@@ -80,8 +80,12 @@ add('/genres', '0.8', 'weekly')
 add('/developers', '0.6', 'weekly')
 add('/play-local', '0.6', 'monthly')
 add('/blog', '0.7', 'weekly')
-for (const p of visiblePlatforms) add(`/games?platform=${p.id}`, '0.7', 'weekly')
-for (const g of genres) add(`/games?genre=${g.id}`, '0.7', 'weekly')
+// 平台页与类型页是主要的搜索入口，用可收录的干净路径（见 src/pages/CollectionPage.tsx）
+for (const p of visiblePlatforms) add(`/platforms/${p.id}`, '0.8', 'weekly')
+// 一款可见游戏都没有的类型是空页面，别提交给搜索引擎
+for (const g of genres) {
+  if (visibleGames.some((x) => x.genres?.includes(g.id))) add(`/genres/${g.id}`, '0.7', 'weekly')
+}
 for (const g of visibleGames) add(`/games/${encodeURIComponent(g.slug)}`, '0.8', 'weekly')
 for (const p of visiblePosts) add(`/blog/${encodeURIComponent(p.slug)}`, '0.5', 'monthly')
 

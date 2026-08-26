@@ -1,5 +1,6 @@
 import { Router } from 'express'
-import { optionalUser } from '../auth.js'
+import { verifyToken } from '../auth.js'
+import { queryOne } from '../db.js'
 
 /**
  * 联机房间注册表（内存版）。
@@ -13,6 +14,8 @@ import { optionalUser } from '../auth.js'
  *
  * 成员超过 MEMBER_TTL 没心跳视为掉线；房间没有成员即消失。
  * 只在内存里，重启后清空（房间本来就是临时的）。多实例部署时请改成 Redis。
+ *
+ * 刻意不依赖数据库：只想跑联机、还没配 MySQL 时，把这个后端起起来房间列表就能用。
  */
 export const roomsRouter = Router()
 
@@ -45,6 +48,22 @@ function publicRoom(room) {
 
 const str = (v, max = 120) => (typeof v === 'string' ? v.trim().slice(0, max) : '')
 
+/**
+ * 可选登录：认得出用户就用他的真实昵称，认不出（没登录、令牌过期、数据库没起来）
+ * 就当游客放行。房间是纯内存功能，不能被数据库拖住。
+ */
+async function softUser(req, _res, next) {
+  try {
+    const h = req.headers.authorization || ''
+    const token = h.startsWith('Bearer ') ? h.slice(7).trim() : ''
+    const payload = token ? verifyToken(token) : null
+    if (payload?.uid) req.user = await queryOne('SELECT id, nickname FROM users WHERE id = ?', [payload.uid])
+  } catch {
+    /* 数据库不可用等情况：当作游客，不影响联机 */
+  }
+  next()
+}
+
 roomsRouter.get('/', (_req, res) => {
   prune()
   const list = [...rooms.values()].map(publicRoom).sort((a, b) => b.createdAt - a.createdAt)
@@ -58,7 +77,7 @@ roomsRouter.get('/:roomId', (req, res) => {
   res.json(publicRoom(room))
 })
 
-roomsRouter.post('/heartbeat', optionalUser, (req, res) => {
+roomsRouter.post('/heartbeat', softUser, (req, res) => {
   const roomId = str(req.body.roomId, 200)
   const gameSlug = str(req.body.gameSlug)
   const memberId = str(req.body.memberId, 64)

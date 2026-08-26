@@ -4,25 +4,32 @@ import { useT } from '@/services/i18n'
 
 export const SITE_NAME = import.meta.env.VITE_SITE_NAME ?? '8BitGo'
 
+/**
+ * 站点 Logo。
+ * 素材：public/ui/logo-8bitgo.png（272x70 透明底像素字标）
+ *      public/ui/logo-mark.png（128x128 单字「8」方形标，compact 时用）
+ * img 上写死 width/height 是为了避免图片加载前后的布局抖动。
+ */
 export function Logo({ className, compact }: { className?: string; compact?: boolean }) {
   const t = useT()
   return (
-    <Link to="/" className={cx('group inline-flex items-center gap-2', className)} aria-label={`${SITE_NAME} ${t.common.home}`}>
-      <span className="grid h-8 w-8 place-items-center rounded-lg bg-brand text-white shadow-[0_0_18px_rgba(0,120,242,0.5)] transition group-hover:rotate-6">
-        <svg width="18" height="18" viewBox="0 0 64 64" shapeRendering="crispEdges" aria-hidden>
-          <rect x="6" y="20" width="52" height="26" rx="6" fill="#fff" />
-          <rect x="14" y="30" width="12" height="5" fill="#0078f2" />
-          <rect x="17.5" y="26.5" width="5" height="12" fill="#0078f2" />
-          <rect x="40" y="27" width="5" height="5" fill="#fbbf24" />
-          <rect x="47" y="32" width="5" height="5" fill="#fbbf24" />
-        </svg>
-      </span>
-      {!compact && (
-        <span className="text-pixel text-sm leading-none tracking-wide">
-          <span className="text-fg">8Bit</span>
-          <span className="text-brand-hover">Go</span>
-        </span>
-      )}
+    <Link
+      to="/"
+      className={cx('group inline-flex items-center', className)}
+      aria-label={`${SITE_NAME} ${t.common.home}`}
+    >
+      <img
+        src={compact ? '/ui/logo-mark.png' : '/ui/logo-8bitgo.png'}
+        alt={SITE_NAME}
+        width={compact ? 32 : 155}
+        height={compact ? 32 : 40}
+        draggable={false}
+        className={cx(
+          'w-auto select-none transition duration-200 group-hover:-translate-y-0.5',
+          compact ? 'h-8' : 'h-9 lg:h-10',
+        )}
+        style={{ imageRendering: 'pixelated', padding: '5px', paddingLeft: 0 }}
+      />
     </Link>
   )
 }

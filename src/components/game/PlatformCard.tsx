@@ -8,7 +8,7 @@ export function PlatformCard({ platform, className }: { platform: PlatformWithCo
   const t = useT()
   return (
     <Link
-      to={`/games?platform=${platform.id}`}
+      to={`/platforms/${platform.id}`}
       className={cx(
         'group card-hover relative block overflow-hidden rounded-card border border-line bg-surface p-4 hover:border-brand/60',
         className,

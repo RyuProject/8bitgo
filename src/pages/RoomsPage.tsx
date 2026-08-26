@@ -1,8 +1,8 @@
 import { getMultiplayerGames } from '@/services/games'
 import { useSeo } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
-import { roomsEnabled, useRooms } from '@/services/rooms'
-import { cloudPlayable, CLOUDGAME_URL } from '@/emulator'
+import { anyRoomsEnabled, useAllRooms } from '@/services/allRooms'
+import { p2pPlayable, cloudPlayable } from '@/emulator'
 import { GameCard } from '@/components/game/GameCard'
 import { RoomCard } from '@/components/game/RoomCard'
 import { SectionHeader } from '@/components/ui/SectionHeader'
@@ -15,9 +15,9 @@ import { SectionHeader } from '@/components/ui/SectionHeader'
 export function RoomsPage() {
   const t = useT()
   useSeo({ title: t.rooms.title, description: t.rooms.seo, noindex: true })
-  const rooms = useRooms()
-  const enabled = roomsEnabled() && Boolean(CLOUDGAME_URL)
-  const suggestions = getMultiplayerGames(12).filter((g) => cloudPlayable(g.platform))
+  const rooms = useAllRooms()
+  const enabled = anyRoomsEnabled()
+  const suggestions = getMultiplayerGames(12).filter((g) => p2pPlayable(g.platform) || cloudPlayable(g.platform))
 
   return (
     <div className="container-x py-8 sm:py-10">

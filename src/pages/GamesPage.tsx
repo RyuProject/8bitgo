@@ -83,6 +83,9 @@ export function GamesPage() {
     title,
     description: t.seo.games,
     canonicalPath: '/games',
+    // 站内搜索结果没有收录价值（内容随关键词无限组合），但仍允许抓取，
+    // 这样 canonical 能被读到，首页 JSON-LD 里的站内搜索框也才验证得过
+    noindex: Boolean(q),
     jsonLd: [
       itemListSchema(
         title,

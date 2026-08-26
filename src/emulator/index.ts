@@ -16,7 +16,8 @@ export {
   extOf,
 } from './registry'
 export type { Runtime, RuntimeId, MountOptions, ResolveContext } from './types'
-export { EJS_PATH } from './adapters/emulatorjs'
+export { EJS_PATH, p2pPlayable } from './adapters/emulatorjs'
+export type { NetplaySession } from './adapters/emulatorjs'
 export { RUFFLE_PATH } from './adapters/ruffle'
 export { J2ME_PATH } from './adapters/j2me'
 export { CLOUDGAME_URL, CLOUD_PLATFORM_CORES, cloudPlayable, cloudGameRuntime } from './adapters/cloudgame'

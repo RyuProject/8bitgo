@@ -4,6 +4,7 @@ import type { Translation } from './index'
 const it: Translation = {
   /* ---------------- Comuni ---------------- */
   common: {
+    moreFilters: 'Filtra con più opzioni →',
     all: 'Tutti',
     view: 'Vedi',
     viewAll: 'Vedi tutti',
@@ -83,6 +84,7 @@ const it: Translation = {
     searchPlaceholder: 'Cerca giochi, piattaforme, sviluppatori…',
     searchAria: 'Cerca giochi',
     playLocal: 'Gioca con ROM locali',
+    downloadApp: 'Scarica l’app',
     coinBalance: 'Saldo G Coin',
     coinBalanceGuest: 'Saldo G Coin (accedi per iniziare a guadagnare)',
     coinChip: '{n} G Coin',
@@ -397,6 +399,14 @@ const it: Translation = {
   },
 
   player: {
+    takingOver: 'L’host si è disconnesso: stai subentrando…',
+    tookOver: 'Ora sei tu l’host, la partita continua',
+    hostChanged: 'L’host è cambiato: riconnessione…',
+    p2pHint: 'Il gioco gira nel tuo browser e viene trasmesso direttamente a chi entra (fino a {max}), senza passare da un server.',
+    p2pTag: 'P2P',
+    hostLeft: 'L’host è uscito: la partita è finita',
+    roomGoneShort: 'Stanza chiusa',
+    cloudFellBack: 'Il server multigiocatore non è disponibile ({msg}): si gioca in locale nel browser',
     onlineStart: 'Inizia · crea una stanza',
     onlineHint: 'Il gioco gira nel cloud. All’avvio viene creata una stanza (fino a {max} giocatori) e gli amici entrano con il link di invito.',
     localInstead: 'Gioca in locale',
@@ -609,6 +619,9 @@ const it: Translation = {
 
   /* ---------------- Runtime ---------------- */
   runtime: {
+    netplayUnavailable: 'Questa build di EmulatorJS non ha il netplay (serve una build propria 4.3.0-pre o superiore)',
+    netplayFailed: 'Impossibile avviare il multigiocatore: {msg}',
+    netplaySignalUnreachable: 'Server di segnalazione irraggiungibile ({url}): multigiocatore non disponibile',
     cloudDesc: 'Multigiocatore online: il gioco gira su un server cloud-game e viene trasmesso al browser via WebRTC',
     cloudNotConfigured: 'Server multigiocatore non configurato (VITE_CLOUDGAME_URL)',
     cloudNoSession: 'Parametri della sessione multigiocatore mancanti',

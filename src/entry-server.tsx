@@ -5,7 +5,7 @@ import { AppRoutes } from './AppRoutes'
 import { gamesStore } from '@/services/store'
 import { postsStore } from '@/services/posts'
 import { setLangForRender } from '@/services/lang'
-import { beginHeadCollection, endHeadCollection, setSsrPath, type CollectedHead } from '@/services/seo'
+import { beginHeadCollection, consumeNotFound, endHeadCollection, setSsrPath, type CollectedHead } from '@/services/seo'
 import { langFromPath, langPrefix, stripLang } from '@/config/languages'
 import type { Game, Post } from '@/types'
 
@@ -20,6 +20,8 @@ export interface RenderResult {
   html: string
   head: CollectedHead
   lang: string
+  /** HTTP 状态码：渲染出 404 页时是 404，其余是 200 */
+  status: number
 }
 
 /**
@@ -46,5 +48,5 @@ export function render({ url, games, posts }: RenderInput): RenderResult {
     </StrictMode>,
   )
   const head = endHeadCollection()
-  return { html, head, lang }
+  return { html, head, lang, status: consumeNotFound() ? 404 : 200 }
 }

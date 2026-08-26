@@ -1,14 +1,14 @@
 import { useState } from 'react'
 import type { PlatformId } from '@/types'
 import type { Translation } from '@/locales'
-import { platformMap } from '@/data/platforms'
+import { platforms, platformMap } from '@/data/platforms'
 import { cx } from '@/lib/format'
 import { useSeo } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
 import { platformLabel } from '@/services/i18nData'
 import { EmulatorPlayer } from '@/emulator'
 import { defaultKeymap } from '@/lib/emulator'
-import { resolveRuntime, runtimes, runtimesFor } from '@/emulator'
+import { isPlayable, resolveRuntime, runtimes, runtimesFor } from '@/emulator'
 
 function stepsFor(t: Translation) {
   return [
@@ -22,13 +22,14 @@ export function PlayLocalPage() {
   const t = useT()
   const STEPS = stepsFor(t)
   useSeo({ title: t.playLocal.title, description: t.seo.playLocal })
-  // 平台完全由拖入的文件自动识别；这里的 platformId 只是识别结果的落点。
   const [platformId, setPlatformId] = useState<PlatformId>('nes')
-  const [detected, setDetected] = useState(false)
+  const [auto, setAuto] = useState(true)
   const platform = platformMap[platformId]
+  const supported = platforms.filter((p) => isPlayable(p.id))
+  const unsupported = platforms.filter((p) => !isPlayable(p.id))
   // 显示「这个平台实际会用哪个引擎」：按优先级取，与 resolveRuntime 的选法一致，
-  // 否则 NES 会显示成 EmulatorJS，但实际跑的是 jsnes。识别出平台之前不高亮任何一个。
-  const runtime = detected ? (runtimesFor(platformId)[0] ?? resolveRuntime(platformId)) : null
+  // 否则 NES 会显示成 EmulatorJS，但实际跑的是 jsnes。
+  const runtime = runtimesFor(platformId)[0] ?? resolveRuntime(platformId)
 
   return (
     <div className="container-x py-8 sm:py-10">
@@ -50,7 +51,58 @@ export function PlayLocalPage() {
 
       <div className="mt-10 grid gap-8 lg:grid-cols-12">
         <div className="lg:col-span-4">
-          <h2 className="text-base font-bold">{t.playLocal.sectionRuntime}</h2>
+          <h2 className="text-base font-bold">{t.playLocal.sectionPlatform}</h2>
+          <button
+            type="button"
+            aria-pressed={auto}
+            onClick={() => setAuto(true)}
+            className={cx(
+              'mt-3 flex w-full items-center gap-2 rounded-xl border px-3 py-2.5 text-left text-sm transition',
+              auto ? 'border-brand bg-brand-soft text-fg' : 'border-line bg-surface text-muted hover:border-line-strong hover:text-fg',
+            )}
+          >
+            <span aria-hidden>🔍</span>
+            <span className="min-w-0">
+              <span className="block font-semibold">{t.playLocal.autoDetect}</span>
+              <span className="block text-[11px] opacity-70">{t.playLocal.autoDetectDesc}</span>
+            </span>
+          </button>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            {supported.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                aria-pressed={!auto && platformId === p.id}
+                onClick={() => {
+                  setAuto(false)
+                  setPlatformId(p.id)
+                }}
+                className={cx(
+                  'flex items-center gap-2 rounded-xl border px-3 py-2.5 text-left text-sm transition',
+                  !auto && platformId === p.id
+                    ? 'border-brand bg-brand-soft text-fg'
+                    : 'border-line bg-surface text-muted hover:border-line-strong hover:text-fg',
+                )}
+              >
+                <span aria-hidden>{p.icon}</span>
+                <span className="min-w-0">
+                  <span className="block truncate font-semibold">{p.shortName}</span>
+                  <span className="block truncate text-[11px] opacity-70">
+                    {(runtimesFor(p.id)[0] ?? resolveRuntime(p.id))?.name} · {p.romExtensions.slice(0, 3).join(' ')}
+                  </span>
+                </span>
+              </button>
+            ))}
+          </div>
+          {unsupported.length > 0 && (
+            <p className="mt-3 text-xs text-dim">
+              {fmt(t.playLocal.unsupportedList, {
+                list: unsupported.map((p) => platformLabel(t, p.id, p.name)).join(t.player.extSep),
+              })}
+            </p>
+          )}
+
+          <h2 className="mt-8 text-base font-bold">{t.playLocal.sectionRuntime}</h2>
           <ul className="mt-3 space-y-2">
             {Object.values(runtimes).map((rt) => (
               <li key={rt.id} className={cx('rounded-lg border px-3 py-2 text-xs', runtime?.id === rt.id ? 'border-brand/60 bg-brand-soft' : 'border-line bg-surface')}>
@@ -75,22 +127,19 @@ export function PlayLocalPage() {
           <h2 className="mb-3 text-base font-bold">
             {t.playLocal.sectionDrop}
             <span className="ml-2 text-xs font-normal text-muted">
-              {detected
-                ? fmt(t.playLocal.currentPlatform, { name: platformLabel(t, platform.id, platform.name) })
-                : t.playLocal.autoPlatform}
-              {runtime && ` ${fmt(t.playLocal.runtimeSuffix, { name: runtime.name })}`}
+              {auto
+                ? t.playLocal.autoPlatform
+                : fmt(t.playLocal.currentPlatform, { name: platformLabel(t, platform.id, platform.name) })}{' '}
+              {fmt(t.playLocal.runtimeSuffix, { name: runtime?.name ?? '—' })}
             </span>
           </h2>
           <EmulatorPlayer
-            key="auto"
+            key={auto ? 'auto' : platform.id}
             platform={platform}
             gameName={`${platformLabel(t, platform.id, platform.name)} ROM`}
-            icon="🔍"
-            onDetectMismatch="switch"
-            onPlatformChange={(id) => {
-              setPlatformId(id)
-              setDetected(true)
-            }}
+            icon={auto ? '🔍' : platform.icon}
+            onDetectMismatch={auto ? 'switch' : 'warn'}
+            onPlatformChange={(id) => setPlatformId(id)}
           />
           <p className="mt-3 text-xs leading-relaxed text-dim">{t.playLocal.disclaimer}</p>
         </div>

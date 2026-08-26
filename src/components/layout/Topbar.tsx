@@ -3,7 +3,6 @@ import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-do
 import { cx } from '@/lib/format'
 import { Button } from '@/components/ui/Button'
 import { logout, useCurrentUser } from '@/services/auth'
-import { openAuthModal } from '@/services/authModal'
 import { useShell } from './ShellContext'
 import { useT, fmt } from '@/services/i18n'
 import { Logo } from './Logo'
@@ -52,8 +51,8 @@ export function Topbar() {
             <SearchIcon />
           </button>
 
-          <Button to="/play-local" variant="secondary" size="sm" className="hidden sm:inline-flex">
-            <span aria-hidden>📂</span> {t.topbar.playLocal}
+          <Button to="/apps" variant="secondary" size="sm" className="hidden sm:inline-flex">
+            <span aria-hidden>📱</span> {t.topbar.downloadApp}
           </Button>
 
           {FEATURES.coins && (
@@ -66,13 +65,8 @@ export function Topbar() {
             </Link>
           )}
 
-          {user ? (
-            <UserMenu />
-          ) : (
-            <Button onClick={openAuthModal} size="sm">
-              {t.common.login}
-            </Button>
-          )}
+          {/* 登录入口保留在侧边栏；顶栏只在已登录时显示用户菜单 */}
+          {user && <UserMenu />}
         </div>
       </div>
 

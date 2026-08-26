@@ -40,7 +40,26 @@ encoder:
     video:
         # vp8 兼容性最好；服务器 CPU 富余可改 vp9（画质更好、更吃 CPU）
         codec: vp8
-        threads: 0
+        # 每个 worker 的编码线程数。小机器上跑多个 worker 时设成 1，
+        # 避免每个 worker 都开一堆线程互相抢 CPU（0 = 自动 = 按核数开）
+        threads: 1
+    list:
+        vp8:
+            encoder: vp8enc
+            # 关键的一行是 target-bitrate。
+            #
+            # cloud-game 默认 3200000（3.2 Mbps），那是按 N64 / PS1 这种画面定的。
+            # 本站主要跑 NES(256×240) / SNES(256×224) / GBA(240×160) 这类像素画面，
+            # 1.2 Mbps 已经几乎无损，带宽直接省到三分之一 —— 小带宽机器上这是最有效的一刀。
+            # 画面明显糊了再往上调；跑 N64 / PS1 建议回到 2500000~3200000。
+            #
+            # cpu-used 越大越省 CPU、画质越低（范围 0~16，默认 6）。
+            # 核心不够用时先调这里，比降码率对画质的伤害小。
+            params: >-
+                keyframe-mode=disabled tuning=ssim cpu-used=6 target-bitrate=1200000 deadline=1 sharpness=1 end-usage=cbr
+                static-threshold=100
+                error-resilient=default+partitions overshoot=20 undershoot=100
+            caps: video/x-vp8
 
 emulator:
     # 每 30 秒自动存档，掉线重连能接着玩

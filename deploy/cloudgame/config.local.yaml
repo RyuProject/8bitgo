@@ -1,0 +1,71 @@
+# 本机试跑用的 cloud-game 配置（macOS / Linux 原生运行，无 Docker、无 TURN）。
+# 用法见 local-mac.md：复制成 <cloud-game>/configs/config.yaml
+#
+# 与生产配置（config.template.yaml）的区别：
+#   - 不配 TURN，本机走 host candidate 直接通
+#   - 打开 debug 日志，方便看清楚卡在哪一步
+#   - 只留 NES / SNES / GBA / GB / MD / PS1 这几个不需要 OpenGL 的核心
+
+coordinator:
+    server:
+        address: :8000
+    origin:
+        userWs:
+    debug: true
+
+worker:
+    library:
+        basePath: assets/games
+        watchMode: true
+    network:
+        coordinatorAddress: localhost:8000
+        endpoint: /wso
+        secure: false
+    server:
+        address: :9000
+    debug: true
+
+webrtc:
+    iceServers:
+        - urls: stun:stun.l.google.com:19302
+    singlePort: 8443
+
+encoder:
+    video:
+        codec: vp8
+        threads: 0
+
+emulator:
+    autosaveSec: 30
+    libretro:
+        cores:
+            repo:
+                # 自动下载对应平台的核心（macOS 会取 .dylib）
+                sync: true
+            list:
+                nes:
+                    lib: nestopia_libretro
+                    folder: nes
+                    roms: ["nes", "fds", "unf", "unif"]
+                snes:
+                    lib: snes9x_libretro
+                    folder: snes
+                    roms: ["smc", "sfc", "swc", "fig", "bs"]
+                gba:
+                    lib: mgba_libretro
+                    folder: gba
+                    roms: ["gba", "agb"]
+                    maxThreads: 4
+                gb:
+                    lib: mgba_libretro
+                    folder: gb
+                    roms: ["gb", "gbc", "sgb"]
+                    maxThreads: 4
+                segamd:
+                    lib: genesis_plus_gx_libretro
+                    folder: segamd
+                    roms: ["md", "gen", "smd", "bin"]
+                psx:
+                    lib: pcsx_rearmed_libretro
+                    folder: psx
+                    roms: ["cue", "chd", "pbp", "iso", "img"]

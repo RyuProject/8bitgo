@@ -47,7 +47,7 @@ export async function renderPage(req, res, next) {
     const { games, posts } = await getContent()
     const url = req.originalUrl
 
-    const { html, head, lang } = render({ url, games, posts })
+    const { html, head, lang, status = 200 } = render({ url, games, posts })
 
     let page = getTemplate()
 
@@ -70,7 +70,8 @@ export async function renderPage(req, res, next) {
     const bootstrap = `<script>window.__8BITGO__=${safeJson({ games, posts, lang })}</script>`
     page = page.replace('<div id="root"></div>', `<div id="root">${html}</div>\n${bootstrap}`)
 
-    res.status(200).set({ 'Content-Type': 'text/html; charset=utf-8' }).end(page)
+    // 不存在的页面要回真正的 404，不能一律 200（软 404 会被搜索引擎降权）
+    res.status(status).set({ 'Content-Type': 'text/html; charset=utf-8' }).end(page)
   } catch (e) {
     console.error('[ssr] 渲染失败，退回纯客户端渲染：', e)
     // SSR 挂了不能让站点打不开：返回不带首屏内容的模板，浏览器自己渲染

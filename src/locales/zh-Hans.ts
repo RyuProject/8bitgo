@@ -16,6 +16,7 @@
 export const zhHans = {
   /* ---------------- 通用 ---------------- */
   common: {
+    moreFilters: '用更多条件筛选 →',
     all: '全部',
     view: '查看',
     viewAll: '查看全部',
@@ -95,6 +96,7 @@ export const zhHans = {
     searchPlaceholder: '搜索游戏、平台、开发商…',
     searchAria: '搜索游戏',
     playLocal: '玩本地 ROM',
+    downloadApp: '下载 App',
     coinBalance: 'G 币余额',
     coinBalanceGuest: 'G 币余额（登录后累积）',
     coinChip: '{n} G币',
@@ -396,6 +398,14 @@ export const zhHans = {
   },
 
   player: {
+    takingOver: '房主掉线了，正在由你接手…',
+    tookOver: '你已成为新房主，游戏继续',
+    hostChanged: '房主换人了，正在重新连接…',
+    p2pHint: '游戏在你的浏览器里运行，画面直接推给加入的朋友（最多 {max} 人），不经过服务器。',
+    p2pTag: 'P2P',
+    hostLeft: '房主已离开，这局结束了',
+    roomGoneShort: '房间已关闭',
+    cloudFellBack: '联机服务器暂时用不了（{msg}），已改为在你的浏览器里本地运行',
     onlineStart: '开始游戏 · 自动创建房间',
     onlineHint: '游戏在云端运行，开始后自动创建房间（最多 {max} 人），朋友打开邀请链接即可加入。',
     localInstead: '本地运行',
@@ -566,6 +576,9 @@ export const zhHans = {
 
   /* ---------------- 运行时 ---------------- */
   runtime: {
+    netplayUnavailable: '当前 EmulatorJS 版本不支持联机（需要 4.3.0-pre 及以上的自建版本）',
+    netplayFailed: '联机启动失败：{msg}',
+    netplaySignalUnreachable: '连不上联机信令服务器（{url}），联机暂时不可用',
     cloudDesc: '远程联机：游戏在 cloud-game 服务器上运行，画面经 WebRTC 推送到浏览器',
     cloudNotConfigured: '尚未配置联机服务器（VITE_CLOUDGAME_URL）',
     cloudNoSession: '缺少联机会话参数',

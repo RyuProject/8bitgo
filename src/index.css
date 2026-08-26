@@ -76,6 +76,9 @@
 html {
   color-scheme: light;
   scroll-behavior: smooth;
+  /* 始终为竖向滚动条预留位置：短页面（/apps 这类）没有滚动条、长页面有，
+   * 视口宽度会差一个滚动条的宽度，顶栏右侧按钮就会左右跳。stable 让两种页面宽度一致。 */
+  scrollbar-gutter: stable;
 }
 
 body {
@@ -115,6 +118,22 @@ body {
     linear-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px),
     linear-gradient(90deg, rgba(255, 255, 255, 0.06) 1px, transparent 1px);
   background-size: 8px 8px;
+}
+
+/* 像素面板：手绘素材 public/ui/panel-pixel.png（122x46 原生像素）以九宫格拉伸，
+ * 四角铆钉不会被拉变形，上下左右四条边平铺，中间用 fill 填满内容区。
+ * --pixel-panel-scale 控制放大倍数（1 = 素材原始像素大小），默认 2。
+ * border-image 画在背景之上，background-color 只是图片加载失败时的兜底。
+ */
+@utility pixel-panel {
+  border-style: solid;
+  border-width: calc(9px * var(--pixel-panel-scale, 2));
+  border-color: transparent;
+  border-image-source: url('/ui/panel-pixel.png');
+  border-image-slice: 9 fill;
+  border-image-repeat: stretch;
+  background-color: #c5d7d9;
+  image-rendering: pixelated;
 }
 
 /* CRT 扫描线 */

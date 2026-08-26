@@ -7,8 +7,13 @@ Disallow: /admin
 Disallow: /me
 Disallow: /login
 
-# 筛选与搜索会产生大量重复页面，只让搜索引擎收录干净的列表页
-Disallow: /games?
-Disallow: /*?q=
+# 说明：筛选页（/games?platform=…）不再用 Disallow 屏蔽 —— 被屏蔽的页面搜索引擎
+# 读不到 canonical，反而无法把权重合并到正规页面。现在的做法是：
+#   - 平台 / 类型有各自可收录的干净路径：/platforms/:id、/genres/:id
+#   - /games 的筛选组合统一 canonical 到 /games
+#   - 站内搜索结果页与房间列表带 noindex
+#
+# 同理，这里也不再屏蔽任何 noindex 的公开页面：被 Disallow 的页面搜索引擎读不到
+# noindex，反而可能因为外链而被收录成一条没有摘要的结果。
 
 Sitemap: https://8bitgo.com/sitemap.xml

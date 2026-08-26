@@ -4,6 +4,7 @@ import type { Translation } from './index'
 const fr: Translation = {
   /* ---------------- Général ---------------- */
   common: {
+    moreFilters: 'Filtrer avec plus d’options →',
     all: 'Tous',
     view: 'Voir',
     viewAll: 'Tout voir',
@@ -83,6 +84,7 @@ const fr: Translation = {
     searchPlaceholder: 'Rechercher un jeu, une plateforme, un développeur…',
     searchAria: 'Rechercher des jeux',
     playLocal: 'Jouer à une ROM locale',
+    downloadApp: 'Télécharger l’app',
     coinBalance: 'Solde de G Coins',
     coinBalanceGuest: 'Solde de G Coins (connecte-toi pour en cumuler)',
     coinChip: '{n} G Coins',
@@ -398,6 +400,14 @@ const fr: Translation = {
   },
 
   player: {
+    takingOver: 'L’hôte s’est déconnecté — reprise en cours…',
+    tookOver: 'Vous êtes le nouvel hôte, la partie continue',
+    hostChanged: 'Changement d’hôte — reconnexion…',
+    p2pHint: 'Le jeu tourne dans votre navigateur et est diffusé directement aux personnes qui rejoignent (jusqu’à {max}), sans passer par un serveur.',
+    p2pTag: 'P2P',
+    hostLeft: 'L’hôte est parti — la partie est terminée',
+    roomGoneShort: 'Salon fermé',
+    cloudFellBack: 'Le serveur multijoueur est indisponible ({msg}) — lecture en local dans votre navigateur',
     onlineStart: 'Démarrer · créer un salon',
     onlineHint: 'Le jeu tourne dans le cloud. Le démarrage crée un salon (jusqu’à {max} joueurs) et vos amis le rejoignent via le lien d’invitation.',
     localInstead: 'Jouer en local',
@@ -613,6 +623,9 @@ const fr: Translation = {
 
   /* ---------------- Moteurs ---------------- */
   runtime: {
+    netplayUnavailable: 'Cette version d’EmulatorJS n’a pas de netplay (il faut une compilation 4.3.0-pre ou plus récente)',
+    netplayFailed: 'Impossible de démarrer le multijoueur : {msg}',
+    netplaySignalUnreachable: 'Serveur de signalisation injoignable ({url}) — multijoueur indisponible',
     cloudDesc: 'Multijoueur en ligne : le jeu tourne sur un serveur cloud-game et est diffusé vers le navigateur en WebRTC',
     cloudNotConfigured: 'Serveur multijoueur non configuré (VITE_CLOUDGAME_URL)',
     cloudNoSession: 'Paramètres de session multijoueur manquants',

@@ -6,6 +6,7 @@ import { GameDetailPage } from '@/pages/GameDetailPage'
 import { PlayLocalPage } from '@/pages/PlayLocalPage'
 import { RoomsPage } from '@/pages/RoomsPage'
 import { DevelopersPage, GenresPage, PlatformsPage } from '@/pages/BrowsePages'
+import { GenrePage, PlatformPage } from '@/pages/CollectionPage'
 import { ComingSoonPage } from '@/pages/ComingSoonPage'
 import { NotFoundPage } from '@/pages/NotFoundPage'
 import { BlogPage } from '@/pages/BlogPage'
@@ -36,7 +37,9 @@ export function AppRoutes() {
           <Route path="/games" element={<GamesPage />} />
           <Route path="/games/:slug" element={<GameDetailPage />} />
           <Route path="/platforms" element={<PlatformsPage />} />
+          <Route path="/platforms/:id" element={<PlatformPage />} />
           <Route path="/genres" element={<GenresPage />} />
+          <Route path="/genres/:id" element={<GenrePage />} />
           <Route path="/developers" element={<DevelopersPage />} />
           <Route path="/play-local" element={<PlayLocalPage />} />
           <Route path="/rooms" element={<RoomsPage />} />

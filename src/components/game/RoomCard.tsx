@@ -5,18 +5,47 @@ import { useLang } from '@/services/lang'
 import { useT, fmt } from '@/services/i18n'
 import { gameTitle, platformLabel } from '@/services/i18nData'
 import type { Room } from '@/services/rooms'
+
+/** 统一的房间视图：P2P（房主浏览器跑）与云端（服务器跑）两种来源合并后长这样 */
+export interface RoomView {
+  roomId: string
+  gameSlug: string
+  players: number
+  max: number
+  host: { nickname: string } | null
+  members: Array<{ nickname: string; playerIndex?: number; host: boolean }>
+  createdAt: number
+  /** p2p = 房主的浏览器在跑；cloud = 服务器在跑（付费通道） */
+  kind: 'p2p' | 'cloud'
+}
+
+/** 云端房间（/api/rooms）转成统一视图 */
+export function cloudRoomView(r: Room): RoomView {
+  return {
+    roomId: r.roomId,
+    gameSlug: r.gameSlug,
+    players: r.players,
+    max: 4,
+    host: r.host,
+    members: r.members,
+    createdAt: r.createdAt,
+    kind: 'cloud',
+  }
+}
 import { GameCover } from './GameCover'
 import { Badge } from '@/components/ui/Badge'
 import { cx } from '@/lib/format'
 
 /** 房间卡片：封面 = 正在玩的游戏，下面是 host 与人数 */
-export function RoomCard({ room, compact = false }: { room: Room; compact?: boolean }) {
+export function RoomCard({ room, compact = false }: { room: RoomView; compact?: boolean }) {
   const t = useT()
   const lang = useLang()
   const game = getGame(room.gameSlug)
-  const max = game?.players ?? 2
+  const max = Math.max(room.max || 0, game?.players ?? 2)
   const full = room.players >= max
-  const to = `/games/${room.gameSlug}?room=${encodeURIComponent(room.roomId)}`
+  // P2P 房间走 ?p2p=，云端房间走 ?room=
+  const param = room.kind === 'p2p' ? 'p2p' : 'room'
+  const to = `/games/${room.gameSlug}?${param}=${encodeURIComponent(room.roomId)}`
 
   if (compact) {
     return (
@@ -66,7 +95,8 @@ export function RoomCard({ room, compact = false }: { room: Room; compact?: bool
         </div>
         <div className="flex flex-wrap gap-1">
           {Array.from({ length: max }, (_, i) => {
-            const m = room.members.find((x) => x.playerIndex === i)
+            // 云端房间知道每个人占哪个手柄位；P2P 只知道顺序
+            const m = room.members.find((x) => x.playerIndex === i) ?? (room.kind === 'p2p' ? room.members[i] : undefined)
             return (
               <span
                 key={i}

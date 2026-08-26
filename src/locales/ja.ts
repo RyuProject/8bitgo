@@ -4,6 +4,7 @@ import type { Translation } from './index'
 const ja: Translation = {
   /* ---------------- 共通 ---------------- */
   common: {
+    moreFilters: 'さらに条件を絞り込む →',
     all: 'すべて',
     view: '見る',
     viewAll: 'すべて見る',
@@ -83,6 +84,7 @@ const ja: Translation = {
     searchPlaceholder: 'ゲーム・ゲーム機・開発会社を検索…',
     searchAria: 'ゲームを検索',
     playLocal: 'ローカル ROM で遊ぶ',
+    downloadApp: 'アプリをダウンロード',
     coinBalance: 'Gコイン残高',
     coinBalanceGuest: 'Gコイン残高（ログインすると貯まります）',
     coinChip: '{n} Gコイン',
@@ -384,6 +386,14 @@ const ja: Translation = {
   },
 
   player: {
+    takingOver: 'ホストが切断されました。引き継いでいます…',
+    tookOver: 'あなたが新しいホストです。ゲームは続きます',
+    hostChanged: 'ホストが交代しました。再接続しています…',
+    p2pHint: 'ゲームはあなたのブラウザで動き、参加した人（最大 {max} 人）へ直接配信されます。サーバーは経由しません。',
+    p2pTag: 'P2P',
+    hostLeft: 'ホストが退出しました。このセッションは終了です',
+    roomGoneShort: 'ルームは閉じました',
+    cloudFellBack: '対戦サーバーを利用できません（{msg}）。ブラウザ内のローカル実行に切り替えました',
     onlineStart: 'スタート · ルームを作成',
     onlineHint: 'ゲームはクラウドで動作します。スタートするとルーム（最大 {max} 人）が作られ、友達は招待リンクから参加できます。',
     localInstead: 'ローカルで遊ぶ',
@@ -554,6 +564,9 @@ const ja: Translation = {
 
   /* ---------------- ランタイム ---------------- */
   runtime: {
+    netplayUnavailable: 'この EmulatorJS ビルドは対戦に対応していません（4.3.0-pre 以降の自前ビルドが必要）',
+    netplayFailed: '対戦の開始に失敗しました：{msg}',
+    netplaySignalUnreachable: 'シグナリングサーバーに接続できません（{url}）。対戦は利用できません',
     cloudDesc: 'オンライン対戦：ゲームは cloud-game サーバー上で動作し、WebRTC でブラウザに配信されます',
     cloudNotConfigured: '対戦サーバーが設定されていません（VITE_CLOUDGAME_URL）',
     cloudNoSession: '対戦セッションのパラメータがありません',

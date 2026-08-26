@@ -4,6 +4,7 @@ import type { Translation } from './index'
 const en: Translation = {
   /* ---------------- Common ---------------- */
   common: {
+    moreFilters: 'Filter with more options →',
     all: 'All',
     view: 'View',
     viewAll: 'View all',
@@ -83,6 +84,7 @@ const en: Translation = {
     searchPlaceholder: 'Search games, platforms, developers…',
     searchAria: 'Search games',
     playLocal: 'Play Local ROMs',
+    downloadApp: 'Download App',
     coinBalance: 'G Coin balance',
     coinBalanceGuest: 'G Coin balance (log in to start earning)',
     coinChip: '{n} G Coins',
@@ -396,6 +398,14 @@ const en: Translation = {
   },
 
   player: {
+    takingOver: 'The host dropped — taking over…',
+    tookOver: 'You are the new host, the game continues',
+    hostChanged: 'The host changed — reconnecting…',
+    p2pHint: 'The game runs in your browser and streams straight to whoever joins (up to {max}), never through a server.',
+    p2pTag: 'P2P',
+    hostLeft: 'The host left — this session is over',
+    roomGoneShort: 'Room closed',
+    cloudFellBack: 'The multiplayer server is unavailable ({msg}) — playing locally in your browser instead',
     onlineStart: 'Start · create a room',
     onlineHint: 'The game runs in the cloud. Starting creates a room (up to {max} players) — friends join through the invite link.',
     localInstead: 'Play locally',
@@ -608,6 +618,9 @@ const en: Translation = {
 
   /* ---------------- Runtimes ---------------- */
   runtime: {
+    netplayUnavailable: 'This EmulatorJS build has no netplay (needs a self-hosted 4.3.0-pre or newer)',
+    netplayFailed: 'Could not start multiplayer: {msg}',
+    netplaySignalUnreachable: 'Cannot reach the signalling server ({url}) — multiplayer is unavailable',
     cloudDesc: 'Online multiplayer: the game runs on a cloud-game server and streams to your browser over WebRTC',
     cloudNotConfigured: 'Multiplayer server not configured (VITE_CLOUDGAME_URL)',
     cloudNoSession: 'Missing multiplayer session parameters',

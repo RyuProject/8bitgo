@@ -3,6 +3,7 @@ import type { Translation } from './index'
 
 const zhHant: Translation = {
   common: {
+    moreFilters: '用更多條件篩選 →',
     all: '全部',
     view: '查看',
     viewAll: '查看全部',
@@ -78,6 +79,7 @@ const zhHant: Translation = {
     searchPlaceholder: '搜尋遊戲、平台、開發商…',
     searchAria: '搜尋遊戲',
     playLocal: '玩本機 ROM',
+    downloadApp: '下載 App',
     coinBalance: 'G 幣餘額',
     coinBalanceGuest: 'G 幣餘額（登入後累積）',
     coinChip: '{n} G幣',
@@ -364,6 +366,14 @@ const zhHant: Translation = {
   },
 
   player: {
+    takingOver: '房主斷線了，正在由你接手…',
+    tookOver: '你已成為新房主，遊戲繼續',
+    hostChanged: '房主換人了，正在重新連線…',
+    p2pHint: '遊戲在你的瀏覽器裡執行，畫面直接推給加入的朋友（最多 {max} 人），不經過伺服器。',
+    p2pTag: 'P2P',
+    hostLeft: '房主已離開，這局結束了',
+    roomGoneShort: '房間已關閉',
+    cloudFellBack: '連線伺服器暫時無法使用（{msg}），已改為在你的瀏覽器裡本機執行',
     onlineStart: '開始遊戲 · 自動建立房間',
     onlineHint: '遊戲在雲端執行，開始後自動建立房間（最多 {max} 人），朋友打開邀請連結即可加入。',
     localInstead: '本機執行',
@@ -528,6 +538,9 @@ const zhHant: Translation = {
   },
 
   runtime: {
+    netplayUnavailable: '目前的 EmulatorJS 版本不支援連線（需要 4.3.0-pre 以上的自建版本）',
+    netplayFailed: '連線啟動失敗：{msg}',
+    netplaySignalUnreachable: '連不上信令伺服器（{url}），連線暫時無法使用',
     cloudDesc: '遠端連線：遊戲在 cloud-game 伺服器上執行，畫面經 WebRTC 推送到瀏覽器',
     cloudNotConfigured: '尚未設定連線伺服器（VITE_CLOUDGAME_URL）',
     cloudNoSession: '缺少連線工作階段參數',

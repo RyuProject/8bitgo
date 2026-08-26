@@ -1,5 +1,6 @@
 import 'dotenv/config'
 import express from 'express'
+import { createServer } from 'node:http'
 import cors from 'cors'
 import path from 'node:path'
 import { ping } from './db.js'
@@ -13,6 +14,7 @@ import { meRouter } from './routes/me.js'
 import { usersRouter } from './routes/users.js'
 import { adminRouter } from './routes/admin.js'
 import { roomsRouter } from './routes/rooms.js'
+import { attachNetplay } from './netplay.js'
 
 const app = express()
 app.disable('x-powered-by')
@@ -95,10 +97,15 @@ app.use((err, _req, res, _next) => {
 })
 
 const PORT = Number(process.env.PORT || 8788)
+
+// P2P 联机信令：画面不经过服务器，这里只转发 WebRTC 握手（见 src/netplay.js）
+const httpServer = createServer(app)
+attachNetplay(httpServer, app, origins)
 startSweeper()
 
-app.listen(PORT, () => {
+httpServer.listen(PORT, () => {
   console.log(`8BitGo API 已启动：http://127.0.0.1:${PORT}`)
+  console.log('P2P 联机信令已就绪：/netplay（socket.io）')
   if (ADMIN_AUTH_DISABLED) {
     console.warn('')
     console.warn('  ****************************************************************')

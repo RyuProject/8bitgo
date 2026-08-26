@@ -199,7 +199,7 @@ export function GenreGridSection() {
         {genres.map((g) => (
           <Link
             key={g.id}
-            to={`/games?genre=${g.id}`}
+            to={`/genres/${g.id}`}
             className="card-hover relative flex h-36 flex-col justify-end overflow-hidden rounded-card p-5"
             style={{ background: GENRE_GRADIENTS[g.id] ?? gradientFor(g.id) }}
           >
@@ -227,7 +227,7 @@ export function GenreGridSection() {
                 <span aria-hidden>{genre.icon}</span>
                 {genreLabel(t, genre.id, genre.name)}
               </h3>
-              <Link to={`/games?genre=${genre.id}`} className="text-xs text-muted transition hover:text-brand-hover">
+              <Link to={`/genres/${genre.id}`} className="text-xs text-muted transition hover:text-brand-hover">
                 {t.common.more}
               </Link>
             </div>

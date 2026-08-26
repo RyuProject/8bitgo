@@ -1,20 +1,34 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react'
 import type { Platform, PlatformId } from '@/types'
-import { platformMap, platforms } from '@/data/platforms'
+import { platformMap } from '@/data/platforms'
 import { formatBytes, isRomFileAccepted } from '@/lib/emulator'
 import { detectRom, describeDetection } from './detect'
-import { resolveRuntime, extOf, isPlayable } from './registry'
+import { resolveRuntime, extOf } from './registry'
 import type { Runtime } from './types'
+import { emulatorJsRuntime, p2pPlayable, type NetplaySession } from './adapters/emulatorjs'
 import { cloudGameRuntime, cloudPlayable, type CloudSession, type CloudState } from './adapters/cloudgame'
 import { cx } from '@/lib/format'
 import { Button } from '@/components/ui/Button'
 import { useShell } from '@/components/layout/ShellContext'
 import { useT, fmt } from '@/services/i18n'
 import { platformLabel } from '@/services/i18nData'
+import { FEATURES } from '@/config/features'
+import {
+  downloadState,
+  fetchNetplayRoom,
+  gameIdFor,
+  inviteLink,
+  migrateRoom,
+  playerName,
+  refreshNetplayRooms,
+  useNetplayRooms,
+} from '@/services/netplay'
 import { freePlayerIndex, keepAlive, roomLink, roomsEnabled, useRoom, MAX_PLAYERS } from '@/services/rooms'
 
 type Status = 'idle' | 'loading' | 'running' | 'error'
 type Mode = 'local' | 'online'
+/** 联机走哪条路：p2p = 房主浏览器直推（默认）；cloud = 游戏跑在服务器上（付费） */
+type Channel = 'p2p' | 'cloud'
 
 interface ActiveSession {
   id: number
@@ -22,7 +36,9 @@ interface ActiveSession {
   /** 实际运行的平台（本地文件被识别为其他平台时可能与页面平台不同） */
   platform: PlatformId
   runtime: Runtime
-  /** 联机会话（联机模式才有） */
+  /** P2P 联机会话（游戏在房主浏览器里跑） */
+  netplay?: NetplaySession
+  /** 云端联机会话（游戏在服务器上跑） */
   cloud?: CloudSession
 }
 
@@ -30,14 +46,16 @@ interface Props {
   platform: Platform
   gameName: string
   /**
-   * 游戏 slug。联机模式需要它：服务器游戏库里的文件名 = slug，邀请链接也用它。
+   * 游戏 slug。联机需要它：房间按 slug 分组，邀请链接也用它。
    * 不传（玩本地 ROM 页）就没有联机入口。
    */
   gameSlug?: string
-  /** 该游戏支持的最大玩家数（决定手柄位数量） */
+  /** 该游戏支持的最大玩家数（决定房间容量）。> 1 时默认走联机 */
   maxPlayers?: number
-  /** 通过邀请链接进来：要加入的房间 id（详情页 ?room=） */
-  joinRoomId?: string
+  /** 邀请链接带进来的 P2P 房间 id（详情页 ?p2p=） */
+  invite?: string
+  /** 邀请链接带进来的云端房间 id（详情页 ?room=，付费通道） */
+  cloudInvite?: string
   /** 空闲态背景（例如封面） */
   backdrop?: ReactNode
   /** 空闲态显示的图标 */
@@ -63,16 +81,17 @@ interface Props {
  *  loading —— 已选择文件，运行时资源加载中
  *  running —— 运行时已就绪（运行在独立 iframe 内）
  *
- * 联机模式（online）：游戏跑在 cloud-game 服务器上，开始即自动创建房间，
- * 房间会出现在侧边栏「联机玩」里；朋友通过邀请链接（?room=）加入并选手柄位。
- * 详情页在联机可用时默认联机，可随时切回本地运行。
+ * 联机模式（online）默认走 **P2P**：游戏在房主自己的浏览器里跑，画面经 WebRTC 直推给
+ * 加入的人，不经过服务器。房间自动出现在侧边栏「联机玩」，朋友打开邀请链接即可加入。
+ * cloud-game（游戏跑在服务器上）是另一条通道，成本高，由 FEATURES.cloudGame 控制，留给付费会员。
  */
 export function EmulatorPlayer({
   platform,
   gameName,
   gameSlug,
   maxPlayers = 2,
-  joinRoomId,
+  invite,
+  cloudInvite,
   backdrop,
   icon,
   className,
@@ -88,25 +107,51 @@ export function EmulatorPlayer({
   const [dragging, setDragging] = useState(false)
   const [session, setSession] = useState<ActiveSession | null>(null)
 
-  // 联机
-  const onlineOk = Boolean(gameSlug) && cloudPlayable(platform.id)
-  const [mode, setMode] = useState<Mode>(onlineOk ? 'online' : 'local')
-  const [roomId, setRoomId] = useState<string | null>(null)
-  const [cloudState, setCloudState] = useState<CloudState | null>(null)
-  const [copied, setCopied] = useState(false)
-  /** 实际使用的手柄位（服务器可能改判，以它的回复为准） */
-  const [slotIndex, setSlotIndex] = useState(0)
-  /** 离开房间后不要再按邀请链接里的 ?room= 重新加入 */
+  const t = useT()
+  const { immersive, toggleImmersive } = useShell()
+
+  /* ---------------- 联机 ---------------- */
+  // 联机需要云端 ROM：房主和访客都得能拿到同一个 ROM
+  const p2pOk = Boolean(gameSlug) && Boolean(romUrl) && p2pPlayable(platform.id)
+  const cloudOk = FEATURES.cloudGame && Boolean(gameSlug) && cloudPlayable(platform.id)
+  const onlineOk = p2pOk || cloudOk
+  /** 优先 P2P；P2P 不可用而云端可用时才走云端 */
+  const channel: Channel = p2pOk ? 'p2p' : 'cloud'
+
   const [ignoreInvite, setIgnoreInvite] = useState(false)
+  const inviteId = ignoreInvite ? undefined : invite
+  const cloudInviteId = ignoreInvite ? undefined : cloudInvite
+  const joining = Boolean(inviteId) || Boolean(cloudInviteId)
+
+  /**
+   * 默认是否走联机：多人游戏，或者点邀请链接进来的人。
+   * 单人游戏默认在本地跑（可手动切联机，相当于开个直播给人看）。
+   */
+  const onlineByDefault = onlineOk && (maxPlayers > 1 || joining)
+  const [mode, setMode] = useState<Mode>(onlineByDefault ? 'online' : 'local')
+  const online = mode === 'online' && onlineOk
+
+  const [roomId, setRoomId] = useState<string | null>(null)
+  const [players, setPlayers] = useState(1)
+  /** netplay 给我们分配的身份 id，服务器用它判断「谁该接手」 */
+  const myIdRef = useRef<string>('')
+  /** 正在接手的旧房间 id：新房间开好后要调 /migrate 把两者接上 */
+  const migrateFromRef = useRef<string>('')
+  const [copied, setCopied] = useState(false)
   const slots = Math.max(1, Math.min(MAX_PLAYERS, maxPlayers))
-  const inviteRoomId = ignoreInvite ? undefined : joinRoomId
-  // 加入别人的房间：先看看房间信息（host、已占用的手柄位）
-  const joinRoom = useRoom(onlineOk && status === 'idle' ? inviteRoomId : undefined)
-  const joinFull = Boolean(inviteRoomId && joinRoom && joinRoom.players >= slots)
-  // 房间信息还没查回来就不能加入：否则会拿到 0（房主的位）跟房主撞车
-  const joinPending = Boolean(inviteRoomId) && roomsEnabled() && joinRoom === undefined
-  // 自己所在的房间（用于工具栏显示人数）
-  const myRoom = useRoom(session?.cloud ? (roomId ?? undefined) : undefined)
+
+  // P2P：从房间列表里找要加入的那个房间（判断满没满、还在不在）
+  const p2pRooms = useNetplayRooms()
+  const inviteRoom = inviteId ? p2pRooms.find((r) => r.roomId === inviteId) : undefined
+  const inviteGone = Boolean(inviteId) && status === 'idle' && p2pRooms.length > 0 && !inviteRoom
+  const inviteFull = Boolean(inviteRoom && inviteRoom.players >= inviteRoom.max)
+
+  // 云端：连接状态与手柄位
+  const [cloudState, setCloudState] = useState<CloudState | null>(null)
+  const [slotIndex, setSlotIndex] = useState(0)
+  const cloudJoinRoom = useRoom(cloudOk && status === 'idle' ? cloudInviteId : undefined)
+  const cloudJoinPending = Boolean(cloudInviteId) && roomsEnabled() && cloudJoinRoom === undefined
+  const myCloudRoom = useRoom(session?.cloud ? (roomId ?? undefined) : undefined)
 
   const hostRef = useRef<HTMLDivElement>(null)
   const frameRef = useRef<HTMLDivElement>(null)
@@ -115,18 +160,26 @@ export function EmulatorPlayer({
   // gameName 只用于存档 / 截图命名，放进 effect 依赖会导致「切换语言就把正在跑的游戏重启」
   const gameNameRef = useRef(gameName)
   gameNameRef.current = gameName
+  /** 云端联机是否真的跑起来过（用于区分「没连上」和「玩到一半断了」） */
+  const cloudPlayedRef = useRef(false)
 
   // 云端 ROM 也按其文件扩展名选引擎；还没拿到地址时退回平台默认
   const pageRuntime = resolveRuntime({ platform: platform.id, ext: extOf(romUrl) })
-  // 「自动识别平台」模式（玩本地 ROM 页）：提示语不该写死某一个平台
-  const autoPlatform = onDetectMismatch === 'switch'
-  const autoPlatformList = platforms
-    .filter((p) => isPlayable(p.id))
-    .map((p) => p.shortName)
-    .join(' / ')
   const supported = Boolean(pageRuntime) || onlineOk
-  const { immersive, toggleImmersive } = useShell()
-  const t = useT()
+  // 云端联机连不上时的本地兜底（用 ref，避免挂载 effect 捕获到旧值）
+  const localFallbackRef = useRef<{ url?: string; runtime?: Runtime }>({})
+  localFallbackRef.current = { url: romUrl, runtime: pageRuntime }
+
+  const begin = (
+    game: File | string,
+    targetPlatform: PlatformId,
+    runtime: Runtime,
+    extra?: { netplay?: NetplaySession; cloud?: CloudSession },
+  ) => {
+    sessionCounter.current += 1
+    setSession({ id: sessionCounter.current, game, platform: targetPlatform, runtime, ...extra })
+    setStatus('loading')
+  }
 
   // 会话变化时挂载 / 卸载运行时
   useEffect(() => {
@@ -136,20 +189,33 @@ export function EmulatorPlayer({
       platform: session.platform,
       game: session.game,
       gameName: gameNameRef.current,
+      netplay: session.netplay,
       cloud: session.cloud,
       onReady: () => setStatus('running'),
       onError: (message: string) => {
+        const cloud = session.cloud
+        // 出错后必须把会话拆掉：否则运行时会在隐藏的挂载点里继续活着
+        setSession(null)
+
+        // 云端自己开房没开成（服务器满了 / 连不上），而这游戏本来就能在浏览器里跑：
+        // 直接退回本地运行，别让人因为服务器容量问题玩不了。
+        const fb = localFallbackRef.current
+        if (cloud && !cloud.roomId && !cloudPlayedRef.current && fb.url && fb.runtime) {
+          setMode('local')
+          setError(null)
+          setNotice(fmt(t.player.cloudFellBack, { msg: message }))
+          begin(fb.url, platform.id, fb.runtime)
+          return
+        }
+
         setError(message)
         setStatus('error')
-        // 出错后必须把会话拆掉：否则运行时会在隐藏的挂载点里继续活着
-        // （联机模式下就是 WebSocket / WebRTC / 房间心跳全都还在后台跑）
-        setSession(null)
       },
     })
     return destroy
   }, [session])
 
-  // 联机期间向本站后端心跳，房间才会出现在「联机玩」列表里
+  // 云端联机期间向本站后端心跳（P2P 不需要：信令服务器本来就知道房间）
   useEffect(() => {
     if (!session?.cloud || !roomId || !gameSlug) return
     return keepAlive({
@@ -160,36 +226,123 @@ export function EmulatorPlayer({
     })
   }, [session, roomId, gameSlug])
 
+  /**
+   * 在 P2P 房间里时盯着房间状态：
+   *   - 房主掉线且服务器选中了我 → 取存档、接手，游戏接着跑
+   *   - 房间已经换了房主 → 跟到新房间
+   *   - 房间没了 → 提示这局结束
+   * 服务器保留 60 秒宽限期，2.5 秒一轮足够。
+   */
+  useEffect(() => {
+    if (!session?.netplay || !roomId || status === 'error') return
+    let stopped = false
+    const tick = async () => {
+      const room = await fetchNetplayRoom(roomId)
+      if (stopped) return
+      if (!room) {
+        // 房间彻底消失（宽限期内没人接手）
+        setSession(null)
+        setStatus('error')
+        setError(t.player.hostLeft)
+        return
+      }
+      if (room.migratedTo && room.migratedTo !== roomId) {
+        setNotice(t.player.hostChanged)
+        startP2p(room.migratedTo)
+        return
+      }
+      if (room.awaitingHost && room.nextHostUserId && room.nextHostUserId === myIdRef.current) {
+        stopped = true
+        setNotice(t.player.takingOver)
+        const state = room.hasState ? await downloadState(roomId) : null
+        startP2p(undefined, { from: roomId, state })
+      }
+    }
+    const timer = window.setInterval(() => void tick(), 2500)
+    return () => {
+      stopped = true
+      window.clearInterval(timer)
+    }
+  }, [session, roomId, status])
+
   useEffect(() => {
     if (!copied) return
     const timer = window.setTimeout(() => setCopied(false), 2000)
     return () => window.clearTimeout(timer)
   }, [copied])
 
-  const begin = (game: File | string, targetPlatform: PlatformId, runtime: Runtime, cloud?: CloudSession) => {
-    sessionCounter.current += 1
-    setSession({ id: sessionCounter.current, game, platform: targetPlatform, runtime, cloud })
-    setStatus('loading')
+  /**
+   * P2P：开房间（join 为空）、加入房间，或接手别人掉线后的房间（带 initialState）。
+   */
+  const startP2p = (join?: string, takeOver?: { from: string; state: Uint8Array | null }) => {
+    if (!gameSlug || !romUrl) return
+    setError(null)
+    if (!takeOver) setNotice(null)
+    setRoomId(join ?? null)
+    setPlayers(1)
+    migrateFromRef.current = takeOver?.from ?? ''
+    begin(romUrl, platform.id, emulatorJsRuntime, {
+      netplay: {
+        gameId: gameIdFor(gameSlug),
+        roomName: gameName,
+        playerName: playerName(),
+        maxPlayers: slots,
+        mode: join ? 'join' : 'host',
+        roomId: join,
+        initialState: takeOver?.state ?? undefined,
+        onIdentity: (id) => (myIdRef.current = id),
+        onRoom: (id, isHost) => {
+          setRoomId(id)
+          // 接手成功：把新房间和旧房间接上，老邀请链接才能继续用
+          const from = migrateFromRef.current
+          if (isHost && from && from !== id) {
+            migrateFromRef.current = ''
+            void migrateRoom(from, id, myIdRef.current).then((okDone) => {
+              if (okDone) setNotice(t.player.tookOver)
+            })
+          }
+          refreshNetplayRooms()
+        },
+        onPlayers: (n) => setPlayers(n),
+        onHostLeft: () => {
+          setSession(null)
+          setStatus('error')
+          setError(t.player.hostLeft)
+        },
+      },
+    })
   }
 
-  /** 联机：创建房间（join 为空）或加入房间 */
-  const startOnline = (join?: string) => {
+  /** 云端：创建房间（join 为空）或加入房间 */
+  const startCloud = (join?: string) => {
     if (!gameSlug) return
     setError(null)
     setNotice(null)
     setRoomId(join ?? null)
     setCloudState('connecting')
-    // 加入别人的房间时挑一个空位；房间信息拿不到（没配后端）就退让到 2P，别去抢房主的 1P
-    const playerIndex = join ? (joinRoom ? freePlayerIndex(joinRoom, slots) : Math.min(1, slots - 1)) : 0
+    const playerIndex = join ? (cloudJoinRoom ? freePlayerIndex(cloudJoinRoom, slots) : Math.min(1, slots - 1)) : 0
     setSlotIndex(playerIndex)
+    cloudPlayedRef.current = false
     begin(romUrl ?? '', platform.id, cloudGameRuntime, {
-      gameId: gameSlug,
-      roomId: join,
-      playerIndex,
-      onRoom: (id) => setRoomId(id),
-      onPlayerIndex: (i) => setSlotIndex(i),
-      onState: (s) => setCloudState(s),
+      cloud: {
+        gameId: gameSlug,
+        roomId: join,
+        playerIndex,
+        onRoom: (id) => setRoomId(id),
+        onPlayerIndex: (i) => setSlotIndex(i),
+        onState: (s) => {
+          if (s === 'playing') cloudPlayedRef.current = true
+          setCloudState(s)
+        },
+      },
     })
+  }
+
+  const startOnline = () => {
+    if (cloudInviteId && cloudOk) return startCloud(cloudInviteId)
+    if (inviteId && p2pOk) return startP2p(inviteId)
+    if (channel === 'p2p') return startP2p()
+    return startCloud()
   }
 
   const start = useCallback(
@@ -251,22 +404,24 @@ export function EmulatorPlayer({
   )
 
   const reset = () => {
-    // 主动离开房间后，URL 里的 ?room= 就不该再把人拉回同一个房间
-    if (session?.cloud || joinRoomId) setIgnoreInvite(true)
+    // 主动离开房间后，URL 里的 ?p2p= / ?room= 就不该再把人拉回同一个房间
+    if (session?.netplay || session?.cloud || joining) setIgnoreInvite(true)
     setSession(null)
     setStatus('idle')
     setFile(null)
     setError(null)
     setNotice(null)
     setRoomId(null)
+    setPlayers(1)
     setCloudState(null)
     if (inputRef.current) inputRef.current.value = ''
   }
 
   const copyInvite = async () => {
     if (!gameSlug || !roomId) return
+    const link = session?.cloud ? roomLink(gameSlug, roomId) : inviteLink(gameSlug, roomId)
     try {
-      await navigator.clipboard.writeText(roomLink(gameSlug, roomId))
+      await navigator.clipboard.writeText(link)
       setCopied(true)
     } catch {
       /* 剪贴板不可用时忽略 */
@@ -288,18 +443,17 @@ export function EmulatorPlayer({
   }
 
   const busy = status === 'loading' || status === 'running'
-  const online = mode === 'online' && onlineOk
-  const joining = online && Boolean(inviteRoomId)
-  const activeRuntime = session?.runtime ?? (online ? cloudGameRuntime : pageRuntime)
+  const inRoom = Boolean(session?.netplay || session?.cloud)
+  const activeRuntime =
+    session?.runtime ?? (online ? (channel === 'p2p' ? emulatorJsRuntime : cloudGameRuntime) : pageRuntime)
   const activePlatform = session ? platformMap[session.platform] : platform
   const cloudStateLabel = cloudState ? t.player.cloudState[cloudState] : ''
+  const roomPlayers = session?.cloud ? (myCloudRoom?.players ?? 1) : players
+  const joinBlocked = online && (inviteFull || inviteGone || cloudJoinPending)
 
   /** 空闲态主按钮 */
   const primaryAction = () => {
-    if (online) {
-      startOnline(inviteRoomId || undefined)
-      return
-    }
+    if (online) return startOnline()
     if (romUrl) void start(null)
     else inputRef.current?.click()
   }
@@ -334,13 +488,13 @@ export function EmulatorPlayer({
               )}
               {supported ? (
                 <>
-                  <Button size="lg" disabled={(!online && romChecking) || joinFull || joinPending} onClick={primaryAction}>
+                  <Button size="lg" disabled={(!online && romChecking) || joinBlocked} onClick={primaryAction}>
                     <span aria-hidden>{online ? '👥' : '▶'}</span>{' '}
-                    {joining
-                      ? joinFull
+                    {joining && online
+                      ? inviteFull
                         ? t.player.roomFull
-                        : joinPending
-                          ? t.player.roomLookup
+                        : inviteGone
+                          ? t.player.roomGoneShort
                           : t.player.joinRoom
                       : online
                         ? t.player.onlineStart
@@ -351,28 +505,30 @@ export function EmulatorPlayer({
                             : t.player.pickRom}
                   </Button>
                   <p className="max-w-md text-[11px] leading-relaxed text-white/70 sm:text-xs">
-                    {joining ? (
+                    {joining && online ? (
                       <>
-                        {joinRoom
-                          ? fmt(t.player.joinHint, {
-                              host: joinRoom.host?.nickname ?? '—',
-                              players: String(joinRoom.players),
-                              max: String(slots),
-                              slot: String(freePlayerIndex(joinRoom, slots) + 1),
-                            })
-                          : !roomsEnabled()
-                            ? t.player.joinHintNoList
-                            : joinRoom === undefined
-                              ? t.player.roomLookup
-                              : t.player.roomGone}
+                        {inviteGone
+                          ? t.player.roomGone
+                          : inviteRoom
+                            ? fmt(t.player.joinHint, {
+                                host: inviteRoom.host?.nickname ?? '—',
+                                players: String(inviteRoom.players),
+                                max: String(inviteRoom.max),
+                                slot: String(Math.min(inviteRoom.players + 1, inviteRoom.max)),
+                              })
+                            : t.player.roomLookup}
                         <br />
-                        <button type="button" className="mx-1 underline underline-offset-2 hover:text-white" onClick={() => startOnline()}>
+                        <button
+                          type="button"
+                          className="mx-1 underline underline-offset-2 hover:text-white"
+                          onClick={() => setIgnoreInvite(true)}
+                        >
                           {t.player.createOwnRoom}
                         </button>
                       </>
                     ) : online ? (
                       <>
-                        {fmt(t.player.onlineHint, { max: String(slots) })}
+                        {fmt(channel === 'p2p' ? t.player.p2pHint : t.player.onlineHint, { max: String(slots) })}
                         <br />
                         {t.player.alsoCan}
                         <button type="button" className="mx-1 underline underline-offset-2 hover:text-white" onClick={() => setMode('local')}>
@@ -402,24 +558,12 @@ export function EmulatorPlayer({
                       <>{t.player.checkingHint}</>
                     ) : (
                       <>
-                        {autoPlatform
-                          ? t.player.dropHintAuto
-                          : fmt(t.player.dropHint, { platform: platformLabel(t, platform.id, platform.name) })}
+                        {fmt(t.player.dropHint, { platform: platformLabel(t, platform.id, platform.name) })}
                         <br />
-                        {autoPlatform
-                          ? fmt(t.player.formatsAuto, { platforms: autoPlatformList })
-                          : fmt(t.player.formats, {
-                              exts: platform.romExtensions.join(' '),
-                              runtime: pageRuntime?.name ?? '',
-                            })}
-                        {onlineOk && (
-                          <>
-                            {' '}
-                            <button type="button" className="mx-1 underline underline-offset-2 hover:text-white" onClick={() => setMode('online')}>
-                              {t.player.onlineInstead}
-                            </button>
-                          </>
-                        )}
+                        {fmt(t.player.formats, {
+                          exts: platform.romExtensions.join(' '),
+                          runtime: pageRuntime?.name ?? '',
+                        })}
                       </>
                     )}
                   </p>
@@ -444,7 +588,7 @@ export function EmulatorPlayer({
         {status === 'loading' && (
           <div className="pointer-events-none absolute left-3 top-3 flex items-center gap-2 rounded-lg bg-black/70 px-3 py-1.5 text-xs text-white backdrop-blur">
             <span className="h-2 w-2 animate-ping rounded-full bg-brand-hover" />
-            {session?.cloud ? cloudStateLabel || fmt(t.player.loading, { runtime: activeRuntime?.name ?? '' }) : fmt(t.player.loading, { runtime: activeRuntime?.name ?? '' })}
+            {session?.cloud && cloudStateLabel ? cloudStateLabel : fmt(t.player.loading, { runtime: activeRuntime?.name ?? '' })}
           </div>
         )}
 
@@ -481,18 +625,21 @@ export function EmulatorPlayer({
                 : t.player.statusIdle}
         </span>
 
-        {session?.cloud ? (
+        {inRoom ? (
           <>
             <span className="inline-flex items-center gap-1 rounded-md bg-brand-soft px-2 py-1 font-semibold text-brand-hover" title={roomId ?? ''}>
-              👥 {fmt(t.player.roomBadge, { players: String(myRoom?.players ?? 1), max: String(slots) })}
-              <span className="font-normal text-muted">· {fmt(t.player.slotLabel, { n: String(slotIndex + 1) })}</span>
+              👥 {fmt(t.player.roomBadge, { players: String(roomPlayers), max: String(slots) })}
+              {session?.cloud && <span className="font-normal text-muted">· {fmt(t.player.slotLabel, { n: String(slotIndex + 1) })}</span>}
+              {session?.netplay && <span className="font-normal text-muted">· {t.player.p2pTag}</span>}
             </span>
             {roomId && (
               <button type="button" onClick={() => void copyInvite()} className="rounded-md border border-line px-2 py-1 text-muted hover:text-fg">
                 {copied ? t.player.copied : t.player.copyInvite}
               </button>
             )}
-            {status === 'running' && cloudState && cloudState !== 'playing' && <span className="text-red-300">{cloudStateLabel}</span>}
+            {session?.cloud && status === 'running' && cloudState && cloudState !== 'playing' && (
+              <span className="text-red-300">{cloudStateLabel}</span>
+            )}
           </>
         ) : file ? (
           <span className="truncate text-muted" title={file.name}>

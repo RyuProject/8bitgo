@@ -6,7 +6,10 @@
  *   Ruffle      Flash (.swf)
  *   jsnes       NES (.nes)
  *   J2ME        Java 手机游戏 (.jar) —— 需自托管，见 adapters/j2me.ts
- *   Cloud       远程联机：游戏跑在 cloud-game 服务器上，见 adapters/cloudgame.ts
+ *   Cloud       云端联机：游戏跑在 cloud-game 服务器上，见 adapters/cloudgame.ts
+ *
+ * 联机有两条路：默认走 EmulatorJS 自带的 P2P netplay（房主的浏览器跑游戏，零服务器成本），
+ * cloud-game 是另一条（游戏跑在服务器上，成本高，留给付费会员）。
  *
  * 新增一个引擎只要三步：
  *   1. 在 adapters/ 下实现 Runtime 接口
@@ -15,6 +18,7 @@
  */
 import type { PlatformId } from '@/types'
 import type { CloudSession } from './adapters/cloudgame'
+import type { NetplaySession } from './adapters/emulatorjs'
 
 export type RuntimeId = 'emulatorjs' | 'ruffle' | 'jsnes' | 'j2me' | 'cloudgame'
 
@@ -25,7 +29,12 @@ export interface MountOptions {
   game: File | string
   /** 显示名（存档 / 截图命名用） */
   gameName: string
-  /** 联机会话（仅 cloudgame 运行时使用；游戏由服务器运行，此时 game 字段被忽略） */
+  /**
+   * P2P 联机会话（EmulatorJS netplay）：游戏在房主自己的浏览器里跑，
+   * 画面经 WebRTC 直推给其他玩家，不经过服务器。这是默认的联机方案。
+   */
+  netplay?: NetplaySession
+  /** 云端联机会话（cloudgame 运行时）：游戏由服务器运行，此时 game 字段被忽略 */
   cloud?: CloudSession
   onReady?: () => void
   onStart?: () => void

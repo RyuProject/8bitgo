@@ -29,7 +29,9 @@ import { FEATURES } from '@/config/features'
 export function GameDetailPage() {
   const { slug = '' } = useParams<{ slug: string }>()
   const [searchParams] = useSearchParams()
-  const joinRoomId = searchParams.get('room') ?? undefined
+  // ?p2p= 是 P2P 邀请链接；?room= 是云端房间（付费通道）
+  const invite = searchParams.get('p2p') ?? undefined
+  const cloudInvite = searchParams.get('room') ?? undefined
   const t = useT()
   const game = getGame(slug)
   const { immersive } = useShell()
@@ -103,7 +105,7 @@ export function GameDetailPage() {
           {t.common.library}
         </Link>
         <span className="mx-1.5">/</span>
-        <Link to={`/games?platform=${platform.id}`} className="hover:text-fg">
+        <Link to={`/platforms/${platform.id}`} className="hover:text-fg">
           {platformLabel(t, platform.id, platform.name)}
         </Link>
         <span className="mx-1.5">/</span>
@@ -120,7 +122,8 @@ export function GameDetailPage() {
               gameName={game.title}
               gameSlug={game.slug}
               maxPlayers={game.players}
-              joinRoomId={joinRoomId}
+              invite={invite}
+              cloudInvite={cloudInvite}
               icon={game.icon}
               romUrl={rom.status === 'found' ? rom.url : undefined}
               romChecking={rom.status === 'checking'}
@@ -134,13 +137,13 @@ export function GameDetailPage() {
               <h1 className="text-2xl font-extrabold tracking-tight sm:text-3xl">{seoTitle}</h1>
               {seoTitle !== game.title && <p className="mt-1 text-sm text-muted">{game.title}</p>}
               <div className="mt-3 flex flex-wrap items-center gap-2">
-                <Link to={`/games?platform=${platform.id}`}>
+                <Link to={`/platforms/${platform.id}`}>
                   <Badge tone="brand" className="text-xs">
                     {platform.icon} {platformLabel(t, platform.id, platform.name)}
                   </Badge>
                 </Link>
                 {game.genres.map((id) => (
-                  <Link key={id} to={`/games?genre=${id}`}>
+                  <Link key={id} to={`/genres/${id}`}>
                     <Badge className="text-xs">
                       {genreMap[id].icon} {genreLabel(t, id, genreMap[id].name)}
                     </Badge>
@@ -256,7 +259,7 @@ export function GameDetailPage() {
               </div>
             </div>
             <p className="mt-3 text-sm leading-relaxed text-muted">{platformDesc(t, platform.id, platform.description)}</p>
-            <Button to={`/games?platform=${platform.id}`} variant="secondary" size="sm" className="mt-4 w-full">
+            <Button to={`/platforms/${platform.id}`} variant="secondary" size="sm" className="mt-4 w-full">
               {fmt(t.game.browsePlatform, { platform: platform.shortName })}
             </Button>
           </div>

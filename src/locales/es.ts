@@ -4,6 +4,7 @@ import type { Translation } from './index'
 const es: Translation = {
   /* ---------------- Común ---------------- */
   common: {
+    moreFilters: 'Filtrar con más opciones →',
     all: 'Todos',
     view: 'Ver',
     viewAll: 'Ver todo',
@@ -83,6 +84,7 @@ const es: Translation = {
     searchPlaceholder: 'Busca juegos, plataformas, desarrolladoras…',
     searchAria: 'Buscar juegos',
     playLocal: 'Jugar ROMs locales',
+    downloadApp: 'Descargar app',
     coinBalance: 'Saldo de G Coins',
     coinBalanceGuest: 'Saldo de G Coins (inicia sesión para empezar a ganarlos)',
     coinChip: '{n} G Coins',
@@ -396,6 +398,14 @@ const es: Translation = {
   },
 
   player: {
+    takingOver: 'El anfitrión se desconectó: tomando el control…',
+    tookOver: 'Ahora eres el anfitrión, la partida continúa',
+    hostChanged: 'Cambió el anfitrión: reconectando…',
+    p2pHint: 'El juego se ejecuta en tu navegador y se transmite directamente a quien se una (hasta {max}), sin pasar por un servidor.',
+    p2pTag: 'P2P',
+    hostLeft: 'El anfitrión se fue: la partida ha terminado',
+    roomGoneShort: 'Sala cerrada',
+    cloudFellBack: 'El servidor multijugador no está disponible ({msg}); se juega en local en tu navegador',
     onlineStart: 'Empezar · crear sala',
     onlineHint: 'El juego se ejecuta en la nube. Al empezar se crea una sala (hasta {max} jugadores) y tus amigos entran con el enlace de invitación.',
     localInstead: 'Jugar en local',
@@ -608,6 +618,9 @@ const es: Translation = {
 
   /* ---------------- Motores ---------------- */
   runtime: {
+    netplayUnavailable: 'Esta versión de EmulatorJS no tiene netplay (requiere una compilación propia 4.3.0-pre o superior)',
+    netplayFailed: 'No se pudo iniciar el multijugador: {msg}',
+    netplaySignalUnreachable: 'No se puede contactar con el servidor de señalización ({url}); multijugador no disponible',
     cloudDesc: 'Multijugador online: el juego se ejecuta en un servidor cloud-game y se transmite al navegador por WebRTC',
     cloudNotConfigured: 'Servidor multijugador no configurado (VITE_CLOUDGAME_URL)',
     cloudNoSession: 'Faltan los parámetros de la sesión multijugador',

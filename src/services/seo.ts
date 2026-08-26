@@ -98,6 +98,7 @@ let collected: CollectedHead | null = null
  */
 export function beginHeadCollection() {
   collected = { title: '', tags: [], jsonLd: [] }
+  ssrNotFound = false
 }
 
 export function endHeadCollection(): CollectedHead {
@@ -202,6 +203,19 @@ export function useSeo(opts: SeoOptions) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fullTitle, metaKey, jsonLdKey])
+}
+
+/**
+ * 本次 SSR 渲染的是不是 404 页。
+ * 服务端据此返回 404 状态码 —— 不存在的页面必须回 404，
+ * 否则搜索引擎会把它当成「软 404」：既浪费抓取预算，也拉低站点整体质量评分。
+ */
+let ssrNotFound = false
+export function markNotFound() {
+  ssrNotFound = true
+}
+export function consumeNotFound(): boolean {
+  return ssrNotFound
 }
 
 /** SSR 期间当前请求的路径（由 entry-server 设定） */

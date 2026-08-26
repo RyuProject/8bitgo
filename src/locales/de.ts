@@ -4,6 +4,7 @@ import type { Translation } from './index'
 const de: Translation = {
   /* ---------------- Allgemein ---------------- */
   common: {
+    moreFilters: 'Mit weiteren Filtern eingrenzen →',
     all: 'Alle',
     view: 'Ansehen',
     viewAll: 'Alle ansehen',
@@ -83,6 +84,7 @@ const de: Translation = {
     searchPlaceholder: 'Spiele, Plattformen, Entwickler suchen…',
     searchAria: 'Spiele suchen',
     playLocal: 'Lokale ROMs spielen',
+    downloadApp: 'App herunterladen',
     coinBalance: 'G-Coin-Guthaben',
     coinBalanceGuest: 'G-Coin-Guthaben (melde dich an, um zu sammeln)',
     coinChip: '{n} G-Coins',
@@ -397,6 +399,14 @@ const de: Translation = {
   },
 
   player: {
+    takingOver: 'Der Host ist weg – du übernimmst…',
+    tookOver: 'Du bist jetzt Host, das Spiel geht weiter',
+    hostChanged: 'Host gewechselt – neu verbinden…',
+    p2pHint: 'Das Spiel läuft in deinem Browser und wird direkt an alle Beitretenden gestreamt (bis zu {max}) – ohne Server dazwischen.',
+    p2pTag: 'P2P',
+    hostLeft: 'Der Host hat die Runde verlassen – Sitzung beendet',
+    roomGoneShort: 'Raum geschlossen',
+    cloudFellBack: 'Der Multiplayer-Server ist nicht verfügbar ({msg}) – es wird lokal im Browser gespielt',
     onlineStart: 'Starten · Raum erstellen',
     onlineHint: 'Das Spiel läuft in der Cloud. Beim Start wird ein Raum erstellt (bis zu {max} Spieler) – Freunde treten über den Einladungslink bei.',
     localInstead: 'Lokal spielen',
@@ -609,6 +619,9 @@ const de: Translation = {
 
   /* ---------------- Runtimes ---------------- */
   runtime: {
+    netplayUnavailable: 'Dieser EmulatorJS-Build hat kein Netplay (benötigt einen eigenen Build ab 4.3.0-pre)',
+    netplayFailed: 'Multiplayer konnte nicht gestartet werden: {msg}',
+    netplaySignalUnreachable: 'Signalisierungsserver nicht erreichbar ({url}) – Multiplayer nicht verfügbar',
     cloudDesc: 'Online-Multiplayer: Das Spiel läuft auf einem cloud-game-Server und wird per WebRTC in den Browser gestreamt',
     cloudNotConfigured: 'Multiplayer-Server nicht konfiguriert (VITE_CLOUDGAME_URL)',
     cloudNoSession: 'Multiplayer-Sitzungsparameter fehlen',

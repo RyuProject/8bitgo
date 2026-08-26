@@ -68,7 +68,7 @@ export function GenresPage() {
         {genres.map((g) => (
           <Link
             key={g.id}
-            to={`/games?genre=${g.id}`}
+            to={`/genres/${g.id}`}
             className="group card-hover rounded-card border border-line bg-surface p-5 hover:border-brand/60"
           >
             <span className="grid h-12 w-12 place-items-center rounded-xl bg-brand-soft text-2xl transition group-hover:scale-110" aria-hidden>

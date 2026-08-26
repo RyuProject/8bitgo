@@ -1,8 +1,8 @@
 # 8BitGo 远程联机：cloud-game 服务端
 #
 #   coordinator  信令 / 分配 worker（浏览器连它的 /ws）
-#   worker-1..N  真正跑游戏 + 编码推流；一个 worker 同一时间只跑一个房间，
-#                想要 N 个并发房间就复制 N 个 worker 段（改端口即可）
+#   worker-1..4  真正跑游戏 + 编码推流；一个 worker 同一时间只跑一个房间，
+#                想要 N 个并发房间就起 N 个 worker（这里预置了 4 个，够双核跑 8/16 位平台）
 #   xvfb         N64 这类 OpenGL 核心需要一个 X 显示
 #   coturn       TURN 中继：用户 NAT 穿不透时兜底（强烈建议保留）
 #
@@ -75,7 +75,26 @@ services:
     ports:
       - "8444:8444/udp"
 
-  # 再要并发房间就照着上面复制 worker-3 / 8445 …（每个大约占 1 个 CPU 核）
+  worker-3:
+    <<: *worker
+    environment:
+      <<: *worker-env
+      CLOUD_GAME_WEBRTC_SINGLEPORT: "8445"
+    ports:
+      - "8445:8445/udp"
+
+  worker-4:
+    <<: *worker
+    environment:
+      <<: *worker-env
+      CLOUD_GAME_WEBRTC_SINGLEPORT: "8446"
+    ports:
+      - "8446:8446/udp"
+
+  # 再要并发房间就照着上面继续复制 worker-5 / 8447 …
+  # 一个 worker 同时只跑一个房间（cloud-game 硬限制），但一台机器能起多少个 worker 不受限，
+  # 瓶颈是 CPU 和上行带宽。NES/SNES/GBA 很轻，双核起 4~6 个是现实的；
+  # 开了 N64/PS1/DOS 就 2~3 个到顶。务必用 docker stats 实测，见 README「容量与成本」。
 
   xvfb:
     image: kcollins/xvfb:latest
