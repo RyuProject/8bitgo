@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react'
 import type { Platform, PlatformId } from '@/types'
-import { platformMap } from '@/data/platforms'
+import { platformMap, platforms } from '@/data/platforms'
 import { formatBytes, isRomFileAccepted } from '@/lib/emulator'
 import { detectRom, describeDetection } from './detect'
-import { resolveRuntime, extOf } from './registry'
+import { resolveRuntime, extOf, isPlayable } from './registry'
 import type { Runtime } from './types'
 import { cloudGameRuntime, cloudPlayable, type CloudSession, type CloudState } from './adapters/cloudgame'
 import { cx } from '@/lib/format'
@@ -118,6 +118,12 @@ export function EmulatorPlayer({
 
   // 云端 ROM 也按其文件扩展名选引擎；还没拿到地址时退回平台默认
   const pageRuntime = resolveRuntime({ platform: platform.id, ext: extOf(romUrl) })
+  // 「自动识别平台」模式（玩本地 ROM 页）：提示语不该写死某一个平台
+  const autoPlatform = onDetectMismatch === 'switch'
+  const autoPlatformList = platforms
+    .filter((p) => isPlayable(p.id))
+    .map((p) => p.shortName)
+    .join(' / ')
   const supported = Boolean(pageRuntime) || onlineOk
   const { immersive, toggleImmersive } = useShell()
   const t = useT()
@@ -396,12 +402,16 @@ export function EmulatorPlayer({
                       <>{t.player.checkingHint}</>
                     ) : (
                       <>
-                        {fmt(t.player.dropHint, { platform: platformLabel(t, platform.id, platform.name) })}
+                        {autoPlatform
+                          ? t.player.dropHintAuto
+                          : fmt(t.player.dropHint, { platform: platformLabel(t, platform.id, platform.name) })}
                         <br />
-                        {fmt(t.player.formats, {
-                          exts: platform.romExtensions.join(' '),
-                          runtime: pageRuntime?.name ?? '',
-                        })}
+                        {autoPlatform
+                          ? fmt(t.player.formatsAuto, { platforms: autoPlatformList })
+                          : fmt(t.player.formats, {
+                              exts: platform.romExtensions.join(' '),
+                              runtime: pageRuntime?.name ?? '',
+                            })}
                         {onlineOk && (
                           <>
                             {' '}
