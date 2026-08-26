@@ -6,9 +6,9 @@ import { cx } from '@/lib/format'
 import { useSeo } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
 import { platformLabel } from '@/services/i18nData'
-import { EmulatorPlayer } from '@/components/player/EmulatorPlayer'
+import { EmulatorPlayer } from '@/emulator'
 import { defaultKeymap } from '@/lib/emulator'
-import { isPlayable, resolveRuntime, runtimes } from '@/runtimes/registry'
+import { isPlayable, resolveRuntime, runtimes, runtimesFor } from '@/emulator'
 
 function stepsFor(t: Translation) {
   return [
@@ -27,7 +27,9 @@ export function PlayLocalPage() {
   const platform = platformMap[platformId]
   const supported = platforms.filter((p) => isPlayable(p.id))
   const unsupported = platforms.filter((p) => !isPlayable(p.id))
-  const runtime = resolveRuntime(platformId)
+  // 显示「这个平台实际会用哪个引擎」：按优先级取，与 resolveRuntime 的选法一致，
+  // 否则 NES 会显示成 EmulatorJS，但实际跑的是 jsnes。
+  const runtime = runtimesFor(platformId)[0] ?? resolveRuntime(platformId)
 
   return (
     <div className="container-x py-8 sm:py-10">
@@ -86,7 +88,7 @@ export function PlayLocalPage() {
                 <span className="min-w-0">
                   <span className="block truncate font-semibold">{p.shortName}</span>
                   <span className="block truncate text-[11px] opacity-70">
-                    {resolveRuntime(p.id)?.name} · {p.romExtensions.slice(0, 3).join(' ')}
+                    {(runtimesFor(p.id)[0] ?? resolveRuntime(p.id))?.name} · {p.romExtensions.slice(0, 3).join(' ')}
                   </span>
                 </span>
               </button>

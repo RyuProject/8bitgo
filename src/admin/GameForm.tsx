@@ -6,7 +6,7 @@ import { platforms, platformMap } from '@/data/platforms'
 import { genres } from '@/data/genres'
 import { cx } from '@/lib/format'
 import { defaultKeyFor, defaultMediaKey, defaultRomKeyForLang, getRomConfig, romUrlForKey, uploadRom } from '@/services/roms'
-import { isPlayable } from '@/runtimes/registry'
+import { isPlayable } from '@/emulator'
 import { Field, btnClass, inputClass } from './ui'
 
 export function slugify(text: string): string {

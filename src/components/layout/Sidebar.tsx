@@ -12,6 +12,8 @@ import { communityLinks, libraryNavFor, mainNavFor, type NavLinkItem } from './n
 import { useT, fmt } from '@/services/i18n'
 import { SocialIcon } from './SocialIcon'
 import { FEATURES } from '@/config/features'
+import { useRooms } from '@/services/rooms'
+import { RoomCard } from '@/components/game/RoomCard'
 
 export const SIDEBAR_WIDTH = 240
 export const SIDEBAR_COLLAPSED_WIDTH = 72
@@ -75,9 +77,11 @@ export function Sidebar() {
 
           <NavGroup title={t.sidebar.groupNav} collapsed={collapsed}>
             {mainNavFor(t).map((item) => (
-              <NavItem key={item.to} item={item} collapsed={collapsed} />
+              <NavItem key={item.to} item={item} collapsed={collapsed} trailing={item.to === '/rooms' ? <RoomCount /> : undefined} />
             ))}
           </NavGroup>
+
+          <RoomsBox collapsed={collapsed} />
 
           <NavGroup title={t.sidebar.groupLibrary} collapsed={collapsed}>
             {libraryNavFor(t).map((item) => (
@@ -135,6 +139,43 @@ export function Sidebar() {
         </div>
       </aside>
     </>
+  )
+}
+
+/** 「联机玩」右侧的在线房间数 */
+function RoomCount() {
+  const rooms = useRooms()
+  if (rooms.length === 0) return null
+  return (
+    <span className="inline-flex items-center gap-1 rounded bg-online/15 px-1.5 py-0.5 text-[10px] font-bold text-online">
+      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-online" />
+      {rooms.length}
+    </span>
+  )
+}
+
+/** 联机玩：正在进行的房间（最多 5 个），封面 = 正在玩的游戏，显示房主与人数 */
+function RoomsBox({ collapsed }: { collapsed: boolean }) {
+  const t = useT()
+  const rooms = useRooms()
+  const { setMobileOpen } = useShell()
+  if (rooms.length === 0) return null
+  return (
+    <div className={cx('mb-3', collapsed && 'lg:hidden')} onClick={() => setMobileOpen(false)}>
+      <p className="text-pixel mb-1.5 px-3 text-[10px] uppercase tracking-wider text-dim">{t.rooms.sidebarTitle}</p>
+      <ul className="space-y-0.5">
+        {rooms.slice(0, 5).map((room) => (
+          <li key={room.roomId}>
+            <RoomCard room={room} compact />
+          </li>
+        ))}
+      </ul>
+      {rooms.length > 5 && (
+        <Link to="/rooms" className="mt-1 block px-3 text-[11px] text-muted hover:text-fg">
+          {t.rooms.sidebarMore} →
+        </Link>
+      )}
+    </div>
   )
 }
 

@@ -8,7 +8,7 @@
  * 资源默认走官方 CDN；自托管时把发行包 data/ 放到 public/emulatorjs/ 并设置 VITE_EJS_PATH=/emulatorjs/
  */
 import { platformMap } from '@/data/platforms'
-import type { MountOptions, Runtime } from './types'
+import type { MountOptions, Runtime } from '../types'
 import { getT, fmt } from '@/services/i18n'
 
 export const EJS_PATH: string = (() => {
@@ -93,12 +93,25 @@ function mount(container: HTMLElement, options: MountOptions): () => void {
   }
 }
 
+/** EmulatorJS 覆盖面最广：把所有配了 core 的平台的扩展名收进来 */
+const EJS_EXTS: string[] = [
+  ...new Set(
+    Object.values(platformMap)
+      .filter((p) => p.core)
+      .flatMap((p) => p.romExtensions ?? []),
+  ),
+].map((e) => e.replace(/^\./, '').toLowerCase())
+
 export const emulatorJsRuntime: Runtime = {
   id: 'emulatorjs',
   name: 'EmulatorJS',
   get description() {
     return getT().runtime.ejsDesc
   },
+  extensions: EJS_EXTS,
+  // 通用兜底引擎，优先级最低：有更专精的引擎（如 .nes 的 jsnes）时让给它
+  priority: 5,
+  available: () => true,
   supports: (platform) => Boolean(platformMap[platform]?.core),
   engineLabel: (platform) => platformMap[platform]?.core ?? '—',
   mount,

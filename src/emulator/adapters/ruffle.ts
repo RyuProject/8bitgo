@@ -7,7 +7,7 @@
  * 资源路径：默认 /ruffle/（由 scripts/copy-ruffle.mjs 从 npm 包复制到 public/ruffle/），
  * 也可设置 VITE_RUFFLE_PATH 指向 CDN，例如 https://unpkg.com/@ruffle-rs/ruffle/
  */
-import type { MountOptions, Runtime } from './types'
+import type { MountOptions, Runtime } from '../types'
 import { getT, fmt } from '@/services/i18n'
 
 export const RUFFLE_PATH: string = (() => {
@@ -128,6 +128,9 @@ export const ruffleRuntime: Runtime = {
   get description() {
     return getT().runtime.ruffleDesc
   },
+  extensions: ['swf'],
+  priority: 20,
+  available: () => true,
   supports: (platform) => platform === 'flash',
   engineLabel: () => 'swf',
   mount,

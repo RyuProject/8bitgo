@@ -1,0 +1,10 @@
+# 生产环境：给 coordinator 套上 HTTPS / WSS（前端站点是 https 时浏览器只允许 wss）。
+# 把 cg.8bitgo.com 换成你的域名并解析到这台服务器，Caddy 会自动申请证书。
+#
+#   VITE_CLOUDGAME_URL=https://cg.8bitgo.com
+#
+# 注意：WebRTC 媒体流不走这里，直接走 worker 的 UDP 端口（8443/8444…）与 coturn 的 3478。
+
+cg.8bitgo.com {
+    reverse_proxy 127.0.0.1:8000
+}

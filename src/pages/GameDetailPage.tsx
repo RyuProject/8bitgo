@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { recordRecent, toggleFavorite, useCurrentUser } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
 import { useRomUrl } from '@/services/roms'
-import { resolveRuntime } from '@/runtimes/registry'
+import { resolveRuntime } from '@/emulator'
 import { getGame, getRelatedGames } from '@/services/games'
 import { platformMap } from '@/data/platforms'
 import { genreMap } from '@/data/genres'
@@ -14,7 +14,7 @@ import { useLang } from '@/services/lang'
 import { useT, fmt } from '@/services/i18n'
 import { getLang } from '@/services/lang'
 import { genreLabel, platformDesc, platformLabel, gameTitle } from '@/services/i18nData'
-import { EmulatorPlayer } from '@/components/player/EmulatorPlayer'
+import { EmulatorPlayer } from '@/emulator'
 import { GameCover } from '@/components/game/GameCover'
 import { GameCard } from '@/components/game/GameCard'
 import { SectionHeader } from '@/components/ui/SectionHeader'
@@ -28,6 +28,8 @@ import { FEATURES } from '@/config/features'
 
 export function GameDetailPage() {
   const { slug = '' } = useParams<{ slug: string }>()
+  const [searchParams] = useSearchParams()
+  const joinRoomId = searchParams.get('room') ?? undefined
   const t = useT()
   const game = getGame(slug)
   const { immersive } = useShell()
@@ -116,6 +118,9 @@ export function GameDetailPage() {
               key={game.slug}
               platform={platform}
               gameName={game.title}
+              gameSlug={game.slug}
+              maxPlayers={game.players}
+              joinRoomId={joinRoomId}
               icon={game.icon}
               romUrl={rom.status === 'found' ? rom.url : undefined}
               romChecking={rom.status === 'checking'}

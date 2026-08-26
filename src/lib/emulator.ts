@@ -2,8 +2,8 @@
  * 播放器相关的通用小工具。运行时（EmulatorJS / Ruffle）的挂载逻辑见 src/runtimes/。
  */
 import { getT } from '@/services/i18n'
-export { EJS_PATH } from '@/runtimes/emulatorjs'
-export { RUFFLE_PATH } from '@/runtimes/ruffle'
+export { EJS_PATH, RUFFLE_PATH } from '@/emulator'
+
 
 /** 判断文件后缀是否在允许的 ROM 类型内 */
 export function isRomFileAccepted(file: File, extensions: string[]): boolean {

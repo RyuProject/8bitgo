@@ -14,7 +14,7 @@
 import { useEffect, useState } from 'react'
 import type { Game } from '@/types'
 import { platformMap } from '@/data/platforms'
-import { isPlayable } from '@/runtimes/registry'
+import { isPlayable } from '@/emulator'
 import type { Lang, RomLang } from '@/config/languages'
 import { romLangFor } from '@/config/languages'
 import { useLang } from '@/services/lang'

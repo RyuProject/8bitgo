@@ -22,7 +22,7 @@ export interface NavGroup {
 export function mainNavFor(t: Translation): NavLinkItem[] {
   return [
     { label: t.nav.discover, to: '/', icon: '🏠', exact: true },
-    { label: t.nav.playOnline, to: '/games?multiplayer=1', icon: '👥', exact: true, disabled: true, badge: 'coming soon' },
+    { label: t.nav.playOnline, to: '/rooms', icon: '👥', exact: true },
     ...(FEATURES.live ? [{ label: t.nav.live, to: '/#live', icon: '📺', disabled: true, badge: 'coming soon' }] : []),
     { label: t.nav.blog, to: '/blog', icon: '📝' },
   ]

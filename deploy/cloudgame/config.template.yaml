@@ -1,0 +1,114 @@
+# 8BitGo 的 cloud-game 配置（覆盖默认值；没写的项沿用 cloud-game 内置 config.yaml）。
+#
+# 这是模板：__PUBLIC_IP__ / __TURN_SECRET__ 由 render-config.sh 从 .env 填入并生成 config.yaml。
+# 核心列表的 key 必须与前端 src/emulator/adapters/cloudgame.ts 的 CLOUD_PLATFORM_CORES 对应，
+# 且与 ./games/<key>/ 子目录同名（sync-roms.sh 会按平台 id 小写建目录）。
+
+coordinator:
+    # 浏览器直接连 8000 端口（生产环境用 Caddy 反代成 wss，见 Caddyfile）
+    server:
+        address: :8000
+    # 空 = 允许任意 Origin 的浏览器连接；上线后可填站点域名收紧，例如 https://8bitgo.com
+    origin:
+        userWs:
+    # 有多个 worker 时随便挑一个空闲的（不做延迟探测）
+    selector:
+    debug: false
+
+worker:
+    library:
+        basePath: assets/games
+        # ROM 同步后不用重启 worker
+        watchMode: true
+    network:
+        endpoint: /wso
+        secure: false
+    server:
+        address: :9000
+    debug: false
+
+webrtc:
+    iceServers:
+        - urls: stun:stun.l.google.com:19302
+        - urls: turn:__PUBLIC_IP__:3478
+          username: 8bitgo
+          credential: __TURN_SECRET__
+    # 单 UDP 端口（每个 worker 用 CLOUD_GAME_WEBRTC_SINGLEPORT 覆盖）
+    singlePort: 8443
+
+encoder:
+    video:
+        # vp8 兼容性最好；服务器 CPU 富余可改 vp9（画质更好、更吃 CPU）
+        codec: vp8
+        threads: 0
+
+emulator:
+    # 每 30 秒自动存档，掉线重连能接着玩
+    autosaveSec: 30
+    libretro:
+        cores:
+            repo:
+                # 首次启动自动从 libretro buildbot 下载下面用到的核心
+                sync: true
+            list:
+                nes:
+                    lib: nestopia_libretro
+                    folder: nes
+                    roms: ["nes", "fds", "unf", "unif"]
+                    options:
+                        nestopia_aspect: "4:3"
+                snes:
+                    lib: snes9x_libretro
+                    folder: snes
+                    roms: ["smc", "sfc", "swc", "fig", "bs"]
+                    hid:
+                        1: 257
+                gba:
+                    lib: mgba_libretro
+                    folder: gba
+                    roms: ["gba", "agb"]
+                    maxThreads: 4
+                gb:
+                    lib: mgba_libretro
+                    folder: gb
+                    roms: ["gb", "gbc", "sgb"]
+                    maxThreads: 4
+                n64:
+                    lib: mupen64plus_next_libretro
+                    folder: n64
+                    roms: ["n64", "v64", "z64"]
+                    isGlAllowed: true
+                    usesLibCo: true
+                    vfr: true
+                    options:
+                        "mupen64plus-43screensize": 320x240
+                        "mupen64plus-cpucore": dynamic_recompiler
+                        "mupen64plus-rdp-plugin": gliden64
+                        "mupen64plus-rsp-plugin": hle
+                        "mupen64plus-FrameDuping": True
+                        "mupen64plus-pak1": memory
+                psx:
+                    lib: pcsx_rearmed_libretro
+                    folder: psx
+                    roms: ["cue", "chd", "pbp", "iso", "img"]
+                    options:
+                        pcsx_rearmed_drc: enabled
+                        pcsx_rearmed_frameskip_type: auto
+                arcade:
+                    lib: fbneo_libretro
+                    folder: arcade
+                    roms: ["zip"]
+                    scaleMethod: bilinear2
+                dos:
+                    lib: dosbox_pure_libretro
+                    folder: dos
+                    roms: ["zip", "cue", "exe"]
+                    kbMouseSupport: true
+                    nonBlockingSave: true
+                    saveStateFs: "*.pure.zip"
+                    hid:
+                        0: [257, 513]
+                segamd:
+                    lib: genesis_plus_gx_libretro
+                    folder: segamd
+                    roms: ["md", "gen", "smd", "bin"]

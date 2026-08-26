@@ -16,6 +16,11 @@ import { getT, fmt } from './i18n'
 
 const API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '')
 
+/** 后端根地址（不带 /api）。未配置时返回空串。 */
+export function apiBase(): string {
+  return API_URL
+}
+
 export function apiEnabled(): boolean {
   return Boolean(API_URL)
 }

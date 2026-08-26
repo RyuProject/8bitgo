@@ -6,7 +6,7 @@
 import { loadGames } from './store'
 import { isPlatformEnabled } from '@/config/platforms'
 import { platforms, platformMap } from '@/data/platforms'
-import { isPlayable } from '@/runtimes/registry'
+import { isPlayable } from '@/emulator'
 import { genres, genreMap } from '@/data/genres'
 import { liveStreams } from '@/data/streams'
 import type {
