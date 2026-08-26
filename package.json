@@ -1,0 +1,36 @@
+{
+  "name": "8bitgo",
+  "private": true,
+  "version": "0.9.18",
+  "type": "module",
+  "scripts": {
+    "predev": "node scripts/fetch-fonts.mjs --if-missing && node scripts/copy-ruffle.mjs --if-missing",
+    "dev": "vite",
+    "start": "vite",
+    "fonts": "node scripts/fetch-fonts.mjs",
+    "ruffle": "node scripts/copy-ruffle.mjs",
+    "prebuild": "node scripts/fetch-fonts.mjs --if-missing && node scripts/copy-ruffle.mjs --if-missing && node scripts/gen-sitemap.mjs",
+    "build": "tsc -b && vite build",
+    "lint": "oxlint",
+    "preview": "vite preview",
+    "sitemap": "node scripts/gen-sitemap.mjs"
+  },
+  "dependencies": {
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-router-dom": "^7.18.2"
+  },
+  "devDependencies": {
+    "@ruffle-rs/ruffle": "^0.5.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.1.0",
+    "esbuild": "^0.28.2",
+    "oxlint": "^1.79.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~6.0.2",
+    "vite": "^8.2.2"
+  }
+}

@@ -1,0 +1,15 @@
+# 8BitGo ROM 代理 Worker
+# 部署：cd worker && npx wrangler login && npx wrangler deploy
+# 设置列表接口口令：npx wrangler secret put ADMIN_TOKEN
+name = "8bitgo-roms"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+
+[[r2_buckets]]
+binding = "ROMS"
+bucket_name = "8bitgo"
+
+[vars]
+# 允许跨域访问的来源，多个用逗号分隔；开发期用 * ，上线后改成你的站点域名，例如
+# ALLOWED_ORIGINS = "https://8bitgo.example.com,http://localhost:5173"
+ALLOWED_ORIGINS = "*"

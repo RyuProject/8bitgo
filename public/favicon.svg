@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" shape-rendering="crispEdges">
+  <rect width="64" height="64" rx="14" fill="#0b0b0f"/>
+  <!-- pixel game controller -->
+  <rect x="10" y="22" width="44" height="22" rx="6" fill="#8b5cf6"/>
+  <rect x="16" y="29" width="10" height="4" fill="#0b0b0f"/>
+  <rect x="19" y="26" width="4" height="10" fill="#0b0b0f"/>
+  <rect x="40" y="27" width="4" height="4" fill="#fbbf24"/>
+  <rect x="46" y="31" width="4" height="4" fill="#fbbf24"/>
+  <rect x="30" y="35" width="3" height="3" fill="#0b0b0f"/>
+  <rect x="35" y="35" width="3" height="3" fill="#0b0b0f"/>
+</svg>

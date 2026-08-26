@@ -1,0 +1,211 @@
+@import 'tailwindcss';
+
+/* ---------- 字体 ----------
+ * 英文：Geist Pixel（index.html 里通过 Google Fonts 引入）
+ * 中文：方舟像素字体 Ark Pixel 12px Proportional（本地 woff2，npm run fonts 自动下载）
+ * Geist Pixel 只含拉丁字符，中文与中文标点会按顺序回退到 Ark Pixel，再回退到系统字体。
+ */
+@font-face {
+  font-family: 'Ark Pixel';
+  src: url('/fonts/ark-pixel/ark-pixel-12px-proportional-zh_cn.otf.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ---------- 8BitGo 设计令牌 ---------- */
+@theme {
+  --font-sans:
+    'Geist Pixel', 'Ark Pixel', ui-sans-serif, system-ui, -apple-system, 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', 'Helvetica Neue', Arial, sans-serif;
+  --font-pixel: 'Geist Pixel', 'Ark Pixel', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+
+  /* 配色参考 Duolingo：亮白底 + 亮绿主色，圆角、活泼、柔和 */
+  --color-bg: #ffffff;
+  --color-surface: #ffffff;
+  --color-surface-2: #f7f7f7;
+  --color-surface-3: #eaeaea;
+  --color-line: #e5e5e5;
+  --color-line-strong: #d4d4d4;
+
+  --color-fg: #3c3c3c;
+  --color-muted: #777777;
+  --color-dim: #afafaf;
+
+  --color-brand: #58cc02;
+  --color-brand-hover: #46a302;
+  --color-brand-soft: rgba(88, 204, 2, 0.15);
+  /* 按钮底部的「3D」阴影色（比主色深一档） */
+  --color-brand-shadow: #46a302;
+  --color-coin: #ffc800;
+  --color-coin-soft: rgba(255, 200, 0, 0.18);
+  --color-live: #ff4b4b;
+  --color-online: #58cc02;
+
+  --radius-card: 16px;
+
+  --animate-marquee: marquee 28s linear infinite;
+  --animate-blink: blink 1.2s steps(2, start) infinite;
+  --animate-float: float 6s ease-in-out infinite;
+
+  @keyframes marquee {
+    from {
+      transform: translateX(0);
+    }
+    to {
+      transform: translateX(-50%);
+    }
+  }
+  @keyframes blink {
+    to {
+      visibility: hidden;
+    }
+  }
+  @keyframes float {
+    0%,
+    100% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(-10px);
+    }
+  }
+}
+
+/* ---------- 基础 ---------- */
+html {
+  color-scheme: light;
+  scroll-behavior: smooth;
+}
+
+body {
+  @apply bg-bg text-fg font-sans antialiased;
+  min-height: 100dvh;
+}
+
+::selection {
+  background: rgba(88, 204, 2, 0.3);
+}
+
+/* 自定义滚动条（横向卡片轨道用） */
+.scrollbar-none {
+  scrollbar-width: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+/* ---------- 工具类 ---------- */
+@utility container-x {
+  @apply mx-auto w-full max-w-[1600px] px-4 sm:px-6 lg:px-8;
+}
+
+@utility card-hover {
+  @apply transition duration-300 ease-out hover:-translate-y-1 hover:shadow-[0_16px_32px_-14px_rgba(0,0,0,0.18)];
+}
+
+@utility text-pixel {
+  font-family: var(--font-pixel);
+  letter-spacing: 0.04em;
+}
+
+/* 像素网格叠层，用于封面 */
+@utility pixel-grid {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.06) 1px, transparent 1px);
+  background-size: 8px 8px;
+}
+
+/* CRT 扫描线 */
+@utility scanlines {
+  background-image: repeating-linear-gradient(
+    0deg,
+    rgba(0, 0, 0, 0.18) 0px,
+    rgba(0, 0, 0, 0.18) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+}
+
+/* 隐藏 EmulatorJS 之外的内容时使用 */
+@utility glow-ring {
+  box-shadow:
+    0 0 0 2px rgba(88, 204, 2, 0.6),
+    0 0 24px rgba(88, 204, 2, 0.25);
+}
+
+/* EmulatorJS 容器内的画布铺满 */
+.ejs-host {
+  width: 100%;
+  height: 100%;
+}
+.ejs-host > div,
+.ejs-host canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* ---------- 博客正文排版 ---------- */
+.prose-pixel {
+  font-size: 15px;
+  line-height: 1.9;
+  color: var(--color-fg);
+}
+.prose-pixel h2 {
+  margin: 2rem 0 0.75rem;
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1.4;
+}
+.prose-pixel h3 {
+  margin: 1.5rem 0 0.5rem;
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+.prose-pixel p {
+  margin: 0 0 1rem;
+  color: var(--color-muted);
+}
+.prose-pixel ul,
+.prose-pixel ol {
+  margin: 0 0 1rem;
+  padding-left: 1.4rem;
+  color: var(--color-muted);
+}
+.prose-pixel ul {
+  list-style: square;
+}
+.prose-pixel ol {
+  list-style: decimal;
+}
+.prose-pixel li {
+  margin: 0.25rem 0;
+}
+.prose-pixel li::marker {
+  color: var(--color-brand-hover);
+}
+.prose-pixel strong {
+  color: var(--color-fg);
+  font-weight: 700;
+}
+.prose-pixel code {
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--color-fg);
+  font-size: 0.9em;
+}
+.prose-pixel blockquote {
+  margin: 0 0 1rem;
+  padding: 0.5rem 1rem;
+  border-left: 3px solid var(--color-brand);
+  background: var(--color-brand-soft);
+  border-radius: 0 8px 8px 0;
+  color: var(--color-fg);
+}
+.prose-pixel a {
+  color: var(--color-brand-hover);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}

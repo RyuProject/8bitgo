@@ -1,0 +1,612 @@
+/** Testi UI in italiano. La struttura delle chiavi rispecchia esattamente zh-Hans.ts. */
+import type { Translation } from './index'
+
+const it: Translation = {
+  /* ---------------- Comuni ---------------- */
+  common: {
+    all: 'Tutti',
+    view: 'Vedi',
+    viewAll: 'Vedi tutti',
+    more: 'Altro →',
+    save: 'Salva',
+    cancel: 'Annulla',
+    close: 'Chiudi',
+    login: 'Accedi',
+    loginOrRegister: 'Accedi / Registrati',
+    logout: 'Esci',
+    backHome: 'Torna alla home',
+    browseGames: 'Esplora la libreria',
+    comingSoon: 'In arrivo',
+    comingSoonParen: '{label} (in arrivo)',
+    comingSoonSuffix: '· In arrivo',
+    breadcrumb: 'Percorso di navigazione',
+    home: 'Home',
+    library: 'Libreria',
+    blog: 'Blog',
+    gamesCount: '{n} giochi',
+    gamesCountArrow: '{n} giochi →',
+    playsCount: '🔥 {n} partite',
+    coinAmount: '🪙 {n} G Coin',
+    coinBadge: '+{n} G Coin',
+    liveBadge: 'Live',
+    instantPlay: '☁️ Gioca subito',
+    scrollLeft: 'Scorri a sinistra',
+    scrollRight: 'Scorri a destra',
+    pagination: 'Paginazione',
+    prevPage: 'Pagina precedente',
+    nextPage: 'Pagina successiva',
+    ratingAria: '{n} / 5 stelle',
+    coverAlt: 'Copertina di {title}',
+  },
+
+  /* ---------------- Titolo del sito ---------------- */
+  site: {
+    defaultTitle: '{site} — Gioca gratis online ai giochi retro con emulatore',
+    titleTemplate: '{title} - {site}',
+  },
+
+  /* ---------------- Navigazione ---------------- */
+  nav: {
+    discover: 'Scopri',
+    playOnline: 'Multigiocatore',
+    live: 'Live',
+    blog: 'Blog',
+    allGames: 'Tutti i giochi',
+    platforms: 'Piattaforme',
+    genres: 'Generi',
+    developers: 'Sviluppatori',
+    about: 'Chi siamo',
+    terms: 'Termini di servizio',
+    privacy: 'Informativa sulla privacy',
+    apps: 'App ed estensioni',
+    playLocal: 'Gioca con ROM locali',
+  },
+
+  /* ---------------- Barra laterale ---------------- */
+  sidebar: {
+    aria: 'Navigazione laterale',
+    closeMenu: 'Chiudi il menu',
+    groupNav: 'Navigazione',
+    groupLibrary: 'Libreria',
+    profile: 'Profilo',
+    viewFavorites: 'Vedi i miei preferiti',
+    coinsHint: '🪙 Accedi per iniziare a guadagnare G Coin',
+    loginToFavorite: 'Accedi per aggiungere giochi ai preferiti',
+    randomGame: 'Gioca a un gioco a caso',
+    community: 'Community dei giocatori',
+  },
+
+  /* ---------------- Barra superiore ---------------- */
+  topbar: {
+    openMenu: 'Apri il menu',
+    search: 'Cerca',
+    searchPlaceholder: 'Cerca giochi, piattaforme, sviluppatori…',
+    searchAria: 'Cerca giochi',
+    playLocal: 'Gioca con ROM locali',
+    coinBalance: 'Saldo G Coin',
+    coinBalanceGuest: 'Saldo G Coin (accedi per iniziare a guadagnare)',
+    coinChip: '{n} G Coin',
+    menuProfile: '👤 Profilo',
+    menuFavorites: '❤️ I miei preferiti',
+    menuLogout: '⏻ Esci',
+  },
+
+  /* ---------------- Piè di pagina ---------------- */
+  footer: {
+    aria: 'Link a piè di pagina',
+    copyright: 'Tutti i contenuti dei giochi sono di proprietà dei rispettivi titolari',
+  },
+
+  /* ---------------- Cambio lingua ---------------- */
+  language: {
+    switch: 'Cambia lingua',
+    current: 'Lingua: {label}',
+    heading: 'Scegli la lingua / Language',
+  },
+
+  /* ---------------- Finestra di accesso ---------------- */
+  auth: {
+    title: 'Accedi',
+    emailLabel: 'Email',
+    emailPlaceholder: 'Inserisci la tua email',
+    codeLabel: 'Codice',
+    codePlaceholder: 'Inserisci il codice a 6 cifre',
+    sendCode: 'Invia il codice',
+    sending: 'Invio in corso…',
+    resendIn: 'Rinvia tra {n}s',
+    devCodeHint: 'Modalità demo locale · Codice {code} (clicca per inserirlo)',
+    submit: "Accedi con l'email",
+    submitting: 'Accesso in corso…',
+    or: 'OPPURE',
+    google: 'Accedi con Google',
+    termsPrefix: 'Accedendo accetti i nostri ',
+    termsLink: 'Termini di servizio',
+    termsAnd: ' e la nostra ',
+    privacyLink: 'Informativa sulla privacy',
+    termsSuffix: '.',
+    sendFailed: 'Invio del codice non riuscito',
+    loginFailed: 'Accesso non riuscito',
+    googleFailed: 'Accesso con Google non riuscito',
+  },
+
+  /* ---------------- Home ---------------- */
+  home: {
+    bannerAria: 'Banner della home',
+    pill: 'Nessun download · Apri il browser e gioca',
+    headline1: 'Gioca ai classici con emulatore ',
+    headline2: 'gratis nel tuo browser',
+    introHeadline1: 'Gioca ai classici con emulatore ',
+    introHeadline2: 'gratis online',
+    subcopy:
+      'NES, SNES, GBA, PS1, N64, arcade… centinaia di classici della tua infanzia, con salvataggi di stato, supporto ai gamepad e multigiocatore online.',
+    ctaPlay: 'Inizia a giocare',
+    ctaUpload: 'Carica una ROM locale',
+    browseByGenre: 'Esplora per genere',
+    carouselAria: 'Carosello',
+    featured: 'In evidenza',
+    playNow: 'Gioca ora',
+    slideNth: 'Slide {n}',
+    browseAllGames: 'Esplora tutti i giochi',
+  },
+
+  /* ---------------- Missioni giornaliere ---------------- */
+  tasks: {
+    title: 'Missioni giornaliere',
+    refresh: 'Si azzerano ogni giorno alle 00:00',
+    progress: 'Progressi {done}/{total}',
+    earnedToday: 'Guadagnate oggi',
+    earnedAmount: '🪙 {earned} / {total} G Coin',
+    progressAria: 'Progressi delle missioni giornaliere',
+    loggedIn:
+      '{avatar} {nickname}, il tuo saldo è di {coins} G Coin. Il pagamento delle missioni è ancora in sviluppo.',
+    guestSuffix: ' per registrare i progressi delle missioni e riscuotere le G Coin in automatico.',
+    t1: 'Gioca a un gioco qualsiasi',
+    t2: 'Finisci un gioco classico',
+    t3: 'Gioca 2 partite online con gli amici',
+    t4: 'Gioca a un gioco su una nuova piattaforma',
+  },
+
+  /* ---------------- Sezioni della home ---------------- */
+  sections: {
+    liveTitle: 'Live',
+    liveSubtitle: '{n} streamer stanno giocando ai retro game proprio adesso',
+    liveMore: 'Tutte le dirette',
+    popularTitle: 'I giochi con emulatore più giocati',
+    popularSubtitle: 'In ordine di partite totali',
+    platformsTitle: 'Gioca ai retro game per piattaforma',
+    platformsSubtitle: 'Dalle portatili ai cabinati arcade, scegli la console della tua infanzia',
+    latestTitle: 'Gli ultimi retro game online',
+    latestSubtitle: 'Aggiornati ogni settimana',
+    togetherTitle: 'Giocate insieme',
+    togetherSubtitle: 'Giochi in co-op locale e multigiocatore online: invita un amico nella tua stanza',
+    coinTitle: 'Guadagna G Coin mentre giochi',
+    coinSubtitle:
+      'Finisci un gioco, batti un record o completa le missioni giornaliere per guadagnare G Coin, poi spendile in temi e vantaggi per i membri',
+    topRatedTitle: 'I classici con il voto più alto',
+    topRatedSubtitle: 'Votati da giocatori veri',
+    genreGridTitle: 'Esplora per genere',
+    genreGridSubtitle: 'Scegli un gusto e parti dai titoli più famosi',
+    toolsTitle: 'Strumenti ed estensioni',
+    toolsSubtitle: 'Più di un emulatore: nuovi modi di giocare ai classici',
+    faqTitle: 'Domande frequenti sui giochi con emulatore online',
+    faqSubtitle: 'Prezzi, download, piattaforme e salvataggi',
+    faqHelper: 'Ancora dubbi? Entra nella nostra community su Discord, oppure leggi il blog per guide più dettagliate.',
+    faqReadBlog: 'Leggi il blog',
+    faqAbout: 'Chi siamo',
+  },
+
+  /* ---------------- Strumenti ed estensioni ---------------- */
+  tools: {
+    motionTitle: 'Controller di movimento',
+    motionDesc:
+      'Accendi la fotocamera e sostituisci i pulsanti con gesti, salti e accovacciate. Nessun accessorio: bastano tu e il tuo salotto.',
+    motionCta: 'Scopri come si gioca con il movimento',
+    voiceTitle: 'Controller vocale',
+    voiceDesc:
+      "Basta dire «salta», «spara» o «pausa» per comandare il gioco. Ottimo per l'accessibilità e per la modalità pigra a mani libere.",
+    voiceCta: 'Prova i comandi vocali',
+    videoTitle: 'Editor video con IA',
+    videoDesc:
+      "Registra la sessione con un clic e lascia che l'IA monti i momenti migliori in un video breve, sottotitoli inclusi, pronto da condividere.",
+    videoCta: 'Registra i miei highlight',
+  },
+
+  /* ---------------- Pagina libreria ---------------- */
+  games: {
+    sortPopular: 'Più popolari',
+    sortNewest: 'Più recenti',
+    sortRating: 'Voto più alto',
+    sortName: 'Nome A-Z',
+    sortLabel: 'Ordina',
+    titleSearch: 'Ricerca «{q}»',
+    titleDeveloper: 'Giochi di {name}',
+    titlePlatformGenre: 'Giochi {genre} per {platform}',
+    titlePlatform: 'Giochi per {platform}',
+    titleGenre: 'Giochi {genre}',
+    titleMultiplayer: 'Giochi multigiocatore / per 2 giocatori',
+    titleCoin: 'Giochi che fanno guadagnare G Coin',
+    titleAll: 'Tutti i giochi',
+    total: '{n} giochi',
+    pageOf: ', pagina {page} di {total}',
+    filterPlatform: 'Piattaforma',
+    filterGenre: 'Genere',
+    filterFeature: 'Caratteristiche',
+    chipMultiplayer: '👥 Multigiocatore / 2 giocatori',
+    chipCoin: '🪙 Guadagna G Coin',
+    clearAll: 'Cancella tutto',
+    emptyTitle: 'Nessun gioco corrisponde a questi filtri',
+    emptyHint: 'Prova altre parole chiave oppure cancella i filtri',
+    clearFilters: 'Cancella i filtri',
+  },
+
+  /* ---------------- Pagina del gioco ---------------- */
+  game: {
+    docTitle: 'Gioca a {title} online',
+    notFoundTitle: 'Gioco non trovato',
+    notFoundMsg: 'Non siamo riusciti a trovare questo gioco: forse è stato rimosso oppure il link non è valido.',
+    badgeMultiplayer: '👥 Multigiocatore',
+    badgeBodyControl: '🤸 Comandi di movimento',
+    favorited: '❤️ Nei preferiti',
+    favorite: '🤍 Preferiti',
+    copied: '✅ Link copiato',
+    share: '🔗 Condividi',
+    createRoom: '👥 Crea una stanza',
+    report: '🚩 Segnala un problema',
+    about: 'Informazioni sul gioco',
+    year: 'Anno di uscita',
+    developer: 'Sviluppatore',
+    players: 'Giocatori',
+    runtime: 'Runtime',
+    unsupported: 'Non ancora supportato',
+    controls: 'Comandi',
+    controlsDesc:
+      "Questi sono i tasti predefiniti: puoi rimapparli quando vuoi dal menu impostazioni in alto a destra nell'emulatore. I gamepad vengono rilevati in automatico e su smartphone compaiono i pulsanti a schermo.",
+    saveState: 'Salvataggio / caricamento rapido',
+    menuButton: 'Pulsante menu',
+    browsePlatform: 'Esplora tutti i giochi {platform}',
+    coinReward: 'Finisci questo gioco o batti il tuo record personale per guadagnare {n} G Coin{suffix}',
+    coinSuffixIn: '.',
+    coinSuffixOut: ", con accredito automatico dopo l'accesso.",
+    coinNone: 'Questo gioco non offre ancora ricompense in G Coin.',
+    coinBalance: '🪙 Saldo: {n} G Coin',
+    coinLogin: 'Accedi per riscattarle',
+    relatedTitle: 'Potrebbe piacerti anche',
+    relatedSubtitle: 'Stessa piattaforma, stesso genere o stesso sviluppatore',
+  },
+
+  /* ---------------- Blog ---------------- */
+  blog: {
+    title: 'Blog',
+    subtitle: 'Guide sugli emulatori, chiacchiere retro e novità sul sito.',
+    allTag: 'Tutti {n}',
+    empty: 'Ancora nessun articolo',
+    minutes: 'Circa {n} min',
+    notFoundTitle: 'Articolo non trovato',
+    notFoundMsg: 'Questo articolo non esiste oppure non è ancora stato pubblicato.',
+    readMinutes: 'Circa {n} min di lettura',
+    morePosts: 'Altri articoli',
+  },
+
+  /* ---------------- Profilo ---------------- */
+  profile: {
+    title: 'Profilo',
+    guestTitle: 'Accedi per vedere il tuo profilo',
+    guestSubtitle: 'Devi accedere per aggiungere giochi ai preferiti e sincronizzare le partite recenti.',
+    saveFailed: 'Salvataggio non riuscito',
+    nickname: 'Nickname',
+    joined: 'Iscritto il {date}',
+    edit: '✏️ Modifica profilo',
+    coins: 'G Coin',
+    favorites: 'Preferiti',
+    recent: 'Visti di recente',
+    favoritesTitle: 'I miei preferiti',
+    favoritesSubtitle: 'Tocca «Preferiti» sulla pagina di un gioco per aggiungerlo qui',
+    favoritesEmpty: 'Ancora nessun preferito',
+    recentTitle: 'Visti di recente',
+    recentSubtitle: 'Conserva gli ultimi 12',
+    recentEmpty: 'Ancora nessuna visita',
+    goLibrary: 'Esplora la libreria →',
+  },
+
+  /* ---------------- Gioca con ROM locali ---------------- */
+  playLocal: {
+    title: 'Gioca con ROM locali',
+    h1: 'Gioca con le tue ROM',
+    intro:
+      'Hai i backup delle tue cartucce, oppure un gioco homebrew / open source? Scegli la piattaforma, trascina dentro il file e parte direttamente nel browser.',
+    step1Title: 'Trascina un file ROM',
+    step1Desc:
+      "Il rilevamento automatico è attivo: leggiamo l'intestazione e l'estensione del file per capire la piattaforma (per uno zip guardiamo cosa c'è dentro), poi scegliamo l'emulatore giusto.",
+    step2Title: 'Il runtime lo scegliamo noi',
+    step2Desc:
+      'Console / portatili / arcade / DOS vanno a EmulatorJS, il Flash (.swf) va a Ruffle. Se il rilevamento sbaglia, puoi impostare la piattaforma a mano.',
+    step3Title: 'Inizia a giocare',
+    step3Desc:
+      'I file vengono letti in locale nel browser e non vengono mai caricati online. Al primo avvio il runtime impiega qualche secondo; da lì in poi puoi salvare, passare a schermo intero o collegare un gamepad quando vuoi.',
+    sectionPlatform: '1. Piattaforma',
+    autoDetect: 'Rilevamento automatico',
+    autoDetectDesc: "Capisce la piattaforma dall'intestazione / estensione del file e sceglie il runtime",
+    unsupportedList: 'Non ancora supportati: {list}',
+    sectionRuntime: 'Runtime',
+    sectionKeymap: 'Tasti predefiniti',
+    sectionDrop: '2. Trascina una ROM e gioca',
+    autoPlatform: 'Rileva la piattaforma in automatico',
+    currentPlatform: 'Piattaforma: {name}',
+    runtimeSuffix: '· Runtime: {name}',
+    disclaimer:
+      'Usa solo giochi di cui possiedi legalmente un backup, oppure ROM homebrew / open source. 8BitGo non ospita alcun file di gioco protetto da copyright.',
+  },
+
+  /* ---------------- Pagine di esplorazione ---------------- */
+  browse: {
+    platformsTitle: 'Piattaforme',
+    platformsDesc:
+      '{n} piattaforme in tutto. Dal NES a 8 bit alla PlayStation a 32 bit, dalle portatili ai cabinati arcade: scegli la console della tua infanzia.',
+    genresTitle: 'Generi',
+    genresDesc: 'Trova i giochi in base a come si giocano: hai voglia di riflessi, di ragionare o di muoverti a ritmo?',
+    developersTitle: 'Sviluppatori',
+    developersDesc: '{n} studi in tutto. Clicca per vedere tutto quello che hanno sul sito.',
+    topGame: 'Famoso soprattutto per: {title}',
+    countSuffix: '{n} giochi',
+  },
+
+  /* ---------------- In arrivo / 404 ---------------- */
+  soon: {
+    appsTitle: 'App ed estensioni',
+    appsDesc: 'Comandi di movimento, comandi vocali, montaggio video con IA e altre estensioni stanno arrivando poco a poco.',
+    aboutTitle: 'Chi siamo',
+    aboutDesc:
+      '8BitGo nasce da un gruppo di sviluppatori appassionati di giochi retro, con un obiettivo: far rivivere i classici direttamente nel browser.',
+    termsTitle: 'Termini di servizio',
+    termsDesc: 'Stiamo scrivendo i nostri termini di servizio.',
+    privacyTitle: 'Informativa sulla privacy',
+    privacyDesc:
+      'Stiamo scrivendo la nostra informativa sulla privacy. Una promessa da subito: le ROM locali vengono lette solo dentro il tuo browser e non vengono mai caricate online.',
+    tvDesc: 'Un canale di giochi retro sempre in diretta, 24 ore su 24.',
+    fallbackTitle: 'In arrivo',
+    fallbackDesc: 'Ci stiamo ancora lavorando.',
+    goPlay: 'Intanto vai a giocare',
+  },
+  notFound: {
+    title: 'Pagina non trovata',
+    message: 'La pagina che cerchi non esiste oppure è stata spostata altrove.',
+  },
+
+  /* ---------------- Player emulatore ---------------- */
+  player: {
+    detectUse: "{reason}: passiamo all'emulatore corrispondente",
+    detectKeep: '{reason}, ma restiamo sulla piattaforma attuale ({platform})',
+    badFormat: 'Formato del file non supportato. {platform} supporta: {exts}',
+    extSep: ', ',
+    noRuntime: "Per {platform} non c'è ancora un runtime disponibile",
+    checkingCloud: 'Cerchiamo una ROM sul cloud…',
+    start: 'Avvia il gioco',
+    pickRom: 'Scegli una ROM per iniziare a giocare',
+    cloudHint:
+      'La ROM viene caricata dal cloud e gira nel tuo browser con {runtime}. Il primo caricamento richiede qualche secondo.',
+    alsoCan: 'Puoi anche ',
+    pickLocal: 'scegliere un file ROM locale',
+    orDrag: ' oppure trascinarne uno direttamente qui.',
+    checkingHint: 'Stiamo controllando se abbiamo una ROM sul cloud per questo gioco…',
+    dropHint:
+      'Trascina qui un file {platform}, oppure clicca il pulsante per sceglierlo. I file vengono letti in locale nel tuo browser e non vengono mai caricati online.',
+    formats: 'Formati: {exts} · Runtime: {runtime}',
+    unsupportedTitle: 'Questa piattaforma non è ancora giocabile online',
+    unsupportedBody:
+      "{platform} non ha ancora un runtime collegato: resta sintonizzato. Nel frattempo prova un gioco di un'altra piattaforma.",
+    loading: 'Caricamento di {runtime}…',
+    statusRunning: 'In esecuzione',
+    statusLoading: 'Caricamento',
+    statusError: 'Errore',
+    statusIdle: 'Non avviato',
+    cloudRom: '☁️ ROM sul cloud · {name}',
+    runtimeCore: 'Runtime · Core',
+    noRuntimeShort: 'Nessun runtime',
+    changeRom: '⏏ Cambia ROM',
+    immersiveTitle: 'Nascondi la barra laterale e quella superiore, lasciando solo il gioco (Esc per uscire)',
+    exitImmersive: '✕ Esci da immersiva',
+    enterImmersive: '◧ Modalità immersiva',
+    exitImmersiveBtn: 'Esci dalla modalità immersiva',
+    fullscreenTitle: 'Schermo intero del browser',
+    fullscreen: '⛶ Schermo intero',
+  },
+
+  /* ---------------- Generi ---------------- */
+  genres: {
+    action: { name: 'Azione', desc: 'Picchiaduro a scorrimento e avventure hack and slash. Impatto puro e appagante.' },
+    fighting: { name: 'Combattimento', desc: "Duelli uno contro uno: combo, spaziature e letture dell'avversario." },
+    shooter: { name: 'Sparatutto', desc: 'Bullet hell, caccia e fuoco senza sosta. Solo riflessi.' },
+    platformer: { name: 'Platform', desc: "Salta, schiaccia, raccogli. Il level design come forma d'arte." },
+    adventure: { name: 'Avventura', desc: 'Esplora la mappa, risolvi gli enigmi, trova il tesoro.' },
+    rpg: { name: 'GDR', desc: 'Livelli, equipaggiamento, storia e combattimenti a turni.' },
+    strategy: { name: 'Strategia', desc: 'Schiera le unità, pianifica ogni mossa, batti il nemico con la testa.' },
+    racing: { name: 'Corse', desc: 'Derapate, potenziamenti e volate finali. Velocità pura.' },
+    sports: { name: 'Sport', desc: 'Sci, skate, giochi di palla. Lo sport, ma per divertirsi.' },
+    music: { name: 'Musica', desc: 'Segui il tempo a colpi di tasto. I rhythm game al massimo della dipendenza.' },
+    puzzle: { name: 'Rompicapo', desc: 'Blocchi, allineamenti e logica. Giochi piccoli, ore che volano.' },
+    card: { name: 'Carte', desc: 'Costruisci il mazzo, gioca la tua mano, leggi il tavolo.' },
+  },
+
+  /* ---------------- Piattaforme ---------------- */
+  platforms: {
+    psx: {
+      name: 'Sony PlayStation',
+      desc: "Il re dell'era a 32 bit e la culla del 3D. Tekken, Final Fantasy e Crash Bandicoot sono nati qui.",
+    },
+    flash: {
+      name: 'Giochi web Flash',
+      desc: "La ricreazione in una scheda del browser: tower defense, endless runner, rhythm game… un'epoca d'oro a un clic di distanza.",
+    },
+    arcade: {
+      name: 'Arcade',
+      desc: 'Gettoni, joystick e combo. The King of Fighters, Metal Slug e Street Fighter: le leggende della sala giochi vivono ancora.',
+    },
+    n64: {
+      name: 'Nintendo 64',
+      desc: 'Quattro porte per i controller che hanno definito le feste in salotto: Mario Kart, Super Smash Bros. e GoldenEye 007.',
+    },
+    nes: {
+      name: 'NES (Famicom)',
+      desc: "Lo standard d'oro degli 8 bit. Super Mario Bros., Contra, Battle City: tutto è cominciato qui.",
+    },
+    snes: {
+      name: 'Super Nintendo',
+      desc: "Il vertice dei 16 bit, l'epoca del Mode 7 e dei colori esplosivi: Super Mario World, Chrono Trigger, Super Metroid.",
+    },
+    nds: {
+      name: 'Nintendo DS',
+      desc: "Due schermi più il touch e un'esplosione di creatività. Pokémon Platinum, Mario Kart DS, Elite Beat Agents.",
+    },
+    gba: {
+      name: 'Game Boy Advance',
+      desc: "Un missile tascabile a 32 bit. Fire Emblem, Pokémon Emerald e Castlevania: Aria of Sorrow, l'età d'oro dei GDR portatili.",
+    },
+    gb: {
+      name: 'Game Boy',
+      desc: "Quattro tonalità di grigio non l'hanno fermato: Pokémon Red and Blue, Tetris, Link's Awakening.",
+    },
+    segaMD: {
+      name: 'Sega Mega Drive',
+      desc: '«Blast Processing»! Sonic, Streets of Rage e Golden Axe sulla console a 16 bit più tosta mai costruita da Sega.',
+    },
+    dos: {
+      name: 'Giochi PC DOS',
+      desc: "I classici per PC dell'era della riga di comando: Doom, Prince of Persia, Diablo, Dune II.",
+    },
+    ws: {
+      name: 'WonderSwan',
+      desc: "L'ultima creatura di Gunpei Yokoi: decine di ore con una sola pila, con gemme come Final Fantasy e One Piece.",
+    },
+    java: {
+      name: 'Giochi mobile Java',
+      desc: 'Nostalgia da telefono a tasti: Asphalt 3, Diamond Rush e Bounce.',
+    },
+  },
+
+  /* ---------------- Domande frequenti ---------------- */
+  faq: [
+    {
+      q: 'Devo pagare per giocare ai giochi con emulatore su 8BitGo?',
+      a: 'No. Tutti i giochi su 8BitGo sono gratuiti online e puoi iniziare senza registrarti. Se crei un account puoi anche salvare i preferiti e sincronizzare le partite recenti.',
+    },
+    {
+      q: 'Devo scaricare e installare un emulatore?',
+      a: 'No. Gli emulatori girano direttamente nel browser (grazie a WebAssembly): apri la pagina di un gioco e premi «Avvia il gioco». Per prestazioni migliori consigliamo le versioni più recenti di Chrome, Edge o Safari.',
+    },
+    {
+      q: 'Quali piattaforme retro sono supportate?',
+      a: 'Al momento: PlayStation 1, Arcade, Nintendo 64, NES (Famicom), Super Nintendo (SNES), Nintendo DS, GBA, Game Boy / Color, Sega Mega Drive, MS-DOS, WonderSwan, oltre ai giochi Flash e Java per cellulare. Continuiamo ad aggiungerne di nuove.',
+    },
+    {
+      q: 'Posso giocare dal telefono?',
+      a: 'Sì. Ogni pagina è pensata per smartphone e tablet, i pulsanti a schermo compaiono in automatico mentre giochi e funzionano anche i gamepad Bluetooth. In orizzontale si gioca molto meglio.',
+    },
+    {
+      q: 'Come faccio a giocare con le mie ROM locali?',
+      a: 'Vai alla pagina «Gioca con ROM locali», scegli la piattaforma giusta e trascina dentro il file della ROM. I file vengono letti in locale nel tuo browser e non vengono mai caricati su un server.',
+    },
+    {
+      q: 'I miei progressi vengono salvati?',
+      a: 'Gli emulatori ti permettono di salvare e caricare quando vuoi (salvataggi di stato), archiviati nel browser per impostazione predefinita. Se accedi puoi sincronizzarli sul cloud e riprendere da dove avevi lasciato su un altro dispositivo.',
+    },
+  ],
+
+  /* ---------------- Errori ---------------- */
+  errors: {
+    emailInvalid: 'Questo indirizzo email non sembra valido',
+    nicknameLength: 'Il nickname deve avere da 2 a 16 caratteri',
+    passwordShort: 'La password deve avere almeno 6 caratteri',
+    emailTaken: 'Questa email è già registrata: accedi direttamente',
+    badCredentials: 'Email o password non corretti',
+    banned: 'Questo account è stato bannato. Contatta un amministratore',
+    codeFormat: 'Inserisci il codice a 6 cifre',
+    codeMissing: 'Richiedi prima un codice',
+    codeExpired: 'Il codice è scaduto. Richiedine uno nuovo',
+    codeWrong: 'Il codice non è corretto',
+    googleLoadFailed: 'Impossibile caricare il componente di accesso Google',
+    googleUnavailable: "Al momento l'accesso con Google non è disponibile",
+    googleCancelled: 'Accesso con Google annullato',
+    googleNotConfigured: "L'amministratore non ha configurato l'accesso con Google (VITE_GOOGLE_CLIENT_ID)",
+    needLogin: 'Accedi prima di continuare',
+    requestFailed: 'Richiesta non riuscita (HTTP {status})',
+    defaultNickname: 'Giocatore',
+    googleNickname: 'Giocatore Google',
+  },
+
+  /* ---------------- Rilevamento ROM ---------------- */
+  detect: {
+    ines: 'Intestazione iNES',
+    swf: 'Intestazione SWF',
+    unif: 'Formato UNIF',
+    fds: 'Immagine disco FDS',
+    n64z64: 'Intestazione N64 (z64)',
+    n64v64: 'Intestazione N64 (v64)',
+    n64n64: 'Intestazione N64 (n64)',
+    gbHeader: 'Intestazione cartuccia Game Boy',
+    gbaHeader: 'Intestazione cartuccia GBA',
+    segaHeader: 'Intestazione cartuccia SEGA',
+    ndsHeader: 'Intestazione NDS',
+    dosExe: 'Eseguibile DOS',
+    psxImage: "Firma PLAYSTATION all'interno dell'immagine",
+    sevenZip: 'Il contenuto di un 7z non si può visualizzare in anteprima, scegli la piattaforma a mano',
+    zipContains: "L'archivio contiene un file .{ext}",
+    zipArcade: "L'archivio contiene più parti di ROM, sembra un set arcade (MAME/FBNeo)",
+    zipAmbiguous: "L'archivio contiene un .{ext}, la piattaforma non è chiara, scegline una a mano",
+    zipUnknown: "Non è stato possibile capire la piattaforma dal contenuto dell'archivio, scegline una a mano",
+    byExt: 'Estensione .{ext}',
+    extAmbiguous: ".{ext} può essere un'immagine MD o PS1, scegli la piattaforma a mano",
+    unknown: 'Tipo di file non riconosciuto',
+    summary: 'Rilevato come {platform} ({reason})',
+  },
+
+  /* ---------------- Runtime ---------------- */
+  runtime: {
+    ruffleDesc: 'Player Flash open source (WebAssembly) che esegue i giochi web .swf',
+    ejsDesc: 'Emulatore per browser basato sui core RetroArch, copre NES / SNES / GBA / PS1 / N64 / Arcade / DOS e altro',
+    flashTitle: 'Player Flash {name}',
+    emulatorTitle: 'Emulatore {name}',
+    flashInitFailed: 'Impossibile inizializzare il contenitore del player Flash',
+    ruffleLoadFailed:
+      'Impossibile caricare Ruffle ({path}). Esegui npm run ruffle per copiare le risorse, oppure imposta VITE_RUFFLE_PATH in .env.',
+    ruffleNotInit: 'Ruffle non si è inizializzato correttamente',
+    ruffleNoApi: 'API del player Ruffle non trovata',
+    flashLoadFailed: 'Caricamento del contenuto Flash non riuscito: {msg}',
+    ejsNoCore: 'EmulatorJS non ha un core per {platform}',
+    ejsInitFailed: "Impossibile inizializzare il contenitore dell'emulatore",
+    ejsLoadFailed:
+      'Impossibile caricare le risorse di EmulatorJS ({path}). Controlla la connessione, oppure imposta un VITE_EJS_PATH self-hosted in .env.',
+  },
+
+  /* ---------------- Numeri e unità ---------------- */
+  featured: {
+    motion: 'Scelta della redazione · Controllo di movimento',
+    rpg: 'RPG immortale · Tredici finali',
+    versus: 'Versus online · Torneo del weekend aperto',
+  },
+  keymap: {
+    dpad: 'Croce direzionale',
+  },
+
+  /* ---------------- Descrizioni SEO ---------------- */
+  seo: {
+    home: 'Gioca gratis online ai classici con emulatore: centinaia di titoli NES, SNES, GBA, PS1, N64 e arcade direttamente nel browser, senza scaricare nulla.',
+    games: 'Sfoglia tutti i giochi retro di 8BitGo: filtra per piattaforma, genere o sviluppatore e gioca subito, senza download né installazioni.',
+    platforms: 'Giochi retro per piattaforma: NES, SNES, GBA, PS1, N64, arcade, DOS e molte altre, tutte giocabili gratis direttamente nel browser.',
+    genres: "Giochi retro per genere: azione, GDR, sparatutto, rompicapo, corse, sport e molto altro. Ce n'è uno per ogni tipo di giocatore.",
+    developers: 'Giochi retro per sviluppatore: scopri quali classici hanno firmato gli studi che hanno segnato la tua infanzia.',
+    blog: 'Guide agli emulatori, consigli sui giochi retro e tutte le novità di 8BitGo, in un unico posto.',
+    playLocal: 'Avvia i tuoi file ROM direttamente nel browser: NES, SNES, GBA, PS1, Flash e altro ancora. I file vengono letti in locale e non vengono mai caricati online.',
+    gameDesc: 'Gioca gratis a {title} ({platform}) online. Nessun download: parti subito dal browser, con salvataggi di stato e supporto ai gamepad.',
+    platformDesc: 'Emulatore {platform} online: {n} giochi classici da giocare gratis, senza download né installazioni. Gira tutto nel browser.',
+    genreDesc: '{genre}: {n} classici retro da giocare gratis direttamente nel browser, senza download né installazioni.',
+  },
+
+  format: {
+    hundredMillion: '{n}M',
+    tenThousand: '{n}K',
+    singlePlayer: 'Giocatore singolo',
+    nPlayers: '{n} giocatori',
+  },
+}
+
+export default it

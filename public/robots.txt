@@ -1,0 +1,14 @@
+# 8BitGo robots.txt
+User-agent: *
+Allow: /
+
+# 私密 / 无收录价值的路径
+Disallow: /admin
+Disallow: /me
+Disallow: /login
+
+# 筛选与搜索会产生大量重复页面，只让搜索引擎收录干净的列表页
+Disallow: /games?
+Disallow: /*?q=
+
+Sitemap: https://8bitgo.com/sitemap.xml

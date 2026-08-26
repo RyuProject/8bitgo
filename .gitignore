@@ -1,0 +1,41 @@
+# dependencies
+node_modules
+
+# build
+dist
+dist-ssr
+*.local
+
+# logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# env
+.env
+.env.*.local
+
+# editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# self-hosted EmulatorJS assets (download separately)
+public/emulatorjs
+
+# Cloudflare Worker
+worker/node_modules
+worker/.wrangler
+
+# Ruffle 运行时（npm run ruffle 从 node_modules 复制）
+public/ruffle
+

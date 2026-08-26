@@ -1,0 +1,568 @@
+/**
+ * 简体中文文案（基准语言 / 唯一事实来源）。
+ *
+ * 其它语言文件的键必须与本文件完全一致——它们的类型都由本文件推导而来，
+ * 缺键或多键会在 `npm run build` 时直接报类型错误。
+ *
+ * 占位符写作 {name}，运行时由 t() 替换：
+ *   t('games.total', { n: 12 })  ->  共 12 款游戏
+ *
+ * 翻译注意：
+ *   - 保留 {xxx} 占位符原样，不要翻译花括号里的内容。
+ *   - 保留开头/结尾的 emoji 与符号（如 🪙、→、·）。
+ *   - 品牌与专有名词不翻译：8BitGo、Google、EmulatorJS、Ruffle、Flash、
+ *     NES、SNES、GBA、PS1、N64、DOS、ROM、G 币（币种名）等。
+ */
+export const zhHans = {
+  /* ---------------- 通用 ---------------- */
+  common: {
+    all: '全部',
+    view: '查看',
+    viewAll: '查看全部',
+    more: '更多 →',
+    save: '保存',
+    cancel: '取消',
+    close: '关闭',
+    login: '登录',
+    loginOrRegister: '登录 / 注册',
+    logout: '退出登录',
+    backHome: '回到首页',
+    browseGames: '浏览游戏库',
+    comingSoon: '即将上线',
+    comingSoonParen: '{label}（即将上线）',
+    comingSoonSuffix: '· 即将上线',
+    breadcrumb: '面包屑',
+    home: '首页',
+    library: '游戏库',
+    blog: '博客',
+    gamesCount: '{n} 款游戏',
+    gamesCountArrow: '{n} 款游戏 →',
+    playsCount: '🔥 {n} 次游玩',
+    coinAmount: '🪙 {n} G 币',
+    coinBadge: '+{n} G币',
+    liveBadge: '直播中',
+    instantPlay: '☁️ 即点即玩',
+    scrollLeft: '向左滚动',
+    scrollRight: '向右滚动',
+    pagination: '分页',
+    prevPage: '上一页',
+    nextPage: '下一页',
+    ratingAria: '{n} / 5 分',
+    coverAlt: '{title} 封面',
+  },
+
+  /* ---------------- 站点标题 ---------------- */
+  site: {
+    defaultTitle: '{site} — 免费在线玩复古模拟器游戏',
+    titleTemplate: '{title} - {site}',
+  },
+
+  /* ---------------- 导航 ---------------- */
+  nav: {
+    discover: '发现',
+    playOnline: '联机玩',
+    live: '直播',
+    blog: '博客',
+    allGames: '全部游戏',
+    platforms: '游戏平台',
+    genres: '游戏类型',
+    developers: '开发商',
+    about: '关于我们',
+    terms: '服务条款',
+    privacy: '隐私政策',
+    apps: '应用与扩展',
+    playLocal: '玩本地 ROM',
+  },
+
+  /* ---------------- 侧边栏 ---------------- */
+  sidebar: {
+    aria: '侧边导航',
+    closeMenu: '关闭菜单',
+    groupNav: '导航',
+    groupLibrary: '游戏库',
+    profile: '个人中心',
+    viewFavorites: '查看我的收藏',
+    coinsHint: '🪙 登录后累积 G 币',
+    loginToFavorite: '登录后收藏游戏',
+    randomGame: '随机玩一个游戏',
+    community: '玩家社区',
+  },
+
+  /* ---------------- 顶栏 ---------------- */
+  topbar: {
+    openMenu: '打开菜单',
+    search: '搜索',
+    searchPlaceholder: '搜索游戏、平台、开发商…',
+    searchAria: '搜索游戏',
+    playLocal: '玩本地 ROM',
+    coinBalance: 'G 币余额',
+    coinBalanceGuest: 'G 币余额（登录后累积）',
+    coinChip: '{n} G币',
+    menuProfile: '👤 个人中心',
+    menuFavorites: '❤️ 我的收藏',
+    menuLogout: '⏻ 退出登录',
+  },
+
+  /* ---------------- 页脚 ---------------- */
+  footer: {
+    aria: '页脚链接',
+    copyright: '游戏内容版权归各自所有者所有',
+  },
+
+  /* ---------------- 语言切换 ---------------- */
+  language: {
+    switch: '切换语言',
+    current: '语言：{label}',
+    heading: '选择语言 / Language',
+  },
+
+  /* ---------------- 登录弹窗 ---------------- */
+  auth: {
+    title: '登录',
+    emailLabel: 'Email',
+    emailPlaceholder: '请输入你的邮箱',
+    codeLabel: 'Code',
+    codePlaceholder: '请输入6位验证码',
+    sendCode: '发送验证码',
+    sending: '发送中…',
+    resendIn: '{n}s 后重发',
+    devCodeHint: '本地演示模式 · 验证码 {code}（点击自动填入）',
+    submit: '使用邮箱登录',
+    submitting: '登录中…',
+    or: 'OR',
+    google: '使用谷歌账号登录',
+    termsPrefix: '登录即表示你同意我们的',
+    termsLink: '服务条款',
+    termsAnd: '和',
+    privacyLink: '隐私政策',
+    termsSuffix: '。',
+    sendFailed: '验证码发送失败',
+    loginFailed: '登录失败',
+    googleFailed: 'Google 登录失败',
+  },
+
+  /* ---------------- 首页 ---------------- */
+  home: {
+    bannerAria: '首页横幅',
+    pill: '无需下载 · 打开浏览器直接玩',
+    headline1: '免费在线畅玩',
+    headline2: '经典模拟器游戏',
+    introHeadline1: '免费在线玩',
+    introHeadline2: '经典模拟器游戏',
+    subcopy: '红白机、超任、GBA、PS1、N64、街机……上百款童年经典，支持即时存档、手柄与联机同乐。',
+    ctaPlay: '开始游玩',
+    ctaUpload: '上传本地 ROM',
+    browseByGenre: '按类型浏览',
+    carouselAria: '轮播',
+    featured: '精选',
+    playNow: '立即游玩',
+    slideNth: '第 {n} 张',
+    browseAllGames: '浏览全部游戏',
+  },
+
+  /* ---------------- 每日任务 ---------------- */
+  tasks: {
+    title: '每日任务',
+    refresh: '每日 00:00 刷新',
+    progress: '进度 {done}/{total}',
+    earnedToday: '今日已获得',
+    earnedAmount: '🪙 {earned} / {total} G币',
+    progressAria: '每日任务进度',
+    loggedIn: '{avatar} {nickname}，当前余额 {coins} G 币。任务结算功能开发中。',
+    guestSuffix: '后自动记录任务进度并结算 G 币。',
+    t1: '玩一局任意游戏',
+    t2: '通关一款经典游戏',
+    t3: '与好友联机对战 2 局',
+    t4: '在一个新平台上玩一局',
+  },
+
+  /* ---------------- 首页分区 ---------------- */
+  sections: {
+    liveTitle: '直播',
+    liveSubtitle: '{n} 位主播正在直播复古游戏',
+    liveMore: '全部直播',
+    popularTitle: '最多人玩的模拟器游戏',
+    popularSubtitle: '按累计游玩次数排序',
+    platformsTitle: '按平台玩复古游戏',
+    platformsSubtitle: '从掌机到街机，挑一台你的童年主机',
+    latestTitle: '最新在线复古游戏',
+    latestSubtitle: '每周持续更新',
+    togetherTitle: '一起玩',
+    togetherSubtitle: '支持本地双人或在线联机的游戏，邀请好友加入房间',
+    coinTitle: '通过游戏赢取 G 币',
+    coinSubtitle: '通关、刷新纪录或完成每日任务即可获得 G 币，用于兑换主题与会员权益',
+    topRatedTitle: '评分最高的经典游戏',
+    topRatedSubtitle: '来自玩家的真实评分',
+    genreGridTitle: '按类型探索',
+    genreGridSubtitle: '选一种口味，从热门开始玩',
+    toolsTitle: '工具与扩展',
+    toolsSubtitle: '不只是模拟器：让复古游戏玩出新花样',
+    faqTitle: '在线模拟器游戏常见问题',
+    faqSubtitle: '关于付费、下载、平台与存档',
+    faqHelper: '没找到答案？加入我们的 Discord 社区，或者在博客中查看更详细的教程。',
+    faqReadBlog: '阅读博客',
+    faqAbout: '关于我们',
+  },
+
+  /* ---------------- 工具与扩展 ---------------- */
+  tools: {
+    motionTitle: '体感控制器',
+    motionDesc: '打开摄像头，用挥手、跳跃、下蹲代替按键。无需任何外设，在客厅里就能全身投入。',
+    motionCta: '了解体感玩法',
+    voiceTitle: '语音控制器',
+    voiceDesc: '说出「跳」「开火」「暂停」即可操作游戏，适合无障碍场景，也适合解放双手的懒人模式。',
+    voiceCta: '试试语音操作',
+    videoTitle: 'AI 视频剪辑',
+    videoDesc: '一键录制游戏过程，AI 自动挑出高光时刻剪成短视频，配好字幕直接分享到社交平台。',
+    videoCta: '录制我的高光',
+  },
+
+  /* ---------------- 游戏库页 ---------------- */
+  games: {
+    sortPopular: '最热门',
+    sortNewest: '最新上线',
+    sortRating: '评分最高',
+    sortName: '名称 A-Z',
+    sortLabel: '排序',
+    titleSearch: '搜索「{q}」',
+    titleDeveloper: '{name} 的游戏',
+    titlePlatformGenre: '{platform} {genre}游戏',
+    titlePlatform: '{platform} 游戏',
+    titleGenre: '{genre}游戏',
+    titleMultiplayer: '联机 / 双人游戏',
+    titleCoin: '可赢取 G 币的游戏',
+    titleAll: '全部游戏',
+    total: '共 {n} 款游戏',
+    pageOf: '，第 {page} / {total} 页',
+    filterPlatform: '平台',
+    filterGenre: '类型',
+    filterFeature: '特性',
+    chipMultiplayer: '👥 联机 / 双人',
+    chipCoin: '🪙 赢取 G 币',
+    clearAll: '清除全部',
+    emptyTitle: '没有找到符合条件的游戏',
+    emptyHint: '试试更换关键字或清除筛选条件',
+    clearFilters: '清除筛选',
+  },
+
+  /* ---------------- 游戏详情页 ---------------- */
+  game: {
+    docTitle: '{title} 在线玩',
+    notFoundTitle: '未找到游戏',
+    notFoundMsg: '没有找到这款游戏，可能已经下架或链接有误。',
+    badgeMultiplayer: '👥 支持联机',
+    badgeBodyControl: '🤸 体感友好',
+    favorited: '❤️ 已收藏',
+    favorite: '🤍 收藏',
+    copied: '✅ 链接已复制',
+    share: '🔗 分享',
+    createRoom: '👥 创建联机房间',
+    report: '🚩 反馈问题',
+    about: '游戏简介',
+    year: '发行年份',
+    developer: '开发商',
+    players: '玩家人数',
+    runtime: '运行时',
+    unsupported: '暂不支持',
+    controls: '操作说明',
+    controlsDesc:
+      '以下是默认键位，可在模拟器右上角的设置菜单中自定义；连接手柄后会自动识别。手机端会显示虚拟按键。',
+    saveState: '快速存 / 读档',
+    menuButton: '菜单按钮',
+    browsePlatform: '浏览全部 {platform} 游戏',
+    coinReward: '通关本作或刷新个人最佳成绩可获得 {n} G 币{suffix}',
+    coinSuffixIn: '。',
+    coinSuffixOut: '，登录后自动结算。',
+    coinNone: '本作暂未开放 G 币奖励。',
+    coinBalance: '🪙 当前余额 {n} G 币',
+    coinLogin: '登录领取',
+    relatedTitle: '你可能也喜欢',
+    relatedSubtitle: '同平台、同类型或同一开发商的作品',
+  },
+
+  /* ---------------- 博客 ---------------- */
+  blog: {
+    title: '博客',
+    subtitle: '模拟器教程、复古游戏闲聊与站点更新日志。',
+    allTag: '全部 {n}',
+    empty: '还没有文章',
+    minutes: '约 {n} 分钟',
+    notFoundTitle: '文章不存在',
+    notFoundMsg: '这篇文章不存在，或者还没有发布。',
+    readMinutes: '约 {n} 分钟阅读',
+    morePosts: '更多文章',
+  },
+
+  /* ---------------- 个人中心 ---------------- */
+  profile: {
+    title: '个人中心',
+    guestTitle: '登录后查看个人中心',
+    guestSubtitle: '收藏游戏、同步最近游玩记录都需要先登录。',
+    saveFailed: '保存失败',
+    nickname: '昵称',
+    joined: '{date} 加入',
+    edit: '✏️ 编辑资料',
+    coins: 'G 币',
+    favorites: '收藏',
+    recent: '最近浏览',
+    favoritesTitle: '我的收藏',
+    favoritesSubtitle: '在游戏详情页点「收藏」即可加入',
+    favoritesEmpty: '还没有收藏任何游戏',
+    recentTitle: '最近浏览',
+    recentSubtitle: '最多保留 12 条',
+    recentEmpty: '还没有浏览记录',
+    goLibrary: '去游戏库逛逛 →',
+  },
+
+  /* ---------------- 玩本地 ROM ---------------- */
+  playLocal: {
+    title: '玩本地 ROM',
+    h1: '玩本地游戏 ROM',
+    intro: '手里有自己备份的卡带 ROM，或者自制 / 开源游戏？选择平台，把文件拖进来就能在浏览器里直接运行。',
+    step1Title: '拖入 ROM 文件',
+    step1Desc: '默认自动识别：读取文件头和扩展名判断平台（zip 会看压缩包内的文件），再选择对应的模拟器。',
+    step2Title: '自动选择运行时',
+    step2Desc: '主机 / 掌机 / 街机 / DOS 交给 EmulatorJS，Flash（.swf）交给 Ruffle。识别不准时可以手动指定平台。',
+    step3Title: '开始游戏',
+    step3Desc: '文件只在浏览器本地读取，不会上传。首次加载运行时需要几秒钟，随时可以存档、全屏或连接手柄。',
+    sectionPlatform: '1. 平台',
+    autoDetect: '自动识别',
+    autoDetectDesc: '按文件头 / 扩展名判断平台并选择运行时',
+    unsupportedList: '暂不支持：{list}',
+    sectionRuntime: '运行时',
+    sectionKeymap: '默认键位',
+    sectionDrop: '2. 拖入 ROM 并开始',
+    autoPlatform: '自动识别平台',
+    currentPlatform: '当前平台：{name}',
+    runtimeSuffix: '· 运行时：{name}',
+    disclaimer:
+      '请只运行你拥有合法备份权利的游戏，或自制 / 开源 ROM。8BitGo 不提供任何受版权保护的游戏文件。',
+  },
+
+  /* ---------------- 浏览页 ---------------- */
+  browse: {
+    platformsTitle: '游戏平台',
+    platformsDesc: '共 {n} 个平台。从 8 位红白机到 32 位 PlayStation，从掌机到街机，选一台你的童年主机。',
+    genresTitle: '游戏类型',
+    genresDesc: '按玩法找游戏：想动手、想动脑，还是想跟着节奏摇摆？',
+    developersTitle: '开发商',
+    developersDesc: '共 {n} 家制作公司。点击查看它们在站内的全部作品。',
+    topGame: '代表作：{title}',
+    countSuffix: '{n} 款',
+  },
+
+  /* ---------------- 即将上线 / 404 ---------------- */
+  soon: {
+    appsTitle: '应用与扩展',
+    appsDesc: '体感控制器、语音控制器与 AI 视频剪辑等扩展功能，正在陆续开放。',
+    aboutTitle: '关于我们',
+    aboutDesc: '8BitGo 由一群热爱复古游戏的开发者创建，目标是让经典游戏在浏览器里重获新生。',
+    termsTitle: '服务条款',
+    termsDesc: '服务条款内容整理中。',
+    privacyTitle: '隐私政策',
+    privacyDesc: '隐私政策内容整理中。我们承诺：本地 ROM 只在浏览器内读取，不会上传。',
+    tvDesc: '24 小时不间断的复古游戏直播频道。',
+    fallbackTitle: '即将上线',
+    fallbackDesc: '该功能正在开发中。',
+    goPlay: '先去玩游戏',
+  },
+  notFound: {
+    title: '页面不存在',
+    message: '你要找的页面不存在，或者已经被移动到别处。',
+  },
+
+  /* ---------------- 模拟器播放器 ---------------- */
+  player: {
+    detectUse: '{reason}，将用对应的模拟器运行',
+    detectKeep: '{reason}，但仍按当前平台（{platform}）运行',
+    badFormat: '文件格式不支持。{platform} 支持：{exts}',
+    extSep: '、',
+    noRuntime: '{platform} 暂时没有可用的运行时',
+    checkingCloud: '正在检测云端 ROM…',
+    start: '开始游戏',
+    pickRom: '选择 ROM 开始游戏',
+    cloudHint: 'ROM 将从云端加载，由 {runtime} 在浏览器内运行，首次加载需要几秒钟。',
+    alsoCan: '也可以',
+    pickLocal: '选择本地 ROM 文件',
+    orDrag: '或直接拖到这里。',
+    checkingHint: '正在检查云端是否有这款游戏的 ROM…',
+    dropHint: '把 {platform} 的文件拖到这里，或点击按钮选择。文件只在你的浏览器本地读取，不会上传。',
+    formats: '支持格式：{exts} · 运行时：{runtime}',
+    unsupportedTitle: '该平台暂不支持在线运行',
+    unsupportedBody: '{platform} 还没有接入运行时，敬请期待。你可以先看看其他平台的游戏。',
+    loading: '正在加载 {runtime}…',
+    statusRunning: '运行中',
+    statusLoading: '加载中',
+    statusError: '出错',
+    statusIdle: '未开始',
+    cloudRom: '☁️ 云端 ROM · {name}',
+    runtimeCore: '运行时 · 核心',
+    noRuntimeShort: '无运行时',
+    changeRom: '⏏ 更换 ROM',
+    immersiveTitle: '隐藏侧边栏与顶栏，只保留游戏画面（Esc 退出）',
+    exitImmersive: '✕ 退出沉浸',
+    enterImmersive: '◧ 沉浸模式',
+    exitImmersiveBtn: '退出沉浸模式',
+    fullscreenTitle: '浏览器全屏',
+    fullscreen: '⛶ 全屏',
+  },
+
+  /* ---------------- 类型 ---------------- */
+  genres: {
+    action: { name: '动作', desc: '横版清关、砍杀冒险，手感与爽快感的极致。' },
+    fighting: { name: '格斗', desc: '一对一对决，连招、立回与读心术。' },
+    shooter: { name: '射击', desc: '弹幕、飞机与突突突，考验反应的时刻。' },
+    platformer: { name: '平台跳跃', desc: '跳跃、踩踏、收集，关卡设计的艺术。' },
+    adventure: { name: '冒险', desc: '探索地图、解开谜题、寻找宝物。' },
+    rpg: { name: '角色扮演', desc: '升级、装备、剧情与回合制战斗。' },
+    strategy: { name: '策略', desc: '排兵布阵、运筹帷幄，脑力的较量。' },
+    racing: { name: '竞速', desc: '漂移、道具与冲线，速度与激情。' },
+    sports: { name: '体育', desc: '滑雪、滑板、球类，运动的乐趣。' },
+    music: { name: '音乐', desc: '跟着节拍敲击，节奏游戏的魅力。' },
+    puzzle: { name: '益智', desc: '方块、消除、逻辑，小巧却上头。' },
+    card: { name: '卡牌', desc: '构筑、出牌与博弈。' },
+  },
+
+  /* ---------------- 平台 ---------------- */
+  platforms: {
+    psx: { name: '索尼 PlayStation', desc: '32 位时代的王者，3D 游戏的启蒙之地。铁拳、最终幻想、古惑狼都诞生于此。' },
+    flash: { name: 'Flash 网页游戏', desc: '课间十分钟的快乐源泉，塔防、跑酷、音乐节奏……浏览器里的黄金年代。' },
+    arcade: { name: '街机', desc: '投币、摇杆、连招。拳皇、合金弹头、街霸，游戏厅里的传奇今天仍在延续。' },
+    n64: { name: '任天堂 64', desc: '四个手柄插槽定义了客厅派对：马力欧赛车、任天堂明星大乱斗、黄金眼 007。' },
+    nes: { name: '红白机', desc: '8 位机的黄金标准。超级马力欧、魂斗罗、坦克大战——一切从这里开始。' },
+    snes: { name: '超级任天堂', desc: '16 位机的巅峰之作，Mode 7 与色彩爆炸的年代：超级马力欧世界、时空之轮、超级银河战士。' },
+    nds: { name: '任天堂 DS', desc: '双屏加触控，创意迸发的掌机。宝可梦白金、马力欧赛车 DS、应援团。' },
+    gba: { name: 'Game Boy Advance', desc: '32 位掌机小钢炮。火焰之纹章、宝可梦绿宝石、恶魔城晓月圆舞曲，掌上 RPG 的黄金时代。' },
+    gb: { name: 'Game Boy', desc: '四色灰阶也挡不住的乐趣：宝可梦红绿、俄罗斯方块、织梦岛。' },
+    segaMD: { name: '世嘉 MD', desc: '「Blast Processing」！索尼克、怒之铁拳、战斧，世嘉最硬核的 16 位主机。' },
+    dos: { name: 'DOS 电脑游戏', desc: '命令行时代的 PC 经典：毁灭战士、波斯王子、暗黑破坏神、沙丘 2。' },
+    ws: { name: '神奇天鹅', desc: '横井军平的遗作，一节电池玩几十小时，收录了最终幻想与海贼王等佳作。' },
+    java: { name: 'Java 手机游戏', desc: '功能机时代的回忆：狂野飙车 3、钻石狂潮、弹跳小球。' },
+  },
+
+  /* ---------------- 常见问题 ---------------- */
+  faq: [
+    {
+      q: '在 8BitGo 玩模拟器游戏需要付费吗？',
+      a: '不需要。8BitGo 上的所有游戏都可以免费在线游玩，无需注册即可开始。注册账号后可以收藏游戏、同步最近游玩记录。',
+    },
+    {
+      q: '我需要下载安装模拟器吗？',
+      a: '不需要。模拟器直接运行在浏览器中（基于 WebAssembly），打开游戏页面点击「开始游戏」即可。我们推荐使用最新版 Chrome、Edge 或 Safari 以获得最佳性能。',
+    },
+    {
+      q: '支持哪些复古游戏平台？',
+      a: '目前支持 PlayStation 1、街机、Nintendo 64、红白机（NES）、超级任天堂（SNES）、Nintendo DS、GBA、Game Boy / Color、世嘉 MD、MS-DOS、WonderSwan，以及 Flash 与 Java 手机游戏。更多平台正在陆续接入。',
+    },
+    {
+      q: '可以在手机上玩吗？',
+      a: '可以。所有页面均针对手机与平板做了适配，游戏运行时会自动显示虚拟按键，也支持连接蓝牙手柄。横屏游玩体验更佳。',
+    },
+    {
+      q: '如何游玩我自己的本地 ROM？',
+      a: '进入「玩本地 ROM」页面，选择对应平台并拖入 ROM 文件即可。文件只在你的浏览器本地读取，不会上传到服务器。',
+    },
+    {
+      q: '游戏进度会保存吗？',
+      a: '模拟器支持随时存档与读档（即时存档），存档默认保存在浏览器本地。登录后可以选择同步到云端，在不同设备之间继续游戏。',
+    },
+  ],
+
+  /* ---------------- 错误提示 ---------------- */
+  errors: {
+    emailInvalid: '邮箱格式不正确',
+    nicknameLength: '昵称需要 2–16 个字符',
+    passwordShort: '密码至少 6 位',
+    emailTaken: '该邮箱已注册，请直接登录',
+    badCredentials: '邮箱或密码不正确',
+    banned: '该账号已被封禁，请联系管理员',
+    codeFormat: '请输入 6 位数字验证码',
+    codeMissing: '请先获取验证码',
+    codeExpired: '验证码已过期，请重新获取',
+    codeWrong: '验证码不正确',
+    googleLoadFailed: '无法加载 Google 登录组件',
+    googleUnavailable: 'Google 登录暂不可用',
+    googleCancelled: 'Google 登录已取消',
+    googleNotConfigured: '管理员尚未配置 Google 登录（VITE_GOOGLE_CLIENT_ID）',
+    needLogin: '请先登录',
+    requestFailed: '请求失败（HTTP {status}）',
+    defaultNickname: '玩家',
+    googleNickname: 'Google 玩家',
+  },
+
+  /* ---------------- ROM 识别 ---------------- */
+  detect: {
+    ines: '文件头为 iNES 标识',
+    swf: '文件头为 SWF 标识',
+    unif: 'UNIF 格式',
+    fds: 'FDS 磁碟镜像',
+    n64z64: 'N64 (z64) 文件头',
+    n64v64: 'N64 (v64) 文件头',
+    n64n64: 'N64 (n64) 文件头',
+    gbHeader: 'Game Boy 卡带头',
+    gbaHeader: 'GBA 卡带头',
+    segaHeader: 'SEGA 卡带头',
+    ndsHeader: 'NDS 文件头',
+    dosExe: 'DOS 可执行文件',
+    psxImage: '镜像内含 PLAYSTATION 标识',
+    sevenZip: '7z 无法预览内容，请按平台手动选择',
+    zipContains: '压缩包内含 .{ext} 文件',
+    zipArcade: '压缩包内为多段 ROM，疑似街机 (MAME/FBNeo) 格式',
+    zipAmbiguous: '压缩包内为 .{ext}，无法判断平台，请手动选择',
+    zipUnknown: '无法从压缩包内容判断平台，请手动选择',
+    byExt: '扩展名 .{ext}',
+    extAmbiguous: '.{ext} 可能是 MD 或 PS1 镜像，请手动选择平台',
+    unknown: '无法识别的文件类型',
+    summary: '识别为 {platform}（{reason}）',
+  },
+
+  /* ---------------- 运行时 ---------------- */
+  runtime: {
+    ruffleDesc: '开源的 Flash 播放器（WebAssembly），运行 .swf 网页游戏',
+    ejsDesc: '基于 RetroArch 核心的浏览器模拟器，覆盖 NES / SNES / GBA / PS1 / N64 / 街机 / DOS 等',
+    flashTitle: '{name} Flash 播放器',
+    emulatorTitle: '{name} 模拟器',
+    flashInitFailed: '无法初始化 Flash 播放器容器',
+    ruffleLoadFailed: '无法加载 Ruffle（{path}）。请先运行 npm run ruffle 复制资源，或在 .env 中设置 VITE_RUFFLE_PATH。',
+    ruffleNotInit: 'Ruffle 未正确初始化',
+    ruffleNoApi: '未找到 Ruffle 播放器 API',
+    flashLoadFailed: 'Flash 内容加载失败：{msg}',
+    ejsNoCore: 'EmulatorJS 没有 {platform} 平台的核心',
+    ejsInitFailed: '无法初始化模拟器容器',
+    ejsLoadFailed: '无法加载 EmulatorJS 资源（{path}）。请检查网络，或在 .env 中配置自托管的 VITE_EJS_PATH。',
+  },
+
+  /* ---------------- 数字与单位 ---------------- */
+  /* ---------------- 精选轮播 / 键位 ---------------- */
+  featured: {
+    motion: '本周编辑推荐 · 支持体感',
+    rpg: '不朽 RPG · 十三种结局',
+    versus: '联机对战 · 周末锦标赛开放报名',
+  },
+  keymap: {
+    dpad: '方向键',
+  },
+
+  /* ---------------- SEO 页面描述 ---------------- */
+  seo: {
+    home: '免费在线玩经典模拟器游戏。无需下载，打开浏览器就能畅玩 NES、SNES、GBA、PS1、N64、街机等上百款童年经典，支持即时存档、手柄与手机游玩。',
+    games: '浏览 8BitGo 的全部复古游戏：可按平台、类型与开发商筛选，点开即玩，无需下载或安装任何软件。',
+    platforms: '按平台浏览复古游戏：红白机、超级任天堂、GBA、PS1、N64、街机、DOS 等，全部可以在浏览器里免费游玩。',
+    genres: '按类型浏览复古游戏：动作、角色扮演、射击、益智、竞速、体育等，总有一款是你的菜。',
+    developers: '按开发商浏览复古游戏，看看你童年喜欢的制作组都留下过哪些经典作品。',
+    blog: '模拟器使用教程、复古游戏推荐，以及 8BitGo 的更新日志。',
+    playLocal: '在浏览器里直接运行你自己的 ROM 文件，支持 NES、SNES、GBA、PS1、Flash 等平台。文件只在本地读取，不会上传到服务器。',
+    gameDesc: '免费在线玩《{title}》（{platform}）。无需下载，打开浏览器即可开始，支持即时存档与手柄。',
+    platformDesc: '{platform} 在线模拟器：{n} 款经典游戏免费畅玩，无需下载，浏览器直接运行。',
+    genreDesc: '{genre}游戏合集：共 {n} 款经典作品，全部可以在浏览器里免费游玩。',
+  },
+
+  format: {
+    hundredMillion: '{n}亿',
+    tenThousand: '{n}万',
+    singlePlayer: '单人',
+    nPlayers: '{n} 人',
+  },
+}
+
+export default zhHans
