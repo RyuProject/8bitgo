@@ -4,10 +4,17 @@
 -- 生成内容：91 款游戏、6 篇文章
 -- ============================================================
 
+-- 强制 utf8mb4：客户端默认 latin1 时中文会被双重编码存成乱码
+SET NAMES utf8mb4;
+
 -- ---------- 1. 表结构 ----------
 -- 8BitGo 数据库表结构
 -- 用法：mysql -u root -p < schema.sql   （或用 npm run migrate 自动执行）
 -- 字符集用 utf8mb4，支持中文与 emoji。
+
+-- 强制本次连接用 utf8mb4：有些 mysql/mariadb 客户端默认 latin1，
+-- 不加这行会把中文按 latin1 存成「双重编码」，读出来全是乱码。
+SET NAMES utf8mb4;
 
 CREATE DATABASE IF NOT EXISTS `8bitgo`
   CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;

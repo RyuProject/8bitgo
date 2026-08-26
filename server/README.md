@@ -131,3 +131,44 @@ server {
 - 尽量用专用数据库账号而非 root；MySQL 尽量只监听 `127.0.0.1`。
 - `/api/games`、`/api/posts` 会返回全部条目（含隐藏 / 草稿，带标记，前端自行过滤）——
   自用站点足够；若要严格隐藏，可自行在这两个接口加过滤。
+
+---
+
+## 服务端渲染（SSR）与多语言路由
+
+### 部署步骤
+
+```bash
+# 1. 项目根目录：构建前端（会同时产出客户端与服务端两份产物）
+npm install
+npm run build          # -> dist/client（浏览器资源） + dist/server（渲染函数）
+
+# 2. 启动后端（它同时负责 API、静态资源和 SSR）
+cd server && npm install && npm start
+```
+
+后端启动时会打印 `[ssr] 已启用服务端渲染`。如果打印的是「未找到 dist/client 或 dist/server」，
+说明还没在根目录跑 `npm run build`，此时只提供 API，网站打不开。
+
+`.env` 里 **`VITE_SITE_URL` 必须填正式域名**，canonical、og:url、hreflang、sitemap 都依赖它。
+
+### 语言与 URL
+
+| 语言 | 网址 |
+|---|---|
+| 简体中文（默认） | `/`、`/games` |
+| 其它语言 | `/en/games`、`/ja/games`、`/de/games` … |
+
+默认语言不带前缀，所以首页 `/` 直接出内容，不用 301 跳转。
+语言由 URL 决定，每种语言都有自己可被收录的地址，页面上会输出全部 9 条 hreflang（8 种语言 + x-default）。
+
+### 几个注意点
+
+- **改完数据最多 60 秒生效**：SSR 用了内存缓存（`SSR_CACHE_MS`，默认 60000 毫秒）。
+  想立刻生效就重启后端，或把这个值调小。
+- **`npm run dev` 不走 SSR**，是纯客户端的 Vite 开发服务器，改代码热更新更快。
+  要验证 SSR 效果，用 `npm run build && cd server && npm start`。
+- **登录态不参与 SSR**：服务端统一按未登录渲染，浏览器接管后再恢复登录状态。
+  这是刻意的——否则每个用户的页面都不一样，没法缓存，也会造成 hydration 不匹配。
+- **导入 SQL 一定要用 utf8mb4**：`server/8bitgo-setup.sql` 开头已经写了 `SET NAMES utf8mb4;`。
+  有些 mysql 客户端默认 latin1，缺这行会把中文存成双重编码的乱码。

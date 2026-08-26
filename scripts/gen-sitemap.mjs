@@ -48,6 +48,9 @@ async function fromApi(path) {
 }
 
 const enabled = await loadTs('src/config/platforms.ts', 'ENABLED_PLATFORMS')
+const LANGUAGES = await loadTs('src/config/languages.ts', 'LANGUAGES')
+const DEFAULT_LANG = await loadTs('src/config/languages.ts', 'DEFAULT_LANG')
+const HREFLANG = await loadTs('src/config/languages.ts', 'HREFLANG')
 let games = await fromApi('/api/games')
 if (!games) {
   games = await loadTs('src/data/games.ts', 'games')
@@ -84,10 +87,35 @@ for (const p of visiblePosts) add(`/blog/${encodeURIComponent(p.slug)}`, '0.5', 
 
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 
+/** 某语言下的完整路径：默认语言不带前缀 */
+const localized = (path, lang) => {
+  const prefix = lang === DEFAULT_LANG ? '' : '/' + lang
+  if (path === '/') return prefix || '/'
+  return prefix + path
+}
+
+/**
+ * 每个页面输出 8 条 URL（每种语言一条），每条都用 xhtml:link 列出全部语言版本。
+ * Google 要求 hreflang 必须「互相指向」，所以每个语言版本都要带完整的 alternates。
+ */
+const entries = []
+for (const u of urls) {
+  for (const l of LANGUAGES) {
+    entries.push({ ...u, lang: l.code, loc: SITE + localized(u.path, l.code) })
+  }
+}
+
+const alternatesFor = (path) =>
+  LANGUAGES.map(
+    (l) => `    <xhtml:link rel="alternate" hreflang="${HREFLANG[l.code]}" href="${esc(SITE + localized(path, l.code))}" />`,
+  ).join('\n') +
+  `\n    <xhtml:link rel="alternate" hreflang="x-default" href="${esc(SITE + localized(path, DEFAULT_LANG))}" />`
+
 const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-${urls.map((u) => `  <url>
-    <loc>${esc(SITE + u.path)}</loc>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">
+${entries.map((u) => `  <url>
+    <loc>${esc(u.loc)}</loc>
+${alternatesFor(u.path)}
     <lastmod>${today}</lastmod>
     <changefreq>${u.changefreq}</changefreq>
     <priority>${u.priority}</priority>
@@ -104,5 +132,5 @@ if (existsSync(robotsPath)) {
   writeFileSync(robotsPath, r, 'utf8')
 }
 
-console.log(`✅ sitemap.xml：${urls.length} 条（游戏 ${visibleGames.length}、文章 ${visiblePosts.length}、平台 ${visiblePlatforms.length}、类型 ${genres.length}）`)
+console.log(`✅ sitemap.xml：${entries.length} 条 URL（${urls.length} 个页面 × ${LANGUAGES.length} 种语言）（游戏 ${visibleGames.length}、文章 ${visiblePosts.length}、平台 ${visiblePlatforms.length}、类型 ${genres.length}）`)
 console.log(`   域名：${SITE}`)
