@@ -123,7 +123,10 @@ function flashSaveKeys(swfUrl: URL | null): string[] {
     if (!value || !isSolBase64(value)) continue
     if (swfUrl) {
       const middle = key.split('/').slice(1, -1).join('/')
-      if (!swfUrl.pathname.includes(middle)) continue
+      // middle 为空说明这条键是「域名/槽名」两段式（存在站点根目录的 SOL）。
+      // 空串的话 includes('') 恒为真，会把同域下**所有**游戏的存档都算进来，
+      // 导出一个游戏的存档能把别的游戏一起带走。宁可漏掉这种也不能多带。
+      if (!middle || !swfUrl.pathname.includes(middle)) continue
     }
     keys.push(key)
   }

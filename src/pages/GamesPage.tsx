@@ -1,8 +1,11 @@
-import { useMemo, type ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import type { GenreId, PlatformId, SortKey } from '@/types'
 import type { Translation } from '@/locales'
-import { getGenre, getGenres, getPlatform, getPlatforms, queryGames } from '@/services/games'
+import { usePageData, type Facets, type GamesData } from '@/services/pageData'
+import { platforms, platformMap } from '@/data/platforms'
+import { genres, genreMap } from '@/data/genres'
+import { isPlatformEnabled } from '@/config/platforms'
 import { useSeo, breadcrumbSchema, itemListSchema } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
 import { genreDesc, genreLabel, platformDesc, platformLabel } from '@/services/i18nData'
@@ -22,8 +25,20 @@ function sortsFor(t: Translation): Array<{ key: SortKey; label: string }> {
 const SORT_KEYS: SortKey[] = ['popular', 'newest', 'name']
 
 /**
+ * facets 只回「id → 数量」，平台和类型的名称、图标、描述仍然是代码里的配置。
+ * 查不到就是 undefined 而不是 0 —— 数据还没到位时宁可不显示数字，
+ * 也好过给每个筛选项挂一个假的「0」。
+ */
+function countsOf(rows: Array<{ id: string; count: number }> | undefined): Map<string, number> {
+  return new Map(rows?.map((r) => [r.id, r.count]))
+}
+
+/**
  * 游戏库页面。所有筛选条件都保存在 URL 查询参数里，方便分享与前进后退：
  *   /games?platform=gba&genre=rpg&q=zelda&sort=rating&multiplayer=1&coin=1&page=2
+ *
+ * 数据由后端按这些条件查好、分好页再回来（见 services/pageData）：
+ * 前端不再持有整个游戏库，页面上的总数、页数、筛选项数量全部以后端返回的为准。
  */
 export function GamesPage() {
   const [params, setParams] = useSearchParams()
@@ -40,25 +55,39 @@ export function GamesPage() {
   const sort: SortKey = sortParam && SORT_KEYS.includes(sortParam) ? sortParam : 'popular'
   const page = Math.max(1, Number(params.get('page') ?? 1) || 1)
 
-  const platform = platformId ? getPlatform(platformId) : undefined
-  const genre = genreId ? getGenre(genreId) : undefined
+  const platform = platformId ? platformMap[platformId] : undefined
+  const genre = genreId ? genreMap[genreId] : undefined
 
-  const result = useMemo(
-    () =>
-      queryGames({
-        q,
-        platform: platform?.id,
-        genre: genre?.id,
-        developer,
-        multiplayer,
-        coin,
-        // 用校验过的 sort，不是原始参数：下拉框显示的是 sort，
-        // 传 sortParam 会出现「显示最热门、列表却没排序」的对不上
-        sort,
-        page,
-      }),
-    [q, platform?.id, genre?.id, developer, multiplayer, coin, sort, page],
+  const state = usePageData<GamesData>(
+    '/games',
+    {
+      // 传认得的 id 而不是原始参数：?platform=乱填 应当被当成「没筛平台」，
+      // 而不是拿去查一个根本不存在的平台、回一页空列表
+      platform: platform?.id,
+      genre: genre?.id,
+      developer,
+      multiplayer: multiplayer ? 1 : undefined,
+      coin: coin ? 1 : undefined,
+      q,
+      // 用校验过的 sort，不是原始参数：下拉框显示的是 sort，
+      // 传 sortParam 会出现「显示最热门、列表却没排序」的对不上
+      sort,
+      page,
+    },
+    'games',
   )
+  // 换页 / 换筛选条件时 usePageData 会保留上一次的数据，所以这里通常不是空的；
+  // 只有首次进入（且没有服务端注入的首屏数据）才会是 undefined
+  const list = state.data?.list
+  const facets: Facets | undefined = state.data?.facets
+
+  const platformCounts = countsOf(facets?.platforms)
+  const genreCounts = countsOf(facets?.genres)
+  // 平台顺序沿用「收录多的排前面」；数量还没回来时 sort 是稳定的，保持配置里的顺序
+  const platformChips = platforms
+    .filter((p) => isPlatformEnabled(p.id))
+    .map((p) => ({ ...p, count: platformCounts.get(p.id) }))
+    .sort((a, b) => (b.count ?? 0) - (a.count ?? 0))
 
   const title = q
     ? fmt(t.games.titleSearch, { q })
@@ -88,9 +117,11 @@ export function GamesPage() {
     // 这样 canonical 能被读到，首页 JSON-LD 里的站内搜索框也才验证得过
     noindex: Boolean(q),
     jsonLd: [
+      // 爬虫拿到的是服务端渲染好的 HTML，那时 list 已经有值；
+      // 客户端跳转过来的第一帧列表还没到，先给个空清单，数据回来会重写
       itemListSchema(
         title,
-        result.items.map((g) => ({ name: g.titleZh ?? g.title, path: `/games/${g.slug}` })),
+        (list?.items ?? []).map((g) => ({ name: g.titleZh ?? g.title, path: `/games/${g.slug}` })),
       ),
       breadcrumbSchema([
         { name: t.common.home, path: '/' },
@@ -130,7 +161,9 @@ export function GamesPage() {
               ? platformDesc(t, platform.id, platform.description)
               : genre
                 ? genreDesc(t, genre.id, genre.description)
-                : fmt(t.games.total, { n: result.total })}
+                : list
+                  ? fmt(t.games.total, { n: list.total })
+                  : null}
           </p>
         </div>
         <label className="flex items-center gap-2 text-sm text-muted">
@@ -155,14 +188,14 @@ export function GamesPage() {
           <FilterChip active={!platformId} onClick={() => set('platform', null)}>
             {t.common.all}
           </FilterChip>
-          {getPlatforms().map((p) => (
+          {platformChips.map((p) => (
             <FilterChip
               key={p.id}
               active={platformId === p.id}
               onClick={() => set('platform', platformId === p.id ? null : p.id)}
             >
               {p.icon} {p.shortName}
-              <span className="opacity-60">{p.count}</span>
+              {p.count !== undefined && <span className="opacity-60">{p.count}</span>}
             </FilterChip>
           ))}
         </FilterRow>
@@ -170,16 +203,19 @@ export function GamesPage() {
           <FilterChip active={!genreId} onClick={() => set('genre', null)}>
             {t.common.all}
           </FilterChip>
-          {getGenres().map((g) => (
-            <FilterChip
-              key={g.id}
-              active={genreId === g.id}
-              onClick={() => set('genre', genreId === g.id ? null : g.id)}
-            >
-              {g.icon} {genreLabel(t, g.id, g.name)}
-              <span className="opacity-60">{g.count}</span>
-            </FilterChip>
-          ))}
+          {genres.map((g) => {
+            const n = genreCounts.get(g.id)
+            return (
+              <FilterChip
+                key={g.id}
+                active={genreId === g.id}
+                onClick={() => set('genre', genreId === g.id ? null : g.id)}
+              >
+                {g.icon} {genreLabel(t, g.id, g.name)}
+                {n !== undefined && <span className="opacity-60">{n}</span>}
+              </FilterChip>
+            )
+          })}
         </FilterRow>
         <FilterRow label={t.games.filterFeature}>
           <FilterChip active={multiplayer} onClick={() => set('multiplayer', multiplayer ? null : '1')}>
@@ -213,33 +249,41 @@ export function GamesPage() {
       </div>
 
       {/* 结果 */}
-      <p className="mt-6 text-sm text-muted">
-        {fmt(t.games.total, { n: result.total })}
-        {result.totalPages > 1 && fmt(t.games.pageOf, { page: result.page, total: result.totalPages })}
-      </p>
-
-      {result.items.length > 0 ? (
-        <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-          {result.items.map((g) => (
-            <GameCard key={g.slug} game={g} />
-          ))}
-        </div>
+      {state.status === 'error' ? (
+        <LoadError message={state.error} />
+      ) : !list ? (
+        <GameGridSkeleton />
       ) : (
-        <div className="mt-6 rounded-2xl border border-dashed border-line py-16 text-center">
-          <p className="text-4xl" aria-hidden>
-            👾
+        <>
+          <p className="mt-6 text-sm text-muted">
+            {fmt(t.games.total, { n: list.total })}
+            {list.totalPages > 1 && fmt(t.games.pageOf, { page: list.page, total: list.totalPages })}
           </p>
-          <p className="mt-3 font-semibold">{t.games.emptyTitle}</p>
-          <p className="mt-1 text-sm text-muted">{t.games.emptyHint}</p>
-          <Button variant="secondary" size="sm" className="mt-4" onClick={() => setParams(new URLSearchParams())}>
-            {t.games.clearFilters}
-          </Button>
-        </div>
-      )}
 
-      <div className="mt-10">
-        <Pagination page={result.page} totalPages={result.totalPages} onChange={(p) => set('page', String(p))} />
-      </div>
+          {list.items.length > 0 ? (
+            <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5" aria-busy={state.status === 'loading'}>
+              {list.items.map((g) => (
+                <GameCard key={g.slug} game={g} />
+              ))}
+            </div>
+          ) : (
+            <div className="mt-6 rounded-2xl border border-dashed border-line py-16 text-center">
+              <p className="text-4xl" aria-hidden>
+                👾
+              </p>
+              <p className="mt-3 font-semibold">{t.games.emptyTitle}</p>
+              <p className="mt-1 text-sm text-muted">{t.games.emptyHint}</p>
+              <Button variant="secondary" size="sm" className="mt-4" onClick={() => setParams(new URLSearchParams())}>
+                {t.games.clearFilters}
+              </Button>
+            </div>
+          )}
+
+          <div className="mt-10">
+            <Pagination page={list.page} totalPages={list.totalPages} onChange={(p) => set('page', String(p))} />
+          </div>
+        </>
+      )}
     </div>
   )
 }
@@ -259,5 +303,37 @@ function FilterChip({ active, onClick, children }: { active: boolean; onClick: (
     <button type="button" aria-pressed={active} onClick={onClick} className={chipClasses(active)}>
       {children}
     </button>
+  )
+}
+
+/**
+ * 首屏取数还没回来时的占位。
+ * 占位卡片和真实卡片同尺寸（4:3 封面 + 两行文字），数据到位时页面不会整体跳一下。
+ */
+function GameGridSkeleton() {
+  return (
+    <div className="mt-10 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5" aria-hidden>
+      {Array.from({ length: 10 }, (_, i) => (
+        <div key={i} className="overflow-hidden rounded-card border border-line bg-surface">
+          <div className="aspect-[4/3] animate-pulse bg-white/5" />
+          <div className="space-y-2 p-3">
+            <div className="h-3.5 w-3/4 animate-pulse rounded bg-white/5" />
+            <div className="h-3 w-1/2 animate-pulse rounded bg-white/5" />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** 取数失败。复用空结果那套外壳，避免为一个边缘状态再造一套样式。 */
+function LoadError({ message }: { message: string }) {
+  return (
+    <div className="mt-6 rounded-2xl border border-dashed border-line py-16 text-center" role="alert">
+      <p className="text-4xl" aria-hidden>
+        📡
+      </p>
+      <p className="mt-3 font-semibold">{message}</p>
+    </div>
   )
 }

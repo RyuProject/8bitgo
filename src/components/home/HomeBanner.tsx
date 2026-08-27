@@ -1,7 +1,7 @@
 import { openAuthModal } from '@/services/authModal'
 import { Button } from '@/components/ui/Button'
 import { GameCover } from '@/components/game/GameCover'
-import { getGamesBySlugs } from '@/services/games'
+import { useGamesBySlugs } from '@/services/gameCache'
 import { cx } from '@/lib/format'
 import { useCurrentUser } from '@/services/auth'
 import { FEATURES } from '@/config/features'
@@ -36,7 +36,9 @@ export function HomeBanner() {
 
 function Banner({ className }: { className?: string }) {
   const t = useT()
-  const heroGames = getGamesBySlugs(HERO_GAMES)
+  // 这三款是写死的 slug，跟首页数据无关，所以走 gameCache 按需取；
+  // 它只返回已经拿到的那部分，取数期间封面区先空着，文案和按钮照常显示
+  const heroGames = useGamesBySlugs(HERO_GAMES)
 
   return (
     <div

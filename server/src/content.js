@@ -61,17 +61,26 @@ async function cached(key, loader) {
 /** 首页要用到的几组列表。数量刻意压得很小 —— 首屏只需要这些。 */
 const HOME_SIZE = 12
 
+/** 首页「分类网格」下面那几栏各列几款游戏 */
+const GENRE_COLUMNS = ['action', 'adventure', 'rpg', 'puzzle']
+
 async function loadHome() {
-  const [popular, newest, multiplayer, facets] = await Promise.all([
+  const [popular, newest, multiplayer, facets, ...samples] = await Promise.all([
     listGames({ sort: 'popular', pageSize: HOME_SIZE }),
     listGames({ sort: 'newest', pageSize: HOME_SIZE }),
     listGames({ multiplayer: true, sort: 'popular', pageSize: HOME_SIZE }),
     loadFacets(),
+    ...GENRE_COLUMNS.map((id) => listGames({ genre: id, sort: 'popular', pageSize: 4 })),
   ])
+  const genreSamples = {}
+  GENRE_COLUMNS.forEach((id, i) => {
+    if (samples[i].items.length) genreSamples[id] = samples[i].items
+  })
   return {
     popular: popular.items,
     newest: newest.items,
     multiplayer: multiplayer.items,
+    genreSamples,
     facets,
     total: popular.total,
   }
@@ -82,7 +91,13 @@ export async function loadFacets() {
   return {
     platforms: platforms.map((r) => ({ id: r.platform, count: Number(r.n) })),
     genres: genres.map((r) => ({ id: r.genre, count: Number(r.n) })),
-    developers: developers.map((r) => ({ name: r.developer, count: Number(r.n) })),
+    developers: developers.map((r) => ({
+      name: r.developer,
+      count: Number(r.n),
+      topGame: r.slug
+        ? { slug: r.slug, title: r.title, titleZh: r.title_zh || undefined, icon: r.icon, cover: r.cover || undefined, platform: r.platform }
+        : undefined,
+    })),
   }
 }
 

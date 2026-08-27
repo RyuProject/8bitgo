@@ -83,6 +83,10 @@ export async function listGames(q = {}) {
 
   // includeHidden 只有管理员视角才会传；默认一律只给上架的
   if (!q.includeHidden) where.push('g.hidden = 0')
+  // 管理员视角下还能进一步只看上架 / 只看下架。放在 SQL 里做，
+  // 否则「只看已下架」会退化成在当前页的 24 条里挑，翻页结果毫无意义。
+  else if (q.status === 'visible') where.push('g.hidden = 0')
+  else if (q.status === 'hidden') where.push('g.hidden = 1')
   if (q.platform) {
     where.push('g.platform = ?')
     params.push(String(q.platform))
@@ -157,12 +161,65 @@ export function genreCounts() {
   )
 }
 
-/** 各开发商的上架游戏数（开发商页用），按数量倒序 */
+/**
+ * 各开发商的上架游戏数，外加一款「代表作」（该开发商游玩次数最高的那款），
+ * 开发商列表页用它做封面。
+ *
+ * 用窗口函数一次算出「计数 + 每组第一名」，避免为了拿封面把每个开发商的游戏
+ * 再各查一遍 —— 那正是 v1 的做法（把全库拉进内存再 groupBy）。
+ * MySQL 8.0+ / MariaDB 10.2+ 都支持 ROW_NUMBER()。
+ */
 export function developerCounts() {
   return query(
-    `SELECT developer, COUNT(*) AS n FROM games
-      WHERE hidden = 0 AND developer <> '' GROUP BY developer ORDER BY n DESC, developer ASC`,
+    `SELECT developer, n, slug, title, title_zh, icon, cover, platform
+       FROM (
+         SELECT g.developer, g.slug, g.title, g.title_zh, g.icon, g.cover, g.platform,
+                COUNT(*)     OVER (PARTITION BY g.developer)                                   AS n,
+                ROW_NUMBER() OVER (PARTITION BY g.developer ORDER BY g.plays DESC, g.id ASC)   AS rn
+           FROM games g
+          WHERE g.hidden = 0 AND g.developer <> ''
+       ) t
+      WHERE rn = 1
+      ORDER BY n DESC, developer ASC`,
   )
+}
+
+/**
+ * 后台概览要的全库聚合。
+ *
+ * 这些数字必须在数据库里算 —— 前端要算就得先把全库拉下来，正是 v2 要消灭的做法。
+ */
+export async function adminStats() {
+  const [games, plays, rom, posts] = await Promise.all([
+    queryOne('SELECT COUNT(*) AS total, SUM(hidden = 0) AS visible, SUM(hidden = 1) AS hidden FROM games'),
+    // 全库之和：下架只是不对外展示，之前攒下的游玩次数还在，
+    // 累计值不该因为下架一款热门游戏就往回跳
+    queryOne('SELECT COALESCE(SUM(plays), 0) AS n FROM games'),
+    // 一次查出「全库已绑 ROM」和「其中已上架的」：
+    // 前者是录入进度（常见流程是先隐藏建条目、传完 ROM 再上架），
+    // 后者用来反推「已上架但还缺 ROM」——那种条目点进去是玩不了的，属于要立刻修的
+    queryOne(
+      `SELECT COUNT(DISTINCT gr.game_id) AS total,
+              COUNT(DISTINCT CASE WHEN g.hidden = 0 THEN gr.game_id END) AS visible
+         FROM game_roms gr JOIN games g ON g.id = gr.game_id`,
+    ),
+    queryOne('SELECT COUNT(*) AS total, SUM(published = 1) AS published, SUM(published = 0) AS draft FROM posts'),
+  ])
+  return {
+    games: {
+      total: Number(games?.total ?? 0),
+      visible: Number(games?.visible ?? 0),
+      hidden: Number(games?.hidden ?? 0),
+      withRom: Number(rom?.total ?? 0),
+      visibleWithRom: Number(rom?.visible ?? 0),
+    },
+    plays: Number(plays?.n ?? 0),
+    posts: {
+      total: Number(posts?.total ?? 0),
+      published: Number(posts?.published ?? 0),
+      draft: Number(posts?.draft ?? 0),
+    },
+  }
 }
 
 /* ---------------- 写 ---------------- */

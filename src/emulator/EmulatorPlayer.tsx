@@ -243,6 +243,16 @@ export function EmulatorPlayer({
   useEffect(() => {
     const host = frameRef.current
     if (!session || !host) return
+    /**
+     * 本次挂载对应的会话号。
+     *
+     * 引擎都是异步初始化的：玩家连着换两个 ROM 时，上一个引擎的回调完全可能在
+     * 新会话已经跑起来之后才到。不判断的话，正在玩的画面会被上一个的报错顶掉 ——
+     * 表现是「画面突然没了，只剩一条红字，但声音还在响」。
+     * 在这里统一挡一道，比在每个适配器里各写一遍 destroyed 判断可靠。
+     */
+    const mountedId = session.id
+    const isCurrent = () => sessionCounter.current === mountedId
     const handle = session.runtime.mount(host, {
       platform: session.platform,
       game: session.game,
@@ -252,13 +262,18 @@ export function EmulatorPlayer({
       netplay: session.netplay,
       cloud: session.cloud,
       // 有些引擎要等核心起来才知道自己支持什么，这里允许它后补
-      onCaps: (next) => setCaps(new Set(next)),
+      onCaps: (next) => {
+        if (!isCurrent()) return
+        setCaps(new Set(next))
+      },
       onReady: () => {
+        if (!isCurrent()) return
         setStatus('running')
         // 游戏真的跑起来了才算一次游玩 —— 打开详情页、加载失败、选错文件都不算
         if (gameSlugRef.current) recordPlay(gameSlugRef.current)
       },
       onError: (message: string) => {
+        if (!isCurrent()) return
         const cloud = session.cloud
         // 出错后必须把会话拆掉：否则运行时会在隐藏的挂载点里继续活着
         setSession(null)

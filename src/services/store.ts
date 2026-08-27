@@ -1,101 +1,71 @@
 /**
- * 游戏数据存储。
+ * 游戏数据的写操作与后台读取（schema v2）。
  *
- * 两种模式，取决于有没有配 VITE_API_URL：
+ * v1 在这里维护一份「整个游戏库」的内存 / localStorage 副本，前台后台都从里面读。
+ * v2 不再全量加载：
+ *   - 前台按路由取数，见 services/pageData.ts
+ *   - 后台按页取数，用下面的 fetchAdminGames()
+ *   - 「我有几个 slug 要对应的游戏」用 services/gameCache.ts
  *
- * 1. 已配后端（remote 模式）：**一切以数据库为准**。列表来自 /api/games，
- *    内置数据 src/data/games.ts 与 localStorage 副本都不参与——数据库是空的，
- *    后台就显示空，不会拿内置的 91 款来充数。首次使用请到「后台 → 数据 →
- *    导入内置数据到数据库」把内置目录写进库里（或在 server/ 下跑 npm run seed）。
- *
- * 2. 没配后端：沿用内置数据 + localStorage 的纯浏览器模式，便于离线开发。
+ * 这里只留写操作，以及后台专用的分页读取。
  */
-import { games as builtinGames } from '@/data/games'
 import type { Game } from '@/types'
-import { createLocalStore } from './localStore'
 import { api, apiEnabled } from './api'
+import type { Paged } from './pageData'
 
-export const STORAGE_KEY = '8bitgo.admin.games'
-
-function isGame(x: unknown): x is Game {
-  return (
-    typeof x === 'object' &&
-    x !== null &&
-    typeof (x as Game).slug === 'string' &&
-    typeof (x as Game).title === 'string' &&
-    typeof (x as Game).platform === 'string' &&
-    Array.isArray((x as Game).genres)
-  )
+export interface AdminGameQuery {
+  q?: string
+  platform?: string
+  /** 'all' | 'visible' | 'hidden'，由服务端筛选，所以 total 和翻页都是全库口径 */
+  status?: 'all' | 'visible' | 'hidden'
+  /** 'popular' | 'newest' | 'name' */
+  sort?: string
+  page?: number
+  pageSize?: number
 }
-
-export const gamesStore = createLocalStore<Game>({
-  key: STORAGE_KEY,
-  initial: builtinGames,
-  getId: (g) => g.slug,
-  validate: isGame,
-  // 配了后端就完全以数据库为准：内置数据与 localStorage 副本都不再参与
-  remote: apiEnabled,
-})
-
-/** 当前完整列表（含已下架的游戏） */
-export const loadGames = gamesStore.load
-export const saveGames = gamesStore.save
-export const resetGames = gamesStore.reset
-export const hasLocalChanges = gamesStore.hasLocalChanges
-export const useAllGames = gamesStore.useAll
-export const exportGamesJson = gamesStore.exportJson
-export const importGamesJson = gamesStore.importJson
 
 /**
- * 从后端拉取游戏，灌入本地缓存（组件仍同步读取）。未配置后端时不做任何事。
- *
- * @param all true = 连已下架的一起要（后台用，需要管理员口令）。
- *            前台不要传，接口默认只给上架的 —— 下架的游戏不该对外可见。
+ * 后台的游戏列表：带 ?all=1，所以包含已下架的，需要管理员口令。
+ * 关键字、平台、上下架状态、排序全部由服务端处理 —— 在前端过滤会让
+ * total 和翻页失去意义（「只看下架」变成在当前页的 24 条里挑）。
  */
-export async function hydrateGames(all = false): Promise<void> {
-  if (!apiEnabled()) return
-  const list = await api.get<Game[]>(all ? '/api/games?all=1' : '/api/games', all)
-  if (Array.isArray(list)) gamesStore.save(list)
+export async function fetchAdminGames(q: AdminGameQuery = {}): Promise<Paged<Game>> {
+  if (!apiEnabled()) {
+    return { items: [], total: 0, page: 1, pageSize: 24, totalPages: 1 }
+  }
+  const sp = new URLSearchParams({ all: '1' })
+  if (q.q) sp.set('q', q.q)
+  if (q.platform && q.platform !== 'all') sp.set('platform', q.platform)
+  if (q.status && q.status !== 'all') sp.set('status', q.status)
+  if (q.sort) sp.set('sort', q.sort)
+  if (q.page) sp.set('page', String(q.page))
+  if (q.pageSize) sp.set('pageSize', String(q.pageSize))
+  return api.get<Paged<Game>>(`/api/games?${sp.toString()}`, true)
 }
 
-/** 新增 / 覆盖游戏：配置后端时写库，同时更新本地缓存 */
-export async function upsertGame(game: Game): Promise<void> {
-  if (apiEnabled()) await api.put(`/api/games/${encodeURIComponent(game.slug)}`, game, true)
-  gamesStore.upsert(game)
+/** 新增 / 整体覆盖一款游戏。返回后端保存后的完整对象。 */
+export async function upsertGame(game: Game): Promise<Game> {
+  return api.put<Game>(`/api/games/${encodeURIComponent(game.slug)}`, game, true)
 }
 
 export async function deleteGame(slug: string): Promise<void> {
-  if (apiEnabled()) await api.del(`/api/games/${encodeURIComponent(slug)}`, true)
-  gamesStore.remove(slug)
-}
-
-export async function setGameHidden(slug: string, hidden: boolean): Promise<void> {
-  return patchGame(slug, { hidden })
+  await api.del(`/api/games/${encodeURIComponent(slug)}`, true)
 }
 
 /**
- * 局部更新一款游戏（绑定 ROM、上下架…）。
+ * 局部更新（绑定 ROM、上下架…）。
  *
- * 先写库再改内存：写库失败就抛出去，界面不会显示成功。
- * 以前后台「ROM 存储」页的绑定 / 解绑 / 自动匹配是直接改内存 store 的，
- * 看起来生效了，一刷新全没了 —— 数据库里从来没写进去过。
+ * 后端按「字段在不在请求里」判断要不要更新，所以 undefined 要显式转成 null
+ * （= 清空），否则 JSON.stringify 会把这个键整个丢掉，变成「没提到就不改」。
  */
-export async function patchGame(slug: string, patch: Partial<Game>): Promise<void> {
-  if (apiEnabled()) {
-    // 后端按「字段在不在请求里」判断要不要更新，所以 undefined 要显式转成 null（= 清空）
-    const body: Record<string, unknown> = {}
-    for (const [k, v] of Object.entries(patch)) body[k] = v === undefined ? null : v
-    const saved = await api.patch<Game>(`/api/games/${encodeURIComponent(slug)}`, body, true)
-    // 用后端返回的整行**整体替换**，而不是浅合并。
-    // 合并会出问题：解绑之后后端返回的对象里根本没有 rom / roms 这两个键
-    // （gameRowToApi 只在有值时才写），浅合并会把本地那份旧值原封不动留下来，
-    // 界面上看着还是「已绑定」。
-    if (saved && typeof saved === 'object') {
-      gamesStore.update(slug, () => saved)
-      return
-    }
-  }
-  gamesStore.update(slug, patch)
+export async function patchGame(slug: string, patch: Partial<Game>): Promise<Game> {
+  const body: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(patch)) body[k] = v === undefined ? null : v
+  return api.patch<Game>(`/api/games/${encodeURIComponent(slug)}`, body, true)
+}
+
+export async function setGameHidden(slug: string, hidden: boolean): Promise<Game> {
+  return patchGame(slug, { hidden })
 }
 
 /** 本次页面会话里已经上报过的游戏，避免重开模拟器重复计数 */
@@ -111,7 +81,17 @@ export function recordPlay(slug: string): void {
   if (!slug || !apiEnabled() || reportedPlays.has(slug)) return
   reportedPlays.add(slug)
   void api.post(`/api/games/${encodeURIComponent(slug)}/play`).catch(() => {
-    // 上报失败就让它失败，下次进页面还有机会
     reportedPlays.delete(slug)
   })
+}
+
+/** 后台概览的全库聚合（在数据库里算，不把全库拉下来 reduce） */
+export interface AdminStats {
+  games: { total: number; visible: number; hidden: number; withRom: number; visibleWithRom: number }
+  plays: number
+  posts: { total: number; published: number; draft: number }
+}
+
+export async function fetchAdminStats(): Promise<AdminStats> {
+  return api.get<AdminStats>('/api/admin/stats', true)
 }

@@ -543,6 +543,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         if (NETPLAY_URL) {
           await injectScript(doc, socketIoScriptUrl()).catch(() => {
             // 信令服务器不可达时不阻断单机游戏，只是联机用不了
+            if (destroyed) return
             options.onError?.(fmt(rt.netplaySignalUnreachable, { url: socketIoScriptUrl() }))
           })
 
@@ -563,6 +564,8 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         if (destroyed) return
         await injectScript(doc, `${EJS_PATH}loader.js`)
       } catch {
+        // 加载过程中被销毁的，别再往新会话上报错
+        if (destroyed) return
         options.onError?.(fmt(rt.ejsLoadFailed, { path: EJS_PATH }))
       }
     })()

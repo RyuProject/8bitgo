@@ -4,9 +4,12 @@ import { invalidateContent } from '../content.js'
 import { publicApi } from '../cache.js'
 import { shouldCount } from '../playcount.js'
 import { gameApiToPartialRow, relationsInPatch } from '../mappers.js'
+import { query } from '../db.js'
+import { attachRelations } from '../games-repo.js'
 import {
   listGames,
   getGameBySlug,
+  getGamesBySlugs,
   upsertGame,
   patchGame,
   deleteGame,
@@ -48,10 +51,64 @@ gamesRouter.get('/', async (req, res, next) => {
       page: req.query.page,
       pageSize: req.query.pageSize,
       includeHidden: wantAll,
+      // 只有管理员视角才认这个（上架 / 下架），公开列表永远只给上架的
+      status: wantAll ? req.query.status : undefined,
     })
     // 只有公开视角能缓存：管理员视角带着身份，缓存下来等于把下架游戏发给所有人
     if (!wantAll) publicApi(res)
     res.json(result)
+  } catch (e) {
+    next(e)
+  }
+})
+
+/**
+ * 按一组 slug 批量取游戏，返回顺序与传入一致。
+ *
+ *   GET /api/games/by-slugs?slugs=contra,super-mario-bros
+ *
+ * 首页轮播、侧边栏「稍后玩」、联机房间卡片都是「我有几个 slug，要对应的游戏」，
+ * 一个个查会打出一串请求，所以给一条批量的。下架的游戏不会返回。
+ * 注意要注册在 /:slug 之前，否则会被当成 slug 吃掉。
+ */
+gamesRouter.get('/by-slugs', async (req, res, next) => {
+  try {
+    const slugs = String(req.query.slugs || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .slice(0, 60) // 挡住一次要几千个的请求
+    if (!slugs.length) return res.json([])
+    const games = (await getGamesBySlugs(slugs)).filter((g) => !g.hidden)
+    publicApi(res)
+    res.json(games)
+  } catch (e) {
+    next(e)
+  }
+})
+
+/**
+ * 随机一款上架游戏。
+ *
+ *   GET /api/games/random?exclude=<slug>
+ *
+ * v1 是把整库拉到浏览器再随机取下标；v2 不再全量加载，改成让数据库随机排一条。
+ * ORDER BY RAND() 在几千行的量级上完全够用（一次全表扫 + 排序，毫秒级）；
+ * 真到几十万行再换成「先随机取 id 区间」的做法。
+ *
+ * 「能不能在线运行」由前端的平台白名单决定，后端不认识那套配置，
+ * 所以这里只保证是上架游戏，前端拿到后自己判断，不合适就再点一次。
+ */
+gamesRouter.get('/random', async (req, res, next) => {
+  try {
+    const exclude = String(req.query.exclude || '')
+    const rows = await query(
+      'SELECT * FROM games WHERE hidden = 0 AND slug <> ? ORDER BY RAND() LIMIT 1',
+      [exclude],
+    )
+    if (!rows.length) return res.status(404).json({ error: '还没有可玩的游戏' })
+    const [game] = await attachRelations(rows)
+    res.json(game)
   } catch (e) {
     next(e)
   }
@@ -65,7 +122,14 @@ gamesRouter.get('/facets', async (_req, res, next) => {
     res.json({
       platforms: platforms.map((r) => ({ id: r.platform, count: Number(r.n) })),
       genres: genres.map((r) => ({ id: r.genre, count: Number(r.n) })),
-      developers: developers.map((r) => ({ name: r.developer, count: Number(r.n) })),
+      developers: developers.map((r) => ({
+        name: r.developer,
+        count: Number(r.n),
+        // 代表作：该开发商游玩次数最高的一款，列表页拿它当封面
+        topGame: r.slug
+          ? { slug: r.slug, title: r.title, titleZh: r.title_zh || undefined, icon: r.icon, cover: r.cover || undefined, platform: r.platform }
+          : undefined,
+      })),
     })
   } catch (e) {
     next(e)

@@ -1,15 +1,41 @@
-import { useRef, useState } from 'react'
-import { STORAGE_KEY, exportGamesJson, hasLocalChanges, hydrateGames, importGamesJson, resetGames, useAllGames } from '@/services/store'
-import { POSTS_KEY, hydratePosts, postsStore, useAllPosts } from '@/services/posts'
-import { USERS_KEY, usersStore } from '@/services/auth'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { Game, Post } from '@/types'
+import { fetchAdminGames } from '@/services/store'
+import { fetchAllPosts } from '@/services/posts'
 import { api, apiEnabled, apiLabel, getAdminApiToken, setAdminApiToken } from '@/services/api'
 import { games as builtinGames } from '@/data/games'
 import { posts as builtinPosts } from '@/data/posts'
 import { Card, btnClass, inputClass } from './ui'
 import { cx } from '@/lib/format'
 
+/** 后端列表接口一页最多给 100 条，导出时要按这个上限翻页 */
+const EXPORT_PAGE_SIZE = 100
+
+/**
+ * 把整库游戏翻完。
+ *
+ * v1 的「导出 JSON」是把前端 store 里的数组直接 stringify —— 那份数组本来就是全库。
+ * v2 后台只按页取数，所以导出得自己一页页翻，直到 totalPages。串行翻页是有意的：
+ * 几十页并发打过去，后端连接池会被这一个按钮吃满。
+ */
+async function fetchAllGames(onProgress?: (loaded: number, total: number) => void): Promise<Game[]> {
+  const items: Game[] = []
+  let page = 1
+  let totalPages = 1
+  do {
+    const r = await fetchAdminGames({ page, pageSize: EXPORT_PAGE_SIZE })
+    items.push(...r.items)
+    totalPages = r.totalPages
+    onProgress?.(items.length, r.total)
+    page++
+  } while (page <= totalPages)
+  return items
+}
+
+const toJson = (value: unknown) => JSON.stringify(value, null, 2)
+
 /** 数据库 / API 连接状态与初始化 */
-function DbApiCard() {
+function DbApiCard({ onSeeded }: { onSeeded: () => void }) {
   const enabled = apiEnabled()
   const url = enabled ? apiLabel() : ''
   const [token, setTok] = useState(getAdminApiToken())
@@ -38,9 +64,9 @@ function DbApiCard() {
     setMsg(null)
     try {
       const r = await api.post<{ games: number; posts: number }>('/api/admin/import', { games: builtinGames, posts: builtinPosts }, true)
-      // 写完立刻把库里的数据重新拉一遍，界面马上就能看到
-      await Promise.all([hydrateGames(true), hydratePosts(true)])
       setMsg({ ok: true, text: `已写入 ${r.games} 款游戏、${r.posts} 篇文章。` })
+      // 写完让本页的统计重新去数一遍，否则上面还显示导入前的数字
+      onSeeded()
     } catch (e) {
       setMsg({ ok: false, text: '导入失败：' + (e instanceof Error ? e.message : '') })
     } finally {
@@ -51,7 +77,7 @@ function DbApiCard() {
   return (
     <Card title="数据库 / API">
       <p className="text-sm text-muted">
-        后端地址（VITE_API_URL）：{url ? <code className="text-fg">{url}</code> : <span className="text-dim">未配置——当前用浏览器本地存储</span>}
+        后端地址（VITE_API_URL）：{url ? <code className="text-fg">{url}</code> : <span className="text-dim">未配置——后台读不到也写不了任何数据</span>}
       </p>
       {enabled ? (
         <div className="mt-3 space-y-4">
@@ -64,7 +90,7 @@ function DbApiCard() {
 
           <div>
             <label className="text-sm font-medium">管理员 API 口令（ADMIN_TOKEN）</label>
-            <p className="mb-1 text-xs text-muted">后台写操作需要。填与后端 .env 里一致的 ADMIN_TOKEN；或者直接用管理员账号登录也行。</p>
+            <p className="mb-1 text-xs text-muted">后台读写都需要。填与后端 .env 里一致的 ADMIN_TOKEN；或者直接用管理员账号登录也行。</p>
             <div className="flex flex-wrap gap-2">
               <input
                 type="password"
@@ -110,40 +136,91 @@ function downloadJson(json: string, name: string) {
 
 export function AdminData() {
   const connected = apiEnabled()
-  const all = useAllGames()
-  const posts = useAllPosts()
+  const [total, setTotal] = useState<number | null>(null)
+  const [posts, setPosts] = useState<Post[] | null>(null)
+  const [statError, setStatError] = useState('')
   const [text, setText] = useState('')
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [busy, setBusy] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
-  const local = hasLocalChanges()
 
-  const download = () => downloadJson(exportGamesJson(), '8bitgo-games')
+  /**
+   * 这一页只需要「有多少」，不需要把内容全拉下来：
+   * 游戏用 pageSize=1 的分页结果里的 total，文章本来就一次给全。
+   */
+  const loadStats = useCallback(() => {
+    if (!apiEnabled()) return
+    setStatError('')
+    void Promise.all([fetchAdminGames({ pageSize: 1 }), fetchAllPosts()])
+      .then(([g, p]) => {
+        setTotal(g.total)
+        setPosts(p)
+      })
+      .catch((e: unknown) => {
+        setTotal(null)
+        setPosts(null)
+        setStatError(e instanceof Error ? e.message : '读取失败')
+      })
+  }, [])
+
+  useEffect(loadStats, [loadStats])
+
+  /** 导出：翻完所有页再交给调用方，中途在按钮旁边报进度 */
+  const collect = async (): Promise<string> => {
+    setMsg(null)
+    setBusy(true)
+    try {
+      const games = await fetchAllGames((loaded, all) => setMsg({ ok: true, text: `正在导出：${loaded} / ${all} 款…` }))
+      return toJson(games)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const download = async () => {
+    try {
+      const json = await collect()
+      downloadJson(json, '8bitgo-games')
+      setMsg({ ok: true, text: '已导出为 JSON 文件' })
+    } catch (err) {
+      setMsg({ ok: false, text: '导出失败：' + (err instanceof Error ? err.message : '') })
+    }
+  }
 
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(exportGamesJson())
+      const json = await collect()
+      await navigator.clipboard.writeText(json)
       setMsg({ ok: true, text: '已复制到剪贴板' })
-    } catch {
-      setMsg({ ok: false, text: '复制失败，请使用下载' })
+    } catch (err) {
+      setMsg({ ok: false, text: (err instanceof Error ? err.message : '复制失败') + '（可改用下载）' })
+    }
+  }
+
+  const downloadPosts = async () => {
+    try {
+      const list = await fetchAllPosts()
+      downloadJson(toJson(list), '8bitgo-posts')
+      setMsg({ ok: true, text: `已导出 ${list.length} 篇文章（含草稿）` })
+    } catch (err) {
+      setMsg({ ok: false, text: '导出失败：' + (err instanceof Error ? err.message : '') })
     }
   }
 
   const doImport = async (json: string) => {
+    setBusy(true)
+    setMsg(null)
     try {
-      if (connected) {
-        // 连了后端就必须写库：只改内存的话刷新一下就没了
-        const parsed: unknown = JSON.parse(json)
-        if (!Array.isArray(parsed)) throw new Error('JSON 格式不正确：需要一个游戏对象数组')
-        const r = await api.post<{ games: number }>('/api/admin/import', { games: parsed }, true)
-        await hydrateGames(true)
-        setMsg({ ok: true, text: `已写入数据库：${r.games} 款游戏` })
-      } else {
-        const n = importGamesJson(json)
-        setMsg({ ok: true, text: `导入成功：${n} 款游戏` })
-      }
+      const parsed: unknown = JSON.parse(json)
+      if (!Array.isArray(parsed)) throw new Error('JSON 格式不正确：需要一个游戏对象数组')
+      const r = await api.post<{ games: number }>('/api/admin/import', { games: parsed }, true)
+      setMsg({ ok: true, text: `已写入数据库：${r.games} 款游戏` })
       setText('')
+      loadStats()
     } catch (err) {
       setMsg({ ok: false, text: err instanceof Error ? err.message : '导入失败' })
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -153,34 +230,21 @@ export function AdminData() {
     if (fileRef.current) fileRef.current.value = ''
   }
 
-  const reset = () => {
-    if (!window.confirm('确定重置？后台所做的全部修改将被清除，恢复为代码里的内置数据。')) return
-    resetGames()
-    setMsg({ ok: true, text: '已恢复为内置数据' })
-  }
-
-  let bytes = 0
-  try {
-    bytes = new Blob([localStorage.getItem(STORAGE_KEY) ?? '']).size
-  } catch {
-    /* ignore */
-  }
-
   return (
     <div className="space-y-4">
-      <DbApiCard />
+      <DbApiCard onSeeded={loadStats} />
       <div>
         <h1 className="text-xl font-bold">数据</h1>
         {connected ? (
           <p className="mt-1 text-sm text-muted">
-            已连接后端，<strong className="text-fg">一切以数据库为准</strong>：后台看到的、前台展示的都是 <code className="text-fg">games</code> /{' '}
-            <code className="text-fg">posts</code> 表里的内容。项目内置的 <code className="text-fg">src/data/games.ts</code> 只在没配{' '}
-            <code className="text-fg">VITE_API_URL</code> 时才会用到。
+            <strong className="text-fg">一切以数据库为准</strong>：后台看到的、前台展示的都是 <code className="text-fg">games</code> /{' '}
+            <code className="text-fg">posts</code> 表里的内容。项目内置的 <code className="text-fg">src/data/games.ts</code> 现在只是一份「初始数据」，
+            用上面的「导入内置数据到数据库」写进库以后就不再参与展示。
           </p>
         ) : (
           <p className="mt-1 text-sm text-muted">
-            后台的修改保存在当前浏览器的 localStorage（键：<code className="text-fg">{STORAGE_KEY}</code>），换浏览器或清除站点数据后会丢失。
-            想长期保存请导出 JSON，替换到 <code className="text-fg">src/data/games.ts</code>。
+            未配置后端（<code className="text-fg">VITE_API_URL</code>）。后台的读写全部走后端，没有后端时这一页什么也导不出、导不进 ——
+            请先部署 <code className="text-fg">server/</code> 并在前端 <code className="text-fg">.env</code> 里配好地址。
           </p>
         )}
       </div>
@@ -190,38 +254,32 @@ export function AdminData() {
           <dl className="space-y-2 text-sm">
             <div className="flex justify-between">
               <dt className="text-muted">数据来源</dt>
-              <dd className={cx('font-medium', connected ? 'text-brand-hover' : local ? 'text-coin' : 'text-fg')}>
-                {connected ? '数据库（MySQL）' : local ? '本地修改版' : '内置数据（src/data/games.ts）'}
-              </dd>
+              <dd className={cx('font-medium', connected ? 'text-brand-hover' : 'text-dim')}>{connected ? '数据库（MySQL）' : '未配置后端'}</dd>
             </div>
             <div className="flex justify-between">
-              <dt className="text-muted">游戏数量</dt>
-              <dd>
-                {all.length} 款（{all.filter((g) => g.hidden).length} 款已下架）
-              </dd>
+              <dt className="text-muted">游戏总数</dt>
+              <dd>{total === null ? '—' : `${total} 款（含已下架）`}</dd>
             </div>
             <div className="flex justify-between">
-              <dt className="text-muted">占用空间</dt>
-              <dd>{local ? `${(bytes / 1024).toFixed(1)} KB` : '—'}</dd>
+              <dt className="text-muted">文章</dt>
+              <dd>{posts === null ? '—' : `${posts.length} 篇（${posts.filter((p) => !p.published).length} 篇草稿）`}</dd>
             </div>
           </dl>
-          <div className="mt-4 flex flex-wrap gap-2">
-            <button type="button" className={btnClass.primary} onClick={download}>
+          {statError && <p className="mt-2 text-xs text-live">读不到统计：{statError}</p>}
+          <p className="mt-4 text-xs text-muted">导出会把整库按每页 {EXPORT_PAGE_SIZE} 条翻完，游戏多时需要几秒。</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button type="button" className={btnClass.primary} onClick={() => void download()} disabled={!connected || busy}>
               ⬇ 下载 JSON
             </button>
-            <button type="button" className={btnClass.secondary} onClick={copy}>
+            <button type="button" className={btnClass.secondary} onClick={() => void copy()} disabled={!connected || busy}>
               复制 JSON
-            </button>
-            <button type="button" className={btnClass.danger} onClick={reset} disabled={!local}>
-              重置为内置数据
             </button>
           </div>
         </Card>
 
         <Card title="导入 JSON">
           <p className="mb-2 text-xs text-muted">
-            粘贴一个游戏数组（与导出格式一致），或选择 .json 文件。
-            {connected ? '已连接数据库：会按 slug 写入 / 覆盖数据库中的对应条目。' : '导入会整体替换当前列表。'}
+            粘贴一个游戏数组（与导出格式一致），或选择 .json 文件。会按 slug 写入 / 覆盖数据库中的对应条目，不在文件里的游戏不受影响。
           </p>
           <textarea
             value={text}
@@ -230,74 +288,31 @@ export function AdminData() {
             className={cx(inputClass, 'h-40 resize-y py-2 font-mono text-xs')}
           />
           <div className="mt-3 flex flex-wrap gap-2">
-            <button type="button" className={btnClass.primary} disabled={!text.trim()} onClick={() => void doImport(text)}>
+            <button type="button" className={btnClass.primary} disabled={!connected || busy || !text.trim()} onClick={() => void doImport(text)}>
               导入粘贴内容
             </button>
-            <button type="button" className={btnClass.secondary} onClick={() => fileRef.current?.click()}>
+            <button type="button" className={btnClass.secondary} disabled={!connected || busy} onClick={() => fileRef.current?.click()}>
               选择 .json 文件
             </button>
-            <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" onChange={(e) => onFile(e.target.files?.[0])} />
+            <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" onChange={(e) => void onFile(e.target.files?.[0])} />
           </div>
         </Card>
       </div>
 
       <Card title="文章与用户数据">
         {/*
-          下面这几个按钮读写的都是浏览器 localStorage，跟数据库没有关系。
-          连了后端还显示它们的话，「下载用户 JSON」导出的是一份空的本地表，
-          「清空用户」点完还会提示「已清空」—— 而数据库里一个用户都没少。
+          v1 这里挂着一排读写 localStorage 的按钮（重置文章、下载 / 清空用户）。
+          v2 这些数据只存在于数据库里，那些按钮要么导出一份空表、要么点完提示「已清空」
+          而库里一条没少 —— 全部删掉，只留一个真的从库里导出的文章备份。
         */}
-        {connected ? (
-          <p className="text-xs text-muted">
-            已连接数据库，用户与文章都存在 MySQL 里。导出请直接备份数据库（
-            <code className="text-fg">mysqldump</code>），本地存储的导出 / 重置按钮在这个模式下没有意义，已隐藏。
-          </p>
-        ) : (
-          <>
         <p className="mb-3 text-xs text-muted">
-          文章保存在 <code className="text-fg">{POSTS_KEY}</code>，用户保存在 <code className="text-fg">{USERS_KEY}</code>（含密码哈希，导出后请妥善保管）。
+          文章与用户都存在数据库里。整站备份请直接 <code className="text-fg">mysqldump</code>；用户数据含邮箱与密码哈希，后台不提供导出。
         </p>
         <div className="flex flex-wrap gap-2">
-          <button type="button" className={btnClass.secondary} onClick={() => downloadJson(postsStore.exportJson(), '8bitgo-posts')}>
-            ⬇ 下载文章 JSON（{posts.length} 篇）
-          </button>
-          <button
-            type="button"
-            className={btnClass.danger}
-            disabled={!postsStore.hasLocalChanges()}
-            onClick={() => {
-              if (window.confirm('确定把文章重置为内置内容？后台写的文章会被清除。')) {
-                postsStore.reset()
-                setMsg({ ok: true, text: '文章已重置' })
-              }
-            }}
-          >
-            重置文章
-          </button>
-          <button type="button" className={btnClass.secondary} onClick={() => downloadJson(usersStore.exportJson(), '8bitgo-users')}>
-            ⬇ 下载用户 JSON（{usersStore.load().length} 位）
-          </button>
-          <button
-            type="button"
-            className={btnClass.danger}
-            disabled={!usersStore.hasLocalChanges()}
-            onClick={() => {
-              if (window.confirm('确定清空全部用户？所有账号、收藏与 G 币都会删除，且会退出当前登录。')) {
-                usersStore.reset()
-                try {
-                  localStorage.removeItem('8bitgo.session')
-                } catch {
-                  /* ignore */
-                }
-                setMsg({ ok: true, text: '用户数据已清空' })
-              }
-            }}
-          >
-            清空用户
+          <button type="button" className={btnClass.secondary} onClick={() => void downloadPosts()} disabled={!connected}>
+            ⬇ 下载文章 JSON{posts ? `（${posts.length} 篇）` : ''}
           </button>
         </div>
-          </>
-        )}
       </Card>
 
       {msg && (

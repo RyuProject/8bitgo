@@ -1,5 +1,5 @@
 import { Link, useParams } from 'react-router-dom'
-import { getPost, getPublishedPosts, readMinutes, useAllPosts } from '@/services/posts'
+import { readMinutes, usePublishedPosts } from '@/services/posts'
 import { renderMarkdown } from '@/lib/markdown'
 import { gradientFor } from '@/lib/gradients'
 import { useSeo, articleSchema, breadcrumbSchema } from '@/services/seo'
@@ -9,8 +9,12 @@ import { NotFoundPage } from './NotFoundPage'
 export function PostPage() {
   const { slug = '' } = useParams<{ slug: string }>()
   const t = useT()
-  useAllPosts()
-  const post = getPost(slug)
+  // 文章总量不大，/blog 一次就把已发布的全给了，单篇直接在里面找 ——
+  // 没必要为一篇文章再单独打一次请求
+  const { posts, loading } = usePublishedPosts()
+  const post = posts.find((p) => p.slug === slug)
+  // 还在加载时不能当成「文章不存在」—— 否则每次进详情页都会先闪一下 404
+  const missing = !loading && !post
   // SEO：hook 要在下面的 early return 之前调用，文章不存在时走 noindex 分支
   const excerpt = post ? plainText(post.excerpt) : ''
   useSeo(
@@ -37,9 +41,11 @@ export function PostPage() {
       : { title: t.blog.notFoundTitle, noindex: true },
   )
 
-  if (!post) return <NotFoundPage message={t.blog.notFoundMsg} />
+  if (missing) return <NotFoundPage message={t.blog.notFoundMsg} />
+  // 还在取数：给一个占位，别渲染 404 也别访问 post.xxx
+  if (!post) return <div className="container-x py-16 text-center text-sm text-muted" aria-busy="true" />
 
-  const more = getPublishedPosts()
+  const more = posts
     .filter((p) => p.slug !== post.slug)
     .slice(0, 3)
 

@@ -1,5 +1,5 @@
 import { useSearchParams } from 'react-router-dom'
-import { getMultiplayerGames } from '@/services/games'
+import { usePageData, type GamesData } from '@/services/pageData'
 import { useSeo } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
 import { anyRoomsEnabled, useAllRooms } from '@/services/allRooms'
@@ -26,7 +26,12 @@ export function RoomsPage() {
   const all = useAllRooms()
   const rooms = live ? [...all].sort((a, b) => (b.spectators ?? 0) - (a.spectators ?? 0)) : all
   const enabled = anyRoomsEnabled()
-  const suggestions = getMultiplayerGames(12).filter((g) => p2pPlayable(g.platform) || cloudPlayable(g.platform))
+  // 推荐可联机的游戏。v2 不再全量加载，改成让后端筛出 multiplayer=1 的那一页，
+  // 前端再按「这个平台的模拟器支不支持联机」过一道 —— 后端不认识前端的运行时配置。
+  const suggestState = usePageData<GamesData>('/games', { multiplayer: 1, sort: 'popular' }, 'games')
+  const suggestions = (suggestState.data?.list.items ?? [])
+    .filter((g) => p2pPlayable(g.platform) || cloudPlayable(g.platform))
+    .slice(0, 12)
 
   return (
     <div className="container-x py-8 sm:py-10">

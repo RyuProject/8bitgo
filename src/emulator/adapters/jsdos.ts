@@ -132,6 +132,8 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   let objectUrl = ''
   let volume = 1
   let paused = false
+  /** onReady 的延时兜底定时器，销毁时要清掉 */
+  let readyFallback = 0
   /** 存档按 slug 归档；见下面 fsChanges 那段的说明 */
   let saveKey = ''
   /** 最近一次存档落到哪儿了（云端 / 浏览器），给界面显示用 */
@@ -231,8 +233,16 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       // 存档要等 js-dos 起来才有 props.save()，所以能力在这里才补上
       if (props.save && saveKey) caps.add('fsSave')
       options.onCaps?.(caps)
-      // 兜底：万一 kiosk 模式下不触发 emu-ready，也别让转圈一直转
-      options.onReady?.()
+      /**
+       * 兜底：万一 kiosk 模式下不触发 emu-ready，也别让转圈一直转。
+       *
+       * ⚠️ 不能像原来那样在这里**立刻**调 —— Dos() 一返回 DOSBox 其实还在启动，
+       * 立刻调的结果是播放器马上显示「运行中」、加载提示消失，玩家对着黑屏
+       * 等好几秒还以为卡死了。改成延时兜底：正常情况下 emu-ready 早就先到了。
+       */
+      readyFallback = window.setTimeout(() => {
+        if (!destroyed) options.onReady?.()
+      }, 8000)
     } catch (e) {
       if (destroyed) return
       options.onError?.(fmt(rt.jsdosLoadFailed, { msg: e instanceof Error ? e.message : String(e) }))
@@ -246,6 +256,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     volume,
     destroy() {
       destroyed = true
+      window.clearTimeout(readyFallback)
       pad?.stop()
       pad = null
       try {

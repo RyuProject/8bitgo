@@ -2,9 +2,8 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { Link, NavLink, Outlet, useOutletContext } from 'react-router-dom'
 import { cx } from '@/lib/format'
 import { useDocumentTitle } from '@/lib/useDocumentTitle'
-import { hasLocalChanges, hydrateGames, useAllGames } from '@/services/store'
-import { hydratePosts } from '@/services/posts'
-import { apiEnabled } from '@/services/api'
+import { api, apiEnabled } from '@/services/api'
+import { fetchAdminGames } from '@/services/store'
 
 const ADMIN_KEY = import.meta.env.VITE_ADMIN_KEY?.trim() ?? ''
 const SESSION_KEY = '8bitgo.admin.unlocked'
@@ -24,11 +23,10 @@ const TABS = [
  */
 export function AdminLayout() {
   /**
-   * 后台要看到「全部」游戏与文章，包括已下架 / 未发布的。
-   *
-   * 前台走 SSR 时，服务端注入的数据是过滤过的（hidden=0 / published=1），
-   * 而且客户端不会再去调 hydrateGames()，所以后台直接用那份数据会看不到下架的条目，
-   * 也就没法把它重新上架。这里进后台时用管理员身份拉一次完整列表（/api/games?all=1）。
+   * v1 在这里把整个游戏库和全部文章灌进一个前端 store，子页面再从里面读。
+   * v2 没有那个 store 了 —— 每个子页面自己按需向后端取数（分页 / 按 slug）。
+   * 所以这里只剩一件事：先探一次后端，让子页面进来之前就知道「能不能读写」，
+   * 免得每一页都各自渲染一遍「连不上」的空状态。
    */
   const [data, setData] = useState<DataState>(() => (apiEnabled() ? 'loading' : 'local'))
   const [dataError, setDataError] = useState('')
@@ -37,12 +35,20 @@ export function AdminLayout() {
     if (!apiEnabled()) return
     setData('loading')
     setDataError('')
-    Promise.all([hydrateGames(true), hydratePosts(true)])
-      .then(() => setData('db'))
-      .catch((e: unknown) => {
+    // 两步都要探：/api/health 只说明进程活着、数据库通着，
+    // 但后台的读写还要过管理员口令那一关。只探 health 的话，口令没配对
+    // 徽章仍然显示「数据库」，要点进任意一页才会看到 403。
+    void (async () => {
+      try {
+        const h = await api.get<{ db?: boolean }>('/api/health')
+        if (!h.db) throw new Error('后端在线，但数据库连接异常')
+        await fetchAdminGames({ pageSize: 1 })
+        setData('db')
+      } catch (e: unknown) {
         setData('error')
         setDataError(e instanceof Error ? e.message : String(e))
-      })
+      }
+    })()
   }, [])
 
   useEffect(load, [load])
@@ -117,25 +123,22 @@ export function useAdminData(): AdminData {
 }
 
 /**
- * 数据来源徽章：一眼看清后台改的东西究竟写到哪。
- * - 数据库：配了 VITE_API_URL 且刚才拉取成功，增删改直接写 MySQL
- * - 连接失败：配了后端但拉不动（后端没起 / 数据库不通），此时改动只会留在浏览器里
- * - 本地存储：没配 VITE_API_URL，纯浏览器模式
+ * 数据来源徽章：一眼看清后台此刻能不能读写。
+ * - 数据库：后端与数据库都通，管理员口令也有效，增删改直接写 MySQL
+ * - 连接失败：后端不通 / 数据库异常 / 口令不对，后台**读也读不到、写也写不了**
+ * - 未配置后端：没填 VITE_API_URL。v2 的后台没有本地兜底，此时是个空壳
  */
 function DataBadge({ state, error, onRetry }: { state: DataState; error: string; onRetry: () => void }) {
-  useAllGames() // 订阅变化，本地模式下改完立刻刷新文案
-  const local = hasLocalChanges()
-
   if (state === 'error') {
     return (
       <button
         type="button"
         onClick={onRetry}
         className="hidden items-center gap-1.5 rounded-md bg-[color:var(--color-coin-soft)] px-2 py-1 text-[color:var(--color-live)] transition hover:brightness-95 sm:inline-flex"
-        title={`连不上后端，改动只会留在这台浏览器里。点一下重试。\n${error}`}
+        title={`连不上后端、数据库异常，或管理员口令无效 —— 后台现在读不到也写不了。点一下重试。\n${error}`}
       >
         <span className="h-1.5 w-1.5 rounded-full bg-[color:var(--color-live)]" />
-        数据库连接失败
+        后端不可用
       </button>
     )
   }
@@ -144,7 +147,7 @@ function DataBadge({ state, error, onRetry }: { state: DataState; error: string;
     return (
       <span className="hidden items-center gap-1.5 rounded-md bg-surface-2 px-2 py-1 text-muted sm:inline-flex">
         <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-dim" />
-        正在读取数据库…
+        正在连接后端…
       </span>
     )
   }
@@ -163,18 +166,11 @@ function DataBadge({ state, error, onRetry }: { state: DataState; error: string;
 
   return (
     <span
-      className={cx(
-        'hidden items-center gap-1.5 rounded-md px-2 py-1 sm:inline-flex',
-        local ? 'bg-coin-soft text-coin' : 'bg-surface-2 text-muted',
-      )}
-      title={
-        local
-          ? '未配置后端（VITE_API_URL），改动只保存在这台浏览器的 localStorage 里'
-          : '未配置后端（VITE_API_URL），当前用的是内置数据'
-      }
+      className="hidden items-center gap-1.5 rounded-md bg-surface-2 px-2 py-1 text-muted sm:inline-flex"
+      title="未配置 VITE_API_URL。后台的数据全部来自后端，没有后端时列表是空的，也保存不了任何修改。"
     >
-      <span className={cx('h-1.5 w-1.5 rounded-full', local ? 'bg-coin' : 'bg-dim')} />
-      {local ? '本地修改版' : '内置数据'}
+      <span className="h-1.5 w-1.5 rounded-full bg-dim" />
+      未配置后端
     </span>
   )
 }

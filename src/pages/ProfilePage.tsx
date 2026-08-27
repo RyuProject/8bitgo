@@ -2,8 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { logout, updateProfile, useAuthReady, useCurrentUser } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
-import { getGamesBySlugs } from '@/services/games'
-import { useAllGames } from '@/services/store'
+import { useGamesBySlugs } from '@/services/gameCache'
 import { cx } from '@/lib/format'
 import { useSeo } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
@@ -20,7 +19,6 @@ export function ProfilePage() {
   useSeo({ title: t.profile.title, noindex: true })
   const user = useCurrentUser()
   const navigate = useNavigate()
-  useAllGames()
 
   const ready = useAuthReady()
   const [editing, setEditing] = useState(false)
@@ -55,8 +53,8 @@ export function ProfilePage() {
       </div>
     )
 
-  const favorites = getGamesBySlugs(user.favorites)
-  const recent = getGamesBySlugs(user.recent)
+  const favorites = useGamesBySlugs(user.favorites)
+  const recent = useGamesBySlugs(user.recent)
 
   const save = async () => {
     try {

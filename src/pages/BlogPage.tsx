@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import type { Post } from '@/types'
-import { getPostTags, getPublishedPosts, readMinutes, useAllPosts } from '@/services/posts'
+import { getPostTags, readMinutes, usePublishedPosts } from '@/services/posts'
 import { gradientFor } from '@/lib/gradients'
 import { cx } from '@/lib/format'
 import { useSeo } from '@/services/seo'
@@ -10,16 +10,23 @@ import { useT, fmt } from '@/services/i18n'
 export function BlogPage() {
   const t = useT()
   useSeo({ title: t.blog.title, description: t.seo.blog })
-  useAllPosts() // 订阅后台修改
   const [params, setParams] = useSearchParams()
   const tag = params.get('tag')
-  const all = getPublishedPosts()
+  // 文章数量级小，后端一次给全已发布的；按标签筛在前端做就够了
+  const { posts: all, loading } = usePublishedPosts()
   const list = tag ? all.filter((p) => p.tags.includes(tag)) : all
-  const tags = getPostTags()
+  const tags = getPostTags(all)
   const [featured, ...rest] = list
+  // 文章还没拉回来时先给一句提示，别让页面看起来像「一篇都没有」
+  const empty = !loading && list.length === 0
 
   return (
     <div className="container-x py-8 sm:py-10">
+      {empty && (
+        <p className="mb-6 rounded-card border border-line bg-surface px-4 py-3 text-sm text-muted">
+          {t.blog.empty}
+        </p>
+      )}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div className="max-w-2xl">
           <span className="text-pixel text-[11px] text-brand-hover">BLOG</span>

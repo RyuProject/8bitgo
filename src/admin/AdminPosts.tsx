@@ -1,19 +1,42 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import type { Post } from '@/types'
-import { deletePost, savePost, setPostPublished, useAllPosts } from '@/services/posts'
+import { deletePost, fetchAllPosts, savePost, setPostPublished } from '@/services/posts'
 import { renderMarkdown } from '@/lib/markdown'
 import { cx } from '@/lib/format'
+import { apiEnabled } from '@/services/api'
 import { slugify } from './GameForm'
 import { Field, btnClass, inputClass } from './ui'
 
 type Editing = { mode: 'add' } | { mode: 'edit'; post: Post } | null
 
 export function AdminPosts() {
-  const posts = useAllPosts()
+  /**
+   * v1 从前端的全量文章 store 里读，写完 store 自己会通知界面刷新。
+   * v2 没有那个 store 了：进页面拉一次 /api/posts?all=1（含草稿），
+   * 每次写操作之后再拉一次 —— 文章总量是几十到几百，不值得为它做分页或增量合并。
+   */
+  const [posts, setPosts] = useState<Post[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
   const [q, setQ] = useState('')
   const [editing, setEditing] = useState<Editing>(null)
   const [toast, setToast] = useState<string | null>(null)
+
+  const reload = useCallback(() => {
+    if (!apiEnabled()) return
+    setLoading(true)
+    setError('')
+    fetchAllPosts()
+      .then(setPosts)
+      .catch((e: unknown) => {
+        setPosts([])
+        setError(e instanceof Error ? e.message : '读取失败')
+      })
+      .finally(() => setLoading(false))
+  }, [])
+
+  useEffect(reload, [reload])
 
   useEffect(() => {
     if (!toast) return
@@ -33,6 +56,7 @@ export function AdminPosts() {
     try {
       await deletePost(p.slug)
       setToast('已删除')
+      reload()
     } catch (err) {
       setToast(err instanceof Error ? err.message : '删除失败')
     }
@@ -44,12 +68,16 @@ export function AdminPosts() {
         <div>
           <h1 className="text-xl font-bold">文章管理</h1>
           <p className="mt-1 text-sm text-muted">
-            共 {posts.length} 篇，{posts.filter((p) => p.published).length} 篇已发布。草稿不会出现在前台。
+            {!apiEnabled()
+              ? '未配置后端（VITE_API_URL），后台读不到文章，也保存不了修改。'
+              : error
+                ? `⚠️ 取不到文章列表：${error}`
+                : `共 ${posts.length} 篇，${posts.filter((p) => p.published).length} 篇已发布。草稿不会出现在前台。`}
           </p>
         </div>
         <div className="flex gap-2">
           <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索标题 / 标签…" className={cx(inputClass, 'w-56')} />
-          <button type="button" className={btnClass.primary} onClick={() => setEditing({ mode: 'add' })}>
+          <button type="button" className={btnClass.primary} onClick={() => setEditing({ mode: 'add' })} disabled={!apiEnabled()}>
             ＋ 写文章
           </button>
         </div>
@@ -105,8 +133,11 @@ export function AdminPosts() {
                       className={cx(btnClass.small, 'text-muted hover:bg-black/5 hover:text-fg')}
                       onClick={async () => {
                         try {
-                          await setPostPublished(p.slug, !p.published)
+                          // setPostPublished 走的是 PUT（整体覆盖），要把原文一起带上，
+                          // 所以传的是整篇 post 而不是 slug
+                          await setPostPublished(p, !p.published)
                           setToast(p.published ? '已转为草稿' : '已发布')
+                          reload()
                         } catch (err) {
                           setToast(err instanceof Error ? err.message : '操作失败')
                         }
@@ -124,7 +155,23 @@ export function AdminPosts() {
             {list.length === 0 && (
               <tr>
                 <td colSpan={6} className="px-3 py-10 text-center text-sm text-muted">
-                  没有文章
+                  {loading ? (
+                    '正在读取数据库…'
+                  ) : error ? (
+                    <>
+                      连不上数据库，取不到文章列表。
+                      <br />
+                      <span className="text-xs">{error}</span>
+                      <br />
+                      <button type="button" className="mt-2 font-semibold text-brand-hover underline" onClick={reload}>
+                        重试
+                      </button>
+                    </>
+                  ) : !apiEnabled() ? (
+                    '未配置后端（VITE_API_URL），后台读不到文章。'
+                  ) : (
+                    '没有文章'
+                  )}
                 </td>
               </tr>
             )}
@@ -150,6 +197,7 @@ export function AdminPosts() {
                   await savePost(post)
                   setEditing(null)
                   setToast(editing.mode === 'edit' ? '已保存' : '已创建')
+                  reload()
                 } catch (err) {
                   setToast(err instanceof Error ? err.message : '保存失败')
                 }

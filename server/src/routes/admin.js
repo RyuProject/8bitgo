@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { withTransaction } from '../db.js'
 import { requireAdmin } from '../auth.js'
 import { postApiToRow, buildUpsert } from '../mappers.js'
-import { upsertGame } from '../games-repo.js'
+import { upsertGame, adminStats } from '../games-repo.js'
 import { invalidateContent } from '../content.js'
 
 export const adminRouter = Router()
@@ -51,6 +51,20 @@ adminRouter.post('/import', async (req, res, next) => {
     // 批量导入后让 SSR 缓存立即失效，前台不用等 60 秒
     invalidateContent()
     res.json({ ok: true, ...result })
+  } catch (e) {
+    next(e)
+  }
+})
+
+/**
+ * 后台概览的全库聚合：游戏总数 / 上下架数 / 已绑定 ROM 数 / 累计游玩 / 文章数。
+ *
+ * 这些必须在数据库里算。v1 是把全库拉进浏览器再 reduce，上千款游戏时
+ * 光是为了首页那几个数字就要下载整个目录。
+ */
+adminRouter.get('/stats', async (_req, res, next) => {
+  try {
+    res.json(await adminStats())
   } catch (e) {
     next(e)
   }

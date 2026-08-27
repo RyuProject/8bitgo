@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { getGamesBySlugs } from '@/services/games'
+import { useGamesBySlugs } from '@/services/gameCache'
 import { platformMap } from '@/data/platforms'
 import { gradientFor } from '@/lib/gradients'
 import { cx, formatCount } from '@/lib/format'
@@ -17,14 +17,17 @@ const FEATURED = [
   { slug: 'street-fighter-ii', tagline: (t: Translation) => t.featured.versus },
 ]
 
+/** 提到模块级：useGamesBySlugs 按数组内容判断要不要重取，每次渲染现 map 一个新数组是白给的 */
+const FEATURED_SLUGS = FEATURED.map((f) => f.slug)
+
 export function FeaturedCarousel() {
   const lang = useLang()
   const t = useT()
   // 标语和游戏必须成对取。
-  // 以前是 items.map((g, i) => FEATURED[i].tagline(t)) —— 而 getGamesBySlugs 会把
-  // 找不到的 slug 过滤掉，数组被压缩后下标就对不上了：只要有一款被下架，
+  // 以前是 items.map((g, i) => FEATURED[i].tagline(t)) —— 而 useGamesBySlugs 只返回
+  // 「已经拿到的那部分」，数组被压缩后下标就对不上了：只要有一款下架或还没取回来，
   // 后面每一张卡片都会顶着别人的标语（RPG 的标语配格斗游戏那种）。
-  const found = getGamesBySlugs(FEATURED.map((f) => f.slug))
+  const found = useGamesBySlugs(FEATURED_SLUGS)
   const slides = FEATURED.flatMap((meta) => {
     const game = found.find((g) => g.slug === meta.slug)
     return game ? [{ meta, game }] : []

@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { getGame } from '@/services/games'
+import { useGameBySlug } from '@/services/gameCache'
 import { platformMap } from '@/data/platforms'
 import { useLang } from '@/services/lang'
 import { useT, fmt } from '@/services/i18n'
@@ -43,7 +43,7 @@ import { cx } from '@/lib/format'
 export function RoomCard({ room, compact = false }: { room: RoomView; compact?: boolean }) {
   const t = useT()
   const lang = useLang()
-  const game = getGame(room.gameSlug)
+  const game = useGameBySlug(room.gameSlug)
   const max = Math.max(room.max || 0, game?.players ?? 2)
   const full = room.players >= max
   const viewers = room.spectators ?? 0

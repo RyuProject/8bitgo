@@ -1,7 +1,6 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { cx } from '@/lib/format'
-import { getRandomGame } from '@/services/games'
 import { useCurrentUser } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
 import { useShell } from './ShellContext'
@@ -13,8 +12,9 @@ import { useT, fmt } from '@/services/i18n'
 import { SocialIcon } from './SocialIcon'
 import { FEATURES } from '@/config/features'
 import { useAllRooms } from '@/services/allRooms'
+import { api, apiEnabled } from '@/services/api'
 import { useCurrentUser as useUser } from '@/services/auth'
-import { getGamesBySlugs } from '@/services/games'
+import { useGamesBySlugs } from '@/services/gameCache'
 import { GameCover } from '@/components/game/GameCover'
 import { RoomCard } from '@/components/game/RoomCard'
 
@@ -204,7 +204,8 @@ function LaterBox({ collapsed }: { collapsed: boolean }) {
   const t = useT()
   const user = useUser()
   const { setMobileOpen } = useShell()
-  const games = getGamesBySlugs(user?.favorites ?? []).slice(0, 3)
+  // 只要前 3 个 slug，多取无益 —— gameCache 会按需向后端批量拉并缓存
+  const games = useGamesBySlugs((user?.favorites ?? []).slice(0, 3))
   if (!games.length) return null
   return (
     <div className={cx('mb-3', collapsed && 'lg:hidden')}>
@@ -243,18 +244,36 @@ function RandomGameButton({ collapsed }: { collapsed: boolean }) {
   const location = useLocation()
   const { setMobileOpen } = useShell()
 
-  const play = () => {
+  const [rolling, setRolling] = useState(false)
+
+  /**
+   * 随机一款游戏。v1 是把整库拉到浏览器再随机取下标，v2 不再全量加载，
+   * 改成问后端要一条。取不到（库是空的 / 网络不通）就退到游戏库，
+   * 别让按钮点了没反应。
+   */
+  const play = async () => {
+    if (rolling) return
     const current = location.pathname.startsWith('/games/') ? location.pathname.split('/')[2] : undefined
-    const game = getRandomGame(current)
     setMobileOpen(false)
-    // 一款游戏都没有时（数据库空 / 还没拉到）就退到游戏库，别去访问 undefined.slug
-    navigate(game ? `/games/${game.slug}` : '/games')
+    if (!apiEnabled()) return navigate('/games')
+    setRolling(true)
+    try {
+      const game = await api.get<{ slug: string }>(
+        `/api/games/random${current ? `?exclude=${encodeURIComponent(current)}` : ''}`,
+      )
+      navigate(game?.slug ? `/games/${game.slug}` : '/games')
+    } catch {
+      navigate('/games')
+    } finally {
+      setRolling(false)
+    }
   }
 
   return (
     <button
       type="button"
-      onClick={play}
+      onClick={() => void play()}
+      disabled={rolling}
       title={t.sidebar.randomGame}
       className={buttonClasses('primary', 'md', cx('group relative mb-3 w-full', collapsed && 'lg:px-0'))}
     >

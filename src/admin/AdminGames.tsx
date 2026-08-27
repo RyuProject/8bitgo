@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { Game, PlatformId } from '@/types'
+import type { Paged } from '@/services/pageData'
 import { platformMap, platforms } from '@/data/platforms'
 import { genreMap } from '@/data/genres'
 import { cx, formatCount } from '@/lib/format'
-import { apiEnabled } from '@/services/api'
+import { api, apiEnabled } from '@/services/api'
 import { useAdminData } from './AdminLayout'
-import { deleteGame, setGameHidden, upsertGame, useAllGames } from '@/services/store'
+import { deleteGame, fetchAdminGames, setGameHidden, upsertGame } from '@/services/store'
 import { romKeysOf } from '@/services/roms'
 import { GameForm } from './GameForm'
 import { btnClass, inputClass } from './ui'
@@ -14,14 +15,44 @@ import { btnClass, inputClass } from './ui'
 type Status = 'all' | 'visible' | 'hidden'
 type Editing = { mode: 'add' } | { mode: 'edit'; game: Game } | null
 
+/** 后台一页多少条。和前台列表页保持一致，够看又不至于一次拉太多关联数据。 */
+const PAGE_SIZE = 24
+/** 搜索防抖：边打字边发请求会把后端打成一串没人要的查询 */
+const SEARCH_DEBOUNCE = 300
+
+/**
+ * 新增前确认 slug 有没有被占用。
+ *
+ * v1 手上有整库，GameForm 里一次 includes 就能判重。v2 列表是分页的，
+ * 表单能拿到的 existingSlugs 只有当前这一页；而 upsertGame 走的是 PUT（整体覆盖），
+ * 撞名不会报错，会**悄悄把已有的那条改掉**，所以这里单独问后端一次。
+ * 请求本身失败（后端不通等）就当作没撞名 —— 让后面真正的保存去报错，
+ * 而不是在这里拦下一个其实合法的新增。
+ */
+async function slugTaken(slug: string): Promise<boolean> {
+  try {
+    await api.get<Game>(`/api/games/${encodeURIComponent(slug)}`, true)
+    return true
+  } catch {
+    return false
+  }
+}
+
 export function AdminGames() {
-  const all = useAllGames()
   const db = useAdminData()
   const [q, setQ] = useState('')
+  const [debouncedQ, setDebouncedQ] = useState('')
   const [platform, setPlatform] = useState<PlatformId | 'all'>('all')
   const [status, setStatus] = useState<Status>('all')
+  const [page, setPage] = useState(1)
   const [editing, setEditing] = useState<Editing>(null)
   const [toast, setToast] = useState<string | null>(null)
+
+  const [paged, setPaged] = useState<Paged<Game> | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  /** 增删改之后 +1，用来重新拉当前页（列表不再有全局 store 会自己推送变化） */
+  const [tick, setTick] = useState(0)
 
   useEffect(() => {
     if (!toast) return
@@ -29,32 +60,81 @@ export function AdminGames() {
     return () => window.clearTimeout(t)
   }, [toast])
 
-  const list = useMemo(() => {
-    const needle = q.trim().toLowerCase()
-    return all.filter((g) => {
-      if (platform !== 'all' && g.platform !== platform) return false
-      if (status === 'visible' && g.hidden) return false
-      if (status === 'hidden' && !g.hidden) return false
-      if (!needle) return true
-      return [g.title, g.titleZh ?? '', g.slug, g.developer].some((s) => s.toLowerCase().includes(needle))
-    })
-  }, [all, q, platform, status])
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedQ(q.trim()), SEARCH_DEBOUNCE)
+    return () => window.clearTimeout(t)
+  }, [q])
+
+  // 换关键词 / 换平台后还停在第 5 页，多半是一片空白，回第一页
+  useEffect(() => {
+    setPage(1)
+  }, [debouncedQ, platform, status])
+
+  useEffect(() => {
+    if (!apiEnabled()) {
+      setPaged(null)
+      return
+    }
+    let cancelled = false
+    setLoading(true)
+    setError('')
+    fetchAdminGames({ q: debouncedQ || undefined, platform, status, page, pageSize: PAGE_SIZE })
+      .then((r) => {
+        if (cancelled) return
+        setPaged(r)
+        // 服务端会把越界的页码夹回合法范围（删掉最后一页的最后一条就会发生）。
+        // 不跟着改本地 page，下一次请求还会带着那个越界页码，翻页按钮就卡住了。
+        if (r.page !== page) setPage(r.page)
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return
+        setPaged(null)
+        setError(e instanceof Error ? e.message : '读取失败')
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [debouncedQ, platform, status, page, tick])
+
+  const reload = () => setTick((n) => n + 1)
+  /** 出错后的重试：顶栏徽章那份探测也一起重跑，否则修好了徽章还红着 */
+  const retry = () => {
+    db.reload()
+    reload()
+  }
+
+  const items = paged?.items ?? []
+  const total = paged?.total ?? 0
+  const totalPages = paged?.totalPages ?? 1
+
+  // 关键词、平台、上下架状态全部由服务端筛选，所以 items 就是最终结果，
+  // total 和翻页也都是全库口径 —— 不能在前端再过滤一道，那会让「共 N 款」对不上。
+  const rows = items
 
   const save = async (game: Game) => {
     try {
+      if (editing?.mode === 'add' && (await slugTaken(game.slug))) {
+        setToast(`slug「${game.slug}」已存在，请换一个`)
+        return
+      }
       await upsertGame(game)
       setEditing(null)
       setToast(editing?.mode === 'edit' ? `已保存「${game.titleZh ?? game.title}」` : `已新增「${game.titleZh ?? game.title}」`)
+      reload()
     } catch (err) {
       setToast(err instanceof Error ? err.message : '保存失败')
     }
   }
 
   const remove = async (g: Game) => {
-    if (!window.confirm(`确定删除「${g.titleZh ?? g.title}」？此操作会从游戏库移除（可在「数据」页重置恢复内置数据）。`)) return
+    if (!window.confirm(`确定删除「${g.titleZh ?? g.title}」？此操作会从数据库中移除该游戏，不可恢复。`)) return
     try {
       await deleteGame(g.slug)
       setToast('已删除')
+      reload()
     } catch (err) {
       setToast(err instanceof Error ? err.message : '删除失败')
     }
@@ -66,15 +146,14 @@ export function AdminGames() {
         <div>
           <h1 className="text-xl font-bold">游戏管理</h1>
           <p className="mt-1 text-sm text-muted">
-            共 {all.length} 款，{all.filter((g) => g.hidden).length} 款已下架。
             {!apiEnabled()
-              ? '未配置后端，修改只保存在这台浏览器里。'
-              : db.state === 'error'
-                ? '⚠️ 连不上数据库，下面是空的，现在也改不了。'
-                : '修改直接写入数据库，前台立即生效。'}
+              ? '未配置后端（VITE_API_URL），后台读不到游戏，也保存不了修改。'
+              : error
+                ? `⚠️ 取不到游戏列表：${error}`
+                : `共 ${total} 款（含已下架）。修改直接写入数据库，前台立即生效。`}
           </p>
         </div>
-        <button type="button" className={btnClass.primary} onClick={() => setEditing({ mode: 'add' })}>
+        <button type="button" className={btnClass.primary} onClick={() => setEditing({ mode: 'add' })} disabled={!apiEnabled()}>
           ＋ 新增游戏
         </button>
       </div>
@@ -85,7 +164,7 @@ export function AdminGames() {
           type="search"
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder="搜索标题 / slug / 开发商…"
+          placeholder="搜索标题 / 译名 / 开发商 / 标签…"
           className={cx(inputClass, 'w-64')}
         />
         <select className={cx(inputClass, 'w-44')} value={platform} onChange={(e) => setPlatform(e.target.value as PlatformId | 'all')}>
@@ -101,7 +180,9 @@ export function AdminGames() {
           <option value="visible">上架中</option>
           <option value="hidden">已下架</option>
         </select>
-        <span className="self-center text-xs text-muted">{list.length} 条结果</span>
+        <span className="self-center text-xs text-muted">
+          {loading ? '读取中…' : `共 ${total} 款`}
+        </span>
       </div>
 
       {/* 表格 */}
@@ -121,7 +202,7 @@ export function AdminGames() {
             </tr>
           </thead>
           <tbody className="divide-y divide-line">
-            {list.map((g) => {
+            {rows.map((g) => {
               const p = platformMap[g.platform]
               return (
                 <tr key={g.slug} className={cx('transition hover:bg-black/[0.03]', g.hidden && 'opacity-60')}>
@@ -176,6 +257,7 @@ export function AdminGames() {
                           try {
                             await setGameHidden(g.slug, !g.hidden)
                             setToast(g.hidden ? '已上架' : '已下架')
+                            reload()
                           } catch (err) {
                             setToast(err instanceof Error ? err.message : '操作失败')
                           }
@@ -191,22 +273,28 @@ export function AdminGames() {
                 </tr>
               )
             })}
-            {list.length === 0 && (
+            {rows.length === 0 && (
               <tr>
                 <td colSpan={9} className="px-3 py-10 text-center text-sm text-muted">
-                  {all.length === 0 && db.state === 'error' ? (
+                  {loading ? (
+                    '正在读取数据库…'
+                  ) : error ? (
                     <>
                       连不上数据库，取不到游戏列表。
                       <br />
-                      <span className="text-xs">{db.error}</span>
+                      <span className="text-xs">{error}</span>
                       <br />
-                      <button type="button" className="mt-2 font-semibold text-brand-hover underline" onClick={db.reload}>
+                      <button type="button" className="mt-2 font-semibold text-brand-hover underline" onClick={retry}>
                         重试
                       </button>
                     </>
-                  ) : all.length === 0 && db.state === 'loading' ? (
-                    '正在读取数据库…'
-                  ) : all.length === 0 && apiEnabled() ? (
+                  ) : !apiEnabled() ? (
+                    <>
+                      未配置后端（VITE_API_URL）。
+                      <br />
+                      <span className="text-xs">在前端 .env 里配好后端地址并重新构建，后台才能读写游戏库。</span>
+                    </>
+                  ) : total === 0 && !debouncedQ && platform === 'all' ? (
                     <>
                       数据库里还没有游戏。
                       <br />
@@ -216,6 +304,8 @@ export function AdminGames() {
                       </Link>
                       」页点「导入内置数据到数据库」，把项目自带的目录一次性写进库里。
                     </>
+                  ) : items.length > 0 ? (
+                    '当前页没有符合该状态的游戏（状态筛选只作用于当前页，可翻页继续找）'
                   ) : (
                     '没有符合条件的游戏'
                   )}
@@ -225,6 +315,28 @@ export function AdminGames() {
           </tbody>
         </table>
       </div>
+
+      {/* 分页：翻页在服务端做，这里只负责报页码 */}
+      {total > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+          <span className="text-xs text-muted">
+            第 {page} / {totalPages} 页 · 共 {total} 款
+          </span>
+          <div className="flex gap-2">
+            <button type="button" className={btnClass.secondary} disabled={page <= 1 || loading} onClick={() => setPage((p) => Math.max(1, p - 1))}>
+              ← 上一页
+            </button>
+            <button
+              type="button"
+              className={btnClass.secondary}
+              disabled={page >= totalPages || loading}
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            >
+              下一页 →
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* 编辑弹窗 */}
       {editing && (
@@ -240,7 +352,8 @@ export function AdminGames() {
             <GameForm
               key={editing.mode === 'edit' ? editing.game.slug : 'new'}
               initial={editing.mode === 'edit' ? editing.game : undefined}
-              existingSlugs={all.map((g) => g.slug)}
+              // 表单里这份只够挡住「和当前页某条重名」，真正的判重在 save() 里问后端
+              existingSlugs={items.map((g) => g.slug)}
               onSubmit={save}
               onCancel={() => setEditing(null)}
             />

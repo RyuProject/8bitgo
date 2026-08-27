@@ -4,9 +4,10 @@ import { recordRecent, toggleFavorite, useCurrentUser } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
 import { useRomUrl } from '@/services/roms'
 import { resolveRuntime, runtimesFor } from '@/emulator'
-import { getGame, getRelatedGames } from '@/services/games'
+import { usePageData, type GameData } from '@/services/pageData'
 import { platformMap } from '@/data/platforms'
 import { genreMap } from '@/data/genres'
+import { isPlatformEnabled } from '@/config/platforms'
 import { getDefaultKeymap } from '@/lib/emulator'
 import { formatCount, formatPlayers } from '@/lib/format'
 import { useSeo, breadcrumbSchema, videoGameSchema } from '@/services/seo'
@@ -34,17 +35,23 @@ export function GameDetailPage() {
   // 从「直播」进来的：默认只看不玩
   const watchOnly = searchParams.get('watch') === '1'
   const t = useT()
-  const game = getGame(slug)
+  // 详情页要的就是这一款游戏和它的相关推荐，由后端一次给全 ——
+  // v1 是把整个游戏库拉进内存再 find(slug)，几千款时光是首屏就得下载整个目录
+  const state = usePageData<GameData>(`/games/${encodeURIComponent(slug)}`, undefined, 'game')
+  // data.game 为 null 表示后端确认没有这款游戏；undefined 是「还没拿到」，两者不能混为一谈
+  const game = state.data?.game ?? undefined
+  const related = state.data?.related ?? []
   const { immersive } = useShell()
   const user = useCurrentUser()
   const [copied, setCopied] = useState(false)
   const isFav = Boolean(user?.favorites.includes(slug))
   const rom = useRomUrl(game)
 
-  // 记录最近浏览
+  // 记录最近浏览。依赖只看 slug：重新取数会得到一个全新的 game 对象，
+  // 按对象比较会让同一款游戏被重复记一次
   useEffect(() => {
     if (game) void recordRecent(game.slug)
-  }, [game])
+  }, [game?.slug])
 
   useEffect(() => {
     if (!copied) return
@@ -52,7 +59,7 @@ export function GameDetailPage() {
     return () => window.clearTimeout(t)
   }, [copied])
 
-  // SEO：hook 必须在下面的 early return 之前调用，所以未找到游戏时走 noindex 分支
+  // SEO：hook 必须在下面的 early return 之前调用，所以「还没取到」和「确实没有」都要在这里各给一套
   const lang = useLang()
   const seoTitle = game ? gameTitle(game, lang) : ''
   const seoPlatform = game ? platformMap[game.platform] : undefined
@@ -83,18 +90,31 @@ export function GameDetailPage() {
             ]),
           ],
         }
-      : { title: t.game.notFoundTitle, noindex: true },
+      : state.status === 'ready'
+        ? // 后端明确说了没有这款游戏
+          { title: t.game.notFoundTitle, noindex: true }
+        : // 还在取数：先用站点默认标题，别急着挂 noindex ——
+          // 那会让「先渲染骨架、后拿到数据」的爬虫读到一个不该有的 noindex
+          {},
   )
 
-  if (!game) return <NotFoundPage message={t.game.notFoundMsg} />
+  // 数据是异步来的，游戏还没到手不代表它不存在，否则每次进详情页都会先闪一下 404
+  if (!game) {
+    if (state.status === 'error') return <LoadError message={state.error} />
+    if (state.status === 'loading') return <DetailSkeleton />
+    return <NotFoundPage message={t.game.notFoundMsg} />
+  }
 
-  const platform = platformMap[game.platform]
+  // platform 是数据库里存的值：可能是代码不认识的，也可能是还没对外开放的（见 config/platforms）。
+  // v1 在取数时就把这两种情况滤掉了，v2 由后端直接按 slug 回，得在这里挡：
+  // 不挡的话下面每一处 platform.xxx 都会把整页带崩。
+  if (!seoPlatform || !isPlatformEnabled(seoPlatform.id)) return <NotFoundPage message={t.game.notFoundMsg} />
+  const platform = seoPlatform
   // 没有具体文件时，按优先级取该平台实际会用的引擎 —— 跟 PlayLocalPage 的选法一致。
   // 只用 resolveRuntime(platform.id) 会走到「平台默认引擎」那一档（platforms.ts 的 runtime
   // 字段），显示的是兜底引擎而不是真正会跑的那个：NDS 装了 webretro 仍写着 EmulatorJS，
   // NES 明明由 jsnes 接管也一样。
   const runtime = runtimesFor(platform.id)[0] ?? resolveRuntime(platform.id)
-  const related = getRelatedGames(game, 8)
 
   return (
     <div className="container-x py-6 sm:py-8">
@@ -334,4 +354,46 @@ function plainText(source: string): string {
     .replace(/[*_`>#]/g, '')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+/**
+ * 取数期间的占位。
+ * 布局和真实页面对齐（左侧播放器 + 标题，右侧平台卡），数据到位时不会整页跳一下。
+ */
+function DetailSkeleton() {
+  return (
+    <div className="container-x py-6 sm:py-8" aria-hidden>
+      <div className="mb-4 h-3 w-64 animate-pulse rounded bg-white/5" />
+      <div className="grid gap-8 lg:grid-cols-12">
+        <div className="lg:col-span-8">
+          <div className="aspect-[16/9] animate-pulse rounded-2xl border border-line bg-surface" />
+          <div className="mt-6 h-8 w-2/3 animate-pulse rounded bg-white/5" />
+          <div className="mt-3 h-4 w-1/3 animate-pulse rounded bg-white/5" />
+          <div className="mt-8 space-y-2">
+            <div className="h-3 w-full animate-pulse rounded bg-white/5" />
+            <div className="h-3 w-11/12 animate-pulse rounded bg-white/5" />
+            <div className="h-3 w-3/4 animate-pulse rounded bg-white/5" />
+          </div>
+        </div>
+        <aside className="space-y-8 lg:col-span-4">
+          <div className="h-56 animate-pulse rounded-2xl border border-line bg-surface" />
+        </aside>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * 取数失败。和「没有这款游戏」分开：网络挂了不该告诉用户游戏不存在，
+ * 那会让人以为游戏被下架了。
+ */
+function LoadError({ message }: { message: string }) {
+  return (
+    <div className="container-x flex min-h-[60vh] flex-col items-center justify-center py-20 text-center" role="alert">
+      <p className="text-4xl" aria-hidden>
+        📡
+      </p>
+      <p className="mt-4 max-w-md text-sm text-muted">{message}</p>
+    </div>
+  )
 }

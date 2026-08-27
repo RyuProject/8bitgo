@@ -12,24 +12,31 @@
 --
 -- 执行前先跑这一句，确认你要丢掉什么：
 --
---   SELECT 'games' t, COUNT(*) n FROM `8bitgo`.games
---   UNION ALL SELECT 'posts', COUNT(*) FROM `8bitgo`.posts
---   UNION ALL SELECT 'users', COUNT(*) FROM `8bitgo`.users;
+--   SELECT 'games' t, COUNT(*) n FROM games
+--   UNION ALL SELECT 'posts', COUNT(*) FROM posts
+--   UNION ALL SELECT 'users', COUNT(*) FROM users;
 --
 --   users 不是 0 就说明已经有人注册过账号，先备份：
---   mysqldump -u root -p -P 3307 8bitgo > backup.sql
+--   mysqldump -u root -p -P 3307 <你的库名> > backup.sql
 --
--- 用法：mysql -u root -p -P 3307 < 8bitgo-v2-install.sql
---      或整个文件粘进 DBGate / Navicat 的 SQL 窗口执行
+-- 用法见下方「不建库、也不切库」那段说明。
 --
 -- 执行完是**空库**：一款游戏、一篇文章都没有，全部由后台自己添加。
 -- ============================================================
 
 SET NAMES utf8mb4;
 
-CREATE DATABASE IF NOT EXISTS `8bitgo`
-  CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-USE `8bitgo`;
+-- ⚠️ 这个脚本**不建库、也不切库**，直接在你当前选中的数据库里执行。
+--    原因：库名写死过一次亏，本项目的 .env 里 DB_NAME 可能是 eightbitgo、8bitgo
+--    或者别的名字，写死就会「表建在 A 库、后端连的是 B 库」，非常难查。
+--
+-- 命令行用法（把 eightbitgo 换成你 .env 里的 DB_NAME）：
+--   mysql -u root -p -P 3307 eightbitgo < 8bitgo-v2-install.sql
+--
+-- 图形客户端（DBGate / Navicat）：先在左侧点开你要用的库，确认标题栏显示的是它，再执行。
+--
+-- 执行前先确认选对了库：
+SELECT DATABASE() AS `当前数据库`;
 
 -- ---------- 0. 清掉旧结构 ----------
 -- 关掉外键检查，删除顺序就不用管依赖关系；下面立刻恢复
@@ -207,7 +214,7 @@ CREATE TABLE IF NOT EXISTS recents (
 -- ============================================================
 -- 自检：应该是 9 张表，全部 0 行
 SELECT table_name FROM information_schema.TABLES
-  WHERE table_schema = '8bitgo' ORDER BY table_name;
+  WHERE table_schema = DATABASE() ORDER BY table_name;
 
 SELECT 'games' t, COUNT(*) n FROM games
 UNION ALL SELECT 'posts', COUNT(*) FROM posts

@@ -74,7 +74,30 @@ const genres = await loadTs('src/data/genres.ts', 'genres')
 const LANGUAGES = await loadTs('src/config/languages.ts', 'LANGUAGES')
 const DEFAULT_LANG = await loadTs('src/config/languages.ts', 'DEFAULT_LANG')
 const HREFLANG = await loadTs('src/config/languages.ts', 'HREFLANG')
-let games = await fromApi('/api/games')
+/**
+ * 取全部游戏。
+ *
+ * v2 的 /api/games 返回的是**一页**（{items, total, page, totalPages}），不再是整个数组 ——
+ * 这正是为了让上千款游戏时前台不用下载整个目录。但 sitemap 恰恰需要全量，
+ * 所以这里按页翻完。翻页上限兜一道，避免接口异常时无限循环。
+ */
+async function fetchAllGames() {
+  const first = await fromApi('/api/games?pageSize=100&page=1')
+  if (!first) return null
+  // 兼容 v1 的数组形状：老部署里可能还跑着旧后端
+  if (Array.isArray(first)) return first
+  if (!Array.isArray(first.items)) return null
+  const all = [...first.items]
+  const totalPages = Math.min(Number(first.totalPages) || 1, 200)
+  for (let p = 2; p <= totalPages; p++) {
+    const page = await fromApi(`/api/games?pageSize=100&page=${p}`)
+    if (!page?.items?.length) break
+    all.push(...page.items)
+  }
+  return all
+}
+
+let games = await fetchAllGames()
 if (!games) {
   games = await loadTs('src/data/games.ts', 'games')
   console.log(`  （用内置数据；${API ? `连不上后端 ${API}，请先启动 server/ 再跑 npm run sitemap` : '配置 VITE_API_URL 后会改从数据库读取'}）`)
@@ -82,7 +105,7 @@ if (!games) {
   console.log(`  （从后端 API 读到 ${games.length} 款游戏）`)
 }
 let posts = await fromApi('/api/posts')
-if (!posts) posts = await loadTs('src/data/posts.ts', 'posts')
+if (!Array.isArray(posts)) posts = await loadTs('src/data/posts.ts', 'posts')
 
 
 // 隐藏的游戏、未发布的文章、未启用的平台都不该进 sitemap

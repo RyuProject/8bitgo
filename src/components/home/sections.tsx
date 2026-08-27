@@ -7,28 +7,49 @@ import { GameCard } from '@/components/game/GameCard'
 import { GameCardWide } from '@/components/game/GameCardWide'
 import { PlatformCard } from '@/components/game/PlatformCard'
 import { GameCover } from '@/components/game/GameCover'
-import {
-  getCoinGames,
-  getGamesByGenre,
-  getGenres,
-  getMultiplayerGames,
-  getNewestGames,
-  getPlatforms,
-  getPopularGames,
-} from '@/services/games'
-import { genreMap } from '@/data/genres'
-import { platformMap } from '@/data/platforms'
+import { genreMap, genres } from '@/data/genres'
+import { platformMap, platforms } from '@/data/platforms'
+import { isPlatformEnabled } from '@/config/platforms'
 import { gradientFor } from '@/lib/gradients'
 import { useLang } from '@/services/lang'
 import { useT, fmt } from '@/services/i18n'
 import { genreLabel, gameTitle } from '@/services/i18nData'
+import type { Facets } from '@/services/pageData'
 import type { Translation } from '@/locales'
-import type { GenreId } from '@/types'
+import type { Game, Genre, GenreId, Platform } from '@/types'
+
+/*
+ * 这些区块一律不自己取数，数据由 HomePage 一次拉好再传进来。
+ * 各区块各调各的 getXxxGames() 是 v1 的做法 —— 那时整个游戏库本来就在内存里，
+ * 多调几次不花钱；v2 每次都是一趟网络请求，首屏会被拆成七八个并发。
+ */
+
+/** 名称、图标、配色这些是常量，仍旧从 src/data 读；facets 只负责补上「有多少款」 */
+type PlatformWithCount = Platform & { count: number }
+type GenreWithCount = Genre & { count: number }
+
+/** 数量为 0 的平台不进首页入口 —— 点进去是空列表，不如不给 */
+function platformsWithCount(facets: Facets | undefined): PlatformWithCount[] {
+  const counts = new Map<string, number>(facets?.platforms.map((p) => [p.id, p.count] as const) ?? [])
+  return (
+    platforms
+      // facets 是直接按数据库分组出来的，不认识前台的平台白名单，这道闸得自己关
+      .filter((p) => isPlatformEnabled(p.id))
+      .map((p) => ({ ...p, count: counts.get(p.id) ?? 0 }))
+      .filter((p) => p.count > 0)
+      .sort((a, b) => b.count - a.count)
+  )
+}
+
+/** 顺序沿用 src/data/genres 的排列而不是按数量排，免得上新一款游戏首页的类型就换个位置 */
+function genresWithCount(facets: Facets | undefined): GenreWithCount[] {
+  const counts = new Map<string, number>(facets?.genres.map((g) => [g.id, g.count] as const) ?? [])
+  return genres.map((g) => ({ ...g, count: counts.get(g.id) ?? 0 })).filter((g) => g.count > 0)
+}
 
 /* ---------------- 最多人玩 ---------------- */
-export function PopularSection() {
+export function PopularSection({ games }: { games: Game[] }) {
   const t = useT()
-  const games = getPopularGames(12)
   return (
     <section className="container-x">
       <SectionHeader
@@ -47,14 +68,15 @@ export function PopularSection() {
 }
 
 /* ---------------- 按平台 ---------------- */
-export function PlatformsSection() {
+export function PlatformsSection({ facets }: { facets?: Facets }) {
   const t = useT()
-  const platforms = getPlatforms().slice(0, 8)
+  // 局部变量避开 platforms 这个名字：模块顶部的同名导入才是静态平台表
+  const shown = platformsWithCount(facets).slice(0, 8)
   return (
     <section className="container-x">
       <SectionHeader title={t.sections.platformsTitle} subtitle={t.sections.platformsSubtitle} icon="🎮" moreTo="/platforms" />
       <HScroll itemClassName="w-52 sm:w-56">
-        {platforms.map((p) => (
+        {shown.map((p) => (
           <PlatformCard key={p.id} platform={p} className="h-full" />
         ))}
       </HScroll>
@@ -63,9 +85,8 @@ export function PlatformsSection() {
 }
 
 /* ---------------- 最新上线 ---------------- */
-export function LatestSection() {
+export function LatestSection({ games }: { games: Game[] }) {
   const t = useT()
-  const games = getNewestGames(10)
   return (
     <section className="container-x">
       <SectionHeader title={t.sections.latestTitle} subtitle={t.sections.latestSubtitle} icon="✨" moreTo="/games?sort=newest" />
@@ -79,9 +100,8 @@ export function LatestSection() {
 }
 
 /* ---------------- 一起玩 ---------------- */
-export function TogetherSection() {
+export function TogetherSection({ games }: { games: Game[] }) {
   const t = useT()
-  const games = getMultiplayerGames(12)
   return (
     <section className="container-x">
       <SectionHeader
@@ -100,9 +120,12 @@ export function TogetherSection() {
 }
 
 /* ---------------- 赢取 G 币 ---------------- */
-export function CoinSection() {
+/**
+ * FEATURES.coins 关着，首页现在没挂这一块，所以后端的首页数据里也没有对应的列表。
+ * 留着是为了 G 币上线时不用重写：那时 loadHome() 补一组数据，这里直接传进来即可。
+ */
+export function CoinSection({ games }: { games: Game[] }) {
   const t = useT()
-  const games = getCoinGames(12)
   return (
     <section className="container-x">
       <div className="rounded-3xl border border-coin/25 bg-gradient-to-br from-coin/10 via-transparent to-transparent p-5 sm:p-6">
@@ -143,11 +166,18 @@ const GENRE_GRADIENTS: Record<GenreId, string> = {
 /** 下方分栏里展示的类型（各挑 4 款游戏）——取游戏数量较多的几个，保证列表填满 */
 const GENRE_COLUMNS: GenreId[] = ['action', 'adventure', 'rpg', 'puzzle']
 
-export function GenreGridSection() {
+export function GenreGridSection({
+  facets,
+  genreSamples,
+}: {
+  facets?: Facets
+  genreSamples?: Record<string, Game[]>
+}) {
   const lang = useLang()
   const t = useT()
-  const genres = getGenres().filter((g) => g.count > 0)
-  const columns = GENRE_COLUMNS.map((id) => ({ genre: genreMap[id], games: getGamesByGenre(id, 4) })).filter((c) => c.games.length > 0)
+  const genreList = genresWithCount(facets)
+  // 服务端只给「确实有游戏」的类型建键，所以这里取不到就是这一栏没内容，整栏不渲染
+  const columns = GENRE_COLUMNS.map((id) => ({ genre: genreMap[id], games: genreSamples?.[id] ?? [] })).filter((c) => c.games.length > 0)
 
   return (
     <section className="container-x">
@@ -155,7 +185,7 @@ export function GenreGridSection() {
 
       {/* 大类型卡片：横向滑动 */}
       <HScroll itemClassName="w-64 sm:w-72">
-        {genres.map((g) => (
+        {genreList.map((g) => (
           <Link
             key={g.id}
             to={`/genres/${g.id}`}
