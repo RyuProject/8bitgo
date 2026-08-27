@@ -60,7 +60,14 @@ export function HScroll({
       <div
         ref={ref}
         className={cx(
-          'scrollbar-none flex snap-x snap-mandatory overflow-x-auto pb-2',
+          'scrollbar-none flex snap-x snap-mandatory overflow-x-auto',
+          // 垂直留白 + 等量负外边距。
+          // 设了 overflow-x 之后 overflow-y 会从 visible 变成 auto，垂直方向跟着被剪；
+          // 而卡片的 card-hover 是 hover:-translate-y-1（上浮 4px）加一层向下延伸 18px 的阴影，
+          // 原来只有 pb-2，结果悬停时上沿被切 4px、阴影下缘被切 6px。
+          // pt-2/pb-4 把这两处空间留出来，-my-2 再把多出来的高度收回去 ——
+          // 轨道在文档流里的占位和卡片的视觉位置都跟改之前一模一样，只是不再裁剪。
+          '-my-2 pt-2 pb-4',
           // 负边距(-mx)让轨道向两侧溢出到页面边缘做「出血」；px 把首卡片推回容器内边；
           // scroll-pl 必须与 px 一致，否则 snap 会把首卡片吸附到边框而非内容边，首屏自动左移、与标题错位。
           // 负边距放在这个「可滚动」元素上（而非外层），左右箭头才不会跟着被推到视口外，导致整页横向溢出。

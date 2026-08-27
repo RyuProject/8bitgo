@@ -522,7 +522,10 @@ function notifyUsers() {
 export async function hydrateUsers(): Promise<void> {
   if (!apiEnabled()) return
   try {
-    const list = await api.get<PublicUser[]>('/api/users')
+    // 必须带 admin 标记：GET /api/users 是管理员接口，
+    // 只用「后台口令」登录后台时（还没建管理员账号的新部署就是这种情况）
+    // 不带的话拿到 403，下面又被 catch 吞掉，后台会显示成「一个用户都没有」
+    const list = await api.get<PublicUser[]>('/api/users', true)
     if (Array.isArray(list)) apiUsers = list
   } catch {
     // 拉取失败就保留上一次的结果 —— 清成空列表会让人以为用户被删光了
