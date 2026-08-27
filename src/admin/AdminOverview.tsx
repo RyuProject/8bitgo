@@ -9,6 +9,7 @@ import { platformMap, platforms } from '@/data/platforms'
 import { genreMap } from '@/data/genres'
 import { formatCount } from '@/lib/format'
 import { useAllUsers } from '@/services/auth'
+import { trackPageLoad } from '@/services/progress'
 import { BarList, Card, Stat } from './ui'
 
 /** 「最近上线」取几条 */
@@ -67,7 +68,7 @@ export function AdminOverview() {
     let cancelled = false
     setLoading(true)
     setError('')
-    loadOverview()
+    trackPageLoad(loadOverview())
       .then((d) => {
         if (!cancelled) setData(d)
       })

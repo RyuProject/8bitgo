@@ -1,5 +1,6 @@
 import { Route, Routes } from 'react-router-dom'
 import { Layout } from '@/components/layout/Layout'
+import { TopProgressBar } from '@/components/layout/TopProgressBar'
 import { HomePage } from '@/pages/HomePage'
 import { GamesPage } from '@/pages/GamesPage'
 import { GameDetailPage } from '@/pages/GameDetailPage'
@@ -31,6 +32,9 @@ const COMING_SOON_ROUTES = [
 
 export function AppRoutes() {
   return (
+    <>
+      {/* 顶部加载条。放在 <Routes> 外面，前台和后台共用同一根 */}
+      <TopProgressBar />
       <Routes>
         <Route element={<Layout />}>
           <Route index element={<HomePage />} />
@@ -63,5 +67,6 @@ export function AppRoutes() {
           <Route path="data" element={<AdminData />} />
         </Route>
       </Routes>
+    </>
   )
 }

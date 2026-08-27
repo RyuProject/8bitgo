@@ -228,3 +228,21 @@ body {
   text-decoration: underline;
   text-underline-offset: 3px;
 }
+
+/* 顶部加载条。transition 放在 CSS 里而不是内联 style：
+   内联 style 优先级更高，写在那儿的话 prefers-reduced-motion 就覆盖不掉了。
+   宽度过渡只在条露着时给（data-active），否则收尾归零会看到它往回缩。 */
+.progress-bar {
+  transition: opacity 260ms ease;
+}
+.progress-bar[data-active='true'] {
+  transition:
+    width 200ms ease-out,
+    opacity 260ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .progress-bar,
+  .progress-bar[data-active='true'] {
+    transition: none;
+  }
+}

@@ -14,6 +14,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Game, Post } from '@/types'
 import { api, apiEnabled } from './api'
+import { startPageLoad } from './progress'
 
 /* ---------------- 各路由的数据形状 ---------------- */
 
@@ -157,6 +158,10 @@ export function usePageData<T extends PageData>(
     let cancelled = false
     loadedKey.current = key
     setState((prev) => ({ status: 'loading', data: prev.data }))
+    // 顶部进度条：这一下就是站内跳转真正花时间的地方。
+    // 注意 done 必须走 finally —— 只挂在 then 上的话，一次失败就会把计数永远留在 1，
+    // 那根条会一直卡在 90% 不下来
+    const done = startPageLoad()
     api
       .get<T>(key)
       .then((data) => {
@@ -168,6 +173,7 @@ export function usePageData<T extends PageData>(
         loadedKey.current = null
         setState({ status: 'error', data: null, error: e instanceof Error ? e.message : '加载失败' })
       })
+      .finally(done)
     return () => {
       cancelled = true
     }

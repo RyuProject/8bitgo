@@ -9,6 +9,7 @@ import { api, apiEnabled } from '@/services/api'
 import { useAdminData } from './AdminLayout'
 import { deleteGame, fetchAdminGames, setGameHidden, upsertGame } from '@/services/store'
 import { romKeysOf } from '@/services/roms'
+import { trackPageLoad } from '@/services/progress'
 import { GameForm } from './GameForm'
 import { btnClass, inputClass } from './ui'
 
@@ -78,7 +79,7 @@ export function AdminGames() {
     let cancelled = false
     setLoading(true)
     setError('')
-    fetchAdminGames({ q: debouncedQ || undefined, platform, status, page, pageSize: PAGE_SIZE })
+    trackPageLoad(fetchAdminGames({ q: debouncedQ || undefined, platform, status, page, pageSize: PAGE_SIZE }))
       .then((r) => {
         if (cancelled) return
         setPaged(r)
