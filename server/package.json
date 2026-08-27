@@ -12,7 +12,9 @@
     "reset-fake-data": "node scripts/reset-fake-data.mjs",
     "test:db": "node scripts/test-connection.mjs",
     "gen-sql": "node scripts/gen-sql.mjs",
-    "gen-sql:empty": "node scripts/gen-sql.mjs --empty"
+    "gen-sql:empty": "node scripts/gen-sql.mjs --empty",
+    "backfill-search": "node scripts/backfill-search.mjs",
+    "test:search": "node scripts/test-search.mjs"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -21,6 +23,7 @@
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.11.0",
+    "nodemailer": "^6.9.14",
     "socket.io": "^4.8.1",
     "ws": "^8.18.0"
   },

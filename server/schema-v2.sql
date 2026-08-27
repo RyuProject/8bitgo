@@ -48,7 +48,11 @@ CREATE TABLE IF NOT EXISTS games (
   icon          VARCHAR(16)   NOT NULL DEFAULT '🎮',
   cover         VARCHAR(500)  NULL,
   video         VARCHAR(500)  NULL,
+  -- 基准简介。后台写什么语言就是什么语言（本站是中文），其余语言拿不到译文时也用它兜底
   description   TEXT          NULL,
+  -- 英文简介。非中文访客优先看这个，和 title / title_zh 是同一套路数：
+  -- 一个基准 + 一个译文，而不是给八种语言各开一列
+  description_en TEXT         NULL,
   body_control  TINYINT(1)    NOT NULL DEFAULT 0,
   hidden        TINYINT(1)    NOT NULL DEFAULT 0,
   -- 模拟器核心覆盖。NULL = 用平台默认（src/data/platforms.ts 的 core 字段）。
@@ -109,6 +113,23 @@ CREATE TABLE IF NOT EXISTS game_tags (
   PRIMARY KEY (game_id, tag),
   KEY idx_tag (tag, game_id),
   CONSTRAINT fk_gt_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------- 搜索倒排索引 ----------
+-- token -> 游戏，带来源权重。由 server/src/search.js 生成，后台增删改游戏时同步维护，
+-- 全量重建用 `npm run backfill-search`。
+--
+-- 为什么不用 FULLTEXT：中文得靠 ngram 解析器，那是 MySQL 5.7+ 独有的（MariaDB 没有），
+-- 用了就把部署绑死在特定数据库上；而且拼音、首字母、繁简互通塞不进 FULLTEXT。
+-- 主键放 (token, game_id)，查询按 token 前缀走主键，几万款游戏也是毫秒级。
+CREATE TABLE IF NOT EXISTS game_search_tokens (
+  token    VARCHAR(32)     NOT NULL,
+  game_id  BIGINT UNSIGNED NOT NULL,
+  -- 来源权重：原名/译名 100、别名 80、拼音 60、开发商 40、标签 30
+  weight   SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+  PRIMARY KEY (token, game_id),
+  KEY idx_game (game_id),
+  CONSTRAINT fk_gst_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------- 游戏 × ROM 文件 ----------

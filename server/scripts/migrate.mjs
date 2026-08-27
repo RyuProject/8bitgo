@@ -92,6 +92,12 @@ const patches = [
     run: () => conn.query('ALTER TABLE `games` ADD COLUMN `core` VARCHAR(32) NULL AFTER `hidden`'),
   },
   {
+    name: 'games.description_en（英文简介）',
+    table: 'games',
+    needed: async () => !(await hasColumn('games', 'description_en')),
+    run: () => conn.query('ALTER TABLE `games` ADD COLUMN `description_en` TEXT NULL AFTER `description`'),
+  },
+  {
     name: 'platform_bios（平台级 BIOS，Neo Geo 这类必须有）',
     table: null,
     needed: async () => !(await hasTable('platform_bios')),
@@ -104,6 +110,32 @@ const patches = [
           'PRIMARY KEY (`platform`)' +
           ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
       ),
+  },
+  {
+    name: 'game_search_tokens（搜索倒排索引：多词、拼音、繁简）',
+    table: null,
+    needed: async () => !(await hasTable('game_search_tokens')),
+    run: async () => {
+      await conn.query(
+        'CREATE TABLE IF NOT EXISTS `game_search_tokens` (' +
+          '`token` VARCHAR(32) NOT NULL,' +
+          '`game_id` BIGINT UNSIGNED NOT NULL,' +
+          '`weight` SMALLINT UNSIGNED NOT NULL DEFAULT 1,' +
+          'PRIMARY KEY (`token`, `game_id`),' +
+          'KEY `idx_game` (`game_id`)' +
+          ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
+      )
+      // 外键单独加：v1 的库里 games.id 可能是别的类型，加不上也不该让整个迁移失败
+      try {
+        await conn.query(
+          'ALTER TABLE `game_search_tokens` ADD CONSTRAINT `fk_gst_game` ' +
+            'FOREIGN KEY (`game_id`) REFERENCES `games`(`id`) ON DELETE CASCADE',
+        )
+      } catch (e) {
+        console.log(`   （外键没加上，不影响使用：${e.message}）`)
+      }
+      console.log('   建好了，但还是空的 —— 跑 `npm run backfill-search` 把现有游戏灌进去')
+    },
   },
   {
     name: 'favorites.idx_fav_game（删游戏时按 game_slug 清理）',
@@ -122,6 +154,11 @@ const patches = [
     table: 'favorites',
     needed: async () => {
       if (!(await hasTable('games'))) return false
+      // 这条是 v1 遗留：v1 的 favorites 用 game_slug 关联，v2 改成了 game_id 外键，
+      // 由数据库 ON DELETE CASCADE 兜着，压根不会有孤儿。
+      // v2 的库里没有 game_slug 这一列，不挡的话整个迁移会在这里崩掉，
+      // 后面的补丁全都跑不到。
+      if (!(await hasColumn('favorites', 'game_slug'))) return false
       const r = await one('SELECT COUNT(*) AS n FROM favorites f LEFT JOIN games g ON g.slug = f.game_slug WHERE g.slug IS NULL')
       return Number(r?.n ?? 0) > 0
     },
@@ -132,6 +169,8 @@ const patches = [
     table: 'recents',
     needed: async () => {
       if (!(await hasTable('games'))) return false
+      // 同上：v2 的 recents 用 game_id 外键，没有 game_slug 这一列
+      if (!(await hasColumn('recents', 'game_slug'))) return false
       const r = await one('SELECT COUNT(*) AS n FROM recents r LEFT JOIN games g ON g.slug = r.game_slug WHERE g.slug IS NULL')
       return Number(r?.n ?? 0) > 0
     },

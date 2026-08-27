@@ -9,6 +9,7 @@
  */
 import { query, queryOne, withTransaction } from './db.js'
 import { gameRowToApi, gameApiToRow, romsOf, GENERIC_ROM_LANG } from './mappers.js'
+import { buildGameTokens, queryTerms, tokenMatchSql, normalize, tokenize } from './search.js'
 
 /** 列表页每页最多给多少条，挡住 ?pageSize=100000 这种请求 */
 const MAX_PAGE_SIZE = 100
@@ -104,19 +105,43 @@ export async function listGames(q = {}) {
   // 首页精选位。true = 只看被钦点的，false = 只看没被钦点的（后台筛选用）
   if (q.home === true) where.push('g.home_rank IS NOT NULL')
   else if (q.home === false) where.push('g.home_rank IS NULL')
-  if (q.q && String(q.q).trim()) {
-    // 搜索标题、译名、开发商和标签。几千行的 LIKE 在 1ms 量级，
-    // 真到十万级再考虑 FULLTEXT（中文需要 ngram 解析器，会绑定 MySQL 版本）
-    const like = `%${String(q.q).trim()}%`
-    where.push('(g.title LIKE ? OR g.title_zh LIKE ? OR g.developer LIKE ? OR EXISTS (SELECT 1 FROM game_tags t WHERE t.game_id = g.id AND t.tag LIKE ?))')
-    params.push(like, like, like, like)
-  }
+
 
   // 按类型筛选走关联表。用 JOIN 而不是 EXISTS：genre_id 上有索引，
   // 先在小表上定位再回主键，比全表扫 games 快得多
-  const join = q.genre ? 'JOIN game_genres gg ON gg.game_id = g.id AND gg.genre_id = ?' : ''
-  const joinParams = q.genre ? [String(q.genre)] : []
+  const genreJoin = q.genre ? 'JOIN game_genres gg ON gg.game_id = g.id AND gg.genre_id = ?' : ''
+  const genreParams = q.genre ? [String(q.genre)] : []
 
+  /**
+   * 关键词走倒排索引，不再用 LIKE '%…%'。
+   * 上万款游戏时 LIKE 是全表扫，而联想下拉每敲一个字就查一次，扛不住。
+   */
+  let searchJoin = ''
+  let searchParams = []
+  let relevanceSql = ''
+  let relevanceParams = []
+  if (q.q && String(q.q).trim()) {
+    const parsed = queryTerms(q.q, { prefixLast: q.prefixLast !== false })
+    if (parsed.empty) {
+      // 输入里一个可搜索字符都没有（比如全是标点）：直接给空，别退化成「搜全部」
+      const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(q.pageSize) || 24))
+      return { items: [], total: 0, page: 1, pageSize, totalPages: 1 }
+    }
+    const m = tokenMatchSql(parsed)
+    searchJoin = `JOIN (${m.sql}) s ON s.game_id = g.id`
+    searchParams = m.params
+    const norm = normalize(q.q).trim()
+    // 索引给的是「命中了什么」，这里再叠一层「命中得有多正」：
+    // 标题整个就是这个词 > 标题以它开头 > 只是含在某处。
+    // 不这么做的话，一个标签里带「马里奥」的冷门游戏会和《超级马里奥》并列。
+    relevanceSql =
+      '(s.score + CASE WHEN g.title = ? OR g.title_zh = ? THEN 1000 ELSE 0 END' +
+      ' + CASE WHEN g.title LIKE ? OR g.title_zh LIKE ? THEN 300 ELSE 0 END) DESC, '
+    relevanceParams = [norm, norm, `${norm}%`, `${norm}%`]
+  }
+
+  const join = `${genreJoin} ${searchJoin}`.trim()
+  const joinParams = [...genreParams, ...searchParams]
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
   const allParams = [...joinParams, ...params]
 
@@ -128,12 +153,142 @@ export async function listGames(q = {}) {
   const page = Math.min(Math.max(1, Number(q.page) || 1), totalPages)
   const offset = (page - 1) * pageSize
 
+  // 有关键词时默认按相关性排；用户显式选了排序方式就听他的
+  const explicitSort = q.sort && q.sort !== 'popular'
+  const order = relevanceSql && !explicitSort ? relevanceSql + orderBy(q.sort) : orderBy(q.sort)
+  const orderParams = relevanceSql && !explicitSort ? relevanceParams : []
+
   // LIMIT / OFFSET 直接拼进 SQL：上面已经强制转成数字并夹在合理范围内，注不进东西
   const rows = await query(
-    `SELECT g.* FROM games g ${join} ${whereSql} ORDER BY ${orderBy(q.sort)} LIMIT ${pageSize} OFFSET ${offset}`,
-    allParams,
+    `SELECT g.* FROM games g ${join} ${whereSql} ORDER BY ${order} LIMIT ${pageSize} OFFSET ${offset}`,
+    [...allParams, ...orderParams],
   )
   return { items: await attachRelations(rows), total, page, pageSize, totalPages }
+}
+
+/* ---------------- 联想 & 搜不到时的补救 ---------------- */
+
+/**
+ * 搜索框联想。刻意做得很轻：只回列表要显示的那几列，不装配类型/标签/ROM。
+ * 每敲一个字就会调一次，多查一次关联表就是多一轮往返。
+ */
+export async function suggestGames(q, { limit = 8 } = {}) {
+  const parsed = queryTerms(q)
+  if (parsed.empty) return []
+  const n = Math.min(20, Math.max(1, Number(limit) || 8))
+  const m = tokenMatchSql(parsed)
+  const norm = normalize(q).trim()
+  const rows = await query(
+    `SELECT g.id, g.slug, g.title, g.title_zh, g.platform, g.year, g.icon, g.cover, g.plays
+       FROM games g
+       JOIN (${m.sql}) s ON s.game_id = g.id
+      WHERE g.hidden = 0
+      ORDER BY (s.score
+                + CASE WHEN g.title = ? OR g.title_zh = ? THEN 1000 ELSE 0 END
+                + CASE WHEN g.title LIKE ? OR g.title_zh LIKE ? THEN 300 ELSE 0 END) DESC,
+               g.plays DESC, g.id DESC
+      LIMIT ${n}`,
+    [...m.params, norm, norm, `${norm}%`, `${norm}%`],
+  )
+  return rows.map((r) => ({
+    slug: r.slug,
+    title: r.title,
+    titleZh: r.title_zh ?? null,
+    platform: r.platform,
+    year: Number(r.year) || null,
+    icon: r.icon,
+    cover: r.cover ?? null,
+  }))
+}
+
+/** 编辑距离（带上限提前退出：超过 max 就不用算完了） */
+function editDistance(a, b, max = 2) {
+  if (Math.abs(a.length - b.length) > max) return max + 1
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i)
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i]
+    let best = i
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(
+        prev[j] + 1,
+        cur[j - 1] + 1,
+        prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+      )
+      if (cur[j] < best) best = cur[j]
+    }
+    if (best > max) return max + 1
+    prev = cur
+  }
+  return prev[b.length]
+}
+
+/**
+ * 一个词都没搜到时的补救，两步：
+ *   1. 把「所有词都要命中」放宽成「命中任意一个词」—— 多打了一个词、词序不对都能救回来
+ *   2. 还是没有，就在索引里找拼写相近的 token（编辑距离 ≤ 2）当「你是不是想找…」
+ *
+ * 候选 token 按首字母 + 长度圈定，不是全表扫：搜不到本来就是低频路径，
+ * 但也不能因为低频就允许它拖慢数据库。
+ */
+export async function searchFallback(q, { limit = 12 } = {}) {
+  const parsed = queryTerms(q, { prefixLast: false })
+  if (parsed.empty) return { suggestion: null, related: [] }
+  const n = Math.min(24, Math.max(1, Number(limit) || 12))
+
+  // 第一步：任意一个 token 命中即可，按命中个数 × 权重排。
+  // 这里用 tokenize 而不是 queryTerms，是为了把汉字拆到**单字**：
+  // 搜「街霸」时二字组「街霸」在库里根本不存在，但拆成 街 / 霸 之后
+  // 《街头霸王》两个都中，就能被捞回来 —— 缩写、简称基本都是这么救回来的。
+  const loose = [...tokenize(q)].slice(0, 24)
+  if (!loose.length) return { suggestion: null, related: [] }
+  const holes = loose.map(() => '?').join(',')
+  const looseRows = await query(
+    `SELECT g.id, g.slug, g.title, g.title_zh, g.platform, g.year, g.icon, g.cover
+       FROM games g
+       JOIN (SELECT game_id, SUM(weight) AS score, COUNT(*) AS hits
+               FROM game_search_tokens WHERE token IN (${holes})
+              GROUP BY game_id) s ON s.game_id = g.id
+      WHERE g.hidden = 0
+      ORDER BY s.hits DESC, s.score DESC, g.plays DESC, g.id DESC
+      LIMIT ${n}`,
+    loose,
+  )
+  const related = looseRows.map((r) => ({
+    slug: r.slug,
+    title: r.title,
+    titleZh: r.title_zh ?? null,
+    platform: r.platform,
+    year: Number(r.year) || null,
+    icon: r.icon,
+    cover: r.cover ?? null,
+  }))
+
+  // 第二步：拼写纠正。只对拉丁词做 —— 汉字打错一个字，编辑距离意义不大，
+  // 上面那步「命中任意一个词」对中文更管用
+  let suggestion = null
+  const word = parsed.required
+    .map((t) => t.token)
+    .filter((t) => /^[a-z]{4,}$/.test(t))
+    .sort((a, b) => b.length - a.length)[0]
+  if (word) {
+    const rows = await query(
+      `SELECT DISTINCT token FROM game_search_tokens
+        WHERE token LIKE ? AND CHAR_LENGTH(token) BETWEEN ? AND ?
+        LIMIT 400`,
+      [`${word[0]}%`, word.length - 2, word.length + 2],
+    )
+    let best = null
+    let bestD = 3
+    for (const r of rows) {
+      const d = editDistance(word, r.token, 2)
+      if (d < bestD && d > 0) {
+        bestD = d
+        best = r.token
+      }
+    }
+    if (best) suggestion = best
+  }
+  return { suggestion, related }
 }
 
 /* ---------------- 平台级 BIOS ---------------- */
@@ -309,6 +464,37 @@ async function writeRelations(run, gameId, game, only) {
 }
 
 /**
+ * 重建一款游戏的搜索索引行。
+ *
+ * 每次写游戏都整条删掉重插，而不是算差量 —— 一款游戏也就几十个 token，
+ * 删插比对比便宜得多，而且不会因为漏算差量留下过期 token
+ * （改了译名之后旧译名还能搜到，是最难发现的那种 bug）。
+ */
+async function reindexGame(run, gameId, game) {
+  await run('DELETE FROM game_search_tokens WHERE game_id = ?', [gameId])
+  const tokens = buildGameTokens({
+    title: game.title,
+    title_zh: game.titleZh ?? game.title_zh,
+    developer: game.developer,
+    tags: game.tags,
+    aliases: game.aliases,
+  })
+  if (!tokens.size) return
+  const rows = [...tokens]
+  // 分批插：一款游戏的 token 通常几十个，但标题特别长时可能上百，
+  // 一条 INSERT 塞太多占位符会顶到 max_allowed_packet
+  const CHUNK = 200
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    const part = rows.slice(i, i + CHUNK)
+    await run(
+      `INSERT INTO game_search_tokens (token, game_id, weight) VALUES ${part.map(() => '(?, ?, ?)').join(', ')}
+       ON DUPLICATE KEY UPDATE weight = VALUES(weight)`,
+      part.flatMap(([token, weight]) => [token, gameId, weight]),
+    )
+  }
+}
+
+/**
  * 新增 / 整体覆盖一款游戏（PUT）。主表和三张关联表在同一个事务里，
  * 中途失败不会留下「主表写了、类型没写」这种半成品。
  */
@@ -325,6 +511,7 @@ export async function upsertGame(slug, game) {
     // 拿不到 insertId 时（走了 UPDATE 分支）再查一次
     const [{ id }] = await run('SELECT id FROM games WHERE slug = ?', [slug])
     await writeRelations(run, id, game)
+    await reindexGame(run, id, { ...game, slug })
     return id
   })
 }
@@ -342,6 +529,15 @@ export async function patchGame(slug, patchRow, relations, game) {
     if (relations.genres || relations.tags || relations.roms) {
       await writeRelations(run, id, game, relations)
     }
+    // PATCH 可能只改了标题、也可能只改了标签，两者都会影响索引。
+    // 与其判断「这次改动是否涉及可搜索字段」，不如从库里读回完整一行重建 ——
+    // 判断漏一个字段就是搜不到，代价远大于多跑一次几十行的插入。
+    const [row] = await run(
+      'SELECT g.title, g.title_zh, g.developer FROM games g WHERE g.id = ?',
+      [id],
+    )
+    const tagRows = await run('SELECT tag FROM game_tags WHERE game_id = ?', [id])
+    await reindexGame(run, id, { ...row, tags: tagRows.map((t) => t.tag) })
     return id
   })
 }

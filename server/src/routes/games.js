@@ -17,6 +17,8 @@ import {
   platformCounts,
   genreCounts,
   developerCounts,
+  suggestGames,
+  searchFallback,
 } from '../games-repo.js'
 
 export const gamesRouter = Router()
@@ -59,6 +61,44 @@ gamesRouter.get('/', async (req, res, next) => {
     // 只有公开视角能缓存：管理员视角带着身份，缓存下来等于把下架游戏发给所有人
     if (!wantAll) publicApi(res)
     res.json(result)
+  } catch (e) {
+    next(e)
+  }
+})
+
+/**
+ * 搜索框联想。
+ *
+ *   GET /api/games/suggest?q=塞尔&limit=8
+ *
+ * 刻意做得比 /api/games 轻：只回列表要显示的那几列，不带类型/标签/ROM，也不分页。
+ * 用户每敲一个字就会调一次，多查一次关联表就是多一轮往返。
+ * 注意要注册在 /:slug 之前，否则会被当成 slug 吃掉。
+ */
+gamesRouter.get('/suggest', async (req, res, next) => {
+  try {
+    const items = await suggestGames(req.query.q, { limit: req.query.limit })
+    publicApi(res)
+    res.json({ items })
+  } catch (e) {
+    next(e)
+  }
+})
+
+/**
+ * 一个都没搜到时的补救。
+ *
+ *   GET /api/games/search-fallback?q=zeldaa
+ *   → { suggestion: 'zelda', related: [...] }
+ *
+ * 单独一条接口而不是塞进 /api/games 的返回里：只有真搜不到时才需要，
+ * 塞进去等于给每一次正常搜索都加两条查询。
+ */
+gamesRouter.get('/search-fallback', async (req, res, next) => {
+  try {
+    const out = await searchFallback(req.query.q, { limit: req.query.limit })
+    publicApi(res)
+    res.json(out)
   } catch (e) {
     next(e)
   }
