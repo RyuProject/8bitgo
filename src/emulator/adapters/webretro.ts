@@ -100,10 +100,17 @@ function fileNameOf(url: string): string {
 }
 
 function buildUrl(core: string, romUrl: string, romName: string): string {
-  const q = new URLSearchParams({ core, rom: romUrl, romname: romName })
-  // noautorefocus 不带值，URLSearchParams 会拼成 "noautorefocus="，
-  // 而 base.js 用的是 hasOwnProperty 判断，带不带值都认，这里保持简单。
-  return `${WEBRETRO_PATH}index.html?${q.toString()}&noautorefocus`
+  // ⚠️ 这里不能用 URLSearchParams。
+  //
+  // URLSearchParams 按 application/x-www-form-urlencoded 编码，空格出来是 "+"；
+  // 而 webretro 解析查询串用的是 decodeURIComponent（base.js:149）——
+  // decodeURIComponent 不把 "+" 还原成空格。结果就是「超级马力欧 赛车.nds」
+  // 到了里面变成「超级马力欧+赛车.nds」，扩展名没事，但存档键（romName）跟着歪，
+  // 玩家看到的是一堆带加号的名字。用 encodeURIComponent 出来是 %20，能正确还原。
+  const q = (k: string, v: string) => `${k}=${encodeURIComponent(v)}`
+  const query = [q('core', core), q('rom', romUrl), q('romname', romName)].join('&')
+  // noautorefocus 是个开关参数，base.js 用 hasOwnProperty 判断，不需要给值
+  return `${WEBRETRO_PATH}index.html?${query}&noautorefocus`
 }
 
 function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {

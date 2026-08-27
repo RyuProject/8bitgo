@@ -700,6 +700,9 @@ const es: Translation = {
     flashInitFailed: 'No se pudo inicializar el contenedor del reproductor de Flash',
     ruffleLoadFailed:
       'No se pudo cargar Ruffle ({path}). Ejecuta npm run ruffle para copiar los recursos o define VITE_RUFFLE_PATH en .env.',
+    flashNoSave: 'Este juego todavía no ha escrito ninguna partida: en Flash las guarda el propio juego, así que llega a un punto donde guarde antes de exportar.',
+    flashSaveBad: 'Ese no es un archivo de partida Flash exportado desde este sitio',
+    flashSaveImported: 'Partida importada: el juego se recargó y la leerá',
     ruffleNotInit: 'Ruffle no se inicializó correctamente',
     ruffleNoApi: 'No se encontró la API del reproductor de Ruffle',
     flashLoadFailed: 'No se pudo cargar el contenido Flash: {msg}',

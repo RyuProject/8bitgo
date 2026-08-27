@@ -56,6 +56,80 @@ interface RuffleGlobal {
   newest: () => RuffleSource | null
 }
 
+/* ---------------- Flash 存档（SharedObject）---------------- */
+
+/**
+ * Flash 游戏的「存档」不是模拟器快照，而是游戏自己通过 SharedObject 写下的进度
+ * （当年俗称 Flash cookie）。Ruffle 把它落在 localStorage 里，一条一个键。
+ *
+ * ⚠️ 我们的 iframe 是 srcdoc，srcdoc 继承父页面的源，所以这些存档其实就写在
+ *    8bitgo 自己的 localStorage 里 —— 也就是说存档**本来就在生效**，
+ *    玩家关掉页面下次再来进度还在。这里补的是导出 / 导入的口子。
+ *
+ * 判定一条 localStorage 是不是 Flash 存档，用的是 SOL 文件头（和 Ruffle 自己
+ * 的判定完全一致，见 ruffle.js 里的那个 base64 校验函数）：
+ *   00 BF <4 字节长度> "TCSO" 00 04 00 00 00 00
+ * 按内容认而不是按键名认，所以不会误伤本站自己的 localStorage 键。
+ */
+function isSolBase64(value: string): boolean {
+  try {
+    const raw = atob(value)
+    return (
+      raw.charCodeAt(0) === 0 &&
+      raw.charCodeAt(1) === 0xbf &&
+      raw.slice(6, 10) === 'TCSO' &&
+      [0, 4, 0, 0, 0, 0].every((b, i) => raw.charCodeAt(10 + i) === b)
+    )
+  } catch {
+    return false
+  }
+}
+
+/** 导出文件的格式标记，导入时要认 */
+const FLASH_SAVE_FORMAT = '8bitgo-flash-save'
+
+interface FlashSaveFile {
+  format: string
+  version: number
+  game?: string
+  savedAt?: string
+  /** localStorage 键 -> base64 的 SOL 内容 */
+  entries: Record<string, string>
+}
+
+/**
+ * 找出属于这个 SWF 的存档键。
+ *
+ * Ruffle 的键长这样：`<域名>/<swf 路径的各段>/<存档名>`。它自己在删除/替换存档时
+ * 也是这么核对归属的：键要以域名开头，且中间那段路径要能在 swf 的 pathname 里找到。
+ * 这里照抄同一套规则，免得把别的 Flash 游戏的存档一起打包走。
+ *
+ * 本地文件（走 data 加载）没有 swf URL，Ruffle 那边会退回页面域名，
+ * 我们也只能按域名筛 —— 会把同域下别的 Flash 存档带上，所以只在拿不到 URL 时用。
+ */
+function flashSaveKeys(swfUrl: URL | null): string[] {
+  const host = swfUrl?.hostname || location.hostname
+  const keys: string[] = []
+  let store: Storage
+  try {
+    store = localStorage
+  } catch {
+    return keys // 隐私模式下读不到就算了
+  }
+  for (let i = 0; i < store.length; i++) {
+    const key = store.key(i)
+    if (!key || !key.startsWith(host)) continue
+    const value = store.getItem(key)
+    if (!value || !isSolBase64(value)) continue
+    if (swfUrl) {
+      const middle = key.split('/').slice(1, -1).join('/')
+      if (!swfUrl.pathname.includes(middle)) continue
+    }
+    keys.push(key)
+  }
+  return keys
+}
+
 function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
   /** 加载成功后才知道能不能暂停 / 调音量，先空着，等 load() 回来再报 */
@@ -64,6 +138,16 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   let player: RufflePlayerElement | null = null
   let api: RufflePlayerApi | null = null
   let volume = 1
+
+  /** 远程 ROM 才有 URL；本地文件走 data 加载，拿不到 */
+  const swfUrl: URL | null = (() => {
+    if (typeof options.game !== 'string') return null
+    try {
+      return new URL(options.game, location.href)
+    } catch {
+      return null
+    }
+  })()
 
   /** 元素和门面上都可能有这些成员，挨个找第一个有的 */
   const canPause = (): boolean =>
@@ -144,6 +228,8 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
 
         // 能力要等实例真的建起来才作数：SWF 加载之前 volume 的 setter 是空转的
         if (canPause()) caps.add('pause')
+        // 存档能力恒定有：导出时再看有没有内容
+        caps.add('saveState')
         if (hasVolume()) {
           caps.add('volume')
           applyVolume()
@@ -184,6 +270,53 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     setVolume(next: number) {
       volume = Math.max(0, Math.min(1, next))
       applyVolume()
+    },
+    saveExt: 'flashsave.json',
+    async saveState() {
+      const keys = flashSaveKeys(swfUrl)
+      if (!keys.length) throw new Error(rt.flashNoSave)
+      const entries: Record<string, string> = {}
+      for (const key of keys) {
+        const value = localStorage.getItem(key)
+        if (value) entries[key] = value
+      }
+      // 带上键名一起导出：SOL 文件本身不含「它属于哪个存档槽」这个信息，
+      // 只导出裸 .sol 的话，导入时没有已存在的存档就无从下手
+      const file: FlashSaveFile = {
+        format: FLASH_SAVE_FORMAT,
+        version: 1,
+        game: options.gameName,
+        savedAt: new Date().toISOString(),
+        entries,
+      }
+      return new Blob([JSON.stringify(file, null, 2)], { type: 'application/json' })
+    },
+    async loadState(data: ArrayBuffer) {
+      let file: FlashSaveFile
+      try {
+        file = JSON.parse(new TextDecoder().decode(data)) as FlashSaveFile
+      } catch {
+        throw new Error(rt.flashSaveBad)
+      }
+      if (file?.format !== FLASH_SAVE_FORMAT || !file.entries) throw new Error(rt.flashSaveBad)
+      let written = 0
+      for (const [key, value] of Object.entries(file.entries)) {
+        // 再校验一遍：别把任意内容塞进 localStorage
+        if (typeof value !== 'string' || !isSolBase64(value)) continue
+        localStorage.setItem(key, value)
+        written++
+      }
+      if (!written) throw new Error(rt.flashSaveBad)
+      // SWF 是在启动时读 SharedObject 的，写完必须重载一次才生效 ——
+      // Ruffle 自带的存档管理器替换存档时也是这么做的（destroy + reload）
+      for (const target of [api, player] as (RufflePlayerApi | RufflePlayerElement | null)[]) {
+        const reload = (target as { reload?: () => Promise<void> } | null)?.reload
+        if (typeof reload === 'function') {
+          await reload.call(target)
+          break
+        }
+      }
+      return rt.flashSaveImported
     },
     destroy() {
       destroyed = true

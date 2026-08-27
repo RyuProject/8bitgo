@@ -701,6 +701,9 @@ const it: Translation = {
     flashInitFailed: 'Impossibile inizializzare il contenitore del player Flash',
     ruffleLoadFailed:
       'Impossibile caricare Ruffle ({path}). Esegui npm run ruffle per copiare le risorse, oppure imposta VITE_RUFFLE_PATH in .env.',
+    flashNoSave: 'Questo gioco non ha ancora scritto un salvataggio: in Flash salva il gioco stesso, quindi arriva a un punto in cui salva prima di esportare.',
+    flashSaveBad: 'Questo non è un file di salvataggio Flash esportato da questo sito',
+    flashSaveImported: 'Salvataggio importato: il gioco è stato ricaricato e lo leggerà',
     ruffleNotInit: 'Ruffle non si è inizializzato correttamente',
     ruffleNoApi: 'API del player Ruffle non trovata',
     flashLoadFailed: 'Caricamento del contenuto Flash non riuscito: {msg}',

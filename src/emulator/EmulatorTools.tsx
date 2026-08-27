@@ -102,7 +102,7 @@ export function EmulatorTools({ handle, caps, gameName, className }: Props) {
         say(tt.saveFail)
         return
       }
-      downloadBlob(blob, mediaFileName(gameName, 'state'))
+      downloadBlob(blob, mediaFileName(gameName, handle.saveExt ?? 'state'))
       say(tt.saveOk)
     } catch (e) {
       say(e instanceof Error && e.message ? e.message : tt.saveFail)
@@ -112,8 +112,8 @@ export function EmulatorTools({ handle, caps, gameName, className }: Props) {
   const doLoad = async (file: File | null | undefined) => {
     if (!file) return
     try {
-      await handle.loadState?.(await file.arrayBuffer())
-      say(tt.loadOk)
+      const note = await handle.loadState?.(await file.arrayBuffer())
+      say(typeof note === 'string' && note ? note : tt.loadOk)
     } catch (e) {
       say(fmt(tt.loadFail, { msg: e instanceof Error ? e.message : String(e) }))
     }

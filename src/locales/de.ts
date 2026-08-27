@@ -701,6 +701,9 @@ const de: Translation = {
     flashInitFailed: 'Der Container für den Flash-Player konnte nicht initialisiert werden',
     ruffleLoadFailed:
       'Ruffle konnte nicht geladen werden ({path}). Führe npm run ruffle aus, um die Dateien zu kopieren, oder setze VITE_RUFFLE_PATH in .env.',
+    flashNoSave: 'Dieses Spiel hat noch keinen Spielstand geschrieben – bei Flash speichert das Spiel selbst, also erst bis zu einem Speicherpunkt spielen und dann exportieren.',
+    flashSaveBad: 'Das ist keine von dieser Seite exportierte Flash-Speicherdatei',
+    flashSaveImported: 'Spielstand importiert – das Spiel wurde neu geladen und liest ihn ein',
     ruffleNotInit: 'Ruffle wurde nicht korrekt initialisiert',
     ruffleNoApi: 'Ruffle-Player-API nicht gefunden',
     flashLoadFailed: 'Flash-Inhalt konnte nicht geladen werden: {msg}',

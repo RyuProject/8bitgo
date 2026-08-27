@@ -104,8 +104,11 @@ export interface RuntimeHandle {
    * 'remote'：存档在服务器上（云联机），saveState() 只表示成功与否。
    */
   saveMode?: 'local' | 'remote'
+  /** 存档文件的扩展名（默认 state）。Flash 导出的是一个 json 包，就写成 flashsave.json */
+  saveExt?: string
   saveState?: () => Promise<Blob | null>
-  loadState?: (data: ArrayBuffer) => Promise<void>
+  /** 返回一句话时，工具栏用它代替默认的「读档完成」（比如 Flash 要说明游戏被重载了） */
+  loadState?: (data: ArrayBuffer) => Promise<string | void>
   /** 音量 0~1 */
   /** 引擎当前音量（0~1），工具栏用它初始化滑块，避免显示 100% 实际却是 60% */
   volume?: number

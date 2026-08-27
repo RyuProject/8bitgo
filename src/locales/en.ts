@@ -700,6 +700,9 @@ const en: Translation = {
     flashInitFailed: 'Could not initialize the Flash player container',
     ruffleLoadFailed:
       'Could not load Ruffle ({path}). Run npm run ruffle to copy the assets, or set VITE_RUFFLE_PATH in .env.',
+    flashNoSave: 'This game has not written a save yet — Flash saves are written by the game itself, so reach a point where it saves before exporting.',
+    flashSaveBad: 'That is not a Flash save file exported from this site',
+    flashSaveImported: 'Save imported — the game reloaded and will pick it up',
     ruffleNotInit: 'Ruffle did not initialize correctly',
     ruffleNoApi: 'Ruffle player API not found',
     flashLoadFailed: 'Flash content failed to load: {msg}',
