@@ -79,6 +79,21 @@ interface Props {
   onDetectMismatch?: 'switch' | 'warn'
   /** 平台切换回调（onDetectMismatch = 'switch' 时触发） */
   onPlatformChange?: (platform: PlatformId) => void
+  /**
+   * 自动识别没能判定平台、当前平台又不接受这个文件时触发。
+   *
+   * 「玩本地 ROM」页去掉了常驻的平台选择器，靠这个回调在识别失败时才让用户手动指定 ——
+   * 否则一个内含单个 .bin 的 zip（detect.ts 只会给出 confidence: 'low' 且不给平台）
+   * 会拿默认平台去跑，必然失败而且用户没有任何出路。
+   *
+   * 返回 true 表示页面已经接管（不再显示默认的「格式不支持」错误）。
+   */
+  onDetectFailed?: (file: File) => boolean | void
+  /**
+   * 外部要求重新运行某个本地文件。每次传入**新对象**都会重新开始一次
+   * （用对象包一层而不是直接传 File，是为了同一个文件也能重试第二次）。
+   */
+  retryRequest?: { file: File } | null
 }
 
 /**
@@ -106,6 +121,8 @@ export function EmulatorPlayer({
   romChecking,
   onDetectMismatch = 'warn',
   onPlatformChange,
+  onDetectFailed,
+  retryRequest,
 }: Props) {
   const [status, setStatus] = useState<Status>('idle')
   const [file, setFile] = useState<File | null>(null)
@@ -448,6 +465,9 @@ export function EmulatorPlayer({
           )
         }
       } else if (!isRomFileAccepted(picked, platform.romExtensions)) {
+        // 没识别出平台，当前平台也不接受这个文件。先问页面要不要接管
+        // （玩本地 ROM 页会弹出手动选择），页面不接管才报默认错误。
+        if (onDetectFailed?.(picked)) return
         setError(
           fmt(t.player.badFormat, {
             platform: platformLabel(t, platform.id, platform.name),
@@ -470,8 +490,19 @@ export function EmulatorPlayer({
       setFile(picked)
       begin(picked, targetPlatform, runtime)
     },
-    [platform, romUrl, pageRuntime, onDetectMismatch, onPlatformChange, t],
+    [platform, romUrl, pageRuntime, onDetectMismatch, onPlatformChange, onDetectFailed, t],
   )
+
+  /**
+   * 外部重试：用户在识别失败后手动选了平台，页面把同一个文件递回来重跑一次。
+   * 用 ref 记住处理过的请求对象，避免 StrictMode 下的重复挂载跑两遍。
+   */
+  const handledRetryRef = useRef<unknown>(null)
+  useEffect(() => {
+    if (!retryRequest || handledRetryRef.current === retryRequest) return
+    handledRetryRef.current = retryRequest
+    void start(retryRequest.file)
+  }, [retryRequest, start])
 
   const reset = () => {
     // 主动离开房间后，URL 里的 ?p2p= / ?room= 就不该再把人拉回同一个房间
