@@ -34,6 +34,8 @@ export function GameDetailPage() {
   const cloudInvite = searchParams.get('room') ?? undefined
   // 从「直播」进来的：默认只看不玩
   const watchOnly = searchParams.get('watch') === '1'
+  // ?live= 是「一人玩多人看」的直播间（和联机房的观众席不是一回事）
+  const liveInvite = searchParams.get('live') ?? undefined
   const t = useT()
   // 详情页要的就是这一款游戏和它的相关推荐，由后端一次给全 ——
   // v1 是把整个游戏库拉进内存再 find(slug)，几千款时光是首屏就得下载整个目录
@@ -148,6 +150,7 @@ export function GameDetailPage() {
               invite={invite}
               cloudInvite={cloudInvite}
               watch={watchOnly}
+              liveInvite={liveInvite}
               icon={game.icon}
               romUrl={rom.status === 'found' ? rom.url : undefined}
               romChecking={rom.status === 'checking'}

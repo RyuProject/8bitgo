@@ -22,6 +22,7 @@ import { j2meRuntime } from './adapters/j2me'
 import { jsdosRuntime } from './adapters/jsdos'
 import { webretroRuntime } from './adapters/webretro'
 import { cloudGameRuntime } from './adapters/cloudgame'
+import { liveViewRuntime } from './adapters/liveview'
 
 export const runtimes: Record<RuntimeId, Runtime> = {
   emulatorjs: emulatorJsRuntime,
@@ -31,10 +32,12 @@ export const runtimes: Record<RuntimeId, Runtime> = {
   jsdos: jsdosRuntime,
   webretro: webretroRuntime,
   cloudgame: cloudGameRuntime,
+  liveview: liveViewRuntime,
 }
 
-/** 参与「本地运行」解析的引擎（排除联机） */
-const localRuntimes = (): Runtime[] => Object.values(runtimes).filter((r) => r.id !== 'cloudgame')
+/** 参与「本地运行」解析的引擎（排除联机与看直播：这两个都不是按文件格式选出来的） */
+const localRuntimes = (): Runtime[] =>
+  Object.values(runtimes).filter((r) => r.id !== 'cloudgame' && r.id !== 'liveview')
 
 export function getRuntime(id: RuntimeId | null | undefined): Runtime | undefined {
   return id ? runtimes[id] : undefined

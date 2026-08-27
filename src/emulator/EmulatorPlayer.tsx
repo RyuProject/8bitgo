@@ -6,6 +6,8 @@ import { detectRom, describeDetection } from './detect'
 import { resolveRuntime, extOf } from './registry'
 import type { Capability, Runtime, RuntimeHandle } from './types'
 import { EmulatorTools } from './EmulatorTools'
+import { LiveControls } from './LiveControls'
+import { liveViewRuntime, type LiveSession, type LiveViewState } from './adapters/liveview'
 import { emulatorJsRuntime, p2pPlayable, type NetplaySession } from './adapters/emulatorjs'
 import { cloudGameRuntime, cloudPlayable, type CloudSession, type CloudState } from './adapters/cloudgame'
 import { cx } from '@/lib/format'
@@ -45,6 +47,8 @@ interface ActiveSession {
   netplay?: NetplaySession
   /** 云端联机会话（游戏在服务器上跑） */
   cloud?: CloudSession
+  /** 看直播：本机不跑游戏，画面来自主播的浏览器 */
+  live?: LiveSession
 }
 
 interface Props {
@@ -63,6 +67,11 @@ interface Props {
   cloudInvite?: string
   /** 从「直播」入口进来（详情页 ?watch=1）：默认以观众身份加入，只看不玩 */
   watch?: boolean
+  /**
+   * 观看链接带进来的直播间 id（详情页 ?live=）。
+   * 和 ?watch= 不是一回事：那个是联机房里的观众席，这个是「一人玩多人看」的直播。
+   */
+  liveInvite?: string
   /** 空闲态背景（例如封面） */
   backdrop?: ReactNode
   /** 空闲态显示的图标 */
@@ -115,6 +124,7 @@ export function EmulatorPlayer({
   invite,
   cloudInvite,
   watch = false,
+  liveInvite,
   backdrop,
   icon,
   className,
@@ -220,6 +230,9 @@ export function EmulatorPlayer({
   gameSlugRef.current = gameSlug
   /** 云端联机是否真的跑起来过（用于区分「没连上」和「玩到一半断了」） */
   const cloudPlayedRef = useRef(false)
+  /** 看直播：观众人数与直播标题 */
+  const [liveViewers, setLiveViewers] = useState(0)
+  const [liveState, setLiveState] = useState<LiveViewState | null>(null)
 
   // 云端 ROM 也按其文件扩展名选引擎；还没拿到地址时退回平台默认
   const pageRuntime = resolveRuntime({ platform: platform.id, ext: extOf(romUrl) })
@@ -261,6 +274,7 @@ export function EmulatorPlayer({
       gameSlug: gameSlugRef.current,
       netplay: session.netplay,
       cloud: session.cloud,
+      live: session.live,
       // 有些引擎要等核心起来才知道自己支持什么，这里允许它后补
       onCaps: (next) => {
         if (!isCurrent()) return
@@ -454,6 +468,39 @@ export function EmulatorPlayer({
       },
     })
   }
+
+  /**
+   * 看直播：本机什么都不跑，只收主播推过来的画面和声音。
+   * 走的是独立的 liveview 运行时，和联机那两条路互不相干。
+   */
+  const startWatchLive = useCallback(
+    (roomId: string) => {
+      setError(null)
+      setNotice(null)
+      setLiveViewers(0)
+      setLiveState('connecting')
+      sessionCounter.current += 1
+      setSession({
+        id: sessionCounter.current,
+        game: '',
+        platform: platform.id,
+        runtime: liveViewRuntime,
+        live: {
+          roomId,
+          onViewers: setLiveViewers,
+          onState: setLiveState,
+          onInfo: (info) => setNotice(info.hostName ? `${info.title} · ${info.hostName}` : info.title),
+        },
+      })
+      setStatus('loading')
+    },
+    [platform.id],
+  )
+
+  // 观看链接进来就直接开看，不用再点一次
+  useEffect(() => {
+    if (liveInvite && !session && status === 'idle') startWatchLive(liveInvite)
+  }, [liveInvite, session, status, startWatchLive])
 
   const startOnline = () => {
     if (cloudInviteId && cloudOk) return startCloud(cloudInviteId)
@@ -862,6 +909,23 @@ export function EmulatorPlayer({
             gameSlug={gameSlug}
             runtimeId={session?.runtime.id ?? activeRuntime?.id}
           />
+        )}
+
+        {/* 观众席：直播间的人数和状态 */}
+        {session?.live && (
+          <span className="inline-flex items-center gap-1 rounded-md bg-live/15 px-2 py-1 font-semibold text-red-300">
+            📡 {fmt(t.player.tools.liveOn, { n: String(liveViewers) })}
+            {liveState && liveState !== 'watching' && <span className="font-normal text-muted">· {liveState}</span>}
+          </span>
+        )}
+
+        {/*
+          开播入口。只给「本来就没法联机」的游戏 —— GBA 是最典型的：
+          联机靠当年的连接线，浏览器里的核心没有那套东西，所以「一起玩」做不到，
+          能做的是「一起看」。支持多人的游戏应该去开联机房，不在这里出现。
+        */}
+        {status === 'running' && !session?.live && !inRoom && maxPlayers <= 1 && (
+          <LiveControls handle={handle} gameName={gameName} gameSlug={gameSlug} platform={session?.platform ?? platform.id} />
         )}
 
         <div className="ml-auto flex items-center gap-1.5">

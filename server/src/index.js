@@ -17,6 +17,7 @@ import { roomsRouter } from './routes/rooms.js'
 import { pageRouter } from './routes/page.js'
 import { savesRouter } from './routes/saves.js'
 import { attachNetplay } from './netplay.js'
+import { attachLive, liveRoom, liveRooms } from './live.js'
 import { iceRouter } from './routes/ice.js'
 
 const app = express()
@@ -64,6 +65,16 @@ app.use('/api/page', pageRouter)
 app.use('/api/saves', savesRouter)
 // P2P 联机的 ICE / TURN 配置（短期凭证，见 routes/ice.js）
 app.use('/api/netplay/ice', iceRouter)
+
+// 正在直播的房间列表。?game=<slug> 只看某个游戏的
+app.get('/api/live/rooms', (req, res) => {
+  res.json(liveRooms({ gameSlug: typeof req.query.game === 'string' ? req.query.game : undefined }))
+})
+app.get('/api/live/rooms/:roomId', (req, res) => {
+  const room = liveRoom(req.params.roomId)
+  if (!room) return res.status(404).json({ error: 'room not found' })
+  res.json(room)
+})
 
 /* ---------------- J2ME 临时上传 ---------------- */
 // 请求体就是 jar 原始字节，用 express.raw 收，省掉 multipart 依赖。
@@ -139,7 +150,10 @@ const PORT = Number(process.env.PORT || 8788)
 
 // P2P 联机信令：画面不经过服务器，这里只转发 WebRTC 握手（见 src/netplay.js）
 const httpServer = createServer(app)
-attachNetplay(httpServer, app, origins)
+const io = attachNetplay(httpServer, app, origins)
+// 直播（一人玩多人看）。和 netplay 共用同一个 socket.io 服务，但走各自的命名空间。
+// 画面同样不经过服务器，这里只转发 WebRTC 握手（见 src/live.js）
+attachLive(io)
 startSweeper()
 
 /**

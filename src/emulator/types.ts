@@ -21,8 +21,9 @@
 import type { PlatformId } from '@/types'
 import type { CloudSession } from './adapters/cloudgame'
 import type { NetplaySession } from './adapters/emulatorjs'
+import type { LiveSession } from './adapters/liveview'
 
-export type RuntimeId = 'emulatorjs' | 'ruffle' | 'jsnes' | 'j2me' | 'jsdos' | 'webretro' | 'cloudgame'
+export type RuntimeId = 'emulatorjs' | 'ruffle' | 'jsnes' | 'j2me' | 'jsdos' | 'webretro' | 'cloudgame' | 'liveview'
 
 export interface MountOptions {
   /** 平台 id（运行时据此选择核心等参数） */
@@ -46,6 +47,11 @@ export interface MountOptions {
   cloud?: CloudSession
   /** DOS 联机（jsdos 运行时） */
   ipx?: IpxSession
+  /**
+   * 观看直播（liveview 运行时）：本机不跑游戏，只收主播推过来的画面和声音。
+   * 此时 game 字段被忽略。
+   */
+  live?: LiveSession
   onReady?: () => void
   onStart?: () => void
   onError?: (message: string) => void
