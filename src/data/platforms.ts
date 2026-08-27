@@ -69,6 +69,7 @@ export const platforms: Platform[] = [
     romExtensions: ['.nes', '.unf', '.fds', '.zip'],
     color: '#e53935',
     icon: '🍄',
+    image: '/ui/NES.svg',
     description: '8 位机的黄金标准。超级马力欧、魂斗罗、坦克大战——一切从这里开始。',
   },
   {

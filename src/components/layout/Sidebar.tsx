@@ -8,11 +8,14 @@ import { useShell } from './ShellContext'
 import { buttonClasses } from '@/components/ui/Button'
 import { LanguageSwitcher } from './LanguageSwitcher'
 import { Logo } from './Logo'
-import { communityLinks, libraryNavFor, mainNavFor, type NavLinkItem } from './nav'
+import { bottomNavFor, communityLinks, exploreNavFor, mainNavFor, type NavLinkItem } from './nav'
 import { useT, fmt } from '@/services/i18n'
 import { SocialIcon } from './SocialIcon'
 import { FEATURES } from '@/config/features'
 import { useAllRooms } from '@/services/allRooms'
+import { useCurrentUser as useUser } from '@/services/auth'
+import { getGamesBySlugs } from '@/services/games'
+import { GameCover } from '@/components/game/GameCover'
 import { RoomCard } from '@/components/game/RoomCard'
 
 export const SIDEBAR_WIDTH = 240
@@ -75,16 +78,26 @@ export function Sidebar() {
           <RandomGameButton collapsed={collapsed} />
           <CommunityBox collapsed={collapsed} />
 
-          <NavGroup title={t.sidebar.groupNav} collapsed={collapsed}>
+          {/* 最上面两条不带分组标题 —— 只有两项，加个「导航」的小标题纯属噪声 */}
+          <NavGroup collapsed={collapsed}>
             {mainNavFor(t).map((item) => (
               <NavItem key={item.to} item={item} collapsed={collapsed} trailing={item.to === '/rooms' ? <RoomCount /> : undefined} />
             ))}
           </NavGroup>
 
+          {/* 有人开着房间时才出现，平时完全不占位置 */}
           <RoomsBox collapsed={collapsed} />
 
+          <LaterBox collapsed={collapsed} />
+
           <NavGroup title={t.sidebar.groupLibrary} collapsed={collapsed}>
-            {libraryNavFor(t).map((item) => (
+            {exploreNavFor(t).map((item) => (
+              <NavItem key={item.to} item={item} collapsed={collapsed} />
+            ))}
+          </NavGroup>
+
+          <NavGroup collapsed={collapsed}>
+            {bottomNavFor(t).map((item) => (
               <NavItem key={item.to} item={item} collapsed={collapsed} />
             ))}
           </NavGroup>
@@ -175,6 +188,50 @@ function RoomsBox({ collapsed }: { collapsed: boolean }) {
           {t.rooms.sidebarMore} →
         </Link>
       )}
+    </div>
+  )
+}
+
+/**
+ * 「稍后玩」：玩家自己标记的游戏，最多显示 3 款，点标题右边的箭头看全部。
+ *
+ * 数据就是原来的「收藏」（favorites 表），只是全站文案改叫「稍后玩」——
+ * 玩家收藏一款老游戏，本来想的也就是「等会儿来玩」。
+ *
+ * 没登录、或者一款都没加时整块不渲染，不占位置。
+ */
+function LaterBox({ collapsed }: { collapsed: boolean }) {
+  const t = useT()
+  const user = useUser()
+  const { setMobileOpen } = useShell()
+  const games = getGamesBySlugs(user?.favorites ?? []).slice(0, 3)
+  if (!games.length) return null
+  return (
+    <div className={cx('mb-3', collapsed && 'lg:hidden')}>
+      <Link
+        to="/me"
+        onClick={() => setMobileOpen(false)}
+        className="text-pixel mb-1.5 flex items-center gap-1 px-3 text-[10px] uppercase tracking-wider text-dim transition hover:text-fg"
+      >
+        {t.sidebar.laterTitle}
+        <span aria-hidden>›</span>
+      </Link>
+      <ul className="space-y-0.5">
+        {games.map((g) => (
+          <li key={g.slug}>
+            <Link
+              to={`/games/${g.slug}`}
+              onClick={() => setMobileOpen(false)}
+              className="flex h-9 items-center gap-2.5 rounded-lg px-3 text-sm text-muted transition hover:bg-black/5 hover:text-fg"
+            >
+              <span className="h-6 w-6 shrink-0 overflow-hidden rounded" aria-hidden>
+                <GameCover game={g} ratio="square" showTitle={false} iconSize="sm" />
+              </span>
+              <span className="min-w-0 flex-1 truncate">{g.titleZh ?? g.title}</span>
+            </Link>
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }
@@ -272,17 +329,20 @@ function CommunityBox({ collapsed }: { collapsed: boolean }) {
   )
 }
 
-function NavGroup({ title, collapsed, children }: { title: string; collapsed: boolean; children: ReactNode }) {
+/** title 可以不传：只有一两项的分组加标题反而更乱 */
+function NavGroup({ title, collapsed, children }: { title?: string; collapsed: boolean; children: ReactNode }) {
   return (
     <div className="mb-3">
-      <p
-        className={cx(
-          'text-pixel mb-1.5 px-3 text-[10px] uppercase tracking-wider text-dim',
-          collapsed && 'lg:sr-only',
-        )}
-      >
-        {title}
-      </p>
+      {title && (
+        <p
+          className={cx(
+            'text-pixel mb-1.5 px-3 text-[10px] uppercase tracking-wider text-dim',
+            collapsed && 'lg:sr-only',
+          )}
+        >
+          {title}
+        </p>
+      )}
       <div className={cx('mb-2 hidden h-px bg-line', collapsed && 'lg:block')} aria-hidden />
       <ul className="space-y-0.5">{children}</ul>
     </div>

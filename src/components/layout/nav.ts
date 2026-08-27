@@ -19,22 +19,30 @@ export interface NavGroup {
   items: NavLinkItem[]
 }
 
+/**
+ * 侧边栏最上面那两条，不带分组标题。
+ * 直播（FEATURES.live）和博客都不放这儿了 —— 前者没开放，后者挪到了最底部。
+ */
 export function mainNavFor(t: Translation): NavLinkItem[] {
   return [
     { label: t.nav.discover, to: '/', icon: '🏠', exact: true },
     { label: t.nav.playOnline, to: '/rooms', icon: '👥', exact: true },
-    ...(FEATURES.live ? [{ label: t.nav.live, to: '/rooms?live=1', icon: '📺', exact: true }] : []),
-    { label: t.nav.blog, to: '/blog', icon: '📝' },
   ]
 }
 
-export function libraryNavFor(t: Translation): NavLinkItem[] {
+/** 「探索」分组：按不同维度浏览游戏库 */
+export function exploreNavFor(t: Translation): NavLinkItem[] {
   return [
     { label: t.nav.allGames, to: '/games', icon: '📚', exact: true },
     { label: t.nav.platforms, to: '/platforms', icon: '🎮' },
     { label: t.nav.genres, to: '/genres', icon: '🧭' },
     { label: t.nav.developers, to: '/developers', icon: '🏢' },
   ]
+}
+
+/** 侧边栏最底下的零散入口。博客从上面挪到这儿，免得跟浏览游戏的几条混在一起。 */
+export function bottomNavFor(t: Translation): NavLinkItem[] {
+  return [{ label: t.nav.blog, to: '/blog', icon: '📝' }]
 }
 
 export interface CommunityLink {

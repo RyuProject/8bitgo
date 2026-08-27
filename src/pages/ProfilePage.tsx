@@ -154,7 +154,7 @@ export function ProfilePage() {
       </section>
 
       <section>
-        <SectionHeader title={t.profile.favoritesTitle} subtitle={t.profile.favoritesSubtitle} icon="❤️" />
+        <SectionHeader title={t.profile.favoritesTitle} subtitle={t.profile.favoritesSubtitle} icon="🕒" />
         {favorites.length ? (
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
             {favorites.map((g) => (

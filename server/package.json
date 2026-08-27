@@ -10,7 +10,9 @@
     "migrate": "node scripts/migrate.mjs",
     "seed": "node scripts/seed.mjs",
     "reset-fake-data": "node scripts/reset-fake-data.mjs",
-    "test:db": "node scripts/test-connection.mjs"
+    "test:db": "node scripts/test-connection.mjs",
+    "gen-sql": "node scripts/gen-sql.mjs",
+    "gen-sql:empty": "node scripts/gen-sql.mjs --empty"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

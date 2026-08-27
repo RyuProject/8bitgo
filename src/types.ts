@@ -52,7 +52,14 @@ export interface Platform {
   romExtensions: string[]
   /** 封面主色调 */
   color: string
+  /** 没有自制图标时的兜底 emoji */
   icon: string
+  /**
+   * 自制平台图标（public/ui/ 下的路径，如 '/ui/NES.svg'）。
+   * 填了就用图，没填退回 icon 的 emoji —— 图标可以一个平台一个平台地慢慢补，
+   * 不用等全部做完才能上。
+   */
+  image?: string
   description: string
 }
 

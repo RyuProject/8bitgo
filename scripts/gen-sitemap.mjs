@@ -66,6 +66,11 @@ async function fromApi(path) {
 }
 
 const enabled = await loadTs('src/config/platforms.ts', 'ENABLED_PLATFORMS')
+// 平台表与类型表。下面按它们生成 /platforms/<id> 和 /genres/<id> 两组页面 ——
+// 以前漏了这两行，脚本直接引用未定义的 visiblePlatforms / genres，
+// prebuild 一跑就 ReferenceError。dev 不跑 sitemap，所以直到第一次真构建才会炸。
+const platforms = await loadTs('src/data/platforms.ts', 'platforms')
+const genres = await loadTs('src/data/genres.ts', 'genres')
 const LANGUAGES = await loadTs('src/config/languages.ts', 'LANGUAGES')
 const DEFAULT_LANG = await loadTs('src/config/languages.ts', 'DEFAULT_LANG')
 const HREFLANG = await loadTs('src/config/languages.ts', 'HREFLANG')
@@ -83,6 +88,11 @@ if (!posts) posts = await loadTs('src/data/posts.ts', 'posts')
 // 隐藏的游戏、未发布的文章、未启用的平台都不该进 sitemap
 const visibleGames = games.filter((g) => !g.hidden && enabled.includes(g.platform))
 const visiblePosts = posts.filter((p) => p.published !== false)
+// 未启用的平台，以及一款可见游戏都没有的平台，进 sitemap 只是给搜索引擎交一个空列表页。
+// 判断标准和下面的类型页保持一致；等游戏加进来了会自动出现。
+const visiblePlatforms = platforms.filter(
+  (p) => enabled.includes(p.id) && visibleGames.some((g) => g.platform === p.id),
+)
 
 const today = new Date().toISOString().slice(0, 10)
 const urls = []

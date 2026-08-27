@@ -3,6 +3,7 @@ import type { PlatformWithCount } from '@/services/games'
 import { cx } from '@/lib/format'
 import { useT, fmt } from '@/services/i18n'
 import { platformLabel } from '@/services/i18nData'
+import { PlatformIcon } from './PlatformIcon'
 
 export function PlatformCard({ platform, className }: { platform: PlatformWithCount; className?: string }) {
   const t = useT()
@@ -21,13 +22,21 @@ export function PlatformCard({ platform, className }: { platform: PlatformWithCo
       />
       <div className="relative flex h-full flex-col">
         <div className="flex items-start justify-between">
-          <span
-            className="grid h-12 w-12 place-items-center rounded-xl text-2xl shadow-inner"
-            style={{ background: `${platform.color}22`, border: `1px solid ${platform.color}55` }}
-            aria-hidden
-          >
-            {platform.icon}
-          </span>
+          {/*
+            自制图标本身就是一整个成品插画，再套一层淡色底 + 描边的方框只会显得脏，
+            所以有图的平台直接铺满这 48×48，方框只留给还在用 emoji 的平台。
+          */}
+          {platform.image ? (
+            <PlatformIcon platform={platform} className="h-12 w-12" />
+          ) : (
+            <span
+              className="grid h-12 w-12 place-items-center rounded-xl text-2xl shadow-inner"
+              style={{ background: `${platform.color}22`, border: `1px solid ${platform.color}55` }}
+              aria-hidden
+            >
+              {platform.icon}
+            </span>
+          )}
           <span className="text-pixel text-[10px] text-muted">{platform.year}</span>
         </div>
         <h3 className="mt-4 text-base font-bold leading-tight">{platformLabel(t, platform.id, platform.name)}</h3>
