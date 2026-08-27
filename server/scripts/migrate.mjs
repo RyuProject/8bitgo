@@ -21,12 +21,13 @@ import mysql from 'mysql2/promise'
 
 const DB_NAME = process.env.DB_NAME || '8bitgo'
 
-const schemaPath = fileURLToPath(new URL('../schema.sql', import.meta.url))
-const rawSchema = await readFile(schemaPath, 'utf8')
-// 剥掉写死库名的 CREATE DATABASE / USE，库名统一由 DB_NAME 决定
-const schema = rawSchema
-  .replace(/^\s*CREATE\s+DATABASE[\s\S]*?;\s*$/gim, '')
-  .replace(/^\s*USE\s+[`'"]?[\w-]+[`'"]?\s*;\s*$/gim, '')
+/** 剥掉写死库名的 CREATE DATABASE / USE，库名统一由 DB_NAME 决定 */
+async function loadSchema(file) {
+  const raw = await readFile(fileURLToPath(new URL(`../${file}`, import.meta.url)), 'utf8')
+  return raw
+    .replace(/^\s*CREATE\s+DATABASE[\s\S]*?;\s*$/gim, '')
+    .replace(/^\s*USE\s+[`'"]?[\w-]+[`'"]?\s*;\s*$/gim, '')
+}
 
 const conn = await mysql.createConnection({
   host: process.env.DB_HOST || '127.0.0.1',
@@ -114,6 +115,10 @@ const patches = [
   {
     name: 'game_search_tokens（搜索倒排索引：多词、拼音、繁简）',
     table: null,
+    // 只在 v2 库上建：索引维护要读 game_tags，v1 库上建出来也是个永远空着的表。
+    // 用 skip 而不是在 needed 里返回 false —— 「跳过」和「已是最新」得说清楚，
+    // 否则 v1 用户会以为索引已经建好了，然后困惑于为什么一个字都搜不出来
+    skip: async () => (!(await hasTable('game_tags')) ? '这个库还是 v1 结构，搜索索引要 v2 才有意义' : null),
     needed: async () => !(await hasTable('game_search_tokens')),
     run: async () => {
       await conn.query(
@@ -185,13 +190,35 @@ try {
   await conn.query(`USE \`${DB_NAME}\``)
 
   const server = await one('SELECT VERSION() AS v')
-  console.log(`数据库：${DB_NAME} @ ${process.env.DB_HOST || '127.0.0.1'}:${process.env.DB_PORT || 3306}（${server?.v ?? '?'}）\n`)
+  console.log(`数据库：${DB_NAME} @ ${process.env.DB_HOST || '127.0.0.1'}:${process.env.DB_PORT || 3306}（${server?.v ?? '?'}）`)
 
-  await conn.query(schema)
-  console.log('✅ 建表完成（schema.sql 已执行）')
+  /**
+   * 先认清这个库是什么结构再动手 —— 以前是无条件执行 schema.sql（**v1** 那份），
+   * 于是在一个空库上跑 migrate 会建出一套 v1 表，而现在的服务端代码是 v2
+   * （games 主键是 id、类型/标签/ROM 各自一张关联表）。表面上「建表完成」，
+   * 实际上后端一条查询都跑不通，排查起来极其费劲。
+   *
+   * 判据用 game_tags：v2 有、v1 没有（v1 的标签存在 games.tags 这个 JSON 列里）。
+   */
+  const version = !(await hasTable('games')) ? 'fresh' : (await hasTable('game_tags')) ? 'v2' : 'v1'
+  console.log(`库结构：${version === 'fresh' ? '空库（还没建过表）' : version}\n`)
+
+  if (version === 'v1') {
+    console.log('⚠️  这个库是 **v1** 结构，而当前代码是 v2。')
+    console.log('   v1 的 games 主键是 slug、标签存 JSON 列，和 v2 不兼容，没法靠 ALTER 补上去。')
+    console.log('   要升到 v2 得执行 8bitgo-v2-install.sql —— 那个脚本会**删表重建**，')
+    console.log('   games / posts / users / favorites / recents 里的数据全部丢失，执行前务必先 mysqldump 备份。')
+    console.log('   下面只会跑那些对 v1 也安全的补丁，v2 专属的会跳过。\n')
+  } else {
+    // 空库和 v2 库都用 v2 结构。schema-v2.sql 全是 CREATE TABLE IF NOT EXISTS，
+    // 对已经建好的表不会有任何动作，所以在 v2 库上重复执行也是安全的
+    await conn.query(await loadSchema('schema-v2.sql'))
+    console.log('✅ 建表完成（schema-v2.sql 已执行）')
+  }
 
   let applied = 0
   let missing = 0
+  let skipped = 0
   for (const p of patches) {
     // table: null = 这条补丁自己就是「建表」，不能拿「表不存在」当跳过理由，
     // 否则新表永远建不出来
@@ -199,6 +226,14 @@ try {
       console.log(`⚠️  ${p.name}：${p.table} 表不存在，已跳过`)
       missing++
       continue
+    }
+    if (p.skip) {
+      const why = await p.skip()
+      if (why) {
+        console.log(`⏭  ${p.name}：已跳过 —— ${why}`)
+        skipped++
+        continue
+      }
     }
     if (!(await p.needed())) {
       console.log(`· ${p.name}：已是最新`)
@@ -220,6 +255,7 @@ try {
     console.log(`  ${t.padEnd(10)} ${String(r?.n ?? 0).padStart(6)} 行`)
   }
 
+  if (skipped) console.log(`\n⏭  有 ${skipped} 条补丁按库结构跳过了（见上面的说明）。`)
   if (missing) console.log(`\n⚠️  有 ${missing} 条补丁因为表不存在被跳过。表建好之后再跑一次 npm run migrate。`)
   else console.log(applied ? `\n共应用 ${applied} 条补丁。` : '\n数据库结构已是最新，无需改动。')
 } catch (e) {
