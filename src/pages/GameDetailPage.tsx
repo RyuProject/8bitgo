@@ -18,7 +18,6 @@ import { EmulatorPlayer } from '@/emulator'
 import { GameCover } from '@/components/game/GameCover'
 import { GameCard } from '@/components/game/GameCard'
 import { SectionHeader } from '@/components/ui/SectionHeader'
-import { RatingLine } from '@/components/ui/Rating'
 import { Badge, CoinBadge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { NotFoundPage } from './NotFoundPage'
@@ -32,6 +31,8 @@ export function GameDetailPage() {
   // ?p2p= 是 P2P 邀请链接；?room= 是云端房间（付费通道）
   const invite = searchParams.get('p2p') ?? undefined
   const cloudInvite = searchParams.get('room') ?? undefined
+  // 从「直播」进来的：默认只看不玩
+  const watchOnly = searchParams.get('watch') === '1'
   const t = useT()
   const game = getGame(slug)
   const { immersive } = useShell()
@@ -74,8 +75,6 @@ export function GameDetailPage() {
               genres: game.genres.map((id) => genreLabel(t, id, genreMap[id]?.name ?? id)),
               year: game.year,
               developer: game.developer,
-              rating: game.rating,
-              ratingCount: game.ratingCount,
             }),
             breadcrumbSchema([
               { name: t.common.home, path: '/' },
@@ -105,7 +104,7 @@ export function GameDetailPage() {
           {t.common.library}
         </Link>
         <span className="mx-1.5">/</span>
-        <Link to={`/games?platform=${platform.id}`} className="hover:text-fg">
+        <Link to={`/platforms/${platform.id}`} className="hover:text-fg">
           {platformLabel(t, platform.id, platform.name)}
         </Link>
         <span className="mx-1.5">/</span>
@@ -124,6 +123,7 @@ export function GameDetailPage() {
               maxPlayers={game.players}
               invite={invite}
               cloudInvite={cloudInvite}
+              watch={watchOnly}
               icon={game.icon}
               romUrl={rom.status === 'found' ? rom.url : undefined}
               romChecking={rom.status === 'checking'}
@@ -137,13 +137,13 @@ export function GameDetailPage() {
               <h1 className="text-2xl font-extrabold tracking-tight sm:text-3xl">{seoTitle}</h1>
               {seoTitle !== game.title && <p className="mt-1 text-sm text-muted">{game.title}</p>}
               <div className="mt-3 flex flex-wrap items-center gap-2">
-                <Link to={`/games?platform=${platform.id}`}>
+                <Link to={`/platforms/${platform.id}`}>
                   <Badge tone="brand" className="text-xs">
                     {platform.icon} {platformLabel(t, platform.id, platform.name)}
                   </Badge>
                 </Link>
                 {game.genres.map((id) => (
-                  <Link key={id} to={`/games?genre=${id}`}>
+                  <Link key={id} to={`/genres/${id}`}>
                     <Badge className="text-xs">
                       {genreMap[id]?.icon} {genreLabel(t, id, genreMap[id]?.name ?? id)}
                     </Badge>
@@ -155,10 +155,11 @@ export function GameDetailPage() {
                 <CoinBadge amount={game.coinReward} className="text-xs" />
               </div>
             </div>
-            <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">
-              <RatingLine rating={game.rating} count={game.ratingCount} />
-              <span className="text-xs text-muted">{fmt(t.common.playsCount, { n: formatCount(game.plays) })}</span>
-            </div>
+            {game.plays > 0 && (
+              <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">
+                <span className="text-xs text-muted">{fmt(t.common.playsCount, { n: formatCount(game.plays) })}</span>
+              </div>
+            )}
           </div>
 
           {/* 动作按钮 */}
@@ -259,7 +260,7 @@ export function GameDetailPage() {
               </div>
             </div>
             <p className="mt-3 text-sm leading-relaxed text-muted">{platformDesc(t, platform.id, platform.description)}</p>
-            <Button to={`/games?platform=${platform.id}`} variant="secondary" size="sm" className="mt-4 w-full">
+            <Button to={`/platforms/${platform.id}`} variant="secondary" size="sm" className="mt-4 w-full">
               {fmt(t.game.browsePlatform, { platform: platform.shortName })}
             </Button>
           </div>

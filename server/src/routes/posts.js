@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { query, queryOne } from '../db.js'
 import { requireAdmin, isAdminRequest } from '../auth.js'
 import { invalidateContent } from '../content.js'
+import { publicApi } from '../cache.js'
 import { postRowToApi, postApiToRow, buildUpsert } from '../mappers.js'
 
 export const postsRouter = Router()
@@ -20,6 +21,9 @@ postsRouter.get('/', async (req, res, next) => {
       ? 'SELECT * FROM posts ORDER BY date DESC'
       : 'SELECT * FROM posts WHERE published = 1 ORDER BY date DESC'
     const rows = await query(sql)
+    // 只有公开视角（不带 ?all=1）才可以缓存：管理员视角带着身份，
+    // 缓存下来等于把下架文章 / 草稿发给所有人
+    if (!wantAll) publicApi(res)
     res.json(rows.map(postRowToApi))
   } catch (e) {
     next(e)
@@ -33,6 +37,8 @@ postsRouter.get('/:slug', async (req, res, next) => {
     if (!row.published && !(await isAdminRequest(req))) {
       return res.status(404).json({ error: '文章不存在' })
     }
+    // 已发布的文章对所有人一样，可以缓存；草稿保持 no-store
+    if (row.published) publicApi(res)
     res.json(postRowToApi(row))
   } catch (e) {
     next(e)

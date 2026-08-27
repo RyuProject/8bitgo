@@ -39,3 +39,6 @@ worker/.wrangler
 # Ruffle 运行时（npm run ruffle 从 node_modules 复制）
 public/ruffle
 
+# js-dos 运行时（npm run jsdos 从 node_modules 复制）
+public/jsdos
+

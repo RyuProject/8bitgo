@@ -5,7 +5,6 @@ import { genreMap } from '@/data/genres'
 import { cx, formatCount } from '@/lib/format'
 import { GameCover } from './GameCover'
 import { Badge, CoinBadge } from '@/components/ui/Badge'
-import { Stars } from '@/components/ui/Rating'
 import { useLang } from '@/services/lang'
 import { useT } from '@/services/i18n'
 import { genreLabel, gameTitle } from '@/services/i18nData'
@@ -67,15 +66,14 @@ export function GameCard({ game, className, rank, showCoin = true }: Props) {
           <span className="truncate">
             {platform.shortName} · {genreLabel(t, game.genres[0], genre?.name)}
           </span>
-          <span className="shrink-0">🔥 {formatCount(game.plays)}</span>
+          {/* 游玩次数是真实统计的，还没人玩过就什么都不显示 —— 挂一个「🔥 0」既难看又没意义 */}
+          {game.plays > 0 && <span className="shrink-0">🔥 {formatCount(game.plays)}</span>}
         </div>
-        <div className="flex items-center justify-between gap-2">
-          <span className="inline-flex items-center gap-1 text-[11px] text-muted">
-            <Stars value={game.rating} size={10} />
-            <span className="font-semibold text-fg">{game.rating.toFixed(1)}</span>
-          </span>
-          {showCoin && <CoinBadge amount={game.coinReward} />}
-        </div>
+        {showCoin && (
+          <div className="flex items-center justify-end gap-2">
+            <CoinBadge amount={game.coinReward} />
+          </div>
+        )}
       </div>
     </Link>
   )

@@ -13,6 +13,7 @@ import { useShell } from '@/components/layout/ShellContext'
 import { useT, fmt } from '@/services/i18n'
 import { platformLabel } from '@/services/i18nData'
 import { FEATURES } from '@/config/features'
+import { recordPlay } from '@/services/store'
 import {
   downloadState,
   fetchNetplayRoom,
@@ -21,7 +22,10 @@ import {
   migrateRoom,
   playerName,
   refreshNetplayRooms,
+  setRoomRole,
   useNetplayRooms,
+  watchNetplayRoom,
+  type RoomRole,
 } from '@/services/netplay'
 import { freePlayerIndex, keepAlive, roomLink, roomsEnabled, useRoom, MAX_PLAYERS } from '@/services/rooms'
 
@@ -56,6 +60,8 @@ interface Props {
   invite?: string
   /** 邀请链接带进来的云端房间 id（详情页 ?room=，付费通道） */
   cloudInvite?: string
+  /** 从「直播」入口进来（详情页 ?watch=1）：默认以观众身份加入，只看不玩 */
+  watch?: boolean
   /** 空闲态背景（例如封面） */
   backdrop?: ReactNode
   /** 空闲态显示的图标 */
@@ -92,6 +98,7 @@ export function EmulatorPlayer({
   maxPlayers = 2,
   invite,
   cloudInvite,
+  watch = false,
   backdrop,
   icon,
   className,
@@ -137,6 +144,14 @@ export function EmulatorPlayer({
   const myIdRef = useRef<string>('')
   /** 正在接手的旧房间 id：新房间开好后要调 /migrate 把两者接上 */
   const migrateFromRef = useRef<string>('')
+  /** 服务端下发的房间令牌：取存档、接手房主、切身份都要用它证明自己是房间成员 */
+  const roomTokenRef = useRef<string>('')
+  /** 我在房间里的身份。观众只收画面和声音，按键不生效 */
+  const [role, setRole] = useState<RoomRole>('player')
+  /** 我是不是房主（房主的机器在跑游戏，不能退到观众席） */
+  const [isHost, setIsHost] = useState(false)
+  /** 适配器交出来的「切身份」函数：不用断线重连就能上场 / 退下 */
+  const roleSwitchRef = useRef<((spectator: boolean) => void) | null>(null)
   const [copied, setCopied] = useState(false)
   const slots = Math.max(1, Math.min(MAX_PLAYERS, maxPlayers))
 
@@ -145,6 +160,24 @@ export function EmulatorPlayer({
   const inviteRoom = inviteId ? p2pRooms.find((r) => r.roomId === inviteId) : undefined
   const inviteGone = Boolean(inviteId) && status === 'idle' && p2pRooms.length > 0 && !inviteRoom
   const inviteFull = Boolean(inviteRoom && inviteRoom.players >= inviteRoom.max)
+  /**
+   * 手柄位满了还有没有观众席。
+   * 老服务端不下发 maxSpectators，这里会算成 0 —— 行为退回原来的「房间已满」，不会出错。
+   */
+  const spectatorSeatFree = Boolean(
+    inviteRoom && (inviteRoom.spectators ?? 0) < (inviteRoom.maxSpectators ?? 0),
+  )
+  /** 能不能以观众身份进这个房间（只有 P2P 房间是一路直播） */
+  const canWatch = p2pOk && Boolean(inviteRoom) && spectatorSeatFree
+  /**
+   * 这次进房会不会是观众：从「直播」入口点进来的（?watch=1），
+   * 或者手柄位已经坐满了。按钮文案和下面的说明都跟着它走，
+   * 免得写着「加入房间」结果进去发现动不了。
+   */
+  const willWatch = canWatch && (watch || inviteFull)
+  /** 正在看的人数（自己所在的房间） */
+  const myNetRoom = session?.netplay && roomId ? p2pRooms.find((r) => r.roomId === roomId) : undefined
+  const viewers = myNetRoom?.spectators ?? 0
 
   // 云端：连接状态与手柄位
   const [cloudState, setCloudState] = useState<CloudState | null>(null)
@@ -160,6 +193,9 @@ export function EmulatorPlayer({
   // gameName 只用于存档 / 截图命名，放进 effect 依赖会导致「切换语言就把正在跑的游戏重启」
   const gameNameRef = useRef(gameName)
   gameNameRef.current = gameName
+  // 同理：游玩计数只在 onReady 里读一次，不该让它把正在跑的会话重建
+  const gameSlugRef = useRef(gameSlug)
+  gameSlugRef.current = gameSlug
   /** 云端联机是否真的跑起来过（用于区分「没连上」和「玩到一半断了」） */
   const cloudPlayedRef = useRef(false)
 
@@ -191,7 +227,11 @@ export function EmulatorPlayer({
       gameName: gameNameRef.current,
       netplay: session.netplay,
       cloud: session.cloud,
-      onReady: () => setStatus('running'),
+      onReady: () => {
+        setStatus('running')
+        // 游戏真的跑起来了才算一次游玩 —— 打开详情页、加载失败、选错文件都不算
+        if (gameSlugRef.current) recordPlay(gameSlugRef.current)
+      },
       onError: (message: string) => {
         const cloud = session.cloud
         // 出错后必须把会话拆掉：否则运行时会在隐藏的挂载点里继续活着
@@ -236,8 +276,8 @@ export function EmulatorPlayer({
   useEffect(() => {
     if (!session?.netplay || !roomId || status === 'error') return
     let stopped = false
-    const tick = async () => {
-      const room = await fetchNetplayRoom(roomId)
+    /** 处理一次房间快照（首次 fetch 与后续 SSE 推送共用同一段逻辑） */
+    const handle = async (room: Awaited<ReturnType<typeof fetchNetplayRoom>>) => {
       if (stopped) return
       if (!room) {
         // 房间彻底消失（宽限期内没人接手）
@@ -254,14 +294,31 @@ export function EmulatorPlayer({
       if (room.awaitingHost && room.nextHostUserId && room.nextHostUserId === myIdRef.current) {
         stopped = true
         setNotice(t.player.takingOver)
-        const state = room.hasState ? await downloadState(roomId) : null
+        const state = room.hasState ? await downloadState(roomId, roomTokenRef.current) : null
         startP2p(undefined, { from: roomId, state })
       }
     }
-    const timer = window.setInterval(() => void tick(), 2500)
+
+    const tick = async () => handle(await fetchNetplayRoom(roomId))
+    // 首次立刻对一次，之后交给 SSE 推送（服务端有变化才发）。
+    // 以前是每 2.5 秒轮询一次自己的房间，纯粹为了等「房主掉线」这个几乎不发生的事件；
+    // 换成推送之后平时零请求，房主一掉线也是立刻知道，接手更快。
+    void tick()
+    const stop = watchNetplayRoom(roomId, {
+      onRoom: (room) => {
+        if (stopped) return
+        void handle(room)
+      },
+      onGone: () => {
+        if (stopped) return
+        setSession(null)
+        setStatus('error')
+        setError(t.player.hostLeft)
+      },
+    })
     return () => {
       stopped = true
-      window.clearInterval(timer)
+      stop()
     }
   }, [session, roomId, status])
 
@@ -274,12 +331,19 @@ export function EmulatorPlayer({
   /**
    * P2P：开房间（join 为空）、加入房间，或接手别人掉线后的房间（带 initialState）。
    */
-  const startP2p = (join?: string, takeOver?: { from: string; state: Uint8Array | null }) => {
+  const startP2p = (
+    join?: string,
+    takeOver?: { from: string; state: Uint8Array | null },
+    asRole: RoomRole = 'player',
+  ) => {
     if (!gameSlug || !romUrl) return
     setError(null)
     if (!takeOver) setNotice(null)
     setRoomId(join ?? null)
     setPlayers(1)
+    setRole(asRole)
+    setIsHost(!join)
+    roleSwitchRef.current = null
     migrateFromRef.current = takeOver?.from ?? ''
     begin(romUrl, platform.id, emulatorJsRuntime, {
       netplay: {
@@ -288,14 +352,20 @@ export function EmulatorPlayer({
         playerName: playerName(),
         maxPlayers: slots,
         mode: join ? 'join' : 'host',
+        role: asRole,
+        onSpectatorControl: (fn) => (roleSwitchRef.current = fn),
         roomId: join,
         initialState: takeOver?.state ?? undefined,
         onIdentity: (id) => (myIdRef.current = id),
-        onRoom: (id, isHost) => {
+        onToken: (tk) => (roomTokenRef.current = tk),
+        onRoom: (id, host) => {
           setRoomId(id)
+          setIsHost(host)
+          // 接手房主之后自然就不是观众了
+          if (host) setRole('player')
           // 接手成功：把新房间和旧房间接上，老邀请链接才能继续用
           const from = migrateFromRef.current
-          if (isHost && from && from !== id) {
+          if (host && from && from !== id) {
             migrateFromRef.current = ''
             void migrateRoom(from, id, myIdRef.current).then((okDone) => {
               if (okDone) setNotice(t.player.tookOver)
@@ -340,7 +410,7 @@ export function EmulatorPlayer({
 
   const startOnline = () => {
     if (cloudInviteId && cloudOk) return startCloud(cloudInviteId)
-    if (inviteId && p2pOk) return startP2p(inviteId)
+    if (inviteId && p2pOk) return startP2p(inviteId, undefined, willWatch ? 'spectator' : 'player')
     if (channel === 'p2p') return startP2p()
     return startCloud()
   }
@@ -414,6 +484,10 @@ export function EmulatorPlayer({
     setRoomId(null)
     setPlayers(1)
     setCloudState(null)
+    // 身份跟着房间一起清掉，不然下次开自己的房还会被当成观众
+    setRole('player')
+    setIsHost(false)
+    roleSwitchRef.current = null
     if (inputRef.current) inputRef.current.value = ''
   }
 
@@ -448,8 +522,28 @@ export function EmulatorPlayer({
     session?.runtime ?? (online ? (channel === 'p2p' ? emulatorJsRuntime : cloudGameRuntime) : pageRuntime)
   const activePlatform = session ? platformMap[session.platform] : platform
   const cloudStateLabel = cloudState ? t.player.cloudState[cloudState] : ''
-  const roomPlayers = session?.cloud ? (myCloudRoom?.players ?? 1) : players
-  const joinBlocked = online && (inviteFull || inviteGone || cloudJoinPending)
+  // 服务端的 players 不含观众，比本地 onPlayers 更准；拿不到时退回本地计数
+  const roomPlayers = session?.cloud ? (myCloudRoom?.players ?? 1) : (myNetRoom?.players ?? players)
+  const joinBlocked = online && ((inviteFull && !canWatch) || inviteGone || cloudJoinPending)
+
+  /**
+   * 上场 / 退到观众席。
+   * 服务端那边记账（手柄位够不够由它说了算），本地那边掐断或恢复输入转发 ——
+   * 真正管用的是本地这一下，因为按键是走 WebRTC 直接到房主的，不经过服务器。
+   */
+  const toggleRole = async () => {
+    if (!roomId || isHost) return
+    const next: RoomRole = role === 'spectator' ? 'player' : 'spectator'
+    const ok = await setRoomRole(roomId, roomTokenRef.current, next)
+    if (!ok) {
+      setNotice(t.player.roleFailed)
+      return
+    }
+    roleSwitchRef.current?.(next === 'spectator')
+    setRole(next)
+    setNotice(null)
+    refreshNetplayRooms()
+  }
 
   /** 空闲态主按钮 */
   const primaryAction = () => {
@@ -489,13 +583,15 @@ export function EmulatorPlayer({
               {supported ? (
                 <>
                   <Button size="lg" disabled={(!online && romChecking) || joinBlocked} onClick={primaryAction}>
-                    <span aria-hidden>{online ? '👥' : '▶'}</span>{' '}
+                    <span aria-hidden>{online ? (willWatch ? '👀' : '👥') : '▶'}</span>{' '}
                     {joining && online
-                      ? inviteFull
-                        ? t.player.roomFull
-                        : inviteGone
-                          ? t.player.roomGoneShort
-                          : t.player.joinRoom
+                      ? willWatch
+                        ? t.player.watchRoom
+                        : inviteFull
+                          ? t.player.roomFull
+                          : inviteGone
+                            ? t.player.roomGoneShort
+                            : t.player.joinRoom
                       : online
                         ? t.player.onlineStart
                         : romChecking
@@ -509,15 +605,29 @@ export function EmulatorPlayer({
                       <>
                         {inviteGone
                           ? t.player.roomGone
-                          : inviteRoom
-                            ? fmt(t.player.joinHint, {
-                                host: inviteRoom.host?.nickname ?? '—',
-                                players: String(inviteRoom.players),
-                                max: String(inviteRoom.max),
-                                slot: String(Math.min(inviteRoom.players + 1, inviteRoom.max)),
-                              })
-                            : t.player.roomLookup}
+                          : willWatch
+                            ? inviteFull
+                              ? t.player.watchHint
+                              : t.player.watchHintPick
+                            : inviteRoom
+                              ? fmt(t.player.joinHint, {
+                                  host: inviteRoom.host?.nickname ?? '—',
+                                  players: String(inviteRoom.players),
+                                  max: String(inviteRoom.max),
+                                  slot: String(Math.min(inviteRoom.players + 1, inviteRoom.max)),
+                                })
+                              : t.player.roomLookup}
                         <br />
+                        {/* 位子还空着，但只想看别人玩 */}
+                        {canWatch && !willWatch && inviteId && (
+                          <button
+                            type="button"
+                            className="mx-1 underline underline-offset-2 hover:text-white"
+                            onClick={() => startP2p(inviteId, undefined, 'spectator')}
+                          >
+                            {t.player.watchInstead}
+                          </button>
+                        )}
                         <button
                           type="button"
                           className="mx-1 underline underline-offset-2 hover:text-white"
@@ -632,6 +742,25 @@ export function EmulatorPlayer({
               {session?.cloud && <span className="font-normal text-muted">· {fmt(t.player.slotLabel, { n: String(slotIndex + 1) })}</span>}
               {session?.netplay && <span className="font-normal text-muted">· {t.player.p2pTag}</span>}
             </span>
+            {session?.netplay && viewers > 0 && (
+              <span className="inline-flex items-center gap-1 rounded-md bg-white/5 px-2 py-1 font-semibold text-muted">
+                👀 {fmt(t.player.viewers, { n: String(viewers) })}
+              </span>
+            )}
+            {session?.netplay && role === 'spectator' && (
+              <span className="inline-flex items-center gap-1 rounded-md bg-live/15 px-2 py-1 font-semibold text-red-300">
+                {t.player.spectatorTag}
+              </span>
+            )}
+            {session?.netplay && roomId && !isHost && (
+              <button
+                type="button"
+                onClick={() => void toggleRole()}
+                className="rounded-md border border-line px-2 py-1 text-muted hover:text-fg"
+              >
+                {role === 'spectator' ? t.player.takeSeat : t.player.goWatch}
+              </button>
+            )}
             {roomId && (
               <button type="button" onClick={() => void copyInvite()} className="rounded-md border border-line px-2 py-1 text-muted hover:text-fg">
                 {copied ? t.player.copied : t.player.copyInvite}

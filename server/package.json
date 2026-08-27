@@ -9,6 +9,7 @@
     "dev": "node --watch src/index.js",
     "migrate": "node scripts/migrate.mjs",
     "seed": "node scripts/seed.mjs",
+    "reset-fake-data": "node scripts/reset-fake-data.mjs",
     "test:db": "node scripts/test-connection.mjs"
   },
   "dependencies": {
@@ -18,7 +19,8 @@
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.11.0",
-    "socket.io": "^4.8.1"
+    "socket.io": "^4.8.1",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "esbuild": "^0.23.0",

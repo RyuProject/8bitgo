@@ -242,6 +242,18 @@ export function AdminData() {
       </div>
 
       <Card title="文章与用户数据">
+        {/*
+          下面这几个按钮读写的都是浏览器 localStorage，跟数据库没有关系。
+          连了后端还显示它们的话，「下载用户 JSON」导出的是一份空的本地表，
+          「清空用户」点完还会提示「已清空」—— 而数据库里一个用户都没少。
+        */}
+        {connected ? (
+          <p className="text-xs text-muted">
+            已连接数据库，用户与文章都存在 MySQL 里。导出请直接备份数据库（
+            <code className="text-fg">mysqldump</code>），本地存储的导出 / 重置按钮在这个模式下没有意义，已隐藏。
+          </p>
+        ) : (
+          <>
         <p className="mb-3 text-xs text-muted">
           文章保存在 <code className="text-fg">{POSTS_KEY}</code>，用户保存在 <code className="text-fg">{USERS_KEY}</code>（含密码哈希，导出后请妥善保管）。
         </p>
@@ -284,6 +296,8 @@ export function AdminData() {
             清空用户
           </button>
         </div>
+          </>
+        )}
       </Card>
 
       {msg && (

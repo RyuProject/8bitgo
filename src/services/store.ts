@@ -70,6 +70,48 @@ export async function deleteGame(slug: string): Promise<void> {
 }
 
 export async function setGameHidden(slug: string, hidden: boolean): Promise<void> {
-  if (apiEnabled()) await api.patch(`/api/games/${encodeURIComponent(slug)}`, { hidden }, true)
-  gamesStore.update(slug, { hidden })
+  return patchGame(slug, { hidden })
+}
+
+/**
+ * 局部更新一款游戏（绑定 ROM、上下架…）。
+ *
+ * 先写库再改内存：写库失败就抛出去，界面不会显示成功。
+ * 以前后台「ROM 存储」页的绑定 / 解绑 / 自动匹配是直接改内存 store 的，
+ * 看起来生效了，一刷新全没了 —— 数据库里从来没写进去过。
+ */
+export async function patchGame(slug: string, patch: Partial<Game>): Promise<void> {
+  if (apiEnabled()) {
+    // 后端按「字段在不在请求里」判断要不要更新，所以 undefined 要显式转成 null（= 清空）
+    const body: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(patch)) body[k] = v === undefined ? null : v
+    const saved = await api.patch<Game>(`/api/games/${encodeURIComponent(slug)}`, body, true)
+    // 用后端返回的整行**整体替换**，而不是浅合并。
+    // 合并会出问题：解绑之后后端返回的对象里根本没有 rom / roms 这两个键
+    // （gameRowToApi 只在有值时才写），浅合并会把本地那份旧值原封不动留下来，
+    // 界面上看着还是「已绑定」。
+    if (saved && typeof saved === 'object') {
+      gamesStore.update(slug, () => saved)
+      return
+    }
+  }
+  gamesStore.update(slug, patch)
+}
+
+/** 本次页面会话里已经上报过的游戏，避免重开模拟器重复计数 */
+const reportedPlays = new Set<string>()
+
+/**
+ * 上报一次真实游玩。在模拟器**真的跑起来**时调用（不是打开详情页）。
+ *
+ * 故意做成「失败也不管」：这只是一个计数，网络不通、后端没起、被广告拦截器挡掉，
+ * 都不该影响玩家正在玩的游戏。服务端还会再按 IP 去重一次。
+ */
+export function recordPlay(slug: string): void {
+  if (!slug || !apiEnabled() || reportedPlays.has(slug)) return
+  reportedPlays.add(slug)
+  void api.post(`/api/games/${encodeURIComponent(slug)}/play`).catch(() => {
+    // 上报失败就让它失败，下次进页面还有机会
+    reportedPlays.delete(slug)
+  })
 }

@@ -172,3 +172,91 @@ cd server && npm install && npm start
   这是刻意的——否则每个用户的页面都不一样，没法缓存，也会造成 hydration 不匹配。
 - **导入 SQL 一定要用 utf8mb4**：`server/8bitgo-setup.sql` 开头已经写了 `SET NAMES utf8mb4;`。
   有些 mysql 客户端默认 latin1，缺这行会把中文存成双重编码的乱码。
+
+## Cloudflare 缓存
+
+服务端已经按资源类型给好了 `Cache-Control`（规则集中在 `server/src/cache.js`）：
+
+| 资源 | 策略 | 说明 |
+| --- | --- | --- |
+| `/assets/*`（带哈希的构建产物） | 一年 + immutable | 文件名变了才算新文件，可以永久缓存 |
+| `/fonts/*` | 一年 + immutable | 换字体请顺手改文件名 |
+| `/ruffle/*`、`/emulatorjs/*`、`/j2me/*` | 浏览器 1 天，边缘 30 天 | 体积大、更新少；升级引擎后清一次 Cloudflare 缓存 |
+| 图片、favicon | 浏览器 1 小时，边缘 7 天 | |
+| `robots.txt`、`sitemap.xml` | 浏览器 5 分钟，边缘 1 小时 | |
+| SSR 页面 | 浏览器不缓存，边缘 `PAGE_S_MAXAGE`（默认 300 秒） | 页面是匿名的，登录态在客户端，不会串号 |
+| `/api/games`、`/api/posts`（公开视角） | 浏览器 30 秒，边缘 `API_S_MAXAGE` | 带 `?all=1` 的管理员视角不缓存 |
+| 其余 `/api/*`、`/admin`、SSR 降级空壳 | `no-store` | 默认不缓存，漏配只会少一层缓存而不会泄漏数据 |
+
+所有能被边缘缓存的响应都带了 `stale-while-revalidate`：过期之后 Cloudflare 先把旧的返给用户，
+同时自己回源更新 —— 用户不会为了等一次回源而卡住。
+
+### ⚠️ 必须在 Cloudflare 加一条 Cache Rule
+
+**Cloudflare 默认只缓存静态后缀，HTML 和 `/api` 是完全不缓存的**，上面的 `s-maxage` 不会自己生效。
+去控制台 → 你的域名 → Caching → Cache Rules → Create rule：
+
+- 规则名：`Cache HTML and public API`
+- 匹配：`(not starts_with(http.request.uri.path, "/admin")) and (not starts_with(http.request.uri.path, "/api/auth")) and (not starts_with(http.request.uri.path, "/api/me")) and (not starts_with(http.request.uri.path, "/api/users")) and (not starts_with(http.request.uri.path, "/api/rooms"))`
+- Cache eligibility：**Eligible for cache**
+- Edge TTL：**Use cache-control header if present**（关键，别选固定 TTL，否则会盖掉上面的策略）
+- Browser TTL：同样选 Respect origin
+
+这样 `no-store` 的响应仍然不会被缓存（Cloudflare 认这个头），而页面和公开接口会被边缘接管。
+
+### 内容更新后如何立刻生效
+
+后台改完游戏或文章，边缘上的旧页面最多还会存活 `PAGE_S_MAXAGE` 秒。要立刻生效有两种办法：
+
+1. Cloudflare 控制台 → Caching → Configuration → Purge Everything（最省事）
+2. 调 API 定点清理（适合接进后台的保存流程）：
+
+```bash
+curl -X POST "https://api.cloudflare.com/client/v4/zones/<ZONE_ID>/purge_cache" \
+  -H "Authorization: Bearer <API_TOKEN>" \
+  -H "Content-Type: application/json" \
+  --data '{"purge_everything":true}'
+```
+
+注意服务端自己还有一层 60 秒的内存缓存（`server/src/content.js`），后台写操作会主动
+调 `invalidateContent()` 让它立刻失效，所以清完 Cloudflare 就是最新的了。
+
+## DOS 联机（IPX）
+
+当年的 DOS 局域网游戏（毁灭战士、毁灭公爵 3D、魔兽争霸 2、命令与征服）靠 IPX 协议通信。
+js-dos 把 IPX 隧道化到了浏览器里，有两种拓扑：
+
+**一、中继（推荐，自己就能部署）**
+
+所有玩家的浏览器连到同一台 IPX 服务器，服务器按房间转发数据包。`server/src/ipx.js`
+就是这个服务器 —— 它是 [dosbox-ipx-server](https://github.com/caiiiycuk/dosbox-ipx-server)（Go）
+的 Node 移植，协议完全一致，好处是不用再单独部署一个 Go 服务。
+
+开启方式：`.env` 里设 `IPX_ENABLED=1`，重启后端。它会在**主站同一个端口**上
+提供 `/ipx/<房间名>`，也就是说走的是 443、橙云代理、现成的证书 —— 什么都不用额外配。
+
+这里有个细节值得知道：js-dos 客户端原本把 IPX 服务器的端口**写死成 1900**
+（它拼的是 `<地址>:1900/ipx/<房间>`），而 1900 不在 Cloudflare 代理的端口列表里
+（只代理 80/443/2053/2083/2087/2096/8443）。照原样用的话，只能给 IPX 单开一个
+灰云（DNS only）子域名直连源站 —— 那等于把源站 IP 暴露出去，整站的 Cloudflare
+防护都能被绕过 —— 或者在源站另配一套监听 1900 的 TLS。
+
+所以 `scripts/copy-jsdos.mjs` 在复制资源时会顺手把那一处端口去掉（整个
+`js-dos.js` 里只出现一次；将来上游改了写法脚本会明确报错，不会静默留下一个连不上的功能）。
+不想打补丁就加 `--no-ipx-patch`，同时把 `.env` 里的 `IPX_PORT` 设成 1900 退回独立端口模式。
+
+玩家侧目前需要手动操作：在播放器里打开 js-dos 的设置面板 → Network，填入
+Server（`wss://你的域名`）和 Room（房间名），双方填同一个房间就在同一个 IPX 网络里了。
+之所以要手动，是因为 **js-dos 没有对外暴露「连接到 IPX 服务器」的编程接口** ——
+`Dos()` 返回的 props 里只有 stop / save / setVolume 这些，没有 IPX 相关的方法。
+
+**二、P2P（浏览器直连，需要一台撮合服务器）**
+
+一个玩家的浏览器当 IPX 服务器，其他人经 WebRTC 直连过去。这条路**可以用代码控制**：
+`Dos()` 的 `startIpxServer` / `connectIpxAddress` 两个选项就是干这个的，适配器
+（`src/emulator/adapters/jsdos.ts`）已经接好，通过 `MountOptions.ipx` 传进去。
+
+它需要一台「撮合服务器」（peer-server）来交换连接信息，默认用的是 js-dos 官方的
+`https://net.dos.zone`。想自建的话要部署 [WebRTC-NET](https://github.com/caiiiycuk/WebRTC-NET)
+的 peer-server（Go + FlatBuffers），然后设 `VITE_JSDOS_PEER_SERVER` 指过去。
+NAT 穿透用的 STUN/TURN 已经接到了本站自己的 `/api/netplay/ice`，跟 P2P 联机共用一套凭据。

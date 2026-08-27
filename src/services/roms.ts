@@ -143,6 +143,41 @@ export function defaultMediaKey(kind: 'covers' | 'videos', slug: string, fileNam
   return `${kind}/${name}${ext || (kind === 'videos' ? '.mp4' : '.jpg')}`
 }
 
+/**
+ * 这款游戏一共绑定了哪些对象 key（通用 rom + 各语言 roms，去重）。
+ *
+ * 编辑弹窗里现在只填「按语言的 ROM」（roms），但后台列表 / 概览 / ROM 存储页
+ * 过去都只看 game.rom 那一个字段 —— 只配了 roms.en 的游戏在后台一律显示「未绑定」，
+ * 「自动匹配」会重复绑一次，删文件时也不会解绑。统一从这里取。
+ */
+export function romKeysOf(game: Pick<Game, 'rom' | 'roms'>): string[] {
+  const keys = [game.rom, ...Object.values(game.roms ?? {})]
+    .map((k) => (typeof k === 'string' ? k.trim() : ''))
+    .filter(Boolean)
+  return [...new Set(keys)]
+}
+
+/** 这款游戏是否已经绑定了任意一个 ROM */
+export function hasRom(game: Pick<Game, 'rom' | 'roms'>): boolean {
+  return romKeysOf(game).length > 0
+}
+
+/** 把某个对象 key 从游戏上解绑（通用 rom 与所有语言槽都清掉），返回要提交的补丁 */
+export function unbindKeyPatch(game: Pick<Game, 'rom' | 'roms'>, key: string): Partial<Game> {
+  const patch: Partial<Game> = {}
+  if (game.rom === key) patch.rom = undefined
+  const roms = { ...(game.roms ?? {}) }
+  let touched = false
+  for (const [lang, value] of Object.entries(roms)) {
+    if (value === key) {
+      delete roms[lang as RomLang]
+      touched = true
+    }
+  }
+  if (touched) patch.roms = Object.keys(roms).length ? roms : undefined
+  return patch
+}
+
 /** 按语言选出该游戏应加载的 ROM key/URL：当前语言 → 英语 → 通用 rom */
 export function effectiveRomKey(game: Game, lang: Lang): string {
   const slot = romLangFor(lang)

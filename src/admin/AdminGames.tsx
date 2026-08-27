@@ -7,6 +7,7 @@ import { cx, formatCount } from '@/lib/format'
 import { apiEnabled } from '@/services/api'
 import { useAdminData } from './AdminLayout'
 import { deleteGame, setGameHidden, upsertGame, useAllGames } from '@/services/store'
+import { romKeysOf } from '@/services/roms'
 import { GameForm } from './GameForm'
 import { btnClass, inputClass } from './ui'
 
@@ -112,7 +113,6 @@ export function AdminGames() {
               <th className="px-3 py-2 font-medium">平台</th>
               <th className="px-3 py-2 font-medium">类型</th>
               <th className="px-3 py-2 font-medium">年份</th>
-              <th className="px-3 py-2 font-medium">评分</th>
               <th className="px-3 py-2 font-medium">游玩</th>
               <th className="px-3 py-2 font-medium">G 币</th>
               <th className="px-3 py-2 font-medium">ROM</th>
@@ -141,17 +141,21 @@ export function AdminGames() {
                   <td className="px-3 py-2 text-muted">{p?.shortName ?? g.platform}</td>
                   <td className="px-3 py-2 text-muted">{g.genres.map((id) => genreMap[id]?.name ?? id).join(' / ')}</td>
                   <td className="px-3 py-2 tabular-nums text-muted">{g.year}</td>
-                  <td className="px-3 py-2 tabular-nums">{g.rating.toFixed(1)}</td>
-                  <td className="px-3 py-2 tabular-nums text-muted">{formatCount(g.plays)}</td>
+                  <td className="px-3 py-2 tabular-nums text-muted">{g.plays ? formatCount(g.plays) : '—'}</td>
                   <td className="px-3 py-2 tabular-nums text-muted">{g.coinReward || '—'}</td>
                   <td className="px-3 py-2">
-                    {g.rom ? (
-                      <span className="rounded bg-online/15 px-1.5 py-0.5 text-xs text-online" title={g.rom}>
-                        ☁️ 已绑定
-                      </span>
-                    ) : (
-                      <span className="text-xs text-dim">—</span>
-                    )}
+                    {(() => {
+                      // 编辑弹窗只填「按语言的 ROM」（roms），以前这里只看 g.rom，
+                      // 结果配好了语言 ROM 的游戏在列表里一律显示未绑定
+                      const keys = romKeysOf(g)
+                      return keys.length ? (
+                        <span className="rounded bg-online/15 px-1.5 py-0.5 text-xs text-online" title={keys.join('\n')}>
+                          ☁️ 已绑定{keys.length > 1 ? ` ×${keys.length}` : ''}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-dim">—</span>
+                      )
+                    })()}
                   </td>
                   <td className="px-3 py-2">
                     {g.hidden ? (
@@ -189,7 +193,7 @@ export function AdminGames() {
             })}
             {list.length === 0 && (
               <tr>
-                <td colSpan={10} className="px-3 py-10 text-center text-sm text-muted">
+                <td colSpan={9} className="px-3 py-10 text-center text-sm text-muted">
                   {all.length === 0 && db.state === 'error' ? (
                     <>
                       连不上数据库，取不到游戏列表。

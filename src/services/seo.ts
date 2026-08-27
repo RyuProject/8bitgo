@@ -98,7 +98,6 @@ let collected: CollectedHead | null = null
  */
 export function beginHeadCollection() {
   collected = { title: '', tags: [], jsonLd: [] }
-  ssrNotFound = false
 }
 
 export function endHeadCollection(): CollectedHead {
@@ -232,19 +231,6 @@ export function takeSsrNotFound(): boolean {
   return v
 }
 
-/**
- * 本次 SSR 渲染的是不是 404 页。
- * 服务端据此返回 404 状态码 —— 不存在的页面必须回 404，
- * 否则搜索引擎会把它当成「软 404」：既浪费抓取预算，也拉低站点整体质量评分。
- */
-let ssrNotFound = false
-export function markNotFound() {
-  ssrNotFound = true
-}
-export function consumeNotFound(): boolean {
-  return ssrNotFound
-}
-
 /** SSR 期间当前请求的路径（由 entry-server 设定） */
 let ssrPath = '/'
 export function setSsrPath(p: string) {
@@ -305,8 +291,6 @@ export interface GameSchemaInput {
   genres?: string[]
   year?: number
   developer?: string
-  rating?: number
-  ratingCount?: number
 }
 
 /** 游戏详情页：VideoGame + 评分 */
@@ -328,16 +312,8 @@ export function videoGameSchema(g: GameSchemaInput) {
   if (g.genres?.length) schema.genre = g.genres
   if (g.year) schema.datePublished = String(g.year)
   if (g.developer) schema.author = { '@type': 'Organization', name: g.developer }
-  // 只有真的有人评分才输出 aggregateRating，否则属于虚假结构化数据
-  if (g.rating && g.ratingCount && g.ratingCount > 0) {
-    schema.aggregateRating = {
-      '@type': 'AggregateRating',
-      ratingValue: g.rating,
-      ratingCount: g.ratingCount,
-      bestRating: 5,
-      worstRating: 1,
-    }
-  }
+  // 这里刻意不输出 aggregateRating：站内没有评分功能，编一个聚合评分属于虚假结构化数据，
+  // Google 对此的处理是取消整站的富媒体摘要资格。将来真做了评分系统再按真实数据补回来。
   return schema
 }
 

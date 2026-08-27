@@ -4,6 +4,12 @@
  */
 
 const bool = (v) => v === 1 || v === true || v === '1'
+/** Date / 字符串 -> YYYY-MM-DD */
+const dateOnly = (v) => {
+  if (!v) return ''
+  if (v instanceof Date) return Number.isNaN(v.getTime()) ? '' : v.toISOString().slice(0, 10)
+  return String(v).slice(0, 10)
+}
 const arr = (v) => (Array.isArray(v) ? v : v == null ? [] : safeParse(v))
 function safeObj(v) {
   try {
@@ -39,7 +45,8 @@ export function gameRowToApi(r) {
     coinReward: Number(r.coin_reward),
     icon: r.icon || '🎮',
     description: r.description || '',
-    addedAt: r.added_at || '',
+    // 「上线日期」优先用后台填的 added_at；没填就用真实入库时间，不编日期
+    addedAt: r.added_at || dateOnly(r.created_at),
     bodyControl: bool(r.body_control),
     hidden: bool(r.hidden),
   }
@@ -81,6 +88,49 @@ export function gameApiToRow(g) {
     rom: g.rom ?? null,
     roms: JSON.stringify(g.roms && typeof g.roms === 'object' ? g.roms : {}),
   }
+}
+
+/**
+ * PATCH 用：只把请求里**确实带了**的字段翻成数据库列。
+ *
+ * 以前 PATCH 是「整行读出来 → 合并 → 整行 upsert」，
+ * 只想改一个 hidden，却会把 plays / rating / roms 等所有列按读到的旧值写回去 ——
+ * 两个人同时改、或者中间别处更新过某一列，都会被这一次悄悄覆盖掉。
+ */
+const GAME_FIELD_TO_COLUMN = {
+  title: ['title', (v) => String(v ?? '')],
+  titleZh: ['title_zh', (v) => (v == null || v === '' ? null : String(v))],
+  platform: ['platform', (v) => String(v ?? '')],
+  genres: ['genres', (v) => JSON.stringify(Array.isArray(v) ? v : [])],
+  year: ['year', (v) => Number(v) || 0],
+  developer: ['developer', (v) => String(v ?? '')],
+  rating: ['rating', (v) => Number(v) || 0],
+  ratingCount: ['rating_count', (v) => Number(v) || 0],
+  plays: ['plays', (v) => Number(v) || 0],
+  players: ['players', (v) => Number(v) || 1],
+  multiplayer: ['multiplayer', (v) => (v ? 1 : 0)],
+  coinReward: ['coin_reward', (v) => Number(v) || 0],
+  icon: ['icon', (v) => String(v ?? '🎮')],
+  cover: ['cover', (v) => (v == null || v === '' ? null : String(v))],
+  video: ['video', (v) => (v == null || v === '' ? null : String(v))],
+  description: ['description', (v) => String(v ?? '')],
+  tags: ['tags', (v) => JSON.stringify(Array.isArray(v) ? v : [])],
+  addedAt: ['added_at', (v) => String(v ?? '')],
+  bodyControl: ['body_control', (v) => (v ? 1 : 0)],
+  hidden: ['hidden', (v) => (v ? 1 : 0)],
+  rom: ['rom', (v) => (v == null || v === '' ? null : String(v))],
+  roms: ['roms', (v) => JSON.stringify(v && typeof v === 'object' ? v : {})],
+}
+
+export function gameApiToPartialRow(patch) {
+  const row = {}
+  if (!patch || typeof patch !== 'object') return row
+  for (const [field, [column, cast]] of Object.entries(GAME_FIELD_TO_COLUMN)) {
+    // 用 in 判断而不是取值真假：{ rom: null } 是「解绑」，{ hidden: false } 是「上架」，
+    // 两者都必须写进去，不能因为值是假的就跳过。
+    if (Object.prototype.hasOwnProperty.call(patch, field)) row[column] = cast(patch[field])
+  }
+  return row
 }
 
 /* ---------------- 博客 ---------------- */

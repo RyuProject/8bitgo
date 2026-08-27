@@ -40,8 +40,12 @@ export interface Platform {
   nameZh: string
   manufacturer: string
   year: number
-  /** 使用哪个运行时（模拟器）；null 表示暂不支持在线运行 */
-  runtime: 'emulatorjs' | 'ruffle' | null
+  /**
+   * 使用哪个运行时（模拟器）；null 表示暂不支持在线运行。
+   * 取值与 src/emulator/types.ts 的 RuntimeId 一致（cloudgame 不在这里选，
+   * 它由用户在播放器里切到联机模式时才用）。
+   */
+  runtime: 'emulatorjs' | 'ruffle' | 'jsnes' | 'j2me' | 'jsdos' | null
   /** EmulatorJS 核心名（仅 runtime 为 emulatorjs 时有意义） */
   core: string | null
   /** 接受的 ROM 文件后缀 */
@@ -68,9 +72,14 @@ export interface Game {
   genres: GenreId[]
   year: number
   developer: string
-  /** 0 - 5 */
+  /**
+   * 评分。站内目前**没有**评分功能，这两个字段一律为 0，界面上也不展示。
+   * 保留下来是给将来的真实评分系统用（用户评分 -> 服务端聚合）。
+   * 在那之前不要手填，更不要输出到 schema.org —— 编造的聚合评分会被 Google 判为虚假富媒体摘要。
+   */
   rating: number
   ratingCount: number
+  /** 真实游玩次数：玩家把游戏跑起来时由后端累加（POST /api/games/:slug/play） */
   plays: number
   /** 最大玩家数 */
   players: 1 | 2 | 3 | 4
@@ -98,21 +107,12 @@ export interface Game {
   roms?: Partial<Record<RomLang, string>>
 }
 
-export interface LiveStream {
-  id: string
-  streamer: string
-  title: string
-  gameSlug: string
-  viewers: number
-  startedAt: string
-}
-
 export interface FaqItem {
   q: string
   a: string
 }
 
-export type SortKey = 'popular' | 'newest' | 'rating' | 'name'
+export type SortKey = 'popular' | 'newest' | 'name'
 
 export interface GameQuery {
   q?: string

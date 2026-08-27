@@ -10,6 +10,7 @@ import { readFileSync, existsSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getContent } from './content.js'
+import { CACHE } from './cache.js'
 
 const root = path.resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const CLIENT_DIR = path.join(root, 'dist/client')
@@ -99,7 +100,11 @@ export async function renderPage(req, res, next) {
     if (isAdminPath(req.path)) {
       return res
         .status(200)
-        .set({ 'Content-Type': 'text/html; charset=utf-8', 'X-Robots-Tag': 'noindex, nofollow' })
+        .set({
+          'Content-Type': 'text/html; charset=utf-8',
+          'X-Robots-Tag': 'noindex, nofollow',
+          'Cache-Control': CACHE.none,
+        })
         .end(getTemplate())
     }
 
@@ -133,12 +138,22 @@ export async function renderPage(req, res, next) {
     page = injectOnce(page, '<div id="root"></div>', `<div id="root">${html}</div>\n${bootstrap}`)
 
     // 渲染出「页面不存在」时回 404：一律 200 会让爬虫把不存在的 URL 当正常页面收录
-    res.status(notFound ? 404 : 200).set({ 'Content-Type': 'text/html; charset=utf-8' }).end(page)
+    // 页面是匿名的（登录态在客户端 localStorage 里，SSR 不碰用户数据），
+    // 所以可以放心让 Cloudflare 缓存。后台改完内容想立刻生效就清一次 Cloudflare 缓存。
+    res
+      .status(notFound ? 404 : 200)
+      .set({
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': notFound ? CACHE.notFound : CACHE.page,
+        Vary: 'Accept-Encoding',
+      })
+      .end(page)
   } catch (e) {
     console.error('[ssr] 渲染失败，退回纯客户端渲染：', e)
     // SSR 挂了不能让站点打不开：返回不带首屏内容的模板，浏览器自己渲染
     try {
-      res.status(200).set({ 'Content-Type': 'text/html; charset=utf-8' }).end(getTemplate())
+      // 这是降级返回的空壳，一旦被边缘缓存住，故障恢复后用户还会拿到没有首屏的页面
+      res.status(200).set({ 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': CACHE.none }).end(getTemplate())
     } catch {
       next(e)
     }

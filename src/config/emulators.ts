@@ -21,4 +21,9 @@ export const EXT_RUNTIME_OVERRIDES: Record<string, RuntimeId> = {
   // Java 手机游戏：需要自托管 J2ME 运行时，没配置时会自动跳过
   jar: 'j2me',
   jad: 'j2me',
+
+  // DOS：js-dos（DOSBox 浏览器移植）比 EmulatorJS 的 dosbox_pure 核心启动快、兼容性好。
+  // .zip / .exe / .com 没写在这里 —— 那几个扩展名别的平台也在用，
+  // 靠 jsdos 的 supports(dos) + priority 去争，不能一刀切。
+  jsdos: 'jsdos',
 }

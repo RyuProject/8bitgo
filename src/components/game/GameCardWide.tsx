@@ -17,9 +17,6 @@ interface Props {
 /** 横版卡片（16:9），用于「最新上线」「一起玩」等区块 */
 export function GameCardWide({ game, className, video = true, isNew }: Props) {
   const platform = platformMap[game.platform]
-  // 用 plays 派生出稳定的假时长，仅用于展示
-  const seconds = 45 + (game.plays % 200)
-  const duration = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 
   return (
     <Link
@@ -37,9 +34,6 @@ export function GameCardWide({ game, className, video = true, isNew }: Props) {
                 </svg>
               </span>
             </span>
-            <Badge tone="dark" className="absolute bottom-2 right-2 font-mono">
-              {duration}
-            </Badge>
           </>
         )}
         {isNew && (
@@ -56,7 +50,7 @@ export function GameCardWide({ game, className, video = true, isNew }: Props) {
           <span>
             {platform.name} · {game.year}
           </span>
-          <span>▶ {formatCount(game.plays)}</span>
+          {game.plays > 0 && <span>▶ {formatCount(game.plays)}</span>}
         </p>
       </div>
     </Link>

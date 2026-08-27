@@ -23,7 +23,7 @@
 import { platformMap } from '@/data/platforms'
 import type { MountOptions, Runtime } from '../types'
 import { getT, fmt } from '@/services/i18n'
-import { ICE_SERVERS, NETPLAY_URL, socketIoScriptUrl, uploadState } from '@/services/netplay'
+import { ICE_SERVERS, NETPLAY_URL, fetchIceConfig, socketIoScriptUrl, uploadState } from '@/services/netplay'
 
 export const EJS_PATH: string = (() => {
   const p = import.meta.env.VITE_EJS_PATH || 'https://cdn.emulatorjs.org/stable/data/'
@@ -41,6 +41,20 @@ export interface NetplaySession {
   maxPlayers: number
   /** host = 开新房间；join = 加入 roomId 指定的房间 */
   mode: 'host' | 'join'
+  /**
+   * 以什么身份加入：
+   *   player    占一个手柄位，能操作（默认）
+   *   spectator 只看不操作 —— 这就是「直播观众」
+   *
+   * 观众这一侧我们会把 netplay 的输入转发函数换成空实现，
+   * 所以他按键盘不会影响房主那边的游戏。手柄位的分配在服务端，见 server/src/netplay.js。
+   */
+  role?: 'player' | 'spectator'
+  /**
+   * 进房后把「切身份」的函数交给调用方，观众想上场时不用断线重连。
+   * 传 true 掐断输入（观众），传 false 恢复（玩家）。
+   */
+  onSpectatorControl?: (setSpectator: (on: boolean) => void) => void
   roomId?: string
   password?: string
   /**
@@ -56,10 +70,38 @@ export interface NetplaySession {
   onPlayers?: (count: number) => void
   /** 房主离开（这局结束了） */
   onHostLeft?: () => void
+  /** 服务端下发的房间令牌：上传存档、接手房主都要用它证明身份 */
+  onToken?: (token: string) => void
+  /**
+   * WebRTC 连接状态（'connecting' | 'connected' | 'failed' | 'disconnected'）。
+   * 用来在界面上区分「还在连」和「连不通」——以前连不通时界面上什么都不显示，
+   * 玩家只看到一片黑，不知道是在加载还是已经失败了。
+   */
+  onLinkState?: (state: RTCPeerConnectionState) => void
+  /** 没有 TURN 兜底时为 false，可据此提示「部分网络可能连不上」 */
+  onIceReady?: (hasTurn: boolean) => void
 }
 
-/** 房主每隔多久把存档传给信令服务器（掉线时交给新房主） */
-const STATE_UPLOAD_MS = 25_000
+/**
+ * 视频发送参数。
+ *
+ * captureStream 出来的轨道，浏览器默认会为了保住分辨率而牺牲帧率
+ * （degradationPreference 默认偏向 maintain-resolution）。老游戏本来就是
+ * 256×240 这种分辨率，糊一点没人在意，卡顿却直接影响能不能玩 ——
+ * 所以明确要求「优先保帧率」，并给一个够用的码率上限，避免把房主的上行占满
+ * （上行一满，存档上传和按键回传都会跟着变卡）。
+ */
+const VIDEO_MAX_BITRATE = Number(import.meta.env.VITE_NETPLAY_MAX_BITRATE) || 2_500_000
+const VIDEO_MAX_FPS = 60
+
+/**
+ * 房主每隔多久把存档传给信令服务器（掉线时交给新房主）。
+ *
+ * 从 25 秒降到 10 秒：接手的人是从这份存档接着玩的，间隔多长就意味着最多丢多少进度，
+ * 25 秒足够打完一条命。之所以敢降，是因为下面加了「内容没变就不传」——
+ * 暂停、看菜单、挂机时一个字节都不会发，真正上传的只有进度确实在推进的时候。
+ */
+const STATE_UPLOAD_MS = 10_000
 
 const FRAME_HTML = `<!doctype html>
 <html lang="zh-CN">
@@ -83,6 +125,8 @@ interface EjsNetplay {
   openRoom: (roomName: string, maxPlayers: number, password: string) => void
   joinRoom: (roomId: string, roomName: string, maxPlayers: number, password: string | null) => void
   leaveRoom?: () => void
+  /** 把访客的按键转发给房主；观众这一侧会被换成空实现 */
+  simulateInput?: (player: number, index: number, value: number) => void
   socket?: { connected?: boolean } | null
 }
 interface EjsGameManager {
@@ -93,6 +137,78 @@ interface EjsEmulator {
   netplay?: EjsNetplay
   gameManager?: EjsGameManager
   isNetplay?: boolean
+}
+
+/**
+ * 在 iframe 里包一层 RTCPeerConnection。
+ *
+ * EmulatorJS 的 netplay 在内部自己建连接，没有对外暴露任何钩子。包一层之后我们能做三件事：
+ *   1. 把连接状态报上去，界面上能区分「连接中」和「连不通」
+ *   2. 连接失败时自动 restartIce 再试一次（换网、切 Wi-Fi 时很常见）
+ *   3. 调发送端参数：优先保帧率、限码率（见 VIDEO_MAX_BITRATE 的说明）
+ *
+ * 必须在 loader.js 之前装好，否则 netplay 拿到的是原生构造函数。
+ */
+function instrumentRtc(win: Window & Record<string, unknown>, onState?: (s: RTCPeerConnectionState) => void) {
+  const Native = win.RTCPeerConnection as typeof RTCPeerConnection | undefined
+  if (typeof Native !== 'function') return
+
+  const tuneVideo = (sender: RTCRtpSender) => {
+    try {
+      const params = sender.getParameters()
+      if (!params.encodings || !params.encodings.length) params.encodings = [{}]
+      for (const e of params.encodings) {
+        e.maxBitrate = VIDEO_MAX_BITRATE
+        e.maxFramerate = VIDEO_MAX_FPS
+      }
+      // 游戏画面：宁可糊一点也不要卡
+      ;(params as RTCRtpSendParameters & { degradationPreference?: string }).degradationPreference =
+        'maintain-framerate'
+      void sender.setParameters(params)
+    } catch {
+      /* 老浏览器不支持就算了，只是少一层优化 */
+    }
+  }
+
+  const Wrapped = function (this: unknown, config?: RTCConfiguration, ...rest: unknown[]) {
+    const pc = new Native(config, ...(rest as []))
+
+    let restarted = false
+    pc.addEventListener('connectionstatechange', () => {
+      onState?.(pc.connectionState)
+      // 失败时自动重来一次：换 Wi-Fi、切移动网络之后很常见，
+      // 不重试的话画面就永远停在那里，玩家只能自己刷新
+      if (pc.connectionState === 'failed' && !restarted) {
+        restarted = true
+        try {
+          pc.restartIce?.()
+        } catch {
+          /* 不支持就算了 */
+        }
+      }
+      if (pc.connectionState === 'connected') restarted = false
+    })
+
+    const nativeAddTrack = pc.addTrack.bind(pc)
+    pc.addTrack = (track: MediaStreamTrack, ...streams: MediaStream[]) => {
+      // 告诉编码器这是「运动画面」，它会自己偏向保帧率
+      try {
+        if (track.kind === 'video') track.contentHint = 'motion'
+      } catch {
+        /* ignore */
+      }
+      const sender = nativeAddTrack(track, ...streams)
+      if (track.kind === 'video') {
+        // 参数要等 sender 真正协商完才生效，稍等一下再设
+        window.setTimeout(() => tuneVideo(sender), 1000)
+      }
+      return sender
+    }
+    return pc
+  } as unknown as typeof RTCPeerConnection
+
+  Wrapped.prototype = Native.prototype
+  win.RTCPeerConnection = Wrapped
 }
 
 /** 往 iframe 里注入一个脚本，resolve 表示加载完成 */
@@ -125,6 +241,10 @@ function mount(container: HTMLElement, options: MountOptions): () => void {
   let destroyed = false
   let playersTimer = 0
   let stateTimer = 0
+  /** 服务端下发的房间令牌，上传存档要用 */
+  let stateToken = ''
+  /** 关页面前补传存档用 */
+  let flushState: (() => void) | null = null
   // 本地文件转成 blob: URL（同源 iframe 可直接访问）；gameName 用原始文件名以保留扩展名
   const isFile = typeof options.game !== 'string'
   const gameUrl = isFile ? URL.createObjectURL(options.game as File) : (options.game as string)
@@ -151,6 +271,22 @@ function mount(container: HTMLElement, options: MountOptions): () => void {
       }
     }
 
+    // 观众：把 netplay 的输入转发换成空实现。
+    // EmulatorJS 里 键盘 → GameManager.simulateInput → netplay.simulateInput，
+    // 而 netplay.simulateInput 既把输入喂给本地模拟器、又发 sync-control 给房主，
+    // 所以换掉这一环，观众按什么都不会生效，画面和声音照常收。
+    const realInput = np.simulateInput?.bind(np)
+    const applyRole = (spectator: boolean) => {
+      try {
+        if (spectator) np.simulateInput = () => {}
+        else if (realInput) np.simulateInput = realInput
+      } catch {
+        /* 换不掉也不致命：服务端那边本来就不给观众手柄位 */
+      }
+    }
+    applyRole(netplay.role === 'spectator')
+    netplay.onSpectatorControl?.(applyRole)
+
     try {
       if (netplay.mode === 'join' && netplay.roomId) {
         np.joinRoom(netplay.roomId, netplay.roomName, netplay.maxPlayers, netplay.password || null)
@@ -166,11 +302,27 @@ function mount(container: HTMLElement, options: MountOptions): () => void {
     let lastCount = -1
     let reportedRoom = ''
     let reportedId = ''
+    let tokenHooked = false
     playersTimer = window.setInterval(() => {
       if (destroyed) return
       const cur = win.EJS_emulator as EjsEmulator | undefined
       const n = cur?.netplay
       if (!n) return
+      // 服务端在开房 / 加入成功后，会通过这条 socket 单独发一个房间令牌给本人。
+      // iframe 是同源的 srcdoc，所以页面这边能直接挂监听。
+      if (!tokenHooked && n.socket) {
+        const sock = n.socket as unknown as { on?: (ev: string, cb: (d: unknown) => void) => void }
+        if (typeof sock.on === 'function') {
+          tokenHooked = true
+          sock.on('room-token', (d: unknown) => {
+            const token = (d as { token?: string } | null)?.token
+            if (!token) return
+            stateToken = token
+            netplay.onToken?.(token)
+          })
+        }
+      }
+
       const count = Object.keys(n.players || {}).length
       if (count !== lastCount) {
         lastCount = count
@@ -188,22 +340,52 @@ function mount(container: HTMLElement, options: MountOptions): () => void {
         reportedId = n.playerID
         netplay.onIdentity?.(n.playerID)
       }
-      // 房主走了：服务器广播 host-left，netplay 会断开
+      // 信令断开。注意：这既可能是「房主走了」，也可能是**我自己**掉线了。
+      // 以前一律当成房主走了报错，用户自己网络抖一下就被踢出房间。
+      // 房主自己不可能「房主走了」，所以房主这边只当作网络问题，交给 socket.io 自己重连。
       if (reportedRoom && !n.socket?.connected) {
+        if (n.owner) return
         window.clearInterval(playersTimer)
         netplay.onHostLeft?.()
       }
     }, 1000)
   }
 
-  /** 房主定期把存档托管到信令服务器（只上传，不广播给访客） */
+  /**
+   * 房主定期把存档托管到信令服务器（只上传，不广播给访客）。
+   *
+   * 两处优化：
+   * 1. **内容没变就不传**。以前每 25 秒无条件全量上传一份，暂停、看菜单、挂机时
+   *    传的都是同一份数据。N64 / PS1 的存档能到几 MB，这些流量全部占用房主的上行 ——
+   *    而房主的上行同时还扛着推给所有访客的画面，一挤画面就卡。
+   *    这里算一个便宜的指纹（长度 + 采样异或），一样就跳过。
+   * 2. **页面要关的时候补传一次**。原来只靠定时器，最坏情况下新房主拿到的是
+   *    25 秒前的进度；关页面前补一次，接手的人基本能无缝接上。
+   */
   const startStateUpload = (win: Window & Record<string, unknown>, roomId: string) => {
     if (stateTimer || destroyed) return
-    const push = () => {
-      if (destroyed) return
+    let lastFingerprint = ''
+
+    /** 便宜的指纹：全量哈希几 MB 太贵，采样 512 个点就足够区分「变了没有」 */
+    const fingerprint = (buf: Uint8Array): string => {
+      let h = 0x811c9dc5
+      const step = Math.max(1, Math.floor(buf.length / 512))
+      for (let i = 0; i < buf.length; i += step) {
+        h ^= buf[i]
+        h = Math.imul(h, 0x01000193)
+      }
+      return `${buf.length}:${h >>> 0}`
+    }
+
+    const push = (force = false) => {
+      if (destroyed && !force) return
       const emu = win.EJS_emulator as EjsEmulator | undefined
       const np = emu?.netplay
-      if (!np?.owner || !np.playerID || !emu?.gameManager) return
+      if (!np?.owner || !emu?.gameManager) return
+      // 有房间令牌就用令牌（服务端加固后的方式），没有就退回 netplay 内部的
+      // playerID —— 兼容还没升级信令服务器的部署
+      const auth = stateToken || np.playerID || ''
+      if (!auth) return
       let state: Uint8Array | undefined
       try {
         state = emu.gameManager.getState()
@@ -211,11 +393,19 @@ function mount(container: HTMLElement, options: MountOptions): () => void {
         return // 有些核心在某些时刻取不到存档，跳过这一轮就行
       }
       if (!state?.length) return
-      void uploadState(roomId, np.playerID, state)
+      const fp = fingerprint(state)
+      if (!force && fp === lastFingerprint) return // 进度没动，不用重复传
+      lastFingerprint = fp
+      void uploadState(roomId, auth, state)
     }
-    stateTimer = window.setInterval(push, STATE_UPLOAD_MS)
+
+    stateTimer = window.setInterval(() => push(), STATE_UPLOAD_MS)
     // 开局后先传一份，别让刚开房就掉线的情况一无所有
-    window.setTimeout(push, 3000)
+    window.setTimeout(() => push(), 3000)
+
+    // 关页面 / 切后台前补一次，让接手的人拿到尽量新的进度
+    flushState = () => push(true)
+    window.addEventListener('pagehide', flushState)
   }
 
   iframe.addEventListener('load', () => {
@@ -260,6 +450,20 @@ function mount(container: HTMLElement, options: MountOptions): () => void {
             // 信令服务器不可达时不阻断单机游戏，只是联机用不了
             options.onError?.(fmt(rt.netplaySignalUnreachable, { url: socketIoScriptUrl() }))
           })
+
+          // ICE 配置向服务端要：那边按请求现算一份短期 TURN 凭证，
+          // 凭证不进前端包，换 TURN 也不用重新构建（见 services/netplay.ts）
+          try {
+            const ice = await fetchIceConfig()
+            win.EJS_netplayICEServers = ice.iceServers
+            netplay?.onIceReady?.(ice.hasTurn)
+          } catch {
+            /* 取不到就用上面设的兜底 STUN */
+          }
+
+          // 包一层 RTCPeerConnection：观察连接状态、失败自动重试、限码率保帧率。
+          // 必须在 loader.js 之前装，否则 netplay 拿到的是原生构造函数。
+          if (netplay) instrumentRtc(win, (state) => netplay.onLinkState?.(state))
         }
         if (destroyed) return
         await injectScript(doc, `${EJS_PATH}loader.js`)
@@ -275,6 +479,10 @@ function mount(container: HTMLElement, options: MountOptions): () => void {
     destroyed = true
     window.clearInterval(playersTimer)
     window.clearInterval(stateTimer)
+    if (flushState) {
+      window.removeEventListener('pagehide', flushState)
+      flushState = null
+    }
     try {
       // 先干净地退出房间，别让别人看到一个已经没人的房间
       const win = iframe.contentWindow as (Window & Record<string, unknown>) | null

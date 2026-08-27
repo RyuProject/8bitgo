@@ -4,12 +4,13 @@
   "version": "0.9.18",
   "type": "module",
   "scripts": {
-    "predev": "node scripts/fetch-fonts.mjs --if-missing && node scripts/copy-ruffle.mjs --if-missing",
+    "predev": "node scripts/fetch-fonts.mjs --if-missing && node scripts/copy-ruffle.mjs --if-missing && node scripts/copy-jsdos.mjs --if-missing",
     "dev": "vite",
     "start": "vite",
     "fonts": "node scripts/fetch-fonts.mjs",
     "ruffle": "node scripts/copy-ruffle.mjs",
-    "prebuild": "node scripts/fetch-fonts.mjs --if-missing && node scripts/copy-ruffle.mjs --if-missing && node scripts/gen-sitemap.mjs",
+    "jsdos": "node scripts/copy-jsdos.mjs",
+    "prebuild": "node scripts/fetch-fonts.mjs --if-missing && node scripts/copy-ruffle.mjs --if-missing && node scripts/copy-jsdos.mjs --if-missing && node scripts/gen-sitemap.mjs",
     "build": "tsc -b && npm run build:client && npm run build:server",
     "lint": "oxlint",
     "preview": "vite preview",
@@ -27,6 +28,7 @@
   },
   "devDependencies": {
     "@ruffle-rs/ruffle": "^0.5.0",
+    "js-dos": "^8.4.1",
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",

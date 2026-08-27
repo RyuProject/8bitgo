@@ -8,17 +8,7 @@ import { isPlatformEnabled } from '@/config/platforms'
 import { platforms, platformMap } from '@/data/platforms'
 import { isPlayable } from '@/emulator'
 import { genres, genreMap } from '@/data/genres'
-import { liveStreams } from '@/data/streams'
-import type {
-  Game,
-  GameQuery,
-  Genre,
-  GenreId,
-  LiveStream,
-  Platform,
-  PlatformId,
-  SortKey,
-} from '@/types'
+import type { Game, GameQuery, Genre, GenreId, Platform, PlatformId, SortKey } from '@/types'
 
 export const DEFAULT_PAGE_SIZE = 24
 
@@ -39,11 +29,19 @@ export interface PagedResult<T> {
   totalPages: number
 }
 
+const byTitle = (a: Game, b: Game) => a.title.localeCompare(b.title, 'en')
+
+/**
+ * 排序。
+ *
+ * plays 现在是真实统计出来的，新站会有很长一段时间大量游戏都是 0 ——
+ * 只按 plays 排的话这些游戏的相对顺序完全取决于数据库返回顺序，每次刷新都可能不同。
+ * 所以每个排序都用「上线日期 → 标题」兜底，保证结果稳定可预期。
+ */
 const sorters: Record<SortKey, (a: Game, b: Game) => number> = {
-  popular: (a, b) => b.plays - a.plays,
-  newest: (a, b) => (a.addedAt < b.addedAt ? 1 : a.addedAt > b.addedAt ? -1 : 0),
-  rating: (a, b) => b.rating - a.rating || b.ratingCount - a.ratingCount,
-  name: (a, b) => a.title.localeCompare(b.title, 'en'),
+  popular: (a, b) => b.plays - a.plays || (a.addedAt < b.addedAt ? 1 : a.addedAt > b.addedAt ? -1 : 0) || byTitle(a, b),
+  newest: (a, b) => (a.addedAt < b.addedAt ? 1 : a.addedAt > b.addedAt ? -1 : 0) || byTitle(a, b),
+  name: byTitle,
 }
 
 function normalize(text: string) {
@@ -116,10 +114,6 @@ export function getNewestGames(limit = 12): Game[] {
   return queryGames({ sort: 'newest', pageSize: limit }).items
 }
 
-export function getTopRatedGames(limit = 12): Game[] {
-  return queryGames({ sort: 'rating', pageSize: limit }).items
-}
-
 export function getMultiplayerGames(limit = 12): Game[] {
   return queryGames({ multiplayer: true, sort: 'popular', pageSize: limit }).items
 }
@@ -127,7 +121,7 @@ export function getMultiplayerGames(limit = 12): Game[] {
 export function getCoinGames(limit = 12): Game[] {
   return games()
     .filter((g) => g.coinReward > 0)
-    .sort((a, b) => b.coinReward - a.coinReward || b.plays - a.plays)
+    .sort((a, b) => b.coinReward - a.coinReward || b.plays - a.plays || byTitle(a, b))
     .slice(0, limit)
 }
 
@@ -147,7 +141,7 @@ export function getRelatedGames(game: Game, limit = 8): Game[] {
     .filter((g) => g.slug !== game.slug)
     .map((g) => ({ g, s: score(g) }))
     .filter((x) => x.s > 0)
-    .sort((a, b) => b.s - a.s || b.g.plays - a.g.plays)
+    .sort((a, b) => b.s - a.s || b.g.plays - a.g.plays || byTitle(a.g, b.g))
     .slice(0, limit)
     .map((x) => x.g)
 }
@@ -201,20 +195,9 @@ export function getDevelopers(): DeveloperInfo[] {
       name,
       count: list.length,
       platforms: [...new Set(list.map((g) => g.platform))],
-      topGame: list.slice().sort((a, b) => b.plays - a.plays)[0],
+      topGame: list.slice().sort((a, b) => b.plays - a.plays || byTitle(a, b))[0],
     }))
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
-}
-
-export interface LiveStreamWithGame extends LiveStream {
-  game: Game
-}
-
-export function getLiveStreams(): LiveStreamWithGame[] {
-  return liveStreams
-    .map((s) => ({ ...s, game: findGame(s.gameSlug) as Game }))
-    .filter((s) => Boolean(s.game))
-    .sort((a, b) => b.viewers - a.viewers)
 }
 
 /**
@@ -230,21 +213,3 @@ export function getRandomGame(excludeSlug?: string): Game | undefined {
   return list[Math.floor(Math.random() * list.length)]
 }
 
-export function getStats() {
-  return {
-    games: games().length,
-    platforms: platforms.length,
-    plays: games().reduce((sum, g) => sum + g.plays, 0),
-    multiplayer: games().filter((g) => g.multiplayer).length,
-    liveStreams: liveStreams.length,
-    liveViewers: liveStreams.reduce((sum, s) => sum + s.viewers, 0),
-    /** 近两周新增游戏数（相对数据中最新的上线日期计算） */
-    addedRecently: (() => {
-      const newest = games().reduce((m, g) => (g.addedAt > m ? g.addedAt : m), '')
-      const cutoff = new Date(newest)
-      cutoff.setDate(cutoff.getDate() - 14)
-      const cutoffStr = cutoff.toISOString().slice(0, 10)
-      return games().filter((g) => g.addedAt >= cutoffStr).length
-    })(),
-  }
-}

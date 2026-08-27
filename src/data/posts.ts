@@ -88,7 +88,7 @@ export const posts: Post[] = [
     excerpt: '有限的调色板、小得可怜的显存，反而逼出了一种至今仍在被模仿的美术风格。',
     icon: '🎨',
     tags: ['复古', '闲聊'],
-    author: '像素老张',
+    author: '8BitGo 团队',
     date: '2026-08-10',
     published: true,
     content: `## 限制造就风格

@@ -28,7 +28,7 @@ export function HomeIntro() {
     <section className="container-x">
       <nav className="flex flex-wrap items-center gap-x-2 gap-y-2.5" aria-label={t.home.browseByGenre}>
         {genres.map((g) => (
-          <Link key={g.id} to={`/games?genre=${g.id}`} className={chipClasses(false, 'text-sm')}>
+          <Link key={g.id} to={`/genres/${g.id}`} className={chipClasses(false, 'text-sm')}>
             <span aria-hidden>{g.icon}</span>
             {genreLabel(t, g.id)}
           </Link>

@@ -8,7 +8,6 @@ import {
   PlatformsSection,
   PopularSection,
   TogetherSection,
-  TopRatedSection,
 } from '@/components/home/sections'
 import { useSeo, faqSchema, websiteSchema } from '@/services/seo'
 import { useT } from '@/services/i18n'
@@ -36,7 +35,6 @@ export function HomePage() {
         <PlatformsSection />
         <LatestSection />
         <TogetherSection />
-        <TopRatedSection />
         <GenreGridSection />
         <FeaturedCarousel />
         <FaqSection />

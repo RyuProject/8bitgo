@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { Game } from '@/types'
-import { gamesStore, useAllGames } from '@/services/store'
+import { patchGame, useAllGames } from '@/services/store'
 import {
   conventionalKeys,
   deleteRom,
@@ -10,10 +10,12 @@ import {
   listRomObjects,
   pingRomApi,
   platformFromKey,
+  romKeysOf,
   romUrlForKey,
   saveRomConfig,
   slugFromKey,
   subscribeRomConfig,
+  unbindKeyPatch,
   type RomObject,
 } from '@/services/roms'
 import { platformMap } from '@/data/platforms'
@@ -58,11 +60,19 @@ export function AdminRoms() {
   const [listError, setListError] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
   const [showCors, setShowCors] = useState(false)
+  const [busy, setBusy] = useState(false)
 
   useEffect(() => subscribeRomConfig(() => setCfg(getRomConfig())), [])
 
-  const bound = games.filter((g) => g.rom)
-  const byRom = useMemo(() => new Map(bound.map((g) => [g.rom!, g])), [bound])
+  // 「已绑定」要同时算上通用 rom 和各语言 roms —— 编辑弹窗里现在只填后者，
+  // 只看 g.rom 的话这些游戏在后台全都显示成未绑定。
+  const bound = useMemo(() => games.filter((g) => romKeysOf(g).length > 0), [games])
+  /** 对象 key -> 绑定了它的游戏 */
+  const byRom = useMemo(() => {
+    const m = new Map<string, Game>()
+    for (const g of games) for (const key of romKeysOf(g)) if (!m.has(key)) m.set(key, g)
+    return m
+  }, [games])
 
   const flash = (t: string) => {
     setSavedMsg(t)
@@ -123,29 +133,77 @@ export function AdminRoms() {
     }
   }
 
-  const bind = (slug: string, key: string | undefined) => gamesStore.update(slug, { rom: key })
-
-  const autoMatch = () => {
-    if (!objects) return
-    let n = 0
-    for (const o of objects) {
-      if (byRom.has(o.key)) continue
-      const g = matchGame(o.key, games)
-      if (g && !g.rom) {
-        bind(g.slug, o.key)
-        n++
-      }
+  /**
+   * 绑定 / 解绑。
+   *
+   * 必须走 patchGame 写数据库：以前这里是 gamesStore.update()，只改了内存里的副本，
+   * 界面上立刻显示「已绑定」，刷新一下全部回到未绑定 —— 库里从头到尾没写过。
+   */
+  const bind = async (slug: string, key: string | undefined) => {
+    const game = games.find((g) => g.slug === slug)
+    if (!game) return
+    try {
+      // 解绑时把通用 rom 和所有指向这个 key 的语言槽一起清掉
+      const patch = key ? { rom: key } : unbindKeyPatch(game, game.rom ?? '')
+      await patchGame(slug, Object.keys(patch).length ? patch : { rom: undefined })
+      flash(key ? '已绑定' : '已解绑')
+    } catch (err) {
+      setListError(err instanceof Error ? err.message : '保存失败')
     }
+  }
+
+  /** 把某个对象 key 从绑定它的游戏上摘掉（删文件前、或行内「解绑」时调用） */
+  const unbindKey = async (key: string) => {
+    const game = byRom.get(key)
+    if (!game) return
+    const patch = unbindKeyPatch(game, key)
+    if (Object.keys(patch).length) await patchGame(game.slug, patch)
+  }
+
+  /** 行内「解绑」：只摘掉这一行对应的 key，不影响这款游戏的其它语言版本 */
+  const unbindRow = async (key: string) => {
+    try {
+      await unbindKey(key)
+      flash('已解绑')
+    } catch (err) {
+      setListError(err instanceof Error ? err.message : '解绑失败')
+    }
+  }
+
+  const autoMatch = async () => {
+    if (!objects) return
+    setBusy(true)
+    setListError(null)
+    let n = 0
+    let failed = 0
+    try {
+      for (const o of objects) {
+        if (byRom.has(o.key)) continue
+        const g = matchGame(o.key, games)
+        if (!g || romKeysOf(g).length > 0) continue
+        try {
+          // 逐条串行写库：一次几十条并发打过去，后端连接池会被打满
+          await patchGame(g.slug, { rom: o.key })
+          n++
+        } catch {
+          failed++
+        }
+      }
+    } finally {
+      setBusy(false)
+    }
+    if (failed) setListError(`${failed} 款游戏保存失败（其余 ${n} 款已写入数据库）`)
     flash(n ? `自动匹配并绑定了 ${n} 款游戏` : '没有可自动匹配的新文件')
   }
 
   const removeObject = async (o: RomObject) => {
     if (!window.confirm(`确定从 R2 删除 ${o.key}？此操作不可恢复。`)) return
     try {
+      // 先解绑再删文件：反过来的话一旦解绑失败，库里还留着指向已删文件的 key，
+      // 玩家点「开始游戏」直接 404。
+      await unbindKey(o.key)
       await deleteRom(o.key)
       setObjects((list) => list?.filter((x) => x.key !== o.key) ?? null)
-      const g = byRom.get(o.key)
-      if (g) bind(g.slug, undefined)
       flash('已删除')
     } catch (err) {
       setListError(err instanceof Error ? err.message : '删除失败')
@@ -230,8 +288,13 @@ export function AdminRoms() {
           extra={
             <div className="flex items-center gap-2">
               <input type="search" value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="筛选 key…" className={cx(inputClass, 'h-8 w-48 text-xs')} />
-              <button type="button" className={cx(btnClass.small, 'bg-brand text-white hover:bg-brand-hover')} onClick={autoMatch}>
-                自动匹配未绑定的
+              <button
+                type="button"
+                className={cx(btnClass.small, 'bg-brand text-white hover:bg-brand-hover')}
+                onClick={() => void autoMatch()}
+                disabled={busy}
+              >
+                {busy ? '匹配中…' : '自动匹配未绑定的'}
               </button>
             </div>
           }
@@ -248,7 +311,16 @@ export function AdminRoms() {
               </thead>
               <tbody className="divide-y divide-line">
                 {visibleObjects.map((o) => (
-                  <ObjectRow key={o.key} object={o} games={games} boundGame={byRom.get(o.key)} suggestion={byRom.get(o.key) ? undefined : matchGame(o.key, games)} onBind={bind} onDelete={removeObject} />
+                  <ObjectRow
+                    key={o.key}
+                    object={o}
+                    games={games}
+                    boundGame={byRom.get(o.key)}
+                    suggestion={byRom.get(o.key) ? undefined : matchGame(o.key, games)}
+                    onBind={bind}
+                    onUnbind={unbindRow}
+                    onDelete={removeObject}
+                  />
                 ))}
                 {visibleObjects.length === 0 && (
                   <tr>
@@ -268,22 +340,40 @@ export function AdminRoms() {
           <p className="text-sm text-muted">还没有游戏绑定 ROM。在「游戏」页打开某款游戏的编辑弹窗，用「上传到 R2」直接上传；或在这里列出文件后「自动匹配」。</p>
         ) : (
           <ul className="divide-y divide-line">
-            {bound.map((g) => (
-              <li key={g.slug} className="flex items-center gap-3 py-2 text-sm">
-                <span aria-hidden>{g.icon}</span>
-                <span className="min-w-0 flex-1">
-                  <span className="font-medium">{g.titleZh ?? g.title}</span>
-                  <span className="ml-2 text-xs text-muted">{platformMap[g.platform]?.shortName}</span>
-                  <span className="block truncate font-mono text-xs text-dim">{g.rom}</span>
-                </span>
-                <a href={romUrlForKey(g.rom!)} target="_blank" rel="noreferrer" className={cx(btnClass.small, 'text-muted hover:bg-black/5 hover:text-fg')}>
-                  打开
-                </a>
-                <button type="button" className={cx(btnClass.small, 'text-live hover:bg-live/15')} onClick={() => bind(g.slug, undefined)}>
-                  解绑
-                </button>
-              </li>
-            ))}
+            {bound.map((g) => {
+              const keys = romKeysOf(g)
+              return (
+                <li key={g.slug} className="flex items-center gap-3 py-2 text-sm">
+                  <span aria-hidden>{g.icon}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="font-medium">{g.titleZh ?? g.title}</span>
+                    <span className="ml-2 text-xs text-muted">{platformMap[g.platform]?.shortName}</span>
+                    {keys.length > 1 && <span className="ml-2 text-xs text-dim">{keys.length} 个语言版本</span>}
+                    {keys.map((k) => (
+                      <span key={k} className="block truncate font-mono text-xs text-dim">
+                        {k}
+                      </span>
+                    ))}
+                  </span>
+                  <a
+                    href={romUrlForKey(keys[0])}
+                    target="_blank"
+                    rel="noreferrer"
+                    className={cx(btnClass.small, 'text-muted hover:bg-black/5 hover:text-fg')}
+                  >
+                    打开
+                  </a>
+                  <button
+                    type="button"
+                    className={cx(btnClass.small, 'text-live hover:bg-live/15')}
+                    onClick={() => void bind(g.slug, undefined)}
+                    title={keys.length > 1 ? '只解绑通用 ROM；语言版本请到「游戏」页的编辑弹窗里改' : undefined}
+                  >
+                    解绑
+                  </button>
+                </li>
+              )
+            })}
           </ul>
         )}
       </Card>
@@ -311,13 +401,15 @@ function ObjectRow({
   boundGame,
   suggestion,
   onBind,
+  onUnbind,
   onDelete,
 }: {
   object: RomObject
   games: Game[]
   boundGame?: Game
   suggestion?: Game
-  onBind: (slug: string, key: string | undefined) => void
+  onBind: (slug: string, key: string | undefined) => void | Promise<void>
+  onUnbind: (key: string) => void | Promise<void>
   onDelete: (o: RomObject) => void
 }) {
   const [selected, setSelected] = useState(suggestion?.slug ?? '')
@@ -344,7 +436,7 @@ function ObjectRow({
       <td className="py-2 text-right">
         <div className="flex justify-end gap-1">
           {boundGame ? (
-            <button type="button" className={cx(btnClass.small, 'text-muted hover:bg-black/5 hover:text-fg')} onClick={() => onBind(boundGame.slug, undefined)}>
+            <button type="button" className={cx(btnClass.small, 'text-muted hover:bg-black/5 hover:text-fg')} onClick={() => void onUnbind(object.key)}>
               解绑
             </button>
           ) : (
@@ -352,7 +444,7 @@ function ObjectRow({
               type="button"
               className={cx(btnClass.small, 'text-brand-hover hover:bg-brand-soft')}
               disabled={!selected && !suggestion}
-              onClick={() => onBind(selected || suggestion!.slug, object.key)}
+              onClick={() => void onBind(selected || suggestion!.slug, object.key)}
             >
               绑定
             </button>

@@ -77,9 +77,11 @@ section('基础协议')
   ok('信令转发到指定 socket', relayed?.offer?.sdp === 'fake')
   ok('转发时带上 sender', relayed?.sender === guest.id)
 
+  // 手柄位满了不再拒人，改成让他进来当观众（见 netplay.js 的 join-room）
   const third = await connect()
-  const [fullErr] = await join(third, extra('u3', 'R1', '路人'))
-  ok('满员被拒', fullErr === 'room is full')
+  const [fullErr, fullUsers] = await join(third, extra('u3', 'R1', '路人'))
+  ok('手柄位满了改成当观众进来', fullErr == null && fullUsers?.['u3']?.role === 'spectator')
+  ok('原有两位仍是玩家', fullUsers?.['u-host']?.role !== 'spectator' && fullUsers?.['u-guest']?.role !== 'spectator')
 
   const hostB = await connect()
   await open(hostB, extra('u-b', 'R-pw', '房主B'), 2, 'secret')

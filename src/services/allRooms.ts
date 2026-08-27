@@ -29,6 +29,7 @@ export function useAllRooms(): RoomView[] {
         gameSlug: slug,
         players: r.players,
         max: r.max,
+        spectators: r.spectators ?? 0,
         host: r.host,
         members: r.members,
         createdAt: r.createdAt,

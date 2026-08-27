@@ -23,7 +23,7 @@ export function mainNavFor(t: Translation): NavLinkItem[] {
   return [
     { label: t.nav.discover, to: '/', icon: '🏠', exact: true },
     { label: t.nav.playOnline, to: '/rooms', icon: '👥', exact: true },
-    ...(FEATURES.live ? [{ label: t.nav.live, to: '/#live', icon: '📺', disabled: true, badge: 'coming soon' }] : []),
+    ...(FEATURES.live ? [{ label: t.nav.live, to: '/rooms?live=1', icon: '📺', exact: true }] : []),
     { label: t.nav.blog, to: '/blog', icon: '📝' },
   ]
 }
@@ -58,7 +58,7 @@ export function footerLinksFor(t: Translation) {
     { label: t.nav.terms, to: '/terms' },
     { label: t.nav.privacy, to: '/privacy' },
     { label: t.nav.apps, to: '/apps' },
-    ...(FEATURES.live ? [{ label: '8BitGo TV', to: '/tv' }] : []),
+    ...(FEATURES.live ? [{ label: '8BitGo TV', to: '/rooms?live=1' }] : []),
     { label: t.nav.playLocal, to: '/play-local' },
   ]
 }

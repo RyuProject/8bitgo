@@ -2,11 +2,11 @@ import 'dotenv/config'
 import express from 'express'
 import { createServer } from 'node:http'
 import cors from 'cors'
-import path from 'node:path'
 import { ping } from './db.js'
 import { ssrAvailable, renderPage, CLIENT_DIR } from './ssr.js'
 import { j2meJarProxy, uploadJar, releaseJar, keepaliveJar, startSweeper, MAX_BYTES, TTL_MS } from './j2me.js'
 import { ADMIN_AUTH_DISABLED } from './auth.js'
+import { CACHE, noStore, staticCacheHeaders } from './cache.js'
 import { authRouter } from './routes/auth.js'
 import { gamesRouter } from './routes/games.js'
 import { postsRouter } from './routes/posts.js'
@@ -15,6 +15,7 @@ import { usersRouter } from './routes/users.js'
 import { adminRouter } from './routes/admin.js'
 import { roomsRouter } from './routes/rooms.js'
 import { attachNetplay } from './netplay.js'
+import { iceRouter } from './routes/ice.js'
 
 const app = express()
 app.disable('x-powered-by')
@@ -34,6 +35,10 @@ app.use(
 
 app.use(express.json({ limit: '4mb' }))
 
+// /api 默认一律不缓存。公开只读接口（games / posts）会自己覆盖成短缓存 ——
+// 默认安全：漏配只是少一层缓存，配反了就可能把某个用户的数据缓存给下一个人。
+app.use('/api', noStore)
+
 // 健康检查
 app.get('/api/health', async (_req, res) => {
   try {
@@ -51,6 +56,8 @@ app.use('/api/me', meRouter)
 app.use('/api/users', usersRouter)
 app.use('/api/admin', adminRouter)
 app.use('/api/rooms', roomsRouter)
+// P2P 联机的 ICE / TURN 配置（短期凭证，见 routes/ice.js）
+app.use('/api/netplay/ice', iceRouter)
 
 /* ---------------- J2ME 临时上传 ---------------- */
 // 请求体就是 jar 原始字节，用 express.raw 收，省掉 multipart 依赖。
@@ -69,11 +76,9 @@ if (ssrAvailable()) {
   app.use(
     express.static(CLIENT_DIR, {
       index: false,
-      setHeaders: (res, filePath) => {
-        if (filePath.includes(`${path.sep}assets${path.sep}`)) {
-          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
-        }
-      },
+      // 带哈希的产物永久缓存；字体、模拟器内核、图片各有各的时长，
+      // 具体规则见 cache.js
+      setHeaders: staticCacheHeaders,
     }),
   )
 
@@ -84,7 +89,7 @@ if (ssrAvailable()) {
 
   // 构建产物找不到就老实回 404。交给下面的 SSR 会返回一段 HTML，
   // 浏览器按 module 加载时只会报一句含糊的 MIME 错误，白屏还查不出原因。
-  app.get(/^\/assets\//, (_req, res) => res.status(404).type('text/plain').send('Not Found'))
+  app.get(/^\/assets\//, (_req, res) => res.status(404).set('Cache-Control', CACHE.none).type('text/plain').send('Not Found'))
 
   // 除 /api 外的所有 GET 都交给 SSR（/admin 也走，但它本身是 noindex 的后台）
   app.get(/^(?!\/api\/).*/, renderPage)
@@ -130,6 +135,26 @@ const PORT = Number(process.env.PORT || 8788)
 const httpServer = createServer(app)
 attachNetplay(httpServer, app, origins)
 startSweeper()
+
+/**
+ * DOS 联机（js-dos 的 IPX 中继，见 src/ipx.js）。
+ *
+ * 默认跟主站共用端口，路径 /ipx/<房间> —— 前提是 public/jsdos 里的 js-dos.js
+ * 打过补丁（scripts/copy-jsdos.mjs 复制时自动打，去掉写死的 1900 端口）。
+ * 这样 IPX 走的就是 443，橙云代理、现成证书都能直接用。
+ *
+ * 如果你用的是没打补丁的原版 js-dos，把 IPX_PORT 设成 1900，会退回独立端口模式
+ * —— 那种情况下 Cloudflare 代理不了这个端口，见 README。
+ */
+if (/^(1|true|yes|on)$/i.test(process.env.IPX_ENABLED || '')) {
+  try {
+    const { attachIpx, attachIpxToServer } = await import('./ipx.js')
+    if (process.env.IPX_PORT) attachIpx({ port: Number(process.env.IPX_PORT), host: process.env.IPX_PUBLIC_HOST || '127.0.0.1' })
+    else attachIpxToServer(httpServer, { publicHost: process.env.IPX_PUBLIC_HOST || 'ipx' })
+  } catch (e) {
+    console.warn(`[ipx] DOS 联机中继未启用：${e.message}`)
+  }
+}
 
 httpServer.listen(PORT, () => {
   console.log(`8BitGo API 已启动：http://127.0.0.1:${PORT}`)

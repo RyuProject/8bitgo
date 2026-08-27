@@ -3,10 +3,10 @@ import { useAllGames } from '@/services/store'
 import { apiEnabled } from '@/services/api'
 import { platformMap, platforms } from '@/data/platforms'
 import { genres } from '@/data/genres'
-import { liveStreams } from '@/data/streams'
 import { formatCount } from '@/lib/format'
 import { useAllUsers } from '@/services/auth'
 import { useAllPosts } from '@/services/posts'
+import { romKeysOf } from '@/services/roms'
 import { BarList, Card, Stat } from './ui'
 
 export function AdminOverview() {
@@ -51,7 +51,7 @@ export function AdminOverview() {
         <Stat label="累计游玩" value={formatCount(plays)} sub="所有可见游戏之和" />
         <Stat label="注册用户" value={users.length} sub={`${users.filter((u) => u.status === 'banned').length} 位被封禁${apiEnabled() ? '' : ' · 本浏览器'}`} />
         <Stat label="文章" value={posts.filter((p) => p.published).length} sub={`${posts.filter((p) => !p.published).length} 篇草稿`} />
-        <Stat label="已绑定云端 ROM" value={visible.filter((g) => g.rom).length} sub="详情页可直接开始游戏" />
+        <Stat label="已绑定云端 ROM" value={visible.filter((g) => romKeysOf(g).length > 0).length} sub="详情页可直接开始游戏" />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -63,7 +63,7 @@ export function AdminOverview() {
         </Card>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid gap-4">
         <Card title="类型分布">
           <div className="flex flex-wrap gap-2">
             {byGenre.map((g) => (
@@ -72,12 +72,6 @@ export function AdminOverview() {
               </span>
             ))}
           </div>
-        </Card>
-        <Card title="直播数据源">
-          <p className="text-sm text-muted">
-            当前有 <span className="font-semibold text-fg">{liveStreams.length}</span> 条模拟直播记录（`src/data/streams.ts`），
-            总观看 {formatCount(liveStreams.reduce((s, x) => s + x.viewers, 0))}。直播功能前台已标记为 coming soon。
-          </p>
         </Card>
       </div>
 

@@ -15,12 +15,11 @@ function sortsFor(t: Translation): Array<{ key: SortKey; label: string }> {
   return [
     { key: 'popular', label: t.games.sortPopular },
     { key: 'newest', label: t.games.sortNewest },
-    { key: 'rating', label: t.games.sortRating },
     { key: 'name', label: t.games.sortName },
   ]
 }
 
-const SORT_KEYS: SortKey[] = ['popular', 'newest', 'rating', 'name']
+const SORT_KEYS: SortKey[] = ['popular', 'newest', 'name']
 
 /**
  * 游戏库页面。所有筛选条件都保存在 URL 查询参数里，方便分享与前进后退：
@@ -85,6 +84,9 @@ export function GamesPage() {
     title,
     description: t.seo.games,
     canonicalPath: '/games',
+    // 站内搜索结果没有收录价值（内容随关键词无限组合），但仍允许抓取，
+    // 这样 canonical 能被读到，首页 JSON-LD 里的站内搜索框也才验证得过
+    noindex: Boolean(q),
     jsonLd: [
       itemListSchema(
         title,

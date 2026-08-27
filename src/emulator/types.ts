@@ -6,6 +6,7 @@
  *   Ruffle      Flash (.swf)
  *   jsnes       NES (.nes)
  *   J2ME        Java 手机游戏 (.jar) —— 需自托管，见 adapters/j2me.ts
+ *   js-dos      DOS 游戏 —— DOSBox 的浏览器移植，见 adapters/jsdos.ts
  *   Cloud       云端联机：游戏跑在 cloud-game 服务器上，见 adapters/cloudgame.ts
  *
  * 联机有两条路：默认走 EmulatorJS 自带的 P2P netplay（房主的浏览器跑游戏，零服务器成本），
@@ -20,7 +21,7 @@ import type { PlatformId } from '@/types'
 import type { CloudSession } from './adapters/cloudgame'
 import type { NetplaySession } from './adapters/emulatorjs'
 
-export type RuntimeId = 'emulatorjs' | 'ruffle' | 'jsnes' | 'j2me' | 'cloudgame'
+export type RuntimeId = 'emulatorjs' | 'ruffle' | 'jsnes' | 'j2me' | 'jsdos' | 'cloudgame'
 
 export interface MountOptions {
   /** 平台 id（运行时据此选择核心等参数） */
@@ -36,9 +37,31 @@ export interface MountOptions {
   netplay?: NetplaySession
   /** 云端联机会话（cloudgame 运行时）：游戏由服务器运行，此时 game 字段被忽略 */
   cloud?: CloudSession
+  /** DOS 联机（jsdos 运行时） */
+  ipx?: IpxSession
   onReady?: () => void
   onStart?: () => void
   onError?: (message: string) => void
+}
+
+/**
+ * DOS 联机（js-dos 的 IPX）。当年的 DOS 局域网游戏靠 IPX 协议互相通信，
+ * js-dos 把它隧道化了，有两种拓扑：
+ *   - 中继：所有人连同一台 IPX 服务器（server/src/ipx.js），穿透性最好，流量过服务器
+ *   - P2P：一个人的浏览器当 IPX 服务器，其他人经 WebRTC 直连过去（需要一台撮合服务器）
+ * 详见 adapters/jsdos.ts。
+ */
+export interface IpxSession {
+  /** P2P：本机当 IPX 服务器，别人连过来 */
+  host?: boolean
+  /** P2P：要连的对方（peer id 或别名） */
+  connectTo?: string
+  /**
+   * 显示 js-dos 自带的界面。
+   * 中继模式必须打开 —— js-dos 没有对外暴露「连接到 IPX 服务器」的接口，
+   * 只能由玩家自己在它的设置面板里填 Server 和 Room。
+   */
+  showUi?: boolean
 }
 
 /** 解析运行时时能用到的线索 */

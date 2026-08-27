@@ -18,7 +18,9 @@ export interface Features {
 }
 
 export const FEATURES: Features = {
-  live: false,
+  // 直播 = P2P 房间的观众席：房主的画面和声音本来就在往房间里推，
+  // 「直播」入口就是这些房间按在看人数排的列表，没有额外成本。
+  live: true,
   coins: false,
   cloudGame: true,
 }

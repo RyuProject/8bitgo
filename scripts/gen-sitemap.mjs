@@ -99,6 +99,13 @@ add('/blog', '0.7', 'weekly')
 // 这些页面自己的 canonical 指向 /games，收进来只会让 Search Console 报
 // 「Alternate page with proper canonical tag」；而且 robots.txt 里 Disallow: /games?
 // 本来就禁止抓取它们，放进 sitemap 属于自相矛盾。
+// 平台页与类型页是主要的搜索入口（/platforms/nes、/genres/action …），
+// 有独立的 H1、正文与结构化数据，必须进 sitemap
+for (const p of visiblePlatforms) add(`/platforms/${p.id}`, '0.8', 'weekly')
+// 一款可见游戏都没有的类型是空页面，别提交给搜索引擎
+for (const g of genres) {
+  if (visibleGames.some((x) => x.genres?.includes(g.id))) add(`/genres/${g.id}`, '0.7', 'weekly')
+}
 for (const g of visibleGames) add(`/games/${encodeURIComponent(g.slug)}`, '0.8', 'weekly')
 for (const p of visiblePosts) add(`/blog/${encodeURIComponent(p.slug)}`, '0.5', 'monthly')
 

@@ -18,6 +18,9 @@ export function AdminUsers() {
       .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
   }, [users, q])
 
+  /** 是不是当前登录的这个管理员自己 */
+  const isSelf = (u: PublicUser) => Boolean(me && me.id === u.id)
+
   const flash = (t: string) => {
     setToast(t)
     window.setTimeout(() => setToast(null), 2000)
@@ -115,10 +118,24 @@ export function AdminUsers() {
                     <button type="button" className={cx(btnClass.small, 'text-coin hover:bg-coin-soft')} onClick={() => adjust(u)}>
                       G 币
                     </button>
-                    <button type="button" className={cx(btnClass.small, 'text-muted hover:bg-black/5 hover:text-fg')} onClick={() => toggleBan(u)}>
+                    {/* 封禁 / 删除自己会把自己直接关在后台外面（下一次请求就被鉴权拦下），
+                        后端也拦了一道，这里先把按钮禁掉，省得点了才报错 */}
+                    <button
+                      type="button"
+                      className={cx(btnClass.small, 'text-muted hover:bg-black/5 hover:text-fg')}
+                      onClick={() => toggleBan(u)}
+                      disabled={isSelf(u) && u.status === 'active'}
+                      title={isSelf(u) && u.status === 'active' ? '不能封禁自己' : undefined}
+                    >
                       {u.status === 'banned' ? '解封' : '封禁'}
                     </button>
-                    <button type="button" className={cx(btnClass.small, 'text-live hover:bg-live/15')} onClick={() => remove(u)}>
+                    <button
+                      type="button"
+                      className={cx(btnClass.small, 'text-live hover:bg-live/15')}
+                      onClick={() => remove(u)}
+                      disabled={isSelf(u)}
+                      title={isSelf(u) ? '不能删除自己' : undefined}
+                    >
                       删除
                     </button>
                   </div>

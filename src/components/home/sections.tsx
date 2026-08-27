@@ -6,18 +6,15 @@ import { Button } from '@/components/ui/Button'
 import { GameCard } from '@/components/game/GameCard'
 import { GameCardWide } from '@/components/game/GameCardWide'
 import { PlatformCard } from '@/components/game/PlatformCard'
-import { StreamCard } from '@/components/game/StreamCard'
 import { GameCover } from '@/components/game/GameCover'
 import {
   getCoinGames,
   getGamesByGenre,
   getGenres,
-  getLiveStreams,
   getMultiplayerGames,
   getNewestGames,
   getPlatforms,
   getPopularGames,
-  getTopRatedGames,
 } from '@/services/games'
 import { genreMap } from '@/data/genres'
 import { platformMap } from '@/data/platforms'
@@ -27,29 +24,6 @@ import { useT, fmt } from '@/services/i18n'
 import { genreLabel, gameTitle } from '@/services/i18nData'
 import type { Translation } from '@/locales'
 import type { GenreId } from '@/types'
-
-/* ---------------- 直播 ---------------- */
-export function LiveSection() {
-  const t = useT()
-  const streams = getLiveStreams()
-  return (
-    <section className="container-x">
-      <SectionHeader
-        id="live"
-        title={t.sections.liveTitle}
-        subtitle={fmt(t.sections.liveSubtitle, { n: streams.length })}
-        icon={<span className="inline-block h-2.5 w-2.5 rounded-full bg-live animate-blink" />}
-        moreTo="/#live"
-        moreLabel={t.sections.liveMore}
-      />
-      <HScroll itemClassName="w-72 sm:w-80">
-        {streams.map((s) => (
-          <StreamCard key={s.id} stream={s} />
-        ))}
-      </HScroll>
-    </section>
-  )
-}
 
 /* ---------------- 最多人玩 ---------------- */
 export function PopularSection() {
@@ -149,21 +123,6 @@ export function CoinSection() {
 }
 
 /* ---------------- 评分最高 ---------------- */
-export function TopRatedSection() {
-  const t = useT()
-  const games = getTopRatedGames(12)
-  return (
-    <section className="container-x">
-      <SectionHeader title={t.sections.topRatedTitle} subtitle={t.sections.topRatedSubtitle} icon="⭐" moreTo="/games?sort=rating" />
-      <HScroll>
-        {games.map((g, i) => (
-          <GameCard key={g.slug} game={g} rank={i + 1} />
-        ))}
-      </HScroll>
-    </section>
-  )
-}
-
 /* ---------------- 分类网格 ---------------- */
 /** 每个类型一套固定渐变，色相各不相同，让大卡片彼此区分 */
 const GENRE_GRADIENTS: Record<GenreId, string> = {

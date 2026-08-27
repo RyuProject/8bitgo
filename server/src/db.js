@@ -33,3 +33,34 @@ export async function ping() {
   const r = await queryOne('SELECT 1 AS ok')
   return r?.ok === 1
 }
+
+/**
+ * 在一个事务里跑一组语句。
+ * 传进去的 run 收到一条独占连接，用 run(sql, params) 发查询；
+ * 抛异常自动回滚，正常返回自动提交，连接一定会还回池里。
+ *
+ * 用于「删游戏顺带清收藏/最近」「批量导入」这类必须整体成败的操作 ——
+ * 以前是一条条裸发，中途报错就留下删了一半的数据。
+ */
+export async function withTransaction(fn) {
+  const conn = await pool.getConnection()
+  try {
+    await conn.beginTransaction()
+    const run = async (sql, params) => {
+      const [rows] = await conn.query(sql, params)
+      return rows
+    }
+    const result = await fn(run)
+    await conn.commit()
+    return result
+  } catch (e) {
+    try {
+      await conn.rollback()
+    } catch {
+      /* 回滚失败也要把连接还回去 */
+    }
+    throw e
+  } finally {
+    conn.release()
+  }
+}

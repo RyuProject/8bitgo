@@ -113,7 +113,10 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
       rom: form.rom?.trim() || undefined,
       roms: Object.keys(cleanedRoms).length ? cleanedRoms : undefined,
       tags: tags.length ? tags : undefined,
-      rating: Math.min(5, Math.max(0, Number(form.rating) || 0)),
+      // rating / ratingCount / plays 都不在表单里填：
+      // plays 由后端在玩家真正开始游戏时累加，评分字段留给将来的真实评分系统。
+      // 编辑时原样带回，新建时是 0。
+      rating: Math.max(0, Number(form.rating) || 0),
       ratingCount: Math.max(0, Math.round(Number(form.ratingCount) || 0)),
       plays: Math.max(0, Math.round(Number(form.plays) || 0)),
       coinReward: Math.max(0, Math.round(Number(form.coinReward) || 0)),
@@ -182,15 +185,6 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
         </Field>
         <Field label="开发商">
           <input className={inputClass} value={form.developer} onChange={(e) => set('developer', e.target.value)} placeholder="Nintendo" />
-        </Field>
-        <Field label="评分 (0-5)">
-          <input type="number" step="0.1" min="0" max="5" className={inputClass} value={form.rating} onChange={(e) => set('rating', Number(e.target.value))} />
-        </Field>
-        <Field label="评分人数">
-          <input type="number" min="0" className={inputClass} value={form.ratingCount} onChange={(e) => set('ratingCount', Number(e.target.value))} />
-        </Field>
-        <Field label="游玩次数">
-          <input type="number" min="0" className={inputClass} value={form.plays} onChange={(e) => set('plays', Number(e.target.value))} />
         </Field>
         <Field label="最大玩家数">
           <select className={inputClass} value={form.players} onChange={(e) => set('players', Number(e.target.value) as Game['players'])}>
