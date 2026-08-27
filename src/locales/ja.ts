@@ -651,6 +651,7 @@ const ja: Translation = {
     netplaySignalUnreachable: 'シグナリングサーバーに接続できません（{url}）。対戦は利用できません',
     liveDesc: '他の人のプレイを観る：映像と音声は配信者のブラウザーから直接届きます',
     liveNotConfigured: '配信にはバックエンドが必要ですが、このサイトでは設定されていません',
+    liveNoServer: 'バックエンドにまだ配信機能がありません（socket.io の /live 名前空間が存在しません）。サーバー側のコードを更新して再起動してください',
     liveNoRoom: '配信が指定されていません',
     liveTimeout: '配信者に接続できません。ネットワーク制限か、すでに配信を終えた可能性があります',
     liveLost: '配信者との接続が切れました',

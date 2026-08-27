@@ -706,6 +706,7 @@ const de: Translation = {
     netplaySignalUnreachable: 'Signalisierungsserver nicht erreichbar ({url}) – Multiplayer nicht verfügbar',
     liveDesc: 'Jemand anderem beim Spielen zusehen – Bild und Ton kommen direkt aus dessen Browser',
     liveNotConfigured: 'Livestreams brauchen das Backend, das diese Seite nicht konfiguriert hat',
+    liveNoServer: 'Das Backend hat noch kein Livestreaming (socket.io-Namespace /live fehlt) – der Server muss aktualisiert und neu gestartet werden',
     liveNoRoom: 'Kein Stream angegeben',
     liveTimeout: 'Streamer nicht erreichbar – Netzwerkeinschränkungen, oder er ist schon offline',
     liveLost: 'Verbindung zum Streamer verloren',

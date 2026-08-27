@@ -12,6 +12,7 @@
  * 用的也是同一个脚本。
  */
 import { apiBase, apiEnabled } from './api'
+import { getT } from './i18n'
 import { fetchIceConfig } from './netplay'
 
 export interface LiveRoomInfo {
@@ -74,14 +75,22 @@ export async function connectLive(): Promise<LiveSocket> {
     forceNew: true,
   })
   await new Promise<void>((resolve, reject) => {
-    const timer = window.setTimeout(() => reject(new Error('connect timeout')), 15_000)
+    const timer = window.setTimeout(() => reject(new Error(getT().runtime.liveTimeout)), 15_000)
     socket.on('connect', () => {
       window.clearTimeout(timer)
       resolve()
     })
     socket.on('connect_error', ((err: Error) => {
       window.clearTimeout(timer)
-      reject(err)
+      try {
+        socket.close()
+      } catch {
+        /* ignore */
+      }
+      // socket.io 在「命名空间没注册」时回的就是一句 "Invalid namespace"，
+      // 对着这句话没人猜得到该干什么。翻译成人话：后端代码是旧的，或者没重启。
+      const msg = String(err?.message || '')
+      reject(new Error(/invalid namespace/i.test(msg) ? getT().runtime.liveNoServer : msg || getT().runtime.liveNoServer))
     }) as (...args: never[]) => void)
   })
   return socket

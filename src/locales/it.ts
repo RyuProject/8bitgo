@@ -706,6 +706,7 @@ const it: Translation = {
     netplaySignalUnreachable: 'Server di segnalazione irraggiungibile ({url}): multigiocatore non disponibile',
     liveDesc: 'Guarda giocare qualcun altro: video e audio arrivano direttamente dal suo browser',
     liveNotConfigured: 'La diretta richiede il backend, che questo sito non ha configurato',
+    liveNoServer: 'Il backend non ha ancora la diretta (manca il namespace socket.io /live): il server va aggiornato e riavviato',
     liveNoRoom: 'Nessuna diretta indicata',
     liveTimeout: 'Impossibile raggiungere chi trasmette: restrizioni di rete, o ha già chiuso',
     liveLost: 'Connessione con chi trasmette persa',

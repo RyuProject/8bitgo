@@ -705,6 +705,7 @@ const en: Translation = {
     netplaySignalUnreachable: 'Cannot reach the signalling server ({url}) — multiplayer is unavailable',
     liveDesc: 'Watch someone else play — video and audio come straight from their browser',
     liveNotConfigured: 'Live streaming needs the backend, which this site has not configured',
+    liveNoServer: 'The backend has no live streaming yet (socket.io namespace /live is missing) — the server needs to be updated and restarted',
     liveNoRoom: 'No stream was specified',
     liveTimeout: 'Could not reach the streamer — network restrictions, or they already went offline',
     liveLost: 'Lost the connection to the streamer',

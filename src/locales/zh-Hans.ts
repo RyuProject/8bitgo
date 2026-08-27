@@ -671,6 +671,7 @@ export const zhHans = {
     netplaySignalUnreachable: '连不上联机信令服务器（{url}），联机暂时不可用',
     liveDesc: '观看别人直播：画面和声音由主播的浏览器直推过来',
     liveNotConfigured: '直播需要后端支持，当前站点没有配置',
+    liveNoServer: '后端还没有直播功能（socket.io 的 /live 命名空间不存在）—— 服务器上的代码需要更新并重启',
     liveNoRoom: '没有指定直播间',
     liveTimeout: '连不上主播 —— 可能是网络限制或对方已经下播',
     liveLost: '和主播的连接断了',

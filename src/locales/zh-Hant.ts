@@ -625,6 +625,7 @@ const zhHant: Translation = {
     netplaySignalUnreachable: '連不上信令伺服器（{url}），連線暫時無法使用',
     liveDesc: '觀看別人直播：畫面和聲音由主播的瀏覽器直推過來',
     liveNotConfigured: '直播需要後端支援，目前站點沒有設定',
+    liveNoServer: '後端還沒有直播功能（socket.io 的 /live 命名空間不存在）—— 伺服器上的程式碼需要更新並重新啟動',
     liveNoRoom: '沒有指定直播間',
     liveTimeout: '連不上主播 —— 可能是網路限制或對方已經下播',
     liveLost: '和主播的連線斷了',

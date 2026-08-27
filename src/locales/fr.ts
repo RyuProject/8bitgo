@@ -710,6 +710,7 @@ const fr: Translation = {
     netplaySignalUnreachable: 'Serveur de signalisation injoignable ({url}) — multijoueur indisponible',
     liveDesc: 'Regardez quelqu’un jouer — l’image et le son viennent directement de son navigateur',
     liveNotConfigured: 'Le direct nécessite le backend, que ce site n’a pas configuré',
+    liveNoServer: 'Le backend n’a pas encore le direct (l’espace de noms socket.io /live est absent) — le serveur doit être mis à jour et redémarré',
     liveNoRoom: 'Aucun direct indiqué',
     liveTimeout: 'Impossible de joindre le diffuseur — restrictions réseau, ou il a déjà arrêté',
     liveLost: 'Connexion au diffuseur perdue',
