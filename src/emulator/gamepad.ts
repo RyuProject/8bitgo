@@ -28,8 +28,11 @@ export const GP = {
   RIGHT: 15,
 } as const
 
-/** 按钮下标 -> 引擎自己的键码 */
-export type GamepadKeyMap = Record<number, number>
+/**
+ * 按钮下标 -> 引擎自己的「键」。
+ * 键长什么样由引擎决定：DOSBox 用数字键码，FreeJ2ME 用 { code, key } 这样的键名对象。
+ */
+export type GamepadKeyMap<K> = Record<number, K>
 
 export interface GamepadBridgeOptions {
   /** 摇杆推到多少算方向键，默认 0.5 */
@@ -52,7 +55,7 @@ export function hasGamepadApi(): boolean {
  * 开始轮询手柄。send(keyCode, pressed) 在状态变化时调用。
  * 返回的 stop() 会把还按着的键都松开，避免退出时角色一直往前跑。
  */
-export function startGamepadBridge(map: GamepadKeyMap, send: (keyCode: number, pressed: boolean) => void, opts: GamepadBridgeOptions = {}): GamepadBridge {
+export function startGamepadBridge<K>(map: GamepadKeyMap<K>, send: (key: K, pressed: boolean) => void, opts: GamepadBridgeOptions = {}): GamepadBridge {
   const threshold = opts.axisThreshold ?? 0.5
   const stickAsDpad = opts.stickAsDpad !== false
   const down = new Set<number>()

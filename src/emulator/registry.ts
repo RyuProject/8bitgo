@@ -20,6 +20,7 @@ import { ruffleRuntime } from './adapters/ruffle'
 import { jsnesRuntime } from './adapters/jsnes'
 import { j2meRuntime } from './adapters/j2me'
 import { jsdosRuntime } from './adapters/jsdos'
+import { webretroRuntime } from './adapters/webretro'
 import { cloudGameRuntime } from './adapters/cloudgame'
 
 export const runtimes: Record<RuntimeId, Runtime> = {
@@ -28,6 +29,7 @@ export const runtimes: Record<RuntimeId, Runtime> = {
   jsnes: jsnesRuntime,
   j2me: j2meRuntime,
   jsdos: jsdosRuntime,
+  webretro: webretroRuntime,
   cloudgame: cloudGameRuntime,
 }
 
