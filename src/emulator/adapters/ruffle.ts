@@ -29,8 +29,21 @@ const FRAME_HTML = `<!doctype html>
 <body><div id="host"></div></body>
 </html>`
 
+/**
+ * Ruffle 的播放器接口。
+ *
+ * 注意这里有两套命名并存：老的门面叫 play() / pause()，
+ * 新的 PlayerV1 门面叫 resume() / suspend()（对应的只读属性也从 isPlaying 变成 suspended）。
+ * 发行包里两套都可能拿到，所以全部写成可选，调用时挨个试。
+ */
 interface RufflePlayerApi {
   load: (options: Record<string, unknown>) => Promise<void> | void
+  play?: () => void
+  resume?: () => void
+  pause?: () => void
+  suspend?: () => void
+  isPlaying?: boolean
+  volume?: number
 }
 /** 新版通过 player.ruffle() 取 API，旧版直接在元素上调用 load() */
 interface RufflePlayerElement extends HTMLElement, Partial<RufflePlayerApi> {
@@ -44,15 +57,29 @@ interface RuffleGlobal {
 }
 
 function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
-  const destroy = mountRaw(container, options)
-  // 这两个引擎暂时不提供暂停/存档/音量等能力，工具栏会自动隐藏对应按钮
-  const caps = new Set<Capability>()
-  options.onCaps?.(caps)
-  return { destroy, caps }
-}
-
-function mountRaw(container: HTMLElement, options: MountOptions): () => void {
   const rt = getT().runtime
+  /** 加载成功后才知道能不能暂停 / 调音量，先空着，等 load() 回来再报 */
+  const caps = new Set<Capability>()
+  /** 播放器元素与它的 API 门面（两者都可能带 volume / pause） */
+  let player: RufflePlayerElement | null = null
+  let api: RufflePlayerApi | null = null
+  let volume = 1
+
+  /** 元素和门面上都可能有这些成员，挨个找第一个有的 */
+  const canPause = (): boolean =>
+    [api, player].some((x) => x && (typeof x.pause === 'function' || typeof x.suspend === 'function'))
+  const hasVolume = (): boolean => [api, player].some((x) => x && typeof x.volume === 'number')
+  const applyVolume = () => {
+    for (const target of [api, player]) {
+      if (!target || typeof target.volume !== 'number') continue
+      try {
+        target.volume = volume
+      } catch {
+        /* 换下一个门面 */
+      }
+    }
+  }
+
   const iframe = document.createElement('iframe')
   iframe.title = fmt(rt.flashTitle, { name: options.gameName })
   iframe.style.cssText = 'width:100%;height:100%;border:0;display:block;background:#0b0b0f'
@@ -80,7 +107,7 @@ function mountRaw(container: HTMLElement, options: MountOptions): () => void {
       try {
         const source = win.RufflePlayer?.newest()
         if (!source) throw new Error(rt.ruffleNotInit)
-        let player = source.createPlayer()
+        player = source.createPlayer()
         const host = doc.getElementById('host')
         host?.appendChild(player)
         // ruffle.js 只是加载器，核心与自定义元素是按需异步注册的，需等元素升级完成
@@ -106,7 +133,7 @@ function mountRaw(container: HTMLElement, options: MountOptions): () => void {
           ? { ...base, data: await (options.game as File).arrayBuffer(), swfFileName: (options.game as File).name }
           : { ...base, url: options.game as string }
 
-        const api: RufflePlayerApi | undefined = typeof player.ruffle === 'function' ? player.ruffle() : typeof player.load === 'function' ? (player as RufflePlayerApi) : undefined
+        api = typeof player.ruffle === 'function' ? player.ruffle() : typeof player.load === 'function' ? (player as RufflePlayerApi) : null
         if (!api) throw new Error(rt.ruffleNoApi)
         // 上面一连串 await（等自定义元素注册、读文件）之间玩家可能已经换了 ROM，
         // 这里要重新确认一次，别把旧会话的结果算到新会话头上
@@ -114,6 +141,14 @@ function mountRaw(container: HTMLElement, options: MountOptions): () => void {
         options.onReady?.()
         await api.load(loadOptions)
         if (destroyed) return
+
+        // 能力要等实例真的建起来才作数：SWF 加载之前 volume 的 setter 是空转的
+        if (canPause()) caps.add('pause')
+        if (hasVolume()) {
+          caps.add('volume')
+          applyVolume()
+        }
+        options.onCaps?.(caps)
         options.onStart?.()
       } catch (err) {
         // 销毁之后的报错不再上报：否则玩家刚拖进来的新游戏会被上一个的错误顶掉，
@@ -126,16 +161,42 @@ function mountRaw(container: HTMLElement, options: MountOptions): () => void {
   })
 
   container.appendChild(iframe)
+  options.onCaps?.(caps)
 
-  return () => {
-    destroyed = true
-    try {
-      iframe.srcdoc = ''
-      iframe.src = 'about:blank'
-    } catch {
-      /* ignore */
-    }
-    iframe.remove()
+  return {
+    caps,
+    volume,
+    setPaused(next: boolean) {
+      // 两套门面轮流试：老的 play/pause，新的 resume/suspend
+      for (const target of [api, player]) {
+        if (!target) continue
+        try {
+          const fn = next ? (target.pause ?? target.suspend) : (target.play ?? target.resume)
+          if (typeof fn === 'function') {
+            fn.call(target)
+            return
+          }
+        } catch {
+          /* 换下一个门面 */
+        }
+      }
+    },
+    setVolume(next: number) {
+      volume = Math.max(0, Math.min(1, next))
+      applyVolume()
+    },
+    destroy() {
+      destroyed = true
+      player = null
+      api = null
+      try {
+        iframe.srcdoc = ''
+        iframe.src = 'about:blank'
+      } catch {
+        /* ignore */
+      }
+      iframe.remove()
+    },
   }
 }
 
