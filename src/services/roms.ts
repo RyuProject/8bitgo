@@ -45,14 +45,36 @@ function writeLocal(key: string, value: string) {
 
 const trimSlash = (s: string) => s.trim().replace(/\/+$/, '')
 
+/**
+ * 补全根地址的协议头。
+ *
+ * 填 `assets.8bitgo.com`（少了 https://）时，拼出来的是 `assets.8bitgo.com/roms/...`
+ * —— 这是个**相对路径**，fetch 会把它接到当前页面后面，变成
+ * `你的域名/admin/assets.8bitgo.com/roms/...`。而这个路径会被 SSR 的兜底路由接住，
+ * 返回 200 + 一个 HTML 页面，于是模拟器拿到网页当 ROM 解析，报「不是合法的 ROM」。
+ * 状态码是 200，看日志根本看不出问题在哪。
+ *
+ * 以 / 开头的（同源路径，如 /roms）保持原样。
+ */
+function withScheme(base: string): string {
+  if (!base) return ''
+  if (/^https?:\/\//i.test(base)) return base
+  // 协议相对写法 //host 要先判：它也以 / 开头，放在下面那条后面就永远轮不到。
+  // SSR 时没有 location 可参照，必须补成绝对地址。
+  if (base.startsWith('//')) return `https:${base}`
+  // 以单个 / 开头的是同源路径（如 /roms），保持原样
+  if (base.startsWith('/')) return base
+  return `https://${base}`
+}
+
 /** 公开读取根地址 */
 export function getRomBase(): string {
-  return trimSlash(readLocal(ROM_BASE_KEY) || import.meta.env.VITE_ROM_BASE_URL || '')
+  return withScheme(trimSlash(readLocal(ROM_BASE_KEY) || import.meta.env.VITE_ROM_BASE_URL || ''))
 }
 
 /** 管理接口（Worker）地址，留空时退回公开根地址 */
 export function getRomApi(): string {
-  return trimSlash(readLocal(ROM_API_KEY) || import.meta.env.VITE_ROM_API_URL || '') || getRomBase()
+  return withScheme(trimSlash(readLocal(ROM_API_KEY) || import.meta.env.VITE_ROM_API_URL || '')) || getRomBase()
 }
 
 /** 对象 key 前缀（不带首尾斜杠），默认 roms */
@@ -82,8 +104,10 @@ export function getRomConfig(): RomConfig {
 }
 
 export function saveRomConfig(cfg: Partial<RomConfig>) {
-  if (cfg.base !== undefined) writeLocal(ROM_BASE_KEY, cfg.base)
-  if (cfg.api !== undefined) writeLocal(ROM_API_KEY, cfg.api)
+  // 存的时候就把协议头补齐，后台输入框里显示的就是最终生效的地址，
+  // 免得填了 assets.8bitgo.com 之后看着没问题、实际被当成相对路径
+  if (cfg.base !== undefined) writeLocal(ROM_BASE_KEY, cfg.base ? withScheme(trimSlash(cfg.base)) : '')
+  if (cfg.api !== undefined) writeLocal(ROM_API_KEY, cfg.api ? withScheme(trimSlash(cfg.api)) : '')
   if (cfg.prefix !== undefined) writeLocal(ROM_PREFIX_KEY, cfg.prefix.replace(/^\/+|\/+$/g, ''))
   if (cfg.token !== undefined) {
     try {
@@ -211,7 +235,13 @@ export function probeUrl(url: string, timeoutMs = 4000): Promise<boolean> {
     const timer = window.setTimeout(() => ctrl.abort(), timeoutMs)
     try {
       const res = await fetch(url, { method: 'HEAD', signal: ctrl.signal })
-      return res.ok
+      if (!res.ok) return false
+      // 地址配错时请求会落到本站的 SSR 兜底路由上，那边对任何路径都回 200 + HTML。
+      // 只看 res.ok 的话会误判成「ROM 存在」，页面显示「即点即玩」，
+      // 点下去才在模拟器里报一句莫名其妙的「不是合法的 ROM」。
+      const type = res.headers.get('content-type') || ''
+      if (/text\/html|application\/xhtml/i.test(type)) return false
+      return true
     } catch {
       return false
     } finally {

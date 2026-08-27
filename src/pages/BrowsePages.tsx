@@ -199,6 +199,9 @@ export function DevelopersPage() {
                   src={d.topGame.cover}
                   alt=""
                   loading="lazy"
+                  decoding="async"
+                  width={64}
+                  height={64}
                   className="h-16 w-16 shrink-0 rounded-lg object-cover"
                 />
               ) : (

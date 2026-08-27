@@ -455,7 +455,7 @@ function MediaField({
           {kind === 'videos' ? (
             <video src={previewUrl} className="h-full w-full object-cover" muted loop playsInline controls />
           ) : (
-            <img src={previewUrl} alt="预览" className="h-full w-full object-cover" />
+            <img src={previewUrl} alt="预览" loading="lazy" decoding="async" className="h-full w-full object-cover" />
           )}
         </div>
       )}

@@ -10,19 +10,23 @@
  *   throw new Error(getT().errors.emailInvalid)
  *
  * 语言切换由 services/lang.ts 驱动，切换后所有用了 useT() 的组件会自动重渲染。
+ *
+ * 非基准语言的文案是按需加载的（见 locales/index.ts）。入口在渲染前
+ * 已经 await 过 loadLocale()，所以这里同步取一定拿得到；万一没拿到
+ * （加载失败）就退回简体中文，而不是让页面炸掉。
  */
 import { useLang, getLang } from './lang'
-import { LOCALES, zhHans, type Translation } from '@/locales'
+import { getLoadedLocale, zhHans, type Translation } from '@/locales'
 
 /** 当前语言的文案表（组件内用，语言切换会触发重渲染） */
 export function useT(): Translation {
   const lang = useLang()
-  return LOCALES[lang] ?? zhHans
+  return getLoadedLocale(lang) ?? zhHans
 }
 
 /** 当前语言的文案表（非组件内用，取一次即时值） */
 export function getT(): Translation {
-  return LOCALES[getLang()] ?? zhHans
+  return getLoadedLocale(getLang()) ?? zhHans
 }
 
 /**

@@ -1,8 +1,10 @@
-import type { ReactNode } from 'react'
+import { useCallback, type ReactNode } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import type { GenreId, PlatformId, SortKey } from '@/types'
+import type { Game, GenreId, PlatformId, SortKey } from '@/types'
 import type { Translation } from '@/locales'
-import { usePageData, type Facets, type GamesData } from '@/services/pageData'
+import { fetchPageData, usePageData, type Facets, type GamesData, type Paged } from '@/services/pageData'
+import { useInfinite } from '@/services/infinite'
+import { InfiniteFooter } from '@/components/ui/InfiniteFooter'
 import { platforms, platformMap } from '@/data/platforms'
 import { genres, genreMap } from '@/data/genres'
 import { isPlatformEnabled } from '@/config/platforms'
@@ -58,28 +60,57 @@ export function GamesPage() {
   const platform = platformId ? platformMap[platformId] : undefined
   const genre = genreId ? genreMap[genreId] : undefined
 
-  const state = usePageData<GamesData>(
-    '/games',
-    {
-      // 传认得的 id 而不是原始参数：?platform=乱填 应当被当成「没筛平台」，
-      // 而不是拿去查一个根本不存在的平台、回一页空列表
-      platform: platform?.id,
-      genre: genre?.id,
-      developer,
-      multiplayer: multiplayer ? 1 : undefined,
-      coin: coin ? 1 : undefined,
-      q,
-      // 用校验过的 sort，不是原始参数：下拉框显示的是 sort，
-      // 传 sortParam 会出现「显示最热门、列表却没排序」的对不上
-      sort,
-      page,
-    },
-    'games',
-  )
+  /**
+   * 取数条件。usePageData 和「续接下一页」共用同一份，
+   * 分成两处写迟早会出现「筛选用 A、续接却按 B 取」的错位。
+   */
+  const query = {
+    // 传认得的 id 而不是原始参数：?platform=乱填 应当被当成「没筛平台」，
+    // 而不是拿去查一个根本不存在的平台、回一页空列表
+    platform: platform?.id,
+    genre: genre?.id,
+    developer,
+    multiplayer: multiplayer ? 1 : undefined,
+    coin: coin ? 1 : undefined,
+    q,
+    // 用校验过的 sort，不是原始参数：下拉框显示的是 sort，
+    // 传 sortParam 会出现「显示最热门、列表却没排序」的对不上
+    sort,
+    page,
+  }
+
+  const state = usePageData<GamesData>('/games', query, 'games')
   // 换页 / 换筛选条件时 usePageData 会保留上一次的数据，所以这里通常不是空的；
   // 只有首次进入（且没有服务端注入的首屏数据）才会是 undefined
   const list = state.data?.list
   const facets: Facets | undefined = state.data?.facets
+
+  /**
+   * 往下滚时接后面的页。
+   *
+   * resetKey 用整份查询条件做指纹：换平台、换排序、换页码都会把已接上的部分丢掉重来。
+   * 少放一个条件进去，就会出现「切了平台，下面还挂着上一个平台的第 2 页」。
+   */
+  const resetKey = JSON.stringify(query)
+  const fetchMore = useCallback(
+    async (nextPage: number): Promise<Paged<Game>> => {
+      const d = await fetchPageData('/games', { ...query, page: nextPage })
+      if (d.route !== 'games') throw new Error('unexpected route payload')
+      return d.list
+    },
+    // query 每次渲染都是新对象，直接进依赖会让回调每帧都变；用它的指纹当依赖
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [resetKey],
+  )
+  const inf = useInfinite({
+    first: list,
+    // 只有数据确实是当前这套条件的结果才允许续接（见 useInfinite 里 ready 的说明）
+    ready: state.status === 'ready',
+    fetchPage: fetchMore,
+    resetKey,
+  })
+  /** 有没有已经往下接过内容。接过之后再显示页码就是在骗人了 */
+  const appended = inf.items.length > (list?.items.length ?? 0)
 
   const platformCounts = countsOf(facets?.platforms)
   const genreCounts = countsOf(facets?.genres)
@@ -257,12 +288,13 @@ export function GamesPage() {
         <>
           <p className="mt-6 text-sm text-muted">
             {fmt(t.games.total, { n: list.total })}
-            {list.totalPages > 1 && fmt(t.games.pageOf, { page: list.page, total: list.totalPages })}
+            {/* 已经往下接过之后就别再报页码了：显示着 120 款、却写「第 1 / 40 页」是自相矛盾 */}
+            {!appended && list.totalPages > 1 && fmt(t.games.pageOf, { page: list.page, total: list.totalPages })}
           </p>
 
-          {list.items.length > 0 ? (
+          {inf.items.length > 0 ? (
             <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5" aria-busy={state.status === 'loading'}>
-              {list.items.map((g) => (
+              {inf.items.map((g) => (
                 <GameCard key={g.slug} game={g} />
               ))}
             </div>
@@ -279,9 +311,17 @@ export function GamesPage() {
             </div>
           )}
 
-          <div className="mt-10">
-            <Pagination page={list.page} totalPages={list.totalPages} onChange={(p) => set('page', String(p))} />
-          </div>
+          <InfiniteFooter list={inf} pageSize={list.pageSize} />
+
+          {/*
+            页码留着当「跳着看」的入口：一路点「加载更多」翻到第 40 页太苦。
+            但一旦开始往下接，它显示的页码就跟实际看到的内容对不上了，所以那时收起来。
+          */}
+          {!appended && (
+            <div className="mt-6">
+              <Pagination page={list.page} totalPages={list.totalPages} onChange={(p) => set('page', String(p))} />
+            </div>
+          )}
         </>
       )}
     </div>

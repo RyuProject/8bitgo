@@ -120,7 +120,7 @@ export async function renderPage(req, res, next) {
     const [pathname, qs] = url.split('?')
     const data = await loadForRoute(stripLang(pathname), new URLSearchParams(qs ?? ''))
 
-    const { html, head, lang, notFound } = render({ url, data })
+    const { html, head, lang, notFound } = await render({ url, data })
 
     let page = getTemplate()
 

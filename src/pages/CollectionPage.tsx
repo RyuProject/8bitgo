@@ -1,6 +1,9 @@
+import { useCallback } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import type { Game, Genre, Platform } from '@/types'
-import { usePageData, type GenreData, type Paged, type PlatformData } from '@/services/pageData'
+import { fetchPageData, usePageData, type GenreData, type Paged, type PlatformData } from '@/services/pageData'
+import { useInfinite, type InfiniteList } from '@/services/infinite'
+import { InfiniteFooter } from '@/components/ui/InfiniteFooter'
 import { platformMap } from '@/data/platforms'
 import { genreMap } from '@/data/genres'
 import { isPlatformEnabled } from '@/config/platforms'
@@ -53,6 +56,8 @@ interface CollectionProps {
   list?: Paged<Game>
   /** URL 上的页码。列表还没到也要能算出正确的 canonical，所以不能等 list.page */
   page: number
+  /** 往下滚续接出来的完整列表（含首页） */
+  more: InfiniteList<Game>
   /** 取数失败的原因 */
   error?: string
   onPage: (p: number) => void
@@ -70,6 +75,7 @@ function Collection({
   article,
   articleTitle,
   list,
+  more,
   page: urlPage,
   error,
   onPage,
@@ -128,15 +134,19 @@ function Collection({
         </p>
       ) : !list ? (
         <GameGridSkeleton />
-      ) : list.items.length > 0 ? (
+      ) : more.items.length > 0 ? (
         <>
           <div className="mt-8 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
-            {list.items.map((g) => (
+            {more.items.map((g) => (
               <GameCard key={g.slug} game={g} />
             ))}
           </div>
-          {totalPages > 1 && (
-            <div className="mt-8">
+
+          <InfiniteFooter list={more} pageSize={list.pageSize} />
+
+          {/* 已经往下接过之后，页码显示的位置和实际看到的内容对不上，收起来 */}
+          {totalPages > 1 && more.items.length === list.items.length && (
+            <div className="mt-6">
               <Pagination page={page} totalPages={totalPages} onChange={onPage} />
             </div>
           )}
@@ -187,6 +197,31 @@ function pageFrom(params: URLSearchParams): number {
   return Math.max(1, Number(params.get('page') ?? 1) || 1)
 }
 
+/**
+ * 平台页 / 类型页共用的「接下一页」。
+ *
+ * resetKey 把路径和入口页码都算进去：从 /platforms/nes 走到 /platforms/gba，
+ * 或者点页码跳到第 3 页，都必须把已经接上的部分丢掉重来。
+ */
+function useCollectionInfinite(
+  path: string,
+  page: number,
+  list: Paged<Game> | undefined,
+  ready: boolean,
+): InfiniteList<Game> {
+  const resetKey = `${path}?page=${page}`
+  const fetchMore = useCallback(
+    async (nextPage: number): Promise<Paged<Game>> => {
+      const d = await fetchPageData(path, { page: nextPage })
+      // 后端按路径决定回哪种 payload；对不上说明路由变了，这批数据不能用
+      if (d.route !== 'platform' && d.route !== 'genre') throw new Error('unexpected route payload')
+      return d.list
+    },
+    [path],
+  )
+  return useInfinite({ first: list, ready, fetchPage: fetchMore, resetKey })
+}
+
 /* ---------------- 平台页 /platforms/:id ---------------- */
 export function PlatformPage() {
   const { id = '' } = useParams<{ id: string }>()
@@ -197,7 +232,10 @@ export function PlatformPage() {
   const platform: Platform | undefined = platformMap[id]
   // Hook 不能放到下面的 404 分支后面，所以不认识的 id 也照发一次请求；
   // 后端回一页空列表，反正这种 URL 本来就渲染不到列表
-  const state = usePageData<PlatformData>(`/platforms/${encodeURIComponent(id)}`, { page }, 'platform')
+  const path = `/platforms/${encodeURIComponent(id)}`
+  const state = usePageData<PlatformData>(path, { page }, 'platform')
+  // 必须在下面的 404 分支之前调用：hook 的调用顺序每次渲染都得一致
+  const more = useCollectionInfinite(path, page, state.data?.list, state.status === 'ready')
 
   // 未启用的平台不该有可收录的页面
   if (!platform || !isPlatformEnabled(platform.id)) return <NotFoundPage />
@@ -217,6 +255,7 @@ export function PlatformPage() {
       parent={{ name: t.browse.platformsTitle, path: '/platforms' }}
       basePath={`/platforms/${platform.id}`}
       list={list}
+      more={more}
       page={page}
       error={state.status === 'error' ? state.error : undefined}
       onPage={(p) => {
@@ -238,7 +277,9 @@ export function GenrePage() {
 
   const page = pageFrom(params)
   const genre: Genre | undefined = genreMap[id]
-  const state = usePageData<GenreData>(`/genres/${encodeURIComponent(id)}`, { page }, 'genre')
+  const path = `/genres/${encodeURIComponent(id)}`
+  const state = usePageData<GenreData>(path, { page }, 'genre')
+  const more = useCollectionInfinite(path, page, state.data?.list, state.status === 'ready')
 
   // 类型是代码里的配置，不认识的 id 立刻 404
   if (!genre) return <NotFoundPage />
@@ -257,6 +298,7 @@ export function GenrePage() {
       parent={{ name: t.browse.genresTitle, path: '/genres' }}
       basePath={`/genres/${genre.id}`}
       list={list}
+      more={more}
       page={page}
       error={state.status === 'error' ? state.error : undefined}
       onPage={(p) => {

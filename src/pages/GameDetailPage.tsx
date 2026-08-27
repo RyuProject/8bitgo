@@ -151,7 +151,7 @@ export function GameDetailPage() {
               icon={game.icon}
               romUrl={rom.status === 'found' ? rom.url : undefined}
               romChecking={rom.status === 'checking'}
-              backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} className="h-full w-full" />}
+              backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority className="h-full w-full" />}
             />
           </div>
 

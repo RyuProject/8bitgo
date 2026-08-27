@@ -18,6 +18,11 @@ interface Props {
   showBadge?: boolean
   /** 右下角有其他角标时，为标题预留空间 */
   reserveBottomRight?: boolean
+  /**
+   * 首屏可见（LCP 候选）。开了就 eager + 高优先级下载、视频也预取 metadata。
+   * 只给真正一进页面就能看到的那几张，给多了等于没分优先级。
+   */
+  priority?: boolean
 }
 
 const ratios = {
@@ -34,7 +39,7 @@ const iconSizes = {
 }
 
 /** 悬停时播放的封面视频（静音、循环、行内）。移动端无悬停时显示 poster / 首帧。 */
-function CoverVideo({ src, poster }: { src: string; poster?: string }) {
+function CoverVideo({ src, poster, priority }: { src: string; poster?: string; priority?: boolean }) {
   const ref = useRef<HTMLVideoElement>(null)
   return (
     <video
@@ -44,7 +49,9 @@ function CoverVideo({ src, poster }: { src: string; poster?: string }) {
       muted
       loop
       playsInline
-      preload="metadata"
+      // 列表里的封面视频只在鼠标移上去才播，提前拉 metadata 等于每张卡都白下一段。
+      // 首屏那几张（priority）才值得先拿 metadata，换第一次悬停不卡。
+      preload={priority ? 'metadata' : 'none'}
       className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
       onMouseEnter={() => void ref.current?.play().catch(() => {})}
       onMouseLeave={() => {
@@ -71,6 +78,7 @@ export function GameCover({
   iconSize = 'md',
   showBadge = true,
   reserveBottomRight = false,
+  priority = false,
 }: Props) {
   const t = useT()
   const platform = platformMap[game.platform]
@@ -87,12 +95,16 @@ export function GameCover({
     >
       {/* 背景层：视频 / 封面图 / 程序化封面 */}
       {videoSrc ? (
-        <CoverVideo src={videoSrc} poster={coverSrc || undefined} />
+        <CoverVideo src={videoSrc} poster={coverSrc || undefined} priority={priority} />
       ) : coverSrc ? (
         <img
           src={coverSrc}
           alt={game.title}
-          loading="lazy"
+          // 首屏那几张必须 eager：对着 LCP 图片加 loading="lazy"，
+          // 等于让浏览器先跳过它、发现完别的资源再回头下，LCP 反而更慢
+          loading={priority ? 'eager' : 'lazy'}
+          fetchPriority={priority ? 'high' : 'auto'}
+          decoding="async"
           className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
         />
       ) : (

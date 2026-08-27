@@ -26,6 +26,7 @@ export function PlatformIcon({
       alt=""
       className={cx('object-contain', className)}
       loading="lazy"
+      decoding="async"
       draggable={false}
     />
   )

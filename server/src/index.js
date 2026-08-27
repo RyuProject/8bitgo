@@ -13,6 +13,7 @@ import { postsRouter } from './routes/posts.js'
 import { meRouter } from './routes/me.js'
 import { usersRouter } from './routes/users.js'
 import { adminRouter } from './routes/admin.js'
+import { roomsRouter } from './routes/rooms.js'
 import { pageRouter } from './routes/page.js'
 import { roomsRouter } from './routes/rooms.js'
 import { savesRouter } from './routes/saves.js'
@@ -57,6 +58,7 @@ app.use('/api/posts', postsRouter)
 app.use('/api/me', meRouter)
 app.use('/api/users', usersRouter)
 app.use('/api/admin', adminRouter)
+app.use('/api/rooms', roomsRouter)
 // 按路由取数：SSR 与客户端共用同一份定义（见 routes/page.js）
 app.use('/api/page', pageRouter)
 app.use('/api/rooms', roomsRouter)

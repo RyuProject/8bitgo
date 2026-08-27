@@ -11,6 +11,7 @@
 import type { Capability, CaptureSources, MountOptions, Runtime, RuntimeHandle } from '../types'
 import { canvasToBlob } from '../recorder'
 import { getT, fmt } from '@/services/i18n'
+import { extractRomFromZip, isZip } from '@/lib/unzip'
 
 /** 把二进制转成 jsnes 需要的「binary string」（每个字符一个字节） */
 function toBinaryString(buf: ArrayBuffer): string {
@@ -24,24 +25,70 @@ function toBinaryString(buf: ArrayBuffer): string {
   return out
 }
 
+/**
+ * 读取 ROM 字节。
+ *
+ * 这里做两件 jsnes 自己不会做的事：
+ *
+ * 1. **认出「取到的不是 ROM」**。ROM 根地址配错时（比如少写 https://），
+ *    请求会落到本站的 SSR 兜底路由上，返回 200 + 一个 HTML 页面。
+ *    直接喂给 jsnes 的话只会得到一句「Not a valid NES ROM.」，
+ *    完全看不出真正的原因是地址配错了。这里提前说清楚。
+ *
+ * 2. **解压**。站点允许 .zip 格式的 ROM，EmulatorJS 内部会自己解压，jsnes 不会。
+ *    这里按**内容**判断（zip 的 PK 魔数），文件名叫什么无关 ——
+ *    实际见过把 zip 存成 .nes 的情况。
+ */
 async function readRom(game: File | string): Promise<ArrayBuffer> {
-  if (typeof game !== 'string') return game.arrayBuffer()
-  const res = await fetch(game)
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return res.arrayBuffer()
+  let buf: ArrayBuffer
+  if (typeof game === 'string') {
+    const res = await fetch(game)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const type = res.headers.get('content-type') || ''
+    if (/text\/html|application\/xhtml/i.test(type)) {
+      throw new Error(fmt(getT().runtime.romNotBinary, { url: game }))
+    }
+    buf = await res.arrayBuffer()
+  } else {
+    buf = await game.arrayBuffer()
+  }
+
+  if (isZip(buf)) {
+    const { data } = await extractRomFromZip(buf, ['nes', 'unf', 'unif', 'fds'])
+    return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer
+  }
+
+  // 没有 content-type 兜底时，再按内容认一次网页
+  const head = new Uint8Array(buf, 0, Math.min(64, buf.byteLength))
+  const text = String.fromCharCode(...head).trim().toLowerCase()
+  if (text.startsWith('<!doctype html') || text.startsWith('<html')) {
+    throw new Error(fmt(getT().runtime.romNotBinary, { url: typeof game === 'string' ? game : '' }))
+  }
+  return buf
 }
 
 /**
  * jsnes 的 Browser 实例，比它的类型声明多不少东西。
  * 下划线开头的是它的实现细节，用之前都做了存在性判断。
  */
+interface JsnesNes {
+  toJSON: () => unknown
+  fromJSON: (state: unknown) => void
+  /** 构造时传进去的选项。papu.reset() 会重新读 sampleRate，所以改这里才能长期生效 */
+  opts?: { sampleRate?: number }
+  /** 音频处理单元。sampleTimerMax 决定「每多少 CPU 周期产一个采样」 */
+  papu?: { sampleRate?: number }
+  /** 公开接口，内部就是 papu.setFrameRate(rate) —— 会按当前 sampleRate 重算 sampleTimerMax */
+  setFramerate?: (rate: number) => void
+}
+
 interface JsnesBrowser {
   destroy: () => void
   loadROM: (data: string) => void
   fitInParent?: () => void
   start?: () => void
   stop?: () => void
-  nes?: { toJSON: () => unknown; fromJSON: (state: unknown) => void }
+  nes?: JsnesNes
   _screen?: { canvas?: HTMLCanvasElement }
   _speakers?: { audioCtx?: AudioContext | null; node?: AudioNode | null }
 }
@@ -79,6 +126,77 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
 
   const onResize = () => browser?.fitInParent?.()
 
+  /** 等 AudioWorklet 就绪最多等这么久；等不到就放弃（没声音也得让游戏能玩） */
+  const AUDIO_READY_TIMEOUT_MS = 5000
+
+  /**
+   * 等 jsnes 的音频节点就绪，然后做两件事。**两件都不能同步做**：
+   * `Speakers.start()` 里 `audioCtx` 是同步建的，但 `node` 要等
+   * `await audioWorklet.addModule()` 之后才赋值 —— loadROM() 一返回就去读，必然是 null。
+   *
+   * 一、把真实采样率补给模拟器核心（这条是「游戏跑太快」的病根）
+   *
+   *   jsnes 的 Browser 在构造 NES 时写的是 `sampleRate: this._speakers.getSampleRate()`，
+   *   而那一刻 audioCtx 还没建，getSampleRate() 只能返回兜底值 44100。
+   *   等 AudioContext 真起来，用的是声卡的原生采样率，绝大多数机器是 48000。
+   *
+   *   于是核心按 44100 产样本（每帧约 734 个），worklet 按 48000 消费 ——
+   *   永远产不够，缓冲区一直空，worklet 每个渲染块都报 underrun，
+   *   而 Browser 对 underrun 的处理是「连跑两帧追音频」。这些补出来的帧会把
+   *   FrameTimer.lastFrameTime 往前推，requestAnimationFrame 那条线算出 numFrames === 0
+   *   就直接 return —— 画面时钟让位给音频时钟，最后稳定在
+   *
+   *       60.098 × 48000 / 44100 ≈ 65.4 fps    （快约 9%）
+   *
+   *   外接 96kHz 的声卡就是 2.18 倍速。有意思的是 jsnes 核心自己的默认值就是 48000，
+   *   是 Browser 这层包装把它改坏了。
+   *
+   * 二、插一个 gain 节点，音量才调得动、录像才有声音
+   *
+   * 暂停会把整个 AudioContext 关掉（Speakers.stop()），恢复播放时重建一个新的，
+   * 所以恢复之后要再调一次 —— 旧的 gain 挂在已经关闭的 context 上，是死的。
+   */
+  const attachAudio = async () => {
+    const deadline = Date.now() + AUDIO_READY_TIMEOUT_MS
+    let speakers = browser?._speakers
+    while (!destroyed && (!speakers?.audioCtx || !speakers.node)) {
+      if (Date.now() > deadline) return
+      await new Promise((r) => setTimeout(r, 50))
+      speakers = browser?._speakers
+    }
+    const ctx = speakers?.audioCtx
+    const node = speakers?.node
+    if (destroyed || !ctx || !node) return
+
+    // 一、采样率
+    const nes = browser?.nes
+    if (nes?.papu && nes.opts && ctx.sampleRate > 0 && nes.opts.sampleRate !== ctx.sampleRate) {
+      nes.opts.sampleRate = ctx.sampleRate // 之后 papu.reset() 会重新读这里
+      nes.papu.sampleRate = ctx.sampleRate // 当前实例立即生效
+      // 传 60 算出来的正好等于 papu.reset() 里那个公式，不用自己硬写 CPU 频率常量
+      nes.setFramerate?.(60)
+    }
+
+    // 二、音量：把 worklet -> destination 的直连改成 worklet -> gain -> destination
+    try {
+      gain?.disconnect()
+    } catch {
+      /* 旧的挂在已关闭的 context 上，断不开也无所谓 */
+    }
+    gain = null
+    try {
+      const g = ctx.createGain()
+      g.gain.value = volume
+      node.disconnect()
+      node.connect(g).connect(ctx.destination)
+      gain = g
+      caps.add('volume')
+      options.onCaps?.(caps)
+    } catch {
+      gain = null
+    }
+  }
+
   void (async () => {
     try {
       const [{ Browser }, buf] = await Promise.all([import('jsnes'), readRom(options.game)])
@@ -112,23 +230,12 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
 
       window.addEventListener('resize', onResize)
 
-      // 音量：把 AudioWorklet -> destination 的直连改成 worklet -> gain -> destination
-      const speakers = browser._speakers
-      if (speakers?.audioCtx && speakers.node) {
-        try {
-          gain = speakers.audioCtx.createGain()
-          gain.gain.value = volume
-          speakers.node.disconnect()
-          speakers.node.connect(gain).connect(speakers.audioCtx.destination)
-        } catch {
-          gain = null
-        }
-      }
-
       for (const c of ['pause', 'screenshot', 'record', 'gamepad'] as Capability[]) caps.add(c)
       if (browser.nes) caps.add('saveState')
-      if (gain) caps.add('volume')
       options.onCaps?.(caps)
+
+      // 音频要等 AudioWorklet 加载完才能接，不能在这里同步做（见 attachAudio 的说明）
+      void attachAudio()
 
       options.onReady?.()
       options.onStart?.()
@@ -144,7 +251,17 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   return {
     caps,
     volume,
-    setPaused: (paused) => (paused ? browser?.stop?.() : browser?.start?.()),
+    setPaused: (paused) => {
+      if (paused) {
+        browser?.stop?.()
+        // Speakers.stop() 把 AudioContext 关了，手上这个 gain 已经是死的
+        gain = null
+        return
+      }
+      browser?.start?.()
+      // 恢复播放会重建 AudioContext 和 worklet，采样率和 gain 都要重新接
+      void attachAudio()
+    },
     setVolume: (v) => {
       volume = Math.max(0, Math.min(1, v))
       if (gain) gain.gain.value = volume

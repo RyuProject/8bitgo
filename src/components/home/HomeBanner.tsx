@@ -88,7 +88,7 @@ function Banner({ className }: { className?: string }) {
                 zIndex: [1, 2, 3][i],
               }}
             >
-              <GameCover game={g} iconSize="sm" showTitle={false} />
+              <GameCover game={g} iconSize="sm" showTitle={false} priority />
             </div>
           ))}
         </div>
