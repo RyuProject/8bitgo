@@ -6,7 +6,10 @@ import { fetchAdminGames, patchGame } from '@/services/store'
 import {
   conventionalKeys,
   deleteRom,
+  deleteRomDir,
+  dirOfKey,
   getRomConfig,
+  isBundleKey,
   isS3ApiUrl,
   listRomObjects,
   pingRomApi,
@@ -19,6 +22,7 @@ import {
   unbindKeyPatch,
   type RomObject,
 } from '@/services/roms'
+import { pickMainSwf } from '@/lib/swfBundle'
 import { platformMap } from '@/data/platforms'
 import { cx } from '@/lib/format'
 import { slugify } from './GameForm'
@@ -64,6 +68,53 @@ function matchGame(key: string, games: Game[]): Game | undefined {
   if (candidates.length === 1) return candidates[0]
   return candidates.find((g) => g.platform === folder) ?? candidates[0]
 }
+
+/**
+ * 多文件包（Flash 多 SWF）在列表里应该是**一行**，不是散着的五行。
+ *
+ * 桶里 roms/flash/jyqx3/ 下面躺着 root/CG/UI/map/war 五个 swf，按对象逐行列出来的话：
+ * 五行都指向同一款游戏、每行都能各自「绑定」（绑错一个就是打不开），
+ * 删除也只能一个一个点。所以先按目录归成一组，再整组显示、整组绑定、整组删除。
+ */
+interface BundleGroup {
+  /** 包目录，如 roms/flash/jyqx3 */
+  dir: string
+  files: RomObject[]
+  size: number
+  /** 猜出来的主 SWF 的完整 key —— 绑定时绑它 */
+  main: string
+}
+
+type RomRow = { kind: 'file'; object: RomObject } | { kind: 'bundle'; bundle: BundleGroup }
+
+/** 按目录把多文件包归组，单文件保持原样；顺序跟着桶里返回的顺序走 */
+function toRows(objects: RomObject[]): RomRow[] {
+  const rows: RomRow[] = []
+  const groups = new Map<string, BundleGroup>()
+  for (const o of objects) {
+    if (!isBundleKey(o.key)) {
+      rows.push({ kind: 'file', object: o })
+      continue
+    }
+    const dir = dirOfKey(o.key)
+    let g = groups.get(dir)
+    if (!g) {
+      g = { dir, files: [], size: 0, main: '' }
+      groups.set(dir, g)
+      rows.push({ kind: 'bundle', bundle: g })
+    }
+    g.files.push(o)
+    g.size += o.size
+  }
+  for (const g of groups.values()) {
+    const rel = pickMainSwf(g.files.map((f) => f.key.slice(g.dir.length + 1)))
+    g.main = rel ? `${g.dir}/${rel}` : g.files[0].key
+  }
+  return rows
+}
+
+/** 这一行「代表」哪个 key：单文件就是它自己，包则是主 SWF */
+const rowKey = (r: RomRow) => (r.kind === 'file' ? r.object.key : r.bundle.main)
 
 const CORS_EXAMPLE = `[
   {
@@ -243,13 +294,16 @@ export function AdminRoms() {
     let failed = 0
     const updated: Game[] = []
     try {
-      for (const o of objects) {
-        if (byRom.has(o.key)) continue
-        const g = matchGame(o.key, games)
+      // 按行来：一个多 SWF 包只算一次，绑的是主 SWF，不是包里随便哪个文件
+      for (const row of toRows(objects)) {
+        const key = rowKey(row)
+        const keys = row.kind === 'file' ? [key] : row.bundle.files.map((f) => f.key)
+        if (keys.some((k) => byRom.has(k))) continue
+        const g = matchGame(key, games)
         if (!g || romKeysOf(g).length > 0) continue
         try {
           // 逐条串行写库：一次几十条并发打过去，后端连接池会被打满
-          updated.push(await patchGame(g.slug, { rom: o.key }))
+          updated.push(await patchGame(g.slug, { rom: key }))
           n++
         } catch {
           failed++
@@ -278,11 +332,41 @@ export function AdminRoms() {
     }
   }
 
-  const visibleObjects = useMemo(() => {
+  /** 整组删：包目录下的文件一个个删没意义，还容易删一半留一半 */
+  const removeBundle = async (b: BundleGroup) => {
+    if (!window.confirm(`确定从 R2 删除整个包目录 ${b.dir}/（${b.files.length} 个文件，${formatBytes(b.size)}）？此操作不可恢复。`)) return
+    try {
+      // 同样是先解绑再删：反过来一旦解绑失败，库里就留着指向已删文件的 key
+      for (const f of b.files) await unbindKey(f.key)
+      const removed = await deleteRomDir(b.dir)
+      const gone = new Set(removed.length ? removed : b.files.map((f) => f.key))
+      setObjects((list) => list?.filter((x) => !gone.has(x.key)) ?? null)
+      flash(`已删除 ${gone.size} 个文件`)
+    } catch (err) {
+      setListError(err instanceof Error ? err.message : '删除失败')
+    }
+  }
+
+  /**
+   * 列表行：先归组再筛。
+   * 筛选命中包里任意一个文件（或目录名）就整组显示 —— 只显示命中的那一个文件的话，
+   * 「这个包一共几个文件、多大」就全错了。
+   */
+  const rows = useMemo(() => {
     if (!objects) return []
     const needle = filter.trim().toLowerCase()
-    return objects.filter((o) => !needle || o.key.toLowerCase().includes(needle))
+    const all = toRows(objects)
+    if (!needle) return all
+    return all.filter((r) =>
+      r.kind === 'file'
+        ? r.object.key.toLowerCase().includes(needle)
+        : r.bundle.dir.toLowerCase().includes(needle) || r.bundle.files.some((f) => f.key.toLowerCase().includes(needle)),
+    )
   }, [objects, filter])
+
+  /** 这一行绑给了哪款游戏：包里任意一个文件被绑了都算 */
+  const boundOfRow = (r: RomRow): Game | undefined =>
+    r.kind === 'file' ? byRom.get(r.object.key) : r.bundle.files.map((f) => byRom.get(f.key)).find(Boolean)
 
   const totalSize = objects?.reduce((s, o) => s + o.size, 0) ?? 0
 
@@ -396,19 +480,35 @@ export function AdminRoms() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
-                {visibleObjects.map((o) => (
-                  <ObjectRow
-                    key={o.key}
-                    object={o}
-                    games={games}
-                    boundGame={byRom.get(o.key)}
-                    suggestion={byRom.get(o.key) ? undefined : matchGame(o.key, games)}
-                    onBind={bind}
-                    onUnbind={unbindRow}
-                    onDelete={removeObject}
-                  />
-                ))}
-                {visibleObjects.length === 0 && (
+                {rows.map((row) => {
+                  const boundGame = boundOfRow(row)
+                  const suggestion = boundGame ? undefined : matchGame(rowKey(row), games)
+                  return row.kind === 'file' ? (
+                    <ObjectRow
+                      key={row.object.key}
+                      object={row.object}
+                      games={games}
+                      boundGame={boundGame}
+                      suggestion={suggestion}
+                      onBind={bind}
+                      onUnbind={unbindRow}
+                      onDelete={removeObject}
+                    />
+                  ) : (
+                    <BundleRow
+                      key={row.bundle.dir}
+                      bundle={row.bundle}
+                      games={games}
+                      boundGame={boundGame}
+                      boundKey={row.bundle.files.map((f) => f.key).find((k) => byRom.has(k))}
+                      suggestion={suggestion}
+                      onBind={bind}
+                      onUnbind={unbindRow}
+                      onDelete={removeBundle}
+                    />
+                  )
+                })}
+                {rows.length === 0 && (
                   <tr>
                     <td colSpan={4} className="py-8 text-center text-muted">
                       {objects.length === 0 ? '这个前缀下没有文件' : '没有匹配的文件'}
@@ -477,6 +577,10 @@ export function AdminRoms() {
           <li>
             之后在「游戏」页的编辑弹窗里直接「上传到 R2」，文件会存到 <code className="text-fg">{cfg.prefix || ''}/&lt;platform&gt;/&lt;slug&gt;.&lt;后缀&gt;</code> 并自动绑定；已有文件用「列出文件 → 自动匹配」。
           </li>
+          <li>
+            <strong className="text-fg">多 SWF 的 Flash 游戏</strong>（主 SWF 运行时还要去拉同目录的其它 swf）把整个游戏文件夹压成 zip 传上去：
+            会解开存到 <code className="text-fg">{cfg.prefix || ''}/flash/&lt;slug&gt;/</code> 下，主 SWF 自动绑成 ROM，列表里这一整包显示为一行。
+          </li>
         </ol>
       </Card>
     </div>
@@ -543,5 +647,111 @@ function ObjectRow({
         </div>
       </td>
     </tr>
+  )
+}
+
+/**
+ * 多文件包的一行：整组显示、整组绑定（绑主 SWF）、整组删除，点开能看包里都有什么。
+ */
+function BundleRow({
+  bundle,
+  games,
+  boundGame,
+  boundKey,
+  suggestion,
+  onBind,
+  onUnbind,
+  onDelete,
+}: {
+  bundle: BundleGroup
+  games: Game[]
+  boundGame?: Game
+  /** 包里真正被绑上的那个 key（管理员可能绑的不是猜出来的主 SWF） */
+  boundKey?: string
+  suggestion?: Game
+  onBind: (slug: string, key: string | undefined) => void | Promise<void>
+  onUnbind: (key: string) => void | Promise<void>
+  onDelete: (b: BundleGroup) => void
+}) {
+  const [selected, setSelected] = useState(suggestion?.slug ?? '')
+  const [open, setOpen] = useState(false)
+  const rel = (k: string) => k.slice(bundle.dir.length + 1)
+  const mainRel = rel(boundKey ?? bundle.main)
+  return (
+    <>
+      <tr className="hover:bg-black/[0.03]">
+        <td className="py-2 pr-3">
+          <button type="button" className="flex items-center gap-1 font-mono text-xs hover:text-brand-hover" onClick={() => setOpen((v) => !v)}>
+            <span className="text-dim">{open ? '▾' : '▸'}</span>
+            {bundle.dir}/
+          </button>
+          <span className="mt-0.5 block text-[11px] text-dim">
+            {bundle.files.length} 个文件 · 主 SWF <span className="font-mono text-muted">{mainRel}</span>
+            {boundKey && boundKey !== bundle.main && <span className="ml-1 text-live">（猜的是 {rel(bundle.main)}）</span>}
+          </span>
+        </td>
+        <td className="py-2 pr-3 tabular-nums text-muted">{formatBytes(bundle.size)}</td>
+        <td className="py-2 pr-3">
+          {boundGame ? (
+            <span className="rounded bg-online/15 px-1.5 py-0.5 text-xs text-online">
+              {boundGame.icon} {boundGame.titleZh ?? boundGame.title}
+            </span>
+          ) : (
+            <select className={cx(inputClass, 'h-8 w-64 text-xs')} value={selected} onChange={(e) => setSelected(e.target.value)}>
+              <option value="">{suggestion ? `— 建议：${suggestion.titleZh ?? suggestion.title} —` : '— 选择游戏 —'}</option>
+              {games.map((g) => (
+                <option key={g.slug} value={g.slug}>
+                  {platformMap[g.platform]?.shortName} · {g.titleZh ?? g.title}
+                </option>
+              ))}
+            </select>
+          )}
+        </td>
+        <td className="py-2 text-right">
+          <div className="flex justify-end gap-1">
+            {boundGame ? (
+              <button
+                type="button"
+                className={cx(btnClass.small, 'text-muted hover:bg-black/5 hover:text-fg')}
+                onClick={() => void onUnbind(boundKey ?? bundle.main)}
+              >
+                解绑
+              </button>
+            ) : (
+              <button
+                type="button"
+                className={cx(btnClass.small, 'text-brand-hover hover:bg-brand-soft')}
+                disabled={!selected && !suggestion}
+                onClick={() => void onBind(selected || suggestion!.slug, bundle.main)}
+                title={`绑定主 SWF ${bundle.main}`}
+              >
+                绑定主 SWF
+              </button>
+            )}
+            <button type="button" className={cx(btnClass.small, 'text-live hover:bg-live/15')} onClick={() => onDelete(bundle)}>
+              删除整包
+            </button>
+          </div>
+        </td>
+      </tr>
+      {open && (
+        <tr>
+          <td colSpan={4} className="pb-2">
+            <ul className="ml-4 divide-y divide-line rounded-lg border border-line">
+              {bundle.files.map((f) => (
+                <li key={f.key} className="flex items-center gap-2 px-2 py-1 text-xs">
+                  <span className={cx('min-w-0 flex-1 truncate font-mono', f.key === (boundKey ?? bundle.main) ? 'text-fg' : 'text-muted')}>{rel(f.key)}</span>
+                  {f.key === (boundKey ?? bundle.main) && <span className="shrink-0 rounded bg-brand/20 px-1 text-[10px] text-brand-hover">主</span>}
+                  <span className="shrink-0 tabular-nums text-dim">{formatBytes(f.size)}</span>
+                  <a href={romUrlForKey(f.key)} target="_blank" rel="noreferrer" className={cx(btnClass.small, 'shrink-0 text-muted hover:bg-black/5 hover:text-fg')}>
+                    打开
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </td>
+        </tr>
+      )}
+    </>
   )
 }

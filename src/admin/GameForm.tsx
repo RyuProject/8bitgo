@@ -6,13 +6,18 @@ import { platforms, platformMap } from '@/data/platforms'
 import { genres } from '@/data/genres'
 import { cx } from '@/lib/format'
 import {
+  bundleDirFor,
   defaultKeyFor,
   defaultMediaKey,
   defaultRomKeyForLang,
+  dirOfKey,
   getRomConfig,
+  isBundleKey,
   romUrlForKey,
   uploadRom,
 } from '@/services/roms'
+import { bundleBytes, bundleWarnings, pickMainSwf, planSwfBundleFromZip, type SwfBundleFile, type SwfBundlePlan } from '@/lib/swfBundle'
+import { uploadSwfBundle, type BundleUploadProgress } from './swfUpload'
 import { confirmUpload, cleanupSuperseded, human } from './uploadGuards'
 import { coreOptionsFor } from '@/config/emulators'
 import { FEATURES } from '@/config/features'
@@ -374,8 +379,24 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
   )
 }
 
+/** 选了 zip 之后先摊开、等管理员确认的那一份「待上传的包」 */
+interface PendingBundle {
+  /** 压缩包完整内容，确认后逐个文件现解现传 */
+  zip: ArrayBuffer
+  /** 压缩包文件名，只用于显示 */
+  name: string
+  /** 目标包目录，如 roms/flash/jyqx3 */
+  dir: string
+  plan: SwfBundlePlan
+}
+
 /**
  * ROM 字段：可手填 key，也可以选文件直接上传到 R2（通过 Worker），成功后自动填入 key。
+ *
+ * Flash 还多一条路：选 .zip 时不当成 ROM 传上去，而是在浏览器里解开，
+ * 把整包文件传到同一个目录，再把主 SWF 绑成这一槽的 ROM ——
+ * 大型 Flash 游戏基本都是「主 SWF + 一堆相对路径加载的素材 SWF」，
+ * 单传一个 root.swf 上去只会卡在片头（见 lib/swfBundle.ts 的说明）。
  */
 function RomField({
   value,
@@ -398,17 +419,48 @@ function RomField({
   const inputRef = useRef<HTMLInputElement>(null)
   const [progress, setProgress] = useState<number | null>(null)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [pending, setPending] = useState<PendingBundle | null>(null)
+  const [bundleAt, setBundleAt] = useState<BundleUploadProgress | null>(null)
   const cfg = getRomConfig()
   const canUpload = Boolean(cfg.api && cfg.token)
-  const accept = (platformMap[platform]?.romExtensions ?? ['.zip']).join(',')
+  const isFlash = platform === 'flash'
+  // Flash 额外收 zip：平台的 romExtensions 保持只有 .swf —— 那个列表还管着
+  // 「玩本地 ROM」和格式识别，混进 zip 会让玩家以为拖个 zip 进播放器也能玩
+  const accept = isFlash ? '.swf,.zip' : (platformMap[platform]?.romExtensions ?? ['.zip']).join(',')
   const defKey = (fileName: string) => (lang ? defaultRomKeyForLang(platform, slug, lang, fileName) : defaultKeyFor(platform, slug, fileName))
+  /** 包目录：这一槽已经绑着某个包里的文件就原地更新，否则按约定新建 */
+  const bundleDir = () => {
+    const old = value.trim()
+    return old && !/^https?:/i.test(old) && isBundleKey(old) ? dirOfKey(old) : bundleDirFor(platform, slug, lang)
+  }
+
+  /** 选中 zip：解出目录结构，交给下面的面板等管理员确认 */
+  const openBundle = async (file: File) => {
+    setMsg({ ok: true, text: `正在读取 ${file.name}…` })
+    try {
+      const zip = await file.arrayBuffer()
+      const plan = planSwfBundleFromZip(zip, slug)
+      if (!plan.files.length) throw new Error('压缩包里没有可上传的文件')
+      setPending({ zip, name: file.name, dir: bundleDir(), plan })
+      setMsg(null)
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : '读取压缩包失败' })
+    }
+  }
 
   const onFile = async (file: File | undefined) => {
     if (!file) return
+    if (isFlash && /\.zip$/i.test(file.name)) {
+      await openBundle(file)
+      if (inputRef.current) inputRef.current.value = ''
+      return
+    }
     const oldKey = value.trim()
     // 字段里已有 key（且不是完整 URL）就复用它 —— 同一个槽位始终对着同一个对象，
-    // 这样重传就是原地覆盖，不会又生出一份
-    const key = oldKey && !/^https?:/i.test(oldKey) ? oldKey : defKey(file.name)
+    // 这样重传就是原地覆盖，不会又生出一份。但包目录里的 key 不能复用：
+    // 那是「某个包里的一个文件」，单传一个 swf 顶上去会和包里的其它文件对不上。
+    const reusable = oldKey && !/^https?:/i.test(oldKey) && !isBundleKey(oldKey)
+    const key = reusable ? oldKey : defKey(file.name)
     setMsg(null)
     if (!(await confirmUpload(key, file))) {
       if (inputRef.current) inputRef.current.value = ''
@@ -431,54 +483,222 @@ function RomField({
     }
   }
 
-  return (
-    <Field
-      label={label ?? 'ROM 文件'}
-      hint={
-        canUpload
-          ? value.trim() && !/^https?:/i.test(value)
-            ? `再次上传会原地覆盖已绑定的 ${value.trim()}；想换存放位置就先改这里的 key 或清空`
-            : `上传会存到 ${defKey('x.zip')} 这样的位置（扩展名跟随所选文件）并自动绑定；也可手填已有文件的 key 或完整 URL。留空则该语言不单独提供`
-          : '手填对象 key 或完整 URL；要直接上传，请先在「ROM 存储」页配置 Worker 地址与口令'
+  /** 面板上点「上传整包」 */
+  const runBundle = async () => {
+    if (!pending) return
+    const oldKey = value.trim()
+    setMsg(null)
+    setBundleAt({ done: 0, total: pending.plan.files.filter((f) => f.include).length, path: '', pct: 0 })
+    try {
+      const r = await uploadSwfBundle({
+        zip: pending.zip,
+        files: pending.plan.files,
+        main: pending.plan.main,
+        dir: pending.dir,
+        onProgress: setBundleAt,
+      })
+      if (!r) {
+        setMsg({ ok: false, text: '已取消，什么都没传' })
+        return
       }
-    >
-      <div className="flex gap-2">
-        <input
-          className={cx(inputClass, 'font-mono')}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder={defKey('x.zip')}
-        />
-        <input ref={inputRef} type="file" accept={accept} className="hidden" onChange={(e) => onFile(e.target.files?.[0])} />
-        <button
-          type="button"
-          className={cx(btnClass.secondary, 'shrink-0 whitespace-nowrap')}
-          disabled={!canUpload || progress !== null}
-          onClick={() => inputRef.current?.click()}
-          title={canUpload ? '选择文件并上传到 R2' : '需要先配置 Worker'}
-        >
-          {progress === null ? '☁️ 上传到 R2' : `上传中 ${progress}%`}
-        </button>
-        {value && !progress && (
-          <a href={romUrlForKey(value)} target="_blank" rel="noreferrer" className={cx(btnClass.secondary, 'shrink-0')} title="在新标签页打开文件地址">
-            打开
-          </a>
+      onChange(r.mainKey)
+      // 旧 ROM 还在同一个包目录里的话，孤儿清理那步已经处理过了，别再问第二遍
+      const removedOld = dirOfKey(oldKey) === pending.dir ? null : await cleanupSuperseded(oldKey, r.mainKey, allBoundKeys)
+      setMsg({
+        ok: true,
+        text:
+          `已上传 ${r.keys.length} 个文件（${human(r.bytes)}）到 ${pending.dir}/，主 SWF 绑定为 ${r.mainKey}` +
+          (r.removed.length ? `；清理了 ${r.removed.length} 个旧文件` : '') +
+          (removedOld ? `；旧 ROM ${removedOld} 已删除` : ''),
+      })
+      setPending(null)
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : '上传失败' })
+    } finally {
+      setBundleAt(null)
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <Field
+        label={label ?? 'ROM 文件'}
+        hint={
+          canUpload
+            ? value.trim() && !/^https?:/i.test(value)
+              ? isBundleKey(value.trim())
+                ? `这一槽绑的是多 SWF 包里的 ${value.trim().split('/').pop()}；再传一个 zip 会原地更新 ${dirOfKey(value.trim())}/`
+                : `再次上传会原地覆盖已绑定的 ${value.trim()}；想换存放位置就先改这里的 key 或清空`
+              : isFlash
+                ? `单个 .swf 存成 ${defKey('x.swf')}；多 SWF 的游戏直接选 .zip，整包会传到 ${bundleDirFor(platform, slug, lang)}/ 下`
+                : `上传会存到 ${defKey('x.zip')} 这样的位置（扩展名跟随所选文件）并自动绑定；也可手填已有文件的 key 或完整 URL。留空则该语言不单独提供`
+            : '手填对象 key 或完整 URL；要直接上传，请先在「ROM 存储」页配置 Worker 地址与口令'
+        }
+      >
+        <div className="flex gap-2">
+          <input
+            className={cx(inputClass, 'font-mono')}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder={defKey(isFlash ? 'x.swf' : 'x.zip')}
+          />
+          <input ref={inputRef} type="file" accept={accept} className="hidden" onChange={(e) => void onFile(e.target.files?.[0])} />
+          <button
+            type="button"
+            className={cx(btnClass.secondary, 'shrink-0 whitespace-nowrap')}
+            disabled={!canUpload || progress !== null || bundleAt !== null}
+            onClick={() => inputRef.current?.click()}
+            title={canUpload ? (isFlash ? '选择 .swf，或选 .zip 上传多 SWF 整包' : '选择文件并上传到 R2') : '需要先配置 Worker'}
+          >
+            {progress === null ? (isFlash ? '☁️ 上传 SWF / ZIP' : '☁️ 上传到 R2') : `上传中 ${progress}%`}
+          </button>
+          {value && !progress && (
+            <a href={romUrlForKey(value)} target="_blank" rel="noreferrer" className={cx(btnClass.secondary, 'shrink-0')} title="在新标签页打开文件地址">
+              打开
+            </a>
+          )}
+        </div>
+        {progress !== null && (
+          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-black/10">
+            <div className="h-full bg-brand transition-[width]" style={{ width: `${progress}%` }} />
+          </div>
         )}
+        {msg && <p className={cx('mt-2 text-xs', msg.ok ? 'text-online' : 'text-live')}>{msg.text}</p>}
+        {!canUpload && (
+          <p className="mt-1 text-[11px] text-dim">
+            <Link to="/admin/roms" className="text-brand-hover hover:underline">
+              去配置 Worker →
+            </Link>
+          </p>
+        )}
+      </Field>
+      {pending && (
+        <SwfBundlePanel
+          bundle={pending}
+          progress={bundleAt}
+          onPlan={(plan) => setPending((b) => (b ? { ...b, plan } : b))}
+          onDir={(dir) => setPending((b) => (b ? { ...b, dir } : b))}
+          onCancel={() => setPending(null)}
+          onConfirm={() => void runBundle()}
+        />
+      )}
+    </div>
+  )
+}
+
+/**
+ * 多 SWF 包的确认面板：先让管理员看清楚「要往哪个目录传哪些文件、哪个是主 SWF」，
+ * 再动手传。整包动辄二三十兆、十几个文件，传错了清理起来很烦，值得多这一步。
+ */
+function SwfBundlePanel({
+  bundle,
+  progress,
+  onPlan,
+  onDir,
+  onCancel,
+  onConfirm,
+}: {
+  bundle: PendingBundle
+  progress: BundleUploadProgress | null
+  onPlan: (plan: SwfBundlePlan) => void
+  onDir: (dir: string) => void
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  const { plan, dir } = bundle
+  const on = plan.files.filter((f) => f.include)
+  const swfs = on.filter((f) => /\.swf$/i.test(f.path)).map((f) => f.path)
+  const warnings = bundleWarnings(plan)
+  const busy = progress !== null
+
+  const toggle = (path: string) => {
+    const files: SwfBundleFile[] = plan.files.map((f) => (f.path === path ? { ...f, include: !f.include, note: undefined } : f))
+    // 主 SWF 被取消勾选就得重挑一个，否则会带着一个「不上传的主文件」去上传
+    const stillOn = files.filter((f) => f.include).map((f) => f.path)
+    const main = stillOn.includes(plan.main) ? plan.main : pickMainSwf(stillOn)
+    onPlan({ ...plan, files, main })
+  }
+
+  return (
+    <div className="rounded-xl border border-line bg-surface-2 p-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <p className="text-sm font-semibold">
+          多 SWF 包 <span className="font-normal text-muted">{bundle.name}</span>
+        </p>
+        <span className="text-xs text-muted">
+          勾选 {on.length} / {plan.files.length} 个文件 · {human(bundleBytes(plan.files))}
+        </span>
       </div>
-      {progress !== null && (
-        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-black/10">
-          <div className="h-full bg-brand transition-[width]" style={{ width: `${progress}%` }} />
+      <p className="mt-1 text-[11px] text-dim">
+        整包传到同一个目录，主 SWF 绑成这一槽的 ROM —— 播放器加载远程 ROM 时会把 base 设成它所在的目录，
+        游戏里 <code className="font-mono">loadMovie(&apos;CG.swf&apos;)</code> 这类相对路径才解析得回来。
+        {plan.strippedRoot && <> 已剥掉包里多套的一层目录 <code className="font-mono">{plan.strippedRoot}/</code>。</>}
+      </p>
+
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-muted">包目录</span>
+          <input className={cx(inputClass, 'font-mono text-xs')} value={dir} disabled={busy} onChange={(e) => onDir(e.target.value.replace(/^\/+|\/+$/g, ''))} />
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-xs font-medium text-muted">主 SWF（绑成 ROM 的那个）</span>
+          <select
+            className={cx(inputClass, 'font-mono text-xs')}
+            value={plan.main}
+            disabled={busy}
+            onChange={(e) => onPlan({ ...plan, main: e.target.value })}
+          >
+            {swfs.length === 0 && <option value="">包里没有 .swf</option>}
+            {swfs.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      {warnings.map((w) => (
+        <p key={w} className="mt-2 text-xs text-live">
+          ⚠ {w}
+        </p>
+      ))}
+
+      <ul className="mt-3 max-h-48 divide-y divide-line overflow-y-auto rounded-lg border border-line">
+        {plan.files.map((f) => (
+          <li key={f.path} className="flex items-center gap-2 px-2 py-1 text-xs">
+            <input type="checkbox" checked={f.include} disabled={busy} onChange={() => toggle(f.path)} className="shrink-0" />
+            <span className={cx('min-w-0 flex-1 truncate font-mono', f.include ? 'text-fg' : 'text-dim line-through')} title={f.path}>
+              {f.path}
+            </span>
+            {f.path === plan.main && f.include && <span className="shrink-0 rounded bg-brand/20 px-1 text-[10px] text-brand-hover">主</span>}
+            {f.note && <span className="shrink-0 text-[10px] text-dim">{f.note}</span>}
+            <span className="shrink-0 tabular-nums text-muted">{human(f.size)}</span>
+          </li>
+        ))}
+      </ul>
+
+      {progress ? (
+        <div className="mt-3">
+          <p className="text-xs text-muted">
+            上传中 {progress.done}/{progress.total} · {progress.pct}%
+            {progress.path && <span className="ml-1 font-mono text-dim">{progress.path}</span>}
+          </p>
+          <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-black/10">
+            <div className="h-full bg-brand transition-[width]" style={{ width: `${progress.pct}%` }} />
+          </div>
+        </div>
+      ) : (
+        <div className="mt-3 flex gap-2">
+          <button type="button" className={btnClass.primary} disabled={!on.length || !plan.main} onClick={onConfirm}>
+            上传整包（{on.length} 个文件）
+          </button>
+          <button type="button" className={btnClass.secondary} onClick={onCancel}>
+            取消
+          </button>
         </div>
       )}
-      {msg && <p className={cx('mt-2 text-xs', msg.ok ? 'text-online' : 'text-live')}>{msg.text}</p>}
-      {!canUpload && (
-        <p className="mt-1 text-[11px] text-dim">
-          <Link to="/admin/roms" className="text-brand-hover hover:underline">
-            去配置 Worker →
-          </Link>
-        </p>
-      )}
-    </Field>
+    </div>
   )
 }
 

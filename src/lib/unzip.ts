@@ -20,6 +20,26 @@ export interface ZipFileEntry {
   offset: number
 }
 
+/**
+ * 解 zip 里的文件名。
+ *
+ * zip 只有一个「这条目的名字是 UTF-8」的标志位（通用标志第 11 位）。没打这个标志的包
+ * 用的是**本地代码页**：Windows 简体中文下打的包就是 GBK。一律按 UTF-8 解，
+ * 中文名会变成一串乱码 —— 而这些名字最后要当对象 key 用，还要和 SWF 里
+ * loadMovie('sound/1.swf') 的相对路径对上，错一个字节就 404。
+ *
+ * 纯 ASCII 的名字两种编码完全一致，直接走 UTF-8；有高位字节又没打 UTF-8 标志的
+ * 才试 GBK（fatal 模式，解不动就说明本来就是 UTF-8，退回去）。
+ */
+export function decodeZipName(bytes: Uint8Array, utf8Flag: boolean): string {
+  if (utf8Flag || bytes.every((c) => c < 0x80)) return new TextDecoder().decode(bytes)
+  try {
+    return new TextDecoder('gbk', { fatal: true }).decode(bytes)
+  } catch {
+    return new TextDecoder().decode(bytes)
+  }
+}
+
 /** 前两个字节是不是 zip 的魔数 PK */
 export function isZip(buf: ArrayBuffer | Uint8Array): boolean {
   const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf)
@@ -48,6 +68,7 @@ export function listZipEntries(buf: ArrayBuffer): ZipFileEntry[] {
 
   for (let i = 0; i < count && p + 46 <= b.length; i++) {
     if (dv.getUint32(p, true) !== 0x02014b50) break
+    const flags = dv.getUint16(p + 8, true)
     const method = dv.getUint16(p + 10, true)
     const compressedSize = dv.getUint32(p + 20, true)
     const uncompressedSize = dv.getUint32(p + 24, true)
@@ -55,7 +76,8 @@ export function listZipEntries(buf: ArrayBuffer): ZipFileEntry[] {
     const extraLen = dv.getUint16(p + 30, true)
     const commentLen = dv.getUint16(p + 32, true)
     const offset = dv.getUint32(p + 42, true)
-    const name = new TextDecoder().decode(b.subarray(p + 46, p + 46 + nameLen))
+    // 反斜杠是某些 Windows 打包器的产物，统一成正斜杠，免得当成文件名的一部分
+    const name = decodeZipName(b.subarray(p + 46, p + 46 + nameLen), Boolean(flags & 0x800)).replace(/\\/g, '/')
     // 目录项以 / 结尾；macOS 打包时塞的 __MACOSX/ 和 ._ 开头的资源叉一律跳过
     if (!name.endsWith('/') && !name.startsWith('__MACOSX/') && !name.split('/').pop()?.startsWith('._')) {
       entries.push({ name, method, compressedSize, uncompressedSize, offset })

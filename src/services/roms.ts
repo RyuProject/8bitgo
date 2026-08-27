@@ -164,10 +164,68 @@ export function explicitRomUrl(game: Game): string {
 
 /** 约定 key：<前缀>/<platform>/<slug>.<ext>，zip 优先 */
 export function conventionalKeys(game: Game): string[] {
+  const prefix = getRomPrefix()
+  const at = (name: string) => `${prefix ? `${prefix}/` : ''}${game.platform}/${name}`
+  /**
+   * Flash 单独一条路：
+   *   1. 不探 <slug>.zip —— Ruffle 不认 zip，探到了只会让详情页显示一个点不动的「开始游戏」
+   *   2. 补上多 SWF 包的约定 <slug>/root.swf（见 lib/swfBundle.ts）
+   */
+  if (game.platform === 'flash') return [at(`${game.slug}.swf`), at(`${game.slug}/root.swf`)]
   const exts = platformMap[game.platform]?.romExtensions ?? ['.zip']
   const ordered = ['.zip', ...exts.filter((e) => e !== '.zip')]
+  return ordered.map((ext) => at(`${game.slug}${ext}`))
+}
+
+/* ---------------- 多文件 ROM（Flash 多 SWF 包） ---------------- */
+
+/**
+ * 多文件包的存放目录：<前缀>/<platform>/<slug>[.<lang>]
+ *
+ * 和单文件 ROM 是同一套约定，只是把「<slug>.swf 这个对象」换成「<slug>/ 这个目录」；
+ * 按语言分槽时同样带语言后缀，各语言各一个目录，互不覆盖。
+ */
+export function bundleDirFor(platform: string, slug: string, lang?: RomLang): string {
   const prefix = getRomPrefix()
-  return ordered.map((ext) => `${prefix ? `${prefix}/` : ''}${game.platform}/${game.slug}${ext}`)
+  const name = lang ? `${slug}.${lang}` : slug
+  return `${prefix ? `${prefix}/` : ''}${platform}/${name}`
+}
+
+/** key 所在的目录，没有目录就返回空串 */
+export function dirOfKey(key: string): string {
+  const i = key.lastIndexOf('/')
+  return i < 0 ? '' : key.slice(0, i)
+}
+
+/**
+ * 这个 key 是不是躺在多文件包目录里。
+ * 单文件 ROM 是 <前缀>/<平台>/<文件>；多出一层，就说明它属于某个包。
+ */
+export function isBundleKey(key: string): boolean {
+  if (/^https?:/i.test(key) || key.startsWith('/')) return false
+  const parts = key.split('/').filter(Boolean)
+  const prefix = getRomPrefix()
+  const i = prefix && parts[0] === prefix ? 1 : 0
+  return parts.length >= i + 3
+}
+
+/** 列出某个目录下的全部对象 */
+export function listRomDir(dir: string): Promise<RomObject[]> {
+  return listRomObjects(dir.replace(/\/+$/, ''))
+}
+
+/**
+ * 删掉整个包目录（keep 里的 key 保留），返回真正删掉的 key。
+ * 逐个串行删：Worker 那边一个 key 一个请求，几十个并发打过去没有意义。
+ */
+export async function deleteRomDir(dir: string, keep: string[] = []): Promise<string[]> {
+  const removed: string[] = []
+  for (const o of await listRomDir(dir)) {
+    if (keep.includes(o.key)) continue
+    await deleteRom(o.key)
+    removed.push(o.key)
+  }
+  return removed
 }
 
 /** 给封面 / 视频生成默认 key：covers/<slug>.<ext> 或 videos/<slug>.<ext> */
@@ -421,8 +479,39 @@ export interface UploadResult {
   size: number
 }
 
-/** 通过 Worker 上传文件到 R2（PUT），带进度回调 */
-export function uploadRom(file: File, key: string, onProgress?: (pct: number) => void): Promise<UploadResult> {
+/**
+ * 按扩展名猜 Content-Type。
+ *
+ * Worker 自己也有一份兜底（`guessType(key)`），但只在请求**没带** Content-Type 时才用；
+ * XHR 一定会带，拿不到类型时带的是 application/octet-stream，于是 Worker 的兜底永远轮不上。
+ * 多 SWF 包里逐个上传的是 Blob（从 zip 里解出来的，没有 type），所以在这边补齐。
+ */
+function guessUploadType(key: string): string {
+  const ext = key.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? ''
+  const map: Record<string, string> = {
+    swf: 'application/x-shockwave-flash',
+    xml: 'text/xml',
+    txt: 'text/plain; charset=utf-8',
+    json: 'application/json',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    png: 'image/png',
+    gif: 'image/gif',
+    mp3: 'audio/mpeg',
+    wav: 'audio/wav',
+    flv: 'video/x-flv',
+    zip: 'application/zip',
+  }
+  return map[ext] ?? 'application/octet-stream'
+}
+
+/**
+ * 通过 Worker 上传文件到 R2（PUT），带进度回调。
+ *
+ * 收 Blob 而不只是 File：多 SWF 包是在浏览器里解开 zip 之后逐个上传的，
+ * 手上只有 Blob，没有 File。
+ */
+export function uploadRom(file: Blob, key: string, onProgress?: (pct: number) => void): Promise<UploadResult> {
   const api = getRomApi()
   if (!api) return Promise.reject(new Error('尚未配置 Worker 地址，无法上传'))
   if (!getRomToken()) return Promise.reject(new Error('请先在「ROM 存储」页填写 Worker 口令（ADMIN_TOKEN）'))
@@ -432,7 +521,7 @@ export function uploadRom(file: File, key: string, onProgress?: (pct: number) =>
     const xhr = new XMLHttpRequest()
     xhr.open('PUT', `${api}/${encodeKey(cleanKey)}`)
     xhr.setRequestHeader('Authorization', `Bearer ${getRomToken()}`)
-    xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream')
+    xhr.setRequestHeader('Content-Type', file.type || guessUploadType(cleanKey))
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100))
     }
@@ -456,13 +545,26 @@ export async function deleteRom(key: string): Promise<void> {
   probeCache.clear()
 }
 
-/** 根据文件名猜测对应的游戏 slug：roms/nes/super-mario-bros.zip -> super-mario-bros */
+/**
+ * 根据 key 猜对应的游戏 slug：
+ *   roms/nes/super-mario-bros.zip        -> super-mario-bros
+ *   roms/flash/jyqx3/root.swf            -> jyqx3     （多文件包认目录名，不是包里的文件名）
+ *   roms/flash/jyqx3.zh-Hans/root.swf    -> jyqx3     （剥掉语言后缀）
+ *
+ * 多文件包这条很关键：按老逻辑取最后一段，同一个包里的五个 swf 会分别猜成
+ * root / war / map …，「自动匹配」既对不上游戏，还可能把 war.swf 绑成 ROM。
+ */
 export function slugFromKey(key: string): string {
-  const file = key.split('/').pop() ?? key
-  return file
+  const parts = key.split('/').filter(Boolean)
+  const prefix = getRomPrefix()
+  const i = prefix && parts[0] === prefix ? 1 : 0
+  const name = parts.length >= i + 3 ? parts[i + 1] : (parts[parts.length - 1] ?? key)
+  const noExt = name
     .replace(/\.(zip|7z|nes|unf|fds|sfc|smc|fig|gba|gbc|gb|z64|n64|v64|md|gen|bin|smd|nds|ws|wsc|cue|iso|img|pbp|chd|exe|com|swf|jar)$/i, '')
     .toLowerCase()
     .replace(/[\s_]+/g, '-')
+  const lang = ROM_LANGS.find((l) => noExt.endsWith(`.${l.toLowerCase()}`))
+  return lang ? noExt.slice(0, -(lang.length + 1)) : noExt
 }
 
 /** 从 key 里推断平台：roms/nes/x.zip -> nes */
