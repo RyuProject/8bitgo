@@ -15,7 +15,8 @@
     "gen-sql:empty": "node scripts/gen-sql.mjs --empty",
     "backfill-search": "node scripts/backfill-search.mjs",
     "test:search": "node scripts/test-search.mjs",
-    "test:search:db": "node scripts/test-search-db.mjs"
+    "test:search:db": "node scripts/test-search-db.mjs",
+    "upgrade-v2": "node scripts/upgrade-v1-to-v2.mjs"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
