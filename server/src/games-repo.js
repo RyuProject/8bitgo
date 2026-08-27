@@ -1,0 +1,254 @@
+/**
+ * games 的数据访问层（schema v2）。
+ *
+ * 全部筛选、排序、分页都在 SQL 里做。v1 是把整个游戏库发给浏览器再用 JS 过滤，
+ * 91 款时看不出问题，上千款时首屏要下载整个目录 —— 这一层就是为了终结那种做法。
+ *
+ * 关联数据（类型 / 标签 / ROM）一律批量装配：一页 24 条只多打 3 条
+ * WHERE game_id IN (...)，不会变成每款查三次。
+ */
+import { query, queryOne, withTransaction } from './db.js'
+import { gameRowToApi, gameApiToRow, romsOf, GENERIC_ROM_LANG } from './mappers.js'
+
+/** 列表页每页最多给多少条，挡住 ?pageSize=100000 这种请求 */
+const MAX_PAGE_SIZE = 100
+
+/* ---------------- 读 ---------------- */
+
+/**
+ * 给一批 games 行装配关联数据。
+ * @param {object[]} rows games 表的原始行
+ * @returns {Promise<object[]>} 前端的 Game 对象数组，顺序与 rows 一致
+ */
+export async function attachRelations(rows) {
+  if (!rows.length) return []
+  const ids = rows.map((r) => r.id)
+  const holes = ids.map(() => '?').join(',')
+  const [genreRows, tagRows, romRows] = await Promise.all([
+    query(`SELECT game_id, genre_id FROM game_genres WHERE game_id IN (${holes})`, ids),
+    query(`SELECT game_id, tag FROM game_tags WHERE game_id IN (${holes})`, ids),
+    query(`SELECT game_id, lang, object_key FROM game_roms WHERE game_id IN (${holes})`, ids),
+  ])
+  // BIGINT 在 mysql2 里可能回成数字也可能回成字符串（取决于是否超出安全整数范围），
+  // 两边都统一成字符串当 key，免得 Map 对不上导致关联数据凭空丢失
+  const key = (v) => String(v)
+  const genres = new Map()
+  const tags = new Map()
+  const roms = new Map()
+  for (const r of genreRows) {
+    const k = key(r.game_id)
+    if (!genres.has(k)) genres.set(k, [])
+    genres.get(k).push(r.genre_id)
+  }
+  for (const r of tagRows) {
+    const k = key(r.game_id)
+    if (!tags.has(k)) tags.set(k, [])
+    tags.get(k).push(r.tag)
+  }
+  for (const r of romRows) {
+    const k = key(r.game_id)
+    if (!roms.has(k)) roms.set(k, {})
+    roms.get(k)[r.lang] = r.object_key
+  }
+  return rows.map((r) => {
+    const k = key(r.id)
+    return gameRowToApi(r, { genres: genres.get(k) ?? [], tags: tags.get(k) ?? [], roms: roms.get(k) ?? {} })
+  })
+}
+
+/** 把 ?sort= 翻成 ORDER BY。带 g. 前缀是因为按类型筛选时要 join。 */
+function orderBy(sort) {
+  switch (sort) {
+    case 'newest':
+      // 上线日期可能为空（后台没填），用入库时间兜底，再用 id 保证顺序稳定
+      return 'COALESCE(g.added_at, DATE(g.created_at)) DESC, g.id DESC'
+    case 'name':
+      return 'g.title ASC, g.id ASC'
+    case 'popular':
+    default:
+      // 新站大量游戏 plays 都是 0，只按 plays 排会导致顺序随数据库返回顺序漂移，
+      // 所以补上「上线日期 → id」兜底，保证翻页结果稳定
+      return 'g.plays DESC, COALESCE(g.added_at, DATE(g.created_at)) DESC, g.id DESC'
+  }
+}
+
+/**
+ * 列表查询。
+ * @param {object} q { platform, genre, developer, multiplayer, coin, q, sort, page, pageSize, includeHidden }
+ * @returns {Promise<{items, total, page, pageSize, totalPages}>}
+ */
+export async function listGames(q = {}) {
+  const where = []
+  const params = []
+
+  // includeHidden 只有管理员视角才会传；默认一律只给上架的
+  if (!q.includeHidden) where.push('g.hidden = 0')
+  if (q.platform) {
+    where.push('g.platform = ?')
+    params.push(String(q.platform))
+  }
+  if (q.developer) {
+    where.push('g.developer = ?')
+    params.push(String(q.developer))
+  }
+  if (q.multiplayer) where.push('g.multiplayer = 1')
+  if (q.coin) where.push('g.coin_reward > 0')
+  if (q.q && String(q.q).trim()) {
+    // 搜索标题、译名、开发商和标签。几千行的 LIKE 在 1ms 量级，
+    // 真到十万级再考虑 FULLTEXT（中文需要 ngram 解析器，会绑定 MySQL 版本）
+    const like = `%${String(q.q).trim()}%`
+    where.push('(g.title LIKE ? OR g.title_zh LIKE ? OR g.developer LIKE ? OR EXISTS (SELECT 1 FROM game_tags t WHERE t.game_id = g.id AND t.tag LIKE ?))')
+    params.push(like, like, like, like)
+  }
+
+  // 按类型筛选走关联表。用 JOIN 而不是 EXISTS：genre_id 上有索引，
+  // 先在小表上定位再回主键，比全表扫 games 快得多
+  const join = q.genre ? 'JOIN game_genres gg ON gg.game_id = g.id AND gg.genre_id = ?' : ''
+  const joinParams = q.genre ? [String(q.genre)] : []
+
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
+  const allParams = [...joinParams, ...params]
+
+  const totalRow = await queryOne(`SELECT COUNT(*) AS n FROM games g ${join} ${whereSql}`, allParams)
+  const total = Number(totalRow?.n ?? 0)
+
+  const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(q.pageSize) || 24))
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  const page = Math.min(Math.max(1, Number(q.page) || 1), totalPages)
+  const offset = (page - 1) * pageSize
+
+  // LIMIT / OFFSET 直接拼进 SQL：上面已经强制转成数字并夹在合理范围内，注不进东西
+  const rows = await query(
+    `SELECT g.* FROM games g ${join} ${whereSql} ORDER BY ${orderBy(q.sort)} LIMIT ${pageSize} OFFSET ${offset}`,
+    allParams,
+  )
+  return { items: await attachRelations(rows), total, page, pageSize, totalPages }
+}
+
+/** 按 slug 取单款游戏（含关联数据）；不存在返回 undefined */
+export async function getGameBySlug(slug) {
+  const row = await queryOne('SELECT * FROM games WHERE slug = ?', [slug])
+  if (!row) return undefined
+  const [g] = await attachRelations([row])
+  return g
+}
+
+/** 按一组 slug 取游戏，返回顺序与传入的 slugs 一致（用于收藏 / 最近列表） */
+export async function getGamesBySlugs(slugs) {
+  if (!slugs.length) return []
+  const holes = slugs.map(() => '?').join(',')
+  const rows = await query(`SELECT * FROM games WHERE slug IN (${holes})`, slugs)
+  const games = await attachRelations(rows)
+  const bySlug = new Map(games.map((g) => [g.slug, g]))
+  return slugs.map((s) => bySlug.get(s)).filter(Boolean)
+}
+
+/** 各平台的上架游戏数（平台页 / 首页用） */
+export function platformCounts() {
+  return query('SELECT platform, COUNT(*) AS n FROM games WHERE hidden = 0 GROUP BY platform')
+}
+
+/** 各类型的上架游戏数 */
+export function genreCounts() {
+  return query(
+    `SELECT gg.genre_id AS genre, COUNT(*) AS n
+       FROM game_genres gg JOIN games g ON g.id = gg.game_id
+      WHERE g.hidden = 0 GROUP BY gg.genre_id`,
+  )
+}
+
+/** 各开发商的上架游戏数（开发商页用），按数量倒序 */
+export function developerCounts() {
+  return query(
+    `SELECT developer, COUNT(*) AS n FROM games
+      WHERE hidden = 0 AND developer <> '' GROUP BY developer ORDER BY n DESC, developer ASC`,
+  )
+}
+
+/* ---------------- 写 ---------------- */
+
+/** 关联表的写入：先全删再插，语义简单且天然幂等 */
+async function writeRelations(run, gameId, game, only) {
+  if (!only || only.genres) {
+    await run('DELETE FROM game_genres WHERE game_id = ?', [gameId])
+    const genres = [...new Set((game.genres ?? []).filter((x) => typeof x === 'string' && x))]
+    if (genres.length) {
+      await run(
+        `INSERT INTO game_genres (game_id, genre_id) VALUES ${genres.map(() => '(?, ?)').join(', ')}`,
+        genres.flatMap((gid) => [gameId, gid]),
+      )
+    }
+  }
+  if (!only || only.tags) {
+    await run('DELETE FROM game_tags WHERE game_id = ?', [gameId])
+    const tags = [...new Set((game.tags ?? []).map((t) => String(t).trim()).filter(Boolean))]
+    if (tags.length) {
+      await run(
+        `INSERT INTO game_tags (game_id, tag) VALUES ${tags.map(() => '(?, ?)').join(', ')}`,
+        tags.flatMap((t) => [gameId, t]),
+      )
+    }
+  }
+  if (!only || only.roms) {
+    await run('DELETE FROM game_roms WHERE game_id = ?', [gameId])
+    const roms = Object.entries(romsOf(game))
+    if (roms.length) {
+      await run(
+        `INSERT INTO game_roms (game_id, lang, object_key) VALUES ${roms.map(() => '(?, ?, ?)').join(', ')}`,
+        roms.flatMap(([lang, key]) => [gameId, lang, key]),
+      )
+    }
+  }
+}
+
+/**
+ * 新增 / 整体覆盖一款游戏（PUT）。主表和三张关联表在同一个事务里，
+ * 中途失败不会留下「主表写了、类型没写」这种半成品。
+ */
+export async function upsertGame(slug, game) {
+  return withTransaction(async (run) => {
+    const row = gameApiToRow({ ...game, slug })
+    const cols = Object.keys(row)
+    const updates = cols.filter((c) => c !== 'slug').map((c) => `\`${c}\` = VALUES(\`${c}\`)`).join(', ')
+    await run(
+      `INSERT INTO games (${cols.map((c) => `\`${c}\``).join(', ')}) VALUES (${cols.map(() => '?').join(', ')})
+       ON DUPLICATE KEY UPDATE ${updates}`,
+      cols.map((c) => row[c]),
+    )
+    // 拿不到 insertId 时（走了 UPDATE 分支）再查一次
+    const [{ id }] = await run('SELECT id FROM games WHERE slug = ?', [slug])
+    await writeRelations(run, id, game)
+    return id
+  })
+}
+
+/** 局部更新（PATCH）。只动请求里带到的列和关联表。 */
+export async function patchGame(slug, patchRow, relations, game) {
+  return withTransaction(async (run) => {
+    const found = await run('SELECT id FROM games WHERE slug = ?', [slug])
+    if (!found.length) return null
+    const id = found[0].id
+    if (Object.keys(patchRow).length) {
+      const sets = Object.keys(patchRow).map((c) => `\`${c}\` = ?`).join(', ')
+      await run(`UPDATE games SET ${sets} WHERE id = ?`, [...Object.values(patchRow), id])
+    }
+    if (relations.genres || relations.tags || relations.roms) {
+      await writeRelations(run, id, game, relations)
+    }
+    return id
+  })
+}
+
+/** 删除游戏。关联表、收藏、最近游玩都有外键级联，数据库自己会清干净。 */
+export async function deleteGame(slug) {
+  const r = await query('DELETE FROM games WHERE slug = ?', [slug])
+  return r.affectedRows > 0
+}
+
+/** 记一次游玩。只对已上架的游戏生效。 */
+export async function incrementPlays(slug) {
+  const r = await query('UPDATE games SET plays = plays + 1 WHERE slug = ? AND hidden = 0', [slug])
+  return r.affectedRows > 0
+}
+
+export { GENERIC_ROM_LANG, MAX_PAGE_SIZE }

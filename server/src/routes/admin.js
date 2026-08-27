@@ -1,7 +1,8 @@
 import { Router } from 'express'
 import { withTransaction } from '../db.js'
 import { requireAdmin } from '../auth.js'
-import { gameApiToRow, postApiToRow, buildUpsert } from '../mappers.js'
+import { postApiToRow, buildUpsert } from '../mappers.js'
+import { upsertGame } from '../games-repo.js'
 import { invalidateContent } from '../content.js'
 
 export const adminRouter = Router()
@@ -27,18 +28,25 @@ adminRouter.post('/import', async (req, res, next) => {
       return res.status(400).json({ error: `有 ${missing.length} 条数据缺少 slug，已全部拒绝` })
     }
 
-    // 整批放进一个事务：中途报错就全部回滚，不会留下导入到一半的库
-    const result = await withTransaction(async (run) => {
-      for (const g of gameList) {
-        const { sql, values } = buildUpsert('games', gameApiToRow(g), 'slug')
-        await run(sql, values)
-      }
+    // 游戏要连关联表一起写，逐条走 upsertGame（它内部各自开事务）。
+    // 文章只有一张标签表，量也小，放在一个事务里。
+    for (const g of gameList) await upsertGame(String(g.slug), g)
+    await withTransaction(async (run) => {
       for (const p of postList) {
         const { sql, values } = buildUpsert('posts', postApiToRow(p), 'slug')
         await run(sql, values)
+        const [{ id }] = await run('SELECT id FROM posts WHERE slug = ?', [p.slug])
+        await run('DELETE FROM post_tags WHERE post_id = ?', [id])
+        const tags = [...new Set((p.tags ?? []).map((t) => String(t).trim()).filter(Boolean))]
+        if (tags.length) {
+          await run(
+            `INSERT INTO post_tags (post_id, tag) VALUES ${tags.map(() => '(?, ?)').join(', ')}`,
+            tags.flatMap((t) => [id, t]),
+          )
+        }
       }
-      return { games: gameList.length, posts: postList.length }
     })
+    const result = { games: gameList.length, posts: postList.length }
 
     // 批量导入后让 SSR 缓存立即失效，前台不用等 60 秒
     invalidateContent()

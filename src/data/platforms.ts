@@ -95,7 +95,7 @@ export const platforms: Platform[] = [
     year: 2004,
     runtime: 'emulatorjs',
     core: 'nds',
-    romExtensions: ['.nds', '.zip'],
+    romExtensions: ['.nds', '.srl', '.zip'],
     color: '#4fc3f7',
     icon: '📱',
     description: '双屏加触控，创意迸发的掌机。宝可梦白金、马力欧赛车 DS、应援团。',

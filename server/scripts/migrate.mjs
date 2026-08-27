@@ -107,7 +107,7 @@ const patches = [
   },
 ]
 
-const TABLES = ['games', 'posts', 'users', 'favorites', 'recents']
+const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves']
 
 try {
   await conn.query(`CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`)

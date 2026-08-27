@@ -9,7 +9,7 @@
 import { readFileSync, existsSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { getContent } from './content.js'
+import { loadForRoute } from './content.js'
 import { CACHE } from './cache.js'
 
 const root = path.resolve(fileURLToPath(new URL('../..', import.meta.url)))
@@ -89,10 +89,15 @@ function injectOnce(page, marker, value) {
  */
 const LANG_SEG = new Set(['zh-Hans', 'zh-Hant', 'en', 'es', 'fr', 'it', 'de', 'ja'])
 
-function isAdminPath(pathname) {
+/** 剥掉语言前缀：/en/games -> /games */
+function stripLang(pathname) {
   const parts = pathname.split('?')[0].split('/').filter(Boolean)
   if (parts[0] && LANG_SEG.has(parts[0])) parts.shift()
-  return parts[0] === 'admin'
+  return '/' + parts.join('/')
+}
+
+function isAdminPath(pathname) {
+  return stripLang(pathname).split('/')[1] === 'admin'
 }
 
 export async function renderPage(req, res, next) {
@@ -109,10 +114,13 @@ export async function renderPage(req, res, next) {
     }
 
     const render = await getRender()
-    const { games, posts } = await getContent()
     const url = req.originalUrl
+    // v2：按路由取数，只把这个页面要渲染的那部分注入 HTML。
+    // v1 是把整个游戏库塞进每一个页面 —— 上千款游戏时首屏体积会失控。
+    const [pathname, qs] = url.split('?')
+    const data = await loadForRoute(stripLang(pathname), new URLSearchParams(qs ?? ''))
 
-    const { html, head, lang, notFound } = render({ url, games, posts })
+    const { html, head, lang, notFound } = render({ url, data })
 
     let page = getTemplate()
 
@@ -134,7 +142,7 @@ export async function renderPage(req, res, next) {
     page = injectOnce(page, '</head>', `${headHtml}\n</head>`)
 
     // 首屏 HTML + 给客户端 hydrate 用的数据
-    const bootstrap = `<script>window.__8BITGO__=${safeJson({ games, posts, lang })}</script>`
+    const bootstrap = `<script>window.__8BITGO__=${safeJson({ data, lang })}</script>`
     page = injectOnce(page, '<div id="root"></div>', `<div id="root">${html}</div>\n${bootstrap}`)
 
     // 渲染出「页面不存在」时回 404：一律 200 会让爬虫把不存在的 URL 当正常页面收录

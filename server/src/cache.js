@@ -59,7 +59,7 @@ export function staticCacheHeaders(res, filePath) {
 
   if (p.includes('/assets/')) return set(CACHE.immutable)
   if (p.includes('/fonts/')) return set(CACHE.font)
-  if (p.includes('/ruffle/') || p.includes('/emulatorjs/') || p.includes('/j2me/') || p.includes('/jsdos/')) return set(CACHE.engine)
+  if (p.includes('/ruffle/') || p.includes('/emulatorjs/') || p.includes('/j2me/') || p.includes('/jsdos/') || p.includes('/webretro/')) return set(CACHE.engine)
   if (/\.(png|jpg|jpeg|gif|webp|avif|svg|ico)$/i.test(p)) return set(CACHE.image)
   if (/\/(robots\.txt|sitemap[^/]*\.xml)$/i.test(p)) return set(CACHE.meta)
   // 兜底：短缓存 + 允许边缘复用，总好过每次都回源

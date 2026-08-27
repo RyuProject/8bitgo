@@ -121,8 +121,44 @@ server {
 | GET | `/api/users` | 用户列表 | 管理员 |
 | PATCH/DELETE | `/api/users/:id` | 调金币 / 封禁 / 删 | 管理员 |
 | POST | `/api/admin/import` | 批量导入游戏 / 文章 | 管理员 |
+| GET | `/api/saves` | 我的云存档清单（不含存档内容） | 用户 |
+| GET | `/api/saves/:runtime/:slug` | 取存档（二进制）；加 `/meta` 只要体积和时间 | 用户 |
+| PUT | `/api/saves/:runtime/:slug` | 存档（请求体是二进制） | 用户 |
+| DELETE | `/api/saves/:runtime/:slug` | 删存档 | 用户 |
 
 “管理员”鉴权：请求头 `Authorization: Bearer <ADMIN_TOKEN>`，或用 `role=admin` 的账号登录后的 JWT。
+
+## 云存档
+
+**云存档跟着账号走，所以必须登录。** 没登录的玩家不进这张表 —— 他们的存档落在自己浏览器里
+（IndexedDB），或者下载成文件自己保管，见 `src/services/saves.ts`。
+
+两种引擎的存档不是一回事，用 `runtime` 分开存、互不覆盖：
+
+| runtime | 存的是什么 | 什么时候能存 | 体积 |
+| --- | --- | --- | --- |
+| `emulatorjs` | 内存快照 —— 整台机器某一帧的状态 | 随时 | NES 约 20KB、GBA 几十 KB |
+| `jsdos` | DOS 文件系统的**变更包** —— 盘上被改过的文件 | 玩家得先在游戏里存盘 | 几 KB 到几百 KB |
+
+所以界面上是两个不同的按钮：快照式引擎给「存档 / 读档 / 另存为文件」，
+DOS 只给一个「保存进度」，提示写的是「先在游戏里存盘，再点这里」。
+
+`:slug` 一般就是游戏的 slug；玩家自己上传的 ROM 没有 slug，前端会传 `local:文件名`
+（文件名可能是中文的，也可能带 `%`，所以服务端只挡斜杠和空白，不限定 ASCII）。
+
+上限用 `SAVE_MAX_BYTES`（默认 4MB）和 `SAVE_MAX_PER_USER`（默认 200 份）控制。
+覆盖已有存档永远放行，只有「新开一份」时才查配额 —— 不然玩家玩到一半突然存不上，
+比拒绝新建难受得多。
+
+### 回归测试
+
+```bash
+cd server && node scripts/test-saves.mjs
+```
+
+30 项，覆盖必须登录 / 存取删 / 覆盖同一格 / 引擎与存档位之间互不覆盖 /
+看不到别人的存档 / 参数校验 / 超大存档回 413 / 中文与带 `%` 的文件名。
+**需要数据库**，连不上会整组跳过并正常退出。
 
 ## 安全提醒
 

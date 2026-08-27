@@ -42,3 +42,8 @@ public/ruffle
 # js-dos 运行时（npm run jsdos 从 node_modules 复制）
 public/jsdos
 
+# webretro 运行时（npm run webretro 从 GitHub 稀疏检出，约 80MB）
+public/webretro
+
+# webretro 安装脚本的临时检出目录（正常会自动清掉，进程被杀时可能残留）
+.webretro-tmp

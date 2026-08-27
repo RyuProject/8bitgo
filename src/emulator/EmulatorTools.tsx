@@ -7,23 +7,45 @@
  * 录像有硬上限 60 秒，录完当场下载到本地，全程不经过服务器。
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Capability, RuntimeHandle } from './types'
+import type { Capability, RuntimeHandle, RuntimeId } from './types'
 import { canRecord, downloadBlob, mediaFileName, startRecording, MAX_RECORD_MS, type Recorder } from './recorder'
 import { useT, fmt } from '@/services/i18n'
+import { useLang } from '@/services/lang'
+import { cloudSavesEnabled, pullSave, pushSave, saveInfo, type SaveRuntime, type SaveWhere } from '@/services/saves'
 import { cx } from '@/lib/format'
 
 interface Props {
   handle: RuntimeHandle | null
   caps: Set<Capability>
   gameName: string
+  /** 存档按它归档。没有 slug（玩家自己传的 ROM）就只能导出成文件 */
+  gameSlug?: string
+  /** 哪个引擎 —— 内存快照和 DOS 变更包不通用，必须分开存 */
+  runtimeId?: RuntimeId
   className?: string
+}
+
+/** 「3 分钟前」。用浏览器自带的本地化，不用为此加一堆文案键 */
+function timeAgo(ts: number, lang: string): string {
+  const sec = Math.max(1, Math.round((Date.now() - ts) / 1000))
+  try {
+    const rtf = new Intl.RelativeTimeFormat(lang, { numeric: 'always' })
+    if (sec < 60) return rtf.format(-sec, 'second')
+    if (sec < 3600) return rtf.format(-Math.round(sec / 60), 'minute')
+    if (sec < 86400) return rtf.format(-Math.round(sec / 3600), 'hour')
+    return rtf.format(-Math.round(sec / 86400), 'day')
+  } catch {
+    // 老浏览器没有 Intl.RelativeTimeFormat
+    return new Date(ts).toLocaleString()
+  }
 }
 
 const BTN = 'inline-flex h-7 min-w-7 items-center justify-center gap-1 rounded-md border border-line px-1.5 text-muted transition-colors hover:border-brand hover:text-fg disabled:opacity-40'
 const BTN_ON = 'border-brand bg-brand-soft text-brand-hover'
 
-export function EmulatorTools({ handle, caps, gameName, className }: Props) {
+export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, className }: Props) {
   const t = useT()
+  const lang = useLang()
   const tt = t.player.tools
   const [paused, setPaused] = useState(false)
   const [volume, setVolume] = useState(handle?.volume ?? 1)
@@ -36,6 +58,13 @@ export function EmulatorTools({ handle, caps, gameName, className }: Props) {
   const recRef = useRef<Recorder | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const msgTimer = useRef(0)
+  /** 现有存档的落点和时间，用来在读档按钮上显示「云端 · 3 分钟前」 */
+  const [archived, setArchived] = useState<{ where: SaveWhere; updatedAt: number } | null>(null)
+
+  // 存档归档需要「哪个引擎 + 哪个游戏」两个坐标；缺一个就只能走文件导入导出
+  const saveRuntime = (runtimeId ?? null) as SaveRuntime | null
+  const archivable = Boolean(saveRuntime && gameSlug)
+  const toCloud = cloudSavesEnabled()
 
   const say = useCallback((text: string) => {
     setMsg(text)
@@ -57,6 +86,19 @@ export function EmulatorTools({ handle, caps, gameName, className }: Props) {
       window.clearTimeout(msgTimer.current)
     }
   }, [handle])
+
+  // 进游戏时问一次「这个游戏有没有存档」，读档按钮上要显示
+  useEffect(() => {
+    let alive = true
+    setArchived(null)
+    if (!archivable || !saveRuntime || !gameSlug) return
+    void saveInfo(saveRuntime, gameSlug).then((info) => {
+      if (alive && info) setArchived({ where: info.where, updatedAt: info.updatedAt })
+    })
+    return () => {
+      alive = false
+    }
+  }, [archivable, saveRuntime, gameSlug, handle])
 
   // 手柄面板开着的时候才轮询，平时不占 CPU
   useEffect(() => {
@@ -91,6 +133,18 @@ export function EmulatorTools({ handle, caps, gameName, className }: Props) {
     handle.setPaused?.(next)
   }
 
+  const whereLabel = (w: SaveWhere) => (w === 'cloud' ? tt.whereCloud : tt.whereLocal)
+
+  /** 存到哪儿了，用同一套话说清楚 —— 玩家最关心的就是「换台电脑还在不在」 */
+  const sayStored = (where: SaveWhere) => {
+    setArchived({ where, updatedAt: Date.now() })
+    say(where === 'cloud' ? tt.saveCloudOk : tt.saveLocalOk)
+  }
+
+  /**
+   * 存档（内存快照式的引擎）。
+   * 登录了进云端跟着账号走；没登录就落在这个浏览器里，随时能再导出成文件。
+   */
   const doSave = async () => {
     try {
       const blob = await handle.saveState?.()
@@ -102,6 +156,19 @@ export function EmulatorTools({ handle, caps, gameName, className }: Props) {
         say(tt.saveFail)
         return
       }
+      if (archivable && saveRuntime && gameSlug) {
+        const bytes = new Uint8Array(await blob.arrayBuffer())
+        const r = await pushSave(saveRuntime, gameSlug, bytes)
+        if (r.ok && r.where) {
+          sayStored(r.where)
+          return
+        }
+        // 云端和浏览器都写不进去（超配额、太大、无痕模式）：
+        // 退回下载成文件，总之不能让玩家的进度就这么没了
+        downloadBlob(blob, mediaFileName(gameName, handle.saveExt ?? 'state'))
+        say(fmt(tt.saveFellBack, { msg: r.error ?? '' }))
+        return
+      }
       downloadBlob(blob, mediaFileName(gameName, handle.saveExt ?? 'state'))
       say(tt.saveOk)
     } catch (e) {
@@ -109,13 +176,67 @@ export function EmulatorTools({ handle, caps, gameName, className }: Props) {
     }
   }
 
-  const doLoad = async (file: File | null | undefined) => {
+  /**
+   * 保存进度（DOS）。
+   * 和上面不是一回事：它固化的是**盘上被改过的文件**，
+   * 所以玩家必须先在游戏里用游戏自己的存档功能存过盘，这里才有东西可存。
+   */
+  const doFsSave = async () => {
+    try {
+      const r = await handle.fsSave?.()
+      if (!r?.ok) {
+        say(tt.fsSaveNothing)
+        return
+      }
+      sayStored(r.where ?? (toCloud ? 'cloud' : 'local'))
+    } catch (e) {
+      say(e instanceof Error && e.message ? e.message : tt.saveFail)
+    }
+  }
+
+  /** 从文件读档 */
+  const doLoadFile = async (file: File | null | undefined) => {
     if (!file) return
     try {
       const note = await handle.loadState?.(await file.arrayBuffer())
       say(typeof note === 'string' && note ? note : tt.loadOk)
     } catch (e) {
       say(fmt(tt.loadFail, { msg: e instanceof Error ? e.message : String(e) }))
+    }
+  }
+
+  /** 读档：有存好的就读那份，没有就让他选个文件 */
+  const doLoad = async () => {
+    if (archivable && saveRuntime && gameSlug) {
+      try {
+        const got = await pullSave(saveRuntime, gameSlug)
+        if (got) {
+          // slice() 保证拿到的是一段独立的 buffer，不受原数组偏移影响
+          const note = await handle.loadState?.(got.data.slice().buffer)
+          setArchived({ where: got.where, updatedAt: got.updatedAt })
+          say(typeof note === 'string' && note ? note : fmt(tt.loadFrom, { where: whereLabel(got.where) }))
+          return
+        }
+      } catch (e) {
+        say(fmt(tt.loadFail, { msg: e instanceof Error ? e.message : String(e) }))
+        return
+      }
+    }
+    fileRef.current?.click()
+  }
+
+  /** 另存为文件：玩家想自己保管一份，或者换个站点 / 换台机器带过去 */
+  const doExport = async () => {
+    try {
+      const blob = await handle.saveState?.()
+      if (!blob) {
+        say(tt.saveFail)
+        return
+      }
+      downloadBlob(blob, mediaFileName(gameName, handle.saveExt ?? 'state'))
+      say(tt.saveOk)
+    } catch (e) {
+      say(e instanceof Error && e.message ? e.message : tt.saveFail)
     }
   }
 
@@ -207,14 +328,42 @@ export function EmulatorTools({ handle, caps, gameName, className }: Props) {
         </button>
       )}
 
+      {/* DOS：只有「保存进度」一个动作。它没有「某一帧」的概念，也没有可下载的文件，
+          下次进游戏时引擎会自己把改动装回去，所以不需要读档按钮 */}
+      {caps.has('fsSave') && (
+        <button
+          type="button"
+          className={BTN}
+          onClick={() => void doFsSave()}
+          title={`${tt.fsSave} · ${tt.fsSaveHint}`}
+        >
+          💾
+        </button>
+      )}
+
       {caps.has('saveState') && (
         <>
           <button type="button" className={BTN} onClick={() => void doSave()} title={tt.save}>
             💾
           </button>
           {handle.loadState && (
-            <button type="button" className={BTN} onClick={() => fileRef.current?.click()} title={tt.load}>
+            <button
+              type="button"
+              className={BTN}
+              onClick={() => void doLoad()}
+              title={
+                archived
+                  ? fmt(tt.loadTitle, { where: whereLabel(archived.where), when: timeAgo(archived.updatedAt, lang) })
+                  : tt.load
+              }
+            >
               📂
+            </button>
+          )}
+          {/* 存档已经进了云端或浏览器时，再给一条「自己保管一份」的出口 */}
+          {archivable && (
+            <button type="button" className={BTN} onClick={() => void doExport()} title={tt.exportFile}>
+              📥
             </button>
           )}
           <input
@@ -222,7 +371,7 @@ export function EmulatorTools({ handle, caps, gameName, className }: Props) {
             type="file"
             className="hidden"
             onChange={(e) => {
-              void doLoad(e.target.files?.[0])
+              void doLoadFile(e.target.files?.[0])
               e.target.value = ''
             }}
           />

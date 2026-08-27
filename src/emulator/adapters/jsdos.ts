@@ -16,6 +16,7 @@ import { getT, fmt } from '@/services/i18n'
 import { makeJsdosBundle } from '@/lib/jsdosBundle'
 import { imageDataToBlob } from '../recorder'
 import { GP, startGamepadBridge, hasGamepadApi, type GamepadBridge } from '../gamepad'
+import { deleteSave, pullSave, pushSave } from '@/services/saves'
 
 /** P2P 模式的撮合服务器。自建的话见 https://github.com/caiiiycuk/WebRTC-NET（Go） */
 export const JSDOS_PEER_SERVER: string = import.meta.env.VITE_JSDOS_PEER_SERVER || 'https://net.dos.zone'
@@ -41,6 +42,8 @@ export const JSDOS_PATH: string = (() => {
 
 type DosProps = {
   stop: () => Promise<void> | void
+  /** 把盘上的改动固化下来。js-dos v8 的 Player API，返回是否存成功 */
+  save?: () => Promise<boolean>
   setPaused?: (paused: boolean) => void
   setVolume?: (volume: number) => void
 }
@@ -129,6 +132,16 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   let objectUrl = ''
   let volume = 1
   let paused = false
+  /** 存档按 slug 归档；见下面 fsChanges 那段的说明 */
+  let saveKey = ''
+  /** 最近一次存档落到哪儿了（云端 / 浏览器），给界面显示用 */
+  let lastPush: { ok: boolean; where: 'cloud' | 'local' | null } | null = null
+  /**
+   * 经函数读，别直接读变量。
+   * 直接读的话 TypeScript 会顺着 `lastPush = null` 一路把类型收窄成 never ——
+   * 它看不出中间那个 await 期间 push 回调把值改掉了。
+   */
+  const readLastPush = () => lastPush
 
   const caps = new Set<Capability>(['pause', 'volume', 'screenshot', 'record'])
   if (hasGamepadApi()) caps.add('gamepad')
@@ -145,6 +158,15 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       // 普通 zip / exe 现场打成 bundle；已经是 bundle 的原样使用
       const bundle = makeJsdosBundle(rom.name, rom.buf)
       objectUrl = URL.createObjectURL(bundle.blob)
+
+      /**
+       * 存档的归档键。
+       *
+       * ⚠️ 这一步是必须的：js-dos 默认拿 `url + '.changes'` 当键，而我们传进去的 url 是
+       * blob URL —— 每次进游戏都重新生成一个。用默认键的话每局都是全新存档，
+       * 存了也永远读不回来。所以这里换成稳定的 slug（本地文件退回文件名）。
+       */
+      saveKey = options.gameSlug || `local:${rom.name}`
       if (destroyed) return URL.revokeObjectURL(objectUrl)
 
       const ipx = options.ipx
@@ -166,6 +188,25 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
           iceServers: fetchIceServers,
         },
         imageRendering: 'pixelated',
+        /**
+         * 存档。js-dos 存的是**文件系统的变更包**（盘上被改过的文件），
+         * 不是内存快照 —— 玩家必须先在游戏里存盘，点存档只是把这些改动固化下来。
+         *
+         * 三个钩子指向 services/saves.ts：登录了进云端跟着账号走，
+         * 没登录就落在浏览器里。pull 会在开机时被自动调用，所以读档是无感的。
+         */
+        fsChanges: {
+          local: true,
+          urlToKey: async () => saveKey,
+          pull: async () => (await pullSave('jsdos', saveKey))?.data ?? null,
+          push: async (_key: string, data: Uint8Array) => {
+            // 记下这次落到哪儿了，fsSave() 要拿它告诉玩家「存到云端」还是「存在浏览器里」
+            lastPush = await pushSave('jsdos', saveKey, data)
+          },
+          delete: async () => {
+            await deleteSave('jsdos', saveKey)
+          },
+        },
         onEvent: (event: string, arg?: unknown) => {
           if (destroyed) return
           if (event === 'emu-ready') options.onReady?.()
@@ -187,6 +228,8 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       // 挂载前玩家可能已经调过音量/暂停，补一次
       props.setVolume?.(volume)
       if (paused) props.setPaused?.(true)
+      // 存档要等 js-dos 起来才有 props.save()，所以能力在这里才补上
+      if (props.save && saveKey) caps.add('fsSave')
       options.onCaps?.(caps)
       // 兜底：万一 kiosk 模式下不触发 emu-ready，也别让转圈一直转
       options.onReady?.()
@@ -225,6 +268,24 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     setVolume(next: number) {
       volume = Math.max(0, Math.min(1, next))
       props?.setVolume?.(volume)
+    },
+    /**
+     * 「保存进度」：让 js-dos 把盘上的改动写出去，走上面 fsChanges.push 那条路。
+     * 注意这不是即时存档 —— 玩家得先在游戏里用它自己的存档功能存过盘，这里才有东西可存。
+     */
+    async fsSave() {
+      if (!props?.save) return { ok: false }
+      try {
+        lastPush = null
+        const ok = await props.save()
+        // props.save() 只说「js-dos 那边写出去了」，真正落到云端还是浏览器
+        // 是上面 push 钩子知道的
+        if (!ok) return { ok: false }
+        const done = readLastPush()
+        return { ok: done?.ok ?? true, where: done?.where ?? undefined }
+      } catch {
+        return { ok: false }
+      }
     },
     async screenshot() {
       // js-dos 走 WebGL，直接读画布是空白的，得用它自己的截图接口

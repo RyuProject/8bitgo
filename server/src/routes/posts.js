@@ -1,15 +1,44 @@
 import { Router } from 'express'
-import { query, queryOne } from '../db.js'
+import { query, queryOne, withTransaction } from '../db.js'
 import { requireAdmin, isAdminRequest } from '../auth.js'
 import { invalidateContent } from '../content.js'
 import { publicApi } from '../cache.js'
-import { postRowToApi, postApiToRow, buildUpsert } from '../mappers.js'
+import { postRowToApi, postApiToRow } from '../mappers.js'
 
 export const postsRouter = Router()
 
+/** 给一批文章装配标签（批量，不做 N+1） */
+export async function attachPostTags(rows) {
+  if (!rows.length) return []
+  const ids = rows.map((r) => r.id)
+  const tagRows = await query(
+    `SELECT post_id, tag FROM post_tags WHERE post_id IN (${ids.map(() => '?').join(',')})`,
+    ids,
+  )
+  const tags = new Map()
+  for (const r of tagRows) {
+    const k = String(r.post_id)
+    if (!tags.has(k)) tags.set(k, [])
+    tags.get(k).push(r.tag)
+  }
+  return rows.map((r) => postRowToApi(r, { tags: tags.get(String(r.id)) ?? [] }))
+}
+
+async function writeTags(run, postId, tags) {
+  await run('DELETE FROM post_tags WHERE post_id = ?', [postId])
+  const list = [...new Set((tags ?? []).map((t) => String(t).trim()).filter(Boolean))]
+  if (!list.length) return
+  await run(
+    `INSERT INTO post_tags (post_id, tag) VALUES ${list.map(() => '(?, ?)').join(', ')}`,
+    list.flatMap((t) => [postId, t]),
+  )
+}
+
 /**
- * 文章列表。默认只返回已发布的；?all=1 返回全部（含草稿），需要管理员身份。
- * 以前无条件返回全部，草稿正文对任何人可读 —— curl /api/posts 就能看到还没发的稿子。
+ * 文章列表。默认只返回已发布的；?all=1 返回全部（含草稿），需要管理员身份 ——
+ * 以前无条件返回全部，草稿正文对任何人可读。
+ *
+ * 文章数量级远小于游戏（几十到几百），所以不做分页，一次给全。
  */
 postsRouter.get('/', async (req, res, next) => {
   try {
@@ -17,14 +46,13 @@ postsRouter.get('/', async (req, res, next) => {
     if (wantAll && !(await isAdminRequest(req))) {
       return res.status(403).json({ error: '需要管理员权限才能查看草稿' })
     }
-    const sql = wantAll
-      ? 'SELECT * FROM posts ORDER BY date DESC'
-      : 'SELECT * FROM posts WHERE published = 1 ORDER BY date DESC'
-    const rows = await query(sql)
-    // 只有公开视角（不带 ?all=1）才可以缓存：管理员视角带着身份，
-    // 缓存下来等于把下架文章 / 草稿发给所有人
+    const rows = await query(
+      wantAll
+        ? 'SELECT * FROM posts ORDER BY COALESCE(`date`, DATE(created_at)) DESC, id DESC'
+        : 'SELECT * FROM posts WHERE published = 1 ORDER BY COALESCE(`date`, DATE(created_at)) DESC, id DESC',
+    )
     if (!wantAll) publicApi(res)
-    res.json(rows.map(postRowToApi))
+    res.json(await attachPostTags(rows))
   } catch (e) {
     next(e)
   }
@@ -34,12 +62,12 @@ postsRouter.get('/:slug', async (req, res, next) => {
   try {
     const row = await queryOne('SELECT * FROM posts WHERE slug = ?', [req.params.slug])
     if (!row) return res.status(404).json({ error: '文章不存在' })
-    if (!row.published && !(await isAdminRequest(req))) {
+    const [post] = await attachPostTags([row])
+    if (!post.published && !(await isAdminRequest(req))) {
       return res.status(404).json({ error: '文章不存在' })
     }
-    // 已发布的文章对所有人一样，可以缓存；草稿保持 no-store
-    if (row.published) publicApi(res)
-    res.json(postRowToApi(row))
+    if (post.published) publicApi(res)
+    res.json(post)
   } catch (e) {
     next(e)
   }
@@ -47,12 +75,24 @@ postsRouter.get('/:slug', async (req, res, next) => {
 
 postsRouter.put('/:slug', requireAdmin, async (req, res, next) => {
   try {
-    const row = postApiToRow({ ...req.body, slug: req.params.slug })
-    const { sql, values } = buildUpsert('posts', row, 'slug')
-    await query(sql, values)
-    const saved = await queryOne('SELECT * FROM posts WHERE slug = ?', [row.slug])
+    const slug = String(req.params.slug)
+    if (!req.body?.title) return res.status(400).json({ error: '缺少标题' })
+    await withTransaction(async (run) => {
+      const row = postApiToRow({ ...req.body, slug })
+      const cols = Object.keys(row)
+      const updates = cols.filter((c) => c !== 'slug').map((c) => `\`${c}\` = VALUES(\`${c}\`)`).join(', ')
+      await run(
+        `INSERT INTO posts (${cols.map((c) => `\`${c}\``).join(', ')}) VALUES (${cols.map(() => '?').join(', ')})
+         ON DUPLICATE KEY UPDATE ${updates}`,
+        cols.map((c) => row[c]),
+      )
+      const [{ id }] = await run('SELECT id FROM posts WHERE slug = ?', [slug])
+      await writeTags(run, id, req.body.tags)
+    })
     invalidateContent()
-    res.json(postRowToApi(saved))
+    const saved = await queryOne('SELECT * FROM posts WHERE slug = ?', [slug])
+    const [post] = await attachPostTags([saved])
+    res.json(post)
   } catch (e) {
     next(e)
   }
@@ -60,7 +100,9 @@ postsRouter.put('/:slug', requireAdmin, async (req, res, next) => {
 
 postsRouter.delete('/:slug', requireAdmin, async (req, res, next) => {
   try {
-    await query('DELETE FROM posts WHERE slug = ?', [req.params.slug])
+    // post_tags 有外键级联，跟着一起删
+    const r = await query('DELETE FROM posts WHERE slug = ?', [req.params.slug])
+    if (!r.affectedRows) return res.status(404).json({ error: '文章不存在' })
     invalidateContent()
     res.json({ ok: true })
   } catch (e) {

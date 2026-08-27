@@ -1,112 +1,106 @@
 /**
- * 数据库行 <-> 前端对象 的转换。
- * 前端用 camelCase，数据库用 snake_case；布尔存 TINYINT，genres/tags 存 JSON。
+ * 数据库行 <-> 前端对象 的转换（schema v2）。
+ *
+ * v2 把类型 / 标签 / ROM 拆成了关联表，所以一行 games 已经凑不出一个完整的 Game，
+ * 必须把关联数据一起带上。对外接口刻意保持 v1 的 Game 形状不变 ——
+ * 前端组件一行都不用改，变的只是数据怎么取。
+ *
+ * 关联数据一律**批量**装配（attachRelations）：一次列表查询只多打 3 条
+ * WHERE game_id IN (...)，不会退化成每款游戏查三次的 N+1。
  */
 
 const bool = (v) => v === 1 || v === true || v === '1'
-/** Date / 字符串 -> YYYY-MM-DD */
-const dateOnly = (v) => {
+
+/** DATE / TIMESTAMP -> 'YYYY-MM-DD'；mysql2 对 DATE 列返回的是 Date 对象 */
+export function dateOnly(v) {
   if (!v) return ''
-  if (v instanceof Date) return Number.isNaN(v.getTime()) ? '' : v.toISOString().slice(0, 10)
+  if (v instanceof Date) {
+    if (Number.isNaN(v.getTime())) return ''
+    // 用本地时区取年月日：DATE 列没有时区概念，toISOString() 会按 UTC 偏移，
+    // 东八区存的 2026-08-27 会被读成 2026-08-26。
+    const p = (n) => String(n).padStart(2, '0')
+    return `${v.getFullYear()}-${p(v.getMonth() + 1)}-${p(v.getDate())}`
+  }
   return String(v).slice(0, 10)
 }
-const arr = (v) => (Array.isArray(v) ? v : v == null ? [] : safeParse(v))
-function safeObj(v) {
-  try {
-    const p = JSON.parse(v)
-    return p && typeof p === 'object' && !Array.isArray(p) ? p : null
-  } catch {
-    return null
-  }
-}
-function safeParse(v) {
-  try {
-    const p = JSON.parse(v)
-    return Array.isArray(p) ? p : []
-  } catch {
-    return []
-  }
-}
+
+/** 通用 ROM 在 game_roms 里用 lang = '*' 表示 */
+export const GENERIC_ROM_LANG = '*'
 
 /* ---------------- 游戏 ---------------- */
-export function gameRowToApi(r) {
+
+/**
+ * 一行 games + 它的关联数据 -> 前端的 Game 对象。
+ * rel 缺省时当作没有类型 / 标签 / ROM，不会抛错。
+ */
+export function gameRowToApi(r, rel = {}) {
   const g = {
     slug: r.slug,
     title: r.title,
     platform: r.platform,
-    genres: arr(r.genres),
-    year: Number(r.year),
+    genres: rel.genres ?? [],
+    year: Number(r.year) || 0,
     developer: r.developer || '',
-    rating: Number(r.rating),
-    ratingCount: Number(r.rating_count),
-    plays: Number(r.plays),
-    players: Number(r.players),
+    plays: Number(r.plays) || 0,
+    players: Number(r.players) || 1,
     multiplayer: bool(r.multiplayer),
-    coinReward: Number(r.coin_reward),
+    coinReward: Number(r.coin_reward) || 0,
     icon: r.icon || '🎮',
     description: r.description || '',
-    // 「上线日期」优先用后台填的 added_at；没填就用真实入库时间，不编日期
-    addedAt: r.added_at || dateOnly(r.created_at),
+    // 后台没填上线日期时用真实入库时间兜底，不用人工编日期
+    addedAt: dateOnly(r.added_at) || dateOnly(r.created_at),
     bodyControl: bool(r.body_control),
     hidden: bool(r.hidden),
   }
   if (r.title_zh) g.titleZh = r.title_zh
   if (r.cover) g.cover = r.cover
   if (r.video) g.video = r.video
-  if (r.rom) g.rom = r.rom
-  const roms = typeof r.roms === 'string' ? safeObj(r.roms) : r.roms
-  if (roms && typeof roms === 'object' && Object.keys(roms).length) g.roms = roms
-  const tags = arr(r.tags)
+
+  const roms = rel.roms ?? {}
+  // 通用 ROM 对外仍然叫 rom，按语言的仍然叫 roms —— 保持 v1 的对外形状
+  if (roms[GENERIC_ROM_LANG]) g.rom = roms[GENERIC_ROM_LANG]
+  const byLang = { ...roms }
+  delete byLang[GENERIC_ROM_LANG]
+  if (Object.keys(byLang).length) g.roms = byLang
+
+  const tags = rel.tags ?? []
   if (tags.length) g.tags = tags
   return g
 }
 
-/** API 游戏对象 -> 用于 upsert 的字段字典（snake_case） */
+/** API 游戏对象 -> games 表的字段字典（不含关联表） */
 export function gameApiToRow(g) {
   return {
     slug: String(g.slug),
     title: String(g.title ?? ''),
     title_zh: g.titleZh ?? null,
     platform: String(g.platform ?? ''),
-    genres: JSON.stringify(Array.isArray(g.genres) ? g.genres : []),
     year: Number(g.year) || 0,
     developer: String(g.developer ?? ''),
-    rating: Number(g.rating) || 0,
-    rating_count: Number(g.ratingCount) || 0,
-    plays: Number(g.plays) || 0,
     players: Number(g.players) || 1,
     multiplayer: g.multiplayer ? 1 : 0,
     coin_reward: Number(g.coinReward) || 0,
     icon: String(g.icon ?? '🎮'),
-    cover: g.cover ?? null,
-    video: g.video ?? null,
+    cover: g.cover || null,
+    video: g.video || null,
     description: String(g.description ?? ''),
-    tags: JSON.stringify(Array.isArray(g.tags) ? g.tags : []),
-    added_at: String(g.addedAt ?? ''),
     body_control: g.bodyControl ? 1 : 0,
     hidden: g.hidden ? 1 : 0,
-    rom: g.rom ?? null,
-    roms: JSON.stringify(g.roms && typeof g.roms === 'object' ? g.roms : {}),
+    // 空字符串要写成 NULL，否则 DATE 列会存成 '0000-00-00'
+    added_at: g.addedAt ? String(g.addedAt).slice(0, 10) : null,
   }
 }
 
 /**
  * PATCH 用：只把请求里**确实带了**的字段翻成数据库列。
- *
- * 以前 PATCH 是「整行读出来 → 合并 → 整行 upsert」，
- * 只想改一个 hidden，却会把 plays / rating / roms 等所有列按读到的旧值写回去 ——
- * 两个人同时改、或者中间别处更新过某一列，都会被这一次悄悄覆盖掉。
+ * plays 不在这里 —— 它由游玩计数接口自增，不接受整体覆盖。
  */
-const GAME_FIELD_TO_COLUMN = {
+const FIELD_TO_COLUMN = {
   title: ['title', (v) => String(v ?? '')],
   titleZh: ['title_zh', (v) => (v == null || v === '' ? null : String(v))],
   platform: ['platform', (v) => String(v ?? '')],
-  genres: ['genres', (v) => JSON.stringify(Array.isArray(v) ? v : [])],
   year: ['year', (v) => Number(v) || 0],
   developer: ['developer', (v) => String(v ?? '')],
-  rating: ['rating', (v) => Number(v) || 0],
-  ratingCount: ['rating_count', (v) => Number(v) || 0],
-  plays: ['plays', (v) => Number(v) || 0],
   players: ['players', (v) => Number(v) || 1],
   multiplayer: ['multiplayer', (v) => (v ? 1 : 0)],
   coinReward: ['coin_reward', (v) => Number(v) || 0],
@@ -114,36 +108,50 @@ const GAME_FIELD_TO_COLUMN = {
   cover: ['cover', (v) => (v == null || v === '' ? null : String(v))],
   video: ['video', (v) => (v == null || v === '' ? null : String(v))],
   description: ['description', (v) => String(v ?? '')],
-  tags: ['tags', (v) => JSON.stringify(Array.isArray(v) ? v : [])],
-  addedAt: ['added_at', (v) => String(v ?? '')],
   bodyControl: ['body_control', (v) => (v ? 1 : 0)],
   hidden: ['hidden', (v) => (v ? 1 : 0)],
-  rom: ['rom', (v) => (v == null || v === '' ? null : String(v))],
-  roms: ['roms', (v) => JSON.stringify(v && typeof v === 'object' ? v : {})],
+  addedAt: ['added_at', (v) => (v ? String(v).slice(0, 10) : null)],
 }
 
 export function gameApiToPartialRow(patch) {
   const row = {}
   if (!patch || typeof patch !== 'object') return row
-  for (const [field, [column, cast]] of Object.entries(GAME_FIELD_TO_COLUMN)) {
-    // 用 in 判断而不是取值真假：{ rom: null } 是「解绑」，{ hidden: false } 是「上架」，
-    // 两者都必须写进去，不能因为值是假的就跳过。
+  for (const [field, [column, cast]] of Object.entries(FIELD_TO_COLUMN)) {
+    // 用 hasOwnProperty 而不是取值真假：{ hidden: false } 是「上架」，
+    // { cover: null } 是「清空封面」，两者都必须写进去
     if (Object.prototype.hasOwnProperty.call(patch, field)) row[column] = cast(patch[field])
   }
   return row
 }
 
+/** 请求体里带了关联字段吗（决定 PATCH 要不要动关联表） */
+export function relationsInPatch(patch) {
+  const has = (k) => Object.prototype.hasOwnProperty.call(patch ?? {}, k)
+  return { genres: has('genres'), tags: has('tags'), roms: has('rom') || has('roms') }
+}
+
+/** 把 API 对象里的 rom / roms 归一成 { lang: key } 的形式（通用 ROM 用 '*'） */
+export function romsOf(g) {
+  const out = {}
+  if (g?.rom) out[GENERIC_ROM_LANG] = String(g.rom).trim()
+  for (const [lang, key] of Object.entries(g?.roms ?? {})) {
+    if (typeof key === 'string' && key.trim()) out[lang] = key.trim()
+  }
+  return out
+}
+
 /* ---------------- 博客 ---------------- */
-export function postRowToApi(r) {
+
+export function postRowToApi(r, rel = {}) {
   return {
     slug: r.slug,
     title: r.title,
     excerpt: r.excerpt || '',
     content: r.content || '',
     icon: r.icon || '📝',
-    tags: arr(r.tags),
+    tags: rel.tags ?? [],
     author: r.author || '',
-    date: r.date || '',
+    date: dateOnly(r.date) || dateOnly(r.created_at),
     published: bool(r.published),
   }
 }
@@ -155,15 +163,15 @@ export function postApiToRow(p) {
     excerpt: String(p.excerpt ?? ''),
     content: String(p.content ?? ''),
     icon: String(p.icon ?? '📝'),
-    tags: JSON.stringify(Array.isArray(p.tags) ? p.tags : []),
     author: String(p.author ?? ''),
-    date: String(p.date ?? ''),
+    date: p.date ? String(p.date).slice(0, 10) : null,
     published: p.published ? 1 : 0,
   }
 }
 
 /* ---------------- 用户 ---------------- */
-/** 用户行 -> 对外公开信息（不含密码）。favorites / recent 单独查后传入 */
+
+/** 用户行 -> 对外公开信息（不含密码）。favorites / recents 单独查后传入 */
 export function userRowToPublic(r, favorites = [], recent = []) {
   return {
     id: r.id,
@@ -173,13 +181,15 @@ export function userRowToPublic(r, favorites = [], recent = []) {
     coins: Number(r.coins),
     role: r.role,
     status: r.status,
-    createdAt: r.created_at || '',
+    createdAt: dateOnly(r.created_at),
     favorites,
     recent,
   }
 }
 
-/** 通用 upsert：INSERT ... ON DUPLICATE KEY UPDATE，覆盖除主键外所有列 */
+/* ---------------- SQL 小工具 ---------------- */
+
+/** INSERT ... ON DUPLICATE KEY UPDATE，覆盖除唯一键外的所有列 */
 export function buildUpsert(table, row, pk) {
   const cols = Object.keys(row)
   const placeholders = cols.map(() => '?').join(', ')

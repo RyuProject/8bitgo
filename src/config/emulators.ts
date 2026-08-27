@@ -22,6 +22,12 @@ export const EXT_RUNTIME_OVERRIDES: Record<string, RuntimeId> = {
   jar: 'j2me',
   jad: 'j2me',
 
+  // NDS：webretro 的 melonDS 核心，比 EmulatorJS 用的 desmume 分支稳。
+  // 需要自托管（npm run webretro + VITE_WEBRETRO_PATH），没部署时 available() 为 false，
+  // 这张表会自动跳过，NDS 回落到 EmulatorJS。
+  nds: 'webretro',
+  srl: 'webretro',
+
   // DOS：js-dos（DOSBox 浏览器移植）比 EmulatorJS 的 dosbox_pure 核心启动快、兼容性好。
   // .zip / .exe / .com 没写在这里 —— 那几个扩展名别的平台也在用，
   // 靠 jsdos 的 supports(dos) + priority 去争，不能一刀切。

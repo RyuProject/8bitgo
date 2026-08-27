@@ -3,7 +3,7 @@ import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { recordRecent, toggleFavorite, useCurrentUser } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
 import { useRomUrl } from '@/services/roms'
-import { resolveRuntime } from '@/emulator'
+import { resolveRuntime, runtimesFor } from '@/emulator'
 import { getGame, getRelatedGames } from '@/services/games'
 import { platformMap } from '@/data/platforms'
 import { genreMap } from '@/data/genres'
@@ -89,7 +89,11 @@ export function GameDetailPage() {
   if (!game) return <NotFoundPage message={t.game.notFoundMsg} />
 
   const platform = platformMap[game.platform]
-  const runtime = resolveRuntime(platform.id)
+  // 没有具体文件时，按优先级取该平台实际会用的引擎 —— 跟 PlayLocalPage 的选法一致。
+  // 只用 resolveRuntime(platform.id) 会走到「平台默认引擎」那一档（platforms.ts 的 runtime
+  // 字段），显示的是兜底引擎而不是真正会跑的那个：NDS 装了 webretro 仍写着 EmulatorJS，
+  // NES 明明由 jsnes 接管也一样。
+  const runtime = runtimesFor(platform.id)[0] ?? resolveRuntime(platform.id)
   const related = getRelatedGames(game, 8)
 
   return (

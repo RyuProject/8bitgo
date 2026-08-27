@@ -247,6 +247,8 @@ export function EmulatorPlayer({
       platform: session.platform,
       game: session.game,
       gameName: gameNameRef.current,
+      // 存档按 slug 归档；玩家自己上传的 ROM 没有 slug，交给引擎退回文件名
+      gameSlug: gameSlugRef.current,
       netplay: session.netplay,
       cloud: session.cloud,
       // 有些引擎要等核心起来才知道自己支持什么，这里允许它后补
@@ -837,7 +839,15 @@ export function EmulatorPlayer({
           </span>
         )}
 
-        {status === 'running' && <EmulatorTools handle={handle} caps={caps} gameName={gameName} />}
+        {status === 'running' && (
+          <EmulatorTools
+            handle={handle}
+            caps={caps}
+            gameName={gameName}
+            gameSlug={gameSlug}
+            runtimeId={session?.runtime.id ?? activeRuntime?.id}
+          />
+        )}
 
         <div className="ml-auto flex items-center gap-1.5">
           {(busy || status === 'error') && (

@@ -96,6 +96,26 @@ CREATE TABLE IF NOT EXISTS recents (
   CONSTRAINT fk_recent_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ---------- 云存档 ----------
+-- 存档跟着账号走（必须登录）。没登录的用户不进这张表 —— 他们的存档在浏览器里或者是下载的文件。
+-- runtime 区分引擎：emulatorjs 是内存快照，jsdos 是 DOS 文件系统的变更包，两者不能互换。
+-- game_slug 允许 `local:文件名` 这种形式（玩家自己上传的 ROM 没有 slug），所以不做外键。
+CREATE TABLE IF NOT EXISTS saves (
+  user_id    VARCHAR(40)      NOT NULL,
+  runtime    VARCHAR(24)      NOT NULL,
+  game_slug  VARCHAR(160)     NOT NULL,
+  -- 存档位。0 是主存档，DOS 只用 0；快照式引擎以后可以做多格
+  slot       TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  size       INT UNSIGNED     NOT NULL,
+  -- MEDIUMBLOB 上限 16MB，接口层再卡到 SAVE_MAX_BYTES（默认 4MB）
+  data       MEDIUMBLOB       NOT NULL,
+  created_at TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, runtime, game_slug, slot),
+  INDEX idx_saves_user_time (user_id, updated_at),
+  CONSTRAINT fk_saves_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- 注意：上面都是 CREATE TABLE IF NOT EXISTS，对**已经建好**的表不会补新增的列和索引。
 -- 给已有库打补丁的逻辑放在 scripts/migrate.mjs 里（用 JS 逐条判断后执行，
 -- 出问题时能看清卡在哪一步），跑 `npm run migrate` 会自动执行。

@@ -18,7 +18,8 @@
     "build:client": "vite build",
     "build:server": "vite build --config vite.config.server.ts",
     "start:ssr": "node server/src/index.js",
-    "j2me": "node scripts/setup-j2me.mjs"
+    "j2me": "node scripts/setup-j2me.mjs",
+    "webretro": "node scripts/setup-webretro.mjs"
   },
   "dependencies": {
     "jsnes": "^2.1.0",

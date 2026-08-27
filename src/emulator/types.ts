@@ -32,6 +32,12 @@ export interface MountOptions {
   /** 显示名（存档 / 截图命名用） */
   gameName: string
   /**
+   * 游戏 slug —— 存档就是按它归档的。
+   * 玩家自己上传的 ROM 没有 slug，调用方会给个 `local:文件名`（见 services/saves.ts）。
+   * 不传就没有存档能力。
+   */
+  gameSlug?: string
+  /**
    * P2P 联机会话（EmulatorJS netplay）：游戏在房主自己的浏览器里跑，
    * 画面经 WebRTC 直推给其他玩家，不经过服务器。这是默认的联机方案。
    */
@@ -75,7 +81,16 @@ export interface ResolveContext {
 }
 
 /** 运行时能提供的能力。播放器按这个集合决定显示哪些按钮 —— 支持才亮，不支持不显示 */
-export type Capability = 'pause' | 'saveState' | 'volume' | 'gamepad' | 'screenshot' | 'record'
+/**
+ * 运行时能提供的能力。播放器按这个集合决定显示哪些按钮 —— 支持才亮，不支持不显示。
+ *
+ * 存档为什么是两种能力：
+ *   saveState  内存快照 —— 精确到某一帧，随时能存能读，还能导出成文件（EmulatorJS / 云联机）
+ *   fsSave     文件系统持久化 —— 存的是盘上被改过的文件，玩家得**先在游戏里存盘**，
+ *              点了只是把这些改动固化下来，没有「某一帧」这个概念（js-dos）
+ * 混在一起会误导玩家：他在关卡中间点存档，回来却退回上一个存盘点。
+ */
+export type Capability = 'pause' | 'saveState' | 'fsSave' | 'volume' | 'gamepad' | 'screenshot' | 'record'
 
 /** 录制 / 截屏要用到的画面与声音来源，由各适配器提供 */
 export interface CaptureSources {
@@ -107,6 +122,11 @@ export interface RuntimeHandle {
   /** 存档文件的扩展名（默认 state）。Flash 导出的是一个 json 包，就写成 flashsave.json */
   saveExt?: string
   saveState?: () => Promise<Blob | null>
+  /**
+   * 文件系统式存档（DOS）：把盘上的改动固化下来，成功返回 true。
+   * 没有可下载的文件，也没有对应的「读档」—— 下次进游戏时引擎会自动把改动装回去。
+   */
+  fsSave?: () => Promise<{ ok: boolean; where?: 'cloud' | 'local' }>
   /** 返回一句话时，工具栏用它代替默认的「读档完成」（比如 Flash 要说明游戏被重载了） */
   loadState?: (data: ArrayBuffer) => Promise<string | void>
   /** 音量 0~1 */

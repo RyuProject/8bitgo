@@ -14,6 +14,7 @@ import { meRouter } from './routes/me.js'
 import { usersRouter } from './routes/users.js'
 import { adminRouter } from './routes/admin.js'
 import { roomsRouter } from './routes/rooms.js'
+import { savesRouter } from './routes/saves.js'
 import { attachNetplay } from './netplay.js'
 import { iceRouter } from './routes/ice.js'
 
@@ -56,6 +57,8 @@ app.use('/api/me', meRouter)
 app.use('/api/users', usersRouter)
 app.use('/api/admin', adminRouter)
 app.use('/api/rooms', roomsRouter)
+// 云存档（必须登录，见 routes/saves.js）
+app.use('/api/saves', savesRouter)
 // P2P 联机的 ICE / TURN 配置（短期凭证，见 routes/ice.js）
 app.use('/api/netplay/ice', iceRouter)
 

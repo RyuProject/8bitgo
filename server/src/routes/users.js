@@ -10,8 +10,13 @@ usersRouter.use(requireAdmin)
 usersRouter.get('/', async (_req, res, next) => {
   try {
     const users = await query('SELECT * FROM users ORDER BY created_at DESC')
-    const favs = await query('SELECT user_id, game_slug FROM favorites ORDER BY created_at DESC')
-    const recents = await query('SELECT user_id, game_slug FROM recents ORDER BY played_at DESC')
+    // v2 里这两张表存的是 game_id，join 回 games 拿 slug（对外一直用 slug）
+    const favs = await query(
+      'SELECT f.user_id, g.slug AS game_slug FROM favorites f JOIN games g ON g.id = f.game_id ORDER BY f.created_at DESC',
+    )
+    const recents = await query(
+      'SELECT r.user_id, g.slug AS game_slug FROM recents r JOIN games g ON g.id = r.game_id ORDER BY r.played_at DESC',
+    )
     const byUser = (rows) => {
       const m = new Map()
       for (const r of rows) {
