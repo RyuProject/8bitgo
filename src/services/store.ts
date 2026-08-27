@@ -1,9 +1,14 @@
 /**
  * 游戏数据存储。
  *
- * 默认使用 src/data/games.ts 里的内置数据；在后台 (/admin) 做过修改后，
- * 完整的游戏列表会保存到 localStorage，前台与后台都从这里读取。
- * 「重置」即删除 localStorage 里的副本，恢复内置数据。
+ * 两种模式，取决于有没有配 VITE_API_URL：
+ *
+ * 1. 已配后端（remote 模式）：**一切以数据库为准**。列表来自 /api/games，
+ *    内置数据 src/data/games.ts 与 localStorage 副本都不参与——数据库是空的，
+ *    后台就显示空，不会拿内置的 91 款来充数。首次使用请到「后台 → 数据 →
+ *    导入内置数据到数据库」把内置目录写进库里（或在 server/ 下跑 npm run seed）。
+ *
+ * 2. 没配后端：沿用内置数据 + localStorage 的纯浏览器模式，便于离线开发。
  */
 import { games as builtinGames } from '@/data/games'
 import type { Game } from '@/types'
@@ -28,6 +33,8 @@ export const gamesStore = createLocalStore<Game>({
   initial: builtinGames,
   getId: (g) => g.slug,
   validate: isGame,
+  // 配了后端就完全以数据库为准：内置数据与 localStorage 副本都不再参与
+  remote: apiEnabled,
 })
 
 /** 当前完整列表（含已下架的游戏） */
@@ -39,10 +46,15 @@ export const useAllGames = gamesStore.useAll
 export const exportGamesJson = gamesStore.exportJson
 export const importGamesJson = gamesStore.importJson
 
-/** 开机时从后端拉取游戏，灌入本地缓存（组件仍同步读取）。未配置后端时不做任何事。 */
-export async function hydrateGames(): Promise<void> {
+/**
+ * 从后端拉取游戏，灌入本地缓存（组件仍同步读取）。未配置后端时不做任何事。
+ *
+ * @param all true = 连已下架的一起要（后台用，需要管理员口令）。
+ *            前台不要传，接口默认只给上架的 —— 下架的游戏不该对外可见。
+ */
+export async function hydrateGames(all = false): Promise<void> {
   if (!apiEnabled()) return
-  const list = await api.get<Game[]>('/api/games')
+  const list = await api.get<Game[]>(all ? '/api/games?all=1' : '/api/games', all)
   if (Array.isArray(list)) gamesStore.save(list)
 }
 

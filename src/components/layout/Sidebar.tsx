@@ -51,7 +51,7 @@ export function Sidebar() {
         )}
       >
 
-        {/* 顶部：Logo 左，关闭按钮 + 语言切换器右 */}
+        {/* 顶部：Logo（+ 折叠按钮）左，语言切换器右 */}
         <div className={cx('flex h-16 shrink-0 items-center gap-1 px-3', collapsed ? 'lg:justify-center' : 'justify-between')}>
           <Logo />
 
@@ -190,7 +190,8 @@ function RandomGameButton({ collapsed }: { collapsed: boolean }) {
     const current = location.pathname.startsWith('/games/') ? location.pathname.split('/')[2] : undefined
     const game = getRandomGame(current)
     setMobileOpen(false)
-    navigate(`/games/${game.slug}`)
+    // 一款游戏都没有时（数据库空 / 还没拉到）就退到游戏库，别去访问 undefined.slug
+    navigate(game ? `/games/${game.slug}` : '/games')
   }
 
   return (
@@ -225,16 +226,8 @@ function CommunityBox({ collapsed }: { collapsed: boolean }) {
   return (
     <>
       {/* 展开态 / 移动端抽屉 */}
-      <section
-        aria-label={t.sidebar.community}
-        className={cx('mb-4 px-4 pb-4 pt-3', collapsed && 'lg:hidden')}
-        style={{
-          backgroundImage: "url('/ui/panel-pixel.svg')",
-          backgroundSize: '100% 100%',
-          backgroundRepeat: 'no-repeat',
-        }}
-      >
-        <p className="mb-1.5 text-xs font-semibold text-fg">{t.sidebar.community}</p>
+      <fieldset className={cx('mb-4 rounded-xl border border-line-strong px-3 pb-3 pt-2', collapsed && 'lg:hidden')}>
+        <legend className="px-1.5 text-xs font-semibold text-fg">{t.sidebar.community}</legend>
         <div className="flex items-center justify-between">
           {communityLinks.map((c) => (
             <a
@@ -244,13 +237,13 @@ function CommunityBox({ collapsed }: { collapsed: boolean }) {
               rel="noreferrer"
               aria-label={c.label}
               title={c.label}
-              className="grid h-9 w-9 place-items-center rounded-lg text-fg/70 transition hover:bg-black/10 hover:text-fg"
+              className="grid h-9 w-9 place-items-center rounded-lg text-muted transition hover:bg-black/5 hover:text-fg"
             >
               <SocialIcon id={c.id} />
             </a>
           ))}
         </div>
-      </section>
+      </fieldset>
 
       {/* 桌面折叠态：竖排图标 */}
       <ul className={cx('mb-3 hidden space-y-0.5 border-b border-line pb-3', collapsed && 'lg:block')} aria-label={t.sidebar.community}>

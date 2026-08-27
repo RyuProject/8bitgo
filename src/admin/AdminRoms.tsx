@@ -209,13 +209,13 @@ export function AdminRoms() {
         {test && (
           <ul className="mt-3 space-y-1.5">
             {test.map((t, i) => (
-              <li key={i} className={cx('rounded-lg px-3 py-2 text-sm', t.ok ? 'bg-online/15 text-online' : 'bg-live/15 text-red-300')}>
+              <li key={i} className={cx('rounded-lg px-3 py-2 text-sm', t.ok ? 'bg-online/15 text-online' : 'bg-live/15 text-live')}>
                 {t.ok ? '✔' : '✖'} {t.text}
               </li>
             ))}
           </ul>
         )}
-        {listError && <p className="mt-3 rounded-lg bg-live/15 px-3 py-2 text-sm text-red-300">{listError}</p>}
+        {listError && <p className="mt-3 rounded-lg bg-live/15 px-3 py-2 text-sm text-live">{listError}</p>}
         {showCors && (
           <div className="mt-3 rounded-lg border border-line bg-surface-2 p-3 text-xs">
             <p className="mb-2 text-muted">Cloudflare 控制台 → R2 → 桶 → 设置 → CORS 策略，粘贴（把域名换成你的站点地址）：</p>
@@ -279,7 +279,7 @@ export function AdminRoms() {
                 <a href={romUrlForKey(g.rom!)} target="_blank" rel="noreferrer" className={cx(btnClass.small, 'text-muted hover:bg-black/5 hover:text-fg')}>
                   打开
                 </a>
-                <button type="button" className={cx(btnClass.small, 'text-red-300 hover:bg-live/15')} onClick={() => bind(g.slug, undefined)}>
+                <button type="button" className={cx(btnClass.small, 'text-live hover:bg-live/15')} onClick={() => bind(g.slug, undefined)}>
                   解绑
                 </button>
               </li>
@@ -357,7 +357,7 @@ function ObjectRow({
               绑定
             </button>
           )}
-          <button type="button" className={cx(btnClass.small, 'text-red-300 hover:bg-live/15')} onClick={() => onDelete(object)}>
+          <button type="button" className={cx(btnClass.small, 'text-live hover:bg-live/15')} onClick={() => onDelete(object)}>
             删除文件
           </button>
         </div>

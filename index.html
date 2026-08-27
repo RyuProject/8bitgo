@@ -6,24 +6,24 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#ffffff" />
 
-    <!-- 默认 SEO：具体页面会在运行时由 src/services/seo.ts 覆盖 -->
+    <!--
+      默认 SEO：服务端渲染时，server/src/ssr.js 会按 data-ssr-default 标记删掉下面这些，
+      换成当前页面 src/services/seo.ts 生成的那一份。
+      ⚠️ 每个带 data-ssr-default 的标签必须写在一行内 —— 删除用的是单行正则，
+         拆成多行会漏删，结果是页面上出现两份 description（且中文那份排在前面）。
+      纯静态托管（不走 SSR）时这些就是实际生效的默认值。
+    -->
     <title>8BitGo — 免费在线玩复古模拟器游戏</title>
-    <meta
-      name="description"
-      content="8BitGo — 免费在线玩复古模拟器游戏。无需下载，浏览器直接畅玩 NES、SNES、GBA、PS1、N64、街机等经典游戏，支持手机与本地 ROM。"
-    />
-    <meta name="robots" content="index,follow,max-image-preview:large" />
+    <meta data-ssr-default name="description" content="8BitGo — 免费在线玩复古模拟器游戏。无需下载，浏览器直接畅玩 NES、SNES、GBA、PS1、N64、街机等经典游戏，支持手机与本地 ROM。" />
+    <meta data-ssr-default name="robots" content="index,follow,max-image-preview:large" />
 
     <!-- 社交分享（Open Graph / Twitter），运行时按页覆盖 -->
-    <meta property="og:site_name" content="8BitGo" />
-    <meta property="og:type" content="website" />
-    <meta property="og:title" content="8BitGo — 免费在线玩复古模拟器游戏" />
-    <meta
-      property="og:description"
-      content="无需下载，浏览器直接畅玩 NES、SNES、GBA、PS1、N64、街机等上百款经典游戏。"
-    />
-    <meta property="og:image" content="/og-default.png" />
-    <meta name="twitter:card" content="summary_large_image" />
+    <meta data-ssr-default property="og:site_name" content="8BitGo" />
+    <meta data-ssr-default property="og:type" content="website" />
+    <meta data-ssr-default property="og:title" content="8BitGo — 免费在线玩复古模拟器游戏" />
+    <meta data-ssr-default property="og:description" content="无需下载，浏览器直接畅玩 NES、SNES、GBA、PS1、N64、街机等上百款经典游戏。" />
+    <meta data-ssr-default property="og:image" content="/og-default.png" />
+    <meta data-ssr-default name="twitter:card" content="summary_large_image" />
 
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />

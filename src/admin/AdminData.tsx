@@ -1,8 +1,8 @@
 import { useRef, useState } from 'react'
-import { STORAGE_KEY, exportGamesJson, hasLocalChanges, importGamesJson, resetGames, useAllGames } from '@/services/store'
-import { POSTS_KEY, postsStore, useAllPosts } from '@/services/posts'
+import { STORAGE_KEY, exportGamesJson, hasLocalChanges, hydrateGames, importGamesJson, resetGames, useAllGames } from '@/services/store'
+import { POSTS_KEY, hydratePosts, postsStore, useAllPosts } from '@/services/posts'
 import { USERS_KEY, usersStore } from '@/services/auth'
-import { api, apiEnabled, getAdminApiToken, setAdminApiToken } from '@/services/api'
+import { api, apiEnabled, apiLabel, getAdminApiToken, setAdminApiToken } from '@/services/api'
 import { games as builtinGames } from '@/data/games'
 import { posts as builtinPosts } from '@/data/posts'
 import { Card, btnClass, inputClass } from './ui'
@@ -10,8 +10,8 @@ import { cx } from '@/lib/format'
 
 /** 数据库 / API 连接状态与初始化 */
 function DbApiCard() {
-  const url = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '')
   const enabled = apiEnabled()
+  const url = enabled ? apiLabel() : ''
   const [token, setTok] = useState(getAdminApiToken())
   const [health, setHealth] = useState<string>('')
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
@@ -38,7 +38,9 @@ function DbApiCard() {
     setMsg(null)
     try {
       const r = await api.post<{ games: number; posts: number }>('/api/admin/import', { games: builtinGames, posts: builtinPosts }, true)
-      setMsg({ ok: true, text: `已写入 ${r.games} 款游戏、${r.posts} 篇文章。刷新页面即可看到数据库数据。` })
+      // 写完立刻把库里的数据重新拉一遍，界面马上就能看到
+      await Promise.all([hydrateGames(true), hydratePosts(true)])
+      setMsg({ ok: true, text: `已写入 ${r.games} 款游戏、${r.posts} 篇文章。` })
     } catch (e) {
       setMsg({ ok: false, text: '导入失败：' + (e instanceof Error ? e.message : '') })
     } finally {
@@ -107,6 +109,7 @@ function downloadJson(json: string, name: string) {
 }
 
 export function AdminData() {
+  const connected = apiEnabled()
   const all = useAllGames()
   const posts = useAllPosts()
   const [text, setText] = useState('')
@@ -125,10 +128,19 @@ export function AdminData() {
     }
   }
 
-  const doImport = (json: string) => {
+  const doImport = async (json: string) => {
     try {
-      const n = importGamesJson(json)
-      setMsg({ ok: true, text: `导入成功：${n} 款游戏` })
+      if (connected) {
+        // 连了后端就必须写库：只改内存的话刷新一下就没了
+        const parsed: unknown = JSON.parse(json)
+        if (!Array.isArray(parsed)) throw new Error('JSON 格式不正确：需要一个游戏对象数组')
+        const r = await api.post<{ games: number }>('/api/admin/import', { games: parsed }, true)
+        await hydrateGames(true)
+        setMsg({ ok: true, text: `已写入数据库：${r.games} 款游戏` })
+      } else {
+        const n = importGamesJson(json)
+        setMsg({ ok: true, text: `导入成功：${n} 款游戏` })
+      }
       setText('')
     } catch (err) {
       setMsg({ ok: false, text: err instanceof Error ? err.message : '导入失败' })
@@ -137,7 +149,7 @@ export function AdminData() {
 
   const onFile = async (file?: File) => {
     if (!file) return
-    doImport(await file.text())
+    await doImport(await file.text())
     if (fileRef.current) fileRef.current.value = ''
   }
 
@@ -159,10 +171,18 @@ export function AdminData() {
       <DbApiCard />
       <div>
         <h1 className="text-xl font-bold">数据</h1>
-        <p className="mt-1 text-sm text-muted">
-          后台的修改保存在当前浏览器的 localStorage（键：<code className="text-fg">{STORAGE_KEY}</code>），换浏览器或清除站点数据后会丢失。
-          想长期保存请导出 JSON，替换到 <code className="text-fg">src/data/games.ts</code>。
-        </p>
+        {connected ? (
+          <p className="mt-1 text-sm text-muted">
+            已连接后端，<strong className="text-fg">一切以数据库为准</strong>：后台看到的、前台展示的都是 <code className="text-fg">games</code> /{' '}
+            <code className="text-fg">posts</code> 表里的内容。项目内置的 <code className="text-fg">src/data/games.ts</code> 只在没配{' '}
+            <code className="text-fg">VITE_API_URL</code> 时才会用到。
+          </p>
+        ) : (
+          <p className="mt-1 text-sm text-muted">
+            后台的修改保存在当前浏览器的 localStorage（键：<code className="text-fg">{STORAGE_KEY}</code>），换浏览器或清除站点数据后会丢失。
+            想长期保存请导出 JSON，替换到 <code className="text-fg">src/data/games.ts</code>。
+          </p>
+        )}
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -170,7 +190,9 @@ export function AdminData() {
           <dl className="space-y-2 text-sm">
             <div className="flex justify-between">
               <dt className="text-muted">数据来源</dt>
-              <dd className={cx('font-medium', local ? 'text-coin' : 'text-fg')}>{local ? '本地修改版' : '内置数据（src/data/games.ts）'}</dd>
+              <dd className={cx('font-medium', connected ? 'text-brand-hover' : local ? 'text-coin' : 'text-fg')}>
+                {connected ? '数据库（MySQL）' : local ? '本地修改版' : '内置数据（src/data/games.ts）'}
+              </dd>
             </div>
             <div className="flex justify-between">
               <dt className="text-muted">游戏数量</dt>
@@ -197,7 +219,10 @@ export function AdminData() {
         </Card>
 
         <Card title="导入 JSON">
-          <p className="mb-2 text-xs text-muted">粘贴一个游戏数组（与导出格式一致），或选择 .json 文件。导入会整体替换当前列表。</p>
+          <p className="mb-2 text-xs text-muted">
+            粘贴一个游戏数组（与导出格式一致），或选择 .json 文件。
+            {connected ? '已连接数据库：会按 slug 写入 / 覆盖数据库中的对应条目。' : '导入会整体替换当前列表。'}
+          </p>
           <textarea
             value={text}
             onChange={(e) => setText(e.target.value)}
@@ -205,7 +230,7 @@ export function AdminData() {
             className={cx(inputClass, 'h-40 resize-y py-2 font-mono text-xs')}
           />
           <div className="mt-3 flex flex-wrap gap-2">
-            <button type="button" className={btnClass.primary} disabled={!text.trim()} onClick={() => doImport(text)}>
+            <button type="button" className={btnClass.primary} disabled={!text.trim()} onClick={() => void doImport(text)}>
               导入粘贴内容
             </button>
             <button type="button" className={btnClass.secondary} onClick={() => fileRef.current?.click()}>
@@ -262,7 +287,7 @@ export function AdminData() {
       </Card>
 
       {msg && (
-        <p role="status" className={cx('rounded-lg px-3 py-2 text-sm', msg.ok ? 'bg-online/15 text-online' : 'bg-live/15 text-red-300')}>
+        <p role="status" className={cx('rounded-lg px-3 py-2 text-sm', msg.ok ? 'bg-online/15 text-online' : 'bg-live/10 text-live')}>
           {msg.text}
         </p>
       )}

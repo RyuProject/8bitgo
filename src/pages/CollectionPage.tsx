@@ -29,8 +29,16 @@ interface CollectionProps {
   kind: 'platform' | 'genre'
   /** H1 与 title */
   heading: string
-  /** 页面正文（对搜索引擎来说这是本页独有的内容） */
+  /** H1 下面那句简介 */
   intro: string
+  /**
+   * 页面底部的长文。这是本页独有的内容，也是这类列表页能不能拿到搜索排名的关键 ——
+   * 放在游戏网格下面：用户先看到游戏，搜索引擎照样读得到。
+   * 空字符串表示这个语言还没写，届时只显示上面的简介。
+   */
+  article?: string
+  /** 长文的小标题 */
+  articleTitle?: string
   /** meta description */
   description: string
   /** 上级列表页 */
@@ -53,6 +61,8 @@ function Collection({
   description,
   parent,
   basePath,
+  article,
+  articleTitle,
   items,
   total,
   page,
@@ -124,6 +134,17 @@ function Collection({
           {t.common.moreFilters}
         </Button>
       </div>
+
+      {article && (
+        <section className="mt-10 max-w-3xl border-t border-line pt-8">
+          {articleTitle && <h2 className="text-xl font-bold tracking-tight">{articleTitle}</h2>}
+          <div className="mt-4 space-y-4 leading-[1.9] text-muted">
+            {article.split('\n\n').map((para, i) => (
+              <p key={i}>{para}</p>
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   )
 }
@@ -145,8 +166,10 @@ export function PlatformPage() {
   return (
     <Collection
       kind="platform"
-      heading={fmt(t.games.titlePlatform, { platform: name })}
+      heading={fmt(t.seo.platformH1, { platform: name })}
       intro={platformDesc(t, platform.id, platformMap[platform.id]?.description ?? '')}
+      article={t.seo.platformIntro[platform.id as keyof typeof t.seo.platformIntro] || ''}
+      articleTitle={fmt(t.seo.platformArticle, { platform: name })}
       description={fmt(t.seo.platformDesc, { platform: name, n: result.total })}
       parent={{ name: t.browse.platformsTitle, path: '/platforms' }}
       basePath={`/platforms/${platform.id}`}
@@ -182,7 +205,7 @@ export function GenrePage() {
   return (
     <Collection
       kind="genre"
-      heading={fmt(t.games.titleGenre, { genre: name })}
+      heading={fmt(t.seo.genreH1, { genre: name })}
       intro={genreDesc(t, genre.id, genreMap[genre.id]?.description ?? '')}
       description={fmt(t.seo.genreDesc, { genre: name, n: result.total })}
       parent={{ name: t.browse.genresTitle, path: '/genres' }}

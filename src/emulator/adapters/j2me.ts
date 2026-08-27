@@ -113,8 +113,18 @@ function mount(container: HTMLElement, options: MountOptions): () => void {
   iframe.title = fmt(rt.emulatorTitle, { name: options.gameName })
   iframe.style.cssText = 'width:100%;height:100%;border:0;display:block;background:#000'
   iframe.setAttribute('allow', 'fullscreen; gamepad; autoplay; midi')
-  iframe.addEventListener('load', () => options.onReady?.())
-  iframe.addEventListener('error', () => options.onError?.(fmt(rt.j2meLoadFailed, { path: J2ME_PATH })))
+  // 只认「设过 src 之后」的那次 load。
+  // iframe 刚 append 时浏览器会为初始的 about:blank 触发一次 load —— 那时候
+  // jar 还没开始上传，却已经把状态改成「运行中」，「正在加载 FreeJ2ME…」的提示
+  // 瞬间消失，而 CheerpJ 实际还要几十秒才起得来。销毁时把 src 设回 about:blank
+  // 同样会再触发一次，也要挡掉。
+  let srcSet = false
+  iframe.addEventListener('load', () => {
+    if (srcSet && !destroyed) options.onReady?.()
+  })
+  iframe.addEventListener('error', () => {
+    if (!destroyed) options.onError?.(fmt(rt.j2meLoadFailed, { path: J2ME_PATH }))
+  })
   container.appendChild(iframe)
 
   let destroyed = false
@@ -123,8 +133,12 @@ function mount(container: HTMLElement, options: MountOptions): () => void {
   /** 心跳：玩的时间超过服务端 TTL 时，防止文件被清扫掉 */
   let heartbeat: ReturnType<typeof setInterval> | null = null
 
-  // 页面关闭时也要删：unmount 在这种情况下不会执行
-  const onPageHide = () => {
+  // 页面关闭时也要删：unmount 在这种情况下不会执行。
+  // 但 pagehide 也会在页面进 bfcache 时触发（手机上切个 App、点外链再返回），
+  // 那种情况页面稍后还会复活、游戏还在跑，删了就变成 404「临时文件已过期」。
+  // event.persisted 为 true 就是进 bfcache，不能删。
+  const onPageHide = (e: PageTransitionEvent) => {
+    if (e.persisted) return
     if (tempName) releaseTempJar(tempName)
   }
   window.addEventListener('pagehide', onPageHide)
@@ -147,6 +161,7 @@ function mount(container: HTMLElement, options: MountOptions): () => void {
       } else {
         name = fileNameOf(options.game as string)
       }
+      srcSet = true
       iframe.src = buildUrl(name)
       options.onStart?.()
     } catch (e) {

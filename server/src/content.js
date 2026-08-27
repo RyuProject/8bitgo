@@ -12,6 +12,12 @@ const TTL = Number(process.env.SSR_CACHE_MS || 60_000)
 
 let cache = { at: 0, games: [], posts: [] }
 let inflight = null
+/**
+ * 缓存代数。invalidateContent() 会 +1；正在飞的那次查询回来时如果代数已经变了，
+ * 说明它读到的是写库**之前**的数据，直接丢弃，不能拿它覆盖缓存 ——
+ * 否则后台明明改完了，前台还会再拿旧数据顶满一个 TTL。
+ */
+let generation = 0
 
 async function fetchAll() {
   const [gameRows, postRows] = await Promise.all([
@@ -29,8 +35,13 @@ async function fetchAll() {
 export async function getContent() {
   if (Date.now() - cache.at < TTL && cache.at > 0) return cache
   if (inflight) return inflight
+  const startedAt = generation
   inflight = fetchAll()
     .then((fresh) => {
+      if (startedAt !== generation) {
+        // 查询期间有人写库并调了 invalidateContent()，这份结果已经过时，别写进缓存
+        return fresh
+      }
       cache = fresh
       return fresh
     })
@@ -45,5 +56,6 @@ export async function getContent() {
 }
 
 export function invalidateContent() {
+  generation += 1
   cache = { ...cache, at: 0 }
 }

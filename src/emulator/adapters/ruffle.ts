@@ -64,7 +64,9 @@ function mount(container: HTMLElement, options: MountOptions): () => void {
 
     const script = doc.createElement('script')
     script.src = `${RUFFLE_PATH}ruffle.js`
-    script.onerror = () => options.onError?.(fmt(rt.ruffleLoadFailed, { path: RUFFLE_PATH }))
+    script.onerror = () => {
+      if (!destroyed) options.onError?.(fmt(rt.ruffleLoadFailed, { path: RUFFLE_PATH }))
+    }
     script.onload = async () => {
       if (destroyed) return
       try {
@@ -98,10 +100,17 @@ function mount(container: HTMLElement, options: MountOptions): () => void {
 
         const api: RufflePlayerApi | undefined = typeof player.ruffle === 'function' ? player.ruffle() : typeof player.load === 'function' ? (player as RufflePlayerApi) : undefined
         if (!api) throw new Error(rt.ruffleNoApi)
+        // 上面一连串 await（等自定义元素注册、读文件）之间玩家可能已经换了 ROM，
+        // 这里要重新确认一次，别把旧会话的结果算到新会话头上
+        if (destroyed) return
         options.onReady?.()
         await api.load(loadOptions)
+        if (destroyed) return
         options.onStart?.()
       } catch (err) {
+        // 销毁之后的报错不再上报：否则玩家刚拖进来的新游戏会被上一个的错误顶掉，
+        // 画面消失、只剩一条红色提示，而新的模拟器其实还在后台出声
+        if (destroyed) return
         options.onError?.(fmt(rt.flashLoadFailed, { msg: err instanceof Error ? err.message : String(err) }))
       }
     }

@@ -11,7 +11,7 @@
  * ⚠️ 上传接口不需要登录（玩家本来就不一定有账号），所以按「公开攻击面」来防：
  *    体积上限、魔数校验、随机文件名、总量上限、定时清扫。
  */
-import { createHash, randomBytes } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, utimesSync, writeFileSync, createReadStream } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -143,13 +143,16 @@ export function uploadJar(req, res) {
     }
 
     ensureDir()
-    // 内容相同就复用同一个文件，避免同一个游戏被反复上传占空间
-    const digest = createHash('sha256').update(buf).digest('hex').slice(0, 32)
-    const name = `tmp-${digest}.jar`
+    // 每次上传给一个**唯一**的文件名。
+    //
+    // 以前是按内容 sha256 命名、内容相同就复用同一个物理文件 —— 省空间，但两个人
+    // （或同一个人开两个标签页）玩同一个 .jar 时会共用一个文件，谁先关页面，
+    // release 就把文件删了，另一个人当场 404「临时文件已过期」，游戏中途挂掉。
+    // 这也等于给了任何人一个「上传同一个 jar → 立刻 release」删掉别人文件的口子。
+    // 临时文件本来就有 TTL 和总量上限兜着，重复一点空间换正确性是划算的。
+    const name = `tmp-${randomBytes(16).toString('hex')}.jar`
     const dest = path.join(TMP_DIR, name)
-    // 内容相同就复用；已存在的话刷新一下时间，避免马上被清扫
-    if (existsSync(dest)) touch(dest)
-    else writeFileSync(dest, buf)
+    writeFileSync(dest, buf)
 
     res.json({ name, expiresInMs: TTL_MS })
   } catch (e) {
@@ -201,8 +204,17 @@ export async function j2meJarProxy(req, res) {
       res.setHeader('Content-Type', 'application/java-archive')
       res.setHeader('X-Content-Type-Options', 'nosniff')
       res.setHeader('Cache-Control', 'no-store')
-      res.setHeader('Accept-Ranges', 'bytes')
-      return createReadStream(p).pipe(res)
+      // 这里刻意不再声明 Accept-Ranges：本分支根本没实现 Range，
+      // 声明了会让客户端发 Range 请求然后每次都拿到整包。
+      const stream = createReadStream(p)
+      // pipe 不转发错误。existsSync 与真正 open 之间有窗口，文件可能刚好被
+      // release / TTL 清扫删掉 —— 没有这个监听，ENOENT 会变成未捕获异常直接杀掉进程。
+      stream.on('error', (err) => {
+        console.error('[j2me] 读取临时 jar 失败：', err.message)
+        if (!res.headersSent) res.status(404).send('临时文件已过期')
+        else res.destroy()
+      })
+      return stream.pipe(res)
     }
     return res.status(404).send('临时文件已过期')
   }

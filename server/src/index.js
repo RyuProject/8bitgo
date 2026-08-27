@@ -18,9 +18,11 @@ import { attachNetplay } from './netplay.js'
 
 const app = express()
 app.disable('x-powered-by')
-app.use(express.json({ limit: '4mb' }))
 
 // CORS：ALLOWED_ORIGINS 为逗号分隔白名单，或 * 放行全部
+// ⚠️ 必须注册在 express.json 之前。body 解析失败时会直接 next(err)，跳过后面所有
+// 普通中间件 —— cors 排在后面的话，413 / 400 这类响应就没有跨域头，
+// 浏览器只报一句 CORS 错误，前端根本读不到「文件过大」这种真正的原因。
 const origins = (process.env.ALLOWED_ORIGINS || '*').split(',').map((s) => s.trim()).filter(Boolean)
 app.use(
   cors({
@@ -29,6 +31,8 @@ app.use(
     allowedHeaders: ['Content-Type', 'Authorization'],
   }),
 )
+
+app.use(express.json({ limit: '4mb' }))
 
 // 健康检查
 app.get('/api/health', async (_req, res) => {
@@ -78,6 +82,10 @@ if (ssrAvailable()) {
   // 放前面会让代理抢先，本地文件永远取不到。
   app.get('/j2me/jar/:name', j2meJarProxy)
 
+  // 构建产物找不到就老实回 404。交给下面的 SSR 会返回一段 HTML，
+  // 浏览器按 module 加载时只会报一句含糊的 MIME 错误，白屏还查不出原因。
+  app.get(/^\/assets\//, (_req, res) => res.status(404).type('text/plain').send('Not Found'))
+
   // 除 /api 外的所有 GET 都交给 SSR（/admin 也走，但它本身是 noindex 的后台）
   app.get(/^(?!\/api\/).*/, renderPage)
 
@@ -92,8 +100,28 @@ app.use((err, _req, res, _next) => {
   if (err?.type === 'entity.too.large' || err?.status === 413) {
     return res.status(413).json({ error: '文件过大' })
   }
+  // JSON 解析失败等客户端错误，body-parser 给的是 4xx，别一律降级成 500
+  const status = Number(err?.status || err?.statusCode || 0)
+  if (status >= 400 && status < 500) {
+    return res.status(status).json({ error: '请求格式不正确' })
+  }
+  // 完整信息只进服务器日志。以前直接把 err.message 回给客户端，
+  // 数据库报错会连表名、列名、索引名（uniq_email 之类）一起泄露出去。
   console.error('[api error]', err)
-  res.status(500).json({ error: err?.message || '服务器内部错误' })
+  res.status(500).json({ error: '服务器内部错误' })
+})
+
+/**
+ * 最后一道保险。代码里该 try/catch 的地方都补了，但只要漏一处，
+ * Node 22 默认就会把未处理的 rejection 当未捕获异常，直接结束进程 ——
+ * 对一个同时扛着 API 和 SSR 的进程来说，那就是整站 502。
+ * 这里只记录不退出；真正的问题去日志里看。
+ */
+process.on('unhandledRejection', (reason) => {
+  console.error('[未处理的 Promise 异常]', reason)
+})
+process.on('uncaughtException', (err) => {
+  console.error('[未捕获异常]', err)
 })
 
 const PORT = Number(process.env.PORT || 8788)

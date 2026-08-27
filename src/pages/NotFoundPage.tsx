@@ -1,11 +1,12 @@
 import { Button } from '@/components/ui/Button'
-import { useSeo, markNotFound } from '@/services/seo'
+import { markSsrNotFound, useSeo } from '@/services/seo'
 import { useT } from '@/services/i18n'
 
 export function NotFoundPage({ message }: { message?: string }) {
   const t = useT()
-  // 让服务端知道这次渲染出来的是 404，从而返回真正的 404 状态码
-  if (import.meta.env.SSR) markNotFound()
+  // 渲染期间打个标记，让服务端把 HTTP 状态码改成 404 而不是 200。
+  // 在 render 里直接调是安全的：renderToString 同步执行，一次只处理一个请求。
+  if (import.meta.env.SSR) markSsrNotFound()
   useSeo({ title: t.notFound.title, noindex: true })
   return (
     <div className="container-x flex min-h-[60vh] flex-col items-center justify-center py-20 text-center">

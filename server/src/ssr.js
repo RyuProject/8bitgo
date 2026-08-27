@@ -6,7 +6,7 @@
  *
  * 没有构建产物时（还没 npm run build）会直接跳过，方便只跑 API 的场景。
  */
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getContent } from './content.js'
@@ -29,10 +29,23 @@ async function getRender() {
   return renderFn
 }
 
-// 模板只在启动时读一次（生产环境不会变）
+// 模板缓存。按 mtime 判断是否需要重读：
+// 重新 npm run build 之后 index.html 里的资源哈希会变，如果这里一直用启动时读到的旧内容，
+// 页面会去请求已经被删掉的 assets/xxx.js，浏览器只拿到 HTML，白屏且报 MIME 错误。
+// 加这一下，构建完不重启 node 也不会挂。
 let template = null
+let templateMtime = 0
 function getTemplate() {
-  if (template === null) template = readFileSync(TEMPLATE, 'utf8')
+  let mtime = 0
+  try {
+    mtime = statSync(TEMPLATE).mtimeMs
+  } catch {
+    /* 读不到就用缓存 */
+  }
+  if (template === null || mtime !== templateMtime) {
+    template = readFileSync(TEMPLATE, 'utf8')
+    templateMtime = mtime
+  }
   return template
 }
 
@@ -41,13 +54,60 @@ function safeJson(data) {
   return JSON.stringify(data).replace(/</g, '\\u003c')
 }
 
+/**
+ * HTML 文本转义。<title> 里的内容会被浏览器当普通文本解析，但只要出现 </title>
+ * 就会提前闭合标签，后面的东西按 HTML 解析 —— 页面标题里带搜索关键词时，
+ * 一条 /games?q=</title><script>… 的链接就能在本站域名下执行脚本。
+ */
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+/**
+ * String.prototype.replace 的**替换串**里，$& / $` / $' / $$ 是有特殊含义的模式。
+ * 我们要塞进模板的是渲染结果和 JSON 数据，里面完全可能出现这些字符
+ * （文章正文里的 shell 片段、搜索关键词……），一旦被当成模式解释，
+ * 整个页面会被复制/撕碎。用函数形式的替换值就不会走模式解析。
+ */
+function injectOnce(page, marker, value) {
+  return page.replace(marker, () => value)
+}
+
+/**
+ * 后台路径（/admin、/en/admin …）不做服务端渲染。
+ *
+ * 理由有三：
+ *  1. SSR 注入的是前台数据（hidden=0 / published=1），后台需要看全量，预渲染反而误导；
+ *  2. 后台是 noindex 的，预渲染没有 SEO 收益；
+ *  3. 是否解锁取决于 sessionStorage，服务端拿不到，渲染出来必然与客户端不一致。
+ * 直接返回空壳模板，让浏览器自己渲染。
+ */
+const LANG_SEG = new Set(['zh-Hans', 'zh-Hant', 'en', 'es', 'fr', 'it', 'de', 'ja'])
+
+function isAdminPath(pathname) {
+  const parts = pathname.split('?')[0].split('/').filter(Boolean)
+  if (parts[0] && LANG_SEG.has(parts[0])) parts.shift()
+  return parts[0] === 'admin'
+}
+
 export async function renderPage(req, res, next) {
   try {
+    if (isAdminPath(req.path)) {
+      return res
+        .status(200)
+        .set({ 'Content-Type': 'text/html; charset=utf-8', 'X-Robots-Tag': 'noindex, nofollow' })
+        .end(getTemplate())
+    }
+
     const render = await getRender()
     const { games, posts } = await getContent()
     const url = req.originalUrl
 
-    const { html, head, lang, status = 200 } = render({ url, games, posts })
+    const { html, head, lang, notFound } = render({ url, games, posts })
 
     let page = getTemplate()
 
@@ -56,22 +116,24 @@ export async function renderPage(req, res, next) {
 
     // 用本页真实的 head 覆盖模板里的默认值：
     // 先删掉模板里会重复的那几项，再插入渲染出来的标签。
+    // 按 data-ssr-default 标记删除模板里的默认标签。
+    // 以前是按属性名逐个匹配（name="description" 之类），但模板里那两个标签是多行写的，
+    // [^>]* 匹配不到跨行内容 —— 结果每个页面都留着模板里的中文 description，
+    // 加上本页的就是两份，搜索引擎取第一份，8 种语言的摘要全是中文。
+    // 现在改成认标记，并要求模板里这些标签写在一行内（index.html 里有注释说明）。
     page = page
       .replace(/<title>[\s\S]*?<\/title>/, '')
-      .replace(/<meta name="description"[^>]*>/g, '')
-      .replace(/<meta name="robots"[^>]*>/g, '')
-      .replace(/<meta property="og:[^"]*"[^>]*>/g, '')
-      .replace(/<meta name="twitter:[^"]*"[^>]*>/g, '')
+      .replace(/<meta\b[^>]*\bdata-ssr-default\b[^>]*>/g, '')
 
-    const headHtml = `<title>${head.title}</title>\n${head.tags.join('\n')}`
-    page = page.replace('</head>', `${headHtml}\n</head>`)
+    const headHtml = `<title>${escapeHtml(head.title)}</title>\n${head.tags.join('\n')}`
+    page = injectOnce(page, '</head>', `${headHtml}\n</head>`)
 
     // 首屏 HTML + 给客户端 hydrate 用的数据
     const bootstrap = `<script>window.__8BITGO__=${safeJson({ games, posts, lang })}</script>`
-    page = page.replace('<div id="root"></div>', `<div id="root">${html}</div>\n${bootstrap}`)
+    page = injectOnce(page, '<div id="root"></div>', `<div id="root">${html}</div>\n${bootstrap}`)
 
-    // 不存在的页面要回真正的 404，不能一律 200（软 404 会被搜索引擎降权）
-    res.status(status).set({ 'Content-Type': 'text/html; charset=utf-8' }).end(page)
+    // 渲染出「页面不存在」时回 404：一律 200 会让爬虫把不存在的 URL 当正常页面收录
+    res.status(notFound ? 404 : 200).set({ 'Content-Type': 'text/html; charset=utf-8' }).end(page)
   } catch (e) {
     console.error('[ssr] 渲染失败，退回纯客户端渲染：', e)
     // SSR 挂了不能让站点打不开：返回不带首屏内容的模板，浏览器自己渲染

@@ -83,9 +83,19 @@ authRouter.post('/login', async (req, res, next) => {
 
 /* ---------------- 邮箱验证码登录 ---------------- */
 // 验证码暂存在内存（单进程足够；多实例部署请改用 Redis / 数据表）。
-const codes = new Map() // email -> { code, expires, lastSent }
+const codes = new Map() // email -> { code, expires, lastSent, tries }
 const CODE_TTL = 10 * 60_000
 const COOLDOWN = 60_000
+/** 单个验证码最多能试几次。6 位数字共 100 万种，不限次数等于可以直接爆破进任意账号（含管理员）。 */
+const MAX_TRIES = 5
+/** Map 的条目上限。发送接口不需要登录，不设上限的话换邮箱刷几百万次就能把内存吃光。 */
+const MAX_PENDING = 10_000
+
+/** 清掉过期条目。每次发码时顺手做一遍，不额外起定时器。 */
+function sweepCodes() {
+  const now = Date.now()
+  for (const [k, v] of codes) if (v.expires < now) codes.delete(k)
+}
 
 authRouter.post('/email/request-code', async (req, res, next) => {
   try {
@@ -96,8 +106,12 @@ authRouter.post('/email/request-code', async (req, res, next) => {
       const wait = Math.ceil((COOLDOWN - (Date.now() - rec.lastSent)) / 1000)
       return res.status(429).json({ error: `发送过于频繁，请 ${wait}s 后再试` })
     }
+    sweepCodes()
+    if (!codes.has(email) && codes.size >= MAX_PENDING) {
+      return res.status(429).json({ error: '当前请求过多，请稍后再试' })
+    }
     const code = String(100000 + crypto.randomInt(900000))
-    codes.set(email, { code, expires: Date.now() + CODE_TTL, lastSent: Date.now() })
+    codes.set(email, { code, expires: Date.now() + CODE_TTL, lastSent: Date.now(), tries: 0 })
     await sendLoginCode(email, code)
     res.json({ ok: true })
   } catch (e) {
@@ -110,8 +124,19 @@ authRouter.post('/email/verify', async (req, res, next) => {
     const email = String(req.body.email || '').trim().toLowerCase()
     const code = String(req.body.code || '').trim()
     const rec = codes.get(email)
-    if (!rec || rec.expires < Date.now()) return res.status(400).json({ error: '验证码已过期，请重新获取' })
-    if (rec.code !== code) return res.status(400).json({ error: '验证码不正确' })
+    if (!rec || rec.expires < Date.now()) {
+      codes.delete(email)
+      return res.status(400).json({ error: '验证码已过期，请重新获取' })
+    }
+    if (rec.code !== code) {
+      // 错一次就减一次机会，用完直接作废这个验证码 —— 否则可以慢慢把 6 位数字试穿
+      rec.tries += 1
+      if (rec.tries >= MAX_TRIES) {
+        codes.delete(email)
+        return res.status(429).json({ error: '错误次数过多，请重新获取验证码' })
+      }
+      return res.status(400).json({ error: '验证码不正确' })
+    }
     codes.delete(email)
     const row = await findOrCreateByEmail(email, nicknameFromEmail(email))
     if (row.status === 'banned') return res.status(403).json({ error: '该账号已被封禁，请联系管理员' })
@@ -125,14 +150,22 @@ authRouter.post('/email/verify', async (req, res, next) => {
 // 前端用 Google Identity Services 拿到 ID token（credential），这里校验后签发本站 JWT。
 authRouter.post('/google', async (req, res, next) => {
   try {
+    // aud 必须校验：它标明这个 ID token 是签给**哪个应用**的。
+    // 之前写成 `if (clientId && ...)`，没配 GOOGLE_CLIENT_ID 时整段被短路 ——
+    // 那样任何人拿自己应用（或别的网站）的 Google token 都能登进本站的任意邮箱账号。
+    // 没配就直接拒绝，也顺手省掉一次对 Google 的请求。
+    const clientId = (process.env.GOOGLE_CLIENT_ID || '').trim()
+    if (!clientId) {
+      return res.status(503).json({ error: '本站未配置 Google 登录（服务端缺少 GOOGLE_CLIENT_ID）' })
+    }
     const credential = String(req.body.credential || '')
     if (!credential) return res.status(400).json({ error: '缺少 Google 凭证' })
     const resp = await fetch('https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(credential))
     if (!resp.ok) return res.status(401).json({ error: 'Google 凭证无效' })
     const info = await resp.json()
-    const clientId = process.env.GOOGLE_CLIENT_ID || ''
-    if (clientId && info.aud !== clientId) return res.status(401).json({ error: 'Google 凭证与本站不匹配' })
-    if (info.email_verified === 'false' || info.email_verified === false) {
+    if (info.aud !== clientId) return res.status(401).json({ error: 'Google 凭证与本站不匹配' })
+    // 字段缺失时也拒绝：拿不到「邮箱已验证」的证据就不能凭这个邮箱发身份
+    if (info.email_verified !== true && info.email_verified !== 'true') {
       return res.status(401).json({ error: 'Google 邮箱未验证' })
     }
     const email = String(info.email || '').trim().toLowerCase()

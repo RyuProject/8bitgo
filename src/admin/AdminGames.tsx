@@ -4,6 +4,8 @@ import type { Game, PlatformId } from '@/types'
 import { platformMap, platforms } from '@/data/platforms'
 import { genreMap } from '@/data/genres'
 import { cx, formatCount } from '@/lib/format'
+import { apiEnabled } from '@/services/api'
+import { useAdminData } from './AdminLayout'
 import { deleteGame, setGameHidden, upsertGame, useAllGames } from '@/services/store'
 import { GameForm } from './GameForm'
 import { btnClass, inputClass } from './ui'
@@ -13,6 +15,7 @@ type Editing = { mode: 'add' } | { mode: 'edit'; game: Game } | null
 
 export function AdminGames() {
   const all = useAllGames()
+  const db = useAdminData()
   const [q, setQ] = useState('')
   const [platform, setPlatform] = useState<PlatformId | 'all'>('all')
   const [status, setStatus] = useState<Status>('all')
@@ -62,7 +65,12 @@ export function AdminGames() {
         <div>
           <h1 className="text-xl font-bold">游戏管理</h1>
           <p className="mt-1 text-sm text-muted">
-            共 {all.length} 款，{all.filter((g) => g.hidden).length} 款已下架。修改会保存在浏览器里并立即反映到前台。
+            共 {all.length} 款，{all.filter((g) => g.hidden).length} 款已下架。
+            {!apiEnabled()
+              ? '未配置后端，修改只保存在这台浏览器里。'
+              : db.state === 'error'
+                ? '⚠️ 连不上数据库，下面是空的，现在也改不了。'
+                : '修改直接写入数据库，前台立即生效。'}
           </p>
         </div>
         <button type="button" className={btnClass.primary} onClick={() => setEditing({ mode: 'add' })}>
@@ -171,7 +179,7 @@ export function AdminGames() {
                       >
                         {g.hidden ? '上架' : '下架'}
                       </button>
-                      <button type="button" className={cx(btnClass.small, 'text-red-300 hover:bg-live/15')} onClick={() => remove(g)}>
+                      <button type="button" className={cx(btnClass.small, 'text-live hover:bg-live/15')} onClick={() => remove(g)}>
                         删除
                       </button>
                     </div>
@@ -182,7 +190,31 @@ export function AdminGames() {
             {list.length === 0 && (
               <tr>
                 <td colSpan={10} className="px-3 py-10 text-center text-sm text-muted">
-                  没有符合条件的游戏
+                  {all.length === 0 && db.state === 'error' ? (
+                    <>
+                      连不上数据库，取不到游戏列表。
+                      <br />
+                      <span className="text-xs">{db.error}</span>
+                      <br />
+                      <button type="button" className="mt-2 font-semibold text-brand-hover underline" onClick={db.reload}>
+                        重试
+                      </button>
+                    </>
+                  ) : all.length === 0 && db.state === 'loading' ? (
+                    '正在读取数据库…'
+                  ) : all.length === 0 && apiEnabled() ? (
+                    <>
+                      数据库里还没有游戏。
+                      <br />
+                      到「
+                      <Link to="/admin/data" className="font-semibold text-brand-hover underline">
+                        数据
+                      </Link>
+                      」页点「导入内置数据到数据库」，把项目自带的目录一次性写进库里。
+                    </>
+                  ) : (
+                    '没有符合条件的游戏'
+                  )}
                 </td>
               </tr>
             )}

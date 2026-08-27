@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { query } from '../db.js'
 import { requireAdmin } from '../auth.js'
 import { gameApiToRow, postApiToRow, buildUpsert } from '../mappers.js'
+import { invalidateContent } from '../content.js'
 
 export const adminRouter = Router()
 adminRouter.use(requireAdmin)
@@ -31,6 +32,8 @@ adminRouter.post('/import', async (req, res, next) => {
         posts++
       }
     }
+    // 批量导入后让 SSR 缓存立即失效，前台不用等 60 秒
+    invalidateContent()
     res.json({ ok: true, games, posts })
   } catch (e) {
     next(e)

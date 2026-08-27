@@ -73,15 +73,18 @@ export function queryGames(query: GameQuery = {}): PagedResult<Game> {
   if (q && q.trim()) {
     const needle = normalize(q)
     list = list.filter((g) => {
-      const p = platformMap[g.platform]
-      const hay = [g.title, g.titleZh ?? '', g.developer, p.name, p.nameZh, ...(g.tags ?? [])]
+      // 平台可能是数据库里写进来的未知值，裸取会 undefined.name 崩在搜索上
+      const p = platformMap[g.platform] as { name?: string; nameZh?: string } | undefined
+      const hay = [g.title, g.titleZh ?? '', g.developer, p?.name ?? '', p?.nameZh ?? '', ...(g.tags ?? [])]
         .map(normalize)
         .join(' ')
       return hay.includes(needle)
     })
   }
 
-  list.sort(sorters[sort])
+  // ?sort=乱填 时 sorters[sort] 是 undefined，Array.sort(undefined) 会退化成
+  // 按字符串比较（所有元素都是 [object Object]），结果是完全没排序还看不出来
+  list.sort(sorters[sort] ?? sorters.popular)
 
   const total = list.length
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
@@ -218,9 +221,12 @@ export function getLiveStreams(): LiveStreamWithGame[] {
  * 随机挑一款可在线运行的游戏（平台已有模拟器核心）。
  * 传入 excludeSlug 可避免连续两次抽到同一款。
  */
-export function getRandomGame(excludeSlug?: string): Game {
+export function getRandomGame(excludeSlug?: string): Game | undefined {
   const pool = games().filter((g) => isPlayable(g.platform) && g.slug !== excludeSlug)
   const list = pool.length ? pool : games()
+  // 数据库为空（或还没拉到）时 list 是空数组，取下标会得到 undefined。
+  // 返回类型以前写成 Game，调用方直接 .slug 就会崩掉整页。
+  if (!list.length) return undefined
   return list[Math.floor(Math.random() * list.length)]
 }
 

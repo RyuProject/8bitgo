@@ -5,7 +5,7 @@ import { AppRoutes } from './AppRoutes'
 import { gamesStore } from '@/services/store'
 import { postsStore } from '@/services/posts'
 import { setLangForRender } from '@/services/lang'
-import { beginHeadCollection, consumeNotFound, endHeadCollection, setSsrPath, type CollectedHead } from '@/services/seo'
+import { beginHeadCollection, endHeadCollection, setSsrPath, takeSsrNotFound, type CollectedHead } from '@/services/seo'
 import { langFromPath, langPrefix, stripLang } from '@/config/languages'
 import type { Game, Post } from '@/types'
 
@@ -20,8 +20,8 @@ export interface RenderResult {
   html: string
   head: CollectedHead
   lang: string
-  /** HTTP 状态码：渲染出 404 页时是 404，其余是 200 */
-  status: number
+  /** 是否渲染出了「页面不存在」，服务端据此回 404 而不是 200 */
+  notFound: boolean
 }
 
 /**
@@ -31,15 +31,21 @@ export interface RenderResult {
  * 在一次请求内不会被其它请求打断——这是刻意依赖的前提。
  */
 export function render({ url, games, posts }: RenderInput): RenderResult {
-  const lang = langFromPath(url)
+  // 先把查询串剥掉再判语言。以前直接把 req.originalUrl 传进去，
+  // /en?utm_source=x 的首段会被解析成 'en?utm_source=x'，认不出语言 →
+  // 按默认中文渲染、basename 为空 → 路由全不匹配 → 服务端吐一个中文 404 页，
+  // 客户端却按英文首页 hydrate，两边对不上。分享链接、广告落地页最容易踩到。
+  const pathname = url.split('?')[0].split('#')[0]
+  const lang = langFromPath(pathname)
   setLangForRender(lang)
-  setSsrPath(stripLang(url.split('?')[0]))
+  setSsrPath(stripLang(pathname))
 
-  // 灌数据：服务端没有 localStorage，save() 内部写失败会被忽略，但内存缓存会生效
-  gamesStore.save(games)
-  postsStore.save(posts)
+  // 灌数据：seed 只写内存，服务端本来也没有 localStorage
+  gamesStore.seed(games)
+  postsStore.seed(posts)
 
   beginHeadCollection()
+  takeSsrNotFound() // 清掉上一次的残留
   const html = renderToString(
     <StrictMode>
       <StaticRouter location={url} basename={langPrefix(lang) || undefined}>
@@ -48,5 +54,5 @@ export function render({ url, games, posts }: RenderInput): RenderResult {
     </StrictMode>,
   )
   const head = endHeadCollection()
-  return { html, head, lang, status: consumeNotFound() ? 404 : 200 }
+  return { html, head, lang, notFound: takeSsrNotFound() }
 }

@@ -53,7 +53,7 @@ export const btnClass = {
   primary: 'inline-flex h-9 items-center gap-1.5 rounded-lg bg-brand px-3 text-sm font-semibold text-white transition hover:bg-brand-hover disabled:opacity-50',
   secondary:
     'inline-flex h-9 items-center gap-1.5 rounded-lg border border-line bg-surface-2 px-3 text-sm text-fg transition hover:border-line-strong disabled:opacity-50',
-  danger: 'inline-flex h-9 items-center gap-1.5 rounded-lg border border-live/40 px-3 text-sm text-red-300 transition hover:bg-live/15 disabled:opacity-50',
+  danger: 'inline-flex h-9 items-center gap-1.5 rounded-lg border border-live/40 px-3 text-sm text-live transition hover:bg-live/15 disabled:opacity-50',
   small: 'inline-flex h-7 items-center rounded-md px-2 text-xs transition',
 }
 

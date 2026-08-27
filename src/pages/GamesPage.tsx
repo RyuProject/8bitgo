@@ -53,10 +53,12 @@ export function GamesPage() {
         developer,
         multiplayer,
         coin,
-        sort: sortParam ?? undefined,
+        // 用校验过的 sort，不是原始参数：下拉框显示的是 sort，
+        // 传 sortParam 会出现「显示最热门、列表却没排序」的对不上
+        sort,
         page,
       }),
-    [q, platform?.id, genre?.id, developer, multiplayer, coin, sortParam, page],
+    [q, platform?.id, genre?.id, developer, multiplayer, coin, sort, page],
   )
 
   const title = q
@@ -83,9 +85,6 @@ export function GamesPage() {
     title,
     description: t.seo.games,
     canonicalPath: '/games',
-    // 站内搜索结果没有收录价值（内容随关键词无限组合），但仍允许抓取，
-    // 这样 canonical 能被读到，首页 JSON-LD 里的站内搜索框也才验证得过
-    noindex: Boolean(q),
     jsonLd: [
       itemListSchema(
         title,

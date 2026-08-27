@@ -22,6 +22,8 @@ export const postsStore = createLocalStore<Post>({
   initial: builtinPosts,
   getId: (p) => p.slug,
   validate: isPost,
+  // 与游戏一致：配了后端就以数据库为准
+  remote: apiEnabled,
 })
 
 const byDateDesc = (a: Post, b: Post) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)
@@ -54,10 +56,14 @@ export function useAllPosts(): Post[] {
   return postsStore.useAll()
 }
 
-/** 开机时从后端拉取文章，灌入本地缓存。未配置后端时不做任何事。 */
-export async function hydratePosts(): Promise<void> {
+/**
+ * 从后端拉取文章。未配置后端时不做任何事。
+ *
+ * @param all true = 连草稿一起要（后台用，需要管理员口令）。前台不要传。
+ */
+export async function hydratePosts(all = false): Promise<void> {
   if (!apiEnabled()) return
-  const list = await api.get<Post[]>('/api/posts')
+  const list = await api.get<Post[]>(all ? '/api/posts?all=1' : '/api/posts', all)
   if (Array.isArray(list)) postsStore.save(list)
 }
 

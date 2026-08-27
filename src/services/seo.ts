@@ -139,7 +139,7 @@ export function useSeo(opts: SeoOptions) {
     ['property', 'og:url', canonicalUrl],
     ['property', 'og:site_name', SITE_NAME],
     ['property', 'og:image', img],
-    ['property', 'og:locale', lang],
+    ['property', 'og:locale', OG_LOCALE[lang] ?? 'en_US'],
     ['name', 'twitter:card', 'summary_large_image'],
     ['name', 'twitter:title', fullTitle],
     ['name', 'twitter:image', img],
@@ -183,7 +183,17 @@ export function useSeo(opts: SeoOptions) {
   useEffect(() => {
     document.title = fullTitle
     for (const [attr, key, content] of metas) upsertMeta(attr, key, content)
-    if (!noindex) upsertLink('canonical', canonicalUrl)
+
+    // 本页没有 description 时要把上一页的删掉，否则客户端路由切过去之后
+    // head 里还留着上一页的描述，和已经更新的 og:url 对不上。
+    if (!description) {
+      for (const sel of ['meta[name="description"]', 'meta[property="og:description"]', 'meta[name="twitter:description"]']) {
+        document.head.querySelector(sel)?.remove()
+      }
+    }
+    // 同理，noindex 页面不写 canonical，也不能留着上一页的
+    if (noindex) document.head.querySelector('link[rel="canonical"]')?.remove()
+    else upsertLink('canonical', canonicalUrl)
 
     // 先清掉上一页留下的 hreflang，再按本页写
     document.head.querySelectorAll('link[rel="alternate"][hreflang]').forEach((el) => el.remove())
@@ -203,6 +213,23 @@ export function useSeo(opts: SeoOptions) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fullTitle, metaKey, jsonLdKey])
+}
+
+/**
+ * 本次服务端渲染是否命中了「页面不存在」。
+ *
+ * 以前所有 URL 一律返回 200，包括不存在的路径 —— 即所谓 soft 404：
+ * 页面上写着 GAME OVER，HTTP 状态码却告诉爬虫和监控「一切正常」，
+ * 结果这些垃圾 URL 会被当成正常页面收录。
+ */
+let ssrNotFound = false
+export function markSsrNotFound() {
+  ssrNotFound = true
+}
+export function takeSsrNotFound(): boolean {
+  const v = ssrNotFound
+  ssrNotFound = false
+  return v
 }
 
 /**
@@ -229,18 +256,41 @@ function currentSsrPath(): string {
 
 /* ---------------- 结构化数据构造器 ---------------- */
 
+/**
+ * 当前语言下的绝对 URL。
+ *
+ * 结构化数据里的页面地址必须和 canonical 指向同一个 URL。以前这里一律用 absoluteUrl，
+ * 于是 /en/games/mario 的 canonical 是英文页，JSON-LD 里的 url 和面包屑却全指向中文页 ——
+ * 等于把 7 种语言的权重都导回中文站，还和 canonical 自相矛盾。
+ * 图片之类与语言无关的资源仍然用 absoluteUrl。
+ */
+function langUrl(path: string): string {
+  return absoluteUrl(localizedPath(path, getLang()))
+}
+
+/** Open Graph 的 og:locale 要求 language_TERRITORY，不能直接给 'en' / 'zh-Hans' */
+const OG_LOCALE: Record<string, string> = {
+  'zh-Hans': 'zh_CN',
+  'zh-Hant': 'zh_TW',
+  en: 'en_US',
+  es: 'es_ES',
+  fr: 'fr_FR',
+  it: 'it_IT',
+  de: 'de_DE',
+  ja: 'ja_JP',
+}
+
 /** 首页：网站 + 站内搜索（可能让 Google 展示搜索框） */
 export function websiteSchema(description: string) {
-  const origin = siteOrigin()
   return {
     '@context': 'https://schema.org',
     '@type': 'WebSite',
     name: SITE_NAME,
-    url: origin + '/',
+    url: langUrl('/'),
     description,
     potentialAction: {
       '@type': 'SearchAction',
-      target: { '@type': 'EntryPoint', urlTemplate: `${origin}/games?q={search_term_string}` },
+      target: { '@type': 'EntryPoint', urlTemplate: `${langUrl('/games')}?q={search_term_string}` },
       'query-input': 'required name=search_term_string',
     },
   }
@@ -265,7 +315,7 @@ export function videoGameSchema(g: GameSchemaInput) {
     '@context': 'https://schema.org',
     '@type': 'VideoGame',
     name: g.name,
-    url: absoluteUrl(`/games/${g.slug}`),
+    url: langUrl(`/games/${g.slug}`),
     playMode: 'SinglePlayer',
     applicationCategory: 'Game',
     // 浏览器里直接运行
@@ -297,8 +347,8 @@ export function articleSchema(p: { title: string; slug: string; excerpt?: string
     '@context': 'https://schema.org',
     '@type': 'BlogPosting',
     headline: p.title,
-    url: absoluteUrl(`/blog/${p.slug}`),
-    mainEntityOfPage: absoluteUrl(`/blog/${p.slug}`),
+    url: langUrl(`/blog/${p.slug}`),
+    mainEntityOfPage: langUrl(`/blog/${p.slug}`),
     publisher: { '@type': 'Organization', name: SITE_NAME },
   }
   if (p.excerpt) schema.description = p.excerpt
@@ -316,7 +366,7 @@ export function breadcrumbSchema(items: Array<{ name: string; path: string }>) {
       '@type': 'ListItem',
       position: i + 1,
       name: it.name,
-      item: absoluteUrl(it.path),
+      item: langUrl(it.path),
     })),
   }
 }
@@ -345,7 +395,7 @@ export function itemListSchema(name: string, items: Array<{ name: string; path: 
       '@type': 'ListItem',
       position: i + 1,
       name: it.name,
-      url: absoluteUrl(it.path),
+      url: langUrl(it.path),
     })),
   }
 }

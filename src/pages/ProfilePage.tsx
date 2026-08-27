@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { logout, updateProfile, useCurrentUser } from '@/services/auth'
+import { logout, updateProfile, useAuthReady, useCurrentUser } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
 import { getGamesBySlugs } from '@/services/games'
 import { useAllGames } from '@/services/store'
@@ -22,14 +22,17 @@ export function ProfilePage() {
   const navigate = useNavigate()
   useAllGames()
 
+  const ready = useAuthReady()
   const [editing, setEditing] = useState(false)
   const [nickname, setNickname] = useState('')
   const [avatar, setAvatar] = useState('🕹️')
   const [error, setError] = useState<string | null>(null)
 
+  // 等登录态确定后再弹登录框：hydration 首帧的 user 恒为 null（服务端不知道访客是谁），
+  // 不等的话已登录用户刷新 /me 会先被弹一次登录框再自动关掉，页面明显闪一下。
   useEffect(() => {
-    if (!user) openAuthModal()
-  }, [user])
+    if (ready && !user) openAuthModal()
+  }, [ready, user])
 
   useEffect(() => {
     if (user) {

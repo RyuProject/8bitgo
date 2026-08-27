@@ -14,18 +14,36 @@ import { build } from 'esbuild'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 
+/**
+ * 读 .env 里的值。
+ *
+ * ⚠️ 顺序必须和 Vite 一致：`.env.production.local` > `.env.local` > `.env` > `.env.example`，
+ * 后读到的覆盖先读到的。以前这里是 `.env` 优先并且读到就返回，跟 Vite 正好相反 ——
+ * 结果构建产物里烘的是 .env.local 的正式域名，sitemap 和 robots.txt 里却是 .env 的
+ * 本地地址，上线后整份 sitemap 和全部 hreflang 互指都指向 127.0.0.1，等于作废。
+ */
 function envValue(key, fallback) {
-  for (const f of ['.env', '.env.local', '.env.example']) {
+  let found
+  for (const f of ['.env.example', '.env', '.env.local', '.env.production', '.env.production.local']) {
     const p = root + f
     if (!existsSync(p)) continue
     const m = readFileSync(p, 'utf8').match(new RegExp(`^${key}=(.*)$`, 'm'))
-    if (m && m[1].trim()) return m[1].trim().replace(/^['"]|['"]$/g, '')
+    if (m && m[1].trim()) found = m[1].trim().replace(/^['"]|['"]$/g, '')
   }
-  return fallback
+  return found ?? fallback
 }
 
 const SITE = envValue('VITE_SITE_URL', 'https://8bitgo.com').replace(/\/+$/, '')
-const API = envValue('VITE_API_URL', '').replace(/\/+$/, '')
+
+const RAW_API = envValue('VITE_API_URL', '').trim()
+/**
+ * VITE_API_URL=same-origin 表示「和站点同域」，是给浏览器用的相对路径写法。
+ * 这个脚本在 Node 里跑，fetch 需要绝对地址，所以要换算成本地后端地址；
+ * 以前直接拿 'same-origin' 去 fetch，抛 URL 解析错误被 catch 吞掉，
+ * 静默退回内置演示数据 —— sitemap 里永远没有数据库里真实上架的游戏。
+ */
+const LOCAL_API = `http://127.0.0.1:${process.env.PORT || 8788}`
+const API = (RAW_API === 'same-origin' || RAW_API === '/' ? LOCAL_API : RAW_API).replace(/\/+$/, '')
 
 async function loadTs(rel, name) {
   const r = await build({
@@ -54,20 +72,17 @@ const HREFLANG = await loadTs('src/config/languages.ts', 'HREFLANG')
 let games = await fromApi('/api/games')
 if (!games) {
   games = await loadTs('src/data/games.ts', 'games')
-  console.log('  （用内置数据；配置 VITE_API_URL 后会改从数据库读取）')
+  console.log(`  （用内置数据；${API ? `连不上后端 ${API}，请先启动 server/ 再跑 npm run sitemap` : '配置 VITE_API_URL 后会改从数据库读取'}）`)
 } else {
   console.log(`  （从后端 API 读到 ${games.length} 款游戏）`)
 }
 let posts = await fromApi('/api/posts')
 if (!posts) posts = await loadTs('src/data/posts.ts', 'posts')
 
-const genres = await loadTs('src/data/genres.ts', 'genres')
-const platforms = await loadTs('src/data/platforms.ts', 'platforms')
 
 // 隐藏的游戏、未发布的文章、未启用的平台都不该进 sitemap
 const visibleGames = games.filter((g) => !g.hidden && enabled.includes(g.platform))
 const visiblePosts = posts.filter((p) => p.published !== false)
-const visiblePlatforms = platforms.filter((p) => enabled.includes(p.id))
 
 const today = new Date().toISOString().slice(0, 10)
 const urls = []
@@ -80,12 +95,10 @@ add('/genres', '0.8', 'weekly')
 add('/developers', '0.6', 'weekly')
 add('/play-local', '0.6', 'monthly')
 add('/blog', '0.7', 'weekly')
-// 平台页与类型页是主要的搜索入口，用可收录的干净路径（见 src/pages/CollectionPage.tsx）
-for (const p of visiblePlatforms) add(`/platforms/${p.id}`, '0.8', 'weekly')
-// 一款可见游戏都没有的类型是空页面，别提交给搜索引擎
-for (const g of genres) {
-  if (visibleGames.some((x) => x.genres?.includes(g.id))) add(`/genres/${g.id}`, '0.7', 'weekly')
-}
+// 筛选页（/games?platform=…、?genre=…）不进 sitemap：
+// 这些页面自己的 canonical 指向 /games，收进来只会让 Search Console 报
+// 「Alternate page with proper canonical tag」；而且 robots.txt 里 Disallow: /games?
+// 本来就禁止抓取它们，放进 sitemap 属于自相矛盾。
 for (const g of visibleGames) add(`/games/${encodeURIComponent(g.slug)}`, '0.8', 'weekly')
 for (const p of visiblePosts) add(`/blog/${encodeURIComponent(p.slug)}`, '0.5', 'monthly')
 
@@ -136,5 +149,5 @@ if (existsSync(robotsPath)) {
   writeFileSync(robotsPath, r, 'utf8')
 }
 
-console.log(`✅ sitemap.xml：${entries.length} 条 URL（${urls.length} 个页面 × ${LANGUAGES.length} 种语言）（游戏 ${visibleGames.length}、文章 ${visiblePosts.length}、平台 ${visiblePlatforms.length}、类型 ${genres.length}）`)
+console.log(`✅ sitemap.xml：${entries.length} 条 URL（${urls.length} 个页面 × ${LANGUAGES.length} 种语言）（游戏 ${visibleGames.length}、文章 ${visiblePosts.length}）`)
 console.log(`   域名：${SITE}`)

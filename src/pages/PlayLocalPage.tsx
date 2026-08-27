@@ -7,7 +7,7 @@ import { useSeo } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
 import { platformLabel } from '@/services/i18nData'
 import { EmulatorPlayer } from '@/emulator'
-import { defaultKeymap } from '@/lib/emulator'
+import { getDefaultKeymap } from '@/lib/emulator'
 import { isPlayable, resolveRuntime, runtimes, runtimesFor } from '@/emulator'
 
 function stepsFor(t: Translation) {
@@ -114,7 +114,7 @@ export function PlayLocalPage() {
 
           <h2 className="mt-8 text-base font-bold">{t.playLocal.sectionKeymap}</h2>
           <div className="mt-3 grid grid-cols-3 gap-2">
-            {defaultKeymap.map((k) => (
+            {getDefaultKeymap(runtime?.id).map((k) => (
               <div key={k.button} className="rounded-lg border border-line bg-surface px-2.5 py-2">
                 <p className="text-[10px] text-muted">{k.button}</p>
                 <p className="font-mono text-xs font-semibold">{k.key}</p>

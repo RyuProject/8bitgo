@@ -7,7 +7,7 @@ import { resolveRuntime } from '@/emulator'
 import { getGame, getRelatedGames } from '@/services/games'
 import { platformMap } from '@/data/platforms'
 import { genreMap } from '@/data/genres'
-import { defaultKeymap } from '@/lib/emulator'
+import { getDefaultKeymap } from '@/lib/emulator'
 import { formatCount, formatPlayers } from '@/lib/format'
 import { useSeo, breadcrumbSchema, videoGameSchema } from '@/services/seo'
 import { useLang } from '@/services/lang'
@@ -71,7 +71,7 @@ export function GameDetailPage() {
               description: seoDesc,
               image: game.cover,
               platform: seoPlatformName,
-              genres: game.genres.map((id) => genreLabel(t, id, genreMap[id].name)),
+              genres: game.genres.map((id) => genreLabel(t, id, genreMap[id]?.name ?? id)),
               year: game.year,
               developer: game.developer,
               rating: game.rating,
@@ -105,7 +105,7 @@ export function GameDetailPage() {
           {t.common.library}
         </Link>
         <span className="mx-1.5">/</span>
-        <Link to={`/platforms/${platform.id}`} className="hover:text-fg">
+        <Link to={`/games?platform=${platform.id}`} className="hover:text-fg">
           {platformLabel(t, platform.id, platform.name)}
         </Link>
         <span className="mx-1.5">/</span>
@@ -137,15 +137,15 @@ export function GameDetailPage() {
               <h1 className="text-2xl font-extrabold tracking-tight sm:text-3xl">{seoTitle}</h1>
               {seoTitle !== game.title && <p className="mt-1 text-sm text-muted">{game.title}</p>}
               <div className="mt-3 flex flex-wrap items-center gap-2">
-                <Link to={`/platforms/${platform.id}`}>
+                <Link to={`/games?platform=${platform.id}`}>
                   <Badge tone="brand" className="text-xs">
                     {platform.icon} {platformLabel(t, platform.id, platform.name)}
                   </Badge>
                 </Link>
                 {game.genres.map((id) => (
-                  <Link key={id} to={`/genres/${id}`}>
+                  <Link key={id} to={`/games?genre=${id}`}>
                     <Badge className="text-xs">
-                      {genreMap[id].icon} {genreLabel(t, id, genreMap[id].name)}
+                      {genreMap[id]?.icon} {genreLabel(t, id, genreMap[id]?.name ?? id)}
                     </Badge>
                   </Link>
                 ))}
@@ -226,7 +226,7 @@ export function GameDetailPage() {
             <h2 className="text-lg font-bold">{t.game.controls}</h2>
             <p className="mt-1 text-sm text-muted">{t.game.controlsDesc}</p>
             <div className="mt-4 grid grid-cols-3 gap-2 sm:grid-cols-5">
-              {defaultKeymap.map((k) => (
+              {getDefaultKeymap(runtime?.id).map((k) => (
                 <div key={k.button} className="rounded-xl border border-line bg-surface px-3 py-2.5">
                   <p className="text-[11px] text-muted">{k.button}</p>
                   <p className="mt-1 font-mono text-sm font-semibold">{k.key}</p>
@@ -259,7 +259,7 @@ export function GameDetailPage() {
               </div>
             </div>
             <p className="mt-3 text-sm leading-relaxed text-muted">{platformDesc(t, platform.id, platform.description)}</p>
-            <Button to={`/platforms/${platform.id}`} variant="secondary" size="sm" className="mt-4 w-full">
+            <Button to={`/games?platform=${platform.id}`} variant="secondary" size="sm" className="mt-4 w-full">
               {fmt(t.game.browsePlatform, { platform: platform.shortName })}
             </Button>
           </div>

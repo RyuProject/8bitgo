@@ -27,8 +27,15 @@ syncHtmlLang()
 
 // SSR 已经把游戏 / 文章塞进 HTML 了，直接灌进 store，
 // 保证 hydration 时客户端看到的数据和服务端渲染用的完全一致（否则会不匹配）。
-if (boot.games?.length) gamesStore.save(boot.games)
-if (boot.posts?.length) postsStore.save(boot.posts)
+//
+// 注意条件是「有没有这个字段」而不是「长度大于 0」：数据库为空时服务端渲染的是 0 款，
+// 客户端如果因为数组是空的就跳过，load() 会回退到内置的 91 款 —— 两边对不上，
+// hydration 失败，React 会丢掉整个首屏重新渲染。
+// 用 seed 而不是 save：save 会写 localStorage，把「空」永久存进访客浏览器。
+if (ssr) {
+  if (Array.isArray(boot.games)) gamesStore.seed(boot.games)
+  if (Array.isArray(boot.posts)) postsStore.seed(boot.posts)
+}
 
 const tree = (
   <StrictMode>

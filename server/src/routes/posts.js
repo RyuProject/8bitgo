@@ -1,14 +1,25 @@
 import { Router } from 'express'
 import { query, queryOne } from '../db.js'
-import { requireAdmin } from '../auth.js'
+import { requireAdmin, isAdminRequest } from '../auth.js'
+import { invalidateContent } from '../content.js'
 import { postRowToApi, postApiToRow, buildUpsert } from '../mappers.js'
 
 export const postsRouter = Router()
 
-/** 全部文章（含未发布，带 published 字段；前台自行过滤）。 */
-postsRouter.get('/', async (_req, res, next) => {
+/**
+ * 文章列表。默认只返回已发布的；?all=1 返回全部（含草稿），需要管理员身份。
+ * 以前无条件返回全部，草稿正文对任何人可读 —— curl /api/posts 就能看到还没发的稿子。
+ */
+postsRouter.get('/', async (req, res, next) => {
   try {
-    const rows = await query('SELECT * FROM posts ORDER BY date DESC')
+    const wantAll = req.query.all === '1'
+    if (wantAll && !(await isAdminRequest(req))) {
+      return res.status(403).json({ error: '需要管理员权限才能查看草稿' })
+    }
+    const sql = wantAll
+      ? 'SELECT * FROM posts ORDER BY date DESC'
+      : 'SELECT * FROM posts WHERE published = 1 ORDER BY date DESC'
+    const rows = await query(sql)
     res.json(rows.map(postRowToApi))
   } catch (e) {
     next(e)
@@ -19,6 +30,9 @@ postsRouter.get('/:slug', async (req, res, next) => {
   try {
     const row = await queryOne('SELECT * FROM posts WHERE slug = ?', [req.params.slug])
     if (!row) return res.status(404).json({ error: '文章不存在' })
+    if (!row.published && !(await isAdminRequest(req))) {
+      return res.status(404).json({ error: '文章不存在' })
+    }
     res.json(postRowToApi(row))
   } catch (e) {
     next(e)
@@ -31,6 +45,7 @@ postsRouter.put('/:slug', requireAdmin, async (req, res, next) => {
     const { sql, values } = buildUpsert('posts', row, 'slug')
     await query(sql, values)
     const saved = await queryOne('SELECT * FROM posts WHERE slug = ?', [row.slug])
+    invalidateContent()
     res.json(postRowToApi(saved))
   } catch (e) {
     next(e)
@@ -40,6 +55,7 @@ postsRouter.put('/:slug', requireAdmin, async (req, res, next) => {
 postsRouter.delete('/:slug', requireAdmin, async (req, res, next) => {
   try {
     await query('DELETE FROM posts WHERE slug = ?', [req.params.slug])
+    invalidateContent()
     res.json({ ok: true })
   } catch (e) {
     next(e)

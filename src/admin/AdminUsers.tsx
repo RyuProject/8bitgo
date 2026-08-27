@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import type { PublicUser } from '@/types'
 import { adminAdjustCoins, adminDeleteUser, adminSetStatus, useAllUsers, useCurrentUser } from '@/services/auth'
 import { cx } from '@/lib/format'
+import { apiEnabled } from '@/services/api'
 import { btnClass, inputClass } from './ui'
 
 export function AdminUsers() {
@@ -62,7 +63,7 @@ export function AdminUsers() {
         <div>
           <h1 className="text-xl font-bold">用户管理</h1>
           <p className="mt-1 text-sm text-muted">
-            共 {users.length} 位用户，{users.filter((u) => u.status === 'banned').length} 位被封禁。用户数据保存在浏览器本地，只能看到本浏览器注册的账号。
+            共 {users.length} 位用户，{users.filter((u) => u.status === 'banned').length} 位被封禁。{apiEnabled() ? '用户数据来自数据库。' : '未配置后端，只能看到在这台浏览器注册的账号。'}
           </p>
         </div>
         <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索昵称 / 邮箱…" className={cx(inputClass, 'w-64')} />
@@ -104,7 +105,7 @@ export function AdminUsers() {
                 <td className="px-3 py-2 tabular-nums text-muted">{u.recent.length}</td>
                 <td className="px-3 py-2">
                   {u.status === 'banned' ? (
-                    <span className="rounded bg-live/15 px-1.5 py-0.5 text-xs text-red-300">已封禁</span>
+                    <span className="rounded bg-live/15 px-1.5 py-0.5 text-xs text-live">已封禁</span>
                   ) : (
                     <span className="rounded bg-online/15 px-1.5 py-0.5 text-xs text-online">正常</span>
                   )}
@@ -117,7 +118,7 @@ export function AdminUsers() {
                     <button type="button" className={cx(btnClass.small, 'text-muted hover:bg-black/5 hover:text-fg')} onClick={() => toggleBan(u)}>
                       {u.status === 'banned' ? '解封' : '封禁'}
                     </button>
-                    <button type="button" className={cx(btnClass.small, 'text-red-300 hover:bg-live/15')} onClick={() => remove(u)}>
+                    <button type="button" className={cx(btnClass.small, 'text-live hover:bg-live/15')} onClick={() => remove(u)}>
                       删除
                     </button>
                   </div>

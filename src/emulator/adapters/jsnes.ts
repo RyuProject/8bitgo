@@ -33,7 +33,7 @@ async function readRom(game: File | string): Promise<ArrayBuffer> {
 function mount(container: HTMLElement, options: MountOptions): () => void {
   const rt = getT().runtime
   let destroyed = false
-  let browser: { destroy: () => void; fitInParent?: () => void } | null = null
+  let browser: { destroy: () => void; loadROM: (data: string) => void; fitInParent?: () => void } | null = null
 
   // 容器：jsnes 会把 canvas 塞进来
   const host = document.createElement('div')
@@ -47,11 +47,30 @@ function mount(container: HTMLElement, options: MountOptions): () => void {
       const [{ Browser }, buf] = await Promise.all([import('jsnes'), readRom(options.game)])
       if (destroyed) return
 
+      // ⚠️ 刻意不传 romData。
+      // jsnes 的构造函数是「先把 document 级键盘监听挂上、启动手柄轮询，最后才 loadROM」，
+      // 而 loadROM 会对非法 ROM 或不支持的 mapper 抛错。一旦在构造函数里抛出来，
+      // 我们拿不到实例，也就调不到 destroy() —— 那三个 keydown/keyup/keypress 监听会永久
+      // 留在 document 上，把全站的方向键和 Z/X/A/S 全部 preventDefault 掉：
+      // 搜索框打不出字、页面没法用方向键滚动，只能刷新页面。
+      // 分两步来，loadROM 抛错时实例已经在手上，可以正常清理干净。
       browser = new Browser({
         container: host,
-        romData: toBinaryString(buf),
         onError: (err: Error) => options.onError?.(fmt(rt.jsnesRunFailed, { msg: err.message })),
-      }) as unknown as { destroy: () => void; fitInParent?: () => void }
+      }) as unknown as { destroy: () => void; loadROM: (data: string) => void; fitInParent?: () => void }
+
+      try {
+        browser.loadROM(toBinaryString(buf))
+      } catch (e) {
+        const inst = browser
+        browser = null
+        try {
+          inst.destroy()
+        } catch {
+          /* 清理失败就算了，至少监听已经摘掉 */
+        }
+        throw e
+      }
 
       window.addEventListener('resize', onResize)
       options.onReady?.()

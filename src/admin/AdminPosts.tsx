@@ -114,7 +114,7 @@ export function AdminPosts() {
                     >
                       {p.published ? '转草稿' : '发布'}
                     </button>
-                    <button type="button" className={cx(btnClass.small, 'text-red-300 hover:bg-live/15')} onClick={() => remove(p)}>
+                    <button type="button" className={cx(btnClass.small, 'text-live hover:bg-live/15')} onClick={() => remove(p)}>
                       删除
                     </button>
                   </div>
@@ -268,7 +268,7 @@ function PostForm({ initial, existingSlugs, onSubmit, onCancel }: { initial?: Po
       </label>
 
       {error && (
-        <p role="alert" className="rounded-lg bg-live/15 px-3 py-2 text-sm text-red-300">
+        <p role="alert" className="rounded-lg bg-live/15 px-3 py-2 text-sm text-live">
           {error}
         </p>
       )}

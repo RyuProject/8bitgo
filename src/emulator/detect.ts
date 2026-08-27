@@ -71,10 +71,10 @@ function sniffHeader(bytes: Uint8Array): RomDetection | null {
   const d = getT().detect
   const head4 = ascii(bytes, 0, 4)
   const head3 = head4.slice(0, 3)
-  if (head4 === 'NES') return { platform: 'nes', confidence: 'high', reason: d.ines }
+  if (head4 === 'NES\x1A') return { platform: 'nes', confidence: 'high', reason: d.ines }
   if (head3 === 'FWS' || head3 === 'CWS' || head3 === 'ZWS') return { platform: 'flash', confidence: 'high', reason: d.swf }
   if (head4 === 'UNIF') return { platform: 'nes', confidence: 'high', reason: d.unif }
-  if (ascii(bytes, 0, 3) === 'FDS' || ascii(bytes, 0, 4) === '*NI') return { platform: 'nes', confidence: 'medium', reason: d.fds }
+  if (ascii(bytes, 0, 3) === 'FDS' || ascii(bytes, 0, 4) === '\x01*NI') return { platform: 'nes', confidence: 'medium', reason: d.fds }
   const b = bytes
   if (b[0] === 0x80 && b[1] === 0x37 && b[2] === 0x12 && b[3] === 0x40) return { platform: 'n64', confidence: 'high', reason: d.n64z64 }
   if (b[0] === 0x37 && b[1] === 0x80 && b[2] === 0x40 && b[3] === 0x12) return { platform: 'n64', confidence: 'high', reason: d.n64v64 }
@@ -84,7 +84,15 @@ function sniffHeader(bytes: Uint8Array): RomDetection | null {
   }
   if (b[4] === 0x24 && b[5] === 0xff && b[6] === 0xae && b[7] === 0x51) return { platform: 'gba', confidence: 'high', reason: d.gbaHeader }
   if (bytes.length >= 0x104 && ascii(bytes, 0x100, 4) === 'SEGA') return { platform: 'segaMD', confidence: 'high', reason: d.segaHeader }
-  if (bytes.length >= 0x200 && ascii(bytes, 0x0c, 4) === 'NDS' ) return { platform: 'nds', confidence: 'medium', reason: d.ndsHeader }
+  // NDS：0xC0 处是任天堂 logo，头四字节固定 24 FF AE 51（GBA 是同一份 logo，但在 0x04）。
+  // 原来比的是 ascii(bytes, 0x0c, 4) === 'NDS' —— 4 个字符去比 3 个字符，恒为 false；
+  // 而且 0x0C 本来就是 4 字节的 game code，不可能是 'NDS'。这条判断从来没生效过。
+  if (
+    bytes.length >= 0x200 &&
+    b[0xc0] === 0x24 && b[0xc1] === 0xff && b[0xc2] === 0xae && b[0xc3] === 0x51
+  ) {
+    return { platform: 'nds', confidence: 'high', reason: d.ndsHeader }
+  }
   if (bytes.length >= 0x200 && ascii(bytes, 0, 2) === 'MZ') return { platform: 'dos', confidence: 'medium', reason: d.dosExe }
   // PSX：镜像头 2KB 内常出现 PLAYSTATION 字样
   const window2k = ascii(bytes, 0, Math.min(bytes.length, 2048))

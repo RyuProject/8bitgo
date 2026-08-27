@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom'
 import { useAllGames } from '@/services/store'
+import { apiEnabled } from '@/services/api'
 import { platformMap, platforms } from '@/data/platforms'
 import { genres } from '@/data/genres'
 import { liveStreams } from '@/data/streams'
@@ -48,7 +49,7 @@ export function AdminOverview() {
         <Stat label="游戏总数" value={visible.length} sub={hidden ? `另有 ${hidden} 款已下架` : '全部上架中'} />
         <Stat label="平台" value={byPlatform.length} sub={`共 ${platforms.length} 个平台已配置`} />
         <Stat label="累计游玩" value={formatCount(plays)} sub="所有可见游戏之和" />
-        <Stat label="注册用户" value={users.length} sub={`${users.filter((u) => u.status === 'banned').length} 位被封禁 · 本浏览器`} />
+        <Stat label="注册用户" value={users.length} sub={`${users.filter((u) => u.status === 'banned').length} 位被封禁${apiEnabled() ? '' : ' · 本浏览器'}`} />
         <Stat label="文章" value={posts.filter((p) => p.published).length} sub={`${posts.filter((p) => !p.published).length} 篇草稿`} />
         <Stat label="已绑定云端 ROM" value={visible.filter((g) => g.rom).length} sub="详情页可直接开始游戏" />
       </div>

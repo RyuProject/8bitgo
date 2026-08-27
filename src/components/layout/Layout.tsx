@@ -17,9 +17,17 @@ function RouteEffects() {
     setImmersive(false)
     setMobileOpen(false)
     if (hash) {
-      const el = document.querySelector(hash)
+      // hash 是任意用户输入，不一定是合法 CSS 选择器：Facebook 回跳会附上 #_=_，
+      // 旧书签可能是 #1 或带空格的锚点。querySelector 对非法选择器会抛 SyntaxError，
+      // 而整个项目没有 ErrorBoundary，effect 抛错会让 React 卸载根节点 —— 整页白屏。
+      let el: Element | null = null
+      try {
+        el = document.getElementById(decodeURIComponent(hash.slice(1)))
+      } catch {
+        el = null
+      }
       if (el) {
-        requestAnimationFrame(() => el.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+        requestAnimationFrame(() => el!.scrollIntoView({ behavior: 'smooth', block: 'start' }))
         return
       }
     }

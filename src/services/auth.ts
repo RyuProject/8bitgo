@@ -159,11 +159,43 @@ export function useCurrentUser(): PublicUser | null {
   return useSyncExternalStore(subscribe, getCurrentUser, () => null)
 }
 
+/**
+ * 登录态是否已经确定下来。
+ *
+ * useCurrentUser 的服务端快照恒为 null（见上面注释），所以 hydration 的首帧
+ * 一定拿到「未登录」。凡是「没登录就弹登录框 / 跳转」的页面都不能直接信这一帧，
+ * 否则已登录用户打开 /me、/login 会先被弹一次登录框再被弹回去。
+ * 这个标记在 hydrateAuth() 跑完（或确定不需要跑）之后才为 true。
+ */
+let authReady = !apiEnabled()
+const readyListeners = new Set<() => void>()
+
+function setAuthReady() {
+  if (authReady) return
+  authReady = true
+  for (const l of readyListeners) l()
+}
+
+export function useAuthReady(): boolean {
+  return useSyncExternalStore(
+    (l) => {
+      readyListeners.add(l)
+      return () => readyListeners.delete(l)
+    },
+    () => authReady,
+    () => false,
+  )
+}
+
 /** 开机时用已存的 token 换取用户信息（API 模式）。 */
 export async function hydrateAuth(): Promise<void> {
-  if (!apiEnabled()) return
+  if (!apiEnabled()) {
+    setAuthReady()
+    return
+  }
   if (!getToken()) {
     setCurrentUser(null)
+    setAuthReady()
     return
   }
   try {
@@ -172,6 +204,8 @@ export async function hydrateAuth(): Promise<void> {
   } catch {
     setToken(null)
     setCurrentUser(null)
+  } finally {
+    setAuthReady()
   }
 }
 
@@ -488,9 +522,10 @@ function notifyUsers() {
 export async function hydrateUsers(): Promise<void> {
   if (!apiEnabled()) return
   try {
-    apiUsers = await api.get<PublicUser[]>('/api/users')
+    const list = await api.get<PublicUser[]>('/api/users')
+    if (Array.isArray(list)) apiUsers = list
   } catch {
-    apiUsers = []
+    // 拉取失败就保留上一次的结果 —— 清成空列表会让人以为用户被删光了
   }
   notifyUsers()
 }

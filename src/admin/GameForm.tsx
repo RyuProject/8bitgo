@@ -278,7 +278,7 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
       </div>
 
       {error && (
-        <p role="alert" className="rounded-lg bg-live/15 px-3 py-2 text-sm text-red-300">
+        <p role="alert" className="rounded-lg bg-live/15 px-3 py-2 text-sm text-live">
           {error}
         </p>
       )}
@@ -375,7 +375,7 @@ function RomField({
           <div className="h-full bg-brand transition-[width]" style={{ width: `${progress}%` }} />
         </div>
       )}
-      {msg && <p className={cx('mt-2 text-xs', msg.ok ? 'text-online' : 'text-red-300')}>{msg.text}</p>}
+      {msg && <p className={cx('mt-2 text-xs', msg.ok ? 'text-online' : 'text-live')}>{msg.text}</p>}
       {!canUpload && (
         <p className="mt-1 text-[11px] text-dim">
           <Link to="/admin/roms" className="text-brand-hover hover:underline">
@@ -465,7 +465,7 @@ function MediaField({
           )}
         </div>
       )}
-      {msg && <p className={cx('mt-2 text-xs', msg.ok ? 'text-online' : 'text-red-300')}>{msg.text}</p>}
+      {msg && <p className={cx('mt-2 text-xs', msg.ok ? 'text-online' : 'text-live')}>{msg.text}</p>}
       {!canUpload && (
         <p className="mt-1 text-[11px] text-dim">
           直接上传需先在{' '}

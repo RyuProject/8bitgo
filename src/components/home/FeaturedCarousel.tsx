@@ -20,15 +20,27 @@ const FEATURED = [
 export function FeaturedCarousel() {
   const lang = useLang()
   const t = useT()
-  const items = getGamesBySlugs(FEATURED.map((f) => f.slug))
+  // 标语和游戏必须成对取。
+  // 以前是 items.map((g, i) => FEATURED[i].tagline(t)) —— 而 getGamesBySlugs 会把
+  // 找不到的 slug 过滤掉，数组被压缩后下标就对不上了：只要有一款被下架，
+  // 后面每一张卡片都会顶着别人的标语（RPG 的标语配格斗游戏那种）。
+  const found = getGamesBySlugs(FEATURED.map((f) => f.slug))
+  const slides = FEATURED.flatMap((meta) => {
+    const game = found.find((g) => g.slug === meta.slug)
+    return game ? [{ meta, game }] : []
+  })
   const [index, setIndex] = useState(0)
   const [paused, setPaused] = useState(false)
 
   useEffect(() => {
-    if (paused) return
-    const timer = window.setInterval(() => setIndex((i) => (i + 1) % items.length), 5000)
+    if (paused || slides.length < 2) return
+    const timer = window.setInterval(() => setIndex((i) => (i + 1) % slides.length), 5000)
     return () => window.clearInterval(timer)
-  }, [paused, items.length])
+  }, [paused, slides.length])
+
+  // 一款都没找到时（数据库为空 / 这三款都下架了）直接不渲染，
+  // 否则 index % 0 会得到 NaN，轮播变成一片空白
+  if (!slides.length) return null
 
   return (
     <section
@@ -42,8 +54,8 @@ export function FeaturedCarousel() {
           className="flex transition-transform duration-700 ease-out"
           style={{ transform: `translateX(-${index * 100}%)` }}
         >
-          {items.map((g, i) => {
-            const platform = platformMap[g.platform]
+          {slides.map(({ meta, game: g }, i) => {
+            const platform = platformMap[g.platform] as { name?: string } | undefined
             return (
               <article
                 key={g.slug}
@@ -58,12 +70,12 @@ export function FeaturedCarousel() {
                     <Badge tone="coin" pixel className="mb-4">
                       {t.home.featured}
                     </Badge>
-                    <p className="text-xs font-semibold text-white/80">{FEATURED[i].tagline(t)}</p>
+                    <p className="text-xs font-semibold text-white/80">{meta.tagline(t)}</p>
                     <h3 className="mt-2 text-2xl font-extrabold text-white sm:text-4xl">
                       {gameTitle(g, lang)}
                     </h3>
                     <p className="mt-1 text-sm text-white/70">
-                      {g.title} · {platformLabel(t, g.platform, platform.name)} · {g.year} · {g.developer}
+                      {g.title} · {platformLabel(t, g.platform, platform?.name ?? g.platform)} · {g.year} · {g.developer}
                     </p>
                     <p className="mt-4 line-clamp-3 text-sm leading-relaxed text-white/85 sm:text-base">
                       {g.description}
@@ -90,7 +102,7 @@ export function FeaturedCarousel() {
 
         {/* 指示器 */}
         <div className="absolute bottom-4 right-6 flex items-center gap-2">
-          {items.map((g, i) => (
+          {slides.map(({ game: g }, i) => (
             <button
               key={g.slug}
               type="button"
