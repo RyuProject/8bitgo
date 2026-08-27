@@ -16,6 +16,63 @@ export const RUFFLE_PATH: string = (() => {
   return p.endsWith('/') ? p : `${p}/`
 })()
 
+/* ---------------- 设备字体（中文不显示的根因）---------------- */
+
+/**
+ * Flash 里的文字分两种：**嵌入字体**（字形打包在 SWF 里）和**设备字体**
+ * （只写一个字体名，播放时用系统里的字）。当年的中文 Flash 几乎都用设备字体 ——
+ * 一套中文字库上万个字形，嵌进去 SWF 会大到没法在拨号网络上传播。
+ *
+ * Ruffle 的 deviceFontRenderer 默认是 'embedded'，它自己的说明写得很清楚：
+ *   "It cannot access device fonts and uses fonts provided in the configuration
+ *    and the default Noto Sans font as a fallback."
+ * Noto Sans 是纯拉丁字库，**一个汉字都没有** —— 所以中文菜单直接渲染成空白，
+ * 而标题那种做成图形/嵌入字体的反而正常。这就是「网页版文字不见了」的全部原因。
+ *
+ * 换成 'canvas' 之后，Ruffle 用一块离屏画布走浏览器的字体栈来画字，
+ * 系统里有的中文字就能出来。官方标它为 experimental（字形按位图渲染，
+ * 极端缩放 / 旋转下可能不如矢量锐利），但对「有字」和「没字」来说这个代价很划算。
+ *
+ * 想退回官方默认：VITE_RUFFLE_FONT_RENDERER=embedded
+ */
+const FONT_RENDERER: string = import.meta.env.VITE_RUFFLE_FONT_RENDERER || 'canvas'
+
+/**
+ * 可选：自带字体，不靠访客机器上有没有中文字库。
+ *
+ * Ruffle 的 fontSources 只认 **SWF**（官方原话 "Currently only SWFs are supported"），
+ * 里面嵌的每个字体都会被当作设备字体。所以要用的话得先把 ttf 打成一个字体 SWF。
+ * 代价是体积：一套中文字库动辄几 MB，除非做子集化，否则每个 Flash 游戏都要先下这一坨。
+ *
+ *   VITE_RUFFLE_FONT_SOURCES=/ruffle/fonts/noto-sans-sc.swf
+ *   VITE_RUFFLE_FONT_SANS=Noto Sans SC
+ *
+ * 配了 FONT_SOURCES 就说明是想要确定性的排版，这时默认切回 'embedded' 渲染器
+ * （矢量、跨机器一致），除非显式指定了 VITE_RUFFLE_FONT_RENDERER。
+ */
+const FONT_SOURCES: string[] = (import.meta.env.VITE_RUFFLE_FONT_SOURCES || '')
+  .split(',')
+  .map((u: string) => u.trim())
+  .filter(Boolean)
+
+const FONT_SANS: string = import.meta.env.VITE_RUFFLE_FONT_SANS || ''
+
+/** 拼出这次加载要用的字体相关配置 */
+function fontConfig(): Record<string, unknown> {
+  const renderer = import.meta.env.VITE_RUFFLE_FONT_RENDERER || (FONT_SOURCES.length ? 'embedded' : FONT_RENDERER)
+  const cfg: Record<string, unknown> = { deviceFontRenderer: renderer }
+  if (FONT_SOURCES.length) {
+    cfg.fontSources = FONT_SOURCES
+    if (FONT_SANS) {
+      const names = FONT_SANS.split(',').map((n) => n.trim()).filter(Boolean)
+      // _sans / _serif / _等幅 都指向同一套中文字体：中文 Flash 基本只用 _sans，
+      // 但偶尔有写 _serif 的，与其让它掉回没有汉字的 Noto Sans，不如都指过去
+      cfg.defaultFonts = { sans: names, serif: names, typewriter: names, japaneseGothic: names }
+    }
+  }
+  return cfg
+}
+
 const FRAME_HTML = `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -227,6 +284,8 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
           splashScreen: false,
           warnOnUnsupportedContent: false,
           publicPath: RUFFLE_PATH,
+          // 中文 / 日文这类设备字体文本要靠它才画得出来，见文件顶部的说明
+          ...fontConfig(),
         }
         const isFile = typeof options.game !== 'string'
         let loadOptions: Record<string, unknown>
