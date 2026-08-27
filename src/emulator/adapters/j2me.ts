@@ -397,9 +397,6 @@ export const j2meRuntime: Runtime = {
     return getT().runtime.j2meDesc
   },
   extensions: ['jar', 'jad'],
-  // CheerpJ 有自己的加载框；而且这里的 onReady 还是「iframe load 即就绪」（见上面的 TODO），
-  // 盖上遮罩只会先挡住 CheerpJ 的进度、再立刻撤掉，两头不落好
-  ownsLoadingUi: true,
   priority: 10,
   // 没装 / 没配置就当作不存在，解析阶段直接跳过
   available: () => Boolean(J2ME_PATH),

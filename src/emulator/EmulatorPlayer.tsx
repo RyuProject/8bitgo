@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react'
-import { humanBytes } from './loadProgress'
 import type { Platform, PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { formatBytes, isRomFileAccepted } from '@/lib/emulator'
@@ -643,17 +642,6 @@ export function EmulatorPlayer({
 
   // 进度条要显示的比例。引擎没报数时为 undefined —— UI 转不确定态而不是显示 0%
   const ratio = progress?.ratio
-  const phaseLabel =
-    progress?.phase === 'assets'
-      ? t.player.loadPhaseAssets
-      : progress?.phase === 'rom'
-        ? t.player.loadPhaseRom
-        : progress?.phase === 'starting'
-          ? t.player.loadPhaseStarting
-          : progress?.phase === 'engine'
-            ? t.player.loadPhaseEngine
-            : // 一帧都还没收到（EmulatorJS 这类不报进度的引擎）：沿用原来那句「正在加载 X…」
-              fmt(t.player.loading, { runtime: activeRuntime?.name ?? '' })
   // 服务端的 players 不含观众，比本地 onPlayers 更准；拿不到时退回本地计数
   const roomPlayers = session?.cloud ? (myCloudRoom?.players ?? 1) : (myNetRoom?.players ?? players)
   const joinBlocked = online && ((inviteFull && !canWatch) || inviteGone || cloudJoinPending)
@@ -827,51 +815,42 @@ export function EmulatorPlayer({
           </div>
         )}
 
-        {status === 'loading' && activeRuntime?.ownsLoadingUi && (
-          // 引擎自带加载界面（EmulatorJS / CheerpJ）：让位给它，只在角落留个小提示
-          <div className="pointer-events-none absolute left-3 top-3 flex items-center gap-2 rounded-lg bg-black/70 px-3 py-1.5 text-xs text-white backdrop-blur">
-            <span className="h-2 w-2 animate-ping rounded-full bg-brand-hover" />
-            {session?.cloud && cloudStateLabel ? cloudStateLabel : phaseLabel}
-          </div>
-        )}
-
-        {status === 'loading' && !activeRuntime?.ownsLoadingUi && (
+        {status === 'loading' && (
           /*
-           * 加载遮罩。**故意**盖住整个画面且不加 pointer-events-none ——
-           * 资源没下完就让玩家点下去，按键会喂给一个还没起来的引擎，
-           * 表现是「怎么按都没反应」，比等一会儿更让人困惑。
+           * 加载遮罩：**只有一条进度条，一个字都不写**。
+           *
+           * 两层意思。一是不遮不行 —— 资源没下完就让玩家点下去，按键喂给一个还没起来的
+           * 引擎，表现是「怎么按都没反应」，比等一会儿更让人困惑，所以这里故意不加
+           * pointer-events-none。二是必须盖住引擎**自己**的加载界面：EmulatorJS 设了
+           * EJS_language='zh-CN'，它会自己弹「正在下载游戏核心」那一套文案，
+           * CheerpJ 也有自己的加载框 —— 不盖住的话这些字照样会露出来。
+           *
+           * 代价说清楚：EmulatorJS 原本会显示真实的下载百分比，被盖住之后这里只剩
+           * 不确定态动画。想两全的话得自托管 EmulatorJS（VITE_EJS_PATH + public/emulatorjs），
+           * 那样就能直接改它 localization/zh-CN.json 里的文案，同时留住它的真实进度。
+           *
+           * aria-label 用的是「加载中」，只给读屏软件听，页面上看不见。
            */
-          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-black/85 px-6 text-center backdrop-blur-sm">
-            <div className="w-full max-w-xs">
-              <div className="mb-2 flex items-baseline justify-between gap-3 text-xs font-medium text-white/85">
-                <span className="truncate">
-                  {session?.cloud && cloudStateLabel ? cloudStateLabel : phaseLabel}
-                </span>
-                {ratio !== undefined && (
-                  <span className="shrink-0 tabular-nums text-white/60">{Math.round(ratio * 100)}%</span>
-                )}
-              </div>
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/15">
-                {ratio === undefined ? (
-                  // 拿不到总量（没有 Content-Length、或者引擎压根不报数）：来回走的不确定态，
-                  // 总比一根永远停在 0% 的进度条诚实
-                  <div className="progress-indeterminate h-full w-1/3 rounded-full bg-brand-hover" />
-                ) : (
-                  <div
-                    className="h-full rounded-full bg-brand-hover transition-[width] duration-200 ease-out"
-                    style={{ width: `${Math.round(ratio * 100)}%` }}
-                  />
-                )}
-              </div>
-              {progress?.loaded !== undefined && (
-                <p className="mt-2 text-[11px] tabular-nums text-white/45">
-                  {humanBytes(progress.loaded)}
-                  {progress.total !== undefined ? ` / ${humanBytes(progress.total)}` : ''}
-                  {activeRuntime?.name ? ` · ${activeRuntime.name}` : ''}
-                </p>
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/85 px-8 backdrop-blur-sm">
+            <div
+              role="progressbar"
+              aria-label={t.player.statusLoading}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={ratio !== undefined ? Math.round(ratio * 100) : undefined}
+              className="h-1.5 w-full max-w-xs overflow-hidden rounded-full bg-white/15"
+            >
+              {ratio === undefined ? (
+                // 拿不到总量（没有 Content-Length，或者引擎压根不报数）：来回走的不确定态，
+                // 总比一根永远停在 0% 的进度条诚实
+                <div className="progress-indeterminate h-full w-1/3 rounded-full bg-brand-hover" />
+              ) : (
+                <div
+                  className="h-full rounded-full bg-brand-hover transition-[width] duration-200 ease-out"
+                  style={{ width: `${Math.round(ratio * 100)}%` }}
+                />
               )}
             </div>
-            <p className="max-w-xs text-[11px] leading-relaxed text-white/40">{t.player.loadHint}</p>
           </div>
         )}
 

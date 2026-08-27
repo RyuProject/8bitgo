@@ -201,17 +201,6 @@ export interface Runtime {
    */
   available: () => boolean
 
-  /**
-   * 这个引擎自己有加载界面吗？
-   *
-   * true 的话播放器**不会**用不透明遮罩盖住画面，只在角落显示一个小提示 ——
-   * 否则会把引擎自己的下载进度挡掉，玩家反而比以前知道得更少。
-   * EmulatorJS 自带一整套下载进度 UI，j2me 背后的 CheerpJ 也有自己的加载框。
-   *
-   * 不写就是 false：由播放器接管，画一条我们自己的进度条并挡住操作。
-   */
-  ownsLoadingUi?: boolean
-
   /** 该运行时是否能跑这个平台 */
   supports: (platform: PlatformId) => boolean
   /** 该平台下用于显示的「核心 / 引擎」名 */

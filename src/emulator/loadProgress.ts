@@ -37,14 +37,6 @@ export function throttleProgress(sink: ProgressSink | undefined): (p: LoadProgre
   }
 }
 
-/** 人类可读的字节数，给进度条下面那行小字用 */
-export function humanBytes(n: number): string {
-  if (!Number.isFinite(n) || n < 0) return '—'
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`
-  return `${(n / 1024 / 1024).toFixed(1)} MB`
-}
-
 /**
  * 带进度的下载。
  *

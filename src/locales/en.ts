@@ -477,11 +477,6 @@ const en: Translation = {
     unsupportedBody:
       '{platform} does not have a runtime hooked up yet — stay tuned. In the meantime, try a game from another platform.',
     loading: 'Loading {runtime}…',
-    loadPhaseEngine: 'Downloading emulator…',
-    loadPhaseAssets: 'Downloading engine assets…',
-    loadPhaseRom: 'Downloading game…',
-    loadPhaseStarting: 'Starting up…',
-    loadHint: 'Keep this page open — the game cannot start until everything is downloaded',
     tools: {
       saveCloudOk: 'Saved to the cloud — it follows your account to any device',
       saveLocalOk: 'Saved in this browser — sign in to sync it to the cloud',

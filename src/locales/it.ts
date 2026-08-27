@@ -478,11 +478,6 @@ const it: Translation = {
     unsupportedBody:
       "{platform} non ha ancora un runtime collegato: resta sintonizzato. Nel frattempo prova un gioco di un'altra piattaforma.",
     loading: 'Caricamento di {runtime}…',
-    loadPhaseEngine: 'Download dell’emulatore…',
-    loadPhaseAssets: 'Download delle risorse del motore…',
-    loadPhaseRom: 'Download del gioco…',
-    loadPhaseStarting: 'Avvio in corso…',
-    loadHint: 'Non chiudere la pagina: il gioco parte solo a download completato',
     tools: {
       saveCloudOk: 'Salvato nel cloud: ti segue su qualsiasi dispositivo',
       saveLocalOk: 'Salvato in questo browser: accedi per sincronizzarlo nel cloud',
