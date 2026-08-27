@@ -15,7 +15,6 @@ import { usersRouter } from './routes/users.js'
 import { adminRouter } from './routes/admin.js'
 import { roomsRouter } from './routes/rooms.js'
 import { pageRouter } from './routes/page.js'
-import { roomsRouter } from './routes/rooms.js'
 import { savesRouter } from './routes/saves.js'
 import { attachNetplay } from './netplay.js'
 import { iceRouter } from './routes/ice.js'
@@ -61,7 +60,6 @@ app.use('/api/admin', adminRouter)
 app.use('/api/rooms', roomsRouter)
 // 按路由取数：SSR 与客户端共用同一份定义（见 routes/page.js）
 app.use('/api/page', pageRouter)
-app.use('/api/rooms', roomsRouter)
 // 云存档（必须登录，见 routes/saves.js）
 app.use('/api/saves', savesRouter)
 // P2P 联机的 ICE / TURN 配置（短期凭证，见 routes/ice.js）
