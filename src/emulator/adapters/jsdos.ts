@@ -11,9 +11,11 @@
  * 资源默认从 /jsdos/ 加载（由 scripts/copy-jsdos.mjs 从 npm 包复制过来）。
  * 想换成官方 CDN 就设 VITE_JSDOS_PATH=https://v8.js-dos.com/latest/
  */
-import type { MountOptions, Runtime } from '../types'
+import type { Capability, CaptureSources, MountOptions, Runtime, RuntimeHandle } from '../types'
 import { getT, fmt } from '@/services/i18n'
 import { makeJsdosBundle } from '@/lib/jsdosBundle'
+import { imageDataToBlob } from '../recorder'
+import { GP, startGamepadBridge, hasGamepadApi, type GamepadBridge } from '../gamepad'
 
 /** P2P 模式的撮合服务器。自建的话见 https://github.com/caiiiycuk/WebRTC-NET（Go） */
 export const JSDOS_PEER_SERVER: string = import.meta.env.VITE_JSDOS_PEER_SERVER || 'https://net.dos.zone'
@@ -37,7 +39,53 @@ export const JSDOS_PATH: string = (() => {
   return p.endsWith('/') ? p : `${p}/`
 })()
 
-type DosProps = { stop: () => Promise<void> | void }
+type DosProps = {
+  stop: () => Promise<void> | void
+  setPaused?: (paused: boolean) => void
+  setVolume?: (volume: number) => void
+}
+
+/** js-dos 的底层接口，ci-ready 事件里给出来 */
+interface DosCi {
+  pause: () => void
+  resume: () => void
+  screenshot: () => Promise<ImageData>
+  sendKeyEvent: (keyCode: number, pressed: boolean) => void
+  exit: () => Promise<void>
+}
+
+/**
+ * DOSBox 的键码（js-dos 的 KBD_* 常量）。DOS 游戏没有统一的手柄标准，
+ * 这里按「方向键 + Ctrl/Alt/空格/回车」这套最通用的键位映射，
+ * 大部分 DOS 动作游戏（毁灭战士、波斯王子之类）默认键位都在里面。
+ */
+const KBD = {
+  right: 262,
+  left: 263,
+  down: 264,
+  up: 265,
+  esc: 256,
+  enter: 257,
+  tab: 258,
+  space: 32,
+  leftShift: 340,
+  leftCtrl: 341,
+  leftAlt: 342,
+} as const
+
+const DOS_PAD_MAP: Record<number, number> = {
+  [GP.UP]: KBD.up,
+  [GP.DOWN]: KBD.down,
+  [GP.LEFT]: KBD.left,
+  [GP.RIGHT]: KBD.right,
+  [GP.A]: KBD.leftCtrl,
+  [GP.B]: KBD.leftAlt,
+  [GP.X]: KBD.space,
+  [GP.Y]: KBD.leftShift,
+  [GP.START]: KBD.enter,
+  [GP.SELECT]: KBD.esc,
+  [GP.L1]: KBD.tab,
+}
 type DosFn = (el: HTMLElement, options: Record<string, unknown>) => DosProps
 
 /** js-dos 是全局脚本，整页只加载一次 */
@@ -72,11 +120,18 @@ async function readRom(game: File | string): Promise<{ name: string; buf: ArrayB
   return { name: game.split(/[?#]/)[0].split('/').pop() || 'game.zip', buf: await res.arrayBuffer() }
 }
 
-function mount(container: HTMLElement, options: MountOptions): () => void {
+function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
   let destroyed = false
   let props: DosProps | null = null
+  let ci: DosCi | null = null
+  let pad: GamepadBridge | null = null
   let objectUrl = ''
+  let volume = 1
+  let paused = false
+
+  const caps = new Set<Capability>(['pause', 'volume', 'screenshot', 'record'])
+  if (hasGamepadApi()) caps.add('gamepad')
 
   const host = document.createElement('div')
   host.style.cssText = 'width:100%;height:100%;background:#000'
@@ -114,12 +169,25 @@ function mount(container: HTMLElement, options: MountOptions): () => void {
         onEvent: (event: string, arg?: unknown) => {
           if (destroyed) return
           if (event === 'emu-ready') options.onReady?.()
-          else if (event === 'bnd-play' || event === 'ci-ready') options.onStart?.()
+          else if (event === 'bnd-play' || event === 'ci-ready') {
+            if (event === 'ci-ready' && arg) {
+              ci = arg as DosCi
+              // DOS 游戏只认键盘，手柄在这里翻译成按键
+              if (caps.has('gamepad') && !pad) {
+                pad = startGamepadBridge(DOS_PAD_MAP, (key, pressed) => ci?.sendKeyEvent(key, pressed))
+              }
+            }
+            options.onStart?.()
+          }
           else if (event === 'emu-error' || event === 'bnd-error') {
             options.onError?.(fmt(rt.jsdosRunFailed, { msg: String(arg ?? '') }))
           }
         },
-      })
+      }) as DosProps
+      // 挂载前玩家可能已经调过音量/暂停，补一次
+      props.setVolume?.(volume)
+      if (paused) props.setPaused?.(true)
+      options.onCaps?.(caps)
       // 兜底：万一 kiosk 模式下不触发 emu-ready，也别让转圈一直转
       options.onReady?.()
     } catch (e) {
@@ -128,16 +196,50 @@ function mount(container: HTMLElement, options: MountOptions): () => void {
     }
   })()
 
-  return () => {
-    destroyed = true
-    try {
-      void props?.stop()
-    } catch {
-      /* 已经停了就忽略 */
-    }
-    props = null
-    if (objectUrl) URL.revokeObjectURL(objectUrl)
-    host.remove()
+  options.onCaps?.(caps)
+
+  return {
+    caps,
+    volume,
+    destroy() {
+      destroyed = true
+      pad?.stop()
+      pad = null
+      try {
+        void props?.stop()
+      } catch {
+        /* 已经停了就忽略 */
+      }
+      props = null
+      ci = null
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+      host.remove()
+    },
+    setPaused(next: boolean) {
+      paused = next
+      // 优先用 js-dos 自己的暂停（会连带停掉声音和渲染），拿不到就退回底层接口
+      if (props?.setPaused) props.setPaused(next)
+      else if (next) ci?.pause()
+      else ci?.resume()
+    },
+    setVolume(next: number) {
+      volume = Math.max(0, Math.min(1, next))
+      props?.setVolume?.(volume)
+    },
+    async screenshot() {
+      // js-dos 走 WebGL，直接读画布是空白的，得用它自己的截图接口
+      if (!ci) return null
+      try {
+        return await imageDataToBlob(await ci.screenshot())
+      } catch {
+        return null
+      }
+    },
+    captureSources(): CaptureSources | null {
+      // 音频在 AudioWorklet 里，外面拿不到节点，DOS 录像目前只有画面
+      const canvas = host.querySelector('canvas')
+      return canvas ? { canvas } : null
+    },
   }
 }
 

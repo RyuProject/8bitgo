@@ -42,6 +42,8 @@ export interface MountOptions {
   onReady?: () => void
   onStart?: () => void
   onError?: (message: string) => void
+  /** 引擎加载完、拿到新能力时调用，播放器据此刷新工具栏 */
+  onCaps?: (caps: Set<Capability>) => void
 }
 
 /**
@@ -71,6 +73,48 @@ export interface ResolveContext {
   ext?: string
 }
 
+/** 运行时能提供的能力。播放器按这个集合决定显示哪些按钮 —— 支持才亮，不支持不显示 */
+export type Capability = 'pause' | 'saveState' | 'volume' | 'gamepad' | 'screenshot' | 'record'
+
+/** 录制 / 截屏要用到的画面与声音来源，由各适配器提供 */
+export interface CaptureSources {
+  canvas?: HTMLCanvasElement | null
+  stream?: MediaStream | null
+  audioNode?: AudioNode | null
+  audioContext?: AudioContext | null
+}
+
+/**
+ * mount() 的返回值。
+ *
+ * 以前只返回一个销毁函数，引擎明明有暂停 / 存档 / 截屏的接口也传不到 UI。
+ * 现在返回一个句柄：能力是异步就绪的（引擎要先加载），所以 caps 是可变集合，
+ * 拿到新能力时调 MountOptions.onCaps 通知播放器重新渲染。
+ */
+export interface RuntimeHandle {
+  destroy: () => void
+  /** 当前可用的能力 */
+  caps: Set<Capability>
+  /** 暂停 / 继续 */
+  setPaused?: (paused: boolean) => void
+  /** 存档：返回一个可下载的文件；读档：吃回同样的文件 */
+  /**
+   * 'local'：saveState() 返回存档文件，由播放器下载到本地；
+   * 'remote'：存档在服务器上（云联机），saveState() 只表示成功与否。
+   */
+  saveMode?: 'local' | 'remote'
+  saveState?: () => Promise<Blob | null>
+  loadState?: (data: ArrayBuffer) => Promise<void>
+  /** 音量 0~1 */
+  /** 引擎当前音量（0~1），工具栏用它初始化滑块，避免显示 100% 实际却是 60% */
+  volume?: number
+  setVolume?: (volume: number) => void
+  /** 截屏 */
+  screenshot?: () => Promise<Blob | null>
+  /** 录制用的画面 / 声音来源 */
+  captureSources?: () => CaptureSources | null
+}
+
 export interface Runtime {
   id: RuntimeId
   /** 展示名 */
@@ -97,6 +141,6 @@ export interface Runtime {
   supports: (platform: PlatformId) => boolean
   /** 该平台下用于显示的「核心 / 引擎」名 */
   engineLabel: (platform: PlatformId) => string
-  /** 在容器内挂载并开始运行，返回销毁函数 */
-  mount: (container: HTMLElement, options: MountOptions) => () => void
+  /** 在容器内挂载并开始运行，返回控制句柄（含销毁函数与能力集合） */
+  mount: (container: HTMLElement, options: MountOptions) => RuntimeHandle
 }

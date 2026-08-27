@@ -7,7 +7,7 @@
  * 资源路径：默认 /ruffle/（由 scripts/copy-ruffle.mjs 从 npm 包复制到 public/ruffle/），
  * 也可设置 VITE_RUFFLE_PATH 指向 CDN，例如 https://unpkg.com/@ruffle-rs/ruffle/
  */
-import type { MountOptions, Runtime } from '../types'
+import type { Capability, MountOptions, Runtime, RuntimeHandle } from '../types'
 import { getT, fmt } from '@/services/i18n'
 
 export const RUFFLE_PATH: string = (() => {
@@ -43,7 +43,15 @@ interface RuffleGlobal {
   newest: () => RuffleSource | null
 }
 
-function mount(container: HTMLElement, options: MountOptions): () => void {
+function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
+  const destroy = mountRaw(container, options)
+  // 这两个引擎暂时不提供暂停/存档/音量等能力，工具栏会自动隐藏对应按钮
+  const caps = new Set<Capability>()
+  options.onCaps?.(caps)
+  return { destroy, caps }
+}
+
+function mountRaw(container: HTMLElement, options: MountOptions): () => void {
   const rt = getT().runtime
   const iframe = document.createElement('iframe')
   iframe.title = fmt(rt.flashTitle, { name: options.gameName })

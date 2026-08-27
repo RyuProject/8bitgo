@@ -21,7 +21,7 @@
  *    要用联机必须自建 EmulatorJS 构建，见 docs 或 README。
  */
 import { platformMap } from '@/data/platforms'
-import type { MountOptions, Runtime } from '../types'
+import type { Capability, CaptureSources, MountOptions, Runtime, RuntimeHandle } from '../types'
 import { getT, fmt } from '@/services/i18n'
 import { ICE_SERVERS, NETPLAY_URL, fetchIceConfig, socketIoScriptUrl, uploadState } from '@/services/netplay'
 
@@ -132,11 +132,75 @@ interface EjsNetplay {
 interface EjsGameManager {
   getState: () => Uint8Array
   loadState: (state: Uint8Array) => void
+  /** 新版本才有；没有就退回读画布 */
+  screenshot?: () => Uint8Array
 }
 interface EjsEmulator {
   netplay?: EjsNetplay
   gameManager?: EjsGameManager
   isNetplay?: boolean
+  /** 下面这些是给统一工具栏用的，各版本 EmulatorJS 不一定都有，调用前都要判空 */
+  pause?: () => void
+  play?: () => void
+  paused?: boolean
+  volume?: number
+  setVolume?: (v: number) => void
+  canvas?: HTMLCanvasElement
+  elements?: { parent?: HTMLElement }
+}
+
+/** 我们塞进 iframe 的音频探针，见 installAudioTap */
+interface EjsAudioTap {
+  ctx: AudioContext | null
+  node: GainNode | null
+}
+
+/**
+ * 在 iframe 里装一个音频探针，供录像取声音用。
+ *
+ * EmulatorJS 的声音走 iframe 内部自己的 AudioContext，外面既拿不到节点也接不上
+ * MediaRecorder。办法是趁 loader.js 还没跑，先把 AudioContext 换成一个子类
+ * （记下第一个实例并建一个 GainNode），再劫持 AudioNode.prototype.connect：
+ * 谁连到 ctx.destination，就顺手也连一份到我们的探针上。
+ * 这样声音照常播放，我们只是多接了一路旁路。
+ */
+function installAudioTap(win: Window & Record<string, unknown>): EjsAudioTap {
+  const tap: EjsAudioTap = { ctx: null, node: null }
+  const Native = (win.AudioContext || win.webkitAudioContext) as typeof AudioContext | undefined
+  const NodeProto = (win as unknown as { AudioNode?: { prototype: AudioNode } }).AudioNode?.prototype
+  if (typeof Native !== 'function' || !NodeProto) return tap
+
+  class TappedAudioContext extends Native {
+    constructor(...args: unknown[]) {
+      super(...(args as [AudioContextOptions?]))
+      if (!tap.ctx) {
+        tap.ctx = this
+        try {
+          tap.node = this.createGain()
+        } catch {
+          tap.node = null
+        }
+      }
+    }
+  }
+  win.AudioContext = TappedAudioContext
+  if (win.webkitAudioContext) win.webkitAudioContext = TappedAudioContext
+
+  const origConnect = NodeProto.connect
+  NodeProto.connect = function (this: AudioNode, dest: AudioNode | AudioParam, ...rest: unknown[]) {
+    const ret = (origConnect as (...a: unknown[]) => unknown).call(this, dest, ...rest)
+    try {
+      // 只旁路「直接连到扬声器」的那一路，避免中间节点被重复采集
+      if (tap.ctx && tap.node && dest === tap.ctx.destination) {
+        ;(origConnect as (...a: unknown[]) => unknown).call(this, tap.node)
+      }
+    } catch {
+      /* 旁路失败只影响录音里的声音，不影响游戏 */
+    }
+    return ret as AudioNode
+  } as AudioNode['connect']
+
+  return tap
 }
 
 /**
@@ -223,12 +287,12 @@ function injectScript(doc: Document, src: string): Promise<void> {
   })
 }
 
-function mount(container: HTMLElement, options: MountOptions): () => void {
+function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
   const core = platformMap[options.platform]?.core
   if (!core) {
     options.onError?.(fmt(rt.ejsNoCore, { platform: options.platform }))
-    return () => {}
+    return { destroy: () => {}, caps: new Set<Capability>() }
   }
   const netplay = options.netplay
 
@@ -241,6 +305,33 @@ function mount(container: HTMLElement, options: MountOptions): () => void {
   let destroyed = false
   let playersTimer = 0
   let stateTimer = 0
+  let audioTap: EjsAudioTap | null = null
+  let volume = 0.6
+  const caps = new Set<Capability>(['pause', 'saveState', 'volume', 'screenshot', 'record', 'gamepad'])
+  /** 取 iframe 里的模拟器实例；还没起来时是 undefined */
+  const emuOf = (): EjsEmulator | undefined =>
+    (iframe.contentWindow as (Window & Record<string, unknown>) | null)?.EJS_emulator as EjsEmulator | undefined
+  /** EmulatorJS 的画布在 iframe 里，同源所以能直接拿 */
+  const canvasOf = (): HTMLCanvasElement | null =>
+    emuOf()?.canvas ?? iframe.contentDocument?.querySelector('canvas') ?? null
+
+  /**
+   * 核心跑起来之后核对一遍能力。
+   * EmulatorJS 的版本（尤其走 CDN 的 stable/latest）随时可能变，
+   * 与其让工具栏亮着一个点了没反应的按钮，不如按实际存在的方法把它摘掉。
+   */
+  const refineCaps = () => {
+    const emu = emuOf()
+    if (!emu) return
+    if (typeof emu.pause !== 'function' || typeof emu.play !== 'function') caps.delete('pause')
+    if (typeof emu.setVolume !== 'function' && !('volume' in emu)) caps.delete('volume')
+    if (typeof emu.gameManager?.getState !== 'function') caps.delete('saveState')
+    if (!canvasOf()) {
+      caps.delete('screenshot')
+      caps.delete('record')
+    }
+    options.onCaps?.(caps)
+  }
   /** 服务端下发的房间令牌，上传存档要用 */
   let stateToken = ''
   /** 关页面前补传存档用 */
@@ -430,6 +521,7 @@ function mount(container: HTMLElement, options: MountOptions): () => void {
       EJS_ready: () => options.onReady?.(),
       EJS_onGameStart: () => {
         options.onStart?.()
+        refineCaps()
         if (netplay) startNetplay(win)
       },
       // 联机相关（没有 netplay 会话时也设上，用户可以自己点模拟器里的联机按钮）
@@ -441,6 +533,9 @@ function mount(container: HTMLElement, options: MountOptions): () => void {
           }
         : {}),
     })
+
+    // 录像要取声音，必须赶在 loader.js 建 AudioContext 之前装探针
+    audioTap = installAudioTap(win)
 
     void (async () => {
       try {
@@ -474,8 +569,9 @@ function mount(container: HTMLElement, options: MountOptions): () => void {
   })
 
   container.appendChild(iframe)
+  options.onCaps?.(caps)
 
-  return () => {
+  const destroy = () => {
     destroyed = true
     window.clearInterval(playersTimer)
     window.clearInterval(stateTimer)
@@ -498,7 +594,61 @@ function mount(container: HTMLElement, options: MountOptions): () => void {
       /* ignore */
     }
     iframe.remove()
+    audioTap = null
     if (isFile) URL.revokeObjectURL(gameUrl)
+  }
+
+  return {
+    caps,
+    destroy,
+    // EmulatorJS 默认 0.6，工具栏滑块要跟它对上
+    volume,
+    setPaused(next: boolean) {
+      const emu = emuOf()
+      try {
+        if (next) emu?.pause?.()
+        else emu?.play?.()
+      } catch {
+        /* 核心还没起来就忽略 */
+      }
+    },
+    setVolume(next: number) {
+      volume = Math.max(0, Math.min(1, next))
+      const win = iframe.contentWindow as (Window & Record<string, unknown>) | null
+      if (win) win.EJS_volume = volume
+      const emu = emuOf()
+      try {
+        if (typeof emu?.setVolume === 'function') emu.setVolume(volume)
+        else if (emu) emu.volume = volume
+      } catch {
+        /* ignore */
+      }
+    },
+    async saveState() {
+      const state = emuOf()?.gameManager?.getState?.()
+      if (!state?.length) return null
+      // 复制一份：核心里的那块内存随时可能被覆写
+      return new Blob([new Uint8Array(state).slice().buffer], { type: 'application/octet-stream' })
+    },
+    async loadState(data: ArrayBuffer) {
+      const gm = emuOf()?.gameManager
+      if (!gm?.loadState) throw new Error(rt.ejsInitFailed)
+      gm.loadState(new Uint8Array(data))
+    },
+    async screenshot() {
+      const canvas = canvasOf()
+      if (!canvas) return null
+      // EmulatorJS 的画布是 WebGL 且没开 preserveDrawingBuffer，
+      // 直接 toBlob 多半是黑的，优先用它自己的截图接口
+      const shot = emuOf()?.gameManager?.screenshot?.()
+      if (shot?.length) return new Blob([new Uint8Array(shot).slice().buffer], { type: 'image/png' })
+      return await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
+    },
+    captureSources(): CaptureSources | null {
+      const canvas = canvasOf()
+      if (!canvas) return null
+      return { canvas, audioNode: audioTap?.node ?? null, audioContext: audioTap?.ctx ?? null }
+    },
   }
 }
 

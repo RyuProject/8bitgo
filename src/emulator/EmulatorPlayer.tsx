@@ -4,7 +4,8 @@ import { platformMap } from '@/data/platforms'
 import { formatBytes, isRomFileAccepted } from '@/lib/emulator'
 import { detectRom, describeDetection } from './detect'
 import { resolveRuntime, extOf } from './registry'
-import type { Runtime } from './types'
+import type { Capability, Runtime, RuntimeHandle } from './types'
+import { EmulatorTools } from './EmulatorTools'
 import { emulatorJsRuntime, p2pPlayable, type NetplaySession } from './adapters/emulatorjs'
 import { cloudGameRuntime, cloudPlayable, type CloudSession, type CloudState } from './adapters/cloudgame'
 import { cx } from '@/lib/format'
@@ -203,6 +204,10 @@ export function EmulatorPlayer({
   const cloudJoinPending = Boolean(cloudInviteId) && roomsEnabled() && cloudJoinRoom === undefined
   const myCloudRoom = useRoom(session?.cloud ? (roomId ?? undefined) : undefined)
 
+  /** 当前运行时句柄 + 它上报的能力集合（决定工具栏画哪些按钮） */
+  const [handle, setHandle] = useState<RuntimeHandle | null>(null)
+  const [caps, setCaps] = useState<Set<Capability>>(() => new Set())
+
   const hostRef = useRef<HTMLDivElement>(null)
   const frameRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -238,12 +243,14 @@ export function EmulatorPlayer({
   useEffect(() => {
     const host = frameRef.current
     if (!session || !host) return
-    const destroy = session.runtime.mount(host, {
+    const handle = session.runtime.mount(host, {
       platform: session.platform,
       game: session.game,
       gameName: gameNameRef.current,
       netplay: session.netplay,
       cloud: session.cloud,
+      // 有些引擎要等核心起来才知道自己支持什么，这里允许它后补
+      onCaps: (next) => setCaps(new Set(next)),
       onReady: () => {
         setStatus('running')
         // 游戏真的跑起来了才算一次游玩 —— 打开详情页、加载失败、选错文件都不算
@@ -269,7 +276,13 @@ export function EmulatorPlayer({
         setStatus('error')
       },
     })
-    return destroy
+    setHandle(handle)
+    setCaps(new Set(handle.caps))
+    return () => {
+      setHandle(null)
+      setCaps(new Set())
+      handle.destroy()
+    }
   }, [session])
 
   // 云端联机期间向本站后端心跳（P2P 不需要：信令服务器本来就知道房间）
@@ -823,6 +836,8 @@ export function EmulatorPlayer({
             {notice}
           </span>
         )}
+
+        {status === 'running' && <EmulatorTools handle={handle} caps={caps} gameName={gameName} />}
 
         <div className="ml-auto flex items-center gap-1.5">
           {(busy || status === 'error') && (

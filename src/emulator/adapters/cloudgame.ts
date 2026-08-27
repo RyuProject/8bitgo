@@ -22,7 +22,7 @@
  * 没配置时 available() 返回 false，界面上不会出现联机入口。
  */
 import type { PlatformId } from '@/types'
-import type { MountOptions, Runtime } from '../types'
+import type { Capability, CaptureSources, MountOptions, Runtime, RuntimeHandle } from '../types'
 import { getT, fmt } from '@/services/i18n'
 
 export const CLOUDGAME_URL: string = (import.meta.env.VITE_CLOUDGAME_URL || '').replace(/\/+$/, '')
@@ -154,18 +154,27 @@ function wsUrl(roomId: string | undefined): string {
   return url.toString()
 }
 
-function mount(container: HTMLElement, options: MountOptions): () => void {
+/** 出错早退时的空句柄：什么能力都没有，工具栏会整排隐藏 */
+function deadHandle(): RuntimeHandle {
+  return { destroy: () => {}, caps: new Set<Capability>() }
+}
+
+function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
   const cloud = options.cloud
 
   if (!CLOUDGAME_URL) {
     options.onError?.(rt.cloudNotConfigured)
-    return () => {}
+    return deadHandle()
   }
   if (!cloud) {
     options.onError?.(rt.cloudNoSession)
-    return () => {}
+    return deadHandle()
   }
+
+  // 云联机的画面在服务器上跑：暂停不了（别人还在玩），存档也在服务器那边。
+  // 但音量、截图、录像、手柄都是本地能做的。
+  const caps = new Set<Capability>(['volume', 'screenshot', 'record', 'gamepad', 'saveState'])
 
   let destroyed = false
   let ws: WebSocket | null = null
@@ -372,10 +381,13 @@ function mount(container: HTMLElement, options: MountOptions): () => void {
     ws = new WebSocket(wsUrl(cloud.roomId))
   } catch (e) {
     fail(fmt(rt.cloudConnectFailed, { msg: e instanceof Error ? e.message : String(e) }))
-    return () => {
-      destroyed = true
-      window.clearTimeout(watchdog)
-      host.remove()
+    return {
+      caps: new Set<Capability>(),
+      destroy: () => {
+        destroyed = true
+        window.clearTimeout(watchdog)
+        host.remove()
+      },
     }
   }
   ws.onmessage = (ev) => {
@@ -495,8 +507,10 @@ function mount(container: HTMLElement, options: MountOptions): () => void {
     raf = requestAnimationFrame(pollGamepad)
   }
 
+  options.onCaps?.(caps)
+
   /* ---------------- 销毁 ---------------- */
-  return () => {
+  const destroy = () => {
     destroyed = true
     window.clearTimeout(watchdog)
     cancelAnimationFrame(raf)
@@ -534,6 +548,38 @@ function mount(container: HTMLElement, options: MountOptions): () => void {
     }
     video.srcObject = null
     host.remove()
+  }
+
+  return {
+    caps,
+    destroy,
+    volume: 1,
+    setVolume(next: number) {
+      const v = Math.max(0, Math.min(1, next))
+      video.volume = v
+      video.muted = v === 0
+    },
+    async screenshot() {
+      if (!video.videoWidth) return null
+      const canvas = document.createElement('canvas')
+      canvas.width = video.videoWidth
+      canvas.height = video.videoHeight
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return null
+      ctx.drawImage(video, 0, 0)
+      return await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
+    },
+    // 云端存档在服务器上，本地拿不到文件
+    saveMode: 'remote',
+    async saveState() {
+      if (!playing || !assignedRoomId) throw new Error(rt.cloudNoSession)
+      send(EP.GAME_SAVE, { room_id: assignedRoomId })
+      return null
+    },
+    captureSources(): CaptureSources | null {
+      // WebRTC 的流本来就带音视频，直接拿去录
+      return stream.getTracks().length ? { stream } : null
+    },
   }
 }
 

@@ -27,7 +27,7 @@
  *
  * ⚠️ CheerpJ 从 leaningtech 的 CDN 加载，离线环境跑不了。
  */
-import type { MountOptions, Runtime } from '../types'
+import type { Capability, MountOptions, Runtime, RuntimeHandle } from '../types'
 import { getT, fmt } from '@/services/i18n'
 import { apiBase, apiEnabled } from '@/services/api'
 
@@ -94,7 +94,15 @@ function releaseTempJar(name: string) {
   void fetch(url, { method: 'POST', body, keepalive: true, headers: { 'Content-Type': 'text/plain' } }).catch(() => {})
 }
 
-function mount(container: HTMLElement, options: MountOptions): () => void {
+function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
+  const destroy = mountRaw(container, options)
+  // 这两个引擎暂时不提供暂停/存档/音量等能力，工具栏会自动隐藏对应按钮
+  const caps = new Set<Capability>()
+  options.onCaps?.(caps)
+  return { destroy, caps }
+}
+
+function mountRaw(container: HTMLElement, options: MountOptions): () => void {
   const rt = getT().runtime
 
   if (!J2ME_PATH) {
