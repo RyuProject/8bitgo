@@ -114,7 +114,13 @@ export interface Game {
    * 手挑的顺序不能顶着「按游玩次数排序」的说法。
    */
   homeRank?: number
+  /** 基准简介。后台写什么语言就是什么语言，其余语言没有译文时也用它兜底 */
   description: string
+  /**
+   * 英文简介。非中文访客优先看这个 —— 和 title / titleZh 是同一套路数：
+   * 一个基准 + 一个译文，而不是给八种语言各开一个字段。
+   */
+  descriptionEn?: string
   tags?: string[]
   /** 上线日期，用于「最新」排序 */
   addedAt: string

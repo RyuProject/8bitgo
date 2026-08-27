@@ -86,6 +86,18 @@ interface ReqOptions {
   admin?: boolean
 }
 
+/** 带上状态码与响应体的请求错误。调用方想细分处理时用 instanceof 判一下即可。 */
+export class ApiError extends Error {
+  readonly status: number
+  readonly data: unknown
+  constructor(message: string, status: number, data: unknown) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.data = data
+  }
+}
+
 async function request<T>(method: string, path: string, { body, admin = false }: ReqOptions = {}): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     method,
@@ -107,7 +119,10 @@ async function request<T>(method: string, path: string, { body, admin = false }:
   }
   if (!res.ok) {
     const msg = (data as { error?: string } | null)?.error || fmt(getT().errors.requestFailed, { status: res.status })
-    throw new Error(msg)
+    // 抛 ApiError 而不是裸 Error：状态码和响应体不能在这里丢掉 ——
+    // 比如发验证码被限流时，服务端会连 retryAfter 一起回来，UI 要靠它倒计时。
+    // 继承自 Error，所以 `err instanceof Error ? err.message : ...` 这类老写法照常能用。
+    throw new ApiError(msg, res.status, data)
   }
   if (data === null && text) {
     throw new Error(fmt(getT().errors.requestFailed, { status: res.status }))

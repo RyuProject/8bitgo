@@ -15,6 +15,7 @@ import {
 } from '@/services/roms'
 import { confirmUpload, cleanupSuperseded, human } from './uploadGuards'
 import { coreOptionsFor } from '@/config/emulators'
+import { FEATURES } from '@/config/features'
 import { isPlayable } from '@/emulator'
 import { Field, btnClass, inputClass } from './ui'
 
@@ -152,6 +153,9 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
       homeRank: Number(form.homeRank) > 0 ? Math.round(Number(form.homeRank)) : undefined,
       // 空字符串要写成 undefined，否则会当成「核心名叫空串」存进去
       core: form.core?.trim() || undefined,
+      // 空字符串写成 undefined，否则会存一条空的英文简介，
+      // 前台判「有没有英文版」时就会误判成有
+      descriptionEn: form.descriptionEn?.trim() || undefined,
     })
   }
 
@@ -226,9 +230,11 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
             ))}
           </select>
         </Field>
-        <Field label="G 币奖励">
-          <input type="number" min="0" className={inputClass} value={form.coinReward} onChange={(e) => set('coinReward', Number(e.target.value))} />
-        </Field>
+        {FEATURES.coins && (
+          <Field label="G 币奖励">
+            <input type="number" min="0" className={inputClass} value={form.coinReward} onChange={(e) => set('coinReward', Number(e.target.value))} />
+          </Field>
+        )}
         <Field label="上线日期">
           <input type="date" className={inputClass} value={form.addedAt} onChange={(e) => set('addedAt', e.target.value)} />
         </Field>
@@ -311,13 +317,27 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
         allBoundKeys={allBoundKeys}
       />
 
-      <Field label="简介">
+      <Field label="简介（中文）">
         <textarea
           className={cx(inputClass, 'h-24 resize-y py-2')}
           value={form.description}
           onChange={(e) => set('description', e.target.value)}
           placeholder="一两句话介绍这款游戏"
         />
+      </Field>
+
+      <Field label="简介（English）">
+        <textarea
+          className={cx(inputClass, 'h-24 resize-y py-2')}
+          value={form.descriptionEn ?? ''}
+          onChange={(e) => set('descriptionEn', e.target.value || undefined)}
+          placeholder="One or two sentences about this game"
+        />
+        <p className="mt-1 text-[11px] text-dim">
+          留空的话，<strong className="text-muted">所有非中文语种</strong>都会看到上面那段中文。
+          填了之后英语、西语、法语、德语、意语、日语访客一律看这一段 ——
+          西语访客读英文，也远好过读中文。
+        </p>
       </Field>
 
       <Field label="标签" hint="用逗号分隔，例如：经典, 双人合作">

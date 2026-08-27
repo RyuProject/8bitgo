@@ -16,7 +16,7 @@ import { useSeo, breadcrumbSchema, videoGameSchema } from '@/services/seo'
 import { useLang } from '@/services/lang'
 import { useT, fmt } from '@/services/i18n'
 import { getLang } from '@/services/lang'
-import { genreLabel, platformDesc, platformLabel, gameTitle } from '@/services/i18nData'
+import { gameDescription, gameTitle, genreLabel, platformDesc, platformLabel } from '@/services/i18nData'
 import { EmulatorPlayer } from '@/emulator'
 import { GameCover } from '@/components/game/GameCover'
 import { GameCard } from '@/components/game/GameCard'
@@ -79,7 +79,9 @@ export function GameDetailPage() {
   // 平台级 BIOS。必须在下面那几个 early return 之前调 —— hook 的调用顺序每次渲染都要一致。
   // 异步到货，第一帧一般是空串；播放器只在挂载引擎那一刻读它，不会因此重启游戏
   const biosUrl = usePlatformBiosUrl(seoPlatform?.id)
-  const seoDesc = game ? plainText(game.description) : ''
+  // SEO 描述也要跟语言走：英文页面挂一段中文 meta description，
+  // 搜索结果里就是一串看不懂的字，等于白写
+  const seoDesc = game ? plainText(gameDescription(game, lang)) : ''
   useSeo(
     game
       ? {
@@ -246,7 +248,7 @@ export function GameDetailPage() {
           {/* 简介 */}
           <section className="mt-8">
             <h2 className="text-lg font-bold">{t.game.about}</h2>
-            <p className="mt-2 leading-relaxed text-muted">{game.description}</p>
+            <p className="mt-2 leading-relaxed text-muted">{gameDescription(game, lang)}</p>
             <dl className="mt-5 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
               <Meta label={t.game.year} value={String(game.year)} />
               <Meta label={t.game.developer} value={game.developer} to={`/games?developer=${encodeURIComponent(game.developer)}`} />

@@ -74,7 +74,11 @@ CREATE TABLE IF NOT EXISTS games (
   icon          VARCHAR(16)   NOT NULL DEFAULT '🎮',
   cover         VARCHAR(500)  NULL,
   video         VARCHAR(500)  NULL,
+  -- 基准简介。后台写什么语言就是什么语言（本站是中文），其余语言拿不到译文时也用它兜底
   description   TEXT          NULL,
+  -- 英文简介。非中文访客优先看这个，和 title / title_zh 是同一套路数：
+  -- 一个基准 + 一个译文，而不是给八种语言各开一列
+  description_en TEXT         NULL,
   body_control  TINYINT(1)    NOT NULL DEFAULT 0,
   hidden        TINYINT(1)    NOT NULL DEFAULT 0,
   -- 模拟器核心覆盖。NULL = 用平台默认（src/data/platforms.ts 的 core 字段）。

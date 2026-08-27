@@ -16,6 +16,7 @@ import { adminRouter } from './routes/admin.js'
 import { roomsRouter } from './routes/rooms.js'
 import { pageRouter } from './routes/page.js'
 import { platformBiosRouter } from './routes/platform-bios.js'
+import { checkSchema } from './schema-check.js'
 import { savesRouter } from './routes/saves.js'
 import { attachNetplay } from './netplay.js'
 import { attachLive, liveRoom, liveRooms } from './live.js'
@@ -23,6 +24,20 @@ import { iceRouter } from './routes/ice.js'
 
 const app = express()
 app.disable('x-powered-by')
+
+/**
+ * 反代信任设置 —— 决定 req.ip 拿到的是真实访客还是 nginx。
+ *
+ * 默认 'loopback'：只有当直连过来的是 127.0.0.1（也就是同机的 nginx）时才采信
+ * X-Forwarded-For。这条默认值是安全的 —— 万一哪天这个进程被直接暴露到公网，
+ * 对端不是 loopback，伪造的 X-Forwarded-For 会被忽略，不会把限流骗过去。
+ *
+ * ⚠️ Cloudflare 在 nginx 前面时，nginx 那边要把真实 IP 透传下来：
+ *      proxy_set_header X-Forwarded-For $http_cf_connecting_ip;
+ *    只写 $remote_addr 的话这里拿到的是 Cloudflare 边缘节点的地址，
+ *    按 IP 限流会退化成「全 Cloudflare 共用一个额度」。
+ */
+app.set('trust proxy', process.env.TRUST_PROXY || 'loopback')
 
 // CORS：ALLOWED_ORIGINS 为逗号分隔白名单，或 * 放行全部
 // ⚠️ 必须注册在 express.json 之前。body 解析失败时会直接 next(err)，跳过后面所有
@@ -129,6 +144,18 @@ app.use((err, _req, res, _next) => {
   if (status >= 400 && status < 500) {
     return res.status(status).json({ error: '请求格式不正确' })
   }
+  /**
+   * 「列不存在」几乎只有一个原因：代码更新了、库没跑迁移。
+   * 这种错如果也吞成「服务器内部错误」，表现就是后台点保存毫无反应，
+   * 排查方向会被带到前端去 —— 所以单独挑出来，直接告诉人该跑什么。
+   * 这里只回列名不回表结构，泄露面和普通报错一致。
+   */
+  if (err?.code === 'ER_BAD_FIELD_ERROR') {
+    console.error('[api error] 表结构落后于代码：', err.sqlMessage || err.message)
+    return res.status(500).json({
+      error: '数据库结构落后于代码（缺列），请在 server 目录执行 npm run migrate 后重试',
+    })
+  }
   // 完整信息只进服务器日志。以前直接把 err.message 回给客户端，
   // 数据库报错会连表名、列名、索引名（uniq_email 之类）一起泄露出去。
   console.error('[api error]', err)
@@ -149,10 +176,6 @@ process.on('uncaughtException', (err) => {
 })
 
 const PORT = Number(process.env.PORT || 8788)
-
-// P2P 联机信令：画面不经过服务器，这里只转发 WebRTC 握手（见 src/netplay.js）
-const httpServer = createServer(app)
-attachNetplay(httpServer, app, origins)
 
 // P2P 联机信令：画面不经过服务器，这里只转发 WebRTC 握手（见 src/netplay.js）
 const httpServer = createServer(app)
@@ -184,6 +207,9 @@ if (/^(1|true|yes|on)$/i.test(process.env.IPX_ENABLED || '')) {
 
 httpServer.listen(PORT, () => {
   console.log(`8BitGo API 已启动：http://127.0.0.1:${PORT}`)
+  // 表结构落后于代码时，读接口一切正常、写接口全 500，症状极具误导性。
+  // 启动时对一遍，把话说在前面
+  void checkSchema()
   console.log('P2P 联机信令已就绪：/netplay（socket.io）')
   if (ADMIN_AUTH_DISABLED) {
     console.warn('')

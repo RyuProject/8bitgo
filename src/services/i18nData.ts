@@ -38,3 +38,20 @@ export function gameTitle(game: { title: string; titleZh?: string }, lang: Lang)
   const zh = lang === 'zh-Hans' || lang === 'zh-Hant'
   return (zh ? game.titleZh : undefined) ?? game.title
 }
+
+/**
+ * 按当前语言选游戏简介。
+ *
+ * 和 gameTitle 的方向正好相反，因为两个字段的「基准语言」不一样：
+ *   - 标题的基准是原名（多半是英文），titleZh 才是译文
+ *   - 简介是后台自己写的，基准就是站点母语（中文），descriptionEn 才是译文
+ *
+ * 所以这里是：中文界面用基准简介，**其余所有语言**优先英文。
+ * 不是只给英文页用 —— 西班牙语访客看英文，也远好过看中文。
+ * 没写英文版时统一回落到基准简介，宁可语言不对也不要留白。
+ */
+export function gameDescription(game: { description?: string; descriptionEn?: string }, lang: Lang): string {
+  const zh = lang === 'zh-Hans' || lang === 'zh-Hant'
+  if (zh) return game.description ?? ''
+  return game.descriptionEn || game.description || ''
+}

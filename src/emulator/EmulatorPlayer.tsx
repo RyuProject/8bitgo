@@ -1066,7 +1066,14 @@ export function EmulatorPlayer({
               </span>
             </label>
           )}
-          {(busy || status === 'error') && (
+          {/*
+            这个位置只有两种情况需要按钮：
+              online  —— 在房间里，得有个「离开房间」
+              file    —— 玩的是玩家自己选的本地文件，才谈得上「更换 ROM」
+            跑云端 ROM 时两个都不成立：ROM 是站点提供的，没有可换的东西，
+            按钮放在那儿只会让人以为自己该做点什么。
+          */}
+          {(busy || status === 'error') && (online || file) && (
             <Button variant="ghost" size="sm" onClick={reset}>
               {online ? t.player.leaveRoom : t.player.changeRom}
             </Button>

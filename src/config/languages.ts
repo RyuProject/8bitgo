@@ -24,7 +24,8 @@ export const DEFAULT_LANG: Lang = 'zh-Hans'
 
 /**
  * ROM 语言槽：游戏可为这几种语言分别上传 ROM。
- * 目前只剩意大利语没有专属槽，按语言选 ROM 时回退到英语（见 romLangFor）。
+ * 站点支持的八种语言现在都有专属槽 —— 某款游戏没上传某个语言的 ROM 时，
+ * 按语言选 ROM 会回退到英语（见 effectiveRomKey），所以「有槽」不等于「必须填」。
  *
  * 用 Extract 而不是直接写字面量联合：这样打错一个语言代码会在编译期就报错，
  * 而不是悄悄多出一个站点根本不支持的 ROM 槽。
@@ -33,8 +34,8 @@ export const DEFAULT_LANG: Lang = 'zh-Hans'
  * 后端 romsOf() 也不对键做白名单，所以不需要改库、不需要迁移；
  * 已有游戏的 roms 里没有新语言的键，effectiveRomKey 会照常回退到英语。
  */
-export type RomLang = Extract<Lang, 'zh-Hans' | 'zh-Hant' | 'en' | 'ja' | 'fr' | 'de' | 'es'>
-export const ROM_LANGS: RomLang[] = ['zh-Hans', 'zh-Hant', 'en', 'ja', 'fr', 'de', 'es']
+export type RomLang = Extract<Lang, 'zh-Hans' | 'zh-Hant' | 'en' | 'ja' | 'fr' | 'de' | 'es' | 'it'>
+export const ROM_LANGS: RomLang[] = ['zh-Hans', 'zh-Hant', 'en', 'ja', 'fr', 'de', 'es', 'it']
 
 /**
  * 槽位显示名直接取 LANGUAGES 里的自称，不再手抄一份 ——

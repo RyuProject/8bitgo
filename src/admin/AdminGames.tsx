@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import type { Game, PlatformId } from '@/types'
 import type { Paged } from '@/services/pageData'
 import { platformMap, platforms } from '@/data/platforms'
+import { FEATURES } from '@/config/features'
 import { genreMap } from '@/data/genres'
 import { cx, formatCount } from '@/lib/format'
 import { api, apiEnabled } from '@/services/api'
@@ -215,7 +216,8 @@ export function AdminGames() {
               <th className="px-3 py-2 font-medium">类型</th>
               <th className="px-3 py-2 font-medium">年份</th>
               <th className="px-3 py-2 font-medium">游玩</th>
-              <th className="px-3 py-2 font-medium">G 币</th>
+              {/* G 币功能没开的时候整列隐藏 —— 开关已经是 false，列还杵在那儿全是「—」 */}
+              {FEATURES.coins && <th className="px-3 py-2 font-medium">G 币</th>}
               <th className="px-3 py-2 font-medium">首页</th>
               <th className="px-3 py-2 font-medium">ROM</th>
               <th className="px-3 py-2 font-medium">状态</th>
@@ -244,7 +246,9 @@ export function AdminGames() {
                   <td className="px-3 py-2 text-muted">{g.genres.map((id) => genreMap[id]?.name ?? id).join(' / ')}</td>
                   <td className="px-3 py-2 tabular-nums text-muted">{g.year}</td>
                   <td className="px-3 py-2 tabular-nums text-muted">{g.plays ? formatCount(g.plays) : '—'}</td>
-                  <td className="px-3 py-2 tabular-nums text-muted">{g.coinReward || '—'}</td>
+                  {FEATURES.coins && (
+                    <td className="px-3 py-2 tabular-nums text-muted">{g.coinReward || '—'}</td>
+                  )}
                   {/*
                     首页位和视频放一格：挑好首页位之后要做的事就是给这几款补视频，
                     分成两列反而要来回对照
@@ -318,7 +322,7 @@ export function AdminGames() {
             })}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={10} className="px-3 py-10 text-center text-sm text-muted">
+                <td colSpan={FEATURES.coins ? 10 : 9} className="px-3 py-10 text-center text-sm text-muted">
                   {loading ? (
                     '正在读取数据库…'
                   ) : error ? (

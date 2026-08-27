@@ -362,8 +362,10 @@ export async function requestEmailCode(email: string): Promise<RequestCodeResult
   if (!EMAIL_RE.test(e)) throw new Error(getT().errors.emailInvalid)
 
   if (apiEnabled()) {
-    await api.post('/api/auth/email/request-code', { email: e })
-    return { cooldown: CODE_COOLDOWN }
+    // 冷却秒数以服务端为准：两边各存一份常量的话，改了一边就会出现
+    // 「按钮已经可以点了，服务端还在 429」这种对不上的情况
+    const r = (await api.post('/api/auth/email/request-code', { email: e })) as { cooldown?: number } | null
+    return { cooldown: Number(r?.cooldown) > 0 ? Number(r?.cooldown) : CODE_COOLDOWN }
   }
 
   const code = genCode()

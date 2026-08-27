@@ -7,8 +7,9 @@
  * 资源路径：默认 /ruffle/（由 scripts/copy-ruffle.mjs 从 npm 包复制到 public/ruffle/），
  * 也可设置 VITE_RUFFLE_PATH 指向 CDN，例如 https://unpkg.com/@ruffle-rs/ruffle/
  */
-import type { Capability, MountOptions, Runtime, RuntimeHandle } from '../types'
+import type { CaptureSources, Capability, MountOptions, Runtime, RuntimeHandle } from '../types'
 import { fetchWithProgress } from '../loadProgress'
+import { canvasToBlob } from '../recorder'
 import { getT, fmt } from '@/services/i18n'
 
 export const RUFFLE_PATH: string = (() => {
@@ -191,6 +192,30 @@ function flashSaveKeys(swfUrl: URL | null): string[] {
   return keys
 }
 
+/**
+ * 等一个 <video> 真的拿到一帧。
+ *
+ * captureStream 出来的流挂到 video 上之后，videoWidth 要等第一帧解码完才有值，
+ * 这之前 drawImage 画出来是空的。有 requestVideoFrameCallback 就用它（最准），
+ * 没有就退回 loadeddata + 一小段安置时间。无论如何 1.5 秒后放行 —— 截图不能卡死。
+ */
+function waitForFrame(video: HTMLVideoElement): Promise<void> {
+  return new Promise((resolve) => {
+    let done = false
+    const finish = () => {
+      if (done) return
+      done = true
+      window.clearTimeout(timer)
+      resolve()
+    }
+    const timer = window.setTimeout(finish, 1500)
+    const rvfc = (video as HTMLVideoElement & { requestVideoFrameCallback?: (cb: () => void) => number })
+      .requestVideoFrameCallback
+    if (typeof rvfc === 'function') rvfc.call(video, finish)
+    else video.addEventListener('loadeddata', () => window.setTimeout(finish, 120), { once: true })
+  })
+}
+
 function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
   /** 加载成功后才知道能不能暂停 / 调音量，先空着，等 load() 回来再报 */
@@ -199,6 +224,24 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   let player: RufflePlayerElement | null = null
   let api: RufflePlayerApi | null = null
   let volume = 1
+
+  /**
+   * 取 Ruffle 的画布。
+   *
+   * ⚠️ 它在 <ruffle-player> 的 **shadow DOM** 里（Ruffle 内部 attachShadow({mode:'open'})，
+   *    画布挂在 shadow 里的 #container 上），所以 iframe.contentDocument.querySelector('canvas')
+   *    **永远返回 null** —— 这条路我实测过，走不通。必须从 player.shadowRoot 找。
+   *    srcdoc iframe 继承父页面的源，加上 shadow 是 open 模式，所以这里拿得到。
+   *
+   * 每次现查、不缓存：读档会调 player.reload()，画布会被换掉。
+   */
+  const stageCanvas = (): HTMLCanvasElement | null => {
+    try {
+      return player?.shadowRoot?.querySelector('canvas') ?? null
+    } catch {
+      return null
+    }
+  }
 
   /** 远程 ROM 才有 URL；本地文件走 data 加载，拿不到 */
   const swfUrl: URL | null = (() => {
@@ -329,6 +372,12 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         if (canPause()) caps.add('pause')
         // 存档能力恒定有：导出时再看有没有内容
         caps.add('saveState')
+        // 录像 / 开播 / 截图都靠画布，画布是在 load() 完成的那一刻出现的（实测），
+        // 所以在这儿判断刚好，早一步查是 null
+        if (stageCanvas()) {
+          caps.add('record')
+          caps.add('screenshot')
+        }
         if (hasVolume()) {
           caps.add('volume')
           applyVolume()
@@ -369,6 +418,61 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     setVolume(next: number) {
       volume = Math.max(0, Math.min(1, next))
       applyVolume()
+    },
+    captureSources(): CaptureSources | null {
+      const canvas = stageCanvas()
+      if (!canvas) return null
+      /**
+       * 只给画面，不给声音。
+       *
+       * Ruffle 的音频跑在它自己 new 出来的 AudioContext 里，没有任何公开接口把
+       * AudioNode 交出来，所以录出来的视频和推出去的直播都是**静音**的。
+       *
+       * 要声音只有一条路（我实测过是通的）：在 ruffle.js 加载**之前**把 iframe 里的
+       * AudioContext 构造函数和 AudioNode.prototype.connect 换掉，凡是接到 destination
+       * 的节点顺手再接一份到我们自己的 GainNode 上，再把这个 Gain 当 audioNode 交出去。
+       * 但那是在替换所有 Flash 游戏的公共音频通路，patch 一旦有闪失就是全站 Flash 没声音，
+       * 比「直播没声音」严重得多，所以先不动。
+       */
+      return { canvas }
+    },
+    async screenshot() {
+      const canvas = stageCanvas()
+      if (!canvas || typeof canvas.captureStream !== 'function') return null
+      /**
+       * 为什么不直接 canvas.toBlob()：
+       * Ruffle 用 WebGL 渲染且没开 preserveDrawingBuffer，绘制之外的时刻读回来是
+       * **全透明**的 —— 实测 toDataURL / drawImage 拿到的中心像素是 rgba(0,0,0,0)，
+       * 放在 requestAnimationFrame 里读也一样。
+       * 绕一圈走 captureStream：合成器交出来的帧是有内容的（实测像素与 SWF 舞台底色一致），
+       * 落到一个隐藏 <video> 上再画一次就拿到真画面。代价是多等一帧。
+       */
+      let stream: MediaStream | null = null
+      const video = document.createElement('video')
+      try {
+        stream = canvas.captureStream()
+        video.muted = true
+        video.playsInline = true
+        video.srcObject = stream
+        video.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none'
+        document.body.appendChild(video)
+        await video.play().catch(() => {})
+        await waitForFrame(video)
+        if (!video.videoWidth) return null
+        const out = document.createElement('canvas')
+        out.width = video.videoWidth
+        out.height = video.videoHeight
+        const ctx = out.getContext('2d')
+        if (!ctx) return null
+        ctx.drawImage(video, 0, 0)
+        return await canvasToBlob(out)
+      } catch {
+        return null
+      } finally {
+        stream?.getTracks().forEach((t) => t.stop())
+        video.srcObject = null
+        video.remove()
+      }
     },
     saveExt: 'flashsave.json',
     async saveState() {

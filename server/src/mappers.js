@@ -86,6 +86,8 @@ export function gameRowToApi(r, rel = {}) {
   // 没覆盖核心的游戏同样不带这个字段，前台自己回落到平台默认
   if (r.core) g.core = r.core
   if (r.title_zh) g.titleZh = r.title_zh
+  // 没写英文简介的游戏不带这个字段，前台自己回落到基准简介
+  if (r.description_en) g.descriptionEn = r.description_en
   if (r.cover) g.cover = r.cover
   if (r.video) g.video = r.video
 
@@ -117,6 +119,7 @@ export function gameApiToRow(g) {
     cover: g.cover || null,
     video: g.video || null,
     description: String(g.description ?? ''),
+    description_en: g.descriptionEn ? String(g.descriptionEn) : null,
     body_control: g.bodyControl ? 1 : 0,
     hidden: g.hidden ? 1 : 0,
     // 空字符串要写成 NULL，否则 DATE 列会存成 '0000-00-00'
@@ -143,6 +146,7 @@ const FIELD_TO_COLUMN = {
   cover: ['cover', (v) => (v == null || v === '' ? null : String(v))],
   video: ['video', (v) => (v == null || v === '' ? null : String(v))],
   description: ['description', (v) => String(v ?? '')],
+  descriptionEn: ['description_en', (v) => (v == null || v === '' ? null : String(v))],
   bodyControl: ['body_control', (v) => (v ? 1 : 0)],
   hidden: ['hidden', (v) => (v ? 1 : 0)],
   addedAt: ['added_at', (v) => (v ? String(v).slice(0, 10) : null)],

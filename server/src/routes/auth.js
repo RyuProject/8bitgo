@@ -5,6 +5,7 @@ import { hashPassword, verifyPassword, signToken, requireUser } from '../auth.js
 import { userRowToPublic } from '../mappers.js'
 import { favIds, recentIds } from '../userdata.js'
 import { sendLoginCode } from '../mail.js'
+import { take, clientKey, isMeaningfulIp } from '../rateLimit.js'
 
 export const authRouter = Router()
 
@@ -91,6 +92,22 @@ const MAX_TRIES = 5
 /** Map 的条目上限。发送接口不需要登录，不设上限的话换邮箱刷几百万次就能把内存吃光。 */
 const MAX_PENDING = 10_000
 
+/* ---- 发信配额 ----
+ * 原来只有「同一邮箱 60 秒一次」，挡得住重复点按钮，挡不住脚本轮着给一万个陌生邮箱发信。
+ * 配上 SMTP 之后那就是架在你服务器上的垃圾邮件发射器，代价是域名被拉黑。
+ *
+ * 两道一起上，缺一不可：
+ *   按 IP —— 正常用户一小时发不了十封；但它**只有在 trust proxy 配对时才准**，
+ *            配错了所有人都算成反代那一个地址。
+ *   全站 —— 不依赖任何代理配置，代理配错时这是唯一还有效的一道。
+ * 都可以用环境变量调，多实例部署记得按实例数把上限除一下（状态在各自内存里）。
+ */
+const HOUR = 3_600_000
+const SEND_PER_IP_PER_HOUR = Number(process.env.CODE_SEND_PER_IP_PER_HOUR || 10)
+const SEND_GLOBAL_PER_HOUR = Number(process.env.CODE_SEND_GLOBAL_PER_HOUR || 500)
+/** 拿不到真实 IP 的警告只打一次，不然每次发码都刷一行 */
+let warnedNoRealIp = false
+
 /** 清掉过期条目。每次发码时顺手做一遍，不额外起定时器。 */
 function sweepCodes() {
   const now = Date.now()
@@ -101,11 +118,39 @@ authRouter.post('/email/request-code', async (req, res, next) => {
   try {
     const email = String(req.body.email || '').trim().toLowerCase()
     if (!EMAIL_RE.test(email)) return res.status(400).json({ error: '邮箱格式不正确' })
+
+    // 同一邮箱的冷却。retryAfter 一并回给前端 —— 以前只在文案里写秒数，
+    // 前端拿不到数字，只能用它自己那份 60 秒常量倒计时，两边一改就对不上了。
     const rec = codes.get(email)
     if (rec && Date.now() - rec.lastSent < COOLDOWN) {
       const wait = Math.ceil((COOLDOWN - (Date.now() - rec.lastSent)) / 1000)
-      return res.status(429).json({ error: `发送过于频繁，请 ${wait}s 后再试` })
+      return res.status(429).json({ error: `发送过于频繁，请 ${wait}s 后再试`, retryAfter: wait })
     }
+
+    // 配额：先看这个 IP，再看全站。放在生成验证码之前 —— 被挡下来时不该产生任何副作用。
+    //
+    // ⚠️ 只有拿到真实访客 IP 时才按 IP 限。反代没透传时所有人都是 127.0.0.1，
+    // 再按 IP 限就成了整站每小时 N 封的总闸，十几个人登录就能把其他人全锁在门外
+    // （Cloudflare 在前面时尤其容易踩）。这种情况下只留全站那道兜底。
+    const ip = clientKey(req)
+    if (isMeaningfulIp(ip)) {
+      const byIp = take(`code:ip:${ip}`, SEND_PER_IP_PER_HOUR, HOUR)
+      if (!byIp.ok) {
+        return res.status(429).json({ error: '发送次数过多，请稍后再试', retryAfter: byIp.retryAfter })
+      }
+    } else if (!warnedNoRealIp) {
+      warnedNoRealIp = true
+      console.warn(
+        `[auth] 拿到的客户端地址是 ${ip}，按 IP 限流已跳过（只剩全站总量兜底）。` +
+          ' 让 nginx 透传真实 IP 即可恢复：proxy_set_header X-Forwarded-For $http_cf_connecting_ip;',
+      )
+    }
+    const global = take('code:global', SEND_GLOBAL_PER_HOUR, HOUR)
+    if (!global.ok) {
+      console.warn('[auth] 全站发信配额已用尽 —— 可能正在被刷，检查 nginx 是否透传了真实 IP')
+      return res.status(429).json({ error: '当前请求过多，请稍后再试', retryAfter: global.retryAfter })
+    }
+
     sweepCodes()
     if (!codes.has(email) && codes.size >= MAX_PENDING) {
       return res.status(429).json({ error: '当前请求过多，请稍后再试' })
@@ -113,7 +158,8 @@ authRouter.post('/email/request-code', async (req, res, next) => {
     const code = String(100000 + crypto.randomInt(900000))
     codes.set(email, { code, expires: Date.now() + CODE_TTL, lastSent: Date.now(), tries: 0 })
     await sendLoginCode(email, code)
-    res.json({ ok: true })
+    // 冷却秒数由服务端说了算，前端照着倒计时，不再各存一份常量
+    res.json({ ok: true, cooldown: Math.round(COOLDOWN / 1000) })
   } catch (e) {
     next(e)
   }

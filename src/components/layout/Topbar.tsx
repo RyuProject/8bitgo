@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { cx } from '@/lib/format'
 import { Button } from '@/components/ui/Button'
 import { logout, useCurrentUser } from '@/services/auth'
@@ -7,6 +7,7 @@ import { useShell } from './ShellContext'
 import { useT, fmt } from '@/services/i18n'
 import { Logo } from './Logo'
 import { FEATURES } from '@/config/features'
+import { SearchBox, SearchIcon } from './SearchBox'
 
 /**
  * 顶栏：移动端菜单按钮 + 搜索 + 快捷操作（玩本地 ROM / G 币 / 通知 / 登录）
@@ -152,51 +153,3 @@ function UserMenu() {
   )
 }
 
-function SearchBox({ className, full, onSubmitted }: { className?: string; full?: boolean; onSubmitted?: () => void }) {
-  const t = useT()
-  const navigate = useNavigate()
-  const [params] = useSearchParams()
-  const [value, setValue] = useState(params.get('q') ?? '')
-
-  useEffect(() => {
-    setValue(params.get('q') ?? '')
-  }, [params])
-
-  const submit = (e: FormEvent) => {
-    e.preventDefault()
-    const q = value.trim()
-    navigate(q ? `/games?q=${encodeURIComponent(q)}` : '/games')
-    onSubmitted?.()
-  }
-
-  return (
-    <form onSubmit={submit} role="search" className={cx('relative', className)}>
-      <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" aria-hidden>
-        <SearchIcon />
-      </span>
-      <input
-        type="search"
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        placeholder={t.topbar.searchPlaceholder}
-        aria-label={t.topbar.searchAria}
-        className={cx(
-          'h-10 rounded-xl border border-line bg-surface pl-10 pr-16 text-sm text-fg placeholder:text-dim transition focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30',
-          full ? 'w-full' : 'w-full',
-        )}
-      />
-      <kbd className="pointer-events-none absolute right-3 top-1/2 hidden -translate-y-1/2 rounded border border-line px-1.5 py-0.5 text-[10px] text-dim md:block">
-        Enter
-      </kbd>
-    </form>
-  )
-}
-
-function SearchIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
-      <circle cx="11" cy="11" r="7" />
-      <path d="M20 20l-3.5-3.5" />
-    </svg>
-  )
-}

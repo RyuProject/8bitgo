@@ -4,6 +4,7 @@ import { cx } from '@/lib/format'
 import { Button, buttonClasses } from '@/components/ui/Button'
 import { closeAuthModal, useAuthModalOpen } from '@/services/authModal'
 import { loginWithEmailCode, loginWithGoogle, requestEmailCode, useCurrentUser } from '@/services/auth'
+import { ApiError } from '@/services/api'
 import { useT, fmt } from '@/services/i18n'
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -90,6 +91,10 @@ export function AuthModal() {
       startCooldown(r.cooldown)
       codeRef.current?.focus()
     } catch (err) {
+      // 被限流时服务端会带 retryAfter 回来。照着它倒计时，按钮就不会在服务端还在
+      // 429 的时候先亮起来 —— 否则用户点一次错一次，完全不知道要等多久。
+      const retry = err instanceof ApiError ? Number((err.data as { retryAfter?: number } | null)?.retryAfter) : NaN
+      if (Number.isFinite(retry) && retry > 0) startCooldown(retry)
       setError(err instanceof Error ? err.message : t.auth.sendFailed)
     } finally {
       setSending(false)

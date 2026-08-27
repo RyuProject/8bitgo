@@ -1,5 +1,6 @@
 import { useCallback, type ReactNode } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
+import { SearchRescue } from '@/components/game/SearchRescue'
 import type { Game, GenreId, PlatformId, SortKey } from '@/types'
 import type { Translation } from '@/locales'
 import { fetchPageData, usePageData, type Facets, type GamesData, type Paged } from '@/services/pageData'
@@ -309,6 +310,11 @@ export function GamesPage() {
                 {t.games.clearFilters}
               </Button>
             </div>
+          )}
+
+          {/* 关键词搜了个空：给拼写建议和放宽条件后的相关游戏，别丢一个空页面给用户 */}
+          {q && inf.items.length === 0 && state.status !== 'loading' && (
+            <SearchRescue q={q} onPick={(next) => set('q', next)} />
           )}
 
           <InfiniteFooter list={inf} pageSize={list.pageSize} />
