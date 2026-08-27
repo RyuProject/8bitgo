@@ -18,8 +18,10 @@ export interface AdminGameQuery {
   platform?: string
   /** 'all' | 'visible' | 'hidden'，由服务端筛选，所以 total 和翻页都是全库口径 */
   status?: 'all' | 'visible' | 'hidden'
-  /** 'popular' | 'newest' | 'name' */
+  /** 'popular' | 'newest' | 'name' | 'home'（home = 按首页排序号） */
   sort?: string
+  /** 'all' | 'picked'（只看上了首页的）| 'unpicked' */
+  home?: 'all' | 'picked' | 'unpicked'
   page?: number
   pageSize?: number
 }
@@ -38,6 +40,8 @@ export async function fetchAdminGames(q: AdminGameQuery = {}): Promise<Paged<Gam
   if (q.platform && q.platform !== 'all') sp.set('platform', q.platform)
   if (q.status && q.status !== 'all') sp.set('status', q.status)
   if (q.sort) sp.set('sort', q.sort)
+  if (q.home === 'picked') sp.set('home', '1')
+  else if (q.home === 'unpicked') sp.set('home', '0')
   if (q.page) sp.set('page', String(q.page))
   if (q.pageSize) sp.set('pageSize', String(q.pageSize))
   return api.get<Paged<Game>>(`/api/games?${sp.toString()}`, true)

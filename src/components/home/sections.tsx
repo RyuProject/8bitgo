@@ -48,19 +48,29 @@ function genresWithCount(facets: Facets | undefined): GenreWithCount[] {
 }
 
 /* ---------------- 最多人玩 ---------------- */
-export function PopularSection({ games }: { games: Game[] }) {
+/**
+ * 首页第一栏。
+ *
+ * curated = 后台在游戏里填了「首页排序」，这一栏就只出那几款。
+ * 这时候标题和角标都得跟着换：
+ *   - 副标题不能再写「按累计游玩次数排序」—— 顺序是人排的，不是数据算的；
+ *   - 不挂 #1 #2 排名角标 —— 那会让人以为这是真实的热度榜。
+ * 界面陈述的事实必须成立，这和站里刚清掉的那批假数据是同一条底线。
+ */
+export function PopularSection({ games, curated = false }: { games: Game[]; curated?: boolean }) {
   const t = useT()
   return (
     <section className="container-x">
       <SectionHeader
-        title={t.sections.popularTitle}
-        subtitle={t.sections.popularSubtitle}
-        icon="🔥"
-        moreTo="/games?sort=popular"
+        title={curated ? t.sections.pickedTitle : t.sections.popularTitle}
+        subtitle={curated ? t.sections.pickedSubtitle : t.sections.popularSubtitle}
+        icon={curated ? '⭐' : '🔥'}
+        // 精选位是人排的，「查看全部」就别再指向热度榜了，直接进游戏库
+        moreTo={curated ? '/games' : '/games?sort=popular'}
       />
       <HScroll>
         {games.map((g, i) => (
-          <GameCard key={g.slug} game={g} rank={i + 1} />
+          <GameCard key={g.slug} game={g} rank={curated ? undefined : i + 1} />
         ))}
       </HScroll>
     </section>

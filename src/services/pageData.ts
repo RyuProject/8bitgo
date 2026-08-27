@@ -44,7 +44,10 @@ export interface Facets {
 
 export interface HomeData {
   route: 'home'
+  /** 首页第一栏。后台钦点过就是那几款，没钦点过就是按游玩次数排的 */
   popular: Game[]
+  /** 上面那一栏是不是后台手挑的。是的话前台要换标题、去掉排名角标 */
+  popularCurated?: boolean
   newest: Game[]
   multiplayer: Game[]
   /** 分类网格下方各栏的样例，键是 genreId。一款游戏都没有的类型服务端不会建键，所以取值可能是 undefined */

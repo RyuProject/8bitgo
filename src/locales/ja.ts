@@ -462,6 +462,11 @@ const ja: Translation = {
     unsupportedTitle: 'このゲーム機はオンラインでの実行に未対応です',
     unsupportedBody: '{platform} はまだランタイムに対応していません。公開までもう少しお待ちください。まずはほかのゲーム機の作品をお楽しみください。',
     loading: '{runtime} を読み込んでいます…',
+    loadPhaseEngine: 'エミュレーターをダウンロード中…',
+    loadPhaseAssets: 'エンジンのアセットをダウンロード中…',
+    loadPhaseRom: 'ゲームをダウンロード中…',
+    loadPhaseStarting: '起動中…',
+    loadHint: 'ダウンロードが終わるまでゲームは始まりません。このページを閉じないでください',
     tools: {
       saveCloudOk: 'クラウドに保存しました。別の端末でも続きから遊べます',
       saveLocalOk: 'このブラウザに保存しました。ログインするとクラウドに同期できます',

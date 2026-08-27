@@ -10,7 +10,7 @@
  * 仍然保留一层短缓存（SSR_CACHE_MS，默认 60 秒），但缓存的是「每个路由的结果」
  * 而不是整个库，且带容量上限，不会被爬虫翻页翻到内存爆掉。
  */
-import { listGames, getGameBySlug, platformCounts, genreCounts, developerCounts } from './games-repo.js'
+import { listGames, listHomePicks, getGameBySlug, platformCounts, genreCounts, developerCounts } from './games-repo.js'
 import { query } from './db.js'
 import { attachPostTags } from './routes/posts.js'
 
@@ -65,7 +65,9 @@ const HOME_SIZE = 12
 const GENRE_COLUMNS = ['action', 'adventure', 'rpg', 'puzzle']
 
 async function loadHome() {
-  const [popular, newest, multiplayer, facets, ...samples] = await Promise.all([
+  const [picks, popular, newest, multiplayer, facets, ...samples] = await Promise.all([
+    // 首页第一栏：后台钦点的优先
+    listHomePicks(HOME_SIZE),
     listGames({ sort: 'popular', pageSize: HOME_SIZE }),
     listGames({ sort: 'newest', pageSize: HOME_SIZE }),
     listGames({ multiplayer: true, sort: 'popular', pageSize: HOME_SIZE }),
@@ -76,8 +78,19 @@ async function loadHome() {
   GENRE_COLUMNS.forEach((id, i) => {
     if (samples[i].items.length) genreSamples[id] = samples[i].items
   })
+  /**
+   * 一款都没钦点时退回按游玩次数自动排 —— 也就是这个功能加进来之前的行为，
+   * 新装的站不用先去后台点一遍才有首页。
+   *
+   * curated 要一路带到前台：手挑出来的列表不能再顶着「按累计游玩次数排序」，
+   * 也不该挂 #1 #2 的排名角标。那和站里刚清理掉的假数据是同一类问题 ——
+   * 界面在陈述一个并不成立的事实。
+   */
+  const curated = picks.length > 0
+
   return {
-    popular: popular.items,
+    popular: curated ? picks : popular.items,
+    popularCurated: curated,
     newest: newest.items,
     multiplayer: multiplayer.items,
     genreSamples,

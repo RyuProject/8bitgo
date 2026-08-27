@@ -33,6 +33,21 @@ export const GENERIC_ROM_LANG = '*'
  * 一行 games + 它的关联数据 -> 前端的 Game 对象。
  * rel 缺省时当作没有类型 / 标签 / ROM，不会抛错。
  */
+/**
+ * 首页精选位的排序号。
+ *
+ * 空串 / null / 0 / 负数 / 非数字一律当「不上首页」。
+ * 特别是 0：后台输入框清空后某些浏览器会回 0 而不是空串，
+ * 当成有效排序号的话这款游戏会莫名其妙钉在首页第一个。
+ */
+export function homeRankOf(v) {
+  if (v == null || v === '') return null
+  const n = Math.trunc(Number(v))
+  if (!Number.isFinite(n) || n <= 0) return null
+  // SMALLINT UNSIGNED 上限；填个离谱的数不该让写入直接报错
+  return Math.min(n, 65535)
+}
+
 export function gameRowToApi(r, rel = {}) {
   const g = {
     slug: r.slug,
@@ -52,6 +67,8 @@ export function gameRowToApi(r, rel = {}) {
     bodyControl: bool(r.body_control),
     hidden: bool(r.hidden),
   }
+  // 不上首页的游戏干脆不带这个字段，前台拿到的形状和以前一样
+  if (r.home_rank != null) g.homeRank = Number(r.home_rank)
   if (r.title_zh) g.titleZh = r.title_zh
   if (r.cover) g.cover = r.cover
   if (r.video) g.video = r.video
@@ -88,6 +105,7 @@ export function gameApiToRow(g) {
     hidden: g.hidden ? 1 : 0,
     // 空字符串要写成 NULL，否则 DATE 列会存成 '0000-00-00'
     added_at: g.addedAt ? String(g.addedAt).slice(0, 10) : null,
+    home_rank: homeRankOf(g.homeRank),
   }
 }
 
@@ -111,6 +129,7 @@ const FIELD_TO_COLUMN = {
   bodyControl: ['body_control', (v) => (v ? 1 : 0)],
   hidden: ['hidden', (v) => (v ? 1 : 0)],
   addedAt: ['added_at', (v) => (v ? String(v).slice(0, 10) : null)],
+  homeRank: ['home_rank', homeRankOf],
 }
 
 export function gameApiToPartialRow(patch) {

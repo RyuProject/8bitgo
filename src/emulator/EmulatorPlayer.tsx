@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react'
+import { humanBytes } from './loadProgress'
 import type { Platform, PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { formatBytes, isRomFileAccepted } from '@/lib/emulator'
 import { detectRom, describeDetection } from './detect'
 import { resolveRuntime, extOf } from './registry'
-import type { Capability, Runtime, RuntimeHandle } from './types'
+import type { Capability, LoadProgress, Runtime, RuntimeHandle } from './types'
 import { EmulatorTools } from './EmulatorTools'
 import { LiveControls } from './LiveControls'
 import { liveViewRuntime, type LiveSession, type LiveViewState } from './adapters/liveview'
@@ -216,6 +217,8 @@ export function EmulatorPlayer({
 
   /** 当前运行时句柄 + 它上报的能力集合（决定工具栏画哪些按钮） */
   const [handle, setHandle] = useState<RuntimeHandle | null>(null)
+  /** 加载进度。null 表示还没收到任何一帧（引擎还没开口），进度条转不确定态 */
+  const [progress, setProgress] = useState<LoadProgress | null>(null)
   const [caps, setCaps] = useState<Set<Capability>>(() => new Set())
 
   const hostRef = useRef<HTMLDivElement>(null)
@@ -249,6 +252,8 @@ export function EmulatorPlayer({
   ) => {
     sessionCounter.current += 1
     setSession({ id: sessionCounter.current, game, platform: targetPlatform, runtime, ...extra })
+    // 上一局的进度必须清掉，否则新会话的遮罩会先闪一下上次的 100%
+    setProgress(null)
     setStatus('loading')
   }
 
@@ -280,8 +285,13 @@ export function EmulatorPlayer({
         if (!isCurrent()) return
         setCaps(new Set(next))
       },
+      onProgress: (next) => {
+        if (!isCurrent()) return
+        setProgress(next)
+      },
       onReady: () => {
         if (!isCurrent()) return
+        setProgress(null)
         setStatus('running')
         // 游戏真的跑起来了才算一次游玩 —— 打开详情页、加载失败、选错文件都不算
         if (gameSlugRef.current) recordPlay(gameSlugRef.current)
@@ -630,6 +640,20 @@ export function EmulatorPlayer({
     session?.runtime ?? (online ? (channel === 'p2p' ? emulatorJsRuntime : cloudGameRuntime) : pageRuntime)
   const activePlatform = session ? platformMap[session.platform] : platform
   const cloudStateLabel = cloudState ? t.player.cloudState[cloudState] : ''
+
+  // 进度条要显示的比例。引擎没报数时为 undefined —— UI 转不确定态而不是显示 0%
+  const ratio = progress?.ratio
+  const phaseLabel =
+    progress?.phase === 'assets'
+      ? t.player.loadPhaseAssets
+      : progress?.phase === 'rom'
+        ? t.player.loadPhaseRom
+        : progress?.phase === 'starting'
+          ? t.player.loadPhaseStarting
+          : progress?.phase === 'engine'
+            ? t.player.loadPhaseEngine
+            : // 一帧都还没收到（EmulatorJS 这类不报进度的引擎）：沿用原来那句「正在加载 X…」
+              fmt(t.player.loading, { runtime: activeRuntime?.name ?? '' })
   // 服务端的 players 不含观众，比本地 onPlayers 更准；拿不到时退回本地计数
   const roomPlayers = session?.cloud ? (myCloudRoom?.players ?? 1) : (myNetRoom?.players ?? players)
   const joinBlocked = online && ((inviteFull && !canWatch) || inviteGone || cloudJoinPending)
@@ -803,10 +827,51 @@ export function EmulatorPlayer({
           </div>
         )}
 
-        {status === 'loading' && (
+        {status === 'loading' && activeRuntime?.ownsLoadingUi && (
+          // 引擎自带加载界面（EmulatorJS / CheerpJ）：让位给它，只在角落留个小提示
           <div className="pointer-events-none absolute left-3 top-3 flex items-center gap-2 rounded-lg bg-black/70 px-3 py-1.5 text-xs text-white backdrop-blur">
             <span className="h-2 w-2 animate-ping rounded-full bg-brand-hover" />
-            {session?.cloud && cloudStateLabel ? cloudStateLabel : fmt(t.player.loading, { runtime: activeRuntime?.name ?? '' })}
+            {session?.cloud && cloudStateLabel ? cloudStateLabel : phaseLabel}
+          </div>
+        )}
+
+        {status === 'loading' && !activeRuntime?.ownsLoadingUi && (
+          /*
+           * 加载遮罩。**故意**盖住整个画面且不加 pointer-events-none ——
+           * 资源没下完就让玩家点下去，按键会喂给一个还没起来的引擎，
+           * 表现是「怎么按都没反应」，比等一会儿更让人困惑。
+           */
+          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-black/85 px-6 text-center backdrop-blur-sm">
+            <div className="w-full max-w-xs">
+              <div className="mb-2 flex items-baseline justify-between gap-3 text-xs font-medium text-white/85">
+                <span className="truncate">
+                  {session?.cloud && cloudStateLabel ? cloudStateLabel : phaseLabel}
+                </span>
+                {ratio !== undefined && (
+                  <span className="shrink-0 tabular-nums text-white/60">{Math.round(ratio * 100)}%</span>
+                )}
+              </div>
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/15">
+                {ratio === undefined ? (
+                  // 拿不到总量（没有 Content-Length、或者引擎压根不报数）：来回走的不确定态，
+                  // 总比一根永远停在 0% 的进度条诚实
+                  <div className="progress-indeterminate h-full w-1/3 rounded-full bg-brand-hover" />
+                ) : (
+                  <div
+                    className="h-full rounded-full bg-brand-hover transition-[width] duration-200 ease-out"
+                    style={{ width: `${Math.round(ratio * 100)}%` }}
+                  />
+                )}
+              </div>
+              {progress?.loaded !== undefined && (
+                <p className="mt-2 text-[11px] tabular-nums text-white/45">
+                  {humanBytes(progress.loaded)}
+                  {progress.total !== undefined ? ` / ${humanBytes(progress.total)}` : ''}
+                  {activeRuntime?.name ? ` · ${activeRuntime.name}` : ''}
+                </p>
+              )}
+            </div>
+            <p className="max-w-xs text-[11px] leading-relaxed text-white/40">{t.player.loadHint}</p>
           </div>
         )}
 

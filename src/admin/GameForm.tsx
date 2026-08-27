@@ -121,6 +121,9 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
       plays: Math.max(0, Math.round(Number(form.plays) || 0)),
       coinReward: Math.max(0, Math.round(Number(form.coinReward) || 0)),
       year: Math.round(Number(form.year) || 0),
+      // 空 / 0 / 负数一律当「不上首页」。清空输入框时有的浏览器回 0 而不是空串，
+      // 不归一化的话这款游戏会莫名其妙钉在首页第一个
+      homeRank: Number(form.homeRank) > 0 ? Math.round(Number(form.homeRank)) : undefined,
     })
   }
 
@@ -200,6 +203,20 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
         </Field>
         <Field label="上线日期">
           <input type="date" className={inputClass} value={form.addedAt} onChange={(e) => set('addedAt', e.target.value)} />
+        </Field>
+        <Field label="首页排序">
+          <input
+            type="number"
+            min="0"
+            className={inputClass}
+            placeholder="留空 = 不上首页"
+            value={form.homeRank ?? ''}
+            onChange={(e) => set('homeRank', e.target.value === '' ? undefined : Number(e.target.value))}
+          />
+          <p className="mt-1 text-[11px] text-dim">
+            填数字就会出现在首页第一栏，小的排前面。只要有任意一款填了，那一栏就<strong className="text-muted">只出填了的这些</strong>，
+            标题也会从「最多人玩」变成「编辑精选」。全部留空则退回按游玩次数自动排。
+          </p>
         </Field>
       </div>
 

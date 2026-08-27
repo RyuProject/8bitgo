@@ -74,6 +74,18 @@ const patches = [
     run: () => conn.query('ALTER TABLE `games` ADD COLUMN `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP AFTER `roms`'),
   },
   {
+    name: 'games.home_rank（首页精选位的排序号）',
+    table: 'games',
+    needed: async () => !(await hasColumn('games', 'home_rank')),
+    run: async () => {
+      await conn.query('ALTER TABLE `games` ADD COLUMN `home_rank` SMALLINT UNSIGNED NULL AFTER `hidden`')
+      // 索引单独一条语句：老库可能已经手动加过列但没加索引
+      if (!(await hasIndex('games', 'idx_home_rank'))) {
+        await conn.query('ALTER TABLE `games` ADD INDEX `idx_home_rank` (`hidden`, `home_rank`)')
+      }
+    },
+  },
+  {
     name: 'favorites.idx_fav_game（删游戏时按 game_slug 清理）',
     table: 'favorites',
     needed: async () => !(await hasIndex('favorites', 'idx_fav_game')),

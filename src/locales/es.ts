@@ -477,6 +477,11 @@ const es: Translation = {
     unsupportedBody:
       '{platform} todavía no tiene un motor conectado, así que habrá que esperar. Mientras tanto, prueba un juego de otra plataforma.',
     loading: 'Cargando {runtime}…',
+    loadPhaseEngine: 'Descargando el emulador…',
+    loadPhaseAssets: 'Descargando recursos del motor…',
+    loadPhaseRom: 'Descargando el juego…',
+    loadPhaseStarting: 'Iniciando…',
+    loadHint: 'No cierres la página: el juego no arranca hasta que todo esté descargado',
     tools: {
       saveCloudOk: 'Guardado en la nube: te sigue a cualquier dispositivo',
       saveLocalOk: 'Guardado en este navegador: inicia sesión para sincronizarlo en la nube',

@@ -64,6 +64,10 @@ function orderBy(sort) {
       return 'COALESCE(g.added_at, DATE(g.created_at)) DESC, g.id DESC'
     case 'name':
       return 'g.title ASC, g.id ASC'
+    case 'home':
+      // 首页精选位：后台给的序号说了算。没给序号的排在最后，
+      // 同号之间再按游玩次数，保证顺序不会每次查询都漂
+      return 'g.home_rank IS NULL, g.home_rank ASC, g.plays DESC, g.id DESC'
     case 'popular':
     default:
       // 新站大量游戏 plays 都是 0，只按 plays 排会导致顺序随数据库返回顺序漂移，
@@ -97,6 +101,9 @@ export async function listGames(q = {}) {
   }
   if (q.multiplayer) where.push('g.multiplayer = 1')
   if (q.coin) where.push('g.coin_reward > 0')
+  // 首页精选位。true = 只看被钦点的，false = 只看没被钦点的（后台筛选用）
+  if (q.home === true) where.push('g.home_rank IS NOT NULL')
+  else if (q.home === false) where.push('g.home_rank IS NULL')
   if (q.q && String(q.q).trim()) {
     // 搜索标题、译名、开发商和标签。几千行的 LIKE 在 1ms 量级，
     // 真到十万级再考虑 FULLTEXT（中文需要 ngram 解析器，会绑定 MySQL 版本）
@@ -127,6 +134,21 @@ export async function listGames(q = {}) {
     allParams,
   )
   return { items: await attachRelations(rows), total, page, pageSize, totalPages }
+}
+
+/**
+ * 首页精选位：后台钦点了哪几款。
+ *
+ * 一款都没钦点时返回空数组 —— 调用方据此退回「按游玩次数自动排」，
+ * 也就是这个功能加进来之前的行为。这样新装的站不需要先去后台点一遍才有首页。
+ */
+export async function listHomePicks(limit) {
+  const n = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(limit) || 12))
+  const rows = await query(
+    `SELECT * FROM games WHERE hidden = 0 AND home_rank IS NOT NULL
+      ORDER BY home_rank ASC, plays DESC, id DESC LIMIT ${n}`,
+  )
+  return attachRelations(rows)
 }
 
 /** 按 slug 取单款游戏（含关联数据）；不存在返回 undefined */

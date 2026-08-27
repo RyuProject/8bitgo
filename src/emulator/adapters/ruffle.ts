@@ -8,6 +8,7 @@
  * 也可设置 VITE_RUFFLE_PATH 指向 CDN，例如 https://unpkg.com/@ruffle-rs/ruffle/
  */
 import type { Capability, MountOptions, Runtime, RuntimeHandle } from '../types'
+import { fetchWithProgress } from '../loadProgress'
 import { getT, fmt } from '@/services/i18n'
 
 export const RUFFLE_PATH: string = (() => {
@@ -210,24 +211,60 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
           autoplay: 'on',
           unmuteOverlay: 'visible',
           letterbox: 'on',
-          backgroundColor: '#0b0b0f',
+          /**
+           * ⚠️ 千万别在这里填颜色。
+           *
+           * Ruffle 的 backgroundColor **不是**「没有背景色时的兜底」，而是**强行覆盖**
+           * SWF 自己的舞台背景色（官方文档原话：specify a color … it will override the
+           * SWF file's native background color；默认 null 才是用 SWF 自己的）。
+           * 以前这里填了 #0b0b0f，于是每一个 Flash 游戏的舞台底色都被涂成近黑 ——
+           * 当年大量 Flash 游戏是「白底 + 黑线稿」或者靠舞台底色当背景画的，
+           * 一涂就变成整片黑屏，看起来像模拟器没跑起来。
+           *
+           * 播放器周围留白的深色由 iframe 和 #host 的 CSS 负责，和这里无关。
+           */
+          backgroundColor: null,
           splashScreen: false,
           warnOnUnsupportedContent: false,
           publicPath: RUFFLE_PATH,
         }
         const isFile = typeof options.game !== 'string'
-        const loadOptions = isFile
-          ? { ...base, data: await (options.game as File).arrayBuffer(), swfFileName: (options.game as File).name }
-          : { ...base, url: options.game as string }
+        let loadOptions: Record<string, unknown>
+        if (isFile) {
+          const data = await (options.game as File).arrayBuffer()
+          options.onProgress?.({ phase: 'rom', loaded: data.byteLength, total: data.byteLength, ratio: 1 })
+          loadOptions = { ...base, data, swfFileName: (options.game as File).name }
+        } else {
+          /**
+           * 远程 SWF 自己下，而不是把 url 丢给 Ruffle —— 这样才拿得到真实的下载字节数。
+           *
+           * 代价是 Ruffle 不再知道这个 SWF 是从哪来的，而当年不少 Flash 游戏会用
+           * loadMovie / XML 之类去取同目录的外部素材，相对路径会从「SWF 所在目录」
+           * 变成「当前页面」，素材全 404。所以必须显式把 base 设回 SWF 的目录 ——
+           * base 是 Ruffle 的正式配置项（DEFAULT_CONFIG 里 base:null），给了 url 时
+           * 它本来也是这么推的，这里只是把同一件事写明白。
+           */
+          const url = options.game as string
+          const data = await fetchWithProgress(url, { phase: 'rom', onProgress: options.onProgress })
+          loadOptions = {
+            ...base,
+            data,
+            swfFileName: url.split(/[?#]/)[0].split('/').pop() || 'game.swf',
+            base: new URL('.', new URL(url, location.href)).href,
+          }
+        }
 
         api = typeof player.ruffle === 'function' ? player.ruffle() : typeof player.load === 'function' ? (player as RufflePlayerApi) : null
         if (!api) throw new Error(rt.ruffleNoApi)
         // 上面一连串 await（等自定义元素注册、读文件）之间玩家可能已经换了 ROM，
         // 这里要重新确认一次，别把旧会话的结果算到新会话头上
         if (destroyed) return
-        options.onReady?.()
+        options.onProgress?.({ phase: 'starting', ratio: 1 })
         await api.load(loadOptions)
         if (destroyed) return
+        // onReady 必须在 load 完成之后 —— 以前放在 load 之前，播放器会在 SWF 还没解析完
+        // 就把加载遮罩撤掉，玩家对着空白舞台点半天
+        options.onReady?.()
 
         // 能力要等实例真的建起来才作数：SWF 加载之前 volume 的 setter 是空转的
         if (canPause()) caps.add('pause')

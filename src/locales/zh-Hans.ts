@@ -474,6 +474,11 @@ export const zhHans = {
     unsupportedTitle: '该平台暂不支持在线运行',
     unsupportedBody: '{platform} 还没有接入运行时，敬请期待。你可以先看看其他平台的游戏。',
     loading: '正在加载 {runtime}…',
+    loadPhaseEngine: '正在下载模拟器…',
+    loadPhaseAssets: '正在下载引擎资源…',
+    loadPhaseRom: '正在下载游戏…',
+    loadPhaseStarting: '正在启动…',
+    loadHint: '别关页面，资源没下完游戏跑不起来',
     tools: {
       saveCloudOk: '已存到云端 · 换台设备也能接着玩',
       saveLocalOk: '已存在这个浏览器里 · 登录后可同步到云端',

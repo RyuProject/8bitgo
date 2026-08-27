@@ -479,6 +479,11 @@ const fr: Translation = {
     unsupportedBody:
       "{platform} n'a pas encore de moteur branché — reste à l'affût. En attendant, essaie un jeu d'une autre plateforme.",
     loading: 'Chargement de {runtime}…',
+    loadPhaseEngine: 'Téléchargement de l’émulateur…',
+    loadPhaseAssets: 'Téléchargement des ressources du moteur…',
+    loadPhaseRom: 'Téléchargement du jeu…',
+    loadPhaseStarting: 'Démarrage…',
+    loadHint: 'Ne fermez pas la page : le jeu ne démarre qu’une fois tout téléchargé',
     tools: {
       saveCloudOk: 'Enregistré dans le cloud : votre sauvegarde vous suit sur tous vos appareils',
       saveLocalOk: 'Enregistré dans ce navigateur : connectez-vous pour le synchroniser dans le cloud',

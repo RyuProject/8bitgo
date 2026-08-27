@@ -52,6 +52,21 @@ export interface MountOptions {
    * 此时 game 字段被忽略。
    */
   live?: LiveSession
+  /**
+   * 加载进度。
+   *
+   * onReady 之前会被调很多次，播放器据此画进度条。**只有拿得到真实字节数的引擎才报数**：
+   * 适配器自己 fetch 的（jsnes / jsdos / ruffle 的远程 SWF）有 loaded/total；
+   * webretro 同源，读它自己那根 <progress> 得到 ratio；其余的只报 phase，
+   * ratio 为 undefined 表示「不知道还剩多少」，UI 转不确定态。
+   */
+  onProgress?: (progress: LoadProgress) => void
+  /**
+   * 资源齐了、这局可以真正开始玩了。
+   *
+   * ⚠️ 语义是「玩家可以动手了」，不是「iframe 的 document 加载完了」。
+   * 播放器就是靠它把加载遮罩撤掉的，早调一步玩家就会对着黑屏乱按。
+   */
   onReady?: () => void
   onStart?: () => void
   onError?: (message: string) => void
@@ -77,6 +92,25 @@ export interface IpxSession {
    * 只能由玩家自己在它的设置面板里填 Server 和 Room。
    */
   showUi?: boolean
+}
+
+/**
+ * 加载阶段。播放器把它翻成给玩家看的一句话。
+ *   engine —— 在下模拟器本体（wasm / 核心 / 运行时脚本）
+ *   assets —— 在下引擎的配套资源（字体、着色器、手柄配置这类）
+ *   rom    —— 在下这一款游戏本身
+ *   starting —— 东西都齐了，引擎正在启动
+ */
+export type LoadPhase = 'engine' | 'assets' | 'rom' | 'starting'
+
+export interface LoadProgress {
+  phase: LoadPhase
+  /** 0~1。拿不到总量时为 undefined —— UI 应转成不确定态，而不是显示 0% */
+  ratio?: number
+  /** 已下载字节数 */
+  loaded?: number
+  /** 总字节数。服务器没给 Content-Length、或响应被压缩过时没有 */
+  total?: number
 }
 
 /** 解析运行时时能用到的线索 */
@@ -166,6 +200,17 @@ export interface Runtime {
    * 这样解析阶段就会跳过它，而不是等到挂载时才报错。
    */
   available: () => boolean
+
+  /**
+   * 这个引擎自己有加载界面吗？
+   *
+   * true 的话播放器**不会**用不透明遮罩盖住画面，只在角落显示一个小提示 ——
+   * 否则会把引擎自己的下载进度挡掉，玩家反而比以前知道得更少。
+   * EmulatorJS 自带一整套下载进度 UI，j2me 背后的 CheerpJ 也有自己的加载框。
+   *
+   * 不写就是 false：由播放器接管，画一条我们自己的进度条并挡住操作。
+   */
+  ownsLoadingUi?: boolean
 
   /** 该运行时是否能跑这个平台 */
   supports: (platform: PlatformId) => boolean

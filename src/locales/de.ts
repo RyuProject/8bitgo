@@ -478,6 +478,11 @@ const de: Translation = {
     unsupportedBody:
       'Für {platform} ist noch keine Runtime angebunden – bleib dran. Probier solange ein Spiel von einer anderen Plattform.',
     loading: '{runtime} wird geladen…',
+    loadPhaseEngine: 'Emulator wird geladen …',
+    loadPhaseAssets: 'Engine-Ressourcen werden geladen …',
+    loadPhaseRom: 'Spiel wird geladen …',
+    loadPhaseStarting: 'Wird gestartet …',
+    loadHint: 'Seite offen lassen – das Spiel startet erst, wenn alles geladen ist',
     tools: {
       saveCloudOk: 'In der Cloud gespeichert – dein Spielstand ist auf jedem Gerät da',
       saveLocalOk: 'In diesem Browser gespeichert – melde dich an, um ihn in die Cloud zu synchronisieren',

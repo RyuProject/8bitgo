@@ -77,6 +77,9 @@ CREATE TABLE IF NOT EXISTS games (
   description   TEXT          NULL,
   body_control  TINYINT(1)    NOT NULL DEFAULT 0,
   hidden        TINYINT(1)    NOT NULL DEFAULT 0,
+  -- 首页「精选」位的排序号。NULL = 不上首页，数字小的排前面。
+  -- 一款都没设时，首页那一栏退回按 plays 自动排（见 server/src/content.js 的 loadHome）
+  home_rank     SMALLINT UNSIGNED NULL,
   -- 对外的「上线日期」。留空时后端用 created_at 兜底，不用人工编日期
   added_at      DATE          NULL,
   created_at    TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -92,7 +95,9 @@ CREATE TABLE IF NOT EXISTS games (
   KEY idx_platform     (hidden, platform, plays DESC),
   KEY idx_developer    (hidden, developer),
   KEY idx_multiplayer  (hidden, multiplayer, plays DESC),
-  KEY idx_coin         (hidden, coin_reward)
+  KEY idx_coin         (hidden, coin_reward),
+  -- 首页精选位：只有寥寥几行 home_rank 非空，这条索引让首页那一次查询不用扫全表
+  KEY idx_home_rank    (hidden, home_rank)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------- 游戏 × 类型 ----------

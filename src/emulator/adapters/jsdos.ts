@@ -11,7 +11,8 @@
  * 资源默认从 /jsdos/ 加载（由 scripts/copy-jsdos.mjs 从 npm 包复制过来）。
  * 想换成官方 CDN 就设 VITE_JSDOS_PATH=https://v8.js-dos.com/latest/
  */
-import type { Capability, CaptureSources, MountOptions, Runtime, RuntimeHandle } from '../types'
+import type { Capability, CaptureSources, LoadProgress, MountOptions, Runtime, RuntimeHandle } from '../types'
+import { fetchWithProgress } from '../loadProgress'
 import { getT, fmt } from '@/services/i18n'
 import { makeJsdosBundle } from '@/lib/jsdosBundle'
 import { imageDataToBlob } from '../recorder'
@@ -116,11 +117,17 @@ function loadJsDos(): Promise<DosFn> {
   return loading
 }
 
-async function readRom(game: File | string): Promise<{ name: string; buf: ArrayBuffer }> {
-  if (typeof game !== 'string') return { name: game.name, buf: await game.arrayBuffer() }
-  const res = await fetch(game)
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return { name: game.split(/[?#]/)[0].split('/').pop() || 'game.zip', buf: await res.arrayBuffer() }
+async function readRom(
+  game: File | string,
+  onProgress?: (p: LoadProgress) => void,
+): Promise<{ name: string; buf: ArrayBuffer }> {
+  if (typeof game !== 'string') {
+    const buf = await game.arrayBuffer()
+    onProgress?.({ phase: 'rom', loaded: buf.byteLength, total: buf.byteLength, ratio: 1 })
+    return { name: game.name, buf }
+  }
+  const buf = await fetchWithProgress(game, { phase: 'rom', onProgress })
+  return { name: game.split(/[?#]/)[0].split('/').pop() || 'game.zip', buf }
 }
 
 function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
@@ -154,7 +161,11 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
 
   void (async () => {
     try {
-      const [Dos, rom] = await Promise.all([loadJsDos(), readRom(options.game)])
+      // js-dos 本体（js-dos.js + wdosbox.wasm）由 loadJsDos() 用 <script> 拉，
+      // 没有进度回调可用，只能先报个阶段；ROM 那一路是我们自己 fetch 的，有真实字节数
+      options.onProgress?.({ phase: 'engine' })
+      const [Dos, rom] = await Promise.all([loadJsDos(), readRom(options.game, options.onProgress)])
+      options.onProgress?.({ phase: 'starting', ratio: 1 })
       if (destroyed) return
 
       // 普通 zip / exe 现场打成 bundle；已经是 bundle 的原样使用

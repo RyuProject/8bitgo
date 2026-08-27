@@ -671,6 +671,8 @@ export const emulatorJsRuntime: Runtime = {
     return getT().runtime.ejsDesc
   },
   extensions: EJS_EXTS,
+  // EmulatorJS 自己就会画下载进度，别拿遮罩盖住它
+  ownsLoadingUi: true,
   // 通用兜底引擎，优先级最低：有更专精的引擎（如 .nes 的 jsnes）时让给它
   priority: 5,
   available: () => true,

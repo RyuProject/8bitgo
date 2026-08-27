@@ -100,6 +100,12 @@ export interface Game {
   cover?: string
   /** 卡片视频：对象存储 key（如 videos/contra.mp4）或完整 URL；4:3 横版最佳。有则优先于封面图播放 */
   video?: string
+  /**
+   * 首页精选位的排序号（数字小的排前面）。没有这个字段就是不上首页。
+   * 只要有任意一款设了，首页第一栏就只出这些，标题也会从「最多人玩」换成「编辑精选」——
+   * 手挑的顺序不能顶着「按游玩次数排序」的说法。
+   */
+  homeRank?: number
   description: string
   tags?: string[]
   /** 上线日期，用于「最新」排序 */

@@ -442,6 +442,11 @@ const zhHant: Translation = {
     unsupportedTitle: '該平台暫不支援線上執行',
     unsupportedBody: '{platform} 還沒有接上執行環境，敬請期待。你可以先看看其他平台的遊戲。',
     loading: '正在載入 {runtime}…',
+    loadPhaseEngine: '正在下載模擬器…',
+    loadPhaseAssets: '正在下載引擎資源…',
+    loadPhaseRom: '正在下載遊戲…',
+    loadPhaseStarting: '正在啟動…',
+    loadHint: '別關頁面，資源沒下完遊戲跑不起來',
     tools: {
       saveCloudOk: '已存到雲端 · 換台裝置也能接著玩',
       saveLocalOk: '已存在這個瀏覽器裡 · 登入後可同步到雲端',

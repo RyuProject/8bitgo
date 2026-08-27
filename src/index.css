@@ -107,6 +107,23 @@ body {
   @apply transition duration-300 ease-out hover:-translate-y-1 hover:shadow-[0_16px_32px_-14px_rgba(0,0,0,0.18)];
 }
 
+/* 不确定态进度条：拿不到总量（服务器没给 Content-Length、或引擎压根不报数）时，
+ * 用一小段来回走的色块表示「在动，但不知道还剩多少」——
+ * 比一根永远停在 0% 的进度条诚实。轨道宽 100%、色块宽 1/3，
+ * 所以 translateX 从 -100%（完全在轨道左外）走到 300%（左沿正好到轨道右端）。 */
+@keyframes progress-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+
+@utility progress-indeterminate {
+  animation: progress-slide 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
 @utility text-pixel {
   font-family: var(--font-pixel);
   letter-spacing: 0.04em;

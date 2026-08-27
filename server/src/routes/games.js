@@ -53,6 +53,8 @@ gamesRouter.get('/', async (req, res, next) => {
       includeHidden: wantAll,
       // 只有管理员视角才认这个（上架 / 下架），公开列表永远只给上架的
       status: wantAll ? req.query.status : undefined,
+      // 后台「只看首页位」筛选。home=1 只看钦点的，home=0 只看没钦点的
+      home: wantAll && req.query.home != null ? truthy(req.query.home) : undefined,
     })
     // 只有公开视角能缓存：管理员视角带着身份，缓存下来等于把下架游戏发给所有人
     if (!wantAll) publicApi(res)

@@ -52,7 +52,7 @@ export function HomePage() {
         这样从 loading 到 ready 页面不会整段长出来把下面的内容顶走。
       */}
       <div className="space-y-10 pt-10">
-        <PopularSection games={data?.popular ?? []} />
+        <PopularSection games={data?.popular ?? []} curated={data?.popularCurated ?? false} />
         <PlatformsSection facets={data?.facets} />
         <LatestSection games={data?.newest ?? []} />
         <TogetherSection games={data?.multiplayer ?? []} />

@@ -8,7 +8,8 @@
  * 这里用 jsnes 自带的高层 Browser 类：它负责 canvas、WebAudio、键盘与手柄，
  * 并提供 destroy() 做彻底清理，正好对上 Runtime.mount 的「返回销毁函数」约定。
  */
-import type { Capability, CaptureSources, MountOptions, Runtime, RuntimeHandle } from '../types'
+import type { Capability, CaptureSources, LoadProgress, MountOptions, Runtime, RuntimeHandle } from '../types'
+import { fetchWithProgress } from '../loadProgress'
 import { canvasToBlob } from '../recorder'
 import { getT, fmt } from '@/services/i18n'
 import { extractRomFromZip, isZip } from '@/lib/unzip'
@@ -39,18 +40,25 @@ function toBinaryString(buf: ArrayBuffer): string {
  *    这里按**内容**判断（zip 的 PK 魔数），文件名叫什么无关 ——
  *    实际见过把 zip 存成 .nes 的情况。
  */
-async function readRom(game: File | string): Promise<ArrayBuffer> {
+async function readRom(game: File | string, onProgress?: (p: LoadProgress) => void): Promise<ArrayBuffer> {
   let buf: ArrayBuffer
   if (typeof game === 'string') {
-    const res = await fetch(game)
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const type = res.headers.get('content-type') || ''
-    if (/text\/html|application\/xhtml/i.test(type)) {
-      throw new Error(fmt(getT().runtime.romNotBinary, { url: game }))
-    }
-    buf = await res.arrayBuffer()
+    buf = await fetchWithProgress(game, {
+      phase: 'rom',
+      onProgress,
+      // 对象存储配错、或者被网关拦截时返回的是一张 HTML 错误页，
+      // 不挡的话会被当成 ROM 塞给模拟器，报出来的错完全看不懂
+      check: (res) => {
+        const type = res.headers.get('content-type') || ''
+        if (/text\/html|application\/xhtml/i.test(type)) {
+          throw new Error(fmt(getT().runtime.romNotBinary, { url: game }))
+        }
+      },
+    })
   } else {
+    // 本地文件不经过网络，直接读完就报满
     buf = await game.arrayBuffer()
+    onProgress?.({ phase: 'rom', loaded: buf.byteLength, total: buf.byteLength, ratio: 1 })
   }
 
   if (isZip(buf)) {
@@ -199,7 +207,9 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
 
   void (async () => {
     try {
-      const [{ Browser }, buf] = await Promise.all([import('jsnes'), readRom(options.game)])
+      options.onProgress?.({ phase: 'engine' })
+      const [{ Browser }, buf] = await Promise.all([import('jsnes'), readRom(options.game, options.onProgress)])
+      options.onProgress?.({ phase: 'starting', ratio: 1 })
       if (destroyed) return
 
       // ⚠️ 刻意不传 romData。

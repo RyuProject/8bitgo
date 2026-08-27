@@ -14,6 +14,7 @@ import { GameForm } from './GameForm'
 import { btnClass, inputClass } from './ui'
 
 type Status = 'all' | 'visible' | 'hidden'
+type HomeFilter = 'all' | 'picked' | 'unpicked'
 type Editing = { mode: 'add' } | { mode: 'edit'; game: Game } | null
 
 /** 后台一页多少条。和前台列表页保持一致，够看又不至于一次拉太多关联数据。 */
@@ -45,6 +46,7 @@ export function AdminGames() {
   const [debouncedQ, setDebouncedQ] = useState('')
   const [platform, setPlatform] = useState<PlatformId | 'all'>('all')
   const [status, setStatus] = useState<Status>('all')
+  const [home, setHome] = useState<HomeFilter>('all')
   const [page, setPage] = useState(1)
   const [editing, setEditing] = useState<Editing>(null)
   const [toast, setToast] = useState<string | null>(null)
@@ -69,7 +71,7 @@ export function AdminGames() {
   // 换关键词 / 换平台后还停在第 5 页，多半是一片空白，回第一页
   useEffect(() => {
     setPage(1)
-  }, [debouncedQ, platform, status])
+  }, [debouncedQ, platform, status, home])
 
   useEffect(() => {
     if (!apiEnabled()) {
@@ -79,7 +81,18 @@ export function AdminGames() {
     let cancelled = false
     setLoading(true)
     setError('')
-    trackPageLoad(fetchAdminGames({ q: debouncedQ || undefined, platform, status, page, pageSize: PAGE_SIZE }))
+    trackPageLoad(
+      fetchAdminGames({
+        q: debouncedQ || undefined,
+        platform,
+        status,
+        home,
+        // 只看首页位时按首页排序号排，才看得出实际的先后
+        sort: home === 'picked' ? 'home' : undefined,
+        page,
+        pageSize: PAGE_SIZE,
+      }),
+    )
       .then((r) => {
         if (cancelled) return
         setPaged(r)
@@ -98,7 +111,7 @@ export function AdminGames() {
     return () => {
       cancelled = true
     }
-  }, [debouncedQ, platform, status, page, tick])
+  }, [debouncedQ, platform, status, home, page, tick])
 
   const reload = () => setTick((n) => n + 1)
   /** 出错后的重试：顶栏徽章那份探测也一起重跑，否则修好了徽章还红着 */
@@ -181,6 +194,12 @@ export function AdminGames() {
           <option value="visible">上架中</option>
           <option value="hidden">已下架</option>
         </select>
+        {/* 挑好首页位之后，对着这一档逐个传视频最省事 */}
+        <select className={cx(inputClass, 'w-36')} value={home} onChange={(e) => setHome(e.target.value as HomeFilter)}>
+          <option value="all">首页位：全部</option>
+          <option value="picked">只看首页位</option>
+          <option value="unpicked">未上首页</option>
+        </select>
         <span className="self-center text-xs text-muted">
           {loading ? '读取中…' : `共 ${total} 款`}
         </span>
@@ -197,6 +216,7 @@ export function AdminGames() {
               <th className="px-3 py-2 font-medium">年份</th>
               <th className="px-3 py-2 font-medium">游玩</th>
               <th className="px-3 py-2 font-medium">G 币</th>
+              <th className="px-3 py-2 font-medium">首页</th>
               <th className="px-3 py-2 font-medium">ROM</th>
               <th className="px-3 py-2 font-medium">状态</th>
               <th className="px-3 py-2 text-right font-medium">操作</th>
@@ -225,6 +245,28 @@ export function AdminGames() {
                   <td className="px-3 py-2 tabular-nums text-muted">{g.year}</td>
                   <td className="px-3 py-2 tabular-nums text-muted">{g.plays ? formatCount(g.plays) : '—'}</td>
                   <td className="px-3 py-2 tabular-nums text-muted">{g.coinReward || '—'}</td>
+                  {/*
+                    首页位和视频放一格：挑好首页位之后要做的事就是给这几款补视频，
+                    分成两列反而要来回对照
+                  */}
+                  <td className="px-3 py-2 whitespace-nowrap">
+                    {g.homeRank ? (
+                      <span className="rounded bg-brand-soft px-1.5 py-0.5 text-xs font-semibold text-brand-hover" title={`首页第 ${g.homeRank} 位`}>
+                        ⭐ {g.homeRank}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-dim">—</span>
+                    )}
+                    {g.video ? (
+                      <span className="ml-1 text-xs" title={`已配视频：${g.video}`}>
+                        🎬
+                      </span>
+                    ) : g.homeRank ? (
+                      <span className="ml-1 text-xs text-dim" title="这一款在首页，但还没配视频">
+                        ○
+                      </span>
+                    ) : null}
+                  </td>
                   <td className="px-3 py-2">
                     {(() => {
                       // 编辑弹窗只填「按语言的 ROM」（roms），以前这里只看 g.rom，
@@ -276,7 +318,7 @@ export function AdminGames() {
             })}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={9} className="px-3 py-10 text-center text-sm text-muted">
+                <td colSpan={10} className="px-3 py-10 text-center text-sm text-muted">
                   {loading ? (
                     '正在读取数据库…'
                   ) : error ? (

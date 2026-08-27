@@ -93,6 +93,11 @@ const CORE_LABELS: Record<string, string> = {
   mednafen_wswan: 'Beetle WonderSwan',
 }
 
+/** 轮询 iframe 内部加载状态的间隔。200ms 足够让进度条走得顺，也不至于空转太凶 */
+const POLL_MS = 200
+/** 兜底放行时间：资源下不动时最多让玩家等这么久 */
+const READY_TIMEOUT_MS = 90_000
+
 /** 从 URL / 对象存储 key 里取出文件名（去掉查询串与锚点） */
 function fileNameOf(url: string): string {
   const clean = url.split(/[?#]/)[0]
@@ -145,12 +150,96 @@ function mountRaw(container: HTMLElement, options: MountOptions): () => void {
   iframe.style.cssText = 'width:100%;height:100%;border:0;display:block;background:#000'
   iframe.setAttribute('allow', 'fullscreen; gamepad; autoplay; midi')
 
-  // 只认「设过 src 之后」的那次 load：iframe 刚 append 时浏览器会为初始的
-  // about:blank 触发一次 load，销毁时把 src 设回 about:blank 又会触发一次。
-  // 不挡掉的话「正在加载…」会在引擎真正起来之前就消失。
+  /* ---------------- 就绪判定与加载进度 ---------------- */
+
+  /**
+   * ⚠️ iframe 的 load 事件**不是**「可以玩了」。
+   *
+   * 它只代表 index.html 这个文档解析完了；此时 webretro 才刚开始下核心 wasm
+   * （melonDS 3MB）和资源包（bundle/，275 个文件共 6.7MB）。以前直接在这里调
+   * onReady，播放器立刻把加载遮罩撤掉，玩家对着黑屏按半天，还以为模拟器坏了。
+   *
+   * 好在 webretro 是自托管的、跟主站同源，父窗口能直接读它内部的状态：
+   *   window.wasmReady / bundleReady / biosReady —— 三个都为 true 就是资源齐了
+   *   document.getElementById('loadingbar').value —— 资源包下载进度，0 → 1
+   *   window.loadStatus —— 当前阶段的英文文案（我们不显示它，只用来判断阶段）
+   * 所以这里改成轮询这几个值，齐了才 onReady。
+   *
+   * 跨源的情况也要兜住：万一有人把 VITE_WEBRETRO_PATH 指到别的域名，读
+   * contentWindow 会抛 SecurityError，那就退回老行为（load 即就绪），
+   * 至少不会让玩家永远卡在加载界面。
+   */
   let srcSet = false
+  let poll: ReturnType<typeof setInterval> | null = null
+  let readySent = false
+
+  const stopPoll = () => {
+    if (poll) {
+      clearInterval(poll)
+      poll = null
+    }
+  }
+  const sendReady = () => {
+    stopPoll()
+    if (readySent || destroyed) return
+    readySent = true
+    options.onReady?.()
+  }
+
+  /** 读一次 iframe 内部状态。返回 false 表示读不到（跨源），调用方据此降级 */
+  const tick = (): boolean => {
+    let win: (Window & Record<string, unknown>) | null
+    let doc: Document | null
+    try {
+      win = iframe.contentWindow as (Window & Record<string, unknown>) | null
+      doc = iframe.contentDocument
+      // 真正会抛 SecurityError 的是这一下访问，不是上面的取属性
+      void win?.location.href
+    } catch {
+      return false
+    }
+    if (!win || !doc) return true // 文档还没建好，下一轮再看
+
+    const wasm = Boolean(win.wasmReady)
+    const bundle = Boolean(win.bundleReady)
+    const bios = Boolean(win.biosReady)
+
+    if (wasm && bundle && bios) {
+      options.onProgress?.({ phase: 'starting', ratio: 1 })
+      sendReady()
+      return true
+    }
+
+    // 资源包下载时 webretro 自己那根 <progress> 的 value 就是 0~1 的真实比例
+    const bar = doc.getElementById('loadingbar') as HTMLProgressElement | null
+    const barRatio = bar && bar.style.display !== 'none' && bar.value > 0 ? Math.min(bar.value, 1) : undefined
+
+    options.onProgress?.(
+      wasm
+        ? { phase: 'assets', ratio: barRatio }
+        : // wasm 还没好：核心是 <script> 标签拉的，没有进度可读，只报阶段
+          { phase: 'engine' },
+    )
+    return true
+  }
+
   iframe.addEventListener('load', () => {
-    if (srcSet && !destroyed) options.onReady?.()
+    if (!srcSet || destroyed) return
+    if (!tick()) {
+      // 跨源，读不到内部状态 —— 退回老行为
+      sendReady()
+      return
+    }
+    stopPoll()
+    poll = setInterval(() => {
+      if (destroyed) return stopPoll()
+      if (!tick()) sendReady()
+    }, POLL_MS)
+    // 兜底：资源真的下不动时（断网、bundle 404），别让玩家永远卡在遮罩后面。
+    // 放行之后 webretro 自己的错误提示就能露出来，玩家至少看得见发生了什么。
+    setTimeout(() => {
+      if (!destroyed && !readySent) sendReady()
+    }, READY_TIMEOUT_MS)
   })
   iframe.addEventListener('error', () => {
     if (!destroyed) options.onError?.(fmt(rt.webretroLoadFailed, { path: WEBRETRO_PATH }))
@@ -170,11 +259,13 @@ function mountRaw(container: HTMLElement, options: MountOptions): () => void {
   }
 
   srcSet = true
+  options.onProgress?.({ phase: 'engine' })
   iframe.src = buildUrl(core, romUrl, romName)
   options.onStart?.()
 
   return () => {
     destroyed = true
+    stopPoll()
     try {
       iframe.src = 'about:blank'
     } catch {

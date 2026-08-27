@@ -267,6 +267,15 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   let srcSet = false
   iframe.addEventListener('load', () => {
     if (!srcSet || destroyed) return
+    /**
+     * TODO(就绪时机)：这里和 webretro 有同样的毛病 —— iframe 的 load 只代表
+     * run.html 解析完了，CheerpJ 还要几十秒才把 JVM 跑起来，玩家会先看到一段黑屏。
+     *
+     * webretro 那边已经改成轮询同源 iframe 的内部状态；j2me 要照做的话，得先确认
+     * freej2me-web 的 run.html 里 #display 这个 canvas 是静态标签还是 MIDlet
+     * 起来之后才创建的 —— 前者的话它在 load 时就存在，拿来当就绪信号没有意义。
+     * 需要装好 public/j2me/ 之后读源码确认，没验证之前不乱猜。
+     */
     options.onReady?.()
 
     const win = iframe.contentWindow
@@ -313,6 +322,9 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     try {
       let name: string
       if (isFile) {
+        // 本地 jar 要先传到后端才能被 freej2me-web 取到。fetch 拿不到上传进度
+        // （只有 XHR 的 upload.onprogress 有），所以这里只报阶段，UI 转不确定态。
+        options.onProgress?.({ phase: 'rom' })
         name = await uploadTempJar(options.game as File)
         if (destroyed) {
           // 上传期间已经被卸载了，直接把刚传上去的删掉
@@ -328,6 +340,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         name = fileNameOf(options.game as string)
       }
       srcSet = true
+      options.onProgress?.({ phase: 'engine' })
       iframe.src = buildUrl(name)
       options.onStart?.()
     } catch (e) {
@@ -384,6 +397,9 @@ export const j2meRuntime: Runtime = {
     return getT().runtime.j2meDesc
   },
   extensions: ['jar', 'jad'],
+  // CheerpJ 有自己的加载框；而且这里的 onReady 还是「iframe load 即就绪」（见上面的 TODO），
+  // 盖上遮罩只会先挡住 CheerpJ 的进度、再立刻撤掉，两头不落好
+  ownsLoadingUi: true,
   priority: 10,
   // 没装 / 没配置就当作不存在，解析阶段直接跳过
   available: () => Boolean(J2ME_PATH),
