@@ -183,7 +183,7 @@ const en: Translation = {
     liveMore: 'All streams',
     popularTitle: 'Most Played Emulator Games',
     popularSubtitle: 'Ranked by total plays',
-    pickedTitle: 'Editor’s Picks',
+    pickedTitle: 'Most Popular Games',
     pickedSubtitle: 'Hand-picked by us',
     platformsTitle: 'Play Retro Games by Platform',
     platformsSubtitle: 'From handhelds to arcade cabinets, pick the console you grew up with',

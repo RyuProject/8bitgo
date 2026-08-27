@@ -271,7 +271,7 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
           />
           <p className="mt-1 text-[11px] text-dim">
             填数字就会出现在首页第一栏，小的排前面。只要有任意一款填了，那一栏就<strong className="text-muted">只出填了的这些</strong>，
-            标题也会从「最多人玩」变成「编辑精选」。全部留空则退回按游玩次数自动排。
+            标题也会从「最多人玩」变成「最热门的游戏」。全部留空则退回按游玩次数自动排。
           </p>
         </Field>
       </div>

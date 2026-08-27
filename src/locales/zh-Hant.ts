@@ -171,7 +171,7 @@ const zhHant: Translation = {
     liveMore: '全部直播',
     popularTitle: '最多人玩的模擬器遊戲',
     popularSubtitle: '依累計遊玩次數排序',
-    pickedTitle: '編輯精選',
+    pickedTitle: '最熱門的遊戲',
     pickedSubtitle: '由站長挑選',
     platformsTitle: '依平台玩復古遊戲',
     platformsSubtitle: '從掌機到街機，挑一台你的童年主機',

@@ -194,7 +194,7 @@ export const zhHans = {
     liveMore: '全部直播',
     popularTitle: '最多人玩的模拟器游戏',
     popularSubtitle: '按累计游玩次数排序',
-    pickedTitle: '编辑精选',
+    pickedTitle: '最热门的游戏',
     pickedSubtitle: '由站长挑选',
     platformsTitle: '按平台玩复古游戏',
     platformsSubtitle: '从掌机到街机，挑一台你的童年主机',

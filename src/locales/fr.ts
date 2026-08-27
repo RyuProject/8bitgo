@@ -184,7 +184,7 @@ const fr: Translation = {
     liveMore: 'Tous les directs',
     popularTitle: 'Les jeux sur émulateur les plus joués',
     popularSubtitle: 'Classés par nombre total de parties',
-    pickedTitle: 'Sélection de la rédaction',
+    pickedTitle: 'Les jeux les plus populaires',
     pickedSubtitle: 'Choisis à la main par nos soins',
     platformsTitle: 'Jouer aux jeux rétro par plateforme',
     platformsSubtitle: "Des consoles portables aux bornes d'arcade, choisis la console de ton enfance",

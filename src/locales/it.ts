@@ -184,7 +184,7 @@ const it: Translation = {
     liveMore: 'Tutte le dirette',
     popularTitle: 'I giochi con emulatore più giocati',
     popularSubtitle: 'In ordine di partite totali',
-    pickedTitle: 'Scelti dalla redazione',
+    pickedTitle: 'I giochi più popolari',
     pickedSubtitle: 'Selezionati a mano da noi',
     platformsTitle: 'Gioca ai retro game per piattaforma',
     platformsSubtitle: 'Dalle portatili ai cabinati arcade, scegli la console della tua infanzia',

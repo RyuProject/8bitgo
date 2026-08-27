@@ -182,7 +182,7 @@ const ja: Translation = {
     liveMore: 'すべての配信',
     popularTitle: '人気のエミュレーターゲーム',
     popularSubtitle: '累計プレイ回数順',
-    pickedTitle: '編集部のおすすめ',
+    pickedTitle: '一番人気のゲーム',
     pickedSubtitle: '運営が選んだ作品',
     platformsTitle: 'ゲーム機からレトロゲームを探す',
     platformsSubtitle: '携帯機からアーケードまで、思い出のハードを選んでください',

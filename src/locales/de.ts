@@ -183,7 +183,7 @@ const de: Translation = {
     liveMore: 'Alle Streams',
     popularTitle: 'Meistgespielte Emulator-Spiele',
     popularSubtitle: 'Sortiert nach Gesamtzahl der Spielrunden',
-    pickedTitle: 'Redaktionsempfehlungen',
+    pickedTitle: 'Die beliebtesten Spiele',
     pickedSubtitle: 'Von uns handverlesen',
     platformsTitle: 'Retro-Spiele nach Plattform',
     platformsSubtitle: 'Von Handhelds bis zum Arcade-Automaten – wähl die Konsole deiner Kindheit',

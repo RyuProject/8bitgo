@@ -183,7 +183,7 @@ const es: Translation = {
     liveMore: 'Todas las transmisiones',
     popularTitle: 'Los juegos de emulador más jugados',
     popularSubtitle: 'Ordenados por total de partidas',
-    pickedTitle: 'Selección del editor',
+    pickedTitle: 'Los juegos más populares',
     pickedSubtitle: 'Elegidos a mano por nosotros',
     platformsTitle: 'Juegos retro por plataforma',
     platformsSubtitle: 'De las portátiles a los arcades: elige la consola de tu infancia',
