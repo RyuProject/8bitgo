@@ -164,6 +164,74 @@ interface EjsAudioTap {
  * 谁连到 ctx.destination，就顺手也连一份到我们的探针上。
  * 这样声音照常播放，我们只是多接了一路旁路。
  */
+/**
+ * 把 iframe 里引擎自己打出来的错误接出来。
+ *
+ * 为什么非要这一层：街机 ROM 出问题时，核心报的是「缺哪个文件、哪个 CRC 对不上」，
+ * 这句话只出现在 iframe 内部的 console 里。外面只能看到「加载失败」四个字，
+ * 而街机 romset 版本极其挑剔，看不到这句原文基本没法排查 ——
+ * 这是街机比卡带机麻烦得多的地方。
+ *
+ * 只在**像致命错误**时才往上报（见 FATAL_HINTS）：核心启动时会打一堆无关紧要的
+ * warning，全报上去等于没报。其余的都留在缓冲区里，由 engineLog() 取。
+ */
+const LOG_LIMIT = 60
+/** 命中这些词才认为是「这局跑不起来了」，而不是普通噪音 */
+const FATAL_HINTS = [
+  'missing',
+  'not found',
+  'no such file',
+  'romset',
+  'crc',
+  'failed to load',
+  'error loading',
+  'could not load',
+  'bios',
+]
+
+function installErrorTap(
+  win: Window & Record<string, unknown>,
+  onFatal: (line: string) => void,
+): { lines: string[] } {
+  const lines: string[] = []
+  const push = (level: string, text: string) => {
+    const line = `[${level}] ${text}`.slice(0, 500)
+    lines.push(line)
+    if (lines.length > LOG_LIMIT) lines.shift()
+    const low = text.toLowerCase()
+    if (level !== 'log' && FATAL_HINTS.some((h) => low.includes(h))) onFatal(text.trim())
+  }
+
+  const c = win.console as Console | undefined
+  for (const level of ['error', 'warn'] as const) {
+    const native = c?.[level]
+    if (typeof native !== 'function' || !c) continue
+    c[level] = (...args: unknown[]) => {
+      try {
+        push(level, args.map((a) => (typeof a === 'string' ? a : safeStr(a))).join(' '))
+      } catch {
+        /* 记日志本身不能把游戏搞挂 */
+      }
+      native.apply(c, args as [])
+    }
+  }
+  win.addEventListener('error', (e) => push('error', (e as ErrorEvent).message || 'script error'))
+  win.addEventListener('unhandledrejection', (e) => {
+    const r = (e as PromiseRejectionEvent).reason
+    push('error', r instanceof Error ? r.message : safeStr(r))
+  })
+  return { lines }
+}
+
+function safeStr(v: unknown): string {
+  if (v instanceof Error) return v.message
+  try {
+    return typeof v === 'object' ? JSON.stringify(v) : String(v)
+  } catch {
+    return String(v)
+  }
+}
+
 function installAudioTap(win: Window & Record<string, unknown>): EjsAudioTap {
   const tap: EjsAudioTap = { ctx: null, node: null }
   const Native = (win.AudioContext || win.webkitAudioContext) as typeof AudioContext | undefined
@@ -289,7 +357,9 @@ function injectScript(doc: Document, src: string): Promise<void> {
 
 function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
-  const core = platformMap[options.platform]?.core
+  // 按游戏覆盖优先，其次才是平台默认。街机一个平台底下其实是好几套硬件，
+  // 拳皇 / 街霸 / 老板子各要各的核心，光靠平台默认值盖不住
+  const core = options.core || platformMap[options.platform]?.core
   if (!core) {
     options.onError?.(fmt(rt.ejsNoCore, { platform: options.platform }))
     return { destroy: () => {}, caps: new Set<Capability>() }
@@ -336,6 +406,9 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   let stateToken = ''
   /** 关页面前补传存档用 */
   let flushState: (() => void) | null = null
+  /** 引擎日志探针。街机 ROM 排查全靠它 —— 详见 installErrorTap */
+  let errorTap: { lines: string[] } | null = null
+  const reportedErrors = new Set<string>()
   // 本地文件转成 blob: URL（同源 iframe 可直接访问）；gameName 用原始文件名以保留扩展名
   const isFile = typeof options.game !== 'string'
   const gameUrl = isFile ? URL.createObjectURL(options.game as File) : (options.game as string)
@@ -513,6 +586,9 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       EJS_gameUrl: gameUrl,
       EJS_gameName: gameName,
       EJS_pathtodata: EJS_PATH,
+      // 平台级 BIOS。Neo Geo 这类平台不给就直接起不来；不需要 BIOS 的平台
+      // 这里是空串，等于没设
+      ...(options.biosUrl ? { EJS_biosUrl: options.biosUrl } : {}),
       EJS_color: '#0078f2',
       EJS_backgroundColor: '#0b0b0f',
       EJS_language: 'zh-CN',
@@ -536,6 +612,16 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
 
     // 录像要取声音，必须赶在 loader.js 建 AudioContext 之前装探针
     audioTap = installAudioTap(win)
+
+    // 引擎的报错探针也要赶在 loader.js 之前装：核心是在加载过程中打错误的，
+    // 装晚了那句「缺哪个文件」就已经过去了
+    errorTap = installErrorTap(win, (line) => {
+      if (destroyed) return
+      // 同一句话可能被核心打好几遍，只报第一次，免得把界面刷成一片红
+      if (reportedErrors.has(line)) return
+      reportedErrors.add(line)
+      options.onError?.(fmt(rt.ejsEngineError, { msg: line }))
+    })
 
     void (async () => {
       try {
@@ -606,6 +692,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     destroy,
     // EmulatorJS 默认 0.6，工具栏滑块要跟它对上
     volume,
+    engineLog: () => errorTap?.lines.slice() ?? [],
     setPaused(next: boolean) {
       const emu = emuOf()
       try {

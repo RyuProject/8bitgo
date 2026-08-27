@@ -9,7 +9,7 @@ import type { PlatformId } from '@/types'
  * 说明：GBC（Game Boy Color）并入 gb（我们的「Game Boy / Color」平台，支持 .gbc）；
  *       WebGame / 网页游戏 即 flash（平台名「Flash / 网页游戏」）。
  */
-export const ENABLED_PLATFORMS: PlatformId[] = ['nes', 'flash', 'gba', 'gb', 'java']
+export const ENABLED_PLATFORMS: PlatformId[] = ['nes', 'flash', 'gba', 'gb', 'java', 'arcade']
 
 export function isPlatformEnabled(id: PlatformId): boolean {
   return ENABLED_PLATFORMS.length === 0 || ENABLED_PLATFORMS.includes(id)

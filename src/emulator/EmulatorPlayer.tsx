@@ -11,10 +11,11 @@ import { liveViewRuntime, type LiveSession, type LiveViewState } from './adapter
 import { emulatorJsRuntime, p2pPlayable, type NetplaySession } from './adapters/emulatorjs'
 import { cloudGameRuntime, cloudPlayable, type CloudSession, type CloudState } from './adapters/cloudgame'
 import { cx } from '@/lib/format'
-import { Button } from '@/components/ui/Button'
+import { Button, buttonClasses } from '@/components/ui/Button'
 import { useShell } from '@/components/layout/ShellContext'
 import { useT, fmt } from '@/services/i18n'
 import { platformLabel } from '@/services/i18nData'
+import { ROM_LANG_LABEL, type RomLang } from '@/config/languages'
 import { FEATURES } from '@/config/features'
 import { recordPlay } from '@/services/store'
 import {
@@ -79,8 +80,21 @@ interface Props {
   className?: string
   /** 若有可直接访问的 ROM URL（对象存储 / 自制开源游戏），可跳过上传 */
   romUrl?: string
+  /** 这一款游戏指定的模拟器核心。不传就用平台默认 */
+  core?: string
+  /** 平台级 BIOS 的地址（见 services/platformBios.ts）。Neo Geo 这类平台缺了就起不来 */
+  biosUrl?: string
   /** 正在探测云端 ROM 是否存在 */
   romChecking?: boolean
+  /**
+   * 这款游戏绑了哪几种语言的 ROM。少于两种时不显示切换入口 ——
+   * 只有一份 ROM 的话「切换语言」是个假选项。
+   */
+  romLangs?: RomLang[]
+  /** 当前用的是哪一种（由 useRomUrl 反查出来） */
+  romLang?: RomLang
+  /** 玩家选了别的语言。父组件据此换 romUrl，换完这边会自动重开这一局 */
+  onRomLangChange?: (lang: RomLang) => void
   /**
    * 本地文件识别出的平台与页面平台不一致时如何处理：
    *   'switch' —— 用识别出的平台运行（玩本地 ROM 页）
@@ -129,7 +143,12 @@ export function EmulatorPlayer({
   icon,
   className,
   romUrl,
+  core,
+  biosUrl,
   romChecking,
+  romLangs,
+  romLang,
+  onRomLangChange,
   onDetectMismatch = 'warn',
   onPlatformChange,
   onDetectFailed,
@@ -230,6 +249,12 @@ export function EmulatorPlayer({
   // 同理：游玩计数只在 onReady 里读一次，不该让它把正在跑的会话重建
   const gameSlugRef = useRef(gameSlug)
   gameSlugRef.current = gameSlug
+  // 核心与 BIOS 也走 ref：BIOS 是异步取回来的，进依赖的话它一到货就会把
+  // 正在跑的游戏重启一遍；这两个值只在挂载引擎那一刻读一次就够了
+  const coreRef = useRef(core)
+  coreRef.current = core
+  const biosUrlRef = useRef(biosUrl)
+  biosUrlRef.current = biosUrl
   /** 云端联机是否真的跑起来过（用于区分「没连上」和「玩到一半断了」） */
   const cloudPlayedRef = useRef(false)
   /** 看直播：观众人数与直播标题 */
@@ -274,6 +299,10 @@ export function EmulatorPlayer({
       platform: session.platform,
       game: session.game,
       gameName: gameNameRef.current,
+      // 按游戏覆盖核心 / 平台级 BIOS：都用 ref 读当前值，
+      // 放进 effect 依赖会让「BIOS 异步到货」把正在跑的游戏重启一遍
+      core: coreRef.current,
+      biosUrl: biosUrlRef.current,
       // 存档按 slug 归档；玩家自己上传的 ROM 没有 slug，交给引擎退回文件名
       gameSlug: gameSlugRef.current,
       netplay: session.netplay,
@@ -590,6 +619,13 @@ export function EmulatorPlayer({
     void start(retryRequest.file)
   }, [retryRequest, start])
 
+  /**
+   * 切完 ROM 语言之后要接着开的那一局。
+   * ROM 换了就是另一份程序，没法热切 —— 只能把会话拆掉、
+   * 等父组件把新地址传下来再重开（见下面那个 effect）。
+   */
+  const restartWithLangRef = useRef<RomLang | null>(null)
+
   const reset = () => {
     // 主动离开房间后，URL 里的 ?p2p= / ?room= 就不该再把人拉回同一个房间
     if (session?.netplay || session?.cloud || joining) setIgnoreInvite(true)
@@ -607,6 +643,36 @@ export function EmulatorPlayer({
     roleSwitchRef.current = null
     if (inputRef.current) inputRef.current.value = ''
   }
+
+  /**
+   * 换 ROM 语言。
+   *
+   * ROM 换了就是另一份程序，存档、内存布局都不通用，没法热切。所以正在玩的话
+   * 只能重开这一局：先把会话拆掉，把想要的语言记在 ref 上，等父组件按新语言
+   * 解析出 romUrl 传下来，下面那个 effect 再自动开起来 —— 玩家看到的就是
+   * 「黑一下，然后是另一个语言的同一款游戏」，不用自己再点一次开始。
+   */
+  const switchRomLang = (next: RomLang) => {
+    if (!next || next === romLang) return
+    // 有会话在跑才需要重开；空闲状态直接换地址就行，玩家还没开始
+    if (session) {
+      restartWithLangRef.current = next
+      reset()
+    }
+    onRomLangChange?.(next)
+  }
+
+  // 语言换完了，父组件把新的 romUrl 传下来，把这一局接着开起来
+  useEffect(() => {
+    const pending = restartWithLangRef.current
+    if (!pending || !romUrl) return
+    restartWithLangRef.current = null
+    void start(null)
+    // start() 里会先清掉提示，所以这句要放它后面
+    setNotice(fmt(t.player.romLangSwitched, { lang: ROM_LANG_LABEL[pending] }))
+    // 只认 romUrl 的变化：start 是 useCallback，放进依赖会让它在无关的重建时也触发
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [romUrl])
 
   const copyInvite = async () => {
     if (!gameSlug || !roomId) return
@@ -831,7 +897,7 @@ export function EmulatorPlayer({
            *
            * aria-label 用的是「加载中」，只给读屏软件听，页面上看不见。
            */
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/85 px-8 backdrop-blur-sm">
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-black px-8">
             <div
               role="progressbar"
               aria-label={t.player.statusLoading}
@@ -973,6 +1039,33 @@ export function EmulatorPlayer({
         )}
 
         <div className="ml-auto flex items-center gap-1.5">
+          {/*
+            ROM 语言切换。两个前提：
+              1. 这款游戏确实有两种以上语言的 ROM —— 只有一种时切了也是它自己
+              2. 不在联机房里 —— 房主和访客必须跑同一份 ROM，中途换语言这局就废了
+          */}
+          {romLangs && romLangs.length > 1 && onRomLangChange && !inRoom && (
+            <label className="relative" title={t.player.romLangTitle}>
+              <span className="sr-only">{t.player.romLang}</span>
+              <select
+                value={romLang ?? ''}
+                onChange={(e) => switchRomLang(e.target.value as RomLang)}
+                className={cx(buttonClasses('secondary', 'sm'), 'cursor-pointer appearance-none pr-7')}
+              >
+                {/* 当前用的是通用 rom（不属于任何语言槽）时，给个占位项，
+                    免得 select 自作主张显示成第一个语言，看起来像已经选了它 */}
+                {!romLang && <option value="">{t.player.romLang}</option>}
+                {romLangs.map((l) => (
+                  <option key={l} value={l}>
+                    {ROM_LANG_LABEL[l]}
+                  </option>
+                ))}
+              </select>
+              <span aria-hidden className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-muted">
+                ▾
+              </span>
+            </label>
+          )}
           {(busy || status === 'error') && (
             <Button variant="ghost" size="sm" onClick={reset}>
               {online ? t.player.leaveRoom : t.player.changeRom}

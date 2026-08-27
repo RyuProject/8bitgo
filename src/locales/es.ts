@@ -413,6 +413,9 @@ const es: Translation = {
   },
 
   player: {
+    romLang: 'Idioma de la ROM',
+    romLangTitle: 'Cambiar a otra versión de idioma de este juego',
+    romLangSwitched: 'Cambiado a la versión en {lang}: la partida ha vuelto a empezar',
     watchHintPick: 'Entras solo para mirar: verás y oirás la partida del anfitrión, pero sin controles. Pulsa «Coger un mando» en la barra cuando quieras jugar.',
     watchRoom: 'Ver',
     watchInstead: 'Solo mirar',
@@ -743,6 +746,7 @@ const es: Translation = {
     flashLoadFailed: 'No se pudo cargar el contenido Flash: {msg}',
     ejsNoCore: 'EmulatorJS no tiene un núcleo para {platform}',
     ejsInitFailed: 'No se pudo inicializar el contenedor del emulador',
+    ejsEngineError: 'Error del emulador: {msg}',
     ejsLoadFailed:
       'No se pudieron cargar los recursos de EmulatorJS ({path}). Revisa tu conexión o define un VITE_EJS_PATH autoalojado en .env.',
   },

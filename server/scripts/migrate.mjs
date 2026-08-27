@@ -62,7 +62,7 @@ async function hasIndex(table, index) {
 }
 
 /**
- * 补丁清单。每条给出 table，跑之前统一确认表在不在 ——
+ * 补丁清单。每条给出 table，跑之前统一确认表在不在（table 为 null 表示这条自己建表）——
  * 「表不存在」和「已经是最新」是两回事，不能都报成 OK。
  * 新增补丁往后面追加，不要修改已有的。
  */
@@ -84,6 +84,26 @@ const patches = [
         await conn.query('ALTER TABLE `games` ADD INDEX `idx_home_rank` (`hidden`, `home_rank`)')
       }
     },
+  },
+  {
+    name: 'games.core（按游戏覆盖模拟器核心）',
+    table: 'games',
+    needed: async () => !(await hasColumn('games', 'core')),
+    run: () => conn.query('ALTER TABLE `games` ADD COLUMN `core` VARCHAR(32) NULL AFTER `hidden`'),
+  },
+  {
+    name: 'platform_bios（平台级 BIOS，Neo Geo 这类必须有）',
+    table: null,
+    needed: async () => !(await hasTable('platform_bios')),
+    run: () =>
+      conn.query(
+        'CREATE TABLE IF NOT EXISTS `platform_bios` (' +
+          '`platform` VARCHAR(20) NOT NULL,' +
+          '`object_key` VARCHAR(500) NOT NULL,' +
+          '`updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,' +
+          'PRIMARY KEY (`platform`)' +
+          ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
+      ),
   },
   {
     name: 'favorites.idx_fav_game（删游戏时按 game_slug 清理）',
@@ -119,7 +139,7 @@ const patches = [
   },
 ]
 
-const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves']
+const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'platform_bios']
 
 try {
   await conn.query(`CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`)
@@ -134,7 +154,9 @@ try {
   let applied = 0
   let missing = 0
   for (const p of patches) {
-    if (!(await hasTable(p.table))) {
+    // table: null = 这条补丁自己就是「建表」，不能拿「表不存在」当跳过理由，
+    // 否则新表永远建不出来
+    if (p.table && !(await hasTable(p.table))) {
       console.log(`⚠️  ${p.name}：${p.table} 表不存在，已跳过`)
       missing++
       continue

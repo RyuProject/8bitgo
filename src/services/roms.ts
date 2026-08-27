@@ -16,7 +16,7 @@ import type { Game } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { isPlayable } from '@/emulator'
 import type { Lang, RomLang } from '@/config/languages'
-import { romLangFor } from '@/config/languages'
+import { ROM_LANGS, romLangFor } from '@/config/languages'
 import { useLang } from '@/services/lang'
 
 export const ROM_BASE_KEY = '8bitgo.rom.base'
@@ -141,9 +141,19 @@ export function encodeKey(key: string): string {
     .join('/')
 }
 
-/** 把对象 key 拼成可公开访问的 URL */
+/**
+ * 把对象 key 拼成可公开访问的 URL。
+ *
+ * 认三种写法：
+ *   1. 完整 URL（http/https）—— 原样返回
+ *   2. 以 `/` 开头 —— 当成站点自己的路径原样返回（例如 BIOS 放在 public/bios/ 里，
+ *      填 `/bios/neogeo.zip`）。对象 key 本身不会以 `/` 开头（上传时 encodeKey 就把
+ *      前导斜杠剥掉了），所以这条不会和真的 key 撞上。
+ *   3. 其余 —— 当成对象存储的 key，拼上公开访问地址；没配地址时返回空串
+ */
 export function romUrlForKey(key: string, base = getRomBase()): string {
   if (/^https?:\/\//i.test(key)) return key
+  if (key.startsWith('/')) return key
   return base ? `${base}/${encodeKey(key)}` : ''
 }
 
@@ -202,8 +212,29 @@ export function unbindKeyPatch(game: Pick<Game, 'rom' | 'roms'>, key: string): P
   return patch
 }
 
-/** 按语言选出该游戏应加载的 ROM key/URL：当前语言 → 英语 → 通用 rom */
-export function effectiveRomKey(game: Game, lang: Lang): string {
+/**
+ * 这款游戏到底绑了哪几种语言的 ROM（按 ROM_LANGS 的顺序，只算真的填了 key 的）。
+ * 播放器用它决定要不要显示「切换 ROM 语言」——只有一种语言时没什么可切的。
+ */
+export function romLangsOf(game: Pick<Game, 'roms'>): RomLang[] {
+  const roms = game.roms ?? {}
+  return ROM_LANGS.filter((l) => typeof roms[l] === 'string' && roms[l].trim() !== '')
+}
+
+/** 某个 key 属于哪个语言槽；不属于任何语言槽（通用 rom / 约定 key）时返回 undefined */
+export function romLangOfKey(game: Pick<Game, 'roms'>, key: string): RomLang | undefined {
+  if (!key) return undefined
+  return ROM_LANGS.find((l) => game.roms?.[l] === key)
+}
+
+/**
+ * 按语言选出该游戏应加载的 ROM key/URL：当前语言 → 英语 → 通用 rom。
+ *
+ * prefer 是玩家在播放器里手动选的语言，优先级最高 —— 那个下拉框里本来就只列
+ * 确实存在的语言，所以命中不了就说明数据变了，照常走后面的回退。
+ */
+export function effectiveRomKey(game: Game, lang: Lang, prefer?: RomLang | null): string {
+  if (prefer && game.roms?.[prefer]) return game.roms[prefer]
   const slot = romLangFor(lang)
   return game.roms?.[slot] || game.roms?.en || game.rom || ''
 }
@@ -256,21 +287,27 @@ export interface RomResolution {
   status: 'idle' | 'checking' | 'found' | 'missing'
   url: string
   key?: string
+  /** 用的是哪个语言槽。通用 rom 和约定 key 探测出来的没有语言，为 undefined */
+  lang?: RomLang
 }
 
-/** 解析某款游戏可直接播放的 ROM 地址：显式绑定 → 立即可用；否则按约定 key 探测 */
-export function useRomUrl(game: Game | undefined): RomResolution {
+/**
+ * 解析某款游戏可直接播放的 ROM 地址：显式绑定 → 立即可用；否则按约定 key 探测。
+ *
+ * prefer：玩家在播放器工具栏里手动选的 ROM 语言，不传就跟着站点语言走。
+ */
+export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomResolution {
   const lang = useLang()
   const [state, setState] = useState<RomResolution>({ status: 'idle', url: '' })
 
   useEffect(() => {
     if (!game) return
     // 显式绑定（按语言选出）优先
-    const key = effectiveRomKey(game, lang)
+    const key = effectiveRomKey(game, lang, prefer)
     if (key) {
       const url = romUrlForKey(key)
       if (url) {
-        setState({ status: 'found', url, key })
+        setState({ status: 'found', url, key, lang: romLangOfKey(game, key) })
         return
       }
     }
@@ -296,7 +333,7 @@ export function useRomUrl(game: Game | undefined): RomResolution {
     return () => {
       cancelled = true
     }
-  }, [game, lang])
+  }, [game, lang, prefer])
 
   return state
 }
@@ -345,6 +382,37 @@ export async function listRomObjects(prefix = getRomPrefix()): Promise<RomObject
     cursor = data.cursor
   }
   return out
+}
+
+export interface RomHead {
+  exists: boolean
+  /** 字节数。跨域也读得到 —— Worker 的 Access-Control-Expose-Headers 里有 Content-Length */
+  size?: number
+  /** R2 单段上传时 ETag 就是内容的 MD5（带引号），可用来粗判是不是同一份文件 */
+  etag?: string
+}
+
+/**
+ * 探一下某个 key 上是不是已经有文件了，以及它多大。
+ *
+ * 用途是上传前的重复检查：同一个游戏的同一个语言槽（或同一张封面）只该有一份文件，
+ * 直接 PUT 会静默覆盖，管理员根本不知道自己盖掉了什么。
+ *
+ * Worker 的 GET/HEAD 不需要口令（ROM 桶本来就是公开读），带上 Authorization 也无妨。
+ * 探测失败一律当作「不存在」——它只是个提示，不该把上传本身拦下来。
+ */
+export async function headRom(key: string): Promise<RomHead> {
+  const api = getRomApi()
+  const clean = key.replace(/^\/+/, '')
+  if (!api || !clean) return { exists: false }
+  const res = await fetch(`${api}/${encodeKey(clean)}`, { method: 'HEAD', headers: authHeaders(), cache: 'no-store' })
+  if (!res.ok) return { exists: false }
+  const len = Number(res.headers.get('content-length'))
+  return {
+    exists: true,
+    size: Number.isFinite(len) && len >= 0 ? len : undefined,
+    etag: res.headers.get('etag') ?? undefined,
+  }
 }
 
 export interface UploadResult {

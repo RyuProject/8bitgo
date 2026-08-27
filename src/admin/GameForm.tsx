@@ -5,7 +5,16 @@ import { ROM_LANGS, ROM_LANG_LABEL, type RomLang } from '@/config/languages'
 import { platforms, platformMap } from '@/data/platforms'
 import { genres } from '@/data/genres'
 import { cx } from '@/lib/format'
-import { defaultKeyFor, defaultMediaKey, defaultRomKeyForLang, getRomConfig, romUrlForKey, uploadRom } from '@/services/roms'
+import {
+  defaultKeyFor,
+  defaultMediaKey,
+  defaultRomKeyForLang,
+  getRomConfig,
+  romUrlForKey,
+  uploadRom,
+} from '@/services/roms'
+import { confirmUpload, cleanupSuperseded, human } from './uploadGuards'
+import { coreOptionsFor } from '@/config/emulators'
 import { isPlayable } from '@/emulator'
 import { Field, btnClass, inputClass } from './ui'
 
@@ -62,10 +71,27 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
   const [slugTouched, setSlugTouched] = useState(Boolean(initial))
   const [error, setError] = useState<string | null>(null)
   const isEdit = Boolean(initial)
+  /** 该平台可选的核心。没配置的平台不显示这一栏 */
+  const coreOptions = coreOptionsFor(form.platform)
 
   useEffect(() => {
     if (!isEdit && !slugTouched) setForm((f) => ({ ...f, slug: slugify(f.title) }))
   }, [form.title, isEdit, slugTouched])
+
+
+  /**
+   * 这款游戏当前绑定的全部对象 key。
+   * **刻意不去重** —— cleanupSuperseded 要靠「同一个 key 出现几次」判断它是不是
+   * 被多个槽位共用（比如 en 和 ja 指向同一份 ROM），共用的就不能删。
+   */
+  const allBoundKeys = [
+    form.rom ?? '',
+    ...Object.values(form.roms ?? {}),
+    form.cover ?? '',
+    form.video ?? '',
+  ]
+    .map((k) => (typeof k === 'string' ? k.trim() : ''))
+    .filter(Boolean)
 
   const set = <K extends keyof Game>(key: K, value: Game[K]) => setForm((f) => ({ ...f, [key]: value }))
 
@@ -124,6 +150,8 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
       // 空 / 0 / 负数一律当「不上首页」。清空输入框时有的浏览器回 0 而不是空串，
       // 不归一化的话这款游戏会莫名其妙钉在首页第一个
       homeRank: Number(form.homeRank) > 0 ? Math.round(Number(form.homeRank)) : undefined,
+      // 空字符串要写成 undefined，否则会当成「核心名叫空串」存进去
+      core: form.core?.trim() || undefined,
     })
   }
 
@@ -204,6 +232,23 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
         <Field label="上线日期">
           <input type="date" className={inputClass} value={form.addedAt} onChange={(e) => set('addedAt', e.target.value)} />
         </Field>
+        {coreOptions.length > 0 && (
+          <Field label="模拟器核心">
+            <select className={inputClass} value={form.core ?? ''} onChange={(e) => set('core', e.target.value || undefined)}>
+              <option value="">平台默认</option>
+              {coreOptions.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-[11px] text-dim">
+              街机这一个平台底下其实是好几套硬件：拳皇是 Neo Geo（fbneo），街霸 2 是 CPS2。
+              报「缺文件 / CRC 不匹配」时先换核心试试——<strong className="text-muted">每个核心认的 romset 版本不一样</strong>，
+              往往比换 ROM 有用。
+            </p>
+          </Field>
+        )}
         <Field label="首页排序">
           <input
             type="number"
@@ -236,6 +281,7 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
             platform={form.platform}
             slug={slugify(form.slug || form.title)}
             onChange={(key) => setRomLang(lang, key)}
+            allBoundKeys={allBoundKeys}
           />
         ))}
       </div>
@@ -251,6 +297,7 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
           value={form.cover ?? ''}
           slug={slugify(form.slug || form.title)}
           onChange={(v) => set('cover', v)}
+          allBoundKeys={allBoundKeys}
         />
       </div>
 
@@ -261,6 +308,7 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
         value={form.video ?? ''}
         slug={slugify(form.slug || form.title)}
         onChange={(v) => set('video', v)}
+        allBoundKeys={allBoundKeys}
       />
 
       <Field label="简介">
@@ -316,6 +364,7 @@ function RomField({
   onChange,
   lang,
   label,
+  allBoundKeys,
 }: {
   value: string
   platform: PlatformId
@@ -323,6 +372,8 @@ function RomField({
   onChange: (key: string) => void
   lang?: RomLang
   label?: string
+  /** 这款游戏当前绑定的全部对象 key（不去重）—— 判断旧文件是不是还被别的槽位共用 */
+  allBoundKeys: string[]
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [progress, setProgress] = useState<number | null>(null)
@@ -334,13 +385,24 @@ function RomField({
 
   const onFile = async (file: File | undefined) => {
     if (!file) return
-    const key = value.trim() && !/^https?:/i.test(value) ? value.trim() : defKey(file.name)
+    const oldKey = value.trim()
+    // 字段里已有 key（且不是完整 URL）就复用它 —— 同一个槽位始终对着同一个对象，
+    // 这样重传就是原地覆盖，不会又生出一份
+    const key = oldKey && !/^https?:/i.test(oldKey) ? oldKey : defKey(file.name)
     setMsg(null)
+    if (!(await confirmUpload(key, file))) {
+      if (inputRef.current) inputRef.current.value = ''
+      return
+    }
     setProgress(0)
     try {
       const result = await uploadRom(file, key, setProgress)
       onChange(result.key)
-      setMsg({ ok: true, text: `已上传到 R2：${result.key}（${(result.size / 1024 / 1024).toFixed(2)} MB）` })
+      const removed = await cleanupSuperseded(oldKey, result.key, allBoundKeys)
+      setMsg({
+        ok: true,
+        text: `已上传到 R2：${result.key}（${human(result.size)}）${removed ? `；旧文件 ${removed} 已删除` : ''}`,
+      })
     } catch (err) {
       setMsg({ ok: false, text: err instanceof Error ? err.message : '上传失败' })
     } finally {
@@ -354,7 +416,9 @@ function RomField({
       label={label ?? 'ROM 文件'}
       hint={
         canUpload
-          ? `上传会存到 ${defKey('x.zip')} 并自动绑定；也可手填已有文件的 key 或完整 URL。留空则该语言不单独提供`
+          ? value.trim() && !/^https?:/i.test(value)
+            ? `再次上传会原地覆盖已绑定的 ${value.trim()}；想换存放位置就先改这里的 key 或清空`
+            : `上传会存到 ${defKey('x.zip')} 这样的位置（扩展名跟随所选文件）并自动绑定；也可手填已有文件的 key 或完整 URL。留空则该语言不单独提供`
           : '手填对象 key 或完整 URL；要直接上传，请先在「ROM 存储」页配置 Worker 地址与口令'
       }
     >
@@ -409,6 +473,7 @@ function MediaField({
   value,
   slug,
   onChange,
+  allBoundKeys,
 }: {
   kind: 'covers' | 'videos'
   label: string
@@ -416,6 +481,7 @@ function MediaField({
   value: string
   slug: string
   onChange: (key: string) => void
+  allBoundKeys: string[]
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [progress, setProgress] = useState<number | null>(null)
@@ -427,13 +493,20 @@ function MediaField({
 
   const onFile = async (file: File | undefined) => {
     if (!file) return
-    const key = value.trim() && !/^https?:/i.test(value) ? value.trim() : defaultMediaKey(kind, slug, file.name)
+    const oldKey = value.trim()
+    // 同 RomField：复用已绑定的 key，避免 covers/slug.jpg 与 covers/slug.png 并存
+    const key = oldKey && !/^https?:/i.test(oldKey) ? oldKey : defaultMediaKey(kind, slug, file.name)
     setMsg(null)
+    if (!(await confirmUpload(key, file))) {
+      if (inputRef.current) inputRef.current.value = ''
+      return
+    }
     setProgress(0)
     try {
       const result = await uploadRom(file, key, setProgress)
       onChange(result.key)
-      setMsg({ ok: true, text: `已上传：${result.key}（${(result.size / 1024 / 1024).toFixed(2)} MB）` })
+      const removed = await cleanupSuperseded(oldKey, result.key, allBoundKeys)
+      setMsg({ ok: true, text: `已上传：${result.key}（${human(result.size)}）${removed ? `；旧文件 ${removed} 已删除` : ''}` })
     } catch (err) {
       setMsg({ ok: false, text: err instanceof Error ? err.message : '上传失败' })
     } finally {

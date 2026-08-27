@@ -414,6 +414,9 @@ const it: Translation = {
   },
 
   player: {
+    romLang: 'Lingua della ROM',
+    romLangTitle: 'Passa a un’altra versione linguistica di questo gioco',
+    romLangSwitched: 'Passato alla versione in {lang}: la partita è ricominciata',
     watchHintPick: 'Entri solo per guardare: immagine e audio dell’host, ma senza comandi. Premi «Prendi un posto» nella barra quando vuoi giocare.',
     watchRoom: 'Guarda',
     watchInstead: 'Solo guardare',
@@ -744,6 +747,7 @@ const it: Translation = {
     flashLoadFailed: 'Caricamento del contenuto Flash non riuscito: {msg}',
     ejsNoCore: 'EmulatorJS non ha un core per {platform}',
     ejsInitFailed: "Impossibile inizializzare il contenitore dell'emulatore",
+    ejsEngineError: 'Errore dell’emulatore: {msg}',
     ejsLoadFailed:
       'Impossibile caricare le risorse di EmulatorJS ({path}). Controlla la connessione, oppure imposta un VITE_EJS_PATH self-hosted in .env.',
   },

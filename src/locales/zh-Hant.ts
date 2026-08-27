@@ -381,6 +381,9 @@ const zhHant: Translation = {
   },
 
   player: {
+    romLang: 'ROM 語言',
+    romLangTitle: '換一個語言版本的遊戲 ROM',
+    romLangSwitched: '已換成{lang}版本，這一局重新開始了',
     watchHintPick: '你選的是只看不玩：能看到房主的畫面、聽到聲音，但不參與操作。想上場隨時在工具列點「上場玩」。',
     watchRoom: '觀看直播',
     watchInstead: '只看不玩',
@@ -663,6 +666,7 @@ const zhHant: Translation = {
     ejsNoCore: 'EmulatorJS 沒有 {platform} 平台的核心',
     ejsInitFailed: '無法初始化模擬器容器',
     ejsLoadFailed: '無法載入 EmulatorJS 資源（{path}）。請檢查網路，或在 .env 中設定自行架設的 VITE_EJS_PATH。',
+    ejsEngineError: '引擎報錯：{msg}',
   },
 
   featured: {

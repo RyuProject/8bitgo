@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { recordRecent, toggleFavorite, useCurrentUser } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
-import { useRomUrl } from '@/services/roms'
+import type { RomLang } from '@/config/languages'
+import { romLangsOf, useRomUrl } from '@/services/roms'
 import { resolveRuntime, runtimesFor } from '@/emulator'
 import { usePageData, type GameData } from '@/services/pageData'
 import { platformMap } from '@/data/platforms'
@@ -10,6 +11,7 @@ import { genreMap } from '@/data/genres'
 import { isPlatformEnabled } from '@/config/platforms'
 import { getDefaultKeymap } from '@/lib/emulator'
 import { formatCount, formatPlayers } from '@/lib/format'
+import { usePlatformBiosUrl } from '@/services/platformBios'
 import { useSeo, breadcrumbSchema, videoGameSchema } from '@/services/seo'
 import { useLang } from '@/services/lang'
 import { useT, fmt } from '@/services/i18n'
@@ -47,7 +49,15 @@ export function GameDetailPage() {
   const user = useCurrentUser()
   const [copied, setCopied] = useState(false)
   const isFav = Boolean(user?.favorites.includes(slug))
-  const rom = useRomUrl(game)
+  /**
+   * 玩家手动选的 ROM 语言（null = 跟着站点语言走）。
+   * 换游戏时要清掉，否则上一款选的「日本語」会带到下一款上。
+   */
+  const [romLang, setRomLang] = useState<RomLang | null>(null)
+  useEffect(() => setRomLang(null), [slug])
+  const rom = useRomUrl(game, romLang)
+  /** 这款游戏绑了哪几种语言的 ROM；少于两种时播放器不显示切换入口 */
+  const romLangs = game ? romLangsOf(game) : []
 
   // 记录最近浏览。依赖只看 slug：重新取数会得到一个全新的 game 对象，
   // 按对象比较会让同一款游戏被重复记一次
@@ -66,6 +76,9 @@ export function GameDetailPage() {
   const seoTitle = game ? gameTitle(game, lang) : ''
   const seoPlatform = game ? platformMap[game.platform] : undefined
   const seoPlatformName = seoPlatform ? platformLabel(t, seoPlatform.id, seoPlatform.name) : ''
+  // 平台级 BIOS。必须在下面那几个 early return 之前调 —— hook 的调用顺序每次渲染都要一致。
+  // 异步到货，第一帧一般是空串；播放器只在挂载引擎那一刻读它，不会因此重启游戏
+  const biosUrl = usePlatformBiosUrl(seoPlatform?.id)
   const seoDesc = game ? plainText(game.description) : ''
   useSeo(
     game
@@ -152,8 +165,14 @@ export function GameDetailPage() {
               watch={watchOnly}
               liveInvite={liveInvite}
               icon={game.icon}
+              // 这一款指定的核心（街机尤其需要），以及平台级 BIOS（Neo Geo 缺了起不来）
+              core={game.core}
+              biosUrl={biosUrl || undefined}
               romUrl={rom.status === 'found' ? rom.url : undefined}
               romChecking={rom.status === 'checking'}
+              romLangs={romLangs}
+              romLang={rom.lang}
+              onRomLangChange={setRomLang}
               backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority className="h-full w-full" />}
             />
           </div>

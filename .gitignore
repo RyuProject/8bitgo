@@ -47,3 +47,9 @@ public/webretro
 
 # webretro 安装脚本的临时检出目录（正常会自动清掉，进程被杀时可能残留）
 .webretro-tmp
+
+# 平台 BIOS（Neo Geo 这类平台必须有，见 public/bios/HOWTO.md）
+# 只忽略文件本身，保留说明文档：BIOS 一般是有版权的商业固件，
+# 进了仓库历史就很难彻底删干净，公开仓库更等于对外分发。
+public/bios/*
+!public/bios/HOWTO.md

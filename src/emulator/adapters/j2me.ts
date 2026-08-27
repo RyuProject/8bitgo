@@ -41,6 +41,10 @@ import { GP, hasGamepadApi, startGamepadBridge, type GamepadBridge } from '../ga
  * 是 2D 不是 WebGL，所以截图直接 toBlob 就行，录像 captureStream 也能拿到帧。
  */
 const DISPLAY_ID = 'display'
+/** 轮询 CheerpJ 是否已经把画面亮出来的间隔 */
+const J2ME_POLL_MS = 250
+/** 兜底放行时间。CheerpJ 冷启动本来就慢，给足两分钟 */
+const J2ME_READY_TIMEOUT_MS = 120_000
 
 /**
  * 手柄：iframe 是同源的，而 main.js 把 keydown / keyup 监听挂在 display 上，
@@ -264,19 +268,74 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const displayOf = (): HTMLCanvasElement | null =>
     (iframe.contentDocument?.getElementById(DISPLAY_ID) as HTMLCanvasElement | null) ?? null
 
+  /* ---------------- 就绪判定 ---------------- */
+
+  /**
+   * ⚠️ iframe 的 load **不是**「可以玩了」。
+   *
+   * 它只代表 run.html 解析完了，CheerpJ 还要几十秒才把 JVM 和 FreeJ2ME 跑起来。
+   * 以前直接在 load 里调 onReady，播放器立刻撤掉加载遮罩，露出来的是 CheerpJ
+   * 自己那个带文字的加载框 —— 既让玩家对着不能玩的画面乱按，也破坏了
+   * 「所有模拟器统一只显示一条进度条」。
+   *
+   * 就绪信号是从 freej2me-web 源码里确认的，不是猜的：
+   *   run.html:190    <canvas tabindex="0" id="display" style="display: none;"></canvas>
+   *   src/main.js:269 setCanvasSize() 里，MIDlet 第一次报画面尺寸时才执行：
+   *                     document.getElementById('loading').hidden = true
+   *                     display.style.display = ''
+   * 也就是说 #display 从隐藏变可见 == 游戏开始出画面；而且同一时刻 CheerpJ
+   * 那个带文字的加载框被藏起来 —— 遮罩接在这一刻撤，正好无缝。
+   *
+   * 跨源读不到（有人把 VITE_J2ME_PATH 指到别的域名）就退回老行为，
+   * 再加超时兜底，免得 CheerpJ 挂了让玩家永远卡在遮罩后面。
+   */
+  let poll: ReturnType<typeof setInterval> | null = null
+  let readySent = false
+
+  const stopPoll = () => {
+    if (poll) {
+      clearInterval(poll)
+      poll = null
+    }
+  }
+  const sendReady = () => {
+    stopPoll()
+    if (readySent || destroyed) return
+    readySent = true
+    options.onReady?.()
+  }
+
+  /** true=画面已亮起 false=还没 null=跨源读不到 */
+  const displayShown = (): boolean | null => {
+    try {
+      const doc = iframe.contentDocument
+      if (!doc) return false // 文档还没建好，下一轮再看
+      const el = doc.getElementById(DISPLAY_ID) as HTMLElement | null
+      // 标签一直都在（静态写在 run.html 里），关键看它还是不是 display:none
+      return el ? el.style.display !== 'none' : false
+    } catch {
+      return null // 跨源
+    }
+  }
+
   let srcSet = false
   iframe.addEventListener('load', () => {
     if (!srcSet || destroyed) return
-    /**
-     * TODO(就绪时机)：这里和 webretro 有同样的毛病 —— iframe 的 load 只代表
-     * run.html 解析完了，CheerpJ 还要几十秒才把 JVM 跑起来，玩家会先看到一段黑屏。
-     *
-     * webretro 那边已经改成轮询同源 iframe 的内部状态；j2me 要照做的话，得先确认
-     * freej2me-web 的 run.html 里 #display 这个 canvas 是静态标签还是 MIDlet
-     * 起来之后才创建的 —— 前者的话它在 load 时就存在，拿来当就绪信号没有意义。
-     * 需要装好 public/j2me/ 之后读源码确认，没验证之前不乱猜。
-     */
-    options.onReady?.()
+
+    if (displayShown() === null) {
+      sendReady() // 跨源，读不到内部状态，退回老行为
+    } else {
+      stopPoll()
+      poll = setInterval(() => {
+        if (destroyed) return stopPoll()
+        const shown = displayShown()
+        if (shown === null || shown === true) sendReady()
+        else options.onProgress?.({ phase: 'engine' })
+      }, J2ME_POLL_MS)
+      setTimeout(() => {
+        if (!destroyed && !readySent) sendReady()
+      }, J2ME_READY_TIMEOUT_MS)
+    }
 
     const win = iframe.contentWindow
     if (!win) return
@@ -352,6 +411,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
 
   const destroy = () => {
     destroyed = true
+    stopPoll()
     pad?.stop()
     pad = null
     audio = null

@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import type { Game } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { gradientFor } from '@/lib/gradients'
@@ -38,9 +38,53 @@ const iconSizes = {
   lg: 'text-7xl sm:text-8xl',
 }
 
-/** 悬停时播放的封面视频（静音、循环、行内）。移动端无悬停时显示 poster / 首帧。 */
+/**
+ * 封面视频：**滚到能看见就自动播**（静音、循环、行内），移出视口就暂停。
+ *
+ * 之前是「悬停才播」，但后台的说明写的是「有视频时卡片会自动播放（静音循环）」——
+ * 说的和做的不一致，而且触屏设备根本没有悬停，等于永远看不到视频，
+ * 卡片上只剩一块黑（preload="none" 不会拉任何一帧，没设封面图就没有 poster 可显示）。
+ *
+ * 之所以不直接写 autoPlay 而要用 IntersectionObserver：
+ * 首页一屏能排十几张卡，全都 autoPlay 等于同时下载十几个视频、解码十几路画面，
+ * 手机上会明显发烫掉帧。只播看得见的那几张，代价就回到可接受范围。
+ *
+ * 另外尊重「减少动态效果」的系统设置：开了就不自动播，仍然可以悬停播放。
+ */
 function CoverVideo({ src, poster, priority }: { src: string; poster?: string; priority?: boolean }) {
   const ref = useRef<HTMLVideoElement>(null)
+
+  useEffect(() => {
+    const v = ref.current
+    if (!v) return
+
+    const reduced =
+      typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
+    if (reduced) return
+
+    // 不支持 IntersectionObserver 的老浏览器：退回悬停播放，不做自动播
+    if (typeof IntersectionObserver !== 'function') return
+
+    const io = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry) return
+        if (entry.isIntersecting) {
+          // 到这一步才允许加载：在视口外时 preload="none"，不占带宽
+          if (v.preload === 'none') v.preload = 'auto'
+          void v.play().catch(() => {
+            /* 自动播放被拦（比如省电模式）就算了，悬停仍然能播 */
+          })
+        } else {
+          v.pause()
+        }
+      },
+      // 一半以上露出来才播，免得横向轮播里边缘那张一闪一闪
+      { threshold: 0.5 },
+    )
+    io.observe(v)
+    return () => io.disconnect()
+  }, [src])
+
   return (
     <video
       ref={ref}
@@ -49,18 +93,11 @@ function CoverVideo({ src, poster, priority }: { src: string; poster?: string; p
       muted
       loop
       playsInline
-      // 列表里的封面视频只在鼠标移上去才播，提前拉 metadata 等于每张卡都白下一段。
-      // 首屏那几张（priority）才值得先拿 metadata，换第一次悬停不卡。
+      // muted + playsInline 是浏览器允许自动播放的前提，缺一个都会被拦
       preload={priority ? 'metadata' : 'none'}
       className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
+      // 悬停仍然生效：自动播被系统设置或省电模式拦下时，这是兜底
       onMouseEnter={() => void ref.current?.play().catch(() => {})}
-      onMouseLeave={() => {
-        const v = ref.current
-        if (v) {
-          v.pause()
-          v.currentTime = 0
-        }
-      }}
     />
   )
 }
@@ -84,12 +121,14 @@ export function GameCover({
   const platform = platformMap[game.platform]
   const coverSrc = game.cover ? romUrlForKey(game.cover) : ''
   const videoSrc = game.video ? romUrlForKey(game.video) : ''
-  const hasMedia = Boolean(videoSrc || coverSrc)
 
   return (
     <div
       className={cx('relative overflow-hidden', ratios[ratio], className)}
-      style={hasMedia ? { background: '#000' } : { background: gradientFor(game.slug) }}
+      // 视频加载出来之前这层背景就是玩家看到的东西。
+      // 有封面图时用黑色（图片自己会铺满）；只有视频没有封面图时用程序化渐变，
+      // 否则 preload="none" 的卡片在播起来之前就是一块纯黑。
+      style={{ background: coverSrc ? '#000' : gradientFor(game.slug) }}
       role="img"
       aria-label={fmt(t.common.coverAlt, { title: game.title })}
     >

@@ -401,6 +401,9 @@ const ja: Translation = {
   },
 
   player: {
+    romLang: 'ROM の言語',
+    romLangTitle: 'このゲームの別の言語版 ROM に切り替える',
+    romLangSwitched: '{lang}版に切り替えました。プレイは最初からになります',
     watchHintPick: '観るだけで参加します。ホストの画面と音は届きますが、操作はできません。プレイしたくなったらツールバーの「プレイに加わる」から。',
     watchRoom: '観戦する',
     watchInstead: '観るだけ',
@@ -688,6 +691,7 @@ const ja: Translation = {
     flashLoadFailed: 'Flash コンテンツの読み込みに失敗しました：{msg}',
     ejsNoCore: 'EmulatorJS に {platform} 用のコアがありません',
     ejsInitFailed: 'エミュレーターのコンテナを初期化できません',
+    ejsEngineError: 'エミュレーターのエラー：{msg}',
     ejsLoadFailed: 'EmulatorJS のリソースを読み込めません（{path}）。ネットワークを確認するか、.env でセルフホストの VITE_EJS_PATH を設定してください。',
   },
 

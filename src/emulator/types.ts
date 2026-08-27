@@ -33,6 +33,19 @@ export interface MountOptions {
   /** 显示名（存档 / 截图命名用） */
   gameName: string
   /**
+   * 模拟器核心覆盖。不传就用平台默认（src/data/platforms.ts 的 core）。
+   *
+   * 街机这类「一个平台底下其实是好几套硬件」的场景必须能按游戏覆盖：
+   * 拳皇是 Neo Geo 走 fbneo，街霸 2 是 CPS2 走 fbalpha2012_cps2，
+   * 更老的板子可能只有 mame2003_plus 跑得动 —— 一个平台默认值盖不住。
+   */
+  core?: string
+  /**
+   * BIOS 文件地址（平台级，见 services/platformBios.ts）。
+   * Neo Geo 这类平台没有它引擎根本起不来，和 ROM 对不对无关。
+   */
+  biosUrl?: string
+  /**
    * 游戏 slug —— 存档就是按它归档的。
    * 玩家自己上传的 ROM 没有 slug，调用方会给个 `local:文件名`（见 services/saves.ts）。
    * 不传就没有存档能力。
@@ -177,6 +190,14 @@ export interface RuntimeHandle {
   screenshot?: () => Promise<Blob | null>
   /** 录制用的画面 / 声音来源 */
   captureSources?: () => CaptureSources | null
+  /**
+   * 引擎自己打出来的最近若干行日志（错误 / 警告）。
+   *
+   * 街机 ROM 出问题时，「缺哪个文件、哪个 CRC 对不上」这句话只在引擎的 console 里，
+   * 而它跑在 iframe 内部，外面拿不到。适配器把它接出来存在这儿，
+   * 排查时在浏览器控制台里读得到，将来也可以做成界面上的「详细信息」。
+   */
+  engineLog?: () => string[]
 }
 
 export interface Runtime {

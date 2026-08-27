@@ -48,6 +48,20 @@ export function homeRankOf(v) {
   return Math.min(n, 65535)
 }
 
+/**
+ * 模拟器核心名。
+ *
+ * 不做白名单：核心列表是前端配置（src/config/emulators.ts），后端跟着抄一份迟早会走偏，
+ * 而且换引擎版本时新核心会先在前端加上。这里只做形状约束 —— 核心名在 libretro 生态里
+ * 一律是小写字母 / 数字 / 下划线，把别的字符挡掉就够了，不认识的名字交给引擎自己报错。
+ */
+export function coreOf(v) {
+  if (v == null) return null
+  const s = String(v).trim().toLowerCase()
+  if (!s) return null
+  return /^[a-z0-9_]{1,32}$/.test(s) ? s : null
+}
+
 export function gameRowToApi(r, rel = {}) {
   const g = {
     slug: r.slug,
@@ -69,6 +83,8 @@ export function gameRowToApi(r, rel = {}) {
   }
   // 不上首页的游戏干脆不带这个字段，前台拿到的形状和以前一样
   if (r.home_rank != null) g.homeRank = Number(r.home_rank)
+  // 没覆盖核心的游戏同样不带这个字段，前台自己回落到平台默认
+  if (r.core) g.core = r.core
   if (r.title_zh) g.titleZh = r.title_zh
   if (r.cover) g.cover = r.cover
   if (r.video) g.video = r.video
@@ -106,6 +122,7 @@ export function gameApiToRow(g) {
     // 空字符串要写成 NULL，否则 DATE 列会存成 '0000-00-00'
     added_at: g.addedAt ? String(g.addedAt).slice(0, 10) : null,
     home_rank: homeRankOf(g.homeRank),
+    core: coreOf(g.core),
   }
 }
 
@@ -130,6 +147,7 @@ const FIELD_TO_COLUMN = {
   hidden: ['hidden', (v) => (v ? 1 : 0)],
   addedAt: ['added_at', (v) => (v ? String(v).slice(0, 10) : null)],
   homeRank: ['home_rank', homeRankOf],
+  core: ['core', coreOf],
 }
 
 export function gameApiToPartialRow(patch) {

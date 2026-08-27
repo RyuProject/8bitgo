@@ -15,6 +15,7 @@ import { usersRouter } from './routes/users.js'
 import { adminRouter } from './routes/admin.js'
 import { roomsRouter } from './routes/rooms.js'
 import { pageRouter } from './routes/page.js'
+import { platformBiosRouter } from './routes/platform-bios.js'
 import { savesRouter } from './routes/saves.js'
 import { attachNetplay } from './netplay.js'
 import { attachLive, liveRoom, liveRooms } from './live.js'
@@ -61,6 +62,7 @@ app.use('/api/admin', adminRouter)
 app.use('/api/rooms', roomsRouter)
 // 按路由取数：SSR 与客户端共用同一份定义（见 routes/page.js）
 app.use('/api/page', pageRouter)
+app.use('/api/platform-bios', platformBiosRouter)
 // 云存档（必须登录，见 routes/saves.js）
 app.use('/api/saves', savesRouter)
 // P2P 联机的 ICE / TURN 配置（短期凭证，见 routes/ice.js）
@@ -147,6 +149,10 @@ process.on('uncaughtException', (err) => {
 })
 
 const PORT = Number(process.env.PORT || 8788)
+
+// P2P 联机信令：画面不经过服务器，这里只转发 WebRTC 握手（见 src/netplay.js）
+const httpServer = createServer(app)
+attachNetplay(httpServer, app, origins)
 
 // P2P 联机信令：画面不经过服务器，这里只转发 WebRTC 握手（见 src/netplay.js）
 const httpServer = createServer(app)

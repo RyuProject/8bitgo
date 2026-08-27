@@ -413,6 +413,9 @@ const en: Translation = {
   },
 
   player: {
+    romLang: 'ROM language',
+    romLangTitle: 'Switch to a different language version of this game',
+    romLangSwitched: 'Switched to the {lang} version — this run started over',
     watchHintPick: 'You are joining to watch: you get the host’s picture and sound but no controls. Hit “Take a slot” in the toolbar whenever you want to play.',
     watchRoom: 'Watch',
     watchInstead: 'Just watch',
@@ -743,6 +746,7 @@ const en: Translation = {
     flashLoadFailed: 'Flash content failed to load: {msg}',
     ejsNoCore: 'EmulatorJS has no core for {platform}',
     ejsInitFailed: 'Could not initialize the emulator container',
+    ejsEngineError: 'Emulator error: {msg}',
     ejsLoadFailed:
       'Could not load the EmulatorJS assets ({path}). Check your connection, or set a self-hosted VITE_EJS_PATH in .env.',
   },

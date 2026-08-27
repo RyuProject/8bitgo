@@ -51,6 +51,10 @@ CREATE TABLE IF NOT EXISTS games (
   description   TEXT          NULL,
   body_control  TINYINT(1)    NOT NULL DEFAULT 0,
   hidden        TINYINT(1)    NOT NULL DEFAULT 0,
+  -- 模拟器核心覆盖。NULL = 用平台默认（src/data/platforms.ts 的 core 字段）。
+  -- 街机尤其需要：同一个「街机」平台底下，拳皇要 fbneo、街霸2 要 fbalpha2012_cps2、
+  -- 有些老游戏只有 mame2003_plus 跑得动，一个平台默认值盖不住。
+  core          VARCHAR(32)   NULL,
   -- 首页「精选」位的排序号。NULL = 不上首页，数字小的排前面。
   -- 一款都没设时，首页那一栏退回按 plays 自动排（见 server/src/content.js 的 loadHome）
   home_rank     SMALLINT UNSIGNED NULL,
@@ -72,6 +76,17 @@ CREATE TABLE IF NOT EXISTS games (
   KEY idx_coin         (hidden, coin_reward),
   -- 首页精选位：只有寥寥几行 home_rank 非空，这条索引让首页那一次查询不用扫全表
   KEY idx_home_rank    (hidden, home_rank)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------- 平台级 BIOS ----------
+-- Neo Geo 这类平台必须有 BIOS 才能启动（拳皇、合金弹头都要 neogeo.zip），
+-- 而同一个 BIOS 是整个平台共用的，挂在每一款游戏上纯属重复。
+-- 这里只存对象存储的 key，文件本身和 ROM 一样放在 R2。
+CREATE TABLE IF NOT EXISTS platform_bios (
+  platform    VARCHAR(20)  NOT NULL,
+  object_key  VARCHAR(500) NOT NULL,
+  updated_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (platform)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------- 游戏 × 类型 ----------

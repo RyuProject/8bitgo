@@ -414,6 +414,9 @@ const de: Translation = {
   },
 
   player: {
+    romLang: 'ROM-Sprache',
+    romLangTitle: 'Zu einer anderen Sprachfassung dieses Spiels wechseln',
+    romLangSwitched: 'Auf die {lang}-Fassung gewechselt – der Durchgang beginnt von vorn',
     watchHintPick: 'Du kommst als Zuschauer rein: Bild und Ton des Gastgebers, aber keine Steuerung. Über „Platz nehmen“ in der Leiste kannst du jederzeit mitspielen.',
     watchRoom: 'Zuschauen',
     watchInstead: 'Nur zuschauen',
@@ -744,6 +747,7 @@ const de: Translation = {
     flashLoadFailed: 'Flash-Inhalt konnte nicht geladen werden: {msg}',
     ejsNoCore: 'EmulatorJS hat keinen Core für {platform}',
     ejsInitFailed: 'Der Emulator-Container konnte nicht initialisiert werden',
+    ejsEngineError: 'Emulator-Fehler: {msg}',
     ejsLoadFailed:
       'Die EmulatorJS-Dateien konnten nicht geladen werden ({path}). Prüf deine Verbindung oder setze einen selbst gehosteten VITE_EJS_PATH in .env.',
   },

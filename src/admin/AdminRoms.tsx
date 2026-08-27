@@ -22,6 +22,7 @@ import {
 import { platformMap } from '@/data/platforms'
 import { cx } from '@/lib/format'
 import { slugify } from './GameForm'
+import { PlatformBiosPanel } from './PlatformBiosPanel'
 import { Card, Field, Stat, btnClass, inputClass } from './ui'
 
 /** 后端列表接口一页最多给 100 条 */
@@ -419,6 +420,8 @@ export function AdminRoms() {
           </div>
         </Card>
       )}
+
+      <PlatformBiosPanel />
 
       <Card title={`已绑定的游戏（${bound.length}）`} extra={<Link to="/admin/games" className="text-xs text-brand-hover hover:underline">去游戏编辑里上传 →</Link>}>
         {bound.length === 0 ? (

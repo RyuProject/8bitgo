@@ -24,17 +24,29 @@ export const DEFAULT_LANG: Lang = 'zh-Hans'
 
 /**
  * ROM 语言槽：游戏可为这几种语言分别上传 ROM。
- * 其它站点语言（西/法/意/德）没有专属 ROM，按语言选 ROM 时统一回退到英语。
+ * 目前只剩意大利语没有专属槽，按语言选 ROM 时回退到英语（见 romLangFor）。
+ *
+ * 用 Extract 而不是直接写字面量联合：这样打错一个语言代码会在编译期就报错，
+ * 而不是悄悄多出一个站点根本不支持的 ROM 槽。
+ *
+ * ⚠️ 加语言只改这里就够了 —— game_roms.lang 是 VARCHAR(10) 不是 ENUM，
+ * 后端 romsOf() 也不对键做白名单，所以不需要改库、不需要迁移；
+ * 已有游戏的 roms 里没有新语言的键，effectiveRomKey 会照常回退到英语。
  */
-export type RomLang = 'zh-Hans' | 'zh-Hant' | 'en' | 'ja'
-export const ROM_LANGS: RomLang[] = ['zh-Hans', 'zh-Hant', 'en', 'ja']
+export type RomLang = Extract<Lang, 'zh-Hans' | 'zh-Hant' | 'en' | 'ja' | 'fr' | 'de' | 'es'>
+export const ROM_LANGS: RomLang[] = ['zh-Hans', 'zh-Hant', 'en', 'ja', 'fr', 'de', 'es']
 
-export const ROM_LANG_LABEL: Record<RomLang, string> = {
-  'zh-Hans': '简体中文',
-  'zh-Hant': '繁體中文',
-  en: 'English',
-  ja: '日本語',
-}
+/**
+ * 槽位显示名直接取 LANGUAGES 里的自称，不再手抄一份 ——
+ * 以前是两处各写一遍，改了一处忘了另一处就会对不上。
+ */
+export const ROM_LANG_LABEL: Record<RomLang, string> = ROM_LANGS.reduce(
+  (acc, code) => {
+    acc[code] = LANGUAGES.find((l) => l.code === code)?.label ?? code
+    return acc
+  },
+  {} as Record<RomLang, string>,
+)
 
 /** 站点语言 → ROM 语言槽；没有专属槽的语言回退到英语 */
 export function romLangFor(lang: Lang): RomLang {

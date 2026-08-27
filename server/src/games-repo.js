@@ -136,6 +136,34 @@ export async function listGames(q = {}) {
   return { items: await attachRelations(rows), total, page, pageSize, totalPages }
 }
 
+/* ---------------- 平台级 BIOS ---------------- */
+
+/**
+ * 各平台配的 BIOS（平台 id -> 对象存储 key）。
+ *
+ * Neo Geo 这类平台不给 BIOS 根本起不来（拳皇、合金弹头都要 neogeo.zip），
+ * 而同一份 BIOS 是整个平台共用的，挂到每一款游戏上纯属重复录入。
+ * 返回的只是 key，前台再拼成 URL —— 和 ROM 的处理方式保持一致。
+ */
+export async function listPlatformBios() {
+  const rows = await query('SELECT platform, object_key FROM platform_bios')
+  const out = {}
+  for (const r of rows) out[r.platform] = r.object_key
+  return out
+}
+
+export async function setPlatformBios(platform, objectKey) {
+  await query(
+    `INSERT INTO platform_bios (platform, object_key) VALUES (?, ?)
+     ON DUPLICATE KEY UPDATE object_key = VALUES(object_key)`,
+    [String(platform), String(objectKey)],
+  )
+}
+
+export async function clearPlatformBios(platform) {
+  await query('DELETE FROM platform_bios WHERE platform = ?', [String(platform)])
+}
+
 /**
  * 首页精选位：后台钦点了哪几款。
  *

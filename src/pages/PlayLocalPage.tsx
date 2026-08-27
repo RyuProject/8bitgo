@@ -5,6 +5,7 @@ import { platforms, platformMap } from '@/data/platforms'
 import { cx } from '@/lib/format'
 import { useSeo } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
+import { usePlatformBiosUrl } from '@/services/platformBios'
 import { platformLabel } from '@/services/i18nData'
 import { EmulatorPlayer } from '@/emulator'
 import { getDefaultKeymap } from '@/lib/emulator'
@@ -39,6 +40,8 @@ export function PlayLocalPage() {
   const [retryRequest, setRetryRequest] = useState<{ file: File } | null>(null)
 
   const platform = platformMap[platformId]
+
+  const biosUrl = usePlatformBiosUrl(platform?.id)
   const playable = platforms.filter((p) => isPlayable(p.id))
   // 显示「这个平台实际会用哪个引擎」：按优先级取，与 resolveRuntime 的选法一致，
   // 否则 NES 会显示成 EmulatorJS，但实际跑的是 jsnes。
@@ -129,6 +132,9 @@ export function PlayLocalPage() {
             onPlatformChange={handlePlatformChange}
             onDetectFailed={handleDetectFailed}
             retryRequest={retryRequest}
+            // 玩本地 ROM 也要给 BIOS：拖一个 Neo Geo ROM 进来，没有 BIOS 一样起不来。
+            // 核心不给覆盖 —— 这里没有具体某一款游戏，只能按平台默认走
+            biosUrl={biosUrl || undefined}
           />
           <p className="mt-3 text-xs leading-relaxed text-dim">{t.playLocal.disclaimer}</p>
         </div>

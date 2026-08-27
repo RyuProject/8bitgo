@@ -33,3 +33,32 @@ export const EXT_RUNTIME_OVERRIDES: Record<string, RuntimeId> = {
   // 靠 jsdos 的 supports(dos) + priority 去争，不能一刀切。
   jsdos: 'jsdos',
 }
+
+/**
+ * 后台「模拟器核心」下拉里可选的核心（按平台）。
+ *
+ * 只影响 EmulatorJS 这一路（EJS_core），别的引擎不吃这个值。
+ * 留空 = 用 src/data/platforms.ts 里该平台的默认核心。
+ *
+ * 街机是唯一真正需要逐款调的：「街机」在我们这儿是一个平台，
+ * 在现实里却是好几套完全不同的硬件 ——
+ *   - 拳皇、合金弹头、侍魂  → Neo Geo，fbneo
+ *   - 街霸 2、恐龙快打      → CPS1/CPS2，fbalpha2012_cps1 / cps2
+ *   - 更老或更杂的板子      → mame2003_plus 兼容面最广，但也最慢
+ * 换核心往往比换 ROM 有用：每个核心认的 romset 版本不一样，
+ * 报「缺文件」时先换核心试试。
+ */
+export const CORE_OPTIONS: Record<string, Array<{ id: string; label: string }>> = {
+  arcade: [
+    { id: 'fbneo', label: 'FBNeo（默认，Neo Geo / 拳皇首选）' },
+    { id: 'fbalpha2012_cps1', label: 'FB Alpha CPS1（街霸 2 这类）' },
+    { id: 'fbalpha2012_cps2', label: 'FB Alpha CPS2' },
+    { id: 'mame2003_plus', label: 'MAME 2003-Plus（兼容面最广，较慢）' },
+    { id: 'mame2003', label: 'MAME 2003' },
+  ],
+}
+
+/** 某平台可选的核心列表；没配置的平台返回空数组（后台就不显示这一栏） */
+export function coreOptionsFor(platform: string): Array<{ id: string; label: string }> {
+  return CORE_OPTIONS[platform] ?? []
+}

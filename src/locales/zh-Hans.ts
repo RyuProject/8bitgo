@@ -413,6 +413,9 @@ export const zhHans = {
   },
 
   player: {
+    romLang: 'ROM 语言',
+    romLangTitle: '换一个语言版本的游戏 ROM',
+    romLangSwitched: '已换成{lang}版本，这一局重新开始了',
     watchHintPick: '你选的是只看不玩：能看到房主的画面、听到声音，但不参与操作。想上场随时在工具栏点「上场玩」。',
     watchRoom: '观看直播',
     watchInstead: '只看不玩',
@@ -709,6 +712,7 @@ export const zhHans = {
     ejsNoCore: 'EmulatorJS 没有 {platform} 平台的核心',
     ejsInitFailed: '无法初始化模拟器容器',
     ejsLoadFailed: '无法加载 EmulatorJS 资源（{path}）。请检查网络，或在 .env 中配置自托管的 VITE_EJS_PATH。',
+    ejsEngineError: '引擎报错：{msg}',
   },
 
   /* ---------------- 数字与单位 ---------------- */
