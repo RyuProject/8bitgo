@@ -48,6 +48,19 @@ export const CACHE = {
   /** 公开只读接口 */
   api: `public, max-age=30, s-maxage=${API_S_MAXAGE}, stale-while-revalidate=600`,
 
+  /**
+   * 平台 BIOS 映射（/api/platform-bios）。一行数据，但**配错或读到旧的，街机就整个起不来**。
+   *
+   * 不能跟 api 那档共用：s-maxage=300 + swr=600 意味着后台改完绑定，
+   * 最多 15 分钟里前台还在拿旧的（常见是绑之前那个空 `{}`）。而后台的 PUT 只调
+   * invalidateContent()，清的是**本进程内**的内容缓存，够不着 Cloudflare 的边缘。
+   * 表现就是「后台明明配好了，游戏还是报缺 BIOS」—— 查起来非常费劲，
+   * 因为刷新、清浏览器缓存都没用，得等边缘自己过期。
+   *
+   * 一行 JSON 而已，不值得为它省这点回源。
+   */
+  bios: 'public, max-age=30, s-maxage=30, stale-while-revalidate=60',
+
   /** 任何跟身份有关、或者实时性要求高的东西 */
   none: 'no-store',
 }
@@ -76,8 +89,11 @@ export function noStore(_req, res, next) {
   next()
 }
 
-/** 公开只读接口：可以被浏览器和边缘缓存一小会儿 */
-export function publicApi(res) {
-  res.setHeader('Cache-Control', CACHE.api)
+/**
+ * 公开只读接口：可以被浏览器和边缘缓存一小会儿。
+ * 个别接口对「拿到旧的」特别敏感，传第二个参数换一档更短的（见 CACHE.bios）。
+ */
+export function publicApi(res, policy = CACHE.api) {
+  res.setHeader('Cache-Control', policy)
   res.setHeader('Vary', 'Accept-Encoding')
 }

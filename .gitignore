@@ -29,8 +29,12 @@ README.md
 *.sln
 *.sw?
 
-# self-hosted EmulatorJS assets (download separately)
-public/emulatorjs
+# 自建的 EmulatorJS（main 分支构建，约 1.6MB）**故意提交进仓库**，别再忽略它。
+# 理由：它和 ruffle / jsdos 不一样 —— 那两个 `npm run ruffle|jsdos` 能从 node_modules
+# 复制出来，这个得 clone EmulatorJS 仓库现构建，构建机上没人会去做这一步。
+# 之前忽略它的后果：线上悄悄退回 CDN 的 4.2.3（不含 dontExtractIfCore），
+# 街机的 neogeo.zip BIOS 被解压，FBNeo 报「Neo Geo BIOS 成员缺失」，本地却一切正常。
+# 更新它：见 deploy/netplay/README.md 第一节。
 
 # Cloudflare Worker
 worker/node_modules

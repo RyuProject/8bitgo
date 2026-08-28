@@ -11,7 +11,7 @@
  */
 import { Router } from 'express'
 import { requireAdmin } from '../auth.js'
-import { publicApi } from '../cache.js'
+import { CACHE, publicApi } from '../cache.js'
 import { listPlatformBios, setPlatformBios, clearPlatformBios } from '../games-repo.js'
 import { invalidateContent } from '../content.js'
 
@@ -23,7 +23,8 @@ const VALID_PLATFORM = /^[A-Za-z0-9_-]{1,20}$/
 platformBiosRouter.get('/', async (_req, res, next) => {
   try {
     const map = await listPlatformBios()
-    publicApi(res)
+    // 短缓存：后台改完绑定清不了边缘，见 CACHE.bios 的注释
+    publicApi(res, CACHE.bios)
     res.json(map)
   } catch (e) {
     next(e)

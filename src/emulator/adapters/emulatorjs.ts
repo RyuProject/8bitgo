@@ -5,7 +5,8 @@
  * 不能在同一页面反复注入，因此放进独立的 srcdoc iframe 里运行：切换游戏直接销毁 iframe，
  * 画面、声音与 WebAssembly 内存随之释放；React StrictMode 二次挂载也不会重复实例化。
  *
- * 资源默认走官方 CDN；自托管时把发行包 data/ 放到 public/emulatorjs/ 并设置 VITE_EJS_PATH=/emulatorjs/
+ * 资源**默认自托管**：public/emulatorjs/（已随仓库提交，构建时被 Vite 原样拷进 dist/client/）。
+ * 想切回官方 CDN 设 VITE_EJS_PATH=https://cdn.emulatorjs.org/stable/data/ —— 但街机别切，见下。
  *
  * ── 关于联机 ─────────────────────────────────────────────
  * EmulatorJS 4.3.0-pre 起自带 netplay（data/src/netplay.js）：房主的浏览器正常跑游戏，
@@ -28,24 +29,53 @@ import { getLang } from '@/services/lang'
 import type { Lang } from '@/config/languages'
 import { ICE_SERVERS, NETPLAY_URL, fetchIceConfig, socketIoScriptUrl, uploadState } from '@/services/netplay'
 
+/**
+ * EmulatorJS 资源根路径。**默认是自托管的 /emulatorjs/，不是 CDN。**
+ *
+ * 这个默认值是被坑出来的，别随手改回 CDN：
+ *
+ *   1. CDN 的 stable 至今是 **4.2.3**，不含 `dontExtractIfCore`。没有它，加载 BIOS 时
+ *      EmulatorJS 看见 `neogeo.zip` 是个压缩包就先解压再喂给核心，FBNeo 拿到的是一堆散
+ *      文件，于是报「四个 Neo Geo BIOS 成员缺失」——街机（拳皇 97 之类）直接起不来。
+ *      main 分支有这个判断，`public/emulatorjs/` 就是从 main 构建出来的。
+ *      （注意 main 的 version.json 仍然写着 4.2.3，别拿版本号当验收标准，
+ *        验收看 `grep -c dontExtractIfCore public/emulatorjs/emulator.min.js` = 1。）
+ *   2. 曾经默认值是 CDN、真实路径靠 `.env.local` 里的 VITE_EJS_PATH 顶上去，而
+ *      `.env.local` 被 .gitignore 的 `*.local` 挡住 —— 构建机上根本没有这个文件，
+ *      于是线上悄悄退回 4.2.3，本地怎么试都是好的。默认值写死才治得了这个。
+ *
+ * 核心（.wasm）不在这个目录里，走 `cdnFallback: true` 从官方 CDN 取，不用自己托管。
+ */
 export const EJS_PATH: string = (() => {
-  const p = import.meta.env.VITE_EJS_PATH || 'https://cdn.emulatorjs.org/stable/data/'
+  const p = import.meta.env.VITE_EJS_PATH || '/emulatorjs/'
   return p.endsWith('/') ? p : `${p}/`
 })()
 
 /**
- * 站点语言 → EmulatorJS 自带的界面语言包（发行包里的 data/localization/*.json）。
+ * 站点语言 → EmulatorJS 自带的界面语言包（data/localization/*.json）。
  *
- * 以前这里写死 'zh-CN'：英文站的玩家一点开模拟器自己的设置菜单，看到的是一水儿的
+ * 写死 'zh-CN' 的年代，英文站的玩家一点开模拟器自己的设置菜单，看到的是一水儿的
  * 简体中文，引擎报错原文也是中文（那句话现在会被我们接出来显示在播放器上，更得对语言）。
  *
- * 两个坑，改之前先看清楚：
+ * **两个构建的文件名不一样**，这是这张表长这样的原因：
  *
- *   1. **法语的文件名就是 af-FR，不是笔误**。EmulatorJS 那份文件的内容确确实实是法语
- *      （"Redémarrer" / "Paramètres"），只是文件名把语言码写错了。照 ISO 改成 fr-FR
- *      只会 404 —— loader.js 抓不到就把 langJson 整个删掉，界面退回英文。
- *   2. **没有繁体**。发行包里只有 zh-CN，繁体退到简体是矮子里拔将军 —— 至少还是中文。
+ *     官方 CDN 4.2.3   zh-CN.json  en-US.json  es-ES.json  af-FR.json  it-IT.json  de-GER.json  ja-JA.json
+ *     main（我们自建）  zh.json     en.json     es.json     fr.json     it.json     de.json      ja.json
+ *
+ * loader.js 的取法是：先试 `<码>.json`，404 了再试**破折号前那一段**`.json`
+ * （见 loader.js 里的 `language.split(/[-_]/)[0]`）。所以带破折号的码两边都能落地 ——
+ * CDN 第一次就命中，自建的兜到第二次。表里保持带破折号就是为了两边都不瞎。
+ *
+ * 三个坑，改之前先看清楚：
+ *
+ *   1. **法语是唯一两边对不上的**。CDN 那份文件名叫 af-FR（内容确确实实是法语，
+ *      "Redémarrer" / "Paramètres"，只是文件名把语言码写错了），main 已经改名成 fr。
+ *      一个字符串没法同时命中两边，这里按**我们实际发布的自建构建**取 'fr-FR'：
+ *      自建走 fr-FR → 404 → fr.json ✓；真切回 CDN 的话法语界面会退回英文。
+ *   2. **没有繁体**。两个构建都只有简体，繁体退到简体是矮子里拔将军 —— 至少还是中文。
  *      真要繁体得自己托管一份 JSON，再用 EJS_paths 指过去（见 loader.js 的语言加载）。
+ *   3. 自建构建下每种语言都会先吃一个 404 再命中，控制台里那条红的是**正常的**，
+ *      不是加载失败。
  *
  * 语言码填错或者文件不存在都不会把游戏搞挂：loader.js 那边 try/catch 兜着，
  * 退回英文而已。写成 Record<Lang, string> 则是为了以后站点加语言时编译期就报错，
@@ -56,7 +86,7 @@ const EJS_LANG: Record<Lang, string> = {
   'zh-Hant': 'zh-CN',
   en: 'en-US',
   es: 'es-ES',
-  fr: 'af-FR',
+  fr: 'fr-FR',
   it: 'it-IT',
   de: 'de-GER',
   ja: 'ja-JA',
