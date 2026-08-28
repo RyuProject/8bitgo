@@ -755,6 +755,8 @@ const it: Translation = {
     ejsNoCore: 'EmulatorJS non ha un core per {platform}',
     ejsInitFailed: "Impossibile inizializzare il contenitore dell'emulatore",
     ejsEngineError: 'Errore dell’emulatore: {msg}',
+    ejsRomFailed: 'Impossibile scaricare il file di gioco (HTTP {status}): {url}',
+    ejsStalled: 'Il caricamento è bloccato su «{stage}». Ricarica la pagina.',
     ejsLoadFailed:
       'Impossibile caricare le risorse di EmulatorJS ({path}). Controlla la connessione, oppure imposta un VITE_EJS_PATH self-hosted in .env.',
   },

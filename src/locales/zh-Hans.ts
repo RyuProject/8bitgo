@@ -720,6 +720,8 @@ export const zhHans = {
     ejsInitFailed: '无法初始化模拟器容器',
     ejsLoadFailed: '无法加载 EmulatorJS 资源（{path}）。请检查网络，或在 .env 中配置自托管的 VITE_EJS_PATH。',
     ejsEngineError: '引擎报错：{msg}',
+    ejsRomFailed: '游戏文件下载失败（HTTP {status}）：{url}',
+    ejsStalled: '加载卡在「{stage}」这一步不动了，请刷新页面重试',
   },
 
   /* ---------------- 数字与单位 ---------------- */

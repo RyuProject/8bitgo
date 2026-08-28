@@ -754,6 +754,8 @@ const es: Translation = {
     ejsNoCore: 'EmulatorJS no tiene un núcleo para {platform}',
     ejsInitFailed: 'No se pudo inicializar el contenedor del emulador',
     ejsEngineError: 'Error del emulador: {msg}',
+    ejsRomFailed: 'No se pudo descargar el archivo del juego (HTTP {status}): {url}',
+    ejsStalled: 'La carga se ha quedado atascada en «{stage}». Recarga la página.',
     ejsLoadFailed:
       'No se pudieron cargar los recursos de EmulatorJS ({path}). Revisa tu conexión o define un VITE_EJS_PATH autoalojado en .env.',
   },

@@ -699,6 +699,8 @@ const ja: Translation = {
     ejsNoCore: 'EmulatorJS に {platform} 用のコアがありません',
     ejsInitFailed: 'エミュレーターのコンテナを初期化できません',
     ejsEngineError: 'エミュレーターのエラー：{msg}',
+    ejsRomFailed: 'ゲームファイルをダウンロードできませんでした（HTTP {status}）：{url}',
+    ejsStalled: '読み込みが「{stage}」で止まっています。ページを再読み込みしてください',
     ejsLoadFailed: 'EmulatorJS のリソースを読み込めません（{path}）。ネットワークを確認するか、.env でセルフホストの VITE_EJS_PATH を設定してください。',
   },
 

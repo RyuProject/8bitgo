@@ -754,6 +754,8 @@ const en: Translation = {
     ejsNoCore: 'EmulatorJS has no core for {platform}',
     ejsInitFailed: 'Could not initialize the emulator container',
     ejsEngineError: 'Emulator error: {msg}',
+    ejsRomFailed: 'Could not download the game file (HTTP {status}): {url}',
+    ejsStalled: 'Loading is stuck at “{stage}”. Try reloading the page.',
     ejsLoadFailed:
       'Could not load the EmulatorJS assets ({path}). Check your connection, or set a self-hosted VITE_EJS_PATH in .env.',
   },

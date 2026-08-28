@@ -760,6 +760,8 @@ const fr: Translation = {
     ejsNoCore: "EmulatorJS n'a pas de cœur pour {platform}",
     ejsInitFailed: "Impossible d'initialiser le conteneur de l'émulateur",
     ejsEngineError: "Erreur de l'émulateur : {msg}",
+    ejsRomFailed: 'Échec du téléchargement du fichier de jeu (HTTP {status}) : {url}',
+    ejsStalled: 'Le chargement est bloqué à « {stage} ». Rechargez la page.',
     ejsLoadFailed:
       "Impossible de charger les ressources EmulatorJS ({path}). Vérifie ta connexion, ou définis un VITE_EJS_PATH auto-hébergé dans .env.",
   },

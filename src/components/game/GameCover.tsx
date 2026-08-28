@@ -60,12 +60,40 @@ function CoverVideo({ src, poster, priority }: { src: string; poster?: string; p
     const v = ref.current
     if (!v) return
 
+    /**
+     * 循环播放的兜底。
+     *
+     * <video loop> 是靠「放到末尾就 seek 回 0」实现的 —— 我在 Chromium 里量过：
+     * loop 生效时只有一串 seeked 事件，**ended 一次都不触发**。
+     * 所以能走进这个回调，就说明浏览器自己那套循环已经失败、退回普通的结束流程了，
+     * 表现就是停在最后一帧、看着像「只播了一次」。
+     *
+     * 什么时候会失败：seek 回不去的时候。响应不支持 Range、或者素材的时长信息
+     * 不可靠（录屏和流式封装出来的 MP4 / WebM 常见）都算。后台的视频是直接传上来的
+     * （accept="video/*"，中间没有转码这一步），什么封装都可能碰上。
+     *
+     * 兜底代价接近于零：loop 正常时这段代码永远不会执行。
+     */
+    const onEnded = () => {
+      try {
+        v.currentTime = 0
+      } catch {
+        /* seekable 为空时设 currentTime 会抛，交给下面的 load() */
+      }
+      // seek 没生效（不可 seek 的流会静默忽略）就整段重新加载。
+      // load() 走 HTTP 缓存，通常不会真的再下一遍，代价只是 poster 闪一下
+      if (v.currentTime > 0.05) v.load()
+      void v.play().catch(() => {})
+    }
+    v.addEventListener('ended', onEnded)
+
     const reduced =
       typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
-    if (reduced) return
+    // 不自动播，但悬停播放和上面的循环兜底照常 —— 是玩家自己把鼠标放上去的
+    if (reduced) return () => v.removeEventListener('ended', onEnded)
 
     // 不支持 IntersectionObserver 的老浏览器：退回悬停播放，不做自动播
-    if (typeof IntersectionObserver !== 'function') return
+    if (typeof IntersectionObserver !== 'function') return () => v.removeEventListener('ended', onEnded)
 
     const io = new IntersectionObserver(
       ([entry]) => {
@@ -73,6 +101,8 @@ function CoverVideo({ src, poster, priority }: { src: string; poster?: string; p
         if (entry.isIntersecting) {
           // 到这一步才允许加载：在视口外时 preload="none"，不占带宽
           if (v.preload === 'none') v.preload = 'auto'
+          // 播完停在末尾的那种：play() 会自动从头开始（规范就是这么定的），
+          // 所以滚出去再滚回来也能自愈
           void v.play().catch(() => {
             /* 自动播放被拦（比如省电模式）就算了，悬停仍然能播 */
           })
@@ -84,7 +114,10 @@ function CoverVideo({ src, poster, priority }: { src: string; poster?: string; p
       { threshold: 0.5 },
     )
     io.observe(v)
-    return () => io.disconnect()
+    return () => {
+      v.removeEventListener('ended', onEnded)
+      io.disconnect()
+    }
   }, [src])
 
   return (

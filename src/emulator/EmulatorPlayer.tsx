@@ -4,7 +4,8 @@ import { platformMap } from '@/data/platforms'
 import { formatBytes, isRomFileAccepted } from '@/lib/emulator'
 import { detectRom, describeDetection } from './detect'
 import { resolveRuntime, extOf } from './registry'
-import type { Capability, LoadProgress, Runtime, RuntimeHandle } from './types'
+import type { Capability, Runtime, RuntimeHandle } from './types'
+import { createOverallRatio } from './loadProgress'
 import { EmulatorTools } from './EmulatorTools'
 import { LiveControls } from './LiveControls'
 import { liveViewRuntime, type LiveSession, type LiveViewState } from './adapters/liveview'
@@ -236,7 +237,13 @@ export function EmulatorPlayer({
   /** 当前运行时句柄 + 它上报的能力集合（决定工具栏画哪些按钮） */
   const [handle, setHandle] = useState<RuntimeHandle | null>(null)
   /** 加载进度。null 表示还没收到任何一帧（引擎还没开口），进度条转不确定态 */
-  const [progress, setProgress] = useState<LoadProgress | null>(null)
+  /**
+   * 加载进度：存的是**合成后**的整条进度（0~1），不是适配器报的分阶段进度。
+   * 合成逻辑在 loadProgress.ts 的 createOverallRatio —— 每次加载新建一个，
+   * 它负责把 engine / assets / rom / starting 四段折进同一条 0→100，并且只进不退。
+   */
+  const [loadRatio, setLoadRatio] = useState<number | null>(null)
+  const overallRatio = useRef(createOverallRatio())
   const [caps, setCaps] = useState<Set<Capability>>(() => new Set())
 
   const hostRef = useRef<HTMLDivElement>(null)
@@ -276,8 +283,10 @@ export function EmulatorPlayer({
   ) => {
     sessionCounter.current += 1
     setSession({ id: sessionCounter.current, game, platform: targetPlatform, runtime, ...extra })
-    // 上一局的进度必须清掉，否则新会话的遮罩会先闪一下上次的 100%
-    setProgress(null)
+    // 上一局的进度必须清掉，否则新会话的遮罩会先闪一下上次的 100%。
+    // 合成器也要换一个新的：它记着「已显示的最大值」，不换的话新一局会被上一局的 100% 卡住
+    overallRatio.current = createOverallRatio()
+    setLoadRatio(null)
     setStatus('loading')
   }
 
@@ -315,11 +324,11 @@ export function EmulatorPlayer({
       },
       onProgress: (next) => {
         if (!isCurrent()) return
-        setProgress(next)
+        setLoadRatio(overallRatio.current(next))
       },
       onReady: () => {
         if (!isCurrent()) return
-        setProgress(null)
+        setLoadRatio(null)
         setStatus('running')
         // 游戏真的跑起来了才算一次游玩 —— 打开详情页、加载失败、选错文件都不算
         if (gameSlugRef.current) recordPlay(gameSlugRef.current)
@@ -706,8 +715,8 @@ export function EmulatorPlayer({
   const activePlatform = session ? platformMap[session.platform] : platform
   const cloudStateLabel = cloudState ? t.player.cloudState[cloudState] : ''
 
-  // 进度条要显示的比例。引擎没报数时为 undefined —— UI 转不确定态而不是显示 0%
-  const ratio = progress?.ratio
+  // 进度条要显示的比例：合成后的整条进度，只有 0→100 这一种状态
+  const ratio = loadRatio ?? 0
   // 服务端的 players 不含观众，比本地 onPlayers 更准；拿不到时退回本地计数
   const roomPlayers = session?.cloud ? (myCloudRoom?.players ?? 1) : (myNetRoom?.players ?? players)
   const joinBlocked = online && ((inviteFull && !canWatch) || inviteGone || cloudJoinPending)
@@ -883,7 +892,10 @@ export function EmulatorPlayer({
 
         {status === 'loading' && (
           /*
-           * 加载遮罩：**只有一条进度条，一个字都不写**。
+           * 加载遮罩：**只有一条进度条，一个字都不写，也只有一种状态**——从 0 走到 100。
+           *
+           * 「一种状态」是刻意的：适配器报的是每个阶段各自的 0~1，四个阶段直接画上去，
+           * 玩家一局加载里会看到条子涨满又归零好几次，像坏了。合成在 loadProgress.ts 里做。
            *
            * 两层意思。一是不遮不行 —— 资源没下完就让玩家点下去，按键喂给一个还没起来的
            * 引擎，表现是「怎么按都没反应」，比等一会儿更让人困惑，所以这里故意不加
@@ -903,19 +915,13 @@ export function EmulatorPlayer({
               aria-label={t.player.statusLoading}
               aria-valuemin={0}
               aria-valuemax={100}
-              aria-valuenow={ratio !== undefined ? Math.round(ratio * 100) : undefined}
+              aria-valuenow={Math.round(ratio * 100)}
               className="h-1.5 w-full max-w-xs overflow-hidden rounded-full bg-white/15"
             >
-              {ratio === undefined ? (
-                // 拿不到总量（没有 Content-Length，或者引擎压根不报数）：来回走的不确定态，
-                // 总比一根永远停在 0% 的进度条诚实
-                <div className="progress-indeterminate h-full w-1/3 rounded-full bg-brand-hover" />
-              ) : (
-                <div
-                  className="h-full rounded-full bg-brand-hover transition-[width] duration-200 ease-out"
-                  style={{ width: `${Math.round(ratio * 100)}%` }}
-                />
-              )}
+              <div
+                className="h-full rounded-full bg-brand-hover transition-[width] duration-300 ease-out"
+                style={{ width: `${Math.round(ratio * 100)}%` }}
+              />
             </div>
           </div>
         )}

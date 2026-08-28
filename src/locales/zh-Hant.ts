@@ -674,6 +674,8 @@ const zhHant: Translation = {
     ejsInitFailed: '無法初始化模擬器容器',
     ejsLoadFailed: '無法載入 EmulatorJS 資源（{path}）。請檢查網路，或在 .env 中設定自行架設的 VITE_EJS_PATH。',
     ejsEngineError: '引擎報錯：{msg}',
+    ejsRomFailed: '遊戲檔案下載失敗（HTTP {status}）：{url}',
+    ejsStalled: '載入卡在「{stage}」這一步不動了，請重新整理頁面再試',
   },
 
   featured: {

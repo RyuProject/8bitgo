@@ -109,3 +109,74 @@ export async function fetchWithProgress(
   emit({ phase, loaded, total: loaded, ratio: 1 }, true)
   return out.buffer
 }
+
+/* ---------------- 合成一条 0→100 的总进度 ---------------- */
+
+/**
+ * 各阶段在整条进度里占的权重，数组顺序就是实际发生的顺序。
+ *
+ * 为什么要合成：适配器报的是**每个阶段自己的** 0~1，直接拿去画条子，
+ * 玩家看到的就是「涨到满 → 归零 → 再涨」——一局加载里来回好几次，
+ * 像坏了。进度条只该有一种状态：从 0 走到 100，而且只进不退。
+ *
+ * 权重按实际耗时估：引擎的 wasm 最大（Ruffle 那个核心十几 MB），
+ * 素材包次之，ROM 通常最小，starting 只是收个尾。
+ */
+const PHASE_WEIGHT: Array<[LoadPhase, number]> = [
+  ['engine', 45],
+  ['assets', 30],
+  ['rom', 22],
+  ['starting', 3],
+]
+
+/**
+ * total 未知时的渐近尺度（字节）。
+ *
+ * 拿不到 Content-Length 时，旧做法是切成「来回滑动的不确定态」——那是第二种状态，
+ * 正是要去掉的东西。改成用**真实已下载字节**做渐近映射：条子跟着真实下载量走，
+ * 但永远到不了本阶段的顶，等阶段真的结束了才跨过去。动得起来，也没有编数字。
+ */
+const SOFT_SCALE: Record<LoadPhase, number> = {
+  engine: 8 * 1024 * 1024,
+  assets: 8 * 1024 * 1024,
+  rom: 4 * 1024 * 1024,
+  starting: 1,
+}
+
+/**
+ * 造一个「把阶段进度折算成整条进度」的函数，每次加载新建一个。
+ *
+ * 两条保证：
+ *   1. **只进不退**：记住已经显示过的最大值，任何回退都被吃掉
+ *      （引擎乱序报数、或者某个阶段迟到，都不会让条子往回缩）
+ *   2. **第一个出现的阶段从 0 开始**：jsnes 这种只有 rom 阶段的引擎，
+ *      不会一上来就停在 75%——权重会在「见到的第一个阶段往后」重新归一化
+ */
+export function createOverallRatio(): (p: LoadProgress) => number {
+  let base: number | null = null
+  let shown = 0
+  return (p) => {
+    const idx = PHASE_WEIGHT.findIndex(([ph]) => ph === p.phase)
+    if (idx < 0) return shown
+    if (base === null) base = idx
+    // 比第一个见到的还早的阶段：迟到的回调，忽略（有 shown 兜着，条子不动）
+    if (idx < base) return shown
+
+    const scope = PHASE_WEIGHT.slice(base)
+    const weightSum = scope.reduce((s, [, w]) => s + w, 0)
+    let start = 0
+    for (const [ph, w] of scope) {
+      if (ph === p.phase) break
+      start += w / weightSum
+    }
+    const span = PHASE_WEIGHT[idx][1] / weightSum
+
+    let inner = p.ratio
+    if (inner === undefined && p.loaded !== undefined && p.loaded > 0) {
+      inner = 1 - Math.exp(-p.loaded / SOFT_SCALE[p.phase])
+    }
+    const value = start + span * Math.min(1, Math.max(0, inner ?? 0))
+    shown = Math.min(1, Math.max(shown, value))
+    return shown
+  }
+}

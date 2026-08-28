@@ -135,6 +135,19 @@ const VIDEO_MAX_FPS = 60
  */
 const STATE_UPLOAD_MS = 10_000
 
+/**
+ * 多久没动静就认定「卡死了」。
+ *
+ * 「动静」= 有网络进度，或者引擎自己那行状态文字变了（解压、写文件系统这些阶段
+ * 没有网络请求，只有那行字在变）。两样都停下来这么久，基本可以断定它不会自己好了：
+ * EmulatorJS 有好几处 promise 断在半路就再也不 resolve（见 installNetTap 的说明），
+ * 没有这道闸，玩家就只能对着一根不动的进度条一直等下去。
+ *
+ * 30 秒是给最慢的一步留的余量：几十 MB 的核心在慢手机上编译 wasm 期间既没有网络请求、
+ * 也不更新文案，实测能安静十几秒。
+ */
+const STALL_MS = 30_000
+
 const FRAME_HTML = `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -306,30 +319,56 @@ function installAudioTap(win: Window & Record<string, unknown>): EjsAudioTap {
 }
 
 /**
- * 把 EmulatorJS 的下载进度接出来，喂给播放器那根进度条。
+ * 包一层 iframe 里的 XMLHttpRequest —— EmulatorJS 的下载全走它（见 emulator.js 的
+ * downloadFile），所以这一层能同时干三件事：报进度、逮住下载失败、给卡死检测拍心跳。
+ *
+ * ── 为什么要报进度 ──
  *
  * 它自己**是**有真实百分比的，但只往 iframe 里的 .ejs_loading_text 写一行字
  * （「下载游戏数据 16%」），既没有事件也没有回调。而播放器的加载遮罩是块不透明黑底，
  * 正好把那行字盖住 —— 于是两头不讨好：遮罩在，玩家看着一根永远转不完的不确定条；
  * 遮罩撤早了，露出来的就是引擎自己那行文字（GBA 上看到的就是这个）。
+ * 包一层 XHR 就能拿到 loaded / total，再按 URL 分辨这一趟在下什么，
+ * 不改它一行代码，也不依赖它的任何文案。
  *
- * 好在它所有下载都走 XMLHttpRequest（见 emulator.js 的 downloadFile），所以赶在
- * loader.js 之前把 iframe 里的 XHR 原型包一层，就能拿到 loaded / total，再按 URL
- * 分辨这一趟在下什么。不改它一行代码，也不依赖它的任何文案 —— 百分号是 downloadFile
- * 自己拼的，跟 EJS_language 无关，但我们连那串字符串都不用碰。
+ * ── 为什么要逮失败 ──
+ * EmulatorJS 接不住 4xx / 5xx：downloadFile 遇到它们回调的是数字 -1，而
+ * downloadRom / downloadGameFile 拿到 -1 之后直接读 `res.headers["content-length"]`，
+ * 抛 TypeError；这个异常发生在 `new Promise(async …)` 的执行体里，被 promise 吞掉，
+ * 于是那个 promise **永远不 resolve**：不报错、不重试，downloadFiles() 的 await 就此卡住，
+ * startGame() 再也不会被调用。表现就是加载遮罩一直挂着、进度条停在某个数字上不动。
  *
  * ⚠️ 只在开局前上报：netplay 的 socket.io 走 XHR 轮询，一秒好几趟，
  *    开局之后还接着报只会让播放器白白重渲染。
  */
-function installProgressTap(
+function installNetTap(
   win: Window & Record<string, unknown>,
-  ctx: { gameUrl: string; live: () => boolean },
-  onProgress?: (p: LoadProgress) => void,
+  ctx: {
+    gameUrl: string
+    biosUrl?: string
+    live: () => boolean
+    onProgress?: (p: LoadProgress) => void
+    /** 有任何网络动静就拍一下，卡死检测靠它判断「引擎还有没有在动」 */
+    onBeat: () => void
+    /** 开不了局的文件下载失败了（HTTP 4xx / 5xx） */
+    onFailed: (status: number, url: string) => void
+  },
 ) {
   const proto = (win.XMLHttpRequest as typeof XMLHttpRequest | undefined)?.prototype
-  if (!onProgress || !proto) return
-  const emit = throttleProgress(onProgress)
+  if (!proto) return
+  const emit = throttleProgress(ctx.onProgress)
   const URL_KEY = '__8bitgoUrl'
+
+  /**
+   * 这一趟是不是「没有它就开不了局」。
+   *
+   * 只认 ROM 和 BIOS —— 正好是上面那个 TypeError 死锁的两条路径。核心不算：
+   * 它下载失败时 EmulatorJS 会自己退到官方 CDN 再试一次，抢在它前面报错，
+   * 等于把本来能救回来的一局掐掉；socket.io 之类断了更不影响单机。
+   */
+  const critical = (url: string): boolean =>
+    Boolean(url) &&
+    ((Boolean(ctx.gameUrl) && url.startsWith(ctx.gameUrl)) || (Boolean(ctx.biosUrl) && url.startsWith(ctx.biosUrl!)))
 
   /** 按 URL 认这一趟在下什么。认不出来的（socket.io 之类）一律算配套资源 */
   const phaseOf = (url: string): LoadPhase => {
@@ -347,10 +386,12 @@ function installProgressTap(
 
   const send = proto.send
   proto.send = function (this: XMLHttpRequest & Record<string, unknown>, ...args: unknown[]) {
-    const phase = phaseOf(String(this[URL_KEY] ?? ''))
+    const url = String(this[URL_KEY] ?? '')
+    const phase = phaseOf(url)
     let seen = 0
     this.addEventListener('progress', (e: ProgressEvent) => {
       if (!ctx.live()) return
+      ctx.onBeat()
       seen = e.loaded
       /*
        * 响应被 gzip / br 压缩过时，Content-Length 是**压缩后**的大小，而读出来的
@@ -362,10 +403,17 @@ function installProgressTap(
       emit({ phase, loaded: e.loaded, total, ratio: total ? Math.min(e.loaded / total, 1) : undefined })
     })
     this.addEventListener('load', () => {
+      if (!ctx.live()) return
+      ctx.onBeat()
+      // 4xx / 5xx 必须在这里截住 —— 交给 EmulatorJS 的话它会死锁，见上面的说明
+      if (this.status >= 400) {
+        if (critical(url)) ctx.onFailed(this.status, url)
+        return
+      }
       // 下完这一趟就把条推满，别停在 97% 上等解压。
       // 只对真的下过东西的请求补这一帧：比对缓存用的 HEAD 一个字节都没有，
       // 跟着推满的话进度条会先满一下再弹回 0
-      if (seen > 0 && ctx.live()) emit({ phase, loaded: seen, total: seen, ratio: 1 }, true)
+      if (seen > 0) emit({ phase, loaded: seen, total: seen, ratio: 1 }, true)
     })
     return (send as (...a: unknown[]) => unknown).call(this, ...args)
   } as XMLHttpRequest['send']
@@ -478,6 +526,13 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   /** 开局标志：EJS_onGameStart 与兜底轮询谁先到都行，但只放行一次 */
   let started = false
   let startWatch = 0
+  /** 最近一次「引擎还在动」的时刻，卡死检测用 */
+  let lastBeat = Date.now()
+  /** 引擎自己那行状态文字上次的内容，变了就算有动静 */
+  let lastStage = ''
+  const beat = () => {
+    lastBeat = Date.now()
+  }
   let audioTap: EjsAudioTap | null = null
   let volume = 0.6
   const caps = new Set<Capability>(['pause', 'saveState', 'volume', 'screenshot', 'record', 'gamepad'])
@@ -512,6 +567,12 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   /** 引擎日志探针。街机 ROM 排查全靠它 —— 详见 installErrorTap */
   let errorTap: { lines: string[] } | null = null
   const reportedErrors = new Set<string>()
+  /** 开局前的致命错误：报上去并停掉轮询（播放器收到 onError 会把这局拆掉） */
+  const failLoad = (message: string) => {
+    if (destroyed || started) return
+    window.clearInterval(startWatch)
+    options.onError?.(message)
+  }
   /** 同一句话可能被核心打好几遍，只报第一次，免得把界面刷成一片红 */
   const reportEngineError = (line: string) => {
     if (destroyed || !line || reportedErrors.has(line)) return
@@ -701,13 +762,18 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   }
 
   /**
-   * 开局前的兜底轮询（400ms 一次，开局或销毁即停）。管两件事：
+   * 开局前的兜底轮询（400ms 一次，开局或销毁即停）。管三件事：
    *
    * 1. **引擎起不来时把话接出来**。startGameError() 只把错误写进它自己那个加载框，
    *    外加一句 console.log —— 级别太低，错误探针（只收 error / warn）逮不着；
    *    而那个框正被遮罩盖着，不接出来的话玩家就对着一块黑屏干等。
    * 2. **start 事件万一没来**。走 CDN 的 EmulatorJS 版本随时会变，多认一个
    *    emulator.started 标志，比只认事件保险 —— 否则遮罩就再也撤不掉了。
+   * 3. **卡死了要有个交代**。EmulatorJS 有好几处 promise 断在半路就再也不 resolve
+   *    （4xx/5xx 的 TypeError 死锁是一种，syncfs 之类被 IndexedDB 挡住是另一种），
+   *    这时候它既不报错也不动 —— 遮罩会一直挂着。超过 STALL_MS 没动静就报出来，
+   *    并且**把引擎当时那行状态文字一起带上**：那行字（「下载游戏数据 100%」
+   *    「解压游戏数据」）直接指出卡在哪一步，否则这种问题根本没法查。
    */
   const watchStart = (win: Window & Record<string, unknown>) => {
     startWatch = window.setInterval(() => {
@@ -715,14 +781,23 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         window.clearInterval(startWatch)
         return
       }
-      const failed = iframe.contentDocument?.querySelector('.ejs_error_text')
-      const msg = failed?.textContent?.trim()
+      const doc = iframe.contentDocument
+      const msg = doc?.querySelector('.ejs_error_text')?.textContent?.trim()
       if (msg) {
         window.clearInterval(startWatch)
         reportEngineError(msg)
         return
       }
-      if ((win.EJS_emulator as EjsEmulator | undefined)?.started) finishStart(win)
+      if ((win.EJS_emulator as EjsEmulator | undefined)?.started) {
+        finishStart(win)
+        return
+      }
+      const stage = doc?.querySelector('.ejs_loading_text')?.textContent?.trim() ?? ''
+      if (stage !== lastStage) {
+        lastStage = stage
+        beat()
+      }
+      if (Date.now() - lastBeat > STALL_MS) failLoad(fmt(rt.ejsStalled, { stage: lastStage || core }))
     }, 400)
   }
 
@@ -769,8 +844,15 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     // 装晚了那句「缺哪个文件」就已经过去了
     errorTap = installErrorTap(win, reportEngineError)
 
-    // 下载进度也要赶在 loader.js 之前包好，否则核心那一趟就漏过去了
-    installProgressTap(win, { gameUrl, live: () => !destroyed && !started }, options.onProgress)
+    // 网络探针也要赶在 loader.js 之前包好，否则核心那一趟就漏过去了
+    installNetTap(win, {
+      gameUrl,
+      biosUrl: options.biosUrl,
+      live: () => !destroyed && !started,
+      onProgress: options.onProgress,
+      onBeat: beat,
+      onFailed: (status, url) => failLoad(fmt(rt.ejsRomFailed, { status: String(status), url })),
+    })
 
     // 开局之前一直盯着：引擎报错要接出来，start 事件不来也得有个台阶下
     watchStart(win)
