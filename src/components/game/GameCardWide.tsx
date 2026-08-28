@@ -15,7 +15,7 @@ interface Props {
 }
 
 /**
- * 横版卡片（16:9），用于「最新上线」「一起玩」等区块。
+ * 宽卡片（1:1 封面），用于「最新上线」「一起玩」等区块。
  *
  * 封面上不叠播放按钮：这些卡的封面本来就是会自动播放的视频（见 GameCover 的
  * IntersectionObserver），中间压一个圆钮正好挡住画面中心，而动起来的画面本身
@@ -34,7 +34,7 @@ export function GameCardWide({ game, className, isNew }: Props) {
       className={cx('group card-hover block overflow-hidden rounded-card border border-line bg-surface hover:border-brand/60', className)}
     >
       <div className="relative">
-        <GameCover game={game} ratio="wide" showTitle={false} iconSize="md" />
+        <GameCover game={game} ratio="square" showTitle={false} iconSize="md" />
         {isNew && (
           <Badge tone="brand" className="absolute right-2 top-2">
             NEW
