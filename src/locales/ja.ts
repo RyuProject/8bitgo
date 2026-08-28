@@ -560,6 +560,7 @@ const ja: Translation = {
     nds: { name: 'ニンテンドーDS', desc: '2 画面とタッチ操作でアイデアが弾けた携帯機。ポケモン プラチナ、マリオカート DS、押忍！闘え！応援団。' },
     gba: { name: 'Game Boy Advance', desc: '32 ビットの小さな怪物。ファイアーエムブレム、ポケモン エメラルド、悪魔城ドラキュラ 暁月の円舞曲。携帯 RPG の黄金時代です。' },
     gb: { name: 'Game Boy', desc: '4 階調のモノクロでも色あせない面白さ。ポケモン 赤・緑、テトリス、夢をみる島。' },
+    gbc: { name: 'Game Boy Color', desc: '携帯機に色がついた時代。ポケモン 金・銀、ゼルダの伝説 夢をみる島 DX、ワリオランド 3。' },
     segaMD: { name: 'メガドライブ', desc: '「Blast Processing」！ ソニック、ベア・ナックル、ゴールデンアックス。セガでいちばん硬派な 16 ビット機。' },
     dos: { name: 'DOS パソコンゲーム', desc: 'コマンドライン時代の PC 名作。DOOM、プリンス・オブ・ペルシャ、ディアブロ、デューン II。' },
     ws: { name: 'ワンダースワン', desc: '横井軍平の遺作。乾電池 1 本で数十時間遊べ、ファイナルファンタジーやワンピースなどの佳作も揃いました。' },
@@ -578,7 +579,7 @@ const ja: Translation = {
     },
     {
       q: 'どのレトロゲーム機に対応していますか？',
-      a: '現在は PlayStation 1、アーケード、Nintendo 64、ファミコン（NES）、スーパーファミコン（SNES）、Nintendo DS、GBA、Game Boy / Color、メガドライブ、MS-DOS、WonderSwan、そして Flash と Java ケータイゲームに対応しています。対応機種は今後も順次追加していきます。',
+      a: '現在は PlayStation 1、アーケード、Nintendo 64、ファミコン（NES）、スーパーファミコン（SNES）、Nintendo DS、GBA、Game Boy、Game Boy Color、メガドライブ、MS-DOS、WonderSwan、そして Flash と Java ケータイゲームに対応しています。対応機種は今後も順次追加していきます。',
     },
     {
       q: 'スマートフォンでも遊べますか？',
@@ -626,6 +627,7 @@ const ja: Translation = {
     n64v64: 'N64 (v64) のファイルヘッダー',
     n64n64: 'N64 (n64) のファイルヘッダー',
     gbHeader: 'Game Boy のカートリッジヘッダー',
+    gbcHeader: 'Game Boy のカートリッジヘッダー（GBC フラグあり）',
     gbaHeader: 'GBA のカートリッジヘッダー',
     segaHeader: 'SEGA のカートリッジヘッダー',
     snesHeader: 'SNES 内部ヘッダ（チェックサム整合）',

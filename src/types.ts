@@ -10,6 +10,7 @@ export type PlatformId =
   | 'nds'
   | 'gba'
   | 'gb'
+  | 'gbc'
   | 'segaMD'
   | 'dos'
   | 'ws'

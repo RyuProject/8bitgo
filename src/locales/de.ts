@@ -603,6 +603,10 @@ const de: Translation = {
       name: 'Game Boy',
       desc: "Vier Graustufen konnten ihn nicht bremsen: Pokémon Rot und Blau, Tetris, Link's Awakening.",
     },
+    gbc: {
+      name: 'Game Boy Color',
+      desc: "Handhelds endlich in Farbe: Pokémon Gold und Silber, Link's Awakening DX, Wario Land 3.",
+    },
     segaMD: {
       name: 'Sega Mega Drive',
       desc: '„Blast Processing“! Sonic, Streets of Rage und Golden Axe auf der härtesten 16-Bit-Konsole, die Sega je gebaut hat.',
@@ -633,7 +637,7 @@ const de: Translation = {
     },
     {
       q: 'Welche Retro-Plattformen werden unterstützt?',
-      a: 'Aktuell: PlayStation 1, Arcade, Nintendo 64, NES (Famicom), Super Nintendo (SNES), Nintendo DS, GBA, Game Boy / Color, Sega Mega Drive, MS-DOS, WonderSwan sowie Flash- und Java-Handyspiele. Weitere Plattformen kommen laufend dazu.',
+      a: 'Aktuell: PlayStation 1, Arcade, Nintendo 64, NES (Famicom), Super Nintendo (SNES), Nintendo DS, GBA, Game Boy, Game Boy Color, Sega Mega Drive, MS-DOS, WonderSwan sowie Flash- und Java-Handyspiele. Weitere Plattformen kommen laufend dazu.',
     },
     {
       q: 'Kann ich auf dem Handy spielen?',
@@ -681,6 +685,7 @@ const de: Translation = {
     n64v64: 'N64-Dateikopf (v64)',
     n64n64: 'N64-Dateikopf (n64)',
     gbHeader: 'Game-Boy-Modulkopf',
+    gbcHeader: 'Game-Boy-Modulkopf (Color-Flag gesetzt)',
     gbaHeader: 'GBA-Modulkopf',
     segaHeader: 'SEGA-Modulkopf',
     snesHeader: 'SNES-interner Header (Prüfsumme stimmig)',

@@ -602,6 +602,10 @@ const es: Translation = {
       name: 'Game Boy',
       desc: "Cuatro tonos de gris no pudieron con ella: Pokémon Rojo y Azul, Tetris, Link's Awakening.",
     },
+    gbc: {
+      name: 'Game Boy Color',
+      desc: "Las portátiles por fin a color: Pokémon Oro y Plata, Link's Awakening DX, Wario Land 3.",
+    },
     segaMD: {
       name: 'Sega Mega Drive',
       desc: '¡"Blast Processing"! Sonic, Streets of Rage y Golden Axe en la consola de 16 bits más bruta que hizo Sega.',
@@ -632,7 +636,7 @@ const es: Translation = {
     },
     {
       q: '¿Qué plataformas retro son compatibles?',
-      a: 'Ahora mismo: PlayStation 1, Arcade, Nintendo 64, NES (Famicom), Super Nintendo (SNES), Nintendo DS, GBA, Game Boy / Color, Sega Mega Drive, MS-DOS, WonderSwan, además de juegos Flash y juegos móviles Java. Seguimos agregando plataformas constantemente.',
+      a: 'Ahora mismo: PlayStation 1, Arcade, Nintendo 64, NES (Famicom), Super Nintendo (SNES), Nintendo DS, GBA, Game Boy, Game Boy Color, Sega Mega Drive, MS-DOS, WonderSwan, además de juegos Flash y juegos móviles Java. Seguimos agregando plataformas constantemente.',
     },
     {
       q: '¿Puedo jugar en el teléfono?',
@@ -680,6 +684,7 @@ const es: Translation = {
     n64v64: 'Cabecera N64 (v64)',
     n64n64: 'Cabecera N64 (n64)',
     gbHeader: 'Cabecera de cartucho de Game Boy',
+    gbcHeader: 'Cabecera de cartucho de Game Boy (indicador Color)',
     gbaHeader: 'Cabecera de cartucho de GBA',
     segaHeader: 'Cabecera de cartucho de SEGA',
     snesHeader: 'Cabecera interna de SNES (suma de verificación válida)',

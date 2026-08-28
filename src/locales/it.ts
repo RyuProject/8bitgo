@@ -603,6 +603,10 @@ const it: Translation = {
       name: 'Game Boy',
       desc: "Quattro tonalità di grigio non l'hanno fermato: Pokémon Red and Blue, Tetris, Link's Awakening.",
     },
+    gbc: {
+      name: 'Game Boy Color',
+      desc: "Le portatili finalmente a colori: Pokémon Oro e Argento, Link's Awakening DX, Wario Land 3.",
+    },
     segaMD: {
       name: 'Sega Mega Drive',
       desc: '«Blast Processing»! Sonic, Streets of Rage e Golden Axe sulla console a 16 bit più tosta mai costruita da Sega.',
@@ -633,7 +637,7 @@ const it: Translation = {
     },
     {
       q: 'Quali piattaforme retro sono supportate?',
-      a: 'Al momento: PlayStation 1, Arcade, Nintendo 64, NES (Famicom), Super Nintendo (SNES), Nintendo DS, GBA, Game Boy / Color, Sega Mega Drive, MS-DOS, WonderSwan, oltre ai giochi Flash e Java per cellulare. Continuiamo ad aggiungerne di nuove.',
+      a: 'Al momento: PlayStation 1, Arcade, Nintendo 64, NES (Famicom), Super Nintendo (SNES), Nintendo DS, GBA, Game Boy, Game Boy Color, Sega Mega Drive, MS-DOS, WonderSwan, oltre ai giochi Flash e Java per cellulare. Continuiamo ad aggiungerne di nuove.',
     },
     {
       q: 'Posso giocare dal telefono?',
@@ -681,6 +685,7 @@ const it: Translation = {
     n64v64: 'Intestazione N64 (v64)',
     n64n64: 'Intestazione N64 (n64)',
     gbHeader: 'Intestazione cartuccia Game Boy',
+    gbcHeader: 'Intestazione cartuccia Game Boy (flag Color)',
     gbaHeader: 'Intestazione cartuccia GBA',
     segaHeader: 'Intestazione cartuccia SEGA',
     snesHeader: 'Intestazione interna SNES (checksum coerente)',

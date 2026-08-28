@@ -607,6 +607,10 @@ const fr: Translation = {
       name: 'Game Boy',
       desc: "Quatre nuances de gris n'ont jamais suffi à l'arrêter : Pokémon Rouge et Bleu, Tetris, Link's Awakening.",
     },
+    gbc: {
+      name: 'Game Boy Color',
+      desc: "Les portables enfin en couleur : Pokémon Or et Argent, Link's Awakening DX, Wario Land 3.",
+    },
     segaMD: {
       name: 'Sega Mega Drive',
       desc: "« Blast Processing » ! Sonic, Streets of Rage et Golden Axe sur la 16 bits la plus musclée que Sega ait jamais sortie.",
@@ -637,7 +641,7 @@ const fr: Translation = {
     },
     {
       q: 'Quelles plateformes rétro sont prises en charge ?',
-      a: "Pour l'instant : PlayStation 1, Arcade, Nintendo 64, NES (Famicom), Super Nintendo (SNES), Nintendo DS, GBA, Game Boy / Color, Sega Mega Drive, MS-DOS, WonderSwan, ainsi que les jeux Flash et les jeux mobiles Java. D'autres plateformes arrivent en continu.",
+      a: "Pour l'instant : PlayStation 1, Arcade, Nintendo 64, NES (Famicom), Super Nintendo (SNES), Nintendo DS, GBA, Game Boy, Game Boy Color, Sega Mega Drive, MS-DOS, WonderSwan, ainsi que les jeux Flash et les jeux mobiles Java. D'autres plateformes arrivent en continu.",
     },
     {
       q: 'Est-ce que je peux jouer sur mon téléphone ?',
@@ -685,6 +689,7 @@ const fr: Translation = {
     n64v64: 'En-tête N64 (v64)',
     n64n64: 'En-tête N64 (n64)',
     gbHeader: 'En-tête de cartouche Game Boy',
+    gbcHeader: 'En-tête de cartouche Game Boy (indicateur Color)',
     gbaHeader: 'En-tête de cartouche GBA',
     segaHeader: 'En-tête de cartouche SEGA',
     snesHeader: 'En-tête interne SNES (somme de contrôle valide)',

@@ -116,17 +116,37 @@ export const platforms: Platform[] = [
   },
   {
     id: 'gb',
-    name: 'Game Boy / Color',
+    name: 'Game Boy',
     shortName: 'GB',
     nameZh: 'Game Boy',
     manufacturer: 'Nintendo',
     year: 1989,
     runtime: 'emulatorjs',
     core: 'gb',
-    romExtensions: ['.gb', '.gbc', '.zip'],
+    romExtensions: ['.gb', '.zip'],
     color: '#9ccc65',
     icon: '🟩',
     description: '四色灰阶也挡不住的乐趣：宝可梦红绿、俄罗斯方块、织梦岛。',
+  },
+  {
+    id: 'gbc',
+    name: 'Game Boy Color',
+    shortName: 'GBC',
+    nameZh: 'Game Boy Color',
+    manufacturer: 'Nintendo',
+    year: 1998,
+    runtime: 'emulatorjs',
+    /**
+     * 核心仍然填 'gb'：EmulatorJS 的核心别名表里**没有** gbc 这一项
+     * （见它 emulator.js 的 getCores()，只有 gb → gambatte），而 gambatte 本来就同时
+     * 跑 GB 和 GBC —— 卡带头里那个 CGB 标志会告诉它按哪种机器工作。
+     * 这里填 'gbc' 的话 EmulatorJS 会拿它当核心文件名去下，直接 404。
+     */
+    core: 'gb',
+    romExtensions: ['.gbc', '.zip'],
+    color: '#00bcd4',
+    icon: '🎨',
+    description: '把掌机带进彩色时代：宝可梦金银、塞尔达传说 织梦岛 DX、瓦力欧乐园 3。',
   },
   {
     id: 'segaMD',

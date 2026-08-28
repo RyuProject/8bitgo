@@ -602,6 +602,10 @@ const en: Translation = {
       name: 'Game Boy',
       desc: "Four shades of grey could not hold it back: Pokémon Red and Blue, Tetris, Link's Awakening.",
     },
+    gbc: {
+      name: 'Game Boy Color',
+      desc: "Handhelds in colour at last: Pokémon Gold and Silver, Link's Awakening DX, Wario Land 3.",
+    },
     segaMD: {
       name: 'Sega Genesis / Mega Drive',
       desc: '"Blast Processing"! Sonic, Streets of Rage and Golden Axe on the hardest-hitting 16-bit console Sega ever made.',
@@ -632,7 +636,7 @@ const en: Translation = {
     },
     {
       q: 'Which retro platforms are supported?',
-      a: 'Right now: PlayStation 1, Arcade, Nintendo 64, NES (Famicom), Super Nintendo (SNES), Nintendo DS, GBA, Game Boy / Color, Sega Genesis / Mega Drive, MS-DOS, WonderSwan, plus Flash and Java mobile games. More platforms are being added all the time.',
+      a: 'Right now: PlayStation 1, Arcade, Nintendo 64, NES (Famicom), Super Nintendo (SNES), Nintendo DS, GBA, Game Boy, Game Boy Color, Sega Genesis / Mega Drive, MS-DOS, WonderSwan, plus Flash and Java mobile games. More platforms are being added all the time.',
     },
     {
       q: 'Can I play on my phone?',
@@ -680,6 +684,7 @@ const en: Translation = {
     n64v64: 'N64 (v64) header',
     n64n64: 'N64 (n64) header',
     gbHeader: 'Game Boy cartridge header',
+    gbcHeader: 'Game Boy cartridge header (Color flag set)',
     gbaHeader: 'GBA cartridge header',
     segaHeader: 'SEGA cartridge header',
     snesHeader: 'SNES internal header (checksum checks out)',

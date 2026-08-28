@@ -538,6 +538,7 @@ const zhHant: Translation = {
     nds: { name: '任天堂 DS', desc: '雙螢幕加觸控，創意迸發的掌機。寶可夢白金、瑪利歐賽車 DS、應援團。' },
     gba: { name: 'Game Boy Advance', desc: '32 位元掌機小鋼炮。聖火降魔錄、寶可夢綠寶石、惡魔城曉月圓舞曲，掌上 RPG 的黃金時代。' },
     gb: { name: 'Game Boy', desc: '四色灰階也擋不住的樂趣：寶可夢紅綠、俄羅斯方塊、織夢島。' },
+    gbc: { name: 'Game Boy Color', desc: '把掌機帶進彩色時代：寶可夢金銀、薩爾達傳說 織夢島 DX、瓦利歐樂園 3。' },
     segaMD: { name: 'SEGA MD', desc: '「Blast Processing」！音速小子、怒之鐵拳、戰斧，SEGA 最硬派的 16 位元主機。' },
     dos: { name: 'DOS 電腦遊戲', desc: '命令列時代的 PC 經典：毀滅戰士、波斯王子、暗黑破壞神、沙丘魔堡 2。' },
     ws: { name: 'WonderSwan', desc: '橫井軍平的遺作，一顆電池玩上數十小時，收錄了太空戰士與航海王等佳作。' },
@@ -555,7 +556,7 @@ const zhHant: Translation = {
     },
     {
       q: '支援哪些復古遊戲平台？',
-      a: '目前支援 PlayStation 1、街機、Nintendo 64、紅白機（NES）、超級任天堂（SNES）、Nintendo DS、GBA、Game Boy / Color、SEGA MD、MS-DOS、WonderSwan，以及 Flash 與 Java 手機遊戲。更多平台正在陸續加入。',
+      a: '目前支援 PlayStation 1、街機、Nintendo 64、紅白機（NES）、超級任天堂（SNES）、Nintendo DS、GBA、Game Boy、Game Boy Color、SEGA MD、MS-DOS、WonderSwan，以及 Flash 與 Java 手機遊戲。更多平台正在陸續加入。',
     },
     {
       q: '可以在手機上玩嗎？',
@@ -601,6 +602,7 @@ const zhHant: Translation = {
     n64v64: 'N64 (v64) 檔頭',
     n64n64: 'N64 (n64) 檔頭',
     gbHeader: 'Game Boy 卡帶標頭',
+    gbcHeader: 'Game Boy 卡帶標頭（標了 GBC）',
     gbaHeader: 'GBA 卡帶標頭',
     segaHeader: 'SEGA 卡帶標頭',
     snesHeader: 'SNES 內部標頭（校驗和自洽）',

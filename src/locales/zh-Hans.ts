@@ -572,6 +572,7 @@ export const zhHans = {
     nds: { name: '任天堂 DS', desc: '双屏加触控，创意迸发的掌机。宝可梦白金、马力欧赛车 DS、应援团。' },
     gba: { name: 'Game Boy Advance', desc: '32 位掌机小钢炮。火焰之纹章、宝可梦绿宝石、恶魔城晓月圆舞曲，掌上 RPG 的黄金时代。' },
     gb: { name: 'Game Boy', desc: '四色灰阶也挡不住的乐趣：宝可梦红绿、俄罗斯方块、织梦岛。' },
+    gbc: { name: 'Game Boy Color', desc: '把掌机带进彩色时代：宝可梦金银、塞尔达传说 织梦岛 DX、瓦力欧乐园 3。' },
     segaMD: { name: '世嘉 MD', desc: '「Blast Processing」！索尼克、怒之铁拳、战斧，世嘉最硬核的 16 位主机。' },
     dos: { name: 'DOS 电脑游戏', desc: '命令行时代的 PC 经典：毁灭战士、波斯王子、暗黑破坏神、沙丘 2。' },
     ws: { name: '神奇天鹅', desc: '横井军平的遗作，一节电池玩几十小时，收录了最终幻想与海贼王等佳作。' },
@@ -590,7 +591,7 @@ export const zhHans = {
     },
     {
       q: '支持哪些老游戏平台？',
-      a: '目前开放红白机（NES）、Game Boy Advance（GBA）、Game Boy / Color、Flash 网页小游戏，以及 J2ME 功能机手机游戏，全部可以直接在线玩。PS1、超级任天堂、街机、世嘉 MD 等平台正在陆续接入。',
+      a: '目前开放红白机（NES）、Game Boy Advance（GBA）、Game Boy、Game Boy Color、Flash 网页小游戏，以及 J2ME 功能机手机游戏，全部可以直接在线玩。PS1、超级任天堂、街机、世嘉 MD 等平台正在陆续接入。',
     },
     {
       q: 'Flash 小游戏停止支持了，还能玩吗？',
@@ -646,6 +647,7 @@ export const zhHans = {
     n64v64: 'N64 (v64) 文件头',
     n64n64: 'N64 (n64) 文件头',
     gbHeader: 'Game Boy 卡带头',
+    gbcHeader: 'Game Boy 卡带头（标了 GBC）',
     gbaHeader: 'GBA 卡带头',
     segaHeader: 'SEGA 卡带头',
     snesHeader: 'SNES 内部头（校验和自洽）',

@@ -235,8 +235,40 @@ export function makeJsdosBundle(name: string, buf: ArrayBuffer, conf?: string): 
 
   if (entries) {
     exe = pickExecutable(entries.map((e) => e.name))
+
+    /**
+     * 目录条目必须保留，缺的还要补齐 —— 这里原来是一行
+     * `if (e.name.endsWith('/')) continue`，注释写着「js-dos 不需要」，恰恰说反了。
+     *
+     * js-dos 的 wasm 解包器（emulators 的 extract bundle 那一步）逐条往虚拟盘上写，
+     * **不会替文件补建父目录**：轮到 SIMDATA/MISC/TR2.TRI 时，前面若没出现过
+     * SIMDATA/、SIMDATA/MISC/ 两个目录条目，写文件直接 ENOENT，DOSBox 当场 exit(1)，
+     * 而且 js-dos 不发任何 error 事件 —— 玩家看到的就是一块黑屏。
+     * 极品飞车（needfspd.zip）就是这么挂的：原包目录条目本来齐全，被这行全扔了。
+     *
+     * 做法：不依赖原包目录条目的有无与顺序，从**所有文件路径**推导出完整目录集合
+     * （原有目录条目也并进来 —— 只有这样空目录才不会丢，有的游戏要往里写存档），
+     * 按深度排好放在最前面，保证解到任何文件时它的父目录都已经建好。
+     */
+    const dirs = new Set<string>()
     for (const e of entries) {
-      if (e.name.endsWith('/')) continue // 目录条目，js-dos 不需要
+      if (e.name.endsWith('/')) {
+        dirs.add(e.name)
+        continue
+      }
+      const parts = e.name.split('/')
+      let prefix = ''
+      for (let i = 0; i < parts.length - 1; i++) {
+        prefix += parts[i] + '/'
+        dirs.add(prefix)
+      }
+    }
+    const empty = new Uint8Array(0) as Uint8Array<ArrayBuffer>
+    for (const dir of [...dirs].sort((a, b) => a.split('/').length - b.split('/').length || (a < b ? -1 : 1))) {
+      out.push({ name: dir, method: 0, crc: 0, compressedSize: 0, uncompressedSize: 0, data: empty })
+    }
+    for (const e of entries) {
+      if (e.name.endsWith('/')) continue // 目录都在上面统一发过了
       out.push({
         name: e.name,
         method: e.method,
@@ -255,6 +287,8 @@ export function makeJsdosBundle(name: string, buf: ArrayBuffer, conf?: string): 
   }
 
   const confBytes = te.encode(conf ?? buildDosboxConf(exe)) as Uint8Array<ArrayBuffer>
+  // conf 自己的父目录同理要先建好（单个 exe 的分支也走到这里，那边一个目录条目都没有）
+  out.push({ name: '.jsdos/', method: 0, crc: 0, compressedSize: 0, uncompressedSize: 0, data: new Uint8Array(0) as Uint8Array<ArrayBuffer> })
   out.push({
     name: '.jsdos/dosbox.conf',
     method: 0, // 存储，不压缩：几百字节而已

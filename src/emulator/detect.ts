@@ -29,7 +29,7 @@ const EXT_TO_PLATFORM: Record<string, PlatformId> = {
   gba: 'gba',
   agb: 'gba',
   gb: 'gb',
-  gbc: 'gb',
+  gbc: 'gbc',
   sgb: 'gb',
   z64: 'n64',
   n64: 'n64',
@@ -125,7 +125,15 @@ function sniffHeader(bytes: Uint8Array): RomDetection | null {
   if (b[0] === 0x37 && b[1] === 0x80 && b[2] === 0x40 && b[3] === 0x12) return { platform: 'n64', confidence: 'high', reason: d.n64v64 }
   if (b[0] === 0x40 && b[1] === 0x12 && b[2] === 0x37 && b[3] === 0x80) return { platform: 'n64', confidence: 'high', reason: d.n64n64 }
   if (bytes.length >= 0x108 && b[0x104] === 0xce && b[0x105] === 0xed && b[0x106] === 0x66 && b[0x107] === 0x66) {
-    return { platform: 'gb', confidence: 'high', reason: d.gbHeader }
+    /*
+     * 任天堂 logo 对上了，说明是 GB 系卡带 —— 但 GB 和 GBC 是两个平台，还得再认一个字节：
+     * 卡带头 0x143 是 CGB 标志，0x80 = 「支持彩色，也能在黑白机上跑」，
+     * 0xC0 = 「只能在彩色机上跑」，其余（多半是标题的最后一个字符）就是纯黑白卡带。
+     * 带 0x80 位的一律算 GBC —— 它们本来就是以彩色卡带的身份发行的（宝可梦金银正是 0x80）。
+     * 文件短到读不着 0x143 时保守算 GB，不猜。
+     */
+    const color = bytes.length > 0x143 && (b[0x143] & 0x80) !== 0
+    return { platform: color ? 'gbc' : 'gb', confidence: 'high', reason: color ? d.gbcHeader : d.gbHeader }
   }
   if (b[4] === 0x24 && b[5] === 0xff && b[6] === 0xae && b[7] === 0x51) return { platform: 'gba', confidence: 'high', reason: d.gbaHeader }
   if (bytes.length >= 0x104 && ascii(bytes, 0x100, 4) === 'SEGA') return { platform: 'segaMD', confidence: 'high', reason: d.segaHeader }
