@@ -13,6 +13,7 @@ import {
   dirOfKey,
   getRomConfig,
   isBundleKey,
+  keepsOriginalFileName,
   romUrlForKey,
   uploadRom,
 } from '@/services/roms'
@@ -424,6 +425,8 @@ function RomField({
   const cfg = getRomConfig()
   const canUpload = Boolean(cfg.api && cfg.token)
   const isFlash = platform === 'flash'
+  /** 街机的 ROM key 保留原文件名 —— FBNeo 靠压缩包名认 romset，见 roms.ts 的 FILENAME_IS_IDENTITY */
+  const isArcade = keepsOriginalFileName(platform)
   // Flash 额外收 zip：平台的 romExtensions 保持只有 .swf —— 那个列表还管着
   // 「玩本地 ROM」和格式识别，混进 zip 会让玩家以为拖个 zip 进播放器也能玩
   const accept = isFlash ? '.swf,.zip' : (platformMap[platform]?.romExtensions ?? ['.zip']).join(',')
@@ -580,6 +583,8 @@ function RomField({
               ? isBundleKey(value.trim())
                 ? `这一槽绑的是多 SWF 包里的 ${value.trim().split('/').pop()}；再传一个 zip 会原地更新 ${dirOfKey(value.trim())}/`
                 : `再次上传会原地覆盖已绑定的 ${value.trim()}；想换存放位置就先改这里的 key 或清空`
+              : isArcade
+              ? `街机 ROM 会**原样保留文件名**上传（如 ${defKey('kof97.zip')}）—— FBNeo 靠压缩包名认 romset，必须是 kof97 这种 romset 短名，改名就报 Romset is unknown`
               : isFlash
                 ? `单个 .swf 存成 ${defKey('x.swf')}；多 SWF 的游戏直接选 .zip，整包会传到 ${bundleDirFor(platform, slug, lang)}/ 下`
                 : `上传会存到 ${defKey('x.zip')} 这样的位置（扩展名跟随所选文件）并自动绑定；也可手填已有文件的 key 或完整 URL。留空则该语言不单独提供`

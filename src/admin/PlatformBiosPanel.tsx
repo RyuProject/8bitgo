@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { PlatformId } from '@/types'
 import { platforms } from '@/data/platforms'
 import { cx } from '@/lib/format'
-import { getRomApi, getRomPrefix, romUrlForKey, uploadRom } from '@/services/roms'
+import { getRomApi, getRomPrefix, romUrlForKey, uploadRom, safeFileName } from '@/services/roms'
 import { cleanupSuperseded, confirmUpload } from './uploadGuards'
 import {
   bindPlatformBios,
@@ -27,11 +27,20 @@ const NEED_BIOS: Array<{ id: PlatformId; hint: string }> = [
   { id: 'psx', hint: '多数核心可以不用 BIOS，但用真 BIOS 兼容性更好' },
 ]
 
-/** BIOS 在对象存储里的默认位置：<前缀>/bios/<平台>.zip */
-function defaultBiosKey(platform: string, fileName: string): string {
-  const ext = (fileName.match(/\.[a-z0-9]+$/i)?.[0] ?? '.zip').toLowerCase()
+/**
+ * BIOS 在对象存储里的默认位置：<前缀>/bios/<原文件名>
+ *
+ * ⚠️ 这里**必须保留原文件名**，不能像以前那样用 <平台>.zip。
+ *
+ * 模拟器核心是按**固定文件名**找 BIOS 的：FBNeo 找 `neogeo.zip`，PS1 核心找
+ * `scph5501.bin`。而播放器把 BIOS 的 URL 原样交给核心（EJS_biosUrl），
+ * 核心看到的文件名就是 URL 最后那一段 —— 存成 `bios/arcade.zip` 的话，
+ * 文件明明在，核心却报「sp-s3.sp1 / sm1.sm1 / sfix.sfix / 000-lo.lo is missing」，
+ * 因为它要的 neogeo.zip 根本不存在。这个坑踩过，别再改回去。
+ */
+function defaultBiosKey(_platform: string, fileName: string): string {
   const prefix = getRomPrefix()
-  return `${prefix ? `${prefix}/` : ''}bios/${platform}${ext}`
+  return `${prefix ? `${prefix}/` : ''}bios/${safeFileName(fileName)}`
 }
 
 export function PlatformBiosPanel() {
@@ -127,6 +136,13 @@ export function PlatformBiosPanel() {
         <code className="rounded bg-surface-2 px-1">/bios/neogeo.zip</code>，改完要重新构建），
         或<strong className="text-muted">上传到对象存储</strong>（点下面的按钮，填的是对象 key）。
         前者简单，但构建机上必须也有这个文件；后者只存一份，部署时不用管。
+      </p>
+      <p className="mt-1 text-[11px] leading-relaxed text-live">
+        ⚠️ 不管哪种放法，<strong>地址最后一段必须是核心要找的那个文件名</strong>：街机是{' '}
+        <code className="rounded bg-surface-2 px-1">neogeo.zip</code>，PS1 是{' '}
+        <code className="rounded bg-surface-2 px-1">scph5501.bin</code>。核心按固定文件名找 BIOS，
+        存成 <code className="rounded bg-surface-2 px-1">bios/arcade.zip</code> 的话文件明明在，
+        核心却会报「sp-s3.sp1 … is missing」。上传时会自动保留原文件名，别手动改成别的。
       </p>
 
       {loading ? (

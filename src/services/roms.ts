@@ -297,20 +297,57 @@ export function effectiveRomKey(game: Game, lang: Lang, prefer?: RomLang | null)
   return game.roms?.[slot] || game.roms?.en || game.rom || ''
 }
 
-/** 给某语言的 ROM 生成默认 key：<前缀>/<platform>/<slug>.<lang>.<ext> */
-export function defaultRomKeyForLang(platform: string, slug: string, lang: RomLang, fileName: string): string {
-  const ext = (fileName.match(/\.[a-z0-9]+$/i)?.[0] ?? '.zip').toLowerCase()
-  const prefix = getRomPrefix()
-  const name = slug || fileName.replace(/\.[a-z0-9]+$/i, '').toLowerCase().replace(/[\s_]+/g, '-')
-  return `${prefix ? `${prefix}/` : ''}${platform}/${name}.${lang}${ext}`
+/**
+ * 这些平台的**文件名本身就是标识**，重命名等于换了一个游戏。
+ *
+ * 街机（MAME / FBNeo）不看文件内容，它拿压缩包的基本名去查内置的 romset 表：
+ * `kof97.zip` 认识，`the-king-of-fighters-97.en.zip` 不认识，直接报
+ * 「Romset is unknown」—— 连 zip 都不会打开。
+ *
+ * 播放器把云端 ROM 的 URL 原样交给核心，所以**对象 key 的最后一段就是核心看到的文件名**。
+ * 这类平台的默认 key 必须保留上传时的原文件名，不能套 <slug> 那套约定。
+ */
+const FILENAME_IS_IDENTITY = new Set(['arcade'])
+
+/** 这个平台的 ROM 是不是靠文件名认身份 */
+export function keepsOriginalFileName(platform: string): boolean {
+  return FILENAME_IS_IDENTITY.has(platform)
 }
 
-/** 给上传的文件生成默认 key */
-export function defaultKeyFor(platform: string, slug: string, fileName: string): string {
-  const ext = (fileName.match(/\.[a-z0-9]+$/i)?.[0] ?? '.zip').toLowerCase()
+/**
+ * 把文件名清理成能安全放进对象 key 的形式：小写，只留字母数字和 . _ -
+ *
+ * 注意这只是「保住一个正确的名字」，救不了本来就错的名字 ——
+ * `The King of Fighters 97 (NGH-2320).zip` 清理完还是不叫 kof97，FBNeo 照样不认。
+ * 正确的 romset 名（kof97、mslug3、sfa3…）本来就全是小写字母数字，清理不会动它们。
+ */
+export function safeFileName(fileName: string): string {
+  return fileName.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')
+}
+
+/**
+ * 给某语言的 ROM 生成默认 key：<前缀>/<platform>/<slug>.<lang>.<ext>
+ *
+ * 街机例外：保留原文件名、也不加语言后缀 —— Neo Geo 的地区版本本来就是不同的
+ * romset（kof97 / kof97h / kof97k…），各自有各自的名字，语言后缀反而会把名字弄坏。
+ */
+export function defaultRomKeyForLang(platform: string, slug: string, lang: RomLang, fileName: string): string {
   const prefix = getRomPrefix()
+  const at = (name: string) => `${prefix ? `${prefix}/` : ''}${platform}/${name}`
+  if (keepsOriginalFileName(platform)) return at(safeFileName(fileName))
+  const ext = (fileName.match(/\.[a-z0-9]+$/i)?.[0] ?? '.zip').toLowerCase()
   const name = slug || fileName.replace(/\.[a-z0-9]+$/i, '').toLowerCase().replace(/[\s_]+/g, '-')
-  return `${prefix ? `${prefix}/` : ''}${platform}/${name}${ext}`
+  return at(`${name}.${lang}${ext}`)
+}
+
+/** 给上传的文件生成默认 key。街机同样保留原文件名，理由见 FILENAME_IS_IDENTITY */
+export function defaultKeyFor(platform: string, slug: string, fileName: string): string {
+  const prefix = getRomPrefix()
+  const at = (name: string) => `${prefix ? `${prefix}/` : ''}${platform}/${name}`
+  if (keepsOriginalFileName(platform)) return at(safeFileName(fileName))
+  const ext = (fileName.match(/\.[a-z0-9]+$/i)?.[0] ?? '.zip').toLowerCase()
+  const name = slug || fileName.replace(/\.[a-z0-9]+$/i, '').toLowerCase().replace(/[\s_]+/g, '-')
+  return at(`${name}${ext}`)
 }
 
 const probeCache = new Map<string, Promise<boolean>>()
