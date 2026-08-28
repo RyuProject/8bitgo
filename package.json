@@ -23,7 +23,8 @@
     "j2me": "node scripts/setup-j2me.mjs",
     "webretro": "node scripts/setup-webretro.mjs",
     "ejscores": "node scripts/copy-ejs-cores.mjs",
-    "ejspatch": "node scripts/patch-emulatorjs.mjs"
+    "ejspatch": "node scripts/patch-emulatorjs.mjs",
+    "romsets": "node scripts/build-arcade-romsets.mjs"
   },
   "dependencies": {
     "jsnes": "^2.1.0",

@@ -18,6 +18,9 @@ import {
   uploadRom,
 } from '@/services/roms'
 import { bundleBytes, bundleWarnings, pickMainSwf, planSwfBundleFromZip, type SwfBundleFile, type SwfBundlePlan } from '@/lib/swfBundle'
+import { listZipEntries, isZip } from '@/lib/unzip'
+import { identifyArcadeRomset, type RomsetIdentification } from '@/lib/arcadeRomset'
+import { platformBiosUrlSync, fetchPlatformBios } from '@/services/platformBios'
 import { uploadSwfBundle, type BundleUploadProgress } from './swfUpload'
 import { confirmUpload, cleanupSuperseded, deleteRomObjects, human, isDeletableKey } from './uploadGuards'
 import { coreOptionsFor } from '@/config/emulators'
@@ -437,6 +440,10 @@ function RomField({
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [pending, setPending] = useState<PendingBundle | null>(null)
   const [bundleAt, setBundleAt] = useState<BundleUploadProgress | null>(null)
+  /** 街机 ROM 的自动识别结果，上传后显示在下面 */
+  const [romset, setRomset] = useState<RomsetIdentification | null>(null)
+  /** 识别出来的游戏需要 BIOS，但平台还没绑 —— 就是「Neo Geo BIOS 成员缺失」那个坑 */
+  const [biosMissing, setBiosMissing] = useState<string | null>(null)
   const cfg = getRomConfig()
   const canUpload = Boolean(cfg.api && cfg.token)
   const isFlash = platform === 'flash'
@@ -466,6 +473,40 @@ function RomField({
     }
   }
 
+  /**
+   * 街机包的自动识别：读 zip 中央目录里的 CRC，比对 FBNeo 驱动表认出 romset。
+   *
+   * 只在**完全命中**（该 romset 的成员一个不缺、且没有第二个同样满分的候选）时
+   * 才改名 —— 差一个 ROM 就套上父集的名字，换来的是「missing files」，比不改还糟。
+   * 顺带查一下这游戏要不要 BIOS、平台绑没绑，缺了当场红字提醒。
+   *
+   * 整条链路都是尽力而为：索引拉不到、包认不出来，都安安静静走原来的流程。
+   */
+  const sniffArcade = async (file: File): Promise<string | null> => {
+    setRomset(null)
+    setBiosMissing(null)
+    if (!isArcade || !/\.(zip|7z)$/i.test(file.name)) return null
+    try {
+      const buf = await file.arrayBuffer()
+      if (!isZip(buf)) return null
+      const found = await identifyArcadeRomset(listZipEntries(buf))
+      if (!found) return null
+      setRomset(found)
+      const hit = found.confident
+      if (!hit) return null
+
+      if (hit.bios) {
+        // 缓存可能还没拉过（后台刚打开就传文件），拉一次再判断
+        await fetchPlatformBios()
+        if (!platformBiosUrlSync(platform)) setBiosMissing(hit.bios)
+      }
+      return `${hit.name}.zip`
+    } catch (err) {
+      console.warn('[romset] 识别失败，按原文件名走：', err)
+      return null
+    }
+  }
+
   const onFile = async (file: File | undefined) => {
     if (!file) return
     if (isFlash && /\.zip$/i.test(file.name)) {
@@ -473,12 +514,16 @@ function RomField({
       if (inputRef.current) inputRef.current.value = ''
       return
     }
+    // 街机：先认 romset。认出来就用 romset 短名当文件名，这是核心唯一认的东西
+    const sniffed = await sniffArcade(file)
     const oldKey = value.trim()
     // 字段里已有 key（且不是完整 URL）就复用它 —— 同一个槽位始终对着同一个对象，
     // 这样重传就是原地覆盖，不会又生出一份。但包目录里的 key 不能复用：
     // 那是「某个包里的一个文件」，单传一个 swf 顶上去会和包里的其它文件对不上。
+    // 街机认出了 romset 就一律用它 —— 哪怕字段里已经有 key。
+    // 那个旧 key 十有八九正是「文件名不对所以跑不起来」的元凶，复用它等于把错留住。
     const reusable = oldKey && !/^https?:/i.test(oldKey) && !isBundleKey(oldKey)
-    const key = reusable ? oldKey : defKey(file.name)
+    const key = sniffed ? defKey(sniffed) : reusable ? oldKey : defKey(file.name)
     setMsg(null)
     if (!(await confirmUpload(key, file))) {
       if (inputRef.current) inputRef.current.value = ''
@@ -491,7 +536,10 @@ function RomField({
       const removed = await cleanupSuperseded(oldKey, result.key, allBoundKeys)
       setMsg({
         ok: true,
-        text: `已上传到 R2：${result.key}（${human(result.size)}）${removed ? `；旧文件 ${removed} 已删除` : ''}`,
+        text:
+          `已上传到 R2：${result.key}（${human(result.size)}）` +
+          (sniffed ? `；已按识别结果命名为 ${sniffed}` : '') +
+          (removed ? `；旧文件 ${removed} 已删除` : ''),
       })
     } catch (err) {
       setMsg({ ok: false, text: err instanceof Error ? err.message : '上传失败' })
@@ -599,7 +647,7 @@ function RomField({
                 ? `这一槽绑的是多 SWF 包里的 ${value.trim().split('/').pop()}；再传一个 zip 会原地更新 ${dirOfKey(value.trim())}/`
                 : `再次上传会原地覆盖已绑定的 ${value.trim()}；想换存放位置就先改这里的 key 或清空`
               : isArcade
-              ? `街机 ROM 会**原样保留文件名**上传（如 ${defKey('kof97.zip')}）—— FBNeo 靠压缩包名认 romset，必须是 kof97 这种 romset 短名，改名就报 Romset is unknown`
+              ? `街机 ROM 会**自动识别 romset**：读包里每个文件的 CRC 比对 FBNeo 驱动表，认出来就按 romset 短名存（如 ${defKey('kof97.zip')}）。核心只认这个名字，认不出时保留原名并给出候选`
               : isFlash
                 ? `单个 .swf 存成 ${defKey('x.swf')}；多 SWF 的游戏直接选 .zip，整包会传到 ${bundleDirFor(platform, slug, lang)}/ 下`
                 : `上传会存到 ${defKey('x.zip')} 这样的位置（扩展名跟随所选文件）并自动绑定；也可手填已有文件的 key 或完整 URL。留空则该语言不单独提供`
@@ -645,6 +693,7 @@ function RomField({
           </div>
         )}
         {msg && <p className={cx('mt-2 text-xs', msg.ok ? 'text-online' : 'text-live')}>{msg.text}</p>}
+        {romset && <RomsetHint found={romset} biosMissing={biosMissing} platform={platform} />}
         {!canUpload && (
           <p className="mt-1 text-[11px] text-dim">
             <Link to="/admin/roms" className="text-brand-hover hover:underline">
@@ -881,5 +930,70 @@ function MediaField({
         </p>
       )}
     </Field>
+  )
+}
+
+/**
+ * 街机 ROM 识别结果的展示。
+ *
+ * 三种情况，说的话完全不一样：
+ *   完全命中  —— 文件已经自动改成 romset 短名了，告诉一声就行
+ *   部分命中  —— 多半是残缺包或者别的版本，把候选摆出来让管理员自己判断，
+ *                 顺便说清楚差在哪（12/13 这种数字比任何形容词都有用）
+ *   认不出来  —— 索引里没有。可能是自制/魔改 ROM，也可能包本身有问题
+ *
+ * BIOS 缺失单独用红字说 —— Neo Geo 没 BIOS 的报错（sp-s3.sp1 … is missing）
+ * 长得完全不像「你少传了个文件」，不提前拦一下，管理员会一路查到怀疑人生。
+ */
+function RomsetHint({
+  found,
+  biosMissing,
+  platform,
+}: {
+  found: RomsetIdentification
+  biosMissing: string | null
+  platform: PlatformId
+}) {
+  const top = found.candidates[0]
+  const hit = found.confident
+  return (
+    <div className="mt-2 space-y-1 text-xs">
+      {hit ? (
+        <p className="text-online">
+          ✓ 识别为 <span className="font-mono font-semibold">{hit.name}</span>
+          （{hit.matched}/{hit.total} 个 ROM 全部匹配）
+          {hit.parent && <span className="text-dim">，属于 {hit.parent} 的变体</span>}
+          {hit.bios && <span className="text-dim">，需要 BIOS {hit.bios}</span>}
+        </p>
+      ) : (
+        <div className="text-live">
+          <p>
+            ⚠️ 没能确定 romset。最接近的是 <span className="font-mono">{top.name}</span>，
+            但只匹配上 {top.matched}/{top.total} 个 ROM —— 包可能残缺、或者是另一个版本。
+          </p>
+          {found.candidates.length > 1 && (
+            <p className="mt-0.5 text-dim">
+              其它候选：
+              {found.candidates.slice(1, 4).map((c) => (
+                <span key={c.name} className="ml-1 font-mono">
+                  {c.name}（{c.matched}/{c.total}）
+                </span>
+              ))}
+            </p>
+          )}
+          <p className="mt-0.5 text-dim">
+            文件名保持原样上传了。核心只认 romset 短名，名字不对会报 Romset is unknown —— 确认是哪个版本后，手动把上面的 key 改成 &lt;romset&gt;.zip。
+          </p>
+        </div>
+      )}
+      {biosMissing && (
+        <p className="text-live">
+          ⚠️ 这游戏需要 <span className="font-mono">{biosMissing}</span> BIOS，但「{platform}」平台还没绑定 BIOS —— 现在直接开会报「四个 Neo Geo BIOS 成员缺失」。
+          <Link to="/admin/roms" className="ml-1 text-brand-hover hover:underline">
+            去绑定 →
+          </Link>
+        </p>
+      )}
+    </div>
   )
 }

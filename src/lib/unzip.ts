@@ -16,6 +16,14 @@ export interface ZipFileEntry {
   method: number
   compressedSize: number
   uncompressedSize: number
+  /**
+   * 成员内容的 CRC-32（无符号）。
+   *
+   * 白捡的：zip 的中央目录里本来就存着每个成员的 CRC，**不用解压就能读到**，
+   * 27MB 的街机包也是一瞬间的事。街机 ROM 识别（lib/arcadeRomset.ts）整个
+   * 就架在这个字段上 —— 拿它去比 FBNeo 的驱动表，是哪个 romset 一目了然。
+   */
+  crc32: number
   /** 本地文件头在整个 zip 里的偏移 */
   offset: number
 }
@@ -70,6 +78,7 @@ export function listZipEntries(buf: ArrayBuffer): ZipFileEntry[] {
     if (dv.getUint32(p, true) !== 0x02014b50) break
     const flags = dv.getUint16(p + 8, true)
     const method = dv.getUint16(p + 10, true)
+    const crc32 = dv.getUint32(p + 16, true)
     const compressedSize = dv.getUint32(p + 20, true)
     const uncompressedSize = dv.getUint32(p + 24, true)
     const nameLen = dv.getUint16(p + 28, true)
@@ -80,7 +89,7 @@ export function listZipEntries(buf: ArrayBuffer): ZipFileEntry[] {
     const name = decodeZipName(b.subarray(p + 46, p + 46 + nameLen), Boolean(flags & 0x800)).replace(/\\/g, '/')
     // 目录项以 / 结尾；macOS 打包时塞的 __MACOSX/ 和 ._ 开头的资源叉一律跳过
     if (!name.endsWith('/') && !name.startsWith('__MACOSX/') && !name.split('/').pop()?.startsWith('._')) {
-      entries.push({ name, method, compressedSize, uncompressedSize, offset })
+      entries.push({ name, method, compressedSize, uncompressedSize, crc32, offset })
     }
     p += 46 + nameLen + extraLen + commentLen
   }
