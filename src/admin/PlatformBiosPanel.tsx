@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PlatformId } from '@/types'
 import { platforms } from '@/data/platforms'
 import { cx } from '@/lib/format'
-import { getRomApi, getRomPrefix, romUrlForKey, uploadRom, safeFileName } from '@/services/roms'
+import { getRomApi, getRomPrefix, probeUrl, romUrlForKey, safeFileName, uploadRom } from '@/services/roms'
 import { cleanupSuperseded, confirmUpload } from './uploadGuards'
 import {
   bindPlatformBios,
@@ -49,6 +49,14 @@ export function PlatformBiosPanel() {
   const [busy, setBusy] = useState<string | null>(null)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [pct, setPct] = useState<Record<string, number>>({})
+  /**
+   * 每个已绑 key 的「文件到底在不在」。
+   *
+   * 绑定只是存了一个字符串，后台从来不验证那个地址上真有东西 —— 于是「填了但文件 404」
+   * 这种状态可以一直躺着，直到玩家启动游戏才以「缺 BIOS 文件」的面目冒出来，
+   * 而那个报错看上去像是 ROM 的问题。这里当场探一下，把哑巴陷阱变成明说。
+   */
+  const [probe, setProbe] = useState<Record<string, 'checking' | 'ok' | 'missing'>>({})
   const fileRefs = useRef<Record<string, HTMLInputElement | null>>({})
 
   useEffect(() => {
@@ -63,6 +71,24 @@ export function PlatformBiosPanel() {
     }
   }, [])
 
+  /** 探一个平台绑定的地址通不通；拼不出地址就不用探了 */
+  const checkKey = useCallback(async (platform: string, key: string) => {
+    const url = key ? romUrlForKey(key) : ''
+    if (!url) {
+      setProbe((s) => ({ ...s, [platform]: 'missing' }))
+      return
+    }
+    setProbe((s) => ({ ...s, [platform]: 'checking' }))
+    const ok = await probeUrl(url)
+    setProbe((s) => ({ ...s, [platform]: ok ? 'ok' : 'missing' }))
+  }, [])
+
+  useEffect(() => {
+    for (const [platform, key] of Object.entries(map)) {
+      if (key) void checkKey(platform, key)
+    }
+  }, [map, checkKey])
+
   const rows = NEED_BIOS.map((n) => ({
     ...n,
     platform: platforms.find((p) => p.id === n.id),
@@ -76,13 +102,31 @@ export function PlatformBiosPanel() {
       // 已经绑过 BIOS 就复用同一个 key —— 原来无条件按文件名重算，
       // 传完 bios.bin 再传 bios.zip 会在 R2 里留下两份，旧的那份永远没人引用
       const oldKey = (map[platform] ?? '').trim()
-      const key = oldKey && !/^https?:/i.test(oldKey) ? oldKey : defaultBiosKey(platform, file.name)
+      const suggested = defaultBiosKey(platform, file.name)
+      let key = oldKey && !/^https?:/i.test(oldKey) ? oldKey : suggested
+      /**
+       * 沿用旧 key 有个前提：旧 key 的文件名得是对的。
+       *
+       * 核心是按**固定文件名**找 BIOS 的，所以一个错的旧 key（比如历史遗留的
+       * bios/arcade.zip）会一直粘着不放 —— 你重传多少次，文件还是落在错的名字上，
+       * 传上去也用不了。名字对不上就问一句，别默默沿用。
+       */
+      const oldName = oldKey.split('/').pop() ?? ''
+      if (oldKey && key !== suggested && oldName !== safeFileName(file.name)) {
+        const move = window.confirm(
+          `当前绑定的是：\n  ${oldKey}\n你上传的文件叫：\n  ${file.name}\n\n` +
+            `模拟器核心是按文件名找 BIOS 的，沿用旧位置的话文件传上去也用不了。\n\n` +
+            `确定 = 改传到 ${suggested}（传完会问要不要删旧文件）\n取消 = 仍然覆盖 ${oldKey}`,
+        )
+        if (move) key = suggested
+      }
       if (!(await confirmUpload(key, file))) return
       await uploadRom(file, key, (p) => setPct((s) => ({ ...s, [platform]: p })))
       await bindPlatformBios(platform, key)
       setMap((m) => ({ ...m, [platform]: key }))
       // 同一份 BIOS 可能被多个平台共用（比如几个街机核心），所以把整张表传进去判断
       const removed = await cleanupSuperseded(oldKey, key, Object.values(map).filter(Boolean) as string[])
+      void checkKey(platform, key)
       setMsg({ ok: true, text: `已上传并绑定：${key}${removed ? `；旧文件 ${removed} 已删除` : ''}` })
     } catch (e) {
       setMsg({ ok: false, text: e instanceof Error ? e.message : '上传失败' })
@@ -98,6 +142,7 @@ export function PlatformBiosPanel() {
     try {
       await bindPlatformBios(platform, key.trim())
       setMap((m) => ({ ...m, [platform]: key.trim() }))
+      void checkKey(platform, key.trim())
       setMsg({ ok: true, text: '已绑定' })
     } catch (e) {
       setMsg({ ok: false, text: e instanceof Error ? e.message : '绑定失败' })
@@ -217,6 +262,14 @@ export function PlatformBiosPanel() {
                 游戏最后报的是「缺文件」，让人以为是 ROM 的问题，
                 实际上是 ROM 存储的公开地址没配。这里必须说破。
               */}
+              {r.key && probe[r.id] === 'missing' && romUrlForKey(r.key) && (
+                <p className="mt-1 text-[11px] font-medium text-live">
+                  ⚠️ 这个地址取不到文件（404 或不可达）。绑定只是存了个字符串，文件没传上去照样是空的 ——
+                  点「上传文件」把 BIOS 传到这个 key 上，或者把 key 改成文件真正所在的位置。
+                </p>
+              )}
+              {r.key && probe[r.id] === 'ok' && <p className="mt-1 text-[11px] text-online">✓ 文件可访问</p>}
+
               {r.key &&
                 (romUrlForKey(r.key) ? (
                   <p className="mt-1 truncate text-[11px] text-dim">实际地址：{romUrlForKey(r.key)}</p>
