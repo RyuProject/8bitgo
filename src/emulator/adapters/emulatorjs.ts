@@ -61,39 +61,80 @@ export const EJS_PATH: string = (() => {
  * 写死 'zh-CN' 的年代，英文站的玩家一点开模拟器自己的设置菜单，看到的是一水儿的
  * 简体中文，引擎报错原文也是中文（那句话现在会被我们接出来显示在播放器上，更得对语言）。
  *
- * **两个构建的文件名不一样**，这是这张表长这样的原因：
+ * **码必须和我们自建构建里的文件名一字不差**（zh.json / fr.json 这样的两字码）。
+ * 别想依赖 loader.js 的「404 就砍掉破折号重试」兜底 —— 那个兜底只认 HTTP 错误状态，
+ * 而 Vite dev 对不存在的路径回的是 **200 + index.html**，loader 拿去 JSON.parse
+ * 炸出 "Unexpected token '<'" 后直接把语言包整个扔了，界面退回英文，开发时中文
+ * 全没了还以为是构建坏了。写成第一发就命中，两个环境都不吃这套。
  *
- *     官方 CDN 4.2.3   zh-CN.json  en-US.json  es-ES.json  af-FR.json  it-IT.json  de-GER.json  ja-JA.json
- *     main（我们自建）  zh.json     en.json     es.json     fr.json     it.json     de.json      ja.json
+ * 两个坑，改之前先看清楚：
  *
- * loader.js 的取法是：先试 `<码>.json`，404 了再试**破折号前那一段**`.json`
- * （见 loader.js 里的 `language.split(/[-_]/)[0]`）。所以带破折号的码两边都能落地 ——
- * CDN 第一次就命中，自建的兜到第二次。表里保持带破折号就是为了两边都不瞎。
- *
- * 三个坑，改之前先看清楚：
- *
- *   1. **法语是唯一两边对不上的**。CDN 那份文件名叫 af-FR（内容确确实实是法语，
- *      "Redémarrer" / "Paramètres"，只是文件名把语言码写错了），main 已经改名成 fr。
- *      一个字符串没法同时命中两边，这里按**我们实际发布的自建构建**取 'fr-FR'：
- *      自建走 fr-FR → 404 → fr.json ✓；真切回 CDN 的话法语界面会退回英文。
- *   2. **没有繁体**。两个构建都只有简体，繁体退到简体是矮子里拔将军 —— 至少还是中文。
+ *   1. 这些两字码只在**我们自建的 main 构建**里存在。官方 CDN 4.2.3 用的是
+ *      zh-CN.json / af-FR.json 那套老名字 —— 但反正 CDN 版会把街机 BIOS 解压，
+ *      早就不能切回去了（见 EJS_PATH 的注释），不用为它留后路。
+ *   2. **没有繁体**。构建里只有简体，繁体退到简体是矮子里拔将军 —— 至少还是中文。
  *      真要繁体得自己托管一份 JSON，再用 EJS_paths 指过去（见 loader.js 的语言加载）。
- *   3. 自建构建下每种语言都会先吃一个 404 再命中，控制台里那条红的是**正常的**，
- *      不是加载失败。
  *
  * 语言码填错或者文件不存在都不会把游戏搞挂：loader.js 那边 try/catch 兜着，
  * 退回英文而已。写成 Record<Lang, string> 则是为了以后站点加语言时编译期就报错，
  * 而不是让新语言悄没声地退回英文。
  */
 const EJS_LANG: Record<Lang, string> = {
-  'zh-Hans': 'zh-CN',
-  'zh-Hant': 'zh-CN',
-  en: 'en-US',
-  es: 'es-ES',
-  fr: 'fr-FR',
-  it: 'it-IT',
-  de: 'de-GER',
-  ja: 'ja-JA',
+  'zh-Hans': 'zh',
+  'zh-Hant': 'zh',
+  en: 'en',
+  es: 'es',
+  fr: 'fr',
+  it: 'it',
+  de: 'de',
+  ja: 'ja',
+}
+
+/**
+ * 一次性清掉 EmulatorJS 的 IndexedDB 工件缓存（库名 EmulatorJS-Cache）。
+ *
+ * 为什么：引擎会把下载完（且解压完）的核心按**文件名**缓存进 IndexedDB，下次直接用，
+ * 连网都不上。在「核心还没自托管」的那段时间里，引擎从 cdn.emulatorjs.org/4.3.0-pre/
+ * 回落拉核心，拉回来的东西初始化不出 EJS_Runtime —— 而这份坏数据**被缓存了**。
+ * 之后就算本地 cores/ 已经齐了，控制台也只会看到
+ *   [EJS Core] Data is already decompressed cache item
+ *   EJS_Runtime is not defined!
+ * 它压根不再下载，清浏览器 HTTP 缓存、硬刷新都无济于事 —— 毒在 IndexedDB 里。
+ *
+ * 所以按「代次」清一次：GENERATION 变了才清，清完在 localStorage 记账，
+ * 每个访客只清一回，正常人感知不到（下一局重新下载一次核心而已，还有 HTTP 缓存兜着）。
+ * 引擎构建再出现不兼容的更换时，把 GENERATION +1。
+ *
+ * 里面只有可重新下载的工件（核心/ROM/BIOS 的副本），删了不丢任何用户数据；
+ * 存档在另一个库（EmulatorJS-states）和我们自己的云存档里，不碰。
+ */
+const EJS_CACHE_GENERATION = '2026-08-28.selfhost-cores'
+const EJS_CACHE_PURGED_KEY = '8bitgo.ejs.cachePurged'
+
+async function purgePoisonedEngineCache(): Promise<void> {
+  try {
+    if (localStorage.getItem(EJS_CACHE_PURGED_KEY) === EJS_CACHE_GENERATION) return
+  } catch {
+    /* localStorage 不可用就每次都清，代价只是核心重新下载 */
+  }
+  await new Promise<void>((resolve) => {
+    try {
+      const req = indexedDB.deleteDatabase('EmulatorJS-Cache')
+      const done = () => resolve()
+      req.onsuccess = done
+      req.onerror = done
+      // 有别的标签页开着同一个库时会 blocked 住；不等它，别把开局卡死
+      req.onblocked = done
+      setTimeout(done, 2000)
+    } catch {
+      resolve()
+    }
+  })
+  try {
+    localStorage.setItem(EJS_CACHE_PURGED_KEY, EJS_CACHE_GENERATION)
+  } catch {
+    /* ignore */
+  }
 }
 
 /** 联机会话参数（MountOptions.netplay） */
@@ -915,6 +956,10 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
           // 必须在 loader.js 之前装，否则 netplay 拿到的是原生构造函数。
           if (netplay) instrumentRtc(win, (state) => netplay.onLinkState?.(state))
         }
+        if (destroyed) return
+        // 清掉旧时代缓存的坏核心（见 purgePoisonedEngineCache 的注释），
+        // 必须在 loader.js 之前 —— 引擎一起来就会去查这个库
+        await purgePoisonedEngineCache()
         if (destroyed) return
         await injectScript(doc, `${EJS_PATH}loader.js`)
       } catch {
