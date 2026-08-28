@@ -157,7 +157,39 @@ authRouter.post('/email/request-code', async (req, res, next) => {
     }
     const code = String(100000 + crypto.randomInt(900000))
     codes.set(email, { code, expires: Date.now() + CODE_TTL, lastSent: Date.now(), tries: 0 })
-    await sendLoginCode(email, code)
+
+    /**
+     * 发信失败必须把刚写进去的验证码撤掉。
+     *
+     * 以前这里是裸 await，异常一路冒到兜底处理器变成「服务器内部错误」——
+     * 而 codes 里那条记录还在，lastSent 也已经打上了。结果是用户既收不到信，
+     * 又被 COOLDOWN 挡在门外一分钟，重试还是同样一句没用的报错。
+     *
+     * 顺带按失败原因分开回：地址收不了信是用户能自己解决的（换一个邮箱），
+     * 配额和配置问题是我们自己的事，别让用户以为是他填错了。
+     */
+    try {
+      await sendLoginCode(email, code)
+    } catch (e) {
+      codes.delete(email)
+      switch (e?.kind) {
+        case 'suppressed':
+          // 这个地址退过信 / 被标过垃圾邮件，再发多少次都不会到
+          return res.status(400).json({ error: '这个邮箱地址无法投递，请换一个邮箱' })
+        case 'ratelimit':
+          console.error('[auth] 发信服务配额已用尽：', e.message)
+          return res.status(429).json({ error: '当前发信繁忙，请稍后再试', retryAfter: 60 })
+        case 'sender':
+          // 发件域没验证、Token 没权限、依赖没装 —— 都是部署问题。
+          // 细节只进日志：回给客户端等于把配置状况告诉所有人。
+          console.error('[auth] 发信配置有问题：', e.message)
+          return res.status(500).json({ error: '邮件服务暂时不可用，请稍后再试' })
+        default:
+          console.error('[auth] 验证码邮件发送失败：', e)
+          return res.status(502).json({ error: '邮件发送失败，请稍后再试' })
+      }
+    }
+
     // 冷却秒数由服务端说了算，前端照着倒计时，不再各存一份常量
     res.json({ ok: true, cooldown: Math.round(COOLDOWN / 1000) })
   } catch (e) {

@@ -86,7 +86,7 @@ export interface Game {
    */
   rating: number
   ratingCount: number
-  /** 真实游玩次数：玩家把游戏跑起来时由后端累加（POST /api/games/:slug/play） */
+  /** 玩过这款游戏的人数：玩家把游戏跑起来时由后端累加，同一个人只算一次（POST /api/games/:slug/play） */
   plays: number
   /** 最大玩家数 */
   players: 1 | 2 | 3 | 4

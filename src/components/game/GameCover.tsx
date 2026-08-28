@@ -5,6 +5,8 @@ import { gradientFor } from '@/lib/gradients'
 import { romUrlForKey } from '@/services/roms'
 import { cx } from '@/lib/format'
 import { useT, fmt } from '@/services/i18n'
+import { useLang } from '@/services/lang'
+import { gameTitle } from '@/services/i18nData'
 
 interface Props {
   game: Game
@@ -118,6 +120,9 @@ export function GameCover({
   priority = false,
 }: Props) {
   const t = useT()
+  const lang = useLang()
+  // 封面上的字、alt、aria-label 都得跟界面同一种语言
+  const title = gameTitle(game, lang)
   const platform = platformMap[game.platform]
   const coverSrc = game.cover ? romUrlForKey(game.cover) : ''
   const videoSrc = game.video ? romUrlForKey(game.video) : ''
@@ -130,7 +135,7 @@ export function GameCover({
       // 否则 preload="none" 的卡片在播起来之前就是一块纯黑。
       style={{ background: coverSrc ? '#000' : gradientFor(game.slug) }}
       role="img"
-      aria-label={fmt(t.common.coverAlt, { title: game.title })}
+      aria-label={fmt(t.common.coverAlt, { title })}
     >
       {/* 背景层：视频 / 封面图 / 程序化封面 */}
       {videoSrc ? (
@@ -138,7 +143,7 @@ export function GameCover({
       ) : coverSrc ? (
         <img
           src={coverSrc}
-          alt={game.title}
+          alt={title}
           // 首屏那几张必须 eager：对着 LCP 图片加 loading="lazy"，
           // 等于让浏览器先跳过它、发现完别的资源再回头下，LCP 反而更慢
           loading={priority ? 'eager' : 'lazy'}
@@ -171,7 +176,7 @@ export function GameCover({
             reserveBottomRight && 'pr-14',
           )}
         >
-          <p className="line-clamp-2 text-[13px] font-bold leading-tight text-white drop-shadow">{game.title}</p>
+          <p className="line-clamp-2 text-[13px] font-bold leading-tight text-white drop-shadow">{title}</p>
         </div>
       )}
 

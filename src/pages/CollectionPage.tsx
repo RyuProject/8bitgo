@@ -9,7 +9,8 @@ import { genreMap } from '@/data/genres'
 import { isPlatformEnabled } from '@/config/platforms'
 import { useSeo, breadcrumbSchema, itemListSchema } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
-import { genreDesc, genreLabel, platformDesc, platformLabel } from '@/services/i18nData'
+import { gameTitle, genreDesc, genreLabel, platformDesc, platformLabel } from '@/services/i18nData'
+import { useLang } from '@/services/lang'
 import { GameCard } from '@/components/game/GameCard'
 import { Pagination } from '@/components/ui/Pagination'
 import { Button } from '@/components/ui/Button'
@@ -82,6 +83,7 @@ function Collection({
   filterHref,
 }: CollectionProps) {
   const t = useT()
+  const lang = useLang()
 
   // 后端会把越界页码夹回合法范围，以它为准；数据没到之前先用 URL 上的
   const page = list?.page ?? urlPage
@@ -102,7 +104,7 @@ function Collection({
       // 爬虫读到的是服务端渲染好的 HTML，那时 list 已经有值
       itemListSchema(
         heading,
-        (list?.items ?? []).map((g) => ({ name: g.titleZh ?? g.title, path: `/games/${g.slug}` })),
+        (list?.items ?? []).map((g) => ({ name: gameTitle(g, lang), path: `/games/${g.slug}` })),
       ),
     ],
   })

@@ -13,14 +13,17 @@
  * 说明：
  *  - canonical / og:url 用 VITE_SITE_URL + 当前 pathname（不带查询串，避免筛选参数
  *    产生成千上万个重复页面；需要收录带参数的页面时显式传 canonicalPath）。
- *  - hreflang：站点有 8 种语言，但目前语言是存在 localStorage 的、URL 不区分语言，
- *    所以这里只输出 x-default 指向当前 URL。等接入「按路径分语言」后再补全（见 README）。
+ *  - hreflang：8 种语言各输出一条 alternate，外加 x-default 指向**英语**版
+ *    （FALLBACK_LANG）—— x-default 的语义是「语言对不上的人看哪份」，
+ *    对一个面向全球的站来说那应该是英语，而不是站点母语简体中文。
+ *    index.html 里那段自动跳转脚本用的是同一套兜底规则，两边要保持一致。
  *  - 组件卸载时会把本页写入的标签清理掉，避免路由切换后残留上一页的 meta。
  */
 import { useEffect } from 'react'
 import { useT, fmt } from './i18n'
 import { getLang } from './lang'
-import { HREFLANG, LANGUAGES, DEFAULT_LANG, localizedPath, stripLang } from '@/config/languages'
+import { HREFLANG, LANGUAGES, FALLBACK_LANG, localizedPath, stripLang } from '@/config/languages'
+import { romUrlForKey } from './roms'
 
 const SITE_NAME = import.meta.env.VITE_SITE_NAME ?? '8BitGo'
 const SITE_URL = (import.meta.env.VITE_SITE_URL ?? '').replace(/\/+$/, '')
@@ -127,7 +130,18 @@ export function useSeo(opts: SeoOptions) {
     (typeof window === 'undefined' ? currentSsrPath() : stripLang(window.location.pathname))
 
   const canonicalUrl = absoluteUrl(localizedPath(barePath, lang))
-  const img = image ? absoluteUrl(image) : absoluteUrl('/og-default.png')
+  /**
+   * 社交卡片图。
+   *
+   * 传进来的 image 可能是三种东西：对象存储 key（封面就是这种，`covers/xxx.jpg`）、
+   * 站内路径（`/og-default.png`）、完整 URL。romUrlForKey 三种都认，而 absoluteUrl 不认
+   * 第一种 —— 直接拿站点域名去拼，结果是 https://本站/covers/xxx.jpg，一个 404。
+   * 封面真身在对象存储上（assets.…），页面里的封面走的是 romUrlForKey 所以看着正常，
+   * 只有 og:image 和结构化数据这两处是坏的：分享出去没图，富媒体摘要也拿不到图。
+   *
+   * 拼不出地址（没配公开根地址）时退回默认图，别输出一个必然 404 的 URL。
+   */
+  const img = absoluteUrl((image ? romUrlForKey(image) : '') || '/og-default.png')
   const robots = noindex ? 'noindex,nofollow' : 'index,follow,max-image-preview:large'
 
   /** 本页要写入的所有 meta/link，服务端和客户端共用同一份定义 */
@@ -149,12 +163,12 @@ export function useSeo(opts: SeoOptions) {
     metas.push(['name', 'twitter:description', description])
   }
 
-  // hreflang：每种语言一条，外加 x-default 指向默认语言
+  // hreflang：每种语言一条，外加 x-default 指向英语版（语言对不上的人看这份）
   const alternates: Array<[string, string]> = noindex
     ? []
     : [
         ...LANGUAGES.map((l) => [HREFLANG[l.code], absoluteUrl(localizedPath(barePath, l.code))] as [string, string]),
-        ['x-default', absoluteUrl(localizedPath(barePath, DEFAULT_LANG))],
+        ['x-default', absoluteUrl(localizedPath(barePath, FALLBACK_LANG))],
       ]
 
   // ---- 服务端：渲染期间收集，不碰 DOM ----
@@ -307,7 +321,9 @@ export function videoGameSchema(g: GameSchemaInput) {
     offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD', availability: 'https://schema.org/InStock' },
   }
   if (g.description) schema.description = g.description
-  if (g.image) schema.image = absoluteUrl(g.image)
+  // 同 og:image：封面存的是对象 key，得先拼成公开地址（拼不出来就不输出这个字段）
+  const imageUrl = g.image ? romUrlForKey(g.image) : ''
+  if (imageUrl) schema.image = absoluteUrl(imageUrl)
   if (g.platform) schema.gamePlatform = g.platform
   if (g.genres?.length) schema.genre = g.genres
   if (g.year) schema.datePublished = String(g.year)

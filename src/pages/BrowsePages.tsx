@@ -7,7 +7,8 @@ import { isPlatformEnabled } from '@/config/platforms'
 import { cx } from '@/lib/format'
 import { useSeo, breadcrumbSchema } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
-import { genreDesc, genreLabel } from '@/services/i18nData'
+import { gameTitle, genreDesc, genreLabel } from '@/services/i18nData'
+import { useLang } from '@/services/lang'
 import { PlatformCard } from '@/components/game/PlatformCard'
 
 /**
@@ -154,6 +155,7 @@ export function GenresPage() {
 /* ---------------- 开发商 ---------------- */
 export function DevelopersPage() {
   const t = useT()
+  const lang = useLang()
   useSeo({
     title: t.browse.developersTitle,
     description: t.seo.developers,
@@ -217,7 +219,7 @@ export function DevelopersPage() {
                 {d.topGame && (
                   <p className="mt-0.5 truncate text-xs text-muted">
                     {platformMap[d.topGame.platform]?.shortName ?? d.topGame.platform} ·{' '}
-                    {d.topGame.titleZh ?? d.topGame.title}
+                    {gameTitle(d.topGame, lang)}
                   </p>
                 )}
               </div>

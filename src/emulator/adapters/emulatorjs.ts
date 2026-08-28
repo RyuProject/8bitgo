@@ -21,14 +21,46 @@
  *    要用联机必须自建 EmulatorJS 构建，见 docs 或 README。
  */
 import { platformMap } from '@/data/platforms'
-import type { Capability, CaptureSources, MountOptions, Runtime, RuntimeHandle } from '../types'
+import type { Capability, CaptureSources, LoadPhase, LoadProgress, MountOptions, Runtime, RuntimeHandle } from '../types'
+import { throttleProgress } from '../loadProgress'
 import { getT, fmt } from '@/services/i18n'
+import { getLang } from '@/services/lang'
+import type { Lang } from '@/config/languages'
 import { ICE_SERVERS, NETPLAY_URL, fetchIceConfig, socketIoScriptUrl, uploadState } from '@/services/netplay'
 
 export const EJS_PATH: string = (() => {
   const p = import.meta.env.VITE_EJS_PATH || 'https://cdn.emulatorjs.org/stable/data/'
   return p.endsWith('/') ? p : `${p}/`
 })()
+
+/**
+ * 站点语言 → EmulatorJS 自带的界面语言包（发行包里的 data/localization/*.json）。
+ *
+ * 以前这里写死 'zh-CN'：英文站的玩家一点开模拟器自己的设置菜单，看到的是一水儿的
+ * 简体中文，引擎报错原文也是中文（那句话现在会被我们接出来显示在播放器上，更得对语言）。
+ *
+ * 两个坑，改之前先看清楚：
+ *
+ *   1. **法语的文件名就是 af-FR，不是笔误**。EmulatorJS 那份文件的内容确确实实是法语
+ *      （"Redémarrer" / "Paramètres"），只是文件名把语言码写错了。照 ISO 改成 fr-FR
+ *      只会 404 —— loader.js 抓不到就把 langJson 整个删掉，界面退回英文。
+ *   2. **没有繁体**。发行包里只有 zh-CN，繁体退到简体是矮子里拔将军 —— 至少还是中文。
+ *      真要繁体得自己托管一份 JSON，再用 EJS_paths 指过去（见 loader.js 的语言加载）。
+ *
+ * 语言码填错或者文件不存在都不会把游戏搞挂：loader.js 那边 try/catch 兜着，
+ * 退回英文而已。写成 Record<Lang, string> 则是为了以后站点加语言时编译期就报错，
+ * 而不是让新语言悄没声地退回英文。
+ */
+const EJS_LANG: Record<Lang, string> = {
+  'zh-Hans': 'zh-CN',
+  'zh-Hant': 'zh-CN',
+  en: 'en-US',
+  es: 'es-ES',
+  fr: 'af-FR',
+  it: 'it-IT',
+  de: 'de-GER',
+  ja: 'ja-JA',
+}
 
 /** 联机会话参数（MountOptions.netplay） */
 export interface NetplaySession {
@@ -139,6 +171,8 @@ interface EjsEmulator {
   netplay?: EjsNetplay
   gameManager?: EjsGameManager
   isNetplay?: boolean
+  /** startGame() 一路跑完才置 true —— 兜底轮询靠它判断「到底开局了没有」 */
+  started?: boolean
   /** 下面这些是给统一工具栏用的，各版本 EmulatorJS 不一定都有，调用前都要判空 */
   pause?: () => void
   play?: () => void
@@ -272,6 +306,72 @@ function installAudioTap(win: Window & Record<string, unknown>): EjsAudioTap {
 }
 
 /**
+ * 把 EmulatorJS 的下载进度接出来，喂给播放器那根进度条。
+ *
+ * 它自己**是**有真实百分比的，但只往 iframe 里的 .ejs_loading_text 写一行字
+ * （「下载游戏数据 16%」），既没有事件也没有回调。而播放器的加载遮罩是块不透明黑底，
+ * 正好把那行字盖住 —— 于是两头不讨好：遮罩在，玩家看着一根永远转不完的不确定条；
+ * 遮罩撤早了，露出来的就是引擎自己那行文字（GBA 上看到的就是这个）。
+ *
+ * 好在它所有下载都走 XMLHttpRequest（见 emulator.js 的 downloadFile），所以赶在
+ * loader.js 之前把 iframe 里的 XHR 原型包一层，就能拿到 loaded / total，再按 URL
+ * 分辨这一趟在下什么。不改它一行代码，也不依赖它的任何文案 —— 百分号是 downloadFile
+ * 自己拼的，跟 EJS_language 无关，但我们连那串字符串都不用碰。
+ *
+ * ⚠️ 只在开局前上报：netplay 的 socket.io 走 XHR 轮询，一秒好几趟，
+ *    开局之后还接着报只会让播放器白白重渲染。
+ */
+function installProgressTap(
+  win: Window & Record<string, unknown>,
+  ctx: { gameUrl: string; live: () => boolean },
+  onProgress?: (p: LoadProgress) => void,
+) {
+  const proto = (win.XMLHttpRequest as typeof XMLHttpRequest | undefined)?.prototype
+  if (!onProgress || !proto) return
+  const emit = throttleProgress(onProgress)
+  const URL_KEY = '__8bitgoUrl'
+
+  /** 按 URL 认这一趟在下什么。认不出来的（socket.io 之类）一律算配套资源 */
+  const phaseOf = (url: string): LoadPhase => {
+    if (url && ctx.gameUrl && url.startsWith(ctx.gameUrl)) return 'rom'
+    // 核心与它的资源包：cores/<core>-wasm.data
+    if (/\/cores\/|-wasm\.data/.test(url)) return 'engine'
+    return 'assets'
+  }
+
+  const open = proto.open
+  proto.open = function (this: Record<string, unknown>, method: string, url: string | URL, ...rest: unknown[]) {
+    this[URL_KEY] = String(url)
+    return (open as (...a: unknown[]) => unknown).call(this, method, url, ...rest)
+  } as XMLHttpRequest['open']
+
+  const send = proto.send
+  proto.send = function (this: XMLHttpRequest & Record<string, unknown>, ...args: unknown[]) {
+    const phase = phaseOf(String(this[URL_KEY] ?? ''))
+    let seen = 0
+    this.addEventListener('progress', (e: ProgressEvent) => {
+      if (!ctx.live()) return
+      seen = e.loaded
+      /*
+       * 响应被 gzip / br 压缩过时，Content-Length 是**压缩后**的大小，而读出来的
+       * 是解压后的字节，比例会冲过 100%。与其显示 120%，不如转成不确定态
+       * —— 跟 loadProgress.ts 里 fetchWithProgress 的处理保持一致。
+       */
+      let total = e.lengthComputable && e.total > 0 ? e.total : undefined
+      if (total !== undefined && e.loaded > total) total = undefined
+      emit({ phase, loaded: e.loaded, total, ratio: total ? Math.min(e.loaded / total, 1) : undefined })
+    })
+    this.addEventListener('load', () => {
+      // 下完这一趟就把条推满，别停在 97% 上等解压。
+      // 只对真的下过东西的请求补这一帧：比对缓存用的 HEAD 一个字节都没有，
+      // 跟着推满的话进度条会先满一下再弹回 0
+      if (seen > 0 && ctx.live()) emit({ phase, loaded: seen, total: seen, ratio: 1 }, true)
+    })
+    return (send as (...a: unknown[]) => unknown).call(this, ...args)
+  } as XMLHttpRequest['send']
+}
+
+/**
  * 在 iframe 里包一层 RTCPeerConnection。
  *
  * EmulatorJS 的 netplay 在内部自己建连接，没有对外暴露任何钩子。包一层之后我们能做三件事：
@@ -375,6 +475,9 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   let destroyed = false
   let playersTimer = 0
   let stateTimer = 0
+  /** 开局标志：EJS_onGameStart 与兜底轮询谁先到都行，但只放行一次 */
+  let started = false
+  let startWatch = 0
   let audioTap: EjsAudioTap | null = null
   let volume = 0.6
   const caps = new Set<Capability>(['pause', 'saveState', 'volume', 'screenshot', 'record', 'gamepad'])
@@ -409,6 +512,12 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   /** 引擎日志探针。街机 ROM 排查全靠它 —— 详见 installErrorTap */
   let errorTap: { lines: string[] } | null = null
   const reportedErrors = new Set<string>()
+  /** 同一句话可能被核心打好几遍，只报第一次，免得把界面刷成一片红 */
+  const reportEngineError = (line: string) => {
+    if (destroyed || !line || reportedErrors.has(line)) return
+    reportedErrors.add(line)
+    options.onError?.(fmt(rt.ejsEngineError, { msg: line }))
+  }
   // 本地文件转成 blob: URL（同源 iframe 可直接访问）；gameName 用原始文件名以保留扩展名
   const isFile = typeof options.game !== 'string'
   const gameUrl = isFile ? URL.createObjectURL(options.game as File) : (options.game as string)
@@ -572,6 +681,51 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     window.addEventListener('pagehide', flushState)
   }
 
+  /**
+   * 撤加载遮罩的唯一入口。
+   *
+   * ⚠️ 以前接的是 EJS_ready，那是个陷阱：EmulatorJS 在建完「开始游戏」按钮之后 20ms
+   * 就发 ready（见 emulator.js 的 createStartButton），这时核心和 ROM 一个字节都还没下。
+   * 遮罩一撤，露出来的正是引擎自己那行「下载游戏数据 16%」—— 玩家看到的是文字而不是
+   * 进度条，而且这时候按键根本没人接。真正「能玩了」的信号是 start，
+   * 它在 startGame() 的最后一行发出，那时画布已经挂上、主循环已经在跑。
+   */
+  const finishStart = (win: Window & Record<string, unknown>) => {
+    if (started || destroyed) return
+    started = true
+    window.clearInterval(startWatch)
+    options.onReady?.()
+    options.onStart?.()
+    refineCaps()
+    if (netplay) startNetplay(win)
+  }
+
+  /**
+   * 开局前的兜底轮询（400ms 一次，开局或销毁即停）。管两件事：
+   *
+   * 1. **引擎起不来时把话接出来**。startGameError() 只把错误写进它自己那个加载框，
+   *    外加一句 console.log —— 级别太低，错误探针（只收 error / warn）逮不着；
+   *    而那个框正被遮罩盖着，不接出来的话玩家就对着一块黑屏干等。
+   * 2. **start 事件万一没来**。走 CDN 的 EmulatorJS 版本随时会变，多认一个
+   *    emulator.started 标志，比只认事件保险 —— 否则遮罩就再也撤不掉了。
+   */
+  const watchStart = (win: Window & Record<string, unknown>) => {
+    startWatch = window.setInterval(() => {
+      if (destroyed || started) {
+        window.clearInterval(startWatch)
+        return
+      }
+      const failed = iframe.contentDocument?.querySelector('.ejs_error_text')
+      const msg = failed?.textContent?.trim()
+      if (msg) {
+        window.clearInterval(startWatch)
+        reportEngineError(msg)
+        return
+      }
+      if ((win.EJS_emulator as EjsEmulator | undefined)?.started) finishStart(win)
+    }, 400)
+  }
+
   iframe.addEventListener('load', () => {
     if (destroyed) return
     const win = iframe.contentWindow as (Window & Record<string, unknown>) | null
@@ -591,15 +745,13 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       ...(options.biosUrl ? { EJS_biosUrl: options.biosUrl } : {}),
       EJS_color: '#0078f2',
       EJS_backgroundColor: '#0b0b0f',
-      EJS_language: 'zh-CN',
+      // 跟着站点语言走。切语言是整页跳转（见 services/lang.ts 的 setLang），
+      // 所以这里每次挂载读到的都是当前语言，不会残留上一次的
+      EJS_language: EJS_LANG[getLang()],
       EJS_startOnLoaded: true,
       EJS_volume: 0.6,
-      EJS_ready: () => options.onReady?.(),
-      EJS_onGameStart: () => {
-        options.onStart?.()
-        refineCaps()
-        if (netplay) startNetplay(win)
-      },
+      // ⚠️ 这里**故意不接** EJS_ready：它在核心和 ROM 开始下载之前就发了，详见 finishStart
+      EJS_onGameStart: () => finishStart(win),
       // 联机相关（没有 netplay 会话时也设上，用户可以自己点模拟器里的联机按钮）
       ...(NETPLAY_URL
         ? {
@@ -615,13 +767,13 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
 
     // 引擎的报错探针也要赶在 loader.js 之前装：核心是在加载过程中打错误的，
     // 装晚了那句「缺哪个文件」就已经过去了
-    errorTap = installErrorTap(win, (line) => {
-      if (destroyed) return
-      // 同一句话可能被核心打好几遍，只报第一次，免得把界面刷成一片红
-      if (reportedErrors.has(line)) return
-      reportedErrors.add(line)
-      options.onError?.(fmt(rt.ejsEngineError, { msg: line }))
-    })
+    errorTap = installErrorTap(win, reportEngineError)
+
+    // 下载进度也要赶在 loader.js 之前包好，否则核心那一趟就漏过去了
+    installProgressTap(win, { gameUrl, live: () => !destroyed && !started }, options.onProgress)
+
+    // 开局之前一直盯着：引擎报错要接出来，start 事件不来也得有个台阶下
+    watchStart(win)
 
     void (async () => {
       try {
@@ -664,6 +816,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     destroyed = true
     window.clearInterval(playersTimer)
     window.clearInterval(stateTimer)
+    window.clearInterval(startWatch)
     if (flushState) {
       window.removeEventListener('pagehide', flushState)
       flushState = null

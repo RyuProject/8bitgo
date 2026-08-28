@@ -128,6 +128,147 @@ server {
 
 “管理员”鉴权：请求头 `Authorization: Bearer <ADMIN_TOKEN>`，或用 `role=admin` 的账号登录后的 JWT。
 
+## 游玩次数（一个人只算一次）
+
+`games.plays` 现在的含义是**有多少人玩过**，不是被点开了多少次。
+
+计数发生在模拟器**真的跑起来**（`onReady`）的时候，不是打开详情页 ——
+否则爬虫、链接预取和随手点开都会被算成一次游玩。
+
+### 去重规则
+
+| 状态 | 按什么去重 | 效果 |
+| --- | --- | --- |
+| 已登录 | 账号（`user_id`） | 换设备、换网络、换 IP 都算同一个人 |
+| 未登录 | 客户端 IP | 同一个 IP 只算一次 |
+
+**已登录时不再看 IP**，这是有意的：同一个出口 IP 后面可能是一整栋宿舍、一家公司、
+一个手机热点，甚至运营商 NAT。把 IP 也算进去的话，那些人里只有第一个会被记上。
+代价是「先以游客身份玩过、后来注册登录再玩同一款」会被算两次 ——
+每人每游戏最多多算一次，比误伤一整栋楼划算。
+
+### 存在哪
+
+`game_plays` 表，主键 `(game_id, kind, identity)`，去重就是这个主键本身：
+
+```sql
+INSERT IGNORE INTO game_plays (game_id, kind, identity)
+SELECT id, ?, ? FROM games WHERE slug = ? AND hidden = 0;
+-- 真插进去了（affectedRows = 1）才 UPDATE games SET plays = plays + 1
+```
+
+并发的两次上报不会双记 —— 谁先插进去谁算数，这是数据库保证的，不是应用层
+「先查再写」判出来的（那中间有窗口，压测时必翻车）。
+
+> 以前这张表在**内存**里，30 分钟窗口 + `IP|UA|slug` 做 key。问题是进程一重启就全忘了，
+> 多实例部署更是各记各的 —— 换句话说，重启一次全站所有人都能再刷一遍。
+
+`identity` 存的是 **HMAC-SHA256 摘要**（base64url，43 字符），不是明文 IP：
+库被拖走也反查不回具体地址，密钥在 `.env` 的 `PLAY_HASH_SECRET`（留空则复用 `JWT_SECRET`）。
+
+> ⚠️ 换掉 `PLAY_HASH_SECRET` / `JWT_SECRET` 等于把已有去重记录作废 ——
+> 老玩家指纹对不上，每个人会被重新算一次，`plays` 会明显往上跳。
+
+⚠️ 列的排序规则必须是 `ascii_bin`。用默认的 `utf8mb4_unicode_ci` 的话
+`aB…` 和 `Ab…` 会被当成同一个人，不同的玩家互相顶掉 —— 症状是「数字看着偏小」，
+没有任何报错。`schema-v2.sql` 和 `migrate.mjs` 两边都写死了，改的时候别只改一处。
+
+### 升级已有的库
+
+```bash
+npm run migrate      # 建 game_plays，现有 plays 数字原样保留
+```
+
+旧数据没有去重记录，所以**老玩家回来还会被算一次**，此后就不会再重复计了。
+想让数字从头干净，可以在跑完 migrate 后手动 `UPDATE games SET plays = 0`。
+
+### 表会长多大
+
+行数 = 玩过的人数 × 人均玩过的游戏数，每行约 70 字节。一万个访客人均玩 3 款
+大约是 3 万行 / 2 MB —— 相对整个库可以忽略。真要控制体积，可以定期删掉
+很久以前的 `kind='i'` 行（IP 本来就会被重新分配），代价是那批游客会被重新计一次。
+
+### 自测
+
+```bash
+npm run test:play    # 不连数据库：身份指纹 + 去重语义（内存 SQLite）+ 排序规则，共 20 个用例
+```
+
+
+## 验证码邮件（Cloudflare Email Service）
+
+`/api/auth/email/request-code` 一调就真发一封信。发信通路在 `src/mail.js`，按环境变量自动选：
+
+| 优先级 | 条件 | 走哪条 |
+| --- | --- | --- |
+| 1 | `CF_ACCOUNT_ID` + `CF_EMAIL_TOKEN` | Cloudflare Email Service REST API（推荐） |
+| 2 | `SMTP_HOST` + `SMTP_USER` | SMTP（需要 `nodemailer`） |
+| 3 | 都没配 | 只把验证码打印到服务器日志 |
+
+**启动日志里会写明当前用的是哪条**（`[mail] 验证码走 …`）。「用户收不到验证码但服务器一切正常」
+基本都是配置写错静默退回了第 3 条，先看那一行。
+
+### 为什么推荐 Cloudflare 那条
+
+只用 `fetch`，不需要任何依赖 —— 也是将来后端搬进 Workers 时**唯一不用重写**的发信方式。
+SMTP 走的是 TCP 465，Workers 根本连不出去。真到那一步时，`sendViaCloudflare()` 里
+换掉 fetch 那几行改成 `env.EMAIL.send()` 绑定就行，消息体字段名两边完全一致。
+
+### 开通步骤
+
+1. 域名托管在 Cloudflare DNS（`8bitgo.com` 已经是了）
+2. Dashboard → **Email Service → Email Sending**，把 `8bitgo.com` 走一遍 onboarding
+   （自动写 SPF / DKIM / DMARC，以及用于**收退信**的 MX 记录；通常 5–15 分钟生效）
+3. 建 API Token，权限勾 **Email Sending: Edit**
+4. 填进 `server/.env`：
+
+```bash
+CF_ACCOUNT_ID=<Dashboard 右侧栏的账号 ID>
+CF_EMAIL_TOKEN=<上一步的 Token>
+MAIL_FROM=noreply@8bitgo.com     # 域名必须和 onboarding 的一致
+MAIL_FROM_NAME=8BitGo
+```
+
+5. 单独测发信（不经过限流和验证码表）：
+
+```bash
+npm run test:mail -- you@example.com
+```
+
+### 配额与费用
+
+- 公测中（2026-04 起）。给**任意地址**发信需要 Workers 付费版（$5/月）
+- 付费版每月含 **3000 封**，超出 **$0.35 / 1000 封**
+- 发给「已验证的目的地址」（账号里验过的那几个）免费、不占配额 ——
+  域名 onboarding 完成前也只能发给这些地址，正好拿来联调
+- 日发送量有个不公开的上限，随发信记录和退信率逐步放开。新域名别一上来就群发
+- ⚠️ `.env` 里 `CODE_SEND_GLOBAL_PER_HOUR` 默认 **500**，跑满就是 36 万封/月，
+  远超月度配额。真开放注册前把它调到跟配额匹配的量级（比如 100/小时 ≈ 7.2 万/月 还是太多，
+  按实际注册量给个两位数更合适）
+
+### 失败了会怎样
+
+`sendLoginCode()` 抛 `MailError`，带 `kind`，`routes/auth.js` 按 kind 翻译：
+
+| kind | 什么情况 | 回给前端 |
+| --- | --- | --- |
+| `suppressed` | 地址退过信 / 被标过垃圾邮件，再发也不会到 | 400「这个邮箱地址无法投递，请换一个邮箱」 |
+| `ratelimit` | 月配额或日限额到顶 | 429 |
+| `sender` | 发件域没验证、Token 没权限、依赖没装 | 500（细节只进日志） |
+| `network` | 连不上 / 超时，可重试 | 502 |
+
+**发信失败时会把刚生成的验证码从 `codes` 表里撤掉。** 不撤的话，用户既收不到信，
+又被 `COOLDOWN` 挡在门外一分钟 —— 这是之前的行为。
+
+> ⚠️ Cloudflare 对**硬退信**返回的是 HTTP 200 + `success: true`，收件地址躺在
+> `result.permanent_bounces` 里。只看状态码会把它当成功，用户对着一封永远不会到的邮件
+> 干等十分钟，而服务器日志里一切正常。`scripts/test-mail-parsing.mjs` 专门锁住了这条分支：
+>
+> ```bash
+> node scripts/test-mail-parsing.mjs   # 不联网，起本地 mock 跑 13 个用例
+> ```
+
+
 ## 云存档
 
 **云存档跟着账号走，所以必须登录。** 没登录的玩家不进这张表 —— 他们的存档落在自己浏览器里
@@ -208,6 +349,45 @@ cd server && npm install && npm start
   这是刻意的——否则每个用户的页面都不一样，没法缓存，也会造成 hydration 不匹配。
 - **导入 SQL 一定要用 utf8mb4**：`server/8bitgo-setup.sql` 开头已经写了 `SET NAMES utf8mb4;`。
   有些 mysql 客户端默认 latin1，缺这行会把中文存成双重编码的乱码。
+
+## 迁移到 Cloudflare D1
+
+站点的终点是全 Cloudflare（Workers + D1 + R2 + Durable Objects），D1 这一步现在做最便宜：
+11 张表、几百 KB 数据、写入量约等于零，越往后拖越贵。
+
+两个文件：
+
+| 文件 | 干什么 |
+| --- | --- |
+| `schema-d1.sql` | `schema-v2.sql` 的 SQLite 版，表 / 列 / 索引 / 外键一一对应 |
+| `scripts/export-d1.mjs` | 连现有 MySQL 按行读，导出 D1 能直接执行的 INSERT |
+
+```bash
+npx wrangler d1 create 8bitgo
+npx wrangler d1 execute 8bitgo --local --file=schema-d1.sql   # 先在本地试
+npm run export-d1 -- --clean --out d1-data.sql                # 从 MySQL 导数据
+npx wrangler d1 execute 8bitgo --local --file=d1-data.sql
+# 本地验完再换成 --remote 打到线上
+```
+
+**过渡期怎么并行**：D1 只能给 Workers 用（Express 走 REST API 每条 SQL 都要跨互联网往返，
+是反模式）。所以现在这台 Node 服务器继续连 MySQL 照常跑，Worker 那边连 D1 并行开发；
+后台改了内容就重跑一次 `npm run export-d1` 覆盖过去。等 Worker 功能齐了一次切换，MySQL 退休。
+写入量小的时候这个笨办法完全够用，还省掉了 Hyperdrive + Cloudflare Tunnel 那一整套。
+
+**四个和 MySQL 不一样的地方**（`schema-d1.sql` 文件头有完整说明）：
+
+1. **一条语句最多 100 个绑定参数。** `games-repo.js` 里 token 批量插入的 `CHUNK = 200`
+   （200×3 = 600 个占位符）在 D1 上会被拒，改成 `33`。
+2. **没有交互式事务。** `withTransaction` 的 4 个调用点里，`upsertGame` / `patchGame` 是真交互
+   （INSERT → `SELECT id` → 用这个 id 写子表）。D1 只有 `batch()`，原子但中途读不到结果。
+   改法：用 `INSERT ... ON CONFLICT(slug) DO UPDATE SET ... RETURNING id` 一条语句拿到 id，
+   再把子表写入放进一个 `batch()`，原子性还在。
+3. **排序规则默认区分大小写。** MySQL 那边是 `utf8mb4_unicode_ci`。`email` 已经在
+   `schema-d1.sql` 里加了 `COLLATE NOCASE`；`slug` 由 `slugify()` 生成、搜索 token 由
+   `normalize()` 统一小写，本来就不依赖排序规则。
+4. **外键默认强制，且关不掉**（没有 `SET FOREIGN_KEY_CHECKS=0`）。所以导入必须父表在前 ——
+   `export-d1.mjs` 的表顺序已经排好，别重排。
 
 ## Cloudflare 缓存
 

@@ -11,12 +11,16 @@
     "seed": "node scripts/seed.mjs",
     "reset-fake-data": "node scripts/reset-fake-data.mjs",
     "test:db": "node scripts/test-connection.mjs",
+    "test:mail": "node scripts/test-mail.mjs",
+    "test:mail:parse": "node scripts/test-mail-parsing.mjs",
+    "test:play": "node scripts/test-playcount.mjs",
     "gen-sql": "node scripts/gen-sql.mjs",
     "gen-sql:empty": "node scripts/gen-sql.mjs --empty",
     "backfill-search": "node scripts/backfill-search.mjs",
     "test:search": "node scripts/test-search.mjs",
     "test:search:db": "node scripts/test-search-db.mjs",
-    "upgrade-v2": "node scripts/upgrade-v1-to-v2.mjs"
+    "upgrade-v2": "node scripts/upgrade-v1-to-v2.mjs",
+    "export-d1": "node scripts/export-d1.mjs"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

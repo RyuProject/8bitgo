@@ -887,13 +887,13 @@ export function EmulatorPlayer({
            *
            * 两层意思。一是不遮不行 —— 资源没下完就让玩家点下去，按键喂给一个还没起来的
            * 引擎，表现是「怎么按都没反应」，比等一会儿更让人困惑，所以这里故意不加
-           * pointer-events-none。二是必须盖住引擎**自己**的加载界面：EmulatorJS 设了
-           * EJS_language='zh-CN'，它会自己弹「正在下载游戏核心」那一套文案，
-           * CheerpJ 也有自己的加载框 —— 不盖住的话这些字照样会露出来。
+           * pointer-events-none。二是必须盖住引擎**自己**的加载界面：EmulatorJS 会用
+           * 它自己的语言包弹「下载游戏数据 16%」那一套文案，CheerpJ 也有自己的加载框
+           * —— 不盖住的话这些字照样会露出来。
            *
-           * 代价说清楚：EmulatorJS 原本会显示真实的下载百分比，被盖住之后这里只剩
-           * 不确定态动画。想两全的话得自托管 EmulatorJS（VITE_EJS_PATH + public/emulatorjs），
-           * 那样就能直接改它 localization/zh-CN.json 里的文案，同时留住它的真实进度。
+           * 盖住不等于丢掉进度：EmulatorJS 那边的真实字节数被适配器接了出来
+           * （包一层 iframe 里的 XHR，见 adapters/emulatorjs.ts 的 installProgressTap），
+           * 照样走这根条 —— 玩家看到的是进度，而不是引擎自己那行中文字。
            *
            * aria-label 用的是「加载中」，只给读屏软件听，页面上看不见。
            */

@@ -9,6 +9,8 @@ import { LanguageSwitcher } from './LanguageSwitcher'
 import { Logo } from './Logo'
 import { bottomNavFor, communityLinks, exploreNavFor, mainNavFor, type NavLinkItem } from './nav'
 import { useT, fmt } from '@/services/i18n'
+import { useLang } from '@/services/lang'
+import { gameTitle } from '@/services/i18nData'
 import { SocialIcon } from './SocialIcon'
 import { FEATURES } from '@/config/features'
 import { useAllRooms } from '@/services/allRooms'
@@ -202,6 +204,7 @@ function RoomsBox({ collapsed }: { collapsed: boolean }) {
  */
 function LaterBox({ collapsed }: { collapsed: boolean }) {
   const t = useT()
+  const lang = useLang()
   const user = useUser()
   const { setMobileOpen } = useShell()
   // 只要前 3 个 slug，多取无益 —— gameCache 会按需向后端批量拉并缓存
@@ -228,7 +231,7 @@ function LaterBox({ collapsed }: { collapsed: boolean }) {
               <span className="h-6 w-6 shrink-0 overflow-hidden rounded" aria-hidden>
                 <GameCover game={g} ratio="square" showTitle={false} iconSize="sm" />
               </span>
-              <span className="min-w-0 flex-1 truncate">{g.titleZh ?? g.title}</span>
+              <span className="min-w-0 flex-1 truncate">{gameTitle(g, lang)}</span>
             </Link>
           </li>
         ))}

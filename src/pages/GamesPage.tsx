@@ -11,7 +11,8 @@ import { genres, genreMap } from '@/data/genres'
 import { isPlatformEnabled } from '@/config/platforms'
 import { useSeo, breadcrumbSchema, itemListSchema } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
-import { genreDesc, genreLabel, platformDesc, platformLabel } from '@/services/i18nData'
+import { gameTitle, genreDesc, genreLabel, platformDesc, platformLabel } from '@/services/i18nData'
+import { useLang } from '@/services/lang'
 import { GameCard } from '@/components/game/GameCard'
 import { Pagination } from '@/components/ui/Pagination'
 import { Button, chipClasses } from '@/components/ui/Button'
@@ -46,6 +47,7 @@ function countsOf(rows: Array<{ id: string; count: number }> | undefined): Map<s
 export function GamesPage() {
   const [params, setParams] = useSearchParams()
   const t = useT()
+  const lang = useLang()
   const SORTS = sortsFor(t)
 
   const q = params.get('q') ?? ''
@@ -153,7 +155,7 @@ export function GamesPage() {
       // 客户端跳转过来的第一帧列表还没到，先给个空清单，数据回来会重写
       itemListSchema(
         title,
-        (list?.items ?? []).map((g) => ({ name: g.titleZh ?? g.title, path: `/games/${g.slug}` })),
+        (list?.items ?? []).map((g) => ({ name: gameTitle(g, lang), path: `/games/${g.slug}` })),
       ),
       breadcrumbSchema([
         { name: t.common.home, path: '/' },

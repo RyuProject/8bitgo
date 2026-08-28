@@ -143,6 +143,36 @@ const patches = [
     },
   },
   {
+    name: 'game_plays（游玩去重名单：一个人对一款游戏只算一次）',
+    table: null,
+    skip: async () => (!(await hasTable('games')) ? '还没有 games 表' : null),
+    needed: async () => !(await hasTable('game_plays')),
+    run: async () => {
+      await conn.query(
+        'CREATE TABLE IF NOT EXISTS `game_plays` (' +
+          '`game_id` BIGINT UNSIGNED NOT NULL,' +
+          // ascii_bin 不能省：base64url 区分大小写，默认的 utf8mb4_unicode_ci
+          // 会把 'aB…' 和 'Ab…' 当成同一个人，不同的人互相顶掉
+          "`kind` CHAR(1) CHARACTER SET ascii COLLATE ascii_bin NOT NULL," +
+          "`identity` CHAR(43) CHARACTER SET ascii COLLATE ascii_bin NOT NULL," +
+          '`played_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,' +
+          'PRIMARY KEY (`game_id`, `kind`, `identity`)' +
+          ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
+      )
+      // 外键单独加：v1 的库里 games.id 可能是别的类型，加不上也不该让整个迁移失败
+      try {
+        await conn.query(
+          'ALTER TABLE `game_plays` ADD CONSTRAINT `fk_gp_game` ' +
+            'FOREIGN KEY (`game_id`) REFERENCES `games`(`id`) ON DELETE CASCADE',
+        )
+      } catch (e) {
+        console.log(`   （外键没加上，不影响使用：${e.message}）`)
+      }
+      console.log('   建好了，但还是空的 —— 现有的 plays 数字原样保留，从现在起按新规则去重累加。')
+      console.log('   也就是说老玩家回来还会被算一次，此后就不会再重复计了。')
+    },
+  },
+  {
     name: 'favorites.idx_fav_game（删游戏时按 game_slug 清理）',
     table: 'favorites',
     needed: async () => !(await hasIndex('favorites', 'idx_fav_game')),
@@ -183,7 +213,7 @@ const patches = [
   },
 ]
 
-const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'platform_bios']
+const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'platform_bios', 'game_plays']
 
 try {
   await conn.query(`CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`)

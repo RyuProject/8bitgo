@@ -10,7 +10,8 @@ import { useCallback, useEffect, useRef, useState, type FormEvent, type Keyboard
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { cx } from '@/lib/format'
 import { useT } from '@/services/i18n'
-import { platformLabel } from '@/services/i18nData'
+import { gameTitle, platformLabel } from '@/services/i18nData'
+import { useLang } from '@/services/lang'
 import { fetchSuggest, rememberSearch, recentSearches, clearRecentSearches, searchEnabled, type SuggestItem } from '@/services/search'
 
 const DEBOUNCE_MS = 200
@@ -23,6 +24,7 @@ interface Props {
 
 export function SearchBox({ className, full, onSubmitted }: Props) {
   const t = useT()
+  const lang = useLang()
   const navigate = useNavigate()
   const [params] = useSearchParams()
   const [value, setValue] = useState(params.get('q') ?? '')
@@ -229,11 +231,11 @@ export function SearchBox({ className, full, onSubmitted }: Props) {
                     </span>
                   )}
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm text-fg">{item.titleZh || item.title}</span>
+                    <span className="block truncate text-sm text-fg">{gameTitle(item, lang)}</span>
                     <span className="block truncate text-[11px] text-muted">
                       {platformLabel(t, item.platform, item.platform)}
                       {item.year ? ` · ${item.year}` : ''}
-                      {item.titleZh && item.titleZh !== item.title ? ` · ${item.title}` : ''}
+                      {gameTitle(item, lang) !== item.title ? ` · ${item.title}` : ''}
                     </span>
                   </span>
                 </button>

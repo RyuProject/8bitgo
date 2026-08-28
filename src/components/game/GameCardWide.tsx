@@ -4,6 +4,8 @@ import { platformMap } from '@/data/platforms'
 import { cx, formatCount } from '@/lib/format'
 import { GameCover } from './GameCover'
 import { Badge } from '@/components/ui/Badge'
+import { useLang } from '@/services/lang'
+import { gameTitle } from '@/services/i18nData'
 
 interface Props {
   game: Game
@@ -20,7 +22,11 @@ interface Props {
  * 已经足够说明「这里有视频」了。
  */
 export function GameCardWide({ game, className, isNew }: Props) {
+  const lang = useLang()
   const platform = platformMap[game.platform]
+  // 中文界面下要显示中文译名。以前这里直接写 game.title，于是「最新上线」整块
+  // 在中文站上全是英文原名，而旁边用 GameCard 的区块却是中文 —— 同一页两套名字
+  const title = gameTitle(game, lang)
 
   return (
     <Link
@@ -36,8 +42,8 @@ export function GameCardWide({ game, className, isNew }: Props) {
         )}
       </div>
       <div className="p-3">
-        <h3 className="truncate text-sm font-semibold" title={game.title}>
-          {game.title}
+        <h3 className="truncate text-sm font-semibold" title={title}>
+          {title}
         </h3>
         <p className="mt-1 flex items-center justify-between text-[11px] text-muted">
           <span>

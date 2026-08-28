@@ -21,6 +21,7 @@ import { savesRouter } from './routes/saves.js'
 import { attachNetplay } from './netplay.js'
 import { attachLive, liveRoom, liveRooms } from './live.js'
 import { iceRouter } from './routes/ice.js'
+import { mailProvider } from './mail.js'
 
 const app = express()
 app.disable('x-powered-by')
@@ -211,6 +212,15 @@ httpServer.listen(PORT, () => {
   // 启动时对一遍，把话说在前面
   void checkSchema()
   console.log('P2P 联机信令已就绪：/netplay（socket.io）')
+  /**
+   * 发信通路配错时会静默退回「只打印日志」，症状是「用户说收不到验证码」
+   * 而服务器一切正常 —— 最难查的那类故障。所以启动时把结论直接说出来。
+   */
+  const MAIL_LABEL = {
+    cloudflare: '[mail] 验证码走 Cloudflare Email Service',
+    smtp: `[mail] 验证码走 SMTP：${process.env.SMTP_HOST}`,
+  }
+  console.log(MAIL_LABEL[mailProvider()] || '[mail] ⚠️  未配置发信通道，验证码只会打印到日志（正式环境请配 CF_ACCOUNT_ID + CF_EMAIL_TOKEN）')
   if (ADMIN_AUTH_DISABLED) {
     console.warn('')
     console.warn('  ****************************************************************')

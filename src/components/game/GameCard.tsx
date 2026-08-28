@@ -59,7 +59,9 @@ export function GameCard({ game, className, rank, showCoin = true }: Props) {
       </div>
 
       <div className="space-y-1.5 p-3">
-        <h3 className="truncate text-sm font-semibold leading-tight" title={game.title}>
+        {/* 标题会被 truncate 截断，tooltip 就得是「被截掉的那行字」本身；
+            原名不会因此丢失 —— 详情页标题下面还专门显示一行（见 GameDetailPage） */}
+        <h3 className="truncate text-sm font-semibold leading-tight" title={gameTitle(game, lang)}>
           {gameTitle(game, lang)}
         </h3>
         <div className="flex items-center justify-between gap-2 text-[11px] text-muted">

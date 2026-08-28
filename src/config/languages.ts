@@ -23,6 +23,16 @@ export const LANGUAGES: LanguageDef[] = [
 export const DEFAULT_LANG: Lang = 'zh-Hans'
 
 /**
+ * 兜底语言：浏览器语言不在上面这 8 种里时（俄语、韩语、葡萄牙语……）用它。
+ * 也是 hreflang 的 x-default 指向的语言 —— 「其它所有人看这个版本」。
+ *
+ * 和 DEFAULT_LANG 是两回事，别混：
+ *   DEFAULT_LANG  = 裸路径 `/games` 渲染成哪种语言（站点母语，简体中文）
+ *   FALLBACK_LANG = 认不出访客语言时把他送到哪（国际通用，英语）
+ */
+export const FALLBACK_LANG: Lang = 'en'
+
+/**
  * ROM 语言槽：游戏可为这几种语言分别上传 ROM。
  * 站点支持的八种语言现在都有专属槽 —— 某款游戏没上传某个语言的 ROM 时，
  * 按语言选 ROM 会回退到英语（见 effectiveRomKey），所以「有槽」不等于「必须填」。
@@ -52,6 +62,47 @@ export const ROM_LANG_LABEL: Record<RomLang, string> = ROM_LANGS.reduce(
 /** 站点语言 → ROM 语言槽；没有专属槽的语言回退到英语 */
 export function romLangFor(lang: Lang): RomLang {
   return (ROM_LANGS as string[]).includes(lang) ? (lang as RomLang) : 'en'
+}
+
+/* ---------------- 浏览器语言匹配 ---------------- */
+
+/**
+ * 只按前缀直接对应的语言（中文另有繁简之分，单独处理）。
+ * 用 Extract 保证这里写错一个代码会在编译期报错，而不是悄悄永远匹配不上。
+ */
+const SIMPLE_MATCH: Extract<Lang, 'en' | 'es' | 'fr' | 'it' | 'de' | 'ja'>[] = ['en', 'es', 'fr', 'it', 'de', 'ja']
+
+/**
+ * 把浏览器给的语言标记列表（navigator.languages）映射成站点语言。
+ *
+ * 这是匹配规则的**唯一出处**。index.html 头部那段自动跳转脚本必须内联
+ * （要在首屏绘制前跑完，来不及等模块加载），所以那边不可避免地抄了一份 ——
+ * scripts/test-lang-detect.mjs 会把两边逐个语言标记对一遍，改了一处忘了另一处会红。
+ *
+ * 规则：
+ *   zh 开头       -> 带 Hans 的算简体；带 Hant / -TW / -HK / -MO 的算繁体；其余（zh、zh-CN、zh-SG）算简体
+ *   en/es/fr/it/de/ja 开头 -> 对应语言
+ *   一个都对不上  -> null，由调用方决定用 FALLBACK_LANG 还是不动
+ *
+ * 按顺序取第一个能对上的 —— navigator.languages 本身就是按用户偏好排好序的。
+ */
+export function matchBrowserLang(tags: readonly string[]): Lang | null {
+  for (const raw of tags) {
+    const tag = String(raw ?? '').toLowerCase()
+    if (!tag) continue
+
+    if (tag.startsWith('zh')) {
+      // hans 要先判：zh-Hans-HK 这种既有 hans 又有 hk，简繁标注比地区码更权威
+      if (tag.includes('hans')) return 'zh-Hans'
+      if (tag.includes('hant') || /-(tw|hk|mo)\b/.test(tag)) return 'zh-Hant'
+      return 'zh-Hans'
+    }
+
+    const base = tag.split('-')[0]
+    const hit = SIMPLE_MATCH.find((code) => code === base)
+    if (hit) return hit
+  }
+  return null
 }
 
 /* ---------------- URL 里的语言前缀 ---------------- */

@@ -4,13 +4,85 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <!--
+      按浏览器语言自动跳到对应语言版本。
+
+      为什么必须内联、必须放在这里：这段要在**首屏绘制之前**跑完。写成模块脚本
+      （像 entry-client 那样）是 defer 的，服务端渲染好的中文首屏会先画出来，
+      用户看到中文闪一下再跳走。放在 head 里同步执行，浏览器还没画任何东西就跳了，
+      顺带把后面的字体和 CSS 请求一起取消掉。
+
+      规则：
+        1. URL 已经带语言前缀（/ja/games）-> 不动。用户或来源已经指定了语言。
+        2. /admin -> 不动。后台不做多语言。
+        3. 爬虫 -> 不动。八种语言各有自己的可收录 URL，把蜘蛛也跳走会让默认语言那份
+           收不进去；hreflang 已经在 seo.ts 里输出，让搜索引擎自己按 hreflang 分发。
+        4. 用户自己选过语言（localStorage 的 8bitgo.lang）-> 优先，比浏览器语言更权威。
+        5. 都没有 -> 按 navigator.languages 匹配；一个都对不上就用英语。
+
+      ⚠️ 匹配规则的唯一出处是 src/config/languages.ts 的 matchBrowserLang()。
+         这里因为要内联，不可避免抄了一份 —— scripts/test-lang-detect.mjs 会把两边
+         逐个语言标记对一遍，改了一处忘了另一处会红。
+    -->
+    <script>
+      (function () {
+        try {
+          var CODES = ['zh-Hans', 'zh-Hant', 'en', 'es', 'fr', 'it', 'de', 'ja']
+          var SIMPLE = ['en', 'es', 'fr', 'it', 'de', 'ja']
+          var DEFAULT_LANG = 'zh-Hans'
+          var FALLBACK_LANG = 'en'
+
+          var path = location.pathname
+          var seg = path.split('/')[1] || ''
+          if (CODES.indexOf(seg) >= 0) return
+          if (seg === 'admin') return
+          if (/bot|crawl|spider|slurp|mediapartners|facebookexternalhit|embedly|preview/i.test(navigator.userAgent || '')) return
+
+          var pick = null
+
+          // 用户显式选过的语言最优先
+          try {
+            var saved = localStorage.getItem('8bitgo.lang')
+            if (CODES.indexOf(saved) >= 0) pick = saved
+          } catch (e) {
+            /* 隐私模式下读不了，当作没选过 */
+          }
+
+          if (!pick) {
+            var tags = navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || '']
+            for (var i = 0; i < tags.length && !pick; i++) {
+              var tag = String(tags[i] || '').toLowerCase()
+              if (!tag) continue
+              if (tag.indexOf('zh') === 0) {
+                // hans 先判：zh-Hans-HK 这种既有 hans 又有 hk，简繁标注比地区码更权威
+                pick = tag.indexOf('hans') >= 0 ? 'zh-Hans' : tag.indexOf('hant') >= 0 || /-(tw|hk|mo)\b/.test(tag) ? 'zh-Hant' : 'zh-Hans'
+              } else {
+                var base = tag.split('-')[0]
+                if (SIMPLE.indexOf(base) >= 0) pick = base
+              }
+            }
+            if (!pick) pick = FALLBACK_LANG
+          }
+
+          // 默认语言就是裸路径本身，不用跳
+          if (pick === DEFAULT_LANG) return
+
+          // replace 而不是 assign：不往历史里塞一条，用户按返回键不会被弹回来又跳走
+          location.replace('/' + pick + (path === '/' ? '' : path) + location.search + location.hash)
+        } catch (e) {
+          /* 这段出任何问题都当没发生过 —— 语言选错了是小事，白屏是大事 */
+        }
+      })()
+    </script>
     <meta name="theme-color" content="#ffffff" />
 
     <!--
       站点归属验证。这些标签**不能**加 data-ssr-default —— 那个标记是给
       SSR 用来「按页替换」的，加了会被 server/src/ssr.js 当成默认值删掉，
       蜘蛛来抓首页时就找不到验证串了。
-      验证通过后可以删，但留着无害，换服务器 / 重新验证时还省事。
+      ⚠️ 验证通过后**不能删**：百度官方明确说「为使您的网站一直保持验证通过的状态，
+      请保留验证的文件、html 标签，我们会去定期检查验证记录」——删了会掉验证状态。
     -->
     <meta name="baidu-site-verification" content="codeva-nNJUgrBqRg" />
 

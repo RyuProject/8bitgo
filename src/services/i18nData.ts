@@ -33,10 +33,14 @@ export function platformDesc(t: Translation, id: string, fallback = ''): string 
  * 按当前语言选游戏名。
  * titleZh 是中文译名，只在中文界面下使用；其它语言用原名（通常是英文/日文原题），
  * 否则英文页面会出现「Play 超级马力欧兄弟 Online」这种中英夹杂的标题。
+ *
+ * titleZh 收 null 和空串：静态数据里它是 undefined，而搜索接口回来的
+ * SuggestItem 是 null，后台也可能存进一个空串 —— 三种「没有译名」都得落回原名，
+ * 所以这里用 || 而不是 ??。
  */
-export function gameTitle(game: { title: string; titleZh?: string }, lang: Lang): string {
+export function gameTitle(game: { title: string; titleZh?: string | null }, lang: Lang): string {
   const zh = lang === 'zh-Hans' || lang === 'zh-Hant'
-  return (zh ? game.titleZh : undefined) ?? game.title
+  return (zh ? game.titleZh : '') || game.title
 }
 
 /**

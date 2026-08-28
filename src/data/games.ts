@@ -6,7 +6,8 @@ import type { Game } from '@/types'
  * 这里只放**事实**：游戏名称、平台、发行年份、开发商为公开信息，简介为本站原创文案。
  *
  * 以下几个字段一律为 0，不要手填：
- *   plays        —— 玩家真正把游戏跑起来时由后端累加（POST /api/games/:slug/play）
+ *   plays        —— 玩过的人数：玩家真正把游戏跑起来时由后端累加，同一个人只算一次
+ *                    （POST /api/games/:slug/play，去重规则见 server/src/playcount.js）
  *   rating/ratingCount —— 站内暂无评分功能，字段保留给将来的真实评分系统
  *   coinReward   —— G 币功能未开放（FEATURES.coins = false），开放时再按规则设定
  *

@@ -70,6 +70,7 @@ export interface MountOptions {
    *
    * onReady 之前会被调很多次，播放器据此画进度条。**只有拿得到真实字节数的引擎才报数**：
    * 适配器自己 fetch 的（jsnes / jsdos / ruffle 的远程 SWF）有 loaded/total；
+   * EmulatorJS 的下载走它 iframe 里的 XHR，包一层同样拿得到；
    * webretro 同源，读它自己那根 <progress> 得到 ratio；其余的只报 phase，
    * ratio 为 undefined 表示「不知道还剩多少」，UI 转不确定态。
    */

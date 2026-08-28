@@ -548,10 +548,36 @@ export async function deleteGame(slug) {
   return r.affectedRows > 0
 }
 
-/** 记一次游玩。只对已上架的游戏生效。 */
-export async function incrementPlays(slug) {
-  const r = await query('UPDATE games SET plays = plays + 1 WHERE slug = ? AND hidden = 0', [slug])
-  return r.affectedRows > 0
+/**
+ * 记一次游玩。同一身份对同一款游戏只算一次，只对已上架的游戏生效。
+ *
+ * 去重靠 game_plays 的主键 (game_id, kind, identity)：
+ * INSERT IGNORE 真插进去了才 +1；撞了唯一键说明这个人已经玩过，直接跳过。
+ * 并发的两次上报也不会双记 —— 谁先插进去谁算数，这是数据库保证的，
+ * 不是应用层「先查再写」判出来的（那中间有窗口，压测时必翻车）。
+ *
+ * 第一条语句用 INSERT ... SELECT 而不是先查 id 再插，省一次往返；
+ * 游戏不存在或已下架时 SELECT 出不来行，自然什么也插不进去。
+ *
+ * 没放进事务里是有意的：这是全站写入最频繁的一条路径，而事务要独占一条
+ * 连接池里的连接（池一共 10 条）。真正重要的不变式「不能重复计数」已经
+ * 由唯一键锁死了；万一进程恰好在两条语句中间挂掉，最坏结果是某次游玩
+ * 记进了名单但没加上计数 —— 一个热度数字少 1，可以接受。
+ *
+ * @param {string} slug     游戏
+ * @param {'u'|'i'} kind    身份类型：账号 / IP，见 playcount.js
+ * @param {string} identity 身份摘要（HMAC，不是明文）
+ * @returns {Promise<boolean>} 这次有没有真的计上
+ */
+export async function recordPlay(slug, kind, identity) {
+  const ins = await query(
+    'INSERT IGNORE INTO game_plays (game_id, kind, identity) SELECT id, ?, ? FROM games WHERE slug = ? AND hidden = 0',
+    [kind, identity, slug],
+  )
+  // 0 行 = 这个人已经玩过，或者这款游戏不存在 / 已下架
+  if (ins.affectedRows === 0) return false
+  await query('UPDATE games SET plays = plays + 1 WHERE slug = ? AND hidden = 0', [slug])
+  return true
 }
 
 export { GENERIC_ROM_LANG, MAX_PAGE_SIZE }

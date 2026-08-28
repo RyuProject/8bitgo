@@ -72,14 +72,18 @@ export async function setGameHidden(slug: string, hidden: boolean): Promise<Game
   return patchGame(slug, { hidden })
 }
 
-/** 本次页面会话里已经上报过的游戏，避免重开模拟器重复计数 */
+/** 本次页面会话里已经上报过的游戏，省掉重开模拟器时的无谓请求 */
 const reportedPlays = new Set<string>()
 
 /**
  * 上报一次真实游玩。在模拟器**真的跑起来**时调用（不是打开详情页）。
  *
  * 故意做成「失败也不管」：这只是一个计数，网络不通、后端没起、被广告拦截器挡掉，
- * 都不该影响玩家正在玩的游戏。服务端还会再按 IP 去重一次。
+ * 都不该影响玩家正在玩的游戏。
+ *
+ * 真正的去重在服务端：一个人对一款游戏只算一次，登录了按账号、没登录按 IP，
+ * 记录落库、永久有效（见 server/src/playcount.js）。上面那个 Set 只是省请求，
+ * 不承担正确性 —— 刷新页面它就空了。
  */
 export function recordPlay(slug: string): void {
   if (!slug || !apiEnabled() || reportedPlays.has(slug)) return

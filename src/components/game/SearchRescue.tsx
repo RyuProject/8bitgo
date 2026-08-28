@@ -10,11 +10,13 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useT, fmt } from '@/services/i18n'
-import { platformLabel } from '@/services/i18nData'
+import { gameTitle, platformLabel } from '@/services/i18nData'
+import { useLang } from '@/services/lang'
 import { fetchSearchFallback, searchEnabled, type SearchFallback } from '@/services/search'
 
 export function SearchRescue({ q, onPick }: { q: string; onPick?: (q: string) => void }) {
   const t = useT()
+  const lang = useLang()
   const [data, setData] = useState<SearchFallback | null>(null)
 
   useEffect(() => {
@@ -70,7 +72,7 @@ export function SearchRescue({ q, onPick }: { q: string; onPick?: (q: string) =>
                   </span>
                 )}
                 <span className="min-w-0">
-                  <span className="block truncate text-sm text-fg">{g.titleZh || g.title}</span>
+                  <span className="block truncate text-sm text-fg">{gameTitle(g, lang)}</span>
                   <span className="block truncate text-[11px] text-muted">
                     {platformLabel(t, g.platform, g.platform)}
                     {g.year ? ` · ${g.year}` : ''}

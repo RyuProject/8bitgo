@@ -1,8 +1,8 @@
 import { Router } from 'express'
-import { requireAdmin, isAdminRequest } from '../auth.js'
+import { requireAdmin, isAdminRequest, optionalUser } from '../auth.js'
 import { invalidateContent } from '../content.js'
 import { publicApi } from '../cache.js'
-import { shouldCount } from '../playcount.js'
+import { playIdentity } from '../playcount.js'
 import { gameApiToPartialRow, relationsInPatch } from '../mappers.js'
 import { query } from '../db.js'
 import { attachRelations } from '../games-repo.js'
@@ -13,7 +13,7 @@ import {
   upsertGame,
   patchGame,
   deleteGame,
-  incrementPlays,
+  recordPlay,
   platformCounts,
   genreCounts,
   developerCounts,
@@ -179,18 +179,25 @@ gamesRouter.get('/facets', async (_req, res, next) => {
 })
 
 /**
- * 记录一次真实游玩。前端在模拟器真的跑起来（onReady）时调用，不需要登录。
+ * 记录一次真实游玩。前端在模拟器真的跑起来（onReady）时调用。
+ *
+ * 一个人对一款游戏只算一次：登录了按账号去重，没登录按 IP 去重
+ * （身份怎么定、为什么这么定，见 playcount.js 开头）。
+ *
+ * 用 optionalUser 而不是 requireUser —— 游客也能玩、也要算数，
+ * 只是带了 token 的时候顺手认出是谁，好让同一个人换设备不重复计数。
  *
  * 刻意**不**调 invalidateContent()：游玩上报是高频写，每次都清 SSR 缓存
  * 等于把缓存关掉；次数本来就允许有一个 TTL 的延迟。
  *
  * 注意这条要注册在 /:slug 之前，否则 'xxx/play' 会被当成 slug 吃掉。
  */
-gamesRouter.post('/:slug/play', async (req, res, next) => {
+gamesRouter.post('/:slug/play', optionalUser, async (req, res, next) => {
   try {
-    const { slug } = req.params
-    if (!shouldCount(req, slug)) return res.json({ ok: true, counted: false })
-    res.json({ ok: true, counted: await incrementPlays(slug) })
+    const who = playIdentity(req)
+    // 既没登录、又拿不到任何 IP：宁可不记，也不要把这类请求全塞进同一个身份里
+    if (!who) return res.json({ ok: true, counted: false })
+    res.json({ ok: true, counted: await recordPlay(req.params.slug, who.kind, who.identity) })
   } catch (e) {
     next(e)
   }

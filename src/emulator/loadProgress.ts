@@ -7,7 +7,9 @@
  *
  * 能报真实字节数的只有「适配器自己去 fetch」的那几个（jsnes / jsdos / ruffle 的远程 SWF）。
  * iframe 型的引擎各有各的办法：webretro 同源，父窗口能读到它自己的 <progress>；
- * EmulatorJS 自带一套下载进度 UI，我们不去动它的内部，只负责在它没就绪之前不放行。
+ * EmulatorJS 的下载全走 XHR，在 iframe 里把 XMLHttpRequest 包一层就能拿到字节数
+ * （见 adapters/emulatorjs.ts 的 installProgressTap）—— 它自己那套文字进度 UI 我们
+ * 一个字都不用碰，反正整个加载期间都被遮罩盖着。
  */
 import type { LoadPhase, LoadProgress } from './types'
 

@@ -147,6 +147,27 @@ CREATE TABLE IF NOT EXISTS game_roms (
   CONSTRAINT fk_gr_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ---------- 游玩去重名单 ----------
+-- games.plays 这个数字的来源。一个身份对一款游戏只有一行，主键就是去重规则本身：
+-- 重复上报会撞唯一键，直接被数据库挡掉，不需要应用层「先查再写」（那中间有并发窗口）。
+--
+--   kind = 'u'  identity = HMAC(账号 id)    已登录：换设备换 IP 都算同一个人
+--   kind = 'i'  identity = HMAC(客户端 IP)  未登录
+--
+-- identity 存的是摘要不是明文 —— 库被拖走也反查不回具体 IP（密钥在 .env 里）。
+-- ⚠️ 必须是 ascii_bin：base64url 区分大小写，用默认的 utf8mb4_unicode_ci 的话
+--    'aB…' 和 'Ab…' 会被当成同一个人，不同的人互相顶掉。
+CREATE TABLE IF NOT EXISTS game_plays (
+  game_id   BIGINT UNSIGNED NOT NULL,
+  -- 'u' = 账号，'i' = IP
+  kind      CHAR(1)  CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  -- HMAC-SHA256 的 base64url，固定 43 个字符
+  identity  CHAR(43) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  played_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (game_id, kind, identity),
+  CONSTRAINT fk_gp_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ---------- 博客文章 ----------
 CREATE TABLE IF NOT EXISTS posts (
   id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,

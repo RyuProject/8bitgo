@@ -78,7 +78,10 @@ export function FeaturedCarousel() {
                       {gameTitle(g, lang)}
                     </h3>
                     <p className="mt-1 text-sm text-white/70">
-                      {g.title} · {platformLabel(t, g.platform, platform?.name ?? g.platform)} · {g.year} · {g.developer}
+                      {/* 副标题打头的原名只在译名跟原名不一样时才有意义：
+                          英文界面下它跟上面那行大标题一字不差，重复一遍纯属噪音 */}
+                      {gameTitle(g, lang) !== g.title && `${g.title} · `}
+                      {platformLabel(t, g.platform, platform?.name ?? g.platform)} · {g.year} · {g.developer}
                     </p>
                     <p className="mt-4 line-clamp-3 text-sm leading-relaxed text-white/85 sm:text-base">
                       {g.description}
