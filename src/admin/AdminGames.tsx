@@ -10,6 +10,7 @@ import { api, apiEnabled } from '@/services/api'
 import { useAdminData } from './AdminLayout'
 import { deleteGame, fetchAdminGames, setGameHidden, upsertGame } from '@/services/store'
 import { romKeysOf } from '@/services/roms'
+import { deleteRomObjects, isDeletableKey } from './uploadGuards'
 import { trackPageLoad } from '@/services/progress'
 import { GameForm } from './GameForm'
 import { btnClass, inputClass } from './ui'
@@ -144,15 +145,49 @@ export function AdminGames() {
     }
   }
 
+  /**
+   * 删游戏，连同它在 R2 上的 ROM 文件一起。
+   *
+   * 数据库那边有外键级联，game_roms 的行会自己清掉 —— 但**对象存储不会**，
+   * 文件会变成没人引用的孤儿，一直占着空间，而且事后谁也说不清那些 key 属于谁。
+   *
+   * 顺序是先删库再删文件：反过来的话，一旦删库失败，游戏还在、ROM 已经没了，
+   * 玩家点「开始游戏」直接 404。所以 key 要在删库**之前**就从 g 上取下来。
+   *
+   * 删文件失败不影响「游戏已删除」这个结果，只把失败的 key 报出来让人工收尾。
+   */
   const remove = async (g: Game) => {
-    if (!window.confirm(`确定删除「${g.titleZh ?? g.title}」？此操作会从数据库中移除该游戏，不可恢复。`)) return
+    const keys = romKeysOf(g).filter(isDeletableKey)
+    const tail = keys.length
+      ? `\n\n同时会从 R2 删除这款游戏的 ${keys.length} 个 ROM 文件：\n${keys.slice(0, 5).map((k) => `  ${k}`).join('\n')}${keys.length > 5 ? `\n  …还有 ${keys.length - 5} 个` : ''}`
+      : ''
+    if (!window.confirm(`确定删除「${g.titleZh ?? g.title}」？此操作会从数据库中移除该游戏，不可恢复。${tail}`)) return
+
     try {
       await deleteGame(g.slug)
-      setToast('已删除')
-      reload()
     } catch (err) {
       setToast(err instanceof Error ? err.message : '删除失败')
+      return
     }
+
+    if (!keys.length) {
+      setToast('已删除')
+      reload()
+      return
+    }
+
+    try {
+      const { removed, failed } = await deleteRomObjects(keys)
+      setToast(
+        failed.length
+          ? `游戏已删除，${removed.length} 个文件已清理，${failed.length} 个删除失败：${failed.join('、')}`
+          : `已删除，并清理了 ${removed.length} 个 ROM 文件`,
+      )
+    } catch (err) {
+      // 游戏已经删掉了，这里只是文件没清干净 —— 说清楚，别让人以为整个操作失败了
+      setToast(`游戏已删除，但 R2 文件未清理：${err instanceof Error ? err.message : '删除失败'}`)
+    }
+    reload()
   }
 
   return (

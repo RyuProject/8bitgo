@@ -5,7 +5,7 @@
  * 要守住的约束是「一个游戏 + 一个语言 = 一个 ROM」「一个游戏 = 一张封面」
  * 「一个平台 = 一份 BIOS」—— 原来三处都是不问直接 PUT，管理员看不到自己盖掉了什么。
  */
-import { deleteRom, headRom } from '@/services/roms'
+import { deleteRom, deleteRomDir, dirOfKey, getRomConfig, headRom, isBundleKey } from '@/services/roms'
 
 // 封面图常常不到 1MB，一律按 MB 显示会变成一排「0.00 MB」，看不出差别
 export const human = (n: number) => (n < 1024 * 1024 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1024 / 1024).toFixed(2)} MB`)
@@ -62,4 +62,57 @@ export async function cleanupSuperseded(oldKey: string, newKey: string, allBound
   if (!ok) return null
   await deleteRom(old)
   return old
+}
+
+/**
+ * 这个 key 指向的是不是「我们能删的 R2 对象」。
+ *
+ * 完整 URL（别人家的地址）和以 / 开头的站内路径（如 /bios/neogeo.zip，那是构建产物）
+ * 都不归对象存储管，删不了也不该删。
+ */
+export function isDeletableKey(key: string): boolean {
+  const k = key.trim()
+  return Boolean(k) && !/^https?:/i.test(k) && !k.startsWith('/')
+}
+
+/**
+ * 删掉一批 ROM key 背后的 R2 对象。
+ *
+ * 三件事调用方不用自己操心：
+ *   1. 去重 —— 多个语言槽可能指向同一份文件
+ *   2. 多 SWF 包 —— key 指向包里的某个文件时，整个包目录一起删，
+ *      不然会留下一堆没人引用的 swf（见 lib/swfBundle.ts）
+ *   3. 删不了的 key（完整 URL / 站内路径）直接跳过
+ *
+ * 返回真正删掉的 key。单个文件删失败不会中断整批 —— 收集到 failed 里一起报，
+ * 否则删到一半停下，剩下的孤儿文件谁也不知道叫什么。
+ */
+export async function deleteRomObjects(keys: string[]): Promise<{ removed: string[]; failed: string[] }> {
+  const cfg = getRomConfig()
+  if (!cfg.api || !cfg.token) throw new Error('未配置 Worker 地址或口令，无法删除 R2 上的文件')
+
+  const removed: string[] = []
+  const failed: string[] = []
+  const doneDirs = new Set<string>()
+  const doneKeys = new Set<string>()
+
+  for (const raw of keys) {
+    const key = raw.trim()
+    if (!isDeletableKey(key) || doneKeys.has(key)) continue
+    doneKeys.add(key)
+    try {
+      if (isBundleKey(key)) {
+        const dir = dirOfKey(key)
+        if (doneDirs.has(dir)) continue
+        doneDirs.add(dir)
+        removed.push(...(await deleteRomDir(dir)))
+      } else {
+        await deleteRom(key)
+        removed.push(key)
+      }
+    } catch {
+      failed.push(key)
+    }
+  }
+  return { removed, failed }
 }

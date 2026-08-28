@@ -18,7 +18,7 @@ import {
 } from '@/services/roms'
 import { bundleBytes, bundleWarnings, pickMainSwf, planSwfBundleFromZip, type SwfBundleFile, type SwfBundlePlan } from '@/lib/swfBundle'
 import { uploadSwfBundle, type BundleUploadProgress } from './swfUpload'
-import { confirmUpload, cleanupSuperseded, human } from './uploadGuards'
+import { confirmUpload, cleanupSuperseded, deleteRomObjects, human, isDeletableKey } from './uploadGuards'
 import { coreOptionsFor } from '@/config/emulators'
 import { FEATURES } from '@/config/features'
 import { isPlayable } from '@/emulator'
@@ -519,6 +519,57 @@ function RomField({
     }
   }
 
+  /**
+   * 删掉这一槽绑定的文件，并解绑。
+   *
+   * 两道守卫：
+   *   1. 同一份文件被这款游戏的多个语言槽共用时**只解绑不删文件** ——
+   *      否则删完，另一个语言槽就指向一个不存在的对象了
+   *   2. 完整 URL / 站内路径（/bios/… 这种构建产物）不归 R2 管，同样只解绑
+   * 多 SWF 包会整个包目录一起删，这个由 deleteRomObjects 处理。
+   */
+  const removeRom = async () => {
+    const key = value.trim()
+    if (!key) return
+    setMsg(null)
+
+    if (!isDeletableKey(key)) {
+      if (!window.confirm(`${key}\n\n这不是对象存储里的文件（完整 URL 或站内路径），只能解除绑定，文件本身不会动。\n\n继续吗？`)) return
+      onChange('')
+      setMsg({ ok: true, text: '已解除绑定（文件不在 R2 上，未删除）' })
+      return
+    }
+
+    const sharedBy = allBoundKeys.filter((k) => k === key).length
+    if (sharedBy > 1) {
+      if (!window.confirm(`${key}\n\n这份文件还被这款游戏的另外 ${sharedBy - 1} 个语言槽引用，删掉会让它们全部失效。\n\n只解除**当前这一槽**的绑定（文件保留）吗？`)) return
+      onChange('')
+      setMsg({ ok: true, text: '已解除绑定，文件保留（其它语言槽还在用）' })
+      return
+    }
+
+    const bundle = isBundleKey(key)
+    const ok = window.confirm(
+      bundle
+        ? `${dirOfKey(key)}/\n\n这是多 SWF 包里的文件，会把**整个包目录**从 R2 删掉，然后解除绑定。\n\n此操作不可恢复。别的游戏也在用这个包的话请选取消。`
+        : `${key}\n\n从 R2 删除这个文件并解除绑定。\n\n此操作不可恢复。别的游戏也绑了同一个文件的话请选取消。`,
+    )
+    if (!ok) return
+
+    try {
+      const { removed, failed } = await deleteRomObjects([key])
+      onChange('')
+      setMsg({
+        ok: failed.length === 0,
+        text: failed.length
+          ? `解绑成功，但 ${failed.length} 个文件删除失败：${failed.join('、')}`
+          : `已删除 ${removed.length} 个文件并解除绑定`,
+      })
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : '删除失败' })
+    }
+  }
+
   return (
     <div className="space-y-2">
       <Field
@@ -556,6 +607,16 @@ function RomField({
             <a href={romUrlForKey(value)} target="_blank" rel="noreferrer" className={cx(btnClass.secondary, 'shrink-0')} title="在新标签页打开文件地址">
               打开
             </a>
+          )}
+          {value && !progress && bundleAt === null && (
+            <button
+              type="button"
+              className={cx(btnClass.danger, 'shrink-0')}
+              onClick={() => void removeRom()}
+              title={isDeletableKey(value) ? '从 R2 删除文件并解除绑定' : '解除绑定（文件不在 R2 上）'}
+            >
+              删除
+            </button>
           )}
         </div>
         {progress !== null && (
