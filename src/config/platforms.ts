@@ -10,7 +10,7 @@ import type { PlatformId } from '@/types'
  *       模拟器核心同为 gambatte，但分类、ROM 目录（roms/gb、roms/gbc）各自独立；
  *       WebGame / 网页游戏 即 flash（平台名「Flash / 网页游戏」）。
  */
-export const ENABLED_PLATFORMS: PlatformId[] = ['nes', 'flash', 'gba', 'gb', 'gbc', 'java', 'arcade']
+export const ENABLED_PLATFORMS: PlatformId[] = ['nes', 'flash', 'gba', 'gb', 'gbc', 'java', 'arcade', 'dos']
 
 export function isPlatformEnabled(id: PlatformId): boolean {
   return ENABLED_PLATFORMS.length === 0 || ENABLED_PLATFORMS.includes(id)
