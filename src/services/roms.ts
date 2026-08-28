@@ -350,32 +350,52 @@ export function defaultKeyFor(platform: string, slug: string, fileName: string):
   return at(`${name}${ext}`)
 }
 
-const probeCache = new Map<string, Promise<boolean>>()
+const probeCache = new Map<string, Promise<string>>()
 
-/** HEAD 探测某个 URL 是否存在（带超时，结果缓存） */
-export function probeUrl(url: string, timeoutMs = 4000): Promise<boolean> {
+/**
+ * 把对象的 ETag 写进查询串，给浏览器 HTTP 缓存和 EmulatorJS IndexedDB 缓存换 key。
+ *
+ * R2 允许覆盖同一个对象 key；若播放地址永远不变，两个缓存都会继续交出旧 ROM。
+ * ETag 随对象内容变化，既不会让没更新的 ROM 重复下载，也不依赖人工清缓存。
+ */
+function versionedRomUrl(url: string, etag: string | null): string {
+  const version = etag?.replace(/^W\//, '').replaceAll('"', '').trim()
+  if (!version) return url
+  const separator = url.includes('?') ? '&' : '?'
+  return `${url}${separator}romv=${encodeURIComponent(version)}`
+}
+
+/** HEAD 探测 ROM，并把内容 ETag 带回播放 URL（带超时，结果缓存） */
+export function probeRomUrl(url: string, timeoutMs = 4000): Promise<string> {
   const cached = probeCache.get(url)
   if (cached) return cached
   const p = (async () => {
     const ctrl = new AbortController()
     const timer = window.setTimeout(() => ctrl.abort(), timeoutMs)
     try {
-      const res = await fetch(url, { method: 'HEAD', signal: ctrl.signal })
-      if (!res.ok) return false
+      // no-store 很关键：这里正是为了发现「同一个 URL 的对象内容已经换了」，
+      // 若 HEAD 自己也吃浏览器缓存，就永远读不到新的 ETag。
+      const res = await fetch(url, { method: 'HEAD', cache: 'no-store', signal: ctrl.signal })
+      if (!res.ok) return ''
       // 地址配错时请求会落到本站的 SSR 兜底路由上，那边对任何路径都回 200 + HTML。
       // 只看 res.ok 的话会误判成「ROM 存在」，页面显示「即点即玩」，
       // 点下去才在模拟器里报一句莫名其妙的「不是合法的 ROM」。
       const type = res.headers.get('content-type') || ''
-      if (/text\/html|application\/xhtml/i.test(type)) return false
-      return true
+      if (/text\/html|application\/xhtml/i.test(type)) return ''
+      return versionedRomUrl(url, res.headers.get('etag'))
     } catch {
-      return false
+      return ''
     } finally {
       window.clearTimeout(timer)
     }
   })()
   probeCache.set(url, p)
   return p
+}
+
+/** 后台只关心对象是否存在；播放器才需要上面的版本化 URL。 */
+export async function probeUrl(url: string, timeoutMs = 4000): Promise<boolean> {
+  return Boolean(await probeRomUrl(url, timeoutMs))
 }
 
 export interface RomResolution {
@@ -397,13 +417,25 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
 
   useEffect(() => {
     if (!game) return
-    // 显式绑定（按语言选出）优先
+    let cancelled = false
+    // 显式绑定（按语言选出）优先。即使数据库已经明确绑定，也要做一次 HEAD：
+    // 除了确认对象还在，更重要的是拿 ETag 给播放地址做内容版本化。
     const key = effectiveRomKey(game, lang, prefer)
     if (key) {
       const url = romUrlForKey(key)
       if (url) {
-        setState({ status: 'found', url, key, lang: romLangOfKey(game, key) })
-        return
+        setState({ status: 'checking', url: '' })
+        void probeRomUrl(url).then((resolvedUrl) => {
+          if (cancelled) return
+          setState(
+            resolvedUrl
+              ? { status: 'found', url: resolvedUrl, key, lang: romLangOfKey(game, key) }
+              : { status: 'missing', url: '' },
+          )
+        })
+        return () => {
+          cancelled = true
+        }
       }
     }
     const base = getRomBase()
@@ -412,13 +444,13 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
       return
     }
 
-    let cancelled = false
     setState({ status: 'checking', url: '' })
     ;(async () => {
       for (const key of conventionalKeys(game)) {
         const url = romUrlForKey(key, base)
-        if (await probeUrl(url)) {
-          if (!cancelled) setState({ status: 'found', url, key })
+        const resolvedUrl = await probeRomUrl(url)
+        if (resolvedUrl) {
+          if (!cancelled) setState({ status: 'found', url: resolvedUrl, key })
           return
         }
       }

@@ -11,10 +11,9 @@
  * 「Romset is unknown」。EJS_gameName 明明就是给这种场景准备的，但引擎的
  * 两个下载分支（fetch 正常路径 + handleNonHttpUrl 的 blob 路径）都没看它。
  *
- * 补丁：仅当 URL 是 blob: 且正是 config.gameUrl（即「这就是游戏本体」）时，
- * 用 config.gameName 当文件名；http(s) 的 URL 一律维持原逻辑 ——
- * 云端 ROM 的对象 key 本来就按 romset 命名（见 services/roms.ts），不能被
- * 游戏标题顶掉。
+ * 补丁：blob: 游戏仍用 config.gameName；http(s) 游戏从 URL 中取文件名时先去掉
+ * 查询串和 hash。后者是因为云端 ROM 会带 `?romv=<ETag>` 做内容版本化，若把参数
+ * 也写进虚拟文件名，FBNeo 看到 `kof97.zip?romv=…` 仍然认不出 romset。
  *
  * 验证记录（2026-08-28，无头 Chromium + 真实 kof97.zip + neogeo.zip）：
  *   打补丁前：FS 里是 /c7b668fa-…（UUID 无扩展名）→ Romset is unknown
@@ -27,20 +26,21 @@ import { fileURLToPath } from 'node:url'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const file = join(root, 'public', 'emulatorjs', 'emulator.min.js')
 
-/** blob: 的游戏 URL → 用 EJS_gameName 当文件名；其余照旧 */
+/** blob: 的游戏 URL → 用 EJS_gameName；http(s) → 去掉版本查询串再取文件名 */
 const NAME_EXPR =
   't.startsWith("blob:")&&this.EJS&&this.EJS.config&&t===this.EJS.config.gameUrl&&' +
   '"string"==typeof this.EJS.config.gameName&&this.EJS.config.gameName?this.EJS.config.gameName:'
+const URL_NAME_EXPR = 't.split(/[?#]/)[0].split("/").pop()'
 
 /** [要找的原文, 替换后] —— 两个下载分支各一处 */
 const PATCHES = [
   [
     'S=t.split("/").pop()||"downloaded.bin"',
-    `S=(${NAME_EXPR}t.split("/").pop())||"downloaded.bin"`,
+    `S=(${NAME_EXPR}${URL_NAME_EXPR})||"downloaded.bin"`,
   ],
   [
     'const o=t.split("/").pop()||"downloaded.bin",r=Date.now();',
-    `const o=(${NAME_EXPR}t.split("/").pop())||"downloaded.bin",r=Date.now();`,
+    `const o=(${NAME_EXPR}${URL_NAME_EXPR})||"downloaded.bin",r=Date.now();`,
   ],
 ]
 
@@ -52,14 +52,17 @@ for (const [from, to] of PATCHES) {
     already++
     continue
   }
-  const n = src.split(from).length - 1
+  // 旧版补丁只修了 blob，没有剥查询串；升级时先把旧表达式当成候选来源。
+  const oldPatched = to.replace(URL_NAME_EXPR, 't.split("/").pop()')
+  const source = src.includes(oldPatched) ? oldPatched : from
+  const n = src.split(source).length - 1
   if (n !== 1) {
     console.error(`✖ 在 emulator.min.js 里找到 ${n} 处「${from.slice(0, 40)}…」，预期恰好 1 处。`)
     console.error('  引擎构建变了，补丁位置对不上。别硬套：按本文件头注释里的思路，')
     console.error('  重新找到两个下载分支里 split("/").pop() 取文件名的地方，更新 PATCHES。')
     process.exit(1)
   }
-  src = src.replace(from, to)
+  src = src.replace(source, to)
   applied++
 }
 if (applied) writeFileSync(file, src)
