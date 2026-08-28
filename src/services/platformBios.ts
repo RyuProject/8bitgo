@@ -52,6 +52,21 @@ export function loadedPlatformBios(): PlatformBiosMap | null {
   return cache
 }
 
+/**
+ * 同步取某平台的 BIOS 地址，只看已经缓存下来的那份（没缓存就返回空串）。
+ *
+ * 「玩本地 ROM」页面需要它：那儿的平台是把文件拖进来**当场识别**出来的，
+ * 而引擎在同一轮里就挂载完了。父组件传下来的 biosUrl 是按识别**之前**的平台
+ * （默认 nes）算的，等它跟着新平台重新渲染一遍，引擎早已经起来了 ——
+ * 而播放器刻意不会因为「BIOS 迟到」重启正在跑的游戏。
+ *
+ * 缓存在页面加载时就拉好了，所以挂载那一刻同步读一次正好补上这个缺口。
+ */
+export function platformBiosUrlSync(platform: PlatformId): string {
+  const key = cache?.[platform]
+  return key ? romUrlForKey(key) : ''
+}
+
 /** 后台改完 BIOS 之后调，让正在开着的页面重新拉一次 */
 export function invalidatePlatformBios() {
   cache = null

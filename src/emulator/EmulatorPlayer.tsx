@@ -6,6 +6,7 @@ import { detectRom, describeDetection } from './detect'
 import { resolveRuntime, extOf } from './registry'
 import type { Capability, Runtime, RuntimeHandle } from './types'
 import { createOverallRatio } from './loadProgress'
+import { platformBiosUrlSync } from '@/services/platformBios'
 import { EmulatorTools } from './EmulatorTools'
 import { LiveControls } from './LiveControls'
 import { liveViewRuntime, type LiveSession, type LiveViewState } from './adapters/liveview'
@@ -311,7 +312,15 @@ export function EmulatorPlayer({
       // 按游戏覆盖核心 / 平台级 BIOS：都用 ref 读当前值，
       // 放进 effect 依赖会让「BIOS 异步到货」把正在跑的游戏重启一遍
       core: coreRef.current,
-      biosUrl: biosUrlRef.current,
+      /**
+       * BIOS 按**本次会话真正的平台**取，父组件传下来的只作首选。
+       *
+       * 「玩本地 ROM」页的平台是拖进文件才识别出来的（detect -> onPlatformChange），
+       * 父组件那边的 biosUrl 还停留在识别前的默认平台上；等它算出新值，
+       * 引擎已经挂载完了，而这里刻意不会为了 BIOS 迟到去重启游戏。
+       * 所以再按 session.platform 同步兜一次 —— 缓存早在进页面时就拉好了。
+       */
+      biosUrl: biosUrlRef.current || platformBiosUrlSync(session.platform),
       // 存档按 slug 归档；玩家自己上传的 ROM 没有 slug，交给引擎退回文件名
       gameSlug: gameSlugRef.current,
       netplay: session.netplay,
