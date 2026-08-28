@@ -99,6 +99,12 @@ const patches = [
     run: () => conn.query('ALTER TABLE `games` ADD COLUMN `description_en` TEXT NULL AFTER `description`'),
   },
   {
+    name: 'games.dos_executable（DOS 启动程序，zip 内相对路径）',
+    table: 'games',
+    needed: async () => !(await hasColumn('games', 'dos_executable')),
+    run: () => conn.query('ALTER TABLE `games` ADD COLUMN `dos_executable` VARCHAR(255) NULL AFTER `core`'),
+  },
+  {
     name: 'platform_bios（平台级 BIOS，Neo Geo 这类必须有）',
     table: null,
     needed: async () => !(await hasTable('platform_bios')),

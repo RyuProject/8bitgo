@@ -110,6 +110,13 @@ export interface Game {
    */
   core?: string
   /**
+   * DOS 启动程序：zip 包内的相对路径（如 PARANOID.COM、NFS/TNFS.EXE）。
+   * 留空由前端启发式去猜（src/lib/jsdosBundle.ts 的 pickExecutable）——
+   * 共享软件时代的包里常混着安装器 / 评估版工具，猜错时在后台填这个字段一锤定音。
+   * 只对 platform 为 dos 的游戏有意义。
+   */
+  dosExecutable?: string
+  /**
    * 首页精选位的排序号（数字小的排前面）。没有这个字段就是不上首页。
    * 只要有任意一款设了，首页第一栏就只出这些，标题也会从「最多人玩」换成「最热门的游戏」——
    * 手挑的顺序不能顶着「按游玩次数排序」的说法。

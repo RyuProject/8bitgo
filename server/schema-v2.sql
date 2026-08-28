@@ -59,6 +59,9 @@ CREATE TABLE IF NOT EXISTS games (
   -- 街机尤其需要：同一个「街机」平台底下，拳皇要 fbneo、街霸2 要 fbalpha2012_cps2、
   -- 有些老游戏只有 mame2003_plus 跑得动，一个平台默认值盖不住。
   core          VARCHAR(32)   NULL,
+  -- DOS 启动程序（zip 内相对路径，如 NFS/TNFS.EXE）。
+  -- NULL = 交给前端启发式去猜（src/lib/jsdosBundle.ts 的 pickExecutable）
+  dos_executable VARCHAR(255)  NULL,
   -- 首页「精选」位的排序号。NULL = 不上首页，数字小的排前面。
   -- 一款都没设时，首页那一栏退回按 plays 自动排（见 server/src/content.js 的 loadHome）
   home_rank     SMALLINT UNSIGNED NULL,

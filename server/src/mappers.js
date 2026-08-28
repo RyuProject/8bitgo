@@ -62,6 +62,22 @@ export function coreOf(v) {
   return /^[a-z0-9_]{1,32}$/.test(s) ? s : null
 }
 
+/**
+ * DOS 启动程序：zip 内相对路径（如 NFS/TNFS.EXE）。
+ * 反斜杠统一成正斜杠（DOS 习惯写法照收），去掉开头的斜杠；
+ * 拒绝空段 / . / .. 与控制字符 —— 这个值最终会拼进 dosbox.conf 的 autoexec，
+ * 换行混进去等于让后台能注入任意 DOSBox 命令，必须在这里挡死。
+ */
+export function dosExecutableOf(v) {
+  if (v == null) return null
+  const s = String(v).trim().replace(/\\/g, '/').replace(/^\/+/, '')
+  if (!s || s.length > 200) return null
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f]/.test(s)) return null
+  if (s.split('/').some((seg) => !seg || seg === '.' || seg === '..')) return null
+  return s
+}
+
 export function gameRowToApi(r, rel = {}) {
   const g = {
     slug: r.slug,
@@ -85,6 +101,8 @@ export function gameRowToApi(r, rel = {}) {
   if (r.home_rank != null) g.homeRank = Number(r.home_rank)
   // 没覆盖核心的游戏同样不带这个字段，前台自己回落到平台默认
   if (r.core) g.core = r.core
+  // 只有 DOS 游戏会填；不带字段 = 前端启发式自己猜
+  if (r.dos_executable) g.dosExecutable = r.dos_executable
   if (r.title_zh) g.titleZh = r.title_zh
   // 没写英文简介的游戏不带这个字段，前台自己回落到基准简介
   if (r.description_en) g.descriptionEn = r.description_en
@@ -126,6 +144,7 @@ export function gameApiToRow(g) {
     added_at: g.addedAt ? String(g.addedAt).slice(0, 10) : null,
     home_rank: homeRankOf(g.homeRank),
     core: coreOf(g.core),
+    dos_executable: dosExecutableOf(g.dosExecutable),
   }
 }
 
@@ -152,6 +171,7 @@ const FIELD_TO_COLUMN = {
   addedAt: ['added_at', (v) => (v ? String(v).slice(0, 10) : null)],
   homeRank: ['home_rank', homeRankOf],
   core: ['core', coreOf],
+  dosExecutable: ['dos_executable', dosExecutableOf],
 }
 
 export function gameApiToPartialRow(patch) {

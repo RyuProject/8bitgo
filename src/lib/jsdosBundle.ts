@@ -162,18 +162,36 @@ function buildZip(entries: OutEntry[]): Blob {
 /* ---------------- dosbox.conf ---------------- */
 
 const RUNNABLE = /\.(exe|com|bat)$/i
-/** 一看就不是游戏本体的东西，排在后面 */
-const NOT_GAME = /(^|\/)(install|setup|config|setsound|readme|uninst|dos4gw|cwsdpmi)/i
+/**
+ * 一看就不是游戏本体的东西，排在后面。
+ * 后半截（eval / order / regist / vendor / catalog）是共享软件时代的常客：
+ * 「做一份评估版软盘给朋友」「打印订购单」之类的随包工具。
+ * Paranoid 就是教训 —— 包里 MAKEEVAL.COM 和 PARANOID.COM 打分打成平手，
+ * 按 zip 里的顺序取第一个，玩家点开游戏看到的是个安装界面。
+ * ⚠️ 别把 demo 加进来：太多游戏本体就叫 XXDEMO.EXE。
+ */
+const NOT_GAME = /(^|\/)(install|setup|config|setsound|readme|uninst|dos4gw|cwsdpmi|eval|order|regist|vendor|catalog)/i
 
-/** 从文件列表里猜一个启动程序 */
-export function pickExecutable(names: string[]): string | null {
+/**
+ * 从文件列表里猜一个启动程序。
+ * hint 是包的文件名（去掉扩展名和语言后缀），可执行文件和它同名的几乎必是本体 ——
+ * paranoid.zip 里的 PARANOID.COM、doom.zip 里的 DOOM.EXE。这是最强的信号，
+ * 比任何后缀加分都可靠，所以给的分也最高。
+ */
+export function pickExecutable(names: string[], hint?: string): string | null {
   const runnable = names.filter((n) => RUNNABLE.test(n) && !n.startsWith('.jsdos/'))
   if (runnable.length === 0) return null
+  // need-for-speed.en.zip → need-for-speed；比对时去掉连字符差异（NEED4SPD 这类缩写救不了，不强求）
+  const base = (hint ?? '').replace(/\.[^.]+$/, '').replace(/\.(zh-Han[st]|en|ja|fr|de|es|it)$/i, '')
+  const norm = (x: string) => x.toLowerCase().replace(/[-_ ]/g, '')
+  const wanted = norm(base)
   const score = (n: string) => {
     let s = 0
+    const stem = norm(n.split('/').pop()!.replace(/\.[^.]+$/, ''))
+    if (wanted && stem === wanted) s += 6
     if (NOT_GAME.test(n)) s -= 10
     if (/\.bat$/i.test(n)) s += 3 // 作者自己写的启动批处理通常最靠谱
-    if (/\.exe$/i.test(n)) s += 2
+    if (/\.(exe|com)$/i.test(n)) s += 2 // .com 和 .exe 在 DOS 里同级，以前漏了 .com，才会出现平局
     s -= (n.split('/').length - 1) * 2 // 越靠近根目录越可能是主程序
     s -= n.length * 0.01
     return s
@@ -234,7 +252,7 @@ export function makeJsdosBundle(name: string, buf: ArrayBuffer, conf?: string): 
   let exe: string | null = null
 
   if (entries) {
-    exe = pickExecutable(entries.map((e) => e.name))
+    exe = pickExecutable(entries.map((e) => e.name), name)
 
     /**
      * 目录条目必须保留，缺的还要补齐 —— 这里原来是一行

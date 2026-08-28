@@ -159,6 +159,8 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
       homeRank: Number(form.homeRank) > 0 ? Math.round(Number(form.homeRank)) : undefined,
       // 空字符串要写成 undefined，否则会当成「核心名叫空串」存进去
       core: form.core?.trim() || undefined,
+      // 空字符串写成 undefined，否则会当成「启动程序叫空串」存进去
+      dosExecutable: form.dosExecutable?.trim() || undefined,
       // 空字符串写成 undefined，否则会存一条空的英文简介，
       // 前台判「有没有英文版」时就会误判成有
       descriptionEn: form.descriptionEn?.trim() || undefined,
@@ -244,6 +246,19 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
         <Field label="上线日期">
           <input type="date" className={inputClass} value={form.addedAt} onChange={(e) => set('addedAt', e.target.value)} />
         </Field>
+        {form.platform === 'dos' && (
+          <Field label="启动程序">
+            <input
+              className={inputClass}
+              value={form.dosExecutable ?? ''}
+              onChange={(e) => set('dosExecutable', e.target.value || undefined)}
+              placeholder="PARANOID.COM 或 NFS/TNFS.EXE"
+            />
+            <p className="mt-1 text-[11px] text-dim">
+              zip 包内的相对路径。留空 = 自动猜测 —— 共享软件的包里常混着安装器（INSTALL / MAKEEVAL），猜错时填这里一锤定音
+            </p>
+          </Field>
+        )}
         {coreOptions.length > 0 && (
           <Field label="模拟器核心">
             <select className={inputClass} value={form.core ?? ''} onChange={(e) => set('core', e.target.value || undefined)}>

@@ -46,6 +46,11 @@ export interface MountOptions {
    */
   biosUrl?: string
   /**
+   * DOS 启动程序（zip 内相对路径，仅 jsdos 运行时用）。
+   * 传了就按它生成 dosbox.conf，压过 pickExecutable 的猜测。
+   */
+  dosExecutable?: string
+  /**
    * 游戏 slug —— 存档就是按它归档的。
    * 玩家自己上传的 ROM 没有 slug，调用方会给个 `local:文件名`（见 services/saves.ts）。
    * 不传就没有存档能力。

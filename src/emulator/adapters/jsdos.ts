@@ -14,7 +14,7 @@
 import type { Capability, CaptureSources, LoadProgress, MountOptions, Runtime, RuntimeHandle } from '../types'
 import { fetchWithProgress } from '../loadProgress'
 import { getT, fmt } from '@/services/i18n'
-import { makeJsdosBundle } from '@/lib/jsdosBundle'
+import { buildDosboxConf, makeJsdosBundle } from '@/lib/jsdosBundle'
 import { imageDataToBlob } from '../recorder'
 import { GP, startGamepadBridge, hasGamepadApi, type GamepadBridge } from '../gamepad'
 import { deleteSave, pullSave, pushSave } from '@/services/saves'
@@ -169,7 +169,13 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       if (destroyed) return
 
       // 普通 zip / exe 现场打成 bundle；已经是 bundle 的原样使用
-      const bundle = makeJsdosBundle(rom.name, rom.buf)
+      // 后台指定了启动程序就按它生成 conf，压过 pickExecutable 的猜测；
+      // ROM 本身已是 .jsdos bundle 时整包原样直通，这个覆盖不生效（bundle 里自带 conf）
+      const bundle = makeJsdosBundle(
+        rom.name,
+        rom.buf,
+        options.dosExecutable ? buildDosboxConf(options.dosExecutable) : undefined,
+      )
       objectUrl = URL.createObjectURL(bundle.blob)
 
       /**
