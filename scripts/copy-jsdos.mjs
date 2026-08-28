@@ -21,7 +21,31 @@ const out = join(root, 'public', 'jsdos')
 const ifMissing = process.argv.includes('--if-missing')
 const withDosboxX = process.argv.includes('--with-dosbox-x')
 
-if (ifMissing && existsSync(join(out, 'js-dos.js'))) process.exit(0)
+/**
+ * 把 js-dos.css 整个包进一个级联层（cascade layer）。
+ *
+ * 站点样式是 Tailwind v4，全部住在 @layer 里；js-dos.css 是 Tailwind v3 编译的、
+ * **不带 layer** —— 而 CSS 规定不分层的样式压过所有分层样式，特异性再高也翻不了案。
+ * 于是玩家一点「开始游戏」（js-dos.css 这时才挂进 <head>），它开头那套全局 reset
+ * （a{color:inherit}、h1-h6{font-size:inherit}、.hidden{display:none}…）就把全站
+ * 打回没有 CSS 的样子：按钮没底色、链接没颜色、布局塌成手机版。
+ *
+ * 包进 @layer jsdos 后它排进层序，而 src/index.css 的第一行把 jsdos 声明成
+ * 优先级最低的层，站点样式就全压得住它；js-dos 自己的界面在层内级联不变。
+ */
+function wrapCssInLayer(file) {
+  if (!existsSync(file)) return
+  const css = readFileSync(file, 'utf8')
+  if (css.startsWith('@layer jsdos{')) return
+  writeFileSync(file, `@layer jsdos{${css}}`)
+  console.log('✔ js-dos.css 已包进 @layer jsdos（防止它的全局 reset 压过站点样式）')
+}
+
+if (ifMissing && existsSync(join(out, 'js-dos.js'))) {
+  // 已有的拷贝也要确保 css 包过层 —— 老拷贝正是没包的那种
+  wrapCssInLayer(join(out, 'js-dos.css'))
+  process.exit(0)
+}
 
 if (!existsSync(join(src, 'js-dos.js'))) {
   const msg = '未找到 node_modules/js-dos，请先 npm install'
@@ -86,6 +110,8 @@ if (!process.argv.includes('--no-ipx-patch')) {
     console.warn('  服务端请改用 attachIpx({ port: 1900 })，详见 server/README.md。')
   }
 }
+
+wrapCssInLayer(join(out, 'js-dos.css'))
 
 console.log(`✔ js-dos 已复制 ${count} 个文件（${(bytes / 1024 / 1024).toFixed(1)} MB）到 public/jsdos/`)
 if (!withDosboxX) console.log('  （未包含 DOSBox-X；需要跑 Windows 9x 时加 --with-dosbox-x）')
