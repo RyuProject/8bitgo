@@ -22,7 +22,8 @@
     "start:ssr": "node server/src/index.js",
     "j2me": "node scripts/setup-j2me.mjs",
     "webretro": "node scripts/setup-webretro.mjs",
-    "ejscores": "node scripts/copy-ejs-cores.mjs"
+    "ejscores": "node scripts/copy-ejs-cores.mjs",
+    "ejspatch": "node scripts/patch-emulatorjs.mjs"
   },
   "dependencies": {
     "jsnes": "^2.1.0",

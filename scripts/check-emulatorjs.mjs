@@ -37,6 +37,13 @@ if (!js.includes('dontExtractIfCore')) {
   )
 }
 
+if (!js.includes('t===this.EJS.config.gameUrl')) {
+  fail(
+    'emulator.min.js 缺「blob URL 文件名」补丁 —— 拖入本地街机 ROM 会报 Romset is unknown',
+    'npm run ejspatch（幂等；升级引擎构建后都要重跑一次，见 scripts/patch-emulatorjs.mjs 头注释）',
+  )
+}
+
 if (!existsSync(join(dir, 'cores', 'fbneo-wasm.data'))) {
   fail(
     'public/emulatorjs/cores/ 里没有核心（至少 fbneo-wasm.data 该在）',
