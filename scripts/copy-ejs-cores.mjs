@@ -1,10 +1,16 @@
 #!/usr/bin/env node
 /**
- * 把 npm 包 @emulatorjs/core-*（GPL-3.0，各核心另有自己的许可证）复制到
- * public/emulatorjs/cores/，让自建的 EmulatorJS 在本地就能取到核心。
+ * 升级 EmulatorJS 核心用的工具（平时不用跑 —— 核心已经提交在
+ * public/emulatorjs/cores/ 里，git pull 下来就有，构建不依赖这个脚本）。
  *
- *   npm run ejscores                        强制复制
- *   node scripts/copy-ejs-cores.mjs --if-missing   已有则跳过（dev / build 前自动执行）
+ * 升级步骤：
+ *   npm i --no-save @emulatorjs/cores@latest   # 官方全部核心，几百 MB，所以 --no-save
+ *   npm run ejscores                           # 挑我们要的 12 个复制进 public/
+ *   git add public/emulatorjs/cores/           # 升级结果照旧进 git
+ *   （删掉 node_modules 里的全家桶：再跑一次 npm install 会自动清掉）
+ *
+ * 为什么不把核心做成 npm 依赖：每个 @emulatorjs/core-* 都依赖 @emulatorjs/emulatorjs，
+ * 后者又可选依赖 @emulatorjs/cores = 全部 50 个核心 —— 装 12 个等于装全家桶。
  *
  * ── 为什么核心必须自托管 ─────────────────────────────────────────
  * public/emulatorjs/ 是从 EmulatorJS main 分支自建的（为了 dontExtractIfCore，
@@ -52,9 +58,9 @@ if (ifMissing && existsSync(join(out, 'fbneo-wasm.data'))) process.exit(0)
 
 const missing = CORES.filter((c) => !existsSync(join(root, 'node_modules', '@emulatorjs', `core-${c}`)))
 if (missing.length) {
-  const msg = `未找到 node_modules/@emulatorjs/core-*：${missing.join(', ')}，请先 npm install`
+  const msg = `未找到 node_modules/@emulatorjs/core-*：${missing.join(', ')}，先 npm i --no-save @emulatorjs/cores@latest`
   if (ifMissing) {
-    console.warn(`⚠ ${msg}；对应平台的游戏会打不开（prebuild 的 check-emulatorjs 会拦下构建）`)
+    console.warn(`⚠ ${msg}`)
     process.exit(0)
   }
   console.error(`✖ ${msg}`)
