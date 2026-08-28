@@ -36,6 +36,11 @@ README.md
 # 街机的 neogeo.zip BIOS 被解压，FBNeo 报「Neo Geo BIOS 成员缺失」，本地却一切正常。
 # 更新它：见 deploy/netplay/README.md 第一节。
 
+# 核心（.data，34MB）不进 git：它们在 npm 上（@emulatorjs/core-*，devDependencies
+# 里锁了版本），npm install 后由 scripts/copy-ejs-cores.mjs 复制过来，
+# dev / build 前自动执行。prebuild 里的 check-emulatorjs.mjs 会确认它们真的在。
+public/emulatorjs/cores/
+
 # Cloudflare Worker
 worker/node_modules
 worker/.wrangler

@@ -44,7 +44,11 @@ import { ICE_SERVERS, NETPLAY_URL, fetchIceConfig, socketIoScriptUrl, uploadStat
  *      `.env.local` 被 .gitignore 的 `*.local` 挡住 —— 构建机上根本没有这个文件，
  *      于是线上悄悄退回 4.2.3，本地怎么试都是好的。默认值写死才治得了这个。
  *
- * 核心（.wasm）不在这个目录里，走 `cdnFallback: true` 从官方 CDN 取，不用自己托管。
+ * 核心（cores/*.data）**也自托管**：来自 npm 的 @emulatorjs/core-*（版本锁在
+ * package.json），scripts/copy-ejs-cores.mjs 复制进来，构建时一并进 dist。
+ * 千万别指望引擎的 CDN 回落 —— 这个 main 构建自称 4.3.0-pre，回落地址是
+ * cdn.emulatorjs.org/4.3.0-pre/，实测取回来的核心初始化不出 EJS_Runtime，
+ * 玩家看到的就是「Error loading EmulatorJS runtime」。本地有核心，这条路不会走。
  */
 export const EJS_PATH: string = (() => {
   const p = import.meta.env.VITE_EJS_PATH || '/emulatorjs/'
