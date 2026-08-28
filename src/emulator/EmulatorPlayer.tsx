@@ -721,7 +721,6 @@ export function EmulatorPlayer({
   const inRoom = Boolean(session?.netplay || session?.cloud)
   const activeRuntime =
     session?.runtime ?? (online ? (channel === 'p2p' ? emulatorJsRuntime : cloudGameRuntime) : pageRuntime)
-  const activePlatform = session ? platformMap[session.platform] : platform
   const cloudStateLabel = cloudState ? t.player.cloudState[cloudState] : ''
 
   // 进度条要显示的比例：合成后的整条进度，只有 0→100 这一种状态
@@ -1007,19 +1006,14 @@ export function EmulatorPlayer({
           <span className="truncate text-muted" title={file.name}>
             📄 {file.name} · {formatBytes(file.size)}
           </span>
-        ) : (
-          busy &&
-          romUrl && (
-            <span className="truncate text-muted" title={romUrl}>
-              {fmt(t.player.cloudRom, { name: romUrl.split('/').pop() ?? '' })}
-            </span>
-          )
+        ) : null}
+        {/* 运行时·核心标签（EmulatorJS · gba 之类）不再常驻展示 —— 对玩家是噪音。
+            只有真没有可用运行时（这游戏压根跑不了）才提示一句 */}
+        {!activeRuntime && (
+          <span className="text-muted" title={t.player.runtimeCore}>
+            {t.player.noRuntimeShort}
+          </span>
         )}
-        <span className="text-muted" title={t.player.runtimeCore}>
-          {activeRuntime
-            ? `${activeRuntime.name} · ${activeRuntime.engineLabel(activePlatform?.id ?? platform.id)}`
-            : t.player.noRuntimeShort}
-        </span>
         {notice && (
           <span data-testid="detect-notice" className="truncate text-brand-hover">
             {notice}
