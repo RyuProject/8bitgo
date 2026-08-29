@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS games (
   -- 一个基准 + 一个译文，而不是给八种语言各开一列
   description_en TEXT         NULL,
   body_control  TINYINT(1)    NOT NULL DEFAULT 0,
+  adult         TINYINT(1)    NOT NULL DEFAULT 0,
   hidden        TINYINT(1)    NOT NULL DEFAULT 0,
   -- 模拟器核心覆盖。NULL = 用平台默认（src/data/platforms.ts 的 core 字段）。
   -- 街机尤其需要：同一个「街机」平台底下，拳皇要 fbneo、街霸2 要 fbalpha2012_cps2、

@@ -12,12 +12,12 @@
  * 想换成官方 CDN 就设 VITE_JSDOS_PATH=https://v8.js-dos.com/latest/
  */
 import type { Capability, CaptureSources, LoadProgress, MountOptions, Runtime, RuntimeHandle } from '../types'
-import { fetchWithProgress } from '../loadProgress'
 import { getT, fmt } from '@/services/i18n'
 import { buildDosboxConf, makeJsdosBundle } from '@/lib/jsdosBundle'
 import { imageDataToBlob } from '../recorder'
 import { GP, startGamepadBridge, hasGamepadApi, type GamepadBridge } from '../gamepad'
 import { deleteSave, pullSave, pushSave } from '@/services/saves'
+import { loadGameBytes } from '../romLoader'
 
 /** P2P 模式的撮合服务器。自建的话见 https://github.com/caiiiycuk/WebRTC-NET（Go） */
 export const JSDOS_PEER_SERVER: string = import.meta.env.VITE_JSDOS_PEER_SERVER || 'https://net.dos.zone'
@@ -121,13 +121,8 @@ async function readRom(
   game: File | string,
   onProgress?: (p: LoadProgress) => void,
 ): Promise<{ name: string; buf: ArrayBuffer }> {
-  if (typeof game !== 'string') {
-    const buf = await game.arrayBuffer()
-    onProgress?.({ phase: 'rom', loaded: buf.byteLength, total: buf.byteLength, ratio: 1 })
-    return { name: game.name, buf }
-  }
-  const buf = await fetchWithProgress(game, { phase: 'rom', onProgress })
-  return { name: game.split(/[?#]/)[0].split('/').pop() || 'game.zip', buf }
+  const loaded = await loadGameBytes(game, onProgress)
+  return { name: loaded.name, buf: loaded.data }
 }
 
 function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {

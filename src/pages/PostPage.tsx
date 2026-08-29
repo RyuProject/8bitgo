@@ -5,6 +5,7 @@ import { gradientFor } from '@/lib/gradients'
 import { useSeo, articleSchema, breadcrumbSchema } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
 import { NotFoundPage } from './NotFoundPage'
+import { SkeletonBlock } from '@/components/ui/PageSkeleton'
 
 export function PostPage() {
   const { slug = '' } = useParams<{ slug: string }>()
@@ -42,8 +43,8 @@ export function PostPage() {
   )
 
   if (missing) return <NotFoundPage message={t.blog.notFoundMsg} />
-  // 还在取数：给一个占位，别渲染 404 也别访问 post.xxx
-  if (!post) return <div className="container-x py-16 text-center text-sm text-muted" aria-busy="true" />
+  // 还在取数：按文章真实排版占位，别渲染 404，也别留一大块没有反馈的空白。
+  if (!post) return <PostSkeleton />
 
   const more = posts
     .filter((p) => p.slug !== post.slug)
@@ -107,6 +108,28 @@ export function PostPage() {
           </ul>
         </section>
       )}
+    </div>
+  )
+}
+
+function PostSkeleton() {
+  return (
+    <div className="container-x py-8 sm:py-10" aria-busy="true">
+      <SkeletonBlock className="h-3 w-56 max-w-[70vw]" />
+      <article className="mx-auto mt-6 max-w-3xl" aria-hidden>
+        <SkeletonBlock className="h-40 rounded-card sm:h-52" />
+        <div className="mt-6 flex gap-2">
+          <SkeletonBlock className="h-5 w-16" />
+          <SkeletonBlock className="h-5 w-20" />
+        </div>
+        <SkeletonBlock className="mt-4 h-9 w-5/6" />
+        <SkeletonBlock className="mt-3 h-3 w-48" />
+        <div className="mt-8 space-y-3">
+          {[0, 1, 2, 3, 4, 5].map((i) => (
+            <SkeletonBlock key={i} className={i % 3 === 2 ? 'h-3 w-3/4' : 'h-3 w-full'} />
+          ))}
+        </div>
+      </article>
     </div>
   )
 }

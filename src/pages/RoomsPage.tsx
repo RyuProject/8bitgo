@@ -7,6 +7,7 @@ import { p2pPlayable, cloudPlayable } from '@/emulator'
 import { GameCard } from '@/components/game/GameCard'
 import { RoomCard } from '@/components/game/RoomCard'
 import { SectionHeader } from '@/components/ui/SectionHeader'
+import { GameGridSkeleton } from '@/components/ui/PageSkeleton'
 
 /**
  * 联机玩：正在进行中的房间列表。
@@ -80,14 +81,22 @@ export function RoomsPage() {
         )}
       </section>
 
-      {suggestions.length > 0 && (
+      {(suggestState.status === 'loading' || suggestions.length > 0) && (
         <section className="mt-10">
           <SectionHeader title={t.rooms.startTitle} subtitle={t.rooms.startSubtitle} icon="🎮" moreTo="/games?multiplayer=1" />
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
-            {suggestions.map((g) => (
-              <GameCard key={g.slug} game={g} showCoin={false} />
-            ))}
-          </div>
+          {suggestState.status === 'loading' && !suggestState.data ? (
+            <GameGridSkeleton
+              count={6}
+              coverRatio="landscape"
+              className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6"
+            />
+          ) : (
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
+              {suggestions.map((g) => (
+                <GameCard key={g.slug} game={g} showCoin={false} />
+              ))}
+            </div>
+          )}
         </section>
       )}
     </div>

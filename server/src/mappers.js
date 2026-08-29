@@ -111,6 +111,7 @@ export function gameRowToApi(r, rel = {}) {
     // 后台没填上线日期时用真实入库时间兜底，不用人工编日期
     addedAt: dateOnly(r.added_at) || dateOnly(r.created_at),
     bodyControl: bool(r.body_control),
+    adult: bool(r.adult),
     hidden: bool(r.hidden),
   }
   // 不上首页的游戏干脆不带这个字段，前台拿到的形状和以前一样
@@ -155,6 +156,7 @@ export function gameApiToRow(g) {
     description: String(g.description ?? ''),
     description_en: g.descriptionEn ? String(g.descriptionEn) : null,
     body_control: g.bodyControl ? 1 : 0,
+    adult: g.adult ? 1 : 0,
     hidden: g.hidden ? 1 : 0,
     // 空字符串要写成 NULL，否则 DATE 列会存成 '0000-00-00'
     added_at: g.addedAt ? String(g.addedAt).slice(0, 10) : null,
@@ -183,6 +185,7 @@ const FIELD_TO_COLUMN = {
   description: ['description', (v) => String(v ?? '')],
   descriptionEn: ['description_en', (v) => (v == null || v === '' ? null : String(v))],
   bodyControl: ['body_control', (v) => (v ? 1 : 0)],
+  adult: ['adult', (v) => (v ? 1 : 0)],
   hidden: ['hidden', (v) => (v ? 1 : 0)],
   addedAt: ['added_at', (v) => (v ? String(v).slice(0, 10) : null)],
   homeRank: ['home_rank', homeRankOf],

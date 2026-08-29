@@ -1,5 +1,6 @@
 import { Suspense, lazy, type ComponentType, type ReactNode } from 'react'
 import { trackPageLoad } from '@/services/progress'
+import { PageSkeleton } from '@/components/ui/PageSkeleton'
 
 /**
  * 按需加载一个具名导出的组件。
@@ -18,10 +19,9 @@ export function lazyNamed<K extends string, P extends object>(
 /**
  * 等 chunk 下载时的占位。
  *
- * 故意留空：顶部那根进度条已经在说「在加载」，这里再放骨架屏或转圈，
- * 用户会在两百毫秒里看到两次布局跳变。只留一个撑高度的空盒子，
- * 免得页脚往上蹿一下又掉回去。
+ * 后台 chunk 第一次下载时也用全站统一骨架。顶部细条负责说明“整个跳转还没结束”，
+ * 骨架负责占住正文布局；两者信息层级不同，不再让内容区空白得像没响应。
  */
 export function RouteChunk({ children }: { children: ReactNode }) {
-  return <Suspense fallback={<div className="min-h-[60vh]" aria-hidden />}>{children}</Suspense>
+  return <Suspense fallback={<PageSkeleton />}>{children}</Suspense>
 }

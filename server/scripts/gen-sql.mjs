@@ -57,6 +57,7 @@ function buildUpsertSQL(table, row, pk) {
  *  MySQL 没有 CREATE INDEX IF NOT EXISTS，用 information_schema 判一下再动态执行。 */
 const PATCHES = [
   ['COLUMNS', 'games', 'created_at', "ALTER TABLE `games` ADD COLUMN `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP AFTER `roms`"],
+  ['COLUMNS', 'games', 'adult', "ALTER TABLE `games` ADD COLUMN `adult` TINYINT(1) NOT NULL DEFAULT 0 AFTER `body_control`"],
   ['STATISTICS', 'favorites', 'idx_fav_game', "ALTER TABLE `favorites` ADD INDEX `idx_fav_game` (`game_slug`)"],
   ['STATISTICS', 'recents', 'idx_recent_game', "ALTER TABLE `recents` ADD INDEX `idx_recent_game` (`game_slug`)"],
 ]

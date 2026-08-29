@@ -17,6 +17,8 @@
     "sitemap": "node scripts/gen-sitemap.mjs",
     "test:jsnes": "node scripts/test-jsnes-audio.mjs",
     "test:lang": "node scripts/test-lang-detect.mjs",
+    "test:age": "node scripts/test-age-gate.mjs",
+    "test:roms": "node scripts/test-rom-validation.mjs",
     "build:client": "vite build",
     "build:server": "vite build --config vite.config.server.ts",
     "start:ssr": "node server/src/index.js",

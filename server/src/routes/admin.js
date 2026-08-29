@@ -8,6 +8,12 @@ import { invalidateContent } from '../content.js'
 export const adminRouter = Router()
 adminRouter.use(requireAdmin)
 
+/** 后台登录门只需要确认口令有效，不该为了验证身份顺手查询或泄露任何业务数据。 */
+adminRouter.get('/verify', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store')
+  res.json({ ok: true })
+})
+
 /**
  * 批量导入内置数据（首次初始化用）：
  *   POST /api/admin/import { games?: Game[], posts?: Post[] }

@@ -16,6 +16,7 @@ import { useLang } from '@/services/lang'
 import { GameCard } from '@/components/game/GameCard'
 import { Pagination } from '@/components/ui/Pagination'
 import { Button, chipClasses } from '@/components/ui/Button'
+import { GameGridSkeleton } from '@/components/ui/PageSkeleton'
 import { FEATURES } from '@/config/features'
 
 function sortsFor(t: Translation): Array<{ key: SortKey; label: string }> {
@@ -286,7 +287,10 @@ export function GamesPage() {
       {state.status === 'error' ? (
         <LoadError message={state.error} />
       ) : !list ? (
-        <GameGridSkeleton />
+        <GameGridSkeleton
+          count={10}
+          className="mt-10 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
+        />
       ) : (
         <>
           <p className="mt-6 text-sm text-muted">
@@ -351,26 +355,6 @@ function FilterChip({ active, onClick, children }: { active: boolean; onClick: (
     <button type="button" aria-pressed={active} onClick={onClick} className={chipClasses(active)}>
       {children}
     </button>
-  )
-}
-
-/**
- * 首屏取数还没回来时的占位。
- * 占位卡片和真实卡片同尺寸（方形封面 + 两行文字），数据到位时页面不会整体跳一下。
- */
-function GameGridSkeleton() {
-  return (
-    <div className="mt-10 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5" aria-hidden>
-      {Array.from({ length: 10 }, (_, i) => (
-        <div key={i} className="overflow-hidden rounded-card border border-line bg-surface">
-          <div className="aspect-square animate-pulse bg-white/5" />
-          <div className="space-y-2 p-3">
-            <div className="h-3.5 w-3/4 animate-pulse rounded bg-white/5" />
-            <div className="h-3 w-1/2 animate-pulse rounded bg-white/5" />
-          </div>
-        </div>
-      ))}
-    </div>
   )
 }
 

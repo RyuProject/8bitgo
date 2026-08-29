@@ -16,6 +16,7 @@ const EXPECTED_COLUMNS = [
   { table: 'games', column: 'home_rank', why: '首页精选位' },
   { table: 'games', column: 'core', why: '按游戏覆盖模拟器核心' },
   { table: 'games', column: 'dos_executable', why: 'DOS 启动程序覆盖' },
+  { table: 'games', column: 'adult', why: '成人游戏 18 岁验证' },
   { table: 'games', column: 'created_at', why: '真实入库时间' },
 ]
 

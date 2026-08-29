@@ -8,7 +8,8 @@
  * 也可设置 VITE_RUFFLE_PATH 指向 CDN，例如 https://unpkg.com/@ruffle-rs/ruffle/
  */
 import type { CaptureSources, Capability, MountOptions, Runtime, RuntimeHandle } from '../types'
-import { fetchWithProgress } from '../loadProgress'
+import { loadGameBytes } from '../romLoader'
+import { assertSwf } from '@/lib/romValidation'
 import { canvasToBlob } from '../recorder'
 import { getT, fmt } from '@/services/i18n'
 
@@ -333,9 +334,9 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         const isFile = typeof options.game !== 'string'
         let loadOptions: Record<string, unknown>
         if (isFile) {
-          const data = await (options.game as File).arrayBuffer()
-          options.onProgress?.({ phase: 'rom', loaded: data.byteLength, total: data.byteLength, ratio: 1 })
-          loadOptions = { ...base, data, swfFileName: (options.game as File).name }
+          const loaded = await loadGameBytes(options.game, options.onProgress)
+          assertSwf(loaded.data)
+          loadOptions = { ...base, data: loaded.data, swfFileName: loaded.name }
         } else {
           /**
            * 远程 SWF 自己下，而不是把 url 丢给 Ruffle —— 这样才拿得到真实的下载字节数。
@@ -347,11 +348,12 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
            * 它本来也是这么推的，这里只是把同一件事写明白。
            */
           const url = options.game as string
-          const data = await fetchWithProgress(url, { phase: 'rom', onProgress: options.onProgress })
+          const loaded = await loadGameBytes(url, options.onProgress)
+          assertSwf(loaded.data)
           loadOptions = {
             ...base,
-            data,
-            swfFileName: url.split(/[?#]/)[0].split('/').pop() || 'game.swf',
+            data: loaded.data,
+            swfFileName: loaded.name,
             base: new URL('.', new URL(url, location.href)).href,
           }
         }

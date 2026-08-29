@@ -105,6 +105,12 @@ const patches = [
     run: () => conn.query('ALTER TABLE `games` ADD COLUMN `dos_executable` VARCHAR(255) NULL AFTER `core`'),
   },
   {
+    name: 'games.adult（成人游戏，前台启动前验证年满 18 岁）',
+    table: 'games',
+    needed: async () => !(await hasColumn('games', 'adult')),
+    run: () => conn.query('ALTER TABLE `games` ADD COLUMN `adult` TINYINT(1) NOT NULL DEFAULT 0 AFTER `body_control`'),
+  },
+  {
     name: 'platform_bios（平台级 BIOS，Neo Geo 这类必须有）',
     table: null,
     needed: async () => !(await hasTable('platform_bios')),

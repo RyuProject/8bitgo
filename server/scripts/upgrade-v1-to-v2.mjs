@@ -252,14 +252,15 @@ try {
       g.description ?? null,
       has('description_en') ? (g.description_en ?? null) : null,
       g.body_control ? 1 : 0,
+      has('adult') && g.adult ? 1 : 0,
       g.hidden ? 1 : 0,
       has('core') ? (g.core ?? null) : null,
       has('home_rank') ? (g.home_rank ?? null) : null,
       asDate(g.added_at),
     ])
     await insertBatch(
-      'INSERT INTO games (slug, title, title_zh, platform, `year`, developer, plays, players, multiplayer, coin_reward, icon, cover, video, description, description_en, body_control, hidden, core, home_rank, added_at) VALUES',
-      20,
+      'INSERT INTO games (slug, title, title_zh, platform, `year`, developer, plays, players, multiplayer, coin_reward, icon, cover, video, description, description_en, body_control, adult, hidden, core, home_rank, added_at) VALUES',
+      21,
       vals,
     )
     for (const r of await all('SELECT id, slug FROM games')) slugToId.set(r.slug, r.id)

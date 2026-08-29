@@ -63,6 +63,7 @@ const EMPTY: Game = {
   tags: [],
   addedAt: today(),
   bodyControl: false,
+  adult: false,
   hidden: false,
   rom: '',
   roms: {},
@@ -375,6 +376,9 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
         </label>
         <label className="inline-flex items-center gap-2">
           <input type="checkbox" checked={Boolean(form.bodyControl)} onChange={(e) => set('bodyControl', e.target.checked)} /> 体感控制友好
+        </label>
+        <label className="inline-flex items-center gap-2">
+          <input type="checkbox" checked={Boolean(form.adult)} onChange={(e) => set('adult', e.target.checked)} /> 成人游戏（需验证年满 18 岁）
         </label>
         <label className="inline-flex items-center gap-2">
           <input type="checkbox" checked={Boolean(form.hidden)} onChange={(e) => set('hidden', e.target.checked)} /> 下架（前台不显示）

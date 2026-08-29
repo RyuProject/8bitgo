@@ -14,6 +14,7 @@ import { useLang } from '@/services/lang'
 import { GameCard } from '@/components/game/GameCard'
 import { Pagination } from '@/components/ui/Pagination'
 import { Button } from '@/components/ui/Button'
+import { GameGridSkeleton } from '@/components/ui/PageSkeleton'
 import { NotFoundPage } from './NotFoundPage'
 
 /**
@@ -135,7 +136,11 @@ function Collection({
           {error}
         </p>
       ) : !list ? (
-        <GameGridSkeleton />
+        <GameGridSkeleton
+          count={12}
+          coverRatio="landscape"
+          className="mt-8 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6"
+        />
       ) : more.items.length > 0 ? (
         <>
           <div className="mt-8 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
@@ -173,23 +178,6 @@ function Collection({
           </div>
         </section>
       )}
-    </div>
-  )
-}
-
-/** 列表还没到时的占位，格子数和真实网格一致，数据到位时页面不会整体跳一下 */
-function GameGridSkeleton() {
-  return (
-    <div className="mt-8 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6" aria-hidden>
-      {Array.from({ length: 12 }, (_, i) => (
-        <div key={i} className="overflow-hidden rounded-card border border-line bg-surface">
-          <div className="aspect-[4/3] animate-pulse bg-white/5" />
-          <div className="space-y-2 p-3">
-            <div className="h-3.5 w-3/4 animate-pulse rounded bg-white/5" />
-            <div className="h-3 w-1/2 animate-pulse rounded bg-white/5" />
-          </div>
-        </div>
-      ))}
     </div>
   )
 }

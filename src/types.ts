@@ -135,6 +135,8 @@ export interface Game {
   addedAt: string
   /** 体感控制友好 */
   bodyControl?: boolean
+  /** 成人内容：启动游戏前必须通过 18 岁出生日期验证 */
+  adult?: boolean
   /** 后台下架：前台不展示 */
   hidden?: boolean
   /** ROM 在对象存储中的 key（如 nes/contra.zip）或完整 URL；留空则按约定路径探测。作为各语言 ROM 的回退 */

@@ -54,10 +54,24 @@ export function isZip(buf: ArrayBuffer | Uint8Array): boolean {
   return b.length > 4 && b[0] === 0x50 && b[1] === 0x4b && (b[2] === 0x03 || b[2] === 0x05 || b[2] === 0x07)
 }
 
-/** 读中央目录，列出压缩包里的文件（不含目录项） */
-export function listZipEntries(buf: ArrayBuffer): ZipFileEntry[] {
+interface ZipDirectory {
+  entries: ZipFileEntry[]
+  /** 包含目录项；空 ZIP 与损坏 ZIP 不能都用 entries.length === 0 表示。 */
+  totalEntries: number
+}
+
+/**
+ * 严格读取中央目录。
+ *
+ * 只检查开头的 PK 魔数识别不了“下载到一半的 ZIP”——本地文件头在开头，中央目录却在
+ * 文件末尾。这里同时核对 EOCD、中央目录范围、每个本地头和成员数据范围，任何一步越界
+ * 都视为损坏。这样截断包不会再被误当成一个普通二进制文件继续交给模拟器。
+ */
+function readZipDirectory(buf: ArrayBuffer): ZipDirectory | null {
   const b = new Uint8Array(buf)
   const dv = new DataView(buf)
+
+  if (!isZip(b) || b.length < 22) return null
 
   // 从尾部往前找「中央目录结束记录」(EOCD)，注释最长 65535 字节
   let eocd = -1
@@ -68,14 +82,26 @@ export function listZipEntries(buf: ArrayBuffer): ZipFileEntry[] {
       break
     }
   }
-  if (eocd < 0) return []
+  if (eocd < 0) return null
 
+  const disk = dv.getUint16(eocd + 4, true)
+  const centralDisk = dv.getUint16(eocd + 6, true)
+  const diskCount = dv.getUint16(eocd + 8, true)
   const count = dv.getUint16(eocd + 10, true)
-  let p = dv.getUint32(eocd + 16, true) // 中央目录起始偏移
+  const centralSize = dv.getUint32(eocd + 12, true)
+  const centralOffset = dv.getUint32(eocd + 16, true)
+  const commentLength = dv.getUint16(eocd + 20, true)
+  // 当前轻量实现不支持分卷 ZIP / ZIP64；与其读出半真半假的目录，不如明确拒绝。
+  if (disk !== 0 || centralDisk !== 0 || diskCount !== count || count === 0xffff) return null
+  if (eocd + 22 + commentLength > b.length) return null
+  if (centralOffset + centralSize > eocd || centralOffset + centralSize > b.length) return null
+
+  let p = centralOffset
+  const centralEnd = centralOffset + centralSize
   const entries: ZipFileEntry[] = []
 
-  for (let i = 0; i < count && p + 46 <= b.length; i++) {
-    if (dv.getUint32(p, true) !== 0x02014b50) break
+  for (let i = 0; i < count; i++) {
+    if (p + 46 > centralEnd || dv.getUint32(p, true) !== 0x02014b50) return null
     const flags = dv.getUint16(p + 8, true)
     const method = dv.getUint16(p + 10, true)
     const crc32 = dv.getUint32(p + 16, true)
@@ -85,15 +111,40 @@ export function listZipEntries(buf: ArrayBuffer): ZipFileEntry[] {
     const extraLen = dv.getUint16(p + 30, true)
     const commentLen = dv.getUint16(p + 32, true)
     const offset = dv.getUint32(p + 42, true)
+    const next = p + 46 + nameLen + extraLen + commentLen
+    if (next > centralEnd) return null
+
+    // 中央目录声称成员有多少字节还不够；本地头和真正的数据也必须完整存在。
+    if (offset + 30 > b.length || dv.getUint32(offset, true) !== 0x04034b50) return null
+    const localNameLen = dv.getUint16(offset + 26, true)
+    const localExtraLen = dv.getUint16(offset + 28, true)
+    const dataStart = offset + 30 + localNameLen + localExtraLen
+    if (dataStart > b.length || dataStart + compressedSize > b.length) return null
+
     // 反斜杠是某些 Windows 打包器的产物，统一成正斜杠，免得当成文件名的一部分
     const name = decodeZipName(b.subarray(p + 46, p + 46 + nameLen), Boolean(flags & 0x800)).replace(/\\/g, '/')
     // 目录项以 / 结尾；macOS 打包时塞的 __MACOSX/ 和 ._ 开头的资源叉一律跳过
     if (!name.endsWith('/') && !name.startsWith('__MACOSX/') && !name.split('/').pop()?.startsWith('._')) {
       entries.push({ name, method, compressedSize, uncompressedSize, crc32, offset })
     }
-    p += 46 + nameLen + extraLen + commentLen
+    p = next
   }
-  return entries
+  if (p > centralEnd) return null
+  return { entries, totalEntries: count }
+}
+
+/** 读中央目录，列出压缩包里的文件（不含目录项）；损坏时返回空数组以兼容旧调用方。 */
+export function listZipEntries(buf: ArrayBuffer): ZipFileEntry[] {
+  return readZipDirectory(buf)?.entries ?? []
+}
+
+/** 完整性校验通过后返回成员；空包与截断包都会明确报错。 */
+export function assertValidZip(buf: ArrayBuffer, label = 'ZIP'): ZipFileEntry[] {
+  const directory = readZipDirectory(buf)
+  if (!directory || directory.totalEntries === 0 || directory.entries.length === 0) {
+    throw new Error(`${label} 压缩包为空、已损坏或下载不完整`)
+  }
+  return directory.entries
 }
 
 /** 解出某一项的完整内容 */

@@ -41,6 +41,8 @@
 import type { PlatformId } from '@/types'
 import type { Capability, MountOptions, Runtime, RuntimeHandle } from '../types'
 import { getT, fmt } from '@/services/i18n'
+import { loadGameBytes } from '../romLoader'
+import { prepareNdsRom } from '@/lib/romValidation'
 
 export const WEBRETRO_PATH: string = (() => {
   const p = import.meta.env.VITE_WEBRETRO_PATH || ''
@@ -98,12 +100,6 @@ const POLL_MS = 200
 /** 兜底放行时间：资源下不动时最多让玩家等这么久 */
 const READY_TIMEOUT_MS = 90_000
 
-/** 从 URL / 对象存储 key 里取出文件名（去掉查询串与锚点） */
-function fileNameOf(url: string): string {
-  const clean = url.split(/[?#]/)[0]
-  return clean.slice(clean.lastIndexOf('/') + 1)
-}
-
 function buildUrl(core: string, romUrl: string, romName: string): string {
   // ⚠️ 这里不能用 URLSearchParams。
   //
@@ -142,6 +138,7 @@ function mountRaw(container: HTMLElement, options: MountOptions): () => void {
   }
 
   let destroyed = false
+  const abort = new AbortController()
   /** 本地文件生成的 blob: 地址，销毁时要回收，否则整个 ROM 一直占着内存 */
   let objectUrl = ''
 
@@ -246,25 +243,28 @@ function mountRaw(container: HTMLElement, options: MountOptions): () => void {
   })
   container.appendChild(iframe)
 
-  const game = options.game
-  let romUrl: string
-  let romName: string
-  if (typeof game === 'string') {
-    romUrl = game
-    romName = fileNameOf(game) || 'rom.nds'
-  } else {
-    objectUrl = URL.createObjectURL(game)
-    romUrl = objectUrl
-    romName = game.name || 'rom.nds'
-  }
-
-  srcSet = true
-  options.onProgress?.({ phase: 'engine' })
-  iframe.src = buildUrl(core, romUrl, romName)
-  options.onStart?.()
+  void (async () => {
+    try {
+      // webretro 原本在 iframe 里直接下载，外层既看不到完整字节，也没法判断 CDN 是否只回了
+      // 半个 ZIP。改成先在父页面完整下载并验 NDS 头，再用 blob: 交给同源 iframe；只下载一次。
+      const loaded = await loadGameBytes(options.game, options.onProgress, abort.signal)
+      const rom = await prepareNdsRom(loaded.data, loaded.name || 'rom.nds')
+      if (destroyed) return
+      objectUrl = URL.createObjectURL(new Blob([rom.data], { type: 'application/octet-stream' }))
+      srcSet = true
+      options.onProgress?.({ phase: 'engine' })
+      iframe.src = buildUrl(core, objectUrl, rom.name)
+      options.onStart?.()
+    } catch (e) {
+      if (destroyed || (e instanceof DOMException && e.name === 'AbortError')) return
+      const msg = e instanceof Error ? e.message : String(e)
+      options.onError?.(fmt(rt.webretroLoadFailed, { path: msg }))
+    }
+  })()
 
   return () => {
     destroyed = true
+    abort.abort()
     stopPoll()
     try {
       iframe.src = 'about:blank'

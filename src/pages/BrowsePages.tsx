@@ -10,6 +10,7 @@ import { useT, fmt } from '@/services/i18n'
 import { gameTitle, genreDesc, genreLabel } from '@/services/i18nData'
 import { useLang } from '@/services/lang'
 import { PlatformCard } from '@/components/game/PlatformCard'
+import { SkeletonBlock } from '@/components/ui/PageSkeleton'
 
 /**
  * 平台 / 类型 / 开发商三个总览页。
@@ -36,7 +37,14 @@ function CardGridSkeleton({ count, grid, height }: { count: number; grid: string
   return (
     <div className={grid} aria-hidden>
       {Array.from({ length: count }, (_, i) => (
-        <div key={i} className={cx('animate-pulse rounded-card border border-line bg-surface', height)} />
+        <div key={i} className={cx('flex gap-4 rounded-card border border-line bg-surface p-4', height)}>
+          <SkeletonBlock className="h-12 w-12 shrink-0 rounded-xl" />
+          <div className="min-w-0 flex-1 pt-1">
+            <SkeletonBlock className="h-4 w-2/3" />
+            <SkeletonBlock className="mt-3 h-3 w-full" />
+            <SkeletonBlock className="mt-2 h-3 w-3/5" />
+          </div>
+        </div>
       ))}
     </div>
   )

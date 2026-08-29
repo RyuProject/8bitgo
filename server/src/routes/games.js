@@ -179,6 +179,25 @@ gamesRouter.get('/facets', async (_req, res, next) => {
 })
 
 /**
+ * 游玩前实时确认是否属于成人游戏。
+ *
+ * 游戏详情 HTML 和公开内容接口会经过 Cloudflare 缓存；后台刚勾选“成人游戏”时，旧详情页
+ * 可能还会存活几分钟。这个极小的接口故意不套 publicApi()，让播放器每次挂载前都直接确认
+ * 数据库里的当前值，避免缓存窗口成为绕过年龄门的路径。
+ */
+gamesRouter.get('/:slug/access', async (req, res, next) => {
+  try {
+    const rows = await query('SELECT adult, hidden FROM games WHERE slug = ? LIMIT 1', [req.params.slug])
+    const game = rows[0]
+    if (!game || truthy(game.hidden)) return res.status(404).json({ error: '游戏不存在' })
+    res.setHeader('Cache-Control', 'no-store')
+    res.json({ adult: truthy(game.adult) })
+  } catch (e) {
+    next(e)
+  }
+})
+
+/**
  * 记录一次真实游玩。前端在模拟器真的跑起来（onReady）时调用。
  *
  * 一个人对一款游戏只算一次：登录了按账号去重，没登录按 IP 去重

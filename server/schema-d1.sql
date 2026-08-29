@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS games (
   description    TEXT,
   description_en TEXT,
   body_control   INTEGER NOT NULL DEFAULT 0,
+  adult          INTEGER NOT NULL DEFAULT 0,
   hidden         INTEGER NOT NULL DEFAULT 0,
   core           TEXT,
   home_rank      INTEGER,

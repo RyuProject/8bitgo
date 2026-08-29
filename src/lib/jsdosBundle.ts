@@ -42,28 +42,48 @@ function findEocd(v: DataView): number {
 
 export function readZipEntries(buf: ArrayBuffer): ZipEntry[] | null {
   const v = new DataView(buf)
+  if (v.byteLength < 22) return null
   const eocd = findEocd(v)
   if (eocd < 0) return null
+  const disk = v.getUint16(eocd + 4, true)
+  const centralDisk = v.getUint16(eocd + 6, true)
+  const diskCount = v.getUint16(eocd + 8, true)
   const count = v.getUint16(eocd + 10, true)
-  let at = v.getUint32(eocd + 16, true)
+  const centralSize = v.getUint32(eocd + 12, true)
+  const centralOffset = v.getUint32(eocd + 16, true)
+  const commentLength = v.getUint16(eocd + 20, true)
+  if (disk !== 0 || centralDisk !== 0 || diskCount !== count || count === 0 || count === 0xffff) return null
+  if (eocd + 22 + commentLength > v.byteLength) return null
+  if (centralOffset + centralSize > eocd || centralOffset + centralSize > v.byteLength) return null
+
+  let at = centralOffset
+  const centralEnd = centralOffset + centralSize
   const out: ZipEntry[] = []
   for (let i = 0; i < count; i++) {
-    if (at + 46 > buf.byteLength || v.getUint32(at, true) !== CEN_SIG) return null
+    if (at + 46 > centralEnd || v.getUint32(at, true) !== CEN_SIG) return null
     const nameLen = v.getUint16(at + 28, true)
     const extraLen = v.getUint16(at + 30, true)
     const commentLen = v.getUint16(at + 32, true)
+    const next = at + 46 + nameLen + extraLen + commentLen
+    if (next > centralEnd) return null
     const name = new TextDecoder().decode(new Uint8Array(buf, at + 46, nameLen))
+    const compressedSize = v.getUint32(at + 20, true)
+    const localOffset = v.getUint32(at + 42, true)
+    if (localOffset + 30 > v.byteLength || v.getUint32(localOffset, true) !== 0x04034b50) return null
+    const dataStart = localOffset + 30 + v.getUint16(localOffset + 26, true) + v.getUint16(localOffset + 28, true)
+    if (dataStart > v.byteLength || dataStart + compressedSize > v.byteLength) return null
     out.push({
       name,
       flags: v.getUint16(at + 8, true),
       method: v.getUint16(at + 10, true),
       crc: v.getUint32(at + 16, true),
-      compressedSize: v.getUint32(at + 20, true),
+      compressedSize,
       uncompressedSize: v.getUint32(at + 24, true),
-      localOffset: v.getUint32(at + 42, true),
+      localOffset,
     })
-    at += 46 + nameLen + extraLen + commentLen
+    at = next
   }
+  if (at > centralEnd) return null
   return out
 }
 
@@ -242,6 +262,9 @@ export interface BundleResult {
  */
 export function makeJsdosBundle(name: string, buf: ArrayBuffer, conf?: string): BundleResult {
   const entries = readZipEntries(buf)
+  const bytes = new Uint8Array(buf)
+  const zipLike = bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b
+  if (zipLike && !entries) throw new Error('DOS 压缩包为空、已损坏或下载不完整')
 
   // 已经是 bundle：原样返回
   if (entries?.some((e) => e.name === '.jsdos/dosbox.conf')) {
@@ -253,6 +276,7 @@ export function makeJsdosBundle(name: string, buf: ArrayBuffer, conf?: string): 
 
   if (entries) {
     exe = pickExecutable(entries.map((e) => e.name), name)
+    if (!exe) throw new Error('DOS 压缩包里没有可运行的 .exe、.com 或 .bat 文件')
 
     /**
      * 目录条目必须保留，缺的还要补齐 —— 这里原来是一行
@@ -299,6 +323,8 @@ export function makeJsdosBundle(name: string, buf: ArrayBuffer, conf?: string): 
   } else {
     // 不是 zip：当成单个可执行文件塞进去
     const file = name.split(/[\\/]/).pop() || 'game.exe'
+    if (!/\.(exe|com|bat)$/i.test(file)) throw new Error('DOS 游戏必须是 ZIP、JSDOS、EXE、COM 或 BAT 文件')
+    if (buf.byteLength === 0) throw new Error('DOS 游戏文件为空')
     const data = new Uint8Array(buf) as Uint8Array<ArrayBuffer>
     exe = file
     out.push({ name: file, method: 0, crc: crc32(data), compressedSize: data.length, uncompressedSize: data.length, data })

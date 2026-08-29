@@ -9,10 +9,11 @@
  * 并提供 destroy() 做彻底清理，正好对上 Runtime.mount 的「返回销毁函数」约定。
  */
 import type { Capability, CaptureSources, LoadProgress, MountOptions, Runtime, RuntimeHandle } from '../types'
-import { fetchWithProgress } from '../loadProgress'
 import { canvasToBlob } from '../recorder'
 import { getT, fmt } from '@/services/i18n'
 import { extractRomFromZip, isZip } from '@/lib/unzip'
+import { assertNesRom } from '@/lib/romValidation'
+import { loadGameBytes } from '../romLoader'
 
 /** 把二进制转成 jsnes 需要的「binary string」（每个字符一个字节） */
 function toBinaryString(buf: ArrayBuffer): string {
@@ -41,37 +42,14 @@ function toBinaryString(buf: ArrayBuffer): string {
  *    实际见过把 zip 存成 .nes 的情况。
  */
 async function readRom(game: File | string, onProgress?: (p: LoadProgress) => void): Promise<ArrayBuffer> {
-  let buf: ArrayBuffer
-  if (typeof game === 'string') {
-    buf = await fetchWithProgress(game, {
-      phase: 'rom',
-      onProgress,
-      // 对象存储配错、或者被网关拦截时返回的是一张 HTML 错误页，
-      // 不挡的话会被当成 ROM 塞给模拟器，报出来的错完全看不懂
-      check: (res) => {
-        const type = res.headers.get('content-type') || ''
-        if (/text\/html|application\/xhtml/i.test(type)) {
-          throw new Error(fmt(getT().runtime.romNotBinary, { url: game }))
-        }
-      },
-    })
-  } else {
-    // 本地文件不经过网络，直接读完就报满
-    buf = await game.arrayBuffer()
-    onProgress?.({ phase: 'rom', loaded: buf.byteLength, total: buf.byteLength, ratio: 1 })
-  }
+  const loaded = await loadGameBytes(game, onProgress)
+  let buf = loaded.data
 
   if (isZip(buf)) {
     const { data } = await extractRomFromZip(buf, ['nes', 'unf', 'unif', 'fds'])
-    return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer
+    buf = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer
   }
-
-  // 没有 content-type 兜底时，再按内容认一次网页
-  const head = new Uint8Array(buf, 0, Math.min(64, buf.byteLength))
-  const text = String.fromCharCode(...head).trim().toLowerCase()
-  if (text.startsWith('<!doctype html') || text.startsWith('<html')) {
-    throw new Error(fmt(getT().runtime.romNotBinary, { url: typeof game === 'string' ? game : '' }))
-  }
+  assertNesRom(buf)
   return buf
 }
 

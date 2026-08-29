@@ -15,6 +15,7 @@ import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, utimesSync, writeFileSync, createReadStream } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { assertJarBuffer } from './jar-validation.js'
 
 // 公开 R2 域名不是机密，给线上同源 JAR 代理一个可用默认值。
 // 否则前端运行时装好了，服务器少一行 server/.env 仍会让全部云端 JAR 404。
@@ -131,9 +132,10 @@ export function uploadJar(req, res) {
     if (buf.length > MAX_BYTES) {
       return res.status(413).json({ error: `文件超过 ${MAX_MB} MB` })
     }
-    // jar 就是 zip：校验魔数，挡掉随便传别的东西
-    if (!(buf[0] === 0x50 && buf[1] === 0x4b && (buf[2] === 0x03 || buf[2] === 0x05 || buf[2] === 0x07))) {
-      return res.status(400).json({ error: '不是有效的 .jar（ZIP）文件' })
+    try {
+      assertJarBuffer(buf)
+    } catch (e) {
+      return res.status(400).json({ error: `不是有效的 J2ME JAR：${e.message}` })
     }
 
     sweepTmp()
@@ -231,13 +233,25 @@ export async function j2meJarProxy(req, res) {
     if (!upstream.ok && upstream.status !== 206) {
       return res.status(upstream.status).send(`上游返回 ${upstream.status}`)
     }
+    const body = Buffer.from(await upstream.arrayBuffer())
+    // 普通完整响应在转给 FreeJ2ME 前先验一次；Range 响应只有局部字节，不能冒充完整 JAR 去验。
+    if (upstream.status === 200 && name.toLowerCase().endsWith('.jar')) {
+      try {
+        assertJarBuffer(body)
+      } catch (e) {
+        console.error(`[j2me] 上游 JAR 无效 ${name}:`, e.message)
+        return res.status(502).send('上游 JAR 已损坏或格式不正确')
+      }
+    }
     res.status(upstream.status)
-    for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified']) {
+    for (const h of ['content-type', 'content-range', 'accept-ranges', 'etag', 'last-modified']) {
       const v = upstream.headers.get(h)
       if (v) res.setHeader(h, v)
     }
+    // Node fetch 可能已经把 gzip/br 响应解压；沿用上游 Content-Length 会让浏览器只读到半截。
+    res.setHeader('Content-Length', String(body.length))
     res.setHeader('Cache-Control', 'public, max-age=86400')
-    res.end(Buffer.from(await upstream.arrayBuffer()))
+    res.end(body)
   } catch (e) {
     console.error('[j2me] jar 代理失败：', e.message)
     res.status(502).send('jar 获取失败')

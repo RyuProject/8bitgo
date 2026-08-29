@@ -17,7 +17,7 @@
  *
  * 令牌：
  *   - 用户登录后拿到的 JWT，存在 localStorage(8bitgo.token)，随请求带上。
- *   - 后台写操作用「管理员 API 口令」（后台账号登录也行）：localStorage(8bitgo.api.admintoken)，
+ *   - 后台写操作用「管理员 API 口令」（后台账号登录也行）：sessionStorage(8bitgo.api.admintoken)，
  *     对应后端 .env 里的 ADMIN_TOKEN；没设时退回用当前用户的 JWT（该用户需为 admin）。
  */
 import { getT, fmt } from './i18n'
@@ -62,15 +62,18 @@ export function setToken(token: string | null) {
 }
 export function getAdminApiToken(): string {
   try {
-    return localStorage.getItem(ADMIN_TOKEN_KEY) ?? ''
+    return sessionStorage.getItem(ADMIN_TOKEN_KEY) ?? ''
   } catch {
     return ''
   }
 }
 export function setAdminApiToken(token: string | null) {
   try {
-    if (token) localStorage.setItem(ADMIN_TOKEN_KEY, token)
-    else localStorage.removeItem(ADMIN_TOKEN_KEY)
+    // 管理员密钥只活在当前标签页；关闭标签页后自动失效，避免长期留在浏览器磁盘里。
+    if (token) sessionStorage.setItem(ADMIN_TOKEN_KEY, token)
+    else sessionStorage.removeItem(ADMIN_TOKEN_KEY)
+    // 清掉旧版本曾经写入 localStorage 的长期副本，升级后不继续遗留管理员密钥。
+    localStorage.removeItem(ADMIN_TOKEN_KEY)
   } catch {
     /* ignore */
   }

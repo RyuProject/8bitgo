@@ -6,6 +6,7 @@ import { gradientFor } from '@/lib/gradients'
 import { cx } from '@/lib/format'
 import { useSeo } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
+import { SkeletonBlock } from '@/components/ui/PageSkeleton'
 
 export function BlogPage() {
   const t = useT()
@@ -34,18 +35,28 @@ export function BlogPage() {
           <p className="mt-2 text-muted">{t.blog.subtitle}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <TagChip active={!tag} onClick={() => setParams({})}>
-            {fmt(t.blog.allTag, { n: all.length })}
-          </TagChip>
-          {tags.map((t) => (
-            <TagChip key={t.tag} active={tag === t.tag} onClick={() => setParams({ tag: t.tag })}>
-              {t.tag} {t.count}
-            </TagChip>
-          ))}
+          {loading ? (
+            Array.from({ length: 5 }, (_, i) => (
+              <SkeletonBlock key={i} className={i === 0 ? 'h-7 w-16' : 'h-7 w-20'} />
+            ))
+          ) : (
+            <>
+              <TagChip active={!tag} onClick={() => setParams({})}>
+                {fmt(t.blog.allTag, { n: all.length })}
+              </TagChip>
+              {tags.map((t) => (
+                <TagChip key={t.tag} active={tag === t.tag} onClick={() => setParams({ tag: t.tag })}>
+                  {t.tag} {t.count}
+                </TagChip>
+              ))}
+            </>
+          )}
         </div>
       </div>
 
-      {list.length === 0 ? (
+      {loading ? (
+        <BlogSkeleton />
+      ) : list.length === 0 ? (
         <p className="mt-10 rounded-2xl border border-dashed border-line py-16 text-center text-muted">{t.blog.empty}</p>
       ) : (
         <>
@@ -57,6 +68,39 @@ export function BlogPage() {
           </div>
         </>
       )}
+    </div>
+  )
+}
+
+/** 博客首屏按“主推文章 + 三列文章卡”占位，避免取数时先闪出空状态。 */
+function BlogSkeleton() {
+  return (
+    <div aria-busy="true">
+      <div className="mt-6 grid overflow-hidden rounded-card border border-line bg-surface md:grid-cols-[2fr_3fr]" aria-hidden>
+        <SkeletonBlock className="min-h-[200px] rounded-none" />
+        <div className="flex flex-col justify-center p-6">
+          <div className="flex gap-2">
+            <SkeletonBlock className="h-5 w-14" />
+            <SkeletonBlock className="h-5 w-20" />
+          </div>
+          <SkeletonBlock className="mt-4 h-7 w-4/5" />
+          <SkeletonBlock className="mt-4 h-3.5 w-full" />
+          <SkeletonBlock className="mt-2 h-3.5 w-3/4" />
+          <SkeletonBlock className="mt-5 h-3 w-40" />
+        </div>
+      </div>
+      <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-3" aria-hidden>
+        {Array.from({ length: 3 }, (_, i) => (
+          <div key={i} className="overflow-hidden rounded-card border border-line bg-surface">
+            <SkeletonBlock className="aspect-[16/7] rounded-none" />
+            <div className="p-4">
+              <SkeletonBlock className="h-4 w-3/4" />
+              <SkeletonBlock className="mt-3 h-3 w-full" />
+              <SkeletonBlock className="mt-2 h-3 w-2/3" />
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }

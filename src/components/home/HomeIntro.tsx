@@ -4,6 +4,7 @@ import { chipClasses } from '@/components/ui/Button'
 import { useT } from '@/services/i18n'
 import { genreLabel } from '@/services/i18nData'
 import type { Facets } from '@/services/pageData'
+import { SkeletonBlock } from '@/components/ui/PageSkeleton'
 
 /**
  * 首页隐藏的 h1：屏幕上看不见，搜索引擎与读屏软件仍能读到。
@@ -26,7 +27,7 @@ export function HomeHeading() {
  * 数量由 HomePage 一次取好的 facets 提供；facets 还没到（首帧 loading）就先一个都不渲染，
  * 而不是先把 12 个类型全铺上去 —— 那样数据到了要抽掉几个，整排 chip 会跳一下。
  */
-export function HomeIntro({ facets }: { facets?: Facets }) {
+export function HomeIntro({ facets, loading = false }: { facets?: Facets; loading?: boolean }) {
   const t = useT()
   // chip 上的图标和名字仍旧来自 src/data/genres，facets 只用来筛掉空类型
   const nonEmpty = new Set<string>(facets?.genres.filter((g) => g.count > 0).map((g) => g.id))
@@ -35,12 +36,25 @@ export function HomeIntro({ facets }: { facets?: Facets }) {
   return (
     <section className="container-x">
       <nav className="flex flex-wrap items-center gap-x-2 gap-y-2.5" aria-label={t.home.browseByGenre}>
-        {shown.map((g) => (
-          <Link key={g.id} to={`/genres/${g.id}`} className={chipClasses(false, 'text-sm')}>
-            <span aria-hidden>{g.icon}</span>
-            {genreLabel(t, g.id)}
-          </Link>
-        ))}
+        {loading
+          ? Array.from({ length: 9 }, (_, i) => (
+              <span
+                key={i}
+                className={i % 3 === 0
+                  ? 'flex h-9 w-28 items-center gap-2 rounded-xl border border-line bg-surface-2 px-2.5'
+                  : 'flex h-9 w-24 items-center gap-2 rounded-xl border border-line bg-surface-2 px-2.5'}
+                aria-hidden
+              >
+                <SkeletonBlock className="h-4 w-4 shrink-0 rounded-full" />
+                <SkeletonBlock className="h-2 flex-1 rounded-full" />
+              </span>
+            ))
+          : shown.map((g) => (
+              <Link key={g.id} to={`/genres/${g.id}`} className={chipClasses(false, 'text-sm')}>
+                <span aria-hidden>{g.icon}</span>
+                {genreLabel(t, g.id)}
+              </Link>
+            ))}
       </nav>
     </section>
   )

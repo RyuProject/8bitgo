@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS games (
   tags         JSON          NULL,
   added_at     VARCHAR(20)   NOT NULL DEFAULT '',
   body_control TINYINT(1)    NOT NULL DEFAULT 0,
+  adult        TINYINT(1)    NOT NULL DEFAULT 0,
   hidden       TINYINT(1)    NOT NULL DEFAULT 0,
   rom          VARCHAR(500)  NULL,
   roms         JSON          NULL,

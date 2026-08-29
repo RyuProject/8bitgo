@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/Button'
 import { GameCard } from '@/components/game/GameCard'
 import { SectionHeader } from '@/components/ui/SectionHeader'
 import { FEATURES } from '@/config/features'
+import { GameGridSkeleton, SkeletonBlock } from '@/components/ui/PageSkeleton'
 
 const AVATARS = ['🕹️', '👾', '🎮', '🍄', '⭐', '🐉', '🦔', '🤖', '👻', '🐱', '🔥', '💎']
 
@@ -38,6 +39,8 @@ export function ProfilePage() {
       setAvatar(user.avatar)
     }
   }, [user])
+
+  if (!ready) return <ProfileSkeleton />
 
   if (!user)
     return (
@@ -175,6 +178,36 @@ export function ProfilePage() {
         ) : (
           <Empty text={t.profile.recentEmpty} />
         )}
+      </section>
+    </div>
+  )
+}
+
+/** 登录态从本地恢复前先占住个人卡和游戏列表，避免已登录用户先看到一帧访客页。 */
+function ProfileSkeleton() {
+  return (
+    <div className="container-x space-y-10 py-8 sm:py-10" aria-busy="true">
+      <section className="rounded-card border border-line bg-surface p-6" aria-hidden>
+        <div className="flex flex-col gap-5 sm:flex-row sm:items-center">
+          <SkeletonBlock className="h-20 w-20 shrink-0 rounded-2xl" />
+          <div className="min-w-0 flex-1">
+            <SkeletonBlock className="h-7 w-40" />
+            <SkeletonBlock className="mt-3 h-3 w-64 max-w-full" />
+            <SkeletonBlock className="mt-4 h-8 w-20" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <SkeletonBlock className="h-16 w-24 rounded-xl" />
+            <SkeletonBlock className="h-16 w-24 rounded-xl" />
+          </div>
+        </div>
+      </section>
+      <section aria-hidden>
+        <SkeletonBlock className="mb-4 h-5 w-32" />
+        <GameGridSkeleton
+          count={6}
+          coverRatio="landscape"
+          className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6"
+        />
       </section>
     </div>
   )

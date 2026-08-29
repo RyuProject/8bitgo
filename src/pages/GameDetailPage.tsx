@@ -19,10 +19,12 @@ import { getLang } from '@/services/lang'
 import { gameDescription, gameTitle, genreLabel, platformDesc, platformLabel } from '@/services/i18nData'
 import { EmulatorPlayer } from '@/emulator'
 import { GameCover } from '@/components/game/GameCover'
+import { GameAgeGuard } from '@/components/game/AgeGate'
 import { GameCard } from '@/components/game/GameCard'
 import { SectionHeader } from '@/components/ui/SectionHeader'
 import { Badge, CoinBadge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
+import { SkeletonBlock } from '@/components/ui/PageSkeleton'
 import { NotFoundPage } from './NotFoundPage'
 import { useShell } from '@/components/layout/ShellContext'
 import { cx } from '@/lib/format'
@@ -157,28 +159,34 @@ export function GameDetailPage() {
         {/* 主区域：沉浸模式下占满整行并按视口高度居中 */}
         <div className={immersive ? 'lg:col-span-12' : 'lg:col-span-8'}>
           <div className={cx(immersive && 'mx-auto max-w-[calc((100dvh-7rem)*16/9)]')}>
-            <EmulatorPlayer
-              key={game.slug}
-              platform={platform}
-              gameName={game.title}
-              gameSlug={game.slug}
-              maxPlayers={game.players}
-              invite={invite}
-              cloudInvite={cloudInvite}
-              watch={watchOnly}
-              liveInvite={liveInvite}
-              icon={game.icon}
-              // 这一款指定的核心（街机尤其需要），以及平台级 BIOS（Neo Geo 缺了起不来）
-              core={game.core}
-              dosExecutable={game.dosExecutable}
-              biosUrl={biosUrl || undefined}
-              romUrl={rom.status === 'found' ? rom.url : undefined}
-              romChecking={rom.status === 'checking'}
-              romLangs={romLangs}
-              romLang={rom.lang}
-              onRomLangChange={setRomLang}
+            <GameAgeGuard
+              slug={game.slug}
+              markedAdult={Boolean(game.adult)}
               backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority className="h-full w-full" />}
-            />
+            >
+              <EmulatorPlayer
+                key={game.slug}
+                platform={platform}
+                gameName={game.title}
+                gameSlug={game.slug}
+                maxPlayers={game.players}
+                invite={invite}
+                cloudInvite={cloudInvite}
+                watch={watchOnly}
+                liveInvite={liveInvite}
+                icon={game.icon}
+                // 这一款指定的核心（街机尤其需要），以及平台级 BIOS（Neo Geo 缺了起不来）
+                core={game.core}
+                dosExecutable={game.dosExecutable}
+                biosUrl={biosUrl || undefined}
+                romUrl={rom.status === 'found' ? rom.url : undefined}
+                romChecking={rom.status === 'checking'}
+                romLangs={romLangs}
+                romLang={rom.lang}
+                onRomLangChange={setRomLang}
+                backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority className="h-full w-full" />}
+              />
+            </GameAgeGuard>
           </div>
 
           {/* 标题与元信息 */}
@@ -202,6 +210,7 @@ export function GameDetailPage() {
                 {rom.status === 'found' && <Badge tone="online" className="text-xs">{t.common.instantPlay}</Badge>}
                 {game.multiplayer && <Badge tone="online" className="text-xs">{t.game.badgeMultiplayer}</Badge>}
                 {game.bodyControl && <Badge tone="coin" className="text-xs">{t.game.badgeBodyControl}</Badge>}
+                {game.adult && <Badge tone="live" className="text-xs">{t.game.badgeAdult}</Badge>}
                 <CoinBadge amount={game.coinReward} className="text-xs" />
               </div>
             </div>
@@ -398,21 +407,37 @@ function plainText(source: string): string {
  */
 function DetailSkeleton() {
   return (
-    <div className="container-x py-6 sm:py-8" aria-hidden>
-      <div className="mb-4 h-3 w-64 animate-pulse rounded bg-white/5" />
+    <div className="container-x py-6 sm:py-8" aria-busy="true">
+      <SkeletonBlock className="mb-4 h-3 w-64 max-w-[70vw]" />
       <div className="grid gap-8 lg:grid-cols-12">
         <div className="lg:col-span-8">
-          <div className="aspect-[16/9] animate-pulse rounded-2xl border border-line bg-surface" />
-          <div className="mt-6 h-8 w-2/3 animate-pulse rounded bg-white/5" />
-          <div className="mt-3 h-4 w-1/3 animate-pulse rounded bg-white/5" />
-          <div className="mt-8 space-y-2">
-            <div className="h-3 w-full animate-pulse rounded bg-white/5" />
-            <div className="h-3 w-11/12 animate-pulse rounded bg-white/5" />
-            <div className="h-3 w-3/4 animate-pulse rounded bg-white/5" />
+          <SkeletonBlock className="aspect-[16/9] rounded-2xl border border-line" />
+          <SkeletonBlock className="mt-6 h-8 w-2/3" />
+          <div className="mt-3 flex gap-2">
+            <SkeletonBlock className="h-7 w-20 rounded-lg" />
+            <SkeletonBlock className="h-7 w-24 rounded-lg" />
+            <SkeletonBlock className="h-7 w-16 rounded-lg" />
+          </div>
+          <div className="mt-8 space-y-3">
+            <SkeletonBlock className="h-4 w-28" />
+            <SkeletonBlock className="h-3 w-full" />
+            <SkeletonBlock className="h-3 w-11/12" />
+            <SkeletonBlock className="h-3 w-3/4" />
           </div>
         </div>
         <aside className="space-y-8 lg:col-span-4">
-          <div className="h-56 animate-pulse rounded-2xl border border-line bg-surface" />
+          <div className="rounded-2xl border border-line bg-surface p-5">
+            <div className="flex gap-3">
+              <SkeletonBlock className="h-12 w-12 shrink-0 rounded-xl" />
+              <div className="flex-1 pt-1">
+                <SkeletonBlock className="h-4 w-2/3" />
+                <SkeletonBlock className="mt-2 h-3 w-1/2" />
+              </div>
+            </div>
+            <SkeletonBlock className="mt-5 h-3 w-full" />
+            <SkeletonBlock className="mt-2 h-3 w-4/5" />
+            <SkeletonBlock className="mt-5 h-9 w-full rounded-xl" />
+          </div>
         </aside>
       </div>
     </div>

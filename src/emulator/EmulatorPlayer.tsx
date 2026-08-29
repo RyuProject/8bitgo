@@ -40,6 +40,12 @@ type Mode = 'local' | 'online'
 /** 联机走哪条路：p2p = 房主浏览器直推（默认）；cloud = 游戏跑在服务器上（付费） */
 type Channel = 'p2p' | 'cloud'
 
+/** 没有真实进度时用 45 秒缓慢走到 90%；真正启动前绝不显示 100%。 */
+const LOAD_PROGRESS_DURATION_MS = 45_000
+const LOAD_PROGRESS_CEILING = 0.9
+/** 自动重试只做一次：网络抖动能自愈，坏 ROM 也不会陷入无限刷新。 */
+const AUTO_RETRY_LIMIT = 1
+
 interface ActiveSession {
   id: number
   game: File | string
@@ -52,6 +58,8 @@ interface ActiveSession {
   cloud?: CloudSession
   /** 看直播：本机不跑游戏，画面来自主播的浏览器 */
   live?: LiveSession
+  /** 当前这次加载已经自动重试了几次；只在启动失败时递增。 */
+  retryAttempt?: number
 }
 
 interface Props {
@@ -286,16 +294,35 @@ export function EmulatorPlayer({
     game: File | string,
     targetPlatform: PlatformId,
     runtime: Runtime,
-    extra?: { netplay?: NetplaySession; cloud?: CloudSession },
+    extra?: { netplay?: NetplaySession; cloud?: CloudSession; retryAttempt?: number },
   ) => {
     sessionCounter.current += 1
     setSession({ id: sessionCounter.current, game, platform: targetPlatform, runtime, ...extra })
     // 上一局的进度必须清掉，否则新会话的遮罩会先闪一下上次的 100%。
     // 合成器也要换一个新的：它记着「已显示的最大值」，不换的话新一局会被上一局的 100% 卡住
     overallRatio.current = createOverallRatio()
-    setLoadRatio(null)
+    // 自动重试仍是同一次“开始游戏”：保留玩家已经看到的进度，避免失败瞬间从 90% 跳回 0%，
+    // 看起来像整个加载被推倒重来。玩家主动开的新一局才从头显示。
+    if (!extra?.retryAttempt) setLoadRatio(null)
     setStatus('loading')
   }
+
+  /**
+   * 有些阶段拿不到 Content-Length，甚至在 WASM 初始化期间完全没有网络回调。
+   * 这时按固定时长补一条缓慢前进的视觉进度；真实进度更快就跟真实进度走，
+   * 两者都封顶 90%，只有 onReady 才代表真正成功。
+   */
+  useEffect(() => {
+    if (status !== 'loading' || !session) return
+    const startedAt = Date.now()
+    setLoadRatio((current) => Math.max(current ?? 0, 0.01))
+    const timer = window.setInterval(() => {
+      const elapsed = Date.now() - startedAt
+      const timed = 0.01 + (LOAD_PROGRESS_CEILING - 0.01) * Math.min(1, elapsed / LOAD_PROGRESS_DURATION_MS)
+      setLoadRatio((current) => Math.max(current ?? 0, timed))
+    }, 250)
+    return () => window.clearInterval(timer)
+  }, [status, session?.id])
 
   // 会话变化时挂载 / 卸载运行时
   useEffect(() => {
@@ -311,6 +338,8 @@ export function EmulatorPlayer({
      */
     const mountedId = session.id
     const isCurrent = () => sessionCounter.current === mountedId
+    /** 已经进入游戏后再报错属于运行期故障，不能按“加载失败”自动重启，免得吞掉玩家进度。 */
+    let ready = false
     const handle = session.runtime.mount(host, {
       platform: session.platform,
       game: session.game,
@@ -340,10 +369,12 @@ export function EmulatorPlayer({
       },
       onProgress: (next) => {
         if (!isCurrent()) return
-        setLoadRatio(overallRatio.current(next))
+        const actual = Math.min(LOAD_PROGRESS_CEILING, overallRatio.current(next))
+        setLoadRatio((current) => Math.max(current ?? 0, actual))
       },
       onReady: () => {
         if (!isCurrent()) return
+        ready = true
         setLoadRatio(null)
         setStatus('running')
         // 游戏真的跑起来了才算一次游玩 —— 打开详情页、加载失败、选错文件都不算
@@ -352,6 +383,16 @@ export function EmulatorPlayer({
       onError: (message: string) => {
         if (!isCurrent()) return
         const cloud = session.cloud
+
+        // 只重试普通的本机加载。联机、云游戏和直播都带外部会话状态，擅自重建会造成重复房间；
+        // 游戏已经运行后再出错也不能重启，否则玩家这一局的进度会直接丢掉。
+        const attempt = session.retryAttempt ?? 0
+        if (!ready && !session.netplay && !session.cloud && !session.live && attempt < AUTO_RETRY_LIMIT) {
+          setError(null)
+          begin(session.game, session.platform, session.runtime, { retryAttempt: attempt + 1 })
+          return
+        }
+
         // 出错后必须把会话拆掉：否则运行时会在隐藏的挂载点里继续活着
         setSession(null)
 
@@ -730,7 +771,7 @@ export function EmulatorPlayer({
     session?.runtime ?? (online ? (channel === 'p2p' ? emulatorJsRuntime : cloudGameRuntime) : pageRuntime)
   const cloudStateLabel = cloudState ? t.player.cloudState[cloudState] : ''
 
-  // 进度条要显示的比例：合成后的整条进度，只有 0→100 这一种状态
+  // 进度条要显示的比例：加载期间只走到 90%，真正启动后遮罩才消失
   const ratio = loadRatio ?? 0
   // 服务端的 players 不含观众，比本地 onPlayers 更准；拿不到时退回本地计数
   const roomPlayers = session?.cloud ? (myCloudRoom?.players ?? 1) : (myNetRoom?.players ?? players)
@@ -763,11 +804,16 @@ export function EmulatorPlayer({
   }
 
   return (
-    <div className={cx('overflow-hidden rounded-2xl border border-line bg-black', className)}>
-      {/* 画面区域 */}
+    <div data-testid="emulator-player" className={cx('overflow-hidden rounded-2xl border border-line bg-black', className)}>
+      {/*
+        播放器自身固定为 16:9，工具栏是其中的最后一行。
+        这样它在普通模式和全屏模式里都属于模拟器，不会再额外撑高详情页；画面区域让出
+        工具栏的实际高度，也不会把 EmulatorJS 自己的底部菜单盖住。
+      */}
       <div
         ref={hostRef}
-        className={cx('relative aspect-video w-full bg-black', dragging && 'ring-2 ring-brand ring-inset')}
+        data-testid="emulator-stage"
+        className={cx('relative flex aspect-video w-full flex-col bg-black', dragging && 'ring-2 ring-brand ring-inset')}
         onDragOver={(e) => {
           e.preventDefault()
           if (!busy) setDragging(true)
@@ -775,16 +821,17 @@ export function EmulatorPlayer({
         onDragLeave={() => setDragging(false)}
         onDrop={onDrop}
       >
-        {/* 运行时挂载点：iframe 由运行时注入，React 不管理其子节点 */}
-        <div ref={frameRef} className={cx('absolute inset-0', busy ? 'block' : 'hidden')} />
+        <div className="relative min-h-0 flex-1">
+          {/* 运行时挂载点：iframe 由运行时注入，React 不管理其子节点 */}
+          <div ref={frameRef} className={cx('absolute inset-0', busy ? 'block' : 'hidden')} />
 
-        {!busy && (
-          <div className="absolute inset-0">
-            <div className="absolute inset-0 opacity-60 blur-sm">{backdrop}</div>
-            <div className="scanlines absolute inset-0" aria-hidden />
-            <div className="absolute inset-0 bg-gradient-to-t from-black via-black/60 to-black/20" />
+          {!busy && (
+            <div className="absolute inset-0">
+              <div className="absolute inset-0 opacity-60 blur-sm">{backdrop}</div>
+              <div className="scanlines absolute inset-0" aria-hidden />
+              <div className="absolute inset-0 bg-gradient-to-t from-black via-black/60 to-black/20" />
 
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 px-6 text-center">
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 px-6 text-center">
               {icon && (
                 <span className="hidden text-6xl drop-shadow-[0_8px_16px_rgba(0,0,0,0.6)] sm:block sm:text-7xl" aria-hidden>
                   {icon}
@@ -901,13 +948,13 @@ export function EmulatorPlayer({
                   {error}
                 </p>
               )}
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {status === 'loading' && (
+          {status === 'loading' && (
           /*
-           * 加载遮罩：**只有一条进度条，一个字都不写，也只有一种状态**——从 0 走到 100。
+           * 加载遮罩：只有「少女祈祷中....」和一个只进不退的百分比。
            *
            * 「一种状态」是刻意的：适配器报的是每个阶段各自的 0~1，四个阶段直接画上去，
            * 玩家一局加载里会看到条子涨满又归零好几次，像坏了。合成在 loadProgress.ts 里做。
@@ -922,36 +969,45 @@ export function EmulatorPlayer({
            * （包一层 iframe 里的 XHR，见 adapters/emulatorjs.ts 的 installProgressTap），
            * 照样走这根条 —— 玩家看到的是进度，而不是引擎自己那行中文字。
            *
-           * aria-label 用的是「加载中」，只给读屏软件听，页面上看不见。
+           * 没有真实字节数时也会按设定时间缓慢走到 90%，让 WASM 初始化这类静默阶段
+           * 不再像页面卡死；90% 之后只等 onReady，绝不假装已经成功。
            */
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-black px-8">
-            <div
-              role="progressbar"
-              aria-label={t.player.statusLoading}
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={Math.round(ratio * 100)}
-              className="h-1.5 w-full max-w-xs overflow-hidden rounded-full bg-white/15"
-            >
+            <div className="flex w-full max-w-xs flex-col items-center gap-3">
+              <p className="text-sm font-medium tracking-wide text-white/90">
+                少女祈祷中.... <span className="tabular-nums text-brand-hover">{Math.round(ratio * 100)}%</span>
+              </p>
               <div
-                className="h-full rounded-full bg-brand-hover transition-[width] duration-300 ease-out"
-                style={{ width: `${Math.round(ratio * 100)}%` }}
-              />
+                role="progressbar"
+                aria-label="少女祈祷中"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={Math.round(ratio * 100)}
+                className="h-1.5 w-full overflow-hidden rounded-full bg-white/15"
+              >
+                <div
+                  className="h-full rounded-full bg-brand-hover transition-[width] duration-300 ease-out"
+                  style={{ width: `${Math.round(ratio * 100)}%` }}
+                />
+              </div>
             </div>
           </div>
-        )}
+          )}
 
-        <input
-          ref={inputRef}
-          type="file"
-          accept={onDetectMismatch === 'switch' ? undefined : platform.romExtensions.join(',')}
-          className="hidden"
-          onChange={(e) => void start(e.target.files?.[0] ?? null)}
-        />
-      </div>
+          <input
+            ref={inputRef}
+            type="file"
+            accept={onDetectMismatch === 'switch' ? undefined : platform.romExtensions.join(',')}
+            className="hidden"
+            onChange={(e) => void start(e.target.files?.[0] ?? null)}
+          />
+        </div>
 
-      {/* 工具栏 */}
-      <div className="flex flex-wrap items-center gap-2 border-t border-line bg-surface px-3 py-2 text-xs">
+        {/* 工具栏放进播放器框体底部，而不是作为详情页里的下一块内容 */}
+        <div
+          data-testid="emulator-toolbar"
+          className="relative z-20 flex shrink-0 flex-wrap items-center gap-2 border-t border-line bg-surface px-3 py-2 text-xs"
+        >
         <span
           className={cx(
             'inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-semibold',
@@ -1054,7 +1110,7 @@ export function EmulatorPlayer({
           <LiveControls handle={handle} gameName={gameName} gameSlug={gameSlug} platform={session?.platform ?? platform.id} />
         )}
 
-        <div className="ml-auto flex items-center gap-1.5">
+          <div className="ml-auto flex items-center gap-1.5">
           {/*
             ROM 语言切换。两个前提：
               1. 这款游戏确实有两种以上语言的 ROM —— 只有一种时切了也是它自己
@@ -1110,6 +1166,7 @@ export function EmulatorPlayer({
               </Button>
             </>
           )}
+          </div>
         </div>
       </div>
     </div>

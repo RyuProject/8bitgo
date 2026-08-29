@@ -32,6 +32,7 @@ import { getT, fmt } from '@/services/i18n'
 import { apiBase, apiEnabled } from '@/services/api'
 import { canvasToBlob } from '../recorder'
 import { GP, hasGamepadApi, startGamepadBridge, type GamepadBridge } from '../gamepad'
+import { assertJar } from '@/lib/romValidation'
 
 /* ---------------- 从 freej2me-web 源码里挖出来的接入点 ---------------- */
 
@@ -194,15 +195,15 @@ function buildUrl(name: string): string {
 /* ---------------- 玩家上传的临时 jar ---------------- */
 
 /** 把本地 jar 传到后端临时目录，返回服务器给的随机文件名 */
-async function uploadTempJar(file: File): Promise<string> {
+async function uploadTempJar(data: ArrayBuffer): Promise<string> {
   const res = await fetch(`${apiBase()}/api/j2me/upload`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/java-archive' },
-    body: file,
+    body: data,
   })
-  const data = (await res.json().catch(() => null)) as { name?: string; error?: string } | null
-  if (!res.ok || !data?.name) throw new Error(data?.error || `HTTP ${res.status}`)
-  return data.name
+  const result = (await res.json().catch(() => null)) as { name?: string; error?: string } | null
+  if (!res.ok || !result?.name) throw new Error(result?.error || `HTTP ${res.status}`)
+  return result.name
 }
 
 /** 告诉后端「还在玩」，给临时文件续期 */
@@ -384,7 +385,11 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         // 本地 jar 要先传到后端才能被 freej2me-web 取到。fetch 拿不到上传进度
         // （只有 XHR 的 upload.onprogress 有），所以这里只报阶段，UI 转不确定态。
         options.onProgress?.({ phase: 'rom' })
-        name = await uploadTempJar(options.game as File)
+        const data = await (options.game as File).arrayBuffer()
+        options.onProgress?.({ phase: 'rom', loaded: data.byteLength, total: data.byteLength, ratio: 1 })
+        // 后端还会独立再验一次；前端先验是为了不上传明显损坏的包，也能立刻给玩家准确提示。
+        assertJar(data)
+        name = await uploadTempJar(data)
         if (destroyed) {
           // 上传期间已经被卸载了，直接把刚传上去的删掉
           releaseTempJar(name)

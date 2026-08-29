@@ -130,6 +130,32 @@ body {
   animation: progress-slide 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 
+/* 网页骨架用一块很淡的品牌色缓慢扫过。比整块忽明忽暗更稳定，
+ * 又能让玩家知道页面仍在取数，而不是一堆静止的灰框。 */
+@keyframes loading-skeleton-scan {
+  from {
+    transform: translateX(-180%);
+  }
+  to {
+    transform: translateX(520%);
+  }
+}
+
+.skeleton-shimmer {
+  position: relative;
+  overflow: hidden;
+  background: var(--color-surface-3);
+}
+.skeleton-shimmer::after {
+  position: absolute;
+  inset-block: -20%;
+  left: 0;
+  width: 24%;
+  content: '';
+  background: rgba(88, 204, 2, 0.14);
+  animation: loading-skeleton-scan 2.6s ease-in-out infinite;
+}
+
 @utility text-pixel {
   font-family: var(--font-pixel);
   letter-spacing: 0.04em;
@@ -267,5 +293,9 @@ body {
   .progress-bar,
   .progress-bar[data-active='true'] {
     transition: none;
+  }
+  .skeleton-shimmer::after {
+    animation: none;
+    opacity: 0;
   }
 }

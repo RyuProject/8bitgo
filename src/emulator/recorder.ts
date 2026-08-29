@@ -39,20 +39,24 @@ export interface Recorder {
   cancel: () => void
 }
 
-/** 挑一个浏览器支持的封装格式：优先 vp9，退回 vp8，再退回默认 webm */
-function pickMimeType(): string | undefined {
+/**
+ * 按优先级列出浏览器能录的格式。
+ * MP4 放前面是为了让录制结果能直接用于常见剪辑与分享工具；仍保留 WebM，
+ * 因为部分浏览器只实现了 VP8 / VP9，不能为了文件后缀让这些设备彻底失去录制能力。
+ */
+function supportedMimeTypes(): string[] {
   const candidates = [
+    'video/mp4',
+    'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+    'video/mp4;codecs=avc1.42E01E',
     'video/webm;codecs=vp9,opus',
     'video/webm;codecs=vp8,opus',
     'video/webm;codecs=vp9',
     'video/webm;codecs=vp8',
     'video/webm',
-    'video/mp4',
   ]
-  for (const type of candidates) {
-    if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(type)) return type
-  }
-  return undefined
+  if (typeof MediaRecorder === 'undefined') return []
+  return candidates.filter((type) => MediaRecorder.isTypeSupported(type))
 }
 
 export function canRecord(sources: RecordSources): boolean {
@@ -62,7 +66,7 @@ export function canRecord(sources: RecordSources): boolean {
 }
 
 /**
- * 开始录制。返回的 stop() 给出 webm；到 60 秒会自动停，
+ * 开始录制。支持时返回 MP4，否则退回 WebM；到 60 秒会自动停，
  * 这时 stop() 拿到的仍然是完整的那 60 秒。
  */
 export function startRecording(sources: RecordSources, opts: { fps?: number; maxMs?: number; onAutoStop?: () => void } = {}): Recorder | null {
@@ -96,13 +100,24 @@ export function startRecording(sources: RecordSources, opts: { fps?: number; max
   const hasAudio = tracks.some((t) => t.kind === 'audio')
   const stream = new MediaStream(tracks)
 
-  const mimeType = pickMimeType()
-  let recorder: MediaRecorder
-  try {
-    recorder = new MediaRecorder(stream, mimeType ? { mimeType, videoBitsPerSecond: 2_500_000 } : undefined)
-  } catch {
-    return null
+  let recorder: MediaRecorder | null = null
+  // isTypeSupported() 只能说明浏览器“应该能录”，个别设备仍可能在构造时失败，
+  // 所以逐个尝试，MP4 起不来就继续走 WebM，最后再让浏览器自己选默认格式。
+  for (const mimeType of [...supportedMimeTypes(), undefined]) {
+    try {
+      recorder = new MediaRecorder(
+        stream,
+        mimeType ? { mimeType, videoBitsPerSecond: 2_500_000 } : { videoBitsPerSecond: 2_500_000 },
+      )
+      break
+    } catch {
+      // 继续尝试下一个格式
+    }
   }
+  if (!recorder) return null
+
+  // 使用浏览器最终确认的类型，避免请求 MP4、实际却产出别的容器时只改错文件后缀。
+  const outputMimeType = recorder.mimeType || 'video/webm'
 
   const chunks: BlobPart[] = []
   recorder.ondataavailable = (e) => {
@@ -156,7 +171,7 @@ export function startRecording(sources: RecordSources, opts: { fps?: number; max
       const durationMs = Math.min((stoppedAt || performance.now()) - startedAt, maxMs)
       await finish()
       if (chunks.length === 0) return null
-      return { blob: new Blob(chunks, { type: mimeType || 'video/webm' }), durationMs, hasAudio }
+      return { blob: new Blob(chunks, { type: outputMimeType }), durationMs, hasAudio }
     },
     cancel: () => {
       chunks.length = 0

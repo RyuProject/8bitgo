@@ -81,6 +81,9 @@ export async function fetchWithProgress(
 
   if (!res.body) {
     const buf = await res.arrayBuffer()
+    if (total !== undefined && buf.byteLength !== total) {
+      throw new Error(`下载不完整：应为 ${total} 字节，实际收到 ${buf.byteLength} 字节`)
+    }
     emit({ phase, loaded: buf.byteLength, total: buf.byteLength, ratio: 1 }, true)
     return buf
   }
@@ -97,6 +100,12 @@ export async function fetchWithProgress(
     // 万一还是超了（服务器给的 Content-Length 本身就不对），转不确定态而不是显示 120%
     if (total !== undefined && loaded > total) total = undefined
     emit({ phase, loaded, total, ratio: total ? Math.min(loaded / total, 1) : undefined })
+  }
+
+  // 浏览器通常会把 Content-Length 不足变成网络异常，但代理 / Service Worker 的自造
+  // Response 不一定如此。这里自己收最后一道口，不能把“流正常结束”误当成“文件完整”。
+  if (total !== undefined && loaded !== total) {
+    throw new Error(`下载不完整：应为 ${total} 字节，实际收到 ${loaded} 字节`)
   }
 
   // 拼成一整块。最后一帧用真实总量，进度条一定走到 100%
