@@ -553,6 +553,7 @@ const ja: Translation = {
   platforms: {
     psx: { name: 'ソニー PlayStation', desc: '32 ビット時代の王者にして、3D ゲームの原点。鉄拳、ファイナルファンタジー、クラッシュ・バンディクーはここから生まれました。' },
     flash: { name: 'Flash ブラウザゲーム', desc: '休み時間の楽しみといえばこれ。タワーディフェンス、ランゲーム、音ゲー……ブラウザの中の黄金時代。' },
+    html5: { name: 'HTML5 ブラウザゲーム', desc: '追加のエミュレーターなしで、現代のブラウザ上に直接動作する HTML5・WebAssembly ゲーム。' },
     arcade: { name: 'アーケード', desc: 'コインを入れて、レバーを握って、コンボを決める。ザ・キング・オブ・ファイターズ、メタルスラッグ、ストリートファイター。ゲームセンターの伝説は今も続いています。' },
     n64: { name: 'ニンテンドー64', desc: '4 つのコントローラーポートがリビングのパーティーを定義しました。マリオカート、大乱闘スマッシュブラザーズ、ゴールデンアイ 007。' },
     nes: { name: 'ファミコン', desc: '8 ビット機のゴールドスタンダード。スーパーマリオ、魂斗羅、バトルシティー——すべてはここから始まりました。' },
@@ -701,6 +702,8 @@ const ja: Translation = {
     ejsNoCore: 'EmulatorJS に {platform} 用のコアがありません',
     ejsInitFailed: 'エミュレーターのコンテナを初期化できません',
     ejsEngineError: 'エミュレーターのエラー：{msg}',
+    ejsArcadeRomInvalid: 'アーケードゲームのファイルが不完全か、有効な ZIP ではありません：{name}',
+    ejsArcadeRomDownloadFailed: 'アーケードゲームのファイルをダウンロードできませんでした：{msg}',
     ejsRomFailed: 'ゲームファイルをダウンロードできませんでした（HTTP {status}）：{url}',
     ejsStalled: '読み込みが「{stage}」で止まっています。ページを再読み込みしてください',
     ejsLoadFailed: 'EmulatorJS のリソースを読み込めません（{path}）。ネットワークを確認するか、.env でセルフホストの VITE_EJS_PATH を設定してください。',

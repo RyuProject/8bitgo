@@ -574,6 +574,10 @@ const es: Translation = {
       name: 'Juegos web Flash',
       desc: 'El recreo en una pestaña del navegador: torres de defensa, corredores infinitos, juegos de ritmo… una época dorada a un clic.',
     },
+    html5: {
+      name: 'Juegos web HTML5',
+      desc: 'Juegos modernos HTML5 y WebAssembly que funcionan directamente en el navegador, sin emulador adicional.',
+    },
     arcade: {
       name: 'Arcade',
       desc: 'Fichas, palancas y combos. The King of Fighters, Metal Slug y Street Fighter: las leyendas de los arcades siguen vivas.',
@@ -759,6 +763,8 @@ const es: Translation = {
     ejsNoCore: 'EmulatorJS no tiene un núcleo para {platform}',
     ejsInitFailed: 'No se pudo inicializar el contenedor del emulador',
     ejsEngineError: 'Error del emulador: {msg}',
+    ejsArcadeRomInvalid: 'El archivo de arcade está incompleto o no es un ZIP válido: {name}',
+    ejsArcadeRomDownloadFailed: 'No se pudo descargar el archivo de arcade: {msg}',
     ejsRomFailed: 'No se pudo descargar el archivo del juego (HTTP {status}): {url}',
     ejsStalled: 'La carga se ha quedado atascada en «{stage}». Recarga la página.',
     ejsLoadFailed:

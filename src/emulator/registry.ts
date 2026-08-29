@@ -17,6 +17,7 @@ import { EXT_RUNTIME_OVERRIDES } from '@/config/emulators'
 import type { ResolveContext, Runtime, RuntimeId } from './types'
 import { emulatorJsRuntime } from './adapters/emulatorjs'
 import { ruffleRuntime } from './adapters/ruffle'
+import { html5Runtime } from './adapters/html5'
 import { jsnesRuntime } from './adapters/jsnes'
 import { j2meRuntime } from './adapters/j2me'
 import { jsdosRuntime } from './adapters/jsdos'
@@ -27,6 +28,7 @@ import { liveViewRuntime } from './adapters/liveview'
 export const runtimes: Record<RuntimeId, Runtime> = {
   emulatorjs: emulatorJsRuntime,
   ruffle: ruffleRuntime,
+  html5: html5Runtime,
   jsnes: jsnesRuntime,
   j2me: j2meRuntime,
   jsdos: jsdosRuntime,

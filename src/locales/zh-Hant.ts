@@ -531,6 +531,7 @@ const zhHant: Translation = {
   platforms: {
     psx: { name: 'Sony PlayStation', desc: '32 位元時代的王者，3D 遊戲的啟蒙之地。鐵拳、太空戰士、古惑狼都誕生於此。' },
     flash: { name: 'Flash 網頁遊戲', desc: '下課十分鐘的快樂泉源，塔防、跑酷、音樂節奏……瀏覽器裡的黃金年代。' },
+    html5: { name: 'HTML5 網頁遊戲', desc: '原生執行於現代瀏覽器的 HTML5 與 WebAssembly 遊戲，不需額外模擬器。' },
     arcade: { name: '街機', desc: '投幣、搖桿、連續技。拳皇、越南大戰、快打旋風，電動間裡的傳奇今天仍在延續。' },
     n64: { name: '任天堂 64', desc: '四個手把插槽定義了客廳派對：瑪利歐賽車、任天堂明星大亂鬥、黃金眼 007。' },
     nes: { name: '紅白機', desc: '8 位元機的黃金標準。超級瑪利歐、魂斗羅、坦克大戰——一切從這裡開始。' },
@@ -676,6 +677,8 @@ const zhHant: Translation = {
     ejsInitFailed: '無法初始化模擬器容器',
     ejsLoadFailed: '無法載入 EmulatorJS 資源（{path}）。請檢查網路，或在 .env 中設定自行架設的 VITE_EJS_PATH。',
     ejsEngineError: '引擎報錯：{msg}',
+    ejsArcadeRomInvalid: '街機遊戲檔案不完整或不是有效的 ZIP：{name}',
+    ejsArcadeRomDownloadFailed: '街機遊戲檔案下載失敗：{msg}',
     ejsRomFailed: '遊戲檔案下載失敗（HTTP {status}）：{url}',
     ejsStalled: '載入卡在「{stage}」這一步不動了，請重新整理頁面再試',
   },

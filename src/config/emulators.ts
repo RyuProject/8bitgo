@@ -18,6 +18,10 @@ export const EXT_RUNTIME_OVERRIDES: Record<string, RuntimeId> = {
   // Flash
   swf: 'ruffle',
 
+  // 现代网页游戏直接加载自己的 HTML 入口；复杂游戏通常是部署好的完整站点，而非单文件。
+  html: 'html5',
+  htm: 'html5',
+
   // Java 手机游戏：需要自托管 J2ME 运行时，没配置时会自动跳过
   jar: 'j2me',
   jad: 'j2me',

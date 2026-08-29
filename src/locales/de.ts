@@ -575,6 +575,10 @@ const de: Translation = {
       name: 'Flash-Webspiele',
       desc: 'Große Pause im Browser-Tab: Tower Defense, Endless Runner, Rhythmusspiele … ein goldenes Zeitalter, nur einen Klick entfernt.',
     },
+    html5: {
+      name: 'HTML5-Webspiele',
+      desc: 'Moderne HTML5- und WebAssembly-Spiele, die ohne zusätzlichen Emulator direkt im Browser laufen.',
+    },
     arcade: {
       name: 'Arcade',
       desc: 'Münzen, Joysticks und Combos. The King of Fighters, Metal Slug und Street Fighter – die Legenden der Spielhalle leben weiter.',
@@ -760,6 +764,8 @@ const de: Translation = {
     ejsNoCore: 'EmulatorJS hat keinen Core für {platform}',
     ejsInitFailed: 'Der Emulator-Container konnte nicht initialisiert werden',
     ejsEngineError: 'Emulator-Fehler: {msg}',
+    ejsArcadeRomInvalid: 'Die Arcade-Datei ist unvollständig oder keine gültige ZIP-Datei: {name}',
+    ejsArcadeRomDownloadFailed: 'Die Arcade-Datei konnte nicht geladen werden: {msg}',
     ejsRomFailed: 'Die Spieldatei konnte nicht geladen werden (HTTP {status}): {url}',
     ejsStalled: 'Das Laden hängt bei „{stage}“ fest. Lade die Seite neu.',
     ejsLoadFailed:

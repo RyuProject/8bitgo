@@ -448,6 +448,7 @@ function RomField({
   const cfg = getRomConfig()
   const canUpload = Boolean(cfg.api && cfg.token)
   const isFlash = platform === 'flash'
+  const isHtml5 = platform === 'html5'
   /** 街机的 ROM key 保留原文件名 —— FBNeo 靠压缩包名认 romset，见 roms.ts 的 FILENAME_IS_IDENTITY */
   const isArcade = keepsOriginalFileName(platform)
   // Flash 额外收 zip：平台的 romExtensions 保持只有 .swf —— 那个列表还管着
@@ -651,8 +652,12 @@ function RomField({
               ? `街机 ROM 会**自动识别 romset**：读包里每个文件的 CRC 比对 FBNeo 驱动表，认出来就按 romset 短名存（如 ${defKey('kof97.zip')}）。核心只认这个名字，认不出时保留原名并给出候选`
               : isFlash
                 ? `单个 .swf 存成 ${defKey('x.swf')}；多 SWF 的游戏直接选 .zip，整包会传到 ${bundleDirFor(platform, slug, lang)}/ 下`
+                : isHtml5
+                  ? `可填写你有权嵌入的 HTTPS 游戏网址；单文件作品也可上传 .html。带 JS、WASM、图片等素材的项目请先完整部署，再填写它的 index.html 地址`
                 : `上传会存到 ${defKey('x.zip')} 这样的位置（扩展名跟随所选文件）并自动绑定；也可手填已有文件的 key 或完整 URL。留空则该语言不单独提供`
-            : '手填对象 key 或完整 URL；要直接上传，请先在「ROM 存储」页配置 Worker 地址与口令'
+            : isHtml5
+              ? '填写你有权嵌入的 HTTPS 游戏网址；目标站点必须允许 iframe 嵌入。单文件上传需先配置 Worker'
+              : '手填对象 key 或完整 URL；要直接上传，请先在「ROM 存储」页配置 Worker 地址与口令'
         }
       >
         <div className="flex gap-2">
@@ -660,7 +665,7 @@ function RomField({
             className={cx(inputClass, 'font-mono')}
             value={value}
             onChange={(e) => onChange(e.target.value)}
-            placeholder={defKey(isFlash ? 'x.swf' : 'x.zip')}
+            placeholder={isHtml5 ? 'https://game.example.com/' : defKey(isFlash ? 'x.swf' : 'x.zip')}
           />
           <input ref={inputRef} type="file" accept={accept} className="hidden" onChange={(e) => void onFile(e.target.files?.[0])} />
           <button
@@ -668,9 +673,9 @@ function RomField({
             className={cx(btnClass.secondary, 'shrink-0 whitespace-nowrap')}
             disabled={!canUpload || progress !== null || bundleAt !== null}
             onClick={() => inputRef.current?.click()}
-            title={canUpload ? (isFlash ? '选择 .swf，或选 .zip 上传多 SWF 整包' : '选择文件并上传到 R2') : '需要先配置 Worker'}
+            title={canUpload ? (isFlash ? '选择 .swf，或选 .zip 上传多 SWF 整包' : isHtml5 ? '上传单文件 HTML 作品' : '选择文件并上传到 R2') : '需要先配置 Worker'}
           >
-            {progress === null ? (isFlash ? '☁️ 上传 SWF / ZIP' : '☁️ 上传到 R2') : `上传中 ${progress}%`}
+            {progress === null ? (isFlash ? '☁️ 上传 SWF / ZIP' : isHtml5 ? '☁️ 上传 HTML' : '☁️ 上传到 R2') : `上传中 ${progress}%`}
           </button>
           {value && !progress && (
             <a href={romUrlForKey(value)} target="_blank" rel="noreferrer" className={cx(btnClass.secondary, 'shrink-0')} title="在新标签页打开文件地址">

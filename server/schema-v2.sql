@@ -12,7 +12,7 @@
 --
 -- 刻意**没有**放进数据库的：平台表、类型表。
 --   它们是配置不是内容 —— platform.runtime / core 直接对应模拟器适配器，
---   PlatformId / GenreId 还是 TypeScript 的联合类型。13 个平台、12 个类型是固定集合，
+--   PlatformId / GenreId 还是 TypeScript 的联合类型。14 个平台、12 个类型是固定集合，
 --   挪进库里会丢掉编译期检查，也省不下任何查询。games.platform 和 game_genres.genre_id
 --   存的就是这些代码里定义好的 id（见 src/data/platforms.ts、src/data/genres.ts）。
 --

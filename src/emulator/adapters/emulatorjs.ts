@@ -23,11 +23,12 @@
  */
 import { platformMap } from '@/data/platforms'
 import type { Capability, CaptureSources, LoadPhase, LoadProgress, MountOptions, Runtime, RuntimeHandle } from '../types'
-import { throttleProgress } from '../loadProgress'
+import { fetchWithProgress, throttleProgress } from '../loadProgress'
 import { getT, fmt } from '@/services/i18n'
 import { getLang } from '@/services/lang'
 import type { Lang } from '@/config/languages'
 import { ICE_SERVERS, NETPLAY_URL, fetchIceConfig, socketIoScriptUrl, uploadState } from '@/services/netplay'
+import { isZip, listZipEntries } from '@/lib/unzip'
 
 /**
  * EmulatorJS 资源根路径。**默认是自托管的 /emulatorjs/，不是 CDN。**
@@ -112,7 +113,7 @@ const EJS_LANG: Record<Lang, string> = {
  * 里面只有可重新下载的工件（核心/ROM/BIOS 的副本），删了不丢任何用户数据；
  * 存档在另一个库（EmulatorJS-states）和我们自己的云存档里，不碰。
  */
-const EJS_CACHE_GENERATION = '2026-08-29.retry-blocked-purge'
+const EJS_CACHE_GENERATION = '2026-08-29.arcade-blob-loader'
 const EJS_CACHE_PURGED_KEY = '8bitgo.ejs.cachePurged'
 
 async function purgePoisonedEngineCache(): Promise<void> {
@@ -589,6 +590,66 @@ function injectScript(doc: Document, src: string): Promise<void> {
   })
 }
 
+/**
+ * 从远程地址取出街机核心真正要看的 romset 文件名。
+ *
+ * FBNeo 不看页面标题，也不看数据库 slug，只看压缩包名：`kof98.zip` 才会选中 kof98
+ * 驱动。查询串是对象 ETag（用于换缓存 key），不能跟着进文件名；URL 编码也必须还原，
+ * 否则 `%20` 之类会被核心当成名字的一部分。
+ */
+export function arcadeRomsetName(url: string): string {
+  try {
+    const pathname = new URL(url, window.location.href).pathname
+    const encoded = pathname.split('/').pop() ?? ''
+    return decodeURIComponent(encoded)
+  } catch {
+    return url.split(/[?#]/)[0].split('/').pop() ?? ''
+  }
+}
+
+class InvalidArcadeArchiveError extends Error {}
+
+/**
+ * 远程街机 ROM 不能继续把 URL 原样交给 EmulatorJS。
+ *
+ * 引擎自己的下载缓存曾把中断请求留下的空壳当成完整 ROM；之后 FBNeo 虽然能从文件名
+ * 认出 kof98 驱动，却在空壳里找不到任何成员，于是一次报出十几个 missing files。
+ * 这里先由站点完整下载并核对 ZIP 的中央目录，成功后再转成 blob:：
+ *   - 不完整响应在进入核心前就会被拦住，玩家得到明确错误；
+ *   - blob: 分支由我们的 EmulatorJS 补丁使用 EJS_gameName，文件名稳定是 kof98.zip；
+ *   - blob: 不会按旧的远程 URL 命中 EmulatorJS-Cache，杜绝半截 ROM 复活。
+ */
+export async function prepareRemoteArcadeRom(
+  url: string,
+  onProgress: MountOptions['onProgress'],
+  signal: AbortSignal,
+): Promise<{ url: string; name: string }> {
+  const name = arcadeRomsetName(url)
+  if (!name || !/\.zip$/i.test(name)) throw new InvalidArcadeArchiveError(name || 'ROM')
+
+  const data = await fetchWithProgress(url, {
+    phase: 'rom',
+    onProgress,
+    signal,
+    check: (res) => {
+      const type = res.headers.get('content-type') ?? ''
+      // 地址或反代配错时，SSR 常会回 200 + HTML；状态码正常也绝不能交给核心。
+      if (/text\/html|application\/xhtml/i.test(type)) throw new InvalidArcadeArchiveError(name)
+    },
+  })
+  // 只看开头的 PK 还不够：截断文件通常仍有正确文件头；中央目录在末尾，能列出来才算完整。
+  let entryCount = 0
+  try {
+    entryCount = isZip(data) ? listZipEntries(data).length : 0
+  } catch {
+    // 畸形偏移可能让 DataView 主动抛错；对玩家而言同样就是损坏的 ZIP。
+  }
+  if (entryCount === 0) throw new InvalidArcadeArchiveError(name)
+
+  const blobUrl = URL.createObjectURL(new Blob([data], { type: 'application/zip' }))
+  return { url: blobUrl, name }
+}
+
 function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
   // 按游戏覆盖优先，其次才是平台默认。街机一个平台底下其实是好几套硬件，
@@ -667,8 +728,15 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   }
   // 本地文件转成 blob: URL（同源 iframe 可直接访问）；gameName 用原始文件名以保留扩展名
   const isFile = typeof options.game !== 'string'
-  const gameUrl = isFile ? URL.createObjectURL(options.game as File) : (options.game as string)
-  const gameName = isFile ? (options.game as File).name : options.gameName
+  const remoteGameUrl = isFile ? '' : (options.game as string)
+  let gameUrl = isFile ? URL.createObjectURL(options.game as File) : remoteGameUrl
+  let engineGameName = isFile ? (options.game as File).name : options.gameName
+  /** 远程街机 ROM 的预下载可以随会话销毁立刻取消，避免切游戏后还在后台吞几十 MB。 */
+  const prepareAbort = new AbortController()
+  /** 预下载生成的 blob:。引擎通常会自行回收，销毁时再兜一次是幂等的。 */
+  let preparedArcadeBlobUrl = ''
+  /** 区分「ROM 预下载失败」与后续 loader.js / 核心加载失败，避免错误提示张冠李戴。 */
+  let arcadeRomPrepared = false
 
   /** 游戏跑起来之后再开 / 加入房间 —— 房主要先有画面才能 captureStream */
   const startNetplay = (win: Window & Record<string, unknown>) => {
@@ -895,56 +963,73 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       options.onError?.(rt.ejsInitFailed)
       return
     }
-    Object.assign(win, {
-      EJS_player: '#game',
-      EJS_core: core,
-      EJS_gameUrl: gameUrl,
-      EJS_gameName: gameName,
-      EJS_pathtodata: EJS_PATH,
-      // 平台级 BIOS。Neo Geo 这类平台不给就直接起不来；不需要 BIOS 的平台
-      // 这里是空串，等于没设
-      ...(options.biosUrl ? { EJS_biosUrl: options.biosUrl } : {}),
-      EJS_color: '#0078f2',
-      EJS_backgroundColor: '#0b0b0f',
-      // 跟着站点语言走。切语言是整页跳转（见 services/lang.ts 的 setLang），
-      // 所以这里每次挂载读到的都是当前语言，不会残留上一次的
-      EJS_language: EJS_LANG[getLang()],
-      EJS_startOnLoaded: true,
-      EJS_volume: 0.6,
-      // ⚠️ 这里**故意不接** EJS_ready：它在核心和 ROM 开始下载之前就发了，详见 finishStart
-      EJS_onGameStart: () => finishStart(win),
-      // 联机相关（没有 netplay 会话时也设上，用户可以自己点模拟器里的联机按钮）
-      ...(NETPLAY_URL
-        ? {
-            EJS_netplayUrl: NETPLAY_URL,
-            EJS_netplayICEServers: ICE_SERVERS,
-            EJS_gameId: netplay?.gameId,
-          }
-        : {}),
-    })
-
-    // 录像要取声音，必须赶在 loader.js 建 AudioContext 之前装探针
-    audioTap = installAudioTap(win)
-
-    // 引擎的报错探针也要赶在 loader.js 之前装：核心是在加载过程中打错误的，
-    // 装晚了那句「缺哪个文件」就已经过去了
-    errorTap = installErrorTap(win, reportEngineError)
-
-    // 网络探针也要赶在 loader.js 之前包好，否则核心那一趟就漏过去了
-    installNetTap(win, {
-      gameUrl,
-      biosUrl: options.biosUrl,
-      live: () => !destroyed && !started,
-      onProgress: options.onProgress,
-      onBeat: beat,
-      onFailed: (status, url) => failLoad(fmt(rt.ejsRomFailed, { status: String(status), url })),
-    })
-
-    // 开局之前一直盯着：引擎报错要接出来，start 事件不来也得有个台阶下
-    watchStart(win)
-
     void (async () => {
       try {
+        /**
+         * 只处理「远程 + 街机」：本地文件本来就是 Blob，其他平台的压缩包需要让引擎照常
+         * 解开，不能一刀切。必须在写 EJS_* 和加载 loader.js 之前完成，否则引擎会抢先
+         * 读取旧 URL，这一局里再改全局变量已经来不及。
+         */
+        if (!isFile && options.platform === 'arcade') {
+          const prepared = await prepareRemoteArcadeRom(remoteGameUrl, options.onProgress, prepareAbort.signal)
+          if (destroyed) {
+            URL.revokeObjectURL(prepared.url)
+            return
+          }
+          preparedArcadeBlobUrl = prepared.url
+          gameUrl = prepared.url
+          engineGameName = prepared.name
+          arcadeRomPrepared = true
+        }
+
+        Object.assign(win, {
+          EJS_player: '#game',
+          EJS_core: core,
+          EJS_gameUrl: gameUrl,
+          EJS_gameName: engineGameName,
+          EJS_pathtodata: EJS_PATH,
+          // 平台级 BIOS。Neo Geo 这类平台不给就直接起不来；不需要 BIOS 的平台
+          // 这里是空串，等于没设
+          ...(options.biosUrl ? { EJS_biosUrl: options.biosUrl } : {}),
+          EJS_color: '#0078f2',
+          EJS_backgroundColor: '#0b0b0f',
+          // 跟着站点语言走。切语言是整页跳转（见 services/lang.ts 的 setLang），
+          // 所以这里每次挂载读到的都是当前语言，不会残留上一次的
+          EJS_language: EJS_LANG[getLang()],
+          EJS_startOnLoaded: true,
+          EJS_volume: 0.6,
+          // ⚠️ 这里**故意不接** EJS_ready：它在核心和 ROM 开始下载之前就发了，详见 finishStart
+          EJS_onGameStart: () => finishStart(win),
+          // 联机相关（没有 netplay 会话时也设上，用户可以自己点模拟器里的联机按钮）
+          ...(NETPLAY_URL
+            ? {
+                EJS_netplayUrl: NETPLAY_URL,
+                EJS_netplayICEServers: ICE_SERVERS,
+                EJS_gameId: netplay?.gameId,
+              }
+            : {}),
+        })
+
+        // 录像要取声音，必须赶在 loader.js 建 AudioContext 之前装探针
+        audioTap = installAudioTap(win)
+
+        // 引擎的报错探针也要赶在 loader.js 之前装：核心是在加载过程中打错误的，
+        // 装晚了那句「缺哪个文件」就已经过去了
+        errorTap = installErrorTap(win, reportEngineError)
+
+        // 网络探针也要赶在 loader.js 之前包好，否则核心那一趟就漏过去了
+        installNetTap(win, {
+          gameUrl,
+          biosUrl: options.biosUrl,
+          live: () => !destroyed && !started,
+          onProgress: options.onProgress,
+          onBeat: beat,
+          onFailed: (status, url) => failLoad(fmt(rt.ejsRomFailed, { status: String(status), url })),
+        })
+
+        // 开局之前一直盯着：引擎报错要接出来，start 事件不来也得有个台阶下
+        watchStart(win)
+
         // socket.io 客户端必须在 loader.js 之前就位：netplay 用的是全局 io()
         if (NETPLAY_URL) {
           await injectScript(doc, socketIoScriptUrl()).catch(() => {
@@ -973,9 +1058,21 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         await purgePoisonedEngineCache()
         if (destroyed) return
         await injectScript(doc, `${EJS_PATH}loader.js`)
-      } catch {
+      } catch (error) {
         // 加载过程中被销毁的，别再往新会话上报错
         if (destroyed) return
+        if (error instanceof InvalidArcadeArchiveError) {
+          options.onError?.(fmt(rt.ejsArcadeRomInvalid, { name: error.message }))
+          return
+        }
+        if (error instanceof DOMException && error.name === 'AbortError') return
+        // 远程街机 ROM 的预下载也在这条链路里；把真实网络错误带出来，
+        // 不要一律误报成「EmulatorJS 资源加载失败」。
+        if (!isFile && options.platform === 'arcade' && !arcadeRomPrepared) {
+          const message = error instanceof Error ? error.message : String(error)
+          options.onError?.(fmt(rt.ejsArcadeRomDownloadFailed, { msg: message }))
+          return
+        }
         options.onError?.(fmt(rt.ejsLoadFailed, { path: EJS_PATH }))
       }
     })()
@@ -986,6 +1083,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
 
   const destroy = () => {
     destroyed = true
+    prepareAbort.abort()
     window.clearInterval(playersTimer)
     window.clearInterval(stateTimer)
     window.clearInterval(startWatch)
@@ -1010,6 +1108,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     iframe.remove()
     audioTap = null
     if (isFile) URL.revokeObjectURL(gameUrl)
+    if (preparedArcadeBlobUrl) URL.revokeObjectURL(preparedArcadeBlobUrl)
   }
 
   return {

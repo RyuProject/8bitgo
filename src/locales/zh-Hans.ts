@@ -565,6 +565,7 @@ export const zhHans = {
   platforms: {
     psx: { name: '索尼 PlayStation', desc: '32 位时代的王者，3D 游戏的启蒙之地。铁拳、最终幻想、古惑狼都诞生于此。' },
     flash: { name: 'Flash 网页游戏', desc: '课间十分钟的快乐源泉，塔防、跑酷、音乐节奏……浏览器里的黄金年代。' },
+    html5: { name: 'HTML5 网页游戏', desc: '原生运行在现代浏览器里的 HTML5 与 WebAssembly 游戏，无需额外模拟器。' },
     arcade: { name: '街机', desc: '投币、摇杆、连招。拳皇、合金弹头、街霸，游戏厅里的传奇今天仍在延续。' },
     n64: { name: '任天堂 64', desc: '四个手柄插槽定义了客厅派对：马力欧赛车、任天堂明星大乱斗、黄金眼 007。' },
     nes: { name: '红白机', desc: '8 位机的黄金标准。超级马力欧、魂斗罗、坦克大战——一切从这里开始。' },
@@ -722,6 +723,8 @@ export const zhHans = {
     ejsInitFailed: '无法初始化模拟器容器',
     ejsLoadFailed: '无法加载 EmulatorJS 资源（{path}）。请检查网络，或在 .env 中配置自托管的 VITE_EJS_PATH。',
     ejsEngineError: '引擎报错：{msg}',
+    ejsArcadeRomInvalid: '街机游戏文件不完整或不是有效的 ZIP：{name}',
+    ejsArcadeRomDownloadFailed: '街机游戏文件下载失败：{msg}',
     ejsRomFailed: '游戏文件下载失败（HTTP {status}）：{url}',
     ejsStalled: '加载卡在「{stage}」这一步不动了，请刷新页面重试',
   },

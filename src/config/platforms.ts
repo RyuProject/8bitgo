@@ -8,9 +8,9 @@ import type { PlatformId } from '@/types'
  *
  * 说明：gb 与 gbc 是**两个**平台（1989 的 Game Boy 和 1998 的 Game Boy Color），
  *       模拟器核心同为 gambatte，但分类、ROM 目录（roms/gb、roms/gbc）各自独立；
- *       WebGame / 网页游戏 即 flash（平台名「Flash / 网页游戏」）。
+ *       Flash 与 HTML5 是两种不同的网页游戏：前者交给 Ruffle，后者直接加载网页入口。
  */
-export const ENABLED_PLATFORMS: PlatformId[] = ['nes', 'flash', 'gba', 'gb', 'gbc', 'java', 'arcade', 'dos']
+export const ENABLED_PLATFORMS: PlatformId[] = ['nes', 'flash', 'html5', 'gba', 'gb', 'gbc', 'java', 'arcade', 'dos']
 
 export function isPlatformEnabled(id: PlatformId): boolean {
   return ENABLED_PLATFORMS.length === 0 || ENABLED_PLATFORMS.includes(id)

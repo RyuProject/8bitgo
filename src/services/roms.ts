@@ -172,6 +172,9 @@ export function conventionalKeys(game: Game): string[] {
    *   2. 补上多 SWF 包的约定 <slug>/root.swf（见 lib/swfBundle.ts）
    */
   if (game.platform === 'flash') return [at(`${game.slug}.swf`), at(`${game.slug}/root.swf`)]
+  // HTML5 游戏通常是一整套网站文件；约定把入口放在独立目录的 index.html，
+  // 同时兼容只有一个 HTML 文件的小作品。
+  if (game.platform === 'html5') return [at(`${game.slug}/index.html`), at(`${game.slug}.html`)]
   const exts = platformMap[game.platform]?.romExtensions ?? ['.zip']
   const ordered = ['.zip', ...exts.filter((e) => e !== '.zip')]
   return ordered.map((ext) => at(`${game.slug}${ext}`))
@@ -366,8 +369,10 @@ function versionedRomUrl(url: string, etag: string | null): string {
 }
 
 /** HEAD 探测 ROM，并把内容 ETag 带回播放 URL（带超时，结果缓存） */
-export function probeRomUrl(url: string, timeoutMs = 4000): Promise<string> {
-  const cached = probeCache.get(url)
+export function probeRomUrl(url: string, timeoutMs = 4000, allowHtml = false): Promise<string> {
+  // 同一个 URL 作为 ROM 时必须拒绝 HTML，作为 HTML5 入口时又必须接受；缓存键要把两种语义分开。
+  const cacheKey = `${allowHtml ? 'html' : 'rom'}:${url}`
+  const cached = probeCache.get(cacheKey)
   if (cached) return cached
   const p = (async () => {
     const ctrl = new AbortController()
@@ -381,7 +386,7 @@ export function probeRomUrl(url: string, timeoutMs = 4000): Promise<string> {
       // 只看 res.ok 的话会误判成「ROM 存在」，页面显示「即点即玩」，
       // 点下去才在模拟器里报一句莫名其妙的「不是合法的 ROM」。
       const type = res.headers.get('content-type') || ''
-      if (/text\/html|application\/xhtml/i.test(type)) return ''
+      if (!allowHtml && /text\/html|application\/xhtml/i.test(type)) return ''
       return versionedRomUrl(url, res.headers.get('etag'))
     } catch {
       return ''
@@ -389,7 +394,7 @@ export function probeRomUrl(url: string, timeoutMs = 4000): Promise<string> {
       window.clearTimeout(timer)
     }
   })()
-  probeCache.set(url, p)
+  probeCache.set(cacheKey, p)
   return p
 }
 
@@ -430,8 +435,14 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
     if (key) {
       const url = romUrlForKey(key)
       if (url) {
+        // iframe 导航不受 fetch CORS 限制；第三方 HTML5 游戏常常允许嵌入，却不允许跨域 HEAD。
+        // 完整 URL 直接交给播放器，让 iframe 自己加载，才能复现普通网页嵌入的工作方式。
+        if (game.platform === 'html5' && /^https?:\/\//i.test(key)) {
+          setState({ status: 'found', url, key, lang: romLangOfKey(game, key) })
+          return
+        }
         setState({ status: 'checking', url: '' })
-        void probeRomUrl(url).then((resolvedUrl) => {
+        void probeRomUrl(url, 4000, game.platform === 'html5').then((resolvedUrl) => {
           if (cancelled) return
           setState(
             resolvedUrl
@@ -454,7 +465,7 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
     ;(async () => {
       for (const key of conventionalKeys(game)) {
         const url = romUrlForKey(key, base)
-        const resolvedUrl = await probeRomUrl(url)
+        const resolvedUrl = await probeRomUrl(url, 4000, game.platform === 'html5')
         if (resolvedUrl) {
           if (!cancelled) setState({ status: 'found', url: resolvedUrl, key })
           return

@@ -4,6 +4,7 @@
  * 一个「运行时」负责把某类 ROM 跑起来。播放器只面向这个接口，不关心背后是谁：
  *   EmulatorJS  主机 / 掌机 / 街机 / DOS（RetroArch 核心）
  *   Ruffle      Flash (.swf)
+ *   HTML5       现代网页 / WebAssembly 游戏（加载受权部署的网页入口）
  *   jsnes       NES (.nes)
  *   J2ME        Java 手机游戏 (.jar) —— 需自托管，见 adapters/j2me.ts
  *   js-dos      DOS 游戏 —— DOSBox 的浏览器移植，见 adapters/jsdos.ts
@@ -23,7 +24,7 @@ import type { CloudSession } from './adapters/cloudgame'
 import type { NetplaySession } from './adapters/emulatorjs'
 import type { LiveSession } from './adapters/liveview'
 
-export type RuntimeId = 'emulatorjs' | 'ruffle' | 'jsnes' | 'j2me' | 'jsdos' | 'webretro' | 'cloudgame' | 'liveview'
+export type RuntimeId = 'emulatorjs' | 'ruffle' | 'html5' | 'jsnes' | 'j2me' | 'jsdos' | 'webretro' | 'cloudgame' | 'liveview'
 
 export interface MountOptions {
   /** 平台 id（运行时据此选择核心等参数） */

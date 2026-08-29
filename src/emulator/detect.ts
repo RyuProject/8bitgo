@@ -41,6 +41,8 @@ const EXT_TO_PLATFORM: Record<string, PlatformId> = {
   ws: 'ws',
   wsc: 'ws',
   swf: 'flash',
+  html: 'html5',
+  htm: 'html5',
   jar: 'java',
   jad: 'java',
   cue: 'psx',

@@ -574,6 +574,10 @@ const en: Translation = {
       name: 'Flash Web Games',
       desc: 'Recess in a browser tab: tower defense, endless runners, rhythm games… a golden age one click away.',
     },
+    html5: {
+      name: 'HTML5 Web Games',
+      desc: 'Modern HTML5 and WebAssembly games that run natively in the browser, with no emulator required.',
+    },
     arcade: {
       name: 'Arcade',
       desc: 'Coins, joysticks and combos. The King of Fighters, Metal Slug and Street Fighter — the legends of the arcade floor live on.',
@@ -759,6 +763,8 @@ const en: Translation = {
     ejsNoCore: 'EmulatorJS has no core for {platform}',
     ejsInitFailed: 'Could not initialize the emulator container',
     ejsEngineError: 'Emulator error: {msg}',
+    ejsArcadeRomInvalid: 'The arcade game file is incomplete or is not a valid ZIP: {name}',
+    ejsArcadeRomDownloadFailed: 'Could not download the arcade game file: {msg}',
     ejsRomFailed: 'Could not download the game file (HTTP {status}): {url}',
     ejsStalled: 'Loading is stuck at “{stage}”. Try reloading the page.',
     ejsLoadFailed:
