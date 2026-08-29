@@ -325,7 +325,7 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
         <MediaField
           kind="covers"
           label="封面图片"
-          hint="4:3 横版最佳；留空用程序生成的渐变封面。可上传或手填 key / URL"
+          hint="1:1 正方形最佳；留空用程序生成的渐变封面。可上传或手填 key / URL"
           value={form.cover ?? ''}
           slug={slugify(form.slug || form.title)}
           onChange={(v) => set('cover', v)}
@@ -844,7 +844,8 @@ function SwfBundlePanel({
 
 
 /**
- * 封面图 / 视频字段：可手填 key/URL，也可选文件上传到 R2（通过 Worker），成功后自动填入 key，并显示 4:3 预览。
+ * 封面图 / 视频字段：可手填 key/URL，也可选文件上传到 R2（通过 Worker）。
+ * 封面预览与前台卡片保持 1:1，视频仍按 4:3；删除时同时处理绑定和可管理的 R2 对象。
  */
 function MediaField({
   kind,
@@ -895,6 +896,37 @@ function MediaField({
     }
   }
 
+  const removeMedia = async () => {
+    const key = value.trim()
+    if (!key) return
+    setMsg(null)
+
+    const sharedBy = allBoundKeys.filter((bound) => bound === key).length
+    if (!isDeletableKey(key) || sharedBy > 1 || !canUpload) {
+      const reason = !isDeletableKey(key)
+        ? '这不是对象存储里的文件，只能解除绑定。'
+        : sharedBy > 1
+          ? `这个文件还被当前游戏的另外 ${sharedBy - 1} 个字段引用，只能解除当前绑定并保留文件。`
+          : '尚未配置 Worker，无法删除对象存储里的文件，只能解除绑定。'
+      if (!window.confirm(`${key}\n\n${reason}\n\n继续吗？`)) return
+      onChange('')
+      setMsg({ ok: true, text: '已解除绑定，原文件保留' })
+      return
+    }
+
+    if (!window.confirm(`${key}\n\n从 R2 删除这个${kind === 'covers' ? '封面图片' : '视频'}并解除绑定？此操作不可恢复。`)) return
+    try {
+      const { removed, failed } = await deleteRomObjects([key])
+      onChange('')
+      setMsg({
+        ok: failed.length === 0,
+        text: failed.length ? '绑定已解除，但 R2 文件删除失败' : `已删除文件并解除绑定（${removed.length} 个对象）`,
+      })
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : '删除失败' })
+    }
+  }
+
   return (
     <Field label={label} hint={hint}>
       <div className="flex gap-2">
@@ -914,6 +946,16 @@ function MediaField({
         >
           {progress === null ? '☁️ 上传' : `上传中 ${progress}%`}
         </button>
+        {value && progress === null && (
+          <button
+            type="button"
+            className={cx(btnClass.danger, 'shrink-0')}
+            onClick={() => void removeMedia()}
+            title={isDeletableKey(value) ? '从 R2 删除文件并解除绑定' : '解除绑定'}
+          >
+            删除
+          </button>
+        )}
       </div>
       {progress !== null && (
         <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-black/10">
@@ -921,7 +963,7 @@ function MediaField({
         </div>
       )}
       {previewUrl && (
-        <div className="mt-2 aspect-[4/3] w-40 overflow-hidden rounded-lg border border-line bg-black">
+        <div className={cx('mt-2 w-40 overflow-hidden rounded-lg border border-line bg-black', kind === 'covers' ? 'aspect-square' : 'aspect-[4/3]')}>
           {kind === 'videos' ? (
             <video src={previewUrl} className="h-full w-full object-cover" muted loop playsInline controls />
           ) : (

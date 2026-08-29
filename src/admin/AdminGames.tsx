@@ -136,8 +136,9 @@ export function AdminGames() {
         setToast(`slug「${game.slug}」已存在，请换一个`)
         return
       }
-      await upsertGame(game)
-      setEditing(null)
+      const saved = await upsertGame(game)
+      // 保存后继续留在弹窗里，方便接着替换封面或调整其它字段；只有底部“取消”负责关闭。
+      setEditing({ mode: 'edit', game: saved })
       setToast(editing?.mode === 'edit' ? `已保存「${game.titleZh ?? game.title}」` : `已新增「${game.titleZh ?? game.title}」`)
       reload()
     } catch (err) {
@@ -422,13 +423,12 @@ export function AdminGames() {
 
       {/* 编辑弹窗 */}
       {editing && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4 backdrop-blur-sm" onClick={() => setEditing(null)}>
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4 backdrop-blur-sm">
           <div
             role="dialog"
             aria-modal="true"
             aria-label={editing.mode === 'edit' ? '编辑游戏' : '新增游戏'}
             className="max-h-[90dvh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-line bg-surface p-5"
-            onClick={(e) => e.stopPropagation()}
           >
             <h2 className="mb-4 text-lg font-bold">{editing.mode === 'edit' ? `编辑：${editing.game.titleZh ?? editing.game.title}` : '新增游戏'}</h2>
             <GameForm
