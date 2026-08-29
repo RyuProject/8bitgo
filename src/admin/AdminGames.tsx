@@ -136,9 +136,9 @@ export function AdminGames() {
         setToast(`slug「${game.slug}」已存在，请换一个`)
         return
       }
-      const saved = await upsertGame(game)
-      // 保存后继续留在弹窗里，方便接着替换封面或调整其它字段；只有底部“取消”负责关闭。
-      setEditing({ mode: 'edit', game: saved })
+      await upsertGame(game)
+      // 只有保存成功才关闭；请求失败时 catch 会保留表单，避免已经填写的内容丢失。
+      setEditing(null)
       setToast(editing?.mode === 'edit' ? `已保存「${game.titleZh ?? game.title}」` : `已新增「${game.titleZh ?? game.title}」`)
       reload()
     } catch (err) {
