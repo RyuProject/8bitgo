@@ -26,6 +26,7 @@ import { confirmUpload, cleanupSuperseded, deleteRomObjects, human, isDeletableK
 import { coreOptionsFor } from '@/config/emulators'
 import { FEATURES } from '@/config/features'
 import { isPlayable } from '@/emulator'
+import { normalizeDevelopers } from '@/lib/developers'
 import { Field, btnClass, inputClass } from './ui'
 
 export function slugify(text: string): string {
@@ -143,7 +144,7 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
       slug,
       title: form.title.trim(),
       titleZh: form.titleZh?.trim() || undefined,
-      developer: form.developer.trim() || '未知',
+      developer: normalizeDevelopers(form.developer) || '未知',
       cover: form.cover?.trim() || undefined,
       video: form.video?.trim() || undefined,
       rom: form.rom?.trim() || undefined,
@@ -229,8 +230,8 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
         <Field label="发行年份">
           <input type="number" className={inputClass} value={form.year} onChange={(e) => set('year', Number(e.target.value))} />
         </Field>
-        <Field label="开发商">
-          <input className={inputClass} value={form.developer} onChange={(e) => set('developer', e.target.value)} placeholder="Nintendo" />
+        <Field label="开发商" hint="多个开发商用逗号分隔">
+          <input className={inputClass} value={form.developer} onChange={(e) => set('developer', e.target.value)} placeholder="Nintendo, HAL Laboratory" />
         </Field>
         <Field label="最大玩家数">
           <select className={inputClass} value={form.players} onChange={(e) => set('players', Number(e.target.value) as Game['players'])}>

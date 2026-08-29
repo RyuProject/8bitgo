@@ -58,7 +58,7 @@ export const zhHans = {
 
   /* ---------------- 站点标题 ---------------- */
   site: {
-    defaultTitle: '{site} — 老游戏在线玩｜NES·GBA·Flash 小游戏免费畅玩',
+    defaultTitle: '{site} — 经典游戏在线玩｜街机·红白机·GBA·Flash',
     titleTemplate: '{title} - {site}',
   },
 

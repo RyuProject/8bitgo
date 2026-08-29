@@ -24,15 +24,21 @@ import { fileURLToPath } from 'node:url'
 const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
 const dest = path.join(root, 'public/j2me')
 const REPO = 'https://github.com/zb3/freej2me-web.git'
+const REQUIRED = ['run.html', 'freej2me-web.jar', 'src/main.js']
 
 const ifMissing = process.argv.includes('--if-missing')
 
-if (existsSync(path.join(dest, 'run.html'))) {
+const missing = REQUIRED.filter((file) => !existsSync(path.join(dest, file)))
+if (missing.length === 0) {
   if (ifMissing) {
-    console.log('✅ public/j2me/ 已存在，跳过')
+    console.log('✅ public/j2me/ 运行时完整，跳过')
     process.exit(0)
   }
   console.log('ℹ️  public/j2me/ 已存在，将重新安装')
+} else if (existsSync(dest)) {
+  // 上次构建若在下载中途被杀，可能留下只有 run.html 的半套产物。
+  // 只检目录存在就跳过，会让后续每次构建都「成功」、线上却永远启动不了 JVM。
+  console.log(`⚠️  public/j2me/ 不完整（缺 ${missing.join(', ')}），将自动修复`)
 }
 
 function run(cmd, args, cwd) {
@@ -57,7 +63,8 @@ try {
   run('git', ['sparse-checkout', 'set', '--no-cone', '/web/', '/LICENSE'], tmp)
 
   const src = path.join(tmp, 'web')
-  if (!existsSync(path.join(src, 'run.html'))) throw new Error('检出结果里没有 web/run.html')
+  const missingSource = REQUIRED.filter((file) => !existsSync(path.join(src, file)))
+  if (missingSource.length) throw new Error(`检出结果不完整，缺 ${missingSource.join(', ')}`)
 
   rmSync(dest, { recursive: true, force: true })
   mkdirSync(path.dirname(dest), { recursive: true })

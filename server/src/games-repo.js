@@ -97,7 +97,8 @@ export async function listGames(q = {}) {
     params.push(String(q.platform))
   }
   if (q.developer) {
-    where.push('g.developer = ?')
+    // 一款游戏可以录多家开发商；边界匹配避免「SNK」误命中「SNK Playmore」。
+    where.push("FIND_IN_SET(?, REPLACE(REPLACE(g.developer, '，', ','), ', ', ',')) > 0")
     params.push(String(q.developer))
   }
   if (q.multiplayer) where.push('g.multiplayer = 1')
@@ -376,14 +377,29 @@ export function genreCounts() {
  */
 export function developerCounts() {
   return query(
-    `SELECT developer, n, slug, title, title_zh, icon, cover, platform
+    `WITH RECURSIVE developer_parts AS (
+       SELECT g.id, g.slug, g.title, g.title_zh, g.icon, g.cover, g.platform, g.plays,
+              TRIM(SUBSTRING_INDEX(REPLACE(g.developer, '，', ','), ',', 1)) AS developer,
+              CASE WHEN LOCATE(',', REPLACE(g.developer, '，', ',')) > 0
+                   THEN SUBSTRING(REPLACE(g.developer, '，', ','), LOCATE(',', REPLACE(g.developer, '，', ',')) + 1)
+                   ELSE '' END AS rest
+         FROM games g
+        WHERE g.hidden = 0 AND g.developer <> ''
+       UNION ALL
+       SELECT id, slug, title, title_zh, icon, cover, platform, plays,
+              TRIM(SUBSTRING_INDEX(rest, ',', 1)) AS developer,
+              CASE WHEN LOCATE(',', rest) > 0 THEN SUBSTRING(rest, LOCATE(',', rest) + 1) ELSE '' END AS rest
+         FROM developer_parts
+        WHERE rest <> ''
+     )
+     SELECT developer, n, slug, title, title_zh, icon, cover, platform
        FROM (
-         SELECT g.developer, g.slug, g.title, g.title_zh, g.icon, g.cover, g.platform,
-                COUNT(*)     OVER (PARTITION BY g.developer)                                   AS n,
-                ROW_NUMBER() OVER (PARTITION BY g.developer ORDER BY g.plays DESC, g.id ASC)   AS rn
-           FROM games g
-          WHERE g.hidden = 0 AND g.developer <> ''
-       ) t
+         SELECT developer, slug, title, title_zh, icon, cover, platform,
+                COUNT(*)     OVER (PARTITION BY developer)                                 AS n,
+                ROW_NUMBER() OVER (PARTITION BY developer ORDER BY plays DESC, id ASC)     AS rn
+           FROM developer_parts
+          WHERE developer <> ''
+       ) ranked
       WHERE rn = 1
       ORDER BY n DESC, developer ASC`,
   )

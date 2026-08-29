@@ -16,7 +16,9 @@ import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, utimesSync, w
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const ROM_BASE = (process.env.ROM_BASE_URL || '').replace(/\/+$/, '')
+// 公开 R2 域名不是机密，给线上同源 JAR 代理一个可用默认值。
+// 否则前端运行时装好了，服务器少一行 server/.env 仍会让全部云端 JAR 404。
+const ROM_BASE = (process.env.ROM_BASE_URL || 'https://assets.8bitgo.com').replace(/\/+$/, '')
 const ROM_PREFIX = (process.env.ROM_PREFIX || 'roms').replace(/^\/+|\/+$/g, '')
 
 /** 临时上传目录。默认在 server/tmp/j2me，可用 J2ME_TMP_DIR 覆盖。 */

@@ -298,7 +298,7 @@ export function GamesPage() {
           {inf.items.length > 0 ? (
             <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5" aria-busy={state.status === 'loading'}>
               {inf.items.map((g) => (
-                <GameCard key={g.slug} game={g} />
+                <GameCard key={g.slug} game={g} coverRatio="square" />
               ))}
             </div>
           ) : (
@@ -356,14 +356,14 @@ function FilterChip({ active, onClick, children }: { active: boolean; onClick: (
 
 /**
  * 首屏取数还没回来时的占位。
- * 占位卡片和真实卡片同尺寸（4:3 封面 + 两行文字），数据到位时页面不会整体跳一下。
+ * 占位卡片和真实卡片同尺寸（方形封面 + 两行文字），数据到位时页面不会整体跳一下。
  */
 function GameGridSkeleton() {
   return (
     <div className="mt-10 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5" aria-hidden>
       {Array.from({ length: 10 }, (_, i) => (
         <div key={i} className="overflow-hidden rounded-card border border-line bg-surface">
-          <div className="aspect-[4/3] animate-pulse bg-white/5" />
+          <div className="aspect-square animate-pulse bg-white/5" />
           <div className="space-y-2 p-3">
             <div className="h-3.5 w-3/4 animate-pulse rounded bg-white/5" />
             <div className="h-3 w-1/2 animate-pulse rounded bg-white/5" />

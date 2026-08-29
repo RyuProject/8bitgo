@@ -12,13 +12,15 @@ import { genreLabel, gameTitle } from '@/services/i18nData'
 interface Props {
   game: Game
   className?: string
+  /** 列表页可改成方形封面；其他位置继续沿用横版比例。 */
+  coverRatio?: 'landscape' | 'square'
   /** 显示排名角标 */
   rank?: number
   showCoin?: boolean
 }
 
-/** 竖版游戏卡片（3:4 封面 + 标题 + 元信息） */
-export function GameCard({ game, className, rank, showCoin = true }: Props) {
+/** 游戏卡片（封面 + 标题 + 元信息） */
+export function GameCard({ game, className, coverRatio = 'landscape', rank, showCoin = true }: Props) {
   const lang = useLang()
   const t = useT()
   const platform = platformMap[game.platform]
@@ -33,7 +35,7 @@ export function GameCard({ game, className, rank, showCoin = true }: Props) {
       )}
     >
       <div className="relative">
-        <GameCover game={game} ratio="landscape" reserveBottomRight={game.multiplayer} />
+        <GameCover game={game} ratio={coverRatio} reserveBottomRight={game.multiplayer} />
         {rank !== undefined && (
           <span className="text-pixel absolute right-2 top-2 rounded bg-black/60 px-1.5 py-1 text-[11px] text-coin backdrop-blur">
             #{rank}

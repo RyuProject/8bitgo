@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { recordRecent, toggleFavorite, useCurrentUser } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
@@ -27,6 +27,7 @@ import { NotFoundPage } from './NotFoundPage'
 import { useShell } from '@/components/layout/ShellContext'
 import { cx } from '@/lib/format'
 import { FEATURES } from '@/config/features'
+import { splitDevelopers } from '@/lib/developers'
 
 export function GameDetailPage() {
   const { slug = '' } = useParams<{ slug: string }>()
@@ -252,7 +253,17 @@ export function GameDetailPage() {
             <p className="mt-2 leading-relaxed text-muted">{gameDescription(game, lang)}</p>
             <dl className="mt-5 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
               <Meta label={t.game.year} value={String(game.year)} />
-              <Meta label={t.game.developer} value={game.developer} to={`/games?developer=${encodeURIComponent(game.developer)}`} />
+              <Meta
+                label={t.game.developer}
+                value={splitDevelopers(game.developer).map((name, index) => (
+                  <span key={name}>
+                    {index > 0 && ', '}
+                    <Link to={`/games?developer=${encodeURIComponent(name)}`} className="hover:text-brand-hover">
+                      {name}
+                    </Link>
+                  </span>
+                ))}
+              />
               <Meta label={t.game.players} value={formatPlayers(game.players)} />
               <Meta label={t.game.runtime} value={runtime ? `${runtime.name} · ${runtime.engineLabel(platform.id)}` : t.game.unsupported} />
             </dl>
@@ -354,7 +365,7 @@ export function GameDetailPage() {
   )
 }
 
-function Meta({ label, value, to }: { label: string; value: string; to?: string }) {
+function Meta({ label, value, to }: { label: string; value: ReactNode; to?: string }) {
   return (
     <div className="rounded-xl border border-line bg-surface px-3 py-2.5">
       <dt className="text-[11px] text-muted">{label}</dt>

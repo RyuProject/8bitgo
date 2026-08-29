@@ -24,6 +24,7 @@ import { useT, fmt } from './i18n'
 import { getLang } from './lang'
 import { HREFLANG, LANGUAGES, FALLBACK_LANG, localizedPath, stripLang } from '@/config/languages'
 import { romUrlForKey } from './roms'
+import { splitDevelopers } from '@/lib/developers'
 
 const SITE_NAME = import.meta.env.VITE_SITE_NAME ?? '8BitGo'
 const SITE_URL = (import.meta.env.VITE_SITE_URL ?? '').replace(/\/+$/, '')
@@ -327,7 +328,8 @@ export function videoGameSchema(g: GameSchemaInput) {
   if (g.platform) schema.gamePlatform = g.platform
   if (g.genres?.length) schema.genre = g.genres
   if (g.year) schema.datePublished = String(g.year)
-  if (g.developer) schema.author = { '@type': 'Organization', name: g.developer }
+  const developers = splitDevelopers(g.developer)
+  if (developers.length) schema.author = developers.map((name) => ({ '@type': 'Organization', name }))
   // 这里刻意不输出 aggregateRating：站内没有评分功能，编一个聚合评分属于虚假结构化数据，
   // Google 对此的处理是取消整站的富媒体摘要资格。将来真做了评分系统再按真实数据补回来。
   return schema

@@ -11,6 +11,22 @@
 
 const bool = (v) => v === 1 || v === true || v === '1'
 
+/** 入库时统一逗号和空格，否则同一家公司会在开发商统计里被拆成多个名字。 */
+function developersText(value) {
+  const seen = new Set()
+  return String(value ?? '')
+    .split(/[,，]/)
+    .map((name) => name.trim())
+    .filter((name) => {
+      if (!name) return false
+      const key = name.toLocaleLowerCase()
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .join(', ')
+}
+
 /** DATE / TIMESTAMP -> 'YYYY-MM-DD'；mysql2 对 DATE 列返回的是 Date 对象 */
 export function dateOnly(v) {
   if (!v) return ''
@@ -129,7 +145,7 @@ export function gameApiToRow(g) {
     title_zh: g.titleZh ?? null,
     platform: String(g.platform ?? ''),
     year: Number(g.year) || 0,
-    developer: String(g.developer ?? ''),
+    developer: developersText(g.developer),
     players: Number(g.players) || 1,
     multiplayer: g.multiplayer ? 1 : 0,
     coin_reward: Number(g.coinReward) || 0,
@@ -157,7 +173,7 @@ const FIELD_TO_COLUMN = {
   titleZh: ['title_zh', (v) => (v == null || v === '' ? null : String(v))],
   platform: ['platform', (v) => String(v ?? '')],
   year: ['year', (v) => Number(v) || 0],
-  developer: ['developer', (v) => String(v ?? '')],
+  developer: ['developer', developersText],
   players: ['players', (v) => Number(v) || 1],
   multiplayer: ['multiplayer', (v) => (v ? 1 : 0)],
   coinReward: ['coin_reward', (v) => Number(v) || 0],
