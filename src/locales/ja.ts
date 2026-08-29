@@ -1,5 +1,6 @@
 /** 日本語の文案。キー構造・順序は基準言語の zh-Hans.ts と完全に一致させること。 */
 import type { Translation } from './index'
+import { aboutEnglish } from './about'
 
 const ja: Translation = {
   /* ---------------- 共通 ---------------- */
@@ -293,6 +294,9 @@ const ja: Translation = {
     relatedTitle: 'こちらもおすすめ',
     relatedSubtitle: '同じゲーム機・同じジャンル・同じ開発会社の作品',
   },
+
+  /* ---------------- 運営について ---------------- */
+  aboutPage: aboutEnglish,
 
   /* ---------------- ブログ ---------------- */
   blog: {

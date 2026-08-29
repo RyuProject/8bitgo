@@ -306,6 +306,43 @@ export const zhHans = {
     relatedSubtitle: '同平台、同类型或同一开发商的作品',
   },
 
+  /* ---------------- 关于我们 ---------------- */
+  aboutPage: {
+    seoTitle: '关于 8BitGo',
+    seoDescription: '了解 8BitGo 如何从一个存放个人游戏 ROM 备份的网站，成长为可在浏览器中运行 GBA、NES 等复古游戏的平台。',
+    heroEyebrow: '一个人的复古游戏计划',
+    heroTitleLead: '让经典游戏，',
+    heroTitleAccent: '继续被按下 START',
+    heroBody: '8BitGo 由我独立创建和设计。它起初只是一个整理个人游戏 ROM 备份的小网站，后来因为一次 GitHub 搜索，慢慢变成了今天这座可以直接在浏览器里游玩的复古游戏厅。',
+    playCta: '开始玩一局',
+    storyCta: '看看它怎么开始',
+    storyEyebrow: 'ORIGIN STORY',
+    storyTitle: '从一个 ROM 文件夹，到一座在线游戏厅',
+    storyBody: '8BitGo 没有宏大的商业起点。它来自一个很简单的念头：把喜欢的游戏收好，并让再次打开它们这件事变得更轻松。',
+    steps: [
+      { title: '最初，只是想收好游戏', body: '我先做了一个用来整理和存放自己游戏 ROM 备份的网站。那时它更像一个私人收藏夹，重点是让散落的游戏文件有一个清楚、好找的地方。' },
+      { title: '在 GitHub 发现另一种可能', body: '搜索开源项目时，我了解到 JavaScript 与 WebAssembly 模拟器已经能在网页里运行主机游戏。收藏不必只是文件列表，它也可以拥有一个“开始游戏”按钮。' },
+      { title: '让收藏真正可以游玩', body: '于是我重新设计了整个网站，把 GBA、NES、Game Boy、街机、Flash 等平台逐步接进浏览器。8BitGo 也从储存工具变成了现在的在线复古游戏空间。' },
+    ],
+    missionEyebrow: 'WHY 8BITGO',
+    missionTitle: '不是把过去封存起来，而是让它重新运行。',
+    missionBody: '旧主机、卡带和插件会离我们越来越远，但那些精心设计的关卡与共同记忆不该只剩截图。浏览器是今天最容易抵达的游戏机，我希望 8BitGo 能让重温经典少一点折腾，多一点按下开始键的快乐。',
+    values: [
+      { title: '打开就能玩', body: '尽可能减少安装、配置与平台差异，让电脑和手机都能快速进入游戏。' },
+      { title: '开放技术驱动', body: '站在 EmulatorJS、Ruffle、js-dos 等开源项目之上，也尊重这些社区长期积累的工作。' },
+      { title: '持续打磨体验', body: '从封面、搜索到存档和手柄支持，每个细节都围绕“更容易再次玩起来”。' },
+    ],
+    creatorEyebrow: 'CREATOR',
+    creatorTitle: '由我创建，也由我设计',
+    creatorBody: '8BitGo 的产品、界面和整体体验都由我独立创建与设计。我仍在持续给它增加游戏平台、修复兼容问题，也尝试让那些属于旧设备的快乐，在新的屏幕上依然自然。',
+    contactTitle: '有想法，欢迎联系',
+    contactBody: '无论是使用反馈、模拟器兼容问题，还是想聊聊复古游戏，都可以通过邮件或 X 找到我。',
+    emailCta: '发送邮件',
+    xCta: '在 X 上找到我',
+    legalTitle: '关于游戏文件',
+    legalBody: '8BitGo 尊重游戏作者与版权所有者。请只运行你拥有合法备份权利的游戏，或自制、开源 ROM。本站的目标是研究网页模拟技术并帮助经典游戏体验在现代浏览器中延续。',
+  },
+
   /* ---------------- 博客 ---------------- */
   blog: {
     title: '博客',

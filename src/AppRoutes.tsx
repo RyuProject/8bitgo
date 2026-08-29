@@ -15,6 +15,7 @@ import { BlogPage } from '@/pages/BlogPage'
 import { PostPage } from '@/pages/PostPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { ProfilePage } from '@/pages/ProfilePage'
+import { AboutPage } from '@/pages/AboutPage'
 
 /**
  * 后台整块按需加载。
@@ -35,7 +36,6 @@ const AdminData = lazyNamed(() => import('@/admin/AdminData'), 'AdminData')
 
 const COMING_SOON_ROUTES = [
   '/apps',
-  '/about',
   '/terms',
   '/privacy',
   '/tv',
@@ -62,6 +62,7 @@ export function AppRoutes() {
           <Route path="/blog/:slug" element={<PostPage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/me" element={<ProfilePage />} />
+          <Route path="/about" element={<AboutPage />} />
           {COMING_SOON_ROUTES.map((path) => (
             <Route key={path} path={path} element={<ComingSoonPage />} />
           ))}

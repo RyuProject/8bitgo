@@ -1,5 +1,6 @@
 /** Deutsche UI-Texte. Schlüsselstruktur exakt wie in zh-Hans.ts. */
 import type { Translation } from './index'
+import { aboutEnglish } from './about'
 
 const de: Translation = {
   /* ---------------- Allgemein ---------------- */
@@ -298,6 +299,9 @@ const de: Translation = {
     relatedTitle: 'Das könnte dir auch gefallen',
     relatedSubtitle: 'Gleiche Plattform, gleiches Genre oder vom selben Entwickler',
   },
+
+  /* ---------------- Über uns ---------------- */
+  aboutPage: aboutEnglish,
 
   /* ---------------- Blog ---------------- */
   blog: {

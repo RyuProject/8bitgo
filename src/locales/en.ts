@@ -1,5 +1,6 @@
 /** English UI strings. Key structure mirrors zh-Hans.ts exactly. */
 import type { Translation } from './index'
+import { aboutEnglish } from './about'
 
 const en: Translation = {
   /* ---------------- Common ---------------- */
@@ -298,6 +299,9 @@ const en: Translation = {
     relatedTitle: 'You might also like',
     relatedSubtitle: 'Same platform, same genre, or from the same developer',
   },
+
+  /* ---------------- About ---------------- */
+  aboutPage: aboutEnglish,
 
   /* ---------------- Blog ---------------- */
   blog: {

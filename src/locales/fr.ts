@@ -1,5 +1,6 @@
 /** Textes d'interface en français. La structure des clés reflète exactement zh-Hans.ts. */
 import type { Translation } from './index'
+import { aboutEnglish } from './about'
 
 const fr: Translation = {
   /* ---------------- Général ---------------- */
@@ -299,6 +300,9 @@ const fr: Translation = {
     relatedTitle: 'Tu aimeras peut-être aussi',
     relatedSubtitle: 'Même plateforme, même genre, ou même développeur',
   },
+
+  /* ---------------- À propos ---------------- */
+  aboutPage: aboutEnglish,
 
   /* ---------------- Blog ---------------- */
   blog: {

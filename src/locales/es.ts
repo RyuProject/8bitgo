@@ -1,5 +1,6 @@
 /** Textos de la interfaz en español (neutro). La estructura de claves es idéntica a zh-Hans.ts. */
 import type { Translation } from './index'
+import { aboutEnglish } from './about'
 
 const es: Translation = {
   /* ---------------- Común ---------------- */
@@ -298,6 +299,9 @@ const es: Translation = {
     relatedTitle: 'También te puede gustar',
     relatedSubtitle: 'Misma plataforma, mismo género o de la misma desarrolladora',
   },
+
+  /* ---------------- Sobre nosotros ---------------- */
+  aboutPage: aboutEnglish,
 
   /* ---------------- Blog ---------------- */
   blog: {

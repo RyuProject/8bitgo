@@ -129,6 +129,7 @@ add('/genres', '0.8', 'weekly')
 add('/developers', '0.6', 'weekly')
 add('/play-local', '0.6', 'monthly')
 add('/blog', '0.7', 'weekly')
+add('/about', '0.5', 'monthly')
 // 筛选页（/games?platform=…、?genre=…）不进 sitemap：
 // 这些页面自己的 canonical 指向 /games，收进来只会让 Search Console 报
 // 「Alternate page with proper canonical tag」；而且 robots.txt 里 Disallow: /games?

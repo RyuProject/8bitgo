@@ -1,5 +1,6 @@
 /** Testi UI in italiano. La struttura delle chiavi rispecchia esattamente zh-Hans.ts. */
 import type { Translation } from './index'
+import { aboutEnglish } from './about'
 
 const it: Translation = {
   /* ---------------- Comuni ---------------- */
@@ -299,6 +300,9 @@ const it: Translation = {
     relatedTitle: 'Potrebbe piacerti anche',
     relatedSubtitle: 'Stessa piattaforma, stesso genere o stesso sviluppatore',
   },
+
+  /* ---------------- Chi siamo ---------------- */
+  aboutPage: aboutEnglish,
 
   /* ---------------- Blog ---------------- */
   blog: {
