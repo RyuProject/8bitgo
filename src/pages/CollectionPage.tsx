@@ -85,6 +85,8 @@ function Collection({
 }: CollectionProps) {
   const t = useT()
   const lang = useLang()
+  // 平台页与游戏库统一用 1:1 封面；类型页暂时保留原来的横版构图，避免扩大本次改动范围。
+  const coverRatio = kind === 'platform' ? 'square' : 'landscape'
 
   // 后端会把越界页码夹回合法范围，以它为准；数据没到之前先用 URL 上的
   const page = list?.page ?? urlPage
@@ -138,14 +140,14 @@ function Collection({
       ) : !list ? (
         <GameGridSkeleton
           count={12}
-          coverRatio="landscape"
+          coverRatio={coverRatio}
           className="mt-8 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6"
         />
       ) : more.items.length > 0 ? (
         <>
           <div className="mt-8 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
             {more.items.map((g) => (
-              <GameCard key={g.slug} game={g} />
+              <GameCard key={g.slug} game={g} coverRatio={coverRatio} />
             ))}
           </div>
 
