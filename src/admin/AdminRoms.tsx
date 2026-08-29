@@ -410,7 +410,7 @@ export function AdminRoms() {
             <input className={inputClass} value={cfg.base} onChange={(e) => setCfg({ ...cfg, base: e.target.value })} placeholder="https://assets.8bitgo.com" />
           </Field>
           <Field label="Worker 地址（后台上传 / 删除 / 列表用）" hint="部署 worker/ 目录后得到，如 https://8bitgo-roms.xxx.workers.dev">
-            <input className={inputClass} value={cfg.api} onChange={(e) => setCfg({ ...cfg, api: e.target.value })} placeholder="https://8bitgo-roms.your-name.workers.dev" />
+            <input className={inputClass} value={cfg.api} onChange={(e) => setCfg({ ...cfg, api: e.target.value })} placeholder="https://roms.8bitgo.com" />
           </Field>
           <Field label="key 前缀（桶内目录）" hint="对应 roms/gba、roms/nes…；上传与约定路径探测都会带上它">
             <input className={cx(inputClass, 'font-mono')} value={cfg.prefix} onChange={(e) => setCfg({ ...cfg, prefix: e.target.value })} placeholder="roms" />
