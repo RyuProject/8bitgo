@@ -1,10 +1,21 @@
-import { Link } from 'react-router-dom'
 import { genres } from '@/data/genres'
-import { chipClasses } from '@/components/ui/Button'
+import { PixelButton } from '@/components/ui/PixelButton'
 import { useT } from '@/services/i18n'
 import { genreLabel } from '@/services/i18nData'
 import type { Facets } from '@/services/pageData'
 import { SkeletonBlock } from '@/components/ui/PageSkeleton'
+
+const CUSTOM_GENRE_ICONS = new Set([
+  'action',
+  'fighting',
+  'shooter',
+  'platformer',
+  'adventure',
+  'rpg',
+  'strategy',
+  'racing',
+  'puzzle',
+])
 
 /**
  * 首页隐藏的 h1：屏幕上看不见，搜索引擎与读屏软件仍能读到。
@@ -50,10 +61,19 @@ export function HomeIntro({ facets, loading = false }: { facets?: Facets; loadin
               </span>
             ))
           : shown.map((g) => (
-              <Link key={g.id} to={`/genres/${g.id}`} className={chipClasses(false, 'text-sm')}>
-                <span aria-hidden>{g.icon}</span>
-                {genreLabel(t, g.id)}
-              </Link>
+              <PixelButton key={g.id} to={`/genres/${g.id}`} compact>
+                {CUSTOM_GENRE_ICONS.has(g.id) ? (
+                  <img
+                    src={`/ui/genre-icons/${g.id}.svg`}
+                    alt=""
+                    className="h-5 w-5 object-contain [image-rendering:pixelated]"
+                    aria-hidden
+                  />
+                ) : (
+                  <span aria-hidden>{g.icon}</span>
+                )}
+                <span>{genreLabel(t, g.id)}</span>
+              </PixelButton>
             ))}
       </nav>
     </section>

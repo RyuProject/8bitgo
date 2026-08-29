@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg preserveAspectRatio="none" id="_图层_2" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" viewBox="0 0 18.7 19.8">
+  <!-- Generator: Adobe Illustrator 29.0.1, SVG Export Plug-In . SVG Version: 2.1.0 Build 192)  -->
+  <defs>
+    <style>
+      .st0 {
+        clip-path: url(#clippath-1);
+      }
+
+      .st1 {
+        fill: #fff;
+      }
+
+      .st2 {
+        clip-path: url(#clippath);
+      }
+    </style>
+    <clipPath id="clippath">
+      <rect class="st1" y="0" width="18.7" height="19.8"/>
+    </clipPath>
+    <clipPath id="clippath-1">
+      <rect class="st1" y="-234.4" width="18.7" height="468.8"/>
+    </clipPath>
+  </defs>
+  <g id="Layer_1">
+    <g>
+      <rect class="st1" y="0" width="18.7" height="19.8"/>
+      <g class="st2">
+        <g>
+          <rect class="st1" y="-234.4" width="18.7" height="468.8"/>
+          <g class="st0">
+            <path class="st1" d="M0-214.2c1.9,0,3.8,0,5.7,0,.7-.4,1.3.6,2-.5,0,0,0,0,0,0,.1.1.2.4.3.5,4.7-.3,9.4,0,14.1-.1v21.8c.2-.1.4-.2.6-.1v22.1c.2,0,.4,0,.6.2v21.6c.2-.1.5-.1.7.1v21c.2.1.5,0,.7.3v2.2c0,5.2,0,10.4,0,15.6v44.8c.2,0,.5,0,.7.4V20.5c-.2,0-.5,0-.7.1v42.9c-.2-.4-.5-.4-.7,0v21.4c-.2.2-.5.2-.7,0,0,7.2,0,14.3,0,21.5-.4.5-.9,0-1.3.2v20.6c-8.5.2-17.1,0-25.6.1v-20.7c-.5,0-.9-.1-1.3,0v-21.7c-.2.1-.4.1-.7,0v-22c-.2.1-.4,0-.7,0,0-14.1,0-28.2,0-42.3-.2-.2-.4-.3-.7,0v-2.6c0-14.1,0-28.1,0-42.2,0-22.7,0-45.3,0-68,0-5.4,0-10.8,0-16.3.2,0,.4,0,.7,0v-40.1c.2-.2.4-.2.7,0,.2.1.4,0,.7-.2,0-7.1,0-14.2,0-21.3.2-.3.4-.2.7-.2,0-7.4,0-14.7,0-22.1.2-.2.4-.3.6.4.1.4.2.7.4.7,1-.1,2.1-.3,3.1-.2C0-199.2,0-206.7,0-214.2h0Z"/>
+          </g>
+        </g>
+      </g>
+    </g>
+  </g>
+</svg>

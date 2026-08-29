@@ -1,5 +1,5 @@
 import { openAuthModal } from '@/services/authModal'
-import { Button } from '@/components/ui/Button'
+import { PixelButton } from '@/components/ui/PixelButton'
 import { GameCover } from '@/components/game/GameCover'
 import { useGamesBySlugs } from '@/services/gameCache'
 import { cx } from '@/lib/format'
@@ -65,12 +65,14 @@ function Banner({ className }: { className?: string }) {
             {t.home.subcopy}
           </p>
           <div className="mt-5 flex flex-wrap gap-2">
-            <Button to="/games">
-              <span aria-hidden>▶</span> {t.home.ctaPlay}
-            </Button>
-            <Button to="/play-local" variant="secondary">
-              <span aria-hidden>📂</span> {t.home.ctaUpload}
-            </Button>
+            <PixelButton to="/games" tone="green">
+              <span aria-hidden>▶</span>
+              <span className="text-[#fcfae5]">{t.home.ctaPlay}</span>
+            </PixelButton>
+            <PixelButton to="/play-local">
+              <img src="/ui/run-my-rom.svg" alt="" className="h-5 w-5 object-contain [image-rendering:pixelated]" aria-hidden />
+              <span>{t.home.ctaUpload}</span>
+            </PixelButton>
           </div>
         </div>
 

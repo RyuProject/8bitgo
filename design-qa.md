@@ -62,6 +62,75 @@ final result: passed
 
 ---
 
+# Nine-slice center-fill correction recheck
+
+- Source visual truth: `/var/folders/hg/rws3swzs2gnc5zs48b6ln5r80000gn/T/TemporaryItems/NSIRD_screencaptureui_tNhqtP/截屏2026-08-29 14.43.21.png` and the supplied nine-slice SVG files.
+- Implementation: `src/components/ui/PixelButton.tsx` with `public/ui/pixel-buttons/white-center.svg` and `green-center.svg`.
+- State: homepage hero and genre buttons, default state.
+
+## Findings and fix
+
+- [P1, fixed in code] The previous implementation skipped both center SVGs and substituted a flat color, while the edge SVGs retained their intrinsic aspect ratio. This produced visible breaks at the top, bottom, and center seams.
+- The component now renders all nine supplied pieces. Corners retain their proportions, top/bottom/center pieces stretch horizontally as required, left/right/center pieces stretch vertically as required, and the new white center asset fills the central cell.
+- Production build and whitespace checks pass.
+
+## Verification blocker
+
+The in-app browser denied local-page access during the post-fix capture, so a fresh browser-rendered screenshot and console check could not be produced in this turn. The already-open preview remains available for manual refresh.
+
+final result: blocked
+
+---
+
+# Homepage pixel-button and genre-icon QA
+
+- Source visual truth: `/Users/zhangwenyu/Downloads/截屏2026-08-29 14.31.54.png`, together with the supplied button and icon SVG files in `/Users/zhangwenyu/Desktop/未命名文件夹/`.
+- Browser-rendered implementation: `/private/tmp/8bitgo-home-buttons-desktop.jpg`
+- Viewport: 1600 × 900 CSS px, device scale factor 1.
+- Source pixels: 1602 × 370. Implementation pixels: 1600 × 900.
+- State: Simplified Chinese homepage, default button state. The source is a focused crop, so comparison uses the matching hero/button region.
+
+## Findings
+
+No actionable P0, P1, or P2 differences remain for the requested change.
+
+## Full-view comparison evidence
+
+The two hero actions remain in the same order and retain the green-primary / white-secondary hierarchy. The supplied pixel-art edge pieces surround a flexible center, so both labels fit without stretching the corner artwork. The genre shortcuts remain a wrapping horizontal group beneath the hero.
+
+## Focused region comparison evidence
+
+The hero button region was inspected at desktop and narrow responsive widths. The green button keeps the existing play icon as requested. The white button uses the supplied `运行我的ROM.svg`. Nine supplied genre SVGs map to their matching genre IDs; genres without a supplied replacement retain their existing icons.
+
+## Required fidelity surfaces
+
+- Fonts and typography: the existing font, weight, size, and label copy are preserved.
+- Spacing and layout rhythm: action spacing, compact genre spacing, wrapping, and responsive layout remain intact.
+- Colors and visual tokens: the requested green/white hierarchy remains, with the green center matched to the supplied SVG palette.
+- Image quality and asset fidelity: all replacements use the supplied vector assets; pixel icons retain crisp rendering.
+- Copy and content: all labels and destinations are unchanged.
+
+## Comparison history
+
+1. First pass: transparent gaps appeared around the flexible center (P1).
+2. Fix: preserved all nine grid positions and added a source-matched center fill.
+3. Post-fix desktop and narrow captures show continuous fills and intact pixel edges.
+
+## Interaction and browser checks
+
+- `/games` and `/play-local` links are visible and retain their correct destinations.
+- Browser console check returned no errors.
+- Production build passed.
+- Lint passed with pre-existing warnings in generated EmulatorJS files and unrelated scripts.
+
+## Follow-up polish
+
+No P3 follow-up is required for this scoped change.
+
+final result: passed
+
+---
+
 # Whole-site page skeleton QA
 
 - Source visual truth: `/Users/zhangwenyu/Downloads/截屏2026-08-29 11.05.17.png`
@@ -112,3 +181,9 @@ The final home chip row mirrors the reference's defining structure: each light r
 No P3 follow-up is required for this scoped change.
 
 final result: passed
+
+---
+
+Latest status for the nine-slice center-fill correction: the implementation and production build pass, but the required fresh browser capture was denied by local-page permissions. See “Nine-slice center-fill correction recheck” above.
+
+final result: blocked

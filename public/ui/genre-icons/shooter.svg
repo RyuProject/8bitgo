@@ -1,0 +1,310 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 512 384">
+  <!-- Generator: Adobe Illustrator 29.0.1, SVG Export Plug-In . SVG Version: 2.1.0 Build 192)  -->
+  <defs>
+    <style>
+      .st0 {
+        fill: #bfa17b;
+      }
+
+      .st1 {
+        fill: #6c4d4a;
+      }
+
+      .st2 {
+        fill: #010101;
+      }
+
+      .st3 {
+        fill: #010000;
+      }
+
+      .st4 {
+        fill: #93735e;
+      }
+
+      .st5 {
+        fill: #bfa278;
+      }
+
+      .st6 {
+        fill: #6e4c4a;
+      }
+
+      .st7 {
+        fill: #decf98;
+      }
+
+      .st8 {
+        fill: #3f2d2d;
+      }
+
+      .st9 {
+        fill: #decf96;
+      }
+
+      .st10 {
+        fill: #3d2d30;
+      }
+
+      .st11 {
+        fill: #bfa27a;
+      }
+
+      .st12 {
+        fill: #decf94;
+      }
+
+      .st13 {
+        fill: #96725c;
+      }
+
+      .st14 {
+        fill: #6f4c4a;
+      }
+
+      .st15 {
+        fill: #93725f;
+      }
+
+      .st16 {
+        fill: #bfa17d;
+      }
+
+      .st17 {
+        fill: #dece9a;
+      }
+
+      .st18 {
+        fill: #95725c;
+      }
+
+      .st19 {
+        fill: #937261;
+      }
+
+      .st20 {
+        fill: #95725f;
+      }
+
+      .st21 {
+        fill: #92735e;
+      }
+
+      .st22 {
+        fill: #95725e;
+      }
+
+      .st23 {
+        fill: #3c2e2d;
+      }
+
+      .st24 {
+        fill: #3f2c2e;
+      }
+
+      .st25 {
+        fill: #dece9b;
+      }
+
+      .st26 {
+        fill: #020001;
+      }
+
+      .st27 {
+        fill: #92745c;
+      }
+    </style>
+  </defs>
+  <g id="_图层_1" data-name="图层_1" shape-rendering="crispEdges">
+    <rect x="80" width="64" height="16"/>
+    <rect x="432" width="16" height="16"/>
+    <rect x="64" y="16" width="16" height="16"/>
+    <rect class="st2" x="80" y="16" width="48" height="16"/>
+    <rect class="st15" x="128" y="16" width="16" height="16"/>
+    <rect x="144" y="16" width="288" height="16"/>
+    <rect class="st2" x="432" y="16" width="16" height="16"/>
+    <rect x="448" y="16" width="32" height="16"/>
+    <rect class="st2" x="16" y="32" width="16" height="16"/>
+    <rect x="64" y="32" width="16" height="16"/>
+    <rect class="st27" x="80" y="32" width="16" height="16"/>
+    <rect class="st22" x="96" y="32" width="32" height="16"/>
+    <rect class="st4" x="128" y="32" width="32" height="16"/>
+    <rect x="160" y="32" width="272" height="16"/>
+    <rect class="st9" x="432" y="32" width="16" height="16"/>
+    <rect x="448" y="32" width="32" height="16"/>
+    <rect class="st2" x="480" y="32" width="16" height="16"/>
+    <rect y="48" width="16" height="16"/>
+    <rect class="st15" x="16" y="48" width="16" height="16"/>
+    <rect class="st26" x="32" y="48" width="16" height="16"/>
+    <rect class="st3" x="48" y="48" width="16" height="16"/>
+    <rect class="st20" x="64" y="48" width="16" height="16"/>
+    <rect class="st25" x="80" y="48" width="16" height="16"/>
+    <rect class="st17" x="96" y="48" width="16" height="16"/>
+    <rect class="st4" x="112" y="48" width="16" height="16"/>
+    <rect class="st7" x="128" y="48" width="16" height="16"/>
+    <rect class="st4" x="144" y="48" width="32" height="16"/>
+    <rect class="st0" x="176" y="48" width="32" height="16"/>
+    <rect class="st22" x="208" y="48" width="64" height="16"/>
+    <rect class="st0" x="272" y="48" width="32" height="16"/>
+    <rect class="st12" x="304" y="48" width="112" height="16"/>
+    <rect class="st9" x="416" y="48" width="32" height="16"/>
+    <rect class="st12" x="448" y="48" width="32" height="16"/>
+    <rect class="st2" x="480" y="48" width="16" height="16"/>
+    <rect x="496" y="48" width="16" height="16"/>
+    <rect x="16" y="64" width="32" height="16"/>
+    <rect class="st22" x="48" y="64" width="16" height="16"/>
+    <rect class="st18" x="64" y="64" width="16" height="16"/>
+    <rect class="st0" x="80" y="64" width="32" height="16"/>
+    <rect class="st18" x="112" y="64" width="16" height="16"/>
+    <rect class="st0" x="128" y="64" width="16" height="16"/>
+    <rect class="st18" x="144" y="64" width="32" height="16"/>
+    <rect class="st0" x="176" y="64" width="32" height="16"/>
+    <rect class="st18" x="208" y="64" width="32" height="16"/>
+    <rect class="st22" x="240" y="64" width="16" height="16"/>
+    <rect class="st18" x="256" y="64" width="16" height="16"/>
+    <rect class="st0" x="272" y="64" width="32" height="16"/>
+    <rect class="st11" x="304" y="64" width="128" height="16"/>
+    <rect class="st5" x="432" y="64" width="48" height="16"/>
+    <rect class="st0" x="480" y="64" width="16" height="16"/>
+    <rect x="496" y="64" width="16" height="16"/>
+    <rect x="16" y="80" width="32" height="16"/>
+    <rect class="st22" x="48" y="80" width="16" height="16"/>
+    <rect class="st18" x="64" y="80" width="64" height="16"/>
+    <rect class="st0" x="128" y="80" width="16" height="16"/>
+    <rect class="st18" x="144" y="80" width="32" height="16"/>
+    <rect class="st0" x="176" y="80" width="48" height="16"/>
+    <rect class="st18" x="224" y="80" width="16" height="16"/>
+    <rect class="st22" x="240" y="80" width="16" height="16"/>
+    <rect class="st18" x="256" y="80" width="16" height="16"/>
+    <rect class="st0" x="272" y="80" width="16" height="16"/>
+    <rect class="st11" x="288" y="80" width="144" height="16"/>
+    <rect class="st16" x="432" y="80" width="32" height="16"/>
+    <rect class="st0" x="464" y="80" width="16" height="16"/>
+    <rect x="480" y="80" width="32" height="16"/>
+    <rect x="16" y="96" width="32" height="16"/>
+    <rect class="st8" x="48" y="96" width="16" height="16"/>
+    <rect class="st5" x="64" y="96" width="16" height="16"/>
+    <rect class="st20" x="80" y="96" width="32" height="16"/>
+    <rect class="st5" x="112" y="96" width="16" height="16"/>
+    <rect class="st20" x="128" y="96" width="32" height="16"/>
+    <rect class="st0" x="160" y="96" width="64" height="16"/>
+    <rect class="st5" x="224" y="96" width="48" height="16"/>
+    <rect class="st0" x="272" y="96" width="144" height="16"/>
+    <rect class="st16" x="416" y="96" width="16" height="16"/>
+    <rect class="st4" x="432" y="96" width="16" height="16"/>
+    <rect class="st22" x="448" y="96" width="16" height="16"/>
+    <rect class="st10" x="464" y="96" width="16" height="16"/>
+    <rect x="480" y="96" width="32" height="16"/>
+    <rect x="16" y="112" width="32" height="16"/>
+    <rect class="st23" x="48" y="112" width="16" height="16"/>
+    <rect class="st24" x="64" y="112" width="352" height="16"/>
+    <rect class="st4" x="416" y="112" width="32" height="16"/>
+    <rect class="st22" x="448" y="112" width="48" height="16"/>
+    <rect x="496" y="112" width="16" height="16"/>
+    <rect x="16" y="128" width="48" height="16"/>
+    <rect class="st21" x="64" y="128" width="16" height="16"/>
+    <rect class="st22" x="80" y="128" width="32" height="16"/>
+    <rect class="st20" x="112" y="128" width="48" height="16"/>
+    <rect class="st22" x="160" y="128" width="304" height="16"/>
+    <rect x="464" y="128" width="48" height="16"/>
+    <rect x="48" y="144" width="16" height="16"/>
+    <rect class="st21" x="64" y="144" width="16" height="16"/>
+    <rect class="st22" x="80" y="144" width="32" height="16"/>
+    <rect class="st0" x="112" y="144" width="64" height="16"/>
+    <rect class="st22" x="176" y="144" width="16" height="16"/>
+    <rect x="192" y="144" width="16" height="16"/>
+    <rect class="st2" x="208" y="144" width="224" height="16"/>
+    <rect class="st21" x="432" y="144" width="32" height="16"/>
+    <rect x="48" y="160" width="16" height="16"/>
+    <rect class="st2" x="64" y="160" width="16" height="16"/>
+    <rect class="st22" x="80" y="160" width="32" height="16"/>
+    <rect class="st0" x="112" y="160" width="64" height="16"/>
+    <rect class="st6" x="176" y="160" width="16" height="16"/>
+    <rect x="192" y="160" width="272" height="16"/>
+    <rect x="64" y="176" width="16" height="16"/>
+    <rect class="st6" x="80" y="176" width="32" height="16"/>
+    <rect class="st22" x="112" y="176" width="64" height="16"/>
+    <rect class="st6" x="176" y="176" width="16" height="16"/>
+    <rect x="192" y="176" width="16" height="16"/>
+    <rect class="st1" x="208" y="176" width="16" height="16"/>
+    <rect class="st14" x="224" y="176" width="16" height="16"/>
+    <rect x="240" y="176" width="32" height="16"/>
+    <rect class="st1" x="272" y="176" width="16" height="16"/>
+    <rect class="st14" x="288" y="176" width="16" height="16"/>
+    <rect x="304" y="176" width="16" height="16"/>
+    <rect x="64" y="192" width="16" height="16"/>
+    <rect class="st6" x="80" y="192" width="32" height="16"/>
+    <rect class="st22" x="112" y="192" width="64" height="16"/>
+    <rect class="st6" x="176" y="192" width="16" height="16"/>
+    <rect x="192" y="192" width="16" height="16"/>
+    <rect class="st2" x="208" y="192" width="16" height="16"/>
+    <rect class="st13" x="224" y="192" width="16" height="16"/>
+    <rect x="240" y="192" width="32" height="16"/>
+    <rect class="st2" x="272" y="192" width="16" height="16"/>
+    <rect class="st13" x="288" y="192" width="16" height="16"/>
+    <rect x="304" y="192" width="16" height="16"/>
+    <rect x="64" y="208" width="16" height="16"/>
+    <rect class="st6" x="80" y="208" width="32" height="16"/>
+    <rect class="st22" x="112" y="208" width="48" height="16"/>
+    <rect class="st6" x="160" y="208" width="16" height="16"/>
+    <rect class="st3" x="176" y="208" width="16" height="16"/>
+    <rect x="192" y="208" width="32" height="16"/>
+    <rect class="st3" x="224" y="208" width="16" height="16"/>
+    <rect class="st2" x="240" y="208" width="16" height="16"/>
+    <rect class="st3" x="256" y="208" width="16" height="16"/>
+    <rect class="st22" x="272" y="208" width="16" height="16"/>
+    <rect class="st13" x="288" y="208" width="16" height="16"/>
+    <rect x="304" y="208" width="16" height="16"/>
+    <rect x="64" y="224" width="16" height="16"/>
+    <rect class="st6" x="80" y="224" width="16" height="16"/>
+    <rect class="st22" x="96" y="224" width="48" height="16"/>
+    <rect class="st6" x="144" y="224" width="32" height="16"/>
+    <rect class="st3" x="176" y="224" width="16" height="16"/>
+    <rect x="192" y="224" width="16" height="16"/>
+    <rect class="st3" x="208" y="224" width="32" height="16"/>
+    <rect class="st22" x="240" y="224" width="16" height="16"/>
+    <rect class="st3" x="256" y="224" width="16" height="16"/>
+    <rect class="st19" x="272" y="224" width="16" height="16"/>
+    <rect class="st2" x="288" y="224" width="16" height="16"/>
+    <rect x="304" y="224" width="16" height="16"/>
+    <rect x="48" y="240" width="16" height="16"/>
+    <rect class="st6" x="64" y="240" width="16" height="16"/>
+    <rect class="st22" x="80" y="240" width="64" height="16"/>
+    <rect class="st6" x="144" y="240" width="32" height="16"/>
+    <rect class="st22" x="176" y="240" width="96" height="16"/>
+    <rect x="272" y="240" width="32" height="16"/>
+    <rect x="48" y="256" width="16" height="16"/>
+    <rect class="st6" x="64" y="256" width="16" height="16"/>
+    <rect class="st22" x="80" y="256" width="64" height="16"/>
+    <rect class="st6" x="144" y="256" width="32" height="16"/>
+    <rect x="176" y="256" width="96" height="16"/>
+    <rect x="48" y="272" width="16" height="16"/>
+    <rect class="st6" x="64" y="272" width="16" height="16"/>
+    <rect class="st22" x="80" y="272" width="48" height="16"/>
+    <rect class="st6" x="128" y="272" width="32" height="16"/>
+    <rect class="st2" x="160" y="272" width="16" height="16"/>
+    <rect x="48" y="288" width="16" height="16"/>
+    <rect class="st6" x="64" y="288" width="16" height="16"/>
+    <rect class="st22" x="80" y="288" width="48" height="16"/>
+    <rect class="st6" x="128" y="288" width="16" height="16"/>
+    <rect x="144" y="288" width="32" height="16"/>
+    <rect x="16" y="304" width="32" height="16"/>
+    <rect class="st6" x="48" y="304" width="16" height="16"/>
+    <rect class="st22" x="64" y="304" width="64" height="16"/>
+    <rect class="st6" x="128" y="304" width="16" height="16"/>
+    <rect x="144" y="304" width="32" height="16"/>
+    <rect x="16" y="320" width="32" height="16"/>
+    <rect class="st6" x="48" y="320" width="16" height="16"/>
+    <rect class="st22" x="64" y="320" width="64" height="16"/>
+    <rect class="st6" x="128" y="320" width="16" height="16"/>
+    <rect x="144" y="320" width="32" height="16"/>
+    <rect x="48" y="336" width="16" height="16"/>
+    <rect class="st6" x="64" y="336" width="80" height="16"/>
+    <rect x="144" y="336" width="32" height="16"/>
+    <rect x="48" y="352" width="16" height="16"/>
+    <rect class="st6" x="64" y="352" width="80" height="16"/>
+    <rect x="144" y="352" width="16" height="16"/>
+    <rect x="64" y="368" width="80" height="16"/>
+  </g>
+</svg>
