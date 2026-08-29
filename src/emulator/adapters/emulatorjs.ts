@@ -101,14 +101,18 @@ const EJS_LANG: Record<Lang, string> = {
  *   EJS_Runtime is not defined!
  * 它压根不再下载，清浏览器 HTTP 缓存、硬刷新都无济于事 —— 毒在 IndexedDB 里。
  *
- * 所以按「代次」清一次：GENERATION 变了才清，清完在 localStorage 记账，
+ * 所以按「代次」清一次：GENERATION 变了才清，确认删除成功后才在 localStorage 记账，
  * 每个访客只清一回，正常人感知不到（下一局重新下载一次核心而已，还有 HTTP 缓存兜着）。
  * 引擎构建再出现不兼容的更换时，把 GENERATION +1。
+ *
+ * ⚠️ `deleteDatabase` 遇到其它标签页仍占着数据库时会触发 `blocked`。以前这里把
+ * blocked / 超时也当成成功并写入代次，结果数据库根本没删，浏览器却永远不再重试，
+ * 同一份正确 ROM 就会时好时坏。现在失败只放行本次开局，不记账；下次启动继续删。
  *
  * 里面只有可重新下载的工件（核心/ROM/BIOS 的副本），删了不丢任何用户数据；
  * 存档在另一个库（EmulatorJS-states）和我们自己的云存档里，不碰。
  */
-const EJS_CACHE_GENERATION = '2026-08-28.selfhost-cores'
+const EJS_CACHE_GENERATION = '2026-08-29.retry-blocked-purge'
 const EJS_CACHE_PURGED_KEY = '8bitgo.ejs.cachePurged'
 
 async function purgePoisonedEngineCache(): Promise<void> {
@@ -117,19 +121,26 @@ async function purgePoisonedEngineCache(): Promise<void> {
   } catch {
     /* localStorage 不可用就每次都清，代价只是核心重新下载 */
   }
-  await new Promise<void>((resolve) => {
+  const deleted = await new Promise<boolean>((resolve) => {
+    let settled = false
+    const done = (ok: boolean) => {
+      if (settled) return
+      settled = true
+      resolve(ok)
+    }
     try {
       const req = indexedDB.deleteDatabase('EmulatorJS-Cache')
-      const done = () => resolve()
-      req.onsuccess = done
-      req.onerror = done
-      // 有别的标签页开着同一个库时会 blocked 住；不等它，别把开局卡死
-      req.onblocked = done
-      setTimeout(done, 2000)
+      req.onsuccess = () => done(true)
+      req.onerror = () => done(false)
+      // 有别的标签页开着数据库就先放行本局，但绝不能写「清理完成」；下次启动再试。
+      req.onblocked = () => done(false)
+      // 浏览器实现异常时也不能把开局一直卡住；超时同样保持未完成状态。
+      setTimeout(() => done(false), 2000)
     } catch {
-      resolve()
+      done(false)
     }
   })
+  if (!deleted) return
   try {
     localStorage.setItem(EJS_CACHE_PURGED_KEY, EJS_CACHE_GENERATION)
   } catch {

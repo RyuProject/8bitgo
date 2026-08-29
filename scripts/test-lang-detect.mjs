@@ -204,5 +204,9 @@ check('seo.ts 的 x-default 指向 FALLBACK_LANG（和跳转兜底一致）', ()
   assert.match(read('src/services/seo.ts'), /\['x-default', absoluteUrl\(localizedPath\(barePath, FALLBACK_LANG\)\)\]/)
 })
 
+check('sitemap 的 x-default 也指向 FALLBACK_LANG', () => {
+  assert.match(read('scripts/gen-sitemap.mjs'), /localized\(path, FALLBACK_LANG\)/)
+})
+
 console.log(failed === 0 ? '\n✅ 全部通过' : `\n❌ ${failed} 个用例未通过`)
 process.exit(failed === 0 ? 0 : 1)

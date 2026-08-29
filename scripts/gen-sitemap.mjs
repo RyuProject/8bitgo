@@ -73,6 +73,7 @@ const platforms = await loadTs('src/data/platforms.ts', 'platforms')
 const genres = await loadTs('src/data/genres.ts', 'genres')
 const LANGUAGES = await loadTs('src/config/languages.ts', 'LANGUAGES')
 const DEFAULT_LANG = await loadTs('src/config/languages.ts', 'DEFAULT_LANG')
+const FALLBACK_LANG = await loadTs('src/config/languages.ts', 'FALLBACK_LANG')
 const HREFLANG = await loadTs('src/config/languages.ts', 'HREFLANG')
 /**
  * 取全部游戏。
@@ -166,7 +167,8 @@ const alternatesFor = (path) =>
   LANGUAGES.map(
     (l) => `    <xhtml:link rel="alternate" hreflang="${HREFLANG[l.code]}" href="${esc(SITE + localized(path, l.code))}" />`,
   ).join('\n') +
-  `\n    <xhtml:link rel="alternate" hreflang="x-default" href="${esc(SITE + localized(path, DEFAULT_LANG))}" />`
+  // 和页面 head 保持一致：访客语言不在支持列表中时，统一落到英语版。
+  `\n    <xhtml:link rel="alternate" hreflang="x-default" href="${esc(SITE + localized(path, FALLBACK_LANG))}" />`
 
 const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">

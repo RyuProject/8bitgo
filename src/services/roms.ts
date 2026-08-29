@@ -413,7 +413,13 @@ export interface RomResolution {
  */
 export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomResolution {
   const lang = useLang()
-  const [state, setState] = useState<RomResolution>({ status: 'idle', url: '' })
+  // SSR 阶段不会运行 effect，但数据库已经明确绑定 ROM 时，我们至少知道「有在线版本，
+  // 正在准备地址」。初始态直接设 checking，避免搜索引擎和首屏用户先看到
+  // 「选择本地 ROM」，水合后又突然变成「开始游戏」这种自相矛盾的文案。
+  const [state, setState] = useState<RomResolution>(() => ({
+    status: game && effectiveRomKey(game, lang, prefer) ? 'checking' : 'idle',
+    url: '',
+  }))
 
   useEffect(() => {
     if (!game) return
