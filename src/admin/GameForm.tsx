@@ -14,6 +14,7 @@ import {
   getRomConfig,
   isBundleKey,
   keepsOriginalFileName,
+  listRomObjects,
   romUrlForKey,
   uploadRom,
 } from '@/services/roms'
@@ -476,8 +477,40 @@ function SystemImageField({ value, onChange }: { value: string; onChange: (value
   const inputRef = useRef<HTMLInputElement>(null)
   const [progress, setProgress] = useState<number | null>(null)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [uploadedKeys, setUploadedKeys] = useState<string[]>([])
+  const [optionsLoading, setOptionsLoading] = useState(false)
+  const [optionsError, setOptionsError] = useState<string | null>(null)
   const cfg = getRomConfig()
   const canUpload = Boolean(cfg.api && cfg.token)
+
+  useEffect(() => {
+    if (!canUpload) return
+    let active = true
+    setOptionsLoading(true)
+    setOptionsError(null)
+    listRomObjects('systems/dos')
+      .then((objects) => {
+        if (!active) return
+        const keys = objects
+          .filter((object) => /\.jsdos$/i.test(object.key))
+          .sort((a, b) => {
+            // 系统镜像通常会按版本反复上传，最近上传的应该最容易被选到。
+            const byTime = String(b.uploaded ?? '').localeCompare(String(a.uploaded ?? ''))
+            return byTime || a.key.localeCompare(b.key)
+          })
+          .map((object) => object.key)
+        setUploadedKeys(keys)
+      })
+      .catch((err) => {
+        if (active) setOptionsError(err instanceof Error ? err.message : '读取已上传镜像失败')
+      })
+      .finally(() => {
+        if (active) setOptionsLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [canUpload, cfg.api, cfg.token])
 
   const onFile = async (file: File | undefined) => {
     if (!file) return
@@ -499,6 +532,7 @@ function SystemImageField({ value, onChange }: { value: string; onChange: (value
     try {
       const result = await uploadRom(file, key, setProgress)
       onChange(result.key)
+      setUploadedKeys((keys) => [result.key, ...keys.filter((item) => item !== result.key)])
       setMsg({ ok: true, text: `系统镜像已上传并绑定：${result.key}（${human(result.size)}）` })
     } catch (err) {
       setMsg({ ok: false, text: err instanceof Error ? err.message : '系统镜像上传失败' })
@@ -510,13 +544,29 @@ function SystemImageField({ value, onChange }: { value: string; onChange: (value
 
   return (
     <Field label="共享 Windows 系统镜像" className="col-span-2 sm:col-span-4">
-      <div className="flex gap-2">
+      <div className="flex flex-col gap-2 sm:flex-row">
         <input
           className={cx(inputClass, 'font-mono')}
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder="systems/dos/system-win95-v1.jsdos"
         />
+        <select
+          className={cx(inputClass, 'font-mono sm:w-72 sm:shrink-0')}
+          value={uploadedKeys.includes(value.trim()) ? value.trim() : ''}
+          onChange={(e) => e.target.value && onChange(e.target.value)}
+          disabled={!canUpload || optionsLoading || uploadedKeys.length === 0}
+          aria-label="快速选择已上传的系统镜像"
+        >
+          <option value="">
+            {optionsLoading ? '正在读取已上传镜像…' : uploadedKeys.length ? '快速选择已上传镜像' : '暂无已上传镜像'}
+          </option>
+          {uploadedKeys.map((key) => (
+            <option key={key} value={key}>
+              {key}
+            </option>
+          ))}
+        </select>
         <input ref={inputRef} type="file" accept=".jsdos" className="hidden" onChange={(e) => void onFile(e.target.files?.[0])} />
         <button
           type="button"
@@ -539,6 +589,7 @@ function SystemImageField({ value, onChange }: { value: string; onChange: (value
           </button>
         )}
       </div>
+      {optionsError && <p className="mt-1 text-[11px] text-live">下拉选项读取失败：{optionsError}；仍可手动填写。</p>}
       <p className="mt-1 text-[11px] text-dim">
         可填对象 key、站内路径或完整 URL。相同值可给所有 Win95 游戏复用；留空则兼容旧模式，把游戏 ROM 当作系统与游戏合一的完整 .jsdos。
         {value.trim() && romUrlForKey(value.trim()) && (
