@@ -279,6 +279,8 @@ const de: Translation = {
     createRoom: '👥 Raum erstellen',
     report: '🚩 Problem melden',
     about: 'Über dieses Spiel',
+    showMore: 'Mehr anzeigen',
+    showLess: 'Weniger anzeigen',
     year: 'Erscheinungsjahr',
     developer: 'Entwickler',
     players: 'Spieler',

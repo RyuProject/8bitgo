@@ -274,6 +274,8 @@ const ja: Translation = {
     createRoom: '👥 オンラインルームを作成',
     report: '🚩 問題を報告',
     about: 'ゲーム紹介',
+    showMore: 'もっと見る',
+    showLess: '折りたたむ',
     year: '発売年',
     developer: '開発会社',
     players: 'プレイ人数',

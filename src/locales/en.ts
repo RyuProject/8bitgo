@@ -279,6 +279,8 @@ const en: Translation = {
     createRoom: '👥 Create a room',
     report: '🚩 Report an issue',
     about: 'About this game',
+    showMore: 'Show more',
+    showLess: 'Show less',
     year: 'Release year',
     developer: 'Developer',
     players: 'Players',

@@ -279,6 +279,8 @@ const es: Translation = {
     createRoom: '👥 Crear una sala',
     report: '🚩 Reportar un problema',
     about: 'Sobre este juego',
+    showMore: 'Mostrar más',
+    showLess: 'Mostrar menos',
     year: 'Año de lanzamiento',
     developer: 'Desarrolladora',
     players: 'Jugadores',

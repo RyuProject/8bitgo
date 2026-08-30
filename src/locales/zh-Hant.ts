@@ -259,6 +259,8 @@ const zhHant: Translation = {
     createRoom: '👥 建立連線房間',
     report: '🚩 回報問題',
     about: '遊戲簡介',
+    showMore: '展開全文',
+    showLess: '收起',
     year: '發行年份',
     developer: '開發商',
     players: '玩家人數',

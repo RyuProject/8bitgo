@@ -280,6 +280,8 @@ const fr: Translation = {
     createRoom: '👥 Créer un salon',
     report: '🚩 Signaler un problème',
     about: 'À propos du jeu',
+    showMore: 'Afficher plus',
+    showLess: 'Afficher moins',
     year: 'Année de sortie',
     developer: 'Développeur',
     players: 'Joueurs',

@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { recordRecent, toggleFavorite, useCurrentUser } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
@@ -262,7 +262,12 @@ export function GameDetailPage() {
           {/* 简介 */}
           <section className="mt-8">
             <h2 className="text-lg font-bold">{t.game.about}</h2>
-            <p className="mt-2 leading-relaxed text-muted">{gameDescription(game, lang)}</p>
+            <GameDescription
+              key={`${game.slug}:${lang}`}
+              description={gameDescription(game, lang)}
+              showMore={t.game.showMore}
+              showLess={t.game.showLess}
+            />
             <dl className="mt-5 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
               <Meta label={t.game.year} value={String(game.year)} />
               <Meta
@@ -372,6 +377,69 @@ export function GameDetailPage() {
             ))}
           </div>
         </section>
+      )}
+    </div>
+  )
+}
+
+function GameDescription({
+  description,
+  showMore,
+  showLess,
+}: {
+  description: string
+  showMore: string
+  showLess: string
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const [canToggle, setCanToggle] = useState(false)
+  const descriptionId = useId()
+  const descriptionRef = useRef<HTMLParagraphElement>(null)
+
+  useEffect(() => {
+    const node = descriptionRef.current
+    if (!node || expanded) return
+
+    let active = true
+    const measure = () => {
+      if (active) setCanToggle(node.scrollHeight > node.clientHeight + 1)
+    }
+
+    measure()
+    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(measure)
+    observer?.observe(node)
+    // 像素字体加载后每行能放下的字数会变化，要再量一次，避免按钮误显或漏显。
+    void document.fonts?.ready.then(measure)
+
+    return () => {
+      active = false
+      observer?.disconnect()
+    }
+  }, [description, expanded])
+
+  return (
+    <div>
+      {/*
+       * 这里只做 CSS 视觉裁切，不截短字符串、也不条件渲染正文。
+       * 因此 SSR HTML、meta description 和结构化数据里始终保留完整简介，搜索引擎可以正常抓取。
+       */}
+      <p
+        ref={descriptionRef}
+        id={descriptionId}
+        className={cx('mt-2 leading-relaxed text-muted', !expanded && 'line-clamp-4')}
+      >
+        {description}
+      </p>
+      {canToggle && (
+        <button
+          type="button"
+          className="mt-2 rounded-sm text-sm font-semibold text-brand-hover underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/60 focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
+          aria-expanded={expanded}
+          aria-controls={descriptionId}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {expanded ? showLess : showMore}
+        </button>
       )}
     </div>
   )

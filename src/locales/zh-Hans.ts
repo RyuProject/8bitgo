@@ -285,6 +285,8 @@ export const zhHans = {
     createRoom: '👥 创建联机房间',
     report: '🚩 反馈问题',
     about: '游戏简介',
+    showMore: '展开全文',
+    showLess: '收起',
     year: '发行年份',
     developer: '开发商',
     players: '玩家人数',
