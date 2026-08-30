@@ -53,6 +53,10 @@ export interface MountOptions {
   dosExecutable?: string
   /** DOSBox-X 用来启动 Windows 95/98 的完整 .jsdos 磁盘镜像；留空走普通 DOSBox。 */
   dosBackend?: DosBackend
+  /** Windows 客体系统的共享 .jsdos 镜像 URL；游戏文件仍由 game 单独提供。 */
+  dosSystemUrl?: string
+  /** 客体系统启动后，等待多少秒再自动运行 dosExecutable。 */
+  dosLaunchDelay?: number
   /**
    * 游戏 slug —— 存档就是按它归档的。
    * 玩家自己上传的 ROM 没有 slug，调用方会给个 `local:文件名`（见 services/saves.ts）。

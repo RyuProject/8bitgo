@@ -121,10 +121,23 @@ export interface Game {
    */
   dosExecutable?: string
   /**
-   * DOS 运行核心。留空等同 dosbox；dosboxX 用于启动已经装好 Windows 95/98 的 .jsdos 镜像。
-   * 这里只切换 CPU/虚拟机核心，不会把普通 Windows 游戏压缩包自动安装成可启动系统。
+   * DOS 运行核心。留空等同 dosbox；dosboxX 可启动 Windows 95/98 的 .jsdos 系统镜像。
+   * 这里只切换 CPU/虚拟机核心；系统由 dosSystem 提供，游戏 ZIP 作为另一块 FAT 盘挂入。
    */
   dosBackend?: DosBackend
+  /**
+   * Windows 客体系统的共享 .jsdos 镜像（对象 key、站内路径或完整 URL）。
+   *
+   * 有值时，rom / roms 仍然只放这款游戏自己的 ZIP；播放器会把游戏作为独立 FAT 盘
+   * 挂进系统镜像。这样 Win95 / Win98 镜像可以被多款游戏复用，不必每款复制近百 MB。
+   * 留空时保留旧行为：dosboxX 直接把 ROM 当成一份已经装好系统与游戏的完整镜像。
+   */
+  dosSystem?: string
+  /**
+   * 客体 Windows 开机后等待多少秒再自动运行 dosExecutable。
+   * 不同系统镜像、浏览器和设备的开机时间差异很大，所以不能把 Win95 的经验值写死。
+   */
+  dosLaunchDelay?: number
   /**
    * 首页精选位的排序号（数字小的排前面）。没有这个字段就是不上首页。
    * 只要有任意一款设了，首页第一栏就只出这些，标题也会从「最多人玩」换成「最热门的游戏」——

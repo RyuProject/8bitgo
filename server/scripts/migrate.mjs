@@ -111,6 +111,18 @@ const patches = [
     run: () => conn.query('ALTER TABLE `games` ADD COLUMN `dos_backend` VARCHAR(16) NULL AFTER `dos_executable`'),
   },
   {
+    name: 'games.dos_system（可复用的 Windows 客体系统镜像）',
+    table: 'games',
+    needed: async () => !(await hasColumn('games', 'dos_system')),
+    run: () => conn.query('ALTER TABLE `games` ADD COLUMN `dos_system` VARCHAR(500) NULL AFTER `dos_backend`'),
+  },
+  {
+    name: 'games.dos_launch_delay（客体 Windows 自启动等待秒数）',
+    table: 'games',
+    needed: async () => !(await hasColumn('games', 'dos_launch_delay')),
+    run: () => conn.query('ALTER TABLE `games` ADD COLUMN `dos_launch_delay` SMALLINT UNSIGNED NULL AFTER `dos_system`'),
+  },
+  {
     name: 'games.adult（成人游戏，前台启动前验证年满 18 岁）',
     table: 'games',
     needed: async () => !(await hasColumn('games', 'adult')),

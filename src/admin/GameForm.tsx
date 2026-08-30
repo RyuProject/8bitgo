@@ -128,6 +128,13 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
     if (!slug) return setError('slug 不能为空')
     if (!isEdit && existingSlugs.includes(slug)) return setError(`slug「${slug}」已存在，请换一个`)
     if (form.genres.length === 0) return setError('至少选择一个类型')
+    const windowsGuest = form.platform === 'dos' && form.dosBackend === 'dosboxX' && Boolean(form.dosSystem?.trim())
+    if (windowsGuest && !/\.jsdos(?:[?#].*)?$/i.test(form.dosSystem!.trim())) {
+      return setError('Windows 系统镜像必须是 .jsdos 文件、对象 key 或 URL')
+    }
+    if (windowsGuest && !form.dosExecutable?.trim()) {
+      return setError('共享 Windows 系统模式必须填写 ZIP 内的自启动 EXE')
+    }
 
     const tags = tagsText
       .split(/[,，]/)
@@ -164,11 +171,14 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
       homeRank: Number(form.homeRank) > 0 ? Math.round(Number(form.homeRank)) : undefined,
       // 空字符串要写成 undefined，否则会当成「核心名叫空串」存进去
       core: form.core?.trim() || undefined,
-      // 空字符串写成 undefined，否则会当成「启动程序叫空串」存进去
-      // Windows 镜像靠 dosbox.conf 的 boot c: 启动，不该再拿 DOS 可执行文件覆盖它。
-      dosExecutable: form.platform === 'dos' && form.dosBackend !== 'dosboxX' ? form.dosExecutable?.trim() || undefined : undefined,
+      // 普通 DOS 用它生成 autoexec；共享 Windows 客体则用它生成客体系统里的启动批处理。
+      // 旧式“系统和游戏揉在一个 .jsdos”没有共享系统字段，仍按原 bundle 的 conf 启动。
+      dosExecutable: form.platform === 'dos' ? form.dosExecutable?.trim() || undefined : undefined,
       // 普通 DOS 是默认值，不落冗余字段；勾选时才明确保存 DOSBox-X。
       dosBackend: form.platform === 'dos' && form.dosBackend === 'dosboxX' ? 'dosboxX' : undefined,
+      // 平台仍然保存为 DOS；这两个字段只描述 DOSBox-X 里面要启动的客体系统。
+      dosSystem: windowsGuest ? form.dosSystem!.trim() : undefined,
+      dosLaunchDelay: windowsGuest ? Math.max(5, Math.min(120, Math.round(Number(form.dosLaunchDelay) || 24))) : undefined,
       // 空字符串写成 undefined，否则会存一条空的英文简介，
       // 前台判「有没有英文版」时就会误判成有
       descriptionEn: form.descriptionEn?.trim() || undefined,
@@ -261,16 +271,47 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
                 <input
                   type="checkbox"
                   checked={form.dosBackend === 'dosboxX'}
-                  onChange={(e) => set('dosBackend', e.target.checked ? 'dosboxX' : undefined)}
+                  onChange={(e) => {
+                    setForm((current) => ({
+                      ...current,
+                      dosBackend: e.target.checked ? 'dosboxX' : undefined,
+                      dosLaunchDelay: e.target.checked ? current.dosLaunchDelay ?? 24 : current.dosLaunchDelay,
+                    }))
+                  }}
                 />
                 Windows 95/98（DOSBox-X）
               </label>
               <p className="mt-1 text-[11px] text-dim">
-                不勾选 = 普通 DOSBox。勾选只会切换核心，ROM 必须是已经安装好 Windows 和游戏的
-                <strong className="text-muted"> .jsdos 完整镜像</strong>；普通 ZIP 不能直接变成 Win95 游戏。
+                数据库平台仍是 DOS。勾选后可让多款游戏共用一份 Win95 / Win98 系统镜像；每款游戏的 ROM 仍上传普通 ZIP。
               </p>
             </Field>
-            {form.dosBackend !== 'dosboxX' && (
+            {form.dosBackend === 'dosboxX' ? (
+              <>
+                <SystemImageField value={form.dosSystem ?? ''} onChange={(value) => set('dosSystem', value || undefined)} />
+                <Field label="Windows 自启动 EXE">
+                  <input
+                    className={cx(inputClass, 'font-mono')}
+                    value={form.dosExecutable ?? ''}
+                    onChange={(e) => set('dosExecutable', e.target.value || undefined)}
+                    placeholder="WINDEPTH.EXE 或 BIN/GAME.EXE"
+                  />
+                  <p className="mt-1 text-[11px] text-dim">
+                    游戏 ZIP 内的相对路径。播放器会等 Windows 开机后自动运行它，加载遮罩在此之前不会撤掉，因此玩家看不到桌面。
+                  </p>
+                </Field>
+                <Field label="开机等待（秒）">
+                  <input
+                    type="number"
+                    min="5"
+                    max="120"
+                    className={inputClass}
+                    value={form.dosLaunchDelay ?? 24}
+                    onChange={(e) => set('dosLaunchDelay', Math.max(5, Math.min(120, Number(e.target.value) || 24)))}
+                  />
+                  <p className="mt-1 text-[11px] text-dim">从模拟器启动到发送自启动命令的等待时间；慢设备可适当调大。</p>
+                </Field>
+              </>
+            ) : (
               <Field label="启动程序">
                 <input
                   className={inputClass}
@@ -421,6 +462,94 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
         </button>
       </div>
     </form>
+  )
+}
+
+/**
+ * 可复用的 Windows 客体系统镜像。
+ *
+ * 它不是某一款游戏的 ROM，因此不进入 allBoundKeys，也不在这里提供“从 R2 删除”：同一份
+ * Win95 / Win98 镜像可能被几十款游戏引用，编辑其中一款时顺手删掉会把其它游戏一起弄坏。
+ * 管理员可以解除当前游戏的绑定；真正删除共享对象仍到「ROM 存储」页明确操作。
+ */
+function SystemImageField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [progress, setProgress] = useState<number | null>(null)
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const cfg = getRomConfig()
+  const canUpload = Boolean(cfg.api && cfg.token)
+
+  const onFile = async (file: File | undefined) => {
+    if (!file) return
+    if (!/\.jsdos$/i.test(file.name)) {
+      setMsg({ ok: false, text: '请选择 .jsdos 系统镜像' })
+      if (inputRef.current) inputRef.current.value = ''
+      return
+    }
+    const old = value.trim()
+    // 已绑对象 key 时允许原地更新；完整 URL / 站内文件不归当前 R2 Worker 管，另存新 key。
+    const safeName = file.name.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'windows-system.jsdos'
+    const key = old && isDeletableKey(old) && /\.jsdos$/i.test(old) ? old : `systems/dos/${safeName}`
+    if (!(await confirmUpload(key, file))) {
+      if (inputRef.current) inputRef.current.value = ''
+      return
+    }
+    setMsg(null)
+    setProgress(0)
+    try {
+      const result = await uploadRom(file, key, setProgress)
+      onChange(result.key)
+      setMsg({ ok: true, text: `系统镜像已上传并绑定：${result.key}（${human(result.size)}）` })
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : '系统镜像上传失败' })
+    } finally {
+      setProgress(null)
+      if (inputRef.current) inputRef.current.value = ''
+    }
+  }
+
+  return (
+    <Field label="共享 Windows 系统镜像" className="col-span-2 sm:col-span-4">
+      <div className="flex gap-2">
+        <input
+          className={cx(inputClass, 'font-mono')}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="systems/dos/system-win95-v1.jsdos"
+        />
+        <input ref={inputRef} type="file" accept=".jsdos" className="hidden" onChange={(e) => void onFile(e.target.files?.[0])} />
+        <button
+          type="button"
+          className={cx(btnClass.secondary, 'shrink-0 whitespace-nowrap')}
+          disabled={!canUpload || progress !== null}
+          onClick={() => inputRef.current?.click()}
+        >
+          {progress === null ? '上传镜像' : `${progress}%`}
+        </button>
+        {value.trim() && (
+          <button
+            type="button"
+            className={cx(btnClass.secondary, 'shrink-0 whitespace-nowrap')}
+            onClick={() => {
+              onChange('')
+              setMsg({ ok: true, text: '已解除这款游戏的系统镜像绑定；共享文件没有删除' })
+            }}
+          >
+            解除绑定
+          </button>
+        )}
+      </div>
+      <p className="mt-1 text-[11px] text-dim">
+        可填对象 key、站内路径或完整 URL。相同值可给所有 Win95 游戏复用；留空则兼容旧模式，把游戏 ROM 当作系统与游戏合一的完整 .jsdos。
+        {value.trim() && romUrlForKey(value.trim()) && (
+          <>
+            {' '}<a className="text-brand hover:underline" href={romUrlForKey(value.trim())} target="_blank" rel="noreferrer">检查文件</a>
+          </>
+        )}
+      </p>
+      {!canUpload && <p className="mt-1 text-[11px] text-dim">要直接上传，请先在「ROM 存储」页配置 Worker 地址与口令。</p>}
+      {msg && <p className={cx('mt-1 text-xs', msg.ok ? 'text-brand' : 'text-live')}>{msg.text}</p>}
+    </Field>
   )
 }
 

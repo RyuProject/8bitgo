@@ -67,6 +67,8 @@ CREATE TABLE IF NOT EXISTS games (
   core           TEXT,
   dos_executable TEXT,
   dos_backend    TEXT,
+  dos_system     TEXT,
+  dos_launch_delay INTEGER,
   home_rank      INTEGER,
   added_at       TEXT,
   created_at     TEXT    NOT NULL DEFAULT (CURRENT_TIMESTAMP),

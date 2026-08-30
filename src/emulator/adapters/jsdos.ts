@@ -13,7 +13,8 @@
  */
 import type { Capability, CaptureSources, LoadProgress, MountOptions, Runtime, RuntimeHandle } from '../types'
 import { getT, fmt } from '@/services/i18n'
-import { buildDosboxConf, makeJsdosBundle } from '@/lib/jsdosBundle'
+import { buildDosboxConf, hideJsdosConfigForLayer, makeJsdosBundle, makeWindowsGameLayer } from '@/lib/jsdosBundle'
+import { buildWindowsGuestConfig, readWindowsSystemConfig, type WindowsGuestConfig } from '@/lib/windowsGuest'
 import { imageDataToBlob } from '../recorder'
 import { GP, startGamepadBridge, hasGamepadApi, type GamepadBridge } from '../gamepad'
 import { deleteSave, pullSave, pushSave } from '@/services/saves'
@@ -56,6 +57,79 @@ interface DosCi {
   screenshot: () => Promise<ImageData>
   sendKeyEvent: (keyCode: number, pressed: boolean) => void
   exit: () => Promise<void>
+}
+
+/** js-dos / Emscripten 使用 GLFW 键码；这里只列自动打开 Windows“运行”框需要的按键。 */
+const WIN_KEY = {
+  enter: 257,
+  esc: 256,
+  leftShift: 340,
+  leftCtrl: 341,
+  r: 82,
+  semicolon: 59,
+} as const
+
+/**
+ * 在客体 Windows 开好以后按 Win+R，输入固定启动脚本路径。
+ *
+ * 不把真实游戏路径逐字敲进去：老游戏目录常有空格、日文或特殊符号，键盘布局一变就会
+ * 输错。播放器只敲形如 D:\\8BITGO\\RUN.BAT 的纯 ASCII 固定路径；这个批处理在游戏
+ * bundle 内生成，负责切到真实目录后再运行后台指定的 EXE。
+ */
+function scheduleWindowsLaunch(
+  ci: DosCi,
+  command: string,
+  waitSeconds: number,
+  stopped: () => boolean,
+  onLaunched: () => void,
+): () => void {
+  const timers = new Set<number>()
+  const later = (ms: number, fn: () => void) => {
+    const id = window.setTimeout(() => {
+      timers.delete(id)
+      if (!stopped()) fn()
+    }, ms)
+    timers.add(id)
+  }
+  const tap = (key: number, shift = false) => {
+    if (shift) ci.sendKeyEvent(WIN_KEY.leftShift, true)
+    ci.sendKeyEvent(key, true)
+    ci.sendKeyEvent(key, false)
+    if (shift) ci.sendKeyEvent(WIN_KEY.leftShift, false)
+  }
+
+  const chars = command.toLowerCase().split('')
+  const typeAt = (at: number) => {
+    if (at >= chars.length) {
+      tap(WIN_KEY.enter)
+      // Explorer 收到命令后还要创建进程；这段时间继续盖住桌面与“运行”框。
+      later(5000, onLaunched)
+      return
+    }
+    const ch = chars[at]
+    if (/[a-z0-9]/.test(ch)) tap(ch.toUpperCase().charCodeAt(0))
+    else if (ch === ':') tap(WIN_KEY.semicolon, true)
+    else if (ch === '\\') tap(92)
+    else if (ch === '.') tap(46)
+    else throw new Error(`Windows 自动启动路径含无法输入的字符：${ch}`)
+    later(35, () => typeAt(at + 1))
+  }
+
+  later(Math.max(5, Math.min(120, waitSeconds)) * 1000, () => {
+    // DOSBox-X 不会把浏览器的 Meta / Super 键可靠地交给 Win95；Win+R 会退化成桌面上的
+    // 普通字母 R。Ctrl+Esc 是 Windows 95 原生的“打开开始菜单”，随后 R 触发 Run，
+    // 同样不会依赖鼠标坐标。第一个键也会让 fastForwardOnBoot 结束，避免游戏继续倍速。
+    ci.sendKeyEvent(WIN_KEY.leftCtrl, true)
+    tap(WIN_KEY.esc)
+    ci.sendKeyEvent(WIN_KEY.leftCtrl, false)
+    later(350, () => tap(WIN_KEY.r))
+    later(800, () => typeAt(0))
+  })
+
+  return () => {
+    for (const timer of timers) window.clearTimeout(timer)
+    timers.clear()
+  }
 }
 
 /**
@@ -131,11 +205,13 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   let props: DosProps | null = null
   let ci: DosCi | null = null
   let pad: GamepadBridge | null = null
-  let objectUrl = ''
+  const objectUrls: string[] = []
+  let cancelWindowsLaunch: (() => void) | null = null
   let volume = 1
   let paused = false
   /** onReady 的延时兜底定时器，销毁时要清掉 */
   let readyFallback = 0
+  let readySent = false
   /** 存档按 slug 归档；见下面 fsChanges 那段的说明 */
   let saveKey = ''
   /** 最近一次存档落到哪儿了（云端 / 浏览器），给界面显示用 */
@@ -146,6 +222,11 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
    * 它看不出中间那个 await 期间 push 回调把值改掉了。
    */
   const readLastPush = () => lastPush
+  const markReady = () => {
+    if (destroyed || readySent) return
+    readySent = true
+    options.onReady?.()
+  }
 
   const caps = new Set<Capability>(['pause', 'volume', 'screenshot', 'record'])
   if (hasGamepadApi()) caps.add('gamepad')
@@ -159,19 +240,37 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       // js-dos 本体（js-dos.js + wdosbox.wasm）由 loadJsDos() 用 <script> 拉，
       // 没有进度回调可用，只能先报个阶段；ROM 那一路是我们自己 fetch 的，有真实字节数
       options.onProgress?.({ phase: 'engine' })
-      const [Dos, rom] = await Promise.all([loadJsDos(), readRom(options.game, options.onProgress)])
+      const systemPromise = options.dosSystemUrl
+        ? loadGameBytes(options.dosSystemUrl, (progress) => options.onProgress?.({ ...progress, phase: 'assets' }))
+        : Promise.resolve(null)
+      const [Dos, rom, system] = await Promise.all([loadJsDos(), readRom(options.game, options.onProgress), systemPromise])
       options.onProgress?.({ phase: 'starting', ratio: 1 })
       if (destroyed) return
 
-      // 普通 zip / exe 现场打成 bundle；已经是 bundle 的原样使用
-      // 后台指定了启动程序就按它生成 conf，压过 pickExecutable 的猜测；
-      // ROM 本身已是 .jsdos bundle 时整包原样直通，这个覆盖不生效（bundle 里自带 conf）
-      const bundle = makeJsdosBundle(
-        rom.name,
-        rom.buf,
-        options.dosExecutable ? buildDosboxConf(options.dosExecutable) : undefined,
-      )
-      objectUrl = URL.createObjectURL(bundle.blob)
+      let primaryUrl = ''
+      let guest: WindowsGuestConfig | null = null
+      let initFs: unknown[] | undefined
+      if (system) {
+        if (!options.dosExecutable) throw new Error('Windows 客体游戏没有配置自启动 EXE')
+        guest = buildWindowsGuestConfig(await readWindowsSystemConfig(system.data))
+        const gameLayer = makeWindowsGameLayer(rom.buf, options.dosExecutable, guest.gameDrive)
+        const gameLayerBytes = new Uint8Array(await gameLayer.blob.arrayBuffer())
+        // 系统包自己的 conf 必须先改名：它作为后续文件层解开时会覆盖 Dos() 的直接配置。
+        // 改名只动 ZIP 头里的 36 个 ASCII 字节，不复制那份近百 MB 的 qcow2 数据。
+        const systemLayer = hideJsdosConfigForLayer(system.data)
+        // 最终配置再放一次到最后，未来 js-dos 即使调整直接配置与 initFs 的合并顺序也不会倒退。
+        initFs = [systemLayer, gameLayerBytes, { dosboxConf: guest.dosboxConf, jsdosConf: { version: '8' } }]
+      } else {
+        // 普通 zip / exe 现场打成 bundle；已经是 bundle 的原样使用。
+        // 后台指定了启动程序就按它生成 conf，压过 pickExecutable 的猜测。
+        const bundle = makeJsdosBundle(
+          rom.name,
+          rom.buf,
+          options.dosExecutable ? buildDosboxConf(options.dosExecutable) : undefined,
+        )
+        primaryUrl = URL.createObjectURL(bundle.blob)
+        objectUrls.push(primaryUrl)
+      }
 
       /**
        * 存档的归档键。
@@ -181,16 +280,21 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
        * 存了也永远读不回来。所以这里换成稳定的 slug（本地文件退回文件名）。
        */
       saveKey = options.gameSlug || `local:${rom.name}`
-      if (destroyed) return URL.revokeObjectURL(objectUrl)
+      if (destroyed) {
+        for (const url of objectUrls) URL.revokeObjectURL(url)
+        return
+      }
 
       const ipx = options.ipx
       props = Dos(host, {
-        url: objectUrl,
+        ...(guest
+          ? { dosboxConf: guest.dosboxConf, jsdosConf: { version: '8' }, initFs }
+          : { url: primaryUrl }),
         // 自托管的 wasm / worker 都在这个目录下
         pathPrefix: `${JSDOS_PATH}emulators/`,
         // Windows 95/98 仍是装在磁盘镜像里的客体系统；这里切的是能启动该镜像的 DOSBox-X 核心。
-        // 仅换核心不会安装 Windows，所以后台会明确要求这类游戏上传完整 .jsdos 包。
-        backend: options.dosBackend === 'dosboxX' ? 'dosboxX' : 'dosbox',
+        // 新模式把系统 bundle 与游戏 ZIP 分开叠加；没配系统 bundle 时仍兼容旧的完整 .jsdos 包。
+        backend: guest || options.dosBackend === 'dosboxX' ? 'dosboxX' : 'dosbox',
         // 播放器外壳是我们自己的，平时隐藏 js-dos 那套 UI；
         // 中继联机时必须放出来，玩家要在它的设置面板里填 IPX 服务器和房间
         kiosk: !ipx?.showUi,
@@ -204,6 +308,8 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
           iceServers: fetchIceServers,
         },
         imageRendering: 'pixelated',
+        // Windows 开机最耗时；第一次键盘输入会自动退出倍速，所以不会把游戏本体也加速。
+        ...(guest ? { fastForwardOnBoot: 5 } : {}),
         /**
          * 存档。js-dos 存的是**文件系统的变更包**（盘上被改过的文件），
          * 不是内存快照 —— 玩家必须先在游戏里存盘，点存档只是把这些改动固化下来。
@@ -225,10 +331,22 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         },
         onEvent: (event: string, arg?: unknown) => {
           if (destroyed) return
-          if (event === 'emu-ready') options.onReady?.()
+          if (event === 'emu-ready') {
+            // Windows 客体此时只代表模拟器壳已就绪，离系统开机和游戏启动还很远。
+            if (!guest) markReady()
+          }
           else if (event === 'bnd-play' || event === 'ci-ready') {
             if (event === 'ci-ready' && arg) {
               ci = arg as DosCi
+              if (guest && !cancelWindowsLaunch) {
+                cancelWindowsLaunch = scheduleWindowsLaunch(
+                  ci,
+                  guest.launcher,
+                  options.dosLaunchDelay ?? 24,
+                  () => destroyed,
+                  markReady,
+                )
+              }
               // DOS 游戏只认键盘，手柄在这里翻译成按键
               if (caps.has('gamepad') && !pad) {
                 pad = startGamepadBridge(DOS_PAD_MAP, (key, pressed) => ci?.sendKeyEvent(key, pressed))
@@ -245,7 +363,8 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       props.setVolume?.(volume)
       if (paused) props.setPaused?.(true)
       // 存档要等 js-dos 起来才有 props.save()，所以能力在这里才补上
-      if (props.save && saveKey) caps.add('fsSave')
+      // qcow2 系统镜像的扇区变化不是普通 js-dos 文件层存档；上游也明确把这种包标成不可保存。
+      if (props.save && saveKey && !guest) caps.add('fsSave')
       options.onCaps?.(caps)
       /**
        * 兜底：万一 kiosk 模式下不触发 emu-ready，也别让转圈一直转。
@@ -254,9 +373,14 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
        * 立刻调的结果是播放器马上显示「运行中」、加载提示消失，玩家对着黑屏
        * 等好几秒还以为卡死了。改成延时兜底：正常情况下 emu-ready 早就先到了。
        */
-      readyFallback = window.setTimeout(() => {
-        if (!destroyed) options.onReady?.()
-      }, 8000)
+      if (!guest) {
+        readyFallback = window.setTimeout(markReady, 8000)
+      } else {
+        // 没拿到 ci-ready 就无法安全发送自启动按键；宁可明确报错，也不能掀开遮罩露出桌面。
+        readyFallback = window.setTimeout(() => {
+          if (!readySent) options.onError?.(fmt(rt.jsdosRunFailed, { msg: 'Windows 客体启动超时，未能执行自启动程序' }))
+        }, ((options.dosLaunchDelay ?? 24) + 45) * 1000)
+      }
     } catch (e) {
       if (destroyed) return
       options.onError?.(fmt(rt.jsdosLoadFailed, { msg: e instanceof Error ? e.message : String(e) }))
@@ -271,6 +395,8 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     destroy() {
       destroyed = true
       window.clearTimeout(readyFallback)
+      cancelWindowsLaunch?.()
+      cancelWindowsLaunch = null
       pad?.stop()
       pad = null
       try {
@@ -280,7 +406,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       }
       props = null
       ci = null
-      if (objectUrl) URL.revokeObjectURL(objectUrl)
+      for (const url of objectUrls) URL.revokeObjectURL(url)
       host.remove()
     },
     setPaused(next: boolean) {

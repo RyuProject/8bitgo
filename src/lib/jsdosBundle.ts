@@ -23,6 +23,7 @@ interface ZipEntry {
   compressedSize: number
   uncompressedSize: number
   localOffset: number
+  centralOffset: number
   flags: number
 }
 
@@ -80,6 +81,7 @@ export function readZipEntries(buf: ArrayBuffer): ZipEntry[] | null {
       compressedSize,
       uncompressedSize: v.getUint32(at + 24, true),
       localOffset,
+      centralOffset: at,
     })
     at = next
   }
@@ -254,6 +256,123 @@ export interface BundleResult {
   executable: string | null
   /** true = 传进来的本来就是 bundle，没有重新打包 */
   passthrough: boolean
+}
+
+/**
+ * 把系统 bundle 自带的 dosbox.conf 改名为同长度的备份文件，供它作为 initFs 文件层使用。
+ *
+ * js-dos 会按顺序解开多层 bundle，后解开的系统 conf 会覆盖播放器生成的自动启动配置。
+ * 这里直接在已经下载好的 ZIP 中原地改两个文件名（本地头 + 中央目录），不碰 96MB 的
+ * qcow2 压缩数据，也不再分配一份同样大的新数组。真正要执行的 conf 会作为最后一层传入。
+ */
+export function hideJsdosConfigForLayer(buf: ArrayBuffer): Uint8Array<ArrayBuffer> {
+  const entries = readZipEntries(buf)
+  const entry = entries?.find((item) => item.name.toLowerCase() === '.jsdos/dosbox.conf')
+  if (!entry) throw new Error('Windows 系统镜像缺少 .jsdos/dosbox.conf')
+
+  const original = te.encode(entry.name)
+  const replacement = te.encode('.jsdos/dosbox.orig')
+  const view = new DataView(buf)
+  const localNameLength = view.getUint16(entry.localOffset + 26, true)
+  const centralNameLength = view.getUint16(entry.centralOffset + 28, true)
+  if (original.length !== replacement.length || localNameLength !== original.length || centralNameLength !== original.length) {
+    throw new Error('Windows 系统镜像的 dosbox.conf 文件名结构异常')
+  }
+
+  const bytes = new Uint8Array(buf) as Uint8Array<ArrayBuffer>
+  bytes.set(replacement, entry.localOffset + 30)
+  bytes.set(replacement, entry.centralOffset + 46)
+  return bytes
+}
+
+/**
+ * 共享 Windows 系统镜像约定的游戏层目录。
+ *
+ * 系统 bundle、游戏 bundle 会一起解到 js-dos 的虚拟根目录；多套系统复用时必须给
+ * 游戏再套一层固定目录，否则游戏自己的 README.TXT 之类很容易覆盖系统 bundle 的文件。
+ */
+export const WINDOWS_GAME_ROOT = 'GAME'
+/** 自动启动时永远敲这一条固定、纯 ASCII 的路径，真实 EXE 路径写在批处理内部。 */
+export const WINDOWS_LAUNCHER_PATH = '8BITGO/RUN.BAT'
+
+function safeArchivePath(path: string): string | null {
+  const clean = path.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+  if (!clean) return null
+  // 解包发生在模拟器的虚拟文件系统里，但 ../ 仍能覆盖系统层和最终 dosbox.conf。
+  if (clean.split('/').some((part) => !part || part === '.' || part === '..')) return null
+  // Windows 9x 本身也处理不了文件名里的控制字符，越早报错越容易定位到包的问题。
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f]/.test(clean)) return null
+  return clean
+}
+
+/**
+ * 把“只有游戏文件”的普通 ZIP 变成可叠加到共享 Windows 系统镜像上的 js-dos 文件层。
+ *
+ * 和 makeJsdosBundle 不同，这里**故意不写 .jsdos/dosbox.conf**：最终配置来自系统镜像，
+ * 再由 windowsGuest.ts 只改 autoexec。游戏层只负责两件事：
+ *   1. 所有文件放进 GAME/，供 DOSBox-X 动态转换成客体 Windows 看得见的 FAT 盘；
+ *   2. 生成固定的 8BITGO/RUN.BAT，把后台填写的真实 EXE 路径变成正确工作目录后再运行。
+ */
+export function makeWindowsGameLayer(buf: ArrayBuffer, executable: string, drive = 'd'): BundleResult {
+  const entries = readZipEntries(buf)
+  const bytes = new Uint8Array(buf)
+  const zipLike = bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b
+  if (!zipLike || !entries) throw new Error('Windows 客体游戏必须上传完整 ZIP，不能只上传单个 EXE')
+
+  const files = entries
+    .filter((entry) => !entry.name.endsWith('/'))
+    .map((entry) => ({ entry, name: safeArchivePath(entry.name) }))
+  if (files.some((file) => file.name === null)) throw new Error('Windows 游戏 ZIP 含不安全的绝对路径或 ../ 路径')
+
+  const wanted = safeArchivePath(executable)
+  if (!wanted || !/\.exe$/i.test(wanted)) throw new Error('Windows 自启动程序必须是 ZIP 内的 .exe 相对路径')
+  const actual = files.find((file) => file.name!.toLowerCase() === wanted.toLowerCase())?.name
+  if (!actual) throw new Error(`Windows 游戏 ZIP 里找不到自启动程序：${wanted}`)
+
+  const out: OutEntry[] = []
+  const dirs = new Set<string>([`${WINDOWS_GAME_ROOT}/`, `${WINDOWS_GAME_ROOT}/8BITGO/`])
+  for (const file of files) {
+    const parts = file.name!.split('/')
+    let prefix = `${WINDOWS_GAME_ROOT}/`
+    for (let i = 0; i < parts.length - 1; i++) {
+      prefix += `${parts[i]}/`
+      dirs.add(prefix)
+    }
+  }
+
+  const empty = new Uint8Array(0) as Uint8Array<ArrayBuffer>
+  for (const dir of [...dirs].sort((a, b) => a.split('/').length - b.split('/').length || (a < b ? -1 : 1))) {
+    out.push({ name: dir, method: 0, crc: 0, compressedSize: 0, uncompressedSize: 0, data: empty })
+  }
+  for (const file of files) {
+    const e = file.entry
+    out.push({
+      name: `${WINDOWS_GAME_ROOT}/${file.name}`,
+      method: e.method,
+      crc: e.crc,
+      compressedSize: e.compressedSize,
+      uncompressedSize: e.uncompressedSize,
+      data: rawData(buf, e),
+    })
+  }
+
+  const slash = actual.lastIndexOf('/')
+  const dir = slash >= 0 ? `\\${actual.slice(0, slash).replace(/\//g, '\\')}` : '\\'
+  const file = actual.slice(slash + 1)
+  const quote = (value: string) => (/\s/.test(value) ? `"${value}"` : value)
+  if (!/^[d-z]$/i.test(drive)) throw new Error('Windows 游戏盘符必须是 D-Z')
+  const launcher = te.encode(['@echo off', `${drive.toLowerCase()}:`, `cd ${quote(dir)}`, quote(file), 'exit'].join('\r\n') + '\r\n') as Uint8Array<ArrayBuffer>
+  out.push({
+    name: `${WINDOWS_GAME_ROOT}/${WINDOWS_LAUNCHER_PATH}`,
+    method: 0,
+    crc: crc32(launcher),
+    compressedSize: launcher.length,
+    uncompressedSize: launcher.length,
+    data: launcher,
+  })
+
+  return { blob: buildZip(out), executable: actual, passthrough: false }
 }
 
 /**

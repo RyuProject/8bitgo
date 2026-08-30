@@ -3,7 +3,7 @@ import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { recordRecent, toggleFavorite, useCurrentUser } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
 import type { RomLang } from '@/config/languages'
-import { romLangsOf, useRomUrl } from '@/services/roms'
+import { romLangsOf, romUrlForKey, useRomUrl } from '@/services/roms'
 import { resolveRuntime, runtimesFor } from '@/emulator'
 import { usePageData, type GameData } from '@/services/pageData'
 import { platformMap } from '@/data/platforms'
@@ -181,6 +181,8 @@ export function GameDetailPage() {
                 core={game.core}
                 dosExecutable={game.dosExecutable}
                 dosBackend={game.dosBackend}
+                dosSystemUrl={game.dosSystem ? romUrlForKey(game.dosSystem) : undefined}
+                dosLaunchDelay={game.dosLaunchDelay}
                 biosUrl={biosUrl || undefined}
                 romUrl={rom.status === 'found' ? rom.url : undefined}
                 romChecking={rom.status === 'checking'}

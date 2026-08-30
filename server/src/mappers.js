@@ -109,6 +109,31 @@ export function dosBackendOf(v) {
   return v === 'dosboxX' ? 'dosboxX' : null
 }
 
+/**
+ * 可复用的 Windows 客体系统镜像。
+ *
+ * 允许对象存储 key、站内绝对路径和 http(s) URL；只拦长度与控制字符。
+ * 它最终会进入 fetch，换行等控制字符既没有合法用途，也会让日志与错误信息变得含混。
+ */
+export function dosSystemOf(v) {
+  if (v == null) return null
+  const s = String(v).trim()
+  if (!s || s.length > 500) return null
+  // eslint-disable-next-line no-control-regex
+  return /[\x00-\x1f]/.test(s) ? null : s
+}
+
+/**
+ * 客体 Windows 自启动等待秒数。5 秒以下基本必然打在 BIOS / 启动画面上；
+ * 120 秒以上只会让坏镜像把玩家长期困在遮罩后，所以把可配置范围收在这里。
+ */
+export function dosLaunchDelayOf(v) {
+  if (v == null || v === '') return null
+  const n = Math.round(Number(v))
+  if (!Number.isFinite(n)) return null
+  return Math.max(5, Math.min(120, n))
+}
+
 export function gameRowToApi(r, rel = {}) {
   const g = {
     slug: r.slug,
@@ -137,6 +162,8 @@ export function gameRowToApi(r, rel = {}) {
   // 只有 DOS 游戏会填；不带字段 = 前端启发式自己猜
   if (r.dos_executable) g.dosExecutable = r.dos_executable
   if (r.dos_backend === 'dosboxX') g.dosBackend = 'dosboxX'
+  if (r.dos_system) g.dosSystem = r.dos_system
+  if (r.dos_launch_delay != null) g.dosLaunchDelay = Number(r.dos_launch_delay)
   if (r.title_zh) g.titleZh = r.title_zh
   // 没写英文简介的游戏不带这个字段，前台自己回落到基准简介
   if (r.description_en) g.descriptionEn = r.description_en
@@ -181,6 +208,8 @@ export function gameApiToRow(g) {
     core: coreOf(g.core),
     dos_executable: dosExecutableOf(g.dosExecutable),
     dos_backend: dosBackendOf(g.dosBackend),
+    dos_system: dosSystemOf(g.dosSystem),
+    dos_launch_delay: dosLaunchDelayOf(g.dosLaunchDelay),
   }
 }
 
@@ -210,6 +239,8 @@ const FIELD_TO_COLUMN = {
   core: ['core', coreOf],
   dosExecutable: ['dos_executable', dosExecutableOf],
   dosBackend: ['dos_backend', dosBackendOf],
+  dosSystem: ['dos_system', dosSystemOf],
+  dosLaunchDelay: ['dos_launch_delay', dosLaunchDelayOf],
 }
 
 export function gameApiToPartialRow(patch) {

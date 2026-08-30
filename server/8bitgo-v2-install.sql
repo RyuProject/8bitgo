@@ -86,6 +86,14 @@ CREATE TABLE IF NOT EXISTS games (
   -- 街机尤其需要：同一个「街机」平台底下，拳皇要 fbneo、街霸2 要 fbalpha2012_cps2、
   -- 有些老游戏只有 mame2003_plus 跑得动，一个平台默认值盖不住。
   core          VARCHAR(32)   NULL,
+  -- DOS 启动程序（zip 内相对路径）；Windows 客体模式用它生成自动启动脚本。
+  dos_executable VARCHAR(255) NULL,
+  -- NULL = 普通 DOSBox；dosboxX = DOS 或 Windows 95/98 客体走 DOSBox-X。
+  dos_backend   VARCHAR(16)   NULL,
+  -- 可复用的 Windows 客体系统 .jsdos。游戏 ROM 仍单独存，避免每款游戏重复一份系统盘。
+  dos_system    VARCHAR(500)  NULL,
+  -- 客体系统开机后等待多少秒再自动运行 dos_executable。
+  dos_launch_delay SMALLINT UNSIGNED NULL,
   -- 首页「精选」位的排序号。NULL = 不上首页，数字小的排前面。
   -- 一款都没设时，首页那一栏退回按 plays 自动排（见 server/src/content.js 的 loadHome）
   home_rank     SMALLINT UNSIGNED NULL,

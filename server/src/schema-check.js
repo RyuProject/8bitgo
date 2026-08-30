@@ -17,6 +17,8 @@ const EXPECTED_COLUMNS = [
   { table: 'games', column: 'core', why: '按游戏覆盖模拟器核心' },
   { table: 'games', column: 'dos_executable', why: 'DOS 启动程序覆盖' },
   { table: 'games', column: 'dos_backend', why: 'DOS / Windows 9x 运行核心选择' },
+  { table: 'games', column: 'dos_system', why: '可复用的 Windows 客体系统镜像' },
+  { table: 'games', column: 'dos_launch_delay', why: '客体 Windows 自启动时机' },
   { table: 'games', column: 'adult', why: '成人游戏 18 岁验证' },
   { table: 'games', column: 'created_at', why: '真实入库时间' },
 ]
