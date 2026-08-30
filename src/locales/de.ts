@@ -438,6 +438,7 @@ const de: Translation = {
     romLang: 'ROM-Sprache',
     romLangTitle: 'Zu einer anderen Sprachfassung dieses Spiels wechseln',
     romLangSwitched: 'Auf die {lang}-Fassung gewechselt – der Durchgang beginnt von vorn',
+    noCurrentLanguageVersion: 'Dieses Spiel ist in der aktuellen Sprache nicht verfügbar',
     watchHintPick: 'Du kommst als Zuschauer rein: Bild und Ton des Gastgebers, aber keine Steuerung. Über „Platz nehmen“ in der Leiste kannst du jederzeit mitspielen.',
     watchRoom: 'Zuschauen',
     watchInstead: 'Nur zuschauen',

@@ -133,6 +133,8 @@ export interface Game {
   tags?: string[]
   /** 上线日期，用于「最新」排序 */
   addedAt: string
+  /** 内容最后更新时间（ISO 8601）；供搜索引擎时间因子使用 */
+  updatedAt?: string
   /** 体感控制友好 */
   bodyControl?: boolean
   /** 成人内容：启动游戏前必须通过 18 岁出生日期验证 */
@@ -141,7 +143,7 @@ export interface Game {
   hidden?: boolean
   /** ROM 在对象存储中的 key（如 nes/contra.zip）或完整 URL；留空则按约定路径探测。作为各语言 ROM 的回退 */
   rom?: string
-  /** 各语言 ROM：按玩家语言自动选用，缺失回退英语，再回退 rom */
+  /** 各语言 ROM：按玩家语言自动选用，缺失依次回退英语、日语、中文，再兼容旧版 rom */
   roms?: Partial<Record<RomLang, string>>
 }
 
@@ -203,5 +205,7 @@ export interface Post {
   author: string
   /** YYYY-MM-DD */
   date: string
+  /** 内容最后更新时间（ISO 8601）；内置文章没有时回退到 date */
+  updatedAt?: string
   published: boolean
 }

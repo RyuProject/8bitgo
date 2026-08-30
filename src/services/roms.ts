@@ -288,16 +288,44 @@ export function romLangOfKey(game: Pick<Game, 'roms'>, key: string): RomLang | u
   return ROM_LANGS.find((l) => game.roms?.[l] === key)
 }
 
+export interface RomCandidate {
+  key: string
+  /** 通用 rom 没有语言槽，所以这里可能为空 */
+  lang?: RomLang
+}
+
 /**
- * 按语言选出该游戏应加载的 ROM key/URL：当前语言 → 英语 → 通用 rom。
+ * 按语言列出 ROM 候选：当前语言 → 英语 → 日语 → 简体中文 → 繁体中文 → 旧版通用 rom。
  *
- * prefer 是玩家在播放器里手动选的语言，优先级最高 —— 那个下拉框里本来就只列
- * 确实存在的语言，所以命中不了就说明数据变了，照常走后面的回退。
+ * 两个中文槽都放在最终回退里，是因为后台允许分别上传简繁版本；不能因为简体槽为空，
+ * 就在繁体槽明明有文件时误报「没有当前语言版本」。同一个 key 只保留第一次出现，
+ * 避免管理员把多个语言槽绑到同一个对象时重复发 HEAD 请求。
+ *
+ * prefer 是玩家在播放器里手动选的语言，优先级最高；后面的回退仍保留，防止所选槽
+ * 对应的 R2 对象后来被删掉时，播放器直接变成不可用。
  */
+export function romCandidates(game: Pick<Game, 'rom' | 'roms'>, lang: Lang, prefer?: RomLang | null): RomCandidate[] {
+  const requested = prefer ?? romLangFor(lang)
+  const order: RomLang[] = [requested, 'en', 'ja', 'zh-Hans', 'zh-Hant']
+  const candidates: RomCandidate[] = []
+  const seen = new Set<string>()
+
+  for (const candidateLang of order) {
+    const key = game.roms?.[candidateLang]?.trim()
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    candidates.push({ key, lang: candidateLang })
+  }
+
+  // game.rom 是旧数据里的无语言版本；继续兼容，避免升级后让原本能玩的游戏消失。
+  const generic = game.rom?.trim()
+  if (generic && !seen.has(generic)) candidates.push({ key: generic })
+  return candidates
+}
+
+/** 返回语言回退链里的第一个候选；实际播放会继续探测后续候选是否存在。 */
 export function effectiveRomKey(game: Game, lang: Lang, prefer?: RomLang | null): string {
-  if (prefer && game.roms?.[prefer]) return game.roms[prefer]
-  const slot = romLangFor(lang)
-  return game.roms?.[slot] || game.roms?.en || game.rom || ''
+  return romCandidates(game, lang, prefer)[0]?.key ?? ''
 }
 
 /**
@@ -429,40 +457,41 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
   useEffect(() => {
     if (!game) return
     let cancelled = false
-    // 显式绑定（按语言选出）优先。即使数据库已经明确绑定，也要做一次 HEAD：
-    // 除了确认对象还在，更重要的是拿 ETag 给播放地址做内容版本化。
-    const key = effectiveRomKey(game, lang, prefer)
-    if (key) {
-      const url = romUrlForKey(key)
-      if (url) {
-        // iframe 导航不受 fetch CORS 限制；第三方 HTML5 游戏常常允许嵌入，却不允许跨域 HEAD。
-        // 完整 URL 直接交给播放器，让 iframe 自己加载，才能复现普通网页嵌入的工作方式。
-        if (game.platform === 'html5' && /^https?:\/\//i.test(key)) {
-          setState({ status: 'found', url, key, lang: romLangOfKey(game, key) })
-          return
-        }
-        setState({ status: 'checking', url: '' })
-        void probeRomUrl(url, 4000, game.platform === 'html5').then((resolvedUrl) => {
-          if (cancelled) return
-          setState(
-            resolvedUrl
-              ? { status: 'found', url: resolvedUrl, key, lang: romLangOfKey(game, key) }
-              : { status: 'missing', url: '' },
-          )
-        })
-        return () => {
-          cancelled = true
-        }
-      }
-    }
-    const base = getRomBase()
-    if (!base || !isPlayable(game.platform)) {
-      setState({ status: 'missing', url: '' })
-      return
-    }
-
     setState({ status: 'checking', url: '' })
     ;(async () => {
+      const candidates = romCandidates(game, lang, prefer)
+      // 每个显式语言槽都要实际探测：绑定记录还在，不代表 R2 对象一定还在。
+      // 当前槽丢失时继续按英语 → 日语 → 中文回退，不能在第一个 404 就停住。
+      for (const candidate of candidates) {
+        const url = romUrlForKey(candidate.key)
+        if (!url) continue
+        // iframe 导航不受 fetch CORS 限制；第三方 HTML5 游戏常常允许嵌入，却不允许跨域 HEAD。
+        // 完整 URL 直接交给播放器，让 iframe 自己加载，才能复现普通网页嵌入的工作方式。
+        if (game.platform === 'html5' && /^https?:\/\//i.test(candidate.key)) {
+          if (!cancelled) setState({ status: 'found', url, key: candidate.key, lang: candidate.lang })
+          return
+        }
+        const resolvedUrl = await probeRomUrl(url, 4000, game.platform === 'html5')
+        if (resolvedUrl) {
+          if (!cancelled) setState({ status: 'found', url: resolvedUrl, key: candidate.key, lang: candidate.lang })
+          return
+        }
+      }
+
+      // 只要后台绑定过语言槽或旧版通用 rom，整条绑定链都失效就应明确报缺版本；
+      // 不能再猜一个约定文件名，否则会绕过管理员配置，加载到不受控的旧对象。
+      if (candidates.length > 0) {
+        if (!cancelled) setState({ status: 'missing', url: '' })
+        return
+      }
+
+      const base = getRomBase()
+      if (!base || !isPlayable(game.platform)) {
+        if (!cancelled) setState({ status: 'missing', url: '' })
+        return
+      }
+
+      // 完全没有绑定记录的老游戏仍按历史约定探测文件名。
       for (const key of conventionalKeys(game)) {
         const url = romUrlForKey(key, base)
         const resolvedUrl = await probeRomUrl(url, 4000, game.platform === 'html5')

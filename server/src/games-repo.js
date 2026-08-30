@@ -592,7 +592,9 @@ export async function recordPlay(slug, kind, identity) {
   )
   // 0 行 = 这个人已经玩过，或者这款游戏不存在 / 已下架
   if (ins.affectedRows === 0) return false
-  await query('UPDATE games SET plays = plays + 1 WHERE slug = ? AND hidden = 0', [slug])
+  // updated_at 现在会作为搜索引擎的「内容更新时间」。游玩数只是热度计数，
+  // 显式保留原值，避免每来一个新玩家就把老游戏伪装成刚更新的内容。
+  await query('UPDATE games SET plays = plays + 1, updated_at = updated_at WHERE slug = ? AND hidden = 0', [slug])
   return true
 }
 

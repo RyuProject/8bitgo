@@ -89,6 +89,20 @@
     <meta name="bytedance-verification-code" content="TPx+b4flhKHs7KiJcOf2" />
 
     <!--
+      头条搜索自动收录。动态插入不会阻塞首屏；URL 必须保持纯文本，不能使用
+      Markdown 的 [文字](链接) 写法，否则浏览器会把整段当成无效地址。
+    -->
+    <script>
+      ;(function () {
+        var el = document.createElement('script')
+        el.src = 'https://lf1-cdn-tos.bytegoofy.com/goofy/ttzz/push.js?553648437e35e84f3b28cee0b9ed7edd7991cc1ed11bf34132b851984d3f927c3871f0d6a9220c04b06cd03d5ba8e733fe66d20303562cd119c1d6f449af6378'
+        el.id = 'ttzz'
+        var s = document.getElementsByTagName('script')[0]
+        s.parentNode.insertBefore(el, s)
+      })()
+    </script>
+
+    <!--
       默认 SEO：服务端渲染时，server/src/ssr.js 会按 data-ssr-default 标记删掉下面这些，
       换成当前页面 src/services/seo.ts 生成的那一份。
       ⚠️ 每个带 data-ssr-default 的标签必须写在一行内 —— 删除用的是单行正则，

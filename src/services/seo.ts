@@ -41,6 +41,10 @@ export interface SeoOptions {
   image?: string
   /** og:type，文章页传 'article' */
   type?: 'website' | 'article'
+  /** 内容首次发布时间；日期值会按本站时区补成 ISO 8601 */
+  publishedTime?: string
+  /** 内容最后更新时间；日期值会按本站时区补成 ISO 8601 */
+  updatedTime?: string
   /** 不希望被搜索引擎收录（个人中心、登录、后台等） */
   noindex?: boolean
   /** 覆盖 canonical 的路径，默认取当前 pathname */
@@ -85,6 +89,15 @@ function upsertLink(rel: string, href: string, hreflang?: string) {
   el.setAttribute('href', href)
 }
 
+/**
+ * 头条时间因子要求完整 ISO 8601。数据库的 TIMESTAMP 已带真实时刻；后台只填了
+ * YYYY-MM-DD 时没有可凭空恢复的钟点，因此统一取当天零点，并明确写东八区偏移。
+ */
+function contentTime(value?: string): string {
+  const s = value?.trim() ?? ''
+  if (!s) return ''
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T00:00:00+08:00` : s
+}
 
 /* ---------------- SSR：渲染期间收集 head ---------------- */
 
@@ -118,7 +131,17 @@ const escapeJson = (s: string) => s.replace(/</g, '\\u003c')
 
 export function useSeo(opts: SeoOptions) {
   const t = useT()
-  const { title, description, image, type = 'website', noindex = false, canonicalPath, jsonLd } = opts
+  const {
+    title,
+    description,
+    image,
+    type = 'website',
+    publishedTime,
+    updatedTime,
+    noindex = false,
+    canonicalPath,
+    jsonLd,
+  } = opts
 
   const lang = getLang()
   const fullTitle = title
@@ -163,6 +186,14 @@ export function useSeo(opts: SeoOptions) {
     metas.push(['property', 'og:description', description])
     metas.push(['name', 'twitter:description', description])
   }
+  const published = contentTime(publishedTime)
+  const updated = contentTime(updatedTime || publishedTime)
+  if (published) metas.push(['property', 'bytedance:published_time', published])
+  if (updated) {
+    // 平台给出的示例中 lrDate_time 与 updated_time 都表示本页最后更新时间。
+    metas.push(['property', 'bytedance:lrDate_time', updated])
+    metas.push(['property', 'bytedance:updated_time', updated])
+  }
 
   // hreflang：每种语言一条，外加 x-default 指向英语版（语言对不上的人看这份）
   const alternates: Array<[string, string]> = noindex
@@ -204,6 +235,12 @@ export function useSeo(opts: SeoOptions) {
       for (const sel of ['meta[name="description"]', 'meta[property="og:description"]', 'meta[name="twitter:description"]']) {
         document.head.querySelector(sel)?.remove()
       }
+    }
+    // 从内容详情切到列表页时必须删掉上一页的时间，否则列表页会冒充那篇内容的日期。
+    if (!published) document.head.querySelector('meta[property="bytedance:published_time"]')?.remove()
+    if (!updated) {
+      document.head.querySelector('meta[property="bytedance:lrDate_time"]')?.remove()
+      document.head.querySelector('meta[property="bytedance:updated_time"]')?.remove()
     }
     // 同理，noindex 页面不写 canonical，也不能留着上一页的
     if (noindex) document.head.querySelector('link[rel="canonical"]')?.remove()
@@ -336,7 +373,14 @@ export function videoGameSchema(g: GameSchemaInput) {
 }
 
 /** 博客文章 */
-export function articleSchema(p: { title: string; slug: string; excerpt?: string; date?: string; author?: string }) {
+export function articleSchema(p: {
+  title: string
+  slug: string
+  excerpt?: string
+  date?: string
+  updated?: string
+  author?: string
+}) {
   const schema: Record<string, unknown> = {
     '@context': 'https://schema.org',
     '@type': 'BlogPosting',
@@ -347,6 +391,7 @@ export function articleSchema(p: { title: string; slug: string; excerpt?: string
   }
   if (p.excerpt) schema.description = p.excerpt
   if (p.date) schema.datePublished = p.date
+  if (p.updated) schema.dateModified = p.updated
   if (p.author) schema.author = { '@type': 'Person', name: p.author }
   return schema
 }

@@ -92,6 +92,8 @@ export function GameDetailPage() {
           // 优先用游戏自己的简介，没有再套通用模板
           description: seoDesc || fmt(t.seo.gameDesc, { title: seoTitle, platform: seoPlatformName }),
           image: game.cover,
+          publishedTime: game.addedAt,
+          updatedTime: game.updatedAt || game.addedAt,
           jsonLd: [
             videoGameSchema({
               name: seoTitle,
@@ -181,6 +183,7 @@ export function GameDetailPage() {
                 biosUrl={biosUrl || undefined}
                 romUrl={rom.status === 'found' ? rom.url : undefined}
                 romChecking={rom.status === 'checking'}
+                romUnavailable={rom.status === 'missing'}
                 romLangs={romLangs}
                 romLang={rom.lang}
                 onRomLangChange={setRomLang}

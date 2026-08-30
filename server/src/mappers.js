@@ -40,6 +40,13 @@ export function dateOnly(v) {
   return String(v).slice(0, 10)
 }
 
+/** TIMESTAMP -> 带时区的 ISO 8601，避免把无时区字符串交给搜索引擎猜。 */
+export function dateTimeIso(v) {
+  if (!v) return ''
+  const d = v instanceof Date ? v : new Date(String(v).replace(' ', 'T'))
+  return Number.isNaN(d.getTime()) ? '' : d.toISOString()
+}
+
 /** 通用 ROM 在 game_roms 里用 lang = '*' 表示 */
 export const GENERIC_ROM_LANG = '*'
 
@@ -110,6 +117,7 @@ export function gameRowToApi(r, rel = {}) {
     description: r.description || '',
     // 后台没填上线日期时用真实入库时间兜底，不用人工编日期
     addedAt: dateOnly(r.added_at) || dateOnly(r.created_at),
+    updatedAt: dateTimeIso(r.updated_at),
     bodyControl: bool(r.body_control),
     adult: bool(r.adult),
     hidden: bool(r.hidden),
@@ -232,6 +240,7 @@ export function postRowToApi(r, rel = {}) {
     tags: rel.tags ?? [],
     author: r.author || '',
     date: dateOnly(r.date) || dateOnly(r.created_at),
+    updatedAt: dateTimeIso(r.updated_at),
     published: bool(r.published),
   }
 }

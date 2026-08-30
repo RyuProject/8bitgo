@@ -301,14 +301,14 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
         <div>
           <p className="text-sm font-semibold">ROM 文件（按语言）</p>
           <p className="mt-0.5 text-xs text-muted">
-            玩家会按站点语言自动加载对应语言的 ROM；该语言没有专属 ROM 时回退到 <span className="font-medium text-fg">English ROM</span>（英语即通用 / 回退 ROM）。
+            玩家会先加载站点语言对应的 ROM；没有时依次回退到 <span className="font-medium text-fg">English → 日本語 → 简体中文 → 繁體中文</span>，全部没有时提示“游戏没有当前语言版本”。
           </p>
         </div>
         {ROM_LANGS.map((lang) => (
           <RomField
             key={lang}
             lang={lang}
-            label={lang === 'en' ? 'English ROM（通用 / 回退）' : `${ROM_LANG_LABEL[lang]} ROM`}
+            label={lang === 'en' ? 'English ROM（第一回退）' : lang === 'ja' ? '日本語 ROM（第二回退）' : `${ROM_LANG_LABEL[lang]} ROM`}
             value={form.roms?.[lang] ?? ''}
             platform={form.platform}
             slug={slugify(form.slug || form.title)}

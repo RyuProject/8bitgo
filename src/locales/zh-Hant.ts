@@ -437,6 +437,7 @@ const zhHant: Translation = {
     romLang: 'ROM 語言',
     romLangTitle: '換一個語言版本的遊戲 ROM',
     romLangSwitched: '已換成{lang}版本，這一局重新開始了',
+    noCurrentLanguageVersion: '遊戲沒有目前語言版本',
     watchHintPick: '你選的是只看不玩：能看到房主的畫面、聽到聲音，但不參與操作。想上場隨時在工具列點「上場玩」。',
     watchRoom: '觀看直播',
     watchInstead: '只看不玩',

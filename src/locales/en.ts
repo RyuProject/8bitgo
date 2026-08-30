@@ -437,6 +437,7 @@ const en: Translation = {
     romLang: 'ROM language',
     romLangTitle: 'Switch to a different language version of this game',
     romLangSwitched: 'Switched to the {lang} version — this run started over',
+    noCurrentLanguageVersion: 'This game is not available in the current language',
     watchHintPick: 'You are joining to watch: you get the host’s picture and sound but no controls. Hit “Take a slot” in the toolbar whenever you want to play.',
     watchRoom: 'Watch',
     watchInstead: 'Just watch',

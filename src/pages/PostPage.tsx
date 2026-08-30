@@ -24,12 +24,15 @@ export function PostPage() {
           title: post.title,
           description: excerpt,
           type: 'article',
+          publishedTime: post.date,
+          updatedTime: post.updatedAt || post.date,
           jsonLd: [
             articleSchema({
               title: post.title,
               slug: post.slug,
               excerpt,
               date: post.date,
+              updated: post.updatedAt || post.date,
               author: post.author,
             }),
             breadcrumbSchema([

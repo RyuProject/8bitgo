@@ -470,6 +470,7 @@ export const zhHans = {
     romLang: 'ROM 语言',
     romLangTitle: '换一个语言版本的游戏 ROM',
     romLangSwitched: '已换成{lang}版本，这一局重新开始了',
+    noCurrentLanguageVersion: '游戏没有当前语言版本',
     watchHintPick: '你选的是只看不玩：能看到房主的画面、听到声音，但不参与操作。想上场随时在工具栏点「上场玩」。',
     watchRoom: '观看直播',
     watchInstead: '只看不玩',

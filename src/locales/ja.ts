@@ -425,6 +425,7 @@ const ja: Translation = {
     romLang: 'ROM の言語',
     romLangTitle: 'このゲームの別の言語版 ROM に切り替える',
     romLangSwitched: '{lang}版に切り替えました。プレイは最初からになります',
+    noCurrentLanguageVersion: 'このゲームには現在の言語版がありません',
     watchHintPick: '観るだけで参加します。ホストの画面と音は届きますが、操作はできません。プレイしたくなったらツールバーの「プレイに加わる」から。',
     watchRoom: '観戦する',
     watchInstead: '観るだけ',

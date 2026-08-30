@@ -98,6 +98,8 @@ interface Props {
   biosUrl?: string
   /** 正在探测云端 ROM 是否存在 */
   romChecking?: boolean
+  /** 当前语言及英语、日语、中文回退均没有可用 ROM */
+  romUnavailable?: boolean
   /**
    * 这款游戏绑了哪几种语言的 ROM。少于两种时不显示切换入口 ——
    * 只有一份 ROM 的话「切换语言」是个假选项。
@@ -159,6 +161,7 @@ export function EmulatorPlayer({
   dosExecutable,
   biosUrl,
   romChecking,
+  romUnavailable,
   romLangs,
   romLang,
   onRomLangChange,
@@ -925,6 +928,12 @@ export function EmulatorPlayer({
                       <>{t.player.checkingHint}</>
                     ) : (
                       <>
+                        {romUnavailable && (
+                          <>
+                            <span className="font-semibold text-white">{t.player.noCurrentLanguageVersion}</span>
+                            <br />
+                          </>
+                        )}
                         {fmt(t.player.dropHint, { platform: platformLabel(t, platform.id, platform.name) })}
                         <br />
                         {fmt(t.player.formats, {

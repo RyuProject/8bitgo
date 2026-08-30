@@ -35,14 +35,14 @@ export const FALLBACK_LANG: Lang = 'en'
 /**
  * ROM 语言槽：游戏可为这几种语言分别上传 ROM。
  * 站点支持的八种语言现在都有专属槽 —— 某款游戏没上传某个语言的 ROM 时，
- * 按语言选 ROM 会回退到英语（见 effectiveRomKey），所以「有槽」不等于「必须填」。
+ * 按语言选 ROM 会依次回退到英语、日语、中文（见 romCandidates），所以「有槽」不等于「必须填」。
  *
  * 用 Extract 而不是直接写字面量联合：这样打错一个语言代码会在编译期就报错，
  * 而不是悄悄多出一个站点根本不支持的 ROM 槽。
  *
  * ⚠️ 加语言只改这里就够了 —— game_roms.lang 是 VARCHAR(10) 不是 ENUM，
  * 后端 romsOf() 也不对键做白名单，所以不需要改库、不需要迁移；
- * 已有游戏的 roms 里没有新语言的键，effectiveRomKey 会照常回退到英语。
+ * 已有游戏的 roms 里没有新语言的键，romCandidates 会照常走完整回退链。
  */
 export type RomLang = Extract<Lang, 'zh-Hans' | 'zh-Hant' | 'en' | 'ja' | 'fr' | 'de' | 'es' | 'it'>
 export const ROM_LANGS: RomLang[] = ['zh-Hans', 'zh-Hant', 'en', 'ja', 'fr', 'de', 'es', 'it']

@@ -438,6 +438,7 @@ const it: Translation = {
     romLang: 'Lingua della ROM',
     romLangTitle: 'Passa a un’altra versione linguistica di questo gioco',
     romLangSwitched: 'Passato alla versione in {lang}: la partita è ricominciata',
+    noCurrentLanguageVersion: 'Questo gioco non è disponibile nella lingua attuale',
     watchHintPick: 'Entri solo per guardare: immagine e audio dell’host, ma senza comandi. Premi «Prendi un posto» nella barra quando vuoi giocare.',
     watchRoom: 'Guarda',
     watchInstead: 'Solo guardare',

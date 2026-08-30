@@ -437,6 +437,7 @@ const es: Translation = {
     romLang: 'Idioma de la ROM',
     romLangTitle: 'Cambiar a otra versión de idioma de este juego',
     romLangSwitched: 'Cambiado a la versión en {lang}: la partida ha vuelto a empezar',
+    noCurrentLanguageVersion: 'Este juego no está disponible en el idioma actual',
     watchHintPick: 'Entras solo para mirar: verás y oirás la partida del anfitrión, pero sin controles. Pulsa «Coger un mando» en la barra cuando quieras jugar.',
     watchRoom: 'Ver',
     watchInstead: 'Solo mirar',
