@@ -19,7 +19,7 @@
  *   2. 在 registry.ts 的 runtimes 里注册
  *   3.（可选）在 src/config/emulators.ts 里把某个扩展名指过去
  */
-import type { PlatformId } from '@/types'
+import type { DosBackend, PlatformId } from '@/types'
 import type { CloudSession } from './adapters/cloudgame'
 import type { NetplaySession } from './adapters/emulatorjs'
 import type { LiveSession } from './adapters/liveview'
@@ -51,6 +51,8 @@ export interface MountOptions {
    * 传了就按它生成 dosbox.conf，压过 pickExecutable 的猜测。
    */
   dosExecutable?: string
+  /** DOSBox-X 用来启动 Windows 95/98 的完整 .jsdos 磁盘镜像；留空走普通 DOSBox。 */
+  dosBackend?: DosBackend
   /**
    * 游戏 slug —— 存档就是按它归档的。
    * 玩家自己上传的 ROM 没有 slug，调用方会给个 `local:文件名`（见 services/saves.ts）。

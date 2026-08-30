@@ -165,7 +165,10 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
       // 空字符串要写成 undefined，否则会当成「核心名叫空串」存进去
       core: form.core?.trim() || undefined,
       // 空字符串写成 undefined，否则会当成「启动程序叫空串」存进去
-      dosExecutable: form.dosExecutable?.trim() || undefined,
+      // Windows 镜像靠 dosbox.conf 的 boot c: 启动，不该再拿 DOS 可执行文件覆盖它。
+      dosExecutable: form.platform === 'dos' && form.dosBackend !== 'dosboxX' ? form.dosExecutable?.trim() || undefined : undefined,
+      // 普通 DOS 是默认值，不落冗余字段；勾选时才明确保存 DOSBox-X。
+      dosBackend: form.platform === 'dos' && form.dosBackend === 'dosboxX' ? 'dosboxX' : undefined,
       // 空字符串写成 undefined，否则会存一条空的英文简介，
       // 前台判「有没有英文版」时就会误判成有
       descriptionEn: form.descriptionEn?.trim() || undefined,
@@ -252,17 +255,35 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
           <input type="date" className={inputClass} value={form.addedAt} onChange={(e) => set('addedAt', e.target.value)} />
         </Field>
         {form.platform === 'dos' && (
-          <Field label="启动程序">
-            <input
-              className={inputClass}
-              value={form.dosExecutable ?? ''}
-              onChange={(e) => set('dosExecutable', e.target.value || undefined)}
-              placeholder="PARANOID.COM 或 NFS/TNFS.EXE"
-            />
-            <p className="mt-1 text-[11px] text-dim">
-              zip 包内的相对路径。留空 = 自动猜测 —— 共享软件的包里常混着安装器（INSTALL / MAKEEVAL），猜错时填这里一锤定音
-            </p>
-          </Field>
+          <>
+            <Field label="运行环境">
+              <label className="flex min-h-9 items-center gap-2 rounded-lg border border-line bg-surface-2 px-3 text-sm">
+                <input
+                  type="checkbox"
+                  checked={form.dosBackend === 'dosboxX'}
+                  onChange={(e) => set('dosBackend', e.target.checked ? 'dosboxX' : undefined)}
+                />
+                Windows 95/98（DOSBox-X）
+              </label>
+              <p className="mt-1 text-[11px] text-dim">
+                不勾选 = 普通 DOSBox。勾选只会切换核心，ROM 必须是已经安装好 Windows 和游戏的
+                <strong className="text-muted"> .jsdos 完整镜像</strong>；普通 ZIP 不能直接变成 Win95 游戏。
+              </p>
+            </Field>
+            {form.dosBackend !== 'dosboxX' && (
+              <Field label="启动程序">
+                <input
+                  className={inputClass}
+                  value={form.dosExecutable ?? ''}
+                  onChange={(e) => set('dosExecutable', e.target.value || undefined)}
+                  placeholder="PARANOID.COM 或 NFS/TNFS.EXE"
+                />
+                <p className="mt-1 text-[11px] text-dim">
+                  zip 包内的相对路径。留空 = 自动猜测 —— 共享软件的包里常混着安装器（INSTALL / MAKEEVAL），猜错时填这里一锤定音
+                </p>
+              </Field>
+            )}
+          </>
         )}
         {coreOptions.length > 0 && (
           <Field label="模拟器核心">

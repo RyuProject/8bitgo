@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react'
-import type { Platform, PlatformId } from '@/types'
+import type { DosBackend, Platform, PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { formatBytes, isRomFileAccepted } from '@/lib/emulator'
 import { detectRom, describeDetection } from './detect'
@@ -94,6 +94,8 @@ interface Props {
   core?: string
   /** DOS 启动程序覆盖（zip 内相对路径），jsdos 运行时用 */
   dosExecutable?: string
+  /** DOS 运行核心：Windows 95/98 的完整 .jsdos 镜像必须走 DOSBox-X */
+  dosBackend?: DosBackend
   /** 平台级 BIOS 的地址（见 services/platformBios.ts）。Neo Geo 这类平台缺了就起不来 */
   biosUrl?: string
   /** 正在探测云端 ROM 是否存在 */
@@ -159,6 +161,7 @@ export function EmulatorPlayer({
   romUrl,
   core,
   dosExecutable,
+  dosBackend,
   biosUrl,
   romChecking,
   romUnavailable,
@@ -280,6 +283,9 @@ export function EmulatorPlayer({
   // 同 core：只在挂载那一刻读一次，进依赖会把正在跑的游戏重启
   const dosExecutableRef = useRef(dosExecutable)
   dosExecutableRef.current = dosExecutable
+  // 和启动程序一样，只在真正挂载 js-dos 时读取，后台配置变化不该打断已经开始的游戏
+  const dosBackendRef = useRef(dosBackend)
+  dosBackendRef.current = dosBackend
   /** 云端联机是否真的跑起来过（用于区分「没连上」和「玩到一半断了」） */
   const cloudPlayedRef = useRef(false)
   /** 看直播：观众人数与直播标题 */
@@ -351,6 +357,7 @@ export function EmulatorPlayer({
       // 放进 effect 依赖会让「BIOS 异步到货」把正在跑的游戏重启一遍
       core: coreRef.current,
       dosExecutable: dosExecutableRef.current,
+      dosBackend: dosBackendRef.current,
       /**
        * BIOS 按**本次会话真正的平台**取，父组件传下来的只作首选。
        *

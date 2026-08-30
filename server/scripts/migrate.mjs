@@ -105,6 +105,12 @@ const patches = [
     run: () => conn.query('ALTER TABLE `games` ADD COLUMN `dos_executable` VARCHAR(255) NULL AFTER `core`'),
   },
   {
+    name: 'games.dos_backend（DOSBox / DOSBox-X 运行核心）',
+    table: 'games',
+    needed: async () => !(await hasColumn('games', 'dos_backend')),
+    run: () => conn.query('ALTER TABLE `games` ADD COLUMN `dos_backend` VARCHAR(16) NULL AFTER `dos_executable`'),
+  },
+  {
     name: 'games.adult（成人游戏，前台启动前验证年满 18 岁）',
     table: 'games',
     needed: async () => !(await hasColumn('games', 'adult')),

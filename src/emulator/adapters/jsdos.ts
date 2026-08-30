@@ -188,7 +188,9 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         url: objectUrl,
         // 自托管的 wasm / worker 都在这个目录下
         pathPrefix: `${JSDOS_PATH}emulators/`,
-        backend: 'dosbox',
+        // Windows 95/98 仍是装在磁盘镜像里的客体系统；这里切的是能启动该镜像的 DOSBox-X 核心。
+        // 仅换核心不会安装 Windows，所以后台会明确要求这类游戏上传完整 .jsdos 包。
+        backend: options.dosBackend === 'dosboxX' ? 'dosboxX' : 'dosbox',
         // 播放器外壳是我们自己的，平时隐藏 js-dos 那套 UI；
         // 中继联机时必须放出来，玩家要在它的设置面板里填 IPX 服务器和房间
         kiosk: !ipx?.showUi,

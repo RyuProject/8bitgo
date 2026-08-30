@@ -3,7 +3,7 @@
  * 把 npm 包 js-dos（DOSBox 的浏览器移植，GPL-2.0）复制到 public/jsdos/，
  * 供 src/emulator/adapters/jsdos.ts 以 /jsdos/js-dos.js 加载。
  *
- *   npm run jsdos                              强制复制
+ *   npm run jsdos                              强制复制（站点已支持 Win9x，会包含 DOSBox-X）
  *   node scripts/copy-jsdos.mjs --if-missing   已有则跳过（dev / build 前自动执行）
  *   node scripts/copy-jsdos.mjs --with-dosbox-x  连 DOSBox-X 一起复制（多 15MB，跑 Win9x 才需要）
  *   node scripts/copy-jsdos.mjs --no-ipx-patch     不要去掉写死的 1900 端口（见下）
@@ -20,6 +20,7 @@ const src = join(root, 'node_modules', 'js-dos', 'dist')
 const out = join(root, 'public', 'jsdos')
 const ifMissing = process.argv.includes('--if-missing')
 const withDosboxX = process.argv.includes('--with-dosbox-x')
+const dosboxXFiles = ['wdosbox-x.js', 'wdosbox-x.wasm', 'wdosbox-x-jspi.js', 'wdosbox-x-jspi.wasm']
 
 /**
  * 把 js-dos.css 整个包进一个级联层（cascade layer）。
@@ -41,7 +42,8 @@ function wrapCssInLayer(file) {
   console.log('✔ js-dos.css 已包进 @layer jsdos（防止它的全局 reset 压过站点样式）')
 }
 
-if (ifMissing && existsSync(join(out, 'js-dos.js'))) {
+const dosboxXReady = dosboxXFiles.every((name) => existsSync(join(out, 'emulators', name)))
+if (ifMissing && existsSync(join(out, 'js-dos.js')) && (!withDosboxX || dosboxXReady)) {
   // 已有的拷贝也要确保 css 包过层 —— 老拷贝正是没包的那种
   wrapCssInLayer(join(out, 'js-dos.css'))
   process.exit(0)
@@ -84,6 +86,13 @@ function copyDir(from, to) {
   }
 }
 copyDir(src, out)
+
+if (withDosboxX) {
+  const missing = dosboxXFiles.filter((name) => !existsSync(join(out, 'emulators', name)))
+  if (missing.length) {
+    throw new Error(`DOSBox-X 资源不完整：${missing.join('、')}。请重新安装 js-dos 依赖后再构建。`)
+  }
+}
 
 /**
  * 去掉 IPX 联机里写死的 1900 端口。

@@ -65,6 +65,8 @@ CREATE TABLE IF NOT EXISTS games (
   adult          INTEGER NOT NULL DEFAULT 0,
   hidden         INTEGER NOT NULL DEFAULT 0,
   core           TEXT,
+  dos_executable TEXT,
+  dos_backend    TEXT,
   home_rank      INTEGER,
   added_at       TEXT,
   created_at     TEXT    NOT NULL DEFAULT (CURRENT_TIMESTAMP),

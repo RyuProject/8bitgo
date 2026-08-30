@@ -18,6 +18,9 @@ export type PlatformId =
   | 'html5'
   | 'java'
 
+/** js-dos 可选核心：普通 DOS 用 DOSBox，Windows 9x 镜像用 DOSBox-X。 */
+export type DosBackend = 'dosbox' | 'dosboxX'
+
 export type GenreId =
   | 'action'
   | 'fighting'
@@ -117,6 +120,11 @@ export interface Game {
    * 只对 platform 为 dos 的游戏有意义。
    */
   dosExecutable?: string
+  /**
+   * DOS 运行核心。留空等同 dosbox；dosboxX 用于启动已经装好 Windows 95/98 的 .jsdos 镜像。
+   * 这里只切换 CPU/虚拟机核心，不会把普通 Windows 游戏压缩包自动安装成可启动系统。
+   */
+  dosBackend?: DosBackend
   /**
    * 首页精选位的排序号（数字小的排前面）。没有这个字段就是不上首页。
    * 只要有任意一款设了，首页第一栏就只出这些，标题也会从「最多人玩」换成「最热门的游戏」——

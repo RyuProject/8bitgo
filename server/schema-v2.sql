@@ -64,6 +64,8 @@ CREATE TABLE IF NOT EXISTS games (
   -- DOS 启动程序（zip 内相对路径，如 NFS/TNFS.EXE）。
   -- NULL = 交给前端启发式去猜（src/lib/jsdosBundle.ts 的 pickExecutable）
   dos_executable VARCHAR(255)  NULL,
+  -- Windows 95/98 的完整 .jsdos 磁盘镜像需要 DOSBox-X；NULL = 普通 DOSBox。
+  dos_backend    VARCHAR(16)   NULL,
   -- 首页「精选」位的排序号。NULL = 不上首页，数字小的排前面。
   -- 一款都没设时，首页那一栏退回按 plays 自动排（见 server/src/content.js 的 loadHome）
   home_rank     SMALLINT UNSIGNED NULL,

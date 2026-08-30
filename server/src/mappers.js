@@ -101,6 +101,14 @@ export function dosExecutableOf(v) {
   return s
 }
 
+/**
+ * DOSBox 是默认核心，不必占一列值；只有 Windows 95/98 游戏需要明确保存 DOSBox-X。
+ * 用白名单而不是照抄请求，避免拼错的核心名一路存进库、直到玩家点开才报错。
+ */
+export function dosBackendOf(v) {
+  return v === 'dosboxX' ? 'dosboxX' : null
+}
+
 export function gameRowToApi(r, rel = {}) {
   const g = {
     slug: r.slug,
@@ -128,6 +136,7 @@ export function gameRowToApi(r, rel = {}) {
   if (r.core) g.core = r.core
   // 只有 DOS 游戏会填；不带字段 = 前端启发式自己猜
   if (r.dos_executable) g.dosExecutable = r.dos_executable
+  if (r.dos_backend === 'dosboxX') g.dosBackend = 'dosboxX'
   if (r.title_zh) g.titleZh = r.title_zh
   // 没写英文简介的游戏不带这个字段，前台自己回落到基准简介
   if (r.description_en) g.descriptionEn = r.description_en
@@ -171,6 +180,7 @@ export function gameApiToRow(g) {
     home_rank: homeRankOf(g.homeRank),
     core: coreOf(g.core),
     dos_executable: dosExecutableOf(g.dosExecutable),
+    dos_backend: dosBackendOf(g.dosBackend),
   }
 }
 
@@ -199,6 +209,7 @@ const FIELD_TO_COLUMN = {
   homeRank: ['home_rank', homeRankOf],
   core: ['core', coreOf],
   dosExecutable: ['dos_executable', dosExecutableOf],
+  dosBackend: ['dos_backend', dosBackendOf],
 }
 
 export function gameApiToPartialRow(patch) {

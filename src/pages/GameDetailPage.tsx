@@ -180,6 +180,7 @@ export function GameDetailPage() {
                 // 这一款指定的核心（街机尤其需要），以及平台级 BIOS（Neo Geo 缺了起不来）
                 core={game.core}
                 dosExecutable={game.dosExecutable}
+                dosBackend={game.dosBackend}
                 biosUrl={biosUrl || undefined}
                 romUrl={rom.status === 'found' ? rom.url : undefined}
                 romChecking={rom.status === 'checking'}
