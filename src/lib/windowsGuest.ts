@@ -63,9 +63,8 @@ export interface WindowsGuestConfig {
 
 /**
  * Windows 3.x 的 DOS 会话不能反向启动 16 位 Windows 图形程序：RUN.BAT 会正常结束，
- * 但其中的游戏 EXE 只会得到“需要 Microsoft Windows”。因此 3.x 必须让 Program
- * Manager 直接运行 EXE；Windows 95/98 的命令行能启动 GUI 程序，继续用批处理来保留
- * 正确的工作目录和对复杂 ZIP 路径的兼容。
+ * 但其中的游戏 EXE 只会得到“需要 Microsoft Windows”。这里把完整 EXE 路径交给
+ * Windows 启动器，由它借 File Manager 设置工作目录；Windows 95/98 继续用批处理。
  */
 export function windowsGuestLaunchCommand(
   guest: Pick<WindowsGuestConfig, 'gameDrive' | 'launcher'>,
@@ -73,7 +72,9 @@ export function windowsGuestLaunchCommand(
   version: '3x' | '9x' = '9x',
 ): string {
   if (version !== '3x') return guest.launcher
-  return `${guest.gameDrive}:\\${executable.replace(/\//g, '\\')}`
+  const file = executable.replace(/\\/g, '/').split('/').pop()
+  if (!file) throw new Error('Windows 3.x 自启动程序文件名为空')
+  return `${guest.gameDrive}:\\${file}`
 }
 
 /**
@@ -83,7 +84,15 @@ export function windowsGuestLaunchCommand(
  * BOOT 移到最后并加 -convertfat。盘符从未占用的 D-Z 里挑，因此未来换带 CD-ROM 的
  * Win98 镜像也不会因为 D: 已存在而互相踩。
  */
-export function buildWindowsGuestConfig(base: string, configOverride?: string): WindowsGuestConfig {
+export function buildWindowsGuestConfig(
+  base: string,
+  configOverride?: string,
+  gameRoot = WINDOWS_GAME_ROOT,
+): WindowsGuestConfig {
+  const cleanGameRoot = gameRoot.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+  if (!cleanGameRoot || cleanGameRoot.split('/').some((part) => part === '.' || part === '..' || !/^[a-z0-9_.-]+$/i.test(part))) {
+    throw new Error('Windows 游戏挂载目录必须是安全的 DOS 路径')
+  }
   let lines = base.replace(/\r\n?/g, '\n').split('\n')
   const autoAt = lines.findIndex((line) => /^\s*\[autoexec\]\s*$/i.test(line))
   if (autoAt < 0) throw new Error('Windows 系统镜像的 dosbox.conf 缺少 [autoexec]')
@@ -111,7 +120,7 @@ export function buildWindowsGuestConfig(base: string, configOverride?: string): 
     ...withoutBoot,
     '',
     // -freesize 与 convert fat free space 双保险，避免一个 800KB 游戏被扩成 250MB 的临时盘。
-    `mount ${gameDrive.toLowerCase()} ${WINDOWS_GAME_ROOT} -freesize 16`,
+    `mount ${gameDrive.toLowerCase()} ${cleanGameRoot} -freesize 16`,
     `boot ${bootDrive.toLowerCase()} -convertfat`,
     ...lines.slice(autoEnd),
   ]

@@ -13,7 +13,13 @@
  */
 import type { Capability, CaptureSources, LoadProgress, MountOptions, Runtime, RuntimeHandle } from '../types'
 import { getT, fmt } from '@/services/i18n'
-import { buildDosboxConf, hideJsdosConfigForLayer, makeJsdosBundle, makeWindowsGameLayer } from '@/lib/jsdosBundle'
+import {
+  buildDosboxConf,
+  hideJsdosConfigForLayer,
+  makeJsdosBundle,
+  makeWindowsGameLayer,
+  WINDOWS_GAME_ROOT,
+} from '@/lib/jsdosBundle'
 import {
   buildWindowsGuestConfig,
   readWindowsSystemConfig,
@@ -197,9 +203,17 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       let initFs: unknown[] | undefined
       if (loadedSystem) {
         if (!options.dosExecutable) throw new Error('Windows 客体游戏没有配置自启动 EXE')
-        guest = buildWindowsGuestConfig(await readWindowsSystemConfig(loadedSystem.data), dosboxConfig)
+        const systemConfig = await readWindowsSystemConfig(loadedSystem.data)
+        guest = buildWindowsGuestConfig(systemConfig, dosboxConfig)
         const gameLayer = makeWindowsGameLayer(rom.buf, options.dosExecutable, guest.gameDrive)
         if (!gameLayer.executable) throw new Error('Windows 游戏层没有可启动的 EXE')
+        if ((options.dosWindowsVersion ?? '9x') === '3x') {
+          const slash = gameLayer.executable.lastIndexOf('/')
+          const executableDir = slash >= 0 ? gameLayer.executable.slice(0, slash) : ''
+          // File Manager 只需切到游戏盘根目录，因此让盘根直接对应 EXE 的父目录。
+          const gameRoot = executableDir ? `${WINDOWS_GAME_ROOT}/${executableDir}` : WINDOWS_GAME_ROOT
+          guest = buildWindowsGuestConfig(systemConfig, dosboxConfig, gameRoot)
+        }
         guestLaunchCommand = windowsGuestLaunchCommand(
           guest,
           gameLayer.executable,

@@ -61,7 +61,7 @@ try {
         "export { normalizeDosboxConfigOverride, mergeDosboxConfigOverride } from './shared/dosbox-config.js'",
         "export { createOverallRatio, fetchWithProgress, windowsGuestStartupBudgetMs } from './src/emulator/loadProgress.ts'",
         "export { shouldCaptureMouse } from './src/emulator/mouseCapture.ts'",
-        "export { isWindowsGraphicsMode, scheduleWindowsLaunch, windowsLaunchDelayMs } from './src/emulator/windowsLaunch.ts'",
+        "export { isWindowsGraphicsMode, scheduleWindowsLaunch, windows3xLaunchCommands, windowsLaunchDelayMs } from './src/emulator/windowsLaunch.ts'",
       ].join('\n'),
       resolveDir: process.cwd(),
       sourcefile: 'rom-validation-test-entry.ts',
@@ -91,6 +91,7 @@ try {
     shouldCaptureMouse,
     isWindowsGraphicsMode,
     scheduleWindowsLaunch,
+    windows3xLaunchCommands,
     windowsLaunchDelayMs,
     windowsGuestStartupBudgetMs,
   } = await import(
@@ -161,8 +162,16 @@ try {
   assert.match(guestConfig.dosboxConf, /boot c: -convertfat/)
   assert.match(guestConfig.dosboxConf, /\[gus\]\ngus=false/)
   assert.equal(windowsGuestLaunchCommand(guestConfig, 'zeek1.exe', '3x'), 'D:\\zeek1.exe')
-  assert.equal(windowsGuestLaunchCommand(guestConfig, 'BIN/GAME.EXE', '3x'), 'D:\\BIN\\GAME.EXE')
+  assert.equal(windowsGuestLaunchCommand(guestConfig, 'BIN/GAME.EXE', '3x'), 'D:\\GAME.EXE')
   assert.equal(windowsGuestLaunchCommand(guestConfig, 'BIN/GAME.EXE', '9x'), 'D:\\8BITGO\\RUN.BAT')
+  assert.match(
+    buildWindowsGuestConfig('[autoexec]\nimgmount c system.img\nboot c:\n', undefined, 'GAME/BIN').dosboxConf,
+    /mount d GAME\/BIN -freesize 16/,
+  )
+  assert.throws(
+    () => buildWindowsGuestConfig('[autoexec]\nimgmount c system.img\nboot c:\n', undefined, 'GAME/../WINDOWS'),
+    /安全的 DOS 路径/,
+  )
 
   // 旧式完整 .jsdos 也要替换包内配置；不能只让共享系统模式生效。
   const legacyBytes = arrayBuffer(zip([
@@ -208,6 +217,16 @@ try {
   assert.equal(isWindowsGraphicsMode(800, 600), true)
   assert.equal(windowsLaunchDelayMs(2), 5_000)
   assert.equal(windowsLaunchDelayMs(999), 120_000)
+  assert.deepEqual(windows3xLaunchCommands('D:\\ZEEK1.EXE'), {
+    fileManager: 'WINFILE.EXE',
+    drive: 'D',
+    executable: 'ZEEK1.EXE',
+  })
+  assert.deepEqual(windows3xLaunchCommands('D:\\BIN\\GAME.EXE'), {
+    fileManager: 'WINFILE.EXE',
+    drive: 'D',
+    executable: 'GAME.EXE',
+  })
 
   // 自启动必须等 Windows 报告图形模式；这条回归测试专门防止以后又退回 ci-ready 一到就计时。
   const originalWindow = globalThis.window
@@ -215,12 +234,25 @@ try {
   let frameSizeConsumer
   globalThis.window = {
     setTimeout(fn, ms) {
-      scheduled.push({ fn, ms, cleared: false })
+      scheduled.push({ fn, ms, cleared: false, ran: false })
       return scheduled.length
     },
     clearTimeout(id) {
       if (scheduled[id - 1]) scheduled[id - 1].cleared = true
     },
+  }
+  const runNextTimer = (ms) => {
+    const timer = scheduled.find((item) => item.ms === ms && !item.cleared && !item.ran)
+    assert.ok(timer, `没有找到 ${ms}ms 定时器`)
+    timer.ran = true
+    timer.fn()
+  }
+  const drainTypingTimers = () => {
+    let count = 0
+    while (scheduled.some((item) => item.ms === 35 && !item.cleared && !item.ran)) {
+      runNextTimer(35)
+      assert.ok(++count < 200, 'Windows 自动输入没有结束')
+    }
   }
   const cancelLaunch = scheduleWindowsLaunch(
     {
@@ -243,6 +275,7 @@ try {
   // Windows 3.x 没有开始菜单：必须走 Program Manager 的 Alt+F、R，不能再发 Ctrl+Esc。
   scheduled.length = 0
   const keyEvents = []
+  let win31Launched = false
   frameSizeConsumer = undefined
   const cancelWin31Launch = scheduleWindowsLaunch(
     {
@@ -252,19 +285,38 @@ try {
     'D:\\ZEEK1.EXE',
     5,
     () => false,
-    () => {},
+    () => { win31Launched = true },
     '3x',
   )
   frameSizeConsumer(640, 480)
-  const launchTimer = scheduled.find(({ ms }) => ms === 5_000)
-  assert.ok(launchTimer)
-  launchTimer.fn()
+  runNextTimer(5_000)
   assert.deepEqual(keyEvents, [
     [342, true],
     [70, true],
     [70, false],
     [342, false],
   ])
+  runNextTimer(350)
+  runNextTimer(800)
+  drainTypingTimers()
+  assert.equal(keyEvents.filter(([keyCode, pressed]) => keyCode === 257 && pressed).length, 1)
+
+  // File Manager 通过 Disk > Select Drive 切到 D:，这样 Run 才会继承游戏工作目录。
+  runNextTimer(4_000)
+  assert.equal(keyEvents.filter(([keyCode, pressed]) => keyCode === 342 && pressed).length, 2)
+  runNextTimer(350)
+  runNextTimer(800)
+  assert.ok(keyEvents.some(([keyCode, pressed]) => keyCode === 68 && pressed), '没有选择游戏盘 D:')
+  runNextTimer(350)
+  runNextTimer(1_500)
+  assert.equal(keyEvents.filter(([keyCode, pressed]) => keyCode === 342 && pressed).length, 3)
+  runNextTimer(350)
+  runNextTimer(800)
+  drainTypingTimers()
+  assert.equal(keyEvents.filter(([keyCode, pressed]) => keyCode === 257 && pressed).length, 3)
+  assert.equal(win31Launched, false)
+  runNextTimer(5_000)
+  assert.equal(win31Launched, true)
   cancelWin31Launch()
   globalThis.window = originalWindow
 

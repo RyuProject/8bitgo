@@ -337,7 +337,7 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
                     placeholder="WINDEPTH.EXE 或 BIN/GAME.EXE"
                   />
                   <p className="mt-1 text-[11px] text-dim">
-                    游戏 ZIP 内的相对路径。Windows 3.x 会由 Program Manager 直接运行，请填写类似 ZEEK1.EXE、BIN/GAME.EXE 的 DOS 8.3 英文路径。
+                    游戏 ZIP 内的相对路径。Windows 3.x 会先打开 EXE 所在目录再运行，请填写类似 ZEEK1.EXE、BIN/GAME.EXE 的 DOS 8.3 英文路径。
                   </p>
                 </Field>
                 <Field label="开机等待（秒）">
