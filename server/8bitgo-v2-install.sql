@@ -92,7 +92,7 @@ CREATE TABLE IF NOT EXISTS games (
   dos_backend   VARCHAR(16)   NULL,
   -- 可复用的 Windows 客体系统 .jsdos。游戏 ROM 仍单独存，避免每款游戏重复一份系统盘。
   dos_system    VARCHAR(500)  NULL,
-  -- 客体系统开机后等待多少秒再自动运行 dos_executable。
+  -- 客体系统切入图形模式后等待多少秒再自动运行 dos_executable。
   dos_launch_delay SMALLINT UNSIGNED NULL,
   -- 首页「精选」位的排序号。NULL = 不上首页，数字小的排前面。
   -- 一款都没设时，首页那一栏退回按 plays 自动排（见 server/src/content.js 的 loadHome）

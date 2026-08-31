@@ -105,7 +105,7 @@ interface Props {
   dosBackend?: DosBackend
   /** 可复用的 Windows 95/98 系统 .jsdos；游戏 ROM 仍单独加载。 */
   dosSystemUrl?: string
-  /** 客体 Windows 开机后，等待多少秒再执行 dosExecutable。 */
+  /** 客体 Windows 切入图形模式后，等待多少秒再执行 dosExecutable。 */
   dosLaunchDelay?: number
   /** 平台级 BIOS 的地址（见 services/platformBios.ts）。Neo Geo 这类平台缺了就起不来 */
   biosUrl?: string

@@ -309,7 +309,7 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
                     value={form.dosLaunchDelay ?? 24}
                     onChange={(e) => set('dosLaunchDelay', Math.max(5, Math.min(120, Number(e.target.value) || 24)))}
                   />
-                  <p className="mt-1 text-[11px] text-dim">从模拟器启动到发送自启动命令的等待时间；慢设备可适当调大。</p>
+                  <p className="mt-1 text-[11px] text-dim">检测到 Windows 图形界面后再等待这么久；慢设备可适当调大。</p>
                 </Field>
               </>
             ) : (

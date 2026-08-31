@@ -20,6 +20,7 @@ import { GP, startGamepadBridge, hasGamepadApi, type GamepadBridge } from '../ga
 import { deleteSave, pullSave, pushSave } from '@/services/saves'
 import { loadGameBytes } from '../romLoader'
 import { windowsGuestStartupBudgetMs } from '../loadProgress'
+import { scheduleWindowsLaunch, type WindowsLaunchCi } from '../windowsLaunch'
 
 /** P2P 模式的撮合服务器。自建的话见 https://github.com/caiiiycuk/WebRTC-NET（Go） */
 export const JSDOS_PEER_SERVER: string = import.meta.env.VITE_JSDOS_PEER_SERVER || 'https://net.dos.zone'
@@ -52,85 +53,12 @@ type DosProps = {
 }
 
 /** js-dos 的底层接口，ci-ready 事件里给出来 */
-interface DosCi {
+interface DosCi extends WindowsLaunchCi {
   pause: () => void
   resume: () => void
   screenshot: () => Promise<ImageData>
   sendKeyEvent: (keyCode: number, pressed: boolean) => void
   exit: () => Promise<void>
-}
-
-/** js-dos / Emscripten 使用 GLFW 键码；这里只列自动打开 Windows“运行”框需要的按键。 */
-const WIN_KEY = {
-  enter: 257,
-  esc: 256,
-  leftShift: 340,
-  leftCtrl: 341,
-  r: 82,
-  semicolon: 59,
-} as const
-
-/**
- * 在客体 Windows 开好以后按 Win+R，输入固定启动脚本路径。
- *
- * 不把真实游戏路径逐字敲进去：老游戏目录常有空格、日文或特殊符号，键盘布局一变就会
- * 输错。播放器只敲形如 D:\\8BITGO\\RUN.BAT 的纯 ASCII 固定路径；这个批处理在游戏
- * bundle 内生成，负责切到真实目录后再运行后台指定的 EXE。
- */
-function scheduleWindowsLaunch(
-  ci: DosCi,
-  command: string,
-  waitSeconds: number,
-  stopped: () => boolean,
-  onLaunched: () => void,
-): () => void {
-  const timers = new Set<number>()
-  const later = (ms: number, fn: () => void) => {
-    const id = window.setTimeout(() => {
-      timers.delete(id)
-      if (!stopped()) fn()
-    }, ms)
-    timers.add(id)
-  }
-  const tap = (key: number, shift = false) => {
-    if (shift) ci.sendKeyEvent(WIN_KEY.leftShift, true)
-    ci.sendKeyEvent(key, true)
-    ci.sendKeyEvent(key, false)
-    if (shift) ci.sendKeyEvent(WIN_KEY.leftShift, false)
-  }
-
-  const chars = command.toLowerCase().split('')
-  const typeAt = (at: number) => {
-    if (at >= chars.length) {
-      tap(WIN_KEY.enter)
-      // Explorer 收到命令后还要创建进程；这段时间继续盖住桌面与“运行”框。
-      later(5000, onLaunched)
-      return
-    }
-    const ch = chars[at]
-    if (/[a-z0-9]/.test(ch)) tap(ch.toUpperCase().charCodeAt(0))
-    else if (ch === ':') tap(WIN_KEY.semicolon, true)
-    else if (ch === '\\') tap(92)
-    else if (ch === '.') tap(46)
-    else throw new Error(`Windows 自动启动路径含无法输入的字符：${ch}`)
-    later(35, () => typeAt(at + 1))
-  }
-
-  later(Math.max(5, Math.min(120, waitSeconds)) * 1000, () => {
-    // DOSBox-X 不会把浏览器的 Meta / Super 键可靠地交给 Win95；Win+R 会退化成桌面上的
-    // 普通字母 R。Ctrl+Esc 是 Windows 95 原生的“打开开始菜单”，随后 R 触发 Run，
-    // 同样不会依赖鼠标坐标。第一个键也会让 fastForwardOnBoot 结束，避免游戏继续倍速。
-    ci.sendKeyEvent(WIN_KEY.leftCtrl, true)
-    tap(WIN_KEY.esc)
-    ci.sendKeyEvent(WIN_KEY.leftCtrl, false)
-    later(350, () => tap(WIN_KEY.r))
-    later(800, () => typeAt(0))
-  })
-
-  return () => {
-    for (const timer of timers) window.clearTimeout(timer)
-    timers.clear()
-  }
 }
 
 /**

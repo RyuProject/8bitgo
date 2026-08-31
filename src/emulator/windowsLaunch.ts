@@ -1,0 +1,127 @@
+/**
+ * Windows 9x 客体的自动启动。
+ *
+ * js-dos 的 ci-ready 只表示 DOSBox-X 接口建好了，此时 Windows 往往还停在 BIOS、启动
+ * Logo 或磁盘检查。过去从 ci-ready 直接倒计时，慢设备会在桌面出现前把 Ctrl+Esc / R
+ * 全部吞掉，而且只有一次机会。DOSBox-X 没有“桌面已就绪”事件，但会在 Windows 切进
+ * 图形界面时把画面切到至少 640×480；因此把后台配置的等待秒数锚定到这个信号之后。
+ */
+
+interface WindowsLaunchEvents {
+  onFrameSize: (consumer: (width: number, height: number) => void) => void
+}
+
+export interface WindowsLaunchCi {
+  screenshot?: () => Promise<ImageData>
+  sendKeyEvent: (keyCode: number, pressed: boolean) => void
+  events?: () => WindowsLaunchEvents
+}
+
+/** 极少数自定义镜像不报告画面尺寸，不能让它们永远等不到启动。 */
+export const WINDOWS_GRAPHICS_SIGNAL_FALLBACK_MS = 90_000
+
+/** 720×400 / 640×400 都还是 DOS 文本或启动阶段；Win95 桌面会进入 640×480 或更高。 */
+export function isWindowsGraphicsMode(width: number, height: number): boolean {
+  return width >= 640 && height >= 480
+}
+
+export function windowsLaunchDelayMs(waitSeconds = 24): number {
+  return Math.max(5, Math.min(120, waitSeconds)) * 1000
+}
+
+/** js-dos / Emscripten 使用 GLFW 键码；这里只列打开 Windows“运行”框需要的按键。 */
+const WIN_KEY = {
+  enter: 257,
+  esc: 256,
+  leftShift: 340,
+  leftCtrl: 341,
+  r: 82,
+  semicolon: 59,
+} as const
+
+/**
+ * 进入客体图形模式后按 Ctrl+Esc、R，再输入固定启动脚本路径。
+ *
+ * 不把真实游戏路径逐字敲进去：老游戏目录常有空格、日文或特殊符号，键盘布局一变就会
+ * 输错。播放器只敲形如 D:\\8BITGO\\RUN.BAT 的纯 ASCII 固定路径；游戏 bundle 里的
+ * 批处理负责切到真实目录后再执行后台指定的 EXE。
+ */
+export function scheduleWindowsLaunch(
+  ci: WindowsLaunchCi,
+  command: string,
+  waitSeconds: number,
+  stopped: () => boolean,
+  onLaunched: () => void,
+): () => void {
+  const timers = new Set<number>()
+  let armed = false
+  const later = (ms: number, fn: () => void) => {
+    const id = window.setTimeout(() => {
+      timers.delete(id)
+      if (!stopped()) fn()
+    }, ms)
+    timers.add(id)
+  }
+  const tap = (key: number, shift = false) => {
+    if (shift) ci.sendKeyEvent(WIN_KEY.leftShift, true)
+    ci.sendKeyEvent(key, true)
+    ci.sendKeyEvent(key, false)
+    if (shift) ci.sendKeyEvent(WIN_KEY.leftShift, false)
+  }
+
+  const chars = command.toLowerCase().split('')
+  const typeAt = (at: number) => {
+    if (at >= chars.length) {
+      tap(WIN_KEY.enter)
+      // Explorer 收到命令后还要创建进程；这段时间继续盖住桌面与“运行”框。
+      later(5000, onLaunched)
+      return
+    }
+    const ch = chars[at]
+    if (/[a-z0-9]/.test(ch)) tap(ch.toUpperCase().charCodeAt(0))
+    else if (ch === ':') tap(WIN_KEY.semicolon, true)
+    else if (ch === '\\') tap(92)
+    else if (ch === '.') tap(46)
+    else throw new Error(`Windows 自动启动路径含无法输入的字符：${ch}`)
+    later(35, () => typeAt(at + 1))
+  }
+
+  const launch = () => {
+    // DOSBox-X 不会把浏览器的 Meta / Super 键可靠地交给 Win95；Win+R 会退化成桌面上的
+    // 普通字母 R。Ctrl+Esc 是 Windows 95 原生的“打开开始菜单”，随后 R 触发 Run，
+    // 同样不会依赖鼠标坐标。第一个键也会让 fastForwardOnBoot 结束，避免游戏继续倍速。
+    ci.sendKeyEvent(WIN_KEY.leftCtrl, true)
+    tap(WIN_KEY.esc)
+    ci.sendKeyEvent(WIN_KEY.leftCtrl, false)
+    later(350, () => tap(WIN_KEY.r))
+    later(800, () => typeAt(0))
+  }
+  const arm = () => {
+    if (armed || stopped()) return
+    armed = true
+    later(windowsLaunchDelayMs(waitSeconds), launch)
+  }
+  const observeSize = (width: number, height: number) => {
+    if (isWindowsGraphicsMode(width, height)) arm()
+  }
+
+  try {
+    const events = ci.events?.()
+    if (events) {
+      events.onFrameSize(observeSize)
+      // 注册监听前若已切过画面模式，补读当前帧，避免永远只等兜底。
+      void ci.screenshot?.().then((frame) => observeSize(frame.width, frame.height)).catch(() => {})
+    } else {
+      // 兼容没有 events() 的旧版 js-dos；这种情况下只能保留原来的倒计时行为。
+      arm()
+    }
+  } catch {
+    arm()
+  }
+  later(WINDOWS_GRAPHICS_SIGNAL_FALLBACK_MS, arm)
+
+  return () => {
+    for (const timer of timers) window.clearTimeout(timer)
+    timers.clear()
+  }
+}

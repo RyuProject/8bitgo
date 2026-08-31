@@ -12,6 +12,7 @@
  * 一个字都不用碰，反正整个加载期间都被遮罩盖着。
  */
 import type { LoadPhase, LoadProgress } from './types'
+import { windowsLaunchDelayMs } from './windowsLaunch'
 
 /** 进度回调节流：下载一个几十 MB 的 ROM 会触发上千次 chunk，全都 setState 会把主线程拖垮 */
 const THROTTLE_MS = 120
@@ -151,8 +152,7 @@ export const WINDOWS_GUEST_INIT_GRACE_MS = 4 * 60_000
 
 /** 客体初始化 + 后台配置的开机等待，共同构成 80–99% 这段的超时预算。 */
 export function windowsGuestStartupBudgetMs(launchDelaySeconds = 24): number {
-  const delay = Math.max(5, Math.min(120, launchDelaySeconds))
-  return delay * 1000 + WINDOWS_GUEST_INIT_GRACE_MS
+  return windowsLaunchDelayMs(launchDelaySeconds) + WINDOWS_GUEST_INIT_GRACE_MS
 }
 
 /**

@@ -58,6 +58,7 @@ try {
         "export { assertValidZip } from './src/lib/unzip.ts'",
         "export { makeJsdosBundle } from './src/lib/jsdosBundle.ts'",
         "export { createOverallRatio, fetchWithProgress, windowsGuestStartupBudgetMs } from './src/emulator/loadProgress.ts'",
+        "export { isWindowsGraphicsMode, scheduleWindowsLaunch, windowsLaunchDelayMs } from './src/emulator/windowsLaunch.ts'",
       ].join('\n'),
       resolveDir: process.cwd(),
       sourcefile: 'rom-validation-test-entry.ts',
@@ -78,6 +79,9 @@ try {
     makeJsdosBundle,
     createOverallRatio,
     fetchWithProgress,
+    isWindowsGraphicsMode,
+    scheduleWindowsLaunch,
+    windowsLaunchDelayMs,
     windowsGuestStartupBudgetMs,
   } = await import(
     `${pathToFileURL(outfile).href}?${Date.now()}`
@@ -147,7 +151,46 @@ try {
   assert.equal(windowsGuestStartupBudgetMs(2), 245_000)
   assert.equal(windowsGuestStartupBudgetMs(999), 360_000)
 
-  console.log('ROM 校验测试通过：下载长度 / 分段进度 / NES / ZIP 截断 / SWF / NDS / J2ME / DOS')
+  // ci-ready 时的 720×400 仍是 DOSBox 文本画面，不能从这里开始自启动倒计时。
+  assert.equal(isWindowsGraphicsMode(720, 400), false)
+  assert.equal(isWindowsGraphicsMode(640, 480), true)
+  assert.equal(isWindowsGraphicsMode(800, 600), true)
+  assert.equal(windowsLaunchDelayMs(2), 5_000)
+  assert.equal(windowsLaunchDelayMs(999), 120_000)
+
+  // 自启动必须等 Windows 报告图形模式；这条回归测试专门防止以后又退回 ci-ready 一到就计时。
+  const originalWindow = globalThis.window
+  const scheduled = []
+  let frameSizeConsumer
+  globalThis.window = {
+    setTimeout(fn, ms) {
+      scheduled.push({ fn, ms, cleared: false })
+      return scheduled.length
+    },
+    clearTimeout(id) {
+      if (scheduled[id - 1]) scheduled[id - 1].cleared = true
+    },
+  }
+  const cancelLaunch = scheduleWindowsLaunch(
+    {
+      sendKeyEvent() {},
+      events: () => ({ onFrameSize: (consumer) => { frameSizeConsumer = consumer } }),
+    },
+    'D:\\8BITGO\\RUN.BAT',
+    24,
+    () => false,
+    () => {},
+  )
+  assert.deepEqual(scheduled.map(({ ms }) => ms), [90_000])
+  frameSizeConsumer(720, 400)
+  assert.deepEqual(scheduled.map(({ ms }) => ms), [90_000])
+  frameSizeConsumer(640, 480)
+  assert.deepEqual(scheduled.map(({ ms }) => ms), [90_000, 24_000])
+  cancelLaunch()
+  assert.ok(scheduled.every(({ cleared }) => cleared))
+  globalThis.window = originalWindow
+
+  console.log('ROM 校验测试通过：下载长度 / 分段进度 / Windows 自启动 / NES / ZIP 截断 / SWF / NDS / J2ME / DOS')
 } finally {
   await rm(temp, { recursive: true, force: true })
 }

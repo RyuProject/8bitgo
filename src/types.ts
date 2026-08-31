@@ -134,8 +134,8 @@ export interface Game {
    */
   dosSystem?: string
   /**
-   * 客体 Windows 开机后等待多少秒再自动运行 dosExecutable。
-   * 不同系统镜像、浏览器和设备的开机时间差异很大，所以不能把 Win95 的经验值写死。
+   * 客体 Windows 切入图形模式后等待多少秒，再自动运行 dosExecutable。
+   * 先等图形模式可以避开 BIOS / 启动画面；额外秒数用于等待桌面服务真正可接收快捷键。
    */
   dosLaunchDelay?: number
   /**

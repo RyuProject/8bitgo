@@ -124,7 +124,7 @@ export function dosSystemOf(v) {
 }
 
 /**
- * 客体 Windows 自启动等待秒数。5 秒以下基本必然打在 BIOS / 启动画面上；
+ * 客体 Windows 进入图形模式后的自启动等待秒数。5 秒以下可能打在仍未就绪的桌面服务上；
  * 120 秒以上只会让坏镜像把玩家长期困在遮罩后，所以把可配置范围收在这里。
  */
 export function dosLaunchDelayOf(v) {
