@@ -47,9 +47,24 @@ export async function fetchAdminGames(q: AdminGameQuery = {}): Promise<Paged<Gam
   return api.get<Paged<Game>>(`/api/games?${sp.toString()}`, true)
 }
 
-/** 新增 / 整体覆盖一款游戏。返回后端保存后的完整对象。 */
+/**
+ * 新增 / 整体覆盖一款游戏。返回后端保存后的完整对象。
+ *
+ * DOS 共享系统镜像是后来才加入的字段。部署时如果只更新了前端静态文件、没有重启
+ * Express，旧后端会把不认识的 JSON 字段直接忽略，却仍然返回 200。后台过去会因此显示
+ * “已保存”，重新编辑时镜像路径却消失。这里用服务端回包做一次回读校验，让版本错位
+ * 当场报清楚，也保留尚未保存的表单内容。
+ */
 export async function upsertGame(game: Game): Promise<Game> {
-  return api.put<Game>(`/api/games/${encodeURIComponent(game.slug)}`, game, true)
+  const saved = await api.put<Game>(`/api/games/${encodeURIComponent(game.slug)}`, game, true)
+  const requestedSystem = game.dosSystem?.trim() || undefined
+  const persistedSystem = saved.dosSystem?.trim() || undefined
+  if (requestedSystem !== persistedSystem) {
+    throw new Error(
+      '服务端没有保存 Windows 系统镜像。请在服务器运行数据库迁移并重启 8bitgo-api，然后重新保存。',
+    )
+  }
+  return saved
 }
 
 export async function deleteGame(slug: string): Promise<void> {
