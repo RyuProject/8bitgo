@@ -55,8 +55,10 @@ try {
     stdin: {
       contents: [
         "export * from './src/lib/romValidation.ts'",
-        "export { assertValidZip } from './src/lib/unzip.ts'",
+        "export { assertValidZip, listZipEntries, extractZipEntry } from './src/lib/unzip.ts'",
         "export { makeJsdosBundle } from './src/lib/jsdosBundle.ts'",
+        "export { buildWindowsGuestConfig } from './src/lib/windowsGuest.ts'",
+        "export { normalizeDosboxConfigOverride, mergeDosboxConfigOverride } from './shared/dosbox-config.js'",
         "export { createOverallRatio, fetchWithProgress, windowsGuestStartupBudgetMs } from './src/emulator/loadProgress.ts'",
         "export { shouldCaptureMouse } from './src/emulator/mouseCapture.ts'",
         "export { isWindowsGraphicsMode, scheduleWindowsLaunch, windowsLaunchDelayMs } from './src/emulator/windowsLaunch.ts'",
@@ -78,6 +80,11 @@ try {
     assertJar,
     prepareNdsRom,
     makeJsdosBundle,
+    listZipEntries,
+    extractZipEntry,
+    buildWindowsGuestConfig,
+    normalizeDosboxConfigOverride,
+    mergeDosboxConfigOverride,
     createOverallRatio,
     fetchWithProgress,
     shouldCaptureMouse,
@@ -130,10 +137,42 @@ try {
   assert.throws(() => assertJar(arrayBuffer(noManifest)), /MANIFEST/)
   assert.throws(() => assertJarBuffer(noManifest), /MANIFEST/)
 
-  assert.throws(() => makeJsdosBundle('broken.zip', arrayBuffer(truncated)), /损坏|不完整/)
-  assert.throws(() => makeJsdosBundle('data.zip', arrayBuffer(zip([['README.TXT', 'x']]))), /没有可运行/)
-  const dos = makeJsdosBundle('game.zip', arrayBuffer(zip([['GAME.EXE', Buffer.from('MZ')]])))
+  await assert.rejects(() => makeJsdosBundle('broken.zip', arrayBuffer(truncated)), /损坏|不完整/)
+  await assert.rejects(() => makeJsdosBundle('data.zip', arrayBuffer(zip([['README.TXT', 'x']]))), /没有可运行/)
+  const dos = await makeJsdosBundle('game.zip', arrayBuffer(zip([['GAME.EXE', Buffer.from('MZ')]])))
   assert.equal(dos.executable, 'GAME.EXE')
+
+  // 高级配置只允许硬件 / 性能段；启动命令和鼠标捕获策略不能借 INI 覆盖绕过去。
+  assert.equal(normalizeDosboxConfigOverride('  [gus]\r\ngus=false  '), '[gus]\ngus=false')
+  assert.throws(() => normalizeDosboxConfigOverride('[autoexec]\nformat c:'), /不允许编辑/)
+  assert.throws(() => normalizeDosboxConfigOverride('[sdl]\nautolock=true'), /统一管理/)
+  assert.throws(() => normalizeDosboxConfigOverride('[gus]\ngus=false\n[gus]\ngus=true'), /重复出现/)
+  const mergedConfig = mergeDosboxConfigOverride('[cpu]\ncycles=auto\n\n[gus]\ngus=true\n', '[cpu]\ncycles=20000\n\n[gus]\ngus=false')
+  assert.match(mergedConfig, /\[cpu\]\ncycles=20000/)
+  assert.match(mergedConfig, /\[gus\]\ngus=false/)
+
+  // 共享系统镜像：覆盖在站点补完游戏盘与 boot 后应用，受保护的 autoexec 仍完整存在。
+  const guestConfig = buildWindowsGuestConfig(
+    '[dosbox]\nmemsize=64\n\n[autoexec]\nimgmount c system.img\nboot c:\n',
+    '[gus]\ngus=false',
+  )
+  assert.match(guestConfig.dosboxConf, /mount d GAME -freesize 16/)
+  assert.match(guestConfig.dosboxConf, /boot c: -convertfat/)
+  assert.match(guestConfig.dosboxConf, /\[gus\]\ngus=false/)
+
+  // 旧式完整 .jsdos 也要替换包内配置；不能只让共享系统模式生效。
+  const legacyBytes = arrayBuffer(zip([
+    ['.jsdos/dosbox.conf', Buffer.from('[gus]\ngus=true\n\n[autoexec]\nmount c .\nc:\nGAME.EXE\n')],
+    ['GAME.EXE', Buffer.from('MZ')],
+  ]))
+  const customized = await makeJsdosBundle('legacy.jsdos', legacyBytes, undefined, '[gus]\ngus=false')
+  assert.equal(customized.passthrough, false)
+  const customizedBytes = await customized.blob.arrayBuffer()
+  const configEntry = listZipEntries(customizedBytes).find((entry) => entry.name === '.jsdos/dosbox.conf')
+  assert.ok(configEntry)
+  const customizedConfig = new TextDecoder().decode(await extractZipEntry(customizedBytes, configEntry))
+  assert.match(customizedConfig, /\[gus\]\ngus=false/)
+  assert.match(customizedConfig, /\[autoexec\]\nmount c \./)
 
   const originalFetch = globalThis.fetch
   globalThis.fetch = async () => new Response(new Uint8Array([1, 2]), { headers: { 'content-length': '3' } })

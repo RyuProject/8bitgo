@@ -12,6 +12,9 @@
  * 压缩前后大小一起搬过去，完全不用碰数据本身。
  */
 
+import { extractZipEntry } from './unzip'
+import { mergeDosboxConfigOverride } from '../../shared/dosbox-config.js'
+
 const te = new TextEncoder()
 
 /* ---------------- zip 读 ---------------- */
@@ -379,15 +382,60 @@ export function makeWindowsGameLayer(buf: ArrayBuffer, executable: string, drive
  * 把一份 DOS 游戏（zip / exe / com，或已经打好的 .jsdos）变成 js-dos 能跑的 bundle。
  * conf 允许外部覆盖（例如用户在界面上手动选了启动程序）。
  */
-export function makeJsdosBundle(name: string, buf: ArrayBuffer, conf?: string): BundleResult {
+export async function makeJsdosBundle(
+  name: string,
+  buf: ArrayBuffer,
+  conf?: string,
+  configOverride?: string,
+): Promise<BundleResult> {
   const entries = readZipEntries(buf)
   const bytes = new Uint8Array(buf)
   const zipLike = bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b
   if (zipLike && !entries) throw new Error('DOS 压缩包为空、已损坏或下载不完整')
 
-  // 已经是 bundle：原样返回
-  if (entries?.some((e) => e.name === '.jsdos/dosbox.conf')) {
+  const bundledConf = entries?.find((e) => e.name.toLowerCase() === '.jsdos/dosbox.conf')
+  // 没有高级覆盖时继续零拷贝透传；避免仅仅为了换一份几 KB 的配置复制整块系统镜像。
+  if (bundledConf && !configOverride?.trim()) {
     return { blob: new Blob([buf], { type: 'application/zip' }), executable: null, passthrough: true }
+  }
+
+  if (entries && bundledConf) {
+    if (bundledConf.uncompressedSize > 1024 * 1024) throw new Error('ROM 内的 dosbox.conf 大小异常')
+    const extracted = await extractZipEntry(buf, {
+      name: bundledConf.name,
+      method: bundledConf.method,
+      compressedSize: bundledConf.compressedSize,
+      uncompressedSize: bundledConf.uncompressedSize,
+      crc32: bundledConf.crc,
+      offset: bundledConf.localOffset,
+    })
+    const merged = te.encode(
+      mergeDosboxConfigOverride(new TextDecoder().decode(extracted), configOverride),
+    ) as Uint8Array<ArrayBuffer>
+    const out: OutEntry[] = []
+    for (const e of entries) {
+      if (e.name.toLowerCase() === '.jsdos/dosbox.conf') continue
+      out.push({
+        name: e.name,
+        method: e.method,
+        crc: e.crc,
+        compressedSize: e.compressedSize,
+        uncompressedSize: e.uncompressedSize,
+        data: rawData(buf, e),
+      })
+    }
+    if (!entries.some((e) => e.name.toLowerCase() === '.jsdos/')) {
+      out.push({ name: '.jsdos/', method: 0, crc: 0, compressedSize: 0, uncompressedSize: 0, data: new Uint8Array(0) as Uint8Array<ArrayBuffer> })
+    }
+    out.push({
+      name: '.jsdos/dosbox.conf',
+      method: 0,
+      crc: crc32(merged),
+      compressedSize: merged.length,
+      uncompressedSize: merged.length,
+      data: merged,
+    })
+    return { blob: buildZip(out), executable: null, passthrough: false }
   }
 
   const out: OutEntry[] = []
@@ -449,7 +497,9 @@ export function makeJsdosBundle(name: string, buf: ArrayBuffer, conf?: string): 
     out.push({ name: file, method: 0, crc: crc32(data), compressedSize: data.length, uncompressedSize: data.length, data })
   }
 
-  const confBytes = te.encode(conf ?? buildDosboxConf(exe)) as Uint8Array<ArrayBuffer>
+  const confBytes = te.encode(
+    mergeDosboxConfigOverride(conf ?? buildDosboxConf(exe), configOverride),
+  ) as Uint8Array<ArrayBuffer>
   // conf 自己的父目录同理要先建好（单个 exe 的分支也走到这里，那边一个目录条目都没有）
   out.push({ name: '.jsdos/', method: 0, crc: 0, compressedSize: 0, uncompressedSize: 0, data: new Uint8Array(0) as Uint8Array<ArrayBuffer> })
   out.push({

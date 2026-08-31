@@ -7,6 +7,7 @@
  */
 import { assertValidZip, extractZipEntry } from './unzip'
 import { WINDOWS_GAME_ROOT, WINDOWS_LAUNCHER_PATH } from './jsdosBundle'
+import { mergeDosboxConfigOverride } from '../../shared/dosbox-config.js'
 
 const td = new TextDecoder()
 const DRIVE_CANDIDATES = 'DEFGHIJKLMNOPQRSTUVWXYZ'
@@ -67,7 +68,7 @@ export interface WindowsGuestConfig {
  * BOOT 移到最后并加 -convertfat。盘符从未占用的 D-Z 里挑，因此未来换带 CD-ROM 的
  * Win98 镜像也不会因为 D: 已存在而互相踩。
  */
-export function buildWindowsGuestConfig(base: string): WindowsGuestConfig {
+export function buildWindowsGuestConfig(base: string, configOverride?: string): WindowsGuestConfig {
   let lines = base.replace(/\r\n?/g, '\n').split('\n')
   const autoAt = lines.findIndex((line) => /^\s*\[autoexec\]\s*$/i.test(line))
   if (autoAt < 0) throw new Error('Windows 系统镜像的 dosbox.conf 缺少 [autoexec]')
@@ -101,8 +102,10 @@ export function buildWindowsGuestConfig(base: string): WindowsGuestConfig {
   ]
   lines = setSectionOption(lines, 'dosbox', 'convert fat free space', '16')
 
+  const generated = `${lines.join('\n').replace(/\n+$/, '')}\n`
   return {
-    dosboxConf: `${lines.join('\n').replace(/\n+$/, '')}\n`,
+    // 覆盖最后应用，但解析器会拒绝 [autoexec] 和关键挂载参数，所以管理员只能调整硬件配置。
+    dosboxConf: mergeDosboxConfigOverride(generated, configOverride),
     gameDrive,
     launcher: `${gameDrive}:\\${WINDOWS_LAUNCHER_PATH.replace(/\//g, '\\')}`,
   }

@@ -183,13 +183,15 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       const rom = await readRom(options.game, options.onProgress)
       options.onProgress?.({ phase: 'starting' })
       if (destroyed) return
+      // 高级配置属于 DOSBox-X；即使数据库里残留了错误字段，普通 DOSBox 也不能误吃进去。
+      const dosboxConfig = options.dosBackend === 'dosboxX' ? options.dosboxConfig : undefined
 
       let primaryUrl = ''
       let guest: WindowsGuestConfig | null = null
       let initFs: unknown[] | undefined
       if (loadedSystem) {
         if (!options.dosExecutable) throw new Error('Windows 客体游戏没有配置自启动 EXE')
-        guest = buildWindowsGuestConfig(await readWindowsSystemConfig(loadedSystem.data))
+        guest = buildWindowsGuestConfig(await readWindowsSystemConfig(loadedSystem.data), dosboxConfig)
         const gameLayer = makeWindowsGameLayer(rom.buf, options.dosExecutable, guest.gameDrive)
         const gameLayerBytes = new Uint8Array(await gameLayer.blob.arrayBuffer())
         // 系统包自己的 conf 必须先改名：它作为后续文件层解开时会覆盖 Dos() 的直接配置。
@@ -200,10 +202,11 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       } else {
         // 普通 zip / exe 现场打成 bundle；已经是 bundle 的原样使用。
         // 后台指定了启动程序就按它生成 conf，压过 pickExecutable 的猜测。
-        const bundle = makeJsdosBundle(
+        const bundle = await makeJsdosBundle(
           rom.name,
           rom.buf,
           options.dosExecutable ? buildDosboxConf(options.dosExecutable) : undefined,
+          dosboxConfig,
         )
         primaryUrl = URL.createObjectURL(bundle.blob)
         objectUrls.push(primaryUrl)

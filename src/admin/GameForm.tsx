@@ -29,6 +29,13 @@ import { FEATURES } from '@/config/features'
 import { isPlayable } from '@/emulator'
 import { normalizeDevelopers } from '@/lib/developers'
 import { Field, btnClass, inputClass } from './ui'
+import { mergeDosboxConfigOverride, normalizeDosboxConfigOverride } from '../../shared/dosbox-config.js'
+
+const DOSBOX_CONFIG_TEMPLATES = [
+  { label: '关闭 GUS', config: '[gus]\ngus=false' },
+  { label: '鼠标 1:1', config: '[sdl]\nsensitivity=100\nraw_mouse_input=true' },
+  { label: 'CPU 兼容模式', config: '[cpu]\ncore=normal' },
+] as const
 
 export function slugify(text: string): string {
   return text
@@ -108,6 +115,17 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
 
   const set = <K extends keyof Game>(key: K, value: Game[K]) => setForm((f) => ({ ...f, [key]: value }))
 
+  const applyDosboxTemplate = (config: string) => {
+    try {
+      // 先校验当前文本，避免模板按钮把管理员刚输错的一行悄悄带进最终配置。
+      const current = normalizeDosboxConfigOverride(form.dosboxConfig)
+      set('dosboxConfig', mergeDosboxConfigOverride(current, config).trim())
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'DOSBox-X 配置格式不正确')
+    }
+  }
+
   const toggleGenre = (id: GenreId) =>
     setForm((f) => ({
       ...f,
@@ -135,6 +153,14 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
     }
     if (windowsGuest && !form.dosExecutable?.trim()) {
       return setError('共享 Windows 系统模式必须填写 ZIP 内的自启动 EXE')
+    }
+    let dosboxConfig: string | undefined
+    if (form.platform === 'dos' && form.dosBackend === 'dosboxX') {
+      try {
+        dosboxConfig = normalizeDosboxConfigOverride(form.dosboxConfig) || undefined
+      } catch (err) {
+        return setError(err instanceof Error ? err.message : 'DOSBox-X 配置格式不正确')
+      }
     }
 
     const tags = tagsText
@@ -180,6 +206,7 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
       // 平台仍然保存为 DOS；这两个字段只描述 DOSBox-X 里面要启动的客体系统。
       dosSystem: windowsGuest ? form.dosSystem!.trim() : undefined,
       dosLaunchDelay: windowsGuest ? Math.max(5, Math.min(120, Math.round(Number(form.dosLaunchDelay) || 24))) : undefined,
+      dosboxConfig,
       // 空字符串写成 undefined，否则会存一条空的英文简介，
       // 前台判「有没有英文版」时就会误判成有
       descriptionEn: form.descriptionEn?.trim() || undefined,
@@ -310,6 +337,40 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
                     onChange={(e) => set('dosLaunchDelay', Math.max(5, Math.min(120, Number(e.target.value) || 24)))}
                   />
                   <p className="mt-1 text-[11px] text-dim">检测到 Windows 图形界面后再等待这么久；慢设备可适当调大。</p>
+                </Field>
+                <Field label="DOSBox-X 配置覆盖" className="col-span-2 sm:col-span-4">
+                  <textarea
+                    className={cx(inputClass, 'h-44 resize-y py-2 font-mono text-xs leading-5')}
+                    value={form.dosboxConfig ?? ''}
+                    onChange={(e) => set('dosboxConfig', e.target.value || undefined)}
+                    spellCheck={false}
+                    placeholder={'[cpu]\ncycles=20000\n\n[gus]\ngus=false'}
+                  />
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {DOSBOX_CONFIG_TEMPLATES.map((template) => (
+                      <button
+                        key={template.label}
+                        type="button"
+                        className={cx(btnClass.secondary, 'h-7 px-2 text-xs')}
+                        onClick={() => applyDosboxTemplate(template.config)}
+                      >
+                        {template.label}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      className={cx(btnClass.secondary, 'h-7 px-2 text-xs')}
+                      onClick={() => {
+                        set('dosboxConfig', undefined)
+                        setError(null)
+                      }}
+                    >
+                      恢复系统默认
+                    </button>
+                  </div>
+                  <p className="mt-1 text-[11px] text-dim">
+                    只保存需要覆盖的 INI 项；支持硬件、CPU、声卡和灵敏度设置。[autoexec]、鼠标捕获模式与游戏盘挂载由站点保护。
+                  </p>
                 </Field>
               </>
             ) : (

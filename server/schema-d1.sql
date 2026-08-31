@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS games (
   dos_backend    TEXT,
   dos_system     TEXT,
   dos_launch_delay INTEGER,
+  -- 逐游戏 DOSBox-X 安全配置覆盖，不允许包含 [autoexec]。
+  dosbox_config_override TEXT,
   home_rank      INTEGER,
   added_at       TEXT,
   created_at     TEXT    NOT NULL DEFAULT (CURRENT_TIMESTAMP),

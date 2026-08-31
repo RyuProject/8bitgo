@@ -71,6 +71,8 @@ CREATE TABLE IF NOT EXISTS games (
   dos_system     VARCHAR(500)  NULL,
   -- 客体系统切入图形模式后等待多少秒再自动运行 dos_executable；不同系统镜像速度不同，不能写死。
   dos_launch_delay SMALLINT UNSIGNED NULL,
+  -- 只保存允许的硬件 / 性能 INI 覆盖；[autoexec] 与挂载参数由应用层拒绝。
+  dosbox_config_override TEXT NULL,
   -- 首页「精选」位的排序号。NULL = 不上首页，数字小的排前面。
   -- 一款都没设时，首页那一栏退回按 plays 自动排（见 server/src/content.js 的 loadHome）
   home_rank     SMALLINT UNSIGNED NULL,

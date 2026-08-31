@@ -59,6 +59,8 @@ export interface MountOptions {
   dosSystemUrl?: string
   /** 客体系统启动后，等待多少秒再自动运行 dosExecutable。 */
   dosLaunchDelay?: number
+  /** 逐游戏 DOSBox-X INI 覆盖；安全解析器会阻止修改 [autoexec] 与站点托管的启动参数。 */
+  dosboxConfig?: string
   /**
    * 游戏 slug —— 存档就是按它归档的。
    * 玩家自己上传的 ROM 没有 slug，调用方会给个 `local:文件名`（见 services/saves.ts）。

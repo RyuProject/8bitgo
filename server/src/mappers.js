@@ -9,6 +9,8 @@
  * WHERE game_id IN (...)，不会退化成每款游戏查三次的 N+1。
  */
 
+import { normalizeDosboxConfigOverride } from '../../shared/dosbox-config.js'
+
 const bool = (v) => v === 1 || v === true || v === '1'
 
 /** 入库时统一逗号和空格，否则同一家公司会在开发商统计里被拆成多个名字。 */
@@ -134,6 +136,22 @@ export function dosLaunchDelayOf(v) {
   return Math.max(5, Math.min(120, n))
 }
 
+/**
+ * DOSBox-X 覆盖配置必须和浏览器端使用同一套规则；否则 API 能存进去、播放器却拒绝运行。
+ * 错误标成可公开的 400，只包含配置行号和规则，不会泄露数据库或服务器路径。
+ */
+export function dosboxConfigOf(v) {
+  if (v == null) return null
+  try {
+    return normalizeDosboxConfigOverride(v) || null
+  } catch (cause) {
+    const error = new Error(cause instanceof Error ? cause.message : 'DOSBox-X 配置格式不正确')
+    error.status = 400
+    error.expose = true
+    throw error
+  }
+}
+
 export function gameRowToApi(r, rel = {}) {
   const g = {
     slug: r.slug,
@@ -164,6 +182,7 @@ export function gameRowToApi(r, rel = {}) {
   if (r.dos_backend === 'dosboxX') g.dosBackend = 'dosboxX'
   if (r.dos_system) g.dosSystem = r.dos_system
   if (r.dos_launch_delay != null) g.dosLaunchDelay = Number(r.dos_launch_delay)
+  if (r.dosbox_config_override) g.dosboxConfig = r.dosbox_config_override
   if (r.title_zh) g.titleZh = r.title_zh
   // 没写英文简介的游戏不带这个字段，前台自己回落到基准简介
   if (r.description_en) g.descriptionEn = r.description_en
@@ -210,6 +229,7 @@ export function gameApiToRow(g) {
     dos_backend: dosBackendOf(g.dosBackend),
     dos_system: dosSystemOf(g.dosSystem),
     dos_launch_delay: dosLaunchDelayOf(g.dosLaunchDelay),
+    dosbox_config_override: dosboxConfigOf(g.dosboxConfig),
   }
 }
 
@@ -241,6 +261,7 @@ const FIELD_TO_COLUMN = {
   dosBackend: ['dos_backend', dosBackendOf],
   dosSystem: ['dos_system', dosSystemOf],
   dosLaunchDelay: ['dos_launch_delay', dosLaunchDelayOf],
+  dosboxConfig: ['dosbox_config_override', dosboxConfigOf],
 }
 
 export function gameApiToPartialRow(patch) {

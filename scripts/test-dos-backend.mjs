@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import {
   dosBackendOf,
+  dosboxConfigOf,
   dosLaunchDelayOf,
   dosSystemOf,
   gameApiToPartialRow,
@@ -12,25 +13,33 @@ assert.equal(dosBackendOf('dosboxX'), 'dosboxX')
 assert.equal(dosBackendOf('dosbox'), null)
 assert.equal(dosBackendOf('DOSBOX-X'), null)
 assert.equal(dosBackendOf(undefined), null)
+assert.equal(dosboxConfigOf(' [gus]\r\ngus=false '), '[gus]\ngus=false')
+assert.equal(dosboxConfigOf(undefined), null)
+assert.throws(() => dosboxConfigOf('[autoexec]\nmount c .'), /不允许编辑/)
+assert.throws(() => dosboxConfigOf('[sdl]\nmouse_emulation=always'), /统一管理/)
 
 const win95 = gameRowToApi({
   slug: 'win95',
   dos_backend: 'dosboxX',
   dos_system: 'systems/win95.jsdos',
   dos_launch_delay: 24,
+  dosbox_config_override: '[gus]\ngus=false',
 })
 assert.equal(win95.dosBackend, 'dosboxX')
 assert.equal(win95.dosSystem, 'systems/win95.jsdos')
 assert.equal(win95.dosLaunchDelay, 24)
+assert.equal(win95.dosboxConfig, '[gus]\ngus=false')
 assert.equal(gameRowToApi({ slug: 'dos', dos_backend: null }).dosBackend, undefined)
 
 assert.equal(gameApiToRow({ slug: 'win95', dosBackend: 'dosboxX', dosSystem: 'systems/win95.jsdos', dosLaunchDelay: 24 }).dos_backend, 'dosboxX')
 assert.equal(gameApiToRow({ slug: 'win95', dosBackend: 'dosboxX', dosSystem: 'systems/win95.jsdos', dosLaunchDelay: 24 }).dos_system, 'systems/win95.jsdos')
 assert.equal(gameApiToRow({ slug: 'win95', dosBackend: 'dosboxX', dosSystem: 'systems/win95.jsdos', dosLaunchDelay: 24 }).dos_launch_delay, 24)
 assert.equal(gameApiToRow({ slug: 'dos', dosBackend: 'dosbox' }).dos_backend, null)
+assert.equal(gameApiToRow({ slug: 'win95', dosboxConfig: '[cpu]\ncycles=20000' }).dosbox_config_override, '[cpu]\ncycles=20000')
 
 assert.deepEqual(gameApiToPartialRow({ dosBackend: 'dosboxX' }), { dos_backend: 'dosboxX' })
 assert.deepEqual(gameApiToPartialRow({ dosBackend: undefined }), { dos_backend: null })
+assert.deepEqual(gameApiToPartialRow({ dosboxConfig: '' }), { dosbox_config_override: null })
 
 assert.equal(dosSystemOf(' systems/win98.jsdos '), 'systems/win98.jsdos')
 assert.equal(dosSystemOf('bad\nvalue'), null)

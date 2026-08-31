@@ -143,7 +143,7 @@ app.use((err, _req, res, _next) => {
   // JSON 解析失败等客户端错误，body-parser 给的是 4xx，别一律降级成 500
   const status = Number(err?.status || err?.statusCode || 0)
   if (status >= 400 && status < 500) {
-    return res.status(status).json({ error: '请求格式不正确' })
+    return res.status(status).json({ error: err?.expose ? String(err.message) : '请求格式不正确' })
   }
   /**
    * 「列不存在」几乎只有一个原因：代码更新了、库没跑迁移。

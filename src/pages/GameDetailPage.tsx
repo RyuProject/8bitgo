@@ -184,6 +184,7 @@ export function GameDetailPage() {
                 dosBackend={game.dosBackend}
                 dosSystemUrl={game.dosSystem ? romUrlForKey(game.dosSystem) : undefined}
                 dosLaunchDelay={game.dosLaunchDelay}
+                dosboxConfig={game.dosboxConfig}
                 biosUrl={biosUrl || undefined}
                 romUrl={rom.status === 'found' ? rom.url : undefined}
                 romChecking={rom.status === 'checking'}

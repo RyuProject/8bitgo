@@ -110,6 +110,8 @@ interface Props {
   dosSystemUrl?: string
   /** 客体 Windows 切入图形模式后，等待多少秒再执行 dosExecutable。 */
   dosLaunchDelay?: number
+  /** 逐游戏 DOSBox-X 启动配置覆盖；由后台高级编辑器维护。 */
+  dosboxConfig?: string
   /** 平台级 BIOS 的地址（见 services/platformBios.ts）。Neo Geo 这类平台缺了就起不来 */
   biosUrl?: string
   /** 正在探测云端 ROM 是否存在 */
@@ -179,6 +181,7 @@ export function EmulatorPlayer({
   dosBackend,
   dosSystemUrl,
   dosLaunchDelay,
+  dosboxConfig,
   biosUrl,
   romChecking,
   romUnavailable,
@@ -312,6 +315,8 @@ export function EmulatorPlayer({
   dosSystemUrlRef.current = dosSystemUrl
   const dosLaunchDelayRef = useRef(dosLaunchDelay)
   dosLaunchDelayRef.current = dosLaunchDelay
+  const dosboxConfigRef = useRef(dosboxConfig)
+  dosboxConfigRef.current = dosboxConfig
   /** 云端联机是否真的跑起来过（用于区分「没连上」和「玩到一半断了」） */
   const cloudPlayedRef = useRef(false)
   /** 看直播：观众人数与直播标题 */
@@ -407,6 +412,7 @@ export function EmulatorPlayer({
       dosBackend: dosBackendRef.current,
       dosSystemUrl: dosSystemUrlRef.current,
       dosLaunchDelay: dosLaunchDelayRef.current,
+      dosboxConfig: dosboxConfigRef.current,
       /**
        * BIOS 按**本次会话真正的平台**取，父组件传下来的只作首选。
        *

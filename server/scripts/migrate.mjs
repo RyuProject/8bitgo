@@ -123,6 +123,12 @@ const patches = [
     run: () => conn.query('ALTER TABLE `games` ADD COLUMN `dos_launch_delay` SMALLINT UNSIGNED NULL AFTER `dos_system`'),
   },
   {
+    name: 'games.dosbox_config_override（逐游戏 DOSBox-X 启动配置覆盖）',
+    table: 'games',
+    needed: async () => !(await hasColumn('games', 'dosbox_config_override')),
+    run: () => conn.query('ALTER TABLE `games` ADD COLUMN `dosbox_config_override` TEXT NULL AFTER `dos_launch_delay`'),
+  },
+  {
     name: 'games.adult（成人游戏，前台启动前验证年满 18 岁）',
     table: 'games',
     needed: async () => !(await hasColumn('games', 'adult')),
