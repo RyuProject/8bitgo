@@ -66,6 +66,8 @@ CREATE TABLE IF NOT EXISTS games (
   hidden         INTEGER NOT NULL DEFAULT 0,
   core           TEXT,
   dos_executable TEXT,
+  -- NULL = 按类别自动判断；1 = 相对鼠标并锁定；0 = 绝对坐标。
+  dos_mouse_capture INTEGER,
   dos_backend    TEXT,
   dos_system     TEXT,
   dos_launch_delay INTEGER,

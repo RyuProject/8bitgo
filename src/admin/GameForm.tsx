@@ -175,6 +175,8 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
       // 普通 DOS 用它生成 autoexec；共享 Windows 客体则用它生成客体系统里的启动批处理。
       // 旧式“系统和游戏揉在一个 .jsdos”没有共享系统字段，仍按原 bundle 的 conf 启动。
       dosExecutable: form.platform === 'dos' ? form.dosExecutable?.trim() || undefined : undefined,
+      // undefined 不是 false：它代表继续按“射击类锁定、其他类别绝对坐标”的默认规则判断。
+      dosMouseCapture: form.platform === 'dos' ? form.dosMouseCapture : undefined,
       // 普通 DOS 是默认值，不落冗余字段；勾选时才明确保存 DOSBox-X。
       dosBackend: form.platform === 'dos' && form.dosBackend === 'dosboxX' ? 'dosboxX' : undefined,
       // 平台仍然保存为 DOS；这两个字段只描述 DOSBox-X 里面要启动的客体系统。
@@ -284,6 +286,20 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
               </label>
               <p className="mt-1 text-[11px] text-dim">
                 数据库平台仍是 DOS。勾选后可让多款游戏共用一份 Win95 / Win98 系统镜像；每款游戏的 ROM 仍上传普通 ZIP。
+              </p>
+            </Field>
+            <Field label="鼠标模式">
+              <select
+                className={inputClass}
+                value={form.dosMouseCapture === undefined ? 'auto' : form.dosMouseCapture ? 'capture' : 'absolute'}
+                onChange={(e) => set('dosMouseCapture', e.target.value === 'auto' ? undefined : e.target.value === 'capture')}
+              >
+                <option value="auto">自动（射击类锁定）</option>
+                <option value="capture">强制锁定（相对鼠标）</option>
+                <option value="absolute">强制不锁定（绝对坐标）</option>
+              </select>
+              <p className="mt-1 text-[11px] text-dim">
+                光标总回到画面中部时选“强制锁定”；点击画面后生效，按 Esc 释放鼠标。
               </p>
             </Field>
             {form.dosBackend === 'dosboxX' ? (

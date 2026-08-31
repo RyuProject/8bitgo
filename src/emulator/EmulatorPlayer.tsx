@@ -102,6 +102,8 @@ interface Props {
   core?: string
   /** 游戏类别；DOS 射击游戏据此启用相对鼠标锁定。 */
   genres?: readonly GenreId[]
+  /** 单款 DOS 游戏的鼠标模式覆盖；留空时才按类别自动判断。 */
+  dosMouseCapture?: boolean
   /** DOS 启动程序覆盖（zip 内相对路径），jsdos 运行时用 */
   dosExecutable?: string
   /** DOS 运行核心：Windows 95/98 的完整 .jsdos 镜像必须走 DOSBox-X */
@@ -175,6 +177,7 @@ export function EmulatorPlayer({
   romUrl,
   core,
   genres,
+  dosMouseCapture,
   dosExecutable,
   dosBackend,
   dosSystemUrl,
@@ -299,6 +302,8 @@ export function EmulatorPlayer({
   // 分类只在新会话挂载时决定鼠标模式；后台热改分类不该中断玩家当前这一局。
   const genresRef = useRef(genres)
   genresRef.current = genres
+  const dosMouseCaptureRef = useRef(dosMouseCapture)
+  dosMouseCaptureRef.current = dosMouseCapture
   const biosUrlRef = useRef(biosUrl)
   biosUrlRef.current = biosUrl
   // 同 core：只在挂载那一刻读一次，进依赖会把正在跑的游戏重启
@@ -402,7 +407,7 @@ export function EmulatorPlayer({
       // 按游戏覆盖核心 / 平台级 BIOS：都用 ref 读当前值，
       // 放进 effect 依赖会让「BIOS 异步到货」把正在跑的游戏重启一遍
       core: coreRef.current,
-      mouseCapture: shouldCaptureMouse(session.platform, genresRef.current),
+      mouseCapture: shouldCaptureMouse(session.platform, genresRef.current, dosMouseCaptureRef.current),
       dosExecutable: dosExecutableRef.current,
       dosBackend: dosBackendRef.current,
       dosSystemUrl: dosSystemUrlRef.current,

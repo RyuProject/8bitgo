@@ -64,6 +64,11 @@ export async function upsertGame(game: Game): Promise<Game> {
       '服务端没有保存 Windows 系统镜像。请在服务器运行数据库迁移并重启 8bitgo-api，然后重新保存。',
     )
   }
+  if (game.platform === 'dos' && game.dosMouseCapture !== saved.dosMouseCapture) {
+    throw new Error(
+      '服务端没有保存 DOS 鼠标模式。请在服务器运行数据库迁移并重启 8bitgo-api，然后重新保存。',
+    )
+  }
   return saved
 }
 

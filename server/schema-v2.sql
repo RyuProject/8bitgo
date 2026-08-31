@@ -64,6 +64,9 @@ CREATE TABLE IF NOT EXISTS games (
   -- DOS 启动程序（zip 内相对路径，如 NFS/TNFS.EXE）。
   -- NULL = 交给前端启发式去猜（src/lib/jsdosBundle.ts 的 pickExecutable）
   dos_executable VARCHAR(255)  NULL,
+  -- NULL = 按类别自动判断；1 = 相对鼠标并锁定；0 = 绝对坐标。
+  -- 单款覆盖用于 Theme Hospital 这类非射击游戏的 js-dos v8 鼠标兼容问题。
+  dos_mouse_capture TINYINT(1) NULL,
   -- Windows 95/98 的完整 .jsdos 磁盘镜像需要 DOSBox-X；NULL = 普通 DOSBox。
   dos_backend    VARCHAR(16)   NULL,
   -- 可复用的 Windows 客体系统 .jsdos。游戏 ROM 仍是独立 ZIP，运行时作为另一块 FAT 盘挂入。
