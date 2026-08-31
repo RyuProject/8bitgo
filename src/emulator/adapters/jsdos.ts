@@ -19,6 +19,7 @@ import { imageDataToBlob } from '../recorder'
 import { GP, startGamepadBridge, hasGamepadApi, type GamepadBridge } from '../gamepad'
 import { deleteSave, pullSave, pushSave } from '@/services/saves'
 import { loadGameBytes } from '../romLoader'
+import { windowsGuestStartupBudgetMs } from '../loadProgress'
 
 /** P2P 模式的撮合服务器。自建的话见 https://github.com/caiiiycuk/WebRTC-NET（Go） */
 export const JSDOS_PEER_SERVER: string = import.meta.env.VITE_JSDOS_PEER_SERVER || 'https://net.dos.zone'
@@ -225,6 +226,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const markReady = () => {
     if (destroyed || readySent) return
     readySent = true
+    window.clearTimeout(readyFallback)
     options.onReady?.()
   }
 
@@ -237,27 +239,34 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
 
   void (async () => {
     try {
-      // js-dos 本体（js-dos.js + wdosbox.wasm）由 loadJsDos() 用 <script> 拉，
-      // 没有进度回调可用，只能先报个阶段；ROM 那一路是我们自己 fetch 的，有真实字节数
+      // js-dos 入口脚本由 loadJsDos() 用 <script> 拉，没有字节进度，只能先报核心阶段；
+      // 系统镜像和 ROM 是我们自己 fetch 的，后两段都有真实进度。
       options.onProgress?.({ phase: 'engine' })
+      const Dos = await loadJsDos()
+      options.onProgress?.({ phase: 'engine', ratio: 1 })
       const systemPromise = options.dosSystemUrl
         ? loadGameBytes(options.dosSystemUrl, (progress) => options.onProgress?.({ ...progress, phase: 'assets' }))
         : Promise.resolve(null)
-      const [Dos, rom, system] = await Promise.all([loadJsDos(), readRom(options.game, options.onProgress), systemPromise])
-      options.onProgress?.({ phase: 'starting', ratio: 1 })
+      // 系统镜像通常远大于游戏 ZIP。以前三路并行时，小 ROM 会先把进度推到 80%，
+      // 随后大半分钟都在等镜像，看起来像卡死。按界面约定分段：核心/镜像 0–40%，
+      // 它们完成后才让游戏 ROM 进入 40–80%。少一点并行，换来可理解、不会骗人乱跳的进度。
+      const loadedSystem = await systemPromise
+      options.onProgress?.({ phase: 'assets', ratio: 1 })
+      const rom = await readRom(options.game, options.onProgress)
+      options.onProgress?.({ phase: 'starting' })
       if (destroyed) return
 
       let primaryUrl = ''
       let guest: WindowsGuestConfig | null = null
       let initFs: unknown[] | undefined
-      if (system) {
+      if (loadedSystem) {
         if (!options.dosExecutable) throw new Error('Windows 客体游戏没有配置自启动 EXE')
-        guest = buildWindowsGuestConfig(await readWindowsSystemConfig(system.data))
+        guest = buildWindowsGuestConfig(await readWindowsSystemConfig(loadedSystem.data))
         const gameLayer = makeWindowsGameLayer(rom.buf, options.dosExecutable, guest.gameDrive)
         const gameLayerBytes = new Uint8Array(await gameLayer.blob.arrayBuffer())
         // 系统包自己的 conf 必须先改名：它作为后续文件层解开时会覆盖 Dos() 的直接配置。
         // 改名只动 ZIP 头里的 36 个 ASCII 字节，不复制那份近百 MB 的 qcow2 数据。
-        const systemLayer = hideJsdosConfigForLayer(system.data)
+        const systemLayer = hideJsdosConfigForLayer(loadedSystem.data)
         // 最终配置再放一次到最后，未来 js-dos 即使调整直接配置与 initFs 的合并顺序也不会倒退。
         initFs = [systemLayer, gameLayerBytes, { dosboxConf: guest.dosboxConf, jsdosConf: { version: '8' } }]
       } else {
@@ -376,10 +385,14 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       if (!guest) {
         readyFallback = window.setTimeout(markReady, 8000)
       } else {
-        // 没拿到 ci-ready 就无法安全发送自启动按键；宁可明确报错，也不能掀开遮罩露出桌面。
+        // CI 创建期间 js-dos 要在 WASM 内挂载近百 MB 的 qcow2；旧的 45 秒宽限会让慢设备
+        // 在即将成功前被误判。真实引擎错误仍会立即走 emu-error，这里只拦真正的长时间失联。
+        const timeoutMs = windowsGuestStartupBudgetMs(options.dosLaunchDelay)
         readyFallback = window.setTimeout(() => {
-          if (!readySent) options.onError?.(fmt(rt.jsdosRunFailed, { msg: 'Windows 客体启动超时，未能执行自启动程序' }))
-        }, ((options.dosLaunchDelay ?? 24) + 45) * 1000)
+          if (!readySent) {
+            options.onError?.(fmt(rt.jsdosRunFailed, { msg: 'Windows 客体初始化超时，未能执行自启动程序' }))
+          }
+        }, timeoutMs)
       }
     } catch (e) {
       if (destroyed) return

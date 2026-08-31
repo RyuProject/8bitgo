@@ -4,8 +4,8 @@ import { platformMap } from '@/data/platforms'
 import { formatBytes, isRomFileAccepted } from '@/lib/emulator'
 import { detectRom, describeDetection } from './detect'
 import { resolveRuntime, extOf } from './registry'
-import type { Capability, Runtime, RuntimeHandle } from './types'
-import { createOverallRatio } from './loadProgress'
+import type { Capability, LoadPhase, Runtime, RuntimeHandle } from './types'
+import { createOverallRatio, LOAD_PHASE_RANGE, windowsGuestStartupBudgetMs } from './loadProgress'
 import { platformBiosUrlSync } from '@/services/platformBios'
 import { EmulatorTools } from './EmulatorTools'
 import { LiveControls } from './LiveControls'
@@ -40,9 +40,16 @@ type Mode = 'local' | 'online'
 /** 联机走哪条路：p2p = 房主浏览器直推（默认）；cloud = 游戏跑在服务器上（付费） */
 type Channel = 'p2p' | 'cloud'
 
-/** 没有真实进度时用 45 秒缓慢走到 90%；真正启动前绝不显示 100%。 */
-const LOAD_PROGRESS_DURATION_MS = 45_000
-const LOAD_PROGRESS_CEILING = 0.9
+/**
+ * 拿不到真实字节数时，各阶段仍按这个时长缓慢推进到区间末尾前 1%。
+ * 最后 1% 必须留给真正的 onReady，不能把“还在等”画成“已经成功”。
+ */
+const LOAD_PHASE_DURATION_MS: Record<Exclude<LoadPhase, 'starting'>, number> = {
+  engine: 20_000,
+  assets: 45_000,
+  rom: 45_000,
+}
+const LOAD_PROGRESS_CEILING = 0.99
 /** 自动重试只做一次：网络抖动能自愈，坏 ROM 也不会陷入无限刷新。 */
 const AUTO_RETRY_LIMIT = 1
 
@@ -260,7 +267,6 @@ export function EmulatorPlayer({
 
   /** 当前运行时句柄 + 它上报的能力集合（决定工具栏画哪些按钮） */
   const [handle, setHandle] = useState<RuntimeHandle | null>(null)
-  /** 加载进度。null 表示还没收到任何一帧（引擎还没开口），进度条转不确定态 */
   /**
    * 加载进度：存的是**合成后**的整条进度（0~1），不是适配器报的分阶段进度。
    * 合成逻辑在 loadProgress.ts 的 createOverallRatio —— 每次加载新建一个，
@@ -268,6 +274,8 @@ export function EmulatorPlayer({
    */
   const [loadRatio, setLoadRatio] = useState<number | null>(null)
   const overallRatio = useRef(createOverallRatio())
+  /** 当前视觉阶段的起点；真实回调停顿时，计时兜底从这里继续向前走。 */
+  const progressClock = useRef<{ phase: LoadPhase; startedAt: number }>({ phase: 'engine', startedAt: Date.now() })
   const [caps, setCaps] = useState<Set<Capability>>(() => new Set())
 
   const hostRef = useRef<HTMLDivElement>(null)
@@ -321,24 +329,44 @@ export function EmulatorPlayer({
     // 上一局的进度必须清掉，否则新会话的遮罩会先闪一下上次的 100%。
     // 合成器也要换一个新的：它记着「已显示的最大值」，不换的话新一局会被上一局的 100% 卡住
     overallRatio.current = createOverallRatio()
-    // 自动重试仍是同一次“开始游戏”：保留玩家已经看到的进度，避免失败瞬间从 90% 跳回 0%，
+    progressClock.current = { phase: 'engine', startedAt: Date.now() }
+    // 自动重试仍是同一次“开始游戏”：保留玩家已经看到的进度，避免失败瞬间从高位跳回 0%，
     // 看起来像整个加载被推倒重来。玩家主动开的新一局才从头显示。
     if (!extra?.retryAttempt) setLoadRatio(null)
     setStatus('loading')
   }
 
+  /** 阶段只允许向前走；并行请求迟到的回调不能把计时器拨回上一段。 */
+  const enterProgressPhase = (phase: LoadPhase) => {
+    const order: LoadPhase[] = ['engine', 'assets', 'rom', 'starting']
+    if (order.indexOf(phase) <= order.indexOf(progressClock.current.phase)) return
+    progressClock.current = { phase, startedAt: Date.now() }
+  }
+
   /**
    * 有些阶段拿不到 Content-Length，甚至在 WASM 初始化期间完全没有网络回调。
-   * 这时按固定时长补一条缓慢前进的视觉进度；真实进度更快就跟真实进度走，
-   * 两者都封顶 90%，只有 onReady 才代表真正成功。
+   * 这时在当前阶段的固定区间内补一条缓慢前进的视觉进度：核心与镜像走到 40%，
+   * ROM 走到 80%，最后 20% 按启动超时推进。真实进度更快就跟真实进度走。
    */
   useEffect(() => {
     if (status !== 'loading' || !session) return
-    const startedAt = Date.now()
     setLoadRatio((current) => Math.max(current ?? 0, 0.01))
     const timer = window.setInterval(() => {
+      const { phase, startedAt } = progressClock.current
+      const [phaseStart, phaseEnd] = LOAD_PHASE_RANGE[phase]
+      let duration: number
+      if (phase === 'starting') {
+        const windowsGuest = session.platform === 'dos' && dosBackendRef.current === 'dosboxX' && dosSystemUrlRef.current
+        // Windows 客体要先在 WASM 里挂近百 MB 的系统盘；视觉进度与真实失败兜底共用预算，
+        // 慢设备不会先停在 99%，更不会在本来还能成功时被旧的 45 秒门槛判死。
+        duration = windowsGuest ? windowsGuestStartupBudgetMs(dosLaunchDelayRef.current) : 45_000
+      } else {
+        duration = LOAD_PHASE_DURATION_MS[phase]
+      }
       const elapsed = Date.now() - startedAt
-      const timed = 0.01 + (LOAD_PROGRESS_CEILING - 0.01) * Math.min(1, elapsed / LOAD_PROGRESS_DURATION_MS)
+      const visualStart = Math.max(0.01, phaseStart)
+      const visualEnd = Math.min(LOAD_PROGRESS_CEILING, phaseEnd - 0.01)
+      const timed = visualStart + (visualEnd - visualStart) * Math.min(1, elapsed / duration)
       setLoadRatio((current) => Math.max(current ?? 0, timed))
     }, 250)
     return () => window.clearInterval(timer)
@@ -392,6 +420,7 @@ export function EmulatorPlayer({
       },
       onProgress: (next) => {
         if (!isCurrent()) return
+        enterProgressPhase(next.phase)
         const actual = Math.min(LOAD_PROGRESS_CEILING, overallRatio.current(next))
         setLoadRatio((current) => Math.max(current ?? 0, actual))
       },
@@ -794,7 +823,7 @@ export function EmulatorPlayer({
     session?.runtime ?? (online ? (channel === 'p2p' ? emulatorJsRuntime : cloudGameRuntime) : pageRuntime)
   const cloudStateLabel = cloudState ? t.player.cloudState[cloudState] : ''
 
-  // 进度条要显示的比例：加载期间只走到 90%，真正启动后遮罩才消失
+  // 进度条加载期间最多走到 99%，真正启动后遮罩才消失
   const ratio = loadRatio ?? 0
   // 服务端的 players 不含观众，比本地 onPlayers 更准；拿不到时退回本地计数
   const roomPlayers = session?.cloud ? (myCloudRoom?.players ?? 1) : (myNetRoom?.players ?? players)
@@ -998,8 +1027,8 @@ export function EmulatorPlayer({
            * （包一层 iframe 里的 XHR，见 adapters/emulatorjs.ts 的 installProgressTap），
            * 照样走这根条 —— 玩家看到的是进度，而不是引擎自己那行中文字。
            *
-           * 没有真实字节数时也会按设定时间缓慢走到 90%，让 WASM 初始化这类静默阶段
-           * 不再像页面卡死；90% 之后只等 onReady，绝不假装已经成功。
+           * 没有真实字节数时也会在当前阶段里缓慢前进：核心与镜像 0–40%，ROM 40–80%，
+           * 启动与超时 80–99%。这样静默阶段不再像页面卡死，真正成功仍只认 onReady。
            */
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-black px-8">
             <div className="flex w-full max-w-xs flex-col items-center gap-3">

@@ -131,7 +131,7 @@ export type LoadPhase = 'engine' | 'assets' | 'rom' | 'starting'
 
 export interface LoadProgress {
   phase: LoadPhase
-  /** 0~1。拿不到总量时为 undefined —— UI 应转成不确定态，而不是显示 0% */
+  /** 0~1。拿不到总量时为 undefined —— UI 会结合已下载字节与阶段计时给出渐进估算。 */
   ratio?: number
   /** 已下载字节数 */
   loaded?: number

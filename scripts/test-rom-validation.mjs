@@ -57,7 +57,7 @@ try {
         "export * from './src/lib/romValidation.ts'",
         "export { assertValidZip } from './src/lib/unzip.ts'",
         "export { makeJsdosBundle } from './src/lib/jsdosBundle.ts'",
-        "export { fetchWithProgress } from './src/emulator/loadProgress.ts'",
+        "export { createOverallRatio, fetchWithProgress, windowsGuestStartupBudgetMs } from './src/emulator/loadProgress.ts'",
       ].join('\n'),
       resolveDir: process.cwd(),
       sourcefile: 'rom-validation-test-entry.ts',
@@ -69,7 +69,17 @@ try {
     outfile,
     logLevel: 'silent',
   })
-  const { assertValidZip, assertNesRom, assertSwf, assertJar, prepareNdsRom, makeJsdosBundle, fetchWithProgress } = await import(
+  const {
+    assertValidZip,
+    assertNesRom,
+    assertSwf,
+    assertJar,
+    prepareNdsRom,
+    makeJsdosBundle,
+    createOverallRatio,
+    fetchWithProgress,
+    windowsGuestStartupBudgetMs,
+  } = await import(
     `${pathToFileURL(outfile).href}?${Date.now()}`
   )
 
@@ -124,7 +134,20 @@ try {
   await assert.rejects(() => fetchWithProgress('https://example.test/short.rom'), /下载不完整/)
   globalThis.fetch = originalFetch
 
-  console.log('ROM 校验测试通过：下载长度 / NES / ZIP 截断 / SWF / NDS / J2ME / DOS')
+  const overall = createOverallRatio()
+  assert.equal(overall({ phase: 'engine', ratio: 0.5 }), 0.1)
+  assert.equal(overall({ phase: 'assets', ratio: 1 }), 0.4)
+  assert.ok(Math.abs(overall({ phase: 'rom', ratio: 0.5 }) - 0.6) < Number.EPSILON)
+  // starting=1 只表示开始启动，80% 之后必须留给超时计时和真正的 onReady。
+  assert.equal(overall({ phase: 'starting', ratio: 1 }), 0.8)
+  // 并行请求的旧阶段晚到时，总进度不能倒退。
+  assert.equal(overall({ phase: 'assets', ratio: 0.1 }), 0.8)
+  // Windows 客体不能再沿用旧的“开机等待 + 45 秒”；慢设备挂 qcow2 本身就可能超过一分钟。
+  assert.equal(windowsGuestStartupBudgetMs(24), 264_000)
+  assert.equal(windowsGuestStartupBudgetMs(2), 245_000)
+  assert.equal(windowsGuestStartupBudgetMs(999), 360_000)
+
+  console.log('ROM 校验测试通过：下载长度 / 分段进度 / NES / ZIP 截断 / SWF / NDS / J2ME / DOS')
 } finally {
   await rm(temp, { recursive: true, force: true })
 }

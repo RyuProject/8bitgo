@@ -122,21 +122,38 @@ export async function fetchWithProgress(
 /* ---------------- 合成一条 0→100 的总进度 ---------------- */
 
 /**
- * 各阶段在整条进度里占的权重，数组顺序就是实际发生的顺序。
+ * 每个阶段在整条进度上的固定区间。
  *
- * 为什么要合成：适配器报的是**每个阶段自己的** 0~1，直接拿去画条子，
- * 玩家看到的就是「涨到满 → 归零 → 再涨」——一局加载里来回好几次，
- * 像坏了。进度条只该有一种状态：从 0 走到 100，而且只进不退。
+ * 固定区间比“按本次见到的阶段重新归一化”更重要：Windows 客体会先下载核心与共享
+ * 系统镜像，再下载游戏 ROM，最后等待客体开机。如果把 starting 只留 3%，玩家会长时间
+ * 卡在 90% 左右，以为浏览器死了。现在明确约定：
  *
- * 权重按实际耗时估：引擎的 wasm 最大（Ruffle 那个核心十几 MB），
- * 素材包次之，ROM 通常最小，starting 只是收个尾。
+ *   0–20%   模拟器核心
+ *   20–40%  系统镜像 / 引擎素材
+ *   40–80%  游戏 ROM
+ *   80–100% 模拟器启动与超时等待
+ *
+ * 某款游戏没有其中一个阶段时，进入下一阶段会直接跨过那一小段；总进度仍然只进不退。
  */
-const PHASE_WEIGHT: Array<[LoadPhase, number]> = [
-  ['engine', 45],
-  ['assets', 30],
-  ['rom', 22],
-  ['starting', 3],
-]
+export const LOAD_PHASE_RANGE: Record<LoadPhase, readonly [number, number]> = {
+  engine: [0, 0.2],
+  assets: [0.2, 0.4],
+  rom: [0.4, 0.8],
+  starting: [0.8, 1],
+}
+
+/**
+ * Windows 9x 的 CI 创建会把近百 MB 的 qcow2 镜像交给 WASM 解包、建盘；这段耗时取决于
+ * 设备 CPU 和内存，不是网络下载结束就会立刻完成。原来只留 45 秒，快设备能进、慢设备
+ * 却会在稍后同样成功之前被误判为失败。额外留 4 分钟，真实引擎错误仍会由 js-dos 立即上报。
+ */
+export const WINDOWS_GUEST_INIT_GRACE_MS = 4 * 60_000
+
+/** 客体初始化 + 后台配置的开机等待，共同构成 80–99% 这段的超时预算。 */
+export function windowsGuestStartupBudgetMs(launchDelaySeconds = 24): number {
+  const delay = Math.max(5, Math.min(120, launchDelaySeconds))
+  return delay * 1000 + WINDOWS_GUEST_INIT_GRACE_MS
+}
 
 /**
  * total 未知时的渐近尺度（字节）。
@@ -158,29 +175,17 @@ const SOFT_SCALE: Record<LoadPhase, number> = {
  * 两条保证：
  *   1. **只进不退**：记住已经显示过的最大值，任何回退都被吃掉
  *      （引擎乱序报数、或者某个阶段迟到，都不会让条子往回缩）
- *   2. **第一个出现的阶段从 0 开始**：jsnes 这种只有 rom 阶段的引擎，
- *      不会一上来就停在 75%——权重会在「见到的第一个阶段往后」重新归一化
+ *   2. **启动阶段不吃 ratio**：适配器报 starting=1 通常只表示“资源准备完了”，
+ *      不表示模拟器已经可玩。80% 之后交给播放器的超时计时缓慢推进，onReady 才算成功。
  */
 export function createOverallRatio(): (p: LoadProgress) => number {
-  let base: number | null = null
   let shown = 0
   return (p) => {
-    const idx = PHASE_WEIGHT.findIndex(([ph]) => ph === p.phase)
-    if (idx < 0) return shown
-    if (base === null) base = idx
-    // 比第一个见到的还早的阶段：迟到的回调，忽略（有 shown 兜着，条子不动）
-    if (idx < base) return shown
+    const [start, end] = LOAD_PHASE_RANGE[p.phase]
+    const span = end - start
 
-    const scope = PHASE_WEIGHT.slice(base)
-    const weightSum = scope.reduce((s, [, w]) => s + w, 0)
-    let start = 0
-    for (const [ph, w] of scope) {
-      if (ph === p.phase) break
-      start += w / weightSum
-    }
-    const span = PHASE_WEIGHT[idx][1] / weightSum
-
-    let inner = p.ratio
+    // starting=1 只代表适配器已经开始启动；真就绪必须等 onReady，不能瞬间画到 100%。
+    let inner = p.phase === 'starting' ? 0 : p.ratio
     if (inner === undefined && p.loaded !== undefined && p.loaded > 0) {
       inner = 1 - Math.exp(-p.loaded / SOFT_SCALE[p.phase])
     }
