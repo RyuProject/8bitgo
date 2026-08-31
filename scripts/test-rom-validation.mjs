@@ -58,6 +58,7 @@ try {
         "export { assertValidZip } from './src/lib/unzip.ts'",
         "export { makeJsdosBundle } from './src/lib/jsdosBundle.ts'",
         "export { createOverallRatio, fetchWithProgress, windowsGuestStartupBudgetMs } from './src/emulator/loadProgress.ts'",
+        "export { shouldCaptureMouse } from './src/emulator/mouseCapture.ts'",
         "export { isWindowsGraphicsMode, scheduleWindowsLaunch, windowsLaunchDelayMs } from './src/emulator/windowsLaunch.ts'",
       ].join('\n'),
       resolveDir: process.cwd(),
@@ -79,6 +80,7 @@ try {
     makeJsdosBundle,
     createOverallRatio,
     fetchWithProgress,
+    shouldCaptureMouse,
     isWindowsGraphicsMode,
     scheduleWindowsLaunch,
     windowsLaunchDelayMs,
@@ -151,6 +153,12 @@ try {
   assert.equal(windowsGuestStartupBudgetMs(2), 245_000)
   assert.equal(windowsGuestStartupBudgetMs(999), 360_000)
 
+  // 只有 DOS 射击游戏使用相对鼠标；其他类别和其他平台都不能误锁定指针。
+  assert.equal(shouldCaptureMouse('dos', ['action', 'shooter']), true)
+  assert.equal(shouldCaptureMouse('dos', ['strategy']), false)
+  assert.equal(shouldCaptureMouse('dos'), false)
+  assert.equal(shouldCaptureMouse('nes', ['shooter']), false)
+
   // ci-ready 时的 720×400 仍是 DOSBox 文本画面，不能从这里开始自启动倒计时。
   assert.equal(isWindowsGraphicsMode(720, 400), false)
   assert.equal(isWindowsGraphicsMode(640, 480), true)
@@ -190,7 +198,7 @@ try {
   assert.ok(scheduled.every(({ cleared }) => cleared))
   globalThis.window = originalWindow
 
-  console.log('ROM 校验测试通过：下载长度 / 分段进度 / Windows 自启动 / NES / ZIP 截断 / SWF / NDS / J2ME / DOS')
+  console.log('ROM 校验测试通过：下载长度 / 分段进度 / Windows 自启动 / DOS 鼠标 / NES / ZIP 截断 / SWF / NDS / J2ME / DOS')
 } finally {
   await rm(temp, { recursive: true, force: true })
 }

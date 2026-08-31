@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react'
-import type { DosBackend, Platform, PlatformId } from '@/types'
+import type { DosBackend, GenreId, Platform, PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { formatBytes, isRomFileAccepted } from '@/lib/emulator'
 import { detectRom, describeDetection } from './detect'
 import { resolveRuntime, extOf } from './registry'
 import type { Capability, LoadPhase, Runtime, RuntimeHandle } from './types'
 import { createOverallRatio, LOAD_PHASE_RANGE, windowsGuestStartupBudgetMs } from './loadProgress'
+import { shouldCaptureMouse } from './mouseCapture'
 import { platformBiosUrlSync } from '@/services/platformBios'
 import { EmulatorTools } from './EmulatorTools'
 import { LiveControls } from './LiveControls'
@@ -99,6 +100,8 @@ interface Props {
   romUrl?: string
   /** 这一款游戏指定的模拟器核心。不传就用平台默认 */
   core?: string
+  /** 游戏类别；DOS 射击游戏据此启用相对鼠标锁定。 */
+  genres?: readonly GenreId[]
   /** DOS 启动程序覆盖（zip 内相对路径），jsdos 运行时用 */
   dosExecutable?: string
   /** DOS 运行核心：Windows 95/98 的完整 .jsdos 镜像必须走 DOSBox-X */
@@ -171,6 +174,7 @@ export function EmulatorPlayer({
   className,
   romUrl,
   core,
+  genres,
   dosExecutable,
   dosBackend,
   dosSystemUrl,
@@ -292,6 +296,9 @@ export function EmulatorPlayer({
   // 正在跑的游戏重启一遍；这两个值只在挂载引擎那一刻读一次就够了
   const coreRef = useRef(core)
   coreRef.current = core
+  // 分类只在新会话挂载时决定鼠标模式；后台热改分类不该中断玩家当前这一局。
+  const genresRef = useRef(genres)
+  genresRef.current = genres
   const biosUrlRef = useRef(biosUrl)
   biosUrlRef.current = biosUrl
   // 同 core：只在挂载那一刻读一次，进依赖会把正在跑的游戏重启
@@ -395,6 +402,7 @@ export function EmulatorPlayer({
       // 按游戏覆盖核心 / 平台级 BIOS：都用 ref 读当前值，
       // 放进 effect 依赖会让「BIOS 异步到货」把正在跑的游戏重启一遍
       core: coreRef.current,
+      mouseCapture: shouldCaptureMouse(session.platform, genresRef.current),
       dosExecutable: dosExecutableRef.current,
       dosBackend: dosBackendRef.current,
       dosSystemUrl: dosSystemUrlRef.current,

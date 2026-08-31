@@ -236,6 +236,10 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         // 中继联机时必须放出来，玩家要在它的设置面板里填 IPX 服务器和房间
         kiosk: !ipx?.showUi,
         autoStart: true,
+        // 射击类需要相对位移并锁定鼠标；策略等游戏必须保留绝对坐标，否则点击会错位。
+        mouseCapture: Boolean(options.mouseCapture),
+        // DOS 游戏会自己绘制软件光标。系统光标叠在上面会出现两只不同步的鼠标。
+        noCursor: true,
         // P2P 联机：一方开服，另一方按 peer id 连过去
         startIpxServer: Boolean(ipx?.host),
         connectIpxAddress: ipx?.connectTo ?? null,

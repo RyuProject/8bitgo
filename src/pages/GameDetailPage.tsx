@@ -179,6 +179,7 @@ export function GameDetailPage() {
                 icon={game.icon}
                 // 这一款指定的核心（街机尤其需要），以及平台级 BIOS（Neo Geo 缺了起不来）
                 core={game.core}
+                genres={game.genres}
                 dosExecutable={game.dosExecutable}
                 dosBackend={game.dosBackend}
                 dosSystemUrl={game.dosSystem ? romUrlForKey(game.dosSystem) : undefined}

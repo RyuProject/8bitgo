@@ -41,6 +41,8 @@ export interface MountOptions {
    * 更老的板子可能只有 mame2003_plus 跑得动 —— 一个平台默认值盖不住。
    */
   core?: string
+  /** js-dos 是否用相对鼠标并请求指针锁定；射击类需要，依赖绝对坐标的游戏不能开启。 */
+  mouseCapture?: boolean
   /**
    * BIOS 文件地址（平台级，见 services/platformBios.ts）。
    * Neo Geo 这类平台没有它引擎根本起不来，和 ROM 对不对无关。
