@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react'
-import type { DosBackend, GenreId, Platform, PlatformId } from '@/types'
+import type { DosBackend, DosWindowsVersion, GenreId, Platform, PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { formatBytes, isRomFileAccepted } from '@/lib/emulator'
 import { detectRom, describeDetection } from './detect'
@@ -104,10 +104,12 @@ interface Props {
   genres?: readonly GenreId[]
   /** DOS 启动程序覆盖（zip 内相对路径），jsdos 运行时用 */
   dosExecutable?: string
-  /** DOS 运行核心：Windows 95/98 的完整 .jsdos 镜像必须走 DOSBox-X */
+  /** DOS 运行核心：Windows 客体的完整 .jsdos 镜像必须走 DOSBox-X */
   dosBackend?: DosBackend
-  /** 可复用的 Windows 95/98 系统 .jsdos；游戏 ROM 仍单独加载。 */
+  /** 可复用的 Windows 系统 .jsdos；游戏 ROM 仍单独加载。 */
   dosSystemUrl?: string
+  /** Windows 3.x 与 9x 的“运行”入口不同；旧数据留空时按 9x 处理。 */
+  dosWindowsVersion?: DosWindowsVersion
   /** 客体 Windows 切入图形模式后，等待多少秒再执行 dosExecutable。 */
   dosLaunchDelay?: number
   /** 逐游戏 DOSBox-X 启动配置覆盖；由后台高级编辑器维护。 */
@@ -180,6 +182,7 @@ export function EmulatorPlayer({
   dosExecutable,
   dosBackend,
   dosSystemUrl,
+  dosWindowsVersion,
   dosLaunchDelay,
   dosboxConfig,
   biosUrl,
@@ -313,6 +316,8 @@ export function EmulatorPlayer({
   // 系统镜像与等待时间也只在新会话挂载时读取；后台热改配置不应中断玩家当前这一局。
   const dosSystemUrlRef = useRef(dosSystemUrl)
   dosSystemUrlRef.current = dosSystemUrl
+  const dosWindowsVersionRef = useRef(dosWindowsVersion)
+  dosWindowsVersionRef.current = dosWindowsVersion
   const dosLaunchDelayRef = useRef(dosLaunchDelay)
   dosLaunchDelayRef.current = dosLaunchDelay
   const dosboxConfigRef = useRef(dosboxConfig)
@@ -411,6 +416,7 @@ export function EmulatorPlayer({
       dosExecutable: dosExecutableRef.current,
       dosBackend: dosBackendRef.current,
       dosSystemUrl: dosSystemUrlRef.current,
+      dosWindowsVersion: dosWindowsVersionRef.current,
       dosLaunchDelay: dosLaunchDelayRef.current,
       dosboxConfig: dosboxConfigRef.current,
       /**

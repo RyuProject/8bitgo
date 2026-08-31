@@ -4,6 +4,7 @@ import {
   dosboxConfigOf,
   dosLaunchDelayOf,
   dosSystemOf,
+  dosWindowsVersionOf,
   gameApiToPartialRow,
   gameApiToRow,
   gameRowToApi,
@@ -43,6 +44,9 @@ assert.deepEqual(gameApiToPartialRow({ dosboxConfig: '' }), { dosbox_config_over
 
 assert.equal(dosSystemOf(' systems/win98.jsdos '), 'systems/win98.jsdos')
 assert.equal(dosSystemOf('bad\nvalue'), null)
+assert.equal(dosWindowsVersionOf('3x'), '3x')
+assert.equal(dosWindowsVersionOf('9x'), '9x')
+assert.equal(dosWindowsVersionOf('win31'), null)
 assert.equal(dosLaunchDelayOf(2), 5)
 assert.equal(dosLaunchDelayOf(999), 120)
 assert.deepEqual(gameApiToPartialRow({ dosSystem: '', dosLaunchDelay: undefined }), {
@@ -50,4 +54,14 @@ assert.deepEqual(gameApiToPartialRow({ dosSystem: '', dosLaunchDelay: undefined 
   dos_launch_delay: null,
 })
 
-console.log('DOS / Windows 9x 核心映射测试通过')
+const win31 = gameRowToApi({
+  slug: 'win31',
+  dos_backend: 'dosboxX',
+  dos_system: 'systems/win31.jsdos',
+  dos_windows_version: '3x',
+})
+assert.equal(win31.dosWindowsVersion, '3x')
+assert.equal(gameApiToRow({ slug: 'win31', dosWindowsVersion: '3x' }).dos_windows_version, '3x')
+assert.deepEqual(gameApiToPartialRow({ dosWindowsVersion: '9x' }), { dos_windows_version: '9x' })
+
+console.log('DOS / Windows 客体核心映射测试通过')

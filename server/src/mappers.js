@@ -104,7 +104,7 @@ export function dosExecutableOf(v) {
 }
 
 /**
- * DOSBox 是默认核心，不必占一列值；只有 Windows 95/98 游戏需要明确保存 DOSBox-X。
+ * DOSBox 是默认核心，不必占一列值；只有 Windows 客体游戏需要明确保存 DOSBox-X。
  * 用白名单而不是照抄请求，避免拼错的核心名一路存进库、直到玩家点开才报错。
  */
 export function dosBackendOf(v) {
@@ -123,6 +123,14 @@ export function dosSystemOf(v) {
   if (!s || s.length > 500) return null
   // eslint-disable-next-line no-control-regex
   return /[\x00-\x1f]/.test(s) ? null : s
+}
+
+/**
+ * Windows 3.x 的 Program Manager 与 Windows 9x 的开始菜单使用不同的“运行”快捷键。
+ * 旧数据没有这列值时前端按 9x 处理；这里只接受后台下拉框会发送的两个代次。
+ */
+export function dosWindowsVersionOf(v) {
+  return v === '3x' || v === '9x' ? v : null
 }
 
 /**
@@ -181,6 +189,7 @@ export function gameRowToApi(r, rel = {}) {
   if (r.dos_executable) g.dosExecutable = r.dos_executable
   if (r.dos_backend === 'dosboxX') g.dosBackend = 'dosboxX'
   if (r.dos_system) g.dosSystem = r.dos_system
+  if (r.dos_windows_version === '3x' || r.dos_windows_version === '9x') g.dosWindowsVersion = r.dos_windows_version
   if (r.dos_launch_delay != null) g.dosLaunchDelay = Number(r.dos_launch_delay)
   if (r.dosbox_config_override) g.dosboxConfig = r.dosbox_config_override
   if (r.title_zh) g.titleZh = r.title_zh
@@ -228,6 +237,7 @@ export function gameApiToRow(g) {
     dos_executable: dosExecutableOf(g.dosExecutable),
     dos_backend: dosBackendOf(g.dosBackend),
     dos_system: dosSystemOf(g.dosSystem),
+    dos_windows_version: dosWindowsVersionOf(g.dosWindowsVersion),
     dos_launch_delay: dosLaunchDelayOf(g.dosLaunchDelay),
     dosbox_config_override: dosboxConfigOf(g.dosboxConfig),
   }
@@ -260,6 +270,7 @@ const FIELD_TO_COLUMN = {
   dosExecutable: ['dos_executable', dosExecutableOf],
   dosBackend: ['dos_backend', dosBackendOf],
   dosSystem: ['dos_system', dosSystemOf],
+  dosWindowsVersion: ['dos_windows_version', dosWindowsVersionOf],
   dosLaunchDelay: ['dos_launch_delay', dosLaunchDelayOf],
   dosboxConfig: ['dosbox_config_override', dosboxConfigOf],
 }

@@ -117,10 +117,16 @@ const patches = [
     run: () => conn.query('ALTER TABLE `games` ADD COLUMN `dos_system` VARCHAR(500) NULL AFTER `dos_backend`'),
   },
   {
+    name: 'games.dos_windows_version（Windows 3.x / 9x 自启动方式）',
+    table: 'games',
+    needed: async () => !(await hasColumn('games', 'dos_windows_version')),
+    run: () => conn.query('ALTER TABLE `games` ADD COLUMN `dos_windows_version` VARCHAR(8) NULL AFTER `dos_system`'),
+  },
+  {
     name: 'games.dos_launch_delay（客体 Windows 自启动等待秒数）',
     table: 'games',
     needed: async () => !(await hasColumn('games', 'dos_launch_delay')),
-    run: () => conn.query('ALTER TABLE `games` ADD COLUMN `dos_launch_delay` SMALLINT UNSIGNED NULL AFTER `dos_system`'),
+    run: () => conn.query('ALTER TABLE `games` ADD COLUMN `dos_launch_delay` SMALLINT UNSIGNED NULL AFTER `dos_windows_version`'),
   },
   {
     name: 'games.dosbox_config_override（逐游戏 DOSBox-X 启动配置覆盖）',

@@ -232,7 +232,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
           : { url: primaryUrl }),
         // 自托管的 wasm / worker 都在这个目录下
         pathPrefix: `${JSDOS_PATH}emulators/`,
-        // Windows 95/98 仍是装在磁盘镜像里的客体系统；这里切的是能启动该镜像的 DOSBox-X 核心。
+        // Windows 3.x / 9x 仍是装在磁盘镜像里的客体系统；这里切的是能启动该镜像的 DOSBox-X 核心。
         // 新模式把系统 bundle 与游戏 ZIP 分开叠加；没配系统 bundle 时仍兼容旧的完整 .jsdos 包。
         backend: guest || options.dosBackend === 'dosboxX' ? 'dosboxX' : 'dosbox',
         // 播放器外壳是我们自己的，平时隐藏 js-dos 那套 UI；
@@ -289,6 +289,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
                   options.dosLaunchDelay ?? 24,
                   () => destroyed,
                   markReady,
+                  options.dosWindowsVersion ?? '9x',
                 )
               }
               // DOS 游戏只认键盘，手柄在这里翻译成按键

@@ -68,6 +68,8 @@ CREATE TABLE IF NOT EXISTS games (
   dos_executable TEXT,
   dos_backend    TEXT,
   dos_system     TEXT,
+  -- 3x = Program Manager，9x = Explorer 开始菜单；NULL 按 9x 兼容。
+  dos_windows_version TEXT,
   dos_launch_delay INTEGER,
   -- 逐游戏 DOSBox-X 安全配置覆盖，不允许包含 [autoexec]。
   dosbox_config_override TEXT,

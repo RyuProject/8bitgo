@@ -144,7 +144,7 @@ export const LOAD_PHASE_RANGE: Record<LoadPhase, readonly [number, number]> = {
 }
 
 /**
- * Windows 9x 的 CI 创建会把近百 MB 的 qcow2 镜像交给 WASM 解包、建盘；这段耗时取决于
+ * Windows 客体的 CI 创建会把近百 MB 的 qcow2 镜像交给 WASM 解包、建盘；这段耗时取决于
  * 设备 CPU 和内存，不是网络下载结束就会立刻完成。原来只留 45 秒，快设备能进、慢设备
  * 却会在稍后同样成功之前被误判为失败。额外留 4 分钟，真实引擎错误仍会由 js-dos 立即上报。
  */

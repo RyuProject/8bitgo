@@ -1,5 +1,5 @@
 /**
- * Windows 9x 客体的自动启动。
+ * Windows 客体的自动启动。
  *
  * js-dos 的 ci-ready 只表示 DOSBox-X 接口建好了，此时 Windows 往往还停在 BIOS、启动
  * Logo 或磁盘检查。过去从 ci-ready 直接倒计时，慢设备会在桌面出现前把 Ctrl+Esc / R
@@ -16,6 +16,8 @@ export interface WindowsLaunchCi {
   sendKeyEvent: (keyCode: number, pressed: boolean) => void
   events?: () => WindowsLaunchEvents
 }
+
+export type WindowsLaunchShell = '3x' | '9x'
 
 /** 极少数自定义镜像不报告画面尺寸，不能让它们永远等不到启动。 */
 export const WINDOWS_GRAPHICS_SIGNAL_FALLBACK_MS = 90_000
@@ -35,12 +37,14 @@ const WIN_KEY = {
   esc: 256,
   leftShift: 340,
   leftCtrl: 341,
+  leftAlt: 342,
+  f: 70,
   r: 82,
   semicolon: 59,
 } as const
 
 /**
- * 进入客体图形模式后按 Ctrl+Esc、R，再输入固定启动脚本路径。
+ * 进入客体图形模式后打开系统自己的“运行”对话框，再输入固定启动脚本路径。
  *
  * 不把真实游戏路径逐字敲进去：老游戏目录常有空格、日文或特殊符号，键盘布局一变就会
  * 输错。播放器只敲形如 D:\\8BITGO\\RUN.BAT 的纯 ASCII 固定路径；游戏 bundle 里的
@@ -52,6 +56,7 @@ export function scheduleWindowsLaunch(
   waitSeconds: number,
   stopped: () => boolean,
   onLaunched: () => void,
+  shell: WindowsLaunchShell = '9x',
 ): () => void {
   const timers = new Set<number>()
   let armed = false
@@ -73,7 +78,7 @@ export function scheduleWindowsLaunch(
   const typeAt = (at: number) => {
     if (at >= chars.length) {
       tap(WIN_KEY.enter)
-      // Explorer 收到命令后还要创建进程；这段时间继续盖住桌面与“运行”框。
+      // Windows shell 收到命令后还要创建进程；这段时间继续盖住桌面与“运行”框。
       later(5000, onLaunched)
       return
     }
@@ -87,12 +92,20 @@ export function scheduleWindowsLaunch(
   }
 
   const launch = () => {
-    // DOSBox-X 不会把浏览器的 Meta / Super 键可靠地交给 Win95；Win+R 会退化成桌面上的
-    // 普通字母 R。Ctrl+Esc 是 Windows 95 原生的“打开开始菜单”，随后 R 触发 Run，
-    // 同样不会依赖鼠标坐标。第一个键也会让 fastForwardOnBoot 结束，避免游戏继续倍速。
-    ci.sendKeyEvent(WIN_KEY.leftCtrl, true)
-    tap(WIN_KEY.esc)
-    ci.sendKeyEvent(WIN_KEY.leftCtrl, false)
+    if (shell === '3x') {
+      // Windows 3.x 没有开始菜单，Ctrl+Esc 打开的是 Task List，随后按 R 什么也不会运行。
+      // Program Manager 启动后本来就在前台，用 Alt+F 打开 File 菜单，再按 R 才是 Run。
+      ci.sendKeyEvent(WIN_KEY.leftAlt, true)
+      tap(WIN_KEY.f)
+      ci.sendKeyEvent(WIN_KEY.leftAlt, false)
+    } else {
+      // DOSBox-X 不会把浏览器的 Meta / Super 键可靠地交给 Win95；Win+R 会退化成桌面上的
+      // 普通字母 R。Ctrl+Esc 是 Windows 95 原生的“打开开始菜单”，随后 R 触发 Run。
+      ci.sendKeyEvent(WIN_KEY.leftCtrl, true)
+      tap(WIN_KEY.esc)
+      ci.sendKeyEvent(WIN_KEY.leftCtrl, false)
+    }
+    // 第一个快捷键也会让 fastForwardOnBoot 结束，避免游戏本体继续倍速。
     later(350, () => tap(WIN_KEY.r))
     later(800, () => typeAt(0))
   }

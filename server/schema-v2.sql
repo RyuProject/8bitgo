@@ -64,11 +64,13 @@ CREATE TABLE IF NOT EXISTS games (
   -- DOS 启动程序（zip 内相对路径，如 NFS/TNFS.EXE）。
   -- NULL = 交给前端启发式去猜（src/lib/jsdosBundle.ts 的 pickExecutable）
   dos_executable VARCHAR(255)  NULL,
-  -- Windows 95/98 的完整 .jsdos 磁盘镜像需要 DOSBox-X；NULL = 普通 DOSBox。
+  -- Windows 3.x / 9x 的完整 .jsdos 磁盘镜像需要 DOSBox-X；NULL = 普通 DOSBox。
   dos_backend    VARCHAR(16)   NULL,
   -- 可复用的 Windows 客体系统 .jsdos。游戏 ROM 仍是独立 ZIP，运行时作为另一块 FAT 盘挂入。
   -- NULL 保留旧模式：ROM 自己就是已经装好系统与游戏的完整 .jsdos。
   dos_system     VARCHAR(500)  NULL,
+  -- 3x = Program Manager 的 File > Run；9x = 开始菜单的 Run；NULL 兼容旧数据并按 9x 处理。
+  dos_windows_version VARCHAR(8) NULL,
   -- 客体系统切入图形模式后等待多少秒再自动运行 dos_executable；不同系统镜像速度不同，不能写死。
   dos_launch_delay SMALLINT UNSIGNED NULL,
   -- 只保存允许的硬件 / 性能 INI 覆盖；[autoexec] 与挂载参数由应用层拒绝。

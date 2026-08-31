@@ -123,4 +123,4 @@ if (!process.argv.includes('--no-ipx-patch')) {
 wrapCssInLayer(join(out, 'js-dos.css'))
 
 console.log(`✔ js-dos 已复制 ${count} 个文件（${(bytes / 1024 / 1024).toFixed(1)} MB）到 public/jsdos/`)
-if (!withDosboxX) console.log('  （未包含 DOSBox-X；需要跑 Windows 9x 时加 --with-dosbox-x）')
+if (!withDosboxX) console.log('  （未包含 DOSBox-X；需要跑 Windows 客体时加 --with-dosbox-x）')

@@ -19,7 +19,7 @@
  *   2. 在 registry.ts 的 runtimes 里注册
  *   3.（可选）在 src/config/emulators.ts 里把某个扩展名指过去
  */
-import type { DosBackend, PlatformId } from '@/types'
+import type { DosBackend, DosWindowsVersion, PlatformId } from '@/types'
 import type { CloudSession } from './adapters/cloudgame'
 import type { NetplaySession } from './adapters/emulatorjs'
 import type { LiveSession } from './adapters/liveview'
@@ -53,10 +53,12 @@ export interface MountOptions {
    * 传了就按它生成 dosbox.conf，压过 pickExecutable 的猜测。
    */
   dosExecutable?: string
-  /** DOSBox-X 用来启动 Windows 95/98 的完整 .jsdos 磁盘镜像；留空走普通 DOSBox。 */
+  /** DOSBox-X 用来启动 Windows 客体的完整 .jsdos 磁盘镜像；留空走普通 DOSBox。 */
   dosBackend?: DosBackend
   /** Windows 客体系统的共享 .jsdos 镜像 URL；游戏文件仍由 game 单独提供。 */
   dosSystemUrl?: string
+  /** Windows 3.x 用 Program Manager 的 File > Run；9x 用开始菜单的 Run。 */
+  dosWindowsVersion?: DosWindowsVersion
   /** 客体系统启动后，等待多少秒再自动运行 dosExecutable。 */
   dosLaunchDelay?: number
   /** 逐游戏 DOSBox-X INI 覆盖；安全解析器会阻止修改 [autoexec] 与站点托管的启动参数。 */

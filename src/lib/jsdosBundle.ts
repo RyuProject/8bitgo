@@ -303,7 +303,7 @@ function safeArchivePath(path: string): string | null {
   if (!clean) return null
   // 解包发生在模拟器的虚拟文件系统里，但 ../ 仍能覆盖系统层和最终 dosbox.conf。
   if (clean.split('/').some((part) => !part || part === '.' || part === '..')) return null
-  // Windows 9x 本身也处理不了文件名里的控制字符，越早报错越容易定位到包的问题。
+  // 客体 Windows 本身也处理不了文件名里的控制字符，越早报错越容易定位到包的问题。
   // eslint-disable-next-line no-control-regex
   if (/[\x00-\x1f]/.test(clean)) return null
   return clean

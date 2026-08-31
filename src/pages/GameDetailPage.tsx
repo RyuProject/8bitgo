@@ -183,6 +183,7 @@ export function GameDetailPage() {
                 dosExecutable={game.dosExecutable}
                 dosBackend={game.dosBackend}
                 dosSystemUrl={game.dosSystem ? romUrlForKey(game.dosSystem) : undefined}
+                dosWindowsVersion={game.dosWindowsVersion}
                 dosLaunchDelay={game.dosLaunchDelay}
                 dosboxConfig={game.dosboxConfig}
                 biosUrl={biosUrl || undefined}

@@ -88,10 +88,12 @@ CREATE TABLE IF NOT EXISTS games (
   core          VARCHAR(32)   NULL,
   -- DOS 启动程序（zip 内相对路径）；Windows 客体模式用它生成自动启动脚本。
   dos_executable VARCHAR(255) NULL,
-  -- NULL = 普通 DOSBox；dosboxX = DOS 或 Windows 95/98 客体走 DOSBox-X。
+  -- NULL = 普通 DOSBox；dosboxX = DOS 或 Windows 3.x / 9x 客体走 DOSBox-X。
   dos_backend   VARCHAR(16)   NULL,
   -- 可复用的 Windows 客体系统 .jsdos。游戏 ROM 仍单独存，避免每款游戏重复一份系统盘。
   dos_system    VARCHAR(500)  NULL,
+  -- 3x 走 Program Manager 的 File > Run；9x 走开始菜单的 Run；NULL 按 9x 兼容。
+  dos_windows_version VARCHAR(8) NULL,
   -- 客体系统切入图形模式后等待多少秒再自动运行 dos_executable。
   dos_launch_delay SMALLINT UNSIGNED NULL,
   -- 只保存硬件 / 性能覆盖；启动命令与动态游戏盘由站点统一生成。

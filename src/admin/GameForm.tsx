@@ -203,8 +203,9 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
       dosExecutable: form.platform === 'dos' ? form.dosExecutable?.trim() || undefined : undefined,
       // 普通 DOS 是默认值，不落冗余字段；勾选时才明确保存 DOSBox-X。
       dosBackend: form.platform === 'dos' && form.dosBackend === 'dosboxX' ? 'dosboxX' : undefined,
-      // 平台仍然保存为 DOS；这两个字段只描述 DOSBox-X 里面要启动的客体系统。
+      // 平台仍然保存为 DOS；这些字段只描述 DOSBox-X 里面要启动的客体系统。
       dosSystem: windowsGuest ? form.dosSystem!.trim() : undefined,
+      dosWindowsVersion: windowsGuest ? form.dosWindowsVersion ?? '9x' : undefined,
       dosLaunchDelay: windowsGuest ? Math.max(5, Math.min(120, Math.round(Number(form.dosLaunchDelay) || 24))) : undefined,
       dosboxConfig,
       // 空字符串写成 undefined，否则会存一条空的英文简介，
@@ -303,19 +304,31 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
                     setForm((current) => ({
                       ...current,
                       dosBackend: e.target.checked ? 'dosboxX' : undefined,
+                      dosWindowsVersion: e.target.checked ? current.dosWindowsVersion ?? '9x' : current.dosWindowsVersion,
                       dosLaunchDelay: e.target.checked ? current.dosLaunchDelay ?? 24 : current.dosLaunchDelay,
                     }))
                   }}
                 />
-                Windows 95/98（DOSBox-X）
+                Windows 3.x / 95 / 98（DOSBox-X）
               </label>
               <p className="mt-1 text-[11px] text-dim">
-                数据库平台仍是 DOS。勾选后可让多款游戏共用一份 Win95 / Win98 系统镜像；每款游戏的 ROM 仍上传普通 ZIP。
+                数据库平台仍是 DOS。勾选后可让多款游戏共用一份 Windows 系统镜像；每款游戏的 ROM 仍上传普通 ZIP。
               </p>
             </Field>
             {form.dosBackend === 'dosboxX' ? (
               <>
                 <SystemImageField value={form.dosSystem ?? ''} onChange={(value) => set('dosSystem', value || undefined)} />
+                <Field label="Windows 版本">
+                  <select
+                    className={inputClass}
+                    value={form.dosWindowsVersion ?? '9x'}
+                    onChange={(e) => set('dosWindowsVersion', e.target.value === '3x' ? '3x' : '9x')}
+                  >
+                    <option value="3x">Windows 3.x（Program Manager）</option>
+                    <option value="9x">Windows 95 / 98（开始菜单）</option>
+                  </select>
+                  <p className="mt-1 text-[11px] text-dim">决定播放器用 Program Manager 的 File → Run，还是开始菜单的 Run。</p>
+                </Field>
                 <Field label="Windows 自启动 EXE">
                   <input
                     className={cx(inputClass, 'font-mono')}
@@ -531,7 +544,7 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
  * 可复用的 Windows 客体系统镜像。
  *
  * 它不是某一款游戏的 ROM，因此不进入 allBoundKeys，也不在这里提供“从 R2 删除”：同一份
- * Win95 / Win98 镜像可能被几十款游戏引用，编辑其中一款时顺手删掉会把其它游戏一起弄坏。
+ * Windows 镜像可能被几十款游戏引用，编辑其中一款时顺手删掉会把其它游戏一起弄坏。
  * 管理员可以解除当前游戏的绑定；真正删除共享对象仍到「ROM 存储」页明确操作。
  */
 function SystemImageField({ value, onChange }: { value: string; onChange: (value: string) => void }) {

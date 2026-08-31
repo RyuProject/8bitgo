@@ -18,8 +18,11 @@ export type PlatformId =
   | 'html5'
   | 'java'
 
-/** js-dos 可选核心：普通 DOS 用 DOSBox，Windows 9x 镜像用 DOSBox-X。 */
+/** js-dos 可选核心：普通 DOS 用 DOSBox，Windows 客体镜像用 DOSBox-X。 */
 export type DosBackend = 'dosbox' | 'dosboxX'
+
+/** Windows 3.x 仍是 Program Manager；Windows 9x 才有开始菜单，两者自启动快捷键不同。 */
+export type DosWindowsVersion = '3x' | '9x'
 
 export type GenreId =
   | 'action'
@@ -121,7 +124,7 @@ export interface Game {
    */
   dosExecutable?: string
   /**
-   * DOS 运行核心。留空等同 dosbox；dosboxX 可启动 Windows 95/98 的 .jsdos 系统镜像。
+   * DOS 运行核心。留空等同 dosbox；dosboxX 可启动 Windows 3.x / 9x 的 .jsdos 系统镜像。
    * 这里只切换 CPU/虚拟机核心；系统由 dosSystem 提供，游戏 ZIP 作为另一块 FAT 盘挂入。
    */
   dosBackend?: DosBackend
@@ -129,10 +132,12 @@ export interface Game {
    * Windows 客体系统的共享 .jsdos 镜像（对象 key、站内路径或完整 URL）。
    *
    * 有值时，rom / roms 仍然只放这款游戏自己的 ZIP；播放器会把游戏作为独立 FAT 盘
-   * 挂进系统镜像。这样 Win95 / Win98 镜像可以被多款游戏复用，不必每款复制近百 MB。
+   * 挂进系统镜像。这样 Windows 镜像可以被多款游戏复用，不必每款复制近百 MB。
    * 留空时保留旧行为：dosboxX 直接把 ROM 当成一份已经装好系统与游戏的完整镜像。
    */
   dosSystem?: string
+  /** 客体 Windows 的桌面代次；留空按旧数据兼容为 9x。 */
+  dosWindowsVersion?: DosWindowsVersion
   /**
    * 客体 Windows 切入图形模式后等待多少秒，再自动运行 dosExecutable。
    * 先等图形模式可以避开 BIOS / 启动画面；额外秒数用于等待桌面服务真正可接收快捷键。

@@ -235,6 +235,33 @@ try {
   assert.deepEqual(scheduled.map(({ ms }) => ms), [90_000, 24_000])
   cancelLaunch()
   assert.ok(scheduled.every(({ cleared }) => cleared))
+
+  // Windows 3.x 没有开始菜单：必须走 Program Manager 的 Alt+F、R，不能再发 Ctrl+Esc。
+  scheduled.length = 0
+  const keyEvents = []
+  frameSizeConsumer = undefined
+  const cancelWin31Launch = scheduleWindowsLaunch(
+    {
+      sendKeyEvent(keyCode, pressed) { keyEvents.push([keyCode, pressed]) },
+      events: () => ({ onFrameSize: (consumer) => { frameSizeConsumer = consumer } }),
+    },
+    'D:\\8BITGO\\RUN.BAT',
+    5,
+    () => false,
+    () => {},
+    '3x',
+  )
+  frameSizeConsumer(640, 480)
+  const launchTimer = scheduled.find(({ ms }) => ms === 5_000)
+  assert.ok(launchTimer)
+  launchTimer.fn()
+  assert.deepEqual(keyEvents, [
+    [342, true],
+    [70, true],
+    [70, false],
+    [342, false],
+  ])
+  cancelWin31Launch()
   globalThis.window = originalWindow
 
   console.log('ROM 校验测试通过：下载长度 / 分段进度 / Windows 自启动 / DOS 鼠标 / NES / ZIP 截断 / SWF / NDS / J2ME / DOS')
