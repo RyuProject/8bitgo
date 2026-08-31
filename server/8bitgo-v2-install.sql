@@ -88,8 +88,6 @@ CREATE TABLE IF NOT EXISTS games (
   core          VARCHAR(32)   NULL,
   -- DOS 启动程序（zip 内相对路径）；Windows 客体模式用它生成自动启动脚本。
   dos_executable VARCHAR(255) NULL,
-  -- NULL = 按类别自动判断；1 = 相对鼠标并锁定；0 = 绝对坐标。
-  dos_mouse_capture TINYINT(1) NULL,
   -- NULL = 普通 DOSBox；dosboxX = DOS 或 Windows 95/98 客体走 DOSBox-X。
   dos_backend   VARCHAR(16)   NULL,
   -- 可复用的 Windows 客体系统 .jsdos。游戏 ROM 仍单独存，避免每款游戏重复一份系统盘。

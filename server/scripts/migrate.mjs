@@ -105,12 +105,6 @@ const patches = [
     run: () => conn.query('ALTER TABLE `games` ADD COLUMN `dos_executable` VARCHAR(255) NULL AFTER `core`'),
   },
   {
-    name: 'games.dos_mouse_capture（单款 DOS 游戏鼠标模式覆盖）',
-    table: 'games',
-    needed: async () => !(await hasColumn('games', 'dos_mouse_capture')),
-    run: () => conn.query('ALTER TABLE `games` ADD COLUMN `dos_mouse_capture` TINYINT(1) NULL AFTER `dos_executable`'),
-  },
-  {
     name: 'games.dos_backend（DOSBox / DOSBox-X 运行核心）',
     table: 'games',
     needed: async () => !(await hasColumn('games', 'dos_backend')),
@@ -127,19 +121,6 @@ const patches = [
     table: 'games',
     needed: async () => !(await hasColumn('games', 'dos_launch_delay')),
     run: () => conn.query('ALTER TABLE `games` ADD COLUMN `dos_launch_delay` SMALLINT UNSIGNED NULL AFTER `dos_system`'),
-  },
-  {
-    name: 'theme-hospital（绕过 js-dos v8 绝对坐标鼠标缺陷）',
-    table: 'games',
-    needed: async () => {
-      if (!(await hasColumn('games', 'dos_mouse_capture'))) return false
-      const r = await one(
-        "SELECT COUNT(*) AS n FROM `games` WHERE `slug` = 'theme-hospital' AND `dos_mouse_capture` IS NULL",
-      )
-      return Number(r?.n ?? 0) > 0
-    },
-    // 只填 NULL：管理员以后明确改成“强制不锁定”时，重复跑迁移不能把选择覆盖回去。
-    run: () => conn.query("UPDATE `games` SET `dos_mouse_capture` = 1 WHERE `slug` = 'theme-hospital' AND `dos_mouse_capture` IS NULL"),
   },
   {
     name: 'games.adult（成人游戏，前台启动前验证年满 18 岁）',

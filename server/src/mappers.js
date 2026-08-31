@@ -110,16 +110,6 @@ export function dosBackendOf(v) {
 }
 
 /**
- * DOS 鼠标覆盖是三态：NULL 继续按游戏类别自动判断，1 强制相对鼠标，0 强制绝对坐标。
- * 不能复用普通的 bool()，因为它会把 undefined 也压成 false，丢掉“自动”这一层语义。
- */
-export function dosMouseCaptureOf(v) {
-  if (v === true || v === 1 || v === '1') return 1
-  if (v === false || v === 0 || v === '0') return 0
-  return null
-}
-
-/**
  * 可复用的 Windows 客体系统镜像。
  *
  * 允许对象存储 key、站内绝对路径和 http(s) URL；只拦长度与控制字符。
@@ -171,7 +161,6 @@ export function gameRowToApi(r, rel = {}) {
   if (r.core) g.core = r.core
   // 只有 DOS 游戏会填；不带字段 = 前端启发式自己猜
   if (r.dos_executable) g.dosExecutable = r.dos_executable
-  if (r.dos_mouse_capture != null) g.dosMouseCapture = bool(r.dos_mouse_capture)
   if (r.dos_backend === 'dosboxX') g.dosBackend = 'dosboxX'
   if (r.dos_system) g.dosSystem = r.dos_system
   if (r.dos_launch_delay != null) g.dosLaunchDelay = Number(r.dos_launch_delay)
@@ -218,7 +207,6 @@ export function gameApiToRow(g) {
     home_rank: homeRankOf(g.homeRank),
     core: coreOf(g.core),
     dos_executable: dosExecutableOf(g.dosExecutable),
-    dos_mouse_capture: dosMouseCaptureOf(g.dosMouseCapture),
     dos_backend: dosBackendOf(g.dosBackend),
     dos_system: dosSystemOf(g.dosSystem),
     dos_launch_delay: dosLaunchDelayOf(g.dosLaunchDelay),
@@ -250,7 +238,6 @@ const FIELD_TO_COLUMN = {
   homeRank: ['home_rank', homeRankOf],
   core: ['core', coreOf],
   dosExecutable: ['dos_executable', dosExecutableOf],
-  dosMouseCapture: ['dos_mouse_capture', dosMouseCaptureOf],
   dosBackend: ['dos_backend', dosBackendOf],
   dosSystem: ['dos_system', dosSystemOf],
   dosLaunchDelay: ['dos_launch_delay', dosLaunchDelayOf],

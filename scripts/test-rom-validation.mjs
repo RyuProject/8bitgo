@@ -158,9 +158,6 @@ try {
   assert.equal(shouldCaptureMouse('dos', ['strategy']), false)
   assert.equal(shouldCaptureMouse('dos'), false)
   assert.equal(shouldCaptureMouse('nes', ['shooter']), false)
-  assert.equal(shouldCaptureMouse('dos', ['strategy'], true), true)
-  assert.equal(shouldCaptureMouse('dos', ['shooter'], false), false)
-  assert.equal(shouldCaptureMouse('nes', ['shooter'], true), false)
 
   // ci-ready 时的 720×400 仍是 DOSBox 文本画面，不能从这里开始自启动倒计时。
   assert.equal(isWindowsGraphicsMode(720, 400), false)

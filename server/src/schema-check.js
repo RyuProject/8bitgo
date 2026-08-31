@@ -16,7 +16,6 @@ const EXPECTED_COLUMNS = [
   { table: 'games', column: 'home_rank', why: '首页精选位' },
   { table: 'games', column: 'core', why: '按游戏覆盖模拟器核心' },
   { table: 'games', column: 'dos_executable', why: 'DOS 启动程序覆盖' },
-  { table: 'games', column: 'dos_mouse_capture', why: '单款 DOS 游戏鼠标模式覆盖' },
   { table: 'games', column: 'dos_backend', why: 'DOS / Windows 9x 运行核心选择' },
   { table: 'games', column: 'dos_system', why: '可复用的 Windows 客体系统镜像' },
   { table: 'games', column: 'dos_launch_delay', why: '客体 Windows 自启动时机' },

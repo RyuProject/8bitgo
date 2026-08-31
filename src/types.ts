@@ -121,11 +121,6 @@ export interface Game {
    */
   dosExecutable?: string
   /**
-   * DOS 鼠标模式覆盖。undefined = 按类别自动判断；true = 相对鼠标并锁定；false = 绝对坐标。
-   * 少数非射击游戏也会撞上 js-dos v8 的绝对坐标兼容问题，需要逐游戏强制开启。
-   */
-  dosMouseCapture?: boolean
-  /**
    * DOS 运行核心。留空等同 dosbox；dosboxX 可启动 Windows 95/98 的 .jsdos 系统镜像。
    * 这里只切换 CPU/虚拟机核心；系统由 dosSystem 提供，游戏 ZIP 作为另一块 FAT 盘挂入。
    */
