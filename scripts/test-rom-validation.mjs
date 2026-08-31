@@ -57,7 +57,7 @@ try {
         "export * from './src/lib/romValidation.ts'",
         "export { assertValidZip, listZipEntries, extractZipEntry } from './src/lib/unzip.ts'",
         "export { makeJsdosBundle } from './src/lib/jsdosBundle.ts'",
-        "export { buildWindowsGuestConfig } from './src/lib/windowsGuest.ts'",
+        "export { buildWindowsGuestConfig, windowsGuestLaunchCommand } from './src/lib/windowsGuest.ts'",
         "export { normalizeDosboxConfigOverride, mergeDosboxConfigOverride } from './shared/dosbox-config.js'",
         "export { createOverallRatio, fetchWithProgress, windowsGuestStartupBudgetMs } from './src/emulator/loadProgress.ts'",
         "export { shouldCaptureMouse } from './src/emulator/mouseCapture.ts'",
@@ -83,6 +83,7 @@ try {
     listZipEntries,
     extractZipEntry,
     buildWindowsGuestConfig,
+    windowsGuestLaunchCommand,
     normalizeDosboxConfigOverride,
     mergeDosboxConfigOverride,
     createOverallRatio,
@@ -159,6 +160,9 @@ try {
   assert.match(guestConfig.dosboxConf, /mount d GAME -freesize 16/)
   assert.match(guestConfig.dosboxConf, /boot c: -convertfat/)
   assert.match(guestConfig.dosboxConf, /\[gus\]\ngus=false/)
+  assert.equal(windowsGuestLaunchCommand(guestConfig, 'zeek1.exe', '3x'), 'D:\\zeek1.exe')
+  assert.equal(windowsGuestLaunchCommand(guestConfig, 'BIN/GAME.EXE', '3x'), 'D:\\BIN\\GAME.EXE')
+  assert.equal(windowsGuestLaunchCommand(guestConfig, 'BIN/GAME.EXE', '9x'), 'D:\\8BITGO\\RUN.BAT')
 
   // 旧式完整 .jsdos 也要替换包内配置；不能只让共享系统模式生效。
   const legacyBytes = arrayBuffer(zip([
@@ -245,7 +249,7 @@ try {
       sendKeyEvent(keyCode, pressed) { keyEvents.push([keyCode, pressed]) },
       events: () => ({ onFrameSize: (consumer) => { frameSizeConsumer = consumer } }),
     },
-    'D:\\8BITGO\\RUN.BAT',
+    'D:\\ZEEK1.EXE',
     5,
     () => false,
     () => {},

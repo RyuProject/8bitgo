@@ -44,11 +44,11 @@ const WIN_KEY = {
 } as const
 
 /**
- * 进入客体图形模式后打开系统自己的“运行”对话框，再输入固定启动脚本路径。
+ * 进入客体图形模式后打开系统自己的“运行”对话框，再输入启动命令。
  *
- * 不把真实游戏路径逐字敲进去：老游戏目录常有空格、日文或特殊符号，键盘布局一变就会
- * 输错。播放器只敲形如 D:\\8BITGO\\RUN.BAT 的纯 ASCII 固定路径；游戏 bundle 里的
- * 批处理负责切到真实目录后再执行后台指定的 EXE。
+ * Windows 95/98 会输入固定的 D:\\8BITGO\\RUN.BAT，由批处理切换真实工作目录；
+ * Windows 3.x 的 DOS 会话无法启动 Windows 图形 EXE，所以该模式会直接输入游戏路径。
+ * 后台应给 3.x 游戏填写 DOS 8.3 风格的 ASCII 相对路径，避免老系统路径转换后对不上。
  */
 export function scheduleWindowsLaunch(
   ci: WindowsLaunchCi,

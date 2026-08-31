@@ -198,7 +198,7 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
       homeRank: Number(form.homeRank) > 0 ? Math.round(Number(form.homeRank)) : undefined,
       // 空字符串要写成 undefined，否则会当成「核心名叫空串」存进去
       core: form.core?.trim() || undefined,
-      // 普通 DOS 用它生成 autoexec；共享 Windows 客体则用它生成客体系统里的启动批处理。
+      // 普通 DOS 用它生成 autoexec；共享 Windows 3.x 直接运行它，95/98 则写进启动批处理。
       // 旧式“系统和游戏揉在一个 .jsdos”没有共享系统字段，仍按原 bundle 的 conf 启动。
       dosExecutable: form.platform === 'dos' ? form.dosExecutable?.trim() || undefined : undefined,
       // 普通 DOS 是默认值，不落冗余字段；勾选时才明确保存 DOSBox-X。
@@ -337,7 +337,7 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
                     placeholder="WINDEPTH.EXE 或 BIN/GAME.EXE"
                   />
                   <p className="mt-1 text-[11px] text-dim">
-                    游戏 ZIP 内的相对路径。播放器会等 Windows 开机后自动运行它，加载遮罩在此之前不会撤掉，因此玩家看不到桌面。
+                    游戏 ZIP 内的相对路径。Windows 3.x 会由 Program Manager 直接运行，请填写类似 ZEEK1.EXE、BIN/GAME.EXE 的 DOS 8.3 英文路径。
                   </p>
                 </Field>
                 <Field label="开机等待（秒）">

@@ -62,6 +62,21 @@ export interface WindowsGuestConfig {
 }
 
 /**
+ * Windows 3.x 的 DOS 会话不能反向启动 16 位 Windows 图形程序：RUN.BAT 会正常结束，
+ * 但其中的游戏 EXE 只会得到“需要 Microsoft Windows”。因此 3.x 必须让 Program
+ * Manager 直接运行 EXE；Windows 95/98 的命令行能启动 GUI 程序，继续用批处理来保留
+ * 正确的工作目录和对复杂 ZIP 路径的兼容。
+ */
+export function windowsGuestLaunchCommand(
+  guest: Pick<WindowsGuestConfig, 'gameDrive' | 'launcher'>,
+  executable: string,
+  version: '3x' | '9x' = '9x',
+): string {
+  if (version !== '3x') return guest.launcher
+  return `${guest.gameDrive}:\\${executable.replace(/\//g, '\\')}`
+}
+
+/**
  * 保留系统镜像的全部硬件配置，只接管 [autoexec] 的最后两步：挂游戏盘、启动客体系统。
  *
  * 原镜像可能用 imgmount 2，也可能直接 imgmount c；我们不猜、不改那些命令，只把已有

@@ -14,7 +14,12 @@
 import type { Capability, CaptureSources, LoadProgress, MountOptions, Runtime, RuntimeHandle } from '../types'
 import { getT, fmt } from '@/services/i18n'
 import { buildDosboxConf, hideJsdosConfigForLayer, makeJsdosBundle, makeWindowsGameLayer } from '@/lib/jsdosBundle'
-import { buildWindowsGuestConfig, readWindowsSystemConfig, type WindowsGuestConfig } from '@/lib/windowsGuest'
+import {
+  buildWindowsGuestConfig,
+  readWindowsSystemConfig,
+  windowsGuestLaunchCommand,
+  type WindowsGuestConfig,
+} from '@/lib/windowsGuest'
 import { imageDataToBlob } from '../recorder'
 import { GP, startGamepadBridge, hasGamepadApi, type GamepadBridge } from '../gamepad'
 import { deleteSave, pullSave, pushSave } from '@/services/saves'
@@ -188,11 +193,18 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
 
       let primaryUrl = ''
       let guest: WindowsGuestConfig | null = null
+      let guestLaunchCommand = ''
       let initFs: unknown[] | undefined
       if (loadedSystem) {
         if (!options.dosExecutable) throw new Error('Windows 客体游戏没有配置自启动 EXE')
         guest = buildWindowsGuestConfig(await readWindowsSystemConfig(loadedSystem.data), dosboxConfig)
         const gameLayer = makeWindowsGameLayer(rom.buf, options.dosExecutable, guest.gameDrive)
+        if (!gameLayer.executable) throw new Error('Windows 游戏层没有可启动的 EXE')
+        guestLaunchCommand = windowsGuestLaunchCommand(
+          guest,
+          gameLayer.executable,
+          options.dosWindowsVersion ?? '9x',
+        )
         const gameLayerBytes = new Uint8Array(await gameLayer.blob.arrayBuffer())
         // 系统包自己的 conf 必须先改名：它作为后续文件层解开时会覆盖 Dos() 的直接配置。
         // 改名只动 ZIP 头里的 36 个 ASCII 字节，不复制那份近百 MB 的 qcow2 数据。
@@ -285,7 +297,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
               if (guest && !cancelWindowsLaunch) {
                 cancelWindowsLaunch = scheduleWindowsLaunch(
                   ci,
-                  guest.launcher,
+                  guestLaunchCommand,
                   options.dosLaunchDelay ?? 24,
                   () => destroyed,
                   markReady,
