@@ -327,7 +327,18 @@ cd server && npm install && npm start
 后端启动时会打印 `[ssr] 已启用服务端渲染`。如果打印的是「未找到 dist/client 或 dist/server」，
 说明还没在根目录跑 `npm run build`，此时只提供 API，网站打不开。
 
-`.env` 里 **`VITE_SITE_URL` 必须填正式域名**，canonical、og:url、hreflang、sitemap 都依赖它。
+根目录构建环境里的 **`VITE_SITE_URL`** 和 `server/.env` 里的 **`PUBLIC_SITE_URL`** 都必须填正式域名。
+前者供 canonical / og:url / hreflang 使用，后者供数据库实时游戏 sitemap 与 IndexNow 使用。
+
+### 搜索引擎发现与 IndexNow
+
+- `/sitemap.xml` 是 sitemap 索引：静态页面来自构建产物，8 种语言的游戏 sitemap 由后端实时查询数据库。
+- 后台新增、修改、上下架或删除游戏后，会把详情页及相关聚合页放入 IndexNow 批量队列；第三方接口失败不会让内容保存失败。
+- 首次部署后执行一次 `cd server && npm run indexnow`，补交数据库里已有的全部上架游戏。
+- Google 的 Indexing API 只允许招聘与直播活动页，普通游戏页不能使用；Google 发现游戏页依赖 sitemap、SSR 链接与 Search Console。
+
+启用前确认 `https://8bitgo.com/b8b81a59fab843acaa590586b6733da0.txt` 能直接返回 key，
+并在 `server/.env` 设置 `PUBLIC_SITE_URL=https://8bitgo.com`、`INDEXNOW_ENABLED=1`。
 
 ### 语言与 URL
 

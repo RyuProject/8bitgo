@@ -22,6 +22,8 @@ import { attachNetplay } from './netplay.js'
 import { attachLive, liveRoom, liveRooms } from './live.js'
 import { iceRouter } from './routes/ice.js'
 import { mailProvider } from './mail.js'
+import { gameSitemap } from './routes/sitemaps.js'
+import { indexNowEnabled, publicSiteUrl } from './indexnow.js'
 
 const app = express()
 app.disable('x-powered-by')
@@ -83,6 +85,9 @@ app.use('/api/platform-bios', platformBiosRouter)
 app.use('/api/saves', savesRouter)
 // P2P 联机的 ICE / TURN 配置（短期凭证，见 routes/ice.js）
 app.use('/api/netplay/ice', iceRouter)
+
+// 游戏 sitemap 直接读数据库。放在静态资源之前，后台刚上架的游戏不必等下次构建才出现。
+app.get('/sitemaps/games-:language.xml', gameSitemap)
 
 // 正在直播的房间列表。?game=<slug> 只看某个游戏的
 app.get('/api/live/rooms', (req, res) => {
@@ -212,6 +217,15 @@ httpServer.listen(PORT, () => {
   // 启动时对一遍，把话说在前面
   void checkSchema()
   console.log('P2P 联机信令已就绪：/netplay（socket.io）')
+  if (indexNowEnabled()) {
+    try {
+      console.log(`[indexnow] 自动提交已启用：${publicSiteUrl()}`)
+    } catch (error) {
+      console.warn(`[indexnow] 配置无效，自动提交未启用：${error?.message || error}`)
+    }
+  } else {
+    console.log('[indexnow] 自动提交未启用（正式环境在 server/.env 设置 INDEXNOW_ENABLED=1）')
+  }
   /**
    * 发信通路配错时会静默退回「只打印日志」，症状是「用户说收不到验证码」
    * 而服务器一切正常 —— 最难查的那类故障。所以启动时把结论直接说出来。

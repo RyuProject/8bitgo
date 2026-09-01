@@ -19,6 +19,7 @@
     "backfill-search": "node scripts/backfill-search.mjs",
     "test:search": "node scripts/test-search.mjs",
     "test:search:db": "node scripts/test-search-db.mjs",
+    "indexnow": "node scripts/submit-indexnow.mjs",
     "upgrade-v2": "node scripts/upgrade-v1-to-v2.mjs",
     "export-d1": "node scripts/export-d1.mjs"
   },

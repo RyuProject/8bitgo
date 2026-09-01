@@ -58,6 +58,7 @@ function run({ path = '/', search = '', hash = '', langs = [], saved = null, ua 
 /* ---------- 把 matchBrowserLang 从 TS 里读出来（不引 TS 工具链） ---------- */
 
 const ts = read('src/config/languages.ts')
+const sharedLanguages = read('shared/site-languages.js')
 const fnSrc = ts.slice(ts.indexOf('export function matchBrowserLang'))
 const body = fnSrc.slice(0, fnSrc.indexOf('\n}\n') + 3)
 // 去掉类型标注，剩下的就是能直接跑的 JS
@@ -193,12 +194,21 @@ console.log('\n五、和配置文件的一致性')
 
 check('内联脚本里的语言列表 = LANGUAGES 里的 8 种', () => {
   const inScript = JSON.parse(SCRIPT.match(/var CODES = (\[[^\]]*\])/)[1].replace(/'/g, '"'))
-  const inConfig = [...ts.matchAll(/\{ code: '([^']+)'/g)].map((m) => m[1])
+  const inConfig = [...sharedLanguages.matchAll(/\{ code: '([^']+)'/g)].map((m) => m[1])
   assert.deepEqual(inScript, inConfig, '加了新语言但忘了改 index.html')
+  assert.match(ts, /SITE_LANGUAGES\.map/, '前端语言配置没有使用共享列表')
 })
 check('内联脚本的默认语言 / 兜底语言 = 配置里的 DEFAULT_LANG / FALLBACK_LANG', () => {
-  assert.equal(SCRIPT.match(/var DEFAULT_LANG = '([^']+)'/)[1], ts.match(/DEFAULT_LANG: Lang = '([^']+)'/)[1])
-  assert.equal(SCRIPT.match(/var FALLBACK_LANG = '([^']+)'/)[1], ts.match(/FALLBACK_LANG: Lang = '([^']+)'/)[1])
+  assert.equal(
+    SCRIPT.match(/var DEFAULT_LANG = '([^']+)'/)[1],
+    sharedLanguages.match(/SITE_DEFAULT_LANGUAGE = '([^']+)'/)[1],
+  )
+  assert.equal(
+    SCRIPT.match(/var FALLBACK_LANG = '([^']+)'/)[1],
+    sharedLanguages.match(/SITE_FALLBACK_LANGUAGE = '([^']+)'/)[1],
+  )
+  assert.match(ts, /DEFAULT_LANG: Lang = SITE_DEFAULT_LANGUAGE/)
+  assert.match(ts, /FALLBACK_LANG: Lang = SITE_FALLBACK_LANGUAGE/)
 })
 check('seo.ts 的 x-default 指向 FALLBACK_LANG（和跳转兜底一致）', () => {
   assert.match(read('src/services/seo.ts'), /\['x-default', absoluteUrl\(localizedPath\(barePath, FALLBACK_LANG\)\)\]/)

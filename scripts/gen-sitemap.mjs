@@ -1,5 +1,5 @@
 /**
- * 生成 public/sitemap.xml。
+ * 生成 sitemap 索引和构建期静态 sitemap。
  *
  * 数据来源优先级：
  *   1) 后端 API（.env 里配了 VITE_API_URL 时）—— 上架后以数据库为准
@@ -141,7 +141,6 @@ for (const p of visiblePlatforms) add(`/platforms/${p.id}`, '0.8', 'weekly')
 for (const g of genres) {
   if (visibleGames.some((x) => x.genres?.includes(g.id))) add(`/genres/${g.id}`, '0.7', 'weekly')
 }
-for (const g of visibleGames) add(`/games/${encodeURIComponent(g.slug)}`, '0.8', 'weekly')
 for (const p of visiblePosts) add(`/blog/${encodeURIComponent(p.slug)}`, '0.5', 'monthly')
 
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
@@ -171,7 +170,7 @@ const alternatesFor = (path) =>
   // 和页面 head 保持一致：访客语言不在支持列表中时，统一落到英语版。
   `\n    <xhtml:link rel="alternate" hreflang="x-default" href="${esc(SITE + localized(path, FALLBACK_LANG))}" />`
 
-const xml = `<?xml version="1.0" encoding="UTF-8"?>
+const staticXml = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">
 ${entries.map((u) => `  <url>
     <loc>${esc(u.loc)}</loc>
@@ -183,7 +182,26 @@ ${alternatesFor(u.path)}
 </urlset>
 `
 
-writeFileSync(root + 'public/sitemap.xml', xml, 'utf8')
+writeFileSync(root + 'public/sitemap-static.xml', staticXml, 'utf8')
+
+/**
+ * 游戏不再烘进构建产物：后台可以在两次部署之间继续上架内容，静态 sitemap 会漏掉它们。
+ * 主索引直接列出 8 份动态游戏 sitemap，由后端每次从数据库生成；每种语言拆一份，
+ * 也避免未来游戏数增长后撞上单份 sitemap 最多 50,000 URL 的上限。
+ */
+const sitemapFiles = [
+  `${SITE}/sitemap-static.xml`,
+  ...LANGUAGES.map((language) => `${SITE}/sitemaps/games-${language.code}.xml`),
+]
+const sitemapIndex = `<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${sitemapFiles.map((loc) => `  <sitemap>
+    <loc>${esc(loc)}</loc>
+    <lastmod>${today}</lastmod>
+  </sitemap>`).join('\n')}
+</sitemapindex>
+`
+writeFileSync(root + 'public/sitemap.xml', sitemapIndex, 'utf8')
 
 // robots.txt 里的 Sitemap 行跟着域名走
 const robotsPath = root + 'public/robots.txt'
@@ -192,5 +210,7 @@ if (existsSync(robotsPath)) {
   writeFileSync(robotsPath, r, 'utf8')
 }
 
-console.log(`✅ sitemap.xml：${entries.length} 条 URL（${urls.length} 个页面 × ${LANGUAGES.length} 种语言）（游戏 ${visibleGames.length}、文章 ${visiblePosts.length}）`)
+console.log(`✅ sitemap.xml：1 份静态 sitemap + ${LANGUAGES.length} 份数据库游戏 sitemap`)
+console.log(`   sitemap-static.xml：${entries.length} 条 URL（${urls.length} 个页面 × ${LANGUAGES.length} 种语言，文章 ${visiblePosts.length}）`)
+console.log(`   动态游戏：${visibleGames.length} 款（构建时检测；线上以数据库实时结果为准）`)
 console.log(`   域名：${SITE}`)

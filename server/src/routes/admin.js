@@ -4,6 +4,7 @@ import { requireAdmin } from '../auth.js'
 import { postApiToRow, buildUpsert } from '../mappers.js'
 import { upsertGame, adminStats } from '../games-repo.js'
 import { invalidateContent } from '../content.js'
+import { queueGameIndexing } from '../indexnow.js'
 
 export const adminRouter = Router()
 adminRouter.use(requireAdmin)
@@ -56,6 +57,8 @@ adminRouter.post('/import', async (req, res, next) => {
 
     // 批量导入后让 SSR 缓存立即失效，前台不用等 60 秒
     invalidateContent()
+    // 一次导入可能有上百款，统一进入队列后由 IndexNow 的批量接口合并提交。
+    for (const game of gameList) queueGameIndexing(game)
     res.json({ ok: true, ...result })
   } catch (e) {
     next(e)

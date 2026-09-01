@@ -6,6 +6,7 @@ import { playIdentity } from '../playcount.js'
 import { gameApiToPartialRow, relationsInPatch } from '../mappers.js'
 import { query } from '../db.js'
 import { attachRelations } from '../games-repo.js'
+import { queueGameIndexing } from '../indexnow.js'
 import {
   listGames,
   getGameBySlug,
@@ -245,7 +246,9 @@ gamesRouter.put('/:slug', requireAdmin, async (req, res, next) => {
     if (!req.body?.platform) return res.status(400).json({ error: '缺少平台' })
     await upsertGame(slug, req.body)
     invalidateContent()
-    res.json(await getGameBySlug(slug))
+    const saved = await getGameBySlug(slug)
+    queueGameIndexing(saved)
+    res.json(saved)
   } catch (e) {
     next(e)
   }
@@ -266,7 +269,9 @@ gamesRouter.patch('/:slug', requireAdmin, async (req, res, next) => {
     const id = await patchGame(slug, patchRow, relations, req.body)
     if (!id) return res.status(404).json({ error: '游戏不存在' })
     invalidateContent()
-    res.json(await getGameBySlug(slug))
+    const saved = await getGameBySlug(slug)
+    queueGameIndexing(saved)
+    res.json(saved)
   } catch (e) {
     next(e)
   }
@@ -281,8 +286,11 @@ gamesRouter.patch('/:slug', requireAdmin, async (req, res, next) => {
  */
 gamesRouter.delete('/:slug', requireAdmin, async (req, res, next) => {
   try {
+    // 删除前先保留平台 / 类型，删除后除了详情 404，聚合页的内容和数量也发生了变化。
+    const previous = await getGameBySlug(req.params.slug)
     if (!(await deleteGame(req.params.slug))) return res.status(404).json({ error: '游戏不存在' })
     invalidateContent()
+    queueGameIndexing(previous)
     res.json({ ok: true })
   } catch (e) {
     next(e)

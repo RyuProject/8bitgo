@@ -1,5 +1,11 @@
+import {
+  SITE_DEFAULT_LANGUAGE,
+  SITE_FALLBACK_LANGUAGE,
+  SITE_LANGUAGES,
+} from '../../shared/site-languages.js'
+
 /** 站点支持的语言。界面文字暂未翻译（后续分批做），但语言状态已用于「按语言选 ROM」。 */
-export type Lang = 'zh-Hans' | 'zh-Hant' | 'en' | 'es' | 'fr' | 'it' | 'de' | 'ja'
+export type Lang = (typeof SITE_LANGUAGES)[number]['code']
 
 export interface LanguageDef {
   code: Lang
@@ -9,18 +15,9 @@ export interface LanguageDef {
   english: string
 }
 
-export const LANGUAGES: LanguageDef[] = [
-  { code: 'zh-Hans', label: '简体中文', english: 'Simplified Chinese' },
-  { code: 'zh-Hant', label: '繁體中文', english: 'Traditional Chinese' },
-  { code: 'en', label: 'English', english: 'English' },
-  { code: 'es', label: 'Español', english: 'Spanish' },
-  { code: 'fr', label: 'Français', english: 'French' },
-  { code: 'it', label: 'Italiano', english: 'Italian' },
-  { code: 'de', label: 'Deutsch', english: 'German' },
-  { code: 'ja', label: '日本語', english: 'Japanese' },
-]
+export const LANGUAGES: LanguageDef[] = SITE_LANGUAGES.map(({ code, label, english }) => ({ code, label, english }))
 
-export const DEFAULT_LANG: Lang = 'zh-Hans'
+export const DEFAULT_LANG: Lang = SITE_DEFAULT_LANGUAGE
 
 /**
  * 兜底语言：浏览器语言不在上面这 8 种里时（俄语、韩语、葡萄牙语……）用它。
@@ -30,7 +27,7 @@ export const DEFAULT_LANG: Lang = 'zh-Hans'
  *   DEFAULT_LANG  = 裸路径 `/games` 渲染成哪种语言（站点母语，简体中文）
  *   FALLBACK_LANG = 认不出访客语言时把他送到哪（国际通用，英语）
  */
-export const FALLBACK_LANG: Lang = 'en'
+export const FALLBACK_LANG: Lang = SITE_FALLBACK_LANGUAGE
 
 /**
  * ROM 语言槽：游戏可为这几种语言分别上传 ROM。
