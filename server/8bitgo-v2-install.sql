@@ -98,6 +98,8 @@ CREATE TABLE IF NOT EXISTS games (
   dos_launch_delay SMALLINT UNSIGNED NULL,
   -- 只保存硬件 / 性能覆盖；启动命令与动态游戏盘由站点统一生成。
   dosbox_config_override TEXT NULL,
+  -- 这款 DOS 游戏怎么存档；播放器「保存进度」的说明面板会显示它。
+  dos_save_hint VARCHAR(160) NULL,
   -- 首页「精选」位的排序号。NULL = 不上首页，数字小的排前面。
   -- 一款都没设时，首页那一栏退回按 plays 自动排（见 server/src/content.js 的 loadHome）
   home_rank     SMALLINT UNSIGNED NULL,

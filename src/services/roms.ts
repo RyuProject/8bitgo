@@ -524,10 +524,10 @@ function authHeaders(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
-function explainStatus(status: number, what: string): Error {
+export function explainRomStatus(status: number, what: string): Error {
   if (status === 401 || status === 403) return new Error(`${what}被拒绝：请在「ROM 存储」页填写与 Worker 一致的 ADMIN_TOKEN`)
   if (status === 404 || status === 405) return new Error(`${what}不可用：该地址不是本项目的 Worker，请部署 worker/ 并填写 Worker 地址`)
-  if (status === 413) return new Error(`${what}失败：文件超过 Worker 单次请求体上限`)
+  if (status === 413) return new Error(`${what}失败：请求体超限（Cloudflare 单请求 100MB，或 Worker 的 MAX_UPLOAD_MB）`)
   return new Error(`${what}失败：HTTP ${status}`)
 }
 
@@ -548,7 +548,7 @@ export async function listRomObjects(prefix = getRomPrefix()): Promise<RomObject
     if (prefix) url.searchParams.set('prefix', prefix.endsWith('/') ? prefix : `${prefix}/`)
     if (cursor) url.searchParams.set('cursor', cursor)
     const res = await fetch(url.toString(), { headers: authHeaders() })
-    if (!res.ok) throw explainStatus(res.status, '列表')
+    if (!res.ok) throw explainRomStatus(res.status, '列表')
     const data = (await res.json()) as { objects?: RomObject[]; cursor?: string; truncated?: boolean }
     out.push(...(data.objects ?? []))
     if (!data.truncated || !data.cursor) break
@@ -588,6 +588,28 @@ export async function headRom(key: string): Promise<RomHead> {
   }
 }
 
+/**
+ * 单发 PUT 的适用上限，超过就走分片上传（见 romMultipart.ts）。
+ *
+ * 24MB 不是随手定的：
+ *   - 平台的请求体上限是 100MB，单发 PUT 传到 100MB 附近必挂（边缘直接 reset，拿不到 413）
+ *   - 但小文件走分片是白搭三次往返 —— NES / GBA / 封面图都在几 MB 以内
+ * 所以阈值放在「一次传完还算稳」和「失败一次代价开始变大」的交界上。
+ */
+export const MULTIPART_THRESHOLD = 24 * 1024 * 1024
+
+export interface UploadStage {
+  /** 分片总数 */
+  parts: number
+  /** 已经传完的片数 */
+  done: number
+  /** 这次是接着上次传的，恢复了几片；0 表示从头传 */
+  resumed: number
+}
+
+/** 上传进度回调。第二个参数只有分片上传才有，单发 PUT 时是 undefined */
+export type UploadProgress = (pct: number, stage?: UploadStage) => void
+
 export interface UploadResult {
   key: string
   url: string
@@ -601,7 +623,7 @@ export interface UploadResult {
  * XHR 一定会带，拿不到类型时带的是 application/octet-stream，于是 Worker 的兜底永远轮不上。
  * 多 SWF 包里逐个上传的是 Blob（从 zip 里解出来的，没有 type），所以在这边补齐。
  */
-function guessUploadType(key: string): string {
+export function guessUploadType(key: string): string {
   const ext = key.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? ''
   const map: Record<string, string> = {
     swf: 'application/x-shockwave-flash',
@@ -621,17 +643,45 @@ function guessUploadType(key: string): string {
 }
 
 /**
- * 通过 Worker 上传文件到 R2（PUT），带进度回调。
+ * 通过 Worker 上传文件到 R2，带进度回调。
+ *
+ * 小文件一次 PUT 完事；超过 MULTIPART_THRESHOLD 的自动改走**分片上传 + 断点续传**，
+ * 因为单发 PUT 在 100MB 附近必挂 —— Cloudflare 的请求体上限由边缘节点执行，
+ * 超限时连接直接被 reset，浏览器拿不到 413，只会看到一句「无法连接 Worker」。
+ * 详细缘由和账本记在哪，见 romMultipart.ts 开头。
+ *
+ * 签名故意保持不变：后台四个上传入口（ROM / 整包 SWF / 封面视频 / 平台 BIOS）
+ * 一行都不用改就能吃到分片和续传。
  *
  * 收 Blob 而不只是 File：多 SWF 包是在浏览器里解开 zip 之后逐个上传的，
- * 手上只有 Blob，没有 File。
+ * 手上只有 Blob，没有 File。（Blob 没有名字和修改时间，所以不支持续传，只能重传。）
  */
-export function uploadRom(file: Blob, key: string, onProgress?: (pct: number) => void): Promise<UploadResult> {
+export async function uploadRom(file: Blob, key: string, onProgress?: UploadProgress): Promise<UploadResult> {
   const api = getRomApi()
-  if (!api) return Promise.reject(new Error('尚未配置 Worker 地址，无法上传'))
-  if (!getRomToken()) return Promise.reject(new Error('请先在「ROM 存储」页填写 Worker 口令（ADMIN_TOKEN）'))
+  if (!api) throw new Error('尚未配置 Worker 地址，无法上传')
+  if (!getRomToken()) throw new Error('请先在「ROM 存储」页填写 Worker 口令（ADMIN_TOKEN）')
   const cleanKey = key.replace(/^\/+/, '')
 
+  if (file.size > MULTIPART_THRESHOLD) {
+    // 动态 import：分片那套只有后台用得上，静态引会被打进播放器的首屏包里
+    const mp = await import('./romMultipart')
+    try {
+      const result = await mp.uploadRomMultipart(file, cleanKey, onProgress)
+      probeCache.clear()
+      return result
+    } catch (err) {
+      // Worker 还没部署分片接口（忘了 wrangler deploy）时退回单发 PUT。
+      // 大文件照样会失败，但小一点的文件不该因为后端没更新就整个传不了。
+      if (!(err instanceof mp.MultipartUnsupportedError)) throw err
+      console.warn('[rom] Worker 没有分片接口，退回单发 PUT；大文件请部署 worker/ 的新版本')
+    }
+  }
+
+  return singlePut(file, cleanKey, api, onProgress)
+}
+
+/** 一次 PUT 传完。只适合小文件，大文件见 uploadRom 里的分片分支 */
+function singlePut(file: Blob, cleanKey: string, api: string, onProgress?: UploadProgress): Promise<UploadResult> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     xhr.open('PUT', `${api}/${encodeKey(cleanKey)}`)
@@ -640,13 +690,22 @@ export function uploadRom(file: Blob, key: string, onProgress?: (pct: number) =>
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100))
     }
-    xhr.onerror = () => reject(new Error('网络错误：无法连接 Worker（检查地址与 CORS）'))
+    xhr.onerror = () =>
+      reject(
+        new Error(
+          // 「检查地址与 CORS」这句话曾经把人带到完全错误的方向上：文件超过平台上限时
+          // 边缘直接 reset 连接，表现和 Worker 不通一模一样。大文件优先提这个可能。
+          file.size > 90 * 1024 * 1024
+            ? '上传中断：文件接近或超过 Cloudflare 单请求 100MB 上限。请部署 worker/ 的新版本以启用分片上传'
+            : '网络错误：无法连接 Worker（检查地址与 CORS）',
+        ),
+      )
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
         probeCache.clear()
         resolve({ key: cleanKey, url: romUrlForKey(cleanKey), size: file.size })
       } else {
-        reject(explainStatus(xhr.status, '上传'))
+        reject(explainRomStatus(xhr.status, '上传'))
       }
     }
     xhr.send(file)
@@ -656,7 +715,7 @@ export function uploadRom(file: Blob, key: string, onProgress?: (pct: number) =>
 export async function deleteRom(key: string): Promise<void> {
   const api = getRomApi()
   const res = await fetch(`${api}/${encodeKey(key)}`, { method: 'DELETE', headers: authHeaders() })
-  if (!res.ok) throw explainStatus(res.status, '删除')
+  if (!res.ok) throw explainRomStatus(res.status, '删除')
   probeCache.clear()
 }
 

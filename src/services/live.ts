@@ -11,6 +11,7 @@
  * 这样版本永远和服务端一致，也省下几十 KB 的首屏体积。模拟器 iframe 里那套联机
  * 用的也是同一个脚本。
  */
+import { useSyncExternalStore } from 'react'
 import { apiBase, apiEnabled } from './api'
 import { getT } from './i18n'
 import { fetchIceConfig } from './netplay'
@@ -132,4 +133,70 @@ export async function fetchLiveRoom(roomId: string): Promise<LiveRoomInfo | null
   } catch {
     return null
   }
+}
+
+/* ---------------- 正在直播的房间列表（轮询，多个组件共享一个定时器） ---------------- */
+
+/**
+ * 为什么是轮询而不是 SSE：直播房间只存在于 /live 命名空间的内存里（server/src/live.js），
+ * 开播 / 下播都是 socket 事件，没有现成的推送通道。8 秒一次和联机列表原来的节奏一致，
+ * 大厅这种页面够用了；真要做到「一开播就出现」得在 attachLive 里再挂一路 SSE。
+ */
+const LIST_POLL_MS = 8_000
+/** 空数组用固定引用：useSyncExternalStore 要求快照引用稳定，否则会无限重渲染 */
+const NO_LIVE_ROOMS: LiveRoomInfo[] = []
+
+/** 和 fetchLiveRooms 的区别：这个会把失败抛出来，让 store 能区分「没人在播」和「后端不可达」 */
+async function loadLiveRooms(): Promise<LiveRoomInfo[]> {
+  const res = await fetch(`${apiBase()}/api/live/rooms`, { cache: 'no-store' })
+  if (!res.ok) throw new Error(String(res.status))
+  const list = (await res.json()) as LiveRoomInfo[]
+  return Array.isArray(list) ? list : []
+}
+
+const liveStore = (() => {
+  let rooms: LiveRoomInfo[] = NO_LIVE_ROOMS
+  const listeners = new Set<() => void>()
+  let timer = 0
+  const emit = () => listeners.forEach((l) => l())
+
+  const refresh = async () => {
+    try {
+      const next = await loadLiveRooms()
+      // 列表空了要真的清空 —— 主播下播之后卡片必须消失，不能因为「保留上次结果」一直挂着
+      rooms = next.length ? next : NO_LIVE_ROOMS
+      emit()
+    } catch {
+      /* 后端暂时不可达时保留上次结果，别闪一下空列表 */
+    }
+  }
+
+  return {
+    get: () => rooms,
+    subscribe(l: () => void) {
+      listeners.add(l)
+      if (listeners.size === 1 && liveEnabled()) {
+        void refresh()
+        timer = window.setInterval(() => void refresh(), LIST_POLL_MS)
+      }
+      return () => {
+        listeners.delete(l)
+        if (listeners.size === 0 && timer) {
+          window.clearInterval(timer)
+          timer = 0
+        }
+      }
+    },
+    refresh,
+  }
+})()
+
+/** 正在直播的房间（自动轮询，多个组件共享一个定时器） */
+export function useLiveRooms(): LiveRoomInfo[] {
+  return useSyncExternalStore(liveStore.subscribe, liveStore.get, () => NO_LIVE_ROOMS)
+}
+
+/** 手动刷新（开播 / 下播之后立刻让列表跟上，不用等下一轮） */
+export function refreshLiveRooms(): void {
+  void liveStore.refresh()
 }

@@ -144,6 +144,14 @@ export interface Game {
    */
   dosLaunchDelay?: number
   /**
+   * 这款 DOS 游戏怎么存档（如「按 F2 存档、F3 读档」「主菜单 → Save Game」）。
+   *
+   * js-dos 存的是盘上被改过的文件，玩家必须先在游戏里存盘，播放器的「保存进度」才有东西可存。
+   * 通用说明只能给最常见的 ESC / F1；具体到某一款，只有后台填的这句话说得准。
+   * 只对 platform 为 dos 的游戏有意义；留空只显示通用说明。
+   */
+  dosSaveHint?: string
+  /**
    * DOSBox-X 游戏级配置覆盖，只保存允许调整的硬件 / 性能 INI 段。
    * [autoexec]、鼠标捕获模式和动态游戏盘参数由站点统一管理，不能从这里覆盖。
    */
@@ -221,7 +229,18 @@ export interface User {
 }
 
 /** 对外暴露的用户信息（不含密码相关字段） */
-export type PublicUser = Omit<User, 'passwordHash' | 'salt'>
+export type PublicUser = Omit<User, 'passwordHash' | 'salt'> & {
+  /**
+   * 有没有设过登录密码。
+   *
+   * 个人中心靠它决定「设置密码」还是「修改密码」（后者要先报旧密码）。
+   * 回的是布尔值而不是哈希本身 —— 哈希是能离线爆破的，没有任何理由发到前端。
+   *
+   * 可选：旧版本缓存在 localStorage 里的会话没有这个字段，
+   * 而本地演示模式（没配后端）也用同一个类型。
+   */
+  hasPassword?: boolean
+}
 
 /* ---------------- 博客 ---------------- */
 export interface Post {

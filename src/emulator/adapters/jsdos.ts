@@ -57,7 +57,14 @@ export const JSDOS_PATH: string = (() => {
 
 type DosProps = {
   stop: () => Promise<void> | void
-  /** 把盘上的改动固化下来。js-dos v8 的 Player API，返回是否存成功 */
+  /**
+   * 把盘上的改动固化下来。js-dos v8 的 Player API。
+   *
+   * ⚠️ 返回值**不是**「存成功了没有」。看 js-dos 的实现：盘上一点改动都没有时
+   * （persist() 返回 null），它只弹一句 no_changes_to_save 的提示，然后照样 return true，
+   * 而 fsChanges.push 钩子压根不会被调用。只有它自己抛异常才返回 false。
+   * 所以「到底存下来了没有」只能看 push 钩子有没有被调过 —— 见 fsSave()。
+   */
   save?: () => Promise<boolean>
   setPaused?: (paused: boolean) => void
   setVolume?: (volume: number) => void
@@ -155,7 +162,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   /** 存档按 slug 归档；见下面 fsChanges 那段的说明 */
   let saveKey = ''
   /** 最近一次存档落到哪儿了（云端 / 浏览器），给界面显示用 */
-  let lastPush: { ok: boolean; where: 'cloud' | 'local' | null } | null = null
+  let lastPush: { ok: boolean; where: 'cloud' | 'local' | null; error?: string } | null = null
   /**
    * 经函数读，别直接读变量。
    * 直接读的话 TypeScript 会顺着 `lastPush = null` 一路把类型收窄成 never ——
@@ -292,8 +299,10 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
           urlToKey: async () => saveKey,
           pull: async () => (await pullSave('jsdos', saveKey))?.data ?? null,
           push: async (_key: string, data: Uint8Array) => {
-            // 记下这次落到哪儿了，fsSave() 要拿它告诉玩家「存到云端」还是「存在浏览器里」
-            lastPush = await pushSave('jsdos', saveKey, data)
+            // 记下这次落到哪儿了，fsSave() 要拿它告诉玩家「存到云端」还是「存在浏览器里」。
+            // 这个钩子被调到过本身就是「盘上真有改动」的唯一证据，fsSave() 也靠它判断。
+            const r = await pushSave('jsdos', saveKey, data)
+            lastPush = { ok: r.ok, where: r.where, error: r.cloudFailed ? r.error : undefined }
           },
           delete: async () => {
             await deleteSave('jsdos', saveKey)
@@ -400,17 +409,30 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
      * 注意这不是即时存档 —— 玩家得先在游戏里用它自己的存档功能存过盘，这里才有东西可存。
      */
     async fsSave() {
-      if (!props?.save) return { ok: false }
+      if (!props?.save) return { ok: false, reason: 'failed' as const }
       try {
         lastPush = null
         const ok = await props.save()
-        // props.save() 只说「js-dos 那边写出去了」，真正落到云端还是浏览器
-        // 是上面 push 钩子知道的
-        if (!ok) return { ok: false }
+        // false 只在 js-dos 内部抛异常、或者压根不能存（canSave=false）时出现
+        if (!ok) return { ok: false, reason: 'failed' as const }
+
         const done = readLastPush()
-        return { ok: done?.ok ?? true, where: done?.where ?? undefined }
+        /**
+         * push 钩子没被调过 = 盘上没有新写出的文件 = 玩家还没在游戏里存盘。
+         *
+         * ⚠️ 这里以前是 `done?.ok ?? true` —— 于是「什么都没存」被当成成功，
+         * 界面回一句「已存到云端 · 换台设备也能接着玩」。玩家没存盘却以为存住了,
+         * 而代码里为这个场景专门写的「请先在游戏里存盘 + 第①步标红」永远不会出现。
+         */
+        if (!done) return { ok: false, reason: 'nothing' as const }
+
+        // 云端和浏览器都没写进去
+        if (!done.ok) return { ok: false, reason: 'failed' as const, error: done.error }
+
+        // 写进去了。error 有值 = 本地成了、云端没成（部分成功），要一并说出来
+        return { ok: true, where: done.where ?? undefined, error: done.error }
       } catch {
-        return { ok: false }
+        return { ok: false, reason: 'failed' as const }
       }
     },
     async screenshot() {

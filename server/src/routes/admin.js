@@ -4,7 +4,7 @@ import { requireAdmin } from '../auth.js'
 import { postApiToRow, buildUpsert } from '../mappers.js'
 import { upsertGame, adminStats } from '../games-repo.js'
 import { invalidateContent } from '../content.js'
-import { queueGameIndexing } from '../indexnow.js'
+import { queueGameSearchPush } from '../search-push.js'
 
 export const adminRouter = Router()
 adminRouter.use(requireAdmin)
@@ -57,8 +57,10 @@ adminRouter.post('/import', async (req, res, next) => {
 
     // 批量导入后让 SSR 缓存立即失效，前台不用等 60 秒
     invalidateContent()
-    // 一次导入可能有上百款，统一进入队列后由 IndexNow 的批量接口合并提交。
-    for (const game of gameList) queueGameIndexing(game)
+    // 一次导入可能有上百款，统一进入队列后由各自的批量接口合并提交。
+    // ⚠️ 百度普通收录有每日配额（新站常见 10~100 条），批量导入几乎必然会把它推满；
+    // 剩下的靠每日兜底任务（cd server && npm run baidu）按天补交。
+    for (const game of gameList) queueGameSearchPush(game)
     res.json({ ok: true, ...result })
   } catch (e) {
     next(e)

@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { cx } from '@/lib/format'
 import { Button, buttonClasses } from '@/components/ui/Button'
 import { closeAuthModal, useAuthModalOpen } from '@/services/authModal'
-import { loginWithEmailCode, loginWithGoogle, requestEmailCode, useCurrentUser } from '@/services/auth'
+import { login, loginWithEmailCode, loginWithGoogle, requestEmailCode, useCurrentUser } from '@/services/auth'
 import { ApiError } from '@/services/api'
 import { useT, fmt } from '@/services/i18n'
 
@@ -12,14 +12,22 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const inputClass =
   'h-12 w-full rounded-xl border border-line bg-surface-2 px-3.5 text-sm text-fg placeholder:text-dim transition focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30'
 
-/** 全站统一的登录弹窗：邮箱验证码 + Google，Duolingo 亮色风格。 */
+/**
+ * 全站统一的登录弹窗：邮箱验证码 / 密码 + Google，Duolingo 亮色风格。
+ *
+ * 默认是验证码那一栏 —— 绝大多数账号是验证码创建的，压根没有密码。
+ * 密码那一栏是给在个人中心设过密码的人用的：能设却不能用来登录的话，
+ * 那个设置项本身就是个坑。
+ */
 export function AuthModal() {
   const open = useAuthModalOpen()
   const user = useCurrentUser()
   const t = useT()
 
+  const [mode, setMode] = useState<'code' | 'password'>('code')
   const [email, setEmail] = useState('')
   const [code, setCode] = useState('')
+  const [password, setPassword] = useState('')
   const [devCode, setDevCode] = useState<string | null>(null)
   const [cooldown, setCooldown] = useState(0)
   const [sending, setSending] = useState(false)
@@ -31,13 +39,15 @@ export function AuthModal() {
   const timer = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const emailValid = EMAIL_RE.test(email.trim())
-  const canSubmit = emailValid && /^\d{6}$/.test(code) && !busy
+  const canSubmit = emailValid && !busy && (mode === 'code' ? /^\d{6}$/.test(code) : password.length > 0)
 
   // 打开时重置 + 锁定滚动 + 聚焦邮箱
   useEffect(() => {
     if (!open) return
+    setMode('code')
     setEmail('')
     setCode('')
+    setPassword('')
     setDevCode(null)
     setCooldown(0)
     setSending(false)
@@ -107,7 +117,8 @@ export function AuthModal() {
     setError(null)
     setBusy(true)
     try {
-      await loginWithEmailCode(email, code)
+      if (mode === 'code') await loginWithEmailCode(email, code)
+      else await login(email, password)
       closeAuthModal()
     } catch (err) {
       setError(err instanceof Error ? err.message : t.auth.loginFailed)
@@ -158,7 +169,33 @@ export function AuthModal() {
           {t.auth.title}
         </h2>
 
-        <form onSubmit={submit} className="mt-6 space-y-4">
+        {/* 验证码 / 密码 两栏。切换时把上一栏的报错清掉 —— 留着「验证码不正确」
+            却站在密码那一栏上，会让人以为是密码错了 */}
+        <div role="tablist" aria-label={t.auth.title} className="mt-5 flex gap-1.5">
+          {([
+            { id: 'code' as const, label: t.auth.tabCode },
+            { id: 'password' as const, label: t.auth.tabPassword },
+          ]).map((x) => (
+            <button
+              key={x.id}
+              type="button"
+              role="tab"
+              aria-selected={mode === x.id}
+              onClick={() => {
+                setMode(x.id)
+                setError(null)
+              }}
+              className={cx(
+                'h-9 flex-1 rounded-xl border-2 text-sm font-bold transition',
+                mode === x.id ? 'border-brand bg-brand-soft text-brand-hover' : 'border-line text-muted hover:bg-surface-2',
+              )}
+            >
+              {x.label}
+            </button>
+          ))}
+        </div>
+
+        <form onSubmit={submit} className="mt-5 space-y-4">
           {/* 邮箱 + 发送验证码 */}
           <div>
             <label htmlFor="auth-email" className="mb-1.5 block text-sm font-semibold text-muted">
@@ -176,44 +213,64 @@ export function AuthModal() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
               />
-              <button
-                type="button"
-                onClick={sendCode}
-                disabled={!emailValid || sending || cooldown > 0}
-                className={buttonClasses('secondary', 'md', 'h-12 shrink-0 whitespace-nowrap px-4')}
-              >
-                {sending ? t.auth.sending : cooldown > 0 ? fmt(t.auth.resendIn, { n: cooldown }) : t.auth.sendCode}
-              </button>
+              {mode === 'code' && (
+                <button
+                  type="button"
+                  onClick={sendCode}
+                  disabled={!emailValid || sending || cooldown > 0}
+                  className={buttonClasses('secondary', 'md', 'h-12 shrink-0 whitespace-nowrap px-4')}
+                >
+                  {sending ? t.auth.sending : cooldown > 0 ? fmt(t.auth.resendIn, { n: cooldown }) : t.auth.sendCode}
+                </button>
+              )}
             </div>
           </div>
 
           {/* 验证码 */}
-          <div>
-            <label htmlFor="auth-code" className="mb-1.5 block text-sm font-semibold text-muted">
-              {t.auth.codeLabel}
-            </label>
-            <input
-              id="auth-code"
-              ref={codeRef}
-              type="text"
-              inputMode="numeric"
-              autoComplete="one-time-code"
-              maxLength={6}
-              placeholder={t.auth.codePlaceholder}
-              className={cx(inputClass, 'tracking-[0.3em]')}
-              value={code}
-              onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-            />
-            {devCode && (
-              <button
-                type="button"
-                onClick={() => setCode(devCode)}
-                className="mt-1.5 text-xs text-muted transition hover:text-brand-hover"
-              >
-                {fmt(t.auth.devCodeHint, { code: devCode })}
-              </button>
-            )}
-          </div>
+          {mode === 'code' ? (
+            <div>
+              <label htmlFor="auth-code" className="mb-1.5 block text-sm font-semibold text-muted">
+                {t.auth.codeLabel}
+              </label>
+              <input
+                id="auth-code"
+                ref={codeRef}
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                maxLength={6}
+                placeholder={t.auth.codePlaceholder}
+                className={cx(inputClass, 'tracking-[0.3em]')}
+                value={code}
+                onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              />
+              {devCode && (
+                <button
+                  type="button"
+                  onClick={() => setCode(devCode)}
+                  className="mt-1.5 text-xs text-muted transition hover:text-brand-hover"
+                >
+                  {fmt(t.auth.devCodeHint, { code: devCode })}
+                </button>
+              )}
+            </div>
+          ) : (
+            <div>
+              <label htmlFor="auth-password" className="mb-1.5 block text-sm font-semibold text-muted">
+                {t.auth.passwordLabel}
+              </label>
+              <input
+                id="auth-password"
+                type="password"
+                autoComplete="current-password"
+                placeholder={t.auth.passwordPlaceholder}
+                className={inputClass}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+              <p className="mt-1.5 text-xs leading-relaxed text-dim">{t.auth.noPasswordHint}</p>
+            </div>
+          )}
 
           {error && (
             <p role="alert" className="rounded-xl bg-live/10 px-3 py-2 text-sm font-medium text-live">
@@ -222,7 +279,7 @@ export function AuthModal() {
           )}
 
           <Button size="lg" type="submit" className="w-full" disabled={!canSubmit}>
-            {busy ? t.auth.submitting : t.auth.submit}
+            {busy ? t.auth.submitting : mode === 'code' ? t.auth.submit : t.auth.submitPassword}
           </Button>
         </form>
 

@@ -75,6 +75,9 @@ CREATE TABLE IF NOT EXISTS games (
   dos_launch_delay SMALLINT UNSIGNED NULL,
   -- 只保存允许的硬件 / 性能 INI 覆盖；[autoexec] 与挂载参数由应用层拒绝。
   dosbox_config_override TEXT NULL,
+  -- 这款 DOS 游戏怎么存档（如「按 F2 存档、F3 读档」）。
+  -- js-dos 存的是盘上被改过的文件，玩家得先在游戏里存盘；各家存档键不同，只能逐游戏填。
+  dos_save_hint  VARCHAR(160)  NULL,
   -- 首页「精选」位的排序号。NULL = 不上首页，数字小的排前面。
   -- 一款都没设时，首页那一栏退回按 plays 自动排（见 server/src/content.js 的 loadHome）
   home_rank     SMALLINT UNSIGNED NULL,
@@ -220,6 +223,10 @@ CREATE TABLE IF NOT EXISTS users (
   coins         INT UNSIGNED  NOT NULL DEFAULT 0,
   role          ENUM('user','admin')    NOT NULL DEFAULT 'user',
   status        ENUM('active','banned') NOT NULL DEFAULT 'active',
+  -- 令牌版本。JWT 是无状态的，签出去就收不回来 —— 「退出所有设备」和「改完密码踢掉旧会话」
+  -- 都靠把这个数 +1 实现：带旧版本号的令牌在 requireUser 里当场作废。
+  -- 详见 src/auth.js 的 signToken 注释。
+  token_version INT UNSIGNED  NOT NULL DEFAULT 0,
   created_at    TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uniq_email (email),
   KEY idx_role (role, status)
@@ -262,3 +269,54 @@ CREATE TABLE IF NOT EXISTS recents (
 -- 管理员账号建不了（需要 bcrypt 哈希）：先在网站上注册，然后
 --   UPDATE users SET role='admin' WHERE email='你的邮箱';
 -- ============================================================
+
+-- ---------- 云存档 ----------
+-- ⚠️ 这张表以前只写在 schema.sql（v1 那份）里，v2 漏了 —— 于是任何按 v2 建的新库都没有它，
+-- 症状是站点一切正常，只有玩家点「云端存档」的那一刻 /api/saves 全部 500，
+-- 而后台和前台都看不出任何异常。补在这里，老库靠 scripts/migrate.mjs 的同名补丁补上。
+--
+-- 存档跟着账号走（必须登录）。没登录的用户不进这张表 —— 他们的存档在浏览器里或者是下载的文件。
+-- runtime 区分引擎：emulatorjs 是内存快照，jsdos 是 DOS 文件系统的变更包，两者不能互换。
+-- game_slug 允许 `local:文件名` 这种形式（玩家自己上传的 ROM 没有 slug），所以不做外键。
+CREATE TABLE IF NOT EXISTS saves (
+  user_id    VARCHAR(40)      NOT NULL,
+  runtime    VARCHAR(24)      NOT NULL,
+  game_slug  VARCHAR(160)     NOT NULL,
+  -- 存档位。0 是主存档，DOS 只用 0；快照式引擎以后可以做多格
+  slot       TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  size       INT UNSIGNED     NOT NULL,
+  -- MEDIUMBLOB 上限 16MB，接口层再卡到 SAVE_MAX_BYTES（默认 4MB）
+  data       MEDIUMBLOB       NOT NULL,
+  created_at TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, runtime, game_slug, slot),
+  INDEX idx_saves_user_time (user_id, updated_at),
+  CONSTRAINT fk_saves_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------- 邮箱验证码 ----------
+-- 登录 / 换绑邮箱 / 注销账号共用这张表，purpose 区分用途，逻辑全在 src/codes.js。
+--
+-- 为什么不放内存：pm2 重启会把所有待验证的码清空，用户刚收到信、回来填却被告知「已过期」；
+-- 多实例部署时发码的实例和验码的实例不是同一个，登录会随机失败一半。
+--
+-- 为什么存哈希不存明文：一次 mysqldump 泄露就等于把所有人（含管理员）的账号送出去。
+-- 哈希拌了 email + purpose，单看哈希值没法拿去别的邮箱或用途上重放。
+--
+-- 时间用 epoch 毫秒的 BIGINT，不用 TIMESTAMP：应用层判过期、数据库判清理，
+-- 两边各用各的时钟 / 时区是很容易踩的坑，统一交给应用时钟最省心。
+CREATE TABLE IF NOT EXISTS login_codes (
+  email      VARCHAR(200)     NOT NULL,
+  purpose    VARCHAR(16)      NOT NULL,
+  -- 换绑 / 注销时绑到具体用户：不绑的话，A 拿自己那封「换绑到 x@y」的码
+  -- 就能去把 B 的账号也换绑成 x@y。登录用途下为 NULL（那会儿还没有用户）。
+  -- 不设外键：登录码没有用户可指，而删用户时也不该因为这张表而失败。
+  user_id    VARCHAR(40)      NULL,
+  code_hash  CHAR(64)         NOT NULL,
+  -- 错误次数。6 位数字共 100 万种，不限次数等于可以直接爆破进任意账号
+  tries      TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  expires_at BIGINT UNSIGNED  NOT NULL,
+  sent_at    BIGINT UNSIGNED  NOT NULL,
+  PRIMARY KEY (email, purpose),
+  KEY idx_codes_expires (expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

@@ -198,7 +198,20 @@ export interface RuntimeHandle {
    * 文件系统式存档（DOS）：把盘上的改动固化下来，成功返回 true。
    * 没有可下载的文件，也没有对应的「读档」—— 下次进游戏时引擎会自动把改动装回去。
    */
-  fsSave?: () => Promise<{ ok: boolean; where?: 'cloud' | 'local' }>
+  /**
+   * 固化盘上被改动的文件。
+   *
+   * reason 区分两种失败，界面上说的话完全不同：
+   *   'nothing' —— 盘上没有新写出的存档文件，玩家还没在游戏里存盘。要引导他回去存盘。
+   *   'failed'  —— 引擎那边就没成功。是真的错误。
+   * error 是云端那一路的失败原因（本地写成功了才会出现，属于部分成功）。
+   */
+  fsSave?: () => Promise<{
+    ok: boolean
+    where?: 'cloud' | 'local'
+    reason?: 'nothing' | 'failed'
+    error?: string
+  }>
   /** 返回一句话时，工具栏用它代替默认的「读档完成」（比如 Flash 要说明游戏被重载了） */
   loadState?: (data: ArrayBuffer) => Promise<string | void>
   /** 音量 0~1 */

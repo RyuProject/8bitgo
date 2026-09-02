@@ -1,11 +1,10 @@
 import { Router } from 'express'
 import crypto from 'crypto'
 import { query, queryOne } from '../db.js'
-import { hashPassword, verifyPassword, signToken, requireUser } from '../auth.js'
+import { hashPassword, verifyPassword, signToken, requireUser, tokenVersionOf } from '../auth.js'
 import { userRowToPublic } from '../mappers.js'
 import { favIds, recentIds } from '../userdata.js'
-import { sendLoginCode } from '../mail.js'
-import { take, clientKey, isMeaningfulIp } from '../rateLimit.js'
+import { issueCode, verifyCode, sendCodeError } from '../codes.js'
 
 export const authRouter = Router()
 
@@ -61,7 +60,7 @@ authRouter.post('/register', async (req, res, next) => {
       [id, email, nickname, '🕹️', hash, WELCOME_COINS, 'user', 'active', createdAt],
     )
     const row = await queryOne('SELECT * FROM users WHERE id = ?', [id])
-    res.json({ token: signToken(id), user: await publicWithData(row) })
+    res.json({ token: signToken(id, tokenVersionOf(row)), user: await publicWithData(row) })
   } catch (e) {
     next(e)
   }
@@ -73,154 +72,51 @@ authRouter.post('/login', async (req, res, next) => {
     const password = String(req.body.password || '')
     const row = await queryOne('SELECT * FROM users WHERE email = ?', [email])
     if (!row) return res.status(401).json({ error: '邮箱或密码不正确' })
+    /**
+     * 验证码 / Google 创建的账号 password_hash 是空串。
+     * 直接扔给 bcrypt.compare 的话它对着一个非法哈希返回 false，用户看到的是
+     * 「邮箱或密码不正确」—— 他会以为自己记错了密码，反复试一个从来不存在的东西。
+     * 这里单独说清楚：这个账号还没有密码，走验证码就能进，进去之后可以在个人中心设一个。
+     */
+    if (!row.password_hash) {
+      return res.status(401).json({ error: '这个账号还没有设置密码，请用邮箱验证码登录（登录后可在个人中心设置密码）' })
+    }
     const ok = await verifyPassword(password, row.password_hash)
     if (!ok) return res.status(401).json({ error: '邮箱或密码不正确' })
     if (row.status === 'banned') return res.status(403).json({ error: '该账号已被封禁，请联系管理员' })
-    res.json({ token: signToken(row.id), user: await publicWithData(row) })
+    res.json({ token: signToken(row.id, tokenVersionOf(row)), user: await publicWithData(row) })
   } catch (e) {
     next(e)
   }
 })
 
 /* ---------------- 邮箱验证码登录 ---------------- */
-// 验证码暂存在内存（单进程足够；多实例部署请改用 Redis / 数据表）。
-const codes = new Map() // email -> { code, expires, lastSent, tries }
-const CODE_TTL = 10 * 60_000
-const COOLDOWN = 60_000
-/** 单个验证码最多能试几次。6 位数字共 100 万种，不限次数等于可以直接爆破进任意账号（含管理员）。 */
-const MAX_TRIES = 5
-/** Map 的条目上限。发送接口不需要登录，不设上限的话换邮箱刷几百万次就能把内存吃光。 */
-const MAX_PENDING = 10_000
-
-/* ---- 发信配额 ----
- * 原来只有「同一邮箱 60 秒一次」，挡得住重复点按钮，挡不住脚本轮着给一万个陌生邮箱发信。
- * 配上 SMTP 之后那就是架在你服务器上的垃圾邮件发射器，代价是域名被拉黑。
- *
- * 两道一起上，缺一不可：
- *   按 IP —— 正常用户一小时发不了十封；但它**只有在 trust proxy 配对时才准**，
- *            配错了所有人都算成反代那一个地址。
- *   全站 —— 不依赖任何代理配置，代理配错时这是唯一还有效的一道。
- * 都可以用环境变量调，多实例部署记得按实例数把上限除一下（状态在各自内存里）。
+/**
+ * 冷却、爆破防护、发信配额、存哪儿，全在 ../codes.js 里 ——
+ * 换绑邮箱和注销账号也要发同样的一封码（见 routes/me.js），
+ * 三处抄三遍必然会漏掉其中一道。
  */
-const HOUR = 3_600_000
-const SEND_PER_IP_PER_HOUR = Number(process.env.CODE_SEND_PER_IP_PER_HOUR || 10)
-const SEND_GLOBAL_PER_HOUR = Number(process.env.CODE_SEND_GLOBAL_PER_HOUR || 500)
-/** 拿不到真实 IP 的警告只打一次，不然每次发码都刷一行 */
-let warnedNoRealIp = false
-
-/** 清掉过期条目。每次发码时顺手做一遍，不额外起定时器。 */
-function sweepCodes() {
-  const now = Date.now()
-  for (const [k, v] of codes) if (v.expires < now) codes.delete(k)
-}
 
 authRouter.post('/email/request-code', async (req, res, next) => {
   try {
     const email = String(req.body.email || '').trim().toLowerCase()
     if (!EMAIL_RE.test(email)) return res.status(400).json({ error: '邮箱格式不正确' })
-
-    // 同一邮箱的冷却。retryAfter 一并回给前端 —— 以前只在文案里写秒数，
-    // 前端拿不到数字，只能用它自己那份 60 秒常量倒计时，两边一改就对不上了。
-    const rec = codes.get(email)
-    if (rec && Date.now() - rec.lastSent < COOLDOWN) {
-      const wait = Math.ceil((COOLDOWN - (Date.now() - rec.lastSent)) / 1000)
-      return res.status(429).json({ error: `发送过于频繁，请 ${wait}s 后再试`, retryAfter: wait })
-    }
-
-    // 配额：先看这个 IP，再看全站。放在生成验证码之前 —— 被挡下来时不该产生任何副作用。
-    //
-    // ⚠️ 只有拿到真实访客 IP 时才按 IP 限。反代没透传时所有人都是 127.0.0.1，
-    // 再按 IP 限就成了整站每小时 N 封的总闸，十几个人登录就能把其他人全锁在门外
-    // （Cloudflare 在前面时尤其容易踩）。这种情况下只留全站那道兜底。
-    const ip = clientKey(req)
-    if (isMeaningfulIp(ip)) {
-      const byIp = take(`code:ip:${ip}`, SEND_PER_IP_PER_HOUR, HOUR)
-      if (!byIp.ok) {
-        return res.status(429).json({ error: '发送次数过多，请稍后再试', retryAfter: byIp.retryAfter })
-      }
-    } else if (!warnedNoRealIp) {
-      warnedNoRealIp = true
-      console.warn(
-        `[auth] 拿到的客户端地址是 ${ip}，按 IP 限流已跳过（只剩全站总量兜底）。` +
-          ' 让 nginx 透传真实 IP 即可恢复：proxy_set_header X-Forwarded-For $http_cf_connecting_ip;',
-      )
-    }
-    const global = take('code:global', SEND_GLOBAL_PER_HOUR, HOUR)
-    if (!global.ok) {
-      console.warn('[auth] 全站发信配额已用尽 —— 可能正在被刷，检查 nginx 是否透传了真实 IP')
-      return res.status(429).json({ error: '当前请求过多，请稍后再试', retryAfter: global.retryAfter })
-    }
-
-    sweepCodes()
-    if (!codes.has(email) && codes.size >= MAX_PENDING) {
-      return res.status(429).json({ error: '当前请求过多，请稍后再试' })
-    }
-    const code = String(100000 + crypto.randomInt(900000))
-    codes.set(email, { code, expires: Date.now() + CODE_TTL, lastSent: Date.now(), tries: 0 })
-
-    /**
-     * 发信失败必须把刚写进去的验证码撤掉。
-     *
-     * 以前这里是裸 await，异常一路冒到兜底处理器变成「服务器内部错误」——
-     * 而 codes 里那条记录还在，lastSent 也已经打上了。结果是用户既收不到信，
-     * 又被 COOLDOWN 挡在门外一分钟，重试还是同样一句没用的报错。
-     *
-     * 顺带按失败原因分开回：地址收不了信是用户能自己解决的（换一个邮箱），
-     * 配额和配置问题是我们自己的事，别让用户以为是他填错了。
-     */
-    try {
-      await sendLoginCode(email, code)
-    } catch (e) {
-      codes.delete(email)
-      switch (e?.kind) {
-        case 'suppressed':
-          // 这个地址退过信 / 被标过垃圾邮件，再发多少次都不会到
-          return res.status(400).json({ error: '这个邮箱地址无法投递，请换一个邮箱' })
-        case 'ratelimit':
-          console.error('[auth] 发信服务配额已用尽：', e.message)
-          return res.status(429).json({ error: '当前发信繁忙，请稍后再试', retryAfter: 60 })
-        case 'sender':
-          // 发件域没验证、Token 没权限、依赖没装 —— 都是部署问题。
-          // 细节只进日志：回给客户端等于把配置状况告诉所有人。
-          console.error('[auth] 发信配置有问题：', e.message)
-          return res.status(500).json({ error: '邮件服务暂时不可用，请稍后再试' })
-        default:
-          console.error('[auth] 验证码邮件发送失败：', e)
-          return res.status(502).json({ error: '邮件发送失败，请稍后再试' })
-      }
-    }
-
-    // 冷却秒数由服务端说了算，前端照着倒计时，不再各存一份常量
-    res.json({ ok: true, cooldown: Math.round(COOLDOWN / 1000) })
+    res.json({ ok: true, ...(await issueCode(req, email, 'login')) })
   } catch (e) {
-    next(e)
+    sendCodeError(res, next, e)
   }
 })
 
 authRouter.post('/email/verify', async (req, res, next) => {
   try {
     const email = String(req.body.email || '').trim().toLowerCase()
-    const code = String(req.body.code || '').trim()
-    const rec = codes.get(email)
-    if (!rec || rec.expires < Date.now()) {
-      codes.delete(email)
-      return res.status(400).json({ error: '验证码已过期，请重新获取' })
-    }
-    if (rec.code !== code) {
-      // 错一次就减一次机会，用完直接作废这个验证码 —— 否则可以慢慢把 6 位数字试穿
-      rec.tries += 1
-      if (rec.tries >= MAX_TRIES) {
-        codes.delete(email)
-        return res.status(429).json({ error: '错误次数过多，请重新获取验证码' })
-      }
-      return res.status(400).json({ error: '验证码不正确' })
-    }
-    codes.delete(email)
+    if (!EMAIL_RE.test(email)) return res.status(400).json({ error: '邮箱格式不正确' })
+    await verifyCode(email, 'login', String(req.body.code || ''))
     const row = await findOrCreateByEmail(email, nicknameFromEmail(email))
     if (row.status === 'banned') return res.status(403).json({ error: '该账号已被封禁，请联系管理员' })
-    res.json({ token: signToken(row.id), user: await publicWithData(row) })
+    res.json({ token: signToken(row.id, tokenVersionOf(row)), user: await publicWithData(row) })
   } catch (e) {
-    next(e)
+    sendCodeError(res, next, e)
   }
 })
 
@@ -251,7 +147,7 @@ authRouter.post('/google', async (req, res, next) => {
     const nickname = String(info.name || nicknameFromEmail(email)).slice(0, 16)
     const row = await findOrCreateByEmail(email, nickname)
     if (row.status === 'banned') return res.status(403).json({ error: '该账号已被封禁，请联系管理员' })
-    res.json({ token: signToken(row.id), user: await publicWithData(row) })
+    res.json({ token: signToken(row.id, tokenVersionOf(row)), user: await publicWithData(row) })
   } catch (e) {
     next(e)
   }

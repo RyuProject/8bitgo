@@ -40,7 +40,8 @@ export const usersStore = createLocalStore<User>({
 
 export function toPublic(u: User): PublicUser {
   const { passwordHash: _h, salt: _s, ...rest } = u
-  return rest
+  // hasPassword 而不是哈希本身：界面只需要知道「要不要先问旧密码」
+  return { ...rest, hasPassword: Boolean(u.passwordHash) }
 }
 
 /* ---------------- 密码哈希（仅本地模式用） ---------------- */
@@ -510,6 +511,186 @@ export async function recordRecent(slug: string): Promise<void> {
   const recent = [slug, ...user.recent.filter((s) => s !== slug)].slice(0, 12)
   if (recent.join() === user.recent.join()) return
   usersStore.update(user.id, { recent })
+}
+
+/* ---------------- 账号与安全 ---------------- */
+
+/**
+ * 换绑邮箱 / 改密码 / 退出所有设备之后，服务端会给一张**新令牌**——
+ * 因为这三个动作都会把 users.token_version +1，手里那张旧的当场作废。
+ * 忘了存新令牌的话，用户下一次请求就会被自己的操作踢下线。
+ */
+function acceptSession(r: { token: string; user: PublicUser }) {
+  setToken(r.token)
+  setCurrentUser(r.user)
+}
+
+/** 换绑邮箱第一步：往**新**邮箱发验证码（收得到才说明那个邮箱真是他的） */
+export async function requestEmailChangeCode(email: string): Promise<RequestCodeResult> {
+  const e = email.trim().toLowerCase()
+  if (!EMAIL_RE.test(e)) throw new Error(getT().errors.emailInvalid)
+  const me = getCurrentUser()
+  if (me && e === me.email.toLowerCase()) throw new Error(getT().account.sameEmail)
+
+  if (apiEnabled()) {
+    const r = (await api.post('/api/me/email/request-code', { email: e })) as { cooldown?: number } | null
+    return { cooldown: Number(r?.cooldown) > 0 ? Number(r?.cooldown) : CODE_COOLDOWN }
+  }
+
+  // 本地演示模式：没有邮件服务器，验证码直接回给界面显示
+  if (usersStore.load().some((u) => u.email === e)) throw new Error(getT().errors.emailTaken)
+  const code = genCode()
+  const list = readPendingCodes().filter((c) => c.email !== e)
+  list.push({ email: e, code, expires: Date.now() + CODE_TTL_MS })
+  writePendingCodes(list)
+  return { cooldown: CODE_COOLDOWN, devCode: code }
+}
+
+/** 换绑邮箱第二步：验码并落库。会把其它设备踢下线，当前设备换新令牌。 */
+export async function changeEmail(email: string, code: string): Promise<PublicUser> {
+  const e = email.trim().toLowerCase()
+  const c = code.trim()
+  if (!/^\d{6}$/.test(c)) throw new Error(getT().errors.codeFormat)
+
+  if (apiEnabled()) {
+    const r = await api.post<{ token: string; user: PublicUser }>('/api/me/email', { email: e, code: c })
+    acceptSession(r)
+    return r.user
+  }
+
+  const user = requireLocalUser()
+  const list = readPendingCodes()
+  const rec = list.find((x) => x.email === e)
+  if (!rec) throw new Error(getT().errors.codeMissing)
+  if (Date.now() > rec.expires) throw new Error(getT().errors.codeExpired)
+  if (rec.code !== c) throw new Error(getT().errors.codeWrong)
+  if (usersStore.load().some((u) => u.email === e && u.id !== user.id)) throw new Error(getT().errors.emailTaken)
+  writePendingCodes(list.filter((x) => x.email !== e))
+  usersStore.update(user.id, { email: e })
+  return toPublic(usersStore.find(user.id) as User)
+}
+
+/**
+ * 设置 / 修改登录密码。
+ * 已经有密码的必须报出旧密码 —— 只凭一张令牌就能改密码的话，
+ * 一台没锁屏的电脑就足够让别人把账号彻底接管过去。
+ */
+export async function setPassword(password: string, currentPassword?: string): Promise<void> {
+  if (password.length < 6) throw new Error(getT().errors.passwordShort)
+
+  if (apiEnabled()) {
+    const r = await api.put<{ token: string; user: PublicUser }>('/api/me/password', {
+      password,
+      ...(currentPassword ? { currentPassword } : {}),
+    })
+    acceptSession(r)
+    return
+  }
+
+  const user = requireLocalUser()
+  if (user.passwordHash) {
+    if (!currentPassword) throw new Error(getT().account.needCurrentPassword)
+    const salt = user.salt || ''
+    if ((await sha256Hex(salt + currentPassword)) !== user.passwordHash) {
+      throw new Error(getT().account.wrongCurrentPassword)
+    }
+  }
+  const salt = makeSalt()
+  usersStore.update(user.id, { salt, passwordHash: await sha256Hex(salt + password) })
+}
+
+/**
+ * 退出所有设备。
+ * JWT 是无状态的，签出去就收不回来，所以服务端是把令牌版本号 +1 让旧的当场作废；
+ * 当前设备立刻拿一张新的，不用重新登录。
+ */
+export async function logoutAllDevices(): Promise<void> {
+  if (apiEnabled()) {
+    acceptSession(await api.post<{ token: string; user: PublicUser }>('/api/me/logout-all'))
+    return
+  }
+  // 本地模式只有这一个「设备」，退出当前会话就是全部
+  writeSessionId(null)
+}
+
+/** 注销第一步：往当前邮箱发一封确认码 */
+export async function requestDeleteCode(): Promise<RequestCodeResult> {
+  if (apiEnabled()) {
+    const r = (await api.post('/api/me/delete/request-code')) as { cooldown?: number } | null
+    return { cooldown: Number(r?.cooldown) > 0 ? Number(r?.cooldown) : CODE_COOLDOWN }
+  }
+  const user = requireLocalUser()
+  const code = genCode()
+  const list = readPendingCodes().filter((c) => c.email !== user.email)
+  list.push({ email: user.email, code, expires: Date.now() + CODE_TTL_MS })
+  writePendingCodes(list)
+  return { cooldown: CODE_COOLDOWN, devCode: code }
+}
+
+/**
+ * 注销第二步：验码并删号，不可逆。
+ * 收藏 / 最近 / 云存档挂在用户行的外键上（ON DELETE CASCADE），由数据库一并清掉。
+ */
+export async function deleteMyAccount(code: string): Promise<void> {
+  const c = code.trim()
+  if (!/^\d{6}$/.test(c)) throw new Error(getT().errors.codeFormat)
+
+  if (apiEnabled()) {
+    await api.del('/api/me', false, { code: c })
+    setToken(null)
+    setCurrentUser(null)
+    return
+  }
+
+  const user = requireLocalUser()
+  const list = readPendingCodes()
+  const rec = list.find((x) => x.email === user.email)
+  if (!rec) throw new Error(getT().errors.codeMissing)
+  if (Date.now() > rec.expires) throw new Error(getT().errors.codeExpired)
+  if (rec.code !== c) throw new Error(getT().errors.codeWrong)
+  writePendingCodes(list.filter((x) => x.email !== user.email))
+  usersStore.remove(user.id)
+  writeSessionId(null)
+}
+
+/* ---------------- 游玩统计 ---------------- */
+
+export interface MeStats {
+  /** 加入至今的天数（含今天，最小 1） */
+  days: number
+  favorites: number
+  recent: number
+  /** null = 这个库还没有 saves 表，界面据此整块隐藏云存档，而不是显示「0 份」 */
+  saves: { count: number; bytes: number } | null
+  /** 最近游玩里出现最多的平台 id；没有记录时为 null */
+  topPlatform: string | null
+  lastPlayedAt: number | null
+}
+
+/** 个人中心顶部那几张小卡片的数据。拿不到就返回 null，界面退回只显示已知的几项。 */
+export async function fetchMyStats(): Promise<MeStats | null> {
+  const me = getCurrentUser()
+  if (!me) return null
+
+  if (apiEnabled()) {
+    try {
+      return await api.get<MeStats>('/api/me/stats')
+    } catch {
+      // 统计只是装饰，取不到不该让整页报错
+      return null
+    }
+  }
+
+  const day = 86_400_000
+  const joined = Date.parse(`${me.createdAt}T00:00:00Z`)
+  return {
+    days: Number.isFinite(joined) ? Math.max(1, Math.floor((Date.now() - joined) / day) + 1) : 1,
+    favorites: me.favorites.length,
+    recent: me.recent.length,
+    saves: null,
+    topPlatform: null,
+    lastPlayedAt: null,
+  }
 }
 
 /* ---------------- 后台用户管理 ---------------- */

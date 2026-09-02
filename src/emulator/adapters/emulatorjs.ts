@@ -221,6 +221,19 @@ const VIDEO_MAX_FPS = 60
  * 暂停、看菜单、挂机时一个字节都不会发，真正上传的只有进度确实在推进的时候。
  */
 const STATE_UPLOAD_MS = 10_000
+/**
+ * 电池存档（SRAM）主动落盘的间隔。
+ *
+ * 玩家在 RPG 里按的「保存」写的是 SRAM，不是快照存档 —— 这才是他们真正会心疼的东西。
+ * 引擎给核心的 retroarch.cfg 里写死 `autosave_interval = 60`（而 retroarchOpts 是从
+ * core.json 读的，我们改不了），也就是说核心每 60 秒才把 .srm 落到 /data/saves 一次。
+ * /data/saves 是 IDBFS + autoPersist，落到那儿之后会自动同步进 IndexedDB。
+ *
+ * 缺口在最后那 60 秒：引擎只在 `exit`（iframe 的 beforeunload）里补刷一次，而
+ * autoPersist 的同步是 `setTimeout(0)` + 异步 IndexedDB 事务，iframe 在同一个同步块里
+ * 就被拆了 —— 那一刀基本落不下去。所以我们自己按这个节奏补刷，把最坏窗口砍掉一半。
+ */
+const SAVE_FLUSH_MS = 30_000
 
 /**
  * 多久没动静就认定「卡死了」。
@@ -266,6 +279,10 @@ interface EjsGameManager {
   loadState: (state: Uint8Array) => void
   /** 新版本才有；没有就退回读画布 */
   screenshot?: () => Uint8Array
+  /** 核心自报支不支持快照存档（cwrap supports_states）；街机的一些驱动就是不支持 */
+  supportsStates?: () => boolean
+  /** 把电池存档（SRAM）从核心刷进 /data/saves（cwrap cmd_savefiles）*/
+  saveSaveFiles?: () => void
 }
 interface EjsEmulator {
   netplay?: EjsNetplay
@@ -670,6 +687,9 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   let destroyed = false
   let playersTimer = 0
   let stateTimer = 0
+  let saveFlushTimer = 0
+  /** 联机存档托管失败只报第一次，免得每 10 秒刷一条 */
+  let stateUploadWarned = false
   /** 开局标志：EJS_onGameStart 与兜底轮询谁先到都行，但只放行一次 */
   let started = false
   let startWatch = 0
@@ -691,6 +711,73 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     emuOf()?.canvas ?? iframe.contentDocument?.querySelector('canvas') ?? null
 
   /**
+   * 存档能力必须**真调一次**才算数。
+   *
+   * 光看 `typeof gameManager.getState === 'function'` 查不出任何问题 —— 那是类方法，
+   * 永远在。真正会断的是它内部依赖的核心导出：引擎自建自 main（自称 4.3.0-pre）走
+   * `Module.EmulatorJSGetState`，而 cores/ 里 npm 发布版的核心只导出老 ABI 的
+   * `save_state_info`，对不上时 getState() 抛 TypeError，玩家点保存只看到引擎那句
+   * 红字「FAILED TO SAVE STATE」，而按钮一直亮着。
+   * 这个不匹配已经由 scripts/patch-emulatorjs.mjs 的「存档 ABI 回退」补住，
+   * 这里是第二道闸：升级引擎忘了重跑补丁时，至少按钮会自己灭掉。
+   *
+   * 失败不当场下结论：有些核心要跑过几帧才给得出存档，开局那一瞬取到的是空的。
+   * 先隔 1.5s 复查一次，两次都不行才摘掉能力并重新广播。
+   */
+  const probeSaveState = (retry = true) => {
+    if (destroyed || !caps.has('saveState')) return
+    // 核心自己就说不支持（街机的一些驱动），不用等重试，当场摘掉
+    try {
+      const gm = emuOf()?.gameManager
+      if (typeof gm?.supportsStates === 'function' && !gm.supportsStates()) {
+        caps.delete('saveState')
+        options.onCaps?.(caps)
+        return
+      }
+    } catch {
+      /* 问不出来就当支持，交给下面真调一次 */
+    }
+    let ok = false
+    try {
+      ok = Boolean(emuOf()?.gameManager?.getState?.()?.length)
+    } catch (e) {
+      logEngine(`[probeSaveState] ${e instanceof Error ? e.message : String(e)}`)
+      ok = false
+    }
+    if (ok) return
+    if (retry) {
+      window.setTimeout(() => probeSaveState(false), 1500)
+      return
+    }
+    caps.delete('saveState')
+    options.onCaps?.(caps)
+  }
+
+  /**
+   * 把电池存档从核心刷进 /data/saves（随后由 IDBFS 的 autoPersist 同步进 IndexedDB）。
+   * 幂等且便宜：一份 .srm 通常几十到一百多 KB，写重复内容也没关系。
+   */
+  const flushSaveFiles = () => {
+    if (!started) return
+    try {
+      emuOf()?.gameManager?.saveSaveFiles?.()
+    } catch (e) {
+      logEngine(`[saveFiles] ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  /**
+   * 页面转入后台时补刷一次。
+   *
+   * 这是最要紧的一个时点：切标签页、最小化、手机按 home —— 移动端浏览器常常从这个
+   * 状态直接把页面回收掉，玩家再回来就发现存档退回上一次自动保存。这时页面还活着，
+   * autoPersist 的异步同步跑得完，和 destroy 那一刀不一样。
+   */
+  const onVisibility = () => {
+    if (document.visibilityState === 'hidden') flushSaveFiles()
+  }
+
+  /**
    * 核心跑起来之后核对一遍能力。
    * EmulatorJS 的版本（尤其走 CDN 的 stable/latest）随时可能变，
    * 与其让工具栏亮着一个点了没反应的按钮，不如按实际存在的方法把它摘掉。
@@ -706,6 +793,8 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       caps.delete('record')
     }
     options.onCaps?.(caps)
+    // 上面广播完再探：探测失败时它会自己再广播一次（可能是 1.5s 之后）
+    probeSaveState()
   }
   /** 服务端下发的房间令牌，上传存档要用 */
   let stateToken = ''
@@ -713,6 +802,16 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   let flushState: (() => void) | null = null
   /** 引擎日志探针。街机 ROM 排查全靠它 —— 详见 installErrorTap */
   let errorTap: { lines: string[] } | null = null
+  /**
+   * 往引擎日志里补一条我们自己的观察。
+   * 探针只收 iframe 里的 console，适配器这一侧抓到的异常（比如取存档抛的 TypeError）
+   * 进不去，但那恰恰是排查时最想看到的一条，所以手动塞进同一个缓冲区。
+   */
+  const logEngine = (line: string) => {
+    if (!errorTap) return
+    errorTap.lines.push(line.slice(0, 500))
+    if (errorTap.lines.length > LOG_LIMIT) errorTap.lines.shift()
+  }
   const reportedErrors = new Set<string>()
   /** 开局前的致命错误：报上去并停掉轮询（播放器收到 onError 会把这局拆掉） */
   const failLoad = (message: string) => {
@@ -877,8 +976,16 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       let state: Uint8Array | undefined
       try {
         state = emu.gameManager.getState()
-      } catch {
-        return // 有些核心在某些时刻取不到存档，跳过这一轮就行
+      } catch (e) {
+        // 有些核心在某些时刻取不到存档，跳过这一轮就行。但如果是引擎和核心的 ABI
+        // 对不上，这里会**每一轮都失败**且永远没人知道（房主以为进度在托管，
+        // 接手的人却拿到空的）—— 所以第一次一定要留下痕迹。
+        if (!stateUploadWarned) {
+          stateUploadWarned = true
+          logEngine(`[netplay] getState 失败，房主进度托管已停摆：${e instanceof Error ? e.message : String(e)}`)
+          console.warn('[netplay] 取存档失败，房主进度托管已停摆', e)
+        }
+        return
       }
       if (!state?.length) return
       const fp = fingerprint(state)
@@ -912,6 +1019,10 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     options.onReady?.()
     options.onStart?.()
     refineCaps()
+    // 电池存档的补刷：定时 + 转入后台。两者都只在开局之后才有意义
+    saveFlushTimer = window.setInterval(flushSaveFiles, SAVE_FLUSH_MS)
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('pagehide', flushSaveFiles)
     if (netplay) startNetplay(win)
   }
 
@@ -1087,6 +1198,9 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     window.clearInterval(playersTimer)
     window.clearInterval(stateTimer)
     window.clearInterval(startWatch)
+    window.clearInterval(saveFlushTimer)
+    document.removeEventListener('visibilitychange', onVisibility)
+    window.removeEventListener('pagehide', flushSaveFiles)
     if (flushState) {
       window.removeEventListener('pagehide', flushState)
       flushState = null
@@ -1139,7 +1253,17 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       }
     },
     async saveState() {
-      const state = emuOf()?.gameManager?.getState?.()
+      let state: Uint8Array | undefined
+      try {
+        state = emuOf()?.gameManager?.getState?.()
+      } catch (e) {
+        // 引擎和核心的存档 ABI 对不上时这里抛的是 TypeError，原文（"this.Module.
+        // EmulatorJSGetState is not a function"）对玩家毫无意义，而 EmulatorTools
+        // 的 catch 是直接 say(e.message)。返回 null 让它显示已本地化的「存档失败」，
+        // 技术原文留在 engineLog 里给我们看。
+        logEngine(`[saveState] ${e instanceof Error ? e.message : String(e)}`)
+        return null
+      }
       if (!state?.length) return null
       // 复制一份：核心里的那块内存随时可能被覆写
       return new Blob([new Uint8Array(state).slice().buffer], { type: 'application/octet-stream' })

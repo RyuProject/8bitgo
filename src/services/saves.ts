@@ -13,13 +13,36 @@
  * 所以 DOS 那边是「玩家点存档 → 直接落到这里」，不需要中间层。
  */
 import { apiBase, apiEnabled, getToken } from './api'
-import { idbDelete, idbGet, idbPut } from '@/lib/idb'
+import { idbDelete, idbGet, idbMark, idbPut } from '@/lib/idb'
 
 /** 存档属于哪个引擎。格式不通用，所以必须分开存 */
 export type SaveRuntime = 'emulatorjs' | 'jsdos' | 'cloudgame' | 'jsnes' | 'ruffle' | 'webretro' | 'j2me'
 
 /** 存档存在哪儿 */
 export type SaveWhere = 'cloud' | 'local'
+
+/**
+ * 合法的存档引擎名，和服务端 routes/saves.js 的 RUNTIMES 一字不差。
+ *
+ * ⚠️ RuntimeId 比这个宽：html5（第三方游戏页，自己管自己的存储）和 liveview
+ * （看别人直播，压根没有自己的机器状态）都在 RuntimeId 里，但都不产生存档。
+ * 所以从 RuntimeId 过来的值必须过 asSaveRuntime()，不能直接 as 断言 ——
+ * 断言过去的结果是：看直播的人一进页面就发一个注定被服务端 400 掉的存档查询。
+ */
+const SAVE_RUNTIMES: ReadonlySet<string> = new Set([
+  'emulatorjs',
+  'jsdos',
+  'cloudgame',
+  'jsnes',
+  'ruffle',
+  'webretro',
+  'j2me',
+])
+
+/** 把 RuntimeId 之类的字符串收窄成存档引擎名；不是存档引擎就返回 null */
+export function asSaveRuntime(id: string | null | undefined): SaveRuntime | null {
+  return id && SAVE_RUNTIMES.has(id) ? (id as SaveRuntime) : null
+}
 
 export interface SaveMeta {
   runtime: SaveRuntime
@@ -58,17 +81,37 @@ function authHeaders(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
+export interface PulledSave {
+  data: Uint8Array
+  where: SaveWhere
+  updatedAt: number
+  /** 这份是本地的、而且还没同步到云端 —— 界面上值得提一句 */
+  pending?: boolean
+}
+
 /**
- * 读存档。登录了先问云端，云端没有或者连不上就退回浏览器里的那份。
+ * 读存档。
  *
- * 「连不上就用本地」是有意的：网络抖一下不该让玩家看到「存档不见了」，
- * 本地那份至少是他自己这台机器上最后玩到的进度。
+ * 顺序很讲究，改之前先看这段：
+ *
+ *   1. 本地那份**带待同步标记**时，它赢。这份是玩家上次玩到的进度，
+ *      而云端因为断网 / 超配额 / 令牌过期没收到，云端那份必然更旧。
+ *      ⚠️ 以前这里是无条件先问云端 —— 结果是断网存过一次的玩家，
+ *      下次进来读到的是旧的云存档，再存一次就把本地那份更新的也覆盖了，
+ *      进度真的没了。这是这个文件里最贵的一个 bug，别把顺序改回去。
+ *   2. 否则问云端。换台电脑、换个浏览器要能接着玩，就靠这一步。
+ *   3. 云端没有（404）或者连不上，退回本地。网络抖一下不该让玩家看到「存档不见了」。
+ *
+ * 为什么用标记而不是比 updatedAt：本地时间戳来自玩家自己的机器，
+ * 时钟差几小时的机器很常见，比出来的结果可能正好是反的。
  */
-export async function pullSave(
-  runtime: SaveRuntime,
-  gameSlug: string,
-  slot = 0,
-): Promise<{ data: Uint8Array; where: SaveWhere; updatedAt: number } | null> {
+export async function pullSave(runtime: SaveRuntime, gameSlug: string, slot = 0): Promise<PulledSave | null> {
+  const local = await idbGet(localKey(runtime, gameSlug, slot))
+
+  if (local?.dirty) {
+    return { data: local.data, where: 'local', updatedAt: local.updatedAt, pending: true }
+  }
+
   if (cloudSavesEnabled()) {
     try {
       const res = await fetch(cloudUrl(runtime, gameSlug, slot), { headers: authHeaders(), cache: 'no-store' })
@@ -84,53 +127,110 @@ export async function pullSave(
       /* 网络问题：退回本地 */
     }
   }
-  const local = await idbGet(localKey(runtime, gameSlug, slot))
+
   return local ? { data: local.data, where: 'local', updatedAt: local.updatedAt } : null
+}
+
+/**
+ * 只取云端那份，取不到就是取不到。
+ *
+ * 个人页的「我的云存档 → 下载」用这个：那个列表是从服务器拉的，
+ * 点下载却给一份浏览器里的存档，等于把不同的东西贴上同一个标签。
+ */
+export async function fetchCloudSave(
+  runtime: SaveRuntime,
+  gameSlug: string,
+  slot = 0,
+): Promise<{ data: Uint8Array; updatedAt: number } | null> {
+  if (!cloudSavesEnabled()) return null
+  const res = await fetch(cloudUrl(runtime, gameSlug, slot), { headers: authHeaders(), cache: 'no-store' })
+  if (!res.ok) return null
+  const buf = new Uint8Array(await res.arrayBuffer())
+  if (!buf.length) return null
+  return { data: buf, updatedAt: Number(res.headers.get('x-save-updated-at') || 0) || Date.now() }
+}
+
+export interface PushedSave {
+  ok: boolean
+  where: SaveWhere | null
+  error?: string
+  /**
+   * 玩家是登录状态、本该进云端，但云端这一路失败了（超配额、令牌过期、断网）。
+   * 界面必须把这件事说出来 —— 光说「已存在这个浏览器里」，
+   * 一个已登录的玩家会以为存档跟着账号走，其实并没有。
+   */
+  cloudFailed?: boolean
 }
 
 /**
  * 写存档。
  *
- * **本地那份永远写**，云端在登录时额外写一份 —— 这样即使云端挂了、
+ * **本地那份永远先写**，云端在登录时额外写一份 —— 这样即使云端挂了、
  * 或者玩家中途退出登录，他这台机器上的进度也不会丢。
+ *
+ * 待同步标记的落定顺序是刻意的：先按「待同步」写进本地，云端确认成功之后才清掉。
+ * 反过来（先乐观地标成已同步、失败再改回来）的话，PUT 飞在半空中时玩家关掉标签页，
+ * 本地就留下一份「以为已经上云」的记录，下次读档会去读更旧的云端那份。
  */
 export async function pushSave(
   runtime: SaveRuntime,
   gameSlug: string,
   data: Uint8Array,
   slot = 0,
-): Promise<{ ok: boolean; where: SaveWhere | null; error?: string }> {
+): Promise<PushedSave> {
   if (data.length === 0) return { ok: false, where: null, error: 'empty' }
   if (data.length > MAX_SAVE_BYTES) return { ok: false, where: null, error: 'too-large' }
 
-  const localOk = await idbPut(localKey(runtime, gameSlug, slot), data)
+  const key = localKey(runtime, gameSlug, slot)
+  const toCloud = cloudSavesEnabled()
+  // 游客的存档不算「待同步」：他没打算往云端存，登录之后云端那份（别的设备存的）
+  // 应该正常接管，不该被这份本地存档挡住
+  const localOk = await idbPut(key, data, Date.now(), toCloud)
 
-  if (cloudSavesEnabled()) {
-    try {
-      const res = await fetch(cloudUrl(runtime, gameSlug, slot), {
-        method: 'PUT',
-        headers: { ...authHeaders(), 'content-type': 'application/octet-stream' },
-        // fetch 不收 Uint8Array 的类型声明，但运行时是可以的
-        body: data as BodyInit,
-      })
-      if (res.ok) return { ok: true, where: 'cloud' }
-      const msg = await res
-        .json()
-        .then((j: { error?: string }) => j.error)
-        .catch(() => undefined)
-      // 云端拒了（超配额、太大）但本地写成功了：算部分成功，把原因带回去显示
-      return { ok: localOk, where: localOk ? 'local' : null, error: msg }
-    } catch {
-      return { ok: localOk, where: localOk ? 'local' : null, error: 'network' }
+  if (!toCloud) return { ok: localOk, where: localOk ? 'local' : null }
+
+  try {
+    const res = await fetch(cloudUrl(runtime, gameSlug, slot), {
+      method: 'PUT',
+      headers: { ...authHeaders(), 'content-type': 'application/octet-stream' },
+      // fetch 不收 Uint8Array 的类型声明，但运行时是可以的
+      body: data as BodyInit,
+    })
+    if (res.ok) {
+      await idbMark(key, false)
+      return { ok: true, where: 'cloud' }
     }
+    const msg = await res
+      .json()
+      .then((j: { error?: string }) => j.error)
+      .catch(() => undefined)
+    // 云端拒了（超配额、太大、令牌过期）但本地写成功了：算部分成功。
+    // 本地那份保持「待同步」，读档时就会优先用它。
+    return {
+      ok: localOk,
+      where: localOk ? 'local' : null,
+      error: msg || `HTTP ${res.status}`,
+      cloudFailed: true,
+    }
+  } catch {
+    return { ok: localOk, where: localOk ? 'local' : null, error: 'network', cloudFailed: true }
   }
-
-  return { ok: localOk, where: localOk ? 'local' : null }
 }
 
-/** 删存档：两边都删 */
+/** 删存档：两边都删。游戏里「清空存档」用这个 —— 玩家的意思是这份进度不要了 */
 export async function deleteSave(runtime: SaveRuntime, gameSlug: string, slot = 0): Promise<void> {
   await idbDelete(localKey(runtime, gameSlug, slot))
+  await deleteCloudSave(runtime, gameSlug, slot)
+}
+
+/**
+ * 只删云端那份，浏览器里的不动。
+ *
+ * 个人页「我的云存档 → 删除」用这个。那个确认框写的是「浏览器里的那份不受影响」，
+ * 以前调的却是两边都删的 deleteSave —— 说一套做一套，而且删掉的是玩家
+ * 在这台机器上唯一的进度备份。
+ */
+export async function deleteCloudSave(runtime: SaveRuntime, gameSlug: string, slot = 0): Promise<void> {
   if (!cloudSavesEnabled()) return
   try {
     await fetch(cloudUrl(runtime, gameSlug, slot), { method: 'DELETE', headers: authHeaders() })
@@ -147,7 +247,14 @@ export async function saveInfo(
   runtime: SaveRuntime,
   gameSlug: string,
   slot = 0,
-): Promise<{ where: SaveWhere; updatedAt: number; size: number } | null> {
+): Promise<{ where: SaveWhere; updatedAt: number; size: number; pending?: boolean } | null> {
+  // 优先级和 pullSave 完全一致 —— 否则按钮上写「云端 · 3 分钟前」，
+  // 点下去读到的却是本地那份，玩家会以为读错了档
+  const local = await idbGet(localKey(runtime, gameSlug, slot))
+  if (local?.dirty) {
+    return { where: 'local', updatedAt: local.updatedAt, size: local.data.length, pending: true }
+  }
+
   if (cloudSavesEnabled()) {
     try {
       const res = await fetch(cloudUrl(runtime, gameSlug, slot, '/meta'), {
@@ -162,7 +269,7 @@ export async function saveInfo(
       /* 往下看本地 */
     }
   }
-  const local = await idbGet(localKey(runtime, gameSlug, slot))
+
   return local ? { where: 'local', updatedAt: local.updatedAt, size: local.data.length } : null
 }
 

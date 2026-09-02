@@ -1,4 +1,28 @@
-import { SITE_DEFAULT_LANGUAGE, SITE_LANGUAGES } from '../../shared/site-languages.js'
+/**
+ * IndexNow（Bing / Yandex 等）主动推送。
+ *
+ * URL 的算法不在这里 —— 见 site-urls.js，动态 sitemap 和百度推送共用同一份。
+ * 为了不改动既有导入，下面把那些函数原样再导出（normalizeIndexNowUrls 是
+ * normalizeSiteUrls 的旧名字）。
+ */
+import {
+  DEFAULT_SITE_URL,
+  gameChangeUrls,
+  gameDetailUrls,
+  localizedPublicUrl,
+  normalizeSiteUrls,
+  publicSiteUrl,
+} from './site-urls.js'
+
+export {
+  DEFAULT_SITE_URL,
+  gameChangeUrls,
+  gameDetailUrls,
+  localizedPublicUrl,
+  publicSiteUrl,
+  normalizeSiteUrls,
+  normalizeSiteUrls as normalizeIndexNowUrls,
+}
 
 /**
  * IndexNow 的 key 本来就必须公开放在网站根目录，因此可以随代码提交。
@@ -6,7 +30,6 @@ import { SITE_DEFAULT_LANGUAGE, SITE_LANGUAGES } from '../../shared/site-languag
  */
 export const DEFAULT_INDEXNOW_KEY = 'b8b81a59fab843acaa590586b6733da0'
 export const DEFAULT_INDEXNOW_ENDPOINT = 'https://api.indexnow.org/indexnow'
-export const DEFAULT_SITE_URL = 'https://8bitgo.com'
 
 const TRUE = /^(1|true|yes|on)$/i
 const KEY_PATTERN = /^[A-Za-z0-9-]{8,128}$/
@@ -22,60 +45,6 @@ export function indexNowEnabled(env = process.env) {
   return TRUE.test(String(env.INDEXNOW_ENABLED || ''))
 }
 
-export function publicSiteUrl(env = process.env) {
-  const raw = String(env.PUBLIC_SITE_URL || env.VITE_SITE_URL || DEFAULT_SITE_URL).trim()
-  const url = new URL(raw)
-  if (!/^https?:$/.test(url.protocol)) throw new Error('PUBLIC_SITE_URL 必须是 http(s) 地址')
-  return url.origin
-}
-
-/** 默认语言不加前缀，其余语言和前端路由保持一致。 */
-export function localizedPublicUrl(pathname, language, siteUrl = publicSiteUrl()) {
-  const path = pathname.startsWith('/') ? pathname : `/${pathname}`
-  const prefix = language === SITE_DEFAULT_LANGUAGE ? '' : `/${language}`
-  return new URL(`${prefix}${path}`, `${siteUrl}/`).href
-}
-
-/** 一款游戏的全部可索引语言版本。 */
-export function gameDetailUrls(slug, siteUrl = publicSiteUrl()) {
-  const path = `/games/${encodeURIComponent(String(slug || '').trim())}`
-  return SITE_LANGUAGES.map(({ code }) => localizedPublicUrl(path, code, siteUrl))
-}
-
-/**
- * 保存一款游戏时，详情页和它所在的聚合页内容都会变化。
- * 一起通知能让新游戏更快从列表入口被发现，也不会只留下一个没有站内关系的孤立 URL。
- */
-export function gameChangeUrls(game, siteUrl = publicSiteUrl()) {
-  const slug = String(game?.slug || '').trim()
-  if (!slug) return []
-  const paths = new Set([`/games/${encodeURIComponent(slug)}`, '/games'])
-  if (game?.platform) paths.add(`/platforms/${encodeURIComponent(String(game.platform))}`)
-  for (const genre of Array.isArray(game?.genres) ? game.genres : []) {
-    if (genre) paths.add(`/genres/${encodeURIComponent(String(genre))}`)
-  }
-  return [...paths].flatMap((path) =>
-    SITE_LANGUAGES.map(({ code }) => localizedPublicUrl(path, code, siteUrl)),
-  )
-}
-
-/** 只允许提交本站 URL，防止脏数据把这台服务器变成任意 URL 提交代理。 */
-export function normalizeIndexNowUrls(urls, siteUrl = publicSiteUrl()) {
-  const origin = new URL(siteUrl).origin
-  const out = new Set()
-  for (const raw of urls || []) {
-    try {
-      const url = new URL(String(raw))
-      if (url.origin !== origin || !/^https?:$/.test(url.protocol)) continue
-      url.hash = ''
-      out.add(url.href)
-    } catch {
-      // 单个坏 URL 不该拖掉同一批里其余正常页面。
-    }
-  }
-  return [...out]
-}
-
 export function buildIndexNowPayload(urls, options = {}) {
   const siteUrl = options.siteUrl || publicSiteUrl()
   const site = new URL(siteUrl)
@@ -85,7 +54,7 @@ export function buildIndexNowPayload(urls, options = {}) {
     host: site.host,
     key,
     keyLocation: `${site.origin}/${key}.txt`,
-    urlList: normalizeIndexNowUrls(urls, site.origin),
+    urlList: normalizeSiteUrls(urls, site.origin),
   }
 }
 
@@ -155,7 +124,7 @@ let flushPromise
 export function queueIndexNowUrls(urls) {
   if (!indexNowEnabled()) return false
   try {
-    for (const url of normalizeIndexNowUrls(urls)) pendingUrls.add(url)
+    for (const url of normalizeSiteUrls(urls)) pendingUrls.add(url)
     if (!pendingUrls.size || queueTimer) return pendingUrls.size > 0
     queueTimer = setTimeout(() => {
       queueTimer = undefined

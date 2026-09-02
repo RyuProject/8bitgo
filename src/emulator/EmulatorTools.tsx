@@ -11,7 +11,7 @@ import type { Capability, RuntimeHandle, RuntimeId } from './types'
 import { canRecord, downloadBlob, mediaFileName, startRecording, MAX_RECORD_MS, type Recorder } from './recorder'
 import { useT, fmt } from '@/services/i18n'
 import { useLang } from '@/services/lang'
-import { cloudSavesEnabled, pullSave, pushSave, saveInfo, type SaveRuntime, type SaveWhere } from '@/services/saves'
+import { asSaveRuntime, cloudSavesEnabled, pullSave, pushSave, saveInfo, type SaveWhere } from '@/services/saves'
 import { cx } from '@/lib/format'
 
 interface Props {
@@ -22,6 +22,11 @@ interface Props {
   gameSlug?: string
   /** 哪个引擎 —— 内存快照和 DOS 变更包不通用，必须分开存 */
   runtimeId?: RuntimeId
+  /**
+   * 这款 DOS 游戏自己的存档说明（后台逐游戏填，如「按 F2 存档 / F3 读档」）。
+   * 留空就只显示通用的三步说明 —— DOS 游戏的存档键各家不同，通用文案只能给最常见的 ESC / F1。
+   */
+  dosSaveHint?: string
   className?: string
 }
 
@@ -43,14 +48,14 @@ function timeAgo(ts: number, lang: string): string {
 const BTN = 'inline-flex h-7 min-w-7 items-center justify-center gap-1 rounded-md border border-line px-1.5 text-muted transition-colors hover:border-brand hover:text-fg disabled:opacity-40'
 const BTN_ON = 'border-brand bg-brand-soft text-brand-hover'
 
-export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, className }: Props) {
+export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSaveHint, className }: Props) {
   const t = useT()
   const lang = useLang()
   const tt = t.player.tools
   const [paused, setPaused] = useState(false)
   const [volume, setVolume] = useState(handle?.volume ?? 1)
   const [muted, setMuted] = useState(false)
-  const [panel, setPanel] = useState<'volume' | 'gamepad' | null>(null)
+  const [panel, setPanel] = useState<'volume' | 'gamepad' | 'fsSave' | null>(null)
   const [msg, setMsg] = useState('')
   const [pads, setPads] = useState<string[]>([])
   const [recording, setRecording] = useState(false)
@@ -59,10 +64,20 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, cla
   const fileRef = useRef<HTMLInputElement>(null)
   const msgTimer = useRef(0)
   /** 现有存档的落点和时间，用来在读档按钮上显示「云端 · 3 分钟前」 */
-  const [archived, setArchived] = useState<{ where: SaveWhere; updatedAt: number } | null>(null)
+  const [archived, setArchived] = useState<{ where: SaveWhere; updatedAt: number; pending?: boolean } | null>(null)
+  /**
+   * 上一次「保存进度」空手而归（玩家还没在游戏里存盘）。
+   * 这个状态只用来把说明面板里的第 ① 步标红 —— toast 4 秒就没了，
+   * 而这恰恰是玩家最需要盯着看的一句。
+   */
+  const [fsSaveFailed, setFsSaveFailed] = useState(false)
 
-  // 存档归档需要「哪个引擎 + 哪个游戏」两个坐标；缺一个就只能走文件导入导出
-  const saveRuntime = (runtimeId ?? null) as SaveRuntime | null
+  // 存档归档需要「哪个引擎 + 哪个游戏」两个坐标；缺一个就只能走文件导入导出。
+  // ⚠️ 必须过 asSaveRuntime 白名单，不能直接把 RuntimeId 断言成 SaveRuntime ——
+  // html5（第三方游戏页自己管存储）和 liveview（在看别人直播，没有自己的机器状态）
+  // 都不是存档引擎，服务端也不认。以前直接断言的结果是：看直播的人一进页面
+  // 就发一个注定被 400 掉的 /api/saves/liveview/... 查询。
+  const saveRuntime = asSaveRuntime(runtimeId)
   const archivable = Boolean(saveRuntime && gameSlug)
   const toCloud = cloudSavesEnabled()
 
@@ -77,6 +92,7 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, cla
     setPaused(false)
     setPanel(null)
     setMsg('')
+    setFsSaveFailed(false)
     setMuted(false)
     setVolume(handle?.volume ?? 1)
     return () => {
@@ -93,7 +109,7 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, cla
     setArchived(null)
     if (!archivable || !saveRuntime || !gameSlug) return
     void saveInfo(saveRuntime, gameSlug).then((info) => {
-      if (alive && info) setArchived({ where: info.where, updatedAt: info.updatedAt })
+      if (alive && info) setArchived({ where: info.where, updatedAt: info.updatedAt, pending: info.pending })
     })
     return () => {
       alive = false
@@ -133,11 +149,22 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, cla
     handle.setPaused?.(next)
   }
 
-  const whereLabel = (w: SaveWhere) => (w === 'cloud' ? tt.whereCloud : tt.whereLocal)
+  const whereLabel = (w: SaveWhere, pending?: boolean) =>
+    w === 'cloud' ? tt.whereCloud : pending ? tt.whereLocalPending : tt.whereLocal
 
-  /** 存到哪儿了，用同一套话说清楚 —— 玩家最关心的就是「换台电脑还在不在」 */
-  const sayStored = (where: SaveWhere) => {
-    setArchived({ where, updatedAt: Date.now() })
+  /**
+   * 存到哪儿了，用同一套话说清楚 —— 玩家最关心的就是「换台电脑还在不在」。
+   *
+   * cloudError 有值 = 玩家是登录状态、本该进云端，但云端那一路失败了。
+   * 这句必须说出来：只回一句「已存在这个浏览器里」的话，一个已登录的玩家
+   * 会以为存档跟着账号走了，而撞上配额或者令牌过期之后其实一直没有。
+   */
+  const sayStored = (where: SaveWhere, cloudError?: string) => {
+    setArchived({ where, updatedAt: Date.now(), pending: Boolean(cloudError) })
+    if (cloudError) {
+      say(fmt(tt.saveCloudFailed, { msg: cloudError }))
+      return
+    }
     say(where === 'cloud' ? tt.saveCloudOk : tt.saveLocalOk)
   }
 
@@ -160,7 +187,7 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, cla
         const bytes = new Uint8Array(await blob.arrayBuffer())
         const r = await pushSave(saveRuntime, gameSlug, bytes)
         if (r.ok && r.where) {
-          sayStored(r.where)
+          sayStored(r.where, r.cloudFailed ? r.error : undefined)
           return
         }
         // 云端和浏览器都写不进去（超配额、太大、无痕模式）：
@@ -180,15 +207,31 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, cla
    * 保存进度（DOS）。
    * 和上面不是一回事：它固化的是**盘上被改过的文件**，
    * 所以玩家必须先在游戏里用游戏自己的存档功能存过盘，这里才有东西可存。
+   *
+   * ⚠️ 这一步只在玩家看过说明面板、点了「我已经在游戏里存过盘了」之后才执行 ——
+   * 直接点按钮就存的老行为，最常见的结局是存下一个空包，玩家却以为进度已经保住了。
    */
   const doFsSave = async () => {
     try {
       const r = await handle.fsSave?.()
       if (!r?.ok) {
-        say(tt.fsSaveNothing)
+        // reason 'nothing' = 盘上没有新写出的文件，游戏里还没存过。面板留着并把
+        // 第 ① 步标红，比一条 4 秒就消失的 toast 更能让人看懂下一步要做什么。
+        if (!r || r.reason === 'nothing') {
+          setFsSaveFailed(true)
+          setPanel('fsSave')
+          say(tt.fsSaveNothing)
+          return
+        }
+        // 'failed' = 引擎或者两边的存储都没成功。这是真的错误，不该让玩家
+        // 去游戏里反复存盘 —— 那不是他的问题
+        say(r.error ? fmt(tt.fsSaveFailed, { msg: r.error }) : tt.saveFail)
         return
       }
-      sayStored(r.where ?? (toCloud ? 'cloud' : 'local'))
+      setFsSaveFailed(false)
+      setPanel(null)
+      // where 一定有值：fsSave 只在 push 钩子真的落过盘时才返回 ok
+      sayStored(r.where ?? (toCloud ? 'cloud' : 'local'), r.error)
     } catch (e) {
       say(e instanceof Error && e.message ? e.message : tt.saveFail)
     }
@@ -213,8 +256,12 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, cla
         if (got) {
           // slice() 保证拿到的是一段独立的 buffer，不受原数组偏移影响
           const note = await handle.loadState?.(got.data.slice().buffer)
-          setArchived({ where: got.where, updatedAt: got.updatedAt })
-          say(typeof note === 'string' && note ? note : fmt(tt.loadFrom, { where: whereLabel(got.where) }))
+          setArchived({ where: got.where, updatedAt: got.updatedAt, pending: got.pending })
+          say(
+            typeof note === 'string' && note
+              ? note
+              : fmt(tt.loadFrom, { where: whereLabel(got.where, got.pending) }),
+          )
           return
         }
       } catch (e) {
@@ -329,13 +376,18 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, cla
       )}
 
       {/* DOS：只有「保存进度」一个动作。它没有「某一帧」的概念，也没有可下载的文件，
-          下次进游戏时引擎会自己把改动装回去，所以不需要读档按钮 */}
+          下次进游戏时引擎会自己把改动装回去，所以不需要读档按钮。
+          点它先开说明面板而不是直接存 —— 见下面 panel === 'fsSave' 那段 */}
       {caps.has('fsSave') && (
         <button
           type="button"
-          className={BTN}
-          onClick={() => void doFsSave()}
+          className={cx(BTN, panel === 'fsSave' && BTN_ON)}
+          onClick={() => {
+            setFsSaveFailed(false)
+            setPanel(panel === 'fsSave' ? null : 'fsSave')
+          }}
           title={`${tt.fsSave} · ${tt.fsSaveHint}`}
+          aria-expanded={panel === 'fsSave'}
         >
           💾
         </button>
@@ -353,7 +405,10 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, cla
               onClick={() => void doLoad()}
               title={
                 archived
-                  ? fmt(tt.loadTitle, { where: whereLabel(archived.where), when: timeAgo(archived.updatedAt, lang) })
+                  ? fmt(tt.loadTitle, {
+                      where: whereLabel(archived.where, archived.pending),
+                      when: timeAgo(archived.updatedAt, lang),
+                    })
                   : tt.load
               }
             >
@@ -427,6 +482,43 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, cla
             </p>
           ))}
           <p className="mt-2 border-t border-line pt-2 text-muted">{tt.gamepadHint}</p>
+        </div>
+      )}
+
+      {/*
+        DOS 存档说明。
+        为什么要拦这一下：js-dos 存的是**盘上被改过的文件**，不是内存快照 ——
+        玩家不先在游戏里存盘，点多少次都只是把一个没有变化的盘固化一遍。
+        原来这句话只在按钮的 title 里，手机上根本没有 hover，等于没说。
+      */}
+      {panel === 'fsSave' && (
+        <div className="absolute bottom-full left-0 z-20 mb-2 w-72 max-w-[calc(100vw-2rem)] rounded-lg border border-line bg-surface px-3 py-2 shadow-lg">
+          <p className="font-semibold text-fg">{tt.fsSave}</p>
+          <p className="mt-1 text-muted">{tt.fsSaveWhy}</p>
+          <ol className="mt-2 space-y-1">
+            {/* 空手而归时把第 ① 步标出来：问题百分之百出在这一步 */}
+            <li className={fsSaveFailed ? 'font-semibold text-live' : 'text-muted'}>{tt.fsSaveStep1}</li>
+            <li className="text-muted">{fmt(tt.fsSaveStep2, { where: whereLabel(toCloud ? 'cloud' : 'local') })}</li>
+            <li className="text-muted">{tt.fsSaveStep3}</li>
+          </ol>
+          {/* 后台给这款游戏填了具体按键就顶上来 —— 比通用的「ESC 或 F1」有用得多 */}
+          {dosSaveHint && (
+            <p className="mt-2 rounded-md bg-brand-soft px-2 py-1 text-brand-hover">
+              {fmt(tt.fsSaveGameHint, { hint: dosSaveHint })}
+            </p>
+          )}
+          <div className="mt-2 flex flex-wrap gap-2 border-t border-line pt-2">
+            <button
+              type="button"
+              className={cx(BTN, 'px-2 border-brand text-brand-hover')}
+              onClick={() => void doFsSave()}
+            >
+              💾 {tt.fsSaveConfirm}
+            </button>
+            <button type="button" className={cx(BTN, 'px-2')} onClick={() => setPanel(null)}>
+              {tt.fsSaveCancel}
+            </button>
+          </div>
         </div>
       )}
     </div>

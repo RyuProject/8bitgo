@@ -17,6 +17,7 @@ import {
   listRomObjects,
   romUrlForKey,
   uploadRom,
+  type UploadStage,
 } from '@/services/roms'
 import { bundleBytes, bundleWarnings, pickMainSwf, planSwfBundleFromZip, type SwfBundleFile, type SwfBundlePlan } from '@/lib/swfBundle'
 import { listZipEntries, isZip } from '@/lib/unzip'
@@ -207,6 +208,9 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
       dosSystem: windowsGuest ? form.dosSystem!.trim() : undefined,
       dosWindowsVersion: windowsGuest ? form.dosWindowsVersion ?? '9x' : undefined,
       dosLaunchDelay: windowsGuest ? Math.max(5, Math.min(120, Math.round(Number(form.dosLaunchDelay) || 24))) : undefined,
+      // 存档说明只对能存档的普通 DOS 游戏有意义：Windows 客体存的是 qcow2 扇区，
+      // 播放器压根不给它「保存进度」按钮，留着这句话只会误导后台编辑
+      dosSaveHint: form.platform === 'dos' && !windowsGuest ? form.dosSaveHint?.trim() || undefined : undefined,
       dosboxConfig,
       // 空字符串写成 undefined，否则会存一条空的英文简介，
       // 前台判「有没有英文版」时就会误判成有
@@ -399,6 +403,22 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
                 </p>
               </Field>
             )}
+            {/* Windows 客体不给「保存进度」按钮（存的是 qcow2 扇区，上游标为不可保存），所以不显示这一项 */}
+            {!(form.dosBackend === 'dosboxX' && form.dosSystem?.trim()) && (
+              <Field label="存档提示" className="col-span-2 sm:col-span-4">
+                <input
+                  className={inputClass}
+                  value={form.dosSaveHint ?? ''}
+                  onChange={(e) => set('dosSaveHint', e.target.value || undefined)}
+                  maxLength={120}
+                  placeholder="按 F2 存档、F3 读档"
+                />
+                <p className="mt-1 text-[11px] text-dim">
+                  显示在播放器「保存进度」的说明面板里。DOS 存档是先在游戏里存盘、再由播放器固化盘上的改动，
+                  而各家的存档键完全不同（Doom 是 F2，多数游戏走 ESC 菜单）—— 填这句能省掉玩家一轮试错。留空只显示通用说明。
+                </p>
+              </Field>
+            )}
           </>
         )}
         {coreOptions.length > 0 && (
@@ -541,6 +561,18 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
 }
 
 /**
+ * 分片上传时的进度补充说明。
+ *
+ * 只有一句「上传中 43%」的话，管理员看不出这次是从头传还是接着上次传的 ——
+ * 而「已恢复 4 片」恰恰是他最想确认的那件事（否则会怀疑上次那几十 MB 白传了）。
+ * 小文件走单发 PUT，没有分片信息，这时返回空串、界面上什么都不多显示。
+ */
+function stageText(stage: UploadStage | null): string {
+  if (!stage || stage.parts <= 1) return ''
+  return `分片 ${stage.done}/${stage.parts}` + (stage.resumed ? ` · 已恢复 ${stage.resumed} 片` : '')
+}
+
+/**
  * 可复用的 Windows 客体系统镜像。
  *
  * 它不是某一款游戏的 ROM，因此不进入 allBoundKeys，也不在这里提供“从 R2 删除”：同一份
@@ -550,6 +582,8 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
 function SystemImageField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [progress, setProgress] = useState<number | null>(null)
+  /** 分片上传的进度明细（单发 PUT 时一直是 null） */
+  const [stage, setStage] = useState<UploadStage | null>(null)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [uploadedKeys, setUploadedKeys] = useState<string[]>([])
   const [optionsLoading, setOptionsLoading] = useState(false)
@@ -604,7 +638,10 @@ function SystemImageField({ value, onChange }: { value: string; onChange: (value
     setMsg(null)
     setProgress(0)
     try {
-      const result = await uploadRom(file, key, setProgress)
+      const result = await uploadRom(file, key, (pct, at) => {
+        setProgress(pct)
+        if (at) setStage(at)
+      })
       onChange(result.key)
       setUploadedKeys((keys) => [result.key, ...keys.filter((item) => item !== result.key)])
       setMsg({ ok: true, text: `系统镜像已上传并绑定：${result.key}（${human(result.size)}）` })
@@ -612,6 +649,7 @@ function SystemImageField({ value, onChange }: { value: string; onChange: (value
       setMsg({ ok: false, text: err instanceof Error ? err.message : '系统镜像上传失败' })
     } finally {
       setProgress(null)
+      setStage(null)
       if (inputRef.current) inputRef.current.value = ''
     }
   }
@@ -673,6 +711,7 @@ function SystemImageField({ value, onChange }: { value: string; onChange: (value
         )}
       </p>
       {!canUpload && <p className="mt-1 text-[11px] text-dim">要直接上传，请先在「ROM 存储」页配置 Worker 地址与口令。</p>}
+      {progress !== null && stageText(stage) && <p className="mt-1 font-mono text-[11px] text-dim">{stageText(stage)}</p>}
       {msg && <p className={cx('mt-1 text-xs', msg.ok ? 'text-brand' : 'text-live')}>{msg.text}</p>}
     </Field>
   )
@@ -717,6 +756,8 @@ function RomField({
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [progress, setProgress] = useState<number | null>(null)
+  /** 分片上传的进度明细（单发 PUT 时一直是 null） */
+  const [stage, setStage] = useState<UploadStage | null>(null)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [pending, setPending] = useState<PendingBundle | null>(null)
   const [bundleAt, setBundleAt] = useState<BundleUploadProgress | null>(null)
@@ -812,7 +853,10 @@ function RomField({
     }
     setProgress(0)
     try {
-      const result = await uploadRom(file, key, setProgress)
+      const result = await uploadRom(file, key, (pct, at) => {
+        setProgress(pct)
+        if (at) setStage(at)
+      })
       onChange(result.key)
       const removed = await cleanupSuperseded(oldKey, result.key, allBoundKeys)
       setMsg({
@@ -826,6 +870,7 @@ function RomField({
       setMsg({ ok: false, text: err instanceof Error ? err.message : '上传失败' })
     } finally {
       setProgress(null)
+      setStage(null)
       if (inputRef.current) inputRef.current.value = ''
     }
   }
@@ -977,6 +1022,7 @@ function RomField({
             <div className="h-full bg-brand transition-[width]" style={{ width: `${progress}%` }} />
           </div>
         )}
+        {progress !== null && stageText(stage) && <p className="mt-1 font-mono text-[11px] text-dim">{stageText(stage)}</p>}
         {msg && <p className={cx('mt-2 text-xs', msg.ok ? 'text-online' : 'text-live')}>{msg.text}</p>}
         {romset && <RomsetHint found={romset} biosMissing={biosMissing} platform={platform} />}
         {!canUpload && (

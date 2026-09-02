@@ -138,5 +138,12 @@ export const api = {
   post: <T>(path: string, body?: unknown, admin = false) => request<T>('POST', path, { body, admin }),
   put: <T>(path: string, body?: unknown, admin = false) => request<T>('PUT', path, { body, admin }),
   patch: <T>(path: string, body?: unknown, admin = false) => request<T>('PATCH', path, { body, admin }),
-  del: <T>(path: string, admin = false) => request<T>('DELETE', path, { admin }),
+  /**
+   * DELETE。第三个参数是请求体 —— 注销账号要把邮箱验证码带上（DELETE /api/me）。
+   *
+   * ⚠️ body 放在 admin 后面而不是像 post/patch 那样放第二个：
+   * 已有十几处在用 `api.del(path, true)`，把 body 插到第二位会让那个 true
+   * 悄悄变成请求体，而 admin 变成 undefined —— 后台的删除全部 403，且不报错在明面上。
+   */
+  del: <T>(path: string, admin = false, body?: unknown) => request<T>('DELETE', path, { admin, body }),
 }

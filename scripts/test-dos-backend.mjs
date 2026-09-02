@@ -3,6 +3,7 @@ import {
   dosBackendOf,
   dosboxConfigOf,
   dosLaunchDelayOf,
+  dosSaveHintOf,
   dosSystemOf,
   dosWindowsVersionOf,
   gameApiToPartialRow,
@@ -63,5 +64,17 @@ const win31 = gameRowToApi({
 assert.equal(win31.dosWindowsVersion, '3x')
 assert.equal(gameApiToRow({ slug: 'win31', dosWindowsVersion: '3x' }).dos_windows_version, '3x')
 assert.deepEqual(gameApiToPartialRow({ dosWindowsVersion: '9x' }), { dos_windows_version: '9x' })
+
+// 存档提示：只是一句给玩家看的话，但它会被塞进播放器面板，
+// 换行和控制字符会把排版撑坏，过长的文案会盖住按钮 —— 两条都要在入库前拦掉。
+assert.equal(dosSaveHintOf('  按 F2 存档、F3 读档  '), '按 F2 存档、F3 读档')
+assert.equal(dosSaveHintOf('第一行\n第二行'), '第一行 第二行')
+assert.equal(dosSaveHintOf('   '), null)
+assert.equal(dosSaveHintOf(undefined), null)
+assert.equal(dosSaveHintOf('存'.repeat(200)).length, 120)
+assert.equal(gameRowToApi({ slug: 'doom', dos_save_hint: '按 F2 存档' }).dosSaveHint, '按 F2 存档')
+assert.equal(gameRowToApi({ slug: 'doom' }).dosSaveHint, undefined)
+assert.equal(gameApiToRow({ slug: 'doom', dosSaveHint: '按 F2 存档' }).dos_save_hint, '按 F2 存档')
+assert.deepEqual(gameApiToPartialRow({ dosSaveHint: '' }), { dos_save_hint: null })
 
 console.log('DOS / Windows 客体核心映射测试通过')

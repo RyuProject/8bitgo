@@ -126,6 +126,20 @@ export function dosSystemOf(v) {
 }
 
 /**
+ * 这款 DOS 游戏怎么存档，一句话（如「按 F2 存档、F3 读档」）。
+ *
+ * 它只被前端当纯文本渲染，不进 dosbox.conf、不拼 SQL，所以不必像 dos_executable 那样
+ * 挑剔路径形状；只砍长度、去掉控制字符 —— 换行会把说明面板的排版撑乱，且没有任何合法用途。
+ */
+export function dosSaveHintOf(v) {
+  if (v == null) return null
+  // eslint-disable-next-line no-control-regex
+  const s = String(v).replace(/[\x00-\x1f]/g, ' ').trim()
+  if (!s) return null
+  return s.slice(0, 120)
+}
+
+/**
  * Windows 3.x 的 Program Manager 与 Windows 9x 的开始菜单使用不同的“运行”快捷键。
  * 旧数据没有这列值时前端按 9x 处理；这里只接受后台下拉框会发送的两个代次。
  */
@@ -192,6 +206,7 @@ export function gameRowToApi(r, rel = {}) {
   if (r.dos_windows_version === '3x' || r.dos_windows_version === '9x') g.dosWindowsVersion = r.dos_windows_version
   if (r.dos_launch_delay != null) g.dosLaunchDelay = Number(r.dos_launch_delay)
   if (r.dosbox_config_override) g.dosboxConfig = r.dosbox_config_override
+  if (r.dos_save_hint) g.dosSaveHint = r.dos_save_hint
   if (r.title_zh) g.titleZh = r.title_zh
   // 没写英文简介的游戏不带这个字段，前台自己回落到基准简介
   if (r.description_en) g.descriptionEn = r.description_en
@@ -240,6 +255,7 @@ export function gameApiToRow(g) {
     dos_windows_version: dosWindowsVersionOf(g.dosWindowsVersion),
     dos_launch_delay: dosLaunchDelayOf(g.dosLaunchDelay),
     dosbox_config_override: dosboxConfigOf(g.dosboxConfig),
+    dos_save_hint: dosSaveHintOf(g.dosSaveHint),
   }
 }
 
@@ -273,6 +289,7 @@ const FIELD_TO_COLUMN = {
   dosWindowsVersion: ['dos_windows_version', dosWindowsVersionOf],
   dosLaunchDelay: ['dos_launch_delay', dosLaunchDelayOf],
   dosboxConfig: ['dosbox_config_override', dosboxConfigOf],
+  dosSaveHint: ['dos_save_hint', dosSaveHintOf],
 }
 
 export function gameApiToPartialRow(patch) {
@@ -345,6 +362,13 @@ export function userRowToPublic(r, favorites = [], recent = []) {
     role: r.role,
     status: r.status,
     createdAt: dateOnly(r.created_at),
+    /**
+     * 只回「有没有密码」，不回哈希。
+     * 前端要靠它决定改密码时是否需要先问旧密码：验证码登录的账号从来没设过密码，
+     * 逼他填一个填不出来的「当前密码」等于这个功能不可用。
+     * 哈希本身是能离线爆破的，没有任何理由发到浏览器。
+     */
+    hasPassword: Boolean(r.password_hash),
     favorites,
     recent,
   }

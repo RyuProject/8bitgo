@@ -114,6 +114,8 @@ interface Props {
   dosLaunchDelay?: number
   /** 逐游戏 DOSBox-X 启动配置覆盖；由后台高级编辑器维护。 */
   dosboxConfig?: string
+  /** 这款 DOS 游戏的存档按键说明；显示在工具栏「保存进度」的说明面板里。 */
+  dosSaveHint?: string
   /** 平台级 BIOS 的地址（见 services/platformBios.ts）。Neo Geo 这类平台缺了就起不来 */
   biosUrl?: string
   /** 正在探测云端 ROM 是否存在 */
@@ -185,6 +187,7 @@ export function EmulatorPlayer({
   dosWindowsVersion,
   dosLaunchDelay,
   dosboxConfig,
+  dosSaveHint,
   biosUrl,
   romChecking,
   romUnavailable,
@@ -1168,6 +1171,7 @@ export function EmulatorPlayer({
             gameName={gameName}
             gameSlug={gameSlug}
             runtimeId={session?.runtime.id ?? activeRuntime?.id}
+            dosSaveHint={dosSaveHint}
           />
         )}
 

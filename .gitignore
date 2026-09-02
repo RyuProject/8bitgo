@@ -14,6 +14,11 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 README.md
+# ⚠️ 上面那行 README.md 夹在日志规则里，效果是**整个仓库所有 README.md 都被忽略**。
+# 后果已经发生过：deploy/netplay/ 和 deploy/cloudgame/ 两份部署说明从来没进 git，
+# 而 server/、worker/、deploy/live/ 那三份是当初 git add -f 硬塞进去的。
+# 部署说明是运维步骤，丢了只能靠人回忆，所以这里把 deploy/ 下的放行。
+!deploy/**/README.md
 # env
 .env
 .env.*.local

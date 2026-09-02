@@ -186,6 +186,7 @@ export function GameDetailPage() {
                 dosWindowsVersion={game.dosWindowsVersion}
                 dosLaunchDelay={game.dosLaunchDelay}
                 dosboxConfig={game.dosboxConfig}
+                dosSaveHint={game.dosSaveHint}
                 biosUrl={biosUrl || undefined}
                 romUrl={rom.status === 'found' ? rom.url : undefined}
                 romChecking={rom.status === 'checking'}

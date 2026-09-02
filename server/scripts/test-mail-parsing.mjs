@@ -35,7 +35,9 @@ process.env.MAIL_FROM = 'noreply@8bitgo.com'
 process.env.MAIL_FROM_NAME = '8BitGo'
 process.env.MAIL_TIMEOUT_MS = '3000'
 process.env.CF_API_BASE = `http://127.0.0.1:${PORT}/client/v4`
-// 确保不会误走 SMTP 分支
+// 确保不会误走别的分支。Resend 的优先级比 Cloudflare 高，
+// 本机 .env 里配了 RESEND_API_KEY 的话这整个文件测的就不是 Cloudflare 了
+delete process.env.RESEND_API_KEY
 delete process.env.SMTP_HOST
 delete process.env.SMTP_USER
 

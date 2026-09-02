@@ -171,10 +171,19 @@ savesRouter.put(
         }
       }
 
+      /**
+       * ⚠️ updated_at 必须显式写，不能指望列上的 ON UPDATE CURRENT_TIMESTAMP。
+       *
+       * MySQL 在「所有列的新值和旧值都一样」时不会真的更新这一行，
+       * ON UPDATE CURRENT_TIMESTAMP 也就不触发。玩家在同一帧反复存档
+       * （或者 DOS 的变更包一个字节没变），时间戳就永远停在第一次那一下，
+       * 界面上的「最后存档时间」跟着一起卡住。
+       */
       await query(
         `INSERT INTO saves (user_id, runtime, game_slug, slot, size, data)
               VALUES (?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE size = VALUES(size), data = VALUES(data)`,
+         ON DUPLICATE KEY UPDATE size = VALUES(size), data = VALUES(data),
+                                 updated_at = CURRENT_TIMESTAMP`,
         [req.user.id, c.runtime, c.slug, c.slot, req.body.length, req.body],
       )
       res.json({ ok: true, size: req.body.length, updatedAt: Date.now() })

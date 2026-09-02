@@ -195,20 +195,55 @@ npm run test:play    # 不连数据库：身份指纹 + 去重语义（内存 SQ
 ```
 
 
-## 验证码邮件（Cloudflare Email Service）
+## 验证码邮件（当前走 Resend）
 
-`/api/auth/email/request-code` 一调就真发一封信。发信通路在 `src/mail.js`，按环境变量自动选：
+三个地方会发验证码信，共用同一套通路和同一份配额（`src/codes.js`）：
+
+| 用途 | 接口 | 码发给谁 |
+| --- | --- | --- |
+| `login` | `POST /api/auth/email/request-code` | 要登录的那个邮箱 |
+| `bind` | `POST /api/me/email/request-code` | **新**邮箱（收得到才说明这个邮箱是他的） |
+| `delete` | `POST /api/me/delete/request-code` | 账号当前邮箱 |
+
+发信通路在 `src/mail.js`，按环境变量自动选：
 
 | 优先级 | 条件 | 走哪条 |
 | --- | --- | --- |
-| 1 | `CF_ACCOUNT_ID` + `CF_EMAIL_TOKEN` | Cloudflare Email Service REST API（推荐） |
-| 2 | `SMTP_HOST` + `SMTP_USER` | SMTP（需要 `nodemailer`） |
-| 3 | 都没配 | 只把验证码打印到服务器日志 |
+| 1 | `RESEND_API_KEY` | Resend REST API（**现在用的是这条**） |
+| 2 | `CF_ACCOUNT_ID` + `CF_EMAIL_TOKEN` | Cloudflare Email Service REST API |
+| 3 | `SMTP_HOST` + `SMTP_USER` | SMTP（需要 `nodemailer`） |
+| 4 | 都没配 | 只把验证码打印到服务器日志 |
 
 **启动日志里会写明当前用的是哪条**（`[mail] 验证码走 …`）。「用户收不到验证码但服务器一切正常」
-基本都是配置写错静默退回了第 3 条，先看那一行。
+基本都是配置写错静默退回了最后一条，先看那一行。
 
-### 为什么推荐 Cloudflare 那条
+### Resend 开通步骤
+
+1. Resend 后台 → **Domains** → 添加 `8bitgo.com`，把它给的 SPF / DKIM 记录加到 DNS
+   （域名托管在 Cloudflare，去 DNS 页面加就行），等状态变成 **Verified**
+2. **API Keys** 建一个有发信权限的 Key
+3. 填进 `server/.env`：
+
+```bash
+RESEND_API_KEY=re_xxx
+MAIL_FROM=noreply@8bitgo.com     # 域名必须和 Verified 的那个一致
+MAIL_FROM_NAME=8BitGo
+```
+
+4. 单独测发信（不经过限流和验证码表）：
+
+```bash
+npm run test:mail -- you@example.com
+```
+
+> ⚠️ 域名还没验证完时，只能用 Resend 自带的 `onboarding@resend.dev` 发信，
+> 而它**只能发给你注册 Resend 的那个邮箱**，发给别人一律 403。
+> 症状是「我自己能收到，别人都收不到」—— 别以为是代码问题，去 Domains 页面看状态。
+
+配额：免费版每天 100 封 / 每月 3000 封。`.env` 里 `CODE_SEND_GLOBAL_PER_HOUR` 默认 **500**，
+跑满远超这个额度 —— 真开放注册前按实际量级调小（两位数更合适）。
+
+### 为什么还留着 Cloudflare 那条
 
 只用 `fetch`，不需要任何依赖 —— 也是将来后端搬进 Workers 时**唯一不用重写**的发信方式。
 SMTP 走的是 TCP 465，Workers 根本连不出去。真到那一步时，`sendViaCloudflare()` 里
@@ -252,12 +287,16 @@ npm run test:mail -- you@example.com
 
 | kind | 什么情况 | 回给前端 |
 | --- | --- | --- |
-| `suppressed` | 地址退过信 / 被标过垃圾邮件，再发也不会到 | 400「这个邮箱地址无法投递，请换一个邮箱」 |
+| `suppressed` | 地址退过信 / 被标过垃圾邮件 / 收件地址不合法，再发也不会到 | 400「这个邮箱地址无法投递，请换一个邮箱」 |
 | `ratelimit` | 月配额或日限额到顶 | 429 |
-| `sender` | 发件域没验证、Token 没权限、依赖没装 | 500（细节只进日志） |
+| `sender` | 发件域没验证、密钥没权限、依赖没装 | 500（细节只进日志） |
 | `network` | 连不上 / 超时，可重试 | 502 |
 
-**发信失败时会把刚生成的验证码从 `codes` 表里撤掉。** 不撤的话，用户既收不到信，
+⚠️ `sender` 和 `suppressed` 千万别混：前者是我们的部署问题（叫用户换邮箱是白费功夫，
+换多少个都发不出去），后者用户换个邮箱立刻就好。Resend 这两种都可能是 403 / 422，
+只看状态码分不出来 —— 判据在 `resendKind()` 里，用的是 `body.name` 加一次消息文本嗅探。
+
+**发信失败时会把刚生成的验证码从 `login_codes` 表里撤掉。** 不撤的话，用户既收不到信，
 又被 `COOLDOWN` 挡在门外一分钟 —— 这是之前的行为。
 
 > ⚠️ Cloudflare 对**硬退信**返回的是 HTTP 200 + `success: true`，收件地址躺在
@@ -267,6 +306,27 @@ npm run test:mail -- you@example.com
 > ```bash
 > node scripts/test-mail-parsing.mjs   # 不联网，起本地 mock 跑 13 个用例
 > ```
+
+Resend 那条通路有自己的一份回归测试（同样不联网）：
+
+```bash
+npm run test:mail:resend   # 返回体分类、请求体字段、三种用途的文案、网络失败
+npm run test:codes         # 验证码状态机（要连库；连不上就自动跳过）
+```
+
+### 验证码存在哪
+
+`login_codes` 表，主键 `(email, purpose)`，存的是 **sha256(email + purpose + code)** 而不是明文 ——
+一次 `mysqldump` 泄露就等于把所有人（含管理员）的账号送出去。哈希拌了 email 和 purpose，
+所以一条哈希只在「这个邮箱的这个用途」上成立，拿不去别处重放。
+
+以前这些码放在进程内存的一个 Map 里，有两个真实的坑：`pm2 restart` 会把待验证的码全清空
+（用户刚收到信，回来填却被告知「验证码已过期」）；多开实例时发码和验码不是同一个进程，
+登录会随机失败一半。**表还没建时会自动退回内存版并在日志里喊一声** —— 缺一张表不该让整站登录不了，
+但看到那行 `[codes] login_codes 表不存在` 就该去跑 `npm run migrate`。
+
+换绑 / 注销的码还绑了 `user_id`：不绑的话，A 拿自己那封「换绑到 x@y」的信里的码，
+就能去把 B 的账号也换绑成 x@y。
 
 
 ## 云存档
@@ -330,15 +390,47 @@ cd server && npm install && npm start
 根目录构建环境里的 **`VITE_SITE_URL`** 和 `server/.env` 里的 **`PUBLIC_SITE_URL`** 都必须填正式域名。
 前者供 canonical / og:url / hreflang 使用，后者供数据库实时游戏 sitemap 与 IndexNow 使用。
 
-### 搜索引擎发现与 IndexNow
+### 搜索引擎发现：sitemap + IndexNow + 百度普通收录
 
-- `/sitemap.xml` 是 sitemap 索引：静态页面来自构建产物，8 种语言的游戏 sitemap 由后端实时查询数据库。
-- 后台新增、修改、上下架或删除游戏后，会把详情页及相关聚合页放入 IndexNow 批量队列；第三方接口失败不会让内容保存失败。
-- 首次部署后执行一次 `cd server && npm run indexnow`，补交数据库里已有的全部上架游戏。
+完整说明和排查表见 **[deploy/seo/README.md](../deploy/seo/README.md)**，这里只列要点。
+
+**sitemap**（上架即生效，不用重新构建）
+
+- `/sitemaps/games-<语言>.xml` 共 8 份，每次请求都现查数据库。
+- `/sitemap.xml` 索引由后端接管，游戏 sitemap 的 `lastmod` 取库里可见游戏的最新更新时间 ——
+  构建期那份静态文件的 lastmod 停在构建当天，搜索引擎据此认为子 sitemap 没动过就不会回来重抓。
+- `/sitemap-static.xml`（首页 / 平台页 / 类型页 / 文章）仍是构建期产物。新游戏带出一个此前
+  完全没有游戏的平台或类型时，那张列表页要等下次 `npm run build` 才进 sitemap，
+  但它已经在上架推送的 URL 列表里，不影响被发现。
+
+**主动推送**（两条通道，互不影响，任一失败都不会让内容保存失败）
+
+| | IndexNow（Bing / Yandex …） | 百度普通收录 |
+|---|---|---|
+| 凭证 | key，公开放在 `/<key>.txt` | 准入密钥 token，**私密**，只放 `server/.env` |
+| 每日配额 | 实际没有 | 有，站点级，新站常见 10~100 条/天 |
+| 推送语言 | 全部 8 种 | 默认只推简体中文（百度不索引 `/en`、`/ja` 等前缀页） |
+
+- 后台新增、修改、上下架或删除游戏后，详情页及相关聚合页进入内存队列，约 1 秒后合并成一次请求发出。
+- 队列在内存里，进程重启会丢；百度还可能当天配额用完。所以有每日兜底任务
+  `deploy/seo/push-daily.sh`（cron 配置见那份 README）。
+- 手动补交：`cd server && npm run baidu -- --all`（首次启用跑一次）、`npm run indexnow`。
+  排查配置先用 `npm run baidu -- --dry-run`，它只打印将要提交的 URL，一条都不发。
 - Google 的 Indexing API 只允许招聘与直播活动页，普通游戏页不能使用；Google 发现游戏页依赖 sitemap、SSR 链接与 Search Console。
 
 启用前确认 `https://8bitgo.com/b8b81a59fab843acaa590586b6733da0.txt` 能直接返回 key，
-并在 `server/.env` 设置 `PUBLIC_SITE_URL=https://8bitgo.com`、`INDEXNOW_ENABLED=1`。
+并在**线上**的 `server/.env` 里设置：
+
+```ini
+PUBLIC_SITE_URL=https://8bitgo.com
+INDEXNOW_ENABLED=1
+BAIDU_PUSH_ENABLED=1
+BAIDU_PUSH_TOKEN=<搜索资源平台的准入密钥>
+```
+
+本机开发的 `server/.env` 里这两个开关刻意留 0：本机连的是线上库，
+调试时存半成品也会拿正式域名去通知搜索引擎，还白吃百度当天配额。
+后端启动时会把两条通道的状态各打印一行，配没配对看那两行，不要等推送日志。
 
 ### 语言与 URL
 

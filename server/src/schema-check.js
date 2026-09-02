@@ -21,8 +21,10 @@ const EXPECTED_COLUMNS = [
   { table: 'games', column: 'dos_windows_version', why: 'Windows 3.x / 9x 自启动方式' },
   { table: 'games', column: 'dos_launch_delay', why: '客体 Windows 自启动时机' },
   { table: 'games', column: 'dosbox_config_override', why: '逐游戏 DOSBox-X 启动配置覆盖' },
+  { table: 'games', column: 'dos_save_hint', why: '逐游戏的 DOS 存档按键说明' },
   { table: 'games', column: 'adult', why: '成人游戏 18 岁验证' },
   { table: 'games', column: 'created_at', why: '真实入库时间' },
+  { table: 'users', column: 'token_version', why: '退出所有设备 / 改完密码作废旧令牌' },
 ]
 
 /**
@@ -41,6 +43,8 @@ const EXPECTED_TABLES = [
   { table: 'game_tags', why: '游戏标签' },
   { table: 'game_search_tokens', why: '搜索倒排索引' },
   { table: 'post_tags', why: '文章标签' },
+  { table: 'saves', why: '云存档；schema-v2 早期漏了这张表，缺了的话 /api/saves 全 500，玩家点「云端存档」就报错' },
+  { table: 'login_codes', why: '邮箱验证码；缺了会自动退回进程内存（重启丢码、多实例对不上），登录能用但不可靠' },
 ]
 
 export async function checkSchema() {

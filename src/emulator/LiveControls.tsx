@@ -12,7 +12,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { RuntimeHandle } from './types'
 import { canBroadcast, startBroadcast, type Broadcast } from './broadcast'
-import { liveEnabled, liveLink } from '@/services/live'
+import { liveEnabled, liveLink, refreshLiveRooms } from '@/services/live'
 import { playerName } from '@/services/netplay'
 import { useT, fmt } from '@/services/i18n'
 import { cx } from '@/lib/format'
@@ -65,6 +65,8 @@ export function LiveControls({ handle, gameName, gameSlug, platform, className }
       liveRef.current = null
       setLive(null)
       setViewers(0)
+      // 下播了就让大厅立刻把卡片撤掉，不用等下一轮轮询
+      refreshLiveRooms()
       return
     }
     const sources = handle.captureSources?.()
@@ -88,6 +90,8 @@ export function LiveControls({ handle, gameName, gameSlug, platform, className }
       })
       liveRef.current = b
       setLive(b)
+      // 开播成功就顺手刷一次大厅列表，主播自己切过去能立刻看见自己
+      refreshLiveRooms()
       say(tt.liveHint)
     } catch (e) {
       say(fmt(tt.liveFail, { msg: e instanceof Error ? e.message : String(e) }))

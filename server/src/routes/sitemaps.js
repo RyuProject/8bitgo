@@ -1,6 +1,9 @@
+import { statSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { query } from '../db.js'
 import { CACHE } from '../cache.js'
-import { localizedPublicUrl, publicSiteUrl } from '../indexnow.js'
+import { localizedPublicUrl, publicSiteUrl } from '../site-urls.js'
 import { SITE_LANGUAGES } from '../../../shared/site-languages.js'
 
 const XML_HEADER = '<?xml version="1.0" encoding="UTF-8"?>'
@@ -50,3 +53,59 @@ export async function gameSitemap(req, res, next) {
   }
 }
 
+
+/* ---------------- sitemap 索引 ---------------- */
+
+const STATIC_SITEMAP = path.join(
+  fileURLToPath(new URL('../../../', import.meta.url)),
+  'dist/client/sitemap-static.xml',
+)
+
+/** 构建产物里那份静态 sitemap 的时间；没构建过就不写 lastmod（协议里它是可选的）。 */
+function staticSitemapLastmod() {
+  try {
+    return dateOnly(statSync(STATIC_SITEMAP).mtime)
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * sitemap 索引。
+ *
+ * 为什么不能只用构建时生成的 public/sitemap.xml：那份里 8 条游戏 sitemap 的 lastmod
+ * 是**构建当天**的日期，之后后台再上架多少款游戏它都不变。索引里的 lastmod 恰恰是
+ * 搜索引擎判断「这份子 sitemap 要不要重新抓」的依据 —— 不变就等于告诉它们不必再看，
+ * 于是游戏 sitemap 明明已经实时更新了，抓取却迟迟不来。
+ * 这里把 lastmod 换成数据库里可见游戏的最新更新时间，上架即变。
+ */
+export function buildSitemapIndex(gamesLastmod, siteUrl = publicSiteUrl(), staticLastmod = '') {
+  const files = [
+    { loc: `${siteUrl}/sitemap-static.xml`, lastmod: staticLastmod },
+    ...SITE_LANGUAGES.map(({ code }) => ({
+      loc: `${siteUrl}/sitemaps/games-${code}.xml`,
+      lastmod: gamesLastmod,
+    })),
+  ]
+  const entries = files.map(
+    ({ loc, lastmod }) =>
+      `  <sitemap>\n    <loc>${escapeXml(loc)}</loc>${lastmod ? `\n    <lastmod>${lastmod}</lastmod>` : ''}\n  </sitemap>`,
+  )
+  return `${XML_HEADER}\n<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${entries.join('\n')}\n</sitemapindex>\n`
+}
+
+export async function sitemapIndex(_req, res, next) {
+  try {
+    const rows = await query(
+      'SELECT MAX(COALESCE(updated_at, created_at, added_at)) AS latest FROM games WHERE hidden = 0',
+    )
+    const latest = dateOnly(rows?.[0]?.latest) || dateOnly(new Date())
+    res.setHeader('Cache-Control', CACHE.meta)
+    res.setHeader('Vary', 'Accept-Encoding')
+    res
+      .type('application/xml; charset=utf-8')
+      .send(buildSitemapIndex(latest, publicSiteUrl(), staticSitemapLastmod()))
+  } catch (error) {
+    next(error)
+  }
+}

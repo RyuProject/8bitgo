@@ -22,8 +22,8 @@ import { attachNetplay } from './netplay.js'
 import { attachLive, liveRoom, liveRooms } from './live.js'
 import { iceRouter } from './routes/ice.js'
 import { mailProvider } from './mail.js'
-import { gameSitemap } from './routes/sitemaps.js'
-import { indexNowEnabled, publicSiteUrl } from './indexnow.js'
+import { gameSitemap, sitemapIndex } from './routes/sitemaps.js'
+import { logSearchPushStatus } from './search-push.js'
 
 const app = express()
 app.disable('x-powered-by')
@@ -52,6 +52,15 @@ app.use(
     origin: origins.includes('*') ? true : origins,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
+    /**
+     * 跨域时浏览器默认只把七个「安全」响应头交给 JS，自定义头一律读不到 ——
+     * res.headers.get('x-save-updated-at') 会返回 null，而且不报任何错。
+     *
+     * 前端拿这个头判断云存档是什么时候的（services/saves.ts 的 pullSave）。
+     * 少了它，VITE_API_URL 填绝对地址（前后端分域）的部署里，云存档的时间
+     * 永远退回成「刚刚」。same-origin 部署碰不到，所以很容易一直没人发现。
+     */
+    exposedHeaders: ['x-save-updated-at'],
   }),
 )
 
@@ -88,6 +97,13 @@ app.use('/api/netplay/ice', iceRouter)
 
 // 游戏 sitemap 直接读数据库。放在静态资源之前，后台刚上架的游戏不必等下次构建才出现。
 app.get('/sitemaps/games-:language.xml', gameSitemap)
+/**
+ * sitemap 索引同样接管掉，覆盖构建产物里的 public/sitemap.xml。
+ * 那份静态文件里游戏 sitemap 的 lastmod 停在构建当天，之后上架多少游戏都不变，
+ * 搜索引擎据此认为子 sitemap 没动过，就不会回来重抓（见 routes/sitemaps.js 的注释）。
+ * 纯静态托管（只有 CDN、没有这个后端）时仍然由那份文件兜底。
+ */
+app.get('/sitemap.xml', sitemapIndex)
 
 // 正在直播的房间列表。?game=<slug> 只看某个游戏的
 app.get('/api/live/rooms', (req, res) => {
@@ -217,24 +233,18 @@ httpServer.listen(PORT, () => {
   // 启动时对一遍，把话说在前面
   void checkSchema()
   console.log('P2P 联机信令已就绪：/netplay（socket.io）')
-  if (indexNowEnabled()) {
-    try {
-      console.log(`[indexnow] 自动提交已启用：${publicSiteUrl()}`)
-    } catch (error) {
-      console.warn(`[indexnow] 配置无效，自动提交未启用：${error?.message || error}`)
-    }
-  } else {
-    console.log('[indexnow] 自动提交未启用（正式环境在 server/.env 设置 INDEXNOW_ENABLED=1）')
-  }
+  logSearchPushStatus()
   /**
    * 发信通路配错时会静默退回「只打印日志」，症状是「用户说收不到验证码」
    * 而服务器一切正常 —— 最难查的那类故障。所以启动时把结论直接说出来。
    */
+  const from = process.env.MAIL_FROM || process.env.SMTP_FROM || process.env.SMTP_USER || '(未设置 MAIL_FROM)'
   const MAIL_LABEL = {
-    cloudflare: '[mail] 验证码走 Cloudflare Email Service',
-    smtp: `[mail] 验证码走 SMTP：${process.env.SMTP_HOST}`,
+    resend: `[mail] 验证码走 Resend，发件 ${from}`,
+    cloudflare: `[mail] 验证码走 Cloudflare Email Service，发件 ${from}`,
+    smtp: `[mail] 验证码走 SMTP：${process.env.SMTP_HOST}，发件 ${from}`,
   }
-  console.log(MAIL_LABEL[mailProvider()] || '[mail] ⚠️  未配置发信通道，验证码只会打印到日志（正式环境请配 CF_ACCOUNT_ID + CF_EMAIL_TOKEN）')
+  console.log(MAIL_LABEL[mailProvider()] || '[mail] ⚠️  未配置发信通道，验证码只会打印到日志（正式环境请配 RESEND_API_KEY + MAIL_FROM）')
   if (ADMIN_AUTH_DISABLED) {
     console.warn('')
     console.warn('  ****************************************************************')

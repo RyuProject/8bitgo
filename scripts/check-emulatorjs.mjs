@@ -8,6 +8,7 @@
  *   emulator.min.js 是 CDN 4.2.3  → 街机 BIOS 被解压，FBNeo 报「sp-s3.sp1 … missing」
  *   缺 cores/                     → 回落到 cdn.emulatorjs.org/4.3.0-pre/，
  *                                   报「Error loading EmulatorJS runtime」
+ *   缺存档 ABI 回退补丁            → 存档一按就红字「FAILED TO SAVE STATE」（读档却是好的）
  * 每一种都曾经真实发生过。宁可让构建当场失败，把话说清楚。
  */
 import { existsSync, readFileSync } from 'node:fs'
@@ -44,6 +45,13 @@ if (!js.includes('t===this.EJS.config.gameUrl')) {
   )
 }
 
+if (!js.includes('this.functions.saveStateInfo()')) {
+  fail(
+    'emulator.min.js 缺「存档 ABI 回退」补丁 —— 所有平台按保存进度都会红字 FAILED TO SAVE STATE',
+    'npm run ejspatch。引擎（自建 4.3.0-pre）走 Module.EmulatorJSGetState，而 npm 发布的核心只导出老 ABI 的 save_state_info，两边对不上；详见 scripts/patch-emulatorjs.mjs 头注释',
+  )
+}
+
 if (!existsSync(join(dir, 'cores', 'fbneo-wasm.data'))) {
   fail(
     'public/emulatorjs/cores/ 里没有核心（至少 fbneo-wasm.data 该在）',
@@ -51,4 +59,4 @@ if (!existsSync(join(dir, 'cores', 'fbneo-wasm.data'))) {
   )
 }
 
-console.log('✔ EmulatorJS 自建运行时 + 核心齐全（含 dontExtractIfCore）')
+console.log('✔ EmulatorJS 自建运行时 + 核心齐全（dontExtractIfCore / blob 文件名 / 存档 ABI 三项补丁均在位）')

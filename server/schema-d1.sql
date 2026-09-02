@@ -73,6 +73,8 @@ CREATE TABLE IF NOT EXISTS games (
   dos_launch_delay INTEGER,
   -- 逐游戏 DOSBox-X 安全配置覆盖，不允许包含 [autoexec]。
   dosbox_config_override TEXT,
+  -- 这款 DOS 游戏怎么存档；播放器「保存进度」的说明面板会显示它。
+  dos_save_hint  TEXT,
   home_rank      INTEGER,
   added_at       TEXT,
   created_at     TEXT    NOT NULL DEFAULT (CURRENT_TIMESTAMP),

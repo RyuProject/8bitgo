@@ -22,6 +22,7 @@ import {
   unbindKeyPatch,
   type RomObject,
 } from '@/services/roms'
+import { abortOrphanUpload, listOrphanUploads, listPendingUploads, type OrphanUpload } from '@/services/romMultipart'
 import { pickMainSwf } from '@/lib/swfBundle'
 import { platformMap } from '@/data/platforms'
 import { cx } from '@/lib/format'
@@ -521,6 +522,8 @@ export function AdminRoms() {
         </Card>
       )}
 
+      <MultipartPanel />
+
       <PlatformBiosPanel />
 
       <Card title={`已绑定的游戏（${bound.length}）`} extra={<Link to="/admin/games" className="text-xs text-brand-hover hover:underline">去游戏编辑里上传 →</Link>}>
@@ -753,5 +756,132 @@ function BundleRow({
         </tr>
       )}
     </>
+  )
+}
+/**
+ * 未完成的分片上传。
+ *
+ * 为什么要专门有这么一个面板：R2 的 Workers binding **没有 listMultipartUploads**，
+ * 一次失败的分片上传会在桶里留下若干**照常计费**的分片，而且从任何界面都看不见 ——
+ * 只能去 Cloudflare 控制台翻。所以 Worker 在 create 时往 `_uploads/` 写一个标记对象，
+ * 这里列的就是那些标记（complete / abort 会把标记删掉，剩下的才是真残留）。
+ *
+ * 「本机可续传」看的是本浏览器的 localStorage：分片的 etag 只记在发起上传的那台机器上
+ * （complete 时必须由调用方把全部 etag 报回去），所以别人机器上留下的残留只能放弃，
+ * 不能接着传。放弃是安全的：它只删这次没合并的分片，不动已经存在的同名对象。
+ */
+function MultipartPanel() {
+  const [cfg, setCfg] = useState(getRomConfig())
+  const [items, setItems] = useState<OrphanUpload[] | null>(null)
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState('')
+  const [loading, setLoading] = useState(false)
+  const ready = Boolean(cfg.api && cfg.token)
+
+  useEffect(() => subscribeRomConfig(() => setCfg(getRomConfig())), [])
+
+  const reload = useCallback(async () => {
+    if (!ready) {
+      setItems(null)
+      return
+    }
+    setLoading(true)
+    setError('')
+    try {
+      setItems(await listOrphanUploads())
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '读取失败')
+      setItems([])
+    } finally {
+      setLoading(false)
+    }
+  }, [ready])
+
+  useEffect(() => {
+    void reload()
+  }, [reload])
+
+  // 本机记着的续传记录，用来标注哪几条还能接着传
+  const resumable = useMemo(() => new Set(listPendingUploads().map((p) => `${p.key}::${p.uploadId}`)), [items])
+
+  const drop = async (item: OrphanUpload) => {
+    const ok = window.confirm(
+      `${item.key || item.marker}\n\n放弃这次未完成的上传，并删掉已经传上去的分片吗？\n\n` +
+        '不会影响这个 key 上已经存在的文件（分片没合并，就还不是对象）。\n' +
+        '如果这正是你打算续传的那一次，请选取消。',
+    )
+    if (!ok) return
+    setBusy(item.marker)
+    try {
+      await abortOrphanUpload(item)
+      await reload()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '清理失败')
+    } finally {
+      setBusy('')
+    }
+  }
+
+  if (!ready) return null
+
+  return (
+    <Card
+      title={`未完成的分片上传${items?.length ? `（${items.length}）` : ''}`}
+      extra={
+        <button type="button" className={cx(btnClass.small, 'bg-surface-2')} onClick={() => void reload()} disabled={loading}>
+          {loading ? '读取中…' : '刷新'}
+        </button>
+      }
+    >
+      {error && <p className="mb-3 rounded-lg bg-live/15 px-3 py-2 text-sm text-live">{error}</p>}
+      {items && items.length === 0 && !error && (
+        <p className="text-sm text-muted">没有残留。大文件上传失败后留下的分片会出现在这里，清掉才不会继续计费。</p>
+      )}
+      {items && items.length > 0 && (
+        <>
+          <p className="mb-3 text-xs text-muted">
+            这些分片还没合并成对象，会一直占用存储。想续传就回「游戏」页重新选<strong>同一个文件</strong>再点上传（只有发起上传的那台机器能续）；不打算续就在这里清掉。
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[720px] text-sm">
+              <thead className="text-left text-xs text-muted">
+                <tr>
+                  <th className="pb-2 font-medium">目标 key</th>
+                  <th className="pb-2 font-medium">文件</th>
+                  <th className="pb-2 font-medium">大小</th>
+                  <th className="pb-2 font-medium">开始于</th>
+                  <th className="pb-2 text-right font-medium">操作</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line">
+                {items.map((item) => (
+                  <tr key={item.marker}>
+                    <td className="py-2 pr-3 font-mono text-xs">
+                      {item.key || <span className="text-dim">（标记里没有 key）</span>}
+                      {resumable.has(`${item.key}::${item.uploadId}`) && (
+                        <span className="ml-2 rounded bg-online/15 px-1.5 py-0.5 text-[10px] text-online">本机可续传</span>
+                      )}
+                    </td>
+                    <td className="py-2 pr-3 text-xs text-muted">{item.name || '—'}</td>
+                    <td className="py-2 pr-3 text-xs text-muted">{item.size ? formatBytes(item.size) : '—'}</td>
+                    <td className="py-2 pr-3 text-xs text-muted">{item.at ? new Date(item.at).toLocaleString() : '—'}</td>
+                    <td className="py-2 text-right">
+                      <button
+                        type="button"
+                        className={cx(btnClass.small, 'bg-live/15 text-live hover:bg-live/25')}
+                        onClick={() => void drop(item)}
+                        disabled={busy === item.marker}
+                      >
+                        {busy === item.marker ? '清理中…' : '放弃并清理'}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </Card>
   )
 }

@@ -135,6 +135,12 @@ const patches = [
     run: () => conn.query('ALTER TABLE `games` ADD COLUMN `dosbox_config_override` TEXT NULL AFTER `dos_launch_delay`'),
   },
   {
+    name: 'games.dos_save_hint（这款 DOS 游戏怎么存档）',
+    table: 'games',
+    needed: async () => !(await hasColumn('games', 'dos_save_hint')),
+    run: () => conn.query('ALTER TABLE `games` ADD COLUMN `dos_save_hint` VARCHAR(160) NULL AFTER `dosbox_config_override`'),
+  },
+  {
     name: 'games.adult（成人游戏，前台启动前验证年满 18 岁）',
     table: 'games',
     needed: async () => !(await hasColumn('games', 'adult')),
@@ -227,6 +233,69 @@ const patches = [
     run: () => conn.query('ALTER TABLE `recents` ADD INDEX `idx_recent_game` (`game_slug`)'),
   },
   {
+    name: 'users.token_version（退出所有设备 / 改密码后作废旧令牌）',
+    table: 'users',
+    needed: async () => !(await hasColumn('users', 'token_version')),
+    run: () =>
+      conn.query('ALTER TABLE `users` ADD COLUMN `token_version` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `status`'),
+  },
+  {
+    name: 'login_codes（邮箱验证码落库，替掉原来的内存 Map）',
+    table: null,
+    needed: async () => !(await hasTable('login_codes')),
+    run: async () => {
+      await conn.query(
+        'CREATE TABLE IF NOT EXISTS `login_codes` (' +
+          '`email` VARCHAR(200) NOT NULL,' +
+          '`purpose` VARCHAR(16) NOT NULL,' +
+          '`user_id` VARCHAR(40) NULL,' +
+          '`code_hash` CHAR(64) NOT NULL,' +
+          '`tries` TINYINT UNSIGNED NOT NULL DEFAULT 0,' +
+          // epoch 毫秒。应用层判过期、数据库判清理，统一用应用时钟，省掉时区/时钟差的坑
+          '`expires_at` BIGINT UNSIGNED NOT NULL,' +
+          '`sent_at` BIGINT UNSIGNED NOT NULL,' +
+          'PRIMARY KEY (`email`, `purpose`),' +
+          'KEY `idx_codes_expires` (`expires_at`)' +
+          ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
+      )
+      console.log('   建好之前验证码走的是进程内存：重启会丢、多实例会对不上。现在两个问题都没了。')
+    },
+  },
+  {
+    name: 'saves（云存档；schema-v2.sql 早期漏了这张表）',
+    table: null,
+    // ⚠️ 这张表原来只写在 schema.sql（v1）里，v2 那份漏了 —— 按 v2 建的新库压根没有它。
+    // 症状极具误导性：站点一切正常，只有玩家点「云端存档」那一刻 /api/saves 全部 500。
+    skip: async () => (!(await hasTable('users')) ? '还没有 users 表' : null),
+    needed: async () => !(await hasTable('saves')),
+    run: async () => {
+      await conn.query(
+        'CREATE TABLE IF NOT EXISTS `saves` (' +
+          '`user_id` VARCHAR(40) NOT NULL,' +
+          '`runtime` VARCHAR(24) NOT NULL,' +
+          '`game_slug` VARCHAR(160) NOT NULL,' +
+          '`slot` TINYINT UNSIGNED NOT NULL DEFAULT 0,' +
+          '`size` INT UNSIGNED NOT NULL,' +
+          // MEDIUMBLOB 上限 16MB，接口层再卡到 SAVE_MAX_BYTES（默认 4MB）
+          '`data` MEDIUMBLOB NOT NULL,' +
+          '`created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,' +
+          '`updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,' +
+          'PRIMARY KEY (`user_id`, `runtime`, `game_slug`, `slot`),' +
+          'KEY `idx_saves_user_time` (`user_id`, `updated_at`)' +
+          ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
+      )
+      // 外键单独加：老库的 users.id 类型可能对不上，加不上也不该让整个迁移失败
+      try {
+        await conn.query(
+          'ALTER TABLE `saves` ADD CONSTRAINT `fk_saves_user` ' +
+            'FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE CASCADE',
+        )
+      } catch (e) {
+        console.log(`   （外键没加上，注销账号时要自己清存档：${e.message}）`)
+      }
+    },
+  },
+  {
     name: '清理孤儿收藏（指向已删除游戏的记录）',
     table: 'favorites',
     needed: async () => {
@@ -255,7 +324,7 @@ const patches = [
   },
 ]
 
-const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'platform_bios', 'game_plays']
+const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'login_codes', 'platform_bios', 'game_plays']
 
 try {
   await conn.query(`CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`)

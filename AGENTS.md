@@ -16,6 +16,7 @@
 | 存储 | Cloudflare R2 + Worker（`worker/`），公开读走 `assets.8bitgo.com` |
 | 部署 | 服务器上 `git pull && npm install && npm run build && pm2 restart 8bitgo-api`，前面挂 Cloudflare |
 | 模拟器 | EmulatorJS（主机/掌机/街机）、Ruffle（Flash）、js-dos、jsnes、webretro、FreeJ2ME |
+| 登录 | 邮箱验证码（**Resend** 发信）/ 密码 / Google，JWT 30 天，见 §2.13–2.14 |
 
 代码注释一律用中文，且**解释「为什么」而不是「是什么」**——现有注释里记着大量踩坑经过，改代码前先读注释。
 
@@ -57,21 +58,37 @@ grep -c dontExtractIfCore public/emulatorjs/emulator.min.js   # 自建 = 1，CDN
 （引擎自己在控制台喊 `THIS METHOD IS A FAILSAFE, AND NOT OFFICIALLY SUPPORTED`）。
 实测那儿取回的核心初始化不出 `EJS_Runtime`，玩家看到 `Error loading EmulatorJS runtime`。
 
-### 2.5 引擎会把**坏核心缓存进 IndexedDB**，清浏览器缓存没用
+### 2.5 引擎比核心新一代，存档 ABI 对不上，**必须打补丁**
+
+自建引擎（4.3.0-pre）取存档走 `Module.EmulatorJSGetState()`；`cores/` 里 npm 发布版的核心
+（core build 2.0.2 / minimumEJSVersion 4.2.2）只导出老 ABI 的 `save_state_info`，
+glue 里 `EmulatorJSGetState` 一次都不出现。对不上 → `getState()` 抛 TypeError →
+**所有平台**按保存进度都是红字 `FAILED TO SAVE STATE`（读档却是好的，它走 `load_state`）。
+升级核心解决不了：核对到 `@emulatorjs/core-mgba@4.2.3`，官方还没发布配套 4.3.0-pre 的核心。
+
+`npm run ejspatch` 的第二组补丁把 4.2.3 的老 ABI 接回去，并保留新 ABI 优先。验收：
+
+```bash
+grep -c 'this.functions.saveStateInfo()' public/emulatorjs/emulator.min.js   # 打过 = 1
+```
+
+### 2.6 引擎会把**坏核心缓存进 IndexedDB**，清浏览器缓存没用
 
 库名 `EmulatorJS-Cache`。缓存命中时日志是 `[EJS Core] Data is already decompressed cache item`
 ——它压根不再下载，硬刷新、清 HTTP 缓存全都无效。
 `src/emulator/adapters/emulatorjs.ts` 里的 `purgePoisonedEngineCache()` 按「代次」清一次，
 每个访客只清一回。**引擎构建再出现不兼容更换时，把 `EJS_CACHE_GENERATION` 加一。**
 
-### 2.6 升级引擎后必须重跑 `npm run ejspatch`
+### 2.7 升级引擎后必须重跑 `npm run ejspatch`
 
 引擎写虚拟文件系统时用 `url.split('/').pop()` 当文件名。「玩本地 ROM」页拖入的文件是
 `blob:` URL，pop 出来是一串 UUID，FBNeo 拿到名为 UUID 的 romset → `Romset is unknown`。
-补丁让 blob 的游戏 URL 改用 `EJS_gameName`，http(s) 不受影响。幂等，见
-`scripts/patch-emulatorjs.mjs` 头注释。
+补丁让 blob 的游戏 URL 改用 `EJS_gameName`，http(s) 不受影响。
 
-### 2.7 街机靠**压缩包文件名**认游戏
+脚本里现在有**两组**补丁：blob 文件名（这一节）+ 存档 ABI 回退（§2.5）。两组各自幂等，
+一条命令全打；位置对不上会当场退出并打印排查思路，见 `scripts/patch-emulatorjs.mjs` 头注释。
+
+### 2.8 街机靠**压缩包文件名**认游戏
 
 叫 `kof97.zip` 才会跑 kof97 驱动，叫别的就 `Romset is unknown`，和内容对不对无关。
 所以 `src/services/roms.ts` 里 `FILENAME_IS_IDENTITY` 把 arcade 列为「保留原文件名」。
@@ -80,14 +97,14 @@ grep -c dontExtractIfCore public/emulatorjs/emulator.min.js   # 自建 = 1，CDN
 CRC-32（不用解压），比对 `public/arcade-romsets.bin`（8721 个 romset / 12.7 万条 CRC）。
 完全命中才自动改名；部分命中只列候选——拿父集的名字去套残缺包只会换来 missing files。
 
-### 2.8 平台 BIOS 的边缘缓存会骗人
+### 2.9 平台 BIOS 的边缘缓存会骗人
 
 后台改完 BIOS 绑定只调 `invalidateContent()`（清进程内缓存），**够不着 Cloudflare 边缘**。
 症状：后台明明配好了，前台还报缺 BIOS，刷新清缓存都没用。
 已把 `/api/platform-bios` 的缓存降到 30 秒（`server/src/cache.js` 的 `CACHE.bios`）。
 **部署后仍建议在 Cloudflare 控制台 Purge Everything 一次。**
 
-### 2.9 数据库缺表不会让服务起不来，只会让**某一条接口**莫名 500
+### 2.10 数据库缺表不会让服务起不来，只会让**某一条接口**莫名 500
 
 `server/src/schema-check.js` 启动时查全部 v2 表并点名。缺表补法一律：
 
@@ -95,12 +112,68 @@ CRC-32（不用解压），比对 `public/arcade-romsets.bin`（8721 个 romset 
 cd server && npm run migrate      # 幂等
 ```
 
-### 2.10 Flash 大游戏是多 SWF 的，不能只传主文件
+### 2.11 Flash 大游戏是多 SWF 的，不能只传主文件
 
 当年的游戏在运行时用**相对路径**拉同目录的其它 swf（`loadMovie('main21.swf')`）。
 只传一个 swf 的话，Ruffle 会去 `roms/flash/` 根目录找它 → 404。
 后台选 `.zip` 走整包上传，文件落在 `roms/flash/<slug>[.<lang>]/` 下，相对路径才对得上。
 **别图省事把缺的 swf 单独补到 `roms/flash/` 根目录**——那是所有 Flash 游戏共用的目录，迟早撞名。
+
+### 2.12 「连不上 Worker」很可能是**文件太大**，而且 Worker 日志里查不到
+
+后台传 100MB 的游戏时报「网络错误：无法连接 Worker（检查地址与 CORS）」——
+Worker 是好的，地址和 CORS 也是对的。真凶是 **Cloudflare 的请求体上限**：
+Free / Pro 100 MB，Business 200 MB，Enterprise 500 MB，**由边缘节点执行，在 Worker 代码之前**。
+超限时边缘直接 reset 连接，浏览器拿不到 413，XHR 只触发 `onerror`，
+所以 `worker/src/index.js` 里那句 `Content-Length > MAX_UPLOAD_MB → 413` 一次都没运行过
+（`MAX_UPLOAD_MB` 默认写着 512，是个管不到平台上限的空承诺）。
+
+**诊断指纹**：失败时开 `npx wrangler tail`，被边缘拦掉的请求**一条日志都不会有**。
+日志里能看到这次 PUT，才说明问题在 Worker 侧。
+
+现在超过 24MB（`MULTIPART_THRESHOLD`）的文件自动改走**分片上传**：
+8MB 一片、3 并发、单片失败重试、`localStorage` 记账后可断点续传（`src/services/romMultipart.ts`）。
+上限是按**单个请求**算的，所以分片顺带把 100MB 这道墙也绕开了。三个必须记住的约束：
+
+1. R2 要求**除最后一片外所有片等大**、最小 5MB、最多 10000 片 —— 改 `PART_SIZE` 会让旧的续传记录作废（身份校验带了 `partSize`，会自动作废，不会拼出坏文件）
+2. binding **没有 `listParts`**：complete 时必须把每片的 `{partNumber, etag}` 全报回去，所以这份账只能记在前端 —— **换浏览器就续不上**
+3. binding 也**没有 `listMultipartUploads`**：没合并的分片会一直计费且任何界面都看不见，所以 Worker 在 `_uploads/` 下写标记对象，后台「ROM 存储」页靠它列出并清理残留
+
+改 `worker/src/index.js` 的分片部分后跑 `npm run test:multipart`（内存版 R2 mock，23 项断言）。
+
+### 2.13 验证码不能放进程内存
+
+登录 / 换绑邮箱 / 注销账号三处都要发一封 6 位验证码，逻辑统一在 `server/src/codes.js`。
+
+早先的实现是一个模块级 `Map`。踩过的坑：`pm2 restart` 会把所有待验证的码清空 ——
+用户刚收到信、回来填，得到的是「验证码已过期，请重新获取」，而服务器日志一切正常；
+多开实例时发码和验码不在同一个进程，登录随机失败一半。
+
+现在落 `login_codes` 表，主键 `(email, purpose)`，**存 sha256(email + purpose + code) 不存明文**
+（一次 mysqldump 就是所有人的账号，包括管理员）。表还没建时自动退回内存版并打一行
+`[codes] login_codes 表不存在` —— 看到那行就 `cd server && npm run migrate`。
+
+换绑 / 注销的码额外绑 `user_id`：不绑的话，A 拿自己那封「换绑到 x@y」的码，
+就能去把 B 的账号也换绑成 x@y。
+
+### 2.14 JWT 收不回来，靠 `users.token_version` 作废
+
+「退出所有设备」、改完密码踢掉旧会话、换绑邮箱后让别处重新登录 —— 这三件事都没法靠删 token 实现，
+服务端手里没有已签发令牌的名单。做法是令牌 payload 里带 `tv`，和 `users.token_version` 对不上就 401
+（`server/src/auth.js`）。想作废所有旧令牌就把那一列 +1，同时给当前设备换一张新的
+（`routes/me.js` 的 `rotateToken`）。
+
+⚠️ **前端拿到新令牌必须存下来**，否则用户会被自己的操作踢下线 —— `src/services/auth.ts`
+的 `acceptSession()` 就是干这个的，新增这类接口时别忘了走它。
+老令牌没有 `tv`，按 0 处理，所以这套东西上线时不会把所有人踢下线。
+
+### 2.15 `saves` 表以前只在 v1 的 schema 里
+
+`schema.sql`（v1）有它，`schema-v2.sql` 漏了。按 v2 建的新库压根没有这张表，
+症状是站点一切正常、后台看不出任何异常，**只有玩家点「云端存档」那一刻 `/api/saves` 全部 500**。
+已经补进 `schema-v2.sql` 和 `scripts/migrate.mjs`，`schema-check.js` 也会在启动时点名。
+
+同类问题的通用判据：`server/src/routes/` 里查了某张表的接口，去 `schema-v2.sql` 里 grep 一遍表名。
 
 ---
 
@@ -110,6 +183,7 @@ cd server && npm run migrate      # 幂等
 npm run dev            # 开发（predev 自动准备 ruffle / js-dos / 字体）
 npm run build          # prebuild 会跑 check-emulatorjs.mjs 体检，缺东西直接失败
 npm run lint           # oxlint
+npm run test:multipart # Worker 分片上传接口的自测（内存版 R2 mock，不联网）
 
 npm run ejspatch       # 重打 blob 文件名补丁（升级引擎后必跑，幂等）
 npm run ejscores       # 重新复制核心（仅升级核心时）
@@ -118,8 +192,18 @@ npm run romsets <dir>  # 重新生成街机 romset 索引，需 FBNeo 源码，�
 cd server && npm run migrate   # 补数据库表 / 列，幂等
 ```
 
-`prebuild` 里的 `scripts/check-emulatorjs.mjs` 会检查四件事：引擎文件在不在、
-是不是自建版（有无 `dontExtractIfCore`）、blob 补丁打没打、核心在不在。任一缺失 → 构建失败。
+发信与验证码（都在 server 目录，都不联网）：
+
+```bash
+npm run test:mail -- you@example.com   # 真发一封，只测发信这一段（绕开限流和验证码表）
+npm run test:mail:resend               # Resend 返回体分类 / 请求体字段 / 三种用途文案
+npm run test:mail:parse                # Cloudflare 那条通路的同类测试
+npm run test:codes                     # 验证码状态机（要连库；连不上自动跳过）
+```
+
+`prebuild` 里的 `scripts/check-emulatorjs.mjs` 会检查五件事：引擎文件在不在、
+是不是自建版（有无 `dontExtractIfCore`）、blob 补丁打没打、**存档 ABI 补丁打没打**、
+核心在不在。任一缺失 → 构建失败。
 
 ---
 
@@ -137,9 +221,54 @@ cd server && npm run migrate   # 补数据库表 / 列，幂等
 
 ---
 
-## 5. 当前进度（2026-08-28，有时效性）
+## 5. 当前进度（2026-09-02，有时效性）
 
-### 已完成并**已上线**
+### 本轮改动：登录 + 个人中心（**尚未部署，需要跑迁移**）
+
+发信换成 **Resend**（`server/.env` 已填 `RESEND_API_KEY` + `MAIL_FROM=noreply@8bitgo.com`）。
+验证码从进程内存搬到 `login_codes` 表并改存哈希（§2.13）；JWT 加了 `token_version`（§2.14）；
+补上了 v2 漏掉的 `saves` 表（§2.15）。
+
+新接口（全部要登录，见 `server/src/routes/me.js`）：
+
+| 接口 | 干什么 |
+| --- | --- |
+| `GET /api/me/stats` | 个人中心顶部的统计卡片 |
+| `POST /api/me/email/request-code` → `POST /api/me/email` | 换绑邮箱（码发到**新**邮箱） |
+| `PUT /api/me/password` | 设置 / 修改密码（有密码的必须报旧密码） |
+| `POST /api/me/logout-all` | 退出其它所有设备 |
+| `POST /api/me/delete/request-code` → `DELETE /api/me` | 注销账号（邮箱验证码二次确认） |
+
+前端：`/me` 改成三个分栏（我的游戏 / 云存档 / 账号与安全），新组件在
+`src/components/profile/`；登录弹窗多了「密码登录」那一栏（之前能在个人中心设密码却没地方用）。
+八种语言文案已同步（`Translation` 类型由 zh-Hans 推导，缺键会在 `tsc` 时报错）。
+
+**部署这一版必须先跑迁移**，否则：`token_version` 缺列 → 改密码 / 退出所有设备 500；
+`login_codes` 缺表 → 验证码退回内存（能用但重启丢码）；`saves` 缺表 → 云存档全 500。
+
+```bash
+cd server && npm run migrate     # 幂等
+```
+
+顺带修掉的一个真 bug：`ProfilePage` 原来把 `useGamesBySlugs` 写在 `if (!user) return` **后面**，
+登录态一确定下来 hook 数量就变了，React 会抛「Rendered more hooks than during the previous render」。
+现在所有 hook 都提到提前 return 之前，**别再挪回去**。
+
+### Resend 上线前必须确认的一件事
+
+`8bitgo.com` 要在 Resend 的 **Domains** 页面显示 **Verified**（DNS 加 SPF + DKIM）。
+没验证完的话只能用 `onboarding@resend.dev`，而它**只能发给注册 Resend 的那个邮箱** ——
+症状是「我自己能收到，别人都收不到」，很容易误判成代码问题。
+
+验收：
+
+```bash
+cd server && npm run test:mail -- 你的邮箱@example.com   # 真发一封
+npm run test:mail:resend                                # 不联网，锁住返回体分类
+npm run test:codes                                      # 验证码状态机（要连库）
+```
+
+### 更早的改动（已上线）
 
 | 提交 | 内容 |
 |---|---|
@@ -148,24 +277,13 @@ cd server && npm run migrate   # 补数据库表 / 列，幂等
 | `97db215` | 清除被污染的 `EmulatorJS-Cache`；语言包码改成自建构建的两字码（`zh`/`fr`…） |
 | `aba17b6` | 播放器状态栏去掉「云端 ROM · 文件名」和常驻的运行时标签 |
 | `4a2fb9f` | blob URL 文件名补丁 + `npm run ejspatch` + 体检把关 |
-
-线上已验证：`/emulatorjs/version.json` 200、`/emulatorjs/cores/fbneo-wasm.data` 可取、
-`emulator.min.js` 含 blob 补丁、`/api/platform-bios` → `{"arcade":"roms/bios/neogeo.zip"}`。
-
-### 已完成但**还没推送**
-
-- **`7aaaf67` feat(admin): 街机 ROM 上传时自动识别 romset** ← 本地领先 origin/main 一个提交
-  - 新增 `public/arcade-romsets.bin`（628KB）、`scripts/build-arcade-romsets.mjs`、`src/lib/arcadeRomset.ts`
-  - `src/lib/unzip.ts` 的 `ZipFileEntry` 加了 `crc32` 字段
-  - 用真实 kof97.zip 验证：13/13 命中 `kof97`，克隆集 `kof97h`/`kof97k` 12/13 被正确排除；
-    11 项断言（含残缺包、无关包、单 CRC 蒙中三种反例）全部通过
-  - **下一步：`git push`，然后服务器 pull + build + 重启**
+| `7aaaf67` | 街机 ROM 上传时自动识别 romset（`public/arcade-romsets.bin`，8721 个 romset / 12.7 万条 CRC） |
 
 ### 待办
 
 1. **《白色房间》(`white-chamber`) 还是坏的**——线上 `roms` 仍是单文件
    `roms/flash/white-chamber.en.swf`，而它是多 SWF 游戏（运行时去拉 `main21.swf` → 404）。
-   修法：后台用 **zip 整包**重传，见 §2.10。
+   修法：后台用 **zip 整包**重传，见 §2.11。
 2. **`POST /api/games/:slug/play` 线上 500**（游玩数永远是 0）。推测是缺 `game_plays` 表，
    但**未在库上确认**。确认办法：看服务端日志那条 500 的原文是不是
    `Table '...game_plays' doesn't exist`；是的话 `cd server && npm run migrate`。
