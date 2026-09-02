@@ -141,6 +141,12 @@ const patches = [
     run: () => conn.query('ALTER TABLE `games` ADD COLUMN `dos_save_hint` VARCHAR(160) NULL AFTER `dosbox_config_override`'),
   },
   {
+    name: 'games.arcade_romdata（街机改版包的 FBNeo RomData）',
+    table: 'games',
+    needed: async () => !(await hasColumn('games', 'arcade_romdata')),
+    run: () => conn.query('ALTER TABLE `games` ADD COLUMN `arcade_romdata` TEXT NULL AFTER `dos_save_hint`'),
+  },
+  {
     name: 'games.adult（成人游戏，前台启动前验证年满 18 岁）',
     table: 'games',
     needed: async () => !(await hasColumn('games', 'adult')),

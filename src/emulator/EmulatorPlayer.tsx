@@ -102,6 +102,8 @@ interface Props {
   core?: string
   /** 游戏类别；DOS 射击游戏据此启用相对鼠标锁定。 */
   genres?: readonly GenreId[]
+  /** FBNeo RomData（.dat 文本）；街机改版包靠它挂到现成驱动上运行。 */
+  arcadeRomData?: string
   /** DOS 启动程序覆盖（zip 内相对路径），jsdos 运行时用 */
   dosExecutable?: string
   /** DOS 运行核心：Windows 客体的完整 .jsdos 镜像必须走 DOSBox-X */
@@ -181,6 +183,7 @@ export function EmulatorPlayer({
   romUrl,
   core,
   genres,
+  arcadeRomData,
   dosExecutable,
   dosBackend,
   dosSystemUrl,
@@ -308,6 +311,9 @@ export function EmulatorPlayer({
   // 分类只在新会话挂载时决定鼠标模式；后台热改分类不该中断玩家当前这一局。
   const genresRef = useRef(genres)
   genresRef.current = genres
+
+  const arcadeRomDataRef = useRef(arcadeRomData)
+  arcadeRomDataRef.current = arcadeRomData
   const biosUrlRef = useRef(biosUrl)
   biosUrlRef.current = biosUrl
   // 同 core：只在挂载那一刻读一次，进依赖会把正在跑的游戏重启
@@ -416,6 +422,7 @@ export function EmulatorPlayer({
       // 放进 effect 依赖会让「BIOS 异步到货」把正在跑的游戏重启一遍
       core: coreRef.current,
       mouseCapture: shouldCaptureMouse(session.platform, genresRef.current),
+      arcadeRomData: arcadeRomDataRef.current,
       dosExecutable: dosExecutableRef.current,
       dosBackend: dosBackendRef.current,
       dosSystemUrl: dosSystemUrlRef.current,

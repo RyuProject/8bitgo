@@ -283,10 +283,14 @@ interface EjsGameManager {
   supportsStates?: () => boolean
   /** 把电池存档（SRAM）从核心刷进 /data/saves（cwrap cmd_savefiles）*/
   saveSaveFiles?: () => void
+  /** Emscripten 的虚拟文件系统。RomData 要往里塞一个 .dat，见 installRomDataInjector */
+  FS?: { writeFile: (path: string, data: string | Uint8Array) => void }
 }
 interface EjsEmulator {
   netplay?: EjsNetplay
   gameManager?: EjsGameManager
+  /** 引擎真正把 ROM 交给核心的那一步；RomData 注入器包在它外面 */
+  startGame?: () => void
   isNetplay?: boolean
   /** startGame() 一路跑完才置 true —— 兜底轮询靠它判断「到底开局了没有」 */
   started?: boolean
@@ -339,6 +343,69 @@ const FATAL_HINTS = [
   'could not load',
   'bios',
 ]
+
+/**
+ * 把 FBNeo 的 RomData（.dat）塞进模拟器的虚拟文件系统。
+ *
+ * ── 为什么要有这东西 ─────────────────────────────────────────
+ * 街机核心靠压缩包名认游戏（见 AGENTS.md §2.8）。汉化版、修改版这类包不在 FBNeo
+ * 的驱动表里，叫什么名字都是「Romset is unknown」。FBNeo 给这种包留了 RomData：
+ * 一份 .dat 写明 ZipName（包名）、DrvName（借哪个驱动跑）和整份 ROM 清单，
+ * 核心把该驱动的包名「寄生」成 ZipName，并整个改用 dat 里的清单，
+ * 于是和原版对不上的那几个 ROM 也能按自己的长度、CRC 加载。
+ *
+ * ── 为什么放在 ROM 旁边而不是 system 目录 ─────────────────────
+ * 核心的 retro_dat_romset_path() 在内容名查不到驱动时，**先找和内容同目录的
+ * `<basename>.dat`**，找不到才去 `<system>/fbneo/romdata/`。EmulatorJS 把 ROM 写在
+ * 文件系统根目录（`callMain(["/" + fileName])`），所以 /wofcn.zip 对应 /wofcn.dat。
+ * 走这条路还有两个好处：不必打开 fbneo-allow-patched-romsets，也不用先加载一遍
+ * 原版 romset 再去核心选项里勾 —— 那是 RetroArch 那套交互，网页上没法要求玩家做。
+ *
+ * ── 为什么劫持 startGame ─────────────────────────────────────
+ * 文件必须在 gameManager（也就是 Emscripten 的 FS）建好之后、callMain 之前写进去。
+ * 引擎在这两步之间没有可挂的事件，而 startGame() 正好是最后一道门：
+ * downloadFiles() → initializeGameManager() → 下载各类文件 → startGameFromDownload()
+ * → **startGame()** → callMain。所以在 loader.js 之前给 window.EJS_emulator 装一个
+ * setter，实例一挂上来就用自有属性盖掉原型上的 startGame。
+ *
+ * 写失败不拦着开局：那样至少还能按原始 romset 试一把，比直接黑屏强，
+ * 玩家会收到一条说明，日志里也留得下线索。
+ */
+function installRomDataInjector(
+  win: Window & Record<string, unknown>,
+  datPath: string,
+  dat: string,
+  onFail: (msg: string) => void,
+): void {
+  let emu: EjsEmulator | undefined
+  let wrapped = false
+
+  const wrap = (next: EjsEmulator | undefined) => {
+    if (!next || wrapped) return
+    const original = next.startGame
+    if (typeof original !== 'function') return
+    wrapped = true
+    next.startGame = function (this: unknown) {
+      try {
+        const fs = next.gameManager?.FS
+        if (!fs) throw new Error('gameManager.FS 还没建好')
+        fs.writeFile(datPath, dat)
+      } catch (e) {
+        onFail(e instanceof Error ? e.message : String(e))
+      }
+      return original.call(this)
+    }
+  }
+
+  Object.defineProperty(win, 'EJS_emulator', {
+    configurable: true,
+    get: () => emu,
+    set: (next: EjsEmulator | undefined) => {
+      emu = next
+      wrap(next)
+    },
+  })
+}
 
 function installErrorTap(
   win: Window & Record<string, unknown>,
@@ -1127,6 +1194,17 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         // 引擎的报错探针也要赶在 loader.js 之前装：核心是在加载过程中打错误的，
         // 装晚了那句「缺哪个文件」就已经过去了
         errorTap = installErrorTap(win, reportEngineError)
+
+        // RomData 也要赶在 loader.js 之前装：它靠接管 window.EJS_emulator 的赋值来生效，
+        // loader.js 第一行就把实例挂上去了，晚一步就接不着。
+        // 文件名必须和 ROM 同名（wofcn.zip → /wofcn.dat），这是核心自己的查找规则。
+        const romData = options.arcadeRomData?.trim()
+        if (romData) {
+          const datPath = `/${engineGameName.replace(/\.[^.]*$/, '')}.dat`
+          installRomDataInjector(win, datPath, `${romData}\n`, (msg) => {
+            if (!destroyed) options.onError?.(fmt(rt.ejsRomDataFailed, { msg }))
+          })
+        }
 
         // 网络探针也要赶在 loader.js 之前包好，否则核心那一趟就漏过去了
         installNetTap(win, {

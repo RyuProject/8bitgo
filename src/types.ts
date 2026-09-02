@@ -117,6 +117,20 @@ export interface Game {
    */
   core?: string
   /**
+   * FBNeo RomData：一份 .dat 文本，把一个**不在驱动表里**的 romset 挂到现成的驱动上。
+   *
+   * 街机核心靠压缩包名认游戏，改版包（汉化、修改版）不在 FBNeo 的驱动表里，
+   * 名字取什么都是「Romset is unknown」。RomData 就是官方给这种包留的口子：
+   * dat 里写清楚 ZipName（包名）、DrvName（借哪个驱动跑）和整份 ROM 清单，
+   * 核心会把该驱动的包名「寄生」成 ZipName，并整个换用 dat 里的清单 ——
+   * 于是汉化包里那几个和原版对不上的 GFX ROM 也能按自己的长度和 CRC 加载。
+   *
+   * 触发方式见 adapters/emulatorjs.ts 的 installRomDataInjector：ROM 叫 wofcn.zip，
+   * 就在虚拟文件系统里放一份同名的 /wofcn.dat，核心自己会找到。
+   * 只对走 FBNeo 系核心的街机游戏有意义；留空 = 按普通 romset 处理。
+   */
+  arcadeRomData?: string
+  /**
    * DOS 启动程序：zip 包内的相对路径（如 PARANOID.COM、NFS/TNFS.EXE）。
    * 留空由前端启发式去猜（src/lib/jsdosBundle.ts 的 pickExecutable）——
    * 共享软件时代的包里常混着安装器 / 评估版工具，猜错时在后台填这个字段一锤定音。

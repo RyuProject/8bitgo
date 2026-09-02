@@ -211,6 +211,8 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
       // 存档说明只对能存档的普通 DOS 游戏有意义：Windows 客体存的是 qcow2 扇区，
       // 播放器压根不给它「保存进度」按钮，留着这句话只会误导后台编辑
       dosSaveHint: form.platform === 'dos' && !windowsGuest ? form.dosSaveHint?.trim() || undefined : undefined,
+      // 街机改版包专用；换成别的平台时要清掉，否则改完平台还留着一份没人读的 dat
+      arcadeRomData: form.platform === 'arcade' ? form.arcadeRomData?.trim() || undefined : undefined,
       dosboxConfig,
       // 空字符串写成 undefined，否则会存一条空的英文简介，
       // 前台判「有没有英文版」时就会误判成有
@@ -420,6 +422,23 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
               </Field>
             )}
           </>
+        )}
+        {form.platform === 'arcade' && (
+          <Field label="RomData（改版包）" className="col-span-2 sm:col-span-4">
+            <textarea
+              className={cx(inputClass, 'h-44 resize-y py-2 font-mono text-xs leading-5')}
+              value={form.arcadeRomData ?? ''}
+              onChange={(e) => set('arcadeRomData', e.target.value || undefined)}
+              spellCheck={false}
+              placeholder={'// 三国志2 中文版\nZipName   wofcn\nDrvName   wofj\nFullName  Warriors of Fate (Chinese)\n\ntk2j_23c.8f  0x080000  0x9b215a68  BRF_ESS BRF_PRG CPS1_68K_PROGRAM_NO_BYTESWAP'}
+            />
+            <p className="mt-1 text-[11px] text-dim">
+              只给<b>不在 FBNeo 驱动表里</b>的包用（汉化版、修改版）。ROM 仍按包名上传（如 wofcn.zip），
+              播放器会在它旁边放一份同名 .dat，核心据此把 DrvName 指定的驱动「寄生」成这个包名，
+              并整个改用 dat 里的 ROM 清单 —— 和原版对不上的 GFX ROM 就是靠这个加载的。
+              必须同时写 ZipName 和 DrvName。骨架可以用 <code>npm run romdata -- &lt;包.zip&gt;</code> 从 zip 直接生成。
+            </p>
+          </Field>
         )}
         {coreOptions.length > 0 && (
           <Field label="模拟器核心">

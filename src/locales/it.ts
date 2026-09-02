@@ -861,6 +861,7 @@ const it: Translation = {
     ruffleNoApi: 'API del player Ruffle non trovata',
     flashLoadFailed: 'Caricamento del contenuto Flash non riuscito: {msg}',
     ejsNoCore: 'EmulatorJS non ha un core per {platform}',
+    ejsRomDataFailed: 'Impossibile installare il file RomData: il gioco partirà come romset originale: {msg}',
     ejsInitFailed: "Impossibile inizializzare il contenitore dell'emulatore",
     ejsEngineError: 'Errore dell’emulatore: {msg}',
     ejsArcadeRomInvalid: 'Il file arcade è incompleto o non è un ZIP valido: {name}',

@@ -41,6 +41,12 @@ export interface MountOptions {
    * 更老的板子可能只有 mame2003_plus 跑得动 —— 一个平台默认值盖不住。
    */
   core?: string
+  /**
+   * FBNeo RomData（.dat 文本）。传了就在虚拟文件系统里和 ROM 并排放一份
+   * `<romset>.dat`，让核心把这个包当成挂在别的驱动上的自定义 romset。
+   * 仅 emulatorjs 运行时的 FBNeo 系核心会用到。
+   */
+  arcadeRomData?: string
   /** js-dos 是否用相对鼠标并请求指针锁定；射击类需要，依赖绝对坐标的游戏不能开启。 */
   mouseCapture?: boolean
   /**

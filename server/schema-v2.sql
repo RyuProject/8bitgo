@@ -78,6 +78,9 @@ CREATE TABLE IF NOT EXISTS games (
   -- 这款 DOS 游戏怎么存档（如「按 F2 存档、F3 读档」）。
   -- js-dos 存的是盘上被改过的文件，玩家得先在游戏里存盘；各家存档键不同，只能逐游戏填。
   dos_save_hint  VARCHAR(160)  NULL,
+  -- 街机改版包（汉化、修改版）的 FBNeo RomData：写明包名、借用的驱动和整份 ROM 清单，
+  -- 让不在驱动表里的 romset 也能跑。见 src/emulator/adapters/emulatorjs.ts。
+  arcade_romdata TEXT NULL,
   -- 首页「精选」位的排序号。NULL = 不上首页，数字小的排前面。
   -- 一款都没设时，首页那一栏退回按 plays 自动排（见 server/src/content.js 的 loadHome）
   home_rank     SMALLINT UNSIGNED NULL,

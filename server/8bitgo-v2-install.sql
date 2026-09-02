@@ -100,6 +100,8 @@ CREATE TABLE IF NOT EXISTS games (
   dosbox_config_override TEXT NULL,
   -- 这款 DOS 游戏怎么存档；播放器「保存进度」的说明面板会显示它。
   dos_save_hint VARCHAR(160) NULL,
+  -- 街机改版包的 FBNeo RomData（.dat 文本）。
+  arcade_romdata TEXT NULL,
   -- 首页「精选」位的排序号。NULL = 不上首页，数字小的排前面。
   -- 一款都没设时，首页那一栏退回按 plays 自动排（见 server/src/content.js 的 loadHome）
   home_rank     SMALLINT UNSIGNED NULL,

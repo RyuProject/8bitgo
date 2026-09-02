@@ -75,6 +75,8 @@ CREATE TABLE IF NOT EXISTS games (
   dosbox_config_override TEXT,
   -- 这款 DOS 游戏怎么存档；播放器「保存进度」的说明面板会显示它。
   dos_save_hint  TEXT,
+  -- 街机改版包的 FBNeo RomData（.dat 文本）。
+  arcade_romdata TEXT,
   home_rank      INTEGER,
   added_at       TEXT,
   created_at     TEXT    NOT NULL DEFAULT (CURRENT_TIMESTAMP),

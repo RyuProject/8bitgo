@@ -72,6 +72,14 @@ glue 里 `EmulatorJSGetState` 一次都不出现。对不上 → `getState()` �
 grep -c 'this.functions.saveStateInfo()' public/emulatorjs/emulator.min.js   # 打过 = 1
 ```
 
+**这条补丁栽过第二次，坑在产物上。** 2026-09-02 补丁已经打进 `public/`、`npm run check`
+也报「三项补丁均在位」，线上却还在发 9-1 构建出来的旧 `emulator.min.js`，玩家继续看到
+`FAILED TO SAVE STATE`。跑在线上的是 `dist/client/emulatorjs/` 里那份拷贝，而这些文件名
+**不带内容哈希**，肉眼分不出新旧。所以 `scripts/check-emulatorjs.mjs --dist` 挂在
+`postbuild:client`，构建后按字节比对 `dist/client/emulatorjs/` 与 `public/`，对不上当场失败。
+改完 `public/emulatorjs/` 一定要重新构建；已经部署过的还要清一次 CDN ——
+`server/src/cache.js` 给 `/emulatorjs/` 发的是 `s-maxage=2592000`，边缘缓存 30 天。
+
 ### 2.6 引擎会把**坏核心缓存进 IndexedDB**，清浏览器缓存没用
 
 库名 `EmulatorJS-Cache`。缓存命中时日志是 `[EJS Core] Data is already decompressed cache item`
@@ -96,6 +104,27 @@ grep -c 'this.functions.saveStateInfo()' public/emulatorjs/emulator.min.js   # �
 现在后台上传街机 ROM 会**自动识别**（`src/lib/arcadeRomset.ts`）：读 zip 中央目录里每个成员的
 CRC-32（不用解压），比对 `public/arcade-romsets.bin`（8721 个 romset / 12.7 万条 CRC）。
 完全命中才自动改名；部分命中只列候选——拿父集的名字去套残缺包只会换来 missing files。
+
+**不在驱动表里的包（汉化版、修改版）走 RomData**，别去改名硬套。FBNeo 给这种包留了口子：
+一份 `.dat` 写明 `ZipName`（包名）、`DrvName`（借哪个驱动跑）和**整份** ROM 清单，
+核心会把该驱动的包名「寄生」成 ZipName，并整个改用 dat 里的清单 ——
+汉化包里那几个和原版对不上的 GFX ROM 就是这样加载的。
+
+触发方式挑的是最省事的一条：核心的 `retro_dat_romset_path()` 在内容名查不到驱动时，
+**先找和内容同目录的 `<basename>.dat`**，找不到才去 `<system>/fbneo/romdata/`。
+EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`），
+所以 `/wofcn.zip` 配 `/wofcn.dat` 就够了 —— 不必打开 `fbneo-allow-patched-romsets`，
+也不必先加载原版 romset 再去核心选项里勾（那是 RetroArch 的交互，网页上没法要求玩家做）。
+
+落地在三处：后台 `games.arcade_romdata` 列存 dat 文本；
+`src/emulator/adapters/emulatorjs.ts` 的 `installRomDataInjector()` 在 loader.js 之前给
+`window.EJS_emulator` 装 setter，包一层 `startGame()` 先把 dat 写进 FS；
+骨架用 `npm run romdata -- <包.zip> --drv <基础驱动> --fbneo <FBNeo>/src/burn/drv` 生成。
+
+⚠️ 第四列的类型**必须写**。FBNeo 独立版在类型留空时会用 `RDSetRomsType()` 按驱动名 + 长度猜，
+但 libretro 版没有这个函数（对照 `libretro/FBNeo` 的 `src/burner/libretro/romdata.cpp`），
+类型为 0 的行会被直接丢掉。生成脚本按 CRC 对照基础驱动源码把类型抄准，
+对不上的（也就是改版包换掉的那几个）留成 `TODO_TYPE` 由人来定。
 
 ### 2.9 平台 BIOS 的边缘缓存会骗人
 

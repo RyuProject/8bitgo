@@ -805,6 +805,7 @@ const zhHant: Translation = {
     ruffleNoApi: '找不到 Ruffle 播放器 API',
     flashLoadFailed: 'Flash 內容載入失敗：{msg}',
     ejsNoCore: 'EmulatorJS 沒有 {platform} 平台的核心',
+    ejsRomDataFailed: 'RomData 寫入失敗，遊戲會按原始 romset 啟動：{msg}',
     ejsInitFailed: '無法初始化模擬器容器',
     ejsLoadFailed: '無法載入 EmulatorJS 資源（{path}）。請檢查網路，或在 .env 中設定自行架設的 VITE_EJS_PATH。',
     ejsEngineError: '引擎報錯：{msg}',

@@ -22,6 +22,7 @@ const EXPECTED_COLUMNS = [
   { table: 'games', column: 'dos_launch_delay', why: '客体 Windows 自启动时机' },
   { table: 'games', column: 'dosbox_config_override', why: '逐游戏 DOSBox-X 启动配置覆盖' },
   { table: 'games', column: 'dos_save_hint', why: '逐游戏的 DOS 存档按键说明' },
+  { table: 'games', column: 'arcade_romdata', why: '街机改版包的 FBNeo RomData' },
   { table: 'games', column: 'adult', why: '成人游戏 18 岁验证' },
   { table: 'games', column: 'created_at', why: '真实入库时间' },
   { table: 'users', column: 'token_version', why: '退出所有设备 / 改完密码作废旧令牌' },

@@ -799,6 +799,7 @@ const ja: Translation = {
     ruffleNoApi: 'Ruffle プレイヤーの API が見つかりません',
     flashLoadFailed: 'Flash コンテンツの読み込みに失敗しました：{msg}',
     ejsNoCore: 'EmulatorJS に {platform} 用のコアがありません',
+    ejsRomDataFailed: 'RomData の書き込みに失敗しました。ゲームは元の romset として起動します：{msg}',
     ejsInitFailed: 'エミュレーターのコンテナを初期化できません',
     ejsEngineError: 'エミュレーターのエラー：{msg}',
     ejsArcadeRomInvalid: 'アーケードゲームのファイルが不完全か、有効な ZIP ではありません：{name}',

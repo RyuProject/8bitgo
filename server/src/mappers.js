@@ -174,6 +174,53 @@ export function dosboxConfigOf(v) {
   }
 }
 
+/**
+ * FBNeo RomData（.dat 文本）。
+ *
+ * 它不进 SQL、不进 shell，只会被写进模拟器的虚拟文件系统再由核心解析，
+ * 所以这里不做逐行语法校验（那是 FBNeo 的活），只管三件事：
+ *
+ *   1. 统一换行、砍掉除 \t 之外的控制字符 —— dat 是按行 token 化解析的，
+ *      \r 混进去会跟着并进最后一个 token（romset 名后面多个 \r 就找不到包了）。
+ *   2. 长度上限。TEXT 列放得下 64KB，但一份 dat 撑死几十行，
+ *      真填进来一个几十 KB 的东西多半是贴错了内容。
+ *   3. **必须同时有 ZipName/RomName 和 DrvName/Parent**。缺任何一个，核心的
+ *      RomDataGetDrvName() 拿不到驱动名，会安静地退回普通 romset 流程 ——
+ *      表现是「后台明明填了，游戏还是 Romset is unknown」，非常难查。
+ *      宁可在保存这一刻就 400 拒掉，把话说清楚。
+ */
+export function arcadeRomDataOf(v) {
+  if (v == null) return null
+  // eslint-disable-next-line no-control-regex
+  const s = String(v).replace(/\r\n?/g, '\n').replace(/[\x00-\x08\x0b-\x1f]/g, '').trim()
+  if (!s) return null
+
+  if (s.length > 32768) {
+    const error = new Error('RomData 太长了（上限 32768 字符）—— 确认贴进来的是 .dat 而不是别的文件')
+    error.status = 400
+    error.expose = true
+    throw error
+  }
+
+  // 只看行首关键字，大小写不敏感，和 FBNeo 的 _tcsicmp 一致
+  const has = (words) =>
+    s.split('\n').some((line) => {
+      const head = line.trim().split(/[\s\t,%:|{}]+/)[0]?.toLowerCase() ?? ''
+      return words.includes(head)
+    })
+
+  if (!has(['zipname', 'romname']) || !has(['drvname', 'parent'])) {
+    const error = new Error(
+      'RomData 必须同时写明 ZipName（包名，如 wofcn）和 DrvName（借用的驱动，如 wofj），否则核心会忽略整份 dat',
+    )
+    error.status = 400
+    error.expose = true
+    throw error
+  }
+
+  return s
+}
+
 export function gameRowToApi(r, rel = {}) {
   const g = {
     slug: r.slug,
@@ -207,6 +254,7 @@ export function gameRowToApi(r, rel = {}) {
   if (r.dos_launch_delay != null) g.dosLaunchDelay = Number(r.dos_launch_delay)
   if (r.dosbox_config_override) g.dosboxConfig = r.dosbox_config_override
   if (r.dos_save_hint) g.dosSaveHint = r.dos_save_hint
+  if (r.arcade_romdata) g.arcadeRomData = r.arcade_romdata
   if (r.title_zh) g.titleZh = r.title_zh
   // 没写英文简介的游戏不带这个字段，前台自己回落到基准简介
   if (r.description_en) g.descriptionEn = r.description_en
@@ -256,6 +304,7 @@ export function gameApiToRow(g) {
     dos_launch_delay: dosLaunchDelayOf(g.dosLaunchDelay),
     dosbox_config_override: dosboxConfigOf(g.dosboxConfig),
     dos_save_hint: dosSaveHintOf(g.dosSaveHint),
+    arcade_romdata: arcadeRomDataOf(g.arcadeRomData),
   }
 }
 
@@ -290,6 +339,7 @@ const FIELD_TO_COLUMN = {
   dosLaunchDelay: ['dos_launch_delay', dosLaunchDelayOf],
   dosboxConfig: ['dosbox_config_override', dosboxConfigOf],
   dosSaveHint: ['dos_save_hint', dosSaveHintOf],
+  arcadeRomData: ['arcade_romdata', arcadeRomDataOf],
 }
 
 export function gameApiToPartialRow(patch) {

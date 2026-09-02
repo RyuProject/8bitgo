@@ -852,6 +852,7 @@ export const zhHans = {
     ruffleNoApi: '未找到 Ruffle 播放器 API',
     flashLoadFailed: 'Flash 内容加载失败：{msg}',
     ejsNoCore: 'EmulatorJS 没有 {platform} 平台的核心',
+    ejsRomDataFailed: 'RomData 写入失败，游戏会按原始 romset 启动：{msg}',
     ejsInitFailed: '无法初始化模拟器容器',
     ejsLoadFailed: '无法加载 EmulatorJS 资源（{path}）。请检查网络，或在 .env 中配置自托管的 VITE_EJS_PATH。',
     ejsEngineError: '引擎报错：{msg}',
