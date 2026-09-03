@@ -11,14 +11,19 @@ import { Button, buttonClasses } from '@/components/ui/Button'
 import { useT, fmt } from '@/services/i18n'
 import { changeEmail, logoutAllDevices, requestEmailChangeCode, setPassword } from '@/services/auth'
 import { CodeInput, Notice, Panel, inputClass, useCooldown } from './shared'
+import { FEATURES } from '@/config/features'
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 export function AccountSection({ user }: { user: PublicUser }) {
   return (
     <div className="grid gap-4 lg:grid-cols-2">
-      <EmailPanel user={user} />
-      <PasswordPanel user={user} />
+      {/* 密码面板收起来时邮箱要占满整行，否则右半边空着一块，像是有东西没加载出来 */}
+      <div className={FEATURES.passwordLogin ? undefined : 'lg:col-span-2'}>
+        <EmailPanel user={user} />
+      </div>
+      {/* 密码登录关着的时候这里也要收起来：设得了、用不上，等于给用户挖坑 */}
+      {FEATURES.passwordLogin && <PasswordPanel user={user} />}
       {/* 「退出其它设备」横跨两列：它是一个动作而不是一组表单，挤在半栏里会被当成邮箱那块的一部分 */}
       <div className="lg:col-span-2">
         <DevicesPanel />

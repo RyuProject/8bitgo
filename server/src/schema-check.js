@@ -44,7 +44,12 @@ const EXPECTED_TABLES = [
   { table: 'game_tags', why: '游戏标签' },
   { table: 'game_search_tokens', why: '搜索倒排索引' },
   { table: 'post_tags', why: '文章标签' },
+  { table: 'developers', why: '开发商的人工资料（logo / 简介）；缺了开发商列表仍然能看，只是后台那一页读写全 500' },
   { table: 'saves', why: '云存档；schema-v2 早期漏了这张表，缺了的话 /api/saves 全 500，玩家点「云端存档」就报错' },
+  {
+    table: 'game_comments',
+    why: '游戏评论；缺了详情页评论区读不出来、发表全 500，而页面其它部分一切正常',
+  },
   { table: 'login_codes', why: '邮箱验证码；缺了会自动退回进程内存（重启丢码、多实例对不上），登录能用但不可靠' },
 ]
 

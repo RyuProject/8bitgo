@@ -102,6 +102,29 @@ const ROMINFO = /\b(\w+)RomInfo\b/
 // { "tk2j_23c.8f", 0x080000, 0x9b215a68, BRF_ESS | BRF_PRG | CPS1_68K_PROGRAM_NO_BYTESWAP },
 const ROW = /\{\s*"([^"]+)"\s*,\s*(0x[0-9a-fA-F]+|\d+)\s*,\s*(0x[0-9a-fA-F]+|\d+)\s*,\s*([^}]+?)\s*\}/g
 
+/**
+ * 展开 FBNeo 源码里的 ROM 清单宏。
+ *
+ * CPS 的驱动表里大量用 `A_BOARD_QSOUND_PLDS` 这类宏一次带进四五行 PLD，
+ * 不展开的话这些行在表里根本不存在 —— 包里明明有 buf1 / ioa1 / rom1 / prg2，
+ * 却会被判成「改版包换掉的 ROM」而标上 TODO_TYPE，人还得回头查一遍才知道
+ * 它们只是普通的 BRF_OPT。展开一次比每回手工核对便宜得多。
+ */
+function expandMacros(text) {
+  const defs = new Map()
+  // #define NAME  <行尾反斜杠续行>…  最后一行不带反斜杠
+  const DEF = /^#define\s+(\w+)\s*\\\n((?:.*\\\n)*.*)$/gm
+  let m
+  while ((m = DEF.exec(text))) {
+    const body = m[2].replace(/\\\n/g, '\n')
+    // 只认那些确实是 ROM 行的宏，别把无关的宏也塞进表里
+    if (/\{\s*"[^"]+"\s*,\s*0x/.test(body)) defs.set(m[1], body)
+  }
+  if (defs.size === 0) return text
+  const NAMES = new RegExp(`\\b(${[...defs.keys()].join('|')})\\b`, 'g')
+  return text.replace(NAMES, (name) => defs.get(name) ?? name)
+}
+
 function walk(dir, out = []) {
   for (const entry of readdirSync(dir)) {
     const full = join(dir, entry)
@@ -120,8 +143,9 @@ function walk(dir, out = []) {
  */
 function loadDriverRoms(srcDir, drv) {
   for (const file of walk(srcDir)) {
-    const text = readFileSync(file, 'utf8')
-    if (!text.includes(`"${drv}"`)) continue
+    const raw = readFileSync(file, 'utf8')
+    if (!raw.includes(`"${drv}"`)) continue
+    const text = expandMacros(raw)
 
     // 先找到这个短名对应的 RomInfo 函数名
     let romInfoName = null

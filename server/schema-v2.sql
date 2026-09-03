@@ -115,6 +115,27 @@ CREATE TABLE IF NOT EXISTS platform_bios (
   PRIMARY KEY (platform)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ---------- 开发商资料 ----------
+-- 开发商本身不是独立实体：名单是从 games.developer 那一列 GROUP BY 出来的
+-- （一款游戏可以写多家，用逗号分隔）。这张表只存**人工补充**的那部分资料，
+-- 一行都没有也不影响开发商列表页 —— 那时每家仍旧显示代表作封面。
+--
+-- 主键就用开发商名字本身，跟 games.developer 里写的完全一致（大小写与排序
+-- 走 utf8mb4_unicode_ci，和那一列同一套规则，JOIN 才对得上）。不另发 id 的原因：
+-- games 那边存的就是名字，多一层 id 就要多一张映射表和一套改名同步逻辑。
+-- 代价是改名等于换主键，所以后台的改名做成「新建一行 + 删旧行」。
+CREATE TABLE IF NOT EXISTS developers (
+  name            VARCHAR(120)  NOT NULL,
+  -- 对象存储 key 或完整 URL，语义和 games.cover 一致（见 romUrlForKey）
+  logo            VARCHAR(500)  NOT NULL DEFAULT '',
+  description     TEXT          NULL,
+  -- 留空时所有非中文语种回退到上面那段中文，和 games.description_en 同一套规则
+  description_en  TEXT          NULL,
+  homepage        VARCHAR(300)  NOT NULL DEFAULT '',
+  updated_at      TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ---------- 游戏 × 类型 ----------
 -- genre_id 取值见 src/data/genres.ts（'action' / 'rpg' / 'puzzle' …）
 -- 两个方向的索引都要：按游戏取它的类型（主键），按类型筛游戏（idx_genre）
@@ -322,4 +343,44 @@ CREATE TABLE IF NOT EXISTS login_codes (
   sent_at    BIGINT UNSIGNED  NOT NULL,
   PRIMARY KEY (email, purpose),
   KEY idx_codes_expires (expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------- 游戏评论 ----------
+-- 只有登录用户能发（服务端 requireUser），所以 user_id 是硬外键：账号注销时评论跟着走。
+--
+-- 三种「不可见」是三件不同的事，不能合成一个状态位：
+--   hidden     后台隐藏 —— 管理员判断内容不合适，前台不再显示，随时能恢复
+--   deleted_at 作者自己删的（或管理员清理）—— 软删除，后台仍看得到原文，方便处理纠纷
+--   两者都没有 = 正常可见
+-- 真删除只在「删游戏 / 删账号」时由外键级联发生。
+--
+-- country 是**发表那一刻的快照**，不是用户资料的一部分：
+-- 取自 Cloudflare 的 CF-IPCountry 请求头（ISO 3166-1 alpha-2），拿不到时是 'XX'。
+-- 存快照而不是每次现查，是因为同一个人换个网络再进来，历史评论上的国家不该跟着变。
+--
+-- parent_id 是「引用回复」。外键用 ON DELETE SET NULL 而不是 CASCADE ——
+-- 父评论真被删掉时只应该断开引用关系，不能把底下整串回复连坐删掉。
+CREATE TABLE IF NOT EXISTS game_comments (
+  id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  game_id    BIGINT UNSIGNED NOT NULL,
+  user_id    VARCHAR(40)     NOT NULL,
+  parent_id  BIGINT UNSIGNED NULL,
+  content    VARCHAR(2000)   NOT NULL,
+  country    CHAR(2)         NOT NULL DEFAULT 'XX',
+  hidden     TINYINT(1)      NOT NULL DEFAULT 0,
+  -- 编辑过的时间；NULL = 从没编辑过（前台据此显示「已编辑」）
+  edited_at  TIMESTAMP(3)    NULL DEFAULT NULL,
+  deleted_at TIMESTAMP(3)    NULL DEFAULT NULL,
+  -- 毫秒精度：同 favorites / recents，秒级会让同一秒里的连续发言排不出先后
+  created_at TIMESTAMP(3)    NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  -- 前台：某款游戏的评论，最新在前
+  KEY idx_cmt_game_time (game_id, created_at DESC),
+  -- 后台：按用户查某个人发过什么
+  KEY idx_cmt_user_time (user_id, created_at DESC),
+  KEY idx_cmt_parent (parent_id),
+  -- 后台审核：先按状态过滤再按时间排
+  KEY idx_cmt_hidden_time (hidden, created_at DESC),
+  CONSTRAINT fk_cmt_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE,
+  CONSTRAINT fk_cmt_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_cmt_parent FOREIGN KEY (parent_id) REFERENCES game_comments(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

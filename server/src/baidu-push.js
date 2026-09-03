@@ -13,6 +13,7 @@ import {
   gameChangeUrls,
   gameDetailUrls,
   normalizeSiteUrls,
+  postChangeUrls,
   publicSiteUrl,
   resolveLanguages,
 } from './site-urls.js'
@@ -84,6 +85,11 @@ export function gameBaiduUrls(game, siteUrl = publicSiteUrl(), languages = DEFAU
 /** 补交用：只要详情页。配额有限时，聚合页远不如详情页值钱。 */
 export function gameBaiduDetailUrls(slug, siteUrl = publicSiteUrl(), languages = DEFAULT_BAIDU_LANGUAGES) {
   return gameDetailUrls(slug, siteUrl, languages)
+}
+
+/** 一篇文章变更时要推的 URL（详情 + 博客列表，仅中文）。 */
+export function postBaiduUrls(post, siteUrl = publicSiteUrl(), languages = DEFAULT_BAIDU_LANGUAGES) {
+  return postChangeUrls(post, siteUrl, languages)
 }
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -219,6 +225,16 @@ export function queueGameBaiduPush(game) {
     return queueBaiduUrls(gameBaiduUrls(game, baiduPushSite(), baiduPushLanguages()))
   } catch (error) {
     console.warn(`[baidu] 未能生成游戏 URL：${error?.message || error}`)
+    return false
+  }
+}
+
+export function queuePostBaiduPush(post) {
+  if (!baiduPushEnabled()) return false
+  try {
+    return queueBaiduUrls(postBaiduUrls(post, baiduPushSite(), baiduPushLanguages()))
+  } catch (error) {
+    console.warn(`[baidu] 未能生成文章 URL：${error?.message || error}`)
     return false
   }
 }

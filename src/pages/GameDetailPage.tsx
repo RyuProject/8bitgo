@@ -20,6 +20,7 @@ import { gameDescription, gameTitle, genreLabel, platformDesc, platformLabel } f
 import { EmulatorPlayer } from '@/emulator'
 import { GameCover } from '@/components/game/GameCover'
 import { GameAgeGuard } from '@/components/game/AgeGate'
+import { GameComments } from '@/components/game/GameComments'
 import { GameCard } from '@/components/game/GameCard'
 import { SectionHeader } from '@/components/ui/SectionHeader'
 import { Badge, CoinBadge } from '@/components/ui/Badge'
@@ -192,6 +193,7 @@ export function GameDetailPage() {
                 romUrl={rom.status === 'found' ? rom.url : undefined}
                 romChecking={rom.status === 'checking'}
                 romUnavailable={rom.status === 'missing'}
+                onRetryRom={rom.retry}
                 romLangs={romLangs}
                 romLang={rom.lang}
                 onRomLangChange={setRomLang}
@@ -349,6 +351,12 @@ export function GameDetailPage() {
               {fmt(t.game.browsePlatform, { platform: platform.shortName })}
             </Button>
           </div>
+
+          {/*
+            评论区。放在平台卡下面 —— 沉浸模式下整个侧栏是隐藏的（见 aside 的 className），
+            那时候玩家在全屏玩游戏，评论跟着一起收起来是对的。
+          */}
+          {FEATURES.comments && <GameComments gameSlug={game.slug} />}
 
           {FEATURES.coins && (
           <div className="rounded-2xl border border-coin/30 bg-gradient-to-br from-coin/10 to-transparent p-5">

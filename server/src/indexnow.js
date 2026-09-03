@@ -11,6 +11,8 @@ import {
   gameDetailUrls,
   localizedPublicUrl,
   normalizeSiteUrls,
+  postChangeUrls,
+  postDetailUrls,
   publicSiteUrl,
 } from './site-urls.js'
 
@@ -19,6 +21,8 @@ export {
   gameChangeUrls,
   gameDetailUrls,
   localizedPublicUrl,
+  postChangeUrls,
+  postDetailUrls,
   publicSiteUrl,
   normalizeSiteUrls,
   normalizeSiteUrls as normalizeIndexNowUrls,
@@ -145,6 +149,16 @@ export function queueGameIndexing(game) {
     return queueIndexNowUrls(gameChangeUrls(game))
   } catch (error) {
     console.warn(`[indexnow] 未能生成游戏 URL：${error?.message || error}`)
+    return false
+  }
+}
+
+export function queuePostIndexing(post) {
+  if (!indexNowEnabled()) return false
+  try {
+    return queueIndexNowUrls(postChangeUrls(post))
+  } catch (error) {
+    console.warn(`[indexnow] 未能生成文章 URL：${error?.message || error}`)
     return false
   }
 }

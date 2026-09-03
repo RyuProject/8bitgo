@@ -188,13 +188,13 @@ await check('not_same_site / not_valid 被原样报出，不当成成功', async
 })
 
 await check('sitemap 索引的游戏 lastmod 跟数据库走', async () => {
-  const xml = buildSitemapIndex('2026-09-02', SITE, '2026-08-30')
+  const xml = buildSitemapIndex({ siteUrl: SITE, gamesLastmod: '2026-09-02', staticLastmod: '2026-08-30' })
   assert.match(xml, /<loc>https:\/\/8bitgo\.com\/sitemaps\/games-zh-Hans\.xml<\/loc>\s*<lastmod>2026-09-02<\/lastmod>/)
   assert.match(xml, /<loc>https:\/\/8bitgo\.com\/sitemap-static\.xml<\/loc>\s*<lastmod>2026-08-30<\/lastmod>/)
-  // 语言数 + 1 份静态
-  assert.equal((xml.match(/<sitemap>/g) || []).length, SITE_LANGUAGES.length + 1)
+  // 1 份静态 + 每种语言各三份（游戏 / 文章 / 平台类型）
+  assert.equal((xml.match(/<sitemap>/g) || []).length, SITE_LANGUAGES.length * 3 + 1)
   // 没构建过时不写 lastmod（协议里它是可选的），别输出空标签
-  assert.ok(!buildSitemapIndex('2026-09-02', SITE, '').includes('<lastmod></lastmod>'))
+  assert.ok(!buildSitemapIndex({ siteUrl: SITE, gamesLastmod: '2026-09-02' }).includes('<lastmod></lastmod>'))
 })
 
 console.log(`✅ 百度推送 / sitemap 索引：${passed} 项检查通过`)

@@ -11,7 +11,17 @@
 
 import { normalizeDosboxConfigOverride } from '../../shared/dosbox-config.js'
 
-const bool = (v) => v === 1 || v === true || v === '1'
+/**
+ * 数据库布尔列的唯一判断方式。
+ *
+ * mysql2 把 `tinyint(1)` 读成数字 `1`/`0`，所以**不能**用 routes 里那个 `truthy`
+ * （只认 `'1'`/`'true'`，那是给 `req.query` 用的）—— 拿它判数据库值会恒为 false。
+ * 这个坑真出过事故：`GET /games/:slug/access` 用 truthy 判 `adult`，永远回 false，
+ * 前端据此把成人游戏的年龄门整个撤掉了。需要判库里布尔值的地方都从这里导入。
+ */
+export const dbFlag = (v) => v === 1 || v === true || v === '1'
+
+const bool = dbFlag
 
 /** 入库时统一逗号和空格，否则同一家公司会在开发商统计里被拆成多个名字。 */
 function developersText(value) {
@@ -422,6 +432,69 @@ export function userRowToPublic(r, favorites = [], recent = []) {
     favorites,
     recent,
   }
+}
+
+/* ---------------- 评论 ---------------- */
+
+/**
+ * 一条评论 -> 对外结构。
+ *
+ * 三件事必须由这一层统一决定，不能让各个接口自己拼：
+ *
+ * 1. **被隐藏 / 被删除的评论不回正文**。前台只需要知道「这里曾经有一条评论」，
+ *    好让引用它的回复不至于指向虚空；把原文照发出去，等于隐藏了个没隐藏。
+ *    后台要看原文，走 admin: true。
+ * 2. **不回邮箱**。评论区是公开的，userRowToPublic 那套是给后台和本人用的。
+ * 3. `country` 统一大写、非法值归成 'XX'，前端只管拿两个字母去查国旗。
+ *
+ * @param r          game_comments 一行，外加 join 出来的 nickname / avatar / game_slug
+ * @param admin      true = 后台视角，无论隐藏与否都给原文
+ */
+export function commentRowToApi(r, { admin = false } = {}) {
+  const hidden = dbFlag(r.hidden)
+  const deleted = Boolean(r.deleted_at)
+  // 前台看不到内容的两种情形。注意别写成 `hidden || deleted ? '' : content` 之后
+  // 又在别处判空——调用方要能区分「没内容」和「有内容但不给你看」，所以额外回状态位。
+  const readable = admin || (!hidden && !deleted)
+  return {
+    id: String(r.id),
+    gameSlug: r.game_slug ?? undefined,
+    gameTitle: r.game_title ?? undefined,
+    content: readable ? String(r.content ?? '') : '',
+    country: countryOf(r.country),
+    hidden,
+    deleted,
+    editedAt: dateTimeIso(r.edited_at) || undefined,
+    createdAt: dateTimeIso(r.created_at),
+    author: {
+      id: r.user_id,
+      nickname: r.nickname ?? '',
+      avatar: r.avatar || '🕹️',
+      // 后台要靠邮箱认人（昵称能改、能重名），前台一律不给
+      email: admin ? (r.email ?? '') : undefined,
+    },
+    /**
+     * 引用的那条评论。平铺列表 + 引用卡片的形态（见 GameComments.tsx）：
+     * 只带一层，不做树 —— 卡片里要的就是「回复谁、说了什么」这一句。
+     * 父评论已被隐藏或删除时 content 为空、deleted 为 true，前台显示占位文案。
+     */
+    quote: r.parent_id
+      ? {
+          id: String(r.parent_id),
+          nickname: r.parent_nickname ?? '',
+          avatar: r.parent_avatar || '🕹️',
+          content:
+            dbFlag(r.parent_hidden) || r.parent_deleted_at ? '' : String(r.parent_content ?? ''),
+          deleted: dbFlag(r.parent_hidden) || Boolean(r.parent_deleted_at),
+        }
+      : undefined,
+  }
+}
+
+/** ISO 3166-1 alpha-2，大写；认不出来的一律 'XX'（前端显示成「未知地区」） */
+export function countryOf(v) {
+  const code = String(v ?? '').trim().toUpperCase()
+  return /^[A-Z]{2}$/.test(code) ? code : 'XX'
 }
 
 /* ---------------- SQL 小工具 ---------------- */

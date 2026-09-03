@@ -3,7 +3,8 @@ import { query, queryOne, withTransaction } from '../db.js'
 import { requireAdmin, isAdminRequest } from '../auth.js'
 import { invalidateContent } from '../content.js'
 import { publicApi } from '../cache.js'
-import { postRowToApi, postApiToRow } from '../mappers.js'
+import { postRowToApi, postApiToRow, dbFlag } from '../mappers.js'
+import { queuePostSearchPush } from '../search-push.js'
 
 export const postsRouter = Router()
 
@@ -77,6 +78,8 @@ postsRouter.put('/:slug', requireAdmin, async (req, res, next) => {
   try {
     const slug = String(req.params.slug)
     if (!req.body?.title) return res.status(400).json({ error: '缺少标题' })
+    // 保存前的发布状态。决定这次要不要通知搜索引擎时用得上（见下面 queuePostSearchPush 处）。
+    const before = await queryOne('SELECT published FROM posts WHERE slug = ?', [slug])
     await withTransaction(async (run) => {
       const row = postApiToRow({ ...req.body, slug })
       const cols = Object.keys(row)
@@ -92,6 +95,13 @@ postsRouter.put('/:slug', requireAdmin, async (req, res, next) => {
     invalidateContent()
     const saved = await queryOne('SELECT * FROM posts WHERE slug = ?', [slug])
     const [post] = await attachPostTags([saved])
+    /**
+     * 只在这个 URL 对搜索引擎「可见过」时才推：
+     *   - 现在是已发布 → 新发或改动，要推
+     *   - 之前已发布、现在撤下 → URL 变成 404，更要推，否则搜索结果里会长期挂着死链
+     *   - 草稿改草稿 → 从来没被收录过，推它只是白耗百度那点每日配额
+     */
+    if (post.published || dbFlag(before?.published)) queuePostSearchPush(post)
     res.json(post)
   } catch (e) {
     next(e)
@@ -100,10 +110,15 @@ postsRouter.put('/:slug', requireAdmin, async (req, res, next) => {
 
 postsRouter.delete('/:slug', requireAdmin, async (req, res, next) => {
   try {
+    const slug = String(req.params.slug)
+    // 删之前先看一眼发布状态：删完就查不到了，而「这篇是否被收录过」决定要不要推送。
+    const before = await queryOne('SELECT published FROM posts WHERE slug = ?', [slug])
     // post_tags 有外键级联，跟着一起删
-    const r = await query('DELETE FROM posts WHERE slug = ?', [req.params.slug])
+    const r = await query('DELETE FROM posts WHERE slug = ?', [slug])
     if (!r.affectedRows) return res.status(404).json({ error: '文章不存在' })
     invalidateContent()
+    // 已发布的文章被删除，详情页变 404、博客列表也少了一条，两个都要让搜索引擎重抓。
+    if (dbFlag(before?.published)) queuePostSearchPush({ slug })
     res.json({ ok: true })
   } catch (e) {
     next(e)

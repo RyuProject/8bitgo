@@ -10,19 +10,21 @@ import { CACHE, noStore, staticCacheHeaders } from './cache.js'
 import { authRouter } from './routes/auth.js'
 import { gamesRouter } from './routes/games.js'
 import { postsRouter } from './routes/posts.js'
+import { commentsRouter } from './routes/comments.js'
 import { meRouter } from './routes/me.js'
 import { usersRouter } from './routes/users.js'
 import { adminRouter } from './routes/admin.js'
 import { roomsRouter } from './routes/rooms.js'
 import { pageRouter } from './routes/page.js'
 import { platformBiosRouter } from './routes/platform-bios.js'
+import { developersRouter } from './routes/developers.js'
 import { checkSchema } from './schema-check.js'
 import { savesRouter } from './routes/saves.js'
 import { attachNetplay } from './netplay.js'
 import { attachLive, liveRoom, liveRooms } from './live.js'
 import { iceRouter } from './routes/ice.js'
 import { mailProvider } from './mail.js'
-import { gameSitemap, sitemapIndex } from './routes/sitemaps.js'
+import { gameSitemap, postSitemap, sitemapIndex, taxonomySitemap } from './routes/sitemaps.js'
 import { logSearchPushStatus } from './search-push.js'
 
 const app = express()
@@ -83,6 +85,8 @@ app.get('/api/health', async (_req, res) => {
 app.use('/api/auth', authRouter)
 app.use('/api/games', gamesRouter)
 app.use('/api/posts', postsRouter)
+// 游戏评论：读公开、发表必须登录、后台可隐藏（见 routes/comments.js）
+app.use('/api/comments', commentsRouter)
 app.use('/api/me', meRouter)
 app.use('/api/users', usersRouter)
 app.use('/api/admin', adminRouter)
@@ -90,6 +94,7 @@ app.use('/api/rooms', roomsRouter)
 // 按路由取数：SSR 与客户端共用同一份定义（见 routes/page.js）
 app.use('/api/page', pageRouter)
 app.use('/api/platform-bios', platformBiosRouter)
+app.use('/api/developers', developersRouter)
 // 云存档（必须登录，见 routes/saves.js）
 app.use('/api/saves', savesRouter)
 // P2P 联机的 ICE / TURN 配置（短期凭证，见 routes/ice.js）
@@ -97,6 +102,12 @@ app.use('/api/netplay/ice', iceRouter)
 
 // 游戏 sitemap 直接读数据库。放在静态资源之前，后台刚上架的游戏不必等下次构建才出现。
 app.get('/sitemaps/games-:language.xml', gameSitemap)
+// 文章同理：后台随时能发文，之前它们只在构建时烘进 sitemap-static.xml，
+// 不重新部署就永远进不了 sitemap。
+app.get('/sitemaps/posts-:language.xml', postSitemap)
+// 平台页 / 类型页：「哪些平台和类型有游戏」同样只有数据库知道。烘在构建期的后果
+// 已经真实发生过 —— 线上 sitemap 长期只剩 flash 和 html5 两个平台页、类型页一条没有。
+app.get('/sitemaps/taxonomy-:language.xml', taxonomySitemap)
 /**
  * sitemap 索引同样接管掉，覆盖构建产物里的 public/sitemap.xml。
  * 那份静态文件里游戏 sitemap 的 lastmod 停在构建当天，之后上架多少游戏都不变，

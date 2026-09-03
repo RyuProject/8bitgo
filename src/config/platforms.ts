@@ -1,17 +1,15 @@
 import type { PlatformId } from '@/types'
+import { ENABLED_PLATFORM_IDS, isPlatformEnabledId } from '../../shared/site-taxonomy.js'
 
 /**
- * 目前对外开放的平台白名单。不在名单里的平台、以及它们的游戏，前台一律不展示
- * （后台 /admin 仍可看到并管理全部平台的游戏）。
+ * 目前对外开放的平台白名单。
  *
- * 想开放更多平台：把对应 id 加进来即可。想恢复「全部平台」：把数组清空 []。
- *
- * 说明：gb 与 gbc 是**两个**平台（1989 的 Game Boy 和 1998 的 Game Boy Color），
- *       模拟器核心同为 gambatte，但分类、ROM 目录（roms/gb、roms/gbc）各自独立；
- *       Flash 与 HTML5 是两种不同的网页游戏：前者交给 Ruffle，后者直接加载网页入口。
+ * 名单本身搬到了 shared/site-taxonomy.js —— 后端的实时 sitemap 也要用它，
+ * 而 server/ 不经过 TypeScript 编译、import 不了 .ts。想改开放范围就改那个文件，
+ * 这里只负责套上 PlatformId 类型。
  */
-export const ENABLED_PLATFORMS: PlatformId[] = ['nes', 'flash', 'html5', 'gba', 'gb', 'gbc', 'java', 'arcade', 'dos']
+export const ENABLED_PLATFORMS: PlatformId[] = ENABLED_PLATFORM_IDS as PlatformId[]
 
 export function isPlatformEnabled(id: PlatformId): boolean {
-  return ENABLED_PLATFORMS.length === 0 || ENABLED_PLATFORMS.includes(id)
+  return isPlatformEnabledId(id)
 }

@@ -6,6 +6,7 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { build } from 'esbuild'
 import { gameApiToPartialRow, gameApiToRow, gameRowToApi } from '../server/src/mappers.js'
+import { dbFlag } from '../server/src/routes/games.js'
 
 const temp = await mkdtemp(path.join(tmpdir(), '8bitgo-age-gate-'))
 try {
@@ -35,7 +36,16 @@ try {
   assert.equal(gameApiToRow({ slug: 'x', adult: true }).adult, 1)
   assert.deepEqual(gameApiToPartialRow({ adult: false }), { adult: 0 })
 
-  console.log('成人游戏年龄验证测试通过：生日边界 / 非法日期 / 数据库字段映射')
+  // /:slug/access 曾用查询串专用的 truthy() 判数据库布尔列，mysql2 回的 1 被判成 false，
+  // 前端拿到 adult:false 就把年龄门整个撤掉了。
+  assert.equal(dbFlag(1), true, 'tinyint(1) 的 1 必须判成真')
+  assert.equal(dbFlag(true), true)
+  assert.equal(dbFlag('1'), true)
+  assert.equal(dbFlag(0), false)
+  assert.equal(dbFlag(null), false)
+  assert.equal(dbFlag(undefined), false)
+
+  console.log('成人游戏年龄验证测试通过：生日边界 / 非法日期 / 数据库字段映射 / access 接口布尔判定')
 } finally {
   await rm(temp, { recursive: true, force: true })
 }

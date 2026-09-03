@@ -6,6 +6,7 @@ import { closeAuthModal, useAuthModalOpen } from '@/services/authModal'
 import { login, loginWithEmailCode, loginWithGoogle, requestEmailCode, useCurrentUser } from '@/services/auth'
 import { ApiError } from '@/services/api'
 import { useT, fmt } from '@/services/i18n'
+import { FEATURES } from '@/config/features'
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -18,6 +19,9 @@ const inputClass =
  * 默认是验证码那一栏 —— 绝大多数账号是验证码创建的，压根没有密码。
  * 密码那一栏是给在个人中心设过密码的人用的：能设却不能用来登录的话，
  * 那个设置项本身就是个坑。
+ *
+ * FEATURES.passwordLogin 关掉时整排标签一起消失（只剩一个标签的 tablist 是纯噪音），
+ * mode 也就永远停在 'code' —— 下面按 mode 分支的代码原样留着，开关翻回来即可复原。
  */
 export function AuthModal() {
   const open = useAuthModalOpen()
@@ -171,29 +175,31 @@ export function AuthModal() {
 
         {/* 验证码 / 密码 两栏。切换时把上一栏的报错清掉 —— 留着「验证码不正确」
             却站在密码那一栏上，会让人以为是密码错了 */}
-        <div role="tablist" aria-label={t.auth.title} className="mt-5 flex gap-1.5">
-          {([
-            { id: 'code' as const, label: t.auth.tabCode },
-            { id: 'password' as const, label: t.auth.tabPassword },
-          ]).map((x) => (
-            <button
-              key={x.id}
-              type="button"
-              role="tab"
-              aria-selected={mode === x.id}
-              onClick={() => {
-                setMode(x.id)
-                setError(null)
-              }}
-              className={cx(
-                'h-9 flex-1 rounded-xl border-2 text-sm font-bold transition',
-                mode === x.id ? 'border-brand bg-brand-soft text-brand-hover' : 'border-line text-muted hover:bg-surface-2',
-              )}
-            >
-              {x.label}
-            </button>
-          ))}
-        </div>
+        {FEATURES.passwordLogin && (
+          <div role="tablist" aria-label={t.auth.title} className="mt-5 flex gap-1.5">
+            {([
+              { id: 'code' as const, label: t.auth.tabCode },
+              { id: 'password' as const, label: t.auth.tabPassword },
+            ]).map((x) => (
+              <button
+                key={x.id}
+                type="button"
+                role="tab"
+                aria-selected={mode === x.id}
+                onClick={() => {
+                  setMode(x.id)
+                  setError(null)
+                }}
+                className={cx(
+                  'h-9 flex-1 rounded-xl border-2 text-sm font-bold transition',
+                  mode === x.id ? 'border-brand bg-brand-soft text-brand-hover' : 'border-line text-muted hover:bg-surface-2',
+                )}
+              >
+                {x.label}
+              </button>
+            ))}
+          </div>
+        )}
 
         <form onSubmit={submit} className="mt-5 space-y-4">
           {/* 邮箱 + 发送验证码 */}

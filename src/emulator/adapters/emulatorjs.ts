@@ -24,10 +24,11 @@
 import { platformMap } from '@/data/platforms'
 import type { Capability, CaptureSources, LoadPhase, LoadProgress, MountOptions, Runtime, RuntimeHandle } from '../types'
 import { fetchWithProgress, throttleProgress } from '../loadProgress'
+import { romCacheGet, romCacheKey, romCachePut } from '../romCache'
 import { getT, fmt } from '@/services/i18n'
 import { getLang } from '@/services/lang'
 import type { Lang } from '@/config/languages'
-import { ICE_SERVERS, NETPLAY_URL, fetchIceConfig, socketIoScriptUrl, uploadState } from '@/services/netplay'
+import { ICE_SERVERS, NETPLAY_URL, fetchIceConfig, gameIdFor, socketIoScriptUrl, uploadState } from '@/services/netplay'
 import { isZip, listZipEntries } from '@/lib/unzip'
 
 /**
@@ -289,6 +290,12 @@ interface EjsGameManager {
 interface EjsEmulator {
   netplay?: EjsNetplay
   gameManager?: EjsGameManager
+  /**
+   * loader.js 在开局前拼好的配置。这里只声明我们会碰的那一个字段：
+   * gameId —— 开房时会被写进房间的 game_id，大厅靠它认出房间属于哪款游戏。
+   * 中途开房（openNetplay）时引擎的 config 早就定死了，得补写这一格。
+   */
+  config?: { gameId?: number }
   /** 引擎真正把 ROM 交给核心的那一步；RomData 注入器包在它外面 */
   startGame?: () => void
   isNetplay?: boolean
@@ -711,6 +718,19 @@ export async function prepareRemoteArcadeRom(
   const name = arcadeRomsetName(url)
   if (!name || !/\.zip$/i.test(name)) throw new InvalidArcadeArchiveError(name || 'ROM')
 
+  // ROM 不可变，反复玩同一款街机游戏没必要每次重下。缓存里的那份一定是下面
+  // 验过中央目录才写进去的，半截 ZIP 永远进不来，所以命中后不用再验一遍。
+  const cacheKey = romCacheKey(url)
+  if (cacheKey) {
+    const cached = await romCacheGet(cacheKey)
+    if (cached) {
+      if (signal.aborted) throw new DOMException('已取消', 'AbortError')
+      // 命中也要发满进度那一帧：播放器的加载遮罩靠进度回调收尾
+      onProgress?.({ phase: 'rom', loaded: cached.byteLength, total: cached.byteLength, ratio: 1 })
+      return { url: URL.createObjectURL(new Blob([cached], { type: 'application/zip' })), name }
+    }
+  }
+
   const data = await fetchWithProgress(url, {
     phase: 'rom',
     onProgress,
@@ -730,6 +750,9 @@ export async function prepareRemoteArcadeRom(
   }
   if (entryCount === 0) throw new InvalidArcadeArchiveError(name)
 
+  // 不 await：下面 Blob 会自己复制一份字节，data 不会被谁 transfer 走，写盘慢也不耽误开局。
+  if (cacheKey) void romCachePut(cacheKey, data).catch(() => {})
+
   const blobUrl = URL.createObjectURL(new Blob([data], { type: 'application/zip' }))
   return { url: blobUrl, name }
 }
@@ -743,7 +766,19 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     options.onError?.(fmt(rt.ejsNoCore, { platform: options.platform }))
     return { destroy: () => {}, caps: new Set<Capability>() }
   }
-  const netplay = options.netplay
+  /**
+   * 联机会话。**可变**：一开始可能没有（玩家先自己开着玩），
+   * 后面点「联机匹配」时由 openNetplay() 补进来，游戏不用重开。
+   */
+  let netplay = options.netplay
+  /**
+   * 房间分组用的数字 id。**始终**算出来，不再只在有联机会话时才有 ——
+   * 玩家可能玩到一半才点「联机匹配」，那时引擎的配置已经定死，来不及再补。
+   * 自己上传的 ROM（local: 前缀）没有 slug 可归组，留空即可。
+   */
+  const gameId =
+    options.netplay?.gameId ??
+    (options.gameSlug && !options.gameSlug.startsWith('local:') ? gameIdFor(options.gameSlug) : undefined)
 
   const iframe = document.createElement('iframe')
   iframe.title = fmt(rt.emulatorTitle, { name: options.gameName })
@@ -904,21 +939,28 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   /** 区分「ROM 预下载失败」与后续 loader.js / 核心加载失败，避免错误提示张冠李戴。 */
   let arcadeRomPrepared = false
 
-  /** 游戏跑起来之后再开 / 加入房间 —— 房主要先有画面才能 captureStream */
+  /**
+   * 开 / 加入房间。两个入口：
+   *   1. 带着联机会话挂载的（点邀请链接进来的人）—— finishStart 里自动调
+   *   2. 已经在玩了，中途点「联机匹配」—— handle.openNetplay() 调
+   * 两种情况都必须等游戏真的跑起来：房主要先有画面才能推给别人。
+   */
   const startNetplay = (win: Window & Record<string, unknown>) => {
-    if (destroyed || !netplay) return
+    // netplay 是可变的（中途开房会后补），闭包里收窄不了 —— 先钉在局部常量上
+    const cfg = netplay
+    if (destroyed || !cfg) return
     const emu = win.EJS_emulator as EjsEmulator | undefined
     const np = emu?.netplay
     if (!np) {
       options.onError?.(rt.netplayUnavailable)
       return
     }
-    np.name = netplay.playerName
+    np.name = cfg.playerName
 
     // 接手别人的房间：先把存档载进去，不然游戏会从开机画面重来
-    if (netplay.initialState && emu?.gameManager) {
+    if (cfg.initialState && emu?.gameManager) {
       try {
-        emu.gameManager.loadState(netplay.initialState)
+        emu.gameManager.loadState(cfg.initialState)
       } catch (e) {
         // 载不进去也继续，大不了从头玩
         console.warn('[netplay] 加载存档失败', e)
@@ -938,21 +980,23 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         /* 换不掉也不致命：服务端那边本来就不给观众手柄位 */
       }
     }
-    applyRole(netplay.role === 'spectator')
-    netplay.onSpectatorControl?.(applyRole)
+    applyRole(cfg.role === 'spectator')
+    cfg.onSpectatorControl?.(applyRole)
 
     try {
-      if (netplay.mode === 'join' && netplay.roomId) {
-        np.joinRoom(netplay.roomId, netplay.roomName, netplay.maxPlayers, netplay.password || null)
+      if (cfg.mode === 'join' && cfg.roomId) {
+        np.joinRoom(cfg.roomId, cfg.roomName, cfg.maxPlayers, cfg.password || null)
       } else {
-        np.openRoom(netplay.roomName, netplay.maxPlayers, netplay.password || '')
+        np.openRoom(cfg.roomName, cfg.maxPlayers, cfg.password || '')
       }
     } catch (e) {
       options.onError?.(fmt(rt.netplayFailed, { msg: e instanceof Error ? e.message : String(e) }))
       return
     }
 
-    // netplay 没有对外的事件回调，只能轮询它自己的状态（很轻，一秒一次）
+    // netplay 没有对外的事件回调，只能轮询它自己的状态（很轻，一秒一次）。
+    // 中途开房时先把上一轮的定时器收掉，别叠成两条。
+    window.clearInterval(playersTimer)
     let lastCount = -1
     let reportedRoom = ''
     let reportedId = ''
@@ -972,7 +1016,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
             const token = (d as { token?: string } | null)?.token
             if (!token) return
             stateToken = token
-            netplay.onToken?.(token)
+            cfg.onToken?.(token)
           })
         }
       }
@@ -980,19 +1024,19 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       const count = Object.keys(n.players || {}).length
       if (count !== lastCount) {
         lastCount = count
-        netplay.onPlayers?.(count)
+        cfg.onPlayers?.(count)
       }
       // 房主的房间 id 是客户端生成的，只能从 extra 里取
       const extra = (n as unknown as { extra?: { sessionid?: string } }).extra
       if (extra?.sessionid && extra.sessionid !== reportedRoom) {
         reportedRoom = extra.sessionid
-        netplay.onRoom?.(extra.sessionid, n.owner)
+        cfg.onRoom?.(extra.sessionid, n.owner)
         // 房主开始定期上传存档，掉线时新房主就能接着玩
         if (n.owner) startStateUpload(win, extra.sessionid)
       }
       if (n.playerID && n.playerID !== reportedId) {
         reportedId = n.playerID
-        netplay.onIdentity?.(n.playerID)
+        cfg.onIdentity?.(n.playerID)
       }
       // 信令断开。注意：这既可能是「房主走了」，也可能是**我自己**掉线了。
       // 以前一律当成房主走了报错，用户自己网络抖一下就被踢出房间。
@@ -1000,7 +1044,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       if (reportedRoom && !n.socket?.connected) {
         if (n.owner) return
         window.clearInterval(playersTimer)
-        netplay.onHostLeft?.()
+        cfg.onHostLeft?.()
       }
     }, 1000)
   }
@@ -1183,7 +1227,9 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
             ? {
                 EJS_netplayUrl: NETPLAY_URL,
                 EJS_netplayICEServers: ICE_SERVERS,
-                EJS_gameId: netplay?.gameId,
+                // ⚠️ loader.js 读的是 EJS_gameID（大写 ID），写成 EJS_gameId 等于没设：
+                // 房间的 game_id 会是 undefined，大厅永远认不出这个房间是哪款游戏。
+                ...(gameId !== undefined ? { EJS_gameID: gameId } : {}),
               }
             : {}),
         })
@@ -1238,8 +1284,10 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
           }
 
           // 包一层 RTCPeerConnection：观察连接状态、失败自动重试、限码率保帧率。
-          // 必须在 loader.js 之前装，否则 netplay 拿到的是原生构造函数。
-          if (netplay) instrumentRtc(win, (state) => netplay.onLinkState?.(state))
+          // 必须在 loader.js 之前装，否则 netplay 拿到的是原生构造函数 ——
+          // 也正因为「之后再装就来不及」，这里不管当下有没有联机会话都装上：
+          // 玩到一半点「联机匹配」的那一路同样要靠它。回调读的是当前的 netplay。
+          instrumentRtc(win, (state) => netplay?.onLinkState?.(state))
         }
         if (destroyed) return
         // 清掉旧时代缓存的坏核心（见 purgePoisonedEngineCache 的注释），
@@ -1364,6 +1412,44 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       const canvas = canvasOf()
       if (!canvas) return null
       return { canvas, audioNode: audioTap?.node ?? null, audioContext: audioTap?.ctx ?? null }
+    },
+    /**
+     * 在**正在跑的这一局**上开房，不重开游戏。
+     *
+     * 为什么值得这么绕：联机会话本来是挂载参数，想开房就得重新挂载一次引擎 ——
+     * 玩家打到一半点「联机匹配」，游戏会退回开机画面，这一局白打。
+     * 而 EmulatorJS 的 netplay 实例其实一直都在（openRoom 只是个普通方法），
+     * 需要的前置条件（socket.io、ICE、RTC 包装、gameId）在挂载时就已经备齐了，
+     * 所以这里只要把会话配置补进来、再走一遍 startNetplay 即可。
+     *
+     * 返回 false 表示这局开不了房（引擎没起来、没有 netplay、或已经在房间里）。
+     */
+    openNetplay(session: NetplaySession): boolean {
+      if (destroyed || !started || netplay) return false
+      const win = iframe.contentWindow as (Window & Record<string, unknown>) | null
+      const emu = win?.EJS_emulator as EjsEmulator | undefined
+      if (!win || !emu?.netplay) return false
+      // 引擎的 config 是开局前就定死的；房间的 game_id 从它读，中途开房得补写这一格
+      if (emu.config && typeof session.gameId === 'number') emu.config.gameId = session.gameId
+      netplay = session
+      startNetplay(win)
+      return true
+    },
+    /** 主动退房，回到自己一个人玩（游戏继续跑，不重开） */
+    closeNetplay() {
+      if (!netplay) return
+      netplay = undefined
+      window.clearInterval(playersTimer)
+      window.clearInterval(stateTimer)
+      if (flushState) {
+        window.removeEventListener('pagehide', flushState)
+        flushState = null
+      }
+      try {
+        emuOf()?.netplay?.leaveRoom?.()
+      } catch {
+        /* 已经断了 */
+      }
     },
   }
 }

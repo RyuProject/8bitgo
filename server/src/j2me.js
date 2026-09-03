@@ -16,10 +16,12 @@ import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, utimesSync, w
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { assertJarBuffer } from './jar-validation.js'
+import { assetBaseUrl } from './site-urls.js'
 
-// 公开 R2 域名不是机密，给线上同源 JAR 代理一个可用默认值。
-// 否则前端运行时装好了，服务器少一行 server/.env 仍会让全部云端 JAR 404。
-const ROM_BASE = (process.env.ROM_BASE_URL || 'https://assets.8bitgo.com').replace(/\/+$/, '')
+// 公开 R2 域名不是机密，给线上同源 JAR 代理一个可用默认值（默认值和读取逻辑都在
+// site-urls.js —— 动态 sitemap 的 <image:loc> 也要用同一个根地址，抄两份就会出现
+// 「JAR 代理能取到、sitemap 里的封面地址是空的」这种一边好一边坏的情况）。
+const ROM_BASE = assetBaseUrl()
 const ROM_PREFIX = (process.env.ROM_PREFIX || 'roms').replace(/^\/+|\/+$/g, '')
 
 /** 临时上传目录。默认在 server/tmp/j2me，可用 J2ME_TMP_DIR 覆盖。 */

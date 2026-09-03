@@ -167,6 +167,23 @@ const patches = [
       ),
   },
   {
+    name: 'developers（开发商的人工资料：logo / 简介 / 官网）',
+    table: null,
+    needed: async () => !(await hasTable('developers')),
+    run: () =>
+      conn.query(
+        'CREATE TABLE IF NOT EXISTS `developers` (' +
+          '`name` VARCHAR(120) NOT NULL,' +
+          "`logo` VARCHAR(500) NOT NULL DEFAULT ''," +
+          '`description` TEXT NULL,' +
+          '`description_en` TEXT NULL,' +
+          "`homepage` VARCHAR(300) NOT NULL DEFAULT ''," +
+          '`updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,' +
+          'PRIMARY KEY (`name`)' +
+          ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
+      ),
+  },
+  {
     name: 'game_search_tokens（搜索倒排索引：多词、拼音、繁简）',
     table: null,
     // 只在 v2 库上建：索引维护要读 game_tags，v1 库上建出来也是个永远空着的表。
@@ -328,9 +345,40 @@ const patches = [
     },
     run: () => conn.query('DELETE r FROM recents r LEFT JOIN games g ON g.slug = r.game_slug WHERE g.slug IS NULL'),
   },
+  {
+    name: 'game_comments（游戏评论：登录用户发表、后台可隐藏、支持引用回复）',
+    // table: null —— 这条补丁自己就是建表，不能拿「表不存在」当跳过理由
+    table: null,
+    needed: async () => !(await hasTable('game_comments')),
+    /**
+     * 只在 v2 库上建：外键指向 games(id)，而 v1 的 games 主键是 slug，
+     * 在 v1 库上跑会直接报 errno 150。
+     */
+    skip: async () => ((await hasColumn('games', 'id')) ? '' : '这个库是 v1 结构（games 没有 id 主键），评论表的外键挂不上去'),
+    run: () =>
+      conn.query(`CREATE TABLE IF NOT EXISTS game_comments (
+        id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        game_id    BIGINT UNSIGNED NOT NULL,
+        user_id    VARCHAR(40)     NOT NULL,
+        parent_id  BIGINT UNSIGNED NULL,
+        content    VARCHAR(2000)   NOT NULL,
+        country    CHAR(2)         NOT NULL DEFAULT 'XX',
+        hidden     TINYINT(1)      NOT NULL DEFAULT 0,
+        edited_at  TIMESTAMP(3)    NULL DEFAULT NULL,
+        deleted_at TIMESTAMP(3)    NULL DEFAULT NULL,
+        created_at TIMESTAMP(3)    NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+        KEY idx_cmt_game_time (game_id, created_at DESC),
+        KEY idx_cmt_user_time (user_id, created_at DESC),
+        KEY idx_cmt_parent (parent_id),
+        KEY idx_cmt_hidden_time (hidden, created_at DESC),
+        CONSTRAINT fk_cmt_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE,
+        CONSTRAINT fk_cmt_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        CONSTRAINT fk_cmt_parent FOREIGN KEY (parent_id) REFERENCES game_comments(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`),
+  },
 ]
 
-const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'login_codes', 'platform_bios', 'game_plays']
+const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'login_codes', 'platform_bios', 'game_plays', 'developers', 'game_comments']
 
 try {
   await conn.query(`CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`)

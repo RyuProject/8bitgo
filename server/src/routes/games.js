@@ -26,6 +26,10 @@ export const gamesRouter = Router()
 
 const truthy = (v) => v === '1' || v === 'true'
 
+// 数据库里的布尔列走 mysql2，tinyint(1) 回来的是数字 1/0，不是字符串。
+// 别用上面那个 truthy() —— 它只认查询串里的 '1'/'true'，套在数据行上会一律判 false。
+export const dbFlag = (v) => v === 1 || v === true || v === '1'
+
 /**
  * 游戏列表。
  *
@@ -169,6 +173,11 @@ gamesRouter.get('/facets', async (_req, res, next) => {
         name: r.developer,
         count: Number(r.n),
         // 代表作：该开发商游玩次数最高的一款，列表页拿它当封面
+        // 后台填了就用自定义 logo，没填前台自己退回代表作封面
+        logo: r.logo || undefined,
+        description: r.description || undefined,
+        descriptionEn: r.description_en || undefined,
+        homepage: r.homepage || undefined,
         topGame: r.slug
           ? { slug: r.slug, title: r.title, titleZh: r.title_zh || undefined, icon: r.icon, cover: r.cover || undefined, platform: r.platform }
           : undefined,
@@ -190,9 +199,9 @@ gamesRouter.get('/:slug/access', async (req, res, next) => {
   try {
     const rows = await query('SELECT adult, hidden FROM games WHERE slug = ? LIMIT 1', [req.params.slug])
     const game = rows[0]
-    if (!game || truthy(game.hidden)) return res.status(404).json({ error: '游戏不存在' })
+    if (!game || dbFlag(game.hidden)) return res.status(404).json({ error: '游戏不存在' })
     res.setHeader('Cache-Control', 'no-store')
-    res.json({ adult: truthy(game.adult) })
+    res.json({ adult: dbFlag(game.adult) })
   } catch (e) {
     next(e)
   }

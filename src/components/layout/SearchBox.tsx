@@ -13,6 +13,7 @@ import { useT } from '@/services/i18n'
 import { gameTitle, platformLabel } from '@/services/i18nData'
 import { useLang } from '@/services/lang'
 import { fetchSuggest, rememberSearch, recentSearches, clearRecentSearches, searchEnabled, type SuggestItem } from '@/services/search'
+import { romUrlForKey } from '@/services/roms'
 
 const DEBOUNCE_MS = 200
 
@@ -223,8 +224,17 @@ export function SearchBox({ className, full, onSubmitted }: Props) {
                     i === active ? 'bg-brand-soft' : 'hover:bg-white/5',
                   )}
                 >
-                  {item.cover ? (
-                    <img src={item.cover} alt="" loading="lazy" className="h-9 w-9 shrink-0 rounded object-cover" />
+                  {/* 封面存的是对象 key，得先拼成公开地址，直接用会裂图 */}
+                  {romUrlForKey(item.cover ?? '') ? (
+                    <img
+                      src={romUrlForKey(item.cover ?? '')}
+                      alt=""
+                      loading="lazy"
+                      onError={(e) => {
+                        e.currentTarget.style.visibility = 'hidden'
+                      }}
+                      className="h-9 w-9 shrink-0 rounded bg-white/5 object-cover"
+                    />
                   ) : (
                     <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded bg-white/5 text-lg" aria-hidden>
                       {item.icon || '🎮'}

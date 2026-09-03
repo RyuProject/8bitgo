@@ -11,7 +11,7 @@
  * 对象 key 约定：<前缀>/<platform>/<slug>.<后缀>，前缀默认 roms（对应桶里的 roms/gba、roms/nes …）。
  * 游戏未显式绑定 ROM 时，前台按约定 key 用 HEAD 探测。
  */
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { Game } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { isPlayable } from '@/emulator'
@@ -231,8 +231,11 @@ export async function deleteRomDir(dir: string, keep: string[] = []): Promise<st
   return removed
 }
 
-/** 给封面 / 视频生成默认 key：covers/<slug>.<ext> 或 videos/<slug>.<ext> */
-export function defaultMediaKey(kind: 'covers' | 'videos', slug: string, fileName: string): string {
+/** 上传到对象存储的媒体类别。目录名就是 key 的第一段。 */
+export type MediaKind = 'covers' | 'videos' | 'logos'
+
+/** 给封面 / 视频 / 开发商 logo 生成默认 key：<kind>/<slug>.<ext> */
+export function defaultMediaKey(kind: MediaKind, slug: string, fileName: string): string {
   const ext = (fileName.match(/\.[a-z0-9]+$/i)?.[0] ?? '').toLowerCase()
   const name = (slug || fileName.replace(/\.[a-z0-9]+$/i, '')).toLowerCase().replace(/[\s_]+/g, '-')
   return `${kind}/${name}${ext || (kind === 'videos' ? '.mp4' : '.jpg')}`
@@ -381,7 +384,29 @@ export function defaultKeyFor(platform: string, slug: string, fileName: string):
   return at(`${name}${ext}`)
 }
 
+/**
+ * 探测结果缓存。
+ *
+ * 只缓存**有结论**的那两种：拿到了对象，或者服务器明确说没有（404 / 403 / 410，
+ * 以及回了 HTML 的情况）。网络抖动、HEAD 超时、R2 回 5xx 都**不算结论**。
+ *
+ * 以前它们和 404 一视同仁地被永久缓存，后果是：一次 4 秒超时就能让这款游戏
+ * 在整个单页应用会话里一直显示「游戏没有当前语言版本 / 选择 ROM 开始游戏」——
+ * ROM 明明好好躺在 R2 上，来回切页面也没用，只有整页刷新才能恢复。
+ */
 const probeCache = new Map<string, Promise<string>>()
+
+/** 单次探测的结果。certain=false 表示「这一次没问出结论」，不该被记住 */
+interface ProbeOutcome {
+  url: string
+  certain: boolean
+}
+
+/**
+ * 这些状态码是服务器给出的**答复**：对象就是不在，再问一百次也一样，可以放心缓存。
+ * 反过来 5xx、429 和连不上都属于「没问出结果」，必须留给下一次重新问。
+ */
+const DEFINITE_MISS_STATUS = new Set([400, 401, 403, 404, 405, 410, 451])
 
 /**
  * 把对象的 ETag 写进查询串，给浏览器 HTTP 缓存和 EmulatorJS IndexedDB 缓存换 key。
@@ -396,34 +421,72 @@ function versionedRomUrl(url: string, etag: string | null): string {
   return `${url}${separator}romv=${encodeURIComponent(version)}`
 }
 
-/** HEAD 探测 ROM，并把内容 ETag 带回播放 URL（带超时，结果缓存） */
+/** 探一次。区分「没有」和「没问出来」，后者留给上层重试 */
+async function probeOnce(url: string, timeoutMs: number, allowHtml: boolean): Promise<ProbeOutcome> {
+  const ctrl = new AbortController()
+  const timer = window.setTimeout(() => ctrl.abort(), timeoutMs)
+  try {
+    // no-store 很关键：这里正是为了发现「同一个 URL 的对象内容已经换了」，
+    // 若 HEAD 自己也吃浏览器缓存，就永远读不到新的 ETag。
+    const res = await fetch(url, { method: 'HEAD', cache: 'no-store', signal: ctrl.signal })
+    if (!res.ok) return { url: '', certain: DEFINITE_MISS_STATUS.has(res.status) }
+    // 地址配错时请求会落到本站的 SSR 兜底路由上，那边对任何路径都回 200 + HTML。
+    // 只看 res.ok 的话会误判成「ROM 存在」，页面显示「即点即玩」，
+    // 点下去才在模拟器里报一句莫名其妙的「不是合法的 ROM」。
+    const type = res.headers.get('content-type') || ''
+    if (!allowHtml && /text\/html|application\/xhtml/i.test(type)) return { url: '', certain: true }
+    return { url: versionedRomUrl(url, res.headers.get('etag')), certain: true }
+  } catch {
+    // 超时（abort）、断网、CORS 预检失败都走这里 —— 全都是「没问出来」
+    return { url: '', certain: false }
+  } finally {
+    window.clearTimeout(timer)
+  }
+}
+
+/**
+ * HEAD 探测 ROM，并把内容 ETag 带回播放 URL。
+ *
+ * 没问出结论时**当场重试一次**（隔 300ms，躲开瞬时抖动），仍然没有结论就把这次的
+ * 结果从缓存里摘掉 —— 下次再问会真的再发一次请求，而不是复读一个失败。
+ * 只重试一次是为了兜住耗时：上层要按语言槽依次探好几个候选，每多一轮就多等一个超时。
+ */
 export function probeRomUrl(url: string, timeoutMs = 4000, allowHtml = false): Promise<string> {
   // 同一个 URL 作为 ROM 时必须拒绝 HTML，作为 HTML5 入口时又必须接受；缓存键要把两种语义分开。
   const cacheKey = `${allowHtml ? 'html' : 'rom'}:${url}`
   const cached = probeCache.get(cacheKey)
   if (cached) return cached
-  const p = (async () => {
-    const ctrl = new AbortController()
-    const timer = window.setTimeout(() => ctrl.abort(), timeoutMs)
-    try {
-      // no-store 很关键：这里正是为了发现「同一个 URL 的对象内容已经换了」，
-      // 若 HEAD 自己也吃浏览器缓存，就永远读不到新的 ETag。
-      const res = await fetch(url, { method: 'HEAD', cache: 'no-store', signal: ctrl.signal })
-      if (!res.ok) return ''
-      // 地址配错时请求会落到本站的 SSR 兜底路由上，那边对任何路径都回 200 + HTML。
-      // 只看 res.ok 的话会误判成「ROM 存在」，页面显示「即点即玩」，
-      // 点下去才在模拟器里报一句莫名其妙的「不是合法的 ROM」。
-      const type = res.headers.get('content-type') || ''
-      if (!allowHtml && /text\/html|application\/xhtml/i.test(type)) return ''
-      return versionedRomUrl(url, res.headers.get('etag'))
-    } catch {
-      return ''
-    } finally {
-      window.clearTimeout(timer)
+  // 先声明再赋值：下面的闭包要拿自己这条 promise 跟缓存比对（同步段跑不到那里，
+  // 等真的用上时 p 早就赋好了）
+  let p: Promise<string> | undefined
+  p = (async () => {
+    let outcome = await probeOnce(url, timeoutMs, allowHtml)
+    if (!outcome.certain) {
+      await new Promise((r) => window.setTimeout(r, 300))
+      outcome = await probeOnce(url, timeoutMs, allowHtml)
     }
+    if (!outcome.certain) {
+      // 只摘掉自己这一条：期间可能已经有别的调用重新写了缓存，别把人家的结果删了
+      if (probeCache.get(cacheKey) === p) probeCache.delete(cacheKey)
+    }
+    return outcome.url
   })()
   probeCache.set(cacheKey, p)
   return p
+}
+
+/**
+ * 清掉这些地址的探测缓存，下次访问会重新发 HEAD。
+ *
+ * 给「重试」按钮用：确定性的失败（404）本来是该缓存的，但后台刚把 ROM 传上去、
+ * 或者刚改完绑定时，玩家手里的页面还记着上一轮的「没有」。不传参数就全清。
+ */
+export function clearRomProbeCache(urls?: string[]): void {
+  if (!urls) return probeCache.clear()
+  for (const url of urls) {
+    probeCache.delete(`rom:${url}`)
+    probeCache.delete(`html:${url}`)
+  }
 }
 
 /** 后台只关心对象是否存在；播放器才需要上面的版本化 URL。 */
@@ -437,6 +500,8 @@ export interface RomResolution {
   key?: string
   /** 用的是哪个语言槽。通用 rom 和约定 key 探测出来的没有语言，为 undefined */
   lang?: RomLang
+  /** 重新探测一遍，并先把这款游戏所有候选地址的缓存结论清掉 */
+  retry: () => void
 }
 
 /**
@@ -449,10 +514,24 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
   // SSR 阶段不会运行 effect，但数据库已经明确绑定 ROM 时，我们至少知道「有在线版本，
   // 正在准备地址」。初始态直接设 checking，避免搜索引擎和首屏用户先看到
   // 「选择本地 ROM」，水合后又突然变成「开始游戏」这种自相矛盾的文案。
-  const [state, setState] = useState<RomResolution>(() => ({
+  const [state, setState] = useState<Omit<RomResolution, 'retry'>>(() => ({
     status: game && effectiveRomKey(game, lang, prefer) ? 'checking' : 'idle',
     url: '',
   }))
+  const [attempt, setAttempt] = useState(0)
+
+  /**
+   * 重试。先清掉这款游戏所有候选地址的探测结论 —— 否则「服务器明确说没有」那一类
+   * 是会被缓存的（本该如此），可玩家点重试的场景恰恰就是「刚传上去 / 刚改完绑定」，
+   * 不清就等于按了个没用的按钮。
+   */
+  const retry = useCallback(() => {
+    if (game) {
+      const keys = [...romCandidates(game, lang, prefer).map((c) => c.key), ...conventionalKeys(game)]
+      clearRomProbeCache(keys.map((key) => romUrlForKey(key)).filter(Boolean))
+    }
+    setAttempt((n) => n + 1)
+  }, [game, lang, prefer])
 
   useEffect(() => {
     if (!game) return
@@ -506,9 +585,9 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
     return () => {
       cancelled = true
     }
-  }, [game, lang, prefer])
+  }, [game, lang, prefer, attempt])
 
-  return state
+  return { ...state, retry }
 }
 
 /* ---------------- Worker 管理接口（后台用） ---------------- */

@@ -65,12 +65,10 @@ async function fromApi(path) {
   }
 }
 
-const enabled = await loadTs('src/config/platforms.ts', 'ENABLED_PLATFORMS')
-// 平台表与类型表。下面按它们生成 /platforms/<id> 和 /genres/<id> 两组页面 ——
-// 以前漏了这两行，脚本直接引用未定义的 visiblePlatforms / genres，
-// prebuild 一跑就 ReferenceError。dev 不跑 sitemap，所以直到第一次真构建才会炸。
-const platforms = await loadTs('src/data/platforms.ts', 'platforms')
-const genres = await loadTs('src/data/genres.ts', 'genres')
+// 平台白名单和类型 id 都在 shared/site-taxonomy.js（纯 .js，后端也 import 同一份），
+// 所以不用再走 loadTs / esbuild。
+const { ENABLED_PLATFORM_IDS, isPlatformEnabledId } = await import('../shared/site-taxonomy.js')
+const enabled = ENABLED_PLATFORM_IDS
 const LANGUAGES = await loadTs('src/config/languages.ts', 'LANGUAGES')
 const DEFAULT_LANG = await loadTs('src/config/languages.ts', 'DEFAULT_LANG')
 const FALLBACK_LANG = await loadTs('src/config/languages.ts', 'FALLBACK_LANG')
@@ -110,13 +108,10 @@ if (!Array.isArray(posts)) posts = await loadTs('src/data/posts.ts', 'posts')
 
 
 // 隐藏的游戏、未发布的文章、未启用的平台都不该进 sitemap
-const visibleGames = games.filter((g) => !g.hidden && enabled.includes(g.platform))
+// ⚠️ 用 isPlatformEnabledId 而不是 enabled.includes：白名单清空成 [] 的语义是
+// 「全部平台开放」，写 includes 的话会反过来变成「全部平台都被禁」，sitemap 直接空掉。
+const visibleGames = games.filter((g) => !g.hidden && isPlatformEnabledId(g.platform))
 const visiblePosts = posts.filter((p) => p.published !== false)
-// 未启用的平台，以及一款可见游戏都没有的平台，进 sitemap 只是给搜索引擎交一个空列表页。
-// 判断标准和下面的类型页保持一致；等游戏加进来了会自动出现。
-const visiblePlatforms = platforms.filter(
-  (p) => enabled.includes(p.id) && visibleGames.some((g) => g.platform === p.id),
-)
 
 const today = new Date().toISOString().slice(0, 10)
 const urls = []
@@ -134,14 +129,22 @@ add('/about', '0.5', 'monthly')
 // 这些页面自己的 canonical 指向 /games，收进来只会让 Search Console 报
 // 「Alternate page with proper canonical tag」；而且 robots.txt 里 Disallow: /games?
 // 本来就禁止抓取它们，放进 sitemap 属于自相矛盾。
-// 平台页与类型页是主要的搜索入口（/platforms/nes、/genres/action …），
-// 有独立的 H1、正文与结构化数据，必须进 sitemap
-for (const p of visiblePlatforms) add(`/platforms/${p.id}`, '0.8', 'weekly')
-// 一款可见游戏都没有的类型是空页面，别提交给搜索引擎
-for (const g of genres) {
-  if (visibleGames.some((x) => x.genres?.includes(g.id))) add(`/genres/${g.id}`, '0.7', 'weekly')
-}
-for (const p of visiblePosts) add(`/blog/${encodeURIComponent(p.slug)}`, '0.5', 'monthly')
+/**
+ * 这份静态 sitemap 现在**只放上面那些真正固定的页面**。
+ *
+ * 平台页 /platforms/<id>、类型页 /genres/<id>、游戏详情页、文章详情页全都不在这里 ——
+ * 它们的存在与否只有数据库知道，烘进构建产物就意味着「不重新部署永远不更新」。
+ * 这个坑真出过事：上线后后台陆续加了上百款游戏，线上 sitemap 里却长期只有
+ * /platforms/flash 和 /platforms/html5 两个平台页，全部类型页一条都没有。
+ *
+ * 现在它们由后端实时生成（见 server/src/routes/sitemaps.js）：
+ *   /sitemaps/games-<lang>.xml     游戏详情
+ *   /sitemaps/posts-<lang>.xml     文章详情
+ *   /sitemaps/taxonomy-<lang>.xml  平台页 + 类型页
+ * 下面只统计数量，好在构建日志里和数据库实际情况对一眼。
+ */
+const visiblePlatformCount = new Set(visibleGames.map((g) => g.platform)).size
+const visibleGenreCount = new Set(visibleGames.flatMap((g) => g.genres ?? [])).size
 
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 
@@ -185,13 +188,15 @@ ${alternatesFor(u.path)}
 writeFileSync(root + 'public/sitemap-static.xml', staticXml, 'utf8')
 
 /**
- * 游戏不再烘进构建产物：后台可以在两次部署之间继续上架内容，静态 sitemap 会漏掉它们。
- * 主索引直接列出 8 份动态游戏 sitemap，由后端每次从数据库生成；每种语言拆一份，
- * 也避免未来游戏数增长后撞上单份 sitemap 最多 50,000 URL 的上限。
+ * 游戏和文章都不烘进构建产物：后台可以在两次部署之间继续上架游戏、发布文章，
+ * 静态 sitemap 会漏掉它们。主索引直接列出每种语言各 3 份动态 sitemap，由后端每次从数据库
+ * 生成；每种语言拆一份，也避免未来游戏数增长后撞上单份 sitemap 最多 50,000 URL 的上限。
  */
 const sitemapFiles = [
   `${SITE}/sitemap-static.xml`,
   ...LANGUAGES.map((language) => `${SITE}/sitemaps/games-${language.code}.xml`),
+  ...LANGUAGES.map((language) => `${SITE}/sitemaps/posts-${language.code}.xml`),
+  ...LANGUAGES.map((language) => `${SITE}/sitemaps/taxonomy-${language.code}.xml`),
 ]
 const sitemapIndex = `<?xml version="1.0" encoding="UTF-8"?>
 <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
@@ -210,7 +215,8 @@ if (existsSync(robotsPath)) {
   writeFileSync(robotsPath, r, 'utf8')
 }
 
-console.log(`✅ sitemap.xml：1 份静态 sitemap + ${LANGUAGES.length} 份数据库游戏 sitemap`)
-console.log(`   sitemap-static.xml：${entries.length} 条 URL（${urls.length} 个页面 × ${LANGUAGES.length} 种语言，文章 ${visiblePosts.length}）`)
-console.log(`   动态游戏：${visibleGames.length} 款（构建时检测；线上以数据库实时结果为准）`)
+console.log(`✅ sitemap.xml：1 份静态 + 每种语言各 3 份动态（游戏 / 文章 / 平台类型），共 ${1 + LANGUAGES.length * 3} 份`)
+console.log(`   sitemap-static.xml：${entries.length} 条 URL（${urls.length} 个固定页面 × ${LANGUAGES.length} 种语言）`)
+console.log(`   由后端实时生成（下列数字只是构建时的快照，线上以数据库为准）：`)
+console.log(`     游戏 ${visibleGames.length} 款 / 文章 ${visiblePosts.length} 篇 / 平台 ${visiblePlatformCount} 个 / 类型 ${visibleGenreCount} 个`)
 console.log(`   域名：${SITE}`)

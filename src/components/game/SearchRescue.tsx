@@ -13,6 +13,7 @@ import { useT, fmt } from '@/services/i18n'
 import { gameTitle, platformLabel } from '@/services/i18nData'
 import { useLang } from '@/services/lang'
 import { fetchSearchFallback, searchEnabled, type SearchFallback } from '@/services/search'
+import { romUrlForKey } from '@/services/roms'
 
 export function SearchRescue({ q, onPick }: { q: string; onPick?: (q: string) => void }) {
   const t = useT()
@@ -64,8 +65,17 @@ export function SearchRescue({ q, onPick }: { q: string; onPick?: (q: string) =>
                 to={`/games/${encodeURIComponent(g.slug)}`}
                 className="flex items-center gap-2 rounded-xl border border-line bg-surface p-2 transition hover:border-brand"
               >
-                {g.cover ? (
-                  <img src={g.cover} alt="" loading="lazy" className="h-10 w-10 shrink-0 rounded object-cover" />
+                {/* 封面存的是对象 key，得先拼成公开地址，直接用会裂图 */}
+                {romUrlForKey(g.cover ?? '') ? (
+                  <img
+                    src={romUrlForKey(g.cover ?? '')}
+                    alt=""
+                    loading="lazy"
+                    onError={(e) => {
+                      e.currentTarget.style.visibility = 'hidden'
+                    }}
+                    className="h-10 w-10 shrink-0 rounded bg-white/5 object-cover"
+                  />
                 ) : (
                   <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded bg-white/5 text-xl" aria-hidden>
                     {g.icon || '🎮'}

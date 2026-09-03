@@ -136,6 +136,27 @@ CREATE TABLE IF NOT EXISTS platform_bios (
   PRIMARY KEY (platform)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ---------- 开发商资料 ----------
+-- 开发商本身不是独立实体：名单是从 games.developer 那一列 GROUP BY 出来的
+-- （一款游戏可以写多家，用逗号分隔）。这张表只存**人工补充**的那部分资料，
+-- 一行都没有也不影响开发商列表页 —— 那时每家仍旧显示代表作封面。
+--
+-- 主键就用开发商名字本身，跟 games.developer 里写的完全一致（大小写与排序
+-- 走 utf8mb4_unicode_ci，和那一列同一套规则，JOIN 才对得上）。不另发 id 的原因：
+-- games 那边存的就是名字，多一层 id 就要多一张映射表和一套改名同步逻辑。
+-- 代价是改名等于换主键，所以后台的改名做成「新建一行 + 删旧行」。
+CREATE TABLE IF NOT EXISTS developers (
+  name            VARCHAR(120)  NOT NULL,
+  -- 对象存储 key 或完整 URL，语义和 games.cover 一致（见 romUrlForKey）
+  logo            VARCHAR(500)  NOT NULL DEFAULT '',
+  description     TEXT          NULL,
+  -- 留空时所有非中文语种回退到上面那段中文，和 games.description_en 同一套规则
+  description_en  TEXT          NULL,
+  homepage        VARCHAR(300)  NOT NULL DEFAULT '',
+  updated_at      TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ---------- 游戏 × 类型 ----------
 -- genre_id 取值见 src/data/genres.ts（'action' / 'rpg' / 'puzzle' …）
 -- 两个方向的索引都要：按游戏取它的类型（主键），按类型筛游戏（idx_genre）
@@ -243,6 +264,28 @@ CREATE TABLE IF NOT EXISTS recents (
   CONSTRAINT fk_recent_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ---------- 游戏评论 ----------
+-- 设计与注释见 schema-v2.sql 里的同名表（三种「不可见」、country 快照、parent_id 的 SET NULL）。
+CREATE TABLE IF NOT EXISTS game_comments (
+  id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  game_id    BIGINT UNSIGNED NOT NULL,
+  user_id    VARCHAR(40)     NOT NULL,
+  parent_id  BIGINT UNSIGNED NULL,
+  content    VARCHAR(2000)   NOT NULL,
+  country    CHAR(2)         NOT NULL DEFAULT 'XX',
+  hidden     TINYINT(1)      NOT NULL DEFAULT 0,
+  edited_at  TIMESTAMP(3)    NULL DEFAULT NULL,
+  deleted_at TIMESTAMP(3)    NULL DEFAULT NULL,
+  created_at TIMESTAMP(3)    NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  KEY idx_cmt_game_time (game_id, created_at DESC),
+  KEY idx_cmt_user_time (user_id, created_at DESC),
+  KEY idx_cmt_parent (parent_id),
+  KEY idx_cmt_hidden_time (hidden, created_at DESC),
+  CONSTRAINT fk_cmt_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE,
+  CONSTRAINT fk_cmt_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_cmt_parent FOREIGN KEY (parent_id) REFERENCES game_comments(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ============================================================
 -- 完成。库是空的，自检：
 --   SELECT table_name, table_rows FROM information_schema.TABLES
@@ -253,7 +296,7 @@ CREATE TABLE IF NOT EXISTS recents (
 -- ============================================================
 
 -- ============================================================
--- 自检：应该是 9 张表，全部 0 行
+-- 自检：应该是 12 张表，全部 0 行
 SELECT table_name FROM information_schema.TABLES
   WHERE table_schema = DATABASE() ORDER BY table_name;
 

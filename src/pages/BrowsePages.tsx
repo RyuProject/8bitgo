@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { PlatformWithCount } from '@/services/games'
 import { usePageData, type DevelopersData, type GenresData, type PlatformsData } from '@/services/pageData'
@@ -7,8 +8,9 @@ import { isPlatformEnabled } from '@/config/platforms'
 import { cx } from '@/lib/format'
 import { useSeo, breadcrumbSchema } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
-import { gameTitle, genreDesc, genreLabel } from '@/services/i18nData'
+import { gameDescription, gameTitle, genreDesc, genreLabel } from '@/services/i18nData'
 import { useLang } from '@/services/lang'
+import { romUrlForKey } from '@/services/roms'
 import { PlatformCard } from '@/components/game/PlatformCard'
 import { SkeletonBlock } from '@/components/ui/PageSkeleton'
 
@@ -177,6 +179,7 @@ export function DevelopersPage() {
   const state = usePageData<DevelopersData>('/developers', undefined, 'developers')
   // 开发商不是配置，只能等 facets：名单和数量都由后端 GROUP BY 出来（已按数量倒序）
   const developers = state.data?.facets.developers
+  const [brokenCover, setBrokenCover] = useState<Record<string, true>>({})
 
   return (
     <div className="container-x py-8 sm:py-10">
@@ -192,7 +195,17 @@ export function DevelopersPage() {
         <CardGridSkeleton count={12} grid={DEVELOPER_GRID} height="h-[88px]" />
       ) : (
         <div className={DEVELOPER_GRID}>
-          {developers.map((d) => (
+          {developers.map((d) => {
+            // 三级回退，和后台那一页的预览完全一致：
+            //   后台填的 logo → 代表作封面 → emoji 占位
+            // 两者存的都是对象 key（logos/xxx.png、covers/xxx.webp），直接塞进 src 会
+            // 404 裂图，必须先拼成公开地址 —— 跟 GameCover 的做法保持一致。
+            const image = d.logo || d.topGame?.cover || ''
+            const cover = image && !brokenCover[d.name] ? romUrlForKey(image) : ''
+            // 后台写了简介就顶掉「平台 · 代表作」那行：管理员特地写的一句话，
+            // 比一个游戏名更值得占这个位置。
+            const desc = gameDescription(d, lang)
+            return (
             <Link
               key={d.name}
               to={`/games?developer=${encodeURIComponent(d.name)}`}
@@ -204,15 +217,18 @@ export function DevelopersPage() {
                 不是把每个开发商的游戏各查一遍，那才是 v2 要去掉的做法。
                 还没有代表作（比如所有作品都下架了）就退回图标占位。
               */}
-              {d.topGame?.cover ? (
+              {cover ? (
                 <img
-                  src={d.topGame.cover}
+                  src={cover}
                   alt=""
                   loading="lazy"
                   decoding="async"
                   width={64}
                   height={64}
-                  className="h-16 w-16 shrink-0 rounded-lg object-cover"
+                  // 图挂了（key 写错、文件被删）就记下来，下一帧换成图标占位；
+                  // 不处理的话浏览器会画一整页默认裂图。
+                  onError={() => setBrokenCover((prev) => (prev[d.name] ? prev : { ...prev, [d.name]: true }))}
+                  className="h-16 w-16 shrink-0 rounded-lg bg-brand-soft object-cover"
                 />
               ) : (
                 <span
@@ -224,16 +240,23 @@ export function DevelopersPage() {
               )}
               <div className="min-w-0 flex-1">
                 <h2 className="truncate font-bold">{d.name}</h2>
-                {d.topGame && (
-                  <p className="mt-0.5 truncate text-xs text-muted">
-                    {platformMap[d.topGame.platform]?.shortName ?? d.topGame.platform} ·{' '}
-                    {gameTitle(d.topGame, lang)}
+                {desc ? (
+                  <p className="mt-0.5 truncate text-xs text-muted" title={desc}>
+                    {desc}
                   </p>
+                ) : (
+                  d.topGame && (
+                    <p className="mt-0.5 truncate text-xs text-muted">
+                      {platformMap[d.topGame.platform]?.shortName ?? d.topGame.platform} ·{' '}
+                      {gameTitle(d.topGame, lang)}
+                    </p>
+                  )
                 )}
               </div>
               <span className="text-pixel shrink-0 text-[11px] text-brand-hover">{fmt(t.browse.countSuffix, { n: d.count })}</span>
             </Link>
-          ))}
+            )
+          })}
         </div>
       )}
     </div>

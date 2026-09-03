@@ -273,3 +273,58 @@ export interface Post {
   updatedAt?: string
   published: boolean
 }
+
+/* ---------------- 游戏评论 ---------------- */
+
+/** 评论作者。前台拿不到邮箱（评论区是公开的），只有后台那条接口会带上。 */
+export interface CommentAuthor {
+  id: string
+  nickname: string
+  /** 头像 emoji，和 users.avatar 同一个字段 */
+  avatar: string
+  email?: string
+}
+
+/**
+ * 被引用的那条评论（平铺列表里的引用卡片）。
+ * 只有一层 —— 卡片要的就是「回复谁、说了什么」，不是整棵回复树。
+ */
+export interface CommentQuote {
+  id: string
+  nickname: string
+  avatar: string
+  /** 已被隐藏 / 删除时为空串，前台显示占位文案 */
+  content: string
+  deleted: boolean
+}
+
+export interface GameComment {
+  id: string
+  /** 正文。被隐藏或删除时后端不下发内容（只有后台视角能拿到） */
+  content: string
+  /**
+   * 发表那一刻的国家（ISO 3166-1 alpha-2，大写）。'XX' = 未知。
+   * 是快照而不是用户资料：换个网络再来，历史评论上的国旗不会变。
+   */
+  country: string
+  /** 被管理员隐藏 */
+  hidden: boolean
+  /** 已删除（作者自己删或管理员清理，都是软删除） */
+  deleted: boolean
+  /** 编辑过的时间；没编辑过就没有这个字段 */
+  editedAt?: string
+  createdAt: string
+  author: CommentAuthor
+  quote?: CommentQuote
+  /** 后台列表才有：这条评论挂在哪款游戏下 */
+  gameSlug?: string
+  gameTitle?: string
+}
+
+/** 评论列表接口的响应 */
+export interface CommentPage {
+  total: number
+  page: number
+  pageSize: number
+  items: GameComment[]
+}

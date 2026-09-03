@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import { watchPresence, UNKNOWN_PRESENCE } from './presence.js'
 
 /**
  * 直播信令（一人玩、多人看）。
@@ -55,6 +56,21 @@ function publicRoom(room) {
     viewers: room.viewers.size,
     maxViewers: MAX_VIEWERS,
     startedAt: room.startedAt,
+    /**
+     * 主播的设备 / 地区 / 网络（见 presence.js）。全部是服务端从握手信息里看出来的，
+     * 主播报不了假；RTT 是它到本站服务器的，不是到观众的 —— 画面走 WebRTC 直连，
+     * 那条路我们量不到。
+     */
+    presence: presenceOf(room),
+  }
+}
+
+/** 取主播的名片快照。房间是老结构（没有 presence）或者取快照出错时退回全未知 */
+function presenceOf(room) {
+  try {
+    return typeof room?.presence === 'function' ? room.presence() : UNKNOWN_PRESENCE
+  } catch {
+    return UNKNOWN_PRESENCE
   }
 }
 
@@ -114,6 +130,11 @@ export function attachLive(io) {
         hostSocketId: socket.id,
         startedAt: Date.now(),
         viewers: new Set(),
+        /**
+         * 主播的名片。设备和国家在这一刻就定死了，RTT 由 socket.io 的心跳
+         * 持续刷新，所以存的是个取快照的函数而不是一份数据。
+         */
+        presence: watchPresence(socket),
       }
       rooms.set(id, room)
       membership.set(socket.id, { roomId: id, role: 'host' })

@@ -229,6 +229,16 @@ export interface RuntimeHandle {
   /** 录制用的画面 / 声音来源 */
   captureSources?: () => CaptureSources | null
   /**
+   * 在**正在跑的这一局**上开 / 加入联机房间，不重开游戏。
+   *
+   * 玩家是先自己玩着，想联机了才点按钮的 —— 如果开房要重新挂载引擎，
+   * 这一局的进度就没了。支持的引擎（目前只有 EmulatorJS）在这里原地开房。
+   * 返回 false 表示这局开不了（引擎还没起来、或已经在房间里）。
+   */
+  openNetplay?: (session: NetplaySession) => boolean
+  /** 退出联机房间，回到一个人玩；游戏继续跑，不重开 */
+  closeNetplay?: () => void
+  /**
    * 引擎自己打出来的最近若干行日志（错误 / 警告）。
    *
    * 街机 ROM 出问题时，「缺哪个文件、哪个 CRC 对不上」这句话只在引擎的 console 里，

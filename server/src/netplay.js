@@ -1,6 +1,7 @@
 import express from 'express'
 import { randomBytes } from 'node:crypto'
 import { Server } from 'socket.io'
+import { watchPresence, UNKNOWN_PRESENCE } from './presence.js'
 
 /**
  * P2P 联机信令服务器（EmulatorJS netplay）+ 房主迁移。
@@ -136,6 +137,15 @@ function publicRoom(room) {
 }
 
 /** 侧边栏 / 房间页用的结构（和 cloud-game 的 /api/rooms 对齐，方便合并展示） */
+/** 取某个成员当前的名片快照；老连接或者异常情况下退回全未知，不能让列表 500 */
+function presenceOf(u) {
+  try {
+    return typeof u?.presence === 'function' ? u.presence() : UNKNOWN_PRESENCE
+  } catch {
+    return UNKNOWN_PRESENCE
+  }
+}
+
 function detailedRoom(room) {
   const users = [...room.users.values()]
   const owner = users.find((u) => u.userid === room.ownerUserId) ?? users[0]
@@ -145,6 +155,8 @@ function detailedRoom(room) {
     roomName: room.roomName,
     createdAt: room.createdAt,
     host: owner ? { nickname: owner.player_name || 'Player' } : null,
+    /** 房主的设备 / 地区 / 网络，房间卡片上那三个格子。见 presence.js */
+    presence: owner ? presenceOf(owner) : UNKNOWN_PRESENCE,
     players: playerCount(room),
     max: room.maxPlayers,
     // 观众：只看不操作。房间列表 / 直播列表用它显示「N 人在看」
@@ -155,6 +167,7 @@ function detailedRoom(room) {
       nickname: u.player_name || 'Player',
       host: u.userid === room.ownerUserId,
       role: u.role === 'spectator' ? 'spectator' : 'player',
+      presence: presenceOf(u),
     })),
     kind: 'p2p',
     // 房主迁移相关：客户端靠这几个字段决定「我要不要接手」「该去哪个新房间」
@@ -193,8 +206,10 @@ function spectatorCount(room) {
  */
 function usersPayload(room) {
   const out = {}
+  // presence 也要摘掉：它是个函数（取快照用），塞进 users-updated 只会变成
+  // 一个空对象跟着广播给 EmulatorJS，白占带宽；房间列表那边自己会调它
   const strip = (u) => {
-    const { token: _t, ...rest } = u
+    const { token: _t, presence: _p, ...rest } = u
     return rest
   }
   for (const [userid, u] of room.users) if (u.role !== 'spectator') out[userid] = strip(u)
@@ -349,11 +364,25 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
     },
     // 顺带把 socket.io 客户端脚本也发出去：模拟器 iframe 需要全局的 io()
     serveClient: true,
+    /**
+     * 默认 25 秒。心跳的往返时间正好是我们量「房主网络好不好」的尺子
+     * （见 presence.js 的 trackRtt），25 秒意味着房间刚开出来的头半分钟
+     * 网络格子只能显示未知。10 秒一个来回，一条连接每分钟多六个几十字节的包，
+     * 换来的是列表里那个格子几乎一开就是准的。
+     * 副作用：掉线判定也跟着变快（pingInterval + pingTimeout，45s → 30s），这是好事。
+     */
+    pingInterval: Number(process.env.SOCKET_PING_INTERVAL_MS || 10_000),
   })
 
   const nsp = io.of('/netplay')
 
   nsp.on('connection', (socket) => {
+    /**
+     * 握手时就把设备和国家定下来，RTT 交给心跳持续更新。
+     * 一条连接建一次就够 —— 同一个人开房、进房、换角色都复用这一张名片。
+     */
+    socket.data.presence = watchPresence(socket)
+
     socket.on('open-room', (payload, ack) => {
       const extra = payload?.extra ?? {}
       const roomId = str(extra.sessionid, 64)
@@ -385,7 +414,9 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
         /** 这一轮换房主开始的时间，用来卡总的宽限时长 */
         migrationStartedAt: 0,
       }
-      room.users.set(userid, { ...extra, socketId: socket.id, role: 'player' })
+      // presence 写在 ...extra 后面：extra 整个是客户端给的，它自己塞一个
+      // presence 进来就等于自选国旗，必须由服务端的这一份覆盖掉
+      room.users.set(userid, { ...extra, socketId: socket.id, role: 'player', presence: socket.data.presence })
       rooms.set(roomId, room)
       socketRoom.set(socket.id, roomId)
       socket.join(roomId)
@@ -412,7 +443,12 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
       const asSpectator = playerCount(room) >= room.maxPlayers
       if (asSpectator && spectatorCount(room) >= MAX_SPECTATORS) return ack?.('room is full')
 
-      room.users.set(userid, { ...extra, socketId: socket.id, role: asSpectator ? 'spectator' : 'player' })
+      room.users.set(userid, {
+        ...extra,
+        socketId: socket.id,
+        role: asSpectator ? 'spectator' : 'player',
+        presence: socket.data.presence, // 同 open-room：不能让 extra 覆盖它
+      })
       socketRoom.set(socket.id, room.id)
       socket.join(room.id)
 

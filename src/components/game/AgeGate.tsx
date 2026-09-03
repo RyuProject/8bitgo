@@ -105,7 +105,9 @@ export function GameAgeGuard({ slug, markedAdult, backdrop, children }: GuardPro
     api
       .get<{ adult: boolean }>(`/api/games/${encodeURIComponent(slug)}/access`)
       .then(({ adult }) => {
-        if (!cancelled) setAccess({ slug, status: adult ? 'adult' : 'open' })
+        // 只收紧不放宽：详情已标成人时，接口回 false 也不放行。
+        // 这条接口出过一次「数据库布尔判成 false」的 bug，年龄门当场消失了。
+        if (!cancelled) setAccess({ slug, status: adult || markedAdult ? 'adult' : 'open' })
       })
       .catch(() => {
         if (!cancelled) setAccess({ slug, status: markedAdult ? 'adult' : 'error' })

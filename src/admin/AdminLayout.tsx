@@ -11,6 +11,8 @@ const TABS = [
   { to: '/admin', label: '概览', end: true },
   { to: '/admin/games', label: '游戏' },
   { to: '/admin/posts', label: '文章' },
+  { to: '/admin/developers', label: '开发商' },
+  { to: '/admin/comments', label: '评论' },
   { to: '/admin/users', label: '用户' },
   { to: '/admin/roms', label: 'ROM 存储' },
   { to: '/admin/data', label: '数据' },

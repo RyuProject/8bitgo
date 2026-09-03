@@ -36,10 +36,19 @@ export interface DeveloperTopGame {
   platform: string
 }
 
+/** 后台在 /admin/developers 里补的资料。一家都没填过时这些字段全是 undefined。 */
+export interface DeveloperProfile {
+  /** 自定义 logo：对象存储 key 或完整 URL，语义同 game.cover */
+  logo?: string
+  description?: string
+  descriptionEn?: string
+  homepage?: string
+}
+
 export interface Facets {
   platforms: Array<{ id: string; count: number }>
   genres: Array<{ id: string; count: number }>
-  developers: Array<{ name: string; count: number; topGame?: DeveloperTopGame }>
+  developers: Array<{ name: string; count: number; topGame?: DeveloperTopGame } & DeveloperProfile>
 }
 
 export interface HomeData {

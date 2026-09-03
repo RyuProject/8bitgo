@@ -10,6 +10,7 @@ import { shouldCaptureMouse } from './mouseCapture'
 import { platformBiosUrlSync } from '@/services/platformBios'
 import { EmulatorTools } from './EmulatorTools'
 import { LiveControls } from './LiveControls'
+import { MatchControls } from './MatchControls'
 import { liveViewRuntime, type LiveSession, type LiveViewState } from './adapters/liveview'
 import { emulatorJsRuntime, p2pPlayable, type NetplaySession } from './adapters/emulatorjs'
 import { cloudGameRuntime, cloudPlayable, type CloudSession, type CloudState } from './adapters/cloudgame'
@@ -125,6 +126,14 @@ interface Props {
   /** 当前语言及英语、日语、中文回退均没有可用 ROM */
   romUnavailable?: boolean
   /**
+   * 重新探测云端 ROM（会先清掉这款游戏的探测缓存）。
+   *
+   * 「探不到」不一定等于「真没有」：一次网络抖动或 HEAD 超时也会走到这个状态，
+   * 而玩家看到的只是「选择 ROM 开始游戏」，会以为站上压根没这个游戏。
+   * 给一个按钮，比让人去刷新整页强。
+   */
+  onRetryRom?: () => void
+  /**
    * 这款游戏绑了哪几种语言的 ROM。少于两种时不显示切换入口 ——
    * 只有一份 ROM 的话「切换语言」是个假选项。
    */
@@ -194,6 +203,7 @@ export function EmulatorPlayer({
   biosUrl,
   romChecking,
   romUnavailable,
+  onRetryRom,
   romLangs,
   romLang,
   onRomLangChange,
@@ -226,15 +236,27 @@ export function EmulatorPlayer({
   const joining = Boolean(inviteId) || Boolean(cloudInviteId)
 
   /**
-   * 默认是否走联机：多人游戏，或者点邀请链接进来的人。
-   * 单人游戏默认在本地跑（可手动切联机，相当于开个直播给人看）。
+   * 默认是否走联机：**只有点邀请链接进来的人**。
+   *
+   * 以前多人游戏一进来就自动建房，玩家还没决定要不要跟人玩，房间已经挂在大厅里了。
+   * 现在所有人都先自己开着玩（自动开播，见 LiveControls），想让人进来再点「联机匹配」——
+   * 那一下不重开游戏，直接在跑着的这一局上开房（handle.openNetplay）。
    */
-  const onlineByDefault = onlineOk && (maxPlayers > 1 || joining)
+  const onlineByDefault = onlineOk && joining
   const [mode, setMode] = useState<Mode>(onlineByDefault ? 'online' : 'local')
   const online = mode === 'online' && onlineOk
 
   const [roomId, setRoomId] = useState<string | null>(null)
   const [players, setPlayers] = useState(1)
+  /**
+   * 「联机匹配」开出来的房间。
+   *
+   * 和 session.netplay 那一路的区别：那是带着联机会话挂载起来的（点邀请链接进来的人），
+   * 这一路是在**已经跑着的本机会话**上后开的房，session 里没有 netplay ——
+   * 所以房间状态得自己记一格，否则工具栏认不出「我正开着房」。
+   */
+  const [hosting, setHosting] = useState(false)
+  const [matchBusy, setMatchBusy] = useState(false)
   /** netplay 给我们分配的身份 id，服务器用它判断「谁该接手」 */
   const myIdRef = useRef<string>('')
   /** 正在接手的旧房间 id：新房间开好后要调 /migrate 把两者接上 */
@@ -271,7 +293,7 @@ export function EmulatorPlayer({
    */
   const willWatch = canWatch && (watch || inviteFull)
   /** 正在看的人数（自己所在的房间） */
-  const myNetRoom = session?.netplay && roomId ? p2pRooms.find((r) => r.roomId === roomId) : undefined
+  const myNetRoom = (session?.netplay || hosting) && roomId ? p2pRooms.find((r) => r.roomId === roomId) : undefined
   const viewers = myNetRoom?.spectators ?? 0
 
   // 云端：连接状态与手柄位
@@ -630,6 +652,81 @@ export function EmulatorPlayer({
     })
   }
 
+  /**
+   * 联机匹配：在**正在跑的这一局**上开房，让别人能加进来。
+   *
+   * 和 startP2p() 的分工：那个是「从头开一局联机的」，会重新挂载引擎；
+   * 这个是玩到一半才想联机的路径，重开等于把玩家已经打的进度扔掉，所以走
+   * handle.openNetplay() —— 引擎实例不动，只是把 netplay 接上去（见 adapters/emulatorjs.ts）。
+   */
+  const openMatch = () => {
+    if (!gameSlug || !handle?.openNetplay || hosting || matchBusy) return
+    setMatchBusy(true)
+    setError(null)
+    setNotice(null)
+    setRoomId(null)
+    setPlayers(1)
+    setRole('player')
+    setIsHost(true)
+    roleSwitchRef.current = null
+    const ok = handle.openNetplay({
+      gameId: gameIdFor(gameSlug),
+      roomName: gameName,
+      playerName: playerName(),
+      maxPlayers: slots,
+      mode: 'host',
+      role: 'player',
+      onSpectatorControl: (fn) => (roleSwitchRef.current = fn),
+      onIdentity: (id) => (myIdRef.current = id),
+      onToken: (tk) => (roomTokenRef.current = tk),
+      onRoom: (id, host) => {
+        setRoomId(id)
+        setIsHost(host)
+        refreshNetplayRooms()
+      },
+      onPlayers: (n) => setPlayers(n),
+      onHostLeft: () => {
+        // 自己就是房主，这条正常不会来；真来了就当房间没了，游戏继续自己玩
+        setHosting(false)
+        setRoomId(null)
+      },
+    })
+    if (!ok) {
+      setMatchBusy(false)
+      setNotice(t.player.matchFailed)
+      setIsHost(false)
+      return
+    }
+    setHosting(true)
+    // openNetplay 是同步返回的，但房间号要等 netplay 轮询到才有（约 1 秒）。
+    // 按钮一直显示「正在开房…」直到房间号到手，玩家才不会对着一个没有邀请链接的房间发愣。
+  }
+
+  /** 房间号到手（或者等太久了）就把「正在开房…」收掉 */
+  useEffect(() => {
+    if (!matchBusy) return
+    if (roomId) {
+      setMatchBusy(false)
+      return
+    }
+    const timer = window.setTimeout(() => setMatchBusy(false), 8000)
+    return () => window.clearTimeout(timer)
+  }, [matchBusy, roomId])
+
+  /** 结束联机，回到一个人玩。游戏不重开，自动开播会接着上（见 LiveControls） */
+  const closeMatch = () => {
+    if (!hosting) return
+    handle?.closeNetplay?.()
+    setHosting(false)
+    setRoomId(null)
+    setPlayers(1)
+    setIsHost(false)
+    setRole('player')
+    roleSwitchRef.current = null
+    // 让大厅立刻把房间卡片撤掉，不用等下一轮轮询
+    refreshNetplayRooms()
+  }
+
   /** 云端：创建房间（join 为空）或加入房间 */
   const startCloud = (join?: string) => {
     if (!gameSlug) return
@@ -784,6 +881,8 @@ export function EmulatorPlayer({
     setNotice(null)
     setRoomId(null)
     setPlayers(1)
+    setHosting(false)
+    setMatchBusy(false)
     setCloudState(null)
     // 身份跟着房间一起清掉，不然下次开自己的房还会被当成观众
     setRole('player')
@@ -848,7 +947,10 @@ export function EmulatorPlayer({
   }
 
   const busy = status === 'loading' || status === 'running'
-  const inRoom = Boolean(session?.netplay || session?.cloud)
+  /** 「在房间里」：挂载时就联机的，或者玩到一半点「联机匹配」开出来的 */
+  const inRoom = Boolean(session?.netplay || session?.cloud || hosting)
+  /** 这个房间是 P2P 那一路（工具栏的观众数、观众席、身份切换只对它有意义） */
+  const netplayOn = Boolean(session?.netplay) || hosting
   const activeRuntime =
     session?.runtime ?? (online ? (channel === 'p2p' ? emulatorJsRuntime : cloudGameRuntime) : pageRuntime)
   const cloudStateLabel = cloudState ? t.player.cloudState[cloudState] : ''
@@ -1010,6 +1112,20 @@ export function EmulatorPlayer({
                         {romUnavailable && (
                           <>
                             <span className="font-semibold text-white">{t.player.noCurrentLanguageVersion}</span>
+                            {/* 探不到 ≠ 真没有：网络抖一下也会落到这里，给个按钮重新探，
+                                比让玩家去刷新整页强 */}
+                            {onRetryRom && (
+                              <>
+                                {' '}
+                                <button
+                                  type="button"
+                                  onClick={onRetryRom}
+                                  className="underline underline-offset-2 hover:text-white"
+                                >
+                                  {t.player.retryRom}
+                                </button>
+                              </>
+                            )}
                             <br />
                           </>
                         )}
@@ -1123,9 +1239,9 @@ export function EmulatorPlayer({
             <span className="inline-flex items-center gap-1 rounded-md bg-brand-soft px-2 py-1 font-semibold text-brand-hover" title={roomId ?? ''}>
               👥 {fmt(t.player.roomBadge, { players: String(roomPlayers), max: String(slots) })}
               {session?.cloud && <span className="font-normal text-muted">· {fmt(t.player.slotLabel, { n: String(slotIndex + 1) })}</span>}
-              {session?.netplay && <span className="font-normal text-muted">· {t.player.p2pTag}</span>}
+              {netplayOn && <span className="font-normal text-muted">· {t.player.p2pTag}</span>}
             </span>
-            {session?.netplay && viewers > 0 && (
+            {netplayOn && viewers > 0 && (
               <span className="inline-flex items-center gap-1 rounded-md bg-white/5 px-2 py-1 font-semibold text-muted">
                 👀 {fmt(t.player.viewers, { n: String(viewers) })}
               </span>
@@ -1191,12 +1307,34 @@ export function EmulatorPlayer({
         )}
 
         {/*
-          开播入口。只给「本来就没法联机」的游戏 —— GBA 是最典型的：
-          联机靠当年的连接线，浏览器里的核心没有那套东西，所以「一起玩」做不到，
-          能做的是「一起看」。支持多人的游戏应该去开联机房，不在这里出现。
+          自动开播。玩就是播 —— 不用玩家点，画面推出去的是录像用的那份副本，
+          本机这一局不受影响。想安静玩的人在按钮上点一下「不公开」，选择记在本地。
+          联机房里的房主不重复推：房间本身就带观众席，再推一路是白占上行。
         */}
-        {status === 'running' && !session?.live && !inRoom && maxPlayers <= 1 && (
-          <LiveControls handle={handle} gameName={gameName} gameSlug={gameSlug} platform={session?.platform ?? platform.id} />
+        {status === 'running' && !session?.live && (
+          <LiveControls
+            handle={handle}
+            gameName={gameName}
+            gameSlug={gameSlug}
+            platform={session?.platform ?? platform.id}
+            active={!inRoom}
+          />
+        )}
+
+        {/*
+          联机匹配。接替原来「开播」的位置：开播已经不需要玩家决定了，
+          「让别人进来一起玩」才需要。点下去在**正在跑的这一局**上开房，游戏不重开。
+        */}
+        {status === 'running' && !session?.live && !session?.netplay && !session?.cloud && (
+          <MatchControls
+            handle={handle}
+            maxPlayers={slots}
+            canPlayOnline={p2pOk}
+            open={hosting}
+            busy={matchBusy}
+            onOpen={openMatch}
+            onClose={closeMatch}
+          />
         )}
 
           <div className="ml-auto flex items-center gap-1.5">

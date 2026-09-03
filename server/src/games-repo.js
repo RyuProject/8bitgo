@@ -392,7 +392,9 @@ export function developerCounts() {
          FROM developer_parts
         WHERE rest <> ''
      )
-     SELECT developer, n, slug, title, title_zh, icon, cover, platform
+     SELECT ranked.developer, ranked.n, ranked.slug, ranked.title, ranked.title_zh,
+            ranked.icon, ranked.cover, ranked.platform,
+            d.logo, d.description, d.description_en, d.homepage
        FROM (
          SELECT developer, slug, title, title_zh, icon, cover, platform,
                 COUNT(*)     OVER (PARTITION BY developer)                                 AS n,
@@ -400,9 +402,51 @@ export function developerCounts() {
            FROM developer_parts
           WHERE developer <> ''
        ) ranked
-      WHERE rn = 1
-      ORDER BY n DESC, developer ASC`,
+       -- 人工资料是可选的：developers 表空着也能出完整名单，只是没有自定义 logo。
+       -- 所以必须是 LEFT JOIN，而且要在 rn = 1 之后接 —— 放进 CTE 里会让每一行
+       -- 都去 JOIN 一次，白白多算 N 倍。
+       LEFT JOIN developers d ON d.name = ranked.developer
+      WHERE ranked.rn = 1
+      ORDER BY ranked.n DESC, ranked.developer ASC`,
   )
+}
+
+/* ---------------- 开发商的人工资料 ---------------- */
+
+/**
+ * 后台用的开发商全名单。
+ *
+ * 名单的来源仍然是 games.developer（GROUP BY 出来的），developers 表只是往上贴资料 ——
+ * 所以这里直接复用 developerCounts()，不再写第二份拆分逗号的 SQL。
+ *
+ * 另外补上「有资料、但名下已经没有游戏」的孤儿行：改了游戏里的开发商拼写之后
+ * 老资料会留在表里，后台看不见就永远删不掉，只能靠这一段捞出来。
+ */
+export async function listDeveloperProfiles() {
+  const [counted, profiles] = await Promise.all([
+    developerCounts(),
+    query('SELECT name, logo, description, description_en, homepage FROM developers'),
+  ])
+  const seen = new Set(counted.map((r) => r.developer))
+  const orphans = profiles
+    .filter((p) => !seen.has(p.name))
+    .map((p) => ({ ...p, developer: p.name, n: 0, slug: null }))
+  return [...counted, ...orphans]
+}
+
+export async function upsertDeveloperProfile(name, data) {
+  await query(
+    `INSERT INTO developers (name, logo, description, description_en, homepage)
+     VALUES (?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE logo = VALUES(logo), description = VALUES(description),
+                             description_en = VALUES(description_en), homepage = VALUES(homepage)`,
+    [name, data.logo, data.description, data.descriptionEn, data.homepage],
+  )
+}
+
+export async function deleteDeveloperProfile(name) {
+  const r = await query('DELETE FROM developers WHERE name = ?', [name])
+  return Number(r?.affectedRows ?? 0) > 0
 }
 
 /**

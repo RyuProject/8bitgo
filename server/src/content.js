@@ -107,6 +107,11 @@ export async function loadFacets() {
     developers: developers.map((r) => ({
       name: r.developer,
       count: Number(r.n),
+      // 后台填了就用自定义 logo，没填前台自己退回代表作封面
+      logo: r.logo || undefined,
+      description: r.description || undefined,
+      descriptionEn: r.description_en || undefined,
+      homepage: r.homepage || undefined,
       topGame: r.slug
         ? { slug: r.slug, title: r.title, titleZh: r.title_zh || undefined, icon: r.icon, cover: r.cover || undefined, platform: r.platform }
         : undefined,

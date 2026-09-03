@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { verifyToken } from '../auth.js'
 import { queryOne } from '../db.js'
+import { presenceFromRequest, UNKNOWN_PRESENCE } from '../presence.js'
 
 /**
  * 联机房间注册表（内存版）。
@@ -8,7 +9,7 @@ import { queryOne } from '../db.js'
  * cloud-game 本身不对外暴露「有哪些房间」，所以前端在联机时定期向这里心跳，
  * 侧边栏「联机玩」就从这里读房间列表。
  *
- *   POST   /api/rooms/heartbeat   { roomId, gameSlug, memberId, nickname, playerIndex, host }
+ *   POST   /api/rooms/heartbeat   { roomId, gameSlug, memberId, nickname, playerIndex, host, rtt }
  *   DELETE /api/rooms/:roomId/members/:memberId   离开
  *   GET    /api/rooms             在线房间列表
  *
@@ -40,9 +41,16 @@ function publicRoom(room) {
     gameSlug: room.gameSlug,
     createdAt: room.createdAt,
     host: host ? { nickname: host.nickname, userId: host.userId } : null,
+    /** 房主的设备 / 地区 / 网络，房间卡片上那三个格子。见 presence.js */
+    presence: host?.presence ?? UNKNOWN_PRESENCE,
     players: members.length,
     playerIndexes: members.map((m) => m.playerIndex),
-    members: members.map((m) => ({ nickname: m.nickname, playerIndex: m.playerIndex, host: Boolean(m.host) })),
+    members: members.map((m) => ({
+      nickname: m.nickname,
+      playerIndex: m.playerIndex,
+      host: Boolean(m.host),
+      presence: m.presence ?? UNKNOWN_PRESENCE,
+    })),
   }
 }
 
@@ -95,7 +103,16 @@ roomsRouter.post('/heartbeat', softUser, (req, res) => {
   const existing = room.members.get(memberId)
   // 第一个进来的就是 host；后来者即使自称 host 也不算
   const host = existing ? existing.host : room.members.size === 0 || Boolean(req.body.host && ![...room.members.values()].some((m) => m.host))
-  room.members.set(memberId, { memberId, nickname, playerIndex, host, userId: req.user?.id ?? null, seenAt: now })
+  /**
+   * 名片每次心跳重算一遍，网络那一格才跟得上变化。
+   *
+   * 云端房间和另外两种不一样：它没有一条常驻的 socket，服务端量不到往返延迟，
+   * 只能收下浏览器自己测的那个数（客户端拿上一次心跳请求的耗时，见 services/rooms.ts）。
+   * 这一项因此是「客户端说了算」的，presenceFromRequest 里会钳范围；
+   * 设备和国家仍然是服务端从 UA 和 IP 自己看的，报不了假。
+   */
+  const presence = presenceFromRequest(req, req.body.rtt)
+  room.members.set(memberId, { memberId, nickname, playerIndex, host, userId: req.user?.id ?? null, seenAt: now, presence })
   res.json(publicRoom(room))
 })
 

@@ -4,7 +4,7 @@ import { requireAdmin } from '../auth.js'
 import { postApiToRow, buildUpsert } from '../mappers.js'
 import { upsertGame, adminStats } from '../games-repo.js'
 import { invalidateContent } from '../content.js'
-import { queueGameSearchPush } from '../search-push.js'
+import { queueGameSearchPush, queuePostSearchPush } from '../search-push.js'
 
 export const adminRouter = Router()
 adminRouter.use(requireAdmin)
@@ -61,6 +61,10 @@ adminRouter.post('/import', async (req, res, next) => {
     // ⚠️ 百度普通收录有每日配额（新站常见 10~100 条），批量导入几乎必然会把它推满；
     // 剩下的靠每日兜底任务（cd server && npm run baidu）按天补交。
     for (const game of gameList) queueGameSearchPush(game)
+    // 文章同样要推。这里只推已发布的：导入包里常常混着草稿。
+    for (const post of postList) {
+      if (post.published !== false) queuePostSearchPush(post)
+    }
     res.json({ ok: true, ...result })
   } catch (e) {
     next(e)

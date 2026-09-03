@@ -14,6 +14,7 @@ import {
   publicSiteUrl,
   queueGameIndexing,
   queueIndexNowUrls,
+  queuePostIndexing,
 } from './indexnow.js'
 import {
   baiduPushEnabled,
@@ -23,6 +24,7 @@ import {
   flushBaiduQueue,
   queueBaiduUrls,
   queueGameBaiduPush,
+  queuePostBaiduPush,
 } from './baidu-push.js'
 
 /** 一款游戏新增 / 修改 / 上下架 / 删除后调用。 */
@@ -30,6 +32,19 @@ export function queueGameSearchPush(game) {
   return {
     indexnow: queueGameIndexing(game),
     baidu: queueGameBaiduPush(game),
+  }
+}
+
+/**
+ * 一篇文章新增 / 修改 / 发布 / 撤下 / 删除后调用。
+ *
+ * 「撤下」和「删除」也要推：URL 从有内容变成 404，不通知的话搜索结果里会长期
+ * 留着一条打不开的记录。是否值得推由路由层判断（草稿从来没被收录过，不用推）。
+ */
+export function queuePostSearchPush(post) {
+  return {
+    indexnow: queuePostIndexing(post),
+    baidu: queuePostBaiduPush(post),
   }
 }
 

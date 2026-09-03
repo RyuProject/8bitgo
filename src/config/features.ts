@@ -15,6 +15,23 @@ export interface Features {
    * 这条通道留给付费会员：接入会员判断后，把这里改成按用户等级返回。
    */
   cloudGame: boolean
+  /**
+   * 密码登录：登录弹窗的「密码登录」那一栏、个人中心的「登录密码」面板。
+   *
+   * 关掉时只留验证码登录。服务端的密码接口照常在（已经设过密码的人不会被锁在门外），
+   * 关的只是入口 —— 想重新开放把这里改成 true 即可。
+   *
+   * 两处必须一起关：只关登录弹窗的话，个人中心还能设密码，设完却没有任何地方能用，
+   * 那个设置项本身就成了坑。
+   */
+  passwordLogin: boolean
+  /**
+   * 游戏评论：详情页侧栏的评论区、后台的「评论」那一页。
+   *
+   * 关掉时前台整块不渲染，接口仍然在（已有的评论不会丢）。
+   * 想上线把这里改成 true —— 前提是后端跑过 npm run migrate 建出 game_comments 表。
+   */
+  comments: boolean
 }
 
 export const FEATURES: Features = {
@@ -23,4 +40,6 @@ export const FEATURES: Features = {
   live: true,
   coins: false,
   cloudGame: true,
+  passwordLogin: false,
+  comments: true,
 }
