@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { watchPresence, UNKNOWN_PRESENCE } from './presence.js'
+import { watchPresence, clientIpFrom, UNKNOWN_PRESENCE } from './presence.js'
 
 /**
  * 直播信令（一人玩、多人看）。
@@ -23,20 +23,41 @@ import { watchPresence, UNKNOWN_PRESENCE } from './presence.js'
  * 要做几十上百人得在中间加 SFU（主播只推一路，服务器扇出）。
  *
  * ── socket.io 命名空间 /live ──────────────────────────────
- *   go-live   {gameSlug, gameName, title, platform}  + ack(err, {roomId, token})
- *   watch     {roomId}                               + ack(err, {hostId, title, ...})
- *   signal    {target, data}   → 转发给 target，附上 from
- *   stop-live                                        主播主动下播
+ *   go-live      {gameSlug, gameName, title, platform}  + ack(err, {roomId, token})
+ *   resume-live  {roomId, token}                        + ack(err, {roomId, viewers: [id]})
+ *                主播断线重连后接回原来的房间（见下面「主播掉线」）
+ *   watch        {roomId}                               + ack(err, {hostId, hostAway, ...})
+ *                同一个观众对同一个房间再发一次 = 「请主播重新给我发 offer」
+ *   signal       {target, data}   → 转发给 target，附上 from
+ *                观众发的一律转给**当前**主播，target 只是摆设（主播重连后 id 会变）
+ *   stop-live                                           主播主动下播
  *   ← viewer-joined  {viewerId}      发给主播，让它建一条新的 PeerConnection
  *   ← viewer-left    {viewerId}
  *   ← viewers        {count}         主播和观众都收
+ *   ← host-away                      发给观众：主播断线了，房间先留着
+ *   ← host-back      {hostId}        发给观众：主播回来了，socket id 换了
  *   ← live-ended     {reason}        发给观众
+ *
+ * ── 主播掉线 ──────────────────────────────────────────────
+ * 以前是「主播 socket 一断房间立刻散」。结果切个 WiFi、地铁过个隧道，观看链接就死了，
+ * 而 WebRTC 画面本身其实还在点对点地流。现在断线后房间保留 RESUME_GRACE_MS，
+ * 主播拿着开播时发的 token 发 resume-live 就能接回来 —— 观众不用换链接。
+ *
+ * 允许**接管**：重连的新 socket 到达时，旧 socket 往往还没到 ping 超时、在服务器眼里
+ * 仍然「在线」。token 对得上就把房间交给新 socket，旧的那份 membership 直接作废。
  */
 
 /** 同时在播的房间上限：信令是公开接口，不设上限开播就能刷爆内存 */
 const MAX_ROOMS = Number(process.env.LIVE_MAX_ROOMS || 200)
+/** 单个 IP 同时能开的房间数。MAX_ROOMS 只防内存，防不了一个人开满整站 */
+const MAX_ROOMS_PER_IP = Number(process.env.LIVE_MAX_ROOMS_PER_IP || 3)
 /** 单场直播的观众上限，见上面关于上行带宽的说明 */
 const MAX_VIEWERS = Number(process.env.LIVE_MAX_VIEWERS || 12)
+/**
+ * 主播断线后房间保留多久。socket.io 判掉线本身要 pingInterval + pingTimeout（约 30 秒），
+ * 这个数是在那之后再等的。太长会让大厅挂着一堆「主播不在」的房间，太短又护不住一次 4G 切换。
+ */
+const RESUME_GRACE_MS = Number(process.env.LIVE_RESUME_GRACE_MS || 60_000)
 
 const str = (v, max = 120) => (typeof v === 'string' ? v.trim().slice(0, max) : '')
 
@@ -56,6 +77,8 @@ function publicRoom(room) {
     viewers: room.viewers.size,
     maxViewers: MAX_VIEWERS,
     startedAt: room.startedAt,
+    /** 主播断线、房间在宽限期里等它回来 */
+    hostAway: room.hostSocketId === null,
     /**
      * 主播的设备 / 地区 / 网络（见 presence.js）。全部是服务端从握手信息里看出来的，
      * 主播报不了假；RTT 是它到本站服务器的，不是到观众的 —— 画面走 WebRTC 直连，
@@ -74,16 +97,52 @@ function presenceOf(room) {
   }
 }
 
+function hostIp(socket) {
+  try {
+    return clientIpFrom(socket?.handshake?.address, socket?.handshake?.headers || {})
+  } catch {
+    return ''
+  }
+}
+
 /** 广播人数给房间里所有人（主播 + 观众） */
 function notifyViewers(nsp, room) {
   nsp.to(room.id).emit('viewers', { roomId: room.id, count: room.viewers.size })
 }
 
 function closeRoom(nsp, room, reason) {
+  if (room.awayTimer) clearTimeout(room.awayTimer)
+  room.awayTimer = null
   nsp.to(room.id).emit('live-ended', { roomId: room.id, reason })
   for (const viewerId of room.viewers) membership.delete(viewerId)
-  membership.delete(room.hostSocketId)
+  if (room.hostSocketId) membership.delete(room.hostSocketId)
   rooms.delete(room.id)
+}
+
+/** 主播的 socket 没了：房间先留着等它回来，到点没回来再散 */
+function hostAway(nsp, room) {
+  room.hostSocketId = null
+  room.awaySince = Date.now()
+  if (room.awayTimer) clearTimeout(room.awayTimer)
+  room.awayTimer = setTimeout(() => {
+    // 期间可能已经被接回去又再断开，或者被 stop-live 关掉 —— 只有还是「不在」才散场
+    const cur = rooms.get(room.id)
+    if (cur && cur.hostSocketId === null) closeRoom(nsp, cur, 'host-left')
+  }, RESUME_GRACE_MS)
+  nsp.to(room.id).emit('host-away', { roomId: room.id })
+}
+
+/** 把房间交给一个（新的）主播 socket */
+function bindHost(nsp, room, socket) {
+  if (room.awayTimer) clearTimeout(room.awayTimer)
+  room.awayTimer = null
+  room.awaySince = null
+  room.hostSocketId = socket.id
+  room.hostIp = hostIp(socket)
+  // RTT 追踪是绑在具体 socket 上的，换了 socket 就得重新挂
+  room.presence = watchPresence(socket)
+  membership.set(socket.id, { roomId: room.id, role: 'host' })
+  socket.join(room.id)
 }
 
 function leave(nsp, socket) {
@@ -94,13 +153,15 @@ function leave(nsp, socket) {
   if (!room) return
 
   if (info.role === 'host') {
-    // 主播走了就是散场：画面本来就来自它的浏览器，没有可接手的东西
-    closeRoom(nsp, room, 'host-left')
+    // 已经被另一个 socket 接管（旧连接迟到的 disconnect）：什么都不用做
+    if (room.hostSocketId !== socket.id) return
+    // 画面来自主播的浏览器，没人能接手 —— 但它自己很可能马上就回来，先等等
+    hostAway(nsp, room)
     return
   }
   room.viewers.delete(socket.id)
   // 告诉主播可以把这条 PeerConnection 拆了，别留着占上行
-  nsp.to(room.hostSocketId).emit('viewer-left', { viewerId: socket.id })
+  if (room.hostSocketId) nsp.to(room.hostSocketId).emit('viewer-left', { viewerId: socket.id })
   notifyViewers(nsp, room)
 }
 
@@ -116,62 +177,98 @@ export function attachLive(io) {
     socket.on('go-live', (payload, ack) => {
       if (membership.has(socket.id)) return ack?.('already in a room')
       if (rooms.size >= MAX_ROOMS) return ack?.('server is full')
+      const ip = hostIp(socket)
+      if (ip && MAX_ROOMS_PER_IP > 0) {
+        let mine = 0
+        for (const r of rooms.values()) if (r.hostIp === ip) mine++
+        if (mine >= MAX_ROOMS_PER_IP) return ack?.('too many rooms')
+      }
 
       const id = randomBytes(9).toString('base64url')
       const room = {
         id,
-        // 令牌暂时只用于将来的下播 / 改标题接口，观众看不到
+        // 续播凭证：主播断线重连后凭它 resume-live。观众看不到（publicRoom 不带它）
         token: randomBytes(24).toString('base64url'),
         title: str(payload?.title, 80) || str(payload?.gameName, 80) || 'Live',
         gameSlug: str(payload?.gameSlug, 120),
         gameName: str(payload?.gameName, 120),
         platform: str(payload?.platform, 40),
         hostName: str(payload?.hostName, 40),
-        hostSocketId: socket.id,
         startedAt: Date.now(),
         viewers: new Set(),
+        awayTimer: null,
+        awaySince: null,
+        // hostSocketId / hostIp / presence 由 bindHost 填：主播重连时也走它，只写一处
+        hostSocketId: null,
+        hostIp: '',
         /**
-         * 主播的名片。设备和国家在这一刻就定死了，RTT 由 socket.io 的心跳
+         * 主播的名片。设备和国家在绑定那一刻就定死了，RTT 由 socket.io 的心跳
          * 持续刷新，所以存的是个取快照的函数而不是一份数据。
          */
-        presence: watchPresence(socket),
+        presence: null,
       }
       rooms.set(id, room)
-      membership.set(socket.id, { roomId: id, role: 'host' })
-      socket.join(id)
+      bindHost(nsp, room, socket)
       ack?.(null, { roomId: id, token: room.token })
+    })
+
+    socket.on('resume-live', (payload, ack) => {
+      if (membership.has(socket.id)) return ack?.('already in a room')
+      const room = rooms.get(str(payload?.roomId, 64))
+      if (!room) return ack?.('not found')
+      const token = str(payload?.token, 64)
+      if (!token || token !== room.token) return ack?.('forbidden')
+
+      // 接管：旧 socket 还挂着（没到 ping 超时）的话，把它从房间里请出去
+      const old = room.hostSocketId
+      if (old && old !== socket.id) {
+        membership.delete(old)
+        nsp.sockets.get(old)?.leave(room.id)
+      }
+      bindHost(nsp, room, socket)
+      // 观众要知道主播的新 id（它们的 signal 其实由服务端路由，但 from 过滤用得上）
+      socket.to(room.id).emit('host-back', { roomId: room.id, hostId: socket.id })
+      // 把当前观众名单交给主播：哪条 PeerConnection 还活着它自己知道，死了的重新 offer
+      ack?.(null, { roomId: room.id, viewers: Array.from(room.viewers) })
     })
 
     socket.on('watch', (payload, ack) => {
       const room = rooms.get(str(payload?.roomId, 64))
       if (!room) return ack?.('not found')
-      if (membership.has(socket.id)) return ack?.('already in a room')
-      if (room.viewers.size >= MAX_VIEWERS) return ack?.('full')
+      const info = membership.get(socket.id)
+      const again = info?.role === 'viewer' && info.roomId === room.id
+      if (info && !again) return ack?.('already in a room')
+      if (!again && room.viewers.size >= MAX_VIEWERS) return ack?.('full')
 
-      room.viewers.add(socket.id)
-      membership.set(socket.id, { roomId: room.id, role: 'viewer' })
-      socket.join(room.id)
+      if (!again) {
+        room.viewers.add(socket.id)
+        membership.set(socket.id, { roomId: room.id, role: 'viewer' })
+        socket.join(room.id)
+      }
       ack?.(null, { ...publicRoom(room), hostId: room.hostSocketId })
-      // 由主播发起 offer：它才知道自己有几条轨、什么编码
-      nsp.to(room.hostSocketId).emit('viewer-joined', { viewerId: socket.id })
-      notifyViewers(nsp, room)
+      // 由主播发起 offer：它才知道自己有几条轨、什么编码。
+      // 主播不在就先不发，它 resume 回来时会拿到观众名单自己补
+      if (room.hostSocketId) nsp.to(room.hostSocketId).emit('viewer-joined', { viewerId: socket.id })
+      if (!again) notifyViewers(nsp, room)
     })
 
     /**
-     * 转发握手包。只在同一个房间内、且只在「主播 ↔ 自己」之间转 ——
+     * 转发握手包。只在同一个房间内、且只在「主播 ↔ 观众」之间转 ——
      * 不加这层校验的话，任何人都能拿别人的 socketId 往里塞 SDP。
+     * 观众发的一律送给当前主播：主播重连后 id 变了，观众手里的旧 id 不算数。
      */
     socket.on('signal', (payload) => {
       const info = membership.get(socket.id)
       if (!info) return
       const room = rooms.get(info.roomId)
       if (!room) return
-      const target = str(payload?.target, 64)
-      if (!target) return
+      let target
       if (info.role === 'host') {
-        if (!room.viewers.has(target)) return
-      } else if (target !== room.hostSocketId) {
-        return
+        target = str(payload?.target, 64)
+        if (!target || !room.viewers.has(target)) return
+      } else {
+        target = room.hostSocketId
+        if (!target) return
       }
       nsp.to(target).emit('signal', { from: socket.id, data: payload?.data })
     })

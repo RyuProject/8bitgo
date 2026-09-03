@@ -22,6 +22,7 @@ import {
 import { bundleBytes, bundleWarnings, pickMainSwf, planSwfBundleFromZip, type SwfBundleFile, type SwfBundlePlan } from '@/lib/swfBundle'
 import { listZipEntries, isZip } from '@/lib/unzip'
 import { identifyArcadeRomset, type RomsetIdentification } from '@/lib/arcadeRomset'
+import type { ArcadeHack } from '@/data/arcadeHacks'
 import { platformBiosUrlSync, fetchPlatformBios } from '@/services/platformBios'
 import { uploadSwfBundle, type BundleUploadProgress } from './swfUpload'
 import { confirmUpload, cleanupSuperseded, deleteRomObjects, human, isDeletableKey } from './uploadGuards'
@@ -115,6 +116,17 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
     .filter(Boolean)
 
   const set = <K extends keyof Game>(key: K, value: Game[K]) => setForm((f) => ({ ...f, [key]: value }))
+
+  /**
+   * 把识别到的改版包写进 RomData 字段。
+   *
+   * onlyIfEmpty 用在「上传时自动认出来」那一路：管理员可能已经手写 / 改过一份 dat，
+   * 上传个文件就把它冲掉太粗暴。字段里有东西时改由界面上那个按钮明确触发。
+   */
+  const applyHack = (hack: ArcadeHack, onlyIfEmpty = false) => {
+    if (!hack.romData) return
+    setForm((f) => (onlyIfEmpty && f.arcadeRomData?.trim() ? f : { ...f, arcadeRomData: hack.romData }))
+  }
 
   const applyDosboxTemplate = (config: string) => {
     try {
@@ -490,6 +502,8 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
             slug={slugify(form.slug || form.title)}
             onChange={(key) => setRomLang(lang, key)}
             allBoundKeys={allBoundKeys}
+            onHackFound={(hack) => applyHack(hack, true)}
+            onApplyHack={(hack) => applyHack(hack)}
           />
         ))}
       </div>
@@ -763,6 +777,8 @@ function RomField({
   lang,
   label,
   allBoundKeys,
+  onHackFound,
+  onApplyHack,
 }: {
   value: string
   platform: PlatformId
@@ -772,6 +788,13 @@ function RomField({
   label?: string
   /** 这款游戏当前绑定的全部对象 key（不去重）—— 判断旧文件是不是还被别的槽位共用 */
   allBoundKeys: string[]
+  /**
+   * 上传时认出是已知改版包。RomData 字段在父组件手里，所以这里只报告，
+   * 由父组件决定要不要自动填（现在的规则：字段是空的才自动填，不覆盖人写好的）。
+   */
+  onHackFound?: (hack: ArcadeHack) => void
+  /** 管理员点「套用」时明确要求写入，覆盖也无所谓 */
+  onApplyHack?: (hack: ArcadeHack) => void
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [progress, setProgress] = useState<number | null>(null)
@@ -833,6 +856,17 @@ function RomField({
       const found = await identifyArcadeRomset(listZipEntries(buf))
       if (!found) return null
       setRomset(found)
+
+      /*
+        已知改版包优先。它的包名由指纹表说了算（FBNeo 靠包名认游戏，RomData 的
+        ZipName 也必须和它一致），不能再走下面那套「覆盖率满分才改名」的判断 ——
+        改版包永远不可能在任何 romset 上满分，那是它的定义。
+      */
+      if (found.hack) {
+        onHackFound?.(found.hack)
+        return `${found.hack.zipName}.zip`
+      }
+
       const hit = found.confident
       if (!hit) return null
 
@@ -1043,7 +1077,14 @@ function RomField({
         )}
         {progress !== null && stageText(stage) && <p className="mt-1 font-mono text-[11px] text-dim">{stageText(stage)}</p>}
         {msg && <p className={cx('mt-2 text-xs', msg.ok ? 'text-online' : 'text-live')}>{msg.text}</p>}
-        {romset && <RomsetHint found={romset} biosMissing={biosMissing} platform={platform} />}
+        {romset && (
+          <RomsetHint
+            found={romset}
+            biosMissing={biosMissing}
+            platform={platform}
+            onApplyHack={onApplyHack}
+          />
+        )}
         {!canUpload && (
           <p className="mt-1 text-[11px] text-dim">
             <Link to="/admin/roms" className="text-brand-hover hover:underline">
@@ -1341,16 +1382,53 @@ function RomsetHint({
   found,
   biosMissing,
   platform,
+  onApplyHack,
 }: {
   found: RomsetIdentification
   biosMissing: string | null
   platform: PlatformId
+  /** 一键把识别到的改版包写进表单（ROM 名 + RomData） */
+  onApplyHack?: (hack: NonNullable<RomsetIdentification['hack']>) => void
 }) {
   const top = found.candidates[0]
   const hit = found.confident
+  const hack = found.hack
   return (
     <div className="mt-2 space-y-1 text-xs">
-      {hit ? (
+      {hack ? (
+        /*
+          已知改版包。这一支要说清楚三件事，因为它和「原版包」的处理完全不同：
+          它叫什么、借哪个驱动跑、以及为什么必须配一份 RomData。
+          不摆候选列表 —— 改版包的身份是指纹确定的，摆「最接近谁」只会误导人
+          （这一条规则本身就是为了收拾「最接近 wofch 19/29」那种错答案）。
+        */
+        <div className="text-online">
+          <p>
+            ✓ 识别为已知改版包：<span className="font-semibold">{hack.title}</span>
+          </p>
+          <p className="mt-0.5 text-dim">
+            包名应为 <span className="font-mono">{hack.zipName}.zip</span>，借
+            <span className="font-mono"> {hack.driver} </span>驱动运行
+            {hack.note && <span>（{hack.note}）</span>}。
+          </p>
+          {hack.romData ? (
+            <p className="mt-1">
+              <button
+                type="button"
+                onClick={() => onApplyHack?.(hack)}
+                className="rounded-md border border-brand px-2 py-1 font-semibold text-brand-hover hover:bg-brand-soft"
+              >
+                填好 RomData
+              </button>
+              <span className="ml-2 text-dim">FBNeo 驱动表里没有它，不配 RomData 一定报 Romset is unknown。</span>
+            </p>
+          ) : (
+            <p className="mt-0.5 text-live">
+              ⚠️ 认得出，但还没有可用的加载方案（缺 RomData）—— 现在传上去也跑不起来。
+            </p>
+          )}
+        </div>
+      ) : hit ? (
         <p className="text-online">
           ✓ 识别为 <span className="font-mono font-semibold">{hit.name}</span>
           （{hit.matched}/{hit.total} 个 ROM 全部匹配）

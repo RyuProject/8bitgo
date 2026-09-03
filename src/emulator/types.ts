@@ -168,7 +168,13 @@ export interface ResolveContext {
  *              点了只是把这些改动固化下来，没有「某一帧」这个概念（js-dos）
  * 混在一起会误导玩家：他在关卡中间点存档，回来却退回上一个存盘点。
  */
-export type Capability = 'pause' | 'saveState' | 'fsSave' | 'volume' | 'gamepad' | 'screenshot' | 'record'
+export type Capability = 'pause' | 'saveState' | 'fsSave' | 'volume' | 'gamepad' | 'screenshot' | 'record' | 'touchpad'
+
+/**
+ * 屏幕手柄能按的键。取 NES/FC 的键位作最小公约数 —— 手机屏上再多按键也放不下，
+ * 别的机型多出来的键（L/R、C 之类）以后由各适配器自己扩。
+ */
+export type PadButton = 'up' | 'down' | 'left' | 'right' | 'a' | 'b' | 'select' | 'start'
 
 /** 录制 / 截屏要用到的画面与声音来源，由各适配器提供 */
 export interface CaptureSources {
@@ -223,6 +229,14 @@ export interface RuntimeHandle {
   /** 音量 0~1 */
   /** 引擎当前音量（0~1），工具栏用它初始化滑块，避免显示 100% 实际却是 60% */
   volume?: number
+  /**
+   * 按下 / 松开一个手柄键，给屏幕手柄用。
+   *
+   * 手机上没有键盘，而 jsnes / js-dos / Ruffle 这些引擎自己不带屏幕按键，
+   * 于是播放器在触屏设备上画一套浮层，按下时调这里。声明了 'touchpad' 能力才会画。
+   * EmulatorJS 不走这条路 —— 它自带虚拟手柄（见 emulatorjs.ts 的 finishStart）。
+   */
+  sendButton?: (button: PadButton, down: boolean) => void
   setVolume?: (volume: number) => void
   /** 截屏 */
   screenshot?: () => Promise<Blob | null>

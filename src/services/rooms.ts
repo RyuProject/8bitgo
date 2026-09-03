@@ -12,11 +12,13 @@ import { useEffect, useState, useSyncExternalStore } from 'react'
 import { api, apiEnabled } from './api'
 import { getCurrentUser } from './auth'
 import { randomId } from './localStore'
+import type { Presence } from './presence'
 
 export interface RoomMember {
   nickname: string
   playerIndex: number
   host: boolean
+  presence?: Presence
 }
 
 export interface Room {
@@ -27,6 +29,8 @@ export interface Room {
   players: number
   playerIndexes: number[]
   members: RoomMember[]
+  /** 房主的设备 / 地区 / 网络。见 services/presence.ts */
+  presence?: Presence
 }
 
 export const MAX_PLAYERS = 4
@@ -96,11 +100,26 @@ export function keepAlive(input: { roomId: string; gameSlug: string; playerIndex
   if (!roomsEnabled()) return () => {}
   const me = memberId()
   let stopped = false
+  /**
+   * 上一次心跳的往返耗时，下一次心跳时报上去 —— 云端房间没有常驻连接，
+   * 服务端量不到延迟，只能这么来（见 server/src/presence.js 的说明）。
+   * 报的是上一次而不是这一次，因为这一次的耗时要等它回来才知道；
+   * 心跳 10 秒一发，差这一拍无所谓。
+   *
+   * 注意这个数比 socket 心跳的 RTT 偏大：它含了一次完整的 HTTP 往返
+   * 加上服务端处理时间。同一档阈值下云端房间会显得稍微「差」一点，
+   * 但云端房间和 P2P 房间本来也不比这个。
+   */
+  let lastRtt: number | null = null
   const beat = () => {
     if (stopped) return
+    const sentAt = Date.now()
     void api
-      .post<Room>('/api/rooms/heartbeat', { ...input, memberId: me, nickname: displayName() })
-      .then((room) => cache.set(room))
+      .post<Room>('/api/rooms/heartbeat', { ...input, memberId: me, nickname: displayName(), rtt: lastRtt })
+      .then((room) => {
+        lastRtt = Date.now() - sentAt
+        cache.set(room)
+      })
       .catch(() => {})
   }
   beat()

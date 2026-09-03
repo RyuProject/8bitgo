@@ -9,7 +9,6 @@ import { Logo } from './Logo'
 import { bottomNavFor, communityLinks, exploreNavFor, mainNavFor, type NavLinkItem } from './nav'
 import { useT, fmt } from '@/services/i18n'
 import { useLang } from '@/services/lang'
-import { gameTitle } from '@/services/i18nData'
 import { SocialIcon } from './SocialIcon'
 import { FEATURES } from '@/config/features'
 import { anyRoomsEnabled, useAllRooms } from '@/services/allRooms'
@@ -17,8 +16,10 @@ import { useGamesTotal } from '@/services/gamesTotal'
 import { api, apiEnabled } from '@/services/api'
 import { useCurrentUser as useUser } from '@/services/auth'
 import { useGamesBySlugs } from '@/services/gameCache'
+import { useGuestRecents } from '@/services/recents'
+import { platformMap } from '@/data/platforms'
+import { gameTitle, platformLabel } from '@/services/i18nData'
 import { GameCover } from '@/components/game/GameCover'
-import { RoomCard } from '@/components/game/RoomCard'
 
 export const SIDEBAR_WIDTH = 240
 export const SIDEBAR_COLLAPSED_WIDTH = 72
@@ -87,9 +88,6 @@ export function Sidebar() {
             ))}
           </NavGroup>
 
-          {/* 有人开着房间时才出现，平时完全不占位置 */}
-          <RoomsBox collapsed={collapsed} />
-
           <LaterBox collapsed={collapsed} />
 
           <NavGroup title={t.sidebar.groupLibrary} collapsed={collapsed}>
@@ -108,6 +106,8 @@ export function Sidebar() {
               <NavItem key={item.to} item={item} collapsed={collapsed} />
             ))}
           </NavGroup>
+
+          <PlayedBox collapsed={collapsed} />
         </nav>
 
         {/* 底部：用户 */}
@@ -191,31 +191,6 @@ function GamesCount() {
   return <span className={COUNT_BADGE}>{total.toLocaleString()}</span>
 }
 
-/** 联机玩：正在进行的房间（最多 5 个），封面 = 正在玩的游戏，显示房主与人数 */
-function RoomsBox({ collapsed }: { collapsed: boolean }) {
-  const t = useT()
-  const rooms = useAllRooms()
-  const { setMobileOpen } = useShell()
-  if (rooms.length === 0) return null
-  return (
-    <div className={cx('mb-3', collapsed && 'lg:hidden')} onClick={() => setMobileOpen(false)}>
-      <p className="text-pixel mb-1.5 px-3 text-[10px] uppercase tracking-wider text-dim">{t.rooms.sidebarTitle}</p>
-      <ul className="space-y-0.5">
-        {rooms.slice(0, 5).map((room) => (
-          <li key={room.roomId}>
-            <RoomCard room={room} compact />
-          </li>
-        ))}
-      </ul>
-      {rooms.length > 5 && (
-        <Link to="/rooms" className="mt-1 block px-3 text-[11px] text-muted hover:text-fg">
-          {t.rooms.sidebarMore} →
-        </Link>
-      )}
-    </div>
-  )
-}
-
 /**
  * 「稍后玩」：玩家自己标记的游戏，最多显示 3 款，点标题右边的箭头看全部。
  *
@@ -254,6 +229,62 @@ function LaterBox({ collapsed }: { collapsed: boolean }) {
                 <GameCover game={g} ratio="square" showTitle={false} iconSize="sm" />
               </span>
               <span className="min-w-0 flex-1 truncate">{gameTitle(g, lang)}</span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+/**
+ * 「曾经玩过」：最近打开过的游戏，最多 4 款。
+ *
+ * 两个来源二选一：登录了读账号上的 users.recent（换设备也在），
+ * 没登录读这台浏览器的本地记录（services/recents.ts）。一款都没有时整块不渲染。
+ * 卡片样式沿用原来侧边栏「联机玩」的房间卡：横版小封面 + 标题 + 一行副文字。
+ */
+function PlayedBox({ collapsed }: { collapsed: boolean }) {
+  const t = useT()
+  const lang = useLang()
+  const user = useUser()
+  const guest = useGuestRecents()
+  const { setMobileOpen } = useShell()
+  const games = useGamesBySlugs((user ? user.recent : guest).slice(0, 4))
+  if (!games.length) return null
+
+  const title = <>{t.sidebar.playedTitle}</>
+  const titleClass = 'text-pixel mb-1.5 flex items-center gap-1 px-3 text-[10px] uppercase tracking-wider text-dim'
+
+  return (
+    <div className={cx('mb-3', collapsed && 'lg:hidden')}>
+      {/* 访客点 /me 只会被弹登录框，所以只有登录用户的标题才是链接 */}
+      {user ? (
+        <Link to="/me" onClick={() => setMobileOpen(false)} className={cx(titleClass, 'transition hover:text-fg')}>
+          {title}
+          <span aria-hidden>›</span>
+        </Link>
+      ) : (
+        <p className={titleClass}>{title}</p>
+      )}
+      <ul className="space-y-0.5">
+        {games.map((g) => (
+          <li key={g.slug}>
+            <Link
+              to={`/games/${g.slug}`}
+              onClick={() => setMobileOpen(false)}
+              title={gameTitle(g, lang)}
+              className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 transition hover:bg-black/5"
+            >
+              <span className="w-14 shrink-0 overflow-hidden rounded-md">
+                <GameCover game={g} ratio="landscape" showTitle={false} showBadge={false} iconSize="sm" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-xs font-semibold">{gameTitle(g, lang)}</span>
+                <span className="block truncate text-[11px] text-muted">
+                  {platformLabel(t, g.platform, platformMap[g.platform]?.name ?? g.platform)}
+                </span>
+              </span>
             </Link>
           </li>
         ))}

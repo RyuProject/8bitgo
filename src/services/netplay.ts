@@ -13,6 +13,7 @@
  */
 import { useSyncExternalStore } from 'react'
 import { getCurrentUser } from './auth'
+import type { Presence } from './presence'
 
 export const NETPLAY_URL: string = (import.meta.env.VITE_NETPLAY_URL || '').replace(/\/+$/, '')
 
@@ -137,7 +138,9 @@ export interface NetplayRoom {
   spectators?: number
   maxSpectators?: number
   hasPassword: boolean
-  members: Array<{ nickname: string; host: boolean; role?: RoomRole }>
+  members: Array<{ nickname: string; host: boolean; role?: RoomRole; presence?: Presence }>
+  /** 房主的设备 / 地区 / 网络。见 services/presence.ts */
+  presence?: Presence
   kind: 'p2p'
   /** 房主掉线了，正在等人接手（60 秒内） */
   awaitingHost?: boolean

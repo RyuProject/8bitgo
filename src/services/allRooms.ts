@@ -13,6 +13,7 @@
 import { useMemo } from 'react'
 import { games } from '@/data/games'
 import { cloudRoomView, liveRoomView, type RoomView } from '@/components/game/RoomCard'
+import { normalizePresence } from './presence'
 import { netplayEnabled, slugForGameId, useNetplayRooms } from './netplay'
 import { roomsEnabled, useRooms } from './rooms'
 import { liveEnabled, useLiveRooms } from './live'
@@ -38,7 +39,9 @@ export function useAllRooms(): RoomView[] {
         max: r.max,
         spectators: r.spectators ?? 0,
         host: r.host,
-        members: r.members,
+        members: r.members.map((m) => ({ ...m, presence: normalizePresence(m.presence) })),
+        // 房主的设备 / 地区 / 网络，服务端从 socket 握手里看出来的（见 services/presence.ts）
+        presence: normalizePresence(r.presence),
         createdAt: r.createdAt,
         kind: 'p2p',
       })

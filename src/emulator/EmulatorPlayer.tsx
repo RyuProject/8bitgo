@@ -9,8 +9,10 @@ import { createOverallRatio, LOAD_PHASE_RANGE, windowsGuestStartupBudgetMs } fro
 import { shouldCaptureMouse } from './mouseCapture'
 import { platformBiosUrlSync } from '@/services/platformBios'
 import { EmulatorTools } from './EmulatorTools'
+import { TouchPad } from './TouchPad'
 import { LiveControls } from './LiveControls'
 import { MatchControls } from './MatchControls'
+import { matchLocalArcadeHack } from './arcadeHack'
 import { liveViewRuntime, type LiveSession, type LiveViewState } from './adapters/liveview'
 import { emulatorJsRuntime, p2pPlayable, type NetplaySession } from './adapters/emulatorjs'
 import { cloudGameRuntime, cloudPlayable, type CloudSession, type CloudState } from './adapters/cloudgame'
@@ -21,6 +23,7 @@ import { useT, fmt } from '@/services/i18n'
 import { platformLabel } from '@/services/i18nData'
 import { ROM_LANG_LABEL, type RomLang } from '@/config/languages'
 import { FEATURES } from '@/config/features'
+import { mobileScreenAspect } from './screenAspect'
 import { recordPlay } from '@/services/store'
 import {
   downloadState,
@@ -177,6 +180,26 @@ interface Props {
  * 加入的人，不经过服务器。房间自动出现在侧边栏「联机玩」，朋友打开邀请链接即可加入。
  * cloud-game（游戏跑在服务器上）是另一条通道，成本高，由 FEATURES.cloudGame 控制，留给付费会员。
  */
+/**
+ * 没到 sm 断点（Tailwind 的 sm 是 min-width:640px）。
+ * 写成 max-width:639.98px 而不是 639px：中间那 1px 的小数宽度（缩放、分屏）
+ * 两个查询都不命中的话，CSS 的 sm: 类名和这里的判断就会各说各话。
+ */
+const NARROW_MQ = '(max-width: 639.98px)'
+
+/**
+ * 「◧ 沉浸模式」→「◧」：手机上按钮只留前面那个符号。
+ *
+ * 八种语言的这几条文案都是「符号 + 空格 + 文字」的形状，省掉文字部分能让工具栏
+ * 在 320pt 宽的屏幕上也保持一行（实测带文字会换行，一行 34pt 是从画面高度里扣的）。
+ * 万一哪天某个语言的文案不是这个形状（开头那段里含字母或数字），就原样返回 ——
+ * 宁可多占点宽度，也不能给玩家显示一个被截断的词。
+ */
+function glyphOnly(label: string): string {
+  const [head, ...rest] = label.split(' ')
+  return rest.length > 0 && head.length <= 2 && !/[\p{L}\p{N}]/u.test(head) ? head : label
+}
+
 export function EmulatorPlayer({
   platform,
   gameName,
@@ -218,9 +241,14 @@ export function EmulatorPlayer({
   const [notice, setNotice] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
   const [session, setSession] = useState<ActiveSession | null>(null)
+  /**
+   * 从玩家上传的包里认出来的 RomData（见 arcadeHack.ts）。
+   * 入库游戏由后台配 arcadeRomData，「玩本地 ROM」这一路只能靠现场识别。
+   */
+  const [localRomData, setLocalRomData] = useState<string | undefined>(undefined)
 
   const t = useT()
-  const { immersive, toggleImmersive } = useShell()
+  const { immersive, setImmersive, toggleImmersive } = useShell()
 
   /* ---------------- 联机 ---------------- */
   // 联机需要云端 ROM：房主和访客都得能拿到同一个 ROM
@@ -317,6 +345,95 @@ export function EmulatorPlayer({
   const [caps, setCaps] = useState<Set<Capability>>(() => new Set())
 
   const hostRef = useRef<HTMLDivElement>(null)
+  /**
+   * 这台设备有没有「粗指针」（手指）。桌面鼠标是 fine，不画屏幕按键。
+   * 放进 state 而不是直接算：这个组件会被 SSR，服务端没有 matchMedia，
+   * 直接算会让首屏 HTML 和 hydrate 结果对不上。
+   */
+  const [touchDevice, setTouchDevice] = useState(false)
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    setTouchDevice(window.matchMedia('(any-pointer:coarse)').matches)
+  }, [])
+  /**
+   * 窄屏（手机竖屏那一档）。布局要用它决定虚拟手柄摆哪儿，所以必须**订阅**而不是只算一次 ——
+   * 玩家横过屏幕、或者在平板上分屏，这个值会变，手柄得跟着从「画面下面一条」换成「浮层」。
+   * 同样放进 state：服务端没有 matchMedia，直接算会让首屏 HTML 和 hydrate 结果对不上。
+   */
+  const [narrow, setNarrow] = useState(false)
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const mq = window.matchMedia(NARROW_MQ)
+    const sync = () => setNarrow(mq.matches)
+    sync()
+    mq.addEventListener('change', sync)
+    return () => mq.removeEventListener('change', sync)
+  }, [])
+  /**
+   * 是不是正处在原生全屏里。
+   *
+   * 需要单独记一份，因为布局要按它切：全屏时画面应该吃掉除工具栏以外的全部高度
+   * （flex-1），而非全屏时移动端要给画面一个按原生比例的框。光靠 CSS 的 :fullscreen
+   * 也能写，但那要用嵌套的任意变体去改子元素，读起来远不如这里一个布尔清楚。
+   *
+   * 监听 fullscreenchange 而不是在 toggleFullscreen 里自己置位：用户按 Esc、
+   * 或者浏览器自己退出全屏时不会经过我们的按钮。
+   */
+  const [fullscreen, setFullscreen] = useState(false)
+  useEffect(() => {
+    const sync = () => setFullscreen(document.fullscreenElement === hostRef.current)
+    document.addEventListener('fullscreenchange', sync)
+    return () => document.removeEventListener('fullscreenchange', sync)
+  }, [])
+
+  /**
+   * 手机上游戏一开始跑，就顺手进沉浸模式并把画面滚到视口顶上。
+   *
+   * 为什么要自动：390pt 宽的屏幕上，顶栏 + 面包屑 + 大标题在画面上方吃掉一大截可视高度。
+   * 玩家点完「开始游戏」，游戏其实已经在跑了，但他看到的还是页面上半部分 ——
+   * 得自己往下滑才找得到画面。沉浸模式本来就是为这个场景做的，只是以前得手动点一下。
+   *
+   * 三条约束，缺一条就会变成骚扰：
+   *  · **只在窄屏做**。桌面端播放器本来就是个够高的 16:9 框，自动把侧边栏收掉毫无道理。
+   *  · **只在「刚开始跑」这一下做**（拿 prevStatus 比对），不是每次 render 都推一把 ——
+   *    否则玩家自己点「退出沉浸」会被我们立刻按回去，按钮看起来像坏的。
+   *  · **我们开的我们关**：停下来 / 离开这个组件时恢复原样；玩家自己开的沉浸不去动它
+   *    （所以进来时先看 immersiveRef，已经开着就不认领）。
+   */
+  const immersiveRef = useRef(immersive)
+  immersiveRef.current = immersive
+  const prevStatusRef = useRef(status)
+  /** 这一局的沉浸是我们自动开的（而不是玩家手动开的），只有这种才由我们负责关掉 */
+  const autoImmersiveRef = useRef(false)
+  useEffect(() => {
+    const was = prevStatusRef.current
+    prevStatusRef.current = status
+    // 现场再问一次而不是读上面那个 state：这里要的是「跳变发生的这一刻」的宽度，
+    // 不受 state 更新时序影响
+    const isNarrow = typeof window !== 'undefined' && window.matchMedia(NARROW_MQ).matches
+    if (status === 'running' && was !== 'running') {
+      if (!isNarrow || immersiveRef.current) return
+      autoImmersiveRef.current = true
+      setImmersive(true)
+      // 等隐藏顶栏后的重排落定再滚，否则滚的是旧的位置
+      requestAnimationFrame(() => hostRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' }))
+      return
+    }
+    if (status !== 'running' && was === 'running' && autoImmersiveRef.current) {
+      autoImmersiveRef.current = false
+      setImmersive(false)
+    }
+  }, [status, setImmersive])
+  // 离开页面（切路由、切游戏）时把自动开的沉浸模式还回去
+  useEffect(
+    () => () => {
+      if (autoImmersiveRef.current) {
+        autoImmersiveRef.current = false
+        setImmersive(false)
+      }
+    },
+    [setImmersive],
+  )
   const frameRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const sessionCounter = useRef(0)
@@ -335,7 +452,8 @@ export function EmulatorPlayer({
   genresRef.current = genres
 
   const arcadeRomDataRef = useRef(arcadeRomData)
-  arcadeRomDataRef.current = arcadeRomData
+  // 后台配的那份最权威（管理员可能手工调过），识别出来的只作兜底
+  arcadeRomDataRef.current = arcadeRomData || localRomData
   const biosUrlRef = useRef(biosUrl)
   biosUrlRef.current = biosUrl
   // 同 core：只在挂载那一刻读一次，进依赖会把正在跑的游戏重启
@@ -804,6 +922,29 @@ export function EmulatorPlayer({
         return
       }
 
+      /*
+        街机改版包：先认一遍指纹表。认出来就换成正确的包名、配好 RomData ——
+        不然核心只会说一句「Romset is unknown」，玩家完全无从下手。
+        放在 detectRom 之前：改版包和原版包的扩展名、魔数都一样，
+        detectRom 认不出这层差别，而这一步会换掉文件本身。
+      */
+      if (platform.id === 'arcade') {
+        const matched = await matchLocalArcadeHack(picked)
+        if (matched?.hack.romData) {
+          setLocalRomData(matched.hack.romData)
+          setNotice(fmt(t.player.arcadeHackFound, { title: matched.hack.title, driver: matched.hack.driver }))
+          setFile(matched.file)
+          begin(matched.file, 'arcade', emulatorJsRuntime)
+          return
+        }
+        // 认得出但没有加载方案，或者压根不认识：清掉上一次的，别让旧 dat 串到新包上
+        setLocalRomData(undefined)
+        if (matched) {
+          setError(fmt(t.player.arcadeHackNoPlan, { title: matched.hack.title }))
+          return
+        }
+      }
+
       // 本地文件：先嗅探类型，决定运行时
       const detection = await detectRom(picked)
       let targetPlatform: PlatformId = platform.id
@@ -980,6 +1121,26 @@ export function EmulatorPlayer({
     refreshNetplayRooms()
   }
 
+  /** 状态文案。徽章的 title 和可见文字共用一份，别在两处各写一遍三元 */
+  /**
+   * 该不该画屏幕手柄。三个条件缺一不可：
+   *  · 游戏真的在跑（没跑的时候画面上是开始按钮，手柄挡着它）
+   *  · 这是台触屏设备（鼠标玩家有键盘，浮层只会挡视野）
+   *  · 运行时声明了 'touchpad'（EmulatorJS 自带手柄，不声明这个能力）
+   */
+  const showPad = status === 'running' && touchDevice && caps.has('touchpad')
+  /** 手机竖屏且不在全屏里 —— 这时手柄放画面下面，别压着画面 */
+  const padInline = narrow && !fullscreen
+
+  const statusLabel =
+    status === 'running'
+      ? t.player.statusRunning
+      : status === 'loading'
+        ? t.player.statusLoading
+        : status === 'error'
+          ? t.player.statusError
+          : t.player.statusIdle
+
   /** 空闲态主按钮 */
   const primaryAction = () => {
     if (online) return startOnline()
@@ -990,14 +1151,30 @@ export function EmulatorPlayer({
   return (
     <div data-testid="emulator-player" className={cx('overflow-hidden rounded-2xl border border-line bg-black', className)}>
       {/*
-        播放器自身固定为 16:9，工具栏是其中的最后一行。
-        这样它在普通模式和全屏模式里都属于模拟器，不会再额外撑高详情页；画面区域让出
-        工具栏的实际高度，也不会把 EmulatorJS 自己的底部菜单盖住。
+        桌面端：播放器整体固定 16:9，工具栏是框里的最后一行 —— 它在普通模式和全屏模式里
+        都属于模拟器，不会额外撑高详情页；画面区让出工具栏的实际高度，也不会盖住
+        EmulatorJS 自己的底部菜单。
+
+        移动端：这套不成立。390pt 宽的屏幕上 16:9 只有 200pt 高，工具栏（三行图标）一占
+        就剩不到 80pt 给画面，红白机的游戏窗口小到几乎看不见。所以手机上改成
+        「画面自己占一个按平台原生比例的框（见 screenAspect.ts），工具栏排在框下面」——
+        页面因此多长几十 pt，手机上滑一下就过去了，换来的是画面高度翻两倍多。
+
+        工具栏本身在手机上也收紧过：状态徽章只留圆点（文字进 title）、间距减半，
+        次要按钮（音量 / 手柄 / 另存 / 截屏 / 录像）收进「⋯」弹出层（见 EmulatorTools.tsx），
+        于是留在行内的只剩暂停 + 存读档 + ⋯ + 沉浸 + 全屏，三行变一行。
       */}
       <div
         ref={hostRef}
         data-testid="emulator-stage"
-        className={cx('relative flex aspect-video w-full flex-col bg-black', dragging && 'ring-2 ring-brand ring-inset')}
+        className={cx(
+          'relative flex w-full flex-col bg-black',
+          // 全屏：浏览器已经把它撑满视口，画面吃掉工具栏以外的高度
+          // 非全屏：桌面端仍是整体 16:9（工具栏在框内，不额外撑高详情页）；
+          //         移动端不给整体比例 —— 高度 = 画面的原生比例框 + 工具栏
+          fullscreen ? 'h-full' : 'sm:aspect-video',
+          dragging && 'ring-2 ring-brand ring-inset',
+        )}
         onDragOver={(e) => {
           e.preventDefault()
           if (!busy) setDragging(true)
@@ -1005,9 +1182,33 @@ export function EmulatorPlayer({
         onDragLeave={() => setDragging(false)}
         onDrop={onDrop}
       >
-        <div className="relative min-h-0 flex-1">
+        <div
+          className={cx(
+            'relative min-h-0',
+            fullscreen
+              ? 'flex-1'
+              : cx(
+                  // 移动端：自己占一个按平台原生比例的框。flex-none 是必须的 ——
+                  // 外层此时是 auto 高度，带着 flex-1（flex-basis:0）会被算成 0 高，画面整块消失
+                  'flex-none sm:flex-1 sm:aspect-auto',
+                  mobileScreenAspect(platform.id),
+                  // 极矮的屏幕上兜一道，别让竖屏平台（NDS / J2ME）把整页顶开
+                  'max-h-[72dvh] sm:max-h-none',
+                ),
+          )}
+        >
           {/* 运行时挂载点：iframe 由运行时注入，React 不管理其子节点 */}
           <div ref={frameRef} className={cx('absolute inset-0', busy ? 'block' : 'hidden')} />
+
+          {/*
+            触屏手柄（浮层那一路）。只对声明了 'touchpad' 能力的运行时出现 ——
+            EmulatorJS 自带虚拟手柄（见 adapters/emulatorjs.ts 的 showVirtualGamepad），
+            两套不能同时冒出来。
+
+            手机竖屏时不走这里，改成画面下面单独一条（见下面 padInline 那块）：
+            画面框只有 291pt 高，浮层的十字键要压掉四成。
+          */}
+          {showPad && !padInline && <TouchPad handle={handle} />}
 
           {!busy && (
             <div className="absolute inset-0">
@@ -1207,12 +1408,26 @@ export function EmulatorPlayer({
           />
         </div>
 
+        {/*
+          触屏手柄（行内那一路）。手机竖屏专用：排在画面框和工具栏之间，谁也不压谁。
+          整条的边框、底色和收起状态都在 TouchPad 里，收起来只剩一颗 🎮 的高度。
+        */}
+        {showPad && padInline && <TouchPad handle={handle} layout="inline" />}
+
         {/* 工具栏放进播放器框体底部，而不是作为详情页里的下一块内容 */}
         <div
           data-testid="emulator-toolbar"
-          className="relative z-20 flex shrink-0 flex-wrap items-center gap-2 border-t border-line bg-surface px-3 py-2 text-xs"
+          className="relative z-20 flex shrink-0 flex-wrap items-center gap-1.5 border-t border-line bg-surface px-2 py-1.5 text-xs sm:gap-2 sm:px-3 sm:py-2"
         >
+        {/*
+          手机上文字部分收起来，只留那个圆点。
+          原因是宽度：390pt 的屏幕上「● 运行中」加上工具栏那排图标按钮排不下，
+          状态徽章会被挤成独立的一行 —— 为一句话多占 34pt，而颜色本身已经把
+          「在跑 / 在加载 / 出错」说清楚了。文字进 title 和 aria-label，读屏照样能读到。
+        */}
         <span
+          title={statusLabel}
+          aria-label={statusLabel}
           className={cx(
             'inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-semibold',
             status === 'running'
@@ -1225,13 +1440,7 @@ export function EmulatorPlayer({
           )}
         >
           <span className={cx('h-1.5 w-1.5 rounded-full', status === 'running' ? 'bg-online' : 'bg-current')} />
-          {status === 'running'
-            ? t.player.statusRunning
-            : status === 'loading'
-              ? t.player.statusLoading
-              : status === 'error'
-                ? t.player.statusError
-                : t.player.statusIdle}
+          <span className="hidden sm:inline">{statusLabel}</span>
         </span>
 
         {inRoom ? (
@@ -1302,7 +1511,10 @@ export function EmulatorPlayer({
         {session?.live && (
           <span className="inline-flex items-center gap-1 rounded-md bg-live/15 px-2 py-1 font-semibold text-red-300">
             📡 {fmt(t.player.tools.liveOn, { n: String(liveViewers) })}
-            {liveState && liveState !== 'watching' && <span className="font-normal text-muted">· {liveState}</span>}
+            {/* 过渡态给人话，别把 'reconnecting' 这种英文状态名直接糊上去 */}
+            {liveState === 'host-away' && <span className="font-normal text-muted">· {t.runtime.liveHostAway}</span>}
+            {liveState === 'reconnecting' && <span className="font-normal text-muted">· {t.runtime.liveReconnecting}</span>}
+            {liveState === 'connecting' && <span className="font-normal text-muted">· …</span>}
           </span>
         )}
 
@@ -1377,6 +1589,11 @@ export function EmulatorPlayer({
               {online ? t.player.leaveRoom : t.player.changeRom}
             </Button>
           )}
+          {/*
+            沉浸 / 全屏这两个按钮在手机上只留前面那个符号（见 glyphOnly）。
+            带上文字的话，320pt 宽的屏幕上工具栏正好差几个像素排不下，
+            为两个词多占一整行 —— 而这一行是从画面高度里扣的。
+          */}
           {supported && (
             <>
               <Button
@@ -1384,12 +1601,25 @@ export function EmulatorPlayer({
                 size="sm"
                 onClick={toggleImmersive}
                 title={t.player.immersiveTitle}
+                aria-label={immersive ? t.player.exitImmersive : t.player.enterImmersive}
                 aria-pressed={immersive}
               >
-                {immersive ? t.player.exitImmersive : t.player.enterImmersive}
+                <span className="sm:hidden" aria-hidden>
+                  {glyphOnly(immersive ? t.player.exitImmersive : t.player.enterImmersive)}
+                </span>
+                <span className="hidden sm:inline">{immersive ? t.player.exitImmersive : t.player.enterImmersive}</span>
               </Button>
-              <Button variant="secondary" size="sm" onClick={toggleFullscreen} title={t.player.fullscreenTitle}>
-                {t.player.fullscreen}
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={toggleFullscreen}
+                title={t.player.fullscreenTitle}
+                aria-label={t.player.fullscreen}
+              >
+                <span className="sm:hidden" aria-hidden>
+                  {glyphOnly(t.player.fullscreen)}
+                </span>
+                <span className="hidden sm:inline">{t.player.fullscreen}</span>
               </Button>
             </>
           )}

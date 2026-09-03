@@ -54,21 +54,56 @@ export interface ArcadeHack {
  * b74b09ac。换掉的只有第一颗程序 ROM，另外**新增**两块带中文字库的图形 ROM。
  * 在 HBMAME 里这个 set 叫 tk2h5 “Tenchi wo Kurau II (Edition Chinese)”。
  *
- * ⚠️ 那两块中文图形不是替换、是新增 —— 它们各自 512KB 但 92% 是零，数据只落在
- * 0x010000..0x019BFF。FBNeo 对这种情况有专门的位置：类型标成 CPS1_EXTRA_TILES_400000
- * 的 ROM 会被装进 CpsGfx + 0x400000（见 FBNeo d_cps1.cpp 的 “Extra Tile Roms” 一段）。
- * 这段逻辑是**按 ROM 表驱动**的，不是写死在某个驱动里，所以 RomData 换掉整张表之后
- * 一样走得通，不需要自定义驱动。
+ * ── 那两块中文字库装到哪 ─────────────────────────────────────
+ * 它们不是替换、是新增：各 512KB，92% 是零，数据只落在 0x010000..0x019BFF。
  *
- * 那一段一次吃 4 个 ROM（源码里 `i += 4`），而中文包只有 2 块，所以清单里补两块全零的
- * 512KB 占位 —— 载入前那段内存本来就会被 memset 清零，补零不会画出任何东西。
+ * ⚠️ **不能用 CPS1_EXTRA_TILES_400000**（一开始就是这么写的，是错的）。对着 FBNeo
+ * 源码（d_cps1.cpp 的 “Extra Tile Roms” 一段、cps.cpp 的 CpsInit / CpsLoadTiles）
+ * 核过之后，这条路对 wofj 走不通，三个理由，一个比一个致命：
+ *
+ * 1. 那个循环的下标是**按位置算的**：i 从 (68K + tiles + z80 + qsound) 条起，
+ *    只扫 nCpsExtraTilesRomNum 条。把两行放在清单末尾（PLD 之后），循环根本扫不到 ——
+ *    一个字节都不会装，而且静默无效，没有任何报错。
+ * 2. CpsLoadTiles(CpsGfx + 0x400000, i) 固定读 i..i+3 四条，中文包只有两块，
+ *    紧跟其后的两条会被当图形数据 OR 进去。
+ * 3. 最要命的一条：CpsGfx 是一整块连续内存，CpsRom = CpsGfx + nCpsGfxLen
+ *    （cps.cpp CpsInit），而 nCpsGfxLen **只统计 CPS1_TILES**，不含 extra。
+ *    wofj 的图形正好 8×0x80000 = 0x400000 —— 也就是说 CpsGfx + 0x400000 就是
+ *    68K 程序的起点。那段代码第一句 memset(CpsGfx + 0x400000, 0, nCpsExtraGfxLen)
+ *    会把刚装好的程序 / Z80 / QSound 全部清零，游戏连开机都做不到。
+ *    FBNeo 里用这个类型的四个 set 全是 sf2 的盗版板，图形有 0x600000，
+ *    0x400000 那一段还在图形区**里面** —— 这个前提对 wofj 不成立。
+ *
+ * ✅ 改成**把图形组接长**。RomData 换掉的是整份清单，所以「有几块图形」由清单说了算：
+ *    在 8 块日版图形后面再接一组 4 条（下标 10~13），nCpsGfxLen 就变成 0x600000，
+ *    第三组正好装到 CpsGfx + 0x400000 —— 和 extra 那条路想去的位置分毫不差，
+ *    但这回内存是算过的（0x400000 + 0x200000 == nCpsGfxLen，一字节不越界），
+ *    并且 nCpsGfxMask 跟着变宽到 0x7FFFFF，程序才寻址得到 0x400000 以上的图块。
+ *
+ * ⚠️ 图形行必须**紧跟程序行**，中间不能插别的类型：装载循环的下标同样是按位置算的
+ *    （i 从 68K 条数起，扫 nCpsTilesRomNum 条）。PLD 那些 BRF_OPT 行不参与这套算术，
+ *    放最后即可。
+ *
+ * ── 还没定下来的（等实测）───────────────────────────────────
+ * 一组 4 条里，前两条填 16x16 图块的**左**半边（Tile，plane 0-1 / 2-3），
+ * 后两条填右半边（Tile+4）。中文包只有两块，所以第 3、4 条这里**重复写了同两个文件**，
+ * 让左右半边一样。这纯粹是猜 —— HBMAME 的 tk2h5 自己都在源码里注明
+ * “The load procedure for the chinese language is unknown”。
+ * 如果 FBNeo 的 zip 装载不允许同一个成员被两条清单项各用一次（有的实现会把用过的
+ * 成员标掉），后两条只是装载失败、不写入 —— 退化成「只填左半边」，一样起得来。
+ * 实测要是字形花 / 错位，下一个候选是把第 3、4 条换成两条 0x80000 的占位行
+ * （`BRF_OPT BRF_NODUMP CPS1_TILES`，文件名随便写，包里没有 → 不装也不拦启动），
+ * 只填左半边再看。**玩家上传的原始包始终不用动。**
  */
 const WOFCN_ROMDATA = `// Tenchi wo Kurau II (Edition Chinese) —— HBMAME 的 tk2h5
-// 基础驱动是日版 wofj；两块中文字库走 CPS1_EXTRA_TILES_400000 装到 CpsGfx+0x400000
+// 基础驱动是日版 wofj。两块中文字库不走 CPS1_EXTRA_TILES_400000（对 wofj 会清掉程序区，
+// 见上面注释），而是当第三组 CPS1_TILES 接在 8 块日版图形后面，落到 CpsGfx+0x400000。
+// 顺序有意义：程序 → 图形（12 条）→ Z80 → QSound → PLD，中间不能插别的类型。
+// FullName 必须加引号：romdata.cpp 用 strqtoken 按 " \t\r\n,%:|{}" 切词，不加引号只会取到第一个词。
 
 ZipName    wofcn
 DrvName    wofj
-FullName   Tenchi wo Kurau II (Edition Chinese)
+FullName   "Tenchi wo Kurau II (Edition Chinese)"
 
 tk2j23ccn.bin        0x080000   0xe1dd01d8   BRF_ESS BRF_PRG CPS1_68K_PROGRAM_NO_BYTESWAP
 tk2j22c.bin          0x080000   0xb74b09ac   BRF_ESS BRF_PRG CPS1_68K_PROGRAM_NO_BYTESWAP
@@ -81,6 +116,12 @@ tk205.bin            0x080000   0xe4a44d53   BRF_GRA CPS1_TILES
 tk206.bin            0x080000   0x58066ba8   BRF_GRA CPS1_TILES
 tk207.bin            0x080000   0xd706568e   BRF_GRA CPS1_TILES
 tk208.bin            0x080000   0xd4a19a02   BRF_GRA CPS1_TILES
+
+// 第三组：装到 CpsGfx + 0x400000。左半边 = 前两条，右半边 = 后两条（重复同两块，待实测）
+tk2_gfx5cn.rom       0x080000   0xec6e8689   BRF_GRA CPS1_TILES
+tk2_gfx6cn.rom       0x080000   0x722787df   BRF_GRA CPS1_TILES
+tk2_gfx5cn.rom       0x080000   0xec6e8689   BRF_GRA CPS1_TILES
+tk2_gfx6cn.rom       0x080000   0x722787df   BRF_GRA CPS1_TILES
 
 tk2_qa.rom           0x020000   0xc9183a0d   BRF_PRG CPS1_Z80_PROGRAM
 
@@ -97,11 +138,6 @@ tk263b.1a            0x000117   0xc4b0349b   BRF_OPT
 iob1.12d             0x000117   0x3abc0700   BRF_OPT
 bprg1.11d            0x000117   0x31793da7   BRF_OPT
 ioc1.ic1             0x000117   0x0d182081   BRF_OPT
-
-tk2_gfx5cn.rom       0x080000   0xec6e8689   BRF_GRA CPS1_EXTRA_TILES_400000
-tk2_gfx6cn.rom       0x080000   0x722787df   BRF_GRA CPS1_EXTRA_TILES_400000
-tk2_blank1.rom       0x080000   0x0a4f37b9   BRF_GRA CPS1_EXTRA_TILES_400000
-tk2_blank2.rom       0x080000   0x0a4f37b9   BRF_GRA CPS1_EXTRA_TILES_400000
 `
 
 export const ARCADE_HACKS: ArcadeHack[] = [

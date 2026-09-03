@@ -309,6 +309,18 @@ interface EjsEmulator {
   setVolume?: (v: number) => void
   canvas?: HTMLCanvasElement
   elements?: { parent?: HTMLElement }
+  /**
+   * 引擎判断「要不要显示虚拟手柄」用的标志。只有玩家用手指点了「开始游戏」按钮才置 true
+   * —— 我们设了 EJS_startOnLoaded，那个按钮根本不由玩家点。见 showVirtualGamepad。
+   */
+  touch?: boolean
+  /** 引擎自己算的触屏判断，比我们细（UA + maxTouchPoints + any-pointer:coarse） */
+  isMobile?: boolean
+  hasTouchScreen?: boolean
+  /** 显示 / 隐藏虚拟手柄。是实例上的闭包，setVirtualGamepad() 里装的 */
+  toggleVirtualGamepad?: (show: boolean) => void
+  /** 读一项设置的当前值（玩家自己关掉虚拟手柄时是 'disabled'） */
+  getSettingValue?: (key: string) => string | undefined
 }
 
 /** 我们塞进 iframe 的音频探针，见 installAudioTap */
@@ -1115,6 +1127,30 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   }
 
   /**
+   * 把引擎自带的虚拟手柄在触屏设备上打开 —— 手机上「没有虚拟按键」就是这里坏的。
+   *
+   * EmulatorJS 显示虚拟手柄的条件是 `this.touch`（startGame 末尾那句
+   * `this.touch && (this.virtualGamepad.style.display = "")`），而 touch 只在
+   * **玩家用手指点了「开始游戏」按钮**时才置 true —— 监听挂在 createStartButton
+   * 建出来的那个按钮上。我们设了 EJS_startOnLoaded，按钮建出来就被程序自己点掉了，
+   * 玩家的手指从来没碰到它，于是 touch 永远是 false，虚拟手柄一直是 display:none。
+   * 手机上只能看着画面动，按不了任何键。
+   *
+   * 触屏判断优先用引擎自己算好的 isMobile / hasTouchScreen，拿不到再自己看指针类型；
+   * matchMedia 要在 iframe 那个 window 上问，不是外面这个。
+   * 玩家在设置里主动关掉过就尊重他的选择，不强行打开。
+   */
+  const showVirtualGamepad = (win: Window & Record<string, unknown>) => {
+    const emu = win.EJS_emulator as EjsEmulator | undefined
+    if (!emu) return
+    const coarse = typeof win.matchMedia === 'function' && win.matchMedia('(any-pointer:coarse)').matches
+    if (!emu.isMobile && !emu.hasTouchScreen && !coarse) return
+    if (emu.getSettingValue?.('virtual-gamepad') === 'disabled') return
+    emu.touch = true
+    emu.toggleVirtualGamepad?.(true)
+  }
+
+  /**
    * 撤加载遮罩的唯一入口。
    *
    * ⚠️ 以前接的是 EJS_ready，那是个陷阱：EmulatorJS 在建完「开始游戏」按钮之后 20ms
@@ -1130,6 +1166,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     options.onReady?.()
     options.onStart?.()
     refineCaps()
+    showVirtualGamepad(win)
     // 电池存档的补刷：定时 + 转入后台。两者都只在开局之后才有意义
     saveFlushTimer = window.setInterval(flushSaveFiles, SAVE_FLUSH_MS)
     document.addEventListener('visibilitychange', onVisibility)

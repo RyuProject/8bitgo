@@ -15,6 +15,7 @@
     "test:mail:parse": "node scripts/test-mail-parsing.mjs",
     "test:mail:resend": "node scripts/test-mail-resend.mjs",
     "test:codes": "node scripts/test-codes.mjs",
+    "test:presence": "node scripts/test-presence.mjs",
     "test:play": "node scripts/test-playcount.mjs",
     "gen-sql": "node scripts/gen-sql.mjs",
     "gen-sql:empty": "node scripts/gen-sql.mjs --empty",

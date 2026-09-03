@@ -5,7 +5,10 @@
 import { createServer } from 'node:http'
 import { Server } from 'socket.io'
 import { io as client } from 'socket.io-client'
-import { attachLive, liveRooms, liveRoom } from '../src/live.js'
+// 宽限期和每 IP 上限都是模块加载时读的环境变量，所以要先设好再 import
+process.env.LIVE_RESUME_GRACE_MS = '400'
+process.env.LIVE_MAX_ROOMS_PER_IP = '3'
+const { attachLive, liveRooms, liveRoom } = await import('../src/live.js')
 
 const http = createServer()
 const server = new Server(http, { cors: { origin: true } })
@@ -86,23 +89,106 @@ check('下播通知观众', (await ended).reason === 'stopped')
 await new Promise((r) => setTimeout(r, 100))
 check('房间已清除', liveRooms().length === 0)
 
-// 9. 主播直接断线也要散场
+// 9. 主播断线：房间**不**立刻散场，观众收到 host-away，房间标成 hostAway
 const host2 = conn(); await once(host2, 'connect')
 const l2 = await call(host2, 'go-live', { gameName: 'Metroid', gameSlug: 'metroid' })
+const room2 = l2.data.roomId
+const token2 = l2.data.token
+check('开播拿到续播令牌', typeof token2 === 'string' && token2.length > 20)
 const v3 = conn(); await once(v3, 'connect')
-await call(v3, 'watch', { roomId: l2.data.roomId })
-const ended2 = once(v3, 'live-ended')
+await call(v3, 'watch', { roomId: room2 })
+await once(host2, 'viewer-joined')
+const away = once(v3, 'host-away')
 host2.close()
-check('主播掉线散场', (await ended2).reason === 'host-left')
-await new Promise((r) => setTimeout(r, 100))
-check('掉线后房间清除', liveRooms().length === 0)
+check('主播掉线 -> 观众收到 host-away', (await away).roomId === room2)
+check('宽限期内房间还在', liveRoom(room2) !== null && liveRoom(room2).hostAway === true)
+check('列表里也还在', liveRooms().length === 1)
 
-// 10. 不存在的房间
+// 10. 错的令牌接不回去
+const host3 = conn(); await once(host3, 'connect')
+const bad1 = await call(host3, 'resume-live', { roomId: room2, token: 'nope' })
+check('错令牌续播被拒', bad1.err === 'forbidden')
+const bad2 = await call(host3, 'resume-live', { roomId: 'nope', token: token2 })
+check('续播不存在的房间', bad2.err === 'not found')
+
+// 11. 对的令牌：接回房间，观众收到 host-back（带新的 hostId），主播拿到观众名单
+const back = once(v3, 'host-back')
+const res = await call(host3, 'resume-live', { roomId: room2, token: token2 })
+check('续播成功', !res.err && res.data?.roomId === room2, res.err || '')
+check('主播拿到观众名单', Array.isArray(res.data?.viewers) && res.data.viewers.includes(v3.id))
+const b = await back
+check('观众收到新的主播 id', b.hostId === host3.id)
+check('房间不再是 hostAway', liveRoom(room2).hostAway === false)
+check('观众人数没丢', liveRoom(room2).viewers === 1)
+
+// 12. 观众手里拿的是旧主播 id 也没关系：观众的 signal 一律路由到当前主播
+const toNewHost = once(host3, 'signal')
+v3.emit('signal', { target: 'stale-old-host-id', data: { sdp: 'ANSWER2' } })
+const g3 = await toNewHost
+check('观众 signal 路由到当前主播', g3?.data?.sdp === 'ANSWER2' && g3.from === v3.id)
+// 反向：新主播能发给观众
+const toV3 = once(v3, 'signal')
+host3.emit('signal', { target: v3.id, data: { sdp: 'OFFER2', gen: 2 } })
+const g4 = await toV3
+check('新主播 -> 观众（带 gen）', g4?.data?.sdp === 'OFFER2' && g4.data.gen === 2 && g4.from === host3.id)
+
+// 13. 接管：旧 socket 还没超时时新 socket 就来了（重连的常态）。令牌对就换人，旧的迟到的 disconnect 不散场
+const host4 = conn(); await once(host4, 'connect')
+const back2 = once(v3, 'host-back')
+const take = await call(host4, 'resume-live', { roomId: room2, token: token2 })
+check('接管成功', !take.err, take.err || '')
+check('观众得知接管后的主播 id', (await back2).hostId === host4.id)
+let endedEarly = false
+v3.once('live-ended', () => { endedEarly = true })
+let awayAfterTakeover = false
+v3.once('host-away', () => { awayAfterTakeover = true })
+host3.close()
+await new Promise((r) => setTimeout(r, 300))
+check('被接管的旧 socket 断开不散场', !endedEarly && liveRoom(room2) !== null)
+check('被接管的旧 socket 断开也不算掉线', !awayAfterTakeover && liveRoom(room2).hostAway === false)
+
+// 14. 观众重新 watch 同一个房间 = 请主播再发一轮 offer：人数不变，主播收到 viewer-joined
+const rejoin = once(host4, 'viewer-joined')
+const again = await call(v3, 'watch', { roomId: room2 })
+check('重新 watch 不报 already in a room', !again.err && again.data?.hostId === host4.id, again.err || '')
+check('重新 watch 触发 viewer-joined', (await rejoin).viewerId === v3.id)
+check('重新 watch 人数不变', liveRoom(room2).viewers === 1, `实际 ${liveRoom(room2).viewers}`)
+
+// 15. 主播不在时观众进来：能进，hostId 为空，等主播回来
+host4.close()
+await once(v3, 'host-away')
+const v5 = conn(); await once(v5, 'connect')
+const w5 = await call(v5, 'watch', { roomId: room2 })
+check('主播不在也能先进房', !w5.err && w5.data?.hostId === null && w5.data?.hostAway === true, w5.err || '')
+
+// 16. 宽限期过了还没回来 -> host-left 散场
+const ended2 = once(v3, 'live-ended', 2000)
+check('宽限期到才散场', (await ended2).reason === 'host-left')
+await new Promise((r) => setTimeout(r, 100))
+check('散场后房间清除', liveRooms().length === 0)
+const late = conn(); await once(late, 'connect')
+const tooLate = await call(late, 'resume-live', { roomId: room2, token: token2 })
+check('散场之后令牌作废', tooLate.err === 'not found')
+
+// 17. 每个 IP 的房间上限（测试里所有连接都是 127.0.0.1）
+const spam = []
+const spamRes = []
+for (let i = 0; i < 4; i++) {
+  const s = conn(); await once(s, 'connect'); spam.push(s)
+  spamRes.push(await call(s, 'go-live', { gameName: `spam${i}`, gameSlug: `spam${i}` }))
+}
+check('同一 IP 前三个房间能开', spamRes.slice(0, 3).every((r) => !r.err))
+check('同一 IP 第四个房间被拒', spamRes[3].err === 'too many rooms', spamRes[3].err || '')
+for (const s of spam) s.close()
+await new Promise((r) => setTimeout(r, 600))
+check('刷房的断线后按宽限期清掉', liveRooms().length === 0, `剩 ${liveRooms().length}`)
+
+// 18. 不存在的房间
 const v4 = conn(); await once(v4, 'connect')
 const nf = await call(v4, 'watch', { roomId: 'nope' })
 check('进不存在的房间', nf.err === 'not found')
 
-for (const s of [host, host2, v1, v2, v3, v4, stranger]) s.close()
+for (const s of [host, host2, host3, host4, v1, v2, v3, v4, v5, late, stranger]) s.close()
 server.close(); http.close()
 console.log('通过 %d 项：\n  %s', ok.length, ok.join('\n  '))
 if (bad.length) { console.log('\n失败 %d 项：\n  %s', bad.length, bad.join('\n  ')); process.exit(1) }

@@ -33,6 +33,8 @@
  * 换来的是「missing files」，比不改还糟。
  */
 
+import { matchArcadeHack, type ArcadeHack } from '@/data/arcadeHacks'
+
 export interface RomsetCandidate {
   /** romset 短名，也就是压缩包该叫的名字（不含 .zip） */
   name: string
@@ -49,6 +51,11 @@ export interface RomsetCandidate {
 }
 
 export interface RomsetIdentification {
+  /**
+   * 命中的已知改版包（见 data/arcadeHacks.ts）。有值时它就是答案，
+   * 下面的 candidates 只作参考 —— 改版包的身份由指纹确定，不由「像谁」确定。
+   */
+  hack: ArcadeHack | null
   /** 按可信度排序的候选，最多几条 */
   candidates: RomsetCandidate[]
   /**
@@ -148,6 +155,16 @@ export function loadRomsetIndex(): Promise<RomsetIndex | null> {
 
 /** 拿一组 CRC 去比对索引，返回排好序的候选 */
 export function matchRomset(index: RomsetIndex, crcs: number[]): RomsetIdentification {
+  /**
+   * 先查已知改版包。
+   *
+   * 顺序很关键：改版包换掉两三个 ROM，剩下几十个还和各个克隆集共用，覆盖率那套
+   * 一定会挑一个碰巧多命中几个的克隆集报出来（吞食天地II 的中文版被判成
+   * 「最接近 wofch 19/29」就是这么来的），而那个方向从一开始就是错的。
+   * 指纹撞上了就没有猜的必要。
+   */
+  const hack = matchArcadeHack(crcs)
+
   const tally = new Map<number, number>()
   for (const crc of crcs) {
     for (const id of index.byCrc.get(crc >>> 0) ?? []) tally.set(id, (tally.get(id) ?? 0) + 1)
@@ -165,8 +182,10 @@ export function matchRomset(index: RomsetIndex, crcs: number[]): RomsetIdentific
   const top = candidates[0]
   // 有歧义（另一个候选命中数一样多且也是满覆盖）时不给「确信」结论，交给人判断
   const ambiguous = candidates.some((c, i) => i > 0 && c.matched === top?.matched && c.coverage === 1)
-  const confident = top && top.coverage === 1 && !ambiguous ? top : null
-  return { candidates, confident }
+  // 命中改版包时不给 confident：那条路的「自动改名」是按 romset 短名来的，
+  // 而改版包要改成 hack.zipName，两回事，交给上层按 hack 处理
+  const confident = !hack && top && top.coverage === 1 && !ambiguous ? top : null
+  return { hack, candidates, confident }
 }
 
 /**
@@ -178,8 +197,17 @@ export function matchRomset(index: RomsetIndex, crcs: number[]): RomsetIdentific
 export async function identifyArcadeRomset(entries: { crc32: number }[]): Promise<RomsetIdentification | null> {
   const crcs = entries.map((e) => e.crc32).filter((c) => c > 0)
   if (!crcs.length) return null
+
+  /**
+   * 指纹表是本地常量，不用等那 600KB 的索引。
+   * 所以先查一遍：索引拉不下来（离线、反代挂了）也照样认得出已知改版包，
+   * 而改版包恰恰是最需要认出来的那一类 —— 认不出玩家就只能对着
+   * 「Romset is unknown」干瞪眼。
+   */
+  const hack = matchArcadeHack(crcs)
+
   const index = await loadRomsetIndex()
-  if (!index) return null
+  if (!index) return hack ? { hack, candidates: [], confident: null } : null
   const result = matchRomset(index, crcs)
-  return result.candidates.length ? result : null
+  return result.hack || result.candidates.length ? result : null
 }

@@ -15,6 +15,7 @@ import { useSyncExternalStore } from 'react'
 import { apiBase, apiEnabled } from './api'
 import { getT } from './i18n'
 import { fetchIceConfig } from './netplay'
+import type { Presence } from './presence'
 
 export interface LiveRoomInfo {
   roomId: string
@@ -26,6 +27,10 @@ export interface LiveRoomInfo {
   viewers: number
   maxViewers: number
   startedAt: number
+  /** 主播断线了、房间在宽限期里等它回来（server/src/live.js 的「主播掉线」一节） */
+  hostAway?: boolean
+  /** 主播的设备 / 地区 / 网络，服务端从握手信息里看出来的。见 services/presence.ts */
+  presence?: Presence
 }
 
 /** socket.io 客户端的最小接口，够用就行，不为它引一整套类型 */
@@ -76,13 +81,22 @@ export async function connectLive(): Promise<LiveSocket> {
     forceNew: true,
   })
   await new Promise<void>((resolve, reject) => {
-    const timer = window.setTimeout(() => reject(new Error(getT().runtime.liveTimeout)), 15_000)
-    socket.on('connect', () => {
+    /**
+     * ⚠️ 这两个处理器只管**首连**，连上之后必须摘掉。
+     * 以前没摘：socket.io 自动重连时每一次失败的尝试都会再触发 connect_error，
+     * 这里就把 socket 关了 —— 服务器重启那几秒、网络抖一下，重连从此永久停止，
+     * 主播的房间和观众的画面就这么没了，而且没有任何报错。
+     */
+    const onConnect = () => {
       window.clearTimeout(timer)
+      socket.off('connect', onConnect)
+      socket.off('connect_error', onError)
       resolve()
-    })
-    socket.on('connect_error', ((err: Error) => {
+    }
+    const onError = ((err: Error) => {
       window.clearTimeout(timer)
+      socket.off('connect', onConnect)
+      socket.off('connect_error', onError)
       try {
         socket.close()
       } catch {
@@ -92,7 +106,10 @@ export async function connectLive(): Promise<LiveSocket> {
       // 对着这句话没人猜得到该干什么。翻译成人话：后端代码是旧的，或者没重启。
       const msg = String(err?.message || '')
       reject(new Error(/invalid namespace/i.test(msg) ? getT().runtime.liveNoServer : msg || getT().runtime.liveNoServer))
-    }) as (...args: never[]) => void)
+    }) as (...args: never[]) => void
+    const timer = window.setTimeout(() => onError(new Error(getT().runtime.liveTimeout) as never), 15_000)
+    socket.on('connect', onConnect)
+    socket.on('connect_error', onError)
   })
   return socket
 }

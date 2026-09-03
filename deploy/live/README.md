@@ -45,10 +45,22 @@ location /socket.io/ {
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
     proxy_set_header Host $host;
+    # ↓ 少这一行，房间卡片上每个人的国旗都会是 ❓，而且不报错
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Real-IP $remote_addr;
     proxy_read_timeout 3600s;
     proxy_buffering off;
 }
 ```
+
+**`X-Forwarded-For` 不是可选的。** 房间卡片上房主的国旗是后端拿握手时的 IP 查出来的
+（server/src/presence.js）。反代不传真实 IP 的话，后端看到的每个人都是 `127.0.0.1`，
+查不出国家，于是全站永远显示 ❓ —— 而且这条路径不会报任何错，只会「就是不显示」，
+排查起来非常费劲。`/api/` 那个 location 同理。
+
+后端信不信这个头由 `TRUST_PROXY` 控制（默认 `loopback`，即「前面有一层自己人的反代」）。
+取的是 XFF 的**最后一段** —— nginx 的 `$proxy_add_x_forwarded_for` 把它亲眼看到的对端追加在末尾，
+前面那些是客户端自己带来的，`curl -H 'X-Forwarded-For: 1.1.1.1'` 谁都能伪造。
 
 TURN 和 netplay 共用 `/api/netplay/ice`（后端现签短期凭证，密码不进前端包）。
 

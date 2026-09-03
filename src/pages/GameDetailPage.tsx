@@ -18,6 +18,7 @@ import { useT, fmt } from '@/services/i18n'
 import { getLang } from '@/services/lang'
 import { gameDescription, gameTitle, genreLabel, platformDesc, platformLabel } from '@/services/i18nData'
 import { EmulatorPlayer } from '@/emulator'
+import { IsolatedPlayCard } from '@/components/game/IsolatedPlayCard'
 import { GameCover } from '@/components/game/GameCover'
 import { GameAgeGuard } from '@/components/game/AgeGate'
 import { GameComments } from '@/components/game/GameComments'
@@ -30,6 +31,7 @@ import { NotFoundPage } from './NotFoundPage'
 import { useShell } from '@/components/layout/ShellContext'
 import { cx } from '@/lib/format'
 import { FEATURES } from '@/config/features'
+import { isolatedEmbedFor } from '../../shared/isolated-embeds.js'
 import { splitDevelopers } from '@/lib/developers'
 
 export function GameDetailPage() {
@@ -77,6 +79,11 @@ export function GameDetailPage() {
 
   // SEO：hook 必须在下面的 early return 之前调用，所以「还没取到」和「确实没有」都要在这里各给一套
   const lang = useLang()
+  /**
+   * 这一款是不是「要整页跨源隔离才跑得起来」的游戏（登记表在 shared/isolated-embeds.js）。
+   * 命中的话详情页不内嵌模拟器，改成显示一个跳 /play/<slug> 的入口。
+   */
+  const isolatedEmbed = isolatedEmbedFor(game?.slug)
   const seoTitle = game ? gameTitle(game, lang) : ''
   const seoPlatform = game ? platformMap[game.platform] : undefined
   const seoPlatformName = seoPlatform ? platformLabel(t, seoPlatform.id, seoPlatform.name) : ''
@@ -167,6 +174,20 @@ export function GameDetailPage() {
               markedAdult={Boolean(game.adult)}
               backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority className="h-full w-full" />}
             >
+              {/*
+                少数游戏（reVC 移植的 GTA 之类）要 SharedArrayBuffer，只能在一个
+                跨源隔离的整页里跑，塞不进详情页 —— 详情页一开 require-corp，
+                Google Fonts、收录脚本和跨源封面图会被一起掐掉。
+                这些游戏改成显示一个入口，跳到 /play/<slug>。理由见 shared/isolated-embeds.js。
+              */}
+              {isolatedEmbed ? (
+                <IsolatedPlayCard
+                  slug={game.slug}
+                  gameName={game.title}
+                  icon={game.icon}
+                  backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority className="h-full w-full" />}
+                />
+              ) : (
               <EmulatorPlayer
                 key={game.slug}
                 platform={platform}
@@ -199,6 +220,7 @@ export function GameDetailPage() {
                 onRomLangChange={setRomLang}
                 backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority className="h-full w-full" />}
               />
+              )}
             </GameAgeGuard>
           </div>
 

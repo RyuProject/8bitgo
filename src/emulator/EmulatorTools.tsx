@@ -56,6 +56,11 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
   const [volume, setVolume] = useState(handle?.volume ?? 1)
   const [muted, setMuted] = useState(false)
   const [panel, setPanel] = useState<'volume' | 'gamepad' | 'fsSave' | null>(null)
+  /**
+   * 移动端：次要按钮（音量 / 手柄 / 另存 / 截屏 / 录像）收进「⋯」里。
+   * 桌面端这个 state 不起作用 —— 那一组在 sm: 断点上无条件常驻（见 return 里的 secondaryCls）。
+   */
+  const [more, setMore] = useState(false)
   const [msg, setMsg] = useState('')
   const [pads, setPads] = useState<string[]>([])
   const [recording, setRecording] = useState(false)
@@ -91,6 +96,7 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
   useEffect(() => {
     setPaused(false)
     setPanel(null)
+    setMore(false)
     setMsg('')
     setFsSaveFailed(false)
     setMuted(false)
@@ -343,35 +349,18 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
 
   const seconds = Math.min(60, Math.floor(elapsed / 1000))
 
+  /**
+   * 这一局到底有没有「次要按钮」。
+   * 全都不支持时（比如 html5 的第三方游戏页）就别画那个「⋯」—— 点开是空的。
+   */
+  const hasSecondary =
+    caps.has('volume') || caps.has('gamepad') || caps.has('screenshot') || caps.has('record') || (caps.has('saveState') && archivable)
+
   return (
     <div className={cx('relative flex flex-wrap items-center gap-1.5', className)}>
       {caps.has('pause') && (
         <button type="button" className={cx(BTN, paused && BTN_ON)} onClick={togglePause} title={paused ? tt.resume : tt.pause} aria-pressed={paused}>
           {paused ? '▶' : '⏸'}
-        </button>
-      )}
-
-      {caps.has('volume') && (
-        <button
-          type="button"
-          className={cx(BTN, panel === 'volume' && BTN_ON)}
-          onClick={() => setPanel(panel === 'volume' ? null : 'volume')}
-          title={tt.volume}
-          aria-expanded={panel === 'volume'}
-        >
-          {muted || volume === 0 ? '🔇' : '🔊'}
-        </button>
-      )}
-
-      {caps.has('gamepad') && (
-        <button
-          type="button"
-          className={cx(BTN, panel === 'gamepad' && BTN_ON)}
-          onClick={() => setPanel(panel === 'gamepad' ? null : 'gamepad')}
-          title={tt.gamepad}
-          aria-expanded={panel === 'gamepad'}
-        >
-          🎮
         </button>
       )}
 
@@ -415,12 +404,6 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
               📂
             </button>
           )}
-          {/* 存档已经进了云端或浏览器时，再给一条「自己保管一份」的出口 */}
-          {archivable && (
-            <button type="button" className={BTN} onClick={() => void doExport()} title={tt.exportFile}>
-              📥
-            </button>
-          )}
           <input
             ref={fileRef}
             type="file"
@@ -433,21 +416,94 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
         </>
       )}
 
-      {caps.has('screenshot') && (
-        <button type="button" className={BTN} onClick={() => void doShot()} title={tt.shot}>
-          📷
-        </button>
-      )}
+      {/*
+        次要按钮组。手机上收进「⋯」，桌面端常驻。
 
-      {caps.has('record') && (
+        为什么不在移动端和桌面端各画一份：那样每个按钮都有两个实例，
+        录像中的那个一旦被 CSS 藏掉，另一份的 recRef 状态是对不上的。
+        所以只画一份，靠同一个容器换定位方式 —— 手机上是弹出层（absolute + hidden），
+        到 sm: 断点全部改回普通的行内一段（static + flex）。
+      */}
+      <div
+        data-testid="emulator-tools-more"
+        className={cx(
+          'items-center gap-1.5',
+          more
+            ? 'absolute bottom-full left-0 z-30 mb-2 flex max-w-[calc(100vw-2rem)] flex-wrap rounded-lg border border-line bg-surface px-2 py-2 shadow-lg'
+            : 'hidden',
+          'sm:static sm:z-auto sm:mb-0 sm:flex sm:max-w-none sm:flex-wrap sm:rounded-none sm:border-0 sm:bg-transparent sm:p-0 sm:shadow-none',
+        )}
+      >
+        {caps.has('volume') && (
+          <button
+            type="button"
+            className={cx(BTN, panel === 'volume' && BTN_ON)}
+            onClick={() => {
+              setPanel(panel === 'volume' ? null : 'volume')
+              setMore(false)
+            }}
+            title={tt.volume}
+            aria-expanded={panel === 'volume'}
+          >
+            {muted || volume === 0 ? '🔇' : '🔊'}
+          </button>
+        )}
+
+        {caps.has('gamepad') && (
+          <button
+            type="button"
+            className={cx(BTN, panel === 'gamepad' && BTN_ON)}
+            onClick={() => {
+              setPanel(panel === 'gamepad' ? null : 'gamepad')
+              setMore(false)
+            }}
+            title={tt.gamepad}
+            aria-expanded={panel === 'gamepad'}
+          >
+            🎮
+          </button>
+        )}
+
+        {/* 存档已经进了云端或浏览器时，再给一条「自己保管一份」的出口 */}
+        {archivable && (
+          <button type="button" className={BTN} onClick={() => void doExport()} title={tt.exportFile}>
+            📥
+          </button>
+        )}
+
+        {caps.has('screenshot') && (
+          <button type="button" className={BTN} onClick={() => void doShot()} title={tt.shot}>
+            📷
+          </button>
+        )}
+
+        {caps.has('record') && (
+          <button
+            type="button"
+            className={cx(BTN, recording && 'border-live bg-live/15 text-red-300')}
+            onClick={toggleRecord}
+            title={recording ? fmt(tt.recStop, { s: String(seconds) }) : tt.rec}
+            aria-pressed={recording}
+          >
+            {recording ? <span className="tabular-nums">⏹ {seconds}s</span> : '⏺'}
+          </button>
+        )}
+      </div>
+
+      {/* 「⋯」只在手机上出现，也只在这一组真有东西可收的时候出现 */}
+      {hasSecondary && (
         <button
           type="button"
-          className={cx(BTN, recording && 'border-live bg-live/15 text-red-300')}
-          onClick={toggleRecord}
-          title={recording ? fmt(tt.recStop, { s: String(seconds) }) : tt.rec}
-          aria-pressed={recording}
+          className={cx(BTN, more && BTN_ON, 'sm:hidden')}
+          onClick={() => {
+            setMore((v) => !v)
+            setPanel(null)
+          }}
+          title={tt.more}
+          aria-label={tt.more}
+          aria-expanded={more}
         >
-          {recording ? <span className="tabular-nums">⏹ {seconds}s</span> : '⏺'}
+          ⋯
         </button>
       )}
 

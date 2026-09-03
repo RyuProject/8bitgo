@@ -38,6 +38,16 @@ export function PlayLocalPage() {
   const [pendingFile, setPendingFile] = useState<File | null>(null)
   /** 用户选好平台后递给播放器重跑；每次都是新对象，所以同一个文件也能重试多次 */
   const [retryRequest, setRetryRequest] = useState<{ file: File } | null>(null)
+  /**
+   * 手写的 FBNeo RomData（.dat）。
+   *
+   * 已知的改版包播放器会自己认出来并配好（见 emulator/arcadeHack.ts），
+   * 这一栏是给**还没进指纹表**的包留的后门 —— 否则玩家手里一个自己找来的汉化版
+   * 就只能对着「Romset is unknown」，而这恰恰是本地页最常见的失败。
+   * 默认收起：绝大多数人玩的是原版包，不该被一栏看不懂的东西拦住。
+   */
+  const [romData, setRomData] = useState('')
+  const [showRomData, setShowRomData] = useState(false)
 
   const platform = platformMap[platformId]
 
@@ -135,7 +145,36 @@ export function PlayLocalPage() {
             // 玩本地 ROM 也要给 BIOS：拖一个 Neo Geo ROM 进来，没有 BIOS 一样起不来。
             // 核心不给覆盖 —— 这里没有具体某一款游戏，只能按平台默认走
             biosUrl={biosUrl || undefined}
+            // 手写的 dat 压过播放器自己认出来的那份：人明确填了就听人的
+            arcadeRomData={romData.trim() || undefined}
           />
+          {platformId === 'arcade' && (
+            <div className="mt-3">
+              <button
+                type="button"
+                onClick={() => setShowRomData((v) => !v)}
+                className="text-xs text-muted underline underline-offset-2 hover:text-fg"
+              >
+                {showRomData ? t.playLocal.romDataHide : t.playLocal.romDataShow}
+              </button>
+              {showRomData && (
+                <div className="mt-2">
+                  <textarea
+                    className="h-40 w-full resize-y rounded-lg border border-line bg-surface px-2 py-2 font-mono text-xs leading-5 text-fg"
+                    value={romData}
+                    onChange={(e) => setRomData(e.target.value)}
+                    spellCheck={false}
+                    placeholder={`ZipName    wofcn
+DrvName    wofj
+FullName   Tenchi wo Kurau II (Edition Chinese)
+
+tk2j23ccn.bin   0x080000   0xe1dd01d8   BRF_ESS BRF_PRG CPS1_68K_PROGRAM_NO_BYTESWAP`}
+                  />
+                  <p className="mt-1 text-[11px] leading-relaxed text-dim">{t.playLocal.romDataHint}</p>
+                </div>
+              )}
+            </div>
+          )}
           <p className="mt-3 text-xs leading-relaxed text-dim">{t.playLocal.disclaimer}</p>
         </div>
       </div>

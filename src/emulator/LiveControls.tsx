@@ -66,6 +66,10 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
   const t = useT()
   const tt = t.player.tools
   const [live, setLive] = useState<Broadcast | null>(null)
+  /** 房间号单独存：重连后接不回原房间时会换（见 broadcast.ts 文件头），Broadcast 对象本身不变 */
+  const [roomId, setRoomId] = useState('')
+  /** 信令断了、正在重连。画面多半还在流（WebRTC 是点对点的），所以只是标记变灰，不撤掉 */
+  const [reconnecting, setReconnecting] = useState(false)
   const [viewers, setViewers] = useState(0)
   const [hidden, setHidden] = useState(readPrivate)
   const [copied, setCopied] = useState(false)
@@ -80,6 +84,8 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
     liveRef.current.stop()
     liveRef.current = null
     setLive(null)
+    setRoomId('')
+    setReconnecting(false)
     setViewers(0)
     // 下播了就让大厅立刻把卡片撤掉，不用等下一轮轮询
     refreshLiveRooms()
@@ -103,13 +109,22 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
           sources,
           meta: { gameSlug, gameName, platform: platform ?? '', title: gameName, hostName: playerName() },
           onViewers: setViewers,
+          onRoom: setRoomId,
           onState: (state) => {
-            // 信令断了（服务器重启、网络抖动）就把界面收回未开播状态，
-            // 别让人对着一个其实已经没在播的标记以为还在播
-            if (state === 'ended' && liveRef.current) {
+            if (state === 'reconnecting') setReconnecting(true)
+            else if (state === 'live') setReconnecting(false)
+            else if (state === 'ended' && liveRef.current) {
+              // 断线重连由 broadcast.ts 自己扛（接回原房间或重开）。走到 ended 是它放弃了：
+              // 收回界面，同时**必须** stop() 放掉抓屏轨和音频节点 —— 以前这里只丢引用，
+              // 轨和 PeerConnection 全泄漏，而且这一局再也不会开播
+              const b = liveRef.current
               liveRef.current = null
+              b.stop()
               setLive(null)
+              setRoomId('')
+              setReconnecting(false)
               setViewers(0)
+              refreshLiveRooms()
             }
           },
         })
@@ -120,6 +135,7 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
         }
         liveRef.current = b
         setLive(b)
+        setRoomId(b.roomId)
         // 顺手刷一次大厅列表，主播自己切过去能立刻看见自己
         refreshLiveRooms()
       } catch (e) {
@@ -146,8 +162,8 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
   }
 
   const copy = async () => {
-    if (!live) return
-    const url = liveLink(gameSlug, live.roomId)
+    if (!live || !roomId) return
+    const url = liveLink(gameSlug, roomId)
     try {
       await navigator.clipboard.writeText(url)
       setCopied(true)
@@ -162,13 +178,14 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
     <div className={cx('flex flex-wrap items-center gap-1.5', className)}>
       <button
         type="button"
-        className={cx(BTN, live && 'border-live bg-live/15 text-red-300')}
+        className={cx(BTN, live && 'border-live bg-live/15 text-red-300', live && reconnecting && 'opacity-60')}
         onClick={toggleHidden}
         title={hidden ? tt.liveShowTitle : tt.liveHideTitle}
         aria-pressed={!hidden}
       >
         {live ? (
-          <span className="tabular-nums">📡 {fmt(tt.liveOn, { n: String(viewers) })}</span>
+          // 重连中先把人数换成 ⏳：那个数字是断线前的，再显示就是在骗人
+          <span className="tabular-nums">📡 {reconnecting ? '⏳' : fmt(tt.liveOn, { n: String(viewers) })}</span>
         ) : hidden ? (
           <span className="opacity-60">📡 {tt.liveHidden}</span>
         ) : (

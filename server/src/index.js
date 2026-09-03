@@ -4,6 +4,7 @@ import { createServer } from 'node:http'
 import cors from 'cors'
 import { ping } from './db.js'
 import { ssrAvailable, renderPage, CLIENT_DIR } from './ssr.js'
+import { playShell } from './routes/play.js'
 import { j2meJarProxy, uploadJar, releaseJar, keepaliveJar, startSweeper, MAX_BYTES, TTL_MS } from './j2me.js'
 import { ADMIN_AUTH_DISABLED } from './auth.js'
 import { CACHE, noStore, staticCacheHeaders } from './cache.js'
@@ -153,6 +154,13 @@ if (ssrAvailable()) {
   // 必须注册在 express.static 之后 —— Express 按注册顺序匹配，
   // 放前面会让代理抢先，本地文件永远取不到。
   app.get('/j2me/jar/:name', j2meJarProxy)
+
+  /**
+   * 跨源隔离的整页游玩外壳。必须注册在 SSR 兜底之前 —— 那条 catch-all 吃掉除 /api 外
+   * 的所有 GET。没登记的 slug 会 next() 下去由 SSR 渲染 404，见 routes/play.js。
+   */
+  app.get('/play/:slug', playShell)
+  app.get('/:lang/play/:slug', playShell)
 
   // 构建产物找不到就老实回 404。交给下面的 SSR 会返回一段 HTML，
   // 浏览器按 module 加载时只会报一句含糊的 MIME 错误，白屏还查不出原因。

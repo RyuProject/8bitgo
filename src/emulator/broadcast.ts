@@ -8,6 +8,19 @@
  * 没有 SFU，是「主播直连每个观众」的星型结构：
  *   上行 = 单路码率 × 观众数。家宽大概到十来路就满了，服务端也按这个数封顶。
  *   真要做大场子，得在中间加一层转发（主播只推一路，服务器扇出）。
+ *
+ * ── 断线 ──────────────────────────────────────────────────
+ * 信令 socket 断了不等于直播断了：画面走的是点对点的 WebRTC，服务器只管握手。
+ * 所以这里的原则是**能接回去就接回去，接不回去就重开，绝不因为信令抖一下就散场**：
+ *
+ *   socket 重连成功 → resume-live（凭开播时发的 token）
+ *     ├─ 成功：房间号不变，观众不用换链接。服务器给回当前观众名单，
+ *     │        哪条 PeerConnection 还活着自己看，死了的重新 offer
+ *     └─ not found（服务器重启、宽限期过了）：go-live 重开一个新房间，
+ *              还连着的观众画面照样在流，只是大厅里换了个房间号
+ *
+ * 以前是 socket 一断就报 ended，然后什么都不做 —— 抓屏的轨、音频节点、每条 PeerConnection
+ * 全部泄漏，而且这一局再也不会开播。
  */
 import type { CaptureSources } from './types'
 import { connectLive, liveIceServers, type LiveSocket } from '@/services/live'
@@ -16,7 +29,7 @@ import { connectLive, liveIceServers, type LiveSocket } from '@/services/live'
 const MAX_BITRATE = Number(import.meta.env.VITE_LIVE_MAX_BITRATE) || 1_500_000
 const MAX_FPS = 60
 
-export type BroadcastState = 'connecting' | 'live' | 'ended' | 'error'
+export type BroadcastState = 'connecting' | 'live' | 'reconnecting' | 'ended' | 'error'
 
 export interface BroadcastMeta {
   gameSlug?: string
@@ -32,14 +45,19 @@ export interface BroadcastOptions {
   fps?: number
   onState?: (state: BroadcastState) => void
   onViewers?: (count: number) => void
+  /** 房间号变了（重连后接不回原房间、只能重开时）。开播那一次也会调 */
+  onRoom?: (roomId: string) => void
   onError?: (message: string) => void
 }
 
 export interface Broadcast {
+  /** 当前房间号。重连后可能换（见文件头「断线」一节），UI 别缓存它，用 onRoom */
   readonly roomId: string
   viewers: () => number
   stop: () => void
 }
+
+type SignalData = { sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit; gen?: number }
 
 /** 能不能开播：有画面就行（声音可选） */
 export function canBroadcast(sources: CaptureSources | null | undefined): boolean {
@@ -110,6 +128,25 @@ function tuneSender(sender: RTCRtpSender) {
   }
 }
 
+/** 这条连接还值得留着吗（还在握手、或者已经通了） */
+function alive(pc: RTCPeerConnection): boolean {
+  const s = pc.connectionState
+  return s === 'new' || s === 'connecting' || s === 'connected'
+}
+
+/** 带超时的 ack 调用；socket 没连上时 emit 会被 socket.io 缓存到重连，这里不等它 */
+function call<T>(socket: LiveSocket, event: string, payload: unknown, ms = 10_000): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (!socket.connected) return reject(new Error('disconnected'))
+    const timer = window.setTimeout(() => reject(new Error(`${event} timeout`)), ms)
+    socket.emit(event, payload, (err: string | null, data: T) => {
+      window.clearTimeout(timer)
+      if (err) reject(new Error(err))
+      else resolve(data)
+    })
+  })
+}
+
 export async function startBroadcast(options: BroadcastOptions): Promise<Broadcast> {
   const built = buildStream(options.sources, options.fps ?? 30)
   if (!built) throw new Error('no capture source')
@@ -125,26 +162,40 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
   }
 
   const iceServers = await liveIceServers()
-  /** 每个观众一条连接 */
-  const peers = new Map<string, RTCPeerConnection>()
+  /** 每个观众一条连接。gen 是这条连接的代号，随 SDP / ICE 一起发，观众据此认出「新一轮」 */
+  const peers = new Map<string, { pc: RTCPeerConnection; gen: number }>()
+  let genCounter = 0
   let viewers = 0
   let stopped = false
+  let roomId = ''
+  let token = ''
 
   const dropPeer = (viewerId: string) => {
-    const pc = peers.get(viewerId)
-    if (!pc) return
+    const p = peers.get(viewerId)
+    if (!p) return
     peers.delete(viewerId)
     try {
-      pc.close()
+      p.pc.close()
     } catch {
       /* ignore */
     }
   }
 
-  const addViewer = async (viewerId: string) => {
-    if (stopped || peers.has(viewerId)) return
+  /**
+   * 给一个观众建连接并发 offer。
+   * force=false 时，已有的连接还活着就不动它（主播重连回来对照名单用）；
+   * force=true 是观众明确要求重来（它重新 watch 了），旧连接不管死活都换掉。
+   */
+  const addViewer = async (viewerId: string, force: boolean) => {
+    if (stopped) return
+    const existing = peers.get(viewerId)
+    if (existing) {
+      if (!force && alive(existing.pc)) return
+      dropPeer(viewerId)
+    }
+    const gen = ++genCounter
     const pc = new RTCPeerConnection({ iceServers })
-    peers.set(viewerId, pc)
+    peers.set(viewerId, { pc, gen })
 
     for (const track of built.stream.getTracks()) {
       const sender = pc.addTrack(track, built.stream)
@@ -152,25 +203,90 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     }
 
     pc.onicecandidate = (ev) => {
-      if (ev.candidate) socket.emit('signal', { target: viewerId, data: { candidate: ev.candidate.toJSON() } })
+      if (ev.candidate) socket.emit('signal', { target: viewerId, data: { candidate: ev.candidate.toJSON(), gen } satisfies SignalData })
     }
     pc.onconnectionstatechange = () => {
-      // 观众那边断了就把连接收掉，别留着白占上行
-      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') dropPeer(viewerId)
+      // 观众那边断了就把连接收掉，别留着白占上行。它要是还在房间里，会自己重新 watch
+      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        if (peers.get(viewerId)?.pc === pc) dropPeer(viewerId)
+      }
     }
 
     try {
       const offer = await pc.createOffer()
       await pc.setLocalDescription(offer)
-      socket.emit('signal', { target: viewerId, data: { sdp: pc.localDescription } })
+      socket.emit('signal', { target: viewerId, data: { sdp: pc.localDescription ?? offer, gen } satisfies SignalData })
     } catch (e) {
       dropPeer(viewerId)
       options.onError?.(e instanceof Error ? e.message : String(e))
     }
   }
 
+  const teardown = () => {
+    for (const id of Array.from(peers.keys())) dropPeer(id)
+    built.release()
+    try {
+      socket.close()
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const goLive = async () => {
+    const data = await call<{ roomId: string; token: string }>(socket, 'go-live', {
+      title: options.meta.title,
+      gameSlug: options.meta.gameSlug,
+      gameName: options.meta.gameName,
+      platform: options.meta.platform,
+      hostName: options.meta.hostName,
+    })
+    roomId = data.roomId
+    token = data.token
+    options.onRoom?.(roomId)
+  }
+
+  /** socket 重连上来之后：先试着接回原房间，接不回去就重开 */
+  const resume = async () => {
+    if (stopped) return
+    try {
+      const data = await call<{ roomId: string; viewers?: string[] }>(socket, 'resume-live', { roomId, token })
+      const current = new Set(data.viewers ?? [])
+      // 名单上没有的观众已经走了（宽限期里它们 disconnect 时主播不在，没收到 viewer-left）
+      for (const id of Array.from(peers.keys())) if (!current.has(id)) dropPeer(id)
+      // 名单上的：连接还活着的不动（信令断了画面没断），死了的重新 offer
+      for (const id of current) void addViewer(id, false)
+      viewers = current.size
+      options.onViewers?.(viewers)
+      options.onState?.('live')
+      return
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (stopped) return
+      // 房间已经没了（服务器重启 / 宽限期过了）：那就重开。老观众如果画面还连着，照样在看
+      if (msg !== 'not found' && msg !== 'forbidden') {
+        // 其它错误（超时、又断了）：等下一次 connect 再来，socket.io 会一直重试
+        console.warn('[live] 续播失败，等下次重连', msg)
+        return
+      }
+    }
+    try {
+      await goLive()
+      viewers = 0
+      options.onViewers?.(0)
+      options.onState?.('live')
+    } catch (e) {
+      // 重开也失败（比如服务器满了）：这一局就到这儿，把资源放掉，别让 UI 挂着假标记
+      if (stopped) return
+      stopped = true
+      teardown()
+      options.onError?.(e instanceof Error ? e.message : String(e))
+      options.onState?.('ended')
+    }
+  }
+
   socket.on('viewer-joined', ((payload: { viewerId?: string }) => {
-    if (payload?.viewerId) void addViewer(payload.viewerId)
+    // 观众进来 / 观众重新 watch：都是「请给我一轮新的 offer」
+    if (payload?.viewerId) void addViewer(payload.viewerId, true)
   }) as (...args: never[]) => void)
 
   socket.on('viewer-left', ((payload: { viewerId?: string }) => {
@@ -182,59 +298,51 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     options.onViewers?.(viewers)
   }) as (...args: never[]) => void)
 
-  socket.on('signal', ((payload: { from?: string; data?: { sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit } }) => {
-    const pc = payload?.from ? peers.get(payload.from) : null
-    if (!pc || !payload?.data) return
-    const { sdp, candidate } = payload.data
-    if (sdp) void pc.setRemoteDescription(new RTCSessionDescription(sdp)).catch(() => {})
+  socket.on('signal', ((payload: { from?: string; data?: SignalData }) => {
+    const p = payload?.from ? peers.get(payload.from) : null
+    if (!p || !payload?.data) return
+    const { sdp, candidate, gen } = payload.data
+    // 观众回的是上一轮的包（它还没收到新 offer 就先回了旧的）：不能喂给新连接
+    if (gen !== undefined && gen !== p.gen) return
+    if (sdp) void p.pc.setRemoteDescription(new RTCSessionDescription(sdp)).catch(() => {})
     // 远端描述还没到就先丢掉这颗候选：对方会重发，比排队简单也不会卡住
-    else if (candidate && pc.remoteDescription) void pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {})
+    else if (candidate && p.pc.remoteDescription) void p.pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {})
   }) as (...args: never[]) => void)
 
   socket.on('disconnect', (() => {
-    if (!stopped) options.onState?.('ended')
+    // 信令断了，画面不一定断（WebRTC 是点对点的）。socket.io 会自己重连，连上再 resume
+    if (!stopped) options.onState?.('reconnecting')
   }) as (...args: never[]) => void)
 
-  const room = await new Promise<{ roomId: string }>((resolve, reject) => {
-    const timer = window.setTimeout(() => reject(new Error('go-live timeout')), 10_000)
-    socket.emit(
-      'go-live',
-      {
-        title: options.meta.title,
-        gameSlug: options.meta.gameSlug,
-        gameName: options.meta.gameName,
-        platform: options.meta.platform,
-        hostName: options.meta.hostName,
-      },
-      (err: string | null, data: { roomId: string }) => {
-        window.clearTimeout(timer)
-        if (err) reject(new Error(err))
-        else resolve(data)
-      },
-    )
-  }).catch((e) => {
+  // connectLive 已经消费掉首连的 connect，这里只会在**重连**时触发
+  socket.on('connect', (() => {
+    if (!stopped && roomId) void resume()
+  }) as (...args: never[]) => void)
+
+  try {
+    await goLive()
+  } catch (e) {
     stopped = true
-    built.release()
-    socket.close()
+    teardown()
     throw e
-  })
+  }
 
   options.onState?.('live')
 
   return {
-    roomId: room.roomId,
+    get roomId() {
+      return roomId
+    },
     viewers: () => viewers,
     stop() {
       if (stopped) return
       stopped = true
       try {
-        socket.emit('stop-live')
+        if (socket.connected) socket.emit('stop-live')
       } catch {
         /* ignore */
       }
-      for (const id of Array.from(peers.keys())) dropPeer(id)
-      built.release()
-      socket.close()
+      teardown()
       options.onState?.('ended')
     },
   }

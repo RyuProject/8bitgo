@@ -204,6 +204,28 @@ Free / Pro 100 MB，Business 200 MB，Enterprise 500 MB，**由边缘节点执�
 
 同类问题的通用判据：`server/src/routes/` 里查了某张表的接口，去 `schema-v2.sql` 里 grep 一遍表名。
 
+### 2.16 房主国旗全是 ❓ ＝ 反代没传真实 IP
+
+房间卡片上房主的设备 💻📱 / 地区 🇨🇳 / 网络 👌🀄️👎 三个格子由 `server/src/presence.js`
+从 **socket 握手信息**里推断：设备看 `User-Agent`，地区拿 IP 查离线库
+（`@ip-location-db/geo-whois-asn-country-mmdb`，CC0，不需要 MaxMind 那种许可证密钥），
+网络看 socket.io 心跳的往返时间。
+
+三样都不接受客户端上报 —— 一是联机房间的 socket 客户端是 EmulatorJS 自带的、我们改不动，
+二是客户端说了算的话挂个 VPN 报个 🇯🇵 就是一行代码的事，这三个格子的意义就没了。
+唯一例外是云端房间的 RTT（那条路没有常驻连接，只能收浏览器自己测的数，服务端会钳范围）。
+
+**踩点在这里**：nginx 的 `location /socket.io/` 里少一行
+`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`，后端看到的每个人都是
+`127.0.0.1`，国旗全站永远是 ❓ —— **而且不会报任何错**，日志干干净净，只是「就是不显示」。
+`/api/` 那个 location 同理（云端房间走它）。配好之后 `TRUST_PROXY` 保持默认的 `loopback`。
+
+取的是 XFF 的**最后一段**：`$proxy_add_x_forwarded_for` 把 nginx 亲眼看到的对端追加在末尾，
+前面几段是客户端自己带来的，谁都能 `curl -H 'X-Forwarded-For: 1.1.1.1'` 伪造。
+（`playcount.js` 里取的是第一段 —— 那边只是计数，将就了；这里是要显示给所有人看的。）
+
+自测：`cd server && npm run test:presence`（40 项，不联网、不用数据库）。
+
 ---
 
 ## 3. 常用命令

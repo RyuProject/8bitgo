@@ -11,6 +11,7 @@ import { useEffect, useSyncExternalStore } from 'react'
 import type { PublicUser, User, UserStatus } from '@/types'
 import { createLocalStore, randomId } from './localStore'
 import { api, apiEnabled, setToken, getToken } from './api'
+import { pushGuestRecent } from './recents'
 import { getT } from './i18n'
 
 export const USERS_KEY = '8bitgo.users'
@@ -493,10 +494,15 @@ export async function toggleFavorite(slug: string): Promise<boolean> {
   return !has
 }
 
-/** 记录最近浏览（未登录时静默忽略） */
+/**
+ * 记录最近玩过。
+ *
+ * 登录了就记到账号上（后端 users.recent，换设备也能看到）；没登录不再丢掉，
+ * 改记在这台浏览器里（services/recents.ts），侧边栏「曾经玩过」两种都读。
+ */
 export async function recordRecent(slug: string): Promise<void> {
   if (apiEnabled()) {
-    if (!getToken()) return
+    if (!getToken()) return pushGuestRecent(slug)
     try {
       const r = await api.post<{ recent: string[] }>(`/api/me/recents/${encodeURIComponent(slug)}`)
       if (apiUser) setCurrentUser({ ...apiUser, recent: r.recent })
@@ -507,7 +513,7 @@ export async function recordRecent(slug: string): Promise<void> {
   }
   const id = readSessionId()
   const user = id ? usersStore.find(id) : undefined
-  if (!user) return
+  if (!user) return pushGuestRecent(slug)
   const recent = [slug, ...user.recent.filter((s) => s !== slug)].slice(0, 12)
   if (recent.join() === user.recent.join()) return
   usersStore.update(user.id, { recent })

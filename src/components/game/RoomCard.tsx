@@ -6,6 +6,7 @@ import { useT, fmt } from '@/services/i18n'
 import { gameTitle, platformLabel } from '@/services/i18nData'
 import type { Room } from '@/services/rooms'
 import type { LiveRoomInfo } from '@/services/live'
+import { normalizePresence, type Presence } from '@/services/presence'
 
 /** 统一的房间视图：P2P（房主浏览器跑）、云端（服务器跑）、直播（只看不玩）三种来源合并后长这样 */
 export interface RoomView {
@@ -16,7 +17,12 @@ export interface RoomView {
   /** 只看不玩的人数。P2P 房间天然就是一路直播，这里就是「几个人在看」 */
   spectators?: number
   host: { nickname: string } | null
-  members: Array<{ nickname: string; playerIndex?: number; host: boolean }>
+  members: Array<{ nickname: string; playerIndex?: number; host: boolean; presence?: Presence }>
+  /**
+   * 房主的设备 / 地区 / 网络（见 services/presence.ts）。
+   * 三种房间都由服务端推断，房主自己报不了假。
+   */
+  presence?: Presence
   createdAt: number
   /**
    * p2p   = 房主的浏览器在跑，别人可以上场当玩家，也可以只看
@@ -37,7 +43,8 @@ export function cloudRoomView(r: Room): RoomView {
     max: 4,
     spectators: 0,
     host: r.host,
-    members: r.members,
+    members: r.members.map((m) => ({ ...m, presence: normalizePresence(m.presence) })),
+    presence: normalizePresence(r.presence),
     createdAt: r.createdAt,
     kind: 'cloud',
   }
@@ -49,6 +56,8 @@ export function cloudRoomView(r: Room): RoomView {
  * 人数看的是 spectators。不摆手柄位 —— 观众没有位置可占。
  */
 export function liveRoomView(r: LiveRoomInfo): RoomView {
+  // 直播只有主播一个人，「房主的名片」和「唯一成员的名片」是同一张
+  const presence = normalizePresence(r.presence)
   return {
     roomId: r.roomId,
     gameSlug: r.gameSlug,
@@ -57,7 +66,8 @@ export function liveRoomView(r: LiveRoomInfo): RoomView {
     max: 1,
     spectators: r.viewers,
     host: r.hostName ? { nickname: r.hostName } : null,
-    members: r.hostName ? [{ nickname: r.hostName, playerIndex: 0, host: true }] : [],
+    members: r.hostName ? [{ nickname: r.hostName, playerIndex: 0, host: true, presence }] : [],
+    presence,
     createdAt: r.startedAt,
     kind: 'live',
   }
@@ -65,6 +75,7 @@ export function liveRoomView(r: LiveRoomInfo): RoomView {
 
 import { GameCover } from './GameCover'
 import { Badge } from '@/components/ui/Badge'
+import { PresenceTags } from './PresenceTags'
 import { cx } from '@/lib/format'
 
 /** 房间卡片：封面 = 正在玩的游戏，下面是 host 与人数 */
@@ -96,8 +107,10 @@ export function RoomCard({ room, compact = false }: { room: RoomView; compact?: 
         </span>
         <span className="min-w-0 flex-1">
           <span className="block truncate text-xs font-semibold">{label}</span>
-          <span className="block truncate text-[11px] text-muted">
-            👑 {room.host?.nickname ?? '—'}
+          <span className="flex items-center gap-1 text-[11px] text-muted">
+            {/* 侧边栏这一行本来就窄：名字让位，三个格子里只画知道的（skipUnknown） */}
+            <span className="truncate">👑 {room.host?.nickname ?? '—'}</span>
+            <PresenceTags presence={room.presence} skipUnknown />
           </span>
         </span>
         {live ? (
@@ -148,8 +161,10 @@ export function RoomCard({ room, compact = false }: { room: RoomView; compact?: 
       <div className="space-y-1.5 p-3">
         <h3 className="truncate text-sm font-semibold leading-tight">{label}</h3>
         <div className="flex items-center justify-between gap-2 text-[11px] text-muted">
-          <span className="truncate">
-            👑 {fmt(t.rooms.hostLabel, { name: room.host?.nickname ?? '—' })}
+          {/* 房主的名字可以被截断，后面那三个格子不行 —— 它们是这一行的重点 */}
+          <span className="flex min-w-0 items-center gap-1">
+            <span className="truncate">👑 {fmt(t.rooms.hostLabel, { name: room.host?.nickname ?? '—' })}</span>
+            <PresenceTags presence={room.presence} />
           </span>
           {game && <span className="shrink-0">{platformLabel(t, game.platform, platformMap[game.platform]?.name ?? game.platform)}</span>}
         </div>
@@ -168,6 +183,8 @@ export function RoomCard({ room, compact = false }: { room: RoomView; compact?: 
                 title={m?.nickname}
               >
                 {i + 1}P {m ? `· ${m.nickname}` : `· ${t.rooms.slotFree}`}
+                {/* 空位没有名片；已知的那几格才画，四个位子挂一排 ❓ 只会糊住这一行 */}
+                {m && <PresenceTags presence={m.presence} skipUnknown className="ml-1 align-[-1px]" />}
               </span>
             )
           })}
