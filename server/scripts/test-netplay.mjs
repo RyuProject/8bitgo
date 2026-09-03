@@ -15,7 +15,9 @@
 import express from 'express'
 import { createServer } from 'node:http'
 import { io as client } from 'socket.io-client'
-import { attachNetplay } from '../src/netplay.js'
+// 这个测试从同一个 IP 开一堆房间，把每 IP 上限关掉（那条规则在 test-netplay-hardening.mjs 里测）
+process.env.NETPLAY_MAX_ROOMS_PER_IP = '0'
+const { attachNetplay } = await import('../src/netplay.js')
 
 let failed = 0
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -34,6 +36,9 @@ const API = 'http://127.0.0.1:9921'
 
 const connect = async () => {
   const s = client(WS)
+  // 服务端在 ack 之后紧接着发的房间令牌，存档 / 认领 / 迁移都靠它
+  s.token = null
+  s.on('room-token', (d) => (s.token = d.token))
   await new Promise((r) => s.on('connect', r))
   return s
 }
@@ -122,18 +127,19 @@ section('房主迁移')
   await open(host, extra('u-host2', 'R2', '房主'), 4)
   await join(g1, extra('u-g1', 'R2', '小明'))
   await join(g2, extra('u-g2', 'R2', '小红'))
+  await wait(80)
 
   const state = Buffer.from('SAVESTATE-'.repeat(1000))
   let r = await fetch(`${API}/api/netplay/rooms/R2/state`, {
     method: 'POST',
-    headers: { 'x-netplay-user': 'u-host2', 'content-type': 'application/octet-stream' },
+    headers: { 'x-netplay-token': host.token, 'content-type': 'application/octet-stream' },
     body: state,
   })
   ok('房主能上传存档', r.ok && (await r.json()).bytes === state.length)
 
   r = await fetch(`${API}/api/netplay/rooms/R2/state`, {
     method: 'POST',
-    headers: { 'x-netplay-user': 'u-g1', 'content-type': 'application/octet-stream' },
+    headers: { 'x-netplay-token': g1.token, 'content-type': 'application/octet-stream' },
     body: state,
   })
   ok('非房主上传被拒', r.status === 403)
@@ -151,27 +157,69 @@ section('房主迁移')
   ok('房间没被解散，转为 awaitingHost', d.awaitingHost === true && d.nextHostUserId === 'u-g1' && d.players === 2)
   ok('换房主期间不出现在可加入列表', !(await getJson('/netplay/list?domain=localhost&game_id=42')).R2)
 
-  r = await fetch(`${API}/api/netplay/rooms/R2/state`)
-  ok('新房主能取到存档', r.ok && Buffer.from(await r.arrayBuffer()).equals(state))
+  // 没被选中的人不能认领
+  r = await fetch(`${API}/api/netplay/rooms/R2/claim`, { method: 'POST', headers: { 'x-netplay-token': g2.token } })
+  ok('非选定者认领被拒', r.status === 403)
+  r = await fetch(`${API}/api/netplay/rooms/R2/claim`, { method: 'POST', headers: { 'x-netplay-token': 'nope' } })
+  ok('假令牌认领被拒', r.status === 403)
 
-  // 新房主开一个新房间，再把新旧接上
+  // 被选中的人认领
+  r = await fetch(`${API}/api/netplay/rooms/R2/claim`, { method: 'POST', headers: { 'x-netplay-token': g1.token } })
+  const claim = r.ok ? (await r.json()).claimToken : null
+  ok('选定者认领成功', typeof claim === 'string' && claim.length > 20)
+  ok('房间标记 claimed', (await getJson('/api/netplay/rooms/R2')).claimed === true)
+
+  // 真实流程：认领之后新房主要重新挂载引擎，旧连接必断 —— 房间不能因此散掉或换人
+  g1.close()
+  await wait(250)
+  d = await getJson('/api/netplay/rooms/R2')
+  ok('认领人断线后房间还在、仍等他接手', d && d.awaitingHost === true && d.nextHostUserId === 'u-g1' && d.claimed === true)
+
+  // 存档：凭认领令牌能取（他已经不是成员了），随便一个令牌不能
+  r = await fetch(`${API}/api/netplay/rooms/R2/state`, { headers: { 'x-netplay-token': claim } })
+  ok('新房主凭认领令牌取到存档', r.ok && Buffer.from(await r.arrayBuffer()).equals(state))
+  r = await fetch(`${API}/api/netplay/rooms/R2/state`, { headers: { 'x-netplay-token': 'nope' } })
+  ok('假令牌取不到存档', r.status === 403)
+
+  // 新房主开一个新房间，再凭 认领令牌 + 新房间令牌 把新旧接上
   const newHost = await connect()
   await open(newHost, extra('u-g1', 'R2b', '小明'), 4)
-  r = await fetch(`${API}/api/netplay/rooms/R2/migrate`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ newRoomId: 'R2b', userId: 'u-g1' }),
+  await wait(80)
+  const migrate = (body, tokenHeader) =>
+    fetch(`${API}/api/netplay/rooms/R2/migrate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(tokenHeader ? { 'x-netplay-token': tokenHeader } : {}) },
+      body: JSON.stringify(body),
+    })
+  // 以前的攻击面：只填 userId 就能把整屋人劫走
+  r = await migrate({ newRoomId: 'R2b', userId: 'u-g1' })
+  ok('只带 userId 的迁移被拒', r.status === 403)
+  r = await migrate({ newRoomId: 'R2b', newRoomToken: newHost.token }, g2.token)
+  ok('拿成员令牌冒充认领被拒', r.status === 403)
+  r = await migrate({ newRoomId: 'R2b', newRoomToken: 'nope' }, claim)
+  ok('新房间令牌不对被拒', r.status === 403)
+
+  let migrated = null
+  g2.on('data-message', (m) => {
+    if (m['host-migrated']) migrated = m['host-migrated']
   })
+  r = await migrate({ newRoomId: 'R2b', newRoomToken: newHost.token }, claim)
   ok('迁移成功', r.ok && (await r.json()).roomId === 'R2b')
+  await wait(100)
+  ok('留在旧房间的人收到 host-migrated', migrated?.roomId === 'R2b')
 
   d = await getJson('/api/netplay/rooms/R2')
   ok('旧 roomId 仍能查到，并给出 migratedTo', d.roomId === 'R2b' && d.migratedTo === 'R2b')
-  r = await fetch(`${API}/api/netplay/rooms/R2/state`)
+  r = await fetch(`${API}/api/netplay/rooms/R2/state`, { headers: { 'x-netplay-token': newHost.token } })
   ok('存档跟着转移到新房间', r.ok && Buffer.from(await r.arrayBuffer()).equals(state))
 
   const g3 = await connect()
   const [joinErr] = await join(g3, extra('u-g3', 'R2', '小刚'))
   ok('用旧邀请链接能加入新房间', joinErr == null && (await getJson('/api/netplay/rooms/R2b')).players === 2)
+
+  // 别名占着的 id 不能再被新房间用（否则谁也进不去那个新房间）
+  const squatter = await connect()
+  ok('别名占用的 id 不能开新房', (await open(squatter, extra('u-sq', 'R2', '占坑'))) === 'room already exists')
 
   const faker = await connect()
   await open(faker, extra('u-fake', 'R-fake', '坏人'))
@@ -182,11 +230,41 @@ section('房主迁移')
   })
   ok('非选定房主接手被拒', r.status === 409 || r.status === 403)
 
-  g1.close()
   g2.close()
   g3.close()
   newHost.close()
   faker.close()
+  squatter.close()
+  await wait(200)
+}
+
+/* ==================== 二·五、双人房：唯一的访客接手 ==================== */
+section('双人房接手（认领人断线时屋里没人）')
+{
+  const host = await connect()
+  const g1 = await connect()
+  await open(host, extra('u-hostD', 'RD', '房主'), 2)
+  await join(g1, extra('u-gD', 'RD', '小明'))
+  await wait(80)
+  host.close()
+  await wait(200)
+  let r = await fetch(`${API}/api/netplay/rooms/RD/claim`, { method: 'POST', headers: { 'x-netplay-token': g1.token } })
+  const claim = r.ok ? (await r.json()).claimToken : null
+  ok('唯一的访客认领成功', Boolean(claim))
+  g1.close()
+  await wait(250)
+  // 以前：屋里 0 人 → 立刻解散 → /migrate 409 → 老邀请链接死掉
+  ok('屋里一个人都没有也不散场', (await fetch(`${API}/api/netplay/rooms/RD`)).status === 200)
+  const nh = await connect()
+  await open(nh, extra('u-gD', 'RDb', '小明'), 2)
+  await wait(80)
+  r = await fetch(`${API}/api/netplay/rooms/RD/migrate`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-netplay-token': claim },
+    body: JSON.stringify({ newRoomId: 'RDb', newRoomToken: nh.token }),
+  })
+  ok('迁移成功，老链接续上', r.ok && (await getJson('/api/netplay/rooms/RD')).migratedTo === 'RDb')
+  nh.close()
   await wait(200)
 }
 
@@ -207,6 +285,22 @@ if (process.env.NETPLAY_HOST_GRACE_MS) {
   ok('超时没人接手 → 广播 host-left', hostLeft)
   ok('超时后房间被解散', (await fetch(`${API}/api/netplay/rooms/R3`)).status === 404)
   guest.close()
+
+  if (process.env.NETPLAY_CLAIM_WINDOW_MS) {
+    section(`认领了却没接完（窗口 ${process.env.NETPLAY_CLAIM_WINDOW_MS}ms）`)
+    const h = await connect()
+    const g = await connect()
+    await open(h, extra('u-h5', 'R5', '房主'))
+    await join(g, extra('u-g5', 'R5', '访客'))
+    await wait(80)
+    h.close()
+    await wait(150)
+    const r = await fetch(`${API}/api/netplay/rooms/R5/claim`, { method: 'POST', headers: { 'x-netplay-token': g.token } })
+    ok('认领成功', r.ok)
+    g.close()
+    await wait(Number(process.env.NETPLAY_CLAIM_WINDOW_MS) + 300)
+    ok('认领窗口过了、屋里没人 → 解散', (await fetch(`${API}/api/netplay/rooms/R5`)).status === 404)
+  }
 } else {
   console.log('\n⏭  跳过「超时解散」：用 NETPLAY_HOST_GRACE_MS=400 node scripts/test-netplay.mjs 跑这一组')
 }

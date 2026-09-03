@@ -228,7 +228,7 @@ CREATE TABLE IF NOT EXISTS users (
   avatar        VARCHAR(16)   NOT NULL DEFAULT '🕹️',
   password_hash VARCHAR(200)  NOT NULL,
   coins         INT UNSIGNED  NOT NULL DEFAULT 0,
-  role          ENUM('user','admin')    NOT NULL DEFAULT 'user',
+  role          ENUM('user','volunteer','admin')    NOT NULL DEFAULT 'user',
   status        ENUM('active','banned') NOT NULL DEFAULT 'active',
   created_at    TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uniq_email (email),

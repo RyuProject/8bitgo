@@ -42,10 +42,41 @@ function wrapCssInLayer(file) {
   console.log('✔ js-dos.css 已包进 @layer jsdos（防止它的全局 reset 压过站点样式）')
 }
 
+/**
+ * 把 js-dos.js 整个包进一个 IIFE。
+ *
+ * upstream 的 dist/js-dos.js 是一个**没有外层函数**的经典脚本 —— 294 个顶层
+ * `function` 声明和 289 个顶层 `var` 全都落在 window 上（连 e / t / n / o 这种
+ * 单字母的也在里面）。其中最要命的一个叫 **`io`**：那是 immer 的 `each()`，
+ * 而站内直播是靠 `window.io` 去认 socket.io 客户端的。于是只要页面上加载过
+ * js-dos（任何一个 DOS 游戏页），自动开播必然抛
+ * `TypeError: Reflect.ownKeys called on non-object`，而且报在 js-dos.js 里，
+ * 看着完全不像是直播的问题。
+ *
+ * 包起来不影响它对外的接口：js-dos 想共享的东西是它自己显式写到 window 上的
+ * （Dos / net / netConfig / wsMessage / WebRTCNet），这些照旧；包里**读**全局
+ * 也照旧（作用域链没变），只是它的顶层声明不再往 window 上撒。
+ *
+ * 用 `.call(this)` 而不是直接 `()`：脚本顶层的 this 就是 window，非严格模式下
+ * 直接调用得到的也是 window，但显式传进去更稳 —— 哪天上游加了 'use strict'，
+ * 直接调用的 this 会变成 undefined。
+ */
+const IIFE_HEAD = ';(function () {\n'
+const IIFE_TAIL = '\n}).call(this);\n'
+
+function wrapInIife(file) {
+  if (!existsSync(file)) return
+  const code = readFileSync(file, 'utf8')
+  if (code.startsWith(IIFE_HEAD)) return
+  writeFileSync(file, `${IIFE_HEAD}${code}${IIFE_TAIL}`)
+  console.log('✔ js-dos.js 已包进 IIFE（顶层的 io 不再顶掉 socket.io，直播才开得起来）')
+}
+
 const dosboxXReady = dosboxXFiles.every((name) => existsSync(join(out, 'emulators', name)))
 if (ifMissing && existsSync(join(out, 'js-dos.js')) && (!withDosboxX || dosboxXReady)) {
-  // 已有的拷贝也要确保 css 包过层 —— 老拷贝正是没包的那种
+  // 已有的拷贝也要确保包过层 / 包过 IIFE —— 老拷贝正是没包的那种
   wrapCssInLayer(join(out, 'js-dos.css'))
+  wrapInIife(join(out, 'js-dos.js'))
   process.exit(0)
 }
 
@@ -121,6 +152,7 @@ if (!process.argv.includes('--no-ipx-patch')) {
 }
 
 wrapCssInLayer(join(out, 'js-dos.css'))
+wrapInIife(join(out, 'js-dos.js'))
 
 console.log(`✔ js-dos 已复制 ${count} 个文件（${(bytes / 1024 / 1024).toFixed(1)} MB）到 public/jsdos/`)
 if (!withDosboxX) console.log('  （未包含 DOSBox-X；需要跑 Windows 客体时加 --with-dosbox-x）')

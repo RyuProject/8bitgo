@@ -22,9 +22,11 @@
  *    要用联机必须自建 EmulatorJS 构建，见 docs 或 README。
  */
 import { platformMap } from '@/data/platforms'
+import { platformLabel } from '@/services/i18nData'
 import type { Capability, CaptureSources, LoadPhase, LoadProgress, MountOptions, Runtime, RuntimeHandle } from '../types'
 import { fetchWithProgress, throttleProgress } from '../loadProgress'
 import { romCacheGet, romCacheKey, romCachePut } from '../romCache'
+import { focusFrame, frameGamepads } from '../frameFocus'
 import { getT, fmt } from '@/services/i18n'
 import { getLang } from '@/services/lang'
 import type { Lang } from '@/config/languages'
@@ -188,7 +190,12 @@ export interface NetplaySession {
   onIdentity?: (playerId: string) => void
   /** 房间人数变化 */
   onPlayers?: (count: number) => void
-  /** 房主离开（这局结束了） */
+  /**
+   * 信令断了、引擎已经自己退了房（EmulatorJS 的 socket 一 disconnect 就 leaveRoom）。
+   * 访客收到它多半是自己网络抖了一下 —— 房间很可能还在，可以重新加入；
+   * 房主收到它则是房间没了（服务器那边已经开始换房主），游戏本身还在跑。
+   * 到底是哪种，调用方自己查一下房间状态再决定。
+   */
   onHostLeft?: () => void
   /** 服务端下发的房间令牌：上传存档、接手房主都要用它证明身份 */
   onToken?: (token: string) => void
@@ -256,6 +263,18 @@ const FRAME_HTML = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   html, body { margin: 0; height: 100%; background: #0b0b0f; overflow: hidden; }
+  /*
+    长按虚拟手柄会选中字符：iOS 把「按住不动」当成开始选字，安卓会弹出选区手柄。
+    引擎自己的样式只给按钮设了 user-select:none，选区却是从 body 上起的，
+    而且没关 -webkit-touch-callout（iOS 长按弹出的那条菜单）。这里在根上一起关掉；
+    引擎的聊天输入框自己带 user-select:text!important，不受影响。
+  */
+  html, body {
+    -webkit-user-select: none; user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .ejs_virtualGamepad_parent, .ejs_virtualGamepad_parent * { touch-action: none; -webkit-touch-callout: none; }
   #game { width: 100%; height: 100%; }
 </style>
 </head>
@@ -319,6 +338,8 @@ interface EjsEmulator {
   hasTouchScreen?: boolean
   /** 显示 / 隐藏虚拟手柄。是实例上的闭包，setVirtualGamepad() 里装的 */
   toggleVirtualGamepad?: (show: boolean) => void
+  /** 虚拟手柄那个容器。要它是为了**确认按键真的画出来了**，见 showVirtualGamepad */
+  virtualGamepad?: HTMLElement
   /** 读一项设置的当前值（玩家自己关掉虚拟手柄时是 'disabled'） */
   getSettingValue?: (key: string) => string | undefined
 }
@@ -912,6 +933,37 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   }
   /** 服务端下发的房间令牌，上传存档要用 */
   let stateToken = ''
+  /**
+   * 把 room-token 的监听挂到 socket **诞生的那一刻**。
+   *
+   * 服务端是在 open-room / join-room 的 ack 之后紧接着发 room-token 的，前后差几毫秒；
+   * 而下面那个一秒一次的轮询要等看到 n.socket 才挂监听 —— 十有八九已经错过了。
+   * 错过的后果：上传存档没有令牌可用，房主的进度托管整个不工作。
+   * 所以在 EmulatorJS 调 io() 建 socket 的瞬间就把监听挂上：把 iframe 里的 io 包一层 Proxy，
+   * 函数上挂着的那些属性（io.connect、io.Manager…）Proxy 会原样透出去。
+   */
+  const hookRoomToken = (win: Window & Record<string, unknown>) => {
+    const realIo = win.io
+    if (typeof realIo !== 'function' || (realIo as { __8bit?: boolean }).__8bit) return
+    const proxy = new Proxy(realIo as (...a: unknown[]) => unknown, {
+      apply(target, thisArg, args) {
+        const sock = Reflect.apply(target, thisArg, args) as { on?: (ev: string, cb: (d: unknown) => void) => void } | undefined
+        try {
+          sock?.on?.('room-token', (d: unknown) => {
+            const token = (d as { token?: string } | null)?.token
+            if (!token) return
+            stateToken = token
+            netplay?.onToken?.(token)
+          })
+        } catch {
+          /* 不是 socket.io 的 socket？那就算了，轮询那边还有一次兜底 */
+        }
+        return sock
+      },
+    })
+    ;(proxy as unknown as { __8bit: boolean }).__8bit = true
+    win.io = proxy
+  }
   /** 关页面前补传存档用 */
   let flushState: (() => void) | null = null
   /** 引擎日志探针。街机 ROM 排查全靠它 —— 详见 installErrorTap */
@@ -961,6 +1013,9 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     // netplay 是可变的（中途开房会后补），闭包里收窄不了 —— 先钉在局部常量上
     const cfg = netplay
     if (destroyed || !cfg) return
+    // 上一个房间的令牌对新房间没用，别让它冒充「已经拿到令牌」
+    stateToken = ''
+    stateUploadWarned = false
     const emu = win.EJS_emulator as EjsEmulator | undefined
     const np = emu?.netplay
     if (!np) {
@@ -1050,12 +1105,22 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         reportedId = n.playerID
         cfg.onIdentity?.(n.playerID)
       }
-      // 信令断开。注意：这既可能是「房主走了」，也可能是**我自己**掉线了。
-      // 以前一律当成房主走了报错，用户自己网络抖一下就被踢出房间。
-      // 房主自己不可能「房主走了」，所以房主这边只当作网络问题，交给 socket.io 自己重连。
+      // 信令断开。EmulatorJS 的 socket 一 disconnect 就自己 leaveRoom 了 —— 不管是谁的网抖，
+      // 这个 netplay 实例都已经退了房，不会自己重连回去。所以两边都得告诉播放器：
+      //   访客：多半是自己网络抖了，房间大概还在，让播放器查一下再决定重进还是报错
+      //   房主：房间在服务器那边已经进入换房主流程，游戏本身还在跑；进度托管得停，
+      //         否则接下来每 10 秒一次 403（以前这里 return 掉，界面一直挂着一个不存在的房间）
       if (reportedRoom && !n.socket?.connected) {
-        if (n.owner) return
         window.clearInterval(playersTimer)
+        window.clearInterval(stateTimer)
+        stateTimer = 0
+        if (flushState) {
+          window.removeEventListener('pagehide', flushState)
+          flushState = null
+        }
+        // 会话作废：不清的话 openNetplay() 会一直以为「已经在房间里」，房主断线后
+        // 再点「联机匹配」永远是「现在开不了房」，只能刷新页面
+        if (netplay === cfg) netplay = undefined
         cfg.onHostLeft?.()
       }
     }, 1000)
@@ -1092,10 +1157,16 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       const emu = win.EJS_emulator as EjsEmulator | undefined
       const np = emu?.netplay
       if (!np?.owner || !emu?.gameManager) return
-      // 有房间令牌就用令牌（服务端加固后的方式），没有就退回 netplay 内部的
-      // playerID —— 兼容还没升级信令服务器的部署
-      const auth = stateToken || np.playerID || ''
-      if (!auth) return
+      // 只用房间令牌。以前没令牌就退回 playerID，可服务端那条路是谁都能伪造的，已经关掉；
+      // 令牌现在在 socket 诞生时就挂了监听（hookRoomToken），拿不到才是异常
+      const auth = stateToken
+      if (!auth) {
+        if (!stateUploadWarned) {
+          stateUploadWarned = true
+          console.warn('[netplay] 没有房间令牌，房主进度托管未启动')
+        }
+        return
+      }
       let state: Uint8Array | undefined
       try {
         state = emu.gameManager.getState()
@@ -1148,6 +1219,20 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     if (emu.getSettingValue?.('virtual-gamepad') === 'disabled') return
     emu.touch = true
     emu.toggleVirtualGamepad?.(true)
+
+    /*
+      打开之后**确认它真的画出来了**，再声明 enginePad —— 开局提示靠这个能力决定
+      「屏幕上到底有没有能按的东西」，说错了比不说更糟：玩家会照着提示在画面上乱按。
+
+      光看 toggleVirtualGamepad 存在不算数。那个容器是 setVirtualGamepad() 按核心
+      的按键表填的，核心认不出来时会是个空 div；玩家在设置里关过、或者 CSS 没加载，
+      display 也可能还是 none。两样都验一遍才作数。
+    */
+    const pad = emu.virtualGamepad
+    if (!pad || pad.children.length === 0) return
+    if (win.getComputedStyle(pad).display === 'none') return
+    caps.add('enginePad')
+    options.onCaps?.(caps)
   }
 
   /**
@@ -1167,6 +1252,14 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     options.onStart?.()
     refineCaps()
     showVirtualGamepad(win)
+    /*
+      把焦点交给 iframe —— 手柄和键盘都指着它。
+
+      玩家点的「▶ 开始」在外层页面上，不主动交焦点的话 iframe 一直没有焦点：
+      引擎在里面读 navigator.getGamepads() 只能读到一串 null（手柄按下的那一刻
+      哪个文档有焦点才给哪个），键盘监听也收不到 keydown。见 frameFocus.ts。
+    */
+    focusFrame(iframe)
     // 电池存档的补刷：定时 + 转入后台。两者都只在开局之后才有意义
     saveFlushTimer = window.setInterval(flushSaveFiles, SAVE_FLUSH_MS)
     document.addEventListener('visibilitychange', onVisibility)
@@ -1309,6 +1402,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
             if (destroyed) return
             options.onError?.(fmt(rt.netplaySignalUnreachable, { url: socketIoScriptUrl() }))
           })
+          hookRoomToken(win)
 
           // ICE 配置向服务端要：那边按请求现算一份短期 TURN 凭证，
           // 凭证不进前端包，换 TURN 也不用重新构建（见 services/netplay.ts）
@@ -1394,6 +1488,8 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     // EmulatorJS 默认 0.6，工具栏滑块要跟它对上
     volume,
     engineLog: () => errorTap?.lines.slice() ?? [],
+    focus: () => focusFrame(iframe),
+    gamepads: () => frameGamepads(iframe),
     setPaused(next: boolean) {
       const emu = emuOf()
       try {
@@ -1478,6 +1574,8 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       netplay = undefined
       window.clearInterval(playersTimer)
       window.clearInterval(stateTimer)
+      // 归零，否则下次再点「联机匹配」时 startStateUpload 会以为定时器还在，进度托管不再启动
+      stateTimer = 0
       if (flushState) {
         window.removeEventListener('pagehide', flushState)
         flushState = null
@@ -1511,7 +1609,20 @@ export const emulatorJsRuntime: Runtime = {
   priority: 5,
   available: () => true,
   supports: (platform) => Boolean(platformMap[platform]?.core),
-  engineLabel: (platform) => platformMap[platform]?.core ?? '—',
+  /**
+   * 详情页「运行时」那一格的后半截。
+   *
+   * 这里**不能**直接把 platformMap[platform].core 摆出去 —— 那是 EmulatorJS 内部的
+   * 核心键（'arcade' / 'segaMD' / 'ws' 这种），既不是引擎名，也永远是英文小写，
+   * 在中文/日文站上就是一行看不懂的字母（用户报的就是「EmulatorJS · arcade」）。
+   *
+   * 改成按站点语言取平台名：中文「街机」、英文「Arcade」、日文「アーケード」，
+   * 用的是 t.platforms 里已有的那份，不需要新增词条。
+   * 取不到（新平台还没进 locales）就退回 data/platforms.ts 里的原名，再退回 id ——
+   * 无论如何不会出现空白或者 '—'。
+   */
+  engineLabel: (platform) =>
+    platformMap[platform]?.core ? platformLabel(getT(), platform, platformMap[platform]?.name ?? platform) : '—',
   mount,
 }
 

@@ -40,8 +40,13 @@ import { watchPresence, clientIpFrom, UNKNOWN_PRESENCE } from './presence.js'
  *
  * ── 主播掉线 ──────────────────────────────────────────────
  * 以前是「主播 socket 一断房间立刻散」。结果切个 WiFi、地铁过个隧道，观看链接就死了，
- * 而 WebRTC 画面本身其实还在点对点地流。现在断线后房间保留 RESUME_GRACE_MS，
- * 主播拿着开播时发的 token 发 resume-live 就能接回来 —— 观众不用换链接。
+ * 而 WebRTC 画面本身其实还在点对点地流。所以**有观众的时候**断线后房间保留
+ * RESUME_GRACE_MS，主播拿着开播时发的 token 发 resume-live 就能接回来 ——
+ * 观众不用换链接。
+ *
+ * 但**席位是空的时候不留**：宽限期保护的是观众手里那条链接，没有观众就没有要保护的东西，
+ * 留下的只是大厅里一张挂着「主播不在」的卡片 —— 玩家关掉页面之后它还要在那儿杵一分钟，
+ * 谁点进去都看不到画面。同理，主播不在期间最后一个观众也走了，房间立刻散。
  *
  * 允许**接管**：重连的新 socket 到达时，旧 socket 往往还没到 ping 超时、在服务器眼里
  * 仍然「在线」。token 对得上就把房间交给新 socket，旧的那份 membership 直接作废。
@@ -155,13 +160,30 @@ function leave(nsp, socket) {
   if (info.role === 'host') {
     // 已经被另一个 socket 接管（旧连接迟到的 disconnect）：什么都不用做
     if (room.hostSocketId !== socket.id) return
-    // 画面来自主播的浏览器，没人能接手 —— 但它自己很可能马上就回来，先等等
+    /**
+     * 没人在看 -> 直接散场，不走宽限期。
+     *
+     * 宽限期保护的是**观众手里的那条链接**：画面走 WebRTC 点对点，主播的信令抖一下
+     * 观众其实还在看，这时候散场纯属自伤。但一个人在玩、席位空着的时候这条理由不存在 ——
+     * 玩家一关页面，大厅里就多一张「主播不在」的卡片杵满一分钟，点进去什么也没有。
+     */
+    if (room.viewers.size === 0) {
+      closeRoom(nsp, room, 'host-left')
+      return
+    }
+    // 有人在看：画面来自主播的浏览器，没人能接手 —— 但它自己很可能马上就回来，先等等
     hostAway(nsp, room)
     return
   }
   room.viewers.delete(socket.id)
   // 告诉主播可以把这条 PeerConnection 拆了，别留着占上行
-  if (room.hostSocketId) nsp.to(room.hostSocketId).emit('viewer-left', { viewerId: socket.id })
+  if (room.hostSocketId) {
+    nsp.to(room.hostSocketId).emit('viewer-left', { viewerId: socket.id })
+  } else if (room.viewers.size === 0) {
+    // 主播不在、最后一个观众也走了：这房间已经没有任何人需要它，别再占着宽限期
+    closeRoom(nsp, room, 'host-left')
+    return
+  }
   notifyViewers(nsp, room)
 }
 

@@ -26,11 +26,13 @@ import { FEATURES } from '@/config/features'
 import { mobileScreenAspect } from './screenAspect'
 import { recordPlay } from '@/services/store'
 import {
+  claimRoom,
   downloadState,
   fetchNetplayRoom,
   gameIdFor,
   inviteLink,
   migrateRoom,
+  netplayEnabled,
   playerName,
   refreshNetplayRooms,
   setRoomRole,
@@ -262,7 +264,28 @@ export function EmulatorPlayer({
   const channel: Channel = p2pOk ? 'p2p' : 'cloud'
 
   const [ignoreInvite, setIgnoreInvite] = useState(false)
-  const inviteId = ignoreInvite ? undefined : invite
+  /**
+   * 邀请链接里的房间 id 顺着别名解析成当前真正的 id。
+   *
+   * 换过房主的房间在列表里是新 id，而链接里带的是旧 id —— 以前直接拿旧 id 去列表里找，
+   * 找不到就判成「房间已关闭」把按钮禁掉。服务器辛辛苦苦做的别名（老链接继续有效）
+   * 在前端这一步被整个废掉了。单房间接口会顺着别名走并给出 migratedTo，先问它一次。
+   */
+  const [resolvedInvite, setResolvedInvite] = useState<string | undefined>(undefined)
+  useEffect(() => {
+    setResolvedInvite(undefined)
+    if (!invite || ignoreInvite || !netplayEnabled()) return
+    let stop = false
+    void fetchNetplayRoom(invite).then((room) => {
+      if (!stop) setResolvedInvite(room?.migratedTo || room?.roomId || invite)
+    })
+    return () => {
+      stop = true
+    }
+  }, [invite, ignoreInvite])
+  /** 还在解析别名：这段时间别急着说「房间已关闭」 */
+  const inviteResolving = Boolean(invite) && !ignoreInvite && netplayEnabled() && resolvedInvite === undefined
+  const inviteId = ignoreInvite ? undefined : (resolvedInvite ?? invite)
   const cloudInviteId = ignoreInvite ? undefined : cloudInvite
   const joining = Boolean(inviteId) || Boolean(cloudInviteId)
 
@@ -292,6 +315,12 @@ export function EmulatorPlayer({
   const myIdRef = useRef<string>('')
   /** 正在接手的旧房间 id：新房间开好后要调 /migrate 把两者接上 */
   const migrateFromRef = useRef<string>('')
+  /** 认领令牌（/claim 发的）：/migrate 靠它证明「我是被选中的那个人」 */
+  const claimTokenRef = useRef<string>('')
+  /** 新房间号先到还是新令牌先到说不准，两样都齐了才能 /migrate —— 记下已开好的新房间号 */
+  const migrateToRef = useRef<string>('')
+  /** 访客网络抖一下自动重进一次；连续失败就别循环了 */
+  const rejoinedRef = useRef(false)
   /** 服务端下发的房间令牌：取存档、接手房主、切身份都要用它证明自己是房间成员 */
   const roomTokenRef = useRef<string>('')
   /** 我在房间里的身份。观众只收画面和声音，按键不生效 */
@@ -306,7 +335,9 @@ export function EmulatorPlayer({
   // P2P：从房间列表里找要加入的那个房间（判断满没满、还在不在）
   const p2pRooms = useNetplayRooms()
   const inviteRoom = inviteId ? p2pRooms.find((r) => r.roomId === inviteId) : undefined
-  const inviteGone = Boolean(inviteId) && status === 'idle' && p2pRooms.length > 0 && !inviteRoom
+  const inviteGone = Boolean(inviteId) && status === 'idle' && !inviteResolving && p2pRooms.length > 0 && !inviteRoom
+  /** 房主掉线、正在换人：这时进去会被拒（room is changing host），先别让人点 */
+  const inviteChanging = Boolean(inviteRoom?.awaitingHost)
   const inviteFull = Boolean(inviteRoom && inviteRoom.players >= inviteRoom.max)
   /**
    * 手柄位满了还有没有观众席。
@@ -681,10 +712,19 @@ export function EmulatorPlayer({
         startP2p(room.migratedTo)
         return
       }
-      if (room.awaitingHost && room.nextHostUserId && room.nextHostUserId === myIdRef.current) {
+      if (room.awaitingHost && room.nextHostUserId && room.nextHostUserId === myIdRef.current && !claimTokenRef.current) {
         stopped = true
         setNotice(t.player.takingOver)
-        const state = room.hasState ? await downloadState(roomId, roomTokenRef.current) : null
+        // 先认领再重挂引擎：重挂会断掉旧连接，不先认领的话服务器看到唯一的访客断了
+        // 就把房间散掉（老邀请链接跟着死）；多人房则 8 秒后轮给下一位，两个人抢着接
+        const claim = await claimRoom(roomId, roomTokenRef.current)
+        if (!claim) {
+          // 认领没成（被别人抢先、房间已经没了）：交回给推送流程，看房间接下来变成什么样
+          stopped = false
+          return
+        }
+        claimTokenRef.current = claim ?? ''
+        const state = room.hasState ? await downloadState(roomId, claim || roomTokenRef.current) : null
         startP2p(undefined, { from: roomId, state })
       }
     }
@@ -735,6 +775,27 @@ export function EmulatorPlayer({
     setIsHost(!join)
     roleSwitchRef.current = null
     migrateFromRef.current = takeOver?.from ?? ''
+    migrateToRef.current = ''
+    if (!takeOver) claimTokenRef.current = ''
+    // 上个房间的令牌对新房间没用；清掉，免得 /migrate 拿着旧令牌去证明新房间是我开的
+    roomTokenRef.current = ''
+    /**
+     * 接手的最后一步：新房间号（轮询到 extra.sessionid）和新房间的令牌（room-token 事件）
+     * 谁先到说不准 —— 房间号往往在服务器 ack 之前就能看到。两样齐了才发 /migrate。
+     */
+    const tryMigrate = () => {
+      const from = migrateFromRef.current
+      const to = migrateToRef.current
+      const claim = claimTokenRef.current
+      const tk = roomTokenRef.current
+      if (!from || !to || !claim || !tk || from === to) return
+      migrateFromRef.current = ''
+      claimTokenRef.current = ''
+      void migrateRoom(from, to, claim, tk).then((okDone) => {
+        if (okDone) setNotice(t.player.tookOver)
+        refreshNetplayRooms()
+      })
+    }
     begin(romUrl, platform.id, emulatorJsRuntime, {
       netplay: {
         gameId: gameIdFor(gameSlug),
@@ -747,27 +808,50 @@ export function EmulatorPlayer({
         roomId: join,
         initialState: takeOver?.state ?? undefined,
         onIdentity: (id) => (myIdRef.current = id),
-        onToken: (tk) => (roomTokenRef.current = tk),
+        onToken: (tk) => {
+          roomTokenRef.current = tk
+          tryMigrate()
+        },
         onRoom: (id, host) => {
           setRoomId(id)
           setIsHost(host)
+          rejoinedRef.current = false
           // 接手房主之后自然就不是观众了
           if (host) setRole('player')
           // 接手成功：把新房间和旧房间接上，老邀请链接才能继续用
-          const from = migrateFromRef.current
-          if (host && from && from !== id) {
-            migrateFromRef.current = ''
-            void migrateRoom(from, id, myIdRef.current).then((okDone) => {
-              if (okDone) setNotice(t.player.tookOver)
-            })
+          if (host && migrateFromRef.current) {
+            migrateToRef.current = id
+            tryMigrate()
           }
           refreshNetplayRooms()
         },
         onPlayers: (n) => setPlayers(n),
         onHostLeft: () => {
-          setSession(null)
-          setStatus('error')
-          setError(t.player.hostLeft)
+          /**
+           * 信令断了，引擎已经自己退了房。分三种情况：
+           *   我是房主   → 服务器那边开始换房主，游戏在我这儿还在跑。不报错，只提示一句
+           *   房间还在   → 多半是我自己的网抖了一下，自动重进一次（EmulatorJS 不会自己重连）
+           *   房间没了 / 正在换房主 / 已经重进过 → 这局对我来说结束了
+           */
+          // join 为空 = 这是接手后开的房，我是房主（别读 isHost：闭包里的是过期值）
+          if (!join) {
+            setNotice(t.player.hostLinkLost)
+            setRoomId(null)
+            return
+          }
+          const wanted = join ?? ''
+          void fetchNetplayRoom(wanted).then((room) => {
+            const alive = room && !room.awaitingHost && !room.migratedTo
+            if (alive && !rejoinedRef.current) {
+              rejoinedRef.current = true
+              setNotice(t.player.rejoining)
+              startP2p(wanted, undefined, asRole)
+              return
+            }
+            setSession(null)
+            setStatus('error')
+            setError(t.player.hostLeft)
+          })
         },
       },
     })
@@ -807,9 +891,13 @@ export function EmulatorPlayer({
       },
       onPlayers: (n) => setPlayers(n),
       onHostLeft: () => {
-        // 自己就是房主，这条正常不会来；真来了就当房间没了，游戏继续自己玩
+        // 信令断了、引擎已经退房。房间在服务器那边开始换房主，游戏在这儿继续自己玩；
+        // 界面得跟上，不能挂着一个已经不存在的房间
         setHosting(false)
         setRoomId(null)
+        setPlayers(1)
+        setNotice(t.player.matchLost)
+        refreshNetplayRooms()
       },
     })
     if (!ok) {
@@ -1103,7 +1191,7 @@ export function EmulatorPlayer({
   const ratio = loadRatio ?? 0
   // 服务端的 players 不含观众，比本地 onPlayers 更准；拿不到时退回本地计数
   const roomPlayers = session?.cloud ? (myCloudRoom?.players ?? 1) : (myNetRoom?.players ?? players)
-  const joinBlocked = online && ((inviteFull && !canWatch) || inviteGone || cloudJoinPending)
+  const joinBlocked = online && ((inviteFull && !canWatch) || inviteGone || inviteChanging || inviteResolving || cloudJoinPending)
 
   /**
    * 上场 / 退到观众席。
@@ -1134,6 +1222,21 @@ export function EmulatorPlayer({
   const showPad = status === 'running' && touchDevice && caps.has('touchpad')
   /** 手机竖屏且不在全屏里 —— 这时手柄放画面下面，别压着画面 */
   const padInline = narrow && !fullscreen
+  /**
+   * 屏幕上到底有没有能按的东西。开局提示只在这个为真时才该出现。
+   *
+   * 两种都算数：我们自己画的那套（touchpad），以及 EmulatorJS 自带、并且适配器
+   * **确认真的画出来了**的那套（enginePad，见 adapters/emulatorjs.ts 的
+   * showVirtualGamepad）。两个都没有的引擎（Flash / html5）在手机上是真没有按键 ——
+   * 那种情况下说一句「手柄在下面」只会让玩家白找一圈，宁可不说。
+   */
+  const hasOnscreenPad = status === 'running' && touchDevice && (caps.has('touchpad') || caps.has('enginePad'))
+  /**
+   * 手柄画在画面**下面**还是**画面上**。
+   * 只有我们那套的 inline 摆法在下面；浮层和 EmulatorJS 自带的都压在画面里。
+   * 提示气泡要靠它决定贴上边还是贴下边 —— 贴错的话，气泡正好盖住要指的那排按键。
+   */
+  const padBelow = showPad && padInline
 
   /**
    * 开局提示：告诉玩家「怎么玩、手柄在哪儿」。
@@ -1159,7 +1262,7 @@ export function EmulatorPlayer({
     }
   }, [])
   useEffect(() => {
-    if (!showPad) return
+    if (!hasOnscreenPad) return
     let seen = false
     try {
       seen = localStorage.getItem(PAD_HINT_KEY) === '1'
@@ -1173,7 +1276,31 @@ export function EmulatorPlayer({
       window.clearTimeout(padHintTimer.current)
       setPadHint(false)
     }
-  }, [showPad])
+  }, [hasOnscreenPad])
+
+  /**
+   * 把键盘 / 手柄的焦点交给运行时。
+   *
+   * 玩家点的「▶ 开始」在外层页面上，而 EmulatorJS / Flash / html5 / J2ME / webretro
+   * 都跑在 iframe 里 —— 不主动交焦点的话，引擎在里面既收不到 keydown，也读不到手柄
+   * （手柄只对「按下那一刻有焦点的文档」可见）。玩家的说法是「插了手柄没反应」
+   * 「不先点一下画面键盘是死的」。原理和实测见 frameFocus.ts。
+   *
+   * 三个时机：
+   *  · 刚跑起来 —— 排在 rAF 里，等自动沉浸那次重排落定，别和它抢
+   *  · 进出全屏 —— 玩家是点我们的按钮进去的，焦点跟着落在按钮上，得还回去
+   *  · 手柄接上 —— gamepadconnected 打在**外层**恰恰说明焦点在外层，正是该还回去的时候
+   */
+  useEffect(() => {
+    if (status !== 'running' || !handle?.focus) return
+    const give = () => handle.focus?.()
+    const raf = requestAnimationFrame(give)
+    window.addEventListener('gamepadconnected', give)
+    return () => {
+      cancelAnimationFrame(raf)
+      window.removeEventListener('gamepadconnected', give)
+    }
+  }, [status, handle, fullscreen])
 
   const statusLabel =
     status === 'running'
@@ -1251,23 +1378,35 @@ export function EmulatorPlayer({
             手机竖屏时不走这里，改成画面下面单独一条（见下面 padInline 那块）：
             画面框只有 291pt 高，浮层的十字键要压掉四成。
           */}
-          {showPad && !padInline && <TouchPad handle={handle} onInput={dismissPadHint} />}
+          {showPad && !padInline && <TouchPad handle={handle} onInput={dismissPadHint} highlight={padHint} />}
 
           {/*
-            开局提示气泡。压在画面底部而不是画在手柄那一条上 —— 玩家的视线在画面里，
-            提示得出现在他正在看的地方，然后用一个 👇 把他引到下面去。
+            开局提示气泡。玩家的视线在画面里，所以提示画在画面里，然后把他引到按键那儿去。
+
+            贴哪一边由 padBelow 决定，这一格不能搞错：
+              手柄在画面**下面**（我们那套 inline）→ 贴画面下沿，紧挨着它，箭头往下指
+              手柄压在画面**上**（我们的浮层 / EmulatorJS 自带的那套）→ 必须贴**上**沿，
+              贴下沿的话气泡正好盖住要指的那排按键 —— 教人按键的东西把按键挡了。
+            两种情况都用 👇：手柄要么在下面，要么在画面靠下的位置，方向是一致的。
           */}
-          {showPad && padHint && (
-            <div className="absolute inset-x-0 bottom-0 z-30 flex justify-center px-2 pb-2">
-              <div className="flex items-start gap-2 rounded-xl border border-white/20 bg-black/80 px-3 py-2 text-left text-[11px] leading-snug text-white/90 shadow-lg backdrop-blur">
+          {hasOnscreenPad && padHint && (
+            <div
+              className={cx(
+                'pointer-events-none absolute inset-x-0 z-30 flex justify-center px-2',
+                padBelow ? 'bottom-0 pb-2' : 'top-0 pt-2',
+              )}
+            >
+              <div className="pointer-events-auto flex items-start gap-2 rounded-xl border border-white/20 bg-black/80 px-3 py-2 text-left text-[11px] leading-snug text-white/90 shadow-lg backdrop-blur">
                 <span aria-hidden className="text-base leading-none">
                   🎮
                 </span>
                 <span>
                   <span className="block font-semibold text-white">
-                    {padInline ? t.player.padHintBelow : t.player.padHintOverlay}
+                    {padBelow ? t.player.padHintBelow : t.player.padHintOverlay}
                   </span>
-                  {t.player.padHintKeys}
+                  {/* DOS 的键位和主机完全不是一回事（A=Ctrl 开火、B=Alt、START=回车），
+                      按主机那套说会把玩家教错 */}
+                  {activeRuntime?.id === 'jsdos' ? t.player.padHintKeysDos : t.player.padHintKeys}
                 </span>
                 <button
                   type="button"
@@ -1317,7 +1456,9 @@ export function EmulatorPlayer({
                       <>
                         {inviteGone
                           ? t.player.roomGone
-                          : willWatch
+                          : inviteChanging
+                            ? t.player.hostChanged
+                            : willWatch
                             ? inviteFull
                               ? t.player.watchHint
                               : t.player.watchHintPick
@@ -1482,7 +1623,7 @@ export function EmulatorPlayer({
           触屏手柄（行内那一路）。手机竖屏专用：排在画面框和工具栏之间，谁也不压谁。
           整条的边框、底色和收起状态都在 TouchPad 里，收起来只剩一颗 🎮 的高度。
         */}
-        {showPad && padInline && <TouchPad handle={handle} layout="inline" onInput={dismissPadHint} />}
+        {showPad && padInline && <TouchPad handle={handle} layout="inline" onInput={dismissPadHint} highlight={padHint} />}
 
         {/* 工具栏放进播放器框体底部，而不是作为详情页里的下一块内容 */}
         <div
@@ -1505,7 +1646,7 @@ export function EmulatorPlayer({
               : status === 'loading'
                 ? 'bg-brand-soft text-brand-hover'
                 : status === 'error'
-                  ? 'bg-live/15 text-red-300'
+                  ? 'bg-live/15 text-live'
                   : 'bg-white/5 text-muted',
           )}
         >
@@ -1526,7 +1667,7 @@ export function EmulatorPlayer({
               </span>
             )}
             {session?.netplay && role === 'spectator' && (
-              <span className="inline-flex items-center gap-1 rounded-md bg-live/15 px-2 py-1 font-semibold text-red-300">
+              <span className="inline-flex items-center gap-1 rounded-md bg-live/15 px-2 py-1 font-semibold text-live">
                 {t.player.spectatorTag}
               </span>
             )}
@@ -1545,7 +1686,7 @@ export function EmulatorPlayer({
               </button>
             )}
             {session?.cloud && status === 'running' && cloudState && cloudState !== 'playing' && (
-              <span className="text-red-300">{cloudStateLabel}</span>
+              <span className="text-live">{cloudStateLabel}</span>
             )}
           </>
         ) : file ? (
@@ -1579,7 +1720,7 @@ export function EmulatorPlayer({
 
         {/* 观众席：直播间的人数和状态 */}
         {session?.live && (
-          <span className="inline-flex items-center gap-1 rounded-md bg-live/15 px-2 py-1 font-semibold text-red-300">
+          <span className="inline-flex items-center gap-1 rounded-md bg-live/15 px-2 py-1 font-semibold text-live">
             📡 {fmt(t.player.tools.liveOn, { n: String(liveViewers) })}
             {/* 过渡态给人话，别把 'reconnecting' 这种英文状态名直接糊上去 */}
             {liveState === 'host-away' && <span className="font-normal text-muted">· {t.runtime.liveHostAway}</span>}

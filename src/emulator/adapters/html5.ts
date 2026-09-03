@@ -5,7 +5,8 @@
  * 也可能是单独部署的完整应用。这里负责把入口放进播放器 iframe，不搬运也不补齐
  * 游戏资源；脚本、WASM、音频等相对路径仍由游戏自己的部署目录提供。
  */
-import type { Capability, MountOptions, Runtime, RuntimeHandle } from '../types'
+import type { Capability, CaptureSources, MountOptions, Runtime, RuntimeHandle } from '../types'
+import { focusFrame, frameGamepads } from '../frameFocus'
 
 function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const caps = new Set<Capability>()
@@ -46,6 +47,8 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   iframe.addEventListener('load', () => {
     if (destroyed) return
     options.onReady?.()
+    // 焦点交给 iframe，否则里面的游戏收不到键盘和手柄（见 frameFocus.ts）
+    focusFrame(iframe)
   })
   iframe.addEventListener('error', () => {
     if (destroyed) return
@@ -64,8 +67,78 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     iframe.src = objectUrl
   }
 
+  /**
+   * 从 iframe 里把游戏画布找出来。
+   *
+   * 只找得到**同源**的：跨源时 contentDocument 直接是 null（读它还会抛），
+   * 这不是可以绕过去的限制。
+   *
+   * 取面积最大的那块 —— 不少游戏除了主画布还挂着几张 1×1 或者小尺寸的
+   * （预乘纹理、字体度量、离屏合成用的），按 DOM 顺序取第一个经常取到它们。
+   * 同源的子 iframe 也往下找一层：门户式的 HTML5 游戏常常是「壳套一层真正的游戏页」。
+   */
+  function findCanvas(doc: Document | null, depth = 0): HTMLCanvasElement | null {
+    if (!doc) return null
+    let best: HTMLCanvasElement | null = null
+    let bestArea = 0
+    for (const c of Array.from(doc.querySelectorAll<HTMLCanvasElement>('canvas'))) {
+      const area = c.width * c.height
+      if (area > bestArea) {
+        best = c
+        bestArea = area
+      }
+    }
+    if (best) return best
+    if (depth >= 2) return null
+    for (const nested of Array.from(doc.querySelectorAll('iframe'))) {
+      let inner: Document | null = null
+      try {
+        inner = nested.contentDocument
+      } catch {
+        continue // 跨源的子框架，跳过
+      }
+      const found = findCanvas(inner, depth + 1)
+      if (found) return found
+    }
+    return null
+  }
+
   return {
     caps,
+    /**
+     * 直播 / 录像的画面来源。
+     *
+     * HTML5 游戏跑在 iframe 里，能不能抓到画面完全取决于**同不同源**：
+     *
+     *   同源（游戏部署在自家域名下，或走 server/src/routes/play.js 那条整页路由）
+     *     → 能读到 iframe 的文档，把里面的 <canvas> 拿出来交给上层 captureStream，
+     *       和别的引擎走的是同一条路。
+     *   跨源（游戏是第三方独立部署的）
+     *     → 浏览器不让读 contentDocument。真要抓只剩 getDisplayMedia，
+     *       那需要玩家点一次并亲手选中标签页 —— 和「玩就是播」的静默前提冲突，
+     *       所以这里老实返回 null，上层重试几次拿不到就安静地不开播。
+     *
+     * **只给画面不给声音**：游戏的 AudioContext 是在 iframe 自己的 realm 里 new 出来的，
+     * 想接一根线出来必须赶在它的脚本跑起来**之前**把 AudioContext 构造函数换掉，
+     * 而我们拿到 contentWindow 的时候游戏早就在加载了。和 Ruffle 是同一个坑
+     * （见 adapters/ruffle.ts 里的长注释），先按静音处理。
+     *
+     * 纯 DOM/CSS 做的游戏（压根没有 canvas）同样抓不到 —— 这类占比很小，
+     * 不值得为它上 html2canvas 那种逐帧重绘的方案。
+     */
+    focus: () => focusFrame(iframe),
+    gamepads: () => frameGamepads(iframe),
+    captureSources(): CaptureSources | null {
+      if (destroyed) return null
+      let doc: Document | null = null
+      try {
+        doc = iframe.contentDocument
+      } catch {
+        return null // 跨源
+      }
+      const canvas = findCanvas(doc)
+      return canvas ? { canvas } : null
+    },
     destroy() {
       destroyed = true
       try {

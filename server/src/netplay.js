@@ -1,7 +1,7 @@
 import express from 'express'
 import { randomBytes } from 'node:crypto'
 import { Server } from 'socket.io'
-import { watchPresence, UNKNOWN_PRESENCE } from './presence.js'
+import { watchPresence, clientIpFrom, UNKNOWN_PRESENCE } from './presence.js'
 
 /**
  * P2P 联机信令服务器（EmulatorJS netplay）+ 房主迁移。
@@ -32,9 +32,12 @@ import { watchPresence, UNKNOWN_PRESENCE } from './presence.js'
  *   1. 房主每隔一段时间把压缩过的存档 POST 上来（只存最新一份，不向访客广播）
  *   2. 房主掉线时房间不立刻解散，而是进入「等待新房主」状态，保留 60 秒，
  *      并按加入顺序选出最早的那位访客当新房主
- *   3. 新房主加载存档、重新开房，然后调 /migrate 把新旧房间接上；
+ *   3. 被选中的人先调 /claim「认领」（凭自己的成员令牌）。认领之后轮询暂停，
+ *      而且**他的 socket 断了房间也不散** —— 接手要重新挂载引擎，旧连接必然会断，
+ *      不认领的话双人房在这一刻就被当成「没人了」解散掉，老邀请链接跟着死
+ *   4. 新房主加载存档、重新开房，然后凭认领令牌 + 新房间的成员令牌调 /migrate 把新旧接上；
  *      旧房间 id 变成别名，**原来的邀请链接继续有效**
- *   4. 60 秒内没人接手就真的解散
+ *   5. 60 秒内没人接手（或者认领了却没在窗口内接完）就真的解散
  *
  * 存档只在内存里，跟着房间一起消失。多实例部署时改成 Redis + 对象存储。
  */
@@ -55,6 +58,13 @@ const HOST_GRACE_MS = Number(process.env.NETPLAY_HOST_GRACE_MS || 30_000)
  * 或者干脆关了页面，房间就白白等死，哪怕屋里还有别人能接。现在轮着问，问到有人接为止。
  */
 const CLAIM_MS = Number(process.env.NETPLAY_CLAIM_MS || 8_000)
+/**
+ * 认领之后给新房主多长时间开好新房、调 /migrate。要下载存档、重新挂载引擎、加载核心和 ROM，
+ * 街机核心几十 MB，慢的网络半分钟都不一定够 —— 但也不能无限等，否则认领的人关了页面房间就永远挂着。
+ */
+const CLAIM_WINDOW_MS = Number(process.env.NETPLAY_CLAIM_WINDOW_MS || 60_000)
+/** 单个 IP 同时能开的房间数。MAX_ROOMS 只防内存，防不了一个人开一堆连接把整站占满 */
+const MAX_ROOMS_PER_IP = Number(process.env.NETPLAY_MAX_ROOMS_PER_IP || 4)
 /** 单份存档上限。NES 约 100KB，N64 / PS1 可能到几 MB */
 const MAX_STATE_BYTES = 12 * 1024 * 1024
 /** 同时存在的房间上限。信令是公开接口，不设上限的话开房就能把内存刷爆 */
@@ -68,6 +78,12 @@ const MSG_PER_SEC = 20
  * 或者发 { 'host-left': true } 直接把这局搞崩。这几个 key 只能由服务器发出。
  */
 const RESERVED_KEYS = new Set(['host-migrating', 'host-migrated', 'host-left'])
+/**
+ * 只有房主能发的控制消息。EmulatorJS 的 dataMessage 收到 {restart:true} 就直接
+ * gameManager.restart()，收到 {pause:true} 就暂停 —— 而 data-message 是房间内广播，
+ * 以前任何一个访客甚至观众发一条 {restart:true}，房主那局就被重开了。
+ */
+const HOST_ONLY_KEYS = new Set(['pause', 'play', 'restart'])
 
 /** roomId(sessionid) -> room */
 const rooms = new Map()
@@ -173,6 +189,8 @@ function detailedRoom(room) {
     // 房主迁移相关：客户端靠这几个字段决定「我要不要接手」「该去哪个新房间」
     awaitingHost: Boolean(room.awaitingHost),
     nextHostUserId: room.nextHostUserId ?? null,
+    /** 被选中的人已经认领、正在重开房间（这段时间房间可能一个成员都没有，但不能散） */
+    claimed: Boolean(room.claim),
     hasState: Boolean(room.state),
     migratedTo: null,
   }
@@ -240,6 +258,8 @@ function memberByToken(room, token) {
 
 function destroyRoom(room) {
   if (room.graceTimer) clearTimeout(room.graceTimer)
+  if (room.claimTimer) clearTimeout(room.claimTimer)
+  room.claim = null
   for (const [, u] of room.users) socketRoom.delete(u.socketId)
   rooms.delete(room.id)
   room.state = null
@@ -260,6 +280,7 @@ function beginHostMigration(nsp, room) {
   room.awaitingHost = true
   room.ownerSocketId = null
   room.migrationStartedAt = Date.now()
+  room.claim = null
 
   // 候选名单：优先玩家，观众排在最后 —— 观众是主动选择「只看」的，让他接手不合适，
   // 但实在只剩观众了还是要问（总比这局直接散掉强）。同类里按加入顺序（Map 保留插入顺序）。
@@ -281,6 +302,8 @@ function beginHostMigration(nsp, room) {
    */
   const offerNext = () => {
     if (rooms.get(room.id) !== room || !room.awaitingHost) return
+    // 已经有人认领了：轮询暂停，等他接完（或者认领窗口过期后由 claimTimer 再来叫醒）
+    if (room.claim) return
 
     // 中途离开房间的人要从名单里剔掉
     while (room.candidates.length && !room.users.has(room.candidates[0])) room.candidates.shift()
@@ -321,6 +344,7 @@ function beginHostMigration(nsp, room) {
     room.graceTimer.unref?.()
   }
 
+  room.offerNext = offerNext
   offerNext()
 }
 
@@ -338,6 +362,12 @@ function removeSocket(socket, nsp) {
   socket.leave(roomId)
 
   if (room.users.size === 0) {
+    // 认领人重新挂载引擎时旧连接必断，屋里可能一时一个人都没有 —— 这时不能散，
+    // 他马上就要带着新房间来 /migrate。窗口到了没来，claimTimer 会收拾
+    if (room.awaitingHost && room.claim) {
+      notifyRooms()
+      return
+    }
     destroyRoom(room)
     return
   }
@@ -347,6 +377,26 @@ function removeSocket(socket, nsp) {
   }
   nsp.to(roomId).emit('users-updated', usersPayload(room))
   notifyRooms()
+}
+
+/** 这个连接的真实 IP（经反代时取 XFF 最后一段，见 presence.js） */
+function socketIp(socket) {
+  try {
+    return clientIpFrom(socket?.handshake?.address, socket?.handshake?.headers || {})
+  } catch {
+    return ''
+  }
+}
+
+/** 发送者在手柄位里的下标：和 usersPayload 的顺序一致（玩家在前、按加入顺序），观众是 -1 */
+function playerIndexOf(room, socketId) {
+  let i = 0
+  for (const [, u] of room.users) {
+    if (u.role === 'spectator') continue
+    if (u.socketId === socketId) return i
+    i++
+  }
+  return -1
 }
 
 /**
@@ -388,10 +438,17 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
       const roomId = str(extra.sessionid, 64)
       const userid = str(extra.userid, 64)
       if (!roomId || !userid) return ack?.('bad request')
-      if (rooms.has(roomId)) return ack?.('room already exists')
+      // 别名也算占用：getRoom 先顺着别名解析，撞上别名的新房间谁也进不去
+      if (rooms.has(roomId) || aliases.has(roomId)) return ack?.('room already exists')
       // 一个连接同时只能待在一个房间里，也就只能开一个房，否则一个脚本就能刷满
       if (socketRoom.has(socket.id)) return ack?.('already in a room')
       if (rooms.size >= MAX_ROOMS) return ack?.('server is full')
+      const ip = socketIp(socket)
+      if (ip && MAX_ROOMS_PER_IP > 0) {
+        let mine = 0
+        for (const r of rooms.values()) if (r.hostIp === ip) mine++
+        if (mine >= MAX_ROOMS_PER_IP) return ack?.('too many rooms')
+      }
 
       const room = {
         id: roomId,
@@ -402,6 +459,7 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
         password: str(payload?.password, 60),
         ownerUserId: userid,
         ownerSocketId: socket.id,
+        hostIp: ip,
         createdAt: Date.now(),
         users: new Map(),
         state: null,
@@ -413,6 +471,9 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
         candidates: [],
         /** 这一轮换房主开始的时间，用来卡总的宽限时长 */
         migrationStartedAt: 0,
+        /** 被选中的人认领之后的凭证：{ userid, token, expiresAt }。见文件头「房主迁移」 */
+        claim: null,
+        claimTimer: null,
       }
       // presence 写在 ...extra 后面：extra 整个是客户端给的，它自己塞一个
       // presence 进来就等于自选国旗，必须由服务端的这一份覆盖掉
@@ -467,6 +528,10 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
       if (!target) return
       const roomId = socketRoom.get(socket.id)
       if (!roomId || socketRoom.get(target) !== roomId) return // 不允许跨房间发信令
+      // 星型拓扑：访客只和房主握手。访客之间互发 offer 没有任何正当用途，
+      // 只会在对方那边凭空多出一条 PeerConnection
+      const room = rooms.get(roomId)
+      if (room && socket.id !== room.ownerSocketId && target !== room.ownerSocketId) return
       nsp.to(target).emit('webrtc-signal', { ...data, sender: socket.id })
     })
 
@@ -484,14 +549,26 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
       }
       if (++msgCount > MSG_PER_SEC) return
 
-      // 服务端保留的控制 key 一律摘掉，见 RESERVED_KEYS 的说明
       if (d && typeof d === 'object' && !Array.isArray(d)) {
+        const room = rooms.get(roomId)
+        const isHost = Boolean(room) && socket.id === room.ownerSocketId
         let dirty = false
         for (const k of Object.keys(d)) {
-          if (RESERVED_KEYS.has(k)) {
+          // 服务端保留的控制 key 一律摘掉，见 RESERVED_KEYS 的说明
+          if (RESERVED_KEYS.has(k) || (!isHost && HOST_ONLY_KEYS.has(k))) {
             delete d[k]
             dirty = true
           }
+        }
+        // 按键同步：观众一个键都不许发；玩家只能发自己手柄位的键。
+        // connected_input[0] 是手柄号，房主那边照单全收塞进模拟器 —— 不拦的话
+        // 任何访客都能替 1P 按键，观众也能操作游戏（客户端那层「掐断输入」只是自律）
+        if (room && !isHost && Array.isArray(d['sync-control'])) {
+          const idx = playerIndexOf(room, socket.id)
+          const kept = idx < 0 ? [] : d['sync-control'].filter((e) => Array.isArray(e?.connected_input) && e.connected_input[0] === idx)
+          if (kept.length !== d['sync-control'].length) dirty = true
+          if (kept.length) d['sync-control'] = kept
+          else delete d['sync-control']
         }
         if (dirty && Object.keys(d).length === 0) return
       }
@@ -577,11 +654,10 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
     (req, res) => {
       const room = getRoom(req.params.roomId)
       if (!room) return res.status(404).json({ error: 'room not found' })
-      // 优先认房间令牌；没带令牌时退回旧的 userid（兼容还没升级的前端）
-      const token = str(req.get('x-netplay-token'), 64)
-      const me = token ? memberByToken(room, token) : null
-      const user = me ? me.userid : str(req.get('x-netplay-user'), 64)
-      if (!user || user !== room.ownerUserId) return res.status(403).json({ error: 'not the host' })
+      // 只认房间令牌。以前没带令牌时退回 userid —— 而 userid 随 users-updated 广播给
+      // 屋里每个人，等于任何访客都能覆盖房主的存档。前端早就拿得到令牌了，不再放行
+      const me = memberByToken(room, str(req.get('x-netplay-token'), 64))
+      if (!me || me.userid !== room.ownerUserId) return res.status(403).json({ error: 'not the host' })
       if (!Buffer.isBuffer(req.body) || req.body.length === 0) return res.status(400).json({ error: 'empty state' })
       room.state = req.body
       room.stateAt = Date.now()
@@ -596,17 +672,15 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
     // 存档是别人游戏进度的完整快照，只有房间成员能取（老前端没带令牌时放行，
     // 升级完可以把下面这行的 `|| !token` 去掉，变成强制）
     const token = str(req.get('x-netplay-token'), 64) || str(req.query.t, 64)
-    if (token && !memberByToken(room, token)) return res.status(403).json({ error: 'not a member' })
+    // 认领令牌也行：认领人重新挂载引擎之后已经不是成员了，但存档正是这时候要
+    const claimed = Boolean(token) && room.claim?.token === token
+    if (token && !claimed && !memberByToken(room, token)) return res.status(403).json({ error: 'not a member' })
     res.set('Cache-Control', 'no-store')
     res.set('Content-Type', 'application/octet-stream')
     res.set('X-State-Age', String(Date.now() - room.stateAt))
     res.send(room.state)
   })
 
-  /**
-   * 接手：新房主已经用新的 roomId 开好房，这里把新旧接上。
-   * 旧 id 变成别名（老邀请链接继续有效），存档也一并转移过去。
-   */
   /**
    * 切换自己的角色。observer ↔ player。
    * 用成员令牌鉴权 —— 和上传存档同一套，别人改不了你的角色，你也改不了别人的。
@@ -635,16 +709,61 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
     res.json({ ok: true, role: want })
   })
 
+  /**
+   * 认领：被选中的人说「我来接」。
+   *
+   * 为什么要多这一步：接手必须重新挂载引擎，旧连接在那一刻必断。以前没有这步，
+   * 双人房里唯一的访客一断，房间就被当成「没人了」当场解散，/migrate 回 409，
+   * 老邀请链接跟着死；多人房里则是 8 秒后轮到下一位，两个人同时在接，开出两个房。
+   * 认领之后：轮询暂停、断线不散场、存档可以凭认领令牌下载，直到 /migrate 或窗口过期。
+   */
+  app.post('/api/netplay/rooms/:roomId/claim', express.json(), (req, res) => {
+    const room = getRoom(req.params.roomId)
+    if (!room) return res.status(404).json({ error: 'room not found' })
+    if (!room.awaitingHost) return res.status(409).json({ error: 'room is not awaiting a host' })
+    const me = memberByToken(room, str(req.get('x-netplay-token'), 64) || str(req.body?.token, 64))
+    if (!me) return res.status(403).json({ error: 'not a member' })
+    if (me.userid !== room.nextHostUserId) return res.status(403).json({ error: 'not the elected host' })
+    if (room.claim && room.claim.userid !== me.userid) return res.status(409).json({ error: 'already claimed' })
+
+    if (room.graceTimer) clearTimeout(room.graceTimer)
+    if (room.claimTimer) clearTimeout(room.claimTimer)
+    room.claim = { userid: me.userid, token: randomBytes(24).toString('base64url'), expiresAt: Date.now() + CLAIM_WINDOW_MS }
+    room.claimTimer = setTimeout(() => {
+      if (rooms.get(room.id) !== room || !room.claim) return
+      // 认领了却没接完：作废，屋里没人就散，还有人就接着往下问
+      room.claim = null
+      if (room.users.size === 0) return destroyRoom(room)
+      room.candidates = room.candidates.filter((id) => id !== me.userid)
+      if (!room.candidates.length) room.candidates = [...room.users.keys()].filter((id) => id !== me.userid)
+      room.offerNext?.()
+    }, CLAIM_WINDOW_MS)
+    room.claimTimer.unref?.()
+    notifyRooms()
+    res.json({ ok: true, roomId: room.id, claimToken: room.claim.token, expiresIn: CLAIM_WINDOW_MS })
+  })
+
+  /**
+   * 接手：新房主已经用新的 roomId 开好房，这里把新旧接上。
+   * 旧 id 变成别名（老邀请链接继续有效），存档也一并转移过去。
+   *
+   * 鉴权全靠令牌：认领令牌证明「我是被选中的那个人」，新房间的成员令牌证明「新房间是我开的」。
+   * 以前看的是 body 里的 userId —— 那是客户端自己填的、还随 users-updated 广播给全屋，
+   * 任何访客都能用被选中者的 userid 开个房，把整屋子人劫到自己那儿去。
+   */
   app.post('/api/netplay/rooms/:roomId/migrate', express.json(), (req, res) => {
     const oldRoom = rooms.get(resolveRoomId(req.params.roomId))
     const newRoomId = str(req.body?.newRoomId, 64)
-    const userId = str(req.body?.userId, 64)
+    const claimToken = str(req.get('x-netplay-token'), 64) || str(req.body?.claimToken, 64)
+    const newRoomToken = str(req.body?.newRoomToken, 64)
     const newRoom = rooms.get(newRoomId)
 
     if (!oldRoom || !oldRoom.awaitingHost) return res.status(409).json({ error: 'room is not awaiting a host' })
     if (!newRoom) return res.status(404).json({ error: 'new room not found' })
-    if (oldRoom.nextHostUserId !== userId) return res.status(403).json({ error: 'not the elected host' })
-    if (newRoom.ownerUserId !== userId) return res.status(403).json({ error: 'not the owner of the new room' })
+    if (newRoom === oldRoom) return res.status(400).json({ error: 'same room' })
+    if (!claimToken || !oldRoom.claim || oldRoom.claim.token !== claimToken) return res.status(403).json({ error: 'not the elected host' })
+    const owner = memberByToken(newRoom, newRoomToken)
+    if (!owner || owner.userid !== newRoom.ownerUserId) return res.status(403).json({ error: 'not the owner of the new room' })
 
     // 存档跟着走，方便下一次再迁移
     if (!newRoom.state && oldRoom.state) {
@@ -654,6 +773,8 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
     newRoom.createdAt = oldRoom.createdAt
 
     if (oldRoom.graceTimer) clearTimeout(oldRoom.graceTimer)
+    if (oldRoom.claimTimer) clearTimeout(oldRoom.claimTimer)
+    oldRoom.claim = null
     // 告诉还留在旧房间里的人去哪儿
     nsp.to(oldRoom.id).emit('data-message', { 'host-migrated': { roomId: newRoomId } })
     for (const [, u] of oldRoom.users) socketRoom.delete(u.socketId)

@@ -1,3 +1,9 @@
+/**
+ * 角色定义在 shared/roles.js —— 服务端鉴权和后台导航读的是同一份，
+ * 这里只是把类型接出来，别在这条线之外再写一份字面量联合。
+ */
+import type { UserRole } from '../shared/roles.js'
+
 import type { RomLang } from '@/config/languages'
 
 /** 平台（主机）标识，同时也是 EmulatorJS 核心映射的键 */
@@ -220,7 +226,7 @@ export interface GameQuery {
 }
 
 /* ---------------- 用户 ---------------- */
-export type UserRole = 'user' | 'admin'
+export type { UserRole }
 export type UserStatus = 'active' | 'banned'
 
 export interface User {

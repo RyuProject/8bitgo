@@ -8,7 +8,7 @@
  *     登录态只记用户 id（8bitgo.session）。行为与以前一致。
  */
 import { useEffect, useSyncExternalStore } from 'react'
-import type { PublicUser, User, UserStatus } from '@/types'
+import type { PublicUser, User, UserRole, UserStatus } from '@/types'
 import { createLocalStore, randomId } from './localStore'
 import { api, apiEnabled, setToken, getToken } from './api'
 import { pushGuestRecent } from './recents'
@@ -729,6 +729,22 @@ export async function adminAdjustCoins(id: string, delta: number) {
     return
   }
   usersStore.update(id, (u) => ({ ...u, coins: Math.max(0, u.coins + delta) }))
+}
+
+/**
+ * 改角色（管理员 / 志愿者 / 玩家）。
+ *
+ * 服务端还压着三道护栏：要有 users:role 权限、不能给自己降级、
+ * 不能把最后一个可用的管理员降下去。这里不重复实现 ——
+ * 前端拦一遍只是省一次往返，真判断在 server/src/routes/users.js。
+ */
+export async function adminSetRole(id: string, role: UserRole) {
+  if (apiEnabled()) {
+    await api.patch(`/api/users/${encodeURIComponent(id)}`, { role }, true)
+    await hydrateUsers()
+    return
+  }
+  usersStore.update(id, { role })
 }
 
 export async function adminSetStatus(id: string, status: UserStatus) {

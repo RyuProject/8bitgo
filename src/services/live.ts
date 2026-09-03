@@ -53,22 +53,67 @@ export function socketScriptUrl(): string {
   return `${apiBase()}/socket.io/socket.io.js`
 }
 
+/**
+ * 这个值到底是不是 socket.io 的 io()。
+ *
+ * 不能只看 `window.io` 有没有值：页面上任何一个**没包 IIFE 的**经典脚本，
+ * 它的顶层函数声明都会变成 window 的属性。`public/jsdos/js-dos.js` 就是这种：
+ * 它把 immer 的 `each()` 以 **`io`** 这个名字泄漏到全局（连带另外 293 个函数和
+ * 289 个变量）。于是 DOS 游戏页一打开，`window.io` 就是有值的 ——
+ * 拿它当 socket.io 用，得到的是 `TypeError: Reflect.ownKeys called on non-object`，
+ * 自动开播在所有 DOS 游戏上永远挂。
+ *
+ * socket.io 的客户端会在 io 上挂 Manager / Socket / connect，认这个比认
+ * `typeof === 'function'` 靠谱得多。
+ */
+function looksLikeSocketIo(v: unknown): v is IoFactory {
+  if (typeof v !== 'function') return false
+  const f = v as { Manager?: unknown; Socket?: unknown; connect?: unknown }
+  return typeof f.Manager === 'function' || typeof f.Socket === 'function' || typeof f.connect === 'function'
+}
+
+/** 拿到手的工厂自己收着，不再回头读全局 —— 后面再有脚本法不到它 */
+let ioFactory: IoFactory | null = null
 let ioLoading: Promise<IoFactory> | null = null
 function loadIo(): Promise<IoFactory> {
+  if (ioFactory) return Promise.resolve(ioFactory)
   if (ioLoading) return ioLoading
   ioLoading = new Promise<IoFactory>((resolve, reject) => {
-    const win = window as unknown as { io?: IoFactory }
-    if (win.io) return resolve(win.io)
+    const win = window as unknown as { io?: unknown }
+    if (looksLikeSocketIo(win.io)) return resolve(win.io)
+    /**
+     * 装脚本前先记下 `window.io` 现在是什么，装完原样放回去。
+     *
+     * 我们要的只是那个工厂函数的**引用**，不需要它占着全局名字；
+     * 而 js-dos 那类泄漏了同名全局的脚本，它自己内部调的就是这个名字 ——
+     * 被我们覆盖掉，坏的就从「开不了播」变成「DOS 游戏本身跑不起来」。
+     */
+    const had = 'io' in win
+    const prev = win.io
+    const restore = () => {
+      if (had) win.io = prev
+      else delete win.io
+    }
     const script = document.createElement('script')
     script.src = socketScriptUrl()
     script.async = true
-    script.onload = () => (win.io ? resolve(win.io) : reject(new Error('socket.io 已加载但没有暴露 io()')))
+    script.onload = () => {
+      const loaded = win.io
+      restore()
+      if (looksLikeSocketIo(loaded)) resolve(loaded)
+      else reject(new Error('socket.io 已加载但没有暴露 io()'))
+    }
     script.onerror = () => reject(new Error(socketScriptUrl()))
     document.head.appendChild(script)
-  }).catch((e) => {
-    ioLoading = null // 允许下次重试（比如反代刚修好）
-    throw e
   })
+    .then((f) => {
+      ioFactory = f
+      return f
+    })
+    .catch((e) => {
+      ioLoading = null // 允许下次重试（比如反代刚修好）
+      throw e
+    })
   return ioLoading
 }
 

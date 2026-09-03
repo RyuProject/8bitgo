@@ -5,7 +5,9 @@
 import { createServer } from 'node:http'
 import express from 'express'
 import { io as ioc } from 'socket.io-client'
-import { attachNetplay } from '../src/netplay.js'
+// 每 IP 上限是模块加载时读的，先设好再 import（测试里所有连接都是 127.0.0.1）
+process.env.NETPLAY_MAX_ROOMS_PER_IP = '3'
+const { attachNetplay } = await import('../src/netplay.js')
 import { iceRouter } from '../src/routes/ice.js'
 
 let pass = 0, fail = 0
@@ -54,9 +56,10 @@ const put = (token, userHeader) =>
   })
 ok((await put(hostToken)).ok, '房主用令牌能上传存档')
 ok((await put(guestToken)).status === 403, '访客用自己的令牌上传被拒')
-ok((await put(null, 'u-host')).ok, '旧前端（只带 userid）仍然兼容')
-// 关键：访客知道房主的 userid（users-updated 会广播），以前靠这个就能覆盖存档
+// 关键：访客知道房主的 userid（users-updated 会广播），以前带个 userid 头就能覆盖房主存档
 ok(JSON.stringify(guestUsers).includes('u-host'), '房主的 userid 确实对访客可见')
+ok((await put(null, 'u-host')).status === 403, '只带 userid（不带令牌）上传被拒 —— 这条路谁都能伪造')
+ok((await put('not-a-real-token')).status === 403, '假令牌被拒')
 
 console.log('\n── 控制消息过滤 ──')
 let hijack = null
@@ -70,9 +73,77 @@ guest.emit('data-message', { chat: 'hi' })
 await sleep(150)
 ok(chat?.chat === 'hi', '正常的聊天消息照常转发')
 
+// 访客发 restart / pause：EmulatorJS 的 dataMessage 收到就直接重开 / 暂停房主的游戏
+const hostGot = []
+host.on('data-message', (d) => hostGot.push(d))
+guest.emit('data-message', { restart: true })
+guest.emit('data-message', { pause: true, chat: 'still here' })
+await sleep(150)
+ok(!hostGot.some((d) => d.restart), '访客发的 restart 被拦掉')
+ok(!hostGot.some((d) => d.pause) && hostGot.some((d) => d.chat === 'still here'), '访客发的 pause 被摘掉，同包里的聊天照常')
+hostGot.length = 0
+host.emit('data-message', { pause: true })
+const guestGot = []
+guest.on('data-message', (d) => guestGot.push(d))
+await sleep(50)
+host.emit('data-message', { restart: true })
+await sleep(150)
+ok(guestGot.some((d) => d.restart), '房主发的 restart 照常转发')
+
+// 按键同步：访客是 2P（下标 1），只能替自己按；替 1P 按的被丢
+guest.emit('data-message', { 'sync-control': [
+  { frame: 1, connected_input: [1, 0, 1] },
+  { frame: 1, connected_input: [0, 0, 1] },
+] })
+await sleep(150)
+const sync = hostGot.find((d) => d['sync-control'])
+ok(sync && sync['sync-control'].length === 1 && sync['sync-control'][0].connected_input[0] === 1, '访客只能发自己手柄位的按键')
+hostGot.length = 0
+// 观众（手柄位满了之后进来的人）一个键都不许发
+const spectators = []
+for (let i = 0; i < 3; i++) {
+  const sp = await connect()
+  await new Promise((r) => sp.emit('join-room', { extra: extra('r1', `u-sp${i}`), password: '' }, r))
+  spectators.push(sp)
+}
+const spec = spectators[spectators.length - 1]
+spec.emit('data-message', { 'sync-control': [{ frame: 1, connected_input: [0, 0, 1] }] })
+spec.emit('data-message', { 'sync-control': [{ frame: 1, connected_input: [1, 0, 1] }], chat: 'watching' })
+await sleep(150)
+ok(!hostGot.some((d) => d['sync-control']) && hostGot.some((d) => d.chat === 'watching'), '观众的按键被丢，聊天照常')
+for (const sp of spectators) sp.close()
+await sleep(100)
+
+console.log('\n── 信令只走星型 ──')
+let g2gLeak = null
+guest.on('webrtc-signal', (d) => (g2gLeak = d))
+const other = await connect()
+await new Promise((r) => other.emit('join-room', { extra: extra('r1', 'u-other'), password: '' }, r))
+other.emit('webrtc-signal', { target: guest.id, offer: { sdp: 'x' } })
+await sleep(150)
+ok(g2gLeak === null, '访客之间的信令被拦')
+let toHost = null
+host.on('webrtc-signal', (d) => (toHost = d))
+other.emit('webrtc-signal', { target: host.id, offer: { sdp: 'ok' } })
+await sleep(150)
+ok(toHost?.offer?.sdp === 'ok' && toHost.sender === other.id, '访客 -> 房主照常')
+other.close()
+await sleep(100)
+
 console.log('\n── 开房限流 ──')
 const dup = await new Promise((r) => guest.emit('open-room', { extra: extra('r2', 'u-guest'), maxPlayers: 2 }, r))
 ok(dup === 'already in a room', '同一个连接不能再开第二个房间')
+// 同一 IP 最多 3 个房间（r1 已经占了一个）
+const spam = []
+const spamRes = []
+for (let i = 0; i < 3; i++) {
+  const sp = await connect(); spam.push(sp)
+  spamRes.push(await new Promise((r) => sp.emit('open-room', { extra: extra(`spam${i}`, `u-spam${i}`), maxPlayers: 2 }, r)))
+}
+ok(spamRes[0] == null && spamRes[1] == null, '同一 IP 前几个房间能开')
+ok(spamRes[2] === 'too many rooms', '同一 IP 超过上限被拒')
+for (const sp of spam) sp.close()
+await sleep(100)
 
 console.log('\n── SSE 推送 ──')
 const events = []

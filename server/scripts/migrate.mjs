@@ -54,6 +54,17 @@ async function hasColumn(table, column) {
   )
   return Number(r?.n ?? 0) > 0
 }
+/**
+ * 列的完整定义（ENUM 要看的就是它：'enum(\'user\',\'admin\')'）。
+ * 列不存在时返回空串，调用方按「不需要改」处理。
+ */
+async function columnType(table, column) {
+  const r = await one(
+    'SELECT COLUMN_TYPE AS t FROM information_schema.COLUMNS WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?',
+    [table, column],
+  )
+  return String(r?.t ?? '')
+}
 async function hasIndex(table, index) {
   const r = await one(
     'SELECT COUNT(*) AS n FROM information_schema.STATISTICS WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?',
@@ -261,6 +272,27 @@ const patches = [
     needed: async () => !(await hasColumn('users', 'token_version')),
     run: () =>
       conn.query('ALTER TABLE `users` ADD COLUMN `token_version` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `status`'),
+  },
+  {
+    name: "users.role 加上 'volunteer'（权限分级：管理员 / 志愿者 / 玩家）",
+    table: 'users',
+    /**
+     * ENUM 加值只能整列 MODIFY，没有 ADD VALUE 那种写法。
+     * 判据用 COLUMN_TYPE 里有没有 'volunteer' —— 比记「改过没有」可靠，
+     * 也让这条补丁天然幂等。
+     *
+     * 新值排在 user 和 admin **中间**：ENUM 的隐式序号就是权限从小到大的顺序，
+     * 以后想按 role 排序或者比大小时不会得到反直觉的结果。
+     * 已有数据不受影响 —— MySQL 是按字符串值存的，重排不动现有行。
+     */
+    needed: async () => {
+      const t = await columnType('users', 'role')
+      return Boolean(t) && !t.includes("'volunteer'")
+    },
+    run: () =>
+      conn.query(
+        "ALTER TABLE `users` MODIFY `role` ENUM('user','volunteer','admin') NOT NULL DEFAULT 'user'",
+      ),
   },
   {
     name: 'login_codes（邮箱验证码落库，替掉原来的内存 Map）',

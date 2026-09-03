@@ -1,10 +1,11 @@
 import { Router } from 'express'
 import { query, queryOne } from '../db.js'
-import { requireAdmin } from '../auth.js'
+import { requireAbility, hasAbility } from '../auth.js'
+import { isRole, ROLE_LABELS } from '../../../shared/roles.js'
 import { userRowToPublic } from '../mappers.js'
 
 export const usersRouter = Router()
-usersRouter.use(requireAdmin)
+usersRouter.use(requireAbility('users:manage'))
 
 /** 全部用户（含收藏 / 最近，供后台展示） */
 usersRouter.get('/', async (_req, res, next) => {
@@ -36,7 +37,13 @@ usersRouter.get('/', async (_req, res, next) => {
 /** 单次调整金币的上限，挡住手滑多打几个零 */
 const MAX_COIN_DELTA = 1_000_000
 
-/** 还剩几个能用的管理员（不含被封禁的） */
+/**
+ * 还剩几个能用的管理员（不含被封禁的）。
+ *
+ * 三处护栏都靠它：封禁、删除、以及**把管理员降级**。最后一条最容易漏 ——
+ * 把自己或者仅存的那个管理员改成志愿者，站里就再也没人能改角色了，
+ * 只能回数据库里手工 UPDATE。
+ */
 async function activeAdminCount(excludeId) {
   const r = await queryOne(
     "SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND status = 'active' AND id <> ?",
@@ -66,6 +73,28 @@ usersRouter.patch('/:id', async (req, res, next) => {
         return res.status(400).json({ error: `单次调整不能超过 ${MAX_COIN_DELTA.toLocaleString('en-US')} G 币` })
       }
       if (delta !== 0) await query('UPDATE users SET coins = GREATEST(0, coins + ?) WHERE id = ?', [delta, id])
+    }
+
+    /**
+     * 改角色。单独一道权限点（users:role）—— 能封号的人不一定就该能发权限，
+     * 而「发权限」是唯一一个能把权限扩散出去的操作，值得单独卡一道。
+     */
+    if (req.body.role !== undefined) {
+      if (!(await hasAbility(req, 'users:role'))) {
+        return res.status(403).json({ error: '权限不足：需要 users:role' })
+      }
+      const role = req.body.role
+      if (!isRole(role)) {
+        return res.status(400).json({ error: `role 只能是 ${Object.keys(ROLE_LABELS).join(' / ')}` })
+      }
+      // 把自己降级 = 当场把自己关在后台外面，而且大概率还是最后一个管理员
+      if (req.user?.id === id && role !== 'admin') {
+        return res.status(400).json({ error: '不能给自己降级' })
+      }
+      if (target.role === 'admin' && role !== 'admin' && (await activeAdminCount(id)) === 0) {
+        return res.status(400).json({ error: '这是最后一个可用的管理员，不能降级' })
+      }
+      if (role !== target.role) await query('UPDATE users SET role = ? WHERE id = ?', [role, id])
     }
 
     if (req.body.status === 'active' || req.body.status === 'banned') {

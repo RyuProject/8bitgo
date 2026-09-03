@@ -18,7 +18,7 @@
  */
 import { Router } from 'express'
 import { query, queryOne } from '../db.js'
-import { requireUser, requireAdmin, isAdminRequest } from '../auth.js'
+import { requireUser, requireAbility, hasAbility } from '../auth.js'
 import { commentRowToApi, countryOf } from '../mappers.js'
 import { take, clientKey, isMeaningfulIp } from '../rateLimit.js'
 
@@ -100,7 +100,7 @@ const FROM_JOINS = `
  *
  * 和前台那条不共用：后台要看到被隐藏和被删除的原文，也要按游戏和用户认人。
  */
-commentsRouter.get('/admin/list', requireAdmin, async (req, res, next) => {
+commentsRouter.get('/admin/list', requireAbility('comments:review'), async (req, res, next) => {
   try {
     const { page, size, offset } = pageParams(req)
     const where = []
@@ -148,7 +148,7 @@ commentsRouter.get('/admin/list', requireAdmin, async (req, res, next) => {
  * 隐藏不动 deleted_at，恢复也不会把作者自己删掉的评论捞回来 ——
  * 那两件事的主体不同，不能互相覆盖。
  */
-commentsRouter.patch('/admin/:id', requireAdmin, async (req, res, next) => {
+commentsRouter.patch('/admin/:id', requireAbility('comments:review'), async (req, res, next) => {
   try {
     const id = Number(req.params.id)
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: '评论 ID 不合法' })
@@ -162,7 +162,7 @@ commentsRouter.patch('/admin/:id', requireAdmin, async (req, res, next) => {
 })
 
 /** 后台彻底删除。会连带把引用它的回复上的引用关系断开（外键 ON DELETE SET NULL），不删回复本身。 */
-commentsRouter.delete('/admin/:id', requireAdmin, async (req, res, next) => {
+commentsRouter.delete('/admin/:id', requireAbility('comments:review'), async (req, res, next) => {
   try {
     const id = Number(req.params.id)
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: '评论 ID 不合法' })
@@ -315,10 +315,12 @@ commentsRouter.delete('/:id', requireUser, async (req, res, next) => {
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: '评论 ID 不合法' })
     const row = await queryOne('SELECT id, user_id, deleted_at FROM game_comments WHERE id = ?', [id])
     if (!row) return res.status(404).json({ error: '评论不存在' })
-    // requireUser 已经放进来了，这里再问一次「是不是管理员」是为了让管理员
+    // requireUser 已经放进来了，这里再问一次「有没有审核权限」是为了让管理员和志愿者
     // 也能从前台直接清理，不必先进后台
     const mine = row.user_id === req.user.id
-    if (!mine && !(await isAdminRequest(req))) return res.status(403).json({ error: '只能删除自己的评论' })
+    if (!mine && !(await hasAbility(req, 'comments:review'))) {
+      return res.status(403).json({ error: '只能删除自己的评论' })
+    }
     // 已经删过就当成功：用户连点两次删除不该看到一个 404
     if (!row.deleted_at) await query('UPDATE game_comments SET deleted_at = CURRENT_TIMESTAMP(3) WHERE id = ?', [id])
     res.json({ ok: true })

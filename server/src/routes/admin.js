@@ -1,18 +1,30 @@
 import { Router } from 'express'
 import { withTransaction } from '../db.js'
-import { requireAdmin } from '../auth.js'
+import { requireAdmin, requireAbility, roleOfRequest } from '../auth.js'
+import { ROLE_ABILITIES, isStaff } from '../../../shared/roles.js'
 import { postApiToRow, buildUpsert } from '../mappers.js'
 import { upsertGame, adminStats } from '../games-repo.js'
 import { invalidateContent } from '../content.js'
 import { queueGameSearchPush, queuePostSearchPush } from '../search-push.js'
 
 export const adminRouter = Router()
-adminRouter.use(requireAdmin)
 
-/** 后台登录门只需要确认口令有效，不该为了验证身份顺手查询或泄露任何业务数据。 */
-adminRouter.get('/verify', (_req, res) => {
-  res.setHeader('Cache-Control', 'no-store')
-  res.json({ ok: true })
+/**
+ * 后台登录门。只确认「这张凭证能不能进后台」，不为了验证身份顺手查询或泄露业务数据。
+ *
+ * 从「只放管理员」改成「放所有有权限点的角色」，并且**把角色和权限点一起回给前端** ——
+ * 志愿者也要进得来，进来之后导航按这份权限收窄（见 src/admin/AdminLayout.tsx）。
+ * 前端拿这份清单只是为了别画出点了会 403 的按钮；真正拦人的是各路由上的 requireAbility。
+ */
+adminRouter.get('/verify', async (req, res, next) => {
+  try {
+    const role = await roleOfRequest(req)
+    if (!isStaff(role)) return res.status(403).json({ error: '需要后台权限（后台口令、管理员或志愿者账号）' })
+    res.setHeader('Cache-Control', 'no-store')
+    res.json({ ok: true, role, abilities: ROLE_ABILITIES[role] })
+  } catch (e) {
+    next(e)
+  }
 })
 
 /**
@@ -20,7 +32,7 @@ adminRouter.get('/verify', (_req, res) => {
  *   POST /api/admin/import { games?: Game[], posts?: Post[] }
  * 前端「后台 → 数据」里点「导入到数据库」会调用这里。
  */
-adminRouter.post('/import', async (req, res, next) => {
+adminRouter.post('/import', requireAdmin, async (req, res, next) => {
   try {
     const gameList = Array.isArray(req.body.games) ? req.body.games : []
     const postList = Array.isArray(req.body.posts) ? req.body.posts : []
@@ -77,7 +89,7 @@ adminRouter.post('/import', async (req, res, next) => {
  * 这些必须在数据库里算。v1 是把全库拉进浏览器再 reduce，上千款游戏时
  * 光是为了首页那几个数字就要下载整个目录。
  */
-adminRouter.get('/stats', async (_req, res, next) => {
+adminRouter.get('/stats', requireAbility('content:edit'), async (_req, res, next) => {
   try {
     res.json(await adminStats())
   } catch (e) {

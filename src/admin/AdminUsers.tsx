@@ -1,13 +1,18 @@
 import { useMemo, useState } from 'react'
 import type { PublicUser } from '@/types'
-import { adminAdjustCoins, adminDeleteUser, adminSetStatus, useAllUsers, useCurrentUser } from '@/services/auth'
+import { adminDeleteUser, adminSetRole, adminSetStatus, useAllUsers, useCurrentUser } from '@/services/auth'
 import { cx } from '@/lib/format'
 import { apiEnabled } from '@/services/api'
 import { btnClass, inputClass } from './ui'
+import { useAdminData } from './AdminLayout'
+import { ROLES, ROLE_LABELS, type UserRole } from '../../shared/roles.js'
 
 export function AdminUsers() {
   const users = useAllUsers()
   const me = useCurrentUser()
+  // 改角色单独一道权限点：能封号的人不一定就该能发权限（见 shared/roles.js）
+  const { abilities } = useAdminData()
+  const canSetRole = abilities.includes('users:role')
   const [q, setQ] = useState('')
   const [toast, setToast] = useState<string | null>(null)
 
@@ -26,14 +31,19 @@ export function AdminUsers() {
     window.setTimeout(() => setToast(null), 2000)
   }
 
-  const adjust = async (u: PublicUser) => {
-    const raw = window.prompt(`给「${u.nickname}」调整 G 币（正数增加，负数扣除）：`, '100')
-    if (raw === null) return
-    const delta = Math.round(Number(raw))
-    if (!Number.isFinite(delta) || delta === 0) return
+  /**
+   * 改角色。
+   *
+   * 服务端还压着三道护栏（要有 users:role、不能给自己降级、不能把最后一个可用的
+   * 管理员降下去），这里只挡住最显眼的那一条，剩下的靠回来的报错说话 ——
+   * 「还剩几个管理员」只有数据库知道，前端这份用户列表算不准。
+   */
+  const changeRole = async (u: PublicUser, role: UserRole) => {
+    if (role === u.role) return
+    if (role !== 'user' && !window.confirm(`把「${u.nickname}」设为${ROLE_LABELS[role]}？`)) return
     try {
-      await adminAdjustCoins(u.id, delta)
-      flash(`${u.nickname}：${delta > 0 ? '+' : ''}${delta} G 币`)
+      await adminSetRole(u.id, role)
+      flash(`${u.nickname} → ${ROLE_LABELS[role]}`)
     } catch (err) {
       flash(err instanceof Error ? err.message : '操作失败')
     }
@@ -78,7 +88,7 @@ export function AdminUsers() {
             <tr>
               <th className="px-3 py-2 font-medium">用户</th>
               <th className="px-3 py-2 font-medium">注册日期</th>
-              <th className="px-3 py-2 font-medium">G 币</th>
+              <th className="px-3 py-2 font-medium">角色</th>
               <th className="px-3 py-2 font-medium">收藏</th>
               <th className="px-3 py-2 font-medium">最近浏览</th>
               <th className="px-3 py-2 font-medium">状态</th>
@@ -103,7 +113,26 @@ export function AdminUsers() {
                   </div>
                 </td>
                 <td className="px-3 py-2 tabular-nums text-muted">{u.createdAt}</td>
-                <td className="px-3 py-2 tabular-nums text-coin">🪙 {u.coins.toLocaleString('zh-CN')}</td>
+                <td className="px-3 py-2">
+                  {canSetRole ? (
+                    <select
+                      value={u.role}
+                      onChange={(e) => void changeRole(u, e.target.value as UserRole)}
+                      // 给自己降级 = 当场把自己关在后台外面，后端也拦了一道
+                      disabled={isSelf(u)}
+                      title={isSelf(u) ? '不能改自己的角色' : undefined}
+                      className={cx(inputClass, 'h-7 w-24 px-1.5 py-0 text-xs disabled:opacity-60')}
+                    >
+                      {ROLES.map((r) => (
+                        <option key={r} value={r}>
+                          {ROLE_LABELS[r]}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <span className="text-muted">{ROLE_LABELS[u.role]}</span>
+                  )}
+                </td>
                 <td className="px-3 py-2 tabular-nums text-muted">{u.favorites.length}</td>
                 <td className="px-3 py-2 tabular-nums text-muted">{u.recent.length}</td>
                 <td className="px-3 py-2">
@@ -115,9 +144,6 @@ export function AdminUsers() {
                 </td>
                 <td className="px-3 py-2">
                   <div className="flex justify-end gap-1">
-                    <button type="button" className={cx(btnClass.small, 'text-coin hover:bg-coin-soft')} onClick={() => adjust(u)}>
-                      G 币
-                    </button>
                     {/* 封禁 / 删除自己会把自己直接关在后台外面（下一次请求就被鉴权拦下），
                         后端也拦了一道，这里先把按钮禁掉，省得点了才报错 */}
                     <button

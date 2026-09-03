@@ -42,6 +42,7 @@ import type { PlatformId } from '@/types'
 import type { Capability, MountOptions, Runtime, RuntimeHandle } from '../types'
 import { getT, fmt } from '@/services/i18n'
 import { loadGameBytes } from '../romLoader'
+import { focusFrame, frameGamepads } from '../frameFocus'
 import { prepareNdsRom } from '@/lib/romValidation'
 
 export const WEBRETRO_PATH: string = (() => {
@@ -115,26 +116,37 @@ function buildUrl(core: string, romUrl: string, romName: string): string {
 }
 
 function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
-  const destroy = mountRaw(container, options)
+  const { destroy, iframe } = mountRaw(container, options)
   // 暂停 / 存档 / 音量都在 RetroArch 自己的菜单里（iframe 内按 F1 打开，
   // F2 存档、F3 读档、F4 截图），外层工具栏不重复提供，免得两套状态对不上。
   const caps = new Set<Capability>()
   options.onCaps?.(caps)
-  return { destroy, caps }
+  return {
+    destroy,
+    caps,
+    focus: () => focusFrame(iframe),
+    gamepads: () => frameGamepads(iframe),
+  }
 }
 
-function mountRaw(container: HTMLElement, options: MountOptions): () => void {
+/** 挂载结果。iframe 要交回给 mount() —— 焦点和手柄读数都得指着它，见 frameFocus.ts */
+interface RawMount {
+  destroy: () => void
+  iframe?: HTMLIFrameElement
+}
+
+function mountRaw(container: HTMLElement, options: MountOptions): RawMount {
   const rt = getT().runtime
 
   if (!WEBRETRO_PATH) {
     options.onError?.(rt.webretroNotConfigured)
-    return () => {}
+    return { destroy: () => {} }
   }
 
   const core = coreFor(options.platform)
   if (!core) {
     options.onError?.(fmt(rt.webretroUnsupportedPlatform, { platform: options.platform }))
-    return () => {}
+    return { destroy: () => {} }
   }
 
   let destroyed = false
@@ -181,6 +193,9 @@ function mountRaw(container: HTMLElement, options: MountOptions): () => void {
     if (readySent || destroyed) return
     readySent = true
     options.onReady?.()
+    // RetroArch 的键盘和手柄都在 iframe 里读，焦点不进去等于没接（见 frameFocus.ts）。
+    // buildUrl 里带的 noautorefocus 只是不让它反复抢焦点，第一次还是得我们给。
+    focusFrame(iframe)
   }
 
   /** 读一次 iframe 内部状态。返回 false 表示读不到（跨源），调用方据此降级 */
@@ -262,20 +277,23 @@ function mountRaw(container: HTMLElement, options: MountOptions): () => void {
     }
   })()
 
-  return () => {
-    destroyed = true
-    abort.abort()
-    stopPoll()
-    try {
-      iframe.src = 'about:blank'
-    } catch {
-      /* ignore */
-    }
-    iframe.remove()
-    if (objectUrl) {
-      URL.revokeObjectURL(objectUrl)
-      objectUrl = ''
-    }
+  return {
+    iframe,
+    destroy: () => {
+      destroyed = true
+      abort.abort()
+      stopPoll()
+      try {
+        iframe.src = 'about:blank'
+      } catch {
+        /* ignore */
+      }
+      iframe.remove()
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl)
+        objectUrl = ''
+      }
+    },
   }
 }
 

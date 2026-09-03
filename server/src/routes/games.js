@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { requireAdmin, isAdminRequest, optionalUser } from '../auth.js'
+import { requireAbility, hasAbility, optionalUser } from '../auth.js'
 import { invalidateContent } from '../content.js'
 import { publicApi } from '../cache.js'
 import { playIdentity } from '../playcount.js'
@@ -44,8 +44,8 @@ export const dbFlag = (v) => v === 1 || v === true || v === '1'
 gamesRouter.get('/', async (req, res, next) => {
   try {
     const wantAll = req.query.all === '1'
-    if (wantAll && !(await isAdminRequest(req))) {
-      return res.status(403).json({ error: '需要管理员权限才能查看全部游戏' })
+    if (wantAll && !(await hasAbility(req, 'content:edit'))) {
+      return res.status(403).json({ error: '需要内容编辑权限才能查看全部游戏' })
     }
     const result = await listGames({
       platform: req.query.platform,
@@ -236,8 +236,8 @@ gamesRouter.get('/:slug', async (req, res, next) => {
   try {
     const game = await getGameBySlug(req.params.slug)
     if (!game) return res.status(404).json({ error: '游戏不存在' })
-    // 已下架的对外当作不存在，只有管理员能取到
-    if (game.hidden && !(await isAdminRequest(req))) {
+    // 已下架的对外当作不存在，只有能编辑内容的人（管理员 / 志愿者）取得到
+    if (game.hidden && !(await hasAbility(req, 'content:edit'))) {
       return res.status(404).json({ error: '游戏不存在' })
     }
     if (!game.hidden) publicApi(res)
@@ -248,7 +248,7 @@ gamesRouter.get('/:slug', async (req, res, next) => {
 })
 
 /** 新增 / 整体覆盖一款游戏（后台）。主表与三张关联表在同一个事务里。 */
-gamesRouter.put('/:slug', requireAdmin, async (req, res, next) => {
+gamesRouter.put('/:slug', requireAbility('content:edit'), async (req, res, next) => {
   try {
     const slug = String(req.params.slug)
     if (!req.body?.title) return res.status(400).json({ error: '缺少标题' })
@@ -267,7 +267,7 @@ gamesRouter.put('/:slug', requireAdmin, async (req, res, next) => {
  * 局部更新（切换上下架、绑定 ROM …）。
  * 只写请求里带到的列 —— 整行回写会把 plays 之类的值按旧数据盖回去。
  */
-gamesRouter.patch('/:slug', requireAdmin, async (req, res, next) => {
+gamesRouter.patch('/:slug', requireAbility('content:edit'), async (req, res, next) => {
   try {
     const slug = String(req.params.slug)
     const patchRow = gameApiToPartialRow(req.body)
@@ -293,7 +293,7 @@ gamesRouter.patch('/:slug', requireAdmin, async (req, res, next) => {
  * R2 里的 ROM / 封面 / 视频文件不会被删除（可能被多款游戏共用），
  * 需要清理请到「后台 → ROM 存储」里手动删。
  */
-gamesRouter.delete('/:slug', requireAdmin, async (req, res, next) => {
+gamesRouter.delete('/:slug', requireAbility('content:edit'), async (req, res, next) => {
   try {
     // 删除前先保留平台 / 类型，删除后除了详情 404，聚合页的内容和数量也发生了变化。
     const previous = await getGameBySlug(req.params.slug)

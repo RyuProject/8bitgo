@@ -11,6 +11,7 @@ import type { CaptureSources, Capability, MountOptions, Runtime, RuntimeHandle }
 import { loadGameBytes } from '../romLoader'
 import { assertSwf } from '@/lib/romValidation'
 import { canvasToBlob } from '../recorder'
+import { focusFrame } from '../frameFocus'
 import { getT, fmt } from '@/services/i18n'
 
 export const RUFFLE_PATH: string = (() => {
@@ -402,6 +403,8 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   return {
     caps,
     volume,
+    // Flash 游戏也在 iframe 里，键盘操作的那些（横版过关、打字游戏）不交焦点就是死的
+    focus: () => focusFrame(iframe),
     setPaused(next: boolean) {
       // 两套门面轮流试：老的 play/pause，新的 resume/suspend
       for (const target of [api, player]) {

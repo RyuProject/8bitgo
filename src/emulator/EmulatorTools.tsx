@@ -122,17 +122,41 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
     }
   }, [archivable, saveRuntime, gameSlug, handle])
 
-  // 手柄面板开着的时候才轮询，平时不占 CPU
+  /*
+    手柄面板开着的时候才轮询，平时不占 CPU。
+
+    ⚠️ 不能只读外层的 navigator.getGamepads()。手柄对每个文档是**分别**可见的
+    （规范里的 [[hasGamepadGesture]]：玩家按下手柄按键那一刻，只有当时有焦点的文档
+    才拿得到手柄）。EmulatorJS 这类跑在 iframe 里的运行时，我们开局后会把焦点交给
+    iframe（见 frameFocus.ts）—— 于是手柄只对 iframe 可见，外层这边读到的是空的。
+    照那样显示，就会出现「手柄明明能操作游戏，面板却说没检测到」。
+    所以两边取**并集**：运行时那侧报上来的（handle.gamepads）加外层自己看到的。
+  */
   useEffect(() => {
     if (panel !== 'gamepad') return
     const scan = () => {
-      const list = navigator.getGamepads ? navigator.getGamepads() : []
-      setPads(Array.prototype.filter.call(list, (p: Gamepad | null) => p?.connected).map((p: Gamepad) => p.id))
+      const outer = navigator.getGamepads ? navigator.getGamepads() : []
+      const ids = new Set<string>(handle?.gamepads?.() ?? [])
+      for (const pad of Array.from(outer)) if (pad?.connected) ids.add(pad.id)
+      setPads([...ids])
     }
     scan()
     const timer = window.setInterval(scan, 1000)
     return () => window.clearInterval(timer)
-  }, [panel])
+  }, [panel, handle])
+
+  /*
+    面板一关就把焦点还给运行时。玩家点 🎮 那一下焦点就落到了外层的按钮上，
+    iframe 里的引擎从这一刻起收不到键盘、也读不到手柄 —— 关面板正是还回去的时机。
+  */
+  const prevPanel = useRef(panel)
+  useEffect(() => {
+    const was = prevPanel.current
+    prevPanel.current = panel
+    // 只在「开着 → 关上」那一下还，不是每次 render 都抢一把：
+    // 播放器自己也在开局时给过一次，重复抢焦点会把玩家正在用的别的控件顶掉
+    if (panel === null && was !== null) handle?.focus?.()
+  }, [panel, handle])
 
   // 录像计时（同时也是 60 秒上限的进度显示）
   useEffect(() => {
@@ -480,7 +504,7 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
         {caps.has('record') && (
           <button
             type="button"
-            className={cx(BTN, recording && 'border-live bg-live/15 text-red-300')}
+            className={cx(BTN, recording && 'border-live bg-live/15 text-live')}
             onClick={toggleRecord}
             title={recording ? fmt(tt.recStop, { s: String(seconds) }) : tt.rec}
             aria-pressed={recording}

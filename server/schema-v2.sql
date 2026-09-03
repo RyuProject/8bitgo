@@ -245,7 +245,7 @@ CREATE TABLE IF NOT EXISTS users (
   avatar        VARCHAR(16)   NOT NULL DEFAULT '🕹️',
   password_hash VARCHAR(200)  NOT NULL,
   coins         INT UNSIGNED  NOT NULL DEFAULT 0,
-  role          ENUM('user','admin')    NOT NULL DEFAULT 'user',
+  role          ENUM('user','volunteer','admin')    NOT NULL DEFAULT 'user',
   status        ENUM('active','banned') NOT NULL DEFAULT 'active',
   -- 令牌版本。JWT 是无状态的，签出去就收不回来 —— 「退出所有设备」和「改完密码踢掉旧会话」
   -- 都靠把这个数 +1 实现：带旧版本号的令牌在 requireUser 里当场作废。

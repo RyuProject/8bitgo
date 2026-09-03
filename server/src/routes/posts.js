@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { query, queryOne, withTransaction } from '../db.js'
-import { requireAdmin, isAdminRequest } from '../auth.js'
+import { requireAbility, hasAbility } from '../auth.js'
 import { invalidateContent } from '../content.js'
 import { publicApi } from '../cache.js'
 import { postRowToApi, postApiToRow, dbFlag } from '../mappers.js'
@@ -44,8 +44,8 @@ async function writeTags(run, postId, tags) {
 postsRouter.get('/', async (req, res, next) => {
   try {
     const wantAll = req.query.all === '1'
-    if (wantAll && !(await isAdminRequest(req))) {
-      return res.status(403).json({ error: '需要管理员权限才能查看草稿' })
+    if (wantAll && !(await hasAbility(req, 'content:edit'))) {
+      return res.status(403).json({ error: '需要内容编辑权限才能查看草稿' })
     }
     const rows = await query(
       wantAll
@@ -64,7 +64,7 @@ postsRouter.get('/:slug', async (req, res, next) => {
     const row = await queryOne('SELECT * FROM posts WHERE slug = ?', [req.params.slug])
     if (!row) return res.status(404).json({ error: '文章不存在' })
     const [post] = await attachPostTags([row])
-    if (!post.published && !(await isAdminRequest(req))) {
+    if (!post.published && !(await hasAbility(req, 'content:edit'))) {
       return res.status(404).json({ error: '文章不存在' })
     }
     if (post.published) publicApi(res)
@@ -74,7 +74,7 @@ postsRouter.get('/:slug', async (req, res, next) => {
   }
 })
 
-postsRouter.put('/:slug', requireAdmin, async (req, res, next) => {
+postsRouter.put('/:slug', requireAbility('content:edit'), async (req, res, next) => {
   try {
     const slug = String(req.params.slug)
     if (!req.body?.title) return res.status(400).json({ error: '缺少标题' })
@@ -108,7 +108,7 @@ postsRouter.put('/:slug', requireAdmin, async (req, res, next) => {
   }
 })
 
-postsRouter.delete('/:slug', requireAdmin, async (req, res, next) => {
+postsRouter.delete('/:slug', requireAbility('content:edit'), async (req, res, next) => {
   try {
     const slug = String(req.params.slug)
     // 删之前先看一眼发布状态：删完就查不到了，而「这篇是否被收录过」决定要不要推送。

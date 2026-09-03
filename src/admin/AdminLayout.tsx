@@ -4,21 +4,35 @@ import { cx } from '@/lib/format'
 import { useDocumentTitle } from '@/lib/useDocumentTitle'
 import { ApiError, api, apiEnabled, getAdminApiToken, setAdminApiToken } from '@/services/api'
 import { fetchAdminGames } from '@/services/store'
+import { ABILITIES, ROLE_LABELS, type Ability, type UserRole } from '../../shared/roles.js'
 
 const SESSION_KEY = '8bitgo.admin.unlocked'
 
-const TABS = [
-  { to: '/admin', label: '概览', end: true },
-  { to: '/admin/games', label: '游戏' },
-  { to: '/admin/posts', label: '文章' },
-  { to: '/admin/developers', label: '开发商' },
-  { to: '/admin/comments', label: '评论' },
-  { to: '/admin/users', label: '用户' },
-  { to: '/admin/roms', label: 'ROM 存储' },
-  { to: '/admin/data', label: '数据' },
+/**
+ * 每一页配一个权限点，志愿者进来时导航按它收窄。
+ *
+ * 藏起来只是体面 —— 真正拦人的是服务端各路由上的 requireAbility（shared/roles.js
+ * 是前后端共用的那张表）。这里的作用只是别让志愿者看见一堆点了就 403 的入口。
+ */
+const TABS: { to: string; label: string; end?: boolean; need: Ability }[] = [
+  { to: '/admin', label: '概览', end: true, need: 'content:edit' },
+  { to: '/admin/games', label: '游戏', need: 'content:edit' },
+  { to: '/admin/posts', label: '文章', need: 'content:edit' },
+  { to: '/admin/developers', label: '开发商', need: 'content:edit' },
+  { to: '/admin/comments', label: '评论', need: 'comments:review' },
+  { to: '/admin/users', label: '用户', need: 'users:manage' },
+  { to: '/admin/roms', label: 'ROM 存储', need: 'site:manage' },
+  { to: '/admin/data', label: '数据', need: 'site:manage' },
 ]
 
 type GateState = 'checking' | 'locked' | 'unlocked'
+
+/** /api/admin/verify 的回包：能不能进后台，以及进来之后能干什么 */
+interface VerifyResult {
+  ok: true
+  role: UserRole
+  abilities: Ability[]
+}
 
 /** 后台入口只信服务端对 ADMIN_TOKEN 的校验结果，密钥不会再被 Vite 打进公开的前端文件。 */
 export function AdminLayout() {
@@ -30,6 +44,9 @@ export function AdminLayout() {
       return 'locked'
     }
   })
+
+  /** 服务端认下来的身份。不缓存在浏览器里 —— 那等于让前端自己给自己发权限 */
+  const [me, setMe] = useState<VerifyResult | null>(null)
 
   const lock = useCallback(() => {
     setAdminApiToken(null)
@@ -46,9 +63,11 @@ export function AdminLayout() {
     if (gate !== 'checking') return
     let cancelled = false
     api
-      .get<{ ok: true }>('/api/admin/verify', true)
-      .then(() => {
-        if (!cancelled) setGate('unlocked')
+      .get<VerifyResult>('/api/admin/verify', true)
+      .then((res) => {
+        if (cancelled) return
+        setMe(res)
+        setGate('unlocked')
       })
       .catch(() => {
         if (!cancelled) lock()
@@ -59,14 +78,22 @@ export function AdminLayout() {
   }, [gate, lock])
 
   if (gate !== 'unlocked') {
-    return <Gate checking={gate === 'checking'} onUnlock={() => setGate('unlocked')} />
+    return (
+      <Gate
+        checking={gate === 'checking'}
+        onUnlock={(res) => {
+          setMe(res)
+          setGate('unlocked')
+        }}
+      />
+    )
   }
 
-  return <AdminShell onLock={lock} />
+  return <AdminShell onLock={lock} me={me} />
 }
 
 /** 验证成功后才挂载后台及其子路由，未登录时不会提前请求任何管理数据。 */
-function AdminShell({ onLock }: { onLock: () => void }) {
+function AdminShell({ onLock, me }: { onLock: () => void; me: VerifyResult | null }) {
   /**
    * v1 在这里把整个游戏库和全部文章灌进一个前端 store，子页面再从里面读。
    * v2 没有那个 store 了 —— 每个子页面自己按需向后端取数（分页 / 按 slug）。
@@ -102,6 +129,15 @@ function AdminShell({ onLock }: { onLock: () => void }) {
 
   useEffect(load, [load])
 
+  /**
+   * me 为 null 只可能是「后端还没升级、verify 回包里没有 abilities」——
+   * 那时按全给处理。否则前端先上、后端后上的那一小段时间里，
+   * 管理员会看见一个只剩两页的后台。少给权限在这里并不是「更安全」：
+   * 真正的门在服务端，这里少给只是把人挡在自己的后台外面。
+   */
+  const abilities: Ability[] = me?.abilities ?? [...ABILITIES]
+  const tabs = TABS.filter((t) => abilities.includes(t.need))
+
   return (
     <div className="min-h-dvh bg-bg text-fg">
       <header className="sticky top-0 z-30 border-b border-line bg-surface/90 backdrop-blur">
@@ -113,7 +149,7 @@ function AdminShell({ onLock }: { onLock: () => void }) {
             </span>
           </Link>
           <nav className="ml-4 flex items-center gap-1" aria-label="后台导航">
-            {TABS.map((t) => (
+            {tabs.map((t) => (
               <NavLink
                 key={t.to}
                 to={t.to}
@@ -130,6 +166,10 @@ function AdminShell({ onLock }: { onLock: () => void }) {
             ))}
           </nav>
           <div className="ml-auto flex items-center gap-3 text-xs text-muted">
+            {/* 管理员不用标 —— 后台默认就是管理员的地方；志愿者要一眼看出自己是谁 */}
+            {me && me.role !== 'admin' && (
+              <span className="rounded bg-brand-soft px-1.5 py-0.5 text-brand-hover">{ROLE_LABELS[me.role]}</span>
+            )}
             <DataBadge state={data} error={dataError} onRetry={load} />
             <Link to="/" className="rounded-lg border border-line px-3 py-1.5 transition hover:border-brand hover:text-fg">
               ← 返回网站
@@ -139,7 +179,7 @@ function AdminShell({ onLock }: { onLock: () => void }) {
       </header>
 
       <main className="mx-auto max-w-6xl px-4 py-6 sm:px-6">
-        <Outlet context={{ state: data, error: dataError, reload: load } satisfies AdminData} />
+        <Outlet context={{ state: data, error: dataError, reload: load, abilities } satisfies AdminData} />
       </main>
     </div>
   )
@@ -152,6 +192,8 @@ export interface AdminData {
   state: DataState
   error: string
   reload: () => void
+  /** 当前身份能做什么（shared/roles.js）。子页面据此决定画不画某个操作 */
+  abilities: Ability[]
 }
 
 /** 子页面读取当前数据源状态 */
@@ -212,7 +254,7 @@ function DataBadge({ state, error, onRetry }: { state: DataState; error: string;
   )
 }
 
-function Gate({ checking, onUnlock }: { checking: boolean; onUnlock: () => void }) {
+function Gate({ checking, onUnlock }: { checking: boolean; onUnlock: (res: VerifyResult) => void }) {
   const [value, setValue] = useState('')
   const [error, setError] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -225,13 +267,13 @@ function Gate({ checking, onUnlock }: { checking: boolean; onUnlock: () => void 
     setError(false)
     setAdminApiToken(key)
     try {
-      await api.get<{ ok: true }>('/api/admin/verify', true)
+      const res = await api.get<VerifyResult>('/api/admin/verify', true)
       try {
         sessionStorage.setItem(SESSION_KEY, '1')
       } catch {
         /* ignore */
       }
-      onUnlock()
+      onUnlock(res)
     } catch {
       setAdminApiToken(null)
       setError(true)

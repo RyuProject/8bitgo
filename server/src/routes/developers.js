@@ -14,7 +14,7 @@
  * 要改名字得去改游戏里的开发商字段，再把这里的旧行删掉。
  */
 import { Router } from 'express'
-import { requireAdmin } from '../auth.js'
+import { requireAbility } from '../auth.js'
 import { invalidateContent } from '../content.js'
 import { listDeveloperProfiles, upsertDeveloperProfile, deleteDeveloperProfile } from '../games-repo.js'
 
@@ -28,7 +28,7 @@ function clean(value, max) {
   return text.length > max ? null : text
 }
 
-developersRouter.get('/', requireAdmin, async (_req, res, next) => {
+developersRouter.get('/', requireAbility('content:edit'), async (_req, res, next) => {
   try {
     const rows = await listDeveloperProfiles()
     res.json(
@@ -49,7 +49,7 @@ developersRouter.get('/', requireAdmin, async (_req, res, next) => {
   }
 })
 
-developersRouter.put('/:name', requireAdmin, async (req, res, next) => {
+developersRouter.put('/:name', requireAbility('content:edit'), async (req, res, next) => {
   try {
     const name = clean(req.params.name, LIMITS.name)
     if (!name) return res.status(400).json({ error: '开发商名字不合法或过长' })
@@ -74,7 +74,7 @@ developersRouter.put('/:name', requireAdmin, async (req, res, next) => {
   }
 })
 
-developersRouter.delete('/:name', requireAdmin, async (req, res, next) => {
+developersRouter.delete('/:name', requireAbility('content:edit'), async (req, res, next) => {
   try {
     const name = clean(req.params.name, LIMITS.name)
     if (!name) return res.status(400).json({ error: '开发商名字不合法或过长' })

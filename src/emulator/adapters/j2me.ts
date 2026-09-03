@@ -33,6 +33,7 @@ import { apiBase, apiEnabled } from '@/services/api'
 import { canvasToBlob } from '../recorder'
 import { GP, hasGamepadApi, startGamepadBridge, type GamepadBridge } from '../gamepad'
 import { assertJar } from '@/lib/romValidation'
+import { focusFrame } from '../frameFocus'
 
 /* ---------------- 从 freej2me-web 源码里挖出来的接入点 ---------------- */
 
@@ -438,6 +439,12 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     caps,
     destroy,
     volume,
+    /*
+      物理手柄这一路不靠焦点 —— startGamepadBridge 是在**父页面**里轮询、
+      再把键塞进 iframe 的（见上面 startGamepadBridge 那处）。但键盘要靠它：
+      FreeJ2ME 的按键监听挂在 iframe 内部。
+    */
+    focus: () => focusFrame(iframe),
     setVolume(next: number) {
       volume = Math.max(0, Math.min(1, next))
       audio?.apply(volume)

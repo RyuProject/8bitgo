@@ -168,7 +168,24 @@ export interface ResolveContext {
  *              点了只是把这些改动固化下来，没有「某一帧」这个概念（js-dos）
  * 混在一起会误导玩家：他在关卡中间点存档，回来却退回上一个存盘点。
  */
-export type Capability = 'pause' | 'saveState' | 'fsSave' | 'volume' | 'gamepad' | 'screenshot' | 'record' | 'touchpad'
+/*
+ * touchpad 和 enginePad 的区别（都只影响触屏设备）：
+ *   touchpad   引擎自己不带屏幕按键，**由播放器画**一套浮层（TouchPad.tsx），按下走 sendButton
+ *   enginePad  引擎自带屏幕按键，而且适配器**确认它真的画出来了**（EmulatorJS）
+ * 前者决定「画不画我们那套」，后者只是告诉播放器「屏幕上确实有能按的东西」，
+ * 好让开局提示知道该不该出现 —— 两个都不声明的引擎（Ruffle / html5）手机上是真没按键，
+ * 提示里说「手柄在下面」只会让玩家白找一圈。
+ */
+export type Capability =
+  | 'pause'
+  | 'saveState'
+  | 'fsSave'
+  | 'volume'
+  | 'gamepad'
+  | 'screenshot'
+  | 'record'
+  | 'touchpad'
+  | 'enginePad'
 
 /**
  * 屏幕手柄能按的键。取 NES/FC 的键位作最小公约数 —— 手机屏上再多按键也放不下，
@@ -260,6 +277,30 @@ export interface RuntimeHandle {
    * 排查时在浏览器控制台里读得到，将来也可以做成界面上的「详细信息」。
    */
   engineLog?: () => string[]
+  /**
+   * 把键盘 / 手柄的焦点交给运行时。
+   *
+   * 浏览器只把键盘和手柄输入交给**有焦点的那个文档**，而 EmulatorJS / Ruffle /
+   * html5 / webretro / J2ME 全跑在 iframe 里。玩家点的「▶ 开始」在外层页面上，
+   * 焦点从头到尾没进过 iframe：引擎在 iframe 里读 navigator.getGamepads() 只能读到
+   * 一串 null（规范里手柄只对「按键那一刻有焦点」的文档可见），键盘监听也收不到
+   * 任何 keydown。玩家看到的就是「插了手柄没反应」「不先点一下画面键盘是死的」。
+   *
+   * 2026-09-03 用 Playwright 实测过：点完外层按钮后 iframe 内 document.hasFocus()
+   * 仍是 false，只有 iframe.focus() 或玩家点进画面才翻成 true。
+   *
+   * 跑在主文档里的引擎（jsnes / js-dos）不用实现 —— 它们本来就在焦点里。
+   */
+  focus?: () => void
+  /**
+   * 运行时那一侧看得到的手柄名字。
+   *
+   * 不能只用外层的 navigator.getGamepads()：手柄对每个文档是**分别**可见的
+   * （规范里的 [[hasGamepadGesture]]，按下按键那一刻哪个文档有焦点就给哪个）。
+   * 焦点在 iframe 里的时候外层读到的是空的 —— 手柄明明能用，工具栏却显示
+   * 「没检测到手柄」。iframe 同源，适配器把它那份 navigator 的结果报上来即可。
+   */
+  gamepads?: () => string[]
 }
 
 export interface Runtime {

@@ -123,7 +123,7 @@ CREATE TABLE IF NOT EXISTS users (
   avatar        TEXT    NOT NULL DEFAULT '🕹️',
   password_hash TEXT    NOT NULL,
   coins         INTEGER NOT NULL DEFAULT 0,
-  role          TEXT    NOT NULL DEFAULT 'user'   CHECK (role   IN ('user','admin')),
+  role          TEXT    NOT NULL DEFAULT 'user'   CHECK (role   IN ('user','volunteer','admin')),
   status        TEXT    NOT NULL DEFAULT 'active' CHECK (status IN ('active','banned')),
   created_at    TEXT    NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );

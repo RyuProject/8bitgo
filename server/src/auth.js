@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
 import { queryOne } from './db.js'
+import { can, isRole } from '../../shared/roles.js'
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me'
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || ''
@@ -98,25 +99,44 @@ export async function optionalUser(req, _res, next) {
 }
 
 /**
- * 后台写操作鉴权：
- *   - 请求头带 Authorization: Bearer <ADMIN_TOKEN>（与 .env 一致），或
- *   - 登录用户的 role = 'admin'
+ * 这次请求是以什么角色来的。
+ *
+ * 三种来源，返回的都是 shared/roles.js 里的角色名，认不出来就是 null：
+ *   - 开发后门 ADMIN_AUTH_DISABLED（见文件顶部）    -> 'admin'
+ *   - Authorization: Bearer <ADMIN_TOKEN>（与 .env 一致） -> 'admin'
+ *   - 登录用户的 users.role                          -> 该用户的角色
+ *
+ * 被封禁的账号一律当作没登录 —— 封号之后手里那张令牌还没过期，
+ * 不在这里拦住的话它还能接着写后台。
+ *
+ * ⚠️ 后台口令（ADMIN_TOKEN）这条路径没有 req.user：它不对应任何一个账号。
+ * 「不能封禁自己」这类以 req.user 为准的护栏对它自然不适用，
+ * 「不能封掉最后一个管理员」那种以数据库为准的护栏才拦得住它。
  */
-export async function isAdminRequest(req) {
-  // 开发后门：见文件顶部 ADMIN_AUTH_DISABLED 说明
-  if (ADMIN_AUTH_DISABLED) return true
+export async function roleOfRequest(req) {
+  if (ADMIN_AUTH_DISABLED) return 'admin'
 
   const token = bearer(req)
-  if (ADMIN_TOKEN && token === ADMIN_TOKEN) return true
+  if (ADMIN_TOKEN && token === ADMIN_TOKEN) return 'admin'
   const payload = token && verifyToken(token)
   if (payload?.uid) {
     const user = await queryOne('SELECT * FROM users WHERE id = ?', [payload.uid])
-    if (user && versionMatches(payload, user) && user.role === 'admin' && user.status !== 'banned') {
+    if (user && versionMatches(payload, user) && user.status !== 'banned') {
       req.user = user
-      return true
+      return isRole(user.role) ? user.role : null
     }
   }
-  return false
+  return null
+}
+
+/**
+ * 后台写操作鉴权：请求头带对了 ADMIN_TOKEN，或者登录用户的 role = 'admin'。
+ *
+ * 志愿者**不算**。要放志愿者进来的接口用 requireAbility(...)，
+ * 明说它需要哪个权限点，而不是把这里放宽 —— 那样等于一次性把整个后台交出去。
+ */
+export async function isAdminRequest(req) {
+  return (await roleOfRequest(req)) === 'admin'
 }
 
 export async function requireAdmin(req, res, next) {
@@ -125,5 +145,35 @@ export async function requireAdmin(req, res, next) {
     return res.status(403).json({ error: '需要管理员权限（后台口令或管理员账号）' })
   } catch (e) {
     next(e)
+  }
+}
+
+/**
+ * 「这次请求有没有这个权限点」的直接问法。
+ *
+ * 给那些**不是拦路、而是分叉**的地方用：同一个接口，有权限的看得到草稿 / 已下架，
+ * 没权限的看到 404。这类判断写成中间件反而绕。
+ */
+export async function hasAbility(req, ability) {
+  return can(await roleOfRequest(req), ability)
+}
+
+/**
+ * 按权限点鉴权：`router.put('/:slug', requireAbility('content:edit'), …)`。
+ *
+ * 谁有哪个权限点写在 shared/roles.js 的 ROLE_ABILITIES 里，前后端读的是同一份 ——
+ * 后台隐藏按钮只是体面，真正说了算的是这里。
+ */
+export function requireAbility(ability) {
+  return async (req, res, next) => {
+    try {
+      const role = await roleOfRequest(req)
+      if (can(role, ability)) return next()
+      // 401 和 403 在前端是两回事：AdminLayout 见到这两个码都会把后台重新锁上，
+      // 所以这里统一给 403，并且把「缺哪一项」说清楚，免得排查时只看见一句「没权限」
+      return res.status(403).json({ error: `权限不足：需要 ${ability}` })
+    } catch (e) {
+      next(e)
+    }
   }
 }

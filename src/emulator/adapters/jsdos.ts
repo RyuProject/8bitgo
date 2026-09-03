@@ -11,7 +11,7 @@
  * 资源默认从 /jsdos/ 加载（由 scripts/copy-jsdos.mjs 从 npm 包复制过来）。
  * 想换成官方 CDN 就设 VITE_JSDOS_PATH=https://v8.js-dos.com/latest/
  */
-import type { Capability, CaptureSources, LoadProgress, MountOptions, Runtime, RuntimeHandle } from '../types'
+import type { Capability, CaptureSources, LoadProgress, MountOptions, PadButton, Runtime, RuntimeHandle } from '../types'
 import { getT, fmt } from '@/services/i18n'
 import {
   buildDosboxConf,
@@ -111,6 +111,27 @@ const DOS_PAD_MAP: Record<number, number> = {
   [GP.SELECT]: KBD.esc,
   [GP.L1]: KBD.tab,
 }
+/**
+ * 屏幕手柄（TouchPad）的八个键 → DOSBox 键码。
+ *
+ * 和上面 DOS_PAD_MAP 是同一套键位，只是索引不同（那份按 Gamepad API 的按钮下标，
+ * 这份按我们自己的 PadButton 名字），所以两边改一处就得改另一处。
+ * 手机上没有键盘，不给这一套的话 DOS 游戏在手机上纯属只能看 —— 连菜单都进不去。
+ *
+ * SELECT 给 Esc 而不是别的：DOS 游戏的暂停 / 退出菜单基本都在 Esc 上，
+ * 手机玩家最容易卡住的地方就是「进了游戏出不来」。
+ */
+const DOS_TOUCH_MAP: Record<PadButton, number> = {
+  up: KBD.up,
+  down: KBD.down,
+  left: KBD.left,
+  right: KBD.right,
+  a: KBD.leftCtrl,
+  b: KBD.leftAlt,
+  start: KBD.enter,
+  select: KBD.esc,
+}
+
 type DosFn = (el: HTMLElement, options: Record<string, unknown>) => DosProps
 
 /** js-dos 是全局脚本，整页只加载一次 */
@@ -331,6 +352,9 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
               if (caps.has('gamepad') && !pad) {
                 pad = startGamepadBridge(DOS_PAD_MAP, (key, pressed) => ci?.sendKeyEvent(key, pressed))
               }
+              // 屏幕手柄同理 —— 有了 ci 才有地方送键，所以能力等到这一刻才声明
+              caps.add('touchpad')
+              options.onCaps?.(caps)
             }
             options.onStart?.()
           }
@@ -376,6 +400,22 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   return {
     caps,
     volume,
+    /**
+     * 屏幕手柄按下 / 松开。播放器在触屏设备上画那一套浮层，按下就走这里
+     * （声明了 'touchpad' 能力才画，见 types.ts 的 Capability）。
+     *
+     * 直接送 DOSBox 键码，不合成 KeyboardEvent —— js-dos 的键盘处理在它自己的
+     * canvas 上，合成事件的 keyCode 在各浏览器上对不齐，而且会撞上页面别的监听。
+     */
+    sendButton(button, down) {
+      const key = DOS_TOUCH_MAP[button]
+      if (key === undefined) return
+      try {
+        ci?.sendKeyEvent(key, down)
+      } catch {
+        /* 引擎已经拆了就忽略 */
+      }
+    },
     destroy() {
       destroyed = true
       window.clearTimeout(readyFallback)

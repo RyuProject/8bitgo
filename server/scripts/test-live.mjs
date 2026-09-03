@@ -188,7 +188,34 @@ const v4 = conn(); await once(v4, 'connect')
 const nf = await call(v4, 'watch', { roomId: 'nope' })
 check('进不存在的房间', nf.err === 'not found')
 
-for (const s of [host, host2, host3, host4, v1, v2, v3, v4, v5, late, stranger]) s.close()
+/**
+ * 19. 一个人玩、没人在看 -> 断线**立刻**散场，不占宽限期。
+ * 宽限期保护的是观众手里那条链接；席位空着就没有要保护的东西，
+ * 再留一分钟只会让大厅挂着一张点进去什么都没有的卡片。
+ */
+const solo = conn(); await once(solo, 'connect')
+const soloLive = await call(solo, 'go-live', { gameName: 'Solo', gameSlug: 'solo' })
+check('独自开播', !soloLive.err && liveRoom(soloLive.data.roomId) !== null, soloLive.err || '')
+solo.close()
+await new Promise((r) => setTimeout(r, 120)) // 远小于 400ms 的宽限期
+check('没观众时掉线立刻散场', liveRoom(soloLive.data.roomId) === null)
+
+// 20. 主播不在期间最后一个观众也走了 -> 房间立刻散，不等宽限期到点
+const host5 = conn(); await once(host5, 'connect')
+const l5 = await call(host5, 'go-live', { gameName: 'Duo', gameSlug: 'duo' })
+const room5 = l5.data.roomId
+const v6 = conn(); await once(v6, 'connect')
+await call(v6, 'watch', { roomId: room5 })
+await once(host5, 'viewer-joined')
+const away5 = once(v6, 'host-away')
+host5.close()
+await away5
+check('有观众时掉线仍走宽限期', liveRoom(room5) !== null && liveRoom(room5).hostAway === true)
+v6.close()
+await new Promise((r) => setTimeout(r, 120))
+check('主播不在时最后一个观众走了也立刻散场', liveRoom(room5) === null)
+
+for (const s of [host, host2, host3, host4, host5, v1, v2, v3, v4, v5, v6, solo, late, stranger]) s.close()
 server.close(); http.close()
 console.log('通过 %d 项：\n  %s', ok.length, ok.join('\n  '))
 if (bad.length) { console.log('\n失败 %d 项：\n  %s', bad.length, bad.join('\n  ')); process.exit(1) }

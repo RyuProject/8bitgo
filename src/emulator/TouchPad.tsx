@@ -9,9 +9,28 @@
  * 已在 adapters/emulatorjs.ts 的 showVirtualGamepad 里修好。所以这个浮层只对
  * 声明了 'touchpad' 能力的运行时出现，两套不会同时冒出来。
  */
-import { useCallback, useEffect, useRef, useState, type MouseEvent, type PointerEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type MouseEvent, type PointerEvent } from 'react'
 import type { PadButton, RuntimeHandle } from './types'
 import { cx } from '@/lib/format'
+
+/**
+ * 手柄整块的触摸样式。
+ *
+ * 长按会选中字符 —— iOS Safari 把「按住不动」当成开始选字，安卓 Chrome 也会弹出选区手柄，
+ * 手指压着 A 键连发时屏幕上就冒出一片蓝色选区、还带放大镜。pointerdown 里的 preventDefault
+ * 拦不住它（选字是触摸手势层面的，不归 pointer 事件管），只能用 CSS 关掉：
+ *   user-select: none         —— 设在根上就够了：子元素的 auto 会跟着父级算成 none
+ *   -webkit-touch-callout     —— iOS 长按弹出的那条「拷贝 / 查询」菜单
+ *   -webkit-tap-highlight     —— 安卓点一下闪一层灰
+ *   touch-action: none        —— 别把按住当成滚动 / 缩放
+ */
+const PAD_STYLE: CSSProperties = {
+  userSelect: 'none',
+  WebkitUserSelect: 'none',
+  WebkitTouchCallout: 'none',
+  WebkitTapHighlightColor: 'transparent',
+  touchAction: 'none',
+}
 
 /** 十字键中心这一圈不算方向；太小会误触，太大会「顶不动」 */
 const DEADZONE = 0.22
@@ -54,12 +73,19 @@ interface Props {
   /**
    * 玩家第一次真的按下某个键时调一次。
    * 播放器拿它来撤掉「手柄在这儿」的开局提示 —— 手都摸到了，就不用再教了。
+   * 收起 / 展开那颗按钮也算：他能点到它，就说明已经看见这一条了。
    */
   onInput?: () => void
+  /**
+   * 描一圈会呼吸的绿边，把玩家的视线引到按键上。
+   * 开局提示显示期间为 true —— 提示说「手柄在下面」，下面同时亮起来，
+   * 光靠一句话玩家未必往下看。
+   */
+  highlight?: boolean
   className?: string
 }
 
-export function TouchPad({ handle, layout = 'overlay', onInput, className }: Props) {
+export function TouchPad({ handle, layout = 'overlay', onInput, highlight, className }: Props) {
   const [hidden, setHidden] = useState(() => {
     try {
       return localStorage.getItem(HIDDEN_KEY) === '1'
@@ -148,8 +174,10 @@ export function TouchPad({ handle, layout = 'overlay', onInput, className }: Pro
       className={cx(
         'pointer-events-auto touch-none rounded-full border border-white/20 backdrop-blur-sm',
         inline ? 'relative bg-white/5' : 'absolute bottom-[8%] left-[4%] bg-black/30',
+        // 行内那一条是整条一起亮（见下面 inline 的容器），这里只管浮层
+        !inline && highlight && 'animate-pad-pulse',
       )}
-      style={{ width: DPAD, height: DPAD, touchAction: 'none' }}
+      style={{ ...PAD_STYLE, width: DPAD, height: DPAD }}
       onPointerDown={(e) => {
         e.preventDefault()
         e.currentTarget.setPointerCapture(e.pointerId)
@@ -179,8 +207,8 @@ export function TouchPad({ handle, layout = 'overlay', onInput, className }: Pro
       type="button"
       aria-label={`Button ${button.toUpperCase()}`}
       {...btnProps(button)}
-      className={cx(face, 'rounded-full font-bold', cls)}
-      style={{ width: FACE, height: FACE, touchAction: 'none' }}
+      className={cx(face, 'rounded-full font-bold', !inline && highlight && 'animate-pad-pulse', cls)}
+      style={{ ...PAD_STYLE, width: FACE, height: FACE }}
     >
       {button.toUpperCase()}
     </button>
@@ -193,7 +221,7 @@ export function TouchPad({ handle, layout = 'overlay', onInput, className }: Pro
       aria-label={button === 'select' ? 'Select' : 'Start'}
       {...btnProps(button)}
       className={cx(face, 'rounded-full px-3 py-1 text-[10px] tracking-wider', cls)}
-      style={{ touchAction: 'none' }}
+      style={PAD_STYLE}
     >
       {button === 'select' ? 'SELECT' : 'START'}
     </button>
@@ -204,7 +232,11 @@ export function TouchPad({ handle, layout = 'overlay', onInput, className }: Pro
     <button
       type="button"
       aria-label={hidden ? 'Show on-screen controls' : 'Hide on-screen controls'}
-      onClick={() => setHidden((v) => !v)}
+      onClick={() => {
+        // 点得到这颗按钮就说明他已经看见这一条了，开局提示可以收了
+        onInput?.()
+        setHidden((v) => !v)
+      }}
       className={cx(
         'pointer-events-auto absolute rounded-md px-2 py-0.5 text-[11px]',
         'border border-white/20 bg-black/40 text-white/70 backdrop-blur-sm',
@@ -226,8 +258,12 @@ export function TouchPad({ handle, layout = 'overlay', onInput, className }: Pro
     return (
       <div
         data-testid="touchpad"
-        className={cx('relative z-20 shrink-0 touch-none border-t border-line bg-black/40', className)}
-        style={{ touchAction: 'none' }}
+        className={cx(
+          'relative z-20 shrink-0 touch-none border-t border-line bg-black/40',
+          highlight && 'animate-pad-pulse',
+          className,
+        )}
+        style={PAD_STYLE}
       >
         {toggle}
         {hidden ? (
@@ -255,7 +291,7 @@ export function TouchPad({ handle, layout = 'overlay', onInput, className }: Pro
     <div
       data-testid="touchpad"
       className={cx('pointer-events-none absolute inset-0 z-20 touch-none', className)}
-      style={{ touchAction: 'none' }}
+      style={PAD_STYLE}
     >
       {toggle}
       {hidden ? null : (

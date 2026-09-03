@@ -150,6 +150,8 @@ export interface NetplayRoom {
   hasState?: boolean
   /** 已经换过房主了，房间搬到了这个新 id（老邀请链接会带上它） */
   migratedTo?: string | null
+  /** 被选中的人已经认领、正在重开房间 */
+  claimed?: boolean
 }
 
 /** 服务端根路径（NETPLAY_URL 形如 https://host/netplay） */
@@ -158,8 +160,13 @@ const apiBase = () => NETPLAY_URL.replace(/\/netplay$/, '')
 /**
  * 房主定期把存档传上去，掉线时交给新房主。
  * gzip 之后 NES 大约 20KB、GBA 几十 KB，25 秒一次可以忽略不计。
+ *
+ * 鉴权只认房间令牌（服务端 room-token 事件发下来的那个）。
+ * ⚠️ 以前这里把令牌塞进了 `x-netplay-user` —— 服务端拿它当 userid 比对，永远 403，
+ * 房主的进度托管其实一直没在工作；而没拿到令牌时退回 userid 的那条路又是任何访客都能伪造的。
  */
-export async function uploadState(roomId: string, userId: string, state: Uint8Array): Promise<boolean> {
+export async function uploadState(roomId: string, token: string, state: Uint8Array): Promise<boolean> {
+  if (!token) return false
   try {
     let body: BodyInit = state as BodyInit
     if (typeof CompressionStream === 'function') {
@@ -168,7 +175,7 @@ export async function uploadState(roomId: string, userId: string, state: Uint8Ar
     }
     const res = await fetch(`${apiBase()}/api/netplay/rooms/${encodeURIComponent(roomId)}/state`, {
       method: 'POST',
-      headers: { 'content-type': 'application/octet-stream', 'x-netplay-user': userId },
+      headers: { 'content-type': 'application/octet-stream', 'x-netplay-token': token },
       body,
     })
     return res.ok
@@ -198,13 +205,41 @@ export async function downloadState(roomId: string, token = ''): Promise<Uint8Ar
   }
 }
 
-/** 新房主开好新房间后，把新旧房间接上（老邀请链接才能继续有效） */
-export async function migrateRoom(oldRoomId: string, newRoomId: string, userId: string): Promise<boolean> {
+/**
+ * 认领：服务器选中我接手，先告诉它「我来」。
+ *
+ * 必须在重新挂载引擎**之前**调：重挂引擎会断掉旧连接，不先认领的话，服务器看到
+ * 唯一的访客断了就把房间散掉，老邀请链接跟着死；多人房则 8 秒后轮给下一位，两个人抢着接。
+ * 认领之后服务器暂停轮询、断线不散场，存档也可以凭这个令牌下载。
+ */
+export async function claimRoom(roomId: string, token: string): Promise<string | null> {
+  if (!token) return null
+  try {
+    const res = await fetch(`${apiBase()}/api/netplay/rooms/${encodeURIComponent(roomId)}/claim`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-netplay-token': token },
+      body: '{}',
+    })
+    if (!res.ok) return null
+    const data = (await res.json()) as { claimToken?: string }
+    return data.claimToken || null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 新房主开好新房间后，把新旧房间接上（老邀请链接才能继续有效）。
+ * 两个令牌：认领令牌证明「我是被选中的人」，新房间的成员令牌证明「新房间是我开的」——
+ * 以前只看 body 里的 userId，那是谁都能填的。
+ */
+export async function migrateRoom(oldRoomId: string, newRoomId: string, claimToken: string, newRoomToken: string): Promise<boolean> {
+  if (!claimToken || !newRoomToken) return false
   try {
     const res = await fetch(`${apiBase()}/api/netplay/rooms/${encodeURIComponent(oldRoomId)}/migrate`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ newRoomId, userId }),
+      headers: { 'content-type': 'application/json', 'x-netplay-token': claimToken },
+      body: JSON.stringify({ newRoomId, newRoomToken }),
     })
     return res.ok
   } catch {

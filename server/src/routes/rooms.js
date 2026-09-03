@@ -21,6 +21,8 @@ import { presenceFromRequest, UNKNOWN_PRESENCE } from '../presence.js'
 export const roomsRouter = Router()
 
 const MEMBER_TTL = 30_000
+/** 房间数上限。心跳是公开接口，roomId 客户端随便填 —— 不设上限的话一个循环就能把内存刷爆 */
+const MAX_ROOMS = Number(process.env.ROOMS_MAX || 1000)
 const rooms = new Map() // roomId -> { roomId, gameSlug, createdAt, members: Map<memberId, member> }
 
 function prune(now = Date.now()) {
@@ -97,6 +99,10 @@ roomsRouter.post('/heartbeat', softUser, (req, res) => {
 
   let room = rooms.get(roomId)
   if (!room) {
+    if (rooms.size >= MAX_ROOMS) {
+      prune(now)
+      if (rooms.size >= MAX_ROOMS) return res.status(503).json({ error: 'too many rooms' })
+    }
     room = { roomId, gameSlug, createdAt: now, members: new Map() }
     rooms.set(roomId, room)
   }
