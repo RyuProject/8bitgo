@@ -722,6 +722,14 @@ export async function hydrateUsers(): Promise<void> {
   notifyUsers()
 }
 
+/**
+ * 调整 G 币。**后台已经不再调它了** —— G 币功能整体没上线（FEATURES.coins = false），
+ * 用户管理页那一列和那个按钮已经撤掉。
+ *
+ * 接口和这个函数都留着：服务端的 coinsDelta 一直在，users.coins 那一列也还在，
+ * 哪天真要开 G 币，前端这条线是现成的。删掉它并不会让谁更安全，只会让重新开的时候
+ * 再写一遍。
+ */
 export async function adminAdjustCoins(id: string, delta: number) {
   if (apiEnabled()) {
     await api.patch(`/api/users/${encodeURIComponent(id)}`, { coinsDelta: delta }, true)

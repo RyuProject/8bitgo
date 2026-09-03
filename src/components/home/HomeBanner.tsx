@@ -4,6 +4,7 @@ import { openAuthModal } from '@/services/authModal'
 import { PixelButton } from '@/components/ui/PixelButton'
 import { GameCover } from '@/components/game/GameCover'
 import { useGamesBySlugs } from '@/services/gameCache'
+import { romUrlForKey } from '@/services/roms'
 import { cx } from '@/lib/format'
 import { useCurrentUser } from '@/services/auth'
 import { FEATURES } from '@/config/features'
@@ -54,6 +55,23 @@ const DEPTH = [
 // md / lg 上这一行还要塞下左边的标题和文案，所以先小一档，宽屏（xl）才放到最大
 const STACK_BOX = 'h-56 w-64 lg:h-64 lg:w-72 xl:h-80 xl:w-96'
 const CARD = 'w-[55%]'
+
+/**
+ * Fisher-Yates，返回打乱后的下标表。
+ *
+ * 只在挂载之后跑（见 Banner 里 order 的注释），所以直接用 Math.random 就行，
+ * 不需要可复现的种子。
+ */
+function shuffledIndexes(n: number): number[] {
+  const out = Array.from({ length: n }, (_, i) => i)
+  for (let i = n - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    const tmp = out[i]
+    out[i] = out[j]
+    out[j] = tmp
+  }
+  return out
+}
 
 /**
  * 系统「减弱动态效果」。
@@ -110,7 +128,28 @@ function Banner({ className, games }: { className?: string; games?: Game[] }) {
    * 热门一到就把参数换成空数组，兜底那几款不再花请求。
    */
   const fallback = useGamesBySlugs(games?.length ? NO_SLUGS : HERO_FALLBACK)
-  const pool = useMemo(() => (games?.length ? games : fallback).slice(0, POOL_MAX), [games, fallback])
+  const base = useMemo(() => (games?.length ? games : fallback).slice(0, POOL_MAX), [games, fallback])
+
+  /**
+   * 顺序**每次进首页都重新打乱**。
+   *
+   * 以前是热门榜原样切前 8 款、seq 从 0 起，于是不管谁什么时候打开首页，
+   * 头一款永远是榜首那个（拳皇 97），后面的顺序也分毫不差 ——
+   * 这一栏本来是想「让人看见库里还有什么」，结果成了一张固定海报。
+   *
+   * 打乱**放在挂载之后**，理由和上面 usePrefersReducedMotion 一样：
+   * 服务端渲染时也会执行这段，两边随机数对不上就是 hydration 不匹配。
+   * 代价是刚进页面那一下会换一次牌，而换牌本来就有抛入动画兜着，看不出来。
+   */
+  const [order, setOrder] = useState<number[] | null>(null)
+  useEffect(() => {
+    setOrder(base.length > 1 ? shuffledIndexes(base.length) : null)
+  }, [base.length])
+
+  const pool = useMemo(
+    () => (order && order.length === base.length ? order.map((i) => base[i]) : base),
+    [base, order],
+  )
 
   /** 轮换序号，只增不减。取模拿当前那款，减去层数就是卡堆里压着的那几款 */
   const [seq, setSeq] = useState(0)
@@ -126,6 +165,22 @@ function Banner({ className, games }: { className?: string; games?: Game[] }) {
     }, ROTATE_MS)
     return () => window.clearInterval(timer)
   }, [reduced, paused, pool.length])
+
+  /**
+   * 把**下一张**封面提前拉下来。
+   *
+   * 不预取的话，每 5 秒抛出来的那张是「先空着一个框、图到了再填」，
+   * 而它同时正在跑 560ms 的抛入动画 —— 图片一到就是一次解码加重绘，
+   * 正好压在动画中间，看着就是卡一下。提前一轮拉好，切换时只是换个 src，直接命中缓存。
+   */
+  useEffect(() => {
+    if (pool.length < 2) return
+    const next = pool[(seq + 1) % pool.length]
+    const src = next?.cover ? romUrlForKey(next.cover) : ''
+    if (!src) return
+    const img = new Image()
+    img.src = src
+  }, [pool, seq])
 
   const current = pool.length ? pool[seq % pool.length] : null
   // 名单还没到的时候保留原来那句品牌语，别让标题空着或者闪一下
@@ -221,8 +276,10 @@ function Banner({ className, games }: { className?: string; games?: Game[] }) {
                     className="block overflow-hidden rounded-xl border border-black/10 shadow-xl shadow-black/25 outline-offset-4 transition-transform hover:scale-[1.04] focus-visible:outline-2 focus-visible:outline-brand"
                   >
                     {/* 只给第一张 priority：它是首屏 LCP 的候选，后面每 5 秒新抛的那些
-                        再标高优先级就等于没分优先级了 */}
-                    <GameCover game={game} ratio="square" iconSize="md" showTitle={false} priority={key === 0} />
+                        再标高优先级就等于没分优先级了。
+                        still：这一摞每 5 秒换一批，带视频封面的话就是不停地新建 <video>
+                        + 解码 + 销毁，主线程被占住，整页跟着一顿一顿（见 GameCover 的 still） */}
+                    <GameCover game={game} ratio="square" iconSize="md" showTitle={false} priority={key === 0} still />
                   </Link>
                 </div>
               </div>
