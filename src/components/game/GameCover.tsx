@@ -25,6 +25,15 @@ interface Props {
    * 只给真正一进页面就能看到的那几张，给多了等于没分优先级。
    */
   priority?: boolean
+  /**
+   * 只用静态封面，不起视频。
+   *
+   * 给那些**会自己换内容**的位置用（首页 hero 的卡堆每 5 秒抛一张新的）：
+   * 那里同时挂着三张卡、每 5 秒换一批，有视频的话就变成不停地新建 <video>、
+   * 拉数据、解码、再销毁 —— 解码占住主线程，整页跟着一顿一顿。
+   * 何况卡堆里压着的那两张本来只露一个角，播了也没人看得见。
+   */
+  still?: boolean
 }
 
 const ratios = {
@@ -151,6 +160,7 @@ export function GameCover({
   showBadge = true,
   reserveBottomRight = false,
   priority = false,
+  still = false,
 }: Props) {
   const t = useT()
   const lang = useLang()
@@ -158,7 +168,7 @@ export function GameCover({
   const title = gameTitle(game, lang)
   const platform = platformMap[game.platform]
   const coverSrc = game.cover ? romUrlForKey(game.cover) : ''
-  const videoSrc = game.video ? romUrlForKey(game.video) : ''
+  const videoSrc = !still && game.video ? romUrlForKey(game.video) : ''
 
   return (
     <div
