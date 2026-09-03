@@ -32,12 +32,28 @@ const POOL_MAX = 8
  * 卡堆里第 n 层的位置、角度、缩放和透明度。
  * 写成常量表而不是按 index 算，是因为这几个角度是调出来的 ——
  * 公式生成的等差角度看着像贴纸，手挑的才像随手扔的一摞卡。
+ *
+ * x / y 是**百分比**（相对卡片自身宽高），不是像素：卡片尺寸按断点变（见下面的
+ * CARD / STACK_BOX），写死像素的话大屏上那点偏移会被缩成一条边，卡堆就摊平了。
+ * 这几个数是原来给 112px 卡调出来的偏移换算过来的（-18/112 ≈ -16%，以此类推）。
  */
 const DEPTH = [
   { x: 0, y: 0, rotate: -4, scale: 1, opacity: 1 },
-  { x: -18, y: 14, rotate: 7, scale: 0.93, opacity: 0.78 },
-  { x: -34, y: 27, rotate: -12, scale: 0.86, opacity: 0.5 },
+  { x: -16, y: 12.5, rotate: 7, scale: 0.93, opacity: 0.78 },
+  { x: -30, y: 24, rotate: -12, scale: 0.86, opacity: 0.5 },
 ]
+
+/**
+ * 卡堆的占位框与卡片宽度。
+ *
+ * 框只负责在这一行里占位（卡片是绝对定位的，超出去也不会被框裁掉），
+ * 所以框比卡片大一圈：卡片最多旋转 12°、还要往左下错开 30%，
+ * 大约要 1.5 倍卡宽才不至于压到左边的文案。
+ * 卡片用容器宽度的百分比，改框的尺寸就够了，不用两处一起调。
+ */
+// md / lg 上这一行还要塞下左边的标题和文案，所以先小一档，宽屏（xl）才放到最大
+const STACK_BOX = 'h-56 w-64 lg:h-64 lg:w-72 xl:h-80 xl:w-96'
+const CARD = 'w-[55%]'
 
 /**
  * 系统「减弱动态效果」。
@@ -155,7 +171,7 @@ function Banner({ className, games }: { className?: string; games?: Game[] }) {
             {t.home.headline1}
             <br />
             {/* 至少占满一行。名字长短差得多（《魂斗罗》和 The King of Fighters '97 不是一个
-                量级），偶尔会折成两行 —— 那一行的高度由右边那摞封面（h-52 + 上下内边距）
+                量级），偶尔会折成两行 —— 那一行的高度由右边那摞封面（STACK_BOX + 上下内边距）
                 兜着，撑不破这一行，所以这里只保底一行，不预留两行去换一块空当出来 */}
             <span className="block min-h-[1.15em]">
               <span
@@ -182,7 +198,7 @@ function Banner({ className, games }: { className?: string; games?: Game[] }) {
         </div>
 
         {/* 抛上来的封面堆。每张都是通往那款游戏的链接，不是装饰，所以不能 aria-hidden */}
-        <div className="relative hidden h-52 w-60 shrink-0 md:block">
+        <div className={cx('relative hidden shrink-0 md:block', STACK_BOX)}>
           {/* 倒着渲染：DOM 里后出现的压在上面，和 z-index 说的是同一件事，
               这样即使 z-index 失效（比如某个祖先建了新的层叠上下文）叠放顺序也还是对的 */}
           {[...stack].reverse().map(({ game, key, depth }) => {
@@ -190,10 +206,10 @@ function Banner({ className, games }: { className?: string; games?: Game[] }) {
             return (
               <div
                 key={key}
-                className="hero-card absolute left-1/2 top-1/2 w-28 transition-[transform,opacity] duration-500 ease-out"
+                className={cx('hero-card absolute left-1/2 top-1/2 transition-[transform,opacity] duration-500 ease-out', CARD)}
                 style={{
                   // 居中 + 该层的偏移一起写在这儿；抛入动画放在里层，两者互不覆盖
-                  transform: `translate(-50%, -50%) translate(${d.x}px, ${d.y}px) rotate(${d.rotate}deg) scale(${d.scale})`,
+                  transform: `translate(-50%, -50%) translate(${d.x}%, ${d.y}%) rotate(${d.rotate}deg) scale(${d.scale})`,
                   opacity: d.opacity,
                   zIndex: 30 - depth * 10,
                 }}
@@ -206,7 +222,7 @@ function Banner({ className, games }: { className?: string; games?: Game[] }) {
                   >
                     {/* 只给第一张 priority：它是首屏 LCP 的候选，后面每 5 秒新抛的那些
                         再标高优先级就等于没分优先级了 */}
-                    <GameCover game={game} ratio="square" iconSize="sm" showTitle={false} priority={key === 0} />
+                    <GameCover game={game} ratio="square" iconSize="md" showTitle={false} priority={key === 0} />
                   </Link>
                 </div>
               </div>

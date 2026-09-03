@@ -528,7 +528,7 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
       )}
 
       {panel === 'gamepad' && (
-        <div className="absolute bottom-full left-0 z-20 mb-2 w-64 rounded-lg border border-line bg-surface px-3 py-2 shadow-lg">
+        <div className="absolute bottom-full left-0 z-20 mb-2 w-64 max-w-[calc(100vw-2rem)] rounded-lg border border-line bg-surface px-3 py-2 shadow-lg">
           <p className={cx('font-semibold', pads.length ? 'text-online' : 'text-muted')}>
             {pads.length ? fmt(tt.gamepadOn, { n: String(pads.length) }) : tt.gamepadOff}
           </p>
@@ -537,7 +537,11 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
               · {id}
             </p>
           ))}
-          <p className="mt-2 border-t border-line pt-2 text-muted">{tt.gamepadHint}</p>
+          {/* 红白机的映射是我们自己实现的（见 gamepadInput.ts），所以能把具体键位说清楚；
+              别的引擎是引擎自带的映射，只能给一句笼统的 */}
+          <p className="mt-2 border-t border-line pt-2 text-muted">
+            {runtimeId === 'jsnes' ? tt.gamepadHintNes : tt.gamepadHint}
+          </p>
         </div>
       )}
 

@@ -51,10 +51,15 @@ interface Props {
    * 将近四成 —— 玩超级玛丽时脚下的地面和敌人正好在那一块。
    */
   layout?: 'overlay' | 'inline'
+  /**
+   * 玩家第一次真的按下某个键时调一次。
+   * 播放器拿它来撤掉「手柄在这儿」的开局提示 —— 手都摸到了，就不用再教了。
+   */
+  onInput?: () => void
   className?: string
 }
 
-export function TouchPad({ handle, layout = 'overlay', className }: Props) {
+export function TouchPad({ handle, layout = 'overlay', onInput, className }: Props) {
   const [hidden, setHidden] = useState(() => {
     try {
       return localStorage.getItem(HIDDEN_KEY) === '1'
@@ -73,8 +78,9 @@ export function TouchPad({ handle, layout = 'overlay', className }: Props) {
       if (down) held.current.add(button)
       else held.current.delete(button)
       send?.(button, down)
+      if (down) onInput?.()
     },
-    [send],
+    [send, onInput],
   )
 
   /** 换游戏、退出全屏、组件卸载：手上按着的键必须松开，否则角色会一直往一个方向跑 */

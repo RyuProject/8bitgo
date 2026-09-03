@@ -187,6 +187,9 @@ interface Props {
  */
 const NARROW_MQ = '(max-width: 639.98px)'
 
+/** 「手柄在这儿」的开局提示看过了没。按浏览器记 —— 教一次就够 */
+const PAD_HINT_KEY = '8bitgo.padhint.seen'
+
 /**
  * 「◧ 沉浸模式」→「◧」：手机上按钮只留前面那个符号。
  *
@@ -1132,6 +1135,46 @@ export function EmulatorPlayer({
   /** 手机竖屏且不在全屏里 —— 这时手柄放画面下面，别压着画面 */
   const padInline = narrow && !fullscreen
 
+  /**
+   * 开局提示：告诉玩家「怎么玩、手柄在哪儿」。
+   *
+   * 为什么需要：手机上手柄在画面**下面**，而玩家点完开始之后眼睛盯着画面 ——
+   * 不往下看就以为这游戏没法操作。桌面端玩家有键盘（提示文案在按钮 title 里），
+   * 手机上没有任何地方能顺手说这句话。
+   *
+   * 什么时候不再出现：
+   *  · 玩家真的按了一下屏幕手柄（onInput）—— 手都摸到了，教完了，记进 localStorage
+   *  · 玩家点了「知道了」—— 同上
+   *  · 9 秒自动淡出，但**不记**已看过：他可能压根没注意到，下一局还该提醒
+   */
+  const [padHint, setPadHint] = useState(false)
+  const padHintTimer = useRef(0)
+  const dismissPadHint = useCallback(() => {
+    window.clearTimeout(padHintTimer.current)
+    setPadHint(false)
+    try {
+      localStorage.setItem(PAD_HINT_KEY, '1')
+    } catch {
+      /* 隐私模式下记不住，那就每局都提醒一次 */
+    }
+  }, [])
+  useEffect(() => {
+    if (!showPad) return
+    let seen = false
+    try {
+      seen = localStorage.getItem(PAD_HINT_KEY) === '1'
+    } catch {
+      /* 读不了就当没看过 */
+    }
+    if (seen) return
+    setPadHint(true)
+    padHintTimer.current = window.setTimeout(() => setPadHint(false), 9000)
+    return () => {
+      window.clearTimeout(padHintTimer.current)
+      setPadHint(false)
+    }
+  }, [showPad])
+
   const statusLabel =
     status === 'running'
       ? t.player.statusRunning
@@ -1208,7 +1251,34 @@ export function EmulatorPlayer({
             手机竖屏时不走这里，改成画面下面单独一条（见下面 padInline 那块）：
             画面框只有 291pt 高，浮层的十字键要压掉四成。
           */}
-          {showPad && !padInline && <TouchPad handle={handle} />}
+          {showPad && !padInline && <TouchPad handle={handle} onInput={dismissPadHint} />}
+
+          {/*
+            开局提示气泡。压在画面底部而不是画在手柄那一条上 —— 玩家的视线在画面里，
+            提示得出现在他正在看的地方，然后用一个 👇 把他引到下面去。
+          */}
+          {showPad && padHint && (
+            <div className="absolute inset-x-0 bottom-0 z-30 flex justify-center px-2 pb-2">
+              <div className="flex items-start gap-2 rounded-xl border border-white/20 bg-black/80 px-3 py-2 text-left text-[11px] leading-snug text-white/90 shadow-lg backdrop-blur">
+                <span aria-hidden className="text-base leading-none">
+                  🎮
+                </span>
+                <span>
+                  <span className="block font-semibold text-white">
+                    {padInline ? t.player.padHintBelow : t.player.padHintOverlay}
+                  </span>
+                  {t.player.padHintKeys}
+                </span>
+                <button
+                  type="button"
+                  onClick={dismissPadHint}
+                  className="ml-1 shrink-0 rounded-md border border-white/25 px-2 py-1 font-semibold text-white/80 hover:border-white/50 hover:text-white"
+                >
+                  {t.player.padHintGot}
+                </button>
+              </div>
+            </div>
+          )}
 
           {!busy && (
             <div className="absolute inset-0">
@@ -1412,7 +1482,7 @@ export function EmulatorPlayer({
           触屏手柄（行内那一路）。手机竖屏专用：排在画面框和工具栏之间，谁也不压谁。
           整条的边框、底色和收起状态都在 TouchPad 里，收起来只剩一颗 🎮 的高度。
         */}
-        {showPad && padInline && <TouchPad handle={handle} layout="inline" />}
+        {showPad && padInline && <TouchPad handle={handle} layout="inline" onInput={dismissPadHint} />}
 
         {/* 工具栏放进播放器框体底部，而不是作为详情页里的下一块内容 */}
         <div

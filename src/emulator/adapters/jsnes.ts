@@ -14,6 +14,7 @@ import { getT, fmt } from '@/services/i18n'
 import { extractRomFromZip, isZip } from '@/lib/unzip'
 import { assertNesRom } from '@/lib/romValidation'
 import { loadGameBytes } from '../romLoader'
+import { startGamepadInput, type GamepadInput } from '../gamepadInput'
 
 /**
  * 手柄键 → jsnes 的按键编号（node_modules/jsnes/src/controller.js 的静态常量）。
@@ -141,20 +142,39 @@ interface JsnesBrowser {
   _frameTimer?: JsnesFrameTimer
 }
 
-/** jsnes 只在 localStorage 里存在配置时才认手柄，没有的话插了也没反应 —— 给个标准布局的默认值 */
+/**
+ * 清掉 jsnes 的手柄配置 —— 注意是「清掉」，不是「配好」。
+ *
+ * 这里以前写的是一份「标准布局的默认值」，形状是 `[{ buttons: { BUTTON_A: 1, ... } }, ...]`。
+ * 而 jsnes 的 GamepadController 要的是
+ * `{ playerGamepadId: [...], configs: { '<pad.id>': { buttons: [{type, code, buttonId}] } } }`，
+ * 两者对不上，后果不是「映射不对」而是**每帧抛异常**：
+ * poll() 里 `this.gamepadConfig.playerGamepadId[0]` 读到 undefined 就 TypeError，
+ * 而它的循环是 `this.poll(); requestAnimationFrame(loop)` —— 抛了之后下一拍不再排，
+ * 手柄轮询彻底停摆，玩家只看到控制台一条报错。
+ *
+ * 而且这条路本来就走不通：configs 是按 gamepad.id 逐个记的，玩家插上之前我们不知道
+ * 那串 id 长什么样，没法预配。所以物理手柄改成自己轮询（见 gamepadInput.ts），
+ * 这里只负责把已经写坏的那份从玩家浏览器里删掉 —— 不删的话，jsnes 自己的循环还是会撞上它。
+ *
+ * 只删「不是 jsnes 那个形状」的值：万一以后真做了绑定界面，玩家自己配的那份不能动。
+ */
 const GAMEPAD_CONFIG_KEY = 'gamepadConfig'
-function ensureGamepadConfig() {
+function clearBrokenGamepadConfig() {
   try {
-    if (localStorage.getItem(GAMEPAD_CONFIG_KEY)) return
-    localStorage.setItem(
-      GAMEPAD_CONFIG_KEY,
-      JSON.stringify([
-        { buttons: { BUTTON_A: 1, BUTTON_B: 0, BUTTON_SELECT: 8, BUTTON_START: 9, BUTTON_UP: 12, BUTTON_DOWN: 13, BUTTON_LEFT: 14, BUTTON_RIGHT: 15 } },
-        { buttons: {} },
-      ]),
-    )
+    const raw = localStorage.getItem(GAMEPAD_CONFIG_KEY)
+    if (!raw) return
+    const parsed: unknown = JSON.parse(raw)
+    const ok =
+      typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) && 'configs' in parsed && 'playerGamepadId' in parsed
+    if (!ok) localStorage.removeItem(GAMEPAD_CONFIG_KEY)
   } catch {
-    /* 隐私模式下写不了就算了 */
+    // 读不了（隐私模式）或者存的不是 JSON：不是我们能修的，也不该在这儿抛
+    try {
+      localStorage.removeItem(GAMEPAD_CONFIG_KEY)
+    } catch {
+      /* 忽略 */
+    }
   }
 }
 
@@ -173,6 +193,23 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   container.appendChild(host)
 
   const onResize = () => browser?.fitInParent?.()
+
+  /**
+   * 按键入口。屏幕手柄（TouchPad）和物理手柄（gamepadInput）都走这里。
+   *
+   * 不去合成键盘事件 —— jsnes 的键盘处理读的是 e.keyCode，合成事件在各浏览器上的
+   * 行为都不一样，还会撞上页面上别的监听。手柄编号固定 1（一号手柄）。
+   */
+  const sendPad = (button: PadButton, down: boolean) => {
+    const nes = browser?.nes
+    const code = NES_BUTTON[button]
+    if (!nes || code === undefined) return
+    if (down) nes.buttonDown?.(1, code)
+    else nes.buttonUp?.(1, code)
+  }
+
+  /** 物理手柄的轮询句柄，destroy 时要停 */
+  let gamepad: GamepadInput | null = null
 
   /** 上一次 rAF 到达的时刻；音频那条线靠它判断 rAF 是不是被浏览器停了 */
   let lastRafAt = 0
@@ -370,7 +407,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       // 留在 document 上，把全站的方向键和 Z/X/A/S 全部 preventDefault 掉：
       // 搜索框打不出字、页面没法用方向键滚动，只能刷新页面。
       // 分两步来，loadROM 抛错时实例已经在手上，可以正常清理干净。
-      ensureGamepadConfig()
+      clearBrokenGamepadConfig()
       browser = new Browser({
         container: host,
         onError: (err: Error) => options.onError?.(fmt(rt.jsnesRunFailed, { msg: err.message })),
@@ -397,6 +434,9 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       window.addEventListener('resize', onResize)
 
       for (const c of ['pause', 'screenshot', 'record', 'gamepad', 'touchpad'] as Capability[]) caps.add(c)
+
+      // 物理手柄：jsnes 自带那套走不通（见 clearBrokenGamepadConfig），改成自己轮询
+      gamepad = startGamepadInput(sendPad)
       if (browser.nes) caps.add('saveState')
       options.onCaps?.(caps)
 
@@ -432,15 +472,8 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       volume = Math.max(0, Math.min(1, v))
       if (gain) gain.gain.value = volume
     },
-    // 屏幕手柄：直接喂给核心，不去合成键盘事件 —— jsnes 的键盘处理读的是 e.keyCode，
-    // 合成事件在各浏览器上的行为都不一样，没必要冒这个风险。手柄编号固定 1（一号手柄）。
-    sendButton: (button, down) => {
-      const nes = browser?.nes
-      const code = NES_BUTTON[button]
-      if (!nes || code === undefined) return
-      if (down) nes.buttonDown?.(1, code)
-      else nes.buttonUp?.(1, code)
-    },
+    // 屏幕手柄和物理手柄走同一个入口（见 sendPad）
+    sendButton: sendPad,
     screenshot: async () => {
       const c = canvas()
       return c ? canvasToBlob(c) : null
@@ -464,6 +497,8 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     destroy: () => {
       destroyed = true
       window.removeEventListener('resize', onResize)
+      gamepad?.stop()
+      gamepad = null
       try {
         gain?.disconnect()
       } catch {
