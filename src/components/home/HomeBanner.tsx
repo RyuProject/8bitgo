@@ -1,3 +1,5 @@
+import { useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { openAuthModal } from '@/services/authModal'
 import { PixelButton } from '@/components/ui/PixelButton'
 import { GameCover } from '@/components/game/GameCover'
@@ -6,39 +8,128 @@ import { cx } from '@/lib/format'
 import { useCurrentUser } from '@/services/auth'
 import { FEATURES } from '@/config/features'
 import { useT, fmt } from '@/services/i18n'
+import { useLang } from '@/services/lang'
+import { gameTitle } from '@/services/i18nData'
+import type { Game } from '@/types'
 import type { Translation } from '@/locales'
 
-/** 横幅里漂浮展示的封面 */
-const HERO_GAMES = ['the-king-of-fighters-97', 'super-mario-world', 'pokemon-emerald']
+/**
+ * 首页热门还没到货时先顶上的几款。取不到的（不存在 / 已下架）自动跳过，
+ * 所以这串写多了也不会在页面上留空位。
+ */
+const HERO_FALLBACK = ['the-king-of-fighters-97', 'super-mario-world', 'pokemon-emerald']
+/** 热门到货后就不用再为兜底那几款发请求了。模块级常量，免得每次渲染都换个新数组 */
+const NO_SLUGS: string[] = []
+
+/** 多久换一款 */
+const ROTATE_MS = 5000
+/** 卡堆最多同时摞几张 */
+const STACK_MAX = 3
+/** 轮换名单最多取几款。热门一栏有几十上百款，全放进来转一圈要好几分钟，等于没人看得到第二款 */
+const POOL_MAX = 8
+
+/**
+ * 卡堆里第 n 层的位置、角度、缩放和透明度。
+ * 写成常量表而不是按 index 算，是因为这几个角度是调出来的 ——
+ * 公式生成的等差角度看着像贴纸，手挑的才像随手扔的一摞卡。
+ */
+const DEPTH = [
+  { x: 0, y: 0, rotate: -4, scale: 1, opacity: 1 },
+  { x: -18, y: 14, rotate: 7, scale: 0.93, opacity: 0.78 },
+  { x: -34, y: 27, rotate: -12, scale: 0.86, opacity: 0.5 },
+]
+
+/**
+ * 系统「减弱动态效果」。
+ *
+ * SSR 时读不到媒体查询，先按「不减弱」渲染，挂载后再纠正 —— 反过来的话，
+ * 大多数用户会先看到静态首屏再突然动起来，比晚一帧关掉动画更抖。
+ */
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(false)
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const sync = () => setReduced(mq.matches)
+    sync()
+    mq.addEventListener('change', sync)
+    return () => mq.removeEventListener('change', sync)
+  }, [])
+  return reduced
+}
 
 /**
  * 首页 banner 位：位于标题 + 类型快捷入口之下。
  * 开启 G 币时左侧主横幅 + 右侧「每日任务」；关闭时主横幅占满整行。
  */
-export function HomeBanner() {
+export function HomeBanner({ games }: { games?: Game[] }) {
   const t = useT()
   if (!FEATURES.coins) {
     return (
       <section className="container-x" aria-label={t.home.bannerAria}>
-        <Banner />
+        <Banner games={games} />
       </section>
     )
   }
   return (
     <section className="container-x" aria-label={t.home.bannerAria}>
       <div className="grid gap-4 xl:grid-cols-12">
-        <Banner className="xl:col-span-8" />
+        <Banner games={games} className="xl:col-span-8" />
         <DailyTasks className="xl:col-span-4" />
       </div>
     </section>
   )
 }
 
-function Banner({ className }: { className?: string }) {
+function Banner({ className, games }: { className?: string; games?: Game[] }) {
   const t = useT()
-  // 这三款是写死的 slug，跟首页数据无关，所以走 gameCache 按需取；
-  // 它只返回已经拿到的那部分，取数期间封面区先空着，文案和按钮照常显示
-  const heroGames = useGamesBySlugs(HERO_GAMES)
+  const lang = useLang()
+  const reduced = usePrefersReducedMotion()
+
+  /**
+   * 轮换名单。
+   *
+   * 热门那一栏就是「库里已经有的游戏」，所以优先用它 —— 上了新游戏、后台调了精选位，
+   * 横幅跟着变，不用改代码。但 HomeBanner 是贴着页面顶渲染的，比首页那次取数早，
+   * 所以数据到货前先用写死的 slug 顶着（走 gameCache 按需取），首屏不会空着一块。
+   * 热门一到就把参数换成空数组，兜底那几款不再花请求。
+   */
+  const fallback = useGamesBySlugs(games?.length ? NO_SLUGS : HERO_FALLBACK)
+  const pool = useMemo(() => (games?.length ? games : fallback).slice(0, POOL_MAX), [games, fallback])
+
+  /** 轮换序号，只增不减。取模拿当前那款，减去层数就是卡堆里压着的那几款 */
+  const [seq, setSeq] = useState(0)
+  const [paused, setPaused] = useState(false)
+
+  useEffect(() => {
+    // 只有一款可转的时候别起定时器：动画会原地重放，看着像闪
+    if (reduced || paused || pool.length < 2) return
+    const timer = window.setInterval(() => {
+      // 后台标签页不推进。不挡的话切回来会一次性补上十几轮，卡堆直接跳到不知道哪一款
+      if (document.hidden) return
+      setSeq((v) => v + 1)
+    }, ROTATE_MS)
+    return () => window.clearInterval(timer)
+  }, [reduced, paused, pool.length])
+
+  const current = pool.length ? pool[seq % pool.length] : null
+  // 名单还没到的时候保留原来那句品牌语，别让标题空着或者闪一下
+  const headline = current ? gameTitle(current, lang) : t.home.headline2
+
+  /**
+   * 卡堆：第 0 层是当前这款，往下依次是前几轮的。
+   * key 用 seq 而不是 slug —— 只有 key 变了 React 才会重新挂载，抛卡动画才会重放；
+   * 名单只有一两款时同一个 slug 会连着出现，用 slug 当 key 就永远不动了。
+   */
+  const stack = useMemo(() => {
+    if (!pool.length) return []
+    const out: { game: Game; key: number; depth: number }[] = []
+    for (let depth = 0; depth < Math.min(STACK_MAX, pool.length); depth++) {
+      const n = seq - depth
+      if (n < 0) break
+      out.push({ game: pool[n % pool.length], key: n, depth })
+    }
+    return out
+  }, [pool, seq])
 
   return (
     <div
@@ -46,6 +137,12 @@ function Banner({ className }: { className?: string }) {
         'relative overflow-hidden rounded-card border border-line bg-gradient-to-br from-brand/25 via-surface to-cyan-500/10',
         className,
       )}
+      // 指针移上来或者键盘焦点进来就停下。自动轮换的内容必须能停，
+      // 否则读到一半标题就换了 —— 想点那张封面时它也正好被抛走
+      onMouseEnter={() => setPaused(true)}
+      onMouseLeave={() => setPaused(false)}
+      onFocusCapture={() => setPaused(true)}
+      onBlurCapture={() => setPaused(false)}
     >
       <div className="pixel-grid absolute inset-0 opacity-40 [mask-image:linear-gradient(to_right,black,transparent)]" aria-hidden />
 
@@ -57,8 +154,16 @@ function Banner({ className }: { className?: string }) {
           <h2 className="mt-3 text-2xl font-extrabold leading-tight tracking-tight sm:text-3xl lg:text-4xl">
             {t.home.headline1}
             <br />
-            <span className="whitespace-nowrap bg-gradient-to-r from-brand-hover via-sky-400 to-cyan-300 bg-clip-text text-transparent">
-              {t.home.headline2}
+            {/* 至少占满一行。名字长短差得多（《魂斗罗》和 The King of Fighters '97 不是一个
+                量级），偶尔会折成两行 —— 那一行的高度由右边那摞封面（h-52 + 上下内边距）
+                兜着，撑不破这一行，所以这里只保底一行，不预留两行去换一块空当出来 */}
+            <span className="block min-h-[1.15em]">
+              <span
+                key={seq}
+                className="hero-title animate-hero-title inline-block bg-gradient-to-r from-brand-hover via-sky-400 to-cyan-300 bg-clip-text text-transparent"
+              >
+                {headline}
+              </span>
             </span>
           </h2>
           <p className="mt-2 max-w-md text-sm leading-relaxed text-muted">
@@ -76,23 +181,37 @@ function Banner({ className }: { className?: string }) {
           </div>
         </div>
 
-        {/* 漂浮的封面 */}
-        <div className="relative hidden h-44 w-56 shrink-0 md:block" aria-hidden>
-          {heroGames.map((g, i) => (
-            <div
-              key={g.slug}
-              className="animate-float absolute w-24 overflow-hidden rounded-xl border border-black/10 shadow-xl shadow-black/25"
-              style={{
-                left: `${[0, 50, 25][i]}%`,
-                top: `${[10, 0, 30][i]}%`,
-                transform: `rotate(${[-8, 6, -3][i]}deg)`,
-                animationDelay: `${i * 1.3}s`,
-                zIndex: [1, 2, 3][i],
-              }}
-            >
-              <GameCover game={g} iconSize="sm" showTitle={false} priority />
-            </div>
-          ))}
+        {/* 抛上来的封面堆。每张都是通往那款游戏的链接，不是装饰，所以不能 aria-hidden */}
+        <div className="relative hidden h-52 w-60 shrink-0 md:block">
+          {/* 倒着渲染：DOM 里后出现的压在上面，和 z-index 说的是同一件事，
+              这样即使 z-index 失效（比如某个祖先建了新的层叠上下文）叠放顺序也还是对的 */}
+          {[...stack].reverse().map(({ game, key, depth }) => {
+            const d = DEPTH[Math.min(depth, DEPTH.length - 1)]
+            return (
+              <div
+                key={key}
+                className="hero-card absolute left-1/2 top-1/2 w-28 transition-[transform,opacity] duration-500 ease-out"
+                style={{
+                  // 居中 + 该层的偏移一起写在这儿；抛入动画放在里层，两者互不覆盖
+                  transform: `translate(-50%, -50%) translate(${d.x}px, ${d.y}px) rotate(${d.rotate}deg) scale(${d.scale})`,
+                  opacity: d.opacity,
+                  zIndex: 30 - depth * 10,
+                }}
+              >
+                <div className={depth === 0 ? 'hero-toss animate-hero-toss' : undefined}>
+                  <Link
+                    to={`/games/${game.slug}`}
+                    aria-label={fmt(t.home.heroPlay, { name: gameTitle(game, lang) })}
+                    className="block overflow-hidden rounded-xl border border-black/10 shadow-xl shadow-black/25 outline-offset-4 transition-transform hover:scale-[1.04] focus-visible:outline-2 focus-visible:outline-brand"
+                  >
+                    {/* 只给第一张 priority：它是首屏 LCP 的候选，后面每 5 秒新抛的那些
+                        再标高优先级就等于没分优先级了 */}
+                    <GameCover game={game} ratio="square" iconSize="sm" showTitle={false} priority={key === 0} />
+                  </Link>
+                </div>
+              </div>
+            )
+          })}
         </div>
       </div>
     </div>

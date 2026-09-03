@@ -164,6 +164,8 @@ export const zhHans = {
     pill: '浏览器即开即玩 · 无需安装模拟器',
     headline1: '在浏览器里，重玩',
     headline2: '那些忘不掉的游戏',
+    /** 横幅右侧那摞封面的链接名 —— 卡片本身只有图，读屏得靠它 */
+    heroPlay: '玩《{name}》',
     introHeadline1: '重温经典游戏',
     introHeadline2: '从这一局开始',
     subcopy: '从红白机、GBA、Game Boy 和街机，到 Flash、DOS 与 J2ME 手机游戏：打开页面即可开始，支持即时存档、手柄和多人同玩。',

@@ -153,6 +153,8 @@ const fr: Translation = {
     pill: 'Aucun téléchargement · Ouvre ton navigateur et joue',
     headline1: 'Joue aux classiques sur émulateur ',
     headline2: 'Gratuitement, dans ton navigateur',
+    /** 横幅右侧那摞封面的链接名 —— 卡片本身只有图，读屏得靠它 */
+    heroPlay: 'Jouer à {name}',
     introHeadline1: 'Joue aux classiques sur émulateur ',
     introHeadline2: 'Gratuitement et en ligne',
     subcopy:

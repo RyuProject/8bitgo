@@ -12,7 +12,8 @@ import { useLang } from '@/services/lang'
 import { gameTitle } from '@/services/i18nData'
 import { SocialIcon } from './SocialIcon'
 import { FEATURES } from '@/config/features'
-import { useAllRooms } from '@/services/allRooms'
+import { anyRoomsEnabled, useAllRooms } from '@/services/allRooms'
+import { useGamesTotal } from '@/services/gamesTotal'
 import { api, apiEnabled } from '@/services/api'
 import { useCurrentUser as useUser } from '@/services/auth'
 import { useGamesBySlugs } from '@/services/gameCache'
@@ -93,7 +94,12 @@ export function Sidebar() {
 
           <NavGroup title={t.sidebar.groupLibrary} collapsed={collapsed}>
             {exploreNavFor(t).map((item) => (
-              <NavItem key={item.to} item={item} collapsed={collapsed} />
+              <NavItem
+                key={item.to}
+                item={item}
+                collapsed={collapsed}
+                trailing={item.to === '/games' ? <GamesCount /> : undefined}
+              />
             ))}
           </NavGroup>
 
@@ -156,16 +162,33 @@ export function Sidebar() {
   )
 }
 
-/** 「联机玩」右侧的在线房间数 */
+/** 计数徽标的静默样式：数字为 0 或纯静态计数时用，不抢「有人在线」那点绿色 */
+const COUNT_BADGE = 'inline-flex items-center rounded bg-black/5 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-muted'
+
+/**
+ * 「一起玩」右侧的房间数 —— 联机房间 + 直播房间（useAllRooms 已经把三路合过）。
+ *
+ * 以前 0 个房间时整块不渲染，结果这一栏平时看不出「现在有没有人在玩」，
+ * 只有热闹的时候才冒出个数字。现在 0 也照样显示，只是收成灰色不带呼吸点。
+ * 三条通道全都没开（无后端 / 无信令）时才真的不渲染 —— 那种情况下 0 是假的。
+ */
 function RoomCount() {
   const rooms = useAllRooms()
-  if (rooms.length === 0) return null
+  if (!anyRoomsEnabled()) return null
+  if (rooms.length === 0) return <span className={COUNT_BADGE}>0</span>
   return (
-    <span className="inline-flex items-center gap-1 rounded bg-online/15 px-1.5 py-0.5 text-[10px] font-bold text-online">
+    <span className="inline-flex items-center gap-1 rounded bg-online/15 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-online">
       <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-online" />
       {rooms.length}
     </span>
   )
+}
+
+/** 「全部游戏」右侧的游戏库总数 */
+function GamesCount() {
+  const total = useGamesTotal()
+  if (total === undefined) return null
+  return <span className={COUNT_BADGE}>{total.toLocaleString()}</span>
 }
 
 /** 联机玩：正在进行的房间（最多 5 个），封面 = 正在玩的游戏，显示房主与人数 */

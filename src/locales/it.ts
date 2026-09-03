@@ -153,6 +153,8 @@ const it: Translation = {
     pill: 'Nessun download · Apri il browser e gioca',
     headline1: 'Gioca ai classici con emulatore ',
     headline2: 'gratis nel tuo browser',
+    /** 横幅右侧那摞封面的链接名 —— 卡片本身只有图，读屏得靠它 */
+    heroPlay: 'Gioca a {name}',
     introHeadline1: 'Gioca ai classici con emulatore ',
     introHeadline2: 'gratis online',
     subcopy:

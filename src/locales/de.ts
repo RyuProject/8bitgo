@@ -153,6 +153,8 @@ const de: Translation = {
     pill: 'Kein Download · Browser auf und los',
     headline1: 'Klassische Emulator-Spiele ',
     headline2: 'kostenlos im Browser',
+    /** 横幅右侧那摞封面的链接名 —— 卡片本身只有图，读屏得靠它 */
+    heroPlay: '{name} spielen',
     introHeadline1: 'Klassische Emulator-Spiele ',
     introHeadline2: 'kostenlos online spielen',
     subcopy:

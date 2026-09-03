@@ -153,6 +153,8 @@ const en: Translation = {
     pill: 'No downloads · Just open your browser and play',
     headline1: 'Play Classic Emulator Games ',
     headline2: 'Free in Your Browser',
+    /** 横幅右侧那摞封面的链接名 —— 卡片本身只有图，读屏得靠它 */
+    heroPlay: 'Play {name}',
     introHeadline1: 'Play Classic Emulator Games ',
     introHeadline2: 'Free Online',
     subcopy:

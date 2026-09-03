@@ -143,6 +143,8 @@ const zhHant: Translation = {
     pill: '免下載 · 打開瀏覽器直接玩',
     headline1: '免費線上暢玩',
     headline2: '經典模擬器遊戲',
+    /** 横幅右侧那摞封面的链接名 —— 卡片本身只有图，读屏得靠它 */
+    heroPlay: '玩《{name}》',
     introHeadline1: '免費線上玩',
     introHeadline2: '經典模擬器遊戲',
     subcopy: '紅白機、超任、GBA、PS1、N64、街機……上百款童年經典，支援即時存檔、手把與連線同樂。',

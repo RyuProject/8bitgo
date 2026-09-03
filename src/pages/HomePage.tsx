@@ -32,7 +32,8 @@ export function HomePage() {
     // 类型入口放在 space-y 容器外面，就不用负 margin 去抵消 space-y-10 了。
     <div className="pb-8">
       <HomeHeading />
-      <HomeBanner />
+      {/* 标题里轮换的游戏名和右边那摞封面都来自热门这一栏 —— 数据没到时横幅自己有兜底 */}
+      <HomeBanner games={data?.popular} />
 
       <div className="pt-4">
         <HomeIntro facets={data?.facets} loading={loading} />
