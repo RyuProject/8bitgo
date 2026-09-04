@@ -3,7 +3,8 @@ import { Link } from 'react-router-dom'
 import { cx } from '@/lib/format'
 import { Button, buttonClasses } from '@/components/ui/Button'
 import { closeAuthModal, useAuthModalOpen } from '@/services/authModal'
-import { login, loginWithEmailCode, loginWithGoogle, requestEmailCode, startWeiboLogin, useCurrentUser } from '@/services/auth'
+import type { OAuthProvider } from '@/services/auth'
+import { login, loginWithEmailCode, loginWithGoogle, requestEmailCode, startOAuthLogin, useCurrentUser } from '@/services/auth'
 import { ApiError } from '@/services/api'
 import { useT, fmt } from '@/services/i18n'
 import { FEATURES } from '@/config/features'
@@ -146,21 +147,21 @@ export function AuthModal() {
   }
 
   /**
-   * 微博走整页跳转：顺利的话下一行代码根本不会执行，页面已经在微博那边了。
+   * Microsoft / Apple 走整页跳转：顺利的话下一行代码根本不会执行，页面已经在对方那边了。
    * 所以这里**不关弹窗、不清 busy** —— 关掉反而会在跳走前闪一下。
-   * 只有拿授权地址就失败（没配、断网）才会走到 catch，那时才需要把按钮放开。
+   * 只有连跳转都没发起（本地演示模式、或者 sessionStorage 写不进去）才会走到后面。
    *
-   * 无后端的本地演示模式下 startWeiboLogin 会直接建个演示账号并立即返回，
+   * 本地演示模式下 startOAuthLogin 会直接建个演示账号并立即返回，
    * 弹窗由「登录成功后自动关闭」那个 effect 收掉。
    */
-  const weibo = async () => {
+  const oauth = (provider: OAuthProvider) => () => {
     if (busy) return
     setError(null)
     setBusy(true)
     try {
-      await startWeiboLogin()
+      startOAuthLogin(provider)
     } catch (err) {
-      setError(err instanceof Error ? err.message : t.auth.weiboFailed)
+      setError(err instanceof Error ? err.message : t.auth.oauthFailed)
       setBusy(false)
     }
   }
@@ -316,16 +317,28 @@ export function AuthModal() {
           <span className="h-px flex-1 bg-line" />
         </div>
 
-        {/* 第三方登录。两个按钮竖排：文案长度差得多（「使用微博登录」比
-            「使用谷歌账号登录」短一截），并排会一宽一窄，很难看齐 */}
-        <div className="space-y-3">
-          <Button variant="secondary" size="lg" className="w-full" onClick={google} disabled={busy}>
+        {/*
+          第三方登录：一行三个，各占三分之一。
+
+          文案用**短版**（只有品牌名）—— 三分之一宽的按钮只剩 ~85px 放文字，
+          而 Button 基类带 whitespace-nowrap：放不下不会换行，会直接顶穿边框。
+          尺寸也降到 md，px-6 在这个宽度下太吃地方。
+
+          min-w-0：grid 子项默认 min-width:auto，内容撑得下就不肯缩，一样会溢出格子。
+          truncate 是最后一道保险，正常语言都不该触发。
+        */}
+        <div className="grid grid-cols-3 gap-2">
+          <Button variant="secondary" size="md" className="w-full min-w-0" onClick={google} disabled={busy}>
             <GoogleIcon />
-            {t.auth.google}
+            <span className="truncate">{t.auth.googleShort}</span>
           </Button>
-          <Button variant="secondary" size="lg" className="w-full" onClick={weibo} disabled={busy}>
-            <WeiboIcon />
-            {t.auth.weibo}
+          <Button variant="secondary" size="md" className="w-full min-w-0" onClick={oauth('microsoft')} disabled={busy}>
+            <BrandIcon src="/ui/microsoft.svg" />
+            <span className="truncate">{t.auth.microsoftShort}</span>
+          </Button>
+          <Button variant="secondary" size="md" className="w-full min-w-0" onClick={oauth('apple')} disabled={busy}>
+            <BrandIcon src="/ui/apple.svg" />
+            <span className="truncate">{t.auth.appleShort}</span>
           </Button>
         </div>
 
@@ -346,29 +359,36 @@ export function AuthModal() {
   )
 }
 
-function WeiboIcon() {
-  // 微博官方标识的「眼睛」轮廓，单色描边版。品牌色 #E6162D
+/**
+ * 品牌图标走 <img>，而不是把 SVG 抄进代码里。
+ *
+ * Microsoft 和 Apple 的品牌规范都要求登录按钮用**他们提供的官方标识**，不接受自己描一个
+ * 近似的。所以这两个文件请从各自的品牌资源页下载后放进 public/ui/：
+ *   · public/ui/microsoft.svg  ← Microsoft 品牌中心的四色方块标识
+ *   · public/ui/apple.svg      ← Apple「Sign in with Apple」HIG 提供的标识
+ *
+ * 文件还没放进去时 onError 会把图标整个摘掉，按钮退化成纯文字 —— 照样能点、能登，
+ * 不会在弹窗里留一个碎图标。
+ */
+function BrandIcon({ src }: { src: string }) {
+  const [failed, setFailed] = useState(false)
+  if (failed) return null
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden>
-      <path
-        fill="#E6162D"
-        d="M10.1 20.9c-4.3 0-7.8-2.1-7.8-4.7 0-1.4.9-2.9 2.4-4.2 2-1.8 4.4-2.6 5.3-1.8.4.4.4 1 .2 1.7-.1.4.3.2.3.2 1.6-.7 3-.7 3.5.1.3.4.2 1-.1 1.7-.1.3 0 .4.2.4 1 .3 2.1 1 2.1 2.3 0 2.1-3 4.3-6.1 4.3zm-.5-7.3c-2.2.2-3.9 1.6-3.8 3.1.1 1.5 2 2.5 4.2 2.3 2.2-.2 3.9-1.6 3.8-3.1-.1-1.5-2-2.5-4.2-2.3z"
-      />
-      <path
-        fill="#E6162D"
-        d="M9.4 15.1c-.7.1-1.2.7-1.1 1.3.1.6.7 1 1.4.9.7-.1 1.2-.6 1.1-1.2-.1-.6-.7-1.1-1.4-1zM18.8 11.4c-.4 0-.7-.3-.7-.7 0-1.6-1.3-2.9-2.9-2.9-.4 0-.7-.3-.7-.7s.3-.7.7-.7c2.4 0 4.3 1.9 4.3 4.3 0 .4-.3.7-.7.7z"
-      />
-      <path
-        fill="#E6162D"
-        d="M21.7 11.9c-.5 0-.8-.4-.8-.8 0-2.9-2.4-5.3-5.3-5.3-.5 0-.8-.4-.8-.8s.4-.8.8-.8c3.8 0 6.9 3.1 6.9 6.9 0 .4-.4.8-.8.8z"
-      />
-    </svg>
+    <img
+      src={src}
+      alt=""
+      aria-hidden
+      width={18}
+      height={18}
+      className="h-[18px] w-[18px] shrink-0 object-contain"
+      onError={() => setFailed(true)}
+    />
   )
 }
 
 function GoogleIcon() {
   return (
-    <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden>
+    <svg width="18" height="18" viewBox="0 0 18 18" className="shrink-0" aria-hidden>
       <path
         fill="#4285F4"
         d="M17.64 9.2045c0-.6381-.0573-1.2518-.1636-1.8409H9v3.4814h4.8436c-.2086 1.125-.8427 2.0782-1.7959 2.7164v2.2581h2.9086c1.7018-1.5668 2.6837-3.874 2.6837-6.615z"

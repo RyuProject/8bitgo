@@ -14,12 +14,27 @@
  */
 import { apiBase, apiEnabled, getToken } from './api'
 import { idbDelete, idbGet, idbMark, idbPut } from '@/lib/idb'
+// 落点偏好单独一个无依赖的模块，好在 node 侧直接测；这里透传出去，调用方不用多认一个文件
+import { getSaveTarget, setSaveTarget, type SaveTarget } from './saveTarget'
+export { getSaveTarget, setSaveTarget, type SaveTarget }
 
 /** 存档属于哪个引擎。格式不通用，所以必须分开存 */
 export type SaveRuntime = 'emulatorjs' | 'jsdos' | 'cloudgame' | 'jsnes' | 'ruffle' | 'webretro' | 'j2me'
 
 /** 存档存在哪儿 */
 export type SaveWhere = 'cloud' | 'local'
+
+/**
+ * 这一次实际该往哪儿存。
+ *
+ * 没选过、或者选了云端但现在没登录（退出登录 / 令牌过期）→ 回落到本地。
+ * **绝不**反过来把没选过的人默认成云端。
+ */
+export function effectiveSaveTarget(): Exclude<SaveTarget, 'download'> {
+  const picked = getSaveTarget()
+  if (picked === 'cloud' && cloudSavesEnabled()) return 'cloud'
+  return 'local'
+}
 
 /**
  * 合法的存档引擎名，和服务端 routes/saves.js 的 RUNTIMES 一字不差。
@@ -112,6 +127,19 @@ export async function pullSave(runtime: SaveRuntime, gameSlug: string, slot = 0)
     return { data: local.data, where: 'local', updatedAt: local.updatedAt, pending: true }
   }
 
+  /**
+   * 明确选了「只存本地」的人，读档也要先读本地。
+   *
+   * ⚠️ 这一条是配合落点选择加的，不加会**静默丢进度**：选了本地之后存下来的那份
+   * 不带 dirty 标记（它本来就没打算上云），于是下面那段会照旧去问云端，
+   * 把一份**更旧的**云端存档读回来 —— 玩家明明刚存过，回来却退回了上次上云的进度。
+   *
+   * 没选过、或者选的是云端，仍然走「云端优先」：那才是换台电脑接着玩的前提。
+   */
+  if (getSaveTarget() === 'local' && local) {
+    return { data: local.data, where: 'local', updatedAt: local.updatedAt }
+  }
+
   if (cloudSavesEnabled()) {
     try {
       const res = await fetch(cloudUrl(runtime, gameSlug, slot), { headers: authHeaders(), cache: 'no-store' })
@@ -137,6 +165,22 @@ export async function pullSave(runtime: SaveRuntime, gameSlug: string, slot = 0)
  * 个人页的「我的云存档 → 下载」用这个：那个列表是从服务器拉的，
  * 点下载却给一份浏览器里的存档，等于把不同的东西贴上同一个标签。
  */
+/**
+ * 只取**这个浏览器里**的那份，取不到就是取不到。
+ *
+ * 和 pullSave 的分工：那个是「按玩家选的落点决定读哪儿」，给自动读档用；
+ * 这个是玩家在存档面板里明确点了「本地存档 · 加载」—— 他要的就是本地那份，
+ * 这时候再去问云端等于答非所问。
+ */
+export async function pullLocalSave(
+  runtime: SaveRuntime,
+  gameSlug: string,
+  slot = 0,
+): Promise<{ data: Uint8Array; updatedAt: number } | null> {
+  const local = await idbGet(localKey(runtime, gameSlug, slot))
+  return local?.data?.length ? { data: local.data, updatedAt: local.updatedAt } : null
+}
+
 export async function fetchCloudSave(
   runtime: SaveRuntime,
   gameSlug: string,
@@ -177,14 +221,24 @@ export async function pushSave(
   gameSlug: string,
   data: Uint8Array,
   slot = 0,
+  /**
+   * 存到哪儿。不传就按玩家选过的来（`effectiveSaveTarget`）——
+   * **没选过就是本地**，不再像以前那样「只要登录了就默认上云」。
+   * DOS 那条自动固化的路（adapters/jsdos.ts）没有界面可问，走的就是这个默认。
+   */
+  target: Exclude<SaveTarget, 'download'> = effectiveSaveTarget(),
 ): Promise<PushedSave> {
   if (data.length === 0) return { ok: false, where: null, error: 'empty' }
   if (data.length > MAX_SAVE_BYTES) return { ok: false, where: null, error: 'too-large' }
 
   const key = localKey(runtime, gameSlug, slot)
-  const toCloud = cloudSavesEnabled()
-  // 游客的存档不算「待同步」：他没打算往云端存，登录之后云端那份（别的设备存的）
-  // 应该正常接管，不该被这份本地存档挡住
+  // 选了云端但此刻没登录（退出 / 令牌过期）就只能落本地，界面会照实说
+  const toCloud = target === 'cloud' && cloudSavesEnabled()
+  /**
+   * 「待同步」只给**真打算上云**的那一份。
+   * 游客、以及明确选了「只存本地」的玩家都不算 —— 他们没打算往云端存，
+   * 云端那份（别的设备存的）该正常接管，不该被这份本地存档挡住。
+   */
   const localOk = await idbPut(key, data, Date.now(), toCloud)
 
   if (!toCloud) return { ok: localOk, where: localOk ? 'local' : null }

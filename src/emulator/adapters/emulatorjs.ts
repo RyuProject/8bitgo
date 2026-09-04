@@ -15,7 +15,8 @@
  *
  * 需要三样东西：
  *   1. 全局的 io()  —— socket.io 客户端，EmulatorJS 自己不加载，得我们注入进 iframe
- *   2. EJS_netplayUrl —— 信令地址（server/src/netplay.js）
+ *   2. EJS_netplayUrl —— 信令地址（server/src/netplay.js）。⚠️ 必须是绝对地址：iframe 是 srcdoc，
+ *      location 是 about:srcdoc，socket.io 拿相对地址会拼成 http://about:80/…（见 netplayUrlForFrame）
  *   3. EJS_gameId     —— 必须是数字，用来给房间分组（见 services/netplay.ts 的 gameIdFor）
  *
  * ⚠️ 官方 CDN 的 stable / nightly 目前都是 4.2.3，**不含 netplay**。
@@ -31,7 +32,7 @@ import { focusFrame, frameGamepads } from '../frameFocus'
 import { getT, fmt } from '@/services/i18n'
 import { getLang } from '@/services/lang'
 import type { Lang } from '@/config/languages'
-import { ICE_SERVERS, NETPLAY_URL, fetchIceConfig, gameIdFor, socketIoScriptUrl, uploadState } from '@/services/netplay'
+import { ICE_SERVERS, NETPLAY_URL, fetchIceConfig, gameIdFor, netplayUrlForFrame, socketIoScriptUrl, uploadState } from '@/services/netplay'
 import { isZip, listZipEntries } from '@/lib/unzip'
 import { matchArcadeHack, type ArcadeHack } from '@/data/arcadeHacks'
 
@@ -1051,6 +1052,15 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
             stateToken = token
             netplay?.onToken?.(token)
           })
+          // 信令连不上时引擎只在自己的弹窗里闪一句 "Connect error"，适配器这边什么都不知道，
+          // 下面的轮询看到 socket 没连上就按「房主断线」处理 —— 排查时至少要在引擎日志里留下真相。
+          // 重连每次都会触发，只记第一次
+          let signalErrorLogged = false
+          sock?.on?.('connect_error', (e: unknown) => {
+            if (signalErrorLogged) return
+            signalErrorLogged = true
+            logEngine(`[netplay] 信令连接失败：${e instanceof Error ? e.message : String(e)}`)
+          })
         } catch {
           /* 不是 socket.io 的 socket？那就算了，轮询那边还有一次兜底 */
         }
@@ -1566,7 +1576,10 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
           // 联机相关（没有 netplay 会话时也设上，用户可以自己点模拟器里的联机按钮）
           ...(NETPLAY_URL
             ? {
-                EJS_netplayUrl: NETPLAY_URL,
+                // 不能直接给 NETPLAY_URL（/netplay）：这个 iframe 的 location 是 about:srcdoc，
+                // socket.io 会把相对地址算成 http://about:80/…，HTTPS 页面上被 Mixed Content 拦掉，
+                // 信令永远连不上。先在父页面这边解析成绝对地址
+                EJS_netplayUrl: netplayUrlForFrame(),
                 EJS_netplayICEServers: ICE_SERVERS,
                 // ⚠️ loader.js 读的是 EJS_gameID（大写 ID），写成 EJS_gameId 等于没设：
                 // 房间的 game_id 会是 undefined，大厅永远认不出这个房间是哪款游戏。

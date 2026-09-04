@@ -11,7 +11,6 @@ import { usePageData, type GameData } from '@/services/pageData'
 import { platformMap } from '@/data/platforms'
 import { genreMap } from '@/data/genres'
 import { isPlatformEnabled } from '@/config/platforms'
-import { getDefaultKeymap } from '@/lib/emulator'
 import { formatCount, formatPlayers } from '@/lib/format'
 import { usePlatformBiosUrl } from '@/services/platformBios'
 import { useSeo, breadcrumbSchema, videoGameSchema } from '@/services/seo'
@@ -24,7 +23,9 @@ import { IsolatedPlayCard } from '@/components/game/IsolatedPlayCard'
 import { GameCover } from '@/components/game/GameCover'
 import { GameAgeGuard } from '@/components/game/AgeGate'
 import { GameComments } from '@/components/game/GameComments'
+import { ShareDialog } from '@/components/game/ShareDialog'
 import { GameCard } from '@/components/game/GameCard'
+import { KeymapCards } from '@/components/game/KeymapCards'
 import { SectionHeader } from '@/components/ui/SectionHeader'
 import { Badge, CoinBadge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
@@ -55,7 +56,7 @@ export function GameDetailPage() {
   const related = state.data?.related ?? []
   const { immersive } = useShell()
   const user = useCurrentUser()
-  const [copied, setCopied] = useState(false)
+  const [shareOpen, setShareOpen] = useState(false)
   const isFav = Boolean(user?.favorites.includes(slug))
   /**
    * 玩家手动选的 ROM 语言（null = 跟着站点语言走）。
@@ -72,12 +73,6 @@ export function GameDetailPage() {
   useEffect(() => {
     if (game) void recordRecent(game.slug)
   }, [game?.slug])
-
-  useEffect(() => {
-    if (!copied) return
-    const t = window.setTimeout(() => setCopied(false), 2000)
-    return () => window.clearTimeout(t)
-  }, [copied])
 
   // SEO：hook 必须在下面的 early return 之前调用，所以「还没取到」和「确实没有」都要在这里各给一套
   const lang = useLang()
@@ -269,19 +264,13 @@ export function GameDetailPage() {
                 {t.game.favorite}
               </Button>
             )}
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={async () => {
-                try {
-                  await navigator.clipboard.writeText(window.location.href)
-                  setCopied(true)
-                } catch {
-                  /* 剪贴板不可用时忽略 */
-                }
-              }}
-            >
-              {copied ? t.game.copied : t.game.share}
+            {/*
+              以前这个按钮点了只是把当前 URL 抄进剪贴板。现在改成开分享面板：
+              嵌入代码需要尺寸选择，而「跨站 iframe 存不了档、带不进登录态」这两句
+              必须有地方说出来，一个按钮给不了这些。见 components/game/ShareDialog.tsx。
+            */}
+            <Button variant="secondary" size="sm" onClick={() => setShareOpen(true)}>
+              {t.game.share}
             </Button>
             {/*
               「创建联机房间」以前是 `to="/games?multiplayer=1"` —— 点了只是跳到游戏库
@@ -346,19 +335,7 @@ export function GameDetailPage() {
           {/* 操作说明 */}
           <section className="mt-8">
             <h2 className="text-lg font-bold">{t.game.controls}</h2>
-            <p className="mt-1 text-sm text-muted">{t.game.controlsDesc}</p>
-            <div className="mt-4 grid grid-cols-3 gap-2 sm:grid-cols-5">
-              {getDefaultKeymap(runtime?.id).map((k) => (
-                <div key={k.button} className="rounded-xl border border-line bg-surface px-3 py-2.5">
-                  <p className="text-[11px] text-muted">{k.button}</p>
-                  <p className="mt-1 font-mono text-sm font-semibold">{k.key}</p>
-                </div>
-              ))}
-              <div className="rounded-xl border border-line bg-surface px-3 py-2.5">
-                <p className="text-[11px] text-muted">{t.game.saveState}</p>
-                <p className="mt-1 font-mono text-sm font-semibold">{t.game.menuButton}</p>
-              </div>
-            </div>
+            <KeymapCards runtimeId={runtime?.id} platform={platform.id} />
           </section>
         </div>
 
@@ -428,6 +405,14 @@ export function GameDetailPage() {
           </div>
         </section>
       )}
+
+      <ShareDialog
+        open={shareOpen}
+        onClose={() => setShareOpen(false)}
+        slug={game.slug}
+        title={seoTitle || game.title}
+        isolated={Boolean(isolatedEmbed)}
+      />
     </div>
   )
 }

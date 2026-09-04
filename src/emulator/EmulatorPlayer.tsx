@@ -1903,6 +1903,8 @@ export function EmulatorPlayer({
             gameSlug={saveSlug}
             runtimeId={session?.runtime.id ?? activeRuntime?.id}
             dosSaveHint={dosSaveHint}
+            // 快捷键要能在游戏开着时按 —— 得从这一块里找到模拟器的 iframe。见 hotkeyBridge.ts
+            stageRef={hostRef}
           />
         )}
 

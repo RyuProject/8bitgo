@@ -334,6 +334,18 @@ export interface RuntimeHandle {
    * 当前状态不另外给 getter —— 看 caps 里有没有 'enginePad' 就行，它是同一份真相。
    */
   setEnginePad?: (show: boolean) => void
+  /**
+   * 反转鼠标的上下方向。只影响**相对**鼠标（指针锁定那一路），不碰绝对坐标。
+   *
+   * Build 引擎那批 DOS 射击游戏（毁灭公爵 3D、影武者、血祭…）出厂默认是飞行摇杆式：
+   * 鼠标前推 = 低头（DUKE3D.CFG 的 MouseAimingFlipped = 0）。当年要进 SETUP.EXE 才翻得过来，
+   * 网页里玩家进不了 SETUP，所以由运行时在送进引擎之前把 Y 取负（见 adapters/jsdos.ts）。
+   * 只有用相对鼠标的运行时才实现 —— 没实现就是「这局没有这个开关」，工具栏不画按钮。
+   * 状态按游戏记在浏览器里，下次进同一款游戏自动生效。
+   */
+  setMouseInvert?: (on: boolean) => void
+  /** 鼠标上下当前是否反转（setMouseInvert 的现值），工具栏用它决定按钮亮不亮 */
+  mouseInverted?: boolean
 }
 
 export interface Runtime {

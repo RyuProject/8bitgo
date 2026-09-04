@@ -8,7 +8,7 @@ import { useT, fmt } from '@/services/i18n'
 import { usePlatformBiosUrl } from '@/services/platformBios'
 import { platformLabel } from '@/services/i18nData'
 import { EmulatorPlayer } from '@/emulator'
-import { getDefaultKeymap } from '@/lib/emulator'
+import { KeymapCards } from '@/components/game/KeymapCards'
 import { isPlayable, resolveRuntime, runtimesFor } from '@/emulator'
 
 function stepsFor(t: Translation) {
@@ -93,14 +93,7 @@ export function PlayLocalPage() {
       <div className="mt-10 grid gap-8 lg:grid-cols-12">
         <div className="lg:col-span-4">
           <h2 className="text-base font-bold">{t.playLocal.sectionKeymap}</h2>
-          <div className="mt-3 grid grid-cols-3 gap-2">
-            {getDefaultKeymap(runtime?.id).map((k) => (
-              <div key={k.button} className="rounded-lg border border-line bg-surface px-2.5 py-2">
-                <p className="text-[10px] text-muted">{k.button}</p>
-                <p className="font-mono text-xs font-semibold">{k.key}</p>
-              </div>
-            ))}
-          </div>
+          <KeymapCards runtimeId={runtime?.id} platform={platformId} size="sm" />
         </div>
 
         <div className="lg:col-span-8">

@@ -1,6 +1,7 @@
 import { Button, buttonClasses } from '@/components/ui/Button'
 import { useSeo } from '@/services/seo'
 import { useT } from '@/services/i18n'
+import { CONTACT_EMAIL } from '@/components/layout/Logo'
 
 const STORY_ICONS = ['📦', '🔎', '▶️']
 const VALUE_ICONS = ['⚡', '🧩', '🛠️']
@@ -113,7 +114,7 @@ export function AboutPage() {
             <h3 className="mt-8 text-lg font-extrabold">{copy.contactTitle}</h3>
             <p className="mt-2 text-sm leading-7 text-muted">{copy.contactBody}</p>
             <div className="mt-5 flex flex-wrap gap-3">
-              <a href="mailto:yeahcore@yeah.net" className={buttonClasses('primary', 'md')}>
+              <a href={`mailto:${CONTACT_EMAIL}`} className={buttonClasses('primary', 'md')}>
                 ✉️ {copy.emailCta}
               </a>
               <a

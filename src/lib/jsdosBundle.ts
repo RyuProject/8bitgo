@@ -12,7 +12,7 @@
  * 压缩前后大小一起搬过去，完全不用碰数据本身。
  */
 
-import { extractZipEntry } from './unzip'
+import { extractZipEntry, crc32 } from './unzip'
 import { mergeDosboxConfigOverride } from '../../shared/dosbox-config.js'
 
 const te = new TextEncoder()
@@ -102,22 +102,6 @@ function rawData(buf: ArrayBuffer, e: ZipEntry): Uint8Array<ArrayBuffer> {
 }
 
 /* ---------------- zip 写 ---------------- */
-
-const CRC_TABLE = (() => {
-  const t = new Uint32Array(256)
-  for (let i = 0; i < 256; i++) {
-    let c = i
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
-    t[i] = c >>> 0
-  }
-  return t
-})()
-
-function crc32(data: Uint8Array<ArrayBuffer>): number {
-  let c = 0xffffffff
-  for (let i = 0; i < data.length; i++) c = CRC_TABLE[(c ^ data[i]) & 0xff] ^ (c >>> 8)
-  return (c ^ 0xffffffff) >>> 0
-}
 
 interface OutEntry {
   name: string

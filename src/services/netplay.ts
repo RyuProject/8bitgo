@@ -94,6 +94,31 @@ export function netplayEnabled(): boolean {
 }
 
 /**
+ * 交给模拟器 iframe 用的信令地址 —— **必须是绝对地址**。
+ *
+ * 模拟器跑在 srcdoc iframe 里，那个文档的 location 是 about:srcdoc：protocol 是 "about:"、
+ * host 是空串。fetch / XHR / <script src> 走的是文档的 base URL（继承父页面），所以相对路径
+ * 都好用；但 socket.io 客户端算地址**不看 base URL**，只拼 location.protocol + location.host ——
+ * `io('/netplay')` 在 iframe 里算出来的是 `http://about:80/socket.io/…`（socket.io-client 4.8 实测），
+ * HTTPS 页面上被当 Mixed Content 直接拦掉。表现：控制台一串「insecure XMLHttpRequest endpoint」
+ * （每次重连一条）、信令永远连不上、open-room 卡在发送缓冲区里、大厅看不到房间、
+ * 房主拿不到 room-token（「没有房间令牌，房主进度托管未启动」）。
+ *
+ * 所以在父页面这边先按当前页面解析成绝对地址（/netplay → https://8bitgo.com/netplay）再写进
+ * EJS_netplayUrl。NETPLAY_URL 本来就是绝对地址时原样返回。本模块其它地方是父页面里的 fetch，
+ * 继续用相对地址没问题。
+ */
+export function netplayUrlForFrame(): string {
+  if (!NETPLAY_URL) return ''
+  if (typeof window === 'undefined') return NETPLAY_URL
+  try {
+    return new URL(NETPLAY_URL, window.location.href).href.replace(/\/+$/, '')
+  } catch {
+    return NETPLAY_URL
+  }
+}
+
+/**
  * EmulatorJS 要求 gameId 是数字（否则联机按钮不显示），而我们的游戏用 slug。
  * 用 FNV-1a 32 位散列把 slug 映射成稳定的数字，两边都能算，不需要额外存储。
  */

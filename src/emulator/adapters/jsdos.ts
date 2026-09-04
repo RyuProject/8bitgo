@@ -137,7 +137,50 @@ interface DosCi extends WindowsLaunchCi {
   resume: () => void
   screenshot: () => Promise<ImageData>
   sendKeyEvent: (keyCode: number, pressed: boolean) => void
+  /** 相对鼠标位移（指针锁定 / 触屏拖动那一路）。js-dos 的界面层在事件发生时调它 */
+  sendMouseRelativeMotion?: (x: number, y: number) => void
   exit: () => Promise<void>
+}
+
+/**
+ * 「鼠标上下反转」按游戏记在浏览器里。
+ *
+ * 为什么按游戏而不是全局：Build 引擎那批 DOS 射击游戏（毁灭公爵 3D、影武者、血祭、Redneck
+ * Rampage）出厂默认是飞行摇杆式 —— 鼠标前推 = 低头（DUKE3D.CFG 里 MouseAimingFlipped = 0），
+ * 当年得进 SETUP.EXE 才能翻过来，网页里玩家进不了 SETUP；而雷神之锤默认就是正常方向，
+ * 毁灭战士压根没有上下视角。一个全局开关会让玩家在两类游戏之间来回切。
+ */
+const MOUSE_INVERT_KEY = '8bitgo.dos.mouseInvertY'
+const mouseInvertStore = {
+  read(game: string): boolean {
+    try {
+      return localStorage.getItem(`${MOUSE_INVERT_KEY}:${game}`) === '1'
+    } catch {
+      return false
+    }
+  },
+  write(game: string, on: boolean) {
+    try {
+      if (on) localStorage.setItem(`${MOUSE_INVERT_KEY}:${game}`, '1')
+      else localStorage.removeItem(`${MOUSE_INVERT_KEY}:${game}`)
+    } catch {
+      /* 隐私模式 / 存储满了：这一局还是反转的，只是下次记不住 */
+    }
+  },
+}
+
+/**
+ * 把 js-dos 送进 DOSBox 的相对鼠标位移包一层，按需把上下取负。
+ *
+ * js-dos 8 的界面层是在每次指针事件里调 `ci.sendMouseRelativeMotion(dx, dy)`（dist 里看过，
+ * dx/dy 直接来自 movementX/Y，没有任何取负），而且调的就是 ci-ready 交出来的这个对象 ——
+ * 所以在实例上盖一个同名方法就够了，不用碰引擎。`inverted` 是现读的，切开关立刻生效。
+ * 绝对坐标那条 `sendMouseMotion` 不碰：反了 Y 光标会镜像，菜单点不准。
+ */
+function hookMouseInvert(c: DosCi, inverted: () => boolean) {
+  const raw = c.sendMouseRelativeMotion
+  if (typeof raw !== 'function') return
+  c.sendMouseRelativeMotion = (x, y) => raw.call(c, x, inverted() ? -y : y)
 }
 
 /**
@@ -251,6 +294,9 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   let engineUp = false
   /** 存档按 slug 归档；见下面 fsChanges 那段的说明 */
   let saveKey = ''
+  /** 鼠标上下反转（见 hookMouseInvert）。按游戏记忆，本地文件退回显示名 */
+  const mouseKey = options.gameSlug || `local:${options.gameName}`
+  let mouseInverted = options.mouseCapture ? mouseInvertStore.read(mouseKey) : false
   /** 最近一次存档落到哪儿了（云端 / 浏览器），给界面显示用 */
   let lastPush: { ok: boolean; where: 'cloud' | 'local' | null; error?: string } | null = null
   /**
@@ -416,6 +462,8 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
           else if (event === 'bnd-play' || event === 'ci-ready') {
             if (event === 'ci-ready' && arg) {
               ci = arg as DosCi
+              // 相对鼠标的上下方向由我们说了算（见 hookMouseInvert）；只有开了指针锁定的游戏才有相对位移
+              if (options.mouseCapture) hookMouseInvert(ci, () => mouseInverted)
               // DOSBox 真的在跑、命令接口也有了，这才是「玩家可以动手」。Windows 客体另算（等自启动）
               if (!guest) markReady()
               if (guest && !cancelWindowsLaunch) {
@@ -487,6 +535,20 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   return {
     caps,
     volume,
+    /** 鼠标上下当前反转了没有。写成 getter：工具栏读到的永远是现值，不是挂载时的快照 */
+    get mouseInverted() {
+      return mouseInverted
+    },
+    // 只有开了相对鼠标（射击类，见 emulator/mouseCapture.ts）才给这个开关：
+    // 绝对坐标的游戏反了 Y 光标会镜像。工具栏按 setMouseInvert 在不在决定画不画按钮
+    ...(options.mouseCapture
+      ? {
+          setMouseInvert(on: boolean) {
+            mouseInverted = on
+            mouseInvertStore.write(mouseKey, on)
+          },
+        }
+      : {}),
     /**
      * 屏幕手柄按下 / 松开。播放器在触屏设备上画那一套浮层，按下就走这里
      * （声明了 'touchpad' 能力才画，见 types.ts 的 Capability）。

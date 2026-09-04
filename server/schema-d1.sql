@@ -125,13 +125,10 @@ CREATE TABLE IF NOT EXISTS users (
   coins         INTEGER NOT NULL DEFAULT 0,
   role          TEXT    NOT NULL DEFAULT 'user'   CHECK (role   IN ('user','volunteer','admin')),
   status        TEXT    NOT NULL DEFAULT 'active' CHECK (status IN ('active','banned')),
-  created_at    TEXT    NOT NULL DEFAULT (CURRENT_TIMESTAMP),
-  -- 见 schema.sql 的同名列：微博登录认这个，不认邮箱
-  weibo_uid     TEXT    NULL
+  created_at    TEXT    NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS uniq_email     ON users (email);
-CREATE UNIQUE INDEX IF NOT EXISTS uniq_weibo_uid ON users (weibo_uid);
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_email ON users (email);
 CREATE INDEX IF NOT EXISTS idx_role          ON users (role, status);
 
 -- ---------- 平台级 BIOS ----------

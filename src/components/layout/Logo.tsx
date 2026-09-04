@@ -5,6 +5,14 @@ import { useT } from '@/services/i18n'
 export const SITE_NAME = import.meta.env.VITE_SITE_NAME ?? '8BitGo'
 
 /**
+ * 对外联系邮箱。
+ *
+ * 页脚的版权免责声明里写了「如涉及版权问题请联系我们处理」，那句话必须真的能点 ——
+ * 所以这个地址由页脚和关于页共用，别再各自写死一份。
+ */
+export const CONTACT_EMAIL = import.meta.env.VITE_CONTACT_EMAIL ?? 'yeahcore@yeah.net'
+
+/**
  * 站点 Logo。
  * 素材：public/ui/logo-8bitgo.png（272x70 透明底像素字标）
  *      public/ui/logo-mark.png（128x128 单字「8」方形标，compact 时用）

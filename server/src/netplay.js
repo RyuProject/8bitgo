@@ -100,6 +100,56 @@ const HOST_ONLY_KEYS = new Set(['pause', 'play', 'restart'])
 const MAX_SYNC_ENTRIES = 32
 /** 聊天正文和昵称的长度上限，和前端输入框对齐 */
 const MAX_CHAT_LEN = 500
+/** 昵称上限。成员表里的 player_name 也按它截，不然一个 100KB 的昵称会随房间列表推给全站 */
+const MAX_NAME_LEN = 32
+/**
+ * 房间 id 与 userid 的合法形状。
+ *
+ * 两者都由 EmulatorJS 现生成（GUID：十六进制 + 短横线），但终究是**客户端自填**的，
+ * 任何字符都可能出现。它们后面要当 Map 键、socket.io 房间名、URL 路径段 ——
+ * 收窄成「字母数字下划线短横线，最长 64」，下游就不用再逐处操心。
+ */
+const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/
+/**
+ * 「长得像数组下标」的字符串（"0"、"7"、"123"）当对象键时会被 JS **排到最前面**，不管插入顺序。
+ *
+ * users-updated 是个以 userid 为键的对象，而 EmulatorJS 的 getUserIndex() 就是
+ * `Object.keys(players).indexOf(myId)` —— 一个访客把 userid 填成 "7"，屋里每个人的
+ * 手柄号都整体后移：房主从 0 变 1（自己的按键跑到 2P），正常访客算出来的下标和服务端
+ * playerIndexOf（按 Map 插入顺序）对不上，按键全被 sync-control 过滤丢掉。
+ * 引擎生成的 GUID 带短横线，永远不会长这样，直接拒。
+ */
+const isIndexLike = (s) => /^(0|[1-9]\d*)$/.test(s) && Number(s) < 2 ** 32 - 1
+/**
+ * socket.io 的房间名必须加前缀。
+ *
+ * socket.io 里每条连接一接入就自动加入一个以它自己 socket.id 命名的房间，
+ * `nsp.to(socketId)` 就是靠这个做点对点投递的。而我们的房间 id 是客户端给的 ——
+ * 谁把 sessionid 填成别人的 socket.id（users-updated 会把全屋的 socketId 广播给每个成员，
+ * 观众也拿得到），就等于把自己塞进了那个人的私有房间：接下来他「自己房间」里的
+ * users-updated / data-message 全部会投到受害者那条连接上 —— 实测能远程 restart 别人的游戏、
+ * 往别人的手柄里灌 sync-control、把别人的成员表整个换掉。加个前缀，两套名字空间就分开了。
+ */
+const roomKey = (roomId) => `r:${roomId}`
+/** 单个连接每秒最多转发几条 webrtc-signal。访客只和房主握手，一次协商十几条 ICE 候选顶天 */
+const SIGNALS_PER_SEC_GUEST = 40
+/** 房主要和每个成员各握一次手，接手换房主时十几个人同时重连，放宽 */
+const SIGNALS_PER_SEC_HOST = 300
+/** requestRenegotiate 会让房主关掉并重建那条 PeerConnection（重新采集、重新协商），引擎自己最快 2.5 秒一次 */
+const RENEGOTIATE_PER_10S = 5
+/**
+ * 存档托管的内存预算。单份最大 12MB × 500 个房间 = 6GB，够把一台小机器打挂。
+ * 全局一个总量，每个 IP 一个小额度（一个人正常只开一间房）。超了回 507，前端静默跳过这一轮。
+ */
+const STATE_BUDGET_BYTES = Number(process.env.NETPLAY_STATE_BUDGET_BYTES || 256 * 1024 * 1024)
+const STATE_PER_IP_BYTES = Number(process.env.NETPLAY_STATE_PER_IP_BYTES || 32 * 1024 * 1024)
+/**
+ * 同一 IP 在同一个房间里最多几个成员。
+ * 观众位一共 12 个，每个都是房主那边的一路 WebRTC 上行 —— 一个人开 12 条连接进来当观众，
+ * 既把位子占光，又把房主的家宽上行打满，正在玩的人全部卡死。0 = 不限。
+ * 每次调用现读 env：测试里所有连接都来自 127.0.0.1，需要能在运行中开关。
+ */
+const maxMembersPerIp = () => Number(process.env.NETPLAY_MAX_MEMBERS_PER_IP ?? 4)
 
 /** roomId(sessionid) -> room */
 const rooms = new Map()
@@ -109,6 +159,8 @@ const socketRoom = new Map()
 const aliases = new Map()
 /** SSE 订阅者：{ res, watch }。房间有任何变化就推给他们，取代前端的轮询 */
 const watchers = new Set()
+/** /netplay 命名空间。destroyRoom 要靠它把残留的连接请出 socket.io 房间 */
+let nspRef = null
 
 /**
  * 房间有变化时推给所有 SSE 订阅者。
@@ -186,7 +238,7 @@ function detailedRoom(room) {
     gameId: room.gameId,
     roomName: room.roomName,
     createdAt: room.createdAt,
-    host: owner ? { nickname: owner.player_name || 'Player' } : null,
+    host: owner ? { nickname: str(owner.player_name, MAX_NAME_LEN) || 'Player' } : null,
     /** 房主的设备 / 地区 / 网络，房间卡片上那三个格子。见 presence.js */
     presence: owner ? presenceOf(owner) : UNKNOWN_PRESENCE,
     players: playerCount(room),
@@ -196,7 +248,7 @@ function detailedRoom(room) {
     maxSpectators: MAX_SPECTATORS,
     hasPassword: Boolean(room.password),
     members: users.map((u) => ({
-      nickname: u.player_name || 'Player',
+      nickname: str(u.player_name, MAX_NAME_LEN) || 'Player',
       host: u.userid === room.ownerUserId,
       role: u.role === 'spectator' ? 'spectator' : 'player',
       presence: presenceOf(u),
@@ -243,7 +295,7 @@ function usersPayload(room) {
   // presence 也要摘掉：它是个函数（取快照用），塞进 users-updated 只会变成
   // 一个空对象跟着广播给 EmulatorJS，白占带宽；房间列表那边自己会调它
   const strip = (u) => {
-    const { token: _t, presence: _p, ...rest } = u
+    const { token: _t, presence: _p, ip: _ip, ...rest } = u
     return rest
   }
   for (const [userid, u] of room.users) if (u.role !== 'spectator') out[userid] = strip(u)
@@ -278,6 +330,13 @@ function destroyRoom(room) {
   room.claim = null
   for (const [, u] of room.users) socketRoom.delete(u.socketId)
   rooms.delete(room.id)
+  /**
+   * 还连着的成员（宽限期到了没人接手时，访客都还在线）必须一并请出 socket.io 房间。
+   * 不然他们的连接会一直留在那个名字下：房间 id 是公开出现过的（列表、邀请链接），
+   * 谁再用同一个 id 开一间新房，users-updated / data-message 就会照样投给这些老成员 ——
+   * 实测能把一个已经散场的访客的成员表换掉、给他发 restart。
+   */
+  nspRef?.socketsLeave(roomKey(room.id))
   room.state = null
   // 房间彻底没了，指向它的别名也没意义了
   for (const [from, to] of aliases) if (to === room.id || from === room.id) aliases.delete(from)
@@ -326,7 +385,7 @@ function beginHostMigration(nsp, room) {
 
     if (Date.now() - room.migrationStartedAt >= HOST_GRACE_MS) {
       // 宽限期到了都没人接，这局才真的结束
-      nsp.to(room.id).emit('data-message', { 'host-left': true })
+      nsp.to(roomKey(room.id)).emit('data-message', { 'host-left': true })
       destroyRoom(room)
       return
     }
@@ -343,10 +402,10 @@ function beginHostMigration(nsp, room) {
     }
 
     room.nextHostUserId = room.candidates[0]
-    nsp.to(room.id).emit('data-message', {
+    nsp.to(roomKey(room.id)).emit('data-message', {
       'host-migrating': { roomId: room.id, nextHost: room.nextHostUserId },
     })
-    nsp.to(room.id).emit('users-updated', usersPayload(room))
+    nsp.to(roomKey(room.id)).emit('users-updated', usersPayload(room))
     notifyRooms()
 
     if (room.graceTimer) clearTimeout(room.graceTimer)
@@ -375,7 +434,7 @@ function removeSocket(socket, nsp) {
   for (const [userid, u] of room.users) {
     if (u.socketId === socket.id) room.users.delete(userid)
   }
-  socket.leave(roomId)
+  socket.leave(roomKey(roomId))
 
   if (room.users.size === 0) {
     // 认领人重新挂载引擎时旧连接必断，屋里可能一时一个人都没有 —— 这时不能散，
@@ -391,7 +450,7 @@ function removeSocket(socket, nsp) {
     beginHostMigration(nsp, room)
     return
   }
-  nsp.to(roomId).emit('users-updated', usersPayload(room))
+  nsp.to(roomKey(roomId)).emit('users-updated', usersPayload(room))
   notifyRooms()
 }
 
@@ -402,6 +461,42 @@ function socketIp(socket) {
   } catch {
     return ''
   }
+}
+
+/** 房间的 game_id：引擎给的是数字（EJS_gameID）；别的类型收成短字串，对象之类一律丢 */
+function gameIdOf(v) {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null
+  return str(v, 64) || null
+}
+
+/**
+ * 成员记录里只留引擎会读的几个字段。
+ *
+ * extra 整个是客户端给的，128KB 以内什么都能塞；以前它原样存进成员表、又随 users-updated
+ * 广播给屋里每个人（每次进出、换角色都全量重发）—— 一个成员塞 100KB 垃圾就是对全屋的放大攻击，
+ * 放进 game_id 的话还会顺着房间列表推给全站每个开着侧边栏的人。
+ * EmulatorJS 从 players[id] 里只读 player_name 和 socketId（见 emulator.min.js 的 users-updated 处理），
+ * 我们自己的适配器读 role；其余字段谁都不看。⚠️ 升级引擎后要重新对一遍这张表。
+ */
+function pickExtra(extra, userid, sessionid) {
+  return {
+    domain: str(extra.domain, 200),
+    game_id: gameIdOf(extra.game_id),
+    room_name: str(extra.room_name, 60),
+    player_name: str(extra.player_name, MAX_NAME_LEN),
+    userid,
+    sessionid,
+  }
+}
+
+/**
+ * 一条 sync-control 的形状对不对：connected_input 得是数组，帧号得是 0..2^31 的整数
+ * （它会变成房主那边 inputsData 的 key；见 MAX_SYNC_ENTRIES 的说明）。
+ */
+function validSync(e) {
+  if (!Array.isArray(e?.connected_input)) return false
+  const f = typeof e.frame === 'number' ? e.frame : typeof e.frame === 'string' && /^\d+$/.test(e.frame) ? Number(e.frame) : NaN
+  return Number.isInteger(f) && f >= 0 && f < 2 ** 31
 }
 
 /** 发送者在手柄位里的下标：和 usersPayload 的顺序一致（玩家在前、按加入顺序），观众是 -1 */
@@ -451,6 +546,7 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
   })
 
   const nsp = io.of('/netplay')
+  nspRef = nsp
 
   nsp.on('connection', (socket) => {
     /**
@@ -460,10 +556,11 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
     socket.data.presence = watchPresence(socket)
 
     socket.on('open-room', (payload, ack) => {
-      const extra = payload?.extra ?? {}
+      const extra = payload?.extra && typeof payload.extra === 'object' ? payload.extra : {}
       const roomId = str(extra.sessionid, 64)
       const userid = str(extra.userid, 64)
-      if (!roomId || !userid) return ack?.('bad request')
+      if (!SAFE_ID.test(roomId) || !SAFE_ID.test(userid)) return ack?.('bad request')
+      if (isIndexLike(userid)) return ack?.('bad userid')
       // 别名也算占用：getRoom 先顺着别名解析，撞上别名的新房间谁也进不去
       if (rooms.has(roomId) || aliases.has(roomId)) return ack?.('room already exists')
       // 一个连接同时只能待在一个房间里，也就只能开一个房，否则一个脚本就能刷满
@@ -478,7 +575,7 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
 
       const room = {
         id: roomId,
-        gameId: extra.game_id ?? null,
+        gameId: gameIdOf(extra.game_id),
         domain: str(extra.domain, 200),
         roomName: str(extra.room_name, 60) || 'Room',
         maxPlayers: Math.max(2, Math.min(MAX_PLAYERS, Number(payload?.maxPlayers) || 2)),
@@ -503,23 +600,24 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
       }
       // presence 写在 ...extra 后面：extra 整个是客户端给的，它自己塞一个
       // presence 进来就等于自选国旗，必须由服务端的这一份覆盖掉
-      room.users.set(userid, { ...extra, socketId: socket.id, role: 'player', presence: socket.data.presence })
+      room.users.set(userid, { ...pickExtra(extra, userid, roomId), socketId: socket.id, role: 'player', ip, presence: socket.data.presence })
       rooms.set(roomId, room)
       socketRoom.set(socket.id, roomId)
-      socket.join(roomId)
+      socket.join(roomKey(roomId))
 
       ack?.(null)
       issueToken(room, userid, socket)
-      nsp.to(roomId).emit('users-updated', usersPayload(room))
+      nsp.to(roomKey(roomId)).emit('users-updated', usersPayload(room))
       notifyRooms()
     })
 
     socket.on('join-room', (payload, ack) => {
-      const extra = payload?.extra ?? {}
+      const extra = payload?.extra && typeof payload.extra === 'object' ? payload.extra : {}
       const room = getRoom(str(extra.sessionid, 64))
       const userid = str(extra.userid, 64)
       if (!room) return ack?.('room not found')
-      if (!userid) return ack?.('bad request')
+      if (!SAFE_ID.test(userid)) return ack?.('bad request')
+      if (isIndexLike(userid)) return ack?.('bad userid')
       /**
        * ⚠️ userid 是**客户端自己填的**，而且随 users-updated 广播给屋里每个人。
        * 不挡重复的话，任何一个访客都能拿房主的 userid 再 join 一次 ——
@@ -545,19 +643,28 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
       // 客户端也可以事后调 /role 主动把自己降成观众。
       const asSpectator = playerCount(room) >= room.maxPlayers
       if (asSpectator && spectatorCount(room) >= MAX_SPECTATORS) return ack?.('room is full')
+      // 同一 IP 别把一屋的位子占光（见 maxMembersPerIp）。房主自己也算一个
+      const ip = socketIp(socket)
+      const cap = maxMembersPerIp()
+      if (ip && cap > 0) {
+        let same = 0
+        for (const [, u] of room.users) if (u.ip === ip) same++
+        if (same >= cap) return ack?.('too many players from your network')
+      }
 
       room.users.set(userid, {
-        ...extra,
+        ...pickExtra(extra, userid, room.id),
         socketId: socket.id,
         role: asSpectator ? 'spectator' : 'player',
+        ip,
         presence: socket.data.presence, // 同 open-room：不能让 extra 覆盖它
       })
       socketRoom.set(socket.id, room.id)
-      socket.join(room.id)
+      socket.join(roomKey(room.id))
 
       ack?.(null, usersPayload(room))
       issueToken(room, userid, socket)
-      nsp.to(room.id).emit('users-updated', usersPayload(room))
+      nsp.to(roomKey(room.id)).emit('users-updated', usersPayload(room))
       notifyRooms()
     })
 
@@ -565,15 +672,41 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
     socket.on('disconnect', () => removeSocket(socket, nsp))
 
     // 纯转发：把握手信息送给指定的那个 socket，并告诉对方是谁发的
+    let sigWindow = 0
+    let sigCount = 0
+    let renegWindow = 0
+    let renegCount = 0
     socket.on('webrtc-signal', (data) => {
-      const target = str(data?.target, 64)
+      if (!data || typeof data !== 'object' || Array.isArray(data)) return
+      const target = str(data.target, 64)
       if (!target) return
       const roomId = socketRoom.get(socket.id)
       if (!roomId || socketRoom.get(target) !== roomId) return // 不允许跨房间发信令
+      const room = rooms.get(roomId)
+      if (!room) return
       // 星型拓扑：访客只和房主握手。访客之间互发 offer 没有任何正当用途，
       // 只会在对方那边凭空多出一条 PeerConnection
-      const room = rooms.get(roomId)
-      if (room && socket.id !== room.ownerSocketId && target !== room.ownerSocketId) return
+      const isHost = socket.id === room.ownerSocketId
+      if (!isHost && target !== room.ownerSocketId) return
+      /**
+       * 限流。data-message 有 20 条/秒的闸，信令以前没有 —— 而信令是访客能直接
+       * 打到房主浏览器上的通道：一条 offer 最大 128KB，不限的话一个访客就能让服务器
+       * 往房主身上灌几十 MB/s；requestRenegotiate 更狠，每一条都让房主关掉重建那条
+       * PeerConnection、重新采集画面。
+       */
+      const now = Date.now()
+      if (now - sigWindow > 1000) {
+        sigWindow = now
+        sigCount = 0
+      }
+      if (++sigCount > (isHost ? SIGNALS_PER_SEC_HOST : SIGNALS_PER_SEC_GUEST)) return
+      if (data.requestRenegotiate) {
+        if (now - renegWindow > 10_000) {
+          renegWindow = now
+          renegCount = 0
+        }
+        if (++renegCount > RENEGOTIATE_PER_10S) return
+      }
       nsp.to(target).emit('webrtc-signal', { ...data, sender: socket.id })
     })
 
@@ -583,6 +716,9 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
     socket.on('data-message', (d) => {
       const roomId = socketRoom.get(socket.id)
       if (!roomId) return
+      // 引擎的 dataMessage(t) 直接读 t.pause、t["sync-control"].forEach —— 传个 null、字串、
+      // 数组过去，屋里每个人的引擎都在事件回调里抛 TypeError。协议里它只有「对象」一种形状
+      if (!d || typeof d !== 'object' || Array.isArray(d)) return
 
       const now = Date.now()
       if (now - msgWindow > 1000) {
@@ -591,7 +727,7 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
       }
       if (++msgCount > MSG_PER_SEC) return
 
-      if (d && typeof d === 'object' && !Array.isArray(d)) {
+      {
         const room = rooms.get(roomId)
         const isHost = Boolean(room) && socket.id === room.ownerSocketId
         let dirty = false
@@ -602,27 +738,22 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
             dirty = true
           }
         }
-        // 按键同步：观众一个键都不许发；玩家只能发自己手柄位的键。
-        // connected_input[0] 是手柄号，房主那边照单全收塞进模拟器 —— 不拦的话
-        // 任何访客都能替 1P 按键，观众也能操作游戏（客户端那层「掐断输入」只是自律）
-        if (room && !isHost && Array.isArray(d['sync-control'])) {
-          const idx = playerIndexOf(room, socket.id)
+        /**
+         * 按键同步：观众一个键都不许发；玩家只能发自己手柄位的键；房主不限手柄位，
+         * 但形状同样要对（不是数组、帧号不合法的一律丢 —— 引擎那边 .forEach 会直接炸）。
+         * connected_input[0] 是手柄号，房主那边照单全收塞进模拟器 —— 不拦的话
+         * 任何访客都能替 1P 按键，观众也能操作游戏（客户端那层「掐断输入」只是自律）。
+         * ⚠️ 这只管 socket.io 这条路；访客按键真正的主路是 WebRTC DataChannel，服务器看不见，
+         * 由房主浏览器里的适配器守（见 emulatorjs.ts 的 guardInputChannel）。
+         */
+        if (room && 'sync-control' in d) {
+          const raw = d['sync-control']
+          const idx = isHost ? -1 : playerIndexOf(room, socket.id)
           const kept =
-            idx < 0
+            !Array.isArray(raw) || (!isHost && idx < 0)
               ? []
-              : d['sync-control']
-                  .filter(
-                    (e) =>
-                      Array.isArray(e?.connected_input) &&
-                      e.connected_input[0] === idx &&
-                      // 帧号会变成房主那边 inputsData 的 key，必须是个正常的整数；
-                      // 见 MAX_SYNC_ENTRIES 的说明
-                      Number.isInteger(Number(e?.frame)) &&
-                      Number(e.frame) >= 0 &&
-                      Number(e.frame) < 2 ** 31,
-                  )
-                  .slice(0, MAX_SYNC_ENTRIES)
-          if (kept.length !== d['sync-control'].length) dirty = true
+              : raw.filter((e) => validSync(e) && (isHost || e.connected_input[0] === idx)).slice(0, MAX_SYNC_ENTRIES)
+          if (!Array.isArray(raw) || kept.length !== raw.length) dirty = true
           if (kept.length) d['sync-control'] = kept
           else delete d['sync-control']
         }
@@ -652,7 +783,7 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
         }
         if (dirty && Object.keys(d).length === 0) return
       }
-      socket.to(roomId).emit('data-message', d)
+      socket.to(roomKey(roomId)).emit('data-message', d)
     })
   })
 
@@ -739,6 +870,17 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
       const me = memberByToken(room, str(req.get('x-netplay-token'), 64))
       if (!me || me.userid !== room.ownerUserId) return res.status(403).json({ error: 'not the host' })
       if (!Buffer.isBuffer(req.body) || req.body.length === 0) return res.status(400).json({ error: 'empty state' })
+      // 预算：见 STATE_BUDGET_BYTES。本房间已有的那份是要被替换掉的，不算在内
+      let total = 0
+      let sameIp = 0
+      for (const r of rooms.values()) {
+        if (r === room || !r.state) continue
+        total += r.state.length
+        if (room.hostIp && r.hostIp === room.hostIp) sameIp += r.state.length
+      }
+      if (total + req.body.length > STATE_BUDGET_BYTES || (room.hostIp && sameIp + req.body.length > STATE_PER_IP_BYTES)) {
+        return res.status(507).json({ error: 'state storage full' })
+      }
       room.state = req.body
       room.stateAt = Date.now()
       res.json({ ok: true, bytes: room.state.length })
@@ -804,7 +946,7 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
       room.users.delete(me.userid)
       room.users.set(me.userid, me)
     }
-    nsp.to(room.id).emit('users-updated', usersPayload(room))
+    nsp.to(roomKey(room.id)).emit('users-updated', usersPayload(room))
     notifyRooms()
     res.json({ ok: true, role: want })
   })
@@ -888,8 +1030,10 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
     if (oldRoom.claimTimer) clearTimeout(oldRoom.claimTimer)
     oldRoom.claim = null
     // 告诉还留在旧房间里的人去哪儿
-    nsp.to(oldRoom.id).emit('data-message', { 'host-migrated': { roomId: newRoomId } })
+    nsp.to(roomKey(oldRoom.id)).emit('data-message', { 'host-migrated': { roomId: newRoomId } })
     for (const [, u] of oldRoom.users) socketRoom.delete(u.socketId)
+    // 他们接下来会自己 join 新房间；旧的 socket.io 房间名不能再挂着他们（见 destroyRoom）
+    nsp.socketsLeave(roomKey(oldRoom.id))
     rooms.delete(oldRoom.id)
     aliases.set(oldRoom.id, newRoomId)
     // 旧的别名也一起指过来，链子不要越接越长

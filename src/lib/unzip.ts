@@ -188,3 +188,134 @@ export async function extractRomFromZip(buf: ArrayBuffer, prefer: string[]): Pro
 
   return { name: pick.name, data: await extractZipEntry(buf, pick) }
 }
+
+/* ══════════════════════════ 往包里追加成员 ══════════════════════════ */
+
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256)
+  for (let i = 0; i < 256; i++) {
+    let c = i
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+    t[i] = c >>> 0
+  }
+  return t
+})()
+
+/** zip 成员用的 CRC-32（无符号）。RomData 的清单要按 CRC 对 ROM，所以合成产物必须自己算一遍 */
+export function crc32(data: Uint8Array): number {
+  let c = 0xffffffff
+  for (let i = 0; i < data.length; i++) c = CRC_TABLE[(c ^ data[i]) & 0xff] ^ (c >>> 8)
+  return (c ^ 0xffffffff) >>> 0
+}
+
+/**
+ * 往一个现成的 zip 末尾追加几个**未压缩**成员，返回新包。
+ *
+ * 为什么是"追加"而不是"重打包"：改版包动辄 20 多 MB、二十几个成员，
+ * 为了加两块合成 ROM 把整包解压再压回去纯属浪费。zip 的结构允许直接接：
+ * 原有成员的本地头和数据一个字节都不用动（中央目录里记的 localOffset 因此仍然有效），
+ * 只要把新成员的本地头 + 数据插在**原中央目录之前**，再把中央目录整段抄过来、
+ * 接上新成员的目录项、重写 EOCD 就行。
+ *
+ * 新成员一律 stored(0) 不压缩 —— 合成 ROM 只在本地递给引擎，省下的那点体积
+ * 换不来 deflate 的时间，而且不用引 CompressionStream。
+ *
+ * 同名成员不会去重：调用方给的名字应该是新名字（见 data/arcadeHacks.ts 的合成产物命名）。
+ */
+export function appendZipEntries(
+  buf: ArrayBuffer,
+  additions: readonly { name: string; data: Uint8Array }[],
+): Uint8Array {
+  const b = new Uint8Array(buf)
+  const dv = new DataView(buf)
+  if (!additions.length) return b
+
+  let eocd = -1
+  const from = Math.max(0, b.length - 22 - 65535)
+  for (let i = b.length - 22; i >= from; i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) {
+      eocd = i
+      break
+    }
+  }
+  if (eocd < 0) throw new Error('zip: 找不到中央目录结束记录，无法追加')
+
+  const count = dv.getUint16(eocd + 10, true)
+  const centralSize = dv.getUint32(eocd + 12, true)
+  const centralOffset = dv.getUint32(eocd + 16, true)
+  if (centralOffset + centralSize > b.length) throw new Error('zip: 中央目录越界，无法追加')
+
+  const enc = new TextEncoder()
+  const rows = additions.map((a) => ({ name: enc.encode(a.name), data: a.data, crc: crc32(a.data) }))
+
+  const localBytes = rows.reduce((n, r) => n + 30 + r.name.length + r.data.length, 0)
+  const centralBytes = rows.reduce((n, r) => n + 46 + r.name.length, 0)
+
+  const out = new Uint8Array(centralOffset + localBytes + centralSize + centralBytes + 22)
+  const ov = new DataView(out.buffer)
+  let p = 0
+
+  // 1) 原包里中央目录之前的全部内容（本地头 + 数据），原样搬过去
+  out.set(b.subarray(0, centralOffset), p)
+  p += centralOffset
+
+  // 2) 新成员的本地头 + 数据。顺手记下每个的 localOffset，中央目录要用
+  const offsets: number[] = []
+  for (const r of rows) {
+    offsets.push(p)
+    ov.setUint32(p, 0x04034b50, true)
+    ov.setUint16(p + 4, 20, true) // version needed
+    ov.setUint16(p + 6, 0x0800, true) // 名字按 UTF-8（虽然这里都是 ASCII）
+    ov.setUint16(p + 8, 0, true) // method = stored
+    ov.setUint16(p + 10, 0, true) // time
+    ov.setUint16(p + 12, 0x0021, true) // date = 1980-01-01，zip 的最小合法值
+    ov.setUint32(p + 14, r.crc, true)
+    ov.setUint32(p + 18, r.data.length, true)
+    ov.setUint32(p + 22, r.data.length, true)
+    ov.setUint16(p + 26, r.name.length, true)
+    ov.setUint16(p + 28, 0, true) // extra
+    out.set(r.name, p + 30)
+    out.set(r.data, p + 30 + r.name.length)
+    p += 30 + r.name.length + r.data.length
+  }
+
+  // 3) 原中央目录整段照抄 —— 里面记的 localOffset 都还在原位，不用修
+  const newCentralOffset = p
+  out.set(b.subarray(centralOffset, centralOffset + centralSize), p)
+  p += centralSize
+
+  // 4) 新成员的中央目录项
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i]
+    ov.setUint32(p, 0x02014b50, true)
+    ov.setUint16(p + 4, 20, true) // version made by
+    ov.setUint16(p + 6, 20, true) // version needed
+    ov.setUint16(p + 8, 0x0800, true)
+    ov.setUint16(p + 10, 0, true) // method = stored
+    ov.setUint16(p + 12, 0, true) // time
+    ov.setUint16(p + 14, 0x0021, true) // date
+    ov.setUint32(p + 16, r.crc, true)
+    ov.setUint32(p + 20, r.data.length, true)
+    ov.setUint32(p + 24, r.data.length, true)
+    ov.setUint16(p + 28, r.name.length, true)
+    ov.setUint16(p + 30, 0, true) // extra
+    ov.setUint16(p + 32, 0, true) // comment
+    ov.setUint16(p + 34, 0, true) // disk start
+    ov.setUint16(p + 36, 0, true) // internal attrs
+    ov.setUint32(p + 38, 0, true) // external attrs
+    ov.setUint32(p + 42, offsets[i], true)
+    out.set(r.name, p + 46)
+    p += 46 + r.name.length
+  }
+
+  // 5) 新的 EOCD
+  ov.setUint32(p, 0x06054b50, true)
+  ov.setUint16(p + 4, 0, true) // this disk
+  ov.setUint16(p + 6, 0, true) // disk with central dir
+  ov.setUint16(p + 8, count + rows.length, true)
+  ov.setUint16(p + 10, count + rows.length, true)
+  ov.setUint32(p + 12, centralSize + centralBytes, true)
+  ov.setUint32(p + 16, newCentralOffset, true)
+  ov.setUint16(p + 20, 0, true) // comment length
+  return out
+}

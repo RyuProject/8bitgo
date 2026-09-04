@@ -16,7 +16,8 @@ import { PostPage } from '@/pages/PostPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { ProfilePage } from '@/pages/ProfilePage'
 import { AboutPage } from '@/pages/AboutPage'
-import { WeiboCallbackPage } from '@/pages/WeiboCallbackPage'
+import { EmbedPage } from '@/pages/EmbedPage'
+import { OAuthCallbackPage } from '@/pages/OAuthCallbackPage'
 
 /**
  * 后台整块按需加载。
@@ -64,9 +65,10 @@ export function AppRoutes() {
           <Route path="/blog" element={<BlogPage />} />
           <Route path="/blog/:slug" element={<PostPage />} />
           <Route path="/login" element={<LoginPage />} />
-          {/* 微博授权回调。路径写死、且不带语言前缀 —— 微博开放平台只认一个「授权回调页」，
-              必须和后端 WEIBO_REDIRECT_URI 完全一致。登完由页面自己整页跳回原来的语言站 */}
-          <Route path="/auth/weibo/callback" element={<WeiboCallbackPage />} />
+          {/* 第三方登录的落地页。注册给 Microsoft / Apple 的是**后端**那个回调地址，
+              这里只接后端 302 回来的结果。不带语言前缀（前缀是路由 basename），
+              所以登完要整页跳回原来的语言站 */}
+          <Route path="/auth/callback" element={<OAuthCallbackPage />} />
           <Route path="/me" element={<ProfilePage />} />
           <Route path="/about" element={<AboutPage />} />
           {COMING_SOON_ROUTES.map((path) => (
@@ -74,6 +76,13 @@ export function AppRoutes() {
           ))}
           <Route path="*" element={<NotFoundPage />} />
         </Route>
+
+        {/*
+          第三方页面嵌入用的精简游玩页。刻意挂在 <Route element={<Layout />}> **外面** ——
+          挂里面就会带上侧边栏、顶栏和页脚，在一个 640x480 的 iframe 里全是负担。
+          它仍然要走 SSR（服务端只跳过 /admin），所以 EmbedPage 只能静态引入，不能 lazy。
+        */}
+        <Route path="/embed/:slug" element={<EmbedPage />} />
 
         {/* 后台：独立外壳，不带前台侧边栏 */}
         <Route

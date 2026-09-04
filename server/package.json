@@ -15,7 +15,7 @@
     "test:mail:parse": "node scripts/test-mail-parsing.mjs",
     "test:mail:resend": "node scripts/test-mail-resend.mjs",
     "test:codes": "node scripts/test-codes.mjs",
-    "test:weibo": "node scripts/test-weibo.mjs",
+    "test:oauth": "node scripts/test-oauth.mjs",
     "test:presence": "node scripts/test-presence.mjs",
     "test:roles": "node scripts/test-roles.mjs",
     "test:save-quota": "node scripts/test-save-quota.mjs",

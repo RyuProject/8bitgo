@@ -6,12 +6,26 @@
  *
  * 录像有硬上限 60 秒，录完当场下载到本地，全程不经过服务器。
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { Capability, RuntimeHandle, RuntimeId } from './types'
 import { canRecord, downloadBlob, mediaFileName, startRecording, MAX_RECORD_MS, type Recorder } from './recorder'
 import { useT, fmt } from '@/services/i18n'
 import { useLang } from '@/services/lang'
-import { asSaveRuntime, cloudSavesEnabled, pullSave, pushSave, saveInfo, type SaveWhere } from '@/services/saves'
+import {
+  asSaveRuntime,
+  cloudSavesEnabled,
+  fetchCloudSave,
+  pullLocalSave,
+  pullSave,
+  pushSave,
+  saveInfo,
+  setSaveTarget,
+  type SaveTarget,
+  type SaveWhere,
+} from '@/services/saves'
+import { SaveLoadModal, type SaveLoadCard } from './SaveLoadModal'
+import { installHotkeys } from './hotkeyBridge'
+import type { HotkeyAction } from '@/services/hotkeys'
 import { cx } from '@/lib/format'
 
 interface Props {
@@ -27,6 +41,12 @@ interface Props {
    * 留空就只显示通用的三步说明 —— DOS 游戏的存档键各家不同，通用文案只能给最常见的 ESC / F1。
    */
   dosSaveHint?: string
+  /**
+   * 播放器那一块 DOM（模拟器 iframe 就在里面）。
+   * 快捷键要在**游戏正开着**的时候也能按，而那时焦点在 iframe 里 ——
+   * 必须从这一块里找到 iframe、在它的文档上也挂一份监听。见 hotkeyBridge.ts。
+   */
+  stageRef?: RefObject<HTMLElement | null>
   className?: string
 }
 
@@ -48,7 +68,8 @@ function timeAgo(ts: number, lang: string): string {
 const BTN = 'inline-flex h-7 min-w-7 items-center justify-center gap-1 rounded-md border border-line px-1.5 text-muted transition-colors hover:border-brand hover:text-fg disabled:opacity-40'
 const BTN_ON = 'border-brand bg-brand-soft text-brand-hover'
 
-export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSaveHint, className }: Props) {
+export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSaveHint,
+  stageRef, className }: Props) {
   const t = useT()
   const lang = useLang()
   const tt = t.player.tools
@@ -56,6 +77,8 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
   const [volume, setVolume] = useState(handle?.volume ?? 1)
   const [muted, setMuted] = useState(false)
   const [panel, setPanel] = useState<'volume' | 'gamepad' | 'fsSave' | null>(null)
+  /** 存档面板（三张卡：云端 / 这个浏览器 / 文件）。见 SaveLoadModal.tsx */
+  const [saveModal, setSaveModal] = useState(false)
   /**
    * 移动端：次要按钮（音量 / 手柄 / 另存 / 截屏 / 录像）收进「⋯」里。
    * 桌面端这个 state 不起作用 —— 那一组在 sm: 断点上无条件常驻（见 return 里的 secondaryCls）。
@@ -63,6 +86,8 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
   const [more, setMore] = useState(false)
   const [msg, setMsg] = useState('')
   const [pads, setPads] = useState<string[]>([])
+  /** 鼠标上下反转（DOS 射击游戏）。初值从句柄读，之后本地维护 —— 和音量一样的做法 */
+  const [mouseInv, setMouseInv] = useState(Boolean(handle?.mouseInverted))
   const [recording, setRecording] = useState(false)
   const [elapsed, setElapsed] = useState(0)
   const recRef = useRef<Recorder | null>(null)
@@ -101,6 +126,7 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
     setFsSaveFailed(false)
     setMuted(false)
     setVolume(handle?.volume ?? 1)
+    setMouseInv(Boolean(handle?.mouseInverted))
     return () => {
       recRef.current?.cancel()
       recRef.current = null
@@ -202,7 +228,8 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
    * 存档（内存快照式的引擎）。
    * 登录了进云端跟着账号走；没登录就落在这个浏览器里，随时能再导出成文件。
    */
-  const doSave = async () => {
+  const doSave = async (target: SaveTarget) => {
+    setPanel(null)
     try {
       const blob = await handle.saveState?.()
       if (handle.saveMode === 'remote') {
@@ -213,9 +240,15 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
         say(tt.saveFail)
         return
       }
+      // 「下载」不是存到哪儿，是不存、直接给他文件
+      if (target === 'download') {
+        downloadBlob(blob, mediaFileName(gameName, handle.saveExt ?? 'state'))
+        say(tt.saveOk)
+        return
+      }
       if (archivable && saveRuntime && gameSlug) {
         const bytes = new Uint8Array(await blob.arrayBuffer())
-        const r = await pushSave(saveRuntime, gameSlug, bytes)
+        const r = await pushSave(saveRuntime, gameSlug, bytes, 0, target)
         if (r.ok && r.where) {
           sayStored(r.where, r.cloudFailed ? r.error : undefined)
           return
@@ -311,6 +344,106 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
     fileRef.current?.click()
   }
 
+  /**
+   * 从指定的地方读档。
+   *
+   * 和 doLoad() 的分工：那个是「读现有的最好那份」（快捷读档按钮用），
+   * 这个是玩家在面板里点了某一张卡的「读档」—— 他要的就是**那儿**的那份，
+   * 这时候再去别处找等于答非所问。空了就直说，别悄悄读了别的地方的。
+   */
+  const loadFrom = async (from: 'cloud' | 'local') => {
+    if (!archivable || !saveRuntime || !gameSlug) return
+    setSaveModal(false)
+    try {
+      const got = from === 'cloud' ? await fetchCloudSave(saveRuntime, gameSlug) : await pullLocalSave(saveRuntime, gameSlug)
+      if (!got) {
+        say(tt.saveLoadNothing)
+        return
+      }
+      // slice() 保证拿到的是一段独立的 buffer，不受原数组偏移影响
+      const note = await handle.loadState?.(got.data.slice().buffer)
+      setArchived({ where: from, updatedAt: got.updatedAt })
+      say(typeof note === 'string' && note ? note : fmt(tt.loadFrom, { where: whereLabel(from) }))
+    } catch (e) {
+      say(fmt(tt.loadFail, { msg: e instanceof Error ? e.message : String(e) }))
+    }
+  }
+
+  /**
+   * 面板上那三张卡。
+   *
+   * 云存档排第一 —— 它是唯一「换台设备还在」的选项。没登录时整张卡压暗、
+   * 标题旁边写「需要登录」：灰一个按钮却不说为什么，玩家只会以为是坏了。
+   *
+   * 每次点「保存」都把这次的选择记下来（setSaveTarget）：DOS 那条自动固化存档的路
+   * 没有界面可问，走的就是这个记忆；没记过就落本地，不会偷偷上云。
+   */
+  const saveCards: SaveLoadCard[] = [
+    {
+      id: 'cloud',
+      saveKey: 'save:cloud',
+      loadKey: 'load:cloud',
+      title: tt.saveCardCloud,
+      desc: tt.saveCardCloudDesc,
+      disabled: !toCloud || !archivable,
+      disabledNote: toCloud ? undefined : tt.saveNeedLogin,
+      onSave: () => {
+        setSaveTarget('cloud')
+        void doSave('cloud')
+      },
+      onLoad: () => void loadFrom('cloud'),
+    },
+    {
+      id: 'local',
+      saveKey: 'save:local',
+      loadKey: 'load:local',
+      title: tt.saveCardLocal,
+      desc: tt.saveCardLocalDesc,
+      disabled: !archivable,
+      onSave: () => {
+        setSaveTarget('local')
+        void doSave('local')
+      },
+      onLoad: () => void loadFrom('local'),
+    },
+    {
+      id: 'download',
+      saveKey: 'save:file',
+      loadKey: 'load:file',
+      // 文件这一路不需要 archivable：没有 slug 的本地 ROM 也能把存档下载下来带走
+      title: tt.saveCardFile,
+      desc: tt.saveCardFileDesc,
+      onSave: () => {
+        setSaveTarget('download')
+        void doSave('download')
+      },
+      onLoad: () => {
+        setSaveModal(false)
+        fileRef.current?.click()
+      },
+    },
+  ]
+
+  /**
+   * 装上存 / 读档的快捷键。
+   *
+   * 依赖里带 saveCards 是因为每张卡的动作闭包着 handle / gameSlug；
+   * 换了游戏、换了引擎都要重挂一遍，否则快捷键还在对上一局操作。
+   */
+  useEffect(() => {
+    if (!caps.has('saveState')) return
+    const byAction: Record<HotkeyAction, (() => void) | undefined> = {
+      'save:cloud': saveCards[0].disabled ? undefined : saveCards[0].onSave,
+      'load:cloud': saveCards[0].disabled ? undefined : saveCards[0].onLoad,
+      'save:local': saveCards[1].disabled ? undefined : saveCards[1].onSave,
+      'load:local': saveCards[1].disabled ? undefined : saveCards[1].onLoad,
+      'save:file': saveCards[2].onSave,
+      'load:file': saveCards[2].onLoad,
+    }
+    return installHotkeys(stageRef?.current ?? null, (action) => byAction[action]?.())
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [caps, saveCards, stageRef])
+
   /** 另存为文件：玩家想自己保管一份，或者换个站点 / 换台机器带过去 */
   const doExport = async () => {
     try {
@@ -387,7 +520,12 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
    * 全都不支持时（比如 html5 的第三方游戏页）就别画那个「⋯」—— 点开是空的。
    */
   const hasSecondary =
-    caps.has('volume') || caps.has('gamepad') || caps.has('screenshot') || caps.has('record') || (caps.has('saveState') && archivable)
+    caps.has('volume') ||
+    caps.has('gamepad') ||
+    caps.has('screenshot') ||
+    caps.has('record') ||
+    (caps.has('saveState') && archivable) ||
+    Boolean(handle.setMouseInvert)
 
   return (
     <div className={cx('relative flex flex-wrap items-center gap-1.5', className)}>
@@ -417,7 +555,14 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
 
       {caps.has('saveState') && (
         <>
-          <button type="button" className={BTN} onClick={() => void doSave()} title={tt.save}>
+          {/*
+            存档 / 读档都进这一个面板。
+
+            以前点一下就存，而且登录用户一律「本地 + 顺手上云」—— 玩家从没被问过。
+            存档是他自己的东西，存在哪儿该他说了算，所以现在点开是三张卡：
+            云端 / 这个浏览器 / 文件，每张自己带「读」和「存」。
+          */}
+          <button type="button" className={BTN} onClick={() => setSaveModal(true)} title={tt.saveLoadTitle}>
             💾
           </button>
           {handle.loadState && (
@@ -494,6 +639,30 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
             aria-expanded={panel === 'gamepad'}
           >
             🎮
+          </button>
+        )}
+
+        {/*
+          鼠标上下反转。只有 js-dos 开了相对鼠标（射击类，见 emulator/mouseCapture.ts）的那一局
+          才有 setMouseInvert。Build 引擎那批 DOS 射击游戏（毁灭公爵 3D、影武者、血祭…）出厂默认
+          前推 = 低头，当年要进 SETUP.EXE 才翻得过来，网页里玩家进不了 SETUP，只能在这儿翻。
+          按游戏记忆（见 adapters/jsdos.ts），亮着 = 这款游戏已经反转。
+        */}
+        {handle.setMouseInvert && (
+          <button
+            type="button"
+            className={cx(BTN, mouseInv && BTN_ON)}
+            onClick={() => {
+              const next = !mouseInv
+              handle.setMouseInvert?.(next)
+              setMouseInv(next)
+              say(next ? tt.mouseYOn : tt.mouseYOff)
+            }}
+            title={mouseInv ? tt.mouseYInverted : tt.mouseYNormal}
+            aria-label={tt.mouseY}
+            aria-pressed={mouseInv}
+          >
+            🖱️
           </button>
         )}
 
@@ -602,6 +771,8 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
           )}
         </div>
       )}
+
+      {saveModal && <SaveLoadModal cards={saveCards} onClose={() => setSaveModal(false)} />}
 
       {/*
         DOS 存档说明。

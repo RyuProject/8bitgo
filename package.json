@@ -32,6 +32,8 @@
     "test:rom-probe": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-rom-probe.mjs",
     "test:arcade-hacks": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-arcade-hacks.mjs",
     "test:room-merge": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-room-merge.mjs",
+    "test:save-target": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-save-target.mjs",
+    "test:hotkeys": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-hotkeys.mjs",
     "test:multipart": "node scripts/test-worker-multipart.mjs",
     "build:client": "vite build",
     "postbuild:client": "node scripts/check-emulatorjs.mjs --dist",
@@ -42,7 +44,8 @@
     "ejscores": "node scripts/copy-ejs-cores.mjs",
     "ejspatch": "node scripts/patch-emulatorjs.mjs",
     "romsets": "node scripts/build-arcade-romsets.mjs",
-    "romdata": "node scripts/make-romdata.mjs"
+    "romdata": "node scripts/make-romdata.mjs",
+    "hackpack": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/prep-arcade-hack.mjs"
   },
   "dependencies": {
     "jsnes": "^2.1.0",
