@@ -44,8 +44,10 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     'allow-scripts allow-same-origin allow-forms allow-modals allow-pointer-lock allow-popups allow-downloads',
   )
 
+  let loaded = false
   iframe.addEventListener('load', () => {
     if (destroyed) return
+    loaded = true
     options.onReady?.()
     // 焦点交给 iframe，否则里面的游戏收不到键盘和手柄（见 frameFocus.ts）
     focusFrame(iframe)
@@ -128,6 +130,18 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
      */
     focus: () => focusFrame(iframe),
     gamepads: () => frameGamepads(iframe),
+    /**
+     * 跨源就是永远抓不到，没必要让直播那边再等九秒：加载完之后 contentDocument 读不出来
+     * （null 或者直接抛）就是跨源。加载完之前先说「不知道」，别误判。
+     */
+    captureBlocked(): boolean {
+      if (destroyed || !loaded) return false
+      try {
+        return iframe.contentDocument === null
+      } catch {
+        return true
+      }
+    },
     captureSources(): CaptureSources | null {
       if (destroyed) return null
       let doc: Document | null = null

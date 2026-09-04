@@ -21,6 +21,7 @@
  * ⚠️ 官方 CDN 的 stable / nightly 目前都是 4.2.3，**不含 netplay**。
  *    要用联机必须自建 EmulatorJS 构建，见 docs 或 README。
  */
+import type { PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { platformLabel } from '@/services/i18nData'
 import type { Capability, CaptureSources, LoadPhase, LoadProgress, MountOptions, Runtime, RuntimeHandle } from '../types'
@@ -32,6 +33,7 @@ import { getLang } from '@/services/lang'
 import type { Lang } from '@/config/languages'
 import { ICE_SERVERS, NETPLAY_URL, fetchIceConfig, gameIdFor, socketIoScriptUrl, uploadState } from '@/services/netplay'
 import { isZip, listZipEntries } from '@/lib/unzip'
+import { matchArcadeHack, type ArcadeHack } from '@/data/arcadeHacks'
 
 /**
  * EmulatorJS 资源根路径。**默认是自托管的 /emulatorjs/，不是 CDN。**
@@ -306,6 +308,18 @@ interface EjsGameManager {
   /** Emscripten 的虚拟文件系统。RomData 要往里塞一个 .dat，见 installRomDataInjector */
   FS?: { writeFile: (path: string, data: string | Uint8Array) => void }
 }
+/**
+ * 「这台机器本身就是靠戳屏幕玩的」—— 画布必须收得到指针事件，
+ * 而且引擎那套压在画面下半部分的虚拟按键默认要收起来（见 applyTouchInput）。
+ *
+ * 现在只有 NDS：下屏是电阻触摸屏，《瓦力欧制造 触摸版》《应援团》这类游戏
+ * 除了戳屏幕没有别的输入。以后接 3DS / Wii U 之类再往里加。
+ *
+ * ⚠️ 别把 PSX、土星这些「有鼠标外设但基本没人用」的平台加进来：
+ * 放开画布指针事件本身没坏处，但顺带把屏幕按键收起来就是净损失了。
+ */
+const POINTER_FIRST = new Set<PlatformId>(['nds'])
+
 interface EjsEmulator {
   netplay?: EjsNetplay
   gameManager?: EjsGameManager
@@ -734,6 +748,24 @@ export function arcadeRomsetName(url: string): string {
 class InvalidArcadeArchiveError extends Error {}
 
 /**
+ * 拿包里的 CRC 认一个已知改版包（data/arcadeHacks.ts）。
+ *
+ * CRC 是白捡的：zip 的中央目录里本来就存着每个成员的 CRC-32，**不用解压**，
+ * 二十几 MB 的街机包也是一瞬间的事。
+ *
+ * 认不出、包坏了、读取抛错都返回 null —— 这一步是锦上添花，
+ * 绝不能因为它让本来能跑的游戏跑不起来。
+ */
+function hackOf(buf: ArrayBuffer): ArcadeHack | null {
+  try {
+    if (!isZip(buf)) return null
+    return matchArcadeHack(listZipEntries(buf).map((e) => e.crc32))
+  } catch {
+    return null
+  }
+}
+
+/**
  * 远程街机 ROM 不能继续把 URL 原样交给 EmulatorJS。
  *
  * 引擎自己的下载缓存曾把中断请求留下的空壳当成完整 ROM；之后 FBNeo 虽然能从文件名
@@ -747,7 +779,7 @@ export async function prepareRemoteArcadeRom(
   url: string,
   onProgress: MountOptions['onProgress'],
   signal: AbortSignal,
-): Promise<{ url: string; name: string }> {
+): Promise<{ url: string; name: string; hack: ArcadeHack | null }> {
   const name = arcadeRomsetName(url)
   if (!name || !/\.zip$/i.test(name)) throw new InvalidArcadeArchiveError(name || 'ROM')
 
@@ -760,7 +792,8 @@ export async function prepareRemoteArcadeRom(
       if (signal.aborted) throw new DOMException('已取消', 'AbortError')
       // 命中也要发满进度那一帧：播放器的加载遮罩靠进度回调收尾
       onProgress?.({ phase: 'rom', loaded: cached.byteLength, total: cached.byteLength, ratio: 1 })
-      return { url: URL.createObjectURL(new Blob([cached], { type: 'application/zip' })), name }
+      // 缓存这一路也要认一遍：第二次玩同一款改版包不能因为走了缓存就少了 dat
+      return { url: URL.createObjectURL(new Blob([cached], { type: 'application/zip' })), name, hack: hackOf(cached) }
     }
   }
 
@@ -787,7 +820,7 @@ export async function prepareRemoteArcadeRom(
   if (cacheKey) void romCachePut(cacheKey, data).catch(() => {})
 
   const blobUrl = URL.createObjectURL(new Blob([data], { type: 'application/zip' }))
-  return { url: blobUrl, name }
+  return { url: blobUrl, name, hack: hackOf(data) }
 }
 
 function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
@@ -1002,6 +1035,8 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   let preparedArcadeBlobUrl = ''
   /** 区分「ROM 预下载失败」与后续 loader.js / 核心加载失败，避免错误提示张冠李戴。 */
   let arcadeRomPrepared = false
+  /** 按指纹认出来、由 data/arcadeHacks.ts 提供的 RomData。管理员填了的话不会用到 */
+  let builtInRomData = ''
 
   /**
    * 开 / 加入房间。两个入口：
@@ -1197,42 +1232,98 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     window.addEventListener('pagehide', flushState)
   }
 
+  /** 引擎自带的屏幕按键这台设备上到底有没有（触屏 + 引擎真画得出来），决定要不要给开关 */
+  let padAvailable = false
+  /** 现在显示着没有 */
+  let padShown = false
+
+  /** 把两个「屏幕上有什么」的能力同步给播放器：开局提示和工具栏开关都看它们 */
+  const syncTouchCaps = (pointer: boolean) => {
+    if (padShown) caps.add('enginePad')
+    else caps.delete('enginePad')
+    if (pointer) caps.add('enginePointer')
+    else caps.delete('enginePointer')
+    options.onCaps?.(caps)
+  }
+
   /**
-   * 把引擎自带的虚拟手柄在触屏设备上打开 —— 手机上「没有虚拟按键」就是这里坏的。
+   * 触屏设备上，引擎给画布挂了 `ejs-canvas-no-pointer`（CSS 里就是 pointer-events:none），
+   * 好让虚拟手柄浮在上面接手指。可它是在**构造函数**里按 isMobile/hasTouchScreen 一次性加的，
+   * 跟虚拟手柄的开关无关 —— 玩家把手柄关掉，这个类也不会摘。
    *
+   * 对 NDS 这种「机器本身就是触屏」的平台，这一条等于把游戏废了：核心的鼠标 / 触摸事件是
+   * Emscripten 绑在 `Module.canvas`（就是 emu.canvas）上的，画布不收指针事件，
+   * 下屏就一下也点不到。《瓦力欧制造 触摸版》《押忍！战斗！应援团》这类纯触控笔的游戏
+   * 在手机上直接没法玩。
+   */
+  const setCanvasPointer = (emu: EjsEmulator, on: boolean) => {
+    if (on) emu.canvas?.classList.remove('ejs-canvas-no-pointer')
+    else emu.canvas?.classList.add('ejs-canvas-no-pointer')
+  }
+
+  /**
+   * 开局后把触屏输入摆正：谁接手指、屏幕按键要不要画。
+   *
+   * ── 为什么要管虚拟手柄 ─────────────────────────────────────
    * EmulatorJS 显示虚拟手柄的条件是 `this.touch`（startGame 末尾那句
    * `this.touch && (this.virtualGamepad.style.display = "")`），而 touch 只在
    * **玩家用手指点了「开始游戏」按钮**时才置 true —— 监听挂在 createStartButton
    * 建出来的那个按钮上。我们设了 EJS_startOnLoaded，按钮建出来就被程序自己点掉了，
    * 玩家的手指从来没碰到它，于是 touch 永远是 false，虚拟手柄一直是 display:none。
-   * 手机上只能看着画面动，按不了任何键。
+   *
+   * ── 指针优先的平台默认不画按键 ─────────────────────────────
+   * 引擎的虚拟手柄是 `position:absolute; bottom:50px; width:100%`，正正压在画面下半部分 ——
+   * 而 NDS 的触摸屏就是下面那块。默认收起来，把整块屏幕留给手指；需要实体按键的游戏
+   * （马力欧赛车 DS 之类）玩家可以在工具栏 🎮 里调回来（handle.setEnginePad）。
    *
    * 触屏判断优先用引擎自己算好的 isMobile / hasTouchScreen，拿不到再自己看指针类型；
    * matchMedia 要在 iframe 那个 window 上问，不是外面这个。
-   * 玩家在设置里主动关掉过就尊重他的选择，不强行打开。
+   * 玩家在设置里主动关掉过虚拟手柄就尊重他的选择，不强行打开。
    */
-  const showVirtualGamepad = (win: Window & Record<string, unknown>) => {
+  const applyTouchInput = (win: Window & Record<string, unknown>) => {
     const emu = win.EJS_emulator as EjsEmulator | undefined
     if (!emu) return
     const coarse = typeof win.matchMedia === 'function' && win.matchMedia('(any-pointer:coarse)').matches
     if (!emu.isMobile && !emu.hasTouchScreen && !coarse) return
-    if (emu.getSettingValue?.('virtual-gamepad') === 'disabled') return
-    emu.touch = true
-    emu.toggleVirtualGamepad?.(true)
+
+    // 这台机器本身就是靠戳屏幕玩的 → 画布必须收得到指针事件
+    const pointerFirst = POINTER_FIRST.has(options.platform)
+    if (pointerFirst) setCanvasPointer(emu, true)
 
     /*
-      打开之后**确认它真的画出来了**，再声明 enginePad —— 开局提示靠这个能力决定
-      「屏幕上到底有没有能按的东西」，说错了比不说更糟：玩家会照着提示在画面上乱按。
+      先真的打开一次，**确认它真的画出来了**，再决定要不要留着。
 
       光看 toggleVirtualGamepad 存在不算数。那个容器是 setVirtualGamepad() 按核心
-      的按键表填的，核心认不出来时会是个空 div；玩家在设置里关过、或者 CSS 没加载，
-      display 也可能还是 none。两样都验一遍才作数。
+      的按键表填的，核心认不出来时会是个空 div；CSS 没加载时 display 也可能还是 none。
+      两样都验一遍，padAvailable 才作数 —— 工具栏那个开关和开局提示都靠它，
+      说错了比不说更糟：玩家会照着提示在画面上乱按。
+
+      注意「能不能画」和「默认画不画」是两回事：玩家在引擎设置里关过虚拟手柄，
+      那只决定默认收起，**不代表这台设备画不出来**。要是把它当成不可用，
+      工具栏那个开关就会变成一颗按了没反应的死按钮。
+      中间这一开一关在同一个任务里跑完，不会真的闪一下。
     */
+    emu.touch = true
+    emu.toggleVirtualGamepad?.(true)
     const pad = emu.virtualGamepad
-    if (!pad || pad.children.length === 0) return
-    if (win.getComputedStyle(pad).display === 'none') return
-    caps.add('enginePad')
-    options.onCaps?.(caps)
+    padAvailable = Boolean(pad && pad.children.length > 0 && win.getComputedStyle(pad).display !== 'none')
+
+    // 默认收起的两种情况：指针优先的平台（别压着触摸屏）、玩家自己在引擎设置里关过
+    const settingOff = emu.getSettingValue?.('virtual-gamepad') === 'disabled'
+    padShown = padAvailable && !pointerFirst && !settingOff
+    if (padAvailable) emu.toggleVirtualGamepad?.(padShown)
+    syncTouchCaps(pointerFirst)
+  }
+
+  /** 工具栏那个「屏幕按键」开关走这里。引擎压根没画出按键时是空操作 */
+  const setEnginePad = (show: boolean) => {
+    if (!padAvailable) return
+    const emu = emuOf()
+    if (!emu) return
+    emu.touch = true
+    emu.toggleVirtualGamepad?.(show)
+    padShown = show
+    syncTouchCaps(caps.has('enginePointer'))
   }
 
   /**
@@ -1251,7 +1342,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     options.onReady?.()
     options.onStart?.()
     refineCaps()
-    showVirtualGamepad(win)
+    applyTouchInput(win)
     /*
       把焦点交给 iframe —— 手柄和键盘都指着它。
 
@@ -1332,6 +1423,26 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
           gameUrl = prepared.url
           engineGameName = prepared.name
           arcadeRomPrepared = true
+
+          /**
+           * 后台没填 RomData，而这个包按指纹认出来是已知改版包 → 用内置的那份。
+           *
+           * 为什么要有这条：改版包（汉化版 / 修改版）不在 FBNeo 的驱动表里，没有 dat
+           * 一定报 Romset is unknown。以前这份 dat 只有两个来源 —— 管理员在后台手贴，
+           * 或者玩家走「运行我的 ROM」时由 arcadeHack.ts 现认。同一张指纹表
+           * （data/arcadeHacks.ts）两条路只接了一条，库里的游戏全靠人不忘记贴。
+           *
+           * **管理员填了就以他为准**：他可能针对这一份包改过清单，自动的不该盖掉。
+           *
+           * 包名也要跟着换成 dat 里的 ZipName —— 核心会 BurnDrvSetZipName(ZipName)
+           * 然后去找**那个名字**的包，对不上等于没配。只在走自动这一路时改，
+           * 手写 dat 的 ZipName 是管理员自己定的，不能替他改。
+           */
+          if (!options.arcadeRomData?.trim() && prepared.hack?.romData) {
+            builtInRomData = prepared.hack.romData
+            engineGameName = `${prepared.hack.zipName}.zip`
+            console.info(`[arcade] 按指纹认出改版包：${prepared.hack.title}（借 ${prepared.hack.driver} 驱动），已套用内置 RomData`)
+          }
         }
 
         Object.assign(win, {
@@ -1374,7 +1485,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         // RomData 也要赶在 loader.js 之前装：它靠接管 window.EJS_emulator 的赋值来生效，
         // loader.js 第一行就把实例挂上去了，晚一步就接不着。
         // 文件名必须和 ROM 同名（wofcn.zip → /wofcn.dat），这是核心自己的查找规则。
-        const romData = options.arcadeRomData?.trim()
+        const romData = options.arcadeRomData?.trim() || builtInRomData
         if (romData) {
           const datPath = `/${engineGameName.replace(/\.[^.]*$/, '')}.dat`
           installRomDataInjector(win, datPath, `${romData}\n`, (msg) => {
@@ -1490,6 +1601,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     engineLog: () => errorTap?.lines.slice() ?? [],
     focus: () => focusFrame(iframe),
     gamepads: () => frameGamepads(iframe),
+    setEnginePad,
     setPaused(next: boolean) {
       const emu = emuOf()
       try {

@@ -43,6 +43,11 @@ export interface BroadcastOptions {
   sources: CaptureSources
   meta: BroadcastMeta
   fps?: number
+  /**
+   * 视频码率上限（bps）。不传用 MAX_BITRATE —— 那是按 240×160 的 GBA 画布给的；
+   * 分享整个标签页那种 720p / 1080p 的画面要给多几倍，否则一动就糊成马赛克。
+   */
+  maxBitrate?: number
   onState?: (state: BroadcastState) => void
   onViewers?: (count: number) => void
   /** 房间号变了（重连后接不回原房间、只能重开时）。开播那一次也会调 */
@@ -113,12 +118,12 @@ function buildStream(sources: CaptureSources, fps: number): { stream: MediaStrea
 }
 
 /** 限码率、保帧率：游戏画面宁可糊一点也不要卡 */
-function tuneSender(sender: RTCRtpSender) {
+function tuneSender(sender: RTCRtpSender, maxBitrate = MAX_BITRATE) {
   try {
     const params = sender.getParameters()
     if (!params.encodings?.length) params.encodings = [{}]
     for (const e of params.encodings) {
-      e.maxBitrate = MAX_BITRATE
+      e.maxBitrate = maxBitrate
       e.maxFramerate = MAX_FPS
     }
     ;(params as RTCRtpSendParameters & { degradationPreference?: string }).degradationPreference = 'maintain-framerate'
@@ -199,7 +204,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
 
     for (const track of built.stream.getTracks()) {
       const sender = pc.addTrack(track, built.stream)
-      if (track.kind === 'video') tuneSender(sender)
+      if (track.kind === 'video') tuneSender(sender, options.maxBitrate)
     }
 
     pc.onicecandidate = (ev) => {

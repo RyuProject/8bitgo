@@ -1230,7 +1230,13 @@ export function EmulatorPlayer({
    * showVirtualGamepad）。两个都没有的引擎（Flash / html5）在手机上是真没有按键 ——
    * 那种情况下说一句「手柄在下面」只会让玩家白找一圈，宁可不说。
    */
-  const hasOnscreenPad = status === 'running' && touchDevice && (caps.has('touchpad') || caps.has('enginePad'))
+  const hasOnscreenPad =
+    status === 'running' && touchDevice && (caps.has('touchpad') || caps.has('enginePad') || caps.has('enginePointer'))
+  /**
+   * 这台机器本身就是戳屏幕玩的（NDS 下屏）。
+   * 提示要说的话完全不一样 —— 不是「按键在哪儿」，而是「画面就能点」。
+   */
+  const touchScreenConsole = caps.has('enginePointer')
   /**
    * 手柄画在画面**下面**还是**画面上**。
    * 只有我们那套的 inline 摆法在下面；浮层和 EmulatorJS 自带的都压在画面里。
@@ -1402,11 +1408,23 @@ export function EmulatorPlayer({
                 </span>
                 <span>
                   <span className="block font-semibold text-white">
-                    {padBelow ? t.player.padHintBelow : t.player.padHintOverlay}
+                    {touchScreenConsole
+                      ? t.player.padHintTouch
+                      : padBelow
+                        ? t.player.padHintBelow
+                        : t.player.padHintOverlay}
                   </span>
-                  {/* DOS 的键位和主机完全不是一回事（A=Ctrl 开火、B=Alt、START=回车），
-                      按主机那套说会把玩家教错 */}
-                  {activeRuntime?.id === 'jsdos' ? t.player.padHintKeysDos : t.player.padHintKeys}
+                  {/*
+                    第二行按机型分三套：
+                      触屏机型（NDS）—— 按键默认是收起的，得告诉他去哪儿调出来
+                      DOS —— 键位和主机完全不是一回事（A=Ctrl 开火、B=Alt、START=回车）
+                      其余 —— 主机那套十字键 + A/B
+                  */}
+                  {touchScreenConsole
+                    ? t.player.padHintTouchKeys
+                    : activeRuntime?.id === 'jsdos'
+                      ? t.player.padHintKeysDos
+                      : t.player.padHintKeys}
                 </span>
                 <button
                   type="button"
@@ -1741,6 +1759,7 @@ export function EmulatorPlayer({
             gameSlug={gameSlug}
             platform={session?.platform ?? platform.id}
             active={!inRoom}
+            captureRef={hostRef}
           />
         )}
 

@@ -170,8 +170,9 @@ export interface ResolveContext {
  */
 /*
  * touchpad 和 enginePad 的区别（都只影响触屏设备）：
- *   touchpad   引擎自己不带屏幕按键，**由播放器画**一套浮层（TouchPad.tsx），按下走 sendButton
- *   enginePad  引擎自带屏幕按键，而且适配器**确认它真的画出来了**（EmulatorJS）
+ *   touchpad      引擎自己不带屏幕按键，**由播放器画**一套浮层（TouchPad.tsx），按下走 sendButton
+ *   enginePad     引擎自带屏幕按键，而且适配器**确认它真的画出来了**（EmulatorJS）
+ *   enginePointer 画面本身能戳 —— 机器自己就是触屏（NDS 下屏），手指直接点画面就是操作
  * 前者决定「画不画我们那套」，后者只是告诉播放器「屏幕上确实有能按的东西」，
  * 好让开局提示知道该不该出现 —— 两个都不声明的引擎（Ruffle / html5）手机上是真没按键，
  * 提示里说「手柄在下面」只会让玩家白找一圈。
@@ -186,6 +187,7 @@ export type Capability =
   | 'record'
   | 'touchpad'
   | 'enginePad'
+  | 'enginePointer'
 
 /**
  * 屏幕手柄能按的键。取 NES/FC 的键位作最小公约数 —— 手机屏上再多按键也放不下，
@@ -253,12 +255,32 @@ export interface RuntimeHandle {
    * 于是播放器在触屏设备上画一套浮层，按下时调这里。声明了 'touchpad' 能力才会画。
    * EmulatorJS 不走这条路 —— 它自带虚拟手柄（见 emulatorjs.ts 的 finishStart）。
    */
-  sendButton?: (button: PadButton, down: boolean) => void
+  /**
+   * 按下 / 松开一个屏幕手柄按钮。
+   *
+   * player 是座位号（0 = 1P，默认；1 = 2P）。同屏双打的 Flash 游戏两个人读的是
+   * 两组不同的键，把观众提成 2P 时就是靠它区分 —— 本机的屏幕手柄永远是 0。
+   * 引擎只有一套输入的（js-dos / jsnes）忽略这个参数即可。
+   */
+  sendButton?: (button: PadButton, down: boolean, player?: number) => void
+  /**
+   * 这一局实际用得上的按钮。不给就是「八个键都有」（主机模拟器都是这样）。
+   *
+   * Flash 每款游戏读的键不一样（见 flashKeys.ts），给了这个，屏幕手柄就只画这几颗。
+   * 画一颗按下去没反应的按钮，比不画更让人困惑。
+   */
+  padButtons?: PadButton[]
   setVolume?: (volume: number) => void
   /** 截屏 */
   screenshot?: () => Promise<Blob | null>
   /** 录制用的画面 / 声音来源 */
   captureSources?: () => CaptureSources | null
+  /**
+   * 画面**永远**抓不到（比如跨源的 iframe，浏览器不让读里面的东西）。
+   * 直播那边靠它少等九秒：captureSources 返回 null 分两种 —— 「还没有第一帧」和「永远不会有」，
+   * 只有运行时自己分得清。不实现或返回 false 都当「再等等」。
+   */
+  captureBlocked?: () => boolean
   /**
    * 在**正在跑的这一局**上开 / 加入联机房间，不重开游戏。
    *
@@ -301,6 +323,17 @@ export interface RuntimeHandle {
    * 「没检测到手柄」。iframe 同源，适配器把它那份 navigator 的结果报上来即可。
    */
   gamepads?: () => string[]
+  /**
+   * 显示 / 隐藏引擎自带的那套屏幕按键（目前只有 EmulatorJS 有）。
+   *
+   * 为什么要做成开关而不是一直开着：那套按键是 `position:absolute; bottom:50px`，
+   * 压在画面下半部分。NDS 的触摸屏正好就是下面那块，压上去等于把游戏废了，
+   * 所以指针优先的平台默认收起（见 adapters/emulatorjs.ts 的 POINTER_FIRST）；
+   * 而马力欧赛车 DS 这类要实体按键的游戏，玩家得能自己把它调回来。
+   *
+   * 当前状态不另外给 getter —— 看 caps 里有没有 'enginePad' 就行，它是同一份真相。
+   */
+  setEnginePad?: (show: boolean) => void
 }
 
 export interface Runtime {

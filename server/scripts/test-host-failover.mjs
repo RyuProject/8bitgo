@@ -25,7 +25,14 @@ const http = createServer(app)
 attachNetplay(http, app, ['*'])
 await new Promise((r) => http.listen(9931, r))
 const API = 'http://127.0.0.1:9931'
-const connect = async () => { const s = client(`${API}/netplay`); await new Promise((r) => s.on('connect', r)); return s }
+const connect = async () => {
+  const s = client(`${API}/netplay`)
+  // 服务端在 ack 之后紧接着发的房间令牌 —— 认领和迁移都要凭它
+  s.token = null
+  s.on('room-token', (d) => (s.token = d.token))
+  await new Promise((r) => s.on('connect', r))
+  return s
+}
 const extra = (userid, sessionid, name) => ({ domain: 'localhost', game_id: 7, room_name: 'T', player_name: name, userid, sessionid })
 const open = (s, e, max = 4) => new Promise((r) => s.emit('open-room', { extra: e, maxPlayers: max, password: '' }, r))
 const join = (s, e) => new Promise((r) => s.emit('join-room', { extra: e, password: '' }, (err, u) => r([err, u])))
@@ -51,12 +58,30 @@ console.log('── A. 第一顺位不接手，自动换下一位 ──')
   ok('A 超时后自动改问 B', offers.includes('u-b'))
   ok('这期间房间一直活着', (await room('F1')) !== null)
 
-  // B 接手
+  /**
+   * B 接手。
+   *
+   * ⚠️ 这一段以前写的是「直接 POST /migrate，body 里带 userId」——
+   * 那是 /migrate 加固**之前**的接口。加固之后 userId 不再被采信
+   * （它是客户端自填的、还随 users-updated 广播全屋，任何访客都能拿它劫房），
+   * 改成认领令牌 + 新房间的成员令牌两张一起验。这个测试当时没跟着改，
+   * 于是从那以后一直是红的，而它又没被 npm scripts 收进去，没人看见。
+   *
+   * 正确顺序：先 /claim（拿认领令牌，服务器这时暂停轮询、断线也不散场），
+   * 再开新房拿新房间的成员令牌，最后 /migrate 把两张一起交上去。
+   */
+  const claim = await fetch(`${API}/api/netplay/rooms/F1/claim`, {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-netplay-token': b.token },
+  })
+  ok('B 先认领', claim.ok)
+  const claimToken = claim.ok ? (await claim.json()).claimToken : ''
+
   const nb = await connect()
   await open(nb, extra('u-b', 'F1b', 'B'))
+  await wait(80) // 等新房间的 room-token 到
   const r = await fetch(`${API}/api/netplay/rooms/F1/migrate`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ newRoomId: 'F1b', userId: 'u-b' }),
+    body: JSON.stringify({ newRoomId: 'F1b', claimToken, newRoomToken: nb.token }),
   })
   ok('B 接手成功，这局继续', r.ok)
   ok('老邀请链接跟到新房间', (await room('F1'))?.migratedTo === 'F1b')

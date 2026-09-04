@@ -173,6 +173,98 @@ await new Promise((r) => third.emit('join-room', { extra: extra('r1', 'u3'), pas
 await sleep(400)
 ok(events.length > before, '有人加入后立刻推送（不用等轮询）')
 
+console.log('\n── sync-control 不能撑爆房主的内存 ──')
+/**
+ * 引擎收到 sync-control 会 push 进 inputsData[frame]，而那张表只在「那一帧真的到来」
+ * 时才删。帧号是发送方给的 —— 填一个永远不会到的数，记录就永远留在房主浏览器里。
+ * 一条消息塞几千条、20 条/秒，几分钟就能把房主的标签页撑爆。
+ */
+const flood = []
+for (let i = 0; i < 500; i++) flood.push({ frame: 2000000 + i, connected_input: [1, 0, 1] })
+flood.push({ frame: -5, connected_input: [1, 0, 1] })
+flood.push({ frame: 'abc', connected_input: [1, 0, 1] })
+let flooded = null
+host.on('data-message', (d) => { if (d['sync-control']) flooded = d['sync-control'] })
+guest.emit('data-message', { 'sync-control': flood })
+await sleep(150)
+ok(Array.isArray(flooded) && flooded.length <= 32, `一条消息里的 sync-control 被截断（收到 ${flooded?.length}）`)
+ok(Array.isArray(flooded) && flooded.every((e) => Number.isInteger(e.frame) && e.frame >= 0), '非法帧号被丢掉')
+
+console.log('\n── 聊天不能冒名 ──')
+let chatGot = null
+host.on('data-message', (d) => { if (d['chat-message']) chatGot = d['chat-message'] })
+guest.emit('data-message', { 'chat-message': { player_name: '房主', from: 'u-host', to: 'all', message: 'x'.repeat(3000) } })
+await sleep(150)
+ok(chatGot?.player_name === 'u-guest', `昵称由服务端填（收到 ${chatGot?.player_name}）`)
+ok(chatGot?.from === 'u-guest', 'from 换成真实发送者，冒充不了别人')
+ok(typeof chatGot?.message === 'string' && chatGot.message.length <= 500, '正文限长')
+
+console.log('\n── 冒名顶替（重复 userid）──')
+/**
+ * userid 是客户端自填的，而且随 users-updated 广播给屋里每个人。
+ * 挡不住重复的话，任何访客都能拿房主的 userid 再 join 一次，
+ * room.users.set 会**覆盖**房主那条记录 —— 他拿到一张绑着房主 userid 的令牌，
+ * 能覆盖房主存档，真房主的令牌反而作废（自己的进度托管全部 403），
+ * 他一断线还会把房主从成员表里带走。整个房间被劫。
+ */
+const evil = await connect()
+let evilToken = null
+evil.on('room-token', (d) => (evilToken = d.token))
+const evilErr = await new Promise((r) => evil.emit('join-room', { extra: extra('r1', 'u-host'), password: '' }, (e) => r(e)))
+await sleep(120)
+ok(evilErr === 'userid taken', '拿房主的 userid 进房被拒')
+ok(!evilToken, '被拒的连接拿不到房间令牌')
+ok((await put(hostToken)).ok, '真房主的令牌仍然有效（没被顶掉）')
+const roster = await (await fetch(`${base}/api/netplay/rooms/r1`)).json()
+ok(roster.members.some((m) => m.host), '房主还在成员表里')
+evil.close()
+
+console.log('\n── 存档不能裸奔 ──')
+// 房间 id 在 /api/netplay/rooms 上是公开的，不带令牌放行等于谁都能把别人的进度拖走
+const anon = await fetch(`${base}/api/netplay/rooms/r1/state`)
+ok(anon.status === 403, '不带令牌取存档被拒')
+const wrong = await fetch(`${base}/api/netplay/rooms/r1/state`, { headers: { 'x-netplay-token': 'not-a-real-token' } })
+ok(wrong.status === 403, '拿错令牌取存档被拒')
+const mine = await fetch(`${base}/api/netplay/rooms/r1/state`, { headers: { 'x-netplay-token': hostToken } })
+ok(mine.ok, '成员凭自己的令牌能取')
+
+console.log('\n── 观众上场不能挤走别人的手柄号 ──')
+/**
+ * usersPayload 里玩家按插入顺序排，EmulatorJS 拿这个顺序当手柄号。
+ * 一个**先加入**的观众就地转成玩家会插到现有玩家前面，把别人的下标整体往后挤 ——
+ * 正在玩的人按键会跑到另一个手柄位上。
+ */
+const rHost = await connect()
+let rHostTok = null
+rHost.on('room-token', (d) => (rHostTok = d.token))
+await new Promise((r) => rHost.emit('open-room', { extra: extra('r2', 'p0'), maxPlayers: 2, password: '' }, r))
+const rSpec = await connect()
+let rSpecTok = null
+rSpec.on('room-token', (d) => (rSpecTok = d.token))
+await new Promise((r) => rSpec.emit('join-room', { extra: extra('r2', 'p1'), password: '' }, r))
+await sleep(80)
+// p1 先主动下场当观众，再进来一个玩家 p2，此时插入顺序是 p0, p1(观众), p2(玩家)
+const toSpec = await fetch(`${base}/api/netplay/rooms/r2/role`, {
+  method: 'POST', headers: { 'content-type': 'application/json', 'x-netplay-token': rSpecTok }, body: JSON.stringify({ role: 'spectator' }),
+})
+ok(toSpec.ok, 'p1 先下场当观众')
+const rP2 = await connect()
+let usersAfter = null
+rP2.on('users-updated', (u) => (usersAfter = u))
+await new Promise((r) => rP2.emit('join-room', { extra: extra('r2', 'p2'), password: '' }, r))
+await sleep(80)
+const idxBefore = Object.keys(usersAfter).indexOf('p2')
+// p1 再上场：不应该动 p2 的下标
+await fetch(`${base}/api/netplay/rooms/r2/role`, {
+  method: 'POST', headers: { 'content-type': 'application/json', 'x-netplay-token': rSpecTok }, body: JSON.stringify({ role: 'player' }),
+})
+await sleep(120)
+const idxAfter = Object.keys(usersAfter).indexOf('p2')
+ok(idxBefore === 1 && idxAfter === 1, `观众上场后 p2 的手柄号不变（${idxBefore} -> ${idxAfter}）`)
+ok(Object.keys(usersAfter).indexOf('p1') === 2, '新上场的人排在玩家组末尾')
+rHost.close(); rSpec.close(); rP2.close()
+void rHostTok
+
 console.log('\n── ICE 下发 ──')
 const ice1 = await (await fetch(`${base}/api/netplay/ice`)).json()
 ok(Array.isArray(ice1.iceServers) && ice1.iceServers.length >= 1, '没配 TURN 时返回 STUN')

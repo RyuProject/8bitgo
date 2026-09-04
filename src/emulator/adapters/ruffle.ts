@@ -7,7 +7,8 @@
  * 资源路径：默认 /ruffle/（由 scripts/copy-ruffle.mjs 从 npm 包复制到 public/ruffle/），
  * 也可设置 VITE_RUFFLE_PATH 指向 CDN，例如 https://unpkg.com/@ruffle-rs/ruffle/
  */
-import type { CaptureSources, Capability, MountOptions, Runtime, RuntimeHandle } from '../types'
+import type { CaptureSources, Capability, MountOptions, PadButton, Runtime, RuntimeHandle } from '../types'
+import { flashKeysFor, keyDesc, type KeyDesc } from '../flashKeys'
 import { loadGameBytes } from '../romLoader'
 import { assertSwf } from '@/lib/romValidation'
 import { canvasToBlob } from '../recorder'
@@ -228,6 +229,19 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   let volume = 1
 
   /**
+   * 这款游戏读哪几个键。Flash 没有统一手柄，只能逐游戏配（见 flashKeys.ts）。
+   * null = 表里没有这款 —— 不画屏幕手柄，也不注入任何按键。
+   */
+  const keys = flashKeysFor(options.gameSlug)
+  /**
+   * 已经按下、还没松开的键（按 code 记）。
+   * 只为去重：Flash 游戏是轮询 Key.isDown 的，补发一次 down 没用，
+   * 而漏掉一次 up 就是角色卡着一直往一个方向走。
+   * 不用在 destroy 里补松开 —— 屏幕手柄自己卸载时会 releaseAll，剩下的跟着 iframe 一起没。
+   */
+  const downKeys = new Set<string>()
+
+  /**
    * 取 Ruffle 的画布。
    *
    * ⚠️ 它在 <ruffle-player> 的 **shadow DOM** 里（Ruffle 内部 attachShadow({mode:'open'})，
@@ -277,6 +291,69 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   iframe.srcdoc = FRAME_HTML
 
   let destroyed = false
+
+  /**
+   * 把焦点交给播放器元素本身。
+   *
+   * ⚠️ 光 focusFrame(iframe) **不够**。Ruffle 只处理「它自己那个元素有焦点」时的键盘事件，
+   * 用 Playwright 在「外层页面 + 同源 srcdoc iframe」这套真实结构上量过（2026-09-04）：
+   *
+   *   焦点在外层按钮上                → 事件根本不进 iframe
+   *   只 iframe.focus()（内部焦点在 body）→ 事件到了 iframe 的 window，但 defaultPrevented 是
+   *                                      false —— Ruffle 看都不看，**真键盘也一样**
+   *   再 player.focus()                → defaultPrevented 变 true，Ruffle 吃下了
+   *
+   * 也就是说别的运行时「把焦点还给 iframe」就够了，Flash 得多走一步。
+   * preventScroll 两处都要给：手机上没有它会把页面猛地滚到播放器（见 frameFocus.ts）。
+   */
+  const focusPlayer = () => {
+    focusFrame(iframe)
+    try {
+      player?.focus({ preventScroll: true })
+    } catch {
+      /* 元素已经拆了就算了 */
+    }
+  }
+
+  /**
+   * 把一次按键打进 Ruffle。
+   *
+   * 和 js-dos 那边的做法正好相反：那边**不能**合成事件（它的键盘处理挂在页面上，
+   * 合成事件会撞上别的监听，keyCode 各浏览器也对不齐），所以走引擎自己的 sendKeyEvent。
+   * Ruffle 没有对应的公开接口，但合成事件在它这儿成立，有三个依据：
+   *   1. 它自己就这么干 —— 虚拟键盘（发行包 ruffle.js 的 virtualKeyboardInput）
+   *      正是往 this.element 上 dispatch 一个 new KeyboardEvent(..., { key, bubbles: true })
+   *   2. 发行包里 isTrusted 出现 0 次，它不区分真按键和合成事件
+   *   3. Ruffle 跑在自己的 srcdoc iframe 文档里，撞不到外层页面的监听
+   *
+   * 派发目标是 <ruffle-player> 元素本身：画布在它的 shadow 里，往下派发不到；
+   * 而 Ruffle 0.5.0 的监听实测挂在 iframe 的 **window** 上，所以必须 bubbles:true 让它冒上去。
+   *
+   * ⚠️ 但事件到得了不等于它会理 —— 见 focusPlayer 那段，注入前必须先把焦点要回来。
+   */
+  const dispatchKey = (desc: KeyDesc, down: boolean) => {
+    const win = iframe.contentWindow as (Window & typeof globalThis) | null
+    const target: EventTarget | null = player ?? iframe.contentDocument
+    if (!win || !target) return
+    try {
+      // 用 iframe 自己的构造函数，事件和目标同一个 realm
+      target.dispatchEvent(
+        new win.KeyboardEvent(down ? 'keydown' : 'keyup', {
+          key: desc.key,
+          code: desc.code,
+          // 废弃字段，但老代码还看它；浏览器的 event.which 也跟着它走
+          keyCode: desc.keyCode,
+          bubbles: true,
+          cancelable: true,
+          // shadow DOM 边界：Ruffle 的监听可能在 shadow 外面
+          composed: true,
+          view: win,
+        }),
+      )
+    } catch {
+      /* 实例已经拆了就忽略 */
+    }
+  }
 
   iframe.addEventListener('load', () => {
     if (destroyed) return
@@ -375,6 +452,13 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         if (canPause()) caps.add('pause')
         // 存档能力恒定有：导出时再看有没有内容
         caps.add('saveState')
+        // 屏幕手柄由播放器画（TouchPad.tsx），按下走下面的 sendButton。
+        // 两个条件：
+        //   1. 放在 load 之后而不是挂载时 —— sendButton 要有 player 元素才发得出去，
+        //      早一步把手柄画出来，玩家按了没反应
+        //   2. **只有键位表里认得这款游戏才画**。Flash 里一大半是纯鼠标游戏，
+        //      给它们画一套没反应的十字键（外加一句「手柄在下面」的开局提示）比不画糟得多
+        if (keys) caps.add('touchpad')
         // 录像 / 开播 / 截图都靠画布，画布是在 load() 完成的那一刻出现的（实测），
         // 所以在这儿判断刚好，早一步查是 null
         if (stageCanvas()) {
@@ -403,8 +487,9 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   return {
     caps,
     volume,
-    // Flash 游戏也在 iframe 里，键盘操作的那些（横版过关、打字游戏）不交焦点就是死的
-    focus: () => focusFrame(iframe),
+    // Flash 游戏也在 iframe 里，键盘操作的那些（横版过关、打字游戏）不交焦点就是死的。
+    // 注意是 focusPlayer 不是 focusFrame —— 只把焦点给到 iframe，Ruffle 照样不收键盘
+    focus: focusPlayer,
     setPaused(next: boolean) {
       // 两套门面轮流试：老的 play/pause，新的 resume/suspend
       for (const target of [api, player]) {
@@ -423,6 +508,32 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     setVolume(next: number) {
       volume = Math.max(0, Math.min(1, next))
       applyVolume()
+    },
+    /** 屏幕手柄只画这款游戏真的读的那几颗键；表里没有这款就一颗都不画 */
+    padButtons: keys ? (Object.keys(keys.p1) as PadButton[]) : [],
+    /**
+     * 屏幕手柄按下 / 松开。player 是座位号：0 = 1P（本机的屏幕手柄永远是它），
+     * 1 = 2P（同屏双打的第二套键，留给「把观众提成 2P」那一步）。
+     */
+    sendButton(button, down, seat = 0) {
+      if (!keys) return
+      // 参数叫 seat 不叫 player：外面那个 player 是 <ruffle-player> 元素，别遮住它
+      const pad = seat === 1 ? keys.p2 : keys.p1
+      const name = pad?.[button]
+      // 这款游戏用不上这颗键（屏幕上本来也不该画出来）
+      if (!name) return
+      const desc = keyDesc(name)
+      if (!desc) {
+        console.warn('[ruffle] 键位表里有个认不出来的键名：', name)
+        return
+      }
+      if (down === downKeys.has(desc.code)) return
+      // 按下时顺手把焦点要回来（松开不要 —— 松手去抢焦点没道理）。
+      // 玩家可能刚点过页面上别的东西，那时候注入进去 Ruffle 是不理的
+      if (down) focusPlayer()
+      if (down) downKeys.add(desc.code)
+      else downKeys.delete(desc.code)
+      dispatchKey(desc, down)
     },
     captureSources(): CaptureSources | null {
       const canvas = stageCanvas()
@@ -515,6 +626,10 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         written++
       }
       if (!written) throw new Error(rt.flashSaveBad)
+      // 重载会换掉整个实例，Ruffle 那边按住的键全没了。我们这份记录必须一起清，
+      // 否则「玩家按住右键读了个档」之后，那颗键在 downKeys 里永远是按下状态，
+      // 下一次按右再也发不出去（去重把它吃了）
+      downKeys.clear()
       // SWF 是在启动时读 SharedObject 的，写完必须重载一次才生效 ——
       // Ruffle 自带的存档管理器替换存档时也是这么做的（destroy + reload）
       for (const target of [api, player] as (RufflePlayerApi | RufflePlayerElement | null)[]) {

@@ -50,6 +50,67 @@ async function fetchIceServers(): Promise<RTCIceServer[]> {
   }
 }
 
+/* ---------------- 音频探针 ---------------- */
+
+/**
+ * 把 js-dos 的声音拿出来给直播 / 录像用。
+ *
+ * js-dos 没有对外暴露音频节点，但它的声音链在**主线程**上：
+ * `new AudioContext({sampleRate})` → `createScriptProcessor` → `GainNode` → `destination`。
+ * 所以在它建上下文之前，包一层 `AudioContext` 构造器记下新建的上下文，再包一层
+ * `AudioNode.prototype.connect` 记下「最后一个接到 destination 的节点」—— 那就是它的总输出。
+ * `captureSources()` 把这个节点和它的上下文交出去，broadcast.ts / recorder 那边会再接一个
+ * `createMediaStreamDestination()`，不影响本机播放。
+ *
+ * 以前这里写的是「音频在 AudioWorklet 里，外面拿不到」—— 不对，`audioWorklet: true` 只是
+ * 传给 worker 侧的开关，主线程的输出链一直都是 ScriptProcessor。结果 DOS 直播和录像一直是哑的。
+ *
+ * 只装一次、装在全局上（js-dos 跑在主页面，不在 iframe 里）。记录用 WeakMap，不拖住上下文。
+ */
+const audioCreated: Array<{ ctx: AudioContext; at: number }> = []
+const audioOutOf = new WeakMap<BaseAudioContext, AudioNode>()
+let audioTapInstalled = false
+
+function installAudioTap() {
+  if (audioTapInstalled || typeof window === 'undefined') return
+  audioTapInstalled = true
+  try {
+    const Native = window.AudioContext
+    if (typeof Native === 'function') {
+      const Tapped = class extends Native {
+        constructor(...args: ConstructorParameters<typeof AudioContext>) {
+          super(...args)
+          audioCreated.push({ ctx: this, at: Date.now() })
+          // 只留最近几条：一局游戏就一个上下文，多的都是历史
+          while (audioCreated.length > 8) audioCreated.shift()
+        }
+      }
+      window.AudioContext = Tapped
+    }
+    const proto = AudioNode.prototype as unknown as { connect: (...a: unknown[]) => unknown }
+    const nativeConnect = proto.connect
+    proto.connect = function (this: AudioNode, ...args: unknown[]) {
+      const dest = args[0]
+      if (typeof AudioDestinationNode === 'function' && dest instanceof AudioDestinationNode) audioOutOf.set(this.context, this)
+      return nativeConnect.apply(this, args)
+    }
+  } catch {
+    // 装不上（老浏览器、被 CSP 冻结的原型）就算了：直播照常只是没声音，和以前一样
+  }
+}
+
+/** 这一局 js-dos 建出来的声音链：挂载之后新建的、且有节点接到了 destination 的那个上下文 */
+function findAudioOut(since: number): { audioNode: AudioNode; audioContext: AudioContext } | null {
+  for (let i = audioCreated.length - 1; i >= 0; i--) {
+    const { ctx, at } = audioCreated[i]
+    if (at < since) break
+    if (ctx.state === 'closed') continue
+    const node = audioOutOf.get(ctx)
+    if (node) return { audioNode: node, audioContext: ctx }
+  }
+  return null
+}
+
 export const JSDOS_PATH: string = (() => {
   const p = import.meta.env.VITE_JSDOS_PATH || '/jsdos/'
   return p.endsWith('/') ? p : `${p}/`
@@ -169,6 +230,9 @@ async function readRom(
 
 function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
+  // 必须先于 js-dos 建 AudioContext；它是在挂载之后的某个 effect 里建的，这里来得及
+  installAudioTap()
+  const mountedAt = Date.now()
   let destroyed = false
   let props: DosProps | null = null
   let ci: DosCi | null = null
@@ -485,9 +549,11 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       }
     },
     captureSources(): CaptureSources | null {
-      // 音频在 AudioWorklet 里，外面拿不到节点，DOS 录像目前只有画面
       const canvas = host.querySelector('canvas')
-      return canvas ? { canvas } : null
+      if (!canvas) return null
+      // 声音走上面的探针（见 installAudioTap）。探针没抓到就只有画面，和以前一样
+      const audio = findAudioOut(mountedAt)
+      return audio ? { canvas, ...audio } : { canvas }
     },
   }
 }

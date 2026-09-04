@@ -97,6 +97,16 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
   /** 当前按住的键。松手要按这份精确松开 —— 不能一把 release 全部，A 和方向常常同时按着 */
   const held = useRef<Set<PadButton>>(new Set())
   const send = handle?.sendButton
+  /**
+   * 这一局用得上的按钮。适配器不给就是八个键全有 —— 主机模拟器都是这样，
+   * 只有 Flash 这种「每款游戏读的键都不一样」的才会缩到几颗（见 flashKeys.ts）。
+   */
+  const only = handle?.padButtons
+  const has = (button: PadButton) => !only || only.includes(button)
+  /** 这游戏只用方向键（森林冰火人这类）。行内那一条的排布要跟着变 */
+  const dpadOnly = !has('a') && !has('b') && !has('select') && !has('start')
+  /** 一个方向都不读的游戏（真有，比如只按空格的）就别画十字键 */
+  const hasDirs = has('up') || has('down') || has('left') || has('right')
 
   const set = useCallback(
     (button: PadButton, down: boolean) => {
@@ -125,7 +135,8 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
     if (hidden) releaseAll()
   }, [hidden, releaseAll])
 
-  if (!send) return null
+  // 送不出去、或者适配器明说「这局一颗键都用不上」，整条就别画了 —— 画一个空壳更糟
+  if (!send || (only && only.length === 0)) return null
 
   const onDpad = (e: PointerEvent<HTMLDivElement>) => {
     const r = e.currentTarget.getBoundingClientRect()
@@ -202,7 +213,8 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
   )
 
   /** A / B。B 在左下、A 在右上，和实机手柄的斜排一致，拇指压着更顺 */
-  const faceButton = (button: 'a' | 'b', cls: string) => (
+  const faceButton = (button: 'a' | 'b', cls: string) =>
+    !has(button) ? null : (
     <button
       type="button"
       aria-label={`Button ${button.toUpperCase()}`}
@@ -215,7 +227,8 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
   )
 
   /** SELECT / START：玩的时候基本不碰，做小一点，别抢地方 */
-  const sysButton = (button: 'select' | 'start', cls: string) => (
+  const sysButton = (button: 'select' | 'start', cls: string) =>
+    !has(button) ? null : (
     <button
       type="button"
       aria-label={button === 'select' ? 'Select' : 'Start'}
@@ -269,17 +282,27 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
         {hidden ? (
           <div className="h-7" />
         ) : (
-          <div className="flex w-full items-center justify-between gap-2 px-3 py-2">
-            {dpad}
-            <div className="flex flex-col items-center gap-1.5 pt-4">
-              {sysButton('select', '')}
-              {sysButton('start', '')}
-            </div>
-            {/* 斜排：容器给够高度，B 落左下、A 落右上 */}
-            <div className="relative" style={{ width: `calc(${FACE} * 2 + 0.5rem)`, height: `calc(${FACE} * 1.45)` }}>
-              {faceButton('b', 'absolute bottom-0 left-0')}
-              {faceButton('a', 'absolute right-0 top-0')}
-            </div>
+          <div
+            className={cx(
+              'flex w-full items-center gap-2 px-3 py-2',
+              // 只有十字键的游戏（森林冰火人这类）把它摆中间，别孤零零贴在左边
+              dpadOnly ? 'justify-center' : 'justify-between',
+            )}
+          >
+            {hasDirs && dpad}
+            {(has('select') || has('start')) && (
+              <div className="flex flex-col items-center gap-1.5 pt-4">
+                {sysButton('select', '')}
+                {sysButton('start', '')}
+              </div>
+            )}
+            {/* 斜排：容器给够高度，B 落左下、A 落右上。一颗都没有就别占这块宽度 */}
+            {(has('a') || has('b')) && (
+              <div className="relative" style={{ width: `calc(${FACE} * 2 + 0.5rem)`, height: `calc(${FACE} * 1.45)` }}>
+                {faceButton('b', 'absolute bottom-0 left-0')}
+                {faceButton('a', 'absolute right-0 top-0')}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -296,7 +319,7 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
       {toggle}
       {hidden ? null : (
         <>
-          {dpad}
+          {hasDirs && dpad}
           {faceButton('b', 'absolute bottom-[10%] right-[26%]')}
           {faceButton('a', 'absolute bottom-[24%] right-[5%]')}
           {sysButton('select', 'absolute bottom-[8%] left-1/2 -translate-x-[115%]')}

@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { randomBytes } from 'node:crypto'
 import { verifyToken } from '../auth.js'
 import { queryOne } from '../db.js'
 import { presenceFromRequest, UNKNOWN_PRESENCE } from '../presence.js'
@@ -23,6 +24,24 @@ export const roomsRouter = Router()
 const MEMBER_TTL = 30_000
 /** 房间数上限。心跳是公开接口，roomId 客户端随便填 —— 不设上限的话一个循环就能把内存刷爆 */
 const MAX_ROOMS = Number(process.env.ROOMS_MAX || 1000)
+/** 单个房间的成员上限。4 个手柄位 + 一点余量，够了；不设的话一个循环就能往别人房间里塞几万个人 */
+const MAX_MEMBERS_PER_ROOM = Number(process.env.ROOM_MAX_MEMBERS || 8)
+
+/**
+ * 成员令牌。
+ *
+ * memberId 是客户端自己生成的，而 roomId 在 GET /api/rooms 上是公开的 ——
+ * 没有令牌的话：
+ *   · 谁都能拿别人的 memberId 调 DELETE 把人从列表里删掉（房间只剩 0 人还会整个消失）；
+ *   · 谁都能用别人的 memberId 心跳，把他的昵称、手柄位、host 标记改成任意值。
+ * 所以第一次心跳时发一张令牌**只回给他本人**，之后认令牌不认 memberId。
+ *
+ * 和 netplay 的房间令牌是同一套做法（server/src/netplay.js 的 issueToken），
+ * 令牌同样从头到尾不进任何列表接口的返回值。
+ */
+const newToken = () => randomBytes(24).toString('base64url')
+/** 令牌可以走请求头，也可以放在 body 里 —— 前端的 api 助手不支持自定义头 */
+const tokenOf = (req) => str(req.get('x-room-token'), 64) || str(req.body?.token, 64)
 const rooms = new Map() // roomId -> { roomId, gameSlug, createdAt, members: Map<memberId, member> }
 
 function prune(now = Date.now()) {
@@ -107,8 +126,27 @@ roomsRouter.post('/heartbeat', softUser, (req, res) => {
     rooms.set(roomId, room)
   }
   const existing = room.members.get(memberId)
-  // 第一个进来的就是 host；后来者即使自称 host 也不算
-  const host = existing ? existing.host : room.members.size === 0 || Boolean(req.body.host && ![...room.members.values()].some((m) => m.host))
+
+  /**
+   * 认令牌不认 memberId：第一次心跳发一张，之后每次都要带对。
+   * 不这么做的话，任何人拿到别人的 memberId 就能把他的昵称 / 手柄位 / host 标记改掉。
+   */
+  if (existing && existing.token !== tokenOf(req)) {
+    return res.status(403).json({ error: 'not your member id' })
+  }
+  if (!existing && room.members.size >= MAX_MEMBERS_PER_ROOM) {
+    return res.status(409).json({ error: 'room is full' })
+  }
+
+  /**
+   * host 只认「开这个房间的那个人」。
+   *
+   * 以前还有一条 `req.body.host && 当前没人是 host` 的自荐路径 —— 房主的心跳晚了一拍
+   * （TTL 30 秒，网络抖一下就够）就会被别人顶掉 host 的显示。房主记录真的过期了也不用抢：
+   * publicRoom 里的 `?? members[0]` 会按 playerIndex 兜底，不需要给一个能被利用的入口。
+   */
+  const host = existing ? existing.host : room.members.size === 0
+  const token = existing ? existing.token : newToken()
   /**
    * 名片每次心跳重算一遍，网络那一格才跟得上变化。
    *
@@ -118,15 +156,22 @@ roomsRouter.post('/heartbeat', softUser, (req, res) => {
    * 设备和国家仍然是服务端从 UA 和 IP 自己看的，报不了假。
    */
   const presence = presenceFromRequest(req, req.body.rtt)
-  room.members.set(memberId, { memberId, nickname, playerIndex, host, userId: req.user?.id ?? null, seenAt: now, presence })
-  res.json(publicRoom(room))
+  room.members.set(memberId, { memberId, nickname, playerIndex, host, token, userId: req.user?.id ?? null, seenAt: now, presence })
+  // 令牌只回给他本人。publicRoom 不带 token，列表接口也就不会把它漏出去
+  res.json({ ...publicRoom(room), memberToken: token })
 })
 
+/**
+ * 离开房间。要带自己的成员令牌 —— 这个接口原来完全没有鉴权，
+ * 知道 roomId 和某人的 memberId 就能把他从列表里删掉，删到最后一个人房间整个消失。
+ */
 roomsRouter.delete('/:roomId/members/:memberId', (req, res) => {
   const room = rooms.get(req.params.roomId)
-  if (room) {
-    room.members.delete(req.params.memberId)
-    if (room.members.size === 0) rooms.delete(room.roomId)
-  }
+  if (!room) return res.json({ ok: true }) // 已经没了就当成功，重复调用不该报错
+  const member = room.members.get(req.params.memberId)
+  if (!member) return res.json({ ok: true })
+  if (member.token !== tokenOf(req)) return res.status(403).json({ error: 'not your member id' })
+  room.members.delete(req.params.memberId)
+  if (room.members.size === 0) rooms.delete(room.roomId)
   res.json({ ok: true })
 })

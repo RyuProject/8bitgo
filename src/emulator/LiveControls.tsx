@@ -14,7 +14,7 @@
  * 「不公开」两种情况下有文字，其余时候界面上只剩一个 📡 —— 玩家分不清自己是正在连、
  * 已经在播、还是压根没推出去。现在五种状态各有一个圆点加一句话（见下面的 Phase）。
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { RuntimeHandle } from './types'
 import { canBroadcast, startBroadcast, type Broadcast } from './broadcast'
 import { liveEnabled, liveLink, refreshLiveRooms } from '@/services/live'
@@ -33,6 +33,11 @@ interface Props {
    * 房间本身就带观众席，再推一路直播是白白多占一份上行。
    */
   active?: boolean
+  /**
+   * 玩家点「开播」走标签页分享时，把画面裁到这个元素（播放器那一块），不带旁边的站点 UI。
+   * Region Capture 目前只有 Chrome 系有；没有就整个标签页一起推，能用。
+   */
+  captureRef?: RefObject<HTMLElement | null>
   className?: string
 }
 
@@ -47,12 +52,15 @@ const BTN =
  *   live          真的在播，带在看人数
  *   reconnecting  信令断了，画面多半还在流（WebRTC 是点对点的），所以不撤标记
  *   off           试过了没成 —— 失败是静默的，界面上只有这一处能看出来
+ *   manual        抓不到画面（跨源的 HTML5 游戏、没有 canvas 的页面），但浏览器支持
+ *                 getDisplayMedia：点一下弹选择器、选本标签页，画面带声音一起推出去。
+ *                 这是这类游戏唯一能播的路 —— iframe 里的东西浏览器不让读，不是我们能绕的
  *   hidden        玩家自己关掉了公开
  *
  * off 和 starting 必须分开：它们以前长得一模一样（都是一个光板 📡），
  * 而对玩家来说「再等等」和「这局没人看得到」是两件完全不同的事。
  */
-type Phase = 'starting' | 'live' | 'reconnecting' | 'off' | 'hidden'
+type Phase = 'starting' | 'live' | 'reconnecting' | 'off' | 'manual' | 'hidden'
 
 /**
  * 状态按钮的底样式。颜色一概不写在这里 —— 每种状态的边框色/文字色由 TONE 给，
@@ -66,6 +74,7 @@ const TONE: Record<Phase, string> = {
   reconnecting: 'border-live/40 bg-live/5 text-muted hover:bg-live/15',
   starting: 'border-line text-muted hover:border-brand hover:text-fg',
   off: 'border-line text-dim hover:border-brand hover:text-fg',
+  manual: 'border-brand/50 text-fg hover:border-brand hover:bg-brand/10',
   hidden: 'border-line text-dim hover:border-brand hover:text-fg',
 }
 
@@ -75,7 +84,51 @@ const DOT: Record<Phase, string> = {
   reconnecting: 'animate-pulse bg-coin',
   starting: 'animate-pulse bg-coin',
   off: 'bg-dim',
+  manual: 'bg-brand',
   hidden: 'bg-dim',
+}
+
+/**
+ * 分享标签页的码率：按实际分辨率给。默认那 1.5 Mbps 是给 240×160 画布的，
+ * 裁到播放器之后一般是 800×600 上下，整页则到 1080p —— 每像素每帧约 0.1 bit，
+ * 下限还是 1.5 Mbps，上限 6 Mbps（再高家宽上行扛不住多个观众）。
+ */
+function tabBitrate(stream: MediaStream): number {
+  const { width = 1280, height = 720 } = stream.getVideoTracks()[0]?.getSettings() ?? {}
+  return Math.round(Math.max(1_500_000, Math.min(6_000_000, width * height * 30 * 0.1)))
+}
+
+/** 浏览器有没有「分享标签页」这条路（Safari iOS 没有；非 https 也没有） */
+function canShareTab(): boolean {
+  return typeof navigator !== 'undefined' && typeof navigator.mediaDevices?.getDisplayMedia === 'function'
+}
+
+/**
+ * 让玩家选本标签页，拿到画面 + 声音。
+ * preferCurrentTab / selfBrowserSurface 是 Chrome 的扩展：选择器直接把本页顶到最前，
+ * 少点一次。Region Capture（cropTo）再把画面裁到播放器，观众看不到旁边的站点 UI。
+ * 这几个 API 都不在 TS 的 lib 里，所以下面一堆 as。
+ */
+async function shareTab(cropTo: HTMLElement | null): Promise<MediaStream> {
+  const constraints = {
+    video: { displaySurface: 'browser' },
+    audio: true,
+    preferCurrentTab: true,
+    selfBrowserSurface: 'include',
+    surfaceSwitching: 'exclude',
+    systemAudio: 'exclude',
+  } as unknown as DisplayMediaStreamOptions
+  const stream = await navigator.mediaDevices.getDisplayMedia(constraints)
+  const track = stream.getVideoTracks()[0] as (MediaStreamTrack & { cropTo?: (t: unknown) => Promise<void> }) | undefined
+  const CropTarget = (window as unknown as { CropTarget?: { fromElement: (el: Element) => Promise<unknown> } }).CropTarget
+  if (track?.cropTo && CropTarget && cropTo) {
+    try {
+      await track.cropTo(await CropTarget.fromElement(cropTo))
+    } catch {
+      /* 裁不了就整页推，能用 */
+    }
+  }
+  return stream
 }
 
 /** 「不公开」是玩家的长期选择，不是这一局的临时状态，所以记在本地 */
@@ -102,8 +155,15 @@ function writePrivate(next: boolean) {
 /** 画布要等引擎把第一帧挂上来才有，开局那一下取不到是正常的 */
 const RETRY_MS = 600
 const RETRY_MAX = 15
+/**
+ * 画布有了但声音还没有：再等几轮。
+ * 推流是一次性拼好的（broadcast.ts 的 buildStream），开播之后声音节点再出现也接不进去。
+ * 有的引擎（js-dos）画布一挂载就在，AudioContext 要等模拟器报出采样率才建 —— 差着一两秒。
+ * 不等的话 DOS 直播永远是哑的。等不到（引擎本来就没有声音节点）就哑着播，别耽误太久。
+ */
+const AUDIO_WAIT_MAX = 8
 
-export function LiveControls({ handle, gameName, gameSlug, platform, active = true, className }: Props) {
+export function LiveControls({ handle, gameName, gameSlug, platform, active = true, captureRef, className }: Props) {
   const t = useT()
   const tt = t.player.tools
   const [live, setLive] = useState<Broadcast | null>(null)
@@ -122,11 +182,21 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
   const [copied, setCopied] = useState(false)
   /** 剪贴板被拦时把链接摊在界面上让人自己复制，而不是弹一个模态框 */
   const [manualLink, setManualLink] = useState('')
+  /** 自动开播抓不到画面（跨源 HTML5 之类）：这局只能靠玩家点一下分享标签页 */
+  const [needsManual, setNeedsManual] = useState(false)
+  /** 正在弹选择器 / 握手，别让人连点 */
+  const [manualBusy, setManualBusy] = useState(false)
   const liveRef = useRef<Broadcast | null>(null)
+  /** 分享标签页拿到的流：停播时要把轨停掉，否则浏览器角上那条「正在分享」一直亮着 */
+  const tabStreamRef = useRef<MediaStream | null>(null)
 
   const on = Boolean(handle) && Boolean(gameSlug) && liveEnabled() && active && !hidden
 
   const stop = useCallback(() => {
+    if (tabStreamRef.current) {
+      for (const tr of tabStreamRef.current.getTracks()) tr.stop()
+      tabStreamRef.current = null
+    }
     if (!liveRef.current) return
     liveRef.current.stop()
     liveRef.current = null
@@ -149,10 +219,23 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
       if (cancelled || liveRef.current) return
       const sources = handle.captureSources?.()
       if (!sources || !canBroadcast(sources)) {
+        // 运行时压根没有抓画面的能力（webretro），或者明说了永远抓不到（跨源 iframe）：
+        // 别让人对着「连接中…」白等九秒，直接落到手动分享那条路
+        const hopeless = !handle.captureSources || handle.captureBlocked?.() === true
         // 还没有画面：再等一会儿。等不到就算了 —— 这个引擎大概抓不出画面
-        if (n < RETRY_MAX) timer = window.setTimeout(() => void attempt(n + 1), RETRY_MS)
-        // 等不到就别让按钮永远停在「连接中」上骗人，落到「未开播」
-        else setConnecting(false)
+        if (!hopeless && n < RETRY_MAX) timer = window.setTimeout(() => void attempt(n + 1), RETRY_MS)
+        else {
+          // 等不到就别让按钮永远停在「连接中」上骗人。抓不到画面的游戏（跨源 HTML5、
+          // 没有 canvas 的页面）还有一条路：玩家点一下分享标签页
+          setConnecting(false)
+          setNeedsManual(canShareTab())
+        }
+        return
+      }
+      setNeedsManual(false)
+      const hasAudio = Boolean(sources.stream?.getAudioTracks().length || (sources.audioNode && sources.audioContext))
+      if (!hasAudio && n < AUDIO_WAIT_MAX) {
+        timer = window.setTimeout(() => void attempt(n + 1), RETRY_MS)
         return
       }
       try {
@@ -203,13 +286,60 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
     return () => {
       cancelled = true
       window.clearTimeout(timer)
+      setNeedsManual(false)
       stop()
     }
   }, [on, handle, gameSlug, gameName, platform, stop])
 
+  /** 玩家点了「开播」：选本标签页，画面带声音一起推 */
+  const startManual = async () => {
+    if (!gameSlug || manualBusy || liveRef.current) return
+    setManualBusy(true)
+    let stream: MediaStream | null = null
+    try {
+      stream = await shareTab(captureRef?.current ?? null)
+      tabStreamRef.current = stream
+      const b = await startBroadcast({
+        sources: { stream },
+        maxBitrate: tabBitrate(stream),
+        meta: { gameSlug, gameName, platform: platform ?? '', title: gameName, hostName: playerName() },
+        onViewers: setViewers,
+        onRoom: setRoomId,
+        onState: (state) => {
+          if (state === 'reconnecting') setReconnecting(true)
+          else if (state === 'live') setReconnecting(false)
+          else if (state === 'ended' && liveRef.current) {
+            liveRef.current = null
+            stop()
+          }
+        },
+      })
+      liveRef.current = b
+      setLive(b)
+      setRoomId(b.roomId)
+      refreshLiveRooms()
+      // 玩家在浏览器那条「正在分享」上点了停止：跟着下播
+      for (const tr of stream.getTracks()) tr.addEventListener('ended', () => stop(), { once: true })
+    } catch (e) {
+      // 多半是玩家在选择器里点了取消（NotAllowedError）—— 那就当没这回事
+      if (stream) for (const tr of stream.getTracks()) tr.stop()
+      tabStreamRef.current = null
+      console.warn('[live] 分享标签页没成', e)
+    } finally {
+      setManualBusy(false)
+    }
+  }
+
   if (!handle || !gameSlug || !liveEnabled() || !active) return null
 
   const toggleHidden = () => {
+    // 走标签页分享的这一路，点一下就是开 / 停，不碰「不公开」那个长期选择：
+    // 这类游戏的开播本来就是每局手动一次，没有「默认公开」可关
+    if (needsManual && !hidden) {
+      if (liveRef.current) stop()
+      else void startManual()
+      return
+    }
     const next = !hidden
     setHidden(next)
     writePrivate(next)
@@ -230,13 +360,24 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
   }
 
   // 「不公开」是玩家的选择，优先于一切；其余按推流自己的进度排
-  const phase: Phase = hidden ? 'hidden' : live ? (reconnecting ? 'reconnecting' : 'live') : connecting ? 'starting' : 'off'
+  const phase: Phase = hidden
+    ? 'hidden'
+    : live
+      ? reconnecting
+        ? 'reconnecting'
+        : 'live'
+      : connecting || manualBusy
+        ? 'starting'
+        : needsManual
+          ? 'manual'
+          : 'off'
 
   const label: Record<Phase, string> = {
     live: fmt(tt.liveOn, { n: String(viewers) }),
     reconnecting: t.runtime.liveReconnecting,
     starting: tt.liveStarting,
     off: tt.liveOff,
+    manual: tt.liveManual,
     hidden: tt.liveHidden,
   }
 
@@ -246,6 +387,7 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
     reconnecting: tt.liveReconnectingTitle,
     starting: tt.liveStartingTitle,
     off: tt.liveOffTitle,
+    manual: tt.liveManualTitle,
     hidden: tt.liveShowTitle,
   }
 

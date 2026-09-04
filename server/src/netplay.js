@@ -84,6 +84,22 @@ const RESERVED_KEYS = new Set(['host-migrating', 'host-migrated', 'host-left'])
  * 以前任何一个访客甚至观众发一条 {restart:true}，房主那局就被重开了。
  */
 const HOST_ONLY_KEYS = new Set(['pause', 'play', 'restart'])
+/**
+ * 单条 data-message 里最多允许几条 sync-control。
+ *
+ * 引擎收到 sync-control 会 `this.inputsData[frame].push(...)`，而这张表**只在
+ * 那一帧真的到来时**才 delete —— 帧号是发送方给的，随便填一个永远不会到的数，
+ * 那条记录就永远留在房主的浏览器里。一条 128KB 的消息能塞进去几千条，
+ * 20 条/秒，几分钟就能把房主的标签页撑爆：这是访客能对房主发起的远程 DoS，
+ * 而且它长得跟正常按键同步一模一样，前面几道过滤全放行。
+ *
+ * 正常一帧的按键事件是个位数（一次按下 / 抬起就是一条），32 已经很宽裕。
+ * ⚠️ 这只把速率压回正常水平，压不掉「表会一直长」这件事本身 ——
+ * 那是引擎里的行为，要根治得改 EmulatorJS 的 dataMessage。
+ */
+const MAX_SYNC_ENTRIES = 32
+/** 聊天正文和昵称的长度上限，和前端输入框对齐 */
+const MAX_CHAT_LEN = 500
 
 /** roomId(sessionid) -> room */
 const rooms = new Map()
@@ -415,6 +431,16 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
     // 顺带把 socket.io 客户端脚本也发出去：模拟器 iframe 需要全局的 io()
     serveClient: true,
     /**
+     * 单条消息的体积上限（默认是 1MB）。
+     *
+     * data-message 是**房间内广播**：一个成员发 1MB，服务器就要往剩下十几个人身上
+     * 各推一份，20 条/秒的限流之下等于一个人就能压出几百 MB/s 的上行 ——
+     * 限流管的是条数，管不了体积。存档走的是 HTTP（POST /state），
+     * 这条通道上最大的正常包是 SDP，几十 KB 顶天，128KB 已经很宽裕。
+     * 在库这一层挡掉，比在每个 handler 里量一遍 JSON 便宜得多。
+     */
+    maxHttpBufferSize: Number(process.env.NETPLAY_MAX_MESSAGE_BYTES || 128 * 1024),
+    /**
      * 默认 25 秒。心跳的往返时间正好是我们量「房主网络好不好」的尺子
      * （见 presence.js 的 trackRtt），25 秒意味着房间刚开出来的头半分钟
      * 网络格子只能显示未知。10 秒一个来回，一条连接每分钟多六个几十字节的包，
@@ -494,6 +520,22 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
       const userid = str(extra.userid, 64)
       if (!room) return ack?.('room not found')
       if (!userid) return ack?.('bad request')
+      /**
+       * ⚠️ userid 是**客户端自己填的**，而且随 users-updated 广播给屋里每个人。
+       * 不挡重复的话，任何一个访客都能拿房主的 userid 再 join 一次 ——
+       * `room.users.set(userid, …)` 会直接**覆盖**房主那条记录，于是：
+       *
+       *   · 服务端给他发一张绑着房主 userid 的令牌 → 他能覆盖房主的存档
+       *     （POST /state 比对的是 `me.userid !== room.ownerUserId`，他过得去）；
+       *   · 真房主的令牌从此 memberByToken 查不到 → 房主自己的进度托管全部 403，
+       *     而且是静默失败，房主毫不知情；
+       *   · 他再一断线，removeSocket 按 socketId 删掉的正是那条被顶掉的记录 →
+       *     房主被"踢"出成员表，users-updated 一广播，别人就把到房主的连接拆了。
+       *
+       * 也就是整个房间被劫。userid 由 EmulatorJS 每次开房/进房现生成
+       * （netplay 的 `this.playerID = t()`），正常撞车的概率可以忽略，直接拒。
+       */
+      if (room.users.has(userid)) return ack?.('userid taken')
       if (room.password && str(payload?.password, 60) !== room.password) return ack?.('wrong password')
       if (socketRoom.has(socket.id)) return ack?.('already in a room')
       // 正在换房主的房间先别放人进来，不然新来的会连到一个马上要消失的房主
@@ -565,10 +607,48 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
         // 任何访客都能替 1P 按键，观众也能操作游戏（客户端那层「掐断输入」只是自律）
         if (room && !isHost && Array.isArray(d['sync-control'])) {
           const idx = playerIndexOf(room, socket.id)
-          const kept = idx < 0 ? [] : d['sync-control'].filter((e) => Array.isArray(e?.connected_input) && e.connected_input[0] === idx)
+          const kept =
+            idx < 0
+              ? []
+              : d['sync-control']
+                  .filter(
+                    (e) =>
+                      Array.isArray(e?.connected_input) &&
+                      e.connected_input[0] === idx &&
+                      // 帧号会变成房主那边 inputsData 的 key，必须是个正常的整数；
+                      // 见 MAX_SYNC_ENTRIES 的说明
+                      Number.isInteger(Number(e?.frame)) &&
+                      Number(e.frame) >= 0 &&
+                      Number(e.frame) < 2 ** 31,
+                  )
+                  .slice(0, MAX_SYNC_ENTRIES)
           if (kept.length !== d['sync-control'].length) dirty = true
           if (kept.length) d['sync-control'] = kept
           else delete d['sync-control']
+        }
+
+        /**
+         * 聊天：昵称由**服务端**填，正文限长。
+         *
+         * player_name 原来是发送方随便填的，而引擎直接把它显示成
+         * 「<名字>: <内容>」—— 任何访客都能顶着房主的昵称说话。
+         * from 同理（引擎拿它判断「这条是不是我自己发的」，冒充别人的 from
+         * 可以让那个人自己看不见这条消息）。两样都换成服务端认得的那个人。
+         */
+        if (room && d['chat-message'] && typeof d['chat-message'] === 'object') {
+          const me = [...room.users.values()].find((u) => u.socketId === socket.id)
+          if (!me) {
+            delete d['chat-message']
+            dirty = true
+          } else {
+            const c = d['chat-message']
+            d['chat-message'] = {
+              player_name: str(me.player_name, 32) || 'Player',
+              from: me.userid,
+              to: str(c.to, 64) || 'all',
+              message: str(c.message, MAX_CHAT_LEN),
+            }
+          }
         }
         if (dirty && Object.keys(d).length === 0) return
       }
@@ -669,12 +749,19 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
   app.get('/api/netplay/rooms/:roomId/state', (req, res) => {
     const room = getRoom(req.params.roomId)
     if (!room?.state) return res.status(404).json({ error: 'no state' })
-    // 存档是别人游戏进度的完整快照，只有房间成员能取（老前端没带令牌时放行，
-    // 升级完可以把下面这行的 `|| !token` 去掉，变成强制）
+    /**
+     * 存档是别人游戏进度的完整快照，**必须**是房间成员才能取。
+     *
+     * 这里以前是「没带令牌就放行」（给老前端留的过渡）—— 而房间 id 在
+     * /api/netplay/rooms 上是公开列出来的，等于任何路人 curl 一下就能把
+     * 别人正在玩的进度整份拖走。前端早就每次都带令牌了
+     * （EmulatorPlayer 调 downloadState 时传的是 `claim || roomTokenRef.current`），
+     * 过渡期结束，收紧成强制。
+     */
     const token = str(req.get('x-netplay-token'), 64) || str(req.query.t, 64)
     // 认领令牌也行：认领人重新挂载引擎之后已经不是成员了，但存档正是这时候要
     const claimed = Boolean(token) && room.claim?.token === token
-    if (token && !claimed && !memberByToken(room, token)) return res.status(403).json({ error: 'not a member' })
+    if (!token || (!claimed && !memberByToken(room, token))) return res.status(403).json({ error: 'not a member' })
     res.set('Cache-Control', 'no-store')
     res.set('Content-Type', 'application/octet-stream')
     res.set('X-State-Age', String(Date.now() - room.stateAt))
@@ -704,6 +791,19 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
     }
 
     me.role = want
+    if (want === 'player') {
+      /**
+       * 上场的人要排到玩家组的**末尾**，不能就地改 role。
+       *
+       * usersPayload 里玩家按 Map 的插入顺序排，而 EmulatorJS 拿这个顺序当手柄号
+       * （`getUserIndex()` = `Object.keys(players).indexOf(myId)`）。一个**先加入**的观众
+       * 就地转成玩家，会插到现有玩家前面，把别人的手柄号整体往后挤 ——
+       * 正在玩的人按键会突然跑到另一个手柄位上，双人游戏里干脆挤到不存在的 3P，
+       * 按键直接没反应。删掉再塞回去就是移到 Map 末尾，现有玩家的下标一个都不动。
+       */
+      room.users.delete(me.userid)
+      room.users.set(me.userid, me)
+    }
     nsp.to(room.id).emit('users-updated', usersPayload(room))
     notifyRooms()
     res.json({ ok: true, role: want })
@@ -728,10 +828,22 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
 
     if (room.graceTimer) clearTimeout(room.graceTimer)
     if (room.claimTimer) clearTimeout(room.claimTimer)
-    room.claim = { userid: me.userid, token: randomBytes(24).toString('base64url'), expiresAt: Date.now() + CLAIM_WINDOW_MS }
+    room.claim = { userid: me.userid, token: randomBytes(24).toString('base64url'), startedAt: Date.now(), expiresAt: Date.now() + CLAIM_WINDOW_MS }
     room.claimTimer = setTimeout(() => {
       if (rooms.get(room.id) !== room || !room.claim) return
       // 认领了却没接完：作废，屋里没人就散，还有人就接着往下问
+      /**
+       * ⚠️ 认领占用的时间不能算进宽限期。
+       *
+       * CLAIM_WINDOW_MS 默认 60s 而 HOST_GRACE_MS 默认 30s —— 等认领窗口过期，
+       * `offerNext()` 开头那句 `Date.now() - migrationStartedAt >= HOST_GRACE_MS`
+       * **必然**成立，于是不管屋里还坐着几个人，房间当场解散，
+       * 名单上的下一位从来没被问过。实测：g1 认领后不接手，房间直接销毁，g2 一次都没轮到。
+       *
+       * 把起点往后推这一段，宽限期才是「找人接手」用掉的时间，
+       * 而不是「等某一个人」用掉的时间。
+       */
+      room.migrationStartedAt += Date.now() - room.claim.startedAt
       room.claim = null
       if (room.users.size === 0) return destroyRoom(room)
       room.candidates = room.candidates.filter((id) => id !== me.userid)

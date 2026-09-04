@@ -301,6 +301,41 @@ if (process.env.NETPLAY_HOST_GRACE_MS) {
     await wait(Number(process.env.NETPLAY_CLAIM_WINDOW_MS) + 300)
     ok('认领窗口过了、屋里没人 → 解散', (await fetch(`${API}/api/netplay/rooms/R5`)).status === 404)
   }
+
+  {
+    /**
+     * 认领了却没接完，但**屋里还有别人** → 应该轮给下一位，不是把房间解散。
+     *
+     * 曾经必然解散：CLAIM_WINDOW_MS（线上默认 60s）比 HOST_GRACE_MS（默认 30s）长，
+     * 等认领窗口过期，offerNext 开头那句「宽限期到了没」必然成立 ——
+     * 于是不管还坐着几个人，房间当场散场，名单上的下一位从来没被问过。
+     * 现在认领占用的时间会从宽限期里扣掉。
+     */
+    section('认领了却没接完、但屋里还有人 → 轮给下一位')
+    const h = await connect()
+    const g1 = await connect()
+    const g2 = await connect()
+    await open(h, extra('u-h6', 'R6', '房主'))
+    await join(g1, extra('u-g6a', 'R6', '访客一'))
+    await join(g2, extra('u-g6b', 'R6', '访客二'))
+    await wait(80)
+    h.close()
+    await wait(150)
+    // 记下服务器问过哪些人。断言看的是「有没有问到第二位」，
+    // 不看某一刻房间还在不在 —— 宽限期在测试里只有几百毫秒，
+    // 轮到第二位之后它照样会正常到点散场，那不是这条要验的东西
+    const offered = []
+    g2.on('data-message', (d) => {
+      if (d && d['host-migrating']) offered.push(d['host-migrating'].nextHost)
+    })
+    const claimed = await fetch(`${API}/api/netplay/rooms/R6/claim`, { method: 'POST', headers: { 'x-netplay-token': g1.token } })
+    ok('第一位认领成功', claimed.ok)
+    // 认领之后一直不 migrate，等窗口过期
+    await wait(Number(process.env.NETPLAY_CLAIM_WINDOW_MS) + 300)
+    ok('认领超时后轮到了下一位候选', offered.includes('u-g6b'))
+    g1.close()
+    g2.close()
+  }
 } else {
   console.log('\n⏭  跳过「超时解散」：用 NETPLAY_HOST_GRACE_MS=400 node scripts/test-netplay.mjs 跑这一组')
 }

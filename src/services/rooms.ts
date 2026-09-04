@@ -33,6 +33,18 @@ export interface Room {
   presence?: Presence
 }
 
+/**
+ * 心跳的回包 = 房间 + **只回给我本人**的成员令牌。
+ *
+ * 第一次心跳时服务端发一张，之后改昵称 / 手柄位、以及离开房间时都要带上它。
+ * 不带的话服务端认的就只有 memberId，而那是客户端自己生成的、
+ * roomId 又是公开的 —— 谁都能拿别人的 memberId 把他从列表里删掉，或者改他的显示。
+ * 列表接口（GET /api/rooms）永远不带这个字段。
+ */
+interface HeartbeatResult extends Room {
+  memberToken?: string
+}
+
 export const MAX_PLAYERS = 4
 const HEARTBEAT_MS = 10_000
 const LIST_POLL_MS = 8_000
@@ -111,13 +123,24 @@ export function keepAlive(input: { roomId: string; gameSlug: string; playerIndex
    * 但云端房间和 P2P 房间本来也不比这个。
    */
   let lastRtt: number | null = null
+  /** 服务端第一次心跳时发下来的成员令牌，之后每次心跳和离开房间都要带 */
+  let token = ''
   const beat = () => {
     if (stopped) return
     const sentAt = Date.now()
     void api
-      .post<Room>('/api/rooms/heartbeat', { ...input, memberId: me, nickname: displayName(), rtt: lastRtt })
+      .post<HeartbeatResult>('/api/rooms/heartbeat', {
+        ...input,
+        memberId: me,
+        nickname: displayName(),
+        rtt: lastRtt,
+        // 令牌走 body 而不是请求头：api 助手不支持按调用传头，
+        // 服务端两种都收（见 server/src/routes/rooms.js 的 tokenOf）
+        token,
+      })
       .then((room) => {
         lastRtt = Date.now() - sentAt
+        if (room.memberToken) token = room.memberToken
         cache.set(room)
       })
       .catch(() => {})
@@ -127,7 +150,9 @@ export function keepAlive(input: { roomId: string; gameSlug: string; playerIndex
   return () => {
     stopped = true
     window.clearInterval(timer)
-    void api.del(`/api/rooms/${encodeURIComponent(input.roomId)}/members/${me}`).catch(() => {})
+    void api
+      .del(`/api/rooms/${encodeURIComponent(input.roomId)}/members/${me}`, false, { token })
+      .catch(() => {})
     cache.remove(input.roomId)
   }
 }

@@ -99,7 +99,7 @@ const WOFCN_ROMDATA = `// Tenchi wo Kurau II (Edition Chinese) —— HBMAME 的
 // 基础驱动是日版 wofj。两块中文字库不走 CPS1_EXTRA_TILES_400000（对 wofj 会清掉程序区，
 // 见上面注释），而是当第三组 CPS1_TILES 接在 8 块日版图形后面，落到 CpsGfx+0x400000。
 // 顺序有意义：程序 → 图形（12 条）→ Z80 → QSound → PLD，中间不能插别的类型。
-// FullName 必须加引号：romdata.cpp 用 strqtoken 按 " \t\r\n,%:|{}" 切词，不加引号只会取到第一个词。
+// FullName 必须加引号：romdata.cpp 用 strqtoken 按空格、制表、换行、逗号、%:|{} 切词，不加引号只会取到第一个词。
 
 ZipName    wofcn
 DrvName    wofj

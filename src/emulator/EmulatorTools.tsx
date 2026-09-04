@@ -566,6 +566,29 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
           <p className="mt-2 border-t border-line pt-2 text-muted">
             {runtimeId === 'jsnes' ? tt.gamepadHintNes : tt.gamepadHint}
           </p>
+
+          {/*
+            引擎自带那套屏幕按键的开关。只在触屏设备上出现 —— 桌面端两个能力都不会声明。
+
+            NDS 这类「机器本身就是触屏」的平台默认是收起的：那套按键压在画面下半部分，
+            而下屏就是触摸屏（见 adapters/emulatorjs.ts 的 POINTER_FIRST）。
+            可马力欧赛车 DS 这种还是要实体按键的，得让玩家自己调回来。
+
+            当前状态直接读 caps —— 适配器每次切换都会重新 onCaps，是同一份真相，
+            不在这里另存一个 state，免得两边对不上。
+          */}
+          {handle.setEnginePad && (caps.has('enginePad') || caps.has('enginePointer')) && (
+            <div className="mt-2 flex items-center justify-between gap-2 border-t border-line pt-2">
+              <span className="text-muted">{tt.screenPad}</span>
+              <button
+                type="button"
+                onClick={() => handle.setEnginePad?.(!caps.has('enginePad'))}
+                className="shrink-0 rounded-md border border-line px-2 py-0.5 font-semibold text-fg hover:border-brand hover:text-brand"
+              >
+                {caps.has('enginePad') ? tt.screenPadHide : tt.screenPadShow}
+              </button>
+            </div>
+          )}
         </div>
       )}
 
