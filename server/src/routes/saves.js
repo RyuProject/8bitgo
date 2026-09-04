@@ -20,6 +20,14 @@ import { requireUser } from '../auth.js'
 export const MAX_SAVE_BYTES = Number(process.env.SAVE_MAX_BYTES || 4 * 1024 * 1024)
 /** 每人最多存多少份，防止有人拿它当网盘 */
 const MAX_SAVES_PER_USER = Number(process.env.SAVE_MAX_PER_USER || 200)
+/**
+ * 每人总共能占多少字节。
+ *
+ * ⚠️ 只数份数是拦不住「拿它当网盘」的：200 份 × 单份 4MB = **一个账号 800MB**，
+ * 而账号是邮箱验证码免费注册的。正常存档 20KB～500KB，把每份都撑到 4MB
+ * 只有一个目的。份数管的是「别开太多格」，字节数才管得住体积。
+ */
+const MAX_TOTAL_BYTES = Number(process.env.SAVE_MAX_TOTAL_BYTES || 64 * 1024 * 1024)
 /** 每个游戏的存档位。0 是「自动 / 主存档」，DOS 只用 0 */
 const MAX_SLOT = 9
 
@@ -33,6 +41,34 @@ const RUNTIMES = new Set(['emulatorjs', 'jsdos', 'cloudgame', 'jsnes', 'ruffle',
  * 斜杠（会把路由打断）、反斜杠、空白和控制字符。
  */
 const SLUG_RE = /^[^/\\\s\u0000-\u001f]{1,160}$/u
+
+/**
+ * 这一次写入放不放行。纯函数，好测（`npm run test:save-quota`）。
+ *
+ * @param used   {count, bytes} 这个用户当前占用的份数和总字节
+ * @param oldSize 要覆盖的那一格原来多大；新开一格传 0
+ * @param newSize 这次要写多少字节
+ * @returns null = 放行；否则 {status, error}
+ *
+ * 两条规则：
+ *  · 新开一格才查份数 —— 覆盖已有存档不该因为份数满了而失败；
+ *  · 体积**只在变大时**才查。玩家玩到一半突然存不上，比拒绝新建难受得多，
+ *    所以「存得比原来小或一样大」永远放行 —— 那不会让占用继续涨，
+ *    人也不至于被卡在一局里出不来。
+ */
+export function saveQuotaError(used, oldSize, newSize) {
+  const isNew = oldSize === 0
+  if (isNew && used.count >= MAX_SAVES_PER_USER) {
+    return { status: 409, error: `云存档最多 ${MAX_SAVES_PER_USER} 份，请先删掉一些` }
+  }
+  if (newSize <= oldSize) return null
+  const after = used.bytes - oldSize + newSize
+  if (after > MAX_TOTAL_BYTES) {
+    const mb = Math.round(MAX_TOTAL_BYTES / 1024 / 1024)
+    return { status: 409, error: `云存档总共最多 ${mb}MB，请先删掉一些` }
+  }
+  return null
+}
 
 export const savesRouter = Router()
 
@@ -158,18 +194,21 @@ savesRouter.put(
         return res.status(413).json({ error: '存档太大' })
       }
 
-      // 只在「新开一份」时查配额；覆盖已有存档永远放行，
-      // 否则玩家玩到一半突然存不上，比拒绝新建难受得多
+      // 份数 + 总字节一起查，判定交给 saveQuotaError（纯函数，规则写在它头上）
       const existing = await queryOne(
-        'SELECT 1 AS x FROM saves WHERE user_id = ? AND runtime = ? AND game_slug = ? AND slot = ?',
+        'SELECT size FROM saves WHERE user_id = ? AND runtime = ? AND game_slug = ? AND slot = ?',
         [req.user.id, c.runtime, c.slug, c.slot],
       )
-      if (!existing) {
-        const n = await queryOne('SELECT COUNT(*) AS n FROM saves WHERE user_id = ?', [req.user.id])
-        if (Number(n?.n ?? 0) >= MAX_SAVES_PER_USER) {
-          return res.status(409).json({ error: `云存档最多 ${MAX_SAVES_PER_USER} 份，请先删掉一些` })
-        }
-      }
+      const used = await queryOne(
+        'SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM saves WHERE user_id = ?',
+        [req.user.id],
+      )
+      const denied = saveQuotaError(
+        { count: Number(used?.n ?? 0), bytes: Number(used?.bytes ?? 0) },
+        Number(existing?.size ?? 0),
+        req.body.length,
+      )
+      if (denied) return res.status(denied.status).json({ error: denied.error })
 
       /**
        * ⚠️ updated_at 必须显式写，不能指望列上的 ON UPDATE CURRENT_TIMESTAMP。

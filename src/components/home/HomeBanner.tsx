@@ -205,7 +205,11 @@ function Banner({ className, games }: { className?: string; games?: Game[] }) {
   return (
     <div
       className={cx(
-        'relative overflow-hidden rounded-card border border-line bg-gradient-to-br from-brand/25 via-surface to-cyan-500/10',
+        // isolate：卡堆是绝对定位 + z-index 的，而顶栏是 sticky z-30。两者原本同在根层叠
+        // 上下文里，z-index 打平时按 DOM 顺序决定谁压谁 —— 正文在 <Topbar> 之后，于是往下滚
+        // 的时候整摞封面盖在顶栏上（右上角的用户菜单被压住）。isolation:isolate 让这里自成
+        // 一个层叠上下文，里面的 z-index 只在卡堆内部比大小，整块横幅再作为 z-auto 去和顶栏比。
+        'relative isolate overflow-hidden rounded-card border border-line bg-gradient-to-br from-brand/25 via-surface to-cyan-500/10',
         className,
       )}
       // 指针移上来或者键盘焦点进来就停下。自动轮换的内容必须能停，
@@ -266,7 +270,8 @@ function Banner({ className, games }: { className?: string; games?: Game[] }) {
                   // 居中 + 该层的偏移一起写在这儿；抛入动画放在里层，两者互不覆盖
                   transform: `translate(-50%, -50%) translate(${d.x}%, ${d.y}%) rotate(${d.rotate}deg) scale(${d.scale})`,
                   opacity: d.opacity,
-                  zIndex: 30 - depth * 10,
+                  // 只在上面那个 isolate 出来的层叠上下文里排先后，不跟顶栏之类的全局层级同场竞技
+                  zIndex: DEPTH.length - depth,
                 }}
               >
                 <div className={depth === 0 ? 'hero-toss animate-hero-toss' : undefined}>

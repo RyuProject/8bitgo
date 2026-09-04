@@ -25,6 +25,7 @@ import { ROM_LANG_LABEL, type RomLang } from '@/config/languages'
 import { FEATURES } from '@/config/features'
 import { mobileScreenAspect } from './screenAspect'
 import { recordPlay } from '@/services/store'
+import { onMatchRequest } from '@/services/matchRequest'
 import {
   claimRoom,
   downloadState,
@@ -325,6 +326,18 @@ export function EmulatorPlayer({
   const roomTokenRef = useRef<string>('')
   /** 我在房间里的身份。观众只收画面和声音，按键不生效 */
   const [role, setRole] = useState<RoomRole>('player')
+  /**
+   * 我正在看的这个直播间，主播有没有同时开着联机房（有就是房号）。
+   * 来源：liveview 的 onNetplay —— 进房时的 ack 带一次，主播中途点「联机」再推一次。
+   */
+  const [liveNetplayRoom, setLiveNetplayRoom] = useState<string | null>(null)
+  /**
+   * 我是从哪个直播间点「加入联机」进来的（空 = 不是从直播间来的）。
+   *
+   * 联机这边散了的时候用它退回去接着看：主播结束联机之后直播是不停的，
+   * 那条流还在，没道理把人扔到错误页上。
+   */
+  const liveReturnRef = useRef('')
   /** 我是不是房主（房主的机器在跑游戏，不能退到观众席） */
   const [isHost, setIsHost] = useState(false)
   /** 适配器交出来的「切身份」函数：不用断线重连就能上场 / 退下 */
@@ -612,8 +625,9 @@ export function EmulatorPlayer({
        * 所以再按 session.platform 同步兜一次 —— 缓存早在进页面时就拉好了。
        */
       biosUrl: biosUrlRef.current || platformBiosUrlSync(session.platform),
-      // 存档按 slug 归档；玩家自己上传的 ROM 没有 slug，交给引擎退回文件名
-      gameSlug: gameSlugRef.current,
+      // 存档按 slug 归档。玩家自己拖进来的 ROM 不能用页面的 slug ——
+      // 那会把他那份存档写到本页官方 ROM 的档位上（见 saveSlugOf）
+      gameSlug: saveSlugOf(session),
       netplay: session.netplay,
       cloud: session.cloud,
       live: session.live,
@@ -650,7 +664,7 @@ export function EmulatorPlayer({
         }
 
         // 出错后必须把会话拆掉：否则运行时会在隐藏的挂载点里继续活着
-        setSession(null)
+        endSession()
 
         // 云端自己开房没开成（服务器满了 / 连不上），而这游戏本来就能在浏览器里跑：
         // 直接退回本地运行，别让人因为服务器容量问题玩不了。
@@ -682,10 +696,12 @@ export function EmulatorPlayer({
     return keepAlive({
       roomId,
       gameSlug,
-      playerIndex: session.cloud.playerIndex,
+      // 服务器分的座位号（onPlayerIndex -> slotIndex），不是我们本地猜的那个：
+      // 两个人同时点同一条邀请链接会猜到同一个空位，房间列表里就出现两个人占一格
+      playerIndex: slotIndex,
       host: !session.cloud.roomId,
     })
-  }, [session, roomId, gameSlug])
+  }, [session, roomId, gameSlug, slotIndex])
 
   /**
    * 在 P2P 房间里时盯着房间状态：
@@ -702,7 +718,7 @@ export function EmulatorPlayer({
       if (stopped) return
       if (!room) {
         // 房间彻底消失（宽限期内没人接手）
-        setSession(null)
+        endSession()
         setStatus('error')
         setError(t.player.hostLeft)
         return
@@ -741,7 +757,7 @@ export function EmulatorPlayer({
       },
       onGone: () => {
         if (stopped) return
-        setSession(null)
+        endSession()
         setStatus('error')
         setError(t.player.hostLeft)
       },
@@ -848,7 +864,20 @@ export function EmulatorPlayer({
               startP2p(wanted, undefined, asRole)
               return
             }
-            setSession(null)
+            /**
+             * 这局联机对我结束了 —— 但**如果我本来是从直播间点进来的，主播多半还在播**。
+             * 他只是点了「结束联机」（closeMatch 之后直播照推，见 LiveControls 的 active），
+             * 这时候把人扔到一张「房主已离开」的错误页上是死路：他明明还能接着看。
+             * 退回去继续看，比报错有用得多。
+             */
+            const back = liveReturnRef.current
+            if (back) {
+              liveReturnRef.current = ''
+              setNotice(t.player.backToWatching)
+              startWatchLive(back)
+              return
+            }
+            endSession()
             setStatus('error')
             setError(t.player.hostLeft)
           })
@@ -922,6 +951,63 @@ export function EmulatorPlayer({
     return () => window.clearTimeout(timer)
   }, [matchBusy, roomId])
 
+  /**
+   * 详情页那个「👥 创建联机房间」按下来了。
+   *
+   * 它以前是个跳转链接（`to="/games?multiplayer=1"`），点了只是去游戏库筛多人游戏 ——
+   * 按钮叫「创建联机房间」，却什么房也不创建。现在它喊一声，由这里真的去开。
+   *
+   * 游戏还没跑起来的话先跑起来：开房必须在**已经挂载的引擎**上做
+   * （openNetplay 的前提），所以记一个「跑起来就开房」的标记，
+   * 等 status 变成 running 再补上那一步。
+   */
+  const wantMatchRef = useRef(false)
+  useEffect(
+    () =>
+      onMatchRequest(() => {
+        if (hosting || matchBusy) return
+        // 已经在跑：立刻开，用不着留标记
+        if (status === 'running') return openMatch()
+        /**
+         * 还没跑：先跑起来，running 之后由下面那个 effect 补上开房。
+         *
+         * ⚠️ 标记只在**确定这一次真能开起来**时才留。
+         * 以前是无条件先 `wantMatchRef.current = true` 再看情况 —— 于是
+         * 「没有 ROM / 这个平台没有可用运行时」这类点了没反应的情况，标记会一直挂着，
+         * 等玩家过一会儿自己传个本地 ROM 开始玩，冷不丁就被开了个房。
+         * 而且设 ref 不触发渲染，指望后面的 effect 去兜底是兜不住的（可能根本不再渲染）。
+         */
+        if (status === 'idle' && romUrl && pageRuntime) {
+          wantMatchRef.current = true
+          void start(null)
+        } else if (status === 'loading') {
+          // ROM 正在下：等它跑起来
+          wantMatchRef.current = true
+        }
+      }),
+    // openMatch / start 每次渲染都是新的，订阅只要一次 —— 用 ref 读最新的状态即可
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [status, hosting, matchBusy, romUrl, pageRuntime],
+  )
+
+  // 游戏跑起来了，而且是因为「想开房」才跑的 —— 把那一步补上
+  useEffect(() => {
+    if (!wantMatchRef.current) return
+    /**
+     * 开局失败、或者玩家把这一局停了：这一次「想开房」的意图就此作废。
+     * 不清的话它会活到下一次开局，在玩家没点任何东西的情况下自己开个房出来。
+     */
+    if (status === 'error' || status === 'idle') {
+      wantMatchRef.current = false
+      return
+    }
+    if (status !== 'running') return
+    // 这个引擎 / 平台开不了房：别把标记一直挂着，等下一次真的点
+    wantMatchRef.current = false
+    if (handle?.openNetplay) openMatch()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, handle])
+
   /** 结束联机，回到一个人玩。游戏不重开，自动开播会接着上（见 LiveControls） */
   const closeMatch = () => {
     if (!hosting) return
@@ -971,6 +1057,13 @@ export function EmulatorPlayer({
       setNotice(null)
       setLiveViewers(0)
       setLiveState('connecting')
+      // 换一间看：上一间的联机房号跟这一间无关，不清的话「加入联机」会指向别人的房间
+      setLiveNetplayRoom(null)
+      // begin() 里那两行同样要做：不清的话遮罩会用上一局的阶段和起始时间算进度，
+      // 第一拍就把条子顶到那个阶段的天花板（79% / 99%）再慢慢爬，看着像卡住
+      overallRatio.current = createOverallRatio()
+      progressClock.current = { phase: 'engine', startedAt: Date.now() }
+      setLoadRatio(null)
       sessionCounter.current += 1
       setSession({
         id: sessionCounter.current,
@@ -982,6 +1075,7 @@ export function EmulatorPlayer({
           onViewers: setLiveViewers,
           onState: setLiveState,
           onInfo: (info) => setNotice(info.hostName ? `${info.title} · ${info.hostName}` : info.title),
+          onNetplay: setLiveNetplayRoom,
         },
       })
       setStatus('loading')
@@ -989,10 +1083,12 @@ export function EmulatorPlayer({
     [platform.id],
   )
 
-  // 观看链接进来就直接开看，不用再点一次
+  // 观看链接进来就直接开看，不用再点一次。
+  // ignoreInvite 是「玩家自己离开过」的闸：没有它的话，看直播时切一次 ROM 语言（reset()）
+  // 就会立刻被这个 effect 拉回直播间，出不去
   useEffect(() => {
-    if (liveInvite && !session && status === 'idle') startWatchLive(liveInvite)
-  }, [liveInvite, session, status, startWatchLive])
+    if (liveInvite && !ignoreInvite && !session && status === 'idle') startWatchLive(liveInvite)
+  }, [liveInvite, ignoreInvite, session, status, startWatchLive])
 
   const startOnline = () => {
     if (cloudInviteId && cloudOk) return startCloud(cloudInviteId)
@@ -1103,10 +1199,42 @@ export function EmulatorPlayer({
    */
   const restartWithLangRef = useRef<RomLang | null>(null)
 
+  /**
+   * 收掉当前这一局。
+   *
+   * **必须**同时把 sessionCounter 往前推一格：mount effect 里那个 isCurrent() 就是拿它
+   * 和自己挂载时的 id 比对，用来挡住「已经拆掉的引擎迟到的回调」。而计数器以前只在
+   * begin() / startWatchLive() 里加 —— 也就是说「拆掉但没有下一局」的那些路径（reset、
+   * 报错收尾、房间没了）过后，isCurrent() 依然为真：一个迟到的 onReady 能把状态推回
+   * 「运行中」，而 session 和 handle 都已经是 null，界面停在一块什么都没有的黑框上，
+   * 除了刷新页面没有别的出路。
+   */
+  const endSession = () => {
+    sessionCounter.current += 1
+    setSession(null)
+  }
+
+  /**
+   * 这一局的存档归档键。
+   *
+   * `types.ts` 早就定好了「玩家自己上传的 ROM 用 `local:文件名`」，但一直没人真的这么传 ——
+   * 播放器把页面的 slug 原样递下去，于是在 /games/contra 里拖进自己的魔改 ROM 存一次档，
+   * 就把官方 Contra 的云存档盖掉了；反过来读档时又会把一份不兼容的快照喂给另一个二进制。
+   * 各适配器里那句 `options.gameSlug || 'local:'+name` 的兜底因此从来没生效过。
+   */
+  const saveSlugOf = (s: ActiveSession | null): string | undefined => {
+    if (!s) return gameSlugRef.current
+    if (typeof s.game !== 'string') return `local:${s.game.name}`
+    return gameSlugRef.current
+  }
+  /** 工具栏用的那一份（存档 / 读档 / 归档都按它走） */
+  const saveSlug = saveSlugOf(session)
+
   const reset = () => {
     // 主动离开房间后，URL 里的 ?p2p= / ?room= 就不该再把人拉回同一个房间
-    if (session?.netplay || session?.cloud || joining) setIgnoreInvite(true)
-    setSession(null)
+    // 直播也算：离开之后别被上面那个自动开看的 effect 又拽回去
+    if (session?.netplay || session?.cloud || session?.live || joining) setIgnoreInvite(true)
+    endSession()
     setStatus('idle')
     setFile(null)
     setError(null)
@@ -1198,6 +1326,36 @@ export function EmulatorPlayer({
    * 服务端那边记账（手柄位够不够由它说了算），本地那边掐断或恢复输入转发 ——
    * 真正管用的是本地这一下，因为按键是走 WebRTC 直接到房主的，不经过服务器。
    */
+  /**
+   * 观众 →「加入联机」。
+   *
+   * 这是「看着看着就能上场」那条路的最后一步：主播点了联机，直播没停，
+   * 正在看的人这里多出一个按钮，点一下就从「看直播」切成「进这个联机房」。
+   *
+   * 手柄位满了就以观众身份进（服务端 join-room 本来也是这么判的：
+   * playerCount >= maxPlayers 就自动收成 spectator）—— 进去之后 1P/2P 谁掉线退出，
+   * 工具栏那个「上场」按钮就能用了，不用退出去重来。
+   *
+   * 房间列表还没到货（p2pRooms 是空的）时按玩家进：服务端会兜住，
+   * 宁可让它把我们收成观众，也不要因为前端一时不知道人数就自降身份。
+   */
+  const joinLiveNetplay = () => {
+    const target = liveNetplayRoom
+    if (!target) return
+    const room = p2pRooms.find((r) => r.roomId === target)
+    const asRole: RoomRole = room && room.players >= room.max ? 'spectator' : 'player'
+    /**
+     * 不在这里把 liveNetplayRoom 清掉。
+     *
+     * startP2p 开头有 `if (!gameSlug || !romUrl) return` —— 先清了再调，万一它直接返回，
+     * 观众就眼看着按钮消失、什么也没发生，而且**再也点不了第二次**。
+     * 顺利的话 session 会换成 netplay，按钮的渲染条件（session?.live）自然就不成立了，
+     * 根本不需要手动清。真正该清的地方是换一个直播间去看的时候（见 startWatchLive）。
+     */
+    liveReturnRef.current = session?.live?.roomId ?? ''
+    startP2p(target, undefined, asRole)
+  }
+
   const toggleRole = async () => {
     if (!roomId || isHost) return
     const next: RoomRole = role === 'spectator' ? 'player' : 'spectator'
@@ -1693,7 +1851,19 @@ export function EmulatorPlayer({
               <button
                 type="button"
                 onClick={() => void toggleRole()}
-                className="rounded-md border border-line px-2 py-1 text-muted hover:text-fg"
+                /*
+                  位子满了就先禁掉，别让人点了才看到一句「操作失败」——
+                  观众等的就是 1P/2P 走人，按钮能不能按本身就是那个信号。
+                  房间信息还没到货（myNetRoom 为空）时不禁：宁可点了服务端拒，
+                  也不要因为列表慢一拍把唯一的入口锁死。
+                */
+                disabled={role === 'spectator' && Boolean(myNetRoom) && roomPlayers >= slots}
+                title={
+                  role === 'spectator' && Boolean(myNetRoom) && roomPlayers >= slots
+                    ? t.player.seatsFull
+                    : undefined
+                }
+                className="rounded-md border border-line px-2 py-1 text-muted transition-colors hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-muted"
               >
                 {role === 'spectator' ? t.player.takeSeat : t.player.goWatch}
               </button>
@@ -1730,7 +1900,7 @@ export function EmulatorPlayer({
             handle={handle}
             caps={caps}
             gameName={gameName}
-            gameSlug={gameSlug}
+            gameSlug={saveSlug}
             runtimeId={session?.runtime.id ?? activeRuntime?.id}
             dosSaveHint={dosSaveHint}
           />
@@ -1748,6 +1918,22 @@ export function EmulatorPlayer({
         )}
 
         {/*
+          主播把这一局开成了联机房 —— 正在看的人这里就能上场。
+          放在观众席徽章旁边而不是藏进菜单：这是个**限时**的邀请（手柄位会被别人坐掉），
+          藏起来就等于没有。房间满了照样让点，进去当观众，等位子空出来再上。
+        */}
+        {session?.live && liveNetplayRoom && romUrl && (
+          <button
+            type="button"
+            onClick={joinLiveNetplay}
+            className="inline-flex items-center gap-1 rounded-md border border-brand bg-brand-soft px-2 py-1 font-semibold text-brand-hover transition-colors hover:bg-brand/20"
+          >
+            <span aria-hidden>👋</span>
+            {t.player.joinMatch}
+          </button>
+        )}
+
+        {/*
           自动开播。玩就是播 —— 不用玩家点，画面推出去的是录像用的那份副本，
           本机这一局不受影响。想安静玩的人在按钮上点一下「不公开」，选择记在本地。
           联机房里的房主不重复推：房间本身就带观众席，再推一路是白占上行。
@@ -1758,7 +1944,14 @@ export function EmulatorPlayer({
             gameName={gameName}
             gameSlug={gameSlug}
             platform={session?.platform ?? platform.id}
-            active={!inRoom}
+            /*
+              只有「我是别人房里的客人」才停播 —— 画面本来就是房主推过来的。
+              **自己开的联机房不停**：以前这里是 `!inRoom`，把自己开的房也算进去了，
+              于是点一下「联机」正在看的人当场断流。现在直播照推，把房号报上去，
+              大厅把直播卡和联机卡合成一张（见 services/allRooms.ts）。
+            */
+            active={!session?.netplay && !session?.cloud}
+            netplayRoomId={hosting ? roomId : null}
             captureRef={hostRef}
           />
         )}

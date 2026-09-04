@@ -36,10 +36,26 @@ export interface LiveSession {
   onState?: (state: LiveViewState) => void
   onViewers?: (count: number) => void
   onInfo?: (info: { title: string; hostName: string; gameName: string }) => void
+  /**
+   * 主播把这个直播间同时开成了联机房（或者刚关掉，回传 null）。
+   *
+   * 观众靠它多出一个「加入联机」的入口 —— 「看着看着就能上场」全靠这一条：
+   * 已经在看的人不会再去刷大厅，等轮询等不来。
+   */
+  onNetplay?: (roomId: string | null) => void
 }
 
 type SignalData = { sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit; gen?: number }
-type WatchAck = { hostId: string | null; hostAway?: boolean; title: string; hostName: string; gameName: string; viewers: number }
+type WatchAck = {
+  hostId: string | null
+  hostAway?: boolean
+  title: string
+  hostName: string
+  gameName: string
+  viewers: number
+  /** 配对的联机房号。中途进来的观众靠它，不用等 netplay-linked 那一下 */
+  netplayRoomId?: string | null
+}
 
 /** 首次握手超时：连不上要给明确提示，而不是永远转圈 */
 const HANDSHAKE_TIMEOUT_MS = 25_000
@@ -237,6 +253,8 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     if (!joined) {
       joined = true
       live.onInfo?.({ title: info.title, hostName: info.hostName, gameName: info.gameName })
+      // 中途进来的观众：主播可能早就点过「联机」了，ack 里就带着房号
+      live.onNetplay?.(info.netplayRoomId ?? null)
       // 主播那边收到 viewer-joined 后会主动发 offer 过来，这里等着就行
       options.onReady?.()
     }
@@ -311,6 +329,14 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       }) as (...args: never[]) => void)
 
       s.on('viewers', ((p: { count?: number }) => live.onViewers?.(p?.count ?? 0)) as (...args: never[]) => void)
+      /**
+       * 主播刚把这一局开成了联机房（传 null 就是刚关掉）。
+       * 已经在看的人就是靠这一下多出「加入联机」按钮的 —— 他们不会再去刷大厅。
+       */
+      s.on(
+        'netplay-linked',
+        ((p: { roomId?: string | null }) => live.onNetplay?.(p?.roomId || null)) as (...args: never[]) => void,
+      )
 
       s.on('host-away', (() => {
         if (destroyed) return

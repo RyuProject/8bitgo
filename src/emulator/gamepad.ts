@@ -39,6 +39,15 @@ export interface GamepadBridgeOptions {
   axisThreshold?: number
   /** 左摇杆是否也映射成方向键（默认开） */
   stickAsDpad?: boolean
+  /**
+   * 从哪儿读手柄。默认读本文档。
+   *
+   * ⚠️ 手柄对**每个文档**是分别可见的：焦点在 iframe 里的时候，父页面
+   * `navigator.getGamepads()` 读到的是一串 null（见 frameFocus.ts）。所以引擎跑在 iframe 里、
+   * 而我们又主动把焦点交进去的那些运行时（j2me），必须从 iframe 那个 window 上读，
+   * 否则手柄插上去在这一局里永远不会生效。js-dos 是直接跑在主页面上的，用默认的就对。
+   */
+  getPads?: () => readonly (Gamepad | null)[]
 }
 
 export interface GamepadBridge {
@@ -58,6 +67,7 @@ export function hasGamepadApi(): boolean {
 export function startGamepadBridge<K>(map: GamepadKeyMap<K>, send: (key: K, pressed: boolean) => void, opts: GamepadBridgeOptions = {}): GamepadBridge {
   const threshold = opts.axisThreshold ?? 0.5
   const stickAsDpad = opts.stickAsDpad !== false
+  const readPads = opts.getPads ?? (() => (navigator.getGamepads ? navigator.getGamepads() : []))
   const down = new Set<number>()
   let raf = 0
   let stopped = false
@@ -80,7 +90,7 @@ export function startGamepadBridge<K>(map: GamepadKeyMap<K>, send: (key: K, pres
   const tick = () => {
     if (stopped) return
     raf = requestAnimationFrame(tick)
-    const pads = navigator.getGamepads ? navigator.getGamepads() : []
+    const pads = readPads()
     const pad = Array.prototype.find.call(pads, (p: Gamepad | null) => p && p.connected) as Gamepad | undefined
     anyPad = Boolean(pad)
     if (!pad) {

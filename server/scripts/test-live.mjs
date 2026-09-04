@@ -215,6 +215,62 @@ v6.close()
 await new Promise((r) => setTimeout(r, 120))
 check('主播不在时最后一个观众走了也立刻散场', liveRoom(room5) === null)
 
+/**
+ * 21. 直播间挂联机房号：主播点了「联机」之后，直播照推、观众不掉，
+ * 大厅靠这个字段把两张卡合成一张（见 src/services/allRooms.ts）。
+ */
+const lh = conn(); await once(lh, 'connect')
+const lr = await call(lh, 'go-live', { gameName: 'Link', gameSlug: 'link' })
+const linkRoom = lr.data.roomId
+check('挂号前是 null', liveRoom(linkRoom).netplayRoomId === null)
+lh.emit('link-netplay', { roomId: 'NP-1' })
+await new Promise((r) => setTimeout(r, 80))
+check('主播能挂上联机房号', liveRoom(linkRoom).netplayRoomId === 'NP-1')
+
+// 观众冒充主播挂号 —— 不然谁都能把别人的直播间标成「联机中」，把人骗进不存在的房间
+const lv = conn(); await once(lv, 'connect')
+await call(lv, 'watch', { roomId: linkRoom })
+lv.emit('link-netplay', { roomId: 'EVIL' })
+await new Promise((r) => setTimeout(r, 80))
+check('观众挂不了号', liveRoom(linkRoom).netplayRoomId === 'NP-1')
+
+// 正在看的人必须**立刻**知道 —— 他们不会再去刷大厅，等轮询等不来。
+// 「看着看着就能上场」这条路全靠这一下推送
+const pushed = await new Promise((r) => {
+  const timer = setTimeout(() => r('超时'), 1500)
+  lv.once('netplay-linked', (d) => { clearTimeout(timer); r(d?.roomId) })
+  lh.emit('link-netplay', { roomId: 'NP-9' })
+})
+check('挂号会立刻推给正在看的观众', pushed === 'NP-9', `实际 ${pushed}`)
+
+// 中途进来的观众不用等推送：watch 的 ack 里本来就带着
+const lateViewer = conn(); await once(lateViewer, 'connect')
+const lateAck = await call(lateViewer, 'watch', { roomId: linkRoom })
+check('后进来的观众从 ack 里就能拿到房号', lateAck.data?.netplayRoomId === 'NP-9')
+lateViewer.close()
+
+lh.emit('link-netplay', { roomId: '' })
+await new Promise((r) => setTimeout(r, 80))
+check('传空 = 解绑（结束联机回到一个人玩）', liveRoom(linkRoom).netplayRoomId === null)
+
+/**
+ * 主播掉线：那个联机房要么散了要么在换房主，房号必须跟着作废 ——
+ * **而且要告诉正在看的人**。不然他手里那个「加入联机」按钮还亮着，
+ * 点下去是离开还活着的直播、去连一个已经不存在的房间：直播也没了，联机也没进去。
+ */
+lh.emit('link-netplay', { roomId: 'NP-2' })
+await new Promise((r) => setTimeout(r, 80))
+const awayLink = once(lv, 'host-away')
+const unlinked = new Promise((r) => {
+  const timer = setTimeout(() => r('没收到'), 1500)
+  lv.once('netplay-linked', (d) => { clearTimeout(timer); r(d?.roomId ?? null) })
+})
+lh.close()
+await awayLink
+check('主播掉线后房号作废', liveRoom(linkRoom).netplayRoomId === null)
+check('主播掉线要收回观众手里的入口', (await unlinked) === null, `实际 ${await unlinked}`)
+lv.close()
+
 for (const s of [host, host2, host3, host4, host5, v1, v2, v3, v4, v5, v6, solo, late, stranger]) s.close()
 server.close(); http.close()
 console.log('通过 %d 项：\n  %s', ok.length, ok.join('\n  '))

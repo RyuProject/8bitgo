@@ -32,6 +32,14 @@ export interface RoomView {
   kind: 'p2p' | 'cloud' | 'live'
   /** 直播房间的游戏名。直播可以开在任何游戏上，包括本站游戏库里没有的（比如本地 ROM） */
   gameName?: string
+  /**
+   * 举手：房主开着房、手柄位还空着，就是在等人来一起玩。
+   *
+   * 只对 p2p 房间有意义 —— 云端房间同理但那条线没上线，直播房压根没有手柄位。
+   * 由 services/allRooms.ts 按 `players < max` 算出来，不是服务端的字段：
+   * 「还差人」本来就是从人数推得出来的，没必要为它多存一份会过期的状态。
+   */
+  wave?: boolean
 }
 
 /** 云端房间（/api/rooms）转成统一视图 */
@@ -118,6 +126,12 @@ export function RoomCard({ room, compact = false }: { room: RoomView; compact?: 
           <span className="shrink-0 text-[11px] font-semibold text-live">📡 {viewers}</span>
         ) : (
           <span className={cx('shrink-0 text-[11px] font-semibold', full ? 'text-dim' : 'text-online')}>
+            {/* 侧边栏这一行很窄，举手只出一个表情，说明放 title 里 */}
+            {room.wave && (
+              <span className="mr-0.5" title={t.rooms.wave} aria-label={t.rooms.wave}>
+                👋
+              </span>
+            )}
             {room.players}/{max}
             {viewers > 0 && <span className="ml-1 font-normal text-muted">👀 {viewers}</span>}
           </span>
@@ -143,10 +157,26 @@ export function RoomCard({ room, compact = false }: { room: RoomView; compact?: 
             👥 {room.players}/{max}
           </Badge>
         )}
-        {(live || viewers > 0) && (
-          <Badge tone={live ? 'live' : 'dark'} className={cx('absolute bottom-2', live ? 'right-2' : 'left-2')}>
+        {/* 直播卡：右下角只有在看人数（没有手柄位这回事），0 也显示 —— 刚开播就是 0 */}
+        {live && (
+          <Badge tone="live" className="absolute bottom-2 right-2">
             👀 {fmt(t.rooms.viewers, { n: String(viewers) })}
           </Badge>
+        )}
+        {/*
+          左下角这一排：举手在前，在看人数跟在后面。
+          摆成一个 flex 而不是各自绝对定位 —— 两个都在时不会叠在一起，
+          只有一个时看起来也和原来一样。右下角留给「几个人在玩」。
+        */}
+        {!live && (room.wave || viewers > 0) && (
+          <div className="absolute bottom-2 left-2 flex items-center gap-1">
+            {room.wave && (
+              <Badge tone="brand" className="animate-bounce" title={t.rooms.wave} aria-label={t.rooms.wave}>
+                <span aria-hidden>👋</span>
+              </Badge>
+            )}
+            {viewers > 0 && <Badge tone="dark">👀 {fmt(t.rooms.viewers, { n: String(viewers) })}</Badge>}
+          </div>
         )}
         <span className="absolute left-2 top-2 inline-flex items-center gap-1 rounded bg-black/60 px-1.5 py-1 text-[10px] font-semibold text-white backdrop-blur">
           <span
@@ -157,6 +187,7 @@ export function RoomCard({ room, compact = false }: { room: RoomView; compact?: 
           />
           {live ? 'LIVE' : !full ? t.rooms.open : watchable ? `👀 ${t.rooms.watch}` : t.rooms.full}
         </span>
+
       </div>
       <div className="space-y-1.5 p-3">
         <h3 className="truncate text-sm font-semibold leading-tight">{label}</h3>

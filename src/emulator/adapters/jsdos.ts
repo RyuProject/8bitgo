@@ -31,7 +31,7 @@ import { GP, startGamepadBridge, hasGamepadApi, type GamepadBridge } from '../ga
 import { deleteSave, pullSave, pushSave } from '@/services/saves'
 import { loadGameBytes } from '../romLoader'
 import { windowsGuestStartupBudgetMs } from '../loadProgress'
-import { scheduleWindowsLaunch, type WindowsLaunchCi } from '../windowsLaunch'
+import { assertTypeable, scheduleWindowsLaunch, windows3xLaunchCommands, type WindowsLaunchCi } from '../windowsLaunch'
 
 /** P2P 模式的撮合服务器。自建的话见 https://github.com/caiiiycuk/WebRTC-NET（Go） */
 export const JSDOS_PEER_SERVER: string = import.meta.env.VITE_JSDOS_PEER_SERVER || 'https://net.dos.zone'
@@ -223,8 +223,9 @@ function loadJsDos(): Promise<DosFn> {
 async function readRom(
   game: File | string,
   onProgress?: (p: LoadProgress) => void,
+  signal?: AbortSignal,
 ): Promise<{ name: string; buf: ArrayBuffer }> {
-  const loaded = await loadGameBytes(game, onProgress)
+  const loaded = await loadGameBytes(game, onProgress, signal)
   return { name: loaded.name, buf: loaded.data }
 }
 
@@ -244,6 +245,10 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   /** onReady 的延时兜底定时器，销毁时要清掉 */
   let readyFallback = 0
   let readySent = false
+  /** 玩家切走时把还在下的系统镜像 / ROM 掐掉：近百 MB 的镜像不该在后台继续吞流量、写缓存 */
+  const abort = new AbortController()
+  /** emu-ready 到过没有（引擎壳起来了）；ci-ready 才是 DOSBox 真的在跑 */
+  let engineUp = false
   /** 存档按 slug 归档；见下面 fsChanges 那段的说明 */
   let saveKey = ''
   /** 最近一次存档落到哪儿了（云端 / 浏览器），给界面显示用 */
@@ -276,14 +281,14 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       const Dos = await loadJsDos()
       options.onProgress?.({ phase: 'engine', ratio: 1 })
       const systemPromise = options.dosSystemUrl
-        ? loadGameBytes(options.dosSystemUrl, (progress) => options.onProgress?.({ ...progress, phase: 'assets' }))
+        ? loadGameBytes(options.dosSystemUrl, (progress) => options.onProgress?.({ ...progress, phase: 'assets' }), abort.signal)
         : Promise.resolve(null)
       // 系统镜像通常远大于游戏 ZIP。以前三路并行时，小 ROM 会先把进度推到 80%，
       // 随后大半分钟都在等镜像，看起来像卡死。按界面约定分段：核心/镜像 0–40%，
       // 它们完成后才让游戏 ROM 进入 40–80%。少一点并行，换来可理解、不会骗人乱跳的进度。
       const loadedSystem = await systemPromise
       options.onProgress?.({ phase: 'assets', ratio: 1 })
-      const rom = await readRom(options.game, options.onProgress)
+      const rom = await readRom(options.game, options.onProgress, abort.signal)
       options.onProgress?.({ phase: 'starting' })
       if (destroyed) return
       // 高级配置属于 DOSBox-X；即使数据库里残留了错误字段，普通 DOSBox 也不能误吃进去。
@@ -311,10 +316,17 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
           gameLayer.executable,
           options.dosWindowsVersion ?? '9x',
         )
+        // 现在就验：以前这两处是在 ci-ready 的回调 / 定时器里才抛，没人接得住，
+        // Windows 在屏幕上跑着、遮罩却盖到四分钟超时才报一句不相干的话
+        assertTypeable(guestLaunchCommand)
+        if ((options.dosWindowsVersion ?? '9x') === '3x') windows3xLaunchCommands(guestLaunchCommand)
         const gameLayerBytes = new Uint8Array(await gameLayer.blob.arrayBuffer())
         // 系统包自己的 conf 必须先改名：它作为后续文件层解开时会覆盖 Dos() 的直接配置。
         // 改名只动 ZIP 头里的 36 个 ASCII 字节，不复制那份近百 MB 的 qcow2 数据。
-        const systemLayer = hideJsdosConfigForLayer(loadedSystem.data)
+        // ⚠️ 刚下载的那份 loadGameBytes 还在后台往 IndexedDB 写（不 await，写的是同一块 ArrayBuffer），
+        // 原地改它等于把改过名的镜像存进缓存 —— 下次命中缓存就找不到 conf，客体永远起不来，
+        // 而且缓存按 URL+etag 命中，不清缓存不会自愈。走缓存来的那份没有写入在飞，不用复制
+        const systemLayer = hideJsdosConfigForLayer(loadedSystem.fromCache ? loadedSystem.data : loadedSystem.data.slice(0))
         // 最终配置再放一次到最后，未来 js-dos 即使调整直接配置与 initFs 的合并顺序也不会倒退。
         initFs = [systemLayer, gameLayerBytes, { dosboxConf: guest.dosboxConf, jsdosConf: { version: '8' } }]
       } else {
@@ -396,12 +408,16 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         onEvent: (event: string, arg?: unknown) => {
           if (destroyed) return
           if (event === 'emu-ready') {
-            // Windows 客体此时只代表模拟器壳已就绪，离系统开机和游戏启动还很远。
-            if (!guest) markReady()
+            // 只是模拟器壳起来了：包还没解、DOSBox 还没跑。以前这里就 markReady，第二局起
+            // js-dos 已经在内存里，emu-ready 在 Dos() 里同步就到 —— 遮罩当场撤掉，玩家对着黑屏
+            // 等大包解压；之后包加载失败的 onError 也落在 ready 之后，直接拆会话而不是自动重试
+            engineUp = true
           }
           else if (event === 'bnd-play' || event === 'ci-ready') {
             if (event === 'ci-ready' && arg) {
               ci = arg as DosCi
+              // DOSBox 真的在跑、命令接口也有了，这才是「玩家可以动手」。Windows 客体另算（等自启动）
+              if (!guest) markReady()
               if (guest && !cancelWindowsLaunch) {
                 cancelWindowsLaunch = scheduleWindowsLaunch(
                   ci,
@@ -442,7 +458,14 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
        * 等好几秒还以为卡死了。改成延时兜底：正常情况下 emu-ready 早就先到了。
        */
       if (!guest) {
-        readyFallback = window.setTimeout(markReady, 8000)
+        readyFallback = window.setTimeout(() => {
+          if (readySent) return
+          // 引擎壳起来了只是 ci-ready 没等到（老版本 / 事件漏了）：按老规矩放行。
+          // 连壳都没起来（wasm 没下到、包 404），以前也 markReady —— 播放器显示「运行中」，
+          // 画面是 kiosk 模式下什么都不显示的黑屏；现在报错，让它走自动重试那条路
+          if (engineUp || ci) markReady()
+          else options.onError?.(fmt(rt.jsdosRunFailed, { msg: 'DOSBox did not start' }))
+        }, 8000)
       } else {
         // CI 创建期间 js-dos 要在 WASM 内挂载近百 MB 的 qcow2；旧的 45 秒宽限会让慢设备
         // 在即将成功前被误判。真实引擎错误仍会立即走 emu-error，这里只拦真正的长时间失联。
@@ -483,12 +506,14 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     destroy() {
       destroyed = true
       window.clearTimeout(readyFallback)
+      abort.abort()
       cancelWindowsLaunch?.()
       cancelWindowsLaunch = null
       pad?.stop()
       pad = null
       try {
-        void props?.stop()
+        // stop() 返回 Promise，同步的 try/catch 接不住它的 reject
+        Promise.resolve(props?.stop()).catch(() => {})
       } catch {
         /* 已经停了就忽略 */
       }

@@ -127,6 +127,70 @@ async function purgePoisonedEngineCache(): Promise<void> {
   } catch {
     /* localStorage 不可用就每次都清，代价只是核心重新下载 */
   }
+  const markDone = () => {
+    try {
+      localStorage.setItem(EJS_CACHE_PURGED_KEY, EJS_CACHE_GENERATION)
+    } catch {
+      /* ignore */
+    }
+  }
+  const DB = 'EmulatorJS-Cache'
+
+  /**
+   * 优先「开库、把每个表清空」而不是 deleteDatabase。
+   *
+   * deleteDatabase 要等**所有**连接关掉才会执行；另一个标签页正开着 EmulatorJS 的话它一直 blocked，
+   * 而按规范同名库上后来的 open() 都排在这个删除请求后面 —— 本页引擎的 open() 就再也不 resolve，
+   * 30 秒后被卡死检测报成「卡住了」。清表只要一个 readwrite 事务，不用别人关连接。
+   * 库不存在时不能用 open()（会凭空建一个版本 1 的空库，引擎再开就对不上），所以先用
+   * indexedDB.databases() 确认；没有这个 API 的浏览器退回 deleteDatabase。
+   */
+  try {
+    const list = typeof indexedDB.databases === 'function' ? await indexedDB.databases() : null
+    if (list) {
+      if (!list.some((d) => d.name === DB)) return markDone() // 本来就没有，没什么可清
+      const cleared = await new Promise<boolean>((resolve) => {
+        let settled = false
+        const done = (ok: boolean) => {
+          if (settled) return
+          settled = true
+          resolve(ok)
+        }
+        const req = indexedDB.open(DB)
+        req.onerror = () => done(false)
+        req.onblocked = () => done(false)
+        req.onsuccess = () => {
+          const db = req.result
+          try {
+            const names = Array.from(db.objectStoreNames)
+            if (!names.length) {
+              db.close()
+              return done(true)
+            }
+            const tx = db.transaction(names, 'readwrite')
+            for (const n of names) tx.objectStore(n).clear()
+            tx.oncomplete = () => {
+              db.close()
+              done(true)
+            }
+            tx.onerror = tx.onabort = () => {
+              db.close()
+              done(false)
+            }
+          } catch {
+            db.close()
+            done(false)
+          }
+        }
+        setTimeout(() => done(false), 4000)
+      })
+      if (cleared) markDone()
+      return
+    }
+  } catch {
+    /* 走下面的老路 */
+  }
+
   const deleted = await new Promise<boolean>((resolve) => {
     let settled = false
     const done = (ok: boolean) => {
@@ -135,8 +199,12 @@ async function purgePoisonedEngineCache(): Promise<void> {
       resolve(ok)
     }
     try {
-      const req = indexedDB.deleteDatabase('EmulatorJS-Cache')
-      req.onsuccess = () => done(true)
+      const req = indexedDB.deleteDatabase(DB)
+      // 就算已经因为超时放行了本局，删除真的完成时也要记下来 —— 否则删得慢的机器上每次开局都会再删一遍
+      req.onsuccess = () => {
+        markDone()
+        done(true)
+      }
       req.onerror = () => done(false)
       // 有别的标签页开着数据库就先放行本局，但绝不能写「清理完成」；下次启动再试。
       req.onblocked = () => done(false)
@@ -146,12 +214,7 @@ async function purgePoisonedEngineCache(): Promise<void> {
       done(false)
     }
   })
-  if (!deleted) return
-  try {
-    localStorage.setItem(EJS_CACHE_PURGED_KEY, EJS_CACHE_GENERATION)
-  } catch {
-    /* ignore */
-  }
+  if (deleted) markDone()
 }
 
 /** 联机会话参数（MountOptions.netplay） */
@@ -1018,10 +1081,21 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     window.clearInterval(startWatch)
     options.onError?.(message)
   }
-  /** 同一句话可能被核心打好几遍，只报第一次，免得把界面刷成一片红 */
+  /**
+   * 同一句话可能被核心打好几遍，只报第一次，免得把界面刷成一片红。
+   *
+   * ⚠️ 只在**开局前**往上报。播放器收到 onError 会把这局拆掉（进度全丢），而 FATAL_HINTS
+   * 那几个词（missing / failed to load / bios…）在游戏跑起来之后照样会出现 —— 比如玩家
+   * 手动载入一份不兼容的即时存档，核心打一行 "Failed to load state"，就因为这一句把
+   * 正在玩的游戏毙掉，是惩罚而不是报错。跑起来之后的错误只进日志探针。
+   */
   const reportEngineError = (line: string) => {
     if (destroyed || !line || reportedErrors.has(line)) return
     reportedErrors.add(line)
+    if (started) {
+      logEngine(`[engine] ${line}`)
+      return
+    }
     options.onError?.(fmt(rt.ejsEngineError, { msg: line }))
   }
   // 本地文件转成 blob: URL（同源 iframe 可直接访问）；gameName 用原始文件名以保留扩展名
@@ -1053,8 +1127,23 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     stateUploadWarned = false
     const emu = win.EJS_emulator as EjsEmulator | undefined
     const np = emu?.netplay
+    /**
+     * 开不了房怎么报：带着联机会话挂载进来的（点邀请链接的访客、接手房主的人），联机开不了
+     * 这局就没意义，走 onError。玩到一半点「联机匹配」的，游戏本身好好地在跑 ——
+     * onError 会让播放器把这局拆掉，那是惩罚不是报错；只收回会话、通知界面复位。
+     */
+    const fromMount = cfg === options.netplay
+    const failNetplay = (message: string) => {
+      if (fromMount) {
+        options.onError?.(message)
+        return
+      }
+      console.warn('[netplay]', message)
+      if (netplay === cfg) netplay = undefined
+      cfg.onHostLeft?.()
+    }
     if (!np) {
-      options.onError?.(rt.netplayUnavailable)
+      failNetplay(rt.netplayUnavailable)
       return
     }
     np.name = cfg.playerName
@@ -1092,7 +1181,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         np.openRoom(cfg.roomName, cfg.maxPlayers, cfg.password || '')
       }
     } catch (e) {
-      options.onError?.(fmt(rt.netplayFailed, { msg: e instanceof Error ? e.message : String(e) }))
+      failNetplay(fmt(rt.netplayFailed, { msg: e instanceof Error ? e.message : String(e) }))
       return
     }
 
@@ -1373,6 +1462,10 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
    *    「解压游戏数据」）直接指出卡在哪一步，否则这种问题根本没法查。
    */
   const watchStart = (win: Window & Record<string, unknown>) => {
+    // 从「真正开始盯」这一刻起算。lastBeat 的初值是挂载时刻，而挂载和这里之间隔着街机 ROM 的
+    // 预下载（几十 MB 的 romset 在慢网上要几十秒）—— 不重置的话第一拍就判成「卡住了」，
+    // 白白下完的 ROM 被扔掉重来
+    beat()
     startWatch = window.setInterval(() => {
       if (destroyed || started) {
         window.clearInterval(startWatch)
@@ -1414,7 +1507,14 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
          * 读取旧 URL，这一局里再改全局变量已经来不及。
          */
         if (!isFile && options.platform === 'arcade') {
-          const prepared = await prepareRemoteArcadeRom(remoteGameUrl, options.onProgress, prepareAbort.signal)
+          const prepared = await prepareRemoteArcadeRom(
+            remoteGameUrl,
+            (p) => {
+              beat() // 下载在动就不算卡
+              options.onProgress?.(p)
+            },
+            prepareAbort.signal,
+          )
           if (destroyed) {
             URL.revokeObjectURL(prepared.url)
             return
@@ -1509,9 +1609,13 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         // socket.io 客户端必须在 loader.js 之前就位：netplay 用的是全局 io()
         if (NETPLAY_URL) {
           await injectScript(doc, socketIoScriptUrl()).catch(() => {
-            // 信令服务器不可达时不阻断单机游戏，只是联机用不了
+            // 信令服务器不可达时不阻断单机游戏，只是联机用不了。
+            // ⚠️ onError 对播放器来说就是「这局完了」（重试一次然后拆掉），没有「警告」这一档 ——
+            // 以前这里不管有没有联机会话都往上报，信令一挂（或者被广告拦截器拦掉脚本），
+            // 全站所有 EmulatorJS 游戏都起不来。现在只有带着联机会话进来的才算致命
             if (destroyed) return
-            options.onError?.(fmt(rt.netplaySignalUnreachable, { url: socketIoScriptUrl() }))
+            logEngine(`[netplay] socket.io 脚本加载失败：${socketIoScriptUrl()}`)
+            if (netplay) options.onError?.(fmt(rt.netplaySignalUnreachable, { url: socketIoScriptUrl() }))
           })
           hookRoomToken(win)
 
@@ -1581,16 +1685,41 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     } catch {
       /* ignore */
     }
-    try {
-      iframe.srcdoc = ''
-      iframe.src = 'about:blank'
-    } catch {
-      /* ignore */
-    }
-    iframe.remove()
     audioTap = null
     if (isFile) URL.revokeObjectURL(gameUrl)
     if (preparedArcadeBlobUrl) URL.revokeObjectURL(preparedArcadeBlobUrl)
+
+    /**
+     * 拆 iframe 之前把电池存档刷出去。
+     *
+     * 核心每 60 秒才写一次 .srm（见 SAVE_FLUSH_MS 那段），页面内切游戏 / 返回 / 换模式走的是这里，
+     * 没有 pagehide —— 玩家在 RPG 里存完档、半分钟内点了别的游戏，那次存档就没了，而游戏明明
+     * 告诉他「已保存」。所以先 cmd_savefiles 把 SRAM 写进 /data/saves，再让 IDBFS 有机会把它
+     * 同步进 IndexedDB：能拿到 FS.syncfs 就等它回调，拿不到给一小段时间；iframe 先隐藏，
+     * 玩家看不到这段延迟。
+     */
+    flushSaveFiles()
+    let torn = false
+    const tearDown = () => {
+      if (torn) return
+      torn = true
+      try {
+        iframe.srcdoc = ''
+        iframe.src = 'about:blank'
+      } catch {
+        /* ignore */
+      }
+      iframe.remove()
+    }
+    iframe.style.display = 'none'
+    if (!started) return tearDown()
+    try {
+      const fs = (emuOf()?.gameManager as { FS?: { syncfs?: (populate: boolean, cb: () => void) => void } } | undefined)?.FS
+      if (typeof fs?.syncfs === 'function') fs.syncfs(false, tearDown)
+    } catch {
+      /* 没有 syncfs 就只靠下面的延时 */
+    }
+    window.setTimeout(tearDown, 1500)
   }
 
   return {

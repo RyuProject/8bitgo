@@ -85,6 +85,17 @@ function publicRoom(room) {
     /** 主播断线、房间在宽限期里等它回来 */
     hostAway: room.hostSocketId === null,
     /**
+     * 配对的联机房号（主播点了「联机」之后自己报上来的）。
+     *
+     * 有它意味着「这个直播间同时也是一个联机房」：直播照推、观众一帧不掉，
+     * 大厅那边把这两张卡**合成一张**（见 src/services/allRooms.ts），
+     * 手柄位还空着就挂个 👋，谁都能点进去坐下一起玩。
+     *
+     * 为什么要过服务端：主播自己的浏览器当然知道两个房号，但**别人的大厅不知道** ——
+     * 靠昵称 + 游戏名去猜配对太脆，一个人开两台机器就串了。
+     */
+    netplayRoomId: room.netplayRoomId ?? null,
+    /**
      * 主播的设备 / 地区 / 网络（见 presence.js）。全部是服务端从握手信息里看出来的，
      * 主播报不了假；RTT 是它到本站服务器的，不是到观众的 —— 画面走 WebRTC 直连，
      * 那条路我们量不到。
@@ -127,6 +138,21 @@ function closeRoom(nsp, room, reason) {
 /** 主播的 socket 没了：房间先留着等它回来，到点没回来再散 */
 function hostAway(nsp, room) {
   room.hostSocketId = null
+  /**
+   * 配对的联机房跟着作废。
+   * EmulatorJS 的 netplay 在 socket disconnect 里直接 leaveRoom()，主播这边一断，
+   * 那个联机房要么已经散了、要么正在换房主 —— 留着房号只会让大厅挂一个
+   * 点进去进不去的「联机中」。主播接回来会重新报一次。
+   */
+  const hadNetplay = room.netplayRoomId !== null && room.netplayRoomId !== undefined
+  room.netplayRoomId = null
+  /**
+   * ⚠️ 光在服务端清掉不够，**得把观众手里那个入口一起收回来**。
+   * 不通知的话，正在看的人那个「加入联机」按钮还亮着 —— 点下去是离开一场
+   * 还活着的直播（宽限期内主播随时可能回来），去连一个已经不存在的房间：
+   * 直播没了，联机也没进去，两头空。
+   */
+  if (hadNetplay) nsp.to(room.id).emit('netplay-linked', { roomId: null })
   room.awaySince = Date.now()
   if (room.awayTimer) clearTimeout(room.awayTimer)
   room.awayTimer = setTimeout(() => {
@@ -293,6 +319,30 @@ export function attachLive(io) {
         if (!target) return
       }
       nsp.to(target).emit('signal', { from: socket.id, data: payload?.data })
+    })
+
+    /**
+     * 主播报告：这一局同时开了个联机房（或者刚把它关了）。
+     *
+     * 只有房主能报，而且只能报自己那间 —— 不然任何观众都能把别人的直播间
+     * 标成「联机中」，把人骗进一个不存在的房间。
+     * 传空 / null 就是解绑（结束联机、回到一个人玩）。
+     */
+    socket.on('link-netplay', (payload) => {
+      const info = membership.get(socket.id)
+      if (info?.role !== 'host') return
+      const room = rooms.get(info.roomId)
+      if (!room || room.hostSocketId !== socket.id) return
+      const next = str(payload?.roomId, 64) || null
+      // 大厅是轮询 /api/live/rooms 的（不像 netplay 那边有 SSE），改完等下一轮就看得到
+      room.netplayRoomId = next
+      /**
+       * 但**正在看的人不能等**：他们已经在房间里了，不会再去刷大厅。
+       * 主播一点「联机」，观众那边就该立刻多出一个「加入联机」的入口 ——
+       * 这正是「看着看着就能上场」这件事成立的前提。
+       * 后进来的观众不用管，watch 的 ack 里带着 publicRoom，本来就有这个字段。
+       */
+      nsp.to(room.id).emit('netplay-linked', { roomId: next })
     })
 
     socket.on('stop-live', () => {

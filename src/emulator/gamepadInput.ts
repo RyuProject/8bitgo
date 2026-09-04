@@ -54,6 +54,14 @@ export function gamepadPadState(pads: readonly (Gamepad | null)[]): Set<PadButto
   const next = new Set<PadButton>()
   for (const pad of pads) {
     if (!pad || !pad.connected) continue
+    /**
+     * 按下标读只在标准布局下成立（文件头说的就是这件事，但一直没真的挡）。
+     * 非标准布局（杂牌 USB 手柄、街机摇杆、Firefox+Linux 上的大部分设备）报的是
+     * `mapping: ''`：它们的 axes[0] 常常是扳机，空闲时静止在 -1 —— `x <= -DEADZONE`
+     * 永远成立，等于**方向键左被一直按住**，角色贴着墙走，而且状态不变就永远不再发事件，
+     * 松不开。宁可这只手柄不生效，也不能把游戏卡死。
+     */
+    if (pad.mapping !== 'standard') continue
     for (let i = 0; i < pad.buttons.length; i++) {
       if (!pad.buttons[i]?.pressed) continue
       const key = BUTTON_MAP[i]

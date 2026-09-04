@@ -260,8 +260,17 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
       }
       setFsSaveFailed(false)
       setPanel(null)
-      // where 一定有值：fsSave 只在 push 钩子真的落过盘时才返回 ok
-      sayStored(r.where ?? (toCloud ? 'cloud' : 'local'), r.error)
+      /**
+       * where 说不出来就别替它编。以前这里退回 `toCloud ? 'cloud' : 'local'` —— 而 toCloud
+       * 只是「这个部署开了云存档」这个全局开关，**不代表这一次真的写进了云端**。
+       * 没登录的玩家存 DOS 游戏，东西只落在本机，界面却说「已存到云端」，
+       * 他换台设备就发现进度不见了，而我们明明告诉过他相反的话。
+       */
+      if (!r.where) {
+        say(tt.saveFail)
+        return
+      }
+      sayStored(r.where, r.error)
     } catch (e) {
       say(e instanceof Error && e.message ? e.message : tt.saveFail)
     }
@@ -488,8 +497,10 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
           </button>
         )}
 
-        {/* 存档已经进了云端或浏览器时，再给一条「自己保管一份」的出口 */}
-        {archivable && (
+        {/* 存档已经进了云端或浏览器时，再给一条「自己保管一份」的出口。
+            条件要和 hasSecondary 那边一致，并且必须带上 saveState —— 导出走的就是它。
+            DOS 是 saveRuntime 但只有 fsSave，少这一条的话按钮照画，点了永远是「保存失败」 */}
+        {archivable && caps.has('saveState') && (
           <button type="button" className={BTN} onClick={() => void doExport()} title={tt.exportFile}>
             📥
           </button>

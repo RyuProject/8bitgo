@@ -16,6 +16,7 @@ import { apiBase, apiEnabled } from './api'
 import { getT } from './i18n'
 import { fetchIceConfig } from './netplay'
 import type { Presence } from './presence'
+import { describeExport, looksLikeSocketIo, runAsCommonJs, umdGlobals } from '@/lib/umd'
 
 export interface LiveRoomInfo {
   roomId: string
@@ -29,6 +30,13 @@ export interface LiveRoomInfo {
   startedAt: number
   /** 主播断线了、房间在宽限期里等它回来（server/src/live.js 的「主播掉线」一节） */
   hostAway?: boolean
+  /**
+   * 配对的联机房号：主播点了「联机」，这个直播间同时也是一个联机房。
+   *
+   * 直播**不停**（观众一帧不掉），大厅拿它把直播卡和联机卡合成一张 ——
+   * 见 services/allRooms.ts。主播掉线时服务端会清掉它。
+   */
+  netplayRoomId?: string | null
   /** 主播的设备 / 地区 / 网络，服务端从握手信息里看出来的。见 services/presence.ts */
   presence?: Presence
 }
@@ -54,40 +62,29 @@ export function socketScriptUrl(): string {
 }
 
 /**
- * 这个值到底是不是 socket.io 的 io()。
+ * 首选路子：**取源码，当 CommonJS 模块跑一遍**。
  *
- * 不能只看 `window.io` 有没有值：页面上任何一个**没包 IIFE 的**经典脚本，
- * 它的顶层函数声明都会变成 window 的属性。`public/jsdos/js-dos.js` 就是这种：
- * 它把 immer 的 `each()` 以 **`io`** 这个名字泄漏到全局（连带另外 293 个函数和
- * 289 个变量）。于是 DOS 游戏页一打开，`window.io` 就是有值的 ——
- * 拿它当 socket.io 用，得到的是 `TypeError: Reflect.ownKeys called on non-object`，
- * 自动开播在所有 DOS 游戏上永远挂。
+ * `module` / `exports` 是 `new Function` 的**形参**，只在这段代码里可见 ——
+ * 全局一个字节都不动。于是：
+ *  · 不看页面上有没有别人占了 define / module / exports（UMD 第一支必然命中）
+ *  · 不碰 `window.io`，js-dos 那个泄漏的同名全局也就不用再存来存去
+ *    （见 [js-dos 泄漏全局 io] 那条：反过来覆盖它，DOS 游戏本身会跑不起来）
  *
- * socket.io 的客户端会在 io 上挂 Manager / Socket / connect，认这个比认
- * `typeof === 'function'` 靠谱得多。
+ * 站点没有设 CSP，`new Function` 可用；真哪天加了 `unsafe-eval` 限制，
+ * 或者 API 在别的域上没开 CORS，就退回下面那条老路子。
  */
-function looksLikeSocketIo(v: unknown): v is IoFactory {
-  if (typeof v !== 'function') return false
-  const f = v as { Manager?: unknown; Socket?: unknown; connect?: unknown }
-  return typeof f.Manager === 'function' || typeof f.Socket === 'function' || typeof f.connect === 'function'
+async function loadIoAsModule(url: string): Promise<IoFactory> {
+  const res = await fetch(url, { credentials: 'omit' })
+  if (!res.ok) throw new Error(`${url} → HTTP ${res.status}`)
+  const exported = runAsCommonJs(await res.text())
+  if (!looksLikeSocketIo(exported)) throw new Error(`${url} 跑完没导出 io()：${describeExport(exported)}`)
+  return exported as IoFactory
 }
 
-/** 拿到手的工厂自己收着，不再回头读全局 —— 后面再有脚本法不到它 */
-let ioFactory: IoFactory | null = null
-let ioLoading: Promise<IoFactory> | null = null
-function loadIo(): Promise<IoFactory> {
-  if (ioFactory) return Promise.resolve(ioFactory)
-  if (ioLoading) return ioLoading
-  ioLoading = new Promise<IoFactory>((resolve, reject) => {
+/** 退路：老老实实插一个 <script>，装完把 window.io 原样放回去 */
+function loadIoAsScript(url: string): Promise<IoFactory> {
+  return new Promise<IoFactory>((resolve, reject) => {
     const win = window as unknown as { io?: unknown }
-    if (looksLikeSocketIo(win.io)) return resolve(win.io)
-    /**
-     * 装脚本前先记下 `window.io` 现在是什么，装完原样放回去。
-     *
-     * 我们要的只是那个工厂函数的**引用**，不需要它占着全局名字；
-     * 而 js-dos 那类泄漏了同名全局的脚本，它自己内部调的就是这个名字 ——
-     * 被我们覆盖掉，坏的就从「开不了播」变成「DOS 游戏本身跑不起来」。
-     */
     const had = 'io' in win
     const prev = win.io
     const restore = () => {
@@ -95,17 +92,41 @@ function loadIo(): Promise<IoFactory> {
       else delete win.io
     }
     const script = document.createElement('script')
-    script.src = socketScriptUrl()
+    script.src = url
     script.async = true
     script.onload = () => {
       const loaded = win.io
       restore()
-      if (looksLikeSocketIo(loaded)) resolve(loaded)
-      else reject(new Error('socket.io 已加载但没有暴露 io()'))
+      if (looksLikeSocketIo(loaded)) resolve(loaded as IoFactory)
+      else reject(new Error(`${url} 装上了却没暴露 io()：${describeExport(loaded)}；${umdGlobals()}`))
     }
-    script.onerror = () => reject(new Error(socketScriptUrl()))
+    script.onerror = () => {
+      restore()
+      reject(new Error(`${url} 加载失败（网络或反代）`))
+    }
     document.head.appendChild(script)
   })
+}
+
+/** 拿到手的工厂自己收着，不再回头读全局 —— 后面再有脚本也夺不走 */
+let ioFactory: IoFactory | null = null
+let ioLoading: Promise<IoFactory> | null = null
+function loadIo(): Promise<IoFactory> {
+  if (ioFactory) return Promise.resolve(ioFactory)
+  if (ioLoading) return ioLoading
+  const url = socketScriptUrl()
+  const win = window as unknown as { io?: unknown }
+  // 别人已经把正牌 socket.io 放在全局了就直接用，省一次请求
+  if (looksLikeSocketIo(win.io)) {
+    ioFactory = win.io as IoFactory
+    return Promise.resolve(ioFactory)
+  }
+  ioLoading = loadIoAsModule(url)
+    .catch((e) => {
+      // 走到这儿多半是 CORS 或者 CSP 禁了 eval。留一行，别把原因吞掉
+      console.warn('[live] 取 socket.io 源码失败，改用 <script> 装', e)
+      return loadIoAsScript(url)
+    })
     .then((f) => {
       ioFactory = f
       return f

@@ -33,7 +33,7 @@ import { apiBase, apiEnabled } from '@/services/api'
 import { canvasToBlob } from '../recorder'
 import { GP, hasGamepadApi, startGamepadBridge, type GamepadBridge } from '../gamepad'
 import { assertJar } from '@/lib/romValidation'
-import { focusFrame } from '../frameFocus'
+import { focusFrame, frameGamepads } from '../frameFocus'
 
 /* ---------------- 从 freej2me-web 源码里挖出来的接入点 ---------------- */
 
@@ -293,6 +293,8 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
    */
   let poll: ReturnType<typeof setInterval> | null = null
   let readySent = false
+  /** 起不来的兜底计时器，销毁时要收掉 */
+  let readyTimer = 0
 
   const stopPoll = () => {
     if (poll) {
@@ -334,8 +336,16 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         if (shown === null || shown === true) sendReady()
         else options.onProgress?.({ phase: 'engine' })
       }, J2ME_POLL_MS)
-      setTimeout(() => {
-        if (!destroyed && !readySent) sendReady()
+      /**
+       * 两分钟还没亮画面 = 起不来了，**不能**当成「可以玩了」。
+       * 以前这里 sendReady()：遮罩撤掉、状态变「运行中」、还记了一次游玩，玩家对着黑屏
+       * 完全不知道发生了什么，而且 ready 之后播放器那次自动重试的机会也一并作废。
+       * CheerpJ 是第三方 CDN，连不上是常事（公司网络、国内网络），报出来才有得救。
+       */
+      readyTimer = window.setTimeout(() => {
+        if (destroyed || readySent) return
+        stopPoll()
+        options.onError?.(rt.j2meStartTimeout)
       }, J2ME_READY_TIMEOUT_MS)
     }
 
@@ -348,13 +358,36 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     caps.add('record')
     if (hasGamepadApi()) {
       caps.add('gamepad')
-      pad = startGamepadBridge<J2meKey>(J2ME_PAD_MAP, (k, pressed) => {
-        const display = displayOf()
-        if (!display) return
-        const win2 = iframe.contentWindow as (Window & { KeyboardEvent?: typeof KeyboardEvent }) | null
-        const Ctor = win2?.KeyboardEvent ?? KeyboardEvent
-        display.dispatchEvent(new Ctor(pressed ? 'keydown' : 'keyup', { code: k.code, key: k.key, bubbles: true }))
-      })
+      pad = startGamepadBridge<J2meKey>(
+        J2ME_PAD_MAP,
+        (k, pressed) => {
+          const display = displayOf()
+          if (!display) return
+          const win2 = iframe.contentWindow as (Window & { KeyboardEvent?: typeof KeyboardEvent }) | null
+          const Ctor = win2?.KeyboardEvent ?? KeyboardEvent
+          display.dispatchEvent(new Ctor(pressed ? 'keydown' : 'keyup', { code: k.code, key: k.key, bubbles: true }))
+        },
+        {
+          /**
+           * 从**拿着焦点的那个文档**读手柄。
+           *
+           * 这里的焦点是我们自己交进 iframe 的（下面 focus: () => focusFrame(iframe)，
+           * 而且插手柄时播放器还会再交一次），此后父页面 navigator.getGamepads() 读到的
+           * 全是 null —— 桥每帧都判定「手柄拔了」，玩家插着手柄却一个键都不生效，
+           * 工具栏的手柄面板也报「没检测到」。iframe 同源，直接问它。
+           */
+          getPads: () => {
+            try {
+              const nav = iframe.contentWindow?.navigator
+              const inner = nav?.getGamepads ? Array.from(nav.getGamepads()) : []
+              if (inner.some(Boolean)) return inner
+            } catch {
+              /* 跨源就退回父页面 */
+            }
+            return navigator.getGamepads ? Array.from(navigator.getGamepads()) : []
+          },
+        },
+      )
     }
     options.onCaps?.(caps)
   })
@@ -417,6 +450,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
 
   const destroy = () => {
     destroyed = true
+    window.clearTimeout(readyTimer)
     stopPoll()
     pad?.stop()
     pad = null
@@ -440,11 +474,13 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     destroy,
     volume,
     /*
-      物理手柄这一路不靠焦点 —— startGamepadBridge 是在**父页面**里轮询、
-      再把键塞进 iframe 的（见上面 startGamepadBridge 那处）。但键盘要靠它：
+      物理手柄这一路会从拿着焦点的那个文档读（见上面 startGamepadBridge 的 getPads），
+      所以交焦点不会把它读没。键盘更是要靠它：
       FreeJ2ME 的按键监听挂在 iframe 内部。
     */
     focus: () => focusFrame(iframe),
+    // 手柄面板要报「检测到哪些手柄」，同样得问 iframe 那个文档
+    gamepads: () => frameGamepads(iframe),
     setVolume(next: number) {
       volume = Math.max(0, Math.min(1, next))
       audio?.apply(volume)

@@ -81,6 +81,19 @@ const WIN_KEY = {
  * Windows 3.x 的 DOS 会话无法启动 Windows 图形 EXE，而 Program Manager 直接运行又不
  * 会切换工作目录，所以先启动 File Manager 打开父目录，再从它的 File > Run 执行 EXE。
  */
+/** 自动输入只会敲这些字符；别的字符在 DOS 8.3 文件名里也合法（~ ! $ # 之类），但这里敲不出来 */
+const TYPEABLE = /^[a-z0-9:\\. \-_]*$/i
+
+/**
+ * 启动前先验一遍能不能敲出来。
+ * 以前是敲到那个字符时在 setTimeout 里抛 —— 没人接得住：整条启动链停在半路，Windows 明明
+ * 已经在屏幕上跑着，遮罩却一直盖着，四分多钟后才报一句「初始化超时」，重试一次再来一遍。
+ */
+export function assertTypeable(command: string): void {
+  const bad = command.split('').find((ch) => !TYPEABLE.test(ch))
+  if (bad !== undefined) throw new Error(`Windows 自动启动路径含无法输入的字符：${bad}`)
+}
+
 export function scheduleWindowsLaunch(
   ci: WindowsLaunchCi,
   command: string,
@@ -122,7 +135,7 @@ export function scheduleWindowsLaunch(
       else if (ch === ' ') tap(WIN_KEY.space)
       else if (ch === '-') tap(WIN_KEY.minus)
       else if (ch === '_') tap(WIN_KEY.minus, true)
-      else throw new Error(`Windows 自动启动路径含无法输入的字符：${ch}`)
+      // 敲不出来的字符 assertTypeable 早就拦了；万一漏网也别在定时器里抛（没人接），跳过它
       later(35, () => typeAt(at + 1))
     }
     typeAt(0)

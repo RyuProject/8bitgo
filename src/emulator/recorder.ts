@@ -96,7 +96,29 @@ export function startRecording(sources: RecordSources, opts: { fps?: number; max
     }
   }
 
-  if (tracks.length === 0) return null
+  /**
+   * 放掉我们自己新建的东西。下面两处提前 return 必须调它 ——
+   * 以前直接 return null，抓屏的 captureStream 和音频的 destination 节点就永久挂在
+   * 活着的模拟器上了：调用方拿到 null 只会提示「录制失败」，没有句柄可清。
+   * 玩家在不支持 MediaRecorder 的设备上多点几次 ⏺，jsnes 这种主线程跑模拟的会肉眼可见掉帧。
+   */
+  const release = () => {
+    if (audioDest && sources.audioNode) {
+      try {
+        sources.audioNode.disconnect(audioDest)
+      } catch {
+        /* 已经断了 */
+      }
+      audioDest = null
+    }
+    // 外部给的流（云游戏 / 直播）不归我们停
+    if (!sources.stream) for (const t of tracks) t.stop()
+  }
+
+  if (tracks.length === 0) {
+    release()
+    return null
+  }
   const hasAudio = tracks.some((t) => t.kind === 'audio')
   const stream = new MediaStream(tracks)
 
@@ -114,7 +136,10 @@ export function startRecording(sources: RecordSources, opts: { fps?: number; max
       // 继续尝试下一个格式
     }
   }
-  if (!recorder) return null
+  if (!recorder) {
+    release()
+    return null
+  }
 
   // 使用浏览器最终确认的类型，避免请求 MP4、实际却产出别的容器时只改错文件后缀。
   const outputMimeType = recorder.mimeType || 'video/webm'

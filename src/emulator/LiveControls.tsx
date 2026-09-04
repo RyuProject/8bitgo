@@ -29,10 +29,21 @@ interface Props {
   gameSlug?: string
   platform?: string
   /**
-   * 这一局该不该自动开播。联机房里的房主传 false ——
-   * 房间本身就带观众席，再推一路直播是白白多占一份上行。
+   * 这一局该不该自动开播。
+   *
+   * 传 false 的只有一种情况：**我是别人房里的客人**（session.netplay / session.cloud）——
+   * 画面本来就是房主推过来的，我再转推一路毫无意义。
+   *
+   * ⚠️ 自己开了联机房**不算**。以前这里传的是 `!inRoom`，把「我开的房」也算进去了，
+   * 于是主播一点「联机」直播就停、正在看的人当场断流。现在直播照推，
+   * 只是把联机房号报上去（netplayRoomId），大厅那边合成一张卡。
    */
   active?: boolean
+  /**
+   * 我这一局同时开着的联机房号（没开就传 null）。
+   * 只是报给服务器让大厅能把两张卡认成一回事，不影响推流本身。
+   */
+  netplayRoomId?: string | null
   /**
    * 玩家点「开播」走标签页分享时，把画面裁到这个元素（播放器那一块），不带旁边的站点 UI。
    * Region Capture 目前只有 Chrome 系有；没有就整个标签页一起推，能用。
@@ -163,7 +174,7 @@ const RETRY_MAX = 15
  */
 const AUDIO_WAIT_MAX = 8
 
-export function LiveControls({ handle, gameName, gameSlug, platform, active = true, captureRef, className }: Props) {
+export function LiveControls({ handle, gameName, gameSlug, platform, active = true, netplayRoomId = null, captureRef, className }: Props) {
   const t = useT()
   const tt = t.player.tools
   const [live, setLive] = useState<Broadcast | null>(null)
@@ -187,6 +198,15 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
   /** 正在弹选择器 / 握手，别让人连点 */
   const [manualBusy, setManualBusy] = useState(false)
   const liveRef = useRef<Broadcast | null>(null)
+
+  /**
+   * 把联机房号报给直播间。房号变了报一次，开播晚于点联机时也要补报 ——
+   * 玩家完全可能先点「联机」（那会儿还没开播成功）再等自动开播接上。
+   * broadcast 内部记着最后一次报的值，重连 / 重开房之后会自己再报（见 relink）。
+   */
+  useEffect(() => {
+    liveRef.current?.linkNetplay(netplayRoomId)
+  }, [netplayRoomId, live])
   /** 分享标签页拿到的流：停播时要把轨停掉，否则浏览器角上那条「正在分享」一直亮着 */
   const tabStreamRef = useRef<MediaStream | null>(null)
 

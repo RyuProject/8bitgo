@@ -618,14 +618,38 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         throw new Error(rt.flashSaveBad)
       }
       if (file?.format !== FLASH_SAVE_FORMAT || !file.entries) throw new Error(rt.flashSaveBad)
+      /**
+       * 只写**这个 SWF 自己**的键。
+       *
+       * Ruffle 的 SharedObject 全站共用一个 localStorage（srcdoc iframe 继承父页面的源），
+       * 键是「域名/swf 路径/存档名」。以前这里拿文件里的键原样 setItem —— 而本地文件那条路
+       * 导出时只能按域名筛（flashSaveKeys 的注释里写着），一次导出会把玩家玩过的**所有** Flash
+       * 游戏的存档打包进去。过几周他在另一个游戏里导入这份文件，那几十个游戏的进度就被整体
+       * 回滚到导出那天，界面还提示「导入成功」。
+       *
+       * 归属判断照抄 Ruffle 自己那套：域名要对得上；有 swf URL 时，键中间那段路径要能在
+       * pathname 里找到。判不出归属的一律跳过 —— 宁可这次导入什么都不写，也不能动别的游戏。
+       */
+      const host = swfUrl?.hostname || location.hostname
+      const mine = (key: string): boolean => {
+        if (!key.startsWith(host)) return false
+        if (!swfUrl) return true // 本地文件：只能按域名认，和导出时同一套标准
+        const middle = key.split('/').slice(1, -1).join('/')
+        return Boolean(middle) && swfUrl.pathname.includes(middle)
+      }
       let written = 0
+      let skipped = 0
       for (const [key, value] of Object.entries(file.entries)) {
         // 再校验一遍：别把任意内容塞进 localStorage
         if (typeof value !== 'string' || !isSolBase64(value)) continue
+        if (!mine(key)) {
+          skipped++
+          continue
+        }
         localStorage.setItem(key, value)
         written++
       }
-      if (!written) throw new Error(rt.flashSaveBad)
+      if (!written) throw new Error(skipped ? rt.flashSaveForeign : rt.flashSaveBad)
       // 重载会换掉整个实例，Ruffle 那边按住的键全没了。我们这份记录必须一起清，
       // 否则「玩家按住右键读了个档」之后，那颗键在 downKeys 里永远是按下状态，
       // 下一次按右再也发不出去（去重把它吃了）

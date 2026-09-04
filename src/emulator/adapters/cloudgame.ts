@@ -573,6 +573,13 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     saveMode: 'remote',
     async saveState() {
       if (!playing || !assignedRoomId) throw new Error(rt.cloudNoSession)
+      /**
+       * 信令没连上就别发：send() 在 socket 不 OPEN 时是**静默丢弃**的，而工具栏那边
+       * 见 saveMode === 'remote' 就直接报「已保存到服务器」。手机切后台、网络抖一下，
+       * WebRTC 的画面还在流（所以 playing 仍是 true），存档却一个字节都没发出去，
+       * 玩家满以为存上了，回来发现进度没了。这里挡住，让工具栏走失败提示。
+       */
+      if (ws?.readyState !== WebSocket.OPEN) throw new Error(rt.cloudNoSession)
       send(EP.GAME_SAVE, { room_id: assignedRoomId })
       return null
     },

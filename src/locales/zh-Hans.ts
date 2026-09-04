@@ -151,6 +151,9 @@ export const zhHans = {
     sendFailed: '验证码发送失败',
     loginFailed: '登录失败',
     googleFailed: 'Google 登录失败',
+    weibo: '使用微博登录',
+    weiboFailed: '微博登录失败',
+    weiboPending: '正在完成微博登录…',
     tabCode: '验证码登录',
     tabPassword: '密码登录',
     passwordLabel: '密码',
@@ -564,6 +567,8 @@ export const zhHans = {
     intro: '游戏在云端运行，每个正在联机的玩家自动拥有一个房间。挑一个房间加入，选好手柄位就能一起玩；也可以自己开一局等朋友来。',
     liveTitle: '正在进行的房间',
     liveCount: '{n} 个房间在线',
+    /** 房间卡上那个举手图标的说明：房主开着房、手柄位还空着 */
+    wave: '房主在等人一起玩',
     autoRefresh: '自动刷新',
     disabledTitle: '联机功能尚未开启',
     disabledBody: '需要部署 cloud-game 服务器并在 .env 里配置 VITE_CLOUDGAME_URL 与 VITE_API_URL，房间列表才会出现。',
@@ -605,6 +610,12 @@ export const zhHans = {
     spectatorTag: '观众',
     viewers: '{n} 人在看',
     takeSeat: '上场玩',
+    /** 观众看到主播开了联机房时，那个上场入口 */
+    joinMatch: '加入联机',
+    /** 观众想上场但手柄位满了 */
+    seatsFull: '手柄位满了，等有人下场再上',
+    /** 联机散了、但主播还在播，退回去接着看 */
+    backToWatching: '联机结束了，先接着看主播玩',
     goWatch: '退到观众席',
     roleFailed: '换不了身份：手柄位满了，或者房间已经结束。',
     takingOver: '房主掉线了，正在由你接手…',
@@ -849,6 +860,10 @@ export const zhHans = {
     requestFailed: '请求失败（HTTP {status}）',
     defaultNickname: '玩家',
     googleNickname: 'Google 玩家',
+    weiboCancelled: '你在微博取消了授权',
+    weiboNoCode: '没有拿到微博授权码，请重新登录',
+    weiboStateMismatch: '微博登录校验失败，请重新发起登录',
+    weiboNickname: '微博玩家',
   },
 
   /* ---------------- ROM 识别 ---------------- */
@@ -920,6 +935,8 @@ export const zhHans = {
     j2meLocalUnsupported: '运行本地 Java 游戏需要后端支持，当前未连接服务器',
     j2meUploadFailed: '本地 Java 游戏上传失败：{msg}',
     j2meLoadFailed: '无法加载 J2ME 运行时（{path}），请检查部署地址',
+    j2meStartTimeout: 'Java 运行时两分钟都没起来 —— 多半是 CheerpJ 的 CDN 连不上，换个网络再试',
+    stateBad: '这不是这台模拟器的存档文件，没有载入',
     webretroDesc: 'RetroArch 的浏览器移植，用 melonDS 核心跑任天堂 DS，需自行部署',
     webretroNotConfigured: '尚未配置 webretro 运行时（VITE_WEBRETRO_PATH），已回退到 EmulatorJS',
     webretroUnsupportedPlatform: 'webretro 未启用「{platform}」平台',
@@ -931,6 +948,7 @@ export const zhHans = {
     ruffleLoadFailed: '无法加载 Ruffle（{path}）。请先运行 npm run ruffle 复制资源，或在 .env 中设置 VITE_RUFFLE_PATH。',
     flashNoSave: '这个游戏还没写过存档 —— Flash 存档是游戏自己写的，先玩到它保存进度的地方再导出。',
     flashSaveBad: '这不是本站导出的 Flash 存档文件',
+    flashSaveForeign: '这份存档属于别的 Flash 游戏，没有导入（导入只会写当前这个游戏的存档）',
     flashSaveImported: '存档已导入，游戏重新载入后会读到它',
     ruffleNotInit: 'Ruffle 未正确初始化',
     ruffleNoApi: '未找到 Ruffle 播放器 API',

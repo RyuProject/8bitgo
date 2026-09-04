@@ -254,6 +254,13 @@ export async function romCacheStats(): Promise<{ count: number; bytes: number; b
 }
 
 /** 清空 ROM 缓存（不碰存档，存档在另一个数据库里） */
+/** 删掉一条（发现是坏记录时用）。失败静默：删不掉也不影响接下来走网络 */
+export async function romCacheDelete(key: string): Promise<void> {
+  const db = await openDb()
+  if (!db) return
+  await removeKeys(db, [key])
+}
+
 export async function romCacheClear(): Promise<void> {
   const db = await openDb()
   if (!db) return

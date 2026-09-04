@@ -5,6 +5,8 @@ import { openAuthModal } from '@/services/authModal'
 import type { RomLang } from '@/config/languages'
 import { romLangsOf, romUrlForKey, useRomUrl } from '@/services/roms'
 import { resolveRuntime, runtimesFor } from '@/emulator'
+import { p2pPlayable } from '@/emulator'
+import { requestMatch } from '@/services/matchRequest'
 import { usePageData, type GameData } from '@/services/pageData'
 import { platformMap } from '@/data/platforms'
 import { genreMap } from '@/data/genres'
@@ -281,8 +283,18 @@ export function GameDetailPage() {
             >
               {copied ? t.game.copied : t.game.share}
             </Button>
-            {game.multiplayer && (
-              <Button variant="secondary" size="sm" to="/games?multiplayer=1">
+            {/*
+              「创建联机房间」以前是 `to="/games?multiplayer=1"` —— 点了只是跳到游戏库
+              筛多人游戏，一个房也不建（用户报的就是这个）。现在它真的开房：
+              喊一声 requestMatch()，播放器接住（见 services/matchRequest.ts）——
+              游戏没开始就先开始，跑起来立刻在**这一局**上开房，不重开。
+
+              条件里加 p2pPlayable：光看 game.multiplayer 不够，那只说明这游戏支持多人，
+              不代表这个平台的模拟器能联机、也不代表信令配好了。画一个点了没反应的按钮
+              比不画更糟。
+            */}
+            {game.multiplayer && p2pPlayable(game.platform) && (
+              <Button variant="secondary" size="sm" onClick={requestMatch}>
                 {t.game.createRoom}
               </Button>
             )}

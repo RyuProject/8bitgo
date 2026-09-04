@@ -100,6 +100,17 @@ function isAdminPath(pathname) {
   return stripLang(pathname).split('/')[1] === 'admin'
 }
 
+/**
+ * 第三方登录回调（/auth/…）不进缓存。
+ *
+ * 页面本身是空壳（登录全在浏览器里做），但 URL 上挂着一次性的授权 code，
+ * 而边缘缓存是按完整 URL 分条目的 —— 按 CACHE.page 发出去，等于每个人登录一次
+ * 就在 Cloudflare 上留一条永远不会再被命中的缓存。
+ */
+function isNoStorePath(pathname) {
+  return stripLang(pathname).split('/')[1] === 'auth'
+}
+
 export async function renderPage(req, res, next) {
   try {
     if (isAdminPath(req.path)) {
@@ -152,7 +163,7 @@ export async function renderPage(req, res, next) {
       .status(notFound ? 404 : 200)
       .set({
         'Content-Type': 'text/html; charset=utf-8',
-        'Cache-Control': notFound ? CACHE.notFound : CACHE.page,
+        'Cache-Control': notFound ? CACHE.notFound : isNoStorePath(req.path) ? CACHE.none : CACHE.page,
         Vary: 'Accept-Encoding',
       })
       .end(page)

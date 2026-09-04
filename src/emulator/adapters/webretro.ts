@@ -39,7 +39,7 @@
  *    否则会走到「加载失败」分支。同源的 /j2me/jar/ 那种代理不适用于这里。
  */
 import type { PlatformId } from '@/types'
-import type { Capability, MountOptions, Runtime, RuntimeHandle } from '../types'
+import type { Capability, CaptureSources, MountOptions, Runtime, RuntimeHandle } from '../types'
 import { getT, fmt } from '@/services/i18n'
 import { loadGameBytes } from '../romLoader'
 import { focusFrame, frameGamepads } from '../frameFocus'
@@ -121,11 +121,41 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   // F2 存档、F3 读档、F4 截图），外层工具栏不重复提供，免得两套状态对不上。
   const caps = new Set<Capability>()
   options.onCaps?.(caps)
+  /**
+   * 直播 / 录像的画面来源：webretro 自托管在同源路径下，iframe 里的画布读得到。
+   * 以前这里什么都不给，NDS 游戏一律「未开播」—— 直播那边只能落到手动分享标签页。
+   * 取面积最大的 canvas（RetroArch 页面上还有别的小画布）。跨源部署（VITE_WEBRETRO_PATH
+   * 指到别的域名）读不到，返回 null，captureBlocked 让直播那边别白等。
+   */
+  const frameDoc = (): Document | null => {
+    try {
+      return iframe?.contentDocument ?? null
+    } catch {
+      return null
+    }
+  }
   return {
     destroy,
     caps,
     focus: () => focusFrame(iframe),
     gamepads: () => frameGamepads(iframe),
+    captureBlocked: () => {
+      if (!iframe?.src || iframe.src === 'about:blank') return false
+      try {
+        return iframe.contentDocument === null && Boolean(iframe.contentWindow)
+      } catch {
+        return true
+      }
+    },
+    captureSources(): CaptureSources | null {
+      const doc = frameDoc()
+      if (!doc) return null
+      let best: HTMLCanvasElement | null = null
+      for (const c of Array.from(doc.querySelectorAll('canvas'))) {
+        if (!best || c.width * c.height > best.width * best.height) best = c
+      }
+      return best && best.width > 0 ? { canvas: best } : null
+    },
   }
 }
 

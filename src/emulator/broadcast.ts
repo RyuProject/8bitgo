@@ -59,6 +59,14 @@ export interface Broadcast {
   /** 当前房间号。重连后可能换（见文件头「断线」一节），UI 别缓存它，用 onRoom */
   readonly roomId: string
   viewers: () => number
+  /**
+   * 告诉服务器「这个直播间同时也是那个联机房」（传 null 解绑）。
+   *
+   * 主播点「联机」之后直播**不停**：观众正看着的那一路画面一帧都不该掉。
+   * 报上去只是为了让**别人的大厅**知道这两个房间是一回事，好把两张卡合成一张、
+   * 手柄位还空着就挂个 👋（见 services/allRooms.ts）。
+   */
+  linkNetplay: (roomId: string | null) => void
   stop: () => void
 }
 
@@ -237,6 +245,25 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     }
   }
 
+  /**
+   * 已经报给服务器的联机房号。
+   *
+   * 要记着是因为**每次重开 / 续播都得再报一遍**：服务端在主播掉线时会把它清掉
+   * （见 server/src/live.js 的 hostAway —— 那时候联机房要么散了要么在换房主，
+   * 留着陈旧房号会让大厅挂一个点进去进不去的「联机中」），重开出来的新房间更是从零开始。
+   */
+  let linkedNetplayRoom: string | null = null
+
+  /** 把配对房号补报给服务器。开房 / 续播成功之后各叫一次 */
+  const relink = () => {
+    if (!linkedNetplayRoom) return
+    try {
+      if (socket.connected) socket.emit('link-netplay', { roomId: linkedNetplayRoom })
+    } catch {
+      /* ignore */
+    }
+  }
+
   const goLive = async () => {
     const data = await call<{ roomId: string; token: string }>(socket, 'go-live', {
       title: options.meta.title,
@@ -248,6 +275,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     roomId = data.roomId
     token = data.token
     options.onRoom?.(roomId)
+    relink()
   }
 
   /** socket 重连上来之后：先试着接回原房间，接不回去就重开 */
@@ -263,6 +291,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       viewers = current.size
       options.onViewers?.(viewers)
       options.onState?.('live')
+      relink()
       return
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -339,6 +368,16 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       return roomId
     },
     viewers: () => viewers,
+    /** 见接口注释。socket 没连上就悄悄跳过 —— 重连之后 LiveControls 会再报一次 */
+    linkNetplay(roomId: string | null) {
+      if (stopped) return
+      linkedNetplayRoom = roomId
+      try {
+        if (socket.connected) socket.emit('link-netplay', { roomId: roomId ?? '' })
+      } catch {
+        /* ignore */
+      }
+    },
     stop() {
       if (stopped) return
       stopped = true

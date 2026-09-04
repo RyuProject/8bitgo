@@ -3,6 +3,7 @@ import { fetchWithProgress } from './loadProgress'
 import { romCacheGet, romCacheKey, romCachePut } from './romCache'
 import type { LoadProgress } from './types'
 import { assertNotHtml } from '@/lib/romValidation'
+import { romCacheDelete } from './romCache'
 
 export interface LoadedGameBytes {
   name: string
@@ -42,9 +43,14 @@ export async function loadGameBytes(
       if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
       // 命中也要发一帧满进度：播放器的遮罩靠进度回调收尾，不发的话会停在 0%
       onProgress?.({ phase: 'rom', loaded: cached.byteLength, total: cached.byteLength, ratio: 1 })
-      // 存进去之前校验过，这里再挡一次：万一是历史上写坏的记录，也不至于喂给模拟器
-      assertNotHtml(cached)
-      return { name: fileNameFromUrl(game), data: cached, remoteUrl: game, fromCache: true }
+      // 存进去之前校验过，这里再挡一次：万一是历史上写坏的记录，也不至于喂给模拟器。
+      // 坏的那条要**扔掉再走网络**，不然自动重试还是撞上它，这台浏览器上这款游戏就永远起不来
+      try {
+        assertNotHtml(cached)
+        return { name: fileNameFromUrl(game), data: cached, remoteUrl: game, fromCache: true }
+      } catch {
+        void romCacheDelete(cacheKey).catch(() => {})
+      }
     }
   }
 

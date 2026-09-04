@@ -456,6 +456,88 @@ export async function loginWithGoogle(): Promise<PublicUser> {
   return loginOrCreateLocal('google.player@8bitgo.local', getT().errors.googleNickname, '🎮')
 }
 
+/* -------- 微博登录 -------- */
+
+/**
+ * 微博走的是**授权码 + 整页跳转**，和 Google 的「弹层拿 ID token」完全不同：
+ *
+ *   点按钮 → 问后端要授权地址 → 整页跳到微博 → 用户点同意
+ *   → 微博带 ?code= 跳回 /auth/weibo/callback → 回调页把 code 交给后端换 JWT
+ *
+ * 为什么不用微博的 JS SDK：那套东西要往页面里塞一个全局脚本，登录态还是得回后端换，
+ * 等于多一个第三方脚本、少一层控制。授权码流程只多一次跳转，App Secret 全程留在服务端。
+ *
+ * 为什么整页跳转而不是弹窗：微博的授权页在移动端和微信内置浏览器里对弹窗支持很差，
+ * 而这站的访客有相当一部分就在那些环境里。
+ */
+
+/** state：防登录 CSRF。跳转前存下，回调时比对，对不上就不认这个 code */
+const WEIBO_STATE_KEY = '8bitgo.weibo.state'
+/** 授权前停在哪个页面（含语言前缀）。回调页登完把人送回去，而不是一律扔回首页 */
+const WEIBO_RETURN_KEY = '8bitgo.weibo.return'
+
+function randomState(): string {
+  const bytes = new Uint8Array(16)
+  crypto.getRandomValues(bytes)
+  return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+function readOnce(key: string): string {
+  try {
+    const v = sessionStorage.getItem(key) ?? ''
+    sessionStorage.removeItem(key)
+    return v
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * 开始微博登录。
+ *
+ * 顺利的话这个 Promise **不会兑现** —— 页面已经跳走了。调用方不要在它后面接
+ * 「登录成功」的收尾逻辑，那段代码只在报错时才会跑到。
+ */
+export async function startWeiboLogin(returnTo?: string): Promise<void> {
+  if (!apiEnabled()) {
+    // 本地演示：没有后端可以换 token，直接建 / 登一个演示账号，便于走通界面流程
+    loginOrCreateLocal('weibo.player@8bitgo.local', getT().errors.weiboNickname, '🧧')
+    return
+  }
+  const state = randomState()
+  // 授权地址由后端拼：redirect_uri 只能有一处定义，两边各写一份迟早会对不上
+  const r = await api.get<{ url: string }>('/api/auth/weibo/authorize-url?state=' + encodeURIComponent(state))
+  try {
+    sessionStorage.setItem(WEIBO_STATE_KEY, state)
+    sessionStorage.setItem(WEIBO_RETURN_KEY, returnTo || window.location.pathname + window.location.search)
+  } catch {
+    /* 无痕模式下写不进去。回调页那边会发现自己没存过 state，按「无法校验」处理 */
+  }
+  window.location.assign(r.url)
+}
+
+/** 回调页调用：拿 code 换本站登录态。state 对不上直接拒绝。 */
+export async function completeWeiboLogin(code: string, state: string): Promise<PublicUser> {
+  const expected = readOnce(WEIBO_STATE_KEY)
+  /**
+   * 存过 state 就必须对得上。没存过（无痕模式、或者用户把回调链接单独收藏了再打开）
+   * 只能放行 —— 卡在这里的话那批人永远登不进来，而 code 本身是一次性的、绑死回调地址，
+   * 单靠它做不了太多事。
+   */
+  if (expected && expected !== state) throw new Error(getT().errors.weiboStateMismatch)
+  const r = await api.post<{ token: string; user: PublicUser }>('/api/auth/weibo', { code })
+  setToken(r.token)
+  setCurrentUser(r.user)
+  return r.user
+}
+
+/** 取出授权前停留的页面，取完即清。没有就回首页。 */
+export function takeWeiboReturnTo(): string {
+  const to = readOnce(WEIBO_RETURN_KEY)
+  // 只认站内的绝对路径：`//evil.com` 会被浏览器当成协议相对 URL 跳出站外
+  return to.startsWith('/') && !to.startsWith('//') ? to : '/'
+}
+
 /* ---------------- 当前用户的操作 ---------------- */
 
 function requireLocalUser(): User {

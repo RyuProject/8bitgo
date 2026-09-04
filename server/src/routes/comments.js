@@ -60,8 +60,16 @@ function cleanContent(raw) {
     .trim()
 }
 
+/**
+ * 页码要封顶。
+ *
+ * 不封的话 `?page=1e20` 会算出一个天文数字的 OFFSET 交给 MySQL —— 超出 64 位就直接
+ * 报错，玩家看到的是 500 而不是一页空列表。评论本来也不可能翻到第一万页。
+ */
+const MAX_PAGE = 10_000
+
 function pageParams(req) {
-  const page = Math.max(1, Math.trunc(Number(req.query.page)) || 1)
+  const page = Math.min(MAX_PAGE, Math.max(1, Math.trunc(Number(req.query.page)) || 1))
   const size = Math.min(MAX_PAGE_SIZE, Math.max(1, Math.trunc(Number(req.query.pageSize)) || DEFAULT_PAGE_SIZE))
   return { page, size, offset: (page - 1) * size }
 }

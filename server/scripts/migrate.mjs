@@ -408,6 +408,22 @@ const patches = [
         CONSTRAINT fk_cmt_parent FOREIGN KEY (parent_id) REFERENCES game_comments(id) ON DELETE SET NULL
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`),
   },
+  {
+    name: 'users.weibo_uid（微博登录的唯一身份）',
+    table: 'users',
+    needed: async () => !(await hasColumn('users', 'weibo_uid')) || !(await hasIndex('users', 'uniq_weibo_uid')),
+    run: async () => {
+      // 列和索引分开判：老库可能已经手工加过列但没建索引，那样只补索引
+      if (!(await hasColumn('users', 'weibo_uid'))) {
+        await conn.query('ALTER TABLE `users` ADD COLUMN `weibo_uid` VARCHAR(32) NULL AFTER `created_at`')
+      }
+      if (!(await hasIndex('users', 'uniq_weibo_uid'))) {
+        // 必须是 UNIQUE：一个微博号只能对应一个站内账号。MySQL 的唯一索引不管 NULL，
+        // 所以非微博账号全空着也不会互相冲突
+        await conn.query('ALTER TABLE `users` ADD UNIQUE KEY `uniq_weibo_uid` (`weibo_uid`)')
+      }
+    },
+  },
 ]
 
 const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'login_codes', 'platform_bios', 'game_plays', 'developers', 'game_comments']

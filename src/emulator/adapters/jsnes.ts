@@ -33,6 +33,9 @@ const NES_BUTTON: Record<PadButton, number> = {
 }
 
 /** 一次 rAF 最多追几帧。掉出去太多就别硬追了，直接对齐，免得补帧风暴把页面拖死 */
+/** 存档文件的身份戳：认出「这是不是本模拟器的存档」，见 loadState */
+const STATE_TAG = '8bitgo-jsnes-1'
+
 const MAX_CATCHUP_FRAMES = 4
 /** 超过这么久没等到 rAF，就认为浏览器把它停了（页面切到后台 / 窗口最小化） */
 const RAF_STALE_MS = 250
@@ -182,6 +185,16 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
   let destroyed = false
   let browser: JsnesBrowser | null = null
+  /** onReady 发过没有 —— 之后的引擎错误不能再拆会话，见 Browser 的 onError */
+  let readyFired = false
+  /** 摘掉「点一下唤醒声音」那组一次性监听。没挂过就是 null */
+  let unlockAudio: (() => void) | null = null
+  /** 补帧的定时器：暂停和销毁时要一起收掉 */
+  const catchupTimers = new Set<number>()
+  const clearCatchup = () => {
+    for (const id of catchupTimers) window.clearTimeout(id)
+    catchupTimers.clear()
+  }
   /** 自己插进去的音量节点：jsnes 的 AudioWorklet 是直连 destination 的，中间没有增益 */
   let gain: GainNode | null = null
   let volume = 1
@@ -272,10 +285,17 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       ft.generateFrame()
       ft.onWriteFrame()
 
-      // 多出来的帧摊到下一拍之前跑完，只算不画（和原版一样）
+      // 多出来的帧摊到下一拍之前跑完，只算不画（和原版一样）。
+      // ⚠️ 定时器 id 必须留着：不收的话，切游戏 / 暂停正好撞上一次卡顿时，
+      // 还有最多三帧会打在已经拆掉的实例上（抛异常）或者让暂停后的画面又往前走几帧
       const timeToNextFrame = interval - excess
       for (let i = 1; i < numFrames; i++) {
-        window.setTimeout(() => ft.generateFrame(), (i * timeToNextFrame) / numFrames)
+        const id = window.setTimeout(() => {
+          catchupTimers.delete(id)
+          if (destroyed) return
+          ft.generateFrame()
+        }, (i * timeToNextFrame) / numFrames)
+        catchupTimers.add(id)
       }
     }
   }
@@ -347,6 +367,33 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     const node = speakers?.node
     if (destroyed || !speakers || !ctx || !node) return
 
+    /**
+     * AudioContext 得自己叫醒。
+     *
+     * 这个 context 是 Browser 构造函数里建的，而那是在 `await import('jsnes')` 和 ROM 下载
+     * **之后** —— 离玩家点「开始」已经隔了两趟网络。Chrome 靠 sticky activation 还能直接
+     * running，Safari / iOS 要求 resume() 发生在手势处理里，于是它一直 suspended：
+     * 画面照跑（帧时钟走 rAF，跟音频无关），声音一点没有，玩家也看不出为什么。
+     * 顺带还坑录像：captureSources 交出去的 gain 挂在睡着的 context 上，录出来是哑的。
+     *
+     * 先试着直接 resume；还醒不了就挂一次性的手势监听，玩家按第一个键或点一下就活了。
+     */
+    if (ctx.state === 'suspended') {
+      void ctx.resume().catch(() => {})
+      if (ctx.state === 'suspended' && !unlockAudio) {
+        const wake = () => {
+          void ctx.resume().catch(() => {})
+          unlockAudio?.()
+          unlockAudio = null
+        }
+        const events = ['pointerdown', 'touchend', 'keydown'] as const
+        for (const ev of events) window.addEventListener(ev, wake, { once: true, passive: true })
+        unlockAudio = () => {
+          for (const ev of events) window.removeEventListener(ev, wake)
+        }
+      }
+    }
+
     // 一、采样率
     const nes = browser?.nes
     if (nes?.papu && nes.opts && ctx.sampleRate > 0 && nes.opts.sampleRate !== ctx.sampleRate) {
@@ -410,7 +457,20 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       clearBrokenGamepadConfig()
       browser = new Browser({
         container: host,
-        onError: (err: Error) => options.onError?.(fmt(rt.jsnesRunFailed, { msg: err.message })),
+        /**
+         * 这是**运行期**的错误通道，游戏跑起来之后还会来。播放器把 onReady 之后的 onError
+         * 当成「这局完了」直接拆会话（进度全丢），而 jsnes 遇到一个不认识的操作码、
+         * 或者销毁时残留的补帧撞上已经拆掉的实例，都会走到这儿 —— 那不该让玩家赔上一小时的进度。
+         * 开局前照报（还能自动重试一次），开局后只留痕。
+         */
+        onError: (err: Error) => {
+          if (destroyed) return
+          if (readyFired) {
+            console.warn('[jsnes] 运行期错误（不拆会话）', err)
+            return
+          }
+          options.onError?.(fmt(rt.jsnesRunFailed, { msg: err.message }))
+        },
       }) as unknown as JsnesBrowser
 
       try {
@@ -443,6 +503,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       // 音频要等 AudioWorklet 加载完才能接，不能在这里同步做（见 attachAudio 的说明）
       void attachAudio()
 
+      readyFired = true
       options.onReady?.()
       options.onStart?.()
     } catch (e) {
@@ -459,6 +520,8 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     volume,
     setPaused: (paused) => {
       if (paused) {
+        // 补帧的定时器要一起收：否则暂停之后画面还会往前走一两帧
+        clearCatchup()
         browser?.stop?.()
         // Speakers.stop() 把 AudioContext 关了，手上这个 gain 已经是死的
         gain = null
@@ -481,12 +544,40 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     saveState: async () => {
       const nes = browser?.nes
       if (!nes) return null
-      return new Blob([JSON.stringify(nes.toJSON())], { type: 'application/json' })
+      const state = nes.toJSON() as unknown
+      // toJSON 拿不到东西时 JSON.stringify 返回的是 undefined，new Blob([undefined])
+      // 会生成一个 9 字节、内容是「undefined」的文件 —— 工具栏只判 !blob，
+      // 那份垃圾会被当成存档推上云端，盖掉玩家上一份好的
+      if (!state || typeof state !== 'object') return null
+      const json = JSON.stringify({ tag: STATE_TAG, game: options.gameName, state })
+      if (!json) return null
+      return new Blob([json], { type: 'application/json' })
     },
     loadState: async (data) => {
       const nes = browser?.nes
       if (!nes) return
-      nes.fromJSON(JSON.parse(new TextDecoder().decode(data)))
+      let file: unknown
+      try {
+        file = JSON.parse(new TextDecoder().decode(data))
+      } catch {
+        throw new Error(rt.stateBad)
+      }
+      /**
+       * 认一遍再喂给 fromJSON。文件选择器什么都收得下，而 fromJSON 是照着自己的
+       * 属性表往活着的模拟器里抄 —— 喂一份别的 JSON（Flash 存档、别的模拟器的存档）
+       * 进去，等于把 CPU 寄存器和内存写成 undefined：画面变雪花，而工具栏还报「读档完成」，
+       * 正在玩的进度当场没了。
+       */
+      const wrapped = file as { tag?: string; state?: unknown } | null
+      const state =
+        wrapped && wrapped.tag === STATE_TAG
+          ? wrapped.state
+          : // 老版本存的是裸 state，认一个 jsnes 一定有的字段
+            file && typeof file === 'object' && 'cpu' in (file as object)
+            ? file
+            : null
+      if (!state || typeof state !== 'object') throw new Error(rt.stateBad)
+      nes.fromJSON(state)
     },
     // 录声音接在自己插的 gain 上：录到的就是玩家听到的
     captureSources: (): CaptureSources => ({
@@ -496,6 +587,9 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     }),
     destroy: () => {
       destroyed = true
+      clearCatchup()
+      unlockAudio?.()
+      unlockAudio = null
       window.removeEventListener('resize', onResize)
       gamepad?.stop()
       gamepad = null

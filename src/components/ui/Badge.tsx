@@ -19,14 +19,22 @@ export function Badge({
   tone = 'neutral',
   className,
   pixel,
+  title,
+  'aria-label': ariaLabel,
 }: {
   children: ReactNode
   tone?: Tone
   className?: string
   pixel?: boolean
+  /** 悬停说明。只画一个表情的徽章（比如房间卡上的 👋）必须给，否则鼠标党无从知道它是什么 */
+  title?: string
+  /** 读屏用。同上：表情本身对读屏器是噪音，真正的意思要写在这里 */
+  'aria-label'?: string
 }) {
   return (
     <span
+      title={title}
+      aria-label={ariaLabel}
       className={cx(
         'inline-flex items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-0.5 text-[11px] font-semibold leading-4',
         pixel && 'text-pixel text-[11px]',

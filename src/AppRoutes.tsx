@@ -16,6 +16,7 @@ import { PostPage } from '@/pages/PostPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { ProfilePage } from '@/pages/ProfilePage'
 import { AboutPage } from '@/pages/AboutPage'
+import { WeiboCallbackPage } from '@/pages/WeiboCallbackPage'
 
 /**
  * 后台整块按需加载。
@@ -63,6 +64,9 @@ export function AppRoutes() {
           <Route path="/blog" element={<BlogPage />} />
           <Route path="/blog/:slug" element={<PostPage />} />
           <Route path="/login" element={<LoginPage />} />
+          {/* 微博授权回调。路径写死、且不带语言前缀 —— 微博开放平台只认一个「授权回调页」，
+              必须和后端 WEIBO_REDIRECT_URI 完全一致。登完由页面自己整页跳回原来的语言站 */}
+          <Route path="/auth/weibo/callback" element={<WeiboCallbackPage />} />
           <Route path="/me" element={<ProfilePage />} />
           <Route path="/about" element={<AboutPage />} />
           {COMING_SOON_ROUTES.map((path) => (

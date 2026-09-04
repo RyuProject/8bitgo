@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { cx } from '@/lib/format'
 import { Button, buttonClasses } from '@/components/ui/Button'
 import { closeAuthModal, useAuthModalOpen } from '@/services/authModal'
-import { login, loginWithEmailCode, loginWithGoogle, requestEmailCode, useCurrentUser } from '@/services/auth'
+import { login, loginWithEmailCode, loginWithGoogle, requestEmailCode, startWeiboLogin, useCurrentUser } from '@/services/auth'
 import { ApiError } from '@/services/api'
 import { useT, fmt } from '@/services/i18n'
 import { FEATURES } from '@/config/features'
@@ -141,6 +141,26 @@ export function AuthModal() {
     } catch (err) {
       setError(err instanceof Error ? err.message : t.auth.googleFailed)
     } finally {
+      setBusy(false)
+    }
+  }
+
+  /**
+   * 微博走整页跳转：顺利的话下一行代码根本不会执行，页面已经在微博那边了。
+   * 所以这里**不关弹窗、不清 busy** —— 关掉反而会在跳走前闪一下。
+   * 只有拿授权地址就失败（没配、断网）才会走到 catch，那时才需要把按钮放开。
+   *
+   * 无后端的本地演示模式下 startWeiboLogin 会直接建个演示账号并立即返回，
+   * 弹窗由「登录成功后自动关闭」那个 effect 收掉。
+   */
+  const weibo = async () => {
+    if (busy) return
+    setError(null)
+    setBusy(true)
+    try {
+      await startWeiboLogin()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t.auth.weiboFailed)
       setBusy(false)
     }
   }
@@ -296,11 +316,18 @@ export function AuthModal() {
           <span className="h-px flex-1 bg-line" />
         </div>
 
-        {/* Google */}
-        <Button variant="secondary" size="lg" className="w-full" onClick={google} disabled={busy}>
-          <GoogleIcon />
-          {t.auth.google}
-        </Button>
+        {/* 第三方登录。两个按钮竖排：文案长度差得多（「使用微博登录」比
+            「使用谷歌账号登录」短一截），并排会一宽一窄，很难看齐 */}
+        <div className="space-y-3">
+          <Button variant="secondary" size="lg" className="w-full" onClick={google} disabled={busy}>
+            <GoogleIcon />
+            {t.auth.google}
+          </Button>
+          <Button variant="secondary" size="lg" className="w-full" onClick={weibo} disabled={busy}>
+            <WeiboIcon />
+            {t.auth.weibo}
+          </Button>
+        </div>
 
         {/* 条款 */}
         <p className="mt-6 text-center text-xs leading-relaxed text-muted">
@@ -316,6 +343,26 @@ export function AuthModal() {
         </p>
       </div>
     </div>
+  )
+}
+
+function WeiboIcon() {
+  // 微博官方标识的「眼睛」轮廓，单色描边版。品牌色 #E6162D
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden>
+      <path
+        fill="#E6162D"
+        d="M10.1 20.9c-4.3 0-7.8-2.1-7.8-4.7 0-1.4.9-2.9 2.4-4.2 2-1.8 4.4-2.6 5.3-1.8.4.4.4 1 .2 1.7-.1.4.3.2.3.2 1.6-.7 3-.7 3.5.1.3.4.2 1-.1 1.7-.1.3 0 .4.2.4 1 .3 2.1 1 2.1 2.3 0 2.1-3 4.3-6.1 4.3zm-.5-7.3c-2.2.2-3.9 1.6-3.8 3.1.1 1.5 2 2.5 4.2 2.3 2.2-.2 3.9-1.6 3.8-3.1-.1-1.5-2-2.5-4.2-2.3z"
+      />
+      <path
+        fill="#E6162D"
+        d="M9.4 15.1c-.7.1-1.2.7-1.1 1.3.1.6.7 1 1.4.9.7-.1 1.2-.6 1.1-1.2-.1-.6-.7-1.1-1.4-1zM18.8 11.4c-.4 0-.7-.3-.7-.7 0-1.6-1.3-2.9-2.9-2.9-.4 0-.7-.3-.7-.7s.3-.7.7-.7c2.4 0 4.3 1.9 4.3 4.3 0 .4-.3.7-.7.7z"
+      />
+      <path
+        fill="#E6162D"
+        d="M21.7 11.9c-.5 0-.8-.4-.8-.8 0-2.9-2.4-5.3-5.3-5.3-.5 0-.8-.4-.8-.8s.4-.8.8-.8c3.8 0 6.9 3.1 6.9 6.9 0 .4-.4.8-.8.8z"
+      />
+    </svg>
   )
 }
 

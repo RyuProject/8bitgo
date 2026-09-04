@@ -231,7 +231,13 @@ CREATE TABLE IF NOT EXISTS users (
   role          ENUM('user','volunteer','admin')    NOT NULL DEFAULT 'user',
   status        ENUM('active','banned') NOT NULL DEFAULT 'active',
   created_at    TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  -- 微博登录的唯一身份。微博开放平台不发邮箱权限，所以微博账号的 email 列填的是
+  -- weibo_<uid>@weibo.invalid 这样的占位值，真正认人的是这一列 ——
+  -- 用户以后换绑真实邮箱，微博绑定也不会跟着丢。
+  -- NULL 不参与唯一索引，所以非微博账号全空着也不冲突。
+  weibo_uid     VARCHAR(32)   NULL,
   UNIQUE KEY uniq_email (email),
+  UNIQUE KEY uniq_weibo_uid (weibo_uid),
   KEY idx_role (role, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
