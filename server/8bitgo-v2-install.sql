@@ -230,6 +230,10 @@ CREATE TABLE IF NOT EXISTS users (
   coins         INT UNSIGNED  NOT NULL DEFAULT 0,
   role          ENUM('user','volunteer','admin')    NOT NULL DEFAULT 'user',
   status        ENUM('active','banned') NOT NULL DEFAULT 'active',
+  -- 出生日期（成人内容年龄验证）。填一次就锁定：应用层只在 birth_date IS NULL 时写入，
+  -- 填错由管理员在后台清掉再重填。满不满 18 不另存布尔列 —— 每次按今天现算，
+  -- 到生日当天自动放行，不需要定时任务。
+  birth_date    DATE          NULL DEFAULT NULL,
   created_at    TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uniq_email (email),
   KEY idx_role (role, status)

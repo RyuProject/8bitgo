@@ -11,7 +11,9 @@
 import express from 'express'
 import { createServer } from 'node:http'
 import { io as client } from 'socket.io-client'
-import { attachNetplay } from '../src/netplay.js'
+// 12 个观众全从 127.0.0.1 进来：每房间每 IP 的成员上限要关掉（那条规则在 test-netplay-hardening.mjs 里测）
+process.env.NETPLAY_MAX_MEMBERS_PER_IP = '0'
+const { attachNetplay } = await import('../src/netplay.js')
 
 let failed = 0
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))

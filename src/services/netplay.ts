@@ -190,18 +190,45 @@ const apiBase = () => NETPLAY_URL.replace(/\/netplay$/, '')
  * ⚠️ 以前这里把令牌塞进了 `x-netplay-user` —— 服务端拿它当 userid 比对，永远 403，
  * 房主的进度托管其实一直没在工作；而没拿到令牌时退回 userid 的那条路又是任何访客都能伪造的。
  */
-export async function uploadState(roomId: string, token: string, state: Uint8Array): Promise<boolean> {
+/**
+ * keepalive 请求体的上限（Chrome / Firefox 都是 64KB，超了 fetch 直接抛 TypeError）。
+ * 留点余量给头部。
+ */
+const KEEPALIVE_MAX_BYTES = 60 * 1024
+
+export async function uploadState(
+  roomId: string,
+  token: string,
+  state: Uint8Array,
+  opts: { keepalive?: boolean } = {},
+): Promise<boolean> {
   if (!token) return false
+  const url = `${apiBase()}/api/netplay/rooms/${encodeURIComponent(roomId)}/state`
+  const headers = { 'content-type': 'application/octet-stream', 'x-netplay-token': token }
   try {
-    let body: BodyInit = state as BodyInit
+    /**
+     * 关页面（pagehide）前的补传：普通 fetch 会跟着页面一起被撕掉，等于白发 —— 以前这一步
+     * 从来没真正传出去过，接手的人拿到的永远是上一轮定时上传的进度。
+     * keepalive 让浏览器在页面卸载后继续把请求发完，但只允许 64KB 以内的请求体，
+     * 而且 pagehide 之后的异步续接（压缩）未必来得及跑。所以：
+     *   · 原始存档够小 → 不压缩、不 await，直接 keepalive 发出去（NES / GB 之类几十 KB）
+     *   · 太大 → 先压，压完能塞进 64KB 就 keepalive，否则只能尽力普通发一次
+     */
+    if (opts.keepalive && state.byteLength <= KEEPALIVE_MAX_BYTES) {
+      const res = await fetch(url, { method: 'POST', headers, body: state as BodyInit, keepalive: true })
+      return res.ok
+    }
+    let body: Blob | Uint8Array = state
     if (typeof CompressionStream === 'function') {
       const stream = new Blob([state as BlobPart]).stream().pipeThrough(new CompressionStream('gzip'))
       body = await new Response(stream).blob()
     }
-    const res = await fetch(`${apiBase()}/api/netplay/rooms/${encodeURIComponent(roomId)}/state`, {
+    const size = body instanceof Blob ? body.size : body.byteLength
+    const res = await fetch(url, {
       method: 'POST',
-      headers: { 'content-type': 'application/octet-stream', 'x-netplay-token': token },
-      body,
+      headers,
+      body: body as BodyInit,
+      keepalive: Boolean(opts.keepalive) && size <= KEEPALIVE_MAX_BYTES,
     })
     return res.ok
   } catch {

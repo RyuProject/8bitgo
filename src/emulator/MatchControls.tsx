@@ -54,9 +54,19 @@ export function MatchControls({
         onClick={open ? onClose : onOpen}
         disabled={busy}
         title={open ? tp.matchStopHint : fmt(tp.matchHint, { max: String(maxPlayers) })}
+        aria-label={busy ? tp.matchOpening : open ? tp.matchStop : tp.match}
         aria-pressed={open}
       >
-        {busy ? tp.matchOpening : open ? `🎮 ${tp.matchStop}` : `🎮 ${tp.match}`}
+        {/*
+          手机上只留 🎮 这个符号，文字进 title / aria-label。
+          工具栏在 360pt 的屏幕上要收在一行里，「🎮 联机匹配」四个字就是让它折成两行的那根稻草，
+          而折出来的那一行是从画面高度里扣的。开房中的那一小会儿照样显示文字 —— 是在变的状态，
+          光一个符号说不清。
+        */}
+        <span aria-hidden>🎮</span>
+        <span className={busy ? undefined : 'hidden sm:inline'}>
+          {busy ? tp.matchOpening : open ? tp.matchStop : tp.match}
+        </span>
       </button>
     </div>
   )

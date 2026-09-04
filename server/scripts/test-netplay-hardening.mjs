@@ -7,6 +7,10 @@ import express from 'express'
 import { io as ioc } from 'socket.io-client'
 // 每 IP 上限是模块加载时读的，先设好再 import（测试里所有连接都是 127.0.0.1）
 process.env.NETPLAY_MAX_ROOMS_PER_IP = '3'
+// 每房间每 IP 的成员上限运行中现读 env，默认关掉，下面「第三批」里单独开一下测
+process.env.NETPLAY_MAX_MEMBERS_PER_IP = '0'
+// 存档总预算压到 64 字节：正常上传的 'SAVEDATA' 8 字节能过，第三批里试一份 100 字节的
+process.env.NETPLAY_STATE_BUDGET_BYTES = '64'
 const { attachNetplay } = await import('../src/netplay.js')
 import { iceRouter } from '../src/routes/ice.js'
 
@@ -264,6 +268,116 @@ ok(idxBefore === 1 && idxAfter === 1, `观众上场后 p2 的手柄号不变（$
 ok(Object.keys(usersAfter).indexOf('p1') === 2, '新上场的人排在玩家组末尾')
 rHost.close(); rSpec.close(); rP2.close()
 void rHostTok
+
+console.log('\n── 第三批：跨房间注入 ──')
+/**
+ * socket.io 里每条连接都自动在一个以自己 socket.id 命名的房间里，nsp.to(socketId) 靠它点对点投递。
+ * 房间 id 是客户端给的 —— 把 sessionid 填成别人的 socket.id（users-updated 会把全屋 socketId
+ * 广播给每个成员，观众也拿得到），以前就等于加入了那个人的私有房间：他「自己房间」里的
+ * users-updated / data-message 全投到受害者身上，实测能远程 restart 别人的游戏、灌 sync-control。
+ */
+const victimMsgs = []
+const victimUsers = []
+host.on('data-message', (d) => victimMsgs.push(d))
+host.on('users-updated', (u) => victimUsers.push(u))
+const squat = await connect()
+const squatAck = await new Promise((r) => squat.emit('open-room', { extra: extra(host.id, 'u-squat'), maxPlayers: 2, password: '' }, r))
+await sleep(80)
+squat.emit('data-message', { restart: true, 'sync-control': [{ frame: 1, connected_input: [0, 8, 1] }] })
+await sleep(150)
+ok(squatAck == null || typeof squatAck === 'string', '用别人的 socket.id 当房间 id 开房（服务端可以放行也可以拒）')
+ok(!victimMsgs.some((d) => d.restart || d['sync-control']), '别的房间的控制消息投不到这条连接上')
+ok(!victimUsers.some((u) => u['u-squat']), '别的房间的成员表投不到这条连接上')
+squat.close()
+await sleep(80)
+
+console.log('\n── 第三批：整数形 userid / 非法 id ──')
+/**
+ * "7" 这类字串当对象键会被 JS 排到最前面，users-updated 的键序一乱，屋里每个人的
+ * getUserIndex() 都错位：房主从 0 变 1，正常访客的按键和服务端 playerIndexOf 对不上被全丢。
+ */
+const seven = await connect()
+ok((await new Promise((r) => seven.emit('join-room', { extra: extra('r1', '7'), password: '' }, (e) => r(e)))) === 'bad userid', '整数形 userid 进房被拒')
+ok((await new Promise((r) => seven.emit('open-room', { extra: extra('r-int', '12345'), maxPlayers: 2 }, r))) === 'bad userid', '整数形 userid 开房被拒')
+ok((await new Promise((r) => seven.emit('open-room', { extra: extra('bad id/with spaces', 'u-x'), maxPlayers: 2 }, r))) === 'bad request', '房间 id 只许字母数字下划线短横线')
+ok((await new Promise((r) => seven.emit('open-room', { extra: 'not-an-object', maxPlayers: 2 }, r))) === 'bad request', 'extra 不是对象直接拒，不抛')
+seven.close()
+let orderSeen = null
+host.on('users-updated', (u) => (orderSeen = Object.keys(u)))
+const dash = await connect()
+await new Promise((r) => dash.emit('join-room', { extra: extra('r1', 'u-dash-9'), password: '' }, r))
+await sleep(100)
+ok(orderSeen && orderSeen[0] === 'u-host', `正常 id 进房后房主仍排第一（${orderSeen?.join(',')}）`)
+dash.close()
+await sleep(80)
+
+console.log('\n── 第三批：畸形 payload 不转发 ──')
+// 引擎的 dataMessage(t) 直接读 t.pause、t["sync-control"].forEach —— null / 字串 / 数组 / 非数组的 sync-control 都会让屋里每个人抛 TypeError
+hostGot.length = 0
+guest.emit('data-message', null)
+guest.emit('data-message', 'hello')
+guest.emit('data-message', [1, 2])
+guest.emit('data-message', { 'sync-control': { frame: 1 } })
+guest.emit('data-message', { 'sync-control': 'x', chat: 'keep me' })
+await sleep(150)
+ok(!hostGot.some((d) => d === null || typeof d !== 'object' || Array.isArray(d)), '非对象 payload 一律丢掉')
+ok(!hostGot.some((d) => d && 'sync-control' in d), '非数组的 sync-control 被摘掉')
+ok(hostGot.some((d) => d && d.chat === 'keep me'), '同包里的其它字段照常')
+guestGot.length = 0
+host.emit('data-message', { 'sync-control': { frame: 1 }, chat: 'host says' })
+await sleep(150)
+ok(guestGot.some((d) => d.chat === 'host says') && !guestGot.some((d) => 'sync-control' in d), '房主发的畸形 sync-control 同样被摘掉')
+guest.emit('webrtc-signal', 'not-an-object')
+guest.emit('webrtc-signal', null)
+await sleep(80)
+ok(true, '畸形 webrtc-signal 不抛（服务器还活着）')
+
+console.log('\n── 第三批：公开列表不放大 ──')
+const bloat = await connect()
+await new Promise((r) => bloat.emit('open-room', { extra: { ...extra('r-bloat', 'u-bloat'), game_id: { junk: 'x'.repeat(5000) }, player_name: 'N'.repeat(5000), custom: 'y'.repeat(5000) }, maxPlayers: 2 }, r))
+await sleep(80)
+const bloatRoom = await (await fetch(`${base}/api/netplay/rooms/r-bloat`)).json()
+ok(bloatRoom.gameId === null, 'game_id 不是数字 / 短字串就丢掉（对象不进列表）')
+ok(bloatRoom.host.nickname.length <= 32 && bloatRoom.members[0].nickname.length <= 32, '昵称截到 32')
+let bloatUsers = null
+const bloatPeer = await connect()
+await new Promise((r) => bloatPeer.emit('join-room', { extra: extra('r-bloat', 'u-bloat-2'), password: '' }, (e, u) => { bloatUsers = u; r() }))
+ok(bloatUsers && !('custom' in bloatUsers['u-bloat']) && bloatUsers['u-bloat'].player_name.length <= 32, 'users-updated 只带引擎会读的字段、昵称截断')
+ok(bloatUsers && !('ip' in bloatUsers['u-bloat']) && !('token' in bloatUsers['u-bloat']), 'users-updated 不泄露 ip / 令牌')
+bloat.close(); bloatPeer.close()
+await sleep(80)
+
+console.log('\n── 第三批：信令限流 ──')
+let sigGot = 0
+host.on('webrtc-signal', (d) => { if (d.candidate === 'flood') sigGot++ })
+for (let i = 0; i < 80; i++) guest.emit('webrtc-signal', { target: host.id, candidate: 'flood' })
+await sleep(250)
+ok(sigGot > 0 && sigGot <= 40, `访客每秒最多 40 条信令（收到 ${sigGot}）`)
+await sleep(1100)
+let renegGot = 0
+host.on('webrtc-signal', (d) => { if (d.requestRenegotiate) renegGot++ })
+for (let i = 0; i < 12; i++) guest.emit('webrtc-signal', { target: host.id, requestRenegotiate: true })
+await sleep(250)
+ok(renegGot > 0 && renegGot <= 5, `requestRenegotiate 每 10 秒最多 5 条（收到 ${renegGot}）`)
+
+console.log('\n── 第三批：同一 IP 占不满一屋 ──')
+process.env.NETPLAY_MAX_MEMBERS_PER_IP = '2'
+const capHost = await connect()
+await new Promise((r) => capHost.emit('open-room', { extra: extra('r-cap', 'u-cap-h'), maxPlayers: 4 }, r))
+const capG1 = await connect()
+const capE1 = await new Promise((r) => capG1.emit('join-room', { extra: extra('r-cap', 'u-cap-1'), password: '' }, (e) => r(e)))
+const capG2 = await connect()
+const capE2 = await new Promise((r) => capG2.emit('join-room', { extra: extra('r-cap', 'u-cap-2'), password: '' }, (e) => r(e)))
+ok(capE1 == null, '同一 IP 第 2 个成员能进（房主算第 1 个）')
+ok(capE2 === 'too many players from your network', '同一 IP 超过上限被拒')
+process.env.NETPLAY_MAX_MEMBERS_PER_IP = '0'
+capHost.close(); capG1.close(); capG2.close()
+await sleep(80)
+
+console.log('\n── 第三批：存档预算 ──')
+const big = await fetch(`${base}/api/netplay/rooms/r1/state`, { method: 'POST', headers: { 'content-type': 'application/octet-stream', 'x-netplay-token': hostToken }, body: Buffer.alloc(100, 1) })
+ok(big.status === 507, `超出总预算的存档被拒（${big.status}）`)
+ok((await put(hostToken)).ok, '预算内的照常')
 
 console.log('\n── ICE 下发 ──')
 const ice1 = await (await fetch(`${base}/api/netplay/ice`)).json()

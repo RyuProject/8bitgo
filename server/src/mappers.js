@@ -10,6 +10,7 @@
  */
 
 import { normalizeDosboxConfigOverride } from '../../shared/dosbox-config.js'
+import { isAdultByBirthDate } from '../../shared/age.js'
 
 /**
  * 数据库布尔列的唯一判断方式。
@@ -413,6 +414,8 @@ export function postApiToRow(p) {
 
 /** 用户行 -> 对外公开信息（不含密码）。favorites / recents 单独查后传入 */
 export function userRowToPublic(r, favorites = [], recent = []) {
+  // 老库还没跑 migrate 时这一列读出来是 undefined，当「没填」处理，读接口不该因此报错
+  const birthDate = r.birth_date ? dateOnly(r.birth_date) : null
   return {
     id: r.id,
     email: r.email,
@@ -422,6 +425,14 @@ export function userRowToPublic(r, favorites = [], recent = []) {
     role: r.role,
     status: r.status,
     createdAt: dateOnly(r.created_at),
+    /**
+     * 出生日期与「现在能不能玩成人内容」。
+     * 这两个字段只走本人（/api/auth/me、/api/me/*）和后台（/api/users）的接口 ——
+     * 评论区那套 commentRowToApi 不经过这里，不会把别人的出生日期发到公开页面。
+     * adultVerified 每次现算（shared/age.js）：未满 18 的账号到生日当天自然变 true。
+     */
+    birthDate,
+    adultVerified: isAdultByBirthDate(birthDate),
     /**
      * 只回「有没有密码」，不回哈希。
      * 前端要靠它决定改密码时是否需要先问旧密码：验证码登录的账号从来没设过密码，

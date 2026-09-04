@@ -125,6 +125,8 @@ CREATE TABLE IF NOT EXISTS users (
   coins         INTEGER NOT NULL DEFAULT 0,
   role          TEXT    NOT NULL DEFAULT 'user'   CHECK (role   IN ('user','volunteer','admin')),
   status        TEXT    NOT NULL DEFAULT 'active' CHECK (status IN ('active','banned')),
+  -- 出生日期 YYYY-MM-DD（成人内容年龄验证）。填一次就锁定，应用层只在 NULL 时写入
+  birth_date    TEXT,
   created_at    TEXT    NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
 

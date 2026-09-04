@@ -177,6 +177,9 @@ export interface ResolveContext {
  * 好让开局提示知道该不该出现 —— 两个都不声明的引擎（Ruffle / html5）手机上是真没按键，
  * 提示里说「手柄在下面」只会让玩家白找一圈。
  */
+/** 播放器告诉运行时的「场合」，见 RuntimeHandle.setStageMode */
+export type StageMode = 'play' | 'monitor' | 'free'
+
 export type Capability =
   | 'pause'
   | 'saveState'
@@ -334,6 +337,25 @@ export interface RuntimeHandle {
    * 当前状态不另外给 getter —— 看 caps 里有没有 'enginePad' 就行，它是同一份真相。
    */
   setEnginePad?: (show: boolean) => void
+  /**
+   * 告诉运行时「这块画面现在是什么场合」。目前只有 EmulatorJS 实现（它的按键和画布都在
+   * 自己的 iframe 里，外层 CSS 够不着）；不实现就等于「这引擎没这回事」，播放器跳过这一步。
+   *
+   *  · 'play'    手机上的游玩布局（EmulatorPlayer 的 playMode）：舞台 fixed 铺满视口，画面在上、
+   *              按键在下。引擎容器加 touch-action:none —— iOS 会把非滚动 iframe 里的滑动手势
+   *              链到外层文档去，手指在画面上一划底下的详情页就跟着走了。竖屏时画布给按键让位
+   *              那条不靠这个模式，它看 iframe 自己的朝向就够了（见 adapters/emulatorjs.ts）。
+   *  · 'monitor' 手机上退出沉浸之后，游戏还在详情页那个 4:3 小框里跑。引擎的按键是
+   *              `position:absolute; bottom:50px` 贴着容器底部画的，小框只有画面那么高，
+   *              十字键 / ABXY / 选择开始全压在画面上 —— 既按不到（框太小）又把画面挡了
+   *              （用户截图里那种「拳皇 99 被按键糊满」）。这时这块画面只是个**监视器**，
+   *              整套按键收起、画面完整露出；玩家点画面回 'play' 再放出来。
+   *              为什么不复用 setEnginePad(false)：那会改写玩家的偏好并连带 caps 里的 enginePad，
+   *              回来时得猜「原来到底开着没有」—— NDS 默认收起、玩家在 🎮 里关过的也要尊重，
+   *              猜不准。这是独立的一层，偏好原样保留。
+   *  · 'free'    其余场合（桌面、原生全屏）：引擎默认行为。
+   */
+  setStageMode?: (mode: StageMode) => void
   /**
    * 反转鼠标的上下方向。只影响**相对**鼠标（指针锁定那一路），不碰绝对坐标。
    *

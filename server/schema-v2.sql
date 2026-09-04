@@ -247,6 +247,10 @@ CREATE TABLE IF NOT EXISTS users (
   coins         INT UNSIGNED  NOT NULL DEFAULT 0,
   role          ENUM('user','volunteer','admin')    NOT NULL DEFAULT 'user',
   status        ENUM('active','banned') NOT NULL DEFAULT 'active',
+  -- 出生日期（成人内容年龄验证）。填一次就锁定：应用层只在 birth_date IS NULL 时写入，
+  -- 填错由管理员在后台清掉再重填。满不满 18 不另存布尔列 —— 每次按今天现算，
+  -- 到生日当天自动放行，不需要定时任务。
+  birth_date    DATE          NULL DEFAULT NULL,
   -- 令牌版本。JWT 是无状态的，签出去就收不回来 —— 「退出所有设备」和「改完密码踢掉旧会话」
   -- 都靠把这个数 +1 实现：带旧版本号的令牌在 requireUser 里当场作废。
   -- 详见 src/auth.js 的 signToken 注释。

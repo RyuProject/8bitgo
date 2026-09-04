@@ -65,6 +65,10 @@ usersRouter.patch('/:id', async (req, res, next) => {
     const { id } = req.params
     const target = await queryOne('SELECT id, role, status FROM users WHERE id = ?', [id])
     if (!target) return res.status(404).json({ error: '用户不存在' })
+    // 参数校验放在任何写操作之前：同一个请求里带了别的字段时，不能改了一半再报错
+    if (req.body.birthDate !== undefined && req.body.birthDate !== null) {
+      return res.status(400).json({ error: 'birthDate 只能清除（传 null），不能由后台代填' })
+    }
 
     if (req.body.coinsDelta !== undefined) {
       const delta = Math.trunc(Number(req.body.coinsDelta))
@@ -105,6 +109,15 @@ usersRouter.patch('/:id', async (req, res, next) => {
         }
       }
       await query('UPDATE users SET status = ? WHERE id = ?', [req.body.status, id])
+    }
+
+    /**
+     * 清除出生日期（成人内容年龄验证）。
+     * 用户自己填一次就锁死（见 routes/me.js 的 PUT /birth-date），填错了只能从这里清掉让他重填。
+     * 只接受 null —— 后台不代填：出生日期是本人的声明，管理员替人填一个成年日期等于替人担责。
+     */
+    if (req.body.birthDate === null) {
+      await query('UPDATE users SET birth_date = NULL WHERE id = ?', [id])
     }
 
     res.json({ ok: true })

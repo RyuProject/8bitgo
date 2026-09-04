@@ -25,7 +25,16 @@
 import type { PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { platformLabel } from '@/services/i18nData'
-import type { Capability, CaptureSources, LoadPhase, LoadProgress, MountOptions, Runtime, RuntimeHandle } from '../types'
+import type {
+  Capability,
+  CaptureSources,
+  LoadPhase,
+  LoadProgress,
+  MountOptions,
+  Runtime,
+  RuntimeHandle,
+  StageMode,
+} from '../types'
 import { fetchWithProgress, throttleProgress } from '../loadProgress'
 import { romCacheGet, romCacheKey, romCachePut } from '../romCache'
 import { focusFrame, frameGamepads } from '../frameFocus'
@@ -33,6 +42,7 @@ import { getT, fmt } from '@/services/i18n'
 import { getLang } from '@/services/lang'
 import type { Lang } from '@/config/languages'
 import { ICE_SERVERS, NETPLAY_URL, fetchIceConfig, gameIdFor, netplayUrlForFrame, socketIoScriptUrl, uploadState } from '@/services/netplay'
+import { guardInputChannel } from '../netplayGuard'
 import { isZip, listZipEntries } from '@/lib/unzip'
 import { matchArcadeHack, type ArcadeHack } from '@/data/arcadeHacks'
 
@@ -296,6 +306,13 @@ const VIDEO_MAX_FPS = 60
  */
 const STATE_UPLOAD_MS = 10_000
 /**
+ * 开房 / 进房最多等多久。信令握手 + open-room 的 ack 正常一两秒；移动网络、跨洋线路慢一些也就几秒。
+ * 以前是 1 秒后看到 socket 没连上就按「房主断线」处理 —— 握手慢一点的正常用户开房就被拆掉。
+ */
+const JOIN_TIMEOUT_MS = 20_000
+/** 信令报过 connect_error 且这么久还没连上，就不用等满 JOIN_TIMEOUT_MS 了（Mixed Content、服务器挂了） */
+const SIGNAL_FAIL_MS = 6_000
+/**
  * 电池存档（SRAM）主动落盘的间隔。
  *
  * 玩家在 RPG 里按的「保存」写的是 SRAM，不是快照存档 —— 这才是他们真正会心疼的东西。
@@ -342,6 +359,49 @@ const FRAME_HTML = `<!doctype html>
   }
   .ejs_virtualGamepad_parent, .ejs_virtualGamepad_parent * { touch-action: none; -webkit-touch-callout: none; }
   #game { width: 100%; height: 100%; }
+  /*
+    手机竖屏的游玩布局：容器竖着（比宽还高）时，画面缩到屏幕按键**上面**，两者不再互相压。
+
+    引擎的画布是 width/height:100% + object-fit:contain + object-position:top ——
+    「铺满容器、按比例缩、贴顶」；虚拟手柄则是 position:absolute; bottom:50px，贴着容器
+    底部画。容器够高时两者本来就各占一头，只是引擎从不保证「够高」：手机竖屏里画面按 4:3
+    是 290px 上下，手柄整套要 230px 以上（SNES/GBA 带 L/R 要 330px），容器不够高，
+    手柄就整个压到画面上 —— 用户截图里拳皇 99 被按键糊满就是这样来的。
+    这里把画布的高度扣掉手柄的实际高度（--pad-h，由适配器量出来写在 <html> 上，
+    见 refreshPadMetrics），object-fit 会把画面缩进剩下的那块里，仍然贴顶、水平居中。
+
+    只在竖着的容器里生效：横屏（手机横过来 / 桌面 / 横屏全屏）容器是宽的，画面本来就
+    占满高度、手柄落在两侧黑边里，再扣高度只会把画面压成一条。
+    !important 是为了盖住联机观众那张画布的行内样式（引擎给它写了 object-position:center）。
+  */
+  @media (orientation: portrait) {
+    .ejs_canvas {
+      height: calc(100% - var(--pad-h, 0px)) !important;
+      object-position: top center !important;
+    }
+    /*
+      SNES / GBA / 土星这几套把 L、R 挂在左右分区的 top:-100px（引擎写在行内样式里，所以要
+      !important）—— 那是给横屏设计的：让肩键靠近屏幕上角。竖着叠放时它们只是把手柄整体
+      拔高了 100px，画面就得再缩 100px（iPhone SE 上超任的画面只剩 200px 宽）。
+      收到 -45px：刚好落在 X 键（分区顶上那颗）上方 14px，手柄矮了 55px，画面等比长回来。
+      N64 的 L/R/Z 在 .ejs_virtualGamepad_top 里，不在这条规则内。
+    */
+    .ejs_virtualGamepad_left > .b_l,
+    .ejs_virtualGamepad_right > .b_r {
+      top: -45px !important;
+    }
+  }
+  /*
+    场合（RuntimeHandle.setStageMode，播放器写在 <html> 的 data-stage 上）：
+      monitor —— 手机上退出沉浸后的小框：整套按键收起，画面完整露出。用属性 + !important
+                 而不是去改引擎的 style.display，那一格是引擎自己的开关在写，我们再去写就分不清
+                 「谁关的」，放开时也不知道该恢复成什么。
+      play    —— 手机上的游玩布局：引擎容器 touch-action:none。iOS 会把非滚动 iframe 里的滑动
+                 手势链到外层文档，手指在画面上一划、底下的详情页就跟着走。引擎自己那些能滚的
+                 面板（设置菜单、联机弹窗）是各自的滚动容器，手势在它们那儿就被接住了，不受影响。
+  */
+  html[data-stage="monitor"] .ejs_virtualGamepad_parent { display: none !important; }
+  html[data-stage="play"] .ejs_parent { touch-action: none; }
 </style>
 </head>
 <body><div id="game"></div></body>
@@ -359,6 +419,8 @@ interface EjsNetplay {
   /** 把访客的按键转发给房主；观众这一侧会被换成空实现 */
   simulateInput?: (player: number, index: number, value: number) => void
   socket?: { connected?: boolean } | null
+  /** socketId → 和那个人的连接。房主这边靠它认出一条 DataChannel 对面坐的是谁（见 guardInputChannel） */
+  peerConnections?: Record<string, { pc?: RTCPeerConnection | null; dataChannel?: RTCDataChannel | null } | undefined>
 }
 interface EjsGameManager {
   getState: () => Uint8Array
@@ -758,6 +820,14 @@ function instrumentRtc(win: Window & Record<string, unknown>, onState?: (s: RTCP
       if (pc.connectionState === 'connected') restarted = false
     })
 
+    // 只有房主会主动建通道（引擎里访客走 ondatachannel），守的正是房主这一端
+    const nativeCreateDataChannel = pc.createDataChannel.bind(pc)
+    pc.createDataChannel = ((label: string, init?: RTCDataChannelInit) => {
+      const ch = nativeCreateDataChannel(label, init)
+      guardInputChannel(() => (win.EJS_emulator as EjsEmulator | undefined)?.netplay, ch, pc)
+      return ch
+    }) as typeof pc.createDataChannel
+
     const nativeAddTrack = pc.addTrack.bind(pc)
     pc.addTrack = (track: MediaStreamTrack, ...streams: MediaStream[]) => {
       // 告诉编码器这是「运动画面」，它会自己偏向保帧率
@@ -1030,6 +1100,8 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   }
   /** 服务端下发的房间令牌，上传存档要用 */
   let stateToken = ''
+  /** 信令最后一次 connect_error 的时间。轮询靠它区分「握手慢」和「连不上」 */
+  let signalErrorAt = 0
   /**
    * 把 room-token 的监听挂到 socket **诞生的那一刻**。
    *
@@ -1057,6 +1129,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
           // 重连每次都会触发，只记第一次
           let signalErrorLogged = false
           sock?.on?.('connect_error', (e: unknown) => {
+            signalErrorAt = Date.now()
             if (signalErrorLogged) return
             signalErrorLogged = true
             logEngine(`[netplay] 信令连接失败：${e instanceof Error ? e.message : String(e)}`)
@@ -1202,11 +1275,15 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     let reportedRoom = ''
     let reportedId = ''
     let tokenHooked = false
+    /** 信令连上过没有：没连上过时的「未连接」是还在握手，不是掉线 */
+    let connectedOnce = false
+    const openedAt = Date.now()
     playersTimer = window.setInterval(() => {
       if (destroyed) return
       const cur = win.EJS_emulator as EjsEmulator | undefined
       const n = cur?.netplay
       if (!n) return
+      if (n.socket?.connected) connectedOnce = true
       // 服务端在开房 / 加入成功后，会通过这条 socket 单独发一个房间令牌给本人。
       // iframe 是同源的 srcdoc，所以页面这边能直接挂监听。
       if (!tokenHooked && n.socket) {
@@ -1227,9 +1304,16 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         lastCount = count
         cfg.onPlayers?.(count)
       }
-      // 房主的房间 id 是客户端生成的，只能从 extra 里取
+      /**
+       * 房间号只在服务器 ack 之后才报。
+       * 房主的 sessionid 是引擎本地生成的，openRoom() 一调 extra 里就有了 —— 但那时 open-room
+       * 可能还卡在发送缓冲区里（信令还在握手），服务器上根本没有这个房间。以前这里一看到 sessionid
+       * 就报 onRoom，播放器紧接着去查房间、404、按「房间没了」把整局拆掉；open-room 被拒
+       * （满员、限流）时则会一直挂着一个不存在的房间。roomJoined() 是引擎收到 ack 之后才跑的，
+       * 它把 isNetplay 置 true —— 拿它当「真的进了房」的信号。
+       */
       const extra = (n as unknown as { extra?: { sessionid?: string } }).extra
-      if (extra?.sessionid && extra.sessionid !== reportedRoom) {
+      if (extra?.sessionid && cur?.isNetplay && extra.sessionid !== reportedRoom) {
         reportedRoom = extra.sessionid
         cfg.onRoom?.(extra.sessionid, n.owner)
         // 房主开始定期上传存档，掉线时新房主就能接着玩
@@ -1239,12 +1323,31 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         reportedId = n.playerID
         cfg.onIdentity?.(n.playerID)
       }
+      if (!reportedRoom) {
+        /**
+         * 一直没进成房。两种情况：信令连不上（Mixed Content、服务器挂了 —— connect_error 会先到），
+         * 或者 open-room / join-room 被拒（引擎自己会弹对话框）。给足时间，连不上才算失败；
+         * 以前 1 秒后看到 socket 没连上就按「房主断线」处理，握手慢一点的正常用户也会中招。
+         */
+        const waited = Date.now() - openedAt
+        const hopeless = signalErrorAt > openedAt && waited > SIGNAL_FAIL_MS
+        if (hopeless || waited > JOIN_TIMEOUT_MS) {
+          window.clearInterval(playersTimer)
+          try {
+            n.leaveRoom?.()
+          } catch {
+            /* 还没连上，没什么可退的 */
+          }
+          failNetplay(hopeless ? fmt(rt.netplaySignalUnreachable, { url: netplayUrlForFrame() }) : rt.netplayJoinTimeout)
+        }
+        return
+      }
       // 信令断开。EmulatorJS 的 socket 一 disconnect 就自己 leaveRoom 了 —— 不管是谁的网抖，
       // 这个 netplay 实例都已经退了房，不会自己重连回去。所以两边都得告诉播放器：
       //   访客：多半是自己网络抖了，房间大概还在，让播放器查一下再决定重进还是报错
       //   房主：房间在服务器那边已经进入换房主流程，游戏本身还在跑；进度托管得停，
       //         否则接下来每 10 秒一次 403（以前这里 return 掉，界面一直挂着一个不存在的房间）
-      if (reportedRoom && !n.socket?.connected) {
+      if (connectedOnce && !n.socket?.connected) {
         window.clearInterval(playersTimer)
         window.clearInterval(stateTimer)
         stateTimer = 0
@@ -1319,7 +1422,8 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       const fp = fingerprint(state)
       if (!force && fp === lastFingerprint) return // 进度没动，不用重复传
       lastFingerprint = fp
-      void uploadState(roomId, auth, state)
+      // 关页面前的那一次要带 keepalive，否则请求跟着页面一起被撕掉（见 uploadState）
+      void uploadState(roomId, auth, state, { keepalive: force })
     }
 
     stateTimer = window.setInterval(() => push(), STATE_UPLOAD_MS)
@@ -1358,6 +1462,65 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const setCanvasPointer = (emu: EjsEmulator, on: boolean) => {
     if (on) emu.canvas?.classList.remove('ejs-canvas-no-pointer')
     else emu.canvas?.classList.add('ejs-canvas-no-pointer')
+  }
+
+  /** 播放器报的场合（见 RuntimeHandle.setStageMode）。记下来是因为可能来得比开局早 */
+  let stageMode: StageMode = 'free'
+  /** 盯着引擎自己开关按键那一格 style 的观察者，开局后装一次 */
+  let padObserver: MutationObserver | null = null
+  /** 手柄上沿和画面之间留的一线空隙，别让画面最底下一行像素贴着按键 */
+  const PAD_GAP = 6
+
+  const applyStageMode = () => {
+    const root = iframe.contentDocument?.documentElement
+    if (!root) return
+    if (stageMode === 'free') root.removeAttribute('data-stage')
+    else root.setAttribute('data-stage', stageMode)
+  }
+
+  /**
+   * 量出引擎屏幕按键从容器底部往上一共占多高，写进 iframe 根节点的 --pad-h；
+   * 竖屏布局下画布按它让位（见 FRAME_HTML 里那段 CSS）。按键收着的时候写 0。
+   *
+   * 为什么是量而不是查表：按键排布按核心走（引擎的 getControlScheme），SNES / GBA 多一对
+   * L/R 挂在 top:-100px、N64 还有一整排在 .ejs_virtualGamepad_top 里，站长还能改
+   * EJS_VirtualGamepadSettings —— 查表迟早对不上，量出来的永远是眼前这套。
+   * 量的是各按键 / 十字键 / 摇杆区 getBoundingClientRect 并集的上沿到 .ejs_parent 底边的距离：
+   * 手柄整套是 bottom 定位的，这个距离不随容器高度变，容器矮到按键顶出去了也量得准。
+   * 空的分区容器不能算：.ejs_virtualGamepad_top 只有 N64 用，平时是个 0 高的空 div，
+   * 却 bottom:250px 吊在半空 —— 算进去会白白多扣一截，所以只认有实际尺寸的元素。
+   * 引擎的 handleResize 有个小动作：按键收着时会把它 opacity:0 亮 250ms 量尺寸再收回去，
+   * 那一下 display 是空的、opacity 是 0，得当成「收着」，否则转屏时画布会抖一下。
+   */
+  const refreshPadMetrics = () => {
+    const win = iframe.contentWindow as (Window & Record<string, unknown>) | null
+    const root = iframe.contentDocument?.documentElement
+    const emu = emuOf()
+    if (!win || !root || !emu) return
+    const pad = emu.virtualGamepad
+    const parent = emu.elements?.parent
+    let height = 0
+    if (pad && parent && pad.style.opacity !== '0' && win.getComputedStyle(pad).display !== 'none') {
+      const base = parent.getBoundingClientRect().bottom
+      let top = Infinity
+      const parts = pad.querySelectorAll<HTMLElement>(
+        '.ejs_virtualGamepad_button, .ejs_dpad_main, .nipple, .ejs_virtualGamepad_left, .ejs_virtualGamepad_right',
+      )
+      parts.forEach((el) => {
+        const r = el.getBoundingClientRect()
+        if (r.width === 0 || r.height === 0) return
+        if (r.top < top) top = r.top
+      })
+      if (top !== Infinity) height = Math.max(0, Math.ceil(base - top) + PAD_GAP)
+    }
+    root.style.setProperty('--pad-h', `${height}px`)
+  }
+
+  /** 见 RuntimeHandle.setStageMode。开局前调也行，开局时会补上（applyTouchInput） */
+  const setStageMode = (mode: StageMode) => {
+    stageMode = mode
+    applyStageMode()
+    refreshPadMetrics()
   }
 
   /**
@@ -1412,6 +1575,21 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     padShown = padAvailable && !pointerFirst && !settingOff
     if (padAvailable) emu.toggleVirtualGamepad?.(padShown)
     syncTouchCaps(pointerFirst)
+
+    // 播放器可能在开局前就报过场合（见 setStageMode），到这儿才有稳定的 <html> 可写
+    applyStageMode()
+    refreshPadMetrics()
+    /*
+      引擎自己也会开关这套按键（玩家在它的设置菜单里点「虚拟手柄：关闭」），走的是
+      style.display，我们收不到任何回调 —— 盯住 style 属性，一变就重量一次，
+      否则按键已经收了、画布还留着那截空白。
+    */
+    if (pad && !padObserver && typeof MutationObserver === 'function') {
+      // 用外层的 MutationObserver 盯 iframe 里的节点：同源，跨 realm 观察没有问题
+      const observer = new MutationObserver(() => refreshPadMetrics())
+      observer.observe(pad, { attributes: true, attributeFilter: ['style'] })
+      padObserver = observer
+    }
   }
 
   /** 工具栏那个「屏幕按键」开关走这里。引擎压根没画出按键时是空操作 */
@@ -1423,6 +1601,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     emu.toggleVirtualGamepad?.(show)
     padShown = show
     syncTouchCaps(caps.has('enginePointer'))
+    refreshPadMetrics()
   }
 
   /**
@@ -1679,6 +1858,8 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
 
   const destroy = () => {
     destroyed = true
+    padObserver?.disconnect()
+    padObserver = null
     prepareAbort.abort()
     window.clearInterval(playersTimer)
     window.clearInterval(stateTimer)
@@ -1744,6 +1925,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     focus: () => focusFrame(iframe),
     gamepads: () => frameGamepads(iframe),
     setEnginePad,
+    setStageMode,
     setPaused(next: boolean) {
       const emu = emuOf()
       try {

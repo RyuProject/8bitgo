@@ -3,6 +3,7 @@
  */
 import { getT } from '@/services/i18n'
 import type { PlatformId } from '@/types'
+import { EJS_KEYS, JSNES_KEYS } from './keymapData'
 export { EJS_PATH, RUFFLE_PATH } from '@/emulator'
 
 
@@ -55,38 +56,24 @@ export interface KeymapInfo {
   customizable: boolean
 }
 
-/** EmulatorJS 的默认键位，按 libretro 手柄下标核对过 */
-const EJS = {
-  a: 'Z',
-  b: 'X',
-  x: 'A',
-  y: 'S',
-  l: 'Q',
-  r: 'E',
-  l2: 'Tab',
-  r2: 'R',
-  start: 'Enter',
-  select: 'V',
-} as const
-
 /** 哪些平台有哪些键。没有的键不摆出来 —— 摆了玩家会去按 */
 const EJS_BUTTONS: Partial<Record<PlatformId, Array<[string, string]>>> = {
   // 两键机：红白机、GB / GBC、万代 WonderSwan
-  nes: [['A', EJS.a], ['B', EJS.b]],
-  gb: [['A', EJS.a], ['B', EJS.b]],
-  gbc: [['A', EJS.a], ['B', EJS.b]],
-  ws: [['A', EJS.a], ['B', EJS.b]],
+  nes: [['A', EJS_KEYS.a], ['B', EJS_KEYS.b]],
+  gb: [['A', EJS_KEYS.a], ['B', EJS_KEYS.b]],
+  gbc: [['A', EJS_KEYS.a], ['B', EJS_KEYS.b]],
+  ws: [['A', EJS_KEYS.a], ['B', EJS_KEYS.b]],
   // 四键 + 肩键
-  snes: [['A', EJS.a], ['B', EJS.b], ['X', EJS.x], ['Y', EJS.y], ['L', EJS.l], ['R', EJS.r]],
-  gba: [['A', EJS.a], ['B', EJS.b], ['L', EJS.l], ['R', EJS.r]],
-  nds: [['A', EJS.a], ['B', EJS.b], ['X', EJS.x], ['Y', EJS.y], ['L', EJS.l], ['R', EJS.r]],
+  snes: [['A', EJS_KEYS.a], ['B', EJS_KEYS.b], ['X', EJS_KEYS.x], ['Y', EJS_KEYS.y], ['L', EJS_KEYS.l], ['R', EJS_KEYS.r]],
+  gba: [['A', EJS_KEYS.a], ['B', EJS_KEYS.b], ['L', EJS_KEYS.l], ['R', EJS_KEYS.r]],
+  nds: [['A', EJS_KEYS.a], ['B', EJS_KEYS.b], ['X', EJS_KEYS.x], ['Y', EJS_KEYS.y], ['L', EJS_KEYS.l], ['R', EJS_KEYS.r]],
   // 世嘉 MD 是 A/B/C 三键。核心把它们映到 libretro 的 Y/B/A 上
-  segaMD: [['A', EJS.y], ['B', EJS.b], ['C', EJS.a], ['Start', EJS.start]],
+  segaMD: [['A', EJS_KEYS.y], ['B', EJS_KEYS.b], ['C', EJS_KEYS.a], ['Start', EJS_KEYS.start]],
   psx: [
-    ['○', EJS.a], ['✕', EJS.b], ['△', EJS.x], ['□', EJS.y],
-    ['L1', EJS.l], ['R1', EJS.r], ['L2', EJS.l2], ['R2', EJS.r2],
+    ['○', EJS_KEYS.a], ['✕', EJS_KEYS.b], ['△', EJS_KEYS.x], ['□', EJS_KEYS.y],
+    ['L1', EJS_KEYS.l], ['R1', EJS_KEYS.r], ['L2', EJS_KEYS.l2], ['R2', EJS_KEYS.r2],
   ],
-  n64: [['A', EJS.a], ['B', EJS.b], ['L', EJS.l], ['R', EJS.r], ['Z', EJS.l2]],
+  n64: [['A', EJS_KEYS.a], ['B', EJS_KEYS.b], ['L', EJS_KEYS.l], ['R', EJS_KEYS.r], ['Z', EJS_KEYS.l2]],
 }
 
 export function getDefaultKeymap(runtimeId?: string, platform?: PlatformId): KeymapInfo {
@@ -98,11 +85,11 @@ export function getDefaultKeymap(runtimeId?: string, platform?: PlatformId): Key
     return {
       rows: [
         dpad,
-        { button: 'A', key: 'X' },
-        { button: 'B', key: 'Z' },
-        { button: t.keymap.turboA, key: 'S' },
-        { button: t.keymap.turboB, key: 'A' },
-        { button: 'Start', key: 'Enter' },
+        { button: 'A', key: JSNES_KEYS.a },
+        { button: 'B', key: JSNES_KEYS.b },
+        { button: t.keymap.turboA, key: JSNES_KEYS.turboA },
+        { button: t.keymap.turboB, key: JSNES_KEYS.turboB },
+        { button: 'Start', key: JSNES_KEYS.start },
         { button: 'Select', key: t.keymap.rightCtrl },
       ],
       note: '',
@@ -123,14 +110,14 @@ export function getDefaultKeymap(runtimeId?: string, platform?: PlatformId): Key
     return {
       rows: [
         dpad,
-        { button: t.keymap.punchL, key: EJS.a },
-        { button: t.keymap.punchM, key: EJS.x },
-        { button: t.keymap.punchH, key: EJS.l },
-        { button: t.keymap.kickL, key: EJS.b },
-        { button: t.keymap.kickM, key: EJS.y },
-        { button: t.keymap.kickH, key: EJS.r },
-        { button: t.keymap.coin, key: EJS.select },
-        { button: 'Start', key: EJS.start },
+        { button: t.keymap.punchL, key: EJS_KEYS.a },
+        { button: t.keymap.punchM, key: EJS_KEYS.x },
+        { button: t.keymap.punchH, key: EJS_KEYS.l },
+        { button: t.keymap.kickL, key: EJS_KEYS.b },
+        { button: t.keymap.kickM, key: EJS_KEYS.y },
+        { button: t.keymap.kickH, key: EJS_KEYS.r },
+        { button: t.keymap.coin, key: EJS_KEYS.select },
+        { button: 'Start', key: EJS_KEYS.start },
       ],
       note: t.keymap.arcadeNote,
       customizable: true,
@@ -138,13 +125,13 @@ export function getDefaultKeymap(runtimeId?: string, platform?: PlatformId): Key
   }
 
   const buttons = (platform && EJS_BUTTONS[platform]) ?? [
-    ['A', EJS.a], ['B', EJS.b], ['X', EJS.x], ['Y', EJS.y], ['L', EJS.l], ['R', EJS.r],
+    ['A', EJS_KEYS.a], ['B', EJS_KEYS.b], ['X', EJS_KEYS.x], ['Y', EJS_KEYS.y], ['L', EJS_KEYS.l], ['R', EJS_KEYS.r],
   ]
   return {
     rows: [
       dpad,
       ...buttons.map(([button, key]) => ({ button, key })),
-      ...(platform === 'segaMD' ? [] : [{ button: 'Start', key: EJS.start }, { button: 'Select', key: EJS.select }]),
+      ...(platform === 'segaMD' ? [] : [{ button: 'Start', key: EJS_KEYS.start }, { button: 'Select', key: EJS_KEYS.select }]),
     ],
     note: '',
     customizable: true,

@@ -13,6 +13,7 @@ import { createLocalStore, randomId } from './localStore'
 import { api, apiBase, apiEnabled, setToken, getToken } from './api'
 import { pushGuestRecent } from './recents'
 import { getT } from './i18n'
+import { checkAdultBirthDate, isAdultByBirthDate } from '../../shared/age.js'
 
 export const USERS_KEY = '8bitgo.users'
 export const SESSION_KEY = '8bitgo.session'
@@ -42,7 +43,8 @@ export const usersStore = createLocalStore<User>({
 export function toPublic(u: User): PublicUser {
   const { passwordHash: _h, salt: _s, ...rest } = u
   // hasPassword 而不是哈希本身：界面只需要知道「要不要先问旧密码」
-  return { ...rest, hasPassword: Boolean(u.passwordHash) }
+  // adultVerified 按今天现算，和服务端 userRowToPublic 用的是同一份 shared/age.js
+  return { ...rest, hasPassword: Boolean(u.passwordHash), adultVerified: isAdultByBirthDate(u.birthDate) }
 }
 
 /* ---------------- 密码哈希（仅本地模式用） ---------------- */
@@ -574,6 +576,29 @@ export async function updateProfile(patch: { nickname?: string; avatar?: string 
   })
 }
 
+/**
+ * 记录出生日期（成人内容年龄验证）。
+ *
+ * 成人游戏必须登录才能玩，出生日期记在账号上，之后不再逐页询问。
+ * **填一次就锁定**（服务端只在还没填过时写入，重复提交回 409）：允许改的话，
+ * 未满 18 的人把日期改成成年再进来，年龄门就只剩形式。填错了找管理员在后台清掉再重填。
+ * 未满 18 的也照样记下 —— 到生日当天服务端现算就放行，不需要再填一次。
+ */
+export async function setBirthDate(birthDate: string): Promise<PublicUser> {
+  if (checkAdultBirthDate(birthDate) === 'invalid') throw new Error(getT().game.ageGateInvalid)
+
+  if (apiEnabled()) {
+    const u = await api.put<PublicUser>('/api/me/birth-date', { birthDate })
+    setCurrentUser(u)
+    return u
+  }
+
+  const user = requireLocalUser()
+  if (user.birthDate) throw new Error(getT().game.ageGateAlreadySet)
+  usersStore.update(user.id, { birthDate })
+  return toPublic(usersStore.find(user.id) as User)
+}
+
 export async function toggleFavorite(slug: string): Promise<boolean> {
   if (apiEnabled()) {
     const r = await api.post<{ favorited: boolean; favorites: string[] }>(`/api/me/favorites/${encodeURIComponent(slug)}`)
@@ -847,6 +872,19 @@ export async function adminSetRole(id: string, role: UserRole) {
     return
   }
   usersStore.update(id, { role })
+}
+
+/**
+ * 清除用户的出生日期，让他可以重填。
+ * 用户自己填一次就锁死（见 setBirthDate），这是唯一的纠错通道；后台不能代填，只能清。
+ */
+export async function adminClearBirthDate(id: string) {
+  if (apiEnabled()) {
+    await api.patch(`/api/users/${encodeURIComponent(id)}`, { birthDate: null }, true)
+    await hydrateUsers()
+    return
+  }
+  usersStore.update(id, { birthDate: null })
 }
 
 export async function adminSetStatus(id: string, status: UserStatus) {

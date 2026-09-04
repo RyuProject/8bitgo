@@ -14,6 +14,8 @@ import { io as client } from 'socket.io-client'
 
 process.env.NETPLAY_HOST_GRACE_MS = '3000'
 process.env.NETPLAY_CLAIM_MS = '700'
+// 所有连接都来自 127.0.0.1：每房间每 IP 的成员上限要关掉（那条规则在 test-netplay-hardening.mjs 里测）
+process.env.NETPLAY_MAX_MEMBERS_PER_IP = '0'
 const { attachNetplay } = await import('../src/netplay.js')
 
 let failed = 0

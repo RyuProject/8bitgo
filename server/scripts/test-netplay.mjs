@@ -17,6 +17,8 @@ import { createServer } from 'node:http'
 import { io as client } from 'socket.io-client'
 // 这个测试从同一个 IP 开一堆房间，把每 IP 上限关掉（那条规则在 test-netplay-hardening.mjs 里测）
 process.env.NETPLAY_MAX_ROOMS_PER_IP = '0'
+// 同理：所有连接都来自 127.0.0.1，每房间每 IP 的成员上限也要关掉
+process.env.NETPLAY_MAX_MEMBERS_PER_IP = '0'
 const { attachNetplay } = await import('../src/netplay.js')
 
 let failed = 0
@@ -284,6 +286,22 @@ if (process.env.NETPLAY_HOST_GRACE_MS) {
   await wait(Number(process.env.NETPLAY_HOST_GRACE_MS) + 400)
   ok('超时没人接手 → 广播 host-left', hostLeft)
   ok('超时后房间被解散', (await fetch(`${API}/api/netplay/rooms/R3`)).status === 404)
+  /**
+   * 散场之后访客的连接还在（他的引擎不会自己断）。以前他会一直留在 socket.io 那个房间名下，
+   * 谁再用同一个 id（列表 / 邀请链接里公开出现过）开一间新房，广播就原样投给他 ——
+   * 实测能把他的成员表换掉、给他发 restart。现在 destroyRoom 会把残留连接一并请出去。
+   */
+  const staleUsers = []
+  const staleMsgs = []
+  guest.on('users-updated', (u) => staleUsers.push(u))
+  guest.on('data-message', (m) => staleMsgs.push(m))
+  const squatter = await connect()
+  ok('散场后同一个 id 可以再开（别名已清）', (await open(squatter, extra('u-sq', 'R3', '占位'))) == null)
+  squatter.emit('data-message', { restart: true })
+  await wait(200)
+  ok('老访客收不到新房间的成员表', staleUsers.length === 0)
+  ok('老访客收不到新房间的控制消息', staleMsgs.length === 0)
+  squatter.close()
   guest.close()
 
   if (process.env.NETPLAY_CLAIM_WINDOW_MS) {

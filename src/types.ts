@@ -246,10 +246,21 @@ export interface User {
   favorites: string[]
   /** 最近浏览的游戏 slug（最新在前，最多 12 个） */
   recent: string[]
+  /**
+   * 出生日期 YYYY-MM-DD（成人内容年龄验证）。
+   * 首次游玩成人游戏时填写，记在账号上，填一次就锁定；null / 缺省 = 还没填。
+   * 可选：老版本缓存在 localStorage 里的会话、以及升级前的本地模式账号都没有这个字段。
+   */
+  birthDate?: string | null
 }
 
 /** 对外暴露的用户信息（不含密码相关字段） */
 export type PublicUser = Omit<User, 'passwordHash' | 'salt'> & {
+  /**
+   * 现在能不能玩成人内容 —— 由出生日期按今天现算（shared/age.js），未满 18 的账号到生日当天自动变 true。
+   * 服务端给的是登录 / 拉取那一刻的值；真正放行与否以 GET /api/games/:slug/access 的实时结论为准。
+   */
+  adultVerified?: boolean
   /**
    * 有没有设过登录密码。
    *

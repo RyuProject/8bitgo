@@ -4,6 +4,7 @@ import { requireUser, hashPassword, verifyPassword, signToken, tokenVersionOf } 
 import { userRowToPublic } from '../mappers.js'
 import { favIds, recentIds, gameIdBySlug } from '../userdata.js'
 import { issueCode, verifyCode, sendCodeError } from '../codes.js'
+import { checkAdultBirthDate } from '../../../shared/age.js'
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -29,6 +30,36 @@ meRouter.patch('/', async (req, res, next) => {
       const sets = Object.keys(patch).map((k) => `\`${k}\` = ?`).join(', ')
       await query(`UPDATE users SET ${sets} WHERE id = ?`, [...Object.values(patch), req.user.id])
     }
+    const row = await queryOne('SELECT * FROM users WHERE id = ?', [req.user.id])
+    res.json(await publicWithData(row))
+  } catch (e) {
+    next(e)
+  }
+})
+
+/**
+ * 记录出生日期（成人内容年龄验证）。
+ *
+ * 成人游戏必须登录才能玩，出生日期记在账号上，之后不再逐页询问。
+ * **填一次就锁定**：UPDATE 只在 birth_date IS NULL 时生效 —— 允许改的话，
+ * 未满 18 的人把日期改成成年再进来，这道门就只剩形式了。
+ * 填错了由管理员在后台清掉（PATCH /api/users/:id { birthDate: null }）再重填。
+ *
+ * 用 `affectedRows` 而不是先 SELECT 再 UPDATE：两个标签页同时提交时，
+ * 第二个必须被数据库拦下，而不是把第一个覆盖掉。
+ *
+ * 不回「是否成年」的单独判定 —— 回整个用户对象，前端拿 adultVerified 就够了；
+ * 未满 18 的也如实记下（到生日当天自动放行），不在这里拒绝。
+ */
+meRouter.put('/birth-date', async (req, res, next) => {
+  try {
+    const birthDate = String(req.body?.birthDate ?? '').trim()
+    if (checkAdultBirthDate(birthDate) === 'invalid') {
+      return res.status(400).json({ error: '请输入有效且不晚于今天的出生日期' })
+    }
+    if (req.user.birth_date) return res.status(409).json({ error: '出生日期已经设置过，不能修改' })
+    const r = await query('UPDATE users SET birth_date = ? WHERE id = ? AND birth_date IS NULL', [birthDate, req.user.id])
+    if (!r?.affectedRows) return res.status(409).json({ error: '出生日期已经设置过，不能修改' })
     const row = await queryOne('SELECT * FROM users WHERE id = ?', [req.user.id])
     res.json(await publicWithData(row))
   } catch (e) {

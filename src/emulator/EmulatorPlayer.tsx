@@ -4,7 +4,7 @@ import { platformMap } from '@/data/platforms'
 import { formatBytes, isRomFileAccepted } from '@/lib/emulator'
 import { detectRom, describeDetection } from './detect'
 import { resolveRuntime, extOf } from './registry'
-import type { Capability, LoadPhase, Runtime, RuntimeHandle } from './types'
+import type { Capability, LoadPhase, Runtime, RuntimeHandle, StageMode } from './types'
 import { createOverallRatio, LOAD_PHASE_RANGE, windowsGuestStartupBudgetMs } from './loadProgress'
 import { shouldCaptureMouse } from './mouseCapture'
 import { platformBiosUrlSync } from '@/services/platformBios'
@@ -189,6 +189,19 @@ interface Props {
  * 两个查询都不命中的话，CSS 的 sm: 类名和这里的判断就会各说各话。
  */
 const NARROW_MQ = '(max-width: 639.98px)'
+/**
+ * 矮视口（手机横屏那一档）。手机横过来宽度到了 850+，NARROW_MQ 不再命中，
+ * 但 330pt 左右的高度放不下详情页里那个 16:9 的框，同样得用铺满视口的游玩布局。
+ * 单看高度会把窄小的桌面窗口也算进去，所以用它的地方都再叠一个 touchDevice。
+ */
+const SHORT_MQ = '(max-height: 499.98px)'
+/** 粗指针（手指）。和 touchDevice 那个 state 用的是同一条查询，跳变时现场再问一次用 */
+const COARSE_MQ = '(any-pointer:coarse)'
+/** 「这是台要用游玩布局的手机」的现场判断：窄屏一律算，横屏靠「矮 + 触屏」认 */
+const isCompactViewport = () =>
+  typeof window !== 'undefined' &&
+  typeof window.matchMedia === 'function' &&
+  (window.matchMedia(NARROW_MQ).matches || (window.matchMedia(COARSE_MQ).matches && window.matchMedia(SHORT_MQ).matches))
 
 /** 「手柄在这儿」的开局提示看过了没。按浏览器记 —— 教一次就够 */
 const PAD_HINT_KEY = '8bitgo.padhint.seen'
@@ -400,7 +413,7 @@ export function EmulatorPlayer({
   const [touchDevice, setTouchDevice] = useState(false)
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') return
-    setTouchDevice(window.matchMedia('(any-pointer:coarse)').matches)
+    setTouchDevice(window.matchMedia(COARSE_MQ).matches)
   }, [])
   /**
    * 窄屏（手机竖屏那一档）。布局要用它决定虚拟手柄摆哪儿，所以必须**订阅**而不是只算一次 ——
@@ -412,6 +425,16 @@ export function EmulatorPlayer({
     if (typeof window.matchMedia !== 'function') return
     const mq = window.matchMedia(NARROW_MQ)
     const sync = () => setNarrow(mq.matches)
+    sync()
+    mq.addEventListener('change', sync)
+    return () => mq.removeEventListener('change', sync)
+  }, [])
+  /** 矮视口（见 SHORT_MQ）。同样要订阅：手机转个方向它就变 */
+  const [shortViewport, setShortViewport] = useState(false)
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const mq = window.matchMedia(SHORT_MQ)
+    const sync = () => setShortViewport(mq.matches)
     sync()
     mq.addEventListener('change', sync)
     return () => mq.removeEventListener('change', sync)
@@ -432,6 +455,76 @@ export function EmulatorPlayer({
     document.addEventListener('fullscreenchange', sync)
     return () => document.removeEventListener('fullscreenchange', sync)
   }, [])
+  /**
+   * 这台浏览器有没有元素级的 Fullscreen API。iPhone 的 Safari 没有（只给 <video>），
+   * 「⛶ 全屏」点了什么都不会发生 —— 那种设备上干脆不画这颗按钮，沉浸模式就是它的全屏。
+   * 放 state：SSR 没有 document，首屏 HTML 和 hydrate 结果得对上。
+   */
+  const [fullscreenApi, setFullscreenApi] = useState(true)
+  useEffect(() => {
+    setFullscreenApi(
+      document.fullscreenEnabled !== false && typeof document.documentElement.requestFullscreen === 'function',
+    )
+  }, [])
+
+  /**
+   * 手机（含横屏）。窄屏一律算；横屏时靠「矮 + 触屏」认（见 SHORT_MQ）。
+   * 和 isCompactViewport() 是同一条判断，这份是订阅着的、给渲染用。
+   */
+  const compact = narrow || (touchDevice && shortViewport)
+  /**
+   * 游玩布局：手机上的沉浸模式不再只是「隐藏顶栏」，而是把舞台 position:fixed 铺满整个视口 ——
+   * 画面在上、按键在下、工具栏压底，页面的其余部分全在它底下。
+   *
+   * 为什么要这一层：iPhone 的 Safari 不给网页元素 Fullscreen API，「全屏」在手机上本来就
+   * 不存在；而页面里那个按平台比例的小框（4:3 → 290pt 高）放不下引擎自带的整套按键
+   * （230px 起），按键只能压在画面上，用户实测「根本玩不了」。铺满视口之后，画面 + 按键
+   * 有 600pt 以上可用，两者各占一头（竖屏的 iframe 里画布给按键让位，见
+   * adapters/emulatorjs.ts 的 FRAME_HTML）；横屏时画面占满高度、按键落在两侧黑边里。
+   *
+   * 原生全屏（安卓 Chrome 能进）时浏览器自己把舞台撑满了，这一层让位（!fullscreen）。
+   * 舞台 DOM 结构在三种布局下完全一样，只换 className —— iframe 一旦被重新挂载游戏就重开了。
+   */
+  const playMode = immersive && compact && !fullscreen
+  /**
+   * 「监视器」态：手机上游戏在跑、但不在游玩布局里（玩家点了退出沉浸，回详情页看简介）。
+   * 画面缩在小框里，引擎自带的按键压在里面既按不到也挡画面 —— 让适配器先把它整套收起来，
+   * 画面完整露出，整块画面变成「点一下回去玩」的按钮；回到游玩布局再放出来。
+   * 见 RuntimeHandle.setStageMode 的 'monitor'。
+   */
+  const monitor = compact && touchDevice && !playMode && !fullscreen
+
+  /**
+   * 游玩布局期间锁住页面滚动，并且退出时把播放器滚回视口。
+   *
+   * 舞台 fixed 铺满视口之后，手指落在 iframe 里不会滚页面（引擎那边 touch-action:none），
+   * 但工具栏这一条还在外层文档里，iOS 上在它上面一划、底下的详情页就跟着走，
+   * 退出时不知道滚到了哪儿。锁在 <html> 上而不是 body：ShellContext 的抽屉用的是
+   * body.style.overflow，两边别互相覆盖。overscroll-behavior 顺手一起关，
+   * 安卓 Chrome 在页面顶上往下一拽是「下拉刷新」—— 十字键往下推一下游戏就没了。
+   *
+   * 退出时滚一下：舞台从 fixed 回到文档流，它 fixed 期间页面塌掉了一截，滚动位置对不上，
+   * 玩家看到的可能是简介的中段而不是刚才那局。放 rAF 里等重排落定再滚。
+   */
+  const wasPlayModeRef = useRef(false)
+  useEffect(() => {
+    const root = document.documentElement
+    if (playMode) {
+      wasPlayModeRef.current = true
+      const prevOverflow = root.style.overflow
+      const prevOverscroll = root.style.overscrollBehavior
+      root.style.overflow = 'hidden'
+      root.style.overscrollBehavior = 'none'
+      return () => {
+        root.style.overflow = prevOverflow
+        root.style.overscrollBehavior = prevOverscroll
+      }
+    }
+    if (!wasPlayModeRef.current) return
+    wasPlayModeRef.current = false
+    const raf = requestAnimationFrame(() => hostRef.current?.scrollIntoView({ block: 'start' }))
+    return () => cancelAnimationFrame(raf)
+  }, [playMode])
 
   /**
    * 手机上游戏一开始跑，就顺手进沉浸模式并把画面滚到视口顶上。
@@ -441,7 +534,8 @@ export function EmulatorPlayer({
    * 得自己往下滑才找得到画面。沉浸模式本来就是为这个场景做的，只是以前得手动点一下。
    *
    * 三条约束，缺一条就会变成骚扰：
-   *  · **只在窄屏做**。桌面端播放器本来就是个够高的 16:9 框，自动把侧边栏收掉毫无道理。
+   *  · **只在手机上做**（isCompactViewport：窄屏，或者「矮 + 触屏」的横屏手机）。
+   *    桌面端播放器本来就是个够高的 16:9 框，自动把侧边栏收掉毫无道理。
    *  · **只在「刚开始跑」这一下做**（拿 prevStatus 比对），不是每次 render 都推一把 ——
    *    否则玩家自己点「退出沉浸」会被我们立刻按回去，按钮看起来像坏的。
    *  · **我们开的我们关**：停下来 / 离开这个组件时恢复原样；玩家自己开的沉浸不去动它
@@ -455,15 +549,13 @@ export function EmulatorPlayer({
   useEffect(() => {
     const was = prevStatusRef.current
     prevStatusRef.current = status
-    // 现场再问一次而不是读上面那个 state：这里要的是「跳变发生的这一刻」的宽度，
+    // 现场再问一次而不是读上面那些 state：这里要的是「跳变发生的这一刻」的尺寸，
     // 不受 state 更新时序影响
-    const isNarrow = typeof window !== 'undefined' && window.matchMedia(NARROW_MQ).matches
     if (status === 'running' && was !== 'running') {
-      if (!isNarrow || immersiveRef.current) return
+      if (!isCompactViewport() || immersiveRef.current) return
       autoImmersiveRef.current = true
+      // 手机上沉浸 = 铺满视口的游玩布局（见 playMode），舞台是 fixed 的，不用再滚到它那儿
       setImmersive(true)
-      // 等隐藏顶栏后的重排落定再滚，否则滚的是旧的位置
-      requestAnimationFrame(() => hostRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' }))
       return
     }
     if (status !== 'running' && was === 'running' && autoImmersiveRef.current) {
@@ -481,6 +573,20 @@ export function EmulatorPlayer({
     },
     [setImmersive],
   )
+  /**
+   * 把「场合」报给运行时（见 RuntimeHandle.setStageMode）：游玩布局 / 监视器 / 其余。
+   * 只有 EmulatorJS 实现了它 —— 别的运行时没这回事，可选链跳过。
+   */
+  const stageMode: StageMode = playMode ? 'play' : monitor ? 'monitor' : 'free'
+  useEffect(() => {
+    if (status !== 'running') return
+    handle?.setStageMode?.(stageMode)
+  }, [handle, status, stageMode])
+  /** 从监视器态点画面回到游玩布局。算作「我们开的」：游戏一停就还回去，和自动进沉浸那条一致 */
+  const enterPlayMode = useCallback(() => {
+    autoImmersiveRef.current = true
+    setImmersive(true)
+  }, [setImmersive])
   const frameRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const sessionCounter = useRef(0)
@@ -1401,6 +1507,12 @@ export function EmulatorPlayer({
    * 提示气泡要靠它决定贴上边还是贴下边 —— 贴错的话，气泡正好盖住要指的那排按键。
    */
   const padBelow = showPad && padInline
+  /**
+   * 引擎自带的按键这时是不是也在画面**下面**：手机竖屏的游玩布局 / 竖屏的原生全屏里
+   * iframe 是竖着的，画布给按键让位、按键贴底（见 adapters/emulatorjs.ts 的 FRAME_HTML）。
+   * 气泡照旧贴上沿（贴下沿会盖住按键），但文案要说「在下方 👇」而不是「就在画面上」。
+   */
+  const enginePadStacked = caps.has('enginePad') && narrow && (playMode || fullscreen)
 
   /**
    * 开局提示：告诉玩家「怎么玩、手柄在哪儿」。
@@ -1452,7 +1564,7 @@ export function EmulatorPlayer({
    *
    * 三个时机：
    *  · 刚跑起来 —— 排在 rAF 里，等自动沉浸那次重排落定，别和它抢
-   *  · 进出全屏 —— 玩家是点我们的按钮进去的，焦点跟着落在按钮上，得还回去
+   *  · 进出全屏 / 游玩布局 —— 玩家是点我们的按钮进去的，焦点跟着落在按钮上，得还回去
    *  · 手柄接上 —— gamepadconnected 打在**外层**恰恰说明焦点在外层，正是该还回去的时候
    */
   useEffect(() => {
@@ -1464,7 +1576,7 @@ export function EmulatorPlayer({
       cancelAnimationFrame(raf)
       window.removeEventListener('gamepadconnected', give)
     }
-  }, [status, handle, fullscreen])
+  }, [status, handle, fullscreen, playMode])
 
   const statusLabel =
     status === 'running'
@@ -1497,16 +1609,25 @@ export function EmulatorPlayer({
         工具栏本身在手机上也收紧过：状态徽章只留圆点（文字进 title）、间距减半，
         次要按钮（音量 / 手柄 / 另存 / 截屏 / 录像）收进「⋯」弹出层（见 EmulatorTools.tsx），
         于是留在行内的只剩暂停 + 存读档 + ⋯ + 沉浸 + 全屏，三行变一行。
+
+        手机上真正**玩**的时候走的是第三种：游玩布局（playMode）。上面那个小框只是详情页里的
+        预览 —— 引擎自带的整套按键（230px 起）塞不进 290pt 高的画面框，只能压在画面上，
+        用户实测「按键挡住了，根本玩不了」。所以游戏一跑起来（或玩家点沉浸），舞台自己
+        fixed 铺满视口：画面在上、按键在下、这条工具栏压底。退出沉浸回到小框时按键整套收起
+        （monitor），点画面回来。DOM 结构三种布局完全一样，只换 className —— iframe 不能重挂。
       */}
       <div
         ref={hostRef}
         data-testid="emulator-stage"
         className={cx(
-          'relative flex w-full flex-col bg-black',
+          'flex w-full flex-col bg-black',
           // 全屏：浏览器已经把它撑满视口，画面吃掉工具栏以外的高度
+          // 游玩布局（手机上的沉浸模式，见 playMode）：自己 fixed 铺满视口，压在页面上；
+          //         z-[60] 要高过 Layout 那颗 z-50 的「退出沉浸」浮钮（它会盖住画面右上角），
+          //         又要低于登录弹窗的 z-[80]
           // 非全屏：桌面端仍是整体 16:9（工具栏在框内，不额外撑高详情页）；
           //         移动端不给整体比例 —— 高度 = 画面的原生比例框 + 工具栏
-          fullscreen ? 'h-full' : 'sm:aspect-video',
+          fullscreen ? 'relative h-full' : playMode ? 'fixed inset-0 z-[60]' : 'relative sm:aspect-video',
           dragging && 'ring-2 ring-brand ring-inset',
         )}
         onDragOver={(e) => {
@@ -1519,7 +1640,9 @@ export function EmulatorPlayer({
         <div
           className={cx(
             'relative min-h-0',
-            fullscreen
+            // 全屏和游玩布局都是「吃掉工具栏以外的全部高度」；iframe 竖着的话，
+            // EmulatorJS 那边画布会给按键让位（见 adapters/emulatorjs.ts 的 FRAME_HTML）
+            fullscreen || playMode
               ? 'flex-1'
               : cx(
                   // 移动端：自己占一个按平台原生比例的框。flex-none 是必须的 ——
@@ -1533,6 +1656,25 @@ export function EmulatorPlayer({
         >
           {/* 运行时挂载点：iframe 由运行时注入，React 不管理其子节点 */}
           <div ref={frameRef} className={cx('absolute inset-0', busy ? 'block' : 'hidden')} />
+
+          {/*
+            监视器态（见 monitor）的「点一下回去玩」。手机上退出沉浸后游戏还在这个小框里跑，
+            但这儿是按不了的：引擎的按键已经收起，我们那套行内手柄也不在这儿。
+            整块画面做成一个按钮，点哪儿都回到游玩布局，底下压一行字说明白。
+            只在跑起来之后画 —— 加载中画面上是进度条，空闲时是开始按钮，都不该被盖住。
+          */}
+          {monitor && status === 'running' && (
+            <button
+              type="button"
+              onClick={enterPlayMode}
+              aria-label={t.player.tapToPlay}
+              className="absolute inset-0 z-30 flex items-end justify-center bg-transparent pb-3"
+            >
+              <span className="rounded-full border border-white/25 bg-black/70 px-3 py-1.5 text-[11px] font-semibold text-white/90 shadow-lg backdrop-blur">
+                ◧ {t.player.tapToPlay}
+              </span>
+            </button>
+          )}
 
           {/*
             触屏手柄（浮层那一路）。只对声明了 'touchpad' 能力的运行时出现 ——
@@ -1568,7 +1710,7 @@ export function EmulatorPlayer({
                   <span className="block font-semibold text-white">
                     {touchScreenConsole
                       ? t.player.padHintTouch
-                      : padBelow
+                      : padBelow || enginePadStacked
                         ? t.player.padHintBelow
                         : t.player.padHintOverlay}
                   </span>
@@ -1804,7 +1946,12 @@ export function EmulatorPlayer({
         {/* 工具栏放进播放器框体底部，而不是作为详情页里的下一块内容 */}
         <div
           data-testid="emulator-toolbar"
-          className="relative z-20 flex shrink-0 flex-wrap items-center gap-1.5 border-t border-line bg-surface px-2 py-1.5 text-xs sm:gap-2 sm:px-3 sm:py-2"
+          className={cx(
+            'relative z-20 flex shrink-0 flex-wrap items-center gap-1.5 border-t border-line bg-surface px-2 py-1.5 text-xs sm:gap-2 sm:px-3 sm:py-2',
+            // 游玩布局：这一条压在视口最底下 —— 手指在上面一划不能把底下的页面滚走（touch-none），
+            // 底边让出 iPhone 的 Home 指示条（safe-area），没有的设备上 max() 取回原来的 py
+            playMode && 'touch-none pb-[max(0.375rem,env(safe-area-inset-bottom))]',
+          )}
         >
         {/*
           手机上文字部分收起来，只留那个圆点。
@@ -1817,6 +1964,9 @@ export function EmulatorPlayer({
           aria-label={statusLabel}
           className={cx(
             'inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-semibold',
+            // 游玩布局里这颗圆点是纯占位：游戏就在眼前跑着，状态一目了然，而这一行的宽度
+            // 在 360pt 的屏幕上一颗都省不得 —— 多一颗就折成两行，从画面高度里扣
+            playMode && 'hidden',
             status === 'running'
               ? 'bg-online/15 text-online'
               : status === 'loading'
@@ -2034,18 +2184,21 @@ export function EmulatorPlayer({
                 </span>
                 <span className="hidden sm:inline">{immersive ? t.player.exitImmersive : t.player.enterImmersive}</span>
               </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={toggleFullscreen}
-                title={t.player.fullscreenTitle}
-                aria-label={t.player.fullscreen}
-              >
-                <span className="sm:hidden" aria-hidden>
-                  {glyphOnly(t.player.fullscreen)}
-                </span>
-                <span className="hidden sm:inline">{t.player.fullscreen}</span>
-              </Button>
+              {/* 没有 Fullscreen API 的浏览器（iPhone Safari）不画：点了什么都不发生的按钮比没有更糟 */}
+              {fullscreenApi && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={toggleFullscreen}
+                  title={t.player.fullscreenTitle}
+                  aria-label={t.player.fullscreen}
+                >
+                  <span className="sm:hidden" aria-hidden>
+                    {glyphOnly(t.player.fullscreen)}
+                  </span>
+                  <span className="hidden sm:inline">{t.player.fullscreen}</span>
+                </Button>
+              )}
             </>
           )}
           </div>

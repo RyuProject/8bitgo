@@ -3,7 +3,8 @@ import { requireAbility, hasAbility, optionalUser } from '../auth.js'
 import { invalidateContent } from '../content.js'
 import { publicApi } from '../cache.js'
 import { playIdentity } from '../playcount.js'
-import { gameApiToPartialRow, relationsInPatch } from '../mappers.js'
+import { gameApiToPartialRow, relationsInPatch, dateOnly } from '../mappers.js'
+import { isAdultByBirthDate } from '../../../shared/age.js'
 import { query } from '../db.js'
 import { attachRelations } from '../games-repo.js'
 import { queueGameSearchPush } from '../search-push.js'
@@ -189,23 +190,47 @@ gamesRouter.get('/facets', async (_req, res, next) => {
 })
 
 /**
- * 游玩前实时确认是否属于成人游戏。
+ * 游玩前实时确认：这款游戏是不是成人游戏，以及**这个人**现在能不能玩。
  *
  * 游戏详情 HTML 和公开内容接口会经过 Cloudflare 缓存；后台刚勾选“成人游戏”时，旧详情页
  * 可能还会存活几分钟。这个极小的接口故意不套 publicApi()，让播放器每次挂载前都直接确认
  * 数据库里的当前值，避免缓存窗口成为绕过年龄门的路径。
+ *
+ * 成人游戏的放行条件由这里统一给出（前端只画结论，不自己算）：
+ *   - 没登录                       -> allowed: false, reason: 'login'
+ *   - 登录了、账号上没记出生日期     -> allowed: false, reason: 'birthDate'
+ *   - 记了出生日期、未满 18          -> allowed: false, reason: 'underage'
+ *   - 年满 18                       -> allowed: true
+ * 非成人游戏一律 allowed: true。`adult` 字段保留 —— 旧前端产物只认它。
+ *
+ * 用 optionalUser 而不是 requireUser：非成人游戏游客也要能问，而且失效的令牌
+ * 在这里只该被当成「没登录」，不该让整个播放器报错。
  */
-gamesRouter.get('/:slug/access', async (req, res, next) => {
+gamesRouter.get('/:slug/access', optionalUser, async (req, res, next) => {
   try {
     const rows = await query('SELECT adult, hidden FROM games WHERE slug = ? LIMIT 1', [req.params.slug])
     const game = rows[0]
     if (!game || dbFlag(game.hidden)) return res.status(404).json({ error: '游戏不存在' })
     res.setHeader('Cache-Control', 'no-store')
-    res.json({ adult: dbFlag(game.adult) })
+    res.json(adultAccessVerdict(dbFlag(game.adult), req.user))
   } catch (e) {
     next(e)
   }
 })
+
+/**
+ * 成人游戏的放行判定。抽成纯函数是为了让 scripts/test-age-gate.mjs 不连库就能把四种情形跑一遍。
+ * @param {boolean} adult   这款游戏是不是成人游戏
+ * @param {object|undefined} user  users 表的一行；未登录为空
+ */
+export function adultAccessVerdict(adult, user) {
+  if (!adult) return { adult: false, allowed: true, reason: null }
+  if (!user) return { adult: true, allowed: false, reason: 'login' }
+  const birthDate = user.birth_date ? dateOnly(user.birth_date) : null
+  if (!birthDate) return { adult: true, allowed: false, reason: 'birthDate' }
+  if (!isAdultByBirthDate(birthDate)) return { adult: true, allowed: false, reason: 'underage' }
+  return { adult: true, allowed: true, reason: null }
+}
 
 /**
  * 记录一次真实游玩。前端在模拟器真的跑起来（onReady）时调用。

@@ -26,6 +26,7 @@ const EXPECTED_COLUMNS = [
   { table: 'games', column: 'adult', why: '成人游戏 18 岁验证' },
   { table: 'games', column: 'created_at', why: '真实入库时间' },
   { table: 'users', column: 'token_version', why: '退出所有设备 / 改完密码作废旧令牌' },
+  { table: 'users', column: 'birth_date', why: '成人内容年龄验证：出生日期记在账号上，缺了 PUT /api/me/birth-date 会 500，成人游戏谁也进不去' },
 ]
 
 /**

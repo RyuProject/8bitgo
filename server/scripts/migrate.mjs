@@ -274,6 +274,17 @@ const patches = [
       conn.query('ALTER TABLE `users` ADD COLUMN `token_version` INT UNSIGNED NOT NULL DEFAULT 0 AFTER `status`'),
   },
   {
+    name: 'users.birth_date（成人内容年龄验证：出生日期记在账号上，填一次锁定）',
+    table: 'users',
+    needed: async () => !(await hasColumn('users', 'birth_date')),
+    /**
+     * 可空、不设默认值：NULL 就是「还没填」，应用层只在 IS NULL 时写入，这就是「填一次锁定」的全部实现。
+     * 不另加「已验证成人」布尔列 —— 满不满 18 每次按今天现算（shared/age.js），
+     * 到生日当天自动放行，省掉一个要靠定时任务维护的状态。
+     */
+    run: () => conn.query('ALTER TABLE `users` ADD COLUMN `birth_date` DATE NULL DEFAULT NULL AFTER `status`'),
+  },
+  {
     name: "users.role 加上 'volunteer'（权限分级：管理员 / 志愿者 / 玩家）",
     table: 'users',
     /**
