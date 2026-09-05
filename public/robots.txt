@@ -1,4 +1,27 @@
 # 8BitGo robots.txt
+
+# ── 只有一组：User-agent: * ──────────────────────────────────
+# 这里刻意**不为任何爬虫单独立组**（Googlebot、Baiduspider、GPTBot、ClaudeBot…都不写）。
+#
+# robots.txt 的规则是「最具体的 user-agent 组优先，且只遵守那一组」。一旦写下
+#   User-agent: GPTBot
+#   Allow: /
+# GPTBot 就只看这一组，下面 User-agent: * 里的 Disallow: /admin 对它全部失效 ——
+# 点名允许，反而等于给它开了绕过私密路径的后门。
+#
+# 所以「允许某爬虫」的正确做法就是**不提它**：不提名的爬虫都落到这一组，
+# 既能抓公开内容，又照样遵守下面的 Disallow。
+#
+# ⚠️ 以后有人（或 AI 平台给的提示）让你加 `User-agent: XXX / Allow: /`，
+#    先想清楚：那是在放行它的同时放弃对 /admin、/me、/login 的约束。
+#
+# 覆盖到的爬虫（无需逐个列出）：
+#   搜索引擎：Googlebot、Bingbot、Baiduspider、Sogou、360Spider、YisouSpider（神马）、
+#             ToutiaoSpider（头条）、YandexBot、DuckDuckBot、Applebot、Slurp
+#   AI 搜索：OAI-SearchBot（ChatGPT 搜索）、PerplexityBot、Claude-SearchBot
+#   AI 训练：GPTBot、ClaudeBot、Google-Extended、Applebot-Extended、Amazonbot、
+#            CCBot、Bytespider、meta-externalagent、cohere-ai
+# 注：Google-Extended / Applebot-Extended 只管 AI 训练，不影响 Google、Apple 的搜索收录。
 User-agent: *
 Allow: /
 
