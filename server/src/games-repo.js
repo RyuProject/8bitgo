@@ -570,6 +570,9 @@ export async function upsertGame(slug, game) {
     )
     // 拿不到 insertId 时（走了 UPDATE 分支）再查一次
     const [{ id }] = await run('SELECT id FROM games WHERE slug = ?', [slug])
+    // 整体覆盖：description / description_en 必然都重新写入了，按需缓存全部作废。
+    // 不在这里清的话，玩家点过翻译的多语言版本会和新的基准对不上，但前端看不出来。
+    await run('UPDATE games SET description_i18n = NULL WHERE id = ?', [id])
     await writeRelations(run, id, game)
     await reindexGame(run, id, { ...game, slug })
     return id
@@ -585,6 +588,11 @@ export async function patchGame(slug, patchRow, relations, game) {
     if (Object.keys(patchRow).length) {
       const sets = Object.keys(patchRow).map((c) => `\`${c}\` = ?`).join(', ')
       await run(`UPDATE games SET ${sets} WHERE id = ?`, [...Object.values(patchRow), id])
+      // 简介基准一改，所有按需翻译的缓存都失去锚点 —— 一并清掉。
+      // 改 title / cover 之类完全不影响翻译，因此只有两个字段碰过才清
+      if ('description' in patchRow || 'description_en' in patchRow) {
+        await run('UPDATE games SET description_i18n = NULL WHERE id = ?', [id])
+      }
     }
     if (relations.genres || relations.tags || relations.roms) {
       await writeRelations(run, id, game, relations)
@@ -600,6 +608,36 @@ export async function patchGame(slug, patchRow, relations, game) {
     await reindexGame(run, id, { ...row, tags: tagRows.map((t) => t.tag) })
     return id
   })
+}
+
+/* ---------------- 按需翻译缓存 ---------------- */
+
+/**
+ * 把 description_i18n 整个置成 lang -> text 的对象（合并写，不会动其它已翻译的语言）。
+ * 用 MySQL 的 JSON_SET 增量更新：已有的 zh-Hant 不动、只加 / 改这一项。
+ *
+ * 单独一条 SQL 比读出来 → 解构 → 写回少一条往返，锁持有时间也短一截；
+ * 多个人同时给一款游戏的不同语言翻不会撞车，因为 JSON_SET 对 key 的写是原子的。
+ *
+ * @param {string} slug
+ * @param {string} lang   站点语言代码（'zh-Hant' / 'es' / ...），不是火山 API 短码
+ * @param {string} text   已翻译的文本
+ * @returns {Promise<boolean>} true = 有行被更新
+ */
+export async function writeDescriptionTranslation(slug, lang, text) {
+  if (!/^[a-zA-Z-]{2,10}$/.test(lang)) throw new Error('lang 必须是合法的语言代码')
+  const safeText = String(text ?? '').slice(0, 4000) // 防御性截断，正常简介撑死几百字
+  // JSON_OBJECT 的参数形式不支持「key 是变量」—— 用 JSON_QUOTE 包住 lang 当 key，
+  // JSON_QUOTE 包住 text 当 value，双层转义由 MySQL 自己做，应用层不需要担心单引号
+  const r = await query(
+    `UPDATE games SET description_i18n = JSON_SET(
+       COALESCE(description_i18n, JSON_OBJECT()),
+       ?,
+       CAST(? AS JSON)
+     ) WHERE slug = ?`,
+    [`$.${lang}`, JSON.stringify(safeText), slug],
+  )
+  return r.affectedRows > 0
 }
 
 /** 删除游戏。关联表、收藏、最近游玩都有外键级联，数据库自己会清干净。 */

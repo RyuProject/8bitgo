@@ -110,6 +110,21 @@ const patches = [
     run: () => conn.query('ALTER TABLE `games` ADD COLUMN `description_en` TEXT NULL AFTER `description`'),
   },
   {
+    name: 'games.description_i18n（其它六种语言按需翻译的译文缓存）',
+    // 形状：{ "zh-Hant": "...", "es": "...", "fr": "...", "it": "...", "de": "...", "ja": "..." }
+    // 翻译接口写的时候用 JSON_SET 增量写，已经有的语种不会被覆盖掉。
+    // 后台改 description / description_en 时清空（见 mappers.js 的 partial row 逻辑），
+    // 否则旧译文会和改过的新基准对不上。
+    table: 'games',
+    needed: async () => !(await hasColumn('games', 'description_i18n')),
+    /**
+     * 用 GENERATED 列做只读视图行不通：MySQL 的 GENERATED 只能基于本行其它列计算，
+     * 不能存「外部 API 调用结果」这种东西。直接 JSON 列 + 显式 UPDATE 即可。
+     * MySQL 5.7.8 起 JSON 是原生类型，server 最低支持版本是 5.7，所以不用走 TEXT 模拟。
+     */
+    run: () => conn.query('ALTER TABLE `games` ADD COLUMN `description_i18n` JSON NULL AFTER `description_en`'),
+  },
+  {
     name: 'games.dos_executable（DOS 启动程序，zip 内相对路径）',
     table: 'games',
     needed: async () => !(await hasColumn('games', 'dos_executable')),

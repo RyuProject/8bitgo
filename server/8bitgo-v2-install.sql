@@ -79,6 +79,9 @@ CREATE TABLE IF NOT EXISTS games (
   -- 英文简介。非中文访客优先看这个，和 title / title_zh 是同一套路数：
   -- 一个基准 + 一个译文，而不是给八种语言各开一列
   description_en TEXT         NULL,
+  -- 按需缓存的其余六种语言的译文（zh-Hans 走 description，en 走 description_en）。
+  -- 形状：{"zh-Hant":"…","es":"…","fr":"…","it":"…","de":"…","ja":"…"}。
+  description_i18n JSON         NULL,
   body_control  TINYINT(1)    NOT NULL DEFAULT 0,
   adult         TINYINT(1)    NOT NULL DEFAULT 0,
   hidden        TINYINT(1)    NOT NULL DEFAULT 0,

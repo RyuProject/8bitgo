@@ -17,7 +17,7 @@ import { useSeo, breadcrumbSchema, videoGameSchema } from '@/services/seo'
 import { useLang } from '@/services/lang'
 import { useT, fmt } from '@/services/i18n'
 import { getLang } from '@/services/lang'
-import { gameDescription, gameTitle, genreLabel, platformDesc, platformLabel } from '@/services/i18nData'
+import { gameDescription, gameTitle, genreLabel, needsTranslation, platformDesc, platformLabel } from '@/services/i18nData'
 import { EmulatorPlayer } from '@/emulator'
 import { IsolatedPlayCard } from '@/components/game/IsolatedPlayCard'
 import { GameCover } from '@/components/game/GameCover'
@@ -26,6 +26,7 @@ import { GameComments } from '@/components/game/GameComments'
 import { ShareDialog } from '@/components/game/ShareDialog'
 import { GameCard } from '@/components/game/GameCard'
 import { KeymapCards } from '@/components/game/KeymapCards'
+import { TranslateButton } from '@/components/game/TranslateButton'
 import { SectionHeader } from '@/components/ui/SectionHeader'
 import { Badge, CoinBadge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
@@ -63,6 +64,15 @@ export function GameDetailPage() {
    * 换游戏时要清掉，否则上一款选的「日本語」会带到下一款上。
    */
   const [romLang, setRomLang] = useState<RomLang | null>(null)
+  /**
+   * 玩家点过翻译按钮之后，覆盖在简介上的译文。
+   * - null = 还没翻，按 gameDescription() 三层回退
+   * - string = 翻译后的文本（已经写到 description_i18n，但前端 state 也保留一份，
+   *           这样母语描述改了描述前页面闪一下不奇怪）
+   * 不持久化到 localStorage —— 跨页签持久化反而引入「后台改了简介但用户看不到」的隐性 bug，
+   * 反正刷新一次页面就重新走 needsTranslation() 判断按钮该不该显示
+   */
+  const [translatedDescription, setTranslatedDescription] = useState<string | null>(null)
   useEffect(() => setRomLang(null), [slug])
   const rom = useRomUrl(game, romLang)
   /** 这款游戏绑了哪几种语言的 ROM；少于两种时播放器不显示切换入口 */
@@ -294,10 +304,22 @@ export function GameDetailPage() {
 
           {/* 简介 */}
           <section className="mt-8">
-            <h2 className="text-lg font-bold">{t.game.about}</h2>
+            <div className="flex items-start justify-between gap-4">
+              <h2 className="text-lg font-bold">{t.game.about}</h2>
+              {/* 「翻译」按钮：当前语言不是 zh-Hans / en 且该语言还没翻译过时挂一个。
+                  needsTranslation() 在已翻译的情况下也会返回 false，按钮就不会再出现 */}
+              {needsTranslation(game, lang) && (
+                <TranslateButton
+                  game={game}
+                  lang={lang}
+                  onTranslated={(text) => setTranslatedDescription(text)}
+                />
+              )}
+            </div>
             <GameDescription
-              key={`${game.slug}:${lang}`}
-              description={gameDescription(game, lang)}
+              // 把译文塞进 key —— 一旦翻译结果改变，子组件全部状态重置，展开 / 收起重新计算
+              key={`${game.slug}:${lang}:${translatedDescription ?? ''}`}
+              description={translatedDescription ?? gameDescription(game, lang)}
               showMore={t.game.showMore}
               showLess={t.game.showLess}
             />

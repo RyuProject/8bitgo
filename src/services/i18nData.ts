@@ -46,16 +46,45 @@ export function gameTitle(game: { title: string; titleZh?: string | null }, lang
 /**
  * 按当前语言选游戏简介。
  *
- * 和 gameTitle 的方向正好相反，因为两个字段的「基准语言」不一样：
- *   - 标题的基准是原名（多半是英文），titleZh 才是译文
- *   - 简介是后台自己写的，基准就是站点母语（中文），descriptionEn 才是译文
+ * 三层回退（每层都是「有就用、没有就走下一层」）：
  *
- * 所以这里是：中文界面用基准简介，**其余所有语言**优先英文。
- * 不是只给英文页用 —— 西班牙语访客看英文，也远好过看中文。
- * 没写英文版时统一回落到基准简介，宁可语言不对也不要留白。
+ *   zh-Hans → description（基准就是中文）
+ *   zh-Hant → descriptionI18n?.['zh-Hant']   ← 玩家点过翻译的话就有
+ *            → description                    ← 没点过就退回到中文（繁体用户看简体中文）
+ *   en      → descriptionEn
+ *   es/fr/it/de/ja
+ *           → descriptionI18n?.[lang]
+ *           → descriptionEn                  ← 没点过翻译就看英文
+ *           → description                    ← 没英文就再退到中文（中文用户帮缺英文版的兜底）
+ *
+ * 优先级里 i18n 永远最高 —— 玩家点过翻译的版本就是他看过的版本，哪怕是后台后来又改了也没关系。
+ * 后台改 description / description_en 时后端会把整张 descriptionI18n 清空，所以「改了基准后旧的点过
+ * 的译文」这种漂移根本不会发生。
  */
-export function gameDescription(game: { description?: string; descriptionEn?: string }, lang: Lang): string {
-  const zh = lang === 'zh-Hans' || lang === 'zh-Hant'
-  if (zh) return game.description ?? ''
-  return game.descriptionEn || game.description || ''
+export function gameDescription(
+  game: { description?: string; descriptionEn?: string; descriptionI18n?: Record<string, string> },
+  lang: Lang,
+): string {
+  // 中文界面没有「翻译」按钮（基准就是中文，没什么好翻的），没用过 descriptionI18n
+  if (lang === 'zh-Hans') return game.description ?? ''
+  // 繁体：点过翻译就是首选；繁体界面也支持「翻译」按钮，所以可能存在 i18n['zh-Hant']
+  if (lang === 'zh-Hant') {
+    return game.descriptionI18n?.['zh-Hant'] || game.description || ''
+  }
+  // 其它：i18n[lang] → 英文 → 中文（依此回退，每一步的注释见上方）
+  return game.descriptionI18n?.[lang] || game.descriptionEn || game.description || ''
+}
+
+/**
+ * 这个语种要不要在游戏简介旁显示「翻译」按钮。
+ *
+ * 规则：
+ *   zh-Hans / en —— passthrough，没有「翻译」目标，点了一次也是空操作；
+ *   其它 6 种 —— i18n 里已经有了就别再让人点（按钮变成无意义），没有就给按钮
+ *
+ * 状态用「需要翻译」描述，符合按钮的语义；前端别去反推 disable / hidden。
+ */
+export function needsTranslation(game: { descriptionI18n?: Record<string, string> }, lang: Lang): boolean {
+  if (lang === 'zh-Hans' || lang === 'en') return false
+  return !game.descriptionI18n?.[lang]
 }

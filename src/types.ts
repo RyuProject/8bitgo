@@ -189,6 +189,13 @@ export interface Game {
    * 一个基准 + 一个译文，而不是给八种语言各开一个字段。
    */
   descriptionEn?: string
+  /**
+   * 其余六种语言的按需翻译缓存。键是站点语言代码（zh-Hant / es / fr / it / de / ja），
+   * 值是已经翻译好的简介。zh-Hans 走 description，en 走 descriptionEn —— 这两个 key 不会
+   * 出现在这里。来源是详情页「翻译」按钮（POST /api/games/:slug/translate-description）。
+   * 改写 description / descriptionEn 时后端会自动清掉（见 server/src/games-repo.js）。
+   */
+  descriptionI18n?: Record<string, string>
   tags?: string[]
   /** 上线日期，用于「最新」排序 */
   addedAt: string

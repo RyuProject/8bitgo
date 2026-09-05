@@ -14,6 +14,7 @@
     "test:mail": "node scripts/test-mail.mjs",
     "test:mail:parse": "node scripts/test-mail-parsing.mjs",
     "test:mail:resend": "node scripts/test-mail-resend.mjs",
+    "test:translate": "node scripts/test-translate.mjs",
     "test:codes": "node scripts/test-codes.mjs",
     "test:oauth": "node scripts/test-oauth.mjs",
     "test:presence": "node scripts/test-presence.mjs",

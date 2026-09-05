@@ -6,7 +6,7 @@ import { playIdentity } from '../playcount.js'
 import { gameApiToPartialRow, relationsInPatch, dateOnly } from '../mappers.js'
 import { isAdultByBirthDate } from '../../../shared/age.js'
 import { query } from '../db.js'
-import { attachRelations } from '../games-repo.js'
+import { attachRelations, writeDescriptionTranslation } from '../games-repo.js'
 import { queueGameSearchPush } from '../search-push.js'
 import {
   listGames,
@@ -22,6 +22,7 @@ import {
   suggestGames,
   searchFallback,
 } from '../games-repo.js'
+import { isTranslateConfigured, translatePlan, translateText } from '../translate.js'
 
 export const gamesRouter = Router()
 
@@ -267,6 +268,81 @@ gamesRouter.get('/:slug', async (req, res, next) => {
     }
     if (!game.hidden) publicApi(res)
     res.json(game)
+  } catch (e) {
+    next(e)
+  }
+})
+
+/**
+ * 按需把游戏简介翻成当前 UI 语言，并缓存到 description_i18n。
+ *
+ *   POST /api/games/:slug/translate-description
+ *   Content-Type: application/json
+ *   { "lang": "es" }                        ← 站点语言代码，详 src/config/languages.ts
+ *   → 200 { lang: "es", text: "...", cached: bool }
+ *   → 400 { error: "语言 es 不需要翻译" }    ← passthrough（zh-Hans / en）
+ *   → 400 { error: "不支持的目标语言：xx" }
+ *   → 400 { error: "游戏没有简介可翻译" }
+ *   → 404 { error: "游戏不存在" }
+ *   → 502 { error: "翻译失败：…" }           ← 火山 API 报错
+ *   → 503 { error: "翻译服务未配置（缺 VOLC_AK / VOLC_SK）" }
+ *
+ * 不要求登录：翻译是公开内容，每款游戏每种语言在缓存命中后只调一次，
+ * 把这条功能拦在登录门后没收益（反而把不登录的访客挡在门外）。
+ *
+ * 必须注册在 /:slug 之前 —— Express 按声明顺序匹配，
+ * "kof97/translate-description" 真有这种 slug 的话会被当成游戏查询。
+ */
+gamesRouter.post('/:slug/translate-description', async (req, res, next) => {
+  try {
+    const lang = String(req.body?.lang ?? '').trim()
+    const plan = translatePlan(lang)
+    if (!plan) return res.status(400).json({ error: `不支持的目标语言：${lang}` })
+    if (plan.passthrough) return res.status(400).json({ error: `语言 ${lang} 不需要翻译` })
+    if (!isTranslateConfigured()) {
+      return res.status(503).json({ error: '翻译服务未配置（缺 VOLC_AK / VOLC_SK）' })
+    }
+
+    // 用「游戏不存在」涵盖简介空着的情况 —— 没东西好翻，
+    // 让前端按"按钮可点但报失败"反而是把诊断难度推给访客。
+    const game = await getGameBySlug(req.params.slug)
+    if (!game) return res.status(404).json({ error: '游戏不存在' })
+
+    // 已经缓存就直返回 —— 同款游戏同语言第二次之后都不再调火山，
+    // 这是这套设计的核心防刷：成本 = N 种语言各一次（其中 zh-Hant 不完美，详 translate.js）
+    if (game.descriptionI18n?.[lang]) {
+      return res.json({ lang, text: game.descriptionI18n[lang], cached: true })
+    }
+
+    // 源文：description_en 优先，没有再退到 description（中文），再没有就报错
+    const source =
+      (game.descriptionEn && game.descriptionEn.trim()) || (game.description && game.description.trim())
+    if (!source) return res.status(400).json({ error: '游戏没有简介可翻译' })
+
+    let translated
+    try {
+      translated = await translateText(source, plan.source, plan.target)
+    } catch (e) {
+      // 火山那边的错误码透传：AuthFailure / SignatureDoesNotMatch 是 AK/SK 错，
+      // LimitExceeded 是 QPS 超限，QuotaExceeded 是欠费。
+      // 这些都是运营问题，给 502（"翻译服务暂时不可用"）而不是 500，
+      // 客户端的视图是「点完显示失败提示」，不该看到内部错误码
+      console.error('[translate] 火山 API 调用失败：', e?.code, e?.message)
+      return res.status(502).json({ error: `翻译失败：${e?.message || '未知错误'}` })
+    }
+
+    // 写库失败也得先把译文回给前端：UI 已经更新了，DB 写失败只是下次还得再调一次火山。
+    // 不能让用户点完了界面上不变还得翻个网络错误。
+    try {
+      await writeDescriptionTranslation(req.params.slug, lang, translated)
+    } catch (e) {
+      console.error('[translate] 写 description_i18n 失败：', e?.message)
+    }
+
+    // 简介变了 —— 详情页是 SSR，缓存要刷，否则下一个访客拿到的是旧 HTML（带着无翻译的页面）。
+    invalidateContent()
+
+    res.json({ lang, text: translated, cached: false })
   } catch (e) {
     next(e)
   }

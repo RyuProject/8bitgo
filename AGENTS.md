@@ -226,6 +226,48 @@ Free / Pro 100 MB，Business 200 MB，Enterprise 500 MB，**由边缘节点执�
 
 自测：`cd server && npm run test:presence`（40 项，不联网、不用数据库）。
 
+### 2.17 游戏简介的按需翻译：一个 JSON 列，不是八列
+
+游戏简介的**存储模型从建站起就是「一个基准 + 一个译文」**，不是八种语言各开一列：
+
+| 列 | 语言 | 谁填 |
+|---|---|---|
+| `description` | 中文（站点母语，基准） | 后台 |
+| `description_en` | 英文 | 后台 |
+| `description_i18n` | **JSON，其余六种按需缓存** | 玩家点「翻译」按钮时写入 |
+
+后台上传游戏时只填英文和中文，西班牙语访客看到的是英文（见 `services/i18nData.ts` 的
+`gameDescription`：英文优先于中文，因为「看英文也好过看中文」）。想看母语就点详情页
+「游戏简介」右上角那个「翻译」按钮 → `POST /api/games/:slug/translate-description` →
+调火山引擎 `TranslateText` 翻一次 → 写进 `description_i18n[lang]` → **之后所有人都是读库，
+不再调接口**。
+
+⚠️ **为什么是 JSON 列而不是 `description_es` / `description_fr` 各一列**：八列里有六列
+99% 的游戏永远是 NULL，而 schema 注释里早就定过「一个基准 + 一个译文」这条线（就是为了避免
+每加一种语言就 ALTER 一次表）。JSON 列加语言不用改库，键名直接就是站点语言代码。
+
+⚠️ **改基准必须清缓存**。`description` / `description_en` 一改，所有语言的译文都失去锚点 ——
+否则玩家看到的是「后台改过简介、但翻译缓存里还是旧的」。`upsertGame` 无条件清、`patchGame`
+在请求里带了这两个字段时清（见 `server/src/games-repo.js`）。**新增写路径时别忘了这一条。**
+
+⚠️ **火山 API 的语言码是 ISO 639-1 短码，不是 BCP-47**。它**没有** `zh-Hans` / `zh-Hant`，
+只有 `zh`。映射表在 `server/src/translate.js` 的 `LANG_MAP` 里，加语种改那一处。
+`zh-Hant` 是唯一不完美的一个：后台填了英文版就把英翻成 `zh` 存进 `i18n['zh-Hant']`
+（简繁偶尔差几个字），没填英文版就不翻译、退回中文原文 —— 繁体用户看简体中文没问题，
+但别指望它是真·繁体。
+
+⚠️ **AK/SK 放 `server/.env`，永远不进 git**（§2.1）。不配也能跑：按钮会变成「翻译失败
+[503] 翻译服务未配置（缺 VOLC_AK / VOLC_SK）」，所有游戏照旧走原文回退。
+机器翻译**按量计费、会欠费**，上线前去火山控制台开「用量预警」。
+
+自测：`cd server && npm run test:translate`（8 项，起本地 mock，不真打火山）。
+端到端：
+```bash
+curl -X POST http://127.0.0.1:8788/api/games/<slug>/translate-description \
+     -H 'Content-Type: application/json' -d '{"lang":"es"}'
+# 第一次 cached:false（真调火山并落库），第二次 cached:true（读库，不再调）
+```
+
 ---
 
 ## 3. 常用命令
@@ -250,6 +292,8 @@ npm run test:mail -- you@example.com   # 真发一封，只测发信这一段（
 npm run test:mail:resend               # Resend 返回体分类 / 请求体字段 / 三种用途文案
 npm run test:mail:parse                # Cloudflare 那条通路的同类测试
 npm run test:codes                     # 验证码状态机（要连库；连不上自动跳过）
+npm run test:translate                 # 火山翻译：V4 签名 / 语言映射 / 错误码（本地 mock，不联网）
+npm run test:presence                  # 房主名片：设备 / 地区 / 网络（不联网、不用数据库）
 ```
 
 `prebuild` 里的 `scripts/check-emulatorjs.mjs` 会检查五件事：引擎文件在不在、
@@ -272,9 +316,41 @@ npm run test:codes                     # 验证码状态机（要连库；连不
 
 ---
 
-## 5. 当前进度（2026-09-02，有时效性）
+## 5. 当前进度（2026-09-05，有时效性）
 
-### 本轮改动：登录 + 个人中心（**尚未部署，需要跑迁移**）
+### 本轮改动：游戏简介的按需翻译（**尚未部署，需要跑迁移**）
+
+游戏详情页「游戏简介」右上角多了个「翻译」按钮：非中文 / 非英文界面的访客点一下，
+后端调火山引擎 `TranslateText` 翻成他的本地语言，结果写进新的 `description_i18n` JSON 列，
+**同款游戏同一语言永不再调接口**（§2.17）。
+
+改动清单：
+
+| 位置 | 内容 |
+| --- | --- |
+| `server/schema-v2.sql`、`8bitgo-v2-install.sql`、`scripts/migrate.mjs` | 新列 `games.description_i18n JSON NULL` |
+| `server/src/translate.js` | 新增：火山 V4 签名 + `TranslateText` + 站点语言 ↔ 火山语言码映射 |
+| `server/src/games-repo.js` | `writeDescriptionTranslation()`；`upsertGame` / `patchGame` 改基准时清缓存 |
+| `server/src/routes/games.js` | 新增 `POST /api/games/:slug/translate-description`（不需登录） |
+| `server/src/mappers.js` | `gameRowToApi` 读出 `descriptionI18n`（**不开放写入**，改基准时自动清） |
+| `src/services/i18nData.ts` | `gameDescription()` 三层回退；新增 `needsTranslation()` 决定按钮要不要出现 |
+| `src/components/game/TranslateButton.tsx` | 新增：idle / translating / translated / error 四态 |
+| `src/pages/GameDetailPage.tsx` | 按钮挂在 h2 右侧；翻译结果局部覆盖简介（不刷新整个 game 对象） |
+| 八个 `src/locales/*.ts` | 新增 `game.translate` / `translating` / `translateRetry` / `translateFailed` / `translatedJustNow` |
+
+**部署这一版必须先跑迁移**，否则 `description_i18n` 缺列 → 翻译接口 500（页面其余部分不受影响，
+简介照常显示英文原文）。
+
+```bash
+cd server && npm run migrate     # 幂等
+```
+
+**可选配置**：在 `server/.env` 填 `VOLC_AK` + `VOLC_SK`（火山控制台 → 访问控制 → API 访问密钥）。
+不配也能正常跑，按钮会显示「翻译失败 [503] 翻译服务未配置」。
+
+---
+
+### 上一轮：登录 + 个人中心（**尚未部署，需要跑迁移**）
 
 发信换成 **Resend**（`server/.env` 已填 `RESEND_API_KEY` + `MAIL_FROM=noreply@8bitgo.com`）。
 验证码从进程内存搬到 `login_codes` 表并改存哈希（§2.13）；JWT 加了 `token_version`（§2.14）；

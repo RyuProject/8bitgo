@@ -269,6 +269,16 @@ export function gameRowToApi(r, rel = {}) {
   if (r.title_zh) g.titleZh = r.title_zh
   // 没写英文简介的游戏不带这个字段，前台自己回落到基准简介
   if (r.description_en) g.descriptionEn = r.description_en
+  // 按需缓存的其它语种译文。形状：{ zh-Hant: '...', es: '...', ... }。
+  // mysql2 把 JSON 列默认解成 JS 对象；空对象 / 全是 null 的 JSON 进来后是 undefined，
+  // 这两种都视为「没翻译过」直接不挂这个字段 —— 前端的 gameDescription() 会自然回退。
+  if (r.description_i18n && typeof r.description_i18n === 'object' && !Array.isArray(r.description_i18n)) {
+    const i18n = {}
+    for (const [k, v] of Object.entries(r.description_i18n)) {
+      if (typeof v === 'string' && v.trim()) i18n[k] = v
+    }
+    if (Object.keys(i18n).length) g.descriptionI18n = i18n
+  }
   if (r.cover) g.cover = r.cover
   if (r.video) g.video = r.video
 

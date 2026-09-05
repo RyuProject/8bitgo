@@ -313,6 +313,14 @@ export const zhHans = {
     about: '游戏简介',
     showMore: '展开全文',
     showLess: '收起',
+    /** 简介右上角的「翻译」按钮 —— 把当前语种的简介翻成本地语言后缓存在 games.description_i18n */
+    translate: '翻译',
+    translating: '翻译中…',
+    translateRetry: '重试翻译',
+    /** 翻译失败的兜底文案（具体错误由后端 error 字段覆盖） */
+    translateFailed: '翻译失败',
+    /** 翻译完成后 1.5 秒的反馈提示；之后按钮直接消失，因为下次渲染 needsTranslation() 返回 false */
+    translatedJustNow: '已翻译',
     year: '发行年份',
     developer: '开发商',
     players: '玩家人数',
