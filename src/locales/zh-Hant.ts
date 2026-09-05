@@ -533,6 +533,9 @@ const zhHant: Translation = {
   browse: {
     platformsTitle: '遊戲平台',
     platformsDesc: '共 {n} 個平台。從 8 位元紅白機到 32 位元 PlayStation，從掌機到街機，選一台你的童年主機。',
+    platformGroupPinned: '頂置',
+    platformGroupNintendo: '任天堂',
+    platformGroupOthers: '其他平台',
     genresTitle: '遊戲類型',
     genresDesc: '依玩法找遊戲：想動手、想動腦，還是想跟著節奏搖擺？',
     developersTitle: '開發商',
@@ -822,7 +825,7 @@ const zhHant: Translation = {
   platforms: {
     psx: { name: 'Sony PlayStation', desc: '32 位元時代的王者，3D 遊戲的啟蒙之地。鐵拳、太空戰士、古惑狼都誕生於此。' },
     flash: { name: 'Flash 網頁遊戲', desc: '下課十分鐘的快樂泉源，塔防、跑酷、音樂節奏……瀏覽器裡的黃金年代。' },
-    html5: { name: 'HTML5 網頁遊戲', desc: '原生執行於現代瀏覽器的 HTML5 與 WebAssembly 遊戲，不需額外模擬器。' },
+    html5: { name: 'Web網頁', desc: '原生執行於現代瀏覽器的 HTML5 與 WebAssembly 遊戲，不需額外模擬器。' },
     arcade: { name: '街機', desc: '投幣、搖桿、連續技。拳皇、越南大戰、快打旋風，電動間裡的傳奇今天仍在延續。' },
     n64: { name: '任天堂 64', desc: '四個手把插槽定義了客廳派對：瑪利歐賽車、任天堂明星大亂鬥、黃金眼 007。' },
     nes: { name: '紅白機', desc: '8 位元機的黃金標準。超級瑪利歐、魂斗羅、坦克大戰——一切從這裡開始。' },
@@ -832,9 +835,9 @@ const zhHant: Translation = {
     gb: { name: 'Game Boy', desc: '四色灰階也擋不住的樂趣：寶可夢紅綠、俄羅斯方塊、織夢島。' },
     gbc: { name: 'Game Boy Color', desc: '把掌機帶進彩色時代：寶可夢金銀、薩爾達傳說 織夢島 DX、瓦利歐樂園 3。' },
     segaMD: { name: 'SEGA MD', desc: '「Blast Processing」！音速小子、怒之鐵拳、戰斧，SEGA 最硬派的 16 位元主機。' },
-    dos: { name: 'DOS 電腦遊戲', desc: '命令列時代的 PC 經典：毀滅戰士、波斯王子、暗黑破壞神、沙丘魔堡 2。' },
+    dos: { name: 'DOS 電腦', desc: '命令列時代的 PC 經典：毀滅戰士、波斯王子、暗黑破壞神、沙丘魔堡 2。' },
     ws: { name: 'WonderSwan', desc: '橫井軍平的遺作，一顆電池玩上數十小時，收錄了太空戰士與航海王等佳作。' },
-    java: { name: 'Java 手機遊戲', desc: '功能型手機時代的回憶：狂野飆車 3、鑽石狂潮、彈跳小球。' },
+    java: { name: 'Java 手機', desc: '功能型手機時代的回憶：狂野飆車 3、鑽石狂潮、彈跳小球。' },
   },
 
   faq: [

@@ -564,6 +564,9 @@ export const zhHans = {
   browse: {
     platformsTitle: '游戏平台',
     platformsDesc: '共 {n} 个平台。从 8 位红白机到 32 位 PlayStation，从掌机到街机，选一台你的童年主机。',
+    platformGroupPinned: '顶置',
+    platformGroupNintendo: '任天堂',
+    platformGroupOthers: '其它平台',
     genresTitle: '游戏类型',
     genresDesc: '按玩法找游戏：想动手、想动脑，还是想跟着节奏摇摆？',
     developersTitle: '开发商',
@@ -866,7 +869,7 @@ export const zhHans = {
   platforms: {
     psx: { name: '索尼 PlayStation', desc: '32 位时代的王者，3D 游戏的启蒙之地。铁拳、最终幻想、古惑狼都诞生于此。' },
     flash: { name: 'Flash 网页游戏', desc: '课间十分钟的快乐源泉，塔防、跑酷、音乐节奏……浏览器里的黄金年代。' },
-    html5: { name: 'HTML5 网页游戏', desc: '原生运行在现代浏览器里的 HTML5 与 WebAssembly 游戏，无需额外模拟器。' },
+    html5: { name: 'Web网页', desc: '原生运行在现代浏览器里的 HTML5 与 WebAssembly 游戏，无需额外模拟器。' },
     arcade: { name: '街机', desc: '投币、摇杆、连招。拳皇、合金弹头、街霸，游戏厅里的传奇今天仍在延续。' },
     n64: { name: '任天堂 64', desc: '四个手柄插槽定义了客厅派对：马力欧赛车、任天堂明星大乱斗、黄金眼 007。' },
     nes: { name: '红白机', desc: '8 位机的黄金标准。超级马力欧、魂斗罗、坦克大战——一切从这里开始。' },
@@ -876,9 +879,9 @@ export const zhHans = {
     gb: { name: 'Game Boy', desc: '四色灰阶也挡不住的乐趣：宝可梦红绿、俄罗斯方块、织梦岛。' },
     gbc: { name: 'Game Boy Color', desc: '把掌机带进彩色时代：宝可梦金银、塞尔达传说 织梦岛 DX、瓦力欧乐园 3。' },
     segaMD: { name: '世嘉 MD', desc: '「Blast Processing」！索尼克、怒之铁拳、战斧，世嘉最硬核的 16 位主机。' },
-    dos: { name: 'DOS 电脑游戏', desc: '命令行时代的 PC 经典：毁灭战士、波斯王子、暗黑破坏神、沙丘 2。' },
+    dos: { name: 'DOS 电脑', desc: '命令行时代的 PC 经典：毁灭战士、波斯王子、暗黑破坏神、沙丘 2。' },
     ws: { name: '神奇天鹅', desc: '横井军平的遗作，一节电池玩几十小时，收录了最终幻想与海贼王等佳作。' },
-    java: { name: 'Java 手机游戏', desc: '功能机时代的回忆：狂野飙车 3、钻石狂潮、弹跳小球。' },
+    java: { name: 'Java 手机', desc: '功能机时代的回忆：狂野飙车 3、钻石狂潮、弹跳小球。' },
   },
 
   /* ---------------- 常见问题 ---------------- */

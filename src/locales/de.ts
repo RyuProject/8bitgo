@@ -530,6 +530,9 @@ const de: Translation = {
     platformsTitle: 'Plattformen',
     platformsDesc:
       'Insgesamt {n} Plattformen. Vom 8-Bit-NES bis zur 32-Bit-PlayStation, von Handhelds bis zum Arcade-Automaten – wähl die Konsole deiner Kindheit.',
+    platformGroupPinned: 'Angeheftet',
+    platformGroupNintendo: 'Nintendo',
+    platformGroupOthers: 'Weitere Plattformen',
     genresTitle: 'Genres',
     genresDesc: 'Finde Spiele nach Spielgefühl: Lust auf schnelle Reflexe, auf Kopfarbeit oder darauf, im Takt mitzugehen?',
     developersTitle: 'Entwickler',

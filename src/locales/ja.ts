@@ -519,6 +519,9 @@ const ja: Translation = {
   browse: {
     platformsTitle: 'ゲーム機',
     platformsDesc: '全 {n} 機種。8 ビットのファミコンから 32 ビットの PlayStation まで、携帯機からアーケードまで、思い出のハードを選んでください。',
+    platformGroupPinned: '固定',
+    platformGroupNintendo: '任天堂',
+    platformGroupOthers: 'その他のプラットフォーム',
     genresTitle: 'ジャンル',
     genresDesc: '遊び方からゲームを探しましょう。体を動かしたい、頭を使いたい、それともリズムに乗りたい？',
     developersTitle: '開発会社',

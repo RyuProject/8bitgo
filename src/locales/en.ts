@@ -529,6 +529,9 @@ const en: Translation = {
     platformsTitle: 'Platforms',
     platformsDesc:
       '{n} platforms in total. From the 8-bit NES to the 32-bit PlayStation, handhelds to arcade cabinets — pick the console you grew up with.',
+    platformGroupPinned: 'Pinned',
+    platformGroupNintendo: 'Nintendo',
+    platformGroupOthers: 'Other platforms',
     genresTitle: 'Genres',
     genresDesc: 'Find games by how they play: feeling twitchy, thoughtful, or ready to move to the beat?',
     developersTitle: 'Developers',

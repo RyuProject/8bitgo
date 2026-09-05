@@ -529,6 +529,9 @@ const es: Translation = {
     platformsTitle: 'Plataformas',
     platformsDesc:
       '{n} plataformas en total. De la NES de 8 bits a la PlayStation de 32 bits, de las portátiles a los arcades: elige la consola de tu infancia.',
+    platformGroupPinned: 'Fijados',
+    platformGroupNintendo: 'Nintendo',
+    platformGroupOthers: 'Otras plataformas',
     genresTitle: 'Géneros',
     genresDesc: 'Encuentra juegos por su forma de jugar: ¿tienes ganas de reflejos, de pensar o de seguir el ritmo?',
     developersTitle: 'Desarrolladoras',

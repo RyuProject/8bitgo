@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import type { PlatformWithCount } from '@/services/games'
+import type { Platform, PlatformId } from '@/types'
+import type { Translation } from '@/locales'
 import { usePageData, type DevelopersData, type GenresData, type PlatformsData } from '@/services/pageData'
 import { platforms, platformMap } from '@/data/platforms'
 import { genres } from '@/data/genres'
@@ -65,11 +66,22 @@ function countsOf(rows: Array<{ id: string; count: number }> | undefined): Map<s
   return new Map(rows?.map((r) => [r.id, r.count]))
 }
 
-const PLATFORM_GRID = 'mt-8 grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4'
+const PLATFORM_GRID = 'grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4'
 const GENRE_GRID = 'mt-8 grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4'
 const DEVELOPER_GRID = 'mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-3'
 
 /* ---------------- 平台 ---------------- */
+
+/**
+ * 平台列表的分组展示（只动 /platforms 页面的外观，不碰平台配置和后端数据）。
+ * 「顶置」组是站点主打的网页 / 街机 / 电脑系，排最前面；「任天堂」组是任天堂主机掌机系。
+ * 以后新开放、不在名单里的平台会兜底进「其它平台」，不会从页面上消失。
+ */
+const PLATFORM_GROUPS: ReadonlyArray<{ titleKey: keyof Translation['browse']; ids: readonly PlatformId[] }> = [
+  { titleKey: 'platformGroupPinned', ids: ['flash', 'arcade', 'dos', 'java', 'html5'] },
+  { titleKey: 'platformGroupNintendo', ids: ['nes', 'gba', 'gbc', 'gb'] },
+]
+
 export function PlatformsPage() {
   const t = useT()
   useSeo({
@@ -88,7 +100,20 @@ export function PlatformsPage() {
   // 开放哪些平台是配置说了算，和后端有没有数据无关 ——
   // 所以「共 N 个平台」这句话不用等取数，首帧就是对的
   const enabled = platforms.filter((p) => isPlatformEnabled(p.id))
-  const cards: PlatformWithCount[] = enabled
+
+  // 按分组名单铺卡片，组内顺序固定，不再像以前那样按游玩数倒序 ——
+  // 不然数量一变卡片就换位置，分组的意义就没了。
+  const grouped = PLATFORM_GROUPS.map((g) => ({
+    ...g,
+    cards: g.ids
+      .map((id) => enabled.find((p) => p.id === id))
+      .filter((p): p is Platform => Boolean(p))
+      .map((p) => ({ ...p, count: counts.get(p.id) ?? 0 })),
+  }))
+  // 兜底组：名单外的平台（以后新开放的）按数量倒序排在最后，避免从页面上消失
+  const known = new Set(PLATFORM_GROUPS.flatMap((g) => g.ids))
+  const others = enabled
+    .filter((p) => !known.has(p.id))
     .map((p) => ({ ...p, count: counts.get(p.id) ?? 0 }))
     .sort((a, b) => b.count - a.count)
 
@@ -102,12 +127,33 @@ export function PlatformsPage() {
       {state.status === 'error' ? (
         <LoadError message={state.error} />
       ) : !facets ? (
-        <CardGridSkeleton count={enabled.length} grid={PLATFORM_GRID} height="h-44" />
+        <CardGridSkeleton count={enabled.length} grid={cx('mt-8', PLATFORM_GRID)} height="h-44" />
       ) : (
-        <div className={PLATFORM_GRID}>
-          {cards.map((p) => (
-            <PlatformCard key={p.id} platform={p} />
+        <div className="mt-8 space-y-10">
+          {grouped.map((g) => (
+            <section key={g.titleKey} aria-labelledby={`platform-group-${g.titleKey}`}>
+              <h2 id={`platform-group-${g.titleKey}`} className="mb-3 text-lg font-bold tracking-tight sm:text-xl">
+                {t.browse[g.titleKey]}
+              </h2>
+              <div className={PLATFORM_GRID}>
+                {g.cards.map((p) => (
+                  <PlatformCard key={p.id} platform={p} />
+                ))}
+              </div>
+            </section>
           ))}
+          {others.length > 0 && (
+            <section aria-labelledby="platform-group-others">
+              <h2 id="platform-group-others" className="mb-3 text-lg font-bold tracking-tight sm:text-xl">
+                {t.browse.platformGroupOthers}
+              </h2>
+              <div className={PLATFORM_GRID}>
+                {others.map((p) => (
+                  <PlatformCard key={p.id} platform={p} />
+                ))}
+              </div>
+            </section>
+          )}
         </div>
       )}
     </div>

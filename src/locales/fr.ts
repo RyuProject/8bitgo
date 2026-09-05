@@ -530,6 +530,9 @@ const fr: Translation = {
     platformsTitle: 'Plateformes',
     platformsDesc:
       "{n} plateformes au total. De la NES 8 bits à la PlayStation 32 bits, des consoles portables aux bornes d'arcade — choisis la console de ton enfance.",
+    platformGroupPinned: 'Épinglés',
+    platformGroupNintendo: 'Nintendo',
+    platformGroupOthers: 'Autres plateformes',
     genresTitle: 'Genres',
     genresDesc: 'Trouve des jeux selon leur façon de se jouer : envie de réflexes, de réflexion, ou de bouger en rythme ?',
     developersTitle: 'Développeurs',
