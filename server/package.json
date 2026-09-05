@@ -18,6 +18,7 @@
     "test:oauth": "node scripts/test-oauth.mjs",
     "test:presence": "node scripts/test-presence.mjs",
     "test:roles": "node scripts/test-roles.mjs",
+    "test:birth-date": "node scripts/test-birth-date.mjs",
     "test:save-quota": "node scripts/test-save-quota.mjs",
     "test:live": "node scripts/test-live.mjs",
     "test:rooms": "node scripts/test-rooms.mjs",

@@ -126,6 +126,14 @@ export function EmbedPage() {
           gameSlug={game.slug}
           /* 跨站 iframe 里联机指望不上（信令要登录态），压成 1 让播放器别画多人入口 */
           maxPlayers={1}
+          /*
+            这一页把整块视口都给了播放器（下面那个 min-h-0 flex-1），所以窄屏上让它按游玩布局
+            排：画面吃满高度、引擎自带的按键叠在下面。不这么给的话播放器会套一个按平台比例的
+            小框，而手机上那个框装不下引擎那整套按键，按键只能压在画面上 —— 就是详情页上
+            修掉的同一个毛病。max-sm:h-full 是把高度从这一层接到舞台上的那一环，缺了 fill 不生效。
+          */
+          fill
+          className="max-sm:h-full"
           icon={game.icon}
           core={game.core}
           genres={game.genres}

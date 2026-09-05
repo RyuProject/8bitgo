@@ -7,6 +7,15 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
  *  - immersive  沉浸模式：隐藏侧边栏与顶栏，只保留内容（游戏运行时使用）
  */
 export interface ShellState {
+  /**
+   * 外面到底有没有 ShellProvider。
+   *
+   * 嵌入页（/embed/:slug）是**故意**挂在 <Layout> 外面的，那儿 useShell() 拿到的是下面这份
+   * defaultState —— setImmersive 是个空函数、immersive 永远 false。不给个标记的话，
+   * 组件没法区分「玩家现在没开沉浸」和「这个页面压根开不了沉浸」，于是会画出一颗
+   * 点了什么都不发生的按钮（播放器的「◧ 沉浸模式」在嵌入页里一直是这样）。
+   */
+  available: boolean
   collapsed: boolean
   setCollapsed: (v: boolean) => void
   toggleCollapsed: () => void
@@ -21,6 +30,7 @@ const STORAGE_KEY = '8bitgo.sidebar.collapsed'
 
 const noop = () => {}
 const defaultState: ShellState = {
+  available: false,
   collapsed: false,
   setCollapsed: noop,
   toggleCollapsed: noop,
@@ -78,6 +88,7 @@ export function ShellProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<ShellState>(
     () => ({
+      available: true,
       collapsed,
       setCollapsed,
       toggleCollapsed,

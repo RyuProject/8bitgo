@@ -9,7 +9,10 @@ import { useState, type FormEvent, type ReactNode } from 'react'
 import type { PublicUser } from '@/types'
 import { Button, buttonClasses } from '@/components/ui/Button'
 import { useT, fmt } from '@/services/i18n'
+import { useLang } from '@/services/lang'
 import { changeEmail, logoutAllDevices, requestEmailChangeCode, setPassword } from '@/services/auth'
+import { BirthDateForm, formatBirthDate } from '@/components/game/AgeGate'
+import { isAdultByBirthDate } from '@/lib/age'
 import { CodeInput, Notice, Panel, inputClass, useCooldown } from './shared'
 import { FEATURES } from '@/config/features'
 
@@ -24,6 +27,10 @@ export function AccountSection({ user }: { user: PublicUser }) {
       </div>
       {/* 密码登录关着的时候这里也要收起来：设得了、用不上，等于给用户挖坑 */}
       {FEATURES.passwordLogin && <PasswordPanel user={user} />}
+      {/* 出生日期也横跨两列：填过之后它只是一行状态，占半栏反而显得空 */}
+      <div className="lg:col-span-2">
+        <BirthDatePanel user={user} />
+      </div>
       {/* 「退出其它设备」横跨两列：它是一个动作而不是一组表单，挤在半栏里会被当成邮箱那块的一部分 */}
       <div className="lg:col-span-2">
         <DevicesPanel />
@@ -272,6 +279,62 @@ function Labeled({ id, label, children }: { id: string; label: string; children:
 }
 
 /* ---------------- 其它设备 ---------------- */
+
+/* ---------------- 出生日期（成人内容年龄验证） ---------------- */
+
+/**
+ * 填一次就锁定，所以这块面板有两种形态：
+ *   - 还没填：一个「填写出生日期」按钮，展开是年龄门里那张同样的两步表单；
+ *   - 填过了：只读地显示日期和当前结论，并说明纠错要找管理员。
+ *
+ * 未满 18 的不说「被拒绝」而说「到 18 岁生日自动解锁」—— 服务端确实是每次现算的，
+ * 用户不需要再回来填一次，这句话是事实而不是安慰。
+ */
+function BirthDatePanel({ user }: { user: PublicUser }) {
+  const t = useT()
+  const lang = useLang()
+  const [open, setOpen] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  if (user.birthDate) {
+    const adult = isAdultByBirthDate(user.birthDate)
+    return (
+      <Panel title={t.account.birthTitle} desc={t.account.birthDesc}>
+        <div className="space-y-3">
+          {saved && <Notice ok text={t.account.birthSaved} />}
+          <p className="text-sm font-semibold tabular-nums">{formatBirthDate(user.birthDate, lang)}</p>
+          <p className="text-sm text-muted">{adult ? t.account.birthAdult : t.account.birthUnderage}</p>
+          <p className="text-xs text-dim">{t.account.birthLocked}</p>
+        </div>
+      </Panel>
+    )
+  }
+
+  return (
+    <Panel title={t.account.birthTitle} desc={t.account.birthDesc}>
+      <div className="space-y-3">
+        <p className="text-sm text-muted">{t.account.birthNone}</p>
+        {open ? (
+          <div className="max-w-xs">
+            <BirthDateForm
+              tone="light"
+              onSaved={() => {
+                setSaved(true)
+                setOpen(false)
+              }}
+            />
+          </div>
+        ) : (
+          <Button size="sm" variant="secondary" onClick={() => setOpen(true)}>
+            {t.account.birthSet}
+          </Button>
+        )}
+      </div>
+    </Panel>
+  )
+}
+
+/* ---------------- 登录设备 ---------------- */
 
 function DevicesPanel() {
   const t = useT()

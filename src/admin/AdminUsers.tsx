@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import type { PublicUser } from '@/types'
-import { adminDeleteUser, adminSetRole, adminSetStatus, useAllUsers, useCurrentUser } from '@/services/auth'
+import { adminClearBirthDate, adminDeleteUser, adminSetRole, adminSetStatus, useAllUsers, useCurrentUser } from '@/services/auth'
+import { isAdultByBirthDate } from '@/lib/age'
 import { cx } from '@/lib/format'
 import { apiEnabled } from '@/services/api'
 import { btnClass, inputClass } from './ui'
@@ -60,6 +61,22 @@ export function AdminUsers() {
     }
   }
 
+  /**
+   * 清除出生日期，让用户可以重填。
+   *
+   * 用户自己填一次就锁死（成人内容的年龄门靠这个才有意义），所以这是唯一的纠错通道。
+   * 后台只能清、不能代填：出生日期是本人的声明，管理员替人填一个成年日期等于替人担责。
+   */
+  const clearBirthDate = async (u: PublicUser) => {
+    if (!window.confirm(`清除「${u.nickname}」的出生日期？清除后他需要重新填写才能玩成人内容。`)) return
+    try {
+      await adminClearBirthDate(u.id)
+      flash('已清除出生日期')
+    } catch (err) {
+      flash(err instanceof Error ? err.message : '操作失败')
+    }
+  }
+
   const remove = async (u: PublicUser) => {
     if (!window.confirm(`确定删除用户「${u.nickname}」（${u.email}）？此操作不可恢复。`)) return
     try {
@@ -89,6 +106,7 @@ export function AdminUsers() {
               <th className="px-3 py-2 font-medium">用户</th>
               <th className="px-3 py-2 font-medium">注册日期</th>
               <th className="px-3 py-2 font-medium">角色</th>
+              <th className="px-3 py-2 font-medium">成人内容</th>
               <th className="px-3 py-2 font-medium">收藏</th>
               <th className="px-3 py-2 font-medium">最近浏览</th>
               <th className="px-3 py-2 font-medium">状态</th>
@@ -133,6 +151,27 @@ export function AdminUsers() {
                     <span className="text-muted">{ROLE_LABELS[u.role]}</span>
                   )}
                 </td>
+                {/* 成人内容的年龄验证状态。出生日期只显示给管理员，不进任何公开接口 */}
+                <td className="px-3 py-2">
+                  {u.birthDate ? (
+                    <div className="flex items-center gap-1.5">
+                      <span className={cx('rounded px-1.5 py-0.5 text-xs', isAdultByBirthDate(u.birthDate) ? 'bg-online/15 text-online' : 'bg-live/15 text-live')}>
+                        {isAdultByBirthDate(u.birthDate) ? '已满 18' : '未满 18'}
+                      </span>
+                      <span className="tabular-nums text-xs text-dim">{u.birthDate}</span>
+                      <button
+                        type="button"
+                        className={cx(btnClass.small, 'text-muted hover:bg-black/5 hover:text-fg')}
+                        onClick={() => clearBirthDate(u)}
+                        title="清除后用户可以重新填写出生日期"
+                      >
+                        清除
+                      </button>
+                    </div>
+                  ) : (
+                    <span className="text-xs text-dim">未填写</span>
+                  )}
+                </td>
                 <td className="px-3 py-2 tabular-nums text-muted">{u.favorites.length}</td>
                 <td className="px-3 py-2 tabular-nums text-muted">{u.recent.length}</td>
                 <td className="px-3 py-2">
@@ -170,7 +209,7 @@ export function AdminUsers() {
             ))}
             {list.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-3 py-10 text-center text-sm text-muted">
+                <td colSpan={8} className="px-3 py-10 text-center text-sm text-muted">
                   {users.length === 0 ? '还没有用户。在前台注册一个账号后会出现在这里。' : '没有符合条件的用户'}
                 </td>
               </tr>

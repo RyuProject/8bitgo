@@ -87,6 +87,15 @@ interface Props {
   gameSlug?: string
   /** 该游戏支持的最大玩家数（决定房间容量）。> 1 时默认走联机 */
   maxPlayers?: number
+  /**
+   * 外面已经把整块高度交给播放器了（嵌入页 /embed/:slug 就是这样：h-dvh 的列里给了
+   * flex-1）。窄屏上据此按游玩布局排 —— 画面吃满高度、引擎按键叠在下面 ——
+   * 而不是套一个按平台比例的小框，那个框在手机上装不下引擎自带的整套按键。
+   *
+   * 不自己 fixed 铺满：嵌入页底下还有一条必须留着的品牌栏，盖掉就违约了。
+   * 配套要给 className 一个 max-sm:h-full，高度链才连得上（见 EmbedPage）。
+   */
+  fill?: boolean
   /** 邀请链接带进来的 P2P 房间 id（详情页 ?p2p=） */
   invite?: string
   /** 邀请链接带进来的云端房间 id（详情页 ?room=，付费通道） */
@@ -224,6 +233,7 @@ export function EmulatorPlayer({
   gameName,
   gameSlug,
   maxPlayers = 2,
+  fill = false,
   invite,
   cloudInvite,
   watch = false,
@@ -267,7 +277,7 @@ export function EmulatorPlayer({
   const [localRomData, setLocalRomData] = useState<string | undefined>(undefined)
 
   const t = useT()
-  const { immersive, setImmersive, toggleImmersive } = useShell()
+  const { immersive, setImmersive, toggleImmersive, available: shellAvailable } = useShell()
 
   /* ---------------- 联机 ---------------- */
   // 联机需要云端 ROM：房主和访客都得能拿到同一个 ROM
@@ -487,12 +497,22 @@ export function EmulatorPlayer({
    */
   const playMode = immersive && compact && !fullscreen
   /**
+   * 嵌入页在窄屏上的等价物（见 fill 属性）：一样是画面吃满高度、按键叠在下面，
+   * 只是不 fixed —— 那边的高度是外面用 flex 给的，底下还有一条品牌栏要留着。
+   * 用 narrow 而不是 compact：高度链靠的是 EmbedPage 传的 max-sm:h-full，两者要严格对齐。
+   */
+  const embedFill = fill && narrow
+  /**
    * 「监视器」态：手机上游戏在跑、但不在游玩布局里（玩家点了退出沉浸，回详情页看简介）。
    * 画面缩在小框里，引擎自带的按键压在里面既按不到也挡画面 —— 让适配器先把它整套收起来，
    * 画面完整露出，整块画面变成「点一下回去玩」的按钮；回到游玩布局再放出来。
    * 见 RuntimeHandle.setStageMode 的 'monitor'。
+   *
+   * ⚠️ 必须先看 shellAvailable。嵌入页没有 ShellProvider，那儿的 setImmersive 是个空函数 ——
+   * 不判这一条的话，嵌入页在手机上会进监视器态：按键被收起来、盖上一张「点按回去玩」，
+   * 而那一点根本回不去，游戏直接变成没法操作的动图。
    */
-  const monitor = compact && touchDevice && !playMode && !fullscreen
+  const monitor = shellAvailable && compact && touchDevice && !playMode && !embedFill && !fullscreen
 
   /**
    * 游玩布局期间锁住页面滚动，并且退出时把播放器滚回视口。
@@ -505,6 +525,13 @@ export function EmulatorPlayer({
    *
    * 退出时滚一下：舞台从 fixed 回到文档流，它 fixed 期间页面塌掉了一截，滚动位置对不上，
    * 玩家看到的可能是简介的中段而不是刚才那局。放 rAF 里等重排落定再滚。
+   *
+   * scrollbar-gutter 也要一起放开。index.css 给 html 设了 `scrollbar-gutter: stable`
+   * （为了让长短页面的顶栏按钮不左右跳），它会**从视口里切掉**一条滚动条宽的位置，而
+   * fixed inset-0 铺的是切剩下的那块 —— probe 实测 393 的视口上舞台只有 378 宽，
+   * 右边留一条 15px 的白边。手机浏览器是覆盖式滚动条，这条规则本来就不生效，看不出来；
+   * 但把桌面窗口拖窄到 640 以下同样会进游玩布局，那儿就是一道白杠。
+   * 反正这时页面已经不滚了，槽留着没有任何意义。
    */
   const wasPlayModeRef = useRef(false)
   useEffect(() => {
@@ -513,11 +540,14 @@ export function EmulatorPlayer({
       wasPlayModeRef.current = true
       const prevOverflow = root.style.overflow
       const prevOverscroll = root.style.overscrollBehavior
+      const prevGutter = root.style.scrollbarGutter
       root.style.overflow = 'hidden'
       root.style.overscrollBehavior = 'none'
+      root.style.scrollbarGutter = 'auto'
       return () => {
         root.style.overflow = prevOverflow
         root.style.overscrollBehavior = prevOverscroll
+        root.style.scrollbarGutter = prevGutter
       }
     }
     if (!wasPlayModeRef.current) return
@@ -577,7 +607,7 @@ export function EmulatorPlayer({
    * 把「场合」报给运行时（见 RuntimeHandle.setStageMode）：游玩布局 / 监视器 / 其余。
    * 只有 EmulatorJS 实现了它 —— 别的运行时没这回事，可选链跳过。
    */
-  const stageMode: StageMode = playMode ? 'play' : monitor ? 'monitor' : 'free'
+  const stageMode: StageMode = playMode || embedFill ? 'play' : monitor ? 'monitor' : 'free'
   useEffect(() => {
     if (status !== 'running') return
     handle?.setStageMode?.(stageMode)
@@ -1512,7 +1542,7 @@ export function EmulatorPlayer({
    * iframe 是竖着的，画布给按键让位、按键贴底（见 adapters/emulatorjs.ts 的 FRAME_HTML）。
    * 气泡照旧贴上沿（贴下沿会盖住按键），但文案要说「在下方 👇」而不是「就在画面上」。
    */
-  const enginePadStacked = caps.has('enginePad') && narrow && (playMode || fullscreen)
+  const enginePadStacked = caps.has('enginePad') && narrow && (playMode || embedFill || fullscreen)
 
   /**
    * 开局提示：告诉玩家「怎么玩、手柄在哪儿」。
@@ -1627,7 +1657,7 @@ export function EmulatorPlayer({
           //         又要低于登录弹窗的 z-[80]
           // 非全屏：桌面端仍是整体 16:9（工具栏在框内，不额外撑高详情页）；
           //         移动端不给整体比例 —— 高度 = 画面的原生比例框 + 工具栏
-          fullscreen ? 'relative h-full' : playMode ? 'fixed inset-0 z-[60]' : 'relative sm:aspect-video',
+          fullscreen ? 'relative h-full' : playMode ? 'fixed inset-0 z-[60]' : embedFill ? 'relative h-full' : 'relative sm:aspect-video',
           dragging && 'ring-2 ring-brand ring-inset',
         )}
         onDragOver={(e) => {
@@ -1642,7 +1672,7 @@ export function EmulatorPlayer({
             'relative min-h-0',
             // 全屏和游玩布局都是「吃掉工具栏以外的全部高度」；iframe 竖着的话，
             // EmulatorJS 那边画布会给按键让位（见 adapters/emulatorjs.ts 的 FRAME_HTML）
-            fullscreen || playMode
+            fullscreen || playMode || embedFill
               ? 'flex-1'
               : cx(
                   // 移动端：自己占一个按平台原生比例的框。flex-none 是必须的 ——
@@ -1947,7 +1977,8 @@ export function EmulatorPlayer({
         <div
           data-testid="emulator-toolbar"
           className={cx(
-            'relative z-20 flex shrink-0 flex-wrap items-center gap-1.5 border-t border-line bg-surface px-2 py-1.5 text-xs sm:gap-2 sm:px-3 sm:py-2',
+            // 窄屏 gap-1：320pt 上七道间隙省下 14px，正好是「一行」和「两行」的差别
+            'relative z-20 flex shrink-0 flex-wrap items-center gap-1 border-t border-line bg-surface px-2 py-1.5 text-xs sm:gap-2 sm:px-3 sm:py-2',
             // 游玩布局：这一条压在视口最底下 —— 手指在上面一划不能把底下的页面滚走（touch-none），
             // 底边让出 iPhone 的 Home 指示条（safe-area），没有的设备上 max() 取回原来的 py
             playMode && 'touch-none pb-[max(0.375rem,env(safe-area-inset-bottom))]',
@@ -1963,10 +1994,18 @@ export function EmulatorPlayer({
           title={statusLabel}
           aria-label={statusLabel}
           className={cx(
-            'inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-semibold',
-            // 游玩布局里这颗圆点是纯占位：游戏就在眼前跑着，状态一目了然，而这一行的宽度
-            // 在 360pt 的屏幕上一颗都省不得 —— 多一颗就折成两行，从画面高度里扣
-            playMode && 'hidden',
+            /*
+              窄屏上整颗徽章都不画（原本只是把文字收进 title，留一颗圆点）。
+              圆点在手机上说不出任何新东西：跑起来了画面自己在动、加载中画面里有进度条、
+              出错了有红字。而它连着间距要占 26px —— 360pt 上工具栏正好差这一点排不下，
+              折出来的第二行是从画面高度里扣的（probe 实测 360/320 都因此变成两行）。
+
+              ⚠️ 用 max-sm:hidden 这个**变体**，不是在 inline-flex 后面追一个裸 hidden：
+              两个都是 display 工具类、同层同特异性，谁赢由 Tailwind 生成的先后顺序决定
+              （inline-flex 排在后面），裸 hidden 根本不生效 —— 第一版就是这么写的，
+              probe 量出来徽章照样占着 22px。带变体的规则生成在后面，才盖得住。
+            */
+            'inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-semibold max-sm:hidden',
             status === 'running'
               ? 'bg-online/15 text-online'
               : status === 'loading'
@@ -2171,9 +2210,20 @@ export function EmulatorPlayer({
           */}
           {supported && (
             <>
+              {/* 嵌入页没有 ShellProvider，toggleImmersive 是空函数 —— 别画一颗点了没反应的按钮 */}
+              {shellAvailable && (
               <Button
                 variant={immersive ? 'primary' : 'secondary'}
                 size="sm"
+                /*
+                  窄屏上收成和工具栏其余图标钮一样的 h-7 / px-1.5（那边是 EmulatorTools 的 BTN）。
+                  这两颗原本是 h-8 px-3 的 Button，在只画一个符号的手机上白占 14px 宽、4px 高，
+                  而 360pt 的屏幕上正好就差这十几个像素会把工具栏挤成两行。
+                  用 max-sm: 而不是裸 h-7：裸的和 Button 自己的 h-8 同层同特异性，
+                  Tailwind 把 h-8 排在 h-7 后面，追加的会被吃掉（和上面徽章那条是同一个坑）；
+                  带变体的规则生成在后面，才盖得住。
+                */
+                className="max-sm:h-7 max-sm:px-1.5"
                 onClick={toggleImmersive}
                 title={t.player.immersiveTitle}
                 aria-label={immersive ? t.player.exitImmersive : t.player.enterImmersive}
@@ -2184,11 +2234,13 @@ export function EmulatorPlayer({
                 </span>
                 <span className="hidden sm:inline">{immersive ? t.player.exitImmersive : t.player.enterImmersive}</span>
               </Button>
+              )}
               {/* 没有 Fullscreen API 的浏览器（iPhone Safari）不画：点了什么都不发生的按钮比没有更糟 */}
               {fullscreenApi && (
                 <Button
                   variant="secondary"
                   size="sm"
+                  className="max-sm:h-7 max-sm:px-1.5"
                   onClick={toggleFullscreen}
                   title={t.player.fullscreenTitle}
                   aria-label={t.player.fullscreen}
