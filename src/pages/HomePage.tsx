@@ -1,6 +1,5 @@
 import { HomeHeading, HomeIntro } from '@/components/home/HomeIntro'
 import { HomeBanner } from '@/components/home/HomeBanner'
-import { FeaturedCarousel } from '@/components/home/FeaturedCarousel'
 import {
   FaqSection,
   GenreGridSection,
@@ -66,7 +65,6 @@ export function HomePage() {
             <GenreGridSection facets={data?.facets} genreSamples={data?.genreSamples} />
           </>
         )}
-        <FeaturedCarousel />
         <FaqSection />
       </div>
     </div>
