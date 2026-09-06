@@ -393,6 +393,191 @@ const ice3 = await (await fetch(`${base}/api/netplay/ice`)).json()
 const turn3 = ice3.iceServers.find((x) => String(x.urls).includes('turn:'))
 ok(turn3.credential === turn.credential || turn3.username !== turn.username, '凭证按时间戳生成（同秒内一致）')
 ok(ice2.expiry > Math.floor(Date.now() / 1000), '过期时间在将来')
+ok(ice2.turnCount === 1, '只配了自建时 turnCount = 1')
+
+console.log('\n── 两路 TURN：自建为主、托管兜底 ──')
+/**
+ * 两路一起下发，不是串行回退：WebRTC 从所有 ICE 服务器一起收集候选，中继候选优先级最低，
+ * 两路中继之间排在前面的本地优先级更高 —— 所以托管那路只在「直连不通且自建也配不上」时才吃流量。
+ * 顺序因此是有意义的，测试要盯住它。
+ */
+process.env.TURN_BACKUP_URLS = 'turn:relay.example.net:80,turns:relay.example.net:443'
+process.env.TURN_BACKUP_USERNAME = 'mgd-user'
+process.env.TURN_BACKUP_CREDENTIAL = 'mgd-pass'
+const both = await (await fetch(`${base}/api/netplay/ice`)).json()
+ok(both.turnCount === 2, `两路都配上时 turnCount = 2（实际 ${both.turnCount}）`)
+const [stunEntry, primary, backup] = both.iceServers
+ok(!String(stunEntry.urls).includes('turn'), 'STUN 排在最前')
+ok(String(primary.urls).includes('turn.example.com') && /^\d+:/.test(primary.username), '自建那路排在托管前面，且用短期凭证')
+ok(String(backup.urls).includes('relay.example.net') && backup.username === 'mgd-user' && backup.credential === 'mgd-pass', '托管那路用固定账号密码')
+ok(both.expiry === (both.iceServers.length ? Number(String(primary.username).split(':')[0]) : 0), 'expiry 取会过期的那路（固定账号不参与）')
+
+// 厂商也用 coturn 那套 HMAC 约定时，填 SECRET 就按 HMAC 现算，忽略固定账号
+process.env.TURN_BACKUP_SECRET = 'backup-secret'
+const hmacBackup = await (await fetch(`${base}/api/netplay/ice`)).json()
+const hb = hmacBackup.iceServers[2]
+ok(/^\d+:/.test(hb.username), '填了 BACKUP_SECRET 就换成短期凭证')
+ok(hb.credential !== 'mgd-pass' && hb.username !== 'mgd-user', '固定账号被忽略')
+// 两路的密钥不同，算出来的凭证必须不同 —— 一样就说明拿错了 secret
+ok(hb.credential !== hmacBackup.iceServers[1].credential, '两路各用各的密钥算凭证')
+ok(hmacBackup.expiry > Math.floor(Date.now() / 1000), '两路都会过期时 expiry 仍在将来')
+delete process.env.TURN_BACKUP_SECRET
+
+// 只配托管、没配自建：照样要能兜底（自建还没搭起来的时候）
+delete process.env.TURN_URLS
+delete process.env.TURN_SECRET
+const onlyBackup = await (await fetch(`${base}/api/netplay/ice`)).json()
+ok(onlyBackup.turnCount === 1 && String(onlyBackup.iceServers[1].urls).includes('relay.example.net'), '只配托管时它就是唯一那路中继')
+ok(onlyBackup.hasTurn === true, 'hasTurn 仍然是 true')
+ok(onlyBackup.expiry === 0, '只有固定账号时 expiry = 0（无需续期）')
+
+// 地址填了但凭证没填 = 配了一半，不能当成有 TURN 报上去
+delete process.env.TURN_BACKUP_USERNAME
+delete process.env.TURN_BACKUP_CREDENTIAL
+const halfConfigured = await (await fetch(`${base}/api/netplay/ice`)).json()
+ok(halfConfigured.turnCount === 0 && halfConfigured.hasTurn === false, '只填地址没填凭证时不算 TURN（hasTurn=false）')
+delete process.env.TURN_BACKUP_URLS
+
+console.log('\n── Cloudflare Realtime TURN ──')
+/**
+ * CF 那一路是服务端现去领凭证的（POST /turn/keys/<id>/credentials/generate-ice-servers）。
+ * 起一个假的 CF 接口，验五件事：形状解析、STUN 有没有并进去、领来的有没有被缓存住
+ * （不能每个请求都去撞人家接口）、换 key 缓存要作废、以及**它挂了会不会拖垮整个接口**
+ * —— 最后这条最要紧：这个接口在开局的关键路径上，玩家点「开始游戏」就在等它。
+ */
+let cfHits = 0
+let cfMode = 'ok'
+/**
+ * ⚠️ CF 这个接口的**分组方式有两种见法**，解析不能赌其中一种：
+ *   split   官方文档的示例：两条，STUN 一条（无凭证）、TURN 一条（带凭证）
+ *   merged  仪表盘「如何创建凭据」的示例：**一条**，stun 和 turn 混在同一个 urls 里，凭证挂在这一条上
+ * 我们的解析是按 URL 的 scheme 拆的，所以两种都必须能出同样的结果。
+ */
+const CF_SHAPES = {
+  split: [
+    { urls: ['stun:stun.cloudflare.com:3478', 'stun:stun.cloudflare.com:53'] },
+    {
+      urls: ['turn:turn.cloudflare.com:3478?transport=udp', 'turns:turn.cloudflare.com:443?transport=tcp'],
+      username: 'cf-user-abc', credential: 'cf-cred-xyz',
+    },
+  ],
+  merged: [
+    {
+      urls: [
+        'stun:stun.cloudflare.com:3478',
+        'stun:stun.cloudflare.com:53',
+        'turn:turn.cloudflare.com:3478?transport=udp',
+        'turns:turn.cloudflare.com:443?transport=tcp',
+      ],
+      username: 'cf-user-abc', credential: 'cf-cred-xyz',
+    },
+  ],
+}
+let cfShape = 'split'
+const cfSrv = createServer((req, res) => {
+  cfHits++
+  if (cfMode === 'down') { res.writeHead(500); return res.end('boom') }
+  if (cfMode === 'hang') return // 故意不回包，逼超时
+  res.writeHead(201, { 'content-type': 'application/json' })
+  res.end(JSON.stringify({ iceServers: CF_SHAPES[cfShape] }))
+})
+await new Promise((r) => cfSrv.listen(0, r))
+process.env.TURN_CF_API_BASE = `http://127.0.0.1:${cfSrv.address().port}/v1`
+process.env.TURN_CF_TIMEOUT_MS = '600'
+// 缓存是按 key 存的，换个 key 就等于让它作废（顺便验了「换 key 要立刻生效」）
+let cfKeySeq = 0
+const useFreshCfKey = () => (process.env.TURN_CF_KEY_ID = `test-key-${++cfKeySeq}`)
+useFreshCfKey()
+process.env.TURN_CF_API_TOKEN = 'test-token'
+// 自建那路也开着，验顺序：自建在前、CF 兜底在后
+process.env.TURN_URLS = 'turn:turn.example.com:3478'
+process.env.TURN_SECRET = 'test-secret'
+
+const withCf = await (await fetch(`${base}/api/netplay/ice`)).json()
+ok(withCf.turnCount === 2, `自建 + CF = 2 路（实际 ${withCf.turnCount}）`)
+ok(
+  JSON.stringify(withCf.turnSources) === JSON.stringify(['self-hosted', 'cloudflare']),
+  `顺序是自建在前、CF 兜底（${withCf.turnSources}）`,
+)
+const cfEntry = withCf.iceServers.find((x) => String(x.urls).includes('turn.cloudflare.com'))
+ok(cfEntry?.username === 'cf-user-abc' && cfEntry?.credential === 'cf-cred-xyz', 'CF 的凭证解析对了')
+ok(
+  withCf.iceServers[0].urls.includes('stun:stun.cloudflare.com:3478'),
+  'CF 带来的 STUN 并进了 STUN 那一格（顺带解决默认 STUN 不可达）',
+)
+ok(cfEntry.urls.every((u) => String(u).startsWith('turn')), 'STUN 没有混进 TURN 那一格')
+ok(withCf.expiry > Math.floor(Date.now() / 1000), 'expiry 取了会过期的那几路里最早的')
+
+// 换成仪表盘那种「一条里混排」的形状，结果必须一模一样
+cfShape = 'merged'
+useFreshCfKey()
+const merged = await (await fetch(`${base}/api/netplay/ice`)).json()
+const mergedTurn = merged.iceServers.find((x) => String(x.urls).includes('turn.cloudflare.com'))
+ok(merged.turnSources.includes('cloudflare'), '混排形状也认得出 TURN')
+ok(
+  mergedTurn?.username === 'cf-user-abc' && mergedTurn.urls.every((u) => String(u).startsWith('turn')),
+  '混排形状里的 stun: 被拆出去，TURN 那一格只剩 turn/turns',
+)
+ok(
+  merged.iceServers[0].urls.includes('stun:stun.cloudflare.com:3478'),
+  '混排形状里的 stun: 正确并进了 STUN 那一格',
+)
+ok(
+  JSON.stringify(mergedTurn.urls) === JSON.stringify(cfEntry.urls),
+  '两种形状解析出来的 TURN 地址完全一致',
+)
+cfShape = 'split'
+
+const hitsAfterFirst = cfHits
+await (await fetch(`${base}/api/netplay/ice`)).json()
+await (await fetch(`${base}/api/netplay/ice`)).json()
+ok(cfHits === hitsAfterFirst, `凭证被缓存住，没有每个请求都去撞 CF（总共撞了 ${cfHits} 次）`)
+
+useFreshCfKey()
+await (await fetch(`${base}/api/netplay/ice`)).json()
+ok(cfHits === hitsAfterFirst + 1, '换了 key 之后缓存作废，会重新去领')
+
+// CF 挂掉：其余几路必须照常，接口不能 500、也不能因此变慢很多
+cfMode = 'down'
+useFreshCfKey()
+const t0 = Date.now()
+const cfDown = await (await fetch(`${base}/api/netplay/ice`)).json()
+const cost = Date.now() - t0
+ok(
+  cfDown.turnSources.includes('self-hosted') && !cfDown.turnSources.includes('cloudflare'),
+  'CF 挂了，自建那路照常下发',
+)
+ok(cost < 3000, `CF 挂了也不会把接口拖死（${cost}ms）`)
+ok(Array.isArray(cfDown.iceServers) && cfDown.iceServers.length >= 2, '响应结构完整，没有 500')
+
+// CF 不回包：只能吞掉这一路，靠 AbortSignal 兜住
+cfMode = 'hang'
+useFreshCfKey()
+const t1 = Date.now()
+const cfHang = await (await fetch(`${base}/api/netplay/ice`)).json()
+const hangCost = Date.now() - t1
+ok(cfHang.turnSources.includes('self-hosted'), 'CF 超时，自建那路照常下发')
+ok(hangCost < 3000, `CF 超时被 AbortSignal 兜住，不会无限等（${hangCost}ms）`)
+
+cfSrv.close()
+delete process.env.TURN_CF_KEY_ID
+delete process.env.TURN_CF_API_TOKEN
+delete process.env.TURN_CF_API_BASE
+delete process.env.TURN_URLS
+delete process.env.TURN_SECRET
+const noTurn = await (await fetch(`${base}/api/netplay/ice`)).json()
+ok(noTurn.hasTurn === false && noTurn.turnCount === 0, '几路都撤掉之后 hasTurn 回到 false')
+
+console.log('\n── STUN 可以整个换掉（默认那几台在部分地区不可达）──')
+process.env.STUN_URLS = 'stun:stun.mydomain.cn:3478,stun:turn.mydomain.cn:3478'
+const cnStun = await (await fetch(`${base}/api/netplay/ice`)).json()
+ok(
+  Array.isArray(cnStun.iceServers[0].urls) &&
+    cnStun.iceServers[0].urls.length === 2 &&
+    !JSON.stringify(cnStun.iceServers).includes('google'),
+  '配了 STUN_URLS 就完全不下发 Google 那几台',
+)
+delete process.env.STUN_URLS
 
 console.log(`\n${fail ? '❌' : '全部通过 ✅'}  通过 ${pass}，失败 ${fail}`)
 host.close(); guest.close(); third.close()

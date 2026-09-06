@@ -161,3 +161,75 @@ export function translateText(text, source, target) {
     })
     .finally(() => clearTimeout(timer))
 }
+
+/* ---------------- 段落级并发翻译 ---------------- */
+
+/**
+ * 简单并发执行器 —— 用 3 个 worker 抢同一个下标计数器，谁拿到谁干。
+ * 比 p-limit 多了 14 KB 的依赖、不值得 —— 这套写法放在文件里 12 行，
+ * 满足「最多 N 个并发」的需求就够。
+ */
+async function runWithLimit(items, mapper, limit) {
+  const out = new Array(items.length)
+  let next = 0
+  async function worker() {
+    while (next < items.length) {
+      const i = next++
+      out[i] = await mapper(items[i], i)
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, () => worker()),
+  )
+  return out
+}
+
+/**
+ * 把 Markdown 内容分块翻译。
+ *
+ * 为什么按段落切：游戏简介单段就够，但文章正文很长（一篇 50KB 的博客常见 30~80 段），
+ * 一次性灌给火山的 TextList 会被单条字符上限（官方没公开数字，实测几千字以内）挡回。
+ * 按双换行（Markdown 段落分隔符）切块后，每段单独翻译再拼回去 —— 段落是天然的翻译单元，
+ * 不会破坏 `##` 标题 / 列表 / 链接等结构标记。
+ *
+ * 段落里**也**可能很长（比如一坨散文 10KB）。当前不做二次切分：
+ *   - 实测中等长度的博客很少有那么大的单段
+ *   - 真撞上 LIMITEXCEEDED 错误码（QPS 太热或单条太长）时路由层会把它当 502 暴露，
+ *     前端按钮显示「翻译失败，请重试」—— 用户能感知
+ *   - 真要补的话，记一笔二次切（按句号或者 chars N 一刀切），后续单独一个补丁
+ *
+ * ⚠️ Markdown 内联标记（**加粗**、`代码`、[链接](url)、```代码块```）现在直接交给火山。
+ * 大多数情况下它会保留这些标记 —— 因为代码块是非中文、链接是 URL —— 但理论上可能
+ * 「贴心地」把 `**强调**` 内部的文字按语义重写。接受偶尔的不完美，比自写规则化
+ * 解析（要识别代码块边界、链接语法、转义）再拼接便宜多了。
+ *
+ * @param {string} text              Markdown 原文
+ * @param {string} source            火山接受的源语言码（'zh' / 'en'）
+ * @param {string} target            火山接受的目标语言码
+ * @param {number} [concurrency=3]   并发上限。免费版火山大约 5 QPS，3 同时进行留 2 个余量
+ *                                   给其他翻译请求（游戏 + 文章可能并发）
+ */
+export async function translateMarkdown(text, source, target, concurrency = 3) {
+  if (!text || !text.trim()) return text || ''
+
+  // 按双换行切，**保留**分隔符（用捕获组 + split）—— 不然段落之间的空白行全丢，
+  // 视觉上挤成一坨，Markdown 渲染器也不喜欢没有空行分隔的段落。
+  const parts = text.split(/(\n\n+)/)
+  // 偶数 index 是正文块（要翻译），奇数 index 是分隔符（保持原样）
+  const indicesToTranslate = []
+  for (let i = 0; i < parts.length; i += 2) {
+    if (parts[i].trim()) indicesToTranslate.push(i)
+  }
+  if (indicesToTranslate.length === 0) return text
+
+  const out = [...parts]
+  await runWithLimit(
+    indicesToTranslate,
+    async (i) => {
+      // 单段失败会冒泡，整体翻译失败、路由回 502、用户重试
+      out[i] = await translateText(parts[i], source, target)
+    },
+    concurrency,
+  )
+  return out.join('')
+}

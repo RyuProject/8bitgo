@@ -26,7 +26,7 @@
  */
 import type { Capability, CaptureSources, MountOptions, Runtime, RuntimeHandle } from '../types'
 import { getT, fmt } from '@/services/i18n'
-import { connectLive, liveEnabled, liveIceServers, type LiveSocket } from '@/services/live'
+import { connectLive, liveEnabled, liveIceConfig, type LiveSocket } from '@/services/live'
 
 export type LiveViewState = 'connecting' | 'watching' | 'reconnecting' | 'host-away' | 'ended' | 'error'
 
@@ -57,11 +57,26 @@ type WatchAck = {
   netplayRoomId?: string | null
 }
 
-/** 首次握手超时：连不上要给明确提示，而不是永远转圈 */
-const HANDSHAKE_TIMEOUT_MS = 25_000
+/**
+ * 首次等 offer 的时间。
+ *
+ * 主播收到 viewer-joined 就会发 offer，正常一两秒。等不到通常不是网络慢，而是**那条事件丢了**
+ * ——主播正好在重连、或者 offer 发出前 addViewer 抛了。以前首次 watch 之后**根本没上闹钟**
+ * （armRewatch 只在 rewatch 和 host-back 之后才上），offer 一丢，观众的 pc 就永远停在 new 状态：
+ * 它不会变成 failed，所以那套「failed → rewatch」的恢复逻辑一次都不会触发，干等到总超时报错。
+ */
+const FIRST_OFFER_MS = 8_000
 /** 重新 watch 之后等 offer 的时间；到点还没通就再要一次，要过几次都没用才算断 */
 const REWATCH_TIMEOUT_MS = 20_000
 const REWATCH_MAX = 3
+/**
+ * 从进房到画面通的**总**预算。
+ *
+ * 以前这里是 25 秒，而重试机制是 20 秒 × 3 次 —— 看门狗必然先到，`fail()` 一调直接进错误遮罩，
+ * 等于那三次重试在首连场景里是死代码。现在放到「首次 8s + 3 × 20s」之上，留一点余量，
+ * 让重试真的有机会跑完；正常连上的话 freshPc 那边一到 connected 就把它清了。
+ */
+const CONNECT_BUDGET_MS = 75_000
 
 function deadHandle(): RuntimeHandle {
   return { destroy: () => {}, caps: new Set<Capability>() }
@@ -98,6 +113,16 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   let watching = false
   let rewatchTimer = 0
   let rewatchCount = 0
+  /** 站点配了 TURN 中继没有。没有的话「连不上」十有八九是穿不过 NAT，提示要说得具体些 */
+  let hasTurn = false
+  /**
+   * 本地收集到的候选类型（host / srflx / relay）。
+   *
+   * 只有 host 意味着**连公网地址都没问出来** —— STUN 不可达（比如默认那几台在墙外的），
+   * 这时除非两边在同一个局域网里，否则必然连不上，跟主播在不在没有半点关系。
+   * 拿它来把「网络根本没有通路」和「主播下播了」分开，不然报错永远是那句放之四海而皆准的废话。
+   */
+  const localCandidateTypes = new Set<string>()
   const stream = new MediaStream()
 
   const host = document.createElement('div')
@@ -138,12 +163,28 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const onClick = () => (video.muted && unmuteHint.style.display !== 'none' ? unmute() : tryPlay())
   host.addEventListener('click', onClick)
 
+  /**
+   * 连不上时到底该说什么。
+   *
+   * 拿本地收集到的候选类型判断：一个公网候选都没有（只有 host），就是这条网络出不去，
+   * 说「可能是对方下播了」纯属误导 —— 用户会一直重试一件永远不可能成功的事。
+   */
+  const diagnose = (): string => {
+    const outward = localCandidateTypes.has('srflx') || localCandidateTypes.has('relay')
+    if (!outward) {
+      console.warn('[live] 只收集到 host 候选，拿不到公网地址（STUN 不可达？）hasTurn=', hasTurn)
+      return rt.liveNoRoute
+    }
+    if (!hasTurn) console.warn('[live] 有公网候选但配不上对，且站点没有 TURN 中继兜底')
+    return rt.liveTimeout
+  }
+
   const watchdog = window.setTimeout(() => {
     if (!destroyed && !watching) {
       live.onState?.('error')
-      options.onError?.(rt.liveTimeout)
+      options.onError?.(diagnose())
     }
-  }, HANDSHAKE_TIMEOUT_MS)
+  }, CONNECT_BUDGET_MS)
 
   const caps = new Set<Capability>(['volume', 'screenshot', 'record'])
 
@@ -207,6 +248,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       }
     }
     next.onicecandidate = (ev) => {
+      if (ev.candidate?.type) localCandidateTypes.add(ev.candidate.type)
       // 用 pcGen 而不是参数 gen：首连时这条 pc 是空着等 offer 建的，代号要等 offer 到了才知道
       if (ev.candidate && socket?.connected && hostId && pc === next) {
         socket.emit('signal', { target: hostId, data: { candidate: ev.candidate.toJSON(), gen: pcGen } satisfies SignalData })
@@ -266,18 +308,18 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   }
 
   /** 等一轮 offer；到点画面还没通就重新 watch 要一次 */
-  const armRewatch = () => {
+  const armRewatch = (delay = REWATCH_TIMEOUT_MS) => {
     window.clearTimeout(rewatchTimer)
     rewatchTimer = window.setTimeout(() => {
       if (!destroyed && !hostAway && pc?.connectionState !== 'connected') void rewatch()
-    }, REWATCH_TIMEOUT_MS)
+    }, delay)
   }
 
   /** 要一轮新 offer；等不到就再要，几次都没用才算断 */
   const rewatch = async () => {
     if (destroyed || !socket?.connected) return
     window.clearTimeout(rewatchTimer)
-    if (rewatchCount >= REWATCH_MAX) return fail(rt.liveLost)
+    if (rewatchCount >= REWATCH_MAX) return fail(joined && watching ? rt.liveLost : diagnose())
     rewatchCount += 1
     live.onState?.('reconnecting')
     const ok = await watch()
@@ -290,7 +332,9 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       live.onState?.('connecting')
       socket = await connectLive()
       if (destroyed) return socket.close()
-      const iceServers = await liveIceServers()
+      const ice = await liveIceConfig()
+      const iceServers = ice.iceServers
+      hasTurn = ice.hasTurn
       if (destroyed) return socket.close()
       const s = socket
 
@@ -379,7 +423,14 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         void rewatch()
       }) as (...args: never[]) => void)
 
-      await watch()
+      const ok = await watch()
+      /**
+       * 首连也要上闹钟 —— 这一行以前没有。
+       * 主播漏收 viewer-joined（它正在重连、或者 offer 发出前抛了）的话，offer 永远不来，
+       * 而 pc 停在 new 状态**不会**变 failed，那条「failed → rewatch」的恢复路径压根不触发。
+       * 结果就是观众干等到总超时，中间一次重试都没有。
+       */
+      if (ok && !hostAway) armRewatch(FIRST_OFFER_MS)
       options.onCaps?.(caps)
     } catch (e) {
       if (destroyed) return

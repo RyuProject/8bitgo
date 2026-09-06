@@ -16,6 +16,7 @@ import {
   platformFromKey,
   romKeysOf,
   romUrlForKey,
+  romConfigOverrides,
   saveRomConfig,
   slugFromKey,
   subscribeRomConfig,
@@ -139,6 +140,13 @@ export function AdminRoms() {
   const [gamesLoading, setGamesLoading] = useState(false)
   const [gamesError, setGamesError] = useState<string | null>(null)
   const [cfg, setCfg] = useState(getRomConfig())
+  /*
+    这几项是不是被这台浏览器的本地值盖着。**只影响当前这台浏览器**：
+    改了 .env.production 对它不生效，而它出的毛病别人多半复现不了。
+    「ROM 明明在、只有我这儿说没有」查起来极费劲，所以直接摆在页面上。
+  */
+  const overrides = romConfigOverrides()
+  const hasOverride = overrides.base || overrides.api || overrides.prefix
   const [savedMsg, setSavedMsg] = useState<string | null>(null)
   const [test, setTest] = useState<Array<{ ok: boolean; text: string }> | null>(null)
   const [testing, setTesting] = useState(false)
@@ -406,6 +414,26 @@ export function AdminRoms() {
       </div>
 
       <Card title="连接配置">
+        {hasOverride && (
+          <div className="mb-3 rounded-lg border border-coin/50 bg-coin/10 px-3 py-2 text-xs leading-relaxed text-fg">
+            <span className="font-semibold">这台浏览器存了一份本地覆盖</span>
+            （{[overrides.base && '公开根地址', overrides.api && 'Worker 地址', overrides.prefix && 'key 前缀']
+              .filter(Boolean)
+              .join('、')}）。 覆盖只对<span className="font-semibold">你这一台浏览器</span>生效：部署时改{' '}
+            <code className="font-mono">.env.production</code> 不会影响它，而它导致的「ROM 读不到」别人也复现不了。
+            要跟着线上配置走就清掉它。
+            <button
+              type="button"
+              className="ml-2 underline underline-offset-2 hover:text-brand-hover"
+              onClick={() => {
+                saveRomConfig({ base: '', api: '', prefix: '' })
+                setCfg(getRomConfig())
+              }}
+            >
+              清除本地覆盖
+            </button>
+          </div>
+        )}
         <div className="grid gap-3 lg:grid-cols-2">
           <Field label="公开根地址（R2 自定义域名 / r2.dev，玩家读取用）" hint="需在桶上配置 CORS 允许 GET、HEAD；末尾不带斜杠">
             <input className={inputClass} value={cfg.base} onChange={(e) => setCfg({ ...cfg, base: e.target.value })} placeholder="https://assets.8bitgo.com" />

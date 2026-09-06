@@ -221,6 +221,7 @@ export function GameDetailPage() {
                 romUrl={rom.status === 'found' ? rom.url : undefined}
                 romChecking={rom.status === 'checking'}
                 romUnavailable={rom.status === 'missing'}
+                romUnreachable={rom.unreachable}
                 onRetryRom={rom.retry}
                 romLangs={romLangs}
                 romLang={rom.lang}
@@ -309,10 +310,10 @@ export function GameDetailPage() {
               {/* 「翻译」按钮：当前语言不是 zh-Hans / en 且该语言还没翻译过时挂一个。
                   needsTranslation() 在已翻译的情况下也会返回 false，按钮就不会再出现 */}
               {needsTranslation(game, lang) && (
-                <TranslateButton
-                  game={game}
+                <TranslateButton<{ text: string }>
+                  endpoint={`/api/games/${encodeURIComponent(game.slug)}/translate-description`}
                   lang={lang}
-                  onTranslated={(text) => setTranslatedDescription(text)}
+                  onTranslated={(r) => setTranslatedDescription(r.text)}
                 />
               )}
             </div>

@@ -24,6 +24,23 @@ export const dbFlag = (v) => v === 1 || v === true || v === '1'
 
 const bool = dbFlag
 
+/**
+ * 把数据库 JSON 列读出来的「翻译缓存对象」规整一下再交给 API：
+ *   - mysql2 默认把 JSON 列解成普通 JS 对象，但空 / null / 数组都被 mysql2 默默处理成 undefined，
+ *     这三种一律视为「没翻译过」返回 undefined，让调用方当成字段不存在 —— 前端的 i18nData
+ *     选择函数会用这种 undefined 来回退到基准文本。
+ *   - 顺手过滤掉空字符串 / 全空白，让"被删过"的译文不挂在响应里。
+ * - 形状：{ 'zh-Hant': '...', 'es': '...', ... } -> 同形状的去空版本或 undefined。
+ */
+export function readI18nMap(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const out = {}
+  for (const [k, v] of Object.entries(raw)) {
+    if (typeof v === 'string' && v.trim()) out[k] = v
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
 /** 入库时统一逗号和空格，否则同一家公司会在开发商统计里被拆成多个名字。 */
 function developersText(value) {
   const seen = new Set()
@@ -270,15 +287,8 @@ export function gameRowToApi(r, rel = {}) {
   // 没写英文简介的游戏不带这个字段，前台自己回落到基准简介
   if (r.description_en) g.descriptionEn = r.description_en
   // 按需缓存的其它语种译文。形状：{ zh-Hant: '...', es: '...', ... }。
-  // mysql2 把 JSON 列默认解成 JS 对象；空对象 / 全是 null 的 JSON 进来后是 undefined，
-  // 这两种都视为「没翻译过」直接不挂这个字段 —— 前端的 gameDescription() 会自然回退。
-  if (r.description_i18n && typeof r.description_i18n === 'object' && !Array.isArray(r.description_i18n)) {
-    const i18n = {}
-    for (const [k, v] of Object.entries(r.description_i18n)) {
-      if (typeof v === 'string' && v.trim()) i18n[k] = v
-    }
-    if (Object.keys(i18n).length) g.descriptionI18n = i18n
-  }
+  // 没翻译过则不挂这个字段，前端的 gameDescription() 会自然回退到 descriptionEn / description。
+  g.descriptionI18n = readI18nMap(r.description_i18n)
   if (r.cover) g.cover = r.cover
   if (r.video) g.video = r.video
 
@@ -404,6 +414,12 @@ export function postRowToApi(r, rel = {}) {
     date: dateOnly(r.date) || dateOnly(r.created_at),
     updatedAt: dateTimeIso(r.updated_at),
     published: bool(r.published),
+    // 按需翻译缓存（站点八种语言里 zh-Hans 看原文，en / es / fr / it / de / ja 看 i18n[lang]）。
+    // post 没有英文基准列（不像 game 有 description_en），所以 en 也走 i18n[en]；
+    // 没翻过则前端退回 excerpt / content 本身（见 i18nData.postExcerpt / postContent）。
+    // 读取时的去空逻辑和 game.descriptionI18n 完全一致 —— 把空对象、null 等价过滤掉。
+    excerptI18n: readI18nMap(r.excerpt_i18n),
+    contentI18n: readI18nMap(r.content_i18n),
   }
 }
 

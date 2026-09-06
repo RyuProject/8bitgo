@@ -33,9 +33,10 @@ const script = (...steps) => {
   calls = 0
 }
 
-const { probeRomUrl, clearRomProbeCache } = await import(
+const { probeRomUrl, probeRom, clearRomProbeCache, romCandidates } = await import(
   fileURLToPath(new URL('../src/services/roms.ts', import.meta.url))
 )
+const { ROM_LANGS } = await import(fileURLToPath(new URL('../src/config/languages.ts', import.meta.url)))
 
 let url = 0
 const next = () => `https://assets.example.com/roms/nes/game-${++url}.zip`
@@ -107,4 +108,97 @@ const next = () => `https://assets.example.com/roms/nes/game-${++url}.zip`
   assert.equal(await probeRomUrl(u), u, '拿不到 ETag 时原样返回')
 }
 
-console.log('✅ ROM 探测缓存测试通过：区分「确定没有」与「没问出来」/ 自动重试 / 手动清缓存')
+/* ---------- 8. certain 要如实报上来 ---------- */
+/*
+  播放器的自动重试就是看这一位：certain === false 才排下一轮退避重试，
+  确定性的「没有」一次都不重试（见 services/roms.ts 的 useRomUrl）。
+  probeRomUrl 把它丢掉了，所以这里直接验 probeRom。
+*/
+{
+  const u = next()
+  script({ status: 404 })
+  assert.deepEqual(
+    await probeRom(u),
+    { url: '', certain: true, reason: 'http', status: 404 },
+    '404 是确定的「没有」，并把原因如实带上（诊断用）',
+  )
+}
+{
+  const u = next()
+  script({ status: 503 }, { status: 503 })
+  const outcome = await probeRom(u)
+  assert.equal(outcome.url, '')
+  assert.equal(outcome.certain, false, '5xx 是「没问出来」，播放器要靠这一位决定自动重试')
+}
+{
+  const u = next()
+  script({ throw: '模拟断网' }, { throw: '模拟断网' })
+  const netOutcome = await probeRom(u)
+  assert.equal(netOutcome.certain, false, '连不上同样是「没问出来」')
+  assert.equal(netOutcome.reason, 'network', 'fetch 抛异常且没超时 → network（CORS / 被插件拦也走这里）')
+}
+{
+  const u = next()
+  script({ status: 200, headers: { etag: '"ok"' } })
+  const outcome = await probeRom(u)
+  assert.equal(outcome.certain, true)
+  assert.ok(outcome.url.includes('romv=ok'))
+}
+
+/* ---------- 9. 语言回退链必须覆盖**全部** ROM_LANGS ---------- */
+/*
+  踩过的坑：这条链原本是手写的五项 [requested, 'en', 'ja', 'zh-Hans', 'zh-Hant']，
+  而 ROM_LANGS 有八项 —— fr / de / es / it 永远不会被当作回退。
+  后果是一款只传了西语版的游戏（超级玛丽兄弟的 es 槽就是这么来的），
+  在非西语站点下报「游戏没有当前语言版本」，而那个 ROM 就躺在 R2 上。
+  下面第一条是逐个语言槽的普查：以后往 ROM_LANGS 里加语言却忘了管回退链，这里会红。
+*/
+{
+  for (const slot of ROM_LANGS) {
+    const game = { roms: { [slot]: `roms/nes/only-${slot}.nes` } }
+    const got = romCandidates(game, 'zh-Hans')
+    assert.equal(got.length, 1, `只有 ${slot} 一个槽时应该仍能回退到它，实际拿到 ${got.length} 个候选`)
+    assert.equal(got[0].key, `roms/nes/only-${slot}.nes`)
+    assert.equal(got[0].lang, slot)
+  }
+}
+{
+  // 站点语言的槽排最前，然后才是 en / ja / 中文，其余语言垫后
+  const game = {
+    roms: {
+      'zh-Hans': 'roms/nes/g.zh.nes',
+      en: 'roms/nes/g.en.nes',
+      ja: 'roms/nes/g.ja.nes',
+      es: 'roms/nes/g.es.nes',
+    },
+  }
+  assert.deepEqual(
+    romCandidates(game, 'zh-Hans').map((c) => c.lang),
+    ['zh-Hans', 'en', 'ja', 'es'],
+    '当前语言优先，其次 en / ja，其余语言垫后',
+  )
+  // 玩家在工具栏里手动选的语言优先级最高，但后面的回退要留着
+  assert.deepEqual(
+    romCandidates(game, 'zh-Hans', 'es').map((c) => c.lang),
+    ['es', 'en', 'ja', 'zh-Hans'],
+    'prefer 排第一，回退链仍在（所选槽的对象可能已经被删了）',
+  )
+}
+{
+  // 同一个对象绑到多个槽时只探一次，别浪费 HEAD
+  const game = { roms: { en: 'roms/nes/same.nes', ja: 'roms/nes/same.nes', es: 'roms/nes/same.nes' } }
+  assert.equal(romCandidates(game, 'en').length, 1, '同一个 key 只保留第一次出现')
+}
+{
+  // 旧数据的无语言 rom 垫在最后，且不与语言槽重复
+  const withGeneric = { rom: 'roms/nes/legacy.nes', roms: { en: 'roms/nes/g.en.nes' } }
+  assert.deepEqual(
+    romCandidates(withGeneric, 'fr').map((c) => c.key),
+    ['roms/nes/g.en.nes', 'roms/nes/legacy.nes'],
+    '通用 rom 是最后的回退',
+  )
+  const dup = { rom: 'roms/nes/g.en.nes', roms: { en: 'roms/nes/g.en.nes' } }
+  assert.equal(romCandidates(dup, 'en').length, 1, '通用 rom 和语言槽指向同一个对象时不重复')
+}
+
+console.log('✅ ROM 探测测试通过：确定没有 / 没问出来（自动重试的依据）/ 手动清缓存 / 语言回退链覆盖全部 ROM_LANGS')

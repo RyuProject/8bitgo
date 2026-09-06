@@ -53,6 +53,31 @@ location /socket.io/ {
 }
 ```
 
+### 国旗 / 网络格子是 ❓ 时先跑这一条
+
+```bash
+curl -s https://你的域名/api/diag | jq '{ip, country, geo}'
+```
+
+- `ip.isPrivate: true` → **反代没把真实 IP 传进来**，看下面那条 `X-Forwarded-For`。
+  注意 `/socket.io/` 那个 location 是**单独**的一块，很多人只在 `/api/` 里加了头，
+  而房间卡片的名片恰恰是在 socket 握手时定的。
+- `geo.loaded: false` → 离线国家库没装好（`npm i` 一遍）。
+- `country.byIp` 和 `country.byHeader` **都是 null** → 两条路都没戏，国旗只能是 ❓。
+
+站点在 Cloudflare 后面的话，`CF-IPCountry` 会自动兜底 —— 就算 XFF 没配好，
+国旗照样出得来（`country.byHeader`）。但 IP 还是该配对：它对每一跳都成立，
+换掉 CF 也不受影响。
+
+网络那格（👌🀄️👎）是长连接上的心跳时延，`/api/diag` 里看不到，要看房间接口：
+
+```bash
+curl -s https://你的域名/api/netplay/rooms | jq '.[0].presence'
+```
+
+连上**一秒内**就该有 `rtt`（服务端会主动补一个 engine.io 心跳，不等 10 秒那一轮）。
+一直是 `null` 就说明 pong 没回来——多半是反代把 WebSocket 的帧截断了，检查 `Upgrade` / `Connection` 那两行。
+
 **`X-Forwarded-For` 不是可选的。** 房间卡片上房主的国旗是后端拿握手时的 IP 查出来的
 （server/src/presence.js）。反代不传真实 IP 的话，后端看到的每个人都是 `127.0.0.1`，
 查不出国家，于是全站永远显示 ❓ —— 而且这条路径不会报任何错，只会「就是不显示」，
@@ -62,7 +87,21 @@ location /socket.io/ {
 取的是 XFF 的**最后一段** —— nginx 的 `$proxy_add_x_forwarded_for` 把它亲眼看到的对端追加在末尾，
 前面那些是客户端自己带来的，`curl -H 'X-Forwarded-For: 1.1.1.1'` 谁都能伪造。
 
-TURN 和 netplay 共用 `/api/netplay/ice`（后端现签短期凭证，密码不进前端包）。
+### STUN / TURN：观众连不上主播，九成是这里没配
+
+TURN 和 netplay 共用 `/api/netplay/ice`（后端现签短期凭证，密码不进前端包），
+配法见 [deploy/netplay/README.md 第四节](../netplay/README.md#四stun--turn不配的话很多人根本连不上)。
+
+直播比联机更依赖它：联机的人多半是朋友之间对着邀请链接连，直播是**随便谁点进来都要连得上**。
+
+⚠️ 内置的默认 STUN 是 Google / Twilio 的，部分地区不可达 —— 那种情况下浏览器
+连自己的公网地址都问不出来，只剩局域网候选，**除非两个人在同一个路由器下面否则必然连不上**。
+典型症状：观众等满超时报「连不上主播」，而主播那边完全正常、显示 0 人在看。
+一条 `STUN_URLS=stun:turn.你的域名:3478` 就能解决，别让它拖着。
+
+自查：`curl -s http://127.0.0.1:8788/api/netplay/ice | jq '{hasTurn, turnCount, expiry}'`。
+观众那边连不上时控制台会留一行 `[live] 只收集到 host 候选，拿不到公网地址（STUN 不可达？）`，
+看到这句就是这个问题，不用再查别的。
 
 环境变量（都有默认值，可以不配）：
 

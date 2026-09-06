@@ -88,3 +88,53 @@ export function needsTranslation(game: { descriptionI18n?: Record<string, string
   if (lang === 'zh-Hans' || lang === 'en') return false
   return !game.descriptionI18n?.[lang]
 }
+
+/* ---------------- 文章按需翻译 ---------------- */
+
+/**
+ * 文章摘要按当前语言选段。
+ *
+ * 和 game 的不同：post 没有英文基准列（不像 game 有 description_en），所以 en 界面看到的也是
+ * 中文原文，需要翻译按钮把中文翻成英文。因此回退链只有两层：
+ *   zh-Hans → excerpt（中文基准）
+ *   其它语言 → excerptI18n?.[lang] → excerpt（没翻过就看中文原文）
+ *
+ * 优先级里 i18n 永远最高：玩家点过翻译的版本就是他看过的版本，哪怕后台后来改了也没关系
+ * （后台改 excerpt 时后端会把整张 excerptI18n 清空，见 routes/posts.js 的 PUT handler）。
+ */
+export function postExcerpt(
+  post: { excerpt?: string; excerptI18n?: Record<string, string> },
+  lang: Lang,
+): string {
+  if (lang === 'zh-Hans') return post.excerpt ?? ''
+  return post.excerptI18n?.[lang] || post.excerpt || ''
+}
+
+/**
+ * 文章正文（Markdown）按当前语言选段。逻辑和 postExcerpt 完全一致，只是字段换成 content。
+ * 详见 postExcerpt 的回退链说明。
+ */
+export function postContent(
+  post: { content?: string; contentI18n?: Record<string, string> },
+  lang: Lang,
+): string {
+  if (lang === 'zh-Hans') return post.content ?? ''
+  return post.contentI18n?.[lang] || post.content || ''
+}
+
+/**
+ * 文章详情页要不要在标题旁显示「翻译」按钮。
+ *
+ * 规则（和 game 不同，因为 post 没有英文基准列）：
+ *   zh-Hans     —— passthrough，原文就是中文，没东西好翻，不显示；
+ *   其它 7 种    —— excerpt / content 两个字段都翻译过了才隐藏按钮，否则就显示。
+ *                 只要有一个字段没翻过（包括「partial 翻译」那种只翻了 excerpt 的情况），
+ *                 按钮依然在，玩家再点一次能补上缺的那个字段。
+ */
+export function needsPostTranslation(
+  post: { excerptI18n?: Record<string, string>; contentI18n?: Record<string, string> },
+  lang: Lang,
+): boolean {
+  if (lang === 'zh-Hans') return false
+  return !(post.excerptI18n?.[lang] && post.contentI18n?.[lang])
+}

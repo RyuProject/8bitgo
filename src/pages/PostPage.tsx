@@ -1,19 +1,29 @@
 import { Link, useParams } from 'react-router-dom'
+import { useState } from 'react'
 import { readMinutes, usePublishedPosts } from '@/services/posts'
 import { renderMarkdown } from '@/lib/markdown'
 import { gradientFor } from '@/lib/gradients'
 import { useSeo, articleSchema, breadcrumbSchema } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
+import { useLang } from '@/services/lang'
+import { postContent, needsPostTranslation } from '@/services/i18nData'
+import { TranslateButton } from '@/components/game/TranslateButton'
 import { NotFoundPage } from './NotFoundPage'
 import { SkeletonBlock } from '@/components/ui/PageSkeleton'
 
 export function PostPage() {
   const { slug = '' } = useParams<{ slug: string }>()
   const t = useT()
+  const lang = useLang()
   // 文章总量不大，/blog 一次就把已发布的全给了，单篇直接在里面找 ——
   // 没必要为一篇文章再单独打一次请求
   const { posts, loading } = usePublishedPosts()
   const post = posts.find((p) => p.slug === slug)
+  // 玩家点过翻译按钮之后，覆盖在正文上的译文（摘要同理）。
+  // - null = 还没翻，按 postContent() 回退到原文
+  // - string = 翻译后的正文（已经写进 content_i18n，但前端 state 也留一份，
+  //   避免「后台改了正文但用户看不到」的隐性 bug，反正刷新一次会重新走 needsPostTranslation）
+  const [translatedContent, setTranslatedContent] = useState<string | null>(null)
   // 还在加载时不能当成「文章不存在」—— 否则每次进详情页都会先闪一下 404
   const missing = !loading && !post
   // SEO：hook 要在下面的 early return 之前调用，文章不存在时走 noindex 分支
@@ -81,13 +91,24 @@ export function PostPage() {
               </Link>
             ))}
           </div>
-          <h1 className="mt-3 text-3xl font-extrabold leading-tight tracking-tight sm:text-4xl">{post.title}</h1>
+          <div className="mt-3 flex items-start justify-between gap-4">
+            <h1 className="flex-1 text-3xl font-extrabold leading-tight tracking-tight sm:text-4xl">{post.title}</h1>
+            {/* 「翻译」按钮：非中文界面且该语言还没翻译过时挂一个。
+                needsPostTranslation() 在两种 i18n 都写过后返回 false，按钮就不再出现 */}
+            {needsPostTranslation(post, lang) && (
+              <TranslateButton<{ excerpt: string; content: string }>
+                endpoint={`/api/posts/${encodeURIComponent(post.slug)}/translate`}
+                lang={lang}
+                onTranslated={(r) => setTranslatedContent(r.content || null)}
+              />
+            )}
+          </div>
           <p className="mt-3 text-sm text-muted">
             {post.author} · {post.date} · {fmt(t.blog.readMinutes, { n: readMinutes(post.content) })}
           </p>
         </header>
 
-        <div className="prose-pixel mt-8">{renderMarkdown(post.content)}</div>
+        <div className="prose-pixel mt-8">{renderMarkdown(translatedContent ?? postContent(post, lang))}</div>
       </article>
 
       {more.length > 0 && (

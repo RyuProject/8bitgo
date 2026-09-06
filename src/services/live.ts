@@ -14,7 +14,7 @@
 import { useSyncExternalStore } from 'react'
 import { apiBase, apiEnabled } from './api'
 import { getT } from './i18n'
-import { fetchIceConfig } from './netplay'
+import { fetchIceConfig, type IceConfig } from './netplay'
 import type { Presence } from './presence'
 import { describeExport, looksLikeSocketIo, runAsCommonJs, umdGlobals } from '@/lib/umd'
 
@@ -182,10 +182,22 @@ export async function connectLive(): Promise<LiveSocket> {
 
 /** 直播用的 ICE 配置，和联机共用同一个接口（TURN 凭证由后端现签） */
 export async function liveIceServers(): Promise<RTCIceServer[]> {
+  return (await liveIceConfig()).iceServers
+}
+
+/**
+ * 完整的 ICE 配置（含 hasTurn）。
+ *
+ * `hasTurn` 服务端一直在算、netplay 那边也一路传到了 onIceReady —— 但**全站没有一处消费它**。
+ * 于是「站点根本没配 TURN、这两个网络之间注定连不通」这件事，明明开播前就知道，
+ * 却要让观众对着转圈等满超时，再收一句「可能是网络限制」。观众侧现在拿它来分辨
+ * 「真的连不上」和「主播下播了」，给出的提示才有指向。
+ */
+export async function liveIceConfig(): Promise<IceConfig> {
   try {
-    return (await fetchIceConfig()).iceServers
+    return await fetchIceConfig()
   } catch {
-    return [{ urls: 'stun:stun.l.google.com:19302' }]
+    return { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }], hasTurn: false, expiry: 0 }
   }
 }
 

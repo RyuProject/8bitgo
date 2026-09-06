@@ -101,10 +101,6 @@ const zhHant: Translation = {
   footer: {
     aria: '頁尾連結',
     copyright: '遊戲內容版權歸各自所有者所有',
-    /** 版权免责声明。{contact} 由 Footer.tsx 换成 mailto 链接 */
-    disclaimer:
-      '本站資源僅供個人學習研究，非盈利目的使用，所有遊戲版權歸原版權方所有，如涉及版權問題請{contact}處理，我們將第一時間下架相關內容。',
-    disclaimerContact: '聯絡我們',
   },
 
   language: {
@@ -613,6 +609,7 @@ const zhHant: Translation = {
     romLangTitle: '換一個語言版本的遊戲 ROM',
     romLangSwitched: '已換成{lang}版本，這一局重新開始了',
     noCurrentLanguageVersion: '遊戲沒有目前語言版本',
+    romUnreachable: '暫時讀取不到 ROM，可能是網路問題',
     retryRom: '重新檢查',
     arcadeHackFound: '已認出改版包：{title}（借 {driver} 驅動執行）',
     arcadeHackNoPlan: '認出來了：{title}，但這個包還沒有可用的載入方案，暫時跑不起來。',
@@ -940,6 +937,7 @@ const zhHant: Translation = {
     liveNoServer: '後端還沒有直播功能（socket.io 的 /live 命名空間不存在）—— 伺服器上的程式碼需要更新並重新啟動',
     liveNoRoom: '沒有指定直播間',
     liveTimeout: '連不上主播 —— 可能是網路限制或對方已經下播',
+    liveNoRoute: '連不上主播：你和主播的網路之間沒有通路。換一個網路（例如手機熱點）再試，或者聯繫站長設定 TURN 中繼',
     liveLost: '和主播的連線斷了',
     liveEnded: '主播已下播',
     liveGone: '這個直播間不存在或已結束',

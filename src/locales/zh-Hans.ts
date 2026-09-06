@@ -119,10 +119,6 @@ export const zhHans = {
   footer: {
     aria: '页脚链接',
     copyright: '游戏内容版权归各自所有者所有',
-    /** 版权免责声明。{contact} 由 Footer.tsx 换成 mailto 链接 */
-    disclaimer:
-      '本站资源仅供个人学习研究，非盈利目的使用，所有游戏版权归原版权方所有，如涉及版权问题请{contact}处理，我们将第一时间下架相关内容。',
-    disclaimerContact: '联系我们',
   },
 
   /* ---------------- 语言切换 ---------------- */
@@ -652,6 +648,7 @@ export const zhHans = {
     romLangTitle: '换一个语言版本的游戏 ROM',
     romLangSwitched: '已换成{lang}版本，这一局重新开始了',
     noCurrentLanguageVersion: '游戏没有当前语言版本',
+    romUnreachable: '暂时读取不到 ROM，可能是网络问题',
     retryRom: '重新检查',
     arcadeHackFound: '已认出改版包：{title}（借 {driver} 驱动运行）',
     arcadeHackNoPlan: '认出来了：{title}，但这个包还没有可用的加载方案，暂时跑不起来。',
@@ -999,6 +996,7 @@ export const zhHans = {
     liveNoServer: '后端还没有直播功能（socket.io 的 /live 命名空间不存在）—— 服务器上的代码需要更新并重启',
     liveNoRoom: '没有指定直播间',
     liveTimeout: '连不上主播 —— 可能是网络限制或对方已经下播',
+    liveNoRoute: '连不上主播：你和主播的网络之间没有通路。换一个网络（比如手机热点）再试，或者联系站长配置 TURN 中继',
     liveLost: '和主播的连接断了',
     liveEnded: '主播已下播',
     liveGone: '这个直播间不存在或已结束',

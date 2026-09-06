@@ -11,7 +11,7 @@
  * 对象 key 约定：<前缀>/<platform>/<slug>.<后缀>，前缀默认 roms（对应桶里的 roms/gba、roms/nes …）。
  * 游戏未显式绑定 ROM 时，前台按约定 key 用 HEAD 探测。
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Game } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { isPlayable } from '@/emulator'
@@ -67,6 +67,35 @@ function withScheme(base: string): string {
   return `https://${base}`
 }
 
+/**
+ * 构建时写死的那一份配置（**不看 localStorage**）。
+ *
+ * 用来判断「后台存的值和内置默认是不是同一个」—— 一样就不该往 localStorage 里落，
+ * 见 saveRomConfig。
+ */
+const BUILTIN = {
+  base: () => withScheme(trimSlash(import.meta.env.VITE_ROM_BASE_URL || '')),
+  api: () => withScheme(trimSlash(import.meta.env.VITE_ROM_API_URL || '')),
+  prefix: () => {
+    const raw = import.meta.env.VITE_ROM_PREFIX
+    return raw === undefined || raw === null ? 'roms' : String(raw).replace(/^\/+|\/+$/g, '')
+  },
+}
+
+/**
+ * 这几项当前是不是被浏览器本地的值盖着（而不是用构建时的配置）。
+ *
+ * 后台用它提醒管理员：本地覆盖**只影响他自己这台浏览器**，改 .env.production 对他不生效，
+ * 而他看到的故障别人多半看不到 —— 这个不对称最容易把排查带沟里。
+ */
+export function romConfigOverrides(): { base: boolean; api: boolean; prefix: boolean } {
+  return {
+    base: Boolean(readLocal(ROM_BASE_KEY)),
+    api: Boolean(readLocal(ROM_API_KEY)),
+    prefix: Boolean(readLocal(ROM_PREFIX_KEY)),
+  }
+}
+
 /** 公开读取根地址 */
 export function getRomBase(): string {
   return withScheme(trimSlash(readLocal(ROM_BASE_KEY) || import.meta.env.VITE_ROM_BASE_URL || ''))
@@ -104,11 +133,31 @@ export function getRomConfig(): RomConfig {
 }
 
 export function saveRomConfig(cfg: Partial<RomConfig>) {
-  // 存的时候就把协议头补齐，后台输入框里显示的就是最终生效的地址，
-  // 免得填了 assets.8bitgo.com 之后看着没问题、实际被当成相对路径
-  if (cfg.base !== undefined) writeLocal(ROM_BASE_KEY, cfg.base ? withScheme(trimSlash(cfg.base)) : '')
-  if (cfg.api !== undefined) writeLocal(ROM_API_KEY, cfg.api ? withScheme(trimSlash(cfg.api)) : '')
-  if (cfg.prefix !== undefined) writeLocal(ROM_PREFIX_KEY, cfg.prefix.replace(/^\/+|\/+$/g, ''))
+  /*
+    存的时候就把协议头补齐，后台输入框里显示的就是最终生效的地址，
+    免得填了 assets.8bitgo.com 之后看着没问题、实际被当成相对路径。
+
+    ⚠️ 和内置默认一模一样的值**不落 localStorage**（写空串 = 删掉那个键）。
+
+    这一条是踩过之后补的：表单是拿 getRomConfig() 初始化的，而它返回的是「当前生效值」，
+    也就是构建时的 VITE_ROM_BASE_URL。于是管理员只要打开这一页点过一次保存 ——
+    哪怕一个字都没改 —— 就把当时的地址冻成了自己浏览器里的一份私有副本。
+    之后 .env.production 再怎么改，对他这台浏览器都不生效，而别人全都正常：
+    「只有我打不开」这种最难查的故障就是这么来的。
+    存成空的之后 getRomBase() 会自然回落到构建时的值，效果完全一样，只是不再冻住。
+  */
+  if (cfg.base !== undefined) {
+    const base = cfg.base ? withScheme(trimSlash(cfg.base)) : ''
+    writeLocal(ROM_BASE_KEY, base === BUILTIN.base() ? '' : base)
+  }
+  if (cfg.api !== undefined) {
+    const api = cfg.api ? withScheme(trimSlash(cfg.api)) : ''
+    writeLocal(ROM_API_KEY, api === BUILTIN.api() ? '' : api)
+  }
+  if (cfg.prefix !== undefined) {
+    const prefix = cfg.prefix.replace(/^\/+|\/+$/g, '')
+    writeLocal(ROM_PREFIX_KEY, prefix === BUILTIN.prefix() ? '' : prefix)
+  }
   if (cfg.token !== undefined) {
     try {
       if (cfg.token) sessionStorage.setItem(ROM_TOKEN_KEY, cfg.token)
@@ -298,18 +347,32 @@ export interface RomCandidate {
 }
 
 /**
- * 按语言列出 ROM 候选：当前语言 → 英语 → 日语 → 简体中文 → 繁体中文 → 旧版通用 rom。
+ * 回退链靠前的那几个：英语和日语多半就是原版，简繁互为对方最好的替代。
  *
- * 两个中文槽都放在最终回退里，是因为后台允许分别上传简繁版本；不能因为简体槽为空，
+ * 只是**优先级**，不是全集 —— 真正的全集是 ROM_LANGS，由下面 romCandidates 兜底接上。
+ */
+const FALLBACK_PRIORITY: RomLang[] = ['en', 'ja', 'zh-Hans', 'zh-Hant']
+
+/**
+ * 按语言列出 ROM 候选：当前语言 → 英语 → 日语 → 简体 → 繁体 → **其余所有语言槽** → 旧版通用 rom。
+ *
+ * 两个中文槽都在回退里，是因为后台允许分别上传简繁版本；不能因为简体槽为空，
  * 就在繁体槽明明有文件时误报「没有当前语言版本」。同一个 key 只保留第一次出现，
  * 避免管理员把多个语言槽绑到同一个对象时重复发 HEAD 请求。
  *
  * prefer 是玩家在播放器里手动选的语言，优先级最高；后面的回退仍保留，防止所选槽
  * 对应的 R2 对象后来被删掉时，播放器直接变成不可用。
+ *
+ * ⚠️ 结尾那个 `...ROM_LANGS` 不能省。这里原本是手写的五项
+ * `[requested, 'en', 'ja', 'zh-Hans', 'zh-Hant']`，而 ROM_LANGS 有八项 ——
+ * fr / de / es / it 四个槽**永远不会被当作回退**。后果是：一款游戏只传了西语版
+ * （超级玛丽兄弟的 es 槽就是这么来的），站点语言又不是西语时，界面报
+ * 「游戏没有当前语言版本」，而那个 ROM 明明就躺在 R2 上。
+ * 所以现在从 ROM_LANGS 派生，以后往里加语言槽不用再记得改这儿。
  */
 export function romCandidates(game: Pick<Game, 'rom' | 'roms'>, lang: Lang, prefer?: RomLang | null): RomCandidate[] {
   const requested = prefer ?? romLangFor(lang)
-  const order: RomLang[] = [requested, 'en', 'ja', 'zh-Hans', 'zh-Hant']
+  const order: RomLang[] = [requested, ...FALLBACK_PRIORITY, ...ROM_LANGS]
   const candidates: RomCandidate[] = []
   const seen = new Set<string>()
 
@@ -394,12 +457,22 @@ export function defaultKeyFor(platform: string, slug: string, fileName: string):
  * 在整个单页应用会话里一直显示「游戏没有当前语言版本 / 选择 ROM 开始游戏」——
  * ROM 明明好好躺在 R2 上，来回切页面也没用，只有整页刷新才能恢复。
  */
-const probeCache = new Map<string, Promise<string>>()
+const probeCache = new Map<string, Promise<ProbeOutcome>>()
 
 /** 单次探测的结果。certain=false 表示「这一次没问出结论」，不该被记住 */
-interface ProbeOutcome {
+export interface ProbeOutcome {
   url: string
   certain: boolean
+  /**
+   * 失败原因，**只给诊断用**，不参与任何判断逻辑。
+   *
+   * 加它是因为排查「ROM 明明在、页面却说没有」时，这一层原本什么都不说：
+   * `probeOnce` 的 catch 把异常整个吞掉，CORS 被拒、被插件拦、超时、断网
+   * 在上层看起来一模一样，只能靠人去浏览器控制台里手动复现。见 reportProbeFailure。
+   */
+  reason?: 'http' | 'html' | 'network' | 'timeout'
+  /** reason === 'http' 时服务器给的状态码 */
+  status?: number
 }
 
 /**
@@ -429,16 +502,18 @@ async function probeOnce(url: string, timeoutMs: number, allowHtml: boolean): Pr
     // no-store 很关键：这里正是为了发现「同一个 URL 的对象内容已经换了」，
     // 若 HEAD 自己也吃浏览器缓存，就永远读不到新的 ETag。
     const res = await fetch(url, { method: 'HEAD', cache: 'no-store', signal: ctrl.signal })
-    if (!res.ok) return { url: '', certain: DEFINITE_MISS_STATUS.has(res.status) }
+    if (!res.ok) return { url: '', certain: DEFINITE_MISS_STATUS.has(res.status), reason: 'http', status: res.status }
     // 地址配错时请求会落到本站的 SSR 兜底路由上，那边对任何路径都回 200 + HTML。
     // 只看 res.ok 的话会误判成「ROM 存在」，页面显示「即点即玩」，
     // 点下去才在模拟器里报一句莫名其妙的「不是合法的 ROM」。
     const type = res.headers.get('content-type') || ''
-    if (!allowHtml && /text\/html|application\/xhtml/i.test(type)) return { url: '', certain: true }
+    if (!allowHtml && /text\/html|application\/xhtml/i.test(type)) return { url: '', certain: true, reason: 'html' }
     return { url: versionedRomUrl(url, res.headers.get('etag')), certain: true }
   } catch {
-    // 超时（abort）、断网、CORS 预检失败都走这里 —— 全都是「没问出来」
-    return { url: '', certain: false }
+    // 超时（abort）、断网、CORS 被拒、被浏览器插件拦掉，全都是「没问出来」。
+    // fetch 对这几种一律抛一个不带信息的 TypeError（CORS 的细节只在控制台里，
+    // 脚本读不到），所以只能靠 signal 把「超时」这一种单独认出来。
+    return { url: '', certain: false, reason: ctrl.signal.aborted ? 'timeout' : 'network' }
   } finally {
     window.clearTimeout(timer)
   }
@@ -451,14 +526,14 @@ async function probeOnce(url: string, timeoutMs: number, allowHtml: boolean): Pr
  * 结果从缓存里摘掉 —— 下次再问会真的再发一次请求，而不是复读一个失败。
  * 只重试一次是为了兜住耗时：上层要按语言槽依次探好几个候选，每多一轮就多等一个超时。
  */
-export function probeRomUrl(url: string, timeoutMs = 4000, allowHtml = false): Promise<string> {
+export function probeRom(url: string, timeoutMs = 4000, allowHtml = false): Promise<ProbeOutcome> {
   // 同一个 URL 作为 ROM 时必须拒绝 HTML，作为 HTML5 入口时又必须接受；缓存键要把两种语义分开。
   const cacheKey = `${allowHtml ? 'html' : 'rom'}:${url}`
   const cached = probeCache.get(cacheKey)
   if (cached) return cached
   // 先声明再赋值：下面的闭包要拿自己这条 promise 跟缓存比对（同步段跑不到那里，
   // 等真的用上时 p 早就赋好了）
-  let p: Promise<string> | undefined
+  let p: Promise<ProbeOutcome> | undefined
   p = (async () => {
     let outcome = await probeOnce(url, timeoutMs, allowHtml)
     if (!outcome.certain) {
@@ -469,10 +544,20 @@ export function probeRomUrl(url: string, timeoutMs = 4000, allowHtml = false): P
       // 只摘掉自己这一条：期间可能已经有别的调用重新写了缓存，别把人家的结果删了
       if (probeCache.get(cacheKey) === p) probeCache.delete(cacheKey)
     }
-    return outcome.url
+    return outcome
   })()
   probeCache.set(cacheKey, p)
   return p
+}
+
+/**
+ * 只要地址、不关心「为什么没有」的调用方用这个（后台的存在性检查等）。
+ *
+ * 播放器不能用它 —— 它把 certain 丢了，而「服务器说没有」和「这次没问出来」
+ * 恰恰要区别对待：前者该报错，后者该自动重试。见 useRomUrl。
+ */
+export function probeRomUrl(url: string, timeoutMs = 4000, allowHtml = false): Promise<string> {
+  return probeRom(url, timeoutMs, allowHtml).then((o) => o.url)
 }
 
 /**
@@ -500,8 +585,69 @@ export interface RomResolution {
   key?: string
   /** 用的是哪个语言槽。通用 rom 和约定 key 探测出来的没有语言，为 undefined */
   lang?: RomLang
+  /**
+   * missing 的原因是「**没问出来**」（超时 / 断网 / CORS / 5xx），不是服务器说没有。
+   *
+   * 两者对玩家是完全不同的两件事：真没有就该去挑别的语言或本地文件，
+   * 而读不到只是这会儿的事，等一等或者换个网就好了。文案要分开说。
+   */
+  unreachable?: boolean
   /** 重新探测一遍，并先把这款游戏所有候选地址的缓存结论清掉 */
   retry: () => void
+}
+
+/**
+ * 「没问出来」时自动重试的退避节奏（毫秒）。
+ *
+ * 为什么要自动重试：探测失败最常见的原因是网络抖一下、或者切后台时请求被掐掉，
+ * 而这时候界面会一路掉到「游戏没有当前语言版本」—— ROM 明明好好躺在 R2 上。
+ * 让玩家自己去点「重新检查」是把我们的问题推给他。
+ *
+ * 三次、由密到疏，全部用完约 8 秒；期间状态保持 checking（按钮显示「正在确认」），
+ * 不会先闪一下错误再自己好。确定性的失败（404）一次都不重试 —— 问一百次也一样。
+ */
+const AUTO_RETRY_DELAYS = [800, 2000, 5000]
+
+/** 一个候选探完之后留下的痕迹，只为诊断 */
+interface ProbeTrace {
+  key: string
+  url: string
+  outcome: ProbeOutcome
+}
+
+/**
+ * 彻底放弃时在控制台留一条能直接定位的诊断。
+ *
+ * 为什么值得专门写：这个故障（「ROM 明明躺在 R2 上，页面却说没有当前语言版本」）
+ * 排查一次的成本高得离谱 —— 页面上只有一句话，控制台一个字都没有，
+ * 得先去翻数据库绑定、再去服务端手取对象、最后才想到是浏览器这一次 HEAD 的事。
+ * 而这三件事里究竟是哪一件，这里全都知道，只是以前没说出来。
+ *
+ * 三种最常见的成因都在下面点了名：
+ *   · localStorage 覆盖 —— 后台「ROM 存储」页保存过配置的浏览器会冻一份地址副本，
+ *     只影响那一个人（多半就是管理员自己），改 .env.production 也不生效
+ *   · CORS —— assets 域名直接绑在 R2 桶上（Worker 没跑）时要在桶上配 CORS；
+ *     走 Worker 的话是它的 ALLOWED_ORIGINS
+ *   · 浏览器插件 —— 钱包类插件会 hook fetch
+ */
+function reportProbeFailure(game: Pick<Game, 'slug' | 'platform'>, traces: ProbeTrace[], unreachable: boolean) {
+  const base = getRomBase()
+  const overridden = Boolean(readLocal(ROM_BASE_KEY))
+  const lines = traces.map(({ key, url, outcome }) => {
+    const why = outcome.reason === 'http' ? `HTTP ${outcome.status}` : (outcome.reason ?? '未知')
+    return `  ${outcome.certain ? '确定没有' : '没问出来'}（${why}）  ${key}\n    ${url}`
+  })
+  console.warn(
+    [
+      `[8bitgo/rom] ${game.slug}（${game.platform}）所有候选都没探到，界面会显示「${unreachable ? '暂时读取不到 ROM' : '没有当前语言版本'}」。`,
+      `根地址：${base || '(空)'}${overridden ? `  ⚠️ 来自 localStorage['${ROM_BASE_KEY}']，不是构建时的 VITE_ROM_BASE_URL` : ''}`,
+      traces.length ? '候选：' : '候选：(一个都没有 —— 后台没绑过语言槽，约定文件名也没探到)',
+      ...lines,
+      unreachable
+        ? '这几次都是「没问出来」：多半是 CORS（assets 域名要么走 Worker 并放行本站 Origin，要么在 R2 桶上配 CORS 允许 GET/HEAD）、断网，或者被浏览器插件拦了。开无痕窗口再试一次能排掉插件。'
+        : '服务器明确说没有：核对后台的语言槽绑定，以及对象是否真的在桶里（注意大小写和 .lang 后缀）。',
+    ].join('\n'),
+  )
 }
 
 /**
@@ -519,6 +665,8 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
     url: '',
   }))
   const [attempt, setAttempt] = useState(0)
+  /** 这一轮已经自动重试过几次。换游戏 / 换语言 / 玩家手动重试都要清零 */
+  const autoRetries = useRef(0)
 
   /**
    * 重试。先清掉这款游戏所有候选地址的探测结论 —— 否则「服务器明确说没有」那一类
@@ -530,17 +678,33 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
       const keys = [...romCandidates(game, lang, prefer).map((c) => c.key), ...conventionalKeys(game)]
       clearRomProbeCache(keys.map((key) => romUrlForKey(key)).filter(Boolean))
     }
+    autoRetries.current = 0
     setAttempt((n) => n + 1)
+  }, [game, lang, prefer])
+
+  /*
+    换游戏 / 换语言时把自动重试的次数清零。
+    必须声明在下面那个主 effect **之前** —— effect 按声明顺序跑，这样切换游戏时先清零
+    再开始探测；而只有 attempt 变化（自动重试自己触发的那一次）时这个 effect 不跑，
+    计数才累加得下去，不会变成无限重试。
+  */
+  useEffect(() => {
+    autoRetries.current = 0
   }, [game, lang, prefer])
 
   useEffect(() => {
     if (!game) return
     let cancelled = false
+    let timer = 0
     setState({ status: 'checking', url: '' })
     ;(async () => {
       const candidates = romCandidates(game, lang, prefer)
+      /** 有没有哪个候选是「没问出来」，而不是服务器明确说没有。决定要不要自动重试 */
+      let uncertain = false
+      /** 每个候选探出来的结果，只在最终放弃时用来打诊断 */
+      const traces: ProbeTrace[] = []
       // 每个显式语言槽都要实际探测：绑定记录还在，不代表 R2 对象一定还在。
-      // 当前槽丢失时继续按英语 → 日语 → 中文回退，不能在第一个 404 就停住。
+      // 当前槽丢失时继续按英语 → 日语 → 中文 → 其余语言槽回退，不能在第一个 404 就停住。
       for (const candidate of candidates) {
         const url = romUrlForKey(candidate.key)
         if (!url) continue
@@ -550,22 +714,43 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
           if (!cancelled) setState({ status: 'found', url, key: candidate.key, lang: candidate.lang })
           return
         }
-        const resolvedUrl = await probeRomUrl(url, 4000, game.platform === 'html5')
-        if (resolvedUrl) {
-          if (!cancelled) setState({ status: 'found', url: resolvedUrl, key: candidate.key, lang: candidate.lang })
+        const outcome = await probeRom(url, 4000, game.platform === 'html5')
+        if (outcome.url) {
+          if (!cancelled) setState({ status: 'found', url: outcome.url, key: candidate.key, lang: candidate.lang })
           return
+        }
+        traces.push({ key: candidate.key, url, outcome })
+        if (!outcome.certain) {
+          /*
+            「没问出来」就**立刻收手**，别把剩下的候选挨个耗一遍。
+
+            这一类失败（断网 / CORS / 被插件拦 / 超时）是**主机级**的，不是这个 key 的事 ——
+            同一个域名下的其它候选必然一样失败。而每个候选要花「4 秒超时 ×2 + 300ms」，
+            回退链补全到八个语言槽之后，硬探到底最坏要 66 秒，再叠上三轮自动重试
+            就是四分多钟的「正在确认文件」。收手之后一轮最多 8 秒多，退避重试才有意义。
+          */
+          uncertain = true
+          break
         }
       }
 
       // 只要后台绑定过语言槽或旧版通用 rom，整条绑定链都失效就应明确报缺版本；
       // 不能再猜一个约定文件名，否则会绕过管理员配置，加载到不受控的旧对象。
       if (candidates.length > 0) {
-        if (!cancelled) setState({ status: 'missing', url: '' })
+        if (!cancelled) finish(uncertain, traces)
         return
       }
 
       const base = getRomBase()
       if (!base || !isPlayable(game.platform)) {
+        // 这是配置问题（根地址没配、平台不支持），重试一万次也一样，不进重试。
+        // 「平台还不支持」是正常状态（未上线的平台），不值得报；根地址空着是真的配错了。
+        if (!base && isPlayable(game.platform)) {
+          console.warn(
+            `[8bitgo/rom] 没有配置 ROM 根地址（VITE_ROM_BASE_URL 或 localStorage['${ROM_BASE_KEY}']），` +
+              `${game.slug} 这类没绑过语言槽的游戏只能靠约定文件名探测，现在一个都探不了。`,
+          )
+        }
         if (!cancelled) setState({ status: 'missing', url: '' })
         return
       }
@@ -573,19 +758,60 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
       // 完全没有绑定记录的老游戏仍按历史约定探测文件名。
       for (const key of conventionalKeys(game)) {
         const url = romUrlForKey(key, base)
-        const resolvedUrl = await probeRomUrl(url, 4000, game.platform === 'html5')
-        if (resolvedUrl) {
-          if (!cancelled) setState({ status: 'found', url: resolvedUrl, key })
+        const outcome = await probeRom(url, 4000, game.platform === 'html5')
+        if (outcome.url) {
+          if (!cancelled) setState({ status: 'found', url: outcome.url, key })
           return
         }
+        traces.push({ key, url, outcome })
+        // 同上：主机级的失败，接着探别的约定文件名只是白等
+        if (!outcome.certain) {
+          uncertain = true
+          break
+        }
       }
-      if (!cancelled) setState({ status: 'missing', url: '' })
+      if (!cancelled) finish(uncertain, traces)
     })()
+
+    /**
+     * 一轮探完都没拿到地址时怎么收场。
+     *
+     * 没问出来（uncertain）且还有重试额度 → 排下一轮，**状态保持 checking**：
+     * 界面继续显示「正在确认文件」，不会先闪一下「没有这个版本」再自己好。
+     * 额度用完才落到 missing，并把 unreachable 带上去，让文案说人话。
+     */
+    function finish(uncertain: boolean, traces: ProbeTrace[]) {
+      if (uncertain && autoRetries.current < AUTO_RETRY_DELAYS.length) {
+        const wait = AUTO_RETRY_DELAYS[autoRetries.current]
+        autoRetries.current += 1
+        timer = window.setTimeout(() => setAttempt((n) => n + 1), wait)
+        return
+      }
+      // 只在真正放弃的那一下报一次；重试途中不吵
+      if (game) reportProbeFailure(game, traces, uncertain)
+      setState({ status: 'missing', url: '', unreachable: uncertain })
+    }
 
     return () => {
       cancelled = true
+      window.clearTimeout(timer)
     }
   }, [game, lang, prefer, attempt])
+
+  /*
+    网络恢复时立刻重来一轮。断网期间每一次探测都必然失败，重试额度会被白白烧光，
+    玩家插回网线看到的还是「暂时读取不到」—— 而这时候只要再问一次就好了。
+    只在「读不到」这一种 missing 上挂监听：真的 404 时联网事件不该触发任何请求。
+  */
+  useEffect(() => {
+    if (state.status !== 'missing' || !state.unreachable) return
+    const again = () => {
+      autoRetries.current = 0
+      setAttempt((n) => n + 1)
+    }
+    window.addEventListener('online', again)
+    return () => window.removeEventListener('online', again)
+  }, [state.status, state.unreachable])
 
   return { ...state, retry }
 }

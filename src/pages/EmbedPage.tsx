@@ -149,6 +149,7 @@ export function EmbedPage() {
           romUrl={rom.status === 'found' ? rom.url : undefined}
           romChecking={rom.status === 'checking'}
           romUnavailable={rom.status === 'missing'}
+          romUnreachable={rom.unreachable}
           onRetryRom={rom.retry}
           romLangs={game ? romLangsOf(game) : []}
           romLang={rom.lang}

@@ -2,38 +2,102 @@
 <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <sitemap>
     <loc>https://8bitgo.com/sitemap-static.xml</loc>
-    <lastmod>2026-09-01</lastmod>
+    <lastmod>2026-09-06</lastmod>
   </sitemap>
   <sitemap>
     <loc>https://8bitgo.com/sitemaps/games-zh-Hans.xml</loc>
-    <lastmod>2026-09-01</lastmod>
+    <lastmod>2026-09-06</lastmod>
   </sitemap>
   <sitemap>
     <loc>https://8bitgo.com/sitemaps/games-zh-Hant.xml</loc>
-    <lastmod>2026-09-01</lastmod>
+    <lastmod>2026-09-06</lastmod>
   </sitemap>
   <sitemap>
     <loc>https://8bitgo.com/sitemaps/games-en.xml</loc>
-    <lastmod>2026-09-01</lastmod>
+    <lastmod>2026-09-06</lastmod>
   </sitemap>
   <sitemap>
     <loc>https://8bitgo.com/sitemaps/games-es.xml</loc>
-    <lastmod>2026-09-01</lastmod>
+    <lastmod>2026-09-06</lastmod>
   </sitemap>
   <sitemap>
     <loc>https://8bitgo.com/sitemaps/games-fr.xml</loc>
-    <lastmod>2026-09-01</lastmod>
+    <lastmod>2026-09-06</lastmod>
   </sitemap>
   <sitemap>
     <loc>https://8bitgo.com/sitemaps/games-it.xml</loc>
-    <lastmod>2026-09-01</lastmod>
+    <lastmod>2026-09-06</lastmod>
   </sitemap>
   <sitemap>
     <loc>https://8bitgo.com/sitemaps/games-de.xml</loc>
-    <lastmod>2026-09-01</lastmod>
+    <lastmod>2026-09-06</lastmod>
   </sitemap>
   <sitemap>
     <loc>https://8bitgo.com/sitemaps/games-ja.xml</loc>
-    <lastmod>2026-09-01</lastmod>
+    <lastmod>2026-09-06</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>https://8bitgo.com/sitemaps/posts-zh-Hans.xml</loc>
+    <lastmod>2026-09-06</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>https://8bitgo.com/sitemaps/posts-zh-Hant.xml</loc>
+    <lastmod>2026-09-06</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>https://8bitgo.com/sitemaps/posts-en.xml</loc>
+    <lastmod>2026-09-06</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>https://8bitgo.com/sitemaps/posts-es.xml</loc>
+    <lastmod>2026-09-06</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>https://8bitgo.com/sitemaps/posts-fr.xml</loc>
+    <lastmod>2026-09-06</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>https://8bitgo.com/sitemaps/posts-it.xml</loc>
+    <lastmod>2026-09-06</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>https://8bitgo.com/sitemaps/posts-de.xml</loc>
+    <lastmod>2026-09-06</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>https://8bitgo.com/sitemaps/posts-ja.xml</loc>
+    <lastmod>2026-09-06</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>https://8bitgo.com/sitemaps/taxonomy-zh-Hans.xml</loc>
+    <lastmod>2026-09-06</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>https://8bitgo.com/sitemaps/taxonomy-zh-Hant.xml</loc>
+    <lastmod>2026-09-06</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>https://8bitgo.com/sitemaps/taxonomy-en.xml</loc>
+    <lastmod>2026-09-06</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>https://8bitgo.com/sitemaps/taxonomy-es.xml</loc>
+    <lastmod>2026-09-06</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>https://8bitgo.com/sitemaps/taxonomy-fr.xml</loc>
+    <lastmod>2026-09-06</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>https://8bitgo.com/sitemaps/taxonomy-it.xml</loc>
+    <lastmod>2026-09-06</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>https://8bitgo.com/sitemaps/taxonomy-de.xml</loc>
+    <lastmod>2026-09-06</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>https://8bitgo.com/sitemaps/taxonomy-ja.xml</loc>
+    <lastmod>2026-09-06</lastmod>
   </sitemap>
 </sitemapindex>

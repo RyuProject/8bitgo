@@ -260,12 +260,58 @@ Free / Pro 100 MB，Business 200 MB，Enterprise 500 MB，**由边缘节点执�
 [503] 翻译服务未配置（缺 VOLC_AK / VOLC_SK）」，所有游戏照旧走原文回退。
 机器翻译**按量计费、会欠费**，上线前去火山控制台开「用量预警」。
 
-自测：`cd server && npm run test:translate`（8 项，起本地 mock，不真打火山）。
+自测：`cd server && npm run test:translate`（13 项，起本地 mock，不真打火山）。
 端到端：
 ```bash
 curl -X POST http://127.0.0.1:8788/api/games/<slug>/translate-description \
      -H 'Content-Type: application/json' -d '{"lang":"es"}'
 # 第一次 cached:false（真调火山并落库），第二次 cached:true（读库，不再调）
+```
+
+### 2.17.1 文章（post）的按需翻译：和游戏同一个套路，但正文是 Markdown
+
+文章系统的存储模型和游戏是**同一哲学、不同形状**——也是「基准 + JSON 译文缓存」，但文章
+**没有英文基准列**（post 从建站起就只有母语 `excerpt` / `content`，没出过多语言版）：
+
+| 列 | 内容 | 写入方 |
+|---|---|---|
+| `excerpt` | 中文（基准） | 后台 |
+| `content` | 中文（基准，Markdown 正文） | 后台 |
+| `excerpt_i18n` | **JSON，七种语言按需缓存**（zh-Hans 除外，见下） | 玩家点「翻译」按钮时写入 |
+| `content_i18n` | **JSON，同上** | 同上 |
+
+⚠️ **文章没有 `en` 基准，所以 en 界面也要翻译按钮。** 游戏因为 `description_en` 存在，`en`
+界面直接显示英文、不需要翻译（`needsTranslation` 对 `en` 返回 false）；文章没有英文版，`en`
+界面看到的是中文原文，所以 `needsPostTranslation` 对 `en` **返回 true**（把中文翻成英文）。
+只有 `zh-Hans`（基准就是中文）不显示按钮。这是文章和游戏唯一的逻辑差异，前端在
+`services/i18nData.ts` 的 `needsPostTranslation` / `postExcerpt` / `postContent` 里。
+
+⚠️ **正文按段落分块翻译，不是整篇一把梭。** 游戏简介就一段，一次 `TranslateText` 搞定；
+文章正文长（一篇博客 30–50KB 很常见），一次性灌给火山的 `TextList` 会被单条字符上限挡回。
+`server/src/translate.js` 的 `translateMarkdown(text, source, target)` 按双换行（Markdown 段落
+分隔符，且**保留**分隔符以维持段落结构）切块，每段单独翻译、内部限并发 3（免费版火山约 5 QPS，
+留 2 个余量给其他翻译请求），最后拼回去。段落里的 Markdown 标记（`##`、列表、`**加粗**`、`代码`、
+链接）原样交给火山，大多数情况它会保留——**接受偶尔的不完美**，比自写规则化解析便宜得多。
+
+⚠️ **单段失败 = 整篇失败。** `translateMarkdown` 里任一段 throw，整篇翻译失败、路由回 502、
+前端显示「翻译失败」让用户重试。这是有意的——避免「半篇译文 + 半篇原文」混着更迷惑。
+（excerpt 和 content 两个字段之间**独立**成功/失败：接口会尽量返回已翻好的部分，前端提示
+`partial`。）
+
+⚠️ **改 excerpt / content 必须清缓存**，和游戏同一条铁律。文章只有 PUT（没有 PATCH），整体
+覆盖就直接在事务里 `UPDATE posts SET excerpt_i18n = NULL, content_i18n = NULL`（见
+`server/src/routes/posts.js` 的 PUT handler）——文章不存在「只改某个字段」的路径，无条件清即可。
+
+⚠️ **`POST /api/posts/:slug/translate` 必须注册在 `GET /:slug` 之前**。Express 按声明顺序
+匹配，`/blog/<slug>/translate` 这个 URL 一旦被 `GET /:slug` 吃掉就 404 了。路由文件里这条
+`post` 路由特意放在所有 `:slug` 路由之前，新增路由时注意顺序。
+
+端到端（先确认 `.env` 配了 AK/SK）：
+```bash
+curl -X POST http://127.0.0.1:8788/api/posts/<slug>/translate \
+     -H 'Content-Type: application/json' -d '{"lang":"es"}'
+# { lang: "es", excerpt: "...", content: "...(Markdown)", cached: false, partial: false }
+# 第二次 cached:true（读库，不再调火山）
 ```
 
 ---
@@ -316,33 +362,36 @@ npm run test:presence                  # 房主名片：设备 / 地区 / 网络
 
 ---
 
-## 5. 当前进度（2026-09-05，有时效性）
+## 5. 当前进度（2026-09-06，有时效性）
 
-### 本轮改动：游戏简介的按需翻译（**尚未部署，需要跑迁移**）
+### 本轮改动：游戏简介 + 文章的按需翻译（**尚未部署，需要跑迁移**）
 
-游戏详情页「游戏简介」右上角多了个「翻译」按钮：非中文 / 非英文界面的访客点一下，
-后端调火山引擎 `TranslateText` 翻成他的本地语言，结果写进新的 `description_i18n` JSON 列，
-**同款游戏同一语言永不再调接口**（§2.17）。
+游戏详情页「游戏简介」和文章详情页正文右上角都加了「翻译」按钮：非中文界面的访客点一下，
+后端调火山引擎 `TranslateText` 翻成他的本地语言，结果写进新的 `*_i18n` JSON 列，
+**同一篇内容同一语言永不再调接口**（§2.17 / §2.17.1）。文章因为**没有英文基准列**，连 `en`
+界面也显示按钮（把中文翻成英文）；游戏有 `description_en`，`en` 界面不需要。
 
 改动清单：
 
 | 位置 | 内容 |
 | --- | --- |
-| `server/schema-v2.sql`、`8bitgo-v2-install.sql`、`scripts/migrate.mjs` | 新列 `games.description_i18n JSON NULL` |
-| `server/src/translate.js` | 新增：火山 V4 签名 + `TranslateText` + 站点语言 ↔ 火山语言码映射 |
+| `server/schema-v2.sql`、`8bitgo-v2-install.sql`、`scripts/migrate.mjs` | 新列 `games.description_i18n` + `posts.excerpt_i18n` + `posts.content_i18n`（都是 JSON NULL） |
+| `server/src/translate.js` | 火山 V4 签名 + `TranslateText` + 语言映射；新增 `translateMarkdown()` 按段落分块并发翻译 |
 | `server/src/games-repo.js` | `writeDescriptionTranslation()`；`upsertGame` / `patchGame` 改基准时清缓存 |
-| `server/src/routes/games.js` | 新增 `POST /api/games/:slug/translate-description`（不需登录） |
-| `server/src/mappers.js` | `gameRowToApi` 读出 `descriptionI18n`（**不开放写入**，改基准时自动清） |
-| `src/services/i18nData.ts` | `gameDescription()` 三层回退；新增 `needsTranslation()` 决定按钮要不要出现 |
-| `src/components/game/TranslateButton.tsx` | 新增：idle / translating / translated / error 四态 |
-| `src/pages/GameDetailPage.tsx` | 按钮挂在 h2 右侧；翻译结果局部覆盖简介（不刷新整个 game 对象） |
-| 八个 `src/locales/*.ts` | 新增 `game.translate` / `translating` / `translateRetry` / `translateFailed` / `translatedJustNow` |
+| `server/src/routes/games.js` | `POST /api/games/:slug/translate-description`（不需登录） |
+| `server/src/mappers.js` | `gameRowToApi` 读 `descriptionI18n`；`postRowToApi` 读 `excerptI18n` / `contentI18n`（都不开放写入） |
+| `server/src/routes/posts.js` | 新增 `POST /api/posts/:slug/translate`；PUT handler 改基准时清 `excerpt_i18n` / `content_i18n` |
+| `src/services/i18nData.ts` | `gameDescription()` 三层回退 + `needsTranslation()`；新增 `postExcerpt` / `postContent` / `needsPostTranslation()` |
+| `src/components/game/TranslateButton.tsx` | **通用化**：接受 `endpoint` + 泛型 `onTranslated`，游戏和文章共用 |
+| `src/pages/GameDetailPage.tsx` | 按钮挂 h2 右侧；翻译结果局部覆盖简介 |
+| `src/pages/PostPage.tsx` | 按钮挂标题右侧；翻译结果覆盖正文 Markdown |
+| 八个 `src/locales/*.ts` | `game.translate` / `translating` / `translateRetry` / `translateFailed` / `translatedJustNow` |
 
-**部署这一版必须先跑迁移**，否则 `description_i18n` 缺列 → 翻译接口 500（页面其余部分不受影响，
-简介照常显示英文原文）。
+**部署这一版必须先跑迁移**，否则 `description_i18n` / `excerpt_i18n` / `content_i18n` 缺列 →
+翻译接口 500（页面其余部分不受影响，简介 / 正文照常显示原文）。迁移幂等，可重复跑。
 
 ```bash
-cd server && npm run migrate     # 幂等
+cd server && npm run migrate     # 幂等，给三张表加 i18n 列
 ```
 
 **可选配置**：在 `server/.env` 填 `VOLC_AK` + `VOLC_SK`（火山控制台 → 访问控制 → API 访问密钥）。

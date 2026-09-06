@@ -174,7 +174,6 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     throw e
   }
 
-  const iceServers = await liveIceServers()
   /** 每个观众一条连接。gen 是这条连接的代号，随 SDP / ICE 一起发，观众据此认出「新一轮」 */
   const peers = new Map<string, { pc: RTCPeerConnection; gen: number }>()
   let genCounter = 0
@@ -206,6 +205,18 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       if (!force && alive(existing.pc)) return
       dropPeer(viewerId)
     }
+    /**
+     * ICE 配置**每条连接现取一次**，不能拿开播那一刻的那份用一整场。
+     *
+     * TURN 是短期凭证（默认 1 小时过期）—— 以前这一份是在 startBroadcast 里取好、闭包捕获的，
+     * 于是一场播过一小时之后，**新进来的观众全部连不上**，而老观众好好的（他们的连接早就建好了）。
+     * 这种「播着播着新观众就进不来了」的 bug 上线后极难查。
+     * fetchIceConfig 自带缓存（快过期才重新取），所以绝大多数调用只是读一下内存。
+     */
+    const iceServers = await liveIceServers()
+    if (stopped) return
+    // await 期间观众可能又重新 watch 了一轮：把那一条收掉，以这次为准（gen 更大，观众认新的）
+    dropPeer(viewerId)
     const gen = ++genCounter
     const pc = new RTCPeerConnection({ iceServers })
     peers.set(viewerId, { pc, gen })

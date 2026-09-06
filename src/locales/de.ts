@@ -108,10 +108,6 @@ const de: Translation = {
   footer: {
     aria: 'Footer-Links',
     copyright: 'Alle Spielinhalte sind Eigentum der jeweiligen Rechteinhaber',
-    /** 版权免责声明。{contact} 由 Footer.tsx 换成 mailto 链接 */
-    disclaimer:
-      'Alle Inhalte dieser Seite dienen ausschließlich dem persönlichen Lernen und Forschen zu nicht kommerziellen Zwecken. Die Rechte an allen Spielen liegen bei den jeweiligen Rechteinhabern. Bei urheberrechtlichen Bedenken bitte {contact} – wir entfernen die betroffenen Inhalte unverzüglich.',
-    disclaimerContact: 'kontaktieren Sie uns',
   },
 
   /* ---------------- Sprachumschalter ---------------- */
@@ -614,6 +610,7 @@ const de: Translation = {
     romLangTitle: 'Zu einer anderen Sprachfassung dieses Spiels wechseln',
     romLangSwitched: 'Auf die {lang}-Fassung gewechselt – der Durchgang beginnt von vorn',
     noCurrentLanguageVersion: 'Dieses Spiel ist in der aktuellen Sprache nicht verfügbar',
+    romUnreachable: 'ROM ist gerade nicht erreichbar – vermutlich ein Netzwerkproblem',
     retryRom: 'Erneut prüfen',
     arcadeHackFound: 'Hack erkannt: {title} (läuft über den Treiber {driver})',
     arcadeHackNoPlan: '{title} erkannt, aber für dieses Paket gibt es noch kein funktionierendes Ladeverfahren.',
@@ -995,6 +992,7 @@ const de: Translation = {
     liveNoServer: 'Das Backend hat noch kein Livestreaming (socket.io-Namespace /live fehlt) – der Server muss aktualisiert und neu gestartet werden',
     liveNoRoom: 'Kein Stream angegeben',
     liveTimeout: 'Streamer nicht erreichbar – Netzwerkeinschränkungen, oder er ist schon offline',
+    liveNoRoute: 'Keine Verbindung zum Streamer: Zwischen eurem Netzwerk und seinem gibt es keine Route. Versuch ein anderes Netzwerk (etwa einen Handy-Hotspot) oder bitte den Betreiber, ein TURN-Relay einzurichten',
     liveLost: 'Verbindung zum Streamer verloren',
     liveEnded: 'Der Stream ist beendet',
     liveGone: 'Diesen Stream gibt es nicht oder er ist schon beendet',

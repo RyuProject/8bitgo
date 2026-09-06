@@ -108,10 +108,6 @@ const it: Translation = {
   footer: {
     aria: 'Link a piè di pagina',
     copyright: 'Tutti i contenuti dei giochi sono di proprietà dei rispettivi titolari',
-    /** 版权免责声明。{contact} 由 Footer.tsx 换成 mailto 链接 */
-    disclaimer:
-      'Le risorse di questo sito sono destinate solo allo studio e alla ricerca personali, senza scopo di lucro. I diritti di tutti i giochi appartengono ai rispettivi titolari. In caso di problemi di copyright, {contact}: rimuoveremo immediatamente i contenuti in questione.',
-    disclaimerContact: 'scrivici',
   },
 
   /* ---------------- Cambio lingua ---------------- */
@@ -614,6 +610,7 @@ const it: Translation = {
     romLangTitle: 'Passa a un’altra versione linguistica di questo gioco',
     romLangSwitched: 'Passato alla versione in {lang}: la partita è ricominciata',
     noCurrentLanguageVersion: 'Questo gioco non è disponibile nella lingua attuale',
+    romUnreachable: 'Al momento non si riesce a raggiungere la ROM, probabilmente un problema di rete',
     retryRom: 'Controlla di nuovo',
     arcadeHackFound: 'Hack riconosciuto: {title} (eseguito con il driver {driver})',
     arcadeHackNoPlan: '{title} riconosciuto, ma per questo pacchetto non esiste ancora un metodo di caricamento funzionante.',
@@ -995,6 +992,7 @@ const it: Translation = {
     liveNoServer: 'Il backend non ha ancora la diretta (manca il namespace socket.io /live): il server va aggiornato e riavviato',
     liveNoRoom: 'Nessuna diretta indicata',
     liveTimeout: 'Impossibile raggiungere chi trasmette: restrizioni di rete, o ha già chiuso',
+    liveNoRoute: 'Impossibile raggiungere chi trasmette: non c’è un percorso tra la tua rete e la sua. Prova con un’altra rete (un hotspot del telefono, per esempio) o chiedi all’amministratore di configurare un relay TURN',
     liveLost: 'Connessione con chi trasmette persa',
     liveEnded: 'La diretta è finita',
     liveGone: 'Questa diretta non esiste o è già finita',

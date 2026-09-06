@@ -138,6 +138,12 @@ interface Props {
   biosUrl?: string
   /** 正在探测云端 ROM 是否存在 */
   romChecking?: boolean
+  /**
+   * 「读不到」而不是「没有」：自动重试也没救回来（见 services/roms.ts 的 useRomUrl）。
+   * 只影响那一句文案 —— 两种情况玩家该做的事不一样：真没有就去挑别的语言或本地文件，
+   * 读不到只是这会儿的事，等一等或换个网就好。
+   */
+  romUnreachable?: boolean
   /** 当前语言及英语、日语、中文回退均没有可用 ROM */
   romUnavailable?: boolean
   /**
@@ -255,6 +261,7 @@ export function EmulatorPlayer({
   biosUrl,
   romChecking,
   romUnavailable,
+  romUnreachable,
   onRetryRom,
   romLangs,
   romLang,
@@ -1871,9 +1878,14 @@ export function EmulatorPlayer({
                       <>
                         {romUnavailable && (
                           <>
-                            <span className="font-semibold text-white">{t.player.noCurrentLanguageVersion}</span>
-                            {/* 探不到 ≠ 真没有：网络抖一下也会落到这里，给个按钮重新探，
-                                比让玩家去刷新整页强 */}
+                            {/* 探不到 ≠ 真没有。现在这两种情况在 useRomUrl 里已经分开了：
+                                「没问出来」会自动退避重试三次、网络恢复时还会再来一轮，
+                                都救不回来才落到这里 —— 那就照实说是读不到，别赖在语言版本上。
+                                手动的「重新检查」两种情况都留着：真没有的那一路，
+                                场景往往是管理员刚把 ROM 传上去。 */}
+                            <span className="font-semibold text-white">
+                              {romUnreachable ? t.player.romUnreachable : t.player.noCurrentLanguageVersion}
+                            </span>
                             {onRetryRom && (
                               <>
                                 {' '}

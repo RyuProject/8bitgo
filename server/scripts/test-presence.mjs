@@ -9,10 +9,12 @@
  *      并且**确认 presence 没有跟着 users-updated 广播出去**（它是个函数，
  *      漏出去会变成一个空对象白占带宽，见 netplay.js 的 strip）
  *
- * 端到端那半把 SOCKET_PING_INTERVAL_MS 调到 150ms，好在一秒内量到 RTT；
- * 线上是 10 秒。
+ * 端到端那半故意把 SOCKET_PING_INTERVAL_MS 调到 **30 秒**（比线上的 10 秒还慢）。
+ * 这不是笔误：网络那格现在靠的是「连上就主动补一个 engine.io ping」（presence.js 的
+ * EARLY_RTT_MS），而不是干等第一次心跳。心跳设得比整个测试还长，量到了 RTT 就只可能是
+ * 提前探测起了作用 —— 心跳一秒钟都还没轮到。以前这里是 150ms，等于把要测的东西绕过去了。
  */
-process.env.SOCKET_PING_INTERVAL_MS = '150'
+process.env.SOCKET_PING_INTERVAL_MS = '30000'
 
 import express from 'express'
 import { createServer } from 'node:http'
@@ -20,7 +22,16 @@ import { io as client } from 'socket.io-client'
 import { Server } from 'socket.io'
 import { attachLive, liveRooms } from '../src/live.js'
 import { attachNetplay } from '../src/netplay.js'
-import { deviceFromUa, clientIpFrom, countryFromIp, netFromRtt, presenceFromRequest } from '../src/presence.js'
+import {
+  clientIpFrom,
+  countryFromHeaders,
+  countryFromIp,
+  deviceFromUa,
+  geoReady,
+  netFromRtt,
+  presenceFromRequest,
+  resolveCountry,
+} from '../src/presence.js'
 
 let failed = 0
 const ok = (name, cond, extra = '') => {
@@ -91,7 +102,8 @@ ok('不报也不炸', presenceFromRequest(fakeReq(), undefined).net === 'unknown
 /* ─────────── 6. 直播房间端到端 ─────────── */
 section('直播房间')
 const liveHttp = createServer()
-const liveIo = new Server(liveHttp, { cors: { origin: true }, pingInterval: 150 })
+// 同上：心跳设得远长于测试时长，量到 RTT 就只可能是提前探测的功劳
+const liveIo = new Server(liveHttp, { cors: { origin: true }, pingInterval: 30_000 })
 attachLive(liveIo)
 await new Promise((r) => liveHttp.listen(0, r))
 const liveUrl = `http://127.0.0.1:${liveHttp.address().port}/live`
@@ -110,13 +122,41 @@ ok('设备来自 UA', room0.presence.device === 'mobile')
 ok('国家来自 XFF（133.242.0.1 是日本）', room0.presence.country === 'JP', String(room0.presence.country))
 ok('刚开播还没量到延迟，是未知', room0.presence.net === 'unknown' && room0.presence.rtt === null)
 
-// 等两三个心跳，RTT 应该出来了
-await wait(600)
+// 一个心跳都还轮不到（30 秒），但提前探测已经把格子填上了
+await wait(900)
 const room1 = liveRooms({ gameSlug: 'zelda-gba' })[0]
-ok('几个心跳之后量到了 RTT', typeof room1.presence.rtt === 'number', `${room1.presence.rtt}ms`)
+ok('不等心跳就量到了 RTT（提前探测）', typeof room1.presence.rtt === 'number', `${room1.presence.rtt}ms`)
 ok('本机回环的 RTT 应该判成好', room1.presence.net === 'good', room1.presence.net)
 host.close()
 liveHttp.close()
+
+/* ─────────── 6.5 国家：网关头兜底 ─────────── */
+section('国家（网关头兜底）')
+/**
+ * 最常见的线上故障：反代少一行 X-Forwarded-For，服务端看到的每个人都是 127.0.0.1，
+ * IP 那一路查不出任何东西 —— 而 Cloudflare 早就把国家写在 CF-IPCountry 里了，
+ * 以前 presence 完全没看它，于是手边有现成答案还是显示 ❓。
+ */
+ok('库加载上了（否则下面几条国家断言都没意义）', geoReady() === true)
+ok('CF-IPCountry 能读出来', countryFromHeaders({ 'cf-ipcountry': 'jp' }) === 'JP')
+ok('大小写不敏感、两边空白容忍', countryFromHeaders({ 'cf-ipcountry': ' Us ' }) === 'US')
+ok('XX（CF 表示不知道）不算国家', countryFromHeaders({ 'cf-ipcountry': 'XX' }) === null)
+ok('T1（Tor 出口）不算国家', countryFromHeaders({ 'cf-ipcountry': 'T1' }) === null)
+ok('三个字母之类的脏值不算', countryFromHeaders({ 'cf-ipcountry': 'CHN' }) === null)
+ok('没有任何网关头就是 null', countryFromHeaders({}) === null)
+ok('Vercel 的头也认', countryFromHeaders({ 'x-vercel-ip-country': 'DE' }) === 'DE')
+
+// 反代没配 XFF 的那种局面：IP 是回环，但 CF 给了国家 —— 必须能兜住
+ok(
+  '内网 IP + CF 头 → 用 CF 的（这就是线上那个 ❓ 的修法）',
+  resolveCountry('127.0.0.1', { 'cf-ipcountry': 'SG' }) === 'SG',
+)
+ok('内网 IP 且没有网关头 → 老实返回 null', resolveCountry('127.0.0.1', {}) === null)
+// 能查出来时以本地库为准：对每一跳都成立，不依赖某一家网关
+ok(
+  '公网 IP 查得到时以 IP 库为准（CF 说别的也不听）',
+  resolveCountry('114.114.114.114', { 'cf-ipcountry': 'BR' }) === 'CN',
+)
 
 /* ─────────── 7. 联机房间端到端 ─────────── */
 section('联机房间')
@@ -170,6 +210,13 @@ const broadcast = await new Promise((res) => {
     third.emit('join-room', { extra: extra('presence-room', 'u-third', 'Third') }, () => {})
   })
 })
+// 网络那格：联机这一路以前完全没测过 RTT。心跳 30 秒都还没到，能量到就是提前探测的功劳
+await wait(900)
+const npRooms = await (await fetch(`http://127.0.0.1:${port}/api/netplay/rooms`)).json()
+const npHost = npRooms.find((r) => r.roomId === 'presence-room')?.presence
+ok('联机房主也不等心跳就量到了 RTT', typeof npHost?.rtt === 'number', `${npHost?.rtt}ms`)
+ok('网络那格因此不再是未知', npHost?.net === 'good', String(npHost?.net))
+
 ok(
   'presence 没有跟着 users-updated 广播出去',
   Object.values(broadcast).every((u) => !('presence' in u)),

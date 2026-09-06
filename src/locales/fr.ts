@@ -108,10 +108,6 @@ const fr: Translation = {
   footer: {
     aria: 'Liens du pied de page',
     copyright: 'Le contenu des jeux reste la propriété de leurs ayants droit respectifs',
-    /** 版权免责声明。{contact} 由 Footer.tsx 换成 mailto 链接 */
-    disclaimer:
-      'Les ressources de ce site sont réservées à l’étude et à la recherche personnelles, à des fins non lucratives. Les droits de tous les jeux appartiennent à leurs détenteurs respectifs. En cas de problème de droits d’auteur, merci de {contact} : nous retirerons le contenu concerné sans délai.',
-    disclaimerContact: 'nous contacter',
   },
 
   /* ---------------- Changement de langue ---------------- */
@@ -615,6 +611,7 @@ const fr: Translation = {
     romLangTitle: 'Passer à une autre version linguistique de ce jeu',
     romLangSwitched: 'Passé à la version {lang} — la partie a redémarré',
     noCurrentLanguageVersion: "Ce jeu n'est pas disponible dans la langue actuelle",
+    romUnreachable: 'Impossible d’accéder à la ROM pour le moment, sans doute un problème réseau',
     retryRom: 'Vérifier à nouveau',
     arcadeHackFound: 'Hack reconnu : {title} (exécuté via le pilote {driver})',
     arcadeHackNoPlan: '{title} reconnu, mais il n\'existe pas encore de méthode de chargement fonctionnelle pour ce paquet.',
@@ -999,6 +996,7 @@ const fr: Translation = {
     liveNoServer: 'Le backend n’a pas encore le direct (l’espace de noms socket.io /live est absent) — le serveur doit être mis à jour et redémarré',
     liveNoRoom: 'Aucun direct indiqué',
     liveTimeout: 'Impossible de joindre le diffuseur — restrictions réseau, ou il a déjà arrêté',
+    liveNoRoute: 'Impossible de joindre le diffuseur : il n’y a pas de route entre votre réseau et le sien. Essayez un autre réseau (un partage de connexion, par exemple) ou demandez à l’administrateur de configurer un relais TURN',
     liveLost: 'Connexion au diffuseur perdue',
     liveEnded: 'Le direct est terminé',
     liveGone: 'Ce direct n’existe pas ou est déjà terminé',

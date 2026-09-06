@@ -108,10 +108,6 @@ const ja: Translation = {
   footer: {
     aria: 'フッターリンク',
     copyright: 'ゲームコンテンツの著作権は各権利者に帰属します',
-    /** 版权免责声明。{contact} 由 Footer.tsx 换成 mailto 链接 */
-    disclaimer:
-      '当サイトのリソースは個人的な学習・研究など非営利目的での利用に限ります。すべてのゲームの著作権は各権利者に帰属します。著作権に関する問題がございましたら{contact}へご連絡ください。該当するコンテンツを速やかに削除いたします。',
-    disclaimerContact: 'こちら',
   },
 
   /* ---------------- 言語切り替え ---------------- */
@@ -601,6 +597,7 @@ const ja: Translation = {
     romLangTitle: 'このゲームの別の言語版 ROM に切り替える',
     romLangSwitched: '{lang}版に切り替えました。プレイは最初からになります',
     noCurrentLanguageVersion: 'このゲームには現在の言語版がありません',
+    romUnreachable: '今は ROM を読み込めません（ネットワークの問題の可能性があります）',
     retryRom: '再確認する',
     arcadeHackFound: '改造版を認識しました：{title}（{driver} ドライバで実行）',
     arcadeHackNoPlan: '{title} と認識しましたが、この ROM セットに使える読み込み方法がまだないため実行できません。',
@@ -934,6 +931,7 @@ const ja: Translation = {
     liveNoServer: 'バックエンドにまだ配信機能がありません（socket.io の /live 名前空間が存在しません）。サーバー側のコードを更新して再起動してください',
     liveNoRoom: '配信が指定されていません',
     liveTimeout: '配信者に接続できません。ネットワーク制限か、すでに配信を終えた可能性があります',
+    liveNoRoute: '配信者に接続できません：あなたと配信者のネットワークの間に経路がありません。別のネットワーク（スマホのテザリングなど）で試すか、サイト管理者に TURN リレーの設定を依頼してください',
     liveLost: '配信者との接続が切れました',
     liveEnded: '配信は終了しました',
     liveGone: 'この配信は存在しないか、すでに終了しています',

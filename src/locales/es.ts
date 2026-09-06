@@ -108,10 +108,6 @@ const es: Translation = {
   footer: {
     aria: 'Enlaces del pie de página',
     copyright: 'Todo el contenido de los juegos pertenece a sus respectivos propietarios',
-    /** 版权免责声明。{contact} 由 Footer.tsx 换成 mailto 链接 */
-    disclaimer:
-      'Los recursos de este sitio son solo para estudio e investigación personales, sin fines de lucro. Los derechos de autor de todos los juegos pertenecen a sus respectivos propietarios. Si detectas algún problema de derechos de autor, {contact} y retiraremos el contenido de inmediato.',
-    disclaimerContact: 'escríbenos',
   },
 
   /* ---------------- Cambio de idioma ---------------- */
@@ -613,6 +609,7 @@ const es: Translation = {
     romLangTitle: 'Cambiar a otra versión de idioma de este juego',
     romLangSwitched: 'Cambiado a la versión en {lang}: la partida ha vuelto a empezar',
     noCurrentLanguageVersion: 'Este juego no está disponible en el idioma actual',
+    romUnreachable: 'Ahora mismo no se puede acceder a la ROM, probablemente por la red',
     retryRom: 'Comprobar de nuevo',
     arcadeHackFound: 'Hack reconocido: {title} (se ejecuta con el driver {driver})',
     arcadeHackNoPlan: 'Se reconoció {title}, pero aún no hay un método de carga que funcione para este paquete.',
@@ -994,6 +991,7 @@ const es: Translation = {
     liveNoServer: 'El backend aún no tiene emisión en directo (falta el espacio de nombres /live de socket.io): hay que actualizar y reiniciar el servidor',
     liveNoRoom: 'No se indicó ninguna emisión',
     liveTimeout: 'No se pudo contactar con quien emite: restricciones de red, o ya terminó',
+    liveNoRoute: 'No se puede conectar con quien emite: no hay ruta entre tu red y la suya. Prueba con otra red (un punto de acceso móvil, por ejemplo) o pide al administrador que configure un relé TURN',
     liveLost: 'Se perdió la conexión con quien emite',
     liveEnded: 'La emisión ha terminado',
     liveGone: 'Esa emisión no existe o ya terminó',

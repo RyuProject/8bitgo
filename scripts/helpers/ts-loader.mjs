@@ -15,7 +15,9 @@ const SRC = fileURLToPath(new URL('../../src/', import.meta.url))
 
 /** 只桩掉与被测逻辑无关的模块，其余一律加载真实源码 */
 const STUBS = {
-  react: 'export const useState=()=>[];export const useEffect=()=>{};export const useCallback=(f)=>f;',
+  // useRef 要给个真的对象：roms.ts 的自动重试用它记次数，返回 undefined 会当场 TypeError
+  react:
+    'export const useState=()=>[];export const useEffect=()=>{};export const useCallback=(f)=>f;export const useRef=(v)=>({current:v});',
   '@/emulator': 'export const isPlayable=()=>true;',
   '@/services/lang': 'export const useLang=()=>"zh-Hans";',
   '@/data/platforms': 'export const platformMap={};',

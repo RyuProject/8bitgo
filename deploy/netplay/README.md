@@ -95,27 +95,137 @@ VITE_API_URL=http://127.0.0.1:8788             # 房间列表 / 用户接口
 
 改完**必须重启 `npm run dev`** —— Vite 的环境变量是构建时注入的。
 
-## 四、TURN：不配的话会有一两成的人连不上
+## 四、STUN / TURN：不配的话很多人根本连不上
 
-P2P 要穿 NAT。只有 STUN 时，对称型 NAT、部分企业网和移动网络的组合连不通，
-这时需要 TURN 中继兜底 —— **只有这部分连接的流量会过服务器**，其余仍是直连。
+这一节是**直播和联机连不上的头号原因**，别跳过。
 
-`deploy/cloudgame/docker-compose.yml` 里那个 coturn 可以直接复用；单独跑也行：
+### 先搞清楚两件事在干嘛
+
+- **STUN**：浏览器问「我在公网上长什么样」。问不到就只有一堆局域网地址。
+- **TURN**：直连实在打不通时的中继。只有这部分连接的流量会过服务器，能直连的照旧点对点。
+
+⚠️ **代码里内置的默认 STUN 是 Google 和 Twilio 的**（`server/src/routes/ice.js` 的 `DEFAULT_STUN`）。
+这几台在部分地区**根本不可达** —— 后果不是「慢一点」，而是浏览器连自己的公网地址都问不出来，
+候选里只有 `host`（局域网地址），于是**除非两个人在同一个路由器下面，否则必然连不上**。
+症状就是观众等满超时、报「连不上主播」，而主播那边一切正常显示 0 人在看。
+面向国内用户就一定要用 `STUN_URLS` 换掉它们——自建的 coturn 本身就能当 STUN 用。
+
+### 主用：自建 coturn（短期凭证，密码不出服务器）
+
+**别再用 `VITE_NETPLAY_ICE` 填 TURN 账号密码** —— 那是构建时注入的，会明晃晃打进 JS 包里，
+任何人打开 DevTools 就能抄走当免费流量中转。配在**后端** `server/.env` 里，
+服务端按请求现算一份短期凭证下发（`GET /api/netplay/ice`），密码永远不出服务器。
+
+`turnserver.conf`（关键就是 `use-auth-secret`，不需要建任何用户）：
+
+```conf
+listening-port=3478
+tls-listening-port=5349
+external-ip=你的公网IP
+realm=8bitgo.com
+use-auth-secret
+static-auth-secret=<和 server/.env 里的 TURN_SECRET 一模一样>
+min-port=49160
+max-port=49200
+fingerprint
+no-cli
+# 有证书就配上，turns:443 能穿掉大部分企业防火墙
+cert=/etc/letsencrypt/live/turn.你的域名/fullchain.pem
+pkey=/etc/letsencrypt/live/turn.你的域名/privkey.pem
+```
 
 ```bash
-docker run -d --network host coturn/coturn:4 -n --log-file=stdout \
-  --listening-port=3478 --external-ip=你的公网IP --realm=8bitgo \
-  --lt-cred-mech --user=8bitgo:你的密码 \
-  --min-port=49160 --max-port=49200 --no-tls --no-dtls --no-cli --fingerprint
+docker run -d --name coturn --network host --restart unless-stopped \
+  -v /etc/coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro \
+  -v /etc/letsencrypt:/etc/letsencrypt:ro \
+  coturn/coturn:4 -c /etc/coturn/turnserver.conf
 ```
 
-前端 `.env`：
+防火墙要放行：`3478/udp`、`3478/tcp`、`5349/tcp`，以及中继端口段 `49160-49200/udp`。
+**中继端口段没放行是最常见的坑** —— 握手能过、一到传数据就卡死。
 
-```
-VITE_NETPLAY_ICE=[{"urls":"stun:stun.l.google.com:19302"},{"urls":"turn:你的IP:3478","username":"8bitgo","credential":"你的密码"}]
+`server/.env`：
+
+```bash
+TURN_URLS=turn:turn.你的域名:3478?transport=udp,turns:turn.你的域名:5349?transport=tcp
+TURN_SECRET=<node -e "console.log(require('crypto').randomBytes(32).toString('hex'))">
+TURN_TTL_SEC=3600
+# 顺手把 STUN 也指到自己这台，别再依赖 Google
+STUN_URLS=stun:turn.你的域名:3478
 ```
 
-国内部署时 Google 的 STUN 可能不通，换成国内的 STUN 或直接只留自己的 TURN。
+### 兜底之一：Cloudflare Realtime TURN（推荐，按流量计费）
+
+⚠️ **先别拿错产品。** Cloudflare 仪表盘的 Realtime 下面有两样完全不同的东西：
+
+| 建出来的 | 给你什么 | 是什么 | 能不能当 TURN |
+|---|---|---|---|
+| **TURN Server / TURN key** | Key ID + API token | 真正的 TURN 中继 | ✅ 就是它 |
+| **Realtime App（SFU）** | App ID + App Secret | 媒体服务器（推流/拉流） | ❌ 塞不进 `iceServers` |
+
+SFU 的 App ID 长得跟 TURN key 很像，但它走的是 `/v1/apps/<id>/sessions`，
+是「大家把流推给它、再从它那儿拉」的架构，和 NAT 穿透完全是两回事。
+填进下面这两行不会报错，只会**静默地什么都不做**。
+
+建好 TURN key 之后：
+
+```bash
+TURN_CF_KEY_ID=<Key ID>
+TURN_CF_API_TOKEN=<API token>
+TURN_CF_TTL_SEC=86400     # 领来的凭证有效期，默认 24 小时
+TURN_CF_TIMEOUT_MS=2500   # 领凭证的超时，见下
+```
+
+服务端拿这两个去 CF 现领短期凭证（`POST /v1/turn/keys/<id>/credentials/generate-ice-servers`），
+**token 永远不出服务器**。领来的会缓存住，不是每个请求都去撞人家接口；换了 key 缓存立刻作废。
+
+三件做对了的事，改这块之前先知道：
+
+1. **CF 挂了不能拖垮开局。** 这个接口在关键路径上 —— 玩家点「开始游戏」就在等它。
+   领凭证有 2.5 秒超时（`AbortSignal`），失败后冷却 30 秒再试，期间其余几路照常下发。
+   测试里专门验了「CF 返回 500」和「CF 干脆不回包」两种，接口都不能变慢、更不能 500。
+2. **顺带解决 STUN 不可达。** CF 的响应里带 `stun.cloudflare.com`，会自动并进 STUN 那一格 ——
+   本节开头那个「默认 STUN 在部分地区连不上、只有 host 候选」的老问题跟着一起解决了。
+3. **计费。** CF TURN 按中继流量收费。它排在自建后面，只有「直连不通 **且** 自建也配不上」
+   才会真的走它 —— 见下面那段关于顺序的说明。
+
+### 兜底之二：别家托管 TURN（固定账号密码）
+
+```bash
+TURN_BACKUP_URLS=turn:xxx.relay.metered.ca:80,turns:xxx.relay.metered.ca:443?transport=tcp
+TURN_BACKUP_USERNAME=<厂商给的>
+TURN_BACKUP_CREDENTIAL=<厂商给的>
+# 厂商也用 coturn 那套 static-auth-secret 约定时改填这个（填了就忽略上面的固定账号）
+TURN_BACKUP_SECRET=
+```
+
+**两路是一起下发的，不是「主的挂了才用备的」。** WebRTC 没有那种串行回退：它从所有 ICE 服务器
+一起收集候选，再按优先级配对。中继候选的优先级本来就最低（只有直连全部失败才会用上），
+两路中继之间排在前面的本地优先级更高 —— 所以托管那路只在**直连不通、而且自建 coturn 也配不上**时
+才真的吃流量。按流量计费的服务这样配才不会白烧钱，同时自建挂掉的那段时间站点不会整个瘫掉。
+
+### 验证
+
+```bash
+curl -s http://127.0.0.1:8788/api/netplay/ice | jq
+```
+
+看三样：`hasTurn` 是不是 `true`、`turnSources` 里有没有你配的那几路、`expiry` 在不在将来。
+
+```json
+{ "hasTurn": true, "turnCount": 2, "turnSources": ["self-hosted", "cloudflare"], "expiry": 1757203200 }
+```
+
+**`turnSources` 就是给运维自查用的**：线上打开这个接口就知道每一路到底生效没有，
+不用等用户来报「连不上」。CF 那路配了却没出现在里面，看后端日志有没有
+`[ice] 向 Cloudflare 领 TURN 凭证失败` —— 多半是 key/token 填错，或者拿的是 SFU 的 App ID。
+
+再去 <https://icetest.info>（或 Chrome 的 `chrome://webrtc-internals`）把上面那份
+`iceServers` 贴进去测一遍，要能看到 `srflx`（STUN 通了）和 `relay`（TURN 通了）两种候选。
+**只有 `host` 就说明 STUN 根本没通**，这时先别查别的，回头看本节开头那段。
+
+观众侧现在会自己做这个判断：一个公网候选都没收集到时，报的是「你和主播的网络之间没有通路」
+而不是含糊的「可能是网络限制或对方已经下播」，控制台还会留一行 `[live] 只收集到 host 候选`。
 
 ## 五、验证
 

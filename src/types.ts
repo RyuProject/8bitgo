@@ -296,6 +296,14 @@ export interface Post {
   /** 内容最后更新时间（ISO 8601）；内置文章没有时回退到 date */
   updatedAt?: string
   published: boolean
+  /**
+   * 按需翻译缓存（站点八种语言里 zh-Hans 看原文，en / es / fr / it / de / ja 看 i18n[lang]）。
+   * 注意 post 没有英文基准列（不像 game 有 description_en），所以 en 界面看到的也是中文原
+   * 文，需要翻译按钮把中文翻成英文。没翻译过这两个字段就是 undefined —— 前端 postExcerpt /
+   * postContent 会自然回退到 excerpt / content。
+   */
+  excerptI18n?: Record<string, string>
+  contentI18n?: Record<string, string>
 }
 
 /* ---------------- 游戏评论 ---------------- */

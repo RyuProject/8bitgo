@@ -310,6 +310,8 @@ const STATE_UPLOAD_MS = 10_000
  * 以前是 1 秒后看到 socket 没连上就按「房主断线」处理 —— 握手慢一点的正常用户开房就被拆掉。
  */
 const JOIN_TIMEOUT_MS = 20_000
+/** 多久把 EJS_netplayICEServers 续一次。TURN 凭证默认 1 小时过期，10 分钟一次很宽裕 */
+const ICE_REFRESH_MS = 10 * 60_000
 /** 信令报过 connect_error 且这么久还没连上，就不用等满 JOIN_TIMEOUT_MS 了（Mixed Content、服务器挂了） */
 const SIGNAL_FAIL_MS = 6_000
 /**
@@ -1102,6 +1104,8 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   let stateToken = ''
   /** 信令最后一次 connect_error 的时间。轮询靠它区分「握手慢」和「连不上」 */
   let signalErrorAt = 0
+  /** 上次刷新 EJS_netplayICEServers 的时间，见 ICE_REFRESH_MS */
+  let lastIceAt = 0
   /**
    * 把 room-token 的监听挂到 socket **诞生的那一刻**。
    *
@@ -1257,6 +1261,21 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     applyRole(cfg.role === 'spectator')
     cfg.onSpectatorControl?.(applyRole)
 
+    /**
+     * 开房 / 进房前把 ICE 配置刷一遍。
+     *
+     * 引擎每建一条 PeerConnection 都现读 `window.EJS_netplayICEServers`，但这个全局是**挂载时**
+     * 写进去的那一份 —— 而 TURN 是短期凭证（默认 1 小时过期）。玩了两小时才点「联机匹配」，
+     * 拿的就是两小时前的凭证，TURN 直接鉴权失败、退化成纯 STUN，穿不过 NAT 的那部分玩家全连不上。
+     * fetchIceConfig 自带缓存（快过期才真去取），所以这里绝大多数时候只是读内存。
+     */
+    void fetchIceConfig().then((ice) => {
+      if (destroyed || netplay !== cfg) return
+      win.EJS_netplayICEServers = ice.iceServers
+      lastIceAt = Date.now()
+      cfg.onIceReady?.(ice.hasTurn)
+    })
+
     try {
       if (cfg.mode === 'join' && cfg.roomId) {
         np.joinRoom(cfg.roomId, cfg.roomName, cfg.maxPlayers, cfg.password || null)
@@ -1284,6 +1303,17 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       const n = cur?.netplay
       if (!n) return
       if (n.socket?.connected) connectedOnce = true
+      /**
+       * 凭证续期。房间可能开几个小时，而**中途进来的每个人**都会让引擎新建一条 PeerConnection，
+       * 读的就是这个全局。不续的话，开播一小时之后进来的人全部拿不到 TURN。
+       * 借这条 1 秒一次的轮询做节流，不另起定时器；fetchIceConfig 只在快过期时才真的发请求。
+       */
+      if (Date.now() - lastIceAt > ICE_REFRESH_MS) {
+        lastIceAt = Date.now()
+        void fetchIceConfig().then((ice) => {
+          if (!destroyed) win.EJS_netplayICEServers = ice.iceServers
+        })
+      }
       // 服务端在开房 / 加入成功后，会通过这条 socket 单独发一个房间令牌给本人。
       // iframe 是同源的 srcdoc，所以页面这边能直接挂监听。
       if (!tokenHooked && n.socket) {

@@ -21,7 +21,10 @@ import { createRequire } from 'node:module'
  *
  * ⚠️ 国家要能查出来，nginx 必须把真实 IP 传进来。反代少一行
  * `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`
- * 的话，服务端看到的每个人都是 127.0.0.1，全站永远是 ❓，而且不报错。
+ * 的话，服务端看到的每个人都是 127.0.0.1，IP 那一路就查不出任何东西。
+ * 这种情况现在有两道兜底：网关自己加的国家头（Cloudflare 的 CF-IPCountry，见 countryFromHeaders），
+ * 以及启动后第一次遇到时打一行警告——以前它是**静默**降级的，全站国旗一直 ❓ 却不报错，
+ * 排查起来毫无线索。实在两样都没有，`GET /api/diag` 会把服务端到底看到了什么原样告诉你。
  * 见 deploy/netplay/README.md 里的 nginx 片段。
  */
 
@@ -86,7 +89,7 @@ function normalizeIp(raw) {
 }
 
 /** 内网 / 回环 / 链路本地。这些查不出国家，也说明「这一跳还是代理」 */
-function isPrivateIp(ip) {
+export function isPrivateIp(ip) {
   if (!ip) return true
   if (ip === '::1' || ip === '::') return true
   if (/^(10\.|127\.|169\.254\.|192\.168\.)/.test(ip)) return true
@@ -148,6 +151,61 @@ try {
   console.warn('[presence] 国家库没加载上，房间卡片的地区会显示未知：', e?.message || e)
 }
 
+/**
+ * 网关在边缘加的国家头。
+ *
+ * 站点在 Cloudflare 后面时这个头**一定有**，而且是 CF 按它自己看到的对端算的，
+ * 比我们这边查 IP 还准 —— 评论那边早就在用了（routes/comments.js）。
+ * presence 以前完全没看它：于是反代少一行 X-Forwarded-For，IP 那一路查不出东西，
+ * 明明手边就有现成的国家却还是显示 ❓。这是**最常见的那种「配置差一行、功能全废」**，
+ * 多这一道兜底就能免掉。
+ *
+ * 'XX' 是 CF 表示「不知道」，'T1' 是 Tor 出口 —— 两个都不是国家，
+ * 拿去画国旗会渲染成方框乱码，一律当查不到。
+ */
+const GATEWAY_COUNTRY_HEADERS = ['cf-ipcountry', 'x-vercel-ip-country', 'x-country-code']
+const NOT_A_COUNTRY = new Set(['XX', 'T1', 'ZZ', 'AP', 'EU'])
+
+export function countryFromHeaders(headers = {}) {
+  for (const name of GATEWAY_COUNTRY_HEADERS) {
+    const raw = headers[name]
+    if (typeof raw !== 'string') continue
+    const code = raw.trim().toUpperCase()
+    if (/^[A-Z]{2}$/.test(code) && !NOT_A_COUNTRY.has(code)) return code
+  }
+  return null
+}
+
+/**
+ * 一次把国家定下来：先按真实 IP 查离线库，查不到再用网关的头兜底。
+ *
+ * 顺序是有讲究的：IP 查库对**每一跳**都成立（自建反代、没有 CF 的部署也能用），
+ * 网关头只在走了那家网关时才有。所以先本地、后网关。
+ */
+let ipBlindWarned = false
+export function resolveCountry(ip, headers = {}) {
+  const byIp = countryFromIp(ip)
+  if (byIp) return byIp
+  const byHeader = countryFromHeaders(headers)
+  if (byHeader) return byHeader
+  // 只提示一次，而且只在「IP 是内网 + 网关也没给」时提示 —— 这两样同时没有，
+  // 基本可以断定是反代少配了头，而不是某个用户的地址查不到
+  if (!ipBlindWarned && isPrivateIp(ip) && geoReader) {
+    ipBlindWarned = true
+    console.warn(
+      '[presence] 看到的客户端地址是内网/回环（' + (ip || '空') + '），网关也没给国家头 —— ' +
+        '房间卡片上的国旗会一直是 ❓。反代请加 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`' +
+        '（socket.io / netplay 那个 location 也要加），或确认流量确实经过 Cloudflare。详见 GET /api/diag',
+    )
+  }
+  return null
+}
+
+/** 离线国家库有没有加载上。/api/diag 用它区分「库没装好」和「这个 IP 查不到」 */
+export function geoReady() {
+  return geoReader !== null
+}
+
 /** IP -> 国家码。查不到返回 null（内网、库没装、地址不合法都走这条） */
 const geoCache = new Map()
 const GEO_CACHE_MAX = 5000
@@ -191,6 +249,22 @@ export function countryFromIp(ip) {
  */
 const RTT_ALPHA = 0.3
 
+/**
+ * 连上之后多久主动探一次 RTT。
+ *
+ * 光等 engine.io 自己的心跳，头一个采样要等满一个 pingInterval —— 也就是房间卡片
+ * 开出来的头 10 秒（线上默认 25 秒）网络那格必然是 ❓。而开房的人恰恰就在这几秒里
+ * 盯着自己的卡片看，于是「网络永远显示不出来」成了个稳定的观感。
+ *
+ * engine.io 的 ping 是**协议层**的：服务端发一个 ping 包，任何 engine.io v4 客户端都会
+ * 自动回 pong，不需要对方的应用代码配合 —— 联机那个改不动的 EmulatorJS 客户端也一样。
+ * 所以这里在连上后立刻补发一个，1 秒内就能把格子填上。实测 polling / websocket 都有效。
+ * 走的是引擎内部方法，包在 try 里：哪天 engine.io 改了，最差也就是退回等正常心跳。
+ */
+const EARLY_RTT_MS = Number(process.env.PRESENCE_EARLY_RTT_MS || 250)
+/** 第一次探测的 pong 要是丢了，再补一次；两次都没有就老实等心跳 */
+const EARLY_RTT_RETRY_MS = 1_500
+
 export function trackRtt(socket) {
   let rtt = null
   const conn = socket?.conn
@@ -212,6 +286,24 @@ export function trackRtt(socket) {
   conn.on('packet', onPacket)
   // engine.io 的 socket 断开后整个对象就没人引用了，不用手动摘监听器
 
+  /** 主动补一个心跳包，见 EARLY_RTT_MS */
+  const probe = () => {
+    if (rtt !== null) return
+    try {
+      if (conn.readyState === 'open' && typeof conn.sendPacket === 'function') conn.sendPacket('ping')
+    } catch {
+      /* 引擎内部 API 变了就算了，等正常心跳 */
+    }
+  }
+  const early = setTimeout(probe, EARLY_RTT_MS)
+  const retry = setTimeout(probe, EARLY_RTT_RETRY_MS)
+  early.unref?.()
+  retry.unref?.()
+  conn.once?.('close', () => {
+    clearTimeout(early)
+    clearTimeout(retry)
+  })
+
   return () => rtt
 }
 
@@ -227,7 +319,8 @@ export const UNKNOWN_PRESENCE = { device: 'unknown', country: null, net: 'unknow
 export function watchPresence(socket) {
   const headers = socket?.handshake?.headers || {}
   const device = deviceFromUa(headers['user-agent'])
-  const country = countryFromIp(clientIpFrom(socket?.handshake?.address, headers))
+  // 先按真实 IP 查库，查不到用网关的国家头兜底（见 resolveCountry）
+  const country = resolveCountry(clientIpFrom(socket?.handshake?.address, headers), headers)
   const getRtt = trackRtt(socket)
   return () => {
     const rtt = getRtt()
@@ -248,5 +341,5 @@ export function presenceFromRequest(req, reportedRtt) {
   const ip = normalizeIp(req?.ip) || clientIpFrom(req?.socket?.remoteAddress, req?.headers || {})
   const n = Number(reportedRtt)
   const rtt = Number.isFinite(n) && n >= 0 && n <= 10_000 ? Math.round(n) : null
-  return { device, country: countryFromIp(ip), net: netFromRtt(rtt), rtt }
+  return { device, country: resolveCountry(ip, req?.headers || {}), net: netFromRtt(rtt), rtt }
 }

@@ -5,17 +5,36 @@
  *
  * 1. **连通率**。P2P 直连要穿 NAT，只靠 STUN 大约有一到两成的组合连不通
  *    （对称型 NAT、部分企业网与移动网络），必须有 TURN 中继兜底。
+ *    ⚠️ 更要命的是 STUN 本身可达不可达：内置的默认几台是 Google / Twilio 的，
+ *    在部分地区**根本不可达** —— 那种情况下浏览器**连自己的公网地址都问不出来**，
+ *    只有一堆 host 候选，除非两边在同一个路由器下面，否则必然连不通。
+ *    配上 Cloudflare 那一路会顺带带来 stun.cloudflare.com，这个问题一并解决。
  *
  * 2. **凭证不能写进前端包**。以前 TURN 账号密码是通过 VITE_NETPLAY_ICE 打进 JS 的，
  *    任何人打开 DevTools 就能抄走，拿你的 TURN 当免费流量中转。
- *    这里改成按请求现算一份**短期凭证**（默认 1 小时过期），照 coturn 的
- *    REST API 约定（static-auth-secret）：
- *        username   = <过期时间戳>:<标签>
- *        credential = base64( HMAC-SHA1(username, TURN_SECRET) )
- *    coturn 侧只要开 `use-auth-secret` + `static-auth-secret=<同一个值>` 即可，
- *    不需要建任何用户。
+ *    这里改成按请求现算 / 现取一份**短期凭证**，密码永远不出服务器。
  *
- * 没配 TURN_SECRET 时退回纯 STUN，功能照常，只是连通率低一些。
+ * ── 三种 TURN，可以同时配，按这个顺序下发 ──────────────────
+ *
+ *   1. 自建 coturn      TURN_URLS + TURN_SECRET            static-auth-secret，服务端现算 HMAC
+ *   2. 托管（固定账号）  TURN_BACKUP_URLS + USERNAME/CREDENTIAL 或 BACKUP_SECRET
+ *   3. Cloudflare       TURN_CF_KEY_ID + TURN_CF_API_TOKEN  服务端向 CF 现领短期凭证
+ *
+ * 全都会**一起**下发给浏览器。WebRTC 不是「主的挂了才用备的」那种串行回退 ——
+ * 它从所有 ICE 服务器一起收集候选，然后按优先级配对：中继（relay）候选的优先级本来就最低，
+ * 只有直连全部失败时才会用上；两个中继之间，排在前面的那个本地优先级更高，所以自建那路会先被试。
+ * 也就是说兜底那路只在「直连不通 **且** 自建 coturn 这一路也配不上」时才吃流量 ——
+ * 正是兜底该有的行为，而且自建挂掉的那段时间站点不会整个瘫掉。
+ *
+ * ⚠️ **Cloudflare Realtime 有两个完全不同的产品，别拿错：**
+ *   · TURN Service —— 就是这里用的。仪表盘里建一个 **TURN key**，给你 Key ID + API token，
+ *     服务端拿它去换短期 TURN 凭证。这才是能塞进 iceServers 的东西。
+ *   · Realtime SFU —— 建出来的是 **App ID + App Secret**，走 /v1/apps/<id>/sessions，
+ *     是个媒体服务器（大家把流推给它、再从它那儿拉），**不是 TURN，塞不进 iceServers**。
+ *     它能解决的是另一个问题（房主上行扛不住十几路观众），要改的是整套推拉流架构。
+ *
+ * 一个都没配时退回纯 STUN，功能照常，只是连通率低一些 —— hasTurn 会如实报 false，
+ * 前端据此把「连不上」的提示说得具体点，而不是让人对着转圈瞎猜。
  */
 import { Router } from 'express'
 import { createHmac } from 'node:crypto'
@@ -42,21 +61,177 @@ function turnCredentials(secret, ttlSec, label) {
   return { username, credential, expiry }
 }
 
-iceRouter.get('/', (req, res) => {
-  const stun = list(process.env.STUN_URLS)
-  const iceServers = [{ urls: stun.length ? stun : DEFAULT_STUN }]
+/* ---------------- Cloudflare Realtime TURN ---------------- */
 
+/**
+ * 覆盖用（测试里指向本地假服务）。正式环境不要动。
+ * 和这个文件里其它配置一样**按请求现读** —— 写成模块级常量的话，
+ * 测试里改了 env 也已经晚了（模块早加载完了），线上改配置也得重启进程。
+ */
+const cfApiBase = () => process.env.TURN_CF_API_BASE || 'https://rtc.live.cloudflare.com/v1'
+/** 向 CF 领一份凭证的有效期。它家默认给 86400（24 小时） */
+const cfTtl = () => Math.max(600, Math.min(172_800, Number(process.env.TURN_CF_TTL_SEC) || 86_400))
+/**
+ * 领凭证的超时。这个接口在**开局的关键路径上** —— 玩家点开始游戏就要等它。
+ * CF 那边抽风的话宁可这一轮没有 CF 中继，也不能让所有人卡在这里。
+ */
+const cfTimeoutMs = () => Number(process.env.TURN_CF_TIMEOUT_MS || 2_500)
+/** 快过期多久就重新领。凭证 24 小时有效，提前 10 分钟换足够 */
+const CF_REFRESH_MARGIN_SEC = 600
+/** 领失败之后多久才再试。CF 挂了的时候不能每个请求都去撞一次、每次多等 2.5 秒 */
+const CF_COOLDOWN_MS = 30_000
+
+/**
+ * 缓存住领来的那份，别每次请求都去调 CF 的接口。
+ *
+ * 按「key + 接口地址 + ttl」缓存：运维换了 key（或者轮换了 token）之后，
+ * 缓存和冷却计时都要跟着作废 —— 否则旧凭证还会挂着用到过期，换 key 等于没换。
+ */
+let cfState = { key: '', cache: null, inflight: null, failedAt: 0, warned: false }
+
+function cfSlot(keyId, base, ttl) {
+  const key = `${keyId}|${base}|${ttl}`
+  if (cfState.key !== key) cfState = { key, cache: null, inflight: null, failedAt: 0, warned: false }
+  return cfState
+}
+
+/**
+ * 向 Cloudflare 领一份短期 TURN 凭证。
+ *
+ *   POST /v1/turn/keys/<keyId>/credentials/generate-ice-servers
+ *   Authorization: Bearer <api token>
+ *   {"ttl": 86400}
+ *
+ * ⚠️ **响应的分组方式不要赌。** CF 文档给的示例是两条
+ * （`[{urls:[stun...]}, {urls:[turn...], username, credential}]`），
+ * 而仪表盘上「如何创建凭据」给的示例是**一条**里 stun 和 turn 混排、凭证挂在这一条上。
+ * 两种都见过，将来还可能再变。所以这里**不按条目结构解析，按 URL 的 scheme 拆**：
+ * `stun:` 归 STUN 组（不需要凭证），`turn:` / `turns:` 归 TURN 组（带上这一条的凭证）。
+ * 怎么分组都能解析对。
+ *
+ * 顺带：CF 自己会带 stun.cloudflare.com，我们把它并进 STUN 那一格 ——
+ * 顺手解决「默认那几台 STUN 在部分地区不可达」的老问题，这是配 CF 的额外收益。
+ *
+ * 拿不到就返回 null：调用方照常下发其它几路，绝不让这一路的故障拖垮整个接口。
+ */
+async function cloudflareIce() {
+  const keyId = (process.env.TURN_CF_KEY_ID || '').trim()
+  const token = (process.env.TURN_CF_API_TOKEN || '').trim()
+  if (!keyId || !token) return null
+
+  const ttl = cfTtl()
+  const base = cfApiBase()
+  const st = cfSlot(keyId, base, ttl)
+  const now = Math.floor(Date.now() / 1000)
+  if (st.cache && st.cache.expiry - now > CF_REFRESH_MARGIN_SEC) return st.cache
+  if (st.inflight) return st.inflight
+  if (Date.now() - st.failedAt < CF_COOLDOWN_MS) return st.cache // 刚失败过，先用旧的（可能是 null）
+
+  st.inflight = (async () => {
+    try {
+      const res = await fetch(`${base}/turn/keys/${encodeURIComponent(keyId)}/credentials/generate-ice-servers`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ ttl }),
+        signal: AbortSignal.timeout(cfTimeoutMs()),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      // iceServers 可能是数组，也可能被写成单个对象 —— 两种都收
+      const entries = Array.isArray(data?.iceServers)
+        ? data.iceServers
+        : data?.iceServers
+          ? [data.iceServers]
+          : []
+      const stunUrls = []
+      const turns = []
+      for (const e of entries) {
+        const urls = Array.isArray(e?.urls) ? e.urls : e?.urls ? [e.urls] : []
+        const turnUrls = []
+        for (const raw of urls) {
+          const u = String(raw)
+          if (u.startsWith('stun:')) stunUrls.push(u)
+          else if (u.startsWith('turn:') || u.startsWith('turns:')) turnUrls.push(u)
+        }
+        // TURN 必须带凭证才有用：没凭证的 turn: 交给浏览器只会报错
+        if (turnUrls.length && e?.username && e?.credential) {
+          turns.push({ urls: turnUrls, username: String(e.username), credential: String(e.credential) })
+        }
+      }
+      if (!turns.length) throw new Error('响应里没有带凭证的 TURN 地址')
+      st.cache = { stunUrls, turns, expiry: now + ttl }
+      st.failedAt = 0
+      st.warned = false
+      return st.cache
+    } catch (e) {
+      st.failedAt = Date.now()
+      if (!st.warned) {
+        st.warned = true
+        console.warn('[ice] 向 Cloudflare 领 TURN 凭证失败（冷却 30 秒后再试，其余几路不受影响）：', e?.message || e)
+      }
+      return st.cache // 旧的还没过期就先用着；没有就是 null
+    } finally {
+      st.inflight = null
+    }
+  })()
+  return st.inflight
+}
+
+iceRouter.get('/', async (req, res) => {
+  const ttl = Math.max(300, Math.min(86400, Number(process.env.TURN_TTL_SEC) || 3600))
+  // 标签只用来在 coturn 日志里区分来源，不参与鉴权，所以放个粗粒度的标识就行
+  const label = String(req.query.u || 'guest').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 24) || 'guest'
+
+  /** 各路凭证的过期时间。前端按**最早**的那个安排续期，不然先过期的那路会静默失效 */
+  const expiries = []
+  /** 哪几路真的生效了。运维自查用：线上打开这个接口就知道兜底到底配上没有 */
+  const turnSources = []
+
+  // Cloudflare 那一路要先取（异步），它还会顺带给我们两台 STUN
+  let cf = null
+  try {
+    cf = await cloudflareIce()
+  } catch {
+    cf = null // cloudflareIce 内部已经兜过了，这里只是再保一层：绝不让它 500
+  }
+
+  const stun = list(process.env.STUN_URLS)
+  const stunUrls = [...(stun.length ? stun : DEFAULT_STUN), ...(cf?.stunUrls ?? [])]
+  const iceServers = [{ urls: [...new Set(stunUrls)] }]
+
+  // ── 1. 自建 coturn ──
   const turnUrls = list(process.env.TURN_URLS)
   const secret = (process.env.TURN_SECRET || '').trim()
-  const ttl = Math.max(300, Math.min(86400, Number(process.env.TURN_TTL_SEC) || 3600))
-
-  let expiry = 0
   if (turnUrls.length && secret) {
-    // 标签只用来在 coturn 日志里区分来源，不参与鉴权，所以放个粗粒度的标识就行
-    const label = String(req.query.u || 'guest').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 24) || 'guest'
     const cred = turnCredentials(secret, ttl, label)
-    expiry = cred.expiry
+    expiries.push(cred.expiry)
     iceServers.push({ urls: turnUrls, username: cred.username, credential: cred.credential })
+    turnSources.push('self-hosted')
+  }
+
+  // ── 2. 托管服务（固定账号密码，或同样的 HMAC 约定）──
+  const backupUrls = list(process.env.TURN_BACKUP_URLS)
+  const backupSecret = (process.env.TURN_BACKUP_SECRET || '').trim()
+  const backupUser = (process.env.TURN_BACKUP_USERNAME || '').trim()
+  const backupCred = (process.env.TURN_BACKUP_CREDENTIAL || '').trim()
+  if (backupUrls.length) {
+    if (backupSecret) {
+      const cred = turnCredentials(backupSecret, ttl, label)
+      expiries.push(cred.expiry)
+      iceServers.push({ urls: backupUrls, username: cred.username, credential: cred.credential })
+      turnSources.push('managed')
+    } else if (backupUser && backupCred) {
+      // 固定账号密码：不会过期，所以不进 expiries
+      iceServers.push({ urls: backupUrls, username: backupUser, credential: backupCred })
+      turnSources.push('managed')
+    }
+  }
+
+  // ── 3. Cloudflare Realtime TURN ──
+  if (cf?.turns?.length) {
+    expiries.push(cf.expiry)
+    for (const t of cf.turns) iceServers.push({ urls: t.urls, username: t.username, credential: t.credential })
+    turnSources.push('cloudflare')
   }
 
   // 凭证会过期，别让 CDN / 浏览器缓存住
@@ -64,9 +239,13 @@ iceRouter.get('/', (req, res) => {
   res.json({
     iceServers,
     /** 有没有 TURN 兜底。前端据此决定要不要提示「可能连不通」 */
-    hasTurn: iceServers.length > 1,
-    /** 凭证过期时间（unix 秒）；0 表示没有 TURN，无需续期 */
-    expiry,
+    hasTurn: turnSources.length > 0,
+    /** 配了几路 TURN */
+    turnCount: turnSources.length,
+    /** 分别是哪几路（self-hosted / managed / cloudflare）—— 自查用 */
+    turnSources,
+    /** 最早的凭证过期时间（unix 秒）；0 表示没有会过期的凭证，无需续期 */
+    expiry: expiries.length ? Math.min(...expiries) : 0,
     ttl,
   })
 })

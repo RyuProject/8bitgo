@@ -200,5 +200,149 @@ try {
 
 mockServer.close()
 
+/* ---------------- translateMarkdown ----------------
+ * 这一组是在 mock server 关闭之后做的——上面的 mock 已经 listen 住了所有调用，
+ * 重启一个用别的端口，免得和之前的 mock 互相干扰。
+ */
+const { translateMarkdown } = await import('../src/translate.js')
+
+let mockCalls = 0
+let mockRouteByText = () => 'TRANSLATED'
+const mdMock = createServer((req, res) => {
+  let raw = ''
+  req.on('data', (c) => (raw += c))
+  req.on('end', () => {
+    mockCalls++
+    let body = {}
+    try {
+      body = JSON.parse(raw || '{}')
+    } catch {
+      /* ignore */
+    }
+    const list = Array.isArray(body.TextList) ? body.TextList : []
+    const translations = list.map((t) => mockRouteByText(t))
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(
+      JSON.stringify({
+        ResponseMetadata: { RequestId: 'md' },
+        Result: { TextList: translations.map((tr) => ({ Translation: tr })) },
+      }),
+    )
+  })
+})
+await new Promise((r) => mdMock.listen(0, '127.0.0.1', r))
+process.env.VOLC_TRANSLATE_BASE_URL = `http://127.0.0.1:${mdMock.address().port}`
+
+/* —— 用例 7：空字符串直接返回 —— */
+try {
+  assert.equal(await translateMarkdown('', 'zh', 'en'), '')
+  assert.equal(await translateMarkdown('   \n\n  ', 'zh', 'en'), '   \n\n  ')  // 全空白视作"无内容"原样返回
+  ok('translateMarkdown 空输入原样返回')
+} catch (e) {
+  bad('translateMarkdown 空输入原样返回', e)
+}
+
+/* —— 用例 8：单段只发一次请求 —— */
+try {
+  mockCalls = 0
+  mockRouteByText = (t) => `[${t}]`
+  const out = await translateMarkdown('一段', 'zh', 'en')
+  assert.equal(out, '[一段]')
+  assert.equal(mockCalls, 1)
+  ok('translateMarkdown 单段 = 一次调用')
+} catch (e) {
+  bad('translateMarkdown 单段 = 一次调用', e)
+}
+
+/* —— 用例 9：多段按段落切，**保留双换行** —— */
+try {
+  mockCalls = 0
+  mockRouteByText = (t) => `T(${t})`
+  const md = `第一段
+
+第二段
+
+
+第四段（中间空两行）`
+  const out = await translateMarkdown(md, 'zh', 'en')
+  // 分隔符原样保留：第一段↔第二段之间是 2 个换行，第二段↔第四段之间是 3 个换行（中间空两行）
+  assert.equal(out, 'T(第一段)\n\nT(第二段)\n\n\nT(第四段（中间空两行）)')
+  assert.equal(mockCalls, 3, '应该发 3 次请求（一段一次）')
+  ok('translateMarkdown 多段保留双换行、并各自翻译')
+} catch (e) {
+  bad('translateMarkdown 多段保留双换行、并各自翻译', e)
+}
+
+/* —— 用例 10：单段失败抛错（整篇视为失败） —— */
+try {
+  mockRouteByText = () => {
+    throw new Error('mock 应该没被调用')
+  }
+  // 直接 mock network 失败：随便一个非 2xx
+  mockRouteByText = () => ({ translation: 'x' })
+  // 让第二次失败：用一个会拒绝的 base url 即可
+  process.env.VOLC_TRANSLATE_BASE_URL = 'http://127.0.0.1:1'  // 不可达
+  await assertError(() => translateMarkdown('one\n\ntwo', 'zh', 'en'))
+  process.env.VOLC_TRANSLATE_BASE_URL = `http://127.0.0.1:${mdMock.address().port}`  // 恢复
+  ok('translateMarkdown 单段失败会冒泡（整篇失败）')
+} catch (e) {
+  process.env.VOLC_TRANSLATE_BASE_URL = `http://127.0.0.1:${mdMock.address().port}`
+  bad('translateMarkdown 单段失败会冒泡（整篇失败）', e)
+}
+
+/* —— 用例 11：自定义并发上限不被顶破 —— */
+let realRoute = null
+try {
+  mockCalls = 0
+  mockRouteByText = (t) => ({ Translation: `c(${t})` })
+  let peakConcurrent = 0
+  let current = 0
+  realRoute = mdMock.listeners('request')[0]
+  mdMock.removeListener('request', realRoute)
+  mdMock.on('request', (req, res) => {
+    let raw = ''
+    req.on('data', (c) => (raw += c))
+    req.on('end', () => {
+      current++
+      peakConcurrent = Math.max(peakConcurrent, current)
+      // 模拟火山响应延迟
+      setTimeout(() => {
+        current--
+        mockCalls++
+        const body = JSON.parse(raw || '{}')
+        const list = body.TextList || []
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(
+          JSON.stringify({
+            ResponseMetadata: {},
+            Result: {
+              TextList: list.map((t) => ({ Translation: 'OK_' + t.slice(0, 3) })),
+            },
+          }),
+        )
+      }, 50)
+    })
+  })
+  // 10 段、并发 2
+  const ten = Array.from({ length: 10 }, (_, i) => `P${i + 1}`).join('\n\n')
+  await translateMarkdown(ten, 'zh', 'en', 2)
+  assert.equal(mockCalls, 10, '10 段都应该被翻译')
+  assert.ok(peakConcurrent <= 2, `并发上限 2 时峰值应该是 2，实测 ${peakConcurrent}`)
+  // 恢复 mock：后面的测试可能还会用（虽然现在就最后一个了，留个干净状态）
+  mdMock.removeAllListeners('request')
+  mdMock.on('request', realRoute)
+  ok('translateMarkdown 不会顶破并发上限')
+} catch (e) {
+  bad('translateMarkdown 不会顶破并发上限', e)
+} finally {
+  // 不管上面成不成功，都把原始 handler 装回去，避免污染下一次跑测试
+  if (realRoute && !mdMock.listeners('request').includes(realRoute)) {
+    mdMock.removeAllListeners('request')
+    mdMock.on('request', realRoute)
+  }
+}
+
+mdMock.close()
+
 console.log(failed ? `\n${failed} 项断言失败` : '\n全部通过')
 process.exitCode = failed ? 1 : 0

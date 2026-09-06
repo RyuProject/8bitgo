@@ -125,6 +125,25 @@ const patches = [
     run: () => conn.query('ALTER TABLE `games` ADD COLUMN `description_i18n` JSON NULL AFTER `description_en`'),
   },
   {
+    name: 'posts.excerpt_i18n（文章摘要的按需翻译缓存）',
+    // 形状同 games.description_i18n —— 站点八种语言里有两种已经有基准字段
+    // （games 是 description / description_en；posts 是 excerpt 一份、母语基准），
+    // 所以 i18n 里只存**其余六种**。zh-Hans / en 都不进 JSON：zh-Hans 看 excerpt，en 也退回 excerpt
+    // （post 没有 description_en —— 摘要被没填英文版时本来就该显示母语，不强制翻译）。
+    table: 'posts',
+    needed: async () => !(await hasColumn('posts', 'excerpt_i18n')),
+    run: () => conn.query('ALTER TABLE `posts` ADD COLUMN `excerpt_i18n` JSON NULL AFTER `excerpt`'),
+  },
+  {
+    name: 'posts.content_i18n（文章正文 Markdown 的按需翻译缓存）',
+    // 形状同上，但内容是分块翻译的（按段落\n\n切，每块单独调火山再拼回去），
+    // 所以存的是「整段拼好的 Markdown」。改 content 时清空（posts-repo.js 里的 patchPost），
+    // 否则用旧译文 + 新原文混着就乱套了。
+    table: 'posts',
+    needed: async () => !(await hasColumn('posts', 'content_i18n')),
+    run: () => conn.query('ALTER TABLE `posts` ADD COLUMN `content_i18n` JSON NULL AFTER `content`'),
+  },
+  {
     name: 'games.dos_executable（DOS 启动程序，zip 内相对路径）',
     table: 'games',
     needed: async () => !(await hasColumn('games', 'dos_executable')),

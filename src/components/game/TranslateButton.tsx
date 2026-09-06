@@ -1,10 +1,15 @@
 /**
- * 翻译按钮：游戏简介右上角，点一下用火山引擎把简介翻成当前 UI 语言并缓存。
+ * 翻译按钮：游戏简介 / 文章正文右上角，点一下用火山引擎把内容翻成当前 UI 语言并缓存。
  *
- * ── 触发位置 ────────────────────────────────────────────────
- * 挂游戏详情页「游戏简介」h2 旁边，和 h2 在同一行 flex 布局。
- * 出现条件 = 当前语言不是 zh-Hans / en，且这一语言的简介没翻译过（见 i18nData.needsTranslation）。
- * 这是「按需」而非「自动」—— 一个语种永远只翻译一次，缓存命中后接口秒回。
+ * ── 这是通用组件 ──────────────────────────────────────────
+ * 游戏和文章共用它。差异只在两处：
+ *   1. endpoint  —— 调哪个接口（游戏 `/api/games/<slug>/translate-description`、
+ *                   文章 `/api/posts/<slug>/translate`）
+ *   2. onTranslated —— 后端返回什么就交给父组件什么（游戏是 { text }，文章是 { excerpt, content }），
+ *      父组件自己决定覆盖哪块 state，组件本身不关心被翻译的是简介还是正文
+ *
+ * 出现条件交给父组件的 `show` / 外层条件渲染控（游戏用 needsTranslation()、文章用
+ * needsPostTranslation()）—— 接口「按需」特性：一个语种永远只翻译一次，缓存命中后秒回。
  *
  * ── 状态机 ────────────────────────────────────────────────
  *   idle        → 显示「翻译」按钮（描边样式，与「展开全文」区分明显）
@@ -13,12 +18,11 @@
  *   error       → 显示「翻译失败」+ 重试（失败文案由后端 error 字段给出）
  *
  * ── 副作用 ────────────────────────────────────────────────
- * 翻译成功后调 onTranslated(text)。父组件（GameDetailPage）把这段文字覆盖到简介组件上，
- * 不去刷新整个 game 对象 —— 30 字的局部 setState 既便宜也不会影响页面其它部分
+ * 翻译成功后调 onTranslated(data)。父组件把 data 里的内容覆盖到对应显示块上，
+ * 不去刷新整个对象 —— 几十字的局部 setState 既便宜也不影响页面其它部分
  * （评论数、相关推荐之类都是独立的）。
  */
 import { useState } from 'react'
-import type { Game } from '@/types'
 import { useT } from '@/services/i18n'
 import { useLang } from '@/services/lang'
 import type { Lang } from '@/config/languages'
@@ -26,37 +30,42 @@ import { api, apiEnabled, ApiError } from '@/services/api'
 
 type Status = 'idle' | 'translating' | 'translated' | 'error'
 
-interface Props {
-  game: Game
+interface Props<T> {
+  /** 翻译接口路径。例如 `/api/games/<slug>/translate-description` 或 `/api/posts/<slug>/translate` */
+  endpoint: string
   /**
-   * 翻译完成回调：把这段文字塞回简介组件，覆盖原值。
+   * 翻译完成回调：把后端返回的完整响应交给父组件。
    * 即使这次是从缓存直接返回（cached: true），也会调一次 —— 父组件的覆盖状态
-   * 才是简介真正显示的内容，绕过它就只是骗 React 一次渲染。
+   * 才是真正显示的内容，绕过它就只是骗 React 一次渲染。
+   * 游戏侧通常 `(r) => setTranslatedDescription(r.text)`，
+   * 文章侧通常 `(r) => { setExcerpt(r.excerpt); setContent(r.content) }`。
    */
-  onTranslated: (text: string) => void
+  onTranslated: (data: T) => void
+  /** 是否显示按钮：默认 true。游戏用 needsTranslation()、文章用 needsPostTranslation() 算好后传进来 */
+  show?: boolean
   /** 当前 UI 语言 —— 通常页面里 useLang() 拿到 */
   lang?: Lang
 }
 
-export function TranslateButton({ game, onTranslated, lang: langProp }: Props) {
+// 不限 T 的形状：游戏返回 { text }、文章返回 { excerpt, content }，都不强制带 lang 字段
+export function TranslateButton<T>({ endpoint, onTranslated, show = true, lang: langProp }: Props<T>) {
   const t = useT()
   const ctxLang = useLang()
   const lang = langProp ?? ctxLang
   const [status, setStatus] = useState<Status>('idle')
   const [errorMsg, setErrorMsg] = useState<string>('')
 
+  if (!show) return null
+
   async function startTranslate() {
     if (!apiEnabled()) return
     setStatus('translating')
     setErrorMsg('')
     try {
-      const r = await api.post<{ lang: string; text: string; cached: boolean }>(
-        `/api/games/${encodeURIComponent(game.slug)}/translate-description`,
-        { lang },
-      )
-      onTranslated(r.text)
+      const r = await api.post<T>(endpoint, { lang })
+      onTranslated(r)
       setStatus('translated')
-      // 闪一下反馈后让按钮淡出 —— 父组件会因为 needsTranslation() 改成 false
+      // 闪一下反馈后让按钮淡出 —— 父组件会因为 show 改成 false
       // 而在下次渲染时不再挂这个按钮，但 1.5s 留个「✓ 已翻译」的视觉过渡，
       // 否则玩家会怀疑刚才那次点击没生效
       setTimeout(() => setStatus('idle'), 1500)

@@ -223,7 +223,13 @@ CREATE TABLE IF NOT EXISTS posts (
   slug        VARCHAR(120)  NOT NULL,
   title       VARCHAR(300)  NOT NULL,
   excerpt     TEXT          NULL,
+  -- 文章没有英文版（和游戏不同，post 整个就没出过多语言），按需翻译缓存全在这两个 JSON 列里。
+  -- excerpt 用作列表卡片预览，content 是详情页 Markdown 正文。后台改 excerpt / content 时清空缓存
+  -- （见 posts-repo.js），否则旧译文会和新的基准对不上。
+  -- 翻译按段落（双换行）分块写到 content_i18n[lang]（详见 server/src/translate.js 的 translateMarkdown）。
+  excerpt_i18n JSON         NULL,
   content     MEDIUMTEXT    NOT NULL,
+  content_i18n JSON         NULL,
   icon        VARCHAR(16)   NOT NULL DEFAULT '📝',
   author      VARCHAR(120)  NOT NULL DEFAULT '',
   `date`      DATE          NULL,
