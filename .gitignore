@@ -72,3 +72,9 @@ public/webretro
 # 进了仓库历史就很难彻底删干净，公开仓库更等于对外分发。
 public/bios/*
 !public/bios/HOWTO.md
+
+# Cloudflare 源站证书与私钥（Authenticated Origin Pulls 的客户端证书）
+# 2026-09-06 被 GitGuardian 抓到：origin.key 从 8/26 起就在跟踪列表里，
+# 随当天的 push 暴露。文件留在磁盘上（nginx 还要用），但永远不进 git。
+# 谁拿到这把私钥，就能冒充 Cloudflare 直连源站、绕开 WAF 和防刷。
+ssl/
