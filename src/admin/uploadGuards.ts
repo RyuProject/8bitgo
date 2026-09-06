@@ -22,7 +22,7 @@ export const human = (n: number) => (n < 1024 * 1024 ? `${(n / 1024).toFixed(0)}
  * ⚠️ 探测本身失败（Worker 不通、CORS 没配好）一律放行：它只是个提示，
  * 不该因为探测挂了就把上传功能也堵死。
  */
-export async function confirmUpload(key: string, file: File): Promise<boolean> {
+export async function confirmUpload(key: string, file: Blob): Promise<boolean> {
   const head = await headRom(key).catch(() => null)
   if (!head?.exists) return true
   if (head.size === file.size) {
@@ -115,4 +115,53 @@ export async function deleteRomObjects(keys: string[]): Promise<{ removed: strin
     }
   }
   return { removed, failed }
+}
+
+/* ---------------- 光盘镜像 ---------------- */
+
+/**
+ * 用光盘的平台。这类平台的「ROM」是几百 MB 到几 GB 的整张盘，
+ * 和卡带机那种几 MB 的文件不是一回事，上传前得多问一句。
+ */
+const DISC_PLATFORMS = new Set(['psx', 'ps2'])
+
+/** 超过这个大小就提醒一次。PS1 用 .chd 压完通常在这条线以下 */
+const DISC_WARN_BYTES = 700 * 1024 * 1024
+
+/**
+ * 上传光盘镜像前的格式与体积提醒。返回 false 表示管理员选择放弃。
+ *
+ * 三件事在这里说清楚，因为**上传之后再发现就晚了** —— 玩家那一侧要真的把这些字节
+ * 下载下来，几百 MB 的差别直接决定这款游戏能不能玩：
+ *
+ * 1. **裸 .bin/.cue 是最差的选择**：不压缩，而且是两个文件 —— 我们一个槽位只存一个对象，
+ *    单传 .cue 的话核心找不到数据轨，单传 .bin 则丢掉了音轨和分轨信息。
+ *    .chd 是无损压缩的单文件（CD 音轨常能压到三分之一），两个 PS1 核心都直接认。
+ * 2. **.iso 对 PS1 也不合适**：ISO9660 只装得下数据轨，带 CDDA 音轨的游戏
+ *    （很多 PS1 游戏的 BGM 就是音轨）会没有音乐。PS2 用 .iso 才是正常的。
+ * 3. **体积要让管理员心里有数**：这不是存储费的问题，是玩家开局要等多久的问题。
+ *
+ * ⚠️ 只提醒、不阻拦。压缩工具不是人人都有，先把游戏传上去能跑，比卡在这里强。
+ */
+export function confirmDiscImage(platform: string, file: File): boolean {
+  if (!DISC_PLATFORMS.has(platform)) return true
+  const ext = (file.name.match(/\.[a-z0-9]+$/i)?.[0] ?? '').toLowerCase()
+  const notes: string[] = []
+
+  if (ext === '.cue') {
+    notes.push('.cue 只是一张目录清单，真正的数据在同名 .bin 里 —— 单传它核心一定报找不到轨道。')
+  } else if (ext === '.bin' || ext === '.img') {
+    notes.push('裸 .bin/.img 不压缩，而且丢掉了 .cue 里的分轨信息，多轨游戏会没有音乐。')
+  } else if (ext === '.iso' && platform === 'psx') {
+    notes.push('.iso 只装得下数据轨，PS1 上带 CDDA 音轨的游戏会整局没有 BGM。')
+  }
+
+  if (notes.length) {
+    notes.push('建议先用 chdman（MAME 自带）转成 .chd：`chdman createcd -i 游戏.cue -o 游戏.chd`。无损、单文件，两个 PS1 核心都认。')
+  }
+  if (file.size > DISC_WARN_BYTES) {
+    notes.push(`这份镜像有 ${human(file.size)}，玩家每次开局都要下这么多。转成 .chd 通常能省掉一半以上。`)
+  }
+  if (!notes.length) return true
+  return window.confirm(`${file.name}\n\n${notes.join('\n\n')}\n\n仍然按现在这份上传吗？`)
 }

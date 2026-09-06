@@ -23,6 +23,14 @@
  */
 export const ENABLED_PLATFORM_IDS = Object.freeze([
   'nes', 'flash', 'html5', 'gba', 'gb', 'gbc', 'java', 'arcade', 'dos',
+  // 光盘平台。加进来是安全的：首页入口按「有几款游戏」过滤（count > 0），
+  // sitemap 也只收数据库里真有游戏的那些平台（见 pickTaxonomyRows），
+  // 所以在传第一款游戏之前，这两个平台在前台是完全看不见的，不会留空页面。
+  'psx',
+  // ⚠️ PS2 是**实验性**的，而且需要自建 Play!（VITE_PLAY_PATH）才跑得起来。
+  // 没自建时平台仍然可见但一款也玩不了 —— 所以在部署 Play.js/Play.wasm 之前
+  // 别往这个平台上传游戏。详见 src/emulator/adapters/play.ts。
+  'ps2',
 ])
 
 export function isPlatformEnabledId(id) {

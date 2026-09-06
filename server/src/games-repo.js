@@ -8,8 +8,9 @@
  * WHERE game_id IN (...)，不会变成每款查三次。
  */
 import { query, queryOne, withTransaction } from './db.js'
-import { gameRowToApi, gameApiToRow, romsOf, GENERIC_ROM_LANG } from './mappers.js'
+import { gameRowToApi, gameApiToRow, dateTimeIso, romsOf, GENERIC_ROM_LANG } from './mappers.js'
 import { buildGameTokens, queryTerms, tokenMatchSql, normalize, tokenize } from './search.js'
+import { BAYES_SCORE_SQL } from './ratings-repo.js'
 
 /** 列表页每页最多给多少条，挡住 ?pageSize=100000 这种请求 */
 const MAX_PAGE_SIZE = 100
@@ -65,6 +66,14 @@ function orderBy(sort) {
       return 'COALESCE(g.added_at, DATE(g.created_at)) DESC, g.id DESC'
     case 'name':
       return 'g.title ASC, g.id ASC'
+    case 'rating':
+      /**
+       * 贝叶斯加权分，不是直接的平均分（见 ratings-repo.js 的 PRIOR_*）。
+       * 直接按平均分排，一款只有 1 票 5 分的冷门游戏会压在 500 票 4.8 分的上面 ——
+       * 评分排序上线第一天就会变成「谁的样本少谁靠前」，等于给刷分开了正门。
+       * 同分之间按票数、再按游玩次数兜底，保证翻页顺序稳定。
+       */
+      return `${BAYES_SCORE_SQL} DESC, g.rating_weight DESC, g.plays DESC, g.id DESC`
     case 'home':
       // 首页精选位：后台给的序号说了算。没给序号的排在最后，
       // 同号之间再按游玩次数，保证顺序不会每次查询都漂
@@ -335,12 +344,42 @@ export async function listHomePicks(limit) {
   return attachRelations(rows)
 }
 
+/**
+ * 这款游戏最新一条**可见**评论的时间（ISO 8601）；一条都没有就返回空串。
+ *
+ * 用途只有一个：头条时间因子的 `bytedance:lrDate_time`，平台的字段解释里写的是
+ * **「内容最新回复时间」**，不是内容更新时间。以前那里填的是 updated_time 的值，
+ * 两个标签永远一模一样，等于把「有没有人回复、最后一条什么时候」谎报了一遍。
+ *
+ * 可见的定义必须和前台评论列表完全一致（routes/comments.js 的 visible）：
+ * `hidden = 0 AND deleted_at IS NULL` —— 管理员隐藏的和作者自己删的都不算数，
+ * 否则会出现「页面上一条回复都看不到，头条那边却显示昨天有新回复」。
+ * 走 idx_cmt_game_time (game_id, created_at DESC) 这个索引，是笔很便宜的查询。
+ *
+ * 整段用 try 兜住：game_comments 是后来 migrate 出来的表，没建表的部署上
+ * 这里报错不该把整个详情页拖挂 —— 少一个 meta 标签而已。
+ */
+async function latestVisibleCommentIso(gameId) {
+  try {
+    const row = await queryOne(
+      'SELECT MAX(created_at) AS latest FROM game_comments WHERE game_id = ? AND hidden = 0 AND deleted_at IS NULL',
+      [gameId],
+    )
+    return dateTimeIso(row?.latest)
+  } catch {
+    return ''
+  }
+}
+
 /** 按 slug 取单款游戏（含关联数据）；不存在返回 undefined */
 export async function getGameBySlug(slug) {
   const row = await queryOne('SELECT * FROM games WHERE slug = ?', [slug])
   if (!row) return undefined
   const [g] = await attachRelations([row])
-  return g
+  // 只有详情页要这个字段，所以不放进 attachRelations —— 那条路列表页也走，
+  // 一页 24 条就会变成 24 次多余的聚合查询。
+  const lastCommentAt = await latestVisibleCommentIso(row.id)
+  return lastCommentAt ? { ...g, lastCommentAt } : g
 }
 
 /** 按一组 slug 取游戏，返回顺序与传入的 slugs 一致（用于收藏 / 最近列表） */

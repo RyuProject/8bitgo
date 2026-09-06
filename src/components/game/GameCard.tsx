@@ -5,6 +5,7 @@ import { genreMap } from '@/data/genres'
 import { cx, formatCount } from '@/lib/format'
 import { GameCover } from './GameCover'
 import { Badge, CoinBadge } from '@/components/ui/Badge'
+import { RatingText } from './StarRating'
 import { useLang } from '@/services/lang'
 import { useT } from '@/services/i18n'
 import { genreLabel, gameTitle } from '@/services/i18nData'
@@ -12,7 +13,7 @@ import { genreLabel, gameTitle } from '@/services/i18nData'
 interface Props {
   game: Game
   className?: string
-  /** 列表页可改成方形封面；其他位置继续沿用横版比例。 */
+  /** 封面比例：默认 1:1 方形；部分列表可显式传 landscape 保持横版。 */
   coverRatio?: 'landscape' | 'square'
   /** 显示排名角标 */
   rank?: number
@@ -20,7 +21,7 @@ interface Props {
 }
 
 /** 游戏卡片（封面 + 标题 + 元信息） */
-export function GameCard({ game, className, coverRatio = 'landscape', rank, showCoin = true }: Props) {
+export function GameCard({ game, className, coverRatio = 'square', rank, showCoin = true }: Props) {
   const lang = useLang()
   const t = useT()
   const platform = platformMap[game.platform]
@@ -70,8 +71,12 @@ export function GameCard({ game, className, coverRatio = 'landscape', rank, show
           <span className="truncate">
             {platform.shortName} · {genreLabel(t, game.genres[0], genre?.name)}
           </span>
-          {/* 游玩次数是真实统计的，还没人玩过就什么都不显示 —— 挂一个「🔥 0」既难看又没意义 */}
-          {game.plays > 0 && <span className="shrink-0">🔥 {formatCount(game.plays)}</span>}
+          {/* 评分和游玩次数都是真实统计的，没有就什么都不显示 ——
+              挂一个「⭐ 0.0」或「🔥 0」既难看又会被读成「评价很差 / 没人玩」 */}
+          <span className="flex shrink-0 items-center gap-1.5">
+            <RatingText rating={game.rating} count={game.ratingCount} />
+            {game.plays > 0 && <span>🔥 {formatCount(game.plays)}</span>}
+          </span>
         </div>
         {showCoin && (
           <div className="flex items-center justify-end gap-2">

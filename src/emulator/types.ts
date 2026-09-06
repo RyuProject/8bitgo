@@ -9,6 +9,7 @@
  *   J2ME        Java 手机游戏 (.jar) —— 需自托管，见 adapters/j2me.ts
  *   js-dos      DOS 游戏 —— DOSBox 的浏览器移植，见 adapters/jsdos.ts
  *   webretro    任天堂 DS（melonDS）—— RetroArch 的 WASM 移植，需自托管，见 adapters/webretro.ts
+ *   Play!       PlayStation 2 —— **实验性**，需自托管，见 adapters/play.ts
  *   Cloud       云端联机：游戏跑在 cloud-game 服务器上，见 adapters/cloudgame.ts
  *
  * 联机有两条路：默认走 EmulatorJS 自带的 P2P netplay（房主的浏览器跑游戏，零服务器成本），
@@ -24,7 +25,7 @@ import type { CloudSession } from './adapters/cloudgame'
 import type { NetplaySession } from './adapters/emulatorjs'
 import type { LiveSession } from './adapters/liveview'
 
-export type RuntimeId = 'emulatorjs' | 'ruffle' | 'html5' | 'jsnes' | 'j2me' | 'jsdos' | 'webretro' | 'cloudgame' | 'liveview'
+export type RuntimeId = 'emulatorjs' | 'ruffle' | 'html5' | 'jsnes' | 'j2me' | 'jsdos' | 'webretro' | 'play' | 'cloudgame' | 'liveview'
 
 export interface MountOptions {
   /** 平台 id（运行时据此选择核心等参数） */
@@ -162,6 +163,14 @@ export interface LoadProgress {
   loaded?: number
   /** 总字节数。服务器没给 Content-Length、或响应被压缩过时没有 */
   total?: number
+  /**
+   * 这一帧的字节来自本地缓存，没有走网络。
+   *
+   * 只有光盘那条路会报（见 adapters/emulatorjs.ts 的 prepareRemoteDiscRom）。
+   * 加载遮罩靠它把「本局需下载 620 MB」换成「已缓存，无需下载」——
+   * 几百 MB 的盘第二次开局是瞬间的，不说一声玩家只会以为进度条坏了。
+   */
+  cached?: boolean
 }
 
 /** 解析运行时时能用到的线索 */
@@ -409,6 +418,14 @@ export interface Runtime {
   supports: (platform: PlatformId) => boolean
   /** 该平台下用于显示的「核心 / 引擎」名 */
   engineLabel: (platform: PlatformId) => string
-  /** 在容器内挂载并开始运行，返回控制句柄（含销毁函数与能力集合） */
-  mount: (container: HTMLElement, options: MountOptions) => RuntimeHandle
 }
+
+/**
+ * 在容器内挂载并开始运行，返回控制句柄（含销毁函数与能力集合）。
+ *
+ * ⚠️ 它**不在** `Runtime` 里 —— 这是分包的关键。`Runtime` 现在只剩元数据
+ * （见 runtimeMeta.ts），任何页面拿它做「该用哪个引擎」的判断都不会把引擎实现拖进来。
+ * 真正的实现由 `runtimes.ts` 的 `mountOf(id)` 提供，而那个文件只被
+ * EmulatorPlayer 引用 —— 后者是懒加载的。
+ */
+export type RuntimeMount = (container: HTMLElement, options: MountOptions) => RuntimeHandle

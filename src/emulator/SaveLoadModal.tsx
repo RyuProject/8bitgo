@@ -53,8 +53,8 @@ interface Props {
 
 type ToolsT = ReturnType<typeof useT>['player']['tools']
 
-/** 动作的中文名，只用在「你把 X 的快捷键抢走了」那句话里 */
-function actionLabel(a: HotkeyAction, tt: ToolsT): string {
+/** 动作的名字，只用在「你把 X 的快捷键抢走了」那句话里。红白机改键那边也要用 */
+export function actionLabel(a: HotkeyAction, tt: ToolsT): string {
   const [what, where] = a.split(':')
   const place = where === 'cloud' ? tt.saveCardCloud : where === 'local' ? tt.saveCardLocal : tt.saveCardFile
   return `${place} · ${what === 'save' ? tt.save : tt.load}`

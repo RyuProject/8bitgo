@@ -14,8 +14,10 @@ import {
   gameDetailUrls,
   normalizeSiteUrls,
   postChangeUrls,
+  postDetailUrls,
   publicSiteUrl,
   resolveLanguages,
+  taxonomyDetailUrls,
 } from './site-urls.js'
 
 export const DEFAULT_BAIDU_ENDPOINT = 'http://data.zz.baidu.com/urls'
@@ -90,6 +92,22 @@ export function gameBaiduDetailUrls(slug, siteUrl = publicSiteUrl(), languages =
 /** 一篇文章变更时要推的 URL（详情 + 博客列表，仅中文）。 */
 export function postBaiduUrls(post, siteUrl = publicSiteUrl(), languages = DEFAULT_BAIDU_LANGUAGES) {
   return postChangeUrls(post, siteUrl, languages)
+}
+
+/** 补交用：只要文章详情页。理由同上，配额有限时列表页不值这一条。 */
+export function postBaiduDetailUrls(slug, siteUrl = publicSiteUrl(), languages = DEFAULT_BAIDU_LANGUAGES) {
+  return postDetailUrls(slug, siteUrl, languages)
+}
+
+/**
+ * 补交用：平台页 / 类型页。
+ *
+ * 它们在配额里排最后（详情页 > 文章 > 聚合页），但**不能不推** ——
+ * 这两类是主要的搜索入口，有独立的 H1、正文和结构化数据，
+ * 而且一款新游戏上架时它们的内容确实变了。
+ */
+export function taxonomyBaiduUrls(rows, siteUrl = publicSiteUrl(), languages = DEFAULT_BAIDU_LANGUAGES) {
+  return taxonomyDetailUrls(rows, siteUrl, languages)
 }
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))

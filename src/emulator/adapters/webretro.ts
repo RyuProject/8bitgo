@@ -38,18 +38,14 @@
  * ⚠️ 远程 ROM 是 iframe 内的 XHR 去取的，对象存储那边必须允许本站跨域，
  *    否则会走到「加载失败」分支。同源的 /j2me/jar/ 那种代理不适用于这里。
  */
-import type { PlatformId } from '@/types'
-import type { Capability, CaptureSources, MountOptions, Runtime, RuntimeHandle } from '../types'
+import type { Capability, CaptureSources, MountOptions, RuntimeHandle } from '../types'
 import { getT, fmt } from '@/services/i18n'
 import { loadGameBytes } from '../romLoader'
 import { focusFrame, frameGamepads } from '../frameFocus'
 import { prepareNdsRom } from '@/lib/romValidation'
 
-export const WEBRETRO_PATH: string = (() => {
-  const p = import.meta.env.VITE_WEBRETRO_PATH || ''
-  if (!p) return ''
-  return p.endsWith('/') ? p : `${p}/`
-})()
+export { WEBRETRO_PATH } from '../paths'
+import { WEBRETRO_PATH, webretroCoreFor as coreFor } from '../paths'
 
 /**
  * 平台 → libretro 核心名。
@@ -57,44 +53,9 @@ export const WEBRETRO_PATH: string = (() => {
  * 这里列的都是 webretro 仓库 installedCores 里确实带了 wasm 的核心，
  * 也就是 `npm run webretro`（不加 --cores）之后本地一定有的。
  */
-const PLATFORM_CORES: Partial<Record<PlatformId, string>> = {
-  nds: 'melonds',
-  n64: 'mupen64plus_next',
-  psx: 'mednafen_psx_hw',
-  nes: 'nestopia',
-  snes: 'snes9x',
-  gba: 'mgba',
-  gb: 'mgba',
-  segaMD: 'genesis_plus_gx',
-  ws: 'mednafen_wswan',
-}
 
-/**
- * 实际交给 webretro 跑的平台。
- *
- * 上面 PLATFORM_CORES 列了九个平台，这里却只放开 NDS —— 不是漏了，是刻意的：
- * **联机（netplay）是 EmulatorJS 独有的**（房主浏览器跑游戏、画面经 WebRTC 推给
- * 访客，见 adapters/emulatorjs.ts）。webretro 没有这套东西。把 NES / SNES / GBA
- * 这些平台改判给 webretro，等于悄无声息地把它们的联机功能关掉。
- *
- * 想再放开某个平台，先确认该平台的联机不重要，再把 id 加进这个集合。
- */
-const ENABLED_PLATFORMS = new Set<PlatformId>(['nds'])
 
-const coreFor = (platform: PlatformId): string | undefined =>
-  ENABLED_PLATFORMS.has(platform) ? PLATFORM_CORES[platform] : undefined
 
-/** 核心名 → 展示名，跟 webretro 的 coreNames 保持一致 */
-const CORE_LABELS: Record<string, string> = {
-  melonds: 'melonDS',
-  mupen64plus_next: 'Mupen64Plus-Next',
-  mednafen_psx_hw: 'Beetle PSX HW',
-  nestopia: 'Nestopia UE',
-  snes9x: 'Snes9x',
-  mgba: 'mGBA',
-  genesis_plus_gx: 'Genesis Plus GX',
-  mednafen_wswan: 'Beetle WonderSwan',
-}
 
 /** 轮询 iframe 内部加载状态的间隔。200ms 足够让进度条走得顺，也不至于空转太凶 */
 const POLL_MS = 200
@@ -115,7 +76,7 @@ function buildUrl(core: string, romUrl: string, romName: string): string {
   return `${WEBRETRO_PATH}index.html?${query}&noautorefocus`
 }
 
-function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
+export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const { destroy, iframe } = mountRaw(container, options)
   // 暂停 / 存档 / 音量都在 RetroArch 自己的菜单里（iframe 内按 F1 打开，
   // F2 存档、F3 读档、F4 截图），外层工具栏不重复提供，免得两套状态对不上。
@@ -327,23 +288,3 @@ function mountRaw(container: HTMLElement, options: MountOptions): RawMount {
   }
 }
 
-export const webretroRuntime: Runtime = {
-  id: 'webretro',
-  name: 'webretro',
-  get description() {
-    return getT().runtime.webretroDesc
-  },
-  // .srl 是 NDS ROM 的另一种后缀（webretro 的 fileExts 里就这么写的）
-  extensions: ['nds', 'srl', 'zip'],
-  // 必须高于 EmulatorJS 的 5，才能在 NDS 上顶掉它；
-  // 低于 jsdos(25) / ruffle(20) / jsnes(20)，不去碰它们的地盘（supports 也拦着）
-  priority: 15,
-  // 没装 / 没配置就当作不存在，NDS 会自动退回 EmulatorJS
-  available: () => Boolean(WEBRETRO_PATH),
-  supports: (platform) => Boolean(coreFor(platform)),
-  engineLabel: (platform) => {
-    const core = coreFor(platform)
-    return core ? (CORE_LABELS[core] ?? core) : '—'
-  },
-  mount,
-}

@@ -4,6 +4,7 @@ import { HScroll } from '@/components/ui/HScroll'
 import { Accordion } from '@/components/ui/Accordion'
 import { Button } from '@/components/ui/Button'
 import { GameCard } from '@/components/game/GameCard'
+import { CollectionCard } from '@/components/game/CollectionCard'
 import { GameCardWide } from '@/components/game/GameCardWide'
 import { PlatformCard } from '@/components/game/PlatformCard'
 import { GameCover } from '@/components/game/GameCover'
@@ -16,7 +17,7 @@ import { useT, fmt } from '@/services/i18n'
 import { genreLabel, gameTitle } from '@/services/i18nData'
 import type { Facets } from '@/services/pageData'
 import type { Translation } from '@/locales'
-import type { Game, Genre, GenreId, Platform } from '@/types'
+import type { Collection, Game, Genre, GenreId, Platform } from '@/types'
 
 /*
  * 这些区块一律不自己取数，数据由 HomePage 一次拉好再传进来。
@@ -125,6 +126,38 @@ export function TogetherSection({ games }: { games: Game[] }) {
           <GameCard key={g.slug} game={g} />
         ))}
       </HScroll>
+    </section>
+  )
+}
+
+/* ---------------- 合集 ---------------- */
+
+/**
+ * 玩家自己整理的合集。
+ *
+ * 和别的首页栏目不一样，这里用**网格**而不是横向轨道（HScroll）：合集卡片本身
+ * 已经是四宫格拼出来的，横着滚会让一屏里出现十几张小封面，看起来像一堵碎图墙。
+ * 一行摆满就够了，剩下的交给「查看全部」。
+ *
+ * 一个合集都没有时整栏不画 —— 空栏目会让首页看起来是坏的，而这一栏在站点刚上线时
+ * 本来就该是空的。
+ */
+export function CollectionsSection({ collections }: { collections: Collection[] }) {
+  const t = useT()
+  if (!collections.length) return null
+  return (
+    <section className="container-x">
+      <SectionHeader
+        title={t.collections.title}
+        subtitle={t.collections.subtitle}
+        icon="📚"
+        moreTo="/collections"
+      />
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+        {collections.slice(0, 4).map((c) => (
+          <CollectionCard key={c.id} collection={c} />
+        ))}
+      </div>
     </section>
   )
 }

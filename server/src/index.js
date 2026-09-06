@@ -4,6 +4,7 @@ import { createServer } from 'node:http'
 import cors from 'cors'
 import { ping } from './db.js'
 import { ssrAvailable, renderPage, CLIENT_DIR } from './ssr.js'
+import { normalizeTrailingSlash } from './url-normalize.js'
 import { playShell } from './routes/play.js'
 import { j2meJarProxy, uploadJar, releaseJar, keepaliveJar, startSweeper, MAX_BYTES, TTL_MS } from './j2me.js'
 import { ADMIN_AUTH_DISABLED } from './auth.js'
@@ -12,6 +13,8 @@ import { authRouter } from './routes/auth.js'
 import { gamesRouter } from './routes/games.js'
 import { postsRouter } from './routes/posts.js'
 import { commentsRouter } from './routes/comments.js'
+import { ratingsRouter } from './routes/ratings.js'
+import { collectionsRouter } from './routes/collections.js'
 import { meRouter } from './routes/me.js'
 import { usersRouter } from './routes/users.js'
 import { adminRouter } from './routes/admin.js'
@@ -22,10 +25,11 @@ import { developersRouter } from './routes/developers.js'
 import { checkSchema } from './schema-check.js'
 import { savesRouter } from './routes/saves.js'
 import { attachNetplay } from './netplay.js'
-import { attachLive, liveRoom, liveRooms } from './live.js'
+import { attachLive, liveRoom, liveRooms, subscribeLiveRooms } from './live.js'
 import { iceRouter } from './routes/ice.js'
 import { diagRouter } from './routes/diag.js'
-import { mailProvider } from './mail.js'
+import { submitGameRouter } from './routes/submit-game.js'
+import { mailProvider, submitMailProvider } from './mail.js'
 import { gameSitemap, postSitemap, sitemapIndex, taxonomySitemap } from './routes/sitemaps.js'
 import { logSearchPushStatus } from './search-push.js'
 
@@ -89,6 +93,9 @@ app.use('/api/games', gamesRouter)
 app.use('/api/posts', postsRouter)
 // 游戏评论：读公开、发表必须登录、后台可隐藏（见 routes/comments.js）
 app.use('/api/comments', commentsRouter)
+// 游戏评分：1~5 星，登录 1.0 / 匿名 0.5 权重（见 routes/ratings.js）
+app.use('/api/ratings', ratingsRouter)
+app.use('/api/collections', collectionsRouter)
 app.use('/api/me', meRouter)
 app.use('/api/users', usersRouter)
 app.use('/api/admin', adminRouter)
@@ -103,6 +110,8 @@ app.use('/api/saves', savesRouter)
 app.use('/api/netplay/ice', iceRouter)
 // 自查：房间卡片的国旗 / 网络格子为什么是 ❓（见 routes/diag.js）
 app.use('/api/diag', diagRouter)
+// 用户提交游戏：登录后上传 ROM（multipart），ROM 作为邮件附件发出，不落存储
+app.use('/api/submit-game', submitGameRouter)
 
 // 游戏 sitemap 直接读数据库。放在静态资源之前，后台刚上架的游戏不必等下次构建才出现。
 app.get('/sitemaps/games-:language.xml', gameSitemap)
@@ -130,6 +139,40 @@ app.get('/api/live/rooms/:roomId', (req, res) => {
   res.json(room)
 })
 
+/**
+ * 直播列表的事件流（SSE）。取代大厅那个 8 秒一次的轮询。
+ *
+ * 侧边栏挂在每个页面上，轮询等于每个在线访客都在持续打请求，而列表绝大多数时候没变。
+ * 和 netplay 的 /api/netplay/events 是同一套做法（那边更早改的）。
+ * 用 SSE 不用 WebSocket：单向推送够用，浏览器自带断线重连，也不用再引依赖。
+ */
+app.get('/api/live/events', (req, res) => {
+  res.set({
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    // Nginx 默认缓冲响应，缓冲住 SSE 就完全不推了
+    'X-Accel-Buffering': 'no',
+  })
+  res.flushHeaders?.()
+
+  const unsubscribe = subscribeLiveRooms(res)
+  const beat = setInterval(() => {
+    try {
+      res.write(': ping\n\n')
+    } catch {
+      clearInterval(beat)
+      unsubscribe()
+    }
+  }, 25_000)
+  beat.unref?.()
+
+  req.on('close', () => {
+    clearInterval(beat)
+    unsubscribe()
+  })
+})
+
 /* ---------------- J2ME 临时上传 ---------------- */
 // 请求体就是 jar 原始字节，用 express.raw 收，省掉 multipart 依赖。
 // 上限在这里也卡一道，避免超大请求先被完整读进内存再拒绝。
@@ -142,7 +185,10 @@ app.post('/api/j2me/keepalive', express.text({ type: '*/*', limit: '1kb' }), kee
 app.get('/api/j2me/config', (_req, res) => res.json({ ttlMs: TTL_MS }))
 
 /* ---------------- 前端：静态资源 + 服务端渲染 ---------------- */
+
 if (ssrAvailable()) {
+  app.use(normalizeTrailingSlash)
+
   // 带哈希的构建产物可以长期缓存；index.html 不能缓存（每次都要走 SSR）
   app.use(
     express.static(CLIENT_DIR, {
@@ -182,6 +228,10 @@ app.use((err, _req, res, _next) => {
   // body-parser 的超限错误要回 413，不然前端只看到一个含糊的 500
   if (err?.type === 'entity.too.large' || err?.status === 413) {
     return res.status(413).json({ error: '文件过大' })
+  }
+  // multer 单文件超限：ROM 上传走 multipart，超限是常见错误，给明确提示
+  if (err?.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({ error: '文件过大：单个 ROM 不能超过 25MB' })
   }
   // JSON 解析失败等客户端错误，body-parser 给的是 4xx，别一律降级成 500
   const status = Number(err?.status || err?.statusCode || 0)
@@ -267,6 +317,25 @@ httpServer.listen(PORT, () => {
     smtp: `[mail] 验证码走 SMTP：${process.env.SMTP_HOST}，发件 ${from}`,
   }
   console.log(MAIL_LABEL[mailProvider()] || '[mail] ⚠️  未配置发信通道，验证码只会打印到日志（正式环境请配 RESEND_API_KEY + MAIL_FROM）')
+  /**
+   * 「提交游戏」那封信可以走另一条通路（SUBMIT_MAIL_PROVIDER）。同样要在启动时说出来 ——
+   * 不说的话，「我明明配了 SMTP」和「信还是从 Resend 发出去的」这两件事永远对不上号，
+   * 而且只有在附件超过 Resend 上限、整封发不出去的时候才会暴露。
+   */
+  try {
+    const sp = submitMailProvider()
+    const to = process.env.SUBMIT_GAME_TO_EMAIL || ''
+    const toLabel = to ? to : `${from}（⚠️ 未设 SUBMIT_GAME_TO_EMAIL，退回用发件地址，多半收不到）`
+    if (sp === 'none') {
+      console.log('[mail] 玩家提交游戏：未配置发信通道，只会打印到日志')
+    } else if (sp === 'cloudflare') {
+      console.warn(`[mail] ⚠️  玩家提交游戏走 Cloudflare Email Service —— 这条通路不支持附件，带 ROM 文件的提交会被拒。请配 SMTP 并设 SUBMIT_MAIL_PROVIDER=smtp`)
+    } else {
+      console.log(`[mail] 玩家提交游戏走 ${sp === 'smtp' ? `SMTP：${process.env.SMTP_HOST}` : 'Resend'}，收件 ${toLabel}`)
+    }
+  } catch (e) {
+    console.error(`[mail] ⚠️  SUBMIT_MAIL_PROVIDER 配置有误，提交游戏会失败：${e.message}`)
+  }
   if (ADMIN_AUTH_DISABLED) {
     console.warn('')
     console.warn('  ****************************************************************')

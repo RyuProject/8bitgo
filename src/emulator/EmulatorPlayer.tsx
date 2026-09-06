@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react'
 import type { DosBackend, DosWindowsVersion, GenreId, Platform, PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
-import { formatBytes, isRomFileAccepted } from '@/lib/emulator'
+import { formatBytes, formatSpeed, isRomFileAccepted } from '@/lib/emulator'
 import { detectRom, describeDetection } from './detect'
 import { resolveRuntime, runtimesFor, extOf } from './registry'
 import type { Capability, LoadPhase, Runtime, RuntimeHandle, RuntimeId, StageMode } from './types'
-import { createOverallRatio, LOAD_PHASE_RANGE, windowsGuestStartupBudgetMs } from './loadProgress'
+import { createOverallRatio, createSpeedMeter, liftRatio, LOAD_PHASE_RANGE, windowsGuestStartupBudgetMs } from './loadProgress'
+import { isTyping } from './hotkeyBridge'
 import { shouldCaptureMouse } from './mouseCapture'
 import { platformBiosUrlSync } from '@/services/platformBios'
 import { EmulatorTools } from './EmulatorTools'
@@ -13,9 +14,17 @@ import { TouchPad } from './TouchPad'
 import { LiveControls } from './LiveControls'
 import { MatchControls } from './MatchControls'
 import { matchLocalArcadeHack } from './arcadeHack'
-import { liveViewRuntime, type LiveSession, type LiveViewState } from './adapters/liveview'
-import { emulatorJsRuntime, p2pPlayable, type NetplaySession } from './adapters/emulatorjs'
-import { cloudGameRuntime, cloudPlayable, type CloudSession, type CloudState } from './adapters/cloudgame'
+import type { LiveSession, LiveViewState } from './adapters/liveview'
+import type { NetplaySession } from './adapters/emulatorjs'
+import type { CloudSession, CloudState } from './adapters/cloudgame'
+import { p2pPlayable, cloudPlayable } from './paths'
+import { cloudGameMeta, emulatorJsMeta, liveViewMeta } from './runtimeMeta'
+/**
+ * 挂载实现。**只有这里引它** —— runtimes.ts 是唯一静态引入九个适配器的地方，
+ * 而本组件由页面懒加载（见 PlayerChunk.tsx），所以引擎代码不进主包。
+ * 「该用哪个引擎」的解析仍然走轻的 registry + runtimeMeta。
+ */
+import { mountOf } from './runtimes'
 import { cx } from '@/lib/format'
 import { Button, buttonClasses } from '@/components/ui/Button'
 import { useShell } from '@/components/layout/ShellContext'
@@ -58,6 +67,16 @@ const LOAD_PHASE_DURATION_MS: Record<Exclude<LoadPhase, 'starting'>, number> = {
   rom: 45_000,
 }
 const LOAD_PROGRESS_CEILING = 0.99
+/** 阶段的先后顺序。进度时钟只能顺着它往前走，不能倒回去 */
+const PHASE_ORDER: LoadPhase[] = ['engine', 'assets', 'rom', 'starting']
+
+/**
+ * 大到值得在加载界面上专门说一句「本局需下载 XXX」的门槛。
+ *
+ * 64MB：卡带机 ROM 全在这条线以下（GBA 最大 32MB，NDS 也就几十 MB），
+ * 光盘镜像全在这条线以上。所以这一行只会出现在真该等的时候。
+ */
+const DISC_NOTICE_BYTES = 64 * 1024 * 1024
 /** 自动重试只做一次：网络抖动能自愈，坏 ROM 也不会陷入无限刷新。 */
 const AUTO_RETRY_LIMIT = 1
 
@@ -422,6 +441,38 @@ export function EmulatorPlayer({
    */
   const [loadRatio, setLoadRatio] = useState<number | null>(null)
   const overallRatio = useRef(createOverallRatio())
+  /** 供 begin() 读当前百分比 —— 它可能从过期闭包里被调用，直接读 state 会拿到旧值 */
+  const loadRatioRef = useRef<number | null>(null)
+  loadRatioRef.current = loadRatio
+  /**
+   * 这一轮进度的**起点**。
+   *
+   * 自动重试和换引擎都属于「同一次开始游戏」，播放器会保留玩家已经看到的百分比。
+   * 但保留之后，新一轮的进度是从 0 重算的，被 `Math.max(已显示, 新算的)` 整段吃掉 ——
+   * 条子会在整个第二次下载期间纹丝不动（和「卡在 80%」是同一种病）。
+   * 所以新一轮要整体压进 [floor, 1]：从保留下来的百分比继续往前爬。
+   * 合成器和视觉计时器**必须用同一个 floor**，只改一边等于没改。
+   */
+  const progressFloor = useRef(0)
+  /**
+   * 下载速度（字节/秒），显示在百分比后面。
+   *
+   * 存在的理由和进度条本身一样：让「下得慢」和「卡死了」在视觉上分开。
+   * 一个 40MB 的核心在 200KB/s 的网络上要三分多钟，期间进度条几乎不动 ——
+   * 有这个读数玩家就知道它还在走；没有的话只会以为坏了然后刷新重来（重来更慢）。
+   */
+  const speedMeter = useRef(createSpeedMeter())
+  const [loadSpeed, setLoadSpeed] = useState(0)
+  /**
+   * 「这一局要下多少」。
+   *
+   * 只有光盘平台报得出来（PS1 的 prepareRemoteDiscRom、PS2 的 Play! 适配器）——
+   * 别的平台 ROM 就几 MB，说一句「需下载 3 MB」纯属噪音，所以下面还有个体积门槛。
+   *
+   * bytes = 0 表示这一局不用下（命中本地缓存，或者 PS2 那种按需读盘的）。
+   * 这一条不能省：几百 MB 的盘第二次开局是瞬间的，不说一声玩家只会以为进度条坏了。
+   */
+  const [discSize, setDiscSize] = useState<{ bytes: number; cached: boolean } | null>(null)
   /** 当前视觉阶段的起点；真实回调停顿时，计时兜底从这里继续向前走。 */
   const progressClock = useRef<{ phase: LoadPhase; startedAt: number }>({ phase: 'engine', startedAt: Date.now() })
   const [caps, setCaps] = useState<Set<Capability>>(() => new Set())
@@ -671,6 +722,20 @@ export function EmulatorPlayer({
   /** 看直播：观众人数与直播标题 */
   const [liveViewers, setLiveViewers] = useState(0)
   const [liveState, setLiveState] = useState<LiveViewState | null>(null)
+  /**
+   * 主播切到后台了 —— 画面是**冻结**不是断开。
+   * 和 liveState 分开存：状态机那边只能报成 host-away，而「掉线了等它回来」
+   * 和「切到后台画面暂停」对观众来说是两件事，措辞不能混。
+   */
+  const [liveFrozen, setLiveFrozen] = useState(false)
+  /**
+   * 观众这一侧的链路判断（见 adapters/liveview.ts 的 LinkQuality）。
+   *
+   * 只在判断**不是 ok** 时才留着 —— 一切正常的时候观众席徽章上不该多一格字。
+   * 存的是 verdict 而不是整个统计：界面上要说的就是「谁的问题」，
+   * 帧率和丢包率是给控制台看的。
+   */
+  const [liveLink, setLiveLink] = useState<'local' | 'host' | null>(null)
 
   // 云端 ROM 也按其文件扩展名选引擎；还没拿到地址时退回平台默认
   const pageRuntime = resolveRuntime({ platform: platform.id, ext: extOf(romUrl) })
@@ -687,21 +752,57 @@ export function EmulatorPlayer({
   ) => {
     sessionCounter.current += 1
     setSession({ id: sessionCounter.current, game, platform: targetPlatform, runtime, ...extra })
+    /*
+      自动重试、以及 mapper 认不出之后换引擎（ruledOut），都仍是**同一次开始游戏**：
+      保留玩家已经看到的进度，避免失败瞬间从高位跳回 0%，看起来像整个加载被推倒重来。
+      玩家主动开的新一局才从头显示。
+
+      ⚠️ 保留百分比就必须同时抬高 floor，否则条子会冻在那个数上不动 ——
+      见 progressFloor 的注释。以前只做了前半件事。
+    */
+    const carryOver = Boolean(extra?.retryAttempt) || Boolean(extra?.ruledOut?.length)
+    progressFloor.current = carryOver ? (loadRatioRef.current ?? 0) : 0
     // 上一局的进度必须清掉，否则新会话的遮罩会先闪一下上次的 100%。
     // 合成器也要换一个新的：它记着「已显示的最大值」，不换的话新一局会被上一局的 100% 卡住
-    overallRatio.current = createOverallRatio()
+    overallRatio.current = createOverallRatio(progressFloor.current)
+    // 速度表也换新的：它记着累计字节和时间窗口，留着会让新一局开头继承上一局的读数
+    speedMeter.current = createSpeedMeter()
+    setLoadSpeed(0)
+    setDiscSize(null)
     progressClock.current = { phase: 'engine', startedAt: Date.now() }
-    // 自动重试仍是同一次“开始游戏”：保留玩家已经看到的进度，避免失败瞬间从高位跳回 0%，
-    // 看起来像整个加载被推倒重来。玩家主动开的新一局才从头显示。
-    if (!extra?.retryAttempt) setLoadRatio(null)
+    if (!carryOver) setLoadRatio(null)
     setStatus('loading')
   }
 
   /** 阶段只允许向前走；并行请求迟到的回调不能把计时器拨回上一段。 */
   const enterProgressPhase = (phase: LoadPhase) => {
-    const order: LoadPhase[] = ['engine', 'assets', 'rom', 'starting']
-    if (order.indexOf(phase) <= order.indexOf(progressClock.current.phase)) return
+    if (PHASE_ORDER.indexOf(phase) <= PHASE_ORDER.indexOf(progressClock.current.phase)) return
     progressClock.current = { phase, startedAt: Date.now() }
+  }
+
+  /**
+   * 自己往下一个阶段推一格，不等适配器报。
+   *
+   * ⚠️ 这是「一直卡在 80%」那个 bug 的正解，值得说清楚：
+   *
+   * EmulatorJS（站上绝大多数平台的运行时）和 J2ME **从来不报 `phase: 'starting'`**。
+   * 于是 ROM 下完之后：整条进度正好等于 rom 阶段的上界 0.80，而进度时钟还停在 'rom'，
+   * 视觉计时器算出来的上限是 `0.8 - 0.01 = 0.79` —— 比已经显示的 0.80 还小，
+   * 被 `Math.max` 原样吃掉。接下来 WASM 编译 + 核心初始化那十几到几十秒里，
+   * 一个进度事件都没有，条子**一动不动地停在 80%**，直到游戏突然就绪。
+   *
+   * 与其去每个引擎的生命周期里找「下载完了」那一刻（EmulatorJS 那边只能靠它自己那行
+   * 本地化的状态文字去猜，脆得很），不如在这里定一条谁都适用的规矩：
+   * **当前阶段已经跑满了，就进下一阶段。** 两种「跑满」都算 ——
+   *   · 实际进度触到了本阶段的上界（下载真的完成了）
+   *   · 本阶段的视觉预算也耗光了（拿不到 Content-Length，进度永远到不了 1）
+   * 这样以后新写的适配器漏报阶段，也不会再把条子冻住。
+   */
+  const advanceProgressPhase = () => {
+    const i = PHASE_ORDER.indexOf(progressClock.current.phase)
+    const next = PHASE_ORDER[i + 1]
+    if (!next) return
+    progressClock.current = { phase: next, startedAt: Date.now() }
   }
 
   /**
@@ -727,8 +828,20 @@ export function EmulatorPlayer({
       const elapsed = Date.now() - startedAt
       const visualStart = Math.max(0.01, phaseStart)
       const visualEnd = Math.min(LOAD_PROGRESS_CEILING, phaseEnd - 0.01)
-      const timed = visualStart + (visualEnd - visualStart) * Math.min(1, elapsed / duration)
+      // 和合成器共用同一个 floor，否则重试那一轮的视觉进度永远低于保留下来的百分比
+      const timed = Math.min(
+        LOAD_PROGRESS_CEILING,
+        liftRatio(progressFloor.current, visualStart + (visualEnd - visualStart) * Math.min(1, elapsed / duration)),
+      )
       setLoadRatio((current) => Math.max(current ?? 0, timed))
+      // 这个阶段的视觉预算也耗光了还没等到下一个阶段的事件 —— 自己往前走一格，
+      // 别让条子停在某个整数上装死（见 advanceProgressPhase）
+      if (elapsed >= duration) advanceProgressPhase()
+      /*
+        速度读数也在这里刷，而不是只在收到进度事件时刷 —— 恰恰是「没有事件」的那几十秒
+        最需要它衰减到 0。read() 会按当前时刻重新算窗口，下载停了就自然归零。
+      */
+      setLoadSpeed(speedMeter.current.read())
     }, 250)
     return () => window.clearInterval(timer)
   }, [status, session?.id])
@@ -749,7 +862,7 @@ export function EmulatorPlayer({
     const isCurrent = () => sessionCounter.current === mountedId
     /** 已经进入游戏后再报错属于运行期故障，不能按“加载失败”自动重启，免得吞掉玩家进度。 */
     let ready = false
-    const handle = session.runtime.mount(host, {
+    const handle = mountOf(session.runtime.id)(host, {
       platform: session.platform,
       game: session.game,
       gameName: gameNameRef.current,
@@ -786,9 +899,18 @@ export function EmulatorPlayer({
       },
       onProgress: (next) => {
         if (!isCurrent()) return
+        // 只认 rom 阶段的第一个带总量的帧：核心和系统镜像也走进度回调，
+        // 把它们的字节数报成「本局需下载」会差出一个数量级
+        if (next.phase === 'rom' && next.total && next.total >= DISC_NOTICE_BYTES) {
+          setDiscSize((cur) => cur ?? { bytes: next.total ?? 0, cached: Boolean(next.cached) })
+        }
         enterProgressPhase(next.phase)
+        speedMeter.current.push(next.loaded)
         const actual = Math.min(LOAD_PROGRESS_CEILING, overallRatio.current(next))
         setLoadRatio((current) => Math.max(current ?? 0, actual))
+        // 实际进度已经把这个阶段跑满了（下载真的完成），立刻进下一阶段。
+        // EmulatorJS 就是靠这一条从 80% 走出来的 —— 它自己不报 starting
+        if (actual >= LOAD_PHASE_RANGE[progressClock.current.phase][1] - 1e-6) advanceProgressPhase()
       },
       onReady: () => {
         if (!isCurrent()) return
@@ -886,17 +1008,46 @@ export function EmulatorPlayer({
    */
   useEffect(() => {
     if (!session?.netplay || !roomId || status === 'error') return
+    /**
+     * ⚠️ 房主不订阅这条。
+     *
+     * 这个 effect 是给**访客**等房主用的：房主掉线了要么接手、要么跟去新房间、要么散场。
+     * 而房主自己的游戏是跑在他本机的引擎里的，房间在服务器上什么样都不影响他能不能玩。
+     * 之前没分这一档，于是 `!room` 那一支会把房主**自己正在玩的这一局**拆掉，
+     * 红字告诉他「房主已离开」—— 他就是房主。同一文件里 onHostLeft 早就特意分了
+     * （`if (!join)` 只提示不报错），这里漏了。
+     */
+    if (isHost) return
     let stopped = false
+    /** 只由 cleanup 写。`stopped` 被接手逻辑当业务标志用了，两者必须分开 */
+    let cancelled = false
+    /**
+     * 房间「查不到」不等于房间「没了」。
+     *
+     * fetchNetplayRoom 在网络抖动、502、超时时同样返回 null（见 services/netplay.ts 的 catch），
+     * 一次 null 就 endSession 意味着玩家的网卡一下，正在玩的联机局当场被拆、进度全丢。
+     * 要连着两次都查不到才认账 —— 服务器本来就留 60 秒宽限期，等一轮完全来得及。
+     */
+    let missCount = 0
     /** 处理一次房间快照（首次 fetch 与后续 SSE 推送共用同一段逻辑） */
     const handle = async (room: Awaited<ReturnType<typeof fetchNetplayRoom>>) => {
-      if (stopped) return
+      if (stopped || cancelled) return
       if (!room) {
+        missCount += 1
+        if (missCount < 2) {
+          // 第一次可能只是网络抖了一下，隔 2.5 秒再问一遍再下结论
+          window.setTimeout(() => {
+            if (!stopped && !cancelled) void tick()
+          }, 2500)
+          return
+        }
         // 房间彻底消失（宽限期内没人接手）
         endSession()
         setStatus('error')
         setError(t.player.hostLeft)
         return
       }
+      missCount = 0
       if (room.migratedTo && room.migratedTo !== roomId) {
         setNotice(t.player.hostChanged)
         startP2p(room.migratedTo)
@@ -908,6 +1059,10 @@ export function EmulatorPlayer({
         // 先认领再重挂引擎：重挂会断掉旧连接，不先认领的话服务器看到唯一的访客断了
         // 就把房间散掉（老邀请链接跟着死）；多人房则 8 秒后轮给下一位，两个人抢着接
         const claim = await claimRoom(roomId, roomTokenRef.current)
+        // ⚠️ 认领和取存档加起来可能要十几秒（存档快照几 MB）。这期间玩家完全可能已经
+        // 点了「离开房间」或者切了 ROM 语言 —— 再把他硬拽回一个他刚明确退出的房间，
+        // 等于当着他的面把新开的那一局黑屏重启。cancelled 只由 cleanup 写，可信。
+        if (cancelled) return
         if (!claim) {
           // 认领没成（被别人抢先、房间已经没了）：交回给推送流程，看房间接下来变成什么样
           stopped = false
@@ -915,6 +1070,7 @@ export function EmulatorPlayer({
         }
         claimTokenRef.current = claim ?? ''
         const state = room.hasState ? await downloadState(roomId, claim || roomTokenRef.current) : null
+        if (cancelled) return
         startP2p(undefined, { from: roomId, state })
       }
     }
@@ -930,17 +1086,17 @@ export function EmulatorPlayer({
         void handle(room)
       },
       onGone: () => {
-        if (stopped) return
-        endSession()
-        setStatus('error')
-        setError(t.player.hostLeft)
+        if (stopped || cancelled) return
+        // 和上面同一个道理：SSE 说「没了」也可能只是这条链路自己断了，再确认一次
+        void handle(null)
       },
     })
     return () => {
       stopped = true
+      cancelled = true
       stop()
     }
-  }, [session, roomId, status])
+  }, [session, roomId, status, isHost])
 
   useEffect(() => {
     if (!copied) return
@@ -957,6 +1113,17 @@ export function EmulatorPlayer({
     asRole: RoomRole = 'player',
   ) => {
     if (!gameSlug || !romUrl) return
+    /**
+     * 这一轮联机对应的会话号。
+     *
+     * ⚠️ netplay 的回调（onRoom / onHostLeft / …）是在**挂载 effect 之外**定义的，
+     * 那道 `isCurrent()` 总闸管不到它们。而 onHostLeft 里还挂着一个 fetchNetplayRoom()，
+     * 慢网上要几秒才落地 —— 这几秒里玩家完全可能已经点了「离开房间」、自己开了单机局。
+     * 没有守卫的话，那个迟到的 promise 会把他**正在玩的另一局**拆掉重挂成联机访客，
+     * 或者直接 endSession() + 红字「房主已离开」。begin() 之后会话号就是它。
+     */
+    const p2pGen = sessionCounter.current + 1
+    const p2pStale = () => sessionCounter.current !== p2pGen
     setError(null)
     if (!takeOver) setNotice(null)
     setRoomId(join ?? null)
@@ -986,7 +1153,7 @@ export function EmulatorPlayer({
         refreshNetplayRooms()
       })
     }
-    begin(romUrl, platform.id, emulatorJsRuntime, {
+    begin(romUrl, platform.id, emulatorJsMeta, {
       netplay: {
         gameId: gameIdFor(gameSlug),
         roomName: gameName,
@@ -999,10 +1166,12 @@ export function EmulatorPlayer({
         initialState: takeOver?.state ?? undefined,
         onIdentity: (id) => (myIdRef.current = id),
         onToken: (tk) => {
+          if (p2pStale()) return
           roomTokenRef.current = tk
           tryMigrate()
         },
         onRoom: (id, host) => {
+          if (p2pStale()) return
           setRoomId(id)
           setIsHost(host)
           rejoinedRef.current = false
@@ -1015,8 +1184,12 @@ export function EmulatorPlayer({
           }
           refreshNetplayRooms()
         },
-        onPlayers: (n) => setPlayers(n),
+        onPlayers: (n) => {
+          if (p2pStale()) return
+          setPlayers(n)
+        },
         onHostLeft: () => {
+          if (p2pStale()) return
           /**
            * 信令断了，引擎已经自己退了房。分三种情况：
            *   我是房主   → 服务器那边开始换房主，游戏在我这儿还在跑。不报错，只提示一句
@@ -1031,6 +1204,8 @@ export function EmulatorPlayer({
           }
           const wanted = join ?? ''
           void fetchNetplayRoom(wanted).then((room) => {
+            // 这几秒里玩家可能已经退出去开了别的局 —— 那这条迟到的消息与他无关了
+            if (p2pStale()) return
             const alive = room && !room.awaitingHost && !room.migratedTo
             if (alive && !rejoinedRef.current) {
               rejoinedRef.current = true
@@ -1206,7 +1381,7 @@ export function EmulatorPlayer({
     const playerIndex = join ? (cloudJoinRoom ? freePlayerIndex(cloudJoinRoom, slots) : Math.min(1, slots - 1)) : 0
     setSlotIndex(playerIndex)
     cloudPlayedRef.current = false
-    begin(romUrl ?? '', platform.id, cloudGameRuntime, {
+    begin(romUrl ?? '', platform.id, cloudGameMeta, {
       cloud: {
         gameId: gameSlug,
         roomId: join,
@@ -1230,12 +1405,18 @@ export function EmulatorPlayer({
       setError(null)
       setNotice(null)
       setLiveViewers(0)
+      setLiveFrozen(false)
       setLiveState('connecting')
       // 换一间看：上一间的联机房号跟这一间无关，不清的话「加入联机」会指向别人的房间
       setLiveNetplayRoom(null)
       // begin() 里那两行同样要做：不清的话遮罩会用上一局的阶段和起始时间算进度，
       // 第一拍就把条子顶到那个阶段的天花板（79% / 99%）再慢慢爬，看着像卡住
+      progressFloor.current = 0
       overallRatio.current = createOverallRatio()
+      // 速度表也换新的：它记着累计字节和时间窗口，留着会让新一局开头继承上一局的读数
+      speedMeter.current = createSpeedMeter()
+      setLoadSpeed(0)
+      setDiscSize(null)
       progressClock.current = { phase: 'engine', startedAt: Date.now() }
       setLoadRatio(null)
       sessionCounter.current += 1
@@ -1243,15 +1424,24 @@ export function EmulatorPlayer({
         id: sessionCounter.current,
         game: '',
         platform: platform.id,
-        runtime: liveViewRuntime,
+        runtime: liveViewMeta,
         live: {
           roomId,
           onViewers: setLiveViewers,
           onState: setLiveState,
           onInfo: (info) => setNotice(info.hostName ? `${info.title} · ${info.hostName}` : info.title),
           onNetplay: setLiveNetplayRoom,
+          onFrozen: setLiveFrozen,
+          onLinkQuality: (q) => {
+            setLiveLink(q.verdict === 'ok' ? null : q.verdict)
+            // 细节留给控制台：界面上说清「谁的问题」就够了，堆数字只会让人更慌
+            if (q.verdict !== 'ok') {
+              console.info(`[live] 链路 ${q.verdict}：${q.fps}fps，丢包 ${(q.loss * 100).toFixed(1)}%，RTT ${q.rttMs}ms`)
+            }
+          },
         },
       })
+      setLiveLink(null)
       setStatus('loading')
     },
     [platform.id],
@@ -1295,7 +1485,7 @@ export function EmulatorPlayer({
           setLocalRomData(matched.hack.romData)
           setNotice(fmt(t.player.arcadeHackFound, { title: matched.hack.title, driver: matched.hack.driver }))
           setFile(matched.file)
-          begin(matched.file, 'arcade', emulatorJsRuntime)
+          begin(matched.file, 'arcade', emulatorJsMeta)
           return
         }
         // 认得出但没有加载方案，或者压根不认识：清掉上一次的，别让旧 dat 串到新包上
@@ -1486,11 +1676,25 @@ export function EmulatorPlayer({
   /** 这个房间是 P2P 那一路（工具栏的观众数、观众席、身份切换只对它有意义） */
   const netplayOn = Boolean(session?.netplay) || hosting
   const activeRuntime =
-    session?.runtime ?? (online ? (channel === 'p2p' ? emulatorJsRuntime : cloudGameRuntime) : pageRuntime)
+    session?.runtime ?? (online ? (channel === 'p2p' ? emulatorJsMeta : cloudGameMeta) : pageRuntime)
   const cloudStateLabel = cloudState ? t.player.cloudState[cloudState] : ''
 
   // 进度条加载期间最多走到 99%，真正启动后遮罩才消失
   const ratio = loadRatio ?? 0
+  // 速度为 0 时是空串，上面据此整格不画（见加载遮罩里的说明）
+  const speedText = formatSpeed(loadSpeed)
+  /**
+   * 「本局需下载 XXX」那行字。
+   *
+   * 只有光盘平台会出现（门槛 DISC_NOTICE_BYTES）—— 卡带机 ROM 就几 MB，
+   * 挂一行「需下载 3 MB」纯属噪音；而几百 MB 的盘不说一句，玩家看着一个爬得极慢的
+   * 百分比，根本判断不出该不该等下去。这是「网页游戏怎么这么卡」的一大半来源。
+   */
+  const discText = discSize
+    ? discSize.cached
+      ? t.runtime.discCached
+      : fmt(t.runtime.discNeedDownload, { size: formatBytes(discSize.bytes) })
+    : ''
   // 服务端的 players 不含观众，比本地 onPlayers 更准；拿不到时退回本地计数
   const roomPlayers = session?.cloud ? (myCloudRoom?.players ?? 1) : (myNetRoom?.players ?? players)
   const joinBlocked = online && ((inviteFull && !canWatch) || inviteGone || inviteChanging || inviteResolving || cloudJoinPending)
@@ -1637,7 +1841,18 @@ export function EmulatorPlayer({
    */
   useEffect(() => {
     if (status !== 'running' || !handle?.focus) return
-    const give = () => handle.focus?.()
+    /**
+     * ⚠️ 玩家正在输入框里打字时不能抢。
+     *
+     * 「gamepadconnected 打在外层说明焦点在外层」这个推理只覆盖了「焦点落在我们自己的
+     * ▶ 开始按钮上」，没覆盖「焦点在页面的搜索框 / 评论框里」。蓝牙手柄从待机中唤醒重连、
+     * 或者 USB 手柄被拔插一次，都会在玩家打字打到一半时触发 —— 光标当场消失，
+     * 后面敲的字全被模拟器当游戏输入吃掉（DOS 游戏里就是往命令行乱敲）。
+     */
+    const give = () => {
+      if (isTyping(document.activeElement)) return
+      handle.focus?.()
+    }
     const raf = requestAnimationFrame(give)
     window.addEventListener('gamepadconnected', give)
     return () => {
@@ -1983,7 +2198,23 @@ export function EmulatorPlayer({
             <div className="flex w-full max-w-xs flex-col items-center gap-3">
               <p className="text-sm font-medium tracking-wide text-white/90">
                 少女祈祷中.... <span className="tabular-nums text-brand-hover">{Math.round(ratio * 100)}%</span>
+                {/*
+                  网速。只在真有字节在走的时候出现 —— 下载停了（WASM 编译那几十秒）
+                  速度会衰减到 0，这一格随之消失，而不是挂着一个不再变化的旧读数骗人。
+                  tabular-nums + 固定最小宽度：数字每 250ms 跳一次，不定宽的话整行会左右抖。
+                */}
+                {speedText && (
+                  <span className="ml-2 inline-block min-w-[4.5rem] text-left tabular-nums text-[11px] text-white/45">
+                    {speedText}
+                  </span>
+                )}
               </p>
+              {/*
+                光盘镜像才有的一行：「本局需下载 620 MB」/「已缓存，无需下载」。
+                放在百分比下面而不是并排 —— 并排会和网速那一格挤在一行，
+                窄屏上换行之后整块加载界面会跟着抖。
+              */}
+              {discText && <p className="-mt-1 text-[11px] text-white/45">{discText}</p>}
               <div
                 role="progressbar"
                 aria-label="少女祈祷中"
@@ -2145,9 +2376,22 @@ export function EmulatorPlayer({
           <span className="inline-flex items-center gap-1 rounded-md bg-live/15 px-2 py-1 font-semibold text-live">
             📡 {fmt(t.player.tools.liveOn, { n: String(liveViewers) })}
             {/* 过渡态给人话，别把 'reconnecting' 这种英文状态名直接糊上去 */}
-            {liveState === 'host-away' && <span className="font-normal text-muted">· {t.runtime.liveHostAway}</span>}
+            {liveFrozen && <span className="font-normal text-muted">· {t.runtime.liveHostHidden}</span>}
+            {!liveFrozen && liveState === 'host-away' && (
+              <span className="font-normal text-muted">· {t.runtime.liveHostAway}</span>
+            )}
             {liveState === 'reconnecting' && <span className="font-normal text-muted">· {t.runtime.liveReconnecting}</span>}
             {liveState === 'connecting' && <span className="font-normal text-muted">· …</span>}
+            {/*
+              画面卡的时候，说清是谁的问题。这两件事该做的动作完全相反 ——
+              自己网差换个网络有用，主播扛不住换网络没用，只能等或者少看一会儿。
+              只在真的在看（没冻结、没掉线）时显示，否则会和上面那几句叠着说。
+            */}
+            {liveLink && !liveFrozen && liveState === 'watching' && (
+              <span className="font-normal text-muted">
+                · {liveLink === 'local' ? t.runtime.liveLinkLocal : t.runtime.liveLinkHost}
+              </span>
+            )}
           </span>
         )}
 

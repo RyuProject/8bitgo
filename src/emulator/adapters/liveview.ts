@@ -24,7 +24,7 @@
  * 一个特殊情形：服务器重启，内存里的房间全没了，重新 watch 会回 not found ——
  * 但如果画面还在流（P2P 不经过服务器），那就静默继续看，别拿遮罩盖掉一场好好的直播。
  */
-import type { Capability, CaptureSources, MountOptions, Runtime, RuntimeHandle } from '../types'
+import type { Capability, CaptureSources, MountOptions, RuntimeHandle } from '../types'
 import { getT, fmt } from '@/services/i18n'
 import { connectLive, liveEnabled, liveIceConfig, type LiveSocket } from '@/services/live'
 
@@ -43,6 +43,34 @@ export interface LiveSession {
    * 已经在看的人不会再去刷大厅，等轮询等不来。
    */
   onNetplay?: (roomId: string | null) => void
+  /**
+   * 主播切到后台了（true）/ 切回来了（false）。
+   * 画面这时是**冻结**而不是断开 —— 浏览器不给后台标签页出帧，这是浏览器行为。
+   */
+  onFrozen?: (frozen: boolean) => void
+  /**
+   * 观众这一侧的链路质量。
+   *
+   * 为什么值得单独报：主播侧早就有 getStats，观众侧一个都没有 —— 于是观众卡的时候
+   * **分不清是自己网差还是主播那边扛不住**，只能瞎刷新。而这两件事该做的动作完全相反：
+   * 前者换个网络有用，后者换网络没用、少看一会儿才有用。
+   */
+  onLinkQuality?: (q: LinkQuality) => void
+}
+
+export interface LinkQuality {
+  /**
+   * - `ok`      一切正常
+   * - `local`   丢包 / 抖动高 → **你这边**的网络问题（换网络、离路由器近点有用）
+   * - `host`    收到的帧率明显偏低但几乎不丢包 → **主播那边**发得就少（他降档了或者机器扛不住）
+   */
+  verdict: 'ok' | 'local' | 'host'
+  /** 实际收到的帧率 */
+  fps: number
+  /** 丢包率（0~1） */
+  loss: number
+  /** 往返时延（毫秒）；拿不到是 0 */
+  rttMs: number
 }
 
 type SignalData = { sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit; gen?: number }
@@ -78,11 +106,30 @@ const REWATCH_MAX = 3
  */
 const CONNECT_BUDGET_MS = 75_000
 
+/* ---------------- 观众端链路统计 ---------------- */
+
+/** 多久读一轮 inbound-rtp。和主播侧对齐，秒级足够 —— 编码器自己的自适应也是秒级的 */
+const LINK_STATS_INTERVAL_MS = 5_000
+/**
+ * 丢包超过这个比例就判成「你这边网络有问题」。
+ * 3% 是经验线：WebRTC 靠 NACK/FEC 能补掉零星丢包，到 3% 以上画面才会开始出块。
+ */
+const LOSS_BAD = 0.03
+/**
+ * 收到的帧率低于「主播标称帧率」的这个比例，且**几乎不丢包**，就判成主播那边发得少。
+ *
+ * ⚠️ 必须带上「不丢包」这个条件。丢包也会让收到的帧率掉下来，
+ * 那种情况是本地网络问题，说成「主播扛不住」会让观众白白去等一个不会好的东西。
+ */
+const HOST_SLOW_RATIO = 0.6
+/** 主播那边的基准帧率（broadcast.ts 的 DEFAULT_FPS）。观众拿不到真值，按这个比 */
+const ASSUMED_HOST_FPS = 30
+
 function deadHandle(): RuntimeHandle {
   return { destroy: () => {}, caps: new Set<Capability>() }
 }
 
-function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
+export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
   const live = options.live
 
@@ -115,6 +162,43 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   let rewatchCount = 0
   /** 站点配了 TURN 中继没有。没有的话「连不上」十有八九是穿不过 NAT，提示要说得具体些 */
   let hasTurn = false
+  /**
+   * ⚠️ 可变，而且每次建新连接之前都要刷。
+   *
+   * TURN 凭证是后端现签的短期凭证（默认一小时）。一场直播看两小时，中途主播信令重连
+   * 一次、或者我们自己 rewatch 一次，都会**新建 PeerConnection** —— 用挂载那一刻取的
+   * 那份就是拿过期凭证去连中继：需要走中继的观众（对称 NAT、移动网络）ICE 全灭，
+   * 三次 rewatch 用完直接报「直播中断」，而且看直播这条路播放器不会自动重试，
+   * 观众只能手动刷新页面。老观众（连接没重建过）一切正常，所以线上极难查。
+   * 主播那边（broadcast.ts 的 addViewer）早就是每条连接现取的，观众这边一直漏着。
+   */
+  let iceServers: RTCIceServer[] = []
+  /** 刷一遍 ICE 配置。liveIceConfig 自带缓存，没过期时只读内存，不发请求 */
+  const refreshIce = async () => {
+    if (destroyed) return
+    try {
+      const next = await liveIceConfig()
+      if (destroyed) return
+      iceServers = next.iceServers
+      hasTurn = next.hasTurn
+    } catch {
+      /* 取不到就沿用上一次的，总比不连强 */
+    }
+  }
+  /**
+   * **真的有画面了**，而不是「连接建立了」。
+   *
+   * 这两件事差着一段可见的时间：PeerConnection 报 connected 只说明 ICE + DTLS 通了，
+   * 第一个关键帧还在路上（编码、发送、解码都要时间）。以前一 connected 就
+   * `onStart()` + 切成 watching，进度条当场消失，于是观众对着一块**黑屏**干等 ——
+   * 而且如果对方压根没加视频轨（主播那边 addTrack 抛了之类），这块黑屏会一直黑下去，
+   * 没有任何超时、没有任何提示。改成等到第一帧真的画出来为止。
+   */
+  let gotFrame = false
+  /** 第一帧的等待器（换连接时要撤掉，否则旧连接的回调会误报） */
+  let frameWaiter: (() => void) | null = null
+  /** 主播切到后台了：画面冻着，不是断了 */
+  let hostFrozen = false
   /**
    * 本地收集到的候选类型（host / srflx / relay）。
    *
@@ -196,6 +280,124 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     options.onError?.(msg)
   }
 
+  /**
+   * 等这条 <video> 真的画出第一帧。
+   *
+   * 首选 `requestVideoFrameCallback` —— 它的语义正是「一帧已经可以拿去显示了」，
+   * 比 loadeddata / playing 都准。不支持的浏览器退回事件 + 轮询 videoWidth：
+   * 有尺寸就说明解码器已经吃到东西了。
+   */
+  const waitForFirstFrame = (onFrame: () => void) => {
+    frameWaiter?.()
+    let done = false
+    const fire = () => {
+      if (done || destroyed) return
+      done = true
+      cleanup()
+      onFrame()
+    }
+    const vid = video as HTMLVideoElement & {
+      requestVideoFrameCallback?: (cb: () => void) => number
+      cancelVideoFrameCallback?: (handle: number) => void
+    }
+    let rvfc = 0
+    let poll = 0
+    const onEvent = () => {
+      if (video.videoWidth > 0) fire()
+    }
+    const cleanup = () => {
+      if (rvfc && vid.cancelVideoFrameCallback) vid.cancelVideoFrameCallback(rvfc)
+      if (poll) window.clearInterval(poll)
+      video.removeEventListener('loadeddata', onEvent)
+      video.removeEventListener('playing', onEvent)
+      frameWaiter = null
+    }
+    frameWaiter = () => {
+      done = true
+      cleanup()
+    }
+    if (typeof vid.requestVideoFrameCallback === 'function') {
+      rvfc = vid.requestVideoFrameCallback(() => fire())
+    }
+    video.addEventListener('loadeddata', onEvent)
+    video.addEventListener('playing', onEvent)
+    // 兜底：有些浏览器上面几条都不触发（自动播放被拦、轨到得早于监听），轮询最稳
+    poll = window.setInterval(onEvent, 250)
+    onEvent()
+  }
+
+  /* ---- 观众端链路质量采样 ---- */
+  let linkTimer = 0
+  /** 上一轮的累计值，用来算这一段区间的增量（getStats 给的是从头累计的） */
+  let lastPkts = { received: 0, lost: 0 }
+
+  /**
+   * 读一轮 inbound-rtp，判断「卡是谁的问题」。
+   *
+   * 用**区间增量**而不是累计值：累计丢包率会被开局握手那几秒的丢包长期拖住，
+   * 网络早就好了，读数还挂在高位 —— 观众看到的就是一句永远不消失的「你的网络不稳」。
+   */
+  const sampleLink = async () => {
+    if (destroyed || !pc || !gotFrame) return
+    let report: RTCStatsReport
+    try {
+      report = await pc.getStats()
+    } catch {
+      return
+    }
+    let fps = 0
+    let received = 0
+    let lost = 0
+    let rttMs = 0
+    report.forEach((stat) => {
+      const t = stat as RTCStats & {
+        kind?: string
+        framesPerSecond?: number
+        packetsReceived?: number
+        packetsLost?: number
+        state?: string
+        currentRoundTripTime?: number
+      }
+      if (t.type === 'inbound-rtp' && t.kind === 'video') {
+        if (typeof t.framesPerSecond === 'number') fps = t.framesPerSecond
+        if (typeof t.packetsReceived === 'number') received += t.packetsReceived
+        // packetsLost 可以是负数（重排序被算回来），夹到 0
+        if (typeof t.packetsLost === 'number') lost += Math.max(0, t.packetsLost)
+      } else if (t.type === 'candidate-pair' && t.state === 'succeeded' && typeof t.currentRoundTripTime === 'number') {
+        rttMs = Math.round(t.currentRoundTripTime * 1000)
+      }
+    })
+
+    const dRecv = Math.max(0, received - lastPkts.received)
+    const dLost = Math.max(0, lost - lastPkts.lost)
+    lastPkts = { received, lost }
+    // 这一段区间里几乎没收到包就别下结论 —— 样本太小，判什么都是噪声
+    if (dRecv + dLost < 50) return
+    const loss = dLost / (dRecv + dLost)
+
+    const verdict: LinkQuality['verdict'] =
+      loss >= LOSS_BAD ? 'local' : fps > 0 && fps < ASSUMED_HOST_FPS * HOST_SLOW_RATIO ? 'host' : 'ok'
+    live.onLinkQuality?.({ verdict, fps: Math.round(fps), loss, rttMs })
+  }
+
+  /** 第一帧到了：这才算真的「在看」 */
+  const markWatching = () => {
+    gotFrame = true
+    window.clearTimeout(watchdog)
+    window.clearTimeout(rewatchTimer)
+    rewatchCount = 0
+    if (!watching) {
+      watching = true
+      options.onStart?.()
+    }
+    // 有画面了才开始采样：没画面时读出来的全是握手期的噪声
+    if (!linkTimer) {
+      lastPkts = { received: 0, lost: 0 }
+      linkTimer = window.setInterval(() => void sampleLink(), LINK_STATS_INTERVAL_MS)
+    }
+    live.onState?.(hostFrozen ? 'host-away' : 'watching')
+  }
+
   const closePc = () => {
     if (!pc) return
     const old = pc
@@ -211,11 +413,22 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   }
 
   /** 换一条新连接。主播每轮 offer 都是新建的 PeerConnection，旧的那条接不了 */
-  const freshPc = (iceServers: RTCIceServer[], gen: number | undefined) => {
+  const freshPc = (gen: number | undefined) => {
     closePc()
+    // 旧连接的等待器不能留着：它盯的是同一个 <video>，会把上一轮的残帧当成新连接通了
+    frameWaiter?.()
     pcGen = gen
     pcOffered = false
     pendingIce = []
+    /**
+     * ⚠️ 换连接就要重新证明有画面。
+     *
+     * gotFrame 以前只置位不复位，于是第一帧之后所有「等不到画面」的恢复逻辑全成了死代码：
+     * ontrack 不再装等待器、connectionState 一到 connected 就报「在看」、
+     * armRewatch 的 `!gotFrame` 永远为假。表现是画面停在上一路连接的最后一帧，
+     * 状态却写着「📡 在看」，没有超时、没有提示、永远不会自愈。
+     */
+    gotFrame = false
     const next = new RTCPeerConnection({ iceServers })
     pc = next
     next.ontrack = (ev) => {
@@ -226,17 +439,23 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         stream.addTrack(track)
       }
       tryPlay()
+      // 轨到了就可以开始等第一帧 —— 比等 connectionState 变 connected 更早
+      if (!gotFrame && ev.track.kind === 'video') waitForFirstFrame(markWatching)
     }
     next.onconnectionstatechange = () => {
       if (destroyed || pc !== next) return
       const s = next.connectionState
       if (s === 'connected') {
-        window.clearTimeout(watchdog)
-        window.clearTimeout(rewatchTimer)
-        rewatchCount = 0
-        watching = true
-        live.onState?.('watching')
-        options.onStart?.()
+        /**
+         * 通道通了 ≠ 有画面了。第一帧还在路上，这时候把进度条撤掉只会露出一块黑屏。
+         * 看门狗**故意不在这里清** —— 连上了却一直没有画面（主播没加轨、编码器起不来）
+         * 也必须能超时报错，而不是让人对着黑屏无限等。
+         */
+        if (gotFrame) live.onState?.('watching')
+        else {
+          live.onState?.('connecting')
+          waitForFirstFrame(markWatching)
+        }
       } else if (s === 'disconnected') {
         // ICE 的 disconnected 经常自己恢复；先只把标记变一下，failed 才动手
         live.onState?.(hostAway ? 'host-away' : 'reconnecting')
@@ -311,7 +530,9 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const armRewatch = (delay = REWATCH_TIMEOUT_MS) => {
     window.clearTimeout(rewatchTimer)
     rewatchTimer = window.setTimeout(() => {
-      if (!destroyed && !hostAway && pc?.connectionState !== 'connected') void rewatch()
+      // 判据是「有没有画面」，不是「通道通没通」：连上了却一直不出画面
+      // （主播那边没加轨、或者编码器起不来）同样要再要一轮 offer
+      if (!destroyed && !hostAway && !gotFrame) void rewatch()
     }, delay)
   }
 
@@ -322,6 +543,9 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     if (rewatchCount >= REWATCH_MAX) return fail(joined && watching ? rt.liveLost : diagnose())
     rewatchCount += 1
     live.onState?.('reconnecting')
+    // 重连这一轮多半要新建 PeerConnection，凭证先刷一遍再要 offer
+    await refreshIce()
+    if (destroyed) return
     const ok = await watch()
     if (!ok || destroyed || hostAway) return
     armRewatch()
@@ -332,14 +556,12 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       live.onState?.('connecting')
       socket = await connectLive()
       if (destroyed) return socket.close()
-      const ice = await liveIceConfig()
-      const iceServers = ice.iceServers
-      hasTurn = ice.hasTurn
+      await refreshIce()
       if (destroyed) return socket.close()
       const s = socket
 
       // 一条空连接先立着，等主播的第一个 offer；ICE 候选在 offer 之前到的话有地方攒
-      freshPc(iceServers, undefined)
+      freshPc(undefined)
 
       s.on('signal', ((payload: { from?: string; data?: SignalData }) => {
         if (destroyed || !payload?.data) return
@@ -350,7 +572,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
           if (sdp.type && sdp.type !== 'offer') return // 主播只发 offer
           // 新一轮：代号变了，或者这条连接已经吃过 offer。主播每轮都是新建的 PeerConnection
           const stale = !pc || pcOffered || (gen !== undefined && pcGen !== undefined && gen !== pcGen)
-          const cur: RTCPeerConnection = stale ? freshPc(iceServers, gen) : (pc as RTCPeerConnection)
+          const cur: RTCPeerConnection = stale ? freshPc(gen) : (pc as RTCPeerConnection)
           pcGen = gen
           pcOffered = true
           void (async () => {
@@ -381,6 +603,17 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         'netplay-linked',
         ((p: { roomId?: string | null }) => live.onNetplay?.(p?.roomId || null)) as (...args: never[]) => void,
       )
+
+      /**
+       * 主播切到后台了：浏览器不给后台标签页出帧，画面就冻在那儿。
+       * 不是断线、不用重连 —— 只要告诉观众一声，别让他以为是自己网的问题。
+       */
+      s.on('host-frozen', ((p: { frozen?: boolean }) => {
+        if (destroyed) return
+        hostFrozen = Boolean(p?.frozen)
+        live.onFrozen?.(hostFrozen)
+        if (watching) live.onState?.(hostFrozen ? 'host-away' : 'watching')
+      }) as (...args: never[]) => void)
 
       s.on('host-away', (() => {
         if (destroyed) return
@@ -465,6 +698,8 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
     },
     destroy() {
       destroyed = true
+      frameWaiter?.()
+      window.clearInterval(linkTimer)
       window.clearTimeout(watchdog)
       window.clearTimeout(rewatchTimer)
       host.removeEventListener('click', onClick)
@@ -485,17 +720,3 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   }
 }
 
-export const liveViewRuntime: Runtime = {
-  id: 'liveview',
-  name: 'Live',
-  get description() {
-    return getT().runtime.liveDesc
-  },
-  // 不参与「按扩展名选引擎」：看直播是用户点进来的，不是文件格式决定的
-  extensions: [],
-  priority: 0,
-  available: () => liveEnabled(),
-  supports: () => true,
-  engineLabel: () => 'WebRTC',
-  mount,
-}

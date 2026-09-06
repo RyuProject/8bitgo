@@ -124,6 +124,52 @@ function hostIp(socket) {
 /** 广播人数给房间里所有人（主播 + 观众） */
 function notifyViewers(nsp, room) {
   nsp.to(room.id).emit('viewers', { roomId: room.id, count: room.viewers.size })
+  // 人数变了 = 大厅那张卡片上的「N 人在看」也变了
+  notifyRoomList()
+}
+
+/* ---------------- 大厅列表的事件流（SSE） ---------------- */
+
+/**
+ * 订阅「正在直播的房间列表」的连接。
+ *
+ * 以前大厅是每 8 秒轮询一次 /api/live/rooms —— 而侧边栏挂在每个页面上，
+ * 等于每个在线访客都在持续打请求，绝大多数时候列表根本没变。
+ * netplay 那边早就换成 SSE 了（见 netplay.js 的 /api/netplay/events），
+ * 这里补上同一套：平时零请求，开播 / 下播 / 人数变化立刻可见。
+ */
+const listWatchers = new Set()
+let listTimer = null
+
+/** 房间列表有变化就推给订阅者。同一轮的多次变化合并成一次 */
+function notifyRoomList() {
+  if (listTimer || listWatchers.size === 0) return
+  listTimer = setTimeout(() => {
+    listTimer = null
+    const payload = `event: rooms\ndata: ${JSON.stringify(liveRooms())}\n\n`
+    for (const res of listWatchers) {
+      try {
+        res.write(payload)
+      } catch {
+        listWatchers.delete(res)
+      }
+    }
+  }, 120)
+  listTimer.unref?.()
+}
+
+/**
+ * 挂一个 SSE 订阅者。返回取消订阅的函数。
+ * 路由写在 index.js 里（那边才有 app），这里只管数据。
+ */
+export function subscribeLiveRooms(res) {
+  listWatchers.add(res)
+  try {
+    res.write(`event: rooms\ndata: ${JSON.stringify(liveRooms())}\n\n`)
+  } catch {
+    listWatchers.delete(res)
+  }
+  return () => listWatchers.delete(res)
 }
 
 function closeRoom(nsp, room, reason) {
@@ -133,6 +179,7 @@ function closeRoom(nsp, room, reason) {
   for (const viewerId of room.viewers) membership.delete(viewerId)
   if (room.hostSocketId) membership.delete(room.hostSocketId)
   rooms.delete(room.id)
+  notifyRoomList()
 }
 
 /** 主播的 socket 没了：房间先留着等它回来，到点没回来再散 */
@@ -161,6 +208,7 @@ function hostAway(nsp, room) {
     if (cur && cur.hostSocketId === null) closeRoom(nsp, cur, 'host-left')
   }, RESUME_GRACE_MS)
   nsp.to(room.id).emit('host-away', { roomId: room.id })
+  notifyRoomList()
 }
 
 /** 把房间交给一个（新的）主播 socket */
@@ -174,6 +222,7 @@ function bindHost(nsp, room, socket) {
   room.presence = watchPresence(socket)
   membership.set(socket.id, { roomId: room.id, role: 'host' })
   socket.join(room.id)
+  notifyRoomList()
 }
 
 function leave(nsp, socket) {
@@ -246,6 +295,8 @@ export function attachLive(io) {
         viewers: new Set(),
         awayTimer: null,
         awaySince: null,
+        /** 主播是不是切到后台了（画面冻着）。见 host-visibility */
+        hostFrozen: false,
         // hostSocketId / hostIp / presence 由 bindHost 填：主播重连时也走它，只写一处
         hostSocketId: null,
         hostIp: '',
@@ -343,6 +394,7 @@ export function attachLive(io) {
        * 后进来的观众不用管，watch 的 ack 里带着 publicRoom，本来就有这个字段。
        */
       nsp.to(room.id).emit('netplay-linked', { roomId: next })
+      notifyRoomList()
     })
 
     socket.on('stop-live', () => {
@@ -350,6 +402,27 @@ export function attachLive(io) {
       if (info?.role !== 'host') return
       const room = rooms.get(info.roomId)
       if (room) closeRoom(nsp, room, 'stopped')
+    })
+
+    /**
+     * 主播切到后台了（或切回来了）。
+     *
+     * 浏览器不给后台标签页出帧 —— `canvas.captureStream` 直接停住，观众那边画面**冻结**。
+     * 这是浏览器行为，改不了。但以前观众看到的是一张凝固的画面、没有任何解释：
+     * 他分不清是自己网断了、主播卡了、还是游戏暂停了，于是刷新、退出、再进来，
+     * 白白折腾一圈。告诉他一句就够了。
+     *
+     * 只有房主能报、而且只能报自己那间 —— 不然任何观众都能把别人的直播标成「已冻结」。
+     */
+    socket.on('host-visibility', (payload) => {
+      const info = membership.get(socket.id)
+      if (info?.role !== 'host') return
+      const room = rooms.get(info.roomId)
+      if (!room || room.hostSocketId !== socket.id) return
+      const frozen = Boolean(payload?.hidden)
+      if (room.hostFrozen === frozen) return // 状态没变就不用惊动所有人
+      room.hostFrozen = frozen
+      socket.to(room.id).emit('host-frozen', { roomId: room.id, frozen })
     })
 
     socket.on('leave', () => leave(nsp, socket))

@@ -56,6 +56,21 @@ export const ROM_LANG_LABEL: Record<RomLang, string> = ROM_LANGS.reduce(
   {} as Record<RomLang, string>,
 )
 
+/**
+ * 封面 / 详情页上「支持语言」那格用的缩写：从 game.roms 里读出实际绑了哪些语言槽，
+ * 再映射成 CN / EN / JP 这种短码。简繁都归到 CN（」中文就写 CN」）。
+ */
+export const ROM_LANG_ABBR: Record<RomLang, string> = {
+  'zh-Hans': 'CN',
+  'zh-Hant': 'CN',
+  en: 'EN',
+  ja: 'JP',
+  fr: 'FR',
+  de: 'DE',
+  es: 'ES',
+  it: 'IT',
+}
+
 /** 站点语言 → ROM 语言槽；没有专属槽的语言回退到英语 */
 export function romLangFor(lang: Lang): RomLang {
   return (ROM_LANGS as string[]).includes(lang) ? (lang as RomLang) : 'en'

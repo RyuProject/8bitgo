@@ -3,12 +3,13 @@ import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { recordRecent, toggleFavorite, useCurrentUser } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
 import type { RomLang } from '@/config/languages'
+import { ROM_LANG_ABBR } from '@/config/languages'
 import { romLangsOf, romUrlForKey, useRomUrl } from '@/services/roms'
 import { resolveRuntime, runtimesFor } from '@/emulator'
 import { p2pPlayable } from '@/emulator'
 import { requestMatch } from '@/services/matchRequest'
 import { usePageData, type GameData } from '@/services/pageData'
-import { platformMap } from '@/data/platforms'
+import { platformMap, EXPERIMENTAL_PLATFORMS } from '@/data/platforms'
 import { genreMap } from '@/data/genres'
 import { isPlatformEnabled } from '@/config/platforms'
 import { formatCount, formatPlayers } from '@/lib/format'
@@ -18,12 +19,14 @@ import { useLang } from '@/services/lang'
 import { useT, fmt } from '@/services/i18n'
 import { getLang } from '@/services/lang'
 import { gameDescription, gameTitle, genreLabel, needsTranslation, platformDesc, platformLabel } from '@/services/i18nData'
-import { EmulatorPlayer } from '@/emulator'
+import { EmulatorPlayer } from '@/emulator/PlayerChunk'
 import { IsolatedPlayCard } from '@/components/game/IsolatedPlayCard'
 import { GameCover } from '@/components/game/GameCover'
 import { GameAgeGuard } from '@/components/game/AgeGate'
 import { GameComments } from '@/components/game/GameComments'
+import { GameRating } from '@/components/game/GameRating'
 import { ShareDialog } from '@/components/game/ShareDialog'
+import { AddToCollectionDialog } from '@/components/game/AddToCollectionDialog'
 import { GameCard } from '@/components/game/GameCard'
 import { KeymapCards } from '@/components/game/KeymapCards'
 import { TranslateButton } from '@/components/game/TranslateButton'
@@ -58,6 +61,7 @@ export function GameDetailPage() {
   const { immersive } = useShell()
   const user = useCurrentUser()
   const [shareOpen, setShareOpen] = useState(false)
+  const [addToCollection, setAddToCollection] = useState(false)
   const isFav = Boolean(user?.favorites.includes(slug))
   /**
    * 玩家手动选的 ROM 语言（null = 跟着站点语言走）。
@@ -109,6 +113,8 @@ export function GameDetailPage() {
           image: game.cover,
           publishedTime: game.addedAt,
           updatedTime: game.updatedAt || game.addedAt,
+          // 评论功能关掉时前台一条回复都看不见，这时候上报「最新回复时间」是谎报
+          replyTime: FEATURES.comments ? game.lastCommentAt : undefined,
           jsonLd: [
             videoGameSchema({
               name: seoTitle,
@@ -119,6 +125,8 @@ export function GameDetailPage() {
               genres: game.genres.map((id) => genreLabel(t, id, genreMap[id]?.name ?? id)),
               year: game.year,
               developer: game.developer,
+              rating: game.rating,
+              ratingCount: game.ratingCount,
             }),
             breadcrumbSchema([
               { name: t.common.home, path: '/' },
@@ -152,6 +160,11 @@ export function GameDetailPage() {
   // 字段），显示的是兜底引擎而不是真正会跑的那个：NDS 装了 webretro 仍写着 EmulatorJS，
   // NES 明明由 jsnes 接管也一样。
   const runtime = runtimesFor(platform.id)[0] ?? resolveRuntime(platform.id)
+  // 「支持语言」格：从 game.roms 里读出真正绑了哪些语言槽，映射成 CN / EN / JP 缩写。
+  // romLangsOf 只返回有 key 的槽，所以「数据库里有那个语言的 ROM 就写什么」。
+  const supportedLangs = Array.from(
+    new Set(romLangsOf(game).map((l) => ROM_LANG_ABBR[l])),
+  ).join(' ')
 
   return (
     <div className="container-x py-6 sm:py-8">
@@ -232,6 +245,17 @@ export function GameDetailPage() {
             </GameAgeGuard>
           </div>
 
+          {/*
+            实验性平台的提示，紧贴在播放器下面。
+            必须在玩家点「开始」**之前**就看得到 —— PS2 大多数游戏在浏览器里跑不起来，
+            让人先等一分钟加载再看到一句报错，那是把他的时间和对站点的信任一起花掉。
+          */}
+          {EXPERIMENTAL_PLATFORMS.has(platform.id) && (
+            <p className="mt-3 rounded-xl border border-coin/40 bg-coin-soft px-3 py-2 text-xs text-muted">
+              ⚠️ {t.runtime.playExperimental}
+            </p>
+          )}
+
           {/* 标题与元信息 */}
           <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
             <div>
@@ -282,6 +306,15 @@ export function GameDetailPage() {
             */}
             <Button variant="secondary" size="sm" onClick={() => setShareOpen(true)}>
               {t.game.share}
+            </Button>
+            {/* 加入合集：没登录的先弹登录，别让他填完一轮才发现要登录 */}
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => (user ? setAddToCollection(true) : openAuthModal())}
+              title={user ? undefined : t.collections.loginToAdd}
+            >
+              📚 {t.collections.addTo}
             </Button>
             {/*
               「创建联机房间」以前是 `to="/games?multiplayer=1"` —— 点了只是跳到游戏库
@@ -338,7 +371,7 @@ export function GameDetailPage() {
                 ))}
               />
               <Meta label={t.game.players} value={formatPlayers(game.players)} />
-              <Meta label={t.game.runtime} value={runtime ? `${runtime.name} · ${runtime.engineLabel(platform.id)}` : t.game.unsupported} />
+              <Meta label={t.game.supportedLanguages} value={supportedLangs || '—'} />
             </dl>
             {game.tags && game.tags.length > 0 && (
               <div className="mt-4 flex flex-wrap gap-2">
@@ -387,9 +420,13 @@ export function GameDetailPage() {
           </div>
 
           {/*
-            评论区。放在平台卡下面 —— 沉浸模式下整个侧栏是隐藏的（见 aside 的 className），
-            那时候玩家在全屏玩游戏，评论跟着一起收起来是对的。
+            评分与评论。放在平台卡下面 —— 沉浸模式下整个侧栏是隐藏的（见 aside 的 className），
+            那时候玩家在全屏玩游戏，这两块跟着一起收起来是对的。
+
+            评分在评论上面：打个分是一秒钟的动作，写评论要斟酌半天。
+            把成本低的那个放在先看到的位置，参与率会差出一个数量级。
           */}
+          {FEATURES.ratings && <GameRating gameSlug={game.slug} />}
           {FEATURES.comments && <GameComments gameSlug={game.slug} />}
 
           {FEATURES.coins && (
@@ -428,6 +465,8 @@ export function GameDetailPage() {
           </div>
         </section>
       )}
+
+      {addToCollection && <AddToCollectionDialog gameSlug={game.slug} onClose={() => setAddToCollection(false)} />}
 
       <ShareDialog
         open={shareOpen}

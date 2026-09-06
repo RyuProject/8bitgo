@@ -1,11 +1,14 @@
 /**
- * 键位表的**原始数据**。刻意单独一个文件、且不 import 任何东西 ——
+ * EmulatorJS 键位表的**原始数据**。刻意单独一个文件、且不 import 任何东西 ——
  * 这样 scripts/test-keymap.mjs 能在 node 里直接把它和引擎源码对着核。
  *
- * 为什么值得对着核：这两张表都是从别人的代码里抄出来的常量，
- * 抄错了 tsc 不会响、页面也照样渲染，只有玩家按下去才发现按错键。
- * 而且升级 EmulatorJS / jsnes 时最容易悄悄失效。
+ * 为什么值得对着核：这张表是从别人的代码里抄出来的常量，抄错了 tsc 不会响、
+ * 页面也照样渲染，只有玩家按下去才发现按错键，升级 EmulatorJS 时最容易悄悄失效。
  * 拼装成给人看的表（分平台、加说明）在 lib/emulator.ts。
+ *
+ * ⚠️ 红白机（jsnes）的键位**不在这里** —— 它已经改成玩家可改的了，
+ * 唯一出处是 services/padKeys.ts 的 DEFAULT_PAD_KEYS，回归测试是 npm run test:padkeys。
+ * 别再往这个文件里抄一份 jsnes 的默认值，那就是两份真相。
  */
 
 /**
@@ -53,13 +56,3 @@ export const JSNES_KEYS = {
   start: 'Enter',
   select: 'Right Ctrl',
 } as const
-
-/** 上面每个键在 jsnes KEYS 里的 keyCode。测试拿它去比对 */
-export const JSNES_KEYCODE: Readonly<Record<keyof typeof JSNES_KEYS, number>> = {
-  a: 88, // X
-  b: 90, // Z
-  turboA: 83, // S
-  turboB: 65, // A
-  start: 13, // Enter
-  select: 17, // Right Ctrl
-}

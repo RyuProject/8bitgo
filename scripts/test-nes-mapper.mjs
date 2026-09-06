@@ -62,6 +62,59 @@ for (const m of [0, 25, 256, 555, 4095]) {
   assert.equal(readNesMapper(header(1, { dirty: true })), 1)
 }
 
+/* ---------- 3b. 判据必须和 jsnes 自己那套一致（字节 8-15，不是 12-15） ---------- */
+{
+  /*
+    ⚠️ 这一组是真出过事的：nesMapper 以前只看字节 12-15，而 jsnes 的 rom.js 看的是 8-15
+    （`for (i = 8; i < 16; i++)`，非零就 `mapperType &= 0xf`）。两边分歧的文件长这样 ——
+    字节 8-11 非零（写了 PRG-RAM 大小 / TV 制式，很常见）而 12-15 为零。
+    分歧的后果：我们算出 118「jsnes 支持」→ 交给 jsnes → jsnes 掩成 6 → 抛
+    `Unsupported mapper` → 播放器原样重试一次 → 确定性地再失败 → 玩家拿到红字，
+    而 EmulatorJS 的 FCEUmm 明明跑得动。
+  */
+  const h = header(118)
+  h[8] = 1 // PRG-RAM 大小：iNES 1.0 的扩展字段，合法且常见
+  assert.equal(readNesMapper(h), 118 & 0x0f, '字节 8-11 非零 = 脏头，只能取低 4 位（和 jsnes 一致）')
+
+  const clean = header(118)
+  assert.equal(readNesMapper(clean), 118, '字节 8-15 全零时才采信字节 7')
+
+  // 反过来：12-15 非零的老式脏头照样只取低 4 位
+  const tail = header(118)
+  tail[14] = 0x21
+  assert.equal(readNesMapper(tail), 118 & 0x0f)
+}
+
+/* ---------- 3c. 脏头不能被误认成 NES 2.0 ---------- */
+{
+  /*
+    NES 2.0 的判据是「字节 7 的 bit2-3 == 0b10」。光看那两位不够：把工具名写进字节 7 的
+    老文件，只要那个 ASCII 满足 `c & 0x0c === 0x08`（'H' 'I' 'X' 'Y' '8' '(' … 一大把）
+    就会被误认，然后拿另一个 ASCII 字节当 mapper 高位，算出上千的荒唐编号 ——
+    本来 jsnes 秒开的游戏被赶去下载一个 RetroArch 核心。
+    所以再要求 ROM 大小自洽（头里写的 PRG + CHR 不能超过文件本身）。
+  */
+  const body = 16 + 2 * 16384 + 1 * 8192
+  const rom = new Uint8Array(body)
+  rom.set(header(4))
+  // 'HACK' 从字节 7 糊上去：'H' = 0x48，低两位组恰好是 0b10 → 会被当成 NES 2.0
+  const junk = 'HACK'
+  for (let i = 0; i < junk.length; i++) rom[7 + i] = junk.charCodeAt(i)
+  assert.equal((rom[7] & 0x0c) === 0x08, true, '前提：这个字节确实会被误认成 NES 2.0')
+  assert.equal(readNesMapper(rom), 4, '⭐ 大小对不上就不是 NES 2.0，退回只取低 4 位')
+
+  // 真的 NES 2.0（大小自洽）不能被误伤
+  const real = new Uint8Array(body)
+  real.set(header(256, { nes20: true }))
+  assert.equal(readNesMapper(real), 256, '真 NES 2.0 且大小自洽 → 照常读 12 位')
+
+  // 指数记法（字节 9 的半字节 == 0xF）算不出确切大小，一律放行
+  const expo = new Uint8Array(64)
+  expo.set(header(300, { nes20: true }))
+  expo[9] = 0x0f
+  assert.equal(readNesMapper(expo), 300, '指数记法不参与大小校验')
+}
+
 /* ---------- 4. 不是 iNES → null（交给 jsnes 自己试） ---------- */
 {
   assert.equal(readNesMapper(new Uint8Array(16)), null, '魔数不对就不是 iNES')

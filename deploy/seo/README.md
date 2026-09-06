@@ -36,18 +36,37 @@ MAILTO=vins@bitabc.io
 
 想改回溯天数：`BAIDU_DAYS=7 ...push-daily.sh`。
 
+## 推哪些内容
+
+两个补交脚本都覆盖三类，**按价值排优先级**：
+
+| 顺序 | 内容 | 来源 |
+|---|---|---|
+| 1 | 游戏详情页 `/games/<slug>` | `games` 表，`hidden = 0` |
+| 2 | 文章详情页 `/blog/<slug>` | `posts` 表，`published = 1`（草稿在前台是 404，不推） |
+| 3 | 平台页 `/platforms/<id>`、类型页 `/genres/<id>` | 复用 sitemap 的 `taxonomyRows()`，空平台 / 白名单外的平台 / 已下线的类型都已剔除 |
+
+顺序对百度有实际意义：配额从前往后花，用完就停，所以最值钱的排最前。IndexNow 没有
+实际配额压力，三类都会展开成全部 8 种语言。
+
+`/games`、`/blog` 这类一直在变的列表页**不进补交** —— 它们在每次内容保存时
+已经跟着 `gameChangeUrls` / `postChangeUrls` 推过了，补交里再占配额不划算。
+
 ## 手动补交
 
 ```bash
 cd server
 
-npm run baidu -- --dry-run     # 只打印将要提交的 URL，一条都不发（排查配置用这个）
-npm run baidu                  # 最近 3 天有变动的上架游戏
+npm run baidu -- --dry-run       # 只打印将要提交的 URL，一条都不发（排查配置用这个）
+npm run baidu                    # 最近 3 天有变动的内容
 npm run baidu -- --days 7
-npm run baidu -- --all         # 全部上架游戏（首次启用时跑一次）
-npm run baidu -- --limit 10    # 最多只推 10 条
+npm run baidu -- --all           # 全部内容（首次启用时跑一次）
+npm run baidu -- --limit 10      # 最多只推 10 条
+npm run baidu -- --only games    # 只推某一类：games / posts / taxonomy
 
-npm run indexnow               # IndexNow 全量重推
+npm run indexnow                 # 全量重推
+npm run indexnow -- --dry-run
+npm run indexnow -- --only posts
 ```
 
 根目录也有同名快捷方式：`npm run baidu -- --dry-run`、`npm run indexnow`。

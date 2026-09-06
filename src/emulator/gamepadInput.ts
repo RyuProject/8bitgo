@@ -122,13 +122,53 @@ export function startGamepadInput(send: (button: PadButton, down: boolean) => vo
     }
     raf = requestAnimationFrame(loop)
   }
-  raf = requestAnimationFrame(loop)
+
+/**
+ * 有没有连着手柄。
+ *
+ * ⚠️ 没有的话 rAF 循环一帧都不该排。
+ *
+ * 手机上根本插不了手柄，而 `hasGamepadApi()` 在 iOS Safari / 安卓 Chrome 上都返回 true ——
+ * 于是每一局游戏全程都在 60Hz 空转：`navigator.getGamepads()` 每次调用都新建一份快照
+ * （Chrome 会造 4 个 Gamepad 对象、各带 17 个 GamepadButton 和一条 axes），
+ * 加上每帧 `new Set()` / `new Array(16)`，一秒几千个纯垃圾对象。这些 GC 压力紧挨着
+ * 模拟器本来就吃紧的 16ms 帧预算，低端机上就是掉帧 + 发烫掉电。
+ * 改成靠 gamepadconnected / gamepaddisconnected 开关循环：没手柄时零开销。
+ */
+  const anyPad = () => {
+    try {
+      return Array.prototype.some.call(navigator.getGamepads(), (p: Gamepad | null) => Boolean(p?.connected))
+    } catch {
+      return false
+    }
+  }
+
+  /** 有手柄就开循环，没有就停掉并把按着的键松开 */
+  const sync = () => {
+    if (stopped) return
+    const on = anyPad()
+    if (on && !raf) raf = requestAnimationFrame(loop)
+    if (!on && raf) {
+      cancelAnimationFrame(raf)
+      raf = 0
+      for (const button of [...held]) send(button, false)
+      held.clear()
+    }
+  }
+
+  window.addEventListener('gamepadconnected', sync)
+  window.addEventListener('gamepaddisconnected', sync)
+  // 进页面之前就插着的手柄不会补发 gamepadconnected，先自己探一次
+  sync()
 
   return {
     stop: () => {
       if (stopped) return
       stopped = true
-      cancelAnimationFrame(raf)
+      window.removeEventListener('gamepadconnected', sync)
+      window.removeEventListener('gamepaddisconnected', sync)
+      if (raf) cancelAnimationFrame(raf)
+      raf = 0
       // 松开这一局还按着的键，否则角色会带着「一直往右」进下一局
       for (const button of [...held]) send(button, false)
       held.clear()

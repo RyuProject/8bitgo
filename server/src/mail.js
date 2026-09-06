@@ -42,7 +42,7 @@ export class MailError extends Error {
 }
 
 /** 发件地址。MAIL_FROM 是新名字，SMTP_FROM / SMTP_USER 是为了兼容旧配置 */
-const FROM_EMAIL = (process.env.MAIL_FROM || process.env.SMTP_FROM || process.env.SMTP_USER || '').trim()
+export const FROM_EMAIL = (process.env.MAIL_FROM || process.env.SMTP_FROM || process.env.SMTP_USER || '').trim()
 const FROM_NAME = (process.env.MAIL_FROM_NAME || '8BitGo').trim()
 /** 发信超时。挂在这里等于把一个 HTTP 请求也挂住，必须卡死 */
 const TIMEOUT_MS = Number(process.env.MAIL_TIMEOUT_MS || 15_000)
@@ -236,7 +236,7 @@ async function getTransport() {
   return transporter
 }
 
-async function sendViaSmtp({ subject, text, html }, to) {
+async function sendViaSmtp({ subject, text, html, attachments, replyTo }, to) {
   const t = await getTransport()
   if (!t) {
     throw new MailError(
@@ -245,7 +245,17 @@ async function sendViaSmtp({ subject, text, html }, to) {
     )
   }
   try {
-    await t.sendMail({ from: `${FROM_NAME} <${FROM_EMAIL}>`, to, subject, text, html })
+    await t.sendMail({
+      from: `${FROM_NAME} <${FROM_EMAIL}>`,
+      to,
+      subject,
+      text,
+      html,
+      // 直接「回复」就能回到提交人手里，不用从正文里把地址复制出来
+      replyTo: replyTo || undefined,
+      // 有附件才传：nodemailer 对空数组也兼容，但显式不传更干净
+      attachments: attachments && attachments.length ? attachments : undefined,
+    })
   } catch (e) {
     // nodemailer 的 5xx 是对方明确拒收（地址不存在之类），4xx 多是临时故障
     const code = Number(e?.responseCode || 0)
@@ -337,4 +347,119 @@ export async function sendLoginCode(email, code, purpose = 'login') {
   }
 
   return sendViaSmtp(mail, email)
+}
+
+/* ------------------------------------------------------------------ */
+/*  带附件的通用发信（提交游戏用）                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 「提交游戏」这条通路可以单独指定，不跟着验证码走。
+ *
+ * ⚠️ 这是这个功能最容易踩、而且踩了完全看不出来的一个坑：
+ * mailProvider() 的优先级是 Resend > Cloudflare > SMTP，而正式环境的
+ * RESEND_API_KEY 是**填着**的（验证码在用）。你后来配了自己的 SMTP 想让 ROM 附件
+ * 从自己的邮箱发出去 —— 不加这个开关的话，SMTP_HOST 填了也一行都不会生效，
+ * 信照旧从 Resend 发出，附件还要受 Resend 的总大小限制。
+ * 排查时看到的现象是「SMTP 明明配好了」，根本想不到是通路选错。
+ *
+ *   SUBMIT_MAIL_PROVIDER=smtp        强制走 SMTP（需要 SMTP_HOST + SMTP_USER）
+ *   SUBMIT_MAIL_PROVIDER=resend      强制走 Resend
+ *   SUBMIT_MAIL_PROVIDER=cloudflare  强制走 Cloudflare（⚠️ 不支持附件）
+ *   留空 / auto                       按 mailProvider() 的默认优先级
+ *
+ * 顺带一句：POP3 是**收**信协议，发信只用得上 SMTP —— 你手上那份 POP 配置
+ * 这里一个字段都用不到，填 SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASS 就够了。
+ */
+export function submitMailProvider() {
+  const forced = String(process.env.SUBMIT_MAIL_PROVIDER || '').trim().toLowerCase()
+  if (!forced || forced === 'auto') return mailProvider()
+  if (forced === 'smtp') {
+    if (!process.env.SMTP_HOST || !process.env.SMTP_USER) {
+      throw new MailError('sender', 'SUBMIT_MAIL_PROVIDER=smtp 但 SMTP_HOST / SMTP_USER 没填')
+    }
+    return 'smtp'
+  }
+  if (forced === 'resend') {
+    if (!process.env.RESEND_API_KEY) {
+      throw new MailError('sender', 'SUBMIT_MAIL_PROVIDER=resend 但 RESEND_API_KEY 没填')
+    }
+    return 'resend'
+  }
+  if (forced === 'cloudflare') {
+    if (!process.env.CF_ACCOUNT_ID || !process.env.CF_EMAIL_TOKEN) {
+      throw new MailError('sender', 'SUBMIT_MAIL_PROVIDER=cloudflare 但 CF_ACCOUNT_ID / CF_EMAIL_TOKEN 没填')
+    }
+    return 'cloudflare'
+  }
+  if (forced === 'none') return 'none'
+  throw new MailError('sender', `SUBMIT_MAIL_PROVIDER 只能是 smtp / resend / cloudflare / auto，收到的是「${forced}」`)
+}
+
+/**
+ * 发一封带附件的邮件。当前只有「提交游戏」在用 —— ROM 文件作为附件发出去，
+ * 不落 R2 / 数据库，省下对象存储空间。
+ *
+ * @param {object} opts
+ * @param {string} opts.to           收件地址（站点管理员）
+ * @param {string} opts.subject      标题
+ * @param {string} opts.text         纯文本正文
+ * @param {string} [opts.html]       HTML 正文
+ * @param {string} [opts.replyTo]    回复地址（填提交人的邮箱，直接回复就能联系上他）
+ * @param {'resend'|'cloudflare'|'smtp'|'none'} [opts.provider] 指定通路，默认 submitMailProvider()
+ * @param {{filename:string,content:Buffer}[]} [opts.attachments]  附件
+ *
+ * ⚠️ 附件只有 SMTP 和 Resend 两条通路支持：
+ *   - SMTP（nodemailer）：原生支持 Buffer 附件，最稳，也没有 REST 那层大小限制。
+ *   - Resend：attachment.content 传 base64 字符串，整封信有总大小上限。
+ *   - Cloudflare Email Service：REST 接口不支持附件 —— 这里**直接报错**，
+ *     不再「把附件名写进正文然后当成功返回」。那种做法的后果是用户看到
+ *     「提交成功」，而 ROM 已经被悄悄丢掉了，比失败更糟。
+ */
+export async function sendRawMail({ to, subject, text, html, attachments = [], replyTo, provider }) {
+  const chosen = provider || submitMailProvider()
+
+  if (chosen === 'none') {
+    console.log(`[mail:dev] (提交游戏) -> ${to}\n主题：${subject}\n附件 ${attachments.length} 个\n${text}`)
+    return
+  }
+
+  if (!FROM_EMAIL) {
+    throw new MailError('sender', '未配置发件地址：在 .env 里设 MAIL_FROM（例如 noreply@8bitgo.com）')
+  }
+
+  if (chosen === 'cloudflare' && attachments.length) {
+    throw new MailError(
+      'sender',
+      'Cloudflare Email Service 不支持邮件附件。请配 SMTP 并设 SUBMIT_MAIL_PROVIDER=smtp，' +
+        '或者让提交人改用「ROM 下载链接」那一栏',
+    )
+  }
+
+  if (chosen === 'resend') {
+    await sendViaResend({
+      from: `${FROM_NAME} <${FROM_EMAIL}>`,
+      to: [to],
+      ...(replyTo ? { reply_to: replyTo } : {}),
+      subject,
+      text,
+      html,
+      ...(attachments.length
+        ? { attachments: attachments.map((a) => ({ filename: a.filename, content: a.content.toString('base64') })) }
+        : {}),
+    })
+    return
+  }
+
+  if (chosen === 'cloudflare') {
+    return sendViaCloudflare({
+      from: { email: FROM_EMAIL, name: FROM_NAME },
+      to,
+      subject,
+      text,
+      html,
+    })
+  }
+
+  return sendViaSmtp({ subject, text, html, attachments, replyTo }, to)
 }

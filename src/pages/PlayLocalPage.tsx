@@ -7,7 +7,7 @@ import { useSeo } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
 import { usePlatformBiosUrl } from '@/services/platformBios'
 import { platformLabel } from '@/services/i18nData'
-import { EmulatorPlayer } from '@/emulator'
+import { EmulatorPlayer } from '@/emulator/PlayerChunk'
 import { KeymapCards } from '@/components/game/KeymapCards'
 import { isPlayable, resolveRuntime, runtimesFor } from '@/emulator'
 

@@ -25,7 +25,8 @@ import { identifyArcadeRomset, type RomsetIdentification } from '@/lib/arcadeRom
 import type { ArcadeHack } from '@/data/arcadeHacks'
 import { platformBiosUrlSync, fetchPlatformBios } from '@/services/platformBios'
 import { uploadSwfBundle, type BundleUploadProgress } from './swfUpload'
-import { confirmUpload, cleanupSuperseded, deleteRomObjects, human, isDeletableKey } from './uploadGuards'
+import { compressCoverToWebp } from '@/lib/imageResize'
+import { confirmUpload, confirmDiscImage, cleanupSuperseded, deleteRomObjects, human, isDeletableKey } from './uploadGuards'
 import { coreOptionsFor } from '@/config/emulators'
 import { FEATURES } from '@/config/features'
 import { isPlayable } from '@/emulator'
@@ -60,7 +61,7 @@ const EMPTY: Game = {
   genres: ['action'],
   year: 1990,
   developer: '',
-  rating: 4.5,
+  rating: 0,
   ratingCount: 0,
   plays: 0,
   players: 1,
@@ -198,9 +199,14 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
       rom: form.rom?.trim() || undefined,
       roms: Object.keys(cleanedRoms).length ? cleanedRoms : undefined,
       tags: tags.length ? tags : undefined,
-      // rating / ratingCount / plays 都不在表单里填：
-      // plays 由后端在玩家真正开始游戏时累加，评分字段留给将来的真实评分系统。
-      // 编辑时原样带回，新建时是 0。
+      /**
+       * rating / ratingCount / plays 都不在表单里填，编辑时原样带回、新建时是 0。
+       *
+       * plays 由后端在玩家真正开始游戏时累加；评分是 game_ratings 明细的聚合，
+       * 服务端在每次有人打分时按明细重算（见 server/src/ratings-repo.js）。
+       * ⚠️ 也就是说这两个字段发上去服务端根本不看（gameApiToRow 不映射它们），
+       * 想手动「调一下评分」是调不动的 —— 下一票一来就被算回真实值。
+       */
       rating: Math.max(0, Number(form.rating) || 0),
       ratingCount: Math.max(0, Math.round(Number(form.ratingCount) || 0)),
       plays: Math.max(0, Math.round(Number(form.plays) || 0)),
@@ -889,6 +895,11 @@ function RomField({
       if (inputRef.current) inputRef.current.value = ''
       return
     }
+    // 光盘平台：格式和体积先问一句。转 .chd 这件事只有在**上传之前**说才有用
+    if (!confirmDiscImage(platform, file)) {
+      if (inputRef.current) inputRef.current.value = ''
+      return
+    }
     // 街机：先认 romset。认出来就用 romset 短名当文件名，这是核心唯一认的东西
     const sniffed = await sniffArcade(file)
     const oldKey = value.trim()
@@ -1253,22 +1264,47 @@ function MediaField({
   const accept = kind === 'videos' ? 'video/*' : 'image/*'
   const previewUrl = value ? romUrlForKey(value) : ''
 
+  /**
+   * 把封面 key 的图片后缀换成压缩后**真正的**那个（.webp；浏览器不支持 WebP 编码时是 .jpg）。
+   * 免得 covers/contra.jpg 这个 key 里头装着 webp 字节，后缀和内容对不上。
+   */
+  function withImageExt(key: string, ext: string): string {
+    return key.replace(/\.(png|jpe?g|gif|webp|bmp|avif)$/i, '') + ext
+  }
+
   const onFile = async (file: File | undefined) => {
     if (!file) return
-    const oldKey = value.trim()
-    // 同 RomField：复用已绑定的 key，避免 covers/slug.jpg 与 covers/slug.png 并存
-    const key = oldKey && !/^https?:/i.test(oldKey) ? oldKey : defaultMediaKey(kind, slug, file.name)
     setMsg(null)
-    if (!(await confirmUpload(key, file))) {
-      if (inputRef.current) inputRef.current.value = ''
-      return
-    }
-    setProgress(0)
     try {
-      const result = await uploadRom(file, key, setProgress)
+      const oldKey = value.trim()
+      const isCover = kind === 'covers'
+      // 封面图先压成 300×300（按短边居中裁切，不拉伸）再传，见 imageResize.ts；视频原样走 R2。
+      const compressed = isCover ? await compressCoverToWebp(file) : null
+      const targetFile: Blob = compressed ? compressed.blob : file
+      /**
+       * 同 RomField：复用已绑定的 key，避免 covers/slug.jpg 与 covers/slug.png 并存。
+       *
+       * ⚠️ 没有已绑定 key 时必须把**原文件名**交给 defaultMediaKey。slug 为空
+       * （新建游戏、标识还没填）时它会退回用文件名 —— 这里要是写死 'cover.webp'，
+       * 每一款新游戏的封面都会落到同一个 covers/cover.webp 上，后传的把先传的盖掉。
+       */
+      const baseKey =
+        oldKey && !/^https?:/i.test(oldKey) ? oldKey : defaultMediaKey(kind, slug, file.name)
+      const key = compressed ? withImageExt(baseKey, compressed.ext) : baseKey
+      if (!(await confirmUpload(key, targetFile))) return
+      setProgress(0)
+      const result = await uploadRom(targetFile, key, setProgress)
       onChange(result.key)
       const removed = await cleanupSuperseded(oldKey, result.key, allBoundKeys)
-      setMsg({ ok: true, text: `已上传：${result.key}（${human(result.size)}）${removed ? `；旧文件 ${removed} 已删除` : ''}` })
+      const note = !compressed
+        ? ''
+        : compressed.fellBackToJpeg
+          ? '（已压成 300×300，但这个浏览器不支持 WebP 编码，存的是 JPEG）'
+          : `（已从 ${compressed.sourceWidth}×${compressed.sourceHeight} 压成 300×300 WebP）`
+      setMsg({
+        ok: true,
+        text: `已上传：${result.key}（${human(result.size)}）${note}${removed ? `；旧文件 ${removed} 已删除` : ''}`,
+      })
     } catch (err) {
       setMsg({ ok: false, text: err instanceof Error ? err.message : '上传失败' })
     } finally {

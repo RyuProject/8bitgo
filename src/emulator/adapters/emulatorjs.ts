@@ -24,19 +24,9 @@
  */
 import type { PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
-import { platformLabel } from '@/services/i18nData'
-import type {
-  Capability,
-  CaptureSources,
-  LoadPhase,
-  LoadProgress,
-  MountOptions,
-  Runtime,
-  RuntimeHandle,
-  StageMode,
-} from '../types'
-import { fetchWithProgress, throttleProgress } from '../loadProgress'
-import { romCacheGet, romCacheKey, romCachePut } from '../romCache'
+import type { Capability, CaptureSources, LoadPhase, LoadProgress, MountOptions, RuntimeHandle, StageMode } from '../types'
+import { fetchBlobWithProgress, fetchWithProgress, throttleProgress } from '../loadProgress'
+import { romCacheGet, romCacheGetBlob, romCacheKey, romCachePut, romCachePutBlob } from '../romCache'
 import { focusFrame, frameGamepads } from '../frameFocus'
 import { getT, fmt } from '@/services/i18n'
 import { getLang } from '@/services/lang'
@@ -67,10 +57,9 @@ import { matchArcadeHack, type ArcadeHack } from '@/data/arcadeHacks'
  * cdn.emulatorjs.org/4.3.0-pre/，实测取回来的核心初始化不出 EJS_Runtime，
  * 玩家看到的就是「Error loading EmulatorJS runtime」。本地有核心，这条路不会走。
  */
-export const EJS_PATH: string = (() => {
-  const p = import.meta.env.VITE_EJS_PATH || '/emulatorjs/'
-  return p.endsWith('/') ? p : `${p}/`
-})()
+export { EJS_PATH } from '../paths'
+import { EJS_PATH, isDiscPlatform } from '../paths'
+import { applyTuning, sizeOfTrack, tuningFor } from '../videoTuning'
 
 /**
  * 站点语言 → EmulatorJS 自带的界面语言包（data/localization/*.json）。
@@ -294,7 +283,14 @@ export interface NetplaySession {
  * 所以明确要求「优先保帧率」，并给一个够用的码率上限，避免把房主的上行占满
  * （上行一满，存档上传和按键回传都会跟着变卡）。
  */
-const VIDEO_MAX_BITRATE = Number(import.meta.env.VITE_NETPLAY_MAX_BITRATE) || 2_500_000
+/**
+ * 联机的码率**下限**（不是固定值）。真正的码率由 videoTuning 按画面大小算，
+ * 算出来低于这个数时按这个走。
+ *
+ * 给得比直播（1Mbps）宽：联机是 1 对 3，上行压力小得多，而访客的操作手感
+ * 直接受画质影响 —— 看不清子弹和看不清像素是两回事。
+ */
+const NETPLAY_MIN_BITRATE = Number(import.meta.env.VITE_NETPLAY_MAX_BITRATE) || 2_000_000
 const VIDEO_MAX_FPS = 60
 
 /**
@@ -786,21 +782,18 @@ function instrumentRtc(win: Window & Record<string, unknown>, onState?: (s: RTCP
   const Native = win.RTCPeerConnection as typeof RTCPeerConnection | undefined
   if (typeof Native !== 'function') return
 
-  const tuneVideo = (sender: RTCRtpSender) => {
-    try {
-      const params = sender.getParameters()
-      if (!params.encodings || !params.encodings.length) params.encodings = [{}]
-      for (const e of params.encodings) {
-        e.maxBitrate = VIDEO_MAX_BITRATE
-        e.maxFramerate = VIDEO_MAX_FPS
-      }
-      // 游戏画面：宁可糊一点也不要卡
-      ;(params as RTCRtpSendParameters & { degradationPreference?: string }).degradationPreference =
-        'maintain-framerate'
-      void sender.setParameters(params)
-    } catch {
-      /* 老浏览器不支持就算了，只是少一层优化 */
-    }
+  /**
+   * 按这条轨的**实际画面大小**定编码参数（和直播共用 ../videoTuning.ts）。
+   *
+   * ⚠️ 原来这里写死 `maintain-framerate` + 固定 2.5Mbps，注释是「宁可糊一点也不要卡」。
+   * 那句话对 640×480 的 DOS 成立，对 256×240 的红白机是**反的** ——
+   * maintain-framerate 的意思是「扛不住就缩分辨率」，而 256×240 缩一半是 128×120，
+   * 访客的屏幕还要放大回去：得到的不是糊一点，是认不出字的马赛克。
+   * 现在按源大小分档，小源保分辨率、掉帧率。
+   */
+  const tuneVideo = (sender: RTCRtpSender, track: MediaStreamTrack) => {
+    const { width, height } = sizeOfTrack(track)
+    applyTuning(sender, tuningFor({ width, height, fps: VIDEO_MAX_FPS, minBitrate: NETPLAY_MIN_BITRATE }))
   }
 
   const Wrapped = function (this: unknown, config?: RTCConfiguration, ...rest: unknown[]) {
@@ -832,17 +825,21 @@ function instrumentRtc(win: Window & Record<string, unknown>, onState?: (s: RTCP
 
     const nativeAddTrack = pc.addTrack.bind(pc)
     pc.addTrack = (track: MediaStreamTrack, ...streams: MediaStream[]) => {
-      // 告诉编码器这是「运动画面」，它会自己偏向保帧率
-      try {
-        if (track.kind === 'video') track.contentHint = 'motion'
-      } catch {
-        /* ignore */
+      /**
+       * contentHint 要在**协商之前**设 —— 它影响编码器怎么建起来，设晚了这一路
+       * 已经按默认建好了。而 setParameters 相反，要等 sender 协商完才生效。
+       * 所以这里分两次：先定 hint，一秒后再写参数。
+       */
+      if (track.kind === 'video') {
+        const { width, height } = sizeOfTrack(track)
+        try {
+          track.contentHint = tuningFor({ width, height, fps: VIDEO_MAX_FPS, minBitrate: NETPLAY_MIN_BITRATE }).contentHint
+        } catch {
+          /* 老浏览器没有 contentHint */
+        }
       }
       const sender = nativeAddTrack(track, ...streams)
-      if (track.kind === 'video') {
-        // 参数要等 sender 真正协商完才生效，稍等一下再设
-        window.setTimeout(() => tuneVideo(sender), 1000)
-      }
+      if (track.kind === 'video') window.setTimeout(() => tuneVideo(sender, track), 1000)
       return sender
     }
     return pc
@@ -853,13 +850,30 @@ function instrumentRtc(win: Window & Record<string, unknown>, onState?: (s: RTCP
 }
 
 /** 往 iframe 里注入一个脚本，resolve 表示加载完成 */
-function injectScript(doc: Document, src: string): Promise<void> {
+function injectScript(doc: Document, src: string, timeoutMs?: number): Promise<void> {
   return new Promise((resolve, reject) => {
     const s = doc.createElement('script')
+    /*
+      ⚠️ 只给**可选的**脚本设超时。
+      浏览器要等 TCP 超时（三十几秒起步）才会给静默丢包的地址打 onerror ——
+      对 socket.io 这种「挂了也只是联机用不了」的脚本，等那么久等于把开局拖死。
+      loader.js 不传这个参数：它慢是因为在下核心，不是因为连不上。
+    */
+    const timer = timeoutMs
+      ? window.setTimeout(() => {
+          s.onload = null
+          s.onerror = null
+          reject(new Error(`${src} (超时)`))
+        }, timeoutMs)
+      : 0
+    const done = (fn: () => void) => {
+      if (timer) window.clearTimeout(timer)
+      fn()
+    }
     s.src = src
     s.async = false
-    s.onload = () => resolve()
-    s.onerror = () => reject(new Error(src))
+    s.onload = () => done(resolve)
+    s.onerror = () => done(() => reject(new Error(src)))
     doc.head.appendChild(s)
   })
 }
@@ -959,7 +973,84 @@ export async function prepareRemoteArcadeRom(
   return { url: blobUrl, name, hack: hackOf(data) }
 }
 
-function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
+/**
+ * 光盘镜像的加载路径（PS1 / PS2）。
+ *
+ * ── 为什么不让引擎自己下 ─────────────────────────────────────
+ * EmulatorJS 自己那套 XHR 下载有两个问题，在几十 MB 的卡带机上都无所谓，
+ * 到了几百 MB 的盘上就是致命的：
+ *
+ *   1. **下完就扔**。同一个玩家第二次进同一款游戏，几百 MB 从头再来一遍。
+ *      romCache 覆盖不到引擎内部的 XHR（见 romCache.ts 的说明），
+ *      所以要缓存就只能把这一步接管过来。
+ *   2. **开局前不知道要下多少**。玩家点了「开始」之后看着一个百分比慢慢爬，
+ *      不知道是 20MB 还是 700MB，也就无从判断该不该等 —— 这是「网页游戏怎么这么卡」
+ *      的一大半来源。接管之后 Content-Length 在第一帧就有了。
+ *
+ * ── 为什么是 Blob 不是 ArrayBuffer ──────────────────────────
+ * 街机那条路（上面的 prepareRemoteArcadeRom）拿的是 ArrayBuffer，因为它要验中央目录、
+ * 要算改版包指纹。光盘这条什么都不用验，只需要一个能交给引擎的 URL ——
+ * 而 ArrayBuffer 要求一整块连续内存，700MB 的连续分配在手机上本来就悬，
+ * 加上后面 Blob 一份、引擎 XHR 回来再一份，峰值是文件的两三倍，标签页直接被系统杀掉。
+ * 走 Blob 则全程只有分片在内存里待过，浏览器还会把大 Blob 落到磁盘。
+ *
+ * ⚠️ **不做格式校验**。盘的种类太多（.chd 是 MAME 自己的容器、.pbp 是 PSP 打包格式、
+ * .cue 是纯文本、.iso 的 magic 在第 32769 字节），在这里判一遍只会把本来能跑的挡在门外。
+ * 真跑不起来时核心报的原文会经 FATAL_HINTS 那条路送上来，比我们猜得准。
+ */
+/**
+ * 从播放地址里取出带扩展名的文件名，交给引擎当 EJS_gameName。
+ *
+ * 必须去掉查询串：播放地址带着 `?romv=<etag>`（内容寻址用，见 romCache.ts），
+ * 留着的话核心看到的扩展名是 `.chd?romv=abc123`，一样认不出容器格式。
+ */
+export function discNameFor(url: string, fallback: string): string {
+  try {
+    const path = new URL(url, location.href).pathname
+    const base = decodeURIComponent(path.slice(path.lastIndexOf('/') + 1))
+    if (/\.[a-z0-9]{2,5}$/i.test(base)) return base
+  } catch {
+    /* 相对地址解析不了就用兜底名 */
+  }
+  return fallback
+}
+
+export async function prepareRemoteDiscRom(
+  url: string,
+  onProgress: MountOptions['onProgress'],
+  signal: AbortSignal,
+): Promise<{ url: string; bytes: number }> {
+  const cacheKey = romCacheKey(url)
+  if (cacheKey) {
+    const cached = await romCacheGetBlob(cacheKey)
+    if (cached) {
+      if (signal.aborted) throw new DOMException('已取消', 'AbortError')
+      // 命中也要发满进度那一帧：播放器的加载遮罩靠进度回调收尾。
+      // cached 标记让遮罩显示「已缓存」而不是「需下载 620 MB」—— 秒开时那行字必须对得上。
+      onProgress?.({ phase: 'rom', loaded: cached.size, total: cached.size, ratio: 1, cached: true })
+      return { url: URL.createObjectURL(cached), bytes: cached.size }
+    }
+  }
+
+  const blob = await fetchBlobWithProgress(url, {
+    phase: 'rom',
+    onProgress,
+    signal,
+    check: (res) => {
+      const type = res.headers.get('content-type') ?? ''
+      // 地址或反代配错时，SSR 常会回 200 + HTML；状态码正常也绝不能当成镜像交给核心
+      if (/text\/html|application\/xhtml/i.test(type)) throw new Error(`HTTP ${res.status}`)
+    },
+  })
+
+  // 不 await：写几百 MB 要花时间，不该让玩家在开局前干等。Blob 本身是不可变的，
+  // 下面 createObjectURL 之后照样能安全写盘
+  if (cacheKey) void romCachePutBlob(cacheKey, blob).catch(() => {})
+
+  return { url: URL.createObjectURL(blob), bytes: blob.size }
+}
+
+export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
   // 按游戏覆盖优先，其次才是平台默认。街机一个平台底下其实是好几套硬件，
   // 拳皇 / 街霸 / 老板子各要各的核心，光靠平台默认值盖不住
@@ -1196,6 +1287,8 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   let preparedArcadeBlobUrl = ''
   /** 区分「ROM 预下载失败」与后续 loader.js / 核心加载失败，避免错误提示张冠李戴。 */
   let arcadeRomPrepared = false
+  /** 同上，光盘那条路的。两条路的失败提示不一样，不能合成一个标志 */
+  let discRomPrepared = false
   /** 按指纹认出来、由 data/arcadeHacks.ts 提供的 RomData。管理员填了的话不会用到 */
   let builtInRomData = ''
 
@@ -1725,7 +1818,34 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
          * 解开，不能一刀切。必须在写 EJS_* 和加载 loader.js 之前完成，否则引擎会抢先
          * 读取旧 URL，这一局里再改全局变量已经来不及。
          */
-        if (!isFile && options.platform === 'arcade') {
+        /**
+         * 光盘平台（PS1）：接管下载，为的是能缓存、能提前告诉玩家要下多少
+         * （见 prepareRemoteDiscRom 的说明）。和街机那条互斥 —— 一个平台不会同时是两者。
+         */
+        if (!isFile && isDiscPlatform(options.platform)) {
+          const prepared = await prepareRemoteDiscRom(
+            remoteGameUrl,
+            (p) => {
+              beat() // 下载在动就不算卡
+              options.onProgress?.(p)
+            },
+            prepareAbort.signal,
+          )
+          if (destroyed) {
+            URL.revokeObjectURL(prepared.url)
+            return
+          }
+          preparedArcadeBlobUrl = prepared.url
+          gameUrl = prepared.url
+          /**
+           * ⚠️ 引擎的名字必须保留**原始扩展名**：核心是按扩展名认容器格式的
+           * （.chd 是 MAME 容器、.pbp 是 PSP 打包、.cue 是文本清单）。
+           * blob: 地址本身不带扩展名，这里不把名字喂对，核心会当成裸镜像去解析，
+           * 报的是「格式不支持」而不是「名字不对」—— 完全指错方向。
+           */
+          engineGameName = discNameFor(remoteGameUrl, options.gameName)
+          discRomPrepared = true
+        } else if (!isFile && options.platform === 'arcade') {
           const prepared = await prepareRemoteArcadeRom(
             remoteGameUrl,
             (p) => {
@@ -1825,12 +1945,9 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
           onFailed: (status, url) => failLoad(fmt(rt.ejsRomFailed, { status: String(status), url })),
         })
 
-        // 开局之前一直盯着：引擎报错要接出来，start 事件不来也得有个台阶下
-        watchStart(win)
-
         // socket.io 客户端必须在 loader.js 之前就位：netplay 用的是全局 io()
         if (NETPLAY_URL) {
-          await injectScript(doc, socketIoScriptUrl()).catch(() => {
+          await injectScript(doc, socketIoScriptUrl(), 8_000).catch(() => {
             // 信令服务器不可达时不阻断单机游戏，只是联机用不了。
             // ⚠️ onError 对播放器来说就是「这局完了」（重试一次然后拆掉），没有「警告」这一档 ——
             // 以前这里不管有没有联机会话都往上报，信令一挂（或者被广告拦截器拦掉脚本），
@@ -1861,6 +1978,20 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         // 清掉旧时代缓存的坏核心（见 purgePoisonedEngineCache 的注释），
         // 必须在 loader.js 之前 —— 引擎一起来就会去查这个库
         await purgePoisonedEngineCache()
+
+        /**
+         * ⚠️ 看门狗必须放在这里，不能更早。
+         *
+         * 它盯的两样东西（`.ejs_error_text`、`win.EJS_emulator.started`）都是 loader.js
+         * 跑起来之后才可能出现的，早装一秒也看不到任何东西 —— 却会开始 30 秒倒计时。
+         * 而它上面那几步全是**没有超时**的等待：注入 socket.io、取 ICE 配置、清缓存。
+         * 信令主机被防火墙静默丢包（DROP 而不是 RST）时，`<script>` 要等到 TCP 超时才 onerror，
+         * 三十几秒起步 —— 这期间没有任何东西能喂心跳（installNetTap 只包 iframe 里的 XHR，
+         * `<script>` 和父窗口的 fetch 都不走它；`.ejs_loading_text` 此时还不存在）。
+         * 于是**单机开一局街机也会被判「卡住了」**，重试一次再等 30 秒，最后红字。
+         * 那一局根本不需要联机。
+         */
+        watchStart(win)
         if (destroyed) return
         await injectScript(doc, `${EJS_PATH}loader.js`)
       } catch (error) {
@@ -1876,6 +2007,11 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         if (!isFile && options.platform === 'arcade' && !arcadeRomPrepared) {
           const message = error instanceof Error ? error.message : String(error)
           options.onError?.(fmt(rt.ejsArcadeRomDownloadFailed, { msg: message }))
+          return
+        }
+        if (!isFile && isDiscPlatform(options.platform) && !discRomPrepared) {
+          const message = error instanceof Error ? error.message : String(error)
+          options.onError?.(fmt(rt.ejsDiscDownloadFailed, { msg: message }))
           return
         }
         options.onError?.(fmt(rt.ejsLoadFailed, { path: EJS_PATH }))
@@ -2055,44 +2191,5 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   }
 }
 
-/** EmulatorJS 覆盖面最广：把所有配了 core 的平台的扩展名收进来 */
-const EJS_EXTS: string[] = [
-  ...new Set(
-    Object.values(platformMap)
-      .filter((p) => p.core)
-      .flatMap((p) => p.romExtensions ?? []),
-  ),
-].map((e) => e.replace(/^\./, '').toLowerCase())
 
-export const emulatorJsRuntime: Runtime = {
-  id: 'emulatorjs',
-  name: 'EmulatorJS',
-  get description() {
-    return getT().runtime.ejsDesc
-  },
-  extensions: EJS_EXTS,
-  // 通用兜底引擎，优先级最低：有更专精的引擎（如 .nes 的 jsnes）时让给它
-  priority: 5,
-  available: () => true,
-  supports: (platform) => Boolean(platformMap[platform]?.core),
-  /**
-   * 详情页「运行时」那一格的后半截。
-   *
-   * 这里**不能**直接把 platformMap[platform].core 摆出去 —— 那是 EmulatorJS 内部的
-   * 核心键（'arcade' / 'segaMD' / 'ws' 这种），既不是引擎名，也永远是英文小写，
-   * 在中文/日文站上就是一行看不懂的字母（用户报的就是「EmulatorJS · arcade」）。
-   *
-   * 改成按站点语言取平台名：中文「街机」、英文「Arcade」、日文「アーケード」，
-   * 用的是 t.platforms 里已有的那份，不需要新增词条。
-   * 取不到（新平台还没进 locales）就退回 data/platforms.ts 里的原名，再退回 id ——
-   * 无论如何不会出现空白或者 '—'。
-   */
-  engineLabel: (platform) =>
-    platformMap[platform]?.core ? platformLabel(getT(), platform, platformMap[platform]?.name ?? platform) : '—',
-  mount,
-}
 
-/** 该平台能否 P2P 联机：需要 EmulatorJS 能跑（即配了 core）且信令已配置 */
-export function p2pPlayable(platform: string): boolean {
-  return Boolean(NETPLAY_URL) && Boolean(platformMap[platform as keyof typeof platformMap]?.core)
-}

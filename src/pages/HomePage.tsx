@@ -1,14 +1,7 @@
 import { HomeHeading, HomeIntro } from '@/components/home/HomeIntro'
 import { HomeBanner } from '@/components/home/HomeBanner'
-import {
-  FaqSection,
-  GenreGridSection,
-  LatestSection,
-  PlatformsSection,
-  PopularSection,
-  TogetherSection,
-} from '@/components/home/sections'
-import { useSeo, faqSchema, websiteSchema } from '@/services/seo'
+import { CollectionsSection, FaqSection, GenreGridSection, LatestSection, PlatformsSection, PopularSection, TogetherSection } from '@/components/home/sections'
+import { useSeo, faqSchema, organizationSchema, websiteSchema } from '@/services/seo'
 import { useT } from '@/services/i18n'
 import { usePageData, type HomeData } from '@/services/pageData'
 import { GameCardSkeleton, SkeletonBlock } from '@/components/ui/PageSkeleton'
@@ -18,7 +11,7 @@ export function HomePage() {
   // 首页不传 title，直接用站点默认标题；FAQ 结构化数据直接复用页面上的问答
   useSeo({
     description: t.seo.home,
-    jsonLd: [websiteSchema(t.seo.home), faqSchema(t.faq)],
+    jsonLd: [websiteSchema(t.seo.home), organizationSchema(), faqSchema(t.faq)],
   })
   // 整页只取这一次：热门 / 最新 / 联机 / 分类样例 / facets 全在这份数据里。
   // 让每个区块自己取的话，首屏就是七八个并发请求，而它们本来就是同一次查询能出的结果。
@@ -62,6 +55,7 @@ export function HomePage() {
             <PlatformsSection facets={data?.facets} />
             <LatestSection games={data?.newest ?? []} />
             <TogetherSection games={data?.multiplayer ?? []} />
+            <CollectionsSection collections={data?.collections ?? []} />
             <GenreGridSection facets={data?.facets} genreSamples={data?.genreSamples} />
           </>
         )}

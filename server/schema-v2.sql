@@ -62,6 +62,13 @@ CREATE TABLE IF NOT EXISTS games (
   body_control  TINYINT(1)    NOT NULL DEFAULT 0,
   -- 成人内容标记。前台据此在挂载模拟器之前要求输入出生日期并验证年满 18 岁。
   adult         TINYINT(1)    NOT NULL DEFAULT 0,
+  -- 评分聚合（见 game_ratings）。冗余在这里是为了让游戏库能直接按评分排序、
+  -- 卡片能直接显示星级，不必每次 join 一张会越来越大的明细表。
+  -- rating_sum = SUM(score*weight)，rating_weight = SUM(weight)，平均分 = 前者/后者。
+  -- rating_count 是**人数**，只用于展示（「128 人评分」），不参与算平均。
+  rating_sum    DECIMAL(12,1)   NOT NULL DEFAULT 0,
+  rating_weight DECIMAL(12,1)   NOT NULL DEFAULT 0,
+  rating_count  INT UNSIGNED    NOT NULL DEFAULT 0,
   hidden        TINYINT(1)    NOT NULL DEFAULT 0,
   -- 模拟器核心覆盖。NULL = 用平台默认（src/data/platforms.ts 的 core 字段）。
   -- 街机尤其需要：同一个「街机」平台底下，拳皇要 fbneo、街霸2 要 fbalpha2012_cps2、
@@ -399,4 +406,95 @@ CREATE TABLE IF NOT EXISTS game_comments (
   CONSTRAINT fk_cmt_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE,
   CONSTRAINT fk_cmt_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   CONSTRAINT fk_cmt_parent FOREIGN KEY (parent_id) REFERENCES game_comments(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------------------------------------------------------------------------
+-- 游戏评分：1~5 星。登录用户权重 1.0，未登录 0.5
+--
+-- 为什么权重不是「登录才算数」：绝大多数访客不会为了打个分去注册，全挡掉等于
+-- 这个功能对大部分人不存在；但匿名票天然更容易被刷，也更不负责任，所以打对折。
+-- 加权平均 = SUM(score * weight) / SUM(weight)，聚合值冗余在 games 表上（见那三列）。
+--
+-- 身份与去重（这是这张表最需要小心的地方）：
+--   登录用户  user_id 有值、anon_id 与 anon_ip 都是 NULL，靠 uniq_rating_user 保证一人一票
+--   匿名用户  user_id 为 NULL，anon_id 是浏览器本地生成的长期标识，anon_ip 是发起时的 IP
+--
+-- ⚠️ IP 的唯一约束**只能约束匿名行**，所以登录行的 anon_ip 必须写 NULL 而不是空串：
+--    MySQL 的唯一索引允许多个 NULL，于是同一个 NAT 后面的多个登录用户互不影响；
+--    要是把登录用户的 IP 也存进去，学校/公司里第二个人就再也评不了分。
+--
+-- ⚠️ anon_id 是客户端自己生成的，换个无痕窗口就能变 —— 它的作用**不是防刷**
+--    （防刷靠 anon_ip 那条唯一约束），而是让同一个浏览器能**改自己的分**，
+--    以及换了网络（手机切基站）之后还认得出是同一个人。
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS game_ratings (
+  id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  game_id    BIGINT UNSIGNED NOT NULL,
+  -- 登录用户的 id；匿名评分为 NULL
+  user_id    VARCHAR(40)     NULL,
+  -- 匿名身份：浏览器本地生成并长期保存的随机串。登录评分为 NULL
+  anon_id    CHAR(32)        NULL,
+  -- 匿名评分发起时的 IP。**登录评分必须为 NULL**，见上面的说明
+  anon_ip    VARCHAR(45)     NULL,
+  score      TINYINT UNSIGNED NOT NULL,
+  -- 1.0 = 登录，0.5 = 匿名。存下来而不是每次按 user_id 现推：
+  -- 以后要调权重时，历史票据该按当时的规则还是新规则算是个产品决定，留出选择余地
+  weight     DECIMAL(2,1)    NOT NULL,
+  -- 发表时的国家快照，和评论同源（CF-IPCountry）。用于事后分析刷分，不对外展示
+  country    CHAR(2)         NOT NULL DEFAULT 'XX',
+  created_at TIMESTAMP(3)    NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at TIMESTAMP(3)    NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  -- 一个登录用户对一款游戏只有一票（改分是 UPDATE 这一行）
+  UNIQUE KEY uniq_rating_user (game_id, user_id),
+  -- 同一浏览器同理。登录行 anon_id 是 NULL，不受这条约束
+  UNIQUE KEY uniq_rating_anon (game_id, anon_id),
+  -- 同一 IP 的匿名票只算一张。登录行 anon_ip 是 NULL，不受影响
+  UNIQUE KEY uniq_rating_ip (game_id, anon_ip),
+  KEY idx_rating_game_time (game_id, created_at DESC),
+  KEY idx_rating_user_time (user_id, created_at DESC),
+  CONSTRAINT fk_rating_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE,
+  CONSTRAINT fk_rating_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT chk_rating_score CHECK (score BETWEEN 1 AND 5)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------------------------------------------------------------------------
+-- 合集：注册用户自己建的游戏清单，目前一律公开
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS collections (
+  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  user_id     VARCHAR(40)     NOT NULL,
+  title       VARCHAR(80)     NOT NULL,
+  -- 「类型」是作者自己填的一行字（产品上就叫「可自定义」），**不是枚举**。
+  -- 建表时定成枚举的话，以后想加一种就要改表；而这一格本来就允许天马行空
+  -- （「小时候的暑假」「通关向」都是合理的类型）。前端会给几个常用建议，仅仅是建议。
+  kind        VARCHAR(30)     NOT NULL DEFAULT '',
+  description VARCHAR(500)    NOT NULL DEFAULT '',
+  -- 管理员用的下架开关。作者自己看不到这一格 —— 违规内容按「谁能改」的约定只允许管理员删/藏，
+  -- 不允许他替作者改内容
+  hidden      TINYINT(1)      NOT NULL DEFAULT 0,
+  -- 最后一次「有动静」的时间：改资料、加游戏、移除游戏都要往前推。
+  -- 列表默认按它排，所以**不能**用 ON UPDATE CURRENT_TIMESTAMP —— 那样任何一次
+  -- 无关的 UPDATE（比如将来加个浏览计数）都会把合集顶到最前面。由各处显式写。
+  updated_at  TIMESTAMP(3)    NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  created_at  TIMESTAMP(3)    NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  -- 个人中心「我的合集」：某个人的，最新建的在前
+  KEY idx_col_user_time (user_id, created_at DESC),
+  -- 首页与 /collections：先滤掉下架的，再按最近更新排
+  KEY idx_col_pub_time (hidden, updated_at DESC),
+  CONSTRAINT fk_col_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS collection_items (
+  collection_id BIGINT UNSIGNED NOT NULL,
+  game_id       BIGINT UNSIGNED NOT NULL,
+  -- 毫秒精度。封面取的是「最新放入的四款」，秒级 TIMESTAMP 会让同一秒里连加几款的
+  -- 先后变成随机的，封面每次刷新都换一批（和 favorites 那条是同一个理由）
+  created_at    TIMESTAMP(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  -- 同一款游戏在一个合集里只能有一条：主键直接把重复加入挡掉，不用先查后插
+  PRIMARY KEY (collection_id, game_id),
+  KEY idx_ci_col_time (collection_id, created_at DESC),
+  -- 删游戏时要按 game_id 清理
+  KEY idx_ci_game (game_id),
+  CONSTRAINT fk_ci_col FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE,
+  CONSTRAINT fk_ci_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

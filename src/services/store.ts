@@ -18,7 +18,7 @@ export interface AdminGameQuery {
   platform?: string
   /** 'all' | 'visible' | 'hidden'，由服务端筛选，所以 total 和翻页都是全库口径 */
   status?: 'all' | 'visible' | 'hidden'
-  /** 'popular' | 'newest' | 'name' | 'home'（home = 按首页排序号） */
+  /** 'popular' | 'newest' | 'rating' | 'name' | 'home'（home = 按首页排序号；rating = 贝叶斯加权分） */
   sort?: string
   /** 'all' | 'picked'（只看上了首页的）| 'unpicked' */
   home?: 'all' | 'picked' | 'unpicked'

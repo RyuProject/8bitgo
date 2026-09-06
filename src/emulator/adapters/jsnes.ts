@@ -8,7 +8,7 @@
  * 这里用 jsnes 自带的高层 Browser 类：它负责 canvas、WebAudio、键盘与手柄，
  * 并提供 destroy() 做彻底清理，正好对上 Runtime.mount 的「返回销毁函数」约定。
  */
-import type { Capability, CaptureSources, LoadProgress, MountOptions, PadButton, Runtime, RuntimeHandle } from '../types'
+import type { Capability, CaptureSources, LoadProgress, MountOptions, PadButton, RuntimeHandle } from '../types'
 import { canvasToBlob } from '../recorder'
 import { getT, fmt } from '@/services/i18n'
 import { extractRomFromZip, isZip } from '@/lib/unzip'
@@ -16,13 +16,15 @@ import { assertNesRom } from '@/lib/romValidation'
 import { loadGameBytes } from '../romLoader'
 import { JSNES_MAPPERS, readNesMapper } from '../nesMapper'
 import { startGamepadInput, type GamepadInput } from '../gamepadInput'
+import { installPadKeyboard } from '../padKeyboard'
+import type { PadAction, Seat } from '@/services/padKeys'
 
 /**
  * 手柄键 → jsnes 的按键编号（node_modules/jsnes/src/controller.js 的静态常量）。
  * 抄成字面量而不是 import Controller：那是包的内部模块，路径随版本变，
  * 而这几个数字是 NES 硬件的移位寄存器顺序，二十年不会动。
  */
-const NES_BUTTON: Record<PadButton, number> = {
+const NES_BUTTON: Record<PadAction, number> = {
   a: 0,
   b: 1,
   select: 2,
@@ -31,6 +33,13 @@ const NES_BUTTON: Record<PadButton, number> = {
   down: 5,
   left: 6,
   right: 7,
+  /**
+   * 连发。jsnes 内置的（Controller.BUTTON_TURBO_A / _B = 8 / 9）：按住期间它在 clock()
+   * 里每帧翻转 A / B 的电平，60fps 下约 30Hz —— 对标 NES Advantage 那种连发手柄的最快档。
+   * 只有键盘绑得到 —— 屏幕手柄和物理手柄那两条路走 PadButton，只有八颗真实按键。
+   */
+  turboA: 8,
+  turboB: 9,
 }
 
 /** 一次 rAF 最多追几帧。掉出去太多就别硬追了，直接对齐，免得补帧风暴把页面拖死 */
@@ -141,6 +150,11 @@ interface JsnesBrowser {
   start?: () => void
   stop?: () => void
   nes?: JsnesNes
+  /**
+   * 它自带的键盘控制器。我们只用来**停掉**它：把 keys 置空，它的 handleKeyDown
+   * 就一个键都匹配不上。不用 setKeys() —— 那会把空表写进 localStorage['keys']。
+   */
+  keyboard?: { keys: Record<number, unknown> }
   _screen?: { canvas?: HTMLCanvasElement }
   _speakers?: JsnesSpeakers
   _frameTimer?: JsnesFrameTimer
@@ -182,7 +196,7 @@ function clearBrokenGamepadConfig() {
   }
 }
 
-function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
+export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
   let destroyed = false
   let browser: JsnesBrowser | null = null
@@ -209,21 +223,35 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const onResize = () => browser?.fitInParent?.()
 
   /**
-   * 按键入口。屏幕手柄（TouchPad）和物理手柄（gamepadInput）都走这里。
+   * 按键总入口。屏幕手柄（TouchPad）、物理手柄（gamepadInput）、键盘（padKeyboard）
+   * 三条路最后都落到这里 —— 一处代码决定「按下去发生什么」。
    *
    * 不去合成键盘事件 —— jsnes 的键盘处理读的是 e.keyCode，合成事件在各浏览器上的
-   * 行为都不一样，还会撞上页面上别的监听。手柄编号固定 1（一号手柄）。
+   * 行为都不一样，还会撞上页面上别的监听。
+   *
+   * seat 0 = 一号手柄，1 = 二号。jsnes 的手柄编号是**从 1 开始**的。
    */
-  const sendPad = (button: PadButton, down: boolean) => {
+  const sendAction = (action: PadAction, down: boolean, seat: Seat = 0) => {
     const nes = browser?.nes
-    const code = NES_BUTTON[button]
+    const code = NES_BUTTON[action]
     if (!nes || code === undefined) return
-    if (down) nes.buttonDown?.(1, code)
-    else nes.buttonUp?.(1, code)
+    const controller = seat === 1 ? 2 : 1
+    if (down) nes.buttonDown?.(controller, code)
+    else nes.buttonUp?.(controller, code)
+  }
+
+  /**
+   * RuntimeHandle.sendButton 那一层。它只认八颗真实按键（PadButton），
+   * player 是 0 / 1 —— 转成座位交给 sendAction。
+   */
+  const sendPad = (button: PadButton, down: boolean, player = 0) => {
+    sendAction(button, down, player === 1 ? 1 : 0)
   }
 
   /** 物理手柄的轮询句柄，destroy 时要停 */
   let gamepad: GamepadInput | null = null
+  /** 键盘监听的卸载函数，destroy 时要摘 —— 不摘的话方向键会一直被 preventDefault */
+  let padKeyboard: (() => void) | null = null
 
   /** 上一次 rAF 到达的时刻；音频那条线靠它判断 rAF 是不是被浏览器停了 */
   let lastRafAt = 0
@@ -499,6 +527,19 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
         } catch {
           /* 清理失败就算了，至少监听已经摘掉 */
         }
+        /**
+         * ⚠️ loadROM 失败要换引擎，不能原样重试。
+         *
+         * nesMapper.ts 的预判和 jsnes 自己那套「脏文件头就只取低 4 位」的判据**不是同一套**
+         * （我们只看字节 12-15，jsnes 看 8-15），两边分歧时预判会说「jsnes 支持」而
+         * jsnes 当场抛 `Unsupported mapper: N`。走 onError 的话播放器只会原封不动重试一次，
+         * 第二次**确定性地**再失败 —— 玩家拿到一张红字，而 EmulatorJS 的 FCEUmm 明明跑得动。
+         * 交给 onUnsupported 就走换引擎那条路；没有下一个引擎时播放器自己会退回报错，语义不丢。
+         */
+        if (!readyFired) {
+          options.onUnsupported?.(e instanceof Error ? e.message : String(e))
+          return
+        }
         throw e
       }
 
@@ -510,6 +551,22 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       window.addEventListener('resize', onResize)
 
       for (const c of ['pause', 'screenshot', 'record', 'gamepad', 'touchpad'] as Capability[]) caps.add(c)
+
+      /*
+        停掉 jsnes 自带的键盘映射，换上我们自己那套（services/padKeys.ts + padKeyboard.ts）。
+
+        为什么要换：它读 e.keyCode（跟键盘布局走，AZERTY 上物理位置对不上）、存在裸的
+        localStorage['keys'] 里、而且 onButtonDown 被 disableIfGamepadEnabled 包着 ——
+        一旦 gamepadConfig 存在就**静默失效**。三条理由都写在 padKeys.ts 开头。
+        换成 code 之后还白捡一个：2P 的小键盘不再依赖 NumLock。
+
+        ⚠️ 是直接把 keys 置空，不是调 keyboard.setKeys({}) —— 后者会把空表写进
+        localStorage['keys'] 落盘，等于替玩家在一个不属于我们的键上留垃圾。
+        置空之后它的 handleKeyDown 一个键都匹配不上，那三个监听就成了空转
+        （留着不摘：destroy() 认的是同一批函数引用，摘了它自己反而清理不干净）。
+      */
+      if (browser.keyboard) browser.keyboard.keys = {}
+      padKeyboard = installPadKeyboard(sendAction)
 
       // 物理手柄：jsnes 自带那套走不通（见 clearBrokenGamepadConfig），改成自己轮询
       gamepad = startGamepadInput(sendPad)
@@ -584,7 +641,7 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
        * 进去，等于把 CPU 寄存器和内存写成 undefined：画面变雪花，而工具栏还报「读档完成」，
        * 正在玩的进度当场没了。
        */
-      const wrapped = file as { tag?: string; state?: unknown } | null
+      const wrapped = file as { tag?: string; game?: string; state?: unknown } | null
       const state =
         wrapped && wrapped.tag === STATE_TAG
           ? wrapped.state
@@ -593,6 +650,19 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
             ? file
             : null
       if (!state || typeof state !== 'object') throw new Error(rt.stateBad)
+      /**
+       * 认出「是 jsnes 存档」还不够，还得认「是**这一款**的存档」。
+       *
+       * saveState 一直把 game 写进文件，却从来没人校验过。文件选择器什么都收得下：
+       * 在 A 游戏导出的档，到 B 游戏里点读档就能选中它 —— tag 一样，校验通过，
+       * fromJSON 把 A 的 CPU / PPU / 内存抄进正在跑的 B，而 mapper 和 PRG/CHR 还是 B 的：
+       * 画面立刻雪花或死机，工具栏却报「读档完成」，B 这局的进度当场没了。
+       * 老档没有 game 字段，放行保持兼容。
+       */
+      const from = wrapped?.tag === STATE_TAG ? wrapped.game : undefined
+      if (from && options.gameName && from !== options.gameName) {
+        throw new Error(fmt(rt.stateForeign, { game: from }))
+      }
       nes.fromJSON(state)
     },
     // 录声音接在自己插的 gain 上：录到的就是玩家听到的
@@ -607,6 +677,9 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       unlockAudio?.()
       unlockAudio = null
       window.removeEventListener('resize', onResize)
+      // 键盘先摘：不摘的话方向键会一直被 preventDefault，玩家退出播放器后页面滚不动了
+      padKeyboard?.()
+      padKeyboard = null
       gamepad?.stop()
       gamepad = null
       try {
@@ -625,17 +698,3 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   }
 }
 
-export const jsnesRuntime: Runtime = {
-  id: 'jsnes',
-  name: 'jsnes',
-  get description() {
-    return getT().runtime.jsnesDesc
-  },
-  extensions: ['nes'],
-  // 比 EmulatorJS 高：命中 .nes 时优先用它
-  priority: 20,
-  available: () => true,
-  supports: (platform) => platform === 'nes',
-  engineLabel: () => 'jsnes',
-  mount,
-}

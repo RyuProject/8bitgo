@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { PlatformId } from '@/types'
 import { getDefaultKeymap } from '@/lib/emulator'
 import { comboLabel, getHotkeys, onHotkeysChange } from '@/services/hotkeys'
+import { onPadKeysChange } from '@/services/padKeys'
 import { useT } from '@/services/i18n'
 import { cx } from '@/lib/format'
 
@@ -25,8 +26,9 @@ interface Props {
 export function KeymapCards({ runtimeId, platform, size = 'md', className }: Props) {
   const t = useT()
   const [, bump] = useState(0)
-  // 玩家在播放器的存档面板里改了快捷键，这张表得立刻跟上，不能还写着旧的
+  // 玩家在播放器里改了存读档快捷键或红白机键位，这张表得立刻跟上，不能还写着旧的
   useEffect(() => onHotkeysChange(() => bump((n) => n + 1)), [])
+  useEffect(() => onPadKeysChange(() => bump((n) => n + 1)), [])
 
   const keymap = getDefaultKeymap(runtimeId, platform)
   const hotkeys = getHotkeys()
@@ -51,21 +53,46 @@ export function KeymapCards({ runtimeId, platform, size = 'md', className }: Pro
     .filter(Boolean)
     .join(' ')
 
+  /**
+   * 2P 那一组。目前只有 jsnes 有（小键盘那一半是它默认表里本来就带的）。
+   * 有第二组时才给第一组加「1P」小标题 —— 只有一组的时候标它反而是噪音。
+   */
+  const p2 = keymap.player2 ?? []
   const sm = size === 'sm'
+
+  const seatLabel = cx('font-semibold text-muted', sm ? 'mt-3 text-[10px]' : 'mt-4 text-[11px]')
+  const grid = cx('grid gap-2', sm ? 'mt-2 grid-cols-3' : 'mt-2 grid-cols-3 sm:grid-cols-5')
+
+  const cards = (list: typeof rows) => (
+    <div className={grid}>
+      {list.map((k) => (
+        <div
+          key={k.button}
+          className={cx('border border-line bg-surface', sm ? 'rounded-lg px-2.5 py-2' : 'rounded-xl px-3 py-2.5')}
+        >
+          <p className={cx('text-muted', sm ? 'text-[10px]' : 'text-[11px]')}>{k.button}</p>
+          <p className={cx('font-mono font-semibold', sm ? 'text-xs' : 'mt-1 text-sm')}>{k.key}</p>
+        </div>
+      ))}
+    </div>
+  )
+
   return (
     <div className={className}>
       {note && <p className={cx('leading-relaxed text-muted', sm ? 'mt-1 text-xs' : 'mt-1 text-sm')}>{note}</p>}
-      <div className={cx('grid gap-2', sm ? 'mt-3 grid-cols-3' : 'mt-4 grid-cols-3 sm:grid-cols-5')}>
-        {rows.map((k) => (
-          <div
-            key={k.button}
-            className={cx('border border-line bg-surface', sm ? 'rounded-lg px-2.5 py-2' : 'rounded-xl px-3 py-2.5')}
-          >
-            <p className={cx('text-muted', sm ? 'text-[10px]' : 'text-[11px]')}>{k.button}</p>
-            <p className={cx('font-mono font-semibold', sm ? 'text-xs' : 'mt-1 text-sm')}>{k.key}</p>
-          </div>
-        ))}
-      </div>
+      {p2.length > 0 && <p className={seatLabel}>1P</p>}
+      {cards(rows)}
+      {p2.length > 0 && (
+        <>
+          <p className={seatLabel}>2P</p>
+          {cards(p2)}
+          {keymap.player2Note && (
+            <p className={cx('leading-relaxed text-muted', sm ? 'mt-2 text-xs' : 'mt-2 text-sm')}>
+              {keymap.player2Note}
+            </p>
+          )}
+        </>
+      )}
     </div>
   )
 }

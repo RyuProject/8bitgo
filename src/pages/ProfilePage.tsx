@@ -16,13 +16,14 @@ import { FEATURES } from '@/config/features'
 import { GameGridSkeleton, SkeletonBlock } from '@/components/ui/PageSkeleton'
 import { AccountSection } from '@/components/profile/AccountSection'
 import { CloudSaves } from '@/components/profile/CloudSaves'
+import { MyCollections } from '@/components/profile/MyCollections'
 import { DangerZone } from '@/components/profile/DangerZone'
 
 const AVATARS = ['🕹️', '👾', '🎮', '🍄', '⭐', '🐉', '🦔', '🤖', '👻', '🐱', '🔥', '💎']
 
 const GRID = 'grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6'
 
-type Tab = 'games' | 'saves' | 'account'
+type Tab = 'games' | 'collections' | 'saves' | 'account'
 
 export function ProfilePage() {
   const t = useT()
@@ -107,6 +108,7 @@ export function ProfilePage() {
 
   const TABS: Array<{ id: Tab; label: string }> = [
     { id: 'games', label: t.profile.title },
+    { id: 'collections', label: t.collections.mine },
     { id: 'saves', label: t.account.savesTitle },
     { id: 'account', label: t.account.title },
   ]
@@ -254,6 +256,8 @@ export function ProfilePage() {
 
       {/* 两个分栏都只在选中时挂载：云存档一挂载就会去拉列表，
           账号那块也没必要在用户压根没点开的时候先渲染出一堆表单 */}
+      {tab === 'collections' && <MyCollections />}
+
       {tab === 'saves' && <CloudSaves />}
 
       {tab === 'account' && (
@@ -308,7 +312,7 @@ function ProfileSkeleton() {
       </div>
       <section aria-hidden>
         <SkeletonBlock className="mb-4 h-5 w-32" />
-        <GameGridSkeleton count={6} coverRatio="landscape" className={GRID} />
+        <GameGridSkeleton count={6} className={GRID} />
       </section>
     </div>
   )

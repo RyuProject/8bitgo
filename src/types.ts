@@ -9,6 +9,7 @@ import type { RomLang } from '@/config/languages'
 /** 平台（主机）标识，同时也是 EmulatorJS 核心映射的键 */
 export type PlatformId =
   | 'psx'
+  | 'ps2'
   | 'arcade'
   | 'n64'
   | 'nes'
@@ -59,7 +60,7 @@ export interface Platform {
    * 取值与 src/emulator/types.ts 的 RuntimeId 一致（cloudgame 不在这里选，
    * 它由用户在播放器里切到联机模式时才用）。
    */
-  runtime: 'emulatorjs' | 'ruffle' | 'html5' | 'jsnes' | 'j2me' | 'jsdos' | 'webretro' | null
+  runtime: 'emulatorjs' | 'ruffle' | 'html5' | 'jsnes' | 'j2me' | 'jsdos' | 'webretro' | 'play' | null
   /** EmulatorJS 核心名（仅 runtime 为 emulatorjs 时有意义） */
   core: string | null
   /** 接受的 ROM 文件后缀 */
@@ -94,9 +95,14 @@ export interface Game {
   year: number
   developer: string
   /**
-   * 评分。站内目前**没有**评分功能，这两个字段一律为 0，界面上也不展示。
-   * 保留下来是给将来的真实评分系统用（用户评分 -> 服务端聚合）。
-   * 在那之前不要手填，更不要输出到 schema.org —— 编造的聚合评分会被 Google 判为虚假富媒体摘要。
+   * 评分（1~5 星）。由服务端按 game_ratings 聚合得出，登录票权重 1.0、匿名票 0.5，
+   * 平均分 = SUM(score×weight) / SUM(weight)，保留一位小数。
+   *
+   * ⚠️ 一票都没有时两个都是 0。0 分在 1~5 分制里不是一个合法评分，是「还没人评过」——
+   * 所以画星星和输出 schema.org 的 aggregateRating 之前都必须先判 ratingCount > 0，
+   * 把 0 当成真实评分发出去会被 Google 判为虚假富媒体摘要。
+   *
+   * ⚠️ 后台表单里也**不要**手填这两个字段：下一次有人评分时服务端会按明细重算，手填的值会被覆盖。
    */
   rating: number
   ratingCount: number
@@ -201,6 +207,11 @@ export interface Game {
   addedAt: string
   /** 内容最后更新时间（ISO 8601）；供搜索引擎时间因子使用 */
   updatedAt?: string
+  /**
+   * 最新一条可见评论的时间（ISO 8601）。没人回复过就没有这个字段。
+   * 只有详情页接口会带上，列表页不查（见 games-repo.js 的 getGameBySlug）。
+   */
+  lastCommentAt?: string
   /** 体感控制友好 */
   bodyControl?: boolean
   /** 成人内容：启动游戏前必须通过 18 岁出生日期验证 */
@@ -218,7 +229,7 @@ export interface FaqItem {
   a: string
 }
 
-export type SortKey = 'popular' | 'newest' | 'name'
+export type SortKey = 'popular' | 'newest' | 'name' | 'rating'
 
 export interface GameQuery {
   q?: string
@@ -346,11 +357,40 @@ export interface GameComment {
   /** 编辑过的时间；没编辑过就没有这个字段 */
   editedAt?: string
   createdAt: string
+  /**
+   * 作者给这款游戏打的分（1~5）。没评过分就没有这个字段。
+   *
+   * 这是 join 出来的**当前**评分，不是发表时的快照 —— 他改了分，
+   * 历史评论上的星星会跟着变。见服务端 routes/comments.js 的说明。
+   */
+  score?: number
   author: CommentAuthor
   quote?: CommentQuote
   /** 后台列表才有：这条评论挂在哪款游戏下 */
   gameSlug?: string
   gameTitle?: string
+}
+
+/** 一款游戏的评分汇总（GET /api/ratings?game=<slug>） */
+export interface RatingSummary {
+  /** 加权平均分，保留一位小数。一票都没有时是 null（不是 0） */
+  average: number | null
+  /** 评分人数，用于「N 人评分」 */
+  count: number
+  /** 权重合计（登录 1.0 + 匿名 0.5 之和）。展示用不到，调试对账时有用 */
+  weight: number
+  /** 1~5 星各有多少人，用来画分布柱 */
+  distribution: Record<string, number>
+  /** 我这一票。没评过是 null */
+  mine: MyRating | null
+}
+
+export interface MyRating {
+  score: number
+  weight: number
+  /** true = 这票是匿名投的（权重 0.5）。登录后再投会顶掉它 */
+  anonymous: boolean
+  updatedAt?: string | null
 }
 
 /** 评论列表接口的响应 */
@@ -359,4 +399,52 @@ export interface CommentPage {
   page: number
   pageSize: number
   items: GameComment[]
+}
+
+/** 合集的作者（只取展示要用的几格，不暴露邮箱之类） */
+export interface CollectionAuthor {
+  id: string
+  nickname: string
+  /** 表情头像（users.avatar 存的就是一个 emoji，不是图片地址） */
+  avatar: string
+}
+
+/** 用户自建的游戏合集 */
+export interface Collection {
+  id: number
+  title: string
+  /**
+   * 作者自己填的「类型」，可以是任意一行字（「系列」「通关向」「小时候的暑假」都行）。
+   * 不是枚举 —— 产品上这一格就叫「可自定义」。没填时是空串。
+   */
+  kind: string
+  description: string
+  /** 里面一共多少款游戏（不是 covers 的长度） */
+  gameCount: number
+  /** 最新放入的四款，用来拼封面四宫格。不足四款时就是实际数量 */
+  covers: Game[]
+  author: CollectionAuthor
+  /** 被管理员下架了。普通访客根本看不到这种合集，只有作者和审核者拿得到 */
+  hidden: boolean
+  updatedAt: string
+  createdAt: string
+  /** 当前登录的人就是作者。没登录 / 不是本人时不带这个字段 */
+  mine?: boolean
+}
+
+/** 合集列表接口的响应 */
+export interface CollectionPage {
+  items: Collection[]
+  total: number
+  page: number
+  pageSize: number
+}
+
+/** 合集详情接口的响应 */
+export interface CollectionDetail {
+  collection: Collection
+  /** 合集里的全部游戏，最新放入的在前 */
+  games: Game[]
+  /** 当前访客有没有审核权（能下架 / 删别人的合集） */
+  canReview: boolean
 }

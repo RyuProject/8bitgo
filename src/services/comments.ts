@@ -32,8 +32,20 @@ export async function fetchComments(gameSlug: string, page = 1): Promise<Comment
   return { ...EMPTY, ...r, items: Array.isArray(r?.items) ? r.items : [] }
 }
 
-export async function postComment(gameSlug: string, content: string, parentId?: string): Promise<GameComment> {
-  return api.post<GameComment>('/api/comments', { gameSlug, content, parentId })
+/**
+ * 发表评论，可以顺手带一个 1~5 的评分。
+ *
+ * score 走的是和 /api/ratings 同一张票（服务端是同一个 submitRating），
+ * 所以「在评论框打的分」会覆盖之前在星星上打的分，反之亦然 —— 一个人对一款游戏只有一票。
+ * 不传（undefined）时完全不碰评分，编辑旧评论也不会把分洗掉。
+ */
+export async function postComment(
+  gameSlug: string,
+  content: string,
+  parentId?: string,
+  score?: number,
+): Promise<GameComment> {
+  return api.post<GameComment>('/api/comments', { gameSlug, content, parentId, score })
 }
 
 export async function editComment(id: string, content: string): Promise<GameComment> {

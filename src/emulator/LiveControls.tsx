@@ -182,6 +182,13 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
   const [roomId, setRoomId] = useState('')
   /** 信令断了、正在重连。画面多半还在流（WebRTC 是点对点的），所以只是标记变灰，不撤掉 */
   const [reconnecting, setReconnecting] = useState(false)
+  /**
+   * 推流受限的原因（来自 WebRTC 的 qualityLimitationReason）。
+   * 以前这条链路上一个 getStats 都没有 —— 画质被压下去了主播也不知道为什么，
+   * 只能等观众来说「好卡」。cpu 那一档尤其要让人看见：**每多一个观众就多一路编码**，
+   * 而游戏主循环和它们抢的是同一颗 CPU。
+   */
+  const [quality, setQuality] = useState<'none' | 'cpu' | 'bandwidth' | 'other'>('none')
   const [viewers, setViewers] = useState(0)
   const [hidden, setHidden] = useState(readPrivate)
   /**
@@ -217,8 +224,14 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
       for (const tr of tabStreamRef.current.getTracks()) tr.stop()
       tabStreamRef.current = null
     }
-    if (!liveRef.current) return
-    liveRef.current.stop()
+    /*
+      ⚠️ 别在这里早退。
+      手动分享那条路的 onState('ended') 以前是先把 liveRef 置空再调 stop()，于是这道
+      早退闸在**界面复位之前**就返回了：红点继续跳、还显示着断线前的在看人数、
+      🔗 复制出去的是一个已经不存在的房间链接。broadcast.stop() 自己有 stopped 守卫，
+      重复调是安全的，所以这里改成「有就停，然后无论如何都把界面收干净」。
+    */
+    liveRef.current?.stop()
     liveRef.current = null
     setLive(null)
     setRoomId('')
@@ -263,6 +276,7 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
           sources,
           meta: { gameSlug, gameName, platform: platform ?? '', title: gameName, hostName: playerName() },
           onViewers: setViewers,
+          onQuality: (q) => setQuality(q.reason),
           onRoom: setRoomId,
           onState: (state) => {
             if (state === 'reconnecting') setReconnecting(true)
@@ -324,14 +338,12 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
         maxBitrate: tabBitrate(stream),
         meta: { gameSlug, gameName, platform: platform ?? '', title: gameName, hostName: playerName() },
         onViewers: setViewers,
+        onQuality: (q) => setQuality(q.reason),
         onRoom: setRoomId,
         onState: (state) => {
           if (state === 'reconnecting') setReconnecting(true)
           else if (state === 'live') setReconnecting(false)
-          else if (state === 'ended' && liveRef.current) {
-            liveRef.current = null
-            stop()
-          }
+          else if (state === 'ended') stop()
         },
       })
       liveRef.current = b
@@ -402,6 +414,12 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
   }
 
   /** 点下去干什么，也随状态变 —— 在播是「停止公开」，不公开是「开始公开」 */
+  /** 受限时把原因缀在按钮说明后面 —— 不新增界面元素，但主播一 hover 就知道为什么糊 */
+  const qualityNote =
+    phase !== 'live' || quality === 'none' || quality === 'other'
+      ? ''
+      : ` · ${quality === 'cpu' ? t.runtime.liveLimitedCpu : t.runtime.liveLimitedBandwidth}`
+
   const hint: Record<Phase, string> = {
     live: tt.liveHideTitle,
     reconnecting: tt.liveReconnectingTitle,
@@ -417,7 +435,7 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
         type="button"
         className={cx(STATE_BTN, TONE[phase])}
         onClick={toggleHidden}
-        title={hint[phase]}
+        title={hint[phase] + qualityNote}
         aria-label={label[phase]}
         aria-pressed={!hidden}
       >

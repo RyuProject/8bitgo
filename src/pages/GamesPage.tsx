@@ -23,11 +23,15 @@ function sortsFor(t: Translation): Array<{ key: SortKey; label: string }> {
   return [
     { key: 'popular', label: t.games.sortPopular },
     { key: 'newest', label: t.games.sortNewest },
+    // 评分排序在功能关掉时整格不出现：留着的话点了会按「最热门」返回，看起来像坏了
+    ...(FEATURES.ratings ? [{ key: 'rating' as SortKey, label: t.games.sortRating }] : []),
     { key: 'name', label: t.games.sortName },
   ]
 }
 
-const SORT_KEYS: SortKey[] = ['popular', 'newest', 'name']
+const SORT_KEYS: SortKey[] = FEATURES.ratings
+  ? ['popular', 'newest', 'rating', 'name']
+  : ['popular', 'newest', 'name']
 
 /**
  * facets 只回「id → 数量」，平台和类型的名称、图标、描述仍然是代码里的配置。
@@ -143,11 +147,26 @@ export function GamesPage() {
                 ? t.games.titleCoin
                 : t.games.titleAll
 
-  // 筛选与分页只是同一份列表的不同切片，canonical 统一指向 /games，避免产生大量重复内容页
+  /**
+   * 没有任何筛选、也没换排序的「干净列表」。
+   *
+   * 分页不算筛选：`/games?page=2` 是同一份列表的下一段，内容和第 1 页并不相同，
+   * 把它 canonical 到 `/games` 等于告诉搜索引擎「这页不用看」，第 2 页往后的游戏
+   * 就只剩 sitemap 一条入口了。平台页 / 类型页早就是 self-canonical 的
+   * （见 CollectionPage.tsx），这里跟上。
+   *
+   * 而带筛选、带搜索、换过排序的那些仍然统一指回 `/games` —— 它们是同一批游戏的
+   * 不同切片，组合数是乘积级的，robots.txt 里也只放行了裸的 `?page=`。
+   */
+  const plainList = !q && !platformId && !genreId && !developer && !multiplayer && !coin && sort === 'popular'
+  const paged = plainList && page > 1
+  const totalPages = list?.totalPages ?? 1
+
   useSeo({
-    title,
+    // 第 2 页起标题带上页码，避免多页共用同一个 title
+    title: paged ? `${title}${fmt(t.games.pageOf, { page, total: totalPages })}` : title,
     description: t.seo.games,
-    canonicalPath: '/games',
+    canonicalPath: paged ? `/games?page=${page}` : '/games',
     // 站内搜索结果没有收录价值（内容随关键词无限组合），但仍允许抓取，
     // 这样 canonical 能被读到，首页 JSON-LD 里的站内搜索框也才验证得过
     noindex: Boolean(q),
@@ -164,6 +183,19 @@ export function GamesPage() {
       ]),
     ],
   })
+
+  /**
+   * 分页链接的地址。保留当前筛选条件，第 1 页不带 page 参数 —— 和 canonical
+   * （固定指向干净的 /games）保持同一套 URL 形状。
+   * 注意 robots.txt 只放行了裸的 `/games?page=`，带筛选的组合仍然不抓，这是有意的。
+   */
+  const pageHref = (p: number) => {
+    const next = new URLSearchParams(params)
+    if (p <= 1) next.delete('page')
+    else next.set('page', String(p))
+    const qs = next.toString()
+    return qs ? `/games?${qs}` : '/games'
+  }
 
   const set = (key: string, value: string | null) => {
     const next = new URLSearchParams(params)
@@ -331,7 +363,12 @@ export function GamesPage() {
           */}
           {!appended && (
             <div className="mt-6">
-              <Pagination page={list.page} totalPages={list.totalPages} onChange={(p) => set('page', String(p))} />
+              <Pagination
+                page={list.page}
+                totalPages={list.totalPages}
+                onChange={(p) => set('page', String(p))}
+                hrefFor={pageHref}
+              />
             </div>
           )}
         </>

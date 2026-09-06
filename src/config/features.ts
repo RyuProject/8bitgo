@@ -32,6 +32,14 @@ export interface Features {
    * 想上线把这里改成 true —— 前提是后端跑过 npm run migrate 建出 game_comments 表。
    */
   comments: boolean
+  /**
+   * 游戏评分：详情页的星级、卡片角标、游戏库的「按评分」排序、评论框里的打分。
+   *
+   * 关掉时前台整块不渲染，接口仍然在（已有的评分不会丢）。
+   * 想上线把这里改成 true —— 前提是后端跑过 npm run migrate 建出 game_ratings 表
+   * 并给 games 补上 rating_sum / rating_weight / rating_count 三列。
+   */
+  ratings: boolean
 }
 
 export const FEATURES: Features = {
@@ -42,4 +50,5 @@ export const FEATURES: Features = {
   cloudGame: true,
   passwordLogin: false,
   comments: true,
+  ratings: true,
 }

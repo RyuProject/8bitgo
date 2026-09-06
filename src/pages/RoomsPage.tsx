@@ -87,7 +87,6 @@ export function RoomsPage() {
           {suggestState.status === 'loading' && !suggestState.data ? (
             <GameGridSkeleton
               count={6}
-              coverRatio="landscape"
               className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6"
             />
           ) : (

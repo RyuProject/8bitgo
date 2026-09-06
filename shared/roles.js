@@ -38,8 +38,20 @@ export const ROLE_LABELS = {
  *   users:manage    用户列表、封禁 / 解封、删号
  *   users:role      改别人的角色
  *   site:manage     ROM 存储、平台 BIOS、批量导入、数据导出这类站级操作
+ *   collections:review 合集审核（下架 / 删除违规合集）
+ *
+ * ⚠️ collections:review **故意只给 admin**（靠 admin: ABILITIES 自动获得），没给志愿者。
+ * 产品上的约定是「作者本人能改，管理员只能删」—— 合集是署名的个人表达，
+ * 让更多人能替作者动他的内容，性质和审核评论不一样。
  */
-export const ABILITIES = ['content:edit', 'comments:review', 'users:manage', 'users:role', 'site:manage']
+export const ABILITIES = [
+  'content:edit',
+  'comments:review',
+  'users:manage',
+  'users:role',
+  'site:manage',
+  'collections:review',
+]
 
 /** 角色 -> 权限点。admin 直接引用 ABILITIES，以后加权限点它自动跟着长 */
 export const ROLE_ABILITIES = {

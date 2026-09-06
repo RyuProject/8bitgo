@@ -25,19 +25,78 @@
 User-agent: *
 Allow: /
 
-# 私密 / 无收录价值的路径。
-# 注意开头的 * ：站点有 /en、/ja 这类语言前缀，写成 Disallow: /admin 只挡得住
-# 中文站，/en/admin、/ja/me 全都漏网。robots.txt 是前缀匹配，必须用通配符。
-Disallow: /admin
-Disallow: /*/admin
-Disallow: /me
-Disallow: /*/me
-Disallow: /login
-Disallow: /*/login
+# ── 私密 / 无收录价值的路径 ──────────────────────────────────
+#
+# ⚠️⚠️ 千万别再写回 `Disallow: /*/me` 这种通配写法。血的教训（2026-09-06 实测）：
+#
+#   robots.txt 的 `*` 匹配**任意字符（含 /）**，而且整条规则是**前缀匹配**。
+#   于是 `/*/me` 展开成「/ + 任意 + /me」，`/games/metal-slug-3` 里
+#   `/games/me` 这一段正好命中 —— 全站 6 款《合金弹头》× 8 种语言 = 48 个 URL
+#   被自己的 robots.txt 挡在门外，而它们全都躺在 sitemap 里，
+#   在 Search Console 里就是一片「已提交的网址被 robots.txt 屏蔽」。
+#   `/*/admin`、`/*/login` 是同一个雷：将来上一款 admiral / logicube 之类的游戏就会中招，
+#   平台 id 也一样（真加了 megadrive，`/platforms/megadrive` 会被 `/*/me` 吞掉）。
+#
+# 正确做法：语言前缀总共就 8 种，且是**闭集**（简体中文是裸路径，其余 7 种各有前缀，
+# 见 src/config/languages.ts）。逐条列全，一个通配符都不用，就永远不会误伤内容页。
+# 新增语言时记得回来补三组。
 
-# 筛选与搜索会产生大量重复页面，只让搜索引擎收录干净的列表页
+# 后台（有子路径，用前缀匹配；站内没有任何以 admin 开头的公开路由）
+Disallow: /admin
+Disallow: /zh-Hant/admin
+Disallow: /en/admin
+Disallow: /es/admin
+Disallow: /fr/admin
+Disallow: /it/admin
+Disallow: /de/admin
+Disallow: /ja/admin
+
+# 个人中心（只有这一个页面，用 $ 精确收尾，避免再吃到 /me… 开头的路径）
+Disallow: /me$
+Disallow: /zh-Hant/me$
+Disallow: /en/me$
+Disallow: /es/me$
+Disallow: /fr/me$
+Disallow: /it/me$
+Disallow: /de/me$
+Disallow: /ja/me$
+
+# 登录页（同上）
+Disallow: /login$
+Disallow: /zh-Hant/login$
+Disallow: /en/login$
+Disallow: /es/login$
+Disallow: /fr/login$
+Disallow: /it/login$
+Disallow: /de/login$
+Disallow: /ja/login$
+
+# ── 筛选与搜索 ──────────────────────────────────────────────
+# 游戏库的筛选组合是乘积级的（平台×类型×开发商×排序×联机×G币），
+# 每一种组合的 canonical 都指回干净的 /games，抓了也不会被收录，纯耗抓取预算。
 Disallow: /games?
-Disallow: /*/games?
+Disallow: /zh-Hant/games?
+Disallow: /en/games?
+Disallow: /es/games?
+Disallow: /fr/games?
+Disallow: /it/games?
+Disallow: /de/games?
+Disallow: /ja/games?
+
+# 但**分页要单独放行**：/games?page=2 起的那些游戏，除了 sitemap 之外
+# 只有这一条内链通路。robots.txt 的裁决规则是「匹配最长的那条说了算，
+# 一样长则 Allow 优先」，`/games?page=` 比 `/games?` 长，所以这里能翻案；
+# 而 /games?platform=gba&page=2 这种带筛选的组合仍然落在上面的 Disallow 里。
+Allow: /games?page=
+Allow: /zh-Hant/games?page=
+Allow: /en/games?page=
+Allow: /es/games?page=
+Allow: /fr/games?page=
+Allow: /it/games?page=
+Allow: /de/games?page=
+Allow: /ja/games?page=
+
+# 站内搜索是无限空间，一律不抓（页面本身也已经是 noindex）
 Disallow: /*?q=
 
 Sitemap: https://8bitgo.com/sitemap.xml

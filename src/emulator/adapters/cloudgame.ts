@@ -21,12 +21,11 @@
  * 启用：.env 里设 VITE_CLOUDGAME_URL=https://cg.example.com（或 http://localhost:8000）。
  * 没配置时 available() 返回 false，界面上不会出现联机入口。
  */
-import type { PlatformId } from '@/types'
-import type { Capability, CaptureSources, MountOptions, Runtime, RuntimeHandle } from '../types'
+import type { Capability, CaptureSources, MountOptions, RuntimeHandle } from '../types'
 import { getT, fmt } from '@/services/i18n'
 
-export const CLOUDGAME_URL: string = (import.meta.env.VITE_CLOUDGAME_URL || '').replace(/\/+$/, '')
-export const CLOUDGAME_ZONE: string = import.meta.env.VITE_CLOUDGAME_ZONE || ''
+export { CLOUDGAME_URL, CLOUDGAME_ZONE, CLOUD_PLATFORM_CORES } from '../paths'
+import { CLOUDGAME_URL, CLOUDGAME_ZONE } from '../paths'
 
 /** 从连上服务器到真正开始游戏的总超时。超过就报错，而不是让转圈一直转下去 */
 const HANDSHAKE_TIMEOUT_MS = 30_000
@@ -36,17 +35,6 @@ const HANDSHAKE_TIMEOUT_MS = 30_000
  * 键必须和 deploy/cloudgame/config.yaml 里 emulator.libretro.cores.list 的配置一致；
  * 不在这里的平台（Flash / J2ME / NDS / WonderSwan）不能联机。
  */
-export const CLOUD_PLATFORM_CORES: Partial<Record<PlatformId, string>> = {
-  nes: 'nestopia',
-  snes: 'snes9x',
-  gba: 'mgba',
-  gb: 'mgba',
-  n64: 'mupen64plus_next',
-  psx: 'pcsx_rearmed',
-  arcade: 'fbneo',
-  dos: 'dosbox_pure',
-  segaMD: 'genesis_plus_gx',
-}
 
 /** 联机会话参数（MountOptions.cloud） */
 export interface CloudSession {
@@ -159,7 +147,7 @@ function deadHandle(): RuntimeHandle {
   return { destroy: () => {}, caps: new Set<Capability>() }
 }
 
-function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
+export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
   const cloud = options.cloud
 
@@ -590,22 +578,4 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   }
 }
 
-export const cloudGameRuntime: Runtime = {
-  id: 'cloudgame',
-  name: 'Cloud',
-  get description() {
-    return getT().runtime.cloudDesc
-  },
-  // 不参与「按扩展名选引擎」：联机是用户显式选择的模式，不是文件格式决定的
-  extensions: [],
-  priority: 0,
-  available: () => Boolean(CLOUDGAME_URL),
-  supports: (platform) => Boolean(CLOUD_PLATFORM_CORES[platform]),
-  engineLabel: (platform) => CLOUD_PLATFORM_CORES[platform] ?? '—',
-  mount,
-}
 
-/** 该平台能否联机（引擎可用且平台有对应核心） */
-export function cloudPlayable(platform: PlatformId): boolean {
-  return cloudGameRuntime.available() && cloudGameRuntime.supports(platform)
-}

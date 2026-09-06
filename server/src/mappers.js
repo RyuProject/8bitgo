@@ -269,6 +269,16 @@ export function gameRowToApi(r, rel = {}) {
     bodyControl: bool(r.body_control),
     adult: bool(r.adult),
     hidden: bool(r.hidden),
+    /**
+     * 评分。games 上那三列是 game_ratings 的聚合缓存（见 ratings-repo.js）。
+     * 平均分按权重算：SUM(score*weight) / SUM(weight)，登录票 1.0、匿名票 0.5。
+     * 一票都没有时给 0 —— 前端据此判断「还没人评过」，不画星星，
+     * 也**不能**输出到 schema.org 的 aggregateRating（0 分会被 Google 判为虚假富媒体摘要）。
+     */
+    rating: Number(r.rating_weight) > 0
+      ? Math.round((Number(r.rating_sum) / Number(r.rating_weight)) * 10) / 10
+      : 0,
+    ratingCount: Number(r.rating_count) || 0,
   }
   // 不上首页的游戏干脆不带这个字段，前台拿到的形状和以前一样
   if (r.home_rank != null) g.homeRank = Number(r.home_rank)
@@ -503,6 +513,13 @@ export function commentRowToApi(r, { admin = false } = {}) {
     deleted,
     editedAt: dateTimeIso(r.edited_at) || undefined,
     createdAt: dateTimeIso(r.created_at),
+    /**
+     * 作者给这款游戏打的分（1~5）。**不是评论的一部分**，是 join 出来的当前评分 ——
+     * 所以他改了分，历史评论上的星星会跟着变。这是有意的：星星表达的是
+     * 「这个人怎么看这款游戏」，而人的看法只有一个当下值，冻结在每条评论上
+     * 反而会出现同一个人的两条评论挂着两个不同分数。没评过分就不带这个字段。
+     */
+    score: r.rating_score != null ? Number(r.rating_score) : undefined,
     author: {
       id: r.user_id,
       nickname: r.nickname ?? '',

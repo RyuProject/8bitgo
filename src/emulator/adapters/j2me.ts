@@ -27,7 +27,7 @@
  *
  * ⚠️ CheerpJ 从 leaningtech 的 CDN 加载，离线环境跑不了。
  */
-import type { Capability, CaptureSources, MountOptions, Runtime, RuntimeHandle } from '../types'
+import type { Capability, CaptureSources, MountOptions, RuntimeHandle } from '../types'
 import { getT, fmt } from '@/services/i18n'
 import { apiBase, apiEnabled } from '@/services/api'
 import { canvasToBlob } from '../recorder'
@@ -168,11 +168,8 @@ function installJ2meAudio(win: Window, getVolume: () => number): J2meAudio | nul
   }
 }
 
-export const J2ME_PATH: string = (() => {
-  const p = import.meta.env.VITE_J2ME_PATH || ''
-  if (!p) return ''
-  return p.endsWith('/') ? p : `${p}/`
-})()
+export { J2ME_PATH } from '../paths'
+import { J2ME_PATH } from '../paths'
 
 /** 从 URL / 对象存储 key 里取出文件名 */
 function fileNameOf(url: string): string {
@@ -236,7 +233,7 @@ function deadHandle(): RuntimeHandle {
   return { destroy: () => {}, caps: new Set<Capability>() }
 }
 
-function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
+export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
 
   if (!J2ME_PATH) {
@@ -498,17 +495,3 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   }
 }
 
-export const j2meRuntime: Runtime = {
-  id: 'j2me',
-  name: 'FreeJ2ME',
-  get description() {
-    return getT().runtime.j2meDesc
-  },
-  extensions: ['jar', 'jad'],
-  priority: 10,
-  // 没装 / 没配置就当作不存在，解析阶段直接跳过
-  available: () => Boolean(J2ME_PATH),
-  supports: (platform) => platform === 'java',
-  engineLabel: () => 'FreeJ2ME',
-  mount,
-}

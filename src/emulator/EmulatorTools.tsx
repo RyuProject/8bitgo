@@ -10,6 +10,7 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { Capability, RuntimeHandle, RuntimeId } from './types'
 import { canRecord, downloadBlob, mediaFileName, startRecording, MAX_RECORD_MS, type Recorder } from './recorder'
 import { useT, fmt } from '@/services/i18n'
+import { NesKeyBinder } from './NesKeyBinder'
 import { useLang } from '@/services/lang'
 import {
   asSaveRuntime,
@@ -230,6 +231,14 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
    */
   const doSave = async (target: SaveTarget) => {
     setPanel(null)
+    /*
+      ⚠️ 弹窗也要关，和 loadFrom 对齐。
+      不关的话，唯一的反馈 say() 画在工具栏上、被弹窗那层 `inset-0 bg-black/50` 的遮罩
+      整个盖住 —— 而 N64 / PSX 的快照推云端要好几秒，这几秒里面板一动不动、没有任何提示。
+      玩家判定「没反应」就会连点，于是对同一个档位并发好几次 saveState + pushSave，
+      最终落盘的可能是较早那一份。
+    */
+    setSaveModal(false)
     try {
       const blob = await handle.saveState?.()
       if (handle.saveMode === 'remote') {
@@ -446,6 +455,17 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
 
   /** 另存为文件：玩家想自己保管一份，或者换个站点 / 换台机器带过去 */
   const doExport = async () => {
+    /*
+      ⚠️ 必须在调 saveState 之前判。
+      云联机的 saveState 是把状态**存到服务器**然后 return null（本地没有可导出的文件）。
+      以前直接调下去：服务器上那份存档被这一刻的状态盖掉了，而界面见到 null 报的是
+      「保存失败」—— 玩家以为什么都没发生，其实他想回退到的那份更早的进度已经没了。
+      doSave 早就有这道判断，doExport 一直没抄。
+    */
+    if (handle.saveMode === 'remote') {
+      say(tt.saveRemote)
+      return
+    }
     try {
       const blob = await handle.saveState?.()
       if (!blob) {
@@ -732,7 +752,13 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
       )}
 
       {panel === 'gamepad' && (
-        <div className="absolute bottom-full left-0 z-20 mb-2 w-64 max-w-[calc(100vw-2rem)] rounded-lg border border-line bg-surface px-3 py-2 shadow-lg">
+        <div
+          className={cx(
+            'absolute bottom-full left-0 z-20 mb-2 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-lg border border-line bg-surface px-3 py-2 shadow-lg',
+            // 红白机那一路多一整块改键表格，w-64 摆不下两列
+            runtimeId === 'jsnes' ? 'max-h-[70vh] w-72' : 'w-64',
+          )}
+        >
           <p className={cx('font-semibold', pads.length ? 'text-online' : 'text-muted')}>
             {pads.length ? fmt(tt.gamepadOn, { n: String(pads.length) }) : tt.gamepadOff}
           </p>
@@ -746,6 +772,12 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
           <p className="mt-2 border-t border-line pt-2 text-muted">
             {runtimeId === 'jsnes' ? tt.gamepadHintNes : tt.gamepadHint}
           </p>
+
+          {/*
+            键盘改键只有红白机这一路有。别的运行时里键盘要么由引擎自己管（EmulatorJS 有
+            它自带的设置菜单），要么直通给游戏（DOS / Flash / J2ME），我们插不上手。
+          */}
+          {runtimeId === 'jsnes' && <NesKeyBinder />}
 
           {/*
             引擎自带那套屏幕按键的开关。只在触屏设备上出现 —— 桌面端两个能力都不会声明。

@@ -271,6 +271,114 @@ check('主播掉线后房号作废', liveRoom(linkRoom).netplayRoomId === null)
 check('主播掉线要收回观众手里的入口', (await unlinked) === null, `实际 ${await unlinked}`)
 lv.close()
 
+/* ─────────── 主播切后台：只有房主能报，观众要收到 ─────────── */
+{
+  const fh = conn()
+  await once(fh, 'connect')
+  const { data: fr } = await call(fh, 'go-live', { gameSlug: 'kof97', gameName: 'KOF97', hostName: 'Ryu' })
+  const fv = conn()
+  await once(fv, 'connect')
+  await call(fv, 'watch', { roomId: fr.roomId })
+  await new Promise((r) => setTimeout(r, 60))
+
+  // 观众冒充房主报「已冻结」——必须被忽略，否则谁都能把别人的直播标成卡住
+  const spoofed = new Promise((r) => {
+    const t = setTimeout(() => r('没收到'), 500)
+    fh.once('host-frozen', (d) => { clearTimeout(t); r(d) })
+  })
+  fv.emit('host-visibility', { hidden: true })
+  check('观众报的切后台被忽略', (await spoofed) === '没收到')
+
+  // 房主报：观众要收到，而且主播自己不该收到自己的广播
+  const frozen = once(fv, 'host-frozen')
+  fh.emit('host-visibility', { hidden: true })
+  check('主播切后台，观众收到 frozen=true', (await frozen)?.frozen === true)
+
+  // 同一个状态重复报不再惊动房间（避免切来切去刷屏）
+  const dup = new Promise((r) => {
+    const t = setTimeout(() => r('没收到'), 400)
+    fv.once('host-frozen', (d) => { clearTimeout(t); r(d) })
+  })
+  fh.emit('host-visibility', { hidden: true })
+  check('状态没变时不重复广播', (await dup) === '没收到')
+
+  const back = once(fv, 'host-frozen')
+  fh.emit('host-visibility', { hidden: false })
+  check('主播切回来，观众收到 frozen=false', (await back)?.frozen === false)
+  fh.close(); fv.close()
+  await new Promise((r) => setTimeout(r, 60))
+}
+
+/* ─────────── 大厅列表的 SSE 推送 ─────────── */
+{
+  const app = (await import('express')).default()
+  const { subscribeLiveRooms } = await import('../src/live.js')
+  app.get('/api/live/events', (req, res) => {
+    res.set({ 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache' })
+    res.flushHeaders?.()
+    const un = subscribeLiveRooms(res)
+    req.on('close', un)
+  })
+  const sseHttp = createServer(app)
+  await new Promise((r) => sseHttp.listen(0, r))
+  const sseUrl = `http://127.0.0.1:${sseHttp.address().port}/api/live/events`
+
+  const events = []
+  const ctrl = new AbortController()
+  const res = await fetch(sseUrl, { signal: ctrl.signal })
+  const reader = res.body.getReader()
+  const dec = new TextDecoder()
+  let buf = ''
+  ;(async () => {
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += dec.decode(value, { stream: true })
+        let i
+        while ((i = buf.indexOf('\n\n')) >= 0) {
+          const chunk = buf.slice(0, i)
+          buf = buf.slice(i + 2)
+          const m = /^event: (\S+)\ndata: ([\s\S]*)$/.exec(chunk)
+          if (m) events.push({ event: m[1], data: JSON.parse(m[2]) })
+        }
+      }
+    } catch { /* aborted */ }
+  })()
+
+  await new Promise((r) => setTimeout(r, 150))
+  check('连上就先收到一份当前列表', events.length === 1 && events[0].event === 'rooms')
+  const before = events.length
+
+  // 开播 → 必须立刻推，而不是等下一轮轮询
+  const sh = conn()
+  await once(sh, 'connect')
+  const { data: sr } = await call(sh, 'go-live', { gameSlug: 'sf2', gameName: 'SF2', hostName: 'Ken' })
+  await new Promise((r) => setTimeout(r, 250))
+  check('开播立刻推送', events.length > before)
+  check('推送里能看到这个房间', events.at(-1).data.some((r) => r.roomId === sr.roomId))
+
+  // 有人来看 → 人数变化也要推（大厅卡片上的「N 人在看」）
+  const n1 = events.length
+  const sv = conn()
+  await once(sv, 'connect')
+  await call(sv, 'watch', { roomId: sr.roomId })
+  await new Promise((r) => setTimeout(r, 250))
+  check('观众进来后人数变化也推送', events.length > n1 && events.at(-1).data.some((r) => r.roomId === sr.roomId && r.viewers === 1))
+
+  // 下播 → 卡片要消失
+  const n2 = events.length
+  sv.close()
+  sh.emit('stop-live')
+  await new Promise((r) => setTimeout(r, 300))
+  check('下播后房间从推送里消失', events.length > n2 && !events.at(-1).data.some((r) => r.roomId === sr.roomId))
+
+  sh.close()
+  ctrl.abort()
+  sseHttp.close()
+  await new Promise((r) => setTimeout(r, 60))
+}
+
 for (const s of [host, host2, host3, host4, host5, v1, v2, v3, v4, v5, v6, solo, late, stranger]) s.close()
 server.close(); http.close()
 console.log('通过 %d 项：\n  %s', ok.length, ok.join('\n  '))

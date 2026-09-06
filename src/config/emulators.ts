@@ -51,6 +51,14 @@ export const EXT_RUNTIME_OVERRIDES: Record<string, RuntimeId> = {
  *   - 更老或更杂的板子      → mame2003_plus 兼容面最广，但也最慢
  * 换核心往往比换 ROM 有用：每个核心认的 romset 版本不一样，
  * 报「缺文件」时先换核心试试。
+ *
+ * PS1 是第二个需要逐款调的：两个核心的取舍方向完全相反，没有哪个「更好」——
+ *   - pcsx_rearmed（EmulatorJS 的 psx 默认）：为手机而生，快、省内存，
+ *     但 GTE 精度和一些特效是近似的，个别游戏会花屏或几何抖动。
+ *   - mednafen_psx_hw（Beetle PSX HW）：准得多，还能拉内部分辨率把 3D 画面变清楚，
+ *     代价是 CPU 和内存都明显更吃 —— 中低端手机上会掉帧。
+ * 所以默认留 pcsx_rearmed（保证能跑起来），个别有画面问题、或者想要高清的游戏
+ * 再单独换成 mednafen_psx_hw。
  */
 export const CORE_OPTIONS: Record<string, Array<{ id: string; label: string }>> = {
   arcade: [
@@ -59,6 +67,10 @@ export const CORE_OPTIONS: Record<string, Array<{ id: string; label: string }>> 
     { id: 'fbalpha2012_cps2', label: 'FB Alpha CPS2' },
     { id: 'mame2003_plus', label: 'MAME 2003-Plus（兼容面最广，较慢）' },
     { id: 'mame2003', label: 'MAME 2003' },
+  ],
+  psx: [
+    { id: 'psx', label: 'PCSX-ReARMed（默认，快、省内存，手机首选）' },
+    { id: 'mednafen_psx_hw', label: 'Beetle PSX HW（更准、可高清，吃性能）' },
   ],
 }
 

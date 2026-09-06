@@ -12,7 +12,7 @@
  *     和 SSR 用的是同一个函数。
  */
 import { useEffect, useRef, useState } from 'react'
-import type { Game, Post } from '@/types'
+import type { Collection, Game, Post } from '@/types'
 import { api, apiEnabled } from './api'
 import { startPageLoad } from './progress'
 
@@ -62,6 +62,8 @@ export interface HomeData {
   /** 分类网格下方各栏的样例，键是 genreId。一款游戏都没有的类型服务端不会建键，所以取值可能是 undefined */
   genreSamples: Record<string, Game[]>
   facets: Facets
+  /** 首页那一栏的合集（最近有动静的几个）。表还没迁移时是空数组，不会让首页挂掉 */
+  collections: Collection[]
   total: number
 }
 export interface GamesData { route: 'games'; list: Paged<Game>; facets: Facets }

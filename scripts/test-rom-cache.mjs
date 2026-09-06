@@ -12,11 +12,8 @@
  * romCache.ts 用到新 API 时这里要跟着补 —— 补不上会直接报错，不会静默放过。
  */
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { build } from 'esbuild'
 
 /* ---------------- 假的 IndexedDB ---------------- */
 
@@ -31,9 +28,11 @@ function createFakeIdb() {
   /** name -> Map(key -> value) */
   const stores = new Map()
 
+  // 值可能是 ArrayBuffer（卡带机 ROM）也可能是 Blob（光盘镜像），两种都要会数
+  const sizeOf = (v) => (v instanceof Blob ? v.size : (v?.byteLength ?? 0))
   const usedBytes = () => {
     let n = 0
-    for (const v of (stores.get('blobs') ?? new Map()).values()) n += v.byteLength
+    for (const v of (stores.get('blobs') ?? new Map()).values()) n += sizeOf(v)
     return n
   }
 
@@ -152,28 +151,42 @@ let clock = 1_000_000
 const tick = (ms = 1000) => { clock += ms }
 Date.now = () => clock
 
-/* ---------------- 把 TS 编出来，每个场景拿一份全新的模块实例 ---------------- */
+/* ---------------- 每个场景拿一份全新的模块实例 ---------------- */
 
-const temp = await mkdtemp(path.join(tmpdir(), '8bitgo-rom-cache-'))
-let failed = false
-try {
-  const outfile = path.join(temp, 'romCache.mjs')
-  await build({
-    entryPoints: [path.resolve('src/emulator/romCache.ts')],
-    bundle: true,
-    platform: 'node',
-    format: 'esm',
-    outfile,
-    logLevel: 'silent',
-  })
+/**
+ * 直接 import 那份 .ts，不再先用 esbuild 打包。
+ *
+ * 为什么换：esbuild 装的是平台相关的原生二进制，这个仓库的 node_modules 是在 macOS 上
+ * 装的，挂到 Linux 侧跑就报 "You installed esbuild for another platform" ——
+ * 于是 romCache 这块**在半数环境里根本测不了**，而它正是那种「悄悄失效没人报 bug」的代码。
+ * 走 ts-register 之后到哪儿都能跑。理由和 scripts/helpers/ts-loader.mjs 的文件头是同一条。
+ */
+const SOURCE = pathToFileURL(path.resolve('src/emulator/romCache.ts')).href
 
+/**
+ * 断言失败靠进程级钩子收口：下面每个场景都在顶层 await，
+ * 用 try/catch 包不住（真包了还得把 Date.now 的还原重复写一遍）。
+ */
+process.on('uncaughtException', (e) => {
+  console.error('\n❌ 测试失败：', e?.message ?? e)
+  if (e?.stack) console.error(e.stack.split('\n').slice(1, 4).join('\n'))
+  Date.now = realNow
+  process.exit(1)
+})
+process.on('unhandledRejection', (e) => {
+  console.error('\n❌ 测试失败：', e?.message ?? e)
+  if (e?.stack) console.error(e.stack.split('\n').slice(1, 4).join('\n'))
+  Date.now = realNow
+  process.exit(1)
+})
+{
   let instance = 0
-  /** romCache 内部把打开的 DB 缓存在模块作用域里，所以每个场景都要重新 import */
+  /** romCache 内部把打开的 DB 缓存在模块作用域里，所以每个场景都要重新 import（查询串用来绕开模块缓存） */
   async function freshCache() {
     const fake = createFakeIdb()
     globalThis.indexedDB = fake.indexedDB
     Object.defineProperty(globalThis, 'navigator', { value: fake.navigator, configurable: true, writable: true })
-    const mod = await import(`${pathToFileURL(outfile).href}?${instance++}`)
+    const mod = await import(`${SOURCE}?${instance++}`)
     return { ...mod, fake }
   }
 
@@ -271,7 +284,7 @@ try {
     globalThis.indexedDB = undefined
     // 连 storage.estimate() 也没有，才是真的老浏览器 / SSR，走兜底预算
     Object.defineProperty(globalThis, 'navigator', { value: {}, configurable: true, writable: true })
-    const mod = await import(`${pathToFileURL(outfile).href}?nodb${instance++}`)
+    const mod = await import(`${SOURCE}?nodb${instance++}`)
     assert.equal(await mod.romCacheGet(url('a')), null, '没有 IndexedDB 时读应返回 null 而不是抛错')
     await mod.romCachePut(url('a'), buf(10)) // 不该抛
     assert.deepEqual(await mod.romCacheStats(), { count: 0, bytes: 0, budget: 1024 * 1024 * 1024 })
@@ -289,13 +302,41 @@ try {
     console.log('✓ 清空缓存')
   }
 
+  /* --- 9. 光盘那条路：存 Blob，读回来还是 Blob --- */
+  {
+    const { romCachePutBlob, romCacheGetBlob, romCacheGet, romCacheStats, fake } = await freshCache()
+    fake.setQuota(100_000) // 预算 50_000
+    await romCachePutBlob(url('disc'), new Blob([new Uint8Array(1024)]))
+    const got = await romCacheGetBlob(url('disc'))
+    assert.ok(got instanceof Blob, '光盘镜像应原样读回 Blob —— 转成 ArrayBuffer 就等于要一整块连续内存')
+    assert.equal(got.size, 1024)
+    assert.equal((await romCacheStats()).bytes, 1024, '元信息要按 Blob 的 size 记，不是 byteLength')
+    assert.equal(await romCacheGet(url('disc')), null, 'ArrayBuffer 接口不该把 Blob 当成自己的东西返回')
+    console.log('✓ Blob 存取：光盘镜像不经过连续内存')
+  }
+
+  /* --- 10. ArrayBuffer 存的也能按 Blob 读回来（平台改判成光盘之后，老缓存不该白白落空） --- */
+  {
+    const { romCachePut, romCacheGetBlob } = await freshCache()
+    await romCachePut(url('old'), buf(256))
+    const got = await romCacheGetBlob(url('old'))
+    assert.ok(got instanceof Blob)
+    assert.equal(got.size, 256)
+    console.log('✓ 旧的 ArrayBuffer 缓存也能按 Blob 读')
+  }
+
+  /* --- 11. 一个条目最多占预算的一半 --- */
+  {
+    const { romCachePutBlob, romCacheGetBlob, romCacheStats, fake } = await freshCache()
+    fake.setQuota(2000) // 预算 1000，单条上限 500
+    await romCachePutBlob(url('big'), new Blob([new Uint8Array(600)]))
+    assert.equal(await romCacheGetBlob(url('big')), null, '超过预算一半的不该存')
+    assert.equal((await romCacheStats()).count, 0)
+    await romCachePutBlob(url('ok'), new Blob([new Uint8Array(400)]))
+    assert.ok(await romCacheGetBlob(url('ok')), '预算一半以内的正常存')
+    console.log('✓ 单条不得超过预算一半（否则两款游戏轮着玩就是每次都重下）')
+  }
+
   console.log('\n全部通过 ✅')
-} catch (e) {
-  failed = true
-  console.error('\n❌ 测试失败：', e?.message ?? e)
-  if (e?.stack) console.error(e.stack.split('\n').slice(1, 4).join('\n'))
-} finally {
-  Date.now = realNow
-  await rm(temp, { recursive: true, force: true })
 }
-process.exit(failed ? 1 : 0)
+Date.now = realNow

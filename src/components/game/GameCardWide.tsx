@@ -4,6 +4,7 @@ import { platformMap } from '@/data/platforms'
 import { cx, formatCount } from '@/lib/format'
 import { GameCover } from './GameCover'
 import { Badge } from '@/components/ui/Badge'
+import { RatingText } from './StarRating'
 import { useLang } from '@/services/lang'
 import { gameTitle } from '@/services/i18nData'
 
@@ -49,7 +50,10 @@ export function GameCardWide({ game, className, isNew }: Props) {
           <span>
             {platform.name} · {game.year}
           </span>
-          {game.plays > 0 && <span>▶ {formatCount(game.plays)}</span>}
+          <span className="flex shrink-0 items-center gap-1.5">
+            <RatingText rating={game.rating} count={game.ratingCount} />
+            {game.plays > 0 && <span>▶ {formatCount(game.plays)}</span>}
+          </span>
         </p>
       </div>
     </Link>

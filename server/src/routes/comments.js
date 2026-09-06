@@ -21,6 +21,7 @@ import { query, queryOne } from '../db.js'
 import { requireUser, requireAbility, hasAbility } from '../auth.js'
 import { commentRowToApi, countryOf } from '../mappers.js'
 import { take, clientKey, isMeaningfulIp } from '../rateLimit.js'
+import { submitRating } from '../ratings-repo.js'
 
 export const commentsRouter = Router()
 
@@ -77,12 +78,17 @@ function pageParams(req) {
 /**
  * 列表查询的公共 SELECT。
  *
- * 两个 LEFT JOIN 是「引用回复」用的：把父评论和它的作者一起带出来，
+ * 前两个 LEFT JOIN 是「引用回复」用的：把父评论和它的作者一起带出来，
  * 前端就能直接画引用卡片，不用为每条回复再打一次请求（N+1）。
  * 只带一层 —— 卡片里要的就是「回复谁、说了什么」这一句，不做整棵树。
+ *
+ * 第三个是评分：把作者给这款游戏打的分带出来，评论旁边就能显示星星。
+ * 走的是 game_ratings 上 (game_id, user_id) 的唯一索引，一行一次索引查找。
+ * 不在 game_comments 上冗余存一份，是因为「发表时的分」和「现在的分」不一致时，
+ * 同一个人的两条评论会挂着两个不同的星级 —— 看的人只会以为哪边坏了。
  */
 const SELECT_COLS = `
-  c.*, u.nickname, u.avatar, u.email,
+  c.*, u.nickname, u.avatar, u.email, r.score AS rating_score,
   p.content AS parent_content, p.hidden AS parent_hidden, p.deleted_at AS parent_deleted_at,
   pu.nickname AS parent_nickname, pu.avatar AS parent_avatar`
 
@@ -90,7 +96,8 @@ const FROM_JOINS = `
   FROM game_comments c
   JOIN users u ON u.id = c.user_id
   LEFT JOIN game_comments p ON p.id = c.parent_id
-  LEFT JOIN users pu ON pu.id = p.user_id`
+  LEFT JOIN users pu ON pu.id = p.user_id
+  LEFT JOIN game_ratings r ON r.game_id = c.game_id AND r.user_id = c.user_id`
 
 /* ==========================================================
  * 后台
@@ -224,7 +231,12 @@ async function loadOne(id, opts) {
 }
 
 /**
- * 发表：POST /api/comments { gameSlug, content, parentId? }
+ * 发表：POST /api/comments { gameSlug, content, parentId?, score? }
+ *
+ * score 是可选的 1~5 星：写评论时顺手打个分。走的是和 /api/ratings 同一个
+ * submitRating()，所以「从评论框打的分」和「从星星打的分」是同一票，改的是同一行。
+ * 顺序是**先写分再写评论**：反过来的话评论写成功、评分那步炸了，用户看到的是
+ * 「评论发出去了但星星没亮」，重发一次又多一条评论。先写分则重试是幂等的。
  *
  * 限流是必须的 —— 这是个登录用户就能往数据库里写文本的接口。
  * 两道：按用户（挡住一个号刷屏）和按 IP（挡住批量注册的小号）。
@@ -269,9 +281,24 @@ commentsRouter.post('/', requireUser, async (req, res, next) => {
       parentId = parent.id
     }
 
+    const country = countryFromRequest(req)
+
+    /**
+     * 带了分就顺手记一票（登录用户，权重 1.0）。
+     * 传了个非法值时**不静默忽略**：前端只会发 1~5，发别的说明有人在试接口，
+     * 直接回 400 比默默丢掉更容易在日志里发现。不带 score 字段则完全不碰评分。
+     */
+    if (req.body?.score !== undefined && req.body?.score !== null && req.body?.score !== '') {
+      const score = Number(req.body.score)
+      if (!Number.isInteger(score) || score < 1 || score > 5) {
+        return res.status(400).json({ error: '评分必须是 1 到 5 的整数' })
+      }
+      await submitRating({ gameId: game.id, userId: req.user.id, score, country })
+    }
+
     const r = await query(
       'INSERT INTO game_comments (game_id, user_id, parent_id, content, country) VALUES (?, ?, ?, ?, ?)',
-      [game.id, req.user.id, parentId, content, countryFromRequest(req)],
+      [game.id, req.user.id, parentId, content, country],
     )
     res.status(201).json(await loadOne(r.insertId))
   } catch (e) {

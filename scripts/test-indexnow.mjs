@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { SITE_LANGUAGES } from '../shared/site-languages.js'
 import {
   DEFAULT_INDEXNOW_KEY,
@@ -9,6 +10,7 @@ import {
   postChangeUrls,
   postDetailUrls,
   submitIndexNowUrls,
+  taxonomyDetailUrls,
 } from '../server/src/indexnow.js'
 import {
   buildGameSitemap,
@@ -275,6 +277,44 @@ await check('不输出 Google 已停止支持的 image 子标签', async () => {
 await check('文章 sitemap 不带图片扩展（文章配图是 emoji 图标）', async () => {
   const xml = buildPostSitemap([{ slug: 'nes-history', updated_at: new Date() }], 'en', 'https://8bitgo.com')
   assert.ok(!xml.includes('image:'))
+})
+
+await check('聚合页 URL：kind 白名单是硬的，脏数据不能决定路径前缀', async () => {
+  const urls = taxonomyDetailUrls(
+    [
+      { kind: 'platforms', id: 'nes' },
+      { kind: 'genres', id: 'rpg' },
+      // 下面这些都不该产出任何 URL
+      { kind: 'admin', id: 'games' },
+      { kind: 'platforms', id: '' },
+      { kind: '', id: 'nes' },
+      null,
+    ],
+    'https://8bitgo.com',
+    ['zh-Hans', 'en'],
+  )
+  assert.deepEqual(urls, [
+    'https://8bitgo.com/platforms/nes',
+    'https://8bitgo.com/en/platforms/nes',
+    'https://8bitgo.com/genres/rpg',
+    'https://8bitgo.com/en/genres/rpg',
+  ])
+})
+
+await check('聚合页 URL 默认展开全部语言，且同一个 id 只出一次', async () => {
+  const urls = taxonomyDetailUrls([{ kind: 'platforms', id: 'nes' }, { kind: 'platforms', id: 'nes' }])
+  assert.equal(urls.length, SITE_LANGUAGES.length)
+  assert.equal(new Set(urls).size, urls.length)
+})
+
+await check('补交脚本三类内容都接上了（防止又退回“只捞游戏”）', () => {
+  for (const file of ['../server/scripts/submit-indexnow.mjs', '../server/scripts/submit-baidu.mjs']) {
+    const src = readFileSync(new URL(file, import.meta.url), 'utf8')
+    assert.match(src, /FROM games/, `${file} 少了游戏`)
+    assert.match(src, /FROM posts/, `${file} 少了文章`)
+    assert.match(src, /taxonomyRows/, `${file} 少了平台 / 类型页`)
+    assert.match(src, /published = 1/, `${file} 必须只推已发布文章，草稿在前台是 404`)
+  }
 })
 
 console.log(`✅ IndexNow / sitemap：${passed} 项检查通过`)

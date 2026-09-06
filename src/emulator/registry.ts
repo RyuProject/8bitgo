@@ -15,27 +15,17 @@ import type { PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { EXT_RUNTIME_OVERRIDES } from '@/config/emulators'
 import type { ResolveContext, Runtime, RuntimeId } from './types'
-import { emulatorJsRuntime } from './adapters/emulatorjs'
-import { ruffleRuntime } from './adapters/ruffle'
-import { html5Runtime } from './adapters/html5'
-import { jsnesRuntime } from './adapters/jsnes'
-import { j2meRuntime } from './adapters/j2me'
-import { jsdosRuntime } from './adapters/jsdos'
-import { webretroRuntime } from './adapters/webretro'
-import { cloudGameRuntime } from './adapters/cloudgame'
-import { liveViewRuntime } from './adapters/liveview'
+import { runtimeMetas } from './runtimeMeta'
 
-export const runtimes: Record<RuntimeId, Runtime> = {
-  emulatorjs: emulatorJsRuntime,
-  ruffle: ruffleRuntime,
-  html5: html5Runtime,
-  jsnes: jsnesRuntime,
-  j2me: j2meRuntime,
-  jsdos: jsdosRuntime,
-  webretro: webretroRuntime,
-  cloudgame: cloudGameRuntime,
-  liveview: liveViewRuntime,
-}
+/**
+ * 全部运行时。**这里放的是元数据，不含 mount** —— 挂载实现在 runtimes.ts，
+ * 那个文件只被懒加载的 EmulatorPlayer 引用。
+ *
+ * 这么分是为了让「该用哪个引擎」这个问题不必把引擎本身下载下来才能回答：
+ * 详情页、游戏库、房间列表、后台表单都要调下面这几个函数，
+ * 以前它们因此各自拖进了七八个适配器的完整实现。
+ */
+export const runtimes: Record<RuntimeId, Runtime> = runtimeMetas
 
 /** 参与「本地运行」解析的引擎（排除联机与看直播：这两个都不是按文件格式选出来的） */
 const localRuntimes = (): Runtime[] =>

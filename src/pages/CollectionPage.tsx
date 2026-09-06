@@ -156,7 +156,13 @@ function Collection({
           {/* 已经往下接过之后，页码显示的位置和实际看到的内容对不上，收起来 */}
           {totalPages > 1 && more.items.length === list.items.length && (
             <div className="mt-6">
-              <Pagination page={page} totalPages={totalPages} onChange={onPage} />
+              {/* href 和上面的 canonicalPath 用同一套形状：第 1 页是裸路径，之后带 ?page=N */}
+              <Pagination
+                page={page}
+                totalPages={totalPages}
+                onChange={onPage}
+                hrefFor={(p) => (p > 1 ? `${basePath}?page=${p}` : basePath)}
+              />
             </div>
           )}
         </>

@@ -24,10 +24,33 @@
  */
 import type { CaptureSources } from './types'
 import { connectLive, liveIceServers, type LiveSocket } from '@/services/live'
+import { applyTuning, fpsForViewers, sizeOfTrack, tuningFor } from './videoTuning'
 
-/** 单路视频码率上限。GBA 才 240×160，给到 1.5Mbps 已经很宽裕 */
-const MAX_BITRATE = Number(import.meta.env.VITE_LIVE_MAX_BITRATE) || 1_500_000
-const MAX_FPS = 60
+/**
+ * 码率上限的**手动覆盖**。设了就一律用它，不再按分辨率算。
+ *
+ * ⚠️ 默认是空的 —— 现在码率由 videoTuning.tuningFor 按源画面大小算（w×h×fps×系数），
+ * 因为原来那个「全平台一个 1.5Mbps」对 160×144 的 Game Boy 是浪费上行
+ * （直播是 N 个观众 N 路，省下来很实在），对 640×480 的 DOS 又不够用。
+ * 只有在自动值明显不合适时才设这个环境变量把它压住。
+ */
+const MAX_BITRATE_OVERRIDE = Number(import.meta.env.VITE_LIVE_MAX_BITRATE) || undefined
+/**
+ * 采集帧率的默认值（options.fps 不传时用它）。
+ *
+ * ⚠️ 以前这里叫 MAX_FPS = 60，被 tuneSender 当成 maxFramerate 写进编码参数 ——
+ * 而画面是 `captureStream(30)` 采的，源头就只有 30 帧。写 60 不会让画面更流畅，
+ * 只会让读代码的人以为在推 60 帧。现在两处统一用同一个数。
+ */
+const DEFAULT_FPS = 30
+/** 多久读一次 WebRTC 统计。太密没意义（编码器自己的自适应也是秒级的） */
+const STATS_INTERVAL_MS = 5_000
+/**
+ * 连续几次采样都被判定为受限，才真的降一档；连续几次干净才升回去。
+ * 不设迟滞的话画质会在两档之间来回跳，比一直糊更难受。
+ */
+const DEGRADE_AFTER = 2
+const RECOVER_AFTER = 4
 
 export type BroadcastState = 'connecting' | 'live' | 'reconnecting' | 'ended' | 'error'
 
@@ -50,6 +73,17 @@ export interface BroadcastOptions {
   maxBitrate?: number
   onState?: (state: BroadcastState) => void
   onViewers?: (count: number) => void
+  /**
+   * 推流质量。以前这条链路上**一个 getStats 都没有** —— 推出去之后画质好不好、
+   * 是被 CPU 还是被带宽限住了，主播和我们都一无所知，只能等观众来报「好卡」。
+   *
+   * reason 直接来自 WebRTC 的 qualityLimitationReason：
+   *   cpu       编码跟不上。**每个观众一条 PeerConnection = 一路独立编码**，
+   *             而游戏主循环在同一个进程里 —— 观众一多，先卡的是主播自己的游戏。
+   *   bandwidth 上行不够，编码器已经自己在降码率了
+   *   none      一切正常
+   */
+  onQuality?: (info: QualityInfo) => void
   /** 房间号变了（重连后接不回原房间、只能重开时）。开播那一次也会调 */
   onRoom?: (roomId: string) => void
   onError?: (message: string) => void
@@ -68,6 +102,18 @@ export interface Broadcast {
    */
   linkNetplay: (roomId: string | null) => void
   stop: () => void
+}
+
+export interface QualityInfo {
+  /** 最需要关注的那个限制原因（有观众被 CPU 限住就报 cpu，它比带宽更难自愈） */
+  reason: 'none' | 'cpu' | 'bandwidth' | 'other'
+  /** 当前实际发送的帧率（所有观众里的最低值） */
+  fps: number
+  /** 当前实际发送的码率，kbps（所有观众合计） */
+  kbps: number
+  /** 我们主动把帧率压到了多少；等于采集帧率就是没压 */
+  cappedFps: number
+  viewers: number
 }
 
 type SignalData = { sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit; gen?: number }
@@ -125,20 +171,18 @@ function buildStream(sources: CaptureSources, fps: number): { stream: MediaStrea
   }
 }
 
-/** 限码率、保帧率：游戏画面宁可糊一点也不要卡 */
-function tuneSender(sender: RTCRtpSender, maxBitrate = MAX_BITRATE) {
-  try {
-    const params = sender.getParameters()
-    if (!params.encodings?.length) params.encodings = [{}]
-    for (const e of params.encodings) {
-      e.maxBitrate = maxBitrate
-      e.maxFramerate = MAX_FPS
-    }
-    ;(params as RTCRtpSendParameters & { degradationPreference?: string }).degradationPreference = 'maintain-framerate'
-    void sender.setParameters(params)
-  } catch {
-    /* 浏览器不支持就按默认来 */
-  }
+/**
+ * 按这条轨的**实际画面大小**定编码参数（见 videoTuning.ts）。
+ *
+ * ⚠️ 原来这里写死 `maintain-framerate` + 固定 1.5Mbps。对 640×480 的 DOS 是对的，
+ * 对 240×160 的 GBA 是反的 —— 那个源本来就没有分辨率可降，缩一次就是马赛克。
+ * 现在两件事都交给 tuningFor 按源大小决定，直播和联机共用同一份判断。
+ *
+ * `options.maxBitrate` 仍然优先（分享标签页那条路自己按屏幕分辨率算过）。
+ */
+function tuneSender(sender: RTCRtpSender, maxBitrate: number | undefined, maxFramerate: number) {
+  const { width, height } = sizeOfTrack(sender.track)
+  applyTuning(sender, tuningFor({ width, height, fps: maxFramerate, maxBitrate }))
 }
 
 /** 这条连接还值得留着吗（还在握手、或者已经通了） */
@@ -161,7 +205,8 @@ function call<T>(socket: LiveSocket, event: string, payload: unknown, ms = 10_00
 }
 
 export async function startBroadcast(options: BroadcastOptions): Promise<Broadcast> {
-  const built = buildStream(options.sources, options.fps ?? 30)
+  const captureFps = options.fps ?? DEFAULT_FPS
+  const built = buildStream(options.sources, captureFps)
   if (!built) throw new Error('no capture source')
 
   options.onState?.('connecting')
@@ -179,6 +224,19 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
   let genCounter = 0
   let viewers = 0
   let stopped = false
+  /**
+   * 我们主动施加的帧率上限。两个来源取更小的那个：
+   *   - `statsCap`：getStats 发现 CPU 被限住之后**事后**逐档降（见 statsTick）
+   *   - `fpsForViewers(viewers)`：按观众数**前馈**降（见 videoTuning.ts）
+   * 分开记是必要的：观众走光之后前馈那一档要自动松开，而 statsTick 那一档
+   * 得靠连续几轮干净采样才升回去 —— 混在一个变量里，观众一走就会把 CPU 那档也一并松掉。
+   */
+  let statsCap = captureFps
+  let cappedFps = captureFps
+  let degradeStreak = 0
+  let recoverStreak = 0
+  let statsTimer = 0
+  let visibilityBound = false
   let roomId = ''
   let token = ''
 
@@ -223,7 +281,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
 
     for (const track of built.stream.getTracks()) {
       const sender = pc.addTrack(track, built.stream)
-      if (track.kind === 'video') tuneSender(sender, options.maxBitrate)
+      if (track.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps)
     }
 
     pc.onicecandidate = (ev) => {
@@ -241,12 +299,154 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       await pc.setLocalDescription(offer)
       socket.emit('signal', { target: viewerId, data: { sdp: pc.localDescription ?? offer, gen } satisfies SignalData })
     } catch (e) {
+      /**
+       * ⚠️ 必须认身份，和 12 行上面的 onconnectionstatechange 一个道理。
+       *
+       * 同一个 viewerId 的两次 addViewer 会重叠（服务器重启后主播 resume 和观众重新 watch
+       * 几乎同时发生）：后一次的 dropPeer 把前一次 close 掉，前一次的 createOffer 于是抛
+       * InvalidStateError 进到这里 —— 不认身份的话，它删掉并 close 的是**刚建好的那条正确连接**。
+       * 结果这个观众一条 offer 都收不到，pc 停在 new（永远不会变 failed），
+       * 主播这边 peers 里也没有它了，只能等观众自己 20 秒后再要一轮。
+       */
+      if (peers.get(viewerId)?.pc !== pc) return
       dropPeer(viewerId)
+      // 旧一轮被新一轮顶掉是正常现象，只有当前这条失败才值得往上报
       options.onError?.(e instanceof Error ? e.message : String(e))
     }
   }
 
+  /** 把新的帧率上限应用到所有观众的视频发送端 */
+  const applyFpsCap = (next: number) => {
+    if (next === cappedFps) return
+    cappedFps = next
+    for (const { pc } of peers.values()) {
+      for (const sender of pc.getSenders()) {
+        if (sender.track?.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps)
+      }
+    }
+  }
+
+  /**
+   * 重算该用多少帧：事后那档（statsCap）和前馈那档（按观众数）取更小的。
+   *
+   * 观众进出时都要调一次 —— 前馈那一档是**可逆**的：人走了就该自动放回去，
+   * 不用等 getStats 攒够几轮干净采样。
+   */
+  const retuneFps = () => applyFpsCap(Math.min(statsCap, fpsForViewers(viewers, captureFps)))
+
+  /**
+   * 读一轮 WebRTC 统计，必要时降档。
+   *
+   * 只看 outbound-rtp 的视频条目：`qualityLimitationReason` 是浏览器自己的判断，
+   * 比我们从帧率倒推可靠得多。取「最坏的那个观众」而不是平均 ——
+   * 一个人卡不代表大家都卡，但 CPU 被限住是主播这台机器的问题，对谁都成立。
+   *
+   * 我们只动帧率，不动码率：码率浏览器自己就在按带宽估计调（BWE），
+   * 再插一手只会互相打架。而**帧率是它不会替我们省的那一项** ——
+   * 编码路数 × 帧率才是主播 CPU 的真实负担。
+   */
+  const statsTick = async () => {
+    if (stopped || peers.size === 0) return
+    /**
+     * 收集每个观众上报的限制原因，循环结束后再取最坏的那个。
+     * 不在回调里直接维护「当前最坏值」——TypeScript 的控制流分析不跟踪闭包里的赋值，
+     * 循环后的比较会被判成恒假（TS2367）。分成收集 + 归约两步，类型和意图都更清楚。
+     */
+    const reasons: string[] = []
+    let minFps = Number.POSITIVE_INFINITY
+    let totalKbps = 0
+    let sawVideo = false
+
+    for (const { pc } of peers.values()) {
+      let report: RTCStatsReport
+      try {
+        report = await pc.getStats()
+      } catch {
+        continue
+      }
+      report.forEach((stat) => {
+        const s = stat as RTCStats & {
+          kind?: string
+          qualityLimitationReason?: string
+          framesPerSecond?: number
+          targetBitrate?: number
+        }
+        if (s.type !== 'outbound-rtp' || s.kind !== 'video') return
+        sawVideo = true
+        if (s.qualityLimitationReason) reasons.push(s.qualityLimitationReason)
+        if (typeof s.framesPerSecond === 'number') minFps = Math.min(minFps, s.framesPerSecond)
+        if (typeof s.targetBitrate === 'number') totalKbps += Math.round(s.targetBitrate / 1000)
+      })
+    }
+    if (stopped || !sawVideo) return
+
+    // 取最坏的那个观众，而不是平均：一个人卡不代表大家都卡，
+    // 但 CPU 被限住是主播这台机器的问题，对谁都成立，所以它优先级最高（带宽会自愈，CPU 不会）
+    const worst: QualityInfo['reason'] = reasons.includes('cpu')
+      ? 'cpu'
+      : reasons.includes('bandwidth')
+        ? 'bandwidth'
+        : reasons.some((r) => r !== 'none')
+          ? 'other'
+          : 'none'
+
+    // 只有 CPU 受限才由我们出手降帧率；带宽受限交给浏览器自己调码率
+    if (worst === 'cpu') {
+      degradeStreak++
+      recoverStreak = 0
+      if (degradeStreak >= DEGRADE_AFTER) {
+        degradeStreak = 0
+        // 逐档减半，最低 10 帧 —— 再低就不像在动了，不如让人少几个观众
+        const next = Math.max(10, Math.round(statsCap / 2))
+        if (next < statsCap) {
+          statsCap = next
+          retuneFps()
+        }
+      }
+    } else {
+      degradeStreak = 0
+      if (statsCap < captureFps) {
+        recoverStreak++
+        if (recoverStreak >= RECOVER_AFTER) {
+          recoverStreak = 0
+          statsCap = Math.min(captureFps, statsCap * 2)
+          retuneFps()
+        }
+      }
+    }
+
+    options.onQuality?.({
+      reason: worst,
+      fps: Number.isFinite(minFps) ? Math.round(minFps) : 0,
+      kbps: totalKbps,
+      cappedFps,
+      viewers,
+    })
+  }
+
+  /**
+   * 主播切到后台：浏览器不给后台标签页出帧，`captureStream` 直接停住，
+   * 观众那边画面**冻结**。这是浏览器行为，改不了 —— 但可以告诉观众一声，
+   * 否则他看到的是一张凝固的画面、没有任何解释，只会以为是自己网断了。
+   */
+  const onVisibility = () => {
+    if (stopped) return
+    try {
+      if (socket.connected) socket.emit('host-visibility', { hidden: document.visibilityState === 'hidden' })
+    } catch {
+      /* 信令断了就算了，回来 resume 时状态会重新对齐 */
+    }
+  }
+
   const teardown = () => {
+    if (statsTimer) {
+      window.clearInterval(statsTimer)
+      statsTimer = 0
+    }
+    if (visibilityBound) {
+      document.removeEventListener('visibilitychange', onVisibility)
+      visibilityBound = false
+    }
     for (const id of Array.from(peers.keys())) dropPeer(id)
     built.release()
     try {
@@ -301,6 +501,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       for (const id of current) void addViewer(id, false)
       viewers = current.size
       options.onViewers?.(viewers)
+      retuneFps()
       options.onState?.('live')
       relink()
       return
@@ -341,6 +542,9 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
   socket.on('viewers', ((payload: { count?: number }) => {
     viewers = payload?.count ?? 0
     options.onViewers?.(viewers)
+    // 观众数一变就重算帧率 —— 「编码路数 × 帧率」是主播 CPU 的真实负担，
+    // 这个不用等 getStats 事后发现，人进来的那一刻就能算出来
+    retuneFps()
   }) as (...args: never[]) => void)
 
   socket.on('signal', ((payload: { from?: string; data?: SignalData }) => {
@@ -373,6 +577,12 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
   }
 
   options.onState?.('live')
+
+  statsTimer = window.setInterval(() => void statsTick(), STATS_INTERVAL_MS)
+  document.addEventListener('visibilitychange', onVisibility)
+  visibilityBound = true
+  // 开播那一刻就可能已经在后台了（比如切到别的标签页才点的开播）
+  if (document.visibilityState === 'hidden') onVisibility()
 
   return {
     get roomId() {

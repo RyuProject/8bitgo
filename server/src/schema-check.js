@@ -25,6 +25,9 @@ const EXPECTED_COLUMNS = [
   { table: 'games', column: 'arcade_romdata', why: '街机改版包的 FBNeo RomData' },
   { table: 'games', column: 'adult', why: '成人游戏 18 岁验证' },
   { table: 'games', column: 'created_at', why: '真实入库时间' },
+  { table: 'games', column: 'rating_sum', why: '评分聚合；缺了详情页星星读得出来，但一有人打分 POST /api/ratings 就 500' },
+  { table: 'games', column: 'rating_weight', why: '评分权重合计（登录 1.0 / 匿名 0.5），按评分排序靠它' },
+  { table: 'games', column: 'rating_count', why: '评分人数，卡片上「N 人评分」用' },
   { table: 'users', column: 'token_version', why: '退出所有设备 / 改完密码作废旧令牌' },
   { table: 'users', column: 'birth_date', why: '成人内容年龄验证：出生日期记在账号上，缺了 PUT /api/me/birth-date 会 500，成人游戏谁也进不去' },
 ]
@@ -52,6 +55,12 @@ const EXPECTED_TABLES = [
     why: '游戏评论；缺了详情页评论区读不出来、发表全 500，而页面其它部分一切正常',
   },
   { table: 'login_codes', why: '邮箱验证码；缺了会自动退回进程内存（重启丢码、多实例对不上），登录能用但不可靠' },
+  { table: 'collections', why: '用户自建合集；缺了首页那一栏是空的，/collections 与「我的合集」全 500' },
+  { table: 'collection_items', why: '合集里的游戏；缺了合集能建但加不进游戏、封面也取不出来' },
+  {
+    table: 'game_ratings',
+    why: '游戏评分明细；缺了详情页的评分卡整块读不出来、打分全 500，而页面其它部分一切正常',
+  },
 ]
 
 export async function checkSchema() {

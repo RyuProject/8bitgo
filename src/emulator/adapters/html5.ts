@@ -5,10 +5,10 @@
  * 也可能是单独部署的完整应用。这里负责把入口放进播放器 iframe，不搬运也不补齐
  * 游戏资源；脚本、WASM、音频等相对路径仍由游戏自己的部署目录提供。
  */
-import type { Capability, CaptureSources, MountOptions, Runtime, RuntimeHandle } from '../types'
+import type { Capability, CaptureSources, MountOptions, RuntimeHandle } from '../types'
 import { focusFrame, frameGamepads } from '../frameFocus'
 
-function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
+export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const caps = new Set<Capability>()
   let destroyed = false
   let objectUrl = ''
@@ -47,6 +47,15 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   let loaded = false
   iframe.addEventListener('load', () => {
     if (destroyed) return
+    /**
+     * 只认第一次 load。
+     *
+     * 门户式的 HTML5 游戏会在自己的 iframe 里做整页跳转（菜单页 → 游戏页、关卡之间
+     * location.href）。每跳一次就再触发一次 load：以前会再报一次 onReady ——
+     * 播放器那边等于**再记一次游玩**（游玩次数虚高），还会把焦点从玩家正在打字的
+     * 评论框里抢进 iframe，后面敲的字全打进游戏里。
+     */
+    if (loaded) return
     loaded = true
     options.onReady?.()
     // 焦点交给 iframe，否则里面的游戏收不到键盘和手柄（见 frameFocus.ts）
@@ -166,14 +175,3 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   }
 }
 
-export const html5Runtime: Runtime = {
-  id: 'html5',
-  name: 'HTML5 / WebAssembly',
-  description: '直接运行已部署的 HTML5 或 WebAssembly 网页游戏',
-  extensions: ['html', 'htm'],
-  priority: 100,
-  available: () => true,
-  supports: (platform) => platform === 'html5',
-  engineLabel: () => 'HTML5 / WASM',
-  mount,
-}

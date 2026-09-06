@@ -11,7 +11,7 @@
  * 资源默认从 /jsdos/ 加载（由 scripts/copy-jsdos.mjs 从 npm 包复制过来）。
  * 想换成官方 CDN 就设 VITE_JSDOS_PATH=https://v8.js-dos.com/latest/
  */
-import type { Capability, CaptureSources, LoadProgress, MountOptions, PadButton, Runtime, RuntimeHandle } from '../types'
+import type { Capability, CaptureSources, LoadProgress, MountOptions, PadButton, RuntimeHandle } from '../types'
 import { getT, fmt } from '@/services/i18n'
 import {
   buildDosboxConf,
@@ -272,7 +272,7 @@ async function readRom(
   return { name: loaded.name, buf: loaded.data }
 }
 
-function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
+export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
   // 必须先于 js-dos 建 AudioContext；它是在挂载之后的某个 effect 里建的，这里来得及
   installAudioTap()
@@ -645,17 +645,3 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   }
 }
 
-export const jsdosRuntime: Runtime = {
-  id: 'jsdos',
-  name: 'js-dos',
-  get description() {
-    return getT().runtime.jsdosDesc
-  },
-  extensions: ['jsdos', 'zip', 'exe', 'com'],
-  // 高于 EmulatorJS：DOS 这类文件优先交给它
-  priority: 25,
-  available: () => true,
-  supports: (platform) => platform === 'dos',
-  engineLabel: () => 'DOSBox',
-  mount,
-}

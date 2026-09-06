@@ -7,7 +7,7 @@
  * 资源路径：默认 /ruffle/（由 scripts/copy-ruffle.mjs 从 npm 包复制到 public/ruffle/），
  * 也可设置 VITE_RUFFLE_PATH 指向 CDN，例如 https://unpkg.com/@ruffle-rs/ruffle/
  */
-import type { CaptureSources, Capability, MountOptions, PadButton, Runtime, RuntimeHandle } from '../types'
+import type { CaptureSources, Capability, MountOptions, PadButton, RuntimeHandle } from '../types'
 import { flashKeysFor, keyDesc, type KeyDesc } from '../flashKeys'
 import { loadGameBytes } from '../romLoader'
 import { assertSwf } from '@/lib/romValidation'
@@ -15,10 +15,8 @@ import { canvasToBlob } from '../recorder'
 import { focusFrame } from '../frameFocus'
 import { getT, fmt } from '@/services/i18n'
 
-export const RUFFLE_PATH: string = (() => {
-  const p = import.meta.env.VITE_RUFFLE_PATH || '/ruffle/'
-  return p.endsWith('/') ? p : `${p}/`
-})()
+export { RUFFLE_PATH } from '../paths'
+import { RUFFLE_PATH } from '../paths'
 
 /* ---------------- 设备字体（中文不显示的根因）---------------- */
 
@@ -219,7 +217,7 @@ function waitForFrame(video: HTMLVideoElement): Promise<void> {
   })
 }
 
-function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
+export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
   /** 加载成功后才知道能不能暂停 / 调音量，先空着，等 load() 回来再报 */
   const caps = new Set<Capability>()
@@ -680,16 +678,3 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   }
 }
 
-export const ruffleRuntime: Runtime = {
-  id: 'ruffle',
-  name: 'Ruffle',
-  get description() {
-    return getT().runtime.ruffleDesc
-  },
-  extensions: ['swf'],
-  priority: 20,
-  available: () => true,
-  supports: (platform) => platform === 'flash',
-  engineLabel: () => 'swf',
-  mount,
-}

@@ -3,6 +3,7 @@ import { query, queryOne } from '../db.js'
 import { requireAbility, hasAbility } from '../auth.js'
 import { isRole, ROLE_LABELS } from '../../../shared/roles.js'
 import { userRowToPublic } from '../mappers.js'
+import { gamesRatedBy, recomputeGameRatings } from '../ratings-repo.js'
 
 export const usersRouter = Router()
 usersRouter.use(requireAbility('users:manage'))
@@ -126,7 +127,13 @@ usersRouter.patch('/:id', async (req, res, next) => {
   }
 })
 
-/** 删除用户。favorites / recents 有 ON DELETE CASCADE，会跟着一起删掉。 */
+/**
+ * 删除用户。favorites / recents 有 ON DELETE CASCADE，会跟着一起删掉。
+ *
+ * ⚠️ 评分要多做一步：game_ratings 也是级联删的，但 games 上的评分聚合列
+ * 是冗余缓存，数据库不会替我们降。所以**删之前**先记下他投过哪些游戏，
+ * 删完再按明细重算那几款 —— 顺序反了就一条都查不到了。
+ */
 usersRouter.delete('/:id', async (req, res, next) => {
   try {
     const { id } = req.params
@@ -136,7 +143,9 @@ usersRouter.delete('/:id', async (req, res, next) => {
     if (target.role === 'admin' && (await activeAdminCount(id)) === 0) {
       return res.status(400).json({ error: '这是最后一个可用的管理员，不能删除' })
     }
+    const rated = await gamesRatedBy(id)
     await query('DELETE FROM users WHERE id = ?', [id])
+    await recomputeGameRatings(rated)
     res.json({ ok: true })
   } catch (e) {
     next(e)

@@ -108,19 +108,34 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
   /** 一个方向都不读的游戏（真有，比如只按空格的）就别画十字键 */
   const hasDirs = has('up') || has('down') || has('left') || has('right')
 
+  /**
+   * onInput 只报第一次。
+   *
+   * 契约写的是「第一次按下时调一次」，实现却是每次按下都调 —— 而消费端在里面做
+   * **同步的 localStorage.setItem**（收起那条上手提示）。按住十字键滑一圈，
+   * onDpad 每个 pointermove 都跑，一秒几十次同步存储写砸在主线程上，
+   * 而模拟器同一帧还要抢那 16ms：搓十字键时掉帧、音频爆音。
+   */
+  const inputFired = useRef(false)
   const set = useCallback(
     (button: PadButton, down: boolean) => {
       if (down === held.current.has(button)) return
       if (down) held.current.add(button)
       else held.current.delete(button)
       send?.(button, down)
-      if (down) onInput?.()
+      if (down && !inputFired.current) {
+        inputFired.current = true
+        onInput?.()
+      }
     },
     [send, onInput],
   )
 
   /** 换游戏、退出全屏、组件卸载：手上按着的键必须松开，否则角色会一直往一个方向跑 */
   const releaseAll = useCallback(() => {
+    // 归属记录也要一起清，否则下次按下会因为「集合里还留着上一轮的手指」而不触发按下
+    dpadPointer.current = null
+    btnPointers.current.clear()
     for (const b of [...held.current]) set(b, false)
   }, [set])
 
@@ -138,6 +153,16 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
   // 送不出去、或者适配器明说「这局一颗键都用不上」，整条就别画了 —— 画一个空壳更糟
   if (!send || (only && only.length === 0)) return null
 
+  /**
+   * 十字键的**归属手指**。
+   *
+   * 没有它的话：一根拇指压着十字键跑图，另一只手的手指（或握持时的掌根）蹭到这块
+   * 125px 的区域 —— 第二根手指的坐标会被当成新方向，角色当场掉头；它一抬起来
+   * clearDpad 又把四个方向全松开，而拇指还压着且不动，于是「十字键忽然死了，
+   * 要抬起来重按一次才活」。只认第一根手指，其余一律不理。
+   */
+  const dpadPointer = useRef<number | null>(null)
+
   const onDpad = (e: PointerEvent<HTMLDivElement>) => {
     const r = e.currentTarget.getBoundingClientRect()
     const nx = ((e.clientX - r.left) / r.width) * 2 - 1
@@ -147,7 +172,58 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
   }
 
   const clearDpad = () => {
+    dpadPointer.current = null
     for (const d of ['up', 'down', 'left', 'right'] as PadButton[]) set(d, false)
+  }
+
+  const dpadProps = {
+    onPointerDown: (e: PointerEvent<HTMLDivElement>) => {
+      e.preventDefault()
+      // 已经有手指在管方向了，后来的一律不理（见 dpadPointer）
+      if (dpadPointer.current !== null) return
+      dpadPointer.current = e.pointerId
+      e.currentTarget.setPointerCapture(e.pointerId)
+      onDpad(e)
+    },
+    onPointerMove: (e: PointerEvent<HTMLDivElement>) => {
+      if (e.pointerId !== dpadPointer.current) return
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) onDpad(e)
+    },
+    onPointerUp: (e: PointerEvent<HTMLDivElement>) => {
+      if (e.pointerId !== dpadPointer.current) return
+      clearDpad()
+    },
+    onPointerCancel: (e: PointerEvent<HTMLDivElement>) => {
+      if (e.pointerId !== dpadPointer.current) return
+      clearDpad()
+    },
+    onLostPointerCapture: (e: PointerEvent<HTMLDivElement>) => {
+      if (e.pointerId !== dpadPointer.current) return
+      clearDpad()
+    },
+    onContextMenu: (e: MouseEvent) => e.preventDefault(),
+  }
+
+  /**
+   * 同一颗按钮上压着几根手指。
+   *
+   * 双指交替猛点 A 连发是标准打法：两次点按只要有几毫秒重叠，第二根的按下就会被
+   * `down === held.has(button)` 挡掉，而第一根一抬就把键松了 —— 一对交替只产生
+   * **一次**按下，连发速率直接减半，玩家感觉「点得越快反而越不出招」。
+   * 记住每颗键上的手指集合，空→非空才按下，非空→空才松开。
+   */
+  const btnPointers = useRef(new Map<PadButton, Set<number>>())
+  const pressBtn = (button: PadButton, id: number) => {
+    let ids = btnPointers.current.get(button)
+    if (!ids) btnPointers.current.set(button, (ids = new Set()))
+    const wasEmpty = ids.size === 0
+    ids.add(id)
+    if (wasEmpty) set(button, true)
+  }
+  const releaseBtn = (button: PadButton, id: number) => {
+    const ids = btnPointers.current.get(button)
+    if (!ids || !ids.delete(id) || ids.size) return
+    set(button, false)
   }
 
   /** 圆按钮（A / B）与胶囊按钮（SELECT / START）共用的按下 / 松开处理 */
@@ -156,11 +232,11 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
       e.preventDefault()
       // 抓住这个 pointer：手指从按钮上滑出去也照样收得到 up，不会卡住不放
       e.currentTarget.setPointerCapture(e.pointerId)
-      set(button, true)
+      pressBtn(button, e.pointerId)
     },
-    onPointerUp: () => set(button, false),
-    onPointerCancel: () => set(button, false),
-    onLostPointerCapture: () => set(button, false),
+    onPointerUp: (e: PointerEvent<HTMLButtonElement>) => releaseBtn(button, e.pointerId),
+    onPointerCancel: (e: PointerEvent<HTMLButtonElement>) => releaseBtn(button, e.pointerId),
+    onLostPointerCapture: (e: PointerEvent<HTMLButtonElement>) => releaseBtn(button, e.pointerId),
     onContextMenu: (e: MouseEvent) => e.preventDefault(),
   })
 
@@ -189,18 +265,7 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
         !inline && highlight && 'animate-pad-pulse',
       )}
       style={{ ...PAD_STYLE, width: DPAD, height: DPAD }}
-      onPointerDown={(e) => {
-        e.preventDefault()
-        e.currentTarget.setPointerCapture(e.pointerId)
-        onDpad(e)
-      }}
-      onPointerMove={(e) => {
-        if (e.currentTarget.hasPointerCapture(e.pointerId)) onDpad(e)
-      }}
-      onPointerUp={clearDpad}
-      onPointerCancel={clearDpad}
-      onLostPointerCapture={clearDpad}
-      onContextMenu={(e) => e.preventDefault()}
+      {...dpadProps}
     >
       {/* 只是画给人看的箭头，事件都在外层那一块上 */}
       <div className="pointer-events-none absolute inset-0 text-white/60">

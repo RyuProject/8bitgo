@@ -84,6 +84,13 @@ CREATE TABLE IF NOT EXISTS games (
   description_i18n JSON         NULL,
   body_control  TINYINT(1)    NOT NULL DEFAULT 0,
   adult         TINYINT(1)    NOT NULL DEFAULT 0,
+  -- 评分聚合（见 game_ratings）。冗余在这里是为了让游戏库能直接按评分排序、
+  -- 卡片能直接显示星级，不必每次 join 一张会越来越大的明细表。
+  -- rating_sum = SUM(score*weight)，rating_weight = SUM(weight)，平均分 = 前者/后者。
+  -- rating_count 是**人数**，只用于展示（「128 人评分」），不参与算平均。
+  rating_sum    DECIMAL(12,1)   NOT NULL DEFAULT 0,
+  rating_weight DECIMAL(12,1)   NOT NULL DEFAULT 0,
+  rating_count  INT UNSIGNED    NOT NULL DEFAULT 0,
   hidden        TINYINT(1)    NOT NULL DEFAULT 0,
   -- 模拟器核心覆盖。NULL = 用平台默认（src/data/platforms.ts 的 core 字段）。
   -- 街机尤其需要：同一个「街机」平台底下，拳皇要 fbneo、街霸2 要 fbalpha2012_cps2、
@@ -293,6 +300,55 @@ CREATE TABLE IF NOT EXISTS game_comments (
   CONSTRAINT fk_cmt_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE,
   CONSTRAINT fk_cmt_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   CONSTRAINT fk_cmt_parent FOREIGN KEY (parent_id) REFERENCES game_comments(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------------------------------------------------------------------------
+-- 游戏评分：1~5 星。登录用户权重 1.0，未登录 0.5
+--
+-- 为什么权重不是「登录才算数」：绝大多数访客不会为了打个分去注册，全挡掉等于
+-- 这个功能对大部分人不存在；但匿名票天然更容易被刷，也更不负责任，所以打对折。
+-- 加权平均 = SUM(score * weight) / SUM(weight)，聚合值冗余在 games 表上（见那三列）。
+--
+-- 身份与去重（这是这张表最需要小心的地方）：
+--   登录用户  user_id 有值、anon_id 与 anon_ip 都是 NULL，靠 uniq_rating_user 保证一人一票
+--   匿名用户  user_id 为 NULL，anon_id 是浏览器本地生成的长期标识，anon_ip 是发起时的 IP
+--
+-- ⚠️ IP 的唯一约束**只能约束匿名行**，所以登录行的 anon_ip 必须写 NULL 而不是空串：
+--    MySQL 的唯一索引允许多个 NULL，于是同一个 NAT 后面的多个登录用户互不影响；
+--    要是把登录用户的 IP 也存进去，学校/公司里第二个人就再也评不了分。
+--
+-- ⚠️ anon_id 是客户端自己生成的，换个无痕窗口就能变 —— 它的作用**不是防刷**
+--    （防刷靠 anon_ip 那条唯一约束），而是让同一个浏览器能**改自己的分**，
+--    以及换了网络（手机切基站）之后还认得出是同一个人。
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS game_ratings (
+  id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  game_id    BIGINT UNSIGNED NOT NULL,
+  -- 登录用户的 id；匿名评分为 NULL
+  user_id    VARCHAR(40)     NULL,
+  -- 匿名身份：浏览器本地生成并长期保存的随机串。登录评分为 NULL
+  anon_id    CHAR(32)        NULL,
+  -- 匿名评分发起时的 IP。**登录评分必须为 NULL**，见上面的说明
+  anon_ip    VARCHAR(45)     NULL,
+  score      TINYINT UNSIGNED NOT NULL,
+  -- 1.0 = 登录，0.5 = 匿名。存下来而不是每次按 user_id 现推：
+  -- 以后要调权重时，历史票据该按当时的规则还是新规则算是个产品决定，留出选择余地
+  weight     DECIMAL(2,1)    NOT NULL,
+  -- 发表时的国家快照，和评论同源（CF-IPCountry）。用于事后分析刷分，不对外展示
+  country    CHAR(2)         NOT NULL DEFAULT 'XX',
+  created_at TIMESTAMP(3)    NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at TIMESTAMP(3)    NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  -- 一个登录用户对一款游戏只有一票（改分是 UPDATE 这一行）
+  UNIQUE KEY uniq_rating_user (game_id, user_id),
+  -- 同一浏览器同理。登录行 anon_id 是 NULL，不受这条约束
+  UNIQUE KEY uniq_rating_anon (game_id, anon_id),
+  -- 同一 IP 的匿名票只算一张。登录行 anon_ip 是 NULL，不受影响
+  UNIQUE KEY uniq_rating_ip (game_id, anon_ip),
+  KEY idx_rating_game_time (game_id, created_at DESC),
+  KEY idx_rating_user_time (user_id, created_at DESC),
+  CONSTRAINT fk_rating_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE,
+  CONSTRAINT fk_rating_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT chk_rating_score CHECK (score BETWEEN 1 AND 5)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================================

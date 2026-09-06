@@ -14,6 +14,7 @@ import {
   postChangeUrls,
   postDetailUrls,
   publicSiteUrl,
+  taxonomyDetailUrls,
 } from './site-urls.js'
 
 export {
@@ -24,6 +25,7 @@ export {
   postChangeUrls,
   postDetailUrls,
   publicSiteUrl,
+  taxonomyDetailUrls,
   normalizeSiteUrls,
   normalizeSiteUrls as normalizeIndexNowUrls,
 }

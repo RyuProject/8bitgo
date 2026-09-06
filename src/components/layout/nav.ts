@@ -34,6 +34,8 @@ export function mainNavFor(t: Translation): NavLinkItem[] {
 export function exploreNavFor(t: Translation): NavLinkItem[] {
   return [
     { label: t.nav.allGames, to: '/games', icon: '📚', exact: true },
+    // 合集放在「全部游戏」后面：它也是一种浏览游戏库的维度，只不过是玩家自己整理的
+    { label: t.collections.title, to: '/collections', icon: '🗂️', exact: true },
     { label: t.nav.platforms, to: '/platforms', icon: '🎮' },
     { label: t.nav.genres, to: '/genres', icon: '🧭' },
     { label: t.nav.developers, to: '/developers', icon: '🏢' },
@@ -42,7 +44,10 @@ export function exploreNavFor(t: Translation): NavLinkItem[] {
 
 /** 侧边栏最底下的零散入口。博客从上面挪到这儿，免得跟浏览游戏的几条混在一起。 */
 export function bottomNavFor(t: Translation): NavLinkItem[] {
-  return [{ label: t.nav.blog, to: '/blog', icon: '📝' }]
+  return [
+    { label: t.nav.blog, to: '/blog', icon: '📝' },
+    { label: t.nav.submitGame, to: '/submit', icon: '📤' },
+  ]
 }
 
 export interface CommunityLink {

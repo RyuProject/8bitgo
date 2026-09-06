@@ -2,11 +2,14 @@ import { Route, Routes } from 'react-router-dom'
 import { Layout } from '@/components/layout/Layout'
 import { TopProgressBar } from '@/components/layout/TopProgressBar'
 import { RouteChunk, lazyNamed } from '@/routes/lazy'
+import { useAutoInclude } from '@/services/autoInclude'
 import { HomePage } from '@/pages/HomePage'
 import { GamesPage } from '@/pages/GamesPage'
 import { GameDetailPage } from '@/pages/GameDetailPage'
 import { PlayLocalPage } from '@/pages/PlayLocalPage'
 import { RoomsPage } from '@/pages/RoomsPage'
+import { CollectionsPage } from '@/pages/CollectionsPage'
+import { CollectionDetailPage } from '@/pages/CollectionDetailPage'
 import { DevelopersPage, GenresPage, PlatformsPage } from '@/pages/BrowsePages'
 import { GenrePage, PlatformPage } from '@/pages/CollectionPage'
 import { ComingSoonPage } from '@/pages/ComingSoonPage'
@@ -16,6 +19,7 @@ import { PostPage } from '@/pages/PostPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { ProfilePage } from '@/pages/ProfilePage'
 import { AboutPage } from '@/pages/AboutPage'
+import { SubmitGamePage } from '@/pages/SubmitGamePage'
 import { EmbedPage } from '@/pages/EmbedPage'
 import { OAuthCallbackPage } from '@/pages/OAuthCallbackPage'
 
@@ -46,6 +50,9 @@ const COMING_SOON_ROUTES = [
 ]
 
 export function AppRoutes() {
+  // 前端路由换页时补一次头条自动收录的推送（index.html 里那段只推首屏那一个 URL）
+  useAutoInclude()
+
   return (
     <>
       {/* 顶部加载条。放在 <Routes> 外面，前台和后台共用同一根 */}
@@ -62,6 +69,10 @@ export function AppRoutes() {
           <Route path="/developers" element={<DevelopersPage />} />
           <Route path="/play-local" element={<PlayLocalPage />} />
           <Route path="/rooms" element={<RoomsPage />} />
+          {/* 用户自建合集。注意和 pages/CollectionPage.tsx 不是一回事 ——
+              那个是平台页 / 类型页的共用组件（/platforms/:id、/genres/:id） */}
+          <Route path="/collections" element={<CollectionsPage />} />
+          <Route path="/collections/:id" element={<CollectionDetailPage />} />
           <Route path="/blog" element={<BlogPage />} />
           <Route path="/blog/:slug" element={<PostPage />} />
           <Route path="/login" element={<LoginPage />} />
@@ -71,6 +82,7 @@ export function AppRoutes() {
           <Route path="/auth/callback" element={<OAuthCallbackPage />} />
           <Route path="/me" element={<ProfilePage />} />
           <Route path="/about" element={<AboutPage />} />
+          <Route path="/submit" element={<SubmitGamePage />} />
           {COMING_SOON_ROUTES.map((path) => (
             <Route key={path} path={path} element={<ComingSoonPage />} />
           ))}

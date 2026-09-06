@@ -1,4 +1,4 @@
-import type { Platform } from '@/types'
+import type { Platform, PlatformId } from '@/types'
 
 export const platforms: Platform[] = [
   {
@@ -14,6 +14,34 @@ export const platforms: Platform[] = [
     color: '#6d6dff',
     icon: '💿',
     description: '32 位时代的王者，3D 游戏的启蒙之地。铁拳、最终幻想、古惑狼都诞生于此。',
+  },
+  {
+    id: 'ps2',
+    name: 'PlayStation 2',
+    shortName: 'PS2',
+    nameZh: '索尼 PlayStation 2',
+    manufacturer: 'Sony',
+    year: 2000,
+    /**
+     * ⚠️ 唯一不走 EmulatorJS 的主机平台，而且是**实验性**的。
+     *
+     * EmulatorJS 的系统列表到 PSP 为止，没有 PS2 核心。浏览器里能跑 PS2 的只有
+     * Play!（jpd002/Play- 的 Emscripten 构建），而它有两条**结构性**限制，
+     * 是浏览器沙箱本身造成的、不是移植没做完：拿不到内存页写保护，
+     * 于是 JIT cache 没法失效，在 EE 上动态加载模块的游戏会跑错；
+     * 以及没法控制浮点舍入模式，一部分游戏的画面和物理会不对。
+     * 作者自己的说法是 "only an experiment"。
+     *
+     * 所以这个平台在站上一律标注实验性，别按「和 PS1 一样能玩」来对待。
+     * 想要真正的 PS2 兼容性，路只有一条：游戏跑在服务器上、画面串流（cloud-game）。
+     */
+    runtime: 'play',
+    core: null,
+    // .cso/.zso 是压缩 ISO，能省一半以上体积；.elf 是自制程序
+    romExtensions: ['.iso', '.chd', '.cso', '.zso', '.isz', '.bin', '.elf'],
+    color: '#1f3fa8',
+    icon: '🎮',
+    description: '双摇杆时代的霸主，史上销量最高的主机。战神、旺达与巨像、真三国无双都在这里。',
   },
   {
     id: 'flash',
@@ -223,3 +251,14 @@ export const platforms: Platform[] = [
 export const platformMap: Record<string, Platform> = Object.fromEntries(
   platforms.map((p) => [p.id, p]),
 )
+
+/**
+ * 「能跑，但别当成正常平台」的平台。
+ *
+ * 目前只有 PS2：浏览器里唯一的 PS2 模拟器（Play!）有两条浏览器沙箱造成的结构性限制，
+ * 大多数游戏跑不起来或画面不对，详见 src/emulator/adapters/play.ts 的文件头。
+ *
+ * 这不是「还没做完」的意思 —— 做完了也是这样，所以要长期挂着这个标记。
+ * 有它的平台在平台卡和游戏详情页上都会显示实验性提示。
+ */
+export const EXPERIMENTAL_PLATFORMS = new Set<PlatformId>(['ps2'])

@@ -453,9 +453,101 @@ const patches = [
         CONSTRAINT fk_cmt_parent FOREIGN KEY (parent_id) REFERENCES game_comments(id) ON DELETE SET NULL
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`),
   },
+  {
+    name: 'collections + collection_items（用户自建的游戏合集）',
+    table: null,
+    skip: async () => {
+      if (!(await hasTable('users'))) return '还没有 users 表'
+      if (!(await hasTable('games'))) return '还没有 games 表'
+      return null
+    },
+    needed: async () => !(await hasTable('collections')) || !(await hasTable('collection_items')),
+    run: async () => {
+      await conn.query(
+        'CREATE TABLE IF NOT EXISTS `collections` (' +
+          '`id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,' +
+          '`user_id` VARCHAR(40) NOT NULL,' +
+          '`title` VARCHAR(80) NOT NULL,' +
+          // 「类型」是作者自己填的一行字，不是枚举 —— 见 schema-v2.sql 里的说明
+          "`kind` VARCHAR(30) NOT NULL DEFAULT ''," +
+          "`description` VARCHAR(500) NOT NULL DEFAULT ''," +
+          '`hidden` TINYINT(1) NOT NULL DEFAULT 0,' +
+          // 不带 ON UPDATE：什么时候算「有动静」由代码显式决定，否则任何无关的
+          // UPDATE 都会把合集顶到列表最前面
+          '`updated_at` TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),' +
+          '`created_at` TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),' +
+          'KEY `idx_col_user_time` (`user_id`, `created_at` DESC),' +
+          'KEY `idx_col_pub_time` (`hidden`, `updated_at` DESC)' +
+          ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
+      )
+      await conn.query(
+        'CREATE TABLE IF NOT EXISTS `collection_items` (' +
+          '`collection_id` BIGINT UNSIGNED NOT NULL,' +
+          '`game_id` BIGINT UNSIGNED NOT NULL,' +
+          // 毫秒精度：封面取「最新放入的四款」，秒级会让同一秒连加的几款排不出先后
+          '`created_at` TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),' +
+          'PRIMARY KEY (`collection_id`, `game_id`),' +
+          'KEY `idx_ci_col_time` (`collection_id`, `created_at` DESC),' +
+          'KEY `idx_ci_game` (`game_id`)' +
+          ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
+      )
+      // 外键单独加：老库里 users.id / games.id 的类型可能对不上，加不上也不该让整个迁移失败
+      for (const [table, name, sql] of [
+        ['collections', 'fk_col_user', 'FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE CASCADE'],
+        ['collection_items', 'fk_ci_col', 'FOREIGN KEY (`collection_id`) REFERENCES `collections`(`id`) ON DELETE CASCADE'],
+        ['collection_items', 'fk_ci_game', 'FOREIGN KEY (`game_id`) REFERENCES `games`(`id`) ON DELETE CASCADE'],
+      ]) {
+        try {
+          await conn.query(`ALTER TABLE \`${table}\` ADD CONSTRAINT \`${name}\` ${sql}`)
+        } catch (e) {
+          console.log(`   （外键 ${name} 没加上，不影响使用：${e.message}）`)
+        }
+      }
+    },
+  },
+  {
+    name: 'games 的评分聚合列（rating_sum / rating_weight / rating_count）',
+    table: 'games',
+    needed: async () => !(await hasColumn('games', 'rating_sum')),
+    run: () =>
+      conn.query(`ALTER TABLE \`games\`
+        ADD COLUMN \`rating_sum\`    DECIMAL(12,1) NOT NULL DEFAULT 0,
+        ADD COLUMN \`rating_weight\` DECIMAL(12,1) NOT NULL DEFAULT 0,
+        ADD COLUMN \`rating_count\`  INT UNSIGNED  NOT NULL DEFAULT 0`),
+  },
+  {
+    name: 'game_ratings（游戏评分：登录 1.0 分权重、匿名 0.5）',
+    // table: null —— 这条补丁自己就是建表，不能拿「表不存在」当跳过理由
+    table: null,
+    needed: async () => !(await hasTable('game_ratings')),
+    /** 同 game_comments：外键指向 games(id)，v1 库的 games 主键是 slug，挂不上去 */
+    skip: async () => ((await hasColumn('games', 'id')) ? '' : '这个库是 v1 结构（games 没有 id 主键），评分表的外键挂不上去'),
+    run: () =>
+      conn.query(`CREATE TABLE IF NOT EXISTS game_ratings (
+        id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        game_id    BIGINT UNSIGNED NOT NULL,
+        user_id    VARCHAR(40)     NULL,
+        anon_id    CHAR(32)        NULL,
+        anon_ip    VARCHAR(45)     NULL,
+        score      TINYINT UNSIGNED NOT NULL,
+        weight     DECIMAL(2,1)    NOT NULL,
+        country    CHAR(2)         NOT NULL DEFAULT 'XX',
+        created_at TIMESTAMP(3)    NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+        updated_at TIMESTAMP(3)    NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+        UNIQUE KEY uniq_rating_user (game_id, user_id),
+        UNIQUE KEY uniq_rating_anon (game_id, anon_id),
+        UNIQUE KEY uniq_rating_ip (game_id, anon_ip),
+        KEY idx_rating_game_time (game_id, created_at DESC),
+        KEY idx_rating_user_time (user_id, created_at DESC),
+        CONSTRAINT fk_rating_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE,
+        CONSTRAINT fk_rating_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        CONSTRAINT chk_rating_score CHECK (score BETWEEN 1 AND 5)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`),
+  },
+
 ]
 
-const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'login_codes', 'platform_bios', 'game_plays', 'developers', 'game_comments']
+const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'login_codes', 'platform_bios', 'game_plays', 'developers', 'game_comments', 'game_ratings']
 
 try {
   await conn.query(`CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`)
@@ -520,11 +612,11 @@ try {
   console.log('\n当前库内容：')
   for (const t of TABLES) {
     if (!(await hasTable(t))) {
-      console.log(`  ${t.padEnd(10)} 不存在`)
+      console.log(`  ${t.padEnd(13)} 不存在`)
       continue
     }
     const r = await one(`SELECT COUNT(*) AS n FROM \`${t}\``)
-    console.log(`  ${t.padEnd(10)} ${String(r?.n ?? 0).padStart(6)} 行`)
+    console.log(`  ${t.padEnd(13)} ${String(r?.n ?? 0).padStart(6)} 行`)
   }
 
   if (skipped) console.log(`\n⏭  有 ${skipped} 条补丁按库结构跳过了（见上面的说明）。`)

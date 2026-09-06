@@ -4,6 +4,7 @@ import { cx } from '@/lib/format'
 import { useT, fmt } from '@/services/i18n'
 import { platformLabel } from '@/services/i18nData'
 import { PlatformIcon } from './PlatformIcon'
+import { EXPERIMENTAL_PLATFORMS } from '@/data/platforms'
 
 export function PlatformCard({ platform, className }: { platform: PlatformWithCount; className?: string }) {
   const t = useT()
@@ -37,7 +38,18 @@ export function PlatformCard({ platform, className }: { platform: PlatformWithCo
               {platform.icon}
             </span>
           )}
-          <span className="text-pixel text-[10px] text-muted">{platform.year}</span>
+          <span className="flex flex-col items-end gap-1">
+            <span className="text-pixel text-[10px] text-muted">{platform.year}</span>
+            {/*
+              实验性平台（目前只有 PS2）要在**进去之前**就说清楚。
+              等玩家点进去、挑了款游戏、等它加载失败再说，那是三步之后的事了。
+            */}
+            {EXPERIMENTAL_PLATFORMS.has(platform.id) && (
+              <span className="rounded bg-coin-soft px-1.5 py-0.5 text-[10px] font-semibold text-coin">
+                {t.common.experimental}
+              </span>
+            )}
+          </span>
         </div>
         <h3 className="mt-4 text-base font-bold leading-tight">{platformLabel(t, platform.id, platform.name)}</h3>
         <p className="mt-0.5 text-xs text-muted">{platform.manufacturer}</p>

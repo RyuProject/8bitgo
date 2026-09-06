@@ -939,6 +939,12 @@ export function guessUploadType(key: string): string {
     jpeg: 'image/jpeg',
     png: 'image/png',
     gif: 'image/gif',
+    // 封面统一压成 WebP 之后必须有这一条：Blob（不是 File）没有 type，
+    // 少了它封面会被当成 application/octet-stream 存进 R2，浏览器直接下载而不是显示
+    webp: 'image/webp',
+    avif: 'image/avif',
+    mp4: 'video/mp4',
+    webm: 'video/webm',
     mp3: 'audio/mpeg',
     wav: 'audio/wav',
     flv: 'video/x-flv',

@@ -19,7 +19,7 @@
 import { actionForCombo, comboOf, type HotkeyAction } from '@/services/hotkeys'
 
 /** 正在打字的时候不能触发快捷键：玩家在评论框里按 F2 是想打字，不是想存档 */
-function isTyping(target: EventTarget | null): boolean {
+export function isTyping(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null
   if (!el || typeof el.tagName !== 'string') return false
   const tag = el.tagName.toUpperCase()

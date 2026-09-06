@@ -131,6 +131,31 @@ export function postChangeUrls(post, siteUrl = publicSiteUrl(), languages) {
   return expand([`/blog/${encodeURIComponent(slug)}`, '/blog'], siteUrl, languages)
 }
 
+/**
+ * 平台页 / 类型页这类聚合页。
+ *
+ * 入参就是 sitemaps.js 里 `taxonomyRows()` 吐出来的那种行（`{ kind, id }`，
+ * kind 只能是 'platforms' 或 'genres'），两边共用同一份筛选结果 ——
+ * 「哪些平台/类型真的有可见游戏」的判断只该有一处，各写一份的话，
+ * sitemap 里有的页面推送时漏掉、或者反过来推一批前台 404 的页面，
+ * 都要逐条比对才看得出来。
+ *
+ * kind 白名单是硬的：这些字符串最终会拼进提交给搜索引擎的 URL，
+ * 让库里的脏数据决定路径前缀等于让它替我们提交任意路径。
+ */
+const TAXONOMY_KINDS = new Set(['platforms', 'genres'])
+
+export function taxonomyDetailUrls(rows, siteUrl = publicSiteUrl(), languages) {
+  const paths = new Set()
+  for (const row of rows || []) {
+    const kind = String(row?.kind || '').trim()
+    const id = String(row?.id || '').trim()
+    if (!TAXONOMY_KINDS.has(kind) || !id) continue
+    paths.add(`/${kind}/${encodeURIComponent(id)}`)
+  }
+  return expand([...paths], siteUrl, languages)
+}
+
 /** 只允许提交本站 URL，防止脏数据把这台服务器变成任意 URL 提交代理。 */
 export function normalizeSiteUrls(urls, siteUrl = publicSiteUrl()) {
   const origin = new URL(siteUrl).origin

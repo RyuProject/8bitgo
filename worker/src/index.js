@@ -80,6 +80,16 @@ const MIME = {
   swf: 'application/x-shockwave-flash',
   json: 'application/json',
   txt: 'text/plain; charset=utf-8',
+  // 封面 / logo / 视频。只有请求没带 Content-Type 时才轮得到这里，
+  // 但一轮到就是「浏览器把封面当文件下载」这种一眼看不出原因的故障
+  webp: 'image/webp',
+  avif: 'image/avif',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  gif: 'image/gif',
+  mp4: 'video/mp4',
+  webm: 'video/webm',
 }
 
 export default {

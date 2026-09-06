@@ -233,11 +233,14 @@ export async function fetchLiveRoom(roomId: string): Promise<LiveRoomInfo | null
 /* ---------------- 正在直播的房间列表（轮询，多个组件共享一个定时器） ---------------- */
 
 /**
- * 为什么是轮询而不是 SSE：直播房间只存在于 /live 命名空间的内存里（server/src/live.js），
- * 开播 / 下播都是 socket 事件，没有现成的推送通道。8 秒一次和联机列表原来的节奏一致，
- * 大厅这种页面够用了；真要做到「一开播就出现」得在 attachLive 里再挂一路 SSE。
+ * 现在走 SSE（`/api/live/events`）：服务端有变化才推，平时零请求，开播 / 下播 / 人数变化
+ * 立刻可见。以前是每 8 秒轮询一次 —— 而侧边栏挂在**每个页面**上，等于每个在线访客都在
+ * 持续打请求，100 个人在线就是每秒十几次，绝大多数时候列表根本没变。
+ * netplay 那边（services/netplay.ts）更早就换过来了，这里是补上同一套。
+ *
+ * EventSource 自带断线重连；浏览器不支持、或者后端还是老版本没有这个端点时，退回轮询。
  */
-const LIST_POLL_MS = 8_000
+const LIST_POLL_MS = 15_000
 /** 空数组用固定引用：useSyncExternalStore 要求快照引用稳定，否则会无限重渲染 */
 const NO_LIVE_ROOMS: LiveRoomInfo[] = []
 
@@ -252,17 +255,63 @@ async function loadLiveRooms(): Promise<LiveRoomInfo[]> {
 const liveStore = (() => {
   let rooms: LiveRoomInfo[] = NO_LIVE_ROOMS
   const listeners = new Set<() => void>()
+  let es: EventSource | null = null
   let timer = 0
   const emit = () => listeners.forEach((l) => l())
 
+  /** 列表空了要真的清空 —— 主播下播之后卡片必须消失，不能因为「保留上次结果」一直挂着 */
+  const apply = (next: LiveRoomInfo[]) => {
+    rooms = next.length ? next : NO_LIVE_ROOMS
+    emit()
+  }
+
   const refresh = async () => {
     try {
-      const next = await loadLiveRooms()
-      // 列表空了要真的清空 —— 主播下播之后卡片必须消失，不能因为「保留上次结果」一直挂着
-      rooms = next.length ? next : NO_LIVE_ROOMS
-      emit()
+      apply(await loadLiveRooms())
     } catch {
       /* 后端暂时不可达时保留上次结果，别闪一下空列表 */
+    }
+  }
+
+  /** 退回轮询（SSE 不可用、或后端还没有这个端点时） */
+  const startPolling = () => {
+    if (timer) return
+    void refresh()
+    timer = window.setInterval(() => void refresh(), LIST_POLL_MS)
+  }
+
+  const connect = () => {
+    if (typeof EventSource !== 'function') {
+      startPolling()
+      return
+    }
+    try {
+      es = new EventSource(`${apiBase()}/api/live/events`)
+    } catch {
+      startPolling()
+      return
+    }
+    es.addEventListener('rooms', (e) => {
+      try {
+        const list = JSON.parse((e as MessageEvent<string>).data) as LiveRoomInfo[]
+        if (Array.isArray(list)) apply(list)
+      } catch {
+        /* 坏包忽略，等下一条 */
+      }
+    })
+    es.addEventListener('error', () => {
+      // EventSource 会自己重连；连续失败（比如后端根本没有这个接口）时兜一层轮询，
+      // 保证老后端配新前端也不至于整个列表不可用
+      if (es?.readyState === EventSource.CLOSED) startPolling()
+    })
+  }
+
+  const disconnect = () => {
+    es?.close()
+    es = null
+    if (timer) {
+      window.clearInterval(timer)
+      timer = 0
     }
   }
 
@@ -270,23 +319,17 @@ const liveStore = (() => {
     get: () => rooms,
     subscribe(l: () => void) {
       listeners.add(l)
-      if (listeners.size === 1 && liveEnabled()) {
-        void refresh()
-        timer = window.setInterval(() => void refresh(), LIST_POLL_MS)
-      }
+      if (listeners.size === 1 && liveEnabled()) connect()
       return () => {
         listeners.delete(l)
-        if (listeners.size === 0 && timer) {
-          window.clearInterval(timer)
-          timer = 0
-        }
+        if (listeners.size === 0) disconnect()
       }
     },
     refresh,
   }
 })()
 
-/** 正在直播的房间（自动轮询，多个组件共享一个定时器） */
+/** 正在直播的房间（服务端推送，多个组件共享一条连接） */
 export function useLiveRooms(): LiveRoomInfo[] {
   return useSyncExternalStore(liveStore.subscribe, liveStore.get, () => NO_LIVE_ROOMS)
 }

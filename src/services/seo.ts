@@ -25,9 +25,26 @@ import { getLang } from './lang'
 import { HREFLANG, LANGUAGES, FALLBACK_LANG, localizedPath, stripLang } from '@/config/languages'
 import { romUrlForKey } from './roms'
 import { splitDevelopers } from '@/lib/developers'
+import { FEATURES } from '@/config/features'
 
 const SITE_NAME = import.meta.env.VITE_SITE_NAME ?? '8BitGo'
 const SITE_URL = (import.meta.env.VITE_SITE_URL ?? '').replace(/\/+$/, '')
+
+/** 没有专属配图时的社交卡片图。尺寸是确定的，所以敢往外写 og:image:width/height。 */
+const OG_DEFAULT_IMAGE = '/og-default.png'
+const OG_DEFAULT_WIDTH = '1200'
+const OG_DEFAULT_HEIGHT = '630'
+
+/** 组织标识：128×128 方形单字标，Google 认站点 logo 用的就是它。 */
+const SITE_LOGO = '/ui/logo-mark.png'
+const SITE_LOGO_SIZE = 128
+
+/**
+ * 官方 X / Twitter 账号（形如 @8bitgo）。**没有就留空**：
+ * twitter:site 指向一个不存在的账号，卡片上会显示成一个点不开的链接。
+ * 配在 .env.production 里（构建期变量，公开信息）。
+ */
+const TWITTER_SITE = (import.meta.env.VITE_TWITTER_SITE ?? '').trim()
 
 /** 本页由 useSeo 写入的标签都打上这个标记，便于卸载时精确清理 */
 const MARK = 'data-seo-managed'
@@ -45,6 +62,11 @@ export interface SeoOptions {
   publishedTime?: string
   /** 内容最后更新时间；日期值会按本站时区补成 ISO 8601 */
   updatedTime?: string
+  /**
+   * 内容**最新回复时间**（头条时间因子的 lrDate_time）。
+   * 没有回复就别传 —— 那个标签会整条不输出，绝不拿更新时间凑数。
+   */
+  replyTime?: string
   /** 不希望被搜索引擎收录（个人中心、登录、后台等） */
   noindex?: boolean
   /** 覆盖 canonical 的路径，默认取当前 pathname */
@@ -138,6 +160,7 @@ export function useSeo(opts: SeoOptions) {
     type = 'website',
     publishedTime,
     updatedTime,
+    replyTime,
     noindex = false,
     canonicalPath,
     jsonLd,
@@ -165,7 +188,10 @@ export function useSeo(opts: SeoOptions) {
    *
    * 拼不出地址（没配公开根地址）时退回默认图，别输出一个必然 404 的 URL。
    */
-  const img = absoluteUrl((image ? romUrlForKey(image) : '') || '/og-default.png')
+  const imgPath = (image ? romUrlForKey(image) : '') || OG_DEFAULT_IMAGE
+  const img = absoluteUrl(imgPath)
+  /** 只有默认图的尺寸是确定的。封面各不相同，宁可不写也别写错 —— 见下面 metas 里的说明。 */
+  const knownImageSize = imgPath === OG_DEFAULT_IMAGE
   const robots = noindex ? 'noindex,nofollow' : 'index,follow,max-image-preview:large'
 
   /** 本页要写入的所有 meta/link，服务端和客户端共用同一份定义 */
@@ -176,11 +202,25 @@ export function useSeo(opts: SeoOptions) {
     ['property', 'og:url', canonicalUrl],
     ['property', 'og:site_name', SITE_NAME],
     ['property', 'og:image', img],
+    // 图片的替代文字。读屏软件和图片加载失败时用得上，也是社交平台推荐的字段。
+    ['property', 'og:image:alt', fullTitle],
     ['property', 'og:locale', OG_LOCALE[lang] ?? 'en_US'],
     ['name', 'twitter:card', 'summary_large_image'],
     ['name', 'twitter:title', fullTitle],
     ['name', 'twitter:image', img],
   ]
+  /**
+   * og:image:width / height 只在用默认图时输出。
+   *
+   * 这两个字段的作用是让平台在真正取到图之前就按比例预留位置，**写错比不写更糟**：
+   * 抓取端会按声明的尺寸排版，和实际不符时卡片会裂开或被裁掉。
+   * 游戏封面存在对象存储上、尺寸各不相同，这里拿不到，所以一律不声明。
+   */
+  if (knownImageSize) {
+    metas.push(['property', 'og:image:width', OG_DEFAULT_WIDTH])
+    metas.push(['property', 'og:image:height', OG_DEFAULT_HEIGHT])
+  }
+  if (TWITTER_SITE) metas.push(['name', 'twitter:site', TWITTER_SITE])
   if (description) {
     metas.push(['name', 'description', description])
     metas.push(['property', 'og:description', description])
@@ -188,12 +228,23 @@ export function useSeo(opts: SeoOptions) {
   }
   const published = contentTime(publishedTime)
   const updated = contentTime(updatedTime || publishedTime)
+  /**
+   * 站长平台的字段解释表写得很清楚，三个字段各有各的含义：
+   *   published_time = 内容发布时间
+   *   updated_time   = 内容更新时间
+   *   lrDate_time    = 内容**最新回复时间**
+   *
+   * 这里以前把 lrDate_time 也填成了更新时间 —— 那是照着平台**示例**推断的，
+   * 而示例里这两个恰好是同一个时间戳，于是被当成了「两个字段一个意思」。
+   * 结果是两个标签永远一模一样，把「有没有人回复、最后一条什么时候」谎报了一遍。
+   *
+   * 现在只有真的有可见回复时才输出 lrDate_time（游戏详情页取最新一条可见评论的时间）。
+   * 没有回复的页面**整条不写** —— 时间因子是拿来换落地页体验评分的，填错比不填更亏。
+   */
+  const replied = contentTime(replyTime)
   if (published) metas.push(['property', 'bytedance:published_time', published])
-  if (updated) {
-    // 平台给出的示例中 lrDate_time 与 updated_time 都表示本页最后更新时间。
-    metas.push(['property', 'bytedance:lrDate_time', updated])
-    metas.push(['property', 'bytedance:updated_time', updated])
-  }
+  if (updated) metas.push(['property', 'bytedance:updated_time', updated])
+  if (replied) metas.push(['property', 'bytedance:lrDate_time', replied])
 
   // hreflang：每种语言一条，外加 x-default 指向英语版（语言对不上的人看这份）
   const alternates: Array<[string, string]> = noindex
@@ -236,12 +287,17 @@ export function useSeo(opts: SeoOptions) {
         document.head.querySelector(sel)?.remove()
       }
     }
+    // 上一页用的是默认图（带尺寸），这一页换成了封面 —— 尺寸必须删掉，
+    // 否则社交平台会按 1200×630 去排一张完全不同比例的封面。
+    if (!knownImageSize) {
+      document.head.querySelector('meta[property="og:image:width"]')?.remove()
+      document.head.querySelector('meta[property="og:image:height"]')?.remove()
+    }
     // 从内容详情切到列表页时必须删掉上一页的时间，否则列表页会冒充那篇内容的日期。
     if (!published) document.head.querySelector('meta[property="bytedance:published_time"]')?.remove()
-    if (!updated) {
-      document.head.querySelector('meta[property="bytedance:lrDate_time"]')?.remove()
-      document.head.querySelector('meta[property="bytedance:updated_time"]')?.remove()
-    }
+    if (!updated) document.head.querySelector('meta[property="bytedance:updated_time"]')?.remove()
+    // 从「有人回复过的游戏」切到「一条回复都没有的游戏」，这条必须跟着消失
+    if (!replied) document.head.querySelector('meta[property="bytedance:lrDate_time"]')?.remove()
     // 同理，noindex 页面不写 canonical，也不能留着上一页的
     if (noindex) document.head.querySelector('link[rel="canonical"]')?.remove()
     else upsertLink('canonical', canonicalUrl)
@@ -318,6 +374,30 @@ const OG_LOCALE: Record<string, string> = {
   ja: 'ja_JP',
 }
 
+/**
+ * 站点所属组织。**只放首页** —— Google 用它认站点名称和 logo，每页重复没有额外收益。
+ *
+ * url 用裸路径首页，而不是 langUrl('/')：组织是同一个实体，八种语言不该拆成八个
+ * Organization。这和上面 langUrl 那条注释不冲突 —— 「JSON-LD 的 url 必须等于 canonical」
+ * 约束的是描述**当前页面**的那些类型（VideoGame、BlogPosting、面包屑）。
+ */
+export function organizationSchema() {
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'Organization',
+    name: SITE_NAME,
+    url: absoluteUrl('/'),
+    logo: {
+      '@type': 'ImageObject',
+      url: absoluteUrl(SITE_LOGO),
+      width: SITE_LOGO_SIZE,
+      height: SITE_LOGO_SIZE,
+    },
+    // 有了官方社媒账号在这里补 sameAs: ['https://x.com/…', …]，
+    // Google 靠它把站点和那些账号认成同一个主体。
+  }
+}
+
 /** 首页：网站 + 站内搜索（可能让 Google 展示搜索框） */
 export function websiteSchema(description: string) {
   return {
@@ -343,7 +423,20 @@ export interface GameSchemaInput {
   genres?: string[]
   year?: number
   developer?: string
+  /** 加权平均分（1~5）。0 = 还没人评过 */
+  rating?: number
+  /** 评分人数 */
+  ratingCount?: number
 }
+
+/**
+ * 少于这么多人评分就不往 schema.org 里写 aggregateRating。
+ *
+ * 不是因为一两票的分数不真实 —— 它是真的。是因为「⭐ 5.0（1 条评价）」出现在
+ * 搜索结果里，读者只会读成刷出来的，而 Google 对判定为操纵评分的站点的处理是
+ * 取消**整站**的富媒体摘要资格。等样本够了再露面，代价小得多。
+ */
+const MIN_RATINGS_FOR_SCHEMA = 5
 
 /** 游戏详情页：VideoGame + 评分 */
 export function videoGameSchema(g: GameSchemaInput) {
@@ -367,8 +460,22 @@ export function videoGameSchema(g: GameSchemaInput) {
   if (g.year) schema.datePublished = String(g.year)
   const developers = splitDevelopers(g.developer)
   if (developers.length) schema.author = developers.map((name) => ({ '@type': 'Organization', name }))
-  // 这里刻意不输出 aggregateRating：站内没有评分功能，编一个聚合评分属于虚假结构化数据，
-  // Google 对此的处理是取消整站的富媒体摘要资格。将来真做了评分系统再按真实数据补回来。
+  /**
+   * 真实的聚合评分才输出。三道门都得过：功能开着、有人评过、样本够。
+   *
+   * ⚠️ 绝不能因为「有这个字段」就输出 —— 没人评分时 rating 是 0，
+   * 而 0 在 1~5 分制里根本不是合法评分。把它当成真实评分发出去就是虚假结构化数据，
+   * 代价是整站的富媒体摘要资格。
+   */
+  if (FEATURES.ratings && g.rating && g.rating > 0 && (g.ratingCount ?? 0) >= MIN_RATINGS_FOR_SCHEMA) {
+    schema.aggregateRating = {
+      '@type': 'AggregateRating',
+      ratingValue: g.rating.toFixed(1),
+      ratingCount: g.ratingCount,
+      bestRating: 5,
+      worstRating: 1,
+    }
+  }
   return schema
 }
 

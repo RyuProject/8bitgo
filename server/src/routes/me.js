@@ -323,7 +323,11 @@ meRouter.delete('/', async (req, res, next) => {
     if (refuseIfAdmin(req, res)) return
     const email = String(req.user.email).trim().toLowerCase()
     await verifyCode(email, 'delete', String(req.body?.code || ''), req.user.id)
+    // 评分聚合是 games 上的冗余列，级联删明细时数据库不会替我们降 ——
+    // 先记下他投过哪些游戏，删完再重算（见 ratings-repo.js）
+    const rated = await gamesRatedBy(req.user.id)
     await query('DELETE FROM users WHERE id = ?', [req.user.id])
+    await recomputeGameRatings(rated)
     res.json({ ok: true })
   } catch (e) {
     sendCodeError(res, next, e)
