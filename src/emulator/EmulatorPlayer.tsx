@@ -7,6 +7,7 @@ import { resolveRuntime, runtimesFor, extOf } from './registry'
 import type { Capability, LoadPhase, Runtime, RuntimeHandle, RuntimeId, StageMode } from './types'
 import { createOverallRatio, createSpeedMeter, liftRatio, LOAD_PHASE_RANGE, windowsGuestStartupBudgetMs } from './loadProgress'
 import { isTyping } from './hotkeyBridge'
+import { installScrollGuard } from './scrollGuard'
 import { shouldCaptureMouse } from './mouseCapture'
 import { platformBiosUrlSync } from '@/services/platformBios'
 import { EmulatorTools } from './EmulatorTools'
@@ -1860,6 +1861,21 @@ export function EmulatorPlayer({
       window.removeEventListener('gamepadconnected', give)
     }
   }, [status, handle, fullscreen, playMode])
+
+  /**
+   * 游戏跑着的时候，不让方向键 / 空格滚页面。
+   *
+   * 玩家的说法是「玩着游戏按下键，网页自己往下滚了」。原因不是焦点跑掉了 ——
+   * 焦点好好在 iframe 里、引擎也收到了键，但**滚动会跨 iframe 边界冒到父页面**
+   * （实测数据在 scrollGuard.ts 顶上）。所以拦的地方必须同时覆盖外层文档和
+   * iframe 里那个文档，装一处、九个运行时全生效。
+   *
+   * 只在 running 装：没在玩的时候方向键本来就该滚页面。
+   */
+  useEffect(() => {
+    if (status !== 'running') return
+    return installScrollGuard(hostRef.current)
+  }, [status])
 
   const statusLabel =
     status === 'running'

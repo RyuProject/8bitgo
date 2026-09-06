@@ -20,34 +20,38 @@ export interface NavGroup {
 }
 
 /**
- * 侧边栏最上面那两条，不带分组标题。
+ * 侧边栏最上面那三条，不带分组标题。
  * 直播（FEATURES.live）和博客都不放这儿了 —— 前者没开放，后者挪到了最底部。
+ *
+ * 合集从「探索」挪上来：那一组是按平台 / 类型 / 开发商这些**属性**切游戏库，
+ * 而合集是玩家自己攒的清单，跟「一起玩」一样属于社区那一路，不是一种筛选维度。
  */
 export function mainNavFor(t: Translation): NavLinkItem[] {
   return [
     { label: t.nav.discover, to: '/', icon: '🏠', exact: true },
     { label: t.nav.playOnline, to: '/rooms', icon: '👥', exact: true },
+    { label: t.collections.title, to: '/collections', icon: '🗂️', exact: true },
   ]
 }
 
-/** 「探索」分组：按不同维度浏览游戏库 */
+/** 「探索」分组：按游戏自身的属性切游戏库（合集不在这儿，见 mainNavFor） */
 export function exploreNavFor(t: Translation): NavLinkItem[] {
   return [
     { label: t.nav.allGames, to: '/games', icon: '📚', exact: true },
-    // 合集放在「全部游戏」后面：它也是一种浏览游戏库的维度，只不过是玩家自己整理的
-    { label: t.collections.title, to: '/collections', icon: '🗂️', exact: true },
     { label: t.nav.platforms, to: '/platforms', icon: '🎮' },
     { label: t.nav.genres, to: '/genres', icon: '🧭' },
     { label: t.nav.developers, to: '/developers', icon: '🏢' },
   ]
 }
 
-/** 侧边栏最底下的零散入口。博客从上面挪到这儿，免得跟浏览游戏的几条混在一起。 */
+/**
+ * 侧边栏最底下的零散入口。博客从上面挪到这儿，免得跟浏览游戏的几条混在一起。
+ *
+ * 「提交游戏」已经挪去页脚（见 footerLinksFor）：侧边栏是玩家找游戏的主路径，
+ * 而投稿是少数人偶尔做一次的事，占一格常驻位置不划算。
+ */
 export function bottomNavFor(t: Translation): NavLinkItem[] {
-  return [
-    { label: t.nav.blog, to: '/blog', icon: '📝' },
-    { label: t.nav.submitGame, to: '/submit', icon: '📤' },
-  ]
+  return [{ label: t.nav.blog, to: '/blog', icon: '📝' }]
 }
 
 export interface CommunityLink {
@@ -72,6 +76,9 @@ export function footerLinksFor(t: Translation) {
     { label: t.nav.privacy, to: '/privacy' },
     { label: t.nav.apps, to: '/apps' },
     ...(FEATURES.live ? [{ label: '8BitGo TV', to: '/rooms?live=1' }] : []),
+    // 投稿入口从侧边栏挪到这儿。注意**不要**塞进上面那个 FEATURES.live 的三元里 ——
+    // 提交游戏和直播没关系，直播一关它会跟着一起消失。
+    { label: t.nav.submitGame, to: '/submit' },
     { label: t.nav.playLocal, to: '/play-local' },
   ]
 }

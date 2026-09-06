@@ -12,7 +12,7 @@
  * 压缩前后大小一起搬过去，完全不用碰数据本身。
  */
 
-import { extractZipEntry, crc32 } from './unzip'
+import { extractZipEntry, crc32, decodeZipName } from './unzip'
 import { mergeDosboxConfigOverride } from '../../shared/dosbox-config.js'
 
 const te = new TextEncoder()
@@ -70,15 +70,30 @@ export function readZipEntries(buf: ArrayBuffer): ZipEntry[] | null {
     const commentLen = v.getUint16(at + 32, true)
     const next = at + 46 + nameLen + extraLen + commentLen
     if (next > centralEnd) return null
-    const name = new TextDecoder().decode(new Uint8Array(buf, at + 46, nameLen))
+    const flags = v.getUint16(at + 8, true)
+    /*
+      ⚠️ 条目名不能硬按 UTF-8 解，也不能留着反斜杠 —— 这两条 unzip.ts 早就写对了，
+      这个解析器一直是另一套。后果：
+        · 中文 Windows 打的包（无 UTF-8 标志、名字是 GBK）会解成一串 U+FFFD，
+          再 te.encode() 写回去就是另一个名字，游戏运行时找不到自己的数据文件；
+          同一个包里两个不同的中文名还会塌成**同一串**替换符 → 重名条目互相覆盖。
+        · 老式 Windows 打包器用 `\` 当分隔符，按 `/` 切推不出任何父目录 →
+          js-dos 的解包器不补父目录 → 写文件 ENOENT → DOSBox 退出，**而且不发任何 error 事件**。
+      顺带把 macOS 归档产生的 __MACOSX / ._* 一起滤掉，别让它们进游戏盘。
+    */
+    const name = decodeZipName(new Uint8Array(buf, at + 46, nameLen), Boolean(flags & 0x800)).replace(/\\/g, '/')
     const compressedSize = v.getUint32(at + 20, true)
     const localOffset = v.getUint32(at + 42, true)
     if (localOffset + 30 > v.byteLength || v.getUint32(localOffset, true) !== 0x04034b50) return null
     const dataStart = localOffset + 30 + v.getUint16(localOffset + 26, true) + v.getUint16(localOffset + 28, true)
     if (dataStart > v.byteLength || dataStart + compressedSize > v.byteLength) return null
+    if (name.startsWith('__MACOSX/') || name.split('/').pop()?.startsWith('._')) {
+      at = next
+      continue
+    }
     out.push({
       name,
-      flags: v.getUint16(at + 8, true),
+      flags,
       method: v.getUint16(at + 10, true),
       crc: v.getUint32(at + 16, true),
       compressedSize,
@@ -112,8 +127,18 @@ interface OutEntry {
   data: Uint8Array<ArrayBuffer>
 }
 
-function buildZip(entries: OutEntry[]): Blob {
-  const parts: BlobPart[] = []
+/**
+ * 拼出 ZIP 的所有分片。`buildZip` 和 `buildZipBytes` 共用。
+ *
+ * ⚠️ 为什么要有 `buildZipBytes`：Windows 客体那条路以前是
+ * `buildZip()` → Blob → `await blob.arrayBuffer()` → Uint8Array，
+ * 一份几十到几百 MB 的游戏包因此在堆上同时存在**三份**（原 ArrayBuffer、Blob、读回来的字节），
+ * 再加上近百 MB 的系统镜像那两份，`Dos()` 被调用的那一刻峰值轻松三四百 MB。
+ * 手机上这就是「加载到一半页面白掉」—— 标签页被系统回收，玩家看不到任何错误。
+ * 直接拼字节能省掉一整份。
+ */
+function zipParts(entries: OutEntry[]): Uint8Array<ArrayBuffer>[] {
+  const parts: Uint8Array<ArrayBuffer>[] = []
   const central: Uint8Array<ArrayBuffer>[] = []
   let offset = 0
 
@@ -165,7 +190,24 @@ function buildZip(entries: OutEntry[]): Blob {
   ev.setUint32(12, centralSize, true)
   ev.setUint32(16, offset, true)
 
-  return new Blob([...parts, ...central, eocd], { type: 'application/zip' })
+  return [...parts, ...central, eocd]
+}
+
+function buildZip(entries: OutEntry[]): Blob {
+  return new Blob(zipParts(entries) as BlobPart[], { type: 'application/zip' })
+}
+
+/** 和 buildZip 同样的字节，但不经过 Blob —— 少复制一整份包，见 zipParts 的注释 */
+function buildZipBytes(entries: OutEntry[]): Uint8Array<ArrayBuffer> {
+  const parts = zipParts(entries)
+  const total = parts.reduce((n, part) => n + part.length, 0)
+  const out = new Uint8Array(total) as Uint8Array<ArrayBuffer>
+  let at = 0
+  for (const part of parts) {
+    out.set(part, at)
+    at += part.length
+  }
+  return out
 }
 
 /* ---------------- dosbox.conf ---------------- */
@@ -208,6 +250,28 @@ export function pickExecutable(names: string[], hint?: string): string | null {
   return runnable.sort((a, b) => score(b) - score(a))[0]
 }
 
+/**
+ * 重打包之前先确认每个条目我们**搬得动**。
+ *
+ * 这两条路都是「压缩数据整段照抄」，只有 store(0) 和 deflate(8) 能被 js-dos 的 wasm
+ * 解包器读回去。deflate64(9)、LZMA(14)、以及带密码的条目（通用标志 bit 0）照抄进去之后，
+ * 解包会在那一条上断掉 —— `GAME/` 半空或全空，而 **js-dos 这一路不发任何 error 事件**：
+ * 玩家看到的是一个闪一下就没的 DOS 框，状态却写着「运行中」。
+ * 这里抛出来是在 `Dos()` 之前，能吃到那次自动重试，最后给玩家一句看得懂的话。
+ * （同一个仓库的 unzip.ts:163 早就有这道关卡，重打包这条路一直没有。）
+ */
+function assertRepackable(entries: ZipEntry[]): void {
+  const encrypted = entries.find((e) => e.flags & 0x1)
+  if (encrypted) throw new Error(`ZIP 里的「${encrypted.name}」带密码，无法解包。请去掉密码后重新打包`)
+  const bad = entries.find((e) => e.method !== 0 && e.method !== 8)
+  if (bad) {
+    throw new Error(
+      `ZIP 里的「${bad.name}」用了不支持的压缩方式（method ${bad.method}）。` +
+        '请用标准 deflate 重新打包（WinRAR/7-Zip 里选「普通」压缩，别用 deflate64 或 LZMA）',
+    )
+  }
+}
+
 /** 生成一份能跑起来的 dosbox.conf */
 export function buildDosboxConf(exe: string | null): string {
   const dir = exe && exe.includes('/') ? exe.slice(0, exe.lastIndexOf('/')) : ''
@@ -229,8 +293,20 @@ export function buildDosboxConf(exe: string | null): string {
     'mount c .',
     'c:',
   ]
-  if (dir) lines.push(`cd ${dir.replace(/\//g, '\\')}`)
-  if (file) lines.push(file)
+  /*
+    ⚠️ 带空格的目录名必须加引号。
+    `pickExecutable` 直接返回 ZIP 里的原始条目名，而 `Prince of Persia/PRINCE.EXE`
+    这种结构在 DOS 包里非常常见 —— 不加引号的话 DOSBox 的 CD 只吃到第一个词，
+    切目录失败，然后在 C:\ 根上跑 EXE 报 Illegal command。
+    而这一切发生在 DOSBox **正常启动之后**：ci-ready 照常到、遮罩照常撤，
+    玩家对着一个 `C:\>` 提示符，没有任何错误提示。
+    末尾那句 @echo 是同一个道理：真没跑起来时，黑屏至少变成一句人话。
+  */
+  if (dir) lines.push(`cd "${dir.replace(/\//g, '\\')}"`)
+  if (file) {
+    lines.push(file.includes(' ') ? `"${file}"` : file)
+    lines.push(`@echo ${file} 已退出。如果刚才画面上什么都没发生，多半是找不到文件或缺少依赖。`)
+  }
   else lines.push('@echo 没有找到可执行文件，请手动运行游戏。')
   return lines.join('\n') + '\n'
 }
@@ -243,6 +319,15 @@ export interface BundleResult {
   executable: string | null
   /** true = 传进来的本来就是 bundle，没有重新打包 */
   passthrough: boolean
+  /**
+   * 包里所有文件是不是都在启动程序那一层目录里（只有 makeWindowsGameLayer 会给）。
+   *
+   * Windows 3.x 那条路会把游戏盘的**盘根**收窄到 EXE 的父目录，好让 File Manager 的
+   * Run 直接继承正确的工作目录。代价是：EXE 目录之外的东西（`GAME/DATA/`、根上的 .INI）
+   * 在客体里**根本不存在**，游戏能启动然后立刻报找不到数据文件。
+   * 所以只有这个为 true 时才准收窄。
+   */
+  singleDir?: boolean
 }
 
 /**
@@ -301,11 +386,21 @@ function safeArchivePath(path: string): string | null {
  *   1. 所有文件放进 GAME/，供 DOSBox-X 动态转换成客体 Windows 看得见的 FAT 盘；
  *   2. 生成固定的 8BITGO/RUN.BAT，把后台填写的真实 EXE 路径变成正确工作目录后再运行。
  */
-export function makeWindowsGameLayer(buf: ArrayBuffer, executable: string, drive = 'd'): BundleResult {
+export interface WindowsGameLayer {
+  /** 客体这条路不经过 Blob，见 zipParts 的注释 */
+  blob: null
+  bytes: Uint8Array<ArrayBuffer>
+  executable: string | null
+  passthrough: false
+  singleDir: boolean
+}
+
+export function makeWindowsGameLayer(buf: ArrayBuffer, executable: string, drive = 'd'): WindowsGameLayer {
   const entries = readZipEntries(buf)
   const bytes = new Uint8Array(buf)
   const zipLike = bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b
   if (!zipLike || !entries) throw new Error('Windows 客体游戏必须上传完整 ZIP，不能只上传单个 EXE')
+  assertRepackable(entries)
 
   const files = entries
     .filter((entry) => !entry.name.endsWith('/'))
@@ -344,6 +439,11 @@ export function makeWindowsGameLayer(buf: ArrayBuffer, executable: string, drive
     })
   }
 
+  const exeSlash = actual.lastIndexOf('/')
+  const exeDir = exeSlash >= 0 ? actual.slice(0, exeSlash + 1) : ''
+  // 盘根能不能收窄到 EXE 那一层：只有当包里没有任何东西落在那一层之外时才行
+  const singleDir = files.every((file) => file.name!.startsWith(exeDir))
+
   const slash = actual.lastIndexOf('/')
   const dir = slash >= 0 ? `\\${actual.slice(0, slash).replace(/\//g, '\\')}` : '\\'
   const file = actual.slice(slash + 1)
@@ -359,7 +459,8 @@ export function makeWindowsGameLayer(buf: ArrayBuffer, executable: string, drive
     data: launcher,
   })
 
-  return { blob: buildZip(out), executable: actual, passthrough: false }
+  // 客体那条路只要字节，不要 Blob（见 zipParts 的注释：Blob 那一趟会白复制一整份包）
+  return { blob: null, bytes: buildZipBytes(out), executable: actual, passthrough: false, singleDir }
 }
 
 /**
@@ -371,15 +472,41 @@ export async function makeJsdosBundle(
   buf: ArrayBuffer,
   conf?: string,
   configOverride?: string,
+  /** 后台填的启动程序原文，只用来做存在性校验（conf 已经由调用方生成好了） */
+  dosExecutable?: string,
 ): Promise<BundleResult> {
   const entries = readZipEntries(buf)
   const bytes = new Uint8Array(buf)
   const zipLike = bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b
   if (zipLike && !entries) throw new Error('DOS 压缩包为空、已损坏或下载不完整')
 
+  if (entries) assertRepackable(entries)
+  /*
+    ⚠️ 后台填的启动程序，包里必须真有。
+    以前一个字都不验，直接拼进 [autoexec]：管理员填错一个字母（或者游戏换了个包），
+    DOSBox 照常起来、ci-ready 照常到、遮罩照常撤，玩家对着一个 `C:\>` 提示符 ——
+    这类反馈只会以「这游戏打不开」的形式回来，没人查得到是配置写错了。
+    在这里抛是在 Dos() 之前，能吃自动重试，最后给出一句指名道姓的错误。
+    对照组：makeWindowsGameLayer 早就有同一道校验（找不到就 throw）。
+  */
+  if (entries && dosExecutable?.trim()) {
+    const wanted = dosExecutable.trim().replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase()
+    if (!entries.some((e) => e.name.toLowerCase() === wanted)) {
+      throw new Error(`ZIP 里找不到后台配置的启动程序：${dosExecutable.trim()}`)
+    }
+  }
+
   const bundledConf = entries?.find((e) => e.name.toLowerCase() === '.jsdos/dosbox.conf')
-  // 没有高级覆盖时继续零拷贝透传；避免仅仅为了换一份几 KB 的配置复制整块系统镜像。
-  if (bundledConf && !configOverride?.trim()) {
+  /*
+    没有高级覆盖、**也没有指定启动程序**时才零拷贝透传；避免仅仅为了换一份几 KB 的
+    配置复制整块系统镜像。
+
+    ⚠️ 以前这里只看 configOverride，于是后台「启动程序」那一栏（提示语写着「猜错时
+    填这里一锤定音」）对**自带 dosbox.conf 的 .jsdos 包完全无效**，而且一声不吭：
+    管理员填了 PARANOID.COM 保存，玩家点开进的还是包里 conf 指向的安装界面，
+    改三次配置清三次缓存都找不到原因。
+  */
+  if (bundledConf && !configOverride?.trim() && !conf) {
     return { blob: new Blob([buf], { type: 'application/zip' }), executable: null, passthrough: true }
   }
 
@@ -393,9 +520,9 @@ export async function makeJsdosBundle(
       crc32: bundledConf.crc,
       offset: bundledConf.localOffset,
     })
-    const merged = te.encode(
-      mergeDosboxConfigOverride(new TextDecoder().decode(extracted), configOverride),
-    ) as Uint8Array<ArrayBuffer>
+    // 后台指定了启动程序就以我们生成的那份为基底，否则用包里自带的
+    const base = conf ?? new TextDecoder().decode(extracted)
+    const merged = te.encode(mergeDosboxConfigOverride(base, configOverride)) as Uint8Array<ArrayBuffer>
     const out: OutEntry[] = []
     for (const e of entries) {
       if (e.name.toLowerCase() === '.jsdos/dosbox.conf') continue

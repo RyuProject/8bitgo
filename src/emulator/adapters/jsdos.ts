@@ -67,7 +67,18 @@ async function fetchIceServers(): Promise<RTCIceServer[]> {
  *
  * 只装一次、装在全局上（js-dos 跑在主页面，不在 iframe 里）。记录用 WeakMap，不拖住上下文。
  */
-const audioCreated: Array<{ ctx: AudioContext; at: number }> = []
+/**
+ * ⚠️ 存 WeakRef，不是强引用。
+ *
+ * 这个 patch 一装就永不撤，而且装在全局上 —— 此后**页面上任何模块**
+ * （EmulatorJS / J2ME / webretro / jsnes）new 出来的 AudioContext 都会被记进来。
+ * 以前是强引用数组：被钉住的上下文没法回收，连带它整条音频图
+ * （ScriptProcessorNode 及其 onaudioprocess 闭包里捕获的 js-dos 内部对象）一起活着，
+ * `destroy()` 也带不走。上限 8 条不是无界泄漏，但代价是最多 8 份「已销毁会话的完整音频链」常驻，
+ * 而且浏览器对每文档的 AudioContext 数量是有上限的，撞上了新的一局就没声音。
+ * 文件头那句「记录用 WeakMap，不拖住上下文」以前只对 audioOutOf 成立。
+ */
+const audioCreated: Array<{ ref: WeakRef<AudioContext>; at: number }> = []
 const audioOutOf = new WeakMap<BaseAudioContext, AudioNode>()
 let audioTapInstalled = false
 
@@ -80,7 +91,7 @@ function installAudioTap() {
       const Tapped = class extends Native {
         constructor(...args: ConstructorParameters<typeof AudioContext>) {
           super(...args)
-          audioCreated.push({ ctx: this, at: Date.now() })
+          audioCreated.push({ ref: new WeakRef(this as AudioContext), at: Date.now() })
           // 只留最近几条：一局游戏就一个上下文，多的都是历史
           while (audioCreated.length > 8) audioCreated.shift()
         }
@@ -102,9 +113,11 @@ function installAudioTap() {
 /** 这一局 js-dos 建出来的声音链：挂载之后新建的、且有节点接到了 destination 的那个上下文 */
 function findAudioOut(since: number): { audioNode: AudioNode; audioContext: AudioContext } | null {
   for (let i = audioCreated.length - 1; i >= 0; i--) {
-    const { ctx, at } = audioCreated[i]
+    const { ref, at } = audioCreated[i]
     if (at < since) break
-    if (ctx.state === 'closed') continue
+    const ctx = ref.deref()
+    // 已经被回收了 —— 那它显然不是这一局正在响的那个
+    if (!ctx || ctx.state === 'closed') continue
     const node = audioOutOf.get(ctx)
     if (node) return { audioNode: node, audioContext: ctx }
   }
@@ -353,20 +366,30 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         if ((options.dosWindowsVersion ?? '9x') === '3x') {
           const slash = gameLayer.executable.lastIndexOf('/')
           const executableDir = slash >= 0 ? gameLayer.executable.slice(0, slash) : ''
-          // File Manager 只需切到游戏盘根目录，因此让盘根直接对应 EXE 的父目录。
-          const gameRoot = executableDir ? `${WINDOWS_GAME_ROOT}/${executableDir}` : WINDOWS_GAME_ROOT
+          /*
+            File Manager 只需切到游戏盘根目录，因此让盘根直接对应 EXE 的父目录。
+            ⚠️ 但只在**包里所有东西都在那一层**时才这么干（gameLayer.singleDir）。
+            EXE 在子目录、而数据在别处的包（`BIN/GAME.EXE` + `DATA/`，Win3.x 商业包里很常见）
+            一旦收窄，客体的 D:\ 就只等于那一个子目录 —— 兄弟目录和根上的 .INI **整个不存在**，
+            游戏能启动然后立刻报「找不到数据文件」。那种情况宁可让盘根留在游戏根上：
+            工作目录不对最多是部分游戏读不到相对路径，文件不存在则是必然打不开。
+          */
+          const gameRoot =
+            executableDir && gameLayer.singleDir ? `${WINDOWS_GAME_ROOT}/${executableDir}` : WINDOWS_GAME_ROOT
           guest = buildWindowsGuestConfig(systemConfig, dosboxConfig, gameRoot)
         }
         guestLaunchCommand = windowsGuestLaunchCommand(
           guest,
           gameLayer.executable,
           options.dosWindowsVersion ?? '9x',
+          // 盘根没收窄的话，得把子目录也敲进 File > Run，否则在盘根上找不到那个 EXE
+          gameLayer.singleDir !== false,
         )
         // 现在就验：以前这两处是在 ci-ready 的回调 / 定时器里才抛，没人接得住，
         // Windows 在屏幕上跑着、遮罩却盖到四分钟超时才报一句不相干的话
         assertTypeable(guestLaunchCommand)
         if ((options.dosWindowsVersion ?? '9x') === '3x') windows3xLaunchCommands(guestLaunchCommand)
-        const gameLayerBytes = new Uint8Array(await gameLayer.blob.arrayBuffer())
+        const gameLayerBytes = gameLayer.bytes
         // 系统包自己的 conf 必须先改名：它作为后续文件层解开时会覆盖 Dos() 的直接配置。
         // 改名只动 ZIP 头里的 36 个 ASCII 字节，不复制那份近百 MB 的 qcow2 数据。
         // ⚠️ 刚下载的那份 loadGameBytes 还在后台往 IndexedDB 写（不 await，写的是同一块 ArrayBuffer），
@@ -383,6 +406,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           rom.buf,
           options.dosExecutable ? buildDosboxConf(options.dosExecutable) : undefined,
           dosboxConfig,
+          options.dosExecutable,
         )
         primaryUrl = URL.createObjectURL(bundle.blob)
         objectUrls.push(primaryUrl)
@@ -437,20 +461,53 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
          * 三个钩子指向 services/saves.ts：登录了进云端跟着账号走，
          * 没登录就落在浏览器里。pull 会在开机时被自动调用，所以读档是无感的。
          */
-        fsChanges: {
-          local: true,
-          urlToKey: async () => saveKey,
-          pull: async () => (await pullSave('jsdos', saveKey))?.data ?? null,
-          push: async (_key: string, data: Uint8Array) => {
-            // 记下这次落到哪儿了，fsSave() 要拿它告诉玩家「存到云端」还是「存在浏览器里」。
-            // 这个钩子被调到过本身就是「盘上真有改动」的唯一证据，fsSave() 也靠它判断。
-            const r = await pushSave('jsdos', saveKey, data)
-            lastPush = { ok: r.ok, where: r.where, error: r.cloudFailed ? r.error : undefined }
-          },
-          delete: async () => {
-            await deleteSave('jsdos', saveKey)
-          },
-        },
+        /*
+          ⚠️ Windows 客体这条路**不接** fsChanges。
+          下面 caps 那里早就写明「qcow2 系统镜像的扇区变化不是普通 js-dos 文件层存档，
+          上游也明确把这种包标成不可保存」，所以 guest 拿不到 fsSave 能力。
+          可 pull 那一路一直接着 —— 开机时 js-dos 会自动调它，把这款游戏当年按普通 DOS
+          配置上线时留下的**文件层变更包**叠到客体盘上：轻则无害，重则遮住系统/游戏文件
+          让客体起不来，而玩家连一个能删掉它的入口都没有，只能一直撞。
+        */
+        ...(guest
+          ? {}
+          : {
+              fsChanges: {
+                local: true,
+                urlToKey: async () => saveKey,
+                /*
+                  ⚠️ 三个钩子都必须**自己吞掉异常**。
+                  它们的拒绝会顺着 js-dos 的包层变成 bnd-error → onError，而那时 ready 早已为真
+                  （玩家正在玩），播放器收到 onError 就是拆会话、进度全丢 —— 玩家只是想存个档。
+                  存档失败该走的是 fsSave() 里那套「提示一句、不动会话」的分支。
+                */
+                pull: async () => {
+                  try {
+                    return (await pullSave('jsdos', saveKey))?.data ?? null
+                  } catch (e) {
+                    console.warn('[jsdos] 读取存档失败，按没有存档处理', e)
+                    return null
+                  }
+                },
+                push: async (_key: string, data: Uint8Array) => {
+                  // 记下这次落到哪儿了，fsSave() 要拿它告诉玩家「存到云端」还是「存在浏览器里」。
+                  // 这个钩子被调到过本身就是「盘上真有改动」的唯一证据，fsSave() 也靠它判断。
+                  try {
+                    const r = await pushSave('jsdos', saveKey, data)
+                    lastPush = { ok: r.ok, where: r.where, error: r.cloudFailed ? r.error : undefined }
+                  } catch (e) {
+                    lastPush = { ok: false, where: null, error: e instanceof Error ? e.message : String(e) }
+                  }
+                },
+                delete: async () => {
+                  try {
+                    await deleteSave('jsdos', saveKey)
+                  } catch (e) {
+                    console.warn('[jsdos] 删除存档失败', e)
+                  }
+                },
+              },
+            }),
         onEvent: (event: string, arg?: unknown) => {
           if (destroyed) return
           if (event === 'emu-ready') {
@@ -474,6 +531,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                   () => destroyed,
                   markReady,
                   options.dosWindowsVersion ?? '9x',
+                  // 确认不了「客体里有反应」。这一定发生在 markReady 之前，
+                  // 所以播放器还能自动重试一次；以前这条链根本没有失败出口
+                  (msg) => {
+                    if (!destroyed && !readySent) options.onError?.(fmt(rt.jsdosRunFailed, { msg }))
+                  },
                 )
               }
               // DOS 游戏只认键盘，手柄在这里翻译成按键

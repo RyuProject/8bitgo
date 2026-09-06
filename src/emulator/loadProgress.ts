@@ -12,7 +12,7 @@
  * 一个字都不用碰，反正整个加载期间都被遮罩盖着。
  */
 import type { LoadPhase, LoadProgress } from './types'
-import { windowsLaunchDelayMs } from './windowsLaunch'
+import { windowsLaunchDelayMs, WINDOWS_GRAPHICS_SIGNAL_FALLBACK_MS, WINDOWS_LAUNCH_VERIFY_MS } from './windowsLaunch'
 
 /** 进度回调节流：下载一个几十 MB 的 ROM 会触发上千次 chunk，全都 setState 会把主线程拖垮 */
 const THROTTLE_MS = 120
@@ -341,9 +341,22 @@ export const LOAD_PHASE_RANGE: Record<LoadPhase, readonly [number, number]> = {
  */
 export const WINDOWS_GUEST_INIT_GRACE_MS = 4 * 60_000
 
+/**
+ * 敲键那条链自己要花的时间（图形信号兜底 + 按键序列 + 敲完之后的画面确认）。
+ *
+ * ⚠️ 这几段以前**没有算进预算**，只减了 `windowsLaunchDelayMs` 一项。
+ * 实际的时间线是：CI 创建（建盘，最慢的一段）→ 等图形信号（拿不到就死等 90 秒）
+ * → `windowsLaunchDelayMs`（默认 24 秒）→ 按键链（3.x 约 14 秒：Run 框 0.8 + 打字
+ * + 文件管理器 4 秒 + 选盘 0.35/0.8/1.5 + 第二次 Run 0.8）→ 敲完之后最多 20 秒画面确认。
+ * 漏掉的这 124 秒全被算成了「建盘时间」——留给 qcow2 的其实只剩 160 秒，
+ * 而 4 分钟那个数本来就是为建盘准备的。慢设备 + 不报画面尺寸的自定义镜像会在
+ * 即将成功前被判超时，然后自动重试再等一遍，玩家合计对着遮罩近九分钟。
+ */
+const WINDOWS_LAUNCH_CHAIN_MS = WINDOWS_GRAPHICS_SIGNAL_FALLBACK_MS + 15_000 + WINDOWS_LAUNCH_VERIFY_MS
+
 /** 客体初始化 + 后台配置的开机等待，共同构成 80–99% 这段的超时预算。 */
 export function windowsGuestStartupBudgetMs(launchDelaySeconds = 24): number {
-  return windowsLaunchDelayMs(launchDelaySeconds) + WINDOWS_GUEST_INIT_GRACE_MS
+  return windowsLaunchDelayMs(launchDelaySeconds) + WINDOWS_LAUNCH_CHAIN_MS + WINDOWS_GUEST_INIT_GRACE_MS
 }
 
 /**

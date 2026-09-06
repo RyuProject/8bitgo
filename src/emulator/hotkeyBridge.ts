@@ -15,8 +15,12 @@
  * 让每个 adapter 把自己的 iframe 交出来要动六个文件，而 iframe 本来就在
  * mount() 拿到的那个容器里。从容器上找就行，一处代码覆盖所有运行时，
  * 以后新加运行时也自动生效。
+ *
+ * 「找出所有这些文档、并且跟着 iframe 一起换」那段现在在 frameDocs.ts ——
+ * 滚动守卫（scrollGuard.ts）要用一模一样的一份。
  */
 import { actionForCombo, comboOf, type HotkeyAction } from '@/services/hotkeys'
+import { observeFrameDocs } from './frameDocs'
 
 /** 正在打字的时候不能触发快捷键：玩家在评论框里按 F2 是想打字，不是想存档 */
 export function isTyping(target: EventTarget | null): boolean {
@@ -37,9 +41,6 @@ export function installHotkeys(
   host: HTMLElement | null,
   run: (action: HotkeyAction) => void,
 ): () => void {
-  /** 已经挂过监听的文档。iframe 换了要重挂，同一个别挂两遍 */
-  const wired = new WeakSet<Document>()
-  const cleanups: Array<() => void> = []
   let dead = false
 
   const onKey = (e: KeyboardEvent) => {
@@ -53,57 +54,14 @@ export function installHotkeys(
     run(action)
   }
 
-  const wire = (doc: Document | null | undefined) => {
-    if (!doc || wired.has(doc)) return
-    wired.add(doc)
-    // 用捕获阶段：模拟器自己也在 document 上收键盘，冒泡阶段轮到我们时它已经处理过了
+  // 用捕获阶段：模拟器自己也在 document 上收键盘，冒泡阶段轮到我们时它已经处理过了
+  const stop = observeFrameDocs(host, (doc) => {
     doc.addEventListener('keydown', onKey, true)
-    cleanups.push(() => doc.removeEventListener('keydown', onKey, true))
-  }
-
-  wire(typeof document === 'undefined' ? null : document)
-
-  /**
-   * iframe 那一侧。
-   *
-   * 要盯着它变：引擎会在挂载过程中换 src（甚至整个换掉 iframe 元素），
-   * 只在装的时候挂一次，玩家真正开始玩之后那个文档往往已经是新的了。
-   * load 事件负责「同一个 iframe 换了文档」，MutationObserver 负责「换了 iframe 元素」。
-   */
-  const scan = () => {
-    if (dead || !host) return
-    for (const frame of Array.from(host.querySelectorAll('iframe'))) {
-      try {
-        wire(frame.contentDocument)
-      } catch {
-        /* 跨源（目前没有这种运行时）：那一侧就没有快捷键，页面这一侧照常 */
-      }
-      if (!frame.dataset.hotkeyWatched) {
-        frame.dataset.hotkeyWatched = '1'
-        const onLoad = () => {
-          try {
-            wire(frame.contentDocument)
-          } catch {
-            /* 同上 */
-          }
-        }
-        frame.addEventListener('load', onLoad)
-        cleanups.push(() => frame.removeEventListener('load', onLoad))
-      }
-    }
-  }
-
-  scan()
-  let observer: MutationObserver | null = null
-  if (host && typeof MutationObserver === 'function') {
-    observer = new MutationObserver(scan)
-    observer.observe(host, { childList: true, subtree: true })
-  }
+    return () => doc.removeEventListener('keydown', onKey, true)
+  })
 
   return () => {
     dead = true
-    observer?.disconnect()
-    for (const off of cleanups) off()
-    cleanups.length = 0
+    stop()
   }
 }

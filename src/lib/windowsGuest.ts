@@ -70,11 +70,17 @@ export function windowsGuestLaunchCommand(
   guest: Pick<WindowsGuestConfig, 'gameDrive' | 'launcher'>,
   executable: string,
   version: '3x' | '9x' = '9x',
+  /**
+   * 盘根有没有收窄到 EXE 那一层（见 makeWindowsGameLayer 的 singleDir）。
+   * 收窄了就只敲文件名；没收窄就得把子目录一起敲进去，否则 File > Run 在盘根上找不到它。
+   */
+  narrowedToExeDir = true,
 ): string {
   if (version !== '3x') return guest.launcher
-  const file = executable.replace(/\\/g, '/').split('/').pop()
+  const path = executable.replace(/\\/g, '/').replace(/^\/+/, '')
+  const file = path.split('/').pop()
   if (!file) throw new Error('Windows 3.x 自启动程序文件名为空')
-  return `${guest.gameDrive}:\\${file}`
+  return `${guest.gameDrive}:\\${(narrowedToExeDir ? file : path).replace(/\//g, '\\')}`
 }
 
 /**

@@ -23,6 +23,7 @@ import {
   setSaveTarget,
   type SaveTarget,
   type SaveWhere,
+  effectiveSaveTarget,
 } from '@/services/saves'
 import { SaveLoadModal, type SaveLoadCard } from './SaveLoadModal'
 import { installHotkeys } from './hotkeyBridge'
@@ -80,6 +81,8 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
   const [panel, setPanel] = useState<'volume' | 'gamepad' | 'fsSave' | null>(null)
   /** 存档面板（三张卡：云端 / 这个浏览器 / 文件）。见 SaveLoadModal.tsx */
   const [saveModal, setSaveModal] = useState(false)
+  /** DOS「固化存档」正在飞：按钮压住，别让连点把 lastPush 判断搞反（见 doFsSave） */
+  const [fsSaving, setFsSaving] = useState(false)
   /**
    * 移动端：次要按钮（音量 / 手柄 / 另存 / 截屏 / 录像）收进「⋯」里。
    * 桌面端这个 state 不起作用 —— 那一组在 sm: 断点上无条件常驻（见 return 里的 secondaryCls）。
@@ -315,6 +318,8 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
       sayStored(r.where, r.error)
     } catch (e) {
       say(e instanceof Error && e.message ? e.message : tt.saveFail)
+    } finally {
+      setFsSaving(false)
     }
   }
 
@@ -819,7 +824,15 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
           <ol className="mt-2 space-y-1">
             {/* 空手而归时把第 ① 步标出来：问题百分之百出在这一步 */}
             <li className={fsSaveFailed ? 'font-semibold text-live' : 'text-muted'}>{tt.fsSaveStep1}</li>
-            <li className="text-muted">{fmt(tt.fsSaveStep2, { where: whereLabel(toCloud ? 'cloud' : 'local') })}</li>
+            {/*
+              ⚠️ 落点要读玩家**真正生效**的那个选择（effectiveSaveTarget），不能拿
+              `toCloud` 猜 —— 那只是「这个部署开了云存档」这个全局开关。doFsSave 的注释
+              早就写明「where 说不出来就别替它编」，可事前这句说明一直在编：
+              DOS 会话根本进不去存档落点面板（那个面板要 caps.has('saveState')，
+              而 DOS 只有 fsSave），所以对每个 DOS 玩家实际落点恒为本地，
+              而这句话恒告诉他「存到云端」—— 他会照着它决定「我存好了，可以换台电脑了」。
+            */}
+            <li className="text-muted">{fmt(tt.fsSaveStep2, { where: whereLabel(effectiveSaveTarget()) })}</li>
             <li className="text-muted">{tt.fsSaveStep3}</li>
           </ol>
           {/* 后台给这款游戏填了具体按键就顶上来 —— 比通用的「ESC 或 F1」有用得多 */}
@@ -831,10 +844,11 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
           <div className="mt-2 flex flex-wrap gap-2 border-t border-line pt-2">
             <button
               type="button"
-              className={cx(BTN, 'px-2 border-brand text-brand-hover')}
+              disabled={fsSaving}
+              className={cx(BTN, 'px-2 border-brand text-brand-hover', fsSaving && 'opacity-60')}
               onClick={() => void doFsSave()}
             >
-              💾 {tt.fsSaveConfirm}
+              💾 {fsSaving ? '…' : tt.fsSaveConfirm}
             </button>
             <button type="button" className={cx(BTN, 'px-2')} onClick={() => setPanel(null)}>
               {tt.fsSaveCancel}
