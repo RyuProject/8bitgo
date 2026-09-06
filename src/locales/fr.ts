@@ -613,6 +613,7 @@ const fr: Translation = {
     noCurrentLanguageVersion: "Ce jeu n'est pas disponible dans la langue actuelle",
     romUnreachable: 'Impossible d’accéder à la ROM pour le moment, sans doute un problème réseau',
     retryRom: 'Vérifier à nouveau',
+    runtimeFellBack: 'Cette ROM nécessite un cœur plus complet : passage à {runtime}',
     arcadeHackFound: 'Hack reconnu : {title} (exécuté via le pilote {driver})',
     arcadeHackNoPlan: '{title} reconnu, mais il n\'existe pas encore de méthode de chargement fonctionnelle pour ce paquet.',
     watchHintPick: 'Vous entrez pour regarder : image et son de l’hôte, sans les commandes. Cliquez sur « Prendre une manette » dans la barre pour jouer.',

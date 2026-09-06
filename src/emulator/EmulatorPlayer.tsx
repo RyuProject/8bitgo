@@ -3,8 +3,8 @@ import type { DosBackend, DosWindowsVersion, GenreId, Platform, PlatformId } fro
 import { platformMap } from '@/data/platforms'
 import { formatBytes, isRomFileAccepted } from '@/lib/emulator'
 import { detectRom, describeDetection } from './detect'
-import { resolveRuntime, extOf } from './registry'
-import type { Capability, LoadPhase, Runtime, RuntimeHandle, StageMode } from './types'
+import { resolveRuntime, runtimesFor, extOf } from './registry'
+import type { Capability, LoadPhase, Runtime, RuntimeHandle, RuntimeId, StageMode } from './types'
 import { createOverallRatio, LOAD_PHASE_RANGE, windowsGuestStartupBudgetMs } from './loadProgress'
 import { shouldCaptureMouse } from './mouseCapture'
 import { platformBiosUrlSync } from '@/services/platformBios'
@@ -75,6 +75,11 @@ interface ActiveSession {
   live?: LiveSession
   /** 当前这次加载已经自动重试了几次；只在启动失败时递增。 */
   retryAttempt?: number
+  /**
+   * 这一局已经试过、并且自己说「跑不了这份 ROM」的引擎（见 RuntimeHandle 那侧的 onUnsupported）。
+   * 换引擎时要把它们排除掉，否则两个引擎可以来回踢皮球，永远转圈。
+   */
+  ruledOut?: RuntimeId[]
 }
 
 interface Props {
@@ -678,7 +683,7 @@ export function EmulatorPlayer({
     game: File | string,
     targetPlatform: PlatformId,
     runtime: Runtime,
-    extra?: { netplay?: NetplaySession; cloud?: CloudSession; retryAttempt?: number },
+    extra?: { netplay?: NetplaySession; cloud?: CloudSession; retryAttempt?: number; ruledOut?: RuntimeId[] },
   ) => {
     sessionCounter.current += 1
     setSession({ id: sessionCounter.current, game, platform: targetPlatform, runtime, ...extra })
@@ -792,6 +797,32 @@ export function EmulatorPlayer({
         setStatus('running')
         // 游戏真的跑起来了才算一次游玩 —— 打开详情页、加载失败、选错文件都不算
         if (gameSlugRef.current) recordPlay(gameSlugRef.current)
+      },
+      /*
+        引擎说「这份 ROM 得换个人跑」（目前只有 jsnes 会说：它只实现了 21 个 mapper）。
+
+        和 onError 分开处理，因为该做的事正好相反：onError 会原样自动重试几次，
+        而这里重试一万次也一样，得换引擎。ROM 字节已经在 IndexedDB 缓存里，换了不重下。
+      */
+      onUnsupported: (reason: string) => {
+        if (!isCurrent()) return
+        // 已经跑起来了就不管了：这时候换引擎等于把玩家的进度扔掉，而游戏明明在跑
+        if (ready) return
+        const ruledOut = [...(session.ruledOut ?? []), session.runtime.id]
+        const next = runtimesFor(session.platform).find((r) => !ruledOut.includes(r.id))
+        console.warn(
+          `[8bitgo/runtime] ${session.runtime.id} 跑不了这份 ROM（${reason}）` +
+            (next ? `，换 ${next.id} 重来` : '，而且没有别的引擎可用了'),
+        )
+        if (!next) {
+          endSession()
+          setError(reason)
+          setStatus('error')
+          return
+        }
+        setError(null)
+        setNotice(fmt(t.player.runtimeFellBack, { runtime: next.name }))
+        begin(session.game, session.platform, next, { ruledOut })
       },
       onError: (message: string) => {
         if (!isCurrent()) return

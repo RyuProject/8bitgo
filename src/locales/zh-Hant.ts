@@ -611,6 +611,7 @@ const zhHant: Translation = {
     noCurrentLanguageVersion: '遊戲沒有目前語言版本',
     romUnreachable: '暫時讀取不到 ROM，可能是網路問題',
     retryRom: '重新檢查',
+    runtimeFellBack: '這份 ROM 需要更完整的模擬核心，已自動切換到 {runtime}',
     arcadeHackFound: '已認出改版包：{title}（借 {driver} 驅動執行）',
     arcadeHackNoPlan: '認出來了：{title}，但這個包還沒有可用的載入方案，暫時跑不起來。',
     watchHintPick: '你選的是只看不玩：能看到房主的畫面、聽到聲音，但不參與操作。想上場隨時在工具列點「上場玩」。',

@@ -650,6 +650,7 @@ export const zhHans = {
     noCurrentLanguageVersion: '游戏没有当前语言版本',
     romUnreachable: '暂时读取不到 ROM，可能是网络问题',
     retryRom: '重新检查',
+    runtimeFellBack: '这份 ROM 需要更完整的模拟核心，已自动切换到 {runtime}',
     arcadeHackFound: '已认出改版包：{title}（借 {driver} 驱动运行）',
     arcadeHackNoPlan: '认出来了：{title}，但这个包还没有可用的加载方案，暂时跑不起来。',
     watchHintPick: '你选的是只看不玩：能看到房主的画面、听到声音，但不参与操作。想上场随时在工具栏点「上场玩」。',

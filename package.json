@@ -30,6 +30,7 @@
     "test:gamepad": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-gamepad-input.mjs",
     "test:live-io": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-live-io.mjs",
     "test:rom-probe": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-rom-probe.mjs",
+    "test:nes-mapper": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-nes-mapper.mjs",
     "test:arcade-hacks": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-arcade-hacks.mjs",
     "test:room-merge": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-room-merge.mjs",
     "test:netplay-guard": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-netplay-guard.mjs",

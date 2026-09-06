@@ -14,6 +14,7 @@ import { getT, fmt } from '@/services/i18n'
 import { extractRomFromZip, isZip } from '@/lib/unzip'
 import { assertNesRom } from '@/lib/romValidation'
 import { loadGameBytes } from '../romLoader'
+import { JSNES_MAPPERS, readNesMapper } from '../nesMapper'
 import { startGamepadInput, type GamepadInput } from '../gamepadInput'
 
 /**
@@ -446,6 +447,21 @@ function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
       const [{ Browser }, buf] = await Promise.all([import('jsnes'), readRom(options.game, options.onProgress)])
       options.onProgress?.({ phase: 'starting', ratio: 1 })
       if (destroyed) return
+
+      /*
+        先看 mapper 认不认得。jsnes 只实现了 21 个（见 nesMapper.ts），碰上没实现的会在
+        loadROM 里抛 `Unsupported mapper: N` —— 玩家看到一条红字，而同一份 ROM 交给
+        EmulatorJS 的 FCEUmm 核心毫无问题（忍者神龟 3 = mapper 25，Konami VRC4）。
+
+        这不是「失败」，是「找错引擎了」：走 onUnsupported 让播放器换引擎重开，
+        而不是 onError —— 后者会先原样重试几次，重试多少次结果都一样。
+        ROM 字节已经进了 IndexedDB 缓存（romLoader 的 loadGameBytes），换引擎不会重下。
+      */
+      const mapper = readNesMapper(buf)
+      if (mapper !== null && !JSNES_MAPPERS.has(mapper)) {
+        options.onUnsupported?.(`jsnes 未实现 mapper ${mapper}`)
+        return
+      }
 
       // ⚠️ 刻意不传 romData。
       // jsnes 的构造函数是「先把 document 级键盘监听挂上、启动手柄轮询，最后才 loadROM」，

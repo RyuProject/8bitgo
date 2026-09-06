@@ -108,6 +108,19 @@ export interface MountOptions {
   onReady?: () => void
   onStart?: () => void
   onError?: (message: string) => void
+  /**
+   * 「这份 ROM 我跑不了，换个引擎吧」—— 和 onError 是两回事。
+   *
+   * onError 是**失败**：播放器会报红字，开局前还会原样自动重试几次。
+   * 而这里说的是「同一份 ROM 换个引擎就能跑」，重试多少次都没用，
+   * 该做的是换引擎重开。目前只有 jsnes 用得上：它只实现了 21 个 mapper，
+   * 碰上 Konami VRC 那一族（忍者神龟 3 是 mapper 25）必然失败，
+   * 而 EmulatorJS 的 FCEUmm 核心跑得好好的。见 nesMapper.ts。
+   *
+   * **只在开局前有意义**：已经跑起来了再说不支持，只会白白拆掉玩家的进度。
+   * reason 是给控制台看的诊断原文，不用本地化（玩家看到的是播放器自己的提示）。
+   */
+  onUnsupported?: (reason: string) => void
   /** 引擎加载完、拿到新能力时调用，播放器据此刷新工具栏 */
   onCaps?: (caps: Set<Capability>) => void
 }

@@ -599,6 +599,7 @@ const ja: Translation = {
     noCurrentLanguageVersion: 'このゲームには現在の言語版がありません',
     romUnreachable: '今は ROM を読み込めません（ネットワークの問題の可能性があります）',
     retryRom: '再確認する',
+    runtimeFellBack: 'この ROM にはより完全なコアが必要です。{runtime} に切り替えました',
     arcadeHackFound: '改造版を認識しました：{title}（{driver} ドライバで実行）',
     arcadeHackNoPlan: '{title} と認識しましたが、この ROM セットに使える読み込み方法がまだないため実行できません。',
     watchHintPick: '観るだけで参加します。ホストの画面と音は届きますが、操作はできません。プレイしたくなったらツールバーの「プレイに加わる」から。',

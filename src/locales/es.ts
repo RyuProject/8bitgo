@@ -611,6 +611,7 @@ const es: Translation = {
     noCurrentLanguageVersion: 'Este juego no está disponible en el idioma actual',
     romUnreachable: 'Ahora mismo no se puede acceder a la ROM, probablemente por la red',
     retryRom: 'Comprobar de nuevo',
+    runtimeFellBack: 'Esta ROM necesita un núcleo más completo: se cambió a {runtime}',
     arcadeHackFound: 'Hack reconocido: {title} (se ejecuta con el driver {driver})',
     arcadeHackNoPlan: 'Se reconoció {title}, pero aún no hay un método de carga que funcione para este paquete.',
     watchHintPick: 'Entras solo para mirar: verás y oirás la partida del anfitrión, pero sin controles. Pulsa «Coger un mando» en la barra cuando quieras jugar.',

@@ -612,6 +612,7 @@ const de: Translation = {
     noCurrentLanguageVersion: 'Dieses Spiel ist in der aktuellen Sprache nicht verfügbar',
     romUnreachable: 'ROM ist gerade nicht erreichbar – vermutlich ein Netzwerkproblem',
     retryRom: 'Erneut prüfen',
+    runtimeFellBack: 'Diese ROM braucht einen vollständigeren Kern – zu {runtime} gewechselt',
     arcadeHackFound: 'Hack erkannt: {title} (läuft über den Treiber {driver})',
     arcadeHackNoPlan: '{title} erkannt, aber für dieses Paket gibt es noch kein funktionierendes Ladeverfahren.',
     watchHintPick: 'Du kommst als Zuschauer rein: Bild und Ton des Gastgebers, aber keine Steuerung. Über „Platz nehmen“ in der Leiste kannst du jederzeit mitspielen.',

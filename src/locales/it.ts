@@ -612,6 +612,7 @@ const it: Translation = {
     noCurrentLanguageVersion: 'Questo gioco non è disponibile nella lingua attuale',
     romUnreachable: 'Al momento non si riesce a raggiungere la ROM, probabilmente un problema di rete',
     retryRom: 'Controlla di nuovo',
+    runtimeFellBack: 'Questa ROM richiede un core più completo: passato a {runtime}',
     arcadeHackFound: 'Hack riconosciuto: {title} (eseguito con il driver {driver})',
     arcadeHackNoPlan: '{title} riconosciuto, ma per questo pacchetto non esiste ancora un metodo di caricamento funzionante.',
     watchHintPick: 'Entri solo per guardare: immagine e audio dell’host, ma senza comandi. Premi «Prendi un posto» nella barra quando vuoi giocare.',

@@ -611,6 +611,7 @@ const en: Translation = {
     noCurrentLanguageVersion: 'This game is not available in the current language',
     romUnreachable: 'Can’t reach the ROM right now — most likely a network problem',
     retryRom: 'Check again',
+    runtimeFellBack: 'This ROM needs a more complete emulator core — switched to {runtime}',
     arcadeHackFound: 'Recognized hack: {title} (running on the {driver} driver)',
     arcadeHackNoPlan: 'Recognized {title}, but there\'s no working load plan for this package yet, so it can\'t run.',
     watchHintPick: 'You are joining to watch: you get the host’s picture and sound but no controls. Hit “Take a slot” in the toolbar whenever you want to play.',
