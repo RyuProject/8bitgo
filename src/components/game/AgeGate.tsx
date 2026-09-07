@@ -203,6 +203,14 @@ interface GuardProps {
    * 嵌入页（第三方 iframe 里没有登录框，登录态也带不进来）传一个跳回主站的链接。
    */
   loginAction?: ReactNode
+  /**
+   * 加在**拦下来时**那个框上（放行时原样返回 children，这个类名不参与）。
+   *
+   * 详情页拿它来限宽：门卫拦下来时画的也是个 16:9 的框，得和播放器一样宽 ——
+   * 而那个限宽是按视口高度算的（见 GameDetailPage 的注释），不能只给播放器不给门卫，
+   * 否则「还在核对年龄」那一下框会先宽一截、放行后又跳窄。
+   */
+  className?: string
   children: ReactNode
 }
 
@@ -212,7 +220,7 @@ interface GuardProps {
  * 详情页可能来自 CDN 旧缓存，因此 markedAdult=false 时不能直接挂载播放器，先走 no-store
  * 接口确认。接口同时给出「这个人现在能不能玩」：登录、填了出生日期都会让它重新问一次。
  */
-export function GameAgeGuard({ slug, markedAdult, backdrop, loginAction, children }: GuardProps) {
+export function GameAgeGuard({ slug, markedAdult, backdrop, loginAction, className, children }: GuardProps) {
   const t = useT()
   const user = useCurrentUser()
   const [access, setAccess] = useState<{ slug: string; status: AccessStatus }>(() => ({ slug, status: 'checking' }))
@@ -271,8 +279,11 @@ export function GameAgeGuard({ slug, markedAdult, backdrop, loginAction, childre
   const status = access.slug === slug ? access.status : 'checking'
   if (status === 'open') return children
 
+  /** 拦下来的那些形态外面统一套一层，好让调用方能给整个门卫框加类名（见 GuardProps.className） */
+  const framed = (gate: ReactNode) => (className ? <div className={className}>{gate}</div> : gate)
+
   if (status === 'login' || status === 'birthDate' || status === 'underage') {
-    return (
+    return framed(
       <GateFrame backdrop={backdrop}>
         <span className="text-3xl sm:text-4xl" aria-hidden>
           🔞
@@ -314,11 +325,11 @@ export function GameAgeGuard({ slug, markedAdult, backdrop, loginAction, childre
             <p className="mt-3 text-[10px] leading-relaxed text-white/45 sm:text-[11px]">{t.game.ageGateUnderageLocked}</p>
           </>
         )}
-      </GateFrame>
+      </GateFrame>,
     )
   }
 
-  return (
+  return framed(
     <div className="overflow-hidden rounded-2xl border border-line bg-black">
       <div className="relative aspect-video w-full overflow-hidden bg-black">
         <div className="absolute inset-0 opacity-25 blur-sm">{backdrop}</div>

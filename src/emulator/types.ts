@@ -226,6 +226,8 @@ export interface ResolveContext {
  *   touchpad      引擎自己不带屏幕按键，**由播放器画**一套浮层（TouchPad.tsx），按下走 sendButton
  *   enginePad     引擎自带屏幕按键，而且适配器**确认它真的画出来了**（EmulatorJS）
  *   enginePointer 画面本身能戳 —— 机器自己就是触屏（NDS 下屏），手指直接点画面就是操作
+ *   remapKeys     键盘键位可以改。红白机不算在内 —— 那一路是我们自己实现的
+ *                 （services/padKeys.ts + NesKeyBinder），有自己的界面
  * 前者决定「画不画我们那套」，后者只是告诉播放器「屏幕上确实有能按的东西」，
  * 好让开局提示知道该不该出现 —— 两个都不声明的引擎（Ruffle / html5）手机上是真没按键，
  * 提示里说「手柄在下面」只会让玩家白找一圈。
@@ -244,6 +246,7 @@ export type Capability =
   | 'touchpad'
   | 'enginePad'
   | 'enginePointer'
+  | 'remapKeys'
 
 /**
  * 屏幕手柄能按的键。取 NES/FC 的键位作最小公约数 —— 手机屏上再多按键也放不下，
@@ -384,6 +387,31 @@ export interface RuntimeHandle {
    * 「没检测到手柄」。iframe 同源，适配器把它那份 navigator 的结果报上来即可。
    */
   gamepads?: () => string[]
+  /**
+   * 打开引擎自带的改键面板。
+   *
+   * 为什么是「打开引擎的」而不是我们自己画一张表：EmulatorJS 里那套是全的 ——
+   * 1P~4P、键盘和手柄一起绑、清空 / 恢复默认、自己持久化，而且按钮清单会跟着平台变
+   * （`getControlScheme()`，GB 只给 A/B/Select/Start，PS1 才有 L2/R2）。
+   * 自己重做一份就得对齐它的存储格式（`controls` + `setupKeys()` + `saveSettings()`，
+   * 键名还是 `"x"` / `"enter"` 这种小写名，和站里 hotkeys / padKeys 的
+   * `KeyboardEvent.code` 又是两套），升级引擎时容易悄悄漂。
+   *
+   * ⚠️ 那个面板挂在**播放器根元素**上（引擎 `createPopup()` 里
+   * `this.elements.parent.appendChild(...)`），**不在 `.ejs_menu_bar` 里** ——
+   * 所以 emulatorjs.ts 里那句把整条底栏 `display:none` 的 CSS 吃不到它，
+   * 藏了底栏之后这个面板仍然能正常弹出来，只是没了入口。这条就是那个入口。
+   */
+  openControls?: () => void
+  /**
+   * 引擎自己正开着弹窗吗（改键 / 金手指 / 联机 / 输入框）。
+   *
+   * 给 hotkeyBridge 用：它在**iframe 文档的捕获阶段**监听并且
+   * `preventDefault + stopPropagation`，所以引擎那个「Press Keyboard」等按键的时候，
+   * 凡是撞上站内快捷键的键（F2 / F4 存读档）会被我们**先吃掉** ——
+   * 玩家绑不上那个键，还会顺手存一次档。开着弹窗时我们就该让开。
+   */
+  popupOpen?: () => boolean
   /**
    * 显示 / 隐藏引擎自带的那套屏幕按键（目前只有 EmulatorJS 有）。
    *

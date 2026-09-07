@@ -35,16 +35,29 @@ export function isTyping(target: EventTarget | null): boolean {
  *
  * @param host 播放器那一块 DOM；iframe 就在它里面
  * @param run  命中某个动作时调这个
+ * @param busy 返回 true 时这一轮完全让开（引擎自己开着弹窗，见下）
  * @returns 卸载函数
  */
 export function installHotkeys(
   host: HTMLElement | null,
   run: (action: HotkeyAction) => void,
+  busy?: () => boolean,
 ): () => void {
   let dead = false
 
   const onKey = (e: KeyboardEvent) => {
     if (dead || e.repeat || isTyping(e.target)) return
+    /*
+      ⚠️ 引擎自己开着弹窗时必须让开，而 isTyping 挡不住这种情况。
+
+      改键面板等按键的那一下（引擎的「Press Keyboard」）落在一个 **div** 上，不是 input，
+      所以 isTyping 返回 false。而我们是在 iframe 文档的**捕获阶段**监听、命中就
+      preventDefault + stopPropagation —— 于是玩家想把某个动作绑到 F2 / F4 上时，
+      那一下被我们先吃掉：键绑不上，还顺手存了一次档。
+      金手指面板、联机弹窗、引擎的输入框同理（那几个里有 input 的那部分 isTyping 能挡住，
+      但「按一下键」这种不能），所以这里用引擎自己的 isPopupOpen() 一次性覆盖。
+    */
+    if (busy?.()) return
     const combo = comboOf({ ctrl: e.ctrlKey, alt: e.altKey, shift: e.shiftKey, meta: e.metaKey, code: e.code })
     const action = actionForCombo(combo)
     if (!action) return

@@ -611,14 +611,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       joined = true
       live.onInfo?.({ title: info.title, hostName: info.hostName, gameName: info.gameName })
       /*
-        中途进来的观众补上最近几条弹幕，不然他面对的是一片空白，
-        看不出这场直播到底有没有人在说话。
-        只在**第一次**进房时补：重连时 watch 会再发一次（那是「请主播重发 offer」），
-        那时候本地已经有这些消息了，再补一遍就是满屏重影。
+        ⚠️ **刻意不再补历史弹幕**（2026-09-07 起，见 LiveChat.tsx 的文件头）。
+        ack 里那个 `info.chat` 服务端照旧会送（30 条环形缓冲），我们收下不用。
+
+        为什么不能「顺手 push 一下反正不亏」：弹幕现在只有飘幕这一个出口，而飘幕
+        **按设计不飞补历史那一批**（一次性糊满屏没人读得了，靠 LiveChatLane 的 seen 拦着）。
+        画面下方的消息列表已经整块删掉。所以 push 进来的这些谁都看不见 ——
+        白占内存、还会把 KEEP 那个飘幕缓冲挤掉真正该飞的新消息。
+
+        代价是明确接受的：中途进来的观众看不到他进来之前说过的话。
       */
-      for (const msg of Array.isArray(info.chat) ? info.chat : []) {
-        if (msg?.text) live.onChat?.(msg)
-      }
       // 中途进来的观众：主播可能早就点过「联机」了，ack 里就带着房号
       live.onNetplay?.(info.netplayRoomId ?? null)
       // 主播那边收到 viewer-joined 后会主动发 offer 过来，这里等着就行

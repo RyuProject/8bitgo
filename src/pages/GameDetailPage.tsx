@@ -60,6 +60,14 @@ export function GameDetailPage() {
   const game = state.data?.game ?? undefined
   const related = state.data?.related ?? []
   const { immersive, setImmersive } = useShell()
+  /**
+   * 播放器那一块的限宽 —— 按视口**高度**算，理由和取舍见下面播放器上方那段注释。
+   *
+   * 逐个发给「真的是 16:9 的那几块」（播放器 / 年龄门 / 跨源隔离的入口卡），
+   * **不套在它们外面那一层**：套外面的话播放器下面那条弹幕输入框会跟着变窄，
+   * 和内容列对不齐。
+   */
+  const playerCap = cx('mx-auto w-full', immersive ? 'max-w-[calc((100dvh-7rem)*16/9)]' : 'lg:max-w-[calc((100dvh-10rem)*16/9)]')
   const user = useCurrentUser()
   const [shareOpen, setShareOpen] = useState(false)
   const [addToCollection, setAddToCollection] = useState(false)
@@ -228,9 +236,20 @@ export function GameDetailPage() {
         标题露个头，暗示还有内容。沉浸模式下顶栏藏了，用原来那个 7rem。
         只在 lg 以上生效：横屏手机（852×330）算出来只有 300 宽，会把没开始的播放器缩成一块小方块，
         而那种屏一跑起来就进铺满视口的游玩布局，不该由这里管。
+
+        ⚠️ 这个限宽**不再套在外面这一层**（2026-09-07 改）。它按视口**高度**算，而这个理由
+        只对 16:9 的东西成立 —— 画面是 16:9、年龄门那两个框也是，但播放器下面那条弹幕输入框
+        不是。套在外层的时候那条输入框跟着白挨了限宽，比底下的标题和资料区窄一截，
+        看着像没对齐（站长报的）。所以现在 `playerCap` 逐个交给真正需要它的那几块，
+        外层只保留内容列的宽度。**别为了少写一处又把它挪回外层。**
       */}
-      <div className={cx('mx-auto w-full', immersive ? 'max-w-[calc((100dvh-7rem)*16/9)]' : 'lg:max-w-[calc((100dvh-10rem)*16/9)]')}>
+      <div className="mx-auto w-full">
         <GameAgeGuard
+              /*
+                门卫拦下来时画的也是个 16:9 的框，得和播放器一样宽 ——
+                只给播放器不给门卫的话，「还在核对年龄」那一下框先宽一截、放行后又跳窄。
+              */
+              className={playerCap}
               slug={game.slug}
               markedAdult={Boolean(game.adult)}
               backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority className="h-full w-full" />}
@@ -243,6 +262,7 @@ export function GameDetailPage() {
               */}
               {isolatedEmbed ? (
                 <IsolatedPlayCard
+                  className={playerCap}
                   slug={game.slug}
                   gameName={game.title}
                   icon={game.icon}
@@ -250,6 +270,7 @@ export function GameDetailPage() {
                 />
               ) : (
               <EmulatorPlayer
+                className={playerCap}
                 key={game.slug}
                 platform={platform}
                 gameName={game.title}
@@ -290,6 +311,10 @@ export function GameDetailPage() {
           实验性平台的提示，紧贴在播放器下面。
           必须在玩家点「开始」**之前**就看得到 —— PS2 大多数游戏在浏览器里跑不起来，
           让人先等一分钟加载再看到一句报错，那是把他的时间和对站点的信任一起花掉。
+
+          注：它现在是**内容列**宽度，比上面那个播放器宽 —— 2026-09-07 把 playerCap 从外层
+          挪走之后的自然结果，是刻意留的。规矩是「只有 16:9 的那几块限宽，其余跟内容列」，
+          给这一条也补上 playerCap 反而会让它比头上的弹幕条窄，更像出了错。
         */}
         {EXPERIMENTAL_PLATFORMS.has(platform.id) && (
           <p className="mt-3 rounded-xl border border-coin/40 bg-coin-soft px-3 py-2 text-xs text-muted">

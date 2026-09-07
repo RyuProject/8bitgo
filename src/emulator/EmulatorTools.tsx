@@ -121,6 +121,15 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
   const [volume, setVolume] = useState(handle?.volume ?? 1)
   const [muted, setMuted] = useState(false)
   const [panel, setPanel] = useState<'volume' | 'gamepad' | 'fsSave' | null>(null)
+  /**
+   * handle 走 ref 给快捷键那个 effect 用。
+   *
+   * 那个 effect 的依赖列表里**没有** handle（下面有 eslint-disable），
+   * 直接在回调里引用会把挂载那一刻的 handle 闭包捕获死 —— 换游戏之后
+   * 「引擎开着弹窗吗」问的还是上一局那个引擎。
+   */
+  const handleRef = useRef(handle)
+  handleRef.current = handle
   /** 存档面板（三张卡：云端 / 这个浏览器 / 文件）。见 SaveLoadModal.tsx */
   const [saveModal, setSaveModal] = useState(false)
   /** DOS「固化存档」正在飞：按钮压住，别让连点把 lastPush 判断搞反（见 doFsSave） */
@@ -496,7 +505,12 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
       'save:file': saveCards[2].onSave,
       'load:file': saveCards[2].onLoad,
     }
-    return installHotkeys(stageRef?.current ?? null, (action) => byAction[action]?.())
+    return installHotkeys(
+      stageRef?.current ?? null,
+      (action) => byAction[action]?.(),
+      // 引擎自己开着弹窗（改键面板等按键、金手指、联机）时让开，见 hotkeyBridge 里那段注释
+      () => handleRef.current?.popupOpen?.() === true,
+    )
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [caps, saveCards, stageRef])
 
@@ -822,10 +836,36 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
           </p>
 
           {/*
-            键盘改键只有红白机这一路有。别的运行时里键盘要么由引擎自己管（EmulatorJS 有
-            它自带的设置菜单），要么直通给游戏（DOS / Flash / J2ME），我们插不上手。
+            键盘改键分两路：
+              红白机（jsnes）—— 映射是我们自己实现的，界面就在这儿（NesKeyBinder）；
+              EmulatorJS  —— 引擎自带一套更全的（1P~4P、键盘+手柄、清空/恢复默认、
+                             自己持久化、按钮清单跟着平台变），我们只补一个入口。
+                             它的面板挂在播放器根元素上，不在被我们藏掉的那条底栏里，
+                             所以一句 controlMenu.style.display='' 就弹得出来
+                             （见 adapters/emulatorjs.ts 的 openControls）。
+              DOS / Flash / J2ME —— 键盘直通给游戏，我们确实插不上手。
+
+            为什么值得有：按钮名是 libretro 那套（A/B/X/Y/L/R/L2/R2），而游戏把什么
+            动作绑在哪个按钮上是**游戏自己**定的 —— 比如有些赛车游戏油门在 R2，
+            默认键盘映射下就是 `R` 键，玩家看着键位表也想不到那是油门。能改就够了。
           */}
           {runtimeId === 'jsnes' && <NesKeyBinder />}
+          {caps.has('remapKeys') && handle?.openControls && (
+            <div className="mt-2 border-t border-line pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  handle.openControls?.()
+                  // 面板弹在播放器里、和这个下拉不在一层，留着这个下拉只会挡住它
+                  setPanel(null)
+                }}
+                className="rounded-md border border-line px-2 py-0.5 font-semibold text-fg hover:border-brand hover:text-brand"
+              >
+                {tt.remapKeys}
+              </button>
+              <p className="mt-1 text-muted">{tt.remapKeysHint}</p>
+            </div>
+          )}
 
           {/*
             双屏布局（NDS）。取值一律用核心自报的原样字符串回填，我们只把它翻成中文

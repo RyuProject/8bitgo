@@ -5,21 +5,37 @@ import { useT } from '@/services/i18n'
 import { CHAT_MAX_LENGTH, chatTextLength, sanitizeChatText } from '../../shared/live-chat.js'
 
 /**
- * 直播弹幕。两块东西共用同一份消息流：
+ * 直播弹幕。两块东西：
  *
  *   LiveChatLane   飘过画面的那一层（贴在舞台上，pointer-events-none）
- *   LiveChatBar    画面下方的输入框 + 最近几条
+ *   LiveChatBar    画面下方的输入框。**只有输入框，没有消息列表**
  *
- * 为什么两块都要：飘过去的有气氛但留不住，中途进来的人看到的是一片空白；
- * 下面那一小段是「刚才说了什么」的唯一去处。数据是同一份，只是渲染两次。
+ * ── 为什么下面那段列表被删掉了（2026-09-07，站长要求「不要历史记录」）──
+ * 这块原来是「输入框 + 最近几条」，理由是「飘过去的有气氛但留不住，中途进来的人
+ * 看到的是一片空白」。那个理由本身没错，但它把弹幕做成了半个聊天记录：
+ * 自己发的话会一条条堆在框里不走，看着更像评论区而不是弹幕。
+ * 现在的取舍是**明确选了「飘过就没了」**：气氛优先，留痕一概不要。
+ *
+ * ⚠️ 连带的三件事，改回去之前先想清楚：
+ *   1. **服务端的补历史不再往这儿送了**（见 adapters/liveview.ts 的 watch ack）。
+ *      那批消息按设计是**不飞**的（一次性糊满屏没人读得了，见 LiveChatLane 的 seen），
+ *      只进列表 —— 列表没了它们就完全看不见，push 进来纯属白传。
+ *   2. 所以中途进来的观众**看不到**他进来之前说过的话，这是刻意的，不是 bug。
+ *   3. `KEEP` 跟着降到只够喂飘幕（见下）。它现在不是「历史」，是飘幕的输入缓冲。
  *
  * 消息**一律来自服务端**（自己发的那条也是服务端广播回来的），本地不做乐观回显 ——
  * 这样每个人看到的顺序完全一致。代价是自己发完到看见有一个 RTT 的延迟，
  * 但弹幕本来就是「大家一起看同一条时间线」，顺序比那点延迟重要。
  */
 
-/** 本地最多留多少条。比服务端的历史多一些，够下面那段列表滚 */
-const KEEP = 60
+/**
+ * 本地最多留多少条。
+ *
+ * 这**不是历史**：唯一的消费者是 LiveChatLane，它靠这个数组的增量找出「哪些是新的」
+ * （见那边的 seen）。所以只要比 FLYING_MAX 宽裕一点就够 —— 一批消息挤在同一拍到达时
+ * 不至于还没起飞就被挤出数组。留 60 条那是上一版给列表滚动用的，现在纯属白占内存。
+ */
+const KEEP = 16
 /** 画面上同时最多飘几条。再多就糊成一片，谁也读不了 */
 const FLYING_MAX = 8
 /** 弹幕分几条轨道 */
@@ -137,31 +153,19 @@ export function LiveChatLane({ messages, className }: { messages: LiveChatMessag
   )
 }
 
-/* ---------------- 画面下方：输入框 + 最近几条 ---------------- */
+/* ---------------- 画面下方：只有输入框 ---------------- */
 
 export function LiveChatBar({
-  messages,
   onSend,
   className,
 }: {
-  messages: LiveChatMessage[]
   /** null = 现在发不了（还没连上 / 已经散场）。这时输入框禁用，而不是让人白打一段字 */
   onSend: ((text: string) => void) | null
   className?: string
 }) {
   const t = useT()
   const tt = t.player.tools
-  const authorLabel = useAuthorLabel()
   const [text, setText] = useState('')
-  const listRef = useRef<HTMLDivElement>(null)
-
-  // 新消息进来自动贴底。只在本来就在底部时才滚 —— 用户往上翻看历史时不该被拽回来
-  useEffect(() => {
-    const el = listRef.current
-    if (!el) return
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40
-    if (atBottom) el.scrollTop = el.scrollHeight
-  }, [messages])
 
   const send = () => {
     const clean = sanitizeChatText(text)
@@ -175,23 +179,7 @@ export function LiveChatBar({
 
   return (
     <div className={cx('rounded-xl border border-line bg-surface', className)}>
-      <div ref={listRef} className="max-h-28 space-y-0.5 overflow-y-auto px-3 pt-2 text-xs">
-        {messages.length === 0 ? (
-          <p className="py-1 text-dim">{tt.chatEmpty}</p>
-        ) : (
-          messages.map((m) => (
-            <p key={m.id} className="leading-relaxed">
-              <span className={cx('font-semibold', m.host ? 'text-coin' : 'text-muted')}>
-                {m.host && '★ '}
-                {authorLabel(m)}
-              </span>
-              <span className="mx-1 text-dim">:</span>
-              <span className="text-fg">{m.text}</span>
-            </p>
-          ))
-        )}
-      </div>
-
+      {/* 只有这一行。消息列表在 2026-09-07 整块删掉了，理由见文件头 */}
       <div className="flex items-center gap-2 px-3 py-2">
         <input
           value={text}

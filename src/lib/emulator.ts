@@ -80,7 +80,13 @@ export interface KeymapRow {
 
 /** 改键入口在哪儿。三档各有各的话要说，混成一句话就一定有一档是错的 */
 export type RebindKind =
-  /** 播放器底部工具条的 🎮 面板 —— **只有红白机**（EmulatorTools 里 NesKeyBinder 的条件） */
+  /**
+   * 播放器底部工具条的 🎮 面板。
+   *
+   * 改键分两路：红白机走我们自己的 NesKeyBinder（映射是自己实现的），
+   * EmulatorJS 走引擎自带那套（面板更全，我们只在同一个 🎮 面板里补了个入口 ——
+   * 见 adapters/emulatorjs.ts 的 openControls）。DOS / Flash / J2ME 键盘直通游戏，没有。
+   */
   | 'ours'
   /** 引擎自带的设置菜单（EmulatorJS 画面内那条工具条上的手柄图标 → Control Settings） */
   | 'engine'

@@ -2164,7 +2164,21 @@ export function EmulatorPlayer({
     else inputRef.current?.click()
   }
 
+  /*
+    ⚠️ 返回的是**两个兄弟节点**（fragment），不是一个盒子 —— 弹幕输入框刻意在播放器盒子
+    **外面**。别为了「看起来整齐」把它塞回去。
+
+    起因（2026-09-07）：详情页给播放器套了一层按**视口高度**限宽的包装
+    （GameDetailPage 的 `lg:max-w-[calc((100dvh-10rem)*16/9)]`，为的是矮屏上 16:9 的画面
+    不超过视口高度）。弹幕条原来是这个根 div 的子节点，于是跟着白挨了那个限宽 ——
+    比底下的标题和资料区窄一截，看着像没对齐。
+
+    而那个限宽的**理由只对 16:9 的东西成立**：画面是 16:9，年龄门那两个框也是 16:9，
+    一行输入框不是。所以现在限宽由调用方通过 `className` 交给下面这个播放器盒子，
+    弹幕条作为兄弟节点落在包装层的原始宽度上，跟内容列对齐。
+  */
   return (
+    <>
     <div data-testid="emulator-player" className={cx('overflow-hidden rounded-2xl border border-line bg-black', className)}>
       {/*
         桌面端：播放器整体固定 16:9，工具栏是框里的最后一行 —— 它在普通模式和全屏模式里
@@ -2942,24 +2956,24 @@ export function EmulatorPlayer({
         沉浸 / 全屏时不画 —— 那两种形态下播放器是 fixed 铺满视口的，
         这一行会落在它后面，成了一个看不见但能被 Tab 到的输入框。
       */}
-      {liveChatOn && !fullscreen && !playMode && (
-        <LiveChatBar
-          className="mt-2"
-          messages={chat.messages}
-          /*
-            主播走自己的推流会话，观众走 liveview 那一路的 handle。
-            两个都没有 = 还没连上或者已经散场，传 null 让输入框禁用 ——
-            让人打完一段字再告诉他发不出去是最差的一种。
-          */
-          onSend={
-            liveSession
-              ? (text) => liveSession.sendChat(text)
-              : handle?.liveChat
-                ? (text) => handle.liveChat?.(text)
-                : null
-          }
-        />
-      )}
     </div>
+    {liveChatOn && !fullscreen && !playMode && (
+      <LiveChatBar
+        className="mt-2"
+        /*
+          主播走自己的推流会话，观众走 liveview 那一路的 handle。
+          两个都没有 = 还没连上或者已经散场，传 null 让输入框禁用 ——
+          让人打完一段字再告诉他发不出去是最差的一种。
+        */
+        onSend={
+          liveSession
+            ? (text) => liveSession.sendChat(text)
+            : handle?.liveChat
+              ? (text) => handle.liveChat?.(text)
+              : null
+        }
+      />
+    )}
+    </>
   )
 }

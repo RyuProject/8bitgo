@@ -413,6 +413,14 @@ const FRAME_HTML = `<!doctype html>
     播放器自己的工具栏现在叠在画面底部、自动隐藏，两条叠在同一个位置会撞在一起。
     代价：EJS 设置菜单里的画面滤镜 / 加速 / 存档槽位、重启、金手指暂时没有入口 —— 后续按需补到
     EmulatorTools 里。只藏不删：引擎内部还引用着这些元素（elements.menu），删了会抛。
+
+    ⚠️ 别以为这条把引擎所有面板都吃掉了：那些弹窗是 createPopup() 建的，而它内部是
+    this.elements.parent.appendChild(...) —— **挂在播放器根元素上，不是这条栏的后代**。
+    所以藏了栏之后面板本身照样弹得出来，缺的只是入口。改键那个入口已经补回来了
+    （openControls 把 controlMenu 的 display 置空，露在 EmulatorTools 的 🎮 面板里）；
+    上面列的那几个要补也是同一个套路，不用去改这条 CSS。
+
+    （这段注释里刻意不写反引号 —— 它在 srcdoc 那个模板字符串里面，一个反引号就把它截断了。）
   */
   .ejs_menu_bar { display: none !important; }
 </style>
@@ -489,6 +497,19 @@ interface EjsEmulator {
   setVolume?: (v: number) => void
   canvas?: HTMLCanvasElement
   elements?: { parent?: HTMLElement }
+  /**
+   * 引擎自带的改键面板（`.ejs_popup_container`）。
+   *
+   * 它是 `createPopup(..., true)` 建出来的、一开始就 `display:none`，
+   * 而 `createPopup` 内部是 `this.elements.parent.appendChild(...)` ——
+   * **挂在播放器根元素上，不在 `.ejs_menu_bar` 里**，所以下面那句把整条底栏
+   * `display:none !important` 的 CSS 吃不到它。引擎自己的底栏按钮做的也就是
+   * `controlMenu.style.display = ""`（emulator.min.js 里 buttonOpts.gamepad 那一处），
+   * 我们照抄这一句就把入口补回来了。
+   */
+  controlMenu?: HTMLElement
+  /** 引擎自己有没有开着弹窗（改键 / 金手指 / 联机 / 输入框）。给 hotkeyBridge 让路用 */
+  isPopupOpen?: () => boolean
   /**
    * 引擎判断「要不要显示虚拟手柄」用的标志。只有玩家用手指点了「开始游戏」按钮才置 true
    * —— 我们设了 EJS_startOnLoaded，那个按钮根本不由玩家点。见 showVirtualGamepad。
@@ -1115,13 +1136,22 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
   let audioTap: AudioTap | null = null
   let volume = 0.6
-  const caps = new Set<Capability>(['pause', 'saveState', 'volume', 'screenshot', 'record', 'gamepad'])
+  const caps = new Set<Capability>(['pause', 'saveState', 'volume', 'screenshot', 'record', 'gamepad', 'remapKeys'])
   /** 取 iframe 里的模拟器实例；还没起来时是 undefined */
   const emuOf = (): EjsEmulator | undefined =>
     (iframe.contentWindow as (Window & Record<string, unknown>) | null)?.EJS_emulator as EjsEmulator | undefined
   /** EmulatorJS 的画布在 iframe 里，同源所以能直接拿 */
   const canvasOf = (): HTMLCanvasElement | null =>
     emuOf()?.canvas ?? iframe.contentDocument?.querySelector('canvas') ?? null
+
+  /**
+   * 引擎那些元素**属于 iframe 那个 realm**，所以 `instanceof HTMLElement` 恒为 false ——
+   * 父窗口的 HTMLElement 和 iframe 里的不是同一个构造函数。
+   * 拿它当判据的话，能力会被静默摘掉、按钮永远点不动（这个坑当场踩过一次）。
+   * 按形状认：能写 style.display 就够我们用了。
+   */
+  const canSetDisplay = (el: HTMLElement | undefined): el is HTMLElement =>
+    typeof el?.style?.display === 'string'
 
   /**
    * 存档能力必须**真调一次**才算数。
@@ -1201,6 +1231,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (typeof emu.pause !== 'function' || typeof emu.play !== 'function') caps.delete('pause')
     if (typeof emu.setVolume !== 'function' && !('volume' in emu)) caps.delete('volume')
     if (typeof emu.gameManager?.getState !== 'function') caps.delete('saveState')
+    // 改键面板是 createBottomMenuBar() 里建的。我们只用 CSS 把那条栏藏了、没删，
+    // 所以正常情况下它一定在；真没有（引擎换了实现）就把按钮摘掉，别亮一个点了没反应的
+    if (!canSetDisplay(emu.controlMenu)) caps.delete('remapKeys')
     if (!canvasOf()) {
       caps.delete('screenshot')
       caps.delete('record')
@@ -2364,6 +2397,23 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     focus: () => focusFrame(iframe),
     gamepads: () => frameGamepads(iframe),
     setEnginePad,
+    /** 见 RuntimeHandle.openControls 的注释：把引擎自带改键面板的入口补回来 */
+    openControls() {
+      const menu = emuOf()?.controlMenu
+      if (!canSetDisplay(menu)) return
+      try {
+        menu.style.display = ''
+      } catch {
+        /* 元素已经被引擎拆了就当没这回事 */
+      }
+    },
+    popupOpen() {
+      try {
+        return emuOf()?.isPopupOpen?.() === true
+      } catch {
+        return false
+      }
+    },
     setScreenLayout: (value: string) => applyLayout(value, true),
     setStageMode,
     setPaused(next: boolean) {
