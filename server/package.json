@@ -44,7 +44,9 @@
     "upgrade-v2": "node scripts/upgrade-v1-to-v2.mjs",
     "export-d1": "node scripts/export-d1.mjs",
     "turn:probe": "node scripts/turn-probe.mjs",
-    "test:turn-probe": "node scripts/test-turn-probe.mjs"
+    "test:turn-probe": "node scripts/test-turn-probe.mjs",
+    "test:im-sig": "node scripts/test-im-sig.mjs",
+    "test:json-path": "node scripts/test-json-path.mjs"
   },
   "dependencies": {
     "@ip-location-db/geo-whois-asn-country-mmdb": "^2.3.2026061719",
