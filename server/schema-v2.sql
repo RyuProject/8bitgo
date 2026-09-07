@@ -490,9 +490,13 @@ CREATE TABLE IF NOT EXISTS collection_items (
   -- 毫秒精度。封面取的是「最新放入的四款」，秒级 TIMESTAMP 会让同一秒里连加几款的
   -- 先后变成随机的，封面每次刷新都换一批（和 favorites 那条是同一个理由）
   created_at    TIMESTAMP(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  -- 作者手动排的位置（0 起）。NULL = 没排过：排过的在前按 position 升序，没排过的垫在后面按加入时间倒序。
+  -- 作者从没拖过时全是 NULL，顺序就和以前一样是「最新放入的在前」
+  position      INT           NULL,
   -- 同一款游戏在一个合集里只能有一条：主键直接把重复加入挡掉，不用先查后插
   PRIMARY KEY (collection_id, game_id),
   KEY idx_ci_col_time (collection_id, created_at DESC),
+  KEY idx_ci_col_pos  (collection_id, position),
   -- 删游戏时要按 game_id 清理
   KEY idx_ci_game (game_id),
   CONSTRAINT fk_ci_col FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE,

@@ -1,9 +1,16 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import type { CollectionDetail } from '@/types'
-import { deleteCollection, getCollection, removeGameFromCollection, setCollectionHidden } from '@/services/collections'
+import type { CollectionDetail, Game } from '@/types'
+import {
+  deleteCollection,
+  getCollection,
+  removeGameFromCollection,
+  reorderCollectionGames,
+  setCollectionHidden,
+} from '@/services/collections'
 import { CollectionFormDialog } from '@/components/game/CollectionFormDialog'
-import { GameCard } from '@/components/game/GameCard'
+import { CollectionAddGamesDialog } from '@/components/game/CollectionAddGamesDialog'
+import { SortableGameGrid } from '@/components/game/SortableGameGrid'
 import { SectionHeader } from '@/components/ui/SectionHeader'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
@@ -21,20 +28,80 @@ export function CollectionDetailPage() {
   const [loading, setLoading] = useState(true)
   const [missing, setMissing] = useState(false)
   const [editing, setEditing] = useState(false)
+  const [adding, setAdding] = useState(false)
   const [busy, setBusy] = useState(false)
+  /** 排序没存上时给一句话；存上了就静默 */
+  const [sortError, setSortError] = useState<string | null>(null)
+  const saveOrderTimer = useRef(0)
 
-  const load = useCallback(() => {
-    setLoading(true)
-    getCollection(id)
-      .then((d) => {
-        setData(d)
-        setMissing(false)
+  /**
+   * silent=true 时不切骨架屏：已经有数据、只是要和服务端对一下账（关掉「添加游戏」弹窗之后）。
+   * 每次都走骨架的话，加完几款一关弹窗整页闪一下，像是把刚加的又弄丢了。
+   */
+  const load = useCallback(
+    (silent = false) => {
+      if (!silent) setLoading(true)
+      getCollection(id)
+        .then((d) => {
+          setData(d)
+          setMissing(false)
+        })
+        .catch(() => {
+          if (!silent) setMissing(true)
+        })
+        .finally(() => {
+          if (!silent) setLoading(false)
+        })
+    },
+    [id],
+  )
+
+  useEffect(() => load(), [load])
+
+  /**
+   * 拖一下 / 按一下方向键就叫一次。本地顺序立刻生效（不然拖起来像卡住），
+   * 存盘等 600ms —— 连着挪好几格只发最后那一次，而不是每一格都打一次接口。
+   * 存失败就从服务端把真顺序拉回来（silent），并说一句。
+   */
+  const SAVE_ORDER_DELAY_MS = 600
+  const onReorder = (next: Game[]) => {
+    setData((prev) => (prev ? { ...prev, games: next } : prev))
+    setSortError(null)
+    window.clearTimeout(saveOrderTimer.current)
+    saveOrderTimer.current = window.setTimeout(() => {
+      if (!data) return
+      reorderCollectionGames(data.collection.id, next.map((g) => g.slug)).catch(() => {
+        setSortError(t.collections.sortFailed)
+        load(true)
       })
-      .catch(() => setMissing(true))
-      .finally(() => setLoading(false))
-  }, [id])
+    }, SAVE_ORDER_DELAY_MS)
+  }
+  // 离开页面时别让飞着的定时器往一个已经卸载的组件上 setState
+  useEffect(() => () => window.clearTimeout(saveOrderTimer.current), [])
 
-  useEffect(load, [load])
+  /** 已在合集里的 slug，给「添加游戏」弹窗把那些卡片标成「已加入」 */
+  const existingSlugs = useMemo(() => new Set((data?.games ?? []).map((g) => g.slug)), [data?.games])
+
+  /**
+   * 弹窗里加了一款：**当场**把它插到最前面、数量 +1，不等接口回来重拉。
+   * 弹窗不关、数字在涨，这是参考站那套交互的核心手感；关弹窗时再 silent 拉一次和服务端对齐。
+   * added=false 是服务端说「早就在里面了」（另一个标签页先加的）—— 数量别重复加。
+   */
+  const onAdded = (game: Game, added: boolean) => {
+    setData((prev) => {
+      if (!prev) return prev
+      const rest = prev.games.filter((g) => g.slug !== game.slug)
+      const already = rest.length !== prev.games.length
+      return {
+        ...prev,
+        games: [game, ...rest],
+        collection: {
+          ...prev.collection,
+          gameCount: prev.collection.gameCount + (added && !already ? 1 : 0),
+        },
+      }
+    })
+  }
 
   const c = data?.collection
   useSeo({
@@ -63,7 +130,8 @@ export function CollectionDetailPage() {
     setBusy(true)
     try {
       await removeGameFromCollection(c.id, slug)
-      load()
+      // 已经有数据了，悄悄对账就行，不用整页闪一次骨架
+      load(true)
     } finally {
       setBusy(false)
     }
@@ -107,6 +175,11 @@ export function CollectionDetailPage() {
         subtitle={c.description || undefined}
         actions={
           <div className="flex flex-wrap items-center gap-2">
+            {mine && (
+              <Button variant="primary" size="sm" onClick={() => setAdding(true)} disabled={busy}>
+                ＋ {t.collections.addGames}
+              </Button>
+            )}
             {mine && (
               <Button variant="secondary" size="sm" onClick={() => setEditing(true)} disabled={busy}>
                 {t.collections.editTitle}
@@ -152,16 +225,25 @@ export function CollectionDetailPage() {
       </div>
 
       {data.games.length === 0 ? (
-        <p className="rounded-card border border-line bg-surface px-4 py-8 text-center text-sm text-muted">
-          {t.collections.detailEmpty}
-        </p>
+        <div className="rounded-card border border-line bg-surface px-4 py-8 text-center text-sm text-muted">
+          <p>{t.collections.detailEmpty}</p>
+          {mine && (
+            <Button variant="primary" size="sm" className="mt-4" onClick={() => setAdding(true)} disabled={busy}>
+              ＋ {t.collections.addGames}
+            </Button>
+          )}
+        </div>
       ) : (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-          {data.games.map((g) => (
-            <div key={g.slug} className="relative">
-              <GameCard game={g} />
-              {/* 只有作者能移除。按钮压在卡片右上角，别挤进卡片内部把布局撑歪 */}
-              {mine && (
+        <>
+          {sortError && <p className="mb-3 text-xs text-live">{sortError}</p>}
+          {/* 作者：左上角手柄拖着排（触屏也行、方向键也行），右上角「移出」。别人：普通网格 */}
+          <SortableGameGrid
+            games={data.games}
+            sortable={mine}
+            disabled={busy}
+            onReorder={onReorder}
+            renderActions={(g) =>
+              mine ? (
                 <button
                   type="button"
                   onClick={() => void removeGame(g.slug)}
@@ -172,10 +254,10 @@ export function CollectionDetailPage() {
                 >
                   ✕
                 </button>
-              )}
-            </div>
-          ))}
-        </div>
+              ) : null
+            }
+          />
+        </>
       )}
 
       {editing && (
@@ -185,6 +267,19 @@ export function CollectionDetailPage() {
           onSaved={() => {
             setEditing(false)
             load()
+          }}
+        />
+      )}
+
+      {adding && (
+        <CollectionAddGamesDialog
+          collection={c}
+          existing={existingSlugs}
+          onAdded={onAdded}
+          onClose={() => {
+            setAdding(false)
+            // 乐观更新过了，这里只是悄悄和服务端对一下顺序 / 封面，不闪骨架
+            load(true)
           }}
         />
       )}

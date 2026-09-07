@@ -443,7 +443,7 @@ export interface CollectionPage {
 /** 合集详情接口的响应 */
 export interface CollectionDetail {
   collection: Collection
-  /** 合集里的全部游戏，最新放入的在前 */
+  /** 合集里的全部游戏。作者排过的按他排的顺序在前；没排过的垫后、最新放入的在前 */
   games: Game[]
   /** 当前访客有没有审核权（能下架 / 删别人的合集） */
   canReview: boolean

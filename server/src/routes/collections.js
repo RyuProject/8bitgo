@@ -198,9 +198,16 @@ collectionsRouter.get('/:id', optionalUser, async (req, res, next) => {
       return res.status(404).json({ error: '合集不存在' })
     }
 
+    /*
+      顺序：作者排过的（position 非空）在前、按 position 升序；没排过的垫在后面、按加入时间倒序。
+      作者从没拖过时全是 NULL，顺序和以前一模一样（最新放入的在前）。
+      排过之后再加进来的新游戏 position 是 NULL → 自动排到末尾，像给清单追加一条，
+      而不是插到作者精心排好的前面去。
+    */
     const itemRows = await query(
-      `SELECT ci.game_id, ci.created_at FROM collection_items ci
-       WHERE ci.collection_id = ? ORDER BY ci.created_at DESC, ci.game_id DESC LIMIT ?`,
+      `SELECT ci.game_id, ci.created_at, ci.position FROM collection_items ci
+       WHERE ci.collection_id = ?
+       ORDER BY (ci.position IS NULL) ASC, ci.position ASC, ci.created_at DESC, ci.game_id DESC LIMIT ?`,
       [id, MAX_ITEMS],
     )
     let games = []
@@ -385,6 +392,63 @@ collectionsRouter.delete('/:id/games/:slug', requireUser, async (req, res, next)
     const r = await query('DELETE FROM collection_items WHERE collection_id = ? AND game_id = ?', [row.id, game.id])
     if (r.affectedRows) await touch(row.id)
     res.json({ ok: true, removed: Boolean(r.affectedRows) })
+  } catch (e) {
+    next(e)
+  }
+})
+
+/**
+ * 手动排序：PATCH /:id/order  body { slugs: [...] }
+ *
+ * 客户端把**当前看到的整个顺序**发上来，服务端按下标写 position。只认作者本人
+ * （ownedOr404）—— 顺序也是作者的表达，管理员一样不能碰，和改标题一个道理。
+ *
+ * 只写名单里有的：不在名单里的（另一个标签页刚加进来的）position 保持 NULL，
+ * 自然排到末尾，不会因为这次没带上就被删掉或乱序。
+ * 不认识的 slug、不在这个合集里的 slug 直接忽略而不是 400 —— 客户端手里的名单
+ * 可能比服务端旧几秒，这不是它的错。
+ */
+collectionsRouter.patch('/:id/order', requireUser, async (req, res, next) => {
+  try {
+    const row = await ownedOr404(req, res)
+    if (!row) return
+    const raw = req.body?.slugs
+    if (!Array.isArray(raw)) return res.status(400).json({ error: '缺少 slugs' })
+    if (raw.length > MAX_ITEMS) return res.status(400).json({ error: `一次最多排 ${MAX_ITEMS} 款` })
+    // 去重、去掉不是字符串的；保留首次出现的位置
+    const slugs = []
+    const seen = new Set()
+    for (const x of raw) {
+      const slug = String(x ?? '').trim()
+      if (!slug || seen.has(slug)) continue
+      seen.add(slug)
+      slugs.push(slug)
+    }
+    if (!slugs.length) return res.json({ ok: true, ordered: 0 })
+
+    const holes = slugs.map(() => '?').join(',')
+    const gameRows = await query(`SELECT id, slug FROM games WHERE slug IN (${holes})`, slugs)
+    const idBySlug = new Map(gameRows.map((g) => [g.slug, String(g.id)]))
+    const inCollection = new Set(
+      (await query('SELECT game_id FROM collection_items WHERE collection_id = ?', [row.id])).map((r) => String(r.game_id)),
+    )
+    // 只给「真在这个合集里」的写位置；下标按过滤后的顺序连续编号，中间不留洞
+    const ordered = slugs.map((slug) => idBySlug.get(slug)).filter((gid) => gid && inCollection.has(gid))
+    if (ordered.length) {
+      /*
+        一条 UPDATE 写完所有位置：CASE game_id WHEN ? THEN ? ... END。
+        500 款也就一个来回；逐条 UPDATE 是 500 个来回，拖一下卡半秒。
+        参数排列：[gid, pos, gid, pos, ..., collection_id, gid, gid, ...]
+      */
+      const cases = ordered.map(() => 'WHEN ? THEN ?').join(' ')
+      const inHoles = ordered.map(() => '?').join(',')
+      await query(
+        `UPDATE collection_items SET position = CASE game_id ${cases} END WHERE collection_id = ? AND game_id IN (${inHoles})`,
+        [...ordered.flatMap((gid, i) => [gid, i]), row.id, ...ordered],
+      )
+      await touch(row.id)
+    }
+    res.json({ ok: true, ordered: ordered.length })
   } catch (e) {
     next(e)
   }

@@ -17,6 +17,11 @@ import { btnClass, inputClass } from './ui'
 
 type Status = 'all' | 'visible' | 'hidden'
 type HomeFilter = 'all' | 'picked' | 'unpicked'
+/**
+ * 排序。这几档服务端早就实现了（games-repo.js 的 orderBy），后台以前只是没给入口。
+ * 'home' 不放进下拉里让人主动选 —— 它是「只看首页位」那一档的附带效果，见下面 effectiveSort。
+ */
+type Sort = 'newest' | 'popular' | 'name' | 'rating'
 type Editing = { mode: 'add' } | { mode: 'edit'; game: Game } | null
 
 /** 后台一页多少条。和前台列表页保持一致，够看又不至于一次拉太多关联数据。 */
@@ -49,6 +54,14 @@ export function AdminGames() {
   const [platform, setPlatform] = useState<PlatformId | 'all'>('all')
   const [status, setStatus] = useState<Status>('all')
   const [home, setHome] = useState<HomeFilter>('all')
+  /**
+   * 后台默认按**最新上架**，不跟前台的「最热」。
+   *
+   * 前台默认按 plays 是对的（访客要看别人都在玩什么），但后台不是逛的地方 ——
+   * 打开它通常是为了处理刚加的那几款。而且 orderBy 里那句注释已经说了
+   * 「新站大量游戏 plays 都是 0」，按它排在后台等于没排序，还得自己翻页去找。
+   */
+  const [sort, setSort] = useState<Sort>('newest')
   const [page, setPage] = useState(1)
   const [editing, setEditing] = useState<Editing>(null)
   const [toast, setToast] = useState<string | null>(null)
@@ -71,9 +84,25 @@ export function AdminGames() {
   }, [q])
 
   // 换关键词 / 换平台后还停在第 5 页，多半是一片空白，回第一页
+  /**
+   * 实际生效的排序。有两种情况会盖掉下拉里选的那个，都会把下拉**禁用**并显示成
+   * 实际生效的那一档 —— 悄悄覆盖会让人以为排序坏了。
+   *
+   * 1. **只看首页位** → 按首页序号。那一档存在的意义就是核对先后，按别的排等于把它废掉。
+   *    （这条是原来就有的行为，没动。）
+   * 2. **有搜索关键词** → 按匹配度。这条是必须的：`listGames` 里
+   *    `explicitSort = q.sort && q.sort !== 'popular'`，只要带了显式排序，
+   *    相关性排序就被丢掉。而后台的默认排序刚从「不传」改成了 newest ——
+   *    不特殊处理的话，一搜 "mario" 出来的是最新入库的那几款而不是最匹配的，
+   *    等于把搜索框弄坏了。
+   */
+  const searching = Boolean(debouncedQ)
+  const effectiveSort: Sort | 'home' | 'relevance' =
+    home === 'picked' ? 'home' : searching ? 'relevance' : sort
+
   useEffect(() => {
     setPage(1)
-  }, [debouncedQ, platform, status, home])
+  }, [debouncedQ, platform, status, home, sort])
 
   useEffect(() => {
     if (!apiEnabled()) {
@@ -89,8 +118,8 @@ export function AdminGames() {
         platform,
         status,
         home,
-        // 只看首页位时按首页排序号排，才看得出实际的先后
-        sort: home === 'picked' ? 'home' : undefined,
+        // 'relevance' 不是服务端的档位，它就是「什么都不传」—— 服务端带关键词时默认按匹配度
+        sort: effectiveSort === 'relevance' ? undefined : effectiveSort,
         page,
         pageSize: PAGE_SIZE,
       }),
@@ -113,7 +142,7 @@ export function AdminGames() {
     return () => {
       cancelled = true
     }
-  }, [debouncedQ, platform, status, home, page, tick])
+  }, [debouncedQ, platform, status, home, sort, page, tick])
 
   const reload = () => setTick((n) => n + 1)
   /** 出错后的重试：顶栏徽章那份探测也一起重跑，否则修好了徽章还红着 */
@@ -236,6 +265,28 @@ export function AdminGames() {
           <option value="all">首页位：全部</option>
           <option value="picked">只看首页位</option>
           <option value="unpicked">未上首页</option>
+        </select>
+        <select
+          className={cx(inputClass, 'w-40')}
+          value={effectiveSort}
+          disabled={effectiveSort !== sort}
+          /* 禁用的 select 不触发 hover，说明只能挂在 title 上 */
+          title={
+            home === 'picked'
+              ? '「只看首页位」时固定按首页序号排'
+              : searching
+                ? '有搜索关键词时按匹配度排；清空搜索框即可改回来'
+                : undefined
+          }
+          onChange={(e) => setSort(e.target.value as Sort)}
+        >
+          <option value="newest">排序：最新上架</option>
+          <option value="popular">排序：最多游玩</option>
+          <option value="rating">排序：评分</option>
+          <option value="name">排序：名称</option>
+          {/* 下面两个只在被盖掉时出现，好让上面的 value 对得上，不是给人选的 */}
+          {home === 'picked' && <option value="home">排序：首页序号</option>}
+          {searching && home !== 'picked' && <option value="relevance">排序：匹配度</option>}
         </select>
         <span className="self-center text-xs text-muted">
           {loading ? '读取中…' : `共 ${total} 款`}

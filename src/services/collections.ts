@@ -5,7 +5,8 @@
  * 写要登录 —— 令牌由 services/api.ts 统一带上，这里不重复处理。
  */
 import { api } from './api'
-import type { Collection, CollectionDetail, CollectionPage } from '@/types'
+import type { Collection, CollectionDetail, CollectionPage, Game } from '@/types'
+import type { Paged } from './pageData'
 
 /** 公开列表，按「最近有动静」排 */
 export function listCollections(page = 1, pageSize = 24): Promise<CollectionPage> {
@@ -36,9 +37,29 @@ export function deleteCollection(id: number): Promise<{ ok: boolean }> {
   return api.del<{ ok: boolean }>(`/api/collections/${id}`)
 }
 
+/** 「添加游戏」弹窗每页拿多少。弹窗里是两三列的小格子，一次给太多要滚很久，给太少要频繁点「加载更多」 */
+export const PICKER_PAGE_SIZE = 12
+
+/**
+ * 「添加游戏」弹窗的搜索：走公开的 /api/games?q=，拿到的是完整的 Game（能直接喂 GameCover / 加进合集）。
+ * 不用 /api/games/suggest —— 那个是给顶栏联想做的瘦身版，字段不够画卡片。
+ */
+export function searchGamesForCollection(q: string, page = 1): Promise<Paged<Game>> {
+  const sp = new URLSearchParams({ q: q.trim(), page: String(page), pageSize: String(PICKER_PAGE_SIZE) })
+  return api.get<Paged<Game>>(`/api/games?${sp.toString()}`)
+}
+
 /** 加游戏。重复加入是幂等的：服务端返回 added=false，不报错 */
 export function addGameToCollection(id: number, gameSlug: string): Promise<{ ok: boolean; added: boolean }> {
   return api.post<{ ok: boolean; added: boolean }>(`/api/collections/${id}/games`, { gameSlug })
+}
+
+/**
+ * 手动排序：把**整个当前顺序**发上去，服务端按下标写 position。
+ * 只认作者；不认识的 slug 服务端会忽略（客户端手里的名单可能比服务端旧几秒）。
+ */
+export function reorderCollectionGames(id: number, slugs: string[]): Promise<{ ok: boolean; ordered: number }> {
+  return api.patch<{ ok: boolean; ordered: number }>(`/api/collections/${id}/order`, { slugs })
 }
 
 export function removeGameFromCollection(id: number, gameSlug: string): Promise<{ ok: boolean; removed: boolean }> {

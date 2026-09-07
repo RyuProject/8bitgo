@@ -38,7 +38,7 @@ function reset() {
   collections = [
     { id: 1, user_id: AUTHOR, title: '合金弹头', kind: '系列', description: '', hidden: 0, updated_at: new Date('2026-01-01T00:00:00Z'), created_at: new Date('2026-01-01T00:00:00Z') },
   ]
-  items = [{ collection_id: 1, game_id: 10, created_at: new Date('2026-01-01T00:00:00Z') }]
+  items = [{ collection_id: 1, game_id: 10, created_at: new Date('2026-01-01T00:00:00Z'), position: null }]
   games = [
     { id: 10, slug: 'metal-slug', title: 'Metal Slug', platform: 'arcade', hidden: 0 },
     { id: 11, slug: 'contra', title: 'Contra', platform: 'nes', hidden: 0 },
@@ -111,7 +111,7 @@ globalThis.__fakeDb = {
     if (q.startsWith('INSERT IGNORE INTO collection_items')) {
       const [cid, gid] = [Number(params[0]), Number(params[1])]
       if (items.some((i) => i.collection_id === cid && i.game_id === gid)) return { affectedRows: 0 }
-      items.push({ collection_id: cid, game_id: gid, created_at: new Date() })
+      items.push({ collection_id: cid, game_id: gid, created_at: new Date(), position: null })
       return { affectedRows: 1 }
     }
     if (q.startsWith('DELETE FROM collection_items')) {
@@ -120,11 +120,34 @@ globalThis.__fakeDb = {
       items = items.filter((i) => !(i.collection_id === cid && i.game_id === gid))
       return { affectedRows: before - items.length }
     }
-    if (q.startsWith('SELECT ci.game_id, ci.created_at FROM collection_items')) {
+    if (q.startsWith('SELECT ci.game_id, ci.created_at, ci.position FROM collection_items')) {
+      // 和真 SQL 一致：排过的在前按 position 升序，没排过的垫后按加入时间倒序
+      const pos = (i) => (i.position == null ? Number.POSITIVE_INFINITY : i.position)
       return items
         .filter((i) => i.collection_id === Number(params[0]))
-        .sort((a, b) => b.created_at - a.created_at || b.game_id - a.game_id)
-        .map((i) => ({ game_id: i.game_id, created_at: i.created_at }))
+        .sort((a, b) => pos(a) - pos(b) || b.created_at - a.created_at || b.game_id - a.game_id)
+        .map((i) => ({ game_id: i.game_id, created_at: i.created_at, position: i.position ?? null }))
+    }
+    if (q.startsWith('SELECT game_id FROM collection_items WHERE collection_id')) {
+      return items.filter((i) => i.collection_id === Number(params[0])).map((i) => ({ game_id: i.game_id }))
+    }
+    if (q.startsWith('SELECT id, slug FROM games WHERE slug IN')) {
+      return games.filter((g) => params.includes(g.slug)).map((g) => ({ id: g.id, slug: g.slug }))
+    }
+    if (q.startsWith('UPDATE collection_items SET position = CASE game_id')) {
+      // 参数排列见路由：[gid, pos, gid, pos, ..., collection_id, gid, gid, ...]
+      const k = (params.length - 1) / 3
+      const cid = Number(params[2 * k])
+      let touched = 0
+      for (let i = 0; i < k; i++) {
+        const gid = Number(params[2 * i])
+        const it = items.find((x) => x.collection_id === cid && x.game_id === gid)
+        if (it) {
+          it.position = Number(params[2 * i + 1])
+          touched++
+        }
+      }
+      return { affectedRows: touched }
     }
     // 封面：窗口函数那条
     if (q.includes('ROW_NUMBER() OVER (PARTITION BY collection_id')) {
@@ -273,6 +296,45 @@ try {
   ok(detail.collection.covers.length === 4, '封面正好四张')
   ok(detail.collection.covers.map((g) => g.slug).join(',') === 'g4,g3,g2,g1', '⭐ 是最新放入的四款，最新的在最前')
   ok(detail.collection.gameCount === 5, '游戏数报的是全部，不是封面那四张')
+
+
+  console.log('\n── 手动排序（PATCH /:id/order） ──')
+  const seedSorted = () => {
+    reset()
+    collections.push({ id: 2, user_id: AUTHOR, title: '拳皇', kind: '系列', description: '', hidden: 0, updated_at: new Date('2026-01-01T00:00:00Z'), created_at: new Date('2026-01-01T00:00:00Z') })
+    for (let i = 0; i < 5; i++) {
+      games.push({ id: 100 + i, slug: `g${i}`, title: `G${i}`, platform: 'nes', hidden: 0 })
+      items.push({ collection_id: 2, game_id: 100 + i, created_at: new Date(Date.UTC(2026, 2, i + 1)), position: null })
+    }
+  }
+  const orderOf = async () => (await (await call('GET', '/2')).json()).games.map((g) => g.slug).join(',')
+
+  seedSorted()
+  ok((await orderOf()) === 'g4,g3,g2,g1,g0', '没排过：还是「最新放入的在前」，和以前一模一样')
+  const before = collections.find((c) => c.id === 2).updated_at
+  const sorted = await call('PATCH', '/2/order', { as: AUTHOR, body: { slugs: ['g1', 'g3', 'g0', 'g4', 'g2'] } })
+  ok(sorted.status === 200 && (await sorted.json()).ordered === 5, '作者排序 200，5 款都写了位置')
+  ok((await orderOf()) === 'g1,g3,g0,g4,g2', '⭐ 详情按作者排的顺序返回')
+  ok(collections.find((c) => c.id === 2).updated_at > before, '排序算「有动静」，updated_at 往前推')
+
+  // 排过之后再加进来的：垫到末尾，别插到作者排好的前面
+  await call('POST', '/2/games', { as: AUTHOR, body: { gameSlug: 'contra' } })
+  ok((await orderOf()) === 'g1,g3,g0,g4,g2,contra', '⭐ 排过之后新加的排到末尾')
+
+  seedSorted()
+  ok((await call('PATCH', '/2/order', { as: ADMIN, body: { slugs: ['g0', 'g1', 'g2', 'g3', 'g4'] } })).status === 403, '⭐ 管理员不能给别人的合集排序（顺序也是作者的表达）')
+  ok((await call('PATCH', '/2/order', { as: OTHER, body: { slugs: ['g0', 'g1'] } })).status === 403, '路人更不能')
+  ok((await call('PATCH', '/2/order', { body: { slugs: ['g0'] } })).status === 401, '没登录不能')
+  ok((await orderOf()) === 'g4,g3,g2,g1,g0', '被拒的请求一个位置都没动')
+
+  seedSorted()
+  const partial = await call('PATCH', '/2/order', { as: AUTHOR, body: { slugs: ['g2', 'nope', 'metal-slug', 'g0', 'g2'] } })
+  ok(partial.status === 200 && (await partial.json()).ordered === 2, '不认识的 / 别的合集里的 / 重复的 slug 忽略不报错，只算真写进去的')
+  ok((await orderOf()) === 'g2,g0,g4,g3,g1', '⭐ 只发一部分：发了的在前按发的顺序，没发的垫后按加入时间倒序')
+
+  ok((await call('PATCH', '/2/order', { as: AUTHOR, body: {} })).status === 400, '缺 slugs 400')
+  ok((await call('PATCH', '/2/order', { as: AUTHOR, body: { slugs: 'g0' } })).status === 400, 'slugs 不是数组 400')
+  ok((await call('PATCH', '/999/order', { as: AUTHOR, body: { slugs: ['g0'] } })).status === 404, '不存在的合集 404')
 
   console.log('\n── 校验 ──')
   reset()

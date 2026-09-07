@@ -506,6 +506,16 @@ const patches = [
     },
   },
   {
+    name: 'collection_items.position（合集内手动排序）',
+    table: 'collection_items',
+    needed: async () => !(await hasColumn('collection_items', 'position')),
+    // NULL = 作者没排过，顺序退回「最新放入的在前」；所以老数据不用回填
+    run: () =>
+      conn.query(`ALTER TABLE \`collection_items\`
+        ADD COLUMN \`position\` INT NULL,
+        ADD KEY \`idx_ci_col_pos\` (\`collection_id\`, \`position\`)`),
+  },
+  {
     name: 'games 的评分聚合列（rating_sum / rating_weight / rating_count）',
     table: 'games',
     needed: async () => !(await hasColumn('games', 'rating_sum')),

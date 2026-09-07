@@ -57,6 +57,7 @@ const EXPECTED_TABLES = [
   { table: 'login_codes', why: '邮箱验证码；缺了会自动退回进程内存（重启丢码、多实例对不上），登录能用但不可靠' },
   { table: 'collections', why: '用户自建合集；缺了首页那一栏是空的，/collections 与「我的合集」全 500' },
   { table: 'collection_items', why: '合集里的游戏；缺了合集能建但加不进游戏、封面也取不出来' },
+  { table: 'collection_items', column: 'position', why: '合集内手动排序；缺了合集详情整页 500（ORDER BY 找不到列）' },
   {
     table: 'game_ratings',
     why: '游戏评分明细；缺了详情页的评分卡整块读不出来、打分全 500，而页面其它部分一切正常',
