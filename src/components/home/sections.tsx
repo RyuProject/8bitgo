@@ -67,7 +67,13 @@ export function PopularSection({ games, curated = false }: { games: Game[]; cura
         subtitle={curated ? t.sections.pickedSubtitle : t.sections.popularSubtitle}
         icon={curated ? '⭐' : '🔥'}
         // 精选位是人排的，「查看全部」就别再指向热度榜了，直接进游戏库
-        moreTo={curated ? '/games' : '/games?sort=popular'}
+        /*
+          以前非精选那一档指的是 /games?sort=popular —— 而 popular 本来就是默认排序，
+          GamesPage 对「无筛选 + 默认排序」是 self-canonical，也就是说那个地址和
+          干净的 /games **是同一个页面**，只不过它落在 robots 的 Disallow 里。
+          所以这里不是加 nofollow，是直接指对：一条死路换成一条给 /games 的内链。
+        */
+        moreTo="/games"
       />
       <HScroll>
         {games.map((g, i) => (

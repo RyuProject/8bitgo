@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
+import { relForInternal } from '@/lib/seoLinks'
 import { recordRecent, toggleFavorite, useCurrentUser } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
 import type { RomLang } from '@/config/languages'
@@ -434,7 +435,11 @@ export function GameDetailPage() {
                 value={splitDevelopers(game.developer).map((name, index) => (
                   <span key={name}>
                     {index > 0 && ', '}
-                    <Link to={`/games?developer=${encodeURIComponent(name)}`} className="hover:text-brand-hover">
+                    <Link
+                      to={`/games?developer=${encodeURIComponent(name)}`}
+                      rel={relForInternal('/games?developer=')}
+                      className="hover:text-brand-hover"
+                    >
                       {name}
                     </Link>
                   </span>
@@ -449,6 +454,8 @@ export function GameDetailPage() {
                   <Link
                     key={t}
                     to={`/games?q=${encodeURIComponent(t)}`}
+                    /* 站内搜索是无限空间、robots 全禁抓，别把详情页的权重挂上去（见 lib/seoLinks.ts） */
+                    rel={relForInternal('/games?q=')}
                     className="rounded-md border border-line px-2 py-1 text-xs text-muted transition hover:border-brand hover:text-fg"
                   >
                     #{t}

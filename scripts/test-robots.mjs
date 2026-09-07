@@ -11,11 +11,11 @@
 //   匹配到的规则里**路径最长的那条**说了算，长度相同时 Allow 优先。
 // 纯 node，无依赖，Linux / macOS 都能跑。
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { SITE_DEFAULT_LANGUAGE, SITE_LANGUAGES } from '../shared/site-languages.js'
-import { normalizeTrailingSlash } from '../server/src/url-normalize.js'
+import { normalizeUrl } from '../server/src/url-normalize.js'
 
 const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
 const ROBOTS = path.join(root, 'public/robots.txt')
@@ -157,7 +157,7 @@ check('声明了 sitemap 入口', () => {
   assert.match(text, /^Sitemap:\s*https:\/\/8bitgo\.com\/sitemap\.xml$/m)
 })
 
-/* ---------------- 尾斜杠归一 ---------------- */
+/* ---------------- URL 归一（尾斜杠 + /index.html） ---------------- */
 
 /** 极简的 req/res 替身，只实现中间件用到的那几个方法 */
 function run(method, originalUrl) {
@@ -173,7 +173,7 @@ function run(method, originalUrl) {
       out.location = location
     },
   }
-  normalizeTrailingSlash(req, res, () => {
+  normalizeUrl(req, res, () => {
     out.nexted = true
   })
   return out
@@ -197,6 +197,38 @@ check('不该动的一律放行', () => {
   // 写请求不碰
   assert.ok(run('POST', '/api/games/').nexted)
   assert.ok(run('PUT', '/games/').nexted)
+})
+
+check('/index.html 必须 301 到目录本身', () => {
+  /*
+    这条是 Search Console 报「被 noindex 标记排除」查出来的（2026-09-07，
+    示例 URL 是 http://www.8bitgo.com/index.html）。病灶：index.html 是
+    dist/client/ 里的真实文件，express.static 的 index:false 只管目录请求，
+    显式请求它照样被静态中间件吐出去、绕过 SSR —— 于是首页多一个
+    可收录、无 canonical 的副本，而 Google 跑完 JS 又会被 SPA 的 404 页改成 noindex。
+  */
+  assert.deepEqual([run('GET', '/index.html').status, run('GET', '/index.html').location], [301, '/'])
+  assert.equal(run('GET', '/it/index.html').location, '/it')
+  assert.equal(run('GET', '/en/games/index.html').location, '/en/games')
+  // 查询串照旧原样带过去
+  assert.equal(run('GET', '/index.html?utm_source=x').location, '/?utm_source=x')
+  // 大小写：固定文件名，不是 slug，所以这一条要归一
+  assert.equal(run('GET', '/INDEX.HTML').location, '/')
+  // 尾斜杠和 index.html 同时出现时只吃**一次** 301，不要链式跳
+  assert.equal(run('GET', '/it/terms/index.html/').location, '/it/terms')
+})
+
+check('⚠️ 去 index.html 的正则不能少了两头的锚 —— 少一头就切错别的路径', () => {
+  // 少了前面的 (^|/)：/myindex.html 会被切成 /my
+  assert.ok(run('GET', '/myindex.html').nexted, '/myindex.html 不该被动')
+  assert.ok(run('GET', '/games/myindex.html').nexted)
+  // 少了后面的 $：带哈希的产物和别的扩展名会中招
+  for (const url of ['/assets/index-abc123.js', '/index.htmlx', '/index.html.bak', '/index.json']) {
+    assert.ok(run('GET', url).nexted, `${url} 不该被动`)
+  }
+  // 开放重定向那道防线不能被新加的这一步绕开
+  assert.equal(run('GET', '//evil.com/index.html').location, '/evil.com')
+  assert.ok(!run('GET', '//evil.com/index.html').location.startsWith('//'))
 })
 
 check('开头的多余斜杠必须折掉 —— 否则就是一个跳到外站的开放重定向', () => {
@@ -227,4 +259,81 @@ check('渲染出「页面不存在」时仍然回 404，不是 200', () => {
   assert.match(ssrSrc, /status\(notFound \? 404 : 200\)/)
 })
 
-console.log(`✅ robots.txt / URL 归一 / 爬虫状态码：${passed} 项检查通过`)
+/* ---------------- 站内链接的 nofollow 判据必须和 robots.txt 一致 ---------------- */
+
+/*
+  src/lib/seoLinks.ts 的 relForInternal() 决定站内链接要不要挂 rel="nofollow"。
+  它**不重新实现 robots**，只表达同一个意图 —— 而「同一个意图」是最容易悄悄漂的东西：
+  哪天 robots.txt 放行了 /games?sort= 之类，代码这边还在 nofollow，就白丢内链权重；
+  反过来新增一条 Disallow，代码这边不跟就又造出一批死路（2026-09-07 数过：
+  当时有九条这样的链接，四条在首页）。所以这里拿上面那个真 robots 模拟器逐条对着核。
+*/
+const { relForInternal } = await import('../src/lib/seoLinks.ts')
+
+check('nofollow 判据和 robots.txt 的裁决逐条一致', () => {
+  const targets = [
+    '/games',
+    '/games?page=2',
+    '/games?q=x',
+    '/games?developer=Nintendo',
+    '/games?multiplayer=1',
+    '/games?coin=1',
+    '/games?sort=newest',
+    '/games?sort=popular',
+    '/games?platform=gba&page=2',
+    '/games/metal-slug-3',
+    '/genres/action',
+    '/platforms/nes?page=2',
+    '/collections',
+  ]
+  for (const to of targets) {
+    const blocked = !decide(to).allowed
+    const rel = relForInternal(to)
+    assert.equal(
+      rel === 'nofollow',
+      blocked,
+      `${to}：robots ${blocked ? '禁抓' : '放行'}，而 relForInternal 给的是 ${rel ?? '(不加 rel)'}`,
+    )
+  }
+})
+
+check('没有哪个 <Link to="/games?…"> 漏了 rel', () => {
+  /*
+    冒烟性质的源码扫描：直接写 to={`/games?…`} 的地方必须在同一个文件里用上
+    relForInternal。走 SectionHeader 的 moreTo= 不算 —— 那一路是在 SectionHeader
+    内部统一判的（这也是为什么要在那儿判：调用方记不住）。
+
+    用纯 node 遍历而不是 shell 里的 grep：那个 pattern 里有反引号和双引号，
+    交给 /bin/sh 拼一次就崩（当场踩过）。
+  */
+  const walk = (dir, out = []) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, e.name)
+      if (e.isDirectory()) walk(full, out)
+      else if (e.name.endsWith('.tsx')) out.push(full)
+    }
+    return out
+  }
+  const LINK_TO_FILTERED = [/to=\{`\/games\?/, /to="\/games\?/]
+  /*
+    扫描前先把注释剥掉：仓库里有好几处注释在**引用旧写法**
+    （EmulatorPlayer / GameDetailPage 里那句「它以前是个跳转链接（to="/games?multiplayer=1"）」），
+    不剥的话这个检查会对着注释报错，而注释里那行本来就已经不是代码了。
+  */
+  const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  let scanned = 0
+  for (const file of walk(path.join(root, 'src'))) {
+    const src = strip(readFileSync(file, 'utf8'))
+    if (!LINK_TO_FILTERED.some((re) => re.test(src))) continue
+    scanned++
+    assert.match(
+      src,
+      /relForInternal/,
+      `${path.relative(root, file)} 里有直接指向 /games?<筛选> 的 <Link>，但没用 relForInternal —— ` +
+        '那些地址在 robots.txt 里是禁抓的，挂真链接等于把权重丢进死路（见 src/lib/seoLinks.ts）',
+    )
+  }
+  assert.ok(scanned > 0, '一个都没扫到 —— 正则大概失效了，这个检查等于空转')
+})
+
+console.log(`✅ robots.txt / URL 归一 / 爬虫状态码 / 内链 nofollow：${passed} 项检查通过`)

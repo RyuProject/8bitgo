@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
+import { relForInternal } from '@/lib/seoLinks'
 import type { Platform, PlatformId } from '@/types'
 import type { Translation } from '@/locales'
 import { usePageData, type DevelopersData, type GenresData, type PlatformsData } from '@/services/pageData'
@@ -255,6 +256,7 @@ export function DevelopersPage() {
             <Link
               key={d.name}
               to={`/games?developer=${encodeURIComponent(d.name)}`}
+              rel={relForInternal('/games?developer=')}
               className="group card-hover flex items-center gap-4 rounded-card border border-line bg-surface p-3 hover:border-brand/60"
             >
               {/*

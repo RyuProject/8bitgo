@@ -15,9 +15,16 @@ import { useLocation } from 'react-router-dom'
  *
  *  1. **src 从 DOM 上取，不在这里抄第二份。** 那串 128 位 hash 是站点凭证，
  *     抄一份就迟早会和 index.html 里的那份对不上（换站点、平台重置 key 时只改一处）。
- *  2. **只在 pathname 变化时推，不管查询串。** `/games?platform=gba` 这类筛选组合
- *     在 robots.txt 里是明确禁抓的，把它推给搜索引擎属于自相矛盾；而分页页面
+ *  2. **带查询串的地址一条都不推。** `/games?platform=gba`、`/games?q=…` 这类在
+ *     robots.txt 里是明确禁抓的，把它推给搜索引擎属于自相矛盾；而分页页面
  *     本来就躺在 sitemap 里、现在也有真链接可循，不缺这一条。
+ *
+ *     ⚠️ 这里必须**连 search 一起判**，只看 pathname 是不够的 ——
+ *     push.js 提交的是它执行那一刻的 `location.href`，**带查询串**。
+ *     守卫看 pathname、载荷带 query，两者不是一回事：玩家在游戏详情页点一个
+ *     `#标签` 跳到 `/games?q=经典`，pathname 从 `/games/xxx` 变成 `/games`
+ *     → 守卫放行 → 推出去的却是那个禁抓的 `?q=` 地址。2026-09-07 查出来的，
+ *     GSC 里那批「已被 robots.txt 屏蔽」的搜索页就是这么被主动送出去的。
  *  3. **推过的 URL 不再推。** 用户来回翻同一批页面很常见，没必要重复打点。
  *  4. 整段用 try 兜住，并且任何一步失败都当没发生过 —— 收录是锦上添花，
  *     绝不能让第三方脚本的问题影响到页面本身。
@@ -45,7 +52,7 @@ function repush() {
 }
 
 export function useAutoInclude() {
-  const { pathname } = useLocation()
+  const { pathname, search } = useLocation()
   // basename 已经被 react-router 剥掉了，所以这里的 pathname 不带 /en 这类语言前缀
   const firstRun = useRef(true)
 
@@ -58,6 +65,9 @@ export function useAutoInclude() {
       return
     }
     if (!scriptSrc) return
+    // 见上面第 2 条：push.js 读的是完整 location.href，所以有查询串就整条跳过。
+    // 刻意**不**记进 pushed —— 待会儿玩家回到干净的 /games 时那一次仍然该推
+    if (search) return
     if (SKIP.test(pathname)) return
     if (pushed.has(pathname)) return
     pushed.add(pathname)

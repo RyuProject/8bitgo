@@ -9,6 +9,7 @@
  */
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { relForInternal } from '@/lib/seoLinks'
 import { useT, fmt } from '@/services/i18n'
 import { gameTitle, platformLabel } from '@/services/i18nData'
 import { useLang } from '@/services/lang'
@@ -48,7 +49,11 @@ export function SearchRescue({ q, onPick }: { q: string; onPick?: (q: string) =>
               {data.suggestion}
             </button>
           ) : (
-            <Link to={`/games?q=${encodeURIComponent(data.suggestion)}`} className="font-semibold text-brand-hover hover:underline">
+            <Link
+              to={`/games?q=${encodeURIComponent(data.suggestion)}`}
+              rel={relForInternal('/games?q=')}
+              className="font-semibold text-brand-hover hover:underline"
+            >
               {data.suggestion}
             </Link>
           )}

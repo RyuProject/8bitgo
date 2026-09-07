@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
+import { relForInternal } from '@/lib/seoLinks'
 import { cx } from '@/lib/format'
 import { useT } from '@/services/i18n'
 
@@ -43,6 +44,12 @@ export function SectionHeader({
         {moreTo && (
           <Link
             to={moreTo}
+            /*
+              指向 robots.txt 禁抓的地址（/games? 的筛选组合）时自动加 nofollow。
+              在这里判而不是让每个调用方自己记：首页那几个「更多」就是这么漏的，
+              见 lib/seoLinks.ts。
+            */
+            rel={relForInternal(moreTo)}
             className="group inline-flex items-center gap-1 text-sm font-medium text-muted transition hover:text-brand-hover"
           >
             {moreLabel ?? t.common.viewAll}

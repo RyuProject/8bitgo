@@ -4,7 +4,7 @@ import { createServer } from 'node:http'
 import cors from 'cors'
 import { ping } from './db.js'
 import { ssrAvailable, renderPage, CLIENT_DIR } from './ssr.js'
-import { normalizeTrailingSlash } from './url-normalize.js'
+import { normalizeUrl } from './url-normalize.js'
 import { playShell } from './routes/play.js'
 import { j2meJarProxy, uploadJar, releaseJar, keepaliveJar, startSweeper, MAX_BYTES, TTL_MS } from './j2me.js'
 import { ADMIN_AUTH_DISABLED } from './auth.js'
@@ -187,7 +187,8 @@ app.get('/api/j2me/config', (_req, res) => res.json({ ttlMs: TTL_MS }))
 /* ---------------- 前端：静态资源 + 服务端渲染 ---------------- */
 
 if (ssrAvailable()) {
-  app.use(normalizeTrailingSlash)
+  // ⚠️ 必须在 express.static 之前 —— 见 url-normalize.js 里 /index.html 那一段
+  app.use(normalizeUrl)
 
   // 带哈希的构建产物可以长期缓存；index.html 不能缓存（每次都要走 SSR）
   app.use(
