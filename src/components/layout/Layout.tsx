@@ -6,6 +6,7 @@ import { Sidebar } from './Sidebar'
 import { Topbar } from './Topbar'
 import { Footer } from './Footer'
 import { AuthModal } from '@/components/auth/AuthModal'
+import { ImPanel } from '@/components/im/ImPanel'
 import { useT } from '@/services/i18n'
 
 /** 路由切换时回到顶部；带 hash 时滚动到对应锚点；同时退出沉浸模式、关闭抽屉 */
@@ -73,6 +74,14 @@ function Shell() {
 
       {/* 全站登录弹窗 */}
       <AuthModal />
+
+      {/*
+        站内消息的右侧抽屉。**一直挂着**（靠 transform 滑出，所以收起也有动画），
+        但它在服务端渲染时什么都不做：useCurrentUser() 的 SSR 快照恒为 null
+        （见 services/auth.ts 的注释），所以 SSR 出来就是一个空壳。
+        SDK 那 700 KB 是 services/imClient.ts 里的动态 import，不在主包里。
+      */}
+      <ImPanel />
     </div>
   )
 }

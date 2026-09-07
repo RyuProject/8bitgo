@@ -90,6 +90,13 @@ export interface Game {
   title: string
   /** 中文译名（可选） */
   titleZh?: string
+  /**
+   * 中文译名的繁体版，形状 `{ 'zh-Hant': '合金彈頭 3' }`。
+   * **只有这一个键** —— 非中文界面刻意显示原名 `title`，见 i18nData.gameTitle。
+   * 由 `server/scripts/pretranslate.mjs` 用 OpenCC 离线生成；没生成过就是 undefined，
+   * gameTitle 会回退到简体译名。
+   */
+  titleI18n?: Record<string, string>
   platform: PlatformId
   genres: GenreId[]
   year: number
@@ -310,9 +317,13 @@ export interface Post {
   /**
    * 按需翻译缓存（站点八种语言里 zh-Hans 看原文，en / es / fr / it / de / ja 看 i18n[lang]）。
    * 注意 post 没有英文基准列（不像 game 有 description_en），所以 en 界面看到的也是中文原
-   * 文，需要翻译按钮把中文翻成英文。没翻译过这两个字段就是 undefined —— 前端 postExcerpt /
-   * postContent 会自然回退到 excerpt / content。
+   * 文，需要翻译按钮把中文翻成英文。没翻译过这几个字段就是 undefined —— 前端 postTitle /
+   * postExcerpt / postContent 会自然回退到 title / excerpt / content。
+   *
+   * ⚠️ titleI18n 是 2026-09-07 加的。加之前标题永远只有中文一份，八种语言的博客列表
+   * 标题一字不差 —— 那是 GSC 把 /fr/blog 判成重复页的主因。
    */
+  titleI18n?: Record<string, string>
   excerptI18n?: Record<string, string>
   contentI18n?: Record<string, string>
 }
@@ -427,6 +438,13 @@ export interface Collection {
   description: string
   /** 里面一共多少款游戏（不是 covers 的长度） */
   gameCount: number
+  /**
+   * **多少人看过**（去重），不是累计打开次数 —— 站长 2026-09-07 拍板的语义。
+   * 服务端按「登录看账号 / 未登录看 IP 的 HMAC 摘要」判重，复用游戏游玩量那一套
+   * （见 server/src/playcount.js）；**作者本人的浏览不计**。
+   * 表还没迁移时服务端容错返回 0，所以这个字段不会缺，只可能是 0。
+   */
+  viewCount: number
   /**
    * 最新放入的游戏，最新的在最前，**最多 12 款**（服务端 COVER_POOL）。
    * 前 4 张拼封面四宫格；其余给卡片轮播用 —— 每隔几秒把一格换成合集里的另一款，

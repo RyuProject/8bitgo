@@ -294,6 +294,10 @@ export function gameRowToApi(r, rel = {}) {
   if (r.dos_save_hint) g.dosSaveHint = r.dos_save_hint
   if (r.arcade_romdata) g.arcadeRomData = r.arcade_romdata
   if (r.title_zh) g.titleZh = r.title_zh
+  // 中文译名的繁体版（只可能有 zh-Hant 一个键）。没生成过就不挂这个字段，
+  // 前端的 gameTitle() 会自然回退到 titleZh，繁体读者看到简体 —— 那是 2026-09-07
+  // 之前的状态，也是 GSC 把 /zh-Hant/* 判成重复页的原因。
+  g.titleI18n = readI18nMap(r.title_i18n)
   // 没写英文简介的游戏不带这个字段，前台自己回落到基准简介
   if (r.description_en) g.descriptionEn = r.description_en
   // 按需缓存的其它语种译文。形状：{ zh-Hant: '...', es: '...', ... }。
@@ -416,6 +420,9 @@ export function postRowToApi(r, rel = {}) {
   return {
     slug: r.slug,
     title: r.title,
+    // 标题的各语言译文。**含 en** —— 文章没有英文基准列（不像 game 有 title 当原名），
+    // 所以英文界面也得靠这里，没有则回退到中文标题（见 i18nData.postTitle）。
+    titleI18n: readI18nMap(r.title_i18n),
     excerpt: r.excerpt || '',
     content: r.content || '',
     icon: r.icon || '📝',

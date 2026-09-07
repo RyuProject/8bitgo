@@ -37,10 +37,23 @@ export function platformDesc(t: Translation, id: string, fallback = ''): string 
  * titleZh 收 null 和空串：静态数据里它是 undefined，而搜索接口回来的
  * SuggestItem 是 null，后台也可能存进一个空串 —— 三种「没有译名」都得落回原名，
  * 所以这里用 || 而不是 ??。
+ *
+ * ── 繁体那一层（2026-09-07 加）────────────────────────────────
+ * 以前 zh-Hant 直接返回 `titleZh`，也就是**简体译名**。于是 `/zh-Hant/platforms/arcade`
+ * 上二十来个游戏名全是简体，整页只有界面文案是繁体 —— Search Console 把它判成
+ * `/platforms/arcade` 的重复页（「Google 选择的规范网页与用户指定的不同」）。
+ *
+ * 现在优先取 `titleI18n['zh-Hant']`（OpenCC 离线转好落库的，见 server/src/zh-convert.js），
+ * 没生成过才退回简体译名 —— 回退依然是「能读」而不是空白，但生成过一遍之后
+ * 繁体页面就真的是繁体了。
  */
-export function gameTitle(game: { title: string; titleZh?: string | null }, lang: Lang): string {
-  const zh = lang === 'zh-Hans' || lang === 'zh-Hant'
-  return (zh ? game.titleZh : '') || game.title
+export function gameTitle(
+  game: { title: string; titleZh?: string | null; titleI18n?: Record<string, string> },
+  lang: Lang,
+): string {
+  if (lang === 'zh-Hant') return game.titleI18n?.['zh-Hant'] || game.titleZh || game.title
+  if (lang === 'zh-Hans') return game.titleZh || game.title
+  return game.title
 }
 
 /**
@@ -92,6 +105,24 @@ export function needsTranslation(game: { descriptionI18n?: Record<string, string
 /* ---------------- 文章按需翻译 ---------------- */
 
 /**
+ * 文章标题按当前语言选段。
+ *
+ * ⚠️ **这一层以前不存在**（2026-09-07 加）：`BlogPage` / `PostPage` 直接渲染
+ * `post.title`，所以八种语言的博客列表标题一字不差 —— 那是 GSC 把 `/fr/blog`
+ * 判成重复页时，页面上占比最大的一块相同文本。
+ *
+ * 回退链和 postExcerpt 一样只有两层，理由也一样：post 没有英文基准列，
+ * `en` 也得靠 titleI18n，没有则看中文原标题。
+ */
+export function postTitle(
+  post: { title?: string; titleI18n?: Record<string, string> },
+  lang: Lang,
+): string {
+  if (lang === 'zh-Hans') return post.title ?? ''
+  return post.titleI18n?.[lang] || post.title || ''
+}
+
+/**
  * 文章摘要按当前语言选段。
  *
  * 和 game 的不同：post 没有英文基准列（不像 game 有 description_en），所以 en 界面看到的也是
@@ -127,14 +158,21 @@ export function postContent(
  *
  * 规则（和 game 不同，因为 post 没有英文基准列）：
  *   zh-Hans     —— passthrough，原文就是中文，没东西好翻，不显示；
- *   其它 7 种    —— excerpt / content 两个字段都翻译过了才隐藏按钮，否则就显示。
- *                 只要有一个字段没翻过（包括「partial 翻译」那种只翻了 excerpt 的情况），
+ *   其它 7 种    —— title / excerpt / content 三个字段都翻译过了才隐藏按钮，否则就显示。
+ *                 只要有一个字段没翻过（包括「partial 翻译」那种只翻了一部分的情况），
  *                 按钮依然在，玩家再点一次能补上缺的那个字段。
+ *
+ * 标题是 2026-09-07 加进这个判据的 —— 加之前，标题永远没有译文，而按钮看
+ * excerpt/content 已齐就把自己藏了，等于没有任何入口能补上标题。
  */
 export function needsPostTranslation(
-  post: { excerptI18n?: Record<string, string>; contentI18n?: Record<string, string> },
+  post: {
+    titleI18n?: Record<string, string>
+    excerptI18n?: Record<string, string>
+    contentI18n?: Record<string, string>
+  },
   lang: Lang,
 ): boolean {
   if (lang === 'zh-Hans') return false
-  return !(post.excerptI18n?.[lang] && post.contentI18n?.[lang])
+  return !(post.titleI18n?.[lang] && post.excerptI18n?.[lang] && post.contentI18n?.[lang])
 }

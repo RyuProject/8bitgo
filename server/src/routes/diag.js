@@ -15,6 +15,7 @@
  * 只回显**这一次请求自己**的信息，不涉及别人的连接，也不吐任何密钥。
  */
 import { Router } from 'express'
+import { turnHealthSnapshot } from '../turnProbe.js'
 import {
   clientIpFrom,
   countryFromHeaders,
@@ -77,6 +78,17 @@ diagRouter.get('/', (req, res) => {
       loaded: geoReady(),
     },
     device: deviceFromUa(headers['user-agent']),
+    /**
+     * 每一路 TURN 的探活结果（详细版，带错误码和「该去查哪一行」）。
+     *
+     *   state      up / down / unknown（unknown = 还没探过，下发时一律按能用处理）
+     *   urls[]     逐条地址的结果；ok:false 的那条 error 里直接写了怎么查
+     *   checkedAt  上次探的时间（unix 秒）。一直是 null = 探活没在跑
+     *              （TURN_PROBE=off，或者一路 TURN 都没配）
+     *
+     * 空对象 {} 就是「没有任何一路 TURN 被登记」—— 先看 /api/netplay/ice 的 turnSources。
+     */
+    turn: turnHealthSnapshot({ verbose: true }),
     /** 有问题时直接把该改哪一行写在返回里 —— 排查的人不用再翻文档 */
     hint: usingEdgeIp
       ? 'nginx 每个 location 都要把 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` ' +

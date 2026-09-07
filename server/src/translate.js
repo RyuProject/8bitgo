@@ -11,11 +11,13 @@
  * 签名算法稳定，一次写完就维护，跟 Mail.js（自管 Resend / SMTP）一个风格。
  *
  * ⚠️ 语言码：火山 API 只支持 ISO 639-1 短码（zh / en / ja / fr / es / it / de / ru / pt），
- *    **不**支持 BCP-47（zh-Hans / zh-Hant）。繁中的处理：
- *      后台填了英文版 → 把英翻成 zh，落到 description_i18n['zh-Hant']（不完美的方案，
- *      简繁偶尔会出几个字差异，但比让繁体用户看英文号强）
- *      后台没填英文版 → 不翻译，直接退回到 description 本身（中文，繁体用户也能读）
- *    加语种只改 LANG_MAP 一张表。
+ *    **不**支持 BCP-47（zh-Hans / zh-Hant 在它眼里都是 zh）。所以：
+ *      繁中（zh-Hant）**不走这里** —— 简繁之间是字词映射不是翻译，交给
+ *      `zh-convert.js` 的 OpenCC（离线、确定、免费、能直接吃简体原文）。
+ *      2026-09-07 之前这一路是「把英文版翻成 zh 再当繁体用」，没填英文版的条目
+ *      直接放弃，于是繁体用户一直在看简体原文 —— 这是 Search Console 把
+ *      /zh-Hant/* 判成 /zh-Hans 重复页的直接原因。
+ *    加语种只改 VOLC_LANG 一张表。
  *
  * 验收：
  *   npm run test:translate   —— 不联网纯单元测试（语言映射 / 缓存读写 / 入参形状）
@@ -42,30 +44,68 @@ const hmac = (key, s) => createHmac('sha256', key).update(s).digest()
 const hmacHex = (key, s) => createHmac('sha256', key).update(s).digest('hex')
 
 /**
- * 把站点语言映射成火山 TranslateText 接受的语言码。
- *   - 输入：站点 lang 之一
- *   - 输出：{ source: 'en' | 'zh' | null, target: 'zh' | 'en' | 'es' | ... | null,
- *             effective: 'zh-Hant' | 'es' | ...,   // 写到 description_i18n 用的 key
- *             passthrough: bool }                    // true = 该语种不需要翻译（zh-Hans / en）
+ * 站点语言 → 火山 TranslateText 认的 ISO 639-1 短码。
  *
- * passthrough=true 表示这条接口根本不该被调用（前端就别点），路由层会 400 挡回去。
- *
- * zh-Hant 单独走特殊分支：API 用 zh，缓存用 zh-Hant；这是个不完美方案，
- * 简体中文用户帮繁体用户翻一次，「の」和「的」这种字差异偶尔会有，到时人工校对。
+ * ⚠️ 火山**不**认 BCP-47（`zh-Hans` / `zh-Hant` 在它眼里都是 `zh`），所以这张表里
+ * **没有 zh-Hant** —— 繁体不是翻译问题，是字词映射问题，走 `zh-convert.js` 的 OpenCC。
+ * 加语种只改这一张表。
  */
-const LANG_MAP = {
-  'zh-Hans': { passthrough: true },
-  'zh-Hant': { source: 'en', target: 'zh', effective: 'zh-Hant' },
-  en: { passthrough: true },
-  es: { source: 'en', target: 'es', effective: 'es' },
-  fr: { source: 'en', target: 'fr', effective: 'fr' },
-  it: { source: 'en', target: 'it', effective: 'it' },
-  de: { source: 'en', target: 'de', effective: 'de' },
-  ja: { source: 'en', target: 'ja', effective: 'ja' },
+const VOLC_LANG = {
+  'zh-Hans': 'zh',
+  en: 'en',
+  es: 'es',
+  fr: 'fr',
+  it: 'it',
+  de: 'de',
+  ja: 'ja',
 }
 
-export function translatePlan(lang) {
-  return LANG_MAP[lang] || null
+/** 站点语言对应的火山语言码；`zh-Hant` 和未知语言都返回 null */
+export function volcCode(lang) {
+  return VOLC_LANG[lang] ?? null
+}
+
+/** 这个目标语言该走本地简繁转换而不是翻译 API */
+export function isLocalConversion(lang) {
+  return lang === 'zh-Hant'
+}
+
+/**
+ * 按「**源文实际是哪种语言**」算翻译计划。
+ *
+ * ── 为什么要传 sourceLang（2026-09-07 修）────────────────────────
+ * 这个函数原来叫 `translatePlan(lang)`，源语言**硬编码成 `'en'`**。而真实的源文经常
+ * 不是英文：
+ *   - 游戏简介：`description_en` 没填时退回 `description`（中文），却仍然告诉火山
+ *     `SourceLanguage: 'en'` —— 拿中文冒充英文送进去，译文质量无从保证；
+ *   - 文章：`posts` **根本没有英文列**，源文一律是中文，于是每一次文章翻译都在撒这个谎；
+ *   - 繁体：计划是 `{ source:'en', target:'zh' }`，也就是「把英文翻成中文再当繁体用」，
+ *     没填英文版的条目直接放弃 —— 现在这一路整体改走 OpenCC。
+ * 所以源语言必须由调用方按「我这次真的拿了哪个字段」传进来，不能默认。
+ *
+ * @param {string} targetLang 站点语言（要译成什么）
+ * @param {'zh-Hans'|'en'} sourceLang 源文的语言（游戏：有 descriptionEn 就是 en，否则 zh-Hans；文章：一律 zh-Hans）
+ * @returns {{ passthrough: true } | { convert: true, effective: string } | { source: string, target: string, effective: string } | null}
+ *   - `passthrough`：目标语言就是源文语言，不需要做任何事（路由层 400 挡回去）
+ *   - `convert`：走 `zh-convert.js` 的简→繁，不花翻译 API 的钱
+ *   - `{ source, target }`：调 `translateText` / `translateMarkdown`
+ *   - `null`：站点不支持这个语言
+ */
+export function translatePlan(targetLang, sourceLang = 'zh-Hans') {
+  if (isLocalConversion(targetLang)) {
+    // 源文本来就是中文才谈得上简繁转换。源文是英文时繁体读者该看的是翻译，
+    // 不是「把英文原样搬过去」—— 这种情况退回让火山把 en 翻成 zh。
+    if (sourceLang === 'zh-Hans') return { convert: true, effective: 'zh-Hant' }
+    const from = volcCode(sourceLang)
+    return from ? { source: from, target: 'zh', effective: 'zh-Hant' } : null
+  }
+  const to = volcCode(targetLang)
+  const from = volcCode(sourceLang)
+  if (!to) return null
+  // 同一种语言不必翻。注意这是**按源文算的**：游戏填了 description_en 时 en 是 passthrough，
+  // 而文章没有英文列，同一个 'en' 就必须真的翻一次。
+  if (!from || to === from) return { passthrough: true }
+  return { source: from, target: to, effective: targetLang }
 }
 
 /**

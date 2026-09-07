@@ -124,3 +124,40 @@ export function desktopScreenAspect(platform: PlatformId, geometry?: { width: nu
   if (ratio >= 3 / 2) return 'sm:aspect-[3/2]'
   return 'sm:aspect-[4/3]'
 }
+
+/* ---------------- 详情页 16:9 舞台的高度上限 ---------------- */
+
+/**
+ * 为什么是**限高**而不是限宽（2026-09-07 改，站长拿红线标了要对齐）。
+ *
+ * 原来的做法是给那个 16:9 的框设宽度上限（`max-w = (100dvh - 10rem) * 16/9`）再居中，
+ * 为的是矮屏（1280×720 的笔记本）上 16:9 铺满宽度会比视口还高、玩家得滚着玩。
+ * 代价是框的两侧缩进，**和底下的标题、资料区对不齐** —— 一眼看过去像没对齐。
+ *
+ * 换成限高之后：框铺满内容列宽度、边缘和内容列对齐；高度到顶就停，
+ * 而引擎画布是 `object-fit: contain`，于是画面在框内左右留黑边。
+ * **画面本身的尺寸一模一样**（受同一个高度约束），只是黑边从「框外的页面底色」
+ * 变成「框内的黑」。矮屏那条约束一点没放松。
+ *
+ * ⚠️ **必须挂在真正带 aspect-ratio 的那个元素上**，不是它的外框。
+ * 详情页里那三块都是「外框（overflow-hidden rounded-2xl）+ 内层 16:9」的结构 ——
+ * 上限挂到外框上，内层照旧按 16:9 算高度、然后被 `overflow-hidden` 裁掉一截
+ * （年龄门那种居中的内容会被推出视野）。所以：
+ *   · 播放器      —— 挂在舞台上，而且**只挂在「普通」那一支**：全屏时舞台自己是
+ *                    fullscreen 元素、游玩布局时是 `fixed inset-0`，
+ *                    一个 max-h 会把这两种铺满视口的形态一起夹住。
+ *   · 年龄门      —— 由 GameAgeGuard 的 className 传到它内层那个 16:9 上
+ *   · 跨源入口卡  —— 由 IsolatedPlayCard 的 frameClassName 传到内层
+ *
+ * ⚠️ 两个值都必须是**完整的类名字面量**（理由同 MOBILE_ASPECT：Tailwind 扫源码文本）。
+ * 沉浸模式那一档不带 `lg:` 前缀，沿用改动前的写法。
+ *
+ * 刻意**没有**做成「挂外框、用 `[&>*]:` 变体转给子元素」那种写法：少改两个组件，
+ * 但换来一条只有构建之后才验得出来的花招 CSS，不值得。
+ */
+const CAP = {
+  immersive: 'max-h-[calc(100dvh-7rem)]',
+  normal: 'lg:max-h-[calc(100dvh-10rem)]',
+} as const
+
+export const stageHeightCap = (immersive: boolean): string => (immersive ? CAP.immersive : CAP.normal)

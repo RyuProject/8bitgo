@@ -27,9 +27,16 @@ interface Props {
   /** 背景（通常是封面），和播放器空闲态保持一致的观感 */
   backdrop?: ReactNode
   className?: string
+  /**
+   * 加在**内层那个 16:9 元素**上（不是外框）。详情页拿它传高度上限 ——
+   * 这张卡是播放器的替身，两者得一样高，否则同一款游戏「能内嵌 / 只能跳整页」
+   * 两种情形下版面高度不一样。外框是 overflow-hidden，上限挂那儿会把内层裁掉。
+   * 见 emulator/screenAspect.ts 的 stageHeightCap。
+   */
+  frameClassName?: string
 }
 
-export function IsolatedPlayCard({ slug, gameName, icon, backdrop, className }: Props) {
+export function IsolatedPlayCard({ slug, gameName, icon, backdrop, className, frameClassName }: Props) {
   const lang = useLang()
   const t = useT()
   // 语言前缀由 basename 承载，而这是一条整页跳转，得自己拼上，否则英文用户会掉到中文页
@@ -37,7 +44,8 @@ export function IsolatedPlayCard({ slug, gameName, icon, backdrop, className }: 
 
   return (
     <div className={cx('overflow-hidden rounded-2xl border border-line bg-black', className)}>
-      <div className="relative flex aspect-video w-full items-center justify-center">
+      {/* frameClassName 落在这一层（带 aspect-video 的那个），不是外框 —— 见 screenAspect.ts 的 stageHeightCap */}
+      <div className={cx('relative flex aspect-video w-full items-center justify-center', frameClassName)}>
         <div className="absolute inset-0 opacity-60 blur-sm">{backdrop}</div>
         <div className="scanlines absolute inset-0" aria-hidden />
         <div className="absolute inset-0 bg-gradient-to-t from-black via-black/60 to-black/20" />

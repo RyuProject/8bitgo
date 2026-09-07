@@ -22,7 +22,8 @@ import {
   suggestGames,
   searchFallback,
 } from '../games-repo.js'
-import { isTranslateConfigured, translatePlan, translateText } from '../translate.js'
+import { isTranslateConfigured, translatePlan } from '../translate.js'
+import { gameDescriptionSource, renderField } from '../i18n-generate.js'
 
 export const gamesRouter = Router()
 
@@ -296,38 +297,44 @@ gamesRouter.get('/:slug', async (req, res, next) => {
 gamesRouter.post('/:slug/translate-description', async (req, res, next) => {
   try {
     const lang = String(req.body?.lang ?? '').trim()
-    const plan = translatePlan(lang)
-    if (!plan) return res.status(400).json({ error: `不支持的目标语言：${lang}` })
-    if (plan.passthrough) return res.status(400).json({ error: `语言 ${lang} 不需要翻译` })
-    if (!isTranslateConfigured()) {
-      return res.status(503).json({ error: '翻译服务未配置（缺 VOLC_AK / VOLC_SK）' })
-    }
 
+    // ⚠️ 顺序变了（2026-09-07）：**先取游戏、再算计划**。
+    // 计划要知道源文是哪种语言（有 description_en 就是英文，没有就是中文），
+    // 而那要先把游戏读出来才知道 —— 见 translate.js 里 translatePlan 的注释。
     // 用「游戏不存在」涵盖简介空着的情况 —— 没东西好翻，
     // 让前端按"按钮可点但报失败"反而是把诊断难度推给访客。
     const game = await getGameBySlug(req.params.slug)
     if (!game) return res.status(404).json({ error: '游戏不存在' })
 
+    const source = gameDescriptionSource(game)
+    if (!source) return res.status(400).json({ error: '游戏没有简介可翻译' })
+
+    const plan = translatePlan(lang, source.lang)
+    if (!plan) return res.status(400).json({ error: `不支持的目标语言：${lang}` })
+    if (plan.passthrough) return res.status(400).json({ error: `语言 ${lang} 不需要翻译` })
+    // 繁体走本地 OpenCC，不需要 AK/SK —— 这道闸只拦真的要出网的那一路，
+    // 否则没配火山密钥的部署连简繁转换都做不了。
+    if (!plan.convert && !isTranslateConfigured()) {
+      return res.status(503).json({ error: '翻译服务未配置（缺 VOLC_AK / VOLC_SK）' })
+    }
+
     // 已经缓存就直返回 —— 同款游戏同语言第二次之后都不再调火山，
-    // 这是这套设计的核心防刷：成本 = N 种语言各一次（其中 zh-Hant 不完美，详 translate.js）
+    // 这是这套设计的核心防刷：成本 = N 种语言各一次。
     if (game.descriptionI18n?.[lang]) {
       return res.json({ lang, text: game.descriptionI18n[lang], cached: true })
     }
 
-    // 源文：description_en 优先，没有再退到 description（中文），再没有就报错
-    const source =
-      (game.descriptionEn && game.descriptionEn.trim()) || (game.description && game.description.trim())
-    if (!source) return res.status(400).json({ error: '游戏没有简介可翻译' })
-
     let translated
     try {
-      translated = await translateText(source, plan.source, plan.target)
+      translated = await renderField(source.text, plan)
     } catch (e) {
       // 火山那边的错误码透传：AuthFailure / SignatureDoesNotMatch 是 AK/SK 错，
       // LimitExceeded 是 QPS 超限，QuotaExceeded 是欠费。
       // 这些都是运营问题，给 502（"翻译服务暂时不可用"）而不是 500，
       // 客户端的视图是「点完显示失败提示」，不该看到内部错误码
-      console.error('[translate] 火山 API 调用失败：', e?.code, e?.message)
+      // OPENCC_MISSING（繁体那一路没装 opencc-js）也落在这里 —— 对访客来说
+      // 「这个功能现在用不了」是同一件事，错误文案已经把原因写在 message 里了。
+      console.error('[translate] 生成译文失败：', e?.code, e?.message)
       return res.status(502).json({ error: `翻译失败：${e?.message || '未知错误'}` })
     }
 

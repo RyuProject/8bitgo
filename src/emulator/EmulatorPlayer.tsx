@@ -36,7 +36,7 @@ import { useT, fmt } from '@/services/i18n'
 import { platformLabel } from '@/services/i18nData'
 import { ROM_LANG_LABEL, type RomLang } from '@/config/languages'
 import { FEATURES } from '@/config/features'
-import { desktopScreenAspect, mobileScreenAspect } from './screenAspect'
+import { desktopScreenAspect, mobileScreenAspect, stageHeightCap } from './screenAspect'
 import { recordPlay } from '@/services/store'
 import { onMatchRequest } from '@/services/matchRequest'
 import {
@@ -2221,7 +2221,13 @@ export function EmulatorPlayer({
               ? 'fixed inset-0 z-[60]'
               : embedFill
                 ? 'relative h-full'
-                : cx('relative', desktopScreenAspect(platform.id, geometry)),
+                : /*
+                    普通分支（详情页里那个框）：16:9 + **高度上限**。
+                    上限只挂在这一支 —— 全屏那支舞台自己是 fullscreen 元素、
+                    游玩布局那支是 fixed 铺满视口，都不能被 max-h 夹住。
+                    为什么是限高不是限宽，见 screenAspect.ts 的 stageHeightCap。
+                  */
+                  cx('relative', desktopScreenAspect(platform.id, geometry), stageHeightCap(immersive)),
           dragging && 'ring-2 ring-brand ring-inset',
         )}
         onDragOver={(e) => {

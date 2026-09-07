@@ -4,11 +4,13 @@
  * 回归：`npm run test:robots`。
  */
 import { CACHE } from './cache.js'
+import { publicSiteUrl } from './site-urls.js'
 
 /**
- * URL 归一（原名 `normalizeTrailingSlash`，2026-09-07 起还管 `/index.html`）。
- * 两件事在**同一趟**里做完，一个请求最多吃一次 301 —— 链式重定向要多一个往返，
- * 而且 Google 只跟有限几跳。
+ * URL 归一（原名 `normalizeTrailingSlash`，现在管尾斜杠、`/index.html`、`www.` 三件事）。
+ * 三件事在**同一趟**里做完，一个请求最多吃一次 301 —— 链式重定向要多一个往返，
+ * 而且 Google 只跟有限几跳。`http://www.8bitgo.com/index.html` 一步到位跳
+ * `https://8bitgo.com/`，而不是 www → apex → 去 index.html 跳三次。
  *
  * ── 一、尾斜杠：`/games/` → `/games` ──────────────────────────
  * Express 默认不区分这两者，所以以前两份都回 200、内容一模一样。canonical 确实
@@ -29,13 +31,33 @@ import { CACHE } from './cache.js'
  *      `index,follow` —— 两边看起来矛盾，其实是渲染前后两个阶段。
  * 归一到目录本身，这个 URL 就不存在了。`/it/index.html` 同理 → `/it`。
  *
- * 注意四点：
+ * ── 三、`www.` → 裸域（2026-09-07，同一份 Search Console 报告查出来的）──
+ * `www.8bitgo.com` 之前**整站都能打开**，一条重定向都没有 —— 每个页面都有两份，
+ * 抓取预算白花一半、外链权重散在两个主机名上。绝大多数页面靠 canonical（永远指向
+ * `publicSiteUrl()`，也就是裸域）兜住了，所以只有**唯一没有 canonical 的那个 URL**
+ * 被报出来：`http://www.8bitgo.com/index.html` —— 它绕过 SSR 吐的是构建模板，
+ * 而 canonical 是 SSR 时才拼进去的。第二节修的是「绕过 SSR」，这一节修的是
+ * 「为什么它长在 www 上」，两个病灶叠在同一个 URL 上，缺一个都不算修完。
+ *
+ * 只认 `www.<裸域>` 这一种写法，不写成「凡是不等于裸域的 host 都跳」：
+ * 后者会把 localhost、内网 IP、健康检查、预览域名全都跳走，而且万一
+ * `PUBLIC_SITE_URL` 配成了带 www 的地址就会自己跳自己、死循环。
+ * 目标用 `publicSiteUrl()` 的 origin，所以顺带把 http 升成 https。
+ *
+ * ⚠️ 边缘缓存是**按主机名分条目**的，这一条上线后 `www.` 上那批旧的 200
+ * 响应还躺在 Cloudflare 里，必须清一次缓存才会开始回 301。
+ *
+ * 注意五点：
  *  1. 只管 GET / HEAD，别去动接口的写请求；`/api/` 一律放过（客户端可能依赖原样路径）。
+ *     `/api/` 连 host 归一也放过：跨主机 301 会让浏览器把 POST 降级、还要多过一次
+ *     预检，而页面一旦被跳到裸域，它发出的接口请求本来就是同源的裸域了。
  *  2. **必须先把开头的多余斜杠折掉**。`//evil.com/` 的 pathname 就是 `//evil.com/`，
  *     直接去尾会得到 `//evil.com` —— 那是协议相对 URL，等于开了一个跳到外站的开放重定向。
  *  3. 用 originalUrl 切出 pathname 和查询串，保持原有的百分号编码不被重新编码一遍。
  *  4. 去 `index.html` 的正则必须锚在 `(^|/)` 和 `$` 上：少了前面那半，`/myindex.html`
  *     会被切成 `/my`；少了后面那半，`/assets/index-abc.js` 之类也会中招。
+ *  5. 比 host 之前要先把端口切掉（`www.8bitgo.com:8080`）、转小写、并且认一下
+ *     `X-Forwarded-Host` —— 见下面 `requestHostname()` 的注释。
  *
  * ⚠️ 这个中间件必须注册在 `express.static` **之前**，否则静态文件先被吐出去，
  * 归一根本没机会跑（`/index.html` 那条就是这么漏掉的）。
@@ -44,6 +66,40 @@ import { CACHE } from './cache.js'
  * URL 301 到 404。那类重复交给 canonical 处理就够了（页面里写的是硬编码的小写路径）。
  * `index.html` 是个例外 —— 它是固定文件名不是 slug，所以那一条带 `i` 标志。
  */
+/**
+ * 裸域的 origin 和它对应的 `www.` 主机名。
+ *
+ * 按 env 的原文做记忆化，而不是模块加载时算一次就锁死：测试要能改
+ * `PUBLIC_SITE_URL` 再验一遍（否则这条规则等于把 8bitgo.com 硬编码进了中间件，
+ * 换域名时会静默失效）。`publicSiteUrl()` 自己会对畸形值抛错，这里不重复校验。
+ */
+let hostCache = { key: null, val: null }
+function canonicalHost() {
+  const key = `${process.env.PUBLIC_SITE_URL || ''}|${process.env.VITE_SITE_URL || ''}`
+  if (hostCache.key !== key) {
+    const origin = publicSiteUrl()
+    const host = new URL(origin).hostname.toLowerCase()
+    hostCache = { key, val: { origin, wwwHost: `www.${host}` } }
+  }
+  return hostCache.val
+}
+
+/**
+ * 请求真正打在哪个主机名上。
+ *
+ * `Host` 之外还看一眼 `X-Forwarded-Host`：nginx 的反代配置里 `proxy_set_header Host`
+ * 写成上游名字（而不是 `$host`）的情况很常见，那时 `Host` 就不是用户敲的那个域名了。
+ * 这个头客户端能伪造，但**在这里伪造不出危害** —— 跳转目标永远是 `publicSiteUrl()`
+ * 自己的 origin，伪造只能让自己被跳到本站的另一个写法上，不构成开放重定向
+ * （真正危险的那种是把 host 拼进跳转目标，这里没有）。
+ * 值可能是逗号分隔的一串，取第一段。
+ */
+function requestHostname(req) {
+  const raw = req.headers?.['x-forwarded-host'] || req.headers?.host || ''
+  // 注意 5：端口和大小写都由客户端决定，比之前必须先规整
+  return String(raw).split(',')[0].trim().toLowerCase().replace(/:\d+$/, '')
+}
+
 export function normalizeUrl(req, res, next) {
   if (req.method !== 'GET' && req.method !== 'HEAD') return next()
   const cut = req.originalUrl.indexOf('?')
@@ -55,6 +111,12 @@ export function normalizeUrl(req, res, next) {
   // 显式请求的 index.html 归到它所在的目录：/index.html → /、/it/index.html → /it
   clean = clean.replace(/(^|\/)index\.html$/i, '')
   if (clean === '') clean = '/'
-  if (clean === pathname) return next()
-  return res.set('Cache-Control', CACHE.meta).redirect(301, clean + search)
+
+  // host 归一和路径归一合成同一次 301（见开头）。带上 origin 就是跨主机跳转，
+  // 顺带把 http 升成 https；不带则保持相对，免得把 localhost 上的请求跳到线上。
+  const { origin, wwwHost } = canonicalHost()
+  const prefix = requestHostname(req) === wwwHost ? origin : ''
+
+  if (!prefix && clean === pathname) return next()
+  return res.set('Cache-Control', CACHE.meta).redirect(301, prefix + clean + search)
 }

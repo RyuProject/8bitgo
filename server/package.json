@@ -16,6 +16,8 @@
     "test:mail:parse": "node scripts/test-mail-parsing.mjs",
     "test:mail:resend": "node scripts/test-mail-resend.mjs",
     "test:translate": "node scripts/test-translate.mjs",
+    "test:zh-convert": "node scripts/test-zh-convert.mjs",
+    "pretranslate": "node scripts/pretranslate.mjs",
     "test:codes": "node scripts/test-codes.mjs",
     "test:oauth": "node scripts/test-oauth.mjs",
     "test:presence": "node scripts/test-presence.mjs",
@@ -40,7 +42,9 @@
     "indexnow": "node scripts/submit-indexnow.mjs",
     "baidu": "node scripts/submit-baidu.mjs",
     "upgrade-v2": "node scripts/upgrade-v1-to-v2.mjs",
-    "export-d1": "node scripts/export-d1.mjs"
+    "export-d1": "node scripts/export-d1.mjs",
+    "turn:probe": "node scripts/turn-probe.mjs",
+    "test:turn-probe": "node scripts/test-turn-probe.mjs"
   },
   "dependencies": {
     "@ip-location-db/geo-whois-asn-country-mmdb": "^2.3.2026061719",
@@ -53,6 +57,7 @@
     "mysql2": "^3.11.0",
     "multer": "^1.4.5-lts.1",
     "nodemailer": "^6.9.14",
+    "opencc-js": "^1.4.2",
     "socket.io": "^4.8.1",
     "ws": "^8.18.0"
   },

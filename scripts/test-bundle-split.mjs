@@ -80,6 +80,18 @@ const isHeavy = (f) =>
   f.endsWith(`${path.sep}emulator${path.sep}runtimes.ts`)
 
 /** 这些入口都会被打进主包（静态路由 / 到处引用的服务） */
+/**
+ * 三方包里也有「绝对不能进主包」的。
+ *
+ * 上面那套闭包分析刻意不跟三方包（见 resolve 里的 `if (!spec.startsWith('.')) return null`），
+ * 所以静态 import 一个 700 KB 的 SDK 它抓不到。这里按包名单独扫一遍主包入口的
+ * **源码文本**：只要出现顶层的 `from '<包名>'`（不带 type），就是进主包了。
+ *
+ * @tencentcloud/chat：站内消息的 SDK，只允许在 services/imClient.ts 里动态 import。
+ * 更细的检查在 scripts/test-im-client.mjs。
+ */
+const HEAVY_PACKAGES = ['@tencentcloud/chat']
+
 const MAIN_BUNDLE_ENTRIES = {
   'AppRoutes（静态路由，主包）': 'src/AppRoutes.tsx',
   'RoomsPage（只要两个布尔判断）': 'src/pages/RoomsPage.tsx',
@@ -107,6 +119,23 @@ for (const [label, rel] of Object.entries(MAIN_BUNDLE_ENTRIES)) {
         '  播放器一律走 @/emulator/PlayerChunk 的懒加载版本。',
     )
   }
+  // 三方重量级包：按源码文本查，见 HEAVY_PACKAGES 的注释
+  for (const pkg of HEAVY_PACKAGES) {
+    const offenders = [...seen].filter((f) => {
+      const src = fs
+        .readFileSync(f, 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/(^|[^:])\/\/.*$/gm, '$1')
+      // 只认顶层的**值**导入。`import type ... from` 编译后整行消失，动态 import() 是分包点。
+      return new RegExp(`^import\\s+(?!type\\b)[^\\n]*?from\\s+['\"]${pkg.replace('/', '\\/')}['\"]`, 'm').test(src)
+    })
+    assert.deepEqual(
+      offenders.map((f) => path.relative(ROOT, f)),
+      [],
+      `${label} 会把 ${pkg} 静态拉进主包。这个包只能用 await import() 动态加载。`,
+    )
+  }
+
   n++
   console.log(`✅ ${label}`)
 }

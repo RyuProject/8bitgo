@@ -18,6 +18,7 @@
  */
 import { Router } from 'express'
 import { query, queryOne } from '../db.js'
+import { playIdentity } from '../playcount.js'
 import { requireUser, optionalUser, hasAbility } from '../auth.js'
 import { attachRelations } from '../games-repo.js'
 import { take, clientKey, isMeaningfulIp } from '../rateLimit.js'
@@ -117,13 +118,41 @@ async function countsFor(ids) {
   return out
 }
 
-function rowToApi(r, { covers = [], gameCount = 0, viewerId = null } = {}) {
+/**
+ * 一批合集各有多少人看过（`collection_views` 的行数，按人去重）。
+ *
+ * ⚠️ **失败一律当 0，绝不往上抛。** 这个数字是装饰性的，而 decorate() 里它和
+ * 封面、游戏数是 `Promise.all` 并列的 —— 一抛就是整份列表 500。
+ * 最现实的失败就是「表还没迁移」（新部署、或者忘了 npm run migrate），
+ * 那时候合集页该照常能看，只是数字是 0。同 topCollections 的 `.catch(() => [])`。
+ *
+ * ⚠️ 表里**没有作者本人那一行**（写入时就拦掉了），所以这里不需要、也无法再减作者。
+ */
+async function viewCountsFor(ids) {
+  const out = new Map(ids.map((id) => [String(id), 0]))
+  if (!ids.length) return out
+  const holes = ids.map(() => '?').join(',')
+  try {
+    const rows = await query(
+      `SELECT collection_id, COUNT(*) AS n FROM collection_views WHERE collection_id IN (${holes}) GROUP BY collection_id`,
+      ids,
+    )
+    for (const r of rows) out.set(String(r.collection_id), Number(r.n) || 0)
+  } catch (e) {
+    console.warn('[collections] 读浏览量失败，按 0 处理（表迁移了吗？）：', e?.message || e)
+  }
+  return out
+}
+
+function rowToApi(r, { covers = [], gameCount = 0, viewCount = 0, viewerId = null } = {}) {
   return {
     id: Number(r.id),
     title: r.title,
     kind: r.kind || '',
     description: r.description || '',
     gameCount,
+    // 多少人看过（去重）。作者本人的浏览不计，见 POST /:id/view
+    viewCount,
     covers,
     author: {
       id: r.user_id,
@@ -146,9 +175,14 @@ const SELECT_WITH_AUTHOR =
 async function decorate(rows, viewerId) {
   if (!rows.length) return []
   const ids = rows.map((r) => r.id)
-  const [covers, counts] = await Promise.all([coversFor(ids), countsFor(ids)])
+  const [covers, counts, views] = await Promise.all([coversFor(ids), countsFor(ids), viewCountsFor(ids)])
   return rows.map((r) =>
-    rowToApi(r, { covers: covers.get(String(r.id)) ?? [], gameCount: counts.get(String(r.id)) ?? 0, viewerId }),
+    rowToApi(r, {
+      covers: covers.get(String(r.id)) ?? [],
+      gameCount: counts.get(String(r.id)) ?? 0,
+      viewCount: views.get(String(r.id)) ?? 0,
+      viewerId,
+    }),
   )
 }
 
@@ -240,11 +274,12 @@ collectionsRouter.get('/:id', optionalUser, async (req, res, next) => {
       // 按 collection_items 的顺序还原，别用 IN 查询回来的顺序
       games = ids.map((gid) => byId.get(gid)).filter(Boolean)
     }
-    const [covers, counts] = await Promise.all([coversFor([id]), countsFor([id])])
+    const [covers, counts, views] = await Promise.all([coversFor([id]), countsFor([id]), viewCountsFor([id])])
     res.json({
       collection: rowToApi(row, {
         covers: covers.get(String(id)) ?? [],
         gameCount: counts.get(String(id)) ?? 0,
+        viewCount: views.get(String(id)) ?? 0,
         viewerId,
       }),
       games,
@@ -377,6 +412,58 @@ collectionsRouter.patch('/:id/hidden', requireUser, async (req, res, next) => {
 })
 
 /* ---------------- 合集里的游戏 ---------------- */
+
+/**
+ * 记一次合集浏览。前端在**详情页拿到数据之后**调一次（每次挂载一次，见 CollectionDetailPage）。
+ *
+ * ── 数的是「多少人看过」，不是累计次数 ──────────────────────
+ * 站长 2026-09-07 拍板。合集没有游戏那种「模拟器真的跑起来」的硬信号，浏览就是
+ * 打开页面 —— 不去重的话刷新、预取、爬虫就能把数字堆到四位数，那和 playcount.js
+ * 开头刻意否决的做法是同一个毛病。所以复用**同一套身份**：登录按账号、
+ * 未登录按 IP 的 HMAC 摘要（不存明文 IP），落 `collection_views`，主键判重。
+ *
+ * ── 三条容易漏的 ────────────────────────────────────────────
+ * 1. **绝不能调 `touch()`。** `collections.updated_at` 是列表的默认排序键，而且
+ *    刻意没有 `ON UPDATE CURRENT_TIMESTAMP` —— 建表时的注释点名说过「将来任何一次
+ *    无关的 UPDATE（**加个浏览计数之类**）都会把合集顶到最前面」。这条接口正是那个
+ *    「之类」。有一条断言盯着「浏览之后 updated_at 一个字都不许变」。
+ * 2. **作者自己看自己的不算。** 作者会反复打开自己的合集去整理，把他算进去的话
+ *    这个数字对他自己毫无意义。服务端拦（req.user 是可信的），不指望前端自觉。
+ * 3. **写失败一律当没数到，不报错。** 一个装饰性的数字不该让页面看起来出了问题；
+ *    最现实的失败就是表还没迁移。
+ *
+ * 用 optionalUser 而不是 requireUser：游客的浏览也算数，带了 token 只是顺手认出是谁。
+ * 和 /:slug/play 一样**不调 invalidateContent()** —— 高频写，每次清 SSR 缓存等于把缓存关掉。
+ */
+collectionsRouter.post('/:id/view', optionalUser, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id)
+    if (!Number.isFinite(id) || id <= 0) return res.status(404).json({ error: '合集不存在' })
+    const row = await queryOne('SELECT id, user_id, hidden FROM collections WHERE id = ?', [id])
+    // 不存在 / 已下架一律 404 —— 403 等于承认「这里确实有个东西」（同 GET /:id）
+    // hidden 是 tinyint(1)，mysql2 给的是数字 —— 用 Number() 判，和上面 GET /:id 那处一致
+    if (!row || Number(row.hidden)) return res.status(404).json({ error: '合集不存在' })
+    // 作者本人：直接不记（见上面第 2 条）
+    if (req.user?.id && String(row.user_id) === String(req.user.id)) return res.json({ ok: true, counted: false })
+    const who = playIdentity(req)
+    // 既没登录、又拿不到任何 IP：宁可不记，也不要把这类请求全塞进同一个身份里
+    if (!who) return res.json({ ok: true, counted: false })
+    let counted = false
+    try {
+      const r = await query('INSERT IGNORE INTO collection_views (collection_id, kind, identity) VALUES (?, ?, ?)', [
+        row.id,
+        who.kind,
+        who.identity,
+      ])
+      counted = Number(r?.affectedRows ?? 0) > 0
+    } catch (e) {
+      console.warn('[collections] 记浏览量失败，按没数到处理（表迁移了吗？）：', e?.message || e)
+    }
+    res.json({ ok: true, counted })
+  } catch (e) {
+    next(e)
+  }
+})
 
 collectionsRouter.post('/:id/games', requireUser, async (req, res, next) => {
   try {

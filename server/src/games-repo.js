@@ -611,7 +611,7 @@ export async function upsertGame(slug, game) {
     const [{ id }] = await run('SELECT id FROM games WHERE slug = ?', [slug])
     // 整体覆盖：description / description_en 必然都重新写入了，按需缓存全部作废。
     // 不在这里清的话，玩家点过翻译的多语言版本会和新的基准对不上，但前端看不出来。
-    await run('UPDATE games SET description_i18n = NULL WHERE id = ?', [id])
+    await run('UPDATE games SET title_i18n = NULL, description_i18n = NULL WHERE id = ?', [id])
     await writeRelations(run, id, game)
     await reindexGame(run, id, { ...game, slug })
     return id
@@ -628,9 +628,14 @@ export async function patchGame(slug, patchRow, relations, game) {
       const sets = Object.keys(patchRow).map((c) => `\`${c}\` = ?`).join(', ')
       await run(`UPDATE games SET ${sets} WHERE id = ?`, [...Object.values(patchRow), id])
       // 简介基准一改，所有按需翻译的缓存都失去锚点 —— 一并清掉。
-      // 改 title / cover 之类完全不影响翻译，因此只有两个字段碰过才清
+      // 改 cover 之类完全不影响翻译，因此只有碰过基准字段才清
       if ('description' in patchRow || 'description_en' in patchRow) {
         await run('UPDATE games SET description_i18n = NULL WHERE id = ?', [id])
+      }
+      // 中文译名改了，它的繁体版跟着作废。**只看 title_zh**：title 是原名，
+      // 而 title_i18n 里只有 zh-Hant 一个键、是从 title_zh 转出来的，改原名与它无关。
+      if ('title_zh' in patchRow) {
+        await run('UPDATE games SET title_i18n = NULL WHERE id = ?', [id])
       }
     }
     if (relations.genres || relations.tags || relations.roms) {
@@ -671,6 +676,32 @@ export async function writeDescriptionTranslation(slug, lang, text) {
   const r = await query(
     `UPDATE games SET description_i18n = JSON_SET(
        COALESCE(description_i18n, JSON_OBJECT()),
+       ?,
+       CAST(? AS JSON)
+     ) WHERE slug = ?`,
+    [`$.${lang}`, JSON.stringify(safeText), slug],
+  )
+  return r.affectedRows > 0
+}
+
+/**
+ * 把 title_i18n 里某个语言的译名写进去（合并写，同 writeDescriptionTranslation）。
+ *
+ * 实际只会被 `'zh-Hant'` 调用 —— 非中文界面刻意用原名 `title`，不需要译名。
+ * 截断到 200 字符和 `title_zh VARCHAR(200)` 对齐：译名比原名长的情况不存在
+ * （简繁是一对一的字映射），真超了说明传错了东西，截断比写进一坨脏数据好。
+ *
+ * @param {string} slug
+ * @param {string} lang 站点语言代码
+ * @param {string} text 译名
+ * @returns {Promise<boolean>} true = 有行被更新
+ */
+export async function writeTitleTranslation(slug, lang, text) {
+  if (!/^[a-zA-Z-]{2,10}$/.test(lang)) throw new Error('lang 必须是合法的语言代码')
+  const safeText = String(text ?? '').slice(0, 200)
+  const r = await query(
+    `UPDATE games SET title_i18n = JSON_SET(
+       COALESCE(title_i18n, JSON_OBJECT()),
        ?,
        CAST(? AS JSON)
      ) WHERE slug = ?`,

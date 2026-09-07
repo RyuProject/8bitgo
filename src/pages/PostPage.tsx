@@ -6,7 +6,7 @@ import { gradientFor } from '@/lib/gradients'
 import { useSeo, articleSchema, breadcrumbSchema } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
 import { useLang } from '@/services/lang'
-import { postContent, needsPostTranslation } from '@/services/i18nData'
+import { postContent, postExcerpt, postTitle, needsPostTranslation } from '@/services/i18nData'
 import { TranslateButton } from '@/components/game/TranslateButton'
 import { NotFoundPage } from './NotFoundPage'
 import { SkeletonBlock } from '@/components/ui/PageSkeleton'
@@ -24,21 +24,33 @@ export function PostPage() {
   // - string = 翻译后的正文（已经写进 content_i18n，但前端 state 也留一份，
   //   避免「后台改了正文但用户看不到」的隐性 bug，反正刷新一次会重新走 needsPostTranslation）
   const [translatedContent, setTranslatedContent] = useState<string | null>(null)
+  // 标题同理。以前按钮只回填正文，标题一直是中文 —— 点完翻译，页面上最大的那行字没变。
+  const [translatedTitle, setTranslatedTitle] = useState<string | null>(null)
   // 还在加载时不能当成「文章不存在」—— 否则每次进详情页都会先闪一下 404
   const missing = !loading && !post
   // SEO：hook 要在下面的 early return 之前调用，文章不存在时走 noindex 分支
-  const excerpt = post ? plainText(post.excerpt) : ''
+  /**
+   * ⚠️ 标题和摘要一律过 postTitle / postExcerpt，**包括 SEO 和结构化数据**。
+   *
+   * 这不只是显示问题：`<title>` / `description` / articleSchema 里的 headline
+   * 是搜索引擎判「这两个 URL 是不是同一个页面」的主要依据。八种语言共用同一个
+   * 中文标题，等于主动告诉 Google「/fr/blog/x 和 /blog/x 是一份东西」。
+   *
+   * `translatedTitle` 优先：玩家刚点完翻译按钮，看到的就该是他刚拿到的那份。
+   */
+  const heading = post ? translatedTitle || postTitle(post, lang) : ''
+  const excerpt = post ? plainText(postExcerpt(post, lang)) : ''
   useSeo(
     post
       ? {
-          title: post.title,
+          title: heading,
           description: excerpt,
           type: 'article',
           publishedTime: post.date,
           updatedTime: post.updatedAt || post.date,
           jsonLd: [
             articleSchema({
-              title: post.title,
+              title: heading,
               slug: post.slug,
               excerpt,
               date: post.date,
@@ -48,7 +60,7 @@ export function PostPage() {
             breadcrumbSchema([
               { name: t.common.home, path: '/' },
               { name: t.common.blog, path: '/blog' },
-              { name: post.title, path: `/blog/${post.slug}` },
+              { name: heading, path: `/blog/${post.slug}` },
             ]),
           ],
         }
@@ -74,7 +86,7 @@ export function PostPage() {
           {t.common.blog}
         </Link>
         <span className="mx-1.5">/</span>
-        <span className="text-fg">{post.title}</span>
+        <span className="text-fg">{heading}</span>
       </nav>
 
       <article className="mx-auto mt-6 max-w-3xl">
@@ -92,14 +104,18 @@ export function PostPage() {
             ))}
           </div>
           <div className="mt-3 flex items-start justify-between gap-4">
-            <h1 className="flex-1 text-3xl font-extrabold leading-tight tracking-tight sm:text-4xl">{post.title}</h1>
+            <h1 className="flex-1 text-3xl font-extrabold leading-tight tracking-tight sm:text-4xl">{heading}</h1>
             {/* 「翻译」按钮：非中文界面且该语言还没翻译过时挂一个。
                 needsPostTranslation() 在两种 i18n 都写过后返回 false，按钮就不再出现 */}
             {needsPostTranslation(post, lang) && (
-              <TranslateButton<{ excerpt: string; content: string }>
+              <TranslateButton<{ title: string; excerpt: string; content: string }>
                 endpoint={`/api/posts/${encodeURIComponent(post.slug)}/translate`}
                 lang={lang}
-                onTranslated={(r) => setTranslatedContent(r.content || null)}
+                onTranslated={(r) => {
+                  // 两个字段各自可能失败（partial），所以分别判空回填，别一起判
+                  setTranslatedTitle(r.title || null)
+                  setTranslatedContent(r.content || null)
+                }}
               />
             )}
           </div>
@@ -122,8 +138,8 @@ export function PostPage() {
                     {p.icon}
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate font-semibold group-hover:text-brand-hover">{p.title}</span>
-                    <span className="block truncate text-xs text-muted">{p.excerpt}</span>
+                    <span className="block truncate font-semibold group-hover:text-brand-hover">{postTitle(p, lang)}</span>
+                    <span className="block truncate text-xs text-muted">{postExcerpt(p, lang)}</span>
                   </span>
                   <span className="shrink-0 text-xs text-dim">{p.date}</span>
                 </Link>

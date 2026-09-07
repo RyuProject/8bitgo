@@ -170,24 +170,9 @@ function installJ2meAudio(win: Window, getVolume: () => number): J2meAudio | nul
 
 export { J2ME_PATH } from '../paths'
 import { J2ME_PATH } from '../paths'
-
-/** 从 URL / 对象存储 key 里取出文件名 */
-function fileNameOf(url: string): string {
-  const clean = url.split(/[?#]/)[0]
-  return clean.slice(clean.lastIndexOf('/') + 1)
-}
-
-/**
- * 拼出 run.html 的地址。
- * .zip 走 app 模式（预打包存档包），其余按 jar 模式。
- */
-function buildUrl(name: string): string {
-  const base = `${J2ME_PATH}run.html`
-  if (name.toLowerCase().endsWith('.zip')) {
-    return `${base}?app=${encodeURIComponent(name.replace(/\.zip$/i, ''))}`
-  }
-  return `${base}?jar=${encodeURIComponent(name)}`
-}
+// URL 那几条规则搬到了 ../j2meUrl（纯函数，有单测）—— 尤其是跨源判定那一条，
+// 原来靠「读 contentDocument 会不会抛」判，而它跨源时返回 null 不抛，那条退路是死代码
+import { buildJ2meUrl, isCrossOriginBase, j2meFileName } from '../j2meUrl'
 
 
 /* ---------------- 玩家上传的临时 jar ---------------- */
@@ -289,6 +274,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 跨源读不到（有人把 VITE_J2ME_PATH 指到别的域名）就退回老行为，
    * 再加超时兜底，免得 CheerpJ 挂了让玩家永远卡在遮罩后面。
    */
+  /**
+   * 资源是不是跨源。**挂载时算一次**，不靠「读 contentDocument 会不会抛」——
+   * 跨源时它返回 null 不抛异常，原来那条 `catch` 永远命中不了，
+   * 于是跨源部署一路轮询到 120 秒然后报「起不来」。理由详见 ../j2meUrl 的 isCrossOriginBase。
+   */
+  const crossOrigin = isCrossOriginBase(J2ME_PATH, window.location.origin)
+
   let poll: ReturnType<typeof setInterval> | null = null
   let readySent = false
   /** 起不来的兜底计时器，销毁时要收掉 */
@@ -305,9 +297,25 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (readySent || destroyed) return
     readySent = true
     options.onReady?.()
+    /*
+      onStart 也在这一刻发，和 EmulatorJS 那边（finishStart 里两个一起发）对齐。
+
+      原来它在 `iframe.src = …` 刚设好时就发了 —— 比真就绪早几十秒（CheerpJ 冷启动）。
+      今天（2026-09-07）查了一遍：**`onStart` 全站没有任何消费者**，
+      所以这个偏差目前不产生后果；但九个适配器各按自己的理解在不同时机调它，
+      哪天有人把它接到游玩量或埋点上，J2ME 会安静地多报一大截。趁手一起对齐。
+    */
+    options.onStart?.()
   }
 
-  /** true=画面已亮起 false=还没 null=跨源读不到 */
+  /**
+   * true=画面已亮起 false=还没 null=读不到（异常）
+   *
+   * ⚠️ **`null` 不再代表「跨源」** —— 跨源现在在挂载时就判掉了（见 crossOrigin）。
+   * 跨源时 `contentDocument` 返回的是 **null 而不是抛异常**，所以这个 catch
+   * 从来没有为跨源命中过；留着它只是兜「同源但由于别的原因读不到」的意外情形，
+   * 那时候宁可放行（当就绪）也不要一路等到 120 秒判死。
+   */
   const displayShown = (): boolean | null => {
     try {
       const doc = iframe.contentDocument
@@ -316,7 +324,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       // 标签一直都在（静态写在 run.html 里），关键看它还是不是 display:none
       return el ? el.style.display !== 'none' : false
     } catch {
-      return null // 跨源
+      return null
     }
   }
 
@@ -324,8 +332,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   iframe.addEventListener('load', () => {
     if (!srcSet || destroyed) return
 
-    if (displayShown() === null) {
-      sendReady() // 跨源，读不到内部状态，退回老行为
+    if (crossOrigin) {
+      // 跨源：读不到 iframe 内部状态，只能退回「load 即就绪」的老行为。
+      // 代价是玩家会看几秒 CheerpJ 自己那个加载框；比一路等到 120 秒判死强得多。
+      sendReady()
     } else {
       stopPoll()
       poll = setInterval(() => {
@@ -390,7 +400,18 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     options.onCaps?.(caps)
   })
   iframe.addEventListener('error', () => {
-    if (!destroyed) options.onError?.(fmt(rt.j2meLoadFailed, { path: J2ME_PATH }))
+    if (destroyed) return
+    /*
+      ⚠️ 就绪之后不能再走 onError —— 播放器那边 onReady 之后的 onError 一律等于
+      **拆会话**（第一轮体检定下的铁律，见 emulator_audit 记忆）。游戏已经在跑了，
+      一个迟到的 iframe error（比如 destroy 里把 src 设回 about:blank 时序上抢跑）
+      不该把玩家正在玩的这一局连根拆掉。就绪后只留一行日志。
+    */
+    if (readySent) {
+      console.warn('[j2me] 就绪之后 iframe 报了 error，忽略（不拆会话）')
+      return
+    }
+    options.onError?.(fmt(rt.j2meLoadFailed, { path: J2ME_PATH }))
   })
   container.appendChild(iframe)
 
@@ -433,12 +454,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           if (tempName) keepaliveTempJar(tempName)
         }, 120_000)
       } else {
-        name = fileNameOf(options.game as string)
+        name = j2meFileName(options.game as string)
       }
       srcSet = true
       options.onProgress?.({ phase: 'engine' })
-      iframe.src = buildUrl(name)
-      options.onStart?.()
+      iframe.src = buildJ2meUrl(J2ME_PATH, name)
     } catch (e) {
       if (destroyed) return
       const msg = e instanceof Error ? e.message : String(e)

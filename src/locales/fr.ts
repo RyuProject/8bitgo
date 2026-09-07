@@ -1,6 +1,7 @@
 /** Textes d'interface en français. La structure des clés reflète exactement zh-Hans.ts. */
 import type { Translation } from './index'
 import { aboutEnglish } from './about'
+import { termsEnglish, privacyEnglish } from './legal/en'
 
 const fr: Translation = {
   /* ---------------- Général ---------------- */
@@ -88,6 +89,28 @@ const fr: Translation = {
   },
 
   /* ---------------- Barre du haut ---------------- */
+  im: {
+    title: 'Messages',
+    close: 'Fermer',
+    back: 'Retour',
+    empty: 'Aucun message pour le moment',
+    emptyHint: "Touche l'avatar de quelqu'un dans les commentaires pour lui envoyer un message privé.",
+    connecting: 'Connexion…',
+    kicked: 'Connecté ailleurs',
+    kickedHint: "Un compte ne peut être en ligne que dans un seul onglet à la fois. Pour discuter ici, reconnecte-toi ci-dessous.",
+    error: 'Connexion impossible',
+    reconnect: 'Se reconnecter',
+    placeholder: 'Dis quelque chose…',
+    send: 'Envoyer',
+    sending: 'Envoi…',
+    sendFailed: "Non envoyé — réessaie",
+    loadMore: 'Charger les messages plus anciens',
+    unknownUser: 'Utilisateur inconnu',
+    dm: 'Message',
+    dmUnavailable: 'Les messages sont indisponibles pour le moment',
+    retry: 'Réessayer',
+    notConnected: "Connexion perdue — le message n'est pas parti",
+  },
   topbar: {
     downloadApp: 'Télécharger l’app',
     openMenu: 'Ouvrir le menu',
@@ -451,6 +474,8 @@ const fr: Translation = {
     errorTotalTooLarge: 'Pièces jointes : {total}, au-dessus de la limite de {max}. Passez les plus gros en lien de téléchargement',
   },
 
+  termsPage: termsEnglish,
+  privacyPage: privacyEnglish,
   aboutPage: aboutEnglish,
 
   /* ---------------- Blog ---------------- */
@@ -474,6 +499,8 @@ const fr: Translation = {
     noDescription: 'Pas encore de description',
     emptyCover: 'Pas encore de jeux',
     gameCount: '{n} jeux',
+    viewCount: '{n} visiteurs',
+    viewCountHint: 'Compté par personne — les visites répétées comptent une fois, celles de l’auteur ne comptent pas',
     empty: 'Aucune collection pour l’instant — soyez le premier',
     mine: 'Mes collections',
     mineEmpty: 'Vous n’avez pas encore créé de collection',
@@ -664,11 +691,6 @@ const fr: Translation = {
     aboutTitle: 'À propos',
     aboutDesc:
       "8BitGo a été créé par une bande de développeurs passionnés de jeux rétro, avec un seul objectif : faire revivre les classiques dans ton navigateur.",
-    termsTitle: "Conditions d'utilisation",
-    termsDesc: "Nos conditions d'utilisation sont en cours de rédaction.",
-    privacyTitle: 'Politique de confidentialité',
-    privacyDesc:
-      "Notre politique de confidentialité est en cours de rédaction. Une promesse d'emblée : les ROM locales sont lues uniquement dans ton navigateur et ne sont jamais envoyées.",
     tvDesc: 'Une chaîne de jeux rétro qui diffuse 24 h/24, 7 j/7.',
     fallbackTitle: 'Bientôt disponible',
     fallbackDesc: 'On travaille encore dessus.',

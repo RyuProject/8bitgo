@@ -18,8 +18,14 @@
         2. /admin -> 不动。后台不做多语言。
         3. 爬虫 -> 不动。八种语言各有自己的可收录 URL，把蜘蛛也跳走会让默认语言那份
            收不进去；hreflang 已经在 seo.ts 里输出，让搜索引擎自己按 hreflang 分发。
-        4. 用户自己选过语言（localStorage 的 8bitgo.lang）-> 优先，比浏览器语言更权威。
-        5. 都没有 -> 按 navigator.languages 匹配；一个都对不上就用英语。
+        4. 测速工具（Lighthouse / PageSpeed Insights / WebPageTest / GTmetrix）-> 不动。
+           这条和第 3 条**理由不同**，所以单独一行判断、不要合进爬虫那串：
+           爬虫是为了收录，测速工具是为了「量到的必须是你点的那个 URL」。
+           PSI 请求 https://8bitgo.com/ 却被这段脚本送去 /en，报告顶上就会挂一条
+           「客户端重定向，建议改用 https://8bitgo.com/en 重新测」，
+           于是 `/`（简体中文首页，canonical 就是它自己）永远量不到。
+        5. 用户自己选过语言（localStorage 的 8bitgo.lang）-> 优先，比浏览器语言更权威。
+        6. 都没有 -> 按 navigator.languages 匹配；一个都对不上就用英语。
 
       ⚠️ 匹配规则的唯一出处是 src/config/languages.ts 的 matchBrowserLang()。
          这里因为要内联，不可避免抄了一份 —— scripts/test-lang-detect.mjs 会把两边
@@ -37,7 +43,19 @@
           var seg = path.split('/')[1] || ''
           if (CODES.indexOf(seg) >= 0) return
           if (seg === 'admin') return
-          if (/bot|crawl|spider|slurp|mediapartners|facebookexternalhit|embedly|preview/i.test(navigator.userAgent || '')) return
+          var ua = navigator.userAgent || ''
+          if (/bot|crawl|spider|slurp|mediapartners|facebookexternalhit|embedly|preview/i.test(ua)) return
+
+          // 测速代理。上面那串一个都不匹配 —— PSI 的 UA 长这样：
+          //   Mozilla/5.0 (Linux; Android 11; moto g power (2022)) ... Mobile Safari/537.36 Chrome-Lighthouse
+          // 认的是后缀里的 lighthouse / pagespeed / ptst(WebPageTest) / gtmetrix，
+          // 这几个词在真实浏览器 UA 里不会出现，所以不怕误伤。
+          //
+          // ⚠️ 只认得出「自报家门」的那一类。Lighthouse 本地 CLI 默认的模拟 UA 是
+          //    干净的 moto g power 串（core/config/constants.js 里的常量，没有后缀），
+          //    和真实的 Moto G 用户一模一样 —— 那种情况**故意不猜**：宁可测速工具吃一次
+          //    跳转，也不能把真人当机器扣掉他的语言。
+          if (/lighthouse|pagespeed|page speed|ptst|gtmetrix/i.test(ua)) return
 
           var pick = null
 

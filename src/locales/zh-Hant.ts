@@ -1,4 +1,5 @@
 /** 繁體中文（台灣）文案。鍵結構與 zh-Hans.ts 完全一致。 */
+import { termsZhHant, privacyZhHant } from './legal/zh-Hant'
 import type { Translation } from './index'
 
 const zhHant: Translation = {
@@ -82,6 +83,28 @@ const zhHant: Translation = {
     community: '玩家社群',
   },
 
+  im: {
+    title: '訊息',
+    close: '關閉',
+    back: '返回',
+    empty: '還沒有訊息',
+    emptyHint: '在留言區點別人的頭像，就能傳私訊給他。',
+    connecting: '正在連線…',
+    kicked: '這個帳號在別處登入了',
+    kickedHint: '同一個帳號同時只能有一個分頁在線。想在這個分頁聊天，點下面重新連線。',
+    error: '連線失敗',
+    reconnect: '重新連線',
+    placeholder: '說點什麼…',
+    send: '傳送',
+    sending: '傳送中…',
+    sendFailed: '沒傳出去，再試一次',
+    loadMore: '看更早的訊息',
+    unknownUser: '未知使用者',
+    dm: '私訊',
+    dmUnavailable: '站內訊息暫時無法使用',
+    retry: '重試',
+    notConnected: '連線斷了，訊息沒傳出去',
+  },
   topbar: {
     downloadApp: '下載 App',
     openMenu: '開啟選單',
@@ -429,6 +452,9 @@ const zhHant: Translation = {
     errorTotalTooLarge: '附件合計 {total}，超過 {max} 的上限，大的那幾個請改填下載連結',
   },
 
+  termsPage: termsZhHant,
+  privacyPage: privacyZhHant,
+
   aboutPage: {
     seoTitle: '關於 8BitGo',
     seoDescription: '了解 8BitGo 如何從一個存放個人遊戲 ROM 備份的網站，成長為可在瀏覽器中執行 GBA、NES 等復古遊戲的平台。',
@@ -484,6 +510,8 @@ const zhHant: Translation = {
     noDescription: '還沒有描述',
     emptyCover: '還沒有遊戲',
     gameCount: '{n} 款遊戲',
+    viewCount: '{n} 人看過',
+    viewCountHint: '按人計：同一個人看多少次都算一次，作者本人不計',
     empty: '還沒有人建過合集，來當第一個吧',
     mine: '我的合集',
     mineEmpty: '你還沒有建過合集',
@@ -664,10 +692,6 @@ const zhHant: Translation = {
     appsDesc: '體感控制器、語音控制器與 AI 影片剪輯等擴充功能，正在陸續開放。',
     aboutTitle: '關於我們',
     aboutDesc: '8BitGo 由一群熱愛復古遊戲的開發者創立，目標是讓經典遊戲在瀏覽器裡重獲新生。',
-    termsTitle: '服務條款',
-    termsDesc: '服務條款內容整理中。',
-    privacyTitle: '隱私權政策',
-    privacyDesc: '隱私權政策內容整理中。我們承諾：本機 ROM 只在瀏覽器內讀取，不會上傳。',
     tvDesc: '24 小時不間斷的復古遊戲直播頻道。',
     fallbackTitle: '即將推出',
     fallbackDesc: '該功能正在開發中。',

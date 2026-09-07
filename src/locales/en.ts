@@ -1,6 +1,7 @@
 /** English UI strings. Key structure mirrors zh-Hans.ts exactly. */
 import type { Translation } from './index'
 import { aboutEnglish } from './about'
+import { termsEnglish, privacyEnglish } from './legal/en'
 
 const en: Translation = {
   /* ---------------- Common ---------------- */
@@ -88,6 +89,28 @@ const en: Translation = {
   },
 
   /* ---------------- Top bar ---------------- */
+  im: {
+    title: 'Messages',
+    close: 'Close',
+    back: 'Back',
+    empty: 'No messages yet',
+    emptyHint: "Tap someone's avatar in the comments to send them a direct message.",
+    connecting: 'Connecting…',
+    kicked: 'Signed in somewhere else',
+    kickedHint: 'One account can only be online in one tab at a time. To chat in this tab, reconnect below.',
+    error: "Couldn't connect",
+    reconnect: 'Reconnect',
+    placeholder: 'Say something…',
+    send: 'Send',
+    sending: 'Sending…',
+    sendFailed: "Didn't go through — try again",
+    loadMore: 'Load earlier messages',
+    unknownUser: 'Unknown user',
+    dm: 'Message',
+    dmUnavailable: 'Messages are unavailable right now',
+    retry: 'Retry',
+    notConnected: "Connection dropped — the message didn't go out",
+  },
   topbar: {
     downloadApp: 'Get the app',
     openMenu: 'Open menu',
@@ -450,6 +473,8 @@ const en: Translation = {
     errorTotalTooLarge: 'Attachments total {total}, over the {max} limit. Use the download link field for the big ones',
   },
 
+  termsPage: termsEnglish,
+  privacyPage: privacyEnglish,
   aboutPage: aboutEnglish,
 
   /* ---------------- Blog ---------------- */
@@ -473,6 +498,8 @@ const en: Translation = {
     noDescription: 'No description yet',
     emptyCover: 'No games yet',
     gameCount: '{n} games',
+    viewCount: '{n} viewers',
+    viewCountHint: 'Counted per person — repeat visits count once, and the author’s own visits are not counted',
     empty: 'No collections yet — be the first',
     mine: 'My collections',
     mineEmpty: 'You have not created a collection yet',
@@ -662,11 +689,6 @@ const en: Translation = {
     aboutTitle: 'About Us',
     aboutDesc:
       '8BitGo was built by a group of developers who love retro games, with one goal: bring the classics back to life in your browser.',
-    termsTitle: 'Terms of Service',
-    termsDesc: 'Our terms of service are being written up.',
-    privacyTitle: 'Privacy Policy',
-    privacyDesc:
-      'Our privacy policy is being written up. One promise up front: local ROMs are read inside your browser only and never uploaded.',
     tvDesc: 'A 24/7 retro gaming channel that never stops streaming.',
     fallbackTitle: 'Coming soon',
     fallbackDesc: "We're still building this one.",

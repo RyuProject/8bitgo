@@ -1,6 +1,7 @@
 /** Deutsche UI-Texte. Schlüsselstruktur exakt wie in zh-Hans.ts. */
 import type { Translation } from './index'
 import { aboutEnglish } from './about'
+import { termsEnglish, privacyEnglish } from './legal/en'
 
 const de: Translation = {
   /* ---------------- Allgemein ---------------- */
@@ -88,6 +89,28 @@ const de: Translation = {
   },
 
   /* ---------------- Topbar ---------------- */
+  im: {
+    title: 'Nachrichten',
+    close: 'Schließen',
+    back: 'Zurück',
+    empty: 'Noch keine Nachrichten',
+    emptyHint: 'Tippe in den Kommentaren auf ein Profilbild, um dieser Person direkt zu schreiben.',
+    connecting: 'Verbinde…',
+    kicked: 'Woanders angemeldet',
+    kickedHint: 'Ein Konto kann nur in einem Tab gleichzeitig online sein. Um hier zu chatten, unten neu verbinden.',
+    error: 'Verbindung fehlgeschlagen',
+    reconnect: 'Neu verbinden',
+    placeholder: 'Sag etwas…',
+    send: 'Senden',
+    sending: 'Sende…',
+    sendFailed: 'Nicht angekommen — nochmal versuchen',
+    loadMore: 'Ältere Nachrichten laden',
+    unknownUser: 'Unbekannter Nutzer',
+    dm: 'Nachricht',
+    dmUnavailable: 'Nachrichten sind gerade nicht verfügbar',
+    retry: 'Erneut versuchen',
+    notConnected: 'Verbindung weg — die Nachricht ist nicht raus',
+  },
   topbar: {
     downloadApp: 'App laden',
     openMenu: 'Menü öffnen',
@@ -450,6 +473,8 @@ const de: Translation = {
     errorTotalTooLarge: 'Anhänge insgesamt {total}, über dem Limit von {max}. Große Dateien bitte als Download-Link',
   },
 
+  termsPage: termsEnglish,
+  privacyPage: privacyEnglish,
   aboutPage: aboutEnglish,
 
   /* ---------------- Blog ---------------- */
@@ -473,6 +498,8 @@ const de: Translation = {
     noDescription: 'Noch keine Beschreibung',
     emptyCover: 'Noch keine Spiele',
     gameCount: '{n} Spiele',
+    viewCount: '{n} Besucher',
+    viewCountHint: 'Pro Person gezählt – wiederholte Besuche zählen einmal, eigene Besuche des Autors nicht',
     empty: 'Noch keine Sammlungen – sei der Erste',
     mine: 'Meine Sammlungen',
     mineEmpty: 'Du hast noch keine Sammlung erstellt',
@@ -663,11 +690,6 @@ const de: Translation = {
     aboutTitle: 'Über uns',
     aboutDesc:
       '8BitGo wurde von einer Gruppe Entwickler gebaut, die Retro-Spiele lieben – mit einem Ziel: die Klassiker im Browser wieder zum Leben zu erwecken.',
-    termsTitle: 'Nutzungsbedingungen',
-    termsDesc: 'Unsere Nutzungsbedingungen werden gerade verfasst.',
-    privacyTitle: 'Datenschutzerklärung',
-    privacyDesc:
-      'Unsere Datenschutzerklärung wird gerade verfasst. Ein Versprechen vorab: Lokale ROMs werden ausschließlich in deinem Browser gelesen und nie hochgeladen.',
     tvDesc: 'Ein Retro-Gaming-Kanal, der rund um die Uhr streamt.',
     fallbackTitle: 'Demnächst',
     fallbackDesc: 'Daran bauen wir noch.',

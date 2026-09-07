@@ -28,6 +28,8 @@ let users
 let collections
 let items
 let games
+let views
+let viewsBroken
 
 function reset() {
   users = {
@@ -39,6 +41,10 @@ function reset() {
     { id: 1, user_id: AUTHOR, title: '合金弹头', kind: '系列', description: '', hidden: 0, updated_at: new Date('2026-01-01T00:00:00Z'), created_at: new Date('2026-01-01T00:00:00Z') },
   ]
   items = [{ collection_id: 1, game_id: 10, created_at: new Date('2026-01-01T00:00:00Z'), position: null }]
+  // 浏览记录。主键 (collection_id, kind, identity)，和真表一样靠它判重
+  views = []
+  // 把 collection_views 的读写全变成抛错，用来验「表还没迁移」时的容错
+  viewsBroken = false
   games = [
     { id: 10, slug: 'metal-slug', title: 'Metal Slug', platform: 'arcade', hidden: 0 },
     { id: 11, slug: 'contra', title: 'Contra', platform: 'nes', hidden: 0 },
@@ -114,6 +120,32 @@ globalThis.__fakeDb = {
     if (q.startsWith('SELECT * FROM games WHERE id IN')) {
       const ids = params.slice(0, params.length).map(String)
       return games.filter((g) => ids.includes(String(g.id)) && !g.hidden).map((g) => ({ ...g }))
+    }
+    /*
+      浏览量的两条。viewsBroken 打开时抛错，模拟「collection_views 还没迁移」——
+      读写两侧都必须容错（读按 0、写按没数到），页面不能因为一个装饰性的数字挂掉。
+    */
+    if (q.startsWith('SELECT collection_id, COUNT(*) AS n FROM collection_views')) {
+      if (viewsBroken) throw new Error("Table 'collection_views' doesn't exist")
+      const ids = params.map(Number)
+      return ids
+        .map((cid) => ({ collection_id: cid, n: views.filter((v) => v.collection_id === cid).length }))
+        .filter((r) => r.n)
+    }
+    if (q.startsWith('INSERT IGNORE INTO collection_views')) {
+      if (viewsBroken) throw new Error("Table 'collection_views' doesn't exist")
+      const [cid, kind, identity] = [Number(params[0]), params[1], params[2]]
+      // 主键判重，和真表一致
+      if (views.some((v) => v.collection_id === cid && v.kind === kind && v.identity === identity)) {
+        return { affectedRows: 0 }
+      }
+      views.push({ collection_id: cid, kind, identity })
+      return { affectedRows: 1 }
+    }
+    if (q.startsWith('SELECT id, user_id, hidden FROM collections WHERE id')) {
+      return collections
+        .filter((c) => c.id === Number(params[0]))
+        .map((c) => ({ id: c.id, user_id: c.user_id, hidden: c.hidden }))
     }
     if (q.startsWith('INSERT IGNORE INTO collection_items')) {
       const [cid, gid] = [Number(params[0]), Number(params[1])]
@@ -364,6 +396,64 @@ try {
   ok((await call('POST', '/1/games', { as: AUTHOR, body: { gameSlug: '不存在的游戏' } })).status === 404, '加不存在的游戏 404')
   ok((await call('GET', '/999')).status === 404, '不存在的合集 404')
   ok((await call('GET', '/mine', { as: AUTHOR })).status === 200, '⭐ /mine 没有被 /:id 抢走（路由顺序）')
+
+  console.log('\n── 浏览量（多少人看过，按人去重） ──')
+  reset()
+  const viewCountOf = async (id = 1) => (await (await call('GET', `/${id}`)).json()).collection.viewCount
+
+  ok(await (async () => {
+    const r = await call('POST', '/1/view')
+    return r.status === 200 && (await r.json()).counted === true
+  })(), '游客浏览记上一次')
+  ok((await viewCountOf()) === 1, '详情里 viewCount 变成 1')
+  ok(!(await (await call('POST', '/1/view')).json()).counted, '⭐ 同一个游客再浏览不重复计数（按 IP 去重）')
+  ok((await viewCountOf()) === 1, '刷新多少次都还是 1 —— 这就是「多少人看过」的意思')
+
+  // 登录之后身份从 IP 换成账号，算另一个人（playcount.js 开头写明的取舍）
+  ok((await (await call('POST', '/1/view', { as: OTHER })).json()).counted, '路人登录后算一个新的人')
+  ok((await viewCountOf()) === 2, 'viewCount 变成 2')
+  ok(!(await (await call('POST', '/1/view', { as: OTHER })).json()).counted, '同一个账号再浏览不重复计数')
+
+  /*
+    ⭐⭐ 这两条是这一块最容易被后人顺手破坏的，都做过变异检查。
+  */
+  ok(!(await (await call('POST', '/1/view', { as: AUTHOR })).json()).counted, '⭐ 作者本人看自己的合集不算')
+  ok((await viewCountOf()) === 2, '⭐ 作者浏览之后 viewCount 一个都没涨')
+
+  const beforeTouch = collections[0].updated_at.getTime()
+  await call('POST', '/1/view')
+  await call('POST', '/1/view', { as: ADMIN })
+  ok(
+    collections[0].updated_at.getTime() === beforeTouch,
+    '⭐ 浏览绝不能碰 updated_at —— 列表按它排，一碰就把被围观的合集顶到最前面（建表注释点名说过「加个浏览计数之类」）',
+  )
+
+  ok((await (await call('POST', '/1/view', { as: ADMIN })).json()).counted === false, '管理员也是人，第二次不重复计数')
+
+  // 列表那一路也要带上，不然卡片上没有数字
+  ok(
+    (await (await call('GET', '/')).json()).items[0].viewCount === 3,
+    '列表里也带 viewCount（游客 + 路人 + 管理员 = 3，作者不算）',
+  )
+
+  console.log('\n── 浏览量：不存在 / 已下架 / 表没迁移 ──')
+  reset()
+  ok((await call('POST', '/999/view')).status === 404, '不存在的合集 404')
+  ok((await call('POST', '/abc/view')).status === 404, 'id 不是数字也 404，不是 400')
+  await call('PATCH', '/1/hidden', { as: ADMIN, body: { hidden: true } })
+  ok((await call('POST', '/1/view')).status === 404, '⭐ 已下架的合集 404（403 等于承认这里确实有个东西）')
+  ok(views.length === 0, '下架的合集一条浏览记录都不该留下')
+
+  reset()
+  viewsBroken = true
+  const brokenPost = await call('POST', '/1/view')
+  ok(brokenPost.status === 200, '⭐ 表还没迁移时上报不能 500')
+  ok((await brokenPost.json()).counted === false, '而是老实说「没数到」')
+  const brokenGet = await call('GET', '/1')
+  ok(brokenGet.status === 200, '⭐ 表还没迁移时详情页照常能看')
+  ok((await brokenGet.json()).collection.viewCount === 0, '数字按 0 处理')
+  ok((await call('GET', '/')).status === 200, '列表也照常 —— decorate 里它和封面是并列的，一抛就是整份 500')
+  viewsBroken = false
 
   server.close()
   console.log(`\n✅ 合集接口权限测试通过（${n} 项）`)

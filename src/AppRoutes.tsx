@@ -19,6 +19,8 @@ import { PostPage } from '@/pages/PostPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { ProfilePage } from '@/pages/ProfilePage'
 import { AboutPage } from '@/pages/AboutPage'
+import { TermsPage } from '@/pages/TermsPage'
+import { PrivacyPage } from '@/pages/PrivacyPage'
 import { SubmitGamePage } from '@/pages/SubmitGamePage'
 import { EmbedPage } from '@/pages/EmbedPage'
 import { OAuthCallbackPage } from '@/pages/OAuthCallbackPage'
@@ -44,8 +46,6 @@ const AdminData = lazyNamed(() => import('@/admin/AdminData'), 'AdminData')
 
 const COMING_SOON_ROUTES = [
   '/apps',
-  '/terms',
-  '/privacy',
   '/tv',
 ]
 
@@ -82,6 +82,10 @@ export function AppRoutes() {
           <Route path="/auth/callback" element={<OAuthCallbackPage />} />
           <Route path="/me" element={<ProfilePage />} />
           <Route path="/about" element={<AboutPage />} />
+          {/* 法律页。必须是静态 import（见上面那段注释）—— 应用商店和第三方登录的
+              审核会来抓这两个 URL，SSR 挂了等于审核看到空壳 */}
+          <Route path="/terms" element={<TermsPage />} />
+          <Route path="/privacy" element={<PrivacyPage />} />
           <Route path="/submit" element={<SubmitGamePage />} />
           {COMING_SOON_ROUTES.map((path) => (
             <Route key={path} path={path} element={<ComingSoonPage />} />

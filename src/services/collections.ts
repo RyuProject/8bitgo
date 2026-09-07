@@ -49,6 +49,19 @@ export function searchGamesForCollection(q: string, page = 1): Promise<Paged<Gam
   return api.get<Paged<Game>>(`/api/games?${sp.toString()}`)
 }
 
+/**
+ * 记一次合集浏览。
+ *
+ * 去重全在服务端：一个人一个合集只算一次（登录看账号 / 未登录看 IP 的 HMAC 摘要），
+ * **作者自己看自己的不算**。所以这里不需要防抖、也不用记「今天报过没有」——
+ * 重复调最多是白发一次请求，不会把数字刷上去。
+ *
+ * 调用方请 `.catch()` 掉：一个装饰性的数字不值得给用户看一句报错。
+ */
+export function reportCollectionView(id: number | string): Promise<{ ok: boolean; counted: boolean }> {
+  return api.post<{ ok: boolean; counted: boolean }>(`/api/collections/${encodeURIComponent(String(id))}/view`, {})
+}
+
 /** 加游戏。重复加入是幂等的：服务端返回 added=false，不报错 */
 export function addGameToCollection(id: number, gameSlug: string): Promise<{ ok: boolean; added: boolean }> {
   return api.post<{ ok: boolean; added: boolean }>(`/api/collections/${id}/games`, { gameSlug })

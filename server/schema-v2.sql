@@ -32,6 +32,9 @@ CREATE TABLE IF NOT EXISTS games (
   slug          VARCHAR(120)  NOT NULL,
   title         VARCHAR(200)  NOT NULL,
   title_zh      VARCHAR(200)  NULL,
+  -- 中文译名的繁体版：{"zh-Hant":"..."}。只有这一个键 —— 非中文界面刻意用原名。
+  -- 由 server/scripts/pretranslate.mjs 用 OpenCC 离线生成，改 title_zh 时清空。
+  title_i18n    JSON          NULL,
   -- 平台 id，取值见 src/data/platforms.ts（'nes' / 'snes' / 'psx' …）
   platform      VARCHAR(20)   NOT NULL,
   `year`        SMALLINT UNSIGNED NOT NULL DEFAULT 0,
@@ -224,11 +227,41 @@ CREATE TABLE IF NOT EXISTS game_plays (
   CONSTRAINT fk_gp_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ---------- 合集浏览量（多少人看过，按人去重） ----------
+-- 和 game_plays 是同一套身份规则（见 src/playcount.js）：
+--   kind = 'u'  identity = HMAC(账号 id)    已登录：换设备换 IP 都算同一个人
+--   kind = 'i'  identity = HMAC(客户端 IP)  未登录
+--
+-- 为什么是「多少人看过」而不是累计次数：合集没有「游戏跑起来」那种硬信号，
+-- 浏览就是打开页面 —— 不去重的话刷新、预取和爬虫就能把数字堆到四位数。
+-- 站长 2026-09-07 拍板取去重语义。
+--
+-- ⚠️ identity 必须是 ascii_bin，理由同 game_plays：base64url 区分大小写，
+--    用 utf8mb4_unicode_ci 的话 'aB…' 和 'Ab…' 会被当成同一个人、互相顶掉。
+--
+-- ⚠️ **作者本人的浏览不入库**（在 routes/collections.js 里拦掉），所以这张表的
+--    行数就是「除作者以外多少人看过」。别在读的时候再去减作者，减不出来 ——
+--    表里根本没有那一行。
+CREATE TABLE IF NOT EXISTS collection_views (
+  collection_id BIGINT UNSIGNED NOT NULL,
+  -- 'u' = 账号，'i' = IP
+  kind          CHAR(1)  CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  -- HMAC-SHA256 的 base64url，固定 43 个字符
+  identity      CHAR(43) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  viewed_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (collection_id, kind, identity),
+  CONSTRAINT fk_cv_collection FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ---------- 博客文章 ----------
 CREATE TABLE IF NOT EXISTS posts (
   id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
   slug        VARCHAR(120)  NOT NULL,
   title       VARCHAR(300)  NOT NULL,
+  -- 标题的七种非简体语言译文。文章标题只有中文一份（games 还有个英文原名 title 可用，
+  -- 文章没有），不存这一列的话八种语言的博客列表标题会完全相同 —— 那正是 GSC 把
+  -- /fr/blog 判成重复页的原因。zh-Hant 走 OpenCC，其余走火山，都在发布时预生成。
+  title_i18n  JSON          NULL,
   excerpt     TEXT          NULL,
   -- 文章没有英文版（和游戏不同，post 整个就没出过多语言），按需翻译缓存全在这两个 JSON 列里。
   -- excerpt 用作列表卡片预览，content 是详情页 Markdown 正文。后台改 excerpt / content 时清空缓存

@@ -960,4 +960,244 @@
     <changefreq>monthly</changefreq>
     <priority>0.5</priority>
   </url>
+  <url>
+    <loc>https://8bitgo.com/terms</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://8bitgo.com/terms" />
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://8bitgo.com/zh-Hant/terms" />
+    <xhtml:link rel="alternate" hreflang="en" href="https://8bitgo.com/en/terms" />
+    <xhtml:link rel="alternate" hreflang="es" href="https://8bitgo.com/es/terms" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://8bitgo.com/fr/terms" />
+    <xhtml:link rel="alternate" hreflang="it" href="https://8bitgo.com/it/terms" />
+    <xhtml:link rel="alternate" hreflang="de" href="https://8bitgo.com/de/terms" />
+    <xhtml:link rel="alternate" hreflang="ja" href="https://8bitgo.com/ja/terms" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://8bitgo.com/en/terms" />
+    <lastmod>2026-09-07</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://8bitgo.com/zh-Hant/terms</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://8bitgo.com/terms" />
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://8bitgo.com/zh-Hant/terms" />
+    <xhtml:link rel="alternate" hreflang="en" href="https://8bitgo.com/en/terms" />
+    <xhtml:link rel="alternate" hreflang="es" href="https://8bitgo.com/es/terms" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://8bitgo.com/fr/terms" />
+    <xhtml:link rel="alternate" hreflang="it" href="https://8bitgo.com/it/terms" />
+    <xhtml:link rel="alternate" hreflang="de" href="https://8bitgo.com/de/terms" />
+    <xhtml:link rel="alternate" hreflang="ja" href="https://8bitgo.com/ja/terms" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://8bitgo.com/en/terms" />
+    <lastmod>2026-09-07</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://8bitgo.com/en/terms</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://8bitgo.com/terms" />
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://8bitgo.com/zh-Hant/terms" />
+    <xhtml:link rel="alternate" hreflang="en" href="https://8bitgo.com/en/terms" />
+    <xhtml:link rel="alternate" hreflang="es" href="https://8bitgo.com/es/terms" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://8bitgo.com/fr/terms" />
+    <xhtml:link rel="alternate" hreflang="it" href="https://8bitgo.com/it/terms" />
+    <xhtml:link rel="alternate" hreflang="de" href="https://8bitgo.com/de/terms" />
+    <xhtml:link rel="alternate" hreflang="ja" href="https://8bitgo.com/ja/terms" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://8bitgo.com/en/terms" />
+    <lastmod>2026-09-07</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://8bitgo.com/es/terms</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://8bitgo.com/terms" />
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://8bitgo.com/zh-Hant/terms" />
+    <xhtml:link rel="alternate" hreflang="en" href="https://8bitgo.com/en/terms" />
+    <xhtml:link rel="alternate" hreflang="es" href="https://8bitgo.com/es/terms" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://8bitgo.com/fr/terms" />
+    <xhtml:link rel="alternate" hreflang="it" href="https://8bitgo.com/it/terms" />
+    <xhtml:link rel="alternate" hreflang="de" href="https://8bitgo.com/de/terms" />
+    <xhtml:link rel="alternate" hreflang="ja" href="https://8bitgo.com/ja/terms" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://8bitgo.com/en/terms" />
+    <lastmod>2026-09-07</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://8bitgo.com/fr/terms</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://8bitgo.com/terms" />
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://8bitgo.com/zh-Hant/terms" />
+    <xhtml:link rel="alternate" hreflang="en" href="https://8bitgo.com/en/terms" />
+    <xhtml:link rel="alternate" hreflang="es" href="https://8bitgo.com/es/terms" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://8bitgo.com/fr/terms" />
+    <xhtml:link rel="alternate" hreflang="it" href="https://8bitgo.com/it/terms" />
+    <xhtml:link rel="alternate" hreflang="de" href="https://8bitgo.com/de/terms" />
+    <xhtml:link rel="alternate" hreflang="ja" href="https://8bitgo.com/ja/terms" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://8bitgo.com/en/terms" />
+    <lastmod>2026-09-07</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://8bitgo.com/it/terms</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://8bitgo.com/terms" />
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://8bitgo.com/zh-Hant/terms" />
+    <xhtml:link rel="alternate" hreflang="en" href="https://8bitgo.com/en/terms" />
+    <xhtml:link rel="alternate" hreflang="es" href="https://8bitgo.com/es/terms" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://8bitgo.com/fr/terms" />
+    <xhtml:link rel="alternate" hreflang="it" href="https://8bitgo.com/it/terms" />
+    <xhtml:link rel="alternate" hreflang="de" href="https://8bitgo.com/de/terms" />
+    <xhtml:link rel="alternate" hreflang="ja" href="https://8bitgo.com/ja/terms" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://8bitgo.com/en/terms" />
+    <lastmod>2026-09-07</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://8bitgo.com/de/terms</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://8bitgo.com/terms" />
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://8bitgo.com/zh-Hant/terms" />
+    <xhtml:link rel="alternate" hreflang="en" href="https://8bitgo.com/en/terms" />
+    <xhtml:link rel="alternate" hreflang="es" href="https://8bitgo.com/es/terms" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://8bitgo.com/fr/terms" />
+    <xhtml:link rel="alternate" hreflang="it" href="https://8bitgo.com/it/terms" />
+    <xhtml:link rel="alternate" hreflang="de" href="https://8bitgo.com/de/terms" />
+    <xhtml:link rel="alternate" hreflang="ja" href="https://8bitgo.com/ja/terms" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://8bitgo.com/en/terms" />
+    <lastmod>2026-09-07</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://8bitgo.com/ja/terms</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://8bitgo.com/terms" />
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://8bitgo.com/zh-Hant/terms" />
+    <xhtml:link rel="alternate" hreflang="en" href="https://8bitgo.com/en/terms" />
+    <xhtml:link rel="alternate" hreflang="es" href="https://8bitgo.com/es/terms" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://8bitgo.com/fr/terms" />
+    <xhtml:link rel="alternate" hreflang="it" href="https://8bitgo.com/it/terms" />
+    <xhtml:link rel="alternate" hreflang="de" href="https://8bitgo.com/de/terms" />
+    <xhtml:link rel="alternate" hreflang="ja" href="https://8bitgo.com/ja/terms" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://8bitgo.com/en/terms" />
+    <lastmod>2026-09-07</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://8bitgo.com/privacy</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://8bitgo.com/privacy" />
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://8bitgo.com/zh-Hant/privacy" />
+    <xhtml:link rel="alternate" hreflang="en" href="https://8bitgo.com/en/privacy" />
+    <xhtml:link rel="alternate" hreflang="es" href="https://8bitgo.com/es/privacy" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://8bitgo.com/fr/privacy" />
+    <xhtml:link rel="alternate" hreflang="it" href="https://8bitgo.com/it/privacy" />
+    <xhtml:link rel="alternate" hreflang="de" href="https://8bitgo.com/de/privacy" />
+    <xhtml:link rel="alternate" hreflang="ja" href="https://8bitgo.com/ja/privacy" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://8bitgo.com/en/privacy" />
+    <lastmod>2026-09-07</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://8bitgo.com/zh-Hant/privacy</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://8bitgo.com/privacy" />
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://8bitgo.com/zh-Hant/privacy" />
+    <xhtml:link rel="alternate" hreflang="en" href="https://8bitgo.com/en/privacy" />
+    <xhtml:link rel="alternate" hreflang="es" href="https://8bitgo.com/es/privacy" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://8bitgo.com/fr/privacy" />
+    <xhtml:link rel="alternate" hreflang="it" href="https://8bitgo.com/it/privacy" />
+    <xhtml:link rel="alternate" hreflang="de" href="https://8bitgo.com/de/privacy" />
+    <xhtml:link rel="alternate" hreflang="ja" href="https://8bitgo.com/ja/privacy" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://8bitgo.com/en/privacy" />
+    <lastmod>2026-09-07</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://8bitgo.com/en/privacy</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://8bitgo.com/privacy" />
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://8bitgo.com/zh-Hant/privacy" />
+    <xhtml:link rel="alternate" hreflang="en" href="https://8bitgo.com/en/privacy" />
+    <xhtml:link rel="alternate" hreflang="es" href="https://8bitgo.com/es/privacy" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://8bitgo.com/fr/privacy" />
+    <xhtml:link rel="alternate" hreflang="it" href="https://8bitgo.com/it/privacy" />
+    <xhtml:link rel="alternate" hreflang="de" href="https://8bitgo.com/de/privacy" />
+    <xhtml:link rel="alternate" hreflang="ja" href="https://8bitgo.com/ja/privacy" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://8bitgo.com/en/privacy" />
+    <lastmod>2026-09-07</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://8bitgo.com/es/privacy</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://8bitgo.com/privacy" />
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://8bitgo.com/zh-Hant/privacy" />
+    <xhtml:link rel="alternate" hreflang="en" href="https://8bitgo.com/en/privacy" />
+    <xhtml:link rel="alternate" hreflang="es" href="https://8bitgo.com/es/privacy" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://8bitgo.com/fr/privacy" />
+    <xhtml:link rel="alternate" hreflang="it" href="https://8bitgo.com/it/privacy" />
+    <xhtml:link rel="alternate" hreflang="de" href="https://8bitgo.com/de/privacy" />
+    <xhtml:link rel="alternate" hreflang="ja" href="https://8bitgo.com/ja/privacy" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://8bitgo.com/en/privacy" />
+    <lastmod>2026-09-07</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://8bitgo.com/fr/privacy</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://8bitgo.com/privacy" />
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://8bitgo.com/zh-Hant/privacy" />
+    <xhtml:link rel="alternate" hreflang="en" href="https://8bitgo.com/en/privacy" />
+    <xhtml:link rel="alternate" hreflang="es" href="https://8bitgo.com/es/privacy" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://8bitgo.com/fr/privacy" />
+    <xhtml:link rel="alternate" hreflang="it" href="https://8bitgo.com/it/privacy" />
+    <xhtml:link rel="alternate" hreflang="de" href="https://8bitgo.com/de/privacy" />
+    <xhtml:link rel="alternate" hreflang="ja" href="https://8bitgo.com/ja/privacy" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://8bitgo.com/en/privacy" />
+    <lastmod>2026-09-07</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://8bitgo.com/it/privacy</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://8bitgo.com/privacy" />
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://8bitgo.com/zh-Hant/privacy" />
+    <xhtml:link rel="alternate" hreflang="en" href="https://8bitgo.com/en/privacy" />
+    <xhtml:link rel="alternate" hreflang="es" href="https://8bitgo.com/es/privacy" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://8bitgo.com/fr/privacy" />
+    <xhtml:link rel="alternate" hreflang="it" href="https://8bitgo.com/it/privacy" />
+    <xhtml:link rel="alternate" hreflang="de" href="https://8bitgo.com/de/privacy" />
+    <xhtml:link rel="alternate" hreflang="ja" href="https://8bitgo.com/ja/privacy" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://8bitgo.com/en/privacy" />
+    <lastmod>2026-09-07</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://8bitgo.com/de/privacy</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://8bitgo.com/privacy" />
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://8bitgo.com/zh-Hant/privacy" />
+    <xhtml:link rel="alternate" hreflang="en" href="https://8bitgo.com/en/privacy" />
+    <xhtml:link rel="alternate" hreflang="es" href="https://8bitgo.com/es/privacy" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://8bitgo.com/fr/privacy" />
+    <xhtml:link rel="alternate" hreflang="it" href="https://8bitgo.com/it/privacy" />
+    <xhtml:link rel="alternate" hreflang="de" href="https://8bitgo.com/de/privacy" />
+    <xhtml:link rel="alternate" hreflang="ja" href="https://8bitgo.com/ja/privacy" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://8bitgo.com/en/privacy" />
+    <lastmod>2026-09-07</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://8bitgo.com/ja/privacy</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://8bitgo.com/privacy" />
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://8bitgo.com/zh-Hant/privacy" />
+    <xhtml:link rel="alternate" hreflang="en" href="https://8bitgo.com/en/privacy" />
+    <xhtml:link rel="alternate" hreflang="es" href="https://8bitgo.com/es/privacy" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://8bitgo.com/fr/privacy" />
+    <xhtml:link rel="alternate" hreflang="it" href="https://8bitgo.com/it/privacy" />
+    <xhtml:link rel="alternate" hreflang="de" href="https://8bitgo.com/de/privacy" />
+    <xhtml:link rel="alternate" hreflang="ja" href="https://8bitgo.com/ja/privacy" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://8bitgo.com/en/privacy" />
+    <lastmod>2026-09-07</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
 </urlset>

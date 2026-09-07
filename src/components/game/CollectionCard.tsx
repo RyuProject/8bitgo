@@ -69,8 +69,19 @@ export function CollectionCard({ collection, className, priority }: Props) {
             </span>
             <span className="truncate">{collection.author.nickname}</span>
           </span>
-          <span className="shrink-0" title={fmt(t.collections.gameCount, { n: String(collection.gameCount) })}>
-            🎮 {collection.gameCount}
+          <span className="flex shrink-0 items-center gap-1.5">
+            {/*
+              浏览量 0 就不画 —— 一排新建的合集全挂着「👁 0」看着像坏了。
+              详情页那处相反（0 也显示，作者需要知道），理由写在那边。
+            */}
+            {collection.viewCount > 0 && (
+              <span title={fmt(t.collections.viewCount, { n: String(collection.viewCount) })}>
+                👁 {collection.viewCount}
+              </span>
+            )}
+            <span title={fmt(t.collections.gameCount, { n: String(collection.gameCount) })}>
+              🎮 {collection.gameCount}
+            </span>
           </span>
         </div>
       </div>

@@ -38,6 +38,7 @@
  */
 import { Router } from 'express'
 import { createHmac } from 'node:crypto'
+import { registerTurnPath, turnHealthSnapshot, turnPathDown } from '../turnProbe.js'
 
 export const iceRouter = Router()
 
@@ -177,8 +178,75 @@ async function cloudflareIce() {
   return st.inflight
 }
 
+/**
+ * 自建 / 托管那两路短期凭证的有效期。
+ *
+ * ⚠️ 这个值同时是**「ICE 接口被缓存多久还不至于出事」的上限**：coturn 校验 username 里的
+ * 时间戳，过期即 401。默认 3600 意味着缓存超过一小时那一路就对所有人废了。
+ * 前面那层 CDN 只要没把 /api/ 排除出缓存规则，就应该把这个值调大（43200 = 12 小时），
+ * 让自建这路和 CF 那路（TTL 24 小时）的抗缓存能力对齐 ——
+ * 别再出现「CF 活着、自建早死了」这种半死不活最难查的状态。
+ */
+const iceTtl = () => Math.max(300, Math.min(86400, Number(process.env.TURN_TTL_SEC) || 3600))
+
+/* ---------------- 三路 TURN 的配置读取（探活和下发共用一份） ---------------- */
+
+const selfHostedUrls = () => list(process.env.TURN_URLS)
+const managedUrls = () => list(process.env.TURN_BACKUP_URLS)
+
+/** 探活时用的签名函数：**每次现签**，不能存签好的凭证（见 turnProbe.js 里 registerTurnPath 的注释） */
+function mintSelfHosted() {
+  const secret = (process.env.TURN_SECRET || '').trim()
+  if (!secret) throw new Error('TURN_SECRET 没配')
+  return turnCredentials(secret, iceTtl(), 'probe')
+}
+
+function mintManaged() {
+  const secret = (process.env.TURN_BACKUP_SECRET || '').trim()
+  if (secret) return turnCredentials(secret, iceTtl(), 'probe')
+  const username = (process.env.TURN_BACKUP_USERNAME || '').trim()
+  const credential = (process.env.TURN_BACKUP_CREDENTIAL || '').trim()
+  if (!username || !credential) throw new Error('托管那路的凭证没配全')
+  return { username, credential }
+}
+
+async function mintCloudflare() {
+  const cf = await cloudflareIce()
+  const t = cf?.turns?.[0]
+  if (!t) throw new Error('CF 那路还没领到凭证')
+  return { username: t.username, credential: t.credential }
+}
+
+/**
+ * 把当前配到的几路 TURN 登记给探针。
+ *
+ * 每次请求都调一遍（很便宜，就是覆盖几个 Map 条目），这样运维改了 env 不用重启也能生效 ——
+ * 和这个文件里「所有配置按请求现读」的约定一致。src/index.js 启动时也调一次，
+ * 免得开站到第一个玩家之间那段时间探针没东西可探。
+ */
+export async function registerTurnProbeTargets() {
+  const self = selfHostedUrls()
+  registerTurnPath('self-hosted', (process.env.TURN_SECRET || '').trim() ? self : [], mintSelfHosted)
+
+  const managed = managedUrls()
+  const hasManagedCred =
+    (process.env.TURN_BACKUP_SECRET || '').trim() ||
+    ((process.env.TURN_BACKUP_USERNAME || '').trim() && (process.env.TURN_BACKUP_CREDENTIAL || '').trim())
+  registerTurnPath('managed', hasManagedCred ? managed : [], mintManaged)
+
+  // CF 的地址是它现发的，所以要先有一份凭证才知道探哪儿
+  let cfUrls = []
+  try {
+    const cf = await cloudflareIce()
+    cfUrls = (cf?.turns || []).flatMap((t) => t.urls)
+  } catch {
+    cfUrls = []
+  }
+  registerTurnPath('cloudflare', cfUrls, mintCloudflare)
+}
+
 iceRouter.get('/', async (req, res) => {
-  const ttl = Math.max(300, Math.min(86400, Number(process.env.TURN_TTL_SEC) || 3600))
+  const ttl = iceTtl()
   // 标签只用来在 coturn 日志里区分来源，不参与鉴权，所以放个粗粒度的标识就行
   const label = String(req.query.u || 'guest').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 24) || 'guest'
 
@@ -199,40 +267,83 @@ iceRouter.get('/', async (req, res) => {
   const stunUrls = [...(stun.length ? stun : DEFAULT_STUN), ...(cf?.stunUrls ?? [])]
   const iceServers = [{ urls: [...new Set(stunUrls)] }]
 
+  /**
+   * 三路先各自算出来，**最后再决定发哪几路** —— 切换就发生在这一步。
+   *
+   * WebRTC 那边没有串行回退（所有服务器一起收集候选），所以「自建挂了换 CF」
+   * 唯一能做手脚的地方就是这里：探针说某一路是死的，就干脆不把它交给浏览器。
+   * 好处不只是省掉那条路白耗的候选收集时间，更重要的是**故障不再是静默的**：
+   * turnSources 会少掉那一路，turnHealth 里写着为什么。
+   */
+  const candidates = []
+
   // ── 1. 自建 coturn ──
-  const turnUrls = list(process.env.TURN_URLS)
+  const turnUrls = selfHostedUrls()
   const secret = (process.env.TURN_SECRET || '').trim()
   if (turnUrls.length && secret) {
     const cred = turnCredentials(secret, ttl, label)
-    expiries.push(cred.expiry)
-    iceServers.push({ urls: turnUrls, username: cred.username, credential: cred.credential })
-    turnSources.push('self-hosted')
+    candidates.push({
+      name: 'self-hosted',
+      server: { urls: turnUrls, username: cred.username, credential: cred.credential },
+      expiry: cred.expiry,
+    })
   }
 
   // ── 2. 托管服务（固定账号密码，或同样的 HMAC 约定）──
-  const backupUrls = list(process.env.TURN_BACKUP_URLS)
+  const backupUrls = managedUrls()
   const backupSecret = (process.env.TURN_BACKUP_SECRET || '').trim()
   const backupUser = (process.env.TURN_BACKUP_USERNAME || '').trim()
   const backupCred = (process.env.TURN_BACKUP_CREDENTIAL || '').trim()
   if (backupUrls.length) {
     if (backupSecret) {
       const cred = turnCredentials(backupSecret, ttl, label)
-      expiries.push(cred.expiry)
-      iceServers.push({ urls: backupUrls, username: cred.username, credential: cred.credential })
-      turnSources.push('managed')
+      candidates.push({
+        name: 'managed',
+        server: { urls: backupUrls, username: cred.username, credential: cred.credential },
+        expiry: cred.expiry,
+      })
     } else if (backupUser && backupCred) {
       // 固定账号密码：不会过期，所以不进 expiries
-      iceServers.push({ urls: backupUrls, username: backupUser, credential: backupCred })
-      turnSources.push('managed')
+      candidates.push({
+        name: 'managed',
+        server: { urls: backupUrls, username: backupUser, credential: backupCred },
+      })
     }
   }
 
   // ── 3. Cloudflare Realtime TURN ──
   if (cf?.turns?.length) {
-    expiries.push(cf.expiry)
-    for (const t of cf.turns) iceServers.push({ urls: t.urls, username: t.username, credential: t.credential })
-    turnSources.push('cloudflare')
+    for (const t of cf.turns) {
+      candidates.push({
+        name: 'cloudflare',
+        server: { urls: t.urls, username: t.username, credential: t.credential },
+        expiry: cf.expiry,
+      })
+    }
   }
+
+  /**
+   * ⚠️ **安全阀：摘掉之后一路都不剩的话，照旧全发。**
+   *
+   * 探针是**从服务器**发出去的，所以它能可靠地判「坏」，判不了「全世界都到得了」。
+   * 万一它把唯一一路误判死了，宁可发一条可能坏的中继，也不能让所有人退回纯 STUN
+   * （只有 host/srflx 候选时，一到两成的玩家组合是**必然**连不通的）。
+   * 这种时候 hasTurn 如实报 false —— 观众端据此把「网络之间没有通路」和「主播下播了」分开。
+   */
+  const downNames = new Set(candidates.filter((c) => turnPathDown(c.name)).map((c) => c.name))
+  const kept = candidates.filter((c) => !downNames.has(c.name))
+  const serving = kept.length ? kept : candidates
+  const turnDropped = kept.length ? [...downNames] : []
+
+  for (const c of serving) {
+    iceServers.push(c.server)
+    if (c.expiry) expiries.push(c.expiry)
+    if (!turnSources.includes(c.name)) turnSources.push(c.name)
+  }
+
+  // 顺手把「现在配到了哪几路」同步给探针（很便宜，改了 env 不用重启）。
+  // **不 await** —— 这个接口在开局的关键路径上，一毫秒都不该为探活的簿记等。
+  registerTurnProbeTargets().catch(() => {})
 
   /**
    * 凭证会过期，别让 CDN / 浏览器缓存住。
@@ -252,12 +363,24 @@ iceRouter.get('/', async (req, res) => {
   res.set('Cloudflare-CDN-Cache-Control', 'no-store')
   res.json({
     iceServers,
-    /** 有没有 TURN 兜底。前端据此决定要不要提示「可能连不通」 */
-    hasTurn: turnSources.length > 0,
+    /**
+     * 有没有**活着的** TURN 兜底。前端据此决定要不要提示「可能连不通」。
+     * 注意：探针把所有路都判死时 iceServers 里其实还留着它们（见上面那个安全阀），
+     * 但这里如实报 false —— 别骗观众端「有中继」。
+     */
+    hasTurn: kept.length > 0,
     /** 配了几路 TURN */
     turnCount: turnSources.length,
     /** 分别是哪几路（self-hosted / managed / cloudflare）—— 自查用 */
     turnSources,
+    /**
+     * 探活把哪几路摘掉了。**这就是「自动切换」发生过的凭据** ——
+     * 线上一 curl 就知道：`turnDropped: ["self-hosted"]` 意味着现在 CF 在扛全部中继流量。
+     * 详细原因（错误码 + 该去查哪一行配置）在 GET /api/diag 的 turn 段里。
+     */
+    turnDropped,
+    /** 每一路现在的状态：up / down / unknown（还没探过，一律按能用处理）*/
+    turnHealth: turnHealthSnapshot(),
     /** 最早的凭证过期时间（unix 秒）；0 表示没有会过期的凭证，无需续期 */
     expiry: expiries.length ? Math.min(...expiries) : 0,
     ttl,

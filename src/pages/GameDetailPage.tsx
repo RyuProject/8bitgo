@@ -21,6 +21,7 @@ import { useT, fmt } from '@/services/i18n'
 import { getLang } from '@/services/lang'
 import { gameDescription, gameTitle, genreLabel, needsTranslation, platformDesc, platformLabel } from '@/services/i18nData'
 import { EmulatorPlayer, preloadPlayer } from '@/emulator/PlayerChunk'
+import { stageHeightCap } from '@/emulator/screenAspect'
 import { IsolatedPlayCard } from '@/components/game/IsolatedPlayCard'
 import { GameCover } from '@/components/game/GameCover'
 import { GameAgeGuard } from '@/components/game/AgeGate'
@@ -62,13 +63,17 @@ export function GameDetailPage() {
   const related = state.data?.related ?? []
   const { immersive, setImmersive } = useShell()
   /**
-   * 播放器那一块的限宽 —— 按视口**高度**算，理由和取舍见下面播放器上方那段注释。
+   * 播放器那一块的**高度**上限（2026-09-07 从「限宽 + 居中」改过来的，站长拿红线标了要对齐）。
    *
-   * 逐个发给「真的是 16:9 的那几块」（播放器 / 年龄门 / 跨源隔离的入口卡），
-   * **不套在它们外面那一层**：套外面的话播放器下面那条弹幕输入框会跟着变窄，
-   * 和内容列对不齐。
+   * 限宽那一版把 16:9 的框两侧缩进、和底下的标题 / 资料区对不齐；限高之后框铺满内容列、
+   * 边缘对齐，而画面（object-fit: contain）在框内左右留黑边，**尺寸一模一样**。
+   * 完整理由见 screenAspect.ts 的 stageHeightCap。
+   *
+   * 发给年龄门和跨源入口卡，**落在它们内层那个 16:9 上**（不是外框，外框是 overflow-hidden）。
+   * **播放器不用它**：全屏 / 游玩布局那两种铺满视口的形态不能被 max-h 夹住，
+   * 所以播放器在自己那个普通分支里挂同一个 stageHeightCap。
    */
-  const playerCap = cx('mx-auto w-full', immersive ? 'max-w-[calc((100dvh-7rem)*16/9)]' : 'lg:max-w-[calc((100dvh-10rem)*16/9)]')
+  const stageCap = stageHeightCap(immersive)
   const user = useCurrentUser()
   const [shareOpen, setShareOpen] = useState(false)
   const [addToCollection, setAddToCollection] = useState(false)
@@ -209,48 +214,48 @@ export function GameDetailPage() {
 
   return (
     <div className="container-x py-6 sm:py-8">
-      {/* 面包屑 */}
-      <nav className="mb-4 text-xs text-muted" aria-label={t.common.breadcrumb}>
-        <Link to="/" className="hover:text-fg">
-          {t.common.home}
-        </Link>
-        <span className="mx-1.5">/</span>
-        <Link to="/games" className="hover:text-fg">
-          {t.common.library}
-        </Link>
-        <span className="mx-1.5">/</span>
-        <Link to={`/platforms/${platform.id}`} className="hover:text-fg">
-          {platformLabel(t, platform.id, platform.name)}
-        </Link>
-        <span className="mx-1.5">/</span>
-        <span className="text-fg">{seoTitle}</span>
-      </nav>
+      {/*
+        ⚠️ 可见的面包屑在 2026-09-07 按站长要求去掉了（这一页的主角是播放器，
+        顶上那行小字只是把画面往下推）。
+
+        **但 JSON-LD 的 breadcrumbSchema 留着**（见上面 useSeo 那一段）——
+        那是给搜索结果用的结构化数据，不占任何像素，去掉纯亏。
+        两者是两回事，别看到「面包屑没了」就把 schema 一起删。
+
+        站内返回路径没丢：平台名在右侧那张平台卡上是链接，游戏库在侧边栏里。
+      */}
 
       {/*
-        播放器独占一行、居中，宽度按**视口高度**倒推（16:9），而不是塞在 8/12 那一栏里。
+        播放器独占一行、**铺满内容列**，高度到视口就停，而不是塞在 8/12 那一栏里。
 
         这一页的主角是游戏。以前播放器只占左边 8 列、右边是平台卡和评论：1440 宽的屏幕上
         画面只有 750×420，4:3 的老游戏再让掉两侧黑边，实际画面 560 宽 —— 比一张封面图大不了多少，
-        而右边那一栏在玩的时候没人看。现在画面能铺到 1136×639（1440 屏）。
-        `max-w` 按 100dvh 算是为了矮屏（1280×720 的笔记本）：不限的话 16:9 铺满宽度比视口还高，
-        玩家得上下滚才看得全画面。10rem = 顶栏 4rem + 页面上下留白 + 面包屑，再留一指宽让下面的
-        标题露个头，暗示还有内容。沉浸模式下顶栏藏了，用原来那个 7rem。
-        只在 lg 以上生效：横屏手机（852×330）算出来只有 300 宽，会把没开始的播放器缩成一块小方块，
-        而那种屏一跑起来就进铺满视口的游玩布局，不该由这里管。
+        而右边那一栏在玩的时候没人看。
 
-        ⚠️ 这个限宽**不再套在外面这一层**（2026-09-07 改）。它按视口**高度**算，而这个理由
-        只对 16:9 的东西成立 —— 画面是 16:9、年龄门那两个框也是，但播放器下面那条弹幕输入框
-        不是。套在外层的时候那条输入框跟着白挨了限宽，比底下的标题和资料区窄一截，
-        看着像没对齐（站长报的）。所以现在 `playerCap` 逐个交给真正需要它的那几块，
-        外层只保留内容列的宽度。**别为了少写一处又把它挪回外层。**
+        ── 为什么是限高，不是限宽（2026-09-07 改，站长拿红线标了要对齐）──
+        第一版是给 16:9 的框设**宽度**上限 `(100dvh - 10rem) * 16/9` 再居中，为的是矮屏
+        （1280×720 的笔记本）上 16:9 铺满宽度会比视口还高、玩家得滚着玩。代价是框两侧缩进，
+        **和底下的标题、资料区对不齐**，一眼看过去像坏了。
+        现在改成框铺满内容列、设**高度**上限：画面是 object-fit:contain，于是在框内左右留黑边 ——
+        **画面尺寸一模一样**（受同一个高度约束），黑边只是从「框外的页面底色」搬进了「框内的黑」。
+        矮屏那条约束一点没放松。完整推导在 screenAspect.ts 的 stageHeightCap。
+
+        10rem = 顶栏 4rem + 页面上下留白 + 再留一指宽让下面的标题露个头，暗示还有内容。
+        （原来这笔预算里还含面包屑的一行，面包屑 09-07 去掉了 —— 那一份现在是标题多露的余量。
+        想让画面再大一点就把 10rem 往下调，但别调没了「标题露头」那一指。）
+        沉浸模式下顶栏藏了，用原来那个 7rem。
+        `lg:` 以上才限：横屏手机（852×330）一跑起来就进铺满视口的游玩布局，不该由这里管。
+
+        ⚠️ 上限**不套在外面这一层**，逐个交给真的是 16:9 的那几块。套外层的话播放器下面那条
+        弹幕输入框会跟着白挨，又变成对不齐。**别为了少写一处把它挪回外层。**
       */}
-      <div className="mx-auto w-full">
+      <div className="w-full">
         <GameAgeGuard
               /*
                 门卫拦下来时画的也是个 16:9 的框，得和播放器一样宽 ——
                 只给播放器不给门卫的话，「还在核对年龄」那一下框先宽一截、放行后又跳窄。
               */
-              className={playerCap}
+              className={stageCap}
               slug={game.slug}
               markedAdult={Boolean(game.adult)}
               backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority className="h-full w-full" />}
@@ -263,7 +268,7 @@ export function GameDetailPage() {
               */}
               {isolatedEmbed ? (
                 <IsolatedPlayCard
-                  className={playerCap}
+                  frameClassName={stageCap}
                   slug={game.slug}
                   gameName={game.title}
                   icon={game.icon}
@@ -271,7 +276,12 @@ export function GameDetailPage() {
                 />
               ) : (
               <EmulatorPlayer
-                className={playerCap}
+                /*
+                  只给满宽。**高度上限由播放器自己**在它那个「普通」分支里挂（stageHeightCap）——
+                  全屏时舞台是 fullscreen 元素、游玩布局时是 fixed 铺满视口，
+                  从这里挂 max-h 会把那两种形态一起夹住。
+                */
+                className="w-full"
                 key={game.slug}
                 platform={platform}
                 gameName={game.title}
@@ -313,9 +323,8 @@ export function GameDetailPage() {
           必须在玩家点「开始」**之前**就看得到 —— PS2 大多数游戏在浏览器里跑不起来，
           让人先等一分钟加载再看到一句报错，那是把他的时间和对站点的信任一起花掉。
 
-          注：它现在是**内容列**宽度，比上面那个播放器宽 —— 2026-09-07 把 playerCap 从外层
-          挪走之后的自然结果，是刻意留的。规矩是「只有 16:9 的那几块限宽，其余跟内容列」，
-          给这一条也补上 playerCap 反而会让它比头上的弹幕条窄，更像出了错。
+          注：它和播放器、标题、资料区**同宽**（都是内容列）。09-07 把限宽换成限高之后
+          这一整列就都对齐了，不需要再为它单独调什么。
         */}
         {EXPERIMENTAL_PLATFORMS.has(platform.id) && (
           <p className="mt-3 rounded-xl border border-coin/40 bg-coin-soft px-3 py-2 text-xs text-muted">
@@ -655,10 +664,14 @@ function plainText(source: string): string {
 function DetailSkeleton() {
   return (
     <div className="container-x py-6 sm:py-8" aria-busy="true">
-      <SkeletonBlock className="mb-4 h-3 w-64 max-w-[70vw]" />
-      {/* 和真页面同一套版位：播放器整行、按视口高度限宽（见上面那段注释），资料区在下面 —— 骨架和正文错位的话数据一到整页跳一下 */}
-      <div className="mx-auto w-full lg:max-w-[calc((100dvh-10rem)*16/9)]">
-        <SkeletonBlock className="aspect-[16/9] rounded-2xl border border-line" />
+      {/*
+        和真页面同一套版位：播放器整行**铺满内容列**、高度到视口就停，资料区在下面 ——
+        骨架和正文错位的话数据一到整页跳一下。
+        · 顶上那条面包屑占位跟着真页面一起去掉了（09-07）
+        · 限宽换成了限高（同 stageHeightCap），骨架不会进沉浸模式，所以只要非沉浸那一档
+      */}
+      <div className="w-full">
+        <SkeletonBlock className="aspect-[16/9] rounded-2xl border border-line lg:max-h-[calc(100dvh-10rem)]" />
       </div>
       <div className="mt-6 grid gap-8 lg:grid-cols-12">
         <div className="lg:col-span-8">

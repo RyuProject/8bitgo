@@ -6,6 +6,8 @@ import { gradientFor } from '@/lib/gradients'
 import { cx } from '@/lib/format'
 import { useSeo } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
+import { useLang } from '@/services/lang'
+import { postExcerpt, postTitle } from '@/services/i18nData'
 import { SkeletonBlock } from '@/components/ui/PageSkeleton'
 
 export function BlogPage() {
@@ -131,6 +133,15 @@ function Meta({ post }: { post: Post }) {
 }
 
 function FeaturedCard({ post }: { post: Post }) {
+  /**
+   * 标题和摘要都必须过 postTitle / postExcerpt。
+   *
+   * 2026-09-07 之前这两处直接渲染 `post.title` / `post.excerpt`，于是八种语言的
+   * 博客列表正文一字不差 —— 界面是法语、文章标题是简体中文。Search Console 因此把
+   * `/fr/blog` 判成「重复网页，Google 选择的规范网页与用户指定的不同」。
+   * 译文本身早就有列（excerptI18n），只是这个页面从来没读过。
+   */
+  const lang = useLang()
   return (
     <Link
       to={`/blog/${post.slug}`}
@@ -148,8 +159,8 @@ function FeaturedCard({ post }: { post: Post }) {
             </span>
           ))}
         </div>
-        <h2 className="mt-3 text-2xl font-bold leading-snug group-hover:text-brand-hover">{post.title}</h2>
-        <p className="mt-2 leading-relaxed text-muted">{post.excerpt}</p>
+        <h2 className="mt-3 text-2xl font-bold leading-snug group-hover:text-brand-hover">{postTitle(post, lang)}</h2>
+        <p className="mt-2 leading-relaxed text-muted">{postExcerpt(post, lang)}</p>
         <div className="mt-4">
           <Meta post={post} />
         </div>
@@ -159,6 +170,8 @@ function FeaturedCard({ post }: { post: Post }) {
 }
 
 function PostCard({ post }: { post: Post }) {
+  // 同 FeaturedCard —— 列表里的每一张卡都要按语言取，见那边的注释
+  const lang = useLang()
   return (
     <Link to={`/blog/${post.slug}`} className="group card-hover flex flex-col overflow-hidden rounded-card border border-line bg-surface hover:border-brand/60">
       <div className="relative grid aspect-[16/7] place-items-center text-5xl" style={{ background: gradientFor(post.slug) }} aria-hidden>
@@ -173,8 +186,8 @@ function PostCard({ post }: { post: Post }) {
             </span>
           ))}
         </div>
-        <h2 className="mt-2 text-base font-bold leading-snug group-hover:text-brand-hover">{post.title}</h2>
-        <p className="mt-1.5 line-clamp-2 text-sm leading-relaxed text-muted">{post.excerpt}</p>
+        <h2 className="mt-2 text-base font-bold leading-snug group-hover:text-brand-hover">{postTitle(post, lang)}</h2>
+        <p className="mt-1.5 line-clamp-2 text-sm leading-relaxed text-muted">{postExcerpt(post, lang)}</p>
         <div className="mt-auto pt-3">
           <Meta post={post} />
         </div>

@@ -17,6 +17,7 @@ import {
   timeAgo,
 } from '@/services/comments'
 import { cx } from '@/lib/format'
+import { DmAvatar } from '@/components/im/DmButton'
 import { FEATURES } from '@/config/features'
 import { Stars } from './StarRating'
 import { Button } from '@/components/ui/Button'
@@ -330,9 +331,14 @@ function CommentItem({
   return (
     <li className="py-3 first:pt-0">
       <div className="flex gap-2">
-        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand-soft text-base" aria-hidden>
-          {comment.author.avatar}
-        </span>
+        {/* 头像同时是私信入口（见 components/im/DmButton.tsx）。
+            没登录、或者点的是自己时，它会退回成一个和原来一模一样的 span。 */}
+        <DmAvatar
+          peerId={comment.author.id}
+          nick={comment.author.nickname}
+          avatar={comment.author.avatar}
+          className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand-soft text-base"
+        />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px]">
             <span className="max-w-[8rem] truncate text-xs font-semibold">{comment.author.nickname}</span>

@@ -125,6 +125,36 @@ const patches = [
     run: () => conn.query('ALTER TABLE `games` ADD COLUMN `description_i18n` JSON NULL AFTER `description_en`'),
   },
   {
+    name: 'games.title_i18n（游戏中文译名的繁体版）',
+    /**
+     * 形状：`{ "zh-Hant": "合金彈頭 3" }` —— **只有繁体这一个键**，而且只有 title_zh
+     * 填了的游戏才有。
+     *
+     * 为什么其它语言不进这张表：非中文界面**刻意**显示原名（通常是英文/日文原题），
+     * 见 `src/services/i18nData.ts` 的 gameTitle —— 不然英文页会出现
+     * 「Play 超级马力欧兄弟 Online」这种中英夹杂。所以要译名的只有繁体。
+     *
+     * 为什么不直接加一个 `title_zh_hant VARCHAR(200)`：形状跟 description_i18n 保持一致，
+     * 读写复用同一套 readI18nMap / JSON_SET 代码，将来真要给某个语言单独配名字也不用再迁一次。
+     */
+    table: 'games',
+    needed: async () => !(await hasColumn('games', 'title_i18n')),
+    run: () => conn.query('ALTER TABLE `games` ADD COLUMN `title_i18n` JSON NULL AFTER `title_zh`'),
+  },
+  {
+    name: 'posts.title_i18n（文章标题的各语言译文）',
+    /**
+     * 形状同 games.title_i18n，但**键是全部七种非简体语言**（含 en）。
+     *
+     * posts 和 games 在这里根本不同：games 有 `title`（原名，通常是英文）可以给非中文界面用，
+     * 而文章标题只有中文一份 —— 2026-09-07 之前 BlogPage 直接渲染 `post.title`，
+     * 于是八种语言的博客列表标题一模一样，Search Console 把 /fr/blog 判成重复页。
+     */
+    table: 'posts',
+    needed: async () => !(await hasColumn('posts', 'title_i18n')),
+    run: () => conn.query('ALTER TABLE `posts` ADD COLUMN `title_i18n` JSON NULL AFTER `title`'),
+  },
+  {
     name: 'posts.excerpt_i18n（文章摘要的按需翻译缓存）',
     // 形状同 games.description_i18n —— 站点八种语言里有两种已经有基准字段
     // （games 是 description / description_en；posts 是 excerpt 一份、母语基准），
@@ -514,6 +544,24 @@ const patches = [
       conn.query(`ALTER TABLE \`collection_items\`
         ADD COLUMN \`position\` INT NULL,
         ADD KEY \`idx_ci_col_pos\` (\`collection_id\`, \`position\`)`),
+  },
+  {
+    name: 'collection_views（合集浏览量，按人去重）',
+    table: null,
+    needed: async () => !(await hasTable('collection_views')),
+    // 老数据不用回填：没有历史浏览记录可考，从上线那一刻开始数
+    run: () =>
+      conn.query(
+        'CREATE TABLE IF NOT EXISTS `collection_views` (' +
+          '`collection_id` BIGINT UNSIGNED NOT NULL,' +
+          '`kind` CHAR(1) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,' +
+          // ⚠️ ascii_bin，理由同 game_plays：base64url 区分大小写
+          '`identity` CHAR(43) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,' +
+          '`viewed_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,' +
+          'PRIMARY KEY (`collection_id`, `kind`, `identity`),' +
+          'CONSTRAINT `fk_cv_collection` FOREIGN KEY (`collection_id`) REFERENCES `collections`(`id`) ON DELETE CASCADE' +
+          ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
+      ),
   },
   {
     name: 'games 的评分聚合列（rating_sum / rating_weight / rating_count）',

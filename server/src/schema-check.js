@@ -59,6 +59,10 @@ const EXPECTED_TABLES = [
   { table: 'collection_items', why: '合集里的游戏；缺了合集能建但加不进游戏、封面也取不出来' },
   { table: 'collection_items', column: 'position', why: '合集内手动排序；缺了合集详情整页 500（ORDER BY 找不到列）' },
   {
+    table: 'collection_views',
+    why: '合集浏览量；**缺了不影响任何页面**（读写两侧都容错，数字显示 0），但那个数字会一直是 0 —— 跑一次 migrate 就好',
+  },
+  {
     table: 'game_ratings',
     why: '游戏评分明细；缺了详情页的评分卡整块读不出来、打分全 500，而页面其它部分一切正常',
   },

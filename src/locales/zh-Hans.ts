@@ -13,6 +13,9 @@
  *   - 品牌与专有名词不翻译：8BitGo、Google、EmulatorJS、Ruffle、Flash、
  *     NES、SNES、GBA、PS1、N64、DOS、ROM、G 币（币种名）等。
  */
+
+import { termsZhHans, privacyZhHans } from './legal/zh-Hans'
+
 export const zhHans = {
   /* ---------------- 通用 ---------------- */
   common: {
@@ -146,6 +149,29 @@ export const zhHans = {
     community: '玩家社区',
   },
 
+  /* ---------------- 站内消息（IM） ---------------- */
+  im: {
+    title: '消息',
+    close: '关闭',
+    back: '返回',
+    empty: '还没有消息',
+    emptyHint: '在评论区点别人的头像，就能给他发私信。',
+    connecting: '正在连接…',
+    kicked: '这个账号在别处登录了',
+    kickedHint: '同一个账号同时只能有一个标签页在线。想在这个标签页聊天，点下面重新连接。',
+    error: '连接失败',
+    reconnect: '重新连接',
+    placeholder: '说点什么…',
+    send: '发送',
+    sending: '发送中…',
+    sendFailed: '没发出去，再试一次',
+    loadMore: '看更早的消息',
+    unknownUser: '未知用户',
+    dm: '私信',
+    dmUnavailable: '站内消息暂时用不了',
+    retry: '重试',
+    notConnected: '连接断了，消息没发出去',
+  },
   /* ---------------- 顶栏 ---------------- */
   topbar: {
     downloadApp: '下载 App',
@@ -458,6 +484,13 @@ export const zhHans = {
     remaining: '还可以输入 {n} 字',
   },
 
+  /* ---------------- 法律文本 ----------------
+     服务条款和隐私政策的正文在 src/locales/legal/ 里 —— 两份加起来两千多行，
+     放在这个文件里没人愿意打开它。简体中文那份是权威版本（条款里明写了
+     「以简体中文版为准」），改动一律先改那边。 */
+  termsPage: termsZhHans,
+  privacyPage: privacyZhHans,
+
   /* ---------------- 关于我们 ---------------- */
   aboutPage: {
     seoTitle: '关于 8BitGo',
@@ -516,6 +549,8 @@ export const zhHans = {
     noDescription: '还没有描述',
     emptyCover: '还没有游戏',
     gameCount: '{n} 款游戏',
+    viewCount: '{n} 人看过',
+    viewCountHint: '按人计：同一个人看多少次都算一次，作者本人不计',
     empty: '还没有人建过合集，来当第一个吧',
     mine: '我的合集',
     mineEmpty: '你还没有建过合集',
@@ -699,10 +734,6 @@ export const zhHans = {
     appsDesc: '体感控制器、语音控制器与 AI 视频剪辑等扩展功能，正在陆续开放。',
     aboutTitle: '关于我们',
     aboutDesc: '8BitGo 由一群热爱复古游戏的开发者创建，目标是让经典游戏在浏览器里重获新生。',
-    termsTitle: '服务条款',
-    termsDesc: '服务条款内容整理中。',
-    privacyTitle: '隐私政策',
-    privacyDesc: '隐私政策内容整理中。我们承诺：本地 ROM 只在浏览器内读取，不会上传。',
     tvDesc: '24 小时不间断的复古游戏直播频道。',
     fallbackTitle: '即将上线',
     fallbackDesc: '该功能正在开发中。',

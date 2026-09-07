@@ -12,8 +12,6 @@ function featuresFor(t: Translation): Record<string, { icon: string; title: stri
       desc: t.soon.appsDesc,
     },
     '/about': { icon: '🕹️', title: t.soon.aboutTitle, desc: t.soon.aboutDesc },
-    '/terms': { icon: '📄', title: t.soon.termsTitle, desc: t.soon.termsDesc },
-    '/privacy': { icon: '🔒', title: t.soon.privacyTitle, desc: t.soon.privacyDesc },
     '/tv': { icon: '📺', title: '8BitGo TV', desc: t.soon.tvDesc },
   }
 }

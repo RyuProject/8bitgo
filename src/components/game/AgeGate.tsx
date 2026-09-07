@@ -204,11 +204,13 @@ interface GuardProps {
    */
   loginAction?: ReactNode
   /**
-   * 加在**拦下来时**那个框上（放行时原样返回 children，这个类名不参与）。
+   * 加在**拦下来时**那个 16:9 内层上（放行时原样返回 children，这个类名不参与）。
    *
-   * 详情页拿它来限宽：门卫拦下来时画的也是个 16:9 的框，得和播放器一样宽 ——
-   * 而那个限宽是按视口高度算的（见 GameDetailPage 的注释），不能只给播放器不给门卫，
-   * 否则「还在核对年龄」那一下框会先宽一截、放行后又跳窄。
+   * 详情页拿它传高度上限：门卫拦下来时画的也是个 16:9 的框，得和播放器一样高 ——
+   * 不给门卫的话，「还在核对年龄」那一下（SSR 的首帧就是它）框会先高一截、放行后又跳矮。
+   *
+   * ⚠️ **落在内层，不是外框。** 外框是 overflow-hidden，上限挂那儿的话内层照旧按
+   * 16:9 算高度然后被裁掉，居中那张卡会被推出视野。见 screenAspect.ts 的 stageHeightCap。
    */
   className?: string
   children: ReactNode
@@ -279,12 +281,10 @@ export function GameAgeGuard({ slug, markedAdult, backdrop, loginAction, classNa
   const status = access.slug === slug ? access.status : 'checking'
   if (status === 'open') return children
 
-  /** 拦下来的那些形态外面统一套一层，好让调用方能给整个门卫框加类名（见 GuardProps.className） */
-  const framed = (gate: ReactNode) => (className ? <div className={className}>{gate}</div> : gate)
-
+  // className 一路传到内层那个 16:9 上，理由见 GuardProps.className
   if (status === 'login' || status === 'birthDate' || status === 'underage') {
-    return framed(
-      <GateFrame backdrop={backdrop}>
+    return (
+      <GateFrame backdrop={backdrop} className={className}>
         <span className="text-3xl sm:text-4xl" aria-hidden>
           🔞
         </span>
@@ -325,13 +325,13 @@ export function GameAgeGuard({ slug, markedAdult, backdrop, loginAction, classNa
             <p className="mt-3 text-[10px] leading-relaxed text-white/45 sm:text-[11px]">{t.game.ageGateUnderageLocked}</p>
           </>
         )}
-      </GateFrame>,
+      </GateFrame>
     )
   }
 
-  return framed(
+  return (
     <div className="overflow-hidden rounded-2xl border border-line bg-black">
-      <div className="relative aspect-video w-full overflow-hidden bg-black">
+      <div className={cx('relative aspect-video w-full overflow-hidden bg-black', className)}>
         <div className="absolute inset-0 opacity-25 blur-sm">{backdrop}</div>
         <div className="absolute inset-0 bg-black/80" />
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 px-6 text-center text-white">
@@ -355,10 +355,21 @@ export function GameAgeGuard({ slug, markedAdult, backdrop, loginAction, classNa
 }
 
 /** 年龄门的外框：封面压暗做底、扫描线、居中一张卡。验证通过之前完全不挂载 EmulatorPlayer，所有启动路径自然都被挡住。 */
-function GateFrame({ backdrop, children }: { backdrop?: ReactNode; children: ReactNode }) {
+function GateFrame({
+  backdrop,
+  children,
+  className,
+}: {
+  backdrop?: ReactNode
+  children: ReactNode
+  /** 调用方的高度上限，落在**内层**那个 16:9 上（见 GameAgeGuard 的 className 注释） */
+  className?: string
+}) {
   return (
     <div className="overflow-hidden rounded-2xl border border-line bg-black">
-      <div className="relative min-h-[25rem] w-full overflow-hidden bg-black sm:aspect-video sm:min-h-0">
+      <div
+        className={cx('relative min-h-[25rem] w-full overflow-hidden bg-black sm:aspect-video sm:min-h-0', className)}
+      >
         <div className="absolute inset-0 opacity-35 blur-sm">{backdrop}</div>
         <div className="scanlines absolute inset-0" aria-hidden />
         <div className="absolute inset-0 bg-black/75" />

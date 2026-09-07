@@ -125,6 +125,11 @@ add('/developers', '0.6', 'weekly')
 add('/play-local', '0.6', 'monthly')
 add('/blog', '0.7', 'weekly')
 add('/about', '0.5', 'monthly')
+// 法律页。优先级低但**必须在这里** —— 应用商店和第三方登录（Google / Apple /
+// Microsoft）的审核会去抓这两个 URL，没被收录时它们只能靠人工点进来。
+// changefreq 用 yearly：这两页只在功能变化时才改，报 monthly 是骗爬虫。
+add('/terms', '0.3', 'yearly')
+add('/privacy', '0.3', 'yearly')
 // 筛选页（/games?platform=…、?genre=…）不进 sitemap：
 // 这些页面自己的 canonical 指向 /games，收进来只会让 Search Console 报
 // 「Alternate page with proper canonical tag」。robots.txt 允许已知 URL 被重抓以读取 canonical，

@@ -1,6 +1,7 @@
 /** 日本語の文案。キー構造・順序は基準言語の zh-Hans.ts と完全に一致させること。 */
 import type { Translation } from './index'
 import { aboutEnglish } from './about'
+import { termsEnglish, privacyEnglish } from './legal/en'
 
 const ja: Translation = {
   /* ---------------- 共通 ---------------- */
@@ -88,6 +89,28 @@ const ja: Translation = {
   },
 
   /* ---------------- ヘッダー ---------------- */
+  im: {
+    title: 'メッセージ',
+    close: '閉じる',
+    back: '戻る',
+    empty: 'まだメッセージはありません',
+    emptyHint: 'コメント欄でアイコンをタップすると、その人にダイレクトメッセージを送れます。',
+    connecting: '接続中…',
+    kicked: '別の場所でログインしました',
+    kickedHint: '同じアカウントで同時にオンラインにできるタブは 1 つだけです。このタブで話すには、下から再接続してください。',
+    error: '接続できませんでした',
+    reconnect: '再接続',
+    placeholder: '何か書いてみましょう…',
+    send: '送信',
+    sending: '送信中…',
+    sendFailed: '送れませんでした。もう一度お試しください',
+    loadMore: '以前のメッセージを読み込む',
+    unknownUser: '不明なユーザー',
+    dm: 'メッセージ',
+    dmUnavailable: 'メッセージは現在利用できません',
+    retry: '再試行',
+    notConnected: '接続が切れました。メッセージは送信されていません',
+  },
   topbar: {
     downloadApp: 'アプリを入手',
     openMenu: 'メニューを開く',
@@ -445,6 +468,8 @@ const ja: Translation = {
     errorTotalTooLarge: '添付合計 {total} が上限 {max} を超えています。大きいものはダウンロードリンクでお願いします',
   },
 
+  termsPage: termsEnglish,
+  privacyPage: privacyEnglish,
   aboutPage: aboutEnglish,
 
   /* ---------------- ブログ ---------------- */
@@ -468,6 +493,8 @@ const ja: Translation = {
     noDescription: '説明はまだありません',
     emptyCover: 'ゲームはまだありません',
     gameCount: '{n} 本',
+    viewCount: '{n} 人が閲覧',
+    viewCountHint: '人単位でカウント：同じ人が何度見ても 1 回、作者本人はカウントしません',
     empty: 'まだコレクションがありません。最初の一つを作ってみませんか',
     mine: 'マイコレクション',
     mineEmpty: 'まだコレクションを作っていません',
@@ -651,10 +678,6 @@ const ja: Translation = {
     appsDesc: 'モーションコントローラー、音声コントローラー、AI 動画編集などの拡張機能を、順次公開していきます。',
     aboutTitle: '運営について',
     aboutDesc: '8BitGo はレトロゲームを愛する開発者たちが立ち上げました。名作をブラウザの中でよみがえらせることを目指しています。',
-    termsTitle: '利用規約',
-    termsDesc: '利用規約は現在準備中です。',
-    privacyTitle: 'プライバシーポリシー',
-    privacyDesc: 'プライバシーポリシーは現在準備中です。ローカルの ROM はブラウザ内でのみ読み込み、アップロードしないことをお約束します。',
     tvDesc: '24 時間ノンストップのレトロゲーム配信チャンネルです。',
     fallbackTitle: '近日公開',
     fallbackDesc: 'この機能は現在開発中です。',

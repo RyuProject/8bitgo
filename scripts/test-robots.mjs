@@ -104,6 +104,8 @@ check('内容页一律可抓 —— 尤其是 me / admin / login 开头的 slug'
     '/developers',
     '/blog',
     '/about',
+    '/terms',
+    '/privacy',
     '/play-local',
     '/',
   ]
@@ -163,9 +165,11 @@ check('声明了 sitemap 入口', () => {
 /* ---------------- URL 归一（尾斜杠 + /index.html） ---------------- */
 
 /** 极简的 req/res 替身，只实现中间件用到的那几个方法 */
-function run(method, originalUrl) {
+function run(method, originalUrl, host) {
   const out = { nexted: false, status: 0, location: '', headers: {} }
-  const req = { method, originalUrl }
+  // host 不传就是「没有 host 头」—— 那种请求只会走路径归一，不会被跨主机跳转，
+  // 所以上面那些老用例的期望值都还是相对路径。
+  const req = { method, originalUrl, headers: host ? { host } : {} }
   const res = {
     set(h) {
       Object.assign(out.headers, h)
@@ -219,6 +223,65 @@ check('/index.html 必须 301 到目录本身', () => {
   assert.equal(run('GET', '/INDEX.HTML').location, '/')
   // 尾斜杠和 index.html 同时出现时只吃**一次** 301，不要链式跳
   assert.equal(run('GET', '/it/terms/index.html/').location, '/it/terms')
+})
+
+check('www. 必须 301 到裸域，并和路径归一合成同一跳', () => {
+  /*
+    同一份 Search Console 报告（2026-09-07）：示例 URL 是
+    http://www.8bitgo.com/index.html。www 之前整站可访问、一条重定向都没有，
+    每个页面都有两份。别的页面靠 canonical（永远指向裸域）兜住了，
+    只有 /index.html 那份绕过 SSR、没有 canonical，所以只有它被报出来。
+
+    这里断言的是「一跳到位」：不能 www → 裸域 → 去 index.html 跳两三次。
+  */
+  const r = run('GET', '/index.html', 'www.8bitgo.com')
+  assert.deepEqual([r.status, r.location], [301, 'https://8bitgo.com/'], 'www + index.html 要一步跳到裸域首页')
+
+  // 普通页面：只换主机名，路径原样
+  assert.equal(run('GET', '/games', 'www.8bitgo.com').location, 'https://8bitgo.com/games')
+  assert.equal(run('GET', '/it/terms', 'www.8bitgo.com').location, 'https://8bitgo.com/it/terms')
+  // 查询串带过去；尾斜杠同时归一
+  assert.equal(run('GET', '/games/?page=2', 'www.8bitgo.com').location, 'https://8bitgo.com/games?page=2')
+  // host 头带端口 / 大小写都不受控，比之前要先规整
+  assert.equal(run('GET', '/games', 'WWW.8BitGo.com:8080').location, 'https://8bitgo.com/games')
+})
+
+check('www 归一不能踩到别的 host', () => {
+  // 裸域本身、localhost、内网 IP、健康检查一律不动
+  for (const host of ['8bitgo.com', 'localhost:5173', '127.0.0.1:8787', '10.0.0.5', 'assets.8bitgo.com']) {
+    assert.ok(run('GET', '/games', host).nexted, `${host} 不该被跳`)
+  }
+  // 相似但不相等的主机名不能被前缀匹配蒙过去
+  for (const host of ['www.8bitgo.com.evil.com', 'notwww.8bitgo.com', 'www8bitgo.com']) {
+    assert.ok(run('GET', '/games', host).nexted, `${host} 不该被跳`)
+  }
+  // /api/ 连 host 都不归一：跨主机 301 会让浏览器把 POST 降级
+  assert.ok(run('GET', '/api/games', 'www.8bitgo.com').nexted, '/api/ 不该被跳')
+
+  // nginx 把 Host 改写成上游名字时，真实域名只剩 X-Forwarded-Host
+  const xf = { method: 'GET', originalUrl: '/games', headers: { host: 'app-upstream', 'x-forwarded-host': 'www.8bitgo.com, 8bitgo.com' } }
+  let hit = ''
+  normalizeUrl(xf, { set: () => ({ redirect: (_s, l) => { hit = l } }) }, () => {})
+  assert.equal(hit, 'https://8bitgo.com/games', 'X-Forwarded-Host 也要认（取第一段）')
+  // 写请求一律不碰
+  assert.ok(run('POST', '/games', 'www.8bitgo.com').nexted)
+})
+
+check('⚠️ 裸域不是硬编码的 —— 换 PUBLIC_SITE_URL 要跟着换', () => {
+  const saved = process.env.PUBLIC_SITE_URL
+  try {
+    process.env.PUBLIC_SITE_URL = 'https://retro.example'
+    assert.equal(run('GET', '/games', 'www.retro.example').location, 'https://retro.example/games')
+    // 换了域之后，旧域名不再被当成自家 www
+    assert.ok(run('GET', '/games', 'www.8bitgo.com').nexted, '旧域名不该再被跳')
+
+    // 配置本身就带 www 时：www.<host> 变成 www.www.…，所以它不会自己跳自己
+    process.env.PUBLIC_SITE_URL = 'https://www.retro.example'
+    assert.ok(run('GET', '/games', 'www.retro.example').nexted, '配置带 www 时不能死循环')
+  } finally {
+    if (saved === undefined) delete process.env.PUBLIC_SITE_URL
+    else process.env.PUBLIC_SITE_URL = saved
+  }
 })
 
 check('⚠️ 去 index.html 的正则不能少了两头的锚 —— 少一头就切错别的路径', () => {

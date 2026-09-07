@@ -300,6 +300,56 @@ curl -s "https://你的域名/api/netplay/ice?cb=$RANDOM" | jq '.iceServers[] | 
 
 ## 五、验证
 
+### 先验 TURN：`npm run turn:probe`
+
+```bash
+cd server && npm run turn:probe
+```
+
+这条命令读 `server/.env`，拿**真实凭证**对每一路 TURN 走一遍完整的 Allocate，
+每条地址打一行结论。**读到 `relay <地址>` 才叫「TURN 能用」** —— 那是 coturn 真的
+给我们分配的中继端口。
+
+为什么必须这么验，不能用别的方式代替：
+
+| 你可能会用的检查 | 为什么不够 |
+|---|---|
+| `ping turn.你的域名` | ICMP 通不代表 3478 通，更不代表能分配中继 |
+| `nc -z 主机 3478` | 端口开着 = coturn 在跑，**但凭证过期照样 401** |
+| `curl .../api/netplay/ice \| jq .hasTurn` | 它只说「配了没有」，不说「能不能用」 |
+| 浏览器里能连上一次 | 你可能刚好走的是兜底那路 |
+
+线上最常见的两种死法在上面那些检查里**全是绿的**：
+
+1. **凭证时间戳过期 → 401。** coturn 的 `use-auth-secret` 把 username 里的
+   `<过期时间戳>` 当鉴权的一部分。`/api/netplay/ice` 被 CDN 缓存住就会给所有人发
+   十几小时前签的凭证，那一路对**所有人**都废掉，而 `hasTurn` 照报 true。
+   → 探针会打印「① 下发的凭证已过期」，并给出该改的那条缓存规则。
+2. **中继端口段 49160-49200/udp 没放行。** 握手全过，Allocate 也返回成功，
+   但**没有中继地址** —— 探针把这种情况判成不通，错误里直接点出端口段。
+
+### 探不通之后会自动发生什么
+
+服务端有个后台循环在跑同一套探活（默认 60 秒一轮，`TURN_PROBE_INTERVAL_SEC`）。
+**连续两轮失败**就把那一路从 `/api/netplay/ice` 的下发里摘掉 ——
+判死要慢（一个丢包不该踢掉一路 TURN），恢复一次成功就够。
+
+```bash
+curl -s "https://你的域名/api/netplay/ice?cb=$RANDOM" | jq '{turnSources, turnDropped, hasTurn, turnHealth}'
+curl -s "https://你的域名/api/diag" | jq .turn     # 详细原因 + 该去查哪一行
+```
+
+`turnDropped: ["self-hosted"]` 就是**切换发生过的凭据** ——
+意味着现在兜底那路（CF）在扛全部中继流量。这一行的全部意义在于：
+在此之前，这种状态是完全静默的，只有账单上看得出来。
+
+⚠️ **一个边界**：探针是从服务器发出去的，所以它能可靠地判「坏」，判不了
+「全世界都到得了」。源站到 coturn 通、而公网到中继端口不通，探针查不出来。
+因此**摘完一路不剩时会照旧全发**，只把 `hasTurn` 报成 false ——
+宁可发一条可能坏的中继，也不能让所有人退回纯 STUN（那样一到两成必然连不通）。
+
+### 再验信令
+
 ```bash
 curl http://127.0.0.1:8788/api/netplay/rooms      # []
 curl http://127.0.0.1:8788/socket.io/socket.io.js # socket.io 客户端脚本（iframe 要用）

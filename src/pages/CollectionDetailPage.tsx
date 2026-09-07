@@ -6,6 +6,7 @@ import {
   getCollection,
   removeGameFromCollection,
   reorderCollectionGames,
+  reportCollectionView,
   setCollectionHidden,
 } from '@/services/collections'
 import { CollectionFormDialog } from '@/components/game/CollectionFormDialog'
@@ -57,6 +58,21 @@ export function CollectionDetailPage() {
   )
 
   useEffect(() => load(), [load])
+
+  /**
+   * 记一次浏览。**每个合集只发一次**，不跟着 `load(true)` 那些静默刷新走 ——
+   * 服务端本来就按人去重（重复发也不会多算），这里只是别为「关个弹窗」白发一次请求。
+   *
+   * 刻意**不**等 load 成功：不存在 / 已下架的合集服务端自己回 404；
+   * 挂在数据后面反而多一层依赖，容易在静默刷新时重复触发。
+   * 失败一律咽掉 —— 这个数字是装饰性的，不该让页面看起来出了问题。
+   */
+  const reportedRef = useRef('')
+  useEffect(() => {
+    if (!id || reportedRef.current === id) return
+    reportedRef.current = id
+    void reportCollectionView(id).catch(() => {})
+  }, [id])
 
   /**
    * 拖一下 / 按一下方向键就叫一次。本地顺序立刻生效（不然拖起来像卡住），
@@ -222,6 +238,11 @@ export function CollectionDetailPage() {
         </span>
         {c.kind && <Badge tone="brand">{c.kind}</Badge>}
         <span>{fmt(t.collections.gameCount, { n: String(c.gameCount) })}</span>
+        {/*
+          浏览量在详情页**即使是 0 也显示** —— 作者会来看自己的合集有没有人光顾，
+          「0 人看过」对他是有效信息。卡片上那处相反（0 就不画，见 CollectionCard）。
+        */}
+        <span title={t.collections.viewCountHint}>{fmt(t.collections.viewCount, { n: String(c.viewCount) })}</span>
       </div>
 
       {data.games.length === 0 ? (

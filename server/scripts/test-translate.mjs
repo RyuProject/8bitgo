@@ -4,7 +4,9 @@
  *   node scripts/test-translate.mjs     （或 npm run test:translate）
  *
  * 测三件事：
- *   1. translatePlan 站点语言 → 火山语言的映射（含 passthrough / zh-Hant 的特殊处理）
+ *   1. translatePlan 站点语言 → 火山语言的映射。**签名是 (target, source) 两个参数**
+ *      —— 源语言由调用方按「我这次真的拿了哪个字段」传入，不能硬编码（详 translate.js）
+ *      同一个目标语言在「源文是中文」和「源文是英文」两种情况下计划**不同**，这是重点
  *   2. V4 签名的规范化环节（headers、CanonicalRequest、StringToSign、时间格式）
  *   3. 端到端：起一个本地 HTTP mock（火山替身），调 translateText 后看请求体形状对不对、
  *      限流错误和签名错误能被正确解析成 Error 的 code
@@ -17,7 +19,7 @@ import assert from 'node:assert/strict'
 process.env.VOLC_AK = 'AK_TEST'
 process.env.VOLC_SK = 'SK_TEST'
 
-const { isTranslateConfigured, translatePlan, translateText } = await import('../src/translate.js')
+const { isTranslateConfigured, translatePlan, translateText, volcCode, isLocalConversion } = await import('../src/translate.js')
 
 let failed = 0
 const ok = (name) => console.log(`  ✅ ${name}`)
@@ -41,26 +43,60 @@ async function assertError(fn, { code, message } = {}) {
   return err
 }
 
-/* ---------------- translatePlan ---------------- */
+/* ---------------- translatePlan：繁体走本地转换 ---------------- */
 try {
-  // passthrough：中文和英文不需要翻译
-  assert.deepEqual(translatePlan('zh-Hans'), { passthrough: true })
-  assert.deepEqual(translatePlan('en'), { passthrough: true })
-  // 其余六种都有 source / target / effective
-  for (const lang of ['zh-Hant', 'es', 'fr', 'it', 'de', 'ja']) {
-    const p = translatePlan(lang)
-    assert.ok(p && !p.passthrough, `${lang} 必须有翻译计划`)
-    assert.equal(p.effective, lang, `${lang}.effective 必须就是 lang 自身`)
-  }
-  // zh-Hant 的 source 必须是 en（API 不支持 zh-Hant，只能先翻成 zh 凑合）
-  assert.equal(translatePlan('zh-Hant').source, 'en')
-  assert.equal(translatePlan('zh-Hant').target, 'zh')
-  // 未知语种 / 取空
-  assert.equal(translatePlan('klingon'), null)
-  assert.equal(translatePlan(''), null)
-  ok('translatePlan 映射 + passthrough + 未知')
+  /**
+   * ⚠️ 这一节 2026-09-07 整体改过。以前断言的是
+   *   translatePlan('zh-Hant').source === 'en' && .target === 'zh'
+   * 也就是「把英文版翻成 zh 再当繁体用」。那个方案有两个致命处：火山不认 BCP-47，
+   * zh-Hans / zh-Hant 在它眼里都是 zh，「把 zh 翻成 zh」是空操作；而没填英文版的
+   * 条目直接放弃，于是繁体读者一直在看简体原文 —— GSC 把 /zh-Hant/* 判成
+   * /zh-Hans 的重复页，根子就在这里。现在繁体走 zh-convert.js 的 OpenCC。
+   */
+  assert.deepEqual(translatePlan('zh-Hant', 'zh-Hans'), { convert: true, effective: 'zh-Hant' })
+  assert.ok(isLocalConversion('zh-Hant'), 'zh-Hant 必须被认成本地转换')
+  assert.ok(!isLocalConversion('fr'), '别的语言不能被认成本地转换')
+  // 火山语言表里刻意没有 zh-Hant —— 有的话就说明有人把它加回去了
+  assert.equal(volcCode('zh-Hant'), null, 'VOLC_LANG 里不许出现 zh-Hant')
+  assert.equal(volcCode('zh-Hans'), 'zh')
+  // 源文是英文时繁体读者该看翻译，不是把英文原样搬过去 —— 退回让火山把 en 翻成 zh
+  assert.deepEqual(translatePlan('zh-Hant', 'en'), { source: 'en', target: 'zh', effective: 'zh-Hant' })
+  ok('繁体走本地简繁转换，不再拿英文中转')
 } catch (e) {
-  bad('translatePlan 映射 + passthrough + 未知', e)
+  bad('繁体走本地简繁转换，不再拿英文中转', e)
+}
+
+/* ---------------- translatePlan：passthrough 跟着源语言变 ---------------- */
+try {
+  /**
+   * 这一组是这次改动的核心：**同一个目标语言，源文不同则计划不同**。
+   *
+   * `en` 以前无条件 passthrough，于是 POST /api/posts/:slug/translate 对英文一律 400 ——
+   * posts 表根本没有英文列，`/en/blog` 因此永远显示中文，而且没有任何入口能改。
+   */
+  // 文章：源文一律中文 → en 必须真翻一次
+  assert.deepEqual(translatePlan('en', 'zh-Hans'), { source: 'zh', target: 'en', effective: 'en' })
+  // 游戏：填了 description_en → 源文就是英文 → en 才是 passthrough
+  assert.deepEqual(translatePlan('en', 'en'), { passthrough: true })
+  // 基准语言对自己永远 passthrough
+  assert.deepEqual(translatePlan('zh-Hans', 'zh-Hans'), { passthrough: true })
+
+  // 其余五种：两种源文下都要有计划，且 source 跟着源文走
+  for (const lang of ['es', 'fr', 'it', 'de', 'ja']) {
+    const fromZh = translatePlan(lang, 'zh-Hans')
+    const fromEn = translatePlan(lang, 'en')
+    assert.ok(fromZh && !fromZh.passthrough && !fromZh.convert, `${lang} 从中文必须有翻译计划`)
+    assert.equal(fromZh.source, 'zh', `${lang}：源文是中文时 source 必须是 zh，不能是硬编码的 en`)
+    assert.equal(fromEn.source, 'en', `${lang}：源文是英文时 source 必须是 en`)
+    assert.equal(fromZh.effective, lang, `${lang}.effective 必须就是 lang 自身`)
+  }
+
+  // 未知语种 / 取空
+  assert.equal(translatePlan('klingon', 'zh-Hans'), null)
+  assert.equal(translatePlan('', 'zh-Hans'), null)
+  ok('passthrough 与 source 都跟着源语言变，不再硬编码 en')
+} catch (e) {
+  bad('passthrough 与 source 都跟着源语言变，不再硬编码 en', e)
 }
 
 /* ---------------- isTranslateConfigured ---------------- */

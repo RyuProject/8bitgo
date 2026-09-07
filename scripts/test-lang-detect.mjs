@@ -124,6 +124,46 @@ check('真实浏览器 UA 不会被当成爬虫误伤', () => {
   for (const ua of reals) assert.equal(run({ path: '/', langs: ['en'], ua }), '/en', ua.slice(0, 40))
 })
 
+/*
+  测速工具 -> 不动。
+
+  2026-09-07 PageSpeed Insights 报告顶上挂了「客户端重定向，建议改用
+  https://8bitgo.com/en 重新测」：PSI 请求 `/`，被这段脚本送去了 /en，
+  于是量的不是首页。`/` 的 canonical 就是它自己（zh-Hans 不带前缀），
+  跳走等于这个 URL 的实验室数据永远拿不到。
+
+  只认「自报家门」的那一类，见 index.html 里的注释。
+*/
+check('测速工具 -> 不动（不然 PSI 量不到 / 这个 URL）', () => {
+  const probes = [
+    // PSI 移动端（服务端日志里实际看到的形状：模拟机型 + Chrome-Lighthouse 后缀）
+    'Mozilla/5.0 (Linux; Android 11; moto g power (2022)) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Mobile Safari/537.36 Chrome-Lighthouse',
+    // PSI 桌面端
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Chrome-Lighthouse',
+    // 老版 PSI 抓取器
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko; Google Page Speed Insights) Chrome/75.0.3777.100 Safari/537.36',
+    // WebPageTest
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36 PTST/250101.120000',
+    // GTmetrix
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36 GTmetrix',
+  ]
+  for (const ua of probes) assert.equal(run({ path: '/', langs: ['en'], ua }), null, ua.slice(-40))
+})
+
+/*
+  这一条是**故意**期望「跳」的，别当成漏网。
+
+  Lighthouse 本地 CLI / DevTools 面板用的模拟 UA 是 core/config/constants.js 里那个
+  干净常量，没有 Chrome-Lighthouse 后缀 —— 和一台真实的 Moto G Power 完全无法区分。
+  想认出它只能上指纹（navigator.webdriver、设备像素比、CDP 痕迹之类），
+  那类判断误伤真人的代价远大于收益：测速工具吃一次跳转只是报告上多一行提示，
+  把真人当机器则是直接不给他母语。所以这里明确选择不猜。
+*/
+check('干净的 Lighthouse 模拟 UA 照旧跳（和真实 Moto G 用户无法区分，故意不猜）', () => {
+  const clean = 'Mozilla/5.0 (Linux; Android 11; moto g power (2022)) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Mobile Safari/537.36'
+  assert.equal(run({ path: '/', langs: ['en'], ua: clean }), '/en')
+})
+
 console.log('\n三、用户自己选过的语言优先')
 
 check('选过英语 + 日语浏览器 -> 听用户的，去 /en', () => {

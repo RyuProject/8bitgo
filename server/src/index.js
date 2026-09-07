@@ -26,7 +26,9 @@ import { checkSchema } from './schema-check.js'
 import { savesRouter } from './routes/saves.js'
 import { attachNetplay } from './netplay.js'
 import { attachLive, liveRoom, liveRooms, subscribeLiveRooms } from './live.js'
-import { iceRouter } from './routes/ice.js'
+import { iceRouter, registerTurnProbeTargets } from './routes/ice.js'
+import { startTurnHealth } from './turnProbe.js'
+import { imRouter } from './routes/im.js'
 import { diagRouter } from './routes/diag.js'
 import { submitGameRouter } from './routes/submit-game.js'
 import { mailProvider, submitMailProvider } from './mail.js'
@@ -108,6 +110,8 @@ app.use('/api/developers', developersRouter)
 app.use('/api/saves', savesRouter)
 // P2P 联机的 ICE / TURN 配置（短期凭证，见 routes/ice.js）
 app.use('/api/netplay/ice', iceRouter)
+// 站内消息的 IM 凭证（短期 UserSig，密钥不出服务器，见 routes/im.js）
+app.use('/api/im', imRouter)
 // 自查：房间卡片的国旗 / 网络格子为什么是 ❓（见 routes/diag.js）
 app.use('/api/diag', diagRouter)
 // 用户提交游戏：登录后上传 ROM（multipart），ROM 作为邮件附件发出，不落存储
@@ -306,6 +310,20 @@ httpServer.listen(PORT, () => {
   // 启动时对一遍，把话说在前面
   void checkSchema()
   console.log('P2P 联机信令已就绪：/netplay（socket.io）')
+  /**
+   * TURN 主动探活。
+   *
+   * 「自建挂了自动换 CF」这件事在浏览器那侧本来就是自动的（所有 ICE 服务器一起下发），
+   * 但**没人会知道它发生了** —— turnSources 照报两路齐全，CF 从兜底变成扛 100% 流量，
+   * 只有账单上看得出来。这个循环拿即将下发的凭证真的走一遍 Allocate，
+   * 探到死的那路就不再下发，并在 /api/netplay/ice 和 /api/diag 里写明原因。
+   *
+   * 只在这里显式起（不接在请求路径上，也不在 import 时自启）——
+   * 测试直接 import 路由时不会顺带对着假地址发出探测包。TURN_PROBE=off 可关。
+   */
+  void registerTurnProbeTargets()
+    .then(() => startTurnHealth())
+    .catch((e) => console.warn('[turn] 探活没起来（不影响下发）：', e?.message || e))
   logSearchPushStatus()
   /**
    * 发信通路配错时会静默退回「只打印日志」，症状是「用户说收不到验证码」
