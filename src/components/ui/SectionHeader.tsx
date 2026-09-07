@@ -44,7 +44,7 @@ export function SectionHeader({
           <InternalLink
             to={moreTo}
             /*
-              指向 robots.txt 禁抓的地址（/games? 的筛选组合）时，InternalLink 自己
+              指向 /games? 的非收录筛选组合时，InternalLink 自己
               就不发 href 了。在这里包而不是让每个调用方自己记：首页那几个「更多」
               （?sort= / ?multiplayer=1 / ?coin=1）就是这么漏的，见 lib/seoLinks.ts。
             */

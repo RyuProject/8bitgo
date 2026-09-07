@@ -156,7 +156,7 @@ export function GamesPage() {
    * （见 CollectionPage.tsx），这里跟上。
    *
    * 而带筛选、带搜索、换过排序的那些仍然统一指回 `/games` —— 它们是同一批游戏的
-   * 不同切片，组合数是乘积级的，robots.txt 里也只放行了裸的 `?page=`。
+   * 不同切片，组合数是乘积级的，内链层也只给裸的 `?page=` 输出 href。
    */
   const plainList = !q && !platformId && !genreId && !developer && !multiplayer && !coin && sort === 'popular'
   const paged = plainList && page > 1
@@ -187,7 +187,7 @@ export function GamesPage() {
   /**
    * 分页链接的地址。保留当前筛选条件，第 1 页不带 page 参数 —— 和 canonical
    * （固定指向干净的 /games）保持同一套 URL 形状。
-   * 注意 robots.txt 只放行了裸的 `/games?page=`，带筛选的组合仍然不抓，这是有意的。
+   * 注意只有裸的 `/games?page=` 会输出真内链；带筛选的分页仍只做客户端跳转。
    */
   const pageHref = (p: number) => {
     const next = new URLSearchParams(params)

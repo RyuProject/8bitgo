@@ -1,18 +1,18 @@
 /**
- * 站内链接指向的地址，爬虫能不能进。
+ * 站内目标要不要输出成真实 href。
  *
- * **零 import** —— 这样 `scripts/test-robots.mjs` 能在 node 里直接把它和真的
- * `public/robots.txt` 对着核（那个脚本本来就有一个按 RFC 9309 裁决的 robots 模拟器）。
- * 这条规则的真相只有一份：robots.txt。这里**不重新实现** robots，只表达同一个意图，
- * 由那个测试保证两边不漂。
+ * **零 import** —— 这样 `scripts/test-robots.mjs` 能在 node 里直接验证它。
+ * robots.txt 和这里刻意分工：前者允许 Google 重抓已知 URL，才能读到
+ * noindex / canonical；这里不向爬虫主动暴露新的筛选组合。
  *
  * ## 为什么需要它
  *
- * robots.txt 里 `/games?` 全部禁抓（各语言前缀逐条列全），只单独放行 `/games?page=`：
- * 那些筛选组合是乘积级的 URL，canonical 又都指回干净的 `/games`，抓了也不会被收录，
- * 纯耗抓取预算（见 robots.txt 里那段注释）。
+ * 筛选组合是乘积级的 URL，canonical 又都指回干净的 `/games`，
+ * 搜索页则是 noindex。它们必须可抓才能让 Google 看到这些信号，但没有必要从站内继续
+ * 发现新组合，因此不给它们 href。只有 `/games?page=` 这类干净分页保留真链接，
+ * 让第 2 页往后的游戏还有正常的发现通路。
  *
- * 但站内一直在往那些地址上挂真链接 —— 2026-09-07 数了一遍**九条，其中四条在首页**
+ * 站内曾经一直往这些地址上挂真链接 —— 2026-09-07 数了一遍**九条，其中四条在首页**
  * （「更多」按钮：`?sort=` / `?multiplayer=1` / `?coin=1`），另外还有游戏详情页的
  * `#标签`（`?q=`）和开发商（`?developer=`）、开发商列表页的每一张卡片、
  * 搜索兜底的「你是不是想搜」。
@@ -28,7 +28,7 @@
  * 真正的代价不是权重，是**告警被噪音淹掉**：这一档只要长期非零，真事故就藏得住 ——
  * 09-06 那次「me 那条通配规则」误伤 48 个《合金弹头》URL，就是混在这堆里才拖了一天。
  * 所以现在的目标是让这一档能**归零**，变成一个有用的告警：
- * 禁抓的地址一律不出现在 HTML 的 `href` 里，改成客户端跳转
+ * 非收录目标一律不出现在 HTML 的 `href` 里，改成客户端跳转
  * （见 `components/ui/InternalLink.tsx`）。Google 自己关于 faceted navigation
  * 的建议也是同一条：筛选控件别用可抓的 `<a href>`。
  *
@@ -40,24 +40,22 @@
  *
  * ## 判据
  *
- * 传进来的 `to` 是**不带语言前缀**的站内路径（前缀由 router 的 basename 补），
- * 而 robots.txt 里各语言那几组规则形状完全一样，所以只看无前缀的那一份就够。
+ * 传进来的 `to` 是**不带语言前缀**的站内路径（前缀由 router 的 basename 补）。
  */
 
 /**
  * @param to 站内路径，形如 `/games?q=x`、`/games?page=2`、`/genres/action`
- * @returns 爬虫能不能抓这个地址。false = 别给它 href
+ * @returns 是否输出 href。false = 仍可以客户端跳转，但不主动给爬虫新入口
  */
-export function isCrawlableInternal(to: string): boolean {
+export function shouldExposeSeoHref(to: string): boolean {
   const q = to.indexOf('?')
-  // 没有查询串的一律是可抓的 path 页（/games、/games/:slug、/genres/:id …）
+  // 没有查询串的 path 页都要保留真内链（/games、/games/:slug、/genres/:id …）
   if (q === -1) return true
-  // 这条规则只针对游戏库列表页 —— 平台页 / 类型页的 ?page= 没有任何 robots 规则拦
+  // 这条规则只针对游戏库列表页；平台页 / 类型页的 ?page= 要保留内链
   if (!/^\/games\/?$/.test(to.slice(0, q))) return true
   /*
-    只有 page 作为**第一个**参数时才是放行的，和 robots.txt 的
-    `Allow: /games?page=` 一字对应（前缀匹配）——
-    `/games?platform=gba&page=2` 这种仍然落在 `Disallow: /games?` 里。
+    只有 page 作为**第一**个参数时才给真链接；
+    `/games?platform=gba&page=2` 这种仍是筛选组合，不应该主动暴露给爬虫。
   */
   return to.slice(q + 1).startsWith('page=')
 }

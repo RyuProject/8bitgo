@@ -88,6 +88,8 @@ check('内容页一律可抓 —— 尤其是 me / admin / login 开头的 slug'
   // 这几条就是当年被 /*/me、/*/admin、/*/login 误伤的形状，一条都不能再中
   const paths = [
     '/games/metal-slug-3',
+    '/games/metal-slug-4',
+    '/games/metal-slug-super-vehicle-001',
     '/games/metal-slug-x-super-vehicle-001',
     '/games/mega-man-2',
     '/games/admiral-quest',
@@ -115,19 +117,20 @@ check('平台页 / 类型页的分页可抓（深层游戏靠它被发现）', (
   }
 })
 
-check('游戏库的干净分页放行，带筛选的组合仍然挡住', () => {
+check('游戏库的公开查询参数页全部放行，让 noindex / canonical 能被读到', () => {
   for (const prefix of langPrefixes) {
     assertAllowed(`${prefix}/games?page=2`)
-    assertBlocked(`${prefix}/games?platform=gba&page=2`)
-    assertBlocked(`${prefix}/games?genre=rpg`)
-    assertBlocked(`${prefix}/games?sort=rating`)
-    assertBlocked(`${prefix}/games?q=zelda`)
+    assertAllowed(`${prefix}/games?platform=gba&page=2`)
+    assertAllowed(`${prefix}/games?genre=rpg`)
+    assertAllowed(`${prefix}/games?developer=Miniclip`)
+    assertAllowed(`${prefix}/games?sort=rating`)
+    assertAllowed(`${prefix}/games?q=zelda`)
   }
 })
 
-check('站内搜索无限空间不抓', () => {
-  assertBlocked('/blog?q=nes')
-  assertBlocked('/en/collections?q=x')
+check('其它公开路径带查询串也不被通配规则误伤', () => {
+  assertAllowed('/blog?q=nes')
+  assertAllowed('/en/collections?q=x')
 })
 
 check('后台 / 个人中心 / 登录页仍然挡住（含全部语言前缀）', () => {
@@ -259,26 +262,29 @@ check('渲染出「页面不存在」时仍然回 404，不是 200', () => {
   assert.match(ssrSrc, /status\(notFound \? 404 : 200\)/)
 })
 
-/* ---------------- 禁抓的地址一律不出现在 href 里 ---------------- */
+/* ---------------- 非收录目标一律不出现在 href 里 ---------------- */
 
 /*
-  src/lib/seoLinks.ts 的 isCrawlableInternal() 决定一个站内目标爬虫能不能进。
-  它**不重新实现** robots，只表达同一个意图 —— 而「同一个意图」是最容易悄悄漂的东西：
-  哪天 robots.txt 放行了 /games?sort= 之类，代码这边还在藏 href，就白丢内链权重；
-  反过来新增一条 Disallow，代码这边不跟就又造出一批可抓的死路。
-  所以这里拿上面那个真 robots 模拟器逐条对着核。
+  src/lib/seoLinks.ts 的 shouldExposeSeoHref() 决定一个站内目标是否给爬虫发现入口。
+  它和 robots.txt 刻意分工：robots 允许重抓已知 URL，链接层不主动制造新的筛选组合。
 
   ⚠️ 2026-09-07 把策略从 rel="nofollow" 换成了「根本不出 href」：nofollow 只是
   不传权重，**挡不住发现**，那些 ?q= / ?developer= 照样被 Google 排进抓取队列，
   然后堆在 Search Console 的「已被 robots.txt 屏蔽」里，把真事故盖住
   （09-06 那 48 个《合金弹头》就是这么被埋了一天）。目标是让那一档能归零。
 */
-const { isCrawlableInternal } = await import('../src/lib/seoLinks.ts')
+const { shouldExposeSeoHref } = await import('../src/lib/seoLinks.ts')
 
-check('可抓判据和 robots.txt 的裁决逐条一致', () => {
-  const targets = [
+check('公开查询页可抓，但只有有收录价值的目标输出 href', () => {
+  const exposed = [
     '/games',
     '/games?page=2',
+    '/games/metal-slug-3',
+    '/genres/action',
+    '/platforms/nes?page=2',
+    '/collections',
+  ]
+  const hidden = [
     '/games?q=x',
     '/games?developer=Nintendo',
     '/games?multiplayer=1',
@@ -286,19 +292,10 @@ check('可抓判据和 robots.txt 的裁决逐条一致', () => {
     '/games?sort=newest',
     '/games?sort=popular',
     '/games?platform=gba&page=2',
-    '/games/metal-slug-3',
-    '/genres/action',
-    '/platforms/nes?page=2',
-    '/collections',
   ]
-  for (const to of targets) {
-    const allowed = decide(to).allowed
-    assert.equal(
-      isCrawlableInternal(to),
-      allowed,
-      `${to}：robots ${allowed ? '放行' : '禁抓'}，而 isCrawlableInternal 说的是相反的`,
-    )
-  }
+  for (const to of [...exposed, ...hidden]) assertAllowed(to)
+  for (const to of exposed) assert.ok(shouldExposeSeoHref(to), `${to} 应该输出 href`)
+  for (const to of hidden) assert.ok(!shouldExposeSeoHref(to), `${to} 不应该输出 href`)
 })
 
 /** 源码里 idx 这个位置所在的那个 JSX 标签叫什么（往回找最近的 `<`） */
@@ -334,19 +331,19 @@ const SOURCES = tsxFiles(path.join(root, 'src'))
     src: strip(readFileSync(file, 'utf8')),
   }))
 
-check('没有哪个组件把禁抓地址写进 href —— 一律走 InternalLink', () => {
+check('没有哪个组件把非收录目标写进 href —— 一律走 InternalLink', () => {
   /*
     冒烟性质的源码扫描。取每一处写死的 to=`…` / to="…"，把 ${} 之前的那一截
-    交给 robots 模拟器裁决（查询参数名一定在插值之前，够判了），
-    禁抓的必须挂在 <InternalLink> 上 —— 那个组件不发 href，改走客户端跳转。
+    交给 shouldExposeSeoHref 裁决（查询参数名一定在插值之前，够判了），
+    不该输出 href 的必须挂在 <InternalLink> 上，改走客户端跳转。
   */
   const TO = /\bto=(?:\{`([^`]*)`|"([^"]*)")/g
-  let blocked = 0
+  let hidden = 0
   for (const { file, src } of SOURCES) {
     for (const m of src.matchAll(TO)) {
       const url = (m[1] ?? m[2]).split('${')[0]
       if (!url.startsWith('/')) continue
-      if (decide(url).allowed) continue
+      if (shouldExposeSeoHref(url)) continue
       /*
         只管带查询串的那一族（/games? 的筛选与搜索）—— InternalLink 就是为它们存在的。
         禁抓的**路径**页（/me、/login）不在此列，这是刻意的：
@@ -356,16 +353,16 @@ check('没有哪个组件把禁抓地址写进 href —— 一律走 InternalLin
         真要收紧，先去确认爬虫是不是真能看到那一条，别一刀切。
       */
       if (!url.includes('?')) continue
-      blocked++
+      hidden++
       assert.equal(
         ownerTagOf(src, m.index),
         'InternalLink',
-        `${file} 里 to="${url}…" 是 robots 禁抓的地址，却挂在真链接上 —— ` +
+        `${file} 里 to="${url}…" 是非收录目标，却挂在真链接上 —— ` +
           '换成 <InternalLink>（见 src/lib/seoLinks.ts：nofollow 挡不住发现）',
       )
     }
   }
-  assert.ok(blocked > 0, '一处禁抓目标都没扫到 —— 正则大概失效了，这个检查等于空转')
+  assert.ok(hidden > 0, '一处非收录目标都没扫到 —— 正则大概失效了，这个检查等于空转')
 })
 
 check('「更多」那一路也走 InternalLink（调用方记不住，得在组件里判）', () => {
@@ -376,11 +373,11 @@ check('「更多」那一路也走 InternalLink（调用方记不住，得在组
   assert.notEqual(at, -1, 'SectionHeader 不再把 moreTo 传给任何东西了？')
   assert.equal(ownerTagOf(header.src, at), 'InternalLink', 'SectionHeader 的 moreTo 必须走 InternalLink')
 
-  // 而且确实有调用方传了禁抓的地址，否则上面那条是空转
-  const blockedMore = SOURCES.flatMap(({ src }) => [...src.matchAll(/\bmoreTo="([^"]*)"/g)])
+  // 而且确实有调用方传了不该输出 href 的地址，否则上面那条是空转
+  const hiddenMore = SOURCES.flatMap(({ src }) => [...src.matchAll(/\bmoreTo="([^"]*)"/g)])
     .map((m) => m[1])
-    .filter((to) => !decide(to).allowed)
-  assert.ok(blockedMore.length > 0, '没有任何 moreTo 指向禁抓地址 —— 这条检查等于空转')
+    .filter((to) => !shouldExposeSeoHref(to))
+  assert.ok(hiddenMore.length > 0, '没有任何 moreTo 指向非收录目标 —— 这条检查等于空转')
 })
 
 console.log(`✅ robots.txt / URL 归一 / 爬虫状态码 / 内链不出 href：${passed} 项检查通过`)

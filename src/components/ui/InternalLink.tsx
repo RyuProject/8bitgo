@@ -1,17 +1,18 @@
 import type { KeyboardEvent, MouseEvent, ReactNode } from 'react'
 import { Link, useHref, useNavigate } from 'react-router-dom'
 import { cx } from '@/lib/format'
-import { isCrawlableInternal } from '@/lib/seoLinks'
+import { shouldExposeSeoHref } from '@/lib/seoLinks'
 
 /**
- * 站内跳转。目标可抓就渲染成真链接，被 robots.txt 禁抓就**不产生 href**。
+ * 站内跳转。需要给爬虫发现的目标渲染成真链接，筛选 / 搜索组合则**不产生 href**。
  *
  * 为什么不是简单挂个 `rel="nofollow"`：nofollow 只是不传权重，挡不住发现，
- * 那些 `?q=` / `?developer=` 地址照样会被排进抓取队列，然后堆在 Search Console
- * 的「已被 robots.txt 屏蔽」里，把真事故盖住。完整推理见 `lib/seoLinks.ts`。
+ * 那些 `?q=` / `?developer=` 地址照样会被排进抓取队列。robots.txt 保持放行，
+ * 是为了让已知 URL 能读到 noindex / canonical；这个组件负责不再制造新的发现入口。
+ * 完整推理见 `lib/seoLinks.ts`。
  *
- * 判据只有一份（`isCrawlableInternal`），并由 `npm run test:robots` 拿真的
- * robots.txt 逐条核对。调用方**不需要**知道哪些地址被禁抓 —— 这正是把判断
+ * 判据只有一份（`shouldExposeSeoHref`），并由 `npm run test:robots` 验证。
+ * 调用方**不需要**知道哪些地址不该输出 href —— 这正是把判断
  * 收进组件的原因：首页那几个「更多」当年就是靠调用方自己记才漏的。
  *
  * 交互上尽量不比链接差：
@@ -26,7 +27,7 @@ interface Props {
   title?: string
   'aria-label'?: string
   /**
-   * 禁抓分支渲染成什么。
+   * 不输出 href 的分支渲染成什么。
    *
    * 默认 `button` —— 语义最准。但 `<button>` 的内容模型只允许 phrasing content，
    * 卡片式的目标（开发商列表里那种，内部有 `<h2>` / `<p>` / `<div>`）塞进去就是
@@ -42,7 +43,7 @@ export function InternalLink({ to, className, children, as = 'button', ...rest }
   // 带上 basename（语言前缀）的真实地址。只在「新标签页打开」时用到，不会进 HTML
   const href = useHref(to)
 
-  if (isCrawlableInternal(to)) {
+  if (shouldExposeSeoHref(to)) {
     return (
       <Link to={to} className={className} {...rest}>
         {children}

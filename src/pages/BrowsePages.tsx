@@ -254,8 +254,8 @@ export function DevelopersPage() {
             const desc = gameDescription(d, lang)
             return (
             /*
-              ?developer= 在 robots.txt 里禁抓，整整一页这样的链接就是 Search Console
-              里那些 /games?developer=… 的来源，所以这里不出 href（见 lib/seoLinks.ts）。
+              ?developer= 没有独立收录价值，整整一页这样的链接会主动制造
+              /games?developer=… 的抓取入口，所以这里不出 href（见 lib/seoLinks.ts）。
               卡片内部有 <h2>/<p>，塞进 <button> 是无效 HTML，用 as="div"。
             */
             <InternalLink

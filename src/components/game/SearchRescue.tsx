@@ -49,7 +49,7 @@ export function SearchRescue({ q, onPick }: { q: string; onPick?: (q: string) =>
               {data.suggestion}
             </button>
           ) : (
-            /* 搜索地址在 robots.txt 里禁抓，所以这里不出 href（见 lib/seoLinks.ts） */
+            /* 搜索地址没有收录价值，所以这里不主动输出 href（见 lib/seoLinks.ts） */
             <InternalLink
               to={`/games?q=${encodeURIComponent(data.suggestion)}`}
               className="font-semibold text-brand-hover hover:underline"

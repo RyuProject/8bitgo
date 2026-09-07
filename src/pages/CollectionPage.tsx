@@ -22,7 +22,7 @@ import { NotFoundPage } from './NotFoundPage'
  * （「NES 游戏在线玩」「GBA 模拟器」「射击游戏合集」都落在这里）。
  *
  * 为什么要有独立路由，而不是复用 /games?platform=nes：
- *   - 查询参数页在 robots.txt 里被挡、canonical 又统一指向 /games，永远不可能拿到排名
+ *   - 查询参数页的 canonical 统一指向 /games，没有自己的内容身份与排名价值
  *   - 干净路径才能拥有自己的 title / description / H1 / 正文和结构化数据
  *   - /games 保留成「带筛选工具的全部游戏」，两者分工明确，不互相抢
  *

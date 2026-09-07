@@ -96,8 +96,8 @@
     <script>
       ;(function () {
         /*
-          带查询串的地址一条都不推：robots.txt 明令禁抓 /games?q= / ?platform= 这类，
-          主动推给搜索引擎属于自相矛盾。push.js 读的是它执行那一刻的 location.href，
+          带查询串的地址一条都不推：/games?q= / ?platform= 这类没有独立收录价值，
+          只允许爬虫在已经知道 URL 时重抓，不该再主动提交。push.js 读的是它执行那一刻的 location.href，
           所以这道闸只能在这儿设 —— 有人直接打开一个 ?q= 的分享链接时，
           首屏这一次就会把它送出去（SPA 内部跳转那一半在 services/autoInclude.ts）。
         */

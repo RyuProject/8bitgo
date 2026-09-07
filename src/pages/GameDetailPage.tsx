@@ -454,7 +454,7 @@ export function GameDetailPage() {
                     key={t}
                     to={`/games?q=${encodeURIComponent(t)}`}
                     /*
-                      站内搜索是无限空间、robots 全禁抓，所以这里不出 href
+                      站内搜索是无限空间、没有收录价值，所以这里不出 href
                       （nofollow 挡不住发现，见 lib/seoLinks.ts）。
                       可抓的同类入口在上面：/platforms/:id 和 /genres/:id 都已经链过。
                     */

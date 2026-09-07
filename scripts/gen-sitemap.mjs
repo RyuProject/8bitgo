@@ -127,8 +127,8 @@ add('/blog', '0.7', 'weekly')
 add('/about', '0.5', 'monthly')
 // 筛选页（/games?platform=…、?genre=…）不进 sitemap：
 // 这些页面自己的 canonical 指向 /games，收进来只会让 Search Console 报
-// 「Alternate page with proper canonical tag」；而且 robots.txt 里 Disallow: /games?
-// 本来就禁止抓取它们，放进 sitemap 属于自相矛盾。
+// 「Alternate page with proper canonical tag」。robots.txt 允许已知 URL 被重抓以读取 canonical，
+// 但 sitemap 不该反过来主动提交这些非收录目标。
 /**
  * 这份静态 sitemap 现在**只放上面那些真正固定的页面**。
  *

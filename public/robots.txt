@@ -72,31 +72,12 @@ Disallow: /de/login$
 Disallow: /ja/login$
 
 # ── 筛选与搜索 ──────────────────────────────────────────────
-# 游戏库的筛选组合是乘积级的（平台×类型×开发商×排序×联机×G币），
-# 每一种组合的 canonical 都指回干净的 /games，抓了也不会被收录，纯耗抓取预算。
-Disallow: /games?
-Disallow: /zh-Hant/games?
-Disallow: /en/games?
-Disallow: /es/games?
-Disallow: /fr/games?
-Disallow: /it/games?
-Disallow: /de/games?
-Disallow: /ja/games?
-
-# 但**分页要单独放行**：/games?page=2 起的那些游戏，除了 sitemap 之外
-# 只有这一条内链通路。robots.txt 的裁决规则是「匹配最长的那条说了算，
-# 一样长则 Allow 优先」，`/games?page=` 比 `/games?` 长，所以这里能翻案；
-# 而 /games?platform=gba&page=2 这种带筛选的组合仍然落在上面的 Disallow 里。
-Allow: /games?page=
-Allow: /zh-Hant/games?page=
-Allow: /en/games?page=
-Allow: /es/games?page=
-Allow: /fr/games?page=
-Allow: /it/games?page=
-Allow: /de/games?page=
-Allow: /ja/games?page=
-
-# 站内搜索是无限空间，一律不抓（页面本身也已经是 noindex）
-Disallow: /*?q=
+# 查询参数页不在这里禁抓。Google 只有真正抓到页面，才能读到：
+#   - 搜索页的 noindex；
+#   - 筛选页指回 /games 的 canonical。
+# 用 robots.txt 挡住会让这两个信号都失效，还会在 Search Console 里长期堆积
+# 「已被 robots.txt 屏蔽」。抓取预算在链接层控制：公开页面不会把这些组合输出为
+# href（见 src/components/ui/InternalLink.tsx），所以不会继续主动喂给爬虫；已知 URL
+# 则能被重抓并正确处理 noindex / canonical。
 
 Sitemap: https://8bitgo.com/sitemap.xml
