@@ -128,32 +128,85 @@ function CoverGrid({ pool, priority, emptyLabel }: { pool: CoverGame[]; priority
 }
 
 /**
- * 一格封面，换图时交叉淡入：新图带 animate-cover-fade-in 压在旧图上面，淡完再把旧图撤掉。
- * 旧图不撤早了 —— 撤早了新图淡入那 500ms 露的是底色，看着像闪了一下。
+ * 一格封面，换图时交叉淡入。
+ *
+ * ⚠️ 不能「换 game 然后让新的 GameCover 淡入」—— 09-07 线上就是这么黑的：
+ * GameCover 有封面时底色是 #000，里面的 <img> 是 loading=lazy + decoding=async，新元素挂上去之后
+ * 图片要再解码一轮才画得出来，而淡入动画一挂上就开始 —— 于是淡入的是一块黑，图片过后才「啪」一下出现。
+ * 预加载（new Image()）只能保证字节在缓存里，保证不了新 <img> 第一帧就画出来。
+ *
+ * 所以这里分三步：
+ *   1. 新图先以我们自己的一个透明 <img> 挂在最上层，等它 **load 且 decode 完**（真画得出来了）
+ *   2. 再给它淡入动画，压在旧的 GameCover 上
+ *   3. 淡完把 cur 换成新游戏（GameCover 换成新图 —— 同一个 URL 已经解码过，第一帧就有），
+ *      再多留一帧撤掉我们那张透明层
+ * 全程旧图一直在底下，任何一帧都不会露出 #000。
+ * 没有真封面（程序化渐变）的游戏不用等，渐变是即时画出来的，直接淡入。
  */
 function Tile({ game, priority, still }: { game: CoverGame; priority?: boolean; still: boolean }) {
   const [cur, setCur] = useState(game)
-  const [prev, setPrev] = useState<CoverGame | null>(null)
+  /** 正在换进来的那一款，以及它走到哪一步了 */
+  const [incoming, setIncoming] = useState<{ game: CoverGame; phase: 'loading' | 'fading' | 'settling' } | null>(null)
 
   useEffect(() => {
-    if (game.slug === cur.slug) return
-    setPrev(cur)
-    setCur(game)
-    const timer = window.setTimeout(() => setPrev(null), FADE_MS + 50)
-    return () => window.clearTimeout(timer)
-  }, [game, cur])
+    if (game.slug === cur.slug) {
+      // 换图中途 pool 又把它换回来了：撤掉半路上的那张
+      if (incoming && incoming.game.slug !== game.slug) setIncoming(null)
+      return
+    }
+    if (incoming?.game.slug === game.slug) return
+    // 没封面图 → 渐变即时可画，直接进淡入；有封面图 → 等 <img> 自己报 load + decode
+    setIncoming({ game, phase: game.cover ? 'loading' : 'fading' })
+  }, [game, cur, incoming])
+
+  // 淡入播完 → cur 换成新的；再留一帧让 GameCover 那张把画面接住，才撤透明层
+  useEffect(() => {
+    if (incoming?.phase !== 'fading') return
+    const t1 = window.setTimeout(() => {
+      setCur(incoming.game)
+      setIncoming({ game: incoming.game, phase: 'settling' })
+    }, FADE_MS + 50)
+    return () => window.clearTimeout(t1)
+  }, [incoming])
+  useEffect(() => {
+    if (incoming?.phase !== 'settling') return
+    // 200ms：GameCover 那张 <img> 是 lazy 的，同 URL 已解码，一两帧就画出来了；多留几帧是给慢机器的余量
+    const t2 = window.setTimeout(() => setIncoming(null), 200)
+    return () => window.clearTimeout(t2)
+  }, [incoming])
+
+  const incomingSrc = incoming?.game.cover ? romUrlForKey(incoming.game.cover) : ''
 
   return (
     <div className="relative h-full w-full">
-      {prev && (
-        <div className="absolute inset-0">
-          <GameCover game={prev} ratio="square" showTitle={false} showBadge={false} still className="h-full w-full" />
+      <GameCover game={cur} ratio="square" showTitle={false} showBadge={false} still={still} priority={priority && !incoming} className="h-full w-full" />
+      {incoming && (
+        <div
+          key={incoming.game.slug}
+          className={cx('absolute inset-0', incoming.phase === 'loading' ? 'opacity-0' : incoming.phase === 'fading' ? 'animate-cover-fade-in' : 'opacity-100')}
+        >
+          {incomingSrc ? (
+            <img
+              src={incomingSrc}
+              alt=""
+              aria-hidden
+              loading="eager"
+              decoding="async"
+              className="absolute inset-0 h-full w-full object-cover"
+              onLoad={(e) => {
+                const img = e.currentTarget
+                // decode() 之后这张图才是「真画得出来」；不支持 decode 的浏览器直接放行
+                const go = () => setIncoming((v) => (v && v.game.slug === incoming.game.slug && v.phase === 'loading' ? { ...v, phase: 'fading' } : v))
+                if (typeof img.decode === 'function') img.decode().then(go, go)
+                else go()
+              }}
+              onError={() => setIncoming((v) => (v && v.game.slug === incoming.game.slug ? null : v))}
+            />
+          ) : (
+            <GameCover game={incoming.game} ratio="square" showTitle={false} showBadge={false} still className="h-full w-full" />
+          )}
         </div>
       )}
-      {/* key 换了才会重新挂载、动画才会重新播；首屏那一张不播（cur === 初始 game 时没有 prev） */}
-      <div key={cur.slug} className={cx('absolute inset-0', prev && 'animate-cover-fade-in')}>
-        <GameCover game={cur} ratio="square" showTitle={false} showBadge={false} still={still} priority={priority && !prev} className="h-full w-full" />
-      </div>
     </div>
   )
 }
@@ -213,8 +266,13 @@ function useCoverRotation(pool: CoverGame[], rootRef: RefObject<HTMLDivElement |
         }
         const url = game.cover ? romUrlForKey(game.cover) : ''
         if (url) {
+          // 先把字节**和解码**都做完再换：Tile 那边还会再等一次 load+decode 兜底（见 Tile 注释），
+          // 这里先做完，那一步就几乎是瞬时的
           const img = new Image()
-          img.onload = swap
+          img.onload = () => {
+            if (typeof img.decode === 'function') img.decode().then(swap, swap)
+            else swap()
+          }
           // 加载失败就跳过这一拍（GameCover 自己会画程序化封面，但那是兜底，不值得为它换图）
           img.onerror = () => {}
           img.src = url
