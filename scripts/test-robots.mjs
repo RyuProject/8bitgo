@@ -259,18 +259,23 @@ check('渲染出「页面不存在」时仍然回 404，不是 200', () => {
   assert.match(ssrSrc, /status\(notFound \? 404 : 200\)/)
 })
 
-/* ---------------- 站内链接的 nofollow 判据必须和 robots.txt 一致 ---------------- */
+/* ---------------- 禁抓的地址一律不出现在 href 里 ---------------- */
 
 /*
-  src/lib/seoLinks.ts 的 relForInternal() 决定站内链接要不要挂 rel="nofollow"。
-  它**不重新实现 robots**，只表达同一个意图 —— 而「同一个意图」是最容易悄悄漂的东西：
-  哪天 robots.txt 放行了 /games?sort= 之类，代码这边还在 nofollow，就白丢内链权重；
-  反过来新增一条 Disallow，代码这边不跟就又造出一批死路（2026-09-07 数过：
-  当时有九条这样的链接，四条在首页）。所以这里拿上面那个真 robots 模拟器逐条对着核。
-*/
-const { relForInternal } = await import('../src/lib/seoLinks.ts')
+  src/lib/seoLinks.ts 的 isCrawlableInternal() 决定一个站内目标爬虫能不能进。
+  它**不重新实现** robots，只表达同一个意图 —— 而「同一个意图」是最容易悄悄漂的东西：
+  哪天 robots.txt 放行了 /games?sort= 之类，代码这边还在藏 href，就白丢内链权重；
+  反过来新增一条 Disallow，代码这边不跟就又造出一批可抓的死路。
+  所以这里拿上面那个真 robots 模拟器逐条对着核。
 
-check('nofollow 判据和 robots.txt 的裁决逐条一致', () => {
+  ⚠️ 2026-09-07 把策略从 rel="nofollow" 换成了「根本不出 href」：nofollow 只是
+  不传权重，**挡不住发现**，那些 ?q= / ?developer= 照样被 Google 排进抓取队列，
+  然后堆在 Search Console 的「已被 robots.txt 屏蔽」里，把真事故盖住
+  （09-06 那 48 个《合金弹头》就是这么被埋了一天）。目标是让那一档能归零。
+*/
+const { isCrawlableInternal } = await import('../src/lib/seoLinks.ts')
+
+check('可抓判据和 robots.txt 的裁决逐条一致', () => {
   const targets = [
     '/games',
     '/games?page=2',
@@ -287,53 +292,95 @@ check('nofollow 判据和 robots.txt 的裁决逐条一致', () => {
     '/collections',
   ]
   for (const to of targets) {
-    const blocked = !decide(to).allowed
-    const rel = relForInternal(to)
+    const allowed = decide(to).allowed
     assert.equal(
-      rel === 'nofollow',
-      blocked,
-      `${to}：robots ${blocked ? '禁抓' : '放行'}，而 relForInternal 给的是 ${rel ?? '(不加 rel)'}`,
+      isCrawlableInternal(to),
+      allowed,
+      `${to}：robots ${allowed ? '放行' : '禁抓'}，而 isCrawlableInternal 说的是相反的`,
     )
   }
 })
 
-check('没有哪个 <Link to="/games?…"> 漏了 rel', () => {
-  /*
-    冒烟性质的源码扫描：直接写 to={`/games?…`} 的地方必须在同一个文件里用上
-    relForInternal。走 SectionHeader 的 moreTo= 不算 —— 那一路是在 SectionHeader
-    内部统一判的（这也是为什么要在那儿判：调用方记不住）。
+/** 源码里 idx 这个位置所在的那个 JSX 标签叫什么（往回找最近的 `<`） */
+function ownerTagOf(src, idx) {
+  const before = src.slice(0, idx)
+  const lt = before.lastIndexOf('<')
+  return /^<([A-Za-z][\w.]*)/.exec(before.slice(lt))?.[1] ?? '(认不出来)'
+}
 
-    用纯 node 遍历而不是 shell 里的 grep：那个 pattern 里有反引号和双引号，
-    交给 /bin/sh 拼一次就崩（当场踩过）。
+const tsxFiles = (dir, out = []) => {
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, e.name)
+    if (e.isDirectory()) tsxFiles(full, out)
+    else if (e.name.endsWith('.tsx')) out.push(full)
+  }
+  return out
+}
+
+/*
+  扫描前先把注释剥掉：仓库里有好几处注释在**引用旧写法**
+  （EmulatorPlayer / GameDetailPage 里那句「它以前是个跳转链接（to="/games?multiplayer=1"）」），
+  不剥的话这个检查会对着注释报错，而注释里那行本来就已经不是代码了。
+*/
+const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+/*
+  后台（src/admin/）整个排除：那些页面在 /admin 底下，本身就禁抓，爬虫根本渲染不到，
+  里面互相跳的 /admin/xxx 链接不会被任何人发现。这里只管**公开页面**发出去的链接。
+*/
+const SOURCES = tsxFiles(path.join(root, 'src'))
+  .filter((file) => !path.relative(root, file).startsWith(path.join('src', 'admin')))
+  .map((file) => ({
+    file: path.relative(root, file),
+    src: strip(readFileSync(file, 'utf8')),
+  }))
+
+check('没有哪个组件把禁抓地址写进 href —— 一律走 InternalLink', () => {
+  /*
+    冒烟性质的源码扫描。取每一处写死的 to=`…` / to="…"，把 ${} 之前的那一截
+    交给 robots 模拟器裁决（查询参数名一定在插值之前，够判了），
+    禁抓的必须挂在 <InternalLink> 上 —— 那个组件不发 href，改走客户端跳转。
   */
-  const walk = (dir, out = []) => {
-    for (const e of readdirSync(dir, { withFileTypes: true })) {
-      const full = path.join(dir, e.name)
-      if (e.isDirectory()) walk(full, out)
-      else if (e.name.endsWith('.tsx')) out.push(full)
+  const TO = /\bto=(?:\{`([^`]*)`|"([^"]*)")/g
+  let blocked = 0
+  for (const { file, src } of SOURCES) {
+    for (const m of src.matchAll(TO)) {
+      const url = (m[1] ?? m[2]).split('${')[0]
+      if (!url.startsWith('/')) continue
+      if (decide(url).allowed) continue
+      /*
+        只管带查询串的那一族（/games? 的筛选与搜索）—— InternalLink 就是为它们存在的。
+        禁抓的**路径**页（/me、/login）不在此列，这是刻意的：
+          · Sidebar 那三处 /me 挂在 `user ? …` 底下，匿名的爬虫根本渲染不到；
+          · OAuthCallbackPage 那个 /login 在一个 noindex 的回调页上；
+          · 而且它们是玩家会收藏、会开新标签的真实页面，值得保留真链接。
+        真要收紧，先去确认爬虫是不是真能看到那一条，别一刀切。
+      */
+      if (!url.includes('?')) continue
+      blocked++
+      assert.equal(
+        ownerTagOf(src, m.index),
+        'InternalLink',
+        `${file} 里 to="${url}…" 是 robots 禁抓的地址，却挂在真链接上 —— ` +
+          '换成 <InternalLink>（见 src/lib/seoLinks.ts：nofollow 挡不住发现）',
+      )
     }
-    return out
   }
-  const LINK_TO_FILTERED = [/to=\{`\/games\?/, /to="\/games\?/]
-  /*
-    扫描前先把注释剥掉：仓库里有好几处注释在**引用旧写法**
-    （EmulatorPlayer / GameDetailPage 里那句「它以前是个跳转链接（to="/games?multiplayer=1"）」），
-    不剥的话这个检查会对着注释报错，而注释里那行本来就已经不是代码了。
-  */
-  const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
-  let scanned = 0
-  for (const file of walk(path.join(root, 'src'))) {
-    const src = strip(readFileSync(file, 'utf8'))
-    if (!LINK_TO_FILTERED.some((re) => re.test(src))) continue
-    scanned++
-    assert.match(
-      src,
-      /relForInternal/,
-      `${path.relative(root, file)} 里有直接指向 /games?<筛选> 的 <Link>，但没用 relForInternal —— ` +
-        '那些地址在 robots.txt 里是禁抓的，挂真链接等于把权重丢进死路（见 src/lib/seoLinks.ts）',
-    )
-  }
-  assert.ok(scanned > 0, '一个都没扫到 —— 正则大概失效了，这个检查等于空转')
+  assert.ok(blocked > 0, '一处禁抓目标都没扫到 —— 正则大概失效了，这个检查等于空转')
 })
 
-console.log(`✅ robots.txt / URL 归一 / 爬虫状态码 / 内链 nofollow：${passed} 项检查通过`)
+check('「更多」那一路也走 InternalLink（调用方记不住，得在组件里判）', () => {
+  // 首页那几个「更多」当年就是靠调用方自己记才漏的，所以判断收在 SectionHeader 里
+  const header = SOURCES.find((f) => f.file.endsWith('SectionHeader.tsx'))
+  assert.ok(header, '找不到 SectionHeader.tsx')
+  const at = header.src.indexOf('to={moreTo}')
+  assert.notEqual(at, -1, 'SectionHeader 不再把 moreTo 传给任何东西了？')
+  assert.equal(ownerTagOf(header.src, at), 'InternalLink', 'SectionHeader 的 moreTo 必须走 InternalLink')
+
+  // 而且确实有调用方传了禁抓的地址，否则上面那条是空转
+  const blockedMore = SOURCES.flatMap(({ src }) => [...src.matchAll(/\bmoreTo="([^"]*)"/g)])
+    .map((m) => m[1])
+    .filter((to) => !decide(to).allowed)
+  assert.ok(blockedMore.length > 0, '没有任何 moreTo 指向禁抓地址 —— 这条检查等于空转')
+})
+
+console.log(`✅ robots.txt / URL 归一 / 爬虫状态码 / 内链不出 href：${passed} 项检查通过`)
