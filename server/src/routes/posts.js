@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { query, queryOne, withTransaction } from '../db.js'
+import { jsonMemberPath, query, queryOne, withTransaction } from '../db.js'
 import { requireAbility, hasAbility } from '../auth.js'
 import { invalidateContent } from '../content.js'
 import { publicApi } from '../cache.js'
@@ -41,8 +41,10 @@ async function writeTags(run, postId, tags) {
  * 给某一列写一条翻译缓存。field 严格走白名单 —— 任何外部输入都不允许
  * 直接拼进 SQL，否则就是 SQL 注入。
  *
- * 列名虽然过了白名单，键名（`$.${lang}`）是变量，所以 lang 也得校验；
- * 校验同时给 key 兜底（中文 lang 用 BCP-47 是 `zh-Hans`，需要 JSON_QUOTE 包才能当 key 用）。
+ * 列名虽然过了白名单，键名是变量，所以 lang 也得校验。
+ * ⚠️ 路径一律走 `jsonMemberPath()` —— 直接写 `` `$.${lang}` `` 会让 `zh-Hant`
+ * 抛 ER_INVALID_JSON_PATH（连字符不是合法标识符），繁体译文一条都写不进去。
+ * 那个 bug 在线上活了一段时间，见 db.js 里 jsonMemberPath 的注释。
  *
  * text 限制 64KB：content 正文比游戏简介长得多，Markdown 一篇博客 30-50KB 很正常，
  * 64KB 够用；同时挡住有人手贱贴个 10MB 的测试。
@@ -59,7 +61,7 @@ export async function writePostTranslation(slug, field, lang, text) {
        ?,
        CAST(? AS JSON)
      ) WHERE slug = ?`,
-    [`$.${lang}`, JSON.stringify(safeText), slug],
+    [jsonMemberPath(lang), JSON.stringify(safeText), slug],
   )
   return r.affectedRows > 0
 }

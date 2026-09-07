@@ -56,6 +56,7 @@
     "test:padkeys": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-pad-keys.mjs",
     "test:im": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-im.mjs",
     "test:im-sig": "node server/scripts/test-im-sig.mjs",
+    "test:json-path": "node server/scripts/test-json-path.mjs",
     "test:im-session": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-im-session.mjs",
     "test:im-client": "node scripts/test-im-client.mjs",
     "test:platforms": "node scripts/test-platforms.mjs",

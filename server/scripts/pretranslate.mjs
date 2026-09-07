@@ -3,7 +3,8 @@
  *
  * 用法（在 server/ 下跑，或 `node server/scripts/pretranslate.mjs`）：
  *   npm run pretranslate -- --dry-run              先看要做多少、花多少次 API
- *   npm run pretranslate -- --langs=zh-Hant        只补繁体（**不花钱**，纯本地 OpenCC）
+ *   npm run pretranslate -- --langs=zh-Hant        只补繁体（中文源文走本地 OpenCC，不花钱；
+ *                                                  只填了 description_en 的游戏，繁体仍要上游翻）
  *   npm run pretranslate -- --yes                  全部语言，真的写库
  *   npm run pretranslate -- --only=posts --yes     只做文章
  *   npm run pretranslate -- --slug=kof97 --force --yes   重做某一条（覆盖已有译文）
@@ -18,9 +19,13 @@
  *
  * ── 成本 ────────────────────────────────────────────────
  *   zh-Hant  —— OpenCC 本地转换，**零成本**，随便跑
- *   其余语言 —— 每个字段一次火山 TranslateText（文章正文按段落切，一段一次）
- * 所以默认**不动手**：先打印计划和「要调多少次火山」，看清楚了再加 `--yes`。
+ *   其余语言 —— 走火山 TranslateText，**按字符计费**（不是按请求次数）
+ * 所以默认**不动手**：先打印「计费字符数」，看清楚了再加 `--yes`。
  * 已经有译文的字段一律跳过（想重做加 `--force`），重复跑是安全的。
+ *
+ * 报两个数字，别混：
+ *   计费字符数 —— 成本。分批、切段都不改变它
+ *   预计请求数 —— 耗时和撞 -429 的概率。按官方 16 条 / 4800 字符编批算出来的
  *
  * ⚠️ 跑完要让前台看见，得清两层缓存：
  *   1. 服务端进程内的内容缓存 —— 重启 node，或在后台随便改存一次内容（会调 invalidateContent）
@@ -28,7 +33,7 @@
  */
 import 'dotenv/config'
 import { pool, query } from '../src/db.js'
-import { translatePlan, isTranslateConfigured, volcCode } from '../src/translate.js'
+import { translatePlan, isTranslateConfigured, volcCode, planBatches, splitOversized } from '../src/translate.js'
 import { renderField, renderMarkdownField, gameDescriptionSource } from '../src/i18n-generate.js'
 import { isZhConvertAvailable } from '../src/zh-convert.js'
 import { writeDescriptionTranslation, writeTitleTranslation } from '../src/games-repo.js'
@@ -75,7 +80,12 @@ for (const l of LANGS) {
 
 /* ---------------- 计数 ---------------- */
 
-const stat = { volc: 0, opencc: 0, skipped: 0, failed: 0, wrote: 0 }
+/**
+ * 计数。**`chars` 才是花钱的那个数** —— 火山文本翻译按字符计费，不按请求次数。
+ * 原来这里只报「调用次数」，那个口径既不等于成本，批量化之后连次数本身都不准了。
+ * `requests` 仍然留着，它决定的是耗时和撞 -429 的概率。
+ */
+const stat = { chars: 0, requests: 0, opencc: 0, skipped: 0, awaitingVolc: 0, failed: 0, wrote: 0 }
 /** 逐条打印会淹掉输出，失败的单独攒起来最后一起报 */
 const failures = []
 
@@ -96,9 +106,18 @@ async function doField({ what, source, plan, cached, markdown = false, write }) 
     stat.skipped += 1
     return
   }
-  if (plan.convert) stat.opencc += 1
-  // 火山的调用次数：正文按段落切，所以是段数而不是 1 —— 预估成本时这个数字才是对的
-  else stat.volc += markdown ? source.split(/\n\n+/).filter((x) => x.trim()).length : 1
+  if (plan.convert) {
+    stat.opencc += 1
+  } else {
+    // 计费口径：字符数。段落切分和分批都不改变总字符数，所以直接数源文。
+    stat.chars += source.length
+    // 请求数：按 translate.js 那两个官方限额（16 条 / 4800 字符）真编一遍批，
+    // 别再拿「段数」当次数 —— 批量化之后那个数字会高估好几倍。
+    const segs = markdown
+      ? source.split(/\n\n+/).filter((x) => x.trim()).flatMap((x) => splitOversized(x))
+      : splitOversized(source)
+    stat.requests += planBatches(segs).length
+  }
 
   if (DRY) return
   try {
@@ -113,6 +132,20 @@ async function doField({ what, source, plan, cached, markdown = false, write }) 
     await write(out)
     stat.wrote += 1
   } catch (e) {
+    /*
+      「需要上游翻译但上游没配」不是失败，是**这次做不了**，单独计数。
+
+      2026-09-07 的实际运行里 `--langs=zh-Hant` 报了 340 条失败，其中 164 条全是这一条；
+      而真正的 bug（写库时的 ER_INVALID_JSON_PATH，繁体译文一条都写不进去）被埋在那
+      164 条噪声里，「…还有 300 条」正好把它截断掉。分开计数之后失败明细里只剩真问题。
+
+      为什么 zh-Hant 也可能需要上游：只有**源文是中文**时才能走 OpenCC；游戏只填了
+      description_en 的话，繁体只能让上游从英文翻（见 translate.js 的 translatePlan）。
+    */
+    if (e?.code === 'NOT_CONFIGURED') {
+      stat.awaitingVolc += 1
+      return
+    }
     stat.failed += 1
     failures.push(`${what}：${e?.code || ''} ${e?.message || e}`)
   }
@@ -236,19 +269,26 @@ try {
 
   console.log(
     `\n${DRY ? '【试运行，什么都没写】' : '完成'}` +
-      `\n  OpenCC 转换 ${stat.opencc} 项（免费）` +
-      `\n  火山调用   ${stat.volc} 次${DRY ? '（预估，正文按段落算）' : ''}` +
-      `\n  已有跳过   ${stat.skipped} 项` +
-      (DRY ? '' : `\n  实际写入   ${stat.wrote} 项`) +
-      `\n  失败       ${stat.failed} 项` +
-      `\n  耗时       ${((Date.now() - t0) / 1000).toFixed(1)}s`,
+      `\n  OpenCC 转换   ${stat.opencc} 项（免费，不走网络）` +
+      `\n  计费字符数    ${stat.chars.toLocaleString('en-US')} 字符  ← 火山按字符计费，这个才是成本` +
+      `\n  预计请求数    ${stat.requests} 次（按 16 条 / 4800 字符编批）` +
+      `\n  已有跳过      ${stat.skipped} 项` +
+      (stat.awaitingVolc
+        ? `\n  待上游翻译    ${stat.awaitingVolc} 项（源文不是中文，OpenCC 转不了；配上 VOLC_AK / VOLC_SK 再跑）`
+        : '') +
+      (DRY ? '' : `\n  实际写入      ${stat.wrote} 项`) +
+      `\n  失败          ${stat.failed} 项` +
+      `\n  耗时          ${((Date.now() - t0) / 1000).toFixed(1)}s`,
   )
   if (failures.length) {
     console.log('\n失败明细：')
     for (const f of failures.slice(0, 40)) console.log('  ·', f)
     if (failures.length > 40) console.log(`  …还有 ${failures.length - 40} 条`)
   }
-  if (DRY) console.log('\n看清楚了就加 --yes 真跑。只补繁体不花钱：--langs=zh-Hant --yes')
+  if (DRY) {
+    console.log('\n看清楚上面那个字符数再决定。只补繁体基本不花钱：--langs=zh-Hant --yes（中文源文走 OpenCC，只有英文源文要上游翻）')
+    console.log('确认要跑全部语言：--yes')
+  }
   else console.log('\n⚠️ 别忘了：重启 node（清进程内容缓存）+ 清一次 Cloudflare 缓存，前台才会变')
 } catch (e) {
   console.error('挂了：', e)

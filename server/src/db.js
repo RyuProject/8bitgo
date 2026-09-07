@@ -64,3 +64,40 @@ export async function withTransaction(fn) {
     conn.release()
   }
 }
+
+/**
+ * 把一个成员名拼成 MySQL 的 JSON 路径表达式，**带双引号**。
+ *
+ * ## 这是 2026-09-07 一条线上故障的修复
+ *
+ * 原来三处调用点都直接写 `` `$.${lang}` ``。对 `en` / `es` / `fr` / `it` / `de` / `ja`
+ * 完全正常，所以一直没人发现 —— 但 `zh-Hant` 里有个连字符：
+ *
+ *     mysql> SELECT JSON_SET('{}', '$.zh-Hant', '合金彈頭');
+ *     ERROR 3143 (42000): Invalid JSON path expression. The error is around character position 9.
+ *
+ * MySQL 的路径里，成员名**只有在它是合法 ECMAScript 标识符时**才能裸写；
+ * 带连字符（还有空格、点、数字开头…）的必须加双引号：`$."zh-Hant"`。
+ *
+ * 后果是繁体中文的译文缓存**从来没写进去过一次**：每次都抛 ER_INVALID_JSON_PATH。
+ * 站点八种语言里只有 zh-Hans / zh-Hant 带连字符，而 zh-Hans 是源文不需要写 ——
+ * 于是恰好只有繁体全军覆没，而且失败被调用方吞掉了，日志里看不出来。
+ *
+ * ## 为什么一律加引号，而不是「需要时才加」
+ *
+ * `$."en"` 和 `$.en` 在 MySQL 里等价，都合法。判断「这个名字要不要引号」需要实现一遍
+ * ECMAScript 标识符的规则（还得考虑 Unicode），而那正是最初出错的那类聪明写法。
+ * 无条件加引号是**一种写法应付所有情况**，读代码的人也不用再想一遍。
+ *
+ * @param {string} name 成员名（本仓库里都是语言代码）
+ * @returns {string} 形如 `$."zh-Hant"`
+ */
+export function jsonMemberPath(name) {
+  const raw = String(name ?? '')
+  if (!raw) throw new Error('JSON 路径的成员名不能为空')
+  // 调用方通常已经用更严的正则校验过 lang 了，这里是这个函数自己的兜底 ——
+  // 它不该依赖调用方做对，否则换个调用方就又是一个注入点
+  if (/[\u0000-\u001f]/.test(raw)) throw new Error('JSON 路径的成员名不能含控制字符')
+  const escaped = raw.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+  return `$."${escaped}"`
+}

@@ -19,7 +19,8 @@ import assert from 'node:assert/strict'
 process.env.VOLC_AK = 'AK_TEST'
 process.env.VOLC_SK = 'SK_TEST'
 
-const { isTranslateConfigured, translatePlan, translateText, volcCode, isLocalConversion } = await import('../src/translate.js')
+const { isTranslateConfigured, translatePlan, translateText, volcCode, isLocalConversion, splitOversized, planBatches } =
+  await import('../src/translate.js')
 
 let failed = 0
 const ok = (name) => console.log(`  ✅ ${name}`)
@@ -43,27 +44,40 @@ async function assertError(fn, { code, message } = {}) {
   return err
 }
 
-/* ---------------- translatePlan：繁体走本地转换 ---------------- */
+/* ---------------- translatePlan：繁体的两条路 ---------------- */
 try {
   /**
-   * ⚠️ 这一节 2026-09-07 整体改过。以前断言的是
-   *   translatePlan('zh-Hant').source === 'en' && .target === 'zh'
-   * 也就是「把英文版翻成 zh 再当繁体用」。那个方案有两个致命处：火山不认 BCP-47，
-   * zh-Hans / zh-Hant 在它眼里都是 zh，「把 zh 翻成 zh」是空操作；而没填英文版的
-   * 条目直接放弃，于是繁体读者一直在看简体原文 —— GSC 把 /zh-Hant/* 判成
-   * /zh-Hans 的重复页，根子就在这里。现在繁体走 zh-convert.js 的 OpenCC。
+   * ⚠️ 这一节被改过**两次**，两次的前提都要记住，别再绕回去：
+   *
+   * 最早：`translatePlan('zh-Hant').source === 'en' && .target === 'zh'`
+   *   —— 「把英文版翻成 zh 再当繁体用」。没填英文版的条目直接放弃，
+   *   于是繁体读者一直看简体原文，GSC 把 /zh-Hant/* 判成 /zh-Hans 的重复页。
+   *
+   * 第一次改：改走 OpenCC，理由写的是「火山不认 BCP-47，zh-Hans / zh-Hant
+   *   在它眼里都是 zh」。**这个理由是错的** —— 那是照抄了代码里一句没核实的旧注释。
+   *   查官方语言支持表（docs 4640/35107）：`zh-Hant` 是一等语言，
+   *   还有 `zh-Hant-tw` / `zh-Hant-hk` 两个地区变体。
+   *
+   * 现在：简体源文**仍然**走 OpenCC，但理由换成真的那几条 —— 免费、结果可复现、
+   *   档位可控（s2twp 的用词和 zh-Hant.ts 的界面文案对齐）。而源文不是中文时
+   *   让上游翻，目标是 **zh-Hant**（以前写 zh，等于给繁体读者发简体）。
    */
+  // 简体源文 → 本地转换，不花配额
   assert.deepEqual(translatePlan('zh-Hant', 'zh-Hans'), { convert: true, effective: 'zh-Hant' })
   assert.ok(isLocalConversion('zh-Hant'), 'zh-Hant 必须被认成本地转换')
   assert.ok(!isLocalConversion('fr'), '别的语言不能被认成本地转换')
-  // 火山语言表里刻意没有 zh-Hant —— 有的话就说明有人把它加回去了
-  assert.equal(volcCode('zh-Hant'), null, 'VOLC_LANG 里不许出现 zh-Hant')
+
+  // zh-Hant **在**语言表里（这一条以前是反着断言的，是个错）
+  assert.equal(volcCode('zh-Hant'), 'zh-Hant', 'zh-Hant 是官方支持的语言码，必须在表里')
   assert.equal(volcCode('zh-Hans'), 'zh')
-  // 源文是英文时繁体读者该看翻译，不是把英文原样搬过去 —— 退回让火山把 en 翻成 zh
-  assert.deepEqual(translatePlan('zh-Hant', 'en'), { source: 'en', target: 'zh', effective: 'zh-Hant' })
-  ok('繁体走本地简繁转换，不再拿英文中转')
+
+  // 源文是英文 → 让上游翻，目标必须是 zh-Hant 而不是 zh
+  assert.deepEqual(translatePlan('zh-Hant', 'en'), { source: 'en', target: 'zh-Hant', effective: 'zh-Hant' })
+  // 简繁不能被当成同一种语言而 passthrough 掉
+  assert.notEqual(volcCode('zh-Hans'), volcCode('zh-Hant'))
+  ok('繁体：简体源文走 OpenCC，英文源文走 API 且目标是 zh-Hant')
 } catch (e) {
-  bad('繁体走本地简繁转换，不再拿英文中转', e)
+  bad('繁体：简体源文走 OpenCC，英文源文走 API 且目标是 zh-Hant', e)
 }
 
 /* ---------------- translatePlan：passthrough 跟着源语言变 ---------------- */
@@ -162,7 +176,8 @@ try {
     status: 200,
     body: {
       ResponseMetadata: { RequestId: 'r1', Action: 'TranslateText', Version: '2020-06-01', Service: 'translate', Region: 'cn-north-1' },
-      Result: { TextList: [{ Translation: 'Hola mundo', DetectedSourceLanguage: 'en' }] },
+      // ⚠️ 官方形状是**顶层** TranslationList，不是 Result.TextList（见 translateBatch 的注释）
+      TranslationList: [{ Translation: 'Hola mundo', DetectedSourceLanguage: 'en' }],
     },
   }))
   assert.equal(out, 'Hola mundo')
@@ -209,13 +224,104 @@ try {
   bad('非 JSON 响应翻成 BAD_RESPONSE', e)
 }
 
-/* —— 用例 5：返回结构没有 TextList —— */
+/* —— 用例 5：空响应 —— */
 try {
-  nextMock = { status: 200, body: { ResponseMetadata: { RequestId: 'r2' }, Result: {} } }
+  nextMock = { status: 200, body: { ResponseMetadata: { RequestId: 'r2' } } }
   await assertError(() => translateText('Hi', 'en', 'es'), { code: 'EMPTY_TRANSLATION' })
   ok('空译文翻成 EMPTY_TRANSLATION')
 } catch (e) {
   bad('空译文翻成 EMPTY_TRANSLATION', e)
+}
+
+/* —— 用例 5b：**旧的错形状必须被判为无译文** —— */
+try {
+  /**
+   * 2026-09-07 之前解析的是 `json.Result.TextList[0].Translation`，而官方返回的是
+   * 顶层 `TranslationList` —— 那个路径永远不存在，功能一次都没成功过。
+   * 而当时的 mock 照着错形状写，测试一直是绿的：**测试把 bug 一起固化了。**
+   * 这条断言就是防再犯 —— 谁把解析改回 Result.TextList，这里会红。
+   */
+  nextMock = {
+    status: 200,
+    body: { ResponseMetadata: { RequestId: 'r3' }, Result: { TextList: [{ Translation: '不该被读到' }] } },
+  }
+  await assertError(() => translateText('Hi', 'en', 'es'), { code: 'EMPTY_TRANSLATION' })
+  ok('Result.TextList 那种旧形状不被认，防止解析改回去')
+} catch (e) {
+  bad('Result.TextList 那种旧形状不被认，防止解析改回去', e)
+}
+
+/* —— 用例 5c：SourceLanguage 留空 = 让上游自动识别 —— */
+try {
+  // 官方文档：SourceLanguage 可选，不填则自动识别。宁可不填也不要填错。
+  nextMock = { status: 200, body: { ResponseMetadata: {}, TranslationList: [{ Translation: 'auto' }] } }
+  await translateText('Hi', undefined, 'es')
+  const body = JSON.parse(lastMock.body)
+  assert.equal('SourceLanguage' in body, false, '源语言留空时 body 里不该出现 SourceLanguage')
+  assert.deepEqual(body, { TargetLanguage: 'es', TextList: ['Hi'] })
+  ok('源语言留空时不发 SourceLanguage 字段')
+} catch (e) {
+  bad('源语言留空时不发 SourceLanguage 字段', e)
+}
+
+/* —— 用例 5d：-429 自动退避重试 —— */
+try {
+  let hits = 0
+  nextMock = { status: 200, body: { ResponseMetadata: {}, TranslationList: [{ Translation: 'ok' }] } }
+  // 用一个自增的 mock：第一次回 -429，第二次成功
+  const prev = mockServer.listeners('request')[0]
+  mockServer.removeListener('request', prev)
+  mockServer.on('request', (req, res) => {
+    req.on('data', () => {})
+    req.on('end', () => {
+      hits += 1
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(
+        hits === 1
+          ? JSON.stringify({ ResponseMetadata: { Error: { Code: -429, Message: '请求频率过高' } } })
+          : JSON.stringify({ ResponseMetadata: {}, TranslationList: [{ Translation: '重试成功' }] }),
+      )
+    })
+  })
+  const out = await translateText('Hi', 'en', 'es')
+  assert.equal(out, '重试成功')
+  assert.equal(hits, 2, '应该正好重试一次')
+  mockServer.removeAllListeners('request')
+  mockServer.on('request', prev)
+  ok('-429 退避重试（错误码是数字也认）')
+} catch (e) {
+  bad('-429 退避重试（错误码是数字也认）', e)
+}
+
+/* —— 用例 5e：官方限额的分批与切分 —— */
+try {
+  // 官方：列表长度 ≤ 16、总文本长度 ≤ 5000（我们留余量取 4800）
+  const short = Array.from({ length: 20 }, (_, i) => `p${i}`)
+  const batches = planBatches(short)
+  assert.equal(batches.length, 2, '20 条短文本按 16 条上限应该编成 2 批')
+  assert.equal(batches[0].length, 16)
+  assert.equal(batches[1].length, 4)
+
+  // 字符上限也要生效：3 条 2000 字的，第 3 条必须挪到下一批
+  const long = [ 'a'.repeat(2000), 'b'.repeat(2000), 'c'.repeat(2000) ]
+  const b2 = planBatches(long)
+  assert.equal(b2.length, 2, '总长超 4800 时必须换批')
+  assert.deepEqual(b2[0], [0, 1])
+
+  // 单条超长要切开，且拼回来一个字不丢
+  const oversized = ('这是一个很长的句子。'.repeat(800))
+  const pieces = splitOversized(oversized)
+  assert.ok(pieces.length > 1, '超过上限的单条必须被切开')
+  assert.ok(pieces.every((x) => x.length <= 4800), '每一段都不许超过上限')
+  assert.equal(pieces.join(''), oversized, '切开再拼必须还原原文')
+  // 优先在句末切：除了最后一段，每段都该以句号结尾
+  assert.ok(pieces.slice(0, -1).every((x) => x.endsWith('。')), '应该在句末切，不是硬切')
+  // 没有标点也不能死循环
+  const noPunct = splitOversized('あ'.repeat(10000))
+  assert.ok(noPunct.length >= 3 && noPunct.every((x) => x.length <= 4800))
+  ok('16 条 / 4800 字符的分批与超长切分')
+} catch (e) {
+  bad('16 条 / 4800 字符的分批与超长切分', e)
 }
 
 /* —— 用例 6：缺 AK / SK 时不去真打火山 —— */
@@ -261,7 +367,7 @@ const mdMock = createServer((req, res) => {
     res.end(
       JSON.stringify({
         ResponseMetadata: { RequestId: 'md' },
-        Result: { TextList: translations.map((tr) => ({ Translation: tr })) },
+        TranslationList: translations.map((tr) => ({ Translation: tr })),
       }),
     )
   })
@@ -303,10 +409,15 @@ try {
   const out = await translateMarkdown(md, 'zh', 'en')
   // 分隔符原样保留：第一段↔第二段之间是 2 个换行，第二段↔第四段之间是 3 个换行（中间空两行）
   assert.equal(out, 'T(第一段)\n\nT(第二段)\n\n\nT(第四段（中间空两行）)')
-  assert.equal(mockCalls, 3, '应该发 3 次请求（一段一次）')
-  ok('translateMarkdown 多段保留双换行、并各自翻译')
+  /**
+   * ⚠️ 这里以前断言的是 3 次请求（一段一次）。2026-09-07 改成批量之后
+   * 3 个短段落装在同一个 TextList 里，**只发 1 次**。
+   * 计费按字符所以不省配额，省的是往返延迟和撞 -429 的概率。
+   */
+  assert.equal(mockCalls, 1, '三个短段落应该批在同一次请求里')
+  ok('translateMarkdown 多段保留双换行，且批在一次请求里')
 } catch (e) {
-  bad('translateMarkdown 多段保留双换行、并各自翻译', e)
+  bad('translateMarkdown 多段保留双换行，且批在一次请求里', e)
 }
 
 /* —— 用例 10：单段失败抛错（整篇视为失败） —— */
@@ -351,18 +462,20 @@ try {
         res.end(
           JSON.stringify({
             ResponseMetadata: {},
-            Result: {
-              TextList: list.map((t) => ({ Translation: 'OK_' + t.slice(0, 3) })),
-            },
+            TranslationList: list.map((t) => ({ Translation: 'OK_' + t.slice(0, 3) })),
           }),
         )
       }, 50)
     })
   })
-  // 10 段、并发 2
-  const ten = Array.from({ length: 10 }, (_, i) => `P${i + 1}`).join('\n\n')
-  await translateMarkdown(ten, 'zh', 'en', 2)
-  assert.equal(mockCalls, 10, '10 段都应该被翻译')
+  /**
+   * 40 段、并发 2。段数必须足够压出**多个批次** —— 批量化之后 10 个短段落
+   * 只有 1 批，并发上限根本没机会被触碰，那个用例就成了摆设。
+   * 40 段 ÷ 每批 16 条 = 3 批。
+   */
+  const many = Array.from({ length: 40 }, (_, i) => `P${i + 1}`).join('\n\n')
+  await translateMarkdown(many, 'zh', 'en', 2)
+  assert.equal(mockCalls, 3, `40 段应该编成 3 批，实测 ${mockCalls} 次请求`)
   assert.ok(peakConcurrent <= 2, `并发上限 2 时峰值应该是 2，实测 ${peakConcurrent}`)
   // 恢复 mock：后面的测试可能还会用（虽然现在就最后一个了，留个干净状态）
   mdMock.removeAllListeners('request')

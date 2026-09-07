@@ -7,7 +7,7 @@
  * 关联数据（类型 / 标签 / ROM）一律批量装配：一页 24 条只多打 3 条
  * WHERE game_id IN (...)，不会变成每款查三次。
  */
-import { query, queryOne, withTransaction } from './db.js'
+import { jsonMemberPath, query, queryOne, withTransaction } from './db.js'
 import { gameRowToApi, gameApiToRow, dateTimeIso, romsOf, GENERIC_ROM_LANG } from './mappers.js'
 import { buildGameTokens, queryTerms, tokenMatchSql, normalize, tokenize } from './search.js'
 import { BAYES_SCORE_SQL } from './ratings-repo.js'
@@ -679,7 +679,7 @@ export async function writeDescriptionTranslation(slug, lang, text) {
        ?,
        CAST(? AS JSON)
      ) WHERE slug = ?`,
-    [`$.${lang}`, JSON.stringify(safeText), slug],
+    [jsonMemberPath(lang), JSON.stringify(safeText), slug],
   )
   return r.affectedRows > 0
 }
@@ -705,7 +705,7 @@ export async function writeTitleTranslation(slug, lang, text) {
        ?,
        CAST(? AS JSON)
      ) WHERE slug = ?`,
-    [`$.${lang}`, JSON.stringify(safeText), slug],
+    [jsonMemberPath(lang), JSON.stringify(safeText), slug],
   )
   return r.affectedRows > 0
 }
