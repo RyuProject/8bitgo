@@ -7,7 +7,8 @@
  * 录像有硬上限 60 秒，录完当场下载到本地，全程不经过服务器。
  */
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
-import type { Capability, RuntimeHandle, RuntimeId } from './types'
+import type { Capability, RuntimeHandle, RuntimeId, ScreenLayoutState } from './types'
+import { layoutToken, showsTouchScreen } from './dualScreen'
 import { canRecord, downloadBlob, mediaFileName, startRecording, MAX_RECORD_MS, type Recorder } from './recorder'
 import { useT, fmt } from '@/services/i18n'
 import { NesKeyBinder } from './NesKeyBinder'
@@ -38,6 +39,14 @@ interface Props {
   gameSlug?: string
   /** 哪个引擎 —— 内存快照和 DOS 变更包不通用，必须分开存 */
   runtimeId?: RuntimeId
+  /**
+   * 双屏机型的屏幕布局，由运行时从**核心自报的选项表**里读出来后经 onScreenLayout 报上来
+   * （见 dualScreen.ts）。null / 取值不足两个 = 这一局没有布局可切，整块 UI 不画。
+   *
+   * ⚠️ 当前值只认这里报上来的那一份，别在组件里另存一个 state ——
+   * 适配器是唯一的真相，两边各存一份迟早对不上（「屏幕按键」那个开关踩过一次）。
+   */
+  screenLayout?: ScreenLayoutState | null
   /**
    * 这款 DOS 游戏自己的存档说明（后台逐游戏填，如「按 F2 存档 / F3 读档」）。
    * 留空就只显示通用的三步说明 —— DOS 游戏的存档键各家不同，通用文案只能给最常见的 ESC / F1。
@@ -71,10 +80,43 @@ const BTN = 'inline-flex h-7 min-w-7 items-center justify-center gap-1 rounded-m
 const BTN_ON = 'border-brand bg-brand-soft text-brand-hover'
 
 export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSaveHint,
-  stageRef, className }: Props) {
+  screenLayout, stageRef, className }: Props) {
   const t = useT()
   const lang = useLang()
   const tt = t.player.tools
+
+  /**
+   * 可选的屏幕布局。**少于两个就等于没有** —— 只有一个取值的选择器没有意义，
+   * 引擎自己建设置菜单时也是这么判的（`values.length <= 1` 直接不画那一行）。
+   */
+  const layoutValues = screenLayout?.values ?? []
+  /**
+   * 取值 → 中文名。查不到就原样返回核心给的英文（见 dualScreen.layoutToken 的理由）。
+   * 写成一张显式表而不是 `tt['layout' + token]`：那种拼键取字符串在 TS 里要么得 any、
+   * 要么得给 locale 加索引签名，两条都会把「文案键写错了」从编译错误降级成线上空白。
+   */
+  const layoutLabel = (value: string): string => {
+    switch (layoutToken(value)) {
+      case 'StackTop':
+        return tt.layoutStackTop
+      case 'StackBottom':
+        return tt.layoutStackBottom
+      case 'SideLeft':
+        return tt.layoutSideLeft
+      case 'SideRight':
+        return tt.layoutSideRight
+      case 'TopOnly':
+        return tt.layoutTopOnly
+      case 'BottomOnly':
+        return tt.layoutBottomOnly
+      case 'HybridTop':
+        return tt.layoutHybridTop
+      case 'HybridBottom':
+        return tt.layoutHybridBottom
+      default:
+        return value
+    }
+  }
   const [paused, setPaused] = useState(false)
   const [volume, setVolume] = useState(handle?.volume ?? 1)
   const [muted, setMuted] = useState(false)
@@ -760,8 +802,9 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
         <div
           className={cx(
             'absolute bottom-full left-0 z-20 mb-2 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-lg border border-line bg-surface px-3 py-2 shadow-lg',
-            // 红白机那一路多一整块改键表格，w-64 摆不下两列
-            runtimeId === 'jsnes' ? 'max-h-[70vh] w-72' : 'w-64',
+            // 红白机那一路多一整块改键表格，w-64 摆不下两列；
+            // 双屏布局那一排是八个中文选项，同样要宽一点，并且要能滚
+            runtimeId === 'jsnes' || layoutValues.length > 1 ? 'max-h-[70vh] w-72' : 'w-64',
           )}
         >
           <p className={cx('font-semibold', pads.length ? 'text-online' : 'text-muted')}>
@@ -783,6 +826,47 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
             它自带的设置菜单），要么直通给游戏（DOS / Flash / J2ME），我们插不上手。
           */}
           {runtimeId === 'jsnes' && <NesKeyBinder />}
+
+          {/*
+            双屏布局（NDS）。取值一律用核心自报的原样字符串回填，我们只把它翻成中文
+            （见 dualScreen.ts 的 layoutToken）—— 认不出的取值就原样显示英文，
+            **不猜一个中文名**：换核心之后同一个词可能是别的意思，硬翻会把玩家骗到。
+
+            为什么摆在这个面板里：NDS 的触摸屏就是下面那块屏，换布局直接决定
+            「画面还能不能戳」，跟紧接着那个「屏幕按键」开关是同一件事的两半。
+          */}
+          {layoutValues.length > 1 && screenLayout && (
+            <div className="mt-2 border-t border-line pt-2">
+              <p className="font-semibold text-fg">{tt.screenLayout}</p>
+              <div className="mt-1 flex flex-wrap gap-1">
+                {layoutValues.map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    aria-pressed={value === screenLayout.current}
+                    onClick={() => handle.setScreenLayout?.(value)}
+                    className={cx(
+                      'rounded-md border px-2 py-0.5',
+                      value === screenLayout.current
+                        ? 'border-brand bg-brand-soft font-semibold text-brand-hover'
+                        : 'border-line text-fg hover:border-brand hover:text-brand',
+                    )}
+                  >
+                    {layoutLabel(value)}
+                  </button>
+                ))}
+              </div>
+              {/*
+                当前布局把触摸屏藏起来了 —— 说清楚，别让玩家以为是坏了。
+                适配器这时已经把屏幕按键补上了（见 adapters/emulatorjs.ts 的 syncLayoutInput），
+                这句话是把那个「自动」讲明白，不是一句纯警告。
+              */}
+              {!showsTouchScreen(screenLayout.current) && (
+                <p className="mt-1 text-live">{tt.layoutNoTouchWarn}</p>
+              )}
+              <p className="mt-1 text-muted">{tt.layoutHint}</p>
+            </div>
+          )}
 
           {/*
             引擎自带那套屏幕按键的开关。只在触屏设备上出现 —— 桌面端两个能力都不会声明。

@@ -33,6 +33,13 @@ diagRouter.get('/', (req, res) => {
   const effective = clientIpFrom(direct, headers)
   const byIp = countryFromIp(effective)
   const byHeader = countryFromHeaders(headers)
+  /**
+   * Cloudflare 认定的访客地址。它和 effective 不一致 = 我们拿到的是 CF 边缘节点，
+   * 不是人（见 presence.js 的 warnIfCdnEdgeIp）—— 这是最难自己发现的一种配置错误，
+   * 因为每一项功能都还「能用」，只是全站所有人塌缩成了同一个访客。
+   */
+  const cfIp = headers['cf-connecting-ip'] || null
+  const usingEdgeIp = Boolean(cfIp && effective && String(cfIp).trim() !== String(effective).trim())
 
   res.set('Cache-Control', 'no-store')
   res.json({
@@ -47,6 +54,13 @@ diagRouter.get('/', (req, res) => {
       isPrivate: isPrivateIp(effective),
       xff: headers['x-forwarded-for'] || null,
       xRealIp: headers['x-real-ip'] || null,
+      /** Cloudflare 说访客是谁。有这个头就说明流量确实过了 CF */
+      cfConnectingIp: cfIp,
+      /**
+       * true = **配错了**：我们采用的是 CF 边缘节点的地址。
+       * 每 IP 房间上限 / 限流会退化成「同一个 CF 机房共用一个额度」，国旗全站显示同一个国家。
+       */
+      usingCdnEdgeIp: usingEdgeIp,
       trustProxy: String(process.env.TRUST_PROXY ?? 'loopback'),
     },
     country: {
@@ -63,6 +77,14 @@ diagRouter.get('/', (req, res) => {
       loaded: geoReady(),
     },
     device: deviceFromUa(headers['user-agent']),
+    /** 有问题时直接把该改哪一行写在返回里 —— 排查的人不用再翻文档 */
+    hint: usingEdgeIp
+      ? 'nginx 每个 location 都要把 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` ' +
+        '换成 `proxy_set_header X-Forwarded-For $http_cf_connecting_ip;`（在 Cloudflare 后面时前者追加的是 CF 节点地址）；' +
+        '并把源站防火墙锁到 Cloudflare 的 IP 段，否则这个头能被直连源站的人伪造。'
+      : isPrivateIp(effective)
+        ? '反代没把真实 IP 传进来：每个 location 都要 proxy_set_header X-Forwarded-For（CF 后面用 $http_cf_connecting_ip）。'
+        : null,
     /**
      * RTT 量不到这里看不出来 —— 它是长连接上的心跳时延，HTTP 请求没有。
      * 网络那格如果一直 ❓，看房间接口里的 presence.rtt：

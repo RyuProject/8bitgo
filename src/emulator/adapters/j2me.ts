@@ -237,6 +237,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const rt = getT().runtime
 
   if (!J2ME_PATH) {
+    console.warn('[j2me] VITE_J2ME_PATH is not configured')
     options.onError?.(rt.j2meNotConfigured)
     return deadHandle()
   }

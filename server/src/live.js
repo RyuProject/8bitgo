@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { watchPresence, clientIpFrom, UNKNOWN_PRESENCE } from './presence.js'
+import { watchPresence, clientIpFrom, isPrivateIp, UNKNOWN_PRESENCE } from './presence.js'
 import { verifyToken } from './auth.js'
 import { queryOne } from './db.js'
 import {
@@ -34,8 +34,11 @@ import {
  *   go-live      {gameSlug, gameName, title, platform}  + ack(err, {roomId, token})
  *   resume-live  {roomId, token}                        + ack(err, {roomId, viewers: [id]})
  *                主播断线重连后接回原来的房间（见下面「主播掉线」）
- *   watch        {roomId}                               + ack(err, {hostId, hostAway, ...})
+ *   watch        {roomId, key?, reoffer?}                + ack(err, {hostId, hostAway, ...})
  *                同一个观众对同一个房间再发一次 = 「请主播重新给我发 offer」
+ *                key 是观众自己生成的随机串，一次观看不变：信令重连后 socket.id 换了，
+ *                凭它认出「还是刚才那个人」（见下面「观众换了 socket」）
+ *                reoffer=true 表示观众的画面已经断了、明确要一轮新 offer
  *   signal       {target, data}   → 转发给 target，附上 from
  *                观众发的一律转给**当前**主播，target 只是摆设（主播重连后 id 会变）
  *   stop-live                                           主播主动下播
@@ -43,7 +46,10 @@ import {
  *                弹幕。房主和观众都能发；房间号取自 membership，**不看 payload**，
  *                名字和「是不是房主」也一律由服务端判（见 chatIdentity）
  *   ← chat           {id, at, name?, guest?, host, text}   广播给房间里所有人（含发的人自己）
- *   ← viewer-joined  {viewerId}      发给主播，让它建一条新的 PeerConnection
+ *   ← viewer-joined  {viewerId, replaces?}  发给主播，让它建一条新的 PeerConnection
+ *                      replaces = 这个人上一条连接用的 socket.id，那条可以直接拆
+ *   ← viewer-rebound {from, to}      发给主播：同一个观众换了 socket.id，画面没断，
+ *                                    把 PeerConnection 换个名字就行，**别重建**
  *   ← viewer-left    {viewerId}
  *   ← viewers        {count}         主播和观众都收
  *   ← host-away                      发给观众：主播断线了，房间先留着
@@ -62,12 +68,34 @@ import {
  *
  * 允许**接管**：重连的新 socket 到达时，旧 socket 往往还没到 ping 超时、在服务器眼里
  * 仍然「在线」。token 对得上就把房间交给新 socket，旧的那份 membership 直接作废。
+ *
+ * ── 观众换了 socket ───────────────────────────────────────
+ * 观众的信令抖一下重连，socket.io 会给它一个**新的** socket.id。以前服务端只认 id：
+ * 新 id = 新观众 → 主播收到 viewer-joined 重建整条 PeerConnection（观众画面黑一下），
+ * 旧 id 还挂在名单里直到 ping 超时 → 人数多算一个、满房时这个人会被自己的幽灵挤出去
+ * （watch 回 full，观众端只能报错退出）。
+ * 现在观众每次 watch 都带一个自己生成的 key：同一个 key 换了 socket，就把名单里的旧 id
+ * 换成新的、发 viewer-rebound 让主播把那条还活着的 PeerConnection 换个名字，画面一帧不掉。
+ * 观众明说画面断了（reoffer）时才走 viewer-joined 重建。
  */
 
 /** 同时在播的房间上限：信令是公开接口，不设上限开播就能刷爆内存 */
 const MAX_ROOMS = Number(process.env.LIVE_MAX_ROOMS || 200)
-/** 单个 IP 同时能开的房间数。MAX_ROOMS 只防内存，防不了一个人开满整站 */
-const MAX_ROOMS_PER_IP = Number(process.env.LIVE_MAX_ROOMS_PER_IP || 3)
+/**
+ * 单个 IP 同时能开的房间数。MAX_ROOMS 只防内存，防不了一个人开满整站。
+ *
+ * ⚠️ 这个站是「玩就是播」——**每一个玩家都在开房**，所以这条闸拦的不只是刷子，
+ * 还有所有共用一个出口 IP 的正常玩家：运营商级 NAT（手机网络几乎全是）、学校、公司。
+ * 以前默认 3：同一个 NAT 后面第四个开始玩的人，自动开播会静默失败（只在控制台留一行）。
+ * 现在放到 20；单个 IP 想刷满 200 间仍然做不到，想再收紧用环境变量。
+ *
+ * 内网 / 回环地址**不计数**：那不是访客的 IP，是反代没把 X-Forwarded-For 传进来
+ * （deploy/live/README.md 里那行）。以前这种配置错误的后果是全站所有主播共用同一个额度 ——
+ * **整个站同时只能开 3 间直播**，而且没有任何报错。配置错了该是名片上的国旗变 ❓，
+ * 不该是直播开不出来；所以这里只在日志里提醒一次，放行。
+ */
+const MAX_ROOMS_PER_IP = Number(process.env.LIVE_MAX_ROOMS_PER_IP || 20)
+let warnedPrivateIp = false
 /** 单场直播的观众上限，见上面关于上行带宽的说明 */
 const MAX_VIEWERS = Number(process.env.LIVE_MAX_VIEWERS || 12)
 /**
@@ -235,13 +263,19 @@ function notifyViewers(nsp, room) {
  */
 const listWatchers = new Set()
 let listTimer = null
+/** 上一次真的推出去的列表。内容没变就不再推 —— 订阅者是**每个在线访客**，一次推送 = N 次写 */
+let lastListJson = ''
 
-/** 房间列表有变化就推给订阅者。同一轮的多次变化合并成一次 */
+/** 房间列表有变化就推给订阅者。同一轮的多次变化合并成一次；合并完内容还和上次一样就一个字都不发 */
 function notifyRoomList() {
   if (listTimer || listWatchers.size === 0) return
   listTimer = setTimeout(() => {
     listTimer = null
-    const payload = `event: rooms\ndata: ${JSON.stringify(liveRooms())}\n\n`
+    const json = JSON.stringify(liveRooms())
+    // 常见的「没变」：主播回前台但房本来就没被摘掉、被摘掉的房里有人进出、RTT 抖一下……
+    if (json === lastListJson) return
+    lastListJson = json
+    const payload = `event: rooms\ndata: ${json}\n\n`
     for (const res of listWatchers) {
       try {
         res.write(payload)
@@ -393,6 +427,7 @@ function leave(nsp, socket) {
     return
   }
   room.viewers.delete(socket.id)
+  room.viewerKeys.delete(socket.id)
   // 告诉主播可以把这条 PeerConnection 拆了，别留着占上行
   if (room.hostSocketId) {
     nsp.to(room.hostSocketId).emit('viewer-left', { viewerId: socket.id })
@@ -419,7 +454,15 @@ export function attachLive(io) {
       if (membership.has(socket.id)) return ack?.('already in a room')
       if (rooms.size >= MAX_ROOMS) return ack?.('server is full')
       const ip = hostIp(socket)
-      if (ip && MAX_ROOMS_PER_IP > 0) {
+      if (ip && isPrivateIp(ip)) {
+        if (!warnedPrivateIp) {
+          warnedPrivateIp = true
+          console.warn(
+            `[live] 主播的 IP 是内网地址 ${ip}：反代没有把 X-Forwarded-For 传进来（/socket.io/ 那个 location 也要加）。` +
+              '每 IP 房间上限对这种地址不生效，否则全站会共用同一个额度。',
+          )
+        }
+      } else if (ip && MAX_ROOMS_PER_IP > 0) {
         let mine = 0
         for (const r of rooms.values()) if (r.hostIp === ip) mine++
         if (mine >= MAX_ROOMS_PER_IP) return ack?.('too many rooms')
@@ -437,6 +480,11 @@ export function attachLive(io) {
         hostName: str(payload?.hostName, 40),
         startedAt: Date.now(),
         viewers: new Set(),
+        /**
+         * 观众 socket.id → 观众自己带的 key。信令重连后 socket.id 会换，凭 key 认出
+         * 「还是这个人」，把旧 id 换掉而不是当新观众（见文件头「观众换了 socket」）。
+         */
+        viewerKeys: new Map(),
         awayTimer: null,
         awaySince: null,
         /** 主播是不是切到后台了（画面冻着）。见 host-visibility */
@@ -494,10 +542,33 @@ export function attachLive(io) {
       const info = membership.get(socket.id)
       const again = info?.role === 'viewer' && info.roomId === room.id
       if (info && !again) return ack?.('already in a room')
-      if (!again && room.viewers.size >= MAX_VIEWERS) return ack?.('full')
 
+      /**
+       * 同一个观众换了 socket（信令重连）：名单里还挂着它上一条连接的 id。
+       * 那个 id 不是别人，是它自己的幽灵 —— 不该占人数，更不该让它把自己挤出满员的房间。
+       * key 是观众自己生成的随机串，别人猜不到，所以拿着 key 来的就是同一个人。
+       */
+      const key = str(payload?.key, 64)
+      let previous = null
+      if (!again && key) {
+        for (const [id, k] of room.viewerKeys) {
+          if (k === key && id !== socket.id) {
+            previous = id
+            break
+          }
+        }
+      }
+      if (!again && !previous && room.viewers.size >= MAX_VIEWERS) return ack?.('full')
+
+      if (previous) {
+        room.viewers.delete(previous)
+        room.viewerKeys.delete(previous)
+        membership.delete(previous)
+        nsp.sockets.get(previous)?.leave(room.id)
+      }
       if (!again) {
         room.viewers.add(socket.id)
+        if (key) room.viewerKeys.set(socket.id, key)
         membership.set(socket.id, { roomId: room.id, role: 'viewer' })
         socket.join(room.id)
         // 有人来看了：后台 + 零观众那把收房的闹钟得撤
@@ -506,11 +577,20 @@ export function attachLive(io) {
       // 带上最近几条弹幕：中途进来的观众不该面对一片空白。
       // 只在 watch 的 ack 里给，不进 publicRoom —— 那个是大厅列表用的，
       // 每张卡片都驮着 30 条弹幕纯属白费流量
-      ack?.(null, { ...publicRoom(room), hostId: room.hostSocketId, chat: room.chat })
+      ack?.(null, { ...publicRoom(room), hostId: room.hostSocketId, chat: room.chat, rebound: Boolean(previous) })
       // 由主播发起 offer：它才知道自己有几条轨、什么编码。
       // 主播不在就先不发，它 resume 回来时会拿到观众名单自己补
-      if (room.hostSocketId) nsp.to(room.hostSocketId).emit('viewer-joined', { viewerId: socket.id })
-      if (!again) notifyViewers(nsp, room)
+      if (room.hostSocketId) {
+        const reoffer = Boolean(payload?.reoffer)
+        if (previous && !reoffer) {
+          // 画面还连着，只是 socket 换了：主播把那条 PeerConnection 换个名字就行，别重建
+          nsp.to(room.hostSocketId).emit('viewer-rebound', { from: previous, to: socket.id })
+        } else {
+          nsp.to(room.hostSocketId).emit('viewer-joined', { viewerId: socket.id, ...(previous ? { replaces: previous } : {}) })
+        }
+      }
+      // 换 socket 不算人数变化：一个人还是一个人
+      if (!again && !previous) notifyViewers(nsp, room)
     })
 
     /**

@@ -118,6 +118,12 @@ const PROXY_TRUSTED = TRUST_PROXY !== 'false' && TRUST_PROXY !== '0' && TRUST_PR
  * 直连进来的（对端不是内网地址）一律不信 XFF：说明请求没经过我们的反代。
  */
 export function clientIpFrom(directAddress, headers = {}) {
+  const ip = resolveClientIp(directAddress, headers)
+  warnIfCdnEdgeIp(ip, headers)
+  return ip
+}
+
+function resolveClientIp(directAddress, headers) {
   const direct = normalizeIp(directAddress)
   if (!PROXY_TRUSTED || !isPrivateIp(direct)) return direct
   const xff = headers['x-forwarded-for'] || headers['X-Forwarded-For'] || ''
@@ -125,6 +131,48 @@ export function clientIpFrom(directAddress, headers = {}) {
   for (let i = hops.length - 1; i >= 0; i--) if (!isPrivateIp(hops[i])) return hops[i]
   const real = normalizeIp(headers['x-real-ip'])
   return real && !isPrivateIp(real) ? real : direct
+}
+
+/** 只提示一次：这个进程的配置要么对要么错，刷一屏没有意义 */
+let cdnEdgeWarned = false
+
+/**
+ * ⚠️ 自查：我们采用的 IP 是不是 **CDN 边缘节点**，而不是访客。
+ *
+ * 上面「取 XFF 最后一段」的设计**只在 nginx 直面用户时成立** —— 那时候最后一段是
+ * nginx 亲眼看到的对端，伪造不了。但站点在 Cloudflare 后面时，nginx 看到的对端就是
+ * **CF 的 anycast 节点**，于是 `$proxy_add_x_forwarded_for` 追加上去的最后一段是 CF 的地址，
+ * 真实访客反而在前面那一段。
+ *
+ * 2026-09-07 线上实测就是这个状态（`xff: "34.162.230.222, 104.22.100.106"`，
+ * 采用了后者 —— 104.22.x.x 是 Cloudflare 的段），后果一串，而且**每一条都不报错**：
+ *
+ *   · 每 IP 房间上限（直播 / 联机）对着 CF 节点算 → **同一个 CF 机房后面的所有玩家共用一个额度**
+ *   · `maxMembersPerIp` 同理 → 同一机房后面只有几个人能进同一个联机房
+ *   · 房间卡片的国旗查的是 CF anycast 地址（多半登记在美国）→ **全站玩家都显示同一个国家**，
+ *     而且因为 `resolveCountry` 先用 IP、查到了就不再看网关头，那份**正确**的
+ *     `CF-IPCountry` 永远轮不上
+ *   · `clientKey` / 限流、匿名评分的 `anon_ip` 一并塌缩成按机房而不是按人
+ *
+ * 判据不需要维护 CF 的 IP 段：**`CF-Connecting-IP` 这个头存在**就说明流量确实过了 Cloudflare，
+ * 而它的值就是 CF 认定的访客地址。它和我们采用的值不一致 = nginx 那一行透传写错了。
+ *
+ * 这里**只告警、不改行为** —— 直接改成信 `CF-Connecting-IP` 会开一个伪造口子
+ * （源站没锁到 CF 的 IP 段时，谁都能直连源站自报地址），
+ * 而现在这套「取最后一段」至少是伪造不了的。修法在 nginx 那一行，见下面的提示。
+ */
+function warnIfCdnEdgeIp(ip, headers) {
+  if (cdnEdgeWarned) return
+  const cf = normalizeIp(headers['cf-connecting-ip'] || headers['CF-Connecting-IP'])
+  if (!cf || !ip || cf === ip) return
+  cdnEdgeWarned = true
+  console.warn(
+    `[presence] 采用的客户端 IP 是 ${ip}，但 Cloudflare 说访客是 ${cf} —— ` +
+      '我们拿到的是 CF 边缘节点的地址，不是人。后果：每 IP 房间上限 / 限流退化成「按机房共用」，' +
+      '房间卡片的国旗全站显示同一个国家。修法是把 nginx 里那一行换掉（每个 location 都要）：' +
+      'proxy_set_header X-Forwarded-For $http_cf_connecting_ip;  ' +
+      '（并把源站防火墙锁到 Cloudflare 的 IP 段，否则这个头可以被直连源站的人伪造）。详见 GET /api/diag',
+  )
 }
 
 /* ---------------- 国家 ---------------- */
@@ -194,8 +242,10 @@ export function resolveCountry(ip, headers = {}) {
     ipBlindWarned = true
     console.warn(
       '[presence] 看到的客户端地址是内网/回环（' + (ip || '空') + '），网关也没给国家头 —— ' +
-        '房间卡片上的国旗会一直是 ❓。反代请加 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`' +
-        '（socket.io / netplay 那个 location 也要加），或确认流量确实经过 Cloudflare。详见 GET /api/diag',
+        '房间卡片上的国旗会一直是 ❓。反代请把真实 IP 透传下来（socket.io / netplay 那个 location 也要加）：' +
+        '直面用户时用 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`；' +
+        '**在 Cloudflare 后面时必须用 `proxy_set_header X-Forwarded-For $http_cf_connecting_ip;`** —— ' +
+        '前者追加的是 CF 边缘节点的地址，会让全站塌缩成同一个「访客」。详见 GET /api/diag',
     )
   }
   return null

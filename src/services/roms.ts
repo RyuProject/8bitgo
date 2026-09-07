@@ -229,6 +229,31 @@ export function conventionalKeys(game: Game): string[] {
   return ordered.map((ext) => at(`${game.slug}${ext}`))
 }
 
+/** key 自带完整地址（外链或站内绝对路径），不需要根地址就能探 */
+const selfContainedKey = (key: string) => /^https?:\/\//i.test(key) || key.startsWith('/')
+
+/**
+ * 首帧就能断定「这游戏待会儿要去探云端 ROM」吗？—— useRomUrl 的初始态用它。
+ *
+ * 为什么不能只看 effectiveRomKey（这是原来的写法）：那个只认后台**显式绑定**的语言槽，
+ * 而绝大多数游戏是靠约定 key（<前缀>/<platform>/<slug>.zip）探出来的，压根没有绑定记录。
+ * 于是这些游戏的首帧落到 idle —— 主按钮先写「选择本地 ROM」，effect 一跑变「正在准备
+ * 在线版本…」，探完又变「开始游戏」。三段文案，正是初始态那段注释想避免的那种自相矛盾。
+ *
+ * **只看构建时的根地址，故意不看 localStorage 覆盖**：初始态必须在服务端渲染和水合时
+ * 算出同一个值，而那份覆盖只存在于管理员自己那台浏览器里。少数派多闪一下，
+ * 换来所有人都不会 hydration mismatch。
+ */
+export function romProbeExpected(game: Game | undefined, lang: Lang, prefer?: RomLang | null): boolean {
+  if (!game) return false
+  const explicit = romCandidates(game, lang, prefer).map((c) => c.key)
+  // 外链 / 站内绝对路径不依赖根地址
+  if (explicit.some(selfContainedKey)) return true
+  // 根地址没配就是没接云端 ROM，这时老实显示「选择本地 ROM」，不要空转一帧
+  if (!BUILTIN.base()) return false
+  return explicit.length > 0 || conventionalKeys(game).length > 0
+}
+
 /* ---------------- 多文件 ROM（Flash 多 SWF 包） ---------------- */
 
 /**
@@ -657,11 +682,14 @@ function reportProbeFailure(game: Pick<Game, 'slug' | 'platform'>, traces: Probe
  */
 export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomResolution {
   const lang = useLang()
-  // SSR 阶段不会运行 effect，但数据库已经明确绑定 ROM 时，我们至少知道「有在线版本，
-  // 正在准备地址」。初始态直接设 checking，避免搜索引擎和首屏用户先看到
-  // 「选择本地 ROM」，水合后又突然变成「开始游戏」这种自相矛盾的文案。
+  /*
+    SSR 阶段不会运行 effect，但只要待会儿会去探（显式绑定 **或**约定 key，见
+    romProbeExpected），我们此刻就已经知道「有在线版本，正在准备地址」。
+    初始态直接设 checking，避免搜索引擎和首屏用户先看到「选择本地 ROM」，
+    水合后又突然变成「开始游戏」这种自相矛盾的文案。
+  */
   const [state, setState] = useState<Omit<RomResolution, 'retry'>>(() => ({
-    status: game && effectiveRomKey(game, lang, prefer) ? 'checking' : 'idle',
+    status: romProbeExpected(game, lang, prefer) ? 'checking' : 'idle',
     url: '',
   }))
   const [attempt, setAttempt] = useState(0)

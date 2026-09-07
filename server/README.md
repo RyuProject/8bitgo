@@ -97,7 +97,10 @@ server {
   location /api/ {
     proxy_pass http://127.0.0.1:8788;
     proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-For $remote_addr;
+    # 直面用户时用 $proxy_add_x_forwarded_for；**在 Cloudflare 后面必须用 $http_cf_connecting_ip**
+    # （$remote_addr / $proxy_add_x_forwarded_for 给的都是 CF 边缘节点，不是访客）
+    # 详见 deploy/live/README.md 的「在 Cloudflare 后面的话」
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
   }
 }
 ```

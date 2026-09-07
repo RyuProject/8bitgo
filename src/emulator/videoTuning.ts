@@ -15,6 +15,12 @@
  * 分界线取 320×240（PS1 / 街机多数板子的分辨率）—— 这条线以下的机型
  * （NES 256×224、GBA 240×160、GB 160×144）缩一次就没法看了。
  *
+ * ⚠️ **双屏机型要按单块屏算**，见 TuningInput.dualScreen。NDS 的画布是两块
+ * 256×192 拼出来的（上下叠 256×384、并排 512×192），总像素 98304 一脚踩过
+ * 320×240 那条线 —— 于是这个站上**单块屏最小**的机型（每屏 49152，比 Game Boy
+ * 之外的任何一台都小）一直被当成大源，带宽一紧就把两块屏各缩成 128×96。
+ * 这正是上面那段话要避免的事，只是判据取错了粒度。
+ *
  * `contentHint` 要和它一致，否则等于给编码器两个相反的指示：
  * `'detail'` = 「保清晰，可以掉帧」，`'motion'` = 「保流畅，可以糊」。
  *
@@ -88,6 +94,17 @@ export interface TuningInput {
   maxBitrate?: number
   /** 码率下限覆盖。联机对响应要求更高，给得比直播宽一点 */
   minBitrate?: number
+  /**
+   * 这条源是**两块屏拼出来的**（双屏机型，见 dualScreen.ts 的 DUAL_SCREEN_PLATFORMS）。
+   *
+   * 只影响「是不是像素画」这一档的判定，**不影响码率** —— 码率按真实要编的像素数算，
+   * 两块屏就是两块屏的量，那部分没有折扣。
+   *
+   * 为什么要调用方传而不是在这里从宽高猜：256×384 和 512×192 都是 NDS，
+   * 而 512×192 也可能是别的什么源；猜错的两个方向代价都不小，
+   * 而调用方手里本来就有平台 id，没有理由让这里去赌。
+   */
+  dualScreen?: boolean
 }
 
 /**
@@ -97,11 +114,13 @@ export interface TuningInput {
  * 猜错的代价不对称 —— 把大源当小源，等于让 640×480 保着分辨率掉到个位数帧率，
  * 那是没法玩的；反过来只是像素画糊一点。
  */
-export function tuningFor({ width, height, fps, maxBitrate, minBitrate = MIN_BITRATE }: TuningInput): VideoTuning {
+export function tuningFor({ width, height, fps, maxBitrate, minBitrate = MIN_BITRATE, dualScreen }: TuningInput): VideoTuning {
   const w = Number(width) || 0
   const h = Number(height) || 0
   const pixels = w * h
-  const retro = pixels > 0 && pixels <= RETRO_MAX_PIXELS
+  // 判「是不是像素画」看**单块屏**：双屏机型的画布是两块屏拼的，见文件头那段
+  const perScreen = dualScreen ? pixels / 2 : pixels
+  const retro = perScreen > 0 && perScreen <= RETRO_MAX_PIXELS
 
   const computed = pixels > 0
     ? Math.round(Math.max(minBitrate, Math.min(MAX_BITRATE, pixels * fps * BITS_PER_PIXEL_FRAME)))

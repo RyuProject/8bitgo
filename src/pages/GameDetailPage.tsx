@@ -19,7 +19,7 @@ import { useLang } from '@/services/lang'
 import { useT, fmt } from '@/services/i18n'
 import { getLang } from '@/services/lang'
 import { gameDescription, gameTitle, genreLabel, needsTranslation, platformDesc, platformLabel } from '@/services/i18nData'
-import { EmulatorPlayer } from '@/emulator/PlayerChunk'
+import { EmulatorPlayer, preloadPlayer } from '@/emulator/PlayerChunk'
 import { IsolatedPlayCard } from '@/components/game/IsolatedPlayCard'
 import { GameCover } from '@/components/game/GameCover'
 import { GameAgeGuard } from '@/components/game/AgeGate'
@@ -36,6 +36,7 @@ import { Button } from '@/components/ui/Button'
 import { SkeletonBlock } from '@/components/ui/PageSkeleton'
 import { NotFoundPage } from './NotFoundPage'
 import { useShell } from '@/components/layout/ShellContext'
+import { CONTACT_EMAIL } from '@/components/layout/Logo'
 import { cx } from '@/lib/format'
 import { FEATURES } from '@/config/features'
 import { isolatedEmbedFor } from '../../shared/isolated-embeds.js'
@@ -58,11 +59,35 @@ export function GameDetailPage() {
   // data.game 为 null 表示后端确认没有这款游戏；undefined 是「还没拿到」，两者不能混为一谈
   const game = state.data?.game ?? undefined
   const related = state.data?.related ?? []
-  const { immersive } = useShell()
+  const { immersive, setImmersive } = useShell()
   const user = useCurrentUser()
   const [shareOpen, setShareOpen] = useState(false)
   const [addToCollection, setAddToCollection] = useState(false)
   const isFav = Boolean(user?.favorites.includes(slug))
+  /**
+   * 「反馈问题」：滚到本页评论区并把光标放进输入框 —— 出错的玩家想说话时，评论区就是最近的出口。
+   * 以前这颗按钮跳 /blog，玩家到了博客列表页不知道该干什么。
+   * 沉浸模式下侧栏（含评论区）是隐藏的，先退出沉浸再滚；评论功能没开或元素不在时退回写邮件。
+   */
+  const reportProblem = () => {
+    const scroll = () => {
+      const el = document.getElementById('comments')
+      if (!FEATURES.comments || !el) {
+        const subject = encodeURIComponent(`[8BitGo] ${slug}`)
+        window.location.href = `mailto:${CONTACT_EMAIL}?subject=${subject}`
+        return
+      }
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      window.setTimeout(() => el.querySelector<HTMLTextAreaElement>('textarea')?.focus({ preventScroll: true }), 450)
+    }
+    if (immersive) {
+      setImmersive(false)
+      // 等布局把侧栏放出来再滚（下一帧）
+      window.setTimeout(scroll, 60)
+      return
+    }
+    scroll()
+  }
   /**
    * 玩家手动选的 ROM 语言（null = 跟着站点语言走）。
    * 换游戏时要清掉，否则上一款选的「日本語」会带到下一款上。
@@ -78,6 +103,13 @@ export function GameDetailPage() {
    */
   const [translatedDescription, setTranslatedDescription] = useState<string | null>(null)
   useEffect(() => setRomLang(null), [slug])
+  /*
+    一进详情页就把播放器 chunk 拉起来，和取数 / 年龄门接口并行。
+    播放器要等 GameAgeGuard 放行才挂载，而 lazy() 是挂载那一刻才开始下载 ——
+    不预热的话「接口 → chunk → 播放器」是串行的，玩家多等一段纯黑。见 PlayerChunk.preloadPlayer。
+    跨源隔离的那几款（isolatedEmbed）用不到，但那要等 game 到了才知道；多下一个会被缓存的 chunk 不算代价。
+  */
+  useEffect(() => preloadPlayer(), [])
   const rom = useRomUrl(game, romLang)
   /** 这款游戏绑了哪几种语言的 ROM；少于两种时播放器不显示切换入口 */
   const romLangs = game ? romLangsOf(game) : []
@@ -145,7 +177,7 @@ export function GameDetailPage() {
 
   // 数据是异步来的，游戏还没到手不代表它不存在，否则每次进详情页都会先闪一下 404
   if (!game) {
-    if (state.status === 'error') return <LoadError message={state.error} />
+    if (state.status === 'error') return <LoadError message={state.error} onRetry={state.retry} />
     if (state.status === 'loading') return <DetailSkeleton />
     return <NotFoundPage message={t.game.notFoundMsg} />
   }
@@ -185,11 +217,20 @@ export function GameDetailPage() {
         <span className="text-fg">{seoTitle}</span>
       </nav>
 
-      <div className="grid gap-8 lg:grid-cols-12">
-        {/* 主区域：沉浸模式下占满整行并按视口高度居中 */}
-        <div className={immersive ? 'lg:col-span-12' : 'lg:col-span-8'}>
-          <div className={cx(immersive && 'mx-auto max-w-[calc((100dvh-7rem)*16/9)]')}>
-            <GameAgeGuard
+      {/*
+        播放器独占一行、居中，宽度按**视口高度**倒推（16:9），而不是塞在 8/12 那一栏里。
+
+        这一页的主角是游戏。以前播放器只占左边 8 列、右边是平台卡和评论：1440 宽的屏幕上
+        画面只有 750×420，4:3 的老游戏再让掉两侧黑边，实际画面 560 宽 —— 比一张封面图大不了多少，
+        而右边那一栏在玩的时候没人看。现在画面能铺到 1136×639（1440 屏）。
+        `max-w` 按 100dvh 算是为了矮屏（1280×720 的笔记本）：不限的话 16:9 铺满宽度比视口还高，
+        玩家得上下滚才看得全画面。10rem = 顶栏 4rem + 页面上下留白 + 面包屑，再留一指宽让下面的
+        标题露个头，暗示还有内容。沉浸模式下顶栏藏了，用原来那个 7rem。
+        只在 lg 以上生效：横屏手机（852×330）算出来只有 300 宽，会把没开始的播放器缩成一块小方块，
+        而那种屏一跑起来就进铺满视口的游玩布局，不该由这里管。
+      */}
+      <div className={cx('mx-auto w-full', immersive ? 'max-w-[calc((100dvh-7rem)*16/9)]' : 'lg:max-w-[calc((100dvh-10rem)*16/9)]')}>
+        <GameAgeGuard
               slug={game.slug}
               markedAdult={Boolean(game.adult)}
               backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority className="h-full w-full" />}
@@ -240,24 +281,28 @@ export function GameDetailPage() {
                 romLang={rom.lang}
                 onRomLangChange={setRomLang}
                 backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority className="h-full w-full" />}
+                onReport={reportProblem}
               />
               )}
-            </GameAgeGuard>
-          </div>
+        </GameAgeGuard>
 
-          {/*
-            实验性平台的提示，紧贴在播放器下面。
-            必须在玩家点「开始」**之前**就看得到 —— PS2 大多数游戏在浏览器里跑不起来，
-            让人先等一分钟加载再看到一句报错，那是把他的时间和对站点的信任一起花掉。
-          */}
-          {EXPERIMENTAL_PLATFORMS.has(platform.id) && (
-            <p className="mt-3 rounded-xl border border-coin/40 bg-coin-soft px-3 py-2 text-xs text-muted">
-              ⚠️ {t.runtime.playExperimental}
-            </p>
-          )}
+        {/*
+          实验性平台的提示，紧贴在播放器下面。
+          必须在玩家点「开始」**之前**就看得到 —— PS2 大多数游戏在浏览器里跑不起来，
+          让人先等一分钟加载再看到一句报错，那是把他的时间和对站点的信任一起花掉。
+        */}
+        {EXPERIMENTAL_PLATFORMS.has(platform.id) && (
+          <p className="mt-3 rounded-xl border border-coin/40 bg-coin-soft px-3 py-2 text-xs text-muted">
+            ⚠️ {t.runtime.playExperimental}
+          </p>
+        )}
+      </div>
 
+      {/* 播放器下面才是资料区：左边标题 / 简介 / 操作说明，右边平台卡 / 评分 / 评论。沉浸模式下右栏收起 */}
+      <div className="mt-6 grid gap-8 lg:grid-cols-12">
+        <div className={immersive ? 'lg:col-span-12' : 'lg:col-span-8'}>
           {/* 标题与元信息 */}
-          <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <h1 className="text-2xl font-extrabold tracking-tight sm:text-3xl">{seoTitle}</h1>
               {seoTitle !== game.title && <p className="mt-1 text-sm text-muted">{game.title}</p>}
@@ -331,7 +376,7 @@ export function GameDetailPage() {
                 {t.game.createRoom}
               </Button>
             )}
-            <Button variant="ghost" size="sm" to="/blog">
+            <Button variant="ghost" size="sm" onClick={reportProblem}>
               {t.game.report}
             </Button>
           </div>
@@ -577,10 +622,13 @@ function DetailSkeleton() {
   return (
     <div className="container-x py-6 sm:py-8" aria-busy="true">
       <SkeletonBlock className="mb-4 h-3 w-64 max-w-[70vw]" />
-      <div className="grid gap-8 lg:grid-cols-12">
+      {/* 和真页面同一套版位：播放器整行、按视口高度限宽（见上面那段注释），资料区在下面 —— 骨架和正文错位的话数据一到整页跳一下 */}
+      <div className="mx-auto w-full lg:max-w-[calc((100dvh-10rem)*16/9)]">
+        <SkeletonBlock className="aspect-[16/9] rounded-2xl border border-line" />
+      </div>
+      <div className="mt-6 grid gap-8 lg:grid-cols-12">
         <div className="lg:col-span-8">
-          <SkeletonBlock className="aspect-[16/9] rounded-2xl border border-line" />
-          <SkeletonBlock className="mt-6 h-8 w-2/3" />
+          <SkeletonBlock className="h-8 w-2/3" />
           <div className="mt-3 flex gap-2">
             <SkeletonBlock className="h-7 w-20 rounded-lg" />
             <SkeletonBlock className="h-7 w-24 rounded-lg" />
@@ -616,13 +664,20 @@ function DetailSkeleton() {
  * 取数失败。和「没有这款游戏」分开：网络挂了不该告诉用户游戏不存在，
  * 那会让人以为游戏被下架了。
  */
-function LoadError({ message }: { message: string }) {
+function LoadError({ message, onRetry }: { message: string; onRetry?: () => void }) {
+  const t = useT()
   return (
     <div className="container-x flex min-h-[60vh] flex-col items-center justify-center py-20 text-center" role="alert">
       <p className="text-4xl" aria-hidden>
         📡
       </p>
       <p className="mt-4 max-w-md text-sm text-muted">{message}</p>
+      {/* 取数失败给一个「重试」，别让人去刷新整页（手机上刷新还会把播放器 chunk 再下一遍） */}
+      {onRetry && (
+        <Button type="button" variant="secondary" size="sm" className="mt-5" onClick={onRetry}>
+          {t.common.retry}
+        </Button>
+      )}
     </div>
   )
 }

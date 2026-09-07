@@ -468,11 +468,36 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
                 </option>
               ))}
             </select>
-            <p className="mt-1 text-[11px] text-dim">
-              街机这一个平台底下其实是好几套硬件：拳皇是 Neo Geo（fbneo），街霸 2 是 CPS2。
-              报「缺文件 / CRC 不匹配」时先换核心试试——<strong className="text-muted">每个核心认的 romset 版本不一样</strong>，
-              往往比换 ROM 有用。
-            </p>
+            {/*
+              说明按平台分三套。原来只有街机那一段 —— 而这个下拉现在 PS1 和 NDS 也有，
+              给他们看「拳皇是 Neo Geo」等于没说，还会让人以为换核心是为了修 romset。
+              三个平台换核心的**目的完全不同**，这一格就是告诉管理员该为什么换。
+            */}
+            {form.platform === 'arcade' ? (
+              <p className="mt-1 text-[11px] text-dim">
+                街机这一个平台底下其实是好几套硬件：拳皇是 Neo Geo（fbneo），街霸 2 是 CPS2。
+                报「缺文件 / CRC 不匹配」时先换核心试试——<strong className="text-muted">每个核心认的 romset 版本不一样</strong>，
+                往往比换 ROM 有用。MAME 2003-Plus 兼容面最广，但也最慢。
+              </p>
+            ) : form.platform === 'nds' ? (
+              <p className="mt-1 text-[11px] text-dim">
+                melonDS 最准，是默认；但它<strong className="text-muted">一个降档手段都没有</strong>（核心里没有帧跳、
+                没有内部分辨率、也没有 JIT——JIT 在网页上架构性地做不到）。
+                所以只在<strong className="text-muted">这一款画面不对、或者手机上跑不动</strong>时才换成 DeSmuME：
+                它有帧跳和可调分辨率，代价是准确度不如 melonDS。不要为了「提速」全站换过去。
+              </p>
+            ) : form.platform === 'psx' ? (
+              <p className="mt-1 text-[11px] text-dim">
+                两个核心的取舍方向<strong className="text-muted">完全相反，没有哪个更好</strong>：PCSX-ReARMed 为手机而生，
+                快、省内存，但 GTE 精度是近似的，个别游戏会花屏或几何抖动；Beetle PSX HW 准得多、还能拉高清，
+                中低端手机上会掉帧。默认保「能跑起来」，有画面问题或想要高清的单款再换。
+              </p>
+            ) : (
+              <p className="mt-1 text-[11px] text-dim">
+                留空 = 用平台默认核心。<strong className="text-muted">每个核心认的 romset 版本、支持的选项都不一样</strong>，
+                只在这一款有具体问题时才换。
+              </p>
+            )}
           </Field>
         )}
         <Field label="首页排序">

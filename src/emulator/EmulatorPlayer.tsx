@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react'
 import type { DosBackend, DosWindowsVersion, GenreId, Platform, PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
-import { formatBytes, formatSpeed, isRomFileAccepted } from '@/lib/emulator'
+import { formatBytes, formatSpeed, getDefaultKeymap, isRomFileAccepted } from '@/lib/emulator'
 import { detectRom, describeDetection } from './detect'
 import { resolveRuntime, runtimesFor, extOf } from './registry'
-import type { Capability, LoadPhase, Runtime, RuntimeHandle, RuntimeId, StageMode } from './types'
+import type { Capability, LoadPhase, Runtime, RuntimeHandle, RuntimeId, ScreenLayoutState, StageMode } from './types'
 import { createOverallRatio, createSpeedMeter, liftRatio, LOAD_PHASE_RANGE, windowsGuestStartupBudgetMs } from './loadProgress'
 import { isTyping } from './hotkeyBridge'
+import { observeFrameDocs } from './frameDocs'
 import { installScrollGuard } from './scrollGuard'
 import { shouldCaptureMouse } from './mouseCapture'
 import { platformBiosUrlSync } from '@/services/platformBios'
@@ -35,7 +36,7 @@ import { useT, fmt } from '@/services/i18n'
 import { platformLabel } from '@/services/i18nData'
 import { ROM_LANG_LABEL, type RomLang } from '@/config/languages'
 import { FEATURES } from '@/config/features'
-import { mobileScreenAspect } from './screenAspect'
+import { desktopScreenAspect, mobileScreenAspect } from './screenAspect'
 import { recordPlay } from '@/services/store'
 import { onMatchRequest } from '@/services/matchRequest'
 import {
@@ -76,12 +77,17 @@ const PHASE_ORDER: LoadPhase[] = ['engine', 'assets', 'rom', 'starting']
 /**
  * 大到值得在加载界面上专门说一句「本局需下载 XXX」的门槛。
  *
- * 64MB：卡带机 ROM 全在这条线以下（GBA 最大 32MB，NDS 也就几十 MB），
- * 光盘镜像全在这条线以上。所以这一行只会出现在真该等的时候。
+ * 64MB：GBA 之前的卡带机 ROM 全在这条线以下（GBA 的卡最大 32MB），光盘镜像全在以上。
+ *
+ * ⚠️ 原来这里写的是「NDS 也就几十 MB」—— **不对**。NDS 的卡到 512MB，
+ * 宝可梦黑白、雷顿教授这类就是 128～256MB。不过结论不变：那些游戏确实该出这行字。
+ * 真正需要改的是另一件事 —— 得有人报出 total，见 SELF_DOWNLOAD_PLATFORMS。
  */
 const DISC_NOTICE_BYTES = 64 * 1024 * 1024
 /** 自动重试只做一次：网络抖动能自愈，坏 ROM 也不会陷入无限刷新。 */
 const AUTO_RETRY_LIMIT = 1
+/** 叠加工具栏：指针停多久后收起。EmulatorJS 自带底栏是 3 秒，视频播放器多在 2–3 秒 */
+const BAR_IDLE_MS = 2500
 
 interface ActiveSession {
   id: number
@@ -136,6 +142,11 @@ interface Props {
   liveInvite?: string
   /** 空闲态背景（例如封面） */
   backdrop?: ReactNode
+  /**
+   * 出错时红字旁边那个「反馈这个问题」点了做什么。详情页传「滚到评论区并聚焦输入框」；
+   * 不传就不画 —— 嵌入页没有评论区。
+   */
+  onReport?: () => void
   /** 空闲态显示的图标 */
   icon?: string
   className?: string
@@ -272,6 +283,7 @@ export function EmulatorPlayer({
   watch = false,
   liveInvite,
   backdrop,
+  onReport,
   icon,
   className,
   romUrl,
@@ -467,6 +479,11 @@ export function EmulatorPlayer({
   const speedMeter = useRef(createSpeedMeter())
   const [loadSpeed, setLoadSpeed] = useState(0)
   /**
+   * 当前加载阶段的镜像（progressClock 是 ref，界面读不到它的变化）。
+   * 只给遮罩上那一行「正在下载游戏…」用，由下面那个 250ms 定时器顺手刷 —— 同值 setState 会被 React 跳过。
+   */
+  const [loadPhase, setLoadPhase] = useState<LoadPhase>('engine')
+  /**
    * 「这一局要下多少」。
    *
    * 只有光盘平台报得出来（PS1 的 prepareRemoteDiscRom、PS2 的 Play! 适配器）——
@@ -479,6 +496,13 @@ export function EmulatorPlayer({
   /** 当前视觉阶段的起点；真实回调停顿时，计时兜底从这里继续向前走。 */
   const progressClock = useRef<{ phase: LoadPhase; startedAt: number }>({ phase: 'engine', startedAt: Date.now() })
   const [caps, setCaps] = useState<Set<Capability>>(() => new Set())
+  /**
+   * 画面的**实测**尺寸（核心 av_info 的几何）。容器比例靠它，见 screenAspect.ts。
+   * null = 还没量到 —— 那时一律按平台查表，别自己编一个值。
+   */
+  const [geometry, setGeometry] = useState<{ width: number; height: number } | null>(null)
+  /** 双屏机型的屏幕布局。null = 这一局没有布局可切（见 dualScreen.ts） */
+  const [screenLayout, setScreenLayout] = useState<ScreenLayoutState | null>(null)
 
   /**
    * 弹幕。主播和观众收消息的入口不是同一个（前者 LiveControls → Broadcast.onChat，
@@ -588,6 +612,66 @@ export function EmulatorPlayer({
    * 舞台 DOM 结构在三种布局下完全一样，只换 className —— iframe 一旦被重新挂载游戏就重开了。
    */
   const playMode = immersive && compact && !fullscreen
+  /**
+   * 叠加工具栏（09-07 用户拿 EmulatorJS 自带底栏当参考）：桌面端（鼠标）和全屏下，
+   * 工具栏不再占框里的一行，而是压在画面底部的半透明条，玩着的时候自动收起、鼠标一动就出来 ——
+   * 画面因此吃满整个 16:9 框。触屏一律不叠：手机的游玩布局画面本来就小，平板上浮层手柄也贴在底部，
+   * 叠上去会撞；那两种场合保留原来「框里最后一行」的做法。
+   */
+  const overlayBar = !touchDevice && (fullscreen || !compact)
+  /** 叠加工具栏此刻是否收起。只有 overlayBar && running 时会为 true */
+  const [barHidden, setBarHidden] = useState(false)
+  /** 指针在工具栏上 / 焦点在工具栏里：钉住不收（音量条、手柄面板、存档弹窗都在它的 DOM 里） */
+  const barPinned = useRef(false)
+  /** 「有人动了」：显示并重新计时。由下面的 effect 填，工具栏自己的 enter/leave 也调它 */
+  const barPoke = useRef<(() => void) | null>(null)
+  useEffect(() => {
+    if (!overlayBar || status !== 'running') {
+      setBarHidden(false)
+      barPoke.current = null
+      return
+    }
+    const host = hostRef.current
+    let timer = 0
+    const arm = () => {
+      window.clearTimeout(timer)
+      timer = window.setTimeout(() => {
+        if (!barPinned.current) setBarHidden(true)
+      }, BAR_IDLE_MS)
+    }
+    const poke = () => {
+      setBarHidden(false)
+      arm()
+    }
+    barPoke.current = poke
+    /*
+      指针动静从哪儿来：
+        · 外层文档 —— 只认落在播放器里的（页面其它地方晃鼠标不该把它叫出来）
+        · iframe 文档 —— 引擎都跑在同源 iframe 里，鼠标在画面上动，事件只发给 iframe 的文档，
+          外层一个都收不到（和键盘一样，见 hotkeyBridge.ts 开头），所以要挂到每个 iframe 文档上。
+          observeFrameDocs 会盯着引擎换 src / 换 iframe 元素。跨源的第三方 HTML5 页装不上 —— 那种情形靠
+          下面那条贴底的感应条（barHidden 时才有）把工具栏叫回来。
+      只认指针，不认键盘：玩家按方向键是在玩，不是想看工具栏（EmulatorJS 自带的底栏也是这么做的）。
+    */
+    const onOuter = (e: Event) => {
+      if (host && e.target instanceof Node && host.contains(e.target)) poke()
+    }
+    const stop = observeFrameDocs(host, (doc) => {
+      const handler = doc === document ? onOuter : poke
+      doc.addEventListener('pointermove', handler, true)
+      doc.addEventListener('pointerdown', handler, true)
+      return () => {
+        doc.removeEventListener('pointermove', handler, true)
+        doc.removeEventListener('pointerdown', handler, true)
+      }
+    })
+    arm()
+    return () => {
+      stop()
+      window.clearTimeout(timer)
+      barPoke.current = null
+    }
+  }, [overlayBar, status])
   /**
    * 嵌入页在窄屏上的等价物（见 fill 属性）：一样是画面吃满高度、按键叠在下面，
    * 只是不 fixed —— 那边的高度是外面用 flex 给的，底下还有一条品牌栏要留着。
@@ -704,6 +788,99 @@ export function EmulatorPlayer({
     if (status !== 'running') return
     handle?.setStageMode?.(stageMode)
   }, [handle, status, stageMode])
+  /**
+   * 玩着的时候关标签页 / 刷新 / 在地址栏输了别的网址：让浏览器弹一次「确定离开？」。
+   * 模拟器的进度全在内存里，一个误触的 Cmd+R 就是半小时白玩 —— 这是模拟器站的标配保护。
+   * 只在 running 时挂；看直播的观众没有进度可丢，不拦。
+   * 站内点链接那种 SPA 跳转走不到 beforeunload，由下面那个 click 守卫单独拦。
+   */
+  const watchingLive = Boolean(session?.live)
+  useEffect(() => {
+    if (status !== 'running' || watchingLive) return
+    const guard = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      // 老一点的浏览器要 returnValue 非空才弹；现代浏览器不显示自定义文字，给空串即可
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', guard)
+    return () => window.removeEventListener('beforeunload', guard)
+  }, [status, watchingLive])
+  /**
+   * 站内链接的守卫。播放器正下方就是 8 张「你可能也喜欢」、面包屑、平台 / 类型标签 ——
+   * 玩到一半误点一下，路由一换播放器整个卸载、handle.destroy()，半小时进度当场没了，连个确认都没有。
+   *
+   * 路由是 BrowserRouter，没有 useBlocker 可用，所以在 document 的**捕获阶段**拦 click：
+   * 它跑在 React 根节点的监听之前，这里 preventDefault 之后 <Link> 自己会跳过 navigate
+   * （react-router 的 Link 判 event.defaultPrevented）。
+   * 只拦「会离开本页的同源左键点击」：新标签（target=_blank / 修饰键）、下载、外站、同页锚点都放过 ——
+   * 这些不会拆掉正在跑的游戏。
+   * 管不到的：地址栏 / 前进后退（那是 beforeunload 和 popstate 的事，后者拦不住）、代码里直接 navigate() 的少数路径。
+   */
+  useEffect(() => {
+    if (status !== 'running' || watchingLive) return
+    const onClick = (e: MouseEvent) => {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+      const node = e.target as Node | null
+      const el = node instanceof Element ? node : node?.parentElement
+      const a = el?.closest('a[href]') as HTMLAnchorElement | null
+      if (!a || a.target === '_blank' || a.hasAttribute('download')) return
+      let url: URL
+      try {
+        url = new URL(a.href, location.href)
+      } catch {
+        return
+      }
+      if (url.origin !== location.origin) return
+      if (url.pathname === location.pathname && url.search === location.search) return
+      if (!window.confirm(t.player.leaveConfirm)) {
+        e.preventDefault()
+        e.stopPropagation()
+      }
+    }
+    document.addEventListener('click', onClick, true)
+    return () => document.removeEventListener('click', onClick, true)
+  }, [status, watchingLive, t])
+
+  /**
+   * 屏幕常亮：用手柄玩、或者看别人直播时手指不碰屏幕，手机一分钟就暗屏锁屏，游戏跟着挂起。
+   * Screen Wake Lock 只在页面可见时拿得到（切后台浏览器自己会释放），回前台再申请一次。
+   * 拿不到（不支持、低电量模式拒绝）就算了，静默 —— 这是锦上添花，不能变成一条报错。
+   */
+  useEffect(() => {
+    if (status !== 'running') return
+    if (typeof navigator === 'undefined' || !('wakeLock' in navigator)) return
+    let sentinel: WakeLockSentinel | null = null
+    let gone = false
+    const acquire = async () => {
+      if (gone || document.visibilityState !== 'visible' || sentinel) return
+      try {
+        const s = await navigator.wakeLock.request('screen')
+        if (gone) {
+          void s.release().catch(() => {})
+          return
+        }
+        sentinel = s
+        // 系统自己收回去了（切后台 / 低电量）：把引用清掉，回前台好重新申请
+        s.addEventListener('release', () => {
+          if (sentinel === s) sentinel = null
+        })
+      } catch {
+        /* 拒绝就拒绝 */
+      }
+    }
+    const onVis = () => {
+      if (document.visibilityState === 'visible') void acquire()
+    }
+    void acquire()
+    document.addEventListener('visibilitychange', onVis)
+    return () => {
+      gone = true
+      document.removeEventListener('visibilitychange', onVis)
+      void sentinel?.release().catch(() => {})
+      sentinel = null
+    }
+  }, [status])
+
   /** 从监视器态点画面回到游玩布局。算作「我们开的」：游戏一停就还回去，和自动进沉浸那条一致 */
   const enterPlayMode = useCallback(() => {
     autoImmersiveRef.current = true
@@ -799,6 +976,7 @@ export function EmulatorPlayer({
     setLoadSpeed(0)
     setDiscSize(null)
     progressClock.current = { phase: 'engine', startedAt: Date.now() }
+    setLoadPhase('engine')
     if (!carryOver) setLoadRatio(null)
     setStatus('loading')
   }
@@ -863,6 +1041,7 @@ export function EmulatorPlayer({
         liftRatio(progressFloor.current, visualStart + (visualEnd - visualStart) * Math.min(1, elapsed / duration)),
       )
       setLoadRatio((current) => Math.max(current ?? 0, timed))
+      setLoadPhase(phase)
       // 这个阶段的视觉预算也耗光了还没等到下一个阶段的事件 —— 自己往前走一格，
       // 别让条子停在某个整数上装死（见 advanceProgressPhase）
       if (elapsed >= duration) advanceProgressPhase()
@@ -925,6 +1104,14 @@ export function EmulatorPlayer({
       onCaps: (next) => {
         if (!isCurrent()) return
         setCaps(new Set(next))
+      },
+      onGeometry: (next) => {
+        if (!isCurrent()) return
+        setGeometry(next)
+      },
+      onScreenLayout: (next) => {
+        if (!isCurrent()) return
+        setScreenLayout(next)
       },
       onProgress: (next) => {
         if (!isCurrent()) return
@@ -1008,9 +1195,18 @@ export function EmulatorPlayer({
     })
     setHandle(handle)
     setCaps(new Set(handle.caps))
+    /*
+      几何和布局都是**这一局**的属性，换游戏/换引擎必须清掉。
+      不清的话下一局开头会拿上一局的比例去定容器：从 NDS 换到红白机，
+      那个 2:3 的竖框会一直挂到新引擎报出几何为止（而红白机根本不报）。
+    */
+    setGeometry(null)
+    setScreenLayout(null)
     return () => {
       setHandle(null)
       setCaps(new Set())
+      setGeometry(null)
+      setScreenLayout(null)
       handle.destroy()
     }
   }, [session])
@@ -1447,6 +1643,7 @@ export function EmulatorPlayer({
       setLoadSpeed(0)
       setDiscSize(null)
       progressClock.current = { phase: 'engine', startedAt: Date.now() }
+      setLoadPhase('engine')
       setLoadRatio(null)
       sessionCounter.current += 1
       setSession({
@@ -1498,7 +1695,27 @@ export function EmulatorPlayer({
 
       // 云端 ROM
       if (!picked) {
-        if (!romUrl || !pageRuntime) return
+        /*
+          地址还没探到。UI 上走不到这里 —— romChecking 期间主按钮是禁用的，
+          探完没找到又会换成「选择本地 ROM」那一路。留着纯粹是兜底。
+        */
+        if (!romUrl) return
+        /*
+          有地址、却没有引擎。这一条以前是和上面那句并在一起的裸 return —— 点了
+          「开始游戏」什么都不发生，连控制台都不响。
+
+          什么时候会撞上：supported 是 `Boolean(pageRuntime) || onlineOk`，所以只要
+          联机可用（平台有 EmulatorJS 核心 + 配了 NETPLAY_URL / CLOUDGAME_URL），
+          即使本地引擎不可用（比如 EmulatorJS 没自托管）按钮照样渲染出来；玩家在
+          联机提示里点一下「本地运行」切回 local，就到这里了。
+
+          本地选文件那一路（下面 detectRom 之后）早就会 setError(noRuntime)，
+          云端这一路一直没有。补齐，两条路说同一句话。
+        */
+        if (!pageRuntime) {
+          setError(fmt(t.player.noRuntime, { platform: platformLabel(t, platform.id, platform.name) }))
+          return
+        }
         begin(romUrl, platform.id, pageRuntime)
         return
       }
@@ -1714,11 +1931,36 @@ export function EmulatorPlayer({
   // 速度为 0 时是空串，上面据此整格不画（见加载遮罩里的说明）
   const speedText = formatSpeed(loadSpeed)
   /**
+   * 开局前那一行键位摘要（桌面端）。🎮 那条提示只给触屏，而桌面玩家的键位表在页面下面 ——
+   * 播放器现在占满一屏，不滚根本看不到；结果就是按 ▶ 之后对着键盘乱试。
+   * 只取前几格（方向 / A / B / Start 之类），详表仍在下面。键盘直通的运行时（DOS / Flash）rows 为空，不画。
+   */
+  const keymapLine =
+    !busy && !online && !touchDevice && romUrl
+      ? getDefaultKeymap((session?.runtime.id ?? pageRuntime?.id) as string | undefined, platform.id)
+          .rows.slice(0, 5)
+          .map((r) => `${r.button} ${r.key}`)
+          .join(' · ')
+      : ''
+  const loadingLabel =
+    loadPhase === 'starting'
+      ? t.player.loadingStarting
+      : loadPhase === 'rom'
+        ? t.player.loadingRom
+        : loadPhase === 'assets'
+          ? t.player.loadingAssets
+          : t.player.loadingEngine
+  /**
    * 「本局需下载 XXX」那行字。
    *
-   * 只有光盘平台会出现（门槛 DISC_NOTICE_BYTES）—— 卡带机 ROM 就几 MB，
+   * 只有超过门槛（DISC_NOTICE_BYTES）的那一局会出现 —— 红白机 / GBA 的 ROM 就几 MB，
    * 挂一行「需下载 3 MB」纯属噪音；而几百 MB 的盘不说一句，玩家看着一个爬得极慢的
    * 百分比，根本判断不出该不该等下去。这是「网页游戏怎么这么卡」的一大半来源。
+   *
+   * 能不能出这行字，取决于**有没有人报出 total**：只有我们自己接管下载的平台才有
+   * （见 paths.ts 的 SELF_DOWNLOAD_PLATFORMS）。引擎自己那条 XHR 也报 total，
+   * 但那时候 loader.js 早就开始下了，这行字的意义（让玩家决定要不要等）已经过去。
+   * 2026-09-07 把 NDS 也接管过来之后，128MB 的 NDS 卡终于也会说这一句。
    */
   const discText = discSize
     ? discSize.cached
@@ -1955,7 +2197,17 @@ export function EmulatorPlayer({
           //         又要低于登录弹窗的 z-[80]
           // 非全屏：桌面端仍是整体 16:9（工具栏在框内，不额外撑高详情页）；
           //         移动端不给整体比例 —— 高度 = 画面的原生比例框 + 工具栏
-          fullscreen ? 'relative h-full' : playMode ? 'fixed inset-0 z-[60]' : embedFill ? 'relative h-full' : 'relative sm:aspect-video',
+          // 桌面端那个 16:9 的框：双屏机型选了上下叠时会放宽一档，
+          // 其余一切照旧（desktopScreenAspect 默认就返回 sm:aspect-video）。
+          // ⚠️ 要用它**顶掉**写死的类名，不能两个一起挂 —— 同为 aspect-ratio 的
+          // 两条规则谁赢取决于 Tailwind 生成的先后，那是碰运气
+          fullscreen
+            ? 'relative h-full'
+            : playMode
+              ? 'fixed inset-0 z-[60]'
+              : embedFill
+                ? 'relative h-full'
+                : cx('relative', desktopScreenAspect(platform.id, geometry)),
           dragging && 'ring-2 ring-brand ring-inset',
         )}
         onDragOver={(e) => {
@@ -1976,7 +2228,7 @@ export function EmulatorPlayer({
                   // 移动端：自己占一个按平台原生比例的框。flex-none 是必须的 ——
                   // 外层此时是 auto 高度，带着 flex-1（flex-basis:0）会被算成 0 高，画面整块消失
                   'flex-none sm:flex-1 sm:aspect-auto',
-                  mobileScreenAspect(platform.id),
+                  mobileScreenAspect(platform.id, geometry),
                   // 极矮的屏幕上兜一道，别让竖屏平台（NDS / J2ME）把整页顶开
                   'max-h-[72dvh] sm:max-h-none',
                 ),
@@ -2087,7 +2339,7 @@ export function EmulatorPlayer({
               {supported ? (
                 <>
                   <Button size="lg" disabled={(!online && romChecking) || joinBlocked} onClick={primaryAction}>
-                    <span aria-hidden>{online ? (willWatch ? '👀' : '👥') : '▶'}</span>{' '}
+                    <span aria-hidden>{online ? (willWatch ? '👀' : '👥') : status === 'error' && romUrl ? '↻' : '▶'}</span>{' '}
                     {joining && online
                       ? willWatch
                         ? t.player.watchRoom
@@ -2101,7 +2353,9 @@ export function EmulatorPlayer({
                         : romChecking
                           ? t.player.checkingCloud
                           : romUrl
-                            ? t.player.start
+                            ? status === 'error'
+                              ? t.player.retryStart
+                              : t.player.start
                             : t.player.pickRom}
                   </Button>
                   <p className="max-w-md text-[11px] leading-relaxed text-white/70 sm:text-xs">
@@ -2208,6 +2462,11 @@ export function EmulatorPlayer({
                       </>
                     )}
                   </p>
+                  {keymapLine && (
+                    <p className="max-w-md text-[11px] leading-relaxed text-white/55 sm:text-xs">
+                      ⌨️ {keymapLine} · {t.player.keymapMore}
+                    </p>
+                  )}
                 </>
               ) : (
                 <div className="max-w-md rounded-xl border border-line bg-black/60 p-4 text-sm text-white/80 backdrop-blur">
@@ -2220,6 +2479,32 @@ export function EmulatorPlayer({
               {error && (
                 <p role="alert" className="max-w-md rounded-lg bg-live/20 px-3 py-2 text-xs text-red-200">
                   {error}
+                  {/*
+                    看直播这条路出错（连不上 / 中断 / 超时）之后播放器不会自动重试，而 ▶ 是「自己开一局」——
+                    以前观众想再看一次只能刷新页面。这里给一个直接重连的入口；
+                    ignoreInvite 是玩家自己离开过直播间的标记，那时候不该再把他往回拉。
+                  */}
+                  {liveInvite && !ignoreInvite && status === 'error' && (
+                    <>
+                      {' '}
+                      <button
+                        type="button"
+                        className="underline underline-offset-2 hover:text-white"
+                        onClick={() => startWatchLive(liveInvite)}
+                      >
+                        {t.player.rewatchLive}
+                      </button>
+                    </>
+                  )}
+                  {/* 出错的人最需要一个出口：直接去评论区留一句，slug / 引擎由页面那边带上 */}
+                  {onReport && (
+                    <>
+                      {' '}
+                      <button type="button" onClick={onReport} className="underline underline-offset-2 hover:text-white">
+                        {t.player.reportProblem}
+                      </button>
+                    </>
+                  )}
                 </p>
               )}
               </div>
@@ -2248,8 +2533,13 @@ export function EmulatorPlayer({
            */
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-black px-8">
             <div className="flex w-full max-w-xs flex-col items-center gap-3">
+              {/*
+                这一行按阶段说人话：准备模拟器 / 下载引擎资源 / 下载游戏 / 启动。
+                以前是写死的「少女祈祷中....」—— 八种语言的站点上其他七种也是这四个汉字，
+                而且玩家分不清「在下 40MB 的核心」和「WASM 编译中」，后者没有网速可看，像卡死。
+              */}
               <p className="text-sm font-medium tracking-wide text-white/90">
-                少女祈祷中.... <span className="tabular-nums text-brand-hover">{Math.round(ratio * 100)}%</span>
+                {loadingLabel} <span className="tabular-nums text-brand-hover">{Math.round(ratio * 100)}%</span>
                 {/*
                   网速。只在真有字节在走的时候出现 —— 下载停了（WASM 编译那几十秒）
                   速度会衰减到 0，这一格随之消失，而不是挂着一个不再变化的旧读数骗人。
@@ -2269,7 +2559,7 @@ export function EmulatorPlayer({
               {discText && <p className="-mt-1 text-[11px] text-white/45">{discText}</p>}
               <div
                 role="progressbar"
-                aria-label="少女祈祷中"
+                aria-label={loadingLabel}
                 aria-valuemin={0}
                 aria-valuemax={100}
                 aria-valuenow={Math.round(ratio * 100)}
@@ -2302,13 +2592,42 @@ export function EmulatorPlayer({
         {/* 工具栏放进播放器框体底部，而不是作为详情页里的下一块内容 */}
         <div
           data-testid="emulator-toolbar"
+          data-overlay={overlayBar ? (barHidden ? 'hidden' : 'shown') : undefined}
           className={cx(
             // 窄屏 gap-1：320pt 上七道间隙省下 14px，正好是「一行」和「两行」的差别
-            'relative z-20 flex shrink-0 flex-wrap items-center gap-1 border-t border-line bg-surface px-2 py-1.5 text-xs sm:gap-2 sm:px-3 sm:py-2',
+            'z-20 flex shrink-0 flex-wrap items-center gap-1 px-2 text-xs sm:gap-2 sm:px-3',
+            overlayBar
+              ? cx(
+                  /*
+                    叠加形态（见 overlayBar）：绝对定位贴在画面底部，上面拖一段渐变让按钮压在画面上也看得清；
+                    player-overlay-bar 把这一块的设计令牌换成深色（index.css），里面的按钮 / 徽章 / 弹出面板全跟着变。
+                    收起 = 透明 + 下沉 2px + 不接指针；元素留在 DOM 里，Tab 到里面的按钮时靠 onFocus 再钉出来。
+                  */
+                  'player-overlay-bar absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/60 to-black/0 pb-2 pt-7 transition-[opacity,transform] duration-200',
+                  barHidden && 'pointer-events-none translate-y-0.5 opacity-0',
+                )
+              : 'relative border-t border-line bg-surface py-1.5 sm:py-2',
             // 游玩布局：这一条压在视口最底下 —— 手指在上面一划不能把底下的页面滚走（touch-none），
             // 底边让出 iPhone 的 Home 指示条（safe-area），没有的设备上 max() 取回原来的 py
             playMode && 'touch-none pb-[max(0.375rem,env(safe-area-inset-bottom))]',
           )}
+          onPointerEnter={() => {
+            barPinned.current = true
+            barPoke.current?.()
+          }}
+          onPointerLeave={() => {
+            barPinned.current = false
+            barPoke.current?.()
+          }}
+          onFocus={() => {
+            barPinned.current = true
+            barPoke.current?.()
+          }}
+          onBlur={(e) => {
+            if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+            barPinned.current = false
+            barPoke.current?.()
+          }}
         >
         {/*
           手机上文字部分收起来，只留那个圆点。
@@ -2418,6 +2737,7 @@ export function EmulatorPlayer({
             gameSlug={saveSlug}
             runtimeId={session?.runtime.id ?? activeRuntime?.id}
             dosSaveHint={dosSaveHint}
+            screenLayout={screenLayout}
             // 快捷键要能在游戏开着时按 —— 得从这一块里找到模拟器的 iframe。见 hotkeyBridge.ts
             stageRef={hostRef}
           />
@@ -2545,6 +2865,16 @@ export function EmulatorPlayer({
             </Button>
           )}
           {/*
+            云端 ROM 加载中的「取消」。上面那颗按钮在默认路径（站点 ROM、单机）两个条件都不成立，
+            于是误点了一张 600MB 的光盘只能等它下完或者关页面。reset() 拆会话 → 适配器 destroy →
+            ROM 下载的 AbortSignal 跟着断，不会在后台继续白拉。跑起来之后就不画了（那时是「玩」不是「等」）。
+          */}
+          {status === 'loading' && !online && !file && (
+            <Button variant="ghost" size="sm" onClick={reset}>
+              {t.player.cancelLoad}
+            </Button>
+          )}
+          {/*
             沉浸 / 全屏这两个按钮在手机上只留前面那个符号（见 glyphOnly）。
             带上文字的话，320pt 宽的屏幕上工具栏正好差几个像素排不下，
             为两个词多占一整行 —— 而这一行是从画面高度里扣的。
@@ -2596,6 +2926,14 @@ export function EmulatorPlayer({
           )}
           </div>
         </div>
+        {/*
+          叠加工具栏收起之后的感应条：贴在最底下 10px，指针一碰就把工具栏叫回来。
+          同源 iframe 里的鼠标动静上面已经监听了，这条主要兜跨源的第三方 HTML5 页；
+          也是「把鼠标挪到底边」这个所有视频播放器都教过玩家的动作。收起时才有，别常年挡着画面底边那一条。
+        */}
+        {overlayBar && barHidden && (
+          <div aria-hidden className="absolute inset-x-0 bottom-0 z-20 h-2.5" onPointerEnter={() => barPoke.current?.()} />
+        )}
       </div>
 
       {/*

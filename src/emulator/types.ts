@@ -124,6 +124,37 @@ export interface MountOptions {
   onUnsupported?: (reason: string) => void
   /** 引擎加载完、拿到新能力时调用，播放器据此刷新工具栏 */
   onCaps?: (caps: Set<Capability>) => void
+  /**
+   * 画面的**实测**尺寸（核心 av_info 的几何，也就是画布的 width/height 属性）。
+   *
+   * 为什么要报出来而不是查表：双屏机型（NDS）的画面比例会随玩家换屏幕布局
+   * 在 2:3（上下叠）/ 8:3（并排）/ 4:3（单屏）之间跳，查表给不出；而容器比例
+   * 给错的代价是实打实的 —— 容器比画面宽，画面就按高度缩了（见 screenAspect.ts）。
+   *
+   * ⚠️ 只有真的量到了才报。切完布局核心要下一帧才更新几何，所以适配器是
+   * **量到变化才报**、量不到就不报（宁可容器停在上一个正确的比例，
+   * 也不要报一个猜的值把画面缩小）。单屏机型一辈子只报一次。
+   */
+  onGeometry?: (geometry: { width: number; height: number }) => void
+  /**
+   * 屏幕布局（双屏机型）变了。整份状态一起给，播放器照抄 ——
+   * 和 onCaps 一样，**适配器是唯一的真相**，别在组件里另存一份推导值。
+   * 不支持布局切换的运行时一次都不调，播放器那块 UI 就整块不画。
+   */
+  onScreenLayout?: (state: ScreenLayoutState) => void
+}
+
+/**
+ * 屏幕布局的当前状态，由适配器从**核心自报的选项表**里读出来（见 dualScreen.ts）。
+ * values 里的字符串原样来自核心，UI 只负责显示和回填，不认识也不解释它们。
+ */
+export interface ScreenLayoutState {
+  /** 核心里那一项的 key（如 melonds_screen_layout）。调试用 */
+  key: string
+  /** 核心自报的全部取值，顺序照它给的 */
+  values: string[]
+  /** 现在生效的那个 */
+  current: string
 }
 
 /**
@@ -364,6 +395,17 @@ export interface RuntimeHandle {
    * 当前状态不另外给 getter —— 看 caps 里有没有 'enginePad' 就行，它是同一份真相。
    */
   setEnginePad?: (show: boolean) => void
+  /**
+   * 换屏幕布局（双屏机型）。传核心自报取值里的**原样字符串**，见 dualScreen.ts。
+   *
+   * 只有真的在核心选项表里认出那一项时才有这个方法 —— 认不出就是 undefined，
+   * 播放器据此整块不画 UI。**别给一颗按了没反应的按钮**：EmulatorJS 的
+   * changeSettingOption 碰上认不出的 key 只是往 allSettings 里塞一格，
+   * 不报错、不生效，玩家点了只会以为是自己看错了。
+   *
+   * 当前值不从这里读，看 onScreenLayout 报上来的那份状态。
+   */
+  setScreenLayout?: (value: string) => void
   /**
    * 告诉运行时「这块画面现在是什么场合」。目前只有 EmulatorJS 实现（它的按键和画布都在
    * 自己的 iframe 里，外层 CSS 够不着）；不实现就等于「这引擎没这回事」，播放器跳过这一步。

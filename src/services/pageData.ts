@@ -11,7 +11,7 @@
  *   - 之后的站内跳转：调 /api/page?path=…，服务端仍然走 loadForRoute()，
  *     和 SSR 用的是同一个函数。
  */
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Collection, Game, Post } from '@/types'
 import { api, apiEnabled } from './api'
 import { startPageLoad } from './progress'
@@ -130,7 +130,8 @@ export function fetchPageData(path: string, params?: Record<string, string | num
 export type PageState<T> =
   | { status: 'ready'; data: T }
   | { status: 'loading'; data: T | null }
-  | { status: 'error'; data: T | null; error: string }
+  /** retry：再拉一次同一个 key。取数失败的页面要给玩家一个按钮，而不是让他刷新整页 */
+  | { status: 'error'; data: T | null; error: string; retry?: () => void }
 
 /**
  * 取当前路由的数据。
@@ -162,6 +163,9 @@ export function usePageData<T extends PageData>(
   })
   // 记住上一次真正取过的 key：路由或筛选条件变了才重新拉
   const loadedKey = useRef<string | null>(state.status === 'ready' ? key : null)
+  // 失败后玩家点「重试」：只加一下计数让 effect 再跑一遍（失败时 loadedKey 已经清掉了）
+  const [attempt, setAttempt] = useState(0)
+  const retry = useCallback(() => setAttempt((n) => n + 1), [])
 
   useEffect(() => {
     if (loadedKey.current === key) return
@@ -185,13 +189,13 @@ export function usePageData<T extends PageData>(
         if (cancelled) return
         // 失败要把 loadedKey 清掉，否则同一个页面再也不会重试
         loadedKey.current = null
-        setState({ status: 'error', data: null, error: e instanceof Error ? e.message : '加载失败' })
+        setState({ status: 'error', data: null, error: e instanceof Error ? e.message : '加载失败', retry })
       })
       .finally(done)
     return () => {
       cancelled = true
     }
-  }, [key])
+  }, [key, attempt, retry])
 
   return state
 }

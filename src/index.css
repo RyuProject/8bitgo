@@ -258,6 +258,27 @@ body {
   image-rendering: pixelated;
 }
 
+/*
+  播放器的叠加工具栏（桌面端 / 全屏，见 EmulatorPlayer 的 overlayBar）：压在画面底部的半透明深色条。
+
+  不给每颗按钮、每个徽章传一个 tone —— 在这一块里**重定义设计令牌**。Tailwind v4 的
+  bg-surface / text-muted / border-line 编译出来全是 var(--color-*)，作用域一改，
+  工具栏里 EmulatorTools 的按钮、状态徽章、音量 / 手柄弹出面板、Button 的 secondary 变体一起变深色，
+  一行组件代码都不用碰。数值参考 EmulatorJS 自带那条底栏（白字、浅描边、半透明黑底）。
+*/
+.player-overlay-bar {
+  --color-surface: rgba(18, 18, 22, 0.94);
+  --color-surface-2: rgba(255, 255, 255, 0.08);
+  --color-surface-3: rgba(255, 255, 255, 0.14);
+  --color-line: rgba(255, 255, 255, 0.22);
+  --color-line-strong: rgba(255, 255, 255, 0.38);
+  --color-fg: #ffffff;
+  --color-muted: rgba(255, 255, 255, 0.8);
+  --color-dim: rgba(255, 255, 255, 0.45);
+  --color-brand-soft: rgba(88, 204, 2, 0.3);
+  color: var(--color-fg);
+}
+
 /* CRT 扫描线 */
 @utility scanlines {
   background-image: repeating-linear-gradient(

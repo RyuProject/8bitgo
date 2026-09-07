@@ -80,8 +80,8 @@ function toBinaryString(buf: ArrayBuffer): string {
  *    这里按**内容**判断（zip 的 PK 魔数），文件名叫什么无关 ——
  *    实际见过把 zip 存成 .nes 的情况。
  */
-async function readRom(game: File | string, onProgress?: (p: LoadProgress) => void): Promise<ArrayBuffer> {
-  const loaded = await loadGameBytes(game, onProgress)
+async function readRom(game: File | string, onProgress?: (p: LoadProgress) => void, signal?: AbortSignal): Promise<ArrayBuffer> {
+  const loaded = await loadGameBytes(game, onProgress, signal)
   let buf = loaded.data
 
   if (isZip(buf)) {
@@ -199,6 +199,11 @@ function clearBrokenGamepadConfig() {
 export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
   let destroyed = false
+  /**
+   * ROM 下载的取消把手。以前不传 signal：玩家换游戏之后旧会话继续把整个 ROM 拉完，
+   * 和新一局抢带宽（webretro 那边早就接了）。destroy 时 abort，catch 里 destroyed 守卫会把 AbortError 吞掉。
+   */
+  const aborter = new AbortController()
   let browser: JsnesBrowser | null = null
   /** onReady 发过没有 —— 之后的引擎错误不能再拆会话，见 Browser 的 onError */
   let readyFired = false
@@ -472,7 +477,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   void (async () => {
     try {
       options.onProgress?.({ phase: 'engine' })
-      const [{ Browser }, buf] = await Promise.all([import('jsnes'), readRom(options.game, options.onProgress)])
+      const [{ Browser }, buf] = await Promise.all([import('jsnes'), readRom(options.game, options.onProgress, aborter.signal)])
       options.onProgress?.({ phase: 'starting', ratio: 1 })
       if (destroyed) return
 
@@ -673,6 +678,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }),
     destroy: () => {
       destroyed = true
+      aborter.abort()
       clearCatchup()
       unlockAudio?.()
       unlockAudio = null

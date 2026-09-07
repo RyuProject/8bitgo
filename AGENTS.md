@@ -224,6 +224,17 @@ Free / Pro 100 MB，Business 200 MB，Enterprise 500 MB，**由边缘节点执�
 前面几段是客户端自己带来的，谁都能 `curl -H 'X-Forwarded-For: 1.1.1.1'` 伪造。
 （`playcount.js` 里取的是第一段 —— 那边只是计数，将就了；这里是要显示给所有人看的。）
 
+⚠️ **但站点在 Cloudflare 后面时，上面这条整个反过来**：nginx 看到的对端就是 CF 的 anycast 节点，
+最后一段变成 CF 的地址，真实访客在前面那一段。2026-09-07 线上实测中招（`/api/diag` 的
+`effective: 104.22.100.106` 而 `cf-connecting-ip: 34.162.230.222`）。后果**全都不报错**：
+每 IP 房间上限 / 限流从「按人」塌缩成「按 CF 机房共用」，国旗全站显示同一个国家
+（`resolveCountry` 先用 IP，查到了就不再看那份正确的 `CF-IPCountry`）。
+修法是每个 location 都换成 `proxy_set_header X-Forwarded-For $http_cf_connecting_ip;`，
+**并把源站防火墙锁到 Cloudflare 的 IP 段** —— 不锁的话这个头能被直连源站的人伪造，
+而原来那套「取最后一段」恰恰不怕伪造。代码里**故意不改成信这个头**（那等于默认开个伪造口子），
+只做自查：`presence.js` 告警一次 + `/api/diag` 的 `usingCdnEdgeIp` / `hint`。
+详见 `deploy/live/README.md` 的「在 Cloudflare 后面的话」。
+
 自测：`cd server && npm run test:presence`（40 项，不联网、不用数据库）。
 
 ### 2.17 游戏简介的按需翻译：一个 JSON 列，不是八列

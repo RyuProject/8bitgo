@@ -239,7 +239,26 @@ export const platforms: Platform[] = [
     nameZh: 'Java 手机游戏',
     manufacturer: 'Mobile',
     year: 2001,
-    runtime: null,
+    /**
+     * ⚠️ 这里**必须**是 'j2me'，别改回 null。
+     *
+     * 曾经是 null，理由看着挺对：「j2me 要自托管，没配就当不存在」。但那个目的
+     * platformDefault() 自己就达成了 —— 它会判 `rt.available() && rt.supports(platform)`，
+     * 而 j2me 的 available() 就是 Boolean(J2ME_PATH)。写 null 是多余的第二道保险，
+     * 代价却是一个会闪的 bug：
+     *
+     *   resolveRuntime({ platform, ext }) 里 ext 来自 extOf(romUrl)，而 romUrl 是
+     *   **异步探测**出来的（见 ROM 探测那份笔记）。探测回来之前 ext 是 undefined，
+     *   覆盖表（jar/jad → j2me）压根不参与，只剩第 3 步 platformDefault —— 它返回
+     *   undefined，于是 supported 为 false，画面上是「该平台暂不支持在线运行」
+     *   加状态栏「无运行时」。ROM 地址一到，ext 变成 jar，覆盖表命中，同一个页面
+     *   又变成「开始游戏」。用户看到的就是「一会不支持一会又能玩」，取决于这次探测
+     *   走的是缓存还是网络。
+     *
+     * java 曾是全站**唯一** runtime 为 null 的平台，其余 14 个都有值 —— 所以这个
+     * bug 只在 J2ME 上出现，别处从来没人碰到。
+     */
+    runtime: 'j2me',
     core: null,
     romExtensions: ['.jar'],
     color: '#26a69a',

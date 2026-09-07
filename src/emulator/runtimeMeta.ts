@@ -70,7 +70,10 @@ export const ruffleMeta: Runtime = {
 export const html5Meta: Runtime = {
   id: 'html5',
   name: 'HTML5 / WebAssembly',
-  description: '直接运行已部署的 HTML5 或 WebAssembly 网页游戏',
+  // 和其余八个一样必须是 getter（见文件头）：以前是普通字段，非中文站点上这一行永远是中文
+  get description() {
+    return getT().runtime.html5Desc
+  },
   extensions: ['html', 'htm'],
   priority: 100,
   available: () => true,

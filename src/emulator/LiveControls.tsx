@@ -200,7 +200,16 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
    * 而游戏主循环和它们抢的是同一颗 CPU。
    */
   const [quality, setQuality] = useState<'none' | 'cpu' | 'bandwidth' | 'other'>('none')
-  const [viewers, setViewers] = useState(0)
+  const [viewers, setViewersRaw] = useState(0)
+  /**
+   * 人数归零时把「受限」的标记一起清掉。getStats 没有观众就不采样（broadcast.ts 的 statsTick 早退），
+   * 所以最后一次采到的 cpu / bandwidth 会一直挂在按钮说明里 —— 明明一个人都没在看，
+   * 主播 hover 上去还写着「编码跟不上」。
+   */
+  const setViewers = useCallback((n: number) => {
+    setViewersRaw(n)
+    if (n === 0) setQuality('none')
+  }, [])
   const [hidden, setHidden] = useState(readPrivate)
   /**
    * 自动开播还在尝试。落定后无论成没成都置 false —— 界面靠它把「连接中…」和
@@ -265,7 +274,7 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
     setViewers(0)
     // 下播了就让大厅立刻把卡片撤掉，不用等下一轮轮询
     refreshLiveRooms()
-  }, [])
+  }, [setViewers])
 
   useEffect(() => {
     if (!on || !handle || !gameSlug) return
@@ -363,7 +372,7 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
       setNeedsManual(false)
       stop()
     }
-  }, [on, handle, gameSlug, gameName, platform, stop])
+  }, [on, handle, gameSlug, gameName, platform, stop, setViewers])
 
   /** 玩家点了「开播」：选本标签页，画面带声音一起推 */
   const startManual = async () => {

@@ -11,8 +11,11 @@
  * ── 断线 ──────────────────────────────────────────────────
  * 三样东西各自会断，处理方式不同：
  *
- *   自己的信令 socket 断了   → socket.io 自动重连，连上后重新 watch（服务器会让主播再发一轮 offer）。
- *                             画面多半没断（WebRTC 是点对点的），中间只是标记变一下。
+ *   自己的信令 socket 断了   → socket.io 自动重连，连上后重新 watch **登记回房间**。重连后 socket.id
+ *                             是新的，服务器凭我们自带的 key 认出还是同一个人：画面还连着就只是换个名字
+ *                             （主播那条 PeerConnection 不重建，一帧不掉）；画面已经断了才要一轮新 offer。
+ *                             以前每次重连都当新观众重建整条连接 —— 画面黑一下、人数多算一个、
+ *                             满员的房间里还会被自己的幽灵挤出去（watch 回 full）。
  *   到主播的 PeerConnection  → 主播在的话重新 watch 要一轮新 offer；主播不在就等 host-back。
  *   failed
  *   主播的 socket 断了       → 服务器发 host-away、房间先留着（见 server/src/live.js）。
@@ -163,6 +166,25 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let hostAway = false
   /** 曾经成功进过房（之后的 watch 都是「重新 watch」，失败的意义不一样） */
   let joined = false
+  /**
+   * 这一次观看的身份钥匙，随每次 watch 发给服务端（见 server/src/live.js 的「观众换了 socket」）。
+   * 信令重连后 socket.id 会换，服务端凭它认出还是同一个人：不多算人数、不把我们挤出满员的房间、
+   * 画面还连着就不让主播重建连接。随机、只发给服务端，别人拿不到。
+   */
+  const viewerKey = (() => {
+    try {
+      return crypto.randomUUID().replace(/-/g, '')
+    } catch {
+      return Math.random().toString(36).slice(2) + Date.now().toString(36)
+    }
+  })()
+  /**
+   * 主播冻着（切后台）的时候来了一次「该重连了」（pc failed / 主播说抓不到画面）—— 当时不能动
+   * （冻着期间要多少轮 offer 都等不到帧），记下来，等它一回前台就补上。
+   * 不记的话：解冻那一刻只看 `!gotFrame`，而我们早就见过帧了 → 没人再去要 offer，
+   * 观众对着一条死掉的连接、状态栏却写着「在看」，永远不会自愈。
+   */
+  let thawRewatch = false
   /** 服务器已经不认这个房间了，但画面还在流；画面一断就是真的结束 */
   let orphan = false
   let watching = false
@@ -540,15 +562,20 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     return next
   }
 
-  /** 进房 / 重新进房。返回 false 表示这次没成功（错误已经处理） */
-  const watch = async (): Promise<boolean> => {
+  /**
+   * 进房 / 重新进房。返回 false 表示这次没成功（错误已经处理）。
+   *
+   * `reoffer`：明确告诉服务端「我的画面断了，要一轮新 offer」。不带的话，服务端认出我们只是换了 socket
+   * 时会让主播**保留**那条还在流的连接（viewer-rebound），而不是拆了重建。
+   */
+  const watch = async (reoffer = true): Promise<boolean> => {
     if (destroyed || !socket?.connected) return false
     const s = socket
     let info: WatchAck
     try {
       info = await new Promise<WatchAck>((resolve, reject) => {
         const timer = window.setTimeout(() => reject(new Error('watch timeout')), 10_000)
-        s.emit('watch', { roomId: live.roomId }, (err: string | null, data: WatchAck) => {
+        s.emit('watch', { roomId: live.roomId, key: viewerKey, reoffer }, (err: string | null, data: WatchAck) => {
           window.clearTimeout(timer)
           if (err) reject(new Error(err))
           else resolve(data)
@@ -625,8 +652,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /** 要一轮新 offer；等不到就再要，几次都没用才算断 */
   const rewatch = async () => {
     if (destroyed || !socket?.connected) return
-    // 主播冻着的时候重来多少次都等不到帧，等它 host-frozen:false 回来再说
-    if (hostFrozen) return
+    // 主播冻着的时候重来多少次都等不到帧，记一笔，等它 host-frozen:false 回来再补（见 thawRewatch）
+    if (hostFrozen) {
+      thawRewatch = true
+      return
+    }
+    thawRewatch = false
     window.clearTimeout(rewatchTimer)
     if (rewatchCount >= REWATCH_MAX) return fail(joined && watching ? rt.liveLost : diagnose())
     rewatchCount += 1
@@ -636,6 +667,29 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (destroyed) return
     const ok = await watch()
     if (!ok || destroyed || hostAway) return
+    armRewatch()
+  }
+
+  /**
+   * 自己的信令重连上来了：**重新登记进房间**，这一步和主播冻着没冻着无关。
+   *
+   * 服务端的 membership 是按 socket.id 记的，重连后 id 换了 —— 不重新 watch 就等于不在房间里：
+   * 收不到 host-frozen:false / live-ended / 弹幕 / 联机房号，房间还可能因为「零观众」被收掉。
+   * 以前这里走的是 rewatch()，而它一看到 hostFrozen 就早退 → 主播切着后台时观众的网抖一下，
+   * 这个观众就永远掉出了房间，主播回前台它也不知道，只能一直黑着。
+   *
+   * 画面还连着就不要新 offer（服务端会让主播把连接换个名字）；断了才要。
+   */
+  const rejoin = async () => {
+    if (destroyed || !socket?.connected) return
+    window.clearTimeout(rewatchTimer)
+    rewatchCount = 0
+    await refreshIce()
+    if (destroyed) return
+    const connected = pc?.connectionState === 'connected'
+    const ok = await watch(!connected)
+    if (!ok || destroyed || hostAway || hostFrozen) return
+    // 闹钟照上：到点有画面它什么都不做，没画面（要的 offer 没来 / 连着却不出帧）就再要一轮
     armRewatch()
   }
 
@@ -732,7 +786,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           冻着期间闹钟是被 armRewatch 的守卫挡住的，不在这里重新起一次的话，
           就再也没有人来喊「怎么还没画面」，观众会一直黑着。
         */
-        if (was && !hostFrozen && !gotFrame) armRewatch()
+        if (was && !hostFrozen) {
+          if (thawRewatch) {
+            // 冻着期间连接就已经断了（见 thawRewatch）：现在立刻去要，别再等 20 秒
+            thawRewatch = false
+            rewatchCount = 0
+            void rewatch()
+          } else if (!gotFrame) {
+            armRewatch()
+          }
+        }
       }) as (...args: never[]) => void)
 
       s.on('host-away', (() => {
@@ -772,8 +835,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       // connectLive 已经消费掉首连的 connect，这里只在**重连**时触发
       s.on('connect', (() => {
         if (destroyed || !joined) return
-        rewatchCount = 0
-        void rewatch()
+        void rejoin()
       }) as (...args: never[]) => void)
 
       const ok = await watch()

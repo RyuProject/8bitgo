@@ -131,6 +131,36 @@ export const DISC_PLATFORMS = new Set<PlatformId>(['psx', 'ps2'])
 
 export const isDiscPlatform = (platform: string): boolean => DISC_PLATFORMS.has(platform as PlatformId)
 
+/**
+ * 「ROM 由我们自己下，不交给引擎的 XHR」的平台。
+ *
+ * 光盘平台全在里面（上面那段说明就是为它们写的），另外多一个 **NDS** ——
+ * 它是唯一一个「卡带机」却值得这么做的平台，理由是数量级：GBA 的卡最大 32MB，
+ * 而 NDS 的卡到 512MB，常见的大作（宝可梦黑白、雷顿教授）就是 128～256MB。
+ * 那段「几十 MB 无所谓」的判断对 GBA 成立，对 NDS 不成立。
+ *
+ * 交给引擎自己下的三笔代价，在 NDS 上都是真金白银：
+ *   1. **下完就扔** —— romCache 覆盖不到引擎内部的 XHR（见 romCache.ts），
+ *      第二次进同一款游戏还要再下 128MB。romCache.ts 的文件头点名说要解决
+ *      「PSX / NDS 每次进游戏都重下几百 MB」，但这条路一直没接上 NDS。
+ *   2. **断了不能续** —— 引擎是一条 XHR 到底，128MB 下到 90% 掉线就从头再来；
+ *      我们自己那条是 8MB 一片、每片三次重试（见 loadProgress 的 CHUNK_BYTES）。
+ *   3. **开局前不知道要下多少** —— 接管之后 Content-Length 第一帧就有，
+ *      播放器那行「本局需下载 XXX」才出得来。
+ *
+ * ⚠️ 那段说明里写的代价（「引擎失去了边下边解压的机会」）对这里几乎不成立：
+ * EmulatorJS 自己也是**整份下完**再写进虚拟文件系统的，压缩包同样是下完才解。
+ * 真实差别只在峰值内存，而我们走的是 Blob（大 Blob 浏览器会落盘），
+ * 比它那一整块 ArrayBuffer 还省。
+ *
+ * ⚠️ 再加平台之前先问一句：这个平台的 ROM 上限是不是真的到了几百 MB。
+ * 红白机 / GBA 这些几 MB 的进来只有坏处 —— 多一次 Blob 拷贝，缓存收益微乎其微。
+ */
+export const SELF_DOWNLOAD_PLATFORMS = new Set<PlatformId>([...DISC_PLATFORMS, 'nds'])
+
+export const isSelfDownloadPlatform = (platform: string): boolean =>
+  SELF_DOWNLOAD_PLATFORMS.has(platform as PlatformId)
+
 /* ---------------- 页面用的几个判断 ---------------- */
 
 /**

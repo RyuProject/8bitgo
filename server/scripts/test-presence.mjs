@@ -69,6 +69,53 @@ ok('v4 带端口', clientIpFrom('1.2.3.4:5678', {}) === '1.2.3.4')
 ok('纯 v6 不能被当成带端口切开', clientIpFrom('2001:4860:4860::8888', {}) === '2001:4860:4860::8888')
 ok('XFF 全是内网时退回直连地址', clientIpFrom('127.0.0.1', { 'x-forwarded-for': '10.0.0.5, 192.168.1.2' }) === '127.0.0.1')
 
+/*
+  ⚠️ Cloudflare 在 nginx 前面时，「取最后一段」拿到的是 **CF 边缘节点**，不是访客 ——
+  `$proxy_add_x_forwarded_for` 追加的是 nginx 看到的对端，而那就是 CF。
+  2026-09-07 线上实测过这个状态（xff: "34.162.230.222, 104.22.100.106"，采用了后者）。
+  行为**故意不改**（信 CF-Connecting-IP 会开伪造口子，源站没锁 CF 段时谁都能自报地址），
+  但必须能自查：presence 会告警一次、/api/diag 里 usingCdnEdgeIp 为 true。
+  修法是 nginx 那一行换成 $http_cf_connecting_ip。
+*/
+{
+  const cfHeaders = { 'x-forwarded-for': '34.162.230.222, 104.22.100.106', 'cf-connecting-ip': '34.162.230.222' }
+
+  /*
+    ⚠️ 告警那几条必须**排在最前** —— `cdnEdgeWarned` 是模块级的一次性标记，
+    只要前面有任何一次「采用值 ≠ CF 说的访客」的调用踩过它，后面就再也发不出来了。
+    （第一版把行为断言写在前面，结果告警在 console.warn 被换掉之前就发完了，测试当场红。）
+  */
+  const warned = []
+  const realWarn = console.warn
+  console.warn = (...a) => warned.push(a.join(' '))
+  try {
+    clientIpFrom('::ffff:127.0.0.1', { 'x-forwarded-for': '8.8.8.8', 'cf-connecting-ip': '8.8.8.8' })
+    ok('配对了就不告警', warned.length === 0)
+    clientIpFrom('::ffff:127.0.0.1', cfHeaders)
+    ok(
+      '⭐ 采用的是 CF 节点地址 → 告警一次，并指出该换哪一行',
+      warned.length === 1 && warned[0].includes('$http_cf_connecting_ip'),
+      warned[0] || '（一条都没发）',
+    )
+    clientIpFrom('::ffff:127.0.0.1', cfHeaders)
+    ok('同一个进程只告警一次（不刷屏）', warned.length === 1)
+  } finally {
+    console.warn = realWarn
+  }
+
+  // 行为**故意不改**：信 CF-Connecting-IP 会开伪造口子（源站没锁 CF 段时谁都能自报地址），
+  // 而「取最后一段」至少伪造不了。修法在 nginx 那一行，不在这里。
+  ok(
+    'CF 后面配错时仍取最后一段（行为不变，靠告警发现）',
+    clientIpFrom('::ffff:127.0.0.1', cfHeaders) === '104.22.100.106',
+  )
+  ok(
+    'nginx 换成 $http_cf_connecting_ip 之后就对了（XFF 只剩访客一段）',
+    clientIpFrom('::ffff:127.0.0.1', { 'x-forwarded-for': '34.162.230.222', 'cf-connecting-ip': '34.162.230.222' }) ===
+      '34.162.230.222',
+  )
+}
+
 /* ─────────── 3. 国家 ─────────── */
 section('国家')
 ok('114.114.114.114 -> CN', countryFromIp('114.114.114.114') === 'CN', String(countryFromIp('114.114.114.114')))

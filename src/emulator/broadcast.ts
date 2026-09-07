@@ -21,11 +21,16 @@
  *
  * 以前是 socket 一断就报 ended，然后什么都不做 —— 抓屏的轨、音频节点、每条 PeerConnection
  * 全部泄漏，而且这一局再也不会开播。
+ *
+ * 观众那边的信令断了同理：它重连后 socket.id 会换，服务端凭它自带的 key 认出是同一个人，
+ * 发 viewer-rebound 过来 —— 我们只把那条连接换个名字，画面一帧不掉、编码器一路不多
+ * （见 peers 的注释）。
  */
 import type { CaptureSources } from './types'
 import { type LiveChatMessage, connectLive, liveIceServers, type LiveSocket } from '@/services/live'
 import { sanitizeChatText } from '../../shared/live-chat.js'
 import { applyTuning, fpsForViewers, sizeOfTrack, tuningFor, usableVideoSize } from './videoTuning'
+import { isDualScreen } from './dualScreen'
 import { createCaptureFeed, probeCapture, type CaptureFeed, type SourceResolver } from './captureFeed'
 
 /**
@@ -178,10 +183,12 @@ function tuneSender(
   maxBitrate: number | undefined,
   maxFramerate: number,
   size: { width?: number; height?: number } = sizeOfTrack(sender.track),
+  /** 双屏机型（NDS）：像素画那一档要按单块屏判，见 videoTuning 的 dualScreen */
+  dualScreen = false,
 ) {
   // ⚠️ 尺寸要调用方从采集源上拿（feed.videoSize()）。走 Insertable Streams 时 sender.track 是
   // generator 轨，getSettings() 多半是空的 —— 空就会被当成大源去缩分辨率，Game Boy 直接成马赛克
-  applyTuning(sender, tuningFor({ width: size.width, height: size.height, fps: maxFramerate, maxBitrate }))
+  applyTuning(sender, tuningFor({ width: size.width, height: size.height, fps: maxFramerate, maxBitrate, dualScreen }))
 }
 
 /** 这条连接还值得留着吗（还在握手、或者已经通了） */
@@ -255,7 +262,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
           for (const { pc } of peers.values()) {
             for (const sender of pc.getSenders()) {
               if (sender.track?.kind !== 'video') continue
-              void sender.replaceTrack(track).then(() => tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, built?.videoSize()))
+              void sender.replaceTrack(track).then(() => tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, built?.videoSize(), dualScreenSource))
             }
           }
         }
@@ -293,8 +300,22 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     throw e
   }
 
-  /** 每个观众一条连接。gen 是这条连接的代号，随 SDP / ICE 一起发，观众据此认出「新一轮」 */
-  const peers = new Map<string, { pc: RTCPeerConnection; gen: number }>()
+  /**
+   * 每个观众一条连接。gen 是这条连接的代号，随 SDP / ICE 一起发，观众据此认出「新一轮」。
+   *
+   * `id` 是这条连接当前对应的观众 socket.id —— 会变：观众的信令重连后 socket.io 给它一个新 id，
+   * 服务端凭观众自带的 key 认出还是同一个人，发 viewer-rebound 让我们把这条**还在流的**连接换个名字
+   * （以前是当新观众重建整条 PeerConnection，观众画面黑一下、编码器多跑一路）。
+   * 所以回调里一律用 `entry.id` 反查，别把创建时的 viewerId 闭包捕获死。
+   *
+   * `pending` / `remoteReady`：观众的 answer 和它的 ICE 候选是紧挨着发过来的，而 setRemoteDescription
+   * 是异步的 —— 候选到的时候 remoteDescription 多半还是 null。以前这里直接把候选丢掉，注释说
+   * 「对方会重发」：**WebRTC 不重发候选**，丢了就是丢了。host 类候选（局域网直连）几乎必丢，
+   * 主播主线程忙（模拟器 + N 路编码）时 srflx 也会丢，剩下能配对的只有中继 —— 白走 TURN 流量，
+   * 没配 TURN 的站点上则是同一路由器下的两个人都连不上。现在先攒着，远端描述落地后再一并加。
+   */
+  type Peer = { pc: RTCPeerConnection; gen: number; id: string; pending: RTCIceCandidateInit[]; remoteReady: boolean }
+  const peers = new Map<string, Peer>()
   let genCounter = 0
   let viewers = 0
   let stopped = false
@@ -306,6 +327,14 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
    * 得靠连续几轮干净采样才升回去 —— 混在一个变量里，观众一走就会把 CPU 那档也一并松掉。
    */
   let statsCap = captureFps
+  /*
+    这一局的源是不是两块屏拼出来的（NDS）。像素画那一档要按**单块屏**判 ——
+    NDS 的画布总像素（256×384 = 98304）一脚踩过 320×240 那条线，不带这一位的话
+    这个站上单块屏最小的机型会被当成大源，带宽一紧就把两块屏各缩成 128×96。
+    见 videoTuning.ts 的 dualScreen。房间快照里的 platform 就是个字符串，
+    isDualScreen 收得下（见 dualScreen.ts 那条注释）。
+  */
+  const dualScreenSource = isDualScreen(options.meta.platform)
   let cappedFps = captureFps
   let degradeStreak = 0
   let recoverStreak = 0
@@ -360,7 +389,8 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     dropPeer(viewerId)
     const gen = ++genCounter
     const pc = new RTCPeerConnection({ iceServers })
-    peers.set(viewerId, { pc, gen })
+    const entry: Peer = { pc, gen, id: viewerId, pending: [], remoteReady: false }
+    peers.set(viewerId, entry)
 
     // 第一个观众进来才真的开始抓屏
     const media = ensureStream()
@@ -368,32 +398,32 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       // 画布已经没了 / 塌成废尺寸（换游戏、引擎拆了、播放器没布局好）：这条连接建不起来。
       // 告诉观众一声再收掉 —— 它会隔几秒再来要一次，画布回来了就接上；一直没有它才报错
       try {
-        socket.emit('signal', { target: viewerId, data: { error: 'no-source', gen } satisfies SignalData })
+        socket.emit('signal', { target: entry.id, data: { error: 'no-source', gen } satisfies SignalData })
       } catch {
         /* ignore */
       }
-      dropPeer(viewerId)
+      dropPeer(entry.id)
       return
     }
     for (const track of media.stream.getTracks()) {
       const sender = pc.addTrack(track, media.stream)
-      if (track.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, media.videoSize())
+      if (track.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, media.videoSize(), dualScreenSource)
     }
 
     pc.onicecandidate = (ev) => {
-      if (ev.candidate) socket.emit('signal', { target: viewerId, data: { candidate: ev.candidate.toJSON(), gen } satisfies SignalData })
+      if (ev.candidate) socket.emit('signal', { target: entry.id, data: { candidate: ev.candidate.toJSON(), gen } satisfies SignalData })
     }
     pc.onconnectionstatechange = () => {
       // 观众那边断了就把连接收掉，别留着白占上行。它要是还在房间里，会自己重新 watch
       if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
-        if (peers.get(viewerId)?.pc === pc) dropPeer(viewerId)
+        if (peers.get(entry.id)?.pc === pc) dropPeer(entry.id)
       }
     }
 
     try {
       const offer = await pc.createOffer()
       await pc.setLocalDescription(offer)
-      socket.emit('signal', { target: viewerId, data: { sdp: pc.localDescription ?? offer, gen } satisfies SignalData })
+      socket.emit('signal', { target: entry.id, data: { sdp: pc.localDescription ?? offer, gen } satisfies SignalData })
     } catch (e) {
       /**
        * ⚠️ 必须认身份，和 12 行上面的 onconnectionstatechange 一个道理。
@@ -404,8 +434,8 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
        * 结果这个观众一条 offer 都收不到，pc 停在 new（永远不会变 failed），
        * 主播这边 peers 里也没有它了，只能等观众自己 20 秒后再要一轮。
        */
-      if (peers.get(viewerId)?.pc !== pc) return
-      dropPeer(viewerId)
+      if (peers.get(entry.id)?.pc !== pc) return
+      dropPeer(entry.id)
       // 旧一轮被新一轮顶掉是正常现象，只有当前这条失败才值得往上报
       options.onError?.(e instanceof Error ? e.message : String(e))
     }
@@ -417,7 +447,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     cappedFps = next
     for (const { pc } of peers.values()) {
       for (const sender of pc.getSenders()) {
-        if (sender.track?.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, built?.videoSize())
+        if (sender.track?.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, built?.videoSize(), dualScreenSource)
       }
     }
   }
@@ -639,6 +669,9 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       retuneFps()
       options.onState?.('live')
       relink()
+      // 服务端不记「切后台」这个状态跨断线：接回来要再报一次，否则主播明明在后台，
+      // 中途进来的观众拿到的快照却是 hostFrozen=false，对着冻住的画面等 75 秒
+      onVisibility()
       return
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -655,6 +688,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       viewers = 0
       options.onViewers?.(0)
       options.onState?.('live')
+      onVisibility() // 新房间从零开始，同样要知道主播此刻在不在前台
     } catch (e) {
       // 重开也失败（比如服务器满了）：这一局就到这儿，把资源放掉，别让 UI 挂着假标记
       if (stopped) return
@@ -665,9 +699,30 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     }
   }
 
-  socket.on('viewer-joined', ((payload: { viewerId?: string }) => {
+  socket.on('viewer-joined', ((payload: { viewerId?: string; replaces?: string }) => {
     // 观众进来 / 观众重新 watch：都是「请给我一轮新的 offer」
-    if (payload?.viewerId) void addViewer(payload.viewerId, true)
+    if (!payload?.viewerId) return
+    // 它上一条连接用的是另一个 socket.id（信令重连过、画面也断了）：那条直接拆，不用等服务端的 viewer-left
+    if (payload.replaces && payload.replaces !== payload.viewerId) dropPeer(payload.replaces)
+    void addViewer(payload.viewerId, true)
+  }) as (...args: never[]) => void)
+
+  socket.on('viewer-rebound', ((payload: { from?: string; to?: string }) => {
+    /**
+     * 同一个观众换了 socket.id，画面没断（见 peers 的注释）：把连接换个名字，一帧都不重编。
+     * 那条连接要是已经死了 / 我们这边压根没有，就按新观众处理，给它一轮 offer。
+     */
+    if (!payload?.from || !payload.to || payload.from === payload.to) return
+    const p = peers.get(payload.from)
+    if (p && alive(p.pc)) {
+      peers.delete(payload.from)
+      dropPeer(payload.to) // 新 id 下万一挂着别的连接（不该有），先收掉
+      p.id = payload.to
+      peers.set(payload.to, p)
+      return
+    }
+    dropPeer(payload.from)
+    void addViewer(payload.to, true)
   }) as (...args: never[]) => void)
 
   socket.on('viewer-left', ((payload: { viewerId?: string }) => {
@@ -708,9 +763,23 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     const { sdp, candidate, gen } = payload.data
     // 观众回的是上一轮的包（它还没收到新 offer 就先回了旧的）：不能喂给新连接
     if (gen !== undefined && gen !== p.gen) return
-    if (sdp) void p.pc.setRemoteDescription(new RTCSessionDescription(sdp)).catch(() => {})
-    // 远端描述还没到就先丢掉这颗候选：对方会重发，比排队简单也不会卡住
-    else if (candidate && p.pc.remoteDescription) void p.pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {})
+    if (sdp) {
+      if (sdp.type && sdp.type !== 'answer') return // 观众只回 answer
+      const pc = p.pc
+      void pc
+        .setRemoteDescription(new RTCSessionDescription(sdp))
+        .then(() => {
+          // 这条连接可能在 await 期间被换掉了（观众又 watch 了一轮）：别往新连接里灌旧候选
+          if (peers.get(p.id) !== p) return
+          p.remoteReady = true
+          for (const c of p.pending.splice(0)) void pc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {})
+        })
+        .catch(() => {})
+    } else if (candidate) {
+      // 远端描述还没落地就先攒着 —— WebRTC **不会**重发候选，丢一颗就少一条可能的通路（见 peers 的注释）
+      if (p.remoteReady) void p.pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {})
+      else p.pending.push(candidate)
+    }
   }) as (...args: never[]) => void)
 
   socket.on('disconnect', (() => {

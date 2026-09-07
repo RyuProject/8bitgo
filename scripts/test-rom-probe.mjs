@@ -33,7 +33,7 @@ const script = (...steps) => {
   calls = 0
 }
 
-const { probeRomUrl, probeRom, clearRomProbeCache, romCandidates } = await import(
+const { probeRomUrl, probeRom, clearRomProbeCache, romCandidates, romProbeExpected } = await import(
   fileURLToPath(new URL('../src/services/roms.ts', import.meta.url))
 )
 const { ROM_LANGS } = await import(fileURLToPath(new URL('../src/config/languages.ts', import.meta.url)))
@@ -201,4 +201,53 @@ const next = () => `https://assets.example.com/roms/nes/game-${++url}.zip`
   assert.equal(romCandidates(dup, 'en').length, 1, '通用 rom 和语言槽指向同一个对象时不重复')
 }
 
-console.log('✅ ROM 探测测试通过：确定没有 / 没问出来（自动重试的依据）/ 手动清缓存 / 语言回退链覆盖全部 ROM_LANGS')
+/* ---------- romProbeExpected：首帧要不要先按「正在确认」渲染 ---------- */
+/*
+  为什么值一组断言：这个返回值决定 useRomUrl 的**初始态**，也就是服务端渲染出来的
+  那一帧。它以前只看 effectiveRomKey（后台显式绑定的语言槽），于是靠约定 key
+  探测的游戏——绝大多数——首帧落到 idle，主按钮先写「选择本地 ROM」，
+  effect 一跑变「正在准备在线版本…」，探完再变「开始游戏」：三段文案。
+
+  另一半同样重要：这个判断必须在 SSR 和水合时算出同一个值，所以它只看构建时的
+  VITE_ROM_BASE_URL，**不看 localStorage 覆盖**。下面最后一条锁的就是这点。
+*/
+{
+  const bound = { slug: 'contra', platform: 'nes', roms: { en: 'roms/nes/contra.en.nes' } }
+  const unbound = { slug: 'contra', platform: 'nes' }
+  const external = { slug: 'x', platform: 'html5', rom: 'https://example.com/x/index.html' }
+  const rooted = { slug: 'y', platform: 'html5', rom: '/games/y/index.html' }
+
+  const saved = globalThis.__viteEnv
+
+  // 根地址没配 = 没接云端 ROM：不该空转一帧「正在确认」
+  globalThis.__viteEnv = {}
+  assert.equal(romProbeExpected(bound, 'en'), false, '没配根地址时，连显式绑定也探不了')
+  assert.equal(romProbeExpected(unbound, 'en'), false, '没配根地址时，约定 key 更探不了')
+  // 但自带完整地址的 key 不依赖根地址
+  assert.equal(romProbeExpected(external, 'en'), true, '外链 key 不需要根地址')
+  assert.equal(romProbeExpected(rooted, 'en'), true, '站内绝对路径 key 不需要根地址')
+
+  globalThis.__viteEnv = { VITE_ROM_BASE_URL: 'https://assets.example.com' }
+  assert.equal(romProbeExpected(bound, 'en'), true, '有绑定、有根地址：首帧就该是「正在确认」')
+  assert.equal(
+    romProbeExpected(unbound, 'en'),
+    true,
+    '这条是这次修的正主：没有绑定记录、靠约定 key 探的游戏，首帧也必须是「正在确认」，' +
+      '否则按钮会先谎报「选择本地 ROM」再改口',
+  )
+  assert.equal(romProbeExpected(undefined, 'en'), false, '没有游戏对象时不探')
+
+  // localStorage 覆盖不参与判断：SSR 那一侧看不到它，参与了就是 hydration mismatch
+  globalThis.__viteEnv = {}
+  globalThis.localStorage = { getItem: (k) => (k === '8bitgo.rom.base' ? 'https://mine.example.com' : null) }
+  assert.equal(
+    romProbeExpected(unbound, 'en'),
+    false,
+    'localStorage 里的根地址覆盖只存在于管理员自己的浏览器；初始态不能看它，否则服务端和客户端算出两个值',
+  )
+  delete globalThis.localStorage
+
+  globalThis.__viteEnv = saved
+}
+
+console.log('✅ ROM 探测测试通过：确定没有 / 没问出来（自动重试的依据）/ 手动清缓存 / 语言回退链覆盖全部 ROM_LANGS / 首帧探测判定')

@@ -41,10 +41,40 @@ export interface IceConfig {
   hasTurn: boolean
   /** 凭证过期时间（unix 秒），0 = 没有 TURN */
   expiry: number
+  /** 只有「接口没打通、用的是退路」那份才有：到这个时刻（unix 秒）就该再问一次服务端 */
+  retryAt?: number
 }
 
 let icePromise: Promise<IceConfig> | null = null
 let iceCached: IceConfig | null = null
+/**
+ * 接口打不通时，退路配置只缓存这么久（秒）就再去问一次。
+ *
+ * ⚠️ 以前失败那一路写的是 `expiry: 0`，而 0 在下面的判断里意味着「永不过期」——
+ * 后端一次 502 抖动（网关偶发，见 /api/health 那条记忆），这个页面**直到刷新为止**
+ * 建的每一条 PeerConnection 都拿不到 TURN：主播播到一半新进来的观众、观众重连的那一轮，
+ * 需要中继的全部连不上，而控制台一行报错都没有。真没配 TURN 的站点多问一次也只是一个小请求。
+ */
+const ICE_RETRY_S = 60
+/**
+ * 请求 ICE 时挂一个「分钟桶」参数。
+ *
+ * ⚠️ 这不是洁癖，是 2026-09-07 实测出来的线上事故：`/api/netplay/ice` 明明发了
+ * `Cache-Control: no-store`，却被前面那层 CDN 缓存了 **13.7 小时**
+ * （Cloudflare 的 Cache Rule 开了 "Cache Everything" 就会盖掉 no-store，
+ * 源站的响应头拦不住它）。后果是**发给所有人的 TURN 凭证是十几个小时前签的**：
+ *
+ *   · 自建 coturn 走 use-auth-secret，username 就是 `<过期时间戳>:label` ——
+ *     时间戳过期它直接 401 拒绝分配，这一路对所有人都是废的；
+ *   · Cloudflare 那路 TTL 24 小时，所以还能撑一阵，**于是故障被掩盖成
+ *     「偶尔有人连不上」**，而 hasTurn 一直如实报 true，查不出问题在哪。
+ *
+ * 带上 query 就是另一个 cache key，必然回源（这一条是对着线上验过的：
+ * 裸 URL 拿到 13.7 小时前那份，带 query 的当场就是 now+3600）。
+ * 用**分钟**而不是随机数：既把陈旧上限钉死在 60 秒（凭证 TTL 一小时，60 秒无所谓），
+ * 又让同一分钟内涌进来的一批观众还能共用一个缓存对象，不至于每人回源一次。
+ */
+const iceBucket = () => Math.floor(Date.now() / 60_000)
 
 /**
  * 取 ICE 配置。
@@ -61,19 +91,43 @@ let iceCached: IceConfig | null = null
 export async function fetchIceConfig(): Promise<IceConfig> {
   const now = Math.floor(Date.now() / 1000)
   // 提前 5 分钟续，别让一局玩到一半凭证过期
-  if (iceCached && (iceCached.expiry === 0 || iceCached.expiry - now > 300)) return iceCached
+  if (iceCached && (iceCached.expiry === 0 || iceCached.expiry - now > 300) && !(iceCached.retryAt && iceCached.retryAt <= now)) return iceCached
   if (icePromise) return icePromise
 
   icePromise = (async () => {
     try {
-      const res = await fetch(`${NETPLAY_URL.replace(/\/netplay$/, '')}/api/netplay/ice`, { cache: 'no-store' })
+      const base = NETPLAY_URL.replace(/\/netplay$/, '')
+      const res = await fetch(`${base}/api/netplay/ice?t=${iceBucket()}`, { cache: 'no-store' })
       if (!res.ok) throw new Error(String(res.status))
       const data = (await res.json()) as Partial<IceConfig>
       if (!Array.isArray(data.iceServers) || !data.iceServers.length) throw new Error('empty')
-      iceCached = { iceServers: data.iceServers, hasTurn: Boolean(data.hasTurn), expiry: Number(data.expiry) || 0 }
+      const expiry = Number(data.expiry) || 0
+
+      /**
+       * 拿到手的凭证**已经过期了**（或者马上就过期）：这份响应是从哪级缓存里翻出来的陈货，
+       * 里面的 TURN 账号密码是死的 —— 自建 coturn 会 401，别再拿 hasTurn 去骗自己和观众。
+       *
+       * 不整个丢掉：STUN 那几条不带凭证、永远有效，留着仍然能让多数人直连成功；
+       * 只是把 hasTurn 拉回 false（观众端「连不上」的提示据此才说得对），
+       * 并且很快再问一次 —— 缓存刷新之后就自愈了。
+       * expiry === 0 是「没有会过期的凭证」（纯 STUN 或固定账号密码），不适用这条。
+       */
+      if (expiry > 0 && expiry - now <= 60) {
+        console.warn(
+          `[ice] 服务端发来的 TURN 凭证已经过期 ${Math.round((now - expiry) / 60)} 分钟 —— ` +
+            '这份响应几乎肯定是被 CDN / 反代缓存住了（源站发的是 no-store，但 Cloudflare 的 ' +
+            '"Cache Everything" 规则会盖掉它）。自建 coturn 的凭证是带时间戳的，过期即 401，' +
+            '这一路现在对所有人都不可用。去把 /api/ 那条路径排除出缓存规则。',
+        )
+        iceCached = { iceServers: data.iceServers, hasTurn: false, expiry: 0, retryAt: now + ICE_RETRY_S }
+        return iceCached
+      }
+
+      iceCached = { iceServers: data.iceServers, hasTurn: Boolean(data.hasTurn), expiry }
       return iceCached
     } catch {
-      iceCached = { iceServers: ICE_SERVERS, hasTurn: false, expiry: 0 }
+      // 退路：过 ICE_RETRY_S 秒再问一次，别把「这一刻接口挂了」记成「这个站没有 TURN」
+      iceCached = { iceServers: ICE_SERVERS, hasTurn: false, expiry: 0, retryAt: now + ICE_RETRY_S }
       return iceCached
     } finally {
       icePromise = null

@@ -152,6 +152,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const cloud = options.cloud
 
   if (!CLOUDGAME_URL) {
+    console.warn('[cloudgame] VITE_CLOUDGAME_URL is not configured')
     options.onError?.(rt.cloudNotConfigured)
     return deadHandle()
   }

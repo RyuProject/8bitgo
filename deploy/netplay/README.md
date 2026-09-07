@@ -227,6 +227,77 @@ curl -s http://127.0.0.1:8788/api/netplay/ice | jq
 观众侧现在会自己做这个判断：一个公网候选都没收集到时，报的是「你和主播的网络之间没有通路」
 而不是含糊的「可能是网络限制或对方已经下播」，控制台还会留一行 `[live] 只收集到 host 候选`。
 
+### ⚠️ 必须从**公网域名**验，不能从 127.0.0.1
+
+上面那句「`expiry` 在不在将来」是这一节最容易被跳过、代价又最大的一条检查 ——
+而**从 `127.0.0.1` 打是查不出问题的**：那条路绕开了 Cloudflare 和 nginx，源站永远给你一份新鲜的。
+
+2026-09-07 线上就是这么坏的：
+
+```bash
+# 裸 URL —— 拿到的是 13.7 小时前签的那一份
+curl -s https://你的域名/api/netplay/ice | jq '.expiry, .hasTurn'
+# 带个随便什么 query（= 另一个 cache key，必然回源）—— 这一份是新鲜的
+curl -s "https://你的域名/api/netplay/ice?cb=$RANDOM" | jq '.expiry, .hasTurn'
+```
+
+两个 `expiry` 差了十几个小时，就是**这个接口被缓存住了**。看响应头确认是哪一层：
+
+```bash
+curl -sI "https://你的域名/api/netplay/ice" | grep -iE "cf-cache-status|age|cache-control|x-cache"
+```
+
+`cf-cache-status: HIT` + 一个很大的 `age` = Cloudflare 在缓存；`x-cache`/`age` 而没有 cf 头 = nginx 的 `proxy_cache`。
+
+**后果比看起来严重得多，而且完全不报错：**
+
+- 自建 coturn 走 `use-auth-secret`，凭证的 username 就是 `<过期时间戳>:label`，
+  coturn 会校验那个时间戳 —— **过期就直接 401 拒绝分配**，这一路对所有人都废了。
+  `TURN_TTL_SEC=3600` 意味着缓存超过 1 小时它就死了。
+- Cloudflare 那路 TTL 是 24 小时，所以它还能撑一阵，**于是故障被掩盖成
+  「偶尔有一两成人连不上、第二天又好了」**，而 `hasTurn` 一路如实报 `true`。
+- 缓存对象的年龄一旦超过 24 小时，两路中继同时死光，`hasTurn` 照样 `true`。
+- `expiry` 落在过去还会让前端那份内存缓存彻底失效（续期判断永远不成立），
+  **每建一条 PeerConnection 都真发一次 HTTP**。
+
+**怎么修（按重要性排）：**
+
+1. **把 `/api/` 排除出缓存规则**，这是根治。Cloudflare 侧：Caching → Cache Rules 新建一条
+   `URI Path starts with /api/` → **Bypass cache**，并把它排在那条 "Cache Everything" 的**前面**
+   （规则是从上往下匹配的，顺序错了等于没加）。nginx 侧：确认 `/api/` 那个 location 里没有
+   `proxy_cache`，或者显式 `proxy_no_cache 1; proxy_cache_bypass 1;`。
+2. 代码里已经加了两道闸，但**别拿它们当修复**：
+   - 后端多发了 `CDN-Cache-Control` 和 `Cloudflare-CDN-Cache-Control`（优先级高于 `Cache-Control`，
+     但 Edge TTL 被设成固定值时一样会被无视）；
+   - 前端请求带一个**分钟桶**参数 `?t=<floor(now/60000)>`（见 `src/services/netplay.ts` 的 `iceBucket`），
+     把陈旧上限钉死在 60 秒；
+   - 前端还会检查「拿到的凭证是不是已经过期」，是就把 `hasTurn` 拉回 `false`、控制台打一行
+     指得出原因的警告、并在 60 秒后重试（`npm run test:ice-config` 钉住这几条）。
+3. 顺手把 `TURN_TTL_SEC` 从 3600 调到 `43200`（12 小时）—— 让自建这路和 CF 那路的
+   抗缓存能力对齐，别再出现「CF 还活着、自建早死了」这种半死不活、最难查的状态。
+   凭证仍然是短期的、仍然不出服务器，只是别把有效期设得比任何一层缓存都短。
+
+### coturn 本身到底通不通（和上面那条分开查）
+
+上面那个是**凭证**的问题，coturn 的配置可能一点毛病没有。要单独验它，
+**一定要用一份新鲜的凭证**（带 query 的那个 URL 取），否则你验的还是 401：
+
+```bash
+curl -s "https://你的域名/api/netplay/ice?cb=$RANDOM" | jq '.iceServers[] | select(.username)'
+```
+
+把其中**自建那一条**（`turn:turn.你的域名:...`）单独贴到 <https://icetest.info>，
+只留它、把别的都删掉，然后看有没有 `relay` 候选：
+
+- 出 `relay` → coturn 是好的，问题纯粹在凭证/缓存。
+- 一个 `relay` 都没有 → 按这个顺序查：
+  1. `docker logs coturn | grep -i "401\|check_stun_auth\|realm"` —— 满屏 401 = 凭证时间戳过期（回上一节），
+     `realm` 不匹配 = `turnserver.conf` 的 `realm` 和签发时用的不一致；
+  2. `static-auth-secret` 和 `server/.env` 的 `TURN_SECRET` **必须一模一样**（末尾多个空格/换行也不行）；
+  3. **中继端口段 `49160-49200/udp` 有没有放行** —— 这是最常见的一条，握手能过、一传数据就卡死；
+  4. `external-ip` 填的是不是真的公网 IP（云服务器上是 NAT 的话必须显式填）；
+  5. `turns:5349` 那条要证书对得上域名，Let's Encrypt 续期后记得让 coturn 重新加载。
+
 ## 五、验证
 
 ```bash

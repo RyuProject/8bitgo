@@ -59,8 +59,9 @@ import { matchArcadeHack, type ArcadeHack } from '@/data/arcadeHacks'
  * 玩家看到的就是「Error loading EmulatorJS runtime」。本地有核心，这条路不会走。
  */
 export { EJS_PATH } from '../paths'
-import { EJS_PATH, isDiscPlatform } from '../paths'
-import { applyTuning, sizeOfTrack, tuningFor } from '../videoTuning'
+import { EJS_PATH, isDiscPlatform, isSelfDownloadPlatform } from '../paths'
+import { applyTuning, sizeOfTrack, tuningFor, usableVideoSize } from '../videoTuning'
+import { findLayoutOption, isDualScreen, isWideBox, parseCoreOptionsText, preferredLayout, showsTouchScreen, type LayoutOption } from '../dualScreen'
 
 /**
  * 站点语言 → EmulatorJS 自带的界面语言包（data/localization/*.json）。
@@ -407,6 +408,13 @@ const FRAME_HTML = `<!doctype html>
   */
   html[data-stage="monitor"] .ejs_virtualGamepad_parent { display: none !important; }
   html[data-stage="play"] .ejs_parent { touch-action: none; }
+  /*
+    引擎自带的底栏（播放 / 存读档 / 金手指 / 设置 / 音量 / 全屏…）整条藏掉（09-07 用户拍板）。
+    播放器自己的工具栏现在叠在画面底部、自动隐藏，两条叠在同一个位置会撞在一起。
+    代价：EJS 设置菜单里的画面滤镜 / 加速 / 存档槽位、重启、金手指暂时没有入口 —— 后续按需补到
+    EmulatorTools 里。只藏不删：引擎内部还引用着这些元素（elements.menu），删了会抛。
+  */
+  .ejs_menu_bar { display: none !important; }
 </style>
 </head>
 <body><div id="game"></div></body>
@@ -438,6 +446,14 @@ interface EjsGameManager {
   saveSaveFiles?: () => void
   /** Emscripten 的虚拟文件系统。RomData 要往里塞一个 .dat，见 installRomDataInjector */
   FS?: { writeFile: (path: string, data: string | Uint8Array) => void }
+  /**
+   * 核心自报的选项表（就是核心的 retro_core_options_v2），新版本才有 ——
+   * 引擎自己的设置菜单就是拿它建的。屏幕布局那一项从这里认（见 dualScreen.ts）。
+   * 拿不到时返回 null；老一点的构建连这个 cwrap 都没有，所以调用前要判空。
+   */
+  getCoreOptionsJSON?: () => { options?: unknown[] } | null
+  /** 老格式：一行一项的字符串（`key|default; a|b|c`）。只在 JSON 那个拿不到时兜底 */
+  getCoreOptions?: () => string
 }
 /**
  * 「这台机器本身就是靠戳屏幕玩的」—— 画布必须收得到指针事件，
@@ -487,6 +503,24 @@ interface EjsEmulator {
   virtualGamepad?: HTMLElement
   /** 读一项设置的当前值（玩家自己关掉虚拟手柄时是 'disabled'） */
   getSettingValue?: (key: string) => string | undefined
+  /**
+   * **玩家自己存下来的**那份设置。和 getSettingValue 不是一回事：
+   * `getSettingValue(k)` 读的是 `allSettings[k] || settings[k]`，而 allSettings 里
+   * 混着「引擎按 EJS_defaultOptions 套上去的默认」—— 两者分不开。
+   * 而这一格只有走过 changeSettingOption(k, v) （第三参不为 true）才会写，
+   * 也正是 saveSettings() 落进 localStorage 的那一份，所以它等于
+   * **「玩家在这款游戏上明确选过什么」**。屏幕布局要靠它区分「玩家选的」和
+   * 「我们按容器方向给的默认」，见 setupScreenLayout。
+   */
+  settings?: Record<string, string>
+  /**
+   * 改一项设置。第三个参数是关键：
+   *   `changeSettingOption(k, v)`       → 写 settings，会被 saveSettings 持久化 = 玩家的选择
+   *   `changeSettingOption(k, v, true)` → 只写 allSettings，**不持久化** = 一个默认值
+   * 两条都会通知菜单里那一行 → menuOptionChanged → gameManager.setVariable(k, v)，
+   * 也就是说两条都立刻对核心生效，区别只在「下一局还算不算数」。
+   */
+  changeSettingOption?: (key: string, value: string, isDefault?: boolean) => void
 }
 
 /**
@@ -740,7 +774,17 @@ function installNetTap(
  *
  * 必须在 loader.js 之前装好，否则 netplay 拿到的是原生构造函数。
  */
-function instrumentRtc(win: Window & Record<string, unknown>, onState?: (s: RTCPeerConnectionState) => void) {
+function instrumentRtc(
+  win: Window & Record<string, unknown>,
+  onState?: (s: RTCPeerConnectionState) => void,
+  /**
+   * 这一局的源是不是两块屏拼出来的（NDS）。像素画那一档要按单块屏判，
+   * 见 ../videoTuning.ts 的 dualScreen —— 不传的话 NDS 的 256×384 会被当成大源，
+   * 访客那边一紧张就把两块屏各缩成 128×96。
+   * 从参数进来而不是读闭包：这个函数在模块层，拿不到 mount 的 options。
+   */
+  dualScreen = false,
+) {
   const Native = win.RTCPeerConnection as typeof RTCPeerConnection | undefined
   if (typeof Native !== 'function') return
 
@@ -755,7 +799,7 @@ function instrumentRtc(win: Window & Record<string, unknown>, onState?: (s: RTCP
    */
   const tuneVideo = (sender: RTCRtpSender, track: MediaStreamTrack) => {
     const { width, height } = sizeOfTrack(track)
-    applyTuning(sender, tuningFor({ width, height, fps: VIDEO_MAX_FPS, minBitrate: NETPLAY_MIN_BITRATE }))
+    applyTuning(sender, tuningFor({ width, height, fps: VIDEO_MAX_FPS, minBitrate: NETPLAY_MIN_BITRATE, dualScreen }))
   }
 
   const Wrapped = function (this: unknown, config?: RTCConfiguration, ...rest: unknown[]) {
@@ -795,7 +839,7 @@ function instrumentRtc(win: Window & Record<string, unknown>, onState?: (s: RTCP
       if (track.kind === 'video') {
         const { width, height } = sizeOfTrack(track)
         try {
-          track.contentHint = tuningFor({ width, height, fps: VIDEO_MAX_FPS, minBitrate: NETPLAY_MIN_BITRATE }).contentHint
+          track.contentHint = tuningFor({ width, height, fps: VIDEO_MAX_FPS, minBitrate: NETPLAY_MIN_BITRATE, dualScreen }).contentHint
         } catch {
           /* 老浏览器没有 contentHint */
         }
@@ -1547,13 +1591,195 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /** 现在显示着没有 */
   let padShown = false
 
-  /** 把两个「屏幕上有什么」的能力同步给播放器：开局提示和工具栏开关都看它们 */
-  const syncTouchCaps = (pointer: boolean) => {
+  /**
+   * 这台机器本身就是靠戳屏幕玩的（POINTER_FIRST 的平台 **且** 确实是触屏设备）。
+   * applyTouchInput 里定，之后 syncTouchCaps 和布局那一套都读它。
+   */
+  let pointerFirst = false
+
+  /**
+   * 把两个「屏幕上有什么」的能力同步给播放器：开局提示和工具栏开关都看它们。
+   *
+   * `enginePointer` 不能只看平台。同一台 NDS，布局切到「只有上屏」时下屏
+   * 整块不画 —— 画面上再也没有可戳的东西了，这时候还声明 enginePointer，
+   * 开局提示就会理直气壮地叫玩家「点画面下方那块屏幕」，而那儿什么都没有。
+   * 所以这一位是「平台是触屏」和「当前布局真把触摸屏画出来了」的与。
+   */
+  const syncTouchCaps = () => {
     if (padShown) caps.add('enginePad')
     else caps.delete('enginePad')
-    if (pointer) caps.add('enginePointer')
+    if (pointerFirst && showsTouchScreen(layoutValue)) caps.add('enginePointer')
     else caps.delete('enginePointer')
     options.onCaps?.(caps)
+  }
+
+  /* ---------------- 双屏布局（见 dualScreen.ts） ---------------- */
+
+  /** 核心里认出来的布局项。null = 这个核心没这回事，整块功能不存在 */
+  let layoutOpt: LayoutOption | null = null
+  /** 现在生效的布局值（核心自报取值里的原样字符串）。非双屏平台恒为空串 */
+  let layoutValue = ''
+  /** 上一次报给播放器的画面几何。没量到过就是 null */
+  let geometry: { width: number; height: number } | null = null
+  /** 切完布局之后盯几何的那个定时器 */
+  let geometryWatch = 0
+  /**
+   * 因为切到「只有上屏」而被我们强行放出来的按键。
+   * 切回看得见下屏的布局时要还原成收起 —— 不还原的话，玩家只是去看了一眼上屏，
+   * 回来发现按键永久压在他的触摸屏上了，而他并没有做过这个选择。
+   */
+  let padForcedByLayout = false
+
+  /** 画布的真实像素尺寸 = 核心 av_info 的几何。太小的当没量到（理由同 usableVideoSize） */
+  const readGeometry = (emu: EjsEmulator | undefined) => {
+    const c = emu?.canvas
+    const width = Number(c?.width) || 0
+    const height = Number(c?.height) || 0
+    return usableVideoSize(width, height) ? { width, height } : null
+  }
+
+  /** 量到**变化**才报。返回「这一次报了没有」，盯几何那个定时器靠它决定停不停 */
+  const reportGeometry = (emu: EjsEmulator | undefined) => {
+    const g = readGeometry(emu)
+    if (!g) return false
+    if (geometry && geometry.width === g.width && geometry.height === g.height) return false
+    geometry = g
+    options.onGeometry?.(g)
+    return true
+  }
+
+  /** 切完布局盯几何盯多久 / 多密。见 watchGeometry */
+  const GEOMETRY_WATCH_MS = 3000
+  const GEOMETRY_TICK_MS = 120
+
+  /**
+   * 切完布局之后盯一会儿画面几何。
+   *
+   * 为什么是盯而不是查表：换布局是把核心的变量改掉（gameManager.setVariable →
+   * ejs_set_variable），核心要在**下一次 retro_run 里读到 variables_updated**
+   * 才重算几何、再经 SET_SYSTEM_AV_INFO 把画布尺寸改过来 —— 这一步既没有事件
+   * 也不是同步的。而混合布局的比例还取决于我们不读的另外几项
+   * （melonds_hybrid_small_screen 之类），查表必错。所以一律等它变，量到了才报。
+   *
+   * 有上限：核心万一根本不认这一项（换了个核心、key 对得上但语义不同），
+   * 几何永远不会变 —— 那就让容器停在上一个**正确**的比例，别留一个常驻定时器
+   * 在那儿空转（这个仓库为「玩就是播」的常驻开销付过一次学费，见 play_perf 记忆）。
+   */
+  const watchGeometry = () => {
+    if (geometryWatch) window.clearInterval(geometryWatch)
+    const until = Date.now() + GEOMETRY_WATCH_MS
+    geometryWatch = window.setInterval(() => {
+      if (destroyed || reportGeometry(emuOf()) || Date.now() > until) {
+        window.clearInterval(geometryWatch)
+        geometryWatch = 0
+      }
+    }, GEOMETRY_TICK_MS)
+  }
+
+  /**
+   * 布局变了之后把「屏幕上有什么」重新算一遍。
+   *
+   * ⚠️ 这是这一整块里最要紧的一步，别把它省成「切完刷一下 UI」。
+   * NDS 的触摸屏是下面那块，`Top Only` 把它整块藏掉；而指针优先的平台默认是
+   * **收起引擎那套按键**的（见 POINTER_FIRST）。两件事叠起来就是：玩家一切到
+   * 「只有上屏」，这一局画面点不到、按键收着、手机上又没有键盘 —— 一个能按的
+   * 东西都没有，而且全程不会有任何报错。所以这里在**藏掉触摸屏的同时**把按键补上。
+   */
+  const syncLayoutInput = () => {
+    const touchVisible = showsTouchScreen(layoutValue)
+    if (pointerFirst && !touchVisible && !padShown && padAvailable) {
+      padForcedByLayout = true
+      setEnginePad(true)
+      return
+    }
+    if (pointerFirst && touchVisible && padForcedByLayout) {
+      padForcedByLayout = false
+      setEnginePad(false)
+      return
+    }
+    syncTouchCaps()
+  }
+
+  /**
+   * 换布局。`byPlayer` 决定要不要记住：
+   *   true  玩家在工具栏里点的 → `changeSettingOption(k, v)`，引擎会持久化，下一局照旧
+   *   false 我们按容器方向给的默认 → 第三参传 true，**只对这一局生效，不落盘**
+   *
+   * 为什么这个区分非做不可：默认值是按**当前容器方向**算的（桌面给并排、
+   * 手机竖屏给上下叠）。要是把它也持久化，玩家在电脑上开过一次的游戏，
+   * 到手机上就永远是并排 —— 两块屏各缩成一条，比不做这个功能还糟。
+   * 引擎那个第三参数的语义正好就是这件事，不用我们另建一套存储。
+   */
+  const applyLayout = (value: string, byPlayer: boolean) => {
+    const emu = emuOf()
+    if (!emu || !layoutOpt || !layoutOpt.values.includes(value)) return
+    layoutValue = value
+    try {
+      emu.changeSettingOption?.(layoutOpt.key, value, byPlayer ? undefined : true)
+    } catch (e) {
+      console.warn('[emulatorjs] 换屏幕布局失败：', e)
+    }
+    options.onScreenLayout?.({ key: layoutOpt.key, values: layoutOpt.values, current: value })
+    syncLayoutInput()
+    watchGeometry()
+  }
+
+  /**
+   * 开局后把画面几何报出去，并（双屏机型）把屏幕布局摆正。
+   *
+   * 几何是**所有平台**都报的：播放器的容器比例本来靠查表，查表给的是 CRT 年代的
+   * 显示比例，对单屏机型仍然以表为准（见 screenAspect.ts 的注释），
+   * 但报上去没坏处 —— 那边自己挑用不用。
+   *
+   * 布局只对双屏机型做，而且**只在核心自报的取值里挑**。挑不出来（换了个核心、
+   * 取值一个也归不了类）就什么都不动，让核心保持它自己的默认 ——
+   * 宁可没有这个功能，也不要按猜出来的字符串去改一个我们不认识的选项。
+   */
+  const setupScreenLayout = (win: Window & Record<string, unknown>) => {
+    const emu = win.EJS_emulator as EjsEmulator | undefined
+    if (!emu) return
+    reportGeometry(emu)
+    if (!isDualScreen(options.platform)) return
+
+    let found: LayoutOption | null = null
+    try {
+      const gm = emu.gameManager
+      found = findLayoutOption(gm?.getCoreOptionsJSON?.() ?? null)
+      // JSON 那条拿不到就退回老格式的文本（引擎自己也是这么兜的）
+      if (!found && typeof gm?.getCoreOptions === 'function') {
+        found = findLayoutOption(parseCoreOptionsText(gm.getCoreOptions()))
+      }
+    } catch (e) {
+      console.warn('[emulatorjs] 读核心选项失败，屏幕布局这块跳过：', e)
+    }
+    layoutOpt = found
+    if (!layoutOpt) {
+      console.info('[emulatorjs] 核心没报出屏幕布局那一项，不画布局 UI')
+      return
+    }
+
+    /*
+      「玩家自己选过」和「引擎/核心的默认」必须分开，判据是 emu.settings ——
+      只有 changeSettingOption(k, v) （第三参不为 true）才会写那一格，也正是
+      saveSettings 落盘的那一份。allSettings 里混着默认值，getSettingValue 分不开。
+    */
+    const chosen = emu.settings?.[layoutOpt.key]
+    const playerChose = typeof chosen === 'string' && layoutOpt.values.includes(chosen)
+    layoutValue = playerChose ? chosen : layoutOpt.current || layoutOpt.fallback || layoutOpt.values[0]
+
+    if (!playerChose) {
+      // 按**引擎容器**的方向定默认，不是按窗口 —— 手机竖屏的游玩布局里
+      // 容器是竖的，而同一台手机横过来（或桌面）容器是宽的，两者要给不同的布局
+      const box = emu.elements?.parent?.getBoundingClientRect()
+      const want = preferredLayout(layoutOpt.values, isWideBox(box?.width ?? 0, box?.height ?? 0))
+      if (want && want !== layoutValue) {
+        applyLayout(want, false)
+        return
+      }
+    }
+    options.onScreenLayout?.({ key: layoutOpt.key, values: layoutOpt.values, current: layoutValue })
+    syncLayoutInput()
+    watchGeometry()
   }
 
   /**
@@ -1670,7 +1896,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (!emu.isMobile && !emu.hasTouchScreen && !coarse) return
 
     // 这台机器本身就是靠戳屏幕玩的 → 画布必须收得到指针事件
-    const pointerFirst = POINTER_FIRST.has(options.platform)
+    pointerFirst = POINTER_FIRST.has(options.platform)
     if (pointerFirst) setCanvasPointer(emu, true)
 
     /*
@@ -1695,7 +1921,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     const settingOff = emu.getSettingValue?.('virtual-gamepad') === 'disabled'
     padShown = padAvailable && !pointerFirst && !settingOff
     if (padAvailable) emu.toggleVirtualGamepad?.(padShown)
-    syncTouchCaps(pointerFirst)
+    syncTouchCaps()
 
     // 播放器可能在开局前就报过场合（见 setStageMode），到这儿才有稳定的 <html> 可写
     applyStageMode()
@@ -1721,7 +1947,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     emu.touch = true
     emu.toggleVirtualGamepad?.(show)
     padShown = show
-    syncTouchCaps(caps.has('enginePointer'))
+    syncTouchCaps()
     refreshPadMetrics()
   }
 
@@ -1742,6 +1968,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     options.onStart?.()
     refineCaps()
     applyTouchInput(win)
+    setupScreenLayout(win)
     /*
       把焦点交给 iframe —— 手柄和键盘都指着它。
 
@@ -1820,7 +2047,43 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
          * 光盘平台（PS1）：接管下载，为的是能缓存、能提前告诉玩家要下多少
          * （见 prepareRemoteDiscRom 的说明）。和街机那条互斥 —— 一个平台不会同时是两者。
          */
-        if (!isFile && isDiscPlatform(options.platform)) {
+        if (!isFile && isSelfDownloadPlatform(options.platform) && !isDiscPlatform(options.platform)) {
+          /*
+            自己下载的**卡带**平台（目前只有 NDS，见 paths.ts 的 SELF_DOWNLOAD_PLATFORMS）。
+
+            和光盘那条走的是同一个 prepareRemoteDiscRom，但**失败处理刻意不同**：
+            光盘平台没得选（几百 MB 交给引擎的单条 XHR 本来就跑不完），失败就得报错；
+            NDS 一直是引擎自己下的，所以这里失败只要**退回老路**就行 ——
+            玩家最坏也只是没吃到缓存和断点重传，而不是本来能玩的游戏突然打不开。
+            这一条的价值全在「不要为了一个优化把可玩性赔进去」，别改成往上报错。
+          */
+          try {
+            const prepared = await prepareRemoteDiscRom(
+              remoteGameUrl,
+              (p) => {
+                beat() // 下载在动就不算卡
+                options.onProgress?.(p)
+              },
+              prepareAbort.signal,
+            )
+            if (destroyed) {
+              URL.revokeObjectURL(prepared.url)
+              return
+            }
+            preparedArcadeBlobUrl = prepared.url
+            gameUrl = prepared.url
+            /*
+              名字必须留住原始扩展名：EmulatorJS 是按扩展名认容器的，melonDS 的
+              core.json 写的是 extensions:["nds"]。blob: 地址本身不带扩展名，
+              喂错名字核心会当成裸镜像去解析（理由同 discNameFor 的注释）。
+            */
+            engineGameName = discNameFor(remoteGameUrl, options.gameName)
+          } catch (error) {
+            // 真的被取消了（换游戏 / 退出播放器）就到此为止，别接着往下开局
+            if (destroyed || prepareAbort.signal.aborted) return
+            console.warn('[emulatorjs] 自己下载 ROM 失败，改让引擎自己下：', error)
+          }
+        } else if (!isFile && isDiscPlatform(options.platform)) {
           const prepared = await prepareRemoteDiscRom(
             remoteGameUrl,
             (p) => {
@@ -1929,7 +2192,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         if (romData) {
           const datPath = `/${engineGameName.replace(/\.[^.]*$/, '')}.dat`
           installRomDataInjector(win, datPath, `${romData}\n`, (msg) => {
-            if (!destroyed) options.onError?.(fmt(rt.ejsRomDataFailed, { msg }))
+            /*
+              写失败**不拦着开局**（和上面 installRomDataInjector 的注释一致）：没了改版 dat，
+              核心还能按原始 romset 试一把，比直接红字强。以前这里走 onError —— 而 onReady 之后的
+              onError 等于拆掉这一局（第一轮体检的铁律），一个可选的补丁没写进去就把游戏关了。
+              真缺文件的话核心自己会报「缺 xxx」，那条走 errorTap，比这里更准。
+            */
+            if (!destroyed) console.warn('[emulatorjs] RomData 没写进虚拟文件系统，按原始 romset 继续：', fmt(rt.ejsRomDataFailed, { msg }))
           })
         }
 
@@ -1970,7 +2239,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           // 必须在 loader.js 之前装，否则 netplay 拿到的是原生构造函数 ——
           // 也正因为「之后再装就来不及」，这里不管当下有没有联机会话都装上：
           // 玩到一半点「联机匹配」的那一路同样要靠它。回调读的是当前的 netplay。
-          instrumentRtc(win, (state) => netplay?.onLinkState?.(state))
+          instrumentRtc(win, (state) => netplay?.onLinkState?.(state), isDualScreen(options.platform))
         }
         if (destroyed) return
         // 清掉旧时代缓存的坏核心（见 purgePoisonedEngineCache 的注释），
@@ -2012,6 +2281,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           options.onError?.(fmt(rt.ejsDiscDownloadFailed, { msg: message }))
           return
         }
+        // 给运维看的细节进控制台；红字只说玩家能理解的那句
+        console.warn(`[emulatorjs] failed to load runtime from ${EJS_PATH} — check the network or set VITE_EJS_PATH to a self-hosted copy`)
         options.onError?.(fmt(rt.ejsLoadFailed, { path: EJS_PATH }))
       }
     })()
@@ -2029,6 +2300,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     window.clearInterval(stateTimer)
     window.clearInterval(startWatch)
     window.clearInterval(saveFlushTimer)
+    // 盯几何那个是**有上限**的短定时器，正常自己会停；这里兜一道，
+    // 免得玩家在切完布局那 3 秒里退出播放器，留一个跑在已销毁 iframe 上的回调
+    window.clearInterval(geometryWatch)
+    geometryWatch = 0
     document.removeEventListener('visibilitychange', onVisibility)
     window.removeEventListener('pagehide', flushSaveFiles)
     if (flushState) {
@@ -2089,6 +2364,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     focus: () => focusFrame(iframe),
     gamepads: () => frameGamepads(iframe),
     setEnginePad,
+    setScreenLayout: (value: string) => applyLayout(value, true),
     setStageMode,
     setPaused(next: boolean) {
       const emu = emuOf()

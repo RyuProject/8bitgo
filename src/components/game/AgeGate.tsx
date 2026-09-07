@@ -164,6 +164,9 @@ interface AccessResponse {
   reason?: Reason | null
 }
 
+/** 非成人游戏的 access 接口失败时自动再问几次（不含第一次）；成人游戏走本地结论，不重试 */
+const AUTO_RETRIES = 2
+
 function isReason(v: unknown): v is Reason {
   return v === 'login' || v === 'birthDate' || v === 'underage'
 }
@@ -227,20 +230,40 @@ export function GameAgeGuard({ slug, markedAdult, backdrop, loginAction, childre
     }
 
     let cancelled = false
+    let retryTimer = 0
     // 已经放行的播放器不因为一次复查就被卸载（玩着玩着在顶栏登录了也一样）——
     // 只有结论变严了才收回去。换了游戏则必须回到 checking。
     setAccess((prev) => (prev.slug === slug && prev.status === 'open' ? prev : { slug, status: 'checking' }))
-    api
-      .get<AccessResponse>(`/api/games/${encodeURIComponent(slug)}/access`)
-      .then((r) => {
-        if (!cancelled) setAccess({ slug, status: verdictOf(r, markedAdult, account) })
-      })
-      .catch(() => {
-        // 详情已标成人时不能因为接口失败就露出播放器，按本地账号状态先拦着
-        if (!cancelled) setAccess({ slug, status: markedAdult ? localVerdict(account) : 'error' })
-      })
+    const ask = (tries: number) => {
+      api
+        .get<AccessResponse>(`/api/games/${encodeURIComponent(slug)}/access`)
+        .then((r) => {
+          if (!cancelled) setAccess({ slug, status: verdictOf(r, markedAdult, account) })
+        })
+        .catch(() => {
+          if (cancelled) return
+          // 详情已标成人时不能因为接口失败就露出播放器，按本地账号状态先拦着
+          if (markedAdult) {
+            setAccess({ slug, status: localVerdict(account) })
+            return
+          }
+          /*
+            非成人游戏：接口失败绝大多数是网络抖一下（切基站、弱网超时）。以前一次失败就亮
+            「为避免误放行，播放器尚未启动」+ 重试按钮 —— 玩家点开一款普通游戏却要先手动重试一次。
+            现在自己再问两次（0.8s / 2s）才认输；仍然**不放行**：详情可能是 CDN 旧缓存，
+            而这款游戏后来被标成了成人，这道门的意义就在这一刻（见 project 记忆「成人内容年龄门」）。
+          */
+          if (tries < AUTO_RETRIES) {
+            retryTimer = window.setTimeout(() => ask(tries + 1), tries === 0 ? 800 : 2000)
+            return
+          }
+          setAccess({ slug, status: 'error' })
+        })
+    }
+    ask(0)
     return () => {
       cancelled = true
+      window.clearTimeout(retryTimer)
     }
   }, [slug, markedAdult, attempt, userId, userBirthDate])
 

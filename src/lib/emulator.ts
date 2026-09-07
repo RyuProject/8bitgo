@@ -1,9 +1,18 @@
 /**
  * 播放器相关的通用小工具。运行时（EmulatorJS / Ruffle）的挂载逻辑见 src/runtimes/。
  */
-import { getT } from '@/services/i18n'
+import { getT, fmt } from '@/services/i18n'
 import type { PlatformId } from '@/types'
-import { EJS_KEYS } from './keymapData'
+import {
+  ARCADE_FIGHTER_BUTTONS,
+  ARCADE_GENERIC_BUTTONS,
+  EJS_INDEX,
+  EJS_KEY_BY_ID,
+  EJS_PLATFORM_BUTTONS,
+  PASSTHROUGH_RUNTIMES,
+  QUICK_SAVE_RUNTIMES,
+  type EjsButton,
+} from './keymapData'
 import { bindingOf, getPadKeys, padKeyFor, padKeyLabel, type PadAction, type Seat } from '@/services/padKeys'
 export { EJS_PATH, RUFFLE_PATH } from '@/emulator'
 
@@ -42,20 +51,26 @@ export function formatSpeed(bytesPerSecond: number): string {
  * 对别的全是错的，而且是**看起来很像真的**那种错：
  *
  *   · **红白机 / GB** 根本没有 X/Y/L/R 这四个键，摆出来玩家会去按，按了没反应；
- *   · **街机**（拳皇、街霸）是六个拳脚键，不是手柄的 ABXY —— 玩家真正想知道的是
- *     「哪个键是轻拳」，而表上写着「A」对他毫无用处；
- *   · **DOS / Flash / J2ME** 压根不经过手柄映射，键盘是直接给游戏的，
- *     键位由游戏自己定（毁灭战士按 Ctrl 开枪，那是游戏的事，不是我们的）——
- *     给它摆一张手柄表是纯粹的误导；
- *   · **世嘉MD** 是 A/B/C 三键，不是 A/B/X/Y。
+ *   · **街机**在现实里是几十种按键数不同的板子（拳皇四键、街霸六键、吃豆人只有摇杆），
+ *     摆一张固定的「三拳三脚」对大多数游戏都是错的；
+ *   · **DOS / Flash / 第三方 HTML5** 压根不经过手柄映射，键盘是直接给游戏的，
+ *     键位由游戏自己定（毁灭战士按 Ctrl 开枪，那是游戏的事，不是我们的）；
+ *   · **J2ME** 相反 —— FreeJ2ME 的键盘映射是**固定**的（方向键 + 数字键 + 软键），
+ *     说成「游戏自己定」等于把已知的事推给玩家去猜；
+ *   · **PS2** 跑的是 Play!，EmulatorJS 那套键位一个字都传不进去（adapters/play.ts
+ *     里根本没有键位映射），摆出来是纯粹编的；
+ *   · **世嘉MD** 是 A/B/C（六键手柄再加 X/Y/Z 和 MODE），不是 A/B/X/Y。
  *
- * 表里的键位不是猜的，都对着引擎的源码核过（2026-09-04）：
- *   EmulatorJS  public/emulatorjs/emulator.min.js 的 defaultControllers
- *               （libretro 手柄下标：0=B 8=A 1=Y 9=X 2=Select 3=Start 10=L 11=R）
- *   jsnes       node_modules/jsnes/src/browser/keyboard.js 的 KEYS
+ * 表里的键位不是猜的，都对着引擎 / 核心的源码核过（2026-09-07）：
+ *   EmulatorJS  public/emulatorjs/emulator.min.js 的 defaultControllers（默认键）
+ *               + createControlSettingMenu（**每个平台有哪几颗键**，不在方案里的
+ *                 下标会被引擎从映射表里删掉，摆出来就是死键）
+ *   FBNeo       src/burner/libretro/retro_input.{cpp,h} 的 FIRE01..06 与 COL_TOP/BOTTOM
+ *   jsnes       services/padKeys.ts 的 DEFAULT_PAD_KEYS（玩家可改，读当前生效的那份）
  *   js-dos      adapters/jsdos.ts 的 DOS_PAD_MAP（那是**手柄**映射，键盘是直通的）
+ *   FreeJ2ME    public/j2me/src/key.js 的 codeMap
  *
- * ⚠️ 改任何一行之前先回去看那三处，别照着别的站抄。
+ * ⚠️ 改任何一行之前先跑 `npm run test:keymap` —— 它会拿 emulator.min.js 逐条核。
  */
 
 export interface KeymapRow {
@@ -63,48 +78,58 @@ export interface KeymapRow {
   key: string
 }
 
+/** 改键入口在哪儿。三档各有各的话要说，混成一句话就一定有一档是错的 */
+export type RebindKind =
+  /** 播放器底部工具条的 🎮 面板 —— **只有红白机**（EmulatorTools 里 NesKeyBinder 的条件） */
+  | 'ours'
+  /** 引擎自带的设置菜单（EmulatorJS 画面内那条工具条上的手柄图标 → Control Settings） */
+  | 'engine'
+  /** 改不了 */
+  | 'none'
+
 export interface KeymapInfo {
   rows: KeymapRow[]
-  /** 这一段要在表下面补一句什么（键盘直通、街机六键之类）。空串就不显示 */
+  /** 这一段要在表下面补一句什么（键盘直通、街机分板子之类）。空串就不显示 */
   note: string
-  /** 能不能在引擎自己的设置里改键 —— 只有 EmulatorJS 有这个菜单 */
-  customizable: boolean
+  rebind: RebindKind
+  /**
+   * 这一档支不支持站里的快速存 / 读档（F2 / F4）。
+   *
+   * ⚠️ 必须和 EmulatorTools 那句 `if (!caps.has('saveState')) return` 对得上：
+   * 快捷键只在运行时有 saveState 时才装。以前这张表**无条件**摆出 F2 / F4，
+   * 于是 DOS / Java / 第三方 HTML5 的「操作说明」整段只有两张卡、而且两张都是死键；
+   * Java 更糟 —— F2 在 FreeJ2ME 的 codeMap 里是右软键，按下去等于替玩家按了游戏的软键。
+   */
+  quickSave: boolean
+  /** 插手柄能不能自动识别 */
+  pad: boolean
+  /** 手机上有没有虚拟按键：'all' 全都有、'some' 只有认得的那些游戏有、'none' 没有 */
+  touch: 'none' | 'some' | 'all'
   /** 2P 键位。空 / 缺省就不显示第二组，也不显示「1P」那个小标题 */
   player2?: KeymapRow[]
   /** 2P 那一组下面补的话（小键盘、NumLock 这些前提条件） */
   player2Note?: string
 }
 
-/** 哪些平台有哪些键。没有的键不摆出来 —— 摆了玩家会去按 */
-const EJS_BUTTONS: Partial<Record<PlatformId, Array<[string, string]>>> = {
-  // 两键机：红白机、GB / GBC、万代 WonderSwan
-  nes: [['A', EJS_KEYS.a], ['B', EJS_KEYS.b]],
-  gb: [['A', EJS_KEYS.a], ['B', EJS_KEYS.b]],
-  gbc: [['A', EJS_KEYS.a], ['B', EJS_KEYS.b]],
-  ws: [['A', EJS_KEYS.a], ['B', EJS_KEYS.b]],
-  // 四键 + 肩键
-  snes: [['A', EJS_KEYS.a], ['B', EJS_KEYS.b], ['X', EJS_KEYS.x], ['Y', EJS_KEYS.y], ['L', EJS_KEYS.l], ['R', EJS_KEYS.r]],
-  gba: [['A', EJS_KEYS.a], ['B', EJS_KEYS.b], ['L', EJS_KEYS.l], ['R', EJS_KEYS.r]],
-  nds: [['A', EJS_KEYS.a], ['B', EJS_KEYS.b], ['X', EJS_KEYS.x], ['Y', EJS_KEYS.y], ['L', EJS_KEYS.l], ['R', EJS_KEYS.r]],
-  // 世嘉 MD 是 A/B/C 三键。核心把它们映到 libretro 的 Y/B/A 上
-  segaMD: [['A', EJS_KEYS.y], ['B', EJS_KEYS.b], ['C', EJS_KEYS.a], ['Start', EJS_KEYS.start]],
-  psx: [
-    ['○', EJS_KEYS.a], ['✕', EJS_KEYS.b], ['△', EJS_KEYS.x], ['□', EJS_KEYS.y],
-    ['L1', EJS_KEYS.l], ['R1', EJS_KEYS.r], ['L2', EJS_KEYS.l2], ['R2', EJS_KEYS.r2],
-  ],
-  n64: [['A', EJS_KEYS.a], ['B', EJS_KEYS.b], ['L', EJS_KEYS.l], ['R', EJS_KEYS.r], ['Z', EJS_KEYS.l2]],
-  // PS2 和 PS1 是同一套手柄按键（多的是两根摇杆和 L3/R3）。
-  // ⚠️ 键位由 Play! 自己定，不走 EmulatorJS 那套 —— 这张表只是**展示**给玩家看的，
-  // 改这里不会真的改掉按键映射（见 adapters/play.ts）。
-  ps2: [
-    ['○', EJS_KEYS.a], ['✕', EJS_KEYS.b], ['△', EJS_KEYS.x], ['□', EJS_KEYS.y],
-    ['L1', EJS_KEYS.l], ['R1', EJS_KEYS.r], ['L2', EJS_KEYS.l2], ['R2', EJS_KEYS.r2],
-  ],
+/* 名单本体在 keymapData.ts —— 那个文件不 import 任何东西，测试才能在 node 里直接核 */
+const QUICK_SAVE = new Set(QUICK_SAVE_RUNTIMES)
+const PASSTHROUGH = new Set(PASSTHROUGH_RUNTIMES)
+
+/** 一颗（或一组方向）按钮的默认键。一组会连起来显示成「↑ ↓ ← →」 */
+function keysOf(id: number | readonly number[]): string {
+  return Array.isArray(id)
+    ? (id as readonly number[]).map((i) => EJS_KEY_BY_ID[i] ?? '—').join(' ')
+    : (EJS_KEY_BY_ID[id as number] ?? '—')
 }
 
 export function getDefaultKeymap(runtimeId?: string, platform?: PlatformId): KeymapInfo {
   const t = getT()
-  const dpad: KeymapRow = { button: t.keymap.dpad, key: '↑ ↓ ← →' }
+  const quickSave = Boolean(runtimeId && QUICK_SAVE.has(runtimeId))
+  /** `#xxx` 是要翻译的行名（见 keymapData 的 EjsButton），其余是键名 / 符号，不用翻 */
+  const label = (name: string): string =>
+    name.startsWith('#') ? ((t.keymap as unknown as Record<string, string>)[name.slice(1)] ?? name.slice(1)) : name
+  const rowsOf = (buttons: readonly EjsButton[]): KeymapRow[] =>
+    buttons.map(([name, id]) => ({ button: label(name), key: keysOf(id) }))
 
   // 红白机实际跑的是 jsnes（见 config/emulators.ts 的扩展名覆盖表），它的键位和 EmulatorJS 不一样
   if (runtimeId === 'jsnes') {
@@ -118,7 +143,7 @@ export function getDefaultKeymap(runtimeId?: string, platform?: PlatformId): Key
     const map = getPadKeys()
 
     /** 一颗键的显示名。「右 Ctrl」和「小键盘」这两个词要按语言走，其余是键名不用翻 */
-    const label = (seat: Seat, action: PadAction): string => {
+    const keyLabel = (seat: Seat, action: PadAction): string => {
       const code = padKeyFor(bindingOf(seat, action), map)
       if (!code) return ''
       if (code === 'ControlRight') return t.keymap.rightCtrl
@@ -133,7 +158,7 @@ export function getDefaultKeymap(runtimeId?: string, platform?: PlatformId): Key
     const dpadOf = (seat: Seat): string => {
       const dirs: PadAction[] = ['up', 'down', 'left', 'right']
       const codes = dirs.map((d) => padKeyFor(bindingOf(seat, d), map))
-      if (codes.some((c) => !c)) return codes.map((c, i) => (c ? label(seat, dirs[i]) : '—')).join(' ')
+      if (codes.some((c) => !c)) return codes.map((c, i) => (c ? keyLabel(seat, dirs[i]) : '—')).join(' ')
       if (codes.every((c) => c.startsWith('Numpad'))) {
         return `${t.keymap.numpad} ${codes.map((c) => c.slice('Numpad'.length)).join(' ')}`
       }
@@ -144,60 +169,129 @@ export function getDefaultKeymap(runtimeId?: string, platform?: PlatformId): Key
     const seatRows = (seat: Seat): KeymapRow[] =>
       [
         { button: t.keymap.dpad, key: dpadOf(seat) },
-        { button: 'A', key: label(seat, 'a') },
-        { button: 'B', key: label(seat, 'b') },
-        { button: t.keymap.turboA, key: label(seat, 'turboA') },
-        { button: t.keymap.turboB, key: label(seat, 'turboB') },
-        { button: 'Start', key: label(seat, 'start') },
-        { button: 'Select', key: label(seat, 'select') },
+        { button: 'A', key: keyLabel(seat, 'a') },
+        { button: 'B', key: keyLabel(seat, 'b') },
+        { button: t.keymap.turboA, key: keyLabel(seat, 'turboA') },
+        { button: t.keymap.turboB, key: keyLabel(seat, 'turboB') },
+        { button: 'Start', key: keyLabel(seat, 'start') },
+        { button: 'Select', key: keyLabel(seat, 'select') },
       ].filter((r) => r.key)
 
     return {
       rows: seatRows(0),
       note: '',
-      customizable: true,
+      rebind: 'ours',
+      quickSave,
+      pad: true,
+      touch: 'all',
       player2: seatRows(1),
       player2Note: t.keymap.player2Note,
     }
   }
 
   /**
-   * 键盘直通的那几种：DOS、Flash、J2ME、以及第三方 HTML5 游戏页。
+   * 键盘直通的那几种：DOS、Flash、第三方 HTML5 游戏页。
    * 键位是游戏自己定的，我们给不出一张表 —— 与其编一张，不如说清楚去哪儿找。
+   *
+   * ⚠️ J2ME **不在**这一档：FreeJ2ME 的键盘映射是固定的，见下面那个分支。
    */
-  if (runtimeId === 'jsdos' || runtimeId === 'ruffle' || runtimeId === 'j2me' || runtimeId === 'html5') {
-    return { rows: [], note: t.keymap.passthrough, customizable: false }
-  }
-
-  // 街机：六个拳脚键，玩家要的是「哪个键是轻拳」，写 A/B/X/Y 对他没用
-  if (platform === 'arcade') {
+  if (runtimeId && PASSTHROUGH.has(runtimeId)) {
     return {
-      rows: [
-        dpad,
-        { button: t.keymap.punchL, key: EJS_KEYS.a },
-        { button: t.keymap.punchM, key: EJS_KEYS.x },
-        { button: t.keymap.punchH, key: EJS_KEYS.l },
-        { button: t.keymap.kickL, key: EJS_KEYS.b },
-        { button: t.keymap.kickM, key: EJS_KEYS.y },
-        { button: t.keymap.kickH, key: EJS_KEYS.r },
-        { button: t.keymap.coin, key: EJS_KEYS.select },
-        { button: 'Start', key: EJS_KEYS.start },
-      ],
-      note: t.keymap.arcadeNote,
-      customizable: true,
+      rows: [],
+      note: t.keymap.passthrough,
+      rebind: 'none',
+      quickSave,
+      // DOS 的手柄由 adapters/jsdos.ts 翻译成键盘（DOS_PAD_MAP）；Flash 那边没有手柄映射，
+      // 屏幕手柄也只画给键位表里认得的那些游戏（adapters/ruffle.ts 的 `if (keys)`）
+      pad: runtimeId === 'jsdos',
+      touch: runtimeId === 'ruffle' ? 'some' : runtimeId === 'jsdos' ? 'all' : 'none',
     }
   }
 
-  const buttons = (platform && EJS_BUTTONS[platform]) ?? [
-    ['A', EJS_KEYS.a], ['B', EJS_KEYS.b], ['X', EJS_KEYS.x], ['Y', EJS_KEYS.y], ['L', EJS_KEYS.l], ['R', EJS_KEYS.r],
+  /**
+   * J2ME：键位是 FreeJ2ME 固定死的，出处是 public/j2me/src/key.js 的 codeMap
+   * （我们自己的手柄映射 adapters/j2me.ts 的 J2ME_PAD_MAP 也是照着它来的）。
+   * 每颗键在游戏里是什么功能由游戏定，但**哪颗键对应手机上的哪个键**是确定的。
+   */
+  if (runtimeId === 'j2me') {
+    return {
+      rows: [
+        { button: t.keymap.dpad, key: '↑ ↓ ← →' },
+        { button: t.keymap.j2meConfirm, key: 'Enter' },
+        { button: t.keymap.j2meNum, key: '0 – 9' },
+        { button: t.keymap.j2meSoftL, key: 'F1' },
+        { button: t.keymap.j2meSoftR, key: 'F2' },
+      ],
+      note: t.keymap.j2meNote,
+      rebind: 'none',
+      quickSave,
+      pad: true,
+      // run.html 没有带 mobile=1，adapter 也没有 touchpad 能力 —— 手机上是真的没有按键
+      touch: 'none',
+    }
+  }
+
+  /** PS2：Play! 自带键位，EmulatorJS 那套传不进去（adapters/play.ts 里没有任何键位映射） */
+  if (runtimeId === 'play') {
+    return { rows: [], note: t.keymap.playNote, rebind: 'none', quickSave, pad: false, touch: 'none' }
+  }
+
+  /** NDS 的 webretro：键位、菜单、存读档全在 RetroArch 自己那套里（iframe 内按 F1） */
+  if (runtimeId === 'webretro') {
+    return { rows: [], note: t.keymap.retroarchNote, rebind: 'none', quickSave, pad: true, touch: 'none' }
+  }
+
+  /**
+   * 街机。
+   *
+   * 「街机」在我们这儿是一个平台，在现实里是几十种按键数完全不同的板子，
+   * 所以这里摆的是**板子上第几个按键落在哪颗键**（核心的通用映射），
+   * 拳皇的 A/B/C/D 就是 1~4，合金弹头只用 1/2/4，吃豆人一个都不用。
+   * 三拳三脚的六键格斗（街霸 II 这类）核心会自动换成另一套，写在 note 里。
+   */
+  if (platform === 'arcade') {
+    const f = ARCADE_FIGHTER_BUTTONS
+    return {
+      rows: [
+        { button: t.keymap.dpad, key: '↑ ↓ ← →' },
+        ...ARCADE_GENERIC_BUTTONS.map((id, i) => ({
+          button: fmt(t.keymap.arcadeBtn, { n: String(i + 1) }),
+          key: keysOf(id),
+        })),
+        { button: t.keymap.coin, key: keysOf(EJS_INDEX.select) },
+        { button: 'Start', key: keysOf(EJS_INDEX.start) },
+      ],
+      note: `${t.keymap.arcadeNote} ${fmt(t.keymap.arcadeFighter, {
+        pl: keysOf(f.punchL),
+        pm: keysOf(f.punchM),
+        ph: keysOf(f.punchH),
+        kl: keysOf(f.kickL),
+        km: keysOf(f.kickM),
+        kh: keysOf(f.kickH),
+      })}`,
+      rebind: 'engine',
+      quickSave,
+      pad: true,
+      touch: 'all',
+    }
+  }
+
+  /**
+   * 其余都是 EmulatorJS。没在表里的平台退回通用手柄那一套 ——
+   * 只可能是新加的平台，摆通用表总比摆错平台的表好。
+   */
+  const fallback: readonly EjsButton[] = [
+    ['#dpad', [4, 5, 6, 7]],
+    ['A', EJS_INDEX.a], ['B', EJS_INDEX.b], ['X', EJS_INDEX.x], ['Y', EJS_INDEX.y],
+    ['L', EJS_INDEX.l], ['R', EJS_INDEX.r],
+    ['Start', EJS_INDEX.start], ['Select', EJS_INDEX.select],
   ]
   return {
-    rows: [
-      dpad,
-      ...buttons.map(([button, key]) => ({ button, key })),
-      ...(platform === 'segaMD' ? [] : [{ button: 'Start', key: EJS_KEYS.start }, { button: 'Select', key: EJS_KEYS.select }]),
-    ],
+    rows: rowsOf((platform && EJS_PLATFORM_BUTTONS[platform]) ?? fallback),
     note: '',
-    customizable: true,
+    rebind: 'engine',
+    quickSave,
+    pad: true,
+    touch: 'all',
   }
 }

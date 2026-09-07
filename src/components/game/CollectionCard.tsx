@@ -138,15 +138,22 @@ function CoverGrid({ pool, priority, emptyLabel }: { pool: CoverGame[]; priority
  * 所以这里分三步：
  *   1. 新图先以我们自己的一个透明 <img> 挂在最上层，等它 **load 且 decode 完**（真画得出来了）
  *   2. 再给它淡入动画，压在旧的 GameCover 上
- *   3. 淡完把 cur 换成新游戏（GameCover 换成新图 —— 同一个 URL 已经解码过，第一帧就有），
- *      再多留一帧撤掉我们那张透明层
+ *   3. 淡完把 cur 换成新游戏，**等 GameCover 那张 <img> 自己报 load** 才撤我们的透明层
+ *      （兜底 1.5 秒，视频那一路没有 load 事件）
  * 全程旧图一直在底下，任何一帧都不会露出 #000。
  * 没有真封面（程序化渐变）的游戏不用等，渐变是即时画出来的，直接淡入。
+ *
+ * ⚠️ 换过图的格子 GameCover 必须 eager（见 GameCover 的 eager 注释）：
+ * 09-07 线上 KOF 合集十款游戏只剩一张封面、三格全黑 —— 就是换进来的 lazy <img> 换了 src 之后
+ * Safari 不下载（要等下一次滚动），200ms 定时一到透明层撤掉，底下是 #000。
+ * 轮播只在卡片进了视口才跑，所以换过图的格子 eager 不会多花一个字节。
  */
 function Tile({ game, priority, still }: { game: CoverGame; priority?: boolean; still: boolean }) {
   const [cur, setCur] = useState(game)
   /** 正在换进来的那一款，以及它走到哪一步了 */
   const [incoming, setIncoming] = useState<{ game: CoverGame; phase: 'loading' | 'fading' | 'settling' } | null>(null)
+  /** 这一格换过图没有。换过就说明卡片在视口里，底下那张 GameCover 从此 eager */
+  const [swapped, setSwapped] = useState(false)
 
   useEffect(() => {
     if (game.slug === cur.slug) {
@@ -159,27 +166,39 @@ function Tile({ game, priority, still }: { game: CoverGame; priority?: boolean; 
     setIncoming({ game, phase: game.cover ? 'loading' : 'fading' })
   }, [game, cur, incoming])
 
-  // 淡入播完 → cur 换成新的；再留一帧让 GameCover 那张把画面接住，才撤透明层
+  // 淡入播完 → cur 换成新的，进入 settling：等底下 GameCover 的图真到了再撤透明层
   useEffect(() => {
     if (incoming?.phase !== 'fading') return
     const t1 = window.setTimeout(() => {
       setCur(incoming.game)
+      setSwapped(true)
       setIncoming({ game: incoming.game, phase: 'settling' })
     }, FADE_MS + 50)
     return () => window.clearTimeout(t1)
   }, [incoming])
+  // settling 的兜底：程序化封面 / 视频没有 load 事件，1.5 秒后无论如何撤层（同 URL 早已解码，正常几帧就到）
   useEffect(() => {
     if (incoming?.phase !== 'settling') return
-    // 200ms：GameCover 那张 <img> 是 lazy 的，同 URL 已解码，一两帧就画出来了；多留几帧是给慢机器的余量
-    const t2 = window.setTimeout(() => setIncoming(null), 200)
+    const t2 = window.setTimeout(() => setIncoming(null), 1500)
     return () => window.clearTimeout(t2)
   }, [incoming])
+  const onCurLoaded = () => setIncoming((v) => (v?.phase === 'settling' ? null : v))
 
   const incomingSrc = incoming?.game.cover ? romUrlForKey(incoming.game.cover) : ''
 
   return (
     <div className="relative h-full w-full">
-      <GameCover game={cur} ratio="square" showTitle={false} showBadge={false} still={still} priority={priority && !incoming} className="h-full w-full" />
+      <GameCover
+        game={cur}
+        ratio="square"
+        showTitle={false}
+        showBadge={false}
+        still={still}
+        priority={priority && !incoming}
+        eager={swapped}
+        onImageLoad={onCurLoaded}
+        className="h-full w-full"
+      />
       {incoming && (
         <div
           key={incoming.game.slug}
@@ -210,6 +229,7 @@ function Tile({ game, priority, still }: { game: CoverGame; priority?: boolean; 
     </div>
   )
 }
+
 
 /**
  * 轮播状态：四个格子各自摆的是 pool 里第几款。超过 4 款才转，否则就是 [0,1,2,3] 不动。

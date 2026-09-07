@@ -8,6 +8,8 @@ import { io as client } from 'socket.io-client'
 // 宽限期和每 IP 上限都是模块加载时读的环境变量，所以要先设好再 import
 process.env.LIVE_RESUME_GRACE_MS = '400'
 process.env.LIVE_MAX_ROOMS_PER_IP = '3'
+// 观众上限压到 3（别的段最多同时 3 个观众）：验「自己的幽灵不能把自己挤出满员的房间」时才凑得满
+process.env.LIVE_MAX_VIEWERS = '3'
 // 主播切后台：300ms 后从大厅摘掉，零观众 700ms 后收房（线上默认 90s / 10min）
 process.env.LIVE_FROZEN_HIDE_MS = '300'
 process.env.LIVE_FROZEN_CLOSE_MS = '700'
@@ -173,15 +175,39 @@ const late = conn(); await once(late, 'connect')
 const tooLate = await call(late, 'resume-live', { roomId: room2, token: token2 })
 check('散场之后令牌作废', tooLate.err === 'not found')
 
-// 17. 每个 IP 的房间上限（测试里所有连接都是 127.0.0.1）
+/**
+ * 17. 每个 IP 的房间上限。
+ *
+ * 测试里直连过来的都是 127.0.0.1 —— 那是**内网地址**，说明反代没把真实 IP 传进来，
+ * 这种地址不计数（否则线上反代少一行 X-Forwarded-For，全站就只能同时开 3 间直播）。
+ * 要验上限得带一个公网 XFF：服务端信任 loopback 直连带来的 XFF（TRUST_PROXY 默认 loopback）。
+ * extraHeaders 在 Node 里只有 polling 传输一定带得上（test-presence.mjs 同款）。
+ */
+const local = []
+for (let i = 0; i < 4; i++) {
+  const s = conn(); await once(s, 'connect'); local.push(s)
+  const r = await call(s, 'go-live', { gameName: `local${i}`, gameSlug: `local${i}` })
+  check(`内网/回环地址不计每 IP 上限（第 ${i + 1} 间）`, !r.err, r.err || '')
+}
+for (const s of local) s.close()
+await new Promise((r) => setTimeout(r, 120))
+check('内网那几间断线后清掉', liveRooms().length === 0, `剩 ${liveRooms().length}`)
+
+const spamConn = () => client(url, { transports: ['polling'], forceNew: true, extraHeaders: { 'x-forwarded-for': '203.0.113.7' } })
 const spam = []
 const spamRes = []
 for (let i = 0; i < 4; i++) {
-  const s = conn(); await once(s, 'connect'); spam.push(s)
+  const s = spamConn(); await once(s, 'connect'); spam.push(s)
   spamRes.push(await call(s, 'go-live', { gameName: `spam${i}`, gameSlug: `spam${i}` }))
 }
-check('同一 IP 前三个房间能开', spamRes.slice(0, 3).every((r) => !r.err))
-check('同一 IP 第四个房间被拒', spamRes[3].err === 'too many rooms', spamRes[3].err || '')
+check('同一公网 IP 前三个房间能开', spamRes.slice(0, 3).every((r) => !r.err), spamRes.map((r) => r.err).join(','))
+check('同一公网 IP 第四个房间被拒', spamRes[3].err === 'too many rooms', spamRes[3].err || '')
+// 别的公网 IP 不受这个人的额度影响
+const other = client(url, { transports: ['polling'], forceNew: true, extraHeaders: { 'x-forwarded-for': '198.51.100.9' } })
+await once(other, 'connect')
+const otherRes = await call(other, 'go-live', { gameName: 'other', gameSlug: 'other' })
+check('另一个公网 IP 照样能开', !otherRes.err, otherRes.err || '')
+other.close()
 for (const s of spam) s.close()
 await new Promise((r) => setTimeout(r, 600))
 check('刷房的断线后按宽限期清掉', liveRooms().length === 0, `剩 ${liveRooms().length}`)
@@ -273,6 +299,87 @@ await awayLink
 check('主播掉线后房号作废', liveRoom(linkRoom).netplayRoomId === null)
 check('主播掉线要收回观众手里的入口', (await unlinked) === null, `实际 ${await unlinked}`)
 lv.close()
+
+/* ─────────── 观众换了 socket（信令重连）：凭 key 认人，不重建、不多算、不被自己挤出去 ─────────── */
+{
+  const rh = conn(); await once(rh, 'connect')
+  const rr = await call(rh, 'go-live', { gameName: 'Rebind', gameSlug: 'rebind', hostName: 'R' })
+  const rRoom = rr.data.roomId
+
+  // 第一次进来：普通 viewer-joined
+  const ra = conn(); await once(ra, 'connect')
+  const j1 = once(rh, 'viewer-joined')
+  const w1 = await call(ra, 'watch', { roomId: rRoom, key: 'key-A', reoffer: true })
+  check('带 key 进房', !w1.err && w1.data?.rebound === false, w1.err || '')
+  check('第一次进房是 viewer-joined、不带 replaces', (await j1).replaces === undefined)
+  const raId = ra.id
+
+  // 「重连」：新 socket、同一个 key、画面没断（reoffer=false）→ 主播收 viewer-rebound，人数不变
+  const ra2 = conn(); await once(ra2, 'connect')
+  let joinedInstead = false
+  rh.once('viewer-joined', () => { joinedInstead = true })
+  const rebound = once(rh, 'viewer-rebound')
+  const w2 = await call(ra2, 'watch', { roomId: rRoom, key: 'key-A', reoffer: false })
+  const rb = await rebound
+  check('同一 key 换 socket → ack 里 rebound=true', !w2.err && w2.data?.rebound === true, w2.err || '')
+  check('主播收到 viewer-rebound（旧 id → 新 id）', rb.from === raId && rb.to === ra2.id)
+  await new Promise((r) => setTimeout(r, 80))
+  check('换 socket 不走 viewer-joined（那会让主播重建连接）', !joinedInstead)
+  check('换 socket 不多算人数', liveRoom(rRoom).viewers === 1, `实际 ${liveRoom(rRoom).viewers}`)
+  // 旧 socket 已经不在房间里了：它发弹幕会被拒，而且它断开也不会让人数掉到 0
+  const oldChat = await call(ra, 'chat', { text: 'ghost' })
+  check('旧 socket 已被请出房间', oldChat.err === 'not in a room', oldChat.err || '')
+  let ghostLeft = false
+  rh.once('viewer-left', () => { ghostLeft = true })
+  ra.close()
+  await new Promise((r) => setTimeout(r, 120))
+  check('旧 socket 断开不发 viewer-left（那条连接已经改名换给新 socket 了）', !ghostLeft)
+  check('旧 socket 断开人数还是 1', liveRoom(rRoom).viewers === 1, `实际 ${liveRoom(rRoom).viewers}`)
+
+  // 再「重连」一次，但这次画面断了（reoffer=true）→ viewer-joined 带 replaces，让主播拆旧连接
+  const ra3 = conn(); await once(ra3, 'connect')
+  const j3 = once(rh, 'viewer-joined')
+  await call(ra3, 'watch', { roomId: rRoom, key: 'key-A', reoffer: true })
+  const jj = await j3
+  check('画面断了的重连走 viewer-joined 并带 replaces=旧 id', jj.viewerId === ra3.id && jj.replaces === ra2.id)
+  check('人数仍是 1', liveRoom(rRoom).viewers === 1, `实际 ${liveRoom(rRoom).viewers}`)
+
+  // 满员时自己的幽灵不能把自己挤出去：上限 3，B、C 进来凑满，A 再重连必须能进
+  const rbv = conn(); await once(rbv, 'connect')
+  const wb = await call(rbv, 'watch', { roomId: rRoom, key: 'key-B', reoffer: true })
+  const rcv = conn(); await once(rcv, 'connect')
+  const wc = await call(rcv, 'watch', { roomId: rRoom, key: 'key-C', reoffer: true })
+  check('第二、三个观众进来凑满', !wb.err && !wc.err && liveRoom(rRoom).viewers === 3, wb.err || wc.err || '')
+  const stranger2 = conn(); await once(stranger2, 'connect')
+  const wf = await call(stranger2, 'watch', { roomId: rRoom, key: 'key-D', reoffer: true })
+  check('第四个人被拒 full', wf.err === 'full', wf.err || '')
+  const ra4 = conn(); await once(ra4, 'connect')
+  const w4 = await call(ra4, 'watch', { roomId: rRoom, key: 'key-A', reoffer: false })
+  check('满员时同一 key 重连不算新人、不报 full', !w4.err && w4.data?.rebound === true, w4.err || '')
+  check('满员重连后人数还是 3', liveRoom(rRoom).viewers === 3, `实际 ${liveRoom(rRoom).viewers}`)
+
+  // 别人拿不到我的 key，但拿着别的 key 来就是普通新观众（这里满了所以被拒）
+  const wk = await call(stranger2, 'watch', { roomId: rRoom, key: 'key-E', reoffer: false })
+  check('不同的 key 就是新观众', wk.err === 'full', wk.err || '')
+
+  // 正常离开之后 key 也跟着清掉：再拿同一个 key 来就是第一次进房
+  ra4.close()
+  await new Promise((r) => setTimeout(r, 120))
+  check('离开后人数递减', liveRoom(rRoom).viewers === 2, `实际 ${liveRoom(rRoom).viewers}`)
+  const ra5 = conn(); await once(ra5, 'connect')
+  const j5 = once(rh, 'viewer-joined')
+  const w5 = await call(ra5, 'watch', { roomId: rRoom, key: 'key-A', reoffer: false })
+  check('走了再来同一个 key = 新进房（rebound=false）', !w5.err && w5.data?.rebound === false, w5.err || '')
+  check('新进房走 viewer-joined 且不带 replaces', (await j5).replaces === undefined)
+
+  // 不带 key 的老客户端：行为和以前完全一样（新 socket = 新观众）
+  const legacy = conn(); await once(legacy, 'connect')
+  const wl = await call(legacy, 'watch', { roomId: rRoom })
+  check('不带 key 的老客户端照旧（这里满了所以 full）', wl.err === 'full', wl.err || '')
+
+  for (const s of [rh, ra2, ra3, rbv, rcv, ra4, ra5, stranger2, legacy]) s.close()
+  await new Promise((r) => setTimeout(r, 120))
+}
 
 /* ─────────── 主播切后台：只有房主能报，观众要收到 ─────────── */
 {

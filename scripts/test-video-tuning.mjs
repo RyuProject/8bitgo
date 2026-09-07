@@ -46,6 +46,33 @@ for (const [name, [w, h]] of Object.entries(SOURCES)) {
   })
 }
 
+check('⚠️ NDS 双屏：总像素越线，但按单块屏算才对', () => {
+  // 上下叠 256×384 = 98304 > 320×240，不带 dualScreen 就会被当成大源
+  const stackedWrong = tuningFor({ width: 256, height: 384, fps: 30 })
+  assert.equal(stackedWrong.retro, false, '这一条是记录旧行为：不告诉它是双屏，它只能按总像素判')
+
+  for (const [name, w, h] of [['上下叠', 256, 384], ['并排', 512, 192]]) {
+    const t = tuningFor({ width: w, height: h, fps: 30, dualScreen: true })
+    assert.equal(t.retro, true, `${name} 应该按单块屏（${w * h / 2}）算成像素画`)
+    assert.equal(t.degradationPreference, 'maintain-resolution', `${name} 必须保分辨率`)
+    assert.equal(t.contentHint, 'detail')
+  }
+  // 单屏布局（256×192）本来就在线以下，带不带这一位都对
+  assert.equal(tuningFor({ width: 256, height: 192, fps: 30, dualScreen: true }).retro, true)
+  assert.equal(tuningFor({ width: 256, height: 192, fps: 30 }).retro, true)
+})
+
+check('dualScreen **不打折码率** —— 要编的像素数是实打实的两块屏', () => {
+  const plain = tuningFor({ width: 256, height: 384, fps: 30 }).maxBitrate
+  const dual = tuningFor({ width: 256, height: 384, fps: 30, dualScreen: true }).maxBitrate
+  assert.equal(dual, plain)
+})
+
+check('dualScreen 不会把真正的大源拽进像素画那一档', () => {
+  // 分享标签页 1280×720 即便误传了这一位，单块屏仍然远超那条线
+  assert.equal(tuningFor({ width: 1280, height: 720, fps: 30, dualScreen: true }).retro, false)
+})
+
 check('分界线本身（320×240）算像素画', () => {
   const t = tuningFor({ width: 320, height: 240, fps: 30 })
   assert.equal(t.retro, true, '320×240 是 PS1 / 多数街机板子的分辨率，必须在像素画这一档')

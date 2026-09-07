@@ -15,6 +15,7 @@
 import { buttonClasses } from '@/components/ui/Button'
 import { langPrefix } from '@/config/languages'
 import { useLang } from '@/services/lang'
+import { useT } from '@/services/i18n'
 import { cx } from '@/lib/format'
 import type { ReactNode } from 'react'
 
@@ -30,6 +31,7 @@ interface Props {
 
 export function IsolatedPlayCard({ slug, gameName, icon, backdrop, className }: Props) {
   const lang = useLang()
+  const t = useT()
   // 语言前缀由 basename 承载，而这是一条整页跳转，得自己拼上，否则英文用户会掉到中文页
   const href = `${langPrefix(lang)}/play/${encodeURIComponent(slug)}`
 
@@ -46,12 +48,11 @@ export function IsolatedPlayCard({ slug, gameName, icon, backdrop, className }: 
               {icon}
             </span>
           )}
-          <a href={href} className={buttonClasses('primary', 'lg')}>
-            <span aria-hidden>▶</span> {gameName}
+          {/* 按钮说「开始游戏」，和播放器那颗一致；游戏名在页面标题里已经有了 */}
+          <a href={href} className={buttonClasses('primary', 'lg')} aria-label={`${t.player.start} · ${gameName}`}>
+            <span aria-hidden>▶</span> {t.player.start}
           </a>
-          <p className="max-w-sm text-xs text-muted">
-            这款游戏会在独立的整页里运行（浏览器要求如此），随时可以从那一页返回。
-          </p>
+          <p className="max-w-sm text-xs text-muted">{t.player.isolatedHint}</p>
         </div>
       </div>
     </div>

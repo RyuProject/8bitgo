@@ -234,8 +234,22 @@ iceRouter.get('/', async (req, res) => {
     turnSources.push('cloudflare')
   }
 
-  // 凭证会过期，别让 CDN / 浏览器缓存住
+  /**
+   * 凭证会过期，别让 CDN / 浏览器缓存住。
+   *
+   * ⚠️ 光有 `Cache-Control` 不够。2026-09-07 线上实测：这个接口被前面那层缓存了
+   * **13.7 小时**，发给所有人的都是十几个小时前签的凭证 —— 自建 coturn 的 username
+   * 是 `<过期时间戳>:label`，过期即 401，那一路对所有人都废了，而 hasTurn 照报 true。
+   * Cloudflare 的 "Cache Everything" 规则会盖掉源站的 `Cache-Control`，
+   * 但它认这两个更高优先级的头（Cloudflare-CDN-Cache-Control > CDN-Cache-Control > Cache-Control）。
+   *
+   * 这只是第二道闸：**真正该做的是把 /api/ 排除出缓存规则**，
+   * 而且 Edge TTL 被设成固定值时这几个头一样会被无视 —— 所以客户端那边还带了
+   * 分钟桶参数兜底（见 src/services/netplay.ts 的 iceBucket）。
+   */
   res.set('Cache-Control', 'no-store')
+  res.set('CDN-Cache-Control', 'no-store')
+  res.set('Cloudflare-CDN-Cache-Control', 'no-store')
   res.json({
     iceServers,
     /** 有没有 TURN 兜底。前端据此决定要不要提示「可能连不通」 */

@@ -34,21 +34,47 @@ export function KeymapCards({ runtimeId, platform, size = 'md', className }: Pro
   const hotkeys = getHotkeys()
 
   /*
-   * 存 / 读档快捷键是站点自己实现的（emulator/hotkeyBridge.ts 直接监听键盘），
-   * 跟底下跑的是哪个引擎无关 —— 所以键盘直通的那几种运行时也摆得出来，
-   * 那种情况下这张表就只剩这两张卡。解绑了的（空串）不摆。
+   * 存 / 读档快捷键是站点自己实现的（emulator/hotkeyBridge.ts 直接监听键盘）。
+   *
+   * ⚠️ 只在这一档**真的装得上**的时候才摆：EmulatorTools 那边是
+   * `if (!caps.has('saveState')) return`，DOS / Java / 第三方 HTML5 / PS2 的运行时
+   * 没有 saveState，快捷键根本没挂上去。以前无条件摆这两张卡，结果是那几个平台的
+   * 「操作说明」整段只有两张卡、而且两张都按不出任何反应（Java 的 F2 还会被
+   * FreeJ2ME 当成右软键按下去）。解绑了的（空串）同样不摆。
    */
   const rows = [
     ...keymap.rows,
-    ...(hotkeys['save:local'] ? [{ button: t.keymap.quickSave, key: comboLabel(hotkeys['save:local']) }] : []),
-    ...(hotkeys['load:local'] ? [{ button: t.keymap.quickLoad, key: comboLabel(hotkeys['load:local']) }] : []),
+    ...(keymap.quickSave && hotkeys['save:local']
+      ? [{ button: t.keymap.quickSave, key: comboLabel(hotkeys['save:local']) }]
+      : []),
+    ...(keymap.quickSave && hotkeys['load:local']
+      ? [{ button: t.keymap.quickLoad, key: comboLabel(hotkeys['load:local']) }]
+      : []),
   ]
 
-  const hasPad = keymap.rows.length > 0
+  const hasKeys = keymap.rows.length > 0
+  /*
+   * 「改键」这句话必须分档。红白机的改键面板是我们自己的（EmulatorTools 里的
+   * NesKeyBinder，只在 runtimeId === 'jsnes' 时画）；EmulatorJS 的改键在**引擎自己**
+   * 那条工具条上（画面里面的手柄图标 → Control Settings）。两条工具条上各有一个手柄
+   * 图标，以前这句话不分档，等于把 GBA / 街机 / PS1 的玩家指到了没用的那一个上。
+   */
+  const rebindNote =
+    keymap.rebind === 'ours'
+      ? t.keymap.rebindOurs
+      : keymap.rebind === 'engine'
+        ? t.keymap.rebindEngine
+        : hasKeys
+          ? t.keymap.rebindNone
+          : ''
+  const touchNote =
+    keymap.touch === 'all' ? t.keymap.touchButtons : keymap.touch === 'some' ? t.keymap.touchButtonsSome : ''
   const note = [
-    hasPad ? t.game.controlsDesc : '',
+    hasKeys ? t.game.controlsDesc : '',
     keymap.note,
-    hasPad ? (keymap.customizable ? `${t.keymap.customizable} ${t.keymap.gamepad}` : t.keymap.notCustomizable) : '',
+    rebindNote,
+    keymap.pad ? t.keymap.gamepadAuto : '',
+    touchNote,
   ]
     .filter(Boolean)
     .join(' ')

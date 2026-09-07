@@ -30,6 +30,8 @@ export interface LiveRoomInfo {
   startedAt: number
   /** 主播断线了、房间在宽限期里等它回来（server/src/live.js 的「主播掉线」一节） */
   hostAway?: boolean
+  /** 主播切到后台了：画面冻着不是断了（server/src/live.js 的 host-visibility）。大厅卡片据此提示，别让人点进去对着冻住的画面猜 */
+  hostFrozen?: boolean
   /**
    * 配对的联机房号：主播点了「联机」，这个直播间同时也是一个联机房。
    *

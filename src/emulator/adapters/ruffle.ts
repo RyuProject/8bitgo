@@ -309,6 +309,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   iframe.srcdoc = FRAME_HTML
 
   let destroyed = false
+  /** SWF 下载的取消把手：换游戏后别让旧会话继续拉完整个 SWF（见 jsnes 同款注释） */
+  const aborter = new AbortController()
 
   /**
    * 把焦点交给播放器元素本身。
@@ -392,6 +394,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     const script = doc.createElement('script')
     script.src = `${RUFFLE_PATH}ruffle.js`
     script.onerror = () => {
+      // 给运维看的细节（路径 / 该配哪个 env）进控制台；红字只说玩家能理解的那句
+      console.warn(`[ruffle] failed to load ${RUFFLE_PATH}ruffle.js — run \`npm run ruffle\` or set VITE_RUFFLE_PATH`)
       if (!destroyed) options.onError?.(fmt(rt.ruffleLoadFailed, { path: RUFFLE_PATH }))
     }
     script.onload = async () => {
@@ -437,7 +441,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         const isFile = typeof options.game !== 'string'
         let loadOptions: Record<string, unknown>
         if (isFile) {
-          const loaded = await loadGameBytes(options.game, options.onProgress)
+          const loaded = await loadGameBytes(options.game, options.onProgress, aborter.signal)
           assertSwf(loaded.data)
           loadOptions = { ...base, data: loaded.data, swfFileName: loaded.name }
         } else {
@@ -451,7 +455,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
            * 它本来也是这么推的，这里只是把同一件事写明白。
            */
           const url = options.game as string
-          const loaded = await loadGameBytes(url, options.onProgress)
+          const loaded = await loadGameBytes(url, options.onProgress, aborter.signal)
           assertSwf(loaded.data)
           loadOptions = {
             ...base,
@@ -702,6 +706,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     },
     destroy() {
       destroyed = true
+      aborter.abort()
       player = null
       api = null
       // realm 跟着 iframe 一起没，不用还原 patch；只是别留着指向死 realm 的节点

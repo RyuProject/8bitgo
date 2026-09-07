@@ -33,6 +33,13 @@ export interface RoomView {
   /** 直播房间的游戏名。直播可以开在任何游戏上，包括本站游戏库里没有的（比如本地 ROM） */
   gameName?: string
   /**
+   * 直播间的两种「画面不动」：主播掉线在宽限期里等它回来 / 主播切到后台画面冻着。
+   * 卡片上要说出来 —— 不说的话点进去的人对着一张静止的画面，只会以为是自己的网有问题。
+   * 只对 live 有意义；p2p / cloud 房间没有这两个状态。
+   */
+  hostAway?: boolean
+  hostPaused?: boolean
+  /**
    * 举手：房主开着房、手柄位还空着，就是在等人来一起玩。
    *
    * 只对 p2p 房间有意义 —— 云端房间同理但那条线没上线，直播房压根没有手柄位。
@@ -78,6 +85,8 @@ export function liveRoomView(r: LiveRoomInfo): RoomView {
     presence,
     createdAt: r.startedAt,
     kind: 'live',
+    hostAway: Boolean(r.hostAway),
+    hostPaused: Boolean(r.hostFrozen),
   }
 }
 
@@ -93,6 +102,8 @@ export function RoomCard({ room, compact = false }: { room: RoomView; compact?: 
   const game = useGameBySlug(room.gameSlug)
   // 直播房间只有房主一个玩家，不能按「这个游戏支持几人」把上限撑大
   const live = room.kind === 'live'
+  // 直播的画面此刻不动（主播掉线 / 切后台）：卡片上说清楚，别让人点进去猜
+  const stalled = live ? (room.hostAway ? t.rooms.hostAway : room.hostPaused ? t.rooms.hostPaused : '') : ''
   const max = live ? 1 : Math.max(room.max || 0, game?.players ?? 2)
   // 直播没有手柄位，也就没有「满了」这回事：观众上限由服务端的 MAX_VIEWERS 兜着
   const full = !live && room.players >= max
@@ -122,8 +133,15 @@ export function RoomCard({ room, compact = false }: { room: RoomView; compact?: 
           </span>
         </span>
         {live ? (
-          // 直播说「几个人在看」，说「1/1」没有任何信息
-          <span className="shrink-0 text-[11px] font-semibold text-live">📡 {viewers}</span>
+          // 直播说「几个人在看」，说「1/1」没有任何信息；画面不动时挂个 ⏸，说明放 title 里
+          <span className="shrink-0 text-[11px] font-semibold text-live">
+            {stalled && (
+              <span className="mr-0.5 font-normal text-muted" title={stalled} aria-label={stalled}>
+                ⏸
+              </span>
+            )}
+            📡 {viewers}
+          </span>
         ) : (
           <span className={cx('shrink-0 text-[11px] font-semibold', full ? 'text-dim' : 'text-online')}>
             {/* 侧边栏这一行很窄，举手只出一个表情，说明放 title 里 */}
@@ -178,14 +196,18 @@ export function RoomCard({ room, compact = false }: { room: RoomView; compact?: 
             {viewers > 0 && <Badge tone="dark">👀 {fmt(t.rooms.viewers, { n: String(viewers) })}</Badge>}
           </div>
         )}
-        <span className="absolute left-2 top-2 inline-flex items-center gap-1 rounded bg-black/60 px-1.5 py-1 text-[10px] font-semibold text-white backdrop-blur">
+        <span
+          className="absolute left-2 top-2 inline-flex max-w-[calc(100%-1rem)] items-center gap-1 rounded bg-black/60 px-1.5 py-1 text-[10px] font-semibold text-white backdrop-blur"
+          title={stalled || undefined}
+        >
           <span
             className={cx(
-              'h-1.5 w-1.5 rounded-full',
-              live ? 'animate-pulse bg-live' : full && !watchable ? 'bg-dim' : 'animate-pulse bg-online',
+              'h-1.5 w-1.5 shrink-0 rounded-full',
+              live ? (stalled ? 'bg-coin' : 'animate-pulse bg-live') : full && !watchable ? 'bg-dim' : 'animate-pulse bg-online',
             )}
           />
-          {live ? 'LIVE' : !full ? t.rooms.open : watchable ? `👀 ${t.rooms.watch}` : t.rooms.full}
+          {/* 直播的画面此刻不动就别只写一个 LIVE：红点跳着、点进去却是冻住的画面，等于骗人 */}
+          <span className="truncate">{live ? stalled || 'LIVE' : !full ? t.rooms.open : watchable ? `👀 ${t.rooms.watch}` : t.rooms.full}</span>
         </span>
 
       </div>

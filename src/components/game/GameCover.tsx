@@ -35,6 +35,16 @@ interface Props {
    * 何况卡堆里压着的那两张本来只露一个角，播了也没人看得见。
    */
   still?: boolean
+  /**
+   * 图必须立刻下（不走 lazy），但也不抬 fetchPriority —— 和 priority 的区别就在这儿。
+   *
+   * 给那些**在视口里被换进来**的位置用（合集卡四宫格轮播）：Safari 对动态换 src 的
+   * loading="lazy" 图要等到下一次滚动才真正开始下载，于是换进来的那一格会一直黑着 ——
+   * 09-07 线上 KOF 合集「十款游戏只出一张封面、其余三格全黑」就是这么来的。
+   */
+  eager?: boolean
+  /** 封面图真正 load 完时调一次（<video> 那一路不会调）。轮播换图要靠它决定何时撤掉过渡层 */
+  onImageLoad?: () => void
 }
 
 const ratios = {
@@ -162,6 +172,8 @@ export function GameCover({
   reserveBottomRight = false,
   priority = false,
   still = false,
+  eager = false,
+  onImageLoad,
 }: Props) {
   const t = useT()
   const lang = useLang()
@@ -190,9 +202,10 @@ export function GameCover({
           alt={title}
           // 首屏那几张必须 eager：对着 LCP 图片加 loading="lazy"，
           // 等于让浏览器先跳过它、发现完别的资源再回头下，LCP 反而更慢
-          loading={priority ? 'eager' : 'lazy'}
+          loading={priority || eager ? 'eager' : 'lazy'}
           fetchPriority={priority ? 'high' : 'auto'}
           decoding="async"
+          onLoad={onImageLoad}
           className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
         />
       ) : (

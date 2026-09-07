@@ -5,12 +5,21 @@
  *
  * 升级步骤：
  *   npm i --no-save @emulatorjs/cores@latest   # 官方全部核心，几百 MB，所以 --no-save
- *   npm run ejscores                           # 挑我们要的 12 个复制进 public/
+ *   npm run ejscores                           # 挑我们要的那些复制进 public/
  *   git add public/emulatorjs/cores/           # 升级结果照旧进 git
  *   （删掉 node_modules 里的全家桶：再跑一次 npm install 会自动清掉）
  *
  * 为什么不把核心做成 npm 依赖：每个 @emulatorjs/core-* 都依赖 @emulatorjs/emulatorjs，
- * 后者又可选依赖 @emulatorjs/cores = 全部 50 个核心 —— 装 12 个等于装全家桶。
+ * 后者又可选依赖 @emulatorjs/cores = 全部 50 个核心 —— 装几个等于装全家桶。
+ *
+ * 💡 只想补**一两个**核心（不想拉全家桶）的话不必走上面那条：
+ *     npm pack @emulatorjs/core-desmume@<版本>     # 一个 tgz，几 MB
+ *     tar xzf emulatorjs-core-desmume-*.tgz
+ *     cp package/desmume-wasm.data package/desmume-legacy-wasm.data public/emulatorjs/cores/
+ *     cp package/reports/desmume.json public/emulatorjs/cores/reports/
+ *   2026-09-07 补 desmume / desmume2015 / mame2003 / mame2003_plus / mednafen_psx_hw
+ *   这五个就是这么干的。**记住 reports/ 那一份也要拷**（少了它引擎会禁用核心的
+ *   IndexedDB 缓存，每次进游戏重下核心）。
  *
  * ── 为什么核心必须自托管 ─────────────────────────────────────────
  * public/emulatorjs/ 是从 EmulatorJS main 分支自建的（为了 dontExtractIfCore，
@@ -39,19 +48,33 @@ const out = join(root, 'public', 'emulatorjs', 'cores')
 const ifMissing = process.argv.includes('--if-missing')
 
 /** 平台 → 默认核心的对应关系见 EmulatorJS 的 getCores()（emulator.min.js 里的 u 表） */
+/*
+  ⚠️ 这张表必须盖住 **config/emulators.ts 的 CORE_OPTIONS 里所有 id** 外加
+  platforms.ts 每个 emulatorjs 平台的默认核心 —— 后台下拉里出现的核心要是没发出去，
+  引擎在本地找不到就回落 CDN，玩家看到的是「Error loading EmulatorJS runtime」。
+
+  这条以前真的破了：mame2003_plus / mame2003 / mednafen_psx_hw 三个选项在后台挂了很久，
+  对应的 .data 一个都没进 public/ —— 管理员一选那一款就打不开，而且看不出跟核心有关。
+  现在有 `npm run test:ejs-cores` 守着（挂在 prebuild 上），别指望人记得。
+*/
 const CORES = [
   'fbneo',              // arcade 默认（拳皇 97 这类 Neo Geo 全在这）
   'fbalpha2012_cps1',   // arcade 备选：CPS1（街霸2 初代系）
   'fbalpha2012_cps2',   // arcade 备选：CPS2（街霸2X / 恐龙快打）
+  'mame2003_plus',      // arcade 备选：兼容面最广（也最慢、最大，5MB/变体）
+  'mame2003',           // arcade 备选：更老的 MAME，个别板子只有它认
   'fceumm',             // nes
   'snes9x',             // snes
   'mgba',               // gba
   'gambatte',           // gb
   'mupen64plus_next',   // n64
-  'pcsx_rearmed',       // psx
+  'pcsx_rearmed',       // psx 默认
+  'mednafen_psx_hw',    // psx 备选：Beetle PSX HW（更准、可高清，吃性能）
   'genesis_plus_gx',    // segaMD
   'mednafen_wswan',     // ws
-  'melonds',            // nds
+  'melonds',            // nds 默认
+  'desmume',            // nds 备选：有 frameskip 和内部分辨率，melonDS 两样都没有
+  'desmume2015',        // nds 备选：更老更轻，弱机兜底
 ]
 
 if (ifMissing && existsSync(join(out, 'fbneo-wasm.data'))) process.exit(0)

@@ -46,7 +46,9 @@ location /socket.io/ {
     proxy_set_header Connection "upgrade";
     proxy_set_header Host $host;
     # ↓ 少这一行，房间卡片上每个人的国旗都会是 ❓，而且不报错
+    #   ⚠️ 在 Cloudflare 后面时**必须换成下面那一行**，见本节末尾「在 Cloudflare 后面的话」
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    # proxy_set_header X-Forwarded-For $http_cf_connecting_ip;   # ← CF 后面用这个
     proxy_set_header X-Real-IP $remote_addr;
     proxy_read_timeout 3600s;
     proxy_buffering off;
@@ -83,6 +85,47 @@ curl -s https://你的域名/api/netplay/rooms | jq '.[0].presence'
 查不出国家，于是全站永远显示 ❓ —— 而且这条路径不会报任何错，只会「就是不显示」，
 排查起来非常费劲。`/api/` 那个 location 同理。
 
+### ⚠️ 在 Cloudflare 后面的话：那一行要换
+
+`$proxy_add_x_forwarded_for` 的含义是「客户端带来的那串 + **nginx 亲眼看到的对端**」，
+追加在末尾；后端取的正是最后一段（那一段伪造不了）。这套在 nginx **直面用户**时是对的。
+
+但站点在 Cloudflare 后面时，nginx 看到的对端就是 **CF 的 anycast 节点**，
+于是最后一段变成了 CF 的地址，真实访客反而在前面那一段：
+
+```
+xff       : "203.0.113.7, 104.22.100.106"    ← 前者是访客，后者是 Cloudflare
+effective : "104.22.100.106"                  ← 后端采用了 CF 节点
+```
+
+2026-09-07 线上实测就是这个状态（`curl -s https://你的域名/api/diag | jq .ip`），
+后果一串，而且**每一条都不报错、功能看着都还"能用"**：
+
+- 每 IP 房间上限（`LIVE_MAX_ROOMS_PER_IP` / `NETPLAY_MAX_ROOMS_PER_IP`）对着 CF 节点算
+  → **同一个 CF 机房后面的所有玩家共用一个额度**；`NETPLAY_MAX_MEMBERS_PER_IP` 同理，
+  同机房后面只有几个人能进同一个联机房；
+- 房间卡片的国旗查的是 CF 的 anycast 地址（多半登记在美国）→ **全站显示同一个国家**，
+  而且 `resolveCountry` 先用 IP、查到了就不再看网关头，那份**正确**的 `CF-IPCountry` 永远轮不上；
+- 限流的 key、匿名评分的 `anon_ip` 一并从「按人」塌缩成「按机房」。
+
+**修法：每个 location 都换成**
+
+```nginx
+proxy_set_header X-Forwarded-For $http_cf_connecting_ip;
+```
+
+`/`、`/api/`、`/socket.io/`、`/api/netplay/events` —— 有几块就改几块，漏一块那一块的功能还是错的。
+改完 `sudo nginx -t && sudo systemctl reload nginx`，再 `curl -s https://你的域名/api/diag | jq .ip`：
+`usingCdnEdgeIp` 要变成 `false`，`effective` 要等于 `cfConnectingIp`。
+
+⚠️ **同时把源站防火墙锁到 Cloudflare 的 IP 段**（`https://www.cloudflare.com/ips/`，或用
+Authenticated Origin Pulls / cloudflared）。不锁的话 `CF-Connecting-IP` 是可以被**直连源站**的人
+伪造的 —— 而原来那套「取最后一段」恰恰不怕伪造，所以这一步不是可选项，是换来的代价。
+
+代码这边不会替你猜：`presence.js` 检测到「采用的 IP ≠ CF 说的访客」会告警一次并写明该换哪一行，
+`/api/diag` 里也有 `usingCdnEdgeIp` 和 `hint`（`npm run test:presence` 钉住了这两条）。
+**行为故意不改成信 `CF-Connecting-IP`** —— 那等于默认开一个伪造口子。
+
 后端信不信这个头由 `TRUST_PROXY` 控制（默认 `loopback`，即「前面有一层自己人的反代」）。
 取的是 XFF 的**最后一段** —— nginx 的 `$proxy_add_x_forwarded_for` 把它亲眼看到的对端追加在末尾，
 前面那些是客户端自己带来的，`curl -H 'X-Forwarded-For: 1.1.1.1'` 谁都能伪造。
@@ -107,9 +150,16 @@ TURN 和 netplay 共用 `/api/netplay/ice`（后端现签短期凭证，密码�
 
 ```bash
 LIVE_MAX_ROOMS=200          # 同时在播的房间上限
+LIVE_MAX_ROOMS_PER_IP=20    # 同一个出口 IP 同时能开几间（见下面）
 LIVE_MAX_VIEWERS=12         # 单场观众上限，见下面「上行」
 VITE_LIVE_MAX_BITRATE=1500000  # 单路视频码率上限
 ```
+
+`LIVE_MAX_ROOMS_PER_IP` 别照着「一个人开几间」去想 —— 这个站是**玩就是播**，每个正在玩的人都占一间，
+而手机网络、学校、公司的一大群人共用同一个出口 IP。设成 3 的话，同一个运营商 NAT 后面第四个开始玩的人
+自动开播就静默失败（只在浏览器控制台留一行 `[live] 自动开播失败 … too many rooms`）。
+内网 / 回环地址不计数：那说明反代没把 `X-Forwarded-For` 传进来，服务端日志会提醒一次 ——
+以前这种配置错误会让**全站所有主播共用同一个额度**，整个站同时只能开 3 间。
 
 ## 上行是唯一的硬约束
 

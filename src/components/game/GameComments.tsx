@@ -139,8 +139,9 @@ export function GameComments({ gameSlug }: { gameSlug: string }) {
   const remaining = COMMENT_MAX_LENGTH - text.length
   const hasMore = items.length < total
 
+  // id 给详情页「反馈问题」用：出错的玩家一键滚到这里留言
   return (
-    <section className="rounded-2xl border border-line bg-surface p-5" aria-label={c.title}>
+    <section id="comments" className="rounded-2xl border border-line bg-surface p-5" aria-label={c.title}>
       <header className="flex items-baseline justify-between">
         <h2 className="text-sm font-bold">💬 {c.title}</h2>
         {total > 0 && <span className="text-xs text-muted">{fmt(c.count, { n: total })}</span>}
