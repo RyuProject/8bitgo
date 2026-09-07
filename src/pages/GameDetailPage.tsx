@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
-import { relForInternal } from '@/lib/seoLinks'
+import { InternalLink } from '@/components/ui/InternalLink'
 import { recordRecent, toggleFavorite, useCurrentUser } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
 import type { RomLang } from '@/config/languages'
@@ -435,13 +435,12 @@ export function GameDetailPage() {
                 value={splitDevelopers(game.developer).map((name, index) => (
                   <span key={name}>
                     {index > 0 && ', '}
-                    <Link
+                    <InternalLink
                       to={`/games?developer=${encodeURIComponent(name)}`}
-                      rel={relForInternal('/games?developer=')}
                       className="hover:text-brand-hover"
                     >
                       {name}
-                    </Link>
+                    </InternalLink>
                   </span>
                 ))}
               />
@@ -451,15 +450,18 @@ export function GameDetailPage() {
             {game.tags && game.tags.length > 0 && (
               <div className="mt-4 flex flex-wrap gap-2">
                 {game.tags.map((t) => (
-                  <Link
+                  <InternalLink
                     key={t}
                     to={`/games?q=${encodeURIComponent(t)}`}
-                    /* 站内搜索是无限空间、robots 全禁抓，别把详情页的权重挂上去（见 lib/seoLinks.ts） */
-                    rel={relForInternal('/games?q=')}
+                    /*
+                      站内搜索是无限空间、robots 全禁抓，所以这里不出 href
+                      （nofollow 挡不住发现，见 lib/seoLinks.ts）。
+                      可抓的同类入口在上面：/platforms/:id 和 /genres/:id 都已经链过。
+                    */
                     className="rounded-md border border-line px-2 py-1 text-xs text-muted transition hover:border-brand hover:text-fg"
                   >
                     #{t}
-                  </Link>
+                  </InternalLink>
                 ))}
               </div>
             )}

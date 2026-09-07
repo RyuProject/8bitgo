@@ -1,6 +1,5 @@
 import type { ReactNode } from 'react'
-import { Link } from 'react-router-dom'
-import { relForInternal } from '@/lib/seoLinks'
+import { InternalLink } from '@/components/ui/InternalLink'
 import { cx } from '@/lib/format'
 import { useT } from '@/services/i18n'
 
@@ -42,21 +41,20 @@ export function SectionHeader({
       <div className="flex shrink-0 items-center gap-2">
         {actions}
         {moreTo && (
-          <Link
+          <InternalLink
             to={moreTo}
             /*
-              指向 robots.txt 禁抓的地址（/games? 的筛选组合）时自动加 nofollow。
-              在这里判而不是让每个调用方自己记：首页那几个「更多」就是这么漏的，
-              见 lib/seoLinks.ts。
+              指向 robots.txt 禁抓的地址（/games? 的筛选组合）时，InternalLink 自己
+              就不发 href 了。在这里包而不是让每个调用方自己记：首页那几个「更多」
+              （?sort= / ?multiplayer=1 / ?coin=1）就是这么漏的，见 lib/seoLinks.ts。
             */
-            rel={relForInternal(moreTo)}
             className="group inline-flex items-center gap-1 text-sm font-medium text-muted transition hover:text-brand-hover"
           >
             {moreLabel ?? t.common.viewAll}
             <span className="transition group-hover:translate-x-0.5" aria-hidden>
               →
             </span>
-          </Link>
+          </InternalLink>
         )}
       </div>
     </div>

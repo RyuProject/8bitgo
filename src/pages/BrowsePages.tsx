@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { relForInternal } from '@/lib/seoLinks'
+import { InternalLink } from '@/components/ui/InternalLink'
 import type { Platform, PlatformId } from '@/types'
 import type { Translation } from '@/locales'
 import { usePageData, type DevelopersData, type GenresData, type PlatformsData } from '@/services/pageData'
@@ -253,10 +253,15 @@ export function DevelopersPage() {
             // 比一个游戏名更值得占这个位置。
             const desc = gameDescription(d, lang)
             return (
-            <Link
+            /*
+              ?developer= 在 robots.txt 里禁抓，整整一页这样的链接就是 Search Console
+              里那些 /games?developer=… 的来源，所以这里不出 href（见 lib/seoLinks.ts）。
+              卡片内部有 <h2>/<p>，塞进 <button> 是无效 HTML，用 as="div"。
+            */
+            <InternalLink
               key={d.name}
+              as="div"
               to={`/games?developer=${encodeURIComponent(d.name)}`}
-              rel={relForInternal('/games?developer=')}
               className="group card-hover flex items-center gap-4 rounded-card border border-line bg-surface p-3 hover:border-brand/60"
             >
               {/*
@@ -302,7 +307,7 @@ export function DevelopersPage() {
                 )}
               </div>
               <span className="text-pixel shrink-0 text-[11px] text-brand-hover">{fmt(t.browse.countSuffix, { n: d.count })}</span>
-            </Link>
+            </InternalLink>
             )
           })}
         </div>

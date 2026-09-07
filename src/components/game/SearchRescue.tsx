@@ -9,7 +9,7 @@
  */
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { relForInternal } from '@/lib/seoLinks'
+import { InternalLink } from '@/components/ui/InternalLink'
 import { useT, fmt } from '@/services/i18n'
 import { gameTitle, platformLabel } from '@/services/i18nData'
 import { useLang } from '@/services/lang'
@@ -49,13 +49,13 @@ export function SearchRescue({ q, onPick }: { q: string; onPick?: (q: string) =>
               {data.suggestion}
             </button>
           ) : (
-            <Link
+            /* 搜索地址在 robots.txt 里禁抓，所以这里不出 href（见 lib/seoLinks.ts） */
+            <InternalLink
               to={`/games?q=${encodeURIComponent(data.suggestion)}`}
-              rel={relForInternal('/games?q=')}
               className="font-semibold text-brand-hover hover:underline"
             >
               {data.suggestion}
-            </Link>
+            </InternalLink>
           )}
         </p>
       )}
