@@ -28,8 +28,15 @@ export const collectionsRouter = Router()
 const MAX_TITLE = 80
 const MAX_KIND = 30
 const MAX_DESC = 500
-/** 封面四宫格要几张 */
-const COVER_COUNT = 4
+/**
+ * 封面给几张。四宫格只**摆** 4 张，但多给几张让卡片能轮播：每隔几秒把一格换成合集里的另一款，
+ * 访客不点进去也能看出这个合集大概装了什么（用户 09-07 提的）。
+ * 12 = 摆 4 张 + 8 张备用。再多的话首页那一栏（十几个合集）的数据量就上去了，而轮播到第 12 张
+ * 早就过去半分钟，没人看那么久。
+ * 给的是**瘦身版**（slug / title / titleZh / platform / icon / cover / video），不是完整 Game ——
+ * 完整 Game 带两种语言的长简介，12 × 十几个合集就是几百 KB 塞进首页 HTML 里。
+ */
+const COVER_POOL = 12
 /** 一个人最多建多少个合集。挡的是脚本刷号，正常用户碰不到 */
 const MAX_PER_USER = 100
 /** 一个合集最多装多少款游戏 */
@@ -51,7 +58,8 @@ function idOf(raw) {
 }
 
 /**
- * 给一批合集取「最新放入的四款游戏」，用于封面四宫格。
+ * 给一批合集取「最新放入的 COVER_POOL 款游戏」（瘦身版），前 4 张拼封面四宫格，其余给卡片轮播。
+ * 最新的在最前，所以四宫格永远是最新放入的四款 —— 这条规则没变。
  *
  * 用窗口函数一次查完，而不是每个合集查一次 —— 首页那一栏有十几个合集，
  * 循环查就是十几个来回。MySQL 8.0+ / MariaDB 10.2+ 都支持 ROW_NUMBER()
@@ -68,20 +76,32 @@ async function coversFor(ids) {
        FROM collection_items
        WHERE collection_id IN (${holes})
      ) t WHERE rn <= ?`,
-    [...ids, COVER_COUNT],
+    [...ids, COVER_POOL],
   )
   if (!rows.length) return out
   // 下架的游戏不该出现在封面上，但它仍然留在合集里（作者的整理不该被我们悄悄改掉）
   const gameIds = [...new Set(rows.map((r) => String(r.game_id)))]
   const gholes = gameIds.map(() => '?').join(',')
-  const gameRows = await query(`SELECT * FROM games WHERE id IN (${gholes}) AND hidden = 0`, gameIds)
-  const games = await attachRelations(gameRows)
-  const byId = new Map(games.map((g, i) => [String(gameRows[i].id), g]))
+  // 只取画封面要用的几列（形状对齐 src/types.ts 的 CoverGame），不走 attachRelations
+  const gameRows = await query(
+    `SELECT id, slug, title, title_zh, platform, icon, cover, video FROM games WHERE id IN (${gholes}) AND hidden = 0`,
+    gameIds,
+  )
+  const byId = new Map(gameRows.map((r) => [String(r.id), coverGame(r)]))
   for (const r of rows) {
     const g = byId.get(String(r.game_id))
     if (g) out.get(String(r.collection_id))?.push(g)
   }
   return out
+}
+
+/** 封面用的瘦身 Game。可选字段没有就不带，和 gameRowToApi 的习惯一致 */
+function coverGame(r) {
+  const g = { slug: r.slug, title: r.title, platform: r.platform, icon: r.icon || '🎮' }
+  if (r.title_zh) g.titleZh = r.title_zh
+  if (r.cover) g.cover = r.cover
+  if (r.video) g.video = r.video
+  return g
 }
 
 /** 一批合集各有多少款游戏 */

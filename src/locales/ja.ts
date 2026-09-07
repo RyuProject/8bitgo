@@ -90,6 +90,8 @@ const ja: Translation = {
   topbar: {
     downloadApp: 'アプリを入手',
     openMenu: 'メニューを開く',
+    chat: 'メッセージ',
+    chatSoon: 'サイト内メッセージは準備中です。まもなくここでやり取りできます。',
     search: '検索',
     searchPlaceholder: 'ゲーム・ゲーム機・開発会社を検索…',
     searchAria: 'ゲームを検索',
@@ -101,9 +103,6 @@ const ja: Translation = {
     coinBalance: 'Gコイン残高',
     coinBalanceGuest: 'Gコイン残高（ログインすると貯まります）',
     coinChip: '{n} Gコイン',
-    menuProfile: '👤 マイページ',
-    menuFavorites: '🕒 あとで遊ぶ',
-    menuLogout: '⏻ ログアウト',
   },
 
   /* ---------------- フッター ---------------- */

@@ -410,6 +410,12 @@ export interface CollectionAuthor {
 }
 
 /** 用户自建的游戏合集 */
+/**
+ * 画一张封面需要的最少字段。GameCover 只认这几个，所以完整的 Game 和这个瘦身版都能喂它。
+ * 合集封面、以后任何「只要图不要资料」的列表都用它，别为了画张图把整个 Game 传下来。
+ */
+export type CoverGame = Pick<Game, 'slug' | 'title' | 'titleZh' | 'platform' | 'icon' | 'cover' | 'video'>
+
 export interface Collection {
   id: number
   title: string
@@ -421,8 +427,13 @@ export interface Collection {
   description: string
   /** 里面一共多少款游戏（不是 covers 的长度） */
   gameCount: number
-  /** 最新放入的四款，用来拼封面四宫格。不足四款时就是实际数量 */
-  covers: Game[]
+  /**
+   * 最新放入的游戏，最新的在最前，**最多 12 款**（服务端 COVER_POOL）。
+   * 前 4 张拼封面四宫格；其余给卡片轮播用 —— 每隔几秒把一格换成合集里的另一款，
+   * 访客不点进去也看得出这个合集大概装了什么。不足四款时就是实际数量。
+   * 是瘦身版（CoverGame），不是完整 Game：首页那一栏十几个合集 × 12 张，带简介的话几百 KB。
+   */
+  covers: CoverGame[]
   author: CollectionAuthor
   /** 被管理员下架了。普通访客根本看不到这种合集，只有作者和审核者拿得到 */
   hidden: boolean

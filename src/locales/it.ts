@@ -90,6 +90,8 @@ const it: Translation = {
   topbar: {
     downloadApp: 'Scarica l’app',
     openMenu: 'Apri il menu',
+    chat: 'Messaggi',
+    chatSoon: 'I messaggi diretti stanno arrivando: potrai chattare proprio qui.',
     search: 'Cerca',
     searchPlaceholder: 'Cerca giochi, piattaforme, sviluppatori…',
     searchAria: 'Cerca giochi',
@@ -101,9 +103,6 @@ const it: Translation = {
     coinBalance: 'Saldo G Coin',
     coinBalanceGuest: 'Saldo G Coin (accedi per iniziare a guadagnare)',
     coinChip: '{n} G Coin',
-    menuProfile: '👤 Profilo',
-    menuFavorites: '🕒 Da giocare',
-    menuLogout: '⏻ Esci',
   },
 
   /* ---------------- Piè di pagina ---------------- */

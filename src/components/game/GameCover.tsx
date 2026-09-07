@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import type { Game } from '@/types'
+import type { CoverGame } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { gradientFor } from '@/lib/gradients'
 import { romUrlForKey } from '@/services/roms'
@@ -9,7 +9,8 @@ import { useLang } from '@/services/lang'
 import { gameTitle } from '@/services/i18nData'
 
 interface Props {
-  game: Game
+  /** 完整 Game 或只有封面字段的瘦身版（合集封面就是瘦身版）都行 —— 这里只读画图要用的那几个字段 */
+  game: CoverGame
   /** 宽高比：竖版 3/4，4:3 横版，16:9 宽屏，方形 1/1 */
   ratio?: 'portrait' | 'landscape' | 'wide' | 'square'
   className?: string

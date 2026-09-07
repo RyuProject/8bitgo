@@ -84,6 +84,8 @@ const zhHant: Translation = {
   topbar: {
     downloadApp: '下載 App',
     openMenu: '開啟選單',
+    chat: '訊息',
+    chatSoon: '站內訊息正在做，很快就能在這裡聊天。',
     search: '搜尋',
     searchPlaceholder: '搜尋遊戲、平台、開發商…',
     searchAria: '搜尋遊戲',
@@ -95,9 +97,6 @@ const zhHant: Translation = {
     coinBalance: 'G 幣餘額',
     coinBalanceGuest: 'G 幣餘額（登入後累積）',
     coinChip: '{n} G幣',
-    menuProfile: '👤 個人中心',
-    menuFavorites: '🕒 稍後玩',
-    menuLogout: '⏻ 登出',
   },
 
   footer: {

@@ -1,13 +1,14 @@
-import { useEffect, useRef, useState } from 'react'
-import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { useState } from 'react'
+import { Link, useLocation } from 'react-router-dom'
 import { cx } from '@/lib/format'
 import { Button } from '@/components/ui/Button'
-import { logout, useCurrentUser } from '@/services/auth'
+import { useCurrentUser } from '@/services/auth'
 import { useShell } from './ShellContext'
 import { useT, fmt } from '@/services/i18n'
 import { Logo } from './Logo'
 import { FEATURES } from '@/config/features'
 import { SearchBox, SearchIcon } from './SearchBox'
+import { ChatButton } from './ChatButton'
 
 /**
  * 顶栏：移动端菜单按钮 + 搜索 + 快捷操作（玩本地 ROM / G 币 / 通知 / 登录）
@@ -66,8 +67,12 @@ export function Topbar() {
             </Link>
           )}
 
-          {/* 登录入口保留在侧边栏；顶栏只在已登录时显示用户菜单 */}
-          {user && <UserMenu />}
+          {/*
+            登录入口保留在侧边栏；顶栏只在已登录时显示聊天入口。
+            原来这儿是「头像 + 昵称 + 下拉」的用户菜单，拿掉了 —— 身份和入口侧边栏底部
+            已经有一份（头像 + 昵称 + G 币 → /me），退出登录在 /me 页面里也有。
+          */}
+          {user && <ChatButton />}
         </div>
       </div>
 
@@ -87,69 +92,3 @@ export function Topbar() {
     </header>
   )
 }
-
-function UserMenu() {
-  const t = useT()
-  const user = useCurrentUser()
-  const navigate = useNavigate()
-  const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!open) return
-    const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
-    }
-    document.addEventListener('mousedown', onDoc)
-    return () => document.removeEventListener('mousedown', onDoc)
-  }, [open])
-
-  if (!user) return null
-
-  return (
-    <div ref={ref} className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        className="flex h-9 items-center gap-2 rounded-lg border border-line bg-surface pl-1 pr-2.5 text-sm transition hover:border-brand/60"
-      >
-        <span className="grid h-7 w-7 place-items-center rounded-md bg-brand-soft text-base" aria-hidden>
-          {user.avatar}
-        </span>
-        <span className="hidden max-w-[7rem] truncate font-semibold sm:block">{user.nickname}</span>
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className={cx('text-muted transition', open && 'rotate-180')} aria-hidden>
-          <path d="M6 9l6 6 6-6" />
-        </svg>
-      </button>
-      {open && (
-        <div role="menu" className="absolute right-0 top-full z-50 mt-2 w-48 rounded-xl border border-line bg-surface p-1.5 shadow-2xl shadow-black/60">
-          <div className="px-2.5 py-2">
-            <p className="truncate text-sm font-semibold">{user.nickname}</p>
-            <p className="truncate text-[11px] text-muted">{user.email}</p>
-          </div>
-          <Link to="/me" role="menuitem" onClick={() => setOpen(false)} className="block rounded-lg px-2.5 py-2 text-sm hover:bg-black/5">
-            {t.topbar.menuProfile}
-          </Link>
-          <Link to="/me#favorites" role="menuitem" onClick={() => setOpen(false)} className="block rounded-lg px-2.5 py-2 text-sm hover:bg-black/5">
-            {t.topbar.menuFavorites}
-          </Link>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setOpen(false)
-              logout()
-              navigate('/')
-            }}
-            className="block w-full rounded-lg px-2.5 py-2 text-left text-sm text-muted hover:bg-black/5 hover:text-fg"
-          >
-            {t.topbar.menuLogout}
-          </button>
-        </div>
-      )}
-    </div>
-  )
-}
-

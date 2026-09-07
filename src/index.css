@@ -52,6 +52,8 @@
 
   --animate-marquee: marquee 28s linear infinite;
   --animate-blink: blink 1.2s steps(2, start) infinite;
+  /* 合集卡片封面轮播：换进来的那一格淡入（keyframe 在下面，用法 animate-cover-fade-in） */
+  --animate-cover-fade-in: cover-fade-in 500ms ease both;
   --animate-float: float 6s ease-in-out infinite;
   /* 首页横幅：标题换到下一款游戏时，右边抛一张封面上来（见 HomeBanner 的卡堆） */
   --animate-hero-toss: hero-toss 560ms cubic-bezier(0.18, 0.9, 0.3, 1.1) both;
@@ -80,6 +82,18 @@
   @keyframes blink {
     to {
       visibility: hidden;
+    }
+  }
+  /* 合集卡片封面轮播：换进来的那一格从透明淡入，压在旧图上面。
+     用 keyframe 而不是 transition —— 新图是刚挂上的元素，靠 rAF 去切 class 在 React 18
+     的批处理下常常和首帧合成一帧、根本不过渡；keyframe 一挂上就动，稳。
+     ⚠️ 这个 @theme 块里的 keyframes 只有被上面某个 --animate-* 引用了才会进产物。 */
+  @keyframes cover-fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
     }
   }
   /* 抛卡：从右上角旋着飞进来。
@@ -356,6 +370,10 @@ body {
   .skeleton-shimmer::after {
     animation: none;
     opacity: 0;
+  }
+  /* 合集封面轮播：自动换图本身由 JS 关掉（CollectionCard 的 usePrefersReducedMotion），这里兜住淡入 */
+  .animate-cover-fade-in {
+    animation: none;
   }
   /* 首页横幅的抛卡和换词：动画去掉，但卡片和标题本身要留在那儿（都是可点的入口）。
      自动轮换本身也会被 JS 关掉，见 HomeBanner 的 usePrefersReducedMotion。 */

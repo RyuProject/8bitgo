@@ -149,6 +149,8 @@ export const zhHans = {
   topbar: {
     downloadApp: '下载 App',
     openMenu: '打开菜单',
+    chat: '消息',
+    chatSoon: '站内消息正在做，很快就能在这儿聊天。',
     search: '搜索',
     searchPlaceholder: '搜索游戏、平台、开发商…',
     searchAria: '搜索游戏',
@@ -160,9 +162,6 @@ export const zhHans = {
     coinBalance: 'G 币余额',
     coinBalanceGuest: 'G 币余额（登录后累积）',
     coinChip: '{n} G币',
-    menuProfile: '👤 个人中心',
-    menuFavorites: '🕒 稍后玩',
-    menuLogout: '⏻ 退出登录',
   },
 
   /* ---------------- 页脚 ---------------- */

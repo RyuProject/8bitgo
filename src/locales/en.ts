@@ -90,6 +90,8 @@ const en: Translation = {
   topbar: {
     downloadApp: 'Get the app',
     openMenu: 'Open menu',
+    chat: 'Messages',
+    chatSoon: 'Direct messages are on the way — you’ll chat right here.',
     search: 'Search',
     searchPlaceholder: 'Search games, platforms, developers…',
     searchAria: 'Search games',
@@ -101,9 +103,6 @@ const en: Translation = {
     coinBalance: 'G Coin balance',
     coinBalanceGuest: 'G Coin balance (log in to start earning)',
     coinChip: '{n} G Coins',
-    menuProfile: '👤 Profile',
-    menuFavorites: '🕒 Play later',
-    menuLogout: '⏻ Log out',
   },
 
   /* ---------------- Footer ---------------- */

@@ -104,6 +104,13 @@ globalThis.__fakeDb = {
       const g = games.find((x) => x.slug === params[0] && (!q.includes('hidden = 0') || !x.hidden))
       return g ? [{ id: g.id }] : []
     }
+    // 封面用的瘦身查询（列名对齐 coverGame()）
+    if (q.startsWith('SELECT id, slug, title, title_zh, platform, icon, cover, video FROM games WHERE id IN')) {
+      const ids = params.map(String)
+      return games
+        .filter((g) => ids.includes(String(g.id)) && !g.hidden)
+        .map((g) => ({ id: g.id, slug: g.slug, title: g.title, title_zh: g.title_zh ?? null, platform: g.platform, icon: g.icon ?? '🎮', cover: g.cover ?? null, video: g.video ?? null }))
+    }
     if (q.startsWith('SELECT * FROM games WHERE id IN')) {
       const ids = params.slice(0, params.length).map(String)
       return games.filter((g) => ids.includes(String(g.id)) && !g.hidden).map((g) => ({ ...g }))
@@ -284,18 +291,28 @@ try {
   ok(items.length === 1, '没有插出第二条')
   ok(items[0].created_at === firstAt, '⭐ 也没有刷新时间 —— 刷了封面顺序会莫名其妙地变')
 
-  console.log('\n── 封面取「最新放入的四款」 ──')
+  console.log('\n── 封面：最新放入的在前，最多给 12 张（前 4 张摆四宫格，其余给卡片轮播） ──')
   reset()
   collections.push({ id: 2, user_id: AUTHOR, title: '空的', kind: '', description: '', hidden: 0, updated_at: new Date(), created_at: new Date() })
-  // 按时间递增放入 5 款，封面应当拿到最后 4 款、且最新的在最前
+  // 按时间递增放入 5 款：全给出来，最新的在最前，四宫格摆的就是前四张
   for (let i = 0; i < 5; i++) {
-    games.push({ id: 100 + i, slug: `g${i}`, title: `G${i}`, platform: 'nes', hidden: 0 })
+    games.push({ id: 100 + i, slug: `g${i}`, title: `G${i}`, platform: 'nes', hidden: 0, cover: `covers/g${i}.jpg` })
     items.push({ collection_id: 2, game_id: 100 + i, created_at: new Date(Date.UTC(2026, 2, i + 1)) })
   }
   const detail = await (await call('GET', '/2')).json()
-  ok(detail.collection.covers.length === 4, '封面正好四张')
-  ok(detail.collection.covers.map((g) => g.slug).join(',') === 'g4,g3,g2,g1', '⭐ 是最新放入的四款，最新的在最前')
-  ok(detail.collection.gameCount === 5, '游戏数报的是全部，不是封面那四张')
+  ok(detail.collection.covers.length === 5, '5 款全给（不到 12 张上限）')
+  ok(detail.collection.covers.slice(0, 4).map((g) => g.slug).join(',') === 'g4,g3,g2,g1', '⭐ 前四张是最新放入的四款，最新的在最前')
+  ok(detail.collection.gameCount === 5, '游戏数报的是全部，不是封面的张数')
+  const cover0 = detail.collection.covers[0]
+  ok(cover0.cover === 'covers/g4.jpg' && cover0.platform === 'nes' && !('description' in cover0) && !('genres' in cover0), '⭐ 封面是瘦身版：有 cover / platform，没有简介和类型（首页那一栏的数据量）')
+  // 再塞到 13 款：封面上限 12
+  for (let i = 5; i < 13; i++) {
+    games.push({ id: 100 + i, slug: `g${i}`, title: `G${i}`, platform: 'nes', hidden: 0 })
+    items.push({ collection_id: 2, game_id: 100 + i, created_at: new Date(Date.UTC(2026, 2, i + 1)) })
+  }
+  const detail13 = await (await call('GET', '/2')).json()
+  ok(detail13.collection.covers.length === 12 && detail13.collection.covers[0].slug === 'g12', '13 款只给 12 张，还是最新的在最前')
+  ok(detail13.collection.gameCount === 13, '游戏数照样是 13')
 
 
   console.log('\n── 手动排序（PATCH /:id/order） ──')

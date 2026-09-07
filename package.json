@@ -50,6 +50,7 @@
     "test:hotkeys": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-hotkeys.mjs",
     "test:keymap": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-keymap.mjs",
     "test:padkeys": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-pad-keys.mjs",
+    "test:im": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-im.mjs",
     "test:multipart": "node scripts/test-worker-multipart.mjs",
     "build:client": "vite build",
     "postbuild:client": "node scripts/check-emulatorjs.mjs --dist",

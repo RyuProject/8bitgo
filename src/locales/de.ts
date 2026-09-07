@@ -90,6 +90,8 @@ const de: Translation = {
   topbar: {
     downloadApp: 'App laden',
     openMenu: 'Menü öffnen',
+    chat: 'Nachrichten',
+    chatSoon: 'Direktnachrichten kommen bald — chatten kannst du dann genau hier.',
     search: 'Suche',
     searchPlaceholder: 'Spiele, Plattformen, Entwickler suchen…',
     searchAria: 'Spiele suchen',
@@ -101,9 +103,6 @@ const de: Translation = {
     coinBalance: 'G-Coin-Guthaben',
     coinBalanceGuest: 'G-Coin-Guthaben (melde dich an, um zu sammeln)',
     coinChip: '{n} G-Coins',
-    menuProfile: '👤 Profil',
-    menuFavorites: '🕒 Später spielen',
-    menuLogout: '⏻ Abmelden',
   },
 
   /* ---------------- Footer ---------------- */
