@@ -60,6 +60,14 @@
      只用 box-shadow，不动 transform/尺寸 —— 手柄那一条正被手指按着，
      一动位置按下去就偏了。 */
   --animate-pad-pulse: pad-pulse 1.4s ease-in-out infinite;
+  /**
+   * 弹幕：从画面右边界外飘到左边界外。
+   *
+   * 位移用两端各 100% 的自身宽度加上容器宽度（--danmaku-span，由组件按舞台宽度设）——
+   * 只写 translateX(-100%) 的话长短不同的弹幕会在不同位置就消失，看着像被吃掉了。
+   * linear 是必须的：ease 会让弹幕在中间加速，几条并排时速度不一致，很难读。
+   */
+  --animate-danmaku: danmaku var(--danmaku-dur, 9s) linear forwards;
 
   @keyframes marquee {
     from {
@@ -108,6 +116,14 @@
     }
     50% {
       transform: translateY(-10px);
+    }
+  }
+  @keyframes danmaku {
+    from {
+      transform: translateX(var(--danmaku-span, 100vw));
+    }
+    to {
+      transform: translateX(-100%);
     }
   }
   @keyframes pad-pulse {

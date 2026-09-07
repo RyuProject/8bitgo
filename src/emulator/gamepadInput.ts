@@ -156,17 +156,28 @@ export function startGamepadInput(send: (button: PadButton, down: boolean) => vo
     }
   }
 
-  window.addEventListener('gamepadconnected', sync)
-  window.addEventListener('gamepaddisconnected', sync)
-  // 进页面之前就插着的手柄不会补发 gamepadconnected，先自己探一次
-  sync()
+  /*
+    没有 window 的环境（SSR、node 里的单元测试）不挂事件，直接常开循环 ——
+    那种环境本来也不会真的跑 rAF，行为和以前一致。
+  */
+  const gated = typeof window !== 'undefined'
+  if (gated) {
+    window.addEventListener('gamepadconnected', sync)
+    window.addEventListener('gamepaddisconnected', sync)
+    // 进页面之前就插着的手柄不会补发 gamepadconnected，先自己探一次
+    sync()
+  } else {
+    raf = requestAnimationFrame(loop)
+  }
 
   return {
     stop: () => {
       if (stopped) return
       stopped = true
-      window.removeEventListener('gamepadconnected', sync)
-      window.removeEventListener('gamepaddisconnected', sync)
+      if (gated) {
+        window.removeEventListener('gamepadconnected', sync)
+        window.removeEventListener('gamepaddisconnected', sync)
+      }
       if (raf) cancelAnimationFrame(raf)
       raf = 0
       // 松开这一局还按着的键，否则角色会带着「一直往右」进下一局

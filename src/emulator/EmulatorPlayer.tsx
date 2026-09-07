@@ -13,6 +13,8 @@ import { platformBiosUrlSync } from '@/services/platformBios'
 import { EmulatorTools } from './EmulatorTools'
 import { TouchPad } from './TouchPad'
 import { LiveControls } from './LiveControls'
+import { LiveChatBar, LiveChatLane, useLiveChat } from './LiveChat'
+import type { Broadcast } from './broadcast'
 import { MatchControls } from './MatchControls'
 import { matchLocalArcadeHack } from './arcadeHack'
 import type { LiveSession, LiveViewState } from './adapters/liveview'
@@ -477,6 +479,32 @@ export function EmulatorPlayer({
   /** 当前视觉阶段的起点；真实回调停顿时，计时兜底从这里继续向前走。 */
   const progressClock = useRef<{ phase: LoadPhase; startedAt: number }>({ phase: 'engine', startedAt: Date.now() })
   const [caps, setCaps] = useState<Set<Capability>>(() => new Set())
+
+  /**
+   * 弹幕。主播和观众收消息的入口不是同一个（前者 LiveControls → Broadcast.onChat，
+   * 后者 liveview 的 LiveSession.onChat），但显示的是同一份流，所以状态放在这一层。
+   */
+  const chat = useLiveChat()
+  /** 我自己的推流会话。有它说明我是主播，发弹幕走它 */
+  const [liveSession, setLiveSession] = useState<Broadcast | null>(null)
+
+  /**
+   * 这一局有没有「直播间」这回事：我在推（liveSession）或者我在看（session.live）。
+   * 两种身份看到的是同一个房间、同一条消息流，只是收发的句柄不同。
+   */
+  const liveChatOn = Boolean(liveSession) || Boolean(session?.live)
+
+  /**
+   * 换一局就把弹幕清空。
+   *
+   * 不清的话，从一场直播切到另一场（或者切回自己玩）时，上一场的话还挂在下面那段列表里，
+   * 看着像新房间里已经有人在聊 —— 而那些人根本不在这儿。
+   * 按 session.id 走：它每开一局就自增，是「这是不是同一局」的唯一判据。
+   */
+  useEffect(() => {
+    chat.clear()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.id])
 
   const hostRef = useRef<HTMLDivElement>(null)
   /**
@@ -1432,6 +1460,7 @@ export function EmulatorPlayer({
           onState: setLiveState,
           onInfo: (info) => setNotice(info.hostName ? `${info.title} · ${info.hostName}` : info.title),
           onNetplay: setLiveNetplayRoom,
+          onChat: chat.push,
           onFrozen: setLiveFrozen,
           onLinkQuality: (q) => {
             setLiveLink(q.verdict === 'ok' ? null : q.verdict)
@@ -1957,6 +1986,13 @@ export function EmulatorPlayer({
           <div ref={frameRef} className={cx('absolute inset-0', busy ? 'block' : 'hidden')} />
 
           {/*
+            弹幕层。压在画面上，pointer-events-none —— 它绝不能挡住游戏的触摸和点击。
+            放在挂载点之后、其余浮层之前：要盖过游戏画面，但别盖过进度条、开始按钮、
+            手柄提示那些需要点的东西。
+          */}
+          {liveChatOn && <LiveChatLane messages={chat.messages} />}
+
+          {/*
             监视器态（见 monitor）的「点一下回去玩」。手机上退出沉浸后游戏还在这个小框里跑，
             但这儿是按不了的：引擎的按键已经收起，我们那套行内手柄也不在这儿。
             整块画面做成一个按钮，点哪儿都回到游玩布局，底下压一行字说明白。
@@ -2447,6 +2483,8 @@ export function EmulatorPlayer({
             active={!session?.netplay && !session?.cloud}
             netplayRoomId={hosting ? roomId : null}
             captureRef={hostRef}
+            onChat={chat.push}
+            onSession={setLiveSession}
           />
         )}
 
@@ -2559,6 +2597,31 @@ export function EmulatorPlayer({
           </div>
         </div>
       </div>
+
+      {/*
+        弹幕输入框。摆在播放器**下面**：压在画面上会挡住游戏，而这一行是要打字的，
+        手机上还会顶出输入法。
+        沉浸 / 全屏时不画 —— 那两种形态下播放器是 fixed 铺满视口的，
+        这一行会落在它后面，成了一个看不见但能被 Tab 到的输入框。
+      */}
+      {liveChatOn && !fullscreen && !playMode && (
+        <LiveChatBar
+          className="mt-2"
+          messages={chat.messages}
+          /*
+            主播走自己的推流会话，观众走 liveview 那一路的 handle。
+            两个都没有 = 还没连上或者已经散场，传 null 让输入框禁用 ——
+            让人打完一段字再告诉他发不出去是最差的一种。
+          */
+          onSend={
+            liveSession
+              ? (text) => liveSession.sendChat(text)
+              : handle?.liveChat
+                ? (text) => handle.liveChat?.(text)
+                : null
+          }
+        />
+      )}
     </div>
   )
 }

@@ -23,8 +23,10 @@
  * 全部泄漏，而且这一局再也不会开播。
  */
 import type { CaptureSources } from './types'
-import { connectLive, liveIceServers, type LiveSocket } from '@/services/live'
-import { applyTuning, fpsForViewers, sizeOfTrack, tuningFor } from './videoTuning'
+import { type LiveChatMessage, connectLive, liveIceServers, type LiveSocket } from '@/services/live'
+import { sanitizeChatText } from '../../shared/live-chat.js'
+import { applyTuning, fpsForViewers, sizeOfTrack, tuningFor, usableVideoSize } from './videoTuning'
+import { createCaptureFeed, probeCapture, type CaptureFeed, type SourceResolver } from './captureFeed'
 
 /**
  * 码率上限的**手动覆盖**。设了就一律用它，不再按分辨率算。
@@ -46,6 +48,11 @@ const DEFAULT_FPS = 30
 /** 多久读一次 WebRTC 统计。太密没意义（编码器自己的自适应也是秒级的） */
 const STATS_INTERVAL_MS = 5_000
 /**
+ * 多久查一次采集源还在不在（画布是否脱离文档 / 塌成废尺寸）。
+ * Ruffle 读档 reload() 换画布前后大约 700ms，2 秒一查观众最多冻两秒多；再密也没意义。
+ */
+const SOURCE_CHECK_MS = 2_000
+/**
  * 连续几次采样都被判定为受限，才真的降一档；连续几次干净才升回去。
  * 不设迟滞的话画质会在两档之间来回跳，比一直糊更难受。
  */
@@ -63,7 +70,11 @@ export interface BroadcastMeta {
 }
 
 export interface BroadcastOptions {
-  sources: CaptureSources
+  /**
+   * 采集源。**推荐传函数**：源会被反复重新解析 —— 开播时一次、每次发现画布废了/换了再一次
+   * （见 captureFeed.ts）。传死对象的话画布一换（Ruffle 读档）直播就冻住，没人能救。
+   */
+  sources: CaptureSources | SourceResolver
   meta: BroadcastMeta
   fps?: number
   /**
@@ -84,6 +95,8 @@ export interface BroadcastOptions {
    *   none      一切正常
    */
   onQuality?: (info: QualityInfo) => void
+  /** 收到一条弹幕（房主自己发的那条也会回来 —— 顺序由服务端定，本地不做乐观回显） */
+  onChat?: (msg: LiveChatMessage) => void
   /** 房间号变了（重连后接不回原房间、只能重开时）。开播那一次也会调 */
   onRoom?: (roomId: string) => void
   onError?: (message: string) => void
@@ -101,6 +114,12 @@ export interface Broadcast {
    * 手柄位还空着就挂个 👋（见 services/allRooms.ts）。
    */
   linkNetplay: (roomId: string | null) => void
+  /**
+   * 发一条弹幕。服务端会广播给房间里所有人（包括房主自己）——
+   * 所以这里**不**做本地回显：每个人看到的顺序都是服务端定的那一个，
+   * 房主也不例外，不然自己那条会比别人早出现，看起来像两套时间线。
+   */
+  sendChat: (text: string) => void
   stop: () => void
 }
 
@@ -116,59 +135,33 @@ export interface QualityInfo {
   viewers: number
 }
 
-type SignalData = { sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit; gen?: number }
-
-/** 能不能开播：有画面就行（声音可选） */
-export function canBroadcast(sources: CaptureSources | null | undefined): boolean {
-  if (!sources) return false
-  if (sources.stream) return sources.stream.getTracks().length > 0
-  return Boolean(sources.canvas && typeof sources.canvas.captureStream === 'function')
-}
+/**
+ * 主播 ↔ 观众之间经服务器转发的信令包。服务器不看内容原样转（见 live.js 的 signal）。
+ * `error: 'no-source'`：主播这一刻抓不到画面（画布没了 / 废了），观众别干等 offer ——
+ * 以前这种情况是悄悄 dropPeer，观众要等满 75 秒才拿到一句甩锅给网络的超时。
+ */
+type SignalData = { sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit; gen?: number; error?: 'no-source' }
 
 /**
- * 把 CaptureSources 拼成一条可推的流。
- * 返回的 release() 只停我们自己新建的轨 —— 云联机那条流还在播，停了画面就没了。
+ * 能不能开播：有画面就行（声音可选）。
+ *
+ * ⚠️ 「有画面」还包含**画面不能是废的**。画布小到 2×2 时 `captureStream` 一样给得出一条轨，
+ * 推出去就是一块观众永远看不出所以然的黑屏（见 videoTuning 的 `MIN_VIDEO_EDGE`）。
+ *
+ * 这里返回 false **不等于放弃**：LiveControls 收到 false 会按 `RETRY_MS` 重试，
+ * 播放器布局到位、画布长回正常尺寸就自然开播了（Ruffle 那边元素一变大就会重建画布）。
+ * 一直好不了才落到「手动分享标签页」那条路 —— 那也比推一块黑屏出去强。
  */
-function buildStream(sources: CaptureSources, fps: number): { stream: MediaStream; release: () => void } | null {
-  const tracks: MediaStreamTrack[] = []
-  let audioDest: MediaStreamAudioDestinationNode | null = null
-  let ownTracks: MediaStreamTrack[] = []
-
+export function canBroadcast(sources: CaptureSources | null | undefined): boolean {
+  if (!sources) return false
   if (sources.stream) {
-    tracks.push(...sources.stream.getTracks())
-  } else if (sources.canvas && typeof sources.canvas.captureStream === 'function') {
-    const captured = sources.canvas.captureStream(fps)
-    const own = captured.getVideoTracks()
-    tracks.push(...own)
-    ownTracks = ownTracks.concat(own)
+    if (!sources.stream.getTracks().length) return false
+    const { width, height } = sizeOfTrack(sources.stream.getVideoTracks()[0])
+    // 尺寸读不出来时不拦：分享标签页那条流的源是屏幕，不可能是 2×2
+    return !width || !height || usableVideoSize(width, height)
   }
-
-  if (!sources.stream && sources.audioNode && sources.audioContext) {
-    try {
-      audioDest = sources.audioContext.createMediaStreamDestination()
-      sources.audioNode.connect(audioDest)
-      const own = audioDest.stream.getAudioTracks()
-      tracks.push(...own)
-      ownTracks = ownTracks.concat(own)
-    } catch {
-      audioDest = null
-    }
-  }
-
-  if (!tracks.length) return null
-  return {
-    stream: new MediaStream(tracks),
-    release: () => {
-      if (audioDest && sources.audioNode) {
-        try {
-          sources.audioNode.disconnect(audioDest)
-        } catch {
-          /* 已经断了 */
-        }
-      }
-      for (const t of ownTracks) t.stop()
-    },
-  }
+  if (!sources.canvas || typeof sources.canvas.captureStream !== 'function') return false
+  return usableVideoSize(sources.canvas.width, sources.canvas.height)
 }
 
 /**
@@ -180,9 +173,15 @@ function buildStream(sources: CaptureSources, fps: number): { stream: MediaStrea
  *
  * `options.maxBitrate` 仍然优先（分享标签页那条路自己按屏幕分辨率算过）。
  */
-function tuneSender(sender: RTCRtpSender, maxBitrate: number | undefined, maxFramerate: number) {
-  const { width, height } = sizeOfTrack(sender.track)
-  applyTuning(sender, tuningFor({ width, height, fps: maxFramerate, maxBitrate }))
+function tuneSender(
+  sender: RTCRtpSender,
+  maxBitrate: number | undefined,
+  maxFramerate: number,
+  size: { width?: number; height?: number } = sizeOfTrack(sender.track),
+) {
+  // ⚠️ 尺寸要调用方从采集源上拿（feed.videoSize()）。走 Insertable Streams 时 sender.track 是
+  // generator 轨，getSettings() 多半是空的 —— 空就会被当成大源去缩分辨率，Game Boy 直接成马赛克
+  applyTuning(sender, tuningFor({ width: size.width, height: size.height, fps: maxFramerate, maxBitrate }))
 }
 
 /** 这条连接还值得留着吗（还在握手、或者已经通了） */
@@ -206,8 +205,83 @@ function call<T>(socket: LiveSocket, event: string, payload: unknown, ms = 10_00
 
 export async function startBroadcast(options: BroadcastOptions): Promise<Broadcast> {
   const captureFps = options.fps ?? DEFAULT_FPS
-  const built = buildStream(options.sources, captureFps)
-  if (!built) throw new Error('no capture source')
+  /** 每次都重新向运行时要源（见 BroadcastOptions.sources 的注释） */
+  const resolveSources: SourceResolver = typeof options.sources === 'function' ? options.sources : () => options.sources as CaptureSources
+
+  /**
+   * 抓屏是**按需**建的：没有观众时一帧都不抓。
+   *
+   * ⚠️ 这条很重要，因为这个站是「玩就是播」——**每一个玩家都在开播**。
+   * 以前 buildStream() 是在这里无条件调的，于是每一局单机游戏都在白付：
+   *   · `canvas.captureStream(30)` 让浏览器每秒从游戏画布上复制 30 帧
+   *     （EmulatorJS 的画布是 WebGL 的，这是一次 GPU 读回/纹理拷贝，
+   *     街机核心本来就跑在 59.94Hz 上，中低端手机和集显笔记本上这笔开销是实打实的）
+   *   · 再往音频图上挂一个 MediaStreamAudioDestinationNode
+   * 而这些帧和这些采样**一个字节都没发出去** —— 没有观众就没有 RTCRtpSender，
+   * 编码器根本没启动。等于纯浪费。
+   *
+   * 现在改成：信令照连、房间照注册（大厅里照样看得到这一局），
+   * 但真正的抓屏推迟到**第一个观众进来**，最后一个观众走了再放掉。
+   */
+  let built: CaptureFeed | null = null
+  /**
+   * 上一轮抓屏放掉时留下的最后一帧，喂给下一轮当种子（见 captureFeed.ts 的 release 注释）：
+   * 游戏暂停着、观众走光又来人，没有它新观众一帧都拿不到。
+   */
+  let seedFrame: VideoFrame | null = null
+  /** 观众走光之后延迟放手，免得断线重连那几秒里反复停/建抓屏 */
+  let idleTimer = 0
+
+  /*
+    开播前先探一次「这个源到底抓不抓得出画面」。
+    不探的话，抓不出来这件事要等到第一个观众进来才发现，而调用方
+    （LiveControls）正是靠这个异常去切「手动分享标签页」那条路的。
+    探完立刻放掉：建一条 track 再停掉是瞬时操作，不留任何持续开销。
+  */
+  if (!probeCapture(resolveSources(), captureFps)) throw new Error('no capture source')
+
+  /** 真要推流了才开始抓。抓不出来（画布已经没了）返回 null，调用方跳过这条连接 */
+  const ensureStream = () => {
+    window.clearTimeout(idleTimer)
+    idleTimer = 0
+    if (!built) {
+      // 种子帧的所有权交给新 feed（拿不到源时它自己会 close）
+      const seed = seedFrame
+      seedFrame = null
+      built = createCaptureFeed(resolveSources, captureFps, seed)
+      if (built && !built.keepAlive) {
+        // 没有 Insertable Streams 的浏览器：换源换的是轨，得挨个 sender 换过去（不用重新协商）
+        built.onVideoTrackReplaced = (track) => {
+          for (const { pc } of peers.values()) {
+            for (const sender of pc.getSenders()) {
+              if (sender.track?.kind !== 'video') continue
+              void sender.replaceTrack(track).then(() => tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, built?.videoSize()))
+            }
+          }
+        }
+      }
+    }
+    return built
+  }
+  const releaseStream = () => {
+    window.clearTimeout(idleTimer)
+    idleTimer = 0
+    const keep = built?.release() ?? null
+    built = null
+    // 只留最新的一帧
+    if (keep) {
+      seedFrame?.close()
+      seedFrame = keep
+    }
+  }
+  /** 没人看了：3 秒后放掉抓屏。给「观众只是抖了一下重连」留个窗口 */
+  const releaseIfIdle = () => {
+    if (built === null || idleTimer) return
+    idleTimer = window.setTimeout(() => {
+      idleTimer = 0
+      if (!stopped && peers.size === 0) releaseStream()
+    }, 3_000)
+  }
 
   options.onState?.('connecting')
 
@@ -215,7 +289,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
   try {
     socket = await connectLive()
   } catch (e) {
-    built.release()
+    releaseStream()
     throw e
   }
 
@@ -236,9 +310,16 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
   let degradeStreak = 0
   let recoverStreak = 0
   let statsTimer = 0
+  let sourceTimer = 0
   let visibilityBound = false
   let roomId = ''
   let token = ''
+  /**
+   * 休眠：服务器把房收了（主播切后台太久、一个观众都没有 —— 见 live.js 的 host-idle），
+   * 但主播这一局还在跑。不是错、也不用重连：人不在，房挂在大厅里只会骗人进来。
+   * 信令留着、抓屏放掉；主播一回到前台就重新开一间（房间号换新的，走 onRoom）。
+   */
+  let dormant = false
 
   const dropPeer = (viewerId: string) => {
     const p = peers.get(viewerId)
@@ -249,6 +330,8 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     } catch {
       /* ignore */
     }
+    // 最后一个观众走了 → 停掉抓屏（见 ensureStream 的注释）
+    if (peers.size === 0) releaseIfIdle()
   }
 
   /**
@@ -279,9 +362,22 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     const pc = new RTCPeerConnection({ iceServers })
     peers.set(viewerId, { pc, gen })
 
-    for (const track of built.stream.getTracks()) {
-      const sender = pc.addTrack(track, built.stream)
-      if (track.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps)
+    // 第一个观众进来才真的开始抓屏
+    const media = ensureStream()
+    if (!media) {
+      // 画布已经没了 / 塌成废尺寸（换游戏、引擎拆了、播放器没布局好）：这条连接建不起来。
+      // 告诉观众一声再收掉 —— 它会隔几秒再来要一次，画布回来了就接上；一直没有它才报错
+      try {
+        socket.emit('signal', { target: viewerId, data: { error: 'no-source', gen } satisfies SignalData })
+      } catch {
+        /* ignore */
+      }
+      dropPeer(viewerId)
+      return
+    }
+    for (const track of media.stream.getTracks()) {
+      const sender = pc.addTrack(track, media.stream)
+      if (track.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, media.videoSize())
     }
 
     pc.onicecandidate = (ev) => {
@@ -321,7 +417,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     cappedFps = next
     for (const { pc } of peers.values()) {
       for (const sender of pc.getSenders()) {
-        if (sender.track?.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps)
+        if (sender.track?.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, built?.videoSize())
       }
     }
   }
@@ -431,11 +527,44 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
    */
   const onVisibility = () => {
     if (stopped) return
+    if (document.visibilityState === 'visible' && dormant) {
+      void wake()
+      return
+    }
     try {
-      if (socket.connected) socket.emit('host-visibility', { hidden: document.visibilityState === 'hidden' })
+      if (socket.connected && roomId) socket.emit('host-visibility', { hidden: document.visibilityState === 'hidden' })
     } catch {
       /* 信令断了就算了，回来 resume 时状态会重新对齐 */
     }
+  }
+
+  /** 从休眠里醒来：重新开一间。信令没连着就继续睡，connect 回来再醒 */
+  const wake = async () => {
+    if (stopped || !dormant || !socket.connected) return
+    dormant = false
+    try {
+      await goLive()
+      viewers = 0
+      options.onViewers?.(0)
+      options.onState?.('live')
+    } catch (e) {
+      if (stopped) return
+      // 重开失败（服务器满了之类）：这一局就到这儿，别让 UI 挂着假标记
+      stopped = true
+      teardown()
+      options.onError?.(e instanceof Error ? e.message : String(e))
+      options.onState?.('ended')
+    }
+  }
+
+  /**
+   * 采集源还在不在。画布被运行时换掉（Ruffle 读档）或者塌成废尺寸时，
+   * feed 自己去重新取源并接上 —— 有 Insertable Streams 的浏览器观众无感，没有的走 replaceTrack。
+   * 只在有观众、真在抓屏的时候查：没人看时抓屏本来就是放掉的。
+   */
+  const sourceTick = () => {
+    if (stopped || !built || peers.size === 0) return
+    if (built.check()) console.info('[live] 采集源已更换（画布被重建或换掉），观众那头无缝接上')
   }
 
   const teardown = () => {
@@ -443,12 +572,18 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       window.clearInterval(statsTimer)
       statsTimer = 0
     }
+    if (sourceTimer) {
+      window.clearInterval(sourceTimer)
+      sourceTimer = 0
+    }
     if (visibilityBound) {
       document.removeEventListener('visibilitychange', onVisibility)
       visibilityBound = false
     }
     for (const id of Array.from(peers.keys())) dropPeer(id)
-    built.release()
+    releaseStream()
+    seedFrame?.close()
+    seedFrame = null
     try {
       socket.close()
     } catch {
@@ -539,6 +674,26 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     if (payload?.viewerId) dropPeer(payload.viewerId)
   }) as (...args: never[]) => void)
 
+  socket.on('live-ended', ((payload: { roomId?: string; reason?: string }) => {
+    // 只认自己这一间；stop() 自己发的 stop-live 回来的那条已经被 stopped 挡掉
+    if (stopped || !roomId || payload?.roomId !== roomId) return
+    for (const id of Array.from(peers.keys())) dropPeer(id)
+    releaseStream()
+    roomId = ''
+    token = ''
+    viewers = 0
+    options.onViewers?.(0)
+    dormant = true
+    console.info(`[live] 服务器收了房间（${payload?.reason ?? '?'}），进入休眠，回到前台再重开`)
+    // UI 上先按「重连中」显示：主播人不在看不到，回来那一刻 wake() 立刻换成 live
+    options.onState?.('reconnecting')
+    if (document.visibilityState === 'visible') void wake()
+  }) as (...args: never[]) => void)
+
+  socket.on('chat', ((msg: LiveChatMessage) => {
+    if (msg?.text) options.onChat?.(msg)
+  }) as (...args: never[]) => void)
+
   socket.on('viewers', ((payload: { count?: number }) => {
     viewers = payload?.count ?? 0
     options.onViewers?.(viewers)
@@ -565,7 +720,9 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
 
   // connectLive 已经消费掉首连的 connect，这里只会在**重连**时触发
   socket.on('connect', (() => {
-    if (!stopped && roomId) void resume()
+    if (stopped) return
+    if (roomId) void resume()
+    else if (dormant && document.visibilityState === 'visible') void wake()
   }) as (...args: never[]) => void)
 
   try {
@@ -579,6 +736,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
   options.onState?.('live')
 
   statsTimer = window.setInterval(() => void statsTick(), STATS_INTERVAL_MS)
+  sourceTimer = window.setInterval(sourceTick, SOURCE_CHECK_MS)
   document.addEventListener('visibilitychange', onVisibility)
   visibilityBound = true
   // 开播那一刻就可能已经在后台了（比如切到别的标签页才点的开播）
@@ -595,6 +753,17 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       linkedNetplayRoom = roomId
       try {
         if (socket.connected) socket.emit('link-netplay', { roomId: roomId ?? '' })
+      } catch {
+        /* ignore */
+      }
+    },
+    /** 见接口注释。socket 没连上就丢掉这一条：弹幕补发没有意义，那一刻早过去了 */
+    sendChat(text: string) {
+      if (stopped) return
+      const clean = sanitizeChatText(text)
+      if (!clean) return
+      try {
+        if (socket.connected) socket.emit('chat', { text: clean })
       } catch {
         /* ignore */
       }

@@ -207,4 +207,24 @@ check('开头的多余斜杠必须折掉 —— 否则就是一个跳到外站�
   assert.equal(run('GET', '//evil.com/').location, '/evil.com')
 })
 
-console.log(`✅ robots.txt / URL 归一：${passed} 项检查通过`)
+/* ---------------- 爬虫看到的状态码 ---------------- */
+
+const ssrSrc = readFileSync(new URL('../server/src/ssr.js', import.meta.url), 'utf8')
+
+check('SSR 降级返回 503 而不是 200', () => {
+  // 降级返回的是空壳（root 里没内容、head 是模板默认值）。用 200 等于告诉爬虫
+  // 「这就是这个 URL 的正确内容」，SSR 出问题的那段时间抓到的页面会全部以
+  // 千篇一律的标题进索引，恢复后还要等重抓才能纠正。503 = 临时，等会儿再来。
+  const branch = ssrSrc.slice(ssrSrc.indexOf('[ssr] 渲染失败'))
+  assert.match(branch, /\.status\(503\)/, '降级分支必须回 503')
+  assert.doesNotMatch(branch, /\.status\(200\)/, '降级分支不能回 200')
+  assert.match(branch, /'Retry-After'/, '503 要带 Retry-After')
+  assert.match(branch, /CACHE\.none/, '空壳绝不能进边缘缓存，否则故障恢复后还在发')
+})
+
+check('渲染出「页面不存在」时仍然回 404，不是 200', () => {
+  // 一律 200 就是软 404：页面上写着 GAME OVER，状态码却告诉爬虫一切正常
+  assert.match(ssrSrc, /status\(notFound \? 404 : 200\)/)
+})
+
+console.log(`✅ robots.txt / URL 归一 / 爬虫状态码：${passed} 项检查通过`)

@@ -36,6 +36,8 @@
     "test:nes-mapper": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-nes-mapper.mjs",
     "test:load-progress": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-load-progress.mjs",
     "test:dos-bundle": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-dos-bundle.mjs",
+    "test:broadcast-idle": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-broadcast-idle.mjs",
+    "test:audio-tap": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-audio-tap.mjs",
     "test:arcade-hacks": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-arcade-hacks.mjs",
     "test:room-merge": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-room-merge.mjs",
     "test:netplay-guard": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-netplay-guard.mjs",

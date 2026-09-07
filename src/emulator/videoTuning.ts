@@ -31,6 +31,36 @@
 /** 源画面到这个大小以内，就按「像素画」对待 */
 export const RETRO_MAX_PIXELS = 320 * 240
 
+/**
+ * 一条视频源的短边小于这个数，就当它**根本没有画面**。
+ *
+ * 2026-09-06 线上出过一次：观众收到的是一条 **2×2 的纯黑**流 —— 连接是好的、帧在正常解码，
+ * 废的是画面本身。主播那边的 `<ruffle-player>` 当时只有 1 个 CSS 像素（× dpr 2），
+ * `captureStream` 忠实地把这一格推了出去。
+ *
+ * 当时全链路没有一处拦得住它：抓屏照抓、编码器按 1Mbps 去编一格像素、
+ * 观众端 `videoWidth > 0` 就算「有画面了」，于是进度条撤掉、看门狗清掉，
+ * 剩下一块**永远黑、永远不报错**的屏。
+ *
+ * 16 这个数怎么来的：真实运行时里最小的源是 Game Boy 的 160×144。
+ * 比它再小一个数量级的只可能是「播放器还没被布局出来」或者「画布已经废了」，
+ * 没有中间地带 —— 所以这条线不会误伤任何一款真游戏。
+ */
+export const MIN_VIDEO_EDGE = 16
+
+/**
+ * 这个尺寸算不算「有画面」。
+ *
+ * ⚠️ 尺寸未知（0 / undefined）在这里算**不可用**。
+ * 「还没有画面」和「画面是废的」对调用方是两件事，要分清的自己先判有没有值再问这里，
+ * 别指望这个函数替你区分 —— 它只回答「这个尺寸能不能看」。
+ */
+export function usableVideoSize(width?: number, height?: number): boolean {
+  const w = Number(width) || 0
+  const h = Number(height) || 0
+  return w >= MIN_VIDEO_EDGE && h >= MIN_VIDEO_EDGE
+}
+
 /** 码率系数：每像素每帧多少 bit */
 const BITS_PER_PIXEL_FRAME = 0.25
 

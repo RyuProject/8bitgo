@@ -22,6 +22,18 @@ const STUBS = {
   '@/emulator': 'export const isPlayable=()=>true;export const EJS_PATH="/ejs/";export const RUFFLE_PATH="/ruffle/";',
   '@/services/lang': 'export const useLang=()=>"zh-Hans";',
   '@/data/platforms': 'export const platformMap={};',
+  /*
+    直播那条服务：测试里不连真信令。socket 由测试自己塞进 globalThis.__fakeLiveSocket，
+    这样 broadcast.ts 的整条握手/观众流程都能在 node 里跑（见 test-broadcast-idle.mjs）。
+    只有**别的模块按 `@/services/live` 引它**时才会被换掉；直接按文件路径 import
+    真实源码的测试（test-live-io.mjs）不受影响。
+  */
+  '@/services/live':
+    'export const connectLive=async()=>globalThis.__fakeLiveSocket;' +
+    'export const liveIceServers=async()=>[];' +
+    'export const liveIceConfig=async()=>({iceServers:[],hasTurn:false,expiry:0});' +
+    'export const liveEnabled=()=>true;' +
+    'export const refreshLiveRooms=()=>{};',
 }
 
 export async function resolve(specifier, context, next) {
@@ -49,5 +61,18 @@ export async function resolve(specifier, context, next) {
 
 export async function load(url, context, next) {
   if (url.startsWith('stub:')) return { format: 'module', shortCircuit: true, source: STUBS[url.slice(5)] }
-  return next(url, context)
+  const loaded = await next(url, context)
+  /*
+    `import.meta.env` 是 Vite 在构建时替换掉的东西，node 里根本没有这个属性 ——
+    源码里一句 `import.meta.env.VITE_X` 在测试里就是 `Cannot read properties of undefined`。
+    这里按文本换成一个全局对象，测试想指定就先设 globalThis.__viteEnv。
+    只动 src/ 下的 .ts / .tsx，node_modules 一个字节都不碰。
+  */
+  if (loaded.source && url.startsWith(pathToFileURL(SRC).href) && /\.tsx?$/.test(url)) {
+    const text = typeof loaded.source === 'string' ? loaded.source : Buffer.from(loaded.source).toString('utf8')
+    if (text.includes('import.meta.env')) {
+      return { ...loaded, source: text.replaceAll('import.meta.env', '(globalThis.__viteEnv ?? {})') }
+    }
+  }
+  return loaded
 }

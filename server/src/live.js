@@ -1,5 +1,13 @@
 import { randomBytes } from 'node:crypto'
 import { watchPresence, clientIpFrom, UNKNOWN_PRESENCE } from './presence.js'
+import { verifyToken } from './auth.js'
+import { queryOne } from './db.js'
+import {
+  CHAT_BURST,
+  CHAT_HISTORY_SIZE,
+  CHAT_MIN_INTERVAL_MS,
+  sanitizeChatText,
+} from '../../shared/live-chat.js'
 
 /**
  * 直播信令（一人玩、多人看）。
@@ -31,6 +39,10 @@ import { watchPresence, clientIpFrom, UNKNOWN_PRESENCE } from './presence.js'
  *   signal       {target, data}   → 转发给 target，附上 from
  *                观众发的一律转给**当前**主播，target 只是摆设（主播重连后 id 会变）
  *   stop-live                                           主播主动下播
+ *   chat         {text}                                 + ack(err, {id})
+ *                弹幕。房主和观众都能发；房间号取自 membership，**不看 payload**，
+ *                名字和「是不是房主」也一律由服务端判（见 chatIdentity）
+ *   ← chat           {id, at, name?, guest?, host, text}   广播给房间里所有人（含发的人自己）
  *   ← viewer-joined  {viewerId}      发给主播，让它建一条新的 PeerConnection
  *   ← viewer-left    {viewerId}
  *   ← viewers        {count}         主播和观众都收
@@ -63,8 +75,83 @@ const MAX_VIEWERS = Number(process.env.LIVE_MAX_VIEWERS || 12)
  * 这个数是在那之后再等的。太长会让大厅挂着一堆「主播不在」的房间，太短又护不住一次 4G 切换。
  */
 const RESUME_GRACE_MS = Number(process.env.LIVE_RESUME_GRACE_MS || 60_000)
+/**
+ * 主播切到后台多久之后，这间房从大厅列表里**摘掉**（房还在，直链能进，进去会看到「主播切后台了」）。
+ *
+ * 2026-09-06 线上：一位匿名主播的房在大厅挂了一个半小时，画面一直不出（人早走了、标签页没关），
+ * 谁点进去都是黑屏或者等 75 秒的超时。浏览器不给后台页出帧是改不了的，能做的是别把这种房
+ * 摆在大厅里骗人进来。90 秒：切个标签页查个东西再回来的常见时长以内不动它。
+ */
+const FROZEN_HIDE_MS = Number(process.env.LIVE_FROZEN_HIDE_MS || 90_000)
+/**
+ * 主播切到后台、且**一个观众都没有**持续多久，直接收房（reason = host-idle）。
+ * 有观众时不收：他们手里那条画面（哪怕冻着）是主播回来就能续上的。
+ * 主播的 broadcast.ts 收到 live-ended 会进入休眠，回到前台自动重开一间。
+ */
+const FROZEN_CLOSE_MS = Number(process.env.LIVE_FROZEN_CLOSE_MS || 10 * 60_000)
 
 const str = (v, max = 120) => (typeof v === 'string' ? v.trim().slice(0, max) : '')
+
+/**
+ * 发弹幕的人是谁 —— **服务端说了算，绝不采信客户端报的名字**。
+ *
+ * /live 这个命名空间本身是不鉴权的（房主的 hostName 就是客户端自己报的）。
+ * 弹幕不能沿用那套：它是实时广播、没有历史、事后删不掉，
+ * 名字可伪造意味着任何人都能挂着房主或者别人的名字说话。
+ *
+ * 所以：握手里带了 JWT 就验签、拿账号昵称；没带就发一个从 socket.id 派生的游客号。
+ * 游客号跟着连接走，同一场直播里同一个人前后是同一个号，但他改不了它。
+ *
+ * 结果缓存在 socket.data 上：多数观众一条都不发，没必要连上就查一次库；
+ * 而发第一条之后再查也没意义（一次连接期间身份不会变）。
+ */
+async function chatIdentity(socket) {
+  if (socket.data?.chatIdentity) return socket.data.chatIdentity
+
+  /** 游客号：socket.id 的尾巴。够短能显示，也够区分同一场里的不同人 */
+  const guest = String(socket.id || '').slice(-4).toLowerCase() || 'anon'
+  let identity = { guest }
+
+  const token = str(socket.handshake?.auth?.token, 512)
+  if (token) {
+    try {
+      const payload = verifyToken(token)
+      const userId = payload?.sub ?? payload?.uid ?? payload?.id
+      if (userId) {
+        const row = await queryOne('SELECT nickname FROM users WHERE id = ?', [String(userId)])
+        const nickname = str(row?.nickname, 40)
+        if (nickname) identity = { name: nickname }
+      }
+    } catch {
+      // 验不过（过期、伪造、密钥换了）就当游客，不报错也不拒绝 ——
+      // 登录态过期不该表现成「弹幕发不出去」，那没人猜得到要去重新登录
+    }
+  }
+
+  if (socket.data) socket.data.chatIdentity = identity
+  return identity
+}
+
+/**
+ * 令牌桶限流。只卡间隔的话，攒够时间一次性倒出来照样是刷屏；
+ * 只卡总量则正常聊天会被误伤。两个一起才拦得住又不碍事。
+ */
+function takeChatToken(socket) {
+  const now = Date.now()
+  const bucket = socket.data?.chatBucket ?? { tokens: CHAT_BURST, at: now }
+  const refill = ((now - bucket.at) / CHAT_MIN_INTERVAL_MS) | 0
+  if (refill > 0) {
+    bucket.tokens = Math.min(CHAT_BURST, bucket.tokens + refill)
+    bucket.at = now
+  }
+  if (bucket.tokens <= 0) {
+    if (socket.data) socket.data.chatBucket = bucket
+    return false
+  }
+  bucket.tokens -= 1
+  if (socket.data) socket.data.chatBucket = bucket
+  return true
+}
 
 /** roomId -> room */
 const rooms = new Map()
@@ -84,6 +171,14 @@ function publicRoom(room) {
     startedAt: room.startedAt,
     /** 主播断线、房间在宽限期里等它回来 */
     hostAway: room.hostSocketId === null,
+    /**
+     * 主播切到后台了：画面**冻着**，不是断了（见 host-visibility）。
+     *
+     * ⚠️ 以前只在切换的那一刻推 `host-frozen` 事件，快照里不带 —— 于是**在主播已经切后台
+     * 之后才进来的观众**永远收不到那条推送：他等不到任何一帧，界面也没有一个字解释，
+     * 只能对着黑屏，最后拿到一句甩锅给他自己网络的错误。中途进来的人必须能从 ack 里读到。
+     */
+    hostFrozen: Boolean(room.hostFrozen),
     /**
      * 配对的联机房号（主播点了「联机」之后自己报上来的）。
      *
@@ -172,9 +267,53 @@ export function subscribeLiveRooms(res) {
   return () => listWatchers.delete(res)
 }
 
+/** 这间房该不该出现在大厅列表里：主播切后台超过 FROZEN_HIDE_MS 就不该 */
+function listed(room) {
+  if (!room.hostFrozen || room.frozenSince === null) return true
+  return Date.now() - room.frozenSince < FROZEN_HIDE_MS
+}
+
+/**
+ * 主播切后台 + 零观众 → 到点收房。观众进出、主播回前台都要重新算一次：
+ * 这里先清再按当前状态决定要不要重新上闹钟，调用方不用管之前有没有。
+ */
+function scheduleFrozenClose(nsp, room) {
+  if (room.frozenTimer) clearTimeout(room.frozenTimer)
+  room.frozenTimer = null
+  if (!room.hostFrozen || room.viewers.size > 0 || !room.hostSocketId) return
+  room.frozenTimer = setTimeout(() => {
+    room.frozenTimer = null
+    // 期间可能有人进来了、主播回前台了、或者房已经被别的原因关掉 —— 只有状态没变才收
+    const cur = rooms.get(room.id)
+    if (cur === room && room.hostFrozen && room.viewers.size === 0 && room.hostSocketId) closeRoom(nsp, room, 'host-idle')
+  }, FROZEN_CLOSE_MS)
+}
+
+/** 主播切到后台了：记时间、到点通知大厅把它摘掉、零观众就上收房的闹钟 */
+function armFrozen(nsp, room) {
+  if (room.frozenSince === null) room.frozenSince = Date.now()
+  if (!room.hideTimer) {
+    room.hideTimer = setTimeout(() => {
+      room.hideTimer = null
+      // 列表是按 listed() 现算的，这里只是叫大厅刷一次
+      if (rooms.get(room.id) === room) notifyRoomList()
+    }, FROZEN_HIDE_MS)
+  }
+  scheduleFrozenClose(nsp, room)
+}
+
+function clearFrozenTimers(room) {
+  if (room.hideTimer) clearTimeout(room.hideTimer)
+  if (room.frozenTimer) clearTimeout(room.frozenTimer)
+  room.hideTimer = null
+  room.frozenTimer = null
+  room.frozenSince = null
+}
+
 function closeRoom(nsp, room, reason) {
   if (room.awayTimer) clearTimeout(room.awayTimer)
   room.awayTimer = null
+  clearFrozenTimers(room)
   nsp.to(room.id).emit('live-ended', { roomId: room.id, reason })
   for (const viewerId of room.viewers) membership.delete(viewerId)
   if (room.hostSocketId) membership.delete(room.hostSocketId)
@@ -185,6 +324,9 @@ function closeRoom(nsp, room, reason) {
 /** 主播的 socket 没了：房间先留着等它回来，到点没回来再散 */
 function hostAway(nsp, room) {
   room.hostSocketId = null
+  // 主播的 socket 都没了，「切后台」这个状态没有意义了，交给宽限期那套去管
+  room.hostFrozen = false
+  clearFrozenTimers(room)
   /**
    * 配对的联机房跟着作废。
    * EmulatorJS 的 netplay 在 socket disconnect 里直接 leaveRoom()，主播这边一断，
@@ -254,6 +396,8 @@ function leave(nsp, socket) {
   // 告诉主播可以把这条 PeerConnection 拆了，别留着占上行
   if (room.hostSocketId) {
     nsp.to(room.hostSocketId).emit('viewer-left', { viewerId: socket.id })
+    // 最后一个观众走了、主播还在后台：上收房的闹钟
+    if (room.hostFrozen) scheduleFrozenClose(nsp, room)
   } else if (room.viewers.size === 0) {
     // 主播不在、最后一个观众也走了：这房间已经没有任何人需要它，别再占着宽限期
     closeRoom(nsp, room, 'host-left')
@@ -297,6 +441,12 @@ export function attachLive(io) {
         awaySince: null,
         /** 主播是不是切到后台了（画面冻着）。见 host-visibility */
         hostFrozen: false,
+        /** 切到后台是什么时候。大厅过滤（FROZEN_HIDE_MS）按它算 */
+        frozenSince: null,
+        /** 到点把房从列表里摘掉时要通知大厅一次 */
+        hideTimer: null,
+        /** 后台 + 零观众到点收房 */
+        frozenTimer: null,
         // hostSocketId / hostIp / presence 由 bindHost 填：主播重连时也走它，只写一处
         hostSocketId: null,
         hostIp: '',
@@ -305,6 +455,13 @@ export function attachLive(io) {
          * 持续刷新，所以存的是个取快照的函数而不是一份数据。
          */
         presence: null,
+        /**
+         * 最近几条弹幕。中途进来的观众从 watch 的 ack 里拿到，不至于面对一片空白。
+         *
+         * 只在内存里，不落库：弹幕是「当下」的东西，房间散了就该跟着没。
+         * 存下来就得再配一套删除、举报、审核 —— 那是评论该干的事，不是弹幕。
+         */
+        chat: [],
       }
       rooms.set(id, room)
       bindHost(nsp, room, socket)
@@ -343,8 +500,13 @@ export function attachLive(io) {
         room.viewers.add(socket.id)
         membership.set(socket.id, { roomId: room.id, role: 'viewer' })
         socket.join(room.id)
+        // 有人来看了：后台 + 零观众那把收房的闹钟得撤
+        if (room.hostFrozen) scheduleFrozenClose(nsp, room)
       }
-      ack?.(null, { ...publicRoom(room), hostId: room.hostSocketId })
+      // 带上最近几条弹幕：中途进来的观众不该面对一片空白。
+      // 只在 watch 的 ack 里给，不进 publicRoom —— 那个是大厅列表用的，
+      // 每张卡片都驮着 30 条弹幕纯属白费流量
+      ack?.(null, { ...publicRoom(room), hostId: room.hostSocketId, chat: room.chat })
       // 由主播发起 offer：它才知道自己有几条轨、什么编码。
       // 主播不在就先不发，它 resume 回来时会拿到观众名单自己补
       if (room.hostSocketId) nsp.to(room.hostSocketId).emit('viewer-joined', { viewerId: socket.id })
@@ -422,19 +584,63 @@ export function attachLive(io) {
       const frozen = Boolean(payload?.hidden)
       if (room.hostFrozen === frozen) return // 状态没变就不用惊动所有人
       room.hostFrozen = frozen
+      if (frozen) armFrozen(nsp, room)
+      else clearFrozenTimers(room)
       socket.to(room.id).emit('host-frozen', { roomId: room.id, frozen })
+      // 回前台的房要重新出现在大厅里；刚切后台的还不摘（到点 hideTimer 会叫）
+      if (!frozen) notifyRoomList()
+    })
+
+    /**
+     * 发一条弹幕。房主和观众都能发，发完广播给这个房间里的**所有人**（含发的人自己 ——
+     * 本地不做乐观回显，这样每个人看到的顺序都是服务端定的那一个）。
+     *
+     * ⚠️ 房间号**只从 membership 里取，绝不采信 payload**。
+     * 让客户端指定 roomId 等于开了个跨房间注入的口子：不在任何房间里的人
+     * 也能往任意直播间广播，而这是 netplay 那边已经踩过的坑（见 netplay 加固那一份）。
+     *
+     * ⚠️ 名字同理，由 chatIdentity 从 JWT 或 socket.id 派生，客户端说什么都不算数。
+     * host 这个标记也是服务端比对 hostSocketId 得出的 —— 冒充房主说话是弹幕里
+     * 破坏力最大的一种，不能留给客户端自觉。
+     */
+    socket.on('chat', (payload, ack) => {
+      const info = membership.get(socket.id)
+      if (!info) return ack?.('not in a room')
+      const room = rooms.get(info.roomId)
+      if (!room) return ack?.('not found')
+
+      const text = sanitizeChatText(payload?.text)
+      if (!text) return ack?.('empty')
+      if (!takeChatToken(socket)) return ack?.('too fast')
+
+      void chatIdentity(socket).then((identity) => {
+        // 异步取身份的这几毫秒里房间可能已经散了 / 人已经走了，再确认一次
+        if (!rooms.has(room.id) || membership.get(socket.id)?.roomId !== room.id) return
+        const msg = {
+          id: randomBytes(8).toString('base64url'),
+          at: Date.now(),
+          ...identity,
+          host: room.hostSocketId === socket.id,
+          text,
+        }
+        room.chat.push(msg)
+        if (room.chat.length > CHAT_HISTORY_SIZE) room.chat.splice(0, room.chat.length - CHAT_HISTORY_SIZE)
+        nsp.to(room.id).emit('chat', msg)
+        ack?.(null, { id: msg.id })
+      })
     })
 
     socket.on('leave', () => leave(nsp, socket))
     socket.on('disconnect', () => leave(nsp, socket))
   })
 
-  return { nsp, list: () => Array.from(rooms.values()).map(publicRoom) }
+  return { nsp, list: () => Array.from(rooms.values()).filter(listed).map(publicRoom) }
 }
 
 /** 给 REST 用：当前在播的房间 */
 export function liveRooms({ gameSlug } = {}) {
-  const all = Array.from(rooms.values())
+  // 主播切后台太久的房不上列表（直链 liveRoom() 照样能查到 —— 那是人家发出去的链接）
+  const all = Array.from(rooms.values()).filter(listed)
   const picked = gameSlug ? all.filter((r) => r.gameSlug === gameSlug) : all
   return picked.sort((a, b) => b.viewers.size - a.viewers.size || a.startedAt - b.startedAt).map(publicRoom)
 }

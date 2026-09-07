@@ -18,7 +18,7 @@ import {
 } from '@/services/comments'
 import { cx } from '@/lib/format'
 import { FEATURES } from '@/config/features'
-import { Stars, StarPicker } from './StarRating'
+import { Stars } from './StarRating'
 import { Button } from '@/components/ui/Button'
 import { SkeletonBlock } from '@/components/ui/PageSkeleton'
 
@@ -52,13 +52,6 @@ export function GameComments({ gameSlug }: { gameSlug: string }) {
   const [replyTo, setReplyTo] = useState<GameComment | null>(null)
   const [sending, setSending] = useState(false)
   const [formError, setFormError] = useState('')
-  /**
-   * 评论框里顺手打的分。0 = 没打，提交时不带 score 字段，服务端就完全不碰他已有的评分。
-   *
-   * ⚠️ 回复别人时不显示这一行：回复是在和某个人说话，不是在评价游戏。
-   * 不区分的话，一条「同意楼上」会顺手把他给整款游戏的评分改掉。
-   */
-  const [score, setScore] = useState(0)
   const boxRef = useRef<HTMLTextAreaElement>(null)
 
   const load = useCallback(
@@ -101,7 +94,6 @@ export function GameComments({ gameSlug }: { gameSlug: string }) {
     setTotal(0)
     setReplyTo(null)
     setText('')
-    setScore(0)
     setFormError('')
     void load(1, false)
   }, [gameSlug, load])
@@ -116,13 +108,12 @@ export function GameComments({ gameSlug }: { gameSlug: string }) {
     setSending(true)
     setFormError('')
     try {
-      const created = await postComment(gameSlug, content, replyTo?.id, replyTo || !score ? undefined : score)
+      const created = await postComment(gameSlug, content, replyTo?.id)
       // 列表是最新在前，所以新评论插在最前面
       setItems((prev) => [created, ...prev])
       setTotal((n) => n + 1)
       setText('')
       setReplyTo(null)
-      setScore(0)
     } catch (e) {
       setFormError(e instanceof Error ? e.message : c.loadFailed)
     } finally {
@@ -183,13 +174,14 @@ export function GameComments({ gameSlug }: { gameSlug: string }) {
                 placeholder={replyTo ? fmt(c.replyPlaceholder, { name: replyTo.author.nickname }) : c.placeholder}
                 className="w-full resize-y rounded-xl border border-line bg-surface-2 px-3 py-2 text-sm text-fg placeholder:text-dim focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30"
               />
-              {/* 打分行。回复别人时不出现 —— 回复是在和人说话，不是在评价游戏 */}
-              {FEATURES.ratings && !replyTo && (
-                <div className="mt-2 flex items-center gap-2">
-                  <span className="text-[11px] text-dim">{t.ratings.withComment}</span>
-                  <StarPicker value={score} onPick={setScore} size="sm" />
-                </div>
-              )}
+              {/*
+                这里**没有**打分控件，是有意的：全站给一款游戏打分只有一个入口 ——
+                侧栏那张评分卡（GameRating）。理由是打分和评论是两件事：分是给游戏的、
+                一人一票、随时可改；评论是一条一条的发言。两个入口摆在一起，
+                「发表」这一下到底改没改我的分就说不清了。
+                作者打过的分会显示在他每条评论的气泡上（见下面 comment.score 那一段，
+                是 join 出来的当前值，他改分这里跟着变）。
+              */}
               <div className="mt-2 flex items-center justify-between gap-2">
                 <span className={cx('text-[11px]', remaining < 50 ? 'text-live' : 'text-dim')}>
                   {remaining < 200 ? fmt(c.remaining, { n: remaining }) : ''}

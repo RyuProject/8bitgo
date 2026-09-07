@@ -171,8 +171,31 @@ export async function renderPage(req, res, next) {
     console.error('[ssr] 渲染失败，退回纯客户端渲染：', e)
     // SSR 挂了不能让站点打不开：返回不带首屏内容的模板，浏览器自己渲染
     try {
-      // 这是降级返回的空壳，一旦被边缘缓存住，故障恢复后用户还会拿到没有首屏的页面
-      res.status(200).set({ 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': CACHE.none }).end(getTemplate())
+      /*
+        状态码是 503 而不是 200，这一条是给爬虫看的。
+
+        降级返回的是一个**空壳**：<div id="root"> 里什么都没有，head 里是 index.html
+        的默认标题和描述。浏览器拿到它会自己把页面渲染出来，用户无感；但爬虫大多不执行
+        JS（就算执行也未必等得到），它看到的就是一个「标题千篇一律、正文空白」的页面。
+        用 200 说出去的意思是「这就是这个 URL 的正确内容」—— 于是 SSR 出问题的那段时间里，
+        被抓到的每个 URL 都会以空壳的样子进索引，而且全站共用同一个标题和描述，
+        典型后果是大批页面被判成重复内容或软 404，恢复之后还得等它重新抓一遍才能纠正。
+
+        503 的语义正好是「临时的，等会儿再来」：Google 明确说收到 503 会推迟处理、
+        不会拿这一次的内容去更新索引，配合 Retry-After 还能提示多久之后重试。
+        代价是监控会报警 —— 但 SSR 挂了本来就该报警，这不算副作用。
+
+        Cache-Control 仍然是 none：这个空壳一旦被边缘缓存住，故障恢复之后用户还会
+        继续拿到没有首屏的页面。
+      */
+      res
+        .status(503)
+        .set({
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': CACHE.none,
+          'Retry-After': '60',
+        })
+        .end(getTemplate())
     } catch {
       next(e)
     }

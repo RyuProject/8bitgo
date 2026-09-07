@@ -12,7 +12,7 @@
  * 用的也是同一个脚本。
  */
 import { useSyncExternalStore } from 'react'
-import { apiBase, apiEnabled } from './api'
+import { getToken, apiBase, apiEnabled } from './api'
 import { getT } from './i18n'
 import { fetchIceConfig, type IceConfig } from './netplay'
 import type { Presence } from './presence'
@@ -39,6 +39,23 @@ export interface LiveRoomInfo {
   netplayRoomId?: string | null
   /** 主播的设备 / 地区 / 网络，服务端从握手信息里看出来的。见 services/presence.ts */
   presence?: Presence
+}
+
+/**
+ * 一条弹幕。字段全部由服务端产出 —— 客户端报什么名字都不算数，
+ * 所以这里没有「发送者自称」这种东西（见 server/src/live.js 的 chatIdentity）。
+ */
+export interface LiveChatMessage {
+  id: string
+  /** 服务端收到的时刻（毫秒） */
+  at: number
+  /** 登录用户的昵称。游客没有这个字段 */
+  name?: string
+  /** 游客号（4 位，跟着这次连接走）。登录用户没有这个字段 */
+  guest?: string
+  /** 是不是房主发的。服务端比对 hostSocketId 得出，伪造不了 */
+  host: boolean
+  text: string
 }
 
 /** socket.io 客户端的最小接口，够用就行，不为它引一整套类型 */
@@ -145,6 +162,12 @@ export async function connectLive(): Promise<LiveSocket> {
   const socket = io(base ? `${base}/live` : '/live', {
     transports: ['websocket', 'polling'],
     forceNew: true,
+    /**
+     * 把登录令牌带进握手，**只为弹幕署名**：服务端验完签用账号昵称，
+     * 没带或验不过就发一个游客号（见 server/src/live.js 的 chatIdentity）。
+     * 信令本身仍然不需要登录 —— 看直播、开播都不要求账号，这一条不改。
+     */
+    auth: { token: getToken() || undefined },
   })
   await new Promise<void>((resolve, reject) => {
     /**

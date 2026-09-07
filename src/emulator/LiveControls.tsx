@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { RuntimeHandle } from './types'
 import { canBroadcast, startBroadcast, type Broadcast } from './broadcast'
-import { liveEnabled, liveLink, refreshLiveRooms } from '@/services/live'
+import { liveEnabled, liveLink, refreshLiveRooms, type LiveChatMessage } from '@/services/live'
 import { playerName } from '@/services/netplay'
 import { useT, fmt } from '@/services/i18n'
 import { cx } from '@/lib/format'
@@ -49,6 +49,13 @@ interface Props {
    * Region Capture 目前只有 Chrome 系有；没有就整个标签页一起推，能用。
    */
   captureRef?: RefObject<HTMLElement | null>
+  /** 收到一条弹幕。主播和观众看到的是同一份消息流，只是入口不同（观众那边走 liveview） */
+  onChat?: (msg: LiveChatMessage) => void
+  /**
+   * 推流会话本身。播放器拿它是为了**发**弹幕（`sendChat`）——
+   * 收在上面那个回调里，发得有个句柄。null = 现在没在播。
+   */
+  onSession?: (live: Broadcast | null) => void
   className?: string
 }
 
@@ -174,10 +181,14 @@ const RETRY_MAX = 15
  */
 const AUDIO_WAIT_MAX = 8
 
-export function LiveControls({ handle, gameName, gameSlug, platform, active = true, netplayRoomId = null, captureRef, className }: Props) {
+export function LiveControls({ handle, gameName, gameSlug, platform, active = true, netplayRoomId = null, captureRef, className,
+  onChat,
+  onSession,
+}: Props) {
   const t = useT()
   const tt = t.player.tools
   const [live, setLive] = useState<Broadcast | null>(null)
+
   /** 房间号单独存：重连后接不回原房间时会换（见 broadcast.ts 文件头），Broadcast 对象本身不变 */
   const [roomId, setRoomId] = useState('')
   /** 信令断了、正在重连。画面多半还在流（WebRTC 是点对点的），所以只是标记变灰，不撤掉 */
@@ -205,6 +216,21 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
   /** 正在弹选择器 / 握手，别让人连点 */
   const [manualBusy, setManualBusy] = useState(false)
   const liveRef = useRef<Broadcast | null>(null)
+  /**
+   * 弹幕回调走 ref。
+   *
+   * 开播那个 effect 的依赖列表已经很长了，把一个每次渲染都换新的函数加进去，
+   * 结果是父组件一重渲染就重新开播一次 —— 抓屏权限弹窗会再弹一遍。
+   */
+  const onChatRef = useRef(onChat)
+  onChatRef.current = onChat
+
+  // 把推流会话交给播放器（它要用 sendChat 发弹幕）。没在播时传 null，输入框会自己禁用
+  const onSessionRef = useRef(onSession)
+  onSessionRef.current = onSession
+  useEffect(() => {
+    onSessionRef.current?.(live)
+  }, [live])
 
   /**
    * 把联机房号报给直播间。房号变了报一次，开播晚于点联机时也要补报 ——
@@ -248,7 +274,17 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
     // 重新开始尝试就回到「连接中」。已经在播的那一路（依赖变化引起的重跑）不动它
     if (!liveRef.current) setConnecting(true)
 
-    const attempt = async (n: number) => {
+    /**
+     * @param n     等**画布**等了几轮
+     * @param audioN 等**声音**等了几轮
+     *
+     * ⚠️ 两个计数器必须分开。以前共用一个 n：画布出得晚的引擎（冷启动、大 ROM、慢机器）
+     * 走到有 sources 的时候 n 已经 ≥ AUDIO_WAIT_MAX 了，于是「等声音」那一档
+     * **一轮都不等**就开播 —— 而 buildStream 是一次性拼好的，开播之后声音节点再出现也接不进去，
+     * 这一整场直播就是哑的，主播界面显示「直播中」，没有任何提示，观众以为自己静音了。
+     * Ruffle 尤其容易踩：它的 AudioContext 是等第一声才建的。
+     */
+    const attempt = async (n: number, audioN = 0) => {
       if (cancelled || liveRef.current) return
       const sources = handle.captureSources?.()
       if (!sources || !canBroadcast(sources)) {
@@ -256,7 +292,7 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
         // 别让人对着「连接中…」白等九秒，直接落到手动分享那条路
         const hopeless = !handle.captureSources || handle.captureBlocked?.() === true
         // 还没有画面：再等一会儿。等不到就算了 —— 这个引擎大概抓不出画面
-        if (!hopeless && n < RETRY_MAX) timer = window.setTimeout(() => void attempt(n + 1), RETRY_MS)
+        if (!hopeless && n < RETRY_MAX) timer = window.setTimeout(() => void attempt(n + 1, audioN), RETRY_MS)
         else {
           // 等不到就别让按钮永远停在「连接中」上骗人。抓不到画面的游戏（跨源 HTML5、
           // 没有 canvas 的页面）还有一条路：玩家点一下分享标签页
@@ -267,15 +303,19 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
       }
       setNeedsManual(false)
       const hasAudio = Boolean(sources.stream?.getAudioTracks().length || (sources.audioNode && sources.audioContext))
-      if (!hasAudio && n < AUDIO_WAIT_MAX) {
-        timer = window.setTimeout(() => void attempt(n + 1), RETRY_MS)
+      if (!hasAudio && audioN < AUDIO_WAIT_MAX) {
+        timer = window.setTimeout(() => void attempt(n, audioN + 1), RETRY_MS)
         return
       }
       try {
         const b = await startBroadcast({
-          sources,
+          // 传函数不传对象：画布被运行时换掉（Ruffle 读档 reload）时 broadcast 会重新来要一次。
+          // 传上面那个 sources 死对象的话，直播会永远冻在换画布前那一帧（见 captureFeed.ts）
+          sources: () => handle.captureSources?.() ?? null,
           meta: { gameSlug, gameName, platform: platform ?? '', title: gameName, hostName: playerName() },
           onViewers: setViewers,
+          // 弹幕直接转给播放器：LiveControls 只是工具条，不该拿着消息列表
+          onChat: (msg) => onChatRef.current?.(msg),
           onQuality: (q) => setQuality(q.reason),
           onRoom: setRoomId,
           onState: (state) => {

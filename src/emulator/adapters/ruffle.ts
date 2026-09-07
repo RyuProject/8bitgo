@@ -12,7 +12,9 @@ import { flashKeysFor, keyDesc, type KeyDesc } from '../flashKeys'
 import { loadGameBytes } from '../romLoader'
 import { assertSwf } from '@/lib/romValidation'
 import { canvasToBlob } from '../recorder'
+import { usableVideoSize } from '../videoTuning'
 import { focusFrame } from '../frameFocus'
+import { installAudioTap, type AudioTap } from '../audioTap'
 import { getT, fmt } from '@/services/i18n'
 
 export { RUFFLE_PATH } from '../paths'
@@ -257,6 +259,21 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
   }
 
+  /**
+   * 舞台画布，而且**画面是有意义的**。
+   *
+   * Ruffle 的画布尺寸 = `<ruffle-player>` 元素的 CSS 尺寸 × devicePixelRatio（2026-09-06 实测，
+   * 元素为 0 时才退回 SWF 舞台尺寸），所以播放器还没被布局出来的那一刻它可能只有 2×2。
+   * 那种画布抓出来是**纯黑**，推流和截图都不该用它 —— 线上出过一次：
+   * 观众收到 2×2 黑屏，全程零报错（见 videoTuning 的 `MIN_VIDEO_EDGE`）。
+   *
+   * 不缓存、每次现查：元素长大之后 Ruffle 会重建画布，等得到就会等到。
+   */
+  const usableStageCanvas = (): HTMLCanvasElement | null => {
+    const c = stageCanvas()
+    return c && usableVideoSize(c.width, c.height) ? c : null
+  }
+
   /** 远程 ROM 才有 URL；本地文件走 data 加载，拿不到 */
   const swfUrl: URL | null = (() => {
     if (typeof options.game !== 'string') return null
@@ -281,6 +298,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
     }
   }
+
+  /** 音频探针（见 ../audioTap）。ruffle.js 加载前装上，销毁时跟着 iframe 一起没 */
+  let audioTap: AudioTap | null = null
 
   const iframe = document.createElement('iframe')
   iframe.title = fmt(rt.flashTitle, { name: options.gameName })
@@ -361,6 +381,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       options.onError?.(rt.flashInitFailed)
       return
     }
+
+    /*
+      音频探针要赶在 ruffle.js 之前装：它一加载就会自己 new AudioContext，晚一步就接不着了。
+      装的是**这个 iframe 自己的 realm**，不碰父页面，销毁时跟着 iframe 一起没。
+      拿不到就是拿不到 —— captureSources 那边照旧只给画面，和以前一样是静音，不会更糟。
+    */
+    audioTap = installAudioTap(win as unknown as Window & Record<string, unknown>)
 
     const script = doc.createElement('script')
     script.src = `${RUFFLE_PATH}ruffle.js`
@@ -534,24 +561,34 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       dispatchKey(desc, down)
     },
     captureSources(): CaptureSources | null {
-      const canvas = stageCanvas()
+      const canvas = usableStageCanvas()
       if (!canvas) return null
       /**
-       * 只给画面，不给声音。
+       * 画面 + 声音。
        *
-       * Ruffle 的音频跑在它自己 new 出来的 AudioContext 里，没有任何公开接口把
-       * AudioNode 交出来，所以录出来的视频和推出去的直播都是**静音**的。
+       * Ruffle 的音频跑在它自己 new 出来的 AudioContext 里，没有任何公开接口把 AudioNode
+       * 交出来 —— 所以在装上探针之前，Flash 的录像和直播一律是**静音**的。
        *
-       * 要声音只有一条路（我实测过是通的）：在 ruffle.js 加载**之前**把 iframe 里的
-       * AudioContext 构造函数和 AudioNode.prototype.connect 换掉，凡是接到 destination
-       * 的节点顺手再接一份到我们自己的 GainNode 上，再把这个 Gain 当 audioNode 交出去。
-       * 但那是在替换所有 Flash 游戏的公共音频通路，patch 一旦有闪失就是全站 Flash 没声音，
-       * 比「直播没声音」严重得多，所以先不动。
+       * 现在走 `../audioTap`：在 ruffle.js 加载之前换掉这个 iframe realm 里的
+       * AudioContext 构造函数和 AudioNode.prototype.connect，把接到扬声器的那一路
+       * 旁路一份到我们自己的 GainNode 上。EmulatorJS 那条路早就是这么干的，
+       * 这次只是把同一份实现抽出来共用。
+       *
+       * ⚠️ 原来这里的注释担心「patch 一旦有闪失就是全站 Flash 没声音」。那个顾虑
+       * 建立在「改的是公共音频通路」上，而实际落点是**每一局自己那个 srcdoc iframe**：
+       * 换游戏就是新 realm，销毁时整个 realm 跟着没，patch 不会外溢到父页面或别的运行时。
+       * 加上探针内部每一步都兜住了失败，最坏的结果就是回到今天 —— 没声音。
+       *
+       * ⚠️ AudioContext 是**懒建**的（Ruffle 要等第一声才建，而且受自动播放策略约束）。
+       * 所以这个函数第一次被调时 tap 很可能还是空的 —— 调用方要重试，
+       * 见 LiveControls 里等声音的那几轮。
        */
-      return { canvas }
+      return { canvas, audioNode: audioTap?.node ?? null, audioContext: audioTap?.ctx ?? null }
     },
     async screenshot() {
-      const canvas = stageCanvas()
+      // 同样要过尺寸这一关：2×2 的画布截出来是一张 2×2 的图，
+      // 当封面用会一路存进对象存储，比截图失败糟得多
+      const canvas = usableStageCanvas()
       if (!canvas || typeof canvas.captureStream !== 'function') return null
       /**
        * 为什么不直接 canvas.toBlob()：
@@ -667,6 +704,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       destroyed = true
       player = null
       api = null
+      // realm 跟着 iframe 一起没，不用还原 patch；只是别留着指向死 realm 的节点
+      audioTap = null
       try {
         iframe.srcdoc = ''
         iframe.src = 'about:blank'

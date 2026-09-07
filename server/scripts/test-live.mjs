@@ -8,11 +8,14 @@ import { io as client } from 'socket.io-client'
 // 宽限期和每 IP 上限都是模块加载时读的环境变量，所以要先设好再 import
 process.env.LIVE_RESUME_GRACE_MS = '400'
 process.env.LIVE_MAX_ROOMS_PER_IP = '3'
+// 主播切后台：300ms 后从大厅摘掉，零观众 700ms 后收房（线上默认 90s / 10min）
+process.env.LIVE_FROZEN_HIDE_MS = '300'
+process.env.LIVE_FROZEN_CLOSE_MS = '700'
 const { attachLive, liveRooms, liveRoom } = await import('../src/live.js')
 
 const http = createServer()
 const server = new Server(http, { cors: { origin: true } })
-attachLive(server)
+const { list: lst } = attachLive(server)
 await new Promise((r) => http.listen(0, r))
 const url = `http://127.0.0.1:${http.address().port}/live`
 const conn = () => client(url, { transports: ['websocket'], forceNew: true })
@@ -377,6 +380,147 @@ lv.close()
   ctrl.abort()
   sseHttp.close()
   await new Promise((r) => setTimeout(r, 60))
+}
+
+
+/* ── 弹幕 ─────────────────────────────────────────────────
+ * 要点全在「服务端说了算」这一句上：房间号取自 membership、名字由服务端派生、
+ * 「是不是房主」由服务端比对 hostSocketId。客户端报什么都不算数。 */
+{
+  const { CHAT_MAX_LENGTH, CHAT_BURST } = await import('../../shared/live-chat.js')
+
+  const ch = conn(); await once(ch, 'connect')
+  const cl = await call(ch, 'go-live', { title: '弹幕场', gameSlug: 'g', gameName: 'G', platform: 'nes', hostName: 'Host' })
+  const cRoom = cl.data.roomId
+
+  const a = conn(); await once(a, 'connect')
+  await call(a, 'watch', { roomId: cRoom })
+  const b = conn(); await once(b, 'connect')
+  await call(b, 'watch', { roomId: cRoom })
+
+  // 1. 观众发 → 房主、另一个观众、以及发的人自己都收到
+  const gotHost = once(ch, 'chat'), gotB = once(b, 'chat'), gotSelf = once(a, 'chat')
+  const sent = await call(a, 'chat', { text: 'hello' })
+  const [mh, mb, ms] = [await gotHost, await gotB, await gotSelf]
+  check('弹幕广播给房间里所有人', mh.text === 'hello' && mb.text === 'hello' && ms.text === 'hello')
+  check('发的人自己也收到（不做本地回显，顺序由服务端定）', ms.id === mh.id && sent.data?.id === mh.id)
+
+  // 2. 房主标记由服务端判
+  check('观众发的 host=false', mh.host === false)
+  const gotFromHost = once(a, 'chat')
+  await call(ch, 'chat', { text: 'hi all' })
+  check('房主发的 host=true', (await gotFromHost).host === true)
+
+  // 3. 名字服务端给，客户端报的一律不认
+  check('游客号由服务端派生', typeof mh.guest === 'string' && mh.guest.length > 0 && mh.name === undefined)
+  const gotFake = once(ch, 'chat')
+  await call(b, 'chat', { text: 'x', name: '房主', guest: 'zzzz', host: true })
+  const fake = await gotFake
+  check('客户端报的 name / host 一概不采信', fake.name === undefined && fake.host === false && fake.guest !== 'zzzz')
+
+  // 4. 跨房间注入：不在任何房间里的人发不出去，也不该漏进别人的房间
+  const outsider = conn(); await once(outsider, 'connect')
+  let leaked = false
+  const spy = (m) => { if (m.text === 'INJECT') leaked = true }
+  ch.on('chat', spy)
+  const rej = await call(outsider, 'chat', { roomId: cRoom, text: 'INJECT' })
+  await new Promise((r) => setTimeout(r, 120))
+  check('不在房间里的人发不了弹幕', rej.err === 'not in a room')
+  check('指定 roomId 也注入不进别人的房间', leaked === false)
+  ch.off('chat', spy)
+  outsider.close()
+
+  // 5. 空内容
+  const blank = await call(a, 'chat', { text: '   \n  ' })
+  check('纯空白不发', blank.err === 'empty')
+
+  // 6. 超长按码点截断
+  const gotLong = once(ch, 'chat')
+  await call(b, 'chat', { text: 'X'.repeat(CHAT_MAX_LENGTH + 40) })
+  check('超长截断到上限', Array.from((await gotLong).text).length === CHAT_MAX_LENGTH)
+
+  // 7. 限流：一个连接连着刷，桶空了就拒
+  const fresh = conn(); await once(fresh, 'connect')
+  await call(fresh, 'watch', { roomId: cRoom })
+  let refused = 0
+  for (let i = 0; i < CHAT_BURST + 3; i++) {
+    const r = await call(fresh, 'chat', { text: 'spam ' + i })
+    if (r.err === 'too fast') refused++
+  }
+  check('连着刷会被限流挡下', refused > 0)
+  fresh.close()
+
+  // 8. 中途进来的观众能从 watch 的 ack 里拿到历史
+  const latecomer = conn(); await once(latecomer, 'connect')
+  const ack = await call(latecomer, 'watch', { roomId: cRoom })
+  check('中途进来的观众拿到历史', Array.isArray(ack.data?.chat) && ack.data.chat.some((m) => m.text === 'hello'))
+  check('历史里也带着服务端判的房主标记', ack.data.chat.some((m) => m.host === true))
+  latecomer.close()
+
+  for (const s of [ch, a, b]) s.close()
+  await new Promise((r) => setTimeout(r, 60))
+}
+
+
+// 9. 主播切后台太久的僵尸房：先从大厅摘掉，零观众到点收房，回前台立刻恢复
+{
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+  const zh = conn(); await once(zh, 'connect')
+  const z = await call(zh, 'go-live', { title: '僵尸房', gameSlug: 'zombie', gameName: 'Zombie', platform: 'flash', hostName: 'Away' })
+  const zRoom = z.data.roomId
+  const zv = conn(); await once(zv, 'connect')
+  const zw = await call(zv, 'watch', { roomId: zRoom })
+  check('僵尸房：观众进得去', !zw.err)
+
+  // 主播切后台：有观众，房不收；刚切的时候还在列表里
+  zh.emit('host-visibility', { hidden: true })
+  await sleep(80)
+  check('切后台那一刻还在大厅列表里', liveRooms().some((r) => r.roomId === zRoom))
+  await sleep(320)
+  check('切后台超过阈值后从大厅列表里摘掉', !liveRooms().some((r) => r.roomId === zRoom))
+  check('摘掉的房直链照样能查到（人家发出去的链接）', liveRoom(zRoom)?.roomId === zRoom)
+  check('摘掉的房 attachLive().list() 也不列', !lst().some((r) => r.roomId === zRoom))
+  await sleep(500)
+  check('有观众在看就算切后台很久也不收房', liveRoom(zRoom)?.roomId === zRoom)
+
+  // 主播回前台：立刻回到列表
+  zh.emit('host-visibility', { hidden: false })
+  await sleep(80)
+  check('回前台立刻回到大厅列表', liveRooms().some((r) => r.roomId === zRoom))
+
+  // 再切后台，观众走了 → 零观众到点收房，主播收到 live-ended(host-idle)
+  zh.emit('host-visibility', { hidden: true })
+  await sleep(50)
+  const ended = once(zh, 'live-ended', 3000)
+  zv.close()
+  await sleep(200)
+  check('观众刚走还没到点，房还在', liveRoom(zRoom)?.roomId === zRoom)
+  const e = await ended.catch(() => null)
+  check('后台 + 零观众到点收房，主播收到 live-ended', e?.roomId === zRoom, JSON.stringify(e))
+  check('收房的 reason 是 host-idle（主播端据此进入休眠而不是报错）', e?.reason === 'host-idle')
+  check('收掉的房查不到了', liveRoom(zRoom) === null)
+
+  // 对照：切后台 + 零观众，但到点前主播回前台了 → 不收
+  const zh2 = conn(); await once(zh2, 'connect')
+  const z2 = await call(zh2, 'go-live', { title: '回来了', gameSlug: 'zombie', gameName: 'Zombie', platform: 'flash', hostName: 'Back' })
+  zh2.emit('host-visibility', { hidden: true })
+  await sleep(400)
+  zh2.emit('host-visibility', { hidden: false })
+  await sleep(500)
+  check('到点前回了前台就不收房', liveRoom(z2.data.roomId)?.roomId === z2.data.roomId)
+
+  // 对照：切后台 + 零观众，到点前来了观众 → 不收
+  const zh3 = conn(); await once(zh3, 'connect')
+  const z3 = await call(zh3, 'go-live', { title: '有人来', gameSlug: 'zombie', gameName: 'Zombie', platform: 'flash', hostName: 'Late' })
+  zh3.emit('host-visibility', { hidden: true })
+  await sleep(400)
+  const zv3 = conn(); await once(zv3, 'connect')
+  await call(zv3, 'watch', { roomId: z3.data.roomId })
+  await sleep(500)
+  check('到点前来了观众就不收房', liveRoom(z3.data.roomId)?.roomId === z3.data.roomId)
+
+  for (const s of [zh, zh2, zh3, zv3]) s.close()
+  await sleep(60)
 }
 
 for (const s of [host, host2, host3, host4, host5, v1, v2, v3, v4, v5, v6, solo, late, stranger]) s.close()

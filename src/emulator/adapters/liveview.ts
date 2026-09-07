@@ -26,7 +26,9 @@
  */
 import type { Capability, CaptureSources, MountOptions, RuntimeHandle } from '../types'
 import { getT, fmt } from '@/services/i18n'
-import { connectLive, liveEnabled, liveIceConfig, type LiveSocket } from '@/services/live'
+import { connectLive, liveEnabled, liveIceConfig, type LiveChatMessage, type LiveSocket } from '@/services/live'
+import { sanitizeChatText } from '../../../shared/live-chat.js'
+import { usableVideoSize } from '../videoTuning'
 
 export type LiveViewState = 'connecting' | 'watching' | 'reconnecting' | 'host-away' | 'ended' | 'error'
 
@@ -43,6 +45,8 @@ export interface LiveSession {
    * 已经在看的人不会再去刷大厅，等轮询等不来。
    */
   onNetplay?: (roomId: string | null) => void
+  /** 收到一条弹幕。自己发的那条也会从服务端回来，本地不做乐观回显 */
+  onChat?: (msg: LiveChatMessage) => void
   /**
    * 主播切到后台了（true）/ 切回来了（false）。
    * 画面这时是**冻结**而不是断开 —— 浏览器不给后台标签页出帧，这是浏览器行为。
@@ -73,16 +77,20 @@ export interface LinkQuality {
   rttMs: number
 }
 
-type SignalData = { sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit; gen?: number }
+type SignalData = { sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit; gen?: number; error?: 'no-source' }
 type WatchAck = {
   hostId: string | null
   hostAway?: boolean
+  /** 主播切后台了，画面冻着。中途进来的观众只能从这里知道 —— host-frozen 那条推送早发过了 */
+  hostFrozen?: boolean
   title: string
   hostName: string
   gameName: string
   viewers: number
   /** 配对的联机房号。中途进来的观众靠它，不用等 netplay-linked 那一下 */
   netplayRoomId?: string | null
+  /** 最近几条弹幕。同理：中途进来的人靠它，不然面对一片空白 */
+  chat?: LiveChatMessage[]
 }
 
 /**
@@ -195,6 +203,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 没有任何超时、没有任何提示。改成等到第一帧真的画出来为止。
    */
   let gotFrame = false
+  /**
+   * 帧在解码，但小得没有内容（2×2 那种）。
+   *
+   * 这是**主播端的源废了**，不是网络问题 —— 报错时必须和「连不上」分开说，
+   * 否则观众会去换网络、换热点，折腾一件跟他毫无关系的事。
+   */
+  let tinyFrame = false
+  /** 主播明说了「这一刻抓不到画面」（见 broadcast.ts 的 SignalData.error）。报错时优先于一切网络诊断 */
+  let noSource = false
+  /** 主播说抓不到画面之后，隔多久再去要一次。画布回来（Ruffle 读档重建大约 700ms）就能接上 */
+  const NO_SOURCE_RETRY_MS = 2_500
   /** 第一帧的等待器（换连接时要撤掉，否则旧连接的回调会误报） */
   let frameWaiter: (() => void) | null = null
   /** 主播切到后台了：画面冻着，不是断了 */
@@ -254,6 +273,28 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 说「可能是对方下播了」纯属误导 —— 用户会一直重试一件永远不可能成功的事。
    */
   const diagnose = (): string => {
+    // 主播自己说了抓不到画面：这是最确定的一条，什么网络诊断都不用做
+    if (noSource) return rt.liveNoSource
+    /**
+     * 先看有没有收到过帧。收到了就说明 ICE 早就通了，
+     * 再去谈 STUN / TURN 是把观众往错误的方向支 —— 问题在主播推的画面上。
+     */
+    if (tinyFrame) {
+      console.warn(`[live] 主播推过来的画面只有 ${video.videoWidth}×${video.videoHeight}，源废了，与网络无关`)
+      return rt.liveBadFrame
+    }
+    /**
+     * 通道通了、轨也在，但一帧都没到（轨一直 muted）：是**主播那边不出帧**，不是网络。
+     * 实测（真 Chromium 环回）：画布静止时后进的观众就是这个形状 —— 游戏暂停、Flash 停在静态菜单、
+     * 或者主播的浏览器没有 Insertable Streams 补不了帧。说「连不上」会让人去换热点，白折腾。
+     */
+    const vt = stream.getVideoTracks()[0]
+    // 走到 diagnose() 就说明一帧都没画出来（看门狗只在 !watching 时叫它），所以这里不用再看 gotFrame。
+    // ⚠️ 别拿 track.muted 当判据：实测源曾经出过帧再静止时，后进观众的轨可能报 muted=false 却一帧没有。
+    if (pc?.connectionState === 'connected' && vt) {
+      console.warn(`[live] 已连上主播（轨 muted=${vt.muted}），但对方一帧都没发出来（游戏暂停 / 静止画面 / 主播浏览器不出帧）`)
+      return rt.liveHostIdle
+    }
     const outward = localCandidateTypes.has('srflx') || localCandidateTypes.has('relay')
     if (!outward) {
       console.warn('[live] 只收集到 host 候选，拿不到公网地址（STUN 不可达？）hasTurn=', hasTurn)
@@ -303,7 +344,24 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     let rvfc = 0
     let poll = 0
     const onEvent = () => {
-      if (video.videoWidth > 0) fire()
+      if (video.videoWidth <= 0) return
+      /**
+       * ⚠️ 有尺寸 ≠ 有画面。
+       *
+       * 以前这里是 `videoWidth > 0` 就 fire()，于是一条 2×2 的黑屏轨也算「第一帧到了」：
+       * markWatching() 把看门狗清掉、进度条撤掉，剩下一块永远黑、永远不报错的屏
+       * （2026-09-06 线上就是这么发生的）。「等第一帧」防住了「一帧都没有」，
+       * 没防住「帧是废的」—— 这里补上。
+       *
+       * 不 fire 也不立刻报错：接着等。主播那边把播放器布局好之后画布会重建，
+       * 轨会跟着变大（实测会），真的一直不好就由看门狗按 diagnose() 说清楚是谁的问题。
+       */
+      if (!usableVideoSize(video.videoWidth, video.videoHeight)) {
+        tinyFrame = true
+        return
+      }
+      tinyFrame = false
+      fire()
     }
     const cleanup = () => {
       if (rvfc && vid.cancelVideoFrameCallback) vid.cancelVideoFrameCallback(rvfc)
@@ -317,7 +375,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       cleanup()
     }
     if (typeof vid.requestVideoFrameCallback === 'function') {
-      rvfc = vid.requestVideoFrameCallback(() => fire())
+      // 自续：rVFC 只回调一次，而第一帧可能是废的，得盯着后面的帧等它变好
+      const onRvfc = () => {
+        onEvent()
+        if (!done && !destroyed && vid.requestVideoFrameCallback) rvfc = vid.requestVideoFrameCallback(onRvfc)
+      }
+      rvfc = vid.requestVideoFrameCallback(onRvfc)
     }
     video.addEventListener('loadeddata', onEvent)
     video.addEventListener('playing', onEvent)
@@ -429,6 +492,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
      * 状态却写着「📡 在看」，没有超时、没有提示、永远不会自愈。
      */
     gotFrame = false
+    tinyFrame = false
     const next = new RTCPeerConnection({ iceServers })
     pc = next
     next.ontrack = (ev) => {
@@ -511,9 +575,23 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
     hostId = info.hostId
     hostAway = !info.hostId || Boolean(info.hostAway)
+    // 主播在我进来之前就切后台了：host-frozen 那条推送早发过，只能从 ack 里补
+    if (Boolean(info.hostFrozen) !== hostFrozen) {
+      hostFrozen = Boolean(info.hostFrozen)
+      live.onFrozen?.(hostFrozen)
+    }
     if (!joined) {
       joined = true
       live.onInfo?.({ title: info.title, hostName: info.hostName, gameName: info.gameName })
+      /*
+        中途进来的观众补上最近几条弹幕，不然他面对的是一片空白，
+        看不出这场直播到底有没有人在说话。
+        只在**第一次**进房时补：重连时 watch 会再发一次（那是「请主播重发 offer」），
+        那时候本地已经有这些消息了，再补一遍就是满屏重影。
+      */
+      for (const msg of Array.isArray(info.chat) ? info.chat : []) {
+        if (msg?.text) live.onChat?.(msg)
+      }
       // 中途进来的观众：主播可能早就点过「联机」了，ack 里就带着房号
       live.onNetplay?.(info.netplayRoomId ?? null)
       // 主播那边收到 viewer-joined 后会主动发 offer 过来，这里等着就行
@@ -532,13 +610,23 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     rewatchTimer = window.setTimeout(() => {
       // 判据是「有没有画面」，不是「通道通没通」：连上了却一直不出画面
       // （主播那边没加轨、或者编码器起不来）同样要再要一轮 offer
-      if (!destroyed && !hostAway && !gotFrame) void rewatch()
+      /*
+        ⚠️ hostFrozen 也要放行，和 hostAway 一个待遇。
+        主播切到后台时浏览器不给后台页出帧，captureStream 直接停住 —— 这时候等不到画面
+        是**必然**的，不是连接有问题。以前守卫里没有它：闹钟照响 → 8/28/48 秒各重新 watch
+        一次 → 每一次都让主播那边把整条 PeerConnection 连编码管线重建一遍（砸在一台
+        本来就被降频的后台机器上）→ 68 秒后 rewatchCount 撞满，观众拿到一句
+        「连接超时 / 你的网络出不去」。主播好好的，只是切了个标签页。
+      */
+      if (!destroyed && !hostAway && !hostFrozen && !gotFrame) void rewatch()
     }, delay)
   }
 
   /** 要一轮新 offer；等不到就再要，几次都没用才算断 */
   const rewatch = async () => {
     if (destroyed || !socket?.connected) return
+    // 主播冻着的时候重来多少次都等不到帧，等它 host-frozen:false 回来再说
+    if (hostFrozen) return
     window.clearTimeout(rewatchTimer)
     if (rewatchCount >= REWATCH_MAX) return fail(joined && watching ? rt.liveLost : diagnose())
     rewatchCount += 1
@@ -567,8 +655,23 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         if (destroyed || !payload?.data) return
         // from 必须是当前主播；主播重连后 id 换了，host-back 会更新 hostId
         if (!hostId || payload.from !== hostId) return
-        const { sdp, candidate, gen } = payload.data
+        const { sdp, candidate, gen, error } = payload.data
+        if (error === 'no-source') {
+          /**
+           * 主播这一刻抓不到画面。不当场报错 —— 画布可能只是在重建（Ruffle 读档那 700ms）——
+           * 隔几秒再要一轮；几轮都这样，rewatch 撞满 REWATCH_MAX 之后 diagnose() 会把这句话原样报出来。
+           */
+          noSource = true
+          console.warn('[live] 主播报告抓不到画面（画布没了或废了），稍后重试')
+          live.onState?.('connecting')
+          window.clearTimeout(rewatchTimer)
+          rewatchTimer = window.setTimeout(() => {
+            if (!destroyed && !gotFrame) void rewatch()
+          }, NO_SOURCE_RETRY_MS)
+          return
+        }
         if (sdp) {
+          noSource = false
           if (sdp.type && sdp.type !== 'offer') return // 主播只发 offer
           // 新一轮：代号变了，或者这条连接已经吃过 offer。主播每轮都是新建的 PeerConnection
           const stale = !pc || pcOffered || (gen !== undefined && pcGen !== undefined && gen !== pcGen)
@@ -594,6 +697,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         }
       }) as (...args: never[]) => void)
 
+      /**
+       * 弹幕。服务端广播给房间里所有人，自己发的那条也会回来 ——
+       * 所以这里收到什么就显示什么，本地不做乐观回显：
+       * 每个观众看到的顺序都是服务端定的那一个。
+       */
+      s.on('chat', ((msg: LiveChatMessage) => {
+        if (msg?.text) live.onChat?.(msg)
+      }) as (...args: never[]) => void)
+
+
       s.on('viewers', ((p: { count?: number }) => live.onViewers?.(p?.count ?? 0)) as (...args: never[]) => void)
       /**
        * 主播刚把这一局开成了联机房（传 null 就是刚关掉）。
@@ -610,9 +723,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
        */
       s.on('host-frozen', ((p: { frozen?: boolean }) => {
         if (destroyed) return
+        const was = hostFrozen
         hostFrozen = Boolean(p?.frozen)
         live.onFrozen?.(hostFrozen)
         if (watching) live.onState?.(hostFrozen ? 'host-away' : 'watching')
+        /*
+          主播回来了，而我还没见过一帧（进来的时候他就冻着）—— 现在才是该等画面的时候。
+          冻着期间闹钟是被 armRewatch 的守卫挡住的，不在这里重新起一次的话，
+          就再也没有人来喊「怎么还没画面」，观众会一直黑着。
+        */
+        if (was && !hostFrozen && !gotFrame) armRewatch()
       }) as (...args: never[]) => void)
 
       s.on('host-away', (() => {
@@ -676,6 +796,19 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   return {
     caps,
     volume: 1,
+    /**
+     * 发一条弹幕。socket 没连上就丢掉 —— 弹幕补发没有意义，那一刻早过去了。
+     * 房间号不用带：服务端从 membership 认，客户端指定房间号是个跨房间注入的口子。
+     */
+    liveChat(text: string) {
+      const clean = sanitizeChatText(text)
+      if (!clean || destroyed || !socket?.connected) return
+      try {
+        socket.emit('chat', { text: clean })
+      } catch {
+        /* ignore */
+      }
+    },
     setVolume(next: number) {
       const v = Math.max(0, Math.min(1, next))
       video.volume = v

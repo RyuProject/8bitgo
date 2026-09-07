@@ -8,7 +8,7 @@
  * 尤其是分档那条线：判错一次，红白机的画面就会被缩成马赛克。
  */
 import assert from 'node:assert/strict'
-import { tuningFor, fpsForViewers, RETRO_MAX_PIXELS } from '../src/emulator/videoTuning.ts'
+import { tuningFor, fpsForViewers, RETRO_MAX_PIXELS, usableVideoSize, MIN_VIDEO_EDGE } from '../src/emulator/videoTuning.ts'
 
 let failed = 0
 const check = (name, fn) => {
@@ -133,6 +133,39 @@ check('单调不增：人越多帧率只会更低', () => {
 
 check('绝不超过采集帧率（源头只有这么多帧，写高了只是骗自己）', () => {
   for (const n of [0, 5, 10]) assert.ok(fpsForViewers(n, 15) <= 15)
+})
+
+console.log('四、废画面（2×2 黑屏那次）')
+
+check('线上真实出过的那个尺寸：2×2 判为不可用', () => {
+  assert.equal(usableVideoSize(2, 2), false)
+})
+
+check('站上最小的真源 Game Boy 160×144 必须可用', () => {
+  assert.equal(usableVideoSize(160, 144), true)
+  // 其余真实机型顺带全过一遍：这条线一旦划错，误伤的是正常直播
+  for (const [name, [w, h]] of Object.entries(SOURCES)) {
+    assert.ok(usableVideoSize(w, h), `${name} ${w}×${h} 被判成废画面了`)
+  }
+})
+
+check('边界正好在 MIN_VIDEO_EDGE 上，取等号算可用', () => {
+  assert.equal(usableVideoSize(MIN_VIDEO_EDGE, MIN_VIDEO_EDGE), true)
+  assert.equal(usableVideoSize(MIN_VIDEO_EDGE - 1, MIN_VIDEO_EDGE), false)
+  assert.equal(usableVideoSize(MIN_VIDEO_EDGE, MIN_VIDEO_EDGE - 1), false)
+})
+
+check('尺寸未知（0 / undefined / NaN）一律算不可用', () => {
+  // 「还没有画面」和「画面是废的」由调用方分：这个函数只回答尺寸能不能看。
+  // 观众端就是靠先判 videoWidth > 0 再问这里，才不会把开局第一拍误杀。
+  for (const bad of [[0, 0], [undefined, undefined], [640, 0], [0, 480], [NaN, NaN]]) {
+    assert.equal(usableVideoSize(bad[0], bad[1]), false, `${bad} 不该算可用`)
+  }
+})
+
+check('一条边正常、另一条塌了也算废（1×800 这种）', () => {
+  assert.equal(usableVideoSize(1, 800), false)
+  assert.equal(usableVideoSize(800, 1), false)
 })
 
 console.log(failed ? `\n${failed} 项未通过` : '\n全部通过 ✅')

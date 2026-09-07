@@ -28,6 +28,7 @@ import type { Capability, CaptureSources, LoadPhase, LoadProgress, MountOptions,
 import { fetchBlobWithProgress, fetchWithProgress, throttleProgress } from '../loadProgress'
 import { romCacheGet, romCacheGetBlob, romCacheKey, romCachePut, romCachePutBlob } from '../romCache'
 import { focusFrame, frameGamepads } from '../frameFocus'
+import { installAudioTap, type AudioTap } from '../audioTap'
 import { getT, fmt } from '@/services/i18n'
 import { getLang } from '@/services/lang'
 import type { Lang } from '@/config/languages'
@@ -302,6 +303,12 @@ const VIDEO_MAX_FPS = 60
  */
 const STATE_UPLOAD_MS = 10_000
 /**
+ * 连着几轮拿不到房间令牌才报警。
+ * 第一轮在开局后 3 秒，之后每 STATE_UPLOAD_MS 一轮 —— 3 轮 ≈ 23 秒，
+ * 足够熬过一次慢握手，又不至于让真的失败埋太久。
+ */
+const MISS_BEFORE_WARN = 3
+/**
  * 开房 / 进房最多等多久。信令握手 + open-room 的 ack 正常一两秒；移动网络、跨洋线路慢一些也就几秒。
  * 以前是 1 秒后看到 socket 没连上就按「房主断线」处理 —— 握手慢一点的正常用户开房就被拆掉。
  */
@@ -482,12 +489,6 @@ interface EjsEmulator {
   getSettingValue?: (key: string) => string | undefined
 }
 
-/** 我们塞进 iframe 的音频探针，见 installAudioTap */
-interface EjsAudioTap {
-  ctx: AudioContext | null
-  node: GainNode | null
-}
-
 /**
  * 在 iframe 里装一个音频探针，供录像取声音用。
  *
@@ -626,45 +627,6 @@ function safeStr(v: unknown): string {
   } catch {
     return String(v)
   }
-}
-
-function installAudioTap(win: Window & Record<string, unknown>): EjsAudioTap {
-  const tap: EjsAudioTap = { ctx: null, node: null }
-  const Native = (win.AudioContext || win.webkitAudioContext) as typeof AudioContext | undefined
-  const NodeProto = (win as unknown as { AudioNode?: { prototype: AudioNode } }).AudioNode?.prototype
-  if (typeof Native !== 'function' || !NodeProto) return tap
-
-  class TappedAudioContext extends Native {
-    constructor(...args: unknown[]) {
-      super(...(args as [AudioContextOptions?]))
-      if (!tap.ctx) {
-        tap.ctx = this
-        try {
-          tap.node = this.createGain()
-        } catch {
-          tap.node = null
-        }
-      }
-    }
-  }
-  win.AudioContext = TappedAudioContext
-  if (win.webkitAudioContext) win.webkitAudioContext = TappedAudioContext
-
-  const origConnect = NodeProto.connect
-  NodeProto.connect = function (this: AudioNode, dest: AudioNode | AudioParam, ...rest: unknown[]) {
-    const ret = (origConnect as (...a: unknown[]) => unknown).call(this, dest, ...rest)
-    try {
-      // 只旁路「直接连到扬声器」的那一路，避免中间节点被重复采集
-      if (tap.ctx && tap.node && dest === tap.ctx.destination) {
-        ;(origConnect as (...a: unknown[]) => unknown).call(this, tap.node)
-      }
-    } catch {
-      /* 旁路失败只影响录音里的声音，不影响游戏 */
-    }
-    return ret as AudioNode
-  } as AudioNode['connect']
-
-  return tap
 }
 
 /**
@@ -1085,6 +1047,18 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let saveFlushTimer = 0
   /** 联机存档托管失败只报第一次，免得每 10 秒刷一条 */
   let stateUploadWarned = false
+  /**
+   * 连着几轮没拿到房间令牌了。
+   *
+   * ⚠️ 不能第一次拿不到就喊。`startStateUpload` 开局 3 秒就先探一次，而令牌是服务端在
+   * open-room 的 ack 之后紧接着单独发的 —— 信令握手慢一点（跨境、TURN 还在协商），
+   * 这一次探测本来就该是空的。以前 `stateUploadWarned` 是个一次性闩：那一下就把
+   * 「房主进度托管未启动」印在控制台上再也不撤，**哪怕令牌半秒后就到了、托管一直在正常跑**。
+   * 于是这条警告既报假警，又把真正的失败（服务端没发、socket.io 没加载、令牌被清掉）
+   * 混在同一句话里，看到的人分不出是哪种。
+   * 改成连着 MISS_BEFORE_WARN 轮（约 23 秒）都没有才算真出事。
+   */
+  let stateTokenMisses = 0
   /** 开局标志：EJS_onGameStart 与兜底轮询谁先到都行，但只放行一次 */
   let started = false
   let startWatch = 0
@@ -1095,7 +1069,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const beat = () => {
     lastBeat = Date.now()
   }
-  let audioTap: EjsAudioTap | null = null
+  let audioTap: AudioTap | null = null
   let volume = 0.6
   const caps = new Set<Capability>(['pause', 'saveState', 'volume', 'screenshot', 'record', 'gamepad'])
   /** 取 iframe 里的模拟器实例；还没起来时是 undefined */
@@ -1305,6 +1279,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     // 上一个房间的令牌对新房间没用，别让它冒充「已经拿到令牌」
     stateToken = ''
     stateUploadWarned = false
+    stateTokenMisses = 0
     const emu = win.EJS_emulator as EjsEmulator | undefined
     const np = emu?.netplay
     /**
@@ -1521,11 +1496,20 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       // 令牌现在在 socket 诞生时就挂了监听（hookRoomToken），拿不到才是异常
       const auth = stateToken
       if (!auth) {
-        if (!stateUploadWarned) {
+        stateTokenMisses += 1
+        // 开局那次探测拿不到是正常的（令牌还在路上），连着几轮都没有才是真出事
+        if (stateTokenMisses >= MISS_BEFORE_WARN && !stateUploadWarned) {
           stateUploadWarned = true
+          logEngine('[netplay] 一直没收到房间令牌，房主进度托管未启动 —— 掉线后接手的人会拿不到进度')
           console.warn('[netplay] 没有房间令牌，房主进度托管未启动')
         }
         return
+      }
+      if (stateTokenMisses) {
+        // 令牌是迟到的，不是没来。留一句，免得日志里只剩下那条吓人的警告
+        if (stateUploadWarned) console.info('[netplay] 房间令牌已到，房主进度托管开始')
+        stateTokenMisses = 0
+        stateUploadWarned = false
       }
       let state: Uint8Array | undefined
       try {
@@ -1615,6 +1599,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 引擎的 handleResize 有个小动作：按键收着时会把它 opacity:0 亮 250ms 量尺寸再收回去，
    * 那一下 display 是空的、opacity 是 0，得当成「收着」，否则转屏时画布会抖一下。
    */
+  /** 上一次写进去的 --pad-h。相同就不写（见 refreshPadMetrics 末尾） */
+  let lastPadH = -1
   const refreshPadMetrics = () => {
     const win = iframe.contentWindow as (Window & Record<string, unknown>) | null
     const root = iframe.contentDocument?.documentElement
@@ -1636,6 +1622,18 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       })
       if (top !== Infinity) height = Math.max(0, Math.ceil(base - top) + PAD_GAP)
     }
+    /*
+      ⚠️ 值没变就别写。
+
+      写 --pad-h 会改画布高度 → 引擎的 handleResize 跟着跑 → 而它有个小动作：
+      把按键 opacity:0 亮 250ms 量完尺寸再收回去。那两次 style 写入又会触发我们盯着
+      pad.style 的 MutationObserver → 再回到这里。写不写得一样并不影响循环成不成立，
+      但**每写一次就是一次 style 失效 + 一次强制同步布局**（上面那圈 getBoundingClientRect），
+      转屏、地址栏收放、引擎自己 resize 的时候会连着抖好几下。
+      加这一道之后，量出来没变化的那些轮次直接就地停住。
+    */
+    if (height === lastPadH) return
+    lastPadH = height
     root.style.setProperty('--pad-h', `${height}px`)
   }
 

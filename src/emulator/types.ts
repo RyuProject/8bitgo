@@ -289,6 +289,11 @@ export interface RuntimeHandle {
    */
   sendButton?: (button: PadButton, down: boolean, player?: number) => void
   /**
+   * 发一条弹幕。只有 liveview（看直播）这一路实现 —— 别的运行时下面根本没有直播间。
+   * 主播那一侧不走这里，走 Broadcast.sendChat（他手里握着的是推流会话，不是观看会话）。
+   */
+  liveChat?: (text: string) => void
+  /**
    * 这一局实际用得上的按钮。不给就是「八个键都有」（主机模拟器都是这样）。
    *
    * Flash 每款游戏读的键不一样（见 flashKeys.ts），给了这个，屏幕手柄就只画这几颗。

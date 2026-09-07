@@ -33,19 +33,18 @@ export async function fetchComments(gameSlug: string, page = 1): Promise<Comment
 }
 
 /**
- * 发表评论，可以顺手带一个 1~5 的评分。
+ * 发表评论。
  *
- * score 走的是和 /api/ratings 同一张票（服务端是同一个 submitRating），
- * 所以「在评论框打的分」会覆盖之前在星星上打的分，反之亦然 —— 一个人对一款游戏只有一票。
- * 不传（undefined）时完全不碰评分，编辑旧评论也不会把分洗掉。
+ * **不带评分。** 打分只有一个入口 —— 详情页侧栏那张评分卡（GameRating）。
+ * 作者已经打过的分会 join 出来显示在他每条评论的气泡上，但发评论这个动作
+ * 本身绝不改动他的评分。
  */
 export async function postComment(
   gameSlug: string,
   content: string,
   parentId?: string,
-  score?: number,
 ): Promise<GameComment> {
-  return api.post<GameComment>('/api/comments', { gameSlug, content, parentId, score })
+  return api.post<GameComment>('/api/comments', { gameSlug, content, parentId })
 }
 
 export async function editComment(id: string, content: string): Promise<GameComment> {

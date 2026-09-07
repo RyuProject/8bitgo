@@ -21,7 +21,6 @@ import { query, queryOne } from '../db.js'
 import { requireUser, requireAbility, hasAbility } from '../auth.js'
 import { commentRowToApi, countryOf } from '../mappers.js'
 import { take, clientKey, isMeaningfulIp } from '../rateLimit.js'
-import { submitRating } from '../ratings-repo.js'
 
 export const commentsRouter = Router()
 
@@ -231,12 +230,12 @@ async function loadOne(id, opts) {
 }
 
 /**
- * 发表：POST /api/comments { gameSlug, content, parentId?, score? }
+ * 发表：POST /api/comments { gameSlug, content, parentId? }
  *
- * score 是可选的 1~5 星：写评论时顺手打个分。走的是和 /api/ratings 同一个
- * submitRating()，所以「从评论框打的分」和「从星星打的分」是同一票，改的是同一行。
- * 顺序是**先写分再写评论**：反过来的话评论写成功、评分那步炸了，用户看到的是
- * 「评论发出去了但星星没亮」，重发一次又多一条评论。先写分则重试是幂等的。
+ * **不收 score。** 打分只有一个入口 —— 详情页侧栏那张评分卡（走 /api/ratings）。
+ * 这里曾经收过一个可选的 score，和评分卡共用同一票；拿掉是因为两个入口摆在一起时，
+ * 「发表」这一下到底改没改我的分说不清。作者的分仍然会显示在他每条评论上，
+ * 那是下面 SELECT 里 LEFT JOIN game_ratings 现查的当前值，和发评论这个动作无关。
  *
  * 限流是必须的 —— 这是个登录用户就能往数据库里写文本的接口。
  * 两道：按用户（挡住一个号刷屏）和按 IP（挡住批量注册的小号）。
@@ -282,19 +281,6 @@ commentsRouter.post('/', requireUser, async (req, res, next) => {
     }
 
     const country = countryFromRequest(req)
-
-    /**
-     * 带了分就顺手记一票（登录用户，权重 1.0）。
-     * 传了个非法值时**不静默忽略**：前端只会发 1~5，发别的说明有人在试接口，
-     * 直接回 400 比默默丢掉更容易在日志里发现。不带 score 字段则完全不碰评分。
-     */
-    if (req.body?.score !== undefined && req.body?.score !== null && req.body?.score !== '') {
-      const score = Number(req.body.score)
-      if (!Number.isInteger(score) || score < 1 || score > 5) {
-        return res.status(400).json({ error: '评分必须是 1 到 5 的整数' })
-      }
-      await submitRating({ gameId: game.id, userId: req.user.id, score, country })
-    }
 
     const r = await query(
       'INSERT INTO game_comments (game_id, user_id, parent_id, content, country) VALUES (?, ?, ?, ?, ?)',
