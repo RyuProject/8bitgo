@@ -166,7 +166,6 @@ async function runGames() {
     const descI18n =
       typeof r.description_i18n === 'string' ? JSON.parse(r.description_i18n || '{}') : r.description_i18n || {}
     const game = { description: r.description, descriptionEn: r.description_en }
-    const source = gameDescriptionSource(game)
 
     for (const lang of LANGS) {
       /**
@@ -184,6 +183,13 @@ async function runGames() {
         })
       }
 
+      /*
+        源文按**目标语言**挑，所以只能在循环里算，不能提到外面去：
+        繁体要中文原文（本地 OpenCC，免费），其余语言要英文那份。
+        提到循环外算一次的话，填了英文简介的游戏繁体又会去走上游翻译 ——
+        没配火山密钥就是一条都生成不出来（见 i18n-generate.js 的注释）。
+      */
+      const source = gameDescriptionSource(game, lang)
       if (!source) continue
       const plan = translatePlan(lang, source.lang)
       // passthrough：目标语言就是源文语言（游戏填了 description_en 时的 en）

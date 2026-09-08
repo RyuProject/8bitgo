@@ -205,6 +205,49 @@ try {
   bad('源码扫描：不许直呈原文字段', e)
 }
 
+/* ---------------- 4. 译文源文按目标语言挑（繁体走中文原文） ---------------- */
+/*
+  2026-09-08 线上实测的病例：/zh-Hant/games/1942 的简介仍是简体。
+  1942 两份简介都有（中文基准 + description_en），而源文挑的是英文 →
+  繁体只能让上游从英文翻 → 没配 VOLC_AK/SK 就整批跳过（NOT_CONFIGURED）。
+  填了英文简介的游戏全都卡在这里，而那正是站上占比最大的一批。
+*/
+try {
+  const { gameDescriptionSource } = await import('../server/src/i18n-generate.js')
+  const both = { description: '《1942》是卡普空的纵向卷轴射击游戏。', descriptionEn: '1942 is a shooter.' }
+  assert.deepEqual(gameDescriptionSource(both, 'zh-Hant'), { text: both.description, lang: 'zh-Hans' },
+    '繁体必须拿中文原文 —— 本地 OpenCC 免费，而且那是原文')
+  for (const lang of ['de', 'es', 'fr', 'it', 'ja', 'en']) {
+    assert.equal(gameDescriptionSource(both, lang).lang, 'en', `${lang} 仍应优先英文简介`)
+  }
+  // 不传目标语言 = 老行为
+  assert.equal(gameDescriptionSource(both).lang, 'en')
+  // 只有英文那份时，繁体只能从英文翻（拿不到就该报 NOT_CONFIGURED，不是静默出错文）
+  assert.equal(gameDescriptionSource({ descriptionEn: 'only english' }, 'zh-Hant').lang, 'en')
+  // 只有中文
+  assert.equal(gameDescriptionSource({ description: '只有中文' }, 'de').lang, 'zh-Hans')
+  // 什么都没有
+  assert.equal(gameDescriptionSource({}, 'zh-Hant'), null)
+  assert.equal(gameDescriptionSource(null, 'de'), null)
+  ok('译文源文按目标语言挑：繁体取中文原文，其余取英文')
+} catch (e) {
+  bad('译文源文按目标语言挑', e)
+}
+
+try {
+  const src = readFileSync(path.join(ROOT, 'server/scripts/pretranslate.mjs'), 'utf8')
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const loop = code.indexOf('for (const lang of LANGS)')
+  const call = code.indexOf('gameDescriptionSource(')
+  assert.ok(loop > 0 && call > 0, 'pretranslate 里应当有语言循环和源文调用')
+  assert.ok(call > loop,
+    '源文必须在语言循环**内**算 —— 提到循环外算一次，繁体又会拿英文那份去走上游翻译')
+  assert.match(code.slice(call, call + 40), /gameDescriptionSource\(game, lang\)/, '要把目标语言传进去')
+  ok('源码扫描：pretranslate 在语言循环内按目标语言取源文')
+} catch (e) {
+  bad('源码扫描：pretranslate 按目标语言取源文', e)
+}
+
 if (fails.length) {
   console.error(`\n❌ ${fails.length} 项失败：${fails.join('、')}`)
   process.exit(1)

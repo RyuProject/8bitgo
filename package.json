@@ -26,6 +26,7 @@
     "test:romdata": "node scripts/test-romdata.mjs",
     "test:indexnow": "node scripts/test-indexnow.mjs",
     "test:baidu": "node scripts/test-baidu-push.mjs",
+    "test:sitemap": "node scripts/test-sitemap.mjs",
     "test:robots": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-robots.mjs",
     "test:i18n-content": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-i18n-content.mjs",
     "test:timefactor": "node scripts/test-time-factor.mjs",

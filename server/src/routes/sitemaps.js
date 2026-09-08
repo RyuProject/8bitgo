@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { query } from '../db.js'
 import { CACHE } from '../cache.js'
 import { assetPublicUrl, localizedPublicUrl, publicSiteUrl } from '../site-urls.js'
-import { SITE_LANGUAGES } from '../../../shared/site-languages.js'
+import { SITE_DEFAULT_LANGUAGE, SITE_LANGUAGES } from '../../../shared/site-languages.js'
 import { ENABLED_PLATFORM_IDS, GENRE_IDS } from '../../../shared/site-taxonomy.js'
 
 const XML_HEADER = '<?xml version="1.0" encoding="UTF-8"?>'
@@ -70,12 +70,106 @@ function buildUrlsetSitemap(rows, language, siteUrl, pathOf, lastmodOf, imageOf)
 }
 
 /**
+ * 从 JSON 列里取某个语言的译文。
+ *
+ * mysql2 会把 JSON 列直接解析成对象，但同一份代码也可能读到字符串
+ * （不同驱动版本、或者列被存成了 TEXT），所以两种形状都认。认不出就当没翻译。
+ */
+function i18nText(raw, language) {
+  let map = raw
+  if (typeof map === 'string') {
+    try {
+      map = JSON.parse(map)
+    } catch {
+      return ''
+    }
+  }
+  if (!map || typeof map !== 'object' || Array.isArray(map)) return ''
+  const value = map[language]
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+/**
+ * 这一行内容在 `language` 下**有没有真正属于这门语言的正文**。
+ *
+ * ── 为什么 sitemap 要管这件事 ────────────────────────────────
+ * 站点有 8 种语言，游戏 210 款 —— 全展开就是 1,680 条 URL 交给 Google。而译文是
+ * **按需生成**的（见 [[8bitgo-i18n-content]] 那套 pretranslate）：没生成的语言，
+ * 页面正文会一路回退到英文简介、繁体回退到简体（`i18nData.ts` 的 gameDescription
+ * 就是这么写的，那是刻意的用户体验兜底，不是 bug）。
+ *
+ * 对读者这个兜底是好事，对搜索引擎是灾难：/de/、/es/、/fr/、/it/、/ja/ 五份页面的
+ * 正文会是**同一段英文**。Google 抓上几条就得出「这站的 URL 不值得抓」的结论，
+ * 剩下的全落进「已发现 - 尚未编入索引」（2026-09-08 实测：1,952 条里 929 条如此），
+ * 顺带把真正有内容的页面也拖慢。抓取预算是全站共享的，喂重复页 = 从正文页那里偷。
+ *
+ * 所以规则是：**sitemap 只承诺那些正文确实是这门语言的 URL**。
+ * 译文一生成，这里下一次被抓时就自动带上了 —— 不需要重新部署，也不用手工维护名单。
+ *
+ * ⚠️ 页面本身照旧可访问、head 里的 hreflang 照旧列全 8 种（Google 靠它归簇、
+ * 也照样能从别处发现这些 URL）。这里减的只是「我们主动请它去抓」的那一份。
+ *
+ * ⚠️ 基准语言（zh-Hans）无条件保留：它是 canonical 那一条，
+ * 连简介都还没写的游戏也得有一条 URL 进得去，否则整款游戏从 sitemap 里消失。
+ *
+ * @param row 数据库行
+ * @param language 站点语言码（已经过 languageCodes 校验）
+ * @param cols `{ i18n: 'description_i18n', en: 'description_en' }` —— 存译文的列名，
+ *             `en` 是「这门语言有独立基准列」的特例（游戏的英文简介是单独一列，文章没有）
+ */
+export function hasLocalizedBody(row, language, cols = {}) {
+  if (language === SITE_DEFAULT_LANGUAGE) return true
+  if (cols.i18n && i18nText(row?.[cols.i18n], language)) return true
+  // 英文简介在 games 里是独立的一列，不在 description_i18n 里
+  if (language === 'en' && cols.en && String(row?.[cols.en] ?? '').trim()) return true
+  return false
+}
+
+/** 这一类的译文列在数据库里不存在（migrate 还没跑），已经退回过一次 */
+const missingI18nColumns = new Set()
+const isUnknownColumn = (error) =>
+  error?.code === 'ER_BAD_FIELD_ERROR' || /unknown column/i.test(String(error?.message || ''))
+
+/**
+ * 取 sitemap 的数据行：先按「带译文列」查，列不存在就退回原来那句，
+ * 并**回报这一份数据到底带不带译文列**（`gate`）。
+ *
+ * 为什么要退回：译文列是靠 `npm run migrate` 加的，而这个仓库的常态是
+ * **代码先上、迁移后跑**（见 [[8bitgo-local-env]]）。那个空窗期里如果直接抛，
+ * sitemap.xml 会变成 500 —— 搜索引擎拿不到任何 URL，比「多提交了几百条重复页」
+ * 严重得多。**记下来不再重试**：sitemap 是给爬虫打的，别为每次抓取都白扔一条错查询；
+ * migrate 跑完之后进程重启一次就自然恢复。
+ *
+ * ⚠️ `gate` 这个返回值不是可选的讲究，是这段的**要害**：退回来的行里根本没有
+ * `description_i18n` 这一列，此时若照旧按 hasLocalizedBody 过滤，
+ * 每一行都会被判成「没有译文」—— 7 种语言的 sitemap 会**全部变成空的**，
+ * 比不做这个功能糟糕一百倍，而且看不出来（XML 合法、HTTP 200、日志安静）。
+ * 所以列不在时必须整个关掉过滤，退回「展开全部语言」的旧行为。
+ */
+async function sitemapRows(key, sqlWithI18n, sqlPlain) {
+  if (!missingI18nColumns.has(key)) {
+    try {
+      return { rows: await query(sqlWithI18n), gate: true }
+    } catch (error) {
+      if (!isUnknownColumn(error)) throw error
+      missingI18nColumns.add(key)
+      console.warn(`[sitemap] ${key}：数据库还没有译文列，这一份退回「展开全部语言」（跑 npm run migrate 再重启即可）：`, error.message)
+    }
+  }
+  return { rows: await query(sqlPlain), gate: false }
+}
+
+/**
  * 每种语言单独一份，避免游戏增长后「游戏数 × 8 种语言」撞上单份 sitemap
  * 最多 50,000 URL 的协议上限。各语言之间的关系由页面 head 的 hreflang 说明。
  */
-export function buildGameSitemap(rows, language, siteUrl = publicSiteUrl()) {
+export function buildGameSitemap(rows, language, siteUrl = publicSiteUrl(), { gate = true } = {}) {
   return buildUrlsetSitemap(
-    rows,
+    // 只承诺正文确实是这门语言的那些游戏，见 hasLocalizedBody。
+    // gate=false 是「这批行里没有译文列」，此时不能过滤，见 sitemapRows
+    gate
+      ? rows.filter((row) => hasLocalizedBody(row, language, { i18n: 'description_i18n', en: 'description_en' }))
+      : rows,
     language,
     siteUrl,
     (row) => `/games/${encodeURIComponent(String(row.slug))}`,
@@ -93,12 +187,14 @@ export async function gameSitemap(req, res, next) {
     if (!languageCodes.has(language)) {
       return res.status(404).set('Cache-Control', CACHE.notFound).type('text/plain').send('Not Found')
     }
-    const rows = await query(
+    const { rows, gate } = await sitemapRows(
+      'games',
+      'SELECT slug, cover, added_at, created_at, updated_at, description_en, description_i18n FROM games WHERE hidden = 0 ORDER BY id ASC',
       'SELECT slug, cover, added_at, created_at, updated_at FROM games WHERE hidden = 0 ORDER BY id ASC',
     )
     res.setHeader('Cache-Control', CACHE.meta)
     res.setHeader('Vary', 'Accept-Encoding')
-    res.type('application/xml; charset=utf-8').send(buildGameSitemap(rows, language))
+    res.type('application/xml; charset=utf-8').send(buildGameSitemap(rows, language, publicSiteUrl(), { gate }))
   } catch (error) {
     next(error)
   }
@@ -111,10 +207,11 @@ export async function gameSitemap(req, res, next) {
  * 和游戏 sitemap 同构，单独一份的理由也一样：后台随时能发文章，
  * 烘进构建产物的话，不重新部署就永远进不了 sitemap。
  */
-export function buildPostSitemap(rows, language, siteUrl = publicSiteUrl()) {
+export function buildPostSitemap(rows, language, siteUrl = publicSiteUrl(), { gate = true } = {}) {
   // `date` 是作者手填的发布日期，可能留空也可能是未来日期，所以只当最后的兜底。
   return buildUrlsetSitemap(
-    rows,
+    // 同游戏那套；文章没有「独立英文正文」这一列，所以 en 也得看 content_i18n
+    gate ? rows.filter((row) => hasLocalizedBody(row, language, { i18n: 'content_i18n' })) : rows,
     language,
     siteUrl,
     (row) => `/blog/${encodeURIComponent(String(row.slug))}`,
@@ -129,12 +226,14 @@ export async function postSitemap(req, res, next) {
     if (!languageCodes.has(language)) {
       return res.status(404).set('Cache-Control', CACHE.notFound).type('text/plain').send('Not Found')
     }
-    const rows = await query(
+    const { rows, gate } = await sitemapRows(
+      'posts',
+      'SELECT slug, `date`, created_at, updated_at, content_i18n FROM posts WHERE published = 1 ORDER BY id ASC',
       'SELECT slug, `date`, created_at, updated_at FROM posts WHERE published = 1 ORDER BY id ASC',
     )
     res.setHeader('Cache-Control', CACHE.meta)
     res.setHeader('Vary', 'Accept-Encoding')
-    res.type('application/xml; charset=utf-8').send(buildPostSitemap(rows, language))
+    res.type('application/xml; charset=utf-8').send(buildPostSitemap(rows, language, publicSiteUrl(), { gate }))
   } catch (error) {
     next(error)
   }
