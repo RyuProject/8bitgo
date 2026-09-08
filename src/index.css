@@ -279,6 +279,30 @@ body {
   color: var(--color-fg);
 }
 
+/*
+  ⚠️ 叠加工具栏**只有按钮本身**接指针，那条渐变带一律穿透。
+
+  病例（2026-09-08 用户报的）：《Fran Bow》这类点击式冒险游戏，抽屉的把手就在画面最底下，
+  玩家点不到、抽屉关不上。原因不是渐变挡视线 —— 是这个容器 `absolute inset-x-0 bottom-0`
+  横跨整宽、`pt-7 pb-2` 加上按钮高度约 64px，**整条带子把点击全吃了**，
+  包括中间那段什么都没有的空白。左右两组按钮之间的空当占了画面宽度的一大半，
+  那一整片对游戏来说是死区，而屏幕上看不出任何东西挡着。
+
+  改法是容器不接指针、直接子元素接。于是渐变带上方那 28px 和左右两组之间的空当全部还给游戏，
+  按钮照旧能点、hover 钉住也照旧（React 的 onPointerEnter 靠 pointerover 冒泡合成，
+  指针落到子元素上时容器那个 enter 仍然会触发）。
+
+  用 `[data-overlay='shown']` 限定，**不能只写 .player-overlay-bar > ***：
+  收起时容器上挂的是 Tailwind 的 `pointer-events-none`，子元素这条规则会把它顶掉 ——
+  那就成了「工具栏透明看不见、按钮还能点」，玩家点画面会误触暂停。
+*/
+.player-overlay-bar[data-overlay='shown'] {
+  pointer-events: none;
+}
+.player-overlay-bar[data-overlay='shown'] > * {
+  pointer-events: auto;
+}
+
 /* CRT 扫描线 */
 @utility scanlines {
   background-image: repeating-linear-gradient(

@@ -6,6 +6,7 @@ import { useAuthReady, useCurrentUser } from '@/services/auth'
 import { useShell } from '@/components/layout/ShellContext'
 import {
   convIdFor,
+  ImLookupError,
   ImNotConnectedError,
   imReconnect,
   imState,
@@ -13,6 +14,7 @@ import {
   imStop,
   listImConversations,
   listImMessages,
+  lookupImUserByEmail,
   markImRead,
   onImConversationsChange,
   onImDmRequest,
@@ -23,6 +25,7 @@ import {
   startImWhenIdle,
   takePendingImDm,
   type ImConversation,
+  type ImLookupCode,
   type ImMessage,
   type ImState,
 } from '@/services/imClient'
@@ -73,6 +76,13 @@ export function ImPanel() {
   const [detail, setDetail] = useState(() => imStateDetail())
   const [convs, setConvs] = useState<ImConversation[]>([])
   const [convError, setConvError] = useState(false)
+  /** 「按邮箱找人」那一行展开了没有。收起是默认态：绝大多数时候用户是来看会话的 */
+  const [composeOpen, setComposeOpen] = useState(false)
+  const [emailDraft, setEmailDraft] = useState('')
+  const [lookupBusy, setLookupBusy] = useState(false)
+  /** 已经本地化好的报错文案。存字符串而不是 code —— 切语言不会重渲染这一句，存 code 反而会留着旧语言 */
+  const [lookupError, setLookupError] = useState('')
+  const emailRef = useRef<HTMLInputElement>(null)
   const [active, setActive] = useState<{ id: string; peerId: string; nick: string; avatar: string } | null>(null)
   /** 打开抽屉前焦点在哪。关闭时还回去 —— 不还的话焦点会留在刚被 inert 掉的子树里 */
   const returnFocus = useRef<HTMLElement | null>(null)
@@ -88,6 +98,10 @@ export function ImPanel() {
 
   const doClose = useCallback(() => {
     setOpen(false)
+    // 关掉时把找人那一行复位。留着的话下次打开会看到一个上次输了一半的邮箱和一句旧报错
+    setComposeOpen(false)
+    setEmailDraft('')
+    setLookupError('')
     // 焦点还给打开它的那颗按钮。inert 生效之后焦点会被浏览器丢到 body 上，
     // 用户再按 Tab 会从头开始 —— 对键盘用户来说等于迷路。
     const el = returnFocus.current
@@ -124,6 +138,9 @@ export function ImPanel() {
     setOpen(false)
     setActive(null)
     setConvs([])
+    setComposeOpen(false)
+    setEmailDraft('')
+    setLookupError('')
     void imStop()
   }, [authReady, user])
 
@@ -153,13 +170,21 @@ export function ImPanel() {
         Enter 那边一开始就判了 isComposing，这里最初漏了。
       */
       if (e.isComposing) return
-      // 在会话里先退回列表，再按一次才关面板 —— 和返回键的直觉一致
+      /*
+        逐层退出，和返回键的直觉一致：
+        会话 -> 列表 -> 关面板；找人那一行展开时，先收它。
+
+        ⚠️ 找人行只在列表视图里存在，所以它和 active 天然互斥，
+        两个分支的先后顺序其实无所谓 —— 但写成串行的 else if 而不是两个独立 if，
+        是为了保证「一次 Esc 只退一层」。
+      */
       if (active) setActive(null)
+      else if (composeOpen) setComposeOpen(false)
       else doClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [open, active, doClose])
+  }, [open, active, composeOpen, doClose])
 
   /* ---------------- 会话列表 ---------------- */
 
@@ -194,6 +219,75 @@ export function ImPanel() {
     if (open && state === 'ready') takeDm()
   }, [open, state, takeDm])
   useEffect(() => onImDmRequest(takeDm), [takeDm])
+
+  /* ---------------- 按邮箱找人 ---------------- */
+
+  /**
+   * code -> 本地文案。**一定要有 default** —— 服务端将来多回一个 code，
+   * 这里漏掉的话用户会看到一句空白的红字，比看到「查找失败」还糟。
+   */
+  const lookupText = useCallback(
+    (code: ImLookupCode | string): string => {
+      switch (code) {
+        case 'bad_email':
+          return t.im.emailInvalid
+        case 'self':
+          return t.im.emailSelf
+        case 'not_found':
+          return t.im.emailNotFound
+        case 'unusable':
+          return t.im.emailUnusable
+        case 'rate_limited':
+          return t.im.emailTooOften
+        default:
+          return t.im.emailFailed
+      }
+    },
+    [t],
+  )
+
+  /**
+   * 查到人就直接进会话。
+   *
+   * 这里**不调 requestImDm** —— 那条路是给「面板还没打开」的场景准备的（评论区点头像），
+   * 要先寄存目标再开面板再通知去取。而这一行本来就长在打开着的面板里，
+   * 多绕那三步只会多出三处能出错的地方。
+   *
+   * 也**不预先创建会话**：腾讯的 C2C 会话在发出第一条消息时才真正存在，
+   * 直接进一个空会话是正确做法（见 imClient.lookupImUserByEmail 的注释）。
+   */
+  const startByEmail = useCallback(async () => {
+    const addr = emailDraft.trim()
+    if (!addr || lookupBusy) return
+    setLookupBusy(true)
+    setLookupError('')
+    try {
+      const peer = await lookupImUserByEmail(addr)
+      setActive({ id: convIdFor(peer.id), peerId: peer.id, nick: peer.nickname, avatar: peer.avatar })
+      // 成功才清空。失败时把用户输的地址留着 —— 多半只是打错一个字母，
+      // 清掉等于逼他重敲一遍整个邮箱
+      setEmailDraft('')
+      setComposeOpen(false)
+    } catch (e) {
+      setLookupError(lookupText(e instanceof ImLookupError ? e.code : 'failed'))
+      if (!(e instanceof ImLookupError)) console.warn('[im] 按邮箱找人失败：', e)
+    } finally {
+      setLookupBusy(false)
+    }
+  }, [emailDraft, lookupBusy, lookupText])
+
+  /*
+    展开时把焦点送进输入框。
+
+    上面那个「打开面板时聚焦第一个可聚焦元素」的 effect 帮不上忙：
+    它的依赖是 [open, active]，展开找人行时两个都没变，不会重跑；
+    而且它的选择器是 `textarea, button, [href]`，本来也选不到 input。
+  */
+  useEffect(() => {
+    if (!composeOpen) return
+    const id = requestAnimationFrame(() => emailRef.current?.focus())
+    return () => cancelAnimationFrame(id)
+  }, [composeOpen])
 
   return (
     <>
@@ -239,7 +333,35 @@ export function ImPanel() {
                   <span className="min-w-0 flex-1 truncate text-sm font-semibold">{active.nick || t.im.unknownUser}</span>
                 </>
               ) : (
-                <span className="min-w-0 flex-1 truncate text-sm font-semibold">{t.im.title}</span>
+                <>
+                  <span className="min-w-0 flex-1 truncate text-sm font-semibold">{t.im.title}</span>
+                  {/*
+                    只在 ready 时给这颗按钮。查人本身是一条普通 REST 请求，没连上也能查通 ——
+                    但查到之后会一头栽进一个连不上的会话，那比按钮不出现更让人困惑。
+                  */}
+                  {state === 'ready' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setComposeOpen((v) => !v)
+                        setLookupError('')
+                      }}
+                      aria-label={t.im.newChat}
+                      title={t.im.newChat}
+                      aria-expanded={composeOpen}
+                      className={cx(
+                        'grid h-8 w-8 shrink-0 place-items-center rounded-lg transition hover:bg-surface-2 hover:text-fg',
+                        composeOpen ? 'bg-surface-2 text-brand' : 'text-muted',
+                      )}
+                    >
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                        <path d="M4 6h16v12H4z" />
+                        <path d="m4 7 8 6 8-6" />
+                        <path d="M18 3v4M20 5h-4" />
+                      </svg>
+                    </button>
+                  )}
+                </>
               )}
               <button
                 type="button"
@@ -253,6 +375,64 @@ export function ImPanel() {
               </button>
             </header>
 
+            {/*
+              找人的输入行。放在顶栏和列表之间，收起时整块不渲染 ——
+              它不是常驻控件，常驻会让一个「看消息」的面板第一眼像个搜索页。
+            */}
+            {state === 'ready' && !active && composeOpen && (
+              <div className="shrink-0 border-b border-line bg-surface-2/40 p-2">
+                <div className="flex items-center gap-2">
+                  <input
+                    ref={emailRef}
+                    type="email"
+                    value={emailDraft}
+                    onChange={(e) => {
+                      setEmailDraft(e.target.value)
+                      // 一开始改就把上一次的红字撤掉：留着它会像是在说新输的这个也错了
+                      if (lookupError) setLookupError('')
+                    }}
+                    onKeyDown={(e) => {
+                      // 和聊天输入框同一条规矩：组字期间的 Enter 是「确认候选词」，不是提交
+                      if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                        e.preventDefault()
+                        void startByEmail()
+                      }
+                    }}
+                    placeholder={t.im.emailPlaceholder}
+                    inputMode="email"
+                    /*
+                      autoComplete="off" 是刻意的：浏览器在这里最想填的是**用户自己的**邮箱，
+                      而那恰好是唯一一个填了必然报错的地址。
+                      autoCapitalize / spellCheck 关掉是手机键盘的老问题 ——
+                      首字母被自动大写、地址被画上红波浪线。
+                    */
+                    autoComplete="off"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    disabled={lookupBusy}
+                    className="h-9 min-w-0 flex-1 rounded-lg border border-line bg-surface px-3 text-sm outline-none placeholder:text-dim focus:border-brand disabled:opacity-60"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void startByEmail()}
+                    disabled={!emailDraft.trim() || lookupBusy}
+                    className="h-9 shrink-0 rounded-lg bg-brand px-3 text-sm font-semibold text-white transition hover:bg-brand-hover disabled:opacity-40"
+                  >
+                    {lookupBusy ? t.im.emailSearching : t.im.emailGo}
+                  </button>
+                </div>
+                {lookupError ? (
+                  // role="alert" 让读屏在原地念出来 —— 焦点还在输入框里，不会自己跑过来读
+                  <p role="alert" className="mt-1.5 px-1 text-[11px] leading-relaxed text-live">
+                    {lookupError}
+                  </p>
+                ) : (
+                  <p className="mt-1.5 px-1 text-[11px] leading-relaxed text-dim">{t.im.emailHint}</p>
+                )}
+              </div>
+            )}
+
             {state !== 'ready' ? (
               <StatusBody state={state} detail={detail} />
             ) : active ? (
@@ -262,6 +442,10 @@ export function ImPanel() {
                 convs={convs}
                 error={convError}
                 onPick={(c) => setActive({ id: c.id, peerId: c.peerId, nick: c.nick, avatar: c.avatar })}
+                onNew={() => {
+                  setComposeOpen(true)
+                  setLookupError('')
+                }}
               />
             )}
           </>
@@ -341,10 +525,13 @@ function ConversationList({
   convs,
   error,
   onPick,
+  onNew,
 }: {
   convs: ImConversation[]
   error: boolean
   onPick: (c: ImConversation) => void
+  /** 打开顶栏那一行「按邮箱找人」。空列表时这里是唯一的入口 */
+  onNew: () => void
 }) {
   const t = useT()
 
@@ -358,6 +545,18 @@ function ConversationList({
         </span>
         <p className="text-sm font-semibold">{t.im.empty}</p>
         <p className="max-w-[16rem] text-xs leading-relaxed text-muted">{t.im.emptyHint}</p>
+        {/*
+          一条会话都没有的时候，顶栏那颗 ✉️ 是整块面板里唯一能做的事，
+          而它在角落里、只有 32 见方。这里再给一个说得出话的入口 ——
+          空状态本来就该告诉用户「下一步按什么」，而不只是「这里没东西」。
+        */}
+        <button
+          type="button"
+          onClick={onNew}
+          className="mt-1 rounded-lg border border-line px-3 py-1.5 text-xs font-semibold transition hover:border-brand hover:text-brand"
+        >
+          {t.im.newChat}
+        </button>
       </div>
     )
   }

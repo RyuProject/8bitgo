@@ -87,6 +87,19 @@ const DISC_NOTICE_BYTES = 64 * 1024 * 1024
 const AUTO_RETRY_LIMIT = 1
 /** 叠加工具栏：指针停多久后收起。EmulatorJS 自带底栏是 3 秒，视频播放器多在 2–3 秒 */
 const BAR_IDLE_MS = 2500
+/**
+ * 指针离画面底边多近才算「想找工具栏」。
+ *
+ * 2026-09-08 加的。原来是**画面上任何指针移动**都把工具栏召出来，学的是视频播放器。
+ * 但视频播放器底下没有可点的东西，游戏有：点击式冒险（《Fran Bow》那种）的抽屉把手、
+ * 对话选项就长在画面最底下，而这类游戏鼠标一直在动 —— 工具栏于是常年亮着压在上面。
+ *
+ * 改成只认底部这一条带。取「15% 或 72px 取大」：72px 是为了让这条带**至少盖住工具栏自己**
+ * （pt-7 + 按钮 + pb-2 ≈ 64px），不然从按钮上方往下移动时，指针已经压在渐变带上了却还没进热区，
+ * 工具栏要等碰到按钮才出来，手感是「按钮会躲」。
+ */
+const BAR_HOT_ZONE_RATIO = 0.15
+const BAR_HOT_ZONE_MIN = 72
 
 interface ActiveSession {
   id: number
@@ -652,17 +665,35 @@ export function EmulatorPlayer({
     /*
       指针动静从哪儿来：
         · 外层文档 —— 只认落在播放器里的（页面其它地方晃鼠标不该把它叫出来）
-        · iframe 文档 —— 引擎都跑在同源 iframe 里，鼠标在画面上动，事件只发给 iframe 的文档，
-          外层一个都收不到（和键盘一样，见 hotkeyBridge.ts 开头），所以要挂到每个 iframe 文档上。
-          observeFrameDocs 会盯着引擎换 src / 换 iframe 元素。跨源的第三方 HTML5 页装不上 —— 那种情形靠
-          下面那条贴底的感应条（barHidden 时才有）把工具栏叫回来。
+        · iframe 文档 —— EmulatorJS / Ruffle / j2me 都跑在同源 iframe 里，鼠标在画面上动，
+          事件只发给 iframe 的文档，外层一个都收不到（和键盘一样，见 hotkeyBridge.ts 开头），
+          所以要挂到每个 iframe 文档上。observeFrameDocs 会盯着引擎换 src / 换 iframe 元素，
+          并且**把 document 自己也算一个** —— js-dos 的画布是直接长在页面里的，走的是这一路。
+          跨源的第三方 HTML5 页装不上监听 —— 那种情形靠下面左右两角的感应条把工具栏叫回来。
       只认指针，不认键盘：玩家按方向键是在玩，不是想看工具栏（EmulatorJS 自带的底栏也是这么做的）。
+
+      ⚠️ 而且**只认底部热区里的指针**（见 BAR_HOT_ZONE_*）。判据要在「指针所在那个文档自己的
+      坐标系」里算，两路各算各的：
+        · iframe：`clientY` 是相对 iframe 视口的，直接和 `innerHeight` 比。叠加形态下画面区是
+          flex-1、工具栏是绝对定位不占流，所以 iframe 的底边就是舞台底边，不用换算。
+        · 外层：`clientY` 是视口坐标，要和舞台的 `getBoundingClientRect().bottom` 比。
+      这个 rect **每次移动都现读、刻意不缓存**：缓存下来之后进/出沉浸模式、全屏、页面滚动都会让它
+      过期，而过期的后果是热区整体偏移几十像素 —— 那比一次单元素的 layout 读贵得多。
     */
+    const nearBottom = (edge: number, height: number, y: number) =>
+      y >= edge - Math.max(BAR_HOT_ZONE_MIN, height * BAR_HOT_ZONE_RATIO)
+
     const onOuter = (e: Event) => {
-      if (host && e.target instanceof Node && host.contains(e.target)) poke()
+      if (!host || !(e.target instanceof Node) || !host.contains(e.target)) return
+      const r = host.getBoundingClientRect()
+      if (nearBottom(r.bottom, r.height, (e as PointerEvent).clientY)) poke()
     }
     const stop = observeFrameDocs(host, (doc) => {
-      const handler = doc === document ? onOuter : poke
+      const onFrame = (e: Event) => {
+        const h = doc.defaultView?.innerHeight || doc.documentElement.clientHeight
+        if (nearBottom(h, h, (e as PointerEvent).clientY)) poke()
+      }
+      const handler = doc === document ? onOuter : onFrame
       doc.addEventListener('pointermove', handler, true)
       doc.addEventListener('pointerdown', handler, true)
       return () => {
@@ -2773,23 +2804,57 @@ export function EmulatorPlayer({
               <span className="text-live">{cloudStateLabel}</span>
             )}
           </>
-        ) : file ? (
-          <span className="truncate text-muted" title={file.name}>
-            📄 {file.name} · {formatBytes(file.size)}
-          </span>
         ) : null}
-        {/* 运行时·核心标签（EmulatorJS · gba 之类）不再常驻展示 —— 对玩家是噪音。
-            只有真没有可用运行时（这游戏压根跑不了）才提示一句 */}
-        {!activeRuntime && (
-          <span className="text-muted" title={t.player.runtimeCore}>
-            {t.player.noRuntimeShort}
-          </span>
-        )}
-        {notice && (
-          <span data-testid="detect-notice" className="truncate text-brand-hover">
-            {notice}
-          </span>
-        )}
+
+        {/*
+          可变长度的说明文字（文件名、没有运行时、检测/回退提示）**全部收进这一块**，
+          而且整条工具栏里只有它能被压缩。
+
+          ## 为什么原来会折行 —— truncate 在 flex-wrap 里是不生效的
+
+          这三段以前是工具栏里三个平级的 span，各自挂着 truncate。但工具栏是 flex-wrap，
+          而 **flex 的换行判定用的是「压缩前」的尺寸**（hypothetical main size）：
+          压缩只在换完行、在每一行内部才发生。所以一个长文件名根本走不到 truncate ——
+          它先把自己顶到第二行去了。
+
+          /play-local 上正好撞满这个条件：`📄 rusty-lake-hotel.swf · 21.1 MB` 加上一句
+          `识别为 Flash 网页游戏（文件头为 SWF 标识）`，把「更换 ROM / 沉浸模式 / 全屏」
+          挤成了第二行。而桌面端这条工具栏是**绝对定位压在画面底部**的（见 overlayBar），
+          多出来的那一行是直接盖在游戏画面上的。
+
+          ## 现在的做法
+
+          `flex-1` 展开是 `flex: 1 1 0%` —— 关键在 **basis 0**：换行判定时这一块算 0 宽，
+          于是它永远不会把后面的按钮挤下去，只会去吃同一行剩下的空隙，超了就打省略号。
+
+          这比把工具栏改成 flex-nowrap 好：nowrap 会让联机 + 直播 + 观众那几个
+          固定宽度的徽章同时出现时横向溢出（那些徽章是纯文字，压不动），
+          而 flex-wrap 在那种极端情况下仍然能折一行兜住。换行这条退路留着，
+          只是不再由一段文字来触发。
+
+          min-w-0 和 overflow-hidden 两个都要：flex 项默认 `min-width: auto` 会把用过的
+          尺寸抬回内容的最小宽度，而 overflow 不是 visible 时那个自动最小尺寸才归零。
+        */}
+        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden text-muted">
+          {!inRoom && file && (
+            <span className="truncate" title={file.name}>
+              📄 {file.name} · {formatBytes(file.size)}
+            </span>
+          )}
+          {/* 运行时·核心标签（EmulatorJS · gba 之类）不再常驻展示 —— 对玩家是噪音。
+              只有真没有可用运行时（这游戏压根跑不了）才提示一句 */}
+          {!activeRuntime && (
+            <span className="shrink-0 whitespace-nowrap" title={t.player.runtimeCore}>
+              {t.player.noRuntimeShort}
+            </span>
+          )}
+          {/* title 带全文：这一句被截断之后，鼠标悬停仍然读得到完整的识别理由 */}
+          {notice && (
+            <span data-testid="detect-notice" className="truncate text-brand-hover" title={notice}>
+              {notice}
+            </span>
+          )}
+        </div>
 
         {status === 'running' && (
           <EmulatorTools
@@ -2872,7 +2937,14 @@ export function EmulatorPlayer({
           />
         )}
 
-          <div className="ml-auto flex items-center gap-1.5">
+          {/*
+            ml-auto 现在其实是多余的（上面那块 flex-1 已经把空隙吃掉了），留着是为了
+            「没有文件、没有提示」时也照样贴右。
+
+            shrink-0 是必须的：这一组里有个 <select>（ROM 语言），
+            表单控件在 flex 里**是会被压缩的**，而这几颗是主控件，宁可折行也不能被挤扁。
+          */}
+          <div className="ml-auto flex shrink-0 items-center gap-1.5">
           {/*
             ROM 语言切换。两个前提：
               1. 这款游戏确实有两种以上语言的 ROM —— 只有一种时切了也是它自己
@@ -2975,12 +3047,22 @@ export function EmulatorPlayer({
           </div>
         </div>
         {/*
-          叠加工具栏收起之后的感应条：贴在最底下 10px，指针一碰就把工具栏叫回来。
+          叠加工具栏收起之后的感应条：指针碰一下就把工具栏叫回来。
           同源 iframe 里的鼠标动静上面已经监听了，这条主要兜跨源的第三方 HTML5 页；
-          也是「把鼠标挪到底边」这个所有视频播放器都教过玩家的动作。收起时才有，别常年挡着画面底边那一条。
+          也是「把鼠标挪到底边」这个所有视频播放器都教过玩家的动作。收起时才有。
+
+          ⚠️ **只贴左右两角，不横跨整宽**（2026-09-08 改）。原来是 `inset-x-0`，
+          于是画面底边那 10px 常年是死区 —— 点击式冒险游戏的抽屉把手、对话选项就长在那儿，
+          而它是个完全透明的 div，玩家和我们都看不出有东西挡着。
+          两角正好压在左右两组按钮的上方，是玩家真要去摸工具栏时手会经过的地方；
+          中间那一大片还给游戏。宽度用 rem 而不是百分比：按钮组宽度不随视口缩放，
+          百分比在超宽屏上会白占一大截。
         */}
         {overlayBar && barHidden && (
-          <div aria-hidden className="absolute inset-x-0 bottom-0 z-20 h-2.5" onPointerEnter={() => barPoke.current?.()} />
+          <>
+            <div aria-hidden className="absolute bottom-0 left-0 z-20 h-2.5 w-64" onPointerEnter={() => barPoke.current?.()} />
+            <div aria-hidden className="absolute bottom-0 right-0 z-20 h-2.5 w-56" onPointerEnter={() => barPoke.current?.()} />
+          </>
         )}
       </div>
 

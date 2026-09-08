@@ -128,11 +128,30 @@ console.log('\n三、签发接口')
 
 const route = strip(read(ROUTE))
 
+/**
+ * 只取签发那一段。
+ *
+ * 以前这里是全文查的，因为 im.js 里只有 /sig 一个 handler。加了「按邮箱找人」之后
+ * 全文查会误伤：那条接口**本来就要**读 req.body.email。
+ * 所以按 handler 切段 —— 规则没有放松，只是落到了它真正该管的那一段上。
+ */
+const sigSeg = route.slice(route.indexOf("imRouter.get('/sig'"), route.indexOf("imRouter.post('/lookup'"))
+
 check('⭐ userID 只取 req.user.id，不接受任何请求参数', () => {
   // 这是整个接入里最要紧的一条。如果允许调用方指定 userID，这个接口就等于
   // 把主密钥的能力原样开放出去 —— 任何人都能签一份别人的 sig 然后读对方的会话。
-  assert.match(route, /String\(req\.user\.id\)/, '没有从 req.user.id 取')
-  assert.ok(!/req\.(query|body|params)/.test(route), '接口里出现了 req.query / req.body / req.params')
+  assert.ok(sigSeg.length > 200, '切段失败 —— handler 名字改了？')
+  assert.match(sigSeg, /String\(req\.user\.id\)/, '没有从 req.user.id 取')
+  assert.ok(!/req\.(query|body|params)/.test(sigSeg), '签发接口里出现了 req.query / req.body / req.params')
+})
+
+check('⭐ 找人接口的请求体里只允许有 email', () => {
+  // 同一条铁律在这条接口上的形态：身份仍然只能来自 req.user.id，
+  // 请求体只准携带「要查谁」，不准携带「我是谁」。
+  const seg = route.slice(route.indexOf("imRouter.post('/lookup'"))
+  const bodyReads = [...seg.matchAll(/req\.body\??\.?\w*/g)].map((m) => m[0])
+  assert.deepEqual([...new Set(bodyReads)], ['req.body?.email'], `请求体里还读了别的：${bodyReads.join(', ')}`)
+  assert.ok(!/req\.(query|params)/.test(seg), '找人接口里出现了 req.query / req.params')
 })
 
 check('整个路由挂了 requireUser', () => {
@@ -472,6 +491,90 @@ check('回到前台时自检，但不打断 SDK 自己的重连', () => {
 check('连接不依赖抽屉开着（空闲时就连，抽屉只是视图）', () => {
   assert.match(clientCode, /export function startImWhenIdle/)
   assert.match(strip(read(PANEL)), /if \(user\) startImWhenIdle\(\)/, '登录后没有安排连接')
+})
+
+console.log('\n十一、按邮箱找人')
+
+const panelCode = strip(read(PANEL))
+
+check('⭐ 服务端的中文报错不能直接渲染（站里有八种语言）', () => {
+  // 服务端只会说中文。UI 必须按 code 查本地文案表，
+  // 把 ApiError.message 直接显示出来，法语用户会收到一句中文
+  assert.match(panelCode, /const lookupText = useCallback\(/, '没有 code -> 文案的映射')
+  assert.match(panelCode, /setLookupError\(lookupText\(/, '报错不是经 lookupText 出来的')
+  const bad = panelCode.match(/setLookupError\([^)\n]*\.message/)
+  assert.equal(bad, null, `把服务端原话直接渲染了：${bad?.[0]}`)
+  // 服务端将来多回一个 code，漏掉的话用户会看到一句空白红字
+  const seg = panelCode.slice(panelCode.indexOf('const lookupText'))
+  assert.match(seg.slice(0, 900), /default:/, 'lookupText 少了 default 分支')
+})
+
+check('⭐ 每一个 code 都要有对应的文案分支', () => {
+  const seg = panelCode.slice(panelCode.indexOf('const lookupText'), panelCode.indexOf('const startByEmail'))
+  for (const code of ['bad_email', 'self', 'not_found', 'unusable', 'rate_limited']) {
+    assert.match(seg, new RegExp(`case '${code}'`), `没处理 ${code}`)
+  }
+})
+
+check('⭐ 请求体里只有邮箱，一个字段都不多', () => {
+  // 多带一个 userId / selfId，服务端那条「身份只取 req.user.id」的铁律就等于被绕开了
+  assert.match(clientCode, /api\.post<ImPeer>\('\/api\/im\/lookup', \{ email: addr \}\)/, '请求形状变了')
+  const seg = clientCode.slice(clientCode.indexOf('export async function lookupImUserByEmail'))
+  assert.ok(!/req|selfId|userId|token/.test(seg.slice(0, seg.indexOf('} catch'))), '请求里混进了身份字段')
+})
+
+check('邮箱在前端也要 trim + 转小写（和服务端 normalizeLookupEmail 同一套）', () => {
+  const seg = clientCode.slice(clientCode.indexOf('export async function lookupImUserByEmail'))
+  assert.match(seg.slice(0, 400), /\.trim\(\)\.toLowerCase\(\)/, '没规范化就发出去了')
+})
+
+check('⭐ 关闭 / 登出要把找人那一行复位', () => {
+  // 不复位的话，下次打开会看到一个上次输了一半的邮箱和一句旧报错；
+  // 登出不复位更糟 —— 换个账号登进来，别人的邮箱还留在框里
+  const close = panelCode.slice(panelCode.indexOf('const doClose = useCallback'))
+  const closeBody = close.slice(0, close.indexOf('}, ['))
+  for (const call of ['setComposeOpen(false)', "setEmailDraft('')", "setLookupError('')"]) {
+    assert.ok(closeBody.includes(call), `doClose 里少了 ${call}`)
+  }
+  const out = panelCode.slice(panelCode.indexOf('void imStop()') - 400, panelCode.indexOf('void imStop()'))
+  for (const call of ['setComposeOpen(false)', "setEmailDraft('')"]) {
+    assert.ok(out.includes(call), `登出分支里少了 ${call}`)
+  }
+})
+
+check('⭐ Esc 一次只退一层：会话 -> 找人行 -> 关面板', () => {
+  assert.match(
+    panelCode,
+    /if \(active\) setActive\(null\)\s*else if \(composeOpen\) setComposeOpen\(false\)\s*else doClose\(\)/,
+    'Esc 的退出顺序变了 —— 写成并列 if 会一次退两层',
+  )
+  // composeOpen 不进依赖数组的话，闭包里永远是 false，那一层等于不存在
+  assert.match(panelCode, /\}, \[open, active, composeOpen, doClose\]\)/, 'Esc 的依赖数组漏了 composeOpen')
+})
+
+check('⭐ 输入框必须关掉自动填充', () => {
+  // 浏览器在这里最想填的是**用户自己的**邮箱，而那恰好是唯一一个填了必然报错的地址
+  const seg = panelCode.slice(panelCode.indexOf('ref={emailRef}'), panelCode.indexOf('className="h-9 min-w-0'))
+  /*
+    数一遍再看值，而不是只判「有没有出现过 off」。
+
+    变异校验里试过「保留 off、再补一条 autoComplete="email"」：
+    JSX 里后写的那条生效，浏览器照样会去填用户自己的邮箱 ——
+    而只判存在的断言对此全绿。
+  */
+  const auto = [...seg.matchAll(/autoComplete="([^"]*)"/g)].map((m) => m[1])
+  assert.deepEqual(auto, ['off'], `autoComplete 不是唯一的 off：${JSON.stringify(auto)}`)
+  assert.match(seg, /autoCapitalize="none"/, '手机键盘会把首字母大写')
+})
+
+check('⭐ 组字期间的 Enter 不能当提交（中日文用户每打一个词都会误触）', () => {
+  const seg = panelCode.slice(panelCode.indexOf('ref={emailRef}'))
+  assert.match(seg.slice(0, 1400), /e\.key === 'Enter' && !e\.nativeEvent\.isComposing/, 'Enter 没判 isComposing')
+})
+
+check('没连上时不给这个入口（查得到人，却会栽进一个连不上的会话）', () => {
+  assert.match(panelCode, /\{state === 'ready' && \(\s*<button/, '顶栏那颗按钮没有按连接状态收起')
+  assert.match(panelCode, /state === 'ready' && !active && composeOpen &&/, '输入行没有按连接状态收起')
 })
 
 console.log(`\n✅ IM 接入结构检查：${n} 项通过`)

@@ -23,6 +23,13 @@ import { requireUser } from '../auth.js'
 import { take } from '../rateLimit.js'
 import { CACHE } from '../cache.js'
 import { genUserSig, imConfigFrom, isValidImUserId } from '../im-sig.js'
+import { queryOne } from '../db.js'
+import {
+  IM_LOOKUP_LIMIT,
+  IM_LOOKUP_WINDOW_MS,
+  lookupOutcome,
+  normalizeLookupEmail,
+} from '../im-lookup.js'
 
 export const imRouter = Router()
 imRouter.use(requireUser)
@@ -93,6 +100,56 @@ imRouter.get('/sig', async (req, res, next) => {
   } catch (e) {
     // async 中间件抛出的 rejection Express 4 不会捕获，Node 22 会直接杀进程 ——
     // 见 server/src/auth.js 顶部那段。必须自己接住再交给错误处理器。
+    next(e)
+  }
+})
+
+/**
+ * 按邮箱找人，用来主动发起一段会话。`POST /api/im/lookup`
+ *
+ * 判断全在 im-lookup.js 里（那份能被单元测试），这里只做三件事：
+ * 配置检查、限流、查库。
+ *
+ * ## 为什么是 POST 而不是 GET
+ *
+ * 查询串会原样进 nginx 的 access log，也会跟着 Referer 漏给第三方。
+ * 这里传的是**别人的邮箱** —— 把它写进一份按天轮转、还要备份的日志里没有必要。
+ * POST 的 body 不进 access log，也不会被任何一层缓存命中（顺带避开 CDN）。
+ *
+ * ## 为什么没配 IM 时也要拦
+ *
+ * 没配 IM 时抽屉根本打不开，这个接口不会有正常调用方。既然如此就别让它开着 ——
+ * 一个用不上的「邮箱是否注册」探针，是净负债。
+ */
+imRouter.post('/lookup', async (req, res, next) => {
+  try {
+    if (!imConfigFrom()) return res.status(501).json({ error: 'IM 未启用', code: 'disabled' })
+
+    // ⚠️ 同 /sig：take() 返回 { ok, retryAfter } 对象，写成 `if (!take(...))` 会恒真，限流静默失效
+    const gate = take(`im:lookup:${req.user.id}`, IM_LOOKUP_LIMIT, IM_LOOKUP_WINDOW_MS)
+    if (!gate.ok) {
+      return res
+        .status(429)
+        .set('Retry-After', String(gate.retryAfter))
+        .json({ error: '查得太频繁了，稍后再试', code: 'rate_limited', retryAfter: gate.retryAfter })
+    }
+
+    const email = normalizeLookupEmail(req.body?.email)
+    if (!email) return res.status(400).json({ error: '邮箱格式不正确', code: 'bad_email' })
+
+    /*
+      只取要用的四列，不要 `SELECT *`。
+      不是为了省那点带宽 —— 是为了让「密码哈希、令牌版本、出生日期跟着进内存、
+      再被谁顺手 res.json(row) 出去」这件事在源头上不可能发生。
+
+      ⚠️ 只能是 `=`。这里一旦出现 LIKE / 通配 / 前缀匹配，这个接口就从
+      「验证一个你已知的地址」变成「把库里的邮箱捞出来」。
+    */
+    const row = await queryOne('SELECT id, nickname, avatar, status FROM users WHERE email = ?', [email])
+    // selfId 只能取自 req.user.id —— 和 /sig 同一条铁律，绝不接受请求参数
+    const out = lookupOutcome(row, String(req.user.id), isValidImUserId)
+    res.status(out.status).set('Cache-Control', CACHE.none).json(out.body)
+  } catch (e) {
     next(e)
   }
 })

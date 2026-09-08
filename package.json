@@ -58,6 +58,8 @@
     "test:im-session": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-im-session.mjs",
     "test:im-sig": "npm --prefix server run test:im-sig",
     "test:json-path": "npm --prefix server run test:json-path",
+    "test:im-lookup": "npm --prefix server run test:im-lookup",
+    "test:toolbar": "node scripts/test-toolbar-line.mjs",
     "test:im-client": "node scripts/test-im-client.mjs",
     "test:platforms": "node scripts/test-platforms.mjs",
     "test:j2me": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-j2me.mjs",

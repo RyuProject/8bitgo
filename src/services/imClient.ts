@@ -556,6 +556,74 @@ export function takePendingImDm(): { peerId: string; nick: string; avatar: strin
   return p
 }
 
+/* ---------------- 按邮箱找人 ---------------- */
+
+/** 找人失败的原因。**用 code 而不是文案**：服务端只会说中文，站里有八种语言 */
+export type ImLookupCode = 'bad_email' | 'self' | 'not_found' | 'unusable' | 'rate_limited' | 'disabled' | 'failed'
+
+/**
+ * 找人失败。
+ *
+ * `code` 是给 UI 查文案表用的，`message` 是服务端的中文原话 —— 只进 console，
+ * 不直接渲染。第一版曾经把 ApiError.message 直接显示出来，结果一个法语用户
+ * 收到了一句中文报错。
+ */
+export class ImLookupError extends Error {
+  readonly code: ImLookupCode
+  // message 必须显式标成 string：写成 `message = code` 会让 TS 把形参推成 ImLookupCode，
+  // 于是传服务端那句中文原话过不了编译
+  constructor(code: ImLookupCode, message: string = code) {
+    super(message)
+    this.name = 'ImLookupError'
+    this.code = code
+  }
+}
+
+export interface ImPeer {
+  id: string
+  nickname: string
+  avatar: string
+}
+
+/** 和服务端 im-lookup.js 里那条保持一致。前端先判一次，省掉一次必然失败的往返和一次限流额度 */
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+/**
+ * 按注册邮箱找一个人，用来主动发起会话。
+ *
+ * ⚠️ 这里**只查人，不建会话**。腾讯的 C2C 会话是「发出第一条消息时才真正存在」的，
+ * 所以查到之后前端直接进一个空会话就行 —— 不需要、也没有「创建会话」这个调用。
+ * ChatView 首屏拉历史会失败（服务端还没有这条会话），那条路径已经处理过了：
+ * 见它 fetchLatest 里 `if (first) setDone(true)` 那段注释。
+ *
+ * 邮箱在这里就 trim + 转小写，和服务端 normalizeLookupEmail 同一套规则 ——
+ * 两边都做，是因为「用户手输的地址」这件事上，任何一边单独可信都不成立。
+ */
+export async function lookupImUserByEmail(email: string): Promise<ImPeer> {
+  const addr = String(email ?? '').trim().toLowerCase()
+  if (!EMAIL_RE.test(addr)) throw new ImLookupError('bad_email')
+  if (!apiEnabled()) throw new ImLookupError('disabled')
+
+  const me = getCurrentUser()
+  // 自己的邮箱在本地就能判掉，不必为此花一次限流额度。
+  // 但服务端那条判断**不能因此删掉** —— 这里能改，那里不能。
+  if (me?.email && String(me.email).toLowerCase() === addr) throw new ImLookupError('self')
+
+  try {
+    const peer = await api.post<ImPeer>('/api/im/lookup', { email: addr })
+    if (!peer?.id) throw new ImLookupError('failed', '响应里没有 id')
+    return peer
+  } catch (e) {
+    if (e instanceof ImLookupError) throw e
+    if (e instanceof ApiError) {
+      const code = (e.data as { code?: string } | null)?.code
+      // 认服务端给的 code；没有 code（网关的 502、被兜底成 HTML 的响应）就按状态码兜一下
+      throw new ImLookupError((code as ImLookupCode) || (e.status === 404 ? 'not_found' : 'failed'), e.message)
+    }
+    throw new ImLookupError('failed', e instanceof Error ? e.message : String(e))
+  }
+}
+
 /* ---------------- 空闲时自动连 + 后台也能收到 ---------------- */
 
 let idleScheduled = false

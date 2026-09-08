@@ -46,7 +46,8 @@
     "turn:probe": "node scripts/turn-probe.mjs",
     "test:turn-probe": "node scripts/test-turn-probe.mjs",
     "test:im-sig": "node scripts/test-im-sig.mjs",
-    "test:json-path": "node scripts/test-json-path.mjs"
+    "test:json-path": "node scripts/test-json-path.mjs",
+    "test:im-lookup": "node scripts/test-im-lookup.mjs"
   },
   "dependencies": {
     "@ip-location-db/geo-whois-asn-country-mmdb": "^2.3.2026061719",
