@@ -36,6 +36,7 @@
  *     | Hybrid Top | Hybrid Bottom
  *   melonds_hybrid_small_screen  默认 Bottom（Bottom | Top | Duplicate）
  *   melonds_touch_mode           默认 Mouse（Mouse | Touch | Joystick | disabled）
+ *                                ⚠️ 这个默认值是**错的那一档**，见下面 findTouchModeOption
  *   melonds_screen_gap           默认 0（0…126）
  *
  * 同时确认了这个构建里**没有** threaded renderer / JIT / OpenGL 渲染器这三类选项，
@@ -227,6 +228,95 @@ export function findLayoutOption(options: unknown): LayoutOption | null {
  * 比 2:3 放进同一个框里还小）。所以要明显是横的才给 side。
  */
 export const WIDE_RATIO = 1.2
+
+/* ---------------- 触控笔怎么被驱动（2026-09-08） ---------------- */
+
+/**
+ * 哪一项是「触控模式」。
+ *
+ * ── 为什么要管这一项 ────────────────────────────────────────
+ * melonDS 的 `melonds_touch_mode` **出厂默认是 `Mouse`**，而 libretro 里
+ * `RETRO_DEVICE_MOUSE` 报的是「movement **relative to the last poll**」——
+ * **相对位移**。也就是说触控笔有一个玩家看不见的内部位置，鼠标/手指只是在推它，
+ * 而不是「按哪儿笔就落哪儿」。`Touch` 才是 `RETRO_DEVICE_POINTER` 那一路：
+ * 「query in **absolute coordinates** where on the screen…，coordinates reported
+ * are the coordinates of the press」。
+ *
+ * 症状（用户报的原话是「鼠标和 nds 上的触控笔模拟很奇怪」）：
+ *   · 点一下笔不会跳到你点的地方，它从上一次的位置开始漂
+ *   · 笔尖在哪儿看不见 —— 我们发的这个 melonDS 变体没有光标选项
+ *   · **手势游戏最惨**：《Cooking Mama》那种切/搅/揉，笔画形状取决于累积位移和
+ *     起始点，而不是你实际划的那一道
+ *
+ * ⚠️ 这一条**订正了 2026-09-07 的一个错判**。当时项目记忆里写的是
+ * 「`melonds_touch_mode` 默认 Mouse 正好是绝对坐标那一路，别改」—— 反了。
+ * 那句话没有来源，是照名字猜的；真正的判据在 libretro.h 的 RETRO_DEVICE_MOUSE /
+ * RETRO_DEVICE_POINTER 两段注释里。
+ *
+ * ⚠️ 还牵出一个测试盲区：09-04 那轮修「手机上点不到」，5 项 Playwright 验的是
+ * **画布收不收到指针事件**（命中计数），没有验**触控笔落在了正确的位置**。
+ * 在 Mouse 模式下手机触摸大概率也是被当成相对位移喂进去的 —— 「有反应」
+ * 掩盖了「反应在错的地方」。这类断言以后要问一句「验的是事件到了，还是结果对了」。
+ *
+ * ── 为什么按 key 现找而不是写死 ──────────────────────────────
+ * 同 findLayoutOption：`changeSettingOption` 碰上认不出的 key 是**静默**的
+ * （只往 allSettings 里塞一格，不报错不生效）。核心换一版、取值改个大小写，
+ * 写死就白改，而且看不出来。
+ *
+ * ── 作用范围刻意只到 melonDS ────────────────────────────────
+ * 正则 `/touch[\s_-]?mode/i` 命中 `melonds_touch_mode`，**不**命中 desmume 那一支的
+ * `desmume_pointer_type`。这是有意的：desmume 的触控是一整组选项
+ * （`desmume_pointer_type` / `desmume_pointer_mouse` / `desmume_mouse_speed` /
+ * **`desmume_pointer_colour`**（能画出看得见的笔尖）/ `desmume_pointer_stylus_pressure`），
+ * 语义和 melonDS 不同，值得单独一轮 —— 先把 melonDS 这一个变量验通再铺开。
+ * （`Mouse Speed` 这个选项本身就是相对模式的证据：绝对映射不需要速度倍率。）
+ */
+const TOUCH_MODE_KEY = /touch[\s_-]?mode/i
+
+/**
+ * 绝对坐标那个取值。只认 `Touch` 这一种写法 —— 认不出就返回 null、什么都不做，
+ * **绝不猜**：把一个我们不认识的字符串塞给核心，最好的结果是静默失效，
+ * 最坏的结果是把玩家推到 `Joystick`（用摇杆推光标）那一档，比现状更糟。
+ */
+const ABSOLUTE_TOUCH_VALUE = /^touch$/i
+
+/** 认出来的触控模式项 */
+export interface TouchModeOption {
+  key: string
+  /** 核心报上来的、代表绝对坐标的那个取值原文 */
+  absolute: string
+  values: string[]
+  /** 核心报的当前值（没报就是空） */
+  current: string
+  /** 核心报的出厂默认（没报就是空） */
+  fallback: string
+}
+
+export function findTouchModeOption(options: unknown): TouchModeOption | null {
+  const list = Array.isArray(options)
+    ? options
+    : Array.isArray((options as { options?: unknown } | null)?.options)
+      ? ((options as { options: unknown[] }).options)
+      : null
+  if (!list) return null
+  for (const raw of list) {
+    const opt = (raw ?? {}) as CoreOption
+    const key = typeof opt.key === 'string' ? opt.key : ''
+    if (!key || !TOUCH_MODE_KEY.test(key)) continue
+    const values = flatValues(opt.values)
+    const absolute = values.find((v) => ABSOLUTE_TOUCH_VALUE.test(v.trim()))
+    // 没有绝对坐标那一档就当没认出来 —— 这一项存在但给不了我们要的东西
+    if (!absolute) continue
+    return {
+      key,
+      absolute,
+      values,
+      current: typeof opt.current === 'string' ? opt.current : '',
+      fallback: typeof opt.default === 'string' ? opt.default : '',
+    }
+  }
+  return null
+}
 
 export function isWideBox(width: number, height: number): boolean {
   const w = Number(width) || 0

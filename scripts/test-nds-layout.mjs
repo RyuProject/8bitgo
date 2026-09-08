@@ -17,6 +17,7 @@
 import assert from 'node:assert/strict'
 import {
   findLayoutOption,
+  findTouchModeOption,
   isDualScreen,
   isWideBox,
   layoutShape,
@@ -335,6 +336,91 @@ check('NDS 不是光盘平台 —— isDiscPlatform 的语义没被顺手改掉'
   // 这两个集合分开是有意的：光盘那条失败就报错，NDS 失败要退回引擎自己下
   assert.equal(isDiscPlatform('nds'), false)
   assert.equal(isDiscPlatform('psx'), true)
+})
+
+/* ================= 触控模式（2026-09-08） ================= */
+
+/**
+ * 取值全部是**从核心 wasm 里实读出来的**（把 `*-wasm.data` 那个 7z 解开、
+ * 读 data 段里的 retro_core_option_v2_definition）。别改成手抄的。
+ */
+const MELONDS_TOUCH = {
+  key: 'melonds_touch_mode',
+  values: ['Mouse', 'Touch', 'Joystick', 'disabled'],
+  default: 'Mouse',
+}
+/** desmume 那一支的一整组触控选项 —— 实读的 key 名，这一轮**刻意不接** */
+const DESMUME_TOUCH_KEYS = [
+  'desmume_pointer_type',
+  'desmume_pointer_mouse',
+  'desmume_mouse_speed',
+  'desmume_pointer_colour',
+  'desmume_pointer_stylus_pressure',
+  'desmume_pointer_device_l',
+  'desmume_pointer_device_r',
+  'desmume_pointer_device_deadzone',
+  'desmume_pointer_device_acceleration_mod',
+  'desmume_hybrid_cursor_always_smallscreen',
+]
+
+check('认出 melonDS 的触控模式项，并挑出绝对坐标那一档', () => {
+  const opt = findTouchModeOption([MELONDS_TOUCH])
+  assert.ok(opt, '应该认出来')
+  assert.equal(opt.key, 'melonds_touch_mode')
+  /*
+    这一条是整件事的要害：核心出厂默认是 Mouse = RETRO_DEVICE_MOUSE = **相对位移**，
+    而 Touch = RETRO_DEVICE_POINTER = **绝对坐标**（libretro.h 两段注释的原话）。
+    2026-09-07 的项目记忆里曾把这两者写反、并写着「别改」，09-08 订正。
+  */
+  assert.equal(opt.absolute, 'Touch')
+  assert.equal(opt.fallback, 'Mouse', '核心的出厂默认就是那个错的档位')
+  assert.notEqual(opt.absolute, opt.fallback, '要是这两个相等就说明核心改了默认，这条守卫该退休')
+})
+
+check('{ options: [...] } 那种包一层的形状也认（引擎两种都可能给）', () => {
+  assert.equal(findTouchModeOption({ options: [MELONDS_TOUCH] })?.key, 'melonds_touch_mode')
+})
+
+check('取值是 {value,label} 对象数组时也认（getCoreOptionsJSON 的真实形状）', () => {
+  const opt = findTouchModeOption([
+    { key: 'melonds_touch_mode', values: [{ value: 'Mouse' }, { value: 'Touch', label: '触摸' }] },
+  ])
+  assert.equal(opt?.absolute, 'Touch')
+})
+
+check('⚠️ 作用范围只到 melonDS —— desmume 那一整组一个都不许命中', () => {
+  /*
+    desmume 的触控是一整组语义不同的选项（含 pointer_colour，能画出看得见的笔尖），
+    值得单独一轮。这一条钉住「这次只动 melonDS」这个决定：
+    哪天有人把正则放宽到 /point/，这里会红，那时必须连带把 desmume 的默认值一起想清楚。
+  */
+  for (const key of DESMUME_TOUCH_KEYS) {
+    const opt = findTouchModeOption([{ key, values: ['mouse', 'touch', 'absolute'] }])
+    assert.equal(opt, null, `${key} 不该被当成触控模式项`)
+  }
+})
+
+check('⚠️ 没有绝对坐标那一档时返回 null，绝不猜一个塞进去', () => {
+  // 认不出就保持核心默认。塞一个不认识的字符串最好是静默失效，
+  // 最坏是把玩家推到 Joystick（摇杆推光标）那一档，比现状更糟
+  assert.equal(findTouchModeOption([{ key: 'melonds_touch_mode', values: ['Mouse', 'Joystick'] }]), null)
+  assert.equal(findTouchModeOption([{ key: 'melonds_touch_mode', values: [] }]), null)
+})
+
+check('脏输入不炸', () => {
+  for (const bad of [null, undefined, 0, '', 'nope', {}, [], [null], [{ key: 123 }], [{ key: 'melonds_touch_mode' }]])
+    assert.equal(findTouchModeOption(bad), null)
+})
+
+check('current 与 fallback 原样带出来（适配器靠它判「已经对了就别再写」）', () => {
+  const opt = findTouchModeOption([{ ...MELONDS_TOUCH, current: 'Touch' }])
+  assert.equal(opt.current, 'Touch')
+  assert.equal(opt.fallback, 'Mouse')
+})
+
+check('大小写/空格不敏感地挑绝对坐标那一档，但回填的是核心的原文', () => {
+  const opt = findTouchModeOption([{ key: 'melonds_touch_mode', values: ['Mouse', ' TOUCH '] }])
+  assert.equal(opt?.absolute, ' TOUCH ', '回填必须原样 —— 核心认的是它自己那份字符串')
 })
 
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')

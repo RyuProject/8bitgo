@@ -61,7 +61,16 @@ import { matchArcadeHack, type ArcadeHack } from '@/data/arcadeHacks'
 export { EJS_PATH } from '../paths'
 import { EJS_PATH, isDiscPlatform, isSelfDownloadPlatform } from '../paths'
 import { applyTuning, sizeOfTrack, tuningFor, usableVideoSize } from '../videoTuning'
-import { findLayoutOption, isDualScreen, isWideBox, parseCoreOptionsText, preferredLayout, showsTouchScreen, type LayoutOption } from '../dualScreen'
+import {
+  findLayoutOption,
+  findTouchModeOption,
+  isDualScreen,
+  isWideBox,
+  parseCoreOptionsText,
+  preferredLayout,
+  showsTouchScreen,
+  type LayoutOption,
+} from '../dualScreen'
 
 /**
  * 站点语言 → EmulatorJS 自带的界面语言包（data/localization/*.json）。
@@ -1758,6 +1767,56 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
 
   /**
+   * 把触控笔切到**绝对坐标**那一档（melonDS 的 `melonds_touch_mode = Touch`）。
+   *
+   * 为什么必须改：核心的出厂默认是 `Mouse`，而那是 libretro 的 RETRO_DEVICE_MOUSE ——
+   * **相对位移**。玩家的感受是「点一下笔不落在点的地方、手势划不出形状」。
+   * 详细的取证与订正记在 `dualScreen.ts` 的 findTouchModeOption 上面。
+   *
+   * 三条约束，缺一条都会出别的毛病：
+   *
+   * 1. **第三参传 true**（只写 allSettings、不落盘）。这是个我们替核心纠正的默认值，
+   *    不是玩家的选择 —— 落盘的话，将来核心把默认改对了、或者玩家想试 Joystick，
+   *    这一格会一直压着他。和 applyLayout 里 `byPlayer` 的取舍是同一个道理。
+   * 2. **玩家自己选过就一个字都不动**。判据只能是 `emu.settings[key]` ——
+   *    只有 changeSettingOption(k, v)（第三参不为 true）才写那一格。
+   *    `getSettingValue()` 返回的是 `allSettings[k] || settings[k]`，混着默认值，分不开。
+   * 3. **认不出就什么都不做**。findTouchModeOption 找不到 key、或者取值里没有
+   *    `Touch` 那一档时返回 null；这时保持核心自己的默认，别拿猜的字符串去写。
+   *
+   * 只在双屏机型（= NDS）上调。别的平台没有触控笔这回事，多写一格 allSettings
+   * 虽然无害，但那是往「我们改过什么」这份账里塞噪声。
+   */
+  const applyTouchModeDefault = (emu: EjsEmulator) => {
+    let opt = null
+    try {
+      const gm = emu.gameManager
+      opt = findTouchModeOption(gm?.getCoreOptionsJSON?.() ?? null)
+      // JSON 那条拿不到就退回老格式的文本（desmume2015 那一支就是 v1 格式）
+      if (!opt && typeof gm?.getCoreOptions === 'function') {
+        opt = findTouchModeOption(parseCoreOptionsText(gm.getCoreOptions()))
+      }
+    } catch (e) {
+      console.warn('[emulatorjs] 读核心选项失败，触控模式这块跳过：', e)
+      return
+    }
+    if (!opt) {
+      console.info('[emulatorjs] 核心没报出触控模式那一项（或没有绝对坐标那一档），保持核心默认')
+      return
+    }
+    const chosen = emu.settings?.[opt.key]
+    if (typeof chosen === 'string' && opt.values.includes(chosen)) return
+    // 已经是绝对坐标了就别多写一次（换核心版本、以后核心改了默认都可能命中这里）
+    if (opt.current && opt.current.trim().toLowerCase() === opt.absolute.trim().toLowerCase()) return
+    try {
+      emu.changeSettingOption?.(opt.key, opt.absolute, true)
+      console.info(`[emulatorjs] 触控笔改走绝对坐标：${opt.key} = ${opt.absolute}（原默认 ${opt.fallback || opt.current || '未知'}）`)
+    } catch (e) {
+      console.warn('[emulatorjs] 设置触控模式失败：', e)
+    }
+  }
+
+  /**
    * 开局后把画面几何报出去，并（双屏机型）把屏幕布局摆正。
    *
    * 几何是**所有平台**都报的：播放器的容器比例本来靠查表，查表给的是 CRT 年代的
@@ -1773,6 +1832,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (!emu) return
     reportGeometry(emu)
     if (!isDualScreen(options.platform)) return
+
+    // 布局之前先把触控笔摆对：它和布局互不相干，但都要在核心选项读得到之后做
+    applyTouchModeDefault(emu)
 
     let found: LayoutOption | null = null
     try {
