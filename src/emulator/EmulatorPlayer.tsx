@@ -709,11 +709,31 @@ export function EmulatorPlayer({
     }
   }, [overlayBar, status])
   /**
-   * 嵌入页在窄屏上的等价物（见 fill 属性）：一样是画面吃满高度、按键叠在下面，
-   * 只是不 fixed —— 那边的高度是外面用 flex 给的，底下还有一条品牌栏要留着。
-   * 用 narrow 而不是 compact：高度链靠的是 EmbedPage 传的 max-sm:h-full，两者要严格对齐。
+   * 嵌入页（`/embed/<slug>`）里画面吃满整个框：舞台 `relative h-full`，不套比例框。
+   *
+   * ⚠️ **2026-09-08 去掉了 `&& narrow` 这个条件**，那是个 0.02px 的错。
+   * `narrow` 是 `(max-width: 639.98px)`，而分享面板给出去的三个预设是 **640 / 800 / 960**
+   * ——一个都不命中。于是所有真实嵌入都掉进「普通分支」，舞台被强制成 `sm:aspect-video`：
+   *
+   * | 预设 | 可用区 | 改之前的画面 | 改之后 | 面积 |
+   * |---|---|---|---|---|
+   * | 640×480 | 640×451 | 舞台 640×360、画面 **480×360** | 601×451 | **+57%** |
+   * | 800×600 | 800×571 | 舞台 800×450、画面 600×450 | 761×571 | +61% |
+   * | 960×720 | 960×691 | 舞台 960×540、画面 720×540 | 921×691 | +64% |
+   *
+   * 三个预设**都是 4:3**（多数复古平台是 4:3，分享面板刻意这么给的），而 4:3 的内容被塞进
+   * 16:9 的舞台、再放进 4:3 的框 —— **letterbox 了两次**，品牌条上方还空掉 90px 的死黑。
+   *
+   * 现在只看 `fill`：嵌入页的 iframe **就是**那一页的视口，框的比例是贴代码的人选的，
+   * 播放器不该再往里塞一个自己的比例。高度链靠 EmbedPage 传的 `h-full`
+   * （原来是 `max-sm:h-full`，跟着这条一起去掉了断点），两者必须严格对齐。
+   *
+   * 顺带确认过没有牵连：`stageMode` 变成 `'play'` 在适配器里只多一条
+   * `.ejs_parent { touch-action: none }`（挡 iOS 的手势链，桌面尺寸的嵌入里无害）；
+   * `monitor` 本来就要 `compact && touchDevice`，嵌入里关掉是对的（那是「手机退出沉浸后的小框」，
+   * 嵌入页没有沉浸这回事）；`enginePadStacked` 仍然自己判 `narrow`，窄嵌入的行为一个字没变。
    */
-  const embedFill = fill && narrow
+  const embedFill = fill
   /**
    * 「监视器」态：手机上游戏在跑、但不在游玩布局里（玩家点了退出沉浸，回详情页看简介）。
    * 画面缩在小框里，引擎自带的按键压在里面既按不到也挡画面 —— 让适配器先把它整套收起来，
@@ -3055,13 +3075,15 @@ export function EmulatorPlayer({
           于是画面底边那 10px 常年是死区 —— 点击式冒险游戏的抽屉把手、对话选项就长在那儿，
           而它是个完全透明的 div，玩家和我们都看不出有东西挡着。
           两角正好压在左右两组按钮的上方，是玩家真要去摸工具栏时手会经过的地方；
-          中间那一大片还给游戏。宽度用 rem 而不是百分比：按钮组宽度不随视口缩放，
-          百分比在超宽屏上会白占一大截。
+          中间那一大片还给游戏。
+          宽度是 `w-1/3` **配上** `max-w-64 / max-w-56` 两头都夹住：光给 rem 的话，
+          640 宽的嵌入框里 256+224 就吃掉 75% 的底边，中间只剩 160px；光给百分比的话，
+          超宽屏上又白占一大截（按钮组宽度不随视口缩放）。
         */}
         {overlayBar && barHidden && (
           <>
-            <div aria-hidden className="absolute bottom-0 left-0 z-20 h-2.5 w-64" onPointerEnter={() => barPoke.current?.()} />
-            <div aria-hidden className="absolute bottom-0 right-0 z-20 h-2.5 w-56" onPointerEnter={() => barPoke.current?.()} />
+            <div aria-hidden className="absolute bottom-0 left-0 z-20 h-2.5 w-1/3 max-w-64" onPointerEnter={() => barPoke.current?.()} />
+            <div aria-hidden className="absolute bottom-0 right-0 z-20 h-2.5 w-1/3 max-w-56" onPointerEnter={() => barPoke.current?.()} />
           </>
         )}
       </div>

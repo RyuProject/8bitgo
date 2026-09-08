@@ -31,6 +31,18 @@ export const ENABLED_PLATFORM_IDS = Object.freeze([
   // 没自建时平台仍然可见但一款也玩不了 —— 所以在部署 Play.js/Play.wasm 之前
   // 别往这个平台上传游戏。详见 src/emulator/adapters/play.ts。
   'ps2',
+  /*
+    NDS（2026-09-08 加）。**东西早就齐了，只是漏了这一行** ——
+    平台定义在 src/data/platforms.ts（runtime: emulatorjs / core: nds）、三个核心也真发出去了
+    （melonds / desmume / desmume2015，各含 legacy 变体）、双屏布局与触控 09-07 做完，
+    而这份名单一直没加它。后果是**每一款 NDS 游戏的详情页都 404**
+    （GameDetailPage 那句 `!isPlatformEnabled(...) → NotFoundPage`，SSR 跟着回 404），
+    平台页 /platforms/nds 同理。站长报「cooking-mama 显示 404」就是撞在这里。
+
+    ⚠️ 三个核心的分工别搞混（详见 [EmulatorJS 核心的发布与选择]）：melonDS 最准但**没有任何降档手段**，
+    desmume 有帧跳和内部分辨率可以调，定位是「按游戏兜底」不是「提速」。
+  */
+  'nds',
 ])
 
 export function isPlatformEnabledId(id) {
