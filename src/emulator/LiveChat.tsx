@@ -155,12 +155,36 @@ export function LiveChatLane({ messages, className }: { messages: LiveChatMessag
 
 /* ---------------- 画面下方：只有输入框 ---------------- */
 
+/**
+ * 主播侧的一个开关（直播 / 联机共用这个形状）。
+ * 文案由上游算好 —— 这里不认 Phase，也不认联机的房间状态。
+ */
+export interface ChatBarToggle {
+  on: boolean
+  /** 按钮上的字（窄屏收进 title） */
+  label: string
+  /** title / aria-label */
+  hint: string
+  busy?: boolean
+  toggle: () => void
+}
+
 export function LiveChatBar({
   onSend,
+  live,
+  match,
   className,
 }: {
   /** null = 现在发不了（还没连上 / 已经散场）。这时输入框禁用，而不是让人白打一段字 */
   onSend: ((text: string) => void) | null
+  /**
+   * 主播侧的两个开关：直播、联机。观众传 undefined，按钮就不画。
+   *
+   * 为什么放在这一行而不是工具栏：工具栏那排图标在 360pt 上已经要折行了，而这两个
+   * 是**主播才用**的东西，跟观众无关；弹幕框本来就是主播的手停留的地方。
+   */
+  live?: ChatBarToggle | null
+  match?: ChatBarToggle | null
   className?: string
 }) {
   const t = useT()
@@ -200,6 +224,15 @@ export function LiveChatBar({
           className="min-w-0 flex-1 rounded-lg border border-line bg-surface-2 px-2.5 py-1.5 text-sm text-fg placeholder:text-dim focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30 disabled:opacity-50"
         />
         {remaining < 20 && <span className="shrink-0 text-[11px] tabular-nums text-dim">{remaining}</span>}
+
+        {/*
+          主播的两个开关。摆在「发送」左边：发送是这一行的主动作，留在最右边，
+          位置固定，不会因为开关出现 / 消失而左右横跳。
+          窄屏只留符号，文字进 title —— 和工具栏那排按钮同一套处理。
+        */}
+        {live && <ToggleButton icon="📡" t={live} />}
+        {match && <ToggleButton icon="🎮" t={match} />}
+
         <button
           type="button"
           onClick={send}
@@ -210,5 +243,29 @@ export function LiveChatBar({
         </button>
       </div>
     </div>
+  )
+}
+
+/** 弹幕框里的开关按钮。亮着 = 开着 */
+function ToggleButton({ icon, t }: { icon: string; t: ChatBarToggle }) {
+  return (
+    <button
+      type="button"
+      onClick={t.toggle}
+      disabled={t.busy}
+      title={t.hint}
+      aria-label={t.label}
+      aria-pressed={t.on}
+      className={cx(
+        'inline-flex shrink-0 items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition disabled:opacity-40',
+        t.on
+          ? 'border-live bg-live/15 text-live'
+          : 'border-line text-muted hover:border-brand hover:text-brand',
+      )}
+    >
+      <span aria-hidden>{icon}</span>
+      {/* 文字只在 sm 以上出现；正在切换时无论宽窄都显示 —— 是个在变的状态，光一个符号说不清 */}
+      <span className={t.busy ? undefined : 'hidden sm:inline'}>{t.label}</span>
+    </button>
   )
 }

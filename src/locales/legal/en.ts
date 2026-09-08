@@ -31,7 +31,7 @@ const UPDATED = '2026-09-07'
 export const termsEnglish: LegalDocCopy = {
   seoTitle: 'Terms of Service',
   seoDescription:
-    'The 8BitGo terms of service: eligibility, accounts and G coins, game files and the copyright takedown process, live streaming, cloud saves, disclaimers and governing law.',
+    'The 8BitGo terms of service: eligibility, accounts, game files and the copyright takedown process, live streaming, cloud saves, disclaimers and governing law.',
   h1: 'Terms of Service',
   updatedLabel: 'Last updated',
   updated: UPDATED,
@@ -68,7 +68,7 @@ The site is reachable worldwide, but we do not warrant that it complies with eve
 
 ### One account per person
 
-You should not create multiple accounts to evade a ban, farm G coins or manipulate ratings.`,
+You should not create multiple accounts to evade a ban or manipulate ratings.`,
     },
     {
       id: 'account',
@@ -92,17 +92,6 @@ If an account is used for anything the "House rules" clause prohibits, we may re
 ### Closing your account
 
 You can close it yourself: start the deletion from your profile, we email a code to the address on the account, and once it is verified the account is deleted together with your favourites, recently played, cloud saves, comments, ratings and collections. What still remains after deletion is listed item by item in the Privacy Policy.`,
-    },
-    {
-      id: 'coins',
-      title: 'G coins',
-      body: `The site has a virtual counter called **G coins**, and you receive some when you register. What you need to know:
-
-- G coins are **not money**. They have no cash value and cannot be withdrawn or exchanged for money or goods.
-- There is **no way to buy them**. We do not sell G coins; anyone claiming to sell them has no connection to this site.
-- G coins cannot be transferred between accounts.
-- We may change how they are earned and what they are for, and balances may be reset when features change. **G coins are not refundable**, because they were never sold.
-- If an account is banned or deleted, its G coins are gone with it.`,
     },
     {
       id: 'game-files',
@@ -214,7 +203,7 @@ Do not broadcast infringing material, unlawful material or other people's privat
 
 - Scrape the site's content or game files at scale with automated tools.
 - Attack, scan or load-test the site, or try to defeat access controls, age checks or rate limits.
-- Forge requests to inflate play counts, ratings or G coins, or use multiple accounts to manipulate ratings.
+- Forge requests to inflate play counts or ratings, or use multiple accounts to manipulate ratings.
 - Impersonate anyone, or claim an official relationship with 8BitGo.
 - Resell the service, or repackage the site's content as a paid product.
 - Upload malicious code, or use the multiplayer, submission or save endpoints to move data for non-gameplay purposes.
@@ -552,7 +541,7 @@ What we use is the browser's local storage, session storage and IndexedDB. All o
 
 ### Kept until you clear it (local storage)
 
-- The **sign-in token** (valid 30 days) and a **cached copy of the current user** (including email, nickname and G coin balance)
+- The **sign-in token** (valid 30 days) and a **cached copy of the current user** (including email and nickname)
 - Your **interface language** choice
 - An **anonymous rating identifier** — a random string, sent to the server with each anonymous rating
 - **Guest play history** (the "recently played" list when not signed in, up to 12 entries)

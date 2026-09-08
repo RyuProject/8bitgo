@@ -13,10 +13,9 @@ import { shouldCaptureMouse } from './mouseCapture'
 import { platformBiosUrlSync } from '@/services/platformBios'
 import { EmulatorTools } from './EmulatorTools'
 import { TouchPad } from './TouchPad'
-import { LiveControls } from './LiveControls'
+import { LiveControls, type LiveControlsHandle } from './LiveControls'
 import { LiveChatBar, LiveChatLane, useLiveChat } from './LiveChat'
 import type { Broadcast } from './broadcast'
-import { MatchControls } from './MatchControls'
 import { matchLocalArcadeHack } from './arcadeHack'
 import type { LiveSession, LiveViewState } from './adapters/liveview'
 import type { NetplaySession } from './adapters/emulatorjs'
@@ -516,6 +515,12 @@ export function EmulatorPlayer({
    * 这一局有没有「直播间」这回事：我在推（liveSession）或者我在看（session.live）。
    * 两种身份看到的是同一个房间、同一条消息流，只是收发的句柄不同。
    */
+  /**
+   * 直播开关。2026-09-08 从工具栏挪到了弹幕框旁边，所以 LiveControls 只管推流、
+   * 把开关交上来（chromeless），按钮由 LiveChatBar 画。
+   */
+  const [liveCtl, setLiveCtl] = useState<LiveControlsHandle | null>(null)
+
   const liveChatOn = Boolean(liveSession) || Boolean(session?.live)
 
   /**
@@ -1917,6 +1922,43 @@ export function EmulatorPlayer({
     else void el.requestFullscreen?.()
   }
 
+  /*
+    弹幕框旁边那两个主播开关。2026-09-08 从工具栏挪过来的（工具栏那排图标在 360pt 上
+    已经要折行，而这两个是主播才用的东西）。
+
+    ⚠️ 联机这道判断是从原来的 MatchControls 里原样搬过来的，一条都不能少：
+    引擎得能在**运行中**开房（openNetplay），否则给出的是一个点了会把游戏重开的假入口；
+    平台和信令要具备 P2P 条件；单人游戏没有联机可言。
+  */
+  const canMatch =
+    status === 'running' &&
+    !session?.live &&
+    !session?.netplay &&
+    !session?.cloud &&
+    Boolean(handle?.openNetplay) &&
+    p2pOk &&
+    slots > 1
+
+  const matchCtl = canMatch
+    ? {
+        on: hosting,
+        busy: matchBusy,
+        label: matchBusy ? t.player.matchOpening : hosting ? t.player.matchStop : t.player.match,
+        hint: hosting ? t.player.matchStopHint : fmt(t.player.matchHint, { max: String(slots) }),
+        toggle: hosting ? closeMatch : openMatch,
+      }
+    : null
+
+  /*
+    弹幕框什么时候画。
+
+    以前是 `liveChatOn`（有直播会话才画）。开关挪进来之后那样是个**死胡同**：
+    主播一关直播 -> liveSession 变 null -> 整条弹幕框消失 -> 那颗「重新开播」的按钮
+    跟着一起没了，再也开不回来。所以只要主播手上有开关就得画，
+    输入框那边本来就会因为 onSend 为 null 而自己禁用。
+  */
+  const chatBarOn = liveChatOn || Boolean(liveCtl) || Boolean(matchCtl)
+
   const busy = status === 'loading' || status === 'running'
   /** 「在房间里」：挂载时就联机的，或者玩到一半点「联机匹配」开出来的 */
   const inRoom = Boolean(session?.netplay || session?.cloud || hosting)
@@ -2823,24 +2865,10 @@ export function EmulatorPlayer({
             active={!session?.netplay && !session?.cloud}
             netplayRoomId={hosting ? roomId : null}
             captureRef={hostRef}
+            chromeless
+            onControls={setLiveCtl}
             onChat={chat.push}
             onSession={setLiveSession}
-          />
-        )}
-
-        {/*
-          联机匹配。接替原来「开播」的位置：开播已经不需要玩家决定了，
-          「让别人进来一起玩」才需要。点下去在**正在跑的这一局**上开房，游戏不重开。
-        */}
-        {status === 'running' && !session?.live && !session?.netplay && !session?.cloud && (
-          <MatchControls
-            handle={handle}
-            maxPlayers={slots}
-            canPlayOnline={p2pOk}
-            open={hosting}
-            busy={matchBusy}
-            onOpen={openMatch}
-            onClose={closeMatch}
           />
         )}
 
@@ -2963,7 +2991,7 @@ export function EmulatorPlayer({
         这一行会落在它后面，成了一个看不见但能被 Tab 到的输入框。
       */}
     </div>
-    {liveChatOn && !fullscreen && !playMode && (
+    {chatBarOn && !fullscreen && !playMode && (
       <LiveChatBar
         className="mt-2"
         /*
@@ -2978,6 +3006,9 @@ export function EmulatorPlayer({
               ? (text) => handle.liveChat?.(text)
               : null
         }
+        /* 这两个只有主播有；观众那一路 liveCtl / matchCtl 都是 null，按钮不画 */
+        live={liveCtl && { on: liveCtl.on, label: liveCtl.label, hint: liveCtl.hint, toggle: liveCtl.toggle }}
+        match={matchCtl}
       />
     )}
     </>

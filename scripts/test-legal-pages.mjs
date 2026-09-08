@@ -528,12 +528,26 @@ check('版权下架流程独立成节，且列了要素清单', () => {
   }
 })
 
-check('G 币明确写了无现金价值、不可购买、不退款', () => {
-  for (const [lang, key] of [['zh-Hans', 'zh'], ['zh-Hant', 'zh'], ['en', 'en']]) {
-    const s = DOCS[`terms/${lang}`].sections.find((x) => x.id === 'coins')
-    const must =
-      key === 'zh' ? [['现金价值', '現金價值'], ['购买', '購買'], ['退款']] : [['no cash value'], ['no way to buy'], ['not refundable']]
-    for (const alts of must) assert.ok(alts.some((w) => s.body.includes(w)), `terms/${lang}#coins 里缺：${alts.join(' / ')}`)
+check('⚠️ 条款里不提 G 币（站上没有这个功能）', () => {
+  /*
+    2026-09-07：条款初稿里有一整节 G 币（无现金价值、不可购买、不退款）。
+    但 config/features.ts 里 `coins: false` —— 这个功能没开，站上根本没有。
+    条款去描述一个不存在的功能，比不写更糟：它给了用户一个不存在的预期，
+    而且真上线时实际规则未必和当初随手写的那节一致。
+
+    这条断言同时钉住反向：哪天 coins 真开了，得**先想清楚规则再写进条款**，
+    那时候把这条测试改掉是刻意动作，不是顺手。
+  */
+  const flags = read('src/config/features.ts')
+  const coinsOn = /coins:\s*true/.test(flags)
+  for (const lang of ['zh-Hans', 'zh-Hant', 'en']) {
+    const text = textOf(DOCS[`terms/${lang}`]) + textOf(DOCS[`privacy/${lang}`])
+    const mentions = /G 币|G 幣|G coin/i.test(text)
+    if (coinsOn) {
+      assert.ok(mentions, `features.ts 里 coins 开了，但 ${lang} 的条款一个字没提 —— 该补一节了`)
+    } else {
+      assert.ok(!mentions, `${lang} 的条款还在写 G 币，但 features.ts 里 coins 是关的`)
+    }
   }
 })
 

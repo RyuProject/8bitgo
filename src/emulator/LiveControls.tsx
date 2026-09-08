@@ -49,6 +49,19 @@ interface Props {
    * Region Capture 目前只有 Chrome 系有；没有就整个标签页一起推，能用。
    */
   captureRef?: RefObject<HTMLElement | null>
+  /**
+   * 不画自己那颗按钮，只干推流的活。
+   *
+   * 2026-09-08 起开关挪到了弹幕输入框旁边（那儿才是主播的手停留的地方，
+   * 而工具栏那一排图标已经挤到 360pt 上要折行了）。但**这个组件不能不挂**——
+   * 推流、重连、观众数、弹幕收发全在它里面。所以是「藏起来」而不是「不渲染」。
+   */
+  chromeless?: boolean
+  /**
+   * 把开关和当前状态交出去，让别处（弹幕框）画那颗按钮。
+   * 传 null = 现在没得可控（组件因为不满足开播条件而没挂）。
+   */
+  onControls?: (c: LiveControlsHandle | null) => void
   /** 收到一条弹幕。主播和观众看到的是同一份消息流，只是入口不同（观众那边走 liveview） */
   onChat?: (msg: LiveChatMessage) => void
   /**
@@ -79,6 +92,19 @@ const BTN =
  * 而对玩家来说「再等等」和「这局没人看得到」是两件完全不同的事。
  */
 type Phase = 'starting' | 'live' | 'reconnecting' | 'off' | 'manual' | 'hidden'
+
+/** 交给别处画按钮用的一小把东西。文案在这边算好，调用方不用再认 Phase */
+export interface LiveControlsHandle {
+  phase: Phase
+  /** 正在播（含重连中） */
+  on: boolean
+  viewers: number
+  /** 按钮文字 */
+  label: string
+  /** 按钮说明（title） */
+  hint: string
+  toggle: () => void
+}
 
 /**
  * 状态按钮的底样式。颜色一概不写在这里 —— 每种状态的边框色/文字色由 TONE 给，
@@ -182,6 +208,8 @@ const RETRY_MAX = 15
 const AUDIO_WAIT_MAX = 8
 
 export function LiveControls({ handle, gameName, gameSlug, platform, active = true, netplayRoomId = null, captureRef, className,
+  chromeless = false,
+  onControls,
   onChat,
   onSession,
 }: Props) {
@@ -411,7 +439,12 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
     }
   }
 
-  if (!handle || !gameSlug || !liveEnabled() || !active) return null
+  /*
+    原来这里是 `return null`。改成一个布尔量往下带，因为下面要加一个把开关交出去的
+    useEffect —— 早退挡在它前面就成了条件调用 hook，React 会当场报错。
+    真正的 return null 挪到 JSX 之前。
+  */
+  const available = Boolean(handle && gameSlug && liveEnabled() && active)
 
   const toggleHidden = () => {
     // 走标签页分享的这一路，点一下就是开 / 停，不碰「不公开」那个长期选择：
@@ -428,7 +461,9 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
   }
 
   const copy = async () => {
-    if (!live || !roomId) return
+    // gameSlug 的判断以前是靠上面那句 early return 收窄的；它改成 available 之后
+    // 这里的类型不再被收窄，得自己判一次
+    if (!live || !roomId || !gameSlug) return
     const url = liveLink(gameSlug, roomId)
     try {
       await navigator.clipboard.writeText(url)
@@ -477,6 +512,32 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
     manual: tt.liveManualTitle,
     hidden: tt.liveShowTitle,
   }
+
+  /*
+    把开关交出去，让弹幕框那边画按钮。
+
+    toggleHidden 每次渲染都是新函数，直接放进依赖数组会让这个 effect 每帧都跑，
+    父组件跟着每帧重渲染。所以存一个 ref，对外给的是一个**恒定**的包装函数，
+    依赖数组里只留真正会变的那几个值。
+  */
+  const toggleRef = useRef(toggleHidden)
+  toggleRef.current = toggleHidden
+  const stableToggle = useCallback(() => toggleRef.current(), [])
+
+  const btnLabel = label[phase]
+  const btnHint = hint[phase] + qualityNote
+  useEffect(() => {
+    if (!onControls) return
+    onControls(
+      available ? { phase, on: phase === 'live' || phase === 'reconnecting', viewers, label: btnLabel, hint: btnHint, toggle: stableToggle } : null,
+    )
+    // 卸载时收回：播放器换局、或者这一局不该开播了，按钮不能还留在弹幕框上
+    return () => onControls(null)
+  }, [onControls, available, phase, viewers, btnLabel, btnHint, stableToggle])
+
+  if (!available) return null
+  // 开关已经交给弹幕框了，这边就不画第二份（推流该干的活在上面的 effect 里照跑）
+  if (chromeless) return null
 
   return (
     <div className={cx('flex flex-wrap items-center gap-1.5', className)}>

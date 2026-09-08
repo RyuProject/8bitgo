@@ -18,7 +18,6 @@ import {
   cloudSavesEnabled,
   fetchCloudSave,
   pullLocalSave,
-  pullSave,
   pushSave,
   saveInfo,
   setSaveTarget,
@@ -385,36 +384,13 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
     }
   }
 
-  /** 读档：有存好的就读那份，没有就让他选个文件 */
-  const doLoad = async () => {
-    if (archivable && saveRuntime && gameSlug) {
-      try {
-        const got = await pullSave(saveRuntime, gameSlug)
-        if (got) {
-          // slice() 保证拿到的是一段独立的 buffer，不受原数组偏移影响
-          const note = await handle.loadState?.(got.data.slice().buffer)
-          setArchived({ where: got.where, updatedAt: got.updatedAt, pending: got.pending })
-          say(
-            typeof note === 'string' && note
-              ? note
-              : fmt(tt.loadFrom, { where: whereLabel(got.where, got.pending) }),
-          )
-          return
-        }
-      } catch (e) {
-        say(fmt(tt.loadFail, { msg: e instanceof Error ? e.message : String(e) }))
-        return
-      }
-    }
-    fileRef.current?.click()
-  }
 
   /**
-   * 从指定的地方读档。
-   *
-   * 和 doLoad() 的分工：那个是「读现有的最好那份」（快捷读档按钮用），
-   * 这个是玩家在面板里点了某一张卡的「读档」—— 他要的就是**那儿**的那份，
+   * 从指定的地方读档。玩家在面板里点了某一张卡的「读档」—— 他要的就是**那儿**的那份，
    * 这时候再去别处找等于答非所问。空了就直说，别悄悄读了别的地方的。
+   *
+   * （2026-09-08 之前旁边还有一颗「读现有的最好那份」的快捷读档按钮，
+   * 那是重复入口，已经删掉。）
    */
   const loadFrom = async (from: 'cloud' | 'local') => {
     if (!archivable || !saveRuntime || !gameSlug) return
@@ -514,31 +490,6 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [caps, saveCards, stageRef])
 
-  /** 另存为文件：玩家想自己保管一份，或者换个站点 / 换台机器带过去 */
-  const doExport = async () => {
-    /*
-      ⚠️ 必须在调 saveState 之前判。
-      云联机的 saveState 是把状态**存到服务器**然后 return null（本地没有可导出的文件）。
-      以前直接调下去：服务器上那份存档被这一刻的状态盖掉了，而界面见到 null 报的是
-      「保存失败」—— 玩家以为什么都没发生，其实他想回退到的那份更早的进度已经没了。
-      doSave 早就有这道判断，doExport 一直没抄。
-    */
-    if (handle.saveMode === 'remote') {
-      say(tt.saveRemote)
-      return
-    }
-    try {
-      const blob = await handle.saveState?.()
-      if (!blob) {
-        say(tt.saveFail)
-        return
-      }
-      downloadBlob(blob, mediaFileName(gameName, handle.saveExt ?? 'state'))
-      say(tt.saveOk)
-    } catch (e) {
-      say(e instanceof Error && e.message ? e.message : tt.saveFail)
-    }
-  }
 
   const doShot = async () => {
     try {
@@ -605,7 +556,6 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
     caps.has('gamepad') ||
     caps.has('screenshot') ||
     caps.has('record') ||
-    (caps.has('saveState') && archivable) ||
     Boolean(handle.setMouseInvert)
 
   return (
@@ -643,26 +593,26 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
             存档是他自己的东西，存在哪儿该他说了算，所以现在点开是三张卡：
             云端 / 这个浏览器 / 文件，每张自己带「读」和「存」。
           */}
-          <button type="button" className={BTN} onClick={() => setSaveModal(true)} title={tt.saveLoadTitle}>
+          {/*
+            2026-09-08 把旁边那颗「📂 快捷读档」删了 —— 面板里三张卡各自都带「读」，
+            那颗按钮是重复入口。但它 title 上那句「上次存在云端 · 3 分钟前」是**独有信息**，
+            删按钮不该把信息一起删掉，所以并到这颗上来。
+          */}
+          <button
+            type="button"
+            className={BTN}
+            onClick={() => setSaveModal(true)}
+            title={
+              archived
+                ? `${tt.saveLoadTitle} · ${fmt(tt.loadTitle, {
+                    where: whereLabel(archived.where, archived.pending),
+                    when: timeAgo(archived.updatedAt, lang),
+                  })}`
+                : tt.saveLoadTitle
+            }
+          >
             💾
           </button>
-          {handle.loadState && (
-            <button
-              type="button"
-              className={BTN}
-              onClick={() => void doLoad()}
-              title={
-                archived
-                  ? fmt(tt.loadTitle, {
-                      where: whereLabel(archived.where, archived.pending),
-                      when: timeAgo(archived.updatedAt, lang),
-                    })
-                  : tt.load
-              }
-            >
-              📂
-            </button>
-          )}
           <input
             ref={fileRef}
             type="file"
@@ -744,15 +694,6 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
             aria-pressed={mouseInv}
           >
             🖱️
-          </button>
-        )}
-
-        {/* 存档已经进了云端或浏览器时，再给一条「自己保管一份」的出口。
-            条件要和 hasSecondary 那边一致，并且必须带上 saveState —— 导出走的就是它。
-            DOS 是 saveRuntime 但只有 fsSave，少这一条的话按钮照画，点了永远是「保存失败」 */}
-        {archivable && caps.has('saveState') && (
-          <button type="button" className={BTN} onClick={() => void doExport()} title={tt.exportFile}>
-            📥
           </button>
         )}
 
