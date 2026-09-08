@@ -15,6 +15,7 @@
  * 重新取一次证再改这里。
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import {
   findLayoutOption,
   findTouchModeOption,
@@ -421,6 +422,56 @@ check('current 与 fallback 原样带出来（适配器靠它判「已经对了�
 check('大小写/空格不敏感地挑绝对坐标那一档，但回填的是核心的原文', () => {
   const opt = findTouchModeOption([{ key: 'melonds_touch_mode', values: ['Mouse', ' TOUCH '] }])
   assert.equal(opt?.absolute, ' TOUCH ', '回填必须原样 —— 核心认的是它自己那份字符串')
+})
+
+/* ---------- 适配器源码守卫：鼠标锁定必须对 POINTER_FIRST 平台无条件关掉 ---------- */
+/*
+  为什么只能扫源码：这几条错误全在浏览器里才现形，而现形的样子是「Chrome 压下一条
+  『按 esc 显示光标』、指针没了、触控笔点不准」—— 没有异常、没有日志，
+  跑任何单元测试都是绿的。09-08 修之前它就这么活了一整天。
+*/
+const ADAPTER = readFileSync(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
+/** 断言用的源码：把注释剥掉，别被我们自己写的病因注释骗过去（test:j2me 踩过） */
+const ADAPTER_CODE = ADAPTER.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+
+check('⚠️ releaseMouseLock 不能挂在 applyTouchInput 里（桌面进不去那个函数）', () => {
+  const from = ADAPTER_CODE.indexOf('const applyTouchInput = ')
+  assert.ok(from > 0, '找不到 applyTouchInput —— 改名了就把这条守卫一起改')
+  const body = ADAPTER_CODE.slice(from, ADAPTER_CODE.indexOf('\n  const ', from + 10))
+  assert.ok(
+    !body.includes('releaseMouseLock'),
+    'applyTouchInput 开头就 `if (!isMobile && !hasTouchScreen && !coarse) return`，' +
+      '桌面浏览器根本进不去；而锁定指针只在桌面上发生。放这儿等于没做',
+  )
+})
+
+check('⚠️ 开局时按 POINTER_FIRST 无条件关掉鼠标锁定', () => {
+  const from = ADAPTER_CODE.indexOf('const finishStart = ')
+  assert.ok(from > 0, '找不到 finishStart')
+  const body = ADAPTER_CODE.slice(from, ADAPTER_CODE.indexOf('\n  const ', from + 10))
+  assert.match(body, /POINTER_FIRST\.has\(options\.platform\)/, 'finishStart 里要按平台判')
+  assert.match(body, /releaseMouseLock\(/, 'finishStart 里要真调 releaseMouseLock')
+})
+
+check('⚠️ 关锁定除了走 changeSettingOption 还必须直接写 enableMouseLock', () => {
+  const from = ADAPTER_CODE.indexOf('const releaseMouseLock = ')
+  assert.ok(from > 0, '找不到 releaseMouseLock')
+  const body = ADAPTER_CODE.slice(from, ADAPTER_CODE.indexOf('\n  const ', from + 10))
+  assert.match(body, /changeSettingOption\?\.\('lockMouse', 'disabled', true\)/, "第三参必须是 true —— 这是默认值不是玩家的选择")
+  assert.match(
+    body,
+    /enableMouseLock = false/,
+    '引擎那句 requestPointerLock 只看这个布尔；菜单那一行没建时，光走 changeSettingOption 等于没关',
+  )
+  assert.match(body, /exitPointerLock\(\)/, '已经锁上了要当场退出来')
+})
+
+check('⚠️ 触控模式那一路改完要回读核对（changeSettingOption?.() 不在时是静默的）', () => {
+  const from = ADAPTER_CODE.indexOf('const applyTouchModeDefault = ')
+  assert.ok(from > 0, '找不到 applyTouchModeDefault')
+  const body = ADAPTER_CODE.slice(from, ADAPTER_CODE.indexOf('\n  const ', from + 10))
+  assert.match(body, /readTouchModeOption\(emu\)\?\.current/, '要再读一次核心选项当证据')
+  assert.match(body, /console\.warn/, '回读对不上必须 warn，不能只打「已改」')
 })
 
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')

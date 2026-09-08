@@ -1785,23 +1785,35 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const sameValue = (a: string | null | undefined, b: string) => !!a && a.trim().toLowerCase() === b.trim().toLowerCase()
 
   /**
-   * 触控笔走绝对坐标时，把引擎的「点画布锁定鼠标」关掉。
+   * 把引擎的「点画布锁定鼠标指针」关掉。**指针优先的平台（POINTER_FIRST）无条件做**。
    *
-   * 为什么这两件事必须绑在一起：EmulatorJS 出厂 `lockMouse = enabled`，玩家在画布上
-   * 第一下点击就 requestPointerLock()。而 RetroArch 的 Emscripten 输入驱动
-   * （rwebinput_input.c）一旦发现 pointerlock_active，就**不再**用事件的 targetX × dpr
-   * 当指针位置，改成把 movementX（CSS 像素，不乘 dpr）累加成一个虚拟位置、再按
-   * 画布**物理像素**尺寸夹住 —— 于是 Retina 上每动 1 个 CSS 像素只走 1 个物理像素，
-   * 指针速度对半；同时系统光标被锁定隐藏、而 melonDS 的 Touch 档不画光标
-   * （input.cpp：cursor_enabled 只在 Mouse / Joystick 为真）。结果就是**看不见任何光标、
-   * 点到哪里全凭感觉**，比相对位移那一档还糟。不锁定时是 targetX × dpr 直接对上
-   * 物理像素的视口，点哪儿就是哪儿 —— 系统光标本身就是笔尖。
+   * 玩家先看到的是这个：在 NDS 上点一下画面，Chrome 顶上压下来一条
+   * 「8bitgo.com – 若要显示光标，请按 esc」，鼠标指针没了。对一台**靠戳屏幕玩**的机器，
+   * 这是纯粹的损失 —— 触控笔的落点全靠指针指，指针一藏就只能凭感觉点。
    *
-   * 和触控模式一样只当默认值改（第三参 true），玩家在菜单里明确开过锁定就不动。
+   * 底下还有一层，比那条横幅更要紧：RetroArch 的 Emscripten 输入驱动
+   * （`input/drivers/rwebinput_input.c`）**锁定与不锁定走的是两套坐标**。
+   *   不锁定：`mouse.x = targetX * dpr` —— CSS 像素乘 dpr，正好落在画布的物理像素视口上，
+   *           指针指哪儿就是哪儿，`RETRO_DEVICE_POINTER`（melonDS 的 `Touch` 档）要的就是这个。
+   *   锁定后：改成 `mouse.x += movementX` 累加成一个虚拟位置，再按**物理像素**尺寸夹住 ——
+   *           movementX 是 CSS 像素、不乘 dpr，于是 Retina（dpr 2）上每动 1 个 CSS 像素只走
+   *           1 个物理像素，绝对坐标那一路直接**速度对半 + 起点错位**。
+   * 叠上 melonDS 在 `Touch` 档**不画十字光标**（`input.cpp`：`cursor_enabled()` 只在
+   * Mouse / Joystick 为真），锁定 = 没有系统指针、也没有游戏光标，一个参照物都不剩。
+   *
+   * 相对位移那一档（`Mouse`）不锁也照样能用：`pending_delta_x` 是从 movementX 累加的，
+   * 而普通 mousemove 一样带 movementX —— 锁定在这一档换来的只有「指针跑不出画布」，
+   * 抵不上藏掉指针的代价。所以这里不分档，进 POINTER_FIRST 就关。
+   *
+   * 和触控模式一样只当默认值改（第三参 true），玩家在引擎菜单里明确开过锁定就尊重他。
+   * 除了走 `changeSettingOption`，**还要直接写 `emu.enableMouseLock`** ——
+   * 引擎那句 `requestPointerLock()` 在画布的 click 监听里只看这个布尔，而
+   * `changeSettingOption` 要靠设置菜单里那一行的监听转发才会经 handleSpecialOptions
+   * 改到它；菜单那一行万一没建（引擎换版本、hideSettings 藏了它），少了这一句就等于没关。
    */
   const releaseMouseLock = (emu: EjsEmulator) => {
     if (emu.settings?.lockMouse === 'enabled') {
-      console.info('[emulatorjs] 玩家自己开了「锁定鼠标」，保留（触控笔在锁定下没有可见光标，不建议）')
+      console.info('[emulatorjs] 玩家自己开过「锁定鼠标」，保留（这台机器靠戳屏幕玩，锁定后没有任何可见指针，不建议）')
       return
     }
     try {
@@ -1809,14 +1821,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     } catch (e) {
       console.warn('[emulatorjs] 关鼠标锁定失败：', e)
     }
-    // 菜单那条路走不到（引擎版本没建这一行）时直接写标志；引擎点画布时只看这个布尔
+    // 兜底：引擎点画布时只看这个布尔（见上面注释最后一段）
     emu.enableMouseLock = false
+    // 已经锁上了就当场退出来（玩家在部署前的版本里点过、或者我们跑得比他第一下点击晚）
     const doc = emu.canvas?.ownerDocument
-    if (doc && doc.pointerLockElement && doc.pointerLockElement === emu.canvas) {
+    if (doc?.pointerLockElement && doc.pointerLockElement === emu.canvas) {
       try {
         doc.exitPointerLock()
       } catch {
-        /* 有的浏览器不允许非手势下退出，忽略 */
+        /* 有的浏览器不允许非手势下退出，忽略 —— 玩家按一下 esc 就出来了 */
       }
     }
   }
@@ -1868,7 +1881,6 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     const chosen = emu.settings?.[opt.key]
     if (typeof chosen === 'string' && opt.values.includes(chosen)) {
       console.info(`[emulatorjs] 玩家在引擎菜单里选过 ${opt.key} = ${chosen}，不改（要换回绝对坐标：设置 → Core Options → ${opt.absolute}）`)
-      if (sameValue(chosen, opt.absolute)) releaseMouseLock(emu)
       return
     }
     // 已经是绝对坐标了就别多写一次（换核心版本、以后核心改了默认都可能命中这里）
@@ -1889,7 +1901,6 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
     if (sameValue(effective, opt.absolute)) {
       console.info(`[emulatorjs] 触控笔走绝对坐标：${opt.key} = ${effective}（核心出厂默认 ${opt.fallback || '未知'}）`)
-      releaseMouseLock(emu)
     } else {
       console.warn(`[emulatorjs] 触控模式没改成：${opt.key} 回读到「${effective || '空'}」，期望 ${opt.absolute}。changeSettingOption 在不在：${typeof emu.changeSettingOption}`)
     }
@@ -2142,6 +2153,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     options.onStart?.()
     refineCaps()
     applyTouchInput(win)
+    /*
+      指针优先的平台（画布本身就是触摸屏）绝不能让引擎锁鼠标指针，见 releaseMouseLock。
+
+      ⚠️ 这一句**不能挪进 applyTouchInput** —— 那个函数一开头就 `if (!isMobile &&
+      !hasTouchScreen && !coarse) return`，桌面浏览器根本进不去；而锁定指针恰恰只在
+      桌面上发生（手机上没有 pointer lock 这回事）。放在这里、按平台判，才覆盖得到。
+    */
+    if (POINTER_FIRST.has(options.platform)) {
+      const emu = emuOf()
+      if (emu) releaseMouseLock(emu)
+    }
     setupScreenLayout(win)
     /*
       把焦点交给 iframe —— 手柄和键盘都指着它。
