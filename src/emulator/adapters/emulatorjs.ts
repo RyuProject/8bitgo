@@ -70,6 +70,7 @@ import {
   preferredLayout,
   showsTouchScreen,
   type LayoutOption,
+  type TouchModeOption,
 } from '../dualScreen'
 
 /**
@@ -551,6 +552,12 @@ interface EjsEmulator {
    * 也就是说两条都立刻对核心生效，区别只在「下一局还算不算数」。
    */
   changeSettingOption?: (key: string, value: string, isDefault?: boolean) => void
+  /**
+   * 引擎的「点画布就锁定鼠标指针」开关（设置菜单里的 Lock Mouse，出厂是开的）。
+   * 走 changeSettingOption('lockMouse', …) 时引擎自己会经 handleSpecialOptions 改它；
+   * 这里声明出来是为了在那条路走不通时直接写标志兜底，见 releaseMouseLock。
+   */
+  enableMouseLock?: boolean
 }
 
 /**
@@ -1766,14 +1773,67 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     watchGeometry()
   }
 
+  /** 读一遍核心的触控模式项：JSON 优先，拿不到退回老格式文本（desmume2015 那一支就是 v1 格式）。都没有返回 null */
+  const readTouchModeOption = (emu: EjsEmulator): TouchModeOption | null => {
+    const gm = emu.gameManager
+    const fromJson = findTouchModeOption(gm?.getCoreOptionsJSON?.() ?? null)
+    if (fromJson) return fromJson
+    if (typeof gm?.getCoreOptions === 'function') return findTouchModeOption(parseCoreOptionsText(gm.getCoreOptions()))
+    return null
+  }
+  /** 核心选项的取值比较：核心报的原文可能带空格或大小写不一 */
+  const sameValue = (a: string | null | undefined, b: string) => !!a && a.trim().toLowerCase() === b.trim().toLowerCase()
+
+  /**
+   * 触控笔走绝对坐标时，把引擎的「点画布锁定鼠标」关掉。
+   *
+   * 为什么这两件事必须绑在一起：EmulatorJS 出厂 `lockMouse = enabled`，玩家在画布上
+   * 第一下点击就 requestPointerLock()。而 RetroArch 的 Emscripten 输入驱动
+   * （rwebinput_input.c）一旦发现 pointerlock_active，就**不再**用事件的 targetX × dpr
+   * 当指针位置，改成把 movementX（CSS 像素，不乘 dpr）累加成一个虚拟位置、再按
+   * 画布**物理像素**尺寸夹住 —— 于是 Retina 上每动 1 个 CSS 像素只走 1 个物理像素，
+   * 指针速度对半；同时系统光标被锁定隐藏、而 melonDS 的 Touch 档不画光标
+   * （input.cpp：cursor_enabled 只在 Mouse / Joystick 为真）。结果就是**看不见任何光标、
+   * 点到哪里全凭感觉**，比相对位移那一档还糟。不锁定时是 targetX × dpr 直接对上
+   * 物理像素的视口，点哪儿就是哪儿 —— 系统光标本身就是笔尖。
+   *
+   * 和触控模式一样只当默认值改（第三参 true），玩家在菜单里明确开过锁定就不动。
+   */
+  const releaseMouseLock = (emu: EjsEmulator) => {
+    if (emu.settings?.lockMouse === 'enabled') {
+      console.info('[emulatorjs] 玩家自己开了「锁定鼠标」，保留（触控笔在锁定下没有可见光标，不建议）')
+      return
+    }
+    try {
+      emu.changeSettingOption?.('lockMouse', 'disabled', true)
+    } catch (e) {
+      console.warn('[emulatorjs] 关鼠标锁定失败：', e)
+    }
+    // 菜单那条路走不到（引擎版本没建这一行）时直接写标志；引擎点画布时只看这个布尔
+    emu.enableMouseLock = false
+    const doc = emu.canvas?.ownerDocument
+    if (doc && doc.pointerLockElement && doc.pointerLockElement === emu.canvas) {
+      try {
+        doc.exitPointerLock()
+      } catch {
+        /* 有的浏览器不允许非手势下退出，忽略 */
+      }
+    }
+  }
+
   /**
    * 把触控笔切到**绝对坐标**那一档（melonDS 的 `melonds_touch_mode = Touch`）。
    *
    * 为什么必须改：核心的出厂默认是 `Mouse`，而那是 libretro 的 RETRO_DEVICE_MOUSE ——
-   * **相对位移**。玩家的感受是「点一下笔不落在点的地方、手势划不出形状」。
+   * **相对位移**：每 1 个 CSS 像素的鼠标移动 = 触摸屏上 1 个像素，而触摸屏在画布上是
+   * 放大显示的（624 宽的并排布局是 1.22×，只显示下屏时 2.4× 起），玩家的感受就是
+   * 「光标比鼠标快一到两倍、越划越偏」，而且这个倍率随窗口大小变，改缩放也压不下去。
+   * `Touch` 档是 RETRO_DEVICE_POINTER，rwebinput 用 targetX × dpr 对到物理像素视口，
+   * 核心再按整个布局的 buffer 尺寸换算、落在下屏范围内才算触到 —— 这一路我们在
+   * 4:3 画布 + 8:3 并排布局（上下各留黑边）上实测过：点哪儿就是哪儿。
    * 详细的取证与订正记在 `dualScreen.ts` 的 findTouchModeOption 上面。
    *
-   * 三条约束，缺一条都会出别的毛病：
+   * 四条约束，缺一条都会出别的毛病：
    *
    * 1. **第三参传 true**（只写 allSettings、不落盘）。这是个我们替核心纠正的默认值，
    *    不是玩家的选择 —— 落盘的话，将来核心把默认改对了、或者玩家想试 Joystick，
@@ -1781,21 +1841,22 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 2. **玩家自己选过就一个字都不动**。判据只能是 `emu.settings[key]` ——
    *    只有 changeSettingOption(k, v)（第三参不为 true）才写那一格。
    *    `getSettingValue()` 返回的是 `allSettings[k] || settings[k]`，混着默认值，分不开。
+   *    ⚠️ 这一格是**按游戏**存在 localStorage 里的：玩家以前在引擎菜单里点过一次
+   *    Mouse，那款游戏就一直是相对位移 —— 所以跳过时要在控制台**说清楚**，否则
+   *    排查时看到的现象和代码对不上。
    * 3. **认不出就什么都不做**。findTouchModeOption 找不到 key、或者取值里没有
    *    `Touch` 那一档时返回 null；这时保持核心自己的默认，别拿猜的字符串去写。
+   * 4. **改完要回读核对**。changeSettingOption 是引擎在 setupSettingsMenu 里才挂上的
+   *    实例闭包，`?.()` 在它还不存在时是**静默**不做；核心那边要到 setVariable
+   *    之后才改。光打一句「已改」等于没验 —— 回读核心选项，当前值不是 Touch 就 warn。
    *
    * 只在双屏机型（= NDS）上调。别的平台没有触控笔这回事，多写一格 allSettings
    * 虽然无害，但那是往「我们改过什么」这份账里塞噪声。
    */
   const applyTouchModeDefault = (emu: EjsEmulator) => {
-    let opt = null
+    let opt: TouchModeOption | null = null
     try {
-      const gm = emu.gameManager
-      opt = findTouchModeOption(gm?.getCoreOptionsJSON?.() ?? null)
-      // JSON 那条拿不到就退回老格式的文本（desmume2015 那一支就是 v1 格式）
-      if (!opt && typeof gm?.getCoreOptions === 'function') {
-        opt = findTouchModeOption(parseCoreOptionsText(gm.getCoreOptions()))
-      }
+      opt = readTouchModeOption(emu)
     } catch (e) {
       console.warn('[emulatorjs] 读核心选项失败，触控模式这块跳过：', e)
       return
@@ -1805,14 +1866,32 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       return
     }
     const chosen = emu.settings?.[opt.key]
-    if (typeof chosen === 'string' && opt.values.includes(chosen)) return
+    if (typeof chosen === 'string' && opt.values.includes(chosen)) {
+      console.info(`[emulatorjs] 玩家在引擎菜单里选过 ${opt.key} = ${chosen}，不改（要换回绝对坐标：设置 → Core Options → ${opt.absolute}）`)
+      if (sameValue(chosen, opt.absolute)) releaseMouseLock(emu)
+      return
+    }
     // 已经是绝对坐标了就别多写一次（换核心版本、以后核心改了默认都可能命中这里）
-    if (opt.current && opt.current.trim().toLowerCase() === opt.absolute.trim().toLowerCase()) return
+    if (!sameValue(opt.current, opt.absolute)) {
+      try {
+        emu.changeSettingOption?.(opt.key, opt.absolute, true)
+      } catch (e) {
+        console.warn('[emulatorjs] 设置触控模式失败：', e)
+        return
+      }
+    }
+    // 回读核对：核心那边到底是不是 Touch，别只报「我们改了」
+    let effective = ''
     try {
-      emu.changeSettingOption?.(opt.key, opt.absolute, true)
-      console.info(`[emulatorjs] 触控笔改走绝对坐标：${opt.key} = ${opt.absolute}（原默认 ${opt.fallback || opt.current || '未知'}）`)
-    } catch (e) {
-      console.warn('[emulatorjs] 设置触控模式失败：', e)
+      effective = readTouchModeOption(emu)?.current ?? ''
+    } catch {
+      /* 读不到就按下面的 warn 处理 */
+    }
+    if (sameValue(effective, opt.absolute)) {
+      console.info(`[emulatorjs] 触控笔走绝对坐标：${opt.key} = ${effective}（核心出厂默认 ${opt.fallback || '未知'}）`)
+      releaseMouseLock(emu)
+    } else {
+      console.warn(`[emulatorjs] 触控模式没改成：${opt.key} 回读到「${effective || '空'}」，期望 ${opt.absolute}。changeSettingOption 在不在：${typeof emu.changeSettingOption}`)
     }
   }
 
