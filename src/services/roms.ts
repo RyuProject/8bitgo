@@ -306,9 +306,9 @@ export async function deleteRomDir(dir: string, keep: string[] = []): Promise<st
 }
 
 /** 上传到对象存储的媒体类别。目录名就是 key 的第一段。 */
-export type MediaKind = 'covers' | 'videos' | 'logos'
+export type MediaKind = 'covers' | 'videos' | 'logos' | 'friend-links'
 
-/** 给封面 / 视频 / 开发商 logo 生成默认 key：<kind>/<slug>.<ext> */
+/** 给封面 / 视频 / logo / 友链图生成默认 key：<kind>/<slug>.<ext> */
 export function defaultMediaKey(kind: MediaKind, slug: string, fileName: string): string {
   const ext = (fileName.match(/\.[a-z0-9]+$/i)?.[0] ?? '').toLowerCase()
   const name = (slug || fileName.replace(/\.[a-z0-9]+$/i, '')).toLowerCase().replace(/[\s_]+/g, '-')

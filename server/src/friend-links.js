@@ -42,11 +42,12 @@ export async function createFriendLink({ name, url, image, sortOrder, enabled })
 }
 
 export async function updateFriendLink(id, { name, url, image, sortOrder, enabled }) {
-  const result = await query(
+  await query(
     'UPDATE friend_links SET name = ?, url = ?, image = ?, sort_order = ?, enabled = ? WHERE id = ?',
     [name, url, image, sortOrder, enabled ? 1 : 0, id],
   )
-  if (!Number(result.affectedRows)) return null
+  // 值一个字没变时，MySQL 是否把 affectedRows 记成 0 取决于连接标志；
+  // 回查这一行才能可靠地区分「没变化」和「id 根本不存在」。
   return getFriendLink(id)
 }
 

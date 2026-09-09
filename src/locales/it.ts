@@ -257,6 +257,7 @@ const it: Translation = {
     faqHelper: 'Ancora dubbi? Entra nella nostra community su Discord, oppure leggi il blog per guide più dettagliate.',
     faqReadBlog: 'Leggi il blog',
     faqAbout: 'Chi siamo',
+    specialThanksTitle: 'Ringraziamenti speciali',
   },
 
   /* ---------------- Strumenti ed estensioni ---------------- */

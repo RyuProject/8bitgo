@@ -28,7 +28,7 @@ function cleanText(raw, max) {
   return value.length <= max ? value : null
 }
 
-function readPayload(body) {
+export function validateFriendLinkPayload(body) {
   const name = cleanText(body?.name, LIMITS.name)
   const url = cleanText(body?.url, LIMITS.url)
   const image = cleanText(body?.image, LIMITS.image)
@@ -43,7 +43,8 @@ function readPayload(body) {
   if (!Number.isInteger(sortOrder) || sortOrder < 0 || sortOrder > LIMITS.sortOrder) {
     return { error: '排序号必须是 0–65535 的整数' }
   }
-  return { value: { name, url, image, sortOrder, enabled: body?.enabled !== false } }
+  if (body?.enabled !== undefined && typeof body.enabled !== 'boolean') return { error: '启用状态必须是布尔值' }
+  return { value: { name, url, image, sortOrder, enabled: body?.enabled ?? true } }
 }
 
 friendLinksRouter.get('/', requireAbility('content:edit'), async (_req, res, next) => {
@@ -56,7 +57,7 @@ friendLinksRouter.get('/', requireAbility('content:edit'), async (_req, res, nex
 
 friendLinksRouter.post('/', requireAbility('content:edit'), async (req, res, next) => {
   try {
-    const parsed = readPayload(req.body)
+    const parsed = validateFriendLinkPayload(req.body)
     if (parsed.error) return res.status(400).json({ error: parsed.error })
     const link = await createFriendLink(parsed.value)
     invalidateContent()
@@ -70,7 +71,7 @@ friendLinksRouter.put('/:id', requireAbility('content:edit'), async (req, res, n
   try {
     const id = idOf(req.params.id)
     if (!id) return res.status(404).json({ error: '友情链接不存在' })
-    const parsed = readPayload(req.body)
+    const parsed = validateFriendLinkPayload(req.body)
     if (parsed.error) return res.status(400).json({ error: parsed.error })
     const link = await updateFriendLink(id, parsed.value)
     if (!link) return res.status(404).json({ error: '友情链接不存在' })

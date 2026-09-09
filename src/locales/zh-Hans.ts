@@ -316,6 +316,7 @@ export const zhHans = {
     faqHelper: '还有疑问？可以查看博客里的使用指南，或加入 Discord 社区交流。',
     faqReadBlog: '阅读博客',
     faqAbout: '关于我们',
+    specialThanksTitle: '特别鸣谢',
   },
 
   /* ---------------- 工具与扩展 ---------------- */

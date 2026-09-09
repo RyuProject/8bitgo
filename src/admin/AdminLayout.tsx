@@ -19,6 +19,7 @@ const TABS: { to: string; label: string; end?: boolean; need: Ability }[] = [
   { to: '/admin/games', label: '游戏', need: 'content:edit' },
   { to: '/admin/posts', label: '文章', need: 'content:edit' },
   { to: '/admin/developers', label: '开发商', need: 'content:edit' },
+  { to: '/admin/friend-links', label: '友情链接', need: 'content:edit' },
   { to: '/admin/comments', label: '评论', need: 'comments:review' },
   { to: '/admin/users', label: '用户', need: 'users:manage' },
   { to: '/admin/roms', label: 'ROM 存储', need: 'site:manage' },
@@ -148,7 +149,8 @@ function AdminShell({ onLock, me }: { onLock: () => void; me: VerifyResult | nul
               8BitGo <span className="text-brand-hover">Admin</span>
             </span>
           </Link>
-          <nav className="ml-4 flex items-center gap-1" aria-label="后台导航">
+          {/* 入口较多时让导航自身横向滚动，不能把两个字压成竖排撑高整个顶栏。 */}
+          <nav className="scrollbar-none ml-2 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto" aria-label="后台导航">
             {tabs.map((t) => (
               <NavLink
                 key={t.to}
@@ -156,7 +158,7 @@ function AdminShell({ onLock, me }: { onLock: () => void; me: VerifyResult | nul
                 end={t.end}
                 className={({ isActive }) =>
                   cx(
-                    'rounded-lg px-3 py-1.5 text-sm transition',
+                    'shrink-0 whitespace-nowrap rounded-lg px-3 py-1.5 text-sm transition',
                     isActive ? 'bg-brand-soft font-semibold text-fg' : 'text-muted hover:bg-black/5 hover:text-fg',
                   )
                 }
@@ -165,7 +167,7 @@ function AdminShell({ onLock, me }: { onLock: () => void; me: VerifyResult | nul
               </NavLink>
             ))}
           </nav>
-          <div className="ml-auto flex items-center gap-3 text-xs text-muted">
+          <div className="ml-auto flex shrink-0 items-center gap-3 text-xs text-muted">
             {/* 管理员不用标 —— 后台默认就是管理员的地方；志愿者要一眼看出自己是谁 */}
             {me && me.role !== 'admin' && (
               <span className="rounded bg-brand-soft px-1.5 py-0.5 text-brand-hover">{ROLE_LABELS[me.role]}</span>

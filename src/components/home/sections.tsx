@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { SectionHeader } from '@/components/ui/SectionHeader'
 import { HScroll } from '@/components/ui/HScroll'
@@ -12,9 +13,12 @@ import { genreMap, genres } from '@/data/genres'
 import { platformMap, platforms } from '@/data/platforms'
 import { isPlatformEnabled } from '@/config/platforms'
 import { gradientFor } from '@/lib/gradients'
+import { cx } from '@/lib/format'
 import { useLang } from '@/services/lang'
 import { useT, fmt } from '@/services/i18n'
 import { genreLabel, gameTitle } from '@/services/i18nData'
+import { romUrlForKey } from '@/services/roms'
+import type { FriendLink } from '@/services/friendLinks'
 import type { Facets } from '@/services/pageData'
 import type { Translation } from '@/locales'
 import type { Collection, Game, Genre, GenreId, Platform } from '@/types'
@@ -355,7 +359,7 @@ export function ToolsSection() {
 }
 
 /* ---------------- FAQ ---------------- */
-export function FaqSection() {
+export function FaqSection({ links = [] }: { links?: FriendLink[] }) {
   const t = useT()
   return (
     <section className="container-x">
@@ -373,11 +377,66 @@ export function FaqSection() {
               {t.sections.faqAbout}
             </Button>
           </div>
+          {links.length > 0 && <SpecialThanksBox links={links} />}
         </div>
         <div className="lg:col-span-8">
           <Accordion items={t.faq} />
         </div>
       </div>
     </section>
+  )
+}
+
+/* ---------------- 特别鸣谢 ---------------- */
+
+/**
+ * 图片友链沿用互联网早期最常见的 88×31 按钮尺寸，和本站的复古气质正好一致。
+ * 一条都没有时整栏不画：刚部署但还没去后台录入时，首页不该留下一个空框。
+ */
+function SpecialThanksBox({ links }: { links: FriendLink[] }) {
+  const t = useT()
+  return (
+    <fieldset className="mt-6 min-w-0 rounded-xl border border-line-strong px-4 pb-4 pt-3">
+      <legend className="px-1.5 text-xs font-semibold text-fg">{t.sections.specialThanksTitle}</legend>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-3 pt-1">
+        {links.map((link) => <FriendLinkButton key={link.id} link={link} />)}
+      </div>
+    </fieldset>
+  )
+}
+
+function FriendLinkButton({ link }: { link: FriendLink }) {
+  const [broken, setBroken] = useState(false)
+  // 空串代表文字友链；先判空，避免资源根地址被误当成图片 URL。
+  const src = broken || !link.image ? '' : romUrlForKey(link.image)
+  return (
+    <a
+      href={link.url}
+      target="_blank"
+      rel="noreferrer"
+      aria-label={link.name}
+      title={link.name}
+      className={cx(
+        'grid h-[31px] shrink-0 place-items-center overflow-hidden rounded-[3px] outline-offset-4 transition focus-visible:outline-2 focus-visible:outline-brand',
+        src
+          ? 'w-[88px] hover:opacity-75'
+          : 'min-w-[88px] max-w-[180px] border border-line-strong bg-surface-2 px-3 text-center text-[11px] font-semibold leading-tight text-muted hover:border-brand hover:text-fg',
+      )}
+    >
+      {src ? (
+        <img
+          src={src}
+          alt={link.name}
+          width={88}
+          height={31}
+          loading="lazy"
+          decoding="async"
+          onError={() => setBroken(true)}
+          className="h-[31px] w-[88px] object-contain"
+        />
+      ) : (
+        <span className="max-w-full truncate whitespace-nowrap">{link.name}</span>
+      )}
+    </a>
   )
 }

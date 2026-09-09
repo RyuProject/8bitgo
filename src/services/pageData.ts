@@ -13,6 +13,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Collection, Game, Post } from '@/types'
+import type { FriendLink } from './friendLinks'
 import { api, apiEnabled } from './api'
 import { startPageLoad } from './progress'
 
@@ -64,6 +65,8 @@ export interface HomeData {
   facets: Facets
   /** 首页那一栏的合集（最近有动静的几个）。表还没迁移时是空数组，不会让首页挂掉 */
   collections: Collection[]
+  /** 首页特别鸣谢。image 为空是文字友链，有值则按 88×31 图片展示 */
+  friendLinks: FriendLink[]
   total: number
 }
 export interface GamesData { route: 'games'; list: Paged<Game>; facets: Facets }

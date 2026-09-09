@@ -254,6 +254,7 @@ const ja: Translation = {
     faqHelper: '答えが見つかりませんか？ Discord コミュニティに参加するか、ブログでより詳しいガイドをご覧ください。',
     faqReadBlog: 'ブログを読む',
     faqAbout: '運営について',
+    specialThanksTitle: 'スペシャルサンクス',
   },
 
   /* ---------------- ツールと拡張機能 ---------------- */

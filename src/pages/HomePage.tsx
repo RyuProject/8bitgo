@@ -59,7 +59,7 @@ export function HomePage() {
             <GenreGridSection facets={data?.facets} genreSamples={data?.genreSamples} />
           </>
         )}
-        <FaqSection />
+        <FaqSection links={data?.friendLinks ?? []} />
       </div>
     </div>
   )

@@ -242,6 +242,7 @@ const zhHant: Translation = {
     faqHelper: '沒找到答案？加入我們的 Discord 社群，或者在部落格中查看更詳細的教學。',
     faqReadBlog: '閱讀部落格',
     faqAbout: '關於我們',
+    specialThanksTitle: '特別鳴謝',
   },
 
   tools: {

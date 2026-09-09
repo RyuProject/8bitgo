@@ -82,6 +82,49 @@ final result: blocked
 
 ---
 
+# Homepage special-thanks and friend-links QA
+
+- Placement reference: `/var/folders/hg/rws3swzs2gnc5zs48b6ln5r80000gn/T/codex-clipboard-c52b7309-32c3-4e71-beb6-ab4a6cba3229.png`
+- Style reference: `/var/folders/hg/rws3swzs2gnc5zs48b6ln5r80000gn/T/TemporaryItems/NSIRD_screencaptureui_InSrSf/截屏2026-09-09 10.38.04.png`
+- Browser-rendered implementation: `/private/tmp/8bitgo-special-thanks-embedded.png`
+- Grouped comparison: `/private/tmp/8bitgo-special-thanks-comparison-latest.png`
+- Viewports: 1265 × 712 desktop and 390 × 844 mobile
+
+## Findings
+
+No actionable P0, P1, or P2 differences remain for the requested change.
+
+## Placement and visual comparison
+
+The special-thanks fieldset is part of the FAQ left column, immediately below the blog/about actions and inside the area identified in the placement reference. It no longer creates a separate full-width homepage row. Its border, rounded corners, inset legend, line weight, typography, and surface color reuse the existing player-community fieldset language.
+
+Image links render at exactly 88 × 31 px. Text links share the 31 px height, keep an 88 px minimum width, and expand only as needed for their label. The contents use wrapping flex layout, so multiple friend links can flow onto additional lines without moving the fieldset out of the FAQ column.
+
+## Responsive and interaction checks
+
+- Desktop: the fieldset stays aligned with the FAQ introduction column while the accordion remains in the right column.
+- Mobile: reading order is introduction → actions → special thanks → FAQ accordion; page horizontal overflow is 0 px.
+- Image failures fall back to the text presentation, preserving a usable outbound link.
+- Links open in a new tab and include keyboard-visible focus styling.
+- The admin list and editor were checked in text and image modes; the narrow admin navigation now scrolls horizontally instead of collapsing labels.
+
+## Verification
+
+- Friend-link validation tests: passed (6 groups).
+- Existing role/permission tests: passed (25 checks).
+- TypeScript project build: passed.
+- Client production build and EmulatorJS artifact check: passed.
+- Server SSR production build: passed.
+- Whitespace/error-marker check: passed.
+
+## Known deployment step
+
+No production database was mutated during QA. The idempotent server migration must run before the admin page and public list are used in a deployed environment.
+
+final result: passed
+
+---
+
 # Homepage pixel-button and genre-icon QA
 
 - Source visual truth: `/Users/zhangwenyu/Downloads/截屏2026-08-29 14.31.54.png`, together with the supplied button and icon SVG files in `/Users/zhangwenyu/Desktop/未命名文件夹/`.
@@ -187,3 +230,11 @@ final result: passed
 Latest status for the nine-slice center-fill correction: the implementation and production build pass, but the required fresh browser capture was denied by local-page permissions. See “Nine-slice center-fill correction recheck” above.
 
 final result: blocked
+
+---
+
+# Current task final status
+
+The homepage special-thanks placement, friend-link wrapping, 88 × 31 image sizing, responsive behavior, admin workflow, and production builds were visually and functionally verified in the current task. See “Homepage special-thanks and friend-links QA” above for the complete evidence.
+
+final result: passed
