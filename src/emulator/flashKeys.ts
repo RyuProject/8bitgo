@@ -89,10 +89,26 @@ export const PRESET = {
  * （查不到不发默认键位，见下面 flashKeysFor），界面上什么提示都没有 ——
  * 加一款之前先去后台确认 slug。
  */
+/** 森林冰火人整个系列：同屏双打，火娃走方向键、冰娃走 A/W/D，没有动作键（上就是跳） */
+const FIREBOY_WATERGIRL: FlashKeys = { p1: PRESET.arrows, p2: PRESET.wasd }
+
 export const FLASH_KEYS: Record<string, FlashKeys> = {
-  // 森林冰火人：同屏双打，1P = WASD、2P = 方向键，没有动作键（上就是跳）
-  // ⚠️ 这个 slug 是占位的，按库里的实际值改
-  'senlin-binghuoren': { p1: PRESET.wasd, p2: PRESET.arrows },
+  /*
+    森林冰火人 1～4。
+
+    ⚠️ 2026-09-08 之前这里写的是占位 slug `senlin-binghuoren`（旁边还留着一句
+    「按库里的实际值改」的提醒），而库里的实际 slug 是下面这四个 —— 也就是说
+    这四款游戏**一直没有屏幕手柄**，而且完全没有痕迹：查不到就不发键位（见
+    flashKeysFor 的注释），手机上既没有十字键、也没有任何提示。占位值和真值
+    长得都像个 slug，肉眼看不出问题，只有跟库里对一遍才发现。
+
+    1P = 方向键 = 火娃，2P = A/W/D = 冰娃 —— 跟着游戏自己的说明来（关卡开头会画
+    出来）。`down` 那一格游戏用不上，多发一个 S 不影响。
+  */
+  'fireboy-and-watergirl': FIREBOY_WATERGIRL,
+  'fireboy-watergirl-2-in-the-light-temple': FIREBOY_WATERGIRL,
+  'fireboy-watergirl-3-in-the-ice-temple': FIREBOY_WATERGIRL,
+  'fireboy-watergirl-4-in-the-crystal-temple': FIREBOY_WATERGIRL,
 }
 
 /**

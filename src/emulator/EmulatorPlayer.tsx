@@ -533,6 +533,13 @@ export function EmulatorPlayer({
    * 把开关交上来（chromeless），按钮由 LiveChatBar 画。
    */
   const [liveCtl, setLiveCtl] = useState<LiveControlsHandle | null>(null)
+  /* ---------------- 观众侧的「上场当 2P」（见 coopSeat.ts） ---------------- */
+  /** 主播这一局给不给 2P 位。**由主播说**（通道一开他会发 hello），不能靠猜 */
+  const [coopOffered, setCoopOffered] = useState(false)
+  /** 我请求过、还没等到答复 */
+  const [coopAsking, setCoopAsking] = useState(false)
+  /** 我现在是 2P */
+  const [coopSeated, setCoopSeated] = useState(false)
 
   const liveChatOn = Boolean(liveSession) || Boolean(session?.live)
 
@@ -1715,6 +1722,18 @@ export function EmulatorPlayer({
           onNetplay: setLiveNetplayRoom,
           onChat: chat.push,
           onFrozen: setLiveFrozen,
+          onCoop: (available) => {
+            setCoopOffered(available)
+            // 主播换了游戏 / 这一局没有 2P 位了：把「等答复」的状态收掉，别一直转
+            if (!available) {
+              setCoopAsking(false)
+              setCoopSeated(false)
+            }
+          },
+          onSeat: (on) => {
+            setCoopSeated(on)
+            setCoopAsking(false)
+          },
           onLinkQuality: (q) => {
             setLiveLink(q.verdict === 'ok' ? null : q.verdict)
             // 细节留给控制台：界面上说清「谁的问题」就够了，堆数字只会让人更慌
@@ -2001,6 +2020,32 @@ export function EmulatorPlayer({
     : null
 
   /*
+    观众侧的「上场当 2P」（见 coopSeat.ts）。
+
+    只在**主播明说这一局有 2P 位**时出现（onCoop）—— 同屏双打的 Flash 游戏才有。
+    主播那一颗按钮走的是 liveCtl.coop（LiveControls 算好交上来的），两边不会同时出现：
+    一个人要么在播、要么在看。
+  */
+  const coopCtl =
+    coopOffered && handle?.requestSeat
+      ? {
+          on: coopSeated,
+          busy: coopAsking,
+          label: coopSeated ? t.player.coopLeave : coopAsking ? t.player.coopAsking : t.player.coopJoin,
+          hint: coopSeated ? t.player.coopLeaveHint : t.player.coopJoinHint,
+          toggle: () => {
+            if (coopSeated) {
+              handle?.leaveSeat?.()
+              return
+            }
+            // 乐观地只标「在等」，**不**标自己是 2P —— 座位由主播说了算
+            setCoopAsking(true)
+            handle?.requestSeat?.()
+          },
+        }
+      : null
+
+  /*
     弹幕框什么时候画。
 
     以前是 `liveChatOn`（有直播会话才画）。开关挪进来之后那样是个**死胡同**：
@@ -2008,7 +2053,7 @@ export function EmulatorPlayer({
     跟着一起没了，再也开不回来。所以只要主播手上有开关就得画，
     输入框那边本来就会因为 onSend 为 null 而自己禁用。
   */
-  const chatBarOn = liveChatOn || Boolean(liveCtl) || Boolean(matchCtl)
+  const chatBarOn = liveChatOn || Boolean(liveCtl) || Boolean(matchCtl) || Boolean(coopCtl)
 
   const busy = status === 'loading' || status === 'running'
   /** 「在房间里」：挂载时就联机的，或者玩到一半点「联机匹配」开出来的 */
@@ -3113,6 +3158,8 @@ export function EmulatorPlayer({
         /* 这两个只有主播有；观众那一路 liveCtl / matchCtl 都是 null，按钮不画 */
         live={liveCtl && { on: liveCtl.on, label: liveCtl.label, hint: liveCtl.hint, toggle: liveCtl.toggle }}
         match={matchCtl}
+        /* 主播那一颗从 LiveControls 上来，观众那一颗是本地算的；一个人只可能占一边 */
+        coop={liveCtl?.coop ?? coopCtl}
       />
     )}
     </>

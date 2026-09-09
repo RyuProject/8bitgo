@@ -27,11 +27,13 @@
  * 一个特殊情形：服务器重启，内存里的房间全没了，重新 watch 会回 not found ——
  * 但如果画面还在流（P2P 不经过服务器），那就静默继续看，别拿遮罩盖掉一场好好的直播。
  */
-import type { Capability, CaptureSources, MountOptions, RuntimeHandle } from '../types'
+import type { Capability, CaptureSources, MountOptions, PadButton, RuntimeHandle } from '../types'
 import { getT, fmt } from '@/services/i18n'
 import { connectLive, liveEnabled, liveIceConfig, type LiveChatMessage, type LiveSocket } from '@/services/live'
 import { sanitizeChatText } from '../../../shared/live-chat.js'
 import { usableVideoSize } from '../videoTuning'
+import { COOP_CHANNEL, encode as encodeCoop, parse as parseCoop } from '../coopSeat'
+import { isTyping } from '../hotkeyBridge'
 
 export type LiveViewState = 'connecting' | 'watching' | 'reconnecting' | 'host-away' | 'ended' | 'error'
 
@@ -55,6 +57,16 @@ export interface LiveSession {
    * 画面这时是**冻结**而不是断开 —— 浏览器不给后台标签页出帧，这是浏览器行为。
    */
   onFrozen?: (frozen: boolean) => void
+  /* ---------------- 「上场当 2P」（见 coopSeat.ts） ---------------- */
+  /**
+   * 房主这一局有没有 2P 位（同屏双打的 Flash 游戏才有）。
+   * 通道一开房主就会说一声，观众靠它决定要不要画「上场」那颗按钮 ——
+   * **不能靠猜**：猜错就是画一颗按了没反应的按钮。老版本的房主不发 hello，
+   * 收不到就当没有，正好是安全的那一边。
+   */
+  onCoop?: (available: boolean) => void
+  /** 我现在是不是 2P（房主同意 / 收回 / 断线都会走这里） */
+  onSeat?: (seated: boolean) => void
   /**
    * 观众这一侧的链路质量。
    *
@@ -483,6 +495,139 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     live.onState?.(hostFrozen ? 'host-away' : 'watching')
   }
 
+  /* ---------------- 「上场当 2P」：访客这一端 ---------------- */
+  /**
+   * 房主开的输入通道。**我们不建**（房主在 createOffer 之前建，通道随 SDP 过来），
+   * 所以这里只等 ondatachannel。老版本的房主没有这条通道，就一直是 null ——
+   * 那种情况下 requestSeat() 是空操作，UI 也不会画按钮（onCoop 没来过）。
+   */
+  let coopDc: RTCDataChannel | null = null
+  /** 我现在有没有座位。所有 sendButton 都要过这一关 */
+  let seated = false
+  /** 房主说这一局 2P 读哪几颗键。屏幕手柄照它画 */
+  let coopButtons: PadButton[] = []
+  /** 我这边正按着的键。掉线 / 收座时要报一轮松开，别让房主那边卡住 */
+  const coopDown = new Set<PadButton>()
+
+  const sendCoop = (payload: Parameters<typeof encodeCoop>[0]): boolean => {
+    if (!coopDc || coopDc.readyState !== 'open') return false
+    try {
+      coopDc.send(encodeCoop(payload))
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * 把还按着的键报一轮松开。
+   *
+   * ⚠️ 房主那边其实也会兜（收座时替我们补松开，见 coopSeat.ts），但两边都做才稳：
+   * 「我主动下场」这条路上房主是被动的，等他察觉之前那几百毫秒里键还按着。
+   */
+  const releaseCoopKeys = () => {
+    for (const b of [...coopDown]) sendCoop({ t: 'k', b, d: false })
+    coopDown.clear()
+  }
+
+  /** 座位状态变了：能力表跟着变（有座才画屏幕手柄），并报给上层 */
+  const setSeated = (on: boolean, buttons?: PadButton[]) => {
+    if (on === seated && (!buttons || buttons.join() === coopButtons.join())) return
+    if (!on) releaseCoopKeys()
+    seated = on
+    coopButtons = on ? (buttons ?? coopButtons) : []
+    /*
+      有座 = 声明 touchpad 能力。这一句是整个功能里最省事的一步：
+      播放器看到 touchpad + padButtons 就会把现成的 TouchPad 画出来，按下走 sendButton ——
+      和手机上玩单机是同一条路，观众这边一行界面代码都不用新写。
+    */
+    if (on) caps.add('touchpad')
+    else caps.delete('touchpad')
+    options.onCaps?.(caps)
+    live?.onSeat?.(on)
+  }
+
+  const bindCoopChannel = (dc: RTCDataChannel) => {
+    coopDc = dc
+    dc.onmessage = (ev) => {
+      const msg = parseCoop(ev.data)
+      // 房主发来的只有 hello / seat 两种；k / want 是访客往房主发的，收到只能是乱发
+      if (!msg) return
+      if (msg.t === 'hello') {
+        coopButtons = msg.buttons ? [...msg.buttons] : []
+        live?.onCoop?.(msg.coop)
+      } else if (msg.t === 'seat') {
+        setSeated(msg.on, msg.buttons ? [...msg.buttons] : undefined)
+      }
+    }
+    dc.onclose = () => {
+      if (coopDc === dc) coopDc = null
+      // 通道没了 = 座位一定没了。清掉本地按着的键（发不出去也得清，不然下次上场是脏的）
+      coopDown.clear()
+      setSeated(false)
+      live?.onCoop?.(false)
+    }
+  }
+
+  /**
+   * 访客自己的键盘 → 抽象按钮。
+   *
+   * 抽象按钮层在这里白赚一笔：访客按自己顺手的键（方向键或 WASD），
+   * 房主那边映射成这一局 2P 真正读的键（Ruffle 的 keys.p2，比如火娃冰娃是 A/W/D）——
+   * **两边键位不需要一致**，也不用告诉访客「你得按 A/W/D」。
+   */
+  const COOP_KEYMAP: Record<string, PadButton> = {
+    ArrowUp: 'up',
+    ArrowDown: 'down',
+    ArrowLeft: 'left',
+    ArrowRight: 'right',
+    KeyW: 'up',
+    KeyS: 'down',
+    KeyA: 'left',
+    KeyD: 'right',
+    Space: 'a',
+    KeyJ: 'a',
+    KeyZ: 'a',
+    KeyK: 'b',
+    KeyX: 'b',
+    Enter: 'start',
+    ShiftLeft: 'select',
+  }
+
+  /** 按下 / 松开一颗抽象按钮（屏幕手柄和键盘共用这一条） */
+  const pressCoop = (button: PadButton, down: boolean) => {
+    if (!seated || destroyed) return
+    // 这一局 2P 读不到的键不发：房主那边照样会丢，白占限流额度
+    if (coopButtons.length && !coopButtons.includes(button)) return
+    if (down === coopDown.has(button)) return
+    if (down) coopDown.add(button)
+    else coopDown.delete(button)
+    if (!sendCoop({ t: 'k', b: button, d: down })) coopDown.delete(button)
+  }
+
+  const onCoopKey = (e: KeyboardEvent) => {
+    // ⚠️ 必须让开输入框：这一页上就有弹幕框，不判的话打字时角色会跟着乱跑
+    if (!seated || e.repeat || isTyping(e.target)) return
+    const button = COOP_KEYMAP[e.code]
+    if (!button) return
+    e.preventDefault()
+    pressCoop(button, e.type === 'keydown')
+  }
+
+  /**
+   * 页面一失焦就把键全松开。
+   *
+   * 切标签页、切窗口时浏览器**不发 keyup** —— 访客切走的那一刻手正按着方向键，
+   * 房主那边的角色就一直朝墙里跑，而访客自己什么都看不见（他已经不在这一页了）。
+   */
+  const onCoopBlur = () => {
+    if (coopDown.size) releaseCoopKeys()
+  }
+
+  window.addEventListener('keydown', onCoopKey)
+  window.addEventListener('keyup', onCoopKey)
+  window.addEventListener('blur', onCoopBlur)
+
   const closePc = () => {
     if (!pc) return
     const old = pc
@@ -490,6 +635,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     old.onconnectionstatechange = null
     old.ontrack = null
     old.onicecandidate = null
+    old.ondatachannel = null
+    /*
+      换连接 = 座位一定要复位。新一轮 offer 会带一条新通道，房主如果还认我持座，
+      他会在 onopen 里再发一次 seat（见 broadcast 的 openInput）。
+      不复位的话：旧通道已经关了、按键发不出去，而界面还写着「你是 2P」。
+    */
+    coopDc = null
+    coopDown.clear()
+    setSeated(false)
     try {
       old.close()
     } catch {
@@ -517,6 +671,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     tinyFrame = false
     const next = new RTCPeerConnection({ iceServers })
     pc = next
+    // 房主在他那边建的输入通道，随 SDP 过来（我们不建，见 coopDc 的注释）
+    next.ondatachannel = (ev) => {
+      if (ev.channel?.label === COOP_CHANNEL) bindCoopChannel(ev.channel)
+    }
     next.ontrack = (ev) => {
       // 新一轮的轨替换旧一轮的同类轨：<video> 一直盯着同一个 MediaStream，不用重新赋 srcObject
       for (const track of ev.streams[0]?.getTracks() ?? [ev.track]) {
@@ -873,6 +1031,32 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         /* ignore */
       }
     },
+    /**
+     * 「我想上场当 2P」。房主那边弹一条提示，同意了才会回 seat ——
+     * 所以这里发出去之后**不要**乐观地把自己标成 2P：座位由房主说了算。
+     */
+    requestSeat() {
+      if (destroyed || seated) return
+      sendCoop({ t: 'want' })
+    },
+    /**
+     * 主动下场。**先报松键再报下场**：反过来的话房主已经把我的座位收了，
+     * 那几条 up 会被闸当成「不是持座人发的」丢掉，他那边的角色就卡着方向键。
+     */
+    leaveSeat() {
+      if (!seated) return
+      releaseCoopKeys()
+      sendCoop({ t: 'leave' })
+      setSeated(false)
+    },
+    /** 屏幕手柄 / 键盘都走这里。`player` 参数在观众这一侧没有意义（座位只有一个） */
+    sendButton(button, down) {
+      pressCoop(button, down)
+    },
+    /** 有座才有按钮；房主说了这一局 2P 读哪几颗，屏幕手柄就只画那几颗 */
+    get padButtons() {
+      return seated ? coopButtons : []
+    },
     setVolume(next: number) {
       const v = Math.max(0, Math.min(1, next))
       video.volume = v
@@ -894,7 +1078,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       return stream.getTracks().length ? { stream } : null
     },
     destroy() {
+      // 先把按着的键报一轮松开，再拆连接 —— 顺序反了这几条就发不出去了
+      releaseCoopKeys()
       destroyed = true
+      window.removeEventListener('keydown', onCoopKey)
+      window.removeEventListener('keyup', onCoopKey)
+      window.removeEventListener('blur', onCoopBlur)
       frameWaiter?.()
       window.clearInterval(linkTimer)
       window.clearTimeout(watchdog)

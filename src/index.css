@@ -190,6 +190,72 @@ body {
  * 用一小段来回走的色块表示「在动，但不知道还剩多少」——
  * 比一根永远停在 0% 的进度条诚实。轨道宽 100%、色块宽 1/3，
  * 所以 translateX 从 -100%（完全在轨道左外）走到 300%（左沿正好到轨道右端）。 */
+/* ──────────────────────────────────────────────────────────────
+   顶栏气泡的新消息预览条。
+
+   ## 为什么不用现成的 @keyframes marquee
+
+   那个是「内容复制两份、无限循环」那种走马灯（translateX(0) -> -50%）。
+   通知不该那样：无限循环会一直动，而文字读完之后还在跑就只剩干扰；
+   而且循环回头那一下会看到文字瞬移。
+
+   这一条是**滚一趟就停**：从头滚到「尾巴刚好露出来」的位置，停在那儿（forwards），
+   然后整条自己收起。位移量 --im-span 由组件量出来（scrollWidth - clientWidth），
+   时长 --im-dur 按位移量算，所以长句子不会爬、短句子不会飞。
+
+   linear 是必须的：ease 会让文字在中间加速，读起来很难跟。
+   ────────────────────────────────────────────────────────────── */
+@keyframes im-marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(calc(-1 * var(--im-span, 0px)));
+  }
+}
+
+.im-marquee {
+  /* 起手先停一下让人读开头，滚完停在尾部 */
+  animation: im-marquee var(--im-dur, 4s) linear var(--im-delay, 900ms) forwards;
+}
+
+/* 展开：从气泡那一侧「卷」出来。
+   不用 width 过渡 —— 绝对定位元素的宽度由内容决定，auto 没法插值；
+   也不用 scaleX，那会把文字压扁。clip-path 的 inset() 之间是能插值的。 */
+.im-preview {
+  clip-path: inset(0 0 0 100%);
+  opacity: 0;
+  transition:
+    clip-path 320ms ease-out,
+    opacity 200ms ease-out;
+}
+.im-preview[data-open='true'] {
+  clip-path: inset(0);
+  opacity: 1;
+}
+
+/* 右边缘淡出，示意「后面还有」。两个前缀都写：Safari 到现在仍然要 -webkit-。
+   收起时不需要它，但留着也无害（clip-path 已经把整条切掉了）。 */
+.im-preview-clip {
+  -webkit-mask-image: linear-gradient(to left, transparent 0, #000 1.25rem);
+  mask-image: linear-gradient(to left, transparent 0, #000 1.25rem);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /*
+    走马灯整条关掉。**不是减速，是不动** —— 滚动的文字对前庭敏感的人是明确的
+    触发源，而这条消息本来就还能读到开头，读不全的部分抽屉里有。
+    展开动画也一起去掉，但 opacity 留着（否则它会凭空闪现）。
+  */
+  .im-marquee {
+    animation: none;
+  }
+  .im-preview {
+    clip-path: inset(0);
+    transition: opacity 200ms ease-out;
+  }
+}
+
 @keyframes progress-slide {
   0% {
     transform: translateX(-100%);

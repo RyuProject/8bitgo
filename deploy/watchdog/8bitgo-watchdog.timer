@@ -1,0 +1,11 @@
+[Unit]
+Description=每分钟跑一次 8BitGo 源站看门狗
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=5s
+Unit=8bitgo-watchdog.service
+
+[Install]
+WantedBy=timers.target

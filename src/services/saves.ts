@@ -315,7 +315,10 @@ export async function saveInfo(
         headers: authHeaders(),
         cache: 'no-store',
       })
-      if (res.ok) {
+      // 204 = 云端明确说「这一格没有存档」（不是错误，所以服务端不回 404 了）。
+      // 必须先判它再 json()：204 没有响应体，解析会抛，落进下面那个 catch 之后
+      // 看起来和「请求失败」一模一样 —— 真出问题时反而查不出来
+      if (res.status !== 204 && res.ok) {
         const j = (await res.json()) as { size: number; updatedAt: number }
         return { where: 'cloud', updatedAt: j.updatedAt, size: j.size }
       }

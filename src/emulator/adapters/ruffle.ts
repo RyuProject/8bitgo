@@ -541,6 +541,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     /** 屏幕手柄只画这款游戏真的读的那几颗键；表里没有这款就一颗都不画 */
     padButtons: keys ? (Object.keys(keys.p1) as PadButton[]) : [],
     /**
+     * 2P 位读哪几颗键。有这一项直播那边才会把「让观众上场」开出来（见 coopSeat.ts）——
+     * 同屏双打的游戏才在 flashKeys 里配了 p2，别的 Flash 游戏这里是空的，入口也就不出现。
+     */
+    coopButtons: keys?.p2 ? (Object.keys(keys.p2) as PadButton[]) : [],
+    /**
      * 屏幕手柄按下 / 松开。player 是座位号：0 = 1P（本机的屏幕手柄永远是它），
      * 1 = 2P（同屏双打的第二套键，留给「把观众提成 2P」那一步）。
      */

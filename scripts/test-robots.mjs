@@ -144,6 +144,23 @@ check('后台 / 个人中心 / 登录页仍然挡住（含全部语言前缀）'
   }
 })
 
+check('接口被挡住 —— 爬虫不能再来挂 SSE 长连接（09-09 压垮源站的那条）', () => {
+  assertBlocked('/api/live/events')
+  assertBlocked('/api/netplay/events')
+  assertBlocked('/api/games')
+  // 接口没有语言前缀，所以只需要一条 `/api/`；顺手确认没人「好心」补成 8 条通配。
+  for (const prefix of langPrefixes.filter(Boolean)) assertAllowed(`${prefix}/games`)
+})
+
+check('屏蔽 /api 不能误伤 sitemap 与站内内容页', () => {
+  assertAllowed('/sitemap.xml')
+  assertAllowed('/sitemaps/games-en.xml')
+  assertAllowed('/robots.txt')
+  // `/api` 是前缀匹配：真出现一款 slug 以 api 开头的游戏，它在 /games/ 底下，挡不到
+  assertAllowed('/games/api-quest')
+  assertAllowed('/en/games/apidya')
+})
+
 check('没有任何一条规则使用「/*/」这种会吃掉整段路径的通配写法', () => {
   const risky = RULES.filter((r) => !r.allow && /^\/\*\//.test(r.pattern))
   assert.deepEqual(

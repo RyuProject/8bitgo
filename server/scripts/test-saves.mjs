@@ -90,6 +90,16 @@ try {
   /* ================= 二、存取删 ================= */
   section('存取删')
   ok('没存过时是 404', (await get(alice, 'emulatorjs', 'contra')).status === 404)
+  /*
+    ⚠️ /meta 那条**不一样，是 204**：它问的是「有没有」，「没有」是正常答案。
+    回 404 的后果是每个登录玩家打开任何一款没存过档的游戏，控制台就多一条红字
+    （2026-09-08 线上实测），把真正的报错盖住。二进制那条 GET 保持 404 —— 那是
+    「你点了读档但东西不在」，确实是异常。两条的语义别对调。
+  */
+  ok(
+    '没存过时 /meta 是 204（不是 404）',
+    (await fetch(url('emulatorjs', 'contra', 0, '/meta'), { headers: auth(alice) })).status === 204,
+  )
   ok('存进去了', (await put(alice, 'emulatorjs', 'contra', bytes('第一关'))).ok)
   ok('原样取回来', (await textOf(await get(alice, 'emulatorjs', 'contra'))) === '第一关')
 

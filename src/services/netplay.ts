@@ -12,6 +12,7 @@
  * 没配置 VITE_NETPLAY_URL 时整块功能自动隐藏。
  */
 import { useSyncExternalStore } from 'react'
+import { fallbackAfterErrors } from './sseFallback'
 import { getCurrentUser } from './auth'
 import type { Presence } from './presence'
 
@@ -435,11 +436,8 @@ const store = (() => {
         /* 坏包忽略，等下一条 */
       }
     })
-    es.addEventListener('error', () => {
-      // EventSource 会自己重连；连续失败时（比如服务端根本没有这个接口）
-      // 兜一层轮询，保证功能不至于完全不可用
-      if (es?.readyState === EventSource.CLOSED) startPolling()
-    })
+    // 连续失败就退回轮询。判据为什么不能只看 CLOSED，见 sseFallback.ts
+    fallbackAfterErrors(es, startPolling)
   }
 
   const disconnect = () => {
@@ -518,10 +516,10 @@ export function watchNetplayRoom(
       es.addEventListener('room-gone', () => {
         if (!stopped) handlers.onGone()
       })
-      es.addEventListener('error', () => {
-        if (es?.readyState === EventSource.CLOSED && !timer) {
-          timer = window.setInterval(() => void poll(), 3000)
-        }
+      // 同上：CLOSED 只覆盖「服务端明确拒绝」，传输层断流要靠计次，见 sseFallback.ts
+      fallbackAfterErrors(es, () => {
+        if (stopped || timer) return
+        timer = window.setInterval(() => void poll(), 3000)
       })
     } catch {
       es = null

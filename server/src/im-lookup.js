@@ -93,3 +93,61 @@ export function lookupOutcome(row, selfId, canChat = () => true) {
     },
   }
 }
+
+/* ---------------- 按 id 批量取昵称 / 头像 ---------------- */
+
+/**
+ * 一次最多解析几个 id。会话列表通常十几条，50 够用，也够小到查询恒定廉价。
+ */
+export const MAX_PEER_IDS = 50
+
+/**
+ * 这个接口的额度要宽：会话列表每来一条新消息就会刷一次。
+ * 前端有会话内缓存（只查没见过的 id），所以正常一次页面生命周期里只有一两次。
+ */
+export const IM_PEERS_LIMIT = 120
+export const IM_PEERS_WINDOW_MS = 3600_000
+
+/**
+ * 规范化要解析的 id 列表：去重、剔掉形状不对的、截到上限。
+ *
+ * 形状用的是腾讯 userID 的规则（^[A-Za-z0-9_-]{1,32}$，见 im-sig.js）——
+ * 能出现在会话列表里的 id 一定过得了这条，剔掉的都是伪造的。
+ * **不抛异常**：一串里混进一个坏 id 不该让整次解析失败，
+ * 那会让会话列表整体退回显示原始 id。
+ */
+export function normalizePeerIds(raw, isValid = () => true) {
+  const list = Array.isArray(raw) ? raw : []
+  const out = []
+  const seen = new Set()
+  for (const item of list) {
+    const id = String(item ?? '').trim()
+    if (!id || seen.has(id) || !isValid(id)) continue
+    seen.add(id)
+    out.push(id)
+    if (out.length >= MAX_PEER_IDS) break
+  }
+  return out
+}
+
+/**
+ * users 行 -> 对外的 peer 形状。
+ *
+ * ⚠️ 和 lookupOutcome 的信息面**故意不一样**，这不是疏漏：
+ *
+ *   · lookupOutcome 回答的是「我能不能找这个人聊天」，所以被封禁的一律当查无此人 ——
+ *     否则那个接口会顺带变成封禁状态查询器。
+ *   · 这里回答的是「这条已经存在的会话，对面叫什么」。昵称和头像**本来就是公开的**
+ *     （评论区每条都带着），而且调用方必须已经知道对方的 user id 才问得出来。
+ *     把被封禁的人过滤掉不会保护任何东西，只会让界面上凭空出现一串原始 id。
+ *
+ * 所以这里不看 status。要改这条之前先想清楚上面两句。
+ */
+export function peerRowsToPublic(rows) {
+  return (Array.isArray(rows) ? rows : []).map((r) => ({
+    id: String(r.id),
+    nickname: String(r.nickname ?? ''),
+    // 和 mappers.js 的 userRowToPublic、lookupOutcome 同一个兜底
+    avatar: String(r.avatar || '🕹️'),
+  }))
+}

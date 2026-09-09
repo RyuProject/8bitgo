@@ -148,7 +148,14 @@ check('⭐ userID 只取 req.user.id，不接受任何请求参数', () => {
 check('⭐ 找人接口的请求体里只允许有 email', () => {
   // 同一条铁律在这条接口上的形态：身份仍然只能来自 req.user.id，
   // 请求体只准携带「要查谁」，不准携带「我是谁」。
-  const seg = route.slice(route.indexOf("imRouter.post('/lookup'"))
+  /*
+    只切 /lookup 自己那一段（到下一个 imRouter 声明为止）。
+    切到文件末尾的话，它下面的 POST /peers 会被算进来 ——
+    那条接口合法地读 req.body?.ids，于是这条断言会误报。真踩过。
+  */
+  const at = route.indexOf("imRouter.post('/lookup'")
+  const nextAt = route.indexOf('imRouter.', at + 20)
+  const seg = nextAt > at ? route.slice(at, nextAt) : route.slice(at)
   const bodyReads = [...seg.matchAll(/req\.body\??\.?\w*/g)].map((m) => m[0])
   assert.deepEqual([...new Set(bodyReads)], ['req.body?.email'], `请求体里还读了别的：${bodyReads.join(', ')}`)
   assert.ok(!/req\.(query|params)/.test(seg), '找人接口里出现了 req.query / req.params')
@@ -575,6 +582,55 @@ check('⭐ 组字期间的 Enter 不能当提交（中日文用户每打一个�
 check('没连上时不给这个入口（查得到人，却会栽进一个连不上的会话）', () => {
   assert.match(panelCode, /\{state === 'ready' && \(\s*<button/, '顶栏那颗按钮没有按连接状态收起')
   assert.match(panelCode, /state === 'ready' && !active && composeOpen &&/, '输入行没有按连接状态收起')
+})
+
+console.log('\n十二、昵称的权威源是我们的库，不是腾讯')
+
+check('⭐ 会话列表用我们库里的昵称**覆盖**腾讯那份，不是「腾讯为空才填」', () => {
+  /*
+    这是 2026-09-08 那个真实 bug 的守卫：
+    583476160@qq.com 注册 -> nicknameFromEmail() 把昵称切成 `583476160` ->
+    那个值被推给腾讯 -> 用户改成 `LL` -> 对方的聊天窗标题一直是 `583476160`。
+
+    关键在**覆盖 vs 兜底**：改过昵称的情况下腾讯那份**不是空的，是旧的**。
+    写成 `c.nick || p.nickname` 就完全修不到这个 bug（而且看起来很合理）。
+  */
+  assert.match(clientCode, /await resolvePeers\(/, '会话列表没有解析昵称')
+  assert.match(
+    clientCode,
+    /nick: p\.nickname \|\| c\.nick/,
+    '覆盖方向错了 —— 必须是「我们的库优先」，写成 c.nick || p.nickname 修不到改名这种情况',
+  )
+  assert.match(clientCode, /avatar: p\.avatar \|\| c\.avatar/, '头像的覆盖方向也要一致')
+})
+
+check('⭐ 昵称解析是装饰步骤，失败不能拖垮会话列表', () => {
+  const seg = clientCode.slice(clientCode.indexOf('async function resolvePeers'))
+  const body = seg.slice(0, seg.indexOf('\n}'))
+  assert.match(body, /catch/, 'resolvePeers 没有兜住异常 —— 后端 429 一次抽屉就整块变「连接失败」')
+  assert.ok(!/throw/.test(body), 'resolvePeers 里不该抛 —— 它只是把名字变好看')
+})
+
+check('⭐ peer 资料要缓存，否则每条新消息都多一次请求', () => {
+  // 会话列表每来一条消息就刷一次，不缓存的话 /api/im/peers 会被打成筛子
+  assert.match(clientCode, /const peerCache = new Map</, '没有缓存')
+  assert.match(clientCode, /peerCache\.get\(id\)/, '没查缓存')
+  assert.match(clientCode, /peerCache\.set\(/, '没写缓存')
+  // 换账号时必须清掉，否则会把上一个账号看到的名字带过来
+  const td = clientCode.slice(clientCode.indexOf('async function teardown'))
+  assert.match(td.slice(0, td.indexOf('\n}')), /peerCache\.clear\(\)/, 'teardown 没清缓存')
+})
+
+check('⭐ 改完资料要重新推给腾讯（syncProfile 只挂在 SDK_READY 上）', () => {
+  assert.match(clientCode, /export function syncImProfile/, '没暴露重新同步的入口')
+  const seg = panelCode.slice(panelCode.indexOf('const myNick'))
+  assert.match(seg.slice(0, 400), /if \(myNick\) syncImProfile\(\)/, '资料变了没有重新同步')
+  /*
+    依赖数组必须是 nickname / avatar 两个**值**。
+    用 user 对象的话：useCurrentUser 每次 notify 都返回新引用
+    （收藏、金币变动都触发），这个 effect 会空跑很多次。
+  */
+  assert.match(seg.slice(0, 400), /\}, \[myNick, myAvatar\]\)/, '依赖数组不是那两个值')
 })
 
 console.log(`\n✅ IM 接入结构检查：${n} 项通过`)

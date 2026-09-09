@@ -124,6 +124,14 @@ savesRouter.get('/', async (req, res, next) => {
 /**
  * 单份存档的元信息。
  * 界面上要显示「云端有存档，3 分钟前」，为这个去下载整份二进制太浪费。
+ *
+ * 没有存档时回 **204 而不是 404**：这个端点问的是「有没有」，「没有」是一个
+ * 正常答案，不是错误。原来回 404 的后果是每个登录玩家打开任何一款没存过档的
+ * 游戏，控制台就多一条红色的
+ *   GET /api/saves/ruffle/<slug>/meta?slot=0 404 (Not Found)
+ * —— 前端本来就把它当「没有」处理（saves.ts 的 saveInfo），功能没坏，但这条红字
+ * 会盖在真正的报错上面，也会污染以后接的错误监控。二进制那条 GET 保持 404：
+ * 那是「你点了读档但东西不在」，确实是异常。
  */
 savesRouter.get('/:runtime/:slug/meta', async (req, res, next) => {
   try {
@@ -133,7 +141,8 @@ savesRouter.get('/:runtime/:slug/meta', async (req, res, next) => {
       'SELECT size, created_at, updated_at FROM saves WHERE user_id = ? AND runtime = ? AND game_slug = ? AND slot = ?',
       [req.user.id, c.runtime, c.slug, c.slot],
     )
-    if (!row) return res.status(404).json({ error: '没有存档' })
+    // 204：问到了，答案是「没有」。别用 404 —— 见上面注释
+    if (!row) return res.status(204).end()
     res.json({
       size: row.size,
       createdAt: new Date(row.created_at).getTime(),

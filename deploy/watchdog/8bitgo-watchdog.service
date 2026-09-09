@@ -1,0 +1,9 @@
+[Unit]
+Description=8BitGo 源站看门狗（探到故障才重启）
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/8bitgo-watchdog.sh
+# 探测本身要能连 443/8788，重启要能操作 systemd —— 所以跑 root
+User=root

@@ -1,0 +1,26 @@
+# 复制到 /etc/8bitgo-watchdog.conf。全部可选，不填就是下面注释里的默认值。
+
+# DOMAIN=8bitgo.com
+# TLS_PORT=443
+# BACKEND_PORT=8788
+# HEALTH_PATH=/api/health
+
+# —— 防抖 ——
+# FAIL_STREAK=2      连续几次探失败才动手
+# COOLDOWN=600       同一层两次重启至少隔多少秒
+# MAX_PER_DAY=4      同一层一天最多重启几次，超了只记日志不动手
+
+# —— 后端怎么重启（留空则按 pm2 → systemd → 端口占用 的顺序自动探）——
+# pm2 的进程列表是**按用户存的**，root 跑 timer 时看不到你自己那份，所以用 pm2 就必须填这一行：
+# PM2_USER=deploy
+# PM2_APP=8bitgo           留空 = pm2 restart all
+# BACKEND_UNIT=8bitgo-api.service
+
+# —— 前置代理（留空则自动探 nginx / caddy / openresty / httpd）——
+# FRONT_UNIT=nginx.service
+
+# —— ⚠️ 开了 Authenticated Origin Pulls 必填 ——
+# 源站 nginx 配了 ssl_verify_client on 的话，本机不带客户端证书去探会被直接拒，
+# 看门狗会把「AOP 正常工作」误判成故障，然后每分钟重启一次 nginx。
+# CLIENT_CERT=/etc/ssl/cf-origin-pull-client.pem
+# CLIENT_KEY=/etc/ssl/cf-origin-pull-client.key

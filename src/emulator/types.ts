@@ -334,6 +334,20 @@ export interface RuntimeHandle {
    * 画一颗按下去没反应的按钮，比不画更让人困惑。
    */
   padButtons?: PadButton[]
+  /**
+   * 这一局的 **2P 位**读哪几颗键（同屏双打的 Flash 游戏才有，见 flashKeys.ts 的 `keys.p2`）。
+   *
+   * 空数组 / 不实现 = 这一局没有第二个座位。直播那边靠它决定要不要把
+   * 「让观众上场」这条路开出来（见 coopSeat.ts）—— 报错了就是画一个点了没反应的入口。
+   */
+  coopButtons?: PadButton[]
+  /**
+   * 「我想上场当 2P」。只有 liveview（看直播）这一路实现：请求发给房主，
+   * **同意与否由房主定**，所以调用方别乐观地把自己当成 2P，等 LiveSession.onSeat。
+   */
+  requestSeat?: () => void
+  /** 「我不玩了」。不给这一条的话访客只能关页面下场，房主要等通道断掉才察觉 */
+  leaveSeat?: () => void
   setVolume?: (volume: number) => void
   /** 截屏 */
   screenshot?: () => Promise<Blob | null>

@@ -95,3 +95,56 @@ export function imUnreadLabel(n: number = unread): string {
   if (n <= 0) return ''
   return n > IM_UNREAD_CAP ? `${IM_UNREAD_CAP}+` : String(n)
 }
+
+/* ---------------- 新消息预览（顶栏气泡上的走马灯） ---------------- */
+
+/** 预览里最多带多少字。一条 2000 字的消息不该产出一个两分钟的走马灯 */
+export const IM_PREVIEW_MAX = 140
+
+export interface ImPreview {
+  /**
+   * 递增序号。**这是给 React 当 key 用的，不是装饰。**
+   *
+   * 连着收到两条一样的「哈喽」时，nick 和 text 都没变，React 会复用同一个节点 ——
+   * CSS 动画不会重新播，用户看不出来有新消息。序号变了才会重挂、动画才会重头跑。
+   */
+  seq: number
+  /** 发件人昵称。解析不出来时是空串，调用方自己兜底文案 */
+  nick: string
+  text: string
+}
+
+let previewSeq = 0
+const previewListeners = new Set<(p: ImPreview) => void>()
+
+/** 订阅新消息预览。返回退订函数 */
+export function onImPreview(fn: (p: ImPreview) => void): () => void {
+  previewListeners.add(fn)
+  return () => {
+    previewListeners.delete(fn)
+  }
+}
+
+/**
+ * 广播一条新消息预览。
+ *
+ * **不留状态**：这是个事件，不是可读取的当前值。存下来的话，用户切个页面
+ * 顶栏重挂就会把几分钟前那条消息又滚一遍 —— 那不是通知，是骚扰。
+ * 没有监听者时（顶栏不在，比如沉浸模式）这一条就是丢掉，也是对的。
+ *
+ * 空文本直接忽略：非文字消息 messageForShow 可能是空的，滚一条空白毫无意义。
+ */
+export function pushImPreview(input: { nick?: string; text?: string }): void {
+  const text = String(input.text ?? '').replace(/\s+/g, ' ').trim().slice(0, IM_PREVIEW_MAX)
+  if (!text) return
+  previewSeq += 1
+  const p: ImPreview = { seq: previewSeq, nick: String(input.nick ?? '').trim(), text }
+  // 拷一份再遍历，同 setImUnread
+  for (const fn of [...previewListeners]) {
+    try {
+      fn(p)
+    } catch {
+      /* 一个监听者炸了不该连累其他人 */
+    }
+  }
+}

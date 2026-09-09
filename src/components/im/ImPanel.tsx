@@ -21,8 +21,10 @@ import {
   onImMessagesChange,
   onImStateChange,
   registerImPanel,
+  reportImPanelOpen,
   sendImText,
   startImWhenIdle,
+  syncImProfile,
   takePendingImDm,
   type ImConversation,
   type ImLookupCode,
@@ -112,6 +114,21 @@ export function ImPanel() {
   // 把「怎么打开我」交给 imClient；它连上腾讯之后会再转交给顶栏按钮
   useEffect(() => registerImPanel(doOpen), [doOpen])
 
+  /*
+    告诉 imClient 抽屉开着没有，它据此决定要不要在顶栏滚新消息预览。
+
+    这个抽屉是 `inset-y-0 right-0 z-[61]`，**把顶栏右侧盖住了** ——
+    开着的时候那条预览会滚在抽屉背后，动画白跑；而且用户正在看聊天，
+    再通知一遍是多余的。
+
+    卸载时汇报 false：组件没了就没有开着的抽屉，不还原的话（比如进沉浸模式
+    整条顶栏和抽屉一起卸掉）那个标志会永久卡在 true，预览再也不出现。
+  */
+  useEffect(() => {
+    reportImPanelOpen(open)
+    return () => reportImPanelOpen(false)
+  }, [open])
+
   useEffect(
     () =>
       onImStateChange(() => {
@@ -125,6 +142,26 @@ export function ImPanel() {
   useEffect(() => {
     if (user) startImWhenIdle()
   }, [user])
+
+  /*
+    资料改了就把新昵称 / 头像重新推给腾讯。
+
+    为什么需要这一段：imClient 里的 syncProfile 只挂在 SDK_READY 上 ——
+    **每次连接推一次**。而用户在「编辑资料」里改昵称时连接早就建好了，
+    没有任何东西会再推一次，于是别人看到的一直是他注册时那个自动生成的昵称。
+    （真实案例：583476160@qq.com 注册的号昵称被切成 `583476160`，
+    改成 `LL` 之后对方的聊天窗标题还是 `583476160`。）
+
+    ⚠️ 依赖数组用 nickname / avatar 两个**值**，不是 user 对象：
+    useCurrentUser 每次 notify 都返回新引用（收藏、金币变动都会触发），
+    用对象会让这个 effect 空跑很多次。syncProfile 内部还按 `nick|avatar` 去重，
+    所以真的没变时它是免费的。
+  */
+  const myNick = user?.nickname
+  const myAvatar = user?.avatar
+  useEffect(() => {
+    if (myNick) syncImProfile()
+  }, [myNick, myAvatar])
 
   /*
     退出登录：收掉连接、关掉面板。

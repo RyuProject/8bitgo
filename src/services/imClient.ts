@@ -42,7 +42,7 @@
 import type TencentCloudChatSDK from '@tencentcloud/chat'
 import { api, apiEnabled, ApiError } from './api'
 import { getCurrentUser } from './auth'
-import { getImUnread, imUnreadLabel, onImChange, registerImOpener, setImUnread } from './im'
+import { getImUnread, imUnreadLabel, onImChange, pushImPreview, registerImOpener, setImUnread } from './im'
 import { imState, invalidate, isStale, setState, setStateIf, startOnce } from './imSession'
 
 // 状态相关的读接口原样透传，让 UI 只认这一个模块
@@ -104,6 +104,30 @@ let unregisterOpener: (() => void) | null = null
 let panelOpener: (() => void) | null = null
 /** 上一次同步给腾讯的 昵称|头像。相同就不再写 */
 let syncedProfile = ''
+
+/**
+ * peer 昵称 / 头像的会话内缓存（userId -> 资料）。
+ *
+ * 会话列表每来一条新消息就刷一次，所以**必须**缓存，否则每条消息都要多一次 /api/im/peers。
+ * 只查没见过的 id。
+ *
+ * 代价：对方在这个页面生命周期里改了昵称，这一侧要刷新才更新 —— 可以接受，
+ * 任何名字缓存都是这个性质。teardown 时清掉（和 syncedProfile 一起）。
+ */
+const peerCache = new Map<string, { nickname: string; avatar: string }>()
+
+/**
+ * 抽屉此刻开着没有。只用来决定「要不要在顶栏滚一条新消息预览」。
+ *
+ * 抽屉是 `inset-y-0 right-0 z-[61]`，**把顶栏右侧盖住了** —— 开着的时候那条预览
+ * 会滚在抽屉背后，纯粹白跑一趟动画。而且用户正在看聊天，再通知他一遍是多余的。
+ */
+let panelOpen = false
+
+/** 抽屉汇报自己开着 / 关着。ImPanel 的 open state 变了就调一次 */
+export function reportImPanelOpen(open: boolean): void {
+  panelOpen = open
+}
 
 const convListeners = new Set<() => void>()
 const msgListeners = new Set<(conversationId: string) => void>()
@@ -267,6 +291,7 @@ async function teardown(): Promise<void> {
   boundUserId = ''
   TC = null
   syncedProfile = ''
+  peerCache.clear()
   retractOpener()
   if (!c) return
   for (const [event, fn] of hs) {
@@ -343,10 +368,12 @@ function wireEvents(c: Chat, epoch: number) {
     if (live()) emitVoid(convListeners)
   })
 
-  on(E.MESSAGE_RECEIVED, (e: { data: Array<{ conversationID?: string }> }) => {
+  on(E.MESSAGE_RECEIVED, (e: { data: RawIncoming[] }) => {
     if (!live()) return
-    const ids = new Set((e.data ?? []).map((m) => m.conversationID).filter(Boolean) as string[])
+    const msgs = e.data ?? []
+    const ids = new Set(msgs.map((m) => m.conversationID).filter(Boolean) as string[])
     for (const id of ids) emitConv(id)
+    void announce(msgs, T)
   })
 
   /*
@@ -383,6 +410,55 @@ function wireEvents(c: Chat, epoch: number) {
 }
 
 /**
+ * 顶栏那条走马灯预览。
+ *
+ * 四道过滤，每一道都有具体理由：
+ *
+ *   1. **只要 flow === 'in'**。MESSAGE_RECEIVED 也会推**自己在别的设备上发的**消息，
+ *      不判的话你在手机上发一句，电脑顶栏会滚出你自己刚说的话。
+ *   2. **只要 C2C**。这一版没有群聊，但事件里将来可能混进来。
+ *   3. **抽屉开着就不滚**（见 panelOpen）。
+ *   4. **标签页不在前台就不滚**。后台标签的通道是标题里那个 (N)（见 wireTitleBadge）；
+ *      在这儿滚一条谁也看不见，等用户切回来时它早停了，反而像丢了消息。
+ *
+ * 只取**最后一条**：一次事件里可能来好几条（重连后补推），逐条滚会排成一列
+ * 谁也读不完，滚最新那条才是通知该有的行为。
+ *
+ * 昵称走 resolvePeers（我们自己的库，不是腾讯那份 —— 见它的注释）。
+ * 命中缓存时是同步的，只有某个人的第一条消息会多一次往返，几十毫秒，对一条
+ * 停留几秒的通知无所谓；换来的是**第一条就显示对的名字**。
+ */
+async function announce(msgs: RawIncoming[], T: ChatNS): Promise<void> {
+  if (panelOpen) return
+  if (typeof document !== 'undefined' && document.hidden) return
+  const inbound = msgs.filter((m) => m.flow === 'in' && m.conversationType === T.TYPES.CONV_C2C)
+  const last = inbound[inbound.length - 1]
+  if (!last) return
+
+  const from = String(last.from ?? '')
+  let nick = ''
+  if (from) {
+    const named = await resolvePeers([from])
+    nick = named.get(from)?.nickname || String(last.nick ?? '')
+  }
+  // 抽屉可能在这次 await 期间被打开了 —— 再判一次，别滚一条盖在抽屉后面的
+  if (panelOpen) return
+  pushImPreview({ nick, text: textOfMessage(last, T) })
+}
+
+/**
+ * 一条消息在预览里显示成什么。
+ *
+ * 和 textOfLast 同一套规矩（文字取 payload.text，其余用 SDK 现成的 messageForShow），
+ * 但入参不同 —— 那边拿的是会话上的 lastMessage 摘要，这边是完整的消息对象。
+ * 两个都留着，比硬凑一个「什么都能吃」的函数清楚。
+ */
+function textOfMessage(m: RawIncoming, T: ChatNS): string {
+  if (m.type === T.TYPES.MSG_TEXT) return m.payload?.text ?? m.messageForShow ?? ''
+  return m.messageForShow ?? ''
+}
+
+/**
  * 把本站的昵称和头像同步给腾讯，让对方看到的是人名而不是一串 id。
  *
  * ⚠️ avatar 塞的是**一个 emoji**，不是 URL。腾讯那个字段文档里说是头像地址，但它就是
@@ -413,6 +489,24 @@ async function syncProfile(): Promise<void> {
 export const convIdFor = (peerId: string) => `C2C${peerId}`
 const peerIdFrom = (convId: string) => (convId.startsWith('C2C') ? convId.slice(3) : '')
 
+/**
+ * MESSAGE_RECEIVED 事件里一条消息，只声明我们真的读的字段。
+ *
+ * 不用 SDK 的 Message 类型：那个类型面很大，而这里只需要五个字段 ——
+ * 声明得越窄，SDK 升级时能悄悄改坏我们的地方就越少。
+ */
+interface RawIncoming {
+  conversationID?: string
+  conversationType?: string
+  /** 'in' = 别人发来的；'out' = **自己在别的设备上发的**，这一路必须滤掉 */
+  flow?: string
+  from?: string
+  nick?: string
+  type?: string
+  messageForShow?: string
+  payload?: { text?: string }
+}
+
 interface RawConversation {
   conversationID: string
   type: string
@@ -439,7 +533,7 @@ export async function listImConversations(): Promise<ImConversation[]> {
   const T = TC
   const res = (await chat.getConversationList()) as { data?: { conversationList?: RawConversation[] } }
   const list = res?.data?.conversationList ?? []
-  return list
+  const convs = list
     .filter((c) => c.type === T.TYPES.CONV_C2C)
     .map((c) => ({
       id: c.conversationID,
@@ -451,6 +545,70 @@ export async function listImConversations(): Promise<ImConversation[]> {
       unread: Number(c.unreadCount) || 0,
     }))
     .sort((a, b) => b.lastTime - a.lastTime)
+
+  /*
+    用**我们自己库里**的昵称 / 头像覆盖腾讯那份。
+
+    腾讯的 userProfile 只有在对方自己连上 IM、由他的浏览器 updateMyProfile 时才会写，
+    所以它在三种情况下必然是错的：对方从没开过聊天（空）、对方改过昵称（旧值，
+    且要等他下次连 IM 才更新）、头像同理。users 表才是权威源。
+    详见服务端 POST /api/im/peers 的注释。
+
+    覆盖而不是「腾讯为空时才填」：改过昵称的那种情况腾讯**不是空的**，是旧的 ——
+    第一版就想写成兜底，那样 583476160 改成 LL 之后照样显示 583476160。
+  */
+  const named = await resolvePeers(convs.map((c) => c.peerId))
+  return convs.map((c) => {
+    const p = named.get(c.peerId)
+    if (!p) return c
+    return { ...c, nick: p.nickname || c.nick, avatar: p.avatar || c.avatar }
+  })
+}
+
+/**
+ * 解析一批 peer 的昵称 / 头像。命中缓存的不再请求。
+ *
+ * **不抛异常**：这一步是「把名字变好看」，失败了应该退回腾讯那份（甚至原始 id），
+ * 而不是让整个会话列表拉取失败。第一版让它抛，结果后端 429 一次抽屉就整块变成
+ * 「连接失败」—— 那是把一个装饰性步骤做成了关键路径。
+ */
+async function resolvePeers(ids: string[]): Promise<Map<string, { nickname: string; avatar: string }>> {
+  const want = [...new Set(ids.filter(Boolean))]
+  const out = new Map<string, { nickname: string; avatar: string }>()
+  const missing: string[] = []
+  for (const id of want) {
+    const hit = peerCache.get(id)
+    if (hit) out.set(id, hit)
+    else missing.push(id)
+  }
+  if (!missing.length || !apiEnabled()) return out
+
+  try {
+    // 服务端一次最多 50 个，超了它自己会截 —— 会话列表到不了这个量级，不在这儿切片
+    const res = await api.post<{ peers: ImPeer[] }>('/api/im/peers', { ids: missing })
+    for (const p of res?.peers ?? []) {
+      if (!p?.id) continue
+      const entry = { nickname: p.nickname ?? '', avatar: p.avatar ?? '' }
+      peerCache.set(p.id, entry)
+      out.set(p.id, entry)
+    }
+  } catch (e) {
+    console.warn('[im] peer 昵称解析失败（退回腾讯那份）：', e)
+  }
+  return out
+}
+
+/**
+ * 把当前用户的昵称 / 头像重新推给腾讯。
+ *
+ * 为什么要单独暴露：syncProfile 只挂在 SDK_READY 上，也就是**每次连接推一次**。
+ * 用户在「编辑资料」里改完昵称时连接早就建好了，没有任何东西会再推一次 ——
+ * 于是别人（尤其是别的客户端、以及我们这套解析还没覆盖到的地方）看到的一直是旧名字。
+ *
+ * syncProfile 内部按 `nick|avatar` 去重，所以没改动时调它是免费的。
+ */
+export function syncImProfile(): void {
+  void syncProfile()
 }
 
 interface RawMessage {

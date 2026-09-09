@@ -23,12 +23,16 @@ import { requireUser } from '../auth.js'
 import { take } from '../rateLimit.js'
 import { CACHE } from '../cache.js'
 import { genUserSig, imConfigFrom, isValidImUserId } from '../im-sig.js'
-import { queryOne } from '../db.js'
+import { query, queryOne } from '../db.js'
 import {
   IM_LOOKUP_LIMIT,
   IM_LOOKUP_WINDOW_MS,
+  IM_PEERS_LIMIT,
+  IM_PEERS_WINDOW_MS,
   lookupOutcome,
   normalizeLookupEmail,
+  normalizePeerIds,
+  peerRowsToPublic,
 } from '../im-lookup.js'
 
 export const imRouter = Router()
@@ -149,6 +153,65 @@ imRouter.post('/lookup', async (req, res, next) => {
     // selfId 只能取自 req.user.id —— 和 /sig 同一条铁律，绝不接受请求参数
     const out = lookupOutcome(row, String(req.user.id), isValidImUserId)
     res.status(out.status).set('Cache-Control', CACHE.none).json(out.body)
+  } catch (e) {
+    next(e)
+  }
+})
+
+/**
+ * 按 user id 批量取昵称 / 头像。`POST /api/im/peers`
+ *
+ * ## 为什么需要它 —— 腾讯的 profile 是缓存，不是真相
+ *
+ * 会话列表里的 `userProfile.nick` 来自腾讯，而那份数据只有在对方**自己连上 IM**、
+ * 由他的浏览器调 `chat.updateMyProfile` 时才会写。于是三种情况下它必然是错的：
+ *
+ *   1. **对方从没打开过聊天** —— 那边是空的，界面上只能显示一串 user id；
+ *   2. **对方改过昵称** —— 腾讯留着旧的，而且要等他**下一次连 IM** 才会更新。
+ *      真实案例：一个 583476160@qq.com 注册的号，注册时昵称被 nicknameFromEmail()
+ *      切成 `583476160`，那个值先被推给了腾讯；他后来改成 `LL`，
+ *      对方的聊天窗标题却一直是 `583476160`。
+ *   3. 头像同理。
+ *
+ * `users` 表才是权威源，而且随时是最新的。所以昵称一律从这里取，
+ * 腾讯那份只当拿不到时的兜底。
+ *
+ * 不需要「我和这个人有没有会话」的校验：昵称和头像本来就是公开信息
+ * （评论区每条都带着），而且调用方必须先知道对方的 user id 才问得出来 ——
+ * 那串 id 是随机的，不像邮箱可以撞库。
+ */
+imRouter.post('/peers', async (req, res, next) => {
+  try {
+    if (!imConfigFrom()) return res.status(501).json({ error: 'IM 未启用', code: 'disabled' })
+
+    // ⚠️ 同上面两处：take() 返回 { ok, retryAfter } 对象，别当布尔用
+    const gate = take(`im:peers:${req.user.id}`, IM_PEERS_LIMIT, IM_PEERS_WINDOW_MS)
+    if (!gate.ok) {
+      return res
+        .status(429)
+        .set('Retry-After', String(gate.retryAfter))
+        .json({ error: '请求过于频繁，请稍后再试', code: 'rate_limited', retryAfter: gate.retryAfter })
+    }
+
+    const ids = normalizePeerIds(req.body?.ids, isValidImUserId)
+    // 空列表回空数组而不是 400：前端把「一条会话都没有」和「id 全被剔掉」
+    // 当同一件事处理（都退回腾讯那份），没必要为此多一条错误路径
+    if (!ids.length) return res.set('Cache-Control', CACHE.none).json({ peers: [] })
+
+    /*
+      占位符按仓库既有写法逐个铺开（见 games-repo.js 的 attachRelations）。
+      ⚠️ 不能写成 `IN (?)` 指望 mysql2 展开数组 —— db.js 用的是 pool.query，
+      而这类展开在 prepared statement 上并不成立，别在这里赌它。
+
+      只取三列。理由和 /lookup 一样：不让密码哈希、邮箱、封禁状态有机会跟着进内存。
+      **这里刻意不筛 status** —— 见 peerRowsToPublic 的注释。
+    */
+    const holes = ids.map(() => '?').join(',')
+    const rows = await query(`SELECT id, nickname, avatar FROM users WHERE id IN (${holes})`, ids)
+
+    // 查不到的 id 直接不出现在结果里，前端据此退回腾讯那份 —— 不回 null 占位，
+    // 那会让调用方多写一条判空
+    res.set('Cache-Control', CACHE.none).json({ peers: peerRowsToPublic(rows) })
   } catch (e) {
     next(e)
   }

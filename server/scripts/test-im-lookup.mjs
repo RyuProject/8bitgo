@@ -20,8 +20,11 @@ import { readFileSync } from 'node:fs'
 import {
   IM_LOOKUP_LIMIT,
   IM_LOOKUP_WINDOW_MS,
+  MAX_PEER_IDS,
   lookupOutcome,
   normalizeLookupEmail,
+  normalizePeerIds,
+  peerRowsToPublic,
 } from '../src/im-lookup.js'
 import { isValidImUserId } from '../src/im-sig.js'
 
@@ -262,10 +265,23 @@ check('⭐ selfId 只能取自 req.user.id，SQL 只能是全等', () => {
  * 都判 gate.ok。全文 grep 的话，改坏其中一个、另一个会替它把断言撑绿。
  */
 function lookupSegment() {
+  return handlerSegment("imRouter.post('/lookup'")
+}
+
+/**
+ * 切出一个 handler 的范围：从它的声明起，到**下一个** imRouter.xxx 声明为止。
+ *
+ * ⚠️ 一开始写的是「切到文件末尾」，因为当时 /lookup 是最后一个 handler。
+ * 后面在它下面加了 POST /peers，那些「不许出现」的断言就把 /peers 的代码
+ * 也算进了 /lookup 的账上（/peers 合法地读 req.body?.ids）。
+ * 按边界收尾之后，每个 handler 只为自己负责。
+ */
+function handlerSegment(decl) {
   const route = readRoute()
-  const at = route.indexOf("imRouter.post('/lookup'")
-  assert.ok(at > 0, '找不到 POST /lookup 这个 handler')
-  return route.slice(at)
+  const at = route.indexOf(decl)
+  assert.ok(at > 0, `找不到 ${decl} 这个 handler`)
+  const nextAt = route.indexOf('imRouter.', at + decl.length)
+  return nextAt > at ? route.slice(at, nextAt) : route.slice(at)
 }
 
 function readRoute() {
@@ -273,5 +289,74 @@ function readRoute() {
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/(^|[^:])\/\/.*$/gm, '$1')
 }
+
+console.log('\n七、按 id 批量取昵称（腾讯那份 profile 是缓存，不是真相）')
+
+check('id 列表要去重、剔掉形状不对的、截到上限', () => {
+  const ok = normalizePeerIds(['u_a', 'u_a', 'u_b', '', null, 'bad id', 'u_c'], isValidImUserId)
+  assert.deepEqual(ok, ['u_a', 'u_b', 'u_c'], '去重 / 过滤没生效')
+  // 空格、@、点都不符合腾讯 userID 规则
+  assert.deepEqual(normalizePeerIds(['a@b.com', 'x.y', 'a b'], isValidImUserId), [])
+  const many = Array.from({ length: MAX_PEER_IDS + 20 }, (_, i) => `u_${i}`)
+  assert.equal(normalizePeerIds(many, isValidImUserId).length, MAX_PEER_IDS, '没截到上限')
+})
+
+check('非数组、乱七八糟的输入不能炸（body 是用户给的）', () => {
+  for (const bad of [null, undefined, 'u_a', 42, {}, true]) {
+    assert.deepEqual(normalizePeerIds(bad, isValidImUserId), [])
+  }
+})
+
+check('⭐ 回的键恰好是 id / nickname / avatar', () => {
+  const out = peerRowsToPublic([row()])
+  assert.deepEqual(Object.keys(out[0]).sort(), ['avatar', 'id', 'nickname'])
+  const json = JSON.stringify(out)
+  assert.ok(!json.includes('peer@example.com'), '邮箱漏出去了')
+  assert.ok(!json.includes('password'), '密码哈希漏出去了')
+  for (const leak of ['role', 'status', 'coins', 'birth_date']) {
+    assert.equal(out[0][leak], undefined, `${leak} 漏出去了`)
+  }
+})
+
+check('头像兜底和另外两处一致（🕹️）', () => {
+  assert.equal(peerRowsToPublic([row({ avatar: '' })])[0].avatar, '🕹️')
+  assert.equal(peerRowsToPublic([row({ avatar: null })])[0].avatar, '🕹️')
+})
+
+check('⭐ 这里**不**筛封禁 —— 和 /lookup 的差异是刻意的', () => {
+  /*
+    两个接口回答的是不同的问题：
+      /lookup  「我能不能找这个人聊天」-> 被封禁的当查无此人，否则它会变成封禁状态查询器
+      /peers   「这条已存在的会话，对面叫什么」-> 昵称本来就公开（评论区每条都带），
+               过滤掉只会让界面上凭空出现一串原始 id，什么都保护不到
+    所以下面这条断言是在守「别顺手把 status 过滤加进来」。
+  */
+  const out = peerRowsToPublic([row({ status: 'banned' })])
+  assert.equal(out.length, 1, '被封禁的用户被过滤掉了 —— 界面上会显示原始 id')
+  assert.equal(out[0].nickname, '隔壁老王')
+  /*
+    ⚠️ 光查纯函数**不够**：过滤同样可以加在 SQL 里。
+    变异校验里往 /peers 的查询上补了一句 `AND status = 'active'`，
+    上面那两条断言全绿 —— 所以这里还得盯住 SQL 本身。
+  */
+  const peers = handlerSegment("imRouter.post('/peers'")
+  // 只看 SQL 那一句。整段查 /status/ 是错的 —— res.status(501) / res.status(429) 都会命中（踩过）
+  const sql = peers.match(/SELECT [^`]+/)?.[0] ?? ''
+  assert.ok(sql.includes('FROM users'), '切不出 peers 的 SQL')
+  assert.ok(!/\bstatus\b/.test(sql), `peers 的 SQL 里出现了 status 过滤：${sql}`)
+  // 同时确认 /lookup 那边**仍然**筛（两边的差异是刻意的，不能一起改）
+  assert.equal(lookupOutcome(row({ status: 'banned' }), ME, isValidImUserId).status, 404)
+  assert.match(lookupSegment(), /status/, '/lookup 反而不筛了？那它会变成封禁状态查询器')
+})
+
+check('⭐ 路由：占位符逐个铺开，不能指望 mysql2 展开 IN (?)', () => {
+  const peers = handlerSegment("imRouter.post('/peers'")
+  assert.ok(peers.includes("ids.map(() => '?').join(',')"), '没按仓库既有写法铺占位符')
+  assert.ok(!/IN \(\?\)/.test(peers), 'IN (?) 指望数组展开 —— db.js 用的是 pool.query，别赌它')
+  assert.ok(peers.includes('normalizePeerIds(req.body?.ids, isValidImUserId)'), 'id 没做规范化就进 SQL')
+  assert.ok(!/SELECT \* FROM users/.test(peers), '用了 SELECT *')
+  assert.ok(peers.includes('take(`im:peers:${req.user.id}`'), '限流没按账号分桶')
+  assert.ok(peers.includes('if (!gate.ok)'), '没判 .ok')
+})
 
 console.log(`\n✅ 按邮箱找人：${n} 项通过`)

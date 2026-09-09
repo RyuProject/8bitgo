@@ -26,10 +26,11 @@
  * 发 viewer-rebound 过来 —— 我们只把那条连接换个名字，画面一帧不掉、编码器一路不多
  * （见 peers 的注释）。
  */
-import type { CaptureSources } from './types'
+import type { CaptureSources, PadButton } from './types'
 import { type LiveChatMessage, connectLive, liveIceServers, type LiveSocket } from '@/services/live'
 import { sanitizeChatText } from '../../shared/live-chat.js'
 import { applyTuning, fpsForViewers, sizeOfTrack, tuningFor, usableVideoSize } from './videoTuning'
+import { COOP_CHANNEL, createSeatGate, encode as encodeCoop, type CoopMsg } from './coopSeat'
 import { isDualScreen } from './dualScreen'
 import { createCaptureFeed, probeCapture, type CaptureFeed, type SourceResolver } from './captureFeed'
 
@@ -105,6 +106,23 @@ export interface BroadcastOptions {
   /** 房间号变了（重连后接不回原房间、只能重开时）。开播那一次也会调 */
   onRoom?: (roomId: string) => void
   onError?: (message: string) => void
+  /* ---------------- 「上场当 2P」（见 coopSeat.ts） ---------------- */
+  /**
+   * 这一局 2P 真的读哪几颗键（Ruffle 的 `keys.p2`）。**传函数**：句柄可能比开播晚到，
+   * 而且换游戏时会变。返回空数组 = 这一局没有 2P 位，那就一个按键都不放行。
+   */
+  coopButtons?: () => readonly PadButton[]
+  /** 有观众请求上场。UI 拿这个弹「让 TA 上场」；同意就调 Broadcast.grantSeat(viewerId) */
+  onSeatRequest?: (viewerId: string) => void
+  /**
+   * 持座那位按了一颗键。接到运行时去：`handle.sendButton(button, down, 1)`。
+   *
+   * ⚠️ 松开的那一条同样会来 —— 而且**收座 / 断线 / 停播时我们会替他补发一轮松开**
+   * （见 coopSeat.ts 文件头）。别在这里过滤 down === false。
+   */
+  onGuestInput?: (button: PadButton, down: boolean) => void
+  /** 座位换人了（null = 空着）。UI 靠它显示「2P：某某」 */
+  onSeatChange?: (viewerId: string | null) => void
 }
 
 export interface Broadcast {
@@ -125,6 +143,15 @@ export interface Broadcast {
    * 房主也不例外，不然自己那条会比别人早出现，看起来像两套时间线。
    */
   sendChat: (text: string) => void
+  /**
+   * 把 2P 位给某个观众（传的是 onSeatRequest 给的那个 viewerId）。
+   * 换人时上一位还按着的键会自动补一轮松开。
+   */
+  grantSeat: (viewerId: string) => void
+  /** 收回 2P 位。按着的键一律松开 */
+  revokeSeat: () => void
+  /** 当前持座的观众 id */
+  seated: () => string | null
   stop: () => void
 }
 
@@ -314,7 +341,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
    * 主播主线程忙（模拟器 + N 路编码）时 srflx 也会丢，剩下能配对的只有中继 —— 白走 TURN 流量，
    * 没配 TURN 的站点上则是同一路由器下的两个人都连不上。现在先攒着，远端描述落地后再一并加。
    */
-  type Peer = { pc: RTCPeerConnection; gen: number; id: string; pending: RTCIceCandidateInit[]; remoteReady: boolean }
+  type Peer = { pc: RTCPeerConnection; gen: number; id: string; pending: RTCIceCandidateInit[]; remoteReady: boolean; dc?: RTCDataChannel }
   const peers = new Map<string, Peer>()
   let genCounter = 0
   let viewers = 0
@@ -350,10 +377,88 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
    */
   let dormant = false
 
+  /**
+   * 「上场当 2P」的闸。身份只认「消息从哪条通道来的」，规则和松键都在 coopSeat.ts 里，
+   * 这里只负责接线：DataChannel ↔ 闸 ↔ options 的回调。
+   */
+  const gate = createSeatGate(options.coopButtons)
+
+  /** 把闸交回来的「要松开的键」真的松掉。收座 / 断线 / 停播都靠这一句 */
+  const release = (keys: PadButton[]) => {
+    for (const b of keys) options.onGuestInput?.(b, false)
+  }
+
+  /** 告诉某个观众他现在有没有 2P 位。通道没开就算了 —— 他重连时会重新收到 hello */
+  const tellSeat = (viewerId: string, on: boolean) => {
+    const dc = peers.get(viewerId)?.dc
+    if (!dc || dc.readyState !== 'open') return
+    try {
+      dc.send(encodeCoop({ t: 'seat', on, ...(on ? { buttons: [...(options.coopButtons?.() ?? [])] } : {}) }))
+    } catch {
+      /* 通道刚断，无所谓 —— 座位状态由房主这边说了算 */
+    }
+  }
+
+  /** 收回座位：松键、告诉那位、报给 UI。访客自己下场和房主收回走的是同一条 */
+  const revokeInternal = () => {
+    const who = gate.seated()
+    release(gate.revoke())
+    if (!who) return
+    tellSeat(who, false)
+    options.onSeatChange?.(null)
+  }
+
+  /**
+   * 给一个观众建输入通道。**必须在 createOffer 之前调**：这样通道进得了 SDP，
+   * 不需要再走一轮重新协商（观众那边只要 ondatachannel 接着）。
+   *
+   * 可靠 + 有序（默认值，不改）：按键消息极小极稀，而**丢一个 keyup 的代价是
+   * 角色一直朝墙里跑**（见 coopSeat.ts 文件头）。这里不值得为几毫秒去换不可靠传输。
+   */
+  const openInput = (entry: Peer) => {
+    let dc: RTCDataChannel
+    try {
+      dc = entry.pc.createDataChannel(COOP_CHANNEL)
+    } catch {
+      // 老浏览器 / 奇怪的实现：没有输入通道就只是不能上场，直播照旧
+      return
+    }
+    entry.dc = dc
+    dc.onopen = () => {
+      // 能力发现：这一局有没有 2P 位，由房主说。老版本的观众收不到也无所谓（他不会有那个按钮）
+      const buttons = [...(options.coopButtons?.() ?? [])]
+      try {
+        dc.send(encodeCoop({ t: 'hello', coop: buttons.length > 0, ...(buttons.length ? { buttons } : {}) }))
+      } catch {
+        /* ignore */
+      }
+      // 主播重连后观众可能还持着座（peers 换了但 gate 没换），补一句让他的界面对上
+      if (gate.seated() === entry.id) tellSeat(entry.id, true)
+    }
+    dc.onmessage = (ev) => {
+      // ⚠️ 身份用 entry.id 现取，不能闭包捕获创建时的 viewerId：观众信令重连后
+      // 服务端发 viewer-rebound，这条**还在流的**连接会被改名（见 Peer 的注释）
+      const msg: CoopMsg | null = gate.admit(entry.id, ev.data)
+      if (!msg) return
+      if (msg.t === 'want') options.onSeatRequest?.(entry.id)
+      else if (msg.t === 'leave') revokeInternal()
+      else if (msg.t === 'k') options.onGuestInput?.(msg.b, msg.d)
+    }
+    dc.onclose = () => release(gate.forget(entry.id))
+  }
+
   const dropPeer = (viewerId: string) => {
     const p = peers.get(viewerId)
     if (!p) return
     peers.delete(viewerId)
+    /*
+      ⚠️ 先松键再关连接。这个观众可能正持着 2P 位、手里按着方向键 ——
+      不松的话游戏里那个角色会一直朝墙里跑，而且看起来像游戏卡住了，
+      玩家不会想到是「刚才那个人断线了」。
+    */
+    const wasSeated = gate.seated() === viewerId
+    release(gate.forget(viewerId))
+    if (wasSeated) options.onSeatChange?.(null)
     try {
       p.pc.close()
     } catch {
@@ -409,6 +514,9 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       const sender = pc.addTrack(track, media.stream)
       if (track.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, media.videoSize(), dualScreenSource)
     }
+
+    // ⚠️ 必须在 createOffer 之前：通道要进 SDP，否则得多走一轮重新协商
+    openInput(entry)
 
     pc.onicecandidate = (ev) => {
       if (ev.candidate) socket.emit('signal', { target: entry.id, data: { candidate: ev.candidate.toJSON(), gen } satisfies SignalData })
@@ -719,6 +827,11 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       dropPeer(payload.to) // 新 id 下万一挂着别的连接（不该有），先收掉
       p.id = payload.to
       peers.set(payload.to, p)
+      /*
+        ⚠️ 座位也要跟着改名。不改的话：连接还在、画面一帧不掉，但闸里记着旧 id，
+        持座那位从此一个键都送不进来，而两边界面都显示他还是 2P（见 coopSeat 的 rename）。
+      */
+      gate.rename(payload.from, payload.to)
       return
     }
     dropPeer(payload.from)
@@ -837,9 +950,23 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
         /* ignore */
       }
     },
+    grantSeat(viewerId: string) {
+      if (stopped) return
+      const previous = gate.seated()
+      release(gate.grant(viewerId))
+      if (previous && previous !== viewerId) tellSeat(previous, false)
+      tellSeat(viewerId, true)
+      options.onSeatChange?.(gate.seated())
+    },
+    revokeSeat() {
+      revokeInternal()
+    },
+    seated: () => gate.seated(),
     stop() {
       if (stopped) return
       stopped = true
+      // 停播也要松键：这一局还在跑，只是不播了 —— 别留一个卡住的方向键给房主
+      revokeInternal()
       try {
         if (socket.connected) socket.emit('stop-live')
       } catch {

@@ -2,6 +2,7 @@ import express from 'express'
 import { randomBytes } from 'node:crypto'
 import { Server } from 'socket.io'
 import { watchPresence, clientIpFrom, UNKNOWN_PRESENCE } from './presence.js'
+import { admitSse } from './sseGuard.js'
 
 /**
  * P2P 联机信令服务器（EmulatorJS netplay）+ 房主迁移。
@@ -807,14 +808,9 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
    * 用 SSE 不用 WebSocket：单向推送够用，浏览器自带断线重连，也不用再引依赖。
    */
   app.get('/api/netplay/events', (req, res) => {
-    res.set({
-      'Content-Type': 'text/event-stream; charset=utf-8',
-      'Cache-Control': 'no-cache, no-transform',
-      Connection: 'keep-alive',
-      // Nginx 默认缓冲响应，缓冲住 SSE 就完全不推了
-      'X-Accel-Buffering': 'no',
-    })
-    res.flushHeaders?.()
+    // 准入闸：爬虫直接拒、per-IP 与总量上限、最长存活时间。响应头也由它写。
+    // 没有这道闸时爬虫会把这条流挂满源站，见 sseGuard.js 顶部那段病史。
+    if (!admitSse(req, res)) return
 
     const watch = str(req.query.watch, 64)
     const w = { res, watch }

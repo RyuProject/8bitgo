@@ -12,6 +12,7 @@
  * 用的也是同一个脚本。
  */
 import { useSyncExternalStore } from 'react'
+import { fallbackAfterErrors } from './sseFallback'
 import { getToken, apiBase, apiEnabled } from './api'
 import { getT } from './i18n'
 import { fetchIceConfig, type IceConfig } from './netplay'
@@ -324,11 +325,13 @@ const liveStore = (() => {
         /* 坏包忽略，等下一条 */
       }
     })
-    es.addEventListener('error', () => {
-      // EventSource 会自己重连；连续失败（比如后端根本没有这个接口）时兜一层轮询，
-      // 保证老后端配新前端也不至于整个列表不可用
-      if (es?.readyState === EventSource.CLOSED) startPolling()
-    })
+    /*
+      连续失败就退回轮询。⚠️ 判据不能只看 `readyState === CLOSED`：
+      HTTP/3 那类传输层断流（线上实测的 ERR_QUIC_PROTOCOL_ERROR）浏览器会一直重连、
+      状态停在 CONNECTING，兜底一次都不会触发，列表就静静地不再更新。
+      详见 sseFallback.ts。
+    */
+    fallbackAfterErrors(es, startPolling)
   }
 
   const disconnect = () => {

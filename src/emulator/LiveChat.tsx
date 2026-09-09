@@ -173,6 +173,7 @@ export function LiveChatBar({
   onSend,
   live,
   match,
+  coop,
   className,
 }: {
   /** null = 现在发不了（还没连上 / 已经散场）。这时输入框禁用，而不是让人白打一段字 */
@@ -185,6 +186,12 @@ export function LiveChatBar({
    */
   live?: ChatBarToggle | null
   match?: ChatBarToggle | null
+  /**
+   * 「上场当 2P」（见 coopSeat.ts）。**这一颗两边都有**，只是语义相反：
+   * 主播那边是「让 TA 上场 / 请 TA 下场」，观众那边是「我要上场 / 我下场」。
+   * 文案由上游算好，这里照旧只管画。
+   */
+  coop?: ChatBarToggle | null
   className?: string
 }) {
   const t = useT()
@@ -226,12 +233,14 @@ export function LiveChatBar({
         {remaining < 20 && <span className="shrink-0 text-[11px] tabular-nums text-dim">{remaining}</span>}
 
         {/*
-          主播的两个开关。摆在「发送」左边：发送是这一行的主动作，留在最右边，
+          几个开关。摆在「发送」左边：发送是这一行的主动作，留在最右边，
           位置固定，不会因为开关出现 / 消失而左右横跳。
           窄屏只留符号，文字进 title —— 和工具栏那排按钮同一套处理。
         */}
         {live && <ToggleButton icon="📡" t={live} />}
         {match && <ToggleButton icon="🎮" t={match} />}
+        {/* 「上场当 2P」。👥 两边都可能出现，见上面 coop 的注释 */}
+        {coop && <ToggleButton icon="👥" t={coop} />}
 
         <button
           type="button"

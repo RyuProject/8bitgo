@@ -16,6 +16,7 @@
  */
 import { Router } from 'express'
 import { turnHealthSnapshot } from '../turnProbe.js'
+import { sseStats } from '../sseGuard.js'
 import {
   clientIpFrom,
   countryFromHeaders,
@@ -89,6 +90,22 @@ diagRouter.get('/', (req, res) => {
      * 空对象 {} 就是「没有任何一路 TURN 被登记」—— 先看 /api/netplay/ice 的 turnSources。
      */
     turn: turnHealthSnapshot({ verbose: true }),
+    /**
+     * 现在挂着多少条 SSE 长连接（`/api/live/events` + `/api/netplay/events` 合计）。
+     *
+     * 2026-09-09 那次源站猝死就是这两条被爬虫挂满堆出来的，事后再查已经查不到了 ——
+     * 所以放在这里，随时一条 curl 就能看见：
+     *
+     *   curl -s https://8bitgo.com/api/diag | jq .sse
+     *
+     *   total          当前并发条数。持续贴着 maxTotal = 闸在扛，去查是谁在挂
+     *   top / topIp    挂得最多的那个 IP 和它的条数。top 长期顶到 maxPerIp 就不是真人
+     *   ips            有多少个不同 IP 挂着流
+     *
+     * ⚠️ 一条被 nginx 反代出去的 SSE 占它**两个**连接槽（客户端一个 + upstream 一个），
+     * 所以 maxTotal 要留足余量，别设到接近 worker_connections。
+     */
+    sse: sseStats(),
     /** 有问题时直接把该改哪一行写在返回里 —— 排查的人不用再翻文档 */
     hint: usingEdgeIp
       ? 'nginx 每个 location 都要把 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` ' +

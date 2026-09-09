@@ -16,6 +16,7 @@
  */
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { RuntimeHandle } from './types'
+import type { ChatBarToggle } from './LiveChat'
 import { canBroadcast, startBroadcast, type Broadcast } from './broadcast'
 import { liveEnabled, liveLink, refreshLiveRooms, type LiveChatMessage } from '@/services/live'
 import { playerName } from '@/services/netplay'
@@ -104,6 +105,13 @@ export interface LiveControlsHandle {
   /** 按钮说明（title） */
   hint: string
   toggle: () => void
+  /**
+   * 「让观众上场当 2P」那颗按钮（见 coopSeat.ts）。null = 这一局给不了：
+   * 要么运行时没有 2P 键位（`handle.coopButtons` 空 —— 绝大多数游戏），要么现在没在播。
+   *
+   * 文案在这里算好再交上去，和 live 那颗一个路数（LiveChatBar 不认业务状态）。
+   */
+  coop?: ChatBarToggle | null
 }
 
 /**
@@ -219,6 +227,11 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
 
   /** 房间号单独存：重连后接不回原房间时会换（见 broadcast.ts 文件头），Broadcast 对象本身不变 */
   const [roomId, setRoomId] = useState('')
+  /* ---------------- 「让观众上场当 2P」（见 coopSeat.ts） ---------------- */
+  /** 正在请求上场的那个观众（先到先得；座位定了就清掉） */
+  const [seatWant, setSeatWant] = useState<string | null>(null)
+  /** 现在谁持着 2P 位 */
+  const [seatOf, setSeatOf] = useState<string | null>(null)
   /** 信令断了、正在重连。画面多半还在流（WebRTC 是点对点的），所以只是标记变灰，不撤掉 */
   const [reconnecting, setReconnecting] = useState(false)
   /**
@@ -261,6 +274,14 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
    */
   const onChatRef = useRef(onChat)
   onChatRef.current = onChat
+
+  /**
+   * 运行时句柄也走 ref，理由同上 —— 而且更要紧：推流会话是**一次性**建的，
+   * 里面那几个 coop 回调会活到下播为止，闭包里捕获创建那一刻的 handle 就等于
+   * 换了游戏之后还往上一局的运行时里灌按键。
+   */
+  const handleRef = useRef(handle)
+  handleRef.current = handle
 
   // 把推流会话交给播放器（它要用 sendChat 发弹幕）。没在播时传 null，输入框会自己禁用
   const onSessionRef = useRef(onSession)
@@ -350,6 +371,21 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
           // 传上面那个 sources 死对象的话，直播会永远冻在换画布前那一帧（见 captureFeed.ts）
           sources: () => handle.captureSources?.() ?? null,
           meta: { gameSlug, gameName, platform: platform ?? '', title: gameName, hostName: playerName() },
+          /* ---------------- 「让观众上场当 2P」（见 coopSeat.ts） ---------------- */
+          // 传函数：句柄可能比开播晚到，换游戏时这一项也会变
+          coopButtons: () => handleRef.current?.coopButtons ?? [],
+          onSeatRequest: (viewerId) => setSeatWant(viewerId),
+          onSeatChange: (viewerId) => {
+            setSeatOf(viewerId)
+            // 座位定了，那条「有人想上场」的提示就没意义了
+            if (viewerId) setSeatWant(null)
+          },
+          /*
+            访客的按键 → 运行时的 2P 位。`1` 就是那个座位号（见 types.ts 的 sendButton）。
+            ⚠️ 别在这里过滤 down === false：松开那一条同样要送，而且 broadcast 在收座 /
+            断线 / 停播时会**替访客补一轮松开** —— 漏掉的话角色一直朝墙里跑。
+          */
+          onGuestInput: (button, down) => handleRef.current?.sendButton?.(button, down, 1),
           onViewers: setViewers,
           // 弹幕直接转给播放器：LiveControls 只是工具条，不该拿着消息列表
           onChat: (msg) => onChatRef.current?.(msg),
@@ -414,6 +450,14 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
         sources: { stream },
         maxBitrate: tabBitrate(stream),
         meta: { gameSlug, gameName, platform: platform ?? '', title: gameName, hostName: playerName() },
+        // 分享标签页这一路游戏照样在本机的运行时里跑，2P 位一样有效
+        coopButtons: () => handleRef.current?.coopButtons ?? [],
+        onSeatRequest: (viewerId) => setSeatWant(viewerId),
+        onSeatChange: (viewerId) => {
+          setSeatOf(viewerId)
+          if (viewerId) setSeatWant(null)
+        },
+        onGuestInput: (button, down) => handleRef.current?.sendButton?.(button, down, 1),
         onViewers: setViewers,
         onQuality: (q) => setQuality(q.reason),
         onRoom: setRoomId,
@@ -526,14 +570,48 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
 
   const btnLabel = label[phase]
   const btnHint = hint[phase] + qualityNote
+
+  /*
+    「让观众上场当 2P」那颗按钮的文案与动作。
+
+    什么时候有：这一局的运行时报了 2P 键位（同屏双打的 Flash 游戏，见 flashKeys 的 p2）
+    **并且**正在播 —— 通道挂在直播的 PeerConnection 上，不播就没有通道。
+
+    一颗按钮管三态，别拆成两颗（工具条上再多一颗就要折行了）：
+      有人在等   → 「让 TA 上场」，按一下就给他
+      已经有 2P → 「请 2P 下场」，按一下收回
+      没人在等   → 灰着，说明一句「等观众点上场」
+  */
+  const coopReady = (handle?.coopButtons?.length ?? 0) > 0 && (phase === 'live' || phase === 'reconnecting')
+  const coopRef = useRef<{ want: string | null; seat: string | null }>({ want: null, seat: null })
+  coopRef.current = { want: seatWant, seat: seatOf }
+  /** 恒定的包装函数，理由同 stableToggle */
+  const coopToggle = useCallback(() => {
+    const b = liveRef.current
+    if (!b) return
+    const { want, seat } = coopRef.current
+    if (seat) b.revokeSeat()
+    else if (want) b.grantSeat(want)
+  }, [])
+  const coopCtl: ChatBarToggle | null = coopReady
+    ? {
+        on: Boolean(seatOf),
+        label: seatOf ? t.player.coopSeated : seatWant ? t.player.coopLet : t.player.coop,
+        hint: seatOf ? t.player.coopKickHint : seatWant ? t.player.coopLetHint : t.player.coopIdleHint,
+        toggle: coopToggle,
+      }
+    : null
+
   useEffect(() => {
     if (!onControls) return
     onControls(
-      available ? { phase, on: phase === 'live' || phase === 'reconnecting', viewers, label: btnLabel, hint: btnHint, toggle: stableToggle } : null,
+      available
+        ? { phase, on: phase === 'live' || phase === 'reconnecting', viewers, label: btnLabel, hint: btnHint, toggle: stableToggle, coop: coopCtl }
+        : null,
     )
     // 卸载时收回：播放器换局、或者这一局不该开播了，按钮不能还留在弹幕框上
     return () => onControls(null)
-  }, [onControls, available, phase, viewers, btnLabel, btnHint, stableToggle])
+  }, [onControls, available, phase, viewers, btnLabel, btnHint, stableToggle, coopCtl])
 
   if (!available) return null
   // 开关已经交给弹幕框了，这边就不画第二份（推流该干的活在上面的 effect 里照跑）
