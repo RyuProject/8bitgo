@@ -519,12 +519,35 @@ npx wrangler d1 execute 8bitgo --local --file=d1-data.sql
 去控制台 → 你的域名 → Caching → Cache Rules → Create rule：
 
 - 规则名：`Cache HTML and public API`
-- 匹配：`(not starts_with(http.request.uri.path, "/admin")) and (not starts_with(http.request.uri.path, "/api/auth")) and (not starts_with(http.request.uri.path, "/api/me")) and (not starts_with(http.request.uri.path, "/api/users")) and (not starts_with(http.request.uri.path, "/api/rooms"))`
+- 匹配（**白名单写法**，见下面的说明）：
+
+```
+(not starts_with(http.request.uri.path, "/api/") and not starts_with(http.request.uri.path, "/admin"))
+or starts_with(http.request.uri.path, "/api/games")
+or starts_with(http.request.uri.path, "/api/posts")
+```
+
 - Cache eligibility：**Eligible for cache**
 - Edge TTL：**Use cache-control header if present**（关键，别选固定 TTL，否则会盖掉上面的策略）
 - Browser TTL：同样选 Respect origin
 
 这样 `no-store` 的响应仍然不会被缓存（Cloudflare 认这个头），而页面和公开接口会被边缘接管。
+
+**为什么是白名单而不是黑名单。** 这条规则原来写成「除了 /admin、/api/auth、/api/me…
+之外都缓存」。黑名单的问题是**新增的接口默认会被缓存**，除非有人记得回来改这条规则 ——
+而这条规则在 Cloudflare 控制台里，不在代码评审的视线内。`cache.js` 那侧的默认是
+`no-store`（漏配只会少一层缓存），Cache Rule 这侧也该同向失败。
+
+⚠️ **两条 SSE 必须排除在外，靠响应头挡不住。** `/api/live/events` 和
+`/api/netplay/events` 发的是 `Cache-Control: no-cache, no-transform` ——
+**`no-cache` 不是 `no-store`**：它的意思是「可以存，但用之前必须回源校验」。
+选了 *Use cache-control header if present* 之后，Cloudflare 会认为这是**可缓存**的，
+然后试图去缓冲一条**永远不结束**的流。上面的白名单写法天然把整个 `/api/`
+排除在外，所以不用单列；但要是有人哪天把它改回黑名单，这两条必须显式排掉。
+
+⚠️ **`/api/netplay/ice` 同理，而且更早就踩过**（2026-09-07，全站 TURN 401，
+排查了很久）。它自己已经补了 `CDN-Cache-Control` / `Cloudflare-CDN-Cache-Control`
+两个更高优先级的头，但那是第二道；第一道仍然是别让规则匹配上它。
 
 ### 内容更新后如何立刻生效
 
