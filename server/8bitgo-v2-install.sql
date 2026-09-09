@@ -167,6 +167,20 @@ CREATE TABLE IF NOT EXISTS developers (
   PRIMARY KEY (name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ---------- 首页特别鸣谢 / 友情链接 ----------
+-- 图片友链以经典 88×31 为基准；image 为空就是文字友链。
+CREATE TABLE IF NOT EXISTS friend_links (
+  id          BIGINT UNSIGNED   NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  name        VARCHAR(80)       NOT NULL,
+  url         VARCHAR(500)      NOT NULL,
+  image       VARCHAR(500)      NOT NULL DEFAULT '',
+  sort_order  SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  enabled     TINYINT(1)        NOT NULL DEFAULT 1,
+  created_at  TIMESTAMP         NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at  TIMESTAMP         NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_friend_links_public (enabled, sort_order, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ---------- 游戏 × 类型 ----------
 -- genre_id 取值见 src/data/genres.ts（'action' / 'rpg' / 'puzzle' …）
 -- 两个方向的索引都要：按游戏取它的类型（主键），按类型筛游戏（idx_genre）

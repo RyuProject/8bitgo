@@ -140,6 +140,20 @@ CREATE TABLE IF NOT EXISTS platform_bios (
   updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
 
+-- ---------- 首页特别鸣谢 / 友情链接 ----------
+-- image 为空就是文字友链；图片在前台统一按 88×31 比例展示。
+CREATE TABLE IF NOT EXISTS friend_links (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  name       TEXT    NOT NULL,
+  url        TEXT    NOT NULL,
+  image      TEXT    NOT NULL DEFAULT '',
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  enabled    INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT    NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+  updated_at TEXT    NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+);
+CREATE INDEX IF NOT EXISTS idx_friend_links_public ON friend_links (enabled, sort_order, id);
+
 -- ---------- 游戏 × 类型 ----------
 CREATE TABLE IF NOT EXISTS game_genres (
   game_id  INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,

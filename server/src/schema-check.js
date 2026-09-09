@@ -49,6 +49,7 @@ const EXPECTED_TABLES = [
   { table: 'game_search_tokens', why: '搜索倒排索引' },
   { table: 'post_tags', why: '文章标签' },
   { table: 'developers', why: '开发商的人工资料（logo / 简介）；缺了开发商列表仍然能看，只是后台那一页读写全 500' },
+  { table: 'friend_links', why: '首页特别鸣谢；缺了首页会隐藏这一栏，后台友情链接管理读写会 500' },
   { table: 'saves', why: '云存档；schema-v2 早期漏了这张表，缺了的话 /api/saves 全 500，玩家点「云端存档」就报错' },
   {
     table: 'game_comments',

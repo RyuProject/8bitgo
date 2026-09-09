@@ -22,6 +22,7 @@ import { roomsRouter } from './routes/rooms.js'
 import { pageRouter } from './routes/page.js'
 import { platformBiosRouter } from './routes/platform-bios.js'
 import { developersRouter } from './routes/developers.js'
+import { friendLinksRouter } from './routes/friend-links.js'
 import { checkSchema } from './schema-check.js'
 import { savesRouter } from './routes/saves.js'
 import { attachNetplay } from './netplay.js'
@@ -107,6 +108,8 @@ app.use('/api/rooms', roomsRouter)
 app.use('/api/page', pageRouter)
 app.use('/api/platform-bios', platformBiosRouter)
 app.use('/api/developers', developersRouter)
+// 首页「特别鸣谢」的后台管理；公开列表跟着 /api/page 的首页数据返回
+app.use('/api/friend-links', friendLinksRouter)
 // 云存档（必须登录，见 routes/saves.js）
 app.use('/api/saves', savesRouter)
 // P2P 联机的 ICE / TURN 配置（短期凭证，见 routes/ice.js）

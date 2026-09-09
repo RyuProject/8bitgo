@@ -22,12 +22,38 @@ NOFILE="${NOFILE:-65535}"
 [ "$(id -u)" -eq 0 ] || { echo "要 root：sudo $0"; exit 1; }
 [ -f "$APP_DIR/src/index.js" ] || { echo "❌ $APP_DIR/src/index.js 不存在，用 APP_DIR=... 指对路径"; exit 1; }
 
-NODE_BIN="$(command -v node || true)"
-[ -x "$NODE_BIN" ] || { echo "❌ 找不到 node"; exit 1; }
-
 echo "── 先看现在是谁在跑 ──"
 OLD_PID="$( (ss -lptnH 'sport = :8788' 2>/dev/null || true) | grep -oP 'pid=\K[0-9]+' | head -1)"
 RUN_USER=root
+
+# ── 找 node ──
+# ⚠️ 顺序有讲究。`command -v node` 放在**最后**，因为 sudo 会按 /etc/sudoers 的
+#    secure_path 重置 PATH —— nvm / fnm / volta 装的 node 一律不在那条路径上，
+#    在这台机器上实测就是这么失败的（「❌ 找不到 node」）。
+#
+#    最可靠的来源是**正在跑的那个进程自己**：/proc/<pid>/exe 直接指向它的 node 二进制，
+#    跟 PATH、跟哪个 shell、跟 nvm 用的哪个版本都无关 —— 而且天然保证
+#    新 unit 用的和现在跑着的是同一个版本，不会因为换了版本而起不来。
+NODE_BIN="${NODE_BIN:-}"
+if [ -z "$NODE_BIN" ] && [ -n "$OLD_PID" ] && [ -e "/proc/$OLD_PID/exe" ]; then
+  cand="$(readlink -f "/proc/$OLD_PID/exe" 2>/dev/null || true)"
+  case "$cand" in *node*) NODE_BIN="$cand" ;; esac
+fi
+if [ -z "$NODE_BIN" ]; then
+  for c in /usr/local/bin/node /usr/bin/node /opt/node/bin/node \
+           /root/.nvm/versions/node/*/bin/node /home/*/.nvm/versions/node/*/bin/node \
+           /root/.volta/bin/node /usr/local/n/versions/node/*/bin/node; do
+    [ -x "$c" ] && { NODE_BIN="$c"; break; }
+  done
+fi
+[ -n "$NODE_BIN" ] || NODE_BIN="$(command -v node || true)"
+
+if [ ! -x "$NODE_BIN" ]; then
+  echo "❌ 找不到 node。手动指给它："
+  echo "   sudo NODE_BIN=\$(readlink -f /proc/$OLD_PID/exe) $0"
+  echo "   或者： which node   （在**不带 sudo** 的 shell 里跑）"
+  exit 1
+fi
 if [ -n "$OLD_PID" ]; then
   RUN_USER="$(ps -o user= -p "$OLD_PID" | tr -d ' ')"
   echo "  PID $OLD_PID  用户 $RUN_USER"
@@ -39,7 +65,15 @@ if [ -n "$OLD_PID" ]; then
 else
   echo "  8788 上没有进程（现在是停着的）"
 fi
-echo "  node：$NODE_BIN"
+echo "  node：$NODE_BIN（$("$NODE_BIN" -v 2>/dev/null || echo '版本读不到')）"
+case "$NODE_BIN" in
+  */.nvm/*|*/.volta/*|*/n/versions/*)
+    echo "  ⚠️ 这个 node 来自版本管理器（nvm / volta / n）。unit 里写的是绝对路径，"
+    echo "     以后 nvm install 换了版本、或者清掉旧版本，这个 unit 就会起不来。"
+    echo "     建议做一个不动的符号链接，再把 unit 指过去："
+    echo "       ln -sfn $NODE_BIN /usr/local/bin/node-8bitgo"
+    echo "       sudo NODE_BIN=/usr/local/bin/node-8bitgo $0" ;;
+esac
 echo "  工作目录：$APP_DIR"
 
 # ⚠️ WorkingDirectory 必须是 server/ —— `dotenv/config` 是从 **process.cwd()**

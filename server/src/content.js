@@ -14,6 +14,7 @@ import { listGames, listHomePicks, getGameBySlug, platformCounts, genreCounts, d
 import { topCollections } from './routes/collections.js'
 import { query } from './db.js'
 import { attachPostTags } from './routes/posts.js'
+import { listPublicFriendLinks } from './friend-links.js'
 
 const TTL = Number(process.env.SSR_CACHE_MS || 60_000)
 /** 缓存最多存多少个路由的结果 */
@@ -66,7 +67,7 @@ const HOME_SIZE = 12
 const GENRE_COLUMNS = ['action', 'adventure', 'rpg', 'puzzle']
 
 async function loadHome() {
-  const [picks, popular, newest, multiplayer, facets, collections, ...samples] = await Promise.all([
+  const [picks, popular, newest, multiplayer, facets, collections, friendLinks, ...samples] = await Promise.all([
     // 首页第一栏：后台钦点的优先
     listHomePicks(HOME_SIZE),
     listGames({ sort: 'popular', pageSize: HOME_SIZE }),
@@ -76,6 +77,8 @@ async function loadHome() {
     // 合集那一栏。取 8 个：首页一行最多摆 4 个，多取一些是为了万一有空合集（还没加游戏）
     // 也能凑够一行；建不出来（表还没迁移）时不能把整个首页拖垮，所以单独兜一层
     topCollections(8).catch(() => []),
+    // 新代码可能先于迁移上线。特别鸣谢缺表时只隐藏这一栏，不能拖垮整个首页。
+    listPublicFriendLinks().catch(() => []),
     ...GENRE_COLUMNS.map((id) => listGames({ genre: id, sort: 'popular', pageSize: 4 })),
   ])
   const genreSamples = {}
@@ -100,6 +103,7 @@ async function loadHome() {
     genreSamples,
     facets,
     collections,
+    friendLinks,
     total: popular.total,
   }
 }

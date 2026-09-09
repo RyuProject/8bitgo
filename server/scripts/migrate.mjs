@@ -602,10 +602,28 @@ const patches = [
         CONSTRAINT chk_rating_score CHECK (score BETWEEN 1 AND 5)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`),
   },
+  {
+    name: 'friend_links（首页特别鸣谢 / 友情链接）',
+    // 这张表不依赖用户或游戏，v1 / v2 库都可以安全创建。
+    table: null,
+    needed: async () => !(await hasTable('friend_links')),
+    run: () =>
+      conn.query(`CREATE TABLE IF NOT EXISTS friend_links (
+        id          BIGINT UNSIGNED   NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        name        VARCHAR(80)       NOT NULL,
+        url         VARCHAR(500)      NOT NULL,
+        image       VARCHAR(500)      NOT NULL DEFAULT '',
+        sort_order  SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+        enabled     TINYINT(1)        NOT NULL DEFAULT 1,
+        created_at  TIMESTAMP         NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at  TIMESTAMP         NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        KEY idx_friend_links_public (enabled, sort_order, id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`),
+  },
 
 ]
 
-const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'login_codes', 'platform_bios', 'game_plays', 'developers', 'game_comments', 'game_ratings']
+const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'login_codes', 'platform_bios', 'game_plays', 'developers', 'friend_links', 'game_comments', 'game_ratings']
 
 try {
   await conn.query(`CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`)

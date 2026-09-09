@@ -33,6 +33,7 @@ const TABLES = [
   'posts',
   'users',
   'platform_bios',
+  'friend_links',
   'game_genres',
   'game_tags',
   'game_search_tokens',
