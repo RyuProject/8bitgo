@@ -87,6 +87,14 @@ export function liveRoomView(r: LiveRoomInfo): RoomView {
     kind: 'live',
     hostAway: Boolean(r.hostAway),
     hostPaused: Boolean(r.hostFrozen),
+    /*
+      举手：这一局有 2P 位、而且还空着（同屏双打的 Flash 游戏，见 emulator/coopSeat.ts）。
+
+      刻意复用 p2p 那一路的 `wave` 而不是新造一个徽章：文案「房主在等人一起玩」
+      对这两种情况一字不差地成立，而玩家要理解的东西越少越好。
+      位子有人坐了就把手放下 —— 挂着一个进不去的 👋 比不挂更烦人（同 p2p 那条注释）。
+    */
+    wave: Boolean(r.coopOpen) && !r.coopTaken,
   }
 }
 

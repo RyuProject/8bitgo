@@ -91,6 +91,19 @@ function normalizeIp(raw) {
 /** 内网 / 回环 / 链路本地。这些查不出国家，也说明「这一跳还是代理」 */
 export function isPrivateIp(ip) {
   if (!ip) return true
+  /**
+   * ⚠️ 先削 `::ffff:` 再判。
+   *
+   * 下面那些正则全是 `^` 锚定的裸 v4 前缀，`::ffff:127.0.0.1` 一条都不命中 ——
+   * 会被当成公网地址。而 `index.js` 的 `httpServer.listen(PORT)` 不带 host，
+   * Node 双栈绑 `::`，同机 nginx 走 IPv4 回环连进来拿到的就正是这个形状。
+   *
+   * 本模块内部的调用方都先过了 normalizeIp（它削了），所以以前没暴露；
+   * 但 sseGuard 那种按 IP 限流的外部调用方一旦直接传原始地址，
+   * 判错的后果是**全站访客塌缩成同一个桶**、一起被限死。在这儿兜住，比指望每个调用方都记得 normalize 靠谱。
+   * Docker / k8s 的 `::ffff:172.17.0.1`、`::ffff:10.x` 同理。
+   */
+  ip = String(ip).replace(/^::ffff:/i, '')
   if (ip === '::1' || ip === '::') return true
   if (/^(10\.|127\.|169\.254\.|192\.168\.)/.test(ip)) return true
   if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip)) return true

@@ -869,6 +869,10 @@ export const zhHans = {
     coopLeave: '我下场',
     coopJoinHint: '请房主让你操作第二个角色。上场后用方向键或 WASD 控制，手机上会出现屏幕手柄。',
     coopLeaveHint: '交回 2P 位，继续看直播。',
+    coopAskTitle: '有人想上场当 2P',
+    coopAskFrom: '{name} 想上场当 2P',
+    coopIgnore: '忽略',
+    coopLost: '房主收回了 2P 位',
     matchFailed: '现在开不了房，等游戏跑起来再试一次。',
     slotLabel: '{n}P',
     copyInvite: '复制邀请链接',
@@ -991,6 +995,10 @@ export const zhHans = {
       remapKeysHint: '打开模拟器自带的按键设置：键盘和手柄都能改，1P~4P 分开设，改完自动记住。',
       chatPlaceholder: '说点什么…（回车发送）',
       chatSend: '发送',
+      /** 发得太快被服务端限流了。弹幕没有本地回显，不说一声用户只会看到「什么都没发生」 */
+      chatTooFast: '发得太快了，缓一下再发',
+      /** 这一条没发出去（房间散了 / 断线 / 服务端没回应）。文字会还回输入框 */
+      chatDropped: '这条没发出去，再试一次',
       chatGuest: '游客',
       chatEmpty: '还没有人说话，来第一个。',
       padRebind: '红白机键位',

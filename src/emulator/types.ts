@@ -24,6 +24,7 @@ import type { DosBackend, DosWindowsVersion, PlatformId } from '@/types'
 import type { CloudSession } from './adapters/cloudgame'
 import type { NetplaySession } from './adapters/emulatorjs'
 import type { LiveSession } from './adapters/liveview'
+import type { ChatSendResult } from './chatSend'
 
 export type RuntimeId = 'emulatorjs' | 'ruffle' | 'html5' | 'jsnes' | 'j2me' | 'jsdos' | 'webretro' | 'play' | 'cloudgame' | 'liveview'
 
@@ -325,8 +326,11 @@ export interface RuntimeHandle {
   /**
    * 发一条弹幕。只有 liveview（看直播）这一路实现 —— 别的运行时下面根本没有直播间。
    * 主播那一侧不走这里，走 Broadcast.sendChat（他手里握着的是推流会话，不是观看会话）。
+   *
+   * 兑现值 = 服务端的答复：null 表示发出去了，'too-fast' / 'dropped' 要给用户一句提示。
+   * **不是 void**：弹幕不做本地回显，静静丢掉的那条用户根本看不出来（见 chatSend.ts）。
    */
-  liveChat?: (text: string) => void
+  liveChat?: (text: string) => Promise<ChatSendResult>
   /**
    * 这一局实际用得上的按钮。不给就是「八个键都有」（主机模拟器都是这样）。
    *

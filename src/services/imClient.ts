@@ -199,6 +199,35 @@ function retractOpener() {
 
 /* ---------------- 连接 ---------------- */
 
+/**
+ * **自动**重连的最小间隔。
+ *
+ * 两条自动路径原来都是「想连就连」，没有任何节流（2026-09-10 加）：
+ *
+ *   1. `KICKED_OUT` + `USERSIG_EXPIRED` —— 立刻重新取签名重连。签名要是**当场就过期**
+ *      （服务器和客户端的钟差得远、或者 TTL 配了个很小的值），这就是一个死循环：
+ *      每一轮一次 `/api/im/sig` + 一次 SDK login，几十毫秒转一圈。
+ *   2. `visibilitychange` —— 每次切回前台、状态不是 ready 就重连。后端正在 500 的时候，
+ *      用户在标签页之间来回切几下就是几十个请求。
+ *
+ * `/api/im/sig` 有 30 次/小时的按账号限流，所以这两条最终会撞上 429 ——
+ * 也就是说「兜底」是把用户的额度烧光、然后卡在 error 上，那不是兜底。
+ *
+ * 连上（SDK_READY）就把计时归零：那之后真的掉线该立刻重连，节流只针对**连不上还一直试**。
+ */
+const AUTO_RETRY_MS = 30_000
+let lastAutoRetry = 0
+
+/**
+ * 自动路径现在能不能试一次。**手点「重新连接」不走这里** —— 用户明确的动作永远算。
+ */
+function autoRetryAllowed(): boolean {
+  const now = Date.now()
+  if (now - lastAutoRetry < AUTO_RETRY_MS) return false
+  lastAutoRetry = now
+  return true
+}
+
 interface SigResponse {
   sdkAppId: number
   userId: string
@@ -322,6 +351,8 @@ export async function imStop(): Promise<void> {
 
 /** 用户点「重新连接」 */
 export async function imReconnect(): Promise<boolean> {
+  // 用户明确点的：把自动重连的节流清掉，否则「刚才自动试过一次」会让这一下没反应
+  lastAutoRetry = 0
   // 必须先 invalidate：不作废的话下面那次 ensureImStarted 会复用正在飞的旧尝试，
   // 而那次的赋值会在 teardown 之后把刚清掉的状态又写回去
   invalidate()
@@ -342,6 +373,8 @@ function wireEvents(c: Chat, epoch: number) {
 
   on(E.SDK_READY, () => {
     if (!live()) return
+    // 连上了：自动重连的节流归零，之后真的掉线要能立刻重连（见 AUTO_RETRY_MS）
+    lastAutoRetry = 0
     setState('ready')
     publishOpener()
     // 昵称同步不在服务端签发接口里做（见 routes/im.js）。失败不影响聊天，不 await
@@ -393,9 +426,11 @@ function wireEvents(c: Chat, epoch: number) {
     if (type === T.TYPES.KICKED_OUT_USERSIG_EXPIRED) {
       void (async () => {
         invalidate()
+        // 拆完先落在 off 上。节流不放行时就停在这儿 —— 用户还有那颗「重新连接」，
+        // 而 30 秒后回到前台的自检也会再试一次（都不是死循环）
         setState('off')
         await teardown()
-        await ensureImStarted()
+        if (autoRetryAllowed()) await ensureImStarted()
       })()
       return
     }
@@ -439,7 +474,7 @@ async function announce(msgs: RawIncoming[], T: ChatNS): Promise<void> {
   let nick = ''
   if (from) {
     const named = await resolvePeers([from])
-    nick = named.get(from)?.nickname || String(last.nick ?? '')
+    nick = named.get(from)?.nickname || cleanPeerText(last.nick)
   }
   // 抽屉可能在这次 await 期间被打开了 —— 再判一次，别滚一条盖在抽屉后面的
   if (panelOpen) return
@@ -484,6 +519,34 @@ async function syncProfile(): Promise<void> {
 }
 
 /* ---------------- 会话与消息 ---------------- */
+
+/**
+ * 对方昵称最多显示多少字。和 users.nickname 的上限（16）留一点余量 ——
+ * 这个值可能来自腾讯，而那一份不是我们校验过的。
+ */
+const PEER_NICK_MAX = 24
+/** 控制字符 + 两个会被当成换行的 Unicode 分隔符（同 shared/live-chat.js） */
+const CONTROL_CHARS = /[\u0000-\u001f\u007f\u2028\u2029]/g
+
+/**
+ * 清洗一段**对方给的**显示文字（昵称）。
+ *
+ * ⚠️ 腾讯的 userProfile.nick 是对方自己的浏览器 `updateMyProfile` 写进去的，
+ * 最长 500 字节、内容腾讯不校验 —— 也就是完全由对方控制。正常路径上我们会用
+ * `/api/im/peers`（我们库里的昵称）**覆盖**它，但那一步是装饰性的、允许失败
+ * （429 / 离线 / 对方已注销），失败时显示的就是这一份。所以它必须自己先干净：
+ *
+ *   · **去控制字符**：换行能把会话列表那一行顶成两行，把整个列表挤变形；
+ *   · **折叠空白**：一串空格能把昵称推出可视区，看着像个空名字；
+ *   · **截断**：一个 500 字节的昵称在聊天窗标题里就是一整块黑条。
+ *
+ * React 会转义 HTML，所以这里**不是**防 XSS —— 防的是「用显示名把界面弄坏 / 冒名」。
+ */
+function cleanPeerText(raw: unknown, max = PEER_NICK_MAX): string {
+  const s = String(raw ?? '').replace(CONTROL_CHARS, ' ').replace(/\s+/g, ' ').trim()
+  const points = Array.from(s)
+  return points.length <= max ? s : points.slice(0, max).join('')
+}
 
 /** C2C 会话 id ↔ 对方 userID */
 export const convIdFor = (peerId: string) => `C2C${peerId}`
@@ -538,8 +601,9 @@ export async function listImConversations(): Promise<ImConversation[]> {
     .map((c) => ({
       id: c.conversationID,
       peerId: c.userProfile?.userID || peerIdFrom(c.conversationID),
-      nick: c.userProfile?.nick || '',
-      avatar: c.userProfile?.avatar || '',
+      // 腾讯那两份是对方自己写的，先清洗再显示（见 cleanPeerText）
+      nick: cleanPeerText(c.userProfile?.nick),
+      avatar: cleanPeerText(c.userProfile?.avatar, 4),
       lastText: textOfLast(c.lastMessage, T),
       lastTime: Number(c.lastMessage?.lastTime) || 0,
       unread: Number(c.unreadCount) || 0,
@@ -651,11 +715,29 @@ export async function listImMessages(
   return { items, cursor: res?.data?.nextReqMessageID ?? '', done: Boolean(res?.data?.isCompleted) }
 }
 
+/**
+ * 一条私信最多多少字。
+ *
+ * ⚠️ 这不是我们想出来的数：腾讯单条文字消息的上限是 **12000 字节**（超了服务端回
+ * `ERR_SVR_COMM_BODY_SIZE_LIMIT: 80002`，SDK 源码里那张错误码表就有它），
+ * 而 SDK **自己不做任何长度检查** —— 它会老老实实把整段发出去再收一个错误码回来。
+ *
+ * 没有这道闸时的症状（2026-09-10 修）：粘一篇长文进去 → 气泡显示「发送失败」+ 一颗
+ * 「重试」，而重试**永远**失败（内容没变，服务端每次都拒），用户只能猜。
+ *
+ * 取 1000 而不是贴着 12000：中文一个字 3 字节，1000 字 ≈ 3KB，离上限很远，
+ * 而「一条私信」本来就不该是一篇文章。输入框那边用 maxLength=1000（按 UTF-16 码元算，
+ * 只会比这个更严）挡在前面，所以这里这一条正常路径永远不会抛。
+ */
+export const IM_TEXT_MAX = 1000
+
 /** 发一条文字消息。没连上时抛 ImNotConnectedError —— 绝不静默假成功 */
 export async function sendImText(peerId: string, text: string): Promise<ImMessage> {
   if (!chat || !TC) throw new ImNotConnectedError()
   const body = text.trim()
   if (!body) throw new Error('消息为空')
+  // 超长在这里就拦住，不发出去 —— 发了也只会换回一个 80002，而那条失败是不可重试的
+  if (Array.from(body).length > IM_TEXT_MAX) throw new Error(`消息超过 ${IM_TEXT_MAX} 字`)
   const msg = chat.createTextMessage({ to: peerId, conversationType: TC.TYPES.CONV_C2C, payload: { text: body } })
   const res = (await chat.sendMessage(msg)) as { data?: { message?: RawMessage } }
   const m = res?.data?.message
@@ -866,6 +948,8 @@ function wireVisibility() {
     if (!getCurrentUser() || !apiEnabled()) return
     const s = imState()
     if (s === 'ready' || s === 'connecting' || s === 'kicked' || s === 'unavailable') return
+    // 节流：后端正在出错时，来回切标签页不该变成一串请求（见 AUTO_RETRY_MS）
+    if (!autoRetryAllowed()) return
     void ensureImStarted()
   })
 }

@@ -540,6 +540,13 @@ export function EmulatorPlayer({
   const [coopAsking, setCoopAsking] = useState(false)
   /** 我现在是 2P */
   const [coopSeated, setCoopSeated] = useState(false)
+  /**
+   * 刚被收回 2P 位（几秒后自己消失）。
+   *
+   * 为什么要专门说一声：座位一没，屏幕手柄跟着消失、按键也不再有反应 ——
+   * 不说的话访客只会以为「卡了」或者「我的网断了」，而实际是房主收回了座位。
+   */
+  const [coopLost, setCoopLost] = useState(false)
 
   const liveChatOn = Boolean(liveSession) || Boolean(session?.live)
 
@@ -1731,7 +1738,11 @@ export function EmulatorPlayer({
             }
           },
           onSeat: (on) => {
-            setCoopSeated(on)
+            setCoopSeated((was) => {
+              // 从「有座」掉到「没座」才提示；一开始就没有的不算
+              if (was && !on) setCoopLost(true)
+              return on
+            })
             setCoopAsking(false)
           },
           onLinkQuality: (q) => {
@@ -2158,6 +2169,13 @@ export function EmulatorPlayer({
     refreshNetplayRooms()
   }
 
+  // 「2P 位被收回」那句话几秒后自己撤掉，别一直挂在画面上
+  useEffect(() => {
+    if (!coopLost) return
+    const timer = window.setTimeout(() => setCoopLost(false), 6000)
+    return () => window.clearTimeout(timer)
+  }, [coopLost])
+
   /** 状态文案。徽章的 title 和可见文字共用一份，别在两处各写一遍三元 */
   /**
    * 该不该画屏幕手柄。三个条件缺一不可：
@@ -2478,6 +2496,52 @@ export function EmulatorPlayer({
                 >
                   {t.player.padHintGot}
                 </button>
+              </div>
+            </div>
+          )}
+
+          {/*
+            「上场当 2P」的画面内浮层（见 emulator/coopSeat.ts）。
+
+            ⚠️ 为什么不能只靠弹幕框那颗 👥：那一行在**全屏和沉浸式游玩时根本不画**
+            （`chatBarOn && !fullscreen && !playMode`），而这两种恰恰是玩同屏双打游戏
+            最常见的姿势。只有按钮的话，观众的请求会一声不响地掉在地上 ——
+            房主既看不见也点不到，观众那边只干等着「等房主同意…」。
+            所以画在画面里：贴上沿（下沿留给手柄和开局提示），三种布局都在。
+
+            两侧共用这一块，但同时只可能出现一条：
+              房主 —— 有人在等答复 → 带「让 TA 上场 / 忽略」两颗按钮
+              访客 —— 座位刚被收回 → 只是一句话，几秒后自己消失
+          */}
+          {(liveCtl?.coop?.pending || coopLost) && (
+            <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex justify-center px-2 pt-2">
+              <div className="pointer-events-auto flex items-center gap-2 rounded-xl border border-white/20 bg-black/80 px-3 py-2 text-left text-[11px] leading-snug text-white/90 shadow-lg backdrop-blur">
+                <span aria-hidden className="text-base leading-none">
+                  👥
+                </span>
+                {liveCtl?.coop?.pending ? (
+                  <>
+                    <span className="font-semibold text-white">
+                      {liveCtl.coop.who ? fmt(t.player.coopAskFrom, { name: liveCtl.coop.who }) : t.player.coopAskTitle}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={liveCtl.coop.accept}
+                      className="shrink-0 rounded-md border border-live/60 bg-live/15 px-2 py-1 font-semibold text-live hover:bg-live/25"
+                    >
+                      {t.player.coopLet}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={liveCtl.coop.dismiss}
+                      className="shrink-0 rounded-md border border-white/25 px-2 py-1 font-semibold text-white/80 hover:border-white/50 hover:text-white"
+                    >
+                      {t.player.coopIgnore}
+                    </button>
+                  </>
+                ) : (
+                  <span className="font-semibold text-white">{t.player.coopLost}</span>
+                )}
               </div>
             </div>
           )}

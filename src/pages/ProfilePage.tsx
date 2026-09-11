@@ -18,8 +18,9 @@ import { AccountSection } from '@/components/profile/AccountSection'
 import { CloudSaves } from '@/components/profile/CloudSaves'
 import { MyCollections } from '@/components/profile/MyCollections'
 import { DangerZone } from '@/components/profile/DangerZone'
-
-const AVATARS = ['🕹️', '👾', '🎮', '🍄', '⭐', '🐉', '🦔', '🤖', '👻', '🐱', '🔥', '💎']
+// 头像选项和服务端校验共用一张表（shared/avatar.js）——
+// 各写一份就会出现「界面上能选、存进去被 400 拒掉」
+import { AVATARS, normalizeAvatar } from '../../shared/avatar.js'
 
 const GRID = 'grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6'
 
@@ -61,7 +62,12 @@ export function ProfilePage() {
   useEffect(() => {
     if (user) {
       setNickname(user.nickname)
-      setAvatar(user.avatar)
+      /*
+        ⚠️ 过一次白名单。库里可能存着历史遗留值（这个字段以前没有任何校验），
+        照原样填进来的话，用户只改昵称、没碰头像选择器，提交时也会带上那个非法值
+        并被服务端整条 400 拒掉 —— 表现是「改昵称改不了」，而原因在他没动过的字段上。
+      */
+      setAvatar(normalizeAvatar(user.avatar) || AVATARS[0])
     }
   }, [user])
 

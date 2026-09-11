@@ -99,8 +99,14 @@ diagRouter.get('/', (req, res) => {
      *   curl -s https://8bitgo.com/api/diag | jq .sse
      *
      *   total          当前并发条数。持续贴着 maxTotal = 闸在扛，去查是谁在挂
-     *   top / topIp    挂得最多的那个 IP 和它的条数。top 长期顶到 maxPerIp 就不是真人
+     *   top / topNet   挂得最多的那个来源的条数和它的**网段**。top 长期顶到 maxPerIp 就不是真人
      *   ips            有多少个不同 IP 挂着流
+     *   blocked        累计拒了多少条，分 crawler / perIp / total 三类。
+     *                  **crawler 异常高就要怀疑 UA 正则误伤真人** —— 被误判的人会被
+     *                  sseFallback 静静退回轮询，页面照常能用，除了这个数字没有别的迹象。
+     *
+     * ⚠️ 这个接口是公开无鉴权的，所以这里只给网段不给完整 IP（见 sseGuard 的 maskIp）。
+     * 「谁在刷」看网段就够，不需要把访客的地址摊给所有人。
      *
      * ⚠️ 一条被 nginx 反代出去的 SSE 占它**两个**连接槽（客户端一个 + upstream 一个），
      * 所以 maxTotal 要留足余量，别设到接近 worker_connections。

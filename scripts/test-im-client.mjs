@@ -633,4 +633,54 @@ check('⭐ 改完资料要重新推给腾讯（syncProfile 只挂在 SDK_READY �
   assert.match(seg.slice(0, 400), /\}, \[myNick, myAvatar\]\)/, '依赖数组不是那两个值')
 })
 
+console.log('\n十三、2026-09-10 那一轮体检修掉的三件事')
+
+check('⭐ 私信必须有长度上限（腾讯 12000 字节，而 SDK 自己不检查）', () => {
+  /*
+    没有这道闸时的症状：粘一篇长文进去 → 腾讯服务端回 80002
+    （ERR_SVR_COMM_BODY_SIZE_LIMIT，SDK 源码里那张错误码表就有它）→
+    气泡显示「发送失败」+ 一颗**永远失败**的重试按钮（内容没变，每次都被拒）。
+  */
+  assert.match(clientCode, /export const IM_TEXT_MAX/, '没有上限常量')
+  const seg = clientCode.slice(clientCode.indexOf('export async function sendImText'))
+  assert.match(
+    seg.slice(0, 600),
+    /Array\.from\(body\)\.length > IM_TEXT_MAX/,
+    'sendImText 没拦超长 —— 按码点算，别用 String.length（emoji 会被算成两个）',
+  )
+  assert.match(panelCode, /maxLength=\{IM_TEXT_MAX\}/, '输入框没有 maxLength，用户打得进去才是问题的起点')
+})
+
+check('⭐ 对方给的显示名要清洗（腾讯那份是对方浏览器写的，我们校验不到）', () => {
+  assert.match(clientCode, /function cleanPeerText/, '缺少清洗')
+  const seg = clientCode.slice(clientCode.indexOf('function cleanPeerText'))
+  const body = seg.slice(0, seg.indexOf('\n}'))
+  assert.match(body, /replace\(CONTROL_CHARS/, '换行能把会话列表那一行顶成两行')
+  assert.match(body, /slice\(0, max\)/, '一个 500 字节的昵称在标题栏里就是一整块黑条')
+})
+
+check('⭐ 自动重连要有节流，手点「重新连接」不受它管', () => {
+  /*
+    两条自动路径原来都是「想连就连」：
+      · KICKED_OUT + USERSIG_EXPIRED —— 签名要是当场就过期（钟差 / TTL 配小了），这是死循环；
+      · visibilitychange —— 后端正在 500 时，来回切几下标签页就是几十个请求。
+    而 /api/im/sig 有 30 次/小时的限流 —— 「兜底」最终是把用户的额度烧光再卡在 error。
+  */
+  assert.match(clientCode, /const AUTO_RETRY_MS/, '没有节流常量')
+  const expired = clientCode.slice(clientCode.indexOf('KICKED_OUT_USERSIG_EXPIRED'))
+  assert.match(
+    expired.slice(0, 400),
+    /if \(autoRetryAllowed\(\)\) await ensureImStarted\(\)/,
+    'sig 过期那条路没过节流闸',
+  )
+  const vis = clientCode.slice(clientCode.indexOf('function wireVisibility'))
+  assert.match(vis.slice(0, 600), /if \(!autoRetryAllowed\(\)\) return/, '回到前台那条路没过节流闸')
+  // 手点的那颗按钮必须无视节流，否则「刚才自动试过一次」会让它点了没反应
+  const rc = clientCode.slice(clientCode.indexOf('export async function imReconnect'))
+  assert.match(rc.slice(0, 400), /lastAutoRetry = 0/, '手动重连没把节流清掉')
+  // 连上就归零：之后真的掉线该立刻重连
+  const ready = clientCode.slice(clientCode.indexOf('on(E.SDK_READY'))
+  assert.match(ready.slice(0, 300), /lastAutoRetry = 0/, 'SDK_READY 没把节流归零')
+})
+
 console.log(`\n✅ IM 接入结构检查：${n} 项通过`)

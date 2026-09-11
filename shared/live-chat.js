@@ -47,3 +47,45 @@ export function sanitizeChatText(raw) {
 export function chatTextLength(raw) {
   return Array.from(typeof raw === 'string' ? raw : '').length
 }
+
+/* ---------------- 发送结果：服务端 ack 的那几个串 ---------------- */
+
+/**
+ * 服务端拒收一条弹幕时，ack 的第一个参数就是下面这几个串之一。
+ *
+ * ⚠️ **前后端必须用同一份常量**，这正是它放在 shared/ 的原因：这几个串是一份协议，
+ * 而协议两头各写一遍字面量的下场是「服务端改了个字，前端的提示从此不再出现」——
+ * 而且这类漂移完全静默（默认分支会把它当成「发送失败」，看着还挺正常）。
+ */
+export const CHAT_ACK_TOO_FAST = 'too fast'
+export const CHAT_ACK_EMPTY = 'empty'
+export const CHAT_ACK_NO_ROOM = 'not in a room'
+export const CHAT_ACK_NOT_FOUND = 'not found'
+export const CHAT_ACK_FAILED = 'failed'
+
+/**
+ * ack -> 前端要提示哪一类。`null` = 这条发出去了，什么都别说。
+ *
+ * ## 为什么非要有这个东西（2026-09-10 加）
+ *
+ * 服务端一直老老实实地 ack 着拒收原因，而**客户端两条发送路径一个都没看**：
+ * 用户按下回车 → 输入框清空 → 画面上什么都没有。而弹幕**没有本地回显**
+ * （每个人看到的顺序由服务端定，见 LiveChat.tsx 的文件头），所以「被丢掉」和
+ * 「没人说话」在界面上一模一样 —— 这正是这个仓库在 shared/live-chat.js 开头
+ * 警告过的那种失效方式，只不过上次说的是长度规则，这次是限流。
+ *
+ * 只分两类，不逐个报原因：
+ *   · `too-fast` 是**用户能做点什么**的（等一下再发）；
+ *   · 其余（房间散了、连接断了、超时没等到 ack）对用户来说都是同一件事：这条没发出去。
+ *     把 'not in a room' 直译给用户既看不懂，也帮不上忙。
+ */
+export function chatSendOutcome(err) {
+  if (!err) return null
+  return String(err) === CHAT_ACK_TOO_FAST ? 'too-fast' : 'dropped'
+}
+
+/**
+ * 等 ack 的上限。socket 在这中间断了的话 ack 永远不会来 ——
+ * 没有这个兜底，那条 promise 就永远挂着，用户也永远等不到提示。
+ */
+export const CHAT_ACK_TIMEOUT_MS = 6000

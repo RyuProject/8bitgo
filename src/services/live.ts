@@ -40,6 +40,15 @@ export interface LiveRoomInfo {
    * 见 services/allRooms.ts。主播掉线时服务端会清掉它。
    */
   netplayRoomId?: string | null
+  /**
+   * 这一局能不能让观众上场当 2P（同屏双打的 Flash 游戏，见 emulator/coopSeat.ts），
+   * 以及位子有没有人坐着。两格都是主播报的（`coop-state`），服务端只存不判。
+   *
+   * 大厅拿它挂 👋「房主在等人一起玩」—— 没有这两格的话，这个功能只有
+   * 已经点开直播间的人才发现得了。
+   */
+  coopOpen?: boolean
+  coopTaken?: boolean
   /** 主播的设备 / 地区 / 网络，服务端从握手信息里看出来的。见 services/presence.ts */
   presence?: Presence
 }

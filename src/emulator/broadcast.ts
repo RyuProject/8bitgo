@@ -28,7 +28,8 @@
  */
 import type { CaptureSources, PadButton } from './types'
 import { type LiveChatMessage, connectLive, liveIceServers, type LiveSocket } from '@/services/live'
-import { sanitizeChatText } from '../../shared/live-chat.js'
+// 弹幕的清洗 / 限流 / ack 都在 chatSend.ts 里（两条发送路径共用一份，见那边的文件头）
+import { sendChatWithAck, type ChatSendResult } from './chatSend'
 import { applyTuning, fpsForViewers, sizeOfTrack, tuningFor, usableVideoSize } from './videoTuning'
 import { COOP_CHANNEL, createSeatGate, encode as encodeCoop, type CoopMsg } from './coopSeat'
 import { isDualScreen } from './dualScreen'
@@ -112,8 +113,12 @@ export interface BroadcastOptions {
    * 而且换游戏时会变。返回空数组 = 这一局没有 2P 位，那就一个按键都不放行。
    */
   coopButtons?: () => readonly PadButton[]
-  /** 有观众请求上场。UI 拿这个弹「让 TA 上场」；同意就调 Broadcast.grantSeat(viewerId) */
-  onSeatRequest?: (viewerId: string) => void
+  /**
+   * 有观众请求上场。UI 拿这个弹「让 TA 上场」；同意就调 Broadcast.grantSeat(viewerId)。
+   * `name` 是服务端派生的显示名（拿不到就是 undefined，UI 退回「有人想上场」）——
+   * **只用来显示**，身份判据永远是「消息从哪条通道来的」（见 coopSeat.ts）。
+   */
+  onSeatRequest?: (viewerId: string, name?: string) => void
   /**
    * 持座那位按了一颗键。接到运行时去：`handle.sendButton(button, down, 1)`。
    *
@@ -142,7 +147,8 @@ export interface Broadcast {
    * 所以这里**不**做本地回显：每个人看到的顺序都是服务端定的那一个，
    * 房主也不例外，不然自己那条会比别人早出现，看起来像两套时间线。
    */
-  sendChat: (text: string) => void
+  /** 发一条弹幕。兑现值 = 服务端的答复（null 表示发出去了），见 chatSend.ts */
+  sendChat: (text: string) => Promise<ChatSendResult>
   /**
    * 把 2P 位给某个观众（传的是 onSeatRequest 给的那个 viewerId）。
    * 换人时上一位还按着的键会自动补一轮松开。
@@ -283,6 +289,17 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       const seed = seedFrame
       seedFrame = null
       built = createCaptureFeed(resolveSources, captureFps, seed)
+      /**
+       * ⚠️ 新建的 feed 一律按**基准**帧率开抓，得立刻把当前档位补给它。
+       *
+       * `cappedFps` 活整场，`built` 只活到观众走光 3 秒。而 `applyFpsCap` 有「值没变就早退」，
+       * 于是这条路会悄悄回到 30 帧：
+       *   CPU 吃紧 → statsCap 降到 15、cappedFps=15 → 观众走光（statsCap 故意不复位）→
+       *   feed 销毁 → 新观众来 → createCaptureFeed 用基准 30 建流 → retuneFps 算出还是 15 →
+       *   等于 cappedFps，早退 → setCaptureFps 一次都没调。
+       * 结果：编码器封在 15，画布却回到 30 —— 「降档降了个寂寞」在已经证明扛不住的那台机器上原样复现。
+       */
+      built?.setCaptureFps(cappedFps)
       if (built && !built.keepAlive) {
         // 没有 Insertable Streams 的浏览器：换源换的是轨，得挨个 sender 换过去（不用重新协商）
         built.onVideoTrackReplaced = (track) => {
@@ -399,6 +416,34 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     }
   }
 
+  /**
+   * 把「这一局有没有 2P 位、有没有人坐着」报给服务器，好让**别人的大厅**看得见
+   * （见 live.js 的 publicRoom.coopOpen）。
+   *
+   * 服务器不参与授权 —— 座位给谁、按键放不放行全在这台机器上守（coopSeat.ts）。
+   * 报上去纯粹是为了让这个功能被发现得到：不报的话，只有已经点开这个直播间的人
+   * 才知道能上场，而没人会为了找一个 2P 位把每个直播间都点一遍。
+   *
+   * 只在**变化时**发。这函数会被 5 秒一轮的统计循环顺手调到（覆盖「句柄比开播晚到」
+   * 和「中途换了游戏」两种情况），绝大多数轮次是没变化的。
+   */
+  /** viewerId → 显示名。只增不减也没关系，一场直播的观众数量级很小；dropPeer 时顺手删 */
+  const viewerNames = new Map<string, string>()
+  let coopReported = ''
+  const reportCoop = () => {
+    if (stopped || dormant) return
+    const open = (options.coopButtons?.().length ?? 0) > 0
+    const taken = gate.seated() !== null
+    const key = `${open}/${taken}`
+    if (key === coopReported) return
+    coopReported = key
+    try {
+      if (socket.connected) socket.emit('coop-state', { open, taken })
+    } catch {
+      /* 信令断了就算了 —— 重连后这个函数还会被统计循环调到，那时再报 */
+    }
+  }
+
   /** 收回座位：松键、告诉那位、报给 UI。访客自己下场和房主收回走的是同一条 */
   const revokeInternal = () => {
     const who = gate.seated()
@@ -406,6 +451,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     if (!who) return
     tellSeat(who, false)
     options.onSeatChange?.(null)
+    reportCoop()
   }
 
   /**
@@ -440,7 +486,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       // 服务端发 viewer-rebound，这条**还在流的**连接会被改名（见 Peer 的注释）
       const msg: CoopMsg | null = gate.admit(entry.id, ev.data)
       if (!msg) return
-      if (msg.t === 'want') options.onSeatRequest?.(entry.id)
+      if (msg.t === 'want') options.onSeatRequest?.(entry.id, viewerNames.get(entry.id))
       else if (msg.t === 'leave') revokeInternal()
       else if (msg.t === 'k') options.onGuestInput?.(msg.b, msg.d)
     }
@@ -457,6 +503,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       玩家不会想到是「刚才那个人断线了」。
     */
     const wasSeated = gate.seated() === viewerId
+    viewerNames.delete(viewerId)
     release(gate.forget(viewerId))
     if (wasSeated) options.onSeatChange?.(null)
     try {
@@ -558,6 +605,19 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
         if (sender.track?.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, built?.videoSize(), dualScreenSource)
       }
     }
+    /**
+     * ⚠️ 抓屏帧率必须跟着一起降，不然这个降档等于白降。
+     *
+     * 上面那圈只改编码器的 maxFramerate。而画面是 `canvas.captureStream(fps)` 采的，
+     * 采多少帧跟编码器编多少帧是**两件事** —— 7 个观众时编码降到 20 帧了，
+     * 画布仍然每秒被拷 30 次。
+     *
+     * 而这两笔开销的性质完全不同：编码是 N 路（观众数越多越贵），抓屏只有一路，
+     * 但**抓屏那一路是 GPU 读回，跟模拟器抢的是同一根线程** ——
+     * 玩家感觉到的「一开播就卡」主要来自它，不是来自编码。少编几帧救不了它，
+     * 少抓几帧才救得了。
+     */
+    built?.setCaptureFps(next)
   }
 
   /**
@@ -580,6 +640,13 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
    * 编码路数 × 帧率才是主播 CPU 的真实负担。
    */
   const statsTick = async () => {
+    /*
+      ⚠️ 顺手报一次 2P 位的状态，而且必须在下面那道早退**之前**：
+      「一个观众都还没有」正是最需要让大厅显示 👋 的时候 —— 放到早退后面，
+      房间永远不会被标成「还差一个人」，而那恰恰是这个功能被发现的唯一入口。
+      这里也顺带覆盖「句柄比开播晚到」和「中途换了游戏」两种情况。
+    */
+    reportCoop()
     if (stopped || peers.size === 0) return
     /**
      * 收集每个观众上报的限制原因，循环结束后再取最坏的那个。
@@ -862,6 +929,17 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     if (msg?.text) options.onChat?.(msg)
   }) as (...args: never[]) => void)
 
+  /**
+   * 观众叫什么（服务端派生，见 live.js 的 viewer-name）。只用来在
+   * 「XX 想上场当 2P」那句话里显示，别拿它当身份判据 —— 身份只认通道（coopSeat.ts）。
+   */
+  socket.on('viewer-name', ((payload: { viewerId?: string; name?: string; guest?: string }) => {
+    const id = payload?.viewerId
+    if (!id) return
+    const label = payload.name || (payload.guest ? `#${payload.guest}` : '')
+    if (label) viewerNames.set(id, label)
+  }) as (...args: never[]) => void)
+
   socket.on('viewers', ((payload: { count?: number }) => {
     viewers = payload?.count ?? 0
     options.onViewers?.(viewers)
@@ -916,6 +994,8 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
   }
 
   options.onState?.('live')
+  // 开播就报一次，别等第一轮统计（那要 5 秒，大厅这 5 秒里少一个 👋）
+  reportCoop()
 
   statsTimer = window.setInterval(() => void statsTick(), STATS_INTERVAL_MS)
   sourceTimer = window.setInterval(sourceTick, SOURCE_CHECK_MS)
@@ -939,16 +1019,13 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
         /* ignore */
       }
     },
-    /** 见接口注释。socket 没连上就丢掉这一条：弹幕补发没有意义，那一刻早过去了 */
+    /**
+     * 见接口注释。补发没有意义（那一刻早过去了），但**发没发出去要告诉调用方** ——
+     * 弹幕不做本地回显，被丢掉的那条在界面上和「没人说话」长得一模一样。
+     */
     sendChat(text: string) {
-      if (stopped) return
-      const clean = sanitizeChatText(text)
-      if (!clean) return
-      try {
-        if (socket.connected) socket.emit('chat', { text: clean })
-      } catch {
-        /* ignore */
-      }
+      if (stopped) return Promise.resolve('dropped' as ChatSendResult)
+      return sendChatWithAck(socket, text)
     },
     grantSeat(viewerId: string) {
       if (stopped) return
@@ -957,6 +1034,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       if (previous && previous !== viewerId) tellSeat(previous, false)
       tellSeat(viewerId, true)
       options.onSeatChange?.(gate.seated())
+      reportCoop()
     },
     revokeSeat() {
       revokeInternal()

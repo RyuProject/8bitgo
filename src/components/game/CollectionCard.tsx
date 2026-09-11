@@ -5,6 +5,7 @@ import { cx } from '@/lib/format'
 import { romUrlForKey } from '@/services/roms'
 import { GameCover } from './GameCover'
 import { useT, fmt } from '@/services/i18n'
+import { usePrefersReducedMotion } from '@/lib/motion'
 
 /** 四宫格每隔多久换一格 */
 const ROTATE_MS = 4_000
@@ -351,16 +352,3 @@ function useInView(ref: RefObject<HTMLElement | null>): boolean {
   return inView
 }
 
-/** 同 HomeBanner 的那一个：用户开了「减少动态效果」就不自动换图 */
-function usePrefersReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(false)
-  useEffect(() => {
-    if (typeof window.matchMedia !== 'function') return
-    const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
-    const sync = () => setReduced(mq.matches)
-    sync()
-    mq.addEventListener('change', sync)
-    return () => mq.removeEventListener('change', sync)
-  }, [])
-  return reduced
-}

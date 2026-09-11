@@ -283,6 +283,45 @@ await new Promise((r) => setTimeout(r, 80))
 check('传空 = 解绑（结束联机回到一个人玩）', liveRoom(linkRoom).netplayRoomId === null)
 
 /**
+ * 21b. 「2P 位」的状态（让观众上场当 2P，见 src/emulator/coopSeat.ts）。
+ *
+ * 服务器只存不判 —— 座位给谁、按键放不放行全在主播浏览器里守（服务端看不见那条
+ * DataChannel）。这两格纯粹是给**别人的大厅**看的：没有它，这个功能只有已经点开
+ * 直播间的人才发现得了。
+ */
+check('开播时默认没有 2P 位', liveRoom(linkRoom).coopOpen === false && liveRoom(linkRoom).coopTaken === false)
+lh.emit('coop-state', { open: true, taken: false })
+await new Promise((r) => setTimeout(r, 80))
+check('主播能报「有 2P 位、还空着」', liveRoom(linkRoom).coopOpen === true && liveRoom(linkRoom).coopTaken === false)
+
+// 观众冒充主播报 —— 不然谁都能把别人的直播间标成「还差一个人」，把人骗进
+// 一个压根不能上场的房间（和 link-netplay 那条一模一样的理由）
+lv.emit('coop-state', { open: false, taken: true })
+await new Promise((r) => setTimeout(r, 80))
+check('观众报不了 2P 位', liveRoom(linkRoom).coopOpen === true && liveRoom(linkRoom).coopTaken === false)
+
+lh.emit('coop-state', { open: true, taken: true })
+await new Promise((r) => setTimeout(r, 80))
+check('有人坐下之后 taken 变真（大厅据此把 👋 收起来）', liveRoom(linkRoom).coopTaken === true)
+
+// 名字给主播、且是服务端派生的（用来显示「XX 想上场当 2P」）
+const namedViewer = conn(); await once(namedViewer, 'connect')
+const gotName = new Promise((r) => {
+  const timer = setTimeout(() => r(null), 1500)
+  lh.on('viewer-name', (d) => {
+    if (d?.viewerId === namedViewer.id) {
+      clearTimeout(timer)
+      r(d)
+    }
+  })
+})
+await call(namedViewer, 'watch', { roomId: linkRoom })
+const nameInfo = await gotName
+check('主播能拿到观众的显示名（服务端派生）', Boolean(nameInfo && (nameInfo.name || nameInfo.guest)), `实际 ${JSON.stringify(nameInfo)}`)
+check('未登录的观众给的是游客号，不是自报的名字', Boolean(nameInfo && !nameInfo.name && nameInfo.guest))
+namedViewer.close()
+
+/**
  * 主播掉线：那个联机房要么散了要么在换房主，房号必须跟着作废 ——
  * **而且要告诉正在看的人**。不然他手里那个「加入联机」按钮还亮着，
  * 点下去是离开还活着的直播、去连一个已经不存在的房间：直播也没了，联机也没进去。
@@ -556,6 +595,32 @@ lv.close()
   }
   check('连着刷会被限流挡下', refused > 0)
   fresh.close()
+
+  /*
+    7b. ⚠️ **重连绕不过限流**。
+
+    takeChatToken 的桶挂在 socket.data 上 —— 断线就没了。所以「连上 → 发满 → 断开 → 再连」
+    可以把它整个绕过去（一次往返 ~200ms，也就是 20 条/秒），而这个桶本来就是为了防这个存在的。
+    房间级的那道闸（takeRoomChatToken）补的正是这一刀：换多少个 socket 都算在同一个房间头上。
+  */
+  let flooded = 0
+  let blocked = 0
+  for (let round = 0; round < 6; round++) {
+    const sock = conn(); await once(sock, 'connect')
+    await call(sock, 'watch', { roomId: cRoom })
+    for (let i = 0; i < 4; i++) {
+      const r = await call(sock, 'chat', { text: `flood ${round}-${i}` })
+      if (r.err === 'too fast') blocked++
+      else flooded++
+    }
+    sock.close()
+  }
+  check('⚠️ 换 socket 重连也绕不过限流（房间级洪水闸）', blocked > 0)
+
+  // 7c. 房主豁免：一屋子人在刷屏时，最该说得上话的就是他
+  const hostSays = once(ch, 'chat')
+  const hostAck = await call(ch, 'chat', { text: '别刷了' })
+  check('房主在房间被灌满时照样发得出去', !hostAck.err && (await hostSays).text === '别刷了')
 
   // 8. 中途进来的观众能从 watch 的 ack 里拿到历史
   const latecomer = conn(); await once(latecomer, 'connect')

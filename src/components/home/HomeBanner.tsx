@@ -13,6 +13,7 @@ import { useLang } from '@/services/lang'
 import { gameTitle } from '@/services/i18nData'
 import type { Game } from '@/types'
 import type { Translation } from '@/locales'
+import { usePrefersReducedMotion } from '@/lib/motion'
 
 /**
  * 首页热门还没到货时先顶上的几款。取不到的（不存在 / 已下架）自动跳过，
@@ -78,23 +79,6 @@ function shuffledIndexes(n: number): number[] {
   return out
 }
 
-/**
- * 系统「减弱动态效果」。
- *
- * SSR 时读不到媒体查询，先按「不减弱」渲染，挂载后再纠正 —— 反过来的话，
- * 大多数用户会先看到静态首屏再突然动起来，比晚一帧关掉动画更抖。
- */
-function usePrefersReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(false)
-  useEffect(() => {
-    const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
-    const sync = () => setReduced(mq.matches)
-    sync()
-    mq.addEventListener('change', sync)
-    return () => mq.removeEventListener('change', sync)
-  }, [])
-  return reduced
-}
 
 /**
  * 首页 banner 位：位于标题 + 类型快捷入口之下。

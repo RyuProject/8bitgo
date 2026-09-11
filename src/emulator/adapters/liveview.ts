@@ -30,7 +30,7 @@
 import type { Capability, CaptureSources, MountOptions, PadButton, RuntimeHandle } from '../types'
 import { getT, fmt } from '@/services/i18n'
 import { connectLive, liveEnabled, liveIceConfig, type LiveChatMessage, type LiveSocket } from '@/services/live'
-import { sanitizeChatText } from '../../../shared/live-chat.js'
+import { sendChatWithAck, type ChatSendResult } from '../chatSend'
 import { usableVideoSize } from '../videoTuning'
 import { COOP_CHANNEL, encode as encodeCoop, parse as parseCoop } from '../coopSeat'
 import { isTyping } from '../hotkeyBridge'
@@ -1019,17 +1019,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     caps,
     volume: 1,
     /**
-     * 发一条弹幕。socket 没连上就丢掉 —— 弹幕补发没有意义，那一刻早过去了。
+     * 发一条弹幕。补发没有意义（那一刻早过去了），但**兑现值要说清楚发没发出去** ——
+     * 弹幕不做本地回显，被服务端丢掉的那条在界面上和「没人说话」一模一样（见 chatSend.ts）。
      * 房间号不用带：服务端从 membership 认，客户端指定房间号是个跨房间注入的口子。
      */
     liveChat(text: string) {
-      const clean = sanitizeChatText(text)
-      if (!clean || destroyed || !socket?.connected) return
-      try {
-        socket.emit('chat', { text: clean })
-      } catch {
-        /* ignore */
-      }
+      if (destroyed) return Promise.resolve('dropped' as ChatSendResult)
+      return sendChatWithAck(socket, text)
     },
     /**
      * 「我想上场当 2P」。房主那边弹一条提示，同意了才会回 seat ——

@@ -35,6 +35,43 @@ export type SourceResolver = () => CaptureSources | null
  */
 export const HEARTBEAT_MS = 500
 
+/**
+ * 抓屏帧率的下限。编码器那侧降到再低，画布也不该采得比这还稀 ——
+ * 低于 10 帧观众看到的就不是「降档」而是「坏了」。
+ */
+export const MIN_CAPTURE_FPS = 10
+
+/**
+ * Worker 往主线程回传「最后一帧快照」的间隔。
+ * `release()` 是同步的、必须当场交出种子帧，而 Worker 回消息是异步的 ——
+ * 所以低频推快照，主线程手里永远攥着一张够新的。种子本来就至少是 3 秒前的画面
+ * （空闲放手要等 3 秒），再旧 2 秒完全无所谓。
+ */
+const SNAP_MS = 2000
+
+/**
+ * 等 Worker 自报「我活着」的上限。等不到就一直留在主线程那条路上 —— 功能完全一样，
+ * 只是逐帧搬运继续占着模拟器那根线程。给得宽松点：拉不到 chunk 的代价只是没优化，
+ * 而误判成「起来了」的代价是永久黑屏。
+ */
+const WORKER_READY_MS = 3000
+
+/**
+ * 起一个转发泵 Worker。起不来就返回 null，退回主线程那条老路 —— 功能完全一样，
+ * 只是逐帧搬运会重新占用模拟器那根线程。
+ *
+ * `new URL(..., import.meta.url)` 是 Vite 认的写法，会把它单独打成一个 chunk；
+ * 不用静态 import，模拟器那个 chunk 的边界不受影响（见 test:bundle-split）。
+ */
+function spawnPumpWorker(): Worker | null {
+  if (typeof Worker !== 'function') return null
+  try {
+    return new Worker(new URL('./captureWorker.ts', import.meta.url), { type: 'module' })
+  } catch {
+    return null
+  }
+}
+
 export interface CaptureFeed {
   /** 交给 PeerConnection 的流。有 Insertable Streams 时视频轨自始至终是同一条 */
   readonly stream: MediaStream
@@ -63,6 +100,19 @@ export interface CaptureFeed {
    * 接手的人负责 close（喂给下一轮 createCaptureFeed 就行，它会接管）。
    */
   release(): VideoFrame | null
+  /**
+   * 改**抓屏**帧率（不是编码帧率）。
+   *
+   * 为什么需要它：`applyFpsCap` 一直只改 `tuneSender` 的 maxFramerate，也就是只管编码器。
+   * 可 `canvas.captureStream(fps)` 那一路一动没动 —— 7 个观众时编码降到 20 帧了，
+   * 画布仍然每秒被拷 30 次。而**画布读回才是最贵的那笔**（EmulatorJS 的画布是 WebGL 的，
+   * 每一帧都是一次 GPU 读回/纹理拷贝，跟模拟器抢同一根线程），编码器少编几帧
+   * 完全不会让它少拷几帧。降档降了个寂寞。
+   *
+   * 会被夹在 [MIN_CAPTURE_FPS, 建流时的基准帧率] 之间。分享标签页那条流不是我们
+   * captureStream 出来的，动不了，直接忽略。
+   */
+  setCaptureFps(fps: number): void
 }
 
 /* ---------------- 非标准 API 的最小类型（lib.dom 里没有） ---------------- */
@@ -165,12 +215,22 @@ export function createCaptureFeed(resolve: SourceResolver, fps: number, seed: Vi
   // 换源时会被替换，所以是 let；类型收窄成非空，闭包里才不用一路 !
   let raw: RawVideo = first
   const audio = buildAudio(sources)
+  /** 当前**实际**在用的抓屏帧率。换源、重建轨都要沿用它，不能退回建流时的 fps */
+  let curFps = fps
+  /** setCaptureFps 的代际：applyConstraints 是异步的，回来时可能已经不是最新那次请求了 */
+  let fpsGen = 0
 
   let released = false
   const w = globalThis as unknown as InsertableWindow
 
   /* ---- Insertable Streams：generator 轨 + 转发 + 心跳 ---- */
   let generator: TrackGenerator | null = null
+  /** 转发泵所在的 Worker。为 null = 退回主线程那条路（writer 才会被用上） */
+  let pumpWorker: Worker | null = null
+  /** Worker 定期回传的「最后一帧」快照，release() 当场把它当种子交出去 */
+  let snapFrame: VideoFrame | null = null
+  /** 正在自证的 Worker（还没交接）。release 时要把它掐掉 */
+  let upgrading: Worker | null = null
   let writer: WritableStreamDefaultWriter<VideoFrame> | null = null
   let reader: ReadableStreamDefaultReader<VideoFrame> | null = null
   /** 最后一帧的副本（心跳用）。换源时故意**不清**：新画布出第一帧之前观众继续看着旧画面，比黑一下好 */
@@ -180,14 +240,39 @@ export function createCaptureFeed(resolve: SourceResolver, fps: number, seed: Vi
   /** 换源计数。旧的转发循环靠它认出自己已经过时，别把旧画布的帧混进来 */
   let pumpGen = 0
 
-  const pump = (track: MediaStreamTrack) => {
-    if (!writer || !w.MediaStreamTrackProcessor) return
+  /**
+   * 把这条 track 接上转发链。**返回是否接上了** —— 调用方必须看返回值。
+   *
+   * ⚠️ 以前它没有返回值，于是 `check()` 换源时不管成没成，照样把 `raw` 换掉、
+   * 把旧轨 stop 掉、返回 true 并打印「观众那头无缝接上」。真失败了的后果是：
+   * Worker/主线程手里还是**旧** readable，而旧轨刚被停掉 → 读循环走到 done 退出 →
+   * 从此只剩心跳在重发那一张旧帧，**观众看着换源前那一帧直到本场结束**，
+   * 而 check() 再也不会触发（新的 raw.track 是 live 的）。
+   */
+  const pump = (track: MediaStreamTrack): boolean => {
+    if (!w.MediaStreamTrackProcessor) return false
+    if (pumpWorker) {
+      /**
+       * Worker 那条路：主线程只负责把这条 track 的 readable **转移**过去，
+       * 之后每一帧都在 Worker 里读、克隆、写。
+       * 换源的代际守卫在 Worker 里（它自己 ++gen），这边不用管。
+       */
+      try {
+        // postMessage 也要包进来 —— 它抛出的话异常会一路冒进 setInterval 回调没人接
+        const readable = new w.MediaStreamTrackProcessor({ track }).readable
+        pumpWorker.postMessage({ t: 'src', readable }, [readable as unknown as Transferable])
+        return true
+      } catch {
+        return false
+      }
+    }
+    if (!writer) return false
     const mine = ++pumpGen
     let r: ReadableStreamDefaultReader<VideoFrame>
     try {
       r = new w.MediaStreamTrackProcessor({ track }).readable.getReader()
     } catch {
-      return
+      return false
     }
     void reader?.cancel().catch(() => {})
     reader = r
@@ -217,6 +302,7 @@ export function createCaptureFeed(resolve: SourceResolver, fps: number, seed: Vi
         }
       }
     })()
+    return true
   }
 
   /**
@@ -238,10 +324,119 @@ export function createCaptureFeed(resolve: SourceResolver, fps: number, seed: Vi
   }
 
   let keepAlive = false
+  /**
+   * 起主线程那套泵：generator 的 writer + 读循环 + 心跳。
+   * 交接失败时也靠它把状态救回来 —— 任何时刻都必须有人在写 generator，
+   * 否则那条轨就是「活着但永远不出帧」。
+   */
+  const startMainPump = (): boolean => {
+    if (!generator || writer) return false
+    try {
+      writer = generator.writable.getWriter()
+    } catch {
+      return false
+    }
+    if (!pump(raw.track)) {
+      try {
+        writer.releaseLock()
+      } catch {
+        /* ignore */
+      }
+      writer = null
+      return false
+    }
+    heartbeat = window.setInterval(beat, HEARTBEAT_MS)
+    return true
+  }
+
+  /**
+   * 把写入口从主线程交接给 Worker。成功返回 true。
+   *
+   * 顺序要紧：先停主线程的读循环和心跳 → releaseLock（锁着的流 transfer 不了）→
+   * 转移 writable → 把手里的最后一帧当种子转过去 → 用 Worker 重新 pump。
+   * 中途任何一步失败都把主线程那套原样拉回来。
+   */
+  const handOver = (worker: Worker): boolean => {
+    if (!generator || !writer || released) return false
+    try {
+      pumpGen++
+      void reader?.cancel().catch(() => {})
+      reader = null
+      if (heartbeat) {
+        window.clearInterval(heartbeat)
+        heartbeat = 0
+      }
+      writer.releaseLock()
+      writer = null
+
+      pumpWorker = worker
+      worker.postMessage(
+        { t: 'init', writable: generator.writable, heartbeatMs: HEARTBEAT_MS, snapMs: SNAP_MS },
+        [generator.writable as unknown as Transferable],
+      )
+      if (last) {
+        const s = last
+        last = null
+        worker.postMessage({ t: 'seed', frame: s }, [s as unknown as Transferable])
+      }
+      if (!pump(raw.track)) throw new Error('worker pump failed')
+      return true
+    } catch {
+      pumpWorker = null
+      // writable 已经转移出去的话 getWriter() 会抛，startMainPump 自己接得住
+      if (!startMainPump()) console.warn('[live] 转发泵交接失败且没能退回主线程，这一路画面可能是死的')
+      return false
+    }
+  }
+
+  /**
+   * 试着把泵升级到 Worker —— **升级成功之前，主线程那套一直在正常干活**。
+   *
+   * ⚠️ 不能反过来（先把 writable 交给 Worker，再指望它能跑起来）。Worker 的加载失败
+   * 全是**异步**的（chunk 404、CSP 挡 worker-src、弱网拉一半断、模块求值抛异常），
+   * `new Worker()` 外面那个 try 一个都接不住。真那么写的话，一个永远不会运行的 Worker
+   * 攥着唯一的写入口，generator 轨活着、muted 是 false、但一帧不出且永远好不了。
+   * 而这个 chunk 是**第一个观众进来那一刻**才去拉的，可能是开播半小时之后。
+   */
+  const tryUpgradeToWorker = () => {
+    const worker = spawnPumpWorker()
+    if (!worker) return
+    upgrading = worker
+    let settled = false
+    const giveUp = () => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(timer)
+      if (upgrading === worker) upgrading = null
+      worker.terminate()
+    }
+    const timer = window.setTimeout(giveUp, WORKER_READY_MS)
+    worker.onerror = giveUp
+    worker.onmessageerror = giveUp
+    worker.onmessage = (e: MessageEvent<{ t?: string; frame?: VideoFrame }>) => {
+      const msg = e.data
+      if (msg?.t === 'ready') {
+        if (settled || released) return giveUp()
+        settled = true
+        window.clearTimeout(timer)
+        upgrading = null
+        if (!handOver(worker)) worker.terminate()
+        return
+      }
+      if (msg?.t !== 'snap' || !msg.frame) return
+      // 放掉之后还在路上的快照直接丢，别把它当种子攥着
+      if (released) {
+        msg.frame.close()
+        return
+      }
+      snapFrame?.close()
+      snapFrame = msg.frame
+    }
+  }
+
   if (hasInsertableStreams()) {
     try {
       generator = new w.MediaStreamTrackGenerator!({ kind: 'video' })
-      writer = generator.writable.getWriter()
       if (seed) {
         /**
          * 种子帧（上一轮放掉时交还的最后一帧）：让心跳下一拍就能补出去。
@@ -253,13 +448,30 @@ export function createCaptureFeed(resolve: SourceResolver, fps: number, seed: Vi
         last = seed
         lastAt = performance.now() - HEARTBEAT_MS
       }
-      pump(raw.track)
-      heartbeat = window.setInterval(beat, HEARTBEAT_MS)
-      keepAlive = true
+      if (startMainPump()) {
+        keepAlive = true
+        // 先跑起来，再异步去试 Worker。升不上去就一直留在这条路上。
+        tryUpgradeToWorker()
+      } else {
+        // ⚠️ generator 建了但没人写 —— 必须停掉，否则每个 feed 漏一条活着的轨
+        try {
+          generator.stop()
+        } catch {
+          /* ignore */
+        }
+        generator = null
+        if (last === seed) last = null
+      }
     } catch {
       // API 在但建不起来：老老实实用画布那条轨
+      try {
+        generator?.stop()
+      } catch {
+        /* ignore */
+      }
       generator = null
       writer = null
+      if (last === seed) last = null
     }
   }
   if (!keepAlive) seed?.close()
@@ -284,11 +496,17 @@ export function createCaptureFeed(resolve: SourceResolver, fps: number, seed: Vi
       // 还是那块废画布 / 那条结束了的轨：这一轮等，下一轮再问
       if (next.canvas && next.canvas === cur.canvas) return false
       if (next.stream && next.stream.getVideoTracks()[0] === cur.track) return false
-      const cand = captureRaw(next, fps)
+      const cand = captureRaw(next, curFps)
       if (!cand) return false
       raw = cand
       if (keepAlive) {
-        pump(cand.track)
+        if (!pump(cand.track)) {
+          // 接不上就整个回滚：旧轨别停（它还在出帧，观众至少不会冻住），
+          // 刚建的那条要停掉别泄漏，这一轮当没换过，下一拍再试。
+          raw = cur
+          if (cand.owned) cand.track.stop()
+          return false
+        }
       } else {
         stream.removeTrack(cur.track)
         stream.addTrack(cand.track)
@@ -296,6 +514,54 @@ export function createCaptureFeed(resolve: SourceResolver, fps: number, seed: Vi
       }
       if (cur.owned) cur.track.stop()
       return true
+    },
+    setCaptureFps(next) {
+      // 分享标签页那条流是别人的，我们既没建也无权改
+      if (released || !raw.owned) return
+      const want = Math.max(MIN_CAPTURE_FPS, Math.min(fps, Math.round(next)))
+      if (!Number.isFinite(want) || want === curFps) return
+      curFps = want
+      const gen = ++fpsGen
+      const track = raw.track
+      void (async () => {
+        let applied = false
+        try {
+          await track.applyConstraints?.({ frameRate: want })
+          const got = track.getSettings?.().frameRate
+          // 读不到就当生效了 —— 有的实现不回填 frameRate，那不代表约束没应用
+          applied = typeof got !== 'number' || Math.abs(got - want) < 1
+        } catch {
+          applied = false
+        }
+        // 等回来的这段时间里：放掉了 / 又改了一次 / 换源了 —— 都不该再动手
+        if (released || gen !== fpsGen || raw.track !== track) return
+        if (applied) return
+
+        /**
+         * applyConstraints 对 canvas 轨不是哪儿都支持。退路是**重建采集轨**，
+         * 而这条退路只有 Insertable Streams 那条路能走：交给 PeerConnection 的是
+         * generator 轨，底下换哪块画布、换多少帧率 sender 一无所知 ——
+         * 不用 replaceTrack，不用重新协商，观众那边一帧都不会断。
+         *
+         * 回退路径（generator 建不起来时）交出去的就是画布轨本身，
+         * 换掉它得对每个 sender replaceTrack，为了省几帧读回不值当，就不降了。
+         */
+        if (!keepAlive) return
+        const fresh = resolve()
+        // 画布已经不是原来那块了：那是换源的活，交给 check() 去做，别在这儿抢
+        if (!fresh || fresh.canvas !== raw.canvas) return
+        const cand = captureRaw(fresh, want)
+        if (!cand) return
+        const prev = raw
+        raw = cand
+        if (!pump(cand.track)) {
+          // 同 check()：接不上就回滚，宁可维持旧帧率也不能把画面弄没
+          raw = prev
+          if (cand.owned) cand.track.stop()
+          return
+        }
+        if (prev.owned) prev.track.stop()
+      })()
     },
     release() {
       if (released) return null
@@ -306,9 +572,25 @@ export function createCaptureFeed(resolve: SourceResolver, fps: number, seed: Vi
       reader = null
       void writer?.close().catch(() => {})
       writer = null
-      // 最后一帧不 close，交还给调用方当下一轮的种子（见接口注释）
-      const keep = last
+      // 最后一帧不 close，交还给调用方当下一轮的种子（见接口注释）。
+      // Worker 那条路上「最后一帧」是它定期推过来的快照 —— release 必须同步返回，
+      // 现问 Worker 要来不及，所以攥的是最近那张。
+      const keep = pumpWorker ? snapFrame : last
+      snapFrame = null
+      // ⚠️ 别把正要交出去的那一帧 close 掉。回退路径上 keep 就是 last 本身；
+      //    Worker 路径上 last 恒为 null，这行只是保险。
+      if (keep !== last) last?.close()
       last = null
+      if (pumpWorker) {
+        // Worker 收到 stop 会自己关掉 writer、close 掉手里的帧，然后 self.close()
+        pumpWorker.postMessage({ t: 'stop' })
+        pumpWorker = null
+      }
+      // 还在自证、没来得及交接的那个直接掐掉，别留着空转
+      if (upgrading) {
+        upgrading.terminate()
+        upgrading = null
+      }
       try {
         generator?.stop()
       } catch {

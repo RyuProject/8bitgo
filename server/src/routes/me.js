@@ -5,6 +5,7 @@ import { userRowToPublic } from '../mappers.js'
 import { favIds, recentIds, gameIdBySlug } from '../userdata.js'
 import { issueCode, verifyCode, sendCodeError } from '../codes.js'
 import { checkAdultBirthDate } from '../../../shared/age.js'
+import { normalizeAvatar } from '../../../shared/avatar.js'
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -25,7 +26,26 @@ meRouter.patch('/', async (req, res, next) => {
       if (n.length < 2 || n.length > 16) return res.status(400).json({ error: '昵称需要 2–16 个字符' })
       patch.nickname = n
     }
-    if (req.body.avatar) patch.avatar = String(req.body.avatar)
+    /*
+      头像必须过白名单（shared/avatar.js）。
+
+      原来这里是 `if (req.body.avatar) patch.avatar = String(req.body.avatar)` —— 一个字都不校验，
+      于是任何登录用户都能把头像设成任意文本。为什么这是安全问题而不是「界面难看」：
+      那个值会被别人的浏览器**渲染**、还会被推给腾讯 IM（updateMyProfile），
+      一个 `http://x.gd/abcd`（16 字符，正好塞进 VARCHAR(16)）就是一枚信标 ——
+      对方打开消息面板的那一刻，攻击者拿到他的 IP 和「已读时刻」。
+      渲染那一侧已经改成纯文本，这里堵源头：腾讯那份数据我们永远校验不到。
+
+      另外 users.avatar 是 VARCHAR(16)，超长的值在严格模式下会让「改昵称」以 500 收场。
+
+      ⚠️ 只在**字段出现时**校验。前端只会送选择器里的值（见 pages/ProfilePage.tsx，
+      它的初始值也过白名单），所以正常路径永远不会撞到这个 400。
+    */
+    if (req.body.avatar !== undefined) {
+      const a = normalizeAvatar(req.body.avatar)
+      if (!a) return res.status(400).json({ error: '头像不在可选范围内' })
+      patch.avatar = a
+    }
     if (Object.keys(patch).length) {
       const sets = Object.keys(patch).map((k) => `\`${k}\` = ?`).join(', ')
       await query(`UPDATE users SET ${sets} WHERE id = ?`, [...Object.values(patch), req.user.id])

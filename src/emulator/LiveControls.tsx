@@ -106,12 +106,29 @@ export interface LiveControlsHandle {
   hint: string
   toggle: () => void
   /**
-   * 「让观众上场当 2P」那颗按钮（见 coopSeat.ts）。null = 这一局给不了：
+   * 「让观众上场当 2P」（见 coopSeat.ts）。null = 这一局给不了：
    * 要么运行时没有 2P 键位（`handle.coopButtons` 空 —— 绝大多数游戏），要么现在没在播。
    *
    * 文案在这里算好再交上去，和 live 那颗一个路数（LiveChatBar 不认业务状态）。
+   *
+   * 除了弹幕框那颗按钮，还多带三格给**画面内的浮层**用：
+   * 那颗按钮所在的那一行在全屏和沉浸式游玩时是不画的（`!fullscreen && !playMode`），
+   * 而这两种恰恰是玩同屏双打游戏最常见的姿势 —— 只有按钮的话，观众的请求会
+   * **一声不响地掉在地上**：房主既看不见也点不到，观众那边只显示「等房主同意…」。
    */
-  coop?: ChatBarToggle | null
+  coop?: (ChatBarToggle & {
+    /** 有人在等答复 */
+    pending: boolean
+    /**
+     * 等着的那位叫什么（服务端派生，拿不到就是 undefined，界面退回「有人想上场」）。
+     * ⚠️ 只用来显示：身份判据永远是「消息从哪条通道来的」（见 coopSeat.ts）。
+     */
+    who?: string
+    /** 让等着的那位上场 */
+    accept: () => void
+    /** 忽略这次请求（他可以再点，`want` 那条限流是 1 次/秒） */
+    dismiss: () => void
+  }) | null
 }
 
 /**
@@ -215,6 +232,9 @@ const RETRY_MAX = 15
  */
 const AUDIO_WAIT_MAX = 8
 
+/** 「有人想上场」这条请求挂多久就算过期（房主没看见 / 那人已经走了） */
+const SEAT_WANT_TTL_MS = 45_000
+
 export function LiveControls({ handle, gameName, gameSlug, platform, active = true, netplayRoomId = null, captureRef, className,
   chromeless = false,
   onControls,
@@ -228,8 +248,8 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
   /** 房间号单独存：重连后接不回原房间时会换（见 broadcast.ts 文件头），Broadcast 对象本身不变 */
   const [roomId, setRoomId] = useState('')
   /* ---------------- 「让观众上场当 2P」（见 coopSeat.ts） ---------------- */
-  /** 正在请求上场的那个观众（先到先得；座位定了就清掉） */
-  const [seatWant, setSeatWant] = useState<string | null>(null)
+  /** 正在请求上场的那个观众（先到先得；座位定了就清掉）。name 是服务端派生的显示名 */
+  const [seatWant, setSeatWant] = useState<{ id: string; name?: string } | null>(null)
   /** 现在谁持着 2P 位 */
   const [seatOf, setSeatOf] = useState<string | null>(null)
   /** 信令断了、正在重连。画面多半还在流（WebRTC 是点对点的），所以只是标记变灰，不撤掉 */
@@ -374,7 +394,7 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
           /* ---------------- 「让观众上场当 2P」（见 coopSeat.ts） ---------------- */
           // 传函数：句柄可能比开播晚到，换游戏时这一项也会变
           coopButtons: () => handleRef.current?.coopButtons ?? [],
-          onSeatRequest: (viewerId) => setSeatWant(viewerId),
+          onSeatRequest: (viewerId, name) => setSeatWant({ id: viewerId, name }),
           onSeatChange: (viewerId) => {
             setSeatOf(viewerId)
             // 座位定了，那条「有人想上场」的提示就没意义了
@@ -452,13 +472,23 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
         meta: { gameSlug, gameName, platform: platform ?? '', title: gameName, hostName: playerName() },
         // 分享标签页这一路游戏照样在本机的运行时里跑，2P 位一样有效
         coopButtons: () => handleRef.current?.coopButtons ?? [],
-        onSeatRequest: (viewerId) => setSeatWant(viewerId),
+        onSeatRequest: (viewerId, name) => setSeatWant({ id: viewerId, name }),
         onSeatChange: (viewerId) => {
           setSeatOf(viewerId)
           if (viewerId) setSeatWant(null)
         },
         onGuestInput: (button, down) => handleRef.current?.sendButton?.(button, down, 1),
         onViewers: setViewers,
+        /*
+          ⚠️ 这一条以前漏了（2026-09-10 查出来）：分享标签页这一路**没有接弹幕**，
+          于是走这条路开播的主播看不到任何一条弹幕 —— 连自己发的那条都看不到
+          （服务端不做本地回显，所有人看到的顺序都由它定）。
+          而观众那边一切正常，主播只会以为「没人说话」。
+
+          自动开播那一路一直是接着的，所以这个 bug 只在**抓不到画布**的游戏上出现
+          （跨源 HTML5 那些，见 needsManual）—— 恰好是最不容易被自己测到的一批。
+        */
+        onChat: (msg) => onChatRef.current?.(msg),
         onQuality: (q) => setQuality(q.reason),
         onRoom: setRoomId,
         onState: (state) => {
@@ -583,8 +613,17 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
       没人在等   → 灰着，说明一句「等观众点上场」
   */
   const coopReady = (handle?.coopButtons?.length ?? 0) > 0 && (phase === 'live' || phase === 'reconnecting')
+  /*
+    请求会过期。房主可能正专心玩、根本没看到这张卡，而一张挂了十分钟的
+    「有人想上场」既没意义又会误导（那人早走了）。过期之后观众可以再点一次。
+  */
+  useEffect(() => {
+    if (!seatWant) return
+    const timer = window.setTimeout(() => setSeatWant(null), SEAT_WANT_TTL_MS)
+    return () => window.clearTimeout(timer)
+  }, [seatWant])
   const coopRef = useRef<{ want: string | null; seat: string | null }>({ want: null, seat: null })
-  coopRef.current = { want: seatWant, seat: seatOf }
+  coopRef.current = { want: seatWant?.id ?? null, seat: seatOf }
   /** 恒定的包装函数，理由同 stableToggle */
   const coopToggle = useCallback(() => {
     const b = liveRef.current
@@ -593,12 +632,23 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
     if (seat) b.revokeSeat()
     else if (want) b.grantSeat(want)
   }, [])
-  const coopCtl: ChatBarToggle | null = coopReady
+  const coopAccept = useCallback(() => {
+    const b = liveRef.current
+    const want = coopRef.current.want
+    if (b && want) b.grantSeat(want)
+  }, [])
+  const coopDismiss = useCallback(() => setSeatWant(null), [])
+  const coopCtl: LiveControlsHandle['coop'] = coopReady
     ? {
         on: Boolean(seatOf),
         label: seatOf ? t.player.coopSeated : seatWant ? t.player.coopLet : t.player.coop,
         hint: seatOf ? t.player.coopKickHint : seatWant ? t.player.coopLetHint : t.player.coopIdleHint,
         toggle: coopToggle,
+        // 已经有人在场时不再提示新的请求：座位只有一个，先把当前这位请下去
+        pending: Boolean(seatWant) && !seatOf,
+        who: seatWant?.name,
+        accept: coopAccept,
+        dismiss: coopDismiss,
       }
     : null
 

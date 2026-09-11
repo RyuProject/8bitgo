@@ -3,6 +3,7 @@ import { cx } from '@/lib/format'
 import { useT } from '@/services/i18n'
 import { timeAgo } from '@/services/comments'
 import { useAuthReady, useCurrentUser } from '@/services/auth'
+import { avatarForShow } from '../../../shared/avatar.js'
 import { useShell } from '@/components/layout/ShellContext'
 import {
   convIdFor,
@@ -11,6 +12,7 @@ import {
   imReconnect,
   imState,
   imStateDetail,
+  IM_TEXT_MAX,
   imStop,
   listImConversations,
   listImMessages,
@@ -493,20 +495,30 @@ export function ImPanel() {
 }
 
 /**
- * 头像。本站的头像是 emoji（users.avatar），但腾讯那个字段语义上是 URL ——
- * 两种都可能出现，所以按内容判断怎么画；图片挂了也要退回文字，不能留一个破图框。
+ * 头像。**只当文字画，永不当图片。**
+ *
+ * ⚠️ 这里原来会把 `http(s)://` 开头的值渲染成 `<img src>`，理由是「腾讯那个字段
+ * 语义上是 URL」。那是个**信标漏洞**，2026-09-10 拆掉：
+ *
+ *   · 这个值的来源有两个，**两个都由对方控制**：我们库里的 users.avatar
+ *     （PATCH /api/me 当时一个字都不校验），以及腾讯的 userProfile.avatar
+ *     （对方自己的浏览器 updateMyProfile 写的，最长 500 字节，腾讯不校验内容）。
+ *   · 于是攻击者把头像设成一个自己的地址，再给谁发一条私信 —— 对方一打开消息面板，
+ *     浏览器就去请求它：攻击者拿到**对方的 IP、UA，以及「他在这一刻读了我的消息」**。
+ *     一个不需要任何交互的已读回执 + IP 探针。
+ *   · 而且本站的头像**本来就只有 emoji**（shared/avatar.js 那 12 个），
+ *     URL 分支在正常路径上一次都不会走到 —— 它是纯负债。
+ *
+ * 源头也堵了（服务端白名单，见 shared/avatar.js），但腾讯那份数据我们**永远校验不到**，
+ * 所以这一层必须自己安全：不管值是什么，都是文字。
+ * 想支持图片头像的话，唯一可接受的做法是只放行我们自己的图床域名。
  */
 function Avatar({ value, size = 'sm' }: { value: string; size?: 'sm' | 'md' }) {
-  const [broken, setBroken] = useState(false)
   const box = size === 'md' ? 'h-9 w-9 text-lg' : 'h-8 w-8 text-base'
-  const isUrl = /^https?:\/\//.test(value) && !broken
   return (
     <span className={cx('grid shrink-0 place-items-center overflow-hidden rounded-full bg-surface-2', box)} aria-hidden>
-      {isUrl ? (
-        <img src={value} alt="" onError={() => setBroken(true)} className="h-full w-full object-cover" />
-      ) : (
-        <span>{broken || !value ? '🕹️' : value}</span>
-      )}
+      {/* 一个 emoji 就是一个字；万一存进来的是别的东西，也只是显示一段字，不发任何请求 */}
+      <span className="truncate px-0.5">{avatarForShow(value)}</span>
     </span>
   )
 }
@@ -898,6 +910,13 @@ function ChatView({
           <textarea
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
+            /*
+              ⚠️ 必须有上限。腾讯单条文字上限 12000 字节，而 SDK 不做长度检查 ——
+              粘一篇长文进去的结果是「发送失败 + 一颗永远失败的重试」（见 sendImText 的 IM_TEXT_MAX）。
+              maxLength 按 UTF-16 码元算，只会比码点上限更严，所以两边不会打架；
+              浏览器也会按它截断粘贴内容。
+            */
+            maxLength={IM_TEXT_MAX}
             onKeyDown={(e) => {
               // Enter 发送、Shift+Enter 换行。输入法组字期间的 Enter 是「确认候选词」，
               // 不能当发送 —— 中日文用户每打一个词都会误发一条
@@ -910,6 +929,10 @@ function ChatView({
             placeholder={t.im.placeholder}
             className="max-h-28 min-h-9 flex-1 resize-y rounded-lg border border-line bg-surface-2 px-3 py-2 text-sm outline-none placeholder:text-dim focus:border-brand"
           />
+          {/* 快到上限了才显示剩余字数。平时不占位置 —— 和弹幕输入框同一套做法 */}
+          {draft.length > IM_TEXT_MAX - 100 && (
+            <span className="shrink-0 self-center text-[11px] tabular-nums text-dim">{IM_TEXT_MAX - draft.length}</span>
+          )}
           <button
             type="button"
             onClick={send}

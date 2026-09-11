@@ -263,6 +263,31 @@ check('⚠️ 访客的按键必须送到座位 1，不是 0', () => {
   assert.equal((src.match(/onGuestInput:/g) || []).length, 2)
 })
 
+check('⚠️ 两条开播路径的回调集合必须一致（漏接一个是静默的）', () => {
+  /*
+    LiveControls 有两处 startBroadcast：自动开播、以及抓不到画布时的「分享标签页」。
+    往其中一处加回调、忘了另一处 —— 这类漏接**完全静默**，而且只在那条冷路径上现形。
+
+    2026-09-10 就靠这一条查出来：分享标签页那一路**没接 onChat**，走这条路开播的主播
+    看不到任何弹幕（连自己发的都看不到，因为服务端不做本地回显），而观众那边一切正常，
+    主播只会以为「没人说话」。跨源 HTML5 那些抓不到画布的游戏走的正是这条路。
+  */
+  const src = code('src/emulator/LiveControls.tsx')
+  const callbacks = (anchor) => {
+    const i = src.indexOf(anchor)
+    assert.ok(i > 0, `找不到开播路径：${anchor}`)
+    const seg = src.slice(i, i + 2600)
+    return [...new Set([...seg.matchAll(/\b(on[A-Z]\w+):/g)].map((m) => m[1]))].sort()
+  }
+  const auto = callbacks('sources: () => handle.captureSources')
+  const manual = callbacks('sources: { stream }')
+  assert.deepEqual(manual, auto, '两条路径接的回调不一样 —— 少的那一路会静默地缺一块功能')
+  // 这几个是这个功能和弹幕赖以工作的，单独点名，别哪天两边一起被删掉还判「一致」
+  for (const must of ['onChat', 'onGuestInput', 'onSeatRequest', 'onSeatChange']) {
+    assert.ok(auto.includes(must), `两条路径都缺 ${must}`)
+  }
+})
+
 check('⚠️ 访客侧不许自己建通道（只能等 ondatachannel）', () => {
   const src = code('src/emulator/adapters/liveview.ts')
   assert.ok(
@@ -270,6 +295,28 @@ check('⚠️ 访客侧不许自己建通道（只能等 ondatachannel）', () =
     '通道由房主建。访客再建一条 = 两条通道，房主那边收不到、访客却以为发出去了',
   )
   assert.match(src, /ondatachannel/, '访客靠 ondatachannel 接房主建的那条')
+})
+
+check('⚠️ 「有人想上场」必须画进画面内浮层，全屏 / 沉浸式也看得见能点', () => {
+  const ep = code('src/emulator/EmulatorPlayer.tsx')
+  for (const bit of ['coop?.pending', 'coop.accept', 'coop.dismiss']) {
+    assert.ok(ep.includes(bit), `画面内那张卡少了 ${bit}`)
+  }
+  /*
+    弹幕框那一行（👥 按钮的家）带着 `!fullscreen && !playMode`，而这两种布局
+    恰恰是玩同屏双打最常见的姿势。卡片必须画在**画面内那一段**（文件里在弹幕框之前），
+    跟着那一行一起画的话，观众的请求在全屏下会一声不响地掉在地上。
+  */
+  const card = ep.indexOf('coop?.pending')
+  const bar = ep.indexOf('chatBarOn &&')
+  assert.ok(card > 0 && bar > 0, '找不到卡片或弹幕框那一段')
+  assert.ok(card < bar, '卡片跑到弹幕框那一段里去了 —— 全屏时会跟着一起被藏掉')
+})
+
+check('⚠️ 座位请求要会过期（房主没看见 / 那人早走了）', () => {
+  const lc = code('src/emulator/LiveControls.tsx')
+  assert.match(lc, /SEAT_WANT_TTL_MS/, '请求要有过期时间，否则一张挂十分钟的卡片只会误导')
+  assert.match(lc, /setSeatWant\(null\), SEAT_WANT_TTL_MS/)
 })
 
 check('⚠️ 座位一变就要重报能力，否则屏幕手柄不出现 / 不消失', () => {

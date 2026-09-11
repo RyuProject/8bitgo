@@ -28,17 +28,24 @@ let captureCalls = 0
 const liveTracks = new Set()
 
 class FakeTrack {
-  constructor(kind) {
+  constructor(kind, fps = 30) {
     this.kind = kind
     this.readyState = 'live'
+    this.frameRate = fps
+    /** setCaptureFps 每次要到的帧率都记下来，测试据此断言 */
+    this.constraintLog = []
     liveTracks.add(this)
   }
   stop() {
     this.readyState = 'ended'
     liveTracks.delete(this)
   }
+  async applyConstraints(c) {
+    this.constraintLog.push(c.frameRate)
+    this.frameRate = c.frameRate
+  }
   getSettings() {
-    return { width: 304, height: 224 }
+    return { width: 304, height: 224, frameRate: this.frameRate }
   }
 }
 
@@ -63,10 +70,12 @@ const canvas = {
   captureStream(fps) {
     captureCalls++
     lastCaptureFps = fps
-    return new FakeMediaStream([new FakeTrack('video')])
+    lastVideoTrack = new FakeTrack('video', fps)
+    return new FakeMediaStream([lastVideoTrack])
   },
 }
 let lastCaptureFps = 0
+let lastVideoTrack = null
 
 const senders = []
 class FakeRTCPeerConnection {
@@ -193,6 +202,72 @@ console.log('\n── 又有人来看：重新抓得起来 ──')
   await sleep(30)
   ok(captureCalls === before + 1, '重新建了一路抓屏')
   ok(liveTracks.size === 1, '轨又活了')
+}
+
+console.log('\n── 观众变多：抓屏帧率必须跟着编码帧率一起降 ──')
+{
+  /**
+   * 这条钉的是 2026-09-09 补上的那个漏洞：`applyFpsCap` 一直只改 tuneSender 的
+   * maxFramerate（编码器那侧），而 `canvas.captureStream(fps)` 一动没动 ——
+   * 于是 7 个观众时编码降到 20 帧，画布仍然每秒被拷 30 次。
+   *
+   * 而画布读回才是跟模拟器抢线程的那一笔（WebGL 画布，每帧一次 GPU 读回）。
+   * 只降编码不降抓屏，等于降了个寂寞。
+   *
+   * ⚠️ 前馈那一档看的是服务端广播的 `viewers` 事件（payload.count），
+   * **不是** viewer-joined 的次数 —— viewer-joined 只负责建连接，不动计数。
+   */
+  const track = lastVideoTrack
+  ok(track.constraintLog.length === 0, '前提：还没降过档时，抓屏帧率一次都没动过')
+
+  // fpsForViewers：≤3 不降，4~6 → 24，7+ → 20
+  fire('viewers', { count: 3 })
+  await sleep(30)
+  ok(track.constraintLog.length === 0, '3 个观众还在不降档的档位里，不该白改一次帧率')
+
+  fire('viewers', { count: 4 })
+  await sleep(30)
+  ok(track.constraintLog.at(-1) === 24, '⭐ 4 个观众 → 编码降到 24，抓屏跟着降到 24')
+  ok(track.getSettings().frameRate === 24, '轨上读回来确实是 24')
+
+  fire('viewers', { count: 7 })
+  await sleep(30)
+  ok(track.constraintLog.at(-1) === 20, '⭐ 7 个观众 → 一起降到 20')
+
+  // 前馈那一档是可逆的：人走了就该放回去（见 videoTuning 里 retuneFps 的注释）
+  fire('viewers', { count: 1 })
+  await sleep(30)
+  ok(track.constraintLog.at(-1) === 30, '⭐ 观众走剩 1 个 → 抓屏帧率放回 30，不会一路降到底')
+
+  ok(captureCalls === 3, '全程没为了改帧率重建抓屏轨（applyConstraints 生效时不该重建）')
+}
+
+console.log('\n── ⭐ feed 重建之后要立刻拿到当前档位 ──')
+{
+  /**
+   * 病灶：`cappedFps` 活整场，`built` 只活到观众走光 3 秒；而 `applyFpsCap` 有
+   * 「值没变就早退」。于是 feed 一重建，抓屏帧率会悄悄回到基准 30，而编码器还封在低档 ——
+   * 「降档降了个寂寞」在已经证明扛不住的那台机器上原样复现。
+   *
+   * 这里故意让 viewers 计数停在 7（编码档位 20）的同时把连接全撤掉触发释放，
+   * 重新进人时新建的 feed 必须**立刻**是 20，而不是 30。
+   */
+  fire('viewers', { count: 7 })
+  await sleep(30)
+  ok(lastVideoTrack.getSettings().frameRate === 20, '前提：当前档位是 20')
+
+  fire('viewer-left', { viewerId: 'v3' })
+  await sleep(3300)
+  ok(liveTracks.size === 0, '前提：连接撤光之后抓屏被释放了')
+
+  const before = captureCalls
+  fire('viewer-joined', { viewerId: 'v10' })
+  await sleep(50)
+  ok(captureCalls === before + 1, '重新建了一路抓屏')
+  ok(
+    lastVideoTrack.getSettings().frameRate === 20,
+    `⭐ 新建的 feed 立刻是 20 帧，没有弹回基准 30（实际 ${lastVideoTrack.getSettings().frameRate}）`,
+  )
 }
 
 console.log('\n── 停播 ──')

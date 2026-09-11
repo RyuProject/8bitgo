@@ -3,6 +3,11 @@ import { watchPresence, clientIpFrom, isPrivateIp, UNKNOWN_PRESENCE } from './pr
 import { verifyToken } from './auth.js'
 import { queryOne } from './db.js'
 import {
+  CHAT_ACK_EMPTY,
+  CHAT_ACK_FAILED,
+  CHAT_ACK_NOT_FOUND,
+  CHAT_ACK_NO_ROOM,
+  CHAT_ACK_TOO_FAST,
   CHAT_BURST,
   CHAT_HISTORY_SIZE,
   CHAT_MIN_INTERVAL_MS,
@@ -41,6 +46,9 @@ import {
  *                reoffer=true 表示观众的画面已经断了、明确要一轮新 offer
  *   signal       {target, data}   → 转发给 target，附上 from
  *                观众发的一律转给**当前**主播，target 只是摆设（主播重连后 id 会变）
+ *   coop-state   {open, taken}                          主播报「这一局有没有 2P 位、有没有人坐着」
+ *                只有主播能发。服务器不参与授权（那件事只可能在主播浏览器里守，
+ *                见 src/emulator/coopSeat.ts），这一条纯粹是为了**让别人的大厅看得见**
  *   stop-live                                           主播主动下播
  *   chat         {text}                                 + ack(err, {id})
  *                弹幕。房主和观众都能发；房间号取自 membership，**不看 payload**，
@@ -51,6 +59,9 @@ import {
  *   ← viewer-rebound {from, to}      发给主播：同一个观众换了 socket.id，画面没断，
  *                                    把 PeerConnection 换个名字就行，**别重建**
  *   ← viewer-left    {viewerId}
+ *   ← viewer-name    {viewerId, name?, guest?}  发给主播：这个观众叫什么。
+ *                      **单独一条、异步发**，不并进 viewer-joined —— 名字要查库，
+ *                      而 viewer-joined 是 offer 的发令枪，不能为一个显示用的字段等 I/O
  *   ← viewers        {count}         主播和观众都收
  *   ← host-away                      发给观众：主播断线了，房间先留着
  *   ← host-back      {hostId}        发给观众：主播回来了，socket id 换了
@@ -181,6 +192,44 @@ function takeChatToken(socket) {
   return true
 }
 
+/**
+ * **房间级**洪水闸。takeChatToken 之外还要这一道，因为那个桶挂在 `socket.data` 上 ——
+ * **断线就没了**。于是一条脚本只要「连上 → 发满 4 条 → 断开 → 再连」，就能把整套限流
+ * 绕干净（一次往返 ~200ms，也就是 20 条/秒），而弹幕的令牌桶本来就是为了防这个存在的。
+ *
+ * ## 为什么不改成按 IP 计
+ *
+ * 试过的方向，但**风险更大**：反代少配一个 XFF 头时所有人看起来是同一个 IP ——
+ * 这个仓库为此出过事故（每 IP 房间上限让全站只能开 3 间，见 live_audit3 那份记录）。
+ * 那种情况下任何按 IP 的限流都会退化成「整站共用一个桶」，一个人打字全站发不出弹幕。
+ * 房间级的桶没有这个失效模式：它只按房间算，最坏情况也只影响正在被灌的那一间。
+ *
+ * ## 数值
+ *
+ * 6 条/秒、攒到 12 条。单个连接本来就被 takeChatToken 限在 ~0.83 条/秒，
+ * 所以这道闸要到**七八个人同时连着刷**才会碰到 —— 正常聊天离它很远，
+ * 而画面上同时也只飘 8 条（见 LiveChatLane 的 FLYING_MAX），再多没人读得了。
+ *
+ * ⚠️ **房主豁免**：一屋子人刷屏时，最该说得上话的那个人正是他（「别刷了」/「我要换游戏了」）。
+ * 他自己那一份照旧受 takeChatToken 管，灌不了自己的房间。
+ */
+const ROOM_CHAT_PER_SEC = 6
+const ROOM_CHAT_BURST = 12
+
+function takeRoomChatToken(room) {
+  const now = Date.now()
+  const bucket = room.chatFlood ?? { tokens: ROOM_CHAT_BURST, at: now }
+  const refill = ((now - bucket.at) * ROOM_CHAT_PER_SEC) / 1000
+  if (refill >= 1) {
+    bucket.tokens = Math.min(ROOM_CHAT_BURST, bucket.tokens + Math.floor(refill))
+    bucket.at = now
+  }
+  room.chatFlood = bucket
+  if (bucket.tokens <= 0) return false
+  bucket.tokens -= 1
+  return true
+}
+
 /** roomId -> room */
 const rooms = new Map()
 /** socket.id -> {roomId, role} */
@@ -218,6 +267,20 @@ function publicRoom(room) {
      * 靠昵称 + 游戏名去猜配对太脆，一个人开两台机器就串了。
      */
     netplayRoomId: room.netplayRoomId ?? null,
+    /**
+     * 「这一局能不能让观众上场当 2P」（同屏双打的 Flash 游戏，见
+     * src/emulator/coopSeat.ts）以及「位子有没有人坐着」。两格都是主播报上来的。
+     *
+     * 为什么要过服务端：授权和输入全在主播浏览器里（服务器看不见那条 DataChannel），
+     * 但**别人的大厅需要知道这房还差一个人** —— 不然这个功能只有已经在看直播的人
+     * 才发现得了，没人会为了找一个 2P 位去把每个直播间都点开一遍。
+     * 和上面 netplayRoomId 是同一个道理、同一套做法。
+     *
+     * 老版本的主播不发 coop-state，两格就都是 false —— 大厅什么都不显示，
+     * 正好是安全的那一边。
+     */
+    coopOpen: Boolean(room.coopOpen),
+    coopTaken: Boolean(room.coopTaken),
     /**
      * 主播的设备 / 地区 / 网络（见 presence.js）。全部是服务端从握手信息里看出来的，
      * 主播报不了假；RTT 是它到本站服务器的，不是到观众的 —— 画面走 WebRTC 直连，
@@ -495,6 +558,9 @@ export function attachLive(io) {
         hideTimer: null,
         /** 后台 + 零观众到点收房 */
         frozenTimer: null,
+        /** 2P 位：主播报上来的（coop-state）。开播那一刻还不知道，先当没有 */
+        coopOpen: false,
+        coopTaken: false,
         // hostSocketId / hostIp / presence 由 bindHost 填：主播重连时也走它，只写一处
         hostSocketId: null,
         hostIp: '',
@@ -510,6 +576,8 @@ export function attachLive(io) {
          * 存下来就得再配一套删除、举报、审核 —— 那是评论该干的事，不是弹幕。
          */
         chat: [],
+        /** 房间级洪水闸的桶（见 takeRoomChatToken）。跟着房间散场一起没，不需要清理 */
+        chatFlood: null,
       }
       rooms.set(id, room)
       bindHost(nsp, room, socket)
@@ -588,6 +656,27 @@ export function attachLive(io) {
         } else {
           nsp.to(room.hostSocketId).emit('viewer-joined', { viewerId: socket.id, ...(previous ? { replaces: previous } : {}) })
         }
+        /*
+          名字**单独一条、异步发**。
+
+          主播那边要它是为了「XX 想上场当 2P」这句话（见 coopSeat.ts）——
+          纯显示用途，而 chatIdentity 可能要查一次库。viewer-joined 是 offer 的发令枪，
+          让它等一次 I/O 会把第一帧往后推，为一个显示字段付这个代价不值得。
+
+          名字由服务端派生（JWT → 昵称，否则游客号），**不收客户端自报的** ——
+          自报就是冒名的口子，弹幕那边同理（见 chatIdentity）。
+        */
+        const viewerId = socket.id
+        const hostAt = room.hostSocketId
+        void chatIdentity(socket)
+          .then((identity) => {
+            // 这几十毫秒里主播可能已经换 socket / 散场了，那这条就没必要发了
+            if (rooms.get(room.id) !== room || room.hostSocketId !== hostAt) return
+            nsp.to(hostAt).emit('viewer-name', { viewerId, ...identity })
+          })
+          .catch(() => {
+            /* 取不到名字就不发，主播那边会退回「有人想上场」 */
+          })
       }
       // 换 socket 不算人数变化：一个人还是一个人
       if (!again && !previous) notifyViewers(nsp, room)
@@ -639,6 +728,28 @@ export function attachLive(io) {
       notifyRoomList()
     })
 
+    /**
+     * 主播报「2P 位」的状态。**只有主播能发** —— 观众能改的话，谁都能把别人的
+     * 直播间标成「还差一个人」，把人骗进一个压根不能上场的房间（和 link-netplay
+     * 那条一模一样的理由，那边也有对应的测试）。
+     *
+     * 服务器只存不判：座位给谁、按键放不放行，全在主播浏览器里守
+     * （见 src/emulator/coopSeat.ts 的文件头）。这里存的只是给大厅看的两个布尔。
+     */
+    socket.on('coop-state', (payload) => {
+      const info = membership.get(socket.id)
+      if (info?.role !== 'host') return
+      const room = rooms.get(info.roomId)
+      if (!room || room.hostSocketId !== socket.id) return
+      const open = Boolean(payload?.open)
+      const taken = Boolean(payload?.taken)
+      // 没变就别惊动大厅：主播那边是在 5 秒一轮的统计循环里顺手报的，绝大多数轮次没变化
+      if (room.coopOpen === open && room.coopTaken === taken) return
+      room.coopOpen = open
+      room.coopTaken = taken
+      notifyRoomList()
+    })
+
     socket.on('stop-live', () => {
       const info = membership.get(socket.id)
       if (info?.role !== 'host') return
@@ -685,14 +796,23 @@ export function attachLive(io) {
      */
     socket.on('chat', (payload, ack) => {
       const info = membership.get(socket.id)
-      if (!info) return ack?.('not in a room')
+      if (!info) return ack?.(CHAT_ACK_NO_ROOM)
       const room = rooms.get(info.roomId)
-      if (!room) return ack?.('not found')
+      if (!room) return ack?.(CHAT_ACK_NOT_FOUND)
 
       const text = sanitizeChatText(payload?.text)
-      if (!text) return ack?.('empty')
-      if (!takeChatToken(socket)) return ack?.('too fast')
+      if (!text) return ack?.(CHAT_ACK_EMPTY)
+      if (!takeChatToken(socket)) return ack?.(CHAT_ACK_TOO_FAST)
+      // 房间级的那一道。房主豁免，理由见 takeRoomChatToken
+      const isHost = room.hostSocketId === socket.id
+      if (!isHost && !takeRoomChatToken(room)) return ack?.(CHAT_ACK_TOO_FAST)
 
+      /*
+        ⚠️ 必须有 .catch()。这不是洁癖：Node 22 对未处理的 rejection 是**直接杀进程**，
+        而这个 .then() 的回调里做的是 emit + ack + 数组操作 —— 任何一个抛出来，
+        整台服务器（SSR、socket.io、所有房间）跟着一起没。
+        chatIdentity 自己内部有 try/catch，所以这一条现在拦的是**回调**里的意外。
+      */
       void chatIdentity(socket).then((identity) => {
         // 异步取身份的这几毫秒里房间可能已经散了 / 人已经走了，再确认一次
         if (!rooms.has(room.id) || membership.get(socket.id)?.roomId !== room.id) return
@@ -707,6 +827,9 @@ export function attachLive(io) {
         if (room.chat.length > CHAT_HISTORY_SIZE) room.chat.splice(0, room.chat.length - CHAT_HISTORY_SIZE)
         nsp.to(room.id).emit('chat', msg)
         ack?.(null, { id: msg.id })
+      }).catch((e) => {
+        console.warn('[live] 弹幕广播失败：', e)
+        ack?.(CHAT_ACK_FAILED)
       })
     })
 

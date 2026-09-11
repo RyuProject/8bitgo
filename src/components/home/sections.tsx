@@ -396,9 +396,9 @@ export function FaqSection({ links = [] }: { links?: FriendLink[] }) {
 function SpecialThanksBox({ links }: { links: FriendLink[] }) {
   const t = useT()
   return (
-    <fieldset className="mt-6 min-w-0 rounded-xl border border-line-strong px-4 pb-4 pt-3">
+    <fieldset className="mt-6 min-w-0 rounded-xl border border-line-strong px-4 pb-4 pt-[10px]">
       <legend className="px-1.5 text-xs font-semibold text-fg">{t.sections.specialThanksTitle}</legend>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-3 pt-1">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-3 pt-0">
         {links.map((link) => <FriendLinkButton key={link.id} link={link} />)}
       </div>
     </fieldset>
