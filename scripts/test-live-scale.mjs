@@ -22,6 +22,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   LIVE_MAX_SCALE,
+  LIVE_MAX_WIDTH_PX,
   STAGE_CAP_EXPR,
   liveStageStyle,
   stageHeightCap,
@@ -98,10 +99,54 @@ check('倍数可调，且至少是 1 倍', () => {
   }
 })
 
-check('大源（DOS / N64 那种 640×480）照旧铺得很大', () => {
-  // 这条是为了说明这个上限**不是一刀切的缩小**：640×480 的源 3 倍是 1920 宽，
-  // 比任何内容列都宽，也就是完全不生效 —— 糊的从来只是小源被放大的那几倍
-  assert.equal(liveStageStyle(DOS, false).maxWidth, '1920px')
+check('⚠️ 绝对宽度上限：大源（640×480）也不准铺满', () => {
+  /*
+    这一条是 09-11 第二轮加的，原因是第一版的上限**在线上完全空转**。
+    第一版只有「流宽 × 3」，前提是「推过来的流就是原生分辨率」——
+    实测不是：画布是主播的播放器大小 × dpr，384×224 的街机推出去是 2079×1098，
+    于是上限算成 6237px，比任何显示器都宽（表格在 screenAspect.ts 的 LIVE_MAX_SCALE 上方）。
+
+    站长的要求是「观众端看起来糊，用小播放器来弥补」，那就必须有一条
+    **不看流尺寸**也成立的上限 —— 因为「流≈原生」这件事有漏网的路径：
+    分享标签页推的是整个标签页（1080p 起步，故意不缩）、
+    或者主播的浏览器不认 scaleResolutionDownBy。
+  */
+  assert.equal(liveStageStyle(DOS, false).maxWidth, `${LIVE_MAX_WIDTH_PX}px`)
+  // 实测那条 2079×1098 的流：第一版给出 6237px（= 空转），现在被绝对上限接住
+  assert.equal(liveStageStyle({ width: 2079, height: 1098 }, false).maxWidth, `${LIVE_MAX_WIDTH_PX}px`)
+  assert.ok(2079 * LIVE_MAX_SCALE > 3000, '这条断言的前提是「流宽×倍数」确实大得离谱')
+})
+
+check('⚠️ 两条上限取小的那个 —— 小源仍然走倍数，不被绝对上限放大', () => {
+  /*
+    绝对上限是**上限**，不是目标值。写成 `maxWidth: 880px` 一刀切的话，
+    NES 256 宽的流会被允许放到 880 = 3.44 倍，比原来的 3 倍更糊 ——
+    一条本该收紧的规则反而放宽了，而且只在小机型上发生。
+  */
+  assert.equal(liveStageStyle(NES, false).maxWidth, `${256 * LIVE_MAX_SCALE}px`)
+  assert.ok(256 * LIVE_MAX_SCALE < LIVE_MAX_WIDTH_PX, 'NES 三倍应当仍在绝对上限以内')
+  assert.equal(liveStageStyle(GB, false).maxWidth, `${160 * LIVE_MAX_SCALE}px`)
+})
+
+check('⚠️ 高度从**夹完之后**的宽度折算，不是流高 × 倍数', () => {
+  /*
+    绝对上限一旦生效，「流高 × 倍数」就比宽度允许的高度大得多，那条 min 等于没写：
+    DOS 640×480 夹到 880 宽之后高度只能是 660，而 480×3 = 1440 —— 写 1440 的话
+    高度这一路完全不设限，矮屏上靠视口那一半兜着，宽屏上舞台会比画面高出一大截黑边。
+  */
+  const dos = liveStageStyle(DOS, false)
+  assert.ok(dos.maxHeight.includes(`${Math.round(LIVE_MAX_WIDTH_PX * 480 / 640)}px`), `折算错了：${dos.maxHeight}`)
+  assert.ok(!dos.maxHeight.includes(`${480 * LIVE_MAX_SCALE}px`), '还在用流高 × 倍数')
+  // 小源没被夹时，折算出来就等于流高 × 倍数（两条路在这里必须重合）
+  const nes = liveStageStyle(NES, false)
+  assert.ok(nes.maxHeight.includes(`${240 * LIVE_MAX_SCALE}px`), `小源那一路漂了：${nes.maxHeight}`)
+})
+
+check('绝对上限可调，且至少是 1px', () => {
+  assert.equal(liveStageStyle(DOS, false, 3, 500).maxWidth, '500px')
+  for (const n of [0, -3, Number.NaN]) {
+    assert.equal(liveStageStyle(DOS, false, 3, n).maxWidth, '1px', `${n} 没有兜到 1`)
+  }
 })
 
 /* ---------------- 二、两份数字必须同步 ---------------- */
@@ -190,6 +235,60 @@ check('第一帧那一刻就报（不然进来的头几秒是按旧尺寸限的�
   const fire = body.indexOf('fire()')
   assert.ok(report >= 0, 'onEvent 里没上报尺寸')
   assert.ok(report < fire, '要在 fire() 之前报 —— 否则上层撤进度条那一刻还不知道流多大')
+})
+
+
+/* ---------------- 三、看直播时的版面（参考图那套 8/4 两栏） ---------------- */
+
+const GDP = code('src/pages/GameDetailPage.tsx')
+
+check('⚠️ watchLayout 由 URL 的 ?live= 决定，不是运行时的 session.live', () => {
+  /*
+    用运行时状态的话，版面会在「开播 / 断流」的瞬间跳一下；更要命的是一旦哪天有人
+    顺手把它改成两套 JSX，`<EmulatorPlayer>` 就会在那一刻被卸载重建 —— 正在看的那路直播
+    当场断流。URL 参数在这个页面的整个生命周期里不变，没有这个风险。
+  */
+  assert.match(GDP, /const watchLayout = Boolean\(liveInvite\)/, 'watchLayout 的判据被改掉了')
+})
+
+check('⚠️ 沉浸模式优先：那时侧栏是收起的，播放器该吃满 12 列', () => {
+  assert.match(GDP, /const watchLayout = Boolean\(liveInvite\) && !immersive/, '沉浸模式下还在按 8 列排')
+})
+
+check('看直播时播放器缩到 8 列，自己玩时满宽 12 列', () => {
+  assert.match(
+    GDP,
+    /cx\('w-full', watchLayout \? 'lg:col-span-8' : 'lg:col-span-12'\)/,
+    '播放器那一层的列宽不对',
+  )
+})
+
+check('⚠️ 侧栏要显式排到第 9 列、第 1 行、跨两行', () => {
+  /*
+    不写这一条的话自动排版是：播放器 8 列落第 1 行 → 资料区 8 列放不下落第 2 行 →
+    侧栏补到第 2 行右边。结果侧栏和**标题**齐平，比播放器矮一整行 —— 正是参考图里没有的样子。
+  */
+  assert.match(GDP, /watchLayout && 'lg:col-start-9 lg:row-start-1 lg:row-span-2'/, '侧栏没有显式定位')
+})
+
+check('⚠️ 播放器只能有一处 JSX —— 两套版面绝不能写成两套 JSX', () => {
+  /*
+    换位置 = React 卸载重建。观众那边是直播当场断流，自己玩那边是这一局没落盘的进度没了。
+    两种版面必须靠**只换类名**实现，DOM 结构一个字不动。
+  */
+  const hits = GDP.match(/<EmulatorPlayer\s/g) ?? []
+  assert.equal(hits.length, 1, `<EmulatorPlayer> 出现了 ${hits.length} 处`)
+})
+
+check('⚠️ 播放器和侧栏在**同一个** 12 列网格里', () => {
+  // 两者之间再开一个 grid 的话，「顶边齐」是做不到的 —— col-start / row-start 只对同一个网格生效
+  const at = GDP.search(/<div className="grid gap-8 lg:grid-cols-12">/)
+  const player = GDP.search(/<EmulatorPlayer\s/)
+  const aside = GDP.search(/<aside\b/)
+  assert.ok(at > 0 && at < player, '合并后的网格不在播放器之前')
+  assert.ok(player < aside, '播放器应当排在侧栏之前')
+  const between = GDP.slice(player, aside)
+  assert.ok(!between.includes('lg:grid-cols-12'), '播放器和侧栏之间又开了一个网格')
 })
 
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')

@@ -51,6 +51,17 @@ interface Props {
    */
   captureRef?: RefObject<HTMLElement | null>
   /**
+   * 这款游戏的**原生**画面尺寸（核心的 av_info 几何，播放器那边的 `geometry`）。
+   *
+   * ⚠️ 和「抓屏抓到的画布尺寸」是两回事，而且差得很远：EmulatorJS 的 <canvas> 是按
+   * 屏幕上容器的大小 × dpr 建的 —— 主播把播放器拉多大，推出去的画面就有多大。
+   * 2026-09-11 实测 384×224 的 CPS1 推出去是 2079×1098，26 倍像素全是插值出来的，
+   * 白烧主播的 CPU 和上行。推流前按这个尺寸缩回去，见 videoTuning 的 encodeScaleFor。
+   *
+   * 拿不到（核心还没起来 / 不认这个回调的引擎）就是 null —— 那就不缩，照旧。
+   */
+  nativeGeometry?: { width: number; height: number } | null
+  /**
    * 不画自己那颗按钮，只干推流的活。
    *
    * 2026-09-08 起开关挪到了弹幕输入框旁边（那儿才是主播的手停留的地方，
@@ -236,6 +247,7 @@ const AUDIO_WAIT_MAX = 8
 const SEAT_WANT_TTL_MS = 45_000
 
 export function LiveControls({ handle, gameName, gameSlug, platform, active = true, netplayRoomId = null, captureRef, className,
+  nativeGeometry = null,
   chromeless = false,
   onControls,
   onChat,
@@ -302,6 +314,13 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
    */
   const handleRef = useRef(handle)
   handleRef.current = handle
+  /**
+   * 原生几何。**存 ref 不进依赖**：它比开播晚到（核心起来才有），换游戏还会变，
+   * 而 startBroadcast 只在开播那一刻调一次 —— 直接闭包捕获的话捕到的是开播瞬间的 null，
+   * 之后永远不更新，缩放就一直是 1。broadcast 每次 tuneSender 都会重新问一次（传的是函数）。
+   */
+  const nativeRef = useRef(nativeGeometry)
+  nativeRef.current = nativeGeometry
 
   // 把推流会话交给播放器（它要用 sendChat 发弹幕）。没在播时传 null，输入框会自己禁用
   const onSessionRef = useRef(onSession)
@@ -391,6 +410,13 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
           // 传上面那个 sources 死对象的话，直播会永远冻在换画布前那一帧（见 captureFeed.ts）
           sources: () => handle.captureSources?.() ?? null,
           meta: { gameSlug, gameName, platform: platform ?? '', title: gameName, hostName: playerName() },
+          /*
+            编码前把分辨率缩回原生（见 videoTuning 的 encodeScaleFor）。
+            传函数不传值：几何比开播晚到，换游戏还会变。
+            ⚠️ 下面「分享标签页」那一路**故意不传** —— 那条流是整个标签页，
+            没有「游戏原生尺寸」可言，按它去缩就是把站点 UI 一起缩成马赛克。
+          */
+          native: () => nativeRef.current,
           /* ---------------- 「让观众上场当 2P」（见 coopSeat.ts） ---------------- */
           // 传函数：句柄可能比开播晚到，换游戏时这一项也会变
           coopButtons: () => handleRef.current?.coopButtons ?? [],

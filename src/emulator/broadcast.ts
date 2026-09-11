@@ -89,6 +89,15 @@ export interface BroadcastOptions {
    * 分享整个标签页那种 720p / 1080p 的画面要给多几倍，否则一动就糊成马赛克。
    */
   maxBitrate?: number
+  /**
+   * 这款游戏的**原生**画面尺寸（核心的 av_info 几何，见 adapters/emulatorjs.ts 的
+   * reportGeometry）。推流前按它把编码分辨率缩回原生，见 videoTuning 的 encodeScaleFor。
+   *
+   * **传函数不传对象**，和 sources / coopButtons 一个理由：几何比开播晚到
+   * （核心起来才知道），而且换游戏会变。传死对象的话开播那一刻拿到的多半是 null，
+   * 之后再也不会更新 —— 缩放就永远是 1，等于这个优化没接上，而且没人会发现。
+   */
+  native?: () => { width: number; height: number } | null
   onState?: (state: BroadcastState) => void
   onViewers?: (count: number) => void
   /**
@@ -218,10 +227,16 @@ function tuneSender(
   size: { width?: number; height?: number } = sizeOfTrack(sender.track),
   /** 双屏机型（NDS）：像素画那一档要按单块屏判，见 videoTuning 的 dualScreen */
   dualScreen = false,
+  /**
+   * 游戏的原生尺寸。**和 size 是两回事**：size 是采集到的画布（= 主播的播放器有多宽），
+   * native 是核心真正在画的分辨率。两者的比值就是编码前要缩掉的倍数，
+   * 见 videoTuning 的 encodeScaleFor。拿不到就不缩。
+   */
+  native: { width: number; height: number } | null = null,
 ) {
   // ⚠️ 尺寸要调用方从采集源上拿（feed.videoSize()）。走 Insertable Streams 时 sender.track 是
   // generator 轨，getSettings() 多半是空的 —— 空就会被当成大源去缩分辨率，Game Boy 直接成马赛克
-  applyTuning(sender, tuningFor({ width: size.width, height: size.height, fps: maxFramerate, maxBitrate, dualScreen }))
+  applyTuning(sender, tuningFor({ width: size.width, height: size.height, fps: maxFramerate, maxBitrate, dualScreen, native }))
 }
 
 /** 这条连接还值得留着吗（还在握手、或者已经通了） */
@@ -306,7 +321,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
           for (const { pc } of peers.values()) {
             for (const sender of pc.getSenders()) {
               if (sender.track?.kind !== 'video') continue
-              void sender.replaceTrack(track).then(() => tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, built?.videoSize(), dualScreenSource))
+              void sender.replaceTrack(track).then(() => tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, built?.videoSize(), dualScreenSource, options.native?.() ?? null))
             }
           }
         }
@@ -559,7 +574,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     }
     for (const track of media.stream.getTracks()) {
       const sender = pc.addTrack(track, media.stream)
-      if (track.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, media.videoSize(), dualScreenSource)
+      if (track.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, media.videoSize(), dualScreenSource, options.native?.() ?? null)
     }
 
     // ⚠️ 必须在 createOffer 之前：通道要进 SDP，否则得多走一轮重新协商
@@ -602,7 +617,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     cappedFps = next
     for (const { pc } of peers.values()) {
       for (const sender of pc.getSenders()) {
-        if (sender.track?.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, built?.videoSize(), dualScreenSource)
+        if (sender.track?.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, built?.videoSize(), dualScreenSource, options.native?.() ?? null)
       }
     }
     /**

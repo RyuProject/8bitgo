@@ -608,8 +608,16 @@ export function EmulatorPlayer({
    *   · 普通分支（非全屏、非游玩布局）—— 那两种形态是玩家主动要求铺满视口的。
    *
    * `geometry` 来自 liveview 上报的 `video.videoWidth/Height`（那一路以前从不上报，
-   * 09-11 补的）。还没收到第一帧时 liveStageStyle 返回 undefined —— **不猜**，照走类名那一套。
+   * 09-11 补的）—— 注意**这是流的尺寸，不是游戏的原生尺寸**：主播推出去的画面是
+   * 他自己画布的大小（384×224 的街机实测推的是 2079×1098），所以第一版只按
+   * 「流宽 × 3」限大小的那条上限在线上是空转的。现在是两条上限取小：
+   * 流宽 × LIVE_MAX_SCALE，和一条不看流的绝对宽度 LIVE_MAX_WIDTH_PX。
+   * 还没收到第一帧时 liveStageStyle 返回 undefined —— **不猜**，照走类名那一套。
    * 完整推导见 screenAspect.ts 的 LIVE_MAX_SCALE。
+   *
+   * ⚠️ 这个 `geometry` 和交给 LiveControls 的 `nativeGeometry` 是**同一个 state、
+   * 两种含义**：观众这边是流尺寸，主播那边是核心上报的 av_info 几何。
+   * 两者不会串，因为观众根本不挂 LiveControls（见下面那个 `!session?.live`）。
    */
   const watchingLiveStage = Boolean(session?.live) && !narrow
   const liveCap = watchingLiveStage ? liveStageStyle(geometry, immersive) : undefined
@@ -3097,6 +3105,12 @@ export function EmulatorPlayer({
             active={!session?.netplay && !session?.cloud}
             netplayRoomId={hosting ? roomId : null}
             captureRef={hostRef}
+            /*
+              原生几何 → 推流前缩回原生分辨率（见 videoTuning 的 encodeScaleFor）。
+              这里的 geometry 一定是**核心上报的**那一份：观众（session.live）根本不挂
+              这个组件（上面那条 `!session?.live`），所以不会混进 liveview 上报的流尺寸。
+            */
+            nativeGeometry={geometry}
             chromeless
             onControls={setLiveCtl}
             onChat={chat.push}

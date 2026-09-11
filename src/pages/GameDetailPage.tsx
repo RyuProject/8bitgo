@@ -74,6 +74,24 @@ export function GameDetailPage() {
    * 所以播放器在自己那个普通分支里挂同一个 stageHeightCap。
    */
   const stageCap = stageHeightCap(immersive)
+  /**
+   * 用不用「看直播」那套版面：播放器缩回左边 8 列，右边的平台卡 / 评论和它**顶边齐**
+   * （也就是 09-07 之前那个 8/4 两栏，站长管它叫「第一版 play page」）。
+   *
+   * 为什么观众要这一套：观众看到的是一路被编码压过的流，画面越大糊得越明显。
+   * 1440 的屏上满宽播放器是 1121 宽，缩回 8 列约 726 —— 小一圈，糊就被压下去了。
+   * 站长的原话是「主播推过来的流糊没关系，观众端看起来糊就用小播放器来弥补」。
+   *
+   * ⚠️ **判据是 URL 上的 `?live=`，不是运行时的 `session.live`。** 用 URL 的好处是它在
+   * 这个页面的整个生命周期里不变：版面不会在开播 / 断流的瞬间跳一下，也就不存在
+   * 「播放器被重新挂载 → 流断掉」的风险。代价是一个边角：观众点了「我自己玩」
+   * （EmulatorPlayer 内部的 ignoreInvite）之后 URL 上的 `?live=` 还在，版面会继续维持 8 列。
+   * 那种情况下画面小一点没什么害处，想要满宽点一下「沉浸模式」即可。
+   *
+   * ⚠️ 沉浸模式优先级更高：那时整个侧栏是收起的（见 aside 的 className），
+   * 播放器本来就该吃满 12 列。
+   */
+  const watchLayout = Boolean(liveInvite) && !immersive
   const user = useCurrentUser()
   const [shareOpen, setShareOpen] = useState(false)
   const [addToCollection, setAddToCollection] = useState(false)
@@ -232,6 +250,9 @@ export function GameDetailPage() {
         画面只有 750×420，4:3 的老游戏再让掉两侧黑边，实际画面 560 宽 —— 比一张封面图大不了多少，
         而右边那一栏在玩的时候没人看。
 
+        ⚠️ 以上说的是**自己玩**。看直播（watchLayout）时反过来要那个 8 列的老版面 ——
+        那里画面小才是优点，理由见 watchLayout 上面那段。
+
         ── 为什么是限高，不是限宽（2026-09-07 改，站长拿红线标了要对齐）──
         第一版是给 16:9 的框设**宽度**上限 `(100dvh - 10rem) * 16/9` 再居中，为的是矮屏
         （1280×720 的笔记本）上 16:9 铺满宽度会比视口还高、玩家得滚着玩。代价是框两侧缩进，
@@ -249,297 +270,317 @@ export function GameDetailPage() {
         ⚠️ 上限**不套在外面这一层**，逐个交给真的是 16:9 的那几块。套外层的话播放器下面那条
         弹幕输入框会跟着白挨，又变成对不齐。**别为了少写一处把它挪回外层。**
       */}
-      <div className="w-full">
-        <GameAgeGuard
-              /*
-                门卫拦下来时画的也是个 16:9 的框，得和播放器一样宽 ——
-                只给播放器不给门卫的话，「还在核对年龄」那一下框先宽一截、放行后又跳窄。
-              */
-              className={stageCap}
-              slug={game.slug}
-              markedAdult={Boolean(game.adult)}
-              backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority className="h-full w-full" />}
-            >
-              {/*
-                少数游戏（reVC 移植的 GTA 之类）要 SharedArrayBuffer，只能在一个
-                跨源隔离的整页里跑，塞不进详情页 —— 详情页一开 require-corp，
-                Google Fonts、收录脚本和跨源封面图会被一起掐掉。
-                这些游戏改成显示一个入口，跳到 /play/<slug>。理由见 shared/isolated-embeds.js。
-              */}
-              {isolatedEmbed ? (
-                <IsolatedPlayCard
-                  frameClassName={stageCap}
-                  slug={game.slug}
-                  gameName={game.title}
-                  icon={game.icon}
-                  backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority className="h-full w-full" />}
-                />
-              ) : (
-              <EmulatorPlayer
+      {/*
+        播放器 + 资料区 + 侧栏**同一个 12 列网格**。
+
+        两种排法，靠 watchLayout 切，DOM 结构完全不变（只换类名）——
+        **不能改成两套 JSX**：`<EmulatorPlayer>` 一旦在树里换了位置就会被卸载重建，
+        正在看的那路直播当场断流、自己玩的那一局存档没落盘就没了。
+
+          自己玩（默认）   [    播放器 12 列    ] / [ 资料区 8 ][ 侧栏 4 ]
+          看直播           [ 播放器 8 ][ 侧    ] / [ 资料区 8 ][   栏   ]
+      */}
+      <div className="grid gap-8 lg:grid-cols-12">
+        <div className={cx('w-full', watchLayout ? 'lg:col-span-8' : 'lg:col-span-12')}>
+          <GameAgeGuard
                 /*
-                  只给满宽。**高度上限由播放器自己**在它那个「普通」分支里挂（stageHeightCap）——
-                  全屏时舞台是 fullscreen 元素、游玩布局时是 fixed 铺满视口，
-                  从这里挂 max-h 会把那两种形态一起夹住。
+                  门卫拦下来时画的也是个 16:9 的框，得和播放器一样宽 ——
+                  只给播放器不给门卫的话，「还在核对年龄」那一下框先宽一截、放行后又跳窄。
                 */
-                className="w-full"
-                key={game.slug}
-                platform={platform}
-                gameName={game.title}
-                gameSlug={game.slug}
-                maxPlayers={game.players}
-                invite={invite}
-                cloudInvite={cloudInvite}
-                watch={watchOnly}
-                liveInvite={liveInvite}
-                icon={game.icon}
-                // 这一款指定的核心（街机尤其需要），以及平台级 BIOS（Neo Geo 缺了起不来）
-                core={game.core}
-                genres={game.genres}
-                arcadeRomData={game.arcadeRomData}
-                dosExecutable={game.dosExecutable}
-                dosBackend={game.dosBackend}
-                dosSystemUrl={game.dosSystem ? romUrlForKey(game.dosSystem) : undefined}
-                dosWindowsVersion={game.dosWindowsVersion}
-                dosLaunchDelay={game.dosLaunchDelay}
-                dosboxConfig={game.dosboxConfig}
-                dosSaveHint={game.dosSaveHint}
-                biosUrl={biosUrl || undefined}
-                romUrl={rom.status === 'found' ? rom.url : undefined}
-                romChecking={rom.status === 'checking'}
-                romUnavailable={rom.status === 'missing'}
-                romUnreachable={rom.unreachable}
-                onRetryRom={rom.retry}
-                romLangs={romLangs}
-                romLang={rom.lang}
-                onRomLangChange={setRomLang}
+                className={stageCap}
+                slug={game.slug}
+                markedAdult={Boolean(game.adult)}
                 backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority className="h-full w-full" />}
-                onReport={reportProblem}
-              />
-              )}
-        </GameAgeGuard>
-
-        {/*
-          实验性平台的提示，紧贴在播放器下面。
-          必须在玩家点「开始」**之前**就看得到 —— PS2 大多数游戏在浏览器里跑不起来，
-          让人先等一分钟加载再看到一句报错，那是把他的时间和对站点的信任一起花掉。
-
-          注：它和播放器、标题、资料区**同宽**（都是内容列）。09-07 把限宽换成限高之后
-          这一整列就都对齐了，不需要再为它单独调什么。
-        */}
-        {EXPERIMENTAL_PLATFORMS.has(platform.id) && (
-          <p className="mt-3 rounded-xl border border-coin/40 bg-coin-soft px-3 py-2 text-xs text-muted">
-            ⚠️ {t.runtime.playExperimental}
-          </p>
-        )}
-      </div>
-
-      {/* 播放器下面才是资料区：左边标题 / 简介 / 操作说明，右边平台卡 / 评分 / 评论。沉浸模式下右栏收起 */}
-      <div className="mt-6 grid gap-8 lg:grid-cols-12">
-        <div className={immersive ? 'lg:col-span-12' : 'lg:col-span-8'}>
-          {/* 标题与元信息 */}
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <h1 className="text-2xl font-extrabold tracking-tight sm:text-3xl">{seoTitle}</h1>
-              {seoTitle !== game.title && <p className="mt-1 text-sm text-muted">{game.title}</p>}
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <Link to={`/platforms/${platform.id}`}>
-                  <Badge tone="brand" className="text-xs">
-                    {platform.icon} {platformLabel(t, platform.id, platform.name)}
-                  </Badge>
-                </Link>
-                {game.genres.map((id) => (
-                  <Link key={id} to={`/genres/${id}`}>
-                    <Badge className="text-xs">
-                      {genreMap[id]?.icon} {genreLabel(t, id, genreMap[id]?.name ?? id)}
-                    </Badge>
-                  </Link>
-                ))}
-                {rom.status === 'found' && <Badge tone="online" className="text-xs">{t.common.instantPlay}</Badge>}
-                {game.multiplayer && <Badge tone="online" className="text-xs">{t.game.badgeMultiplayer}</Badge>}
-                {game.bodyControl && <Badge tone="coin" className="text-xs">{t.game.badgeBodyControl}</Badge>}
-                {game.adult && <Badge tone="live" className="text-xs">{t.game.badgeAdult}</Badge>}
-                <CoinBadge amount={game.coinReward} className="text-xs" />
-              </div>
-            </div>
-            {game.plays > 0 && (
-              <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">
-                <span className="text-xs text-muted">{fmt(t.common.playsCount, { n: formatCount(game.plays) })}</span>
-              </div>
-            )}
-          </div>
-
-          {/* 动作按钮 */}
-          <div className="mt-5 flex flex-wrap gap-2">
-            {user ? (
-              <Button variant={isFav ? 'primary' : 'secondary'} size="sm" onClick={() => void toggleFavorite(game.slug).catch(() => {})} aria-pressed={isFav}>
-                {isFav ? t.game.favorited : t.game.favorite}
-              </Button>
-            ) : (
-              <Button variant="secondary" size="sm" onClick={openAuthModal}>
-                {t.game.favorite}
-              </Button>
-            )}
-            {/*
-              以前这个按钮点了只是把当前 URL 抄进剪贴板。现在改成开分享面板：
-              嵌入代码需要尺寸选择，而「跨站 iframe 存不了档、带不进登录态」这两句
-              必须有地方说出来，一个按钮给不了这些。见 components/game/ShareDialog.tsx。
-            */}
-            <Button variant="secondary" size="sm" onClick={() => setShareOpen(true)}>
-              {t.game.share}
-            </Button>
-            {/* 加入合集：没登录的先弹登录，别让他填完一轮才发现要登录 */}
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => (user ? setAddToCollection(true) : openAuthModal())}
-              title={user ? undefined : t.collections.loginToAdd}
-            >
-              📚 {t.collections.addTo}
-            </Button>
-            {/*
-              「创建联机房间」以前是 `to="/games?multiplayer=1"` —— 点了只是跳到游戏库
-              筛多人游戏，一个房也不建（用户报的就是这个）。现在它真的开房：
-              喊一声 requestMatch()，播放器接住（见 services/matchRequest.ts）——
-              游戏没开始就先开始，跑起来立刻在**这一局**上开房，不重开。
-
-              条件里加 p2pPlayable：光看 game.multiplayer 不够，那只说明这游戏支持多人，
-              不代表这个平台的模拟器能联机、也不代表信令配好了。画一个点了没反应的按钮
-              比不画更糟。
-            */}
-            {game.multiplayer && p2pPlayable(game.platform) && (
-              <Button variant="secondary" size="sm" onClick={requestMatch}>
-                {t.game.createRoom}
-              </Button>
-            )}
-            <Button variant="ghost" size="sm" onClick={reportProblem}>
-              {t.game.report}
-            </Button>
-          </div>
-
-          {/* 简介 */}
-          <section className="mt-8">
-            <div className="flex items-start justify-between gap-4">
-              <h2 className="text-lg font-bold">{t.game.about}</h2>
-              {/* 「翻译」按钮：当前语言不是 zh-Hans / en 且该语言还没翻译过时挂一个。
-                  needsTranslation() 在已翻译的情况下也会返回 false，按钮就不会再出现 */}
-              {needsTranslation(game, lang) && (
-                <TranslateButton<{ text: string }>
-                  endpoint={`/api/games/${encodeURIComponent(game.slug)}/translate-description`}
-                  lang={lang}
-                  onTranslated={(r) => setTranslatedDescription(r.text)}
-                />
-              )}
-            </div>
-            <GameDescription
-              // 把译文塞进 key —— 一旦翻译结果改变，子组件全部状态重置，展开 / 收起重新计算
-              key={`${game.slug}:${lang}:${translatedDescription ?? ''}`}
-              description={translatedDescription ?? gameDescription(game, lang)}
-              showMore={t.game.showMore}
-              showLess={t.game.showLess}
-            />
-            <dl className="mt-5 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
-              <Meta label={t.game.year} value={String(game.year)} />
-              <Meta
-                label={t.game.developer}
-                value={splitDevelopers(game.developer).map((name, index) => (
-                  <span key={name}>
-                    {index > 0 && ', '}
-                    <InternalLink
-                      to={`/games?developer=${encodeURIComponent(name)}`}
-                      className="hover:text-brand-hover"
-                    >
-                      {name}
-                    </InternalLink>
-                  </span>
-                ))}
-              />
-              <Meta label={t.game.players} value={formatPlayers(game.players)} />
-              <Meta label={t.game.supportedLanguages} value={supportedLangs || '—'} />
-            </dl>
-            {game.tags && game.tags.length > 0 && (
-              <div className="mt-4 flex flex-wrap gap-2">
-                {game.tags.map((t) => (
-                  <InternalLink
-                    key={t}
-                    to={`/games?q=${encodeURIComponent(t)}`}
-                    /*
-                      站内搜索是无限空间、没有收录价值，所以这里不出 href
-                      （nofollow 挡不住发现，见 lib/seoLinks.ts）。
-                      可抓的同类入口在上面：/platforms/:id 和 /genres/:id 都已经链过。
-                    */
-                    className="rounded-md border border-line px-2 py-1 text-xs text-muted transition hover:border-brand hover:text-fg"
-                  >
-                    #{t}
-                  </InternalLink>
-                ))}
-              </div>
-            )}
-          </section>
-
-          {/* 操作说明 */}
-          <section className="mt-8">
-            <h2 className="text-lg font-bold">{t.game.controls}</h2>
-            <KeymapCards runtimeId={runtime?.id} platform={platform.id} />
-          </section>
-        </div>
-
-        {/* 侧栏 */}
-        <aside className={cx('space-y-8 lg:col-span-4', immersive && 'hidden')}>
-          <div className="rounded-2xl border border-line bg-surface p-5">
-            <div className="flex items-center gap-3">
-              <span
-                className="grid h-12 w-12 place-items-center rounded-xl text-2xl"
-                style={{ background: `${platform.color}22`, border: `1px solid ${platform.color}55` }}
-                aria-hidden
               >
-                {platform.icon}
-              </span>
-              <div>
-                <p className="font-bold">{platformLabel(t, platform.id, platform.name)}</p>
-                <p className="text-xs text-muted">
-                  {platform.manufacturer} · {platform.year}
-                </p>
-              </div>
-            </div>
-            <p className="mt-3 text-sm leading-relaxed text-muted">{platformDesc(t, platform.id, platform.description)}</p>
-            <Button to={`/platforms/${platform.id}`} variant="secondary" size="sm" className="mt-4 w-full">
-              {fmt(t.game.browsePlatform, { platform: platform.shortName })}
-            </Button>
-          </div>
+                {/*
+                  少数游戏（reVC 移植的 GTA 之类）要 SharedArrayBuffer，只能在一个
+                  跨源隔离的整页里跑，塞不进详情页 —— 详情页一开 require-corp，
+                  Google Fonts、收录脚本和跨源封面图会被一起掐掉。
+                  这些游戏改成显示一个入口，跳到 /play/<slug>。理由见 shared/isolated-embeds.js。
+                */}
+                {isolatedEmbed ? (
+                  <IsolatedPlayCard
+                    frameClassName={stageCap}
+                    slug={game.slug}
+                    gameName={game.title}
+                    icon={game.icon}
+                    backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority className="h-full w-full" />}
+                  />
+                ) : (
+                <EmulatorPlayer
+                  /*
+                    只给满宽。**高度上限由播放器自己**在它那个「普通」分支里挂（stageHeightCap）——
+                    全屏时舞台是 fullscreen 元素、游玩布局时是 fixed 铺满视口，
+                    从这里挂 max-h 会把那两种形态一起夹住。
+                  */
+                  className="w-full"
+                  key={game.slug}
+                  platform={platform}
+                  gameName={game.title}
+                  gameSlug={game.slug}
+                  maxPlayers={game.players}
+                  invite={invite}
+                  cloudInvite={cloudInvite}
+                  watch={watchOnly}
+                  liveInvite={liveInvite}
+                  icon={game.icon}
+                  // 这一款指定的核心（街机尤其需要），以及平台级 BIOS（Neo Geo 缺了起不来）
+                  core={game.core}
+                  genres={game.genres}
+                  arcadeRomData={game.arcadeRomData}
+                  dosExecutable={game.dosExecutable}
+                  dosBackend={game.dosBackend}
+                  dosSystemUrl={game.dosSystem ? romUrlForKey(game.dosSystem) : undefined}
+                  dosWindowsVersion={game.dosWindowsVersion}
+                  dosLaunchDelay={game.dosLaunchDelay}
+                  dosboxConfig={game.dosboxConfig}
+                  dosSaveHint={game.dosSaveHint}
+                  biosUrl={biosUrl || undefined}
+                  romUrl={rom.status === 'found' ? rom.url : undefined}
+                  romChecking={rom.status === 'checking'}
+                  romUnavailable={rom.status === 'missing'}
+                  romUnreachable={rom.unreachable}
+                  onRetryRom={rom.retry}
+                  romLangs={romLangs}
+                  romLang={rom.lang}
+                  onRomLangChange={setRomLang}
+                  backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority className="h-full w-full" />}
+                  onReport={reportProblem}
+                />
+                )}
+          </GameAgeGuard>
 
           {/*
-            评分与评论。放在平台卡下面 —— 沉浸模式下整个侧栏是隐藏的（见 aside 的 className），
-            那时候玩家在全屏玩游戏，这两块跟着一起收起来是对的。
+            实验性平台的提示，紧贴在播放器下面。
+            必须在玩家点「开始」**之前**就看得到 —— PS2 大多数游戏在浏览器里跑不起来，
+            让人先等一分钟加载再看到一句报错，那是把他的时间和对站点的信任一起花掉。
 
-            评分在评论上面：打个分是一秒钟的动作，写评论要斟酌半天。
-            把成本低的那个放在先看到的位置，参与率会差出一个数量级。
+            注：它和播放器、标题、资料区**同宽**（都是内容列）。09-07 把限宽换成限高之后
+            这一整列就都对齐了，不需要再为它单独调什么。
           */}
-          {FEATURES.ratings && <GameRating gameSlug={game.slug} />}
-          {FEATURES.comments && <GameComments gameSlug={game.slug} />}
-
-          {FEATURES.coins && (
-          <div className="rounded-2xl border border-coin/30 bg-gradient-to-br from-coin/10 to-transparent p-5">
-            <p className="text-pixel text-[11px] text-coin">G COIN</p>
-            <p className="mt-2 text-sm leading-relaxed text-muted">
-              {game.coinReward > 0
-                ? fmt(t.game.coinReward, {
-                    n: game.coinReward,
-                    suffix: user ? t.game.coinSuffixIn : t.game.coinSuffixOut,
-                  })
-                : t.game.coinNone}
+          {EXPERIMENTAL_PLATFORMS.has(platform.id) && (
+            <p className="mt-3 rounded-xl border border-coin/40 bg-coin-soft px-3 py-2 text-xs text-muted">
+              ⚠️ {t.runtime.playExperimental}
             </p>
-            {user ? (
-              <p className="mt-4 text-sm font-semibold text-coin">
-                {fmt(t.game.coinBalance, { n: user.coins.toLocaleString(getLang()) })}
-              </p>
-            ) : (
-              <Button onClick={openAuthModal} variant="coin" size="sm" className="mt-4">
-                {t.game.coinLogin}
-              </Button>
-            )}
-          </div>
           )}
-        </aside>
+        </div>
+
+          <div className={immersive ? 'lg:col-span-12' : 'lg:col-span-8'}>
+            {/* 标题与元信息 */}
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <h1 className="text-2xl font-extrabold tracking-tight sm:text-3xl">{seoTitle}</h1>
+                {seoTitle !== game.title && <p className="mt-1 text-sm text-muted">{game.title}</p>}
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <Link to={`/platforms/${platform.id}`}>
+                    <Badge tone="brand" className="text-xs">
+                      {platform.icon} {platformLabel(t, platform.id, platform.name)}
+                    </Badge>
+                  </Link>
+                  {game.genres.map((id) => (
+                    <Link key={id} to={`/genres/${id}`}>
+                      <Badge className="text-xs">
+                        {genreMap[id]?.icon} {genreLabel(t, id, genreMap[id]?.name ?? id)}
+                      </Badge>
+                    </Link>
+                  ))}
+                  {rom.status === 'found' && <Badge tone="online" className="text-xs">{t.common.instantPlay}</Badge>}
+                  {game.multiplayer && <Badge tone="online" className="text-xs">{t.game.badgeMultiplayer}</Badge>}
+                  {game.bodyControl && <Badge tone="coin" className="text-xs">{t.game.badgeBodyControl}</Badge>}
+                  {game.adult && <Badge tone="live" className="text-xs">{t.game.badgeAdult}</Badge>}
+                  <CoinBadge amount={game.coinReward} className="text-xs" />
+                </div>
+              </div>
+              {game.plays > 0 && (
+                <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">
+                  <span className="text-xs text-muted">{fmt(t.common.playsCount, { n: formatCount(game.plays) })}</span>
+                </div>
+              )}
+            </div>
+
+            {/* 动作按钮 */}
+            <div className="mt-5 flex flex-wrap gap-2">
+              {user ? (
+                <Button variant={isFav ? 'primary' : 'secondary'} size="sm" onClick={() => void toggleFavorite(game.slug).catch(() => {})} aria-pressed={isFav}>
+                  {isFav ? t.game.favorited : t.game.favorite}
+                </Button>
+              ) : (
+                <Button variant="secondary" size="sm" onClick={openAuthModal}>
+                  {t.game.favorite}
+                </Button>
+              )}
+              {/*
+                以前这个按钮点了只是把当前 URL 抄进剪贴板。现在改成开分享面板：
+                嵌入代码需要尺寸选择，而「跨站 iframe 存不了档、带不进登录态」这两句
+                必须有地方说出来，一个按钮给不了这些。见 components/game/ShareDialog.tsx。
+              */}
+              <Button variant="secondary" size="sm" onClick={() => setShareOpen(true)}>
+                {t.game.share}
+              </Button>
+              {/* 加入合集：没登录的先弹登录，别让他填完一轮才发现要登录 */}
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => (user ? setAddToCollection(true) : openAuthModal())}
+                title={user ? undefined : t.collections.loginToAdd}
+              >
+                📚 {t.collections.addTo}
+              </Button>
+              {/*
+                「创建联机房间」以前是 `to="/games?multiplayer=1"` —— 点了只是跳到游戏库
+                筛多人游戏，一个房也不建（用户报的就是这个）。现在它真的开房：
+                喊一声 requestMatch()，播放器接住（见 services/matchRequest.ts）——
+                游戏没开始就先开始，跑起来立刻在**这一局**上开房，不重开。
+
+                条件里加 p2pPlayable：光看 game.multiplayer 不够，那只说明这游戏支持多人，
+                不代表这个平台的模拟器能联机、也不代表信令配好了。画一个点了没反应的按钮
+                比不画更糟。
+              */}
+              {game.multiplayer && p2pPlayable(game.platform) && (
+                <Button variant="secondary" size="sm" onClick={requestMatch}>
+                  {t.game.createRoom}
+                </Button>
+              )}
+              <Button variant="ghost" size="sm" onClick={reportProblem}>
+                {t.game.report}
+              </Button>
+            </div>
+
+            {/* 简介 */}
+            <section className="mt-8">
+              <div className="flex items-start justify-between gap-4">
+                <h2 className="text-lg font-bold">{t.game.about}</h2>
+                {/* 「翻译」按钮：当前语言不是 zh-Hans / en 且该语言还没翻译过时挂一个。
+                    needsTranslation() 在已翻译的情况下也会返回 false，按钮就不会再出现 */}
+                {needsTranslation(game, lang) && (
+                  <TranslateButton<{ text: string }>
+                    endpoint={`/api/games/${encodeURIComponent(game.slug)}/translate-description`}
+                    lang={lang}
+                    onTranslated={(r) => setTranslatedDescription(r.text)}
+                  />
+                )}
+              </div>
+              <GameDescription
+                // 把译文塞进 key —— 一旦翻译结果改变，子组件全部状态重置，展开 / 收起重新计算
+                key={`${game.slug}:${lang}:${translatedDescription ?? ''}`}
+                description={translatedDescription ?? gameDescription(game, lang)}
+                showMore={t.game.showMore}
+                showLess={t.game.showLess}
+              />
+              <dl className="mt-5 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+                <Meta label={t.game.year} value={String(game.year)} />
+                <Meta
+                  label={t.game.developer}
+                  value={splitDevelopers(game.developer).map((name, index) => (
+                    <span key={name}>
+                      {index > 0 && ', '}
+                      <InternalLink
+                        to={`/games?developer=${encodeURIComponent(name)}`}
+                        className="hover:text-brand-hover"
+                      >
+                        {name}
+                      </InternalLink>
+                    </span>
+                  ))}
+                />
+                <Meta label={t.game.players} value={formatPlayers(game.players)} />
+                <Meta label={t.game.supportedLanguages} value={supportedLangs || '—'} />
+              </dl>
+              {game.tags && game.tags.length > 0 && (
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {game.tags.map((t) => (
+                    <InternalLink
+                      key={t}
+                      to={`/games?q=${encodeURIComponent(t)}`}
+                      /*
+                        站内搜索是无限空间、没有收录价值，所以这里不出 href
+                        （nofollow 挡不住发现，见 lib/seoLinks.ts）。
+                        可抓的同类入口在上面：/platforms/:id 和 /genres/:id 都已经链过。
+                      */
+                      className="rounded-md border border-line px-2 py-1 text-xs text-muted transition hover:border-brand hover:text-fg"
+                    >
+                      #{t}
+                    </InternalLink>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            {/* 操作说明 */}
+            <section className="mt-8">
+              <h2 className="text-lg font-bold">{t.game.controls}</h2>
+              <KeymapCards runtimeId={runtime?.id} platform={platform.id} />
+            </section>
+          </div>
+
+          {/* 侧栏 */}
+          <aside
+            className={cx(
+              'space-y-8 lg:col-span-4',
+              /*
+                看直播时侧栏要和**播放器**顶边齐（参考图那样），所以显式排到第 9 列、从第 1 行
+                起跨两行。不写的话自动排版是这样的：播放器占 8 列落在第 1 行、资料区 8 列放不下
+                → 第 2 行、侧栏再补到第 2 行右边 —— 侧栏就跑到标题旁边去了，和播放器差一整行。
+              */
+              watchLayout && 'lg:col-start-9 lg:row-start-1 lg:row-span-2',
+              immersive && 'hidden',
+            )}
+          >
+            <div className="rounded-2xl border border-line bg-surface p-5">
+              <div className="flex items-center gap-3">
+                <span
+                  className="grid h-12 w-12 place-items-center rounded-xl text-2xl"
+                  style={{ background: `${platform.color}22`, border: `1px solid ${platform.color}55` }}
+                  aria-hidden
+                >
+                  {platform.icon}
+                </span>
+                <div>
+                  <p className="font-bold">{platformLabel(t, platform.id, platform.name)}</p>
+                  <p className="text-xs text-muted">
+                    {platform.manufacturer} · {platform.year}
+                  </p>
+                </div>
+              </div>
+              <p className="mt-3 text-sm leading-relaxed text-muted">{platformDesc(t, platform.id, platform.description)}</p>
+              <Button to={`/platforms/${platform.id}`} variant="secondary" size="sm" className="mt-4 w-full">
+                {fmt(t.game.browsePlatform, { platform: platform.shortName })}
+              </Button>
+            </div>
+
+            {/*
+              评分与评论。放在平台卡下面 —— 沉浸模式下整个侧栏是隐藏的（见 aside 的 className），
+              那时候玩家在全屏玩游戏，这两块跟着一起收起来是对的。
+
+              评分在评论上面：打个分是一秒钟的动作，写评论要斟酌半天。
+              把成本低的那个放在先看到的位置，参与率会差出一个数量级。
+            */}
+            {FEATURES.ratings && <GameRating gameSlug={game.slug} />}
+            {FEATURES.comments && <GameComments gameSlug={game.slug} />}
+
+            {FEATURES.coins && (
+            <div className="rounded-2xl border border-coin/30 bg-gradient-to-br from-coin/10 to-transparent p-5">
+              <p className="text-pixel text-[11px] text-coin">G COIN</p>
+              <p className="mt-2 text-sm leading-relaxed text-muted">
+                {game.coinReward > 0
+                  ? fmt(t.game.coinReward, {
+                      n: game.coinReward,
+                      suffix: user ? t.game.coinSuffixIn : t.game.coinSuffixOut,
+                    })
+                  : t.game.coinNone}
+              </p>
+              {user ? (
+                <p className="mt-4 text-sm font-semibold text-coin">
+                  {fmt(t.game.coinBalance, { n: user.coins.toLocaleString(getLang()) })}
+                </p>
+              ) : (
+                <Button onClick={openAuthModal} variant="coin" size="sm" className="mt-4">
+                  {t.game.coinLogin}
+                </Button>
+              )}
+            </div>
+            )}
+          </aside>
       </div>
 
       {/* 相关游戏 */}

@@ -145,6 +145,51 @@ export function endHeadCollection(): CollectedHead {
   return c
 }
 
+/* ---------------- SSR：把 React 吐在 body 最前面的 head 标签摘回去 ---------------- */
+
+/**
+ * React 19 会为树里的 `<img src>` **自动生成** `<link rel="preload" as="image">`。
+ *
+ * 流式渲染（renderToPipeableStream）会把它们放进 `<head>`；而我们用的是同步的
+ * `renderToString` —— 它手里没有 document，只能把这些标签**原样吐在返回字符串的最前面**，
+ * 也就是最后落进 `<div id="root">` 里。客户端 hydrate 时 React 又按规矩把它们提到
+ * `<head>`，于是 `#root` 的头几个子节点服务端有、客户端没有：
+ *
+ *     Uncaught Error: Minified React error #418
+ *     （Hydration failed because the server rendered HTML didn't match the client）
+ *
+ * 2026-09-11 线上实测，`#root` 的前 4 个子节点是：
+ *     <link rel="preload" as="image" href="/ui/logo-8bitgo.png">        ← Logo.tsx
+ *     <link rel="preload" as="image" href="/ui/random-button/left.svg">  ← Sidebar.tsx
+ *     <link rel="preload" as="image" href="/ui/random-button/middle.svg">
+ *     <link rel="preload" as="image" href="/ui/random-button/right.svg">
+ * 而客户端的 `#root` 只有 2 个子节点 —— 差的正是这 4 条。
+ *
+ * 所以这里把开头那一串摘下来交给 `<head>`，等于手工补上流式渲染本来会做的那一步。
+ * 顺带还是**性能上的正收益**：preload 放在 head 里才是它该在的位置，
+ * 放在 body 尾部的 `#root` 里等于白写一条（浏览器读到它时图片早就开始下了）。
+ *
+ * ⚠️ **只从字符串开头连续地摘**，不全文扫描：React 把这些放在最前面，
+ * 而页面正文里如果哪天真出现一个 `<link>`，全文扫会把它一起摘走 —— 那是内容丢失，
+ * 比多一次 hydration 警告严重得多。
+ *
+ * ⚠️ 只认 link / meta。`<title>` 故意不收：站点标题已经由 useSeo 收集在 head.title 里，
+ * 再摘一个进去就是两个 `<title>`。
+ */
+const HOISTED_HEAD_TAG = /^\s*<(?:link|meta)\b[^>]*\/?>/i
+
+export function splitHoistedHead(html: string): { hoisted: string[]; body: string } {
+  const hoisted: string[] = []
+  let body = html
+  for (;;) {
+    const m = HOISTED_HEAD_TAG.exec(body)
+    if (!m) break
+    hoisted.push(m[0].trim())
+    body = body.slice(m[0].length)
+  }
+  return { hoisted, body }
+}
+
 const escapeAttr = (s: string) =>
   s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 

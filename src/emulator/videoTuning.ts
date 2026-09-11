@@ -34,8 +34,31 @@
  * 没有摄像头画面那种可以省掉的高频噪声。按 0.1 给的话 NES 只有 460kbps，一动就块。
  */
 
-/** 源画面到这个大小以内，就按「像素画」对待 */
-export const RETRO_MAX_PIXELS = 320 * 240
+/**
+ * 「像素画」那一档的**每屏**像素上限。
+ *
+ * ⚠️ 这条线量的是**游戏的原生尺寸**（tuningFor 的 native），不是采集到的画布、
+ * 也不是编码尺寸。三者不是一回事：
+ *   画布 = 主播把播放器拉多宽（2079×1098）—— 跟内容毫无关系
+ *   编码 = 画布缩回原生之后（424×224）—— 含两侧黑边，黑边多少取决于播放器的比例
+ *   原生 = 核心真正在画的分辨率（384×224）—— 只有这个是游戏的属性
+ * 所以判档只能用原生。拿编码尺寸判的话，同一款街机游戏在 16:9 的播放器上是
+ * 424×224、在 4:3 的播放器上是 384×288，两次判出来可以不一样 —— 那显然是错的。
+ *
+ * 384×224 怎么来的：原来写的是 320×240（76800），而 CPS1/CPS2 街机板是 384×224
+ * （86016）—— 一脚踩过线，于是这个站上**整个街机分类**一直被当成大源，
+ * 拿到的是 maintain-framerate + contentHint:'motion'，也就是「糊了没关系，保帧率」。
+ * 抬到 86016 之后线两边分别是：
+ *   线内  GB 160×144 / GBA 240×160 / NES 256×240 / MD·NeoGeo 320×224 /
+ *         PS1 320×240 / NDS 单屏 256×192 / 街机 384×224
+ *   线外  NDS 双屏拼出来的 256×384（98304，所以 dualScreen 那一位仍然是必需的，
+ *         见下面 TuningInput.dualScreen）、DOS·PS1 高分辨率 640×480、分享标签页的 720p/1080p
+ *
+ * ⚠️ 别再往上抬：98304（NDS 两块屏）是硬顶。越过它，dualScreen 那一位就变成死代码 ——
+ * 不带这一位也会被判成像素画，于是「按单块屏算」这条逻辑再也不会被测到，
+ * 而它正是 2026-09 修过的一个真 bug。
+ */
+export const RETRO_MAX_PIXELS = 384 * 224
 
 /**
  * 一条视频源的短边小于这个数，就当它**根本没有画面**。
@@ -67,6 +90,55 @@ export function usableVideoSize(width?: number, height?: number): boolean {
   return w >= MIN_VIDEO_EDGE && h >= MIN_VIDEO_EDGE
 }
 
+/**
+ * 编码前最多把分辨率缩这么多倍。
+ *
+ * 只是个防呆上限：正常路径上倍数来自「画布 ÷ 原生」，最大的实测值也就 5 倍出头。
+ * 真出现离谱的倍数（画布被某个布局 bug 拉到 8K）时，与其信它，不如夹住 ——
+ * 缩过头的代价是观众看一块马赛克，比多编几个像素严重。
+ */
+export const MAX_ENCODE_SCALE_DOWN = 16
+
+/**
+ * 这条源该在编码前缩几倍（WebRTC 的 `scaleResolutionDownBy`）。1 = 不缩。
+ *
+ * ── 为什么需要它 ──────────────────────────────────────────
+ * 采集到的画布**不是游戏的原生分辨率**：EmulatorJS 的 <canvas> 是按屏幕上容器的
+ * 大小 × dpr 建的，所以**主播把播放器拉多大，推出去的画面就有多大**。
+ * 2026-09-11 线上实测（恐龙快打，CPS1 384×224）：推的是 **2079×1098**，
+ * 像素数是原生的 26 倍，而多出来的 26 倍里**没有一点新信息** ——
+ * 它就是 384×224 被双线性拉上去的结果。
+ *
+ * 代价全落在主播身上，而且是双份：
+ *   · CPU —— 每个观众一条 PeerConnection = 一路独立编码，和游戏主循环抢同一颗核。
+ *     实测推流时编码帧率掉到 4~17fps（见 broadcast.ts 的 onQuality）。
+ *   · 上行 —— 码率按像素数算，2.28Mpx 直接把 MAX_BITRATE 顶满 6Mbps，
+ *     ×12 个观众 = 72Mbps，家宽上行根本给不出。
+ *
+ * ── 为什么取两个比值里**小**的那个 ─────────────────────────
+ * 画布通常比游戏**宽**（引擎把画面居中、两侧留黑边）：2079/1098 是 1.89，
+ * 而 384/224 是 1.71。按宽算是 5.41 倍，缩完高度只剩 203 —— **低于原生**，
+ * 那就真的在丢信息了。取 min（这里是 1098/224 = 4.90）保证两个方向都不低于原生，
+ * 缩完是 424×224：游戏内容正好落在 384×224，多出来的 40 是那两条黑边。
+ *
+ * ⚠️ 拿不到原生尺寸就返回 1（照旧不缩）。猜错的代价不对称：不缩只是浪费带宽，
+ * 而按错的原生去缩是把画面缩成马赛克，且主播无从发现。
+ */
+export function encodeScaleFor(
+  width?: number,
+  height?: number,
+  native?: { width?: number; height?: number } | null,
+): number {
+  const w = Number(width) || 0
+  const h = Number(height) || 0
+  const nw = Number(native?.width) || 0
+  const nh = Number(native?.height) || 0
+  if (w <= 0 || h <= 0 || nw <= 0 || nh <= 0) return 1
+  const scale = Math.min(w / nw, h / nh)
+  if (!Number.isFinite(scale) || scale <= 1) return 1
+  return Math.min(scale, MAX_ENCODE_SCALE_DOWN)
+}
+
 /** 码率系数：每像素每帧多少 bit */
 const BITS_PER_PIXEL_FRAME = 0.25
 
@@ -84,6 +156,12 @@ export interface VideoTuning {
   contentHint: 'detail' | 'motion'
   /** true = 走的像素画那一档。调试和文案用 */
   retro: boolean
+  /**
+   * 编码前把分辨率缩几倍（见 encodeScaleFor）。1 = 原样编码。
+   * ⚠️ 上面的 maxBitrate / retro / degradationPreference 已经是按**缩完之后**的尺寸算的，
+   * 调用方不要再拿源尺寸去二次判断。
+   */
+  scaleResolutionDownBy: number
 }
 
 export interface TuningInput {
@@ -105,6 +183,14 @@ export interface TuningInput {
    * 而调用方手里本来就有平台 id，没有理由让这里去赌。
    */
   dualScreen?: boolean
+  /**
+   * 这款游戏的**原生**画面尺寸（模拟器核心的 av_info 几何，见 adapters/emulatorjs.ts
+   * 的 reportGeometry）—— 不是画布尺寸，两者差多少取决于主播把播放器拉多宽。
+   *
+   * 传了就按它把编码分辨率缩回原生（见 encodeScaleFor）；不传 = 照旧原样编码。
+   * 分享标签页那条路推的是整个标签页，没有「原生尺寸」可言，不传。
+   */
+  native?: { width?: number; height?: number } | null
 }
 
 /**
@@ -114,16 +200,33 @@ export interface TuningInput {
  * 猜错的代价不对称 —— 把大源当小源，等于让 640×480 保着分辨率掉到个位数帧率，
  * 那是没法玩的；反过来只是像素画糊一点。
  */
-export function tuningFor({ width, height, fps, maxBitrate, minBitrate = MIN_BITRATE, dualScreen }: TuningInput): VideoTuning {
+export function tuningFor({ width, height, fps, maxBitrate, minBitrate = MIN_BITRATE, dualScreen, native }: TuningInput): VideoTuning {
   const w = Number(width) || 0
   const h = Number(height) || 0
-  const pixels = w * h
+  /*
+    ⚠️ 下面**所有**判断都用缩完之后的尺寸，不用源尺寸。
+    源尺寸是「主播的播放器有多宽」，跟内容无关（见 encodeScaleFor 文件内那段）：
+    拿它去判像素画，384×224 的街机会因为画布是 2079×1098 而被当成大源；
+    拿它去算码率，会为一堆插值出来的像素买单。
+  */
+  const scaleResolutionDownBy = encodeScaleFor(w, h, native)
+  /** 真正要编码的像素数（缩完之后）。码率按它算 —— 那才是实打实要花的带宽 */
+  const encoded = (w * h) / (scaleResolutionDownBy * scaleResolutionDownBy)
+  /*
+    判「是不是像素画」用**原生**尺寸，不用 encoded：encoded 里含黑边，
+    含多少取决于主播播放器的比例（16:9 的播放器上 384×224 会编成 424×224）——
+    那不是游戏的属性，拿它判档会让同一款游戏在不同主播那里落到不同档。
+    拿不到原生就退回 encoded：没得选，而且那时 scale 也是 1，encoded 就是画布本身。
+  */
+  const nw = Number(native?.width) || 0
+  const nh = Number(native?.height) || 0
+  const judged = nw > 0 && nh > 0 ? nw * nh : encoded
   // 判「是不是像素画」看**单块屏**：双屏机型的画布是两块屏拼的，见文件头那段
-  const perScreen = dualScreen ? pixels / 2 : pixels
+  const perScreen = dualScreen ? judged / 2 : judged
   const retro = perScreen > 0 && perScreen <= RETRO_MAX_PIXELS
 
-  const computed = pixels > 0
-    ? Math.round(Math.max(minBitrate, Math.min(MAX_BITRATE, pixels * fps * BITS_PER_PIXEL_FRAME)))
+  const computed = encoded > 0
+    ? Math.round(Math.max(minBitrate, Math.min(MAX_BITRATE, encoded * fps * BITS_PER_PIXEL_FRAME)))
     : minBitrate
   return {
     maxBitrate: maxBitrate ?? computed,
@@ -132,6 +235,7 @@ export function tuningFor({ width, height, fps, maxBitrate, minBitrate = MIN_BIT
     degradationPreference: retro ? 'maintain-resolution' : 'maintain-framerate',
     contentHint: retro ? 'detail' : 'motion',
     retro,
+    scaleResolutionDownBy,
   }
 }
 
@@ -166,6 +270,12 @@ export function applyTuning(sender: RTCRtpSender, tuning: VideoTuning): void {
     for (const e of params.encodings) {
       e.maxBitrate = tuning.maxBitrate
       e.maxFramerate = tuning.maxFramerate
+      /*
+        编码前先缩回原生（见 encodeScaleFor）。这一条是**主播端性能和上行流量**的大头：
+        恐龙快打实测 2079×1098 → 424×224，像素数降 26 倍，码率从顶满的 6Mbps 降到 1Mbps。
+        观众看到的清晰度不降反升 —— 缩掉的那些像素本来就是插值出来的。
+      */
+      e.scaleResolutionDownBy = tuning.scaleResolutionDownBy
     }
     ;(params as RTCRtpSendParameters & { degradationPreference?: string }).degradationPreference =
       tuning.degradationPreference

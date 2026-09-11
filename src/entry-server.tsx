@@ -4,7 +4,7 @@ import { StaticRouter } from 'react-router'
 import { AppRoutes } from './AppRoutes'
 import { setSsrData, type PageData } from '@/services/pageData'
 import { setLangForRender } from '@/services/lang'
-import { beginHeadCollection, endHeadCollection, setSsrPath, takeSsrNotFound, type CollectedHead } from '@/services/seo'
+import { beginHeadCollection, endHeadCollection, setSsrPath, splitHoistedHead, takeSsrNotFound, type CollectedHead } from '@/services/seo'
 import { langFromPath, langPrefix, stripLang } from '@/config/languages'
 import { loadLocale } from '@/locales'
 
@@ -55,7 +55,7 @@ export async function render({ url, data }: RenderInput): Promise<RenderResult> 
 
   beginHeadCollection()
   takeSsrNotFound() // 清掉上一次的残留
-  const html = renderToString(
+  const rendered = renderToString(
     <StrictMode>
       <StaticRouter location={url} basename={langPrefix(lang) || undefined}>
         <AppRoutes />
@@ -63,6 +63,14 @@ export async function render({ url, data }: RenderInput): Promise<RenderResult> 
     </StrictMode>,
   )
   const head = endHeadCollection()
+  /*
+    renderToString 会把 React 自动生成的 `<link rel="preload">` 吐在字符串最前面
+    （流式渲染才会自己提进 head）。不摘出来的话它们会落进 #root，而客户端 hydrate 时
+    React 把它们提到 head —— 两边的 #root 头几个子节点对不上，报 React #418。
+    完整病历见 services/seo.ts 的 splitHoistedHead。
+  */
+  const { hoisted, body } = splitHoistedHead(rendered)
+  if (hoisted.length) head.tags.push(...hoisted)
   setSsrData(null)
-  return { html, head, lang, notFound: takeSsrNotFound() }
+  return { html: body, head, lang, notFound: takeSsrNotFound() }
 }
