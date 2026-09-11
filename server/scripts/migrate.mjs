@@ -621,9 +621,77 @@ const patches = [
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`),
   },
 
+  {
+    name: '开放平台五张表（oauth_apps / _app_secrets / _authorizations / _codes / _tokens）',
+    table: null,
+    /*
+      设计稿：docs/open-platform.md。这五张一起建、一起判：
+      少建一张的后果不是「某个功能没有」，而是**授权流程走到一半才炸** ——
+      换 token 那一步查不到 oauth_codes，接入方看到的是一个 500，无从下手。
+
+      ⚠️ 外键指向 oauth_apps，所以建表顺序不能变（apps 必须最先）。
+    */
+    skip: async () => (!(await hasTable('users')) ? '还没有 users 表' : null),
+    needed: async () => {
+      for (const t of ['oauth_apps', 'oauth_app_secrets', 'oauth_authorizations', 'oauth_codes', 'oauth_tokens']) {
+        if (!(await hasTable(t))) return true
+      }
+      return false
+    },
+    run: async () => {
+      await conn.query('CREATE TABLE IF NOT EXISTS oauth_apps ( id              VARCHAR(40)   NOT NULL PRIMARY KEY, owner_id        VARCHAR(40)   NOT NULL, name            VARCHAR(60)   NOT NULL, description     TEXT          NULL, homepage        VARCHAR(300)  NULL, logo            VARCHAR(500)  NULL, privacy_url     VARCHAR(300)  NULL, client_type     ENUM(\'confidential\',\'public\') NOT NULL DEFAULT \'confidential\', redirect_uris   TEXT          NULL, embed_origins   TEXT          NULL, approved_scopes TEXT          NULL, status          ENUM(\'sandbox\',\'live\',\'suspended\') NOT NULL DEFAULT \'sandbox\', rate_tier       VARCHAR(16)   NOT NULL DEFAULT \'sandbox\', created_at      TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at      TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, KEY idx_owner (owner_id) ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci')
+      await conn.query('CREATE TABLE IF NOT EXISTS oauth_app_secrets ( id           VARCHAR(40)  NOT NULL PRIMARY KEY, app_id       VARCHAR(40)  NOT NULL, secret_hash  VARCHAR(200) NOT NULL, hint         CHAR(6)      NOT NULL, created_at   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP, expires_at   TIMESTAMP    NULL, revoked_at   TIMESTAMP    NULL, last_used_at TIMESTAMP    NULL, KEY idx_app (app_id), CONSTRAINT fk_oas_app FOREIGN KEY (app_id) REFERENCES oauth_apps(id) ON DELETE CASCADE ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci')
+      await conn.query('CREATE TABLE IF NOT EXISTS oauth_authorizations ( user_id    VARCHAR(40) NOT NULL, app_id     VARCHAR(40) NOT NULL, scopes     TEXT        NULL, created_at TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, PRIMARY KEY (user_id, app_id), KEY idx_auth_app (app_id), CONSTRAINT fk_oauth_app FOREIGN KEY (app_id) REFERENCES oauth_apps(id) ON DELETE CASCADE ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci')
+      await conn.query('CREATE TABLE IF NOT EXISTS oauth_codes ( code_hash      CHAR(64)     NOT NULL PRIMARY KEY, app_id         VARCHAR(40)  NOT NULL, user_id        VARCHAR(40)  NOT NULL, scopes         TEXT         NULL, redirect_uri   VARCHAR(500) NOT NULL, code_challenge VARCHAR(128) NOT NULL, nonce          VARCHAR(128) NULL, expires_at     TIMESTAMP    NOT NULL, used_at        TIMESTAMP    NULL, KEY idx_codes_expire (expires_at), CONSTRAINT fk_oc_app FOREIGN KEY (app_id) REFERENCES oauth_apps(id) ON DELETE CASCADE ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci')
+      await conn.query('CREATE TABLE IF NOT EXISTS oauth_tokens ( token_hash   CHAR(64)    NOT NULL PRIMARY KEY, app_id       VARCHAR(40) NOT NULL, user_id      VARCHAR(40) NOT NULL, scopes       TEXT        NULL, rotated_from CHAR(64)    NULL, expires_at   TIMESTAMP   NOT NULL, revoked_at   TIMESTAMP   NULL, last_used_at TIMESTAMP   NULL, created_at   TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP, KEY idx_tok_user_app (user_id, app_id), KEY idx_tok_expire (expires_at), CONSTRAINT fk_ot_app FOREIGN KEY (app_id) REFERENCES oauth_apps(id) ON DELETE CASCADE ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci')
+    },
+  },
+  {
+    name: '开放平台的申请与审核（oauth_apps 加 8 列 + 流水表 + 沙箱测试账号白名单）',
+    table: null,
+    /*
+      状态机见 server/src/open/review.js。
+      ⚠️ 逐列判断而不是一条 ALTER 加八列：这张表是 09-11 当天建的，
+      有的库可能已经有了其中几列（比如先手工加过 requested_scopes），
+      一条 ALTER 会整条失败，于是后面七列一个都加不上。
+    */
+    skip: async () => (!(await hasTable('oauth_apps')) ? '还没有 oauth_apps 表（先跑上一条补丁）' : null),
+    needed: async () =>
+      !(await hasColumn('oauth_apps', 'review_state')) ||
+      !(await hasTable('oauth_app_reviews')) ||
+      !(await hasTable('oauth_app_testers')),
+    run: async () => {
+      if (!(await hasColumn('oauth_apps', 'review_state'))) {
+        await conn.query('ALTER TABLE `oauth_apps` ADD COLUMN `review_state` ENUM(\'none\',\'pending\',\'rejected\') NOT NULL DEFAULT \'none\' AFTER `status`')
+      }
+      if (!(await hasColumn('oauth_apps', 'requested_scopes'))) {
+        await conn.query('ALTER TABLE `oauth_apps` ADD COLUMN `requested_scopes` TEXT NULL AFTER `approved_scopes`')
+      }
+      if (!(await hasColumn('oauth_apps', 'review_note'))) {
+        await conn.query('ALTER TABLE `oauth_apps` ADD COLUMN `review_note` TEXT NULL AFTER `review_state`')
+      }
+      if (!(await hasColumn('oauth_apps', 'review_reason'))) {
+        await conn.query('ALTER TABLE `oauth_apps` ADD COLUMN `review_reason` VARCHAR(500) NULL AFTER `review_note`')
+      }
+      if (!(await hasColumn('oauth_apps', 'submitted_at'))) {
+        await conn.query('ALTER TABLE `oauth_apps` ADD COLUMN `submitted_at` TIMESTAMP NULL AFTER `review_reason`')
+      }
+      if (!(await hasColumn('oauth_apps', 'reviewed_by'))) {
+        await conn.query('ALTER TABLE `oauth_apps` ADD COLUMN `reviewed_by` VARCHAR(40) NULL AFTER `submitted_at`')
+      }
+      if (!(await hasColumn('oauth_apps', 'reviewed_at'))) {
+        await conn.query('ALTER TABLE `oauth_apps` ADD COLUMN `reviewed_at` TIMESTAMP NULL AFTER `reviewed_by`')
+      }
+      if (!(await hasColumn('oauth_apps', 'suspended_from'))) {
+        await conn.query('ALTER TABLE `oauth_apps` ADD COLUMN `suspended_from` ENUM(\'sandbox\',\'live\') NULL AFTER `reviewed_at`')
+      }
+      await conn.query('CREATE TABLE IF NOT EXISTS oauth_app_reviews ( id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, app_id     VARCHAR(40) NOT NULL, actor_id   VARCHAR(40) NOT NULL, action     ENUM(\'submit\',\'withdraw\',\'approve\',\'reject\',\'suspend\',\'restore\') NOT NULL, detail     TEXT        NULL, created_at TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP, KEY idx_oar_app (app_id, created_at), CONSTRAINT fk_oar_app FOREIGN KEY (app_id) REFERENCES oauth_apps(id) ON DELETE CASCADE ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci')
+      await conn.query('CREATE TABLE IF NOT EXISTS oauth_app_testers ( app_id   VARCHAR(40) NOT NULL, user_id  VARCHAR(40) NOT NULL, added_at TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (app_id, user_id), CONSTRAINT fk_oat_app FOREIGN KEY (app_id) REFERENCES oauth_apps(id) ON DELETE CASCADE ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci')
+    },
+  },
 ]
 
-const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'login_codes', 'platform_bios', 'game_plays', 'developers', 'friend_links', 'game_comments', 'game_ratings']
+const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'login_codes', 'platform_bios', 'game_plays', 'developers', 'friend_links', 'game_comments', 'game_ratings', 'oauth_apps']
 
 try {
   await conn.query(`CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`)

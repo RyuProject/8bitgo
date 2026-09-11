@@ -36,6 +36,7 @@ import { ICE_SERVERS, NETPLAY_URL, fetchIceConfig, gameIdFor, netplayUrlForFrame
 import { guardInputChannel } from '../netplayGuard'
 import { isZip, listZipEntries } from '@/lib/unzip'
 import { matchArcadeHack, type ArcadeHack } from '@/data/arcadeHacks'
+import { deriveArcadeHackBytes } from '../arcadeHack'
 
 /**
  * EmulatorJS 资源根路径。**默认是自托管的 /emulatorjs/，不是 CDN。**
@@ -577,21 +578,86 @@ interface EjsEmulator {
  * 而街机 romset 版本极其挑剔，看不到这句原文基本没法排查 ——
  * 这是街机比卡带机麻烦得多的地方。
  *
- * 只在**像致命错误**时才往上报（见 FATAL_HINTS）：核心启动时会打一堆无关紧要的
+ * 只在**像致命错误**时才往上报（见 FATAL_PHRASES）：核心启动时会打一堆无关紧要的
  * warning，全报上去等于没报。其余的都留在缓冲区里，由 engineLog() 取。
  */
 const LOG_LIMIT = 60
 /** 命中这些词才认为是「这局跑不起来了」，而不是普通噪音 */
-const FATAL_HINTS = [
-  'missing',
-  'not found',
-  'no such file',
-  'romset',
-  'crc',
-  'failed to load',
-  'error loading',
-  'could not load',
-  'bios',
+/**
+ * 街机专用的屏幕手柄布局。
+ *
+ * **为什么必须自己给一份**：引擎的 `setVirtualGamepad()` 是按 `getControlScheme()` 分支的，
+ * 而那张表里**根本没有 arcade / mame 这两档** —— 街机落进最后那个 else，拿到的是一套
+ * SNES 布局：`Y X B A` 四颗 + nipplejs 摇杆 + Start + Select。于是：
+ *
+ *   ① **按键 5 / 6（libretro R=11、L=10）在屏幕上根本不存在。** 手机上打街霸 II、
+ *      恐龙快打这类 CPS 六键格斗，**重拳和重脚永远出不来**，大招全废 —— 而页面底下
+ *      那张键位表明写着「按键 5 / 按键 6」。拳皇是 Neo Geo 四键（A/B/C/D = 按键 1~4），
+ *      刚好够用，所以**只测拳皇是发现不了这个 bug 的**。
+ *   ② 方向用的是 `type:"zone"`（nipplejs）。它对没命中的方向不是立刻置 0，而是排一个
+ *      30ms 的定时器去松开，**而且从不 clearTimeout**：手指从 ↓ 滚到 ↘，30ms 后那个
+ *      旧定时器把「右」松掉，握住对角线只剩一个方向 —— 波动拳、蹲防全搓不出来。
+ *      `type:"dpad"` 那条路每次 touchmove 把四个方向**同步全量**重写一遍，没有定时器，
+ *      对角线是干净的；街机本来就是八向微动摇杆，方格判定也更贴近实机。
+ *   ③ 投币键屏幕上标的是 `localization("Select")` = **「选择」**。引擎只在键盘改键面板里
+ *      对 arcade/mame 把它改名成 INSERT COIN，虚拟手柄那条路没有这段。**街机不投币
+ *      按 START 什么都不会发生**，而唯一能救玩家的那颗按钮上写着「选择」。
+ *
+ * 几何照抄引擎自带的世嘉土星布局（同样是两排三颗的六键排法，是它自己发出来、
+ * 验证过的坐标），只换 text / id / input_value。
+ *
+ * **按键的摆位有讲究**：编号来自 `ARCADE_GENERIC_BUTTONS = [0, 8, 1, 9, 11, 10]`
+ * （按键 1..6 → libretro B A Y X R L），但摆的时候按**三拳三脚**那套排：
+ *
+ *     上排  按键3(Y) 按键4(X) 按键6(L)   ← 轻拳 中拳 重拳
+ *     下排  按键1(B) 按键2(A) 按键5(R)   ← 轻脚 中脚 重脚
+ *
+ * 这样六键格斗的拳脚各占一排，和真机一致；而 Neo Geo 只用按键 1~4 时，它们正好
+ * 落成左边一个干净的 2×2 方块（1 2 在下、3 4 在上），也是 KOF 在手柄上的通行摆法。
+ * 按数字顺序 1 2 3 / 4 5 6 摆反而会把拳和脚打散（实测：拳会落到左上、右下、右中）。
+ */
+const ARCADE_VIRTUAL_PAD: readonly Record<string, unknown>[] = [
+  // 上排：轻拳 中拳 重拳
+  { type: 'button', text: '3', id: 'arc_3', location: 'right', right: 145, top: 0, bold: true, input_value: 1 },
+  { type: 'button', text: '4', id: 'arc_4', location: 'right', right: 75, top: 0, bold: true, input_value: 9 },
+  { type: 'button', text: '6', id: 'arc_6', location: 'right', right: 5, top: 0, bold: true, input_value: 10 },
+  // 下排：轻脚 中脚 重脚
+  { type: 'button', text: '1', id: 'arc_1', location: 'right', right: 145, top: 70, bold: true, input_value: 0 },
+  { type: 'button', text: '2', id: 'arc_2', location: 'right', right: 75, top: 70, bold: true, input_value: 8 },
+  { type: 'button', text: '5', id: 'arc_5', location: 'right', right: 5, top: 70, bold: true, input_value: 11 },
+  // 八向摇杆走 dpad，别用 zone（理由见上面第 ② 条）
+  { type: 'dpad', id: 'dpad', location: 'left', left: '50%', right: '50%', joystickInput: false, inputValues: [4, 5, 6, 7] },
+  // 文案交给引擎的 localization()：zh.json 里 'INSERT COIN' → 「投币」
+  { type: 'button', text: 'INSERT COIN', id: 'arc_coin', location: 'center', left: -5, fontSize: 13, block: true, input_value: 2 },
+  { type: 'button', text: 'Start', id: 'arc_start', location: 'center', left: 60, fontSize: 15, block: true, input_value: 3 },
+]
+
+/**
+ * 确定致命的**整句**。命中就当这一局起不来了。
+ *
+ * ⚠️ **这张表是 2026-09-11 收紧过的，别再往回放宽。**
+ *
+ * 原来它是一串单词：`missing` / `not found` / `romset` / `crc` / `bios` …
+ * 当时那么写没出事，纯粹是因为**核心的 stderr 根本出不来** —— 引擎把 Emscripten 的
+ * `printErr` 写成了 `t=>{this.debug&&console.log(t)}`，而 `this.debug` 来自从没设过的
+ * `EJS_DEBUG_XX`，所以那九个词一个都命不中，整套分流是死代码。
+ *
+ * 09-11 在 `scripts/patch-emulatorjs.mjs` 里把 `printErr` 改成无条件 `console.warn` 打通之后，
+ * 核心原文第一次真的流进来了 —— 而 **MAME 2003 / 2003-Plus 在「能跑但有缺件」时照样会打
+ * `NOT FOUND`、`INCORRECT CHECKSUM`、`WARNING: the game might not run correctly`**。
+ * 按老那张表，这些会在游戏本来能正常启动的情况下直接 onError 把这一局毙掉。
+ *
+ * 所以现在只认少数确定致命的整句，宁可漏判：漏判的代价是玩家多等几秒看到引擎自己的报错，
+ * 误杀的代价是一款本来能玩的游戏永远打不开。其余原文一律只进 `engineLog()` 供排查。
+ */
+const FATAL_PHRASES = [
+  // FBNeo：认不出这个 romset，必然起不来
+  'romset is unknown',
+  // MAME：缺件已经到了跑不了的程度（区别于它那些 NOT FOUND 警告）
+  'required files are missing',
+  // 引擎自己：运行时没加载上 / startGame 抛了
+  'error loading emulatorjs',
+  'failed to start game',
 ]
 
 /**
@@ -667,11 +733,17 @@ function installErrorTap(
     lines.push(line)
     if (lines.length > LOG_LIMIT) lines.shift()
     const low = text.toLowerCase()
-    if (level !== 'log' && FATAL_HINTS.some((h) => low.includes(h))) onFatal(text.trim())
+    if (level !== 'log' && FATAL_PHRASES.some((h) => low.includes(h))) onFatal(text.trim())
   }
 
+  /**
+   * ⚠️ `log` 也要接，但**只进缓冲区、不参与 FATAL 判定**（上面那句 `level !== 'log'` 守着）。
+   *
+   * 引擎自己的 `startGameError()` 是用 `console.log` 打的，核心的 stdout 也走这一路 ——
+   * 不接的话 `engineLog()` 里连「引擎当时到底说了什么」都没有，排查街机起不来只能靠猜。
+   */
   const c = win.console as Console | undefined
-  for (const level of ['error', 'warn'] as const) {
+  for (const level of ['error', 'warn', 'log'] as const) {
     const native = c?.[level]
     if (typeof native !== 'function' || !c) continue
     c[level] = (...args: unknown[]) => {
@@ -736,8 +808,6 @@ function installNetTap(
     onFailed: (status: number, url: string) => void
   },
 ) {
-  const proto = (win.XMLHttpRequest as typeof XMLHttpRequest | undefined)?.prototype
-  if (!proto) return
   const emit = throttleProgress(ctx.onProgress)
   const URL_KEY = '__8bitgoUrl'
 
@@ -759,6 +829,88 @@ function installNetTap(
     if (/\/cores\/|-wasm\.data/.test(url)) return 'engine'
     return 'assets'
   }
+
+  /* ---------------- fetch（引擎真正在用的那条） ---------------- */
+
+  /**
+   * ⚠️ **主路必须包 fetch，不能只包 XHR。**
+   *
+   * 这整个探针本来只包了 `XMLHttpRequest.prototype`，而自建的 `emulator.min.js` 里
+   * `XMLHttpRequest` 只出现 4 次、**全部属于内嵌的 socket.io（engine.io polling）**；
+   * 引擎自己的 `downloadFile` 和 `loader.js` 早就改用 `fetch` 了。也就是说核心、
+   * `*-wasm.data`、ROM、BIOS **没有一趟走 XHR**，下面那段 XHR 代码线上一次都不会执行。
+   *
+   * 三个后果（都实测得出来）：
+   *   · `onFailed` / `critical()` 是死代码。BIOS 的 objectKey 配错 → 引擎自己 catch 成
+   *     `startGameError("Network Error")` 且那个 promise **永不 resolve** ——
+   *     玩家看到「引擎报错：Network Error」，管理员分不清是断网、没绑 BIOS 还是 key 打错。
+   *   · 卡死检测失去唯一的网络心跳，只剩 `.ejs_loading_text` 的文案变化；而那行字
+   *     **只有响应带 Content-Length 时才逐帧更新**（静态层用 chunked / 动态 gzip 就没有），
+   *     于是核心明明在正常下载，30 秒后却报「加载在 Download Game Core 这一步停住了」。
+   *   · 街机后半程（核心 8~40MB）没有任何真实进度，条子靠合成计时器爬到 99% 然后钉死。
+   *
+   * 实现上用 `TransformStream` 直通计数，**不用 `tee()`** —— tee 出来的两路读速不一致时
+   * 快的那路会把数据缓冲在内存里，而这里下的正是几十上百 MB 的东西。
+   */
+  const origFetch = win.fetch as typeof fetch | undefined
+  const W = win as unknown as {
+    Response?: typeof Response
+    TransformStream?: typeof TransformStream
+  }
+  if (typeof origFetch === 'function' && typeof W.Response === 'function' && typeof W.TransformStream === 'function') {
+    win.fetch = async function (input: RequestInfo | URL, init?: RequestInit) {
+      const url =
+        typeof input === 'string' ? input : input instanceof URL ? input.href : ((input as Request)?.url ?? String(input))
+      const res = await origFetch.call(win, input as RequestInfo, init)
+      if (!ctx.live() || !url) return res
+      ctx.onBeat()
+
+      // 4xx / 5xx 必须在这里截住 —— 交给 EmulatorJS 的话它会死锁，见 critical() 的说明
+      if (res.status >= 400) {
+        if (critical(url)) ctx.onFailed(res.status, url)
+        return res
+      }
+      // 没有 body（HEAD、204、opaque）就没什么可数的
+      if (!res.body) return res
+
+      const phase = phaseOf(url)
+      const len = Number(res.headers.get('content-length') || 0)
+      /*
+       * 压缩过的响应里 Content-Length 是**压缩后**的大小，而读出来的是解压后的字节，
+       * 比例会冲过 100%。冲过就转成不确定态，和 loadProgress.ts 的处理保持一致。
+       */
+      let total: number | undefined = len > 0 ? len : undefined
+      let loaded = 0
+      try {
+        const counting = res.body.pipeThrough(
+          new W.TransformStream!<Uint8Array, Uint8Array>({
+            transform(chunk, controller) {
+              loaded += chunk.byteLength
+              if (total !== undefined && loaded > total) total = undefined
+              if (ctx.live()) {
+                ctx.onBeat()
+                emit({ phase, loaded, total, ratio: total ? Math.min(loaded / total, 1) : undefined })
+              }
+              controller.enqueue(chunk)
+            },
+            flush() {
+              // 下完这一趟就把条推满，别停在 97% 上等解压
+              if (loaded > 0 && ctx.live()) emit({ phase, loaded, total: loaded, ratio: 1 }, true)
+            },
+          }),
+        )
+        return new W.Response!(counting, { status: res.status, statusText: res.statusText, headers: res.headers })
+      } catch {
+        // 包不上就原样放行 —— 少一层进度，总好过把下载弄断
+        return res
+      }
+    } as typeof fetch
+  }
+
+  /* ---------------- XHR（socket.io 那一路，留着兜底） ---------------- */
+
+  const proto = (win.XMLHttpRequest as typeof XMLHttpRequest | undefined)?.prototype
+  if (!proto) return
 
   const open = proto.open
   proto.open = function (this: Record<string, unknown>, method: string, url: string | URL, ...rest: unknown[]) {
@@ -968,6 +1120,32 @@ function hackOf(buf: ArrayBuffer): ArcadeHack | null {
  *   - blob: 分支由我们的 EmulatorJS 补丁使用 EJS_gameName，文件名稳定是 kof98.zip；
  *   - blob: 不会按旧的远程 URL 命中 EmulatorJS-Cache，杜绝半截 ROM 复活。
  */
+/**
+ * 认指纹、必要时把合成 ROM 补进包，产出交给引擎的 blob 地址。
+ *
+ * ⚠️ **合成这一步以前只有「玩本地 ROM」那条路接了，入库的游戏这条没接。**
+ * 入库这条当时只做两件事：套 `hack.romData`、把包名改成 `hack.zipName` ——
+ * 而 dat 里引用的 `tk2_gfx1cn.rom` / `tk2_gfx3cn.rom` 偏偏是**合成产物**
+ * （原图形 ROM 的一个字节窗口被中文补丁片盖过）。包里根本没有这两块，
+ * 核心按 dat 去找就是两条 missing → FATAL → 游戏必死，
+ * 而后台界面还绿字写着「✓ 识别为已知改版包，已填好 RomData」。
+ *
+ * 两条路现在都走这里，同一张指纹表、同一套合成。
+ */
+async function arcadeBlobFrom(data: ArrayBuffer, name: string): Promise<{ url: string; name: string; hack: ArcadeHack | null }> {
+  const hack = hackOf(data)
+  let bytes: ArrayBuffer | Uint8Array = data
+  if (hack?.derive) {
+    // 合成失败不能静默放行 —— 放行的结果是 100% 起不来，而报错会指向完全无关的方向
+    const merged = await deriveArcadeHackBytes(data, listZipEntries(data), hack)
+    if (merged) {
+      bytes = merged
+      console.info(`[arcade] ${hack.title}：已现场合成 ${hack.derive.outputs.join(' / ')} 并补进包里`)
+    }
+  }
+  return { url: URL.createObjectURL(new Blob([bytes as BlobPart], { type: 'application/zip' })), name, hack }
+}
+
 export async function prepareRemoteArcadeRom(
   url: string,
   onProgress: MountOptions['onProgress'],
@@ -984,9 +1162,12 @@ export async function prepareRemoteArcadeRom(
     if (cached) {
       if (signal.aborted) throw new DOMException('已取消', 'AbortError')
       // 命中也要发满进度那一帧：播放器的加载遮罩靠进度回调收尾
-      onProgress?.({ phase: 'rom', loaded: cached.byteLength, total: cached.byteLength, ratio: 1 })
-      // 缓存这一路也要认一遍：第二次玩同一款改版包不能因为走了缓存就少了 dat
-      return { url: URL.createObjectURL(new Blob([cached], { type: 'application/zip' })), name, hack: hackOf(cached) }
+      // ⚠️ 必须带 cached: true。EmulatorPlayer 对**任何** phase==='rom' 且 total≥64MB 的帧
+      // 都会去更新那个「本局需下载 XXX MB」的遮罩文案（不只光盘平台），不带的话
+      // 玩过一次的大 romset 第二次秒开，界面上却还写着「需下载 180 MB」，自相矛盾。
+      onProgress?.({ phase: 'rom', loaded: cached.byteLength, total: cached.byteLength, ratio: 1, cached: true })
+      // 缓存这一路也要认一遍：第二次玩同一款改版包不能因为走了缓存就少了 dat、也不能少了合成
+      return arcadeBlobFrom(cached, name)
     }
   }
 
@@ -1012,8 +1193,7 @@ export async function prepareRemoteArcadeRom(
   // 不 await：下面 Blob 会自己复制一份字节，data 不会被谁 transfer 走，写盘慢也不耽误开局。
   if (cacheKey) void romCachePut(cacheKey, data).catch(() => {})
 
-  const blobUrl = URL.createObjectURL(new Blob([data], { type: 'application/zip' }))
-  return { url: blobUrl, name, hack: hackOf(data) }
+  return arcadeBlobFrom(data, name)
 }
 
 /**
@@ -1039,7 +1219,7 @@ export async function prepareRemoteArcadeRom(
  *
  * ⚠️ **不做格式校验**。盘的种类太多（.chd 是 MAME 自己的容器、.pbp 是 PSP 打包格式、
  * .cue 是纯文本、.iso 的 magic 在第 32769 字节），在这里判一遍只会把本来能跑的挡在门外。
- * 真跑不起来时核心报的原文会经 FATAL_HINTS 那条路送上来，比我们猜得准。
+ * 真跑不起来时核心报的原文会经 FATAL_PHRASES 那条路送上来，比我们猜得准。
  */
 /**
  * 从播放地址里取出带扩展名的文件名，交给引擎当 EJS_gameName。
@@ -1329,7 +1509,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /**
    * 同一句话可能被核心打好几遍，只报第一次，免得把界面刷成一片红。
    *
-   * ⚠️ 只在**开局前**往上报。播放器收到 onError 会把这局拆掉（进度全丢），而 FATAL_HINTS
+   * ⚠️ 只在**开局前**往上报。播放器收到 onError 会把这局拆掉（进度全丢），而 FATAL_PHRASES
    * 那几个词（missing / failed to load / bios…）在游戏跑起来之后照样会出现 —— 比如玩家
    * 手动载入一份不兼容的即时存档，核心打一行 "Failed to load state"，就因为这一句把
    * 正在玩的游戏毙掉，是惩罚而不是报错。跑起来之后的错误只进日志探针。
@@ -2350,6 +2530,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           // 平台级 BIOS。Neo Geo 这类平台不给就直接起不来；不需要 BIOS 的平台
           // 这里是空串，等于没设
           ...(options.biosUrl ? { EJS_biosUrl: options.biosUrl } : {}),
+          // 街机：引擎没有 arcade 分支，不给这份布局手机上就只有 4 颗动作键、
+          // 摇杆还会把对角线松掉、投币键写着「选择」。见 ARCADE_VIRTUAL_PAD 的注释
+          ...(options.platform === 'arcade' ? { EJS_VirtualGamepadSettings: ARCADE_VIRTUAL_PAD } : {}),
           EJS_color: '#0078f2',
           EJS_backgroundColor: '#0b0b0f',
           // 跟着站点语言走。切语言是整页跳转（见 services/lang.ts 的 setLang），
@@ -2528,6 +2711,20 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
      * 玩家看不到这段延迟。
      */
     flushSaveFiles()
+    /**
+     * ⚠️ 先把核心停住再拆。
+     *
+     * 下面 iframe 只是 `display:none`，真正 remove 要等 `FS.syncfs` 回调或 1.5 秒超时；
+     * 而 React 的 effect cleanup 一跑完就会立刻挂新会话 —— 中间这段**两套 WASM 堆是重叠的**。
+     * 在详情页之间连点三款街机（或连点三次重试），手机上就同时存在 2~3 个
+     * `mame2003_plus` 实例，每个几十到两百 MB，标签页会被系统回收。
+     * 存档已经在上面 flushSaveFiles 里写过了，这里暂停不影响它。
+     */
+    try {
+      emuOf()?.pause?.()
+    } catch {
+      /* 引擎还没起来 / 已经没了，都无所谓 */
+    }
     let torn = false
     const tearDown = () => {
       if (torn) return

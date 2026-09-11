@@ -39,6 +39,7 @@
     "test:gamepad": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-gamepad-input.mjs",
     "test:chat-send": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-chat-send.mjs",
     "test:avatar": "node scripts/test-avatar.mjs",
+    "test:live-scale": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-live-scale.mjs",
     "test:live-chat": "node scripts/test-live-chat.mjs",
     "test:live-io": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-live-io.mjs",
     "test:rom-probe": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-rom-probe.mjs",

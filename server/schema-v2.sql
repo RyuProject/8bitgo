@@ -551,3 +551,144 @@ CREATE TABLE IF NOT EXISTS collection_items (
   CONSTRAINT fk_ci_col FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE,
   CONSTRAINT fk_ci_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------- 开放平台（第三方用 AppID + key 接入） ----------
+-- 设计稿：docs/open-platform.md。五张表，users 表不动。
+--
+-- ⚠️ 授权码和 refresh token **都只存哈希**：库被读走时，里面的东西不能直接拿去换令牌。
+--    access token 本身不落库（自包含的 JWT，15 分钟寿命，见 server/src/open/tokens.js）。
+
+CREATE TABLE IF NOT EXISTS oauth_apps (
+  -- = OIDC 的 client_id，形如 app_ + 24 位十六进制
+  id              VARCHAR(40)   NOT NULL PRIMARY KEY,
+  owner_id        VARCHAR(40)   NOT NULL,
+  name            VARCHAR(60)   NOT NULL,
+  description     TEXT          NULL,
+  homepage        VARCHAR(300)  NULL,
+  -- 对象 key，渲染前过 assetPublicUrl（和 games.cover 同一套）
+  logo            VARCHAR(500)  NULL,
+  privacy_url     VARCHAR(300)  NULL,
+  -- confidential = 有 key 的服务端应用；public = 纯前端，不发 key，只靠 PKCE
+  client_type     ENUM('confidential','public') NOT NULL DEFAULT 'confidential',
+  -- JSON 数组。回调地址**精确匹配**，差一个斜杠都不行
+  redirect_uris   TEXT          NULL,
+  -- JSON 数组。嵌入播放器的 frame-ancestors 白名单，和回调地址分开登记
+  embed_origins   TEXT          NULL,
+  -- 空白分隔。games.rom / saves.write 这类敏感 scope 要人工审核才会出现在这里
+  approved_scopes TEXT          NULL,
+  status          ENUM('sandbox','live','suspended') NOT NULL DEFAULT 'sandbox',
+  -- 上产申请的流转。和 status 分开的理由见 server/src/open/review.js 的文件头：
+  -- 正在申请上产的应用**仍然是可用的沙箱应用**，合成一个枚举会丢掉这件事
+  review_state    ENUM('none','pending','rejected') NOT NULL DEFAULT 'none',
+  -- 申请人**申请**的 scope。和 approved_scopes 分开是这套审核的基础：
+  -- 同一个字段既存申请又存批准，等于「提交即生效」
+  requested_scopes TEXT         NULL,
+  -- 申请人填的用途说明（审核人读这个）
+  review_note     TEXT          NULL,
+  -- 审核人给的打回 / 停用理由。**会原样显示给申请人**，所以必填
+  review_reason   VARCHAR(500)  NULL,
+  submitted_at    TIMESTAMP     NULL,
+  reviewed_by     VARCHAR(40)   NULL,
+  reviewed_at     TIMESTAMP     NULL,
+  -- 停用前是哪一档。恢复时回到这一档而不是一律回 live ——
+  -- 否则一个从沙箱被停用的应用，恢复之后就绕过了审核
+  suspended_from  ENUM('sandbox','live') NULL,
+  rate_tier       VARCHAR(16)   NOT NULL DEFAULT 'sandbox',
+  created_at      TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at      TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_owner (owner_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 密钥。**允许同时有两把有效**：新建一把 -> 两边都能用 -> 接入方换完 -> 撤销旧的。
+-- 不支持轮换的后果别处见过：密钥一到期，所有接入方同时挂，而且没有回退路径。
+CREATE TABLE IF NOT EXISTS oauth_app_secrets (
+  id           VARCHAR(40)  NOT NULL PRIMARY KEY,
+  app_id       VARCHAR(40)  NOT NULL,
+  -- bcrypt。明文只在创建/轮换时显示一次
+  secret_hash  VARCHAR(200) NOT NULL,
+  -- 末 6 位，仅用于在列表里认出「这是哪一把」
+  hint         CHAR(6)      NOT NULL,
+  created_at   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  expires_at   TIMESTAMP    NULL,
+  revoked_at   TIMESTAMP    NULL,
+  last_used_at TIMESTAMP    NULL,
+  KEY idx_app (app_id),
+  CONSTRAINT fk_oas_app FOREIGN KEY (app_id) REFERENCES oauth_apps(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 用户对应用的长期授权。/me/authorized-apps 那一页读它，用户一键解除也是删这里。
+CREATE TABLE IF NOT EXISTS oauth_authorizations (
+  user_id    VARCHAR(40) NOT NULL,
+  app_id     VARCHAR(40) NOT NULL,
+  scopes     TEXT        NULL,
+  created_at TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, app_id),
+  KEY idx_auth_app (app_id),
+  CONSTRAINT fk_oauth_app FOREIGN KEY (app_id) REFERENCES oauth_apps(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 授权码：一次性、60 秒。只存 sha256，明文不入库。
+CREATE TABLE IF NOT EXISTS oauth_codes (
+  code_hash      CHAR(64)     NOT NULL PRIMARY KEY,
+  app_id         VARCHAR(40)  NOT NULL,
+  user_id        VARCHAR(40)  NOT NULL,
+  scopes         TEXT         NULL,
+  -- 换 token 时必须和当初那次**完全一致**（RFC 6749 的要求，也是防重定向劫持的关键）
+  redirect_uri   VARCHAR(500) NOT NULL,
+  -- PKCE，只接受 S256。plain 一律拒绝
+  code_challenge VARCHAR(128) NOT NULL,
+  nonce          VARCHAR(128) NULL,
+  expires_at     TIMESTAMP    NOT NULL,
+  -- 用过的码再用一次 = 被偷了：按 RFC 9700 要把该用户在该应用下的 refresh token 全废掉
+  used_at        TIMESTAMP    NULL,
+  KEY idx_codes_expire (expires_at),
+  CONSTRAINT fk_oc_app FOREIGN KEY (app_id) REFERENCES oauth_apps(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- refresh token：轮换 + 重放检测。同样只存哈希。
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+  token_hash   CHAR(64)    NOT NULL PRIMARY KEY,
+  app_id       VARCHAR(40) NOT NULL,
+  user_id      VARCHAR(40) NOT NULL,
+  scopes       TEXT        NULL,
+  -- 上一枚。拿已经轮换掉的那枚来刷新 = 有人在重放，整条链一起吊销
+  rotated_from CHAR(64)    NULL,
+  expires_at   TIMESTAMP   NOT NULL,
+  revoked_at   TIMESTAMP   NULL,
+  last_used_at TIMESTAMP   NULL,
+  created_at   TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_tok_user_app (user_id, app_id),
+  KEY idx_tok_expire (expires_at),
+  CONSTRAINT fk_ot_app FOREIGN KEY (app_id) REFERENCES oauth_apps(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------- 开放平台：申请与审核（2026-09-11 追加） ----------
+-- 状态机在 server/src/open/review.js，那份文件的头部解释了为什么
+-- status（能力）和 review_state（流转）是两个字段而不是一个枚举。
+
+-- 审核流水。**必须留痕**：「这把 key 当初凭什么发的」是事后唯一能查的东西，
+-- 而 oauth_apps 上只存得下最后一次的结果。
+CREATE TABLE IF NOT EXISTS oauth_app_reviews (
+  id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  app_id     VARCHAR(40) NOT NULL,
+  -- 谁做的。申请人自己提交/撤回时是他，批准/打回/停用时是审核人
+  actor_id   VARCHAR(40) NOT NULL,
+  action     ENUM('submit','withdraw','approve','reject','suspend','restore') NOT NULL,
+  -- 提交时是用途说明，批准时是最终批的 scope，打回/停用时是理由
+  detail     TEXT        NULL,
+  created_at TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_oar_app (app_id, created_at),
+  CONSTRAINT fk_oar_app FOREIGN KEY (app_id) REFERENCES oauth_apps(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 沙箱期的授权白名单。**这张表是「先沙箱后审核」这个模型成立的关键**：
+-- 沙箱应用只能授权给申请人自己和这里的几个测试号，所以「拿 key 去钓鱼」
+-- 在审核之前压根走不通。上产之后这张表不再生效（见 review.js 的 limitsFor）。
+CREATE TABLE IF NOT EXISTS oauth_app_testers (
+  app_id   VARCHAR(40) NOT NULL,
+  user_id  VARCHAR(40) NOT NULL,
+  added_at TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (app_id, user_id),
+  CONSTRAINT fk_oat_app FOREIGN KEY (app_id) REFERENCES oauth_apps(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

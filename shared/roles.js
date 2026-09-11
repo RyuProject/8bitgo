@@ -39,10 +39,17 @@ export const ROLE_LABELS = {
  *   users:role      改别人的角色
  *   site:manage     ROM 存储、平台 BIOS、批量导入、数据导出这类站级操作
  *   collections:review 合集审核（下架 / 删除违规合集）
+ *   apps:review     开放平台的应用审核（批上产、删减 scope、停用应用）
  *
  * ⚠️ collections:review **故意只给 admin**（靠 admin: ABILITIES 自动获得），没给志愿者。
  * 产品上的约定是「作者本人能改，管理员只能删」—— 合集是署名的个人表达，
  * 让更多人能替作者动他的内容，性质和审核评论不一样。
+ *
+ * ⚠️ apps:review 同样**只给 admin**，而且这条线比合集那条还硬：
+ * 批一个应用上产 = 把站外的一把 key 放进生产环境，它能读真实用户的数据、能领 ROM 凭据。
+ * 那不是「改内容」，是**对外授权** —— 改错内容看得见也改得回来，而发出去的 key 收不回来
+ * （吊销之后还有最长 15 分钟的在飞令牌，见 docs/open-platform.md）。
+ * 想放给运营，改下面 ROLE_ABILITIES 里 volunteer 那一行就行，别去改路由。
  */
 export const ABILITIES = [
   'content:edit',
@@ -51,6 +58,7 @@ export const ABILITIES = [
   'users:role',
   'site:manage',
   'collections:review',
+  'apps:review',
 ]
 
 /** 角色 -> 权限点。admin 直接引用 ABILITIES，以后加权限点它自动跟着长 */

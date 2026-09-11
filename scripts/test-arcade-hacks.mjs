@@ -189,4 +189,47 @@ for (const h of ARCADE_HACKS) {
   }
 }
 
+/* ---------------- 入库的包也必须跑合成 ---------------- */
+{
+  console.log('\n── 合成这一步两条路都要接上 ──')
+  const { readFileSync } = await import('node:fs')
+  const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')
+
+  /*
+    病史：合成（derive）以前**只有「玩本地 ROM」那条路接了**。入库的游戏那条只做两件事 ——
+    套 hack.romData、把包名改成 hack.zipName —— 而 dat 里引用的偏偏是合成产物
+    （wofcn 的两块中文字库片是原图形 ROM 的一个字节窗口被补丁片盖过）。包里没有这两块，
+    核心按 dat 去找就是两条 missing，游戏必死，而后台界面还绿字写着「✓ 识别为已知改版包」。
+  */
+  const adapter = strip(readFileSync(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8'))
+  ok(
+    /deriveArcadeHackBytes\(/.test(adapter),
+    '⭐ prepareRemoteArcadeRom 这条路会跑合成（入库的改版包不能只套 dat 不合成）',
+  )
+  ok(
+    !/new Blob\(\[data\], \{ type: 'application\/zip' \}\)/.test(adapter),
+    '⭐ 不许再直接拿原始字节建 blob —— 必须过 arcadeBlobFrom，它才会合成',
+  )
+  const local = strip(readFileSync(new URL('../src/emulator/arcadeHack.ts', import.meta.url), 'utf8'))
+  ok(/deriveArcadeHackBytes\(/.test(local), '本地那条路也走同一个函数（同一张表、同一套合成）')
+
+  // outputs 必须和 run() 的实际产出、以及 romData 里引用的名字三者一致
+  for (const hack of ARCADE_HACKS) {
+    if (!hack.derive) continue
+    const { inputs, outputs, run } = hack.derive
+    ok(Array.isArray(outputs) && outputs.length > 0, `${hack.zipName}: derive 声明了 outputs`)
+    // 拿够长的假数据跑一遍，只核名字
+    const fake = {}
+    for (const name of inputs) fake[name] = new Uint8Array(0x200000)
+    const produced = run(fake).map((x) => x.name)
+    ok(
+      JSON.stringify(produced) === JSON.stringify(outputs),
+      `${hack.zipName}: outputs 和 run() 实际产出一致（${produced.join(', ')}）`,
+    )
+    for (const name of outputs) {
+      ok(hack.romData.includes(name), `${hack.zipName}: romData 里引用了合成产物 ${name}`)
+    }
+  }
+}
+
 console.log(`\n全部通过 ✅  共 ${n} 项`)

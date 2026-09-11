@@ -75,7 +75,33 @@ if (!existsSync(join(dir, 'cores', 'fbneo-wasm.data'))) {
 }
 
 if (!checkDist) {
-  console.log('✔ EmulatorJS 自建运行时 + 核心齐全（dontExtractIfCore / blob 文件名 / 存档 ABI 三项补丁均在位）')
+/*
+  引擎的下载器必须还是 fetch。
+
+  为什么要盯：`installNetTap`（adapters/emulatorjs.ts）就是靠包 iframe 的 `fetch` 才拿到
+  加载进度、卡死心跳、以及 4xx/5xx 的拦截。这套东西**上一次已经悄悄失效过一整轮** ——
+  当时它包的是 XMLHttpRequest，而引擎早就改用 fetch 了，于是探针整块变成死代码：
+  BIOS 配错报成一句无关的「Network Error」、核心下载没有真实进度、卡死检测误报。
+  tsc 不会响，页面照样能开，只有玩家撞上才知道。所以升级引擎时必须在这里当场拦住。
+*/
+{
+  const xhrHits = (js.match(/XMLHttpRequest/g) || []).length
+  if (!/\bfetch\s*\(/.test(js)) {
+    fail(
+      'emulator.min.js 里找不到 fetch 调用 —— 引擎可能换回了 XHR 或别的下载实现',
+      'adapters/emulatorjs.ts 的 installNetTap 是靠包 fetch 工作的，换实现的话那套进度/心跳/4xx 拦截会整块失效；去那个函数里跟着改',
+    )
+  }
+  // socket.io 自带的 polling 传输会用到 XHR，几处是正常的；多到不像话就说明引擎改实现了
+  if (xhrHits > 12) {
+    fail(
+      `emulator.min.js 里 XMLHttpRequest 出现了 ${xhrHits} 次，远多于 socket.io 那几处`,
+      '引擎可能把下载器换回了 XHR。确认之后回去看 installNetTap 包的是哪一个',
+    )
+  }
+}
+
+  console.log('✔ EmulatorJS 自建运行时 + 核心齐全（三项补丁在位，下载器仍是 fetch）')
   process.exit(0)
 }
 

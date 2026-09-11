@@ -195,4 +195,56 @@ for (const key of [...needed].sort()) {
   ok(typeof zhHans.keymap[key] === 'string', `t.keymap.${key} 有文案（${zhHans.keymap[key]}）`)
 }
 
+/* ---------------- 街机的屏幕手柄 ---------------- */
+{
+  console.log('\n── 街机屏幕手柄（EJS_VirtualGamepadSettings）──')
+  /*
+    为什么要钉这条：引擎的 setVirtualGamepad() 按 getControlScheme() 分支，
+    而那张表里**根本没有 arcade / mame** —— 街机会落进最后那个 else，拿到一套 SNES 布局。后果：
+      · 按键 5/6（libretro R=11、L=10）屏幕上不存在 → 手机上六键格斗的重拳重脚永远出不来
+        （拳皇是四键，刚好够用，所以只测拳皇发现不了）
+      · zone 摇杆用 30ms 定时器松方向、且从不 clearTimeout → 握住对角线会被松掉，波动拳搓不出
+      · 投币键标成 localization("Select") =「选择」→ 街机不投币按 Start 没反应，新手直接劝退
+    所以适配器必须自带一份。这里核它和 keymapData 那张表对得上。
+  */
+  const adapter = readFileSync(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
+  const code = adapter.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')
+
+  ok(/EJS_VirtualGamepadSettings:\s*ARCADE_VIRTUAL_PAD/.test(code), '街机注入了自己的屏幕手柄布局')
+  ok(/options\.platform === 'arcade' \?/.test(code), '只给街机注入，别的平台仍用引擎默认')
+
+  const from = code.indexOf('const ARCADE_VIRTUAL_PAD')
+  const body = code.slice(from, code.indexOf('\n]', from) + 2)
+
+  const inputs = [...body.matchAll(/input_value:\s*(\d+)/g)].map((m) => Number(m[1]))
+  const want = [...ARCADE_GENERIC_BUTTONS, EJS_INDEX.select, EJS_INDEX.start]
+  const sorted = (a) => JSON.stringify([...a].sort((x, y) => x - y))
+  ok(sorted(inputs) === sorted(want), `六颗动作键 + 投币 + Start，一个不多一个不少（${inputs.join(',')}）`)
+  for (const id of ARCADE_GENERIC_BUTTONS) ok(inputs.includes(id), `键位表里的 libretro ${id} 屏幕上有对应按钮`)
+
+  ok(/type: 'dpad'/.test(body), '方向走 dpad —— zone 那条会把对角线松掉')
+  ok(!/type: 'zone'/.test(body), '没有用 zone')
+  ok(/inputValues: \[4, 5, 6, 7\]/.test(body), 'dpad 的四个方向是 4/5/6/7')
+  ok(/text: 'INSERT COIN'/.test(body), "投币键的 text 是 'INSERT COIN'（引擎过 localization() → 中文「投币」）")
+  ok(ejsSrc.includes('INSERT COIN'), '引擎侧确实认 INSERT COIN 这个词条')
+
+  // 摆位：上排三拳、下排三脚 —— 六键格斗的拳脚各占一排，和真机一致
+  const top = [...body.matchAll(/top: 0,[^}]*input_value:\s*(\d+)/g)].map((m) => Number(m[1]))
+  const bottom = [...body.matchAll(/top: 70,[^}]*input_value:\s*(\d+)/g)].map((m) => Number(m[1]))
+  const f = ARCADE_FIGHTER_BUTTONS
+  ok(JSON.stringify(top) === JSON.stringify([f.punchL, f.punchM, f.punchH]), `上排从左到右 = 轻拳 中拳 重拳（${top.join(',')}）`)
+  ok(JSON.stringify(bottom) === JSON.stringify([f.kickL, f.kickM, f.kickH]), `下排从左到右 = 轻脚 中脚 重脚（${bottom.join(',')}）`)
+}
+
+/* ---------------- 开局前那行键位摘要 ---------------- */
+{
+  console.log('\n── 键位摘要不能把投币和 Start 切掉 ──')
+  const player = readFileSync(new URL('../src/emulator/EmulatorPlayer.tsx', import.meta.url), 'utf8')
+  ok(
+    !/\.rows\.slice\(0,\s*5\)/.test(player),
+    '⭐ 不许再用 slice(0,5) —— 街机 9 行表正好只留下方向键+按键1~4，把唯一「不知道就开不了始」的投币和 Start 切掉',
+  )
+  ok(/rows\.slice\(-2\)/.test(player), '摘要保留末两行（各平台都是 Start/Select 在末尾）')
+}
+
 console.log(`\n全部通过 ✅  共 ${n} 项`)

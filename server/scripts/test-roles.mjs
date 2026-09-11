@@ -28,6 +28,24 @@ check('志愿者能审评论', can('volunteer', 'comments:review'))
 check('志愿者不能管用户', can('volunteer', 'users:manage') === false)
 check('志愿者不能发权限', can('volunteer', 'users:role') === false)
 check('志愿者不能碰站级操作', can('volunteer', 'site:manage') === false)
+/*
+  ⚠️ 发 key 这件事的权限线要比「改内容」硬：批一个应用上产 = 把站外的一把 key
+  放进生产环境。改错内容看得见也改得回来，发出去的 key 收不回来。
+*/
+check('志愿者不能审开放平台的应用', can('volunteer', 'apps:review') === false)
+check('管理员能审开放平台的应用', can('admin', 'apps:review'))
+
+/*
+  ⚠️ 手写的 shared/roles.d.ts 会和 roles.js 漂开。
+  2026-09-11 实测发现它少了 collections:review（早就加进 ABILITIES 了）——
+  症状是前端引用那个权限点时 TS 报「不可赋值」，于是有人会顺手写个 as 断言绕过去，
+  而那一刀下去整张权限表在前端就不再受类型保护了。
+*/
+{
+  const dts = readFileSync(join(root, '../shared/roles.d.ts'), 'utf8')
+  const missing = ABILITIES.filter((a) => !dts.includes(`'${a}'`))
+  check('roles.d.ts 的 Ability 联合类型和 ABILITIES 一致', missing.length === 0, missing.join(' '))
+}
 check('志愿者进得了后台', isStaff('volunteer'))
 check('管理员是全集', ABILITIES.every((a) => can('admin', a)))
 check('认不出的角色一律没权限', !can('root', 'content:edit') && !can(undefined, 'content:edit') && !isStaff(null))

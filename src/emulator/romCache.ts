@@ -45,6 +45,20 @@ const STORE_META = 'meta'
  * 否则玩第二款游戏时会把第一款整个挤掉，两款轮流玩就是每次都重下。
  */
 const MAX_ENTRY_BYTES = 200 * 1024 * 1024
+
+/** 最近一次「没能缓存」的原因，给 romCacheStats() 和排查用 */
+let lastSkip: { key: string; size: number; why: string; at: number } | null = null
+
+/** 跳过缓存时留个痕迹 —— 静默跳过会让人怀疑整个缓存坏了 */
+function skip(key: string, size: number, why: string): void {
+  lastSkip = { key, size, why, at: Date.now() }
+  console.debug(`[romCache] 跳过缓存：${why}（${Math.round(size / 1048576)}MB）${key}`)
+}
+
+/** 给设置页 / 排查用：最近一次跳过的原因 */
+export function romCacheLastSkip() {
+  return lastSkip
+}
 const MAX_BLOB_ENTRY_BYTES = 4 * 1024 * 1024 * 1024
 
 /** 只占配额的一半，另一半留给存档、EmulatorJS-Cache 和浏览器自己的 HTTP 缓存 */
@@ -196,6 +210,9 @@ async function touch(db: IDBDatabase, key: string): Promise<void> {
  * 的判断就是兜这种情况：宁可不缓存，也不能把 0 字节写进去当成有效 ROM。
  */
 export async function romCachePut(key: string, data: ArrayBuffer): Promise<void> {
+  if (data.byteLength > MAX_ENTRY_BYTES) {
+    skip(key, data.byteLength, `超过单条上限（${Math.round(MAX_ENTRY_BYTES / 1048576)}MB）`)
+  }
   return put(key, data, MAX_ENTRY_BYTES)
 }
 
@@ -220,8 +237,17 @@ async function put(key: string, data: CacheValue, maxEntry: number): Promise<voi
   const budget = await budgetBytes()
   // 一个条目最多占掉预算的一半：占满的话，玩第二款游戏必然把第一款挤掉，
   // 两款轮着玩就变成每次都重下 —— 那还不如一开始就不缓存这一张
-  if (size > budget / 2) return
-  if (!(await ensureRoom(db, size, budget))) return
+  /**
+   * ⚠️ 这两道闸以前是**完全静默**的，排查时看不出任何痕迹。
+   *
+   * 表现：一个 260MB 的合并 romset 永远进不了缓存，玩家每次开局都重下 260MB，
+   * `romCacheStats()` 里看不到、控制台一个字都没有，查的人只会怀疑 romCache 本身坏了。
+   * 第二道更隐蔽：iOS Safari 的 `storage.estimate().quota` 常报 ~1GB → budget 500MB →
+   * `budget/2 = 250MB`，同一份 ROM 在桌面 Chrome 上能缓存、在 iPhone 上永远不能，
+   * 行为分叉却无从得知。
+   */
+  if (size > budget / 2) return skip(key, size, `超过预算的一半（${Math.round(budget / 2 / 1048576)}MB）`)
+  if (!(await ensureRoom(db, size, budget))) return skip(key, size, '腾不出空间')
 
   const result = await putEntry(db, key, data)
   if (result !== 'quota') return

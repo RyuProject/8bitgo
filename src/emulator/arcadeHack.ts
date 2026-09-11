@@ -53,6 +53,31 @@ async function runDerive(
 }
 
 /**
+ * 带 `derive` 的改版包：把合成产物追加进包，返回新的字节；不需要合成返回 null。
+ *
+ * **本地包和入库的包两条路都必须走这里。** 以前只有本地那条接了 —— 入库这条只套了
+ * RomData、改了包名，**没跑合成**，而 dat 里引用的偏偏就是合成产物（wofcn 的两块中文
+ * 字库片），于是核心按 dat 去找 `tk2_gfx1cn.rom` / `tk2_gfx3cn.rom`，包里根本没有，
+ * 必然两条 missing。管理员那边界面还绿字写着「✓ 识别为已知改版包」。
+ *
+ * ⚠️ **合成失败要抛，不能静默放行。** 放行的结果是 100% 起不来，而报错文案会指向
+ * 完全无关的方向；抛出来至少能说清「这个包缺合成需要的成员」。
+ */
+export async function deriveArcadeHackBytes(
+  buf: ArrayBuffer,
+  entries: readonly ZipFileEntry[],
+  hack: ArcadeHack,
+): Promise<Uint8Array | null> {
+  if (!hack.derive) return null
+  // 已经烘好的包（scripts/prep-arcade-hack.mjs 离线合成过）就别再追加一遍
+  const already = new Set(entries.map((e) => e.name.split('/').pop()))
+  const outputs = hack.derive.outputs
+  if (outputs.length > 0 && outputs.every((n) => already.has(n))) return null
+  const derived = await runDerive(buf, entries, hack.derive)
+  return appendZipEntries(buf, derived)
+}
+
+/**
  * 认一个本地街机包。不是 zip、认不出、或者读取失败都返回 null ——
  * 这一步是锦上添花，不能把「拖个文件进来就能玩」搞挂。
  */
@@ -72,9 +97,8 @@ export async function matchLocalArcadeHack(file: File): Promise<ArcadeHackMatch 
       return { hack, file: renamed }
     }
 
-    const derived = await runDerive(buf, entries, hack.derive)
-    const merged = appendZipEntries(buf, derived)
-    return { hack, file: new File([merged as BlobPart], wanted, { type: file.type }) }
+    const merged = await deriveArcadeHackBytes(buf, entries, hack)
+    return { hack, file: new File([(merged ?? buf) as BlobPart], wanted, { type: file.type }) }
   } catch (err) {
     console.warn('[arcade] 改版包识别失败，按原文件走：', err)
     return null

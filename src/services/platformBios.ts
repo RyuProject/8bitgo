@@ -16,6 +16,9 @@ import { romUrlForKey } from './roms'
 export type PlatformBiosMap = Partial<Record<PlatformId, string>>
 
 let cache: PlatformBiosMap | null = null
+/** 上次请求失败的时刻。失败之后不写 cache，靠这个做短退避 */
+let failedAt = 0
+const RETRY_BACKOFF_MS = 5000
 let inflight: Promise<PlatformBiosMap> | null = null
 const listeners = new Set<() => void>()
 
@@ -27,18 +30,32 @@ function notify() {
 export function fetchPlatformBios(force = false): Promise<PlatformBiosMap> {
   if (!apiEnabled()) return Promise.resolve({})
   if (!force && cache) return Promise.resolve(cache)
+  // 上一次失败之后的退避窗口内直接给空表，别把失败的接口打爆
+  if (!force && failedAt && Date.now() - failedAt < RETRY_BACKOFF_MS) return Promise.resolve({})
   if (!force && inflight) return inflight
   inflight = api
     .get<PlatformBiosMap>('/api/platform-bios')
     .then((m) => {
       cache = m && typeof m === 'object' ? m : {}
+      failedAt = 0
       return cache
     })
     .catch(() => {
-      // 取不到就当没配。BIOS 缺失会由引擎自己报错，比在这里抛出去更有用 ——
-      // 那样连不需要 BIOS 的平台也一起打不开了
-      cache = cache ?? {}
-      return cache
+      /**
+       * 取不到就当没配 —— BIOS 缺失由引擎自己报错，比在这里抛出去有用（那样连不需要
+       * BIOS 的平台也一起打不开了）。
+       *
+       * ⚠️ **但绝不能把空表写进 cache。** 写了的话 `if (!force && cache) return` 就再也
+       * 不会重新请求，整页生命周期里 `platformBiosUrlSync` 一律返回空 →
+       * `EJS_biosUrl` 不设 → 所有 Neo Geo 街机报 `sp-s2.sp1 not found` 起不来，
+       * 玩家点重试、换游戏、来回切都一样，因为毒在模块级变量里。
+       * 而触发它只需要进站那一刻接口抖一下（5xx / 弱网超时 / 被拦截器挡一次）。
+       *
+       * 所以：保持 cache 为空，下一次调用照常重新请求。加一个短退避，免得
+       * 接口真挂了时每次渲染都打一发。
+       */
+      failedAt = Date.now()
+      return cache ?? {}
     })
     .finally(() => {
       inflight = null

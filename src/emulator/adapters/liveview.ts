@@ -362,6 +362,28 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 比 loadeddata / playing 都准。不支持的浏览器退回事件 + 轮询 videoWidth：
    * 有尺寸就说明解码器已经吃到东西了。
    */
+  /**
+   * 上报流的分辨率。**只报可用的尺寸**（usableVideoSize）——
+   * 一条 2×2 的废流报上去会让上层把舞台限成 6×6 像素，比不报糟得多。
+   */
+  let reportedSize = ''
+  const reportSize = () => {
+    if (destroyed) return
+    const w = video.videoWidth
+    const h = video.videoHeight
+    if (!usableVideoSize(w, h)) return
+    const key = `${w}x${h}`
+    if (key === reportedSize) return
+    reportedSize = key
+    options.onGeometry?.({ width: w, height: h })
+  }
+
+  /*
+    主播换游戏 / 换布局时流的分辨率会变（NDS 切上下叠、从 NES 换到 DOS）。
+    `resize` 正是「这条轨的尺寸变了」，不挂的话观众端会一直按第一帧那个尺寸限大小。
+  */
+  video.addEventListener('resize', reportSize)
+
   const waitForFirstFrame = (onFrame: () => void) => {
     frameWaiter?.()
     let done = false
@@ -395,6 +417,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         return
       }
       tinyFrame = false
+      /*
+        把**流的真实分辨率**报上去。以前这一路一次都没报过几何，
+        于是观众端的舞台按平台查表（`desktopScreenAspect` 默认 16:9），
+        画面在里面再 contain 一次 —— 而真正要紧的是：上层不知道流多大，
+        就没法按「原生分辨率的几倍」限画面大小（见 screenAspect.ts 的 liveStageStyle）。
+        这是站长报的「大播放器 → 串流画面很糊」的前提条件。
+      */
+      reportSize()
       fire()
     }
     const cleanup = () => {
@@ -1085,6 +1115,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       window.clearTimeout(watchdog)
       window.clearTimeout(rewatchTimer)
       host.removeEventListener('click', onClick)
+      video.removeEventListener('resize', reportSize)
       closePc()
       try {
         socket?.close()

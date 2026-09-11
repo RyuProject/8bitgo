@@ -161,3 +161,95 @@ const CAP = {
 } as const
 
 export const stageHeightCap = (immersive: boolean): string => (immersive ? CAP.immersive : CAP.normal)
+
+/**
+ * 和 `CAP` 是**同一份数字**，给需要在 inline style 里做 `min()` 的地方用（见 liveStageStyle）。
+ *
+ * ⚠️ 只能写两遍：Tailwind 的类名必须是字面量（理由同 MOBILE_ASPECT），
+ * 而 CSS 的 `calc()` 里减号两侧要有空格、Tailwind 的任意值里不能有空格 ——
+ * 两种写法拼不成一个。`scripts/test-live-scale.mjs` 有一条断言把两边钉在一起，
+ * 改了一处忘了另一处会红。
+ */
+export const STAGE_CAP_EXPR = {
+  immersive: 'calc(100dvh - 7rem)',
+  normal: 'calc(100dvh - 10rem)',
+} as const
+
+/* ---------------- 看直播时：画面最多放大到原生分辨率的几倍 ---------------- */
+
+/**
+ * 观众端画面的放大上限（2026-09-11，站长报「大播放器会导致串流画面很糊」）。
+ *
+ * ## 为什么「回到第一版布局」解决不了这件事
+ *
+ * 站长记忆里的「第一版 play page」是 09-07 之前那个 8/4 两栏、播放器塞在左边 8 列的样子
+ * （1440 屏上画面约 750×420）。那**确实**会让画面变小，但它是「跟着窗口缩放」的 ——
+ * 4K 屏上照样会被撑到 1400 宽，糊只是来得慢一点。
+ * （顺带：09-07 那次「限宽 → 限高」的改动里**画面尺寸一个像素都没变**，
+ * 见 stageHeightCap 上面那段推导。所以如果「第一版」指的是那一版，改回去是纯粹的空操作。）
+ *
+ * ## 真正的病因是放大倍数
+ *
+ * 推流发的是**源画布的分辨率**，而像素画那一档还刻意 `maintain-resolution`
+ * （见 videoTuning.ts：小源宁可掉帧也不减分辨率）。于是 NES 约 256×240 的一路流，
+ * 被一路撑到四倍多，而且是一条按 0.25 bit/像素/帧 压过的流 ——
+ * 编码器省掉的每一个细节都跟着放大四倍。
+ *
+ * **09-11 在云端真 Chromium 里量的**（Playwright + 手写等价 CSS 的 probe，
+ * 内容列上限 1900、视口高度预算 10rem，流按 256×240）：
+ *
+ * | 视口 | 现状：画面 / 放大 | 限 3 倍之后 |
+ * |---|---|---|
+ * | 1920×1170 | 1077×1010 / **4.21×** | 768×720 / 3.00× |
+ * | 1920×1080 | 981×920 / 3.83× | 768×720 / 3.00× |
+ * | 2560×1440 | 1140×1069 / **4.45×** | 768×720 / 3.00× |
+ * | 1280×720 | 597×560 / 2.33× | **597×560 / 2.33×（一模一样）** |
+ *
+ * 最后一行是这套做法最值得看的一条：**矮屏上什么都没变**。
+ * 那里限住画面的本来就是视口高度（`calc(100dvh - 10rem)`），
+ * 这个上限只是把外面那个黑框从 1216 收到 768，画面一个像素没动。
+ * 换句话说它只在「窗口大到开始糊」的时候才起作用。
+ *
+ * 代价是大屏上画面明显变小（NES 最大 768×720），两侧是黑边 —— 这是站长要的取舍。
+ *
+ * 3 倍怎么来的：2 倍在 1080p 屏上偏小（NES 只有 512×480），4 倍就回到现在这个量级了
+ * （上表 3.83× 已经在糊）。真要调就改这个常量，它是这套逻辑里唯一一个可调的数。
+ */
+export const LIVE_MAX_SCALE = 3
+
+/**
+ * 观众端舞台的 inline style。`undefined` = 还不知道流多大，**不猜**（照常走类名那一套）。
+ *
+ * 三件事一起做，缺一件都不对：
+ *
+ * 1. **`aspectRatio` 按流的实际比例**。不这么做的话舞台还是 16:9，
+ *    而 4:3 的流在里面 contain 一次 —— maxWidth 限的是那个 16:9 的框，
+ *    画面只能拿到 `768 × 9/16 × 4/3 = 576` 宽，也就是 2.25 倍，不是 3 倍。
+ *    直播这一支舞台里没有别的东西（桌面端工具栏是叠加的），所以舞台 = 画面，
+ *    比例给准了就不会有任何一次多余的 contain。
+ * 2. **`maxWidth`** = 原生宽 × 倍数。
+ * 3. **`maxHeight`** = `min(原来那个视口上限, 原生高 × 倍数)`。
+ *    ⚠️ 必须自己做这个 min：inline style 的优先级高过任何类名，
+ *    直接写 `maxHeight: '720px'` 会把 stageHeightCap 那条**顶掉** ——
+ *    矮屏上画面就会比视口还高，玩家得滚着看。
+ *
+ * ⚠️ **只在桌面端的普通分支用**：手机上舞台是 auto 高度（画面 + 手柄 + 工具栏三段），
+ * 给它一个 aspectRatio 会把后两段挤出去；而全屏 / 游玩布局本来就是要铺满视口的。
+ * 手机上也用不着 —— 390 宽的屏幕对 NES 只有 1.5 倍，压根不糊。
+ */
+export function liveStageStyle(
+  geometry: { width: number; height: number } | null | undefined,
+  immersive: boolean,
+  maxScale: number = LIVE_MAX_SCALE,
+): { aspectRatio: string; maxWidth: string; maxHeight: string } | undefined {
+  const w = Number(geometry?.width) || 0
+  const h = Number(geometry?.height) || 0
+  if (w <= 0 || h <= 0) return undefined
+  const scale = Math.max(1, Math.floor(maxScale) || 1)
+  const cap = immersive ? STAGE_CAP_EXPR.immersive : STAGE_CAP_EXPR.normal
+  return {
+    aspectRatio: `${w} / ${h}`,
+    maxWidth: `${w * scale}px`,
+    maxHeight: `min(${cap}, ${h * scale}px)`,
+  }
+}

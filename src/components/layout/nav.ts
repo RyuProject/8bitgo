@@ -80,5 +80,12 @@ export function footerLinksFor(t: Translation) {
     // 提交游戏和直播没关系，直播一关它会跟着一起消失。
     { label: t.nav.submitGame, to: '/submit' },
     { label: t.nav.playLocal, to: '/play-local' },
+    /*
+      开放平台的开发者入口。放页脚是合适的位置：它面向的是少数人、偶尔来一次
+      （和「提交游戏」同一个性质），占侧边栏一格不划算。
+      ⚠️ 文案写死中文，和它指向的那一页一致 —— 那一页管理的东西（文档、scope 语义、
+      错误码）只有中文一份，给入口翻八种语言只会让人点进去发现看不懂。
+    */
+    { label: '开放平台', to: '/open' },
   ]
 }

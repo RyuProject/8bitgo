@@ -150,8 +150,17 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
     if (hidden) releaseAll()
   }, [hidden, releaseAll])
 
-  // 送不出去、或者适配器明说「这局一颗键都用不上」，整条就别画了 —— 画一个空壳更糟
-  if (!send || (only && only.length === 0)) return null
+  /**
+   * ⚠️ 下面两个 useRef **必须待在所有提前 return 之前**（hooks 规则）。
+   *
+   * 它们原来在 `if (!send || …) return null` 之后，两个后果：
+   *   · 同一个实例先以空 padButtons 渲染、之后变非空 → hook 数量从 7 变 9 →
+   *     React 抛「Rendered more hooks than during the previous render」，整个播放器子树垮掉；
+   *   · 走提前返回那一支时，`releaseAll` 的闭包在 effect 清理里引用它们会命中 TDZ
+   *     （Cannot access 'dpadPointer' before initialization）。
+   * 现在恰好踩不到，是因为唯一给空 padButtons 的 liveview 座位同时也摘掉了 touchpad 能力 ——
+   * 那是巧合保护，不是设计。
+   */
 
   /**
    * 十字键的**归属手指**。
@@ -162,6 +171,19 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
    * 要抬起来重按一次才活」。只认第一根手指，其余一律不理。
    */
   const dpadPointer = useRef<number | null>(null)
+
+  /**
+   * 每颗按键上**压着哪几根手指**。
+   *
+   * 双指交替猛点 A 连发是标准打法：两次点按只要有几毫秒重叠，第二根的按下就会被
+   * `down === held.has(button)` 挡掉，而第一根一抬就把键松了 —— 一对交替只产生
+   * **一次**按下，连发速率直接减半，玩家感觉「点得越快反而越不出招」。
+   * 记住每颗键上的手指集合，空→非空才按下，非空→空才松开。
+   */
+  const btnPointers = useRef(new Map<PadButton, Set<number>>())
+
+  // 送不出去、或者适配器明说「这局一颗键都用不上」，整条就别画了 —— 画一个空壳更糟
+  if (!send || (only && only.length === 0)) return null
 
   const onDpad = (e: PointerEvent<HTMLDivElement>) => {
     const r = e.currentTarget.getBoundingClientRect()
@@ -204,15 +226,7 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
     onContextMenu: (e: MouseEvent) => e.preventDefault(),
   }
 
-  /**
-   * 同一颗按钮上压着几根手指。
-   *
-   * 双指交替猛点 A 连发是标准打法：两次点按只要有几毫秒重叠，第二根的按下就会被
-   * `down === held.has(button)` 挡掉，而第一根一抬就把键松了 —— 一对交替只产生
-   * **一次**按下，连发速率直接减半，玩家感觉「点得越快反而越不出招」。
-   * 记住每颗键上的手指集合，空→非空才按下，非空→空才松开。
-   */
-  const btnPointers = useRef(new Map<PadButton, Set<number>>())
+  /** 按下：这颗键上的手指集合从空变非空，才算真的按下一次（理由见 btnPointers） */
   const pressBtn = (button: PadButton, id: number) => {
     let ids = btnPointers.current.get(button)
     if (!ids) btnPointers.current.set(button, (ids = new Set()))

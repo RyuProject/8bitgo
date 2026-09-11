@@ -83,6 +83,22 @@ const STATE_GET_TO =
   'return new Uint8Array(this.Module.HEAPU8.subarray(i,i+e))}'
 
 /**
+ * 核心的 stderr 必须出得来。
+ *
+ * 引擎把 Emscripten 的两个输出口都写成了 `t=>{this.debug&&console.log(t)}`，而 `this.debug`
+ * 来自 `EJS_DEBUG_XX` —— 站点从没设过，所以核心自己打的诊断（FBNeo 的 `Romset is unknown`、
+ * MAME 的 `NOT FOUND` / `WRONG CHECKSUM`、缺 BIOS 那几行）**一个字都出不来**。
+ *
+ * 后果：同一款 Neo Geo 游戏，「没配 neogeo.zip」「romset 少一个成员」「改版包没贴 RomData」
+ * 三种完全不同的病，玩家和运维看到的都是同一句「Failed to start game」，
+ * 而 adapters/emulatorjs.ts 里那套按关键词分流的 FATAL_HINTS 一个词都命不中。
+ *
+ * 只改 `printErr`（stderr）不动 `print`（stdout）—— 后者是核心的常规输出，会刷屏。
+ */
+const PRINT_ERR_FROM = 'printErr:t=>{this.debug&&console.log(t)}'
+const PRINT_ERR_TO = 'printErr:t=>{console.warn(t)}'
+
+/**
  * 每组：name 显示用；patches 是 [要找的原文, 替换后]；
  * legacy 可选，把「替换后」映射成更早一版补丁的样子，用来在引擎升级后接管旧补丁；
  * hint 是位置对不上时打给人看的排查思路。
@@ -101,6 +117,15 @@ const GROUPS = [
     legacy: (to) => to.replace(URL_NAME_EXPR, 't.split("/").pop()'),
     hint: [
       '重新找到两个下载分支里 split("/").pop() 取文件名的地方，更新这一组。',
+    ],
+  },
+  {
+    name: '核心 stderr 出得来',
+    patches: [[PRINT_ERR_FROM, PRINT_ERR_TO]],
+    hint: [
+      '在 initModule 里找 Emscripten 的 Module 配置，那对 print / printErr 回调；',
+      '只把 printErr 改成无条件 console.warn，print 保持原样（stdout 会刷屏）。',
+      '⚠️ 这一组没了的话，街机起不来时永远只有一句「Failed to start game」，查不出是缺 BIOS 还是 romset 不全。',
     ],
   },
   {

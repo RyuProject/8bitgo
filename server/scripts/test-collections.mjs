@@ -226,6 +226,18 @@ try {
       'export const pool = { query: () => { throw new Error("测试不该直接用 pool") } }',
       // games-repo.js 会 import 它（合集详情要用 attachRelations），少一个导出整个模块就加载不了
       'export const withTransaction = async (fn) => fn({ query: globalThis.__fakeDb.query, queryOne: globalThis.__fakeDb.queryOne })',
+      /*
+        ⚠️ 2026-09-11 补：games-repo.js 后来又多 import 了一个 jsonMemberPath，
+        而这份假库没跟着加 —— 于是 `npm run test:collections` 直接
+        `SyntaxError: does not provide an export named 'jsonMemberPath'`，整个套件跑不起来。
+        这就是上面那句注释警告过的情形，只是没人回来看。
+        照抄 db.js 的实现（它是纯函数，没有数据库依赖）。
+      */
+      'export function jsonMemberPath(name) {',
+      '  const raw = String(name ?? "")',
+      '  if (!raw) throw new Error("JSON 路径的成员名不能为空")',
+      '  return `$."${raw.replace(/\\\\/g, "\\\\\\\\").replace(/"/g, String.fromCharCode(92) + String.fromCharCode(34))}"`',
+      '}',
       '',
     ].join('\n'),
     'utf8',

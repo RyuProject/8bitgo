@@ -160,5 +160,51 @@ const used = new Set(wanted.map((w) => resolve(w.id)))
 const orphans = [...shipped].filter((c) => !used.has(c))
 console.log(orphans.length ? `  ℹ️ ${orphans.join(', ')} —— 没有任何平台默认或下拉项指向它们` : '  ✅ 没有多余的核心')
 
+/* ---------------- 致命判定不能误杀 ---------------- */
+
+console.log('\n五、FATAL 判定（打通核心 stderr 之后的必要收紧）')
+/*
+  背景：引擎把 Emscripten 的 printErr 写成 `t=>{this.debug&&console.log(t)}`，而 this.debug
+  来自从没设过的 EJS_DEBUG_XX —— 核心的 stderr 一个字都出不来，于是 adapters 里那套
+  按关键词分流的 FATAL 判定整块是死代码（所以它当时写成一串宽泛单词也没出事）。
+
+  09-11 在 patch-emulatorjs.mjs 里把 printErr 改成无条件 console.warn 打通之后，核心原文
+  第一次真的流进来。而 **MAME 2003/2003-Plus 在「能跑但有缺件」时照样会打 NOT FOUND /
+  INCORRECT CHECKSUM / WARNING: the game might not run correctly** —— 按老那张宽泛的表，
+  这些会把本来能启动的游戏直接毙掉。
+
+  所以两头都钉：补丁必须在位；判定必须收紧到认不出 MAME 的常规警告。
+*/
+{
+  const engine = readFileSync(join(root, 'public', 'emulatorjs', 'emulator.min.js'), 'utf8')
+  check('⭐ printErr 的补丁在位（没有它，三种完全不同的病都只报一句 Failed to start game）', () => {
+    assert.ok(engine.includes('printErr:t=>{console.warn(t)}'), '跑一次 npm run ejspatch')
+  })
+
+  const adapter = readFileSync(join(root, 'src', 'emulator', 'adapters', 'emulatorjs.ts'), 'utf8')
+  const from = adapter.indexOf('const FATAL_PHRASES')
+  assert.ok(from > 0, '找不到 FATAL_PHRASES')
+  const body = adapter.slice(from, adapter.indexOf('\n]', from))
+  const phrases = [...body.matchAll(/^\s*'([^']+)',/gm)].map((m) => m[1])
+  const hits = (line) => phrases.some((p) => line.toLowerCase().includes(p))
+
+  check(`致命短语表解析出来了（${phrases.length} 条）`, () => assert.ok(phrases.length >= 3))
+
+  for (const line of [
+    'NOT FOUND (NO GOOD DUMP KNOWN)',
+    'WARNING: the game might not run correctly.',
+    'INCORRECT CHECKSUM:',
+    'romset kof97 not supported by this version',
+    'Loading bios neogeo.zip',
+    'warning: missing optional samples',
+  ]) {
+    check(`⭐ 不误杀：${line.slice(0, 44)}`, () => assert.ok(!hits(line), '这句在「游戏能跑」时也会出现'))
+  }
+
+  for (const line of ['Romset is unknown', 'FATAL ERROR: required files are missing', 'Error loading EmulatorJS runtime']) {
+    check(`认得出致命：${line.slice(0, 44)}`, () => assert.ok(hits(line)))
+  }
+}
+
 console.log(failed ? `\n${failed} 项失败` : `\n全部通过 ✅（${shipped.size} 个核心齐全）`)
 process.exit(failed ? 1 : 0)

@@ -24,6 +24,8 @@ const TABS: { to: string; label: string; end?: boolean; need: Ability }[] = [
   { to: '/admin/users', label: '用户', need: 'users:manage' },
   { to: '/admin/roms', label: 'ROM 存储', need: 'site:manage' },
   { to: '/admin/data', label: '数据', need: 'site:manage' },
+  // 开放平台的应用审核。单独一个权限点，理由见 shared/roles.js 里 apps:review 那段
+  { to: '/admin/open-apps', label: '开放平台', need: 'apps:review' },
 ]
 
 type GateState = 'checking' | 'locked' | 'unlocked'

@@ -24,6 +24,7 @@ import { PrivacyPage } from '@/pages/PrivacyPage'
 import { SubmitGamePage } from '@/pages/SubmitGamePage'
 import { EmbedPage } from '@/pages/EmbedPage'
 import { OAuthCallbackPage } from '@/pages/OAuthCallbackPage'
+import { OpenPlatformPage } from '@/pages/OpenPlatformPage'
 
 /**
  * 后台整块按需加载。
@@ -44,6 +45,7 @@ const AdminDevelopers = lazyNamed(() => import('@/admin/AdminDevelopers'), 'Admi
 const AdminFriendLinks = lazyNamed(() => import('@/admin/AdminFriendLinks'), 'AdminFriendLinks')
 const AdminRoms = lazyNamed(() => import('@/admin/AdminRoms'), 'AdminRoms')
 const AdminData = lazyNamed(() => import('@/admin/AdminData'), 'AdminData')
+const AdminOpenApps = lazyNamed(() => import('@/admin/AdminOpenApps'), 'AdminOpenApps')
 
 const COMING_SOON_ROUTES = [
   '/apps',
@@ -88,6 +90,9 @@ export function AppRoutes() {
           <Route path="/terms" element={<TermsPage />} />
           <Route path="/privacy" element={<PrivacyPage />} />
           <Route path="/submit" element={<SubmitGamePage />} />
+          {/* 开放平台的开发者控制台。**不叫 /developers** —— 那个路径是站内的「开发商」
+              浏览页（科乐美、SNK 那种），两个 developer 完全不是一回事，见 OpenPlatformPage 的注释 */}
+          <Route path="/open" element={<OpenPlatformPage />} />
           {COMING_SOON_ROUTES.map((path) => (
             <Route key={path} path={path} element={<ComingSoonPage />} />
           ))}
@@ -123,6 +128,7 @@ export function AppRoutes() {
           <Route path="comments" element={<RouteChunk><AdminComments /></RouteChunk>} />
           <Route path="roms" element={<RouteChunk><AdminRoms /></RouteChunk>} />
           <Route path="data" element={<RouteChunk><AdminData /></RouteChunk>} />
+          <Route path="open-apps" element={<RouteChunk><AdminOpenApps /></RouteChunk>} />
         </Route>
       </Routes>
     </>

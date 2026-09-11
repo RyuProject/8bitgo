@@ -31,6 +31,9 @@ import { admitSse } from './sseGuard.js'
 import { iceRouter, registerTurnProbeTargets } from './routes/ice.js'
 import { startTurnHealth } from './turnProbe.js'
 import { imRouter } from './routes/im.js'
+import { openRouter } from './routes/open.js'
+import { openAppsRouter } from './routes/open-apps.js'
+import { adminOpenAppsRouter } from './routes/admin-open-apps.js'
 import { diagRouter } from './routes/diag.js'
 import { submitGameRouter } from './routes/submit-game.js'
 import { mailProvider, submitMailProvider } from './mail.js'
@@ -91,6 +94,22 @@ app.get('/api/health', async (_req, res) => {
     res.status(500).json({ service: '8bitgo-api', db: false, error: String(e.message || e) })
   }
 })
+
+/*
+  开放平台。**挂在最前面**是有意的：它有自己的一套 CORS（放开到任意 Origin）、
+  自己的一套令牌（RS256，与站内互不相认）、自己的错误体（OAuth 风格）。
+  和站内路由混在一起最容易出的事就是顺手复用了某个中间件 —— 见 routes/open.js 的文件头。
+*/
+app.use('/api/open', openRouter)
+
+/*
+  开发者控制台与后台审核。**这两条是站内接口**（登录态 + 站内 CORS 白名单），
+  和上面那个 /api/open 不是一套 —— 挂到 openRouter 下面会顺带把「管理应用、轮换密钥」
+  也放开到任意 Origin，那等于任何网站都能拿着受害者的登录态替他建应用。
+  ⚠️ admin-open-apps 必须挂在 /api/admin 之前：adminRouter 里有 /:id 这类通配路由。
+*/
+app.use('/api/open-apps', openAppsRouter)
+app.use('/api/admin/open-apps', adminOpenAppsRouter)
 
 app.use('/api/auth', authRouter)
 app.use('/api/games', gamesRouter)

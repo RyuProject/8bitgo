@@ -43,9 +43,26 @@ export function tokenVersionOf(userRow) {
 function versionMatches(payload, userRow) {
   return (Number(payload?.tv) || 0) === tokenVersionOf(userRow)
 }
+/**
+ * 验站内登录令牌。
+ *
+ * ⚠️ 两道**白名单式**的收紧（2026-09-11 加，配合开放平台）：
+ *
+ * 1. `algorithms: ['HS256']` 写死。不写的话，「密钥是字符串就只认 HS」是 jsonwebtoken 的
+ *    实现细节而不是它的承诺 —— 安全边界不该押在别人的实现细节上。
+ * 2. **带 `aud` / `scope` / `cid` 的一律拒绝**。这三个字段只有开放平台的 access token 才有
+ *    （见 server/src/open/tokens.js）。本仓库实测过：一个 HS256 签的、payload 里带 uid 的令牌，
+ *    哪怕再多带 aud/scope，这里原来也会**原样接受并取出 uid** —— 也就是说，开放平台哪天
+ *    图省事复用了 JWT_SECRET，一枚「只读昵称」的第三方令牌立刻等价于完整账号令牌。
+ *    换算法换密钥本身已经挡住了，这一条是纵深防御：两边都做白名单，不写成「不是 A 就当 B」。
+ */
 export function verifyToken(token) {
   try {
-    return jwt.verify(token, JWT_SECRET)
+    const payload = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] })
+    if (payload && typeof payload === 'object') {
+      if (payload.aud !== undefined || payload.scope !== undefined || payload.cid !== undefined) return null
+    }
+    return payload
   } catch {
     return null
   }

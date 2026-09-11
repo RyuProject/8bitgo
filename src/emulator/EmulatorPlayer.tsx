@@ -35,7 +35,7 @@ import { useT, fmt } from '@/services/i18n'
 import { platformLabel } from '@/services/i18nData'
 import { ROM_LANG_LABEL, type RomLang } from '@/config/languages'
 import { FEATURES } from '@/config/features'
-import { desktopScreenAspect, mobileScreenAspect, stageHeightCap } from './screenAspect'
+import { desktopScreenAspect, liveStageStyle, mobileScreenAspect, stageHeightCap } from './screenAspect'
 import { recordPlay } from '@/services/store'
 import { onMatchRequest } from '@/services/matchRequest'
 import {
@@ -550,6 +550,7 @@ export function EmulatorPlayer({
 
   const liveChatOn = Boolean(liveSession) || Boolean(session?.live)
 
+
   /**
    * 换一局就把弹幕清空。
    *
@@ -597,6 +598,21 @@ export function EmulatorPlayer({
     mq.addEventListener('change', sync)
     return () => mq.removeEventListener('change', sync)
   }, [])
+  /**
+   * 看直播时把画面限在**流的原生分辨率的几倍**以内（2026-09-11，站长报「大播放器 → 串流很糊」）。
+   *
+   * 只在「观众 + 桌面 + 普通分支」这三条同时成立时生效：
+   *   · 观众（`session.live`）—— **主播端一个像素都不动**，他看的是本地画布，不存在放大问题；
+   *   · 桌面（`!narrow`）—— 手机上舞台是 auto 高度的三段（画面 / 手柄 / 工具栏），
+   *     给它 aspectRatio 会把后两段挤出去；而 390 宽的屏幕对 NES 只有 1.5 倍，压根不糊；
+   *   · 普通分支（非全屏、非游玩布局）—— 那两种形态是玩家主动要求铺满视口的。
+   *
+   * `geometry` 来自 liveview 上报的 `video.videoWidth/Height`（那一路以前从不上报，
+   * 09-11 补的）。还没收到第一帧时 liveStageStyle 返回 undefined —— **不猜**，照走类名那一套。
+   * 完整推导见 screenAspect.ts 的 LIVE_MAX_SCALE。
+   */
+  const watchingLiveStage = Boolean(session?.live) && !narrow
+  const liveCap = watchingLiveStage ? liveStageStyle(geometry, immersive) : undefined
   /**
    * 是不是正处在原生全屏里。
    *
@@ -2084,13 +2100,25 @@ export function EmulatorPlayer({
    * 播放器现在占满一屏，不滚根本看不到；结果就是按 ▶ 之后对着键盘乱试。
    * 只取前几格（方向 / A / B / Start 之类），详表仍在下面。键盘直通的运行时（DOS / Flash）rows 为空，不画。
    */
-  const keymapLine =
-    !busy && !online && !touchDevice && romUrl
-      ? getDefaultKeymap((session?.runtime.id ?? pageRuntime?.id) as string | undefined, platform.id)
-          .rows.slice(0, 5)
-          .map((r) => `${r.button} ${r.key}`)
-          .join(' · ')
-      : ''
+  const keymapLine = (() => {
+    if (busy || online || touchDevice || !romUrl) return ''
+    const rows = getDefaultKeymap((session?.runtime.id ?? pageRuntime?.id) as string | undefined, platform.id).rows
+    /**
+     * ⚠️ 别再用 `slice(0, 5)`。
+     *
+     * 街机那张表是 9 行：`方向键 / 按键1..6 / 投币 / Start`。取前 5 行留下的正好是
+     * 方向键 + 按键 1~4 —— 动作键砍掉两个不要紧，但**投币和 Start 一个都没露出来**，
+     * 而这两个才是唯一「不知道就开不了始」的键（街机不投币按 Start 什么都不会发生）。
+     * 玩家照着这行摘要按一遍，游戏停在 INSERT COIN 不动，然后认为站坏了。
+     *
+     * 改成「头三行 + 末两行」：各平台的表都是**动作键在中间、Start/Select 在末尾**，
+     * 所以这个取法对谁都合适（GBA 的 7 行同样从只露 A/B/L/R 变成也露 Start/Select）。
+     */
+    const fmt = (r: { button: string; key: string }) => `${r.button} ${r.key}`
+    if (rows.length <= 5) return rows.map(fmt).join(' · ')
+    // 中间省掉了行就给个记号，别让人以为这就是全部
+    return [...rows.slice(0, 3).map(fmt), '…', ...rows.slice(-2).map(fmt)].join(' · ')
+  })()
   const loadingLabel =
     loadPhase === 'starting'
       ? t.player.loadingStarting
@@ -2382,8 +2410,16 @@ export function EmulatorPlayer({
                     上限只挂在这一支 —— 全屏那支舞台自己是 fullscreen 元素、
                     游玩布局那支是 fixed 铺满视口，都不能被 max-h 夹住。
                     为什么是限高不是限宽，见 screenAspect.ts 的 stageHeightCap。
+
+                    ⚠️ 看直播时（liveCap 非空）比例和两个上限**全部由 inline style 给**：
+                    比例要按流的实际尺寸算、上限的数字来自流的分辨率，两样都不可能写成
+                    Tailwind 的字面量类名。所以这一支把 aspect / max-h 两个类名一起让出去，
+                    避免「一个类名 + 一条 inline 规则」同时描述同一件事（谁赢要去想优先级）。
+                    mx-auto：框窄了之后居中，否则它会贴在内容列左边。
                   */
-                  cx('relative', desktopScreenAspect(platform.id, geometry), stageHeightCap(immersive)),
+                  liveCap
+                    ? 'relative mx-auto'
+                    : cx('relative', desktopScreenAspect(platform.id, geometry), stageHeightCap(immersive)),
           dragging && 'ring-2 ring-brand ring-inset',
         )}
         onDragOver={(e) => {
@@ -2392,6 +2428,8 @@ export function EmulatorPlayer({
         }}
         onDragLeave={() => setDragging(false)}
         onDrop={onDrop}
+        /* 看直播时的比例 + 两个上限。见上面那段注释和 screenAspect.ts 的 liveStageStyle */
+        style={liveCap}
       >
         <div
           className={cx(

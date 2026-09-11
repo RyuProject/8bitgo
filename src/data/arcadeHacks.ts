@@ -26,6 +26,15 @@ import type { PlatformId } from '@/types'
 export interface ArcadeHackDerive {
   /** 合成需要哪几个成员的**解压后**内容。只解这几个，别为了它把 20 多 MB 全解开 */
   inputs: string[]
+  /**
+   * `run()` 会产出哪几个成员的名字。
+   *
+   * 存在的理由只有一个：**判断这个包是不是已经烘好了**。`scripts/prep-arcade-hack.mjs`
+   * 会离线把合成产物写进包里，而运行时这条路也会合成 —— 两边都做过就会往 zip 里
+   * 追加同名成员。不预先知道名字就只能先跑一遍 run()（几十 MB 的复制）才能发现白跑了。
+   * ⚠️ 必须和 `run()` 实际返回的名字、以及 romData 里引用的名字三者一致。
+   */
+  outputs: string[]
   /** 产出要追加进包里的新成员。名字要和 romData 里写的一致 */
   run(inputs: Record<string, Uint8Array>): { name: string; data: Uint8Array }[]
 }
@@ -137,6 +146,7 @@ const WOFCN_FONT_WINDOW = { start: 0x010000, end: 0x019c00 } as const
 
 const WOFCN_DERIVE: ArcadeHackDerive = {
   inputs: ['tk2_gfx1.rom', 'tk2_gfx3.rom', 'tk2_gfx5cn.rom', 'tk2_gfx6cn.rom'],
+  outputs: ['tk2_gfx1cn.rom', 'tk2_gfx3cn.rom'],
   run(inputs) {
     const { start, end } = WOFCN_FONT_WINDOW
     // (原图形, 中文补丁片, 合成后的名字) —— 顺序对应清单第 0、1 条

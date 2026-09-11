@@ -1,18 +1,22 @@
 # 8BitGo 开放平台 · 接口设计
 
-> 状态：**设计稿，尚未实现**。写在动手之前，用来把几个不可逆的决定钉死。
+> 状态：**应用级那半已有可跑的骨架**（`/api/open/v1`，见文末「已落地的部分」）；
+> 用户级（OIDC 授权码 + PKCE）仍是设计稿。
 > 一旦发出去的 appkey 有人在用，协议就改不动了 —— 所以先争论文档，别先写代码。
+>
+> **2026-09-11 修订**：站长要求开放 ROM。原方案的「ROM 不出站」被推翻，改为
+> **短期签名凭据**（§4.3）。这是本文档唯一一次方向性改动，前后的理由都留着，别再来回翻。
 
 面向的两件事：
 
 1. **用 8BitGo 账号登录第三方网站** —— 8BitGo 做身份提供方（OIDC Provider）。
 2. **调用 8BitGo 的游戏资源** —— 游戏元数据 + 可嵌入的播放器。
 
-已定的边界（`2026-09` 与产品确认）：
+已定的边界（`2026-09` 与产品确认，ROM 一行于 `2026-09-11` 修订）：
 
 | 项目 | 结论 |
 |---|---|
-| 游戏资源 | 元数据 + 可嵌入播放器。**ROM 不出站** |
+| 游戏资源 | 元数据 + 封面 + 可嵌入播放器 + **ROM（短期签名凭据，单独 scope、单独审核）** |
 | 用户数据 | 基本资料 / 收藏与最近在玩 / 云存档读写 |
 | G 币 | **不开放**（虚拟资产，将来单独审核，不走自助） |
 | 后台能力 | **永不开放**（`content:edit` 这类权限点与开放平台完全隔离） |
@@ -78,20 +82,86 @@ OAuth 2.1 目前仍是 Internet-Draft（`draft-ietf-oauth-v2-1-15`），不作�
 
 | | sandbox（自助，立即可用） | live（人工审核后） |
 |---|---|---|
+| 拿到 key | **创建时当场发**，明文只显示一次 | 同一把，不用换 |
+| 可用 scope | 只有 `games.read` | 审核人批的那些 |
 | 回调地址 | 最多 3 个，允许 `http://localhost` | 最多 10 个，**仅 https** |
 | 可授权用户 | 仅应用所有者本人 + 最多 5 个测试账号 | 不限 |
-| QPS | 5 | 按 tier |
-| 日调用量 | 10 000 | 按 tier |
+| QPS | 5 | 50（按 tier 可调） |
+| 日调用量 | 10 000 | 200 000（按 tier 可调） |
 | 云存档写 | 100 次/日 | 按 tier |
 | 嵌入播放器 | 可用，页面带「沙箱」水印 | 无水印 |
 
-沙箱限定授权对象，是为了让「拿 appkey 去钓鱼」这条路在审核前走不通。
+⚠️ **沙箱限定授权对象，是这套「先沙箱后审核」模型的立足点**，不是配额优化：
+没有它，一把没审过的 key 就能拿去向任意用户请求授权（钓鱼）。
+每个账号最多 10 个应用；创建有按账号的限流，而且**额度比这个上限宽** ——
+两者一样的话，用户永远撞不到「最多 10 个」那句提示，他先撞上「建得太频繁」，
+而这两句话的下一步动作完全不同（「等一小时」 vs 「先删一个」）。
 
-### 1.4 开发者后台
+### 1.4 申请与审核（2026-09-11 实现）
 
-- `/developers/apps` —— 站内页面，登录即可用：建应用、看 key、轮换密钥、填回调地址与嵌入域名、看用量曲线、申请上产。
-- `/me/authorized-apps` —— 用户侧：看自己授权过哪些应用、各自拿了什么 scope、一键解除。
-  **这一页必须和开放平台同期上线**，不能等 P3。用户能授权却不能撤销，是不能接受的。
+```
+                        ┌─────────────── 申请人（登录用户） ───────────────┐
+  建应用 ──当场──> sandbox + 一把 key（明文只显示一次）
+                          │  approved = games.read        ← 自助只给这一个
+                          │  requested = 他勾的全部        ← 其余等审
+                          ├─ 加测试账号（≤5）、改资料、轮换 key
+                          └─ 提交上产申请（用途说明 ≥30 字）
+                                    │
+                              sandbox + pending          ← ⚠️ 沙箱**照旧可用**
+                                    │
+        ┌───────────── 审核人（apps:review，当下只给 admin）─────────────┐
+        ├─ 通过（可只批一部分 scope）──> live + approved = 批的那份
+        └─ 打回（理由必填，原样给申请人看）──> sandbox + rejected
+                                              └─ 改完可以再提交
+        任意时刻：停用 ──> suspended ──恢复──> **回到停用前那一档**
+```
+
+**两个状态字段，不是一个枚举**（`status` = 能力，`review_state` = 流转）。
+合成一个看着更简单，但会丢掉一件事：*正在申请上产的应用仍然是可用的沙箱应用*。
+合并之后 `status === 'pending'` 那一刻，所有「这个应用能不能用」的判断都得跟着改，
+而漏改一处的症状是「提交申请之后沙箱突然不能用了」。
+
+几条硬规则（全在 `server/src/open/review.js`，纯函数、有测试）：
+
+| 规则 | 不这么做会怎样 |
+|---|---|
+| 自助只发 `games.read`，其余一律进 `requested_scopes` | 注册个号就能领 ROM 凭据，审核这层当场作废 |
+| **审核中锁住** `requested_scopes` / 回调 / 嵌入域名 / 客户端类型 | 提交后把 scope 换成 `saves.write` —— **审的是 A，批的是 B** |
+| 名字、简介、logo **不锁** | 填错一个字要先撤回申请 |
+| 批准的 scope **可以少于、不能多于**申请的 | 批了人家没申请的东西：他不知道自己有，出事时说不清是谁要的 |
+| 打回**不动** `approved_scopes` | 被打回一次，连沙箱调试环境一起没了 |
+| 打回 / 停用**理由必填**，原样显示给申请人 | 没有理由的「已拒绝」只换来一次一模一样的重新提交 |
+| 恢复回到**停用前那一档** | 从沙箱被停用的应用，恢复之后直接进生产 —— 绕过了审核 |
+| 上产要求 https 回调（沙箱的 `http://localhost` 不能带上产） | 授权码被重定向到某人本机的任意端口 |
+| 每一个动作写一条 `oauth_app_reviews` | 「这把 key 当初凭什么发的」事后查不出来 |
+| 别人的应用一律 **404，不是 403** | 403 顺带确认了「这个 id 存在」，而 id 是可以枚举着试的 |
+| 撤销最后一把有效 key 要挡下 | 应用彻底取不到令牌，而界面上看不出为什么 |
+
+**为什么是「先沙箱后审核」而不是「审核通过才发 key」**（站长 09-11 拍板）：
+后者让开发者在审核前一行代码都跑不了，于是申请单上写的只能是意向（「我想做个聚合站」），
+而你无从判断 —— 批或不批都是猜。先给沙箱之后，你审的是能查证的三件事：
+**主页打不打得开、回调/嵌入域名是不是他自己的、勾的权限和他说的事对不对得上**。
+而「拿 key 去钓鱼」这条路在审核前也走不通 —— 沙箱应用只能向白名单账号请求授权
+（`apps-repo.js` 的 `canAuthorize`，OIDC 同意页实现时**必须**调它）。
+
+### 1.5 两个页面
+
+- **`/open`** —— 开发者控制台：建应用、拿 key、轮换、加测试账号、提交上产、看审核记录。
+  ⚠️ **不叫 `/developers/apps`**（早期设计稿里的路径）：`/developers` 已经是站内的
+  「开发商」浏览页（科乐美、SNK 那种）。两个 developer 完全不是一回事，挂一起只会两边都难认。
+  入口在页脚。
+- **`/admin/open-apps`** —— 审核队列：默认只看待审、**按提交时间正序**（先交的先审，
+  倒序会让早上交的那一份永远压在下面）。敏感 scope 直接标在标题行，
+  key 的「最近使用时间」摆在详情里 —— 那是判断「他真的接了吗」最直接的证据。
+
+这两页**刻意都是中文**（和 `/admin` 一样不走 i18n）：它们管理的东西本身只有中文一份 ——
+这份设计稿、scope 的语义说明、服务端的 OAuth 错误体。给页面翻八种语言而文档还是中文，
+是一种更糟的体验。等有了对外文档站再一起做（记在第 12 节的待办里）。
+
+### 1.6 `/me/authorized-apps`（还没做）
+
+用户侧：看自己授权过哪些应用、各自拿了什么 scope、一键解除。
+**这一页必须和 OIDC 同期上线**，不能等 P3 —— 用户能授权却不能撤销，是不能接受的。
 
 ---
 
@@ -196,6 +266,7 @@ RS256 签名（不是 HS256）。理由：公开客户端手里没有 secret，�
 | `profile` | 昵称、头像、注册时间 | 否（登录的最小集） | P0 |
 | `email` | 邮箱 + 是否已验证 | 可 | P0 |
 | `games.read` | 游戏元数据、封面、嵌入地址 | —（应用级，不涉及用户） | P0 |
+| `games.rom` | **ROM 的短期下载凭据** | —（应用级） | P0.5，**需人工审核** |
 | `library.read` | 收藏列表、最近在玩 | 可 | P1 |
 | `library.write` | 加/取消收藏、写最近在玩 | 可 | P1 |
 | `saves.read` | 列出、下载云存档 | 可 | P2 |
@@ -210,68 +281,179 @@ RS256 签名（不是 HS256）。理由：公开客户端手里没有 secret，�
 - `saves.write` 是破坏力最大的一个：它能覆盖玩家几十小时的进度。所以它
   **单独限速、单独配额**，且写入前强制走现有的「存档落点」语义（见
   `project_8bitgo_saves` 的记忆：没选过云存档的用户绝不默认上云）。
+- ⚠️ **`games.rom` 绝不能并进 `games.read`**。两者的风险不在一个量级：前者是
+  「把整库游戏本体带出站」，后者是「读一段简介」。合并的后果是，一个只想展示游戏列表的应用
+  会顺带拿到全库 ROM 的下载权 —— 那不是授权，那是疏忽。
+  代码里这是两个不同的 `requireApp(scope)`，测试里有一条专门验「`games.read` 要不到 ROM」。
+- ⚠️ 已获批的 scope 里可能同时有应用级和用户级（一个既做登录又展示游戏库的应用很常见）。
+  `client_credentials` 只能拿到其中的**应用级**那部分 —— 背后没有用户，一枚带 `profile` 的
+  应用级令牌拿去调用户接口时，`sub` 会是 client_id，那是一个不存在的用户。
 
 ---
 
 ## 4. 游戏资源
 
-### 4.1 元数据（应用级，`Authorization: Bearer <app access token>`）
+应用级，`Authorization: Bearer <app access token>`。令牌用 **AppID + key** 换：
 
-应用级令牌走 `grant_type=client_credentials`（仅 confidential 客户端），
-或者 public 客户端直接用 `client_id` + Referer 校验的只读通道（限速更严）。
+```
+POST /api/open/v1/token
+Content-Type: application/json
+
+{ "grant_type": "client_credentials",
+  "client_id": "app_0123456789abcdef01234567",
+  "client_secret": "…",
+  "scope": "games.read games.rom" }        ← 可省；省了就给「已获批 ∩ 应用级」的全部
+
+→ { "access_token": "eyJ…", "token_type": "Bearer", "expires_in": 900,
+    "scope": "games.read games.rom" }
+```
+
+`Authorization: Basic base64(client_id:client_secret)` 也认 —— 现成的 OAuth 库默认发这一种，
+只支持 body 里那种的话，接入方会卡在一个「照文档写了却 401」的地方。
+
+⚠️ **认不出来一律回同一句话**（`invalid_client`，连响应体都一样）：区分「没这个应用」和
+「key 不对」，这个端点就顺带变成了 AppID 探针。
+
+### 4.1 元数据与多语言
 
 | 端点 | 说明 |
 |---|---|
-| `GET /api/open/v1/games` | 分页列表。`platform` / `genre` / `q` / `sort` / `page` / `page_size≤50` |
-| `GET /api/open/v1/games/{slug}` | 详情：标题（多语言）、简介、平台、类型、开发商、封面、是否支持联机 |
-| `GET /api/open/v1/facets` | 有游戏的平台与类型 |
-| `GET /api/open/v1/games/{slug}/embed` | 换一个签名的嵌入地址（见下） |
+| `GET /v1/games` | 分页列表。`platform` / `genre` / `q` / `sort` / `page` / `page_size≤50` / `lang` |
+| `GET /v1/games/{slug}` | 详情 |
+| `GET /v1/me` | 这枚令牌是谁的、有哪些 scope、什么时候过期（排错的第一站） |
 
-实现上直接复用 `server/src/games-repo.js`，但**输出走一层独立的 mapper**：
-后台字段（`hidden`、`arcade_romdata`、`dos_*`、对象 key 原文）一个都不能漏出去。
-现有 `mappers.js` 是给站内前端用的，它认为调用方是自己人 —— 不要直接拿来对外。
+**多语言：`?lang=` 给一门，外加一个「实际是哪一门」。**
 
-成人内容（`games.adult`）默认从开放接口里**整体排除**，除非应用单独申请并通过审核。
+```
+GET /api/open/v1/games/contra?lang=fr
 
-### 4.2 嵌入播放器
+{ "slug": "contra",
+  "title": "Contra",
+  "description": "Two commandos versus aliens.",
+  "lang_requested": "fr",
+  "lang_actual": { "title": "und", "description": "en" },   ← ⚠️ 这一栏是关键
+  "platform": "nes", "genres": ["action"], "tags": ["经典"],
+  "year": 1987, "developer": "Konami", "players": 2, "multiplayer": true,
+  "icon": "🎮",
+  "cover": "https://assets.8bitgo.com/covers/contra.jpg",
+  "rating": 4.5, "rating_count": 9, "plays": 120,
+  "added_at": "1987-02-20", "updated_at": "2026-02-01T00:00:00.000Z",
+  "adult": false,
+  "rom_langs": ["*", "ja"] }
+```
+
+为什么不是「把八种语言一次全发出去」：库里的译文是**残缺的，而且残缺得不均匀** ——
+`title_i18n` 只有 `zh-Hant` 一个键（非中文界面刻意用原名），`description_i18n` 按需生成、
+es/fr 目前整门是空的（见项目记忆「多语言正文其实是同一份」）。把这么一张稀疏表原样发出去，
+等于把「该退到哪一门」这个**只有我们知道**的规则丢给接入方猜。他多半会写成
+`i18n[lang] ?? title`，于是繁体读者看到简体、法语读者看到中文，而我们站内其实是退到英文的。
+
+回退链（和站内 `src/services/i18nData.ts` **逐格一致**，有测试两边都跑一遍比对）：
+
+| 请求 | 标题 | 简介 |
+|---|---|---|
+| `zh-Hans` | `title_zh` → `title` | `description` |
+| `zh-Hant` | `title_i18n['zh-Hant']` → `title_zh` → `title` | `description_i18n['zh-Hant']` → `description` |
+| `en` | `title`（原名） | `description_en` → `description` |
+| 其余 6 门 | `title`（原名） | `description_i18n[lang]` → `description_en` → `description` |
+
+- `lang_actual` 里的 `und` = 游戏原名，没有语言可言（`Contra` / `魂斗羅` 都可能）。
+  接入方拿它决定要不要显示「暂无译文」、页面该打什么 hreflang。
+- **不传 `lang` 时默认 `en`**，刻意和站内的 `zh-Hans` 不同：调用方是第三方开发者，
+  默认给中文只会让没读文档的人以为「这库全是中文」。用站内 hreflang 的 x-default 一致。
+- 认不出来的语言码（`pt-BR`）退到默认，**不报 400** —— 一个拼错的语言码不该让整次请求失败。
+
+**封面**永远是绝对地址，给不出来时是 `null`。**绝不发对象 key 原文** ——
+那是内部寻址，泄露它等于把存储结构和其它文件的位置一起送出去。
+
+**成人内容（`adult`）整体排除**，除非应用单独申请并过审。默认排除而不是默认包含：
+接入方不会想到要过滤，而我们知道它存在。下架的游戏对外**不存在**，和「没这款」同一个 404 ——
+区分开就成了「这游戏是不是被下架了」的查询器。
+
+### 4.2 ⚠️ 对外的形状必须单独一层 mapper
+
+`server/src/mappers.js` 的 `gameRowToApi` 是**给站内前端用的**，它的前提是「调用方是自己人」，
+所以原样带着 `hidden`、`arcade_romdata`、`dos_*`、以及 **ROM 和封面的对象 key 原文**。
+把它直接发给第三方，等于把前面那一整套签名凭据绕过去。
+
+所以对外走 `server/src/open/mapper.js`，而且是**白名单**：想加字段必须在那个文件里显式写一行。
+反过来（黑名单「删掉几个不该给的」）在这种地方是错的做法 —— 明天 `games` 表加一列，
+黑名单不会报错，它会直接把新列发出去。测试里有一条逐个断言 `FORBIDDEN_OUT_KEYS` 都不在响应里。
+
+### 4.3 ROM：短期签名凭据（2026-09-11 推翻了原来的「不出站」）
+
+```
+GET /api/open/v1/games/contra/rom?lang=ja      （scope: games.rom）
+
+→ { "url": "https://8bitgo.com/api/open/v1/rom/eyJhIjoi…～.Xk9…",
+    "expires_in": 300,
+    "lang_requested": "ja",
+    "lang_actual": "ja",
+    "filename": "contra-ja.zip" }
+```
+
+凭据是 `base64url(JSON).base64url(HMAC-SHA256)`，**自包含、不落库**（寿命只有五分钟，
+落库就要配清理和同步）。里面绑死四样东西：
+
+| 绑什么 | 防的是什么 |
+|---|---|
+| `app_id` | 转手给别人也查得出是从哪把 key 漏出去的 |
+| `slug` + 对象 key | 换个 slug 就验不过 —— 不能拿一张票下整库 |
+| `exp`（5 分钟） | 抄走地址的窗口就是这么长 |
+| 随机串 `n` | 同一分钟反复领票也各不相同，便于按票追踪单次下载 |
+
+兑现地址 `GET /v1/rom/{grant}` **不要求 Bearer**：凭据自己就是授权，而下载多半发生在
+浏览器或 curl 里，带不上 Authorization 头。兑现时 302 到存储地址（几十上百 MB 的东西
+没必要全走源站带宽），响应带 `Cache-Control: private, no-store`。
+
+**ROM 的语言不做跨语言回退**：要日文、没有日文，就给通用件（`*`）或者 404，
+**绝不悄悄发一份别的语言的**。玩家开进去是另一套文字，而接入方无从得知 ——
+他要的是 `de`，我们回 200，他没有任何理由去怀疑。
+
+`rom_langs` 这一栏（元数据里就有）**只报语言码、不报 key**，没有 `games.rom` 的应用也看得到：
+它是「这款有没有日文版」的展示信息，不是下载凭据。
+
+#### ⚠️⚠️ 这层签名现在还不是真的门 —— P-1 必须先做
+
+`assets.8bitgo.com` 目前是**公开读**的对象存储：任何人打开一次游戏、从网络面板抄走 ROM 地址，
+就能无限次直接下载，**跟有没有 appkey 毫无关系**。所以在把 ROM 写进对外承诺之前必须先做：
+
+1. ROM 对象改为**不可公开读**，只能经 Worker（`worker/`）或 R2 预签名取；
+2. 兑现那一步把 302 的目标换成预签名地址（调用方无感，只改我们这一侧）；
+3. **站内播放器同步改造** —— 它现在也是直接拿公开地址的。
+
+在 P-1 完成之前，这套凭据只是「我们不主动给」，**别对外宣传成访问控制**。
+第一个认真的接入方会在半小时内发现「其实我不用你的凭据也能拿到 ROM」。
+
+#### 版权与计量
+
+- ROM 一律**逐个应用人工审核**（`games.rom` 是敏感 scope，自助创建拿不到）。
+  审的不是技术，是「这家凭什么分发这些文件」。
+- ROM 单独一层配额（默认 600 次/小时/应用），和元数据那层分开：这是整套接口里
+  唯一按 GB 计费的东西。
+- 想更进一步（按款控制哪些 ROM 可分发），加一列 `games.rom_open` 逐款勾选 ——
+  设计上留了位置，本期不做。
+
+### 4.4 嵌入播放器
 
 ```
 GET /api/open/v1/games/kof97/embed?lang=zh-Hans
-→ {
-    "url": "https://8bitgo.com/embed/kof97?a=app_xxx&e=1788600000&s=<hmac>",
-    "expires_at": "2026-09-05T12:00:00Z",
-    "aspect_ratio": "4/3",
-    "allow": "fullscreen; gamepad; autoplay; clipboard-write"
-  }
+→ { "url": "https://8bitgo.com/embed/kof97?a=app_xxx&e=1788600000&s=<hmac>&lang=zh-Hans",
+    "expires_in": 3600,
+    "allow": "fullscreen; gamepad; autoplay; clipboard-write" }
 ```
 
 - `/embed/:slug` 是一个新的整页外壳，照抄 `server/src/routes/play.js` 的思路：
-  不走 SSR、不引 React、不引任何第三方资源 —— 因为跨源隔离头（COOP/COEP）会掐掉外部资源，
+  不走 SSR、不引 React、不引任何第三方资源 —— 跨源隔离头（COOP/COEP）会掐掉外部资源，
   内容越少越安全。区别是它多一个 8BitGo 角标和签名校验。
-- 签名 `s = HMAC-SHA256(OPEN_EMBED_SECRET, app_id|slug|exp)`，服务端自己的密钥，
-  **不是** app secret（服务端只存 secret 的哈希，签不出来）。有效期建议 1 小时。
+- 签名用 `OPEN_EMBED_SECRET`，**不是** app secret（库里只有 secret 的 bcrypt 哈希，我们自己都签不出来），
+  也**不是** ROM 那把 —— 一把密钥泄露不该把另一件事一起带走，而且两者的吊销节奏完全不同。
 - **防盗链靠 `frame-ancestors`**：`/embed/*` 的响应头带
-  `Content-Security-Policy: frame-ancestors <该应用登记的嵌入域名>`。
-  这是浏览器强制的，比 Referer 判断可靠得多。Referer / `Sec-Fetch-Site` 只作为
-  服务端侧的弱校验和用量归因，不作为唯一屏障。
+  `Content-Security-Policy: frame-ancestors <该应用登记的嵌入域名>`。这是浏览器强制的，
+  比 Referer 判断可靠得多。Referer / `Sec-Fetch-Site` 只作为服务端侧的弱校验和用量归因。
 - 嵌入域名与 OAuth 回调域名**分开登记**：一个网站可能只嵌游戏不接登录，反过来也一样。
 - 想让嵌入的游戏带上玩家身份（存档、收藏），在 URL 上再挂一个短期的用户票据，
   由 `/embed` 页换成会话 —— 不要直接把 access token 放进 iframe 地址，它会进浏览器历史和 Referer。
-
-### 4.3 ⚠️ 「ROM 不出站」目前只是「我们不主动给」
-
-现在 `assets.8bitgo.com` 是**公开读**的对象存储：任何人打开一次游戏、从网络面板抄走
-ROM 地址，就能无限次直接下载，跟有没有 appkey 毫无关系。所以在开放平台对外承诺
-「ROM 不出站」之前，必须先补上这一层：
-
-- ROM 对象改为**不可公开读**，由 Worker（`worker/`）或 R2 预签名发放短期地址；
-- 地址与会话绑定（app_id / user / slug / exp），有效期以分钟计；
-- 现有站内播放器同步改造。
-
-这是开放平台的**前置改造**，不是可选项 —— 否则第一个接入方就会发现
-「其实我不用你的播放器也能拿到 ROM」，而那正是我们选「元数据 + 嵌入播放器」方案想避免的事。
-
----
 
 ## 5. 用户数据接口
 
@@ -403,55 +585,154 @@ oauth_tokens(
 ## 8. 新增环境变量
 
 ```
-# 开放平台的签名密钥（与 JWT_SECRET 无关，绝不能复用）
-OPEN_JWT_PRIVATE_KEY_PATH=   # RS256 私钥，PEM
+# 开放平台的签名密钥。三把各司其职，**一把都不能复用**，也都与 JWT_SECRET 无关
+OPEN_JWT_PRIVATE_KEY_PATH=   # RS256 私钥（PEM）。签 access token
 OPEN_JWT_KID=                # 轮换时靠它区分，JWKS 里同时挂新旧两把
+OPEN_ROM_SECRET=             # ROM 短期凭据的 HMAC 密钥
 OPEN_EMBED_SECRET=           # 嵌入地址的 HMAC 密钥
 OPEN_ISSUER=https://8bitgo.com
 ```
+
+生成私钥：`openssl genpkey -algorithm RSA -pkcs8 -out open-jwt.pem -pkeyopt rsa_keygen_bits:2048`
+
+⚠️ **配不全就整块关掉**（501），不要用空密钥把接口跑起来 ——
+「跑起来了但签名谁都能伪造」是最坏的一种状态：看着正常，没人会去查。
+`OPEN_ROM_SECRET` 没配时 ROM 那两个端点单独 501，其余照常。
 
 ---
 
 ## 9. 分期
 
-| 阶段 | 内容 | 完成的标志 |
-|---|---|---|
-| **P-1** | ROM 签名发放改造（见 4.3） | 直接拿 ROM 地址下不到东西 |
-| **P0** | 应用注册 + 开发者后台 + OIDC（`openid/profile/email`）+ `/me/authorized-apps` | 一个外部站点能用 8BitGo 账号登录并看到昵称 |
-| **P0.5** | `games.read` + 嵌入播放器 + `frame-ancestors` | 外部站点能列游戏并嵌进去玩 |
-| **P1** | `library.read/write` | 收藏在两边同步 |
-| **P2** | `saves.read/write` + 独立配额 | 进度在两边同步，且写坏了能查到是哪个应用 |
-| **P3** | 上产审核流、用量面板、开发者文档站 | 可以对外宣传 |
+| 阶段 | 内容 | 完成的标志 | 状态 |
+|---|---|---|---|
+| **P0.1** | 应用级令牌（AppID + key）+ `games.read` + 对外 mapper | 一把 key 能列出游戏，且响应里没有任何内部字段 | **已落地** |
+| **P0.2** | 申请 / 审核（`/open` + `/admin/open-apps` + `apps:review`）| 一个玩家能自助建应用拿到沙箱 key，管理员能批上产 | **已落地** |
+| **P-1** | ROM 私有化 + 预签名发放 | **直接拿 ROM 地址下不到东西** | 未做（阻塞对外承诺 ROM） |
+| **P0** | OIDC（`openid/profile/email`）+ `/me/authorized-apps` | 一个外部站点能用 8BitGo 账号登录并看到昵称 | 未做 |
+| **P0.5** | `games.rom` 审核流 + 嵌入播放器 + `frame-ancestors` | 外部站点能列游戏、嵌进去玩、按票下 ROM | 部分（凭据已通，`/embed` 外壳未做） |
+| **P1** | `library.read/write` | 收藏在两边同步 | 未做 |
+| **P2** | `saves.read/write` + 独立配额 | 进度在两边同步，且写坏了能查到是哪个应用 | 未做 |
+| **P3** | 上产审核流、用量面板、开发者文档站 | 可以对外宣传 | 未做 |
 
-P-1 排在 P0 前面不是洁癖：它是「元数据 + 嵌入播放器」这个方案唯一的立足点。
+⚠️ **P-1 是对外承诺 ROM 的前提**，不是可选项。凭据那一层已经写完了，但只要对象存储还是
+公开读，它就只是一道礼貌的门。顺序上可以先给少数几家白名单接入方试用，
+但**在 P-1 之前不要在任何对外文档里写「ROM 受保护」**。
 
 ---
 
-## 10. 实现时必须先写的测试
+## 10. 测试
 
-照 `server/scripts/test-oauth.mjs` 的路子（假库 + 假 fetch + 真密钥），新建 `test-openapi.mjs`：
+`cd server && npm run test:openapi` —— 真的起一个 express、真的签真的验：
+db.js 换成内存假库，RSA 密钥当场生成，路由挂的是真的 `routes/open.js`。
 
-1. 站内 JWT **不能**通过开放平台中间件；开放平台 access token **不能**通过 `requireUser`；
-   两个方向都要断言。
-2. `redirect_uri` 差一个斜杠 / 差 www / 多一个查询参数 → 全部拒绝。
-3. 没有 `code_challenge` → 拒绝；`plain` → 拒绝；`code_verifier` 对不上 → 拒绝。
-4. 授权码用第二次 → 拒绝，**且该用户在该应用下的 refresh token 全部失效**。
-5. 用已轮换掉的 refresh token → 拒绝并吊销整条链。
-6. 请求超出已获批 scope → `invalid_scope`，不静默降级。
-7. 只有 `profile` 的 token 调 `/me/saves` → 403。
-8. 被封禁用户：换 token 与刷新 token 都被拒。
-9. 沙箱应用给非白名单用户授权 → 拒绝。
-10. `/embed` 的签名过期 / 被改 app_id → 拒绝；`frame-ancestors` 头与登记域名一致。
-11. 开放接口的游戏详情里不含 `hidden`、`arcade_romdata`、`dos_*` 等内部字段。
-12. `/oauth/authorize` 的响应头带 `frame-ancestors 'none'`。
-13. 开放接口的 CORS 放开到任意 Origin 之后，`/api/me`、`/api/admin` 的白名单**没有**跟着变松。
+已经在跑的（**每一条都做过变异检查**：把那道闸手动去掉，确认测试真的红，再还原）：
+
+1. ⚠️ 站内 JWT 进不了开放接口；开放平台令牌进不了 `verifyToken`；**两个方向都断言**。
+2. ⚠️ 带 `aud`/`scope`/`cid` 的 HS256 令牌站内一律拒绝（纵深防御那一条）。
+3. ⚠️ 算法混淆：拿**公钥**当 HMAC 密钥签的令牌必须被拒。
+   （jsonwebtoken 9 自己就拦得住，所以这条行为测不出差别 —— 用源码断言守住白名单，
+   理由写在测试里。**源码断言前先剥注释**，不然文件头那段说明会让它假绿。）
+4. ⚠️ 没有 `typ=at+jwt` 的令牌不算 access token（同一把私钥将来还要签 id_token）。
+5. AppID + key 换令牌；Basic 那种写法也认；key 错和应用不存在回**同一个响应体**。
+6. ⚠️ scope 超出已获批 → `invalid_scope`，**不静默降级**；用户级 scope 不能用
+   client_credentials 取；不传 scope 时也只给应用级那部分。
+7. ⚠️ 对外响应里不含 `FORBIDDEN_OUT_KEYS` 里的任何一个；ROM / 封面的对象 key 原文不出现。
+8. ⚠️ 多语言按 `lang` 返回 + `lang_actual`；**回退链与站内 `i18nData.ts` 逐格比对**
+   （两边各跑一遍，漂了就红）。
+9. ⚠️ `games.read` 要不到 ROM；ROM 凭据不含对象 key、分钟级过期、改一个字节就失效；
+   过期兑现回 410、伪造回 403；合法兑现 302 且 `no-store`。
+10. ⚠️ ROM 不做跨语言回退：只有日文版时要德文必须 404。
+11. 下架的游戏：详情、ROM、嵌入**三条路各测各的**（它们查的不是同一条 SQL）。
+12. ⚠️ 开放接口 CORS 放开到任意 Origin，而站内白名单**没有**跟着变松。
+
+用户级那半（OIDC）实现时要补的：
+
+13. `redirect_uri` 差一个斜杠 / 差 www / 多一个查询参数 → 全部拒绝。
+14. 没有 `code_challenge` → 拒绝；`plain` → 拒绝；`code_verifier` 对不上 → 拒绝。
+15. 授权码用第二次 → 拒绝，**且该用户在该应用下的 refresh token 全部失效**。
+16. 用已轮换掉的 refresh token → 拒绝并吊销整条链。
+17. 只有 `profile` 的 token 调 `/me/saves` → 403。
+18. 被封禁用户：换 token 与刷新 token 都被拒。
+19. 沙箱应用给非白名单用户授权 → 拒绝。
+20. `/oauth/authorize` 的响应头带 `frame-ancestors 'none'`；`/embed` 的与登记域名一致。
 
 ---
 
 ## 11. 明确不做
 
-- 不发 ROM 直链，不提供「下载游戏」接口。
+- 不提供**批量导出**（「把你们全库的元数据/ROM 打个包给我」）。逐个 slug、逐张票、逐次计量，
+  是这套东西能追责的前提。
+- 不发**永久** ROM 直链，不发对象存储的 key 原文。ROM 只经分钟级凭据。
 - 不开放 G 币的查询与增减。
 - 不开放任何后台能力点（`content:edit` / `users:manage` / `site:manage` …）。
 - 不做隐式流、密码模式、`prompt=none` 静默续期。
 - 不允许第三方应用代替用户改邮箱、改密码、注销账号 —— 这些永远只在 8bitgo.com 上做。
+
+---
+
+## 12. 已落地的部分（2026-09-11）
+
+应用级那半有可跑的骨架，用户级（OIDC）仍只有设计。
+
+```
+server/src/open/
+  scopes.js     scope 表、子集判定（纯函数）
+  i18n.js       lang 规整 + 标题/简介/ROM 的回退链（纯函数）
+  tokens.js     RS256 签发与验证。**两种令牌互不相认的那一半**
+  sign.js       ROM 凭据与嵌入地址的 HMAC 短期签名（纯函数）
+  mapper.js     对外形状的白名单 + FORBIDDEN_OUT_KEYS
+  apps.js       AppID + key 的校验（bcrypt，支持两把并存轮换）
+  config.js     三把密钥的读取；配不全就整块关掉
+  review.js     ⭐ 申请 / 审核状态机（纯函数）—— 第 1.4 节那张表的全部规则都在这儿
+  apps-repo.js  应用的读写、发 key、留痕、沙箱白名单
+server/src/routes/
+  open.js             /api/open/v1（第三方用 key 调，CORS 放开到任意 Origin）
+  open-apps.js        /api/open-apps（**站内**：开发者管自己的应用，登录态）
+  admin-open-apps.js  /api/admin/open-apps（审核，权限点 apps:review）
+src/pages/OpenPlatformPage.tsx   /open 开发者控制台
+src/admin/AdminOpenApps.tsx      /admin/open-apps 审核队列
+src/services/openApps.ts         两套端点的客户端
+server/scripts/test-openapi.mjs    npm run test:openapi    （28 项）
+server/scripts/test-open-apps.mjs  npm run test:open-apps  （32 项）
+```
+
+⚠️ **`/api/open` 和 `/api/open-apps` 是两套东西，别混**：前者是第三方拿 key 调的
+（CORS 任意 Origin、RS256 令牌），后者是本站用户管理自己应用的页面接口（登录态 + 站内 CORS）。
+把后者挂到 openRouter 下面会顺带把「建应用、轮换密钥」也放开到任意 Origin ——
+那等于任何网站都能拿着受害者的登录态替他建应用。测试里有一条守着这件事。
+
+连带改动：
+
+- `server/src/auth.js` 的 `verifyToken` 收紧（算法白名单 + 拒绝带 `aud`/`scope`/`cid` 的令牌）。
+  这是第 0 节那条铁律的站内一半，**不做的话开放平台再小心也没用**。
+- `server/schema-v2.sql` 与 `server/scripts/migrate.mjs` 加了第 7 节那五张表。
+  ⚠️ 另外四份 schema（`schema.sql` / `schema-d1.sql` / `8bitgo-v2-install.sql` /
+  两份 `8bitgo-setup*.sql`）**还没同步** —— 上线前按仓库惯例补齐。
+
+连带改动（这一轮）：
+
+- `shared/roles.js` 加了权限点 **`apps:review`**（只给 admin）。顺手修了一个既有漂移：
+  手写的 `shared/roles.d.ts` 少了 `collections:review` —— 前端引用那个权限点时 TS 会报
+  「不可赋值」，于是很容易被人用 `as` 断言绕过去，而那一刀下去整张权限表在前端就不再受
+  类型保护了。`test:roles` 现在有一条断言守着 d.ts 和 ABILITIES 一致。
+- `oauth_apps` 加了 8 列（`review_state` / `requested_scopes` / `review_note` /
+  `review_reason` / `submitted_at` / `reviewed_by` / `reviewed_at` / `suspended_from`），
+  新增 `oauth_app_reviews`（审核流水）和 `oauth_app_testers`（沙箱白名单）。
+  migrate 的补丁**逐列判断**，不是一条 ALTER 加八列 —— 一条失败会让后面七列一个都加不上。
+
+还差的（按优先级）：
+
+1. **P-1**：ROM 私有化（见 4.3），这是对外承诺 ROM 的前提。
+2. OIDC 那半：`/oauth/authorize` 同意页、`/api/oauth/token`、JWKS、`/me/authorized-apps`。
+   ⚠️ 同意页**必须**调 `apps-repo.js` 的 `canAuthorize` —— 沙箱应用只能向白名单账号
+   请求授权，那是「先沙箱后审核」模型唯一的防钓鱼屏障。
+   ⚠️ 「用户能授权却不能撤销」是不能接受的，`/me/authorized-apps` 必须同期上线。
+3. `/embed/:slug` 外壳与 `frame-ancestors`；沙箱水印。
+4. 全站基础安全头（`/oauth/authorize` 必须 `frame-ancestors 'none'`，见第 6 节）。
+5. 用量曲线（控制台和审核页都想要「他这周调了多少次」）。现在只有 key 的
+   `last_used_at` 能当一个粗糙的「有没有真的在用」。
+6. 两个页面的 i18n（见 1.5：等对外文档站一起做）。
+7. 申请状态变化时发一封邮件（现在只能靠他自己回控制台看）。Resend 已经接好了，
+   见 [[发信与功能开关]]。
+8. 另外四份 schema 同步（`schema.sql` / `schema-d1.sql` / `8bitgo-v2-install.sql` /
+   两份 `8bitgo-setup*.sql`）。

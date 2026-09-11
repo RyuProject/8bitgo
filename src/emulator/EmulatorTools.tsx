@@ -229,6 +229,22 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
     面板一关就把焦点还给运行时。玩家点 🎮 那一下焦点就落到了外层的按钮上，
     iframe 里的引擎从这一刻起收不到键盘、也读不到手柄 —— 关面板正是还回去的时机。
   */
+  /**
+   * 点完把焦点还给运行时。
+   *
+   * ⚠️ **不开面板的按钮全都要走这个。** 下面那个 `prevPanel` 的 effect 只覆盖了
+   * 「面板从开到关」那一下，而 ⏸ / 🖱️ / 📷 / ⏺ / ⋯ 这几颗**根本不开面板** ——
+   * 点完焦点就停在外层 `<button>` 上，而引擎跑在 iframe 里，从这一刻起收不到 keydown、
+   * iframe 侧的 `getGamepads()` 也全是 null（见 frameFocus.ts 的文件头，当时只修了面板那一半）。
+   *
+   * 街机上这个 bug 特别难看：Start 正好是 `Enter`，而 `Enter` 又是 `<button>` 的激活键 ——
+   * 玩家打完一局按 Start 想再来，实际是**又截了一张图**，游戏一点反应都没有。
+   */
+  const refocus = (fn: () => void) => () => {
+    fn()
+    handle?.focus?.()
+  }
+
   const prevPanel = useRef(panel)
   useEffect(() => {
     const was = prevPanel.current
@@ -561,7 +577,7 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
   return (
     <div className={cx('relative flex flex-wrap items-center gap-1.5', className)}>
       {caps.has('pause') && (
-        <button type="button" className={cx(BTN, paused && BTN_ON)} onClick={togglePause} title={paused ? tt.resume : tt.pause} aria-pressed={paused}>
+        <button type="button" className={cx(BTN, paused && BTN_ON)} onClick={refocus(togglePause)} title={paused ? tt.resume : tt.pause} aria-pressed={paused}>
           {paused ? '▶' : '⏸'}
         </button>
       )}
@@ -683,12 +699,12 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
           <button
             type="button"
             className={cx(BTN, mouseInv && BTN_ON)}
-            onClick={() => {
+            onClick={refocus(() => {
               const next = !mouseInv
               handle.setMouseInvert?.(next)
               setMouseInv(next)
               say(next ? tt.mouseYOn : tt.mouseYOff)
-            }}
+            })}
             title={mouseInv ? tt.mouseYInverted : tt.mouseYNormal}
             aria-label={tt.mouseY}
             aria-pressed={mouseInv}
@@ -698,7 +714,7 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
         )}
 
         {caps.has('screenshot') && (
-          <button type="button" className={BTN} onClick={() => void doShot()} title={tt.shot}>
+          <button type="button" className={BTN} onClick={refocus(() => void doShot())} title={tt.shot}>
             📷
           </button>
         )}
@@ -707,7 +723,7 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
           <button
             type="button"
             className={cx(BTN, recording && 'border-live bg-live/15 text-live')}
-            onClick={toggleRecord}
+            onClick={refocus(toggleRecord)}
             title={recording ? fmt(tt.recStop, { s: String(seconds) }) : tt.rec}
             aria-pressed={recording}
           >
@@ -721,10 +737,10 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
         <button
           type="button"
           className={cx(BTN, more && BTN_ON, 'sm:hidden')}
-          onClick={() => {
+          onClick={refocus(() => {
             setMore((v) => !v)
             setPanel(null)
-          }}
+          })}
           title={tt.more}
           aria-label={tt.more}
           aria-expanded={more}
@@ -737,7 +753,7 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
 
       {panel === 'volume' && (
         <div className="absolute bottom-full left-0 z-20 mb-2 flex items-center gap-2 rounded-lg border border-line bg-surface px-3 py-2 shadow-lg">
-          <button type="button" className={BTN} onClick={() => applyVolume(volume, !muted)} title={muted ? tt.unmute : tt.mute}>
+          <button type="button" className={BTN} onClick={refocus(() => applyVolume(volume, !muted))} title={muted ? tt.unmute : tt.mute}>
             {muted ? '🔇' : '🔊'}
           </button>
           <input
@@ -874,7 +890,16 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
         </div>
       )}
 
-      {saveModal && <SaveLoadModal cards={saveCards} onClose={() => setSaveModal(false)} />}
+      {saveModal && (
+        <SaveLoadModal
+          cards={saveCards}
+          onClose={() => {
+            setSaveModal(false)
+            // 弹窗开的时候抢过焦点，关了要还 —— 否则读完档键盘手柄全是死的
+            handle?.focus?.()
+          }}
+        />
+      )}
 
       {/*
         DOS 存档说明。
