@@ -139,12 +139,20 @@ ratingsRouter.post('/', optionalUser, async (req, res, next) => {
       const perHour = take(`rating:user:hour:${userId}`, 200, 3_600_000)
       if (!perHour.ok) return res.status(429).json({ error: '操作太频繁，请稍后再试', retryAfter: perHour.retryAfter })
     } else {
+      /*
+        ⚠️ 顺序要紧：**先按 IP，再按 anonId**。
+
+        anonId 是客户端自报的（见 anonIdOf），32 位随机字母数字，攻击者要多少有多少。
+        原来是先 `take('rating:anon:'+anonId)` 再按 IP —— 于是被 IP 闸拒掉的那条请求
+        **已经在限流表里建好了一个新桶**，每条请求净增一条记录，而且那条路一次库都不查，
+        攻击者这边接近零成本。反过来先判 IP，超了就直接出去，攻击面归零。
+      */
+      if (anonIp) {
+        const perIp = take(`rating:ip:${anonIp}`, 30, 60_000)
+        if (!perIp.ok) return res.status(429).json({ error: '操作太频繁，请稍后再试', retryAfter: perIp.retryAfter })
+      }
       const perAnon = take(`rating:anon:${anonId}`, 10, 60_000)
       if (!perAnon.ok) return res.status(429).json({ error: '操作太频繁，请稍后再试', retryAfter: perAnon.retryAfter })
-    }
-    if (anonIp) {
-      const perIp = take(`rating:ip:${anonIp}`, 30, 60_000)
-      if (!perIp.ok) return res.status(429).json({ error: '操作太频繁，请稍后再试', retryAfter: perIp.retryAfter })
     }
 
     const game = await gameBySlug(slug)

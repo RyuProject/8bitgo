@@ -238,8 +238,20 @@ export async function pushSave(
    * 「待同步」只给**真打算上云**的那一份。
    * 游客、以及明确选了「只存本地」的玩家都不算 —— 他们没打算往云端存，
    * 云端那份（别的设备存的）该正常接管，不该被这份本地存档挡住。
+   *
+   * ⚠️⚠️ 但「想上云、这次没上成」**也算**。2026-09-11 审出来的丢进度路径：
+   *   1. 玩家选了云端（`8bitgo.save.target = 'cloud'` 落进 localStorage），云端存着第 3 关；
+   *   2. 某次打开站点时 /api/auth/me 抖了一下 —— hydrateAuth 对**任何**异常都
+   *      `setToken(null)`，玩家被静默登出，而那个 localStorage 的落点选择**不会**被清；
+   *   3. 他接着玩到第 8 关存档：`toCloud` 为假 → 落本地、不打标记（界面照实说「存在这个浏览器里」，
+   *      没骗人）；
+   *   4. 重新登录再进游戏，DOS 那条路开机**自动**调 pullSave：`local.dirty` 是 false，
+   *      而 `getSaveTarget()` 仍然是 'cloud' → 下面那道「只存本地」的保护也不成立 →
+   *      去读云端那份第 3 关盖上来。两小时白玩，全程零提示。
+   * 所以这里要问的不是「这次上没上成」，而是「他想不想上」。
    */
-  const localOk = await idbPut(key, data, Date.now(), toCloud)
+  const wantedCloud = getSaveTarget() === 'cloud'
+  const localOk = await idbPut(key, data, Date.now(), toCloud || wantedCloud)
 
   if (!toCloud) return { ok: localOk, where: localOk ? 'local' : null }
 

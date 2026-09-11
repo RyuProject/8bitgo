@@ -82,8 +82,36 @@ const handleProtocols = (protocols) => (protocols.has('binary') ? 'binary' : fal
  * 注意用 noServer 模式手动处理 upgrade：同一个服务器上还挂着 socket.io，
  * 不是我们的路径必须原样放过去，不能 destroy。
  */
+/*
+  ---------------- 准入限制（2026-09-11 补） ----------------
+
+  这是站上**第三条**长连接端点，而 sseGuard.js 给另外两条补的四道闸（爬虫、每 IP、
+  总量、最长存活）这里一道都没有。2026-09-09 源站猝死就是长连接被挂满堆出来的，
+  同一个形状不能在这里再来一次。
+
+  ⚠️ ws 的 maxPayload 默认是 **100 MiB**，而这里收到一帧是要**广播给房里所有人**的 ——
+  不设上限等于给了一个放大器。真实的 IPX 包最大也就 1500 字节上下，64 KiB 绰绰有余。
+*/
+const MAX_PAYLOAD = 64 * 1024
+const MAX_ROOM_NAME = 64
+const MAX_PER_IP = 8
+const MAX_TOTAL = 200
+
+/** 每个 IP 当前挂着几条。close 时减回去 */
+const perIp = new Map()
+
+function ipOf(req) {
+  return String(req.socket?.remoteAddress || '').replace(/^::ffff:/i, '')
+}
+
+function totalConnections() {
+  let n = 0
+  for (const clients of rooms.values()) n += clients.size
+  return n
+}
+
 export function attachIpxToServer(httpServer, { publicHost = 'ipx' } = {}) {
-  const wss = new WebSocketServer({ noServer: true, handleProtocols })
+  const wss = new WebSocketServer({ noServer: true, handleProtocols, maxPayload: MAX_PAYLOAD })
   wss.on('error', (e) => console.warn('[ipx] server error:', e.message))
 
   httpServer.on('upgrade', (req, socket, head) => {
@@ -98,7 +126,7 @@ export function attachIpxToServer(httpServer, { publicHost = 'ipx' } = {}) {
 
 /** 独立端口模式：不打补丁、用原版 js-dos 时走这条 */
 export function attachIpx({ port = IPX_PORT, host = '127.0.0.1' } = {}) {
-  const wss = new WebSocketServer({ port, handleProtocols })
+  const wss = new WebSocketServer({ port, handleProtocols, maxPayload: MAX_PAYLOAD })
   wss.on('error', (e) => console.warn('[ipx] server error:', e.message))
   wire(wss, `${host}:${port}`)
   console.log(`[ipx] DOS 联机中继已启用：ws://…:${port}${IPX_PATH}<房间名>`)
@@ -111,6 +139,13 @@ function wire(wss, serverAddress) {
     // 路径必须是 /ipx/<room>
     if (parts[1] !== 'ipx' || !parts[2]) return ws.close()
     const room = decodeURIComponent(parts[2])
+    // 房间名来自 URL，不限长的话 rooms 的 key 可以被撑到任意大
+    if (room.length > MAX_ROOM_NAME) return ws.close()
+
+    const ip = ipOf(req)
+    if (totalConnections() >= MAX_TOTAL) return ws.close()
+    if (ip && (perIp.get(ip) || 0) >= MAX_PER_IP) return ws.close()
+
     const address = `${req.socket.remoteAddress}:${req.socket.remotePort}`
 
     let clients = rooms.get(room)
@@ -118,6 +153,7 @@ function wire(wss, serverAddress) {
     // 同一个地址重连时踢掉旧连接
     clients.get(address)?.close()
     clients.set(address, ws)
+    if (ip) perIp.set(ip, (perIp.get(ip) || 0) + 1)
     ws.on('error', (e) => console.warn('[ipx] socket error:', e.message))
 
     ws.on('message', (data) => {
@@ -140,6 +176,19 @@ function wire(wss, serverAddress) {
     })
 
     ws.on('close', () => {
+      if (ip) {
+        const left = (perIp.get(ip) || 1) - 1
+        if (left > 0) perIp.set(ip, left)
+        else perIp.delete(ip)
+      }
+      /*
+        ⚠️ 只有「表里存的还是我」才能删。
+        同一个地址重连时上面会先 close 掉旧连接再把新的写进去，而**旧 socket 的 close
+        回调是异步到的** —— 它一到就把刚写进去的新连接删掉，还可能顺手把整个 room
+        从 rooms 里摘掉。新客户端明明连着，却对谁都不可见（不是内存泄漏，是功能性失联），
+        ipxStats() 也跟着少报。
+      */
+      if (clients.get(address) !== ws) return
       clients.delete(address)
       if (clients.size === 0) rooms.delete(room)
     })

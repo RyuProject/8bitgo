@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import jwt from 'jsonwebtoken'
 import { query, queryOne } from '../db.js'
 import { hashPassword, verifyPassword, signToken, requireUser, tokenVersionOf } from '../auth.js'
+import { clientKey, isMeaningfulIp, take } from '../rateLimit.js'
 import { userRowToPublic } from '../mappers.js'
 import { favIds, recentIds } from '../userdata.js'
 import { issueCode, verifyCode, sendCodeError } from '../codes.js'
@@ -43,6 +44,57 @@ async function findOrCreateByEmail(email, nickname) {
   return row
 }
 
+
+/* ---------------- 密码登录 / 注册的限流（2026-09-11 补） ---------------- */
+
+const HOUR = 3_600_000
+
+/**
+ * ⚠️⚠️ 为什么这两条非加不可。
+ *
+ * 1. **密码可以无限爆破。** `/login` 原来一道闸都没有：没有频率限制、没有失败计数、
+ *    没有锁定，而密码下限只有 6 位。任何人可以对已知邮箱（后台/开发者控制台的申请人邮箱、
+ *    或者靠注册接口的 409 反查）无限次试密码，包括管理员账号。
+ * 2. **它还是个 CPU 打点。** 依赖里是 `bcryptjs`（**纯 JS 实现**，不是原生 bcrypt），
+ *    cost 10 的 compare 跑在**单线程事件循环上**。一个未登录的人打 `/login` 循环
+ *    就能把这个进程按住 —— 而它同时扛着全站 API、SSR 和 socket.io 信令。
+ * 3. `/register` 是「未登录即可无限往 users 表写行」的接口，每个新号还白送 100 G 币。
+ *
+ * 对照组：同一套验证码登录（codes.js）早就有邮箱冷却 + 每 IP/小时 + 全站/小时三道，
+ * 评论、评分、合集、提交游戏、j2me 上传也都有 —— 唯独密码登录和注册漏了。
+ *
+ * ⚠️ 按邮箱那道**必须在按 IP 之前**：邮箱是攻击者可控的字符串，先建桶再判 IP 的话
+ * 被拒的请求照样往限流表里塞记录（同 ratings.js 那条的教训）。
+ *
+ * ⚠️ 拿不到真实 IP 时跳过按 IP 那道，只留其余的 —— 同 codes.js：反代没透传时
+ * 所有人塌缩成一个地址，按 IP 限会把真实用户全锁在门外。
+ */
+function authGateOk(req, res, { email = '', kind }) {
+  const ip = clientKey(req)
+  if (isMeaningfulIp(ip)) {
+    const perIp = take(`auth:${kind}:ip:${ip}`, kind === 'login' ? 30 : 10, HOUR)
+    if (!perIp.ok) {
+      res.status(429).json({ error: '尝试次数过多，请稍后再试', retryAfter: perIp.retryAfter })
+      return false
+    }
+  }
+  if (kind === 'login' && email) {
+    // 按邮箱：挡住「盯着一个账号慢慢试」——单 IP 闸对换着 IP 的攻击者没用
+    const perEmail = take(`auth:login:email:${email}`, 10, 15 * 60_000)
+    if (!perEmail.ok) {
+      res.status(429).json({ error: '该账号尝试次数过多，请稍后再试', retryAfter: perEmail.retryAfter })
+      return false
+    }
+  }
+  const global = take(`auth:${kind}:global`, kind === 'login' ? 600 : 200, HOUR)
+  if (!global.ok) {
+    console.warn(`[auth] 全站 ${kind} 配额用尽 —— 可能正在被刷，检查 nginx 是否透传了真实 IP`)
+    res.status(429).json({ error: '当前请求过多，请稍后再试', retryAfter: global.retryAfter })
+    return false
+  }
+  return true
+}
+
 authRouter.post('/register', async (req, res, next) => {
   try {
     const email = String(req.body.email || '').trim().toLowerCase()
@@ -51,6 +103,7 @@ authRouter.post('/register', async (req, res, next) => {
     if (!EMAIL_RE.test(email)) return res.status(400).json({ error: '邮箱格式不正确' })
     if (nickname.length < 2 || nickname.length > 16) return res.status(400).json({ error: '昵称需要 2–16 个字符' })
     if (password.length < 6) return res.status(400).json({ error: '密码至少 6 位' })
+    if (!authGateOk(req, res, { kind: 'register' })) return
 
     const exists = await queryOne('SELECT id FROM users WHERE email = ?', [email])
     if (exists) return res.status(409).json({ error: '该邮箱已注册，请直接登录' })
@@ -73,6 +126,8 @@ authRouter.post('/login', async (req, res, next) => {
   try {
     const email = String(req.body.email || '').trim().toLowerCase()
     const password = String(req.body.password || '')
+    // 闸在查库和 bcrypt 之前 —— 那两步才是攻击者真正想让我们花的钱
+    if (!authGateOk(req, res, { email, kind: 'login' })) return
     const row = await queryOne('SELECT * FROM users WHERE email = ?', [email])
     if (!row) return res.status(401).json({ error: '邮箱或密码不正确' })
     /**

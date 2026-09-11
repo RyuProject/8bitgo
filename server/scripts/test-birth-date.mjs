@@ -57,6 +57,12 @@ try {
       'export const query = (sql, params) => globalThis.__fakeDb.query(sql, params)',
       'export const queryOne = (sql, params) => globalThis.__fakeDb.queryOne(sql, params)',
       'export const pool = { query: () => { throw new Error("测试不该直接用 pool") } }',
+      // ⚠️ 假 db 要覆盖**模块图里真的会被 import 的每一个导出**，不是只覆盖本测试用到的那几个。
+      // 2026-09-11：me.js 补了 ratings-repo 的 import（在那之前注销接口必 500），
+      // ratings-repo 又 import 了 withTransaction —— 假 db 少这一个，整个测试在加载期就炸，
+      // 报的还是「db.js 不提供 withTransaction」这种看起来和生日毫无关系的错。
+      'export const withTransaction = (fn) => fn((sql, params) => globalThis.__fakeDb.query(sql, params))',
+      'export const jsonMemberPath = (name) => `$."${String(name).replaceAll(String.fromCharCode(34), String.fromCharCode(92, 34))}"`',
       '',
     ].join('\n'),
     'utf8',

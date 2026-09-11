@@ -38,9 +38,17 @@ const RUNTIMES = new Set(['emulatorjs', 'jsdos', 'cloudgame', 'jsnes', 'ruffle',
  * 存档的 key 是 slug；本地文件没有 slug，前端会给个 `local:文件名` 的形式 ——
  * 而文件名完全可能是中文、日文的（`local:超级马里奥.zip`），
  * 所以这里不能限定 ASCII，只挡真正会出问题的字符：
- * 斜杠（会把路由打断）、反斜杠、空白和控制字符。
+ * 斜杠（会把路由打断）、反斜杠、控制字符。
+ *
+ * ⚠️ 2026-09-11：原来连**空格**也挡了（`\s`），于是这条路对绝大多数真实 ROM 文件名
+ * 直接失效 —— `local:Super Mario Bros (USA).nes` 一律 400「游戏标识不合法」。
+ * 玩家自己拖进来的 ROM 因此**永远存不上云**（界面照实报错，不是静默丢数据，
+ * 但这个功能等于不存在）。空格在路径段里编码之后完全合法，没有任何理由挡它。
+ * 仍然挡掉的是：斜杠 / 反斜杠（打断路由）、控制字符、以及首尾空白
+ * （首尾空白会让「看起来一样」的两个 key 指向不同存档，那是另一种坑）。
  */
-const SLUG_RE = /^[^/\\\s\u0000-\u001f]{1,160}$/u
+const SLUG_RE = /^[^/\\\u0000-\u001f\u007f]{1,160}$/u
+export const slugOk = (v) => SLUG_RE.test(v) && v === v.trim()
 
 /**
  * 这一次写入放不放行。纯函数，好测（`npm run test:save-quota`）。
@@ -87,7 +95,7 @@ function coords(req, res) {
     res.status(400).json({ error: '未知的引擎' })
     return null
   }
-  if (!SLUG_RE.test(slug)) {
+  if (!slugOk(slug)) {
     res.status(400).json({ error: '游戏标识不合法' })
     return null
   }

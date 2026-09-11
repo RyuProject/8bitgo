@@ -13,7 +13,7 @@ import assert from 'node:assert/strict'
 const MB = 1024 * 1024
 process.env.SAVE_MAX_PER_USER = '3'
 process.env.SAVE_MAX_TOTAL_BYTES = String(10 * MB)
-const { saveQuotaError } = await import('../src/routes/saves.js')
+const { saveQuotaError, slugOk } = await import('../src/routes/saves.js')
 
 let n = 0
 let failedChecks = 0
@@ -36,6 +36,29 @@ const ok = (cond, msg) => {
   failedChecks++
   console.log('❌ ' + msg)
 }
+console.log('\n── 存档 slug：本地 ROM 的文件名得能存上云 ──')
+{
+  /*
+    ⚠️ 2026-09-11：原来的正则连**空格**也挡（`\\s`），于是这条路对绝大多数真实 ROM
+    文件名直接失效 —— `local:Super Mario Bros (USA).nes` 一律 400「游戏标识不合法」。
+    玩家自己拖进来的 ROM 因此永远存不上云。空格在路径段里编码之后完全合法。
+    仍然要挡的是：斜杠 / 反斜杠（打断路由）、控制字符、首尾空白
+    （首尾空白会让「看起来一样」的两个 key 指向不同存档）。
+  */
+  ok(slugOk('local:Super Mario Bros (USA).nes') === true, '⭐ 带空格的真实 ROM 文件名')
+  ok(slugOk('local:超级马里奥.zip') === true, '中文文件名')
+  ok(slugOk('zeek-the-geek') === true, '普通 slug')
+  ok(slugOk('local:a/b.nes') === false, '斜杠（会把路由打断）')
+  ok(slugOk('local:a\\b.nes') === false, '反斜杠')
+  ok(slugOk('local:a\\tb.nes') === false, '制表符')
+  ok(slugOk('local:a\\nb.nes') === false, '换行')
+  ok(slugOk(' local:a.nes') === false, '首空格')
+  ok(slugOk('local:a.nes ') === false, '尾空格')
+  ok(slugOk('') === false, '空')
+  ok(slugOk('local:' + 'x'.repeat(200)) === false, '超长的挡住')
+}
+
+
 process.on('exit', () => {
   if (failedChecks) {
     console.log(`\n❌ ${failedChecks} 项失败（上面带 ❌ 的那几条）`)

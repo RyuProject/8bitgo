@@ -72,10 +72,25 @@ openRouter.post('/v1/token', async (req, res, next) => {
     if (!cfg) return fail(res, 501, 'temporarily_unavailable', '开放平台未启用')
 
     const { clientId, clientSecret } = readClientCredentials(req)
-    // 限流按 client_id + IP 两层：只按 app 限，一个坏用户能拖垮整个应用；
-    // 只按 IP 限，应用服务端的出口 IP 会互相挤占
-    const gate = take(`open:token:${clientId || clientIpFrom(req.ip, req.headers)}`, 60, 3600_000)
-    if (!gate.ok) return rateLimited(res, gate)
+    /*
+      限流按 IP + client_id 两层：只按 app 限，一个坏用户能拖垮整个应用；
+      只按 IP 限，应用服务端的出口 IP 会互相挤占。
+
+      ⚠️ **顺序要紧：先 IP，后 client_id。** client_id 是请求体/Basic 里的任意字符串，
+      在 authenticateApp 之前它没经过任何验证 —— 先按它建桶的话，每一条伪造 client_id
+      的请求都会往限流表里净增一条记录，而且这里的窗口是**一小时**，
+      比 ratings 那条（60 秒）恶劣得多：一小时内一条都清不掉。
+      先判 IP、超了就出去，未认证的请求就只能撑开有界的 IP key 空间。
+    */
+    const ip = clientIpFrom(req.ip, req.headers)
+    if (ip) {
+      const byIp = take(`open:token:ip:${ip}`, 120, 3600_000)
+      if (!byIp.ok) return rateLimited(res, byIp)
+    }
+    if (clientId) {
+      const byApp = take(`open:token:${clientId}`, 60, 3600_000)
+      if (!byApp.ok) return rateLimited(res, byApp)
+    }
 
     if (String(req.body?.grant_type || '') !== 'client_credentials') {
       return fail(res, 400, 'unsupported_grant_type', '这个端点只支持 client_credentials；用户登录走 /api/oauth/authorize')
@@ -336,8 +351,18 @@ async function getRawGame(slug) {
 /**
  * `GET /v1/games/:slug/embed` —— 换一个带签名、会过期的嵌入地址。
  *
- * 防盗链靠 `/embed/*` 响应头上的 `frame-ancestors <该应用登记的域名>`，
- * 那是浏览器强制的；Referer 只作为服务端侧的弱校验和用量归因，不作为屏障。
+ * ⚠️⚠️ **这道门目前还不是真的门 —— 别对外宣传成访问控制。**
+ *
+ * 原来这里写的是「防盗链靠 `/embed/*` 响应头上的 `frame-ancestors <该应用登记的域名>`」。
+ * 2026-09-11 核对：全仓库**没有任何地方下发过 CSP**（grep `frame-ancestors` 只有这段注释
+ * 本身），`/embed/:slug` 是纯前端路由、由 SSR catch-all 返回，不带任何安全响应头；
+ * `open/sign.js` 导出的 `verifyEmbed()` **一个调用点都没有**。
+ * 也就是说 signEmbed 发出去的 `?a=&e=&s=` 三个参数无人校验，
+ * 任何网站直接 `<iframe src="https://…/embed/<slug>">` 就能白嵌。
+ *
+ * 要把它变成真的门，需要给 `/embed/*` 单独一条 Express 路由：先 `verifyEmbed()`，
+ * 再按该应用登记的 `embed_origins` 下发 `Content-Security-Policy: frame-ancestors …`。
+ * 在那之前，Referer 只是弱校验和用量归因，挡不住任何人。
  */
 openRouter.get('/v1/games/:slug/embed', requireApp('games.read'), async (req, res, next) => {
   try {

@@ -765,6 +765,8 @@ try {
     console.log('⚠️  这个库是 **v1** 结构，而当前代码是 v2。')
     console.log('   v1 的 games 主键是 slug、标签存 JSON 列，和 v2 不兼容，没法靠 ALTER 补上去。')
     console.log('   要升到 v2 得执行 8bitgo-v2-install.sql —— 那个脚本会**删表重建**，')
+    console.log('   ⚠️ 连带后果：saves 表虽然不删，但里面所有云存档的 user_id 会全部悬空、永久失效。')
+    console.log('      先看一眼有多少：SELECT COUNT(*) FROM saves;')
     console.log('   games / posts / users / favorites / recents 里的数据全部丢失，执行前务必先 mysqldump 备份。')
     console.log('   下面只会跑那些对 v1 也安全的补丁，v2 专属的会跳过。\n')
   } else {

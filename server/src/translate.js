@@ -503,3 +503,56 @@ export async function translateMarkdown(text, source, target, concurrency = 3) {
   })
   return out.join('')
 }
+
+/* ---------------- 翻译接口的限流闸（2026-09-11 补） ---------------- */
+
+import { clientKey, isMeaningfulIp, take } from './rateLimit.js'
+
+const HOUR = 3_600_000
+const TRANSLATE_PER_IP_PER_MIN = 6
+const TRANSLATE_PER_IP_PER_HOUR = 60
+const TRANSLATE_GLOBAL_PER_HOUR = 600
+
+let warnedNoRealIp = false
+
+/**
+ * `POST /api/posts/:slug/translate` 和 `POST /api/games/:slug/translate-description`
+ * 的准入闸。挡住了就自己把 429 写出去并返回 false，调用方 `if (!translateGateOk(req, res)) return`。
+ *
+ * ⚠️ 为什么非要有：这两条路由**不需要登录**，而下游是按字符计费的火山翻译。
+ * 原来的防刷理由是「缓存命中之后每款每语言只调一次」，但冷缓存对成千上万个
+ * (slug, lang) 组合天然存在 —— 游戏简介又没有发布时预翻，于是每一款游戏 × 每个计费语言
+ * 都是一次可以被外人白嫖的付费调用。一条 for 循环就能把账单刷上去，
+ * 顺带耗尽配额让正常翻译全部失败。
+ *
+ * ⚠️ 拿不到真实访客 IP 时跳过按 IP 那道，只留全站兜底 —— 同 codes.js 的理由：
+ * 反代没透传时所有人塌缩成同一个地址，按 IP 限会把真实用户全锁在门外。
+ */
+export function translateGateOk(req, res) {
+  const ip = clientKey(req)
+  if (isMeaningfulIp(ip)) {
+    const perMin = take(`translate:ip:${ip}`, TRANSLATE_PER_IP_PER_MIN, 60_000)
+    if (!perMin.ok) {
+      res.status(429).json({ error: '翻译请求太频繁，请稍后再试', retryAfter: perMin.retryAfter })
+      return false
+    }
+    const perHour = take(`translate:ip:h:${ip}`, TRANSLATE_PER_IP_PER_HOUR, HOUR)
+    if (!perHour.ok) {
+      res.status(429).json({ error: '翻译请求太频繁，请稍后再试', retryAfter: perHour.retryAfter })
+      return false
+    }
+  } else if (!warnedNoRealIp) {
+    warnedNoRealIp = true
+    console.warn(
+      `[translate] 拿到的客户端地址是 ${ip}，按 IP 限流已跳过（只剩全站总量兜底）。` +
+        ' 让 nginx 透传真实 IP 即可恢复：proxy_set_header X-Forwarded-For $http_cf_connecting_ip;',
+    )
+  }
+  const global = take('translate:global', TRANSLATE_GLOBAL_PER_HOUR, HOUR)
+  if (!global.ok) {
+    console.warn('[translate] 全站翻译配额已用尽 —— 可能正在被刷，检查 nginx 是否透传了真实 IP')
+    res.status(429).json({ error: '当前请求过多，请稍后再试', retryAfter: global.retryAfter })
+    return false
+  }
+  return true
+}

@@ -3,6 +3,10 @@ import { query, queryOne } from '../db.js'
 import { requireUser, hashPassword, verifyPassword, signToken, tokenVersionOf } from '../auth.js'
 import { userRowToPublic } from '../mappers.js'
 import { favIds, recentIds, gameIdBySlug } from '../userdata.js'
+// ⚠️ 2026-09-11：这两个在 DELETE /api/me 里用着，但一直没 import ——
+// 自助注销会在消费掉验证码之后抛 ReferenceError 变成 500，用户永远注销不了，
+// 而且每试一次白费一封验证码邮件。
+import { gamesRatedBy, recomputeGameRatings } from '../ratings-repo.js'
 import { issueCode, verifyCode, sendCodeError } from '../codes.js'
 import { checkAdultBirthDate } from '../../../shared/age.js'
 import { normalizeAvatar } from '../../../shared/avatar.js'

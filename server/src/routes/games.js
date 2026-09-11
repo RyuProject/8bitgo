@@ -22,7 +22,7 @@ import {
   suggestGames,
   searchFallback,
 } from '../games-repo.js'
-import { isTranslateConfigured, translatePlan } from '../translate.js'
+import { isTranslateConfigured, translateGateOk, translatePlan } from '../translate.js'
 import { gameDescriptionSource, renderField } from '../i18n-generate.js'
 
 export const gamesRouter = Router()
@@ -296,6 +296,8 @@ gamesRouter.get('/:slug', async (req, res, next) => {
  */
 gamesRouter.post('/:slug/translate-description', async (req, res, next) => {
   try {
+    // 同 posts 的 translate：不需要登录 + 下游按字符计费，必须限流。见 rateLimit.js
+    if (!translateGateOk(req, res)) return
     const lang = String(req.body?.lang ?? '').trim()
 
     // ⚠️ 顺序变了（2026-09-07）：**先取游戏、再算计划**。

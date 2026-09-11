@@ -5,7 +5,7 @@ import { invalidateContent } from '../content.js'
 import { publicApi } from '../cache.js'
 import { postRowToApi, postApiToRow, dbFlag } from '../mappers.js'
 import { queuePostSearchPush } from '../search-push.js'
-import { isTranslateConfigured, translatePlan } from '../translate.js'
+import { isTranslateConfigured, translateGateOk, translatePlan } from '../translate.js'
 import { renderField, renderMarkdownField } from '../i18n-generate.js'
 
 export const postsRouter = Router()
@@ -158,6 +158,15 @@ postsRouter.post('/:slug/translate', async (req, res, next) => {
      * 直接的后果是 **`en` 在文章这边不是 passthrough**：以前 `translatePlan('en')`
      * 无条件返回 passthrough，这条路由对英文一律 400，于是 `/en/blog` 永远显示中文。
      */
+    /*
+      ⚠️ 这条路由不需要登录，而它下游是**按字符计费**的火山翻译。
+      文件头原来的防刷理由是「缓存命中后每款每语言只调一次」，但冷缓存对成千上万个
+      (slug, lang) 组合天然存在，一条 for 循环就能把账单刷上去、顺带耗尽配额
+      让正常翻译全部失败。照 codes.js 的三层写法补上。
+      拿不到真实 IP 时（反代没透传）跳过按 IP 那道，只留全站闸 —— 宁可放宽也不误伤。
+    */
+    if (!translateGateOk(req, res)) return
+
     const plan = translatePlan(lang, 'zh-Hans')
     if (!plan) return res.status(400).json({ error: `不支持的目标语言：${lang}` })
     if (plan.passthrough) return res.status(400).json({ error: `语言 ${lang} 不需要翻译` })
@@ -169,11 +178,24 @@ postsRouter.post('/:slug/translate', async (req, res, next) => {
     // 直接读原始行而不是 postRowToApi —— 看 excerpt_i18n / content_i18n 是裸 JSON 列，
     // mysql2 已经解成对象了，访问起来比走 readI18nMap 一层过滤简单一点（这里我们
     // 需要的是「原值」（包括空字符串）来判断「缓存命中了但内容是空」这种边角）。
+    /*
+      ⚠️⚠️ 草稿必须挡住。`SELECT` 里因此要多取一列 `published`。
+
+      这条路由是后加的，没跟着抄 `GET /:slug` 那道 published 判断，结果是：
+      任何**未登录**的人 POST `/api/posts/<草稿slug>/translate {"lang":"zh-Hant"}`
+      就能拿到草稿的标题、摘要、**正文全文**的繁体版（zh-Hant 走本地 OpenCC，
+      连火山密钥都不需要）。而且它还是个 slug 探针 —— 草稿存在回 200、不存在回 404，
+      而 `GET /:slug` 对两者都回 404，于是可以先枚举出草稿 slug 再读全文。
+    */
     const row = await queryOne(
-      'SELECT title, excerpt, content, title_i18n, excerpt_i18n, content_i18n FROM posts WHERE slug = ?',
+      'SELECT published, title, excerpt, content, title_i18n, excerpt_i18n, content_i18n FROM posts WHERE slug = ?',
       [req.params.slug],
     )
     if (!row) return res.status(404).json({ error: '文章不存在' })
+    // 和 GET /:slug 同一条规矩：没有内容编辑权的人，草稿一律当作不存在
+    if (!row.published && !(await hasAbility(req, 'content:edit'))) {
+      return res.status(404).json({ error: '文章不存在' })
+    }
 
     const titleCached = row.title_i18n?.[lang] || ''
     const excerptCached = row.excerpt_i18n?.[lang] || ''
