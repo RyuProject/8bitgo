@@ -64,6 +64,16 @@ export async function upsertGame(game: Game): Promise<Game> {
       '服务端没有保存 Windows 系统镜像。请在服务器运行数据库迁移并重启 8bitgo-api，然后重新保存。',
     )
   }
+  /*
+    附加文件同理，而且它的静默失败最难查：后台一个个传完、点保存、绿字提示「已保存」，
+    玩家进去却什么都没多 —— 因为那一列根本不存在，服务端悄悄把它丢了。
+    只判「要了却一个都没回来」：服务端会去重 / 截断 / 滤掉非法行，逐条比对会误报。
+  */
+  if (game.dosExtras?.length && !saved.dosExtras?.length) {
+    throw new Error(
+      '服务端没有保存附加文件清单。请在服务器运行数据库迁移（cd server && npm run migrate）并重启 8bitgo-api，然后重新保存。',
+    )
+  }
   const requestedWindowsVersion = game.dosWindowsVersion
   if (requestedWindowsVersion !== saved.dosWindowsVersion) {
     throw new Error(

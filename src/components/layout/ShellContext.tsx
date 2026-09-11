@@ -52,7 +52,18 @@ function readCollapsed(): boolean {
 }
 
 export function ShellProvider({ children }: { children: ReactNode }) {
-  const [collapsed, setCollapsedState] = useState<boolean>(readCollapsed)
+  /*
+    ⚠️ 首次渲染必须和服务端一致，所以这里写死 false。
+
+    原来是 `useState(readCollapsed)` —— 初始化函数是在 **hydrate 的第一次渲染**
+    里跑的：服务端没有 localStorage，永远得到 false；而收起过侧栏的人在浏览器
+    里得到 true。两边对不上，React 报 #418 并把整棵树推倒重建——而且这一条
+    只对「收起过侧栏的人」触发，自己测很容易测不出来。
+
+    注意：这不会多出一次闪烁。旧写法里 React 本来就要按服务端的 HTML
+    先画一遍再重建，闪的是**整页**；现在只有侧栏那一块重渲染。
+  */
+  const [collapsed, setCollapsedState] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [immersive, setImmersive] = useState(false)
 
@@ -67,6 +78,11 @@ export function ShellProvider({ children }: { children: ReactNode }) {
 
   const toggleCollapsed = useCallback(() => setCollapsed(!collapsed), [collapsed, setCollapsed])
   const toggleImmersive = useCallback(() => setImmersive((v) => !v), [])
+
+  // hydrate 完成之后再把浏览器里记的那份补上（上面那段注释）
+  useEffect(() => {
+    setCollapsedState(readCollapsed())
+  }, [])
 
   // 沉浸模式下按 Esc 退出
   useEffect(() => {

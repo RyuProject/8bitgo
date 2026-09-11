@@ -65,3 +65,64 @@ export function formatDosExtra(ref: DosExtraRef): string {
   const path = normalizeExtraPath(ref.path)
   return !path || path === defaultExtraPath(ref.key) ? ref.key : `${ref.key}|${path}`
 }
+
+/* ---------------- 后台上传时用的（放这里是为了能被测试直接 import） ---------------- */
+
+/**
+ * 路径的每一段都过一遍对象 key 的字符集。`/` 要留着 —— 子目录得跟着进存储。
+ * 整段被滤空（比如中文文件名）时那一段就没了，调用方要判空。
+ */
+export function extraObjectName(path: string): string {
+  return path
+    .split('/')
+    .map((seg) => seg.replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, ''))
+    .filter(Boolean)
+    .join('/')
+}
+
+/**
+ * 从网上下下来的资料片压缩包里，哪些条目不该当成附加文件。
+ *
+ * ⚠️ `__MACOSX/` 和 `._xxx` 这两类必须滤掉：macOS 上重新压过的包一定带着它们，
+ * 而它们会原样落进游戏目录。DOS 那边不认这种名字，轻则多几个垃圾文件，
+ * 重则把 8.3 名空间搞乱 —— 而且没有任何提示。
+ */
+export function skipExtraEntry(name: string): boolean {
+  if (!name || name.endsWith('/')) return true
+  if (/^__MACOSX\//i.test(name)) return true
+  return name.split('/').some((seg) => seg.startsWith('.'))
+}
+
+/** 8.3：DOS 真正认得的名字。和 jsdosBundle 里那条同源，这里只用来给后台提示 */
+const DOS_83 = /^[A-Za-z0-9_^$~!#%&{}@'()-]{1,8}(\.[A-Za-z0-9_^$~!#%&{}@'()-]{1,3})?$/
+
+/**
+ * 这个落点拿到 DOS 里会不会出事。后台上传时提前说出来，别等玩家进游戏才发现。
+ *
+ * 分两档，因为严重程度差得远：
+ *   blocking —— 名字里有非 ASCII / 空格之类。它既进不了对象 key（会被滤成 `.MIX`
+ *     这种一碰就撞的名字），在 FAT 盘上也是一团乱码，**必须先改名**。
+ *   非 blocking —— 只是不合 8.3。DOSBox 会给它编一个 8.3 别名，
+ *     所以文件在盘上；但游戏内部如果按原名去找就读不到。这种只提醒，不拦 ——
+ *     确实有包用长名字，而且拦掉的代价（功能完全用不了）比读不到大。
+ */
+export function extraPathProblem(path: string): { blocking: boolean; text: string } | null {
+  const p = normalizeExtraPath(path)
+  if (!p) return { blocking: true, text: `「${path}」不是合法的路径` }
+  const segments = p.split('/')
+  const bad = segments.find((seg) => !/^[A-Za-z0-9_^$~!#%&{}@'().-]+$/.test(seg))
+  if (bad) {
+    return {
+      blocking: true,
+      text: `「${p}」里的「${bad}」含有 DOS 认不了的字符（中文、空格等）。请先把文件改成英文名再上传。`,
+    }
+  }
+  const notDos = segments.find((seg) => !DOS_83.test(seg))
+  if (notDos) {
+    return {
+      blocking: false,
+      text: `「${p}」里的「${notDos}」不是 DOS 的 8.3 短名（最多 8 个字符 + 3 位扩展名）。文件会进游戏目录，但游戏按原名找可能读不到。`,
+    }
+  }
+  return null
+}

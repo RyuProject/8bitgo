@@ -20,7 +20,17 @@ import {
   type UploadStage,
 } from '@/services/roms'
 import { bundleBytes, bundleWarnings, pickMainSwf, planSwfBundleFromZip, type SwfBundleFile, type SwfBundlePlan } from '@/lib/swfBundle'
-import { listZipEntries, isZip } from '@/lib/unzip'
+import { assertValidZip, extractZipEntry, listZipEntries, isZip } from '@/lib/unzip'
+import {
+  extraObjectName,
+  extraPathProblem,
+  formatDosExtra,
+  normalizeExtraPath,
+  parseDosExtra,
+  parseDosExtras,
+  skipExtraEntry,
+  type DosExtraRef,
+} from '@/lib/dosExtras'
 import { identifyArcadeRomset, type RomsetIdentification } from '@/lib/arcadeRomset'
 import type { ArcadeHack } from '@/data/arcadeHacks'
 import { platformBiosUrlSync, fetchPlatformBios } from '@/services/platformBios'
@@ -423,6 +433,11 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
                 </p>
               </Field>
             )}
+            <DosExtrasField
+              slug={slugify(form.slug || form.title)}
+              value={form.dosExtras}
+              onChange={(next) => set('dosExtras', next)}
+            />
             {/* Windows 客体不给「保存进度」按钮（存的是 qcow2 扇区，上游标为不可保存），所以不显示这一项 */}
             {!(form.dosBackend === 'dosboxX' && form.dosSystem?.trim()) && (
               <Field label="存档提示" className="col-span-2 sm:col-span-4">
@@ -634,6 +649,208 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
 function stageText(stage: UploadStage | null): string {
   if (!stage || stage.parts <= 1) return ''
   return `分片 ${stage.done}/${stage.parts}` + (stage.resumed ? ` · 已恢复 ${stage.resumed} 片` : '')
+}
+
+/**
+ * DOS 附加文件（资料片 / 补丁 / 额外配置）。
+ *
+ * 站长 2026-09-11 的原话：「有的时候不是我上传游戏而是运维人员，他们不太会用 cd curl unzip 指令」。
+ * 所以这个字段的硬要求是：**把从网上下下来的那个 zip 原样丢进来就行**。
+ * 组件自己判断是不是压缩包、自己拆、逐个传、自己算好每个文件在游戏目录里的落点，
+ * 全程不需要命令行，也不用重打那份十几 MB 的游戏 ROM。
+ *
+ * 存进库的是一行一个 `对象key` 或 `对象key|游戏里的路径`（见 lib/dosExtras.ts）。
+ *
+ * ⚠️ 「移除」只解除这款游戏的绑定，不删 R2 上的对象 —— 和 SystemImageField 一个道理：
+ * 同一份补丁可能被别的游戏引用，编辑这一款时顺手删掉会把别人弄坏。真要删去「ROM 存储」页。
+ */
+const DOS_EXTRAS_MAX = 12
+
+function DosExtrasField({
+  slug,
+  value,
+  onChange,
+}: {
+  slug: string
+  value: string[] | undefined
+  onChange: (value: string[] | undefined) => void
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [manual, setManual] = useState('')
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const cfg = getRomConfig()
+  const canUpload = Boolean(cfg.api && cfg.token)
+  const refs = parseDosExtras(value)
+
+  const write = (next: DosExtraRef[]) => {
+    const lines = next.map(formatDosExtra)
+    onChange(lines.length ? lines : undefined)
+  }
+
+  const onFiles = async (files: File[]) => {
+    if (!files.length) return
+    setMsg(null)
+
+    // 第一步：把选中的东西摊平成「一份份要上传的文件」。压缩包就地拆开，其余原样。
+    const planned: { path: string; blob: Blob }[] = []
+    try {
+      for (const file of files) {
+        const buf = await file.arrayBuffer()
+        if (isZip(buf)) {
+          for (const entry of assertValidZip(buf, file.name)) {
+            if (skipExtraEntry(entry.name)) continue
+            planned.push({ path: entry.name, blob: new Blob([await extractZipEntry(buf, entry) as BlobPart]) })
+          }
+        } else {
+          planned.push({ path: file.name, blob: file })
+        }
+      }
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : '读取附加文件失败' })
+      if (inputRef.current) inputRef.current.value = ''
+      return
+    }
+
+    // 第二步：先把「这批到底放不放得下」说清楚，再动手传。
+    // 传到一半才发现超限、前几个已经进了 R2 —— 那种半成品状态最难收拾。
+    const usable = planned.filter((item) => normalizeExtraPath(item.path) && extraObjectName(item.path))
+    if (!usable.length) {
+      setMsg({ ok: false, text: '这些文件里没有能用的附加文件（压缩包可能是空的，或者只有目录）' })
+      if (inputRef.current) inputRef.current.value = ''
+      return
+    }
+    // 名字里有中文 / 空格的一律先拦下来。硬传上去的结果是对象 key 被滤成「.MIX」这种
+    // 一碰就撞的东西，而在 FAT 盘上它就是一团乱码 —— 玩家只会看到游戏读不到资料片
+    const problems = usable
+      .map((item) => extraPathProblem(item.path))
+      .filter((p): p is NonNullable<typeof p> => p !== null)
+    const blocking = problems.filter((p) => p.blocking)
+    if (blocking.length) {
+      setMsg({ ok: false, text: blocking.map((p) => p.text).join(' ') })
+      if (inputRef.current) inputRef.current.value = ''
+      return
+    }
+    // 同名的是替换，不占新名额
+    const existing = new Set(refs.map((r) => r.path.toLowerCase()))
+    const fresh = usable.filter((item) => !existing.has(normalizeExtraPath(item.path).toLowerCase())).length
+    if (refs.length + fresh > DOS_EXTRAS_MAX) {
+      setMsg({
+        ok: false,
+        text: `最多 ${DOS_EXTRAS_MAX} 个附加文件：现在有 ${refs.length} 个，这批要新增 ${fresh} 个。` +
+          '每个文件都会进玩家的加载链路，请只挑真正需要的（说明书、截图之类不用传）。',
+      })
+      if (inputRef.current) inputRef.current.value = ''
+      return
+    }
+
+    const dir = `extras/${slug || 'shared'}`
+    const next = refs.slice()
+    const failed: string[] = []
+    let done = 0
+    for (const item of usable) {
+      const path = normalizeExtraPath(item.path)
+      const key = `${dir}/${extraObjectName(path)}`
+      try {
+        if (!(await confirmUpload(key, item.blob))) continue
+        setBusy(`${path} 0%`)
+        const result = await uploadRom(item.blob, key, (pct) => setBusy(`${path} ${pct}%`))
+        const at = next.findIndex((r) => r.path.toLowerCase() === path.toLowerCase())
+        const ref = { key: result.key, path }
+        if (at >= 0) next[at] = ref
+        else next.push(ref)
+        done++
+      } catch (err) {
+        failed.push(`${path}（${err instanceof Error ? err.message : '上传失败'}）`)
+      }
+    }
+    setBusy(null)
+    if (inputRef.current) inputRef.current.value = ''
+    write(next)
+    const warn = problems.map((p) => p.text).join(' ')
+    if (failed.length) setMsg({ ok: false, text: `${done} 个已上传，${failed.length} 个失败：${failed.join('；')}` })
+    else if (done) setMsg({ ok: !warn, text: `已上传并绑定 ${done} 个附加文件。${warn}`.trim() })
+  }
+
+  return (
+    <Field label="附加文件（资料片 / 补丁）" className="col-span-2 sm:col-span-4">
+      {refs.length > 0 && (
+        <ul className="mb-2 space-y-1">
+          {refs.map((ref, i) => (
+            <li key={`${ref.key}|${ref.path}|${i}`} className="flex flex-col gap-1 sm:flex-row sm:items-center">
+              <input
+                className={cx(inputClass, 'font-mono sm:flex-1')}
+                value={ref.path}
+                onChange={(e) => {
+                  const next = refs.slice()
+                  next[i] = { ...ref, path: e.target.value }
+                  write(next)
+                }}
+                aria-label="在游戏目录里的路径"
+              />
+              <span
+                className="truncate font-mono text-[11px] text-dim sm:w-72 sm:shrink-0"
+                title={`对象 key：${ref.key}`}
+              >
+                {ref.key}
+              </span>
+              <button
+                type="button"
+                className={cx(btnClass.secondary, 'shrink-0 whitespace-nowrap')}
+                onClick={() => write(refs.filter((_, j) => j !== i))}
+              >
+                移除
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <input
+          ref={inputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={(e) => void onFiles(Array.from(e.target.files ?? []))}
+        />
+        <button
+          type="button"
+          className={cx(btnClass.secondary, 'shrink-0 whitespace-nowrap')}
+          disabled={!canUpload || busy !== null}
+          onClick={() => inputRef.current?.click()}
+        >
+          {busy === null ? '上传附加文件 / 压缩包' : `上传中 ${busy}`}
+        </button>
+        <input
+          className={cx(inputClass, 'font-mono sm:flex-1')}
+          value={manual}
+          onChange={(e) => setManual(e.target.value)}
+          placeholder="或直接填已上传的对象 key，如 extras/command-conquer/SC-002.MIX"
+        />
+        <button
+          type="button"
+          className={cx(btnClass.secondary, 'shrink-0 whitespace-nowrap')}
+          disabled={!manual.trim() || refs.length >= DOS_EXTRAS_MAX}
+          onClick={() => {
+            const ref = parseDosExtra(manual)
+            if (!ref) return setMsg({ ok: false, text: '这个 key 解析不出文件名' })
+            setManual('')
+            setMsg(null)
+            write([...refs.filter((r) => r.path.toLowerCase() !== ref.path.toLowerCase()), ref])
+          }}
+        >
+          添加
+        </button>
+      </div>
+      {msg && <p className={cx('mt-1 text-[11px]', msg.ok ? 'text-emerald-400' : 'text-rose-400')}>{msg.text}</p>}
+      <p className="mt-1 text-[11px] text-dim">
+        加载时并进游戏目录，<b>不改动已上传的 ROM</b>，也不用刷全站缓存。资料片（《命令与征服》的 SC-002.MIX）、
+        官方补丁、额外的 .INI 都走这里。<b>压缩包可以整个丢进来</b>，会自动拆开逐个上传。
+        左边那格是文件在游戏目录里的落点，默认就是文件名（= 和本体放同一层），需要进子目录才改它，清空即恢复默认。
+        最多 {DOS_EXTRAS_MAX} 个 —— 每个都会进玩家开局的加载链路。
+      </p>
+    </Field>
+  )
 }
 
 /**

@@ -47,6 +47,7 @@
     "test:nes-mapper": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-nes-mapper.mjs",
     "test:load-progress": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-load-progress.mjs",
     "test:dos-bundle": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-dos-bundle.mjs",
+    "test:dos-extras": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-dos-extras.mjs",
     "test:broadcast-idle": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-broadcast-idle.mjs",
     "test:capture-worker": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-capture-worker.mjs",
     "test:capture-feed": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-capture-feed.mjs",

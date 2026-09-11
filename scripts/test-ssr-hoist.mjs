@@ -19,7 +19,7 @@
  * 首屏慢半拍。也就是说没有这组断言，改回去谁都不会发现。
  */
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { splitHoistedHead } from '../src/services/seo.ts'
@@ -110,6 +110,113 @@ check('⚠️ 提升发生在 renderToString 这条路上才需要这个补丁',
   // 这块补丁就该整段删掉（留着会把流式渲染吐的正文头部误判）
   const src = code('src/entry-server.tsx')
   assert.match(src, /renderToString/, '渲染方式换了，splitHoistedHead 这块要重新评估')
+})
+
+console.log('四、useState 的初始化不许读浏览器状态')
+
+/*
+  #418 不止一种来法。上面三节修的是 React 19 资源提升那一种；这一节盯的是更常见的另一种：
+
+    const [collapsed] = useState(readCollapsed)   // readCollapsed 读 localStorage
+
+  useState 的初始化函数是在 **hydrate 的第一次渲染**里跑的。它要是读了 localStorage /
+  matchMedia 这类只有浏览器才有的东西，服务端渲出来的 HTML 和客户端第一次渲染就必然不同。
+  阴险的地方在于它**只对改过那个设置的人触发** —— 站长自己点开首页一切正常，
+  而收起过侧栏的访客每次都在吃一次整树重建。ShellContext 就是这么来的（09-11 修）。
+
+  所以这里不是钉某一处，是扫全仓库：任何 useState 的初始化函数只要碰浏览器全局，
+  要么改掉，要么在下面的白名单里写清楚**为什么它不会被 SSR 渲染**。
+*/
+const BROWSER_GLOBAL = /\b(localStorage|sessionStorage|matchMedia|navigator|document|window)\b/
+
+/** 例外：必须写明为什么安全，不能只写「没事」 */
+const ALLOWED = new Map([
+  [
+    'src/emulator/LiveControls.tsx:readPrivate',
+    '只有 status === "running" 之后才挂载（EmulatorPlayer 里那个条件渲染），SSR 的 HTML 里没有它；'
+      + '而且这个值管的是「不公开直播」，改成 effect 补读会让私密局先推出去一帧',
+  ],
+])
+
+function tsFiles(dir) {
+  const out = []
+  for (const name of readdirSync(dir)) {
+    const full = path.join(dir, name)
+    if (statSync(full).isDirectory()) out.push(...tsFiles(full))
+    else if (/\.tsx?$/.test(name)) out.push(full)
+  }
+  return out
+}
+
+/** 从 `at` 往后取第一个花括号块（用来看一个函数体里有没有碰浏览器全局） */
+function blockAt(src, at) {
+  const start = src.indexOf('{', at)
+  if (start < 0) return ''
+  let depth = 0
+  for (let i = start; i < src.length; i++) {
+    if (src[i] === '{') depth++
+    else if (src[i] === '}' && --depth === 0) return src.slice(start, i + 1)
+  }
+  return src.slice(start)
+}
+
+function scanHydrationUnsafeInitializers() {
+  const hits = []
+  for (const file of tsFiles(path.join(ROOT, 'src'))) {
+    const rel = path.relative(ROOT, file).replace(/\\/g, '/')
+    const src = readFileSync(file, 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '')
+
+    // 这个文件里哪些函数碰了浏览器全局
+    const clientOnly = new Set()
+    for (const m of src.matchAll(/function\s+([A-Za-z_$][\w$]*)\s*\(/g))
+      if (BROWSER_GLOBAL.test(blockAt(src, m.index))) clientOnly.add(m[1])
+    for (const m of src.matchAll(/const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/g))
+      if (BROWSER_GLOBAL.test(blockAt(src, m.index))) clientOnly.add(m[1])
+
+    for (const m of src.matchAll(/useState[^(]*\(([^)]*)\)/g)) {
+      const arg = (m[1] || '').trim()
+      if (!arg) continue
+      const inline = BROWSER_GLOBAL.test(arg)
+      if (!inline && !clientOnly.has(arg)) continue
+      const line = src.slice(0, m.index).split('\n').length
+      const key = `${rel}:${inline ? arg : arg}`
+      hits.push({ key, rel, line, arg, inline })
+    }
+  }
+  return hits
+}
+
+check('⚠️ 全仓库扫描：没有 useState 在初始化里读浏览器状态', () => {
+  const bad = scanHydrationUnsafeInitializers().filter((h) => !ALLOWED.has(h.key))
+  assert.equal(
+    bad.length,
+    0,
+    '这些会在 hydrate 第一次渲染时读到服务端没有的值 → #418：\n     '
+      + bad.map((h) => `${h.rel}:${h.line}  useState(${h.arg})`).join('\n     ')
+      + '\n     改法：useState 里放和 SSR 一致的默认值，真正的值在 useEffect 里补读。'
+      + '\n     确实不会被 SSR 渲染的，写进 ALLOWED 并说明理由。',
+  )
+})
+
+check('⚠️ 白名单本身不许长草', () => {
+  // 白名单里的条目如果已经不存在了（函数改名 / 组件删了），要及时清掉，
+  // 否则下一个同名函数会白白继承这份豁免。
+  const live = new Set(scanHydrationUnsafeInitializers().map((h) => h.key))
+  const stale = [...ALLOWED.keys()].filter((k) => !live.has(k))
+  assert.equal(stale.length, 0, `白名单里这些已经不存在了，删掉：${stale.join(', ')}`)
+})
+
+check('ShellContext 的侧栏折叠是在 effect 里补读的', () => {
+  const src = code('src/components/layout/ShellContext.tsx')
+  // ⚠️ 别写成 assert.match(src, /useState\(false\)/) —— 这文件里 mobileOpen / immersive
+  // 本来就是 useState(false)，那条断言在改回旧写法之后照样通过（空断言）。
+  assert.ok(
+    !/useState[^(]*\(\s*readCollapsed\s*\)/.test(src),
+    '又改回 useState(readCollapsed) 了：初始化函数会在 hydrate 第一次渲染里跑',
+  )
+  assert.match(src, /useEffect\(\(\) => \{\s*setCollapsedState\(readCollapsed\(\)\)/, '没有在 effect 里补读')
 })
 
 console.log(failed ? `\n${failed} 项未通过` : '\n全部通过 ✅')
