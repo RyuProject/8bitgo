@@ -99,9 +99,27 @@ export async function idbPut(
  * 等结果回来再把标记落定。重新 put 一遍整份数据只是为了改一个布尔值，
  * DOS 的变更包能有几百 KB，没必要。
  */
-export async function idbMark(key: string, dirty: boolean): Promise<void> {
+export async function idbMark(key: string, dirty: boolean, expectUpdatedAt?: number): Promise<void> {
   const cur = await idbGet(key)
   if (!cur || cur.dirty === dirty) return
+  /*
+    ⚠️⚠️ `expectUpdatedAt` 不是可选的讲究，是防丢档的。
+
+    这个函数是跨两个事务的 read-modify-write，而且原来**只认 key、不认版本** ——
+    于是同一个存档位上有两次并发推送时：
+      1. 存档 A：idbPut(A, dirty=true)，PUT A 上路；
+      2. 玩家没看到反馈又按了一次（N64/PSX 的快照推云端要好几秒，而快捷键那条路
+         连防连点都没有）→ 存档 B：idbPut(B, dirty=true)，本地现在是 B；
+      3. PUT A 先回 200 → idbMark(key, false) 读到的是 **B 的数据**，
+         写回 {data: B, dirty: false} —— 云端是 A，本地是 B 却被标成「已同步」；
+      4. PUT B 随后失败（令牌过期 / 断网 / 超配额）→ pushSave 不会把标记改回去；
+      5. 下次进游戏 pullSave 看 dirty=false → 读云端的 A。**B 没了。**
+    另一条不需要任何失败的变体：两个 PUT 都成功但到达顺序反了，云端留下更旧的 A，
+    而本地 B 已被标成 clean，同样丢 B。
+
+    带上推送时的 updatedAt 之后，「这份已经不是我推的那份了」就什么都不做。
+  */
+  if (expectUpdatedAt !== undefined && cur.updatedAt !== expectUpdatedAt) return
   await tx<IDBValidKey>('readwrite', (s) => s.put({ data: cur.data, updatedAt: cur.updatedAt, dirty }, key))
 }
 

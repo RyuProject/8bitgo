@@ -245,6 +245,8 @@ export type Capability =
   | 'pause'
   | 'saveState'
   | 'fsSave'
+  /** 存档能导出成文件 / 从文件导入（DOS 那条路的兜底，见 fsExport） */
+  | 'fsFile'
   | 'volume'
   | 'gamepad'
   | 'screenshot'
@@ -307,7 +309,28 @@ export interface RuntimeHandle {
     where?: 'cloud' | 'local'
     reason?: 'nothing' | 'failed'
     error?: string
+    /**
+     * 这一次固化出来的字节。**存哪儿失败了也会有**（那正是它最有用的时候）——
+     * 工具栏拿它退回「下载成文件」，不让玩家的进度就这么没了。
+     */
+    bytes?: Uint8Array
   }>
+  /**
+   * 把当前进度导出成一个文件（DOS 那条路的兜底）。
+   *
+   * ⚠️ 为什么 DOS 非要单独有这个：快照式引擎（EmulatorJS 等）本来就能
+   * `saveState()` 拿到 Blob 直接下载，而 DOS 的存档是「盘上被改过的文件」这一包，
+   * 以前**只有**云端和 IndexedDB 两个落点、没有任何带走的办法 ——
+   * 没登录 + 清一次浏览器数据 = 进度全没，而且事前毫无征兆。
+   */
+  fsExport?: () => Promise<{ ok: boolean; blob?: Blob; reason?: 'nothing' | 'failed'; error?: string }>
+  /**
+   * 把一个导出过的存档文件写回存储。
+   *
+   * ⚠️ **写完不会立刻生效** —— js-dos 只在开机时调一次 fsChanges.pull，
+   * 所以要重开这一局才装得进去。界面必须把这句话说出来，别让玩家以为已经读上了。
+   */
+  fsImport?: (data: Uint8Array) => Promise<{ ok: boolean; where?: 'cloud' | 'local'; error?: string }>
   /** 返回一句话时，工具栏用它代替默认的「读档完成」（比如 Flash 要说明游戏被重载了） */
   loadState?: (data: ArrayBuffer) => Promise<string | void>
   /** 音量 0~1 */

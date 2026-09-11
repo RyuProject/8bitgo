@@ -63,6 +63,7 @@
     "test:chunked-fetch": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-chunked-fetch.mjs",
     "test:remote-disc": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-remote-disc.mjs",
     "test:save-target": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-save-target.mjs",
+    "test:save-sync": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-save-sync.mjs",
     "test:scroll": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-scroll-guard.mjs",
     "test:hotkeys": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-hotkeys.mjs",
     "test:keymap": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-keymap.mjs",

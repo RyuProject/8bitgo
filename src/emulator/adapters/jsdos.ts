@@ -350,6 +350,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let mouseInverted = options.mouseCapture ? mouseInvertStore.read(mouseKey) : false
   /** 最近一次存档落到哪儿了（云端 / 浏览器），给界面显示用 */
   let lastPush: { ok: boolean; where: 'cloud' | 'local' | null; error?: string } | null = null
+  /** 最近一次固化出来的字节；导出成文件和「存不进去时退回下载」都用它 */
+  let lastBytes: Uint8Array | null = null
   /**
    * 经函数读，别直接读变量。
    * 直接读的话 TypeScript 会顺着 `lastPush = null` 一路把类型收窄成 never ——
@@ -558,6 +560,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                 push: async (_key: string, data: Uint8Array) => {
                   // 记下这次落到哪儿了，fsSave() 要拿它告诉玩家「存到云端」还是「存在浏览器里」。
                   // 这个钩子被调到过本身就是「盘上真有改动」的唯一证据，fsSave() 也靠它判断。
+                  /*
+                    ⚠️ 字节要**先留一份**，而且和存储成功与否无关。
+                    两边都写不进去（无痕模式、超配额、令牌过期）时，这一包就是玩家进度
+                    在这个世界上唯一的副本 —— 工具栏拿它退回「下载成文件」。
+                    以前这里失败就只剩一句「存档失败」，字节当场丢掉。
+                  */
+                  lastBytes = new Uint8Array(data)
                   try {
                     const r = await pushSave('jsdos', saveKey, data)
                     lastPush = { ok: r.ok, where: r.where, error: r.cloudFailed ? r.error : undefined }
@@ -624,7 +633,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       if (paused) props.setPaused?.(true)
       // 存档要等 js-dos 起来才有 props.save()，所以能力在这里才补上
       // qcow2 系统镜像的扇区变化不是普通 js-dos 文件层存档；上游也明确把这种包标成不可保存。
-      if (props.save && saveKey && !guest) caps.add('fsSave')
+      if (props.save && saveKey && !guest) {
+        caps.add('fsSave')
+        // 导出/导入是 fsSave 的兜底，条件完全一样
+        caps.add('fsFile')
+      }
       options.onCaps?.(caps)
       /**
        * 兜底：万一 kiosk 模式下不触发 emu-ready，也别让转圈一直转。
@@ -727,6 +740,37 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
      * 「保存进度」：让 js-dos 把盘上的改动写出去，走上面 fsChanges.push 那条路。
      * 注意这不是即时存档 —— 玩家得先在游戏里用它自己的存档功能存过盘，这里才有东西可存。
      */
+    /**
+     * 导出成文件：先固化一次（拿到最新的盘面），再把那一包交出去。
+     *
+     * ⚠️ **存储失败也照样给文件** —— 兜底的全部意义就在这儿。
+     */
+    async fsExport() {
+      const r = await this.fsSave!()
+      const bytes = r.bytes ?? lastBytes
+      if (!bytes || bytes.length === 0) {
+        return { ok: false, reason: (r.reason ?? 'nothing') as 'nothing' | 'failed', error: r.error }
+      }
+      return { ok: true, blob: new Blob([bytes as BlobPart], { type: 'application/octet-stream' }), error: r.error }
+    },
+
+    /**
+     * 从文件导入：写进存储。
+     *
+     * ⚠️ **不会立刻生效**：js-dos 只在开机时调一次 fsChanges.pull。
+     * 所以这里只负责把它放对地方，「要重开这一局」那句话由工具栏去说。
+     */
+    async fsImport(data: Uint8Array) {
+      if (!saveKey) return { ok: false, error: 'no-slug' }
+      if (!data || data.length === 0) return { ok: false, error: 'empty' }
+      try {
+        const r = await pushSave('jsdos', saveKey, data)
+        return { ok: r.ok, where: r.where ?? undefined, error: r.cloudFailed ? r.error : undefined }
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) }
+      }
+    },
+
     async fsSave() {
       if (!props?.save) return { ok: false, reason: 'failed' as const }
       try {
@@ -745,11 +789,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
          */
         if (!done) return { ok: false, reason: 'nothing' as const }
 
-        // 云端和浏览器都没写进去
-        if (!done.ok) return { ok: false, reason: 'failed' as const, error: done.error }
+        // 云端和浏览器都没写进去 —— 把字节交出去，工具栏会退回「下载成文件」
+        if (!done.ok) return { ok: false, reason: 'failed' as const, error: done.error, bytes: lastBytes ?? undefined }
 
         // 写进去了。error 有值 = 本地成了、云端没成（部分成功），要一并说出来
-        return { ok: true, where: done.where ?? undefined, error: done.error }
+        return { ok: true, where: done.where ?? undefined, error: done.error, bytes: lastBytes ?? undefined }
       } catch {
         return { ok: false, reason: 'failed' as const }
       }

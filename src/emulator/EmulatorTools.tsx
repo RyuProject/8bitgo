@@ -132,7 +132,12 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
   /** 存档面板（三张卡：云端 / 这个浏览器 / 文件）。见 SaveLoadModal.tsx */
   const [saveModal, setSaveModal] = useState(false)
   /** DOS「固化存档」正在飞：按钮压住，别让连点把 lastPush 判断搞反（见 doFsSave） */
+  /** 正在存 / 正在读。防连点用，见 doSave 里的注释 */
+  const [saving, setSaving] = useState(false)
   const [fsSaving, setFsSaving] = useState(false)
+  /** 刚导入过一份存档，面板上要把「重开这一局」那个按钮亮出来 */
+  const [fsImported, setFsImported] = useState(false)
+  const fsFileRef = useRef<HTMLInputElement | null>(null)
   /**
    * 移动端：次要按钮（音量 / 手柄 / 另存 / 截屏 / 录像）收进「⋯」里。
    * 桌面端这个 state 不起作用 —— 那一组在 sm: 断点上无条件常驻（见 return 里的 secondaryCls）。
@@ -299,6 +304,15 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
    * 登录了进云端跟着账号走；没登录就落在这个浏览器里，随时能再导出成文件。
    */
   const doSave = async (target: SaveTarget) => {
+    /*
+      ⚠️ 防连点不是体验问题，是**丢档**问题的上游。
+      N64 / PSX 的快照推云端要好几秒，玩家看不到反馈就会再按一次；而快捷键那条路
+      （F2 / Shift+F2，hotkeyBridge 只挡了 e.repeat）两次独立按键会开两条并发的 pushSave。
+      并发本身已经在 services/saves.ts 里排队了，但让玩家多存一份没用的、还要多等一轮，
+      没有任何好处。SaveLoadModal 早就声明了 busy 这个 prop，只是一直没人传 —— 现在传上了。
+    */
+    if (saving) return
+    setSaving(true)
     setPanel(null)
     /*
       ⚠️ 弹窗也要关，和 loadFrom 对齐。
@@ -341,6 +355,67 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
       say(tt.saveOk)
     } catch (e) {
       say(e instanceof Error && e.message ? e.message : tt.saveFail)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  /** DOS 存档的文件名。扩展名自定，重要的是让人一眼看出这是哪款游戏的存档 */
+  const dosSaveFileName = () => mediaFileName(gameName, 'dossave')
+
+  /**
+   * 导出成文件 —— 没有云端时这是玩家唯一能把进度带走的办法。
+   * 存储失败也照样给文件（见 adapters/jsdos.ts 的 fsExport）。
+   */
+  const doFsExport = async () => {
+    if (fsSaving) return
+    setFsSaving(true)
+    try {
+      const r = await handle.fsExport?.()
+      if (!r?.ok || !r.blob) {
+        if (!r || r.reason === 'nothing') {
+          setFsSaveFailed(true)
+          setPanel('fsSave')
+          say(tt.fsSaveNothing)
+          return
+        }
+        say(r.error ? fmt(tt.fsSaveFailed, { msg: r.error }) : tt.saveFail)
+        return
+      }
+      downloadBlob(r.blob, dosSaveFileName())
+      setFsSaveFailed(false)
+      say(tt.saveOk)
+    } catch (e) {
+      say(e instanceof Error && e.message ? e.message : tt.saveFail)
+    } finally {
+      setFsSaving(false)
+    }
+  }
+
+  /**
+   * 从文件导入。
+   *
+   * ⚠️ js-dos 只在**开机时**调一次 fsChanges.pull，所以写完不会立刻生效。
+   * 这里必须把「要重开这一局」说出来，否则玩家会以为已经读上了、接着玩下去，
+   * 然后在下一次存档时把刚导入的那份覆盖掉。
+   */
+  const doFsImport = async (file: File | null | undefined) => {
+    if (!file || fsSaving) return
+    setFsSaving(true)
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      const r = await handle.fsImport?.(bytes)
+      if (!r?.ok) {
+        say(fmt(tt.fsImportFailed, { msg: r?.error ?? '' }))
+        return
+      }
+      setFsImported(true)
+      setPanel('fsSave')
+      say(fmt(tt.fsImportOk, { where: whereLabel(r.where ?? effectiveSaveTarget()) }))
+    } catch (e) {
+      say(fmt(tt.fsImportFailed, { msg: e instanceof Error ? e.message : String(e) }))
+    } finally {
+      setFsSaving(false)
     }
   }
 
@@ -364,8 +439,19 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
           say(tt.fsSaveNothing)
           return
         }
-        // 'failed' = 引擎或者两边的存储都没成功。这是真的错误，不该让玩家
-        // 去游戏里反复存盘 —— 那不是他的问题
+        /*
+          'failed' = 引擎或者两边的存储都没成功。这是真的错误，不该让玩家
+          去游戏里反复存盘 —— 那不是他的问题。
+
+          ⚠️ 只要还拿得到字节，就**退回下载成文件**，和快照引擎那条路（doSave）对齐。
+          以前这里只说一句「保存进度失败」，而那一包正是玩家进度在这个世界上
+          唯一的副本（无痕模式、超配额、令牌过期都会走到这里）—— 说完就丢掉了。
+        */
+        if (r?.bytes?.length) {
+          downloadBlob(new Blob([r.bytes as BlobPart], { type: 'application/octet-stream' }), dosSaveFileName())
+          say(fmt(tt.saveFellBack, { msg: r.error ?? '' }))
+          return
+        }
         say(r.error ? fmt(tt.fsSaveFailed, { msg: r.error }) : tt.saveFail)
         return
       }
@@ -893,6 +979,7 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
       {saveModal && (
         <SaveLoadModal
           cards={saveCards}
+          busy={saving}
           onClose={() => {
             setSaveModal(false)
             // 弹窗开的时候抢过焦点，关了要还 —— 否则读完档键盘手柄全是死的
@@ -944,6 +1031,59 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
               {tt.fsSaveCancel}
             </button>
           </div>
+
+          {/*
+            存档文件这一路：**没有云端时玩家唯一能把进度带走的办法**。
+            以前 DOS 只有云端和 IndexedDB 两个落点 —— 没登录 + 清一次浏览器数据 = 进度全没，
+            而且事前毫无征兆。快照式引擎早就有「另存为文件」，这里补齐。
+          */}
+          {caps.has('fsFile') && (
+            <div className="mt-2 border-t border-line pt-2">
+              <p className="text-[11px] text-dim">{tt.fsFileWhy}</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={fsSaving}
+                  className={cx(BTN, 'px-2', fsSaving && 'opacity-60')}
+                  onClick={() => void doFsExport()}
+                >
+                  ⬇ {tt.fsExport}
+                </button>
+                <button
+                  type="button"
+                  disabled={fsSaving}
+                  className={cx(BTN, 'px-2', fsSaving && 'opacity-60')}
+                  onClick={() => fsFileRef.current?.click()}
+                >
+                  ⬆ {tt.fsImport}
+                </button>
+                {/*
+                  导入之后**必须重开这一局**才会生效：js-dos 只在开机时调一次 fsChanges.pull。
+                  不把这个按钮亮出来的话，玩家会以为已经读上了、接着玩，
+                  然后在下一次存档时把刚导入的那份覆盖掉。
+                */}
+                {fsImported && (
+                  <button
+                    type="button"
+                    className={cx(BTN, 'px-2 border-brand text-brand-hover')}
+                    onClick={() => window.location.reload()}
+                  >
+                    ↻ {tt.fsImportReload}
+                  </button>
+                )}
+              </div>
+              <input
+                ref={fsFileRef}
+                type="file"
+                className="hidden"
+                onChange={(e) => {
+                  void doFsImport(e.target.files?.[0])
+                  // 同一个文件连选两次也要能触发 change
+                  e.target.value = ''
+                }}
+              />
+            </div>
+          )}
         </div>
       )}
     </div>

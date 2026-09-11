@@ -216,6 +216,34 @@ export interface PushedSave {
  * 反过来（先乐观地标成已同步、失败再改回来）的话，PUT 飞在半空中时玩家关掉标签页，
  * 本地就留下一份「以为已经上云」的记录，下次读档会去读更旧的云端那份。
  */
+/**
+ * 同一个存档位的写入**排队**，不并发。
+ *
+ * ⚠️ 为什么必须排队，而不是只靠 idbMark 的版本守卫：
+ * 守卫能防住「清错标记」，防不住**两个 PUT 到达服务器的顺序反过来**。
+ * 服务端是 last-writer-wins（saves.js 的 REPLACE），HTTP/2 多路复用和代理重试
+ * 都可能让后发的先到 —— 那样云端最终留下的是更旧的那一份，而且没有任何迹象。
+ * 排成一条链之后，「先按的先落地」这件事就由客户端保证了。
+ *
+ * 链尾会自己从 Map 里摘掉，所以这个 Map 不会随游戏数无界增长。
+ */
+const pushChains = new Map<string, Promise<void>>()
+
+function serializePush<T>(key: string, run: () => Promise<T>): Promise<T> {
+  const prev = pushChains.get(key) ?? Promise.resolve()
+  // 前一个失败也要继续排下一个 —— 用同一个 run 接住两条分支
+  const result = prev.then(run, run)
+  const tail = result.then(
+    () => {},
+    () => {},
+  )
+  pushChains.set(key, tail)
+  void tail.then(() => {
+    if (pushChains.get(key) === tail) pushChains.delete(key)
+  })
+  return result
+}
+
 export async function pushSave(
   runtime: SaveRuntime,
   gameSlug: string,
@@ -232,6 +260,17 @@ export async function pushSave(
   if (data.length > MAX_SAVE_BYTES) return { ok: false, where: null, error: 'too-large' }
 
   const key = localKey(runtime, gameSlug, slot)
+  return serializePush(key, () => pushOne(key, runtime, gameSlug, data, slot, target))
+}
+
+async function pushOne(
+  key: string,
+  runtime: SaveRuntime,
+  gameSlug: string,
+  data: Uint8Array,
+  slot: number,
+  target: Exclude<SaveTarget, 'download'>,
+): Promise<PushedSave> {
   // 选了云端但此刻没登录（退出 / 令牌过期）就只能落本地，界面会照实说
   const toCloud = target === 'cloud' && cloudSavesEnabled()
   /**
@@ -251,7 +290,9 @@ export async function pushSave(
    * 所以这里要问的不是「这次上没上成」，而是「他想不想上」。
    */
   const wantedCloud = getSaveTarget() === 'cloud'
-  const localOk = await idbPut(key, data, Date.now(), toCloud || wantedCloud)
+  // 这个时间戳同时是「我推的是哪一份」的凭证，等云端回来时拿它去核对（见 idbMark）
+  const stamp = Date.now()
+  const localOk = await idbPut(key, data, stamp, toCloud || wantedCloud)
 
   if (!toCloud) return { ok: localOk, where: localOk ? 'local' : null }
 
@@ -263,7 +304,8 @@ export async function pushSave(
       body: data as BodyInit,
     })
     if (res.ok) {
-      await idbMark(key, false)
+      // 只清「我自己推上去的那一份」的标记，别人的不动
+      await idbMark(key, false, stamp)
       return { ok: true, where: 'cloud' }
     }
     const msg = await res
