@@ -44,10 +44,28 @@ import { normalizeDevelopers } from '@/lib/developers'
 import { Field, btnClass, inputClass } from './ui'
 import { mergeDosboxConfigOverride, normalizeDosboxConfigOverride } from '../../shared/dosbox-config.js'
 
+/*
+  一键模板。点一下是**合并**进现有配置（mergeDosboxConfigOverride），不是覆盖，可以叠着点。
+
+  下面三条「性能」相关的由来（2026-09-11 实测 js-dos 8.4.1 内嵌的镜像模板）：
+    · cycles：站点默认 cycles=auto，而 auto 在**实模式**下是一个保守的固定值，
+      只有程序进了保护模式才自动跳到 max（DOSBox-X 自己的提示原文：
+      "DOSBox-X has switched to max cycles, because of the setting: cycles=auto"）。
+      也就是说一个实模式的 VGA 动作游戏现在是按老 386 的速度在跑。默认值不改
+      —— auto 的保守正是为了不让早期游戏跑飞 —— 但得让人知道有这个旋钮。
+    · memsize：js-dos 的 Win 3.11 镜像写的是 **256**（DOS 7.1 是 64、Win95/98 是 128）。
+      Win 3.11 增强模式根本用不到，而 DOSBox-X 会把这块内存一次性分配出来，
+      在 wasm 里就是实打实 256 MB 堆，内存紧张的设备上可能直接分配失败。
+    · oplemu：DOSBox-X 的 OPL 模拟里 nuked 是逐样本精确模拟、CPU 开销最大。
+      用 AdLib / FM 音乐的老游戏可以拿音色精度换 CPU。
+*/
 const DOSBOX_CONFIG_TEMPLATES = [
   { label: '关闭 GUS', config: '[gus]\ngus=false' },
   { label: '鼠标 1:1', config: '[sdl]\nsensitivity=100\nraw_mouse_input=true' },
   { label: 'CPU 兼容模式', config: '[cpu]\ncore=normal' },
+  { label: '⚡ 提速（放开 CPU）', config: '[cpu]\ncycles=max' },
+  { label: '⚡ 省内存（Win 3.x）', config: '[dosbox]\nmemsize=32' },
+  { label: '⚡ FM 音乐省 CPU', config: '[sblaster]\noplemu=fast' },
 ] as const
 
 export function slugify(text: string): string {
@@ -417,6 +435,11 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
                   </div>
                   <p className="mt-1 text-[11px] text-dim">
                     只保存需要覆盖的 INI 项；支持硬件、CPU、声卡和灵敏度设置。[autoexec]、鼠标捕获模式与游戏盘挂载由站点保护。
+                  </p>
+                  <p className="mt-1 text-[11px] text-dim">
+                    ⚡ 嫌慢先看这两个：站点默认 <code>cycles=auto</code>，实模式 DOS 游戏会按一个保守的固定速度跑，
+                    只有程序进保护模式才自动放开 —— 老游戏卡就点「提速」。Windows 3.x 的共享镜像默认
+                    <code>memsize=256</code>，这块内存开机就一次性分配掉，手机上很容易吃不消，点「省内存」降到 32 MB。
                   </p>
                 </Field>
               </>

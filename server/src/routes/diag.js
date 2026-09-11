@@ -31,6 +31,31 @@ import {
   resolveCountry,
 } from '../presence.js'
 
+/** 鉴权最多等这么久（毫秒）。这不是「慢」的阈值，是「卡住了」的阈值 */
+const ADMIN_CHECK_MS = 1500
+
+/**
+ * 限时问一句「是不是管理员」。超时、抛异常、库卡住 —— 一律答 false。
+ *
+ * ⚠️ 定时器要 unref：否则一个还没落地的鉴权检查会把 Node 进程的退出拖住。
+ */
+async function adminWithin(req, ms) {
+  let timer = null
+  try {
+    return await Promise.race([
+      isAdminRequest(req),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(false), ms)
+        timer.unref?.()
+      }),
+    ])
+  } catch {
+    return false
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 export const diagRouter = Router()
 
 diagRouter.get('/', async (req, res) => {
@@ -50,17 +75,19 @@ diagRouter.get('/', async (req, res) => {
     （maskIp 那层脱敏也留着。鉴权是门，脱敏是锁，少一样都不行。）
   */
   /*
-    鉴权失败（比如数据库连不上、JWT 校验炸了）一律按**不是管理员**处理，而不是往 500 走：
+    鉴权失败一律按**不是管理员**处理，而不是往 500 走：
     /api/diag 恰恰是后端出问题时最需要还能打开的那一页，它自己不能跟着一起挂。
+
+    ⚠️⚠️ 光 try/catch 不够，**还要限时**。带登录态的请求会走到
+    `roleOfRequest` → `queryOne('SELECT * FROM users …')`：数据库要是连得上但**卡住**
+    （连接池耗尽、锁等待、SSH 隧道半死），这个 await 永远不 resolve，catch 一辈子等不到，
+    于是这个自查接口自己先没了响应 —— 而「数据库卡住」正是最需要打开它的那一刻。
+    超时之后按匿名回答：少两段信息，总好过一个转圈的页面。
+
     这里也是整个 handler 里唯一一个 await —— Express 4 不会转发 async 的 reject，
     所以只包这一处，剩下的代码保持同步。
   */
-  let admin = false
-  try {
-    admin = await isAdminRequest(req)
-  } catch {
-    admin = false
-  }
+  const admin = await adminWithin(req, ADMIN_CHECK_MS)
   const headers = req.headers || {}
   const direct = req.socket?.remoteAddress || ''
   const effective = clientIpFrom(direct, headers)

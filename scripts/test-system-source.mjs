@@ -10,9 +10,11 @@
  */
 import assert from 'node:assert/strict'
 import { deflateRawSync } from 'node:zlib'
+import { readFileSync } from 'node:fs'
 import {
   looksLikeSystemBundle,
   loadSystemBytes,
+  systemCacheUrl,
   systemSourcesFor,
 } from '../src/emulator/systemSource.ts'
 
@@ -114,6 +116,17 @@ await check('已登记的路径有备用源，而且主源永远排第一', () =
   assert.equal(s.length, 2)
   assert.equal(s[0].url, PRIMARY, '主源不是第一个 —— 备用源不是「更快的源」，顺序不能倒')
   assert.equal(s[1].url, OFFICIAL)
+})
+
+await check('⚠️⚠️ 我们自己改出来的 VGA 镜像绝不能回落到官方那份', () => {
+  /*
+    system-win311-vga-v1 是把官方 win311 的 SYSTEM.INI 显示驱动换成标准 VGA 之后的产物。
+    登记成官方那份的镜像 = 主源一抖就把 800x600 真彩的系统发下去，
+    Zeek 这类 16 色游戏又变回空白窗口，而且不报任何错。
+  */
+  const s = systemSourcesFor('https://assets.8bitgo.com/systems/dos/system-win311-vga-v1.jsdos')
+  assert.equal(s.length, 1, '给它配了备用源 —— 那不是同一个系统')
+  assert.ok(!s.some((x) => x.url.includes('dos.zone')), '回落到了官方源')
 })
 
 await check('⚠️ 没登记的镜像不猜备用源', () => {
@@ -231,6 +244,132 @@ await check('全都取不到时，报错里要点名每个源和原因', async (
       assert.match(e.message, /404/)
       return true
     },
+  )
+})
+
+console.log('三点五、缓存：那 20 MB 不该每次都重下一遍')
+
+/*
+  背景：系统镜像 21,498,320 字节，占一次冷启动全部下载量的 71%。
+  而 romCacheKey 要求地址带 `?romv=<etag>`，romUrlForKey 又不加 —— 所以在 09-11 之前
+  这份镜像**一次都没被缓存过**，每个玩家每次进任何 Windows 游戏都重下 20 MB。
+  现在先 HEAD 一趟拿 ETag 把 key 拼出来，再走 romCache。
+*/
+
+await check('拿到 ETag → 拼成带 romv 的地址（这样 romCacheKey 才认）', async () => {
+  globalThis.fetch = async (url, init) => {
+    assert.equal(init?.method, 'HEAD', '探 ETag 必须用 HEAD，不能把整个镜像拉下来')
+    assert.equal(init?.cache, 'no-store', '自己吃缓存就永远读不到新的 ETag')
+    return { ok: true, status: 200, headers: { get: (k) => (k.toLowerCase() === 'etag' ? '"abc123"' : null) } }
+  }
+  assert.equal(await systemCacheUrl(PRIMARY), `${PRIMARY}?romv=abc123`)
+})
+
+await check('弱 ETag 的 W/ 前缀和引号要剥掉', async () => {
+  globalThis.fetch = async () => ({ ok: true, status: 200, headers: { get: () => 'W/"xyz"' } })
+  assert.equal(await systemCacheUrl(PRIMARY), `${PRIMARY}?romv=xyz`)
+})
+
+await check('⚠️⚠️ 读不到 ETag 时用 Last-Modified 兜底', async () => {
+  /*
+    ETag **不在 CORS 响应头安全列表里**。系统镜像在资源域名上（跨域），服务器不额外发
+    `Access-Control-Expose-Headers: ETag` 的话 headers.get('etag') 就是 null ——
+    于是拼不出 romv、缓存一个字节都不生效，而且没有任何报错。
+    Last-Modified 在安全列表里，任何跨域配置下都读得到。
+  */
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: (k) => (k.toLowerCase() === 'last-modified' ? 'Tue, 01 Apr 2025 12:27:00 GMT' : null) },
+  })
+  const url = await systemCacheUrl(PRIMARY)
+  assert.match(url, /[?&]romv=/, '⭐ 只认 ETag 的话，跨域没暴露这个头就等于整套缓存白写')
+  assert.ok(url.startsWith(PRIMARY), '兜底也要挂在原地址上')
+})
+
+await check('⚠️ ETag 优先于 Last-Modified', async () => {
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: (k) => (k.toLowerCase() === 'etag' ? '"e1"' : 'Tue, 01 Apr 2025 12:27:00 GMT') },
+  })
+  assert.equal(await systemCacheUrl(PRIMARY), `${PRIMARY}?romv=e1`)
+})
+
+await check('⚠️ 两个版本头都没有 → 返回空串（明确「这次不缓存」）', async () => {
+  globalThis.fetch = async () => ({ ok: true, status: 200, headers: { get: () => null } })
+  const url = await systemCacheUrl(PRIMARY)
+  assert.equal(url, '', '没有版本号却返回了地址，上层会拿它当 key —— 那等于把「过期镜像复活」的坑又挖回来')
+})
+
+await check('⚠️ HEAD 失败 / 断网 / CORS 不暴露 ETag → 返回空串，照常走网络', async () => {
+  globalThis.fetch = async () => ({ ok: false, status: 403, headers: { get: () => null } })
+  assert.equal(await systemCacheUrl(PRIMARY), '')
+  globalThis.fetch = async () => { throw new TypeError('Failed to fetch') }
+  assert.equal(await systemCacheUrl(PRIMARY), '', '探测抛异常必须被吞掉 —— 缓存只是加速，不能让人玩不了游戏')
+})
+
+await check('⚠️ 已经取消了就别再探', async () => {
+  let called = 0
+  globalThis.fetch = async () => { called++; return { ok: true, status: 200, headers: { get: () => null } } }
+  const ctl = new AbortController()
+  ctl.abort()
+  assert.equal(await systemCacheUrl(PRIMARY, ctl.signal), '')
+  assert.equal(called, 0, '已取消还去打了一次 HEAD')
+})
+
+await check('⚠️ node / 无痕 / SSR（没有 IndexedDB）下连探都不探', async () => {
+  // 没有本地缓存时这趟往返的结果没人用得上，白给每次加载加一个 RTT
+  let heads = 0
+  globalThis.fetch = fakeFetch({ [PRIMARY]: { body: GOOD } })
+  const inner = globalThis.fetch
+  globalThis.fetch = async (url, init) => {
+    if (init?.method === 'HEAD') heads++
+    return inner(url, init)
+  }
+  assert.equal(typeof indexedDB, 'undefined', '这条用例的前提是 node 里没有 indexedDB')
+  const got = await loadSystemBytes(systemSourcesFor(PRIMARY))
+  assert.equal(got.fromCache, false)
+  assert.equal(heads, 0, '没有缓存可用却还是探了一趟')
+})
+
+console.log('三点六、缓存那几条不变量（源码守卫）')
+
+/*
+  下面几条的共同点：**错了都不会报错**，只会让玩家某一天打不开游戏、而且清缓存前不会自愈。
+  行为测试要在 node 里造 IndexedDB 才跑得动，代价远大于收益，所以钉在源码上。
+*/
+const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+const SRC = strip(readFileSync(new URL('../src/emulator/systemSource.ts', import.meta.url), 'utf8'))
+const JSDOS = strip(readFileSync(new URL('../src/emulator/adapters/jsdos.ts', import.meta.url), 'utf8'))
+
+await check('⚠️ 只有主源那一份写缓存', () => {
+  assert.match(
+    SRC,
+    /if \(key && i === 0\) void romCachePut\(/,
+    '备用源的内容按主源的 key 存进去 = 把一个可能不同的 Windows 永久钉在玩家本地，主源好了也换不回来',
+  )
+})
+
+await check('⚠️ 缓存命中要先验是不是合法镜像，坏的要删掉再走网络', () => {
+  const at = SRC.indexOf('romCacheGet(')
+  assert.ok(at > 0, '没有读缓存')
+  const body = SRC.slice(at, at + 700)
+  assert.match(body, /looksLikeSystemBundle\(hit\)/, '命中直接就用了 —— 历史上写坏的那条会让这台浏览器永远起不来')
+  assert.match(body, /romCacheDelete\(key\)/, '坏的那条不删，每次都撞上它')
+})
+
+await check('⚠️⚠️ jsdos.ts 改名前必须复制（否则改过名的镜像会被存进缓存）', () => {
+  /*
+    hideJsdosConfigForLayer 是原地改字节的，而 romCachePut 是不 await 的后台写，
+    两者指着同一块 ArrayBuffer。不复制的话存进去的就是改过名的那份，
+    下次命中找不到 .jsdos/dosbox.conf，客体永远起不来，清缓存前不会自愈。
+    这一行 09-11 上午因为「反正没缓存」被删过一次，下午加了缓存必须补回来。
+  */
+  assert.match(
+    JSDOS,
+    /hideJsdosConfigForLayer\(\s*loadedSystem\.fromCache \? loadedSystem\.data : loadedSystem\.data\.slice\(0\)/,
+    '走网络的那份没复制就交给原地改名的函数了',
   )
 })
 

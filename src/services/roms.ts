@@ -512,7 +512,7 @@ const DEFINITE_MISS_STATUS = new Set([400, 401, 403, 404, 405, 410, 451])
  * R2 允许覆盖同一个对象 key；若播放地址永远不变，两个缓存都会继续交出旧 ROM。
  * ETag 随对象内容变化，既不会让没更新的 ROM 重复下载，也不依赖人工清缓存。
  */
-function versionedRomUrl(url: string, etag: string | null): string {
+export function versionedRomUrl(url: string, etag: string | null): string {
   const version = etag?.replace(/^W\//, '').replaceAll('"', '').trim()
   if (!version) return url
   const separator = url.includes('?') ? '&' : '?'

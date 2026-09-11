@@ -13,7 +13,14 @@
  *   content-type: application/octet-stream     ← 没有 content-encoding
  *
  * 也就是说每个第一次开 Win95 游戏的人，都要下 93.1 MiB 完全没压缩的数据。
- * 重新打成 deflate 之后是 39,371,413 字节（40.3%），**省 55.6 MiB，画质和内容一个字节不差**。
+ * 重新打成 deflate 之后是 40,208,558 字节（41.2%），**内容一个字节不差**。
+ * 加 `--zopfli` 再省 3.5%（38,271,964 字节）—— 产出仍是标准 deflate，js-dos 照常读，零代码改动。
+ *
+ * 2026-09-11 又往前走了一步：那份 qcow2 里有 8.0 MiB 是 **FAT 空闲簇里的残留垃圾**
+ * （装完系统删掉的临时文件，扇区还留着旧内容）。把空闲簇抹零之后，qcow2 本身从 93.1 MiB
+ * 掉到 84.1 MiB（qemu-img 会把全零的簇整个丢掉不分配），再 zopfli 是 35,701,926 字节 ——
+ * 93.13 MiB → 34.05 MiB，**文件系统里 1283 个文件的 sha256 逐个一致**。
+ * 抹零那一步需要 qemu-img，不在这个脚本里；要再做一次（比如 win98 那个 235 MB 的包）找 Claude。
  *
  * CDN 不会替我们压：`application/octet-stream` 不在 Cloudflare 的可压缩类型里，
  * 而且它对「看起来已经压过的」内容本来就跳过 —— 对 zip 这个判断通常是对的，
@@ -34,10 +41,23 @@
 import { createHash } from 'node:crypto'
 import { readFileSync, statSync, writeFileSync } from 'node:fs'
 import { deflateRawSync, inflateRawSync } from 'node:zlib'
+import { spawnSync } from 'node:child_process'
 
-const [, , inPath, outPathArg] = process.argv
+const argv = process.argv.slice(2)
+/**
+ * `--zopfli`：用 zopfli 代替 zlib 压。
+ *
+ * zopfli 产出的是**标准 deflate**，任何 zip 解包器（包括 js-dos 的）照常读 —— 零代码改动。
+ * 代价只在打包这一侧：它穷举块划分和霍夫曼树，93 MiB 要跑三四分钟，而 zlib 只要十秒。
+ * 换来大约 3.5%，这个包上是 1.4 MiB —— 对一个**每个第一次玩 Win95 游戏的人都要下一遍**
+ * 的文件，一次性多花三分钟是划算的。
+ *
+ * 装不上 zopfli（没有 python3 或没装这个包）就自动退回 zlib：少省一点，但绝不因此打不出包。
+ */
+const useZopfli = argv.includes('--zopfli')
+const [inPath, outPathArg] = argv.filter((a) => !a.startsWith('--'))
 if (!inPath) {
-  console.error('用法：node scripts/repack-jsdos.mjs <输入.jsdos> [输出.jsdos]')
+  console.error('用法：node scripts/repack-jsdos.mjs [--zopfli] <输入.jsdos> [输出.jsdos]')
   process.exit(2)
 }
 const outPath = outPathArg || inPath.replace(/\.jsdos$/, '') + '.packed.jsdos'
@@ -103,6 +123,33 @@ function crc32(buf) {
   return (crc ^ 0xffffffff) >>> 0
 }
 
+/**
+ * 走 zopfli 压一块数据，拿回**裸 deflate**。
+ *
+ * python 的 zopfli 绑定只给 zlib / gzip 容器，所以剥掉 zlib 的 2 字节头和 4 字节 adler32
+ * 尾巴 —— 中间那段就是裸 deflate，和 deflateRawSync 的产物同一种东西。
+ *
+ * numiterations 取 5：实测 15 次和 5 次在这个包上只差 0.01%，时间却多一倍。
+ *
+ * ⚠️ 任何一步不对就返回 null 让调用方退回 zlib，绝不把半截数据当成功 ——
+ * 这个包坏了的表现是「Windows 起不来」，没有任何错误信息。
+ */
+function zopfliDeflate(data) {
+  const py = [
+    'import sys, zlib',
+    'import zopfli.zopfli as z',
+    'raw = sys.stdin.buffer.read()',
+    'out = z.compress(raw, numiterations=5)[2:-4]',
+    'assert zlib.decompress(out, -15) == raw',   // 自己先验一遍，坏的不出这个进程
+    'sys.stdout.buffer.write(out)',
+  ].join('\n')
+  const r = spawnSync('python3', ['-c', py], { input: data, maxBuffer: 1 << 30 })
+  if (r.error || r.status !== 0 || !r.stdout?.length) return null
+  return r.stdout
+}
+
+let zopfliWarned = false
+
 function build(entries) {
   const locals = []
   const centrals = []
@@ -110,7 +157,15 @@ function build(entries) {
   for (const e of entries) {
     // 目录项（尾部是 /）保持 store：压一个 0 字节没有意义，还会让某些解包器犯迷糊
     const isDir = e.name[e.name.length - 1] === 0x2f
-    const body = isDir ? e.data : deflateRawSync(e.data, { level: 9 })
+    let body = isDir ? e.data : null
+    if (body === null && useZopfli) {
+      body = zopfliDeflate(e.data)
+      if (body === null && !zopfliWarned) {
+        zopfliWarned = true
+        console.warn('⚠️ zopfli 跑不起来（pip install zopfli?），这一趟退回 zlib')
+      }
+    }
+    if (body === null) body = deflateRawSync(e.data, { level: 9 })
     const method = isDir ? 0 : 8
     const crc = crc32(e.data)
 

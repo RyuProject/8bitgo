@@ -33,6 +33,7 @@ import { GP, startGamepadBridge, hasGamepadApi, type GamepadBridge } from '../ga
 import { deleteSave, pullSave, pushSave } from '@/services/saves'
 import { loadGameBytes } from '../romLoader'
 import { loadSystemBytes, systemSourcesFor } from '../systemSource'
+import { armJspi } from '../jspiFlag'
 import { windowsGuestStartupBudgetMs } from '../loadProgress'
 import { assertTypeable, scheduleWindowsLaunch, windows3xLaunchCommands, type WindowsLaunchCi } from '../windowsLaunch'
 
@@ -267,6 +268,12 @@ function loadJsDos(): Promise<DosFn> {
     css.href = `${JSDOS_PATH}js-dos.css`
     document.head.appendChild(css)
 
+    /*
+      ⚠️ 必须在 <script> 插进去**之前**：js-dos 的 store 在模块求值时就把 jspi 开关
+      从 localStorage 读死了，之后没有任何 Dos() 参数能改它。见 ../jspiFlag.ts。
+    */
+    if (armJspi()) console.info('[jsdos] 本次使用 JSPI 版 dosbox-X（Windows 客体）')
+
     const script = document.createElement('script')
     script.src = `${JSDOS_PATH}js-dos.js`
     script.onload = () => (win.Dos ? resolve(win.Dos) : reject(new Error('js-dos 已加载但没有暴露 Dos()')))
@@ -442,15 +449,19 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           系统包自己的 conf 必须先改名：它作为后续文件层解开时会覆盖 Dos() 的直接配置。
           改名只动 ZIP 头里的 36 个 ASCII 字节，不复制那一大块 qcow2 数据。
 
-          ⚠️ 这里**不再复制一份**。原来是 `fromCache ? data : data.slice(0)`，防的是
-          「loadGameBytes 刚下载完还在后台往 IndexedDB 写同一块 ArrayBuffer，原地改名会把
-          改过名的镜像存进缓存」。09-11 换成 loadSystemBytes 之后那条路不存在了 ——
-          它不写缓存，没有任何写入在飞（顺带：系统镜像的地址没有 ?romv=，
-          romCacheKey 一直返回空串，也就是说那份缓存**从来没生效过**，
-          `fromCache` 恒为 false、那个 slice 每次都在白白复制一整个镜像）。
-          ⚠️ 哪天真给系统镜像加上缓存，这一行要跟着改回去。
+          ⚠️ 走网络来的那份**必须先复制**。hideJsdosConfigForLayer 是原地改字节的
+          （把 `.jsdos/dosbox.conf` 改成同样长度的备份名），而 loadSystemBytes 拿到字节之后
+          会**不 await 地**往 IndexedDB 写同一块 ArrayBuffer —— 不复制的话存进缓存的就是
+          改过名的那份，下次命中直接找不到 conf，客体永远起不来，而且缓存不清不会自愈。
+
+          这一行 09-11 上午被删过一次：当时系统镜像的地址没有 `?romv=`，romCacheKey 恒返回
+          空串，那份缓存从来没生效过，于是这个 slice 每次都在白白复制一整个镜像。
+          当天下午给系统镜像补上 ETag 缓存（见 systemSource.ts 的 systemCacheUrl）之后，
+          前提重新成立，所以又加了回来。缓存命中的那份是 IndexedDB 新给的副本，不用再复制。
         */
-        const systemLayer = hideJsdosConfigForLayer(loadedSystem.data)
+        const systemLayer = hideJsdosConfigForLayer(
+          loadedSystem.fromCache ? loadedSystem.data : loadedSystem.data.slice(0),
+        )
         // 最终配置再放一次到最后，未来 js-dos 即使调整直接配置与 initFs 的合并顺序也不会倒退。
         initFs = [systemLayer, gameLayerBytes, { dosboxConf: guest.dosboxConf, jsdosConf: { version: '8' } }]
       } else {

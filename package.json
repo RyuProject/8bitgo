@@ -93,6 +93,7 @@
     "test:ssr-hoist": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-ssr-hoist.mjs",
     "test:watch-panel": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-live-watch-panel.mjs",
     "test:seo-meta": "node scripts/test-seo-meta.mjs",
+    "test:jspi": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-jspi-flag.mjs",
     "repack:jsdos": "node scripts/repack-jsdos.mjs",
     "test:system-source": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-system-source.mjs"
   },

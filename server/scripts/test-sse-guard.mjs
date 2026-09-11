@@ -279,6 +279,20 @@ console.log('\n── /api/diag：turn / sse 只给管理员 ──')
 
   const wrong = await callDiag('Bearer not-the-token')
   ok(wrong.body.sse === undefined, '口令不对等同匿名')
+
+  /*
+    ⚠️⚠️ 鉴权卡住时这个接口自己不能跟着挂。
+    带登录态的请求会走到 roleOfRequest → queryOne('SELECT * FROM users …')；
+    数据库连得上但**卡住**（连接池耗尽、锁等待、隧道半死）时那个 await 永远不 resolve，
+    try/catch 一辈子等不到 —— 而「数据库卡住」正是最需要打开自查页的那一刻。
+  */
+  const src = readFileSync(new URL('../src/routes/diag.js', import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '')
+  ok(/Promise\.race\(/.test(src), '⭐ 鉴权必须限时（Promise.race），光 try/catch 挡不住「卡住」')
+  ok(/setTimeout\(\(\) => resolve\(false\)/.test(src), '⭐ 超时之后要按**匿名**回答，不是抛错')
+  ok(/timer\.unref\?\.\(\)/.test(src), '定时器要 unref，否则会拖住进程退出')
+  ok(!/await isAdminRequest\(req\)(?!\s*,)/.test(src.replace(/Promise\.race\([\s\S]*?\]\)/, '')), '别在 race 之外再直接 await 一次')
 }
 
 console.log('\n── 源码守卫 ──')

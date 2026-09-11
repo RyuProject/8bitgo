@@ -450,4 +450,38 @@ console.log('\n── 保护表里的键必须是模拟器真认识的 ──')
   }
 }
 
+console.log('\n── 后台那几个一键模板必须是合法配置 ──')
+{
+  /*
+    模板是写死在 GameForm.tsx 里的字符串。写错一个字母不会有任何编译期错误，
+    只会在管理员点下去的那一刻炸一句「配置第 N 行…」—— 而那时候人已经在改别的东西了。
+    这里直接把它们喂给真正的校验器过一遍。
+  */
+  const form = readFileSync(new URL('../src/admin/GameForm.tsx', import.meta.url), 'utf8')
+  const at = form.indexOf('const DOSBOX_CONFIG_TEMPLATES = [')
+  assert.ok(at > 0, '没找到 DOSBOX_CONFIG_TEMPLATES —— 改名了的话这组测试要跟着改')
+  const body = form.slice(at, form.indexOf('\n] as const', at))
+  const templates = [...body.matchAll(/\{ label: '([^']+)', config: '((?:[^'\\]|\\.)*)' \}/g)]
+    .map((m) => [m[1], m[2].replace(/\\n/g, '\n')])
+  ok(templates.length >= 6, `解析出 ${templates.length} 个模板`)
+
+  for (const [label, config] of templates) {
+    let err = null
+    try {
+      normalizeDosboxConfigOverride(config)
+    } catch (e) {
+      err = e.message
+    }
+    ok(err === null, `模板「${label}」是合法配置${err ? ' —— ' + err : ''}`)
+  }
+
+  // 叠着点也要还是合法的：applyDosboxTemplate 是 merge 不是覆盖
+  let merged = ''
+  for (const [, config] of templates) merged = mergeDosboxConfigOverride(merged || '[cpu]\ncputype=auto\n', config)
+  ok(/cycles=max/.test(merged) && /memsize=32/.test(merged) && /oplemu=fast/.test(merged), '六个模板叠着点之后每一项都还在')
+
+  const perf = templates.filter(([l]) => l.includes('⚡')).map(([l]) => l)
+  ok(perf.length === 3, `三个性能模板都在（${perf.join('、')}）`)
+}
+
 console.log(`\n✅ DOS 打包测试通过（${n} 项）`)
