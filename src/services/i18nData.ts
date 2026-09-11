@@ -57,6 +57,23 @@ export function gameTitle(
 }
 
 /**
+ * 按当前语言选可选资料片的名字（开始界面那个开关上的「隐秘行动」）。
+ *
+ * 只有两档，和 gameTitle 一样不走按需翻译：这是专有名词，机器翻出来的
+ * 「Secret Action」只会让玩家找不到自己认识的那个资料片。
+ * 两边都空就返回空串，调用方退回各语言自己的「扩展包 / the expansion」。
+ */
+export function dosExtrasName(
+  game: { dosExtrasLabel?: string | null; dosExtrasLabelEn?: string | null },
+  lang: Lang,
+): string {
+  const zh = game.dosExtrasLabel?.trim() ?? ''
+  const en = game.dosExtrasLabelEn?.trim() ?? ''
+  // 繁体没有单独一份，跟简体走（和 gameTitle 在没有 titleI18n 时的行为一致）
+  return lang === 'zh-Hans' || lang === 'zh-Hant' ? zh || en : en || zh
+}
+
+/**
  * 按当前语言选游戏简介。
  *
  * 三层回退（每层都是「有就用、没有就走下一层」）：

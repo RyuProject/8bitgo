@@ -20,7 +20,7 @@ import { useSeo, breadcrumbSchema, videoGameSchema } from '@/services/seo'
 import { useLang } from '@/services/lang'
 import { useT, fmt } from '@/services/i18n'
 import { getLang } from '@/services/lang'
-import { gameDescription, gameTitle, genreLabel, needsTranslation, platformDesc, platformLabel } from '@/services/i18nData'
+import { dosExtrasName, gameDescription, gameTitle, genreLabel, needsTranslation, platformDesc, platformLabel } from '@/services/i18nData'
 import { EmulatorPlayer, preloadPlayer } from '@/emulator/PlayerChunk'
 import { stageHeightCap } from '@/emulator/screenAspect'
 import { IsolatedPlayCard } from '@/components/game/IsolatedPlayCard'
@@ -341,7 +341,7 @@ export function GameDetailPage() {
                   dosBackend={game.dosBackend}
                   dosSystemUrl={game.dosSystem ? romUrlForKey(game.dosSystem) : undefined}
                   dosExtras={dosExtraSources(game.dosExtras)}
-                  dosExtrasLabel={game.dosExtrasLabel}
+                  dosExtrasLabel={dosExtrasName(game, lang)}
                   dosWindowsVersion={game.dosWindowsVersion}
                   dosLaunchDelay={game.dosLaunchDelay}
                   dosboxConfig={game.dosboxConfig}

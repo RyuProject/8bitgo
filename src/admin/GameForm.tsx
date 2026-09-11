@@ -439,6 +439,8 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
               onChange={(next) => set('dosExtras', next)}
               label={form.dosExtrasLabel ?? ''}
               onLabelChange={(next) => set('dosExtrasLabel', next)}
+              labelEn={form.dosExtrasLabelEn ?? ''}
+              onLabelEnChange={(next) => set('dosExtrasLabelEn', next)}
             />
             {/* Windows 客体不给「保存进度」按钮（存的是 qcow2 扇区，上游标为不可保存），所以不显示这一项 */}
             {!(form.dosBackend === 'dosboxX' && form.dosSystem?.trim()) && (
@@ -674,12 +676,16 @@ function DosExtrasField({
   onChange,
   label,
   onLabelChange,
+  labelEn,
+  onLabelEnChange,
 }: {
   slug: string
   value: string[] | undefined
   onChange: (value: string[] | undefined) => void
   label: string
   onLabelChange: (value: string | undefined) => void
+  labelEn: string
+  onLabelEnChange: (value: string | undefined) => void
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState<string | null>(null)
@@ -876,7 +882,14 @@ function DosExtrasField({
             value={label}
             maxLength={60}
             onChange={(e) => onLabelChange(e.target.value || undefined)}
-            placeholder="隐秘行动"
+            placeholder="中文名，如：隐秘行动"
+          />
+          <input
+            className={cx(inputClass, 'sm:flex-1')}
+            value={labelEn}
+            maxLength={60}
+            onChange={(e) => onLabelEnChange(e.target.value || undefined)}
+            placeholder="English name, e.g. Covert Operations"
           />
         </div>
       )}
@@ -887,6 +900,8 @@ function DosExtrasField({
 「路径」那格是文件在游戏目录里的落点，默认就是文件名（= 和本体放同一层），需要进子目录才改它，清空即恢复默认。
         <b>「可选」是给几百 MB 的资料片用的</b>：勾上之后玩家会在开始界面看到一个开关，<b>默认不下载</b>，
         想玩资料片的自己勾一下 —— 别让每个路过点开的人都先下 500 MB。补丁这种「不打就是另一个游戏」的必须不勾。
+        名字中英各填一格：开关上那句话（「同时加载…（额外 498 MB）」）八种语言都有译文，
+        只有这个名字是专有名词，不填英文的话英文玩家会在一句英文里看到一个中文名。
         体积不用填，开局前会自动量一次。最多 {DOS_EXTRAS_MAX} 个 —— 每个强制注入的都会进玩家开局的加载链路。
       </p>
     </Field>

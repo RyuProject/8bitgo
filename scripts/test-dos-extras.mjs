@@ -25,6 +25,7 @@ const { mergeExtraFiles } = await import(fileURLToPath(new URL('../src/lib/jsdos
 const { parseDosExtra, parseDosExtras, formatDosExtra, defaultExtraPath, normalizeExtraPath, extraObjectName, skipExtraEntry, extraPathProblem } =
   await import(fileURLToPath(new URL('../src/lib/dosExtras.ts', import.meta.url)))
 const { extractZipEntry, listZipEntries } = await import(fileURLToPath(new URL('../src/lib/unzip.ts', import.meta.url)))
+const { dosExtrasName } = await import(fileURLToPath(new URL('../src/services/i18nData.ts', import.meta.url)))
 const { dosExtrasOf, dosExtrasLabelOf } = await import(fileURLToPath(new URL('../server/src/mappers.js', import.meta.url)))
 
 let n = 0
@@ -307,6 +308,27 @@ ok(dosExtrasLabelOf('') === null && dosExtrasLabelOf(null) === null, '没填就�
 ok(dosExtrasLabelOf('隐秘\n  行动') === '隐秘 行动', '换行和连续空格压成一个空格（这行字要显示在一行里）')
 ok(dosExtrasLabelOf('名'.repeat(200)).length === 60, '超长名字截到 60 —— 开关是一行字，不是简介')
 
+/* ---------------- 三点六、资料片名字的中英双语 ---------------- */
+
+/*
+  开关那句话（「同时加载「{name}」（额外 498 MB）」）八种语言都有译文，但 {name} 是
+  后台填的专有名词。只有一份中文名的话，英文玩家看到的是
+  `Also load “隐秘行动” (+498 MB)` —— 一句英文里夹一个中文名。
+  所以后台中英各填一格，和 title / titleZh 一个路数：两个字段，不走按需翻译
+  （机器把「隐秘行动」翻成 Secret Action，玩家反而认不出那是哪个资料片）。
+*/
+const both = { dosExtrasLabel: '隐秘行动', dosExtrasLabelEn: 'Covert Operations' }
+ok(dosExtrasName(both, 'zh-Hans') === '隐秘行动', '简体用中文名')
+ok(dosExtrasName(both, 'zh-Hant') === '隐秘行动', '繁体没有单独一份，跟简体走（和 gameTitle 缺 titleI18n 时一致）')
+for (const lang of ['en', 'ja', 'es', 'fr', 'de', 'it']) {
+  ok(dosExtrasName(both, lang) === 'Covert Operations', `${lang} 用英文名`)
+}
+ok(dosExtrasName({ dosExtrasLabel: '隐秘行动' }, 'en') === '隐秘行动', '只填了中文名时，英文界面退回中文 —— 总比什么都不显示强')
+ok(dosExtrasName({ dosExtrasLabelEn: 'Covert Operations' }, 'zh-Hans') === 'Covert Operations', '只填了英文名时，中文界面退回英文')
+ok(dosExtrasName({}, 'en') === '' && dosExtrasName({}, 'zh-Hans') === '', '两边都空返回空串（调用方退回各语言自己的「扩展包 / the expansion」）')
+ok(dosExtrasName({ dosExtrasLabel: '  隐秘行动  ' }, 'zh-Hans') === '隐秘行动', '两边空白吃掉')
+ok(dosExtrasName({ dosExtrasLabel: '   ', dosExtrasLabelEn: 'Covert Ops' }, 'zh-Hans') === 'Covert Ops', '全是空白等于没填')
+
 /* ---------------- 四、后台那一步：整个压缩包丢进来 ---------------- */
 
 /*
@@ -385,6 +407,33 @@ const player = readFileSync(new URL('../src/emulator/EmulatorPlayer.tsx', import
   ok(/fetch\(e\.url, \{ method: 'HEAD' \}\)/.test(player), '量体积只发 HEAD')
   ok(/for \(const n of sizes\) \{\s*\n\s*if \(n === null\) return null/.test(player), '任何一份量不到就整个不显示体积 —— 写个偏小的数字比不写还糟')
   ok(/optionalExtras\.length > 0 && !online && !willWatch/.test(player), '联机 / 观战时不显示这个开关（游戏不在本机跑，勾了也没用）')
+  // 开关上那句话必须整句走 i18n，一个字都不能硬编码
+  ok(/t\.player\.extrasToggleSized/.test(player) && /t\.player\.extrasToggle\b/.test(player), '开关文案走 t.player.*，不是写死的中文')
+  ok(/t\.player\.extrasFallbackName/.test(player), '后台没填名字时退回各语言自己的「扩展包」')
+}
+
+{
+  // 详情页必须按当前语言挑名字，而不是把中文名直接递下去
+  const detail = readFileSync(new URL('../src/pages/GameDetailPage.tsx', import.meta.url), 'utf8')
+  ok(/dosExtrasLabel=\{dosExtrasName\(game, lang\)\}/.test(detail), '详情页按当前语言挑资料片名字')
+  ok(!/dosExtrasLabel=\{game\.dosExtrasLabel\}/.test(detail), '⚠️ 没有哪条路把中文名直接递给播放器')
+}
+
+{
+  // 八种语言一个都不能少：少一种的后果是那个语言的玩家看到 undefined
+  const LANGS = ['zh-Hans', 'zh-Hant', 'en', 'ja', 'es', 'fr', 'de', 'it']
+  const KEYS = ['extrasToggle', 'extrasToggleSized', 'extrasFallbackName']
+  for (const lang of LANGS) {
+    const src = readFileSync(new URL(`../src/locales/${lang}.ts`, import.meta.url), 'utf8')
+    const missing = KEYS.filter((k) => !new RegExp(`\\n\\s*${k}:`).test(src))
+    ok(!missing.length, `${lang} 三条开关文案齐全${missing.length ? `（缺 ${missing.join('、')}）` : ''}`)
+  }
+  // 占位符写错了不会报错，只会在界面上原样显示一个 {size}
+  for (const lang of LANGS) {
+    const src = readFileSync(new URL(`../src/locales/${lang}.ts`, import.meta.url), 'utf8')
+    const sized = src.match(new RegExp(`extrasToggleSized: '([^']*)'`))?.[1] ?? ''
+    ok(sized.includes('{name}') && sized.includes('{size}'), `${lang} 的带体积文案里 {name} 和 {size} 都在`)
+  }
 }
 
 console.log(`\n✅ ${n} 项通过`)

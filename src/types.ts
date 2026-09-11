@@ -182,6 +182,14 @@ export interface Game {
    * 体积由前端现场测，不存这里 —— 换一份文件自动跟着变。
    */
   dosExtrasLabel?: string
+  /**
+   * 同上的英文名（Covert Operations）。非中文界面用它。
+   *
+   * 开关那句话本身（「同时加载…」「额外 498 MB」）八种语言都有译文，只有这个
+   * 名字是后台填的专有名词 —— 不给英文版的话，英文玩家会在一句英文里看到一个中文名。
+   * 和 title / titleZh 一个路数：两个字段，不走按需翻译（专有名词不该被机器翻）。
+   */
+  dosExtrasLabelEn?: string
   /** 客体 Windows 的桌面代次；留空按旧数据兼容为 9x。 */
   dosWindowsVersion?: DosWindowsVersion
   /**

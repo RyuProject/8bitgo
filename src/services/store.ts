@@ -79,7 +79,10 @@ export async function upsertGame(game: Game): Promise<Game> {
     库里有 dos_extras 却没有 dos_extras_label，上面那条守卫放行，名字却悄悄丢了，
     玩家在开始界面看到的是「同时加载「扩展包」」。单独判一次。
   */
-  if (game.dosExtrasLabel?.trim() && !saved.dosExtrasLabel?.trim()) {
+  if (
+    (game.dosExtrasLabel?.trim() && !saved.dosExtrasLabel?.trim()) ||
+    (game.dosExtrasLabelEn?.trim() && !saved.dosExtrasLabelEn?.trim())
+  ) {
     throw new Error(
       '服务端没有保存资料片名称。请在服务器再跑一次数据库迁移（cd server && npm run migrate）并重启 8bitgo-api，然后重新保存。',
     )

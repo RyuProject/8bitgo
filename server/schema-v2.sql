@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS games (
   dos_system     VARCHAR(500)  NULL,
   dos_extras     TEXT             NULL,  -- 附加文件：一行一个对象 key，加载时并进游戏目录
   dos_extras_label VARCHAR(60)  NULL,  -- 可选附加文件在开始界面上的名字（「隐秘行动」）
+  dos_extras_label_en VARCHAR(60) NULL, -- 同上的英文名（Covert Operations）；非中文界面用它
   -- 3x = Program Manager 的 File > Run；9x = 开始菜单的 Run；NULL 兼容旧数据并按 9x 处理。
   dos_windows_version VARCHAR(8) NULL,
   -- 客体系统切入图形模式后等待多少秒再自动运行 dos_executable；不同系统镜像速度不同，不能写死。

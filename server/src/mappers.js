@@ -355,6 +355,7 @@ export function gameRowToApi(r, rel = {}) {
     if (extras.length) g.dosExtras = extras
   }
   if (r.dos_extras_label) g.dosExtrasLabel = r.dos_extras_label
+  if (r.dos_extras_label_en) g.dosExtrasLabelEn = r.dos_extras_label_en
   if (r.dos_windows_version === '3x' || r.dos_windows_version === '9x') g.dosWindowsVersion = r.dos_windows_version
   if (r.dos_launch_delay != null) g.dosLaunchDelay = Number(r.dos_launch_delay)
   if (r.dosbox_config_override) g.dosboxConfig = r.dosbox_config_override
@@ -414,6 +415,7 @@ export function gameApiToRow(g) {
     dos_system: dosSystemOf(g.dosSystem),
     dos_extras: dosExtrasOf(g.dosExtras),
     dos_extras_label: dosExtrasLabelOf(g.dosExtrasLabel),
+    dos_extras_label_en: dosExtrasLabelOf(g.dosExtrasLabelEn),
     dos_windows_version: dosWindowsVersionOf(g.dosWindowsVersion),
     dos_launch_delay: dosLaunchDelayOf(g.dosLaunchDelay),
     dosbox_config_override: dosboxConfigOf(g.dosboxConfig),
@@ -451,6 +453,7 @@ const FIELD_TO_COLUMN = {
   dosSystem: ['dos_system', dosSystemOf],
   dosExtras: ['dos_extras', dosExtrasOf],
   dosExtrasLabel: ['dos_extras_label', dosExtrasLabelOf],
+  dosExtrasLabelEn: ['dos_extras_label_en', dosExtrasLabelOf],
   dosWindowsVersion: ['dos_windows_version', dosWindowsVersionOf],
   dosLaunchDelay: ['dos_launch_delay', dosLaunchDelayOf],
   dosboxConfig: ['dosbox_config_override', dosboxConfigOf],
