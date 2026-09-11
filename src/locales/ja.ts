@@ -836,6 +836,10 @@ const ja: Translation = {
     alsoCan: 'または',
     pickLocal: 'ローカルの ROM ファイルを選択',
     orDrag: 'するか、ここに直接ドラッグしてください。',
+    /* 追加ディスク（拡張パック）の切り替え。名前は管理画面、容量は HEAD で実測 */
+    extrasToggle: '「{name}」も読み込む（追加ダウンロードあり）',
+    extrasToggleSized: '「{name}」も読み込む（+{size}）',
+    extrasFallbackName: '拡張パック',
     checkingHint: 'このゲームの ROM がクラウドにあるか確認しています…',
     dropHintUpload: '{platform} のファイルをここにドラッグするか、ボタンから選択してください。Java ゲームは実行のため当サイトのサーバーへアップロードされ、ページを閉じると削除されます。',
     dropHint: '{platform} のファイルをここにドラッグするか、ボタンから選択してください。ファイルはお使いのブラウザ内でのみ読み込まれ、アップロードされることはありません。',

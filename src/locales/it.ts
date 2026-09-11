@@ -849,6 +849,10 @@ const it: Translation = {
     alsoCan: 'Puoi anche ',
     pickLocal: 'scegliere un file ROM locale',
     orDrag: ' oppure trascinarne uno direttamente qui.',
+    /* Interruttore dell’espansione opzionale. Il nome viene dal pannello, la dimensione è misurata con HEAD. */
+    extrasToggle: 'Carica anche «{name}» (download aggiuntivo)',
+    extrasToggleSized: 'Carica anche «{name}» (+{size})',
+    extrasFallbackName: 'l’espansione',
     checkingHint: 'Stiamo controllando se abbiamo una ROM sul cloud per questo gioco…',
     dropHintUpload: 'Trascina qui il file {platform} o usa il pulsante. I giochi Java devono essere caricati sul nostro server per funzionare; il file viene eliminato alla chiusura della pagina.',
     dropHint:

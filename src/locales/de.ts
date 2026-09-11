@@ -849,6 +849,10 @@ const de: Translation = {
     alsoCan: 'Du kannst auch ',
     pickLocal: 'eine lokale ROM-Datei auswählen',
     orDrag: ' oder sie einfach hierher ziehen.',
+    /* Schalter für das optionale Add-on. Name aus dem Adminbereich, Größe per HEAD gemessen. */
+    extrasToggle: '„{name}“ mitladen (zusätzlicher Download)',
+    extrasToggleSized: '„{name}“ mitladen (+{size})',
+    extrasFallbackName: 'das Add-on',
     checkingHint: 'Wir prüfen, ob wir ein Cloud-ROM für dieses Spiel haben…',
     dropHintUpload: 'Zieh deine {platform}-Datei hierher oder nutze den Button. Java-Spiele müssen zum Ausführen auf unseren Server hochgeladen werden; die Datei wird beim Schließen der Seite gelöscht.',
     dropHint:

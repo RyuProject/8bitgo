@@ -437,6 +437,8 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
               slug={slugify(form.slug || form.title)}
               value={form.dosExtras}
               onChange={(next) => set('dosExtras', next)}
+              label={form.dosExtrasLabel ?? ''}
+              onLabelChange={(next) => set('dosExtrasLabel', next)}
             />
             {/* Windows 客体不给「保存进度」按钮（存的是 qcow2 扇区，上游标为不可保存），所以不显示这一项 */}
             {!(form.dosBackend === 'dosboxX' && form.dosSystem?.trim()) && (
@@ -670,10 +672,14 @@ function DosExtrasField({
   slug,
   value,
   onChange,
+  label,
+  onLabelChange,
 }: {
   slug: string
   value: string[] | undefined
   onChange: (value: string[] | undefined) => void
+  label: string
+  onLabelChange: (value: string | undefined) => void
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState<string | null>(null)
@@ -756,7 +762,12 @@ function DosExtrasField({
         setBusy(`${path} 0%`)
         const result = await uploadRom(item.blob, key, (pct) => setBusy(`${path} ${pct}%`))
         const at = next.findIndex((r) => r.path.toLowerCase() === path.toLowerCase())
-        const ref = { key: result.key, path }
+        /*
+          新传的默认是**强制注入**。可选与否由管理员看着体积自己勾 ——
+          默认成可选的话，补丁这种「不打就是另一个游戏」的东西会悄悄变成没人打。
+          原地替换时保留原来那一条的可选状态：重传一版资料片不该把开关也弄丢。
+        */
+        const ref = { key: result.key, path, optional: at >= 0 ? next[at].optional : false }
         if (at >= 0) next[at] = ref
         else next.push(ref)
         done++
@@ -778,6 +789,21 @@ function DosExtrasField({
         <ul className="mb-2 space-y-1">
           {refs.map((ref, i) => (
             <li key={`${ref.key}|${ref.path}|${i}`} className="flex flex-col gap-1 sm:flex-row sm:items-center">
+              <label
+                className="flex shrink-0 cursor-pointer items-center gap-1 text-[11px] text-dim"
+                title="勾上 = 几百 MB 的资料片，玩家在开始界面上自己决定要不要下；不勾 = 每次都注入（补丁必须不勾）"
+              >
+                <input
+                  type="checkbox"
+                  checked={ref.optional}
+                  onChange={(e) => {
+                    const next = refs.slice()
+                    next[i] = { ...ref, optional: e.target.checked }
+                    write(next)
+                  }}
+                />
+                可选
+              </label>
               <input
                 className={cx(inputClass, 'font-mono sm:flex-1')}
                 value={ref.path}
@@ -842,12 +868,26 @@ function DosExtrasField({
           添加
         </button>
       </div>
+      {refs.some((r) => r.optional) && (
+        <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
+          <span className="shrink-0 text-[11px] text-dim">资料片名称</span>
+          <input
+            className={cx(inputClass, 'sm:flex-1')}
+            value={label}
+            maxLength={60}
+            onChange={(e) => onLabelChange(e.target.value || undefined)}
+            placeholder="隐秘行动"
+          />
+        </div>
+      )}
       {msg && <p className={cx('mt-1 text-[11px]', msg.ok ? 'text-emerald-400' : 'text-rose-400')}>{msg.text}</p>}
       <p className="mt-1 text-[11px] text-dim">
         加载时并进游戏目录，<b>不改动已上传的 ROM</b>，也不用刷全站缓存。资料片（《命令与征服》的 SC-002.MIX）、
         官方补丁、额外的 .INI 都走这里。<b>压缩包可以整个丢进来</b>，会自动拆开逐个上传。
-        左边那格是文件在游戏目录里的落点，默认就是文件名（= 和本体放同一层），需要进子目录才改它，清空即恢复默认。
-        最多 {DOS_EXTRAS_MAX} 个 —— 每个都会进玩家开局的加载链路。
+「路径」那格是文件在游戏目录里的落点，默认就是文件名（= 和本体放同一层），需要进子目录才改它，清空即恢复默认。
+        <b>「可选」是给几百 MB 的资料片用的</b>：勾上之后玩家会在开始界面看到一个开关，<b>默认不下载</b>，
+        想玩资料片的自己勾一下 —— 别让每个路过点开的人都先下 500 MB。补丁这种「不打就是另一个游戏」的必须不勾。
+        体积不用填，开局前会自动量一次。最多 {DOS_EXTRAS_MAX} 个 —— 每个强制注入的都会进玩家开局的加载链路。
       </p>
     </Field>
   )
@@ -1138,7 +1178,7 @@ function RomField({
       return
     }
     // 光盘平台：格式和体积先问一句。转 .chd 这件事只有在**上传之前**说才有用
-    if (!confirmDiscImage(platform, file)) {
+    if (!(await confirmDiscImage(platform, file))) {
       if (inputRef.current) inputRef.current.value = ''
       return
     }

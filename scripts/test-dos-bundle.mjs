@@ -11,7 +11,9 @@
  * 跑：npm run test:dos-bundle
  */
 import assert from 'node:assert/strict'
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { normalizeDosboxConfigOverride, mergeDosboxConfigOverride } from '../shared/dosbox-config.js'
 
 const { makeJsdosBundle, makeWindowsGameLayer, buildDosboxConf } = await import(
   fileURLToPath(new URL('../src/lib/jsdosBundle.ts', import.meta.url))
@@ -322,6 +324,130 @@ console.log('\n── autoexec：CD 不许带引号，进不去的目录改挂 D
   ok(/@echo .*已退出/.test(conf2), '末尾留一句人话，真没跑起来时黑屏至少变成一行提示')
   const none = buildDosboxConf(null)
   ok(none.includes('没有找到可执行文件'), '猜不出启动程序时的提示保持不变')
+}
+
+/**
+ * 保护表是模块私有的，这里从源码里解析出来 —— 比为了测试专门加一个导出干净，
+ * 也顺带保证测试读的就是真表，不会和实现漂开。
+ */
+const PROTECTED_FOR_TEST = (() => {
+  const src = readFileSync(new URL('../shared/dosbox-config.js', import.meta.url), 'utf8')
+  const at = src.indexOf('const protectedKeys = new Map([')
+  assert.ok(at > 0, '没找到 protectedKeys —— 实现改名了，这组测试要跟着改')
+  const body = src.slice(at, src.indexOf('\n])', at))
+  const out = []
+  for (const m of body.matchAll(/\['([a-z0-9]+)',\s*new Set\(\[([^\]]*)\]\)/g)) {
+    out.push([m[1], [...m[2].matchAll(/'([^']+)'/g)].map((k) => k[1])])
+  }
+  assert.ok(out.length > 0, '解析 protectedKeys 失败')
+  return out
+})()
+
+console.log('\n── 高级配置：站点托管的那几个键，换个拼法也得拦住 ──')
+{
+  /*
+    2026-09-11 的教训。保护表里原本写的是 `mouse_emulation`，而 js-dos 的
+    Win311 镜像里写的是 `mouse emulation=integration`（空格）—— 看起来像是被绕过去了。
+
+    去 wdosbox-x.wasm 里查了才知道：DOSBox-X 认的确实是下划线那个，
+    带空格的那行它根本不认识（所以镜像里那一行其实是空转）。保护没漏。
+
+    但这件事说明按字面比太脆：DOSBox-X 自己两种风格混着用
+    （`mouse_emulation` 下划线，`convert fat free space` / `integration device` 空格），
+    哪天改个拼法，或者哪个版本两种都认，保护就静默失效了 —— 而失效是没有任何迹象的。
+    所以现在按规范形式比（下划线/连字符/空格折叠成一个空格），两种写法一起拦。
+  */
+  const blocked = (text) => {
+    try {
+      normalizeDosboxConfigOverride(text)
+      return null
+    } catch (e) {
+      return e.message
+    }
+  }
+
+  for (const [label, text] of [
+    ['下划线写法', '[sdl]\nmouse_emulation=locked'],
+    ['空格写法', '[sdl]\nmouse emulation=locked'],
+    ['连字符写法', '[sdl]\nmouse-emulation=locked'],
+    ['大写混排', '[sdl]\nMouse_Emulation=locked'],
+  ]) {
+    ok(/由站点统一管理/.test(blocked(text) || ''), `⭐ 鼠标模式：${label}也拦得住`)
+  }
+  ok(/由站点统一管理/.test(blocked('[sdl]\nautolock=true') || ''), 'autolock 仍然拦')
+  ok(/由站点统一管理/.test(blocked('[dosbox]\nconvert_fat_free_space=999') || ''), '⭐ 动态盘上限：下划线写法也拦')
+  ok(/由站点统一管理/.test(blocked('[cpu]\nintegration device=false') || ''), '⭐ 集成设备不许关（Windows 客体的 dboxmpi.drv 指着它）')
+  ok(/由站点统一管理/.test(blocked('[cpu]\nintegration_device=false') || ''), '⭐ 集成设备：下划线写法也拦')
+
+  // 反向用例：只验证「拦住了」很容易写出一张把所有键都拦掉的表
+  ok(blocked('[cpu]\ncycles=max') === null, 'cycles 照常可以改')
+  ok(blocked('[sblaster]\nsbtype=sb16') === null, 'sbtype 照常可以改')
+  ok(blocked('[mixer]\nnosound=true') === null, 'nosound 照常可以改')
+  ok(blocked('[sdl]\nsensitivity=80') === null, '同一个 section 里没被点名的键不受影响')
+
+  // 同一个键换拼法写两遍 = 重复，不是两个键
+  // ⚠️ 这里必须用允许编辑的 section，否则先撞上「不允许编辑 [xxx] 配置段」，
+  //    这条断言就变成在验证另一件事了（空断言）。
+  ok(/重复出现/.test(blocked('[cpu]\ncore=auto\nCore=normal') || ''), '⭐ 同一个键换个大小写写两遍算重复')
+  ok(/重复出现/.test(blocked('[render]\nscaler test=1\nscaler_test=2') || ''), '⭐ 空格 / 下划线写两遍也算重复')
+
+  // 合并时也要认同一个键，否则会在 section 里追加出第二行无效项
+  const spaced = 'vesa vbe put modelist in vesa information'
+  const merged = mergeDosboxConfigOverride(
+    `[dosbox]\n${spaced}=false\n`,
+    `[dosbox]\n${spaced.replace(/ /g, '_')}=true`,
+  )
+  ok(
+    (merged.match(/vesa[ _]vbe[ _]put[ _]modelist/gi) || []).length === 1,
+    '⭐ 换拼法覆盖已有项时替换那一行，而不是在 section 里再追加一行（两行同名，DOSBox 只认一个）',
+  )
+  ok(/=true/.test(merged) && !/=false/.test(merged), '值确实被覆盖成新的了')
+
+  /*
+    ⚠️ 反方向也要试。上面那组里**基础配置本来就是规范形式**，所以就算只把覆盖项
+    规范化、比对时拿原文比，也照样能撞上 —— 那条断言杀不掉「只规范化一半」这个变异。
+    真正会漏的是「基础配置用下划线、覆盖项用空格」这一边。
+  */
+  const mergedBack = mergeDosboxConfigOverride(
+    `[dosbox]\n${spaced.replace(/ /g, '_')}=false\n`,
+    `[dosbox]\n${spaced}=true`,
+  )
+  ok(
+    (mergedBack.match(/vesa[ _]vbe[ _]put[ _]modelist/gi) || []).length === 1,
+    '⭐ 基础配置用下划线、覆盖项用空格时，同样是替换而不是追加',
+  )
+  ok(/=true/.test(mergedBack) && !/=false/.test(mergedBack), '反方向的值也确实覆盖上了')
+}
+
+console.log('\n── 保护表里的键必须是模拟器真认识的 ──')
+{
+  /*
+    ⚠️ 一个拼错的保护键 = 一道**什么都没保护**的保护，而且完全静默。
+    上面那次就是差点在这里翻车：光看代码没法知道 `mouse_emulation` 是不是真名字。
+    所以直接拿 wasm 里的字符串表对一遍 —— 名字在不在模拟器里，二进制说了算。
+  */
+  const cores = ['public/jsdos/emulators/wdosbox-x.wasm', 'public/jsdos/emulators/wdosbox.wasm']
+    .map((rel) => new URL('../' + rel, import.meta.url))
+    .filter((u) => existsSync(u))
+
+  if (cores.length === 0) {
+    console.log('  ⏭  跳过：public/jsdos 还没拉下来（npm run jsdos）')
+  } else {
+    const pools = cores.map((u) => readFileSync(u))
+    /** 名字是不是以独立字符串出现在某个核心里（前后都是 NUL，避免子串误判） */
+    const knownToEmulator = (name) =>
+      pools.some((buf) => buf.includes(Buffer.concat([Buffer.from([0]), Buffer.from(name, 'latin1'), Buffer.from([0])])))
+
+    for (const [section, keys] of PROTECTED_FOR_TEST) {
+      for (const canonical of keys) {
+        const spellings = [canonical, canonical.replace(/ /g, '_'), canonical.replace(/ /g, '-')]
+        ok(
+          spellings.some(knownToEmulator),
+          `⭐ [${section}] ${canonical} —— 在 wdosbox-x/wdosbox 的字符串表里找得到（找不到就说明这条保护是空的）`,
+        )
+      }
+    }
+  }
 }
 
 console.log(`\n✅ DOS 打包测试通过（${n} 项）`)

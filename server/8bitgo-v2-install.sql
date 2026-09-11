@@ -103,6 +103,7 @@ CREATE TABLE IF NOT EXISTS games (
   -- 可复用的 Windows 客体系统 .jsdos。游戏 ROM 仍单独存，避免每款游戏重复一份系统盘。
   dos_system    VARCHAR(500)  NULL,
   dos_extras     TEXT             NULL,  -- 附加文件：一行一个对象 key，加载时并进游戏目录
+  dos_extras_label VARCHAR(60)  NULL,  -- 可选附加文件在开始界面上的名字（「隐秘行动」）
   -- 3x 走 Program Manager 的 File > Run；9x 走开始菜单的 Run；NULL 按 9x 兼容。
   dos_windows_version VARCHAR(8) NULL,
   -- 客体系统切入图形模式后等待多少秒再自动运行 dos_executable。

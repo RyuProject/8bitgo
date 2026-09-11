@@ -718,6 +718,19 @@ const patches = [
       await conn.query('ALTER TABLE `games` ADD COLUMN `dos_extras` TEXT NULL AFTER `dos_system`')
     },
   },
+  {
+    name: '可选附加文件的名字（games.dos_extras_label）',
+    /*
+      站长 2026-09-11：《命令与征服》的隐秘行动资料片有 500MB，不能让每个路过点开的人
+      都先把它下一遍。所以附加文件可以逐条标成「可选」（行首一个 `?`），开始界面上给一个
+      开关、默认不加载 —— 而开关上总得写清楚那 500MB 到底是什么，这一列存的就是那个名字。
+      体积由前端现场 HEAD 测，不存库：换一份文件自动跟着变，没有对不上的风险。
+    */
+    needed: async () => (await hasTable('games')) && !(await hasColumn('games', 'dos_extras_label')),
+    run: async () => {
+      await conn.query('ALTER TABLE `games` ADD COLUMN `dos_extras_label` VARCHAR(60) NULL AFTER `dos_extras`')
+    },
+  },
 ]
 
 const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'login_codes', 'platform_bios', 'game_plays', 'developers', 'friend_links', 'friend_link_hits', 'game_comments', 'game_ratings', 'oauth_apps']

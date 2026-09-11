@@ -19,6 +19,7 @@ const EXPECTED_COLUMNS = [
   { table: 'games', column: 'dos_backend', why: 'DOS / Windows 客体运行核心选择' },
   { table: 'games', column: 'dos_system', why: '可复用的 Windows 客体系统镜像' },
   { table: 'games', column: 'dos_extras', why: 'DOS 附加文件（资料片 / 补丁）清单；缺了后台保存的附加文件会静默丢失' },
+  { table: 'games', column: 'dos_extras_label', why: '可选资料片在开始界面上的名字；缺了开关上只剩「加载扩展包」，玩家不知道那几百 MB 是什么' },
   { table: 'games', column: 'dos_windows_version', why: 'Windows 3.x / 9x 自启动方式' },
   { table: 'games', column: 'dos_launch_delay', why: '客体 Windows 自启动时机' },
   { table: 'games', column: 'dosbox_config_override', why: '逐游戏 DOSBox-X 启动配置覆盖' },

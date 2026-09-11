@@ -16,6 +16,19 @@ export interface DosExtraRef {
   key: string
   /** 并进游戏 ZIP 之后的相对路径 */
   path: string
+  /**
+   * 玩家自己决定要不要加载（行首一个 `?`）。
+   *
+   * 资料片动辄几百 MB —— 《命令与征服》的隐秘行动就有 500 MB —— 不该让每个
+   * 路过点开的人都先把它下一遍。所以大件标成可选，开始界面上给一个开关，默认不加载。
+   * 补丁这类「不打就是另一个游戏」的必须保持强制，不给选。
+   */
+  optional: boolean
+}
+
+/** 播放器拿到的那一份：解析好的清单 + 已经算成可下载的地址 */
+export interface DosExtraSource extends DosExtraRef {
+  url: string
 }
 
 /** 路径里一段都不能是空 / . / ..，也不收控制字符 —— 这个值最终会变成 ZIP 里的路径 */
@@ -41,14 +54,20 @@ export function defaultExtraPath(key: string): string {
   return normalizeExtraPath(noQuery.replace(/\/+$/, '').split('/').pop() ?? '')
 }
 
-/** 一行 → { key, path }。空行 / 落点非法都返回 null */
+/**
+ * 一行 → { key, path, optional }。空行 / 落点非法都返回 null。
+ *
+ * 行首的 `?` 是「可选」标记，必须在其它一切之前剥掉 —— 它后面才是 key。
+ */
 export function parseDosExtra(line: string): DosExtraRef | null {
-  const raw = String(line ?? '')
+  let raw = String(line ?? '').trim()
+  const optional = raw.startsWith('?')
+  if (optional) raw = raw.slice(1)
   const bar = raw.indexOf('|')
   const key = (bar < 0 ? raw : raw.slice(0, bar)).trim().replace(/^\/+/, '')
   if (!key) return null
   const path = (bar < 0 ? '' : normalizeExtraPath(raw.slice(bar + 1))) || defaultExtraPath(key)
-  return path ? { key, path } : null
+  return path ? { key, path, optional } : null
 }
 
 export function parseDosExtras(lines: readonly string[] | undefined | null): DosExtraRef[] {
@@ -60,10 +79,11 @@ export function parseDosExtras(lines: readonly string[] | undefined | null): Dos
   return out
 }
 
-/** { key, path } → 存回后台的一行。落点就是默认值时省掉后半段，别把噪音写进库 */
+/** { key, path, optional } → 存回后台的一行。落点就是默认值时省掉后半段，别把噪音写进库 */
 export function formatDosExtra(ref: DosExtraRef): string {
   const path = normalizeExtraPath(ref.path)
-  return !path || path === defaultExtraPath(ref.key) ? ref.key : `${ref.key}|${path}`
+  const body = !path || path === defaultExtraPath(ref.key) ? ref.key : `${ref.key}|${path}`
+  return ref.optional ? `?${body}` : body
 }
 
 /* ---------------- 后台上传时用的（放这里是为了能被测试直接 import） ---------------- */

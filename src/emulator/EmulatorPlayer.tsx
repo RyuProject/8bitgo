@@ -20,6 +20,7 @@ import { LiveChatBar, LiveChatLane, useLiveChat } from './LiveChat'
 import { LiveWatchPanel } from './LiveWatchPanel'
 import type { Broadcast } from './broadcast'
 import { matchLocalArcadeHack } from './arcadeHack'
+import type { DosExtraSource } from '@/lib/dosExtras'
 import type { LiveSession, LiveViewState } from './adapters/liveview'
 import type { NetplaySession } from './adapters/emulatorjs'
 import type { CloudSession, CloudState } from './adapters/cloudgame'
@@ -189,8 +190,13 @@ interface Props {
   dosBackend?: DosBackend
   /** 可复用的 Windows 系统 .jsdos；游戏 ROM 仍单独加载。 */
   dosSystemUrl?: string
-  /** DOS 附加文件（资料片 / 补丁）：加载时并进游戏 ZIP，见 lib/dosExtras.ts。 */
-  dosExtras?: readonly { url: string; path: string }[]
+  /**
+   * DOS 附加文件（资料片 / 补丁）：加载时并进游戏 ZIP，见 lib/dosExtras.ts。
+   * 带 optional 的那些由玩家在开始界面上自己决定要不要下。
+   */
+  dosExtras?: readonly DosExtraSource[]
+  /** 可选附加文件在开关上的名字（「隐秘行动」）。留空退回一句通用的「扩展包」。 */
+  dosExtrasLabel?: string
   /** Windows 3.x 与 9x 的“运行”入口不同；旧数据留空时按 9x 处理。 */
   dosWindowsVersion?: DosWindowsVersion
   /** 客体 Windows 切入图形模式后，等待多少秒再执行 dosExecutable。 */
@@ -299,6 +305,66 @@ function glyphOnly(label: string): string {
   return rest.length > 0 && head.length <= 2 && !/[\p{L}\p{N}]/u.test(head) ? head : label
 }
 
+/* ---------------- 可选附加文件（资料片） ---------------- */
+
+/** 没有可选附加文件时共用同一个空数组：每次渲染都 new 一个会让下面那个 effect 白跑 */
+const EMPTY_EXTRAS: readonly DosExtraSource[] = []
+
+const EXTRAS_CHOICE_KEY = '8bitgo.dos.extras'
+
+/**
+ * 玩家上次选了加不加载资料片。按游戏记在浏览器里 —— 勾过一次的人下次进来直接就有，
+ * 不用每次重新勾；而没勾过的人永远不会被动下那几百 MB。
+ */
+function readExtrasChoice(slug?: string): boolean {
+  if (!slug) return false
+  try {
+    return localStorage.getItem(`${EXTRAS_CHOICE_KEY}:${slug}`) === '1'
+  } catch {
+    return false
+  }
+}
+
+function writeExtrasChoice(slug: string | undefined, on: boolean) {
+  if (!slug) return
+  try {
+    if (on) localStorage.setItem(`${EXTRAS_CHOICE_KEY}:${slug}`, '1')
+    else localStorage.removeItem(`${EXTRAS_CHOICE_KEY}:${slug}`)
+  } catch {
+    /* 隐私模式 / 存储满了：这一局还是按勾的来，只是下次记不住 */
+  }
+}
+
+/**
+ * 量一下可选附加文件一共多大，给开关上那句「额外 498 MB」用。
+ *
+ * ⚠️ 只发 HEAD，绝不 GET。这一步的**全部意义**就是让玩家在下之前知道要下多少，
+ * 为了显示体积先把 500MB 拉下来是纯粹的自相矛盾。
+ * ⚠️ 任何一份量不到就整个返回 null，宁可不显示体积 —— 写「额外 300 MB」
+ * 而实际要下 500MB，比不写还糟：玩家是按那个数字做的决定。
+ */
+async function probeExtrasBytes(list: readonly DosExtraSource[]): Promise<number | null> {
+  try {
+    const sizes = await Promise.all(
+      list.map(async (e) => {
+        if (!e.url) return null
+        const res = await fetch(e.url, { method: 'HEAD' })
+        if (!res.ok) return null
+        const len = Number(res.headers.get('content-length'))
+        return Number.isFinite(len) && len > 0 ? len : null
+      }),
+    )
+    let total = 0
+    for (const n of sizes) {
+      if (n === null) return null
+      total += n
+    }
+    return total
+  } catch {
+    return null
+  }
+}
+
 export function EmulatorPlayer({
   platform,
   gameName,
@@ -322,6 +388,7 @@ export function EmulatorPlayer({
   dosBackend,
   dosSystemUrl,
   dosExtras,
+  dosExtrasLabel,
   dosWindowsVersion,
   dosLaunchDelay,
   dosboxConfig,
@@ -1035,8 +1102,40 @@ export function EmulatorPlayer({
   // 系统镜像与等待时间也只在新会话挂载时读取；后台热改配置不应中断玩家当前这一局。
   const dosSystemUrlRef = useRef(dosSystemUrl)
   dosSystemUrlRef.current = dosSystemUrl
-  const dosExtrasRef = useRef(dosExtras)
-  dosExtrasRef.current = dosExtras
+  /**
+   * 可选附加文件（资料片）的开关。
+   *
+   * 站长 2026-09-11：《命令与征服》的隐秘行动资料片 500MB。默认全量注入等于让
+   * **每个路过点开的人**先下这 500MB，而绝大多数人只是想玩本体 —— 于是默认关，
+   * 想玩资料片的自己勾一下。补丁那种「不打就是另一个游戏」的不进这个开关（optional=false）。
+   */
+  const optionalExtras = dosExtras?.filter((e) => e.optional) ?? EMPTY_EXTRAS
+  const [wantExtras, setWantExtras] = useState(() => readExtrasChoice(gameSlug))
+  /** 可选那几份加起来多少字节。null = 还没测出来（HEAD 失败也停在 null，只是不显示体积） */
+  const [extrasBytes, setExtrasBytes] = useState<number | null>(null)
+  useEffect(() => {
+    if (!optionalExtras.length) {
+      setExtrasBytes(null)
+      return
+    }
+    let live = true
+    void probeExtrasBytes(optionalExtras).then((n) => {
+      if (live) setExtrasBytes(n)
+    })
+    return () => {
+      live = false
+    }
+    // 地址变了才重测；数组每次渲染都是新引用，所以按地址串比
+  }, [optionalExtras.map((e) => e.url).join('\n')]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /*
+    真正交给运行时的那一份：强制的永远在，可选的看开关。
+    ⚠️ 这里是**挂载那一刻**读的（下面 dosExtrasRef），所以玩家先勾再点「开始游戏」才算数；
+    已经跑起来之后再改开关不会有任何效果 —— 但那时遮罩早就没了，玩家也点不到。
+  */
+  const activeExtras = dosExtras?.filter((e) => !e.optional || wantExtras)
+  const dosExtrasRef = useRef(activeExtras)
+  dosExtrasRef.current = activeExtras
   const dosWindowsVersionRef = useRef(dosWindowsVersion)
   dosWindowsVersionRef.current = dosWindowsVersion
   const dosLaunchDelayRef = useRef(dosLaunchDelay)
@@ -2770,6 +2869,30 @@ export function EmulatorPlayer({
                       </>
                     )}
                   </p>
+                  {/*
+                    资料片开关。只在**本机开局**这条路上出现：联机由房主的机器跑，
+                    观战根本不跑游戏，这两种情况下勾它没有任何意义，反而会让人以为
+                    自己下的那份会生效。
+                  */}
+                  {optionalExtras.length > 0 && !online && !willWatch && (
+                    <label className="flex max-w-md cursor-pointer items-center gap-2 rounded-lg border border-white/20 bg-black/50 px-3 py-2 text-[11px] leading-relaxed text-white/80 backdrop-blur hover:border-white/40 hover:text-white sm:text-xs">
+                      <input
+                        type="checkbox"
+                        className="size-4 shrink-0 accent-brand"
+                        checked={wantExtras}
+                        onChange={(e) => {
+                          setWantExtras(e.target.checked)
+                          writeExtrasChoice(gameSlug, e.target.checked)
+                        }}
+                      />
+                      <span>
+                        {fmt(extrasBytes === null ? t.player.extrasToggle : t.player.extrasToggleSized, {
+                          name: dosExtrasLabel?.trim() || t.player.extrasFallbackName,
+                          size: extrasBytes === null ? '' : formatBytes(extrasBytes),
+                        })}
+                      </span>
+                    </label>
+                  )}
                   {keymapLine && (
                     <p className="max-w-md text-[11px] leading-relaxed text-white/55 sm:text-xs">
                       ⌨️ {keymapLine} · {t.player.keymapMore}

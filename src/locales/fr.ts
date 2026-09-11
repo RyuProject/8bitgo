@@ -850,6 +850,10 @@ const fr: Translation = {
     alsoCan: 'Tu peux aussi ',
     pickLocal: 'choisir un fichier ROM local',
     orDrag: ' ou simplement en déposer un ici.',
+    /* Interrupteur de l’extension optionnelle. Le nom vient de l’admin, la taille est mesurée en HEAD. */
+    extrasToggle: 'Charger aussi « {name} » (téléchargement supplémentaire)',
+    extrasToggleSized: 'Charger aussi « {name} » (+{size})',
+    extrasFallbackName: 'l’extension',
     checkingHint: 'On vérifie si une ROM de ce jeu est disponible sur le cloud…',
     dropHintUpload: 'Déposez ici votre fichier {platform} ou utilisez le bouton. Les jeux Java doivent être envoyés sur notre serveur pour fonctionner ; le fichier est supprimé à la fermeture de la page.',
     dropHint:

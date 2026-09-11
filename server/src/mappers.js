@@ -145,9 +145,14 @@ export function dosExtrasOf(v) {
   const list = Array.isArray(v) ? v : String(v ?? '').split('\n')
   const out = []
   for (const raw of list) {
-    const line = String(raw ?? '').trim()
+    let line = String(raw ?? '').trim()
     if (!line) continue
-    // 一行的形状：`对象key` 或 `对象key|游戏里的路径`（见 src/lib/dosExtras.ts）
+    /*
+      一行的形状：`[?]对象key[|游戏里的路径]`（见 src/lib/dosExtras.ts）。
+      行首的 `?` 是「玩家自己选要不要加载」，必须先剥掉再往下解析 —— 它不是 key 的一部分。
+    */
+    const optional = line.startsWith('?')
+    if (optional) line = line.slice(1).trim()
     const bar = line.indexOf('|')
     const key = (bar < 0 ? line : line.slice(0, bar)).trim().replace(/^\/+/, '')
     const path = bar < 0 ? '' : line.slice(bar + 1).trim().replace(/\\/g, '/').replace(/^\/+/, '')
@@ -156,11 +161,25 @@ export function dosExtrasOf(v) {
     if (key.includes('\\') || key.split('/').includes('..')) continue
     if (path && !extraPathOk(path)) continue
     // 同一个 key 落两个不同位置是合法的（同一份补丁丢进两个目录），所以整行去重
-    const norm = path ? `${key}|${path}` : key
+    const norm = (optional ? '?' : '') + (path ? `${key}|${path}` : key)
     if (!out.includes(norm)) out.push(norm)
     if (out.length >= DOS_EXTRAS_MAX) break
   }
   return out.length ? out.join('\n') : null
+}
+
+/**
+ * 可选附加文件在开始界面上的名字（「隐秘行动」「黎明计划」…）。
+ *
+ * 只在有可选条目时才用得上：开关上写「加载「隐秘行动」（额外 498 MB）」比
+ * 「加载附加文件」强得多 —— 玩家得知道那 500 MB 到底是什么才好决定要不要下。
+ * 体积是前端现场 HEAD 测的，不存库：换一份文件就自动跟着变，没有对不上的风险。
+ */
+export function dosExtrasLabelOf(v) {
+  if (v == null) return null
+  const s = String(v).replace(/\s+/g, ' ').trim()
+  if (!s) return null
+  return s.slice(0, 60)
 }
 
 export function dosExecutableOf(v) {
@@ -335,6 +354,7 @@ export function gameRowToApi(r, rel = {}) {
     const extras = String(r.dos_extras).split('\n').map((x) => x.trim()).filter(Boolean)
     if (extras.length) g.dosExtras = extras
   }
+  if (r.dos_extras_label) g.dosExtrasLabel = r.dos_extras_label
   if (r.dos_windows_version === '3x' || r.dos_windows_version === '9x') g.dosWindowsVersion = r.dos_windows_version
   if (r.dos_launch_delay != null) g.dosLaunchDelay = Number(r.dos_launch_delay)
   if (r.dosbox_config_override) g.dosboxConfig = r.dosbox_config_override
@@ -393,6 +413,7 @@ export function gameApiToRow(g) {
     dos_backend: dosBackendOf(g.dosBackend),
     dos_system: dosSystemOf(g.dosSystem),
     dos_extras: dosExtrasOf(g.dosExtras),
+    dos_extras_label: dosExtrasLabelOf(g.dosExtrasLabel),
     dos_windows_version: dosWindowsVersionOf(g.dosWindowsVersion),
     dos_launch_delay: dosLaunchDelayOf(g.dosLaunchDelay),
     dosbox_config_override: dosboxConfigOf(g.dosboxConfig),
@@ -429,6 +450,7 @@ const FIELD_TO_COLUMN = {
   dosBackend: ['dos_backend', dosBackendOf],
   dosSystem: ['dos_system', dosSystemOf],
   dosExtras: ['dos_extras', dosExtrasOf],
+  dosExtrasLabel: ['dos_extras_label', dosExtrasLabelOf],
   dosWindowsVersion: ['dos_windows_version', dosWindowsVersionOf],
   dosLaunchDelay: ['dos_launch_delay', dosLaunchDelayOf],
   dosboxConfig: ['dosbox_config_override', dosboxConfigOf],

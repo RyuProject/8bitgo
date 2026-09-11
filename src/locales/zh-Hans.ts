@@ -898,6 +898,10 @@ export const zhHans = {
     alsoCan: '也可以',
     pickLocal: '选择本地 ROM 文件',
     orDrag: '或直接拖到这里。',
+    /* 可选资料片的开关。名字由后台填（「隐秘行动」），体积是开局前 HEAD 现测的 */
+    extrasToggle: '同时加载「{name}」（需要额外下载）',
+    extrasToggleSized: '同时加载「{name}」（额外 {size}）',
+    extrasFallbackName: '扩展包',
     checkingHint: '这款游戏已收录在线版本，正在确认文件并准备模拟器。',
     dropHintUpload: '把 {platform} 的文件拖到这里，或点击按钮选择。Java 游戏需要先上传到本站服务器才能运行，关闭页面后会自动删除。',
     dropHint: '把 {platform} 的文件拖到这里，或点击按钮选择。文件只在你的浏览器本地读取，不会上传。',

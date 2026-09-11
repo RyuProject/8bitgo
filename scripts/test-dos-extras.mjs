@@ -25,7 +25,7 @@ const { mergeExtraFiles } = await import(fileURLToPath(new URL('../src/lib/jsdos
 const { parseDosExtra, parseDosExtras, formatDosExtra, defaultExtraPath, normalizeExtraPath, extraObjectName, skipExtraEntry, extraPathProblem } =
   await import(fileURLToPath(new URL('../src/lib/dosExtras.ts', import.meta.url)))
 const { extractZipEntry, listZipEntries } = await import(fileURLToPath(new URL('../src/lib/unzip.ts', import.meta.url)))
-const { dosExtrasOf } = await import(fileURLToPath(new URL('../server/src/mappers.js', import.meta.url)))
+const { dosExtrasOf, dosExtrasLabelOf } = await import(fileURLToPath(new URL('../server/src/mappers.js', import.meta.url)))
 
 let n = 0
 let failed = 0
@@ -269,6 +269,44 @@ ok(dosExtrasOf(['e/x.mix', 'e/x.mix|D/X.MIX']).split('\n').length === 2, '同一
 ok(dosExtrasOf(Array.from({ length: 30 }, (_, i) => `e/f${i}.mix`)).split('\n').length === 12, '超过 12 条被截断（每一条都会进玩家开局的加载链路）')
 ok(dosExtrasOf(['e/' + 'x'.repeat(600) + '.mix']) === null, '超长 key 被丢掉')
 
+/* ---------------- 三点五、可选资料片（行首的 ?） ---------------- */
+
+/*
+  站长 2026-09-11：《命令与征服》的隐秘行动资料片 500MB。默认全量注入 = 每个路过点开的人
+  先下这 500MB，而绝大多数人只想玩本体。于是逐条可以标成「可选」，开始界面给一个开关、默认不下。
+  ⚠️ 最要命的一条在最前面：**没标记的行必须还是强制注入**。这个标记是后加的，
+  库里已经有的那些行一条都没有 `?`，要是默认成可选，所有已经上线的补丁当场全部停止生效。
+*/
+ok(parseDosExtra('extras/a/x.mix').optional === false, '⚠️ 没有 ? 的行仍然是强制注入（库里的老数据一条都不能变）')
+{
+  const r = parseDosExtra('?extras/cc/SC-002.MIX')
+  ok(r.optional === true, '行首的 ? = 可选')
+  ok(r.key === 'extras/cc/SC-002.MIX', '? 不会被当成 key 的一部分')
+  ok(r.path === 'SC-002.MIX', '剥掉 ? 之后照常算默认落点')
+  ok(formatDosExtra(r) === '?extras/cc/SC-002.MIX', '回写时把 ? 补回去')
+}
+{
+  const r = parseDosExtra('?extras/cc/SC-002.MIX|DATA/SC-002.MIX')
+  ok(r.optional === true && r.path === 'DATA/SC-002.MIX', '? 和 |落点 可以同时用')
+  ok(formatDosExtra(r) === '?extras/cc/SC-002.MIX|DATA/SC-002.MIX', '两样都回写得出来')
+}
+ok(parseDosExtra('  ?extras/a/x.mix ').optional === true, '前后有空格也认得出 ?')
+ok(parseDosExtra('?') === null, '光一个 ? 不算一条')
+{
+  const list = parseDosExtras(['patch/fix.dat', '?extras/cc/SC-002.MIX'])
+  ok(list.filter((e) => e.optional).length === 1 && list.filter((e) => !e.optional).length === 1, '同一款游戏里补丁强制、资料片可选，两者能共存')
+}
+
+ok(dosExtrasOf(['?extras/cc/SC-002.MIX']) === '?extras/cc/SC-002.MIX', '服务端原样保留 ? 标记')
+ok(dosExtrasOf(['?extras/cc/x.mix|D/X.MIX']) === '?extras/cc/x.mix|D/X.MIX', '? 和落点一起保留')
+ok(dosExtrasOf(['?../../secret']) === null, '带 ? 的行照样过 .. 校验（剥标记不等于放行）')
+ok(dosExtrasOf(['?e/x.mix', 'e/x.mix']).split('\n').length === 2, '同一个 key 可选和强制各一条不算重复（去重是整行比）')
+
+ok(dosExtrasLabelOf('  隐秘行动  ') === '隐秘行动', '资料片名字两边空白吃掉')
+ok(dosExtrasLabelOf('') === null && dosExtrasLabelOf(null) === null, '没填就是 NULL，不是空字符串')
+ok(dosExtrasLabelOf('隐秘\n  行动') === '隐秘 行动', '换行和连续空格压成一个空格（这行字要显示在一行里）')
+ok(dosExtrasLabelOf('名'.repeat(200)).length === 60, '超长名字截到 60 —— 开关是一行字，不是简介')
+
 /* ---------------- 四、后台那一步：整个压缩包丢进来 ---------------- */
 
 /*
@@ -328,6 +366,25 @@ const adapter = readFileSync(new URL('../src/emulator/adapters/jsdos.ts', import
   // 要么这一局本来就跑不成预期的样子，而玩家只会以为「你们这个扩展包是假的」
   ok(/throw new Error\(`附加文件「\$\{path\}」下载失败/.test(adapter), '附加文件下不下来时抛错，不静默跳过')
   ok(/loadExtras\(options\.dosExtras, abort\.signal\)/.test(adapter), '下载挂在会话的 AbortSignal 上（玩家切走就别继续吞流量）')
+}
+
+/* ---------------- 六、开关：默认不下那 500MB ---------------- */
+
+const player = readFileSync(new URL('../src/emulator/EmulatorPlayer.tsx', import.meta.url), 'utf8')
+{
+  // 这三条是整个功能的意义所在，改错任何一条都会让 500MB 重新变成人人必下
+  ok(
+    /const activeExtras = dosExtras\?\.filter\(\(e\) => !e\.optional \|\| wantExtras\)/.test(player),
+    '交给运行时的是「强制的 + 勾了才算的可选的」，不是整份清单',
+  )
+  ok(/dosExtrasRef\.current = activeExtras/.test(player), '挂载时读的是过滤后的那一份（不是原始 dosExtras）')
+  ok(!/dosExtrasRef\.current = dosExtras\b/.test(player), '⚠️ 没有哪条路把未过滤的清单直接塞回 ref')
+  ok(/useState\(\(\) => readExtrasChoice\(gameSlug\)\)/.test(player), '开关的初值来自玩家自己上次的选择')
+  ok(/localStorage\.getItem\(`\$\{EXTRAS_CHOICE_KEY\}:\$\{slug\}`\) === '1'/.test(player), '没选过 = false = 不下载（默认关）')
+  // 「为了显示体积先把 500MB 下下来」是这个功能能犯的最蠢的错
+  ok(/fetch\(e\.url, \{ method: 'HEAD' \}\)/.test(player), '量体积只发 HEAD')
+  ok(/for \(const n of sizes\) \{\s*\n\s*if \(n === null\) return null/.test(player), '任何一份量不到就整个不显示体积 —— 写个偏小的数字比不写还糟')
+  ok(/optionalExtras\.length > 0 && !online && !willWatch/.test(player), '联机 / 观战时不显示这个开关（游戏不在本机跑，勾了也没用）')
 }
 
 console.log(`\n✅ ${n} 项通过`)

@@ -177,6 +177,11 @@ export interface Game {
    * 加一个资料片不必重打十几 MB 的包，也不用刷全站缓存。见 lib/dosExtras.ts。
    */
   dosExtras?: string[]
+  /**
+   * 可选附加文件（行首 `?` 的那些）在开始界面上的名字，如「隐秘行动」。
+   * 体积由前端现场测，不存这里 —— 换一份文件自动跟着变。
+   */
+  dosExtrasLabel?: string
   /** 客体 Windows 的桌面代次；留空按旧数据兼容为 9x。 */
   dosWindowsVersion?: DosWindowsVersion
   /**

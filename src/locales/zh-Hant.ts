@@ -849,6 +849,10 @@ const zhHant: Translation = {
     alsoCan: '也可以',
     pickLocal: '選擇本機 ROM 檔案',
     orDrag: '或直接拖到這裡。',
+    /* 可選資料片的開關。名字由後台填（「隱密行動」），體積是開局前 HEAD 現測的 */
+    extrasToggle: '同時載入「{name}」（需要額外下載）',
+    extrasToggleSized: '同時載入「{name}」（額外 {size}）',
+    extrasFallbackName: '擴充包',
     checkingHint: '正在檢查雲端是否有這款遊戲的 ROM…',
     dropHintUpload: '把 {platform} 的檔案拖到這裡，或點擊按鈕選擇。Java 遊戲需要先上傳到本站伺服器才能執行，關閉頁面後會自動刪除。',
     dropHint: '把 {platform} 的檔案拖到這裡，或點擊按鈕選擇。檔案只在你的瀏覽器本機讀取，不會上傳。',

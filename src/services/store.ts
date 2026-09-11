@@ -74,6 +74,16 @@ export async function upsertGame(game: Game): Promise<Game> {
       '服务端没有保存附加文件清单。请在服务器运行数据库迁移（cd server && npm run migrate）并重启 8bitgo-api，然后重新保存。',
     )
   }
+  /*
+    资料片名字是**后加的一列**，所以它可能单独没迁移到 —— 上一轮已经跑过 migrate 的人
+    库里有 dos_extras 却没有 dos_extras_label，上面那条守卫放行，名字却悄悄丢了，
+    玩家在开始界面看到的是「同时加载「扩展包」」。单独判一次。
+  */
+  if (game.dosExtrasLabel?.trim() && !saved.dosExtrasLabel?.trim()) {
+    throw new Error(
+      '服务端没有保存资料片名称。请在服务器再跑一次数据库迁移（cd server && npm run migrate）并重启 8bitgo-api，然后重新保存。',
+    )
+  }
   const requestedWindowsVersion = game.dosWindowsVersion
   if (requestedWindowsVersion !== saved.dosWindowsVersion) {
     throw new Error(

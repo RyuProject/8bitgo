@@ -848,6 +848,10 @@ const en: Translation = {
     alsoCan: 'You can also ',
     pickLocal: 'pick a local ROM file',
     orDrag: ' or just drag one here.',
+    /* Optional expansion toggle. Name comes from the admin; size is measured with a HEAD request. */
+    extrasToggle: 'Also load “{name}” (extra download)',
+    extrasToggleSized: 'Also load “{name}” (+{size})',
+    extrasFallbackName: 'the expansion',
     checkingHint: 'Checking whether we have a cloud ROM for this game…',
     dropHintUpload: 'Drop your {platform} file here, or use the button. Java games must be uploaded to our server to run; the file is deleted when you close the page.',
     dropHint:

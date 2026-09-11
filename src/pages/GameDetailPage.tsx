@@ -6,7 +6,7 @@ import { openAuthModal } from '@/services/authModal'
 import type { RomLang } from '@/config/languages'
 import { ROM_LANG_ABBR } from '@/config/languages'
 import { romLangsOf, romUrlForKey, useRomUrl } from '@/services/roms'
-import { parseDosExtras } from '@/lib/dosExtras'
+import { parseDosExtras, type DosExtraSource } from '@/lib/dosExtras'
 import { resolveRuntime, runtimesFor } from '@/emulator'
 import { p2pPlayable } from '@/emulator'
 import { requestMatch } from '@/services/matchRequest'
@@ -341,6 +341,7 @@ export function GameDetailPage() {
                   dosBackend={game.dosBackend}
                   dosSystemUrl={game.dosSystem ? romUrlForKey(game.dosSystem) : undefined}
                   dosExtras={dosExtraSources(game.dosExtras)}
+                  dosExtrasLabel={game.dosExtrasLabel}
                   dosWindowsVersion={game.dosWindowsVersion}
                   dosLaunchDelay={game.dosLaunchDelay}
                   dosboxConfig={game.dosboxConfig}
@@ -640,9 +641,9 @@ export function GameDetailPage() {
  * 没配就返回 undefined（不是空数组）：这个值每次渲染都会重算，返回新的空数组只会让
  * 下游多一份没用的新引用。清单本身很短（后台上限 12 条），不值得为它上 useMemo。
  */
-function dosExtraSources(list?: string[]) {
+function dosExtraSources(list?: string[]): DosExtraSource[] | undefined {
   const refs = parseDosExtras(list)
-  return refs.length ? refs.map((e) => ({ url: romUrlForKey(e.key), path: e.path })) : undefined
+  return refs.length ? refs.map((e) => ({ ...e, url: romUrlForKey(e.key) })) : undefined
 }
 
 function GameDescription({
