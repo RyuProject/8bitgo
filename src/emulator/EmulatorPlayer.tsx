@@ -189,6 +189,8 @@ interface Props {
   dosBackend?: DosBackend
   /** 可复用的 Windows 系统 .jsdos；游戏 ROM 仍单独加载。 */
   dosSystemUrl?: string
+  /** DOS 附加文件（资料片 / 补丁）：加载时并进游戏 ZIP，见 lib/dosExtras.ts。 */
+  dosExtras?: readonly { url: string; path: string }[]
   /** Windows 3.x 与 9x 的“运行”入口不同；旧数据留空时按 9x 处理。 */
   dosWindowsVersion?: DosWindowsVersion
   /** 客体 Windows 切入图形模式后，等待多少秒再执行 dosExecutable。 */
@@ -319,6 +321,7 @@ export function EmulatorPlayer({
   dosExecutable,
   dosBackend,
   dosSystemUrl,
+  dosExtras,
   dosWindowsVersion,
   dosLaunchDelay,
   dosboxConfig,
@@ -1032,6 +1035,8 @@ export function EmulatorPlayer({
   // 系统镜像与等待时间也只在新会话挂载时读取；后台热改配置不应中断玩家当前这一局。
   const dosSystemUrlRef = useRef(dosSystemUrl)
   dosSystemUrlRef.current = dosSystemUrl
+  const dosExtrasRef = useRef(dosExtras)
+  dosExtrasRef.current = dosExtras
   const dosWindowsVersionRef = useRef(dosWindowsVersion)
   dosWindowsVersionRef.current = dosWindowsVersion
   const dosLaunchDelayRef = useRef(dosLaunchDelay)
@@ -1204,6 +1209,7 @@ export function EmulatorPlayer({
       dosExecutable: dosExecutableRef.current,
       dosBackend: dosBackendRef.current,
       dosSystemUrl: dosSystemUrlRef.current,
+      dosExtras: dosExtrasRef.current,
       dosWindowsVersion: dosWindowsVersionRef.current,
       dosLaunchDelay: dosLaunchDelayRef.current,
       dosboxConfig: dosboxConfigRef.current,

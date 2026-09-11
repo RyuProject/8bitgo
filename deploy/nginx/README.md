@@ -77,7 +77,7 @@ nginx 的槽位从此不再是瓶颈，**Node 那侧的 `SSE_MAX_TOTAL` 就变�
 看着 `/api/diag` 的 `sse.total` 调：
 
 ```bash
-curl -s https://8bitgo.com/api/diag | jq .sse
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" https://8bitgo.com/api/diag | jq .sse
 ```
 
 `total` 长期贴着 `maxTotal` 说明闸在扛，可以在 `server/.env` 里往上调
@@ -90,5 +90,5 @@ curl -s https://8bitgo.com/api/diag | jq .sse
 nginx -T | grep -E "worker_processes|worker_rlimit_nofile|worker_connections"
 pgrep -c -f "nginx: worker"                     # worker 进程数
 ss -tnH state established "dport = :8788" | wc -l   # 现在挂着多少条到后端的连接
-curl -s https://8bitgo.com/api/diag | jq .sse
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" https://8bitgo.com/api/diag | jq .sse
 ```

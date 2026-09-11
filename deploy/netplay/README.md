@@ -336,7 +336,7 @@ cd server && npm run turn:probe
 
 ```bash
 curl -s "https://你的域名/api/netplay/ice?cb=$RANDOM" | jq '{turnSources, turnDropped, hasTurn, turnHealth}'
-curl -s "https://你的域名/api/diag" | jq .turn     # 详细原因 + 该去查哪一行
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" "https://你的域名/api/diag" | jq .turn     # 详细原因 + 该去查哪一行
 ```
 
 `turnDropped: ["self-hosted"]` 就是**切换发生过的凭据** ——

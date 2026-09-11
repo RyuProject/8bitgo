@@ -65,6 +65,11 @@ export interface MountOptions {
   dosBackend?: DosBackend
   /** Windows 客体系统的共享 .jsdos 镜像 URL；游戏文件仍由 game 单独提供。 */
   dosSystemUrl?: string
+  /**
+   * DOS 附加文件（资料片 / 补丁）：加载时下载下来并进游戏 ZIP，仓库里的 ROM 不动。
+   * url 为空表示后台配了 key 但 ROM 存储没配好 —— 那是错误，不是「跳过」。
+   */
+  dosExtras?: readonly { url: string; path: string }[]
   /** Windows 3.x 用 Program Manager 的 File > Run；9x 用开始菜单的 Run。 */
   dosWindowsVersion?: DosWindowsVersion
   /** 客体系统启动后，等待多少秒再自动运行 dosExecutable。 */

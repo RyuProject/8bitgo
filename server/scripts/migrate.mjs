@@ -705,6 +705,19 @@ const patches = [
       )
     },
   },
+  {
+    name: 'DOS 游戏的附加文件（games.dos_extras）',
+    /*
+      站长 2026-09-11：扩展包 / 补丁这类「只要和本体躺在同一个目录里」的纯数据，
+      不该为了加一个几十 KB 的文件去重打一份十几 MB 的 ROM —— 尤其上传的常常是
+      不会用命令行的运维。存一行一个对象 key，加载时由 lib/jsdosBundle 的
+      mergeExtraFiles 并进游戏 ZIP。
+    */
+    needed: async () => (await hasTable('games')) && !(await hasColumn('games', 'dos_extras')),
+    run: async () => {
+      await conn.query('ALTER TABLE `games` ADD COLUMN `dos_extras` TEXT NULL AFTER `dos_system`')
+    },
+  },
 ]
 
 const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'login_codes', 'platform_bios', 'game_plays', 'developers', 'friend_links', 'friend_link_hits', 'game_comments', 'game_ratings', 'oauth_apps']

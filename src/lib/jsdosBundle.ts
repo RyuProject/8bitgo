@@ -272,6 +272,17 @@ function assertRepackable(entries: ZipEntry[]): void {
   }
 }
 
+/**
+ * 路径的每一段是不是合法的 DOS 8.3 名。
+ * 合法 → DOSBox 的 CD 能直接进；不合法（空格、超过 8 个字符、非法字符）
+ * → 只能单独挂成另一个盘，详见 buildDosboxConf 里的注释。
+ */
+const DOS_83_SEGMENT = /^[A-Za-z0-9_^$~!#%&{}@'()-]{1,8}(\.[A-Za-z0-9_^$~!#%&{}@'()-]{1,3})?$/
+function isDos83Path(path: string): boolean {
+  const segments = path.split('/')
+  return segments.length > 0 && segments.every((segment) => DOS_83_SEGMENT.test(segment))
+}
+
 /** 生成一份能跑起来的 dosbox.conf */
 export function buildDosboxConf(exe: string | null): string {
   const dir = exe && exe.includes('/') ? exe.slice(0, exe.lastIndexOf('/')) : ''
@@ -294,15 +305,32 @@ export function buildDosboxConf(exe: string | null): string {
     'c:',
   ]
   /*
-    ⚠️ 带空格的目录名必须加引号。
-    `pickExecutable` 直接返回 ZIP 里的原始条目名，而 `Prince of Persia/PRINCE.EXE`
-    这种结构在 DOS 包里非常常见 —— 不加引号的话 DOSBox 的 CD 只吃到第一个词，
-    切目录失败，然后在 C:\ 根上跑 EXE 报 Illegal command。
-    而这一切发生在 DOSBox **正常启动之后**：ci-ready 照常到、遮罩照常撤，
+    ⚠️ 这里绝不能给 CD 加引号。
+    DOSBox 的 CD 是 shell 内建命令，`DoCommand` 把整段原文直接交给 `CMD_CHDIR`，
+    **不走** CommandLine 解析，也就不会剥引号——`cd "caeser"` 会真的去找一个
+    叫 `"caeser"`（连引号一起）的目录，然后打印 `Unable to change to: "caeser".`。
+    wdosbox.wasm 里的格式串是 `Unable to change to: %s.`，本身不含引号，
+    屏幕上看到的那对引号就是参数自己带进去的。
+
+    而带空格的目录加不加引号都进不去：空格在 DOS 文件名里本来就非法，
+    DOSBox 只会提示你改用 `PRINCE~1` 这种 8.3 别名。所以两种情况要分开处理：
+      · 名字本身就是合法 8.3 → 直接 `cd DIR`，不加引号；
+      · 带空格 / 超长 / 带非法字符 → 把那层目录单独挂成 D: 盘。
+        MOUNT 走的是 CommandLine 解析，**会**剥引号，是唯一稳的写法；
+        C: 仍然留着，EXE 目录之外的数据照样能访问。
+
+    麻烦的地方在于这一切发生在 DOSBox **正常启动之后**：ci-ready 照常到、遮罩照常撤，
     玩家对着一个 `C:\>` 提示符，没有任何错误提示。
     末尾那句 @echo 是同一个道理：真没跑起来时，黑屏至少变成一句人话。
   */
-  if (dir) lines.push(`cd "${dir.replace(/\//g, '\\')}"`)
+  if (dir) {
+    if (isDos83Path(dir)) lines.push(`cd ${dir.replace(/\//g, '\\')}`)
+    else {
+      // 引号无法转义进 MOUNT 的参数；宁可在进游戏前报一句人话，也不能挂错目录。
+      if (dir.includes('"')) throw new Error(`DOS 游戏目录名里带引号，无法挂载：${dir}`)
+      lines.push(`mount d "./${dir}"`, 'd:')
+    }
+  }
   if (file) {
     lines.push(file.includes(' ') ? `"${file}"` : file)
     lines.push(`@echo ${file} 已退出。如果刚才画面上什么都没发生，多半是找不到文件或缺少依赖。`)
@@ -334,8 +362,12 @@ export interface BundleResult {
  * 把系统 bundle 自带的 dosbox.conf 改名为同长度的备份文件，供它作为 initFs 文件层使用。
  *
  * js-dos 会按顺序解开多层 bundle，后解开的系统 conf 会覆盖播放器生成的自动启动配置。
- * 这里直接在已经下载好的 ZIP 中原地改两个文件名（本地头 + 中央目录），不碰 96MB 的
- * qcow2 压缩数据，也不再分配一份同样大的新数组。真正要执行的 conf 会作为最后一层传入。
+ * 这里直接在已经下载好的 ZIP 中原地改两个文件名（本地头 + 中央目录），不碰那份近百 MB 的
+ * qcow2 数据，也不再分配一份同样大的新数组。真正要执行的 conf 会作为最后一层传入。
+ *
+ * ⚠️ 这件事和**条目用什么压缩方式无关** —— 改的是文件名那 36 个 ASCII 字节，
+ * store 和 deflate 都一样成立。2026-09-11 把 system-win95-v1.jsdos 从 store 重打成
+ * deflate（93.1 MiB → 38.3 MiB）时验过这一条，见 scripts/repack-jsdos.mjs 的 verify()。
  */
 export function hideJsdosConfigForLayer(buf: ArrayBuffer): Uint8Array<ArrayBuffer> {
   const entries = readZipEntries(buf)
@@ -461,6 +493,96 @@ export function makeWindowsGameLayer(buf: ArrayBuffer, executable: string, drive
 
   // 客体那条路只要字节，不要 Blob（见 zipParts 的注释：Blob 那一趟会白复制一整份包）
   return { blob: null, bytes: buildZipBytes(out), executable: actual, passthrough: false, singleDir }
+}
+
+/* ---------------- 附加文件（扩展包 / 补丁 / 配置） ---------------- */
+
+export interface ExtraFile {
+  /** 在游戏目录里的路径。`SC-002.MIX` 落到根上，`CDROM/FOO.MIX` 落到子目录 */
+  path: string
+  data: Uint8Array<ArrayBuffer>
+}
+
+/**
+ * 把附加文件并进游戏的 ZIP。
+ *
+ * 站长 2026-09-11 要在后台就能给 DOS 游戏加扩展包（C&C 的 `SC-002.MIX`）：
+ * 那类东西是**纯数据**，只要和本体躺在同一个目录里就行，为它重打一份十几 MB 的 ROM
+ * 既费事又容易出错（放错层、用了 LZMA、覆盖了缓存…）。所以改成加载时现并。
+ *
+ * ⚠️ **同名就替换**，不是两条并存。ZIP 允许重名条目，而 js-dos 的解包器是逐条往虚拟盘
+ * 写的 —— 两条同名只会变成「后写的赢」，取决于顺序，那是碰运气。这里明确地删掉旧的。
+ * 顺带这也让附加文件能**覆盖**本体里的文件（打补丁正是要这个）。
+ *
+ * ⚠️ **父目录条目必须补齐**。js-dos 的 wasm 解包器不会替文件补建父目录：
+ * 轮到 `CDROM/FOO.MIX` 时前面没出现过 `CDROM/`，写文件直接 ENOENT，
+ * DOSBox 当场退出，而**这条路不发任何 error 事件** —— 玩家看到的是一块黑屏。
+ * （同一个坑在这个文件下面重打包那一段里已经栽过一次，见那段注释里的极品飞车。）
+ *
+ * ⚠️ 附加文件按 **store（不压缩）** 写进去。扩展包多半本来就是压好的数据（.MIX/.DAT），
+ * 再压一遍省不下什么，而浏览器里同步 deflate 要么没有要么慢。
+ */
+export function mergeExtraFiles(buf: ArrayBuffer, extras: readonly ExtraFile[]): ArrayBuffer {
+  if (!extras.length) return buf
+  const entries = readZipEntries(buf)
+  if (!entries) throw new Error('要加附加文件的 ROM 不是一个可读的 ZIP')
+  assertRepackable(entries)
+
+  const clean = (p: string) => p.replace(/\\/g, '/').replace(/^\.?\//, '').replace(/^\/+/, '')
+  const wanted = new Map<string, ExtraFile>()
+  for (const e of extras) {
+    const path = clean(e.path)
+    if (!path || path.endsWith('/')) continue
+    wanted.set(path.toLowerCase(), { path, data: e.data })
+  }
+  if (!wanted.size) return buf
+
+  const out: OutEntry[] = []
+  const have = new Set<string>()
+  for (const e of entries) {
+    // 同名的让位给附加文件
+    if (wanted.has(e.name.toLowerCase())) continue
+    have.add(e.name.toLowerCase())
+    out.push({
+      name: e.name,
+      method: e.method,
+      crc: e.crc,
+      compressedSize: e.compressedSize,
+      uncompressedSize: e.uncompressedSize,
+      data: rawData(buf, e),
+    })
+  }
+
+  const dir = (name: string): OutEntry => ({
+    name,
+    method: 0,
+    crc: 0,
+    compressedSize: 0,
+    uncompressedSize: 0,
+    data: new Uint8Array(0) as Uint8Array<ArrayBuffer>,
+  })
+
+  for (const { path, data } of wanted.values()) {
+    // 缺的父目录逐层补上，见上面那条 ⚠️
+    const segments = path.split('/')
+    for (let i = 1; i < segments.length; i++) {
+      const d = segments.slice(0, i).join('/') + '/'
+      if (have.has(d.toLowerCase())) continue
+      have.add(d.toLowerCase())
+      out.push(dir(d))
+    }
+    out.push({
+      name: path,
+      method: 0,
+      crc: crc32(data),
+      compressedSize: data.length,
+      uncompressedSize: data.length,
+      data,
+    })
+  }
+
+  const bytes = buildZipBytes(out)
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
 }
 
 /**

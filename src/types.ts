@@ -169,6 +169,14 @@ export interface Game {
    * 留空时保留旧行为：dosboxX 直接把 ROM 当成一份已经装好系统与游戏的完整镜像。
    */
   dosSystem?: string
+  /**
+   * DOS 附加文件（资料片 / 补丁 / 配置）清单，一行一个。
+   *
+   * 形状是 `对象key` 或 `对象key|游戏里的路径`（省略后半段 = 落到游戏根目录，
+   * 文件名取 key 的最后一段）。播放器加载时把它们并进游戏 ZIP，仓库里的 ROM 不动 ——
+   * 加一个资料片不必重打十几 MB 的包，也不用刷全站缓存。见 lib/dosExtras.ts。
+   */
+  dosExtras?: string[]
   /** 客体 Windows 的桌面代次；留空按旧数据兼容为 9x。 */
   dosWindowsVersion?: DosWindowsVersion
   /**

@@ -274,13 +274,51 @@ console.log('\n── Windows 3.x：盘根只有在包里全在一层时才准�
   )
 }
 
-console.log('\n── autoexec：带空格的路径要加引号 ──')
+console.log('\n── autoexec：CD 不许带引号，进不去的目录改挂 D: 盘 ──')
 {
-  const conf = buildDosboxConf('Prince of Persia/PRINCE.EXE')
-  ok(conf.includes('cd "Prince of Persia"'), '⭐ 带空格的目录加了引号（不加的话 CD 只吃到第一个词）')
-  ok(/^PRINCE\.EXE$/m.test(conf), '文件名本身没空格就不用加引号')
+  /*
+    回归用例。fced184（9/6）把这一行改成了 `cd "${dir}"`，而 DOSBox 的 CD 不剥引号：
+    `cd "caeser"` 去找一个连引号一起的目录名，打印 `Unable to change to: "caeser".`，
+    接着在 C:\ 根上跑启动程序报 Illegal command —— 从那天起，所有「启动程序在子目录里」
+    的 DOS 游戏都停在一个 `C:\>` 提示符上，而当时这里的断言正好在要求那个错误行为。
+  */
+  const sub = buildDosboxConf('caeser/CAESAR.BAT')
+  ok(/^cd caeser$/m.test(sub), '⭐ 合法 8.3 目录直接 cd，不加引号（DOSBox 的 CD 不剥引号）')
+  ok(!/cd "/.test(sub), '⭐ autoexec 里不许再出现 cd "…"')
+  ok(!/mount d/.test(sub), '目录名合法时不该多挂一个盘')
+  ok(sub.indexOf('cd caeser') < sub.indexOf('CAESAR.BAT'), '先切目录再跑启动程序')
+
+  // 多级目录仍然是一条 cd，斜杠换成反斜杠
+  ok(/^cd game\\bin$/m.test(buildDosboxConf('game/bin/G.EXE')), '多级合法目录拼成一条 cd，用反斜杠')
+
+  /*
+    带空格的目录：加引号进不去（上面那条），不加引号 CD 只吃到第一个词，也进不去 ——
+    空格在 DOS 文件名里本来就非法。唯一稳的写法是单独挂一个盘，MOUNT 会剥引号。
+  */
+  const spaced = buildDosboxConf('Prince of Persia/PRINCE.EXE')
+  ok(!/^cd /m.test(spaced), '⭐ 带空格的目录不能用 CD（加不加引号都进不去）')
+  ok(spaced.includes('mount d "./Prince of Persia"'), '⭐ 改成挂 D: 盘（MOUNT 走 CommandLine，会剥引号）')
+  ok(/^d:$/m.test(spaced), '挂完要切到 D:')
+  ok(spaced.includes('mount c .'), 'C: 仍然保留，EXE 目录之外的数据还要能访问')
+  ok(spaced.indexOf('mount c .') < spaced.indexOf('mount d '), 'D: 挂在 C: 之后')
+  ok(spaced.indexOf('mount d ') < spaced.indexOf('PRINCE.EXE'), '挂完盘再跑启动程序')
+  ok(/^PRINCE\.EXE$/m.test(spaced), '文件名本身没空格就不用加引号')
+
+  // 超过 8 个字符同样不是合法 8.3，CD 进不去
+  ok(buildDosboxConf('LONGDIRECTORY/G.EXE').includes('mount d "./LONGDIRECTORY"'), '目录名超过 8 个字符也要挂盘')
+  // 多级目录里只要有一段不合法，整条路径都得走挂盘
+  ok(buildDosboxConf('game/My Data/G.EXE').includes('mount d "./game/My Data"'), '多级目录里有一段不合法 → 整条挂盘')
+
+  // 目录名里带引号的话 MOUNT 的参数无法转义，宁可报错也不能挂错目录
+  let quoted = null
+  try { buildDosboxConf('we"ird/G.EXE') } catch (e) { quoted = e }
+  ok(quoted instanceof Error && /无法挂载/.test(quoted.message), '目录名带引号时抛一句指名道姓的错误')
+
+  const root = buildDosboxConf('GAME.EXE')
+  ok(!/^cd /m.test(root) && !/mount d/.test(root), '启动程序在根上时既不 cd 也不挂盘')
+
   const conf2 = buildDosboxConf('My Game.exe')
-  ok(conf2.includes('"My Game.exe"'), '文件名带空格也要加引号')
+  ok(conf2.includes('"My Game.exe"'), '文件名带空格仍然加引号（DOSBox 那边同样不剥，是另一个坑，待单独处理）')
   ok(/@echo .*已退出/.test(conf2), '末尾留一句人话，真没跑起来时黑屏至少变成一行提示')
   const none = buildDosboxConf(null)
   ok(none.includes('没有找到可执行文件'), '猜不出启动程序时的提示保持不变')

@@ -18,7 +18,9 @@ import {
   hideJsdosConfigForLayer,
   makeJsdosBundle,
   makeWindowsGameLayer,
+  mergeExtraFiles,
   WINDOWS_GAME_ROOT,
+  type ExtraFile,
 } from '@/lib/jsdosBundle'
 import {
   buildWindowsGuestConfig,
@@ -30,6 +32,7 @@ import { imageDataToBlob } from '../recorder'
 import { GP, startGamepadBridge, hasGamepadApi, type GamepadBridge } from '../gamepad'
 import { deleteSave, pullSave, pushSave } from '@/services/saves'
 import { loadGameBytes } from '../romLoader'
+import { loadSystemBytes, systemSourcesFor } from '../systemSource'
 import { windowsGuestStartupBudgetMs } from '../loadProgress'
 import { assertTypeable, scheduleWindowsLaunch, windows3xLaunchCommands, type WindowsLaunchCi } from '../windowsLaunch'
 
@@ -285,6 +288,34 @@ async function readRom(
   return { name: loaded.name, buf: loaded.data }
 }
 
+/**
+ * 取回后台配的附加文件（资料片 / 补丁），见 lib/dosExtras.ts。
+ *
+ * ⚠️ 取不到就**抛错**，不静默跳过。这份清单是后台一条条配上去的：少一条要么是 key 填错
+ * （永远不会自己好），要么这一局本来就跑不成预期的样子。静默继续的结果是玩家进游戏找不到
+ * 资料片关卡，回来说「你们这个扩展包是假的」，而日志里干干净净什么都没有。
+ * 真·网络抖动那一路本来也会先把游戏 ROM 本身打掉，不会单独卡在这里。
+ *
+ * 串行取：这些包都是几百 KB 到几 MB 的小东西，并行省不下多少，
+ * 出错时却能明确指出是哪一个 —— 报错信息里那个文件名就是后台要改的那一行。
+ */
+async function loadExtras(
+  list: readonly { url: string; path: string }[] | undefined,
+  signal: AbortSignal,
+): Promise<ExtraFile[]> {
+  if (!list?.length) return []
+  const out: ExtraFile[] = []
+  for (const { url, path } of list) {
+    if (!url) throw new Error(`附加文件「${path}」没有可用地址（ROM 存储没配好？）`)
+    const res = await fetch(url, { signal })
+    if (!res.ok) throw new Error(`附加文件「${path}」下载失败（HTTP ${res.status}）`)
+    const buf = await res.arrayBuffer()
+    if (!buf.byteLength) throw new Error(`附加文件「${path}」是空的`)
+    out.push({ path, data: new Uint8Array(buf) })
+  }
+  return out
+}
+
 export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
   // 必须先于 js-dos 建 AudioContext；它是在挂载之后的某个 effect 里建的，这里来得及
@@ -339,17 +370,34 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       options.onProgress?.({ phase: 'engine' })
       const Dos = await loadJsDos()
       options.onProgress?.({ phase: 'engine', ratio: 1 })
+      /*
+        系统镜像走**多源兜底**（见 ../systemSource）：主源是我们自己的资源域名，
+        取不到或者卡死就换 js-dos 官方源。它是 Win9x/Win3.x 游戏的硬前提 ——
+        拿不到就什么都做不了，而玩家看到的只是一个永远不动的进度条。
+      */
       const systemPromise = options.dosSystemUrl
-        ? loadGameBytes(options.dosSystemUrl, (progress) => options.onProgress?.({ ...progress, phase: 'assets' }), abort.signal)
+        ? loadSystemBytes(
+            systemSourcesFor(options.dosSystemUrl),
+            (progress) => options.onProgress?.({ ...progress, phase: 'assets' }),
+            abort.signal,
+          )
         : Promise.resolve(null)
       // 系统镜像通常远大于游戏 ZIP。以前三路并行时，小 ROM 会先把进度推到 80%，
       // 随后大半分钟都在等镜像，看起来像卡死。按界面约定分段：核心/镜像 0–40%，
       // 它们完成后才让游戏 ROM 进入 40–80%。少一点并行，换来可理解、不会骗人乱跳的进度。
       const loadedSystem = await systemPromise
+      // 走了备用源就喊一声：这说明主源出问题了，而玩家那边是完全无感的
+      if (loadedSystem?.usedFallback) {
+        console.warn(`[jsdos] 主源取不到系统镜像，已改用${loadedSystem.label}`, loadedSystem.url)
+      }
       options.onProgress?.({ phase: 'assets', ratio: 1 })
       const rom = await readRom(options.game, options.onProgress, abort.signal)
+      // 资料片 / 补丁现取现并。放在这里而不是分支里，是因为普通 DOS 和 Windows 客体两条路
+      // 都是拿 gameBuf 当「这款游戏的 ZIP」，合并只需做一次。
+      const extras = await loadExtras(options.dosExtras, abort.signal)
       options.onProgress?.({ phase: 'starting' })
       if (destroyed) return
+      const gameBuf = extras.length ? mergeExtraFiles(rom.buf, extras) : rom.buf
       // 高级配置属于 DOSBox-X；即使数据库里残留了错误字段，普通 DOSBox 也不能误吃进去。
       const dosboxConfig = options.dosBackend === 'dosboxX' ? options.dosboxConfig : undefined
 
@@ -361,7 +409,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         if (!options.dosExecutable) throw new Error('Windows 客体游戏没有配置自启动 EXE')
         const systemConfig = await readWindowsSystemConfig(loadedSystem.data)
         guest = buildWindowsGuestConfig(systemConfig, dosboxConfig)
-        const gameLayer = makeWindowsGameLayer(rom.buf, options.dosExecutable, guest.gameDrive)
+        const gameLayer = makeWindowsGameLayer(gameBuf, options.dosExecutable, guest.gameDrive)
         if (!gameLayer.executable) throw new Error('Windows 游戏层没有可启动的 EXE')
         if ((options.dosWindowsVersion ?? '9x') === '3x') {
           const slash = gameLayer.executable.lastIndexOf('/')
@@ -390,12 +438,19 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         assertTypeable(guestLaunchCommand)
         if ((options.dosWindowsVersion ?? '9x') === '3x') windows3xLaunchCommands(guestLaunchCommand)
         const gameLayerBytes = gameLayer.bytes
-        // 系统包自己的 conf 必须先改名：它作为后续文件层解开时会覆盖 Dos() 的直接配置。
-        // 改名只动 ZIP 头里的 36 个 ASCII 字节，不复制那份近百 MB 的 qcow2 数据。
-        // ⚠️ 刚下载的那份 loadGameBytes 还在后台往 IndexedDB 写（不 await，写的是同一块 ArrayBuffer），
-        // 原地改它等于把改过名的镜像存进缓存 —— 下次命中缓存就找不到 conf，客体永远起不来，
-        // 而且缓存按 URL+etag 命中，不清缓存不会自愈。走缓存来的那份没有写入在飞，不用复制
-        const systemLayer = hideJsdosConfigForLayer(loadedSystem.fromCache ? loadedSystem.data : loadedSystem.data.slice(0))
+        /*
+          系统包自己的 conf 必须先改名：它作为后续文件层解开时会覆盖 Dos() 的直接配置。
+          改名只动 ZIP 头里的 36 个 ASCII 字节，不复制那一大块 qcow2 数据。
+
+          ⚠️ 这里**不再复制一份**。原来是 `fromCache ? data : data.slice(0)`，防的是
+          「loadGameBytes 刚下载完还在后台往 IndexedDB 写同一块 ArrayBuffer，原地改名会把
+          改过名的镜像存进缓存」。09-11 换成 loadSystemBytes 之后那条路不存在了 ——
+          它不写缓存，没有任何写入在飞（顺带：系统镜像的地址没有 ?romv=，
+          romCacheKey 一直返回空串，也就是说那份缓存**从来没生效过**，
+          `fromCache` 恒为 false、那个 slice 每次都在白白复制一整个镜像）。
+          ⚠️ 哪天真给系统镜像加上缓存，这一行要跟着改回去。
+        */
+        const systemLayer = hideJsdosConfigForLayer(loadedSystem.data)
         // 最终配置再放一次到最后，未来 js-dos 即使调整直接配置与 initFs 的合并顺序也不会倒退。
         initFs = [systemLayer, gameLayerBytes, { dosboxConf: guest.dosboxConf, jsdosConf: { version: '8' } }]
       } else {
@@ -403,7 +458,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         // 后台指定了启动程序就按它生成 conf，压过 pickExecutable 的猜测。
         const bundle = await makeJsdosBundle(
           rom.name,
-          rom.buf,
+          gameBuf,
           options.dosExecutable ? buildDosboxConf(options.dosExecutable) : undefined,
           dosboxConfig,
           options.dosExecutable,

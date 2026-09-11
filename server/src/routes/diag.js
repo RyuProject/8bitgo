@@ -12,11 +12,15 @@
  *   country.final  最终用的国家码。null 就是两条路都没查出来
  *   geo.loaded     离线国家库有没有加载上（false = npm 依赖没装好）
  *
- * 只回显**这一次请求自己**的信息，不涉及别人的连接，也不吐任何密钥。
+ * 匿名这层只回显**这一次请求自己**的信息，不涉及别人的连接，也不吐任何密钥。
+ * turn / sse 两段说的是别人的连接，只给管理员：
+ *
+ *   curl -s -H "Authorization: Bearer $ADMIN_TOKEN" https://你的域名/api/diag | jq .sse
  */
 import { Router } from 'express'
 import { turnHealthSnapshot } from '../turnProbe.js'
 import { sseStats } from '../sseGuard.js'
+import { isAdminRequest } from '../auth.js'
 import {
   clientIpFrom,
   countryFromHeaders,
@@ -29,7 +33,34 @@ import {
 
 export const diagRouter = Router()
 
-diagRouter.get('/', (req, res) => {
+diagRouter.get('/', async (req, res) => {
+  /*
+    ⚠️ 这个接口分两层。
+    公开的那层只回显**这一次请求自己**的东西（IP 链、国家、设备），
+    隐私政策里已经写明（见 test-legal-pages 的 public-diag），也是排查“国旗为什么是 ❓”
+    的全部需要，保持一条 curl 就有答案。
+
+    turn / sse 不一样：它们描述的是**全站别人的连接**（哪个网段挂了多少条、
+    TURN 中继地址），一开始这个文件写的“只回显这一次请求自己的信息”在加进去之后就不成立了：
+    2026-09-11 线上实测，任何人 curl 一下就能拿到 `topIp` —— 一个真实访客的 IP。
+    所以这两段改成只给管理员；运维在服务器上照样一条 curl 就行：
+
+      curl -s -H "Authorization: Bearer $ADMIN_TOKEN" https://你的域名/api/diag | jq .sse
+
+    （maskIp 那层脱敏也留着。鉴权是门，脱敏是锁，少一样都不行。）
+  */
+  /*
+    鉴权失败（比如数据库连不上、JWT 校验炸了）一律按**不是管理员**处理，而不是往 500 走：
+    /api/diag 恰恰是后端出问题时最需要还能打开的那一页，它自己不能跟着一起挂。
+    这里也是整个 handler 里唯一一个 await —— Express 4 不会转发 async 的 reject，
+    所以只包这一处，剩下的代码保持同步。
+  */
+  let admin = false
+  try {
+    admin = await isAdminRequest(req)
+  } catch {
+    admin = false
+  }
   const headers = req.headers || {}
   const direct = req.socket?.remoteAddress || ''
   const effective = clientIpFrom(direct, headers)
@@ -89,7 +120,7 @@ diagRouter.get('/', (req, res) => {
      *
      * 空对象 {} 就是「没有任何一路 TURN 被登记」—— 先看 /api/netplay/ice 的 turnSources。
      */
-    turn: turnHealthSnapshot({ verbose: true }),
+    ...(admin ? { turn: turnHealthSnapshot({ verbose: true }) } : {}),
     /**
      * 现在挂着多少条 SSE 长连接（`/api/live/events` + `/api/netplay/events` 合计）。
      *
@@ -105,13 +136,18 @@ diagRouter.get('/', (req, res) => {
      *                  **crawler 异常高就要怀疑 UA 正则误伤真人** —— 被误判的人会被
      *                  sseFallback 静静退回轮询，页面照常能用，除了这个数字没有别的迹象。
      *
-     * ⚠️ 这个接口是公开无鉴权的，所以这里只给网段不给完整 IP（见 sseGuard 的 maskIp）。
-     * 「谁在刷」看网段就够，不需要把访客的地址摊给所有人。
+         * ⚠️ 这一段只给管理员（2026-09-11 之前是公开的，任何人 curl 一下就能拿到 `topIp`）。
+     * 就算已经鉴权，这里仍然只给网段不给完整 IP（见 sseGuard 的 maskIp）——
+     * 「谁在刷」看网段就够。鉴权是门，脱敏是锁，少一样都不行。
      *
      * ⚠️ 一条被 nginx 反代出去的 SSE 占它**两个**连接槽（客户端一个 + upstream 一个），
      * 所以 maxTotal 要留足余量，别设到接近 worker_connections。
      */
-    sse: sseStats(),
+    ...(admin ? { sse: sseStats() } : {}),
+    /** 没鉴权时明说少了什么、怎么拿 —— 否则排查的人会以为这两段挂了 */
+    ...(admin
+      ? {}
+      : { restricted: 'turn / sse 需要管理员：curl -H "Authorization: Bearer $ADMIN_TOKEN" …/api/diag' }),
     /** 有问题时直接把该改哪一行写在返回里 —— 排查的人不用再翻文档 */
     hint: usingEdgeIp
       ? 'nginx 每个 location 都要把 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` ' +

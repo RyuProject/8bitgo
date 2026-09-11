@@ -121,6 +121,48 @@ export function coreOf(v) {
  * 拒绝空段 / . / .. 与控制字符 —— 这个值最终会拼进 dosbox.conf 的 autoexec，
  * 换行混进去等于让后台能注入任意 DOSBox 命令，必须在这里挡死。
  */
+/**
+ * DOS 游戏的**附加文件**：一行一个对象 key，加载时并进游戏目录（见 lib/jsdosBundle 的 mergeExtraFiles）。
+ *
+ * 用来装扩展包 / 补丁 / 额外配置这类「只要和本体躺在同一个目录里」的纯数据，
+ * 免得为加一个几十 KB 的文件去重打一份十几 MB 的 ROM。
+ *
+ * ⚠️ 存的是**对象 key**，不是 URL —— 和 cover / rom / dos_system 一个路数，
+ * 换资源域名时不用改数据。
+ * ⚠️ 条数和长度都要卡住：这东西会进每个玩家的加载链路，
+ * 填一百行等于让每个人开局先串行下一百个文件。
+ */
+const DOS_EXTRAS_MAX = 12
+/** 落点（ZIP 里的相对路径）合法吗。空 = 用默认落点，不是错误 */
+function extraPathOk(path) {
+  if (path.length > 200) return false
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f]/.test(path)) return false
+  if (path.endsWith('/')) return false
+  return !path.split('/').some((seg) => !seg || seg === '.' || seg === '..')
+}
+export function dosExtrasOf(v) {
+  const list = Array.isArray(v) ? v : String(v ?? '').split('\n')
+  const out = []
+  for (const raw of list) {
+    const line = String(raw ?? '').trim()
+    if (!line) continue
+    // 一行的形状：`对象key` 或 `对象key|游戏里的路径`（见 src/lib/dosExtras.ts）
+    const bar = line.indexOf('|')
+    const key = (bar < 0 ? line : line.slice(0, bar)).trim().replace(/^\/+/, '')
+    const path = bar < 0 ? '' : line.slice(bar + 1).trim().replace(/\\/g, '/').replace(/^\/+/, '')
+    if (!key || key.length > 500) continue
+    // 反斜杠和 .. 一律不收：这个值最终会变成 ZIP 里的路径
+    if (key.includes('\\') || key.split('/').includes('..')) continue
+    if (path && !extraPathOk(path)) continue
+    // 同一个 key 落两个不同位置是合法的（同一份补丁丢进两个目录），所以整行去重
+    const norm = path ? `${key}|${path}` : key
+    if (!out.includes(norm)) out.push(norm)
+    if (out.length >= DOS_EXTRAS_MAX) break
+  }
+  return out.length ? out.join('\n') : null
+}
+
 export function dosExecutableOf(v) {
   if (v == null) return null
   const s = String(v).trim().replace(/\\/g, '/').replace(/^\/+/, '')
@@ -288,6 +330,11 @@ export function gameRowToApi(r, rel = {}) {
   if (r.dos_executable) g.dosExecutable = r.dos_executable
   if (r.dos_backend === 'dosboxX') g.dosBackend = 'dosboxX'
   if (r.dos_system) g.dosSystem = r.dos_system
+  // 附加文件：库里是一行一个 key 的文本，接口上给数组，前端直接 map 成 URL
+  if (r.dos_extras) {
+    const extras = String(r.dos_extras).split('\n').map((x) => x.trim()).filter(Boolean)
+    if (extras.length) g.dosExtras = extras
+  }
   if (r.dos_windows_version === '3x' || r.dos_windows_version === '9x') g.dosWindowsVersion = r.dos_windows_version
   if (r.dos_launch_delay != null) g.dosLaunchDelay = Number(r.dos_launch_delay)
   if (r.dosbox_config_override) g.dosboxConfig = r.dosbox_config_override
@@ -345,6 +392,7 @@ export function gameApiToRow(g) {
     dos_executable: dosExecutableOf(g.dosExecutable),
     dos_backend: dosBackendOf(g.dosBackend),
     dos_system: dosSystemOf(g.dosSystem),
+    dos_extras: dosExtrasOf(g.dosExtras),
     dos_windows_version: dosWindowsVersionOf(g.dosWindowsVersion),
     dos_launch_delay: dosLaunchDelayOf(g.dosLaunchDelay),
     dosbox_config_override: dosboxConfigOf(g.dosboxConfig),
@@ -380,6 +428,7 @@ const FIELD_TO_COLUMN = {
   dosExecutable: ['dos_executable', dosExecutableOf],
   dosBackend: ['dos_backend', dosBackendOf],
   dosSystem: ['dos_system', dosSystemOf],
+  dosExtras: ['dos_extras', dosExtrasOf],
   dosWindowsVersion: ['dos_windows_version', dosWindowsVersionOf],
   dosLaunchDelay: ['dos_launch_delay', dosLaunchDelayOf],
   dosboxConfig: ['dosbox_config_override', dosboxConfigOf],

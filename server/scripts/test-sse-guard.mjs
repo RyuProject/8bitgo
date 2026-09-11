@@ -225,6 +225,62 @@ resetSseCounters()
   ok(short.sseStats().total === 0, '收掉之后名额也还回来了')
 }
 
+console.log('\n── /api/diag：turn / sse 只给管理员 ──')
+{
+  /*
+    2026-09-11 线上实测：任何人 `curl https://8bitgo.com/api/diag` 都能拿到
+    `sse.topIp` —— 一个真实访客的完整 IP。脱敏（maskIp）是后来补的，但那只是把
+    完整 IP 换成网段；真正的问题是这一整段**本来就不该给匿名访客看**。
+    这里用 ADMIN_TOKEN 那条路跑真的 handler（不碰数据库：roleOfRequest 命中口令就返回了）。
+  */
+  process.env.ADMIN_TOKEN = 'test-admin-token-for-diag'
+  const { diagRouter } = await import('../src/routes/diag.js')
+
+  const callDiag = (authorization) =>
+    new Promise((resolve, reject) => {
+      const req = {
+        method: 'GET',
+        url: '/',
+        headers: authorization ? { authorization } : {},
+        socket: { remoteAddress: '203.0.113.9' },
+      }
+      const res = {
+        code: 200,
+        set: () => res,
+        status(n) {
+          res.code = n
+          return res
+        },
+        json(body) {
+          resolve({ code: res.code, body })
+          return res
+        },
+      }
+      diagRouter(req, res, (e) => (e ? reject(e) : resolve({ code: 404, body: null })))
+    })
+
+  const anon = await callDiag(null)
+  ok(anon.code === 200, '匿名照样 200 —— 排查「国旗为什么是 ❓」不需要登录')
+  ok(anon.body.ip?.effective === '203.0.113.9', '自己那份 IP 链照常回显（隐私政策里写明了的那部分）')
+  ok(anon.body.sse === undefined, '⭐ 匿名看不到 sse')
+  ok(anon.body.turn === undefined, '⭐ 匿名看不到 turn（里面有 TURN 中继地址）')
+  ok(
+    !JSON.stringify(anon.body).includes('topIp') && !JSON.stringify(anon.body).includes('topNet'),
+    '⭐ 整个匿名响应里不含任何别人的地址字段',
+  )
+  ok(/ADMIN_TOKEN/.test(anon.body.restricted || ''), '明说少了什么、怎么拿，别让人以为接口坏了')
+
+  // 反向用例：只验证「挡住了」很容易写出一个把管理员也挡住的门
+  const admin = await callDiag('Bearer test-admin-token-for-diag')
+  ok(admin.code === 200 && admin.body.sse !== undefined, '⭐ 带对 ADMIN_TOKEN 就能看到 sse')
+  ok(admin.body.turn !== undefined, '⭐ 带对 ADMIN_TOKEN 就能看到 turn')
+  ok(admin.body.restricted === undefined, '管理员那份不该再带 restricted 提示')
+  ok(typeof admin.body.sse.maxPerIp === 'number', 'sse 内容本身没被削掉')
+
+  const wrong = await callDiag('Bearer not-the-token')
+  ok(wrong.body.sse === undefined, '口令不对等同匿名')
+}
+
 console.log('\n── 源码守卫 ──')
 {
   const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')

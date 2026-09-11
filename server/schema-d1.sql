@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS games (
   dos_executable TEXT,
   dos_backend    TEXT,
   dos_system     TEXT,
+  dos_extras     TEXT    NULL,
   -- 3x = Program Manager，9x = Explorer 开始菜单；NULL 按 9x 兼容。
   dos_windows_version TEXT,
   dos_launch_delay INTEGER,

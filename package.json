@@ -90,7 +90,9 @@
     "hackpack": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/prep-arcade-hack.mjs",
     "test:ssr-hoist": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-ssr-hoist.mjs",
     "test:watch-panel": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-live-watch-panel.mjs",
-    "test:seo-meta": "node scripts/test-seo-meta.mjs"
+    "test:seo-meta": "node scripts/test-seo-meta.mjs",
+    "repack:jsdos": "node scripts/repack-jsdos.mjs",
+    "test:system-source": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-system-source.mjs"
   },
   "dependencies": {
     "@tencentcloud/chat": "3.6.7",
