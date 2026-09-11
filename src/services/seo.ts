@@ -237,7 +237,23 @@ export function useSeo(opts: SeoOptions) {
   const img = absoluteUrl(imgPath)
   /** 只有默认图的尺寸是确定的。封面各不相同，宁可不写也别写错 —— 见下面 metas 里的说明。 */
   const knownImageSize = imgPath === OG_DEFAULT_IMAGE
-  const robots = noindex ? 'noindex,nofollow' : 'index,follow,max-image-preview:large'
+  /**
+   * `noindex` 的页面为什么给 **follow** 而不是 nofollow（2026-09-11 改）。
+   *
+   * Bing Webmaster 报了一条「Important pages using meta robots tag that need review」。
+   * 站内确实有几页是 `noindex` 而且**挂在全站导航上**：`/rooms`（侧边栏「一起玩」+ 页脚
+   * 「8BitGo TV」）、`/apps`、`/submit`、`/open`。这些页该不该收录 —— **不该**：
+   * 房间列表是几分钟就变的实时内容、`/apps` 是未上线功能的占位、`/submit` 和 `/open`
+   * 是表单和控制台。所以 noindex 保留。
+   *
+   * 但 `nofollow` 是多余且有害的：它告诉爬虫**连这一页上的链接都别跟**，
+   * 而 `/rooms` 整页都是通往游戏详情页的链接、搜索结果页（`/games?q=`）同理 ——
+   * 等于把这些页面的内链权重全部掐断。正确的组合是「这一页别收录，但请顺着它往下爬」。
+   *
+   * ⚠️ 别改回 nofollow 来「省抓取预算」：抓取预算该用 robots.txt 和 sitemap 管，
+   * 用 nofollow 管的代价是内链图被打断，而那是看不见的。
+   */
+  const robots = noindex ? 'noindex,follow' : 'index,follow,max-image-preview:large'
 
   /** 本页要写入的所有 meta/link，服务端和客户端共用同一份定义 */
   const metas: Array<['name' | 'property', string, string]> = [

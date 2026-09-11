@@ -168,6 +168,24 @@ CREATE TABLE IF NOT EXISTS friend_links (
   KEY idx_friend_links_public (enabled, sort_order, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ---------- 友情链接埋点（双向：我们带出去 / 对方带进来） ----------
+-- 记的是「人」不是「次」：主键带 day + identity，每人每天每条链接每个方向只记一次。
+-- 身份是 HMAC 摘要，不存明文 IP（同 game_plays，见 src/playcount.js）。
+CREATE TABLE IF NOT EXISTS friend_link_hits (
+  link_id   BIGINT UNSIGNED NOT NULL,
+  -- 'o' = 出站（首页鸣谢位被点），'i' = 入站（从对方站点过来）
+  direction CHAR(1)  CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  day       DATE     NOT NULL,
+  -- HMAC-SHA256 的 base64url，固定 43 个字符
+  identity  CHAR(43) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  hit_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (link_id, direction, day, identity),
+  -- 按天清理旧数据用；不建的话 DELETE ... WHERE day < ? 会全表扫
+  KEY idx_flh_day (day),
+  CONSTRAINT fk_flh_link FOREIGN KEY (link_id) REFERENCES friend_links(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
 -- ---------- 游戏 × 类型 ----------
 -- genre_id 取值见 src/data/genres.ts（'action' / 'rpg' / 'puzzle' …）
 -- 两个方向的索引都要：按游戏取它的类型（主键），按类型筛游戏（idx_genre）

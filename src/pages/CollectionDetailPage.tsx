@@ -122,7 +122,14 @@ export function CollectionDetailPage() {
   const c = data?.collection
   useSeo({
     title: c ? c.title : t.collections.title,
-    description: c?.description || t.collections.subtitle,
+    /*
+      合集自己写了简介就用它；没写就按标题和数量拼一句。
+      ⚠️ 以前这里回退到 t.collections.subtitle —— 简体中文只有 11 个字，
+      而**大多数合集都没写简介**，于是几乎每个合集详情页都挂着同一句过短的描述
+      （Bing Webmaster 2026-09-11 报的「描述过短」）。拼出来的这句既够长也各不相同。
+    */
+    description:
+      c?.description || (c ? fmt(t.seo.collectionDesc, { title: c.title, n: c.gameCount }) : t.seo.collections),
     canonicalPath: `/collections/${id}`,
     // 下架的合集不该被收录
     noindex: Boolean(c?.hidden),

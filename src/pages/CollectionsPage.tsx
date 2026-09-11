@@ -48,7 +48,12 @@ export function CollectionsPage() {
 
   useSeo({
     title: t.collections.title,
-    description: t.collections.subtitle,
+    /*
+      ⚠️ 别用 t.collections.subtitle 当描述：那句是页面上那行小标题（简体中文只有 11 个字），
+      Bing Webmaster 2026-09-11 报「Meta descriptions … are too short」就是这儿。
+      SEO 描述和界面文案是两件事，各写各的。
+    */
+    description: t.seo.collections,
     canonicalPath: page > 1 ? `/collections?page=${page}` : '/collections',
   })
 

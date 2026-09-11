@@ -689,9 +689,25 @@ const patches = [
       await conn.query('CREATE TABLE IF NOT EXISTS oauth_app_testers ( app_id   VARCHAR(40) NOT NULL, user_id  VARCHAR(40) NOT NULL, added_at TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (app_id, user_id), CONSTRAINT fk_oat_app FOREIGN KEY (app_id) REFERENCES oauth_apps(id) ON DELETE CASCADE ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci')
     },
   },
+  {
+    name: '友情链接双向埋点（friend_link_hits）',
+    /*
+      站长 2026-09-11 要「监控从友情链接来了多少人」。两个方向都记：
+        direction 'o' 出站 —— 首页鸣谢位上的链接被点了（前端 sendBeacon）
+        direction 'i' 入站 —— 有人从对方站点点进来了（服务端读 Referer）
+      主键带 day + identity = 每人每天每条链接每个方向只记一次，记的是「人」不是「次」。
+      identity 是 HMAC 摘要，不存明文 IP（同 game_plays，见 src/playcount.js）。
+    */
+    needed: async () => !(await hasTable('friend_link_hits')),
+    run: async () => {
+      await conn.query(
+        'CREATE TABLE IF NOT EXISTS friend_link_hits ( link_id BIGINT UNSIGNED NOT NULL, direction CHAR(1) CHARACTER SET ascii COLLATE ascii_bin NOT NULL, day DATE NOT NULL, identity CHAR(43) CHARACTER SET ascii COLLATE ascii_bin NOT NULL, hit_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (link_id, direction, day, identity), KEY idx_flh_day (day), CONSTRAINT fk_flh_link FOREIGN KEY (link_id) REFERENCES friend_links(id) ON DELETE CASCADE ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
+      )
+    },
+  },
 ]
 
-const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'login_codes', 'platform_bios', 'game_plays', 'developers', 'friend_links', 'game_comments', 'game_ratings', 'oauth_apps']
+const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'login_codes', 'platform_bios', 'game_plays', 'developers', 'friend_links', 'friend_link_hits', 'game_comments', 'game_ratings', 'oauth_apps']
 
 try {
   await conn.query(`CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`)

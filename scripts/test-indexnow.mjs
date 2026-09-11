@@ -86,13 +86,33 @@ await check('提交使用批量 JSON，200/202 都视为搜索引擎已接收', 
 })
 
 await check('动态游戏 sitemap 使用数据库更新时间和指定语言路径', async () => {
+  /*
+    ⚠️ 这行 fixture 必须带英文正文。
+
+    2026-09-08 加语言门控（只承诺正文确实是这门语言的 URL）之后，没有 description_en /
+    description_i18n.en 的行会被正确地滤掉 —— 而当时漏改了这里的数据，于是
+    buildGameSitemap 回了一份空 urlset，这条断言从那天起一直是红的，
+    **整套 test:indexnow（27 项）就此什么都没在守**，直到 09-11 才发现。
+
+    补数据而不是关门控（别改成 { gate: false }）：这条测的是 URL 算法和 lastmod，
+    应该走和线上一模一样的那条路。
+  */
   const xml = buildGameSitemap(
-    [{ slug: 'theme-hospital', updated_at: new Date('2026-08-31T12:00:00Z') }],
+    [{ slug: 'theme-hospital', updated_at: new Date('2026-08-31T12:00:00Z'), description_en: 'A hospital sim.' }],
     'en',
     'https://8bitgo.com',
   )
   assert.match(xml, /<loc>https:\/\/8bitgo\.com\/en\/games\/theme-hospital<\/loc>/)
   assert.match(xml, /<lastmod>2026-08-31<\/lastmod>/)
+})
+
+await check('⭐ 同一行没有英文正文时就该被门控滤掉（上一条别靠关门控来过）', async () => {
+  const xml = buildGameSitemap(
+    [{ slug: 'theme-hospital', updated_at: new Date('2026-08-31T12:00:00Z') }],
+    'en',
+    'https://8bitgo.com',
+  )
+  assert.doesNotMatch(xml, /<loc>/)
 })
 
 await check('文章生成全部语言 URL，默认语言使用裸路径', async () => {
@@ -110,8 +130,15 @@ await check('文章变更同时覆盖详情页与博客列表', async () => {
 })
 
 await check('动态文章 sitemap 使用数据库更新时间和指定语言路径', async () => {
+  // ⚠️ 同上：语言门控要求这一行真有德文正文，否则整份 sitemap 是空的
   const xml = buildPostSitemap(
-    [{ slug: 'nes-history', updated_at: new Date('2026-09-02T08:00:00Z') }],
+    [
+      {
+        slug: 'nes-history',
+        updated_at: new Date('2026-09-02T08:00:00Z'),
+        content_i18n: JSON.stringify({ de: 'Die Geschichte des NES.' }),
+      },
+    ],
     'de',
     'https://8bitgo.com',
   )
@@ -120,7 +147,24 @@ await check('动态文章 sitemap 使用数据库更新时间和指定语言路�
 })
 
 await check('三个时间列都为空时不写 lastmod，而不是退回 1970-01-01', async () => {
-  const xml = buildPostSitemap([{ slug: 'draft-less', updated_at: null, created_at: null, date: null }], 'en')
+  const xml = buildPostSitemap(
+    [
+      {
+        slug: 'draft-less',
+        updated_at: null,
+        created_at: null,
+        date: null,
+        content_i18n: JSON.stringify({ en: 'No dates at all.' }),
+      },
+    ],
+    'en',
+  )
+  /*
+    ⚠️ 这条前置断言不能删。09-08 加语言门控之后这行 fixture 没有英文正文，被滤成了空
+    sitemap —— 而「不含 lastmod」「不含 1970」在空文件上**自动成立**，于是这条用例
+    从那天起一直是**空转的假绿**，什么都没在验。现在先确认真的产出了 URL 再往下断言。
+  */
+  assert.match(xml, /<loc>/, '门控把这一行滤掉了，下面两条断言会变成空转')
   assert.ok(!xml.includes('<lastmod>'), '不该出现 lastmod')
   assert.ok(!xml.includes('1970'))
 })
@@ -245,9 +289,10 @@ await check('封面 key 换算成对象存储上的绝对地址，逐段编码',
 })
 
 await check('游戏 sitemap 带图片扩展，没封面的条目跳过', async () => {
+  // ⚠️ 两行都要带英文正文，否则语言门控会把它们滤光，下面的计数全变成 0（假绿）
   const xml = buildGameSitemap([
-    { slug: 'contra', cover: 'covers/contra.jpg', updated_at: new Date('2026-09-01T00:00:00Z') },
-    { slug: 'bare', cover: null, updated_at: new Date('2026-09-01T00:00:00Z') },
+    { slug: 'contra', cover: 'covers/contra.jpg', updated_at: new Date('2026-09-01T00:00:00Z'), description_en: 'Run and gun.' },
+    { slug: 'bare', cover: null, updated_at: new Date('2026-09-01T00:00:00Z'), description_en: 'No cover.' },
   ], 'en', 'https://8bitgo.com')
   assert.match(xml, /xmlns:image="http:\/\/www\.google\.com\/schemas\/sitemap-image\/1\.1"/)
   assert.match(xml, /<image:loc>https:\/\/assets\.8bitgo\.com\/covers\/contra\.jpg<\/image:loc>/)
@@ -257,7 +302,13 @@ await check('游戏 sitemap 带图片扩展，没封面的条目跳过', async (
 })
 
 await check('一张封面都没有时不声明 image 命名空间', async () => {
-  const xml = buildGameSitemap([{ slug: 'bare', cover: null, updated_at: new Date() }], 'ja', 'https://8bitgo.com')
+  const xml = buildGameSitemap(
+    [{ slug: 'bare', cover: null, updated_at: new Date(), description_i18n: JSON.stringify({ ja: '説明' }) }],
+    'ja',
+    'https://8bitgo.com',
+  )
+  // ⚠️ 先确认真的产出了 URL：空 sitemap 上「不含 xmlns:image」自动成立，这条会变成空转
+  assert.match(xml, /<loc>/, '门控把这一行滤掉了，下面两条断言会变成空转')
   assert.ok(!xml.includes('xmlns:image'))
   assert.ok(!xml.includes('image:'))
 })
@@ -275,7 +326,13 @@ await check('不输出 Google 已停止支持的 image 子标签', async () => {
 })
 
 await check('文章 sitemap 不带图片扩展（文章配图是 emoji 图标）', async () => {
-  const xml = buildPostSitemap([{ slug: 'nes-history', updated_at: new Date() }], 'en', 'https://8bitgo.com')
+  const xml = buildPostSitemap(
+    [{ slug: 'nes-history', updated_at: new Date(), content_i18n: JSON.stringify({ en: 'A history.' }) }],
+    'en',
+    'https://8bitgo.com',
+  )
+  // ⚠️ 同上：不先确认有 URL 的话，「不含 image:」在空 sitemap 上自动成立（假绿）
+  assert.match(xml, /<loc>/, '门控把这一行滤掉了，下面那条断言会变成空转')
   assert.ok(!xml.includes('image:'))
 })
 

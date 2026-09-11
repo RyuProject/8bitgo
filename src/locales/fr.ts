@@ -1348,6 +1348,10 @@ const fr: Translation = {
     gameDesc: 'Joue gratuitement à {title} ({platform}) en ligne. Aucun téléchargement : tout démarre dans ton navigateur, avec sauvegardes instantanées et manette.',
     platformDesc: 'Émulateur {platform} en ligne : {n} jeux classiques à jouer gratuitement, sans téléchargement ni installation, directement dans ton navigateur.',
     genreDesc: '{genre} : {n} classiques rétro à jouer gratuitement dans ton navigateur, sans téléchargement ni installation.',
+    /* 合集：列表页用 collections，详情页在合集自己没写简介时回退到 collectionDesc。
+       以前两处都回退到 collections.subtitle（十来个字），Bing 报「描述过短」。 */
+    collections: 'Des listes composées par les joueurs : collections rétro classées par thème, époque ou façon de jouer, de la NES à la GBA, de l’arcade au Flash. Tout se lance dans le navigateur.',
+    collectionDesc: '« {title} » est une liste composée par un joueur, avec {n} jeux rétro. Ouvrez-en un : il se lance dans le navigateur, sans téléchargement, avec sauvegarde rapide et manette.',
   },
 
   format: {

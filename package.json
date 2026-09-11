@@ -17,6 +17,7 @@
     "sitemap": "node scripts/gen-sitemap.mjs",
     "indexnow": "npm --prefix server run indexnow",
     "baidu": "cd server && node scripts/submit-baidu.mjs",
+    "test": "node scripts/run-tests.mjs",
     "test:jsnes": "node scripts/test-jsnes-audio.mjs",
     "test:lang": "node scripts/test-lang-detect.mjs",
     "test:legal": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-legal-pages.mjs",
@@ -88,7 +89,8 @@
     "romdata": "node scripts/make-romdata.mjs",
     "hackpack": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/prep-arcade-hack.mjs",
     "test:ssr-hoist": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-ssr-hoist.mjs",
-    "test:watch-panel": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-live-watch-panel.mjs"
+    "test:watch-panel": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-live-watch-panel.mjs",
+    "test:seo-meta": "node scripts/test-seo-meta.mjs"
   },
   "dependencies": {
     "@tencentcloud/chat": "3.6.7",

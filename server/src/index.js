@@ -23,6 +23,8 @@ import { pageRouter } from './routes/page.js'
 import { platformBiosRouter } from './routes/platform-bios.js'
 import { developersRouter } from './routes/developers.js'
 import { friendLinksRouter } from './routes/friend-links.js'
+import { IN, friendLinkHostMap, hostOf, normalizeHost, recordFriendLinkHit } from './friend-link-hits.js'
+import { isCrawlerUa } from './sseGuard.js'
 import { checkSchema } from './schema-check.js'
 import { savesRouter } from './routes/saves.js'
 import { attachNetplay } from './netplay.js'
@@ -237,6 +239,38 @@ if (ssrAvailable()) {
   // 构建产物找不到就老实回 404。交给下面的 SSR 会返回一段 HTML，
   // 浏览器按 module 加载时只会报一句含糊的 MIME 错误，白屏还查不出原因。
   app.get(/^\/assets\//, (_req, res) => res.status(404).set('Cache-Control', CACHE.none).type('text/plain').send('Not Found'))
+
+  /**
+   * 入站友链统计：有人从友链对方的站点点进来了。
+   *
+   * 挂在 SSR 兜底**之前**，因为到这一步静态资源已经被 express.static 吃掉了，
+   * 剩下的才是真正的页面请求。
+   *
+   * ⚠️ **先 next() 再统计**，顺序不能反：这是首屏渲染的必经之路，
+   * 一次写库（哪怕 5ms）也不该挂在用户等首字节的那条线上。所以这里不 await 就放行，
+   * 统计在后面自己慢慢做完，失败了也只是少一条数据。
+   *
+   * ⚠️ 站内跳转要排除：站内每一次前进都会带上自己的域名当 Referer，
+   * 不排除的话，只要有一条友链填的是自己的域名（或者哪天做了多域名），数字会离谱地虚高。
+   */
+  app.get(/^(?!\/api\/).*/, (req, _res, next) => {
+    next()
+    void (async () => {
+      try {
+        const ref = req.headers?.referer || req.headers?.referrer
+        if (!ref) return
+        // 爬虫会带着上一跳的地址挨个抓，算进来的话热门友链全是蜘蛛
+        if (isCrawlerUa(req.headers?.['user-agent'])) return
+        const host = hostOf(ref)
+        if (!host || host === normalizeHost(req.hostname)) return
+        const id = (await friendLinkHostMap()).get(host)
+        if (!id) return
+        await recordFriendLinkHit(id, IN, req)
+      } catch {
+        /* 统计失败不该惊动任何人 */
+      }
+    })()
+  })
 
   // 除 /api 外的所有 GET 都交给 SSR（/admin 也走，但它本身是 noindex 的后台）
   app.get(/^(?!\/api\/).*/, renderPage)

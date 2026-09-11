@@ -16,7 +16,7 @@
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { buildGameSitemap, buildPostSitemap, hasLocalizedBody } from '../server/src/routes/sitemaps.js'
+import { buildGameSitemap, buildPostSitemap, buildSitemapIndex, hasLocalizedBody } from '../server/src/routes/sitemaps.js'
 
 let failed = 0
 const check = (name, fn) => {
@@ -123,6 +123,57 @@ check('过滤之后 loc 前缀、lastmod、图片这些老行为不变', () => {
   assert.match(xml, /<lastmod>2026-09-01<\/lastmod>/)
   assert.match(xml, /<urlset[^>]*>/)
 })
+
+/* ---------------- 索引不列空的语言 sitemap ---------------- */
+
+console.log('\n── 索引：没内容的语言别列进去 ──')
+{
+  /*
+    病例（2026-09-11）：GSC 报 games-es.xml「XML 标记缺失：父标记 urlset，标记 url」——
+    那是它对「<urlset> 里一个 <url> 都没有」的说法。es / fr 还没生成译文，语言门控
+    正确地把所有游戏都滤掉了，于是产出一份合法但空的 sitemap。
+    **空 sitemap 在 GSC 里是一条永久错误**，会一直响，还会盖住别的 sitemap 的真问题。
+    所以索引里干脆别列它。
+  */
+  const locs = (xml) => [...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1])
+
+  const all = locs(buildSitemapIndex({ siteUrl: 'https://x.test' }))
+  check('不传参数时照旧全列（默认行为不变）', () => {
+    assert.ok(all.some((u) => u.endsWith('/sitemaps/games-es.xml')))
+    assert.ok(all.some((u) => u.endsWith('/sitemaps/posts-fr.xml')))
+  })
+
+  const trimmed = locs(
+    buildSitemapIndex({ siteUrl: 'https://x.test', gamesLangs: new Set(['zh-Hans', 'en']) }),
+  )
+  check('⭐ 没内容的语言的 games sitemap 不进索引', () => {
+    assert.ok(!trimmed.some((u) => u.endsWith('/sitemaps/games-es.xml')), 'es 还在索引里')
+    assert.ok(!trimmed.some((u) => u.endsWith('/sitemaps/games-fr.xml')), 'fr 还在索引里')
+    assert.ok(trimmed.some((u) => u.endsWith('/sitemaps/games-en.xml')), 'en 不该被摘掉')
+    assert.ok(trimmed.some((u) => u.endsWith('/sitemaps/games-zh-Hans.xml')), '基准语言不该被摘掉')
+  })
+  check('摘 games 不影响 posts 和 taxonomy', () => {
+    assert.ok(trimmed.some((u) => u.endsWith('/sitemaps/posts-es.xml')))
+    assert.ok(trimmed.some((u) => u.endsWith('/sitemaps/taxonomy-es.xml')))
+    assert.ok(trimmed.some((u) => u.endsWith('/sitemap-static.xml')))
+  })
+
+  check('⭐ 传 null 一律全列 —— 这是拿不准时唯一安全的方向', () => {
+    const n = locs(buildSitemapIndex({ siteUrl: 'https://x.test', gamesLangs: null, postsLangs: null }))
+    assert.deepEqual(n, all, '传 null 应该和不传完全一样')
+  })
+
+  // 源码守卫：算不出来的时候必须回 null，不能回空集合
+  const src = readFileSync(new URL('../server/src/routes/sitemaps.js', import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^[ \t]*\/\/.*$/gm, '')
+  check('⭐ 译文列不存在（gate=false）时回 null，不是空集合', () => {
+    assert.match(src, /if \(!gate\) return null/)
+  })
+  check('⭐ 查询抛了也回 null（全列），不能让索引塌成空的', () => {
+    assert.match(src, /gamesLangs: null, postsLangs: null/)
+  })
+}
 
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exit(failed ? 1 : 0)

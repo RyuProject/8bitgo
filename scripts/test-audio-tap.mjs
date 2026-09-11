@@ -18,11 +18,32 @@ import { fileURLToPath } from 'node:url'
 const { installAudioTap } = await import(fileURLToPath(new URL('../src/emulator/audioTap.ts', import.meta.url)))
 
 let n = 0
+let failedChecks = 0
+/**
+ * ⚠️ 断言失败**不再抛异常**，而是记一笔继续往下跑。
+ *
+ * 原来是 `assert.ok(cond, msg)` —— 第一条炸了整个进程就退出，后面的用例一条都不执行。
+ * 2026-09-11 的教训：test:indexnow 从 09-08 起就红着，28 条里只跑到第 6 条，
+ * 后面 22 条三天没被执行过，而没人知道，因为根本没人跑它（现在有 `npm test` 了）。
+ * 一条小毛病不该把整套的价值清零。
+ *
+ * 退出码由下面那个 exit 钩子负责 —— 有失败就是非零，绝不会变成静默通过。
+ */
 const ok = (cond, msg) => {
-  n++
-  assert.ok(cond, msg)
-  console.log('✅ ' + msg)
+  if (cond) {
+    n++
+    console.log('✅ ' + msg)
+    return
+  }
+  failedChecks++
+  console.log('❌ ' + msg)
 }
+process.on('exit', () => {
+  if (failedChecks) {
+    console.log(`\n❌ ${failedChecks} 项失败（上面带 ❌ 的那几条）`)
+    process.exitCode = 1
+  }
+})
 
 /* ---------------- 假的 Web Audio ---------------- */
 

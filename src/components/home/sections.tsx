@@ -18,7 +18,7 @@ import { useLang } from '@/services/lang'
 import { useT, fmt } from '@/services/i18n'
 import { genreLabel, gameTitle } from '@/services/i18nData'
 import { romUrlForKey } from '@/services/roms'
-import type { FriendLink } from '@/services/friendLinks'
+import { reportFriendLinkClick, type FriendLink } from '@/services/friendLinks'
 import type { Facets } from '@/services/pageData'
 import type { Translation } from '@/locales'
 import type { Collection, Game, Genre, GenreId, Platform } from '@/types'
@@ -413,7 +413,22 @@ function FriendLinkButton({ link }: { link: FriendLink }) {
     <a
       href={link.url}
       target="_blank"
-      rel="noreferrer"
+      /*
+        ⚠️ 是 `noopener` 不是 `noreferrer`（2026-09-11 改）。
+
+        两者都防 `window.opener` 劫持，但 `noreferrer` 还会**把 Referer 一起抹掉** ——
+        于是访客从这儿点过去时，对方的统计里显示成「直接访问」，
+        **他永远看不到 8bitgo 给他带了多少人**。友链是互惠的，互换时你也拿不出凭据。
+        换成 noopener 之后安全性一点不减，对方能看到来源域名
+        （浏览器默认 strict-origin-when-cross-origin，只发域名不发具体路径）。
+      */
+      rel="noopener"
+      /*
+        出站点击埋点。走 sendBeacon，不挡跳转 —— 细节见 services/friendLinks 的 reportFriendLinkClick。
+        onClick 而不是 onAuxClick + onClick 两个都挂：中键新标签页打开确实统计不到，
+        但为了那一小部分人给每个链接挂两个监听器不划算。
+      */
+      onClick={() => reportFriendLinkClick(link.id)}
       aria-label={link.name}
       title={link.name}
       className={cx(

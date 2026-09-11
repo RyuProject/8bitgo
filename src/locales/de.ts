@@ -1343,6 +1343,10 @@ const de: Translation = {
     gameDesc: '{title} ({platform}) kostenlos online spielen. Kein Download nötig – einfach im Browser starten, mit Speicherpunkten und Gamepad-Support.',
     platformDesc: '{platform}-Emulator online: {n} Klassiker kostenlos spielen – ohne Download, ohne Installation, direkt im Browser.',
     genreDesc: '{genre}-Spiele: {n} Retro-Klassiker, die du kostenlos und direkt im Browser spielen kannst – ohne Download.',
+    /* 合集：列表页用 collections，详情页在合集自己没写简介时回退到 collectionDesc。
+       以前两处都回退到 collections.subtitle（十来个字），Bing 报「描述过短」。 */
+    collections: 'Von Spielern zusammengestellte Listen: Retro-Sammlungen nach Thema, Ära oder Spielgefühl – von NES und GBA bis Arcade und Flash. Jeder Titel startet direkt im Browser.',
+    collectionDesc: '„{title}“ ist eine von Spielern zusammengestellte Liste mit {n} Retro-Spielen. Jeder Titel startet direkt im Browser – ohne Download, mit Quicksave und Gamepad-Support.',
   },
 
   format: {

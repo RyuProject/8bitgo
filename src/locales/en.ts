@@ -1342,6 +1342,10 @@ const en: Translation = {
     gameDesc: 'Play {title} ({platform}) free online. No download needed — start straight in your browser, with save states and gamepad support.',
     platformDesc: '{platform} emulator online: {n} classic games free to play, no download and no install — everything runs right in your browser.',
     genreDesc: 'Free {genre} games: {n} retro classics you can play right in your browser, no download and no install required.',
+    /* 合集：列表页用 collections，详情页在合集自己没写简介时回退到 collectionDesc。
+       以前两处都回退到 collections.subtitle（十来个字），Bing 报「描述过短」。 */
+    collections: 'Game lists put together by players: retro collections grouped by theme, era or the way they play, from NES and GBA to arcade and Flash. Every title runs right in your browser.',
+    collectionDesc: '"{title}" is a player-made list of {n} retro games. Open any of them and it runs right in your browser — no download, with save states and gamepad support.',
   },
 
   format: {

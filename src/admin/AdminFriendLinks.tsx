@@ -5,6 +5,7 @@ import { apiEnabled } from '@/services/api'
 import {
   deleteFriendLink,
   fetchFriendLinks,
+  type FriendLinkAdmin,
   saveFriendLink,
   type FriendLink,
   type FriendLinkInput,
@@ -16,20 +17,27 @@ import { Field, btnClass, inputClass } from './ui'
 const EMPTY: FriendLinkInput = { name: '', url: '', image: '', sortOrder: 0, enabled: true }
 
 export function AdminFriendLinks() {
-  const [links, setLinks] = useState<FriendLink[]>([])
+  const [links, setLinks] = useState<FriendLinkAdmin[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [editing, setEditing] = useState<FriendLink | null | 'new'>(null)
   const [toast, setToast] = useState('')
+
+  /** 列表上那两个数字统计的是最近多少天。0 = 后端还没给（旧版后端），那就不画这两列 */
+  const [statsDays, setStatsDays] = useState(0)
 
   const reload = useCallback(() => {
     if (!apiEnabled()) return
     setLoading(true)
     setError('')
     fetchFriendLinks()
-      .then(setLinks)
+      .then((r) => {
+        setLinks(r.links)
+        setStatsDays(r.statsDays)
+      })
       .catch((e: unknown) => {
         setLinks([])
+        setStatsDays(0)
         setError(e instanceof Error ? e.message : '读取失败')
       })
       .finally(() => setLoading(false))
@@ -89,6 +97,7 @@ export function AdminFriendLinks() {
                 排序 {link.sortOrder} · {link.url}
               </p>
             </div>
+            {statsDays > 0 && <HitStats hits={link.hits} days={statsDays} />}
             <button type="button" className={btnClass.secondary} onClick={() => setEditing(link)}>编辑</button>
             <button type="button" className={btnClass.danger} onClick={() => void remove(link)}>删除</button>
           </div>
@@ -111,6 +120,24 @@ export function AdminFriendLinks() {
       {toast && (
         <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-lg bg-fg px-4 py-2 text-sm text-bg shadow-lg">{toast}</div>
       )}
+    </div>
+  )
+}
+
+/**
+ * 两个方向的人数。**必须把「最近 N 天」写出来**：光写「带出 12」的话，
+ * 12 是今天的、这个月的、还是开站以来的，看的人无从判断 —— 那种数字比没有更糟。
+ *
+ * 「带出 / 带入」而不是「点击 / 访问」：记的是**人**不是次
+ * （每人每天每条链接每个方向只算一次，见 server/src/friend-link-hits.js），
+ * 用「点击」这个词会让人以为是原始点击量。
+ */
+function HitStats({ hits, days }: { hits: FriendLinkAdmin['hits']; days: number }) {
+  return (
+    <div className="shrink-0 text-right text-xs leading-tight" title={`最近 ${days} 天，按人去重（同一个人一天只算一次）`}>
+      <p className="text-muted">带出 <b className="text-fg">{hits.out}</b></p>
+      <p className="text-muted">带入 <b className="text-fg">{hits.in}</b></p>
+      <p className="mt-0.5 text-[10px] text-dim">近 {days} 天 · 按人</p>
     </div>
   )
 }

@@ -357,7 +357,22 @@ export function buildSitemapIndex({
   gamesLastmod = '',
   postsLastmod = '',
   taxonomyLastmod = '',
+  /**
+   * 哪几门语言的游戏 / 文章 sitemap 里**真的有 URL**。传 null = 全都有。
+   *
+   * 为什么要有这个：语言门控只承诺「正文确实是这门语言」的 URL，某门语言译文还没生成时
+   * 那一份就是个合法但空的 `<urlset></urlset>`。而**空 sitemap 在 GSC 里是一条永久错误**
+   * （报的是「XML 标记缺失：父标记 urlset，标记 url」—— 就是「里面一个 url 都没有」），
+   * 2026-09-11 es / fr 两份正是这样。挂着的错误会一直响，还会盖住别的 sitemap 的真问题。
+   *
+   * ⚠️ **拿不准的时候一律当「有」。** 少列一门语言 = 那门语言整个从搜索引擎视野里消失，
+   * 比多列一个空文件严重得多。所以 null、异常、译文列不存在，全都走「全列」。
+   */
+  gamesLangs = null,
+  postsLangs = null,
 } = {}) {
+  const hasGames = (code) => !gamesLangs || gamesLangs.has(code)
+  const hasPosts = (code) => !postsLangs || postsLangs.has(code)
   /**
    * 每一类的 lastmod 都单独算，不共用一个时间戳。
    *
@@ -367,11 +382,11 @@ export function buildSitemapIndex({
    */
   const files = [
     { loc: `${siteUrl}/sitemap-static.xml`, lastmod: staticLastmod },
-    ...SITE_LANGUAGES.map(({ code }) => ({
+    ...SITE_LANGUAGES.filter(({ code }) => hasGames(code)).map(({ code }) => ({
       loc: `${siteUrl}/sitemaps/games-${code}.xml`,
       lastmod: gamesLastmod,
     })),
-    ...SITE_LANGUAGES.map(({ code }) => ({
+    ...SITE_LANGUAGES.filter(({ code }) => hasPosts(code)).map(({ code }) => ({
       loc: `${siteUrl}/sitemaps/posts-${code}.xml`,
       lastmod: postsLastmod,
     })),
@@ -387,11 +402,55 @@ export function buildSitemapIndex({
   return `${XML_HEADER}\n<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${entries.join('\n')}\n</sitemapindex>\n`
 }
 
+/**
+ * 算出哪几门语言的 games / posts sitemap 里真的有 URL，好让索引不去列空文件。
+ *
+ * ⚠️ **失败方向必须是「全列」。** 少列一门语言 = 那门语言整个从搜索引擎视野里消失；
+ * 多列一个空文件只是 GSC 里一条警告。所以：译文列不存在（gate=false）→ null，
+ * 查询抛了 → null，两者调用方都当成「全都有」。
+ *
+ * 查的是**只带 i18n 列的轻量版**，不是 sitemap 那两句完整查询 —— 这里只需要判断有没有，
+ * 不需要 slug / 封面 / 时间。`/sitemap.xml` 本身带 CACHE.meta（边缘缓存 1 小时），
+ * 多这两句不会打到库上。
+ */
+async function langsWithContent() {
+  const pick = (rows, gate, cols) => {
+    if (!gate) return null
+    const set = new Set()
+    for (const { code } of SITE_LANGUAGES) {
+      if (rows.some((row) => hasLocalizedBody(row, code, cols))) set.add(code)
+    }
+    return set
+  }
+  try {
+    const [g, p] = await Promise.all([
+      sitemapRows(
+        'index-games',
+        'SELECT description_en, description_i18n FROM games WHERE hidden = 0',
+        'SELECT slug FROM games WHERE hidden = 0',
+      ),
+      sitemapRows(
+        'index-posts',
+        'SELECT content_i18n FROM posts WHERE published = 1',
+        'SELECT slug FROM posts WHERE published = 1',
+      ),
+    ])
+    return {
+      gamesLangs: pick(g.rows, g.gate, { i18n: 'description_i18n', en: 'description_en' }),
+      postsLangs: pick(p.rows, p.gate, { i18n: 'content_i18n' }),
+    }
+  } catch (error) {
+    console.warn('[sitemap] 算不出各语言有没有内容，索引照旧全列：', error?.message)
+    return { gamesLangs: null, postsLangs: null }
+  }
+}
+
 export async function sitemapIndex(_req, res, next) {
   try {
-    const [gameRows, postRows] = await Promise.all([
+    const [gameRows, postRows, langs] = await Promise.all([
       query('SELECT MAX(COALESCE(updated_at, created_at, added_at)) AS latest FROM games WHERE hidden = 0'),
       query('SELECT MAX(COALESCE(updated_at, created_at)) AS latest FROM posts WHERE published = 1'),
+      langsWithContent(),
     ])
     // 一篇文章都没发布 / 一款游戏都没上架时 MAX() 是 NULL。这时不写 lastmod
     //（协议里它是可选的），而不是退回今天 —— 退回今天等于每天都宣告「有更新」，
@@ -409,6 +468,9 @@ export async function sitemapIndex(_req, res, next) {
         gamesLastmod,
         postsLastmod,
         taxonomyLastmod,
+        // 没译文的语言那一份是空的，空 sitemap 在 GSC 里是永久错误 —— 干脆别列
+        gamesLangs: langs.gamesLangs,
+        postsLangs: langs.postsLangs,
       }),
     )
   } catch (error) {

@@ -1342,6 +1342,10 @@ const es: Translation = {
     gameDesc: 'Juega gratis a {title} ({platform}) online. Sin descargas: empieza directamente en tu navegador, con guardado rápido y soporte para controles.',
     platformDesc: 'Emulador de {platform} online: {n} juegos clásicos gratis, sin descargas ni instalaciones. Todo funciona en tu navegador.',
     genreDesc: 'Juegos de {genre} gratis: {n} clásicos retro que puedes jugar directamente en tu navegador, sin descargar nada.',
+    /* 合集：列表页用 collections，详情页在合集自己没写简介时回退到 collectionDesc。
+       以前两处都回退到 collections.subtitle（十来个字），Bing 报「描述过短」。 */
+    collections: 'Listas creadas por jugadores: colecciones retro agrupadas por tema, época o forma de jugar, de NES y GBA hasta recreativas y Flash. Todo se juega en tu navegador.',
+    collectionDesc: '«{title}» es una lista creada por jugadores con {n} juegos retro. Abre cualquiera y se ejecuta en tu navegador: sin descargas, con guardado rápido y soporte de mando.',
   },
 
   format: {

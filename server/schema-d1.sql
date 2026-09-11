@@ -154,6 +154,19 @@ CREATE TABLE IF NOT EXISTS friend_links (
 );
 CREATE INDEX IF NOT EXISTS idx_friend_links_public ON friend_links (enabled, sort_order, id);
 
+-- ---------- 友情链接埋点（双向：我们带出去 / 对方带进来） ----------
+CREATE TABLE IF NOT EXISTS friend_link_hits (
+  link_id   INTEGER NOT NULL,
+  direction TEXT    NOT NULL,
+  day       TEXT    NOT NULL,
+  identity  TEXT    NOT NULL,
+  hit_at    TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (link_id, direction, day, identity),
+  FOREIGN KEY (link_id) REFERENCES friend_links(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_flh_day ON friend_link_hits (day);
+
+
 -- ---------- 游戏 × 类型 ----------
 CREATE TABLE IF NOT EXISTS game_genres (
   game_id  INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
