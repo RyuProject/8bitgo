@@ -57,6 +57,14 @@ interface Props {
    * 必须从这一块里找到 iframe、在它的文档上也挂一份监听。见 hotkeyBridge.ts。
    */
   stageRef?: RefObject<HTMLElement | null>
+  /**
+   * 原地重开这一局（不刷新页面）。**DOS 的「读档」就是它** ——
+   * js-dos 只在开机时调一次 fsChanges.pull，存档必须在新的一局开机时才装得回去。
+   *
+   * 播放器在联机 / 云游戏 / 看直播这三种会话里**不传**（那三种的状态不在本机，
+   * 重开等于把房间拆了）。不传时读档按钮退回整页刷新 —— 效果一样，只是慢。
+   */
+  onRestart?: () => void
   className?: string
 }
 
@@ -79,7 +87,7 @@ const BTN = 'inline-flex h-7 min-w-7 items-center justify-center gap-1 rounded-m
 const BTN_ON = 'border-brand bg-brand-soft text-brand-hover'
 
 export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSaveHint,
-  screenLayout, stageRef, className }: Props) {
+  screenLayout, stageRef, onRestart, className }: Props) {
   const t = useT()
   const lang = useLang()
   const tt = t.player.tools
@@ -119,7 +127,7 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
   const [paused, setPaused] = useState(false)
   const [volume, setVolume] = useState(handle?.volume ?? 1)
   const [muted, setMuted] = useState(false)
-  const [panel, setPanel] = useState<'volume' | 'gamepad' | 'fsSave' | null>(null)
+  const [panel, setPanel] = useState<'volume' | 'gamepad' | 'fsSave' | 'fsLoad' | null>(null)
   /**
    * handle 走 ref 给快捷键那个 effect 用。
    *
@@ -138,6 +146,12 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
   /** 刚导入过一份存档，面板上要把「重开这一局」那个按钮亮出来 */
   const [fsImported, setFsImported] = useState(false)
   const fsFileRef = useRef<HTMLInputElement | null>(null)
+  /**
+   * 读档面板自己的那个 <input type=file>。
+   * ⚠️ 不能和上面那个共用：两个面板互斥渲染，panel === 'fsLoad' 时 💾 面板整块不在 DOM 里，
+   * fsFileRef.current 是 null —— 共用的结果是点「从文件读档」什么都不会发生。
+   */
+  const fsLoadFileRef = useRef<HTMLInputElement | null>(null)
   /**
    * 移动端：次要按钮（音量 / 手柄 / 另存 / 截屏 / 录像）收进「⋯」里。
    * 桌面端这个 state 不起作用 —— 那一组在 sm: 断点上无条件常驻（见 return 里的 secondaryCls）。
@@ -393,13 +407,31 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
   }
 
   /**
+   * 读档 —— **重开这一局**。
+   *
+   * DOS 没有「把一份快照灌回正在跑的机器」这种操作：js-dos 存的是盘上被改过的文件，
+   * 而它只在**开机时**调一次 fsChanges.pull。所以读档只能是「重来一局，让引擎开机时
+   * 把存档装回盘上」，然后玩家在游戏自己的读档菜单里接着玩。
+   *
+   * 播放器给了 onRestart 就原地重开（拆掉引擎、换一个新的 session 号再挂一次，
+   * 页面不刷新、云端 ROM 也走缓存）；没给（联机 / 云游戏 / 看直播）就退回整页刷新，
+   * 这也是这颗按钮从前唯一的行为。
+   */
+  const restartNow = () => {
+    setPanel(null)
+    setFsImported(false)
+    if (onRestart) onRestart()
+    else window.location.reload()
+  }
+
+  /**
    * 从文件导入。
    *
    * ⚠️ js-dos 只在**开机时**调一次 fsChanges.pull，所以写完不会立刻生效。
    * 这里必须把「要重开这一局」说出来，否则玩家会以为已经读上了、接着玩下去，
    * 然后在下一次存档时把刚导入的那份覆盖掉。
    */
-  const doFsImport = async (file: File | null | undefined) => {
+  const doFsImport = async (file: File | null | undefined, andRestart = false) => {
     if (!file || fsSaving) return
     setFsSaving(true)
     try {
@@ -407,6 +439,19 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
       const r = await handle.fsImport?.(bytes)
       if (!r?.ok) {
         say(fmt(tt.fsImportFailed, { msg: r?.error ?? '' }))
+        return
+      }
+      /*
+        「从文件读档」那一路是一次完整的读档动作，导完就该直接重开 ——
+        中间再拦一步「现在重开吗？」是多问的：玩家点的是读档，不是「把文件放进存储里」。
+        💾 面板里那颗「从文件导入」仍然只导不重开（那儿的语境是管理存档文件）。
+
+        ⚠️ 这一支**不报成功**：重开会把整条工具栏卸掉（status 变成 loading，
+        EmulatorTools 就不渲染了），toast 连一帧都显示不出来。真正的反馈是画面重开本身；
+        失败那条路不重开，所以那句提示照常看得见。
+      */
+      if (andRestart) {
+        restartNow()
         return
       }
       setFsImported(true)
@@ -668,8 +713,7 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
         </button>
       )}
 
-      {/* DOS：只有「保存进度」一个动作。它没有「某一帧」的概念，也没有可下载的文件，
-          下次进游戏时引擎会自己把改动装回去，所以不需要读档按钮。
+      {/* DOS：存的是盘上被改过的文件，不是某一帧的快照。
           点它先开说明面板而不是直接存 —— 见下面 panel === 'fsSave' 那段 */}
       {caps.has('fsSave') && (
         <button
@@ -683,6 +727,36 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
           aria-expanded={panel === 'fsSave'}
         >
           💾
+        </button>
+      )}
+
+      {/*
+        DOS 读档。
+
+        这颗按钮以前是没有的，理由写在原来那条注释里：「下次进游戏时引擎会自己把改动装回去，
+        所以不需要读档按钮」。这句话只对**跨会话**成立 —— 玩家真正需要读档的时刻恰恰在会话内：
+        刚被怪打死、想回到五分钟前那个存档点。那时候他唯一的出路是自己去刷新整个页面，
+        而界面上没有任何地方说过这件事。
+
+        动作本身就是「重开这一局」，所以必须先把「会丢掉没存的进度」摆在面板里说清楚，
+        不能点一下就重开 —— 和 💾 那边先开说明面板是同一个道理。
+      */}
+      {caps.has('fsFile') && (
+        <button
+          type="button"
+          className={cx(BTN, panel === 'fsLoad' && BTN_ON)}
+          onClick={() => setPanel(panel === 'fsLoad' ? null : 'fsLoad')}
+          title={
+            archived
+              ? `${tt.fsLoad} · ${fmt(tt.fsLoadHave, {
+                  where: whereLabel(archived.where, archived.pending),
+                  when: timeAgo(archived.updatedAt, lang),
+                })}`
+              : tt.fsLoad
+          }
+          aria-expanded={panel === 'fsLoad'}
+        >
+          📂
         </button>
       )}
 
@@ -1066,7 +1140,7 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
                   <button
                     type="button"
                     className={cx(BTN, 'px-2 border-brand text-brand-hover')}
-                    onClick={() => window.location.reload()}
+                    onClick={restartNow}
                   >
                     ↻ {tt.fsImportReload}
                   </button>
@@ -1084,6 +1158,74 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
               />
             </div>
           )}
+        </div>
+      )}
+
+      {/*
+        DOS 读档面板。
+
+        读档在 DOS 这边**就是重开这一局** —— js-dos 只在开机时调一次 fsChanges.pull，
+        没有「把存档灌回正在跑的机器」这种操作（见 restartNow 的注释）。
+        所以这个面板要说三件事，缺一件玩家就会踩坑：
+          · 它会重开（否则以为是即时读档，重开时的黑屏会被当成崩溃）
+          · 现在有没有存档、存在哪儿、什么时候存的（决定要不要点下去）
+          · 没存过的进度会丢（这是唯一不可逆的部分）
+      */}
+      {panel === 'fsLoad' && (
+        <div className="absolute bottom-full left-0 z-20 mb-2 w-72 max-w-[calc(100vw-2rem)] rounded-lg border border-line bg-surface px-3 py-2 shadow-lg">
+          <p className="font-semibold text-fg">{tt.fsLoad}</p>
+          <p className="mt-1 text-muted">{tt.fsLoadWhy}</p>
+          {/*
+            有存档就把落点和时间摆出来（和 💾 那颗按钮 title 上的是同一份信息）；
+            没有就直说，并且标出来 —— 这时候点「读档并重开」只会白白丢掉手上的进度。
+
+            ⚠️ 查不到**不等于**真没有（saveInfo 在云端请求失败、本地又没有副本时同样返回 null），
+            所以按钮不禁用，只把话说清楚：真正说了算的是开机时那次 pull。
+          */}
+          <p className={archived ? 'mt-2 text-muted' : 'mt-2 font-semibold text-live'}>
+            {archived
+              ? fmt(tt.fsLoadHave, {
+                  where: whereLabel(archived.where, archived.pending),
+                  when: timeAgo(archived.updatedAt, lang),
+                })
+              : tt.fsLoadNone}
+          </p>
+          <p className="mt-2 rounded-md bg-brand-soft px-2 py-1 text-brand-hover">⚠️ {tt.fsLoadWarn}</p>
+          <div className="mt-2 flex flex-wrap gap-2 border-t border-line pt-2">
+            <button
+              type="button"
+              disabled={fsSaving}
+              className={cx(BTN, 'px-2 border-brand text-brand-hover', fsSaving && 'opacity-60')}
+              onClick={restartNow}
+            >
+              ↻ {tt.fsLoadConfirm}
+            </button>
+            {/*
+              从文件读档 = 导入 + 重开，一次做完（doFsImport 的第二个参数）。
+              💾 面板里那颗「从文件导入」只导不重开，那儿的语境是管理存档文件。
+            */}
+            <button
+              type="button"
+              disabled={fsSaving}
+              className={cx(BTN, 'px-2', fsSaving && 'opacity-60')}
+              onClick={() => fsLoadFileRef.current?.click()}
+            >
+              ⬆ {fsSaving ? '…' : tt.fsLoadFile}
+            </button>
+            <button type="button" className={cx(BTN, 'px-2')} onClick={() => setPanel(null)}>
+              {tt.saveLoadClose}
+            </button>
+          </div>
+          <input
+            ref={fsLoadFileRef}
+            type="file"
+            className="hidden"
+            onChange={(e) => {
+              void doFsImport(e.target.files?.[0], true)
+              // 同一个文件连选两次也要能触发 change
+              e.target.value = ''
+            }}
+          />
         </div>
       )}
     </div>

@@ -973,6 +973,15 @@ export const zhHans = {
       fsImportOk: '已导入{where}。重开这一局才会装进去 —— 现在重开吗？',
       fsImportReload: '重开这一局',
       fsImportFailed: '导入失败：{msg}',
+      /** 读档面板：DOS 的「读档」= 重开这一局（js-dos 只在开机时 pull 一次存档）
+          ——不说清楚，玩家会以为按钮坏了，或者以为不用重开就已经读上了 */
+      fsLoad: '读档',
+      fsLoadWhy: 'DOS 读档 = 重开这一局：引擎开机时会把存下来的磁盘改动自动装回去，之后在游戏里用它自己的读档菜单接着玩。',
+      fsLoadWarn: '重开会回到最后一次「保存进度」那一刻 —— 这一局在那之后的进度会丢。',
+      fsLoadHave: '现有存档：{where} · {when}',
+      fsLoadNone: '还没有存档。先在游戏里存盘，再回来点 💾 保存进度。',
+      fsLoadConfirm: '读档并重开',
+      fsLoadFile: '从文件读档',
       loadFrom: '已读取{where}的存档',
       loadTitle: '读档 · {where} · {when}',
       exportFile: '另存为文件',

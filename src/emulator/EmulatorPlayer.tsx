@@ -25,6 +25,7 @@ import type { LiveSession, LiveViewState } from './adapters/liveview'
 import type { NetplaySession } from './adapters/emulatorjs'
 import type { CloudSession, CloudState } from './adapters/cloudgame'
 import { p2pPlayable, cloudPlayable } from './paths'
+import { canRestartInPlace } from './sessionRestart'
 import { cloudGameMeta, emulatorJsMeta, liveViewMeta } from './runtimeMeta'
 /**
  * 挂载实现。**只有这里引它** —— runtimes.ts 是唯一静态引入九个适配器的地方，
@@ -1395,8 +1396,11 @@ export function EmulatorPlayer({
 
         // 只重试普通的本机加载。联机、云游戏和直播都带外部会话状态，擅自重建会造成重复房间；
         // 游戏已经运行后再出错也不能重启，否则玩家这一局的进度会直接丢掉。
+        //
+        // ⚠️ 「哪些会话不能重挂」和读档那边是**同一个**判断，所以共用 canRestartInPlace ——
+        // 以前这里手写了一遍，两份分叉的表现只会在联机时出现，而且不报错。
         const attempt = session.retryAttempt ?? 0
-        if (!ready && !session.netplay && !session.cloud && !session.live && attempt < AUTO_RETRY_LIMIT) {
+        if (!ready && canRestartInPlace(session) && attempt < AUTO_RETRY_LIMIT) {
           setError(null)
           begin(session.game, session.platform, session.runtime, { retryAttempt: attempt + 1 })
           return
@@ -2089,6 +2093,28 @@ export function EmulatorPlayer({
   }
   /** 工具栏用的那一份（存档 / 读档 / 归档都按它走） */
   const saveSlug = saveSlugOf(session)
+
+  /**
+   * 原地重开这一局：拆掉当前引擎，用同样的 ROM / 平台 / 运行时再挂一次。
+   *
+   * **这是 DOS「读档」的实现**。js-dos 存的是盘上被改过的文件，而它只在**开机时**
+   * 调一次 fsChanges.pull —— 也就是说存档只能在「新的一局」开机那一刻装回盘上。
+   * 工具栏从前唯一的出路是 window.location.reload()：整页重来，React、引擎壳、
+   * 系统镜像、ROM 全部重新走一遍，Windows 客体那种要几十秒。
+   * 而 begin() 只是换一个新的 session 号 —— mount effect 的 cleanup 把旧 handle destroy 掉，
+   * 紧接着按新 id 挂一个新的，页面不动，js-dos 和镜像都还在内存/IndexedDB 里。
+   *
+   * ⚠️ 哪些会话**不给**这个能力由 canRestartInPlace 说了算（联机 / 云游戏 / 看直播 ——
+   * 那三种的游戏状态都不在本机这一份引擎里，重开只会把房间拆掉或者断掉那一路）。
+   * 工具栏拿不到它就退回整页刷新（和从前一样），不会出现按钮点了没反应。
+   *
+   * 不走 useCallback：begin() 本身就没被 memo，包一层只会把依赖列表写错的风险搬过来；
+   * EmulatorTools 那边也没有对这个 prop 做引用比较。
+   */
+  const restartSession =
+    session && canRestartInPlace(session)
+      ? () => begin(session.game, session.platform, session.runtime)
+      : undefined
 
   const reset = () => {
     // 主动离开房间后，URL 里的 ?p2p= / ?room= 就不该再把人拉回同一个房间
@@ -3205,6 +3231,8 @@ export function EmulatorPlayer({
             screenLayout={screenLayout}
             // 快捷键要能在游戏开着时按 —— 得从这一块里找到模拟器的 iframe。见 hotkeyBridge.ts
             stageRef={hostRef}
+            // DOS 读档 = 原地重开这一局（见 restartSession）
+            onRestart={restartSession}
           />
         )}
 
