@@ -16,7 +16,7 @@
  *    但**绝不能**把站内的 `ALLOWED_ORIGINS` 改成 `*` —— 那会把 `/api/me`、`/api/admin`
  *    一起放开。两套策略分开写，就是下面那个 `openCors`。
  */
-import { Router } from 'express'
+import express, { Router } from 'express'
 import { listGames } from '../games-repo.js'
 import { query } from '../db.js'
 import { take } from '../rateLimit.js'
@@ -58,6 +58,37 @@ function fail(res, status, error, description, extra) {
 /* ---------------- 取令牌：AppID + key ---------------- */
 
 /**
+ * token 端点的请求体解析。
+ *
+ * ⚠️ **RFC 6749 §4.1.3 规定 token 端点收的是 `application/x-www-form-urlencoded`**，
+ * 而这个应用全局只挂了 `express.json`（index.js）—— 于是标准写法发过来
+ * `req.body` 是空的、`grant_type` 读不到，回一句 `400 unsupported_grant_type`。
+ *
+ * 现成的 OAuth 客户端库默认就发 form-encoded，**在这里一律会失败**，
+ * 而那句错误里完全看不出真正的原因：它说的是「不支持这个 grant_type」，
+ * 可调用方明明传了 `client_credentials`。不抓包根本查不出来。
+ *
+ * 所以在这一条路由上单独补一个解析器。JSON 那种写法继续照收 ——
+ * 上游 express.json 已经解好了，content-type 对不上时这个解析器会跳过、不动 req.body。
+ *
+ * **不挂全局**，两个理由：
+ *   · 那会让站内每一个 POST/PUT 都接受表单体，而跨域表单提交是不触发预检的
+ *     「简单请求」—— 为了一个端点的兼容性平白多出一整个 CSRF 面。
+ *   · 限额也该单独给：这个请求体最多几百字节，没有理由跟着全局那个 4MB 走。
+ */
+const tokenBody = express.urlencoded({ extended: false, limit: '16kb' })
+
+/*
+  解析失败（畸形、超限）**不用在这里接**：错误顺着 next(err) 走到 index.js 里那道
+  openErrorMiddleware，会被翻成 OAuth 形状的错误体。JSON 那一路在全局的
+  express.json 里就失败了、根本到不了这个路由，走的也是同一道 —— 两条路同一个出口。
+
+  ⚠️ 这里原本包了一层自己转错误的中间件，和那道守卫**做的是同一件事**：
+  删掉它测试一条都不红（变异测试实测）。两份等价的实现摆在两处，
+  迟早有人只改其中一处。
+*/
+
+/**
  * `POST /api/open/v1/token`
  *
  * 只支持 `grant_type=client_credentials`（应用级）。用户级令牌走 `/api/oauth/token`
@@ -66,7 +97,7 @@ function fail(res, status, error, description, extra) {
  *
  * ⚠️ 这里签出来的令牌**背后没有用户**，所以它永远拿不到 user 级 scope（见 APP_SCOPES）。
  */
-openRouter.post('/v1/token', async (req, res, next) => {
+openRouter.post('/v1/token', tokenBody, async (req, res, next) => {
   try {
     const cfg = openConfig()
     if (!cfg) return fail(res, 501, 'temporarily_unavailable', '开放平台未启用')

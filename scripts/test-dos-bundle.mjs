@@ -19,6 +19,14 @@ const { makeJsdosBundle, makeWindowsGameLayer, buildDosboxConf } = await import(
   fileURLToPath(new URL('../src/lib/jsdosBundle.ts', import.meta.url))
 )
 const { windowsGuestLaunchCommand } = await import(fileURLToPath(new URL('../src/lib/windowsGuest.ts', import.meta.url)))
+const {
+  desktopSettled,
+  frameDiffRatio,
+  scheduleWindowsLaunch,
+  windowsLaunchDelayMs,
+  DESKTOP_SETTLE_FLOOR_MS,
+  WINDOWS_LAUNCH_VERIFY_MS,
+} = await import(fileURLToPath(new URL('../src/emulator/windowsLaunch.ts', import.meta.url)))
 
 let n = 0
 let failedChecks = 0
@@ -482,6 +490,186 @@ console.log('\n── 后台那几个一键模板必须是合法配置 ──')
 
   const perf = templates.filter(([l]) => l.includes('⚡')).map(([l]) => l)
   ok(perf.length === 3, `三个性能模板都在（${perf.join('、')}）`)
+}
+
+/* ══════════ Windows 客体的自动启动：什么时候敲键、什么时候认账 ══════════ */
+
+/**
+ * 虚拟时钟。`scheduleWindowsLaunch` 整条链都走 `window.setTimeout`，
+ * 真等的话这一节要跑一分多钟；而且「第 24 秒才敲键」这种断言本来就得看虚拟时刻。
+ */
+function fakeClock() {
+  let now = 0
+  let seq = 0
+  const timers = new Map()
+  const win = {
+    setTimeout: (fn, ms) => {
+      const id = ++seq
+      timers.set(id, { at: now + Math.max(0, ms || 0), fn, seq: id })
+      return id
+    },
+    clearTimeout: (id) => timers.delete(id),
+  }
+  // 截图是 Promise，定时器之间必须把微任务放干净，否则链条推不动
+  const drain = async () => {
+    for (let i = 0; i < 64; i++) await Promise.resolve()
+  }
+  return {
+    win,
+    get now() { return now },
+    async runUntil(limit) {
+      for (;;) {
+        let next = null
+        for (const t of timers.values()) {
+          if (!next || t.at < next.at || (t.at === next.at && t.seq < next.seq)) next = t
+        }
+        if (!next || next.at > limit) break
+        timers.delete(next.seq)
+        now = next.at
+        next.fn()
+        await drain()
+      }
+      now = limit
+      await drain()
+    },
+  }
+}
+
+const frameCache = new Map()
+/** 一帧画面。同一个 (w,h,fill) 复用同一个对象：640×480×4 是 1.2MB，别在测试里反复分配 */
+function mkFrame(w, h, fill) {
+  const key = `${w}x${h}:${fill}`
+  let f = frameCache.get(key)
+  if (!f) {
+    f = { width: w, height: h, data: new Uint8ClampedArray(w * h * 4).fill(fill) }
+    frameCache.set(key, f)
+  }
+  return f
+}
+const TEXT = mkFrame(720, 400, 10)
+const DESKTOP = mkFrame(640, 480, 40)
+const DESKTOP_PAINTING = mkFrame(640, 480, 90)
+const GAME = mkFrame(640, 480, 200)
+
+console.log('\n── 桌面到底画完了没有（desktopSettled）──')
+{
+  ok(desktopSettled(null, DESKTOP) === false, '没有上一帧时不算稳 —— 证据不足不能敲键')
+  ok(desktopSettled(TEXT, TEXT) === false, '⭐ 文本模式下画面再静止也不算稳（那是 `C:\\>` 提示符，不是桌面）')
+  ok(desktopSettled(DESKTOP, DESKTOP) === true, '图形模式 + 两帧一样 = Program Manager 画完了')
+  ok(desktopSettled(DESKTOP_PAINTING, DESKTOP) === false, '还在画（整屏都在变）就不算稳')
+  ok(frameDiffRatio(TEXT, DESKTOP) === 1, '⭐ 尺寸变了直接算「全变了」—— 开机途中模式来回切时凑不满连续次数')
+}
+
+/**
+ * 跑一遍完整的 3.x 启动链。
+ *
+ * @param frameAt  (虚拟时刻) => 这一刻的画面
+ * @param waitSeconds 后台配的 dosLaunchDelay
+ */
+async function runLaunch({ frameAt, waitSeconds = 24, until = 120_000 }) {
+  const clock = fakeClock()
+  globalThis.window = clock.win
+  const keys = []
+  const milestones = []
+  let launchedAt = null
+  let failedAt = null
+  let sizeConsumer = null
+  // 命令敲完的时刻（launched 里程碑）。场景里「游戏窗口什么时候出现」要挂在它后面，
+  // 写成绝对时刻的话，启动时机一改测试就跟着坏
+  let typedAt = null
+  const ci = {
+    screenshot: async () => frameAt(clock.now, typedAt),
+    sendKeyEvent: (code, pressed) => {
+      if (pressed) keys.push([clock.now, code])
+    },
+    events: () => ({ onFrameSize: (fn) => (sizeConsumer = fn) }),
+  }
+  const cancel = scheduleWindowsLaunch(
+    ci,
+    'D:\\ZEEK1.EXE',
+    waitSeconds,
+    () => false,
+    () => (launchedAt = clock.now),
+    '3x',
+    () => (failedAt = clock.now),
+    (step) => {
+      if (step === 'launched') typedAt = clock.now
+      milestones.push([clock.now, step])
+    },
+  )
+  // 实测到的尺寸序列：640×400 文本 → 640×480（DOSBox-X 自己的启动画面，**假信号**）
+  // → 720×400 客体 DOS → 640×480 真桌面
+  await clock.runUntil(800)
+  sizeConsumer?.(640, 400)
+  await clock.runUntil(1000)
+  sizeConsumer?.(640, 480)
+  await clock.runUntil(until)
+  cancel()
+  return { keys, milestones, launchedAt, failedAt, firstKey: keys.length ? keys[0][0] : null }
+}
+
+console.log('\n── 敲键的时机：盯画面，不再干等 24 秒 ──')
+{
+  // 2.4 秒之后桌面稳下来（实测值）
+  const r = await runLaunch({ frameAt: (t) => (t < 1800 ? TEXT : t < 2400 ? DESKTOP_PAINTING : DESKTOP) })
+  ok(r.firstKey !== null, '键敲出去了')
+  ok(
+    r.firstKey < 6_000,
+    `⭐ 桌面一稳下来就敲（第 ${(r.firstKey / 1000).toFixed(1)} 秒），不再等满 24 秒 —— 省下约 ${((24_000 - r.firstKey) / 1000).toFixed(0)} 秒`,
+  )
+  ok(r.firstKey >= 1000 + DESKTOP_SETTLE_FLOOR_MS, `但也不会早于进图形模式后的 ${DESKTOP_SETTLE_FLOOR_MS / 1000} 秒下限`)
+  ok(
+    r.milestones.some(([, step]) => step === 'desktop'),
+    '报了 desktop 里程碑（进度条据此走到 91%）',
+  )
+  ok(
+    r.milestones.some(([, step]) => step === 'launched'),
+    '也报了 launched 里程碑（→ 97%）',
+  )
+}
+
+console.log('\n── 画面永远不静止时：退回老行为，绝不比以前慢 ──')
+{
+  /*
+    动画壁纸、闪烁光标、开机自检还在滚 —— 这类画面永远凑不满「连续两次没变」。
+    必须还有一条出路，而那条出路就是原来那个固定等待。
+  */
+  let flip = 0
+  const r = await runLaunch({ frameAt: () => (flip++ % 2 ? DESKTOP : DESKTOP_PAINTING) })
+  const cap = 1000 + windowsLaunchDelayMs(24)
+  ok(r.firstKey !== null && Math.abs(r.firstKey - cap) < 600, `⭐ 等满上限就照敲（第 ${(r.firstKey / 1000).toFixed(1)} 秒 ≈ 图形信号 + 24 秒）`)
+  ok(
+    !r.milestones.some(([, step]) => step === 'desktop'),
+    '⭐ 但**不报** desktop 里程碑 —— 里程碑只报确证发生过的事，硬敲那条路不算',
+  )
+}
+
+console.log('\n── 敲完之后的确认：第一眼提前到 0.8 秒 ──')
+{
+  // 桌面 2.4 秒稳定；游戏窗口在敲完命令之后很快出现（Run 框一关画面就变了）
+  const r = await runLaunch({
+    frameAt: (t, typedAt) => (typedAt !== null && t > typedAt ? GAME : t < 2400 ? TEXT : DESKTOP),
+  })
+  const typedAt = r.keys[r.keys.length - 1][0]
+  ok(r.launchedAt !== null && r.failedAt === null, '判成功，没有误报失败')
+  const wait = r.launchedAt - typedAt
+  ok(wait < 2_000, `⭐ 敲完 ${wait} 毫秒就确认完了（原来固定 5000 毫秒）`)
+}
+
+console.log('\n── 提前看不等于判得松：画面纹丝不动仍要等满 20 秒才判失败 ──')
+{
+  /*
+    这是上一条的守卫。elapsed 以前是每轮硬加一个轮询间隔，间隔一改那个计数就不再
+    等于真实时间；现在按 Date.now() 差值算，所以间隔怎么调都不影响失败门槛。
+  */
+  const r = await runLaunch({ frameAt: (t) => (t < 2400 ? TEXT : DESKTOP) })
+  const typedAt = r.keys[r.keys.length - 1][0]
+  ok(r.failedAt !== null && r.launchedAt === null, '画面一直没变 → 判失败（而不是静默算成功）')
+  const waited = r.failedAt - typedAt
+  ok(
+    waited >= WINDOWS_LAUNCH_VERIFY_MS && waited < WINDOWS_LAUNCH_VERIFY_MS + 4_000,
+    `⭐ 等满 ${(waited / 1000).toFixed(1)} 秒才判死（门槛 ${WINDOWS_LAUNCH_VERIFY_MS / 1000} 秒），没有因为看得早就判得早`,
+  )
 }
 
 console.log(`\n✅ DOS 打包测试通过（${n} 项）`)

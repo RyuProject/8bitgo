@@ -5,7 +5,15 @@ import { formatBytes, formatSpeed, getDefaultKeymap, isRomFileAccepted } from '@
 import { detectRom, describeDetection } from './detect'
 import { resolveRuntime, runtimesFor, extOf } from './registry'
 import type { Capability, LoadPhase, Runtime, RuntimeHandle, RuntimeId, ScreenLayoutState, StageMode } from './types'
-import { createOverallRatio, createSpeedMeter, liftRatio, LOAD_PHASE_RANGE, windowsGuestStartupBudgetMs } from './loadProgress'
+import {
+  createOverallRatio,
+  createSpeedMeter,
+  liftRatio,
+  LOAD_PHASE_RANGE,
+  nextStartupMilestone,
+  startingSegmentMs,
+  STARTING_MILESTONE_CAP,
+} from './loadProgress'
 import { isTyping } from './hotkeyBridge'
 import { observeFrameDocs } from './frameDocs'
 import { installScrollGuard } from './scrollGuard'
@@ -77,6 +85,49 @@ const LOAD_PHASE_DURATION_MS: Record<Exclude<LoadPhase, 'starting'>, number> = {
 const LOAD_PROGRESS_CEILING = 0.99
 /** 阶段的先后顺序。进度时钟只能顺着它往前走，不能倒回去 */
 const PHASE_ORDER: LoadPhase[] = ['engine', 'assets', 'rom', 'starting']
+
+/**
+ * 视觉进度当前在爬哪一格。
+ *
+ * 原来只有 `{ phase, startedAt }`，一格就是一整个阶段。starting 这个阶段因此成了
+ * 一格 20 个百分点、预算 389 秒的巨无霸 —— 每 1% 要走 20.5 秒，玩家看到的就是
+ * 「卡在 80%」（见 loadProgress 的 windowsGuestStartupBudgetMs 那段注释）。
+ *
+ * 现在 starting 内部按里程碑再切成四小格，每格自己的起止点和预算都单独算。
+ * `from` / `to` 都是**抬起来之前**的整条进度坐标（liftRatio 之前），
+ * 和合成器那边保持同一套坐标系，否则重试那一轮两边会对不上。
+ */
+type ProgressClock = {
+  phase: LoadPhase
+  startedAt: number
+  from: number
+  to: number
+  startup: number
+  /** 这一局有没有里程碑可报（只有 Windows 客体那条路有） */
+  milestones: boolean
+}
+
+/**
+ * 造一格新的进度时钟。
+ *
+ * ⚠️ `milestones` 必须只对 Windows 客体开。别的运行时（EmulatorJS / jsnes / ruffle…）
+ * 一个 startup 都不报，给它们切成四小格的话，每格都得先耗光自己的预算才往下走，
+ * 80→99% 会从 45 秒变成 180 秒 —— 那是把这次要修的 bug 搬到别的平台上再犯一遍。
+ */
+const makeProgressClock = (phase: LoadPhase, startup = 0, milestones = false): ProgressClock => {
+  const [start, end] = LOAD_PHASE_RANGE[phase]
+  const span = end - start
+  const segmented = phase === 'starting' && milestones
+  return {
+    phase,
+    startedAt: Date.now(),
+    from: segmented ? start + span * startup : start,
+    // 有里程碑时只准爬到下一个跟前 —— 越过去就等于替客体作证「那一步已经发生了」
+    to: segmented ? start + span * nextStartupMilestone(startup) : end,
+    startup: segmented ? startup : 0,
+    milestones,
+  }
+}
 
 /**
  * 大到值得在加载界面上专门说一句「本局需下载 XXX」的门槛。
@@ -591,7 +642,7 @@ export function EmulatorPlayer({
    */
   const [discSize, setDiscSize] = useState<{ bytes: number; cached: boolean } | null>(null)
   /** 当前视觉阶段的起点；真实回调停顿时，计时兜底从这里继续向前走。 */
-  const progressClock = useRef<{ phase: LoadPhase; startedAt: number }>({ phase: 'engine', startedAt: Date.now() })
+  const progressClock = useRef<ProgressClock>(makeProgressClock('engine'))
   const [caps, setCaps] = useState<Set<Capability>>(() => new Set())
   /**
    * 画面的**实测**尺寸（核心 av_info 的几何）。容器比例靠它，见 screenAspect.ts。
@@ -1202,16 +1253,38 @@ export function EmulatorPlayer({
     speedMeter.current = createSpeedMeter()
     setLoadSpeed(0)
     setDiscSize(null)
-    progressClock.current = { phase: 'engine', startedAt: Date.now() }
+    progressClock.current = makeProgressClock('engine', 0, startupMilestonesOn())
     setLoadPhase('engine')
     if (!carryOver) setLoadRatio(null)
     setStatus('loading')
   }
 
+  /**
+   * 这一局有没有启动里程碑可报。
+   *
+   * 只有 Windows 客体那条路有：`dosSystemUrl` 非空就意味着「dos 平台 + 带系统镜像」，
+   * 而 dosboxX 是跑客体的硬前提。别的运行时全都一个 startup 都不报，
+   * 给它们分段等于把 80→99% 从 45 秒拖成 180 秒（见 makeProgressClock 的说明）。
+   */
+  const startupMilestonesOn = () => Boolean(dosBackendRef.current === 'dosboxX' && dosSystemUrlRef.current)
+
   /** 阶段只允许向前走；并行请求迟到的回调不能把计时器拨回上一段。 */
   const enterProgressPhase = (phase: LoadPhase) => {
     if (PHASE_ORDER.indexOf(phase) <= PHASE_ORDER.indexOf(progressClock.current.phase)) return
-    progressClock.current = { phase, startedAt: Date.now() }
+    progressClock.current = makeProgressClock(phase, 0, startupMilestonesOn())
+  }
+
+  /**
+   * 适配器报来一个**确证发生过**的启动里程碑（见 loadProgress 的 STARTING_MILESTONE）。
+   *
+   * 这是 80% 之后条子唯一的真实信号源。和阶段一样只进不退：迟到的早期里程碑
+   * （比如 ci-ready 的回调排在 desktop 后面才跑）不能把条子拽回去。
+   */
+  const enterStartupMilestone = (startup: number | undefined) => {
+    if (startup === undefined || !Number.isFinite(startup)) return
+    const clock = progressClock.current
+    if (clock.phase !== 'starting' || startup <= clock.startup + 1e-6) return
+    progressClock.current = makeProgressClock('starting', Math.min(STARTING_MILESTONE_CAP, startup), true)
   }
 
   /**
@@ -1233,10 +1306,23 @@ export function EmulatorPlayer({
    * 这样以后新写的适配器漏报阶段，也不会再把条子冻住。
    */
   const advanceProgressPhase = () => {
-    const i = PHASE_ORDER.indexOf(progressClock.current.phase)
+    const clock = progressClock.current
+    /*
+      starting 是最后一个阶段，但它内部还有里程碑。视觉预算耗光了就自己往下一格推 ——
+      理由和上面那段阶段推进一模一样：**别让条子停在某个整数上装死**。
+      这不是替客体作证，失败仍然由 windowsGuestStartupBudgetMs 那条超时说了算。
+    */
+    if (clock.phase === 'starting') {
+      if (!clock.milestones) return
+      const next = nextStartupMilestone(clock.startup)
+      if (next >= 1) return
+      progressClock.current = makeProgressClock('starting', next, true)
+      return
+    }
+    const i = PHASE_ORDER.indexOf(clock.phase)
     const next = PHASE_ORDER[i + 1]
     if (!next) return
-    progressClock.current = { phase: next, startedAt: Date.now() }
+    progressClock.current = makeProgressClock(next, 0, clock.milestones)
   }
 
   /**
@@ -1248,20 +1334,22 @@ export function EmulatorPlayer({
     if (status !== 'loading' || !session) return
     setLoadRatio((current) => Math.max(current ?? 0, 0.01))
     const timer = window.setInterval(() => {
-      const { phase, startedAt } = progressClock.current
-      const [phaseStart, phaseEnd] = LOAD_PHASE_RANGE[phase]
+      const { phase, startedAt, from, to, startup, milestones } = progressClock.current
       let duration: number
       if (phase === 'starting') {
-        const windowsGuest = session.platform === 'dos' && dosBackendRef.current === 'dosboxX' && dosSystemUrlRef.current
-        // Windows 客体要先在 WASM 里挂近百 MB 的系统盘；视觉进度与真实失败兜底共用预算，
-        // 慢设备不会先停在 99%，更不会在本来还能成功时被旧的 45 秒门槛判死。
-        duration = windowsGuest ? windowsGuestStartupBudgetMs(dosLaunchDelayRef.current) : 45_000
+        /*
+          ⚠️ 这里**不能**用 windowsGuestStartupBudgetMs —— 那是「最坏情况下才判失败」的
+          上限（389 秒），拿它铺 0.80→0.99 等于 1% 走 20.5 秒，正是「卡在 80%」的病根。
+          现在按里程碑分段取**预计**耗时；失败仍由 jsdos 那边同一个 389 秒的
+          readyFallback 兜底，两个数各管各的。
+        */
+        duration = startingSegmentMs(startup, milestones, dosLaunchDelayRef.current)
       } else {
         duration = LOAD_PHASE_DURATION_MS[phase]
       }
       const elapsed = Date.now() - startedAt
-      const visualStart = Math.max(0.01, phaseStart)
-      const visualEnd = Math.min(LOAD_PROGRESS_CEILING, phaseEnd - 0.01)
+      const visualStart = Math.max(0.01, from)
+      const visualEnd = Math.max(visualStart, Math.min(LOAD_PROGRESS_CEILING, to - 0.01))
       // 和合成器共用同一个 floor，否则重试那一轮的视觉进度永远低于保留下来的百分比
       const timed = Math.min(
         LOAD_PROGRESS_CEILING,
@@ -1349,6 +1437,8 @@ export function EmulatorPlayer({
           setDiscSize((cur) => cur ?? { bytes: next.total ?? 0, cached: Boolean(next.cached) })
         }
         enterProgressPhase(next.phase)
+        // 80% 之后唯一的真实信号：客体走到哪一步了（ci-ready / 桌面画完 / 命令敲完）
+        enterStartupMilestone(next.startup)
         speedMeter.current.push(next.loaded)
         const actual = Math.min(LOAD_PROGRESS_CEILING, overallRatio.current(next))
         setLoadRatio((current) => Math.max(current ?? 0, actual))
@@ -1873,7 +1963,7 @@ export function EmulatorPlayer({
       speedMeter.current = createSpeedMeter()
       setLoadSpeed(0)
       setDiscSize(null)
-      progressClock.current = { phase: 'engine', startedAt: Date.now() }
+      progressClock.current = makeProgressClock('engine')
       setLoadPhase('engine')
       setLoadRatio(null)
       sessionCounter.current += 1

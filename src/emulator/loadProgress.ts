@@ -354,9 +354,87 @@ export const WINDOWS_GUEST_INIT_GRACE_MS = 4 * 60_000
  */
 const WINDOWS_LAUNCH_CHAIN_MS = WINDOWS_GRAPHICS_SIGNAL_FALLBACK_MS + 15_000 + WINDOWS_LAUNCH_VERIFY_MS
 
-/** 客体初始化 + 后台配置的开机等待，共同构成 80–99% 这段的超时预算。 */
+/**
+ * 客体初始化 + 后台配置的开机等待，共同构成 80–99% 这段的**超时预算**。
+ *
+ * ⚠️⚠️ 这个数**只能用来判失败，绝不能用来画进度条**。这一条是 2026-09-11 那次
+ * 「加载卡在 80%」的病根：EmulatorPlayer 的视觉计时器原来直接拿它当 duration，
+ * 而它是 24000 + (90000+15000+20000) + 240000 = **389 秒**，用来铺 0.80→0.99
+ * 这 19 个百分点 ——
+ *
+ *     1% 要走 20.5 秒。
+ *
+ * 实测（zeek-the-geek / Win3.11）：80%@5.2s → 81%@16.2s → 82%@37.2s；游戏在
+ * 39 秒就跑起来了，条子才走到 82%。玩家看到的就是「80% 之后一动不动」。
+ *
+ * 「最坏情况下才判失败的上限」和「预计还要多久」是两个数，必须分开 ——
+ * 前者在这里，后者见 startingSegmentMs。
+ */
 export function windowsGuestStartupBudgetMs(launchDelaySeconds = 24): number {
   return windowsLaunchDelayMs(launchDelaySeconds) + WINDOWS_LAUNCH_CHAIN_MS + WINDOWS_GUEST_INIT_GRACE_MS
+}
+
+/* ---------------- 启动阶段（80–100%）的里程碑 ---------------- */
+
+/**
+ * 80% 之后客体到底走到哪一步了。
+ *
+ * 这一段以前是整条进度里**唯一没有任何真实信号**的部分：适配器进了 starting 就再也
+ * 不吭声，条子全靠一个计时器瞎爬。而它恰恰是 Windows 客体耗时最长的一段
+ * （实测占总时长的 87%）。所以给它补三个**确证发生过**的里程碑：
+ *
+ *   ci      DOSBox-X 的命令接口建好了（qcow2 挂载 / 建盘完成，冷启动最慢的一段）
+ *   desktop 客体画面稳下来了 = Windows 桌面画完了（见 windowsLaunch 的 desktopSettled）
+ *   launched 启动命令已经敲完回车
+ *
+ * 值是「在 starting 这 20% 里的位置」，映射到整条进度就是 0.8 + 0.2 × 它。
+ */
+export const STARTING_MILESTONE = Object.freeze({
+  /** → 整条进度 86% */
+  ci: 0.3,
+  /** → 整条进度 91% */
+  desktop: 0.55,
+  /** → 整条进度 97% */
+  launched: 0.85,
+})
+
+/**
+ * 里程碑能把条子推到的最高处（→ 整条进度 98%）。
+ *
+ * 最后那一格永远留给 onReady：适配器说「命令敲完了」不等于玩家能动手，
+ * 画到 100% 再倒回去是这套进度里最不能犯的错。
+ */
+export const STARTING_MILESTONE_CAP = 0.9
+
+const MILESTONE_STOPS: readonly number[] = [
+  STARTING_MILESTONE.ci,
+  STARTING_MILESTONE.desktop,
+  STARTING_MILESTONE.launched,
+  1,
+]
+
+/** 下一个里程碑在哪儿。视觉进度只准爬到它跟前，越过去就等于替客体作证 */
+export function nextStartupMilestone(startup: number): number {
+  return MILESTONE_STOPS.find((stop) => stop > startup + 1e-6) ?? 1
+}
+
+/**
+ * **视觉**进度从当前里程碑爬到下一个里程碑的预算（毫秒）。
+ *
+ * 和 windowsGuestStartupBudgetMs 的区别是这里要的是「预计」而不是「上限」。
+ * 数字来自 2026-09-11 的实测：
+ *   · Dos() → ci-ready：热缓存 0.5 秒，冷启动 ~72 秒（2.6MB wasm 冷编译 +
+ *     21.5MB qcow2 在 WASM 里挂载建盘）。取 90 秒，冷启动那次才不会提前顶到头。
+ *   · ci-ready → 桌面：Win3.11 在 5 倍速下 2 秒，慢机器留到 30 秒。
+ *   · 桌面 → 敲完命令：盯画面 + 按键链，上限就是 dosLaunchDelay，再留 15 秒给按键链本身。
+ *   · 敲完 → 第一帧：就是那段画面确认。
+ */
+export function startingSegmentMs(startup: number, windowsGuest: boolean, launchDelaySeconds = 24): number {
+  if (!windowsGuest) return 45_000
+  if (startup < STARTING_MILESTONE.ci) return 90_000
+  if (startup < STARTING_MILESTONE.desktop) return 30_000
+  if (startup < STARTING_MILESTONE.launched) return windowsLaunchDelayMs(launchDelaySeconds) + 15_000
+  return WINDOWS_LAUNCH_VERIFY_MS
 }
 
 /**
@@ -409,8 +487,18 @@ export function createOverallRatio(floor = 0): (p: LoadProgress) => number {
     const [start, end] = LOAD_PHASE_RANGE[p.phase]
     const span = end - start
 
-    // starting=1 只代表适配器已经开始启动；真就绪必须等 onReady，不能瞬间画到 100%。
-    let inner = p.phase === 'starting' ? 0 : p.ratio
+    /*
+      starting 阶段刻意**不吃 ratio**：ruffle / jsnes / webretro 都是资源一读完就报
+      `starting: 1`，那只表示「资源准备完了」，不表示模拟器已经可玩 —— 认了它条子会
+      当场冲到 98% 再原地不动，和「卡在 80%」是同一种病，只换了个数字。
+      真正能推进这一段的只有 startup：那是适配器**确证发生过**的里程碑
+      （见 STARTING_MILESTONE），而且封顶在 STARTING_MILESTONE_CAP，
+      最后一格永远留给 onReady。
+    */
+    let inner =
+      p.phase === 'starting'
+        ? Math.min(STARTING_MILESTONE_CAP, Math.max(0, p.startup ?? 0))
+        : p.ratio
     if (inner === undefined && p.loaded !== undefined && p.loaded > 0) {
       inner = 1 - Math.exp(-p.loaded / SOFT_SCALE[p.phase])
     }

@@ -50,8 +50,20 @@ export function windowsLaunchDelayMs(waitSeconds = 24): number {
  * （最常见、也最没救的一类）画面确实纹丝不动，跑不掉。
  */
 export const WINDOWS_LAUNCH_VERIFY_MS = 20_000
-/** 每隔多久看一眼画面 */
-const VERIFY_POLL_MS = 5_000
+/**
+ * 敲完回车之后多久看**第一眼**。
+ *
+ * 以前是 5 秒。而「Run 框关掉」本身就是一次远超 CHANGE_RATIO 的画面变化 ——
+ * 800 毫秒看和 5 秒看得出的是同一个结论，那 4 秒多纯粹是白等。
+ * 2026-09-11 实测：热缓存下整条启动链 39.0 秒，这一段就占了 5 秒（13%）。
+ *
+ * ⚠️ 提前看**不会**让失败判定变松：失败仍然只在累计到 WINDOWS_LAUNCH_VERIFY_MS
+ * 还没见过变化时才报，而下面的 elapsed 已经改成按真实时间累计（原来是每轮
+ * 硬加一个 VERIFY_POLL_MS，间隔一变那个计数就不再等于真实时间了）。
+ */
+const VERIFY_FIRST_MS = 800
+/** 第一眼之后的复查间隔 */
+const VERIFY_POLL_MS = 2_500
 /**
  * 画面变了多少才算「有反应」。
  *
@@ -79,6 +91,61 @@ export function frameDiffRatio(a: ImageData, b: ImageData): number {
   }
   return seen ? diff / seen : 0
 }
+
+/* ────────────────── 桌面到底画完了没有 ────────────────── */
+
+/**
+ * 以前这里是 `later(windowsLaunchDelayMs(waitSeconds), launch)` —— 见到图形信号之后
+ * **无条件干等 24 秒**再敲键。2026-09-11 实测（zeek-the-geek / Win3.11，热缓存）：
+ *
+ *     引擎+镜像+ROM 0.4s │ DOSBox-X 起来 + Win3.11 开机到桌面 2.0s │ 干等 22.4s │
+ *     按键链 9.0s │ 首次画面确认 5.0s   ＝ 39.0 秒，三次跑出来误差不到 0.2 秒
+ *
+ * 也就是说 Windows 两秒就到桌面了，我们还要站在那儿等二十二秒，而且这 39 秒和机器
+ * 快慢、网速完全无关 —— 它整条就是几个写死的 setTimeout。
+ *
+ * 现在改成**拿画面当证据**：进入图形模式之后每 DESKTOP_SETTLE_POLL_MS 抓一帧，
+ * 连续 DESKTOP_SETTLE_STREAK 次「几乎没变」就认为 Program Manager 画完了、可以敲键。
+ * `waitSeconds` 从「一定要等这么久」降级成「最多等这么久」——
+ * 慢设备的行为和以前完全一样（等满就敲），快设备省下二十秒。
+ *
+ * ⚠️ 这一改顺手修掉了另一个 bug：`armed` 是一次性闩锁，而实测 canvas 尺寸序列是
+ * `300x150 → 640x480(0.8s) → 720x400(1.8s) → 640x480(2.4s)` —— **真桌面是第二个
+ * 640x480**，第一个是 DOSBox-X 自己的启动画面，`sawTextMode` 那道守卫没拦住它。
+ * 于是那 24 秒其实是从「Windows 还没开机」开始数的。改成盯画面之后，
+ * 假信号只会让我们早几百毫秒开始盯：中间那次 720x400 与前后尺寸不同，
+ * frameDiffRatio 直接返回 1，压根凑不满 streak，真桌面稳下来才会放行。
+ */
+export const DESKTOP_SETTLE_POLL_MS = 500
+/**
+ * 两帧之间变化低于多少算「没在画了」。
+ *
+ * 0.5% 远低于 CHANGE_RATIO(2%)：那个判的是「有没有反应」，这个判的是「还在不在动」，
+ * 方向相反，阈值必须更严。Win3.1 的桌面静止时是逐像素完全相同的，留 0.5% 只是为了
+ * 容忍鼠标指针那几十个像素。
+ */
+export const DESKTOP_SETTLE_RATIO = 0.005
+/** 连续几次「没变」才算稳。一次容易撞上桌面绘制中间的停顿（画完图标、等磁盘） */
+export const DESKTOP_SETTLE_STREAK = 2
+/**
+ * 进入图形模式后最少也要等这么久再敲键。
+ *
+ * Program Manager 的窗口画完 ≠ 它已经能收键盘：还有组文件要读、驱动要初始化。
+ * 这条下限刻意留得比实测值宽 —— 省二十秒和省二十二秒对玩家没差别，
+ * 而早敲一下的代价是整局重来。
+ */
+export const DESKTOP_SETTLE_FLOOR_MS = 2000
+
+/** 这一帧相比上一帧，算不算「桌面已经停下来了」 */
+export function desktopSettled(prev: ImageData | null, frame: ImageData): boolean {
+  if (!prev) return false
+  // 还在文本模式 / 尺寸在变 = 还在开机，不管画面动不动都不能敲
+  if (!isWindowsGraphicsMode(frame.width, frame.height)) return false
+  return frameDiffRatio(prev, frame) < DESKTOP_SETTLE_RATIO
+}
+
+/** 启动链上的里程碑。只用来推进加载进度条，不参与任何成败判定 */
+export type WindowsLaunchMilestone = 'desktop' | 'launched'
 
 /** File Manager 要先完成切盘和目录初始化，随后 File > Run 才会继承正确工作目录。 */
 export const WINDOWS_3X_FILE_MANAGER_READY_MS = 4000
@@ -152,6 +219,11 @@ export function scheduleWindowsLaunch(
   shell: WindowsLaunchShell = '9x',
   /** 确认不了「客体里有反应」时调它。**必须在 onLaunched 之前**，那样播放器还能自动重试一次 */
   onFailed?: (message: string) => void,
+  /**
+   * 启动链上的里程碑，只用来推进加载进度条（见 loadProgress 的 STARTING_MILESTONE）。
+   * 刻意只在**确证发生**时才报：桌面稳下来了才报 desktop，等满上限硬敲的那条路不报。
+   */
+  onMilestone?: (step: WindowsLaunchMilestone) => void,
 ): () => void {
   const timers = new Set<number>()
   let armed = false
@@ -222,16 +294,20 @@ export function scheduleWindowsLaunch(
    * 拿它当基准，「键全打进了空气、桌面纹丝不动」这一类就能被认出来。
    */
   const finishLaunch = () => {
+    onMilestone?.('launched')
     const shot = ci.screenshot
     if (typeof shot !== 'function' || !onFailed) {
       // 拿不到画面（旧版 js-dos / 调用方不接失败）：只能沿用老行为，蒙一个 5 秒
       later(5000, onLaunched)
       return
     }
+    // 同样按排过的定时器累计，不读 Date.now()（理由见 arm 里那段注释）
     let elapsed = 0
+    let waited = VERIFY_FIRST_MS
     const poll = () => {
       if (stopped()) return
-      elapsed += VERIFY_POLL_MS
+      elapsed += waited
+      waited = VERIFY_POLL_MS
       void shot
         .call(ci)
         .then((frame) => {
@@ -253,7 +329,7 @@ export function scheduleWindowsLaunch(
           if (!stopped()) onLaunched()
         })
     }
-    later(VERIFY_POLL_MS, poll)
+    later(VERIFY_FIRST_MS, poll)
   }
 
   const launch = () => {
@@ -291,7 +367,52 @@ export function scheduleWindowsLaunch(
   const arm = () => {
     if (armed || stopped()) return
     armed = true
-    later(windowsLaunchDelayMs(waitSeconds), launch)
+    const capMs = windowsLaunchDelayMs(waitSeconds)
+    const shot = ci.screenshot
+    // 拿不到画面（旧版 js-dos）：只能沿用老行为，干等满
+    if (typeof shot !== 'function') {
+      later(capMs, launch)
+      return
+    }
+    /*
+      ⚠️ 时间一律按**实际排过的定时器**累计，不读 Date.now()。
+      两个理由：一是这条链整个活在 setTimeout 上，玩家切走标签页时浏览器会把定时器
+      节流到每秒一次 —— 那时墙上时间跑得比链条快得多，拿 Date.now() 当预算会在
+      客体其实没走几步的时候就把下限当成已经满足；二是这样才测得了（见 test:dos-bundle）。
+    */
+    let watched = 0
+    let prev: ImageData | null = null
+    let streak = 0
+    let fired = false
+    const go = (settled: boolean) => {
+      if (fired || stopped()) return
+      fired = true
+      if (settled) onMilestone?.('desktop')
+      launch()
+    }
+    /*
+      硬上限。画面永远不静止（动画壁纸、闪烁光标、开机自检还在滚）时必须还有一条出路，
+      而那条出路就是老行为 —— 所以这一改在最坏情况下**不会比以前慢**。
+    */
+    later(capMs, () => go(false))
+    const tick = () => {
+      if (fired || stopped()) return
+      void shot
+        .call(ci)
+        .then((frame) => {
+          if (fired || stopped()) return
+          watched += DESKTOP_SETTLE_POLL_MS
+          streak = desktopSettled(prev, frame) ? streak + 1 : 0
+          prev = frame
+          if (streak >= DESKTOP_SETTLE_STREAK && watched >= DESKTOP_SETTLE_FLOOR_MS) return go(true)
+          later(DESKTOP_SETTLE_POLL_MS, tick)
+        })
+        .catch(() => {
+          // 截图偶发失败不该把整条链卡死；继续盯，实在不行还有上面那条硬上限
+          if (!fired && !stopped()) later(DESKTOP_SETTLE_POLL_MS, tick)
+        })
+    }
+    later(DESKTOP_SETTLE_POLL_MS, tick)
   }
   /**
    * 见过一次「不是图形模式」的尺寸没有。

@@ -173,6 +173,7 @@ const { verifyToken } = await import('../src/auth.js')
 const { issueAppToken, verifyOpenToken } = await import('../src/open/tokens.js')
 const { signToken } = await import('../src/auth.js')
 const { FORBIDDEN_OUT_KEYS } = await import('../src/open/mapper.js')
+const { isOpenPath, openErrorFor, openErrorMiddleware } = await import('../src/open/errors.js')
 const { pickDescription, pickTitle } = await import('../src/open/i18n.js')
 const jwtLib = (await import('jsonwebtoken')).default
 SECRET_HASH = await hashSecret(APP_SECRET)
@@ -180,6 +181,20 @@ SECRET_HASH = await hashSecret(APP_SECRET)
 const app = express()
 app.use(express.json())
 app.use('/api/open', openRouter)
+/*
+  ⚠️ 挂的是**和 index.js 同一个函数**，不是照着抄一份。
+
+  请求体解析失败的错误**到不了路由** —— express.json 挂在全局，畸形 JSON 在进
+  openRouter 之前就 next(err) 了。所以「开放平台的错误体永远是 OAuth 形状」这句话
+  要靠这道守卫才成立。挂同一个函数意味着函数体里的任何改动这里都会真的跑到；
+  index.js 那边只剩「挂了没有、排在第几位」两件事，靠下面那条源码断言守。
+  （抄一份的写法试过：那样连 index.js 整个删掉守卫都测不出来。）
+*/
+app.use(openErrorMiddleware(() => 'https://8bitgo.com'))
+// 站内那半：形状和 index.js 的一样，用来确认「不是开放平台的请求原样放行」
+app.use((err, _req, res, _next) => {
+  res.status(Number(err?.status) || 500).json({ error: '请求格式不正确' })
+})
 const server = app.listen(0)
 await new Promise((r) => server.once('listening', r))
 const base = `http://127.0.0.1:${server.address().port}`
@@ -550,6 +565,186 @@ await check('/v1/me 能自查令牌（接入方排错的第一站）', async () 
   assert.equal(me.client_id, APP.id)
   assert.equal(me.kind, 'app')
   assert.equal(me.scope, 'games.read')
+})
+
+console.log('\n六、token 端点的请求体：RFC 6749 要的是 form-encoded')
+
+/*
+  ## 这一节在守什么
+
+  RFC 6749 §4.1.3 规定 token 端点收 `application/x-www-form-urlencoded`，
+  而这个应用**全局只挂了 express.json**。补上之前，标准写法发过来 req.body 是空的、
+  grant_type 读不到，回一句 `400 unsupported_grant_type` ——
+  现成的 OAuth 客户端库默认就发 form-encoded，**一律接不上**，
+  而那句错误里完全看不出真正的原因（它说「不支持这个 grant_type」，
+  可调用方明明传了 client_credentials）。不抓包根本查不出来。
+
+  所以下面四件事都要钉住：两种 content-type 都能取到令牌、两种取到的东西一样、
+  解析失败回的是 OAuth 形状、以及 **urlencoded 没有被顺手挂到全局**。
+*/
+
+const form = (obj) => new URLSearchParams(obj).toString()
+const FORM_CT = { 'Content-Type': 'application/x-www-form-urlencoded' }
+
+await check('form-encoded（RFC 6749 的标准写法）能换到令牌', async () => {
+  const r = await api('/api/open/v1/token', {
+    method: 'POST',
+    headers: FORM_CT,
+    body: form({ grant_type: 'client_credentials', client_id: APP.id, client_secret: APP_SECRET }),
+  })
+  const t = await r.json()
+  assert.equal(r.status, 200, `form-encoded 被拒了：${JSON.stringify(t)}`)
+  assert.equal(t.token_type, 'Bearer')
+  assert.ok(t.access_token)
+})
+
+await check('form-encoded + Basic 认证也认（OAuth 库最常见的组合）', async () => {
+  const basic = Buffer.from(`${APP.id}:${APP_SECRET}`).toString('base64')
+  const r = await api('/api/open/v1/token', {
+    method: 'POST',
+    headers: { ...FORM_CT, Authorization: `Basic ${basic}` },
+    body: form({ grant_type: 'client_credentials' }),
+  })
+  assert.equal(r.status, 200)
+})
+
+await check('两种写法取到的是同一个东西（scope 不能因为 content-type 而不同）', async () => {
+  const viaForm = await (await api('/api/open/v1/token', {
+    method: 'POST',
+    headers: FORM_CT,
+    body: form({ grant_type: 'client_credentials', client_id: APP.id, client_secret: APP_SECRET, scope: 'games.read' }),
+  })).json()
+  const viaJson = await getToken('games.read')
+  assert.equal(viaForm.scope, viaJson.scope)
+  assert.equal(viaForm.expires_in, viaJson.expires_in)
+})
+
+await check('form-encoded 里的 scope 一样不静默降级', async () => {
+  const r = await api('/api/open/v1/token', {
+    method: 'POST',
+    headers: FORM_CT,
+    body: form({ grant_type: 'client_credentials', client_id: APP.id, client_secret: APP_SECRET, scope: 'games.read saves.write' }),
+  })
+  assert.equal(r.status, 400)
+  assert.equal((await r.json()).error, 'invalid_scope')
+})
+
+await check('JSON 那条路没被弄坏', async () => {
+  const t = await getToken()
+  assert.ok(t.access_token, 'JSON 写法反而挂了 —— 加解析器时把上游 express.json 顶掉了')
+})
+
+await check('⚠️ 超限的表单体回 OAuth 形状，不是站内形状', async () => {
+  const r = await api('/api/open/v1/token', {
+    method: 'POST',
+    headers: FORM_CT,
+    body: form({ grant_type: 'client_credentials', client_id: APP.id, client_secret: 'x'.repeat(20_000) }),
+  })
+  assert.equal(r.status, 413)
+  const body = await r.json()
+  assert.equal(body.error, 'invalid_request', `回的是站内形状：${JSON.stringify(body)}`)
+  assert.ok(body.error_description, 'OAuth 错误体必须带 error_description')
+})
+
+await check('⚠️ 畸形 JSON 也回 OAuth 形状（它在全局就失败了，到不了路由）', async () => {
+  const r = await api('/api/open/v1/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{"grant_type":',
+  })
+  assert.ok(r.status >= 400 && r.status < 500, `畸形 JSON 回了 ${r.status}`)
+  const body = await r.json()
+  assert.equal(body.error, 'invalid_request', `回的是站内形状：${JSON.stringify(body)}`)
+})
+
+await check('⚠️ urlencoded 只挂在 token 这一条路由上，没有挂全局', async () => {
+  /*
+    挂全局的话，站内每一个 POST/PUT 都会接受表单体 —— 而跨域表单提交是
+    不触发预检的「简单请求」，等于为了一个端点的兼容性平白多出一整个 CSRF 面。
+  */
+  const fs = (await import('node:fs')).default
+  const index = stripComments(fs.readFileSync(new URL('../src/index.js', import.meta.url), 'utf8'))
+  const open = stripComments(fs.readFileSync(new URL('../src/routes/open.js', import.meta.url), 'utf8'))
+  assert.ok(!/app\.use\(\s*express\.urlencoded/.test(index), 'index.js 把 urlencoded 挂到全局了')
+  assert.ok(/express\.urlencoded\(/.test(open), 'open.js 里没有 urlencoded 解析器')
+  assert.ok(
+    /openRouter\.post\('\/v1\/token', tokenBody,/.test(open),
+    'token 路由上没有挂 tokenBody 解析器',
+  )
+})
+
+await check('⚠️ index.js 挂了这道守卫，而且排在站内那个之前', async () => {
+  /*
+    上面那几条「回 OAuth 形状」的用例跑的是**本文件自己搭的 app**，
+    证明的是那个函数好用。线上那个 app 有没有挂、挂在第几位，只能扫源码。
+
+    排序是要紧的：站内那个错误处理会把 413 先截走，开放平台的请求就拿不到
+    OAuth 形状了 —— 而这种错排不会有任何症状，直到某个接入方发来一张截图。
+  */
+  const fs = (await import('node:fs')).default
+  const index = stripComments(fs.readFileSync(new URL('../src/index.js', import.meta.url), 'utf8'))
+  const mine = index.indexOf('app.use(openErrorMiddleware(')
+  const site = index.indexOf('app.use((err')
+  assert.ok(mine > 0, 'index.js 没有挂 openErrorMiddleware')
+  assert.ok(site > 0, '找不到站内的错误处理 —— 这条断言的前提没了，去看看 index.js 改成什么了')
+  assert.ok(mine < site, '开放平台的守卫排在站内错误处理后面 —— 413 会先被站内形状截走')
+})
+
+await check('⚠️ 不是开放平台的请求，这道守卫原样放行（别把站内的错误也改了形状）', () => {
+  const mw = openErrorMiddleware(() => 'https://8bitgo.com')
+  let passed = null
+  let responded = false
+  const res = { status() { responded = true; return this }, json() { responded = true; return this } }
+  mw(new Error('boom'), { originalUrl: '/api/me' }, res, (e) => { passed = e })
+  assert.ok(passed instanceof Error, '站内请求的错误被开放平台的守卫吃掉了')
+  assert.equal(responded, false, '守卫替站内请求回了响应')
+})
+
+await check('⚠️ 取站点地址抛异常也不能把错误处理本身搞挂', () => {
+  const mw = openErrorMiddleware(() => { throw new Error('env 没配') })
+  let status = 0
+  let body = null
+  mw({ status: 400 }, { originalUrl: '/api/open/v1/token' },
+     { status(s) { status = s; return this }, json(b) { body = b; return this } },
+     () => assert.fail('不该放行'))
+  assert.equal(status, 400)
+  assert.equal(body.error, 'invalid_request')
+  assert.equal(body.error_uri, undefined, '取不到站点地址就不该带 error_uri')
+})
+
+console.log('\n七、错误体形状（open/errors.js，纯函数）')
+
+await check('超限 -> 413 invalid_request', () => {
+  const { status, body } = openErrorFor({ type: 'entity.too.large' }, 'https://8bitgo.com')
+  assert.equal(status, 413)
+  assert.equal(body.error, 'invalid_request')
+  assert.equal(body.error_uri, 'https://8bitgo.com/developers/docs/errors#invalid_request')
+})
+
+await check('4xx 原样带过去，5xx 一律 server_error', () => {
+  assert.equal(openErrorFor({ status: 400 }).status, 400)
+  assert.equal(openErrorFor({ status: 415 }).body.error, 'invalid_request')
+  assert.equal(openErrorFor(new Error('boom')).status, 500)
+  assert.equal(openErrorFor(new Error('boom')).body.error, 'server_error')
+})
+
+await check('⚠️ 不把内部错误信息透出去', () => {
+  const { body } = openErrorFor(new Error('/srv/8bitgo/server/src/db.js:42 ECONNREFUSED'))
+  assert.ok(!JSON.stringify(body).includes('db.js'), '错误体里带上了内部路径')
+  assert.ok(!JSON.stringify(body).includes('ECONNREFUSED'))
+})
+
+await check('⚠️ 给不出站点地址就不带 error_uri（不编一个假的）', () => {
+  assert.equal(openErrorFor({ status: 400 }).body.error_uri, undefined)
+  assert.equal(openErrorFor({ status: 400 }, '').body.error_uri, undefined)
+})
+
+await check('⚠️ 路径前缀带尾斜杠，/api/opensesame 不算开放平台', () => {
+  assert.equal(isOpenPath('/api/open/v1/token'), true)
+  assert.equal(isOpenPath('/api/open/v1/games?lang=ja'), true)
+  assert.equal(isOpenPath('/api/opensesame'), false)
+  assert.equal(isOpenPath('/api/me'), false)
+  assert.equal(isOpenPath(undefined), false)
 })
 
 server.close()

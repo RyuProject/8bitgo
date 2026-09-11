@@ -34,7 +34,7 @@ import { deleteSave, pullSave, pushSave } from '@/services/saves'
 import { loadGameBytes } from '../romLoader'
 import { loadSystemBytes, systemSourcesFor } from '../systemSource'
 import { armJspi } from '../jspiFlag'
-import { windowsGuestStartupBudgetMs } from '../loadProgress'
+import { STARTING_MILESTONE, windowsGuestStartupBudgetMs } from '../loadProgress'
 import { assertTypeable, scheduleWindowsLaunch, windows3xLaunchCommands, type WindowsLaunchCi } from '../windowsLaunch'
 
 /** P2P 模式的撮合服务器。自建的话见 https://github.com/caiiiycuk/WebRTC-NET（Go） */
@@ -594,6 +594,18 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           else if (event === 'bnd-play' || event === 'ci-ready') {
             if (event === 'ci-ready' && arg) {
               ci = arg as DosCi
+              /*
+                进度条的第一个真实里程碑。
+                ci-ready = DOSBox-X 的命令接口建好了，也就是 qcow2 挂载 / 建盘那一段
+                （冷启动实测 ~72 秒，整条链上最慢的一段）已经过去了。
+                在此之前 80% 之后没有任何真实信号，条子全靠计时器瞎爬。
+
+                ⚠️ 只有客体那条路报。普通 DOS 游戏 ci-ready 的下一句就是 markReady，
+                报了不但没用，还会把播放器切进「按里程碑分段」的模式 ——
+                而那套分段的前提是后面还有 desktop / launched 两个里程碑会来，
+                普通 DOS 一个都不会来。
+              */
+              if (guest) options.onProgress?.({ phase: 'starting', startup: STARTING_MILESTONE.ci })
               // 相对鼠标的上下方向由我们说了算（见 hookMouseInvert）；只有开了指针锁定的游戏才有相对位移
               if (options.mouseCapture) hookMouseInvert(ci, () => mouseInverted)
               // DOSBox 真的在跑、命令接口也有了，这才是「玩家可以动手」。Windows 客体另算（等自启动）
@@ -610,6 +622,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                   // 所以播放器还能自动重试一次；以前这条链根本没有失败出口
                   (msg) => {
                     if (!destroyed && !readySent) options.onError?.(fmt(rt.jsdosRunFailed, { msg }))
+                  },
+                  // 另外两个里程碑：桌面画完了 / 启动命令敲完了。只推进度条，不参与成败判定
+                  (step) => {
+                    if (destroyed) return
+                    options.onProgress?.({
+                      phase: 'starting',
+                      startup: step === 'desktop' ? STARTING_MILESTONE.desktop : STARTING_MILESTONE.launched,
+                    })
                   },
                 )
               }

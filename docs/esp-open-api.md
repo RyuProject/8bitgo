@@ -75,19 +75,24 @@ curl -i -X POST https://8bitgo.com/api/open/v1/token \
 
 ## 2. 取令牌 `POST /v1/token`
 
-### ⚠️ 必须发 JSON，不能发 form-encoded
+### 两种写法都收
 
-标准 OAuth 的 token 端点收的是 `application/x-www-form-urlencoded`，
-**但这个服务端没有挂 `express.urlencoded`** —— 全局只挂了 `express.json`
-（`server/src/index.js:84`，全仓库 grep `urlencoded` 只有 `auth.js` 里 OAuth 回调那一处）。
+| Content-Type | 说明 |
+|---|---|
+| `application/x-www-form-urlencoded` | **RFC 6749 §4.1.3 规定的那种**。现成的 OAuth 客户端库默认发这个 |
+| `application/json` | 非标准的扩展写法，设备端手写 HTTP 时更省事 |
 
-后果：form-encoded 发过去 `req.body` 是空的 → `grant_type` 读不到 →
-回 `400 unsupported_grant_type`，而错误信息里完全看不出真正的原因。
-现成的 OAuth 客户端库默认就是 form-encoded，**在这里一律会失败**。
+两种取到的东西完全一样（scope、`expires_in` 都一致，有测试钉住）。
+请求体上限 **16 KB**，超了回 `413 invalid_request`。
 
-设备端本来也是手写 HTTP，发 JSON 反而更省事。
+> 📌 **2026-09-11 之前这里是坏的**：服务端全局只挂了 `express.json`，
+> form-encoded 发过去 `req.body` 是空的 → `grant_type` 读不到 →
+> 回一句 `400 unsupported_grant_type`，而那句话完全看不出真正的原因
+> （它说「不支持这个 grant_type」，可你明明传了 `client_credentials`）。
+> 现成的 OAuth 库一律接不上。已在 `routes/open.js` 的 token 路由上单独补了解析器。
+> 如果你对着的是旧版本服务端，**发 JSON**。
 
-### 请求
+### 请求（JSON 写法）
 
 ```http
 POST /api/open/v1/token HTTP/1.1
@@ -97,12 +102,22 @@ Content-Type: application/json
 {"grant_type":"client_credentials","client_id":"app_xxxx","client_secret":"yyyy"}
 ```
 
+### 请求（form 写法）
+
+```http
+POST /api/open/v1/token HTTP/1.1
+Host: 8bitgo.com
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=client_credentials&client_id=app_xxxx&client_secret=yyyy
+```
+
 带凭据有两种写法，二选一：
 
 | 写法 | 怎么发 |
 |---|---|
 | **放 body**（推荐，ESP 上最省事） | `client_id` / `client_secret` 两个字段写在 JSON 里 |
-| **HTTP Basic** | `Authorization: Basic base64(client_id + ":" + client_secret)`，body 仍然要是 JSON `{"grant_type":"client_credentials"}`。⚠️ 两段按 RFC 6749 §2.3.1 要先做 URL 编码 |
+| **HTTP Basic** | `Authorization: Basic base64(client_id + ":" + client_secret)`，body 里只留 `grant_type`。⚠️ 两段按 RFC 6749 §2.3.1 要先做 URL 编码 |
 
 `scope` 字段**可以不传**：不传就给「已获批 ∩ 应用级」的全部。
 传了就必须是已获批的子集 —— **不会静默降级**，少一个就整个请求 400，
@@ -344,7 +359,8 @@ Authorization: Bearer eyJ...
 
 | HTTP | `error` | 什么意思 / 怎么办 |
 |---|---|---|
-| 400 | `unsupported_grant_type` | 只支持 `client_credentials`。**也可能是你发了 form-encoded** —— 见 §2 |
+| 400 | `invalid_request` | 请求体解析不了（畸形 JSON / 畸形表单）。413 也是这个码，表示**请求体超过 16 KB** |
+| 400 | `unsupported_grant_type` | 只支持 `client_credentials` |
 | 400 | `unauthorized_client` | 这个应用是 `public` 类型，不能用 `client_credentials` |
 | 400 | `invalid_scope` | 不认识的 scope / 要了用户级 scope / 应用没获批。描述里写了差哪个 |
 | 401 | `invalid_client` | AppID 或 key 不对。⚠️ 两种失败**回同一句话**（防 AppID 枚举），别指望从这里区分 |
@@ -355,6 +371,8 @@ Authorization: Bearer eyJ...
 | 404 | `rom_unavailable` | 这款游戏没有可下载的 ROM |
 | 410 | `grant_expired` | ROM 凭据过期 → 回第一步再换一张 |
 | 429 | `rate_limited` | 看 `Retry-After` |
+| 413 | `invalid_request` | 请求体超过 16 KB |
+| 500 | `server_error` | 服务端自己的问题。**不会带任何内部信息**，重试或者联系我们 |
 | 501 | `temporarily_unavailable` | 服务端没配密钥，整套或 ROM 那部分没启用。**你改不了，去看部署** |
 
 ---
@@ -419,7 +437,7 @@ DELETE /api/saves/:runtime/:slug?slot=0
 ## 10. 一条能跑通的最小链路
 
 ```
-1. POST /v1/token                      ← JSON！不是 form
+1. POST /v1/token                      ← JSON 或 form，两种都行
    └─ 存 access_token + millis() + expires_in
 
 2. GET  /v1/me                          ← 接线时打一次，确认 scope 对

@@ -34,6 +34,8 @@ import { iceRouter, registerTurnProbeTargets } from './routes/ice.js'
 import { startTurnHealth } from './turnProbe.js'
 import { imRouter } from './routes/im.js'
 import { openRouter } from './routes/open.js'
+import { openErrorMiddleware } from './open/errors.js'
+import { publicSiteUrl } from './site-urls.js'
 import { openAppsRouter } from './routes/open-apps.js'
 import { adminOpenAppsRouter } from './routes/admin-open-apps.js'
 import { diagRouter } from './routes/diag.js'
@@ -281,6 +283,20 @@ if (ssrAvailable()) {
 }
 
 // 兜底错误处理
+/**
+ * 开放平台的错误体是 OAuth 形状（RFC 6749 §5.2），**和站内不是一套**。
+ *
+ * 路由里那些错误走 routes/open.js 的 fail()，形状一直是对的；
+ * 但**请求体解析失败的到不了路由** —— express.json 挂在全局（上面几十行），
+ * 畸形 JSON 在进 openRouter 之前就 next(err) 了。不单独接一下的话，
+ * 第三方拿到的是下面那句站内风格的「请求格式不正确」，而它的 OAuth 库只认
+ * error 码，只会报一句「无法解析的响应」—— 真正的原因一个字都没传达到。
+ *
+ * ⚠️ **必须排在下面那个站内错误处理之前**：站内那个会把 413 先截走。
+ * 不是开放平台的请求它原样 next(err) 放行，对站内没有任何影响。
+ */
+app.use(openErrorMiddleware(publicSiteUrl))
+
 app.use((err, _req, res, _next) => {
   // body-parser 的超限错误要回 413，不然前端只看到一个含糊的 500
   if (err?.type === 'entity.too.large' || err?.status === 413) {

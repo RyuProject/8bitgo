@@ -18,9 +18,17 @@
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
 
-const { createOverallRatio, createSpeedMeter, liftRatio, LOAD_PHASE_RANGE } = await import(
-  fileURLToPath(new URL('../src/emulator/loadProgress.ts', import.meta.url))
-)
+const {
+  createOverallRatio,
+  createSpeedMeter,
+  liftRatio,
+  LOAD_PHASE_RANGE,
+  nextStartupMilestone,
+  startingSegmentMs,
+  STARTING_MILESTONE,
+  STARTING_MILESTONE_CAP,
+  windowsGuestStartupBudgetMs,
+} = await import(fileURLToPath(new URL('../src/emulator/loadProgress.ts', import.meta.url)))
 const { formatSpeed } = await import(fileURLToPath(new URL('../src/lib/emulator.ts', import.meta.url)))
 
 /* ---- 播放器那套的最小复刻（逐字照抄 EmulatorPlayer.tsx 的公式与常量）---- */
@@ -28,35 +36,66 @@ const PHASE_ORDER = ['engine', 'assets', 'rom', 'starting']
 const LOAD_PHASE_DURATION_MS = { engine: 20_000, assets: 45_000, rom: 45_000 }
 const CEILING = 0.99
 
-function makePlayer({ autoAdvance, floor = 0 }) {
+/** 逐字照抄 EmulatorPlayer.tsx 的 makeProgressClock */
+function makeClock(phase, startup = 0, milestones = false, now = 0) {
+  const [start, end] = LOAD_PHASE_RANGE[phase]
+  const span = end - start
+  const segmented = phase === 'starting' && milestones
+  return {
+    phase,
+    startedAt: now,
+    from: segmented ? start + span * startup : start,
+    to: segmented ? start + span * nextStartupMilestone(startup) : end,
+    startup: segmented ? startup : 0,
+    milestones,
+  }
+}
+
+function makePlayer({ autoAdvance, floor = 0, milestones = false, launchDelay = 24 }) {
   const overall = createOverallRatio(floor)
-  let clock = { phase: 'engine', startedAt: 0 }
+  let clock = makeClock('engine', 0, milestones, 0)
   let shown = floor
 
   const enterPhase = (phase, now) => {
     if (PHASE_ORDER.indexOf(phase) <= PHASE_ORDER.indexOf(clock.phase)) return
-    clock = { phase, startedAt: now }
+    clock = makeClock(phase, 0, milestones, now)
+  }
+  const enterMilestone = (startup, now) => {
+    if (startup === undefined) return
+    if (clock.phase !== 'starting' || startup <= clock.startup + 1e-6) return
+    clock = makeClock('starting', Math.min(STARTING_MILESTONE_CAP, startup), true, now)
   }
   const advance = (now) => {
+    if (clock.phase === 'starting') {
+      if (!clock.milestones) return
+      const next = nextStartupMilestone(clock.startup)
+      if (next >= 1) return
+      clock = makeClock('starting', next, true, now)
+      return
+    }
     const next = PHASE_ORDER[PHASE_ORDER.indexOf(clock.phase) + 1]
-    if (next) clock = { phase: next, startedAt: now }
+    if (next) clock = makeClock(next, 0, clock.milestones, now)
   }
   return {
     get shown() { return shown },
     get phase() { return clock.phase },
+    get startup() { return clock.startup },
     onProgress(p, now) {
       enterPhase(p.phase, now)
+      enterMilestone(p.startup, now)
       const actual = Math.min(CEILING, overall(p))
       shown = Math.max(shown, actual)
       if (autoAdvance && actual >= LOAD_PHASE_RANGE[clock.phase][1] - 1e-6) advance(now)
     },
     /** 250ms 那个视觉计时器的一拍 */
     tick(now) {
-      const [phaseStart, phaseEnd] = LOAD_PHASE_RANGE[clock.phase]
-      const duration = clock.phase === 'starting' ? 45_000 : LOAD_PHASE_DURATION_MS[clock.phase]
+      const duration =
+        clock.phase === 'starting'
+          ? startingSegmentMs(clock.startup, clock.milestones, launchDelay)
+          : LOAD_PHASE_DURATION_MS[clock.phase]
       const elapsed = now - clock.startedAt
-      const visualStart = Math.max(0.01, phaseStart)
-      const visualEnd = Math.min(CEILING, phaseEnd - 0.01)
+      const visualStart = Math.max(0.01, clock.from)
+      const visualEnd = Math.max(visualStart, Math.min(CEILING, clock.to - 0.01))
       shown = Math.max(
         shown,
         Math.min(CEILING, liftRatio(floor, visualStart + (visualEnd - visualStart) * Math.min(1, elapsed / duration))),
@@ -64,6 +103,19 @@ function makePlayer({ autoAdvance, floor = 0 }) {
       if (autoAdvance && elapsed >= duration) advance(now)
     },
   }
+}
+
+/**
+ * 复刻 2026-09-11 实测到的那条 Windows 客体时间线（zeek-the-geek / Win3.11，热缓存）。
+ * 时刻是实测值，不是拍脑袋：0.4s 下载完、0.5s 后 ci-ready、2.4s 桌面、
+ * 改完之后约 12s 敲完命令。
+ */
+function runWindowsGuestLoad(player, t0 = 0) {
+  player.onProgress({ phase: 'engine', ratio: 1 }, t0)
+  player.onProgress({ phase: 'assets', loaded: 6_425_021, total: 6_425_021, ratio: 1 }, t0 + 300)
+  player.onProgress({ phase: 'rom', loaded: 166_281, total: 166_281, ratio: 1 }, t0 + 400)
+  player.onProgress({ phase: 'starting' }, t0 + 400)
+  return t0 + 400
 }
 
 /** 复刻 EmulatorJS 的行为：报 engine / rom，**从不报 starting** */
@@ -147,6 +199,95 @@ console.log('\n── 只进不退 ──')
   // 迟到的 engine 事件（引擎乱序报数）不能把条子拽回去
   p.onProgress({ phase: 'engine', loaded: 100, total: 1_000_000, ratio: 0.0001 }, 100)
   ok(p.shown >= high, '迟到的早期阶段事件不会让条子倒退')
+}
+
+console.log('\n── 复现旧行为：Windows 客体「80% 之后一动不动」──')
+{
+  /*
+    旧公式：starting 那一格直接拿 windowsGuestStartupBudgetMs 当 duration。
+    这里不用跑播放器，算一下就知道有多离谱。
+  */
+  const budget = windowsGuestStartupBudgetMs(24)
+  ok(budget === 389_000, `旧的视觉预算是 ${budget / 1000} 秒（= 24 + 90 + 15 + 20 + 240）`)
+  const at = (ms) => 0.8 + (0.99 - 0.8) * Math.min(1, ms / budget)
+  const onePercent = (budget * 0.01) / 0.19
+  ok(Math.round(onePercent / 100) / 10 === 20.5, `⭐ 按它铺 0.80→0.99，1% 要走 ${(onePercent / 1000).toFixed(1)} 秒`)
+  ok(Math.round(at(39_000) * 100) === 82, `⭐ 游戏 39 秒就跑起来了，条子才走到 ${Math.round(at(39_000) * 100)}% —— 这就是用户报的「80% 之后特别慢」`)
+}
+
+console.log('\n── 新行为：Windows 客体按里程碑推进 ──')
+{
+  const p = makePlayer({ autoAdvance: true, milestones: true })
+  let t = runWindowsGuestLoad(p)
+  ok(Math.abs(p.shown - 0.8) < 1e-9, `下载完正好 ${(p.shown * 100).toFixed(0)}%`)
+  ok(p.phase === 'starting', '进了 starting')
+
+  p.onProgress({ phase: 'starting', startup: STARTING_MILESTONE.ci }, t + 500)
+  ok(Math.round(p.shown * 100) === 86, `⭐ ci-ready（qcow2 建盘完成）→ ${Math.round(p.shown * 100)}%`)
+
+  p.onProgress({ phase: 'starting', startup: STARTING_MILESTONE.desktop }, t + 2500)
+  ok(Math.round(p.shown * 100) === 91, `⭐ 桌面画完了 → ${Math.round(p.shown * 100)}%`)
+
+  // 盯画面 + 按键链那十来秒里没有任何事件，只有视觉计时器在跑
+  for (let i = 1; i <= 40; i++) p.tick(t + 2500 + i * 250)
+  const crawling = p.shown
+  ok(crawling > 0.91 && crawling < 0.97, `按键链期间条子仍在爬（${(crawling * 100).toFixed(0)}%），且没越过下一个里程碑`)
+
+  p.onProgress({ phase: 'starting', startup: STARTING_MILESTONE.launched }, t + 12_000)
+  ok(Math.round(p.shown * 100) === 97, `⭐ 启动命令敲完 → ${Math.round(p.shown * 100)}%`)
+
+  // 最后那一格永远留给 onReady
+  for (let i = 1; i <= 400; i++) p.tick(t + 12_000 + i * 250)
+  ok(p.shown <= CEILING + 1e-9, `视觉进度封顶在 ${(p.shown * 100).toFixed(0)}%，100% 只能由 onReady 画`)
+}
+
+console.log('\n── 里程碑只进不退、且封不到顶 ──')
+{
+  const overall = createOverallRatio()
+  const high = overall({ phase: 'starting', startup: STARTING_MILESTONE.launched })
+  const late = overall({ phase: 'starting', startup: STARTING_MILESTONE.ci })
+  ok(late >= high, '迟到的早期里程碑（ci 排在 desktop 后面才跑）不会让条子倒退')
+
+  const maxed = createOverallRatio()({ phase: 'starting', startup: 1 })
+  ok(maxed <= 0.8 + 0.2 * STARTING_MILESTONE_CAP + 1e-9, `适配器就算报 startup: 1 也只到 ${(maxed * 100).toFixed(0)}%`)
+  ok(maxed < 0.99, '⭐ 无论如何画不到 100% —— 那一步只能由 onReady 走')
+}
+
+console.log('\n── starting 阶段仍然不吃 ratio ──')
+{
+  /*
+    ruffle / jsnes / webretro 都是资源一读完就报 `starting: 1`，那只表示「资源准备完了」。
+    认了它条子会当场冲到 98% 再原地不动 —— 和「卡在 80%」是同一种病，只换了个数字。
+  */
+  const overall = createOverallRatio()
+  ok(Math.abs(overall({ phase: 'starting', ratio: 1 }) - 0.8) < 1e-9, '⭐ `starting: 1` 仍然只算 80%')
+}
+
+console.log('\n── 别的运行时不能被分段拖慢 ──')
+{
+  /*
+    里程碑只有 Windows 客体报得出来。给别的运行时也切成四小格的话，每格都要先耗光
+    自己的预算才往下走，80→99% 会从 45 秒变成 180 秒 —— 那是把这次要修的 bug
+    搬到别的平台上再犯一遍。
+  */
+  const p = makePlayer({ autoAdvance: true })
+  const t = runEmulatorJsLoad(p)
+  ok(p.phase === 'starting' && p.startup === 0, 'EmulatorJS 进了 starting，且没有里程碑')
+  for (let i = 1; i <= 200; i++) p.tick(t + i * 250)
+  ok(p.shown > 0.95, `⭐ 50 秒内照样爬到 ${(p.shown * 100).toFixed(0)}%，没被切段拖慢`)
+}
+
+console.log('\n── 分段预算本身 ──')
+{
+  ok(startingSegmentMs(0, false) === 45_000, '非客体：整段 45 秒，和以前一样')
+  ok(startingSegmentMs(0, true) === 90_000, 'Dos() → ci-ready 给 90 秒（冷启动实测 ~72 秒）')
+  ok(startingSegmentMs(STARTING_MILESTONE.ci, true) === 30_000, 'ci-ready → 桌面给 30 秒')
+  ok(
+    startingSegmentMs(STARTING_MILESTONE.desktop, true, 24) === 39_000,
+    '桌面 → 敲完命令 = dosLaunchDelay 上限 24 秒 + 按键链 15 秒',
+  )
+  ok(startingSegmentMs(STARTING_MILESTONE.launched, true) === 20_000, '敲完 → 第一帧 = 那段画面确认的 20 秒')
+  ok(nextStartupMilestone(STARTING_MILESTONE.launched) === 1, '最后一个里程碑之后就是终点')
 }
 
 console.log('\n── 速度表 ──')

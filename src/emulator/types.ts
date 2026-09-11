@@ -196,6 +196,15 @@ export interface LoadProgress {
   phase: LoadPhase
   /** 0~1。拿不到总量时为 undefined —— UI 会结合已下载字节与阶段计时给出渐进估算。 */
   ratio?: number
+  /**
+   * `starting` 阶段的里程碑，0~1。**只报确证发生过的事**（见 loadProgress 的
+   * STARTING_MILESTONE），别拿它报「我打算开始启动了」。
+   *
+   * 为什么不复用 ratio：ratio 在 starting 阶段是被刻意忽略的 —— 好几个适配器
+   * 资源一读完就报 `starting: 1`，认了它条子会当场冲到顶再原地不动。
+   * startup 是另一件事：它对应的是「客体真的到了哪一步」，所以可以放心吃。
+   */
+  startup?: number
   /** 已下载字节数 */
   loaded?: number
   /** 总字节数。服务器没给 Content-Length、或响应被压缩过时没有 */
