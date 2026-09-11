@@ -87,7 +87,8 @@
     "romsets": "node scripts/build-arcade-romsets.mjs",
     "romdata": "node scripts/make-romdata.mjs",
     "hackpack": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/prep-arcade-hack.mjs",
-    "test:ssr-hoist": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-ssr-hoist.mjs"
+    "test:ssr-hoist": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-ssr-hoist.mjs",
+    "test:watch-panel": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-live-watch-panel.mjs"
   },
   "dependencies": {
     "@tencentcloud/chat": "3.6.7",

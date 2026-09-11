@@ -68,6 +68,27 @@ export interface LiveChatMessage {
   /** 是不是房主发的。服务端比对 hostSocketId 得出，伪造不了 */
   host: boolean
   text: string
+  /**
+   * 这条是**进房时补的历史**，不是刚发生的。
+   *
+   * ⚠️ 只在客户端打，服务端不发这个字段 —— 它回答的是「对我来说这条是不是旧的」，
+   * 而同一条消息对先进来的人是新的、对后进来的人是历史，本来就不是消息自己的属性。
+   *
+   * 唯一的用处是让飘幕跳过它们：三十条历史一次性到达，全飞的话会瞬间糊满画面，
+   * 而且把真正该飞的新消息挤掉（见 LiveChatLane 的 seen / FLYING_MAX）。
+   */
+  history?: boolean
+}
+
+/**
+ * 观众名单里的一位。服务端派生，客户端自报的一律不认（见 server/src/live.js 的 viewerList）。
+ *
+ * 三种形态：`{name}` 登录用户、`{guest}` 游客、`{}` 名字还在异步解析中。
+ * ⚠️ **没有 socket.id**：名单会发给房间里所有人，带 id 等于把「谁是谁」的句柄散出去。
+ */
+export interface LiveViewerEntry {
+  name?: string
+  guest?: string
 }
 
 /** socket.io 客户端的最小接口，够用就行，不为它引一整套类型 */

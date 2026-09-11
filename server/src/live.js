@@ -62,7 +62,11 @@ import {
  *   ← viewer-name    {viewerId, name?, guest?}  发给主播：这个观众叫什么。
  *                      **单独一条、异步发**，不并进 viewer-joined —— 名字要查库，
  *                      而 viewer-joined 是 offer 的发令枪，不能为一个显示用的字段等 I/O
- *   ← viewers        {count}         主播和观众都收
+ *   ← viewers        {count, list}   主播和观众都收。list = 观众名单，每项 {name?} / {guest?} / {}
+ *                      ⚠️ **名单里没有 socket.id**：观众端只拿它显示，而 id 发给房间里
+ *                      所有人等于把「谁是谁」的句柄散出去。名字还没解析完的占一个空位 {}。
+ *                      ⚠️ 这意味着**每个观众的昵称对房间里所有人可见**（2026-09-11 站长拍板，
+ *                      在此之前只有发过弹幕的人才露名）。
  *   ← host-away                      发给观众：主播断线了，房间先留着
  *   ← host-back      {hostId}        发给观众：主播回来了，socket id 换了
  *   ← live-ended     {reason}        发给观众
@@ -307,9 +311,57 @@ function hostIp(socket) {
   }
 }
 
-/** 广播人数给房间里所有人（主播 + 观众） */
+/**
+ * 这一房间当前的观众名单。
+ *
+ * ⚠️ **不带 socket.id**。观众端只拿它显示，不需要 id；而 id 一旦发给房间里所有人，
+ * 就等于把「谁是谁」的句柄散出去了。名字本身是服务端派生的（JWT → 昵称，否则游客号），
+ * 客户端自报的一律不认 —— 同 chatIdentity。
+ *
+ * ⚠️ 名字是**异步**解析的（可能查一次库），所以刚进来的那一位可能还没有名字，
+ * 这里就只占一个空位 `{}`。观众端按「还没拿到名字」画占位，不要显示成空白行。
+ */
+function viewerList(room) {
+  const out = []
+  for (const id of room.viewers) {
+    const who = room.viewerNames.get(id)
+    if (who?.name) out.push({ name: who.name })
+    else if (who?.guest) out.push({ guest: who.guest })
+    else out.push({})
+  }
+  return out
+}
+
+/**
+ * 解析一位观众的署名，落进 `room.viewerNames`，然后把名单重新广播一遍。
+ *
+ * 名字由服务端派生（JWT → 昵称，否则游客号），**不收客户端自报的** ——
+ * 自报就是冒名的口子，弹幕那边同理（见 chatIdentity）。
+ *
+ * ⚠️ 解析是异步的，这几十毫秒里房间可能已经散了、这位观众可能已经走了、
+ * 甚至已经换过一次 socket。所以落库前必须重新确认「这个 id 还在这个房间的名单里」——
+ * 不确认的话会把已经走掉的人重新写回 viewerNames，而那份 Map 再没有别的地方会清它。
+ */
+function resolveViewerName(nsp, room, socket) {
+  const viewerId = socket.id
+  void chatIdentity(socket)
+    .then((identity) => {
+      if (rooms.get(room.id) !== room || !room.viewers.has(viewerId)) return
+      room.viewerNames.set(viewerId, identity)
+      // 名单变了，房间里所有人重新拿一份
+      notifyViewers(nsp, room)
+      // 主播那边额外要 viewerId → 名字的映射，「XX 想上场当 2P」那句话用（见 coopSeat.ts）
+      if (room.hostSocketId) nsp.to(room.hostSocketId).emit('viewer-name', { viewerId, ...identity })
+    })
+    .catch(() => {
+      /* 取不到名字就留个空位：名单上是「观众」，主播那边退回「有人想上场」 */
+    })
+}
+
+/** 广播人数**和名单**给房间里所有人（主播 + 观众） */
 function notifyViewers(nsp, room) {
-  nsp.to(room.id).emit('viewers', { roomId: room.id, count: room.viewers.size })
+  // count 保持原样单独给：观众席徽章只要这一个数，不该为了它去数数组
+  nsp.to(room.id).emit('viewers', { roomId: room.id, count: room.viewers.size, list: viewerList(room) })
   // 人数变了 = 大厅那张卡片上的「N 人在看」也变了
   notifyRoomList()
 }
@@ -491,6 +543,7 @@ function leave(nsp, socket) {
   }
   room.viewers.delete(socket.id)
   room.viewerKeys.delete(socket.id)
+  room.viewerNames.delete(socket.id)
   // 告诉主播可以把这条 PeerConnection 拆了，别留着占上行
   if (room.hostSocketId) {
     nsp.to(room.hostSocketId).emit('viewer-left', { viewerId: socket.id })
@@ -548,6 +601,16 @@ export function attachLive(io) {
          * 「还是这个人」，把旧 id 换掉而不是当新观众（见文件头「观众换了 socket」）。
          */
         viewerKeys: new Map(),
+        /**
+         * 观众 socket.id → 服务端派生的署名（`{name}` 或 `{guest}`，同 chatIdentity）。
+         *
+         * 和 `viewers` 分开存而不是把 Set 换成 Map：`viewers` 有十来处在用
+         * `for...of` / `Array.from` / `.has()` 的集合语义（resume-live 的 ack 直接
+         * `Array.from(room.viewers)`），换成 Map 会让那些地方悄悄拿到 [k,v] 对。
+         * ⚠️ 代价是这两份要手动保持同步 —— 每一处 `viewers.delete` 旁边都必须有一条
+         * `viewerNames.delete`，server/scripts/test-live.mjs 有断言盯着。
+         */
+        viewerNames: new Map(),
         awayTimer: null,
         awaySince: null,
         /** 主播是不是切到后台了（画面冻着）。见 host-visibility */
@@ -631,6 +694,7 @@ export function attachLive(io) {
       if (previous) {
         room.viewers.delete(previous)
         room.viewerKeys.delete(previous)
+        room.viewerNames.delete(previous)
         membership.delete(previous)
         nsp.sockets.get(previous)?.leave(room.id)
       }
@@ -657,28 +721,22 @@ export function attachLive(io) {
           nsp.to(room.hostSocketId).emit('viewer-joined', { viewerId: socket.id, ...(previous ? { replaces: previous } : {}) })
         }
         /*
-          名字**单独一条、异步发**。
-
-          主播那边要它是为了「XX 想上场当 2P」这句话（见 coopSeat.ts）——
-          纯显示用途，而 chatIdentity 可能要查一次库。viewer-joined 是 offer 的发令枪，
-          让它等一次 I/O 会把第一帧往后推，为一个显示字段付这个代价不值得。
-
-          名字由服务端派生（JWT → 昵称，否则游客号），**不收客户端自报的** ——
-          自报就是冒名的口子，弹幕那边同理（见 chatIdentity）。
+          名字**不在这条里**，单独异步发，见下面 resolveViewerName。
         */
-        const viewerId = socket.id
-        const hostAt = room.hostSocketId
-        void chatIdentity(socket)
-          .then((identity) => {
-            // 这几十毫秒里主播可能已经换 socket / 散场了，那这条就没必要发了
-            if (rooms.get(room.id) !== room || room.hostSocketId !== hostAt) return
-            nsp.to(hostAt).emit('viewer-name', { viewerId, ...identity })
-          })
-          .catch(() => {
-            /* 取不到名字就不发，主播那边会退回「有人想上场」 */
-          })
       }
-      // 换 socket 不算人数变化：一个人还是一个人
+      /*
+        名字**单独解析、异步发**，不挡 viewer-joined。
+
+        viewer-joined 是 offer 的发令枪，而 chatIdentity 可能要查一次库 ——
+        让发令枪等一次 I/O 会把第一帧往后推，为一个显示字段付这个代价不值得。
+
+        ⚠️ 这一段以前嵌在 `if (room.hostSocketId)` 里，也就是**主播不在时根本不解析名字**。
+        那时候名字只服务于主播那句「XX 想上场当 2P」，没主播确实不需要。现在它还要供
+        观众端的名单用（房间里所有人都看得到），主播在不在都得解析。
+      */
+      if (!again) resolveViewerName(nsp, room, socket)
+      // 换 socket 不算人数变化：一个人还是一个人。
+      // （换 socket 那一路的名单由 resolveViewerName 解析完再广播）
       if (!again && !previous) notifyViewers(nsp, room)
     })
 

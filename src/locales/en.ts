@@ -948,6 +948,12 @@ const en: Translation = {
       chatDropped: "That one didn't go through — try again",
       chatGuest: 'Guest',
       chatEmpty: 'Nobody has said anything yet — go first.',
+      /* 观众端右栏的直播面板（见 LiveWatchPanel） */
+      watchHost: 'Host',
+      watchViewers: 'Watching',
+      watchMatch: 'Playing',
+      watchHistory: 'Chat log',
+      watchAnon: 'Viewer',
       padRebind: 'NES controls',
       padRebindHint: 'Click a key chip, then press the key you want. Esc cancels, Backspace unbinds.',
       padReset: 'Reset to defaults',

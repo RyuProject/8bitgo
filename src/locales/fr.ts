@@ -950,6 +950,12 @@ const fr: Translation = {
       chatDropped: "Ce message n'est pas parti — réessaie",
       chatGuest: 'Invité',
       chatEmpty: 'Personne n’a encore rien dit — lancez-vous.',
+      /* 观众端右栏的直播面板（见 LiveWatchPanel） */
+      watchHost: 'Hôte',
+      watchViewers: 'Spectateurs',
+      watchMatch: 'En partie',
+      watchHistory: 'Historique du chat',
+      watchAnon: 'Spectateur',
       padRebind: 'Commandes NES',
       padRebindHint: 'Cliquez sur une touche, puis appuyez sur celle que vous voulez. Échap annule, Retour arrière désaffecte.',
       padReset: 'Réinitialiser',

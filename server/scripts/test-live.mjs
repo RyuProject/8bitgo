@@ -2,6 +2,7 @@
  * 直播信令的端到端测试：起一个真的 http server + socket.io，
  * 用主播 / 观众两个客户端跑一遍完整流程。
  */
+import { readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { Server } from 'socket.io'
 import { io as client } from 'socket.io-client'
@@ -693,6 +694,89 @@ lv.close()
 
   for (const s of [zh, zh2, zh3, zv3]) s.close()
   await sleep(60)
+}
+
+/* ---------------- 观众名单（2026-09-11：viewers 事件从只有 count 变成带 list） ---------------- */
+{
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+  const rh = conn(); await once(rh, 'connect')
+  const r = await call(rh, 'go-live', { title: '名单', gameSlug: 'roster', gameName: 'Roster', platform: 'nes', hostName: 'Host' })
+  const rid = r.data.roomId
+
+  const rv1 = conn(); await once(rv1, 'connect')
+  const firstBroadcast = once(rh, 'viewers')
+  await call(rv1, 'watch', { roomId: rid })
+  const first = await firstBroadcast
+  check('viewers 事件带 list', Array.isArray(first?.list), `实际 ${JSON.stringify(first)}`)
+  check('list 的长度和 count 对得上', first?.list?.length === first?.count, `${first?.list?.length} vs ${first?.count}`)
+
+  /*
+    名字是异步解析的（chatIdentity 可能查一次库），所以第一条广播里多半只是个空位 {}，
+    解析完会**再广播一次**。这里等的就是第二条。
+  */
+  await sleep(300)
+  const room = liveRoom(rid)
+  check('人数记对了', room?.viewers === 1, `实际 ${room?.viewers}`)
+
+  const named = once(rh, 'viewers')
+  const rv2 = conn(); await once(rv2, 'connect')
+  await call(rv2, 'watch', { roomId: rid })
+  await sleep(300)
+  const list2 = (await named.catch(() => null))?.list ?? []
+  check('第二位观众进来后名单跟着长', list2.length >= 1, `实际 ${JSON.stringify(list2)}`)
+
+  // 直接读内部状态，避开异步广播的时序
+  const internal = [...(liveRooms?.() ?? [])]
+  void internal
+  const names = []
+  {
+    // 通过再触发一次广播来取一份「名字已经解析完」的名单
+    const settled = once(rh, 'viewers')
+    const rv3 = conn(); await once(rv3, 'connect')
+    await call(rv3, 'watch', { roomId: rid })
+    await sleep(400)
+    const l = (await settled.catch(() => null))?.list ?? []
+    names.push(...l)
+    rv3.close()
+    await sleep(200)
+  }
+  check('游客在名单里有游客号', names.some((e) => typeof e?.guest === 'string' && e.guest.length > 0), `实际 ${JSON.stringify(names)}`)
+
+  /*
+    ⚠️ 这一条是隐私红线，不是风格问题：socket.id 一旦跟着名单发给房间里**所有人**，
+    就等于把「谁是谁」的句柄散出去了。观众端只拿名单显示，一个 id 都不需要。
+  */
+  check(
+    '⚠️ 名单里不带 socket.id',
+    names.every((e) => !('id' in (e ?? {})) && !('viewerId' in (e ?? {})) && !('socketId' in (e ?? {}))),
+    `实际 ${JSON.stringify(names)}`,
+  )
+
+  // 走掉的人必须从名单里消失（viewers 和 viewerNames 是两份，最容易漏的就是这里）
+  const afterLeave = once(rh, 'viewers')
+  rv2.close()
+  const left = await afterLeave.catch(() => null)
+  await sleep(200)
+  check('观众走了名单跟着缩', (left?.list?.length ?? -1) === (left?.count ?? -2), `实际 ${JSON.stringify(left)}`)
+
+  for (const s of [rh, rv1, rv2]) s.close()
+  await sleep(60)
+}
+
+/* ---------------- 源码断言：viewers 和 viewerNames 必须成对维护 ---------------- */
+{
+  const src = readFileSync(new URL('../src/live.js', import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '')
+  const dels = (src.match(/room\.viewers\.delete\(/g) ?? []).length
+  const nameDels = (src.match(/room\.viewerNames\.delete\(/g) ?? []).length
+  /*
+    ⚠️ 名单存在 viewerNames 这份**独立的 Map** 里（viewers 是 Set，十来处在用集合语义，
+    换成 Map 会让 for...of / Array.from 悄悄拿到 [k,v] 对）。代价就是这两份要手动同步：
+    漏掉一处 delete，那位观众会永远挂在名单上 —— 而且不会报错，只是名单上多一个鬼。
+  */
+  check('⚠️ 每处 viewers.delete 都配了 viewerNames.delete', dels === nameDels, `viewers ${dels} 处 vs viewerNames ${nameDels} 处`)
+  check('⚠️ 名字只能由服务端派生（不收客户端自报的）', /chatIdentity\(socket\)/.test(src) && !/payload\?\.\s*name/.test(src))
 }
 
 for (const s of [host, host2, host3, host4, host5, v1, v2, v3, v4, v5, v6, solo, late, stranger]) s.close()

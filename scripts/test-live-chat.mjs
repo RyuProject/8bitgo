@@ -130,7 +130,11 @@ check('⚠️ 弹幕层的显示条件必须同时覆盖主播和观众', () => 
 check('⚠️ 弹幕层要画在画面容器里（全屏 / 沉浸式也得看得见）', () => {
   const src = read('src/emulator/EmulatorPlayer.tsx')
   const lane = src.indexOf('<LiveChatLane')
-  const bar = src.indexOf('{chatBarOn && !fullscreen && !playMode && (')
+  /*
+    ⚠️ 别把整串条件写死当锚点：09-11 那条条件加了 `!watchPanelOn`（观众端输入框搬去
+    右栏面板了），写死的锚点当场对不上，而这条断言真正要钉的是**先后顺序**，不是条件长什么样。
+  */
+  const bar = src.indexOf('{chatBarOn && ')
   assert.ok(lane > 0 && bar > 0, '找不到弹幕层 / 输入框')
   assert.ok(
     lane < bar,

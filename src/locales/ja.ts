@@ -934,6 +934,12 @@ const ja: Translation = {
       chatDropped: '送信できませんでした。もう一度お試しください',
       chatGuest: 'ゲスト',
       chatEmpty: 'まだ誰も発言していません。最初の一言をどうぞ。',
+      /* 观众端右栏的直播面板（见 LiveWatchPanel） */
+      watchHost: '配信者',
+      watchViewers: '視聴中',
+      watchMatch: 'プレイ中',
+      watchHistory: 'コメント履歴',
+      watchAnon: '視聴者',
       padRebind: 'ファミコンのキー',
       padRebindHint: 'キーの札を押してから、割り当てたいキーを押してください。Esc で中止、Backspace で解除。',
       padReset: '初期設定に戻す',

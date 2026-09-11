@@ -5,39 +5,36 @@ import { cx } from '@/lib/format'
 import { useT } from '@/services/i18n'
 import { CHAT_MAX_LENGTH, chatTextLength, sanitizeChatText } from '../../shared/live-chat.js'
 import type { ChatSendResult } from './chatSend'
+import { appendChat } from './liveChatStore'
 
 /**
- * 直播弹幕。两块东西：
+ * 直播弹幕。三块东西：
  *
- *   LiveChatLane   飘过画面的那一层（贴在舞台上，pointer-events-none）
- *   LiveChatBar    画面下方的输入框。**只有输入框，没有消息列表**
+ *   LiveChatLane     飘过画面的那一层（贴在舞台上，pointer-events-none）
+ *   LiveChatBar      输入框。主播在画面下方，观众在右栏直播面板里
+ *   LiveChatHistory  观众端右栏那段历史列表（2026-09-11 加回来的）
  *
- * ── 为什么下面那段列表被删掉了（2026-09-07，站长要求「不要历史记录」）──
- * 这块原来是「输入框 + 最近几条」，理由是「飘过去的有气氛但留不住，中途进来的人
- * 看到的是一片空白」。那个理由本身没错，但它把弹幕做成了半个聊天记录：
- * 自己发的话会一条条堆在框里不走，看着更像评论区而不是弹幕。
- * 现在的取舍是**明确选了「飘过就没了」**：气氛优先，留痕一概不要。
+ * ── 「要不要历史」这件事来回过两次，先读完再动 ────────────────
+ * 09-07 站长说「不要历史记录」，于是列表整块删掉，取舍写的是「飘过就没了，气氛优先」。
+ * 09-11 站长重新要：观众端右栏要「弹幕 + 弹幕历史记录（临时存储，关播后清除，限 100 条）」。
+ * **现在是后者。** 当初记下的三条连带影响，对应现在的处置：
+ *   1. 服务端的补历史**接回来了**（adapters/liveview.ts 的 watch ack，30 条环形缓冲）。
+ *   2. 中途进来的观众**看得到**他进来之前的弹幕 —— 09-07 到 09-11 之间看不到是刻意的，现在不是了。
+ *   3. `KEEP` 从 16 抬回 100。它重新是「历史」，不只是飘幕的输入缓冲。
  *
- * ⚠️ 连带的三件事，改回去之前先想清楚：
- *   1. **服务端的补历史不再往这儿送了**（见 adapters/liveview.ts 的 watch ack）。
- *      那批消息按设计是**不飞**的（一次性糊满屏没人读得了，见 LiveChatLane 的 seen），
- *      只进列表 —— 列表没了它们就完全看不见，push 进来纯属白传。
- *   2. 所以中途进来的观众**看不到**他进来之前说过的话，这是刻意的，不是 bug。
- *   3. `KEEP` 跟着降到只够喂飘幕（见下）。它现在不是「历史」，是飘幕的输入缓冲。
+ * ⚠️ 当初那条「自己发的话堆在框里不走、看着像评论区」的顾虑仍然成立，处置是**分工**：
+ * 飘幕只飞新消息（历史那批带 `history` 标记，不飞），历史只在**观众端右栏**出现 ——
+ * 主播端画面下方仍然只有输入框，一条列表都不画。主播要的是画面，不是聊天室。
+ *
+ * ⚠️ 历史是**临时的**：`useLiveChat` 跟着 `session.id` 清空，换一局 / 散场都不留痕，
+ * 也不落任何存储。这一条是站长明确要求的（「关播后清除所有记录」），别顺手加持久化 ——
+ * 存下来就得再配一套删除、举报、审核，那是评论该干的事。
  *
  * 消息**一律来自服务端**（自己发的那条也是服务端广播回来的），本地不做乐观回显 ——
  * 这样每个人看到的顺序完全一致。代价是自己发完到看见有一个 RTT 的延迟，
  * 但弹幕本来就是「大家一起看同一条时间线」，顺序比那点延迟重要。
  */
 
-/**
- * 本地最多留多少条。
- *
- * 这**不是历史**：唯一的消费者是 LiveChatLane，它靠这个数组的增量找出「哪些是新的」
- * （见那边的 seen）。所以只要比 FLYING_MAX 宽裕一点就够 —— 一批消息挤在同一拍到达时
- * 不至于还没起飞就被挤出数组。留 60 条那是上一版给列表滚动用的，现在纯属白占内存。
- */
-const KEEP = 16
 /** 画面上同时最多飘几条。再多就糊成一片，谁也读不了 */
 const FLYING_MAX = 8
 /** 弹幕分几条轨道 */
@@ -77,12 +74,7 @@ export interface LiveChatState {
 export function useLiveChat(): LiveChatState {
   const [messages, setMessages] = useState<LiveChatMessage[]>([])
   const push = useCallback((msg: LiveChatMessage) => {
-    setMessages((prev) => {
-      // 服务端重连、或者补历史时可能重发同一条，按 id 去重
-      if (prev.some((m) => m.id === msg.id)) return prev
-      const next = [...prev, msg]
-      return next.length > KEEP ? next.slice(next.length - KEEP) : next
-    })
+    setMessages((prev) => appendChat(prev, msg))
   }, [])
   const clear = useCallback(() => setMessages([]), [])
   return { messages, push, clear }
@@ -144,9 +136,13 @@ export function LiveChatLane({ messages, className }: { messages: LiveChatMessag
   /**
    * 只让**新**消息起飞。
    *
-   * 补历史那一批（中途进来时 watch 的 ack 给的）不该一次性糊满画面 ——
-   * 那些是「刚才说的」，属于下面那段列表，不属于此刻的画面。
-   * 第一次渲染时把已有的全部记成看过，之后新增的才飞。
+   * 补历史那一批（中途进来时 watch 的 ack 给的，带 `history` 标记）**不飞** ——
+   * 那些是「刚才说的」，属于右栏那段历史列表，不属于此刻的画面。
+   * 三十条一次性起飞的后果有两重：瞬间糊满屏没人读得了，而且会把真正该飞的新消息
+   * 从 FLYING_MAX 里挤出去。
+   *
+   * ⚠️ 历史那批**照样要进 `seen`**：不进的话，它们会在每一次 messages 变化时
+   * 重新被算成「新的」，于是每来一条新弹幕就连带把三十条历史再飞一遍。
    */
   useEffect(() => {
     const fresh = messages.filter((m) => !seen.current.has(m.id))
@@ -155,10 +151,11 @@ export function LiveChatLane({ messages, className }: { messages: LiveChatMessag
     if (seen.current.size > SEEN_MAX) {
       seen.current = new Set([...messages.map((m) => m.id), ...flying.map((m) => m.id)])
     }
-    if (!fresh.length) return
+    const flyable = fresh.filter((m) => !m.history)
+    if (!flyable.length) return
     const cap = reduced ? LANES : FLYING_MAX
     setFlying((prev) => {
-      const add = fresh.map((m) => {
+      const add = flyable.map((m) => {
         lane.current = (lane.current + 1) % LANES
         /*
           id 是 base64url，取两个字符当种子，够把时长摊开一点。
@@ -404,5 +401,67 @@ function ToggleButton({ icon, t }: { icon: string; t: ChatBarToggle }) {
       {/* 文字只在 sm 以上出现；正在切换时无论宽窄都显示 —— 是个在变的状态，光一个符号说不清 */}
       <span className={t.busy ? undefined : 'hidden sm:inline'}>{t.label}</span>
     </button>
+  )
+}
+
+/* ---------------- 观众端右栏：弹幕历史 ---------------- */
+
+/**
+ * 弹幕历史列表。**只在观众端右栏用**（主播端画面下方仍然只有输入框，见文件头）。
+ *
+ * 内容就是 `useLiveChat` 手里那个数组（最多 KEEP=100 条，跟着 session 清空），
+ * 这里不自己存任何东西 —— 「关播后清除所有记录」是靠那一层做到的，别在这里加缓存。
+ *
+ * ⚠️ **贴底要看用户有没有自己往上翻**。无条件 scrollTop = scrollHeight 的话，
+ * 人正在回头看前面几条时会被每一条新弹幕拽回底部，等于没法读。
+ * 判据是「当前离底部还有多远」，留 STICK_SLACK 的余量：浏览器缩放和小数像素会让
+ * scrollTop + clientHeight 差着零点几像素永远等不到 scrollHeight。
+ */
+const STICK_SLACK = 24
+
+export function LiveChatHistory({ messages, className }: { messages: LiveChatMessage[]; className?: string }) {
+  const t = useT()
+  const authorLabel = useAuthorLabel()
+  const boxRef = useRef<HTMLDivElement>(null)
+  /** 现在还贴着底吗。用 ref 不用 state：它每次滚动都变，进 state 会让整段列表重渲染 */
+  const stick = useRef(true)
+
+  const onScroll = useCallback(() => {
+    const box = boxRef.current
+    if (!box) return
+    stick.current = box.scrollHeight - box.scrollTop - box.clientHeight <= STICK_SLACK
+  }, [])
+
+  useEffect(() => {
+    const box = boxRef.current
+    if (!box || !stick.current) return
+    box.scrollTop = box.scrollHeight
+  }, [messages])
+
+  return (
+    <div className={cx('flex min-h-0 flex-col', className)}>
+      <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-dim">{t.player.tools.watchHistory}</p>
+      <div
+        ref={boxRef}
+        onScroll={onScroll}
+        /* role=log + aria-live：读屏会把新来的那条念出来，而不是要求用户自己去翻 */
+        role="log"
+        aria-live="polite"
+        className="min-h-0 flex-1 space-y-1.5 overflow-y-auto rounded-xl border border-line bg-surface p-2.5 text-sm"
+      >
+        {messages.length === 0 ? (
+          <p className="text-xs text-dim">{t.player.tools.chatEmpty}</p>
+        ) : (
+          messages.map((m) => (
+            <p key={m.id} className="break-words leading-snug">
+              <span className={cx('mr-1.5 text-xs', m.host ? 'font-bold text-live' : 'text-muted')}>
+                {authorLabel(m)}
+              </span>
+              <span className="text-fg">{m.text}</span>
+            </p>
+          ))
+        )}
+      </div>
+    </div>
   )
 }

@@ -947,6 +947,12 @@ const zhHant: Translation = {
       chatDropped: '這條沒發出去，再試一次',
       chatGuest: '訪客',
       chatEmpty: '還沒有人說話，來第一個。',
+      /* 观众端右栏的直播面板（见 LiveWatchPanel） */
+      watchHost: '主播',
+      watchViewers: '在看',
+      watchMatch: '連線',
+      watchHistory: '彈幕紀錄',
+      watchAnon: '觀眾',
       padRebind: '紅白機鍵位',
       padRebindHint: '點鍵位牌子，再按你要綁的鍵。Esc 取消，Backspace 解綁。',
       padReset: '恢復預設',

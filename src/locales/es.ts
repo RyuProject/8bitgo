@@ -948,6 +948,12 @@ const es: Translation = {
       chatDropped: 'Ese no se envió: inténtalo de nuevo',
       chatGuest: 'Invitado',
       chatEmpty: 'Todavía no ha hablado nadie: sé el primero.',
+      /* 观众端右栏的直播面板（见 LiveWatchPanel） */
+      watchHost: 'Anfitrión',
+      watchViewers: 'Viendo',
+      watchMatch: 'Jugando',
+      watchHistory: 'Registro de chat',
+      watchAnon: 'Espectador',
       padRebind: 'Controles NES',
       padRebindHint: 'Pulsa una tecla de la lista y luego la tecla que quieras. Esc cancela, Retroceso desasigna.',
       padReset: 'Restablecer',

@@ -1001,6 +1001,12 @@ export const zhHans = {
       chatDropped: '这条没发出去，再试一次',
       chatGuest: '游客',
       chatEmpty: '还没有人说话，来第一个。',
+      /* 观众端右栏的直播面板（见 LiveWatchPanel） */
+      watchHost: '主播',
+      watchViewers: '在看',
+      watchMatch: '联机',
+      watchHistory: '弹幕记录',
+      watchAnon: '观众',
       padRebind: '红白机键位',
       padRebindHint: '点键位牌子，再按你要绑的键。Esc 取消，Backspace 解绑。',
       padReset: '恢复默认',

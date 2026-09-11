@@ -29,7 +29,7 @@
  */
 import type { Capability, CaptureSources, MountOptions, PadButton, RuntimeHandle } from '../types'
 import { getT, fmt } from '@/services/i18n'
-import { connectLive, liveEnabled, liveIceConfig, type LiveChatMessage, type LiveSocket } from '@/services/live'
+import { connectLive, liveEnabled, liveIceConfig, type LiveChatMessage, type LiveSocket, type LiveViewerEntry } from '@/services/live'
 import { sendChatWithAck, type ChatSendResult } from '../chatSend'
 import { usableVideoSize } from '../videoTuning'
 import { COOP_CHANNEL, encode as encodeCoop, parse as parseCoop } from '../coopSeat'
@@ -42,6 +42,11 @@ export interface LiveSession {
   roomId: string
   onState?: (state: LiveViewState) => void
   onViewers?: (count: number) => void
+  /**
+   * 观众名单（2026-09-11 加的，在此之前服务端只广播人数）。
+   * 每次 `viewers` 事件都是**全量**，不是增量 —— 名单最多 MAX_VIEWERS 条，全量最省心。
+   */
+  onRoster?: (list: LiveViewerEntry[]) => void
   onInfo?: (info: { title: string; hostName: string; gameName: string }) => void
   /**
    * 主播把这个直播间同时开成了联机房（或者刚关掉，回传 null）。
@@ -799,16 +804,21 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       joined = true
       live.onInfo?.({ title: info.title, hostName: info.hostName, gameName: info.gameName })
       /*
-        ⚠️ **刻意不再补历史弹幕**（2026-09-07 起，见 LiveChat.tsx 的文件头）。
-        ack 里那个 `info.chat` 服务端照旧会送（30 条环形缓冲），我们收下不用。
+        补上进房之前的弹幕（2026-09-11 接回来的，站长拍板要）。
 
-        为什么不能「顺手 push 一下反正不亏」：弹幕现在只有飘幕这一个出口，而飘幕
-        **按设计不飞补历史那一批**（一次性糊满屏没人读得了，靠 LiveChatLane 的 seen 拦着）。
-        画面下方的消息列表已经整块删掉。所以 push 进来的这些谁都看不见 ——
-        白占内存、还会把 KEEP 那个飘幕缓冲挤掉真正该飞的新消息。
+        服务端一直在 watch 的 ack 里送这一批（`info.chat`，30 条环形缓冲），
+        09-07 到 09-11 之间客户端收下不用 —— 那时弹幕只有飘幕一个出口，补进来谁也看不见。
+        现在观众端右栏有历史面板了，这批消息有地方落，就接回来。
 
-        代价是明确接受的：中途进来的观众看不到他进来之前说过的话。
+        ⚠️ 每条都打上 `history: true`：**它们不能飞**。三十条一次性到达，全飞的话
+        瞬间糊满画面，而且会把真正该飞的新消息从 FLYING_MAX 里挤出去
+        （拦在 LiveChatLane，不是拦在这里 —— 这里只负责说清「这批是旧的」）。
       */
+      if (Array.isArray(info.chat)) {
+        for (const msg of info.chat) {
+          if (msg?.text) live.onChat?.({ ...msg, history: true })
+        }
+      }
       // 中途进来的观众：主播可能早就点过「联机」了，ack 里就带着房号
       live.onNetplay?.(info.netplayRoomId ?? null)
       // 主播那边收到 viewer-joined 后会主动发 offer 过来，这里等着就行
@@ -951,7 +961,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }) as (...args: never[]) => void)
 
 
-      s.on('viewers', ((p: { count?: number }) => live.onViewers?.(p?.count ?? 0)) as (...args: never[]) => void)
+      s.on('viewers', ((p: { count?: number; list?: LiveViewerEntry[] }) => {
+        live.onViewers?.(p?.count ?? 0)
+        // list 是 09-11 加的；老服务端没有这个字段，那就报空名单（界面退回只显示人数）
+        live.onRoster?.(Array.isArray(p?.list) ? p.list : [])
+      }) as (...args: never[]) => void)
       /**
        * 主播刚把这一局开成了联机房（传 null 就是刚关掉）。
        * 已经在看的人就是靠这一下多出「加入联机」按钮的 —— 他们不会再去刷大厅。

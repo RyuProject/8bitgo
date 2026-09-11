@@ -949,6 +949,12 @@ const de: Translation = {
       chatDropped: 'Das kam nicht an – bitte noch einmal',
       chatGuest: 'Gast',
       chatEmpty: 'Hier hat noch niemand etwas gesagt — mach den Anfang.',
+      /* 观众端右栏的直播面板（见 LiveWatchPanel） */
+      watchHost: 'Gastgeber',
+      watchViewers: 'Zuschauer',
+      watchMatch: 'Im Spiel',
+      watchHistory: 'Chatverlauf',
+      watchAnon: 'Zuschauer',
       padRebind: 'NES-Tasten',
       padRebindHint: 'Auf ein Tastenfeld klicken, dann die gewünschte Taste drücken. Esc bricht ab, Rücktaste löst die Belegung.',
       padReset: 'Zurücksetzen',

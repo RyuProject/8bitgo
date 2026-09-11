@@ -92,6 +92,13 @@ export function GameDetailPage() {
    * 播放器本来就该吃满 12 列。
    */
   const watchLayout = Boolean(liveInvite) && !immersive
+  /**
+   * 右栏那块直播面板的挂载点。播放器通过 portal 把面板画进这个节点。
+   *
+   * ⚠️ 用 **state + 回调 ref**，不用 useRef：portal 的目标节点必须在渲染时就拿得到，
+   * 而 useRef 挂上之后**不会触发重渲染** —— 播放器那边会一直看到 null，面板永远不出现。
+   */
+  const [livePanelSlot, setLivePanelSlot] = useState<HTMLElement | null>(null)
   const user = useCurrentUser()
   const [shareOpen, setShareOpen] = useState(false)
   const [addToCollection, setAddToCollection] = useState(false)
@@ -323,6 +330,7 @@ export function GameDetailPage() {
                   cloudInvite={cloudInvite}
                   watch={watchOnly}
                   liveInvite={liveInvite}
+                livePanelSlot={watchLayout ? livePanelSlot : null}
                   icon={game.icon}
                   // 这一款指定的核心（街机尤其需要），以及平台级 BIOS（Neo Geo 缺了起不来）
                   core={game.core}
@@ -526,59 +534,75 @@ export function GameDetailPage() {
               immersive && 'hidden',
             )}
           >
-            <div className="rounded-2xl border border-line bg-surface p-5">
-              <div className="flex items-center gap-3">
-                <span
-                  className="grid h-12 w-12 place-items-center rounded-xl text-2xl"
-                  style={{ background: `${platform.color}22`, border: `1px solid ${platform.color}55` }}
-                  aria-hidden
-                >
-                  {platform.icon}
-                </span>
-                <div>
-                  <p className="font-bold">{platformLabel(t, platform.id, platform.name)}</p>
-                  <p className="text-xs text-muted">
-                    {platform.manufacturer} · {platform.year}
-                  </p>
-                </div>
-              </div>
-              <p className="mt-3 text-sm leading-relaxed text-muted">{platformDesc(t, platform.id, platform.description)}</p>
-              <Button to={`/platforms/${platform.id}`} variant="secondary" size="sm" className="mt-4 w-full">
-                {fmt(t.game.browsePlatform, { platform: platform.shortName })}
-              </Button>
-            </div>
-
             {/*
-              评分与评论。放在平台卡下面 —— 沉浸模式下整个侧栏是隐藏的（见 aside 的 className），
-              那时候玩家在全屏玩游戏，这两块跟着一起收起来是对的。
+              看直播时右栏**整块换掉**：平台卡 / 评分 / 评论对正在看直播的人没有意义，
+              站长的原话是「观众端清除最右侧的内容，然后右侧放现在观看的联机+观众，
+              下面放弹幕，然后弹幕历史记录」。
 
-              评分在评论上面：打个分是一秒钟的动作，写评论要斟酌半天。
-              把成本低的那个放在先看到的位置，参与率会差出一个数量级。
+              这里只放一个**空容器**，真正的内容由 EmulatorPlayer 通过 portal 挂进来 ——
+              面板要的名单 / 人数 / 弹幕 / 发送句柄全在播放器的 state 里（见 LiveWatchPanel 文件头）。
+
+              lg:sticky：左边播放器很高，右栏内容比它短；不 sticky 的话往下滚一点弹幕就出画了。
             */}
-            {FEATURES.ratings && <GameRating gameSlug={game.slug} />}
-            {FEATURES.comments && <GameComments gameSlug={game.slug} />}
-
-            {FEATURES.coins && (
-            <div className="rounded-2xl border border-coin/30 bg-gradient-to-br from-coin/10 to-transparent p-5">
-              <p className="text-pixel text-[11px] text-coin">G COIN</p>
-              <p className="mt-2 text-sm leading-relaxed text-muted">
-                {game.coinReward > 0
-                  ? fmt(t.game.coinReward, {
-                      n: game.coinReward,
-                      suffix: user ? t.game.coinSuffixIn : t.game.coinSuffixOut,
-                    })
-                  : t.game.coinNone}
-              </p>
-              {user ? (
-                <p className="mt-4 text-sm font-semibold text-coin">
-                  {fmt(t.game.coinBalance, { n: user.coins.toLocaleString(getLang()) })}
-                </p>
-              ) : (
-                <Button onClick={openAuthModal} variant="coin" size="sm" className="mt-4">
-                  {t.game.coinLogin}
+            {watchLayout ? (
+              <div ref={setLivePanelSlot} className="lg:sticky lg:top-20" />
+            ) : (
+              <>
+              <div className="rounded-2xl border border-line bg-surface p-5">
+                <div className="flex items-center gap-3">
+                  <span
+                    className="grid h-12 w-12 place-items-center rounded-xl text-2xl"
+                    style={{ background: `${platform.color}22`, border: `1px solid ${platform.color}55` }}
+                    aria-hidden
+                  >
+                    {platform.icon}
+                  </span>
+                  <div>
+                    <p className="font-bold">{platformLabel(t, platform.id, platform.name)}</p>
+                    <p className="text-xs text-muted">
+                      {platform.manufacturer} · {platform.year}
+                    </p>
+                  </div>
+                </div>
+                <p className="mt-3 text-sm leading-relaxed text-muted">{platformDesc(t, platform.id, platform.description)}</p>
+                <Button to={`/platforms/${platform.id}`} variant="secondary" size="sm" className="mt-4 w-full">
+                  {fmt(t.game.browsePlatform, { platform: platform.shortName })}
                 </Button>
+              </div>
+
+              {/*
+                评分与评论。放在平台卡下面 —— 沉浸模式下整个侧栏是隐藏的（见 aside 的 className），
+                那时候玩家在全屏玩游戏，这两块跟着一起收起来是对的。
+
+                评分在评论上面：打个分是一秒钟的动作，写评论要斟酌半天。
+                把成本低的那个放在先看到的位置，参与率会差出一个数量级。
+              */}
+              {FEATURES.ratings && <GameRating gameSlug={game.slug} />}
+              {FEATURES.comments && <GameComments gameSlug={game.slug} />}
+
+              {FEATURES.coins && (
+              <div className="rounded-2xl border border-coin/30 bg-gradient-to-br from-coin/10 to-transparent p-5">
+                <p className="text-pixel text-[11px] text-coin">G COIN</p>
+                <p className="mt-2 text-sm leading-relaxed text-muted">
+                  {game.coinReward > 0
+                    ? fmt(t.game.coinReward, {
+                        n: game.coinReward,
+                        suffix: user ? t.game.coinSuffixIn : t.game.coinSuffixOut,
+                      })
+                    : t.game.coinNone}
+                </p>
+                {user ? (
+                  <p className="mt-4 text-sm font-semibold text-coin">
+                    {fmt(t.game.coinBalance, { n: user.coins.toLocaleString(getLang()) })}
+                  </p>
+                ) : (
+                  <Button onClick={openAuthModal} variant="coin" size="sm" className="mt-4">
+                    {t.game.coinLogin}
+                  </Button>
+                )}
+              </div>
               )}
-            </div>
+              </>
             )}
           </aside>
       </div>

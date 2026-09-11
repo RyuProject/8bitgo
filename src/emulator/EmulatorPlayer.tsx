@@ -14,7 +14,10 @@ import { platformBiosUrlSync } from '@/services/platformBios'
 import { EmulatorTools } from './EmulatorTools'
 import { TouchPad } from './TouchPad'
 import { LiveControls, type LiveControlsHandle } from './LiveControls'
+import { createPortal } from 'react-dom'
+import type { LiveViewerEntry } from '@/services/live'
 import { LiveChatBar, LiveChatLane, useLiveChat } from './LiveChat'
+import { LiveWatchPanel } from './LiveWatchPanel'
 import type { Broadcast } from './broadcast'
 import { matchLocalArcadeHack } from './arcadeHack'
 import type { LiveSession, LiveViewState } from './adapters/liveview'
@@ -152,6 +155,16 @@ interface Props {
    * 和 ?watch= 不是一回事：那个是联机房里的观众席，这个是「一人玩多人看」的直播。
    */
   liveInvite?: string
+  /**
+   * 观众看直播时，右栏那块直播面板要挂进去的**真实 DOM 节点**（详情页给的）。
+   *
+   * 为什么走 portal 而不是让详情页自己画：面板要的四样东西（观众名单、人数、弹幕、
+   * 发送句柄）全在这个组件的 state 里，提上去等于重构整个播放器。portal 只搬 DOM 位置、
+   * 不动组件树 —— 播放器一个像素都不会被卸载重建，而在直播场景下重建就是断流。
+   *
+   * null / undefined = 不画（主播端、或者详情页没给位置）。
+   */
+  livePanelSlot?: HTMLElement | null
   /** 空闲态背景（例如封面） */
   backdrop?: ReactNode
   /**
@@ -294,6 +307,7 @@ export function EmulatorPlayer({
   cloudInvite,
   watch = false,
   liveInvite,
+  livePanelSlot = null,
   backdrop,
   onReport,
   icon,
@@ -620,6 +634,13 @@ export function EmulatorPlayer({
    * 两者不会串，因为观众根本不挂 LiveControls（见下面那个 `!session?.live`）。
    */
   const watchingLiveStage = Boolean(session?.live) && !narrow
+  /**
+   * 右栏那块直播面板开着没有 —— 也就是「我是观众 **且** 详情页给了位置」。
+   *
+   * 它同时是「画面下方那条弹幕输入框要不要画」的开关：面板里已经有一个输入框了，
+   * 两个同时在页面上是明确的 bug（同一件事两个入口，还都能打字）。
+   */
+  const watchPanelOn = Boolean(livePanelSlot) && Boolean(session?.live)
   const liveCap = watchingLiveStage ? liveStageStyle(geometry, immersive) : undefined
   /**
    * 是不是正处在原生全屏里。
@@ -1021,6 +1042,13 @@ export function EmulatorPlayer({
   const cloudPlayedRef = useRef(false)
   /** 看直播：观众人数与直播标题 */
   const [liveViewers, setLiveViewers] = useState(0)
+  /**
+   * 观众名单（服务端派生的署名，2026-09-11 加的协议，在此之前只有人数）。
+   * 每次 `viewers` 事件都是**全量**，所以直接整份换掉，不做增量合并。
+   */
+  const [liveRoster, setLiveRoster] = useState<LiveViewerEntry[]>([])
+  /** 主播叫什么。`notice` 里那句是给提示条用的拼接串，面板要的是干净的名字 */
+  const [liveHostName, setLiveHostName] = useState<string | null>(null)
   const [liveState, setLiveState] = useState<LiveViewState | null>(null)
   /**
    * 主播切到后台了 —— 画面是**冻结**不是断开。
@@ -1748,8 +1776,14 @@ export function EmulatorPlayer({
         live: {
           roomId,
           onViewers: setLiveViewers,
+          // 名单和人数分开报：徽章只要那个数，面板要名字（见 LiveWatchPanel）
+          onRoster: setLiveRoster,
           onState: setLiveState,
-          onInfo: (info) => setNotice(info.hostName ? `${info.title} · ${info.hostName}` : info.title),
+          onInfo: (info) => {
+            setNotice(info.hostName ? `${info.title} · ${info.hostName}` : info.title)
+            // 面板要的是干净的名字，不是上面那句拼好的提示
+            setLiveHostName(info.hostName ?? null)
+          },
           onNetplay: setLiveNetplayRoom,
           onChat: chat.push,
           onFrozen: setLiveFrozen,
@@ -3256,7 +3290,11 @@ export function EmulatorPlayer({
         这一行会落在它后面，成了一个看不见但能被 Tab 到的输入框。
       */}
     </div>
-    {chatBarOn && !fullscreen && !playMode && (
+    {/*
+      ⚠️ `!watchPanelOn`：观众端的输入框已经搬到右栏面板里了（见 LiveWatchPanel），
+      这里再画一个就是同一件事两个入口。主播端 watchPanelOn 恒为 false，一如既往。
+    */}
+    {chatBarOn && !fullscreen && !playMode && !watchPanelOn && (
       <LiveChatBar
         className="mt-2"
         /*
@@ -3278,6 +3316,25 @@ export function EmulatorPlayer({
         coop={liveCtl?.coop ?? coopCtl}
       />
     )}
+    {/*
+      观众端右栏的直播面板。portal 进详情页给的那个节点 —— 只搬 DOM 位置、不动组件树，
+      播放器不会被卸载重建（重建 = 断流）。详见 LiveWatchPanel 的文件头和 livePanelSlot 那条注释。
+    */}
+    {watchPanelOn && livePanelSlot
+      ? createPortal(
+          <LiveWatchPanel
+            hostName={liveHostName}
+            viewers={liveViewers}
+            roster={liveRoster}
+            netplayRoomId={liveNetplayRoom}
+            messages={chat.messages}
+            /* 观众发弹幕走 liveview 那一路的 handle；拿不到就传 null 让输入框禁用 */
+            onSend={handle?.liveChat ? (text) => handle.liveChat?.(text) : null}
+            coop={coopCtl}
+          />,
+          livePanelSlot,
+        )
+      : null}
     </>
   )
 }
