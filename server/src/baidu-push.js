@@ -66,14 +66,37 @@ export function baiduPushLanguages(env = process.env) {
   return resolveLanguages(raw.split(',').map((s) => s.trim()).filter(Boolean))
 }
 
-/** 提交地址。token 在 query 里，所以这个字符串本身是敏感的，别打进日志。 */
+/**
+ * 提交地址。token 在 query 里，所以这个字符串本身是敏感的，别打进日志。
+ *
+ * ⚠️ **site 不做百分号编码。**
+ *
+ * 原来这里是 `url.searchParams.set('site', 'https://8bitgo.com')`，发出去是
+ * `site=https%3A%2F%2F8bitgo.com`；而百度文档里的示例、以及搜索资源平台
+ * 「API 提交」页面上直接复制的那条地址，都是没编码的 `site=https://8bitgo.com`。
+ *
+ * 两种写法按 RFC 3986 是等价的（query 里 `:` 和 `/` 本来就合法，
+ * `query = *( pchar / "/" / "?" )`），**规范上服务端该解出同一个值**。
+ * 但 site 对不上的症状是 not_same_site / site error —— 一条也不会收，
+ * 而且百度不会告诉你它到底解出了什么。既然对方文档给的是不编码的形式，
+ * 就按它的形式发，把这个变量从排查清单里划掉。
+ *
+ * 只让 `:` 和 `/` 保持原样，别的字符照编 —— site 来自 `new URL(x).origin`，
+ * 理论上只可能有 scheme / host / port，但别指望「理论上」。
+ */
 export function baiduPushEndpoint(options = {}) {
   const env = options.env || process.env
   const base = options.endpoint || env.BAIDU_PUSH_ENDPOINT || DEFAULT_BAIDU_ENDPOINT
   const url = new URL(base)
-  url.searchParams.set('site', options.site || baiduPushSite(env))
-  url.searchParams.set('token', options.token || baiduPushToken(env))
+  const site = options.site || baiduPushSite(env)
+  const token = options.token || baiduPushToken(env)
+  url.search = `site=${encodeSiteParam(site)}&token=${encodeURIComponent(token)}`
   return url.href
+}
+
+/** 百分号编码，但把 `:` 和 `/` 还原 —— 理由见 baiduPushEndpoint 的注释 */
+export function encodeSiteParam(site) {
+  return encodeURIComponent(String(site)).replace(/%3A/gi, ':').replace(/%2F/gi, '/')
 }
 
 /** 日志里安全的版本：把 token 抹掉。 */
@@ -152,6 +175,17 @@ export async function submitBaiduUrls(urls, options = {}) {
     remain: undefined,
     notSameSite: [],
     notValid: [],
+    /** 响应里的 failed 字段（百度自己报的失败条数），不一定等于两个数组的长度 */
+    failed: 0,
+    /**
+     * 「提交了但没被收下，而百度一个字都没解释」的条数。
+     *
+     * 这一项是给**排查**用的，不是统计。`success` 比提交数少、
+     * not_same_site / not_valid / failed 又都是空的时候，
+     * 原来的日志只会写一句「提交 40 个，收下 0 个」然后什么都不说 ——
+     * 而这恰恰是最需要有人去看一眼的情况（site 写法、配额、账号状态都可能）。
+     */
+    unexplained: 0,
     quotaExhausted: false,
   }
 
@@ -171,12 +205,33 @@ export async function submitBaiduUrls(urls, options = {}) {
         })
         const text = String(await response.text())
         const body = parseBody(text)
+        /*
+          把**原始响应**交给调用方（--probe 用它）。
+          排查 site / 配额这类问题时，我们解析后的那几个字段是不够的：
+          百度偶尔会回一个我们没见过的字段，或者一段根本不是 JSON 的东西，
+          而那正是唯一能说明问题的证据。
+        */
+        options.onRawResponse?.({ status: response.status, text, batch })
         if (response.status === 200 && body && body.error === undefined) {
           result.batches++
           result.submitted += batch.length
-          result.accepted += Number(body.success) || 0
+          const accepted = Number(body.success) || 0
+          result.accepted += accepted
+          /*
+            failed 是百度自己报的失败总数，**和下面两个数组不是一回事**：
+            数组说的是「具体哪几条」，它是个总数，而且见过只回总数不回数组的响应。
+            不读它的话，`{"remain":N,"success":0,"failed":40}` 在我们这边就成了
+            「提交 40 条、收下 0 条」外加一句解释都没有。
+          */
+          const failed = Number(body.failed) || 0
+          result.failed += failed
           if (Array.isArray(body.not_same_site)) result.notSameSite.push(...body.not_same_site)
           if (Array.isArray(body.not_valid)) result.notValid.push(...body.not_valid)
+          // 差额里连百度都说不出理由的那部分，单独记一笔
+          const explained = failed
+            + (Array.isArray(body.not_same_site) ? body.not_same_site.length : 0)
+            + (Array.isArray(body.not_valid) ? body.not_valid.length : 0)
+          result.unexplained += Math.max(0, batch.length - accepted - explained)
           if (body.remain !== undefined) {
             result.remain = Number(body.remain)
             lastRemain = result.remain
@@ -271,6 +326,20 @@ export async function flushBaiduQueue() {
       }
       if (result.notValid.length) {
         console.warn(`[baidu] ${result.notValid.length} 个 URL 不合法：${result.notValid.slice(0, 3).join(' ')}`)
+      }
+      /*
+        ⚠️ 这一句是「推了半天一条没收」唯一会留下的线索。
+
+        百度可以在 HTTP 200 + 没有 error 的情况下回 `success` 比提交数少，
+        而 not_same_site / not_valid / failed 全是空的。原来这种情况下日志只有
+        「已提交 40 个 URL，百度收下 0 个」—— 看上去像在正常工作，
+        而实际上一条都没进去。排查时唯一能做的是自己去抓包。
+      */
+      if (result.unexplained > 0) {
+        console.warn(
+          `[baidu] ${result.unexplained} 个 URL 既没被收下、百度也没说原因 ——` +
+            ' 先用 `cd server && npm run baidu -- --probe` 打一条看原始响应',
+        )
       }
       if (result.remain === 0) {
         console.warn('[baidu] 当天配额已用完，后续变更要靠每日兜底任务补交（cd server && npm run baidu）')
