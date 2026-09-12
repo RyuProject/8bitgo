@@ -7,6 +7,8 @@
 export interface Features {
   /** 直播：首页直播区块、侧边栏「直播」入口、页脚 8BitGo TV */
   live: boolean
+  /** 8BitGo TV：24/7 复古游戏直播频道页（/tv）。收不到信号时退回游戏库浏览 */
+  tv: boolean
   /** G 币：顶栏余额、卡片角标、每日任务、详情页奖励卡、赢取 G 币筛选、个人页余额 */
   coins: boolean
   /**
@@ -46,6 +48,7 @@ export const FEATURES: Features = {
   // 直播 = P2P 房间的观众席：房主的画面和声音本来就在往房间里推，
   // 「直播」入口就是这些房间按在看人数排的列表，没有额外成本。
   live: true,
+  tv: true,
   coins: false,
   cloudGame: true,
   passwordLogin: false,

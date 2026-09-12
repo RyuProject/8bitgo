@@ -202,7 +202,7 @@ export async function loadForRoute(pathname, search) {
     const q = {
       platform: qs('platform'), genre: qs('genre'), developer: qs('developer'),
       multiplayer: qs('multiplayer') === '1', coin: qs('coin') === '1',
-      q: qs('q'), sort: qs('sort'), page: qs('page'),
+      q: qs('q'), sort: qs('sort'), page: qs('page'), letter: qs('letter'),
     }
     // 带搜索词的组合太发散，不进缓存，免得把内存塞满。
     // ⚠️ page 要规整过再进 key，理由见 cachePage

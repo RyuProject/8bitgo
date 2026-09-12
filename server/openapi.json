@@ -1,0 +1,638 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "8BitGo 开放平台 API",
+    "version": "1.0.0",
+    "description": "面向第三方应用 / 设备端的只读 API。鉴权用 OAuth2（client_credentials 取应用级令牌，设备码流程取用户级令牌），scope 隔离。完整字段与取值均对齐 `server/src/routes/open.js` 与 `docs/esp-open-api.md`。本文件挂在 `/.well-known/openapi.json`，供 agent / 代码生成器自发现。",
+    "contact": { "name": "8BitGo", "url": "https://8bitgo.com/open" }
+  },
+  "servers": [
+    { "url": "https://8bitgo.com/api/open/v1", "description": "生产环境" }
+  ],
+  "tags": [
+    { "name": "system", "description": "公开系统端点" },
+    { "name": "auth", "description": "取令牌 / 设备码 / 自省" },
+    { "name": "catalog", "description": "静态参考目录（平台 / 类型 / 语言）" },
+    { "name": "games", "description": "游戏发现与下载凭据" },
+    { "name": "user-data", "description": "用户级只读数据（收藏 / 存档）" }
+  ],
+  "components": {
+    "securitySchemes": {
+      "openToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "开放平台令牌（RS256 签发，与站内令牌互不相认）。放在 `Authorization: Bearer <token>`。用户级 scope（library.read / saves.read）只能由设备码流程获得。"
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": { "type": "string", "description": "OAuth 风格错误码，如 invalid_token / insufficient_scope / not_found / rate_limited" },
+          "error_description": { "type": "string" },
+          "error_uri": { "type": "string", "format": "uri" },
+          "scope": { "type": "string", "description": "部分 403 响应会回缺失的 scope" }
+        },
+        "required": ["error"]
+      },
+      "TokenRequest": {
+        "type": "object",
+        "description": "client_credentials 与设备码兑现共用。grant_type 决定走哪条路。",
+        "properties": {
+          "grant_type": {
+            "type": "string",
+            "enum": ["client_credentials", "urn:ietf:params:oauth:grant-type:device_code"],
+            "description": "client_credentials=应用级；device_code=用户级（需先调 /v1/device/code 拿到 device_code）"
+          },
+          "client_id": { "type": "string", "description": "AppID" },
+          "client_secret": { "type": "string", "description": "AppKey" },
+          "scope": { "type": "string", "description": "可选，空格分隔；不传=已获批全部。必须是子集，不静默降级" },
+          "device_code": { "type": "string", "description": "仅 device_code 流程需要" }
+        },
+        "required": ["grant_type", "client_id", "client_secret"]
+      },
+      "TokenResponse": {
+        "type": "object",
+        "properties": {
+          "access_token": { "type": "string" },
+          "token_type": { "type": "string", "const": "Bearer" },
+          "expires_in": { "type": "integer", "description": "秒，固定 900" },
+          "scope": { "type": "string", "description": "空格分隔的 scope 串" }
+        },
+        "required": ["access_token", "token_type", "expires_in"]
+      },
+      "DeviceCodeResponse": {
+        "type": "object",
+        "properties": {
+          "device_code": { "type": "string" },
+          "user_code": { "type": "string", "description": "用户在网页上输入的短码" },
+          "verification_uri": { "type": "string", "format": "uri" },
+          "verification_uri_complete": { "type": "string", "format": "uri", "description": "带 user_code 的完整地址，可直接编成二维码" },
+          "expires_in": { "type": "integer" },
+          "interval": { "type": "integer", "description": "轮询间隔（秒）" }
+        },
+        "required": ["device_code", "user_code", "verification_uri", "expires_in", "interval"]
+      },
+      "MeResponse": {
+        "type": "object",
+        "properties": {
+          "client_id": { "type": "string", "description": "应用 AppID（app_ + 24 位十六进制）" },
+          "kind": { "type": "string", "enum": ["app", "user"] },
+          "user_id": { "type": ["string", "null"], "description": "用户级令牌才有，应用级为 null" },
+          "scope": { "type": "string" },
+          "expires_at": { "type": "string", "format": "date-time" }
+        },
+        "required": ["client_id", "kind", "scope", "expires_at"]
+      },
+      "PlatformNative": {
+        "type": "object",
+        "properties": {
+          "runnable": { "type": "boolean", "description": "本地模拟器能否直接跑" },
+          "emulator": { "type": "string", "description": "推荐的 Linux 原生模拟器" },
+          "note": { "type": "string" }
+        },
+        "required": ["runnable"]
+      },
+      "Platform": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "nameZh": { "type": "string" },
+          "manufacturer": { "type": "string" },
+          "year": { "type": "integer" },
+          "runtime": { "type": "string", "description": "站内运行时，如 emulatorjs / ruffle / html5" },
+          "core": { "type": ["string", "null"] },
+          "romExtensions": { "type": "array", "items": { "type": "string" } },
+          "native": { "$ref": "#/components/schemas/PlatformNative" },
+          "enabled": { "type": "boolean", "description": "站上是否实际开放；false 时该平台查不到游戏" }
+        },
+        "required": ["id", "name", "runtime", "native", "enabled"]
+      },
+      "Genre": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string", "description": "展示名（中文）" }
+        },
+        "required": ["id", "name"]
+      },
+      "Language": {
+        "type": "object",
+        "properties": {
+          "code": { "type": "string", "description": "语言码，如 zh-Hans / en / ja" },
+          "label": { "type": "string", "description": "本地名" },
+          "english": { "type": "string", "description": "英文名" }
+        },
+        "required": ["code", "label", "english"]
+      },
+      "HealthResponse": {
+        "type": "object",
+        "properties": {
+          "service": { "type": "string", "const": "8bitgo-open" },
+          "db": { "type": "boolean", "description": "数据库连通性" },
+          "timestamp": { "type": "string", "format": "date-time" }
+        },
+        "required": ["service", "db", "timestamp"]
+      },
+      "Game": {
+        "type": "object",
+        "description": "对外白名单形状（open/mapper.js），不含 ROM 真实地址等内部字段",
+        "properties": {
+          "slug": { "type": "string" },
+          "title": { "type": "string" },
+          "description": { "type": "string" },
+          "lang_requested": { "type": "string", "description": "请求时传的 lang" },
+          "lang_actual": {
+            "type": "object",
+            "properties": {
+              "title": { "type": "string" },
+              "description": { "type": "string" }
+            }
+          },
+          "platform": { "type": "string" },
+          "genres": { "type": "array", "items": { "type": "string" } },
+          "tags": { "type": "array", "items": { "type": "string" } },
+          "year": { "type": "integer" },
+          "developer": { "type": "string" },
+          "players": { "type": "integer" },
+          "multiplayer": { "type": "boolean" },
+          "icon": { "type": "string", "description": "emoji 兜底图标" },
+          "cover": { "type": ["string", "null"], "format": "uri" },
+          "rating": { "type": "number" },
+          "rating_count": { "type": "integer" },
+          "plays": { "type": "integer" },
+          "added_at": { "type": ["string", "null"], "format": "date" },
+          "updated_at": { "type": ["string", "null"], "format": "date-time" },
+          "adult": { "type": "boolean" },
+          "rom_langs": { "type": "array", "items": { "type": "string" }, "description": "可选 ROM 语言码，* 表示通用件" }
+        },
+        "required": ["slug", "title", "platform"]
+      },
+      "GamePage": {
+        "type": "object",
+        "properties": {
+          "items": { "type": "array", "items": { "$ref": "#/components/schemas/Game" } },
+          "page": { "type": "integer" },
+          "page_size": { "type": "integer" },
+          "total": { "type": "integer" },
+          "total_pages": { "type": "integer" }
+        },
+        "required": ["items", "page", "page_size", "total", "total_pages"]
+      },
+      "RomGrantResponse": {
+        "type": "object",
+        "properties": {
+          "url": { "type": "string", "format": "uri" },
+          "expires_in": { "type": "integer", "description": "秒，固定 300" },
+          "lang_requested": { "type": ["string", "null"] },
+          "lang_actual": { "type": "string" },
+          "filename": { "type": "string" }
+        },
+        "required": ["url", "expires_in", "lang_actual", "filename"]
+      },
+      "EmbedResponse": {
+        "type": "object",
+        "properties": {
+          "url": { "type": "string", "format": "uri" },
+          "expires_in": { "type": "integer" },
+          "allow": { "type": "string" }
+        },
+        "required": ["url", "expires_in"]
+      },
+      "LibraryResponse": {
+        "type": "object",
+        "properties": {
+          "favorites": { "type": "array", "items": { "$ref": "#/components/schemas/Game" } },
+          "recent": { "type": "array", "items": { "$ref": "#/components/schemas/Game" } },
+          "favorites_total": { "type": "integer", "description": "收藏实际总数，被截断时 > favorites.length" }
+        },
+        "required": ["favorites", "recent", "favorites_total"]
+      },
+      "SaveMeta": {
+        "type": "object",
+        "properties": {
+          "runtime": { "type": "string" },
+          "game_slug": { "type": "string" },
+          "slot": { "type": "integer" },
+          "size": { "type": "integer", "description": "字节" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        },
+        "required": ["runtime", "game_slug", "slot", "size"]
+      },
+      "CoverGame": {
+        "type": "object",
+        "description": "封面用的瘦身 Game（合集四宫格 / 轮播）",
+        "properties": {
+          "slug": { "type": "string" },
+          "title": { "type": "string" },
+          "titleZh": { "type": "string" },
+          "platform": { "type": "string" },
+          "icon": { "type": "string" },
+          "cover": { "type": ["string", "null"], "format": "uri" },
+          "video": { "type": ["string", "null"] }
+        },
+        "required": ["slug", "title", "platform", "icon"]
+      },
+      "LiveRoom": {
+        "type": "object",
+        "description": "直播房间公开快照（已脱敏：无主播 IP / 续播 token / 观众 socket.id）",
+        "properties": {
+          "roomId": { "type": "string" },
+          "title": { "type": "string" },
+          "gameSlug": { "type": "string" },
+          "gameName": { "type": "string" },
+          "platform": { "type": "string" },
+          "hostName": { "type": "string" },
+          "viewers": { "type": "integer" },
+          "maxViewers": { "type": "integer" },
+          "startedAt": { "type": "integer", "description": "主播开播的 epoch 毫秒" },
+          "hostAway": { "type": "boolean", "description": "主播断线、房间在宽限期等它回来" },
+          "hostFrozen": { "type": "boolean", "description": "主播切后台，画面冻着" },
+          "netplayRoomId": { "type": ["string", "null"], "description": "配对的联机房号（也是联机房时才有）" },
+          "coopOpen": { "type": "boolean", "description": "这一局允许观众上场当 2P" },
+          "coopTaken": { "type": "boolean", "description": "2P 位是否已有人" },
+          "presence": { "type": "object", "description": "服务端看出来的主播设备/地区/网络，全未知时为占位对象" }
+        },
+        "required": ["roomId", "title", "gameSlug", "platform", "viewers", "startedAt"]
+      },
+      "CollectionSummary": {
+        "type": "object",
+        "description": "合集元信息（不含里面的游戏，见 /v1/collections/{id}）",
+        "properties": {
+          "id": { "type": "integer" },
+          "title": { "type": "string" },
+          "kind": { "type": "string" },
+          "description": { "type": "string" },
+          "gameCount": { "type": "integer" },
+          "viewCount": { "type": "integer", "description": "多少人看过（去重）" },
+          "covers": { "type": "array", "items": { "$ref": "#/components/schemas/CoverGame" } },
+          "author": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "integer" },
+              "nickname": { "type": "string" },
+              "avatar": { "type": "string" }
+            }
+          },
+          "hidden": { "type": "boolean" },
+          "updatedAt": { "type": "string", "format": "date-time" },
+          "createdAt": { "type": "string", "format": "date-time" }
+        },
+        "required": ["id", "title", "gameCount", "author", "updatedAt", "createdAt"]
+      }
+    }
+  },
+  "paths": {
+    "/v1/health": {
+      "get": {
+        "tags": ["system"],
+        "summary": "健康检查（公开，无需令牌）",
+        "responses": {
+          "200": {
+            "description": "服务正常",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HealthResponse" } } }
+          },
+          "503": {
+            "description": "数据库不可用",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HealthResponse" } } }
+          }
+        }
+      }
+    },
+    "/v1/token": {
+      "post": {
+        "tags": ["auth"],
+        "summary": "取令牌（client_credentials 应用级 / 设备码用户级）",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/TokenRequest" }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": { "$ref": "#/components/schemas/TokenRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TokenResponse" } } }
+          },
+          "400": { "description": "参数 / scope 错误", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "AppID 或 key 不正确", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "客户端类型不允许", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "429": { "description": "限流", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/v1/device/code": {
+      "post": {
+        "tags": ["auth"],
+        "summary": "设备码流程：申请 user_code / device_code",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "client_id": { "type": "string" },
+                  "client_secret": { "type": "string" },
+                  "scope": { "type": "string", "description": "可选，要的用户级 scope" }
+                },
+                "required": ["client_id", "client_secret"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DeviceCodeResponse" } } }
+          },
+          "400": { "description": "scope / 客户端类型错误", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "认证失败", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/v1/me": {
+      "get": {
+        "tags": ["auth"],
+        "summary": "自省：令牌身份 / scope / 过期",
+        "security": [{ "openToken": [] }],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MeResponse" } } }
+          },
+          "401": { "description": "令牌无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/v1/platforms": {
+      "get": {
+        "tags": ["catalog"],
+        "summary": "平台目录（模拟器 / 扩展名 / 能否本地跑）",
+        "security": [{ "openToken": [] }],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "items": { "type": "array", "items": { "$ref": "#/components/schemas/Platform" } } } } } }
+          },
+          "401": { "description": "令牌无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/v1/genres": {
+      "get": {
+        "tags": ["catalog"],
+        "summary": "游戏类型枚举",
+        "security": [{ "openToken": [] }],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "items": { "type": "array", "items": { "$ref": "#/components/schemas/Genre" } } } } } }
+          },
+          "401": { "description": "令牌无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/v1/languages": {
+      "get": {
+        "tags": ["catalog"],
+        "summary": "游戏语言枚举",
+        "security": [{ "openToken": [] }],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "items": { "type": "array", "items": { "$ref": "#/components/schemas/Language" } } } } } }
+          },
+          "401": { "description": "令牌无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/v1/games": {
+      "get": {
+        "tags": ["games"],
+        "summary": "游戏列表（分页 / 筛选）",
+        "security": [{ "openToken": ["games.read"] }],
+        "parameters": [
+          { "name": "page", "in": "query", "schema": { "type": "integer", "minimum": 1, "default": 1 } },
+          { "name": "page_size", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 50, "default": 24 } },
+          { "name": "platform", "in": "query", "schema": { "type": "string" }, "description": "平台 id，见 /v1/platforms" },
+          { "name": "genre", "in": "query", "schema": { "type": "string" }, "description": "类型 id，见 /v1/genres" },
+          { "name": "q", "in": "query", "schema": { "type": "string" }, "description": "搜索词" },
+          { "name": "sort", "in": "query", "schema": { "type": "string", "enum": ["popular", "newest", "name", "rating", "home"] } },
+          { "name": "lang", "in": "query", "schema": { "type": "string" }, "description": "语言码，默认 en（站内 x-default）" }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GamePage" } } }
+          },
+          "401": { "description": "令牌无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "缺 games.read", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/v1/games/{slug}": {
+      "get": {
+        "tags": ["games"],
+        "summary": "游戏详情",
+        "security": [{ "openToken": ["games.read"] }],
+        "parameters": [
+          { "name": "slug", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "lang", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Game" } } }
+          },
+          "404": { "description": "不存在 / 下架 / 成人", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "令牌无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "缺 games.read", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/v1/games/{slug}/rom": {
+      "get": {
+        "tags": ["games"],
+        "summary": "换 ROM 短期下载凭据（两步式第一步）",
+        "security": [{ "openToken": ["games.rom"] }],
+        "parameters": [
+          { "name": "slug", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "lang", "in": "query", "schema": { "type": "string" }, "description": "要的 ROM 语言，默认通用件；精确→通用件，不跨语言回退" }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RomGrantResponse" } } }
+          },
+          "404": { "description": "游戏不存在 / 无可用 ROM", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "令牌无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "缺 games.rom 或未启用", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/v1/games/{slug}/embed": {
+      "get": {
+        "tags": ["games"],
+        "summary": "换带签名的嵌入播放器地址",
+        "security": [{ "openToken": ["games.read"] }],
+        "parameters": [
+          { "name": "slug", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "lang", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EmbedResponse" } } }
+          },
+          "404": { "description": "游戏不存在", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "令牌无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "缺 games.read 或未启用", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/v1/rom/{grant}": {
+      "get": {
+        "tags": ["games"],
+        "summary": "兑现 ROM 凭据（两步式第二步，302 不带 Authorization）",
+        "parameters": [
+          { "name": "grant", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "302": { "description": "302 重定向到 ROM 下载地址（跟随到 assets 主机，凭据 5 分钟过期）" },
+          "403": { "description": "凭据无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "410": { "description": "凭据已过期", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/v1/library": {
+      "get": {
+        "tags": ["user-data"],
+        "summary": "收藏与最近在玩（用户级令牌）",
+        "security": [{ "openToken": ["library.read"] }],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LibraryResponse" } } }
+          },
+          "401": { "description": "令牌无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "需要用户级令牌（设备码流程）", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/v1/saves": {
+      "get": {
+        "tags": ["user-data"],
+        "summary": "存档清单（用户级令牌，仅元信息）",
+        "security": [{ "openToken": ["saves.read"] }],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "items": { "type": "array", "items": { "$ref": "#/components/schemas/SaveMeta" } } } } } }
+          },
+          "401": { "description": "令牌无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "需要用户级令牌", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/v1/saves/{runtime}/{slug}": {
+      "get": {
+        "tags": ["user-data"],
+        "summary": "取一份存档的二进制（用户级令牌）",
+        "security": [{ "openToken": ["saves.read"] }],
+        "parameters": [
+          { "name": "runtime", "in": "path", "required": true, "schema": { "type": "string" }, "description": "引擎，如 dos / gba" },
+          { "name": "slug", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "slot", "in": "query", "schema": { "type": "integer", "default": 0 } }
+        ],
+        "responses": {
+          "200": { "description": "成功", "content": { "application/octet-stream": { "schema": { "type": "string", "format": "binary" } } } },
+          "400": { "description": "坐标不合法", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "404": { "description": "没有这份存档", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "令牌无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "需要用户级令牌", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/v1/live/rooms": {
+      "get": {
+        "tags": ["games"],
+        "summary": "当前在播的公开直播房间（带 ?game= 可筛选）",
+        "security": [{ "openToken": [] }],
+        "parameters": [
+          { "name": "game", "in": "query", "schema": { "type": "string" }, "description": "只看某一款游戏（slug）" }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "items": { "type": "array", "items": { "$ref": "#/components/schemas/LiveRoom" } } } } } }
+          },
+          "401": { "description": "令牌无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/v1/live/rooms/{roomId}": {
+      "get": {
+        "tags": ["games"],
+        "summary": "单个直播房间快照",
+        "security": [{ "openToken": [] }],
+        "parameters": [
+          { "name": "roomId", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LiveRoom" } } }
+          },
+          "404": { "description": "没有这个直播间", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "令牌无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/v1/collections": {
+      "get": {
+        "tags": ["catalog"],
+        "summary": "公开合集列表（分页）",
+        "security": [{ "openToken": [] }],
+        "parameters": [
+          { "name": "page", "in": "query", "schema": { "type": "integer", "minimum": 1, "default": 1 } },
+          { "name": "page_size", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 48, "default": 24 } }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "items": { "type": "array", "items": { "$ref": "#/components/schemas/CollectionSummary" } }, "page": { "type": "integer" }, "page_size": { "type": "integer" }, "total": { "type": "integer" }, "total_pages": { "type": "integer" } } } } }
+          },
+          "401": { "description": "令牌无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/v1/collections/{id}": {
+      "get": {
+        "tags": ["catalog"],
+        "summary": "单个合集 + 里面的游戏（游戏走开放平台白名单映射，不含 ROM 真实地址）",
+        "security": [{ "openToken": [] }],
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } },
+          { "name": "lang", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "collection": { "$ref": "#/components/schemas/CollectionSummary" }, "games": { "type": "array", "items": { "$ref": "#/components/schemas/Game" } } } } } }
+          },
+          "404": { "description": "没有这个合集", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "令牌无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    }
+  }
+}

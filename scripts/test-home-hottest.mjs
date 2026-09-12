@@ -155,6 +155,58 @@ check('组件引用的 hottest* 文案键在基准语言里都存在', () => {
   assert.deepEqual(missing, [], `zh-Hans 里没有：${missing.join(', ')}`)
 })
 
+console.log('\n── 后台说明必须和实际行为一致 ──')
+
+/*
+  这一节是被一次真实的困惑逼出来的：后台「首页排序」的说明原本写着
+  「标题也会从『最多人玩』变成『最热门的游戏』」—— 而代码里换上的是 pickedTitle
+  （「站长精选」）。更糟的是「最热门的游戏」是**另一栏真实存在的名字**，
+  于是填完精选的人会以为第一栏变成了那一栏，然后发现两边都对不上，
+  只能得出「我的模块不见了」。
+
+  界面陈述的事实必须成立 —— 这条规矩对后台的帮助文字同样有效，
+  而且后台的文字没人会去核对，错了能挂很久。所以让测试替人核对：
+  说明里写的标题，必须就是 locales 里那两个常量的值。
+*/
+const titleSwap = (text, where) => {
+  // 注释里这句话会跨行，前缀是 " * "，先抹平再匹配
+  const flat = text.replace(/\n\s*\*\s*/g, '')
+  const m = flat.match(/标题[^。]*?从「([^」]+)」(?:变成|换成)「([^」]+)」/)
+  assert.ok(m, `${where} 里找不到「标题会从『…』变成『…』」这句话 —— 改了措辞的话这条断言也要跟着改`)
+  return { from: m[1], to: m[2] }
+}
+
+check('⚠️ 后台「首页排序」的说明写的标题，就是第一栏真正会变成的那个', () => {
+  const zh = read('src/locales/zh-Hans.ts')
+  const picked = valueOf(zh, 'pickedTitle')
+  const popular = valueOf(zh, 'popularTitle')
+  assert.ok(picked && popular, 'pickedTitle / popularTitle 读不出来了')
+  const { from, to } = titleSwap(read('src/admin/GameForm.tsx'), 'GameForm.tsx 的「首页排序」说明')
+  assert.equal(to, picked, `说明里写「变成『${to}』」，代码里换上的其实是「${picked}」`)
+  assert.equal(from, popular, `说明里写「从『${from}』」，那一栏平时的标题其实是「${popular}」`)
+})
+
+check('⚠️ types.ts 上 homeRank 的注释也是同一套说法', () => {
+  const zh = read('src/locales/zh-Hans.ts')
+  const picked = valueOf(zh, 'pickedTitle')
+  const types = read('src/types.ts')
+  const i = types.indexOf('homeRank?: number')
+  assert.ok(i > 0, '找不到 homeRank 了')
+  const { to } = titleSwap(types.slice(Math.max(0, i - 900), i), 'types.ts 的 homeRank 注释')
+  assert.equal(to, picked, `注释里写「换成『${to}』」，代码里换上的其实是「${picked}」`)
+})
+
+check('⚠️ 说明里得交代真榜还在「最热门的游戏」那一栏（否则还是会被当成榜没了）', () => {
+  const zh = read('src/locales/zh-Hans.ts')
+  const hottest = valueOf(zh, 'hottestTitle')
+  assert.ok(hottest, 'hottestTitle 读不出来了')
+  const form = read('src/admin/GameForm.tsx')
+  assert.ok(
+    form.includes(hottest),
+    `后台说明里没提「${hottest}」—— 开了精选的人会以为按游玩次数排的榜整个没了`,
+  )
+})
+
 console.log('')
 if (fails.length) {
   for (const f of fails) console.error('✗ ' + f.name + '\n' + (f.e?.stack ?? f.e))

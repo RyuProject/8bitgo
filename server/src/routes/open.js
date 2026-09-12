@@ -18,7 +18,7 @@
  */
 import express, { Router } from 'express'
 import { listGames } from '../games-repo.js'
-import { query } from '../db.js'
+import { ping, query } from '../db.js'
 import { take } from '../rateLimit.js'
 import { assetPublicUrl, publicSiteUrl } from '../site-urls.js'
 import { clientIpFrom } from '../presence.js'
@@ -35,6 +35,10 @@ import { favIds, recentIds } from '../userdata.js'
 import { saveCoords } from './saves.js'
 import { APP_SCOPES, formatScopes, hasScope, missingScopes, parseScopes } from '../open/scopes.js'
 import { openGame, openPage } from '../open/mapper.js'
+import { OPEN_PLATFORMS } from '../open/platforms.js'
+import { OPEN_GENRES, OPEN_LANGUAGES } from '../open/taxonomy.js'
+import { liveRooms, liveRoom } from '../live.js'
+import { listPublicCollections, getPublicCollection } from '../routes/collections.js'
 import { normalizeLang, pickRom } from '../open/i18n.js'
 import { ROM_GRANT_TTL_SEC, EMBED_TTL_SEC, signEmbed, signRomGrant, verifyRomGrant } from '../open/sign.js'
 
@@ -83,6 +87,31 @@ function fail(res, status, error, description, extra) {
  *   · 限额也该单独给：这个请求体最多几百字节，没有理由跟着全局那个 4MB 走。
  */
 const tokenBody = express.urlencoded({ extended: false, limit: '16kb' })
+
+/* ---------------- 系统：健康检查（公开，无需令牌） ---------------- */
+
+/**
+ * `GET /v1/health` —— 服务存活 + 数据库连通性探测。
+ *
+ * 仿 GGEMU 的 `/api/health`：公开、匿名、CORS 放开，方便监控和第三方程序直接探。
+ * 故意**不挂 requireApp**：健康检查如果被令牌限流挡住，就探不出真实的「服务挂了」。
+ * 回的形状对齐 `/api/health`（`{ service, db }`）再多带一个 `timestamp`，
+ * 便于调用方判断探测时差。
+ */
+openRouter.get('/v1/health', async (req, res) => {
+  let dbOk = false
+  try {
+    dbOk = await ping()
+  } catch {
+    dbOk = false
+  }
+  const status = dbOk ? 200 : 503
+  res.status(status).json({
+    service: '8bitgo-open',
+    db: dbOk,
+    timestamp: new Date().toISOString(),
+  })
+})
 
 /* ---------------- 设备码流程（RFC 8628） ---------------- */
 
@@ -445,6 +474,121 @@ openRouter.get('/v1/games/:slug', requireApp('games.read'), async (req, res, nex
     // 下架 / 成人 / 不存在，对外都是同一个 404：区分开就成了「这游戏是不是被下架了」的查询器
     if (!item) return fail(res, 404, 'not_found', '没有这款游戏')
     res.json(item)
+  } catch (e) {
+    next(e)
+  }
+})
+
+/* ---------------- 平台目录（只读参考） ---------------- */
+
+/**
+ * `GET /v1/platforms` —— 第三方客户端挑模拟器用的目录。
+ *
+ * 游戏对象只给 `platform` 这个 slug，不暴露 core / 扩展名 / 能不能本地跑
+ * （那些属于内部信息，且 `core` 在 FORBIDDEN_OUT_KEYS 里）。
+ * 但一个要自己起本地模拟器的客户端，恰恰需要这三样：拿到 slug 后查这张表，
+ * 就知道该调哪个模拟器、ROM 是什么扩展名、这个平台到底能不能本地跑
+ * （html5 是网页、ps2 只有串流，都 runnable:false）。
+ *
+ * 只要令牌有效就回（和 /v1/me 一样用 `requireApp()` 不带 scope），
+ * 因为它只是静态参考，不是用户数据。数据来自 `open/platforms.js`。
+ *
+ * ⚠️ 每行带一个 `enabled` —— 站上并不是 16 个平台都开着（白名单在
+ * shared/site-taxonomy.js）。不看这个字段的客户端会列出永远没有内容的分类。
+ */
+openRouter.get('/v1/platforms', requireApp(), (req, res) => {
+  /*
+    ⚠️ 这条要覆盖掉 /api 那道全局 noStore。
+
+    它是**静态的、不含任何用户数据**的目录，而文档明确建议客户端「缓存整张表（很少变）」——
+    服务端却发 no-store，等于让每台设备每次开机都重新拉一遍，两边自相矛盾。
+    一小时足够短（改了平台表最多一小时全网生效），也足够长（省掉绝大多数重复请求）。
+
+    `public` 是可以的：这里没有按令牌变化的内容，所有应用拿到的是同一份。
+    ⚠️ 将来如果给这张表加了**按应用不同**的字段（比如「这个应用能不能访问该平台」），
+    必须立刻改回 private —— 否则中间层缓存会把 A 应用的那份发给 B。
+  */
+  res.set('Cache-Control', 'public, max-age=3600')
+  res.json({ items: OPEN_PLATFORMS })
+})
+
+/* ---------------- 类型 / 语言目录（只读参考） ---------------- */
+
+/**
+ * `GET /v1/genres` —— 给客户端画「按类型筛选」用的枚举。
+ *
+ * 和 /v1/platforms 一样：静态参考、只要令牌有效即可（requireApp() 不带 scope）、
+ * 可公开缓存一小时。数据来自 `open/taxonomy.js`（镜像 `GENRE_IDS` + `genres.ts`）。
+ */
+openRouter.get('/v1/genres', requireApp(), (req, res) => {
+  res.set('Cache-Control', 'public, max-age=3600')
+  res.json({ items: OPEN_GENRES })
+})
+
+/**
+ * `GET /v1/languages` —— 给客户端画「按语言筛选」用的枚举。
+ *
+ * 同样静态参考、可缓存。数据直接来自 `shared/site-languages.js` 的 `SITE_LANGUAGES`。
+ */
+openRouter.get('/v1/languages', requireApp(), (req, res) => {
+  res.set('Cache-Control', 'public, max-age=3600')
+  res.json({ items: OPEN_LANGUAGES })
+})
+
+/* ---------------- 直播房间发现（只读，公开信令信息） ---------------- */
+
+/**
+ * `GET /v1/live/rooms` —— 当前在播的公开房间列表。
+ *
+ * 复用 `live.js` 的 `liveRooms()`，它已经走 `publicRoom()` 脱敏：不含主播 IP、续播 token、
+ * 观众 socket.id，只给大厅要展示的字段（标题 / 游戏 / 主播名 / 人数 / 联机房号 / 2P 位）。
+ * 和站内 `/api/live/rooms` 同一份内存房间表；`?game=<slug>` 只筛某一款游戏。
+ * 需要令牌（requireApp）但无特殊 scope，和 /v1/platforms 同级。
+ */
+openRouter.get('/v1/live/rooms', requireApp(), (req, res) => {
+  const gameSlug = typeof req.query.game === 'string' && req.query.game ? req.query.game : undefined
+  res.json({ items: liveRooms({ gameSlug }) })
+})
+
+/**
+ * `GET /v1/live/rooms/:roomId` —— 单个房间快照。
+ * 直链也能查到：不受「主播切后台太久了下榜」的影响（那是列表层面的过滤，单房照样在）。
+ */
+openRouter.get('/v1/live/rooms/:roomId', requireApp(), (req, res) => {
+  const room = liveRoom(req.params.roomId)
+  if (!room) return fail(res, 404, 'not_found', '没有这个直播间')
+  res.json(room)
+})
+
+/* ---------------- 合集（只读） ---------------- */
+
+/**
+ * `GET /v1/collections` —— 公开合集列表（分页）。
+ * 复用 `collections.js` 的 `listPublicCollections`（同一段查询 + 安全 `decorate`）。
+ */
+openRouter.get('/v1/collections', requireApp(), async (req, res, next) => {
+  try {
+    const pageSize = Math.min(48, Math.max(1, Number(req.query.page_size) || 24))
+    const { items, total, page, pageSize: size } = await listPublicCollections(req.query.page, pageSize)
+    res.json({ items, page, page_size: size, total, total_pages: Math.ceil(total / size) })
+  } catch (e) {
+    next(e)
+  }
+})
+
+/**
+ * `GET /v1/collections/:id` —— 单个合集 + 里面的游戏。
+ *
+ * ⚠️ 游戏对象**不走**站内的 `attachRelations`（那会带出 ROM 真实地址等内部字段），
+ * 而是用本文件的 `openGamesBySlugs` 白名单重新映射，和 /v1/games 的元素同一个形状。
+ */
+openRouter.get('/v1/collections/:id', requireApp(), async (req, res, next) => {
+  try {
+    const lang = normalizeLang(req.query.lang)
+    const found = await getPublicCollection(req.params.id)
+    if (!found) return fail(res, 404, 'not_found', '没有这个合集')
+    const games = await openGamesBySlugs(found.gameSlugs, lang)
+    res.json({ collection: found.collection, games })
   } catch (e) {
     next(e)
   }

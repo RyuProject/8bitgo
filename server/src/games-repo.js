@@ -112,6 +112,15 @@ export async function listGames(q = {}) {
   }
   if (q.multiplayer) where.push('g.multiplayer = 1')
   if (q.coin) where.push('g.coin_reward > 0')
+  // 字母索引（参照 /pro 那种 A-Z 快跳）：按标题首字母过滤。
+  // 只认 A-Z，拼进 LIKE 的模式固定是「单字母 + %」，没有通配符注入空间
+  if (q.letter) {
+    const ch = String(q.letter).charAt(0).toUpperCase()
+    if (/^[A-Z]$/.test(ch)) {
+      where.push('g.title LIKE ?')
+      params.push(`${ch}%`)
+    }
+  }
   // 首页精选位。true = 只看被钦点的，false = 只看没被钦点的（后台筛选用）
   if (q.home === true) where.push('g.home_rank IS NOT NULL')
   else if (q.home === false) where.push('g.home_rank IS NULL')

@@ -81,7 +81,7 @@ export function footerLinksFor(t: Translation) {
       错误码）只有中文一份，给入口翻八种语言只会让人点进去发现看不懂。
     */
     { label: '开放平台', to: '/open' },
-    ...(FEATURES.live ? [{ label: '8BitGo TV', to: '/rooms?live=1' }] : []),
+    ...(FEATURES.live ? [{ label: '8BitGo TV', to: '/tv' }] : []),
     { label: '本地游玩', to: '/play-local' },
   ]
 }

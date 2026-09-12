@@ -698,6 +698,32 @@ const fr: Translation = {
   },
 
   /* ---------------- Bientôt disponible / 404 ---------------- */
+  tv: {
+    title: '8BitGo TV',
+    tagline: 'Une chaîne de jeux rétro en direct 24/7',
+    live: 'EN DIRECT',
+    nowPlaying: 'À l’antenne',
+    upNext: 'À venir',
+    viewers: '{n} en train de regarder',
+    watchNow: 'Jouer maintenant',
+    openGame: 'Ouvrir le jeu',
+    allChannels: 'Tous',
+    scheduleTitle: 'Programme',
+    endsIn: 'Temps restant à ce programme',
+    offAirTitle: 'Signal perdu',
+    offAirBody: 'Aucun signal en direct pour le moment — parcourez plutôt la bibliothèque de jeux.',
+    offAirRetry: 'Réessayer le signal',
+    toLive: 'Retour au direct',
+    catalogTitle: 'Bibliothèque de jeux',
+    catalogSubtitle: 'Le programme de secours hors antenne — choisissez un jeu et jouez.',
+    searchPlaceholder: 'Rechercher jeux, consoles, développeurs…',
+    allPlatforms: 'Toutes les consoles',
+    letter: 'Initiale',
+    playableGames: '{n} jeux jouables',
+    browseHint: 'Filtrez par console, initiale ou mot-clé, puis jouez instantanément.',
+    invalidSignal: 'Aucun signal en direct ({status}) ; bascule vers la bibliothèque de jeux.',
+    channel: 'Chaîne',
+  },
   soon: {
     appsTitle: 'Applis et extensions',
     appsDesc:

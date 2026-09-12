@@ -7,7 +7,7 @@
 > 每条数字和字段都标了源码出处。和设计稿冲突的地方**以源码为准**，
 > 并在正文里显式标出来（见 §7 的限流一节）。
 >
-> 核对基线：`server/src/routes/open.js` + `server/src/open/*`，2026-09-11。
+> 核对基线：`server/src/routes/open.js` + `server/src/open/*`，2026-09-12。
 
 ---
 
@@ -36,6 +36,36 @@
 这不影响你的固件怎么写，但影响你怎么对外描述这个功能。
 
 ---
+
+## 0.5 端点清单（全量速查）
+
+所有路由都挂在 Base URL `https://8bitgo.com/api/open/v1` 下。「需要 scope」一栏为「无 / —」表示只要令牌有效即可（不卡具体 scope）。
+
+| 方法 | 路径 | 需要 scope | 用途 |
+|---|---|---|---|
+| `POST` | `/v1/token` | — | 换应用级 / 用户级令牌（`client_credentials` 或 `device_code`） |
+| `POST` | `/v1/device/code` | — | 设备码流程：拿 `user_code` / `device_code` |
+| `GET` | `/v1/me` | 无 | 自查令牌的 `client_id` / `scope` / `expires_at` |
+| `GET` | `/v1/platforms` | 无 | 平台目录：`runtime` / `core` / `romExtensions` / `native` 建议 / `enabled`，本地客户端挑模拟器用（见 §12） |
+| `GET` | `/v1/health` | 无（**公开**） | 健康检查：服务存活 + 数据库连通（规格见 `/.well-known/openapi.json`） |
+| `GET` | `/v1/genres` | 无 | 游戏类型枚举（客户端画筛选器用） |
+| `GET` | `/v1/languages` | 无 | 游戏语言枚举（客户端画筛选器用） |
+| `GET` | `/v1/live/rooms` | 无 | 在播直播房间列表（`?game=<slug>` 可筛某一款） |
+| `GET` | `/v1/live/rooms/:roomId` | 无 | 单个直播房间快照（已脱敏，无 IP / token） |
+| `GET` | `/v1/collections` | 无 | 公开合集列表（分页） |
+| `GET` | `/v1/collections/:id` | 无 | 单个合集 + 里面的游戏（游戏走白名单映射） |
+| `GET` | `/v1/games` | `games.read` | 游戏列表（分页 / 筛选） |
+| `GET` | `/v1/games/:slug` | `games.read` | 游戏详情 |
+| `GET` | `/v1/games/:slug/rom` | `games.rom` | 换 ROM 短期下载凭据（两步式第一步） |
+| `GET` | `/v1/games/:slug/embed` | `games.read` | 换带签名、会过期的嵌入播放器地址 |
+| `GET` | `/v1/rom/:grant` | — | 兑现 ROM 凭据（两步式第二步，302 不带 `Authorization`） |
+| `GET` | `/v1/library` | `library.read` | 用户收藏 / 最近在玩（用户级令牌） |
+| `GET` | `/v1/saves` | `saves.read` | 用户存档清单（用户级令牌） |
+| `GET` | `/v1/saves/:runtime/:slug` | `saves.read` | 取一份存档（用户级令牌） |
+
+> 全部路由的响应错误体一致（见 §8）；`/v1/rom/:grant` 是唯一的「不带 `Authorization` 也能调」的端点。
+>
+> 🤖 **机器可读规格**：完整的 OpenAPI 3.1 挂在 `/.well-known/openapi.json`（公开、匿名、CORS 放开），agents / 代码生成器可直接消费，对应源文件 `server/openapi.json`。
 
 ## 1. 前提与环境
 
@@ -202,8 +232,10 @@ Authorization: Bearer eyJ...
 `OPEN_DEFAULT_LANG`）：开放接口的调用方是第三方，默认给中文会让人以为整库都是中文。
 要中文界面就**每次都显式传 `lang=zh-Hans`**。
 
-⚠️ 开放平台**没有** facets / 平台列表端点。`platform` 和 `genre` 的可选值只能从
-返回的 items 里认，或者去站点上看。
+⚠️ 开放平台**没有**站内那种 facets 聚合端点（`/api/games/facets` 是站内的）。
+但平台目录有专门的只读端点 `GET /v1/platforms`（见 §12）：它返回每个平台的
+`runtime` / `core` / `romExtensions` 和 `native` 建议，本地客户端挑模拟器就靠它。
+`genre` 的可选值仍只能从返回的 items 里认，或去站点上看。
 
 ⚠️ 成人内容（`adult=1`）**整体排除**，下架的游戏对外也不存在。
 
@@ -561,3 +593,84 @@ sensitive，而且要连着三件事一起想清楚才能上：单份 4 MB / 每
 每一步的失败都认 `error` 字段，不认 `error_description`。
 `401 invalid_token` 回第 1 步一次；`410 grant_expired` 回第 4 步一次；
 `429` 按 `Retry-After` 退避。其余的错误直接报给用户看，别自动重试。
+
+---
+
+## 12. 本地 / Linux 客户端：下载 ROM 后用本机模拟器跑
+
+这套接口对「能联网的本地机器（Linux 小主机、x86 PC、单板机）」完全够用：
+机器经 WiFi 拿 AppID + Key 换令牌，拉游戏列表，取 ROM 签名地址，下载 ROM，
+再交给本机模拟器运行。和 ESP 嵌入式的区别是：机器有完整的 CPU / 存储 / 文件系统，
+不用在固件里抠内存，所以**整套接口都能直接用**，没有 ESP 那边的流式解析约束。
+
+### 12.1 先拉平台目录，决定能不能跑、用什么跑
+
+```
+GET /v1/platforms          ← 只要令牌有效就回，不限 scope
+```
+
+返回 `items`，每个平台带：
+
+| 字段 | 含义 |
+|---|---|
+| `runtime` | 站内用的运行环境：`emulatorjs` / `jsdos` / `ruffle` / `html5` / `play` / `j2me` |
+| `core` | emulatorjs 的核心名（`nes` / `snes` / `arcade` …），本地客户端据此选模拟器 |
+| `romExtensions` | 这个平台 ROM 的扩展名，下载后按它判断怎么喂给模拟器 |
+| `native.runnable` | **能不能拿这个平台的 ROM 在本机模拟器上跑**（见下面 12.2 的三档） |
+| `native.emulator` | runnable 时推荐的 Linux 原生模拟器项目名 |
+| `native.note` | 格式上的坑，或者 runnable=false 的原因。**这一句是写给用户看的**，客户端可以直接显示 |
+| `enabled` | 这个平台在站上开着没有。`false` = 前台 404、列表里查不到东西，客户端应当整个隐藏 |
+
+`game.platform` 字段就是这里的 `id`。客户端拿 `id` 查这张表即可，
+**别把 16 个平台的映射硬编码进客户端**——站上加平台时旧客户端就认不出了。
+
+### 12.2 哪些平台「下载即跑」，哪些不是
+
+- ✅ **下载即跑**：`runtime=emulatorjs` 那 11 个（nes / snes / gba / gb / gbc / n64 /
+  nds / psx / segaMD / ws / arcade）+ `java`（`runtime=j2me`，FreeJ2ME），一共 12 个。
+  ROM 是单个文件（`.nes` / `.sfc` / `.zip` romset / `.jar` …），`filename` 字段直接
+  告诉你文件名，按 `romExtensions` 交给对应模拟器。
+
+  > ⚠️ **这 12 个里有几个站上是关着的。** 每一行都带 `enabled`，它跟着站点的平台
+  > 白名单走：`enabled:false` 的平台在前台是 404，`/v1/games?platform=<id>` 也查不到东西。
+  > **客户端要按 `enabled` 过滤**，别照着这份名单给用户列出永远没有内容的分类。
+  > 这个名单是会变的（NDS 就是后来才补进去的），所以别在代码里写死「有哪几个」。
+- ⚠️ **能跑但要处理格式**：
+  - `dos`：ROM 是 **jsdos 包**（Web 专用格式）。本地 DOSBox 要先解包、把内部目录结构
+    整理成裸 DOS 游戏目录才能跑，不是直接喂 zip。
+  - `flash`：`.swf` 用 **Ruffle**（有 Linux 原生构建）跑。
+- ❌ **本地跑不了**：
+  - `html5`：根本不是 ROM，是一个网页，没有可下载的执行文件。
+  - `ps2`：**不是「没有模拟器」，是「拿不到盘」。** PS2 是 DVD，一张 1~4.7GB，
+    站上根本不提供整份下载 —— 浏览器里那个实验性的 Play! 走 HTTP Range 只读游戏
+    真正读到的扇区。所以 `/v1/games/:slug/rom` 这条路对 PS2 不成立。
+    （Linux 上 PCSX2 很成熟，但盘得你自己准备。）
+
+  客户端应当把这两个平台整个隐藏，别让用户点进去下载一堆用不了的东西。
+
+### 12.3 一个游戏的完整本地流程
+
+```
+1. GET  /v1/platforms                              ← 缓存整张表（很少变）
+2. POST /v1/token  (client_credentials)             ← 拿应用级令牌
+3. GET  /v1/games?platform=arcade&lang=zh-Hans      ← 列表
+4. GET  /v1/games/:slug                             ← 详情，拿到 platform
+5. GET  /v1/games/:slug/rom?lang=*                  ← 需要 games.rom
+    └─ 回 { url, filename, lang_actual }，5 分钟内用掉
+6. GET  <url>   （不带 Authorization，跟随 302）      ← 下载 ROM 到本地
+7. 查 /v1/platforms 里 platform 的 native.emulator   ← 选模拟器
+8. 用对应模拟器打开下载下来的 filename               ← 开玩
+```
+
+ROM 那一步（`/v1/rom/:grant`）是 302 到 `assets.8bitgo.com`，下载工具要**跟随重定向且接受换主机**
+（TLS 钉根 CA，别钉叶子证书——见 §6 的设备端三个坑，对本地客户端同样成立）。
+
+要读玩家自己的收藏和存档、做到「续上云端进度」：走 §6.5 设备码流程拿用户级令牌，
+再 `GET /v1/library`、`GET /v1/saves/:runtime/:slug`。⚠️ **写回**（`saves.write`）还没有，
+本地进度暂时不能推回云端——只读能续，写入要等这一轮补齐。
+
+### 12.4 AppKey 别烧死在分发的客户端里
+
+§1 说的「secret 只能留服务端」对分发的 Linux 客户端同样是硬约束：把 AppKey 编译进
+要给别人装的包，等于任何人拿到一份就能用你的配额、还能在 `/open` 控制台撤销那把 key 砖化所有设备。
+自用几台无所谓；要做成产品，走「自己架一层中转、secret 留服务端」那一条。

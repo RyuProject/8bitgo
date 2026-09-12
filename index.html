@@ -2,6 +2,18 @@
 <html lang="zh-Hans">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      站标是一个 10×12 的像素「8」（public/favicon.svg 里一格一个 <rect>）。
+      两份是同一张图，分工不同：
+        · .ico 里压了 16/32/48 三层，每层都是整数倍最近邻放大，
+          小尺寸下每个格子正好压在整数个物理像素上 —— 这是像素画唯一不糊的画法。
+        · .svg 的 viewBox 也是 16×16（字形 10×12 居中，留 3/2 的边），
+          所以缩到 16/32/48/64 时同样是整数倍，和 ico 看起来是同一张。
+          ⚠️ 别把 viewBox 改成 12×12 去「贴边」：16/12 不是整数，
+          每个格子会被摊成 1px 或 2px，宽窄不匀，像素风当场就散了。
+      顺序按惯例 ico 在前、svg 在后：支持 svg 的浏览器会优先用后者。
+    -->
+    <link rel="icon" href="/favicon.ico" sizes="32x32" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 

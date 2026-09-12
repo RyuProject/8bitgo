@@ -462,6 +462,80 @@ body {
   text-underline-offset: 3px;
 }
 
+/* ---------- 8BitGo TV ---------- */
+
+.tv-screen {
+  position: relative;
+}
+
+/* CRT 扫描线：横向细密暗纹，叠在画面上营造老电视质感 */
+.tv-scanlines::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(0, 0, 0, 0.22) 0px,
+    rgba(0, 0, 0, 0.22) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  mix-blend-mode: multiply;
+}
+
+/* 屏幕四周压暗，模拟 CRT 的弧面暗角 */
+.tv-vignette::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  box-shadow: inset 0 0 120px 30px rgba(0, 0, 0, 0.55);
+  border-radius: inherit;
+}
+
+/* 极轻微的整屏闪烁，别太明显 */
+.tv-flicker {
+  animation: tv-flicker 5s steps(50) infinite;
+}
+@keyframes tv-flicker {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.96;
+  }
+  53% {
+    opacity: 0.99;
+  }
+}
+
+/* 无封面时封面图的缓慢推近，让「直播」有画面在动的错觉 */
+.tv-kenburns {
+  animation: tv-kenburns 16s ease-in-out infinite alternate;
+}
+@keyframes tv-kenburns {
+  from {
+    transform: scale(1.05);
+  }
+  to {
+    transform: scale(1.18) translate(2%, -2%);
+  }
+}
+
+/* 节目进度条平滑推进（每秒由内联 width 推一格） */
+.tv-progress {
+  transition: width 1s linear;
+}
+
+/* 底部滚动字幕：内容复制两份、平移 -50% 形成无缝循环 */
+.tv-marquee {
+  display: inline-flex;
+  width: max-content;
+  animation: marquee 28s linear infinite;
+}
+
 /* 顶部加载条。transition 放在 CSS 里而不是内联 style：
    内联 style 优先级更高，写在那儿的话 prefers-reduced-motion 就覆盖不掉了。
    宽度过渡只在条露着时给（data-active），否则收尾归零会看到它往回缩。 */

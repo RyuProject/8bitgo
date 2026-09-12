@@ -553,7 +553,9 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
           />
           <p className="mt-1 text-[11px] text-dim">
             填数字就会出现在首页第一栏，小的排前面。只要有任意一款填了，那一栏就<strong className="text-muted">只出填了的这些</strong>，
-            标题也会从「最多人玩」变成「最热门的游戏」。全部留空则退回按游玩次数自动排。
+            标题会从「最多人玩的模拟器游戏」变成「站长精选」，<strong className="text-muted">#1 #2 的排名角标也会摘掉</strong>
+            —— 手挑的顺序不该被当成热度榜。按游玩次数排的那份真榜不会丢，它一直在下面的「最热门的游戏」那一栏。
+            全部留空则第一栏退回按游玩次数自动排。
           </p>
         </Field>
       </div>

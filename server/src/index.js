@@ -1,6 +1,7 @@
 import 'dotenv/config'
 import express from 'express'
 import { createServer } from 'node:http'
+import { readFileSync } from 'node:fs'
 import cors from 'cors'
 import { ping } from './db.js'
 import { ssrAvailable, renderPage, CLIENT_DIR } from './ssr.js'
@@ -42,6 +43,7 @@ import { oauthRouter } from './routes/oauth.js'
 import { adminOpenAppsRouter } from './routes/admin-open-apps.js'
 import { diagRouter } from './routes/diag.js'
 import { submitGameRouter } from './routes/submit-game.js'
+import { tvRouter } from './routes/tv.js'
 import { mailProvider, submitMailProvider } from './mail.js'
 import { gameSitemap, postSitemap, sitemapIndex, taxonomySitemap } from './routes/sitemaps.js'
 import { logSearchPushStatus } from './search-push.js'
@@ -102,6 +104,25 @@ app.get('/api/health', async (_req, res) => {
 })
 
 /*
+  开放平台 OpenAPI 规格自发现（仿 `/.well-known/openapi.json` 约定）。
+  公开、匿名、CORS 放开到任意 Origin，方便 agent / 代码生成器像发现 GGEMU 那样发现我们。
+  文件在 server/openapi.json（与 routes/open.js 对齐）。读不到就 404，不拖垮整个进程。
+*/
+const OPENAPI_SPEC = (() => {
+  try {
+    return JSON.parse(readFileSync(new URL('../openapi.json', import.meta.url), 'utf8'))
+  } catch {
+    return null
+  }
+})()
+app.get('/.well-known/openapi.json', (_req, res) => {
+  if (!OPENAPI_SPEC) return res.status(404).json({ error: 'not_found', error_description: 'OpenAPI 规格未找到' })
+  res.set('Access-Control-Allow-Origin', '*')
+  res.set('Cache-Control', 'public, max-age=3600')
+  res.type('application/json').json(OPENAPI_SPEC)
+})
+
+/*
   开放平台。**挂在最前面**是有意的：它有自己的一套 CORS（放开到任意 Origin）、
   自己的一套令牌（RS256，与站内互不相认）、自己的错误体（OAuth 风格）。
   和站内路由混在一起最容易出的事就是顺手复用了某个中间件 —— 见 routes/open.js 的文件头。
@@ -156,6 +177,8 @@ app.use('/api/im', imRouter)
 app.use('/api/diag', diagRouter)
 // 用户提交游戏：登录后上传 ROM（multipart），ROM 作为邮件附件发出，不落存储
 app.use('/api/submit-game', submitGameRouter)
+// 8BitGo TV：直播频道的当前节目单（收不到信号时前端退回游戏库浏览）
+app.use('/api/tv', tvRouter)
 
 // 游戏 sitemap 直接读数据库。放在静态资源之前，后台刚上架的游戏不必等下次构建才出现。
 app.get('/sitemaps/games-:language.xml', gameSitemap)

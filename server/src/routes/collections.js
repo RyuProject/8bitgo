@@ -201,6 +201,60 @@ export async function topCollections(limit = 8) {
   return decorate(rows, null)
 }
 
+/* ---------------- 开放平台（/api/open/v1/*）专用只读入口 ---------------- */
+
+/**
+ * 给开放平台用的公开合集列表。
+ *
+ * 和 GET / 是同一段查询 + 同一套 `decorate`（封面走 `coverGame`，只选 slug/title/platform/cover
+ * 等安全列，**不带 ROM 真实地址**）。区别只有 viewerId 强制 null（开放平台令牌背后没有站内用户，
+ * 永远不报 `mine`），以及分页参数由调用方给定。
+ */
+export async function listPublicCollections(page, pageSize) {
+  const size = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(pageSize) || DEFAULT_PAGE_SIZE))
+  const p = Math.max(1, Number(page) || 1)
+  const total = Number((await queryOne('SELECT COUNT(*) AS n FROM collections WHERE hidden = 0'))?.n) || 0
+  const rows = await query(
+    `${SELECT_WITH_AUTHOR} WHERE c.hidden = 0 ORDER BY c.updated_at DESC, c.id DESC LIMIT ? OFFSET ?`,
+    [size, (p - 1) * size],
+  )
+  return { items: await decorate(rows, null), total, page: p, pageSize: size }
+}
+
+/**
+ * 给开放平台用的单个合集元信息 + 游戏 slug（按展示顺序）。
+ *
+ * ⚠️ **不回完整游戏对象**：站内的 GET /:id 走 `attachRelations`，会把 ROM 真实地址等内部字段
+ * 一起发出去；开放平台那条路由必须改用 `openGame` 白名单重新映射（见 routes/open.js），
+ * 所以这里只回 slug 列表，游戏对象由那边现拼。
+ * 下架 / 不存在一律返回 null（调用方转 404），和站内「下架合集对外 404」一致。
+ */
+export async function getPublicCollection(id) {
+  const cid = idOf(id)
+  if (!cid) return null
+  const row = await queryOne(`${SELECT_WITH_AUTHOR} WHERE c.id = ?`, [cid])
+  if (!row || Number(row.hidden)) return null
+  const itemRows = await query(
+    `SELECT ci.game_id FROM collection_items ci
+     WHERE ci.collection_id = ?
+     ORDER BY (ci.position IS NULL) ASC, ci.position ASC, ci.created_at DESC, ci.game_id DESC LIMIT ?`,
+    [cid, MAX_ITEMS],
+  )
+  const ids = itemRows.map((r) => String(r.game_id))
+  let slugs = []
+  if (ids.length) {
+    const holes = ids.map(() => '?').join(',')
+    const gameRows = await query(`SELECT id, slug FROM games WHERE id IN (${holes}) AND hidden = 0`, ids)
+    const slugById = new Map(gameRows.map((g) => [String(g.id), g.slug]))
+    slugs = ids.map((gid) => slugById.get(gid)).filter(Boolean)
+  }
+  const counts = await countsFor([cid])
+  return {
+    collection: rowToApi(row, { viewerId: null, gameCount: counts.get(String(cid)) ?? 0 }),
+    gameSlugs: slugs,
+  }
+}
+
 /* ---------------- 公开读 ---------------- */
 
 /**

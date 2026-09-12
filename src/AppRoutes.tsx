@@ -27,6 +27,7 @@ import { OAuthCallbackPage } from '@/pages/OAuthCallbackPage'
 import { OpenPlatformPage } from '@/pages/OpenPlatformPage'
 import { OpenDevicePage } from '@/pages/OpenDevicePage'
 import { OpenAuthorizePage } from '@/pages/OpenAuthorizePage'
+import { TvPage } from '@/pages/TvPage'
 
 /**
  * 后台整块按需加载。
@@ -51,7 +52,6 @@ const AdminOpenApps = lazyNamed(() => import('@/admin/AdminOpenApps'), 'AdminOpe
 
 const COMING_SOON_ROUTES = [
   '/apps',
-  '/tv',
 ]
 
 export function AppRoutes() {
@@ -99,6 +99,8 @@ export function AppRoutes() {
           <Route path="/open/device" element={<OpenDevicePage />} />
           {/* 授权码流程里用户同意那一步。有浏览器的 Web 应用把用户重定向到这里点同意 */}
           <Route path="/open/authorize" element={<OpenAuthorizePage />} />
+          {/* 8BitGo TV：24/7 复古游戏直播频道。收不到信号（503）时退回游戏库浏览 */}
+          <Route path="/tv" element={<TvPage />} />
           {COMING_SOON_ROUTES.map((path) => (
             <Route key={path} path={path} element={<ComingSoonPage />} />
           ))}

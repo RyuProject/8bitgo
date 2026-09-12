@@ -199,6 +199,62 @@ const DOC_ENDPOINTS: { method: 'GET' | 'POST'; path: string; scope: string; desc
   },
   {
     method: 'GET',
+    path: '/v1/platforms',
+    scope: '无',
+    desc: '平台目录：每平台的模拟器 / ROM 扩展名 / 能否本地跑',
+    detail: '返回 items：id / name / runtime / core / romExtensions / native{runnable,emulator,note}。本地客户端拿到游戏 platform 后查这张表挑模拟器。注意 dos(flash 包需解包)、flash、java 能本地跑但有格式坑；html5 是网页、ps2 仅串流，runnable:false。',
+  },
+  {
+    method: 'GET',
+    path: '/v1/health',
+    scope: '无（公开）',
+    desc: '健康检查：服务存活 + 数据库连通',
+    detail: '公开匿名端点，返回 {service:"8bitgo-open", db, timestamp}。监控和第三方可直接探，不会被令牌限流挡住。完整的机器可读 OpenAPI 挂在 /.well-known/openapi.json。',
+  },
+  {
+    method: 'GET',
+    path: '/v1/genres',
+    scope: '无',
+    desc: '游戏类型枚举',
+    detail: '返回 items：{id, name}。客户端画「按类型筛选」用，别把类型集合硬编码进固件——它会变。',
+  },
+  {
+    method: 'GET',
+    path: '/v1/languages',
+    scope: '无',
+    desc: '游戏语言枚举',
+    detail: '返回 items：{code, label, english}（如 zh-Hans / en / ja）。和 ?lang= 的合法取值一致。',
+  },
+  {
+    method: 'GET',
+    path: '/v1/live/rooms',
+    scope: '无',
+    desc: '在播直播房间列表',
+    detail: '返回 items：{roomId, title, gameSlug, gameName, platform, hostName, viewers, startedAt, hostAway, hostFrozen, netplayRoomId, coopOpen, coopTaken, presence}。?game=<slug> 只筛某一款。已脱敏：无主播 IP / 续播 token / 观众 socket.id。',
+  },
+  {
+    method: 'GET',
+    path: '/v1/live/rooms/:roomId',
+    scope: '无',
+    desc: '单个直播房间快照',
+    detail: '直链也能查到，不受「切后台下榜」影响。不存在回 404 not_found。',
+  },
+  {
+    method: 'GET',
+    path: '/v1/collections',
+    scope: '无',
+    desc: '公开合集列表（分页）',
+    detail: '返回 {items, page, page_size, total, total_pages}。items 是合集元信息（id/title/author/covers/gameCount…），封面走瘦身 Game，不含 ROM 地址。',
+  },
+  {
+    method: 'GET',
+    path: '/v1/collections/:id',
+    scope: '无',
+    desc: '单个合集 + 里面的游戏',
+    detail: '返回 {collection, games}。games 走开放平台白名单映射（和 /v1/games 同形状），不含 ROM 真实地址——和站内 /:id 那条（用 attachRelations）不同，那条会漏内部字段。下架/不存在回 404。',
+  },
+  {
+    method: 'GET',
     path: '/v1/games',
     scope: 'games.read',
     desc: '游戏列表（分页）',
@@ -336,6 +392,17 @@ function ApiDocs() {
           <code className="text-fg">slow_down</code> 是「接着等」，不是失败。
         </p>
         <p className="text-muted">CORS 放开到任意 Origin 且不带 cookie；认 <code className="text-fg">error</code> 字段而非中文的 error_description。</p>
+        <p className="text-dim">
+          本地客户端挑平台：<code className="text-fg">runtime=emulatorjs</code> 那 11 个与{' '}
+          <code className="text-fg">java</code> 是「下载即跑」（见 <code className="text-fg">/v1/platforms</code> 的 native 建议）；
+          <code className="text-fg">dos</code> 的 jsdos 包、<code className="text-fg">flash</code> 的 swf 要按 note 处理格式；
+          <code className="text-fg">html5</code> 不是 ROM 而是网页，<code className="text-fg">ps2</code> 是 1~4.7GB 的 DVD 镜像、
+          站上只按扇区串读不提供整份下载 —— 这两个本地拿不到可用的 ROM。
+        </p>
+        <p className="text-dim">
+          ⚠️ 每一行还带 <code className="text-fg">enabled</code>：站上并不是每个平台都开着，
+          <code className="text-fg">false</code> 的在前台是 404、列表里也查不到东西，客户端应当整个隐藏。这个名单会变，别写死。
+        </p>
       </DocSection>
 
       <DocSection title="接口">
