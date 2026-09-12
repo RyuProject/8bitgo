@@ -43,6 +43,22 @@ const isWordChar = (ch) => /[a-z0-9]/.test(ch)
  * 归一化：全角转半角、繁转简、转小写、罗马音的长音记号去掉。
  * 索引和查询走的是同一个函数 —— 只要两边一致，映射准不准反而是次要的。
  */
+/**
+ * 转义 LIKE 模式里的通配符。
+ *
+ * `%` 和 `_` 在 LIKE 里是通配符，而用户搜的词里完全可能带着它们
+ * （`马_`、`100%`）。不转义的后果分两种，都不报错：
+ *   · 在 WHERE 里 —— 匹配范围被放大，可能变成全表扫描；
+ *   · 在 ORDER BY 的 CASE 里（games-repo 的相关性打分）—— **排序被污染**，
+ *     一批不该加分的游戏拿到了前缀分，而「搜出来第一个不是我要的」没人会去查 SQL。
+ *
+ * ⚠️ 反斜杠自己也要转义，而且要排在前面 —— 否则先插进去的那些反斜杠会被二次处理。
+ * 这里用一条正则一次过，不存在顺序问题。
+ */
+export function escapeLike(s) {
+  return String(s ?? '').replace(/[%_\\]/g, '\\$&')
+}
+
 export function normalize(text) {
   return simplify(
     String(text ?? '')
@@ -210,7 +226,7 @@ function termSql(t, req) {
     // 谁在前只能看 plays 撞运气。
     return {
       sql: `SELECT game_id, MAX(weight + IF(token = ?, 40, 0)) AS w, ${req} AS req FROM game_search_tokens WHERE token LIKE ? GROUP BY game_id`,
-      params: [t.token, `${t.token.replace(/[%_\\]/g, '\\$&')}%`],
+      params: [t.token, `${escapeLike(t.token)}%`],
     }
   }
   return {

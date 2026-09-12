@@ -208,6 +208,16 @@ globalThis.__fakeDb = {
     }
     // attachRelations 的三条
     if (/^SELECT game_id, (genre_id|tag|lang)/.test(q)) return []
+    /*
+      拿锁用的两条 SELECT ... FOR UPDATE（建合集锁 users 那一行、加游戏锁 collections 那一行）。
+      它们只为在事务里占住这一行，取什么列不重要 —— 这里回一行存在即可。
+
+      ⚠️ **不能只回 []**：真实的锁一定能锁到（两处的行都刚查过、一定存在），
+      回空的话被测代码看起来仍然正常，而我们就把「锁到底有没有拿到」测掉了。
+    */
+    if (/^SELECT id FROM (users|collections) WHERE id = \? FOR UPDATE$/.test(q)) {
+      return [{ id: params[0] }]
+    }
     throw new Error(`假数据库没准备这条 SQL：${q}`)
   },
   async queryOne(sql, params) {
@@ -225,7 +235,18 @@ try {
       'export const queryOne = (sql, params) => globalThis.__fakeDb.queryOne(sql, params)',
       'export const pool = { query: () => { throw new Error("测试不该直接用 pool") } }',
       // games-repo.js 会 import 它（合集详情要用 attachRelations），少一个导出整个模块就加载不了
-      'export const withTransaction = async (fn) => fn({ query: globalThis.__fakeDb.query, queryOne: globalThis.__fakeDb.queryOne })',
+      /*
+        ⚠️ 2026-09-12 修：这个假的**签名本来是错的**。
+
+        真的 withTransaction（db.js）把一个**函数** `run(sql, params)` 交给回调，
+        而这里给的是个对象 `{ query, queryOne }`。之前没人发现，是因为
+        games-repo.js 只是 import 它、从来没调过 —— 假库「能加载」就够了。
+        等 collections.js 真的开始用事务，第一次调用就是 `run is not a function`。
+
+        假库的签名和真库不一样，是假库最危险的一种错法：它让「代码是对的」这件事
+        变成假的，而症状出现在完全无关的另一个改动上。
+      */
+      'export const withTransaction = async (fn) => fn((sql, params) => globalThis.__fakeDb.query(sql, params))',
       /*
         ⚠️ 2026-09-11 补：games-repo.js 后来又多 import 了一个 jsonMemberPath，
         而这份假库没跟着加 —— 于是 `npm run test:collections` 直接

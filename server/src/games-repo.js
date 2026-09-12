@@ -9,7 +9,7 @@
  */
 import { jsonMemberPath, query, queryOne, withTransaction } from './db.js'
 import { gameRowToApi, gameApiToRow, dateTimeIso, romsOf, GENERIC_ROM_LANG } from './mappers.js'
-import { buildGameTokens, queryTerms, tokenMatchSql, normalize, tokenize } from './search.js'
+import { buildGameTokens, queryTerms, tokenMatchSql, normalize, tokenize, escapeLike } from './search.js'
 import { BAYES_SCORE_SQL } from './ratings-repo.js'
 
 /** 列表页每页最多给多少条，挡住 ?pageSize=100000 这种请求 */
@@ -147,7 +147,20 @@ export async function listGames(q = {}) {
     relevanceSql =
       '(s.score + CASE WHEN g.title = ? OR g.title_zh = ? THEN 1000 ELSE 0 END' +
       ' + CASE WHEN g.title LIKE ? OR g.title_zh LIKE ? THEN 300 ELSE 0 END) DESC, '
-    relevanceParams = [norm, norm, `${norm}%`, `${norm}%`]
+    /*
+      ⚠️ LIKE 的模式要转义 `%` 和 `_`。
+
+      normalize() 只做 NFKC / 繁转简 / 小写 / 去音调，**不碰这两个通配符**。
+      搜「马_」的时候拼出来是 `LIKE '马_%'`，`_` 匹配任意单字符 ——
+      于是一批本来不该拿那 300 分前缀加分的游戏拿到了，搜索结果顺序整个是错的。
+
+      不是全表扫描（这两个 LIKE 只在 ORDER BY 的 CASE 里，作用对象是倒排索引已经
+      筛出来的候选行），所以症状很轻：没有报错、没有变慢，只是**排序不对**，
+      而「搜出来的第一个不是我要的」这种事没人会去查 SQL。
+      同仓 search.js 的 tokenMatchSql 和 comments.js 都转义了，这里是遗漏。
+    */
+    const likePrefix = `${escapeLike(norm)}%`
+    relevanceParams = [norm, norm, likePrefix, likePrefix]
   }
 
   const join = `${genreJoin} ${searchJoin}`.trim()

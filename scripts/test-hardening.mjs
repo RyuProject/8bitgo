@@ -184,6 +184,79 @@ check('⚠️ 收藏不再是「先查再裸 INSERT」（双击会 500，而且�
   assert.match(me, /DELETE FROM favorites[\s\S]{0,200}affectedRows/, '不是「先删，删不到才插」那个形状')
 })
 
+console.log('\n── P2：能被利用但代价有限的那几条 ──')
+
+const { escapeLike } = await import('../server/src/search.js')
+const { cachePage } = await import('../server/src/content.js')
+
+check('⚠️ LIKE 模式转义了 % 和 _（否则搜索排序被污染）', () => {
+  /*
+    normalize() 只做 NFKC / 繁转简 / 小写 / 去音调，不碰这两个通配符。
+    搜「马_」时相关性打分拼出 `LIKE '马_%'`，`_` 匹配任意单字符 ——
+    一批本来不该拿 300 分前缀加分的游戏拿到了。
+
+    症状很轻：不报错、不变慢（这两个 LIKE 只在 ORDER BY 的 CASE 里，
+    作用对象是倒排索引已经筛出来的候选行），只是**顺序不对** ——
+    而「搜出来第一个不是我要的」没人会去查 SQL。
+  */
+  assert.equal(escapeLike('马_'), '马\\_')
+  assert.equal(escapeLike('100%'), '100\\%')
+  assert.equal(escapeLike('a\\b'), 'a\\\\b')
+  assert.equal(escapeLike('正常'), '正常')
+  const repo = strip(read('server/src/games-repo.js'))
+  assert.match(repo, /escapeLike\(norm\)/, '相关性打分那两个 LIKE 没转义')
+})
+
+check('⚠️ 缓存 key 用规整过的 page（否则 500 条请求冲干净整个 SSR 缓存）', () => {
+  /*
+    真正生效的页码在 games-repo 里被夹到 totalPages 再取整，所以 ?page=1、
+    ?page=99999、?page=abc 拿到的是同一份数据，而 key 是三个。缓存只有 500 格、
+    FIFO 淘汰，之后每个真实首屏都直穿数据库。两条入口都未认证、无限流。
+  */
+  assert.equal(cachePage('1'), 1)
+  assert.equal(cachePage('abc'), 1)
+  assert.equal(cachePage(undefined), 1)
+  assert.equal(cachePage('-5'), 1)
+  assert.equal(cachePage('1.9'), 1, '小数没取整 —— key 空间又变回无穷了')
+  assert.equal(cachePage('99999'), cachePage('500'), '超大页码没塌缩成同一个 key')
+  const content = strip(read('server/src/content.js'))
+  assert.match(content, /platform:\$\{id\}:\$\{cachePage\(/)
+  assert.match(content, /genre:\$\{id\}:\$\{cachePage\(/)
+  assert.match(content, /page: cachePage\(q\.page\)/)
+  assert.doesNotMatch(content, /\$\{qs\('page'\) \?\? 1\}/, '还有地方在用原始 page 当 key')
+})
+
+check('⚠️ /auth/google 有闸，而且长度闸在外呼之前', () => {
+  /*
+    那个 fetch 是从我们服务器发出去的，URL 里带着 credential，
+    encodeURIComponent 会把非 URL 安全字符膨胀 3 倍 —— 4MB 的垃圾串变成 12MB 出网 URL。
+    而且每条都算在我们对 oauth2.googleapis.com 的来源 IP 限额里：
+    打爆之后**真实用户的 Google 登录全部失败**。
+  */
+  const auth = strip(read('server/src/routes/auth.js'))
+  const i = auth.indexOf("authRouter.post('/google'")
+  assert.ok(i > 0, '找不到 /google')
+  const body = auth.slice(i, i + 1600)
+  const lenGuard = body.indexOf('MAX_GOOGLE_CREDENTIAL')
+  const gate = body.indexOf('authGateOk(')
+  const outbound = body.indexOf('oauth2.googleapis.com')
+  assert.ok(lenGuard > 0, '没有长度上限')
+  assert.ok(gate > 0, '这条路没有限流')
+  assert.ok(lenGuard < outbound, '长度闸排在外呼之后 —— 12MB 的 URL 已经发出去了')
+  assert.ok(gate < outbound, '限流排在外呼之后')
+  // google 是登录不是注册，按注册那档（10 次/小时）会把 NAT 后面的人互相锁在门外
+  assert.match(auth, /kind === 'login' \|\| kind === 'google'/, 'google 没算进登录那一档')
+})
+
+check('⚠️ 合集的两处「先查后写」都进了事务', () => {
+  const col = strip(read('server/src/routes/collections.js'))
+  const n = (col.match(/withTransaction\(async \(run\)/g) ?? []).length
+  assert.equal(n, 2, `只有 ${n} 处用了事务 —— 建合集和加游戏两处都要`)
+  assert.match(col, /SELECT id FROM users WHERE id = \? FOR UPDATE/, '建合集没拿锁')
+  assert.match(col, /SELECT id FROM collections WHERE id = \? FOR UPDATE/, '加游戏没拿锁')
+  assert.match(col, /take\(`collection:add:/, '加游戏那条仍然没有限流')
+})
+
 console.log('')
 if (fails.length) {
   for (const f of fails) console.error('✗ ' + f.name + '\n' + (f.e?.stack ?? f.e))

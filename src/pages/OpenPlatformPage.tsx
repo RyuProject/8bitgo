@@ -96,7 +96,7 @@ export function OpenPlatformPage() {
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-8 sm:px-6">
-      <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_17rem]">
+      <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_21rem]">
         <div className="min-w-0">
           <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
@@ -155,91 +155,291 @@ export function OpenPlatformPage() {
       </p>
         </div>
         <aside className="hidden lg:block">
-          <ApiQuickref />
+          <div className="sticky top-6 max-h-[calc(100vh-3rem)] overflow-y-auto pr-1.5">
+            <ApiDocs />
+          </div>
         </aside>
       </div>
     </div>
   )
 }
 
-/* ---------------- 右侧：接口快查 ---------------- */
+/* ---------------- 右侧：完整开发文档（可独立滚动） ---------------- */
 
 /**
- * `/open` 右栏的接口速查。
+ * `/open` 右栏的**完整**开发文档，像阿里云控制台那样：左栏是操作台，右栏是可滚动的
+ * API 参考，含鉴权、每个端点的字段、错误码、限流。内容对齐 `server/src/routes/open.js`
+ * 与 `docs/esp-open-api.md`，改了接口记得同步这里。
  *
- * 跟着 `server/src/routes/open.js` 走：列出 Base URL、所有 `/v1/*` 端点（带方法）、
- * 以及当前可用的 scope。不展开字段和错误码 —— 那部分太长，留给关于页，
- * 这里只做「一眼看全有哪些接口、要哪个 scope」。
+ * 容器本身在 JSX 里是 `sticky top-6 max-h-[calc(100vh-3rem)] overflow-y-auto`，
+ * 所以这一坨再长也只滚右栏、不带着整页走。
  */
-function ApiQuickref() {
-  const endpoints: { method: 'GET' | 'POST'; path: string; note: string }[] = [
-    { method: 'POST', path: '/v1/token', note: 'AppID + Key 换令牌' },
-    { method: 'POST', path: '/v1/device/code', note: '设备码流程要一串码' },
-    { method: 'GET', path: '/v1/me', note: '自查令牌的 scope' },
-    { method: 'GET', path: '/v1/games', note: '游戏列表' },
-    { method: 'GET', path: '/v1/games/:slug', note: '游戏详情' },
-    { method: 'GET', path: '/v1/games/:slug/rom', note: 'ROM 短期凭据' },
-    { method: 'GET', path: '/v1/games/:slug/embed', note: '嵌入播放器' },
-    { method: 'GET', path: '/v1/library', note: '收藏 / 最近在玩' },
-    { method: 'GET', path: '/v1/saves', note: '存档清单' },
-    { method: 'GET', path: '/v1/saves/:runtime/:slug', note: '取一份存档' },
-  ]
-  const scopes: { id: string; kind: 'self' | 'review' | 'soon' }[] = [
-    { id: 'games.read', kind: 'self' },
-    { id: 'games.rom', kind: 'review' },
-    { id: 'library.read', kind: 'review' },
-    { id: 'saves.read', kind: 'review' },
-    { id: 'saves.write', kind: 'soon' },
-  ]
 
+const DOC_ENDPOINTS: { method: 'GET' | 'POST'; path: string; scope: string; desc: string; detail?: string }[] = [
+  {
+    method: 'POST',
+    path: '/v1/token',
+    scope: '—',
+    desc: 'AppID + Key 换应用级令牌',
+    detail: '请求体 JSON 或 x-www-form-urlencoded。grant_type=client_credentials。回 {access_token, token_type:"Bearer", expires_in:900, scope}。scope 不传=已获批应用级全部，传了必须是子集、不静默降级。',
+  },
+  {
+    method: 'POST',
+    path: '/v1/device/code',
+    scope: '—',
+    desc: '设备码流程：要一串 user_code / device_code',
+    detail: '回 {device_code, user_code, verification_uri:"/open/device", verification_uri_complete, expires_in:900, interval:5}。只有 confidential 客户端能用。',
+  },
+  {
+    method: 'GET',
+    path: '/v1/me',
+    scope: '无',
+    desc: '自查令牌：client_id / kind / scope / expires_at',
+    detail: '排错第一站。「为什么我调那个接口 403」先看这里的 scope。',
+  },
+  {
+    method: 'GET',
+    path: '/v1/games',
+    scope: 'games.read',
+    desc: '游戏列表（分页）',
+    detail: '参数：page(默认1)、page_size(默认24,≤50)、platform、genre、q、sort(popular/newest/name/rating/home)、lang(默认 en)。回 {items,page,page_size,total,total_pages}。',
+  },
+  {
+    method: 'GET',
+    path: '/v1/games/:slug',
+    scope: 'games.read',
+    desc: '游戏详情，返回单个游戏对象',
+    detail: '下架 / 成人 / 不存在对外一律 404 not_found。',
+  },
+  {
+    method: 'GET',
+    path: '/v1/games/:slug/rom',
+    scope: 'games.rom',
+    desc: '换 ROM 短期下载凭据',
+    detail: '参数 lang（精确→通用件*，不做跨语言回退）。回 {url, expires_in:300, lang_actual, filename}。第二跳 GET /v1/rom/:grant 是 302 不带 Authorization，跟随到 assets 主机；凭据 5 分钟过期。',
+  },
+  {
+    method: 'GET',
+    path: '/v1/games/:slug/embed',
+    scope: 'games.read',
+    desc: '换带签名、会过期的嵌入播放器地址',
+    detail: '回 {url, expires_in, allow:"fullscreen; gamepad; autoplay; clipboard-write"}。',
+  },
+  {
+    method: 'GET',
+    path: '/v1/library',
+    scope: 'library.read',
+    desc: '用户收藏与最近在玩（用户级令牌）',
+    detail: '回 {favorites:[游戏对象], recent:[…]最多12条, favorites_total}。设备码流程换来的用户级令牌才能调。',
+  },
+  {
+    method: 'GET',
+    path: '/v1/saves',
+    scope: 'saves.read',
+    desc: '用户存档清单（只元信息，不带内容）',
+    detail: '回 {items:[{runtime, game_slug, slot, size, created_at, updated_at}]}。',
+  },
+  {
+    method: 'GET',
+    path: '/v1/saves/:runtime/:slug',
+    scope: 'saves.read',
+    desc: '取一份存档的二进制（用户级令牌）',
+    detail: '参数 slot(0–9)。回 application/octet-stream + x-save-updated-at。runtime 白名单：emulatorjs / jsdos / cloudgame / jsnes / ruffle / webretro / j2me。',
+  },
+]
+
+const DOC_ERRORS: [string, string, string][] = [
+  ['400', 'invalid_request', '请求体畸形 / 超 16KB（413 同码）'],
+  ['400', 'unsupported_grant_type', '只支持 client_credentials / device_code'],
+  ['400', 'unauthorized_client', 'public 客户端不能用此端点'],
+  ['400', 'invalid_scope', 'scope 不认识 / 未获批 / 要了用户级'],
+  ['401', 'invalid_client', 'AppID 或 key 不对（不区分）'],
+  ['401', 'invalid_token', '令牌无效或过期 → 续一次、重试一次'],
+  ['403', 'insufficient_scope', '差哪个 scope（响应带 scope 字段）'],
+  ['403', 'invalid_grant', 'ROM 凭据签名不对'],
+  ['404', 'not_found', '没这款游戏（下架/成人/不存在不区分）'],
+  ['404', 'rom_unavailable', '这款游戏没有可下载 ROM'],
+  ['410', 'grant_expired', 'ROM 凭据过期 → 回第一步重换'],
+  ['429', 'rate_limited', '看 Retry-After 退避'],
+  ['500', 'server_error', '服务端问题，重试或联系我们'],
+  ['501', 'temporarily_unavailable', '服务端未启用开放平台'],
+]
+
+const DOC_RATES: [string, string][] = [
+  ['取令牌 · 按 IP', '120 / 小时'],
+  ['取令牌 · 按 AppID', '60 / 小时'],
+  ['普通接口 · 按 AppID', '3600 / 小时'],
+  ['ROM 换凭据 · 按 AppID', '600 / 小时'],
+]
+
+const DOC_GAME_FIELDS: [string, string, string][] = [
+  ['slug', 'string', '对外唯一标识，所有端点都用它'],
+  ['title / description', 'string', '已按 lang 取好的单语言文本'],
+  ['lang_requested', 'string', '你要求的语言'],
+  ['lang_actual', '{title,description}', '实际是哪门；und=原名'],
+  ['platform', 'string', '平台 id，如 nes / dos'],
+  ['genres / tags', 'string[]', '类型 / 标签'],
+  ['year', 'number', '0=没填'],
+  ['developer', 'string', '开发商'],
+  ['players / multiplayer', 'number / bool', '人数 / 是否多人'],
+  ['icon', 'string', 'emoji 兜底封面'],
+  ['cover', 'string|null', '绝对地址，没有时给 null 而非 404 URL'],
+  ['rating / rating_count', 'number', '一位小数；0=还没人评'],
+  ['plays', 'number', '游玩次数'],
+  ['added_at / updated_at', 'string|null', '日期 / ISO 时间'],
+  ['adult', 'bool', '列表里恒为 false'],
+  ['rom_langs', 'string[]', '可选 ROM 语言，* = 通用件'],
+]
+
+function MethodBadge({ method }: { method: 'GET' | 'POST' }) {
   return (
-    <div className="sticky top-6 space-y-5">
+    <span
+      className={cx(
+        'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold',
+        method === 'GET' ? 'bg-brand-soft text-brand-hover' : 'bg-coin/20 text-coin',
+      )}
+    >
+      {method}
+    </span>
+  )
+}
+
+function DocSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="border-t border-line pt-4 first:border-t-0 first:pt-0">
+      <h3 className="text-[11px] font-semibold uppercase tracking-wide text-dim">{title}</h3>
+      <div className="mt-2 space-y-3">{children}</div>
+    </section>
+  )
+}
+
+function ApiDocs() {
+  return (
+    <div className="space-y-5 pb-4 text-[11px] leading-relaxed">
       <div>
         <p className="text-[11px] font-semibold uppercase tracking-wide text-dim">Base URL</p>
-        <code className="mt-1 block break-all rounded-lg border border-line bg-surface-2 px-2 py-1.5 text-[11px]">
+        <code className="mt-1 block break-all rounded-lg border border-line bg-surface-2 px-2 py-1.5">
           https://8bitgo.com/api/open/v1
         </code>
       </div>
 
-      <div>
-        <p className="text-[11px] font-semibold uppercase tracking-wide text-dim">接口</p>
-        <ul className="mt-2 space-y-1.5">
-          {endpoints.map((e) => (
-            <li key={e.path} className="flex items-baseline gap-2">
-              <span
-                className={cx(
-                  'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold',
-                  e.method === 'GET' ? 'bg-brand-soft text-brand-hover' : 'bg-coin/20 text-coin',
-                )}
-              >
-                {e.method}
-              </span>
-              <span className="min-w-0">
-                <code className="block text-[11px] leading-tight text-fg">{e.path}</code>
-                <span className="text-[10px] text-dim">{e.note}</span>
-              </span>
-            </li>
-          ))}
-        </ul>
-      </div>
+      <DocSection title="鉴权">
+        <p className="text-muted">
+          所有接口除 <code className="text-fg">GET /v1/rom/:grant</code> 外都要带：
+        </p>
+        <pre className="overflow-x-auto rounded-lg border border-line bg-surface-2 px-2 py-1.5 text-[10px] text-fg">Authorization: Bearer &lt;access_token&gt;</pre>
+        <p className="text-muted">
+          应用级令牌（client_credentials）背后没有用户，拿不到 <code className="text-fg">library.* / saves.*</code>。
+          读用户数据要走设备码流程（RFC 8628）：先 <code className="text-fg">POST /v1/device/code</code> 拿码，
+          人在 <code className="text-fg">/open/device</code> 点同意，设备再 <code className="text-fg">POST /v1/token</code>
+          轮询 grant_type=device_code。注意 <code className="text-fg">authorization_pending</code> /{' '}
+          <code className="text-fg">slow_down</code> 是「接着等」，不是失败。
+        </p>
+        <p className="text-muted">CORS 放开到任意 Origin 且不带 cookie；认 <code className="text-fg">error</code> 字段而非中文的 error_description。</p>
+      </DocSection>
 
-      <div>
-        <p className="text-[11px] font-semibold uppercase tracking-wide text-dim">Scope</p>
-        <ul className="mt-2 space-y-1">
-          {scopes.map((s) => (
-            <li key={s.id} className="flex items-center gap-2 text-[11px]">
-              <code className={s.kind === 'soon' ? 'text-dim line-through' : 'text-fg'}>{s.id}</code>
-              {s.kind === 'self' && <span className="rounded bg-brand-soft px-1 text-[10px] text-brand-hover">自助</span>}
-              {s.kind === 'review' && <span className="rounded bg-coin/20 px-1 text-[10px] text-coin">需审核</span>}
-              {s.kind === 'soon' && <span className="text-dim">待上线</span>}
-            </li>
-          ))}
-        </ul>
-      </div>
+      <DocSection title="接口">
+        {DOC_ENDPOINTS.map((e) => (
+          <div key={e.path} className="rounded-lg border border-line bg-surface p-2.5">
+            <div className="flex items-center gap-2">
+              <MethodBadge method={e.method} />
+              <code className="text-[11px] font-semibold text-fg">{e.path}</code>
+            </div>
+            <p className="mt-1 text-muted">
+              需要 <code className="text-fg">{e.scope}</code> · {e.desc}
+            </p>
+            {e.detail && <p className="mt-1 text-dim">{e.detail}</p>}
+          </div>
+        ))}
+      </DocSection>
 
-      <p className="text-[11px] leading-relaxed text-dim">
-        完整字段、错误码、限流见 <Link to="/about" className="text-brand-hover underline underline-offset-2">关于页</Link> 的开放平台一节。
-      </p>
+      <DocSection title="游戏对象字段">
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-[10px]">
+            <thead>
+              <tr className="text-left text-dim">
+                <th className="border-b border-line py-1 pr-2 font-medium">字段</th>
+                <th className="border-b border-line py-1 pr-2 font-medium">类型</th>
+                <th className="border-b border-line py-1 font-medium">说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              {DOC_GAME_FIELDS.map(([f, t, d]) => (
+                <tr key={f}>
+                  <td className="border-b border-line/60 py-1 pr-2 align-top"><code className="text-fg">{f}</code></td>
+                  <td className="border-b border-line/60 py-1 pr-2 align-top text-dim">{t}</td>
+                  <td className="border-b border-line/60 py-1 align-top text-muted">{d}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="text-dim">
+          绝不会出现（内部字段）：id、rom / roms / object_key、hidden、core、dos_*、coin_reward、video 等。
+        </p>
+      </DocSection>
+
+      <DocSection title="错误码">
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-[10px]">
+            <thead>
+              <tr className="text-left text-dim">
+                <th className="border-b border-line py-1 pr-2 font-medium">HTTP</th>
+                <th className="border-b border-line py-1 pr-2 font-medium">error</th>
+                <th className="border-b border-line py-1 font-medium">含义</th>
+              </tr>
+            </thead>
+            <tbody>
+              {DOC_ERRORS.map(([http, err, desc]) => (
+                <tr key={err}>
+                  <td className="border-b border-line/60 py-1 pr-2 align-top text-dim">{http}</td>
+                  <td className="border-b border-line/60 py-1 pr-2 align-top"><code className="text-fg">{err}</code></td>
+                  <td className="border-b border-line/60 py-1 align-top text-muted">{desc}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </DocSection>
+
+      <DocSection title="限流（窗口均为 1 小时）">
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-[10px]">
+            <thead>
+              <tr className="text-left text-dim">
+                <th className="border-b border-line py-1 pr-2 font-medium">桶</th>
+                <th className="border-b border-line py-1 font-medium">上限</th>
+              </tr>
+            </thead>
+            <tbody>
+              {DOC_RATES.map(([bucket, limit]) => (
+                <tr key={bucket}>
+                  <td className="border-b border-line/60 py-1 pr-2 align-top text-muted">{bucket}</td>
+                  <td className="border-b border-line/60 py-1 align-top"><code className="text-fg">{limit}</code></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="text-dim">429 带 Retry-After 头（秒），照它退避。普通接口平均约 1 QPS。</p>
+      </DocSection>
+
+      <DocSection title="Scope">
+        <ul className="space-y-1">
+          <li><code className="text-fg">games.read</code> <span className="rounded bg-brand-soft px-1 text-brand-hover">自助</span> <span className="text-dim">创建即给</span></li>
+          <li><code className="text-fg">games.rom</code> <span className="rounded bg-coin/20 px-1 text-coin">需审核</span> <span className="text-dim">assets 当前公开可读，凭据只是不主动给</span></li>
+          <li><code className="text-fg">library.read</code> <span className="rounded bg-coin/20 px-1 text-coin">需审核</span> <span className="text-dim">用户级，需设备码流程</span></li>
+          <li><code className="text-fg">saves.read</code> <span className="rounded bg-coin/20 px-1 text-coin">需审核</span> <span className="text-dim">用户级，需设备码流程</span></li>
+          <li><code className="text-fg line-through">saves.write</code> <span className="text-dim">待上线（敏感，要连配额/覆盖保护/审计一起做）</span></li>
+        </ul>
+      </DocSection>
+
+      <DocSection title="语言码">
+        <p className="text-muted">
+          只认 <code className="text-fg">zh-Hans zh-Hant en es fr it de ja</code>；不报错退到默认 <code className="text-fg">en</code>。
+          库内译文残缺，设备上靠 <code className="text-fg">lang_actual</code> 判断有没有译文，别靠 lang_requested。
+        </p>
+      </DocSection>
     </div>
   )
 }

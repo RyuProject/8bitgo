@@ -6,7 +6,7 @@ import { ping } from './db.js'
 import { ssrAvailable, renderPage, CLIENT_DIR } from './ssr.js'
 import { normalizeUrl } from './url-normalize.js'
 import { playShell } from './routes/play.js'
-import { j2meJarProxy, uploadJar, releaseJar, keepaliveJar, startSweeper, MAX_BYTES, TTL_MS } from './j2me.js'
+import { j2meJarProxy, uploadGate, uploadJar, releaseJar, keepaliveJar, startSweeper, MAX_BYTES, TTL_MS } from './j2me.js'
 import { ADMIN_AUTH_DISABLED, adminBackdoorFatal } from './auth.js'
 import { CACHE, noStore, staticCacheHeaders } from './cache.js'
 import { authRouter } from './routes/auth.js'
@@ -215,7 +215,14 @@ app.get('/api/live/events', (req, res) => {
 /* ---------------- J2ME 临时上传 ---------------- */
 // 请求体就是 jar 原始字节，用 express.raw 收，省掉 multipart 依赖。
 // 上限在这里也卡一道，避免超大请求先被完整读进内存再拒绝。
-app.post('/api/j2me/upload', express.raw({ type: '*/*', limit: MAX_BYTES }), uploadJar)
+/*
+  ⚠️ uploadGate **必须排在 express.raw 之前**。
+
+  express.raw 一跑完，20MB 就已经整个进内存了 —— 被拒的请求和被放行的一样要先吃掉它。
+  限流原来写在 uploadJar 的开头（注释还写着「挡掉的请求不该再花任何 CPU 或磁盘」），
+  但在中间件顺序下那句话不成立。拆出来挂前面，429 才是在读 body 之前发出去的。
+*/
+app.post('/api/j2me/upload', uploadGate, express.raw({ type: '*/*', limit: MAX_BYTES }), uploadJar)
 // 页面关闭时由 navigator.sendBeacon 调用，只能是 POST。
 app.post('/api/j2me/release', express.text({ type: '*/*', limit: '1kb' }), releaseJar)
 // 还在玩的时候续期，避免长时间游戏中途文件被清扫

@@ -157,6 +157,29 @@ async function loadPublishedPosts() {
  * @param {string} pathname 已经剥掉语言前缀的路径
  * @param {URLSearchParams} search
  */
+/**
+ * 把 `?page=` 规整成缓存 key 能用的样子。
+ *
+ * ## 为什么缓存 key 不能直接用原始值
+ *
+ * 真正生效的页码在下游被夹过（games-repo：`min(max(1, n), totalPages)` 再取整），
+ * 所以 `?page=1`、`?page=99999`、`?page=abc`、`?page=1.0` **拿到的是同一份数据**，
+ * 而缓存 key 是四个。缓存只有 500 格、FIFO 淘汰 —— 一个 for 循环打 500 个不同的
+ * page 就能把整个 SSR 缓存冲干净，之后每一个真实首屏都直穿数据库（每次两条查询：
+ * count + select）。而这两条入口（/api/page 和 SSR）都是**未认证、无限流**的。
+ *
+ * 这里只做「规整」不做「夹到 totalPages」：那个上界要先查出总数才知道，
+ * 而缓存 key 必须在查询之前就定下来。规整到整数 + 一个明显过大的上界，
+ * 已经把可用的 key 空间从「无穷」压到几百个 —— 超出的那些全部塌缩成同一个 key，
+ * 而它们本来就都会被下游夹成最后一页。
+ */
+const MAX_CACHE_PAGE = 500
+export function cachePage(raw) {
+  const n = Math.trunc(Number(raw))
+  if (!Number.isFinite(n) || n <= 1) return 1
+  return Math.min(n, MAX_CACHE_PAGE)
+}
+
 export async function loadForRoute(pathname, search) {
   const seg = pathname.split('/').filter(Boolean)
   const qs = (k) => search?.get(k) ?? undefined
@@ -181,8 +204,9 @@ export async function loadForRoute(pathname, search) {
       multiplayer: qs('multiplayer') === '1', coin: qs('coin') === '1',
       q: qs('q'), sort: qs('sort'), page: qs('page'),
     }
-    // 带搜索词的组合太发散，不进缓存，免得把内存塞满
-    const key = q.q ? null : `games:${JSON.stringify(q)}`
+    // 带搜索词的组合太发散，不进缓存，免得把内存塞满。
+    // ⚠️ page 要规整过再进 key，理由见 cachePage
+    const key = q.q ? null : `games:${JSON.stringify({ ...q, page: cachePage(q.page) })}`
     const load = async () => ({ route: 'games', list: await listGames(q), facets: await loadFacets() })
     return key ? cached(key, load) : load()
   }
@@ -191,7 +215,7 @@ export async function loadForRoute(pathname, search) {
   if (seg[0] === 'platforms') {
     if (seg[1]) {
       const id = decodeURIComponent(seg[1])
-      return cached(`platform:${id}:${qs('page') ?? 1}`, async () => ({
+      return cached(`platform:${id}:${cachePage(qs('page'))}`, async () => ({
         route: 'platform',
         id,
         list: await listGames({ platform: id, sort: 'popular', page: qs('page') }),
@@ -204,7 +228,7 @@ export async function loadForRoute(pathname, search) {
   if (seg[0] === 'genres') {
     if (seg[1]) {
       const id = decodeURIComponent(seg[1])
-      return cached(`genre:${id}:${qs('page') ?? 1}`, async () => ({
+      return cached(`genre:${id}:${cachePage(qs('page'))}`, async () => ({
         route: 'genre',
         id,
         list: await listGames({ genre: id, sort: 'popular', page: qs('page') }),

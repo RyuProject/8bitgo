@@ -165,32 +165,62 @@ export function keepaliveJar(req, res) {
  * 用原始 body 而不是 multipart，省掉一个依赖。
  * 返回 { name }，前端拿去拼 run.html?jar=<name>。
  */
+/**
+ * 上传的闸。**必须挂在 express.raw 之前**（见 index.js 的挂载点）。
+ *
+ * ## 为什么是一个独立的中间件，而不是 uploadJar 里的头几行
+ *
+ * 它原来就写在 uploadJar 开头，注释还写着「限流放在最前面 —— 挡掉的请求不该再花
+ * 任何 CPU 或磁盘」。但那句话在实际的中间件顺序下**不成立**：
+ *
+ *     app.post('/api/j2me/upload', express.raw({ limit: 20MB }), uploadJar)
+ *                                  └─ 这一步跑完，20MB 已经整个进内存了 ─┘
+ *
+ * 也就是说被拒的第 121 次请求，和被放行的前 120 次一样，各自先吃掉 20MB。
+ * 未认证的内存放大器。拆成独立中间件之后，429 是在读 body 之前发出去的。
+ *
+ * 顺带补一道 Content-Length 预检：超了直接断连接，不给它机会把字节送完。
+ * 这个头可以缺（chunked 传输），缺的时候 express.raw 的 limit 仍然兜着。
+ */
+export function uploadGate(req, res, next) {
+  // 预检：声明了就信，超了当场拒。省掉 20MB 的内存和一次完整的接收
+  const len = Number(req.headers['content-length'])
+  if (Number.isFinite(len) && len > MAX_BYTES) {
+    res.on('finish', () => {
+      try {
+        req.destroy()
+      } catch {
+        /* 连接已经没了，无所谓 */
+      }
+    })
+    return res.status(413).json({ error: `jar 不能超过 ${Math.round(MAX_BYTES / 1024 / 1024)}MB` })
+  }
+
+  const ip = clientKey(req)
+  if (isMeaningfulIp(ip)) {
+    const perMin = take(`j2me:up:ip:${ip}`, UPLOAD_PER_IP_PER_MIN, MINUTE)
+    if (!perMin.ok) return res.status(429).json({ error: '上传太频繁了，请稍后再试', retryAfter: perMin.retryAfter })
+    const perHour = take(`j2me:up:ip:h:${ip}`, UPLOAD_PER_IP_PER_HOUR, HOUR)
+    if (!perHour.ok) return res.status(429).json({ error: '上传次数过多，请稍后再试', retryAfter: perHour.retryAfter })
+  } else if (!warnedNoRealIp) {
+    warnedNoRealIp = true
+    console.warn(
+      '[j2me] 拿不到真实客户端 IP，按 IP 的上传限流已跳过，只剩全站兜底。' +
+        ' 让 nginx 透传真实 IP 即可恢复：proxy_set_header X-Forwarded-For $http_cf_connecting_ip;',
+    )
+  }
+  const global = take('j2me:up:global', UPLOAD_GLOBAL_PER_MIN, MINUTE)
+  if (!global.ok) {
+    console.warn('[j2me] 全站上传配额已用尽 —— 可能正在被刷，检查 nginx 是否透传了真实 IP')
+    return res.status(429).json({ error: '当前上传请求过多，请稍后再试', retryAfter: global.retryAfter })
+  }
+  next()
+}
+
 export async function uploadJar(req, res) {
   try {
-    /*
-      限流放在**最前面** —— 挡掉的请求不该再花任何 CPU 或磁盘。
-      尤其别放在 assertJarBuffer 后面：那个函数要走完整个 ZIP 中央目录，
-      是这条路径上最贵的一步，让攻击者免费用掉它就等于限流白加。
-    */
-    const ip = clientKey(req)
-    if (isMeaningfulIp(ip)) {
-      const perMin = take(`j2me:up:ip:${ip}`, UPLOAD_PER_IP_PER_MIN, MINUTE)
-      if (!perMin.ok) return res.status(429).json({ error: '上传太频繁了，请稍后再试', retryAfter: perMin.retryAfter })
-      const perHour = take(`j2me:up:ip:h:${ip}`, UPLOAD_PER_IP_PER_HOUR, HOUR)
-      if (!perHour.ok) return res.status(429).json({ error: '上传次数过多，请稍后再试', retryAfter: perHour.retryAfter })
-    } else if (!warnedNoRealIp) {
-      warnedNoRealIp = true
-      console.warn(
-        '[j2me] 拿不到真实客户端 IP，按 IP 的上传限流已跳过，只剩全站兜底。' +
-          ' 让 nginx 透传真实 IP 即可恢复：proxy_set_header X-Forwarded-For $http_cf_connecting_ip;',
-      )
-    }
-    const global = take('j2me:up:global', UPLOAD_GLOBAL_PER_MIN, MINUTE)
-    if (!global.ok) {
-      console.warn('[j2me] 全站上传配额已用尽 —— 可能正在被刷，检查 nginx 是否透传了真实 IP')
-      return res.status(429).json({ error: '当前上传请求过多，请稍后再试', retryAfter: global.retryAfter })
-    }
-
+    // ⚠️ 限流和大小预检在 uploadGate 里，它挂在 express.raw **之前**（见 index.js）。
+    // 别把那几行搬回来 —— 搬回来就等于「先收 20MB 再说拒绝」。
     const buf = req.body
     if (!Buffer.isBuffer(buf) || buf.length === 0) {
       return res.status(400).json({ error: '请求体为空' })

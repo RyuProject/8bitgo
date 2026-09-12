@@ -186,20 +186,63 @@ const codeOnly = (src) =>
     .filter((l) => !l.trim().startsWith('//'))
     .join('\n')
 const serverCode = codeOnly(serverSrc)
+/**
+ * index.js 的源码。上传路由的挂载顺序要在那儿看，不在 j2me.js 里。
+ *
+ * 注意这里**故意不过 codeOnly**。那个函数用正则去块注释，而 index.js 里有
+ * `express.raw({ type: <星斜星> })` —— 字符串里那个「星号加斜杠」会被当成注释结束，
+ * 把前面一整段代码连同它一起吃掉，拼出一行根本不存在的语句。
+ * （实测：断言拿到的是 upload 那行的开头，接上了 release 那行的结尾。）
+ *
+ * 顺带一提，写这段注释时我自己也踩了同一个坑 —— 所以上面那个通配符是用中文写的。
+ * 这里只去掉整行的行注释就够：要找的那一行本来就没有注释。
+ */
+const readIndex = () =>
+  readFileSync(new URL('../server/src/index.js', import.meta.url), 'utf8')
+    .split('\n')
+    .filter((l) => !l.trim().startsWith('//'))
+    .join('\n')
 
-check('⭐ uploadJar 里有按 IP 和全站两道闸', () => {
+check('⭐ 上传有按 IP 和全站两道闸', () => {
   assert.match(serverCode, /j2me:up:ip:/, '缺按 IP 那道')
   assert.match(serverCode, /j2me:up:global/, '缺全站兜底那道')
   assert.match(serverCode, /isMeaningfulIp/, '拿不到真实 IP 时必须跳过按 IP 那道，否则误伤真实用户')
 })
 
-check('⭐ 限流必须在 assertJarBuffer 之前 —— 否则最贵的一步被白用', () => {
+check('⚠️⭐ 闸是独立中间件，而且挂在 express.raw **之前**', () => {
+  /*
+    这一条 2026-09-12 改过，改之前它守的东西是错的。
+
+    老断言是「限流要在 uploadJar 里、排在 assertJarBuffer 前面」。那句话在
+    uploadJar 内部成立，但在**中间件顺序**上不成立 ——
+        app.post(..., express.raw({ limit: 20MB }), uploadJar)
+    express.raw 一跑完，20MB 就已经整个进内存了。也就是说被拒的那一次
+    和被放行的那一次一样，各自先吃掉 20MB。未认证的内存放大器，而测试是绿的。
+
+    现在闸拆成 uploadGate 挂在 raw 前面，这条改成守新的形状。
+  */
+  assert.match(serverCode, /export function uploadGate/, '闸没有拆成独立中间件')
+  const idx = readIndex()
+  const mount = idx.match(/app\.post\('\/api\/j2me\/upload'[^\n]*/)?.[0] ?? ''
+  assert.ok(mount, '找不到上传路由的挂载点')
+  assert.ok(
+    mount.indexOf('uploadGate') < mount.indexOf('express.raw'),
+    '闸排在 express.raw 后面 —— 那时 20MB 已经进内存了',
+  )
+  assert.ok(mount.indexOf('express.raw') < mount.indexOf('uploadJar'), '挂载顺序整个不对')
+})
+
+check('⚠️⭐ 限流别再被搬回 uploadJar 里', () => {
+  // 搬回去就等于「先收 20MB 再说拒绝」，而且症状是零 —— 测试和界面都看不出来
   const up = serverCode.slice(serverCode.indexOf('export async function uploadJar'))
   const body = up.slice(0, up.indexOf('\n}\n'))
-  const atLimit = body.indexOf('j2me:up:global')
-  const atValidate = body.indexOf('assertJarBuffer')
-  assert.ok(atLimit > 0 && atValidate > 0, '两处都得在 uploadJar 里')
-  assert.ok(atLimit < atValidate, '限流要排在 JAR 校验前面（那一步要走完整个 ZIP 中央目录）')
+  assert.doesNotMatch(body, /j2me:up:global/, 'uploadJar 里又出现了限流 —— 它跑在 raw 之后')
+})
+
+check('⭐ 超大的请求体在读之前就被拒（Content-Length 预检）', () => {
+  const gate = serverCode.slice(serverCode.indexOf('export function uploadGate'))
+  assert.match(gate.slice(0, 800), /content-length/i, '没有预检，只能等 raw 收完再报 413')
+  assert.match(gate.slice(0, 800), /req\.destroy\(\)/, '拒了不断连接，node 还会把剩下的字节收完')
 })
 
 check('⭐ 20MB 的写不能是同步的（这台进程同时在跑 SSR 和 socket.io）', () => {

@@ -5,6 +5,12 @@ import jwt from 'jsonwebtoken'
 import { query, queryOne } from '../db.js'
 import { hashPassword, verifyPassword, signToken, requireUser, tokenVersionOf } from '../auth.js'
 import { isEmail } from '../../../shared/email.js'
+
+/**
+ * Google ID token 的长度上限。它是三段 JWT，实测千把字节，2048 已经很宽裕。
+ * 上限存在的理由不是格式校验，是**外呼放大**：见 /google 里那段注释。
+ */
+const MAX_GOOGLE_CREDENTIAL = 2048
 import { clientKey, isMeaningfulIp, take } from '../rateLimit.js'
 import { userRowToPublic } from '../mappers.js'
 import { favIds, recentIds } from '../userdata.js'
@@ -72,8 +78,15 @@ const HOUR = 3_600_000
  */
 function authGateOk(req, res, { email = '', kind }) {
   const ip = clientKey(req)
+  /*
+    登录类（密码登录 / Google 登录）比注册宽：同一个出口 IP 后面可能坐着一整间办公室，
+    而登录是天天要做的事，注册一辈子一次。
+    ⚠️ `google` 必须算进这一档 —— 它是登录，不是注册。按注册那档（10 次/小时）算的话，
+    一个 NAT 后面十个人登一遍就把彼此锁在门外了。
+  */
+  const isSignIn = kind === 'login' || kind === 'google'
   if (isMeaningfulIp(ip)) {
-    const perIp = take(`auth:${kind}:ip:${ip}`, kind === 'login' ? 30 : 10, HOUR)
+    const perIp = take(`auth:${kind}:ip:${ip}`, isSignIn ? 30 : 10, HOUR)
     if (!perIp.ok) {
       res.status(429).json({ error: '尝试次数过多，请稍后再试', retryAfter: perIp.retryAfter })
       return false
@@ -87,7 +100,7 @@ function authGateOk(req, res, { email = '', kind }) {
       return false
     }
   }
-  const global = take(`auth:${kind}:global`, kind === 'login' ? 600 : 200, HOUR)
+  const global = take(`auth:${kind}:global`, isSignIn ? 600 : 200, HOUR)
   if (!global.ok) {
     console.warn(`[auth] 全站 ${kind} 配额用尽 —— 可能正在被刷，检查 nginx 是否透传了真实 IP`)
     res.status(429).json({ error: '当前请求过多，请稍后再试', retryAfter: global.retryAfter })
@@ -205,6 +218,22 @@ authRouter.post('/google', async (req, res, next) => {
     }
     const credential = String(req.body.credential || '')
     if (!credential) return res.status(400).json({ error: '缺少 Google 凭证' })
+    /*
+      ⚠️ 长度闸必须在**外呼之前**。
+
+      下面那个 fetch 是从我们服务器发出去的请求，URL 里带着 credential，
+      而 encodeURIComponent 会把非 URL 安全字符膨胀到 3 倍 ——
+      一个 4MB 的垃圾串（请求体上限就是 4MB）会变成 12MB 的出网 URL。
+      不拦的话这条接口就是个免费的出网请求放大器，而且每一条都算在我们对
+      oauth2.googleapis.com 的来源 IP 限额里：打爆之后**真实用户的 Google 登录全部失败**。
+
+      2048 是宽裕的上限：Google 的 ID token 是三段 JWT，实测千把字节。
+    */
+    if (credential.length > MAX_GOOGLE_CREDENTIAL) {
+      return res.status(400).json({ error: 'Google 凭证不合法' })
+    }
+    // 和 /register、/login 同一套闸。这条路以前一道都没有，而它每次调用都要外呼一次
+    if (!authGateOk(req, res, { kind: 'google' })) return
     const resp = await fetch('https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(credential))
     if (!resp.ok) return res.status(401).json({ error: 'Google 凭证无效' })
     const info = await resp.json()

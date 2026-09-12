@@ -17,7 +17,7 @@
  * 用户加完游戏刷新看不到，只会以为没加上又加一遍。/api 默认就是 no-store。
  */
 import { Router } from 'express'
-import { query, queryOne } from '../db.js'
+import { query, queryOne, withTransaction } from '../db.js'
 import { playIdentity } from '../playcount.js'
 import { requireUser, optionalUser, hasAbility } from '../auth.js'
 import { attachRelations } from '../games-repo.js'
@@ -328,16 +328,32 @@ collectionsRouter.post('/', requireUser, async (req, res, next) => {
       if (!perIp.ok) return res.status(429).json({ error: '建得太快了，请稍后再试', retryAfter: perIp.retryAfter })
     }
 
-    const owned = Number((await queryOne('SELECT COUNT(*) AS n FROM collections WHERE user_id = ?', [req.user.id]))?.n) || 0
-    if (owned >= MAX_PER_USER) return res.status(400).json({ error: `最多只能建 ${MAX_PER_USER} 个合集` })
+    /*
+      ⚠️ 数上限和写入要在同一个事务、同一把锁下。
 
-    const r = await query('INSERT INTO collections (user_id, title, kind, description) VALUES (?, ?, ?, ?)', [
-      req.user.id,
-      title,
-      clean(req.body?.kind, MAX_KIND),
-      clean(req.body?.description, MAX_DESC),
-    ])
-    const row = await queryOne(`${SELECT_WITH_AUTHOR} WHERE c.id = ?`, [r.insertId])
+      原来是「先 COUNT 再 INSERT」，中间没有锁，而 collections 表上也没有
+      「每用户条数」的约束（库里只有外键）。并发 5 个请求（正好卡在上面那道
+      5 次/分钟的闸内 —— 限流是内存计数，5 个并发全部放行）会读到同一个 owned，
+      于是 MAX_PER_USER 这个上限不再是硬的，长期跑能一直撑破。
+
+      锁 users 那一行：collections 里可能一条都没有，锁不住不存在的行。
+      代价只落在同一个人自己并发建合集的时候，那本来就该排队。
+    */
+    const created = await withTransaction(async (run) => {
+      await run('SELECT id FROM users WHERE id = ? FOR UPDATE', [req.user.id])
+      const owned =
+        Number((await run('SELECT COUNT(*) AS n FROM collections WHERE user_id = ?', [req.user.id]))[0]?.n) || 0
+      if (owned >= MAX_PER_USER) return { over: true }
+      const ins = await run('INSERT INTO collections (user_id, title, kind, description) VALUES (?, ?, ?, ?)', [
+        req.user.id,
+        title,
+        clean(req.body?.kind, MAX_KIND),
+        clean(req.body?.description, MAX_DESC),
+      ])
+      return { over: false, insertId: ins.insertId }
+    })
+    if (created.over) return res.status(400).json({ error: `最多只能建 ${MAX_PER_USER} 个合集` })
+    const row = await queryOne(`${SELECT_WITH_AUTHOR} WHERE c.id = ?`, [created.insertId])
     res.status(201).json(rowToApi(row, { viewerId: req.user.id }))
   } catch (e) {
     next(e)
@@ -474,17 +490,38 @@ collectionsRouter.post('/:id/games', requireUser, async (req, res, next) => {
     const game = await queryOne('SELECT id FROM games WHERE slug = ? AND hidden = 0', [slug])
     if (!game) return res.status(404).json({ error: '游戏不存在' })
 
-    const n = Number((await queryOne('SELECT COUNT(*) AS n FROM collection_items WHERE collection_id = ?', [row.id]))?.n) || 0
-    if (n >= MAX_ITEMS) return res.status(400).json({ error: `一个合集最多放 ${MAX_ITEMS} 款游戏` })
+    /*
+      这条路以前**一道限流都没有**（对比同文件的 POST / 有两道）。
+      作者自己对自己的合集并发 POST 几百个不同 slug，就能绕过下面那个上限。
+    */
+    const gate = take(`collection:add:${req.user.id}`, 120, 60_000)
+    if (!gate.ok) return res.status(429).json({ error: '加得太快了，请稍后再试', retryAfter: gate.retryAfter })
 
     /*
-      IGNORE：主键已经保证同一款游戏在一个合集里只有一条。重复加入是**幂等**的，
+      ⚠️ 数上限和写入要在同一个事务、同一把锁下 —— 理由同 POST /。
+
+      超了之后的症状特别隐蔽：GET /:id 用 `LIMIT MAX_ITEMS` 取，多出来的那些游戏
+      **在详情页上列不出来，也就没有删除入口** —— 看不见也删不掉，只能从库里清。
+      属于「不报错，但数据回不去」那一类。
+
+      这里锁 collections 那一行（合集一定存在，ownedOr404 刚查过），
+      粒度比锁用户更细：同一个人可以同时往两个不同的合集里加游戏。
+
+      IGNORE 保留：主键已经保证同一款游戏在一个合集里只有一条。重复加入是**幂等**的，
       不该报错 —— 玩家在两个标签页里各点一次「加入」是很正常的事。
       但也不能刷新 created_at：那会让封面顺序跟着变，看起来像凭空换了封面。
     */
-    const r = await query('INSERT IGNORE INTO collection_items (collection_id, game_id) VALUES (?, ?)', [row.id, game.id])
-    if (r.affectedRows) await touch(row.id)
-    res.status(201).json({ ok: true, added: Boolean(r.affectedRows) })
+    const added = await withTransaction(async (run) => {
+      await run('SELECT id FROM collections WHERE id = ? FOR UPDATE', [row.id])
+      const n =
+        Number((await run('SELECT COUNT(*) AS n FROM collection_items WHERE collection_id = ?', [row.id]))[0]?.n) || 0
+      if (n >= MAX_ITEMS) return { over: true }
+      const ins = await run('INSERT IGNORE INTO collection_items (collection_id, game_id) VALUES (?, ?)', [row.id, game.id])
+      return { over: false, affected: ins.affectedRows }
+    })
+    if (added.over) return res.status(400).json({ error: `一个合集最多放 ${MAX_ITEMS} 款游戏` })
+    if (added.affected) await touch(row.id)
+    res.status(201).json({ ok: true, added: Boolean(added.affected) })
   } catch (e) {
     next(e)
   }
