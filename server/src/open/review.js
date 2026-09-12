@@ -147,7 +147,7 @@ export function submit(app, o = {}) {
   const needsRedirect = scopes.some((s) => OPEN_SCOPES[s]?.kind === 'user')
   const uris = asList(app.redirect_uris)
   if (needsRedirect) {
-    if (!uris.length) return no('no_redirect', '申请登录类权限必须先登记回调地址')
+    if (!uris.length) return no('no_redirect', '需要用户授权的权限（library.* / saves.* / openid 等）必须先在控制台登记回调地址')
     const bad = uris.filter((u) => !/^https:\/\//i.test(u))
     if (bad.length) return no('insecure_redirect', `上产的回调地址必须是 https：${bad.join(' ')}`)
   }

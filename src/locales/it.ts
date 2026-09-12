@@ -707,6 +707,7 @@ const it: Translation = {
     watchNow: 'Gioca ora',
     openGame: 'Apri gioco',
     allChannels: 'Tutti',
+    backToList: 'Torna all\'elenco',
     scheduleTitle: 'Palinsesto',
     endsIn: 'Tempo rimasto a questo programma',
     offAirTitle: 'Segnale perso',

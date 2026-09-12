@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import type { Game, PlatformId } from '@/types'
 import type { Lang } from '@/config/languages'
@@ -11,11 +11,12 @@ import { useSeo } from '@/services/seo'
 import { tvOrigin } from '@/services/tvHost'
 import { romUrlForKey } from '@/services/roms'
 import { cx } from '@/lib/format'
-import { enterFullscreen } from '@/lib/fullscreen'
 import { gradientFor } from '@/lib/gradients'
 import { fetchTv, computeRotation, type TvSignal } from '@/services/tv'
 import { fetchPageData } from '@/services/pageData'
 import { FocusScope, useFocusable, useFocusedId } from '@/components/tv/FocusScope'
+import { TvPlay } from '@/components/tv/TvPlay'
+import { enterFullscreen } from '@/lib/fullscreen'
 
 /**
  * 8BitGo TV —— 十个脚下的 10-foot UI（客厅电视 / 投影）。
@@ -33,7 +34,7 @@ import { FocusScope, useFocusable, useFocusedId } from '@/components/tv/FocusSco
 export function TvPage() {
   const t = useT()
   const lang = useLang()
-  const [params] = useSearchParams()
+  const [params, setParams] = useSearchParams()
 
   // ?offair = 强制演示「信号丢失」
   const forceOffline = params.get('offair') !== null
@@ -91,6 +92,35 @@ export function TvPage() {
   // ---- 大磁贴墙：每个平台拉一页热门，按平台分行 ----
   const { rows, error } = usePlatformWall(12)
 
+  /*
+    ---- 开玩：`?play=<slug>` 把这一屏整个换成满窗口的播放器 ----
+
+    ⚠️ 2026-09-12 改的是**落点**，不是把全屏拿掉。上一版是「跳详情页 + enterFullscreen()」，
+    毛病在详情页这个落点上：
+      · 整页全屏之后播放器还是待在自己那个按比例的框里，下面照样跟着评论、键位表、
+        相关推荐 —— 屏幕变大了，播放器并没有「占满」。
+      · 车机和不少电视浏览器根本没有 Fullscreen API（fullscreenEnabled === false），
+        失败被吞掉之后，那些设备上就只是一个普通详情页，什么都没占满。
+
+    现在是两层叠着：
+      地基 —— `?play=` 切到 TvPlay，播放器用 fill + h-dvh 吃满**浏览器窗口**，不要任何权限；
+      锦上添花 —— 列表项的 onClick 顺手要一次整页全屏，把浏览器自己的地址栏也去掉，
+                  要不到就算了（见下面 ListRow 那段注释和 lib/fullscreen.ts）。
+
+    用查询串而不是另开一条路由：返回键天然能用（历史里有这一条）、退回来列表还是热的、
+    也不多一个能被收录的地址 —— 这一屏是个动作，不是一篇内容。
+  */
+  const playSlug = params.get('play') ?? ''
+  /** 退回列表时把焦点还给刚才按下去的那一款，而不是甩回最上面 */
+  const lastPlayed = useRef('')
+  if (playSlug) lastPlayed.current = playSlug
+  const exitPlay = useCallback(() => {
+    const next = new URLSearchParams(params)
+    next.delete('play')
+    // replace：不然从列表按「返回」又会掉回播放器里，出不去
+    setParams(next, { replace: true })
+  }, [params, setParams])
+
   // ---- 平台筛选 + 当前列表 ----
   const [platform, setPlatform] = useState<PlatformId | 'all'>('all')
   const list = !rows ? [] : platform === 'all' ? rows.flatMap((r) => r.items) : (rows.find((r) => r.id === platform)?.items ?? [])
@@ -106,9 +136,14 @@ export function TvPage() {
     四周的 padding 是 overscan 安全边距：老电视会把画面边缘裁掉一圈，
     贴边的字在客厅里是看不到的。
   */
+  if (playSlug) return <TvPlay slug={playSlug} onExit={exitPlay} />
+
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-bg px-8 py-6 sm:px-12 sm:py-8">
-      <FocusScope initialId="plat:all" className="flex min-h-0 flex-1 flex-col">
+      <FocusScope
+        initialId={lastPlayed.current ? `game:${lastPlayed.current}` : 'plat:all'}
+        className="flex min-h-0 flex-1 flex-col"
+      >
         {/* ── 顶栏：站名 + 正在播 + 平台筛选 ── */}
         <header className="shrink-0">
           <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
@@ -170,7 +205,8 @@ function NowPlayingChip({ game, lang, t }: { game: Game; lang: Lang; t: ReturnTy
   const { focused, setFocus } = useFocusable('nowplaying')
   return (
     <Link
-      to={`/games/${game.slug}`}
+      to={`?play=${encodeURIComponent(game.slug)}`}
+      onClick={() => enterFullscreen()}
       data-focus-id="nowplaying"
       onMouseEnter={setFocus}
       className={cx(
@@ -215,16 +251,22 @@ function ListRow({ game, lang }: { game: Game; lang: Lang }) {
   return (
     <li>
       {/*
-        回车（或点击）= 直接开玩：跳详情页并带 ?autoplay=1，同时把整页切进全屏。
+        回车（或点击）= 直接开玩。
 
-        ⚠️ 两件事都卡在同一条约束上，改之前先看 lib/fullscreen.ts 的文件头：
-          · 全屏必须在**手势的同步调用栈**里要 —— FocusScope 的回车是 el.click() 派发的，
-            所以挂在 onClick 上正好落在那一帧里；挪进 useEffect 就静默失败。
-          · 跳转必须是**同文档**的前端路由（<Link>），整页重载会把全屏状态丢掉，
-            而详情页那边没有手势可用，补不回来。**别把这里换成 <a>。**
+        两件事叠着做，**分工别搞反**：
+          · `to` 指向本页的 `?play=` —— 这是地基：播放器吃满浏览器窗口（TvPlay 的 fill + h-dvh），
+            不需要任何权限，车机和老电视浏览器上一样成立。
+          · `onClick` 顺手要一次整页全屏 —— 这是锦上添花：窗口占满了，浏览器自己的
+            地址栏/标签栏还在，全屏能把那一圈也去掉。**要不到就算了**（enterFullscreen 内部全吞），
+            界面不会因此少任何东西。
+
+        ⚠️ 全屏必须挂在 onClick 上：它要 transient activation，而 FocusScope 的回车是
+        `el.click()` 派发的，同步落在同一个 keydown 手势里。挪进 useEffect 就静默失败。
+        ⚠️ 跳转必须是 <Link>（同文档路由）：整页重载会把刚进的全屏丢掉。别换成 <a>。
+        这两条的出处是 lib/fullscreen.ts 的文件头。
       */}
       <Link
-        to={`/games/${game.slug}?autoplay=1`}
+        to={`?play=${encodeURIComponent(game.slug)}`}
         onClick={() => enterFullscreen()}
         data-focus-id={id}
         onMouseEnter={setFocus}

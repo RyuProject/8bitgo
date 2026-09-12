@@ -696,6 +696,7 @@ const ja: Translation = {
     watchNow: '今すぐ遊ぶ',
     openGame: 'ゲームを開く',
     allChannels: 'すべて',
+    backToList: 'リストに戻る',
     scheduleTitle: '番組表',
     endsIn: 'この番組の残り時間',
     offAirTitle: '信号途絶',

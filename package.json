@@ -84,6 +84,7 @@
     "test:tv-host": "node scripts/test-tv-host.mjs",
     "test:tv-autoplay": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-tv-autoplay.mjs",
     "test:admin-entry": "node scripts/test-admin-entry.mjs",
+    "test:open-console": "node scripts/test-open-console.mjs",
     "test:tv-page": "node scripts/test-tv-page.mjs",
   "test:platforms": "node scripts/test-platforms.mjs",
     "test:j2me": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-j2me.mjs",

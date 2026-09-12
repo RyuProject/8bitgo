@@ -13,6 +13,7 @@ import {
   createMyApp,
   myApp,
   myApps,
+  patchMyApp,
   removeTester,
   revokeSecret,
   rotateSecret,
@@ -406,6 +407,18 @@ function AppCard({ app, open, onToggle, onChanged }: { app: OpenApp; open: boole
           {/* 沙箱测试账号 */}
           {app.status === 'sandbox' && <Testers app={app} detail={detail} onChanged={reload} />}
 
+          {/*
+            回调地址。位置刻意放在「上产申请」正上方 —— 它是提交审核的前置条件，
+            以前控制台上**根本没有这个字段**，于是提交时报一句「必须先登记回调地址」，
+            而界面上哪儿都找不到能登记的地方（2026-09-12 补）。
+          */}
+          <RedirectUris
+            app={app}
+            busy={busy === 'redirect'}
+            disabled={busy !== '' || app.reviewState === 'pending'}
+            onSave={(uris) => void run('redirect', () => patchMyApp(app.id, { redirectUris: uris }))}
+          />
+
           {/* 上产申请 */}
           <section>
             <h3 className="font-semibold">上产申请</h3>
@@ -460,6 +473,72 @@ function AppCard({ app, open, onToggle, onChanged }: { app: OpenApp; open: boole
         </div>
       )}
     </li>
+  )
+}
+
+/**
+ * 回调地址（redirect_uri）的登记框。
+ *
+ * 后端从第一天就支持（POST / PATCH 都收 redirectUris，校验在 open-apps.js 的 cleanList），
+ * 但控制台一直没把它画出来 —— 申请了 library.* / saves.* 这类用户级 scope 的人，
+ * 提交审核时会撞上「申请登录类权限必须先登记回调地址」，然后在界面上遍寻不着。
+ *
+ * 一行一条。**不做任何规整**（不补末尾斜杠、不小写化）—— OAuth 的精确匹配就是拿这个串去比的，
+ * 这里顺手「修」一下，线上换来的就是一个 redirect_uri_mismatch。
+ */
+function RedirectUris({
+  app,
+  busy,
+  disabled,
+  onSave,
+}: {
+  app: OpenApp
+  busy: boolean
+  disabled: boolean
+  onSave: (uris: string[]) => void
+}) {
+  const saved = app.redirectUris.join('\n')
+  const [text, setText] = useState(saved)
+  // 保存成功后父组件会换一份新的 app，把编辑框同步过去（否则显示的还是刚才那一版）
+  useEffect(() => setText(saved), [saved])
+  const list = text.split(/\s+/).filter(Boolean)
+  const dirty = list.join('\n') !== saved
+  const missing = app.needsRedirect && !app.redirectUris.length
+
+  return (
+    <section>
+      <h3 className="font-semibold">
+        回调地址
+        {app.needsRedirect && <span className="ml-2 text-xs font-normal text-live">必填</span>}
+      </h3>
+      <p className="mt-1.5 leading-relaxed text-dim">
+        授权完成后我们把授权码送回的地址，一行一条，最多 {app.limits.redirectUris} 条。
+        <strong className="text-muted">精确匹配</strong>：大小写、末尾斜杠、端口都算数，和你代码里写的那一串必须一模一样。
+        地址里不能带 <code className="font-mono">#</code>；沙箱可以用 <code className="font-mono">http://localhost</code>，上产必须是 https。
+      </p>
+      {missing && (
+        <p className="mt-1.5 text-live">
+          你申请的权限里有用户授权类的（library.* / saves.* / openid 这些），不登记回调地址提交不了审核。
+        </p>
+      )}
+      {app.reviewState === 'pending' ? (
+        <p className="mt-2 text-muted">审核中，回调地址暂时改不了 —— 要改先撤回申请。</p>
+      ) : (
+        <div className="mt-2 space-y-2">
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            rows={3}
+            spellCheck={false}
+            className="w-full rounded-lg border border-line bg-surface-2 px-3 py-2 font-mono text-xs outline-none focus:border-brand"
+            placeholder={'https://example.com/oauth/callback\nhttp://localhost:5173/callback'}
+          />
+          <Button size="sm" disabled={disabled || !dirty} onClick={() => onSave(list)}>
+            {busy ? '保存中…' : '保存回调地址'}
+          </Button>
+        </div>
+      )}
+    </section>
   )
 }
 

@@ -13,7 +13,7 @@
 import { randomBytes } from 'node:crypto'
 import { query, queryOne } from '../db.js'
 import { hashSecret, newAppId, newAppSecret, secretHint } from './apps.js'
-import { limitsFor, parseUriList, SANDBOX_LIMITS } from './review.js'
+import { limitsFor, needsRedirectUri, parseUriList, SANDBOX_LIMITS } from './review.js'
 import { parseScopes } from './scopes.js'
 
 const APP_COLS = `id, owner_id, name, description, homepage, logo, privacy_url, client_type,
@@ -289,6 +289,15 @@ export function appForOwner(app) {
     privacyUrl: app.privacy_url || '',
     clientType: app.client_type,
     redirectUris: parseUriList(app.redirect_uris),
+    /**
+     * 这批申请里有没有用户级 scope —— 有就必须先登记回调地址，否则提交审核会被打回
+     * （review.js 的 no_redirect）。
+     *
+     * ⚠️ 由**服务端**算好了给前端，别让控制台自己再抄一份 scope 分类表：
+     * 抄一份就会漂，而漂的后果是「界面说不用填，提交时说必须填」这种最难查的自相矛盾。
+     * 判定走的是同一个 needsRedirectUri()。
+     */
+    needsRedirect: needsRedirectUri(app.requested_scopes),
     embedOrigins: parseUriList(app.embed_origins),
     /** 现在真的能用的 */
     approvedScopes: parseScopes(app.approved_scopes).scopes,

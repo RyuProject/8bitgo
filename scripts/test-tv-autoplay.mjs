@@ -110,12 +110,36 @@ check('⚠️ 同步抛也要吞掉', () => {
   withDoc(doc, () => enterFullscreen())
 })
 
-console.log('\n── TV 侧接线 ──')
+console.log('\n── TV 侧接线：回车 = 播放器占满窗口 ──')
 
 const tv = strip(read('src/pages/TvPage.tsx'))
+const tvPlay = strip(read('src/components/tv/TvPlay.tsx'))
 
-check('列表项跳的是详情页并带 ?autoplay=1', () => {
-  assert.match(tv, /to=\{`\/games\/\$\{game\.slug\}\?autoplay=1`\}/, '列表项没带 autoplay 参数')
+/*
+  ⚠️ 2026-09-12 改了路子，**别把下面这些改回去**。
+
+  上一版是「跳详情页 ?autoplay=1 + enterFullscreen() 把整页切全屏」。两个毛病：
+    · 落点是详情页 —— 整页全屏之后播放器还是待在自己那个比例框里，
+      下面照样跟着评论、键位表、相关推荐，并没有「占满」；
+    · 车机和不少电视浏览器没有 Fullscreen API（fullscreenEnabled === false），
+      失败被吞掉之后那些设备上就只是个普通详情页。
+
+  现在是「本页 ?play=<slug> → TvPlay 用 fill + h-dvh 吃满视口」，不需要任何全屏权限。
+*/
+
+check('⭐ 列表项指向本页的 ?play=，不是详情页', () => {
+  assert.match(tv, /to=\{`\?play=\$\{encodeURIComponent\(game\.slug\)\}`\}/, '列表项没指向 ?play=')
+  assert.doesNotMatch(tv, /autoplay=1/, 'TV 又回到「跳详情页带 ?autoplay=1」那条路了')
+  assert.doesNotMatch(tv, /to=\{`\/games\//, 'TV 的列表项又跳详情页了')
+})
+
+check('⭐ 满窗口不能**依赖**全屏（车机 / 电视浏览器多半没有 Fullscreen API）', () => {
+  /*
+    全屏是锦上添花不是地基：窗口占满靠 TvPlay 的 fill + h-dvh，那个不需要任何权限；
+    全屏只多去掉浏览器自己的地址栏，要不到就算了（enterFullscreen 内部全吞）。
+    所以这里断言的是「TvPlay 那一屏和全屏无关」，不是「全站不许调全屏」。
+  */
+  assert.doesNotMatch(tvPlay, /enterFullscreen|requestFullscreen/, 'TvPlay 的满窗口布局挂到全屏上去了')
 })
 
 check('⚠️ 全屏挂在 onClick 上（回车是 el.click() 派发的，这样才在手势里）', () => {
@@ -125,16 +149,72 @@ check('⚠️ 全屏挂在 onClick 上（回车是 el.click() 派发的，这样
 check('⚠️ 全屏不许在 effect / 定时器里要（那里没有用户手势，浏览器静默拒绝）', () => {
   const calls = [...tv.matchAll(/enterFullscreen\(/g)].length
   const inHandler = [...tv.matchAll(/onClick=\{\(\) => enterFullscreen\(\)\}/g)].length
-  assert.equal(calls, inHandler, '除了 onClick，还有别处在调 enterFullscreen —— 确认它仍在手势里')
+  /*
+    ⚠️ 不要为 import 那一行做 -1 的修正（我加过，是错的）：正则要求 enterFullscreen 后面
+    紧跟一个 `(`，而 import 那行后面是 ` }`，本来就不匹配。注释也已经被 strip 掉了。
+    所以两边应当**严格相等** —— 每一次调用都必须落在某个 onClick 里。
+  */
+  assert.ok(inHandler > 0, '一处手势里的调用都没有')
+  assert.equal(calls, inHandler, '除了 onClick，还有别处在调 enterFullscreen')
   assert.doesNotMatch(tv, /useEffect\([\s\S]{0,400}?enterFullscreen\(/, 'effect 里调了全屏')
   assert.doesNotMatch(tv, /setTimeout\([\s\S]{0,200}?enterFullscreen\(/, '定时器里调了全屏')
 })
 
-check('⚠️ 跳转必须是 <Link>（整页重载会把刚进的全屏丢掉）', () => {
-  const i = tv.indexOf('function ListRow')
-  const body = tv.slice(i, tv.indexOf('function ', i + 20))
-  assert.match(body, /<Link\b/, 'ListRow 里没有 <Link>')
-  assert.doesNotMatch(body, /<a\s[^>]*href=/, 'ListRow 用上了 <a href> —— 整页重载，全屏会没')
+check('⚠️ 退出时把全屏一起退掉（否则列表停在全屏里，人以为卡住了）', () => {
+  assert.match(tvPlay, /document\.exitFullscreen\(\)/, '退出没退全屏')
+})
+
+check('⭐ ?play= 时渲染 TvPlay，并且是提前返回（浏览列表整块不画）', () => {
+  assert.match(tv, /if \(playSlug\) return <TvPlay slug=\{playSlug\} onExit=\{exitPlay\}/, '没切到 TvPlay')
+})
+
+check('⭐ TvPlay 真的占满整个窗口：h-dvh 容器 + 播放器 fill', () => {
+  /*
+    fill 是开关、h-full 是高度链，**缺一个都不占满**（见 EmulatorPlayer 里 embedFill 那段）。
+    所以这两条一起断言，不能只查其中一个。
+  */
+  assert.match(tvPlay, /className="[^"]*\bh-dvh\b/, 'TvPlay 的外层不是 h-dvh')
+  const mount = tvPlay.match(/<EmulatorPlayer[\s\S]*?\/>/)?.[0] ?? ''
+  assert.match(mount, /^\s*fill\s*$/m, '播放器没开 fill')
+  assert.match(mount, /className="h-full"/, '缺 h-full 高度链 —— fill 单独给是不生效的')
+})
+
+check('⭐ 回车进来直接开一局（autoStart），不用再按一次「开始游戏」', () => {
+  const mount = tvPlay.match(/<EmulatorPlayer[\s\S]*?\/>/)?.[0] ?? ''
+  assert.match(mount, /^\s*autoStart\s*$/m, 'TvPlay 没传 autoStart')
+})
+
+check('⚠️ 退出用 replace —— 否则从列表按「返回」又掉回播放器里出不去', () => {
+  assert.match(tv, /setParams\(next, \{ replace: true \}\)/, 'exitPlay 没用 replace')
+})
+
+check('⭐ TvPlay 和 EmbedPage 的播放器 props 不许漂移', () => {
+  /*
+    这两处挂播放器用的是**同一套** props。本该抽成公共组件，但 EmbedPage 是第三方网站
+    嵌着在用的，抽的时候必须能真的跑起来验，不能靠读代码。所以暂时两份，由这条钉住：
+    哪天有人给播放器加了 prop 只改了一边，这里会红。
+    **抽成一份之后请把这条连同 TvPlay 里那段注释一起删掉。**
+  */
+  const propsOf = (src) => {
+    const block = src.match(/<EmulatorPlayer[\s\S]*?\n\s*\/>/)?.[0] ?? ''
+    return new Set([...block.matchAll(/^\s{8,}([a-zA-Z][\w]*)(?:=|\s*$)/gm)].map((m) => m[1]))
+  }
+  const embed = propsOf(strip(read('src/pages/EmbedPage.tsx')))
+  const play = propsOf(tvPlay)
+  assert.ok(embed.size > 15, `只从 EmbedPage 解析出 ${embed.size} 个 prop —— 正则失效了`)
+
+  // 有意不同的那几个，每一个都要说得出理由
+  const ONLY_EMBED = new Set([
+    'maxPlayers', // 嵌入页压成 1（跨站 iframe 里联机指望不上，信令要登录态）
+  ])
+  const ONLY_PLAY = new Set([
+    'maxPlayers', // TV 上照游戏本身的人数来
+    'autoStart', // 回车即开玩；嵌入页要让访客自己点一下
+  ])
+  const missing = [...embed].filter((k) => !play.has(k) && !ONLY_EMBED.has(k))
+  const extra = [...play].filter((k) => !embed.has(k) && !ONLY_PLAY.has(k))
+  assert.deepEqual(missing, [], `EmbedPage 有而 TvPlay 没有的 prop：${missing.join(', ')}`)
+  assert.deepEqual(extra, [], `TvPlay 有而 EmbedPage 没有的 prop：${extra.join(', ')}`)
 })
 
 console.log('\n── 详情页与播放器 ──')

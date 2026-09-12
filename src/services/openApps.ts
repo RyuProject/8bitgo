@@ -30,6 +30,8 @@ export interface OpenApp {
   privacyUrl: string
   clientType: 'confidential' | 'public'
   redirectUris: string[]
+  /** 申请的权限里有用户级 scope —— 有就必须先登记回调地址才提交得了审核（服务端算的） */
+  needsRedirect: boolean
   embedOrigins: string[]
   /** 现在真的能用的 */
   approvedScopes: string[]

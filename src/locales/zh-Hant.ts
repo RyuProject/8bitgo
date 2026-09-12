@@ -710,6 +710,7 @@ const zhHant: Translation = {
     watchNow: '立即遊玩',
     openGame: '打開遊戲',
     allChannels: '全部',
+    backToList: '返回列表',
     scheduleTitle: '節目單',
     endsIn: '本節目剩餘時間',
     offAirTitle: '信號中斷',

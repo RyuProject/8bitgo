@@ -706,6 +706,7 @@ const es: Translation = {
     watchNow: 'Jugar ahora',
     openGame: 'Abrir juego',
     allChannels: 'Todos',
+    backToList: 'Volver a la lista',
     scheduleTitle: 'Programación',
     endsIn: 'Tiempo restante del programa',
     offAirTitle: 'Señal perdida',

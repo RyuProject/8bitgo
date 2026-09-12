@@ -754,6 +754,7 @@ export const zhHans = {
     watchNow: '立即游玩',
     openGame: '打开游戏',
     allChannels: '全部',
+    backToList: '返回列表',
     scheduleTitle: '节目单',
     endsIn: '本节目还剩',
     offAirTitle: '信号中断',
