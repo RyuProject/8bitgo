@@ -126,7 +126,11 @@ const en: Translation = {
     downloadApp: 'Get the app',
     openMenu: 'Open menu',
     chat: 'Messages',
-    chatSoon: 'Direct messages are on the way — you’ll chat right here.',
+    /** 后端根本没配（/api/im/sig 回 501）时才用这句。**别再写成「正在做」** —— 功能已经上线了 */
+    chatSoon: 'Direct messages are not available yet.',
+    chatConnecting: 'Connecting to messages…',
+    chatOffline: 'Messages are offline. Try again below.',
+    chatRetry: 'Reconnect',
     search: 'Search',
     searchPlaceholder: 'Search games, platforms, developers…',
     searchAria: 'Search games',

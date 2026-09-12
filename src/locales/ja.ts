@@ -126,7 +126,11 @@ const ja: Translation = {
     downloadApp: 'アプリを入手',
     openMenu: 'メニューを開く',
     chat: 'メッセージ',
-    chatSoon: 'サイト内メッセージは準備中です。まもなくここでやり取りできます。',
+    /** 后端根本没配（/api/im/sig 回 501）时才用这句。**别再写成「正在做」** —— 功能已经上线了 */
+    chatSoon: 'メッセージはまだ利用できません。',
+    chatConnecting: 'メッセージに接続中…',
+    chatOffline: 'メッセージに接続できません。下から再試行してください。',
+    chatRetry: '再接続',
     search: '検索',
     searchPlaceholder: 'ゲーム・ゲーム機・開発会社を検索…',
     searchAria: 'ゲームを検索',

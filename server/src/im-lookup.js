@@ -25,6 +25,19 @@ import { isEmail } from '../../shared/email.js'
 export const IM_LOOKUP_LIMIT = 20
 export const IM_LOOKUP_WINDOW_MS = 3600_000
 
+/**
+ * 另外两个维度（2026-09-12 补）。
+ *
+ * 按账号那一道单独用是挡不住的：这个站注册太便宜（验证码即注册、OAuth 更便宜），
+ * 一个人拿 100 个账号就把探针的单价打到了 2000 次/小时。
+ *
+ * · 按 IP —— 挡住「一台机器多账号」这条最省事的路
+ * · 全站 —— 兜底。真有人换着 IP 换着账号刷，至少整体速率是有天花板的；
+ *   正常用量离它很远（全站一小时 2000 次「按邮箱找人」是不可能的）
+ */
+export const IM_LOOKUP_IP_LIMIT = 60
+export const IM_LOOKUP_GLOBAL_LIMIT = 2000
+
 /** 和 routes/auth.js、routes/me.js 保持同一条：宽松到不误伤，严到挡住明显不是邮箱的串 */
 
 /** users.email 是 VARCHAR(200)，比这更长的串在库里根本不可能存在 */
@@ -121,6 +134,17 @@ export const IM_PEERS_WINDOW_MS = 3600_000
  */
 export function normalizePeerIds(raw, isValid = () => true) {
   const list = Array.isArray(raw) ? raw : []
+  /*
+    ⚠️ **先卡输入长度，再进循环。**
+
+    下面那个 `break` 只在 `out.length >= MAX_PEER_IDS` 时触发 —— 也就是说
+    **全是非法 id 的数组一个都不会计数，循环会把整份跑完**。全局 body 上限是 4MB，
+    塞约 100 万个非法 id 进来，Node 单线程就在那儿做 100 万次 String/trim/正则，
+    这期间 SSR、socket.io 信令、SSE 全停。
+    反向的直觉是错的：**合法 id 打不出这个效果**（第 50 个就 break 了），
+    廉价路径恰恰是全非法。所以扫描长度本身必须有上限。
+  */
+  if (list.length > MAX_PEER_IDS * 4) return []
   const out = []
   const seen = new Set()
   for (const item of list) {

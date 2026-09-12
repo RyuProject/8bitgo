@@ -739,6 +739,37 @@ const patches = [
       }
     },
   },
+  {
+    name: 'game_comments.post_id（评论表兼作博客文章评论：宿主二选一）',
+    table: 'game_comments',
+    /**
+     * 给已有的评论表补上「文章」这一种宿主。三件事一起做：
+     *   1. game_id 放开为可空 —— 文章评论这一行只有 post_id
+     *   2. 加 post_id 列（可空）+ 索引
+     *   3. 加指向 posts(id) 的外键
+     * 一个补丁里做完而不是拆三条：只补到一半（比如列加了、game_id 还 NOT NULL）
+     * 会让文章评论的 INSERT 永远失败，而那看起来和「功能没做」一模一样。
+     */
+    skip: async () => (!(await hasTable('posts')) ? '还没有 posts 表' : null),
+    needed: async () => !(await hasColumn('game_comments', 'post_id')),
+    run: async () => {
+      // 放开 game_id 之前先确认它当前是 NOT NULL，避免重复 MODIFY
+      await conn.query('ALTER TABLE `game_comments` MODIFY `game_id` BIGINT UNSIGNED NULL')
+      await conn.query('ALTER TABLE `game_comments` ADD COLUMN `post_id` BIGINT UNSIGNED NULL AFTER `game_id`')
+      if (!(await hasIndex('game_comments', 'idx_cmt_post_time'))) {
+        await conn.query('ALTER TABLE `game_comments` ADD INDEX `idx_cmt_post_time` (`post_id`, `created_at` DESC)')
+      }
+      // 外键单独加：老库里 posts.id 的类型可能对不上，加不上也不该让整个迁移失败
+      try {
+        await conn.query(
+          'ALTER TABLE `game_comments` ADD CONSTRAINT `fk_cmt_post` ' +
+            'FOREIGN KEY (`post_id`) REFERENCES `posts`(`id`) ON DELETE CASCADE',
+        )
+      } catch (e) {
+        console.log(`   （外键没加上，删文章时要自己清评论：${e.message}）`)
+      }
+    },
+  },
 ]
 
 const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'login_codes', 'platform_bios', 'game_plays', 'developers', 'friend_links', 'friend_link_hits', 'game_comments', 'game_ratings', 'oauth_apps']

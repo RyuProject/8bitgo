@@ -120,7 +120,11 @@ const zhHant: Translation = {
     downloadApp: '下載 App',
     openMenu: '開啟選單',
     chat: '訊息',
-    chatSoon: '站內訊息正在做，很快就能在這裡聊天。',
+    /** 后端根本没配（/api/im/sig 回 501）时才用这句。**别再写成「正在做」** —— 功能已经上线了 */
+    chatSoon: '站內訊息暫未開放。',
+    chatConnecting: '正在連接站內訊息…',
+    chatOffline: '站內訊息連不上，點下面重試一次。',
+    chatRetry: '重新連接',
     search: '搜尋',
     searchPlaceholder: '搜尋遊戲、平台、開發商…',
     searchAria: '搜尋遊戲',

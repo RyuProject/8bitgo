@@ -220,10 +220,55 @@ export async function isAdminRequest(req) {
 export async function requireAdmin(req, res, next) {
   try {
     if (await isAdminRequest(req)) return next()
+    const why = authFailure(req, await roleOfRequest(req))
+    if (why) return res.status(403).json(why)
     return res.status(403).json({ error: '需要管理员权限（后台口令或管理员账号）' })
   } catch (e) {
     next(e)
   }
+}
+
+/**
+ * 这次请求带的 Bearer **是什么东西**。用来把「你权限不够」和「你这张凭证根本没生效」分开。
+ *
+ * ⚠️ 这个区分不是为了好看。后台有两种入场方式：登录的管理员账号，和一个不对应任何账号的
+ * 后台口令（ADMIN_TOKEN）。前端取值时**后台口令优先**（见 src/services/api.ts 的 authHeaders），
+ * 于是一个填错 / 过期 / 服务端换过的后台口令，会把一个完全正常的管理员登录态**整个盖掉**：
+ *   · `token === ADMIN_TOKEN` 不成立
+ *   · 那串又不是 JWT，verifyToken 验不过
+ *   · roleOfRequest 一路走到 return null
+ *   · requireAbility 报「权限不足：需要 content:edit」
+ * 排查的人于是去查角色、查 ROLE_ABILITIES、查数据库 —— 而真正的问题在口令上。
+ * 界面陈述的事实必须成立，报错也是界面。
+ *
+ * 只读请求多半是公开的，所以症状还特别偏：后台看得见、一保存就没权限。
+ */
+export function bearerKind(req) {
+  const token = bearer(req)
+  if (!token) return 'none'
+  if (ADMIN_TOKEN && token === ADMIN_TOKEN) return 'admin-token'
+  if (verifyToken(token)) return 'session'
+  // 带了东西，但既不是合法的站内令牌，也不等于后台口令
+  return 'invalid'
+}
+
+/**
+ * 鉴权失败时说**真正**的原因。返回 null 表示「确实是权限不够」，照常报权限点。
+ *
+ * code 是给前端用的机器可读标记：拿到 invalid_admin_token 就该把存着的那个口令清掉，
+ * 否则它会继续盖住登录态，每一次写操作都失败（见 api.ts 里的重试）。
+ */
+function authFailure(req, role) {
+  const kind = bearerKind(req)
+  if (kind === 'invalid') {
+    return { code: 'invalid_admin_token', error: '后台口令无效或已过期。清掉它就会改用你的登录身份。' }
+  }
+  if (kind === 'none') return { code: 'not_signed_in', error: '未登录' }
+  // 令牌本身是合法 JWT，但 roleOfRequest 没认出角色 —— 账号被封、令牌被作废（改密码 / 退出所有设备）
+  if (kind === 'session' && role === null) {
+    return { code: 'session_expired', error: '登录已失效，请重新登录' }
+  }
+  return null
 }
 
 /**
@@ -249,6 +294,8 @@ export function requireAbility(ability) {
       if (can(role, ability)) return next()
       // 401 和 403 在前端是两回事：AdminLayout 见到这两个码都会把后台重新锁上，
       // 所以这里统一给 403，并且把「缺哪一项」说清楚，免得排查时只看见一句「没权限」
+      const why = authFailure(req, role)
+      if (why) return res.status(403).json(why)
       return res.status(403).json({ error: `权限不足：需要 ${ability}` })
     } catch (e) {
       next(e)

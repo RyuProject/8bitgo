@@ -42,8 +42,8 @@
 import type TencentCloudChatSDK from '@tencentcloud/chat'
 import { api, apiEnabled, ApiError } from './api'
 import { getCurrentUser } from './auth'
-import { getImUnread, imUnreadLabel, onImChange, pushImPreview, registerImOpener, setImUnread } from './im'
-import { imState, invalidate, isStale, setState, setStateIf, startOnce } from './imSession'
+import { getImUnread, imUnreadLabel, onImChange, pushImPreview, registerImOpener, registerImRetry, setImStatus, setImUnread } from './im'
+import { imState, invalidate, isStale, onImStateChange, setState, setStateIf, startOnce } from './imSession'
 
 // 状态相关的读接口原样透传，让 UI 只认这一个模块
 export { imState, imStateDetail, onImStateChange, type ImState } from './imSession'
@@ -191,10 +191,16 @@ function publishOpener() {
   })
 }
 
+/**
+ * 收回 opener。
+ *
+ * ⚠️ **这里不清未读数**（2026-09-12 改）。以前顺手 `setImUnread(0)`，于是被踢下线时
+ * 红点一起消失 —— 用户得到的信息是「没有未读消息」，而真相是「你被踢了，还有 5 条没看」。
+ * 清零是「换了人」的语义，只该发生在登出和换账号时，那两处各自显式清。
+ */
 function retractOpener() {
   unregisterOpener?.()
   unregisterOpener = null
-  setImUnread(0)
 }
 
 /* ---------------- 连接 ---------------- */
@@ -228,6 +234,37 @@ function autoRetryAllowed(): boolean {
   return true
 }
 
+/**
+ * `login()` 兑现之后等 `SDK_READY` 的上限。
+ *
+ * ⚠️ 这一段以前**没有任何超时**，而 `connecting` 是个**没有出口**的状态：
+ * 回到前台的自检刻意跳过它（怕打断 SDK 自己的重连），抽屉里那一分支也只画一句
+ * 「正在连接…」。于是弱网下 login 成功、长连接却建不起来时，用户面前是一个
+ * 永远转不完的圈，手上没有任何可点的东西，只能刷新页面。
+ *
+ * 超时之后转 error —— error 是有出口的：抽屉和顶栏都会给出「重新连接」。
+ */
+const READY_TIMEOUT_MS = 20_000
+let readyTimer: number | null = null
+
+function clearReadyWatchdog(): void {
+  if (readyTimer === null) return
+  clearTimeout(readyTimer)
+  readyTimer = null
+}
+
+function armReadyWatchdog(epoch: number): void {
+  clearReadyWatchdog()
+  if (typeof window === 'undefined') return
+  readyTimer = window.setTimeout(() => {
+    readyTimer = null
+    // 这一代作废了、或者早就连上了，都不关这个定时器的事
+    if (imState() !== 'connecting') return
+    // detail 留空：这里不该把英文/中文的内部原因塞给八种语言的用户
+    setStateIf(epoch, 'error')
+  }, READY_TIMEOUT_MS)
+}
+
 interface SigResponse {
   sdkAppId: number
   userId: string
@@ -242,16 +279,42 @@ interface SigResponse {
  * 后端没配（/api/im/sig 回 501）、以及**这次尝试已经被更新的一代作废**。
  * 前几种下顶栏保持占位面板，和接入之前的行为一致。
  */
-export function ensureImStarted(): Promise<boolean> {
+export function ensureImStarted(options: { auto?: boolean } = {}): Promise<boolean> {
   if (typeof window === 'undefined') return Promise.resolve(false)
   const user = getCurrentUser()
   if (!user || !apiEnabled()) return Promise.resolve(false)
-  if (chat && boundUserId === user.id && imState() === 'ready') return Promise.resolve(true)
+  /*
+    正在连的也算「已经在连了」，别拆掉重来（2026-09-12 改）。
+
+    以前只认 ready：空闲那次连接刚 login 完、还在等 SDK_READY 时，用户点一下评论区的
+    「私信」就会把那条马上要好的连接 teardown 掉重连 —— 白烧一次 30 次/小时的 sig 额度，
+    连接时间翻倍。**boundUserId 的判断必须留着**，那是跨账号冒充的防线。
+  */
+  const s = imState()
+  if (chat && boundUserId === user.id && (s === 'ready' || s === 'connecting')) return Promise.resolve(true)
+  /*
+    自动路径要过节流，用户明确的动作（点顶栏、点「私信」、点「重新连接」）永远算。
+
+    ⚠️ 这道闸以前只装在**调用方**（visibilitychange、USERSIG_EXPIRED）身上，而
+    ImPanel 里那个 `useEffect(..., [user])` 的依赖是 user **对象**：收藏一个游戏、
+    开一局游戏都会让 useCurrentUser 返回新引用 → 重新 startImWhenIdle → 直接进这里，
+    一次节流都不过。后端 500 时用户随便逛几分钟就能把 30 次/小时烧光。
+  */
+  if (options.auto && !autoRetryAllowed()) return Promise.resolve(false)
 
   return startOnce(user.id, async (epoch) => {
     setStateIf(epoch, 'connecting')
 
-    // 换账号：先把旧连接彻底收掉，否则会拿着 A 的连接读 B 的会话
+    /*
+      换账号：先把旧连接彻底收掉，否则会拿着 A 的连接读 B 的会话。
+      顺带清未读 —— 上一个账号的数字不能留在下一个人的顶栏上
+      （retractOpener 不再做这件事，理由见它那里）。
+
+      ⚠️ 清零这一句写在**前面**，不是随手排的：`if (chat) await teardown()` 之后
+      **紧邻的下一行必须是 isStale 守卫**，中间插任何东西 test:im-client 都会红 ——
+      那条断言正是为了防住跨账号冒充，别为了少一行把它绕开。
+    */
+    if (chat) setImUnread(0)
     if (chat) await teardown()
     if (isStale(epoch)) return false
 
@@ -271,13 +334,14 @@ export function ensureImStarted(): Promise<boolean> {
     }
     if (isStale(epoch)) return false
 
+    let created: Chat | null = null
     try {
       const mod = await import('@tencentcloud/chat')
       if (isStale(epoch)) return false
       // UMD 产物经 Vite 的 CJS 互操作后具名导出挂在 default 上；两种形状都兜一下，
       // 免得换成 ESM 产物或升级 Vite 时这里静默拿到 undefined
       TC = ((mod as { default?: ChatNS }).default ?? (mod as unknown as ChatNS)) as ChatNS
-      const created = TC.create({ SDKAppID: sig.sdkAppId })
+      created = TC.create({ SDKAppID: sig.sdkAppId })
       if (!created) throw new Error('TencentCloudChat.create 返回空 —— SDKAppID 不合法？')
       // 日志等级 1 = 只留 release 级别。默认 0 会往控制台刷大量 SDK 内部日志，
       // 而这个站的控制台本来就有模拟器的输出，叠一层就没法看了。排查时临时改 0。
@@ -288,7 +352,7 @@ export function ensureImStarted(): Promise<boolean> {
       await created.login({ userID: sig.userId, userSig: sig.userSig })
     } catch (e) {
       console.warn('[im] 连接失败：', e)
-      await teardown()
+      await teardownOwn(created)
       setStateIf(epoch, 'error', e instanceof Error ? e.message : String(e))
       return false
     }
@@ -296,12 +360,13 @@ export function ensureImStarted(): Promise<boolean> {
     // login 兑现之后这一代可能已经作废了（登出、换账号）。此时**必须把已经建立的连接
     // 拆掉** —— 光把 chat 置空没用：SDK 按 SDKAppID 缓存实例，而它已经登录成功了
     if (isStale(epoch)) {
-      await teardown()
+      await teardownOwn(created)
       return false
     }
 
     // 注意：login 兑现 ≠ 可以发消息。要等 SDK_READY（见 wireEvents），所以这里
     // **不**把状态改成 ready
+    armReadyWatchdog(epoch)
     return true
   })
 }
@@ -313,6 +378,7 @@ export function ensureImStarted(): Promise<boolean> {
  * 就再 create 会拿到同一个事件发射器 —— 处理器翻倍，而且没有句柄再也解不掉。
  */
 async function teardown(): Promise<void> {
+  clearReadyWatchdog()
   const c = chat
   const hs = handlers
   chat = null
@@ -342,11 +408,43 @@ async function teardown(): Promise<void> {
   }
 }
 
+/**
+ * 拆掉**这一代自己创建的那个实例**。
+ *
+ * ⚠️⚠️ 这一代作废时**绝不能直接调 `teardown()`**：它拆的是模块级的 `chat`，
+ * 而那时候 `chat` 很可能已经是**新一代**的连接了。2026-09-12 查出的致命形状：
+ *
+ *   A 登录 → login 在飞 → A 登出（teardown 把 A 拆了）→ B 登录并连上（ready）
+ *   → 几百毫秒后 A 那次 login 才 reject → catch 里 `await teardown()`
+ *   → **把 B 正用着的连接拆了**，而 `setStateIf` 因为 stale 被忽略，状态纹丝不动停在 ready。
+ *
+ * 结果是 `imState() === 'ready'` 但 `chat === null`：面板显示在线、发消息报未连接、
+ * 顶栏退回占位、回到前台的自检因为「已经是 ready」直接跳过 —— 不刷新页面永远回不来。
+ */
+async function teardownOwn(created: Chat | null): Promise<void> {
+  if (!created) return
+  // 还是我的：走正常的整套拆除（off 掉处理器、清模块级状态）
+  if (chat === created) return teardown()
+  // 已经被新的一代顶替了：只把自己那个实例送走，一个字都别碰现在活着的连接
+  try {
+    await created.logout()
+  } catch {
+    /* 已经掉线时会抛，无所谓 */
+  }
+  try {
+    await created.destroy()
+  } catch {
+    /* 同上 */
+  }
+}
+
 /** 退出登录 / 换账号时调。之后顶栏回到占位面板 */
 export async function imStop(): Promise<void> {
   invalidate()
   setState('off')
   await teardown()
+  // 换人了，未读数必须清 —— 留着会把上一个账号的数字挂在下一个人的顶栏上
+  setImUnread(0)
 }
 
 /** 用户点「重新连接」 */
@@ -373,6 +471,7 @@ function wireEvents(c: Chat, epoch: number) {
 
   on(E.SDK_READY, () => {
     if (!live()) return
+    clearReadyWatchdog()
     // 连上了：自动重连的节流归零，之后真的掉线要能立刻重连（见 AUTO_RETRY_MS）
     lastAutoRetry = 0
     setState('ready')
@@ -430,7 +529,7 @@ function wireEvents(c: Chat, epoch: number) {
         // 而 30 秒后回到前台的自检也会再试一次（都不是死循环）
         setState('off')
         await teardown()
-        if (autoRetryAllowed()) await ensureImStarted()
+        await ensureImStarted({ auto: true })
       })()
       return
     }
@@ -886,7 +985,7 @@ export function startImWhenIdle(): void {
   idleScheduled = true
   const go = () => {
     idleScheduled = false
-    void ensureImStarted()
+    void ensureImStarted({ auto: true })
   }
   const ric = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => void })
     .requestIdleCallback
@@ -948,16 +1047,32 @@ function wireVisibility() {
     if (!getCurrentUser() || !apiEnabled()) return
     const s = imState()
     if (s === 'ready' || s === 'connecting' || s === 'kicked' || s === 'unavailable') return
-    // 节流：后端正在出错时，来回切标签页不该变成一串请求（见 AUTO_RETRY_MS）
-    if (!autoRetryAllowed()) return
-    void ensureImStarted()
+    // 节流现在统一由 ensureImStarted 的 auto 分支管（见那边的注释），这里不再自己判 ——
+    // 两处各判一次会把额度消耗两遍
+    void ensureImStarted({ auto: true })
   })
 }
 
-/** 标题未读数和前台自检只装一次，且不依赖有没有登录 */
+/** 标题未读数、前台自检、顶栏接线，只装一次，且不依赖有没有登录 */
 function wireAmbient() {
   if (ambientWired) return
   ambientWired = true
   wireTitleBadge()
   wireVisibility()
+  /*
+    把状态机镜像给顶栏那颗按钮（services/im.ts 是零 import 的接缝，它自己看不到状态机）。
+
+    没有这一行的话，顶栏只知道「opener 有没有」，而 opener 只在 SDK_READY 之后才注册 ——
+    连接中、限流、腾讯登录失败、被踢，六种状态在顶栏上长得一模一样，全是那句
+    「站内消息正在做」。见 services/im.ts 里 ImStatus 的注释。
+  */
+  setImStatus(imState())
+  onImStateChange(() => setImStatus(imState()))
+  /*
+    把「重新连接」交给接缝。imReconnect 本来写得很完整（清节流、invalidate、
+    teardown、重连），但全站只有一个调用点 —— 在抽屉里，而抽屉恰恰在连不上时打不开。
+  */
+  registerImRetry(() => {
+    void imReconnect()
+  })
 }

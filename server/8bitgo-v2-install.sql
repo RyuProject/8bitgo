@@ -322,11 +322,12 @@ CREATE TABLE IF NOT EXISTS recents (
   CONSTRAINT fk_recent_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- ---------- 游戏评论 ----------
--- 设计与注释见 schema-v2.sql 里的同名表（三种「不可见」、country 快照、parent_id 的 SET NULL）。
+-- ---------- 评论（游戏 + 博客文章共用一张表） ----------
+-- 设计与注释见 schema-v2.sql 里的同名表（宿主二选一、三种「不可见」、country 快照、parent_id 的 SET NULL）。
 CREATE TABLE IF NOT EXISTS game_comments (
   id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-  game_id    BIGINT UNSIGNED NOT NULL,
+  game_id    BIGINT UNSIGNED NULL,
+  post_id    BIGINT UNSIGNED NULL,
   user_id    VARCHAR(40)     NOT NULL,
   parent_id  BIGINT UNSIGNED NULL,
   content    VARCHAR(2000)   NOT NULL,
@@ -336,10 +337,12 @@ CREATE TABLE IF NOT EXISTS game_comments (
   deleted_at TIMESTAMP(3)    NULL DEFAULT NULL,
   created_at TIMESTAMP(3)    NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   KEY idx_cmt_game_time (game_id, created_at DESC),
+  KEY idx_cmt_post_time (post_id, created_at DESC),
   KEY idx_cmt_user_time (user_id, created_at DESC),
   KEY idx_cmt_parent (parent_id),
   KEY idx_cmt_hidden_time (hidden, created_at DESC),
   CONSTRAINT fk_cmt_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE,
+  CONSTRAINT fk_cmt_post FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
   CONSTRAINT fk_cmt_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   CONSTRAINT fk_cmt_parent FOREIGN KEY (parent_id) REFERENCES game_comments(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

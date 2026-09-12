@@ -408,6 +408,9 @@ export interface GameComment {
   /** 后台列表才有：这条评论挂在哪款游戏下 */
   gameSlug?: string
   gameTitle?: string
+  /** 后台列表才有：这条评论挂在哪篇文章下 */
+  postSlug?: string
+  postTitle?: string
 }
 
 /** 一款游戏的评分汇总（GET /api/ratings?game=<slug>） */

@@ -586,8 +586,11 @@ export function commentRowToApi(r, { admin = false } = {}) {
   const readable = admin || (!hidden && !deleted)
   return {
     id: String(r.id),
+    // 后台列表才有：这条评论挂在哪款游戏 / 哪篇文章下（前台按宿主直接查，不需要回带）
     gameSlug: r.game_slug ?? undefined,
     gameTitle: r.game_title ?? undefined,
+    postSlug: r.post_slug ?? undefined,
+    postTitle: r.post_title ?? undefined,
     content: readable ? String(r.content ?? '') : '',
     country: countryOf(r.country),
     hidden,

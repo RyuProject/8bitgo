@@ -79,8 +79,17 @@ export function setAdminApiToken(token: string | null) {
   }
 }
 
-function authHeaders(admin: boolean): Record<string, string> {
-  const token = admin ? getAdminApiToken() || getToken() : getToken()
+/**
+ * ⚠️ 后台口令**优先于**登录令牌，这是有意的（口令是给没有账号的人留的），
+ * 但它有个危险的副作用：一个填错 / 过期 / 服务端换过的口令，会把一个完全正常的
+ * 管理员登录态整个盖掉，于是每一次后台写操作都报「权限不足」。
+ *
+ * 处置不在这里，而在 request() 里：服务端认出「带了东西但既不是站内令牌也不是口令」
+ * 时会回 `code: 'invalid_admin_token'`，那边收到就把这个口令清掉并用登录令牌重试一次。
+ * 光在这里调换优先级是不行的 —— 客户端没法自己判断一个口令对不对。
+ */
+function authHeaders(admin: boolean, skipAdminToken = false): Record<string, string> {
+  const token = admin && !skipAdminToken ? getAdminApiToken() || getToken() : getToken()
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
@@ -101,14 +110,19 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(method: string, path: string, { body, admin = false }: ReqOptions = {}): Promise<T> {
+async function request<T>(
+  method: string,
+  path: string,
+  { body, admin = false }: ReqOptions = {},
+  skipAdminToken = false,
+): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     method,
     headers: {
       // 整个 API 都是 JSON；显式声明让 /api/oauth/authorize 这类按 Accept 分流的端点回 JSON 而不是 HTML
       Accept: 'application/json',
       ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-      ...authHeaders(admin),
+      ...authHeaders(admin, skipAdminToken),
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
@@ -123,6 +137,21 @@ async function request<T>(method: string, path: string, { body, admin = false }:
     data = null
   }
   if (!res.ok) {
+    /*
+      后台口令是坏的：清掉它，改用登录令牌重试一次。
+
+      为什么要自愈而不是只报错：这个口令存在 sessionStorage 里，不清掉的话**后面每一次
+      写操作都会继续被它盖住**，而人看到的只是一句莫名其妙的「权限不足」。
+
+      ⚠️ 只重试这一种情况（服务端明说的 invalid_admin_token）、只重试一次、
+      而且只在确实还有登录令牌可用时。403 意味着服务端**什么都没做**，所以重试一个
+      PUT / POST 不会写两遍 —— 换成别的状态码就不成立了，别顺手放宽。
+    */
+    const code = (data as { code?: string } | null)?.code
+    if (code === 'invalid_admin_token' && !skipAdminToken && getAdminApiToken() && getToken()) {
+      setAdminApiToken(null)
+      return request<T>(method, path, { body, admin }, true)
+    }
     const msg = (data as { error?: string } | null)?.error || fmt(getT().errors.requestFailed, { status: res.status })
     // 抛 ApiError 而不是裸 Error：状态码和响应体不能在这里丢掉 ——
     // 比如发验证码被限流时，服务端会连 retryAfter 一起回来，UI 要靠它倒计时。

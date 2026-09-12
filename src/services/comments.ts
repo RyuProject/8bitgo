@@ -1,9 +1,13 @@
 /**
- * 游戏评论的前端数据层。
+ * 评论（游戏 + 博客文章）的前端数据层。
  *
- * 刻意不做全局 store：评论只在详情页侧栏这一处用，而且是「随时在变」的数据 ——
+ * 刻意不做全局 store：评论只在游戏详情页 / 文章页这两处用，而且是「随时在变」的数据 ——
  * 缓存起来的收益远小于「用户发完看不到自己那条」的代价。组件自己持有列表状态，
  * 发表 / 编辑 / 删除后就地更新那一条。
+ *
+ * 宿主用 CommentTarget 表达（游戏或文章）。后端是同一张表、同一套路由，靠
+ * `?game=` / `?post=` 区分（见 server/src/routes/comments.js）。编辑 / 删除只按
+ * 评论 id，两种宿主共用同一对函数。
  *
  * 没配后端（VITE_API_URL 为空）时全部退化成空列表和「不可用」——
  * 评论必须有服务端，不像稍后玩那样能在浏览器里凑一份。
@@ -18,15 +22,25 @@ export const COMMENT_MAX_LENGTH = 2000
 export const COMMENT_EDIT_WINDOW_MS = 5 * 60 * 1000
 export const COMMENT_PAGE_SIZE = 20
 
+/** 评论挂在哪个宿主下：一款游戏，或一篇文章 */
+export type CommentTarget = { kind: 'game' | 'post'; slug: string }
+
 const EMPTY: CommentPage = { total: 0, page: 1, pageSize: COMMENT_PAGE_SIZE, items: [] }
 
 export function commentsAvailable(): boolean {
   return apiEnabled()
 }
 
-export async function fetchComments(gameSlug: string, page = 1): Promise<CommentPage> {
+/** 宿主 -> query 片段。列名由后端 resolveTarget 白名单化，前端只管怎么传 */
+function targetQuery(target: CommentTarget): string {
+  return target.kind === 'game'
+    ? `game=${encodeURIComponent(target.slug)}`
+    : `post=${encodeURIComponent(target.slug)}`
+}
+
+export async function fetchComments(target: CommentTarget, page = 1): Promise<CommentPage> {
   if (!apiEnabled()) return EMPTY
-  const qs = `game=${encodeURIComponent(gameSlug)}&page=${page}&pageSize=${COMMENT_PAGE_SIZE}`
+  const qs = `${targetQuery(target)}&page=${page}&pageSize=${COMMENT_PAGE_SIZE}`
   const r = await api.get<CommentPage>(`/api/comments?${qs}`)
   // 后端理论上一定给全，但前端不该因为少一个字段整块崩掉
   return { ...EMPTY, ...r, items: Array.isArray(r?.items) ? r.items : [] }
@@ -40,11 +54,15 @@ export async function fetchComments(gameSlug: string, page = 1): Promise<Comment
  * 本身绝不改动他的评分。
  */
 export async function postComment(
-  gameSlug: string,
+  target: CommentTarget,
   content: string,
   parentId?: string,
 ): Promise<GameComment> {
-  return api.post<GameComment>('/api/comments', { gameSlug, content, parentId })
+  return api.post<GameComment>('/api/comments', {
+    [target.kind === 'game' ? 'gameSlug' : 'postSlug']: target.slug,
+    content,
+    parentId,
+  })
 }
 
 export async function editComment(id: string, content: string): Promise<GameComment> {
@@ -134,22 +152,28 @@ export function timeAgo(iso: string): string {
 /* ---------------- 后台 ---------------- */
 
 export type CommentStatusFilter = 'all' | 'visible' | 'hidden' | 'deleted'
+/** 后台按宿主筛：全部 / 只看游戏评论 / 只看文章评论 */
+export type CommentTargetFilter = 'all' | 'game' | 'post'
 
 export interface AdminCommentQuery {
   status?: CommentStatusFilter
+  target?: CommentTargetFilter
   q?: string
   game?: string
+  post?: string
   page?: number
   pageSize?: number
 }
 
-/** 后台列表：含被隐藏和被删除的，带原文、邮箱和所属游戏 */
+/** 后台列表：含被隐藏和被删除的，带原文、邮箱和所属宿主（游戏或文章） */
 export async function fetchAdminComments(query: AdminCommentQuery = {}): Promise<CommentPage> {
   if (!apiEnabled()) return EMPTY
   const p = new URLSearchParams()
   if (query.status && query.status !== 'all') p.set('status', query.status)
+  if (query.target && query.target !== 'all') p.set('target', query.target)
   if (query.q?.trim()) p.set('q', query.q.trim())
   if (query.game?.trim()) p.set('game', query.game.trim())
+  if (query.post?.trim()) p.set('post', query.post.trim())
   p.set('page', String(query.page ?? 1))
   p.set('pageSize', String(query.pageSize ?? 30))
   const r = await api.get<CommentPage>(`/api/comments/admin/list?${p.toString()}`, true)

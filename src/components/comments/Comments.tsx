@@ -15,16 +15,17 @@ import {
   fetchComments,
   postComment,
   timeAgo,
+  type CommentTarget,
 } from '@/services/comments'
 import { cx } from '@/lib/format'
 import { DmAvatar } from '@/components/im/DmButton'
 import { FEATURES } from '@/config/features'
-import { Stars } from './StarRating'
+import { Stars } from '@/components/game/StarRating'
 import { Button } from '@/components/ui/Button'
 import { SkeletonBlock } from '@/components/ui/PageSkeleton'
 
 /**
- * 详情页侧栏的评论区。
+ * 评论区。同一个组件服务两个宿主：游戏详情页的侧栏、博客文章页的右侧栏。
  *
  * 三个定下来的取舍：
  *
@@ -36,8 +37,26 @@ import { SkeletonBlock } from '@/components/ui/PageSkeleton'
  *    代价是评论内容不参与 SEO；要拿这块内容做收录得先解决边缘缓存那一层。
  * 3. **未登录不隐藏评论区**，只把输入框换成一句提示加登录按钮。
  *    整块藏起来的话，没登录的人根本不知道这里有讨论。
+ *
+ * 宿主（游戏 / 文章）用 target 表达；后端同一张表、同一套路由（见 services/comments.ts）。
+ * 文章没有评分，所以文章评论上不会出现星星 —— 那是 score 字段为空时自然的结果，
+ * 不需要再传一个 showScore 开关。
+ *
+ * ⚠️ 依赖不要用 target 对象本身：调用方每次 render 都会新建一个字面量，
+ * 拿它进 useCallback 依赖会让 load 每帧都变，重置 effect 跟着无限跑。
+ * 所以下面一律拆成 kind / slug 两个原始值。
  */
 export function GameComments({ gameSlug }: { gameSlug: string }) {
+  return <CommentsPanel target={{ kind: 'game', slug: gameSlug }} />
+}
+
+export function PostComments({ postSlug }: { postSlug: string }) {
+  return <CommentsPanel target={{ kind: 'post', slug: postSlug }} />
+}
+
+function CommentsPanel({ target }: { target: CommentTarget }) {
+  const { kind, slug } = target
+  const showScore = kind === 'game'
   const t = useT()
   const c = t.comments
   const user = useCurrentUser()
@@ -60,7 +79,7 @@ export function GameComments({ gameSlug }: { gameSlug: string }) {
       if (append) setMore(true)
       else setStatus('loading')
       try {
-        const r = await fetchComments(gameSlug, nextPage)
+        const r = await fetchComments({ kind, slug }, nextPage)
         setTotal(r.total)
         setPage(r.page)
         // 追加时按 id 去重：翻页期间有人发了新评论，第 2 页的第一条可能已经在第 1 页里了
@@ -82,10 +101,11 @@ export function GameComments({ gameSlug }: { gameSlug: string }) {
         setMore(false)
       }
     },
-    [gameSlug, c.loadFailed],
+    // kind / slug 是原始值，见文件头关于「不要依赖 target 对象」的说明
+    [kind, slug, c.loadFailed],
   )
 
-  // 换游戏时整块重置：上一款的评论和「正在回复」不能带过来
+  // 换宿主（换游戏 / 换文章）时整块重置：上一个宿主的评论和「正在回复」不能带过来
   useEffect(() => {
     if (!commentsAvailable()) {
       setStatus('ready')
@@ -97,7 +117,7 @@ export function GameComments({ gameSlug }: { gameSlug: string }) {
     setText('')
     setFormError('')
     void load(1, false)
-  }, [gameSlug, load])
+  }, [kind, slug, load])
 
   const submit = async () => {
     const content = text.trim()
@@ -109,7 +129,7 @@ export function GameComments({ gameSlug }: { gameSlug: string }) {
     setSending(true)
     setFormError('')
     try {
-      const created = await postComment(gameSlug, content, replyTo?.id)
+      const created = await postComment({ kind, slug }, content, replyTo?.id)
       // 列表是最新在前，所以新评论插在最前面
       setItems((prev) => [created, ...prev])
       setTotal((n) => n + 1)
@@ -177,12 +197,11 @@ export function GameComments({ gameSlug }: { gameSlug: string }) {
                 className="w-full resize-y rounded-xl border border-line bg-surface-2 px-3 py-2 text-sm text-fg placeholder:text-dim focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30"
               />
               {/*
-                这里**没有**打分控件，是有意的：全站给一款游戏打分只有一个入口 ——
+                游戏评论这里**没有**打分控件，是有意的：全站给一款游戏打分只有一个入口 ——
                 侧栏那张评分卡（GameRating）。理由是打分和评论是两件事：分是给游戏的、
                 一人一票、随时可改；评论是一条一条的发言。两个入口摆在一起，
                 「发表」这一下到底改没改我的分就说不清了。
-                作者打过的分会显示在他每条评论的气泡上（见下面 comment.score 那一段，
-                是 join 出来的当前值，他改分这里跟着变）。
+                作者打过的分会显示在他每条评论的气泡上（见下面 comment.score 那一段）。
               */}
               <div className="mt-2 flex items-center justify-between gap-2">
                 <span className={cx('text-[11px]', remaining < 50 ? 'text-live' : 'text-dim')}>
@@ -247,6 +266,7 @@ export function GameComments({ gameSlug }: { gameSlug: string }) {
                     key={item.id}
                     comment={item}
                     mine={Boolean(user && user.id === item.author.id)}
+                    showScore={showScore}
                     onReply={user ? startReply : () => openAuthModal()}
                     onDeleted={onDeleted}
                     onEdited={onEdited}
@@ -276,12 +296,14 @@ export function GameComments({ gameSlug }: { gameSlug: string }) {
 function CommentItem({
   comment,
   mine,
+  showScore,
   onReply,
   onDeleted,
   onEdited,
 }: {
   comment: GameComment
   mine: boolean
+  showScore: boolean
   onReply: (c: GameComment) => void
   onDeleted: (id: string) => void
   onEdited: (c: GameComment) => void
@@ -351,8 +373,9 @@ function CommentItem({
               {timeAgo(comment.createdAt)}
             </time>
             {comment.editedAt && <span className="text-dim">({c.edited})</span>}
-            {/* 作者给这款游戏打的分。是 join 出来的当前值，他改分这里会跟着变 */}
-            {FEATURES.ratings && comment.score != null && (
+            {/* 作者给这款游戏打的分。是 join 出来的当前值，他改分这里会跟着变。
+                文章评论没有评分，score 为空，这块自然不画（见 CommentsPanel 的 showScore）。 */}
+            {showScore && FEATURES.ratings && comment.score != null && (
               <Stars value={comment.score} size="sm" />
             )}
           </div>

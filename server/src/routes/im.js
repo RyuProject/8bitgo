@@ -20,11 +20,13 @@
  */
 import { Router } from 'express'
 import { requireUser } from '../auth.js'
-import { take } from '../rateLimit.js'
+import { clientKey, isMeaningfulIp, take } from '../rateLimit.js'
 import { CACHE } from '../cache.js'
 import { genUserSig, imConfigFrom, isValidImUserId } from '../im-sig.js'
 import { query, queryOne } from '../db.js'
 import {
+  IM_LOOKUP_GLOBAL_LIMIT,
+  IM_LOOKUP_IP_LIMIT,
   IM_LOOKUP_LIMIT,
   IM_LOOKUP_WINDOW_MS,
   IM_PEERS_LIMIT,
@@ -129,13 +131,42 @@ imRouter.post('/lookup', async (req, res, next) => {
   try {
     if (!imConfigFrom()) return res.status(501).json({ error: 'IM 未启用', code: 'disabled' })
 
-    // ⚠️ 同 /sig：take() 返回 { ok, retryAfter } 对象，写成 `if (!take(...))` 会恒真，限流静默失效
+    /*
+      三道闸，缺一道这个探针的单价就被打下来了（2026-09-12 补的后两道）。
+
+      按账号那道原本是唯一的一道 —— 而**账号在这个站上很便宜**：邮箱验证码即注册，
+      Google / Apple 登录更便宜。攻击者在一台机器上持有 100 个账号并发跑，
+      就是 2000 次/小时的「这个邮箱注册过没有」，而服务端**没有任何一条计数
+      能把这些请求关联起来刹车**。站里别的敏感接口（验证码、评分、评论、投稿、ice）
+      全都是两三个维度，只有 IM 这三个接口是单维度。
+
+      ⚠️ take() 返回 { ok, retryAfter } 对象，写成 `if (!take(...))` 会恒真，限流静默失效。
+      ⚠️ 拿不到真实 IP 时跳过按 IP 那道 —— 反代没透传时所有人塌缩成一个地址，
+         按 IP 限会把真实用户全锁在门外（同 routes/auth.js）。
+    */
     const gate = take(`im:lookup:${req.user.id}`, IM_LOOKUP_LIMIT, IM_LOOKUP_WINDOW_MS)
     if (!gate.ok) {
       return res
         .status(429)
         .set('Retry-After', String(gate.retryAfter))
         .json({ error: '查得太频繁了，稍后再试', code: 'rate_limited', retryAfter: gate.retryAfter })
+    }
+    const ip = clientKey(req)
+    if (isMeaningfulIp(ip)) {
+      const perIp = take(`im:lookup:ip:${ip}`, IM_LOOKUP_IP_LIMIT, IM_LOOKUP_WINDOW_MS)
+      if (!perIp.ok) {
+        return res
+          .status(429)
+          .set('Retry-After', String(perIp.retryAfter))
+          .json({ error: '查得太频繁了，稍后再试', code: 'rate_limited', retryAfter: perIp.retryAfter })
+      }
+    }
+    const global = take('im:lookup:global', IM_LOOKUP_GLOBAL_LIMIT, IM_LOOKUP_WINDOW_MS)
+    if (!global.ok) {
+      return res
+        .status(429)
+        .set('Retry-After', String(global.retryAfter))
+        .json({ error: '查得太频繁了，稍后再试', code: 'rate_limited', retryAfter: global.retryAfter })
     }
 
     const email = normalizeLookupEmail(req.body?.email)

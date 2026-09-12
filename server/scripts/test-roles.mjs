@@ -85,6 +85,78 @@ check('schema-d1.sql 的 CHECK 和 ROLES 一致', Boolean(d1) && d1[1].replace(/
 const mig = readFileSync(join(root, 'scripts/migrate.mjs'), 'utf8').match(/MODIFY\s+`role`\s+ENUM\(([^)]*)\)/i)
 check('migrate.mjs 的 ALTER 和 ROLES 一致', Boolean(mig) && mig[1].replace(/\s/g, '') === wanted, mig ? mig[1] : '没找到')
 
+// ---------- 4. 鉴权失败时要说真正的原因 ----------
+/*
+  ⚠️ 这一节是一次真实排查逼出来的（2026-09-12）。
+
+  后台有两种入场方式：管理员账号，和一个不对应任何账号的后台口令（ADMIN_TOKEN）。
+  前端取值时**后台口令优先**，于是一个填错 / 过期 / 服务端换过的口令会把一个完全正常的
+  管理员登录态整个盖掉 —— 而报出来的是「权限不足：需要 content:edit」。
+  排查的人于是去查角色、查 ROLE_ABILITIES、查数据库，而真正的问题在口令上。
+
+  只读接口多半是公开的，所以症状还特别偏：后台看得见、一点保存就没权限。
+
+  bearerKind 不碰数据库，所以这里是**真的跑**，不是扫源码。
+*/
+process.env.ADMIN_TOKEN = 'the-back-door'
+process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret-for-roles'
+const { bearerKind } = await import('../src/auth.js')
+const jwtMod = await import('jsonwebtoken')
+const sign = (payload) => jwtMod.default.sign(payload, process.env.JWT_SECRET, { algorithm: 'HS256' })
+const withAuth = (v) => ({ headers: v ? { authorization: v } : {} })
+
+check('没带 Authorization → none', bearerKind(withAuth('')) === 'none')
+check('带对了后台口令 → admin-token', bearerKind(withAuth('Bearer the-back-door')) === 'admin-token')
+check('带了合法的站内令牌 → session', bearerKind(withAuth('Bearer ' + sign({ uid: 1 }))) === 'session')
+check(
+  '⭐ 带了一串既不是令牌也不是口令的东西 → invalid（这正是填错后台口令时的样子）',
+  bearerKind(withAuth('Bearer wrong-back-door')) === 'invalid',
+  bearerKind(withAuth('Bearer wrong-back-door')),
+)
+check(
+  '⚠️ 开放平台的令牌不算站内会话（带 aud / scope / cid 的一律拒）',
+  bearerKind(withAuth('Bearer ' + sign({ uid: 1, aud: 'x', scope: 'y', cid: 'z' }))) === 'invalid',
+)
+
+const authSrc = readFileSync(join(root, 'src/auth.js'), 'utf8')
+check(
+  '⭐ requireAbility 先问 authFailure，再报「权限不足」',
+  authSrc.includes('const why = authFailure(req, role)') && authSrc.includes('if (why) return res.status(403).json(why)'),
+)
+check(
+  '⭐ 口令坏掉时回的是机器可读的 invalid_admin_token（前端靠它自愈）',
+  authSrc.includes("code: 'invalid_admin_token'"),
+)
+check('登录令牌失效时说「登录已失效」，不说「权限不足」', authSrc.includes("code: 'session_expired'"))
+
+// ---------- 5. 前端：坏口令要能自愈 ----------
+/*
+  服务端说清楚了还不够：那个口令存在 sessionStorage 里，不清掉的话**后面每一次写操作
+  都会继续被它盖住**。所以前端收到 invalid_admin_token 要清掉它、改用登录令牌重试一次。
+*/
+const apiSrc = readFileSync(join(root, '../src/services/api.ts'), 'utf8')
+check(
+  '⭐ 收到 invalid_admin_token 会清掉口令并重试',
+  apiSrc.includes('setAdminApiToken(null)') && apiSrc.includes('return request<T>(method, path, { body, admin }, true)'),
+)
+check(
+  '⚠️ 只重试这一种 code —— 别放宽（403 才保证服务端什么都没做，重试 PUT 不会写两遍）',
+  apiSrc.includes("code === 'invalid_admin_token'"),
+)
+// ⚠️ 必须钉在**重试条件那一整串**上：authHeaders 里也有一个 !skipAdminToken，
+// 全文搜关键字的话，把重试条件里的挡板删掉这条照样绿（变异测试抓出来的）。
+check(
+  '⚠️ 只重试一次（skipAdminToken 挡住第二轮）',
+  apiSrc.includes("code === 'invalid_admin_token' && !skipAdminToken"),
+)
+check('⚠️ 没有登录令牌可退回时就不重试（否则等于白跑一趟）', apiSrc.includes('&& getToken()'))
+// authHeaders 的取值优先级本身也要钉住：变异测试发现把它改成「永远不用后台口令」
+// 时，上面那些断言一条都没红 —— 那样没有账号的人就再也进不了后台了。
+check(
+  '⚠️ 后台口令优先于登录令牌（口令是给没有账号的人留的）',
+  apiSrc.includes('admin && !skipAdminToken ? getAdminApiToken() || getToken() : getToken()'),
+)
+
 console.log('通过 %d 项：\n  %s', ok.length, ok.join('\n  '))
 if (bad.length) {
   console.log('\n失败 %d 项：\n  %s', bad.length, bad.join('\n  '))

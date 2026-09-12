@@ -1,13 +1,18 @@
 /**
- * 游戏评论。
+ * 站内评论 —— 游戏详情页侧栏 + 博客文章详情页右侧栏，两者共用这一套路由和同一张表
+ * （game_comments，宿主是 game_id 或 post_id 二选一，见 schema-v2.sql）。
  *
  * 规矩就三条，都在这一层落实，不指望前端自觉：
  *   - **发表必须登录**（requireUser）。匿名评论区在一个能被搜索引擎抓到的站点上
  *     等于免费的外链农场，上线第一周就会被灌满。
  *   - **删除是软删除**（deleted_at），后台仍然看得到原文。真删除只发生在
- *     删游戏 / 注销账号时，由外键级联完成。
+ *     删游戏 / 删文章 / 注销账号时，由外键级联完成。
  *   - **隐藏是管理员的动作**（hidden），和作者自己删的分开记 —— 处理举报纠纷时
  *     「谁让它消失的」是要能查的。
+ *
+ * 宿主（game / post）由 query 的 `?game=` / `?post=`、或 body 的 `gameSlug` / `postSlug`
+ * 指定，**恰好给一个**。列名只可能是 'game_id' / 'post_id' 两个字面量（见 resolveTarget），
+ * 没有任何用户输入会被拼进 SQL。
  *
  * 国家：取自 Cloudflare 的 CF-IPCountry 请求头，在**发表那一刻**存进这条评论。
  * 不是用户资料的一部分 —— 同一个人换个网络再来，历史评论上的国旗不该跟着变。
@@ -109,10 +114,12 @@ const FROM_JOINS = `
 /**
  * 后台评论列表。
  *   ?status=all | visible | hidden | deleted
- *   ?q=      在正文 / 昵称 / 邮箱 / 游戏名里搜
+ *   ?target=game | post        只看某一种宿主
+ *   ?q=      在正文 / 昵称 / 邮箱 / 游戏名 / 文章标题里搜
  *   ?game=   只看某款游戏（slug）
+ *   ?post=   只看某篇文章（slug）
  *
- * 和前台那条不共用：后台要看到被隐藏和被删除的原文，也要按游戏和用户认人。
+ * 和前台那条不共用：后台要看到被隐藏和被删除的原文，也要按宿主和用户认人。
  */
 commentsRouter.get('/admin/list', requireAbility('comments:review'), async (req, res, next) => {
   try {
@@ -125,27 +132,44 @@ commentsRouter.get('/admin/list', requireAbility('comments:review'), async (req,
     else if (status === 'hidden') where.push('c.hidden = 1')
     else if (status === 'deleted') where.push('c.deleted_at IS NOT NULL')
 
+    // 宿主筛选：只看游戏评论 / 只看文章评论
+    const target = String(req.query.target || '')
+    if (target === 'game') where.push('c.game_id IS NOT NULL')
+    else if (target === 'post') where.push('c.post_id IS NOT NULL')
+
     if (typeof req.query.game === 'string' && req.query.game.trim()) {
       where.push('g.slug = ?')
       params.push(req.query.game.trim())
     }
+    if (typeof req.query.post === 'string' && req.query.post.trim()) {
+      where.push('po.slug = ?')
+      params.push(req.query.post.trim())
+    }
 
     const q = typeof req.query.q === 'string' ? req.query.q.trim() : ''
     if (q) {
-      where.push('(c.content LIKE ? OR u.nickname LIKE ? OR u.email LIKE ? OR g.title LIKE ?)')
+      where.push('(c.content LIKE ? OR u.nickname LIKE ? OR u.email LIKE ? OR g.title LIKE ? OR po.title LIKE ?)')
       // LIKE 的通配符要转义，否则搜「100%」会退化成「100 开头的一切」
       const like = `%${q.replace(/[\\%_]/g, (m) => `\\${m}`)}%`
-      params.push(like, like, like, like)
+      params.push(like, like, like, like, like)
     }
 
     const clause = where.length ? `WHERE ${where.join(' AND ')}` : ''
-    const joins = `${FROM_JOINS}\n  JOIN games g ON g.id = c.game_id`
+    /**
+     * ⚠️ 两个宿主都要 **LEFT JOIN**：文章评论的 game_id 是 NULL，
+     * 用原来的 INNER JOIN games 会把它们整批过滤掉 —— 后台看起来
+     * 「文章评论一条都没有」，其实是查询写错了，最耗时间的那类 bug。
+     */
+    const joins = `${FROM_JOINS}
+  LEFT JOIN games g ON g.id = c.game_id
+  LEFT JOIN posts po ON po.id = c.post_id`
 
     const total = Number(
       (await queryOne(`SELECT COUNT(*) AS n ${joins} ${clause}`, params))?.n ?? 0,
     )
     const rows = await query(
-      `SELECT ${SELECT_COLS}, g.slug AS game_slug, g.title AS game_title ${joins} ${clause}
+      `SELECT ${SELECT_COLS}, g.slug AS game_slug, g.title AS game_title,
+              po.slug AS post_slug, po.title AS post_title ${joins} ${clause}
        ORDER BY c.created_at DESC, c.id DESC
        LIMIT ? OFFSET ?`,
       [...params, size, offset],
@@ -193,29 +217,56 @@ commentsRouter.delete('/admin/:id', requireAbility('comments:review'), async (re
  * ========================================================== */
 
 /**
- * 某款游戏的评论：GET /api/comments?game=<slug>&page=1&pageSize=20
+ * 把宿主（游戏 / 文章）的 slug 解析成 `{ col, id }`。
+ *
+ * `col` 只会是 'game_id' / 'post_id' 两个字面量，调用方拿它拼进 SQL 是安全的 ——
+ * 这是「为什么列名可以直接拼」的全部理由，改这段前先确认这一点还成立。
+ *
+ * 缺两个、或两个都给，都算参数错误。返回 `{ status, error }` 让调用方自己 res。
+ */
+async function resolveTarget(gameSlug, postSlug) {
+  if (gameSlug && postSlug) return { status: 400, error: 'game 和 post 只能给一个' }
+  if (gameSlug) {
+    const row = await queryOne('SELECT id FROM games WHERE slug = ?', [gameSlug])
+    if (!row) return { status: 404, error: '游戏不存在' }
+    return { col: 'game_id', id: row.id }
+  }
+  if (postSlug) {
+    // 只认已发布的文章：草稿的评论区不该对外可见（slug 也当探针用，统一回 404）
+    const row = await queryOne('SELECT id, published FROM posts WHERE slug = ?', [postSlug])
+    if (!row || !row.published) return { status: 404, error: '文章不存在' }
+    return { col: 'post_id', id: row.id }
+  }
+  return { status: 400, error: '缺少 game 或 post 参数' }
+}
+
+/**
+ * 某个宿主（游戏 / 文章）的评论：
+ *   GET /api/comments?game=<slug>&page=1&pageSize=20
+ *   GET /api/comments?post=<slug>&page=1&pageSize=20
  *
  * 只回可见的。被隐藏 / 被删除的那些不进列表，但如果有人引用过它们，
  * 引用卡片会显示成「该评论已删除」—— 直接抹掉引用会让回复变得莫名其妙。
  */
 commentsRouter.get('/', async (req, res, next) => {
   try {
-    const slug = typeof req.query.game === 'string' ? req.query.game.trim() : ''
-    if (!slug) return res.status(400).json({ error: '缺少 game 参数' })
-    const game = await queryOne('SELECT id FROM games WHERE slug = ?', [slug])
-    if (!game) return res.status(404).json({ error: '游戏不存在' })
+    const target = await resolveTarget(
+      typeof req.query.game === 'string' ? req.query.game.trim() : '',
+      typeof req.query.post === 'string' ? req.query.post.trim() : '',
+    )
+    if (target.error) return res.status(target.status).json({ error: target.error })
 
     const { page, size, offset } = pageParams(req)
-    const visible = 'WHERE c.game_id = ? AND c.hidden = 0 AND c.deleted_at IS NULL'
+    const visible = `WHERE c.${target.col} = ? AND c.hidden = 0 AND c.deleted_at IS NULL`
     // 总数只需要主表，不必带上那两个为了引用卡片而做的 JOIN
     const total = Number(
-      (await queryOne(`SELECT COUNT(*) AS n FROM game_comments c ${visible}`, [game.id]))?.n ?? 0,
+      (await queryOne(`SELECT COUNT(*) AS n FROM game_comments c ${visible}`, [target.id]))?.n ?? 0,
     )
     const rows = await query(
       `SELECT ${SELECT_COLS} ${FROM_JOINS} ${visible}
        ORDER BY c.created_at DESC, c.id DESC
        LIMIT ? OFFSET ?`,
-      [game.id, size, offset],
+      [target.id, size, offset],
     )
     res.json({ total, page, pageSize: size, items: rows.map((r) => commentRowToApi(r)) })
   } catch (e) {
@@ -230,7 +281,9 @@ async function loadOne(id, opts) {
 }
 
 /**
- * 发表：POST /api/comments { gameSlug, content, parentId? }
+ * 发表：POST /api/comments { gameSlug | postSlug, content, parentId? }
+ *
+ * 宿主二选一：游戏详情页传 gameSlug，博客文章页传 postSlug。
  *
  * **不收 score。** 打分只有一个入口 —— 详情页侧栏那张评分卡（走 /api/ratings）。
  * 这里曾经收过一个可选的 score，和评分卡共用同一票；拿掉是因为两个入口摆在一起时，
@@ -244,9 +297,12 @@ async function loadOne(id, opts) {
  */
 commentsRouter.post('/', requireUser, async (req, res, next) => {
   try {
-    const slug = String(req.body?.gameSlug ?? '').trim()
+    const gameSlug = String(req.body?.gameSlug ?? '').trim()
+    const postSlug = String(req.body?.postSlug ?? '').trim()
     const content = cleanContent(req.body?.content)
-    if (!slug) return res.status(400).json({ error: '缺少 gameSlug' })
+    // 宿主参数先做纯字符串校验，别让「参数都不对」的请求也消耗限流额度
+    if (!gameSlug && !postSlug) return res.status(400).json({ error: '缺少 gameSlug 或 postSlug' })
+    if (gameSlug && postSlug) return res.status(400).json({ error: 'gameSlug 和 postSlug 只能给一个' })
     if (!content) return res.status(400).json({ error: '评论内容不能为空' })
     if (content.length > MAX_LEN) return res.status(400).json({ error: `评论不能超过 ${MAX_LEN} 字` })
 
@@ -260,12 +316,12 @@ commentsRouter.post('/', requireUser, async (req, res, next) => {
       if (!perIp.ok) return res.status(429).json({ error: '发言太频繁，请稍后再试', retryAfter: perIp.retryAfter })
     }
 
-    const game = await queryOne('SELECT id FROM games WHERE slug = ?', [slug])
-    if (!game) return res.status(404).json({ error: '游戏不存在' })
+    const target = await resolveTarget(gameSlug, postSlug)
+    if (target.error) return res.status(target.status).json({ error: target.error })
 
     /**
-     * 引用的那条必须属于同一款游戏，而且当下是可见的。
-     * 不校验的话，随手传一个别的游戏的 id 就能让引用卡片显示另一个页面的内容 ——
+     * 引用的那条必须属于**同一个宿主**，而且当下是可见的。
+     * 不校验的话，随手传一个别的游戏 / 别的文章的 id 就能让引用卡片显示另一个页面的内容 ——
      * 拼出一段「某人在某处说过某句话」的假上下文，代价是零。
      */
     let parentId = null
@@ -273,8 +329,8 @@ commentsRouter.post('/', requireUser, async (req, res, next) => {
       const pid = Number(req.body.parentId)
       if (!Number.isInteger(pid) || pid <= 0) return res.status(400).json({ error: 'parentId 不合法' })
       const parent = await queryOne(
-        'SELECT id FROM game_comments WHERE id = ? AND game_id = ? AND hidden = 0 AND deleted_at IS NULL',
-        [pid, game.id],
+        `SELECT id FROM game_comments WHERE id = ? AND ${target.col} = ? AND hidden = 0 AND deleted_at IS NULL`,
+        [pid, target.id],
       )
       if (!parent) return res.status(400).json({ error: '被回复的评论不存在或已被删除' })
       parentId = parent.id
@@ -282,9 +338,10 @@ commentsRouter.post('/', requireUser, async (req, res, next) => {
 
     const country = countryFromRequest(req)
 
+    // target.col 只可能是 'game_id' / 'post_id'，另一个宿主列留 NULL
     const r = await query(
-      'INSERT INTO game_comments (game_id, user_id, parent_id, content, country) VALUES (?, ?, ?, ?, ?)',
-      [game.id, req.user.id, parentId, content, country],
+      `INSERT INTO game_comments (${target.col}, user_id, parent_id, content, country) VALUES (?, ?, ?, ?, ?)`,
+      [target.id, req.user.id, parentId, content, country],
     )
     res.status(201).json(await loadOne(r.insertId))
   } catch (e) {

@@ -8,6 +8,7 @@ import {
   purgeComment,
   setCommentHidden,
   type CommentStatusFilter,
+  type CommentTargetFilter,
 } from '@/services/comments'
 import { apiEnabled } from '@/services/api'
 import { cx } from '@/lib/format'
@@ -20,6 +21,13 @@ const TABS: Array<{ id: CommentStatusFilter; label: string }> = [
   { id: 'visible', label: '正常' },
   { id: 'hidden', label: '已隐藏' },
   { id: 'deleted', label: '已删除' },
+]
+
+/** 按宿主筛：游戏详情页的评论 / 博客文章页的评论（同一个列表，同一套审核动作） */
+const TARGETS: Array<{ id: CommentTargetFilter; label: string }> = [
+  { id: 'all', label: '全部' },
+  { id: 'game', label: '游戏' },
+  { id: 'post', label: '文章' },
 ]
 
 /**
@@ -37,6 +45,7 @@ export function AdminComments() {
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [status, setStatus] = useState<CommentStatusFilter>('all')
+  const [target, setTarget] = useState<CommentTargetFilter>('all')
   const [q, setQ] = useState('')
   const [search, setSearch] = useState('')
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
@@ -56,7 +65,7 @@ export function AdminComments() {
     }
     setState('loading')
     try {
-      const r = await fetchAdminComments({ status, q: search, page, pageSize: PAGE_SIZE })
+      const r = await fetchAdminComments({ status, target, q: search, page, pageSize: PAGE_SIZE })
       setItems(r.items)
       setTotal(r.total)
       setState('ready')
@@ -64,7 +73,7 @@ export function AdminComments() {
       setError(e instanceof Error ? e.message : '读取失败')
       setState('error')
     }
-  }, [status, search, page])
+  }, [status, target, search, page])
 
   useEffect(() => {
     void load()
@@ -73,7 +82,7 @@ export function AdminComments() {
   // 换筛选条件时回到第一页：停在第 5 页会看到一个空列表，很容易误判成「没有数据」
   useEffect(() => {
     setPage(1)
-  }, [status, search])
+  }, [status, target, search])
 
   const toggleHidden = async (item: GameComment) => {
     setBusyId(item.id)
@@ -133,6 +142,21 @@ export function AdminComments() {
               </button>
             ))}
           </div>
+          <div className="flex items-center gap-1 rounded-lg border border-line bg-surface p-0.5">
+            {TARGETS.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setTarget(item.id)}
+                className={cx(
+                  'rounded-md px-2.5 py-1 text-xs transition',
+                  target === item.id ? 'bg-brand-soft font-semibold text-fg' : 'text-muted hover:text-fg',
+                )}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
           <form
             onSubmit={(e) => {
               e.preventDefault()
@@ -143,7 +167,7 @@ export function AdminComments() {
               type="search"
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              placeholder="搜正文 / 昵称 / 邮箱 / 游戏名…"
+              placeholder="搜正文 / 昵称 / 邮箱 / 游戏名 / 文章标题…"
               className={cx(inputClass, 'w-64')}
             />
           </form>
@@ -165,7 +189,7 @@ export function AdminComments() {
             <tr>
               <th className="px-3 py-2 font-medium">用户</th>
               <th className="px-3 py-2 font-medium">地区</th>
-              <th className="px-3 py-2 font-medium">游戏</th>
+              <th className="px-3 py-2 font-medium">归属</th>
               <th className="px-3 py-2 font-medium">内容</th>
               <th className="px-3 py-2 font-medium">时间</th>
               <th className="px-3 py-2 font-medium">状态</th>
@@ -193,6 +217,10 @@ export function AdminComments() {
                   {item.gameSlug ? (
                     <Link to={`/games/${item.gameSlug}`} target="_blank" className="text-brand-hover hover:underline">
                       {item.gameTitle || item.gameSlug}
+                    </Link>
+                  ) : item.postSlug ? (
+                    <Link to={`/blog/${item.postSlug}`} target="_blank" className="text-brand-hover hover:underline">
+                      📝 {item.postTitle || item.postSlug}
                     </Link>
                   ) : (
                     <span className="text-dim">—</span>
@@ -249,7 +277,7 @@ export function AdminComments() {
             {state !== 'loading' && items.length === 0 && (
               <tr>
                 <td colSpan={7} className="px-3 py-10 text-center text-sm text-muted">
-                  {search || status !== 'all' ? '没有符合条件的评论' : '还没有评论。玩家在游戏详情页发表后会出现在这里。'}
+                  {search || status !== 'all' || target !== 'all' ? '没有符合条件的评论' : '还没有评论。玩家在游戏详情页或文章页发表后会出现在这里。'}
                 </td>
               </tr>
             )}

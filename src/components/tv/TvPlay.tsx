@@ -4,7 +4,9 @@ import { GameAgeGuard } from '@/components/game/AgeGate'
 import { GameCover } from '@/components/game/GameCover'
 import { EmulatorPlayer } from '@/emulator/PlayerChunk'
 import { usePlatformBiosUrl } from '@/services/platformBios'
-import { romLangsOf, romUrlForKey, useRomUrl, type RomLang } from '@/services/roms'
+import { romLangsOf, romUrlForKey, useRomUrl } from '@/services/roms'
+import type { RomLang } from '@/config/languages'
+import { isPlatformEnabled } from '@/config/platforms'
 import { usePageData, type GameData } from '@/services/pageData'
 import { gameTitle } from '@/services/i18nData'
 import { useLang } from '@/services/lang'
@@ -79,16 +81,32 @@ export function TvPlay({ slug, onExit }: { slug: string; onExit: () => void }) {
       <div className="min-h-0 flex-1">
         {state.status === 'error' ? (
           <p className="flex h-full items-center justify-center px-8 text-center text-white/70">{state.error}</p>
-        ) : !game ? (
+        ) : state.status === 'loading' || !game ? (
           <div className="h-full animate-pulse bg-black" />
+        ) : !platform || !isPlatformEnabled(platform.id) ? (
+          /*
+            ⚠️ 这道闸不是为了过类型（虽然它顺带把 platform 收窄成非空）——
+            **下架的平台不该能开玩**。TV 的列表是按平台拉的，理论上不会出现，
+            但 ?play= 是个可以手敲、可以被收藏的地址，进来的 slug 不受列表约束。
+            EmbedPage 那边同样挡了这一道（`!isPlatformEnabled(platform.id)`）。
+          */
+          <p className="flex h-full items-center justify-center px-8 text-center text-white/70">
+            {t.game.notFoundMsg}
+          </p>
         ) : (
-          <GameAgeGuard game={game}>
+          <GameAgeGuard
+            slug={game.slug}
+            markedAdult={Boolean(game.adult)}
+            backdrop={
+              <GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority className="h-full w-full" />
+            }
+          >
             <EmulatorPlayer
               key={game.slug}
               platform={platform}
               gameName={game.title}
               gameSlug={game.slug}
-              maxPlayers={game.maxPlayers ?? 1}
+              maxPlayers={game.players}
               /* 回车进来的就直接开一局 —— 遥控器上再要求按一次「开始游戏」是多余的一步 */
               autoStart
               /*

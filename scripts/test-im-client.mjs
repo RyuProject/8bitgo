@@ -352,13 +352,75 @@ check('⭐ 每跨一个 await 都问一次 isStale —— 守卫必须紧贴下�
   assert.match(clientCode, /userSig: sig\.userSig \}\)/, '找不到 login 调用')
 })
 
-check('⭐ login 之后发现已作废时，必须把已经建立的连接拆掉', () => {
+check('⭐ login 之后发现已作废时，必须把已经建立的连接拆掉 —— 而且只拆自己那一个', () => {
   // 光把 chat 置空没用：SDK 按 SDKAppID 缓存实例，而那条连接已经登录成功了
   assert.match(
     clientCode,
-    /if \(isStale\(epoch\)\) \{\s*await teardown\(\)/,
-    'login 之后那道守卫必须 await teardown()，不能只 return',
+    /if \(isStale\(epoch\)\) \{\s*await teardownOwn\(created\)/,
+    'login 之后那道守卫必须 await teardownOwn(created)，不能只 return',
   )
+  /*
+    ⚠️⚠️ 这里**不能**是全局的 teardown()。它拆的是模块级的 `chat`，而这一代作废时
+    `chat` 很可能已经是**新一代**的连接了。2026-09-12 查出的致命形状：
+
+      A 登录 → login 在飞 → A 登出 → B 登录并连上（ready）
+      → 几百毫秒后 A 那次 login 才结算 → 这一行把 **B 正用着的连接**拆了
+      → setStateIf 因为 stale 被忽略，状态纹丝不动停在 ready
+
+    结果是 imState() === 'ready' 但 chat === null：面板显示在线、发消息报未连接、
+    顶栏退回占位、回到前台的自检因为「已经是 ready」直接跳过 —— 不刷新页面永远回不来。
+  */
+  assert.doesNotMatch(
+    clientCode,
+    /if \(isStale\(epoch\)\) \{\s*await teardown\(\)/,
+    '作废分支拆的是全局 chat —— 会把新一代活着的连接一起拆掉',
+  )
+})
+
+check('⭐ 连接失败的 catch 也只拆自己那一代的实例', () => {
+  const i = clientCode.indexOf("console.warn('[im] 连接失败：'")
+  assert.ok(i > 0, '找不到连接失败的 catch（改了日志文案的话这条断言也要跟着改）')
+  const body = clientCode.slice(i, i + 240)
+  assert.match(body, /await teardownOwn\(created\)/, '连接失败没有拆掉自己那一代的实例')
+  assert.doesNotMatch(body, /await teardown\(\)\s/, '连接失败拆的是全局 chat —— 理由同上一条')
+})
+
+check('⚠️ 自动路径必须过节流，手动路径不受它管', () => {
+  // 自动的三条：空闲首连、回到前台自检、sig 过期
+  const autos = [...clientCode.matchAll(/ensureImStarted\(\{ auto: true \}\)/g)].length
+  assert.ok(autos >= 3, `只有 ${autos} 处自动调用带了 auto 标记，应当至少 3 处（空闲 / 回前台 / sig 过期）`)
+  assert.match(
+    clientCode,
+    /if \(options\.auto && !autoRetryAllowed\(\)\) return Promise\.resolve\(false\)/,
+    'ensureImStarted 里没有那道 auto 节流 —— 调用方各判各的挡不住（ImPanel 那个 effect 就是从旁边绕过去的）',
+  )
+  // imReconnect 是用户明确点的，绝不能带 auto
+  const i = clientCode.indexOf('export async function imReconnect')
+  assert.ok(i > 0, '找不到 imReconnect')
+  assert.doesNotMatch(clientCode.slice(i, i + 500), /auto: true/, '手点「重新连接」被套上了节流')
+})
+
+check('⚠️ connecting 有看门狗兜底（否则它是个没有出口的状态）', () => {
+  assert.match(clientCode, /armReadyWatchdog\(epoch\)/, 'login 之后没有武装看门狗')
+  assert.match(clientCode, /clearReadyWatchdog\(\)/, '没有清看门狗的地方')
+  const i = clientCode.indexOf('function armReadyWatchdog')
+  assert.ok(i > 0, '找不到看门狗')
+  const body = clientCode.slice(i, i + 400)
+  assert.match(body, /imState\(\) !== 'connecting'/, '看门狗没有确认自己还在 connecting 上')
+  assert.match(body, /setStateIf\(epoch, 'error'\)/, "超时之后必须转成 error —— 那是唯一有出口的失败态")
+})
+
+check('⚠️ 被踢下线不清未读数（那会告诉用户「没有新消息」）', () => {
+  const i = clientCode.indexOf('function retractOpener')
+  assert.ok(i > 0, '找不到 retractOpener')
+  assert.doesNotMatch(
+    clientCode.slice(i, i + 200),
+    /setImUnread\(0\)/,
+    'retractOpener 又开始清未读了 —— 被踢时红点会跟着消失，用户以为没有新消息',
+  )
+  // 但「换了人」这两处必须清
+  assert.match(clientCode, /export async function imStop[\s\S]{0,260}setImUnread\(0\)/, '登出没清未读')
+  assert.match(clientCode, /if \(chat\) setImUnread\(0\)/, '换账号没清未读')
 })
 
 check('⭐ 拆连接时逐个 off()（create 是按 SDKAppID 缓存实例的）', () => {
@@ -471,10 +533,16 @@ check('昵称只在变了才同步给腾讯（SDK_READY 每次重连都会再来
 
 check('不可达的 unavailable 分支已经删掉', () => {
   // 501 时从来不会 publishOpener、requestImDm 也返回 false，抽屉根本打不开 ——
-  // 那种情况用户看到的是 ChatButton 自己的占位面板
-  const p = strip(read(PANEL))
-  assert.ok(!/🚧/.test(p), 'unavailable 那段死代码还在')
-  assert.match(p, /没有.{0,4}unavailable 分支|unavailable/, '至少要在注释里说明为什么没有这个分支')
+  // 那种情况用户看到的是 ChatButton 自己的状态面板（见 test:im-topbar）
+  const raw = read(PANEL)
+  assert.ok(!/🚧/.test(strip(raw)), 'unavailable 那段死代码还在')
+  /*
+    ⚠️ 第二条断言要在**没去注释**的原文里找。以前它扫的是 strip 之后的源码，
+    而 strip 把注释全删了 —— 那条 `|unavailable` 的或分支之所以一直绿，
+    纯粹是因为当时代码里恰好有个 `state === 'unavailable'` 的条件表达式。
+    2026-09-12 那个条件被拆走之后，这条就露馅了：它其实从来没在验证「注释里有说明」。
+  */
+  assert.match(raw, /没有[^\n]{0,12}unavailable[^\n]{0,8}分支/, '至少要在注释里说明为什么没有这个分支')
 })
 
 console.log('\n十、后台也要能收到消息')
@@ -497,7 +565,21 @@ check('回到前台时自检，但不打断 SDK 自己的重连', () => {
 
 check('连接不依赖抽屉开着（空闲时就连，抽屉只是视图）', () => {
   assert.match(clientCode, /export function startImWhenIdle/)
-  assert.match(strip(read(PANEL)), /if \(user\) startImWhenIdle\(\)/, '登录后没有安排连接')
+  assert.match(strip(read(PANEL)), /if \(myId\) startImWhenIdle\(\)/, '登录后没有安排连接')
+})
+
+check('⚠️ 安排连接的 effect 依赖的是 user?.id，不是 user 对象', () => {
+  /*
+    useCurrentUser 每次 notify 都返回**新对象**（收藏一个游戏、开一局游戏都会触发）。
+    依赖写成 `[user]` 的话这个 effect 跟着乱跑，每次都重新排一次连接尝试 ——
+    AUTO_RETRY_MS 的节流整个被绕过去，后端出错时能把 30 次/小时的 sig 额度烧光。
+  */
+  const p = strip(read(PANEL))
+  const i = p.indexOf('startImWhenIdle()')
+  assert.ok(i > 0, '找不到安排连接那一处')
+  const tail = p.slice(i, i + 120)
+  assert.match(tail, /\}, \[myId\]\)/, '依赖数组不是 [myId]')
+  assert.doesNotMatch(tail, /\}, \[user\]\)/, '依赖又写回了 user 对象')
 })
 
 console.log('\n十一、按邮箱找人')
@@ -667,14 +749,20 @@ check('⭐ 自动重连要有节流，手点「重新连接」不受它管', () 
     而 /api/im/sig 有 30 次/小时的限流 —— 「兜底」最终是把用户的额度烧光再卡在 error。
   */
   assert.match(clientCode, /const AUTO_RETRY_MS/, '没有节流常量')
+  /*
+    ⚠️ 2026-09-12：这道闸从**调用方**挪进了 ensureImStarted（`{ auto: true }`）。
+    原因是挡不住 —— ImPanel 里那个 `useEffect(..., [user])` 直接调 startImWhenIdle，
+    从两个调用方的旁边绕了过去，而 useCurrentUser 每次收藏 / 开游戏都换新对象。
+    闸装在入口才是唯一挡得住的位置；这两条断言现在验的是「调用方有没有诚实地标上 auto」。
+  */
   const expired = clientCode.slice(clientCode.indexOf('KICKED_OUT_USERSIG_EXPIRED'))
   assert.match(
     expired.slice(0, 400),
-    /if \(autoRetryAllowed\(\)\) await ensureImStarted\(\)/,
-    'sig 过期那条路没过节流闸',
+    /await ensureImStarted\(\{ auto: true \}\)/,
+    'sig 过期那条路没标成自动（会绕过节流）',
   )
   const vis = clientCode.slice(clientCode.indexOf('function wireVisibility'))
-  assert.match(vis.slice(0, 600), /if \(!autoRetryAllowed\(\)\) return/, '回到前台那条路没过节流闸')
+  assert.match(vis.slice(0, 600), /ensureImStarted\(\{ auto: true \}\)/, '回到前台那条路没标成自动')
   // 手点的那颗按钮必须无视节流，否则「刚才自动试过一次」会让它点了没反应
   const rc = clientCode.slice(clientCode.indexOf('export async function imReconnect'))
   assert.match(rc.slice(0, 400), /lastAutoRetry = 0/, '手动重连没把节流清掉')

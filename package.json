@@ -78,6 +78,7 @@
     "test:im-lookup": "npm --prefix server run test:im-lookup",
     "test:toolbar": "node scripts/test-toolbar-line.mjs",
     "test:im-client": "node scripts/test-im-client.mjs",
+    "test:im-topbar": "node scripts/test-im-topbar.mjs",
     "test:open-platforms": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-open-platforms.mjs",
     "test:favicon": "node scripts/test-favicon.mjs",
     "test:spatial-focus": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-spatial-focus.mjs",

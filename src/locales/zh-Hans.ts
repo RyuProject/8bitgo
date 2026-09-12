@@ -188,7 +188,11 @@ export const zhHans = {
     downloadApp: '下载 App',
     openMenu: '打开菜单',
     chat: '消息',
-    chatSoon: '站内消息正在做，很快就能在这儿聊天。',
+    /** 后端根本没配（/api/im/sig 回 501）时才用这句。**别再写成「正在做」** —— 功能已经上线了 */
+    chatSoon: '站内消息暂未开放。',
+    chatConnecting: '正在连接站内消息…',
+    chatOffline: '站内消息连不上，点下面重试一次。',
+    chatRetry: '重新连接',
     search: '搜索',
     searchPlaceholder: '搜索游戏、平台、开发商…',
     searchAria: '搜索游戏',

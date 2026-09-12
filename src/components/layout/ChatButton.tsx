@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { cx } from '@/lib/format'
 import { useT } from '@/services/i18n'
-import { getImUnread, imReady, imUnreadLabel, onImChange, onImPreview, openIm, type ImPreview } from '@/services/im'
+import { getImStatus, getImUnread, imReady, imUnreadLabel, onImChange, onImPreview, openIm, retryIm, type ImPreview, type ImStatus } from '@/services/im'
 
 /**
  * 顶栏的聊天气泡按钮。**IM 的入口，也是它唯一的落点。**
@@ -13,8 +13,18 @@ import { getImUnread, imReady, imUnreadLabel, onImChange, onImPreview, openIm, t
  * 这个组件**对 IM 一无所知**：不认 socket、不认协议、不认消息结构，只跟
  * services/im.ts 打交道。真接 IM 时在那边 registerImOpener + setImUnread，这里不用动。
  *
- * 没接上的时候点它会展开一个「即将上线」的占位面板 —— 刻意不做成禁用按钮：
+ * 没接上的时候点它会展开一个状态面板 —— 刻意不做成禁用按钮：
  * 灰掉的按钮看着像坏了，而一颗点了完全没反应的按钮比没有更糟。
+ *
+ * ## ⚠️ 那块面板必须说真话（2026-09-12）
+ *
+ * 它原来只有一句「站内消息正在做，很快就能在这儿聊天」，而 IM 早就写完了。
+ * 于是**六种状态被压成同一句假话**：正在连、限流 429、腾讯登录失败、卡在连接中、
+ * 被踢下线、后端真的没配。用户看到「正在做」就不会再点第二次，也不会来报障 ——
+ * 它劝退了唯一能让你发现故障的信号。
+ *
+ * 现在按 `getImStatus()` 分文案，并且**连不上时给一颗能点的「重试」**
+ * （以前「重新连接」只存在于抽屉里，而抽屉恰恰在连不上时打不开）。
  */
 /** 走马灯速度（px/秒）。比这快读不完，比这慢像卡住了 */
 const MARQUEE_SPEED = 45
@@ -48,11 +58,25 @@ export function ChatButton() {
   const clipRef = useRef<HTMLSpanElement>(null)
   /** 真正被 transform 推走的那一层，量内容宽度用 */
   const trackRef = useRef<HTMLSpanElement>(null)
-  /** 占位面板开着没有。IM 真接上之后这个 state 就用不到了（那时走 openIm） */
+  /** 状态面板开着没有。连上之后就用不到了（那时走 openIm） */
   const [placeholder, setPlaceholder] = useState(false)
+  /** 连接状态。顶栏据此决定面板里说什么，以及要不要给「重试」 */
+  const [status, setStatus] = useState<ImStatus>(() => getImStatus())
   const ref = useRef<HTMLDivElement>(null)
 
-  useEffect(() => onImChange(() => setUnread(getImUnread())), [])
+  /*
+    未读数、连接状态、IM 有没有接上，三者共用 services/im.ts 的同一路订阅。
+    ⚠️ `imReady()` 的变化也走这一路 —— 以前 registerImOpener 是静默改全局变量，
+    连上之后这个组件不会重渲染，用户点下去还是占位面板。
+  */
+  useEffect(
+    () =>
+      onImChange(() => {
+        setUnread(getImUnread())
+        setStatus(getImStatus())
+      }),
+    [],
+  )
 
   /*
     新消息来了就换内容、并且**先回到收起状态** —— 下一个 layout effect 里再展开，
@@ -196,8 +220,23 @@ export function ChatButton() {
       <button
         type="button"
         onClick={() => {
-          // IM 接上了就交给它；没接上才退回占位面板
-          if (openIm()) return
+          // IM 接上了就交给它
+          if (openIm()) {
+            /*
+              ⚠️ 必须显式关掉状态面板。以前这里是裸 return：用户在连接中点过一次
+              （面板展开），连上之后再点一次 → 抽屉滑出来，而顶栏下面还挂着那块
+              「站内消息正在做」。外点关闭的 handler 判的是「点的是不是 ref 里面」，
+              而按钮就在 ref 里面，所以它自己关不掉。
+            */
+            setPlaceholder(false)
+            return
+          }
+          /*
+            还没接上：**点一下就开始连**，别让用户干等 requestIdleCallback 的 8 秒。
+            retryIm 在 off / error / kicked / unavailable 下都是「再试一次」，
+            实现层自己会去重（见 imClient 的 ensureImStarted）。
+          */
+          if (status !== 'connecting') retryIm()
           setPlaceholder((v) => !v)
         }}
         title={label}
@@ -238,7 +277,33 @@ export function ChatButton() {
           className="absolute right-0 top-full z-50 mt-2 w-56 rounded-xl border border-line bg-surface p-3 shadow-2xl shadow-black/60"
         >
           <p className="text-sm font-semibold">{t.topbar.chat}</p>
-          <p className="mt-1 text-xs leading-relaxed text-muted">{t.topbar.chatSoon}</p>
+          {/*
+            一句话说清楚现在到底是什么情况。每一条都对应 imClient 里一种真实的终态，
+            别再把它们压成同一句「正在做」（理由见组件头）。
+          */}
+          <p className={cx('mt-1 text-xs leading-relaxed text-muted', status === 'connecting' && 'animate-pulse')}>
+            {status === 'connecting' || status === 'off'
+              ? t.topbar.chatConnecting
+              : status === 'kicked'
+                ? t.im.kickedHint
+                : status === 'error'
+                  ? t.topbar.chatOffline
+                  : t.topbar.chatSoon}
+          </p>
+          {/*
+            连不上时给一个能点的出口。`unavailable` 是后端根本没配（501），
+            重试一万次也没用，所以那一档不画按钮 —— 给一颗注定失败的按钮
+            和给一句假话一样糟。
+          */}
+          {(status === 'error' || status === 'kicked') && (
+            <button
+              type="button"
+              onClick={() => retryIm()}
+              className="mt-2 w-full rounded-lg border border-line px-2 py-1 text-xs font-semibold transition hover:border-brand hover:text-brand"
+            >
+              {t.topbar.chatRetry}
+            </button>
+          )}
         </div>
       )}
     </div>

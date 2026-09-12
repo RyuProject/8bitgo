@@ -31,6 +31,7 @@ const EXPECTED_COLUMNS = [
   { table: 'games', column: 'rating_sum', why: '评分聚合；缺了详情页星星读得出来，但一有人打分 POST /api/ratings 就 500' },
   { table: 'games', column: 'rating_weight', why: '评分权重合计（登录 1.0 / 匿名 0.5），按评分排序靠它' },
   { table: 'games', column: 'rating_count', why: '评分人数，卡片上「N 人评分」用' },
+  { table: 'game_comments', column: 'post_id', why: '博客文章评论；缺了文章页发表评论会 500（评论表的宿主二选一，见 schema-v2.sql）' },
   { table: 'users', column: 'token_version', why: '退出所有设备 / 改完密码作废旧令牌' },
   { table: 'users', column: 'birth_date', why: '成人内容年龄验证：出生日期记在账号上，缺了 PUT /api/me/birth-date 会 500，成人游戏谁也进不去' },
 ]

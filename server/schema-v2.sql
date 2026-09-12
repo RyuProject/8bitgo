@@ -438,14 +438,21 @@ CREATE TABLE IF NOT EXISTS login_codes (
   KEY idx_codes_expires (expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- ---------- 游戏评论 ----------
+-- ---------- 评论（游戏 + 博客文章共用一张表） ----------
 -- 只有登录用户能发（服务端 requireUser），所以 user_id 是硬外键：账号注销时评论跟着走。
+--
+-- 宿主是**游戏或文章二选一**，所以 game_id / post_id 都可空，恰好有一个非空：
+--   game_id 非空 = 挂在某款游戏下（游戏详情页侧栏）
+--   post_id 非空 = 挂在某篇博客文章下（文章详情页右侧栏）
+-- 表名仍叫 game_comments（历史原因），但语义已经是「站内评论」——
+-- 两个宿主的读写走同一套路由（见 routes/comments.js），后台也在同一个列表里审。
+-- ⚠️ 应用层必须保证恰好设一个，数据库这一层没有 CHECK（MySQL 5.7 会忽略它）。
 --
 -- 三种「不可见」是三件不同的事，不能合成一个状态位：
 --   hidden     后台隐藏 —— 管理员判断内容不合适，前台不再显示，随时能恢复
 --   deleted_at 作者自己删的（或管理员清理）—— 软删除，后台仍看得到原文，方便处理纠纷
 --   两者都没有 = 正常可见
--- 真删除只在「删游戏 / 删账号」时由外键级联发生。
+-- 真删除只在「删游戏 / 删文章 / 删账号」时由外键级联发生。
 --
 -- country 是**发表那一刻的快照**，不是用户资料的一部分：
 -- 取自 Cloudflare 的 CF-IPCountry 请求头（ISO 3166-1 alpha-2），拿不到时是 'XX'。
@@ -455,7 +462,9 @@ CREATE TABLE IF NOT EXISTS login_codes (
 -- 父评论真被删掉时只应该断开引用关系，不能把底下整串回复连坐删掉。
 CREATE TABLE IF NOT EXISTS game_comments (
   id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-  game_id    BIGINT UNSIGNED NOT NULL,
+  -- 宿主二选一：游戏评论填 game_id，文章评论填 post_id，另一个为 NULL
+  game_id    BIGINT UNSIGNED NULL,
+  post_id    BIGINT UNSIGNED NULL,
   user_id    VARCHAR(40)     NOT NULL,
   parent_id  BIGINT UNSIGNED NULL,
   content    VARCHAR(2000)   NOT NULL,
@@ -466,14 +475,16 @@ CREATE TABLE IF NOT EXISTS game_comments (
   deleted_at TIMESTAMP(3)    NULL DEFAULT NULL,
   -- 毫秒精度：同 favorites / recents，秒级会让同一秒里的连续发言排不出先后
   created_at TIMESTAMP(3)    NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  -- 前台：某款游戏的评论，最新在前
+  -- 前台：某款游戏 / 某篇文章的评论，最新在前
   KEY idx_cmt_game_time (game_id, created_at DESC),
+  KEY idx_cmt_post_time (post_id, created_at DESC),
   -- 后台：按用户查某个人发过什么
   KEY idx_cmt_user_time (user_id, created_at DESC),
   KEY idx_cmt_parent (parent_id),
   -- 后台审核：先按状态过滤再按时间排
   KEY idx_cmt_hidden_time (hidden, created_at DESC),
   CONSTRAINT fk_cmt_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE,
+  CONSTRAINT fk_cmt_post FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
   CONSTRAINT fk_cmt_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   CONSTRAINT fk_cmt_parent FOREIGN KEY (parent_id) REFERENCES game_comments(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

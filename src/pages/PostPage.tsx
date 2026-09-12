@@ -8,6 +8,8 @@ import { useT, fmt } from '@/services/i18n'
 import { useLang } from '@/services/lang'
 import { postContent, postExcerpt, postTitle, needsPostTranslation } from '@/services/i18nData'
 import { TranslateButton } from '@/components/game/TranslateButton'
+import { PostComments } from '@/components/comments/Comments'
+import { FEATURES } from '@/config/features'
 import { NotFoundPage } from './NotFoundPage'
 import { SkeletonBlock } from '@/components/ui/PageSkeleton'
 
@@ -75,6 +77,9 @@ export function PostPage() {
     .filter((p) => p.slug !== post.slug)
     .slice(0, 3)
 
+  // 评论关掉时就退回原来的居中单栏，不留一个空的右栏、也不把正文拉宽
+  const withComments = FEATURES.comments
+
   return (
     <div className="container-x py-8 sm:py-10">
       <nav className="text-xs text-muted" aria-label={t.common.breadcrumb}>
@@ -89,7 +94,14 @@ export function PostPage() {
         <span className="text-fg">{heading}</span>
       </nav>
 
-      <article className="mx-auto mt-6 max-w-3xl">
+      {/* 正文 + 右侧评论栏。lg 以上两栏（正文左、评论右），以下自然堆叠。
+          grid 子项用显式 col/row 摆放，省掉一层包裹 div（见下面 article / section / aside）。 */}
+      <div
+        className={`mx-auto mt-6 ${
+          withComments ? 'grid max-w-6xl items-start gap-8 lg:grid-cols-[minmax(0,1fr)_340px]' : 'max-w-3xl'
+        }`}
+      >
+      <article className={withComments ? 'lg:col-start-1 lg:row-start-1' : undefined}>
         <div className="relative grid h-40 place-items-center overflow-hidden rounded-card text-7xl sm:h-52" style={{ background: gradientFor(post.slug) }} aria-hidden>
           <span className="pixel-grid absolute inset-0 opacity-60" />
           <span className="relative drop-shadow">{post.icon}</span>
@@ -128,7 +140,9 @@ export function PostPage() {
       </article>
 
       {more.length > 0 && (
-        <section className="mx-auto mt-14 max-w-3xl border-t border-line pt-8">
+        <section
+          className={`mt-14 border-t border-line pt-8 ${withComments ? 'lg:col-start-1 lg:row-start-2 lg:mt-0' : ''}`}
+        >
           <h2 className="text-lg font-bold">{t.blog.morePosts}</h2>
           <ul className="mt-4 divide-y divide-line">
             {more.map((p) => (
@@ -148,6 +162,15 @@ export function PostPage() {
           </ul>
         </section>
       )}
+
+      {/* 右侧评论栏：登录用户可发言，未登录显示登录提示（见 components/comments/Comments.tsx）。
+          粘性 + 自身可滚：评论多了不会把整页拉长，也不会被视口切掉。 */}
+      {withComments && (
+        <aside className="lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:sticky lg:top-20 lg:max-h-[calc(100dvh-6rem)] lg:self-start lg:overflow-y-auto">
+          <PostComments postSlug={post.slug} />
+        </aside>
+      )}
+      </div>
     </div>
   )
 }

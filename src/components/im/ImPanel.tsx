@@ -140,10 +140,20 @@ export function ImPanel() {
     [],
   )
 
-  // 登录后空闲时把连接建起来（幂等）。同时这一步会装上标题未读数和回到前台的自检
+  /*
+    登录后空闲时把连接建起来（幂等）。同时这一步会装上标题未读数、回到前台的自检、
+    以及顶栏那条状态镜像。
+
+    ⚠️ 依赖是 `user?.id` 不是 `user`：useCurrentUser 每次 notify 都返回**新对象**
+    （收藏一个游戏、开一局游戏都会触发），用对象会让这个 effect 跟着乱跑。
+    以前那样写的后果不只是空转 —— 它每次都会重新排一次连接尝试，把
+    AUTO_RETRY_MS 的节流整个绕过去，后端出错时能把 30 次/小时的 sig 额度烧光。
+    （ensureImStarted 那边现在也自己挡了一道，两道都要留着。）
+  */
+  const myId = user?.id
   useEffect(() => {
-    if (user) startImWhenIdle()
-  }, [user])
+    if (myId) startImWhenIdle()
+  }, [myId])
 
   /*
     资料改了就把新昵称 / 头像重新推给腾讯。
@@ -524,18 +534,30 @@ function Avatar({ value, size = 'sm' }: { value: string; size?: 'sm' | 'md' }) {
 }
 
 /**
- * 连接中 / 被踢 / 出错 共用这一块。
+ * 连接中 / 没连上 / 被踢 / 出错 / 未开放 共用这一块。
  *
- * ⚠️ 这里**没有** `unavailable` 分支。第一版写了一整段（🚧 图标 + 占位文案），
- * 但那段代码不可达：`unavailable` 意味着 /api/im/sig 回了 501，于是从来没有
- * publishOpener、requestImDm 也返回 false，抽屉根本不会被打开。那种情况用户看到的是
- * ChatButton 自己的「即将上线」占位面板 —— 那才是接缝设计好的兜底。
+ * ## ⚠️ 每一种状态都必须有出口（2026-09-12）
+ *
+ * 以前 `connecting | off | unavailable` 三种共用一句「正在连接…」，**连按钮都没有**。
+ * 于是这条路是能走通的：sig 过期被踢 → `setState('off')` → 自动重连被 30 秒节流挡住
+ * → **状态永远停在 off**，用户面前是一个转不完的圈，只能刷新页面。
+ * `connecting` 更常见（弱网下 SDK_READY 可能永远不来，回到前台的自检还刻意跳过它），
+ * 现在由 imClient 的 READY_TIMEOUT_MS 看门狗兜底转成 error。
+ *
+ * 分档的理由：
+ *   · `connecting` —— SDK 自己在跑，插一脚只会打断它，所以只报进度不给按钮（有看门狗兜底）
+ *   · `off` / `error` / `kicked` —— 都给「重新连接」
+ *
+ * ⚠️ 这里仍然**没有** `unavailable` 分支，而且不要加：`unavailable` 意味着
+ * /api/im/sig 回了 501，那种情况下从来没有 publishOpener、requestImDm 也返回 false，
+ * 抽屉根本打不开 —— 写了就是死代码（test:im-client 有一条盯着它）。
+ * 那一档由**顶栏**负责说清楚（见 ChatButton 的 chatSoon 分支）。
  */
 function StatusBody({ state, detail }: { state: ImState; detail: string }) {
   const t = useT()
   const [busy, setBusy] = useState(false)
 
-  if (state === 'connecting' || state === 'off' || state === 'unavailable') {
+  if (state === 'connecting') {
     return (
       <div className="flex flex-1 items-center justify-center p-6 text-sm text-muted">
         <span className="animate-pulse">{t.im.connecting}</span>
