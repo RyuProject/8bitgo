@@ -235,6 +235,8 @@ const ja: Translation = {
     popularSubtitle: '累計プレイ回数順',
     pickedTitle: '一番人気のゲーム',
     pickedSubtitle: '運営が選んだ作品',
+    hottestTitle: '人気のゲーム',
+    hottestSubtitle: '累計プレイ回数による実際のランキング',
     platformsTitle: 'ゲーム機からレトロゲームを探す',
     platformsSubtitle: '携帯機からアーケードまで、思い出のハードを選んでください',
     latestTitle: '新着のレトロゲーム',

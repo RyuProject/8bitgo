@@ -72,20 +72,16 @@ export const communityLinks: CommunityLink[] = [
 export function footerLinksFor(t: Translation) {
   return [
     { label: t.nav.about, to: '/about' },
-    { label: t.nav.terms, to: '/terms' },
-    { label: t.nav.privacy, to: '/privacy' },
-    { label: t.nav.apps, to: '/apps' },
-    ...(FEATURES.live ? [{ label: '8BitGo TV', to: '/rooms?live=1' }] : []),
-    // 投稿入口从侧边栏挪到这儿。注意**不要**塞进上面那个 FEATURES.live 的三元里 ——
-    // 提交游戏和直播没关系，直播一关它会跟着一起消失。
-    { label: t.nav.submitGame, to: '/submit' },
-    { label: t.nav.playLocal, to: '/play-local' },
+    // 「服务与隐私」把原来的服务条款 + 隐私政策合并成一格。
+    // 目前先指向服务条款页；如果以后要做成合并的法律页，改这个 to 即可。
+    { label: '服务与隐私', to: '/terms' },
     /*
-      开放平台的开发者入口。放页脚是合适的位置：它面向的是少数人、偶尔来一次
-      （和「提交游戏」同一个性质），占侧边栏一格不划算。
+      开放平台的开发者入口。放页脚是合适的位置：它面向的是少数人、偶尔来一次。
       ⚠️ 文案写死中文，和它指向的那一页一致 —— 那一页管理的东西（文档、scope 语义、
       错误码）只有中文一份，给入口翻八种语言只会让人点进去发现看不懂。
     */
     { label: '开放平台', to: '/open' },
+    ...(FEATURES.live ? [{ label: '8BitGo TV', to: '/rooms?live=1' }] : []),
+    { label: '本地游玩', to: '/play-local' },
   ]
 }

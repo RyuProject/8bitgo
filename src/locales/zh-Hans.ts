@@ -297,6 +297,9 @@ export const zhHans = {
     popularSubtitle: '按累计游玩次数排序',
     pickedTitle: '站长精选',
     pickedSubtitle: '从游戏库里挑出的耐玩经典',
+    /** 最热门那一栏（榜单网格）。始终是按游玩次数排的真榜，不受「站长精选」影响 */
+    hottestTitle: '最热门的游戏',
+    hottestSubtitle: '按累计游玩次数排出来的真实榜单',
     platformsTitle: '按游戏平台探索',
     platformsSubtitle: '从掌机、家用机到街机与老电脑，找到熟悉的那一台',
     latestTitle: '最近上架',

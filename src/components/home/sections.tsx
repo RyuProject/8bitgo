@@ -5,6 +5,7 @@ import { HScroll } from '@/components/ui/HScroll'
 import { Accordion } from '@/components/ui/Accordion'
 import { Button } from '@/components/ui/Button'
 import { GameCard } from '@/components/game/GameCard'
+import { GameRankCard } from '@/components/game/GameRankCard'
 import { CollectionCard } from '@/components/game/CollectionCard'
 import { GameCardWide } from '@/components/game/GameCardWide'
 import { PlatformCard } from '@/components/game/PlatformCard'
@@ -13,7 +14,7 @@ import { genreMap, genres } from '@/data/genres'
 import { platformMap, platforms } from '@/data/platforms'
 import { isPlatformEnabled } from '@/config/platforms'
 import { gradientFor } from '@/lib/gradients'
-import { cx } from '@/lib/format'
+import { cx, formatCount } from '@/lib/format'
 import { useLang } from '@/services/lang'
 import { useT, fmt } from '@/services/i18n'
 import { genreLabel, gameTitle } from '@/services/i18nData'
@@ -84,6 +85,54 @@ export function PopularSection({ games, curated = false }: { games: Game[]; cura
           <GameCard key={g.slug} game={g} rank={curated ? undefined : i + 1} />
         ))}
       </HScroll>
+    </section>
+  )
+}
+
+
+/* ---------------- 最热门（榜单网格） ---------------- */
+/**
+ * 和上面那一栏的分工，别看混了：
+ *
+ *   · PopularSection —— 首页第一栏。后台一旦在游戏里填了「首页排序」，它整栏会变成
+ *     **站长精选**（人排的顺序，连排名角标都摘掉）。也就是说开了精选之后，
+ *     「按游玩次数排出来的那份真榜」在首页上就**看不到了**。
+ *   · 这一栏 —— 始终是那份真榜，而且是网格排版（名次一眼扫得到、简介读得到）。
+ *
+ * ⚠️ 没开精选时，两栏的前几款会是同一批游戏（同一个排序依据）。
+ * 这是接入时就知道的重复，不是 bug；要消掉的话要么在后台开精选，
+ * 要么把其中一栏换个指标 —— 但那是产品决定，不该由这个组件偷偷替谁做主。
+ */
+export function HottestSection({ games }: { games: Game[] }) {
+  const t = useT()
+  if (!games.length) return null
+  return (
+    <section className="container-x">
+      <SectionHeader
+        title={t.sections.hottestTitle}
+        subtitle={t.sections.hottestSubtitle}
+        icon="🔥"
+        moreTo="/games"
+      />
+      {/*
+        5 列到 2 列。移动端不降到 1 列：这张卡本来就窄（小封面 + 居中文字），
+        一列会让每张卡横着拉得很长，反而更难扫。
+      */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+        {games.map((g, i) => (
+          <GameRankCard
+            key={g.slug}
+            game={g}
+            rank={i + 1}
+            /*
+              显示的量必须和排序依据一致 —— 这一栏按累计游玩次数排，就显示游玩次数。
+              0 次时传 undefined 让卡片整块不画：「🔥 0」会被读成「没人玩」，
+              而真相是「还没统计到」。这条规矩 GameCard 那边也一样。
+            */
+            metric={g.plays > 0 ? <>🔥 {formatCount(g.plays)}</> : undefined}
+          />
+        ))}
+      </div>
     </section>
   )
 }

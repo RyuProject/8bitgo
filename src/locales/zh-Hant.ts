@@ -223,6 +223,8 @@ const zhHant: Translation = {
     popularSubtitle: '依累計遊玩次數排序',
     pickedTitle: '最熱門的遊戲',
     pickedSubtitle: '由站長挑選',
+    hottestTitle: '最熱門的遊戲',
+    hottestSubtitle: '按累計遊玩次數排出來的真實榜單',
     platformsTitle: '依平台玩復古遊戲',
     platformsSubtitle: '從掌機到街機，挑一台你的童年主機',
     latestTitle: '最新線上復古遊戲',

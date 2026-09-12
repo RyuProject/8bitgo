@@ -58,6 +58,12 @@ export interface HomeData {
   popular: Game[]
   /** 上面那一栏是不是后台手挑的。是的话前台要换标题、去掉排名角标 */
   popularCurated?: boolean
+  /**
+   * 「最热门」那一栏（榜单网格）。**始终**是按累计游玩次数排出来的真榜，
+   * 不受「站长精选」影响 —— 精选一开，popular 那栏就不是榜了，这一栏补的就是它。
+   * 老服务端没有这个字段，所以是可选的：拿不到时那一栏整块不画。
+   */
+  hottest?: Game[]
   newest: Game[]
   multiplayer: Game[]
   /** 分类网格下方各栏的样例，键是 genreId。一款游戏都没有的类型服务端不会建键，所以取值可能是 undefined */

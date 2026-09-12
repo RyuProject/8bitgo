@@ -62,6 +62,11 @@ async function cached(key, loader) {
 
 /** 首页要用到的几组列表。数量刻意压得很小 —— 首屏只需要这些。 */
 const HOME_SIZE = 12
+/**
+ * 「最热门」那一栏摆几款。5 列 × 2 行，所以是 10。
+ * 必须 ≤ HOME_SIZE —— 它是从那次查询的结果里切出来的，不另跑一次 SQL。
+ */
+const HOT_SIZE = 10
 
 /** 首页「分类网格」下面那几栏各列几款游戏 */
 const GENRE_COLUMNS = ['action', 'adventure', 'rpg', 'puzzle']
@@ -98,6 +103,17 @@ async function loadHome() {
   return {
     popular: curated ? picks : popular.items,
     popularCurated: curated,
+    /**
+     * 「最热门」那一栏：**始终**是按游玩次数排出来的那份真榜。
+     *
+     * 为什么不让前台直接用上面的 popular：后台一旦钦点了首页排序，popular 整栏
+     * 会变成「站长精选」（人排的顺序），那份真榜在首页上就没有了。这一栏补的正是它。
+     *
+     * 切的是同一次查询的结果，**不多跑一次 SQL**。没钦点精选时这十款和上面那栏
+     * 的前十款是同一批 —— 是同一个排序依据，重复是意料之中的，
+     * 要消掉得改产品（开精选、或者给其中一栏换个指标），不是改这里。
+     */
+    hottest: popular.items.slice(0, HOT_SIZE),
     newest: newest.items,
     multiplayer: multiplayer.items,
     genreSamples,

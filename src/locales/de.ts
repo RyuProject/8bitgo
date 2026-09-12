@@ -236,6 +236,8 @@ const de: Translation = {
     popularSubtitle: 'Sortiert nach Gesamtzahl der Spielrunden',
     pickedTitle: 'Die beliebtesten Spiele',
     pickedSubtitle: 'Von uns handverlesen',
+    hottestTitle: 'Die beliebtesten Spiele',
+    hottestSubtitle: 'Nach Gesamtzahl der Spielstarts — echte Zahlen',
     platformsTitle: 'Retro-Spiele nach Plattform',
     platformsSubtitle: 'Von Handhelds bis zum Arcade-Automaten – wähl die Konsole deiner Kindheit',
     latestTitle: 'Neueste Retro-Spiele online',
