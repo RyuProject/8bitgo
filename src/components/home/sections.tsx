@@ -53,36 +53,31 @@ function genresWithCount(facets: Facets | undefined): GenreWithCount[] {
   return genres.map((g) => ({ ...g, count: counts.get(g.id) ?? 0 })).filter((g) => g.count > 0)
 }
 
-/* ---------------- 最多人玩 ---------------- */
+/* ---------------- 站长精选 ---------------- */
 /**
- * 首页第一栏。
+ * 首页最上面那一栏，**只在后台钦点过的时候出现**（有游戏填了「首页排序」）。
  *
- * curated = 后台在游戏里填了「首页排序」，这一栏就只出那几款。
- * 这时候标题和角标都得跟着换：
- *   - 副标题不能再写「按累计游玩次数排序」—— 顺序是人排的，不是数据算的；
- *   - 不挂 #1 #2 排名角标 —— 那会让人以为这是真实的热度榜。
- * 界面陈述的事实必须成立，这和站里刚清掉的那批假数据是同一条底线。
+ * 一款都没钦点就整栏不画 —— 这时候后端给的 popular 就是按游玩次数排的那份，
+ * 和下面「最多人玩」那一栏是同一批数据，两栏并排等于把同一个榜贴两遍。
+ *
+ * 不挂 #1 #2 排名角标：顺序是人排的，角标会让人以为这是真实的热度榜。
+ * 界面陈述的事实必须成立，这和站里清掉的那批假数据是同一条底线。
  */
-export function PopularSection({ games, curated = false }: { games: Game[]; curated?: boolean }) {
+export function PickedSection({ games, curated }: { games: Game[]; curated: boolean }) {
   const t = useT()
+  if (!curated || !games.length) return null
   return (
     <section className="container-x">
       <SectionHeader
-        title={curated ? t.sections.pickedTitle : t.sections.popularTitle}
-        subtitle={curated ? t.sections.pickedSubtitle : t.sections.popularSubtitle}
-        icon={curated ? '⭐' : '🔥'}
-        // 精选位是人排的，「查看全部」就别再指向热度榜了，直接进游戏库
-        /*
-          以前非精选那一档指的是 /games?sort=popular —— 而 popular 本来就是默认排序，
-          GamesPage 对「无筛选 + 默认排序」是 self-canonical，也就是说那个地址和
-          干净的 /games **是同一个页面**，只不过它落在 robots 的 Disallow 里。
-          所以这里不是加 nofollow，是直接指对：一条死路换成一条给 /games 的内链。
-        */
+        title={t.sections.pickedTitle}
+        subtitle={t.sections.pickedSubtitle}
+        icon="⭐"
+        // 精选位是人排的，「查看全部」别再指向热度榜，直接进游戏库
         moreTo="/games"
       />
       <HScroll>
-        {games.map((g, i) => (
-          <GameCard key={g.slug} game={g} rank={curated ? undefined : i + 1} />
+        {games.map((g) => (
+          <GameCard key={g.slug} game={g} />
         ))}
       </HScroll>
     </section>
@@ -90,28 +85,33 @@ export function PopularSection({ games, curated = false }: { games: Game[]; cura
 }
 
 
-/* ---------------- 最热门（榜单网格） ---------------- */
+/* ---------------- 最多人玩（榜单网格） ---------------- */
 /**
+ * 按累计游玩次数排出来的真榜。**不受站长精选影响**，只要有游戏就在。
+ *
  * 和上面那一栏的分工，别看混了：
+ *   · PickedSection —— 人挑的，后台没填就整栏没有；
+ *   · 这一栏 —— 机器排的，一直在。没开精选时它就是首页第一眼看到的那一栏。
  *
- *   · PopularSection —— 首页第一栏。后台一旦在游戏里填了「首页排序」，它整栏会变成
- *     **站长精选**（人排的顺序，连排名角标都摘掉）。也就是说开了精选之后，
- *     「按游玩次数排出来的那份真榜」在首页上就**看不到了**。
- *   · 这一栏 —— 始终是那份真榜，而且是网格排版（名次一眼扫得到、简介读得到）。
- *
- * ⚠️ 没开精选时，两栏的前几款会是同一批游戏（同一个排序依据）。
- * 这是接入时就知道的重复，不是 bug；要消掉的话要么在后台开精选，
- * 要么把其中一栏换个指标 —— 但那是产品决定，不该由这个组件偷偷替谁做主。
+ * ⚠️ 数据来自后端的 hottest 字段。老版本后端没有这个字段，这里会拿到空数组，
+ * 于是整栏静默消失（2026-09-12 线上就是这样：前端构建过了，Node 没重启）。
+ * 排查「这一栏不见了」先看 /api/page?path=/ 的 JSON 里有没有 hottest 这个键。
  */
-export function HottestSection({ games }: { games: Game[] }) {
+export function MostPlayedSection({ games }: { games: Game[] }) {
   const t = useT()
   if (!games.length) return null
   return (
     <section className="container-x">
       <SectionHeader
-        title={t.sections.hottestTitle}
-        subtitle={t.sections.hottestSubtitle}
+        title={t.sections.popularTitle}
+        subtitle={t.sections.popularSubtitle}
         icon="🔥"
+        /*
+          以前指的是 /games?sort=popular —— 而 popular 本来就是默认排序，
+          GamesPage 对「无筛选 + 默认排序」是 self-canonical，也就是说那个地址和
+          干净的 /games **是同一个页面**，只不过它落在 robots 的 Disallow 里。
+          所以这里不是加 nofollow，是直接指对：一条死路换成一条给 /games 的内链。
+        */
         moreTo="/games"
       />
       {/*

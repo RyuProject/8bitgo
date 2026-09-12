@@ -11,6 +11,9 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loadForRoute } from './content.js'
 import { CACHE } from './cache.js'
+import { publicSiteUrl } from './site-urls.js'
+import { requestHostname } from './url-normalize.js'
+import { tvRenderPath } from '../../shared/tv-host.js'
 
 const root = path.resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const CLIENT_DIR = path.join(root, 'dist/client')
@@ -131,7 +134,20 @@ export async function renderPage(req, res, next) {
     const [pathname, qs] = url.split('?')
     const data = await loadForRoute(stripLang(pathname), new URLSearchParams(qs ?? ''))
 
-    const { html, head, lang, notFound } = await render({ url, data })
+    /*
+      TV 子域（tv.8bitgo.com）的根要渲 TV 页而不是首页。判定走 shared/tv-host.js，
+      和客户端同一套规则 —— 客户端读 location.hostname，服务端没有 location，
+      所以在这里算好塞进去。两边不一致的表现是页面先渲 TV 页、hydrate 之后变回首页。
+
+      ⚠️ 只影响 `/` 挂哪个组件，**不影响取数**：TV 页的数据是它自己在客户端拉的
+      （services/tv.ts + fetchPageData），loadForRoute 里没有 /tv 这一路，
+      所以上面那行 loadForRoute 不用跟着改。
+    */
+    const tvHost = Boolean(
+      tvRenderPath({ hostname: requestHostname(req), pathname, siteOrigin: publicSiteUrl() }),
+    )
+
+    const { html, head, lang, notFound } = await render({ url, data, tvHost })
 
     let page = getTemplate()
 

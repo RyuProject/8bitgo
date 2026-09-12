@@ -1,6 +1,6 @@
 import { HomeHeading, HomeIntro } from '@/components/home/HomeIntro'
 import { HomeBanner } from '@/components/home/HomeBanner'
-import { CollectionsSection, FaqSection, GenreGridSection, HottestSection, LatestSection, PlatformsSection, PopularSection, TogetherSection } from '@/components/home/sections'
+import { CollectionsSection, FaqSection, GenreGridSection, LatestSection, MostPlayedSection, PickedSection, PlatformsSection, TogetherSection } from '@/components/home/sections'
 import { useSeo, faqSchema, organizationSchema, websiteSchema } from '@/services/seo'
 import { useT } from '@/services/i18n'
 import { usePageData, type HomeData } from '@/services/pageData'
@@ -51,9 +51,10 @@ export function HomePage() {
           <HomeDataSkeleton />
         ) : (
           <>
-            <PopularSection games={data?.popular ?? []} curated={data?.popularCurated ?? false} />
-            {/* 按游玩次数排的真榜。精选一开，上面那栏就不是榜了，这一栏补上 */}
-            <HottestSection games={data?.hottest ?? []} />
+            {/* 后台钦点的那几款。一款都没填就整栏不出现，首页直接从下面那栏开始 */}
+            <PickedSection games={data?.popular ?? []} curated={data?.popularCurated ?? false} />
+            {/* 按游玩次数排的真榜，始终在，不受精选影响 */}
+            <MostPlayedSection games={data?.hottest ?? []} />
             <PlatformsSection facets={data?.facets} />
             <LatestSection games={data?.newest ?? []} />
             <TogetherSection games={data?.multiplayer ?? []} />

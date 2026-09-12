@@ -236,8 +236,6 @@ const en: Translation = {
     popularSubtitle: 'Ranked by total plays',
     pickedTitle: 'Most Popular Games',
     pickedSubtitle: 'Hand-picked by us',
-    hottestTitle: 'Hottest Games',
-    hottestSubtitle: 'Ranked by total plays — the real numbers',
     platformsTitle: 'Play Retro Games by Platform',
     platformsSubtitle: 'From handhelds to arcade cabinets, pick the console you grew up with',
     latestTitle: 'Newest Retro Games Online',

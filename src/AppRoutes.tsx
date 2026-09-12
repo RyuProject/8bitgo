@@ -4,6 +4,7 @@ import { TopProgressBar } from '@/components/layout/TopProgressBar'
 import { RouteChunk, lazyNamed } from '@/routes/lazy'
 import { useAutoInclude } from '@/services/autoInclude'
 import { HomePage } from '@/pages/HomePage'
+import { onTvHost } from '@/services/tvHost'
 import { GamesPage } from '@/pages/GamesPage'
 import { GameDetailPage } from '@/pages/GameDetailPage'
 import { PlayLocalPage } from '@/pages/PlayLocalPage'
@@ -64,7 +65,14 @@ export function AppRoutes() {
       <TopProgressBar />
       <Routes>
         <Route element={<Layout />}>
-          <Route index element={<HomePage />} />
+          {/*
+            TV 子域（tv.8bitgo.com）的根挂的是 TV 页，不是首页 —— 那个域名整个是给
+            电视和车机用的（见 shared/tv-host.js）。主域的 / 不受影响。
+
+            ⚠️ 判定必须和服务端一致：服务端在渲染前把结果塞进 setSsrTvHost，
+            客户端读 location.hostname，两边同一套规则。不一致的话页面会先渲 TV 再跳首页。
+          */}
+          <Route index element={onTvHost() ? <TvPage /> : <HomePage />} />
           <Route path="/games" element={<GamesPage />} />
           <Route path="/games/:slug" element={<GameDetailPage />} />
           <Route path="/platforms" element={<PlatformsPage />} />

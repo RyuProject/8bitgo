@@ -22,7 +22,7 @@
 import { useEffect } from 'react'
 import { useT, fmt } from './i18n'
 import { getLang } from './lang'
-import { HREFLANG, LANGUAGES, FALLBACK_LANG, localizedPath, stripLang } from '@/config/languages'
+import { HREFLANG, LANGUAGES, FALLBACK_LANG, localizedPath, stripLang, type Lang } from '@/config/languages'
 import { romUrlForKey } from './roms'
 import { splitDevelopers } from '@/lib/developers'
 import { FEATURES } from '@/config/features'
@@ -71,6 +71,16 @@ export interface SeoOptions {
   noindex?: boolean
   /** 覆盖 canonical 的路径，默认取当前 pathname */
   canonicalPath?: string
+  /**
+   * 覆盖 canonical / og:url / hreflang 的**站点根地址**，默认是 VITE_SITE_URL。
+   *
+   * 目前只有一处用：TV 页搬到了 tv.8bitgo.com，它的正牌地址在子域上，
+   * 而站点其余页面仍然以主域为准（见 shared/tv-host.js）。
+   * ⚠️ canonical、og:url 和 hreflang 必须**一起**换 —— 只换 canonical 的话，
+   * hreflang 会把 8 种语言都指回主域，等于自己和自己打架：
+   * canonical 说「我在子域」，hreflang 说「我的各语言版本都在主域」。
+   */
+  canonicalOrigin?: string
   /** 结构化数据，可传多个 */
   jsonLd?: object[]
 }
@@ -208,6 +218,7 @@ export function useSeo(opts: SeoOptions) {
     replyTime,
     noindex = false,
     canonicalPath,
+    canonicalOrigin,
     jsonLd,
   } = opts
 
@@ -221,7 +232,15 @@ export function useSeo(opts: SeoOptions) {
     canonicalPath ??
     (typeof window === 'undefined' ? currentSsrPath() : stripLang(window.location.pathname))
 
-  const canonicalUrl = absoluteUrl(localizedPath(barePath, lang))
+  /**
+   * barePath 在某个语言下的绝对地址。canonicalOrigin 给了就换根，否则还是站点主域。
+   * canonical / og:url / hreflang 三处都走它，保证要么一起在主域、要么一起在子域。
+   */
+  const urlInLang = (l: Lang): string => {
+    const p = localizedPath(barePath, l)
+    return canonicalOrigin ? canonicalOrigin + p : absoluteUrl(p)
+  }
+  const canonicalUrl = urlInLang(lang)
   /**
    * 社交卡片图。
    *
@@ -311,8 +330,8 @@ export function useSeo(opts: SeoOptions) {
   const alternates: Array<[string, string]> = noindex
     ? []
     : [
-        ...LANGUAGES.map((l) => [HREFLANG[l.code], absoluteUrl(localizedPath(barePath, l.code))] as [string, string]),
-        ['x-default', absoluteUrl(localizedPath(barePath, FALLBACK_LANG))],
+        ...LANGUAGES.map((l) => [HREFLANG[l.code], urlInLang(l.code)] as [string, string]),
+        ['x-default', urlInLang(FALLBACK_LANG)],
       ]
 
   // ---- 服务端：渲染期间收集，不碰 DOM ----

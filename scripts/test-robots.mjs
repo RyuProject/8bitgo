@@ -16,6 +16,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { SITE_DEFAULT_LANGUAGE, SITE_LANGUAGES } from '../shared/site-languages.js'
 import { normalizeUrl } from '../server/src/url-normalize.js'
+import { tvAllowedPaths, tvRobots, tvRobotsTxt } from '../server/src/tv-robots.js'
 
 const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
 const ROBOTS = path.join(root, 'public/robots.txt')
@@ -50,10 +51,13 @@ function patternMatches(pattern, url) {
   return re.test(url)
 }
 
-/** 返回 { allowed, rule }：命中的最长规则说了算，等长 Allow 优先 */
-function decide(url) {
+/**
+ * 返回 { allowed, rule }：命中的最长规则说了算，等长 Allow 优先。
+ * rules 可以换一份 —— TV 子域那份 robots.txt 用的是同一套裁决规则。
+ */
+function decide(url, rules = RULES) {
   let best = null
-  for (const r of RULES) {
+  for (const r of rules) {
     if (!patternMatches(r.pattern, url)) continue
     const len = r.pattern.length
     if (!best || len > best.len || (len === best.len && r.allow)) best = { ...r, len }
@@ -202,6 +206,115 @@ function run(method, originalUrl, host) {
   })
   return out
 }
+
+/* ---------------- TV 子域的 robots.txt ---------------- */
+/*
+  子域跑的是同一个应用，每条路径都打得开 —— 不挡的话整站被抓两遍。
+  挡法是 robots + canonical 两道软的，不能用 301（会把 TV 页自己的 js / 字体跳没，
+  见 server/src/tv-robots.js 的文件头）。
+*/
+{
+  const tvRules = parseRules(tvRobotsTxt())
+  const tvDecide = (url) => decide(url, tvRules)
+
+  check('各语言的根都放行', () => {
+    for (const p of tvAllowedPaths()) {
+      const d = tvDecide(p)
+      assert.ok(d.allowed, `${p} 被挡住了（命中 ${d.rule}）`)
+    }
+    // 语言表不许在这里手抄第二份：加一种语言时这条会跟着涨
+    assert.equal(tvAllowedPaths().length, SITE_LANGUAGES.length, '放行的根数和语言数对不上')
+    assert.ok(tvAllowedPaths().includes('/'))
+  })
+
+  check('⚠️ 除了各语言的根，其余一律不收（否则整站被抓两遍）', () => {
+    for (const p of ['/games', '/games/contra', '/ja/games/contra', '/platforms', '/genres', '/tv', '/ja/tv']) {
+      const d = tvDecide(p)
+      assert.ok(!d.allowed, `${p} 在子域上被放行了（命中 ${d.rule}）`)
+    }
+  })
+
+  check('⭐ 每条 Allow 都带结尾锚 $ —— 少了它就是前缀匹配，等于整站放开', () => {
+    /*
+      `Allow: /` 是**前缀**匹配，会把整个子域重新放开，这份 robots 就白写了；
+      `Allow: /ja` 同理会连 /ja/games/contra 一起放行。
+    */
+    const bad = tvRules.filter((r) => r.allow && !r.pattern.endsWith('$'))
+    assert.deepEqual(bad.map((r) => r.pattern), [], '这些 Allow 没有结尾锚')
+    assert.ok(tvRules.some((r) => !r.allow && r.pattern === '/'), '缺少兜底的 Disallow: /')
+  })
+
+  check('中间件只在 TV 子域上接管 /robots.txt', () => {
+    const run = (host, url = '/robots.txt') => {
+      const out = { nexted: false, body: '', type: '' }
+      const req = { path: url, method: 'GET', originalUrl: url, headers: host ? { host } : {} }
+      const res = {
+        set: () => res,
+        type(v) {
+          out.type = v
+          return res
+        },
+        send(v) {
+          out.body = v
+        },
+      }
+      tvRobots(req, res, () => {
+        out.nexted = true
+      })
+      return out
+    }
+    assert.ok(run('tv.8bitgo.com').body.includes('Allow: /$'), 'TV 子域上没吐出专用的那份')
+    assert.ok(run('8bitgo.com').nexted, '主域上应当放行给 public/robots.txt')
+    assert.ok(run('www.8bitgo.com').nexted, 'www 上也该放行')
+    assert.ok(run('tv.8bitgo.com', '/sitemap.xml').nexted, '只接管 /robots.txt 这一条路径')
+  })
+}
+
+/* ---------------- TV 子域 ---------------- */
+/*
+  规则本体和它的单元测试在 shared/tv-host.js / scripts/test-tv-host.mjs。
+  这里测的是**接进中间件之后**还成不成立 —— 特别是「一个请求最多吃一次 301」
+  这条：TV 跳转必须和尾斜杠、index.html、www 合并，不能叠成两跳。
+*/
+
+check('⚠️ /tv 永久搬到子域，语言前缀跟着走', () => {
+  assert.deepEqual(
+    [run('GET', '/tv', '8bitgo.com').status, run('GET', '/tv', '8bitgo.com').location],
+    [301, 'https://tv.8bitgo.com/'],
+  )
+  assert.equal(run('GET', '/ja/tv', '8bitgo.com').location, 'https://tv.8bitgo.com/ja')
+  assert.equal(run('GET', '/zh-Hant/tv', '8bitgo.com').location, 'https://tv.8bitgo.com/zh-Hant')
+})
+
+check('⭐ 尾斜杠 / index.html / www 都和 TV 跳转合成同一次 301', () => {
+  // 每一条都只跳一次，而且落点就是最终地址 —— 不是先跳裸域、再跳子域
+  assert.equal(run('GET', '/tv/', '8bitgo.com').location, 'https://tv.8bitgo.com/')
+  assert.equal(run('GET', '/tv/index.html', '8bitgo.com').location, 'https://tv.8bitgo.com/')
+  assert.equal(run('GET', '/tv', 'www.8bitgo.com').location, 'https://tv.8bitgo.com/')
+  assert.equal(run('GET', '/ja/tv/', 'www.8bitgo.com').location, 'https://tv.8bitgo.com/ja')
+})
+
+check('查询串原样带到子域', () => {
+  assert.equal(run('GET', '/tv?platform=arcade', '8bitgo.com').location, 'https://tv.8bitgo.com/?platform=arcade')
+})
+
+check('子域上的 /tv 收敛到根（同主机跳，不跨域）', () => {
+  assert.equal(run('GET', '/tv', 'tv.8bitgo.com').location, '/')
+  assert.equal(run('GET', '/ja/tv', 'tv.8bitgo.com').location, '/ja')
+})
+
+check('⚠️ 子域上别的路径一个都不跳（跳了 TV 页自己的 js / 字体就没了）', () => {
+  for (const p of ['/', '/ja', '/games/contra', '/assets/index-abc.js', '/fonts/x.woff2', '/emulatorjs/emulator.min.js']) {
+    const r = run('GET', p, 'tv.8bitgo.com')
+    assert.ok(r.nexted, `${p} 被跳走了（落到 ${r.location}）`)
+    assert.equal(r.status, 0, p)
+  }
+})
+
+check('⚠️ 子域上的 /api/ 照旧放行（跨主机 301 会把 POST 降级）', () => {
+  assert.ok(run('GET', '/api/games', 'tv.8bitgo.com').nexted)
+  assert.ok(run('POST', '/api/tv', '8bitgo.com').nexted)
+})
 
 check('尾斜杠 301 到无斜杠，查询串原样带过去', () => {
   assert.deepEqual(

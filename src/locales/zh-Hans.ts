@@ -293,13 +293,12 @@ export const zhHans = {
     liveTitle: '直播',
     liveSubtitle: '{n} 位主播正在直播复古游戏',
     liveMore: '全部直播',
+    /** 最多人玩（MostPlayedSection）：按游玩次数排的真榜，始终在，不受精选影响 */
     popularTitle: '最多人玩的模拟器游戏',
     popularSubtitle: '按累计游玩次数排序',
+    /** 站长精选（PickedSection）：单独一栏，摆在真榜上面；后台没钦点过就整栏不出现 */
     pickedTitle: '站长精选',
     pickedSubtitle: '从游戏库里挑出的耐玩经典',
-    /** 最热门那一栏（榜单网格）。始终是按游玩次数排的真榜，不受「站长精选」影响 */
-    hottestTitle: '最热门的游戏',
-    hottestSubtitle: '按累计游玩次数排出来的真实榜单',
     platformsTitle: '按游戏平台探索',
     platformsSubtitle: '从掌机、家用机到街机与老电脑，找到熟悉的那一台',
     latestTitle: '最近上架',

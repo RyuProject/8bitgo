@@ -5,6 +5,7 @@
  */
 import { CACHE } from './cache.js'
 import { publicSiteUrl } from './site-urls.js'
+import { tvRedirect } from '../../shared/tv-host.js'
 
 /**
  * URL 归一（原名 `normalizeTrailingSlash`，现在管尾斜杠、`/index.html`、`www.` 三件事）。
@@ -94,7 +95,7 @@ function canonicalHost() {
  * （真正危险的那种是把 host 拼进跳转目标，这里没有）。
  * 值可能是逗号分隔的一串，取第一段。
  */
-function requestHostname(req) {
+export function requestHostname(req) {
   const raw = req.headers?.['x-forwarded-host'] || req.headers?.host || ''
   // 注意 5：端口和大小写都由客户端决定，比之前必须先规整
   return String(raw).split(',')[0].trim().toLowerCase().replace(/:\d+$/, '')
@@ -115,7 +116,24 @@ export function normalizeUrl(req, res, next) {
   // host 归一和路径归一合成同一次 301（见开头）。带上 origin 就是跨主机跳转，
   // 顺带把 http 升成 https；不带则保持相对，免得把 localhost 上的请求跳到线上。
   const { origin, wwwHost } = canonicalHost()
-  const prefix = requestHostname(req) === wwwHost ? origin : ''
+  const hostname = requestHostname(req)
+  let prefix = hostname === wwwHost ? origin : ''
+
+  /*
+    ── 四、TV 子域（2026-09-12）─────────────────────────────
+    `/tv` 这一页搬到了 `tv.<裸域>`，规则全在 shared/tv-host.js 里（前后端共用一份）。
+    这里只负责把它**并进同一次 301** —— 和上面三条一样，一个请求最多吃一次。
+    `www.8bitgo.com/tv` 因此是一步到位跳 `https://tv.8bitgo.com/`，
+    而不是先跳裸域再跳子域。
+
+    ⚠️ 放在 www 那条**之后**并覆盖它：两条都命中时，TV 那条才是最终目的地。
+    ⚠️ 子域上的其它路径**不跳**（tvRedirect 会返回 null）—— 跳了会把 TV 页自己的
+       js / wasm / 字体一起跳走。理由见 shared/tv-host.js 的文件头。
+  */
+  const tv = tvRedirect({ hostname, pathname: clean, siteOrigin: origin })
+  if (tv) {
+    return res.set('Cache-Control', CACHE.meta).redirect(301, tv.origin + tv.path + search)
+  }
 
   if (!prefix && clean === pathname) return next()
   return res.set('Cache-Control', CACHE.meta).redirect(301, prefix + clean + search)

@@ -237,8 +237,6 @@ const fr: Translation = {
     popularSubtitle: 'Classés par nombre total de parties',
     pickedTitle: 'Les jeux les plus populaires',
     pickedSubtitle: 'Choisis à la main par nos soins',
-    hottestTitle: 'Les jeux les plus populaires',
-    hottestSubtitle: 'Classés par nombre total de parties — de vrais chiffres',
     platformsTitle: 'Jouer aux jeux rétro par plateforme',
     platformsSubtitle: "Des consoles portables aux bornes d'arcade, choisis la console de ton enfance",
     latestTitle: 'Les derniers jeux rétro en ligne',

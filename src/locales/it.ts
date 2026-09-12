@@ -237,8 +237,6 @@ const it: Translation = {
     popularSubtitle: 'In ordine di partite totali',
     pickedTitle: 'I giochi più popolari',
     pickedSubtitle: 'Selezionati a mano da noi',
-    hottestTitle: 'I giochi più popolari',
-    hottestSubtitle: 'In base alle partite totali: numeri veri',
     platformsTitle: 'Gioca ai retro game per piattaforma',
     platformsSubtitle: 'Dalle portatili ai cabinati arcade, scegli la console della tua infanzia',
     latestTitle: 'Gli ultimi retro game online',

@@ -251,7 +251,24 @@ check('内联脚本的默认语言 / 兜底语言 = 配置里的 DEFAULT_LANG / 
   assert.match(ts, /FALLBACK_LANG: Lang = SITE_FALLBACK_LANGUAGE/)
 })
 check('seo.ts 的 x-default 指向 FALLBACK_LANG（和跳转兜底一致）', () => {
-  assert.match(read('src/services/seo.ts'), /\['x-default', absoluteUrl\(localizedPath\(barePath, FALLBACK_LANG\)\)\]/)
+  /*
+    ⚠️ 这条原来钉的是**那一行的原样写法**（`absoluteUrl(localizedPath(barePath, FALLBACK_LANG))`）。
+    2026-09-12 把 canonical / og:url / hreflang 三处统一到一个地址构造器上（为了 TV 子域
+    能整组换根），那行写法变了，这条就红了 —— 而 x-default 指的还是 FALLBACK_LANG，
+    行为一点没变。钉写法的断言就是这样：重构一次红一次，久了就被人随手改绿。
+
+    所以现在守的是两个**不变量**，和函数叫什么无关：
+      1. x-default 用的是 FALLBACK_LANG（不是默认语言、不是当前语言）；
+      2. 它和其余 8 条 hreflang 走**同一个**构造器 —— 不然 x-default 可能指到别的域名去。
+  */
+  const seo = read('src/services/seo.ts')
+  const m = /\['x-default', (\w+)\(([^)]*)\)\]/.exec(seo)
+  assert.ok(m, '找不到 x-default 那一条 —— 改了写法的话这条断言也要跟着改')
+  assert.match(m[2], /FALLBACK_LANG/, `x-default 传的是 ${m[2]}，不是 FALLBACK_LANG`)
+  assert.ok(
+    new RegExp(`HREFLANG\\[l\\.code\\], ${m[1]}\\(`).test(seo),
+    `x-default 走 ${m[1]}()，其余 hreflang 走的却是别的函数`,
+  )
 })
 
 check('sitemap 的 x-default 也指向 FALLBACK_LANG', () => {

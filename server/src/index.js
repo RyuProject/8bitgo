@@ -6,6 +6,7 @@ import cors from 'cors'
 import { ping } from './db.js'
 import { ssrAvailable, renderPage, CLIENT_DIR } from './ssr.js'
 import { normalizeUrl } from './url-normalize.js'
+import { tvRobots } from './tv-robots.js'
 import { playShell } from './routes/play.js'
 import { j2meJarProxy, uploadGate, uploadJar, releaseJar, keepaliveJar, startSweeper, MAX_BYTES, TTL_MS } from './j2me.js'
 import { ADMIN_AUTH_DISABLED, adminBackdoorFatal } from './auth.js'
@@ -258,6 +259,12 @@ app.get('/api/j2me/config', (_req, res) => res.json({ ttlMs: TTL_MS }))
 if (ssrAvailable()) {
   // ⚠️ 必须在 express.static 之前 —— 见 url-normalize.js 里 /index.html 那一段
   app.use(normalizeUrl)
+
+  /*
+    TV 子域专用的 robots.txt。同样必须抢在 express.static 前面，
+    否则 public/robots.txt（主域那份）先被吐出去。主域上这个中间件直接 next()。
+  */
+  app.use(tvRobots)
 
   // 带哈希的构建产物可以长期缓存；index.html 不能缓存（每次都要走 SSR）
   app.use(
