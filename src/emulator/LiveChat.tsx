@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { usePrefersReducedMotion } from '@/lib/motion'
 import type { LiveChatMessage } from '@/services/live'
 import { cx } from '@/lib/format'
@@ -23,8 +23,13 @@ import { appendChat } from './liveChatStore'
  *   3. `KEEP` 从 16 抬回 100。它重新是「历史」，不只是飘幕的输入缓冲。
  *
  * ⚠️ 当初那条「自己发的话堆在框里不走、看着像评论区」的顾虑仍然成立，处置是**分工**：
- * 飘幕只飞新消息（历史那批带 `history` 标记，不飞），历史只在**观众端右栏**出现 ——
- * 主播端画面下方仍然只有输入框，一条列表都不画。主播要的是画面，不是聊天室。
+ * 飘幕只飞新消息（历史那批带 `history` 标记，不飞），历史在观众端右栏是**常驻列表**，
+ * 在主播端是**一颗默认收起的按钮**（2026-09-12 站长要的）。
+ *
+ * 主播端为什么是按钮而不是列表：原来的取舍是「主播要的是画面，不是聊天室」——
+ * 那句话针对的是**常驻**列表（永久占掉画面下方一块地方、还会自己长高）。
+ * 收起的按钮不占地方，点开才有，所以那条取舍没被推翻，是被满足了。
+ * ⚠️ 别把它改成默认展开：一展开就退回成当初删掉的那个东西了。
  *
  * ⚠️ 历史是**临时的**：`useLiveChat` 跟着 `session.id` 清空，换一局 / 散场都不留痕，
  * 也不落任何存储。这一条是站长明确要求的（「关播后清除所有记录」），别顺手加持久化 ——
@@ -242,6 +247,7 @@ export function LiveChatBar({
   live,
   match,
   coop,
+  history,
   className,
 }: {
   /**
@@ -266,11 +272,29 @@ export function LiveChatBar({
    * 文案由上游算好，这里照旧只管画。
    */
   coop?: ChatBarToggle | null
+  /**
+   * 弹幕历史。给了就在这一行多一颗按钮，点开在输入框下面展开一段列表；不给就没有这颗按钮。
+   *
+   * 观众端右栏（LiveWatchPanel）**不要传** —— 那边 LiveChatHistory 是常驻的，
+   * 再来一颗按钮就是同一段列表两个入口。这颗是给主播的：弹幕飞过去就没了，
+   * 主播正盯着游戏，漏掉一条只能靠它翻回来。
+   *
+   * 内容直接就是 useLiveChat 手里那个数组（最多 KEEP 条、跟着 session 清空），
+   * 这里不另存一份 —— 「关播后清除所有记录」是靠那一层做到的。
+   */
+  history?: LiveChatMessage[]
   className?: string
 }) {
   const t = useT()
   const tt = t.player.tools
   const [text, setText] = useState('')
+  /**
+   * 历史面板展开着没有。**默认收起**，而且刻意不记住上次的选择 ——
+   * 见文件头：常驻的列表正是当初被删掉的那个东西，每一局都从「不占地方」开始。
+   */
+  const [historyOpen, setHistoryOpen] = useState(false)
+  /** 按钮的 aria-controls 要指到面板上；同一页可能有不止一个播放器，id 不能写死 */
+  const historyId = useId()
   /**
    * 上一条没发出去时的提示。**一定要有** —— 服务端会因为限流 / 房间散了拒收，
    * 而弹幕没有本地回显，不说一声的话用户看到的就是「我发了，但什么都没发生」。
@@ -356,6 +380,23 @@ export function LiveChatBar({
         {match && <ToggleButton icon="🎮" t={match} />}
         {/* 「上场当 2P」。👥 两边都可能出现，见上面 coop 的注释 */}
         {coop && <ToggleButton icon="👥" t={coop} />}
+        {/*
+          弹幕历史。和上面几颗长得一样，但语义不同：那几颗是**开关**（改变直播 / 联机的状态），
+          这颗只是**展开**（不改变任何东西）。所以走 expands 那一支换成 aria-expanded ——
+          读屏对这两者的播报不一样，用错会让人以为点一下会把什么东西打开或关掉。
+        */}
+        {history && (
+          <ToggleButton
+            icon="💬"
+            expands={historyId}
+            t={{
+              on: historyOpen,
+              label: tt.watchHistory,
+              hint: tt.chatHistoryHint,
+              toggle: () => setHistoryOpen((v) => !v),
+            }}
+          />
+        )}
 
         <button
           type="button"
@@ -376,12 +417,30 @@ export function LiveChatBar({
           {notice === 'too-fast' ? tt.chatTooFast : tt.chatDropped}
         </p>
       )}
+
+      {/*
+        展开的历史。放在输入框**下面**而不是上面：这一行贴在画面底下，
+        往上长会把画面顶走（正在玩的那一局被推出视口是最糟的一种「帮忙」），
+        往下长只是把页面后面的内容推下去。
+        max-h 是必须的 —— 100 条不封顶的话，展开就是一整屏。
+      */}
+      {history && historyOpen && (
+        <div id={historyId} className="border-t border-line px-3 py-2">
+          <LiveChatHistory messages={history} className="max-h-48" />
+        </div>
+      )}
     </div>
   )
 }
 
-/** 弹幕框里的开关按钮。亮着 = 开着 */
-function ToggleButton({ icon, t }: { icon: string; t: ChatBarToggle }) {
+/**
+ * 弹幕框里的按钮。亮着 = 开着 / 展开着。
+ *
+ * `expands` 给的是被展开那一块的 id：给了就按「展开」播报（aria-expanded + aria-controls），
+ * 不给就按「开关」播报（aria-pressed）。两者对读屏用户是**不同的承诺** ——
+ * 前者是「点一下这里会多出一段内容」，后者是「点一下会改变某个状态」。
+ */
+function ToggleButton({ icon, t, expands }: { icon: string; t: ChatBarToggle; expands?: string }) {
   return (
     <button
       type="button"
@@ -389,7 +448,9 @@ function ToggleButton({ icon, t }: { icon: string; t: ChatBarToggle }) {
       disabled={t.busy}
       title={t.hint}
       aria-label={t.label}
-      aria-pressed={t.on}
+      aria-pressed={expands ? undefined : t.on}
+      aria-expanded={expands ? t.on : undefined}
+      aria-controls={expands}
       className={cx(
         'inline-flex shrink-0 items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition disabled:opacity-40',
         t.on

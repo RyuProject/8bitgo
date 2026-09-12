@@ -3591,6 +3591,12 @@ export function EmulatorPlayer({
         match={matchCtl}
         /* 主播那一颗从 LiveControls 上来，观众那一颗是本地算的；一个人只可能占一边 */
         coop={liveCtl?.coop ?? coopCtl}
+        /*
+          弹幕历史那颗按钮。传的就是飘幕用的同一个数组，不另存一份。
+          ⚠️ 上面那个 `!watchPanelOn` 的条件保证了这里不会和观众端右栏那段常驻列表打架：
+          右栏在的时候这一行整块不画。
+        */
+        history={chat.messages}
       />
     )}
     {/*

@@ -950,6 +950,8 @@ const ja: Translation = {
       whereLocal: 'このブラウザ',
       whereLocalPending: 'このブラウザ（クラウド未同期）',
       liveOn: '配信中 · {n} 人が視聴',
+      /** Label on the live toggle in the chat bar: 📡 already says "live", so only the count here */
+      liveViewerCount: '{n} 人',
       liveLink: '視聴リンクをコピー',
       liveCopied: 'リンクをコピーしました',
       liveHidden: '非公開',
@@ -984,6 +986,7 @@ const ja: Translation = {
       watchViewers: '視聴中',
       watchMatch: 'プレイ中',
       watchHistory: 'コメント履歴',
+      chatHistoryHint: '視聴者が送ったコメント。この配信中だけ保持し、終了時に消えます。',
       watchAnon: '視聴者',
       padRebind: 'ファミコンのキー',
       padRebindHint: 'キーの札を押してから、割り当てたいキーを押してください。Esc で中止、Backspace で解除。',

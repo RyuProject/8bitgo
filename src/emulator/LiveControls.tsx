@@ -589,7 +589,15 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
           : 'off'
 
   const label: Record<Phase, string> = {
-    live: fmt(tt.liveOn, { n: String(viewers) }),
+    /*
+      按钮上只报人数（「3 人」），不再写「直播中 · 3 人在看」。
+      左边就贴着 📡，那个符号已经把「在播」说完了；按钮亮着 border-live 的样式又说了一遍。
+      再写一遍「直播中」，等于同一件事说三遍，却把这一行在 360pt 上的宽度吃光。
+      ⚠️ 和 tt.liveOn 不是同一个东西：那一条给的是观众端画面上方那块「观众席」徽标
+      （EmulatorPlayer 里 session?.live 那一段），那里没有按钮的高亮样式，
+      需要自己把「直播中」说出来。改一个别顺手改另一个。
+    */
+    live: fmt(tt.liveViewerCount, { n: String(viewers) }),
     reconnecting: t.runtime.liveReconnecting,
     starting: tt.liveStarting,
     off: tt.liveOff,

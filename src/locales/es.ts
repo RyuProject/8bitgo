@@ -964,6 +964,8 @@ const es: Translation = {
       whereLocal: 'este navegador',
       whereLocalPending: 'este navegador (aún sin sincronizar)',
       liveOn: 'En directo · {n} viendo',
+      /** Label on the live toggle in the chat bar: 📡 already says "live", so only the count here */
+      liveViewerCount: '{n} viendo',
       liveLink: 'Copiar enlace',
       liveCopied: 'Enlace copiado',
       liveHidden: 'Privada',
@@ -998,6 +1000,7 @@ const es: Translation = {
       watchViewers: 'Viendo',
       watchMatch: 'Jugando',
       watchHistory: 'Registro de chat',
+      chatHistoryHint: 'Mensajes enviados por los espectadores. Solo durante esta sesión; se borran al terminar.',
       watchAnon: 'Espectador',
       padRebind: 'Controles NES',
       padRebindHint: 'Pulsa una tecla de la lista y luego la tecla que quieras. Esc cancela, Retroceso desasigna.',

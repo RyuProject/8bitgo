@@ -227,5 +227,122 @@ check('时长的种子不能算出 NaN', () => {
   assert.match(src, /\(m\.id\.charCodeAt\(0\) \|\| 0\) \+ \(m\.id\.charCodeAt\(1\) \|\| 0\)/)
 })
 
+/* ---------------- 六、弹幕框那一行：三颗按钮 ---------------- */
+
+/*
+  这一行（LiveChatBar）在 360pt 的屏幕上要收得下输入框 + 三到四颗按钮 + 「发送」。
+  所以每颗按钮的字都短到不能再短，而「短」很容易在后续改动里被人补回去 ——
+  下面这几条盯的就是那种「补回去」。
+*/
+
+/** locales 里取一个字符串字面量的值 */
+const locStr = (lang, key) => {
+  const m = read(`src/locales/${lang}.ts`).match(
+    new RegExp(`\\n\\s*${key}: (['"])((?:\\\\.|(?!\\1).)*)\\1,`),
+  )
+  return m ? m[2] : null
+}
+
+check('⚠️ 直播按钮只报人数，用 liveViewerCount 而不是 liveOn', () => {
+  const src = code('src/emulator/LiveControls.tsx')
+  assert.match(src, /live: fmt\(tt\.liveViewerCount, \{ n: String\(viewers\) \}\)/, '按钮没用 liveViewerCount')
+  assert.doesNotMatch(src, /live: fmt\(tt\.liveOn/, '按钮又回到 liveOn 了（那条带「直播中」前缀）')
+  for (const lang of ['zh-Hans', 'zh-Hant']) {
+    const v = locStr(lang, 'liveViewerCount')
+    assert.ok(v, `${lang} 缺 liveViewerCount`)
+    assert.match(v, /\{n\}/, `${lang} 的 liveViewerCount 里没有 {n}`)
+    // 📡 + border-live 的高亮已经把「在播」说了两遍，按钮上的字不必是第三遍
+    assert.doesNotMatch(v, /直播中|配信中|在看|觀看/, `${lang} 的 liveViewerCount 又把「直播中 / 在看」写回去了：${v}`)
+  }
+})
+
+check('⚠️ liveOn 没被顺手删掉 —— 观众端那块「观众席」徽标还在用', () => {
+  /*
+    这两条文案长得像，很容易被当成重复项合并掉。它们在**不同的位置**：
+    liveViewerCount 在按钮上（自带 📡 和高亮边框），liveOn 在观众端画面上方那块徽标里
+    （只有 📡，没有按钮的高亮，所以需要自己说「直播中」）。
+  */
+  const player = code('src/emulator/EmulatorPlayer.tsx')
+  assert.match(player, /fmt\(t\.player\.tools\.liveOn, \{ n: String\(liveViewers\) \}\)/, '观众席徽标不再用 liveOn 了')
+  assert.ok(locStr('zh-Hans', 'liveOn'), 'zh-Hans 的 liveOn 被删了')
+})
+
+check('⚠️ 提示文案里引用的按钮名，必须就是按钮上的字', () => {
+  /*
+    matchLost / hostLinkLost 会写「重新点『联机』」。按钮改名而这两句没跟着改，
+    界面就在让用户去找一个不存在的按钮 —— 和后台那段「标题会变成…」是同一类错。
+  */
+  for (const [lang, keys] of [['zh-Hans', ['matchLost', 'hostLinkLost']], ['zh-Hant', ['matchLost', 'hostLinkLost']]]) {
+    const btn = locStr(lang, 'match')
+    assert.ok(btn, `${lang} 缺 match`)
+    for (const k of keys) {
+      const v = locStr(lang, k)
+      assert.ok(v, `${lang} 缺 ${k}`)
+      const quoted = [...v.matchAll(/「([^」]+)」/g)].map((m) => m[1])
+      assert.ok(quoted.length > 0, `${lang}.${k} 里没有引号引起来的按钮名了 —— 改了措辞的话这条断言也要跟着改`)
+      assert.ok(
+        quoted.includes(btn),
+        `${lang}.${k} 让用户去点「${quoted.join('／')}」，而按钮上写的是「${btn}」`,
+      )
+    }
+  }
+})
+
+/* ---------------- 七、主播端的弹幕历史按钮 ---------------- */
+
+/*
+  「要不要历史」这件事在这个仓库里来回过三次（见 LiveChat.tsx 的文件头）。
+  现在的形态是：观众端右栏常驻列表，主播端一颗**默认收起**的按钮。
+  下面几条把「按钮」和「常驻」的区别钉住 —— 一旦有人把它改成默认展开，
+  就退回成 2026-09-07 被删掉的那个东西了。
+*/
+
+check('⚠️ 主播端那一行接了 history，观众端右栏不接（否则同一段列表两个入口）', () => {
+  const player = code('src/emulator/EmulatorPlayer.tsx')
+  assert.match(player, /history=\{chat\.messages\}/, '播放器那一行没把弹幕传给历史按钮')
+  const panel = code('src/emulator/LiveWatchPanel.tsx')
+  assert.match(panel, /<LiveChatHistory messages=\{messages\}/, '观众端右栏的常驻列表没了')
+  assert.doesNotMatch(panel, /<LiveChatBar[^>]*history=/, '观众端右栏的输入框又多了一颗历史按钮，和旁边的常驻列表重了')
+})
+
+check('⚠️ 历史默认收起，而且不记住上次的选择', () => {
+  const src = code('src/emulator/LiveChat.tsx')
+  // 写全名，不写裸的 useState(false) —— 那样文件里随便哪个别的开关都能让这条恒真
+  assert.match(src, /const \[historyOpen, setHistoryOpen\] = useState\(false\)/, '历史面板的初始状态不是收起')
+  assert.doesNotMatch(src, /localStorage|sessionStorage/, '把展开状态存起来了 —— 那等于每一局都默认展开')
+})
+
+check('⚠️ 历史按钮按「展开」播报（aria-expanded），不是「开关」（aria-pressed）', () => {
+  const src = code('src/emulator/LiveChat.tsx')
+  assert.match(src, /aria-expanded=\{expands \? t\.on : undefined\}/, '没有 aria-expanded')
+  assert.match(src, /aria-pressed=\{expands \? undefined : t\.on\}/, '展开型按钮还在同时挂 aria-pressed')
+  assert.match(src, /aria-controls=\{expands\}/, 'aria-controls 没指到面板上')
+  assert.match(src, /expands=\{historyId\}/, '历史按钮没走 expands 那一支')
+})
+
+check('⚠️ 展开的历史有高度上限（100 条不封顶就是一整屏）', () => {
+  const src = code('src/emulator/LiveChat.tsx')
+  const i = src.indexOf('id={historyId}')
+  assert.ok(i > 0, '找不到历史面板了')
+  assert.match(src.slice(i, i + 300), /max-h-\d+/, '面板没有 max-h')
+})
+
+check('⚠️ 历史不另存一份（「关播后清除」靠 useLiveChat 那一层）', () => {
+  const src = code('src/emulator/LiveChat.tsx')
+  const i = src.indexOf('export function LiveChatBar')
+  const j = src.indexOf('function ToggleButton')
+  const body = src.slice(i, j)
+  assert.doesNotMatch(body, /useState<LiveChatMessage\[\]>/, 'LiveChatBar 自己存了一份弹幕')
+})
+
+check('⚠️ 历史按钮的文案键在八种语言里都有', () => {
+  for (const lang of ['zh-Hans', 'zh-Hant', 'en', 'ja', 'de', 'fr', 'es', 'it']) {
+    for (const k of ['watchHistory', 'chatHistoryHint', 'liveViewerCount']) {
+      const v = locStr(lang, k)
+      assert.ok(v && v.trim(), `${lang} 缺 ${k}`)
+    }
+  }
+})
+
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exit(failed ? 1 : 0)
