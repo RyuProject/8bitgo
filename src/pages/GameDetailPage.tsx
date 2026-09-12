@@ -9,6 +9,7 @@ import { romLangsOf, romUrlForKey, useRomUrl } from '@/services/roms'
 import { parseDosExtras, type DosExtraSource } from '@/lib/dosExtras'
 import { resolveRuntime, runtimesFor } from '@/emulator'
 import { p2pPlayable } from '@/emulator'
+import { visitCountsAsPlayed } from '@/emulator/playedScope'
 import { requestMatch } from '@/services/matchRequest'
 import { usePageData, type GameData } from '@/services/pageData'
 import { platformMap, EXPERIMENTAL_PLATFORMS } from '@/data/platforms'
@@ -154,11 +155,19 @@ export function GameDetailPage() {
   /** 这款游戏绑了哪几种语言的 ROM；少于两种时播放器不显示切换入口 */
   const romLangs = game ? romLangsOf(game) : []
 
-  // 记录最近浏览。依赖只看 slug：重新取数会得到一个全新的 game 对象，
-  // 按对象比较会让同一款游戏被重复记一次
+  /*
+    记录最近浏览（侧边栏的「曾经玩过」）。依赖只看 slug：重新取数会得到一个全新的
+    game 对象，按对象比较会让同一款游戏被重复记一次。
+
+    ⚠️ **带着 `?live=` 进来的不记** —— 那是来看别人玩的，这台机器一帧都没跑过，
+    把它算成「曾经玩过」只会让侧边栏里堆满自己根本没玩过的游戏。
+    联机（`?p2p=` / `?room=`）是另一回事：访客真的在操作这一局，照记。
+
+    他要是看完直播自己又开了一局，播放器那边会补记一次（见 EmulatorPlayer 的 onReady）。
+  */
   useEffect(() => {
-    if (game) void recordRecent(game.slug)
-  }, [game?.slug])
+    if (game && visitCountsAsPlayed(liveInvite)) void recordRecent(game.slug)
+  }, [game?.slug, liveInvite])
 
   // SEO：hook 必须在下面的 early return 之前调用，所以「还没取到」和「确实没有」都要在这里各给一套
   const lang = useLang()

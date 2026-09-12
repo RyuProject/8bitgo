@@ -34,6 +34,7 @@ import type { NetplaySession } from './adapters/emulatorjs'
 import type { CloudSession, CloudState } from './adapters/cloudgame'
 import { p2pPlayable, cloudPlayable } from './paths'
 import { canRestartInPlace } from './sessionRestart'
+import { sessionCountsAsPlayed } from './playedScope'
 import { cloudGameMeta, emulatorJsMeta, liveViewMeta } from './runtimeMeta'
 /**
  * 挂载实现。**只有这里引它** —— runtimes.ts 是唯一静态引入九个适配器的地方，
@@ -50,6 +51,7 @@ import { ROM_LANG_LABEL, type RomLang } from '@/config/languages'
 import { FEATURES } from '@/config/features'
 import { desktopScreenAspect, liveStageStyle, mobileScreenAspect, stageHeightCap } from './screenAspect'
 import { recordPlay } from '@/services/store'
+import { recordRecent } from '@/services/auth'
 import { onMatchRequest } from '@/services/matchRequest'
 import {
   claimRoom,
@@ -1196,6 +1198,12 @@ export function EmulatorPlayer({
   dosboxConfigRef.current = dosboxConfig
   /** 云端联机是否真的跑起来过（用于区分「没连上」和「玩到一半断了」） */
   const cloudPlayedRef = useRef(false)
+  /**
+   * 这次是不是带着 `?live=` 进来的。
+   * 挂载 effect 里要读它，而那个 effect 的依赖只有 session —— 直接闭包捕获会捕到旧值。
+   */
+  const liveInviteRef = useRef(liveInvite)
+  liveInviteRef.current = liveInvite
   /** 看直播：观众人数与直播标题 */
   const [liveViewers, setLiveViewers] = useState(0)
   /**
@@ -1451,8 +1459,26 @@ export function EmulatorPlayer({
         ready = true
         setLoadRatio(null)
         setStatus('running')
-        // 游戏真的跑起来了才算一次游玩 —— 打开详情页、加载失败、选错文件都不算
-        if (gameSlugRef.current) recordPlay(gameSlugRef.current)
+        /*
+          游戏真的跑起来了才算一次游玩 —— 打开详情页、加载失败、选错文件都不算。
+
+          ⚠️ **看直播不算。** 观众这边一帧都没跑过：画面是主播推过来的视频流，
+          本机既没有 ROM 也没有引擎。可 liveview 适配器照样会报 onReady（它指的是
+          「流接上了」），于是每进一次直播间就给这款游戏加一次游玩数，
+          还把它塞进侧边栏的「曾经玩过」。
+
+          联机（netplay / 云游戏）**照算**：游戏是跑在房主 / 服务器上没错，
+          但访客真的在操作这一局，那就是在玩。
+        */
+        if (gameSlugRef.current && sessionCountsAsPlayed(session)) {
+          recordPlay(gameSlugRef.current)
+          /*
+            带着 ?live= 进来的人，详情页那边**没有**记「曾经玩过」（看直播不算）。
+            他后来退出直播、自己开了一局 —— 那就是真的玩了，这时候补记一次。
+            没有这一句的话，这种人玩完之后侧边栏里找不到这款游戏，只能重新搜。
+          */
+          if (liveInviteRef.current) void recordRecent(gameSlugRef.current)
+        }
       },
       /*
         引擎说「这份 ROM 得换个人跑」（目前只有 jsnes 会说：它只实现了 21 个 mapper）。
@@ -3408,11 +3434,15 @@ export function EmulatorPlayer({
           */}
           <div className="ml-auto flex shrink-0 items-center gap-1.5">
           {/*
-            ROM 语言切换。两个前提：
+            ROM 语言切换。三个前提：
               1. 这款游戏确实有两种以上语言的 ROM —— 只有一种时切了也是它自己
               2. 不在联机房里 —— 房主和访客必须跑同一份 ROM，中途换语言这局就废了
+              3. **不是在看直播** —— 游戏跑在主播的浏览器里，这台机器一帧都没跑过。
+                 切了会怎样：switchRomLang 把会话拆掉、按新语言的 ROM 自己开一局，
+                 观众当场从直播间掉出去，而他以为自己只是换了个语言。
+                 （`inRoom` 拦不住这条：它只认 netplay / cloud / 自己开播。）
           */}
-          {romLangs && romLangs.length > 1 && onRomLangChange && !inRoom && (
+          {romLangs && romLangs.length > 1 && onRomLangChange && !inRoom && !session?.live && (
             <label className="relative" title={t.player.romLangTitle}>
               <span className="sr-only">{t.player.romLang}</span>
               <select
