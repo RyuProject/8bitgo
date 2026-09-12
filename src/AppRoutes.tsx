@@ -25,6 +25,8 @@ import { SubmitGamePage } from '@/pages/SubmitGamePage'
 import { EmbedPage } from '@/pages/EmbedPage'
 import { OAuthCallbackPage } from '@/pages/OAuthCallbackPage'
 import { OpenPlatformPage } from '@/pages/OpenPlatformPage'
+import { OpenDevicePage } from '@/pages/OpenDevicePage'
+import { OpenAuthorizePage } from '@/pages/OpenAuthorizePage'
 
 /**
  * 后台整块按需加载。
@@ -93,6 +95,10 @@ export function AppRoutes() {
           {/* 开放平台的开发者控制台。**不叫 /developers** —— 那个路径是站内的「开发商」
               浏览页（科乐美、SNK 那种），两个 developer 完全不是一回事，见 OpenPlatformPage 的注释 */}
           <Route path="/open" element={<OpenPlatformPage />} />
+          {/* 设备码流程里用户确认那一步。设备上没有浏览器，人到这一页来输码 */}
+          <Route path="/open/device" element={<OpenDevicePage />} />
+          {/* 授权码流程里用户同意那一步。有浏览器的 Web 应用把用户重定向到这里点同意 */}
+          <Route path="/open/authorize" element={<OpenAuthorizePage />} />
           {COMING_SOON_ROUTES.map((path) => (
             <Route key={path} path={path} element={<ComingSoonPage />} />
           ))}

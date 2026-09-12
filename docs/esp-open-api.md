@@ -11,18 +11,23 @@
 
 ---
 
-## 0. 先说清楚：四件事里今天只有两件能做
+## 0. 先说清楚：哪些今天能用
 
 | 你要做的 | 状态 | 说明 |
 |---|---|---|
 | 拉游戏列表 / 详情 | ✅ **可用** | `games.read`，自助创建应用当场就有这个权限 |
 | 下载 ROM 到设备 | ✅ **可用** | `games.rom`，但这个 scope **要人工审核**才批；另见下面的 ⚠️ |
-| 云存档读写 | ❌ **不存在** | 开放平台**一个 saves 端点都没有**（`open.js` 里 grep 不到 saves/library）。它属于用户级 scope，而用户级授权（OIDC 授权码 + PKCE）**整个没实现** —— `server/src/routes/oauth.js` 这个文件不存在，`/api/oauth` 也没在 `index.js` 里挂过 |
+| 云存档**读取** | ✅ **可用**（2026-09-12 加的） | `saves.read`，用户级 scope。要先走**设备码流程**拿一枚用户级令牌，见 §6.5 |
+| 收藏 / 最近在玩 | ✅ **可用**（2026-09-12 加的） | `library.read`，同上 |
+| 云存档**写入** | ❌ 还没有 | `saves.write` 在 `scopes.js` 里标着 sensitive，这一轮只做了只读。写入要连着配额、覆盖保护、删除审计一起想清楚 |
 | 上报在玩 / 心跳 | ❌ **不存在** | 开放平台没有这个端点。站内有 `POST /api/games/:slug/play`，但那是站内接口，不认开放平台令牌 |
 
-后两件要怎么办，见 §9。**别照着设计稿写固件** —— `docs/open-platform.md` 里
-`saves.read` / `saves.write` / `library.*` 是设计稿，`server/src/open/scopes.js` 里
-确实有这些常量，但**没有任何路由消费它们**。
+写入和心跳要怎么办，见 §10。
+
+> 📌 **2026-09-12 之前，云存档那两行是 ❌。** 当时的状况是：`scopes.js` 里声明了
+> `library.read` / `saves.read`，而 `routes/open.js` 里**连路由都没有**；
+> 更要命的是就算有也没人调得到 —— 用户级令牌的签发函数 `issueUserToken`
+> 当时**一个调用方都没有**。现在两边都补上了：路由在 §7，取令牌的路在 §6.5。
 
 ⚠️ ROM 那条还有一个必须知道的前提：`assets.8bitgo.com` 目前是**公开可读**的。
 签名凭据这一层现在只是「我们不主动给地址」，**不是访问控制** ——
@@ -313,7 +318,112 @@ Authorization: Bearer eyJ...
 
 ---
 
-## 7. 限流与错误
+### 6.5 设备码流程：怎么拿到**用户级**令牌
+
+`client_credentials` 换来的令牌**背后没有用户**，所以它永远拿不到 `library.*` /
+`saves.*`。要读某个玩家的收藏和存档，得让**那个玩家**授权一次。
+
+而设备上没有浏览器 —— 弹不出授权页，也接不住回调地址。所以走的是 RFC 8628
+设备码流程：设备显示一串码，人在手机上输进去点同意，设备这边一直轮询。
+
+```
+1. POST /v1/device/code          ← 设备要一串码（带 AppID + key）
+   └─ 拿到 user_code（给人看）、device_code（给机器用）、interval
+
+2. 屏幕上显示 user_code + verification_uri
+   （能画二维码的话直接编 verification_uri_complete，用户不用手打）
+
+3. POST /v1/token 反复轮询       ← grant_type=urn:ietf:params:oauth:grant-type:device_code
+   ├─ 400 authorization_pending  → 还没人确认，按 interval 接着等
+   ├─ 400 slow_down              → 轮太快了，把间隔加大
+   ├─ 400 access_denied          → 用户点了拒绝，停
+   ├─ 400 expired_token          → 码过期了，回第 1 步
+   └─ 200 {access_token,…}       → 成了，这是一枚用户级令牌
+```
+
+#### `POST /v1/device/code`
+
+请求（JSON 或 form，和 token 端点一样）：
+
+```json
+{"client_id":"app_xxxx","client_secret":"yyyy","scope":"library.read saves.read"}
+```
+
+`scope` 可以不传（= 已获批的全部）；传了就必须是子集，**不静默降级**。
+
+响应：
+
+```json
+{
+  "device_code": "…",
+  "user_code": "BCDF-GHJK",
+  "verification_uri": "https://8bitgo.com/open/device",
+  "verification_uri_complete": "https://8bitgo.com/open/device?code=BCDF-GHJK",
+  "expires_in": 900,
+  "interval": 5
+}
+```
+
+`user_code` 的字母表刻意去掉了元音和 `0/O`、`1/I/L` —— 用户是照着你的小屏幕
+一个字符一个字符念出来手打的。显示时**保留中间那道横线**，比对时横线会被忽略。
+
+#### 轮询
+
+```json
+{"grant_type":"urn:ietf:params:oauth:grant-type:device_code",
+ "client_id":"app_xxxx","client_secret":"yyyy","device_code":"…"}
+```
+
+⚠️ **`authorization_pending` 和 `slow_down` 不是失败。** 它们的 HTTP 状态是 400
+（协议规定的），但意思是「接着等」。把 400 一律当错误退出的固件，会在用户
+明明已经点了同意的时候放弃 —— 这是接入这套流程最常见的一个错。
+
+⚠️ 一串 `device_code` **只能兑现一次**。拿到令牌之后那条记录就没了，
+再轮询回 `invalid_grant`。令牌自己存好（15 分钟，到期要重新走一遍流程）。
+
+⚠️ 沙箱应用只能授权给**开发者本人和登记过的测试账号**。别人输码会看到一句
+「这个应用还在沙箱阶段」，点不了同意。上产之后才对所有人开放。
+
+## 7. 用户数据（只读，要用户级令牌）
+
+需要走完 §6.5 拿到的那枚令牌，请求头照旧 `Authorization: Bearer …`。
+
+### `GET /v1/library` —— 收藏与最近在玩
+
+需要 `library.read`。
+
+```json
+{
+  "favorites": [ /* 和 /v1/games 的元素同一个形状 */ ],
+  "recent": [ /* 同上，最多 12 条 */ ],
+  "favorites_total": 37
+}
+```
+
+回的是**完整的游戏对象**而不是一串 slug：否则你拿到十个 slug 之后还得再发十次请求
+去换标题和封面。收藏一次最多给 100 条，`favorites_total` 告诉你有没有被截断。
+
+### `GET /v1/saves` —— 存档清单
+
+需要 `saves.read`。**只给元信息，不带内容**（一份 DOS 变更包几百 KB）。
+
+```json
+{"items":[{"runtime":"jsdos","game_slug":"contra","slot":0,
+           "size":8,"created_at":"…","updated_at":"…"}]}
+```
+
+### `GET /v1/saves/:runtime/:slug?slot=0` —— 取一份存档
+
+需要 `saves.read`。回的是 `application/octet-stream` 原始字节，
+外加 `x-save-updated-at`（毫秒时间戳）和 `Cache-Control: private, no-store`。
+
+- `runtime` 白名单：`emulatorjs` `jsdos` `cloudgame` `jsnes` `ruffle` `webretro` `j2me`
+- `slot` 0–9，DOS 只用 0
+- 没有这一份 → `404 not_found`；引擎名或档位不合法 → `400 invalid_request`
+
+⚠️ 写入（`saves.write`）**还没有**，见 §9。
+
+## 8. 限流与错误
 
 ### 实际的限流数字
 
@@ -377,7 +487,7 @@ Authorization: Bearer eyJ...
 
 ---
 
-## 8. 语言码
+## 9. 语言码
 
 `lang` 只认这八个（`shared/site-languages.js`）：
 
@@ -393,35 +503,21 @@ zh-Hans  zh-Hant  en  es  fr  it  de  ja
 
 ---
 
-## 9. 那两件今天做不到的事
+## 10. 还做不到的事
 
-### 云存档
+### 云存档的**写入**
 
-开放平台里没有任何存档端点，而且这条路是**用户级**的（存档跟着账号走，
-不是跟着应用走），需要 OIDC 授权码 + PKCE —— 而那一整套没实现。
+读取已经能用了（§7）。写入（`saves.write`）还没做 —— 它在 `scopes.js` 里标着
+sensitive，而且要连着三件事一起想清楚才能上：单份 4 MB / 每人 200 份 / 总共 64 MB
+的配额怎么在第三方这条路上算、覆盖别人正在用的档位怎么防、删除要不要留审计。
+只读那条路错了最多是读到旧数据，写错了是**把玩家的进度盖掉**。
 
-现在只有一条路能通，**代价很大**：站内接口 `/api/saves/*` 用站内登录令牌
-（`requireUser`）。意味着设备上要存**用户的登录令牌**，而那枚令牌是**全权限**的 ——
-能改邮箱、能删号。在一台可以被 dump Flash 的设备上放这个，比放 client_secret 严重得多。
-**不建议**。
+在那之前，设备端能做的是「读云端的档 + 写本地」，或者把存档导出成文件
+（DOS 那一路见站内工具栏的「导出存档文件」）。
 
-站内那套的形状（仅供参考，随时可能改、没有版本承诺）：
-
-```
-GET    /api/saves/                          列出全部
-GET    /api/saves/:runtime/:slug/meta?slot=0  只要大小和时间
-GET    /api/saves/:runtime/:slug?slot=0       下载（二进制）
-PUT    /api/saves/:runtime/:slug?slot=0       上传（请求体就是原始字节）
-DELETE /api/saves/:runtime/:slug?slot=0
-```
-
-- `runtime` 白名单：`emulatorjs` `jsdos` `cloudgame` `jsnes` `ruffle` `webretro` `j2me`
-- `slot` 0–9，DOS 只用 0
-- 单份上限 4 MB，每人最多 200 份、总共 64 MB
-
-要让设备端正经用上云存档，得先做两件事：实现 OIDC 那半（设备端还得走
-设备码流程 RFC 8628，因为 ESP 上没有浏览器），再在 `/api/open/v1` 下补一套
-`saves.*` 端点。这是两个独立的工程，不是配置问题。
+⚠️ **不要**为了绕开这一点去用站内的 `/api/saves/*`：那套认的是**站内登录令牌**，
+而那枚令牌是全权限的 —— 能改邮箱、能删号。在一台可以被 dump Flash 的设备上放它，
+比放 client_secret 严重得多。
 
 ### 在玩上报 / 心跳
 
@@ -434,7 +530,7 @@ DELETE /api/saves/:runtime/:slug?slot=0
 
 ---
 
-## 10. 一条能跑通的最小链路
+## 11. 一条能跑通的最小链路
 
 ```
 1. POST /v1/token                      ← JSON 或 form，两种都行
@@ -451,6 +547,15 @@ DELETE /api/saves/:runtime/:slug?slot=0
 
 5. GET  <那个 url>                       ← 不带 Authorization
    └─ 跟随 302 → assets 主机 → 写进 SD / SPIFFS
+
+要读玩家自己的收藏和存档，在第 1 步之前再插一段（见 §6.5）：
+
+```
+0a. POST /v1/device/code                ← 拿 user_code + device_code
+0b. 屏幕显示 user_code 和 8bitgo.com/open/device
+0c. POST /v1/token 每 interval 秒轮一次  ← grant_type=…:device_code
+    （authorization_pending / slow_down 都是「接着等」，不是失败）
+0d. 拿到用户级令牌 → GET /v1/library、GET /v1/saves
 ```
 
 每一步的失败都认 `error` 字段，不认 `error_description`。

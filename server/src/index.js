@@ -7,7 +7,7 @@ import { ssrAvailable, renderPage, CLIENT_DIR } from './ssr.js'
 import { normalizeUrl } from './url-normalize.js'
 import { playShell } from './routes/play.js'
 import { j2meJarProxy, uploadJar, releaseJar, keepaliveJar, startSweeper, MAX_BYTES, TTL_MS } from './j2me.js'
-import { ADMIN_AUTH_DISABLED } from './auth.js'
+import { ADMIN_AUTH_DISABLED, adminBackdoorFatal } from './auth.js'
 import { CACHE, noStore, staticCacheHeaders } from './cache.js'
 import { authRouter } from './routes/auth.js'
 import { gamesRouter } from './routes/games.js'
@@ -37,6 +37,8 @@ import { openRouter } from './routes/open.js'
 import { openErrorMiddleware } from './open/errors.js'
 import { publicSiteUrl } from './site-urls.js'
 import { openAppsRouter } from './routes/open-apps.js'
+import { openDeviceRouter } from './routes/open-device.js'
+import { oauthRouter } from './routes/oauth.js'
 import { adminOpenAppsRouter } from './routes/admin-open-apps.js'
 import { diagRouter } from './routes/diag.js'
 import { submitGameRouter } from './routes/submit-game.js'
@@ -113,6 +115,17 @@ app.use('/api/open', openRouter)
   ⚠️ admin-open-apps 必须挂在 /api/admin 之前：adminRouter 里有 /:id 这类通配路由。
 */
 app.use('/api/open-apps', openAppsRouter)
+/*
+  设备码流程里「用户确认」那一步。**站内接口**，和上面那条同一个性质：
+  要登录态、走站内 CORS 白名单。放开到任意 Origin 的话，任何网站都能拿着
+  受害者的登录态替他批准一台设备 —— 那是这套流程最坏的失败方式。
+*/
+app.use('/api/open-device', openDeviceRouter)
+/*
+  用户级令牌那一半：授权码 + PKCE（OIDC 授权码流程）。设备码那一半在 routes/open.js 的
+  /api/open/v1/token 里。两者共用同一套 RS256 令牌与 scope，但入口分开、安全模型不同。
+*/
+app.use('/api/oauth', oauthRouter)
 app.use('/api/admin/open-apps', adminOpenAppsRouter)
 
 app.use('/api/auth', authRouter)
@@ -341,6 +354,25 @@ process.on('unhandledRejection', (reason) => {
 process.on('uncaughtException', (err) => {
   console.error('[未捕获异常]', err)
 })
+
+/*
+  ⚠️ 后台鉴权后门 + 非本机站点地址 = **拒绝启动**。
+
+  roleOfRequest 的第一行就是 `if (ADMIN_AUTH_DISABLED) return 'admin'`，在读 token 之前 ——
+  这个组合意味着一条不带凭证的请求就能提权和删库。
+  原来这里只打一段警告，而警告拦不住任何事：2026-09-12 审计时，它正开在一份
+  PUBLIC_SITE_URL 指向正式域名、DB 连着生产库的 .env 里。
+
+  判断在 auth.js 的 adminBackdoorFatal（纯函数，有测试）。这里只负责把进程停掉，
+  而且要停在 **listen 之前** —— 端口一旦开了，后门就已经对外可达了。
+*/
+const backdoorFatal = adminBackdoorFatal()
+if (backdoorFatal) {
+  console.error('')
+  console.error('  ❌ 拒绝启动：' + backdoorFatal)
+  console.error('')
+  process.exit(1)
+}
 
 const PORT = Number(process.env.PORT || 8788)
 

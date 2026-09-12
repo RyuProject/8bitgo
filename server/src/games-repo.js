@@ -158,9 +158,20 @@ export async function listGames(q = {}) {
   const totalRow = await queryOne(`SELECT COUNT(*) AS n FROM games g ${join} ${whereSql}`, allParams)
   const total = Number(totalRow?.n ?? 0)
 
-  const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(q.pageSize) || 24))
+  /*
+    ⚠️ **必须取整。** 下面 LIMIT / OFFSET 是直接拼进 SQL 的，而 MySQL 的 LIMIT
+    只接受整数字面量 —— `?pageSize=2.5` 拼出来就是 `LIMIT 2.5`，直接 ER_PARSE_ERROR。
+
+    后果不止是 500：SSR 走的是同一条路（content.js → loadForRoute），
+    `GET /games?page=1.1` 会让整页渲染抛异常，最后回一个 **503 空壳**给爬虫。
+    也就是说一条 URL 就能让 SEO 侧看到「服务不可用」。
+
+    原来这里只有 Math.min/max 夹范围，夹不掉小数。同仓 comments.js 用的是
+    Math.trunc，说明这是漏的不是取舍。
+  */
+  const pageSize = Math.trunc(Math.min(MAX_PAGE_SIZE, Math.max(1, Number(q.pageSize) || 24)))
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
-  const page = Math.min(Math.max(1, Number(q.page) || 1), totalPages)
+  const page = Math.trunc(Math.min(Math.max(1, Number(q.page) || 1), totalPages))
   const offset = (page - 1) * pageSize
 
   // 有关键词时默认按相关性排；用户显式选了排序方式就听他的

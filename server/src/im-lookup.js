@@ -19,13 +19,14 @@
  * ⚠️ 真要把探针彻底关掉，只有一条路：给 users 加一列「允许别人用邮箱找到我」，
  * 默认关，用户自己去设置里打开。那是产品决定，不是这一层能替它做的。
  */
+import { isEmail } from '../../shared/email.js'
 
 /** 窗口内允许查几次。正常人一天也找不了几个人；撞库要的是几千次 */
 export const IM_LOOKUP_LIMIT = 20
 export const IM_LOOKUP_WINDOW_MS = 3600_000
 
 /** 和 routes/auth.js、routes/me.js 保持同一条：宽松到不误伤，严到挡住明显不是邮箱的串 */
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
 /** users.email 是 VARCHAR(200)，比这更长的串在库里根本不可能存在 */
 const EMAIL_MAX = 200
 
@@ -38,8 +39,10 @@ const EMAIL_MAX = 200
  */
 export function normalizeLookupEmail(raw) {
   const s = String(raw ?? '').trim().toLowerCase()
-  if (!s || s.length > EMAIL_MAX) return ''
-  return EMAIL_RE.test(s) ? s : ''
+  // 这里比 isEmail 的 254 更紧：users.email 是 VARCHAR(200)，更长的串在库里不可能存在。
+  // 两道都留着 —— isEmail 那道是防正则回溯的通用闸，这道是这张表自己的事实。
+  if (s.length > EMAIL_MAX) return ''
+  return isEmail(s) ? s : ''
 }
 
 /**

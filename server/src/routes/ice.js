@@ -39,6 +39,8 @@
 import { Router } from 'express'
 import { createHmac } from 'node:crypto'
 import { registerTurnPath, turnHealthSnapshot, turnPathDown } from '../turnProbe.js'
+import { take, isMeaningfulIp } from '../rateLimit.js'
+import { clientIpFrom } from '../presence.js'
 
 export const iceRouter = Router()
 
@@ -245,7 +247,44 @@ export async function registerTurnProbeTargets() {
   registerTurnPath('cloudflare', cfUrls, mintCloudflare)
 }
 
+/**
+ * ⚠️ **不能要求登录** —— 访客点开一个联机邀请链接就要用它，加了 requireUser
+ * 等于把「不注册也能一起玩」这条路砍掉。所以这里用限流当闸。
+ *
+ * 为什么必须有闸：这是全站唯一一个「不需要任何身份 + 直接发放计费资源凭证」的接口。
+ * TTL 最长 86400 秒，凭证拿去就能当通用 TURN 中继用 ——
+ * Cloudflare TURN 按 GB 计量，自建 coturn 吃的是你的带宽。
+ * 也就是说，没有闸的时候这是一个**对外开放的匿名中继代理，账单记在你头上**。
+ *
+ * 两层，和站里其它花钱的接口（翻译 / 验证码 / j2me）同一个形状：
+ *   · 按 IP —— 正常玩家开一局最多取几次（进房 + 续期），60 次/小时绰绰有余；
+ *   · 全站 —— 换着 IP 刷的时候兜底。这一层宁可偶尔误伤，也不能让账单没有上限。
+ *
+ * ⚠️ 顺序是先 IP 后全站：反过来的话，一个刷子把全站额度吃光，正常玩家全被挡在外面，
+ * 而我们连「是谁在刷」都没记下来。
+ */
+const ICE_PER_IP_PER_HOUR = Number(process.env.ICE_PER_IP_PER_HOUR || 60)
+const ICE_GLOBAL_PER_MIN = Number(process.env.ICE_GLOBAL_PER_MIN || 600)
+
 iceRouter.get('/', async (req, res) => {
+  const ip = clientIpFrom(req.ip, req.headers)
+  if (isMeaningfulIp(ip)) {
+    const perIp = take(`ice:ip:${ip}`, ICE_PER_IP_PER_HOUR, 3600_000)
+    if (!perIp.ok) {
+      return res
+        .status(429)
+        .set('Retry-After', String(perIp.retryAfter))
+        .json({ error: '取中继凭证太频繁了，稍后再试', retryAfter: perIp.retryAfter })
+    }
+  }
+  const global = take('ice:global', ICE_GLOBAL_PER_MIN, 60_000)
+  if (!global.ok) {
+    return res
+      .status(429)
+      .set('Retry-After', String(global.retryAfter))
+      .json({ error: '中继服务正忙，稍后再试', retryAfter: global.retryAfter })
+  }
+
   const ttl = iceTtl()
   // 标签只用来在 coturn 日志里区分来源，不参与鉴权，所以放个粗粒度的标识就行
   const label = String(req.query.u || 'guest').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 24) || 'guest'

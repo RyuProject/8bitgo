@@ -95,8 +95,10 @@ export function OpenPlatformPage() {
   }
 
   return (
-    <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
-      <header className="flex flex-wrap items-end justify-between gap-3">
+    <div className="mx-auto max-w-5xl px-4 py-8 sm:px-6">
+      <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_17rem]">
+        <div className="min-w-0">
+          <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-pixel text-lg">开放平台</h1>
           <p className="mt-1.5 text-xs leading-relaxed text-muted">
@@ -150,6 +152,93 @@ export function OpenPlatformPage() {
       <p className="mt-10 text-[11px] leading-relaxed text-dim">
         接口文档见 <Link to="/about" className="underline underline-offset-2">关于页</Link> 里的开放平台一节。
         遇到问题把 AppID（不是 AppKey！）连同报错一起发给我们。
+      </p>
+        </div>
+        <aside className="hidden lg:block">
+          <ApiQuickref />
+        </aside>
+      </div>
+    </div>
+  )
+}
+
+/* ---------------- 右侧：接口快查 ---------------- */
+
+/**
+ * `/open` 右栏的接口速查。
+ *
+ * 跟着 `server/src/routes/open.js` 走：列出 Base URL、所有 `/v1/*` 端点（带方法）、
+ * 以及当前可用的 scope。不展开字段和错误码 —— 那部分太长，留给关于页，
+ * 这里只做「一眼看全有哪些接口、要哪个 scope」。
+ */
+function ApiQuickref() {
+  const endpoints: { method: 'GET' | 'POST'; path: string; note: string }[] = [
+    { method: 'POST', path: '/v1/token', note: 'AppID + Key 换令牌' },
+    { method: 'POST', path: '/v1/device/code', note: '设备码流程要一串码' },
+    { method: 'GET', path: '/v1/me', note: '自查令牌的 scope' },
+    { method: 'GET', path: '/v1/games', note: '游戏列表' },
+    { method: 'GET', path: '/v1/games/:slug', note: '游戏详情' },
+    { method: 'GET', path: '/v1/games/:slug/rom', note: 'ROM 短期凭据' },
+    { method: 'GET', path: '/v1/games/:slug/embed', note: '嵌入播放器' },
+    { method: 'GET', path: '/v1/library', note: '收藏 / 最近在玩' },
+    { method: 'GET', path: '/v1/saves', note: '存档清单' },
+    { method: 'GET', path: '/v1/saves/:runtime/:slug', note: '取一份存档' },
+  ]
+  const scopes: { id: string; kind: 'self' | 'review' | 'soon' }[] = [
+    { id: 'games.read', kind: 'self' },
+    { id: 'games.rom', kind: 'review' },
+    { id: 'library.read', kind: 'review' },
+    { id: 'saves.read', kind: 'review' },
+    { id: 'saves.write', kind: 'soon' },
+  ]
+
+  return (
+    <div className="sticky top-6 space-y-5">
+      <div>
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-dim">Base URL</p>
+        <code className="mt-1 block break-all rounded-lg border border-line bg-surface-2 px-2 py-1.5 text-[11px]">
+          https://8bitgo.com/api/open/v1
+        </code>
+      </div>
+
+      <div>
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-dim">接口</p>
+        <ul className="mt-2 space-y-1.5">
+          {endpoints.map((e) => (
+            <li key={e.path} className="flex items-baseline gap-2">
+              <span
+                className={cx(
+                  'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold',
+                  e.method === 'GET' ? 'bg-brand-soft text-brand-hover' : 'bg-coin/20 text-coin',
+                )}
+              >
+                {e.method}
+              </span>
+              <span className="min-w-0">
+                <code className="block text-[11px] leading-tight text-fg">{e.path}</code>
+                <span className="text-[10px] text-dim">{e.note}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <div>
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-dim">Scope</p>
+        <ul className="mt-2 space-y-1">
+          {scopes.map((s) => (
+            <li key={s.id} className="flex items-center gap-2 text-[11px]">
+              <code className={s.kind === 'soon' ? 'text-dim line-through' : 'text-fg'}>{s.id}</code>
+              {s.kind === 'self' && <span className="rounded bg-brand-soft px-1 text-[10px] text-brand-hover">自助</span>}
+              {s.kind === 'review' && <span className="rounded bg-coin/20 px-1 text-[10px] text-coin">需审核</span>}
+              {s.kind === 'soon' && <span className="text-dim">待上线</span>}
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <p className="text-[11px] leading-relaxed text-dim">
+        完整字段、错误码、限流见 <Link to="/about" className="text-brand-hover underline underline-offset-2">关于页</Link> 的开放平台一节。
       </p>
     </div>
   )

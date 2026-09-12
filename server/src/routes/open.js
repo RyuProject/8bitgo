@@ -24,7 +24,15 @@ import { assetPublicUrl, publicSiteUrl } from '../site-urls.js'
 import { clientIpFrom } from '../presence.js'
 import { openConfig } from '../open/config.js'
 import { authenticateApp, readClientCredentials } from '../open/apps.js'
-import { issueAppToken, verifyOpenToken, OPEN_ACCESS_TTL_SEC } from '../open/tokens.js'
+import { issueAppToken, issueUserToken, verifyOpenToken, OPEN_ACCESS_TTL_SEC } from '../open/tokens.js'
+import {
+  DEVICE_CODE_TTL_SEC,
+  DEVICE_POLL_INTERVAL_SEC,
+  createDeviceAuth,
+  pollDeviceAuth,
+} from '../open/device.js'
+import { favIds, recentIds } from '../userdata.js'
+import { saveCoords } from './saves.js'
 import { APP_SCOPES, formatScopes, hasScope, missingScopes, parseScopes } from '../open/scopes.js'
 import { openGame, openPage } from '../open/mapper.js'
 import { normalizeLang, pickRom } from '../open/i18n.js'
@@ -55,8 +63,6 @@ function fail(res, status, error, description, extra) {
   })
 }
 
-/* ---------------- 取令牌：AppID + key ---------------- */
-
 /**
  * token 端点的请求体解析。
  *
@@ -77,6 +83,93 @@ function fail(res, status, error, description, extra) {
  *   · 限额也该单独给：这个请求体最多几百字节，没有理由跟着全局那个 4MB 走。
  */
 const tokenBody = express.urlencoded({ extended: false, limit: '16kb' })
+
+/* ---------------- 设备码流程（RFC 8628） ---------------- */
+
+/** 协议规定的 grant_type 值，一个字都不能改 */
+export const DEVICE_GRANT = 'urn:ietf:params:oauth:grant-type:device_code'
+
+/**
+ * 轮询时那几种「还不行」的说明。
+ * ⚠️ `authorization_pending` 和 `slow_down` **不是失败** —— 它们的意思是「接着等」。
+ * 说清楚是因为接入方最容易在这里写错：把 400 一律当错误退出，
+ * 结果就是用户明明在手机上点了同意，设备却已经放弃了。
+ */
+const DEVICE_ERROR_HINT = {
+  authorization_pending: '用户还没在网页上确认，按 interval 接着轮询',
+  slow_down: '轮询太快了，把间隔加大一点再继续',
+  access_denied: '用户拒绝了这次授权',
+  expired_token: '这串码已经过期，重新要一串',
+  invalid_grant: 'device_code 无效',
+}
+
+/**
+ * `POST /api/open/v1/device/code` —— 设备要一串码。
+ *
+ * 要 AppID + key（和取令牌同一套认证）：设备上本来就存着 key，
+ * 而公开客户端那条路我们整个不开（见 §1.1，前端藏不住密钥）。
+ */
+openRouter.post('/v1/device/code', tokenBody, async (req, res, next) => {
+  try {
+    const cfg = openConfig()
+    if (!cfg) return fail(res, 501, 'temporarily_unavailable', '开放平台未启用')
+
+    const { clientId, clientSecret } = readClientCredentials(req)
+    // 顺序和取令牌那条一样：先 IP 后 client_id，理由见那边的注释
+    const ip = clientIpFrom(req.ip, req.headers)
+    if (ip) {
+      const byIp = take(`open:device:ip:${ip}`, 60, 3600_000)
+      if (!byIp.ok) return rateLimited(res, byIp)
+    }
+    if (clientId) {
+      const byApp = take(`open:device:${clientId}`, 60, 3600_000)
+      if (!byApp.ok) return rateLimited(res, byApp)
+    }
+
+    const app = await authenticateApp(clientId, clientSecret)
+    if (!app) return fail(res, 401, 'invalid_client', 'AppID 或 key 不正确')
+    if (app.clientType !== 'confidential') {
+      return fail(res, 400, 'unauthorized_client', '公开客户端（无 key）不能用设备码流程')
+    }
+
+    /*
+      要哪些 scope。规矩和 client_credentials 那边**一模一样**：
+      不传就给已获批的全部，传了就必须是子集，**不静默降级**。
+      唯一的区别是这里不过滤 APP_SCOPES —— 设备码换来的是用户级令牌，
+      user 级 scope 正是它存在的理由。
+    */
+    let scopes = [...app.approvedScopes]
+    if (req.body?.scope) {
+      const parsed = parseScopes(req.body.scope)
+      if (parsed.unknown.length) return fail(res, 400, 'invalid_scope', `不认识的 scope：${parsed.unknown.join(' ')}`)
+      const missing = missingScopes(parsed.scopes, app.approvedScopes)
+      if (missing.length) return fail(res, 400, 'invalid_scope', `应用未获批：${missing.join(' ')}`)
+      scopes = parsed.scopes
+    }
+    if (!scopes.length) return fail(res, 400, 'invalid_scope', '这个应用没有任何已获批的权限')
+
+    const made = createDeviceAuth({ appId: app.id, scopes })
+    // 待授权表满了。这是我们这边的容量问题，不是调用方做错了什么 —— 按 503 说
+    if (!made) return fail(res, 503, 'temporarily_unavailable', '待授权的请求太多，稍后再试')
+
+    const verify = new URL('/open/device', publicSiteUrl())
+    const complete = new URL('/open/device', publicSiteUrl())
+    complete.searchParams.set('code', made.userCode)
+    res.json({
+      device_code: made.deviceCode,
+      user_code: made.userCode,
+      verification_uri: verify.href,
+      /* 带着码的完整地址：能显示二维码的设备直接把它编成码，用户不用手打 */
+      verification_uri_complete: complete.href,
+      expires_in: DEVICE_CODE_TTL_SEC,
+      interval: DEVICE_POLL_INTERVAL_SEC,
+    })
+  } catch (e) {
+    next(e)
+  }
+})
+
+/* ---------------- 取令牌：AppID + key ---------------- */
 
 /*
   解析失败（畸形、超限）**不用在这里接**：错误顺着 next(err) 走到 index.js 里那道
@@ -123,15 +216,53 @@ openRouter.post('/v1/token', tokenBody, async (req, res, next) => {
       if (!byApp.ok) return rateLimited(res, byApp)
     }
 
-    if (String(req.body?.grant_type || '') !== 'client_credentials') {
-      return fail(res, 400, 'unsupported_grant_type', '这个端点只支持 client_credentials；用户登录走 /api/oauth/authorize')
+    const grant = String(req.body?.grant_type || '')
+    if (grant !== 'client_credentials' && grant !== DEVICE_GRANT) {
+      return fail(
+        res,
+        400,
+        'unsupported_grant_type',
+        `这个端点支持 client_credentials（应用级）和 ${DEVICE_GRANT}（设备码，用户级）`,
+      )
     }
 
     const app = await authenticateApp(clientId, clientSecret)
     // ⚠️ 认不出来一律同一句话：区分「没这个应用」和「密钥不对」就成了 AppID 探针
     if (!app) return fail(res, 401, 'invalid_client', 'AppID 或 key 不正确')
     if (app.clientType !== 'confidential') {
-      return fail(res, 400, 'unauthorized_client', '公开客户端（无 key）不能用 client_credentials')
+      return fail(res, 400, 'unauthorized_client', '公开客户端（无 key）不能用这个端点取令牌')
+    }
+
+    /*
+      设备码兑现。RFC 8628 §3.4/§3.5。
+      这一支**签的是用户级令牌**（kind='user'，sub=用户 id），所以它能拿到
+      library.* / saves.* 这些应用级流程永远拿不到的 scope。
+    */
+    if (grant === DEVICE_GRANT) {
+      const r = pollDeviceAuth(String(req.body?.device_code || ''), { appId: app.id })
+      if (!r.ok) {
+        // authorization_pending / slow_down 都是 400 —— 协议规定的，不是我们随便定的。
+        // 设备拿它们当「接着等」，不是当失败。
+        const status = r.error === 'expired_token' || r.error === 'access_denied' ? 400 : 400
+        return fail(res, status, r.error, DEVICE_ERROR_HINT[r.error] ?? '', {
+          ...(r.error === 'slow_down' ? { interval: DEVICE_POLL_INTERVAL_SEC } : {}),
+        })
+      }
+      const access_token = issueUserToken({
+        privateKey: cfg.privateKey,
+        kid: cfg.kid,
+        issuer: cfg.issuer,
+        appId: app.id,
+        sub: r.userId,
+        scopes: r.scopes,
+        ttl: OPEN_ACCESS_TTL_SEC,
+      })
+      return res.json({
+        access_token,
+        token_type: 'Bearer',
+        expires_in: OPEN_ACCESS_TTL_SEC,
+        scope: formatScopes(r.scopes),
+      })
     }
 
     // 不传 scope 就给「已获批 ∩ 应用级」的全部；传了就必须是子集
@@ -202,6 +333,29 @@ function requireApp(scope) {
     if (!gate.ok) return rateLimited(res, gate)
     next()
   }
+}
+
+/**
+ * 要一枚**用户级**令牌（设备码换来的那种），而且带指定 scope。
+ *
+ * ⚠️ 和 requireApp 的区别不只是多判一个字段：`kind` 不对的话 `userId` 是空串，
+ * 而下面那些查询全都是 `WHERE user_id = ?` —— 空串查出来是空集，
+ * 看起来像「这个用户没有收藏」，而真相是「这枚令牌背后压根没有用户」。
+ * 静默给出一个错误的空结果，比报错糟得多。
+ *
+ * 实际上应用级令牌永远拿不到 user 级 scope（client_credentials 那边挡着），
+ * 所以这一道是纵深防御。纵深防御的意思就是：即使上游那道哪天破了，这里也不放行。
+ */
+function requireUserScope(scope) {
+  const base = requireApp(scope)
+  return (req, res, next) =>
+    base(req, res, () => {
+      const c = req.openClaims
+      if (c?.kind !== 'user' || !c.userId) {
+        return fail(res, 403, 'insufficient_scope', '这个接口要用户授权过的令牌（设备码流程）', { scope })
+      }
+      next()
+    })
 }
 
 /* ---------------- 游戏元数据 ---------------- */
@@ -419,6 +573,102 @@ openRouter.get('/v1/games/:slug/embed', requireApp('games.read'), async (req, re
   }
 })
 
+/* ---------------- 用户数据（只读，要用户级令牌） ---------------- */
+
+/**
+ * `GET /v1/library` —— 收藏与最近在玩。
+ *
+ * 回的是**完整的游戏对象**（和 /v1/games 的元素同一个形状），不是一串 slug：
+ * 接入方拿到十个 slug 之后必然要再发十次请求去换标题和封面，
+ * 而那十次查的是我们这边本来一次就能出的东西。
+ *
+ * ⚠️ 仍旧过 openGamesBySlugs → openGame 那条白名单，和别的接口一样 ——
+ * 「这是用户自己的数据」不是把内部字段发出去的理由。
+ */
+openRouter.get('/v1/library', requireUserScope('library.read'), async (req, res, next) => {
+  try {
+    const lang = normalizeLang(req.query.lang)
+    const uid = req.openClaims.userId
+    const [favSlugs, recentSlugs] = await Promise.all([favIds(uid), recentIds(uid)])
+    /*
+      收藏没有上限（站内那一路也没有），所以这里自己封顶。
+      不封的话，一个收藏了两千款的账号会让这个接口一次吐出几 MB ——
+      而接入方多半只想展示前几屏。
+    */
+    const [favorites, recent] = await Promise.all([
+      openGamesBySlugs(favSlugs.slice(0, MAX_LIBRARY_ITEMS), lang),
+      openGamesBySlugs(recentSlugs, lang),
+    ])
+    res.json({
+      favorites,
+      recent,
+      /** 收藏被截断了没有。接入方要不要提示「还有更多」，靠这个判断 */
+      favorites_total: favSlugs.length,
+    })
+  } catch (e) {
+    next(e)
+  }
+})
+
+/** 收藏最多一次给多少款 */
+const MAX_LIBRARY_ITEMS = 100
+
+/**
+ * `GET /v1/saves` —— 存档清单。**只给元信息，不带内容**：
+ * 一份 DOS 变更包几百 KB，一次把全部内容吐出来对谁都没好处。
+ */
+openRouter.get('/v1/saves', requireUserScope('saves.read'), async (req, res, next) => {
+  try {
+    const rows = await query(
+      `SELECT runtime, game_slug, slot, size, created_at, updated_at
+         FROM saves WHERE user_id = ? ORDER BY updated_at DESC`,
+      [req.openClaims.userId],
+    )
+    res.json({
+      items: rows.map((r) => ({
+        runtime: r.runtime,
+        game_slug: r.game_slug,
+        slot: r.slot,
+        size: r.size,
+        created_at: new Date(r.created_at).toISOString(),
+        updated_at: new Date(r.updated_at).toISOString(),
+      })),
+    })
+  } catch (e) {
+    next(e)
+  }
+})
+
+/**
+ * `GET /v1/saves/:runtime/:slug?slot=0` —— 取一份存档的**二进制**。
+ *
+ * 坐标校验和站内共用同一个纯函数（saves.js 的 saveCoords）——
+ * 各判一遍的话，哪天加个引擎名只会改其中一处，
+ * 症状是「站内能存，第三方说未知的引擎」。
+ */
+openRouter.get('/v1/saves/:runtime/:slug', requireUserScope('saves.read'), async (req, res, next) => {
+  try {
+    const c = saveCoords({ runtime: req.params.runtime, slug: req.params.slug, slot: req.query.slot })
+    if (!c.ok) {
+      const msg = c.reason === 'runtime' ? '未知的引擎' : c.reason === 'slug' ? '游戏标识不合法' : '存档位不合法'
+      return fail(res, 400, 'invalid_request', msg)
+    }
+    const row = await query(
+      'SELECT data, updated_at FROM saves WHERE user_id = ? AND runtime = ? AND game_slug = ? AND slot = ? LIMIT 1',
+      [req.openClaims.userId, c.runtime, c.slug, c.slot],
+    )
+    const hit = row[0]
+    if (!hit) return fail(res, 404, 'not_found', '没有这份存档')
+    res.setHeader('content-type', 'application/octet-stream')
+    res.setHeader('x-save-updated-at', String(new Date(hit.updated_at).getTime()))
+    // 别人的存档不该进任何一层缓存
+    res.setHeader('cache-control', 'private, no-store')
+    res.send(hit.data)
+  } catch (e) {
+    next(e)
+  }
+})
+
 /* ---------------- 自省：接入方排错的第一站 ---------------- */
 
 /**
@@ -429,6 +679,12 @@ openRouter.get('/v1/me', requireApp(), (req, res) => {
   res.json({
     client_id: req.openClaims.appId,
     kind: req.openClaims.kind,
+    /*
+      用户级令牌要把用户 id 报出来 —— 接入方拿它区分「这是谁的授权」
+      （同一个应用可能同时握着好几个用户的令牌）。应用级令牌背后没有用户，给 null，
+      **不给空串**：空串在 JSON 里看起来像「有这个字段但值丢了」。
+    */
+    user_id: req.openClaims.kind === 'user' ? req.openClaims.userId : null,
     scope: formatScopes(req.openClaims.scopes),
     expires_at: new Date(req.openClaims.exp * 1000).toISOString(),
   })

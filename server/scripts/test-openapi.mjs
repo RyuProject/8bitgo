@@ -89,8 +89,16 @@ const APP = {
   name: '测试应用',
   client_type: 'confidential',
   status: 'live',
-  approved_scopes: 'games.read games.rom',
+  /*
+    ⚠️ 这里**混着两级 scope**，是有意的：
+    games.read / games.rom 是应用级（client_credentials 就能拿），
+    library.read / saves.read 是用户级（只有设备码换来的令牌才拿得到）。
+    混在一把 key 上才测得出「同一个应用，两条取令牌的路给的东西不一样」——
+    而那正是这套权限模型的核心。
+  */
+  approved_scopes: 'games.read games.rom library.read saves.read',
   rate_tier: 'live',
+  redirect_uris: '["https://partner.example/cb"]',
   embed_origins: '["https://partner.example"]',
 }
 /**
@@ -102,26 +110,58 @@ const APP = {
  */
 const APP2 = {
   id: 'app_111111111111111111111111',
-  name: '只批了 games.read 的应用',
+  name: '只批了 games.read 的沙箱应用',
   client_type: 'confidential',
-  status: 'live',
+  /*
+    ⚠️ `status` 和 `rate_tier` **是两个字段，别看混**（设计稿 §1.4 专门讲了这件事）：
+    status = 这个应用现在有什么能力（sandbox / live / suspended），
+    rate_tier = 按哪一档限流。canAuthorize 看的是 **status**。
+
+    原来这里是 `status: 'live'` 而 `rate_tier: 'sandbox'`，于是「沙箱应用只能授权给
+    开发者和测试账号」那条用例恒为绿 —— canAuthorize 在 `status === 'live'` 那一行
+    就直接返回 true 了，根本走不到白名单判断。改成真的沙箱。
+  */
+  status: 'sandbox',
   approved_scopes: 'openid profile games.read',
   rate_tier: 'sandbox',
+  redirect_uris: '["https://partner2.example/cb"]',
   embed_origins: '[]',
 }
 const APP_SECRET = 'test-secret-value'
 let SECRET_HASH = ''
 
+/* ---------- 用户数据的假行。只有设备码换来的**用户级**令牌读得到 ---------- */
+const USER_ID = 'u_device_owner'
+const SAVE_BYTES = Buffer.from('SAVEDATA')
+const SAVES = [
+  {
+    runtime: 'jsdos',
+    game_slug: 'contra',
+    slot: 0,
+    size: SAVE_BYTES.length,
+    created_at: '2026-09-01T00:00:00Z',
+    updated_at: '2026-09-02T00:00:00Z',
+  },
+]
+
 globalThis.__fakeDb = {
   async query(sql, params = []) {
     const s = sql.replace(/\s+/g, ' ').trim()
-    if (s.startsWith('SELECT id, name, client_type')) {
+    // authenticateApp 用的是另一套列（id, name, client_type, status, ...），和 getApp 不是一句 SQL
+    if (s.startsWith('SELECT id, name, client_type, status, approved_scopes')) {
+      return [APP, APP2].filter((a) => a.id === params[0])
+    }
+    if (s.startsWith('SELECT id, owner_id, name, description')) {
       return [APP, APP2].filter((a) => a.id === params[0])
     }
     if (s.startsWith('SELECT id, secret_hash FROM oauth_app_secrets')) {
       return [APP.id, APP2.id].includes(params[0]) ? [{ id: 's1', secret_hash: SECRET_HASH }] : []
     }
     if (s.startsWith('UPDATE oauth_app_secrets')) return []
+    // 同意页（/api/oauth/authorize、/api/open-device）要登录：这里给一个 id 对得上的用户
+    if (s.startsWith('SELECT * FROM users WHERE id = ?')) {
+      return params[0] === USER_ID ? [{ id: USER_ID, token_version: 0, status: 'active' }] : []
+    }
     /*
       ⚠️ 假库必须**照着 SQL 说的做**，不能自己替被测代码把 hidden / adult 过滤掉 ——
       那样的话，路由里的 `AND hidden = 0` 被人删了，测试照样绿（变异检查里实测过）。
@@ -144,6 +184,23 @@ globalThis.__fakeDb = {
     if (s.startsWith('SELECT game_id, genre_id')) return [{ game_id: 1, genre_id: 'action' }]
     if (s.startsWith('SELECT game_id, tag')) return [{ game_id: 1, tag: '经典' }]
     if (s.startsWith('SELECT game_id, lang, object_key')) return ROMS
+    /* ---- 用户数据（library / saves）。同样照着 SQL 说的做，不替被测代码过滤 ---- */
+    if (s.startsWith('SELECT g.slug FROM favorites')) {
+      return params[0] === USER_ID ? [{ slug: 'contra' }] : []
+    }
+    if (s.startsWith('SELECT g.slug FROM recents')) {
+      return params[0] === USER_ID ? [{ slug: 'contra' }] : []
+    }
+    if (s.startsWith('SELECT runtime, game_slug, slot, size, created_at, updated_at FROM saves')) {
+      return params[0] === USER_ID ? SAVES : []
+    }
+    if (s.startsWith('SELECT data, updated_at FROM saves')) {
+      const [uid, runtime, slug, slot] = params
+      const hit = SAVES.find(
+        (r) => uid === USER_ID && r.runtime === runtime && r.game_slug === slug && r.slot === slot,
+      )
+      return hit ? [{ data: SAVE_BYTES, updated_at: hit.updated_at }] : []
+    }
     return []
   },
   async queryOne(sql, params) {
@@ -168,12 +225,15 @@ process.env.PUBLIC_SITE_URL = 'https://8bitgo.com'
 process.env.ROM_BASE_URL = 'https://assets.8bitgo.com'
 
 const { openRouter } = await import('../src/routes/open.js')
+const { oauthRouter } = await import('../src/routes/oauth.js')
+const { openDeviceRouter } = await import('../src/routes/open-device.js')
 const { hashSecret } = await import('../src/open/apps.js')
 const { verifyToken } = await import('../src/auth.js')
 const { issueAppToken, verifyOpenToken } = await import('../src/open/tokens.js')
 const { signToken } = await import('../src/auth.js')
 const { FORBIDDEN_OUT_KEYS } = await import('../src/open/mapper.js')
 const { isOpenPath, openErrorFor, openErrorMiddleware } = await import('../src/open/errors.js')
+const device = await import('../src/open/device.js')
 const { pickDescription, pickTitle } = await import('../src/open/i18n.js')
 const jwtLib = (await import('jsonwebtoken')).default
 SECRET_HASH = await hashSecret(APP_SECRET)
@@ -181,6 +241,13 @@ SECRET_HASH = await hashSecret(APP_SECRET)
 const app = express()
 app.use(express.json())
 app.use('/api/open', openRouter)
+app.use('/api/oauth', oauthRouter)
+/*
+  设备码流程里「用户确认」那一步的站内接口。它在真实应用里挂在 /api/open-device
+  （index.js），是**站内**路由（登录态 + 站内 CORS），和 /api/open 不是一套。
+  这里挂上它，下面那条「同意页走的是同一套」的用例才是真的打到了 HTTP 层。
+*/
+app.use('/api/open-device', openDeviceRouter)
 /*
   ⚠️ 挂的是**和 index.js 同一个函数**，不是照着抄一份。
 
@@ -220,6 +287,8 @@ const getToken = async (scope, appId = APP.id) => {
   })
   return r.json()
 }
+/** 测试里「已登录用户」的站点 JWT（和资源拥有者 USER_ID 对上，token_version=0） */
+const userBearer = () => ({ Authorization: `Bearer ${signToken(USER_ID, 0)}` })
 
 console.log('\n一、⚠️ 两种令牌必须互不相认（错一次全盘皆输）')
 
@@ -745,6 +814,431 @@ await check('⚠️ 路径前缀带尾斜杠，/api/opensesame 不算开放平�
   assert.equal(isOpenPath('/api/opensesame'), false)
   assert.equal(isOpenPath('/api/me'), false)
   assert.equal(isOpenPath(undefined), false)
+})
+
+console.log('\n八、设备码流程（RFC 8628）：设备上没有浏览器')
+
+/*
+  ## 这一节在守什么
+
+  开放平台原本只有 client_credentials 一条取令牌的路，而它签出来的令牌**背后没有用户** ——
+  所以 library.* / saves.* 这些 user 级 scope 永远拿不到。scopes.js 里声明了它们，
+  routes/open.js 里却连路由都没有，而且就算有也没人调得到：`issueUserToken`
+  在此之前**一个调用方都没有**。
+
+  设备码流程补的就是这一半：设备显示一串码，人在手机上输进去点同意，设备轮询拿令牌。
+
+  下面每一条对应协议里一个**接入方必然会写错**的地方，或者一个安全边界。
+*/
+
+const DEVICE_GRANT = 'urn:ietf:params:oauth:grant-type:device_code'
+const askDevice = async (scope, appId = APP.id, secret = APP_SECRET) =>
+  api('/api/open/v1/device/code', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ client_id: appId, client_secret: secret, ...(scope ? { scope } : {}) }),
+  })
+const pollDevice = async (deviceCode, appId = APP.id) =>
+  api('/api/open/v1/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      grant_type: DEVICE_GRANT,
+      client_id: appId,
+      client_secret: APP_SECRET,
+      device_code: deviceCode,
+    }),
+  })
+
+await check('设备能要到一串码，回的字段是协议规定的那几个', async () => {
+  device.resetDeviceAuths()
+  const r = await askDevice('library.read')
+  assert.equal(r.status, 200)
+  const j = await r.json()
+  for (const k of ['device_code', 'user_code', 'verification_uri', 'expires_in', 'interval']) {
+    assert.ok(j[k] !== undefined, `少了 ${k}`)
+  }
+  // 能显示二维码的设备直接把它编成码，用户不用手打
+  assert.match(j.verification_uri_complete, /\/open\/device\?code=/)
+  assert.match(j.user_code, /^[A-Z0-9]{4}-[A-Z0-9]{4}$/)
+})
+
+await check('⚠️ 用户码的字母表里没有元音和形近字符', () => {
+  /*
+    用户是照着小屏幕念出来手打的：0/O、1/I/L 认错一个就白输一遍；
+    有元音的话八位随机串迟早拼出脏话，而那串码要显示在别人的设备上。
+  */
+  for (let i = 0; i < 200; i++) {
+    const c = device.newUserCode()
+    assert.match(c, /^[BCDFGHJKLMNPQRSTVWXZ23456789]{4}-[BCDFGHJKLMNPQRSTVWXZ23456789]{4}$/, c)
+  }
+})
+
+await check('用户码的比对认得出大小写、空格和横线的各种写法', () => {
+  assert.equal(device.normalizeUserCode('bcdf-ghjk'), 'BCDFGHJK')
+  assert.equal(device.normalizeUserCode('BCDF GHJK'), 'BCDFGHJK')
+  assert.equal(device.normalizeUserCode('BCDFGHJK'), 'BCDFGHJK')
+})
+
+await check('⚠️ 没人确认时轮询回 authorization_pending（这不是失败，是「接着等」）', async () => {
+  device.resetDeviceAuths()
+  const { device_code } = await (await askDevice('library.read')).json()
+  const r = await pollDevice(device_code)
+  assert.equal(r.status, 400, '协议规定这一支就是 400')
+  const j = await r.json()
+  assert.equal(j.error, 'authorization_pending')
+  assert.ok(j.error_description, '没说清楚该接着等 —— 接入方会把 400 当失败退出')
+})
+
+await check('⚠️ 轮询太快回 slow_down，而且**不把节流时间戳往后推**', async () => {
+  device.resetDeviceAuths()
+  const { device_code } = await (await askDevice('library.read')).json()
+  const opts = (t) => ({ appId: APP.id, now: t, intervalSec: 5 })
+  const t0 = Date.now()
+
+  assert.equal(device.pollDeviceAuth(device_code, opts(t0)).error, 'authorization_pending')
+  assert.equal(device.pollDeviceAuth(device_code, opts(t0 + 1000)).error, 'slow_down', '1 秒后又轮了一次，没被节流')
+
+  /*
+    ⚠️ 关键的一条，而且**必须卡着时间点测**。
+
+    如果 slow_down 那一支也把 lastPolledAt 往后推，一台死循环轮询的设备会**永远**
+    收到 slow_down —— 它每次都把闸门重新顶到最新时刻，减速之后反而更难恢复。
+
+    下面这个时间点就是用来分辨两种实现的：距离**第一次**轮询 5.5 秒（够了），
+    但距离那次被拒的快轮只有 4.5 秒（不够）。
+    正确实现看前者 -> 放行；把时间戳往后推的实现看后者 -> 还是 slow_down。
+    （第一版这条用例用的是 now + 10 秒，两种实现都放行，等于没测 —— 变异测试抓出来的。）
+  */
+  assert.equal(
+    device.pollDeviceAuth(device_code, opts(t0 + 5500)).error,
+    'authorization_pending',
+    '被拒的那次把节流窗口顶后了 —— 设备减速之后永远恢复不了',
+  )
+})
+
+await check('用户同意之后，设备换到的是**用户级**令牌', async () => {
+  device.resetDeviceAuths()
+  const { device_code, user_code } = await (await askDevice('library.read saves.read')).json()
+  assert.ok(device.approveDeviceAuth(user_code, USER_ID))
+  const j = await (await pollDevice(device_code)).json()
+  assert.ok(j.access_token, `没拿到令牌：${JSON.stringify(j)}`)
+  assert.equal(j.scope, 'library.read saves.read')
+  const me = await (await api('/api/open/v1/me', { headers: { Authorization: `Bearer ${j.access_token}` } })).json()
+  assert.equal(me.kind, 'user')
+  assert.equal(me.user_id, USER_ID, '/v1/me 没报出这枚令牌是谁的')
+})
+
+await check('⚠️ 一串 device_code 只能兑现一次', async () => {
+  device.resetDeviceAuths()
+  const { device_code, user_code } = await (await askDevice('library.read')).json()
+  device.approveDeviceAuth(user_code, USER_ID)
+  assert.ok((await (await pollDevice(device_code)).json()).access_token)
+  const again = await (await pollDevice(device_code)).json()
+  assert.equal(again.error, 'invalid_grant', '同一串码换出了第二枚令牌 —— 抄走它的人可以一直换')
+})
+
+await check('⚠️ 拿别的应用的 key 去兑现别人的 device_code：invalid_grant，且和「没这条」同一句话', async () => {
+  device.resetDeviceAuths()
+  const { device_code, user_code } = await (await askDevice('library.read')).json()
+  device.approveDeviceAuth(user_code, USER_ID)
+  const stolen = await (await pollDevice(device_code, APP2.id)).json()
+  const nonsense = await (await pollDevice('no-such-device-code', APP2.id)).json()
+  assert.equal(stolen.error, 'invalid_grant')
+  assert.deepEqual(
+    { e: stolen.error, d: stolen.error_description },
+    { e: nonsense.error, d: nonsense.error_description },
+    '两种失败的说法不一样 —— 可以据此确认「这个 device_code 存在」',
+  )
+})
+
+await check('用户拒绝 -> access_denied', async () => {
+  device.resetDeviceAuths()
+  const { device_code, user_code } = await (await askDevice('library.read')).json()
+  assert.ok(device.denyDeviceAuth(user_code))
+  assert.equal((await (await pollDevice(device_code)).json()).error, 'access_denied')
+})
+
+await check('⚠️ 同意页（/api/open-device）走的是同一套，HTTP 层也能端到端', async () => {
+  /*
+    设备码流程的「用户确认」那一半（open-device.js）也是要登录的站内接口；
+    上面那些用例是直连 device.js 纯函数验证逻辑，这一条走真 HTTP，
+    确认 approve 之后设备真能轮询到用户级令牌。
+  */
+  device.resetDeviceAuths()
+  const { device_code, user_code } = await (await askDevice('library.read saves.read')).json()
+  const approve = await api(`/api/open-device/${user_code}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...userBearer() },
+    body: JSON.stringify({ approve: true }),
+  })
+  assert.equal(approve.status, 200)
+  assert.equal((await approve.json()).approved, true, '同意页没把授权落下来')
+  const j = await (await pollDevice(device_code)).json()
+  assert.ok(j.access_token, `同意页批准后换不到令牌：${JSON.stringify(j)}`)
+  assert.equal(j.scope, 'library.read saves.read')
+})
+
+await check('过期 -> expired_token', () => {
+  device.resetDeviceAuths()
+  const made = device.createDeviceAuth({ appId: APP.id, scopes: ['library.read'], ttlSec: 1 })
+  const r = device.pollDeviceAuth(made.deviceCode, { appId: APP.id, now: Date.now() + 2000 })
+  assert.equal(r.error, 'expired_token')
+})
+
+await check('⚠️ 两个人先后输同一串码，只有第一个算数', () => {
+  device.resetDeviceAuths()
+  const made = device.createDeviceAuth({ appId: APP.id, scopes: ['library.read'] })
+  assert.equal(device.approveDeviceAuth(made.userCode, 'u_first'), true)
+  assert.equal(device.approveDeviceAuth(made.userCode, 'u_second'), false, '第二个人把授权改到了自己名下')
+  const r = device.pollDeviceAuth(made.deviceCode, { appId: APP.id })
+  assert.equal(r.userId, 'u_first')
+})
+
+await check('⚠️ scope 不静默降级（和 client_credentials 同一条规矩）', async () => {
+  device.resetDeviceAuths()
+  const r = await askDevice('library.read this.is.not.a.scope')
+  assert.equal(r.status, 400)
+  assert.equal((await r.json()).error, 'invalid_scope')
+
+  /*
+    ⚠️ 这一条要**批过的和没批过的混着要**，不能只要一个没批过的。
+
+    只要 `saves.write` 的话，「静默降级」的实现过滤完是空集，接着撞上
+    「这个应用没有任何已获批的权限」那道判断，照样回 invalid_scope ——
+    测试绿，而 bug 还在（变异测试实测）。
+    混着要才分得开：降级的实现会把 library.read 发出去，装作一切正常。
+  */
+  const mixed = await askDevice('library.read saves.write') // APP 批了前者，没批后者
+  assert.equal(mixed.status, 400, '少给了一个 scope 却照发了码 —— 接入方要到线上功能失效才发现')
+  assert.equal((await mixed.json()).error, 'invalid_scope')
+
+  const r2 = await askDevice('saves.write', APP2.id) // APP2 压根没批 saves.write
+  assert.equal((await r2.json()).error, 'invalid_scope')
+})
+
+console.log('\n九、用户数据：library / saves（只读）')
+
+/** 走完整条设备码流程拿一枚用户级令牌 */
+const userToken = async (scope) => {
+  device.resetDeviceAuths()
+  const { device_code, user_code } = await (await askDevice(scope)).json()
+  device.approveDeviceAuth(user_code, USER_ID)
+  const j = await (await pollDevice(device_code)).json()
+  assert.ok(j.access_token, `拿不到用户令牌：${JSON.stringify(j)}`)
+  return j.access_token
+}
+const asUser = async (path, token) => api(path, { headers: { Authorization: `Bearer ${token}` } })
+
+await check('/v1/library 回收藏和最近在玩，而且是完整的游戏对象', async () => {
+  const t = await userToken('library.read')
+  const r = await asUser('/api/open/v1/library?lang=zh-Hans', t)
+  assert.equal(r.status, 200)
+  const j = await r.json()
+  assert.equal(j.favorites[0].slug, 'contra')
+  assert.equal(j.favorites[0].title, '魂斗罗', '只回了 slug —— 接入方还得再发十次请求去换标题')
+  assert.equal(j.recent[0].slug, 'contra')
+  assert.equal(j.favorites_total, 1)
+})
+
+await check('⚠️ 用户数据也走对外白名单，不能漏内部字段', async () => {
+  const t = await userToken('library.read')
+  const j = await (await asUser('/api/open/v1/library', t)).json()
+  const text = JSON.stringify(j)
+  for (const k of FORBIDDEN_OUT_KEYS) {
+    assert.ok(!text.includes(`"${k}"`), `library 里漏了内部字段 ${k}`)
+  }
+})
+
+await check('/v1/saves 只给元信息，不带存档内容', async () => {
+  const t = await userToken('saves.read')
+  const j = await (await asUser('/api/open/v1/saves', t)).json()
+  assert.equal(j.items.length, 1)
+  assert.equal(j.items[0].game_slug, 'contra')
+  assert.equal(j.items[0].runtime, 'jsdos')
+  assert.ok(!JSON.stringify(j).includes('SAVEDATA'), '清单里把存档内容也吐出来了')
+})
+
+await check('/v1/saves/:runtime/:slug 给二进制，而且不许被缓存', async () => {
+  const t = await userToken('saves.read')
+  const r = await asUser('/api/open/v1/saves/jsdos/contra?slot=0', t)
+  assert.equal(r.status, 200)
+  assert.equal(r.headers.get('content-type'), 'application/octet-stream')
+  assert.match(r.headers.get('cache-control') ?? '', /no-store/, '别人的存档被允许缓存了')
+  assert.equal(await r.text(), 'SAVEDATA')
+})
+
+await check('存档坐标校验和站内共用同一份（未知引擎 -> 400）', async () => {
+  const t = await userToken('saves.read')
+  const r = await asUser('/api/open/v1/saves/not-an-engine/contra', t)
+  assert.equal(r.status, 400)
+  assert.equal((await r.json()).error, 'invalid_request')
+})
+
+await check('没有这份存档 -> 404', async () => {
+  const t = await userToken('saves.read')
+  const r = await asUser('/api/open/v1/saves/jsdos/contra?slot=3', t)
+  assert.equal(r.status, 404)
+})
+
+await check('⚠️ scope 不够就进不去（library.read 的令牌读不了存档）', async () => {
+  const t = await userToken('library.read')
+  const r = await asUser('/api/open/v1/saves', t)
+  assert.equal(r.status, 403)
+  assert.equal((await r.json()).error, 'insufficient_scope')
+})
+
+await check('⚠️⚠️ 应用级令牌进不了用户数据接口，哪怕它带着那个 scope', async () => {
+  /*
+    这是纵深防御那一道。正常情况下 client_credentials 根本发不出带 user 级 scope 的令牌
+    （那边挡着），所以这里得**自己伪造**一枚 kind='app' 却带着 saves.read 的令牌 ——
+    也就是「上游那道哪天破了」的样子。
+
+    为什么必须挡：kind 不是 user 的话 userId 是空串，而下面的查询全是
+    `WHERE user_id = ?` —— 空串查出来是空集，看起来像「这个用户没有存档」，
+    而真相是「这枚令牌背后压根没有用户」。静默给一个错的空结果，比报错糟得多。
+  */
+  const forged = jwtLib.sign(
+    { iss: 'https://8bitgo.com', sub: APP.id, aud: APP.id, cid: APP.id, kind: 'app', scope: 'saves.read library.read' },
+    privateKey,
+    { algorithm: 'RS256', expiresIn: 600, header: { typ: 'at+jwt' } },
+  )
+  for (const path of ['/api/open/v1/saves', '/api/open/v1/library']) {
+    const r = await asUser(path, forged)
+    assert.equal(r.status, 403, `${path} 放了一枚应用级令牌进来`)
+    assert.equal((await r.json()).error, 'insufficient_scope')
+  }
+})
+
+console.log('\n十、授权码流程（RFC 6749 授权码 + PKCE）')
+
+/*
+  ## 这一节在守什么
+
+  用户级令牌的另一条路：有浏览器的 Web 应用把用户重定向到 /open/authorize，
+  用户点同意，浏览器带着 code 跳回应用的 redirect_uri，应用用 code + PKCE 换令牌。
+  和 device.js 那条路一样最终调 issueUserToken，但中间多了「授权码 + 强制 PKCE」。
+
+  守的是几件接入方必然写错、或安全边界的事：
+    · 强制 PKCE（缺 challenge / 用 plain 一律 invalid_request）；
+    · redirect_uri 必须命中白名单（否则成了开放重定向）；
+    · 授权码一次性、PKCE 对不上就是 invalid_grant；
+    · 沙箱应用对陌生账号，同意页 allowed=false、POST 真正 403。
+*/
+
+const ACCEPT_JSON = { Accept: 'application/json' }
+const sha256b64 = (s) => crypto.createHash('sha256').update(s).digest('base64url')
+const makePkce = () => {
+  const verifier = crypto.randomBytes(32).toString('base64url')
+  return { verifier, challenge: sha256b64(verifier) }
+}
+const authzGet = (q) =>
+  api(`/api/oauth/authorize?${new URLSearchParams(q).toString()}`, { headers: { ...ACCEPT_JSON, ...userBearer() } })
+/*
+  ⚠️ POST 必须带上登录令牌。
+
+  2026-09-12 之前这条路由**没有 requireUser**，所以这里不带令牌也能过 ——
+  也就是说原来的用例在断言一个漏洞是「正常」的：那段代码会在没有任何身份证明的
+  情况下，铸一枚指向某个 sub 的授权码。补上守卫之后不带令牌就是 401，这是对的。
+  下面另有一条用例专门钉「不带令牌必须 401」。
+*/
+const authzPost = (body) =>
+  api('/api/oauth/authorize', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...ACCEPT_JSON, ...userBearer() },
+    body: JSON.stringify(body),
+  })
+const CB = 'https://partner.example/cb'
+
+await check('GET 同意页回应用信息和要申请的权限（JSON 形状）', async () => {
+  const { challenge } = makePkce()
+  const r = await authzGet({
+    client_id: APP.id, redirect_uri: CB, response_type: 'code',
+    scope: 'library.read saves.read', state: 'st1',
+    code_challenge: challenge, code_challenge_method: 'S256',
+  })
+  assert.equal(r.status, 200)
+  const j = await r.json()
+  assert.equal(j.client_id, APP.id)
+  assert.equal(j.app.name, APP.name)
+  assert.deepEqual(j.scopes.map((s) => s.id), ['library.read', 'saves.read'], '返回的 scope 和申请的不一致')
+  assert.equal(j.allowed, true, 'live 应用应当允许任意用户授权')
+})
+
+await check('⚠️ 强制 PKCE：缺 code_challenge / method=plain -> invalid_request', async () => {
+  const noChallenge = await authzGet({ client_id: APP.id, redirect_uri: CB, response_type: 'code', scope: 'library.read', state: 's' })
+  assert.equal((await noChallenge.json()).error, 'invalid_request')
+  const plain = await authzGet({ client_id: APP.id, redirect_uri: CB, response_type: 'code', scope: 'library.read', state: 's', code_challenge: 'abc', code_challenge_method: 'plain' })
+  assert.equal((await plain.json()).error, 'invalid_request')
+})
+
+await check('⚠️ redirect_uri 不在白名单 -> invalid_redirect_uri（否则成了开放重定向）', async () => {
+  const { challenge } = makePkce()
+  const r = await authzGet({ client_id: APP.id, redirect_uri: 'https://evil.example/cb', response_type: 'code', scope: 'library.read', state: 's', code_challenge: challenge, code_challenge_method: 'S256' })
+  assert.equal((await r.json()).error, 'invalid_redirect_uri')
+})
+
+await check('⚠️ 未知 scope -> invalid_scope', async () => {
+  const { challenge } = makePkce()
+  const r = await authzGet({ client_id: APP.id, redirect_uri: CB, response_type: 'code', scope: 'library.read noscope', state: 's', code_challenge: challenge, code_challenge_method: 'S256' })
+  assert.equal((await r.json()).error, 'invalid_scope')
+})
+
+await check('完整的授权码 + PKCE 流程换来用户级令牌，并读得到用户数据', async () => {
+  const { verifier, challenge } = makePkce()
+  const q = { client_id: APP.id, redirect_uri: CB, response_type: 'code', scope: 'library.read saves.read', state: 'st2', code_challenge: challenge, code_challenge_method: 'S256' }
+  assert.equal((await authzGet(q)).status, 200)
+  const postR = await authzPost({ ...q, decision: 'approve' })
+  assert.equal(postR.status, 200)
+  const { code, state } = await postR.json()
+  assert.ok(code, '同意页没发回授权码')
+  assert.equal(state, 'st2', 'state 没原样带回来 —— 第三方挡不住 CSRF')
+
+  // 换令牌（机密客户端要 client_secret）
+  const tokR = await api('/api/oauth/token', {
+    method: 'POST',
+    headers: FORM_CT,
+    body: form({ grant_type: 'authorization_code', client_id: APP.id, client_secret: APP_SECRET, code, code_verifier: verifier }),
+  })
+  // ⚠️ 响应体只能读一次。断言消息里再 await 一次 .json() 会把它读空，
+  // 于是下一行抛「Body has already been read」—— 真正的失败原因反而看不到了
+  const tok = await tokR.json()
+  assert.equal(tokR.status, 200, `换令牌失败：${JSON.stringify(tok)}`)
+  assert.ok(tok.access_token)
+  assert.equal(tok.token_type, 'Bearer')
+
+  const me = await (await api('/api/open/v1/me', { headers: { Authorization: `Bearer ${tok.access_token}` } })).json()
+  assert.equal(me.kind, 'user', '授权码换来的不是用户级令牌')
+  assert.equal(me.user_id, USER_ID, '/v1/me 没报出这枚令牌是谁的')
+
+  const lib = await (await api('/api/open/v1/library', { headers: { Authorization: `Bearer ${tok.access_token}` } })).json()
+  assert.equal(lib.favorites[0].slug, 'contra', '用户级令牌读不到 library')
+})
+
+await check('⚠️ PKCE 对不上（verifier 错）-> invalid_grant', async () => {
+  const { challenge } = makePkce()
+  const { code } = await (await authzPost({ client_id: APP.id, redirect_uri: CB, response_type: 'code', scope: 'library.read', state: 's', code_challenge: challenge, code_challenge_method: 'S256', decision: 'approve' })).json()
+  const tokR = await api('/api/oauth/token', { method: 'POST', headers: FORM_CT, body: form({ grant_type: 'authorization_code', client_id: APP.id, client_secret: APP_SECRET, code, code_verifier: 'wrong-verifier' }) })
+  assert.equal((await tokR.json()).error, 'invalid_grant')
+})
+
+await check('⚠️ 授权码一次性：重放同一枚 code -> invalid_grant', async () => {
+  const { verifier, challenge } = makePkce()
+  const { code } = await (await authzPost({ client_id: APP.id, redirect_uri: CB, response_type: 'code', scope: 'library.read', state: 's', code_challenge: challenge, code_challenge_method: 'S256', decision: 'approve' })).json()
+  const first = await api('/api/oauth/token', { method: 'POST', headers: FORM_CT, body: form({ grant_type: 'authorization_code', client_id: APP.id, client_secret: APP_SECRET, code, code_verifier: verifier }) })
+  assert.equal(first.status, 200, `第一次换令牌就失败了：${JSON.stringify(await first.json())}`)
+  const again = await api('/api/oauth/token', { method: 'POST', headers: FORM_CT, body: form({ grant_type: 'authorization_code', client_id: APP.id, client_secret: APP_SECRET, code, code_verifier: verifier }) })
+  assert.equal((await again.json()).error, 'invalid_grant', '同一枚 code 被换出两枚令牌 —— 抄走它的人可以一直换')
+})
+
+await check('⚠️ 沙箱应用对未授权的账号：同意页 allowed=false，POST 真正 403', async () => {
+  // APP2 是 sandbox：canAuthorize 只对开发者 / 测试账号放行，USER_ID 不是，所以不允许
+  const { challenge } = makePkce()
+  const j = await (await authzGet({ client_id: APP2.id, redirect_uri: 'https://partner2.example/cb', response_type: 'code', scope: 'games.read', state: 's', code_challenge: challenge, code_challenge_method: 'S256' })).json()
+  assert.equal(j.allowed, false, '沙箱应用对陌生账号也放行了')
+  const postR = await authzPost({ client_id: APP2.id, redirect_uri: 'https://partner2.example/cb', response_type: 'code', scope: 'games.read', state: 's', code_challenge: challenge, code_challenge_method: 'S256', decision: 'approve' })
+  assert.equal(postR.status, 403)
+  assert.equal((await postR.json()).error, 'access_denied')
 })
 
 server.close()

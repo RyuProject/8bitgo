@@ -25,6 +25,23 @@ import {
 import { approve, reject, restore, sensitiveAsks, suspend } from '../open/review.js'
 import { SENSITIVE_SCOPES } from '../open/scopes.js'
 
+/**
+ * 这次审核动作记在谁名下。
+ *
+ * ⚠️ **不能直接用 `req.user.id`。** requireAbility 放行有三条路（auth.js 的 roleOfRequest）：
+ * 登录的 admin 账号、ADMIN_TOKEN 口令、以及开发后门 ADMIN_AUTH_DISABLED ——
+ * **后两条不设置 `req.user`**（那一段的注释自己写明了：口令不对应任何一个账号）。
+ * 直接解引用的结果是 TypeError → 500，而且是在 patchApp 之前抛，
+ * 也就是说批准 / 打回 / **停用** / 恢复四个动作一个都执行不了。
+ *
+ * 其中 suspend 是这套开放平台唯一的急停手段 —— 出事的时候按不下去，
+ * 而症状只是一个 500，看不出是「鉴权路径没带用户」。
+ * 对照写法见 routes/users.js，那边一直用的是 `req.user?.id`。
+ */
+function reviewerId(req) {
+  return req.user?.id ?? ''
+}
+
 export const adminOpenAppsRouter = Router()
 adminOpenAppsRouter.use(requireAbility('apps:review'))
 adminOpenAppsRouter.use((_req, res, next) => {
@@ -93,8 +110,8 @@ adminOpenAppsRouter.post('/:id/approve', async (req, res, next) => {
     const app = await getApp(req.params.id)
     const r = approve(app, { scopes: req.body?.scopes, tier: req.body?.tier, note: req.body?.note })
     if (!r.ok) return fromReview(res, r)
-    await patchApp(app.id, { ...r.patch, reviewed_by: req.user.id, reviewed_at: new Date() })
-    await logReview(app.id, req.user.id, r.event.action, r.event.detail)
+    await patchApp(app.id, { ...r.patch, reviewed_by: reviewerId(req), reviewed_at: new Date() })
+    await logReview(app.id, reviewerId(req), r.event.action, r.event.detail)
     res.json(await shape(app.id))
   } catch (e) {
     next(e)
@@ -107,8 +124,8 @@ adminOpenAppsRouter.post('/:id/reject', async (req, res, next) => {
     const app = await getApp(req.params.id)
     const r = reject(app, { reason: req.body?.reason })
     if (!r.ok) return fromReview(res, r)
-    await patchApp(app.id, { ...r.patch, reviewed_by: req.user.id, reviewed_at: new Date() })
-    await logReview(app.id, req.user.id, r.event.action, r.event.detail)
+    await patchApp(app.id, { ...r.patch, reviewed_by: reviewerId(req), reviewed_at: new Date() })
+    await logReview(app.id, reviewerId(req), r.event.action, r.event.detail)
     res.json(await shape(app.id))
   } catch (e) {
     next(e)
@@ -127,8 +144,8 @@ adminOpenAppsRouter.post('/:id/suspend', async (req, res, next) => {
     const app = await getApp(req.params.id)
     const r = suspend(app, { reason: req.body?.reason })
     if (!r.ok) return fromReview(res, r)
-    await patchApp(app.id, { ...r.patch, reviewed_by: req.user.id, reviewed_at: new Date() })
-    await logReview(app.id, req.user.id, r.event.action, r.event.detail)
+    await patchApp(app.id, { ...r.patch, reviewed_by: reviewerId(req), reviewed_at: new Date() })
+    await logReview(app.id, reviewerId(req), r.event.action, r.event.detail)
     res.json({
       ...(await shape(app.id)),
       notice: '已停用：不能再换新令牌、不能再领 ROM 凭据。⚠️ 已经发出去的令牌最长还有 15 分钟有效。',
@@ -144,8 +161,8 @@ adminOpenAppsRouter.post('/:id/restore', async (req, res, next) => {
     const app = await getApp(req.params.id)
     const r = restore(app)
     if (!r.ok) return fromReview(res, r)
-    await patchApp(app.id, { ...r.patch, reviewed_by: req.user.id, reviewed_at: new Date() })
-    await logReview(app.id, req.user.id, r.event.action, r.event.detail)
+    await patchApp(app.id, { ...r.patch, reviewed_by: reviewerId(req), reviewed_at: new Date() })
+    await logReview(app.id, reviewerId(req), r.event.action, r.event.detail)
     res.json(await shape(app.id))
   } catch (e) {
     next(e)

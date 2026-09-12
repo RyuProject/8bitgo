@@ -198,3 +198,68 @@ export const SCOPE_LABELS: Record<string, string> = {
   'saves.read': '读云存档',
   'saves.write': '写云存档',
 }
+
+/* ---------------- 设备码流程：用户确认那一步 ---------------- */
+
+export interface DeviceScope {
+  id: string
+  desc: string
+  sensitive: boolean
+}
+export interface DeviceAuthInfo {
+  app: { id: string; name: string; logo: string | null; homepage: string | null; status: string }
+  scopes: DeviceScope[]
+  /** 沙箱应用只能授权给开发者本人和登记过的测试账号，见 apps-repo.canAuthorize */
+  allowed: boolean
+  reason: string
+}
+
+/** 这串码是哪个应用要的、要哪些权限 */
+export async function deviceAuthInfo(code: string): Promise<DeviceAuthInfo> {
+  return api.get(`/api/open-device/${encodeURIComponent(code)}`)
+}
+
+/** 同意 / 拒绝 */
+export async function decideDeviceAuth(code: string, approve: boolean): Promise<{ ok: boolean; approved: boolean }> {
+  return api.post(`/api/open-device/${encodeURIComponent(code)}`, { approve })
+}
+
+/* ---------------- 授权码流程：用户同意页（/open/authorize） ---------------- */
+
+/**
+ * 同意页要展示的东西：哪个应用、要哪些权限、沙箱没放行时为什么灰按钮。
+ * 形状和服务端 routes/oauth.js 的 `GET /api/oauth/authorize`（Accept: json）回包一致。
+ */
+export interface AuthorizeScope {
+  id: string
+  desc: string
+  sensitive: boolean
+}
+export interface AuthorizeInfo {
+  client_id: string
+  app: { id: string; name: string; logo: string | null; homepage: string | null; status: AppStatus }
+  scopes: AuthorizeScope[]
+  redirect_uri: string
+  state: string
+  /** 沙箱应用只能授权给开发者本人和测试账号；false 时同意按钮要灰掉 */
+  allowed: boolean
+  reason: string
+}
+/** 点了同意 / 拒绝后的回包：SPA 拿到后自己 302 跳回第三方 redirect_uri */
+export interface AuthorizeResult {
+  redirect_uri: string
+  state: string | null
+  code: string | null
+  error: string | null
+}
+
+/** 取这枚授权请求要展示的内容（把地址里的 OAuth 参数原样传回去） */
+export async function authorizeInfo(params: Record<string, string>): Promise<AuthorizeInfo> {
+  const qs = new URLSearchParams(params).toString()
+  return api.get(`/api/oauth/authorize?${qs}`)
+}
+
+/** 同意 / 拒绝。decision 之外要把原始 OAuth 参数一起带回去，服务端会再校验一遍 */
+export async function decideAuthorize(params: Record<string, string>, approve: boolean): Promise<AuthorizeResult> {
+  return api.post(`/api/oauth/authorize`, { ...params, decision: approve ? 'approve' : 'deny' })
+}

@@ -1,0 +1,37 @@
+{
+  "name": "@8bitgo/open-sdk",
+  "version": "0.1.0",
+  "description": "Official 8BitGo Open Platform SDK (TypeScript). A framework-agnostic client for the public /api/open/v1 API — games metadata, signed ROM download grants and signed embed URLs, with app-level client_credentials authentication.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test test/auth.test.ts test/client.test.ts test/resources.test.ts test/userflows.test.ts test/library-saves.test.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2"
+  },
+  "keywords": [
+    "8bitgo",
+    "retro",
+    "emulator",
+    "open-platform",
+    "sdk"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

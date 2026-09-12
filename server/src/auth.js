@@ -8,9 +8,70 @@ const ADMIN_TOKEN = process.env.ADMIN_TOKEN || ''
 
 /**
  * ⚠️ 开发用后门：.env 里 ADMIN_AUTH_DISABLED=1 时，后台写操作（增删改游戏 / 文章 / 用户）不再校验身份。
- * 只在本机开发时开启。线上一定要删掉这行配置或设为 0，否则任何人都能删光你的数据。
+ * 只在本机开发时开启。
+ *
+ * ## 为什么它现在会让进程**起不来**，而不只是打一行警告
+ *
+ * roleOfRequest 的第一行就是 `if (ADMIN_AUTH_DISABLED) return 'admin'` —— 在读 token
+ * **之前**。也就是说这个开关一开，一条不带任何凭证的
+ * `PATCH /api/users/<id> {"role":"admin"}` 就能提权，`DELETE /api/games/<slug>` 就能删库。
+ *
+ * 原来的保护只有启动时的一段警告。而这个仓库的 .env 是**连同注释一起带上服务器**的
+ * （里面写着「部署到那台服务器上运行时，把 DB_PORT 改回 3306」）—— 靠人记得改掉
+ * 其中一行，这件事已经失败过一次：2026-09-12 审计时发现它在一份 PUBLIC_SITE_URL
+ * 指向正式域名、DB 连着生产库的 .env 里开着。
+ *
+ * 所以改成硬护栏：**只要站点地址不是本机，带着这个开关启动就直接退出**。
+ * 误伤的代价是「本地用了个非 localhost 的域名调试，得多设一个环境变量」；
+ * 漏掉的代价是整个数据库。
  */
 export const ADMIN_AUTH_DISABLED = /^(1|true|yes|on)$/i.test(process.env.ADMIN_AUTH_DISABLED || '')
+
+/**
+ * 这个站点地址是不是「本机」。localhost / 127.x / ::1 / *.local / 私网地址都算。
+ *
+ * 纯函数，单独导出是为了能被测试真的跑一遍 —— 这道护栏要是自己判错了，
+ * 要么线上起不来，要么后门照样能开，两种都很糟。
+ */
+export function isLocalSiteUrl(raw) {
+  let host
+  try {
+    host = new URL(String(raw || '')).hostname.toLowerCase()
+  } catch {
+    // 地址本身就不合法：当成「不是本机」。宁可拦住启动，也不能猜成本机放行
+    return false
+  }
+  if (host === 'localhost' || host === '::1' || host === '[::1]') return true
+  if (host.endsWith('.localhost') || host.endsWith('.local')) return true
+  if (/^127\./.test(host)) return true
+  // 私网段：10.x / 192.168.x / 172.16-31.x
+  if (/^10\./.test(host) || /^192\.168\./.test(host)) return true
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return true
+  return false
+}
+
+/**
+ * 后门开着、而站点地址不是本机 —— 这种组合绝不允许跑起来。
+ *
+ * @returns {string} 空串 = 可以启动；否则是要打印的那段话
+ */
+export function adminBackdoorFatal(env = process.env) {
+  if (!ADMIN_AUTH_DISABLED) return ''
+  const site = env.PUBLIC_SITE_URL || env.VITE_SITE_URL || ''
+  if (isLocalSiteUrl(site)) return ''
+  /*
+    留一个逃生口：确实要在非本机域名上开着后门调试（比如内网测试机用了自定义域名）。
+    名字写得很难被手滑打出来，而且它自己就是一句话的说明 ——
+    有人在生产环境设了这个，那是明知故犯，不是漏配。
+  */
+  if (/^(1|true|yes|on)$/i.test(env.I_KNOW_ADMIN_AUTH_IS_DISABLED || '')) return ''
+  return (
+    `后台鉴权后门（ADMIN_AUTH_DISABLED）开着，而 PUBLIC_SITE_URL 是「${site || '未设置'}」——\n` +
+    '     这不是本机地址，任何人都能不带凭证删光你的游戏 / 文章 / 用户。\n' +
+    '     把 .env 里的 ADMIN_AUTH_DISABLED 删掉或设为 0 再启动。\n' +
+    '     确实要在非本机域名上开着它调试：额外设 I_KNOW_ADMIN_AUTH_IS_DISABLED=1。'
+  )
+}
 
 export async function hashPassword(plain) {
   return bcrypt.hash(plain, 10)

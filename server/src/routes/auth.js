@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import jwt from 'jsonwebtoken'
 import { query, queryOne } from '../db.js'
 import { hashPassword, verifyPassword, signToken, requireUser, tokenVersionOf } from '../auth.js'
+import { isEmail } from '../../../shared/email.js'
 import { clientKey, isMeaningfulIp, take } from '../rateLimit.js'
 import { userRowToPublic } from '../mappers.js'
 import { favIds, recentIds } from '../userdata.js'
@@ -13,7 +14,7 @@ import { fetchJson, verifyIdToken } from '../oidc.js'
 export const authRouter = Router()
 
 const WELCOME_COINS = 100
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
 
 function newId() {
   return 'u_' + crypto.randomBytes(6).toString('hex')
@@ -100,7 +101,7 @@ authRouter.post('/register', async (req, res, next) => {
     const email = String(req.body.email || '').trim().toLowerCase()
     const nickname = String(req.body.nickname || '').trim()
     const password = String(req.body.password || '')
-    if (!EMAIL_RE.test(email)) return res.status(400).json({ error: '邮箱格式不正确' })
+    if (!isEmail(email)) return res.status(400).json({ error: '邮箱格式不正确' })
     if (nickname.length < 2 || nickname.length > 16) return res.status(400).json({ error: '昵称需要 2–16 个字符' })
     if (password.length < 6) return res.status(400).json({ error: '密码至少 6 位' })
     if (!authGateOk(req, res, { kind: 'register' })) return
@@ -126,6 +127,18 @@ authRouter.post('/login', async (req, res, next) => {
   try {
     const email = String(req.body.email || '').trim().toLowerCase()
     const password = String(req.body.password || '')
+    /*
+      ⚠️ 校验必须在 authGateOk **之前**，理由不是「省一次查库」，是两件安全上的事：
+
+      1. 下面那道按邮箱的闸把 email **拼进限流表的 key**（authGateOk 里的
+         `auth:login:email:${email}`）。不校验的话，这个 key 是攻击者完全可控、
+         长度无上限的字符串 —— rateLimit 的 MAX_BUCKETS 管的是**条数**不是字节，
+         几十条 4MB 的 key 就能把限流表本身撑爆，而限流表正是用来防这类事的。
+      2. isEmail 自带长度闸，挡住那条正则的灾难性回溯（见 shared/email.js）。
+
+      格式不对时故意回和「密码错」**同一句话**：区分开就成了账号枚举器。
+    */
+    if (!isEmail(email)) return res.status(401).json({ error: '邮箱或密码不正确' })
     // 闸在查库和 bcrypt 之前 —— 那两步才是攻击者真正想让我们花的钱
     if (!authGateOk(req, res, { email, kind: 'login' })) return
     const row = await queryOne('SELECT * FROM users WHERE email = ?', [email])
@@ -158,7 +171,7 @@ authRouter.post('/login', async (req, res, next) => {
 authRouter.post('/email/request-code', async (req, res, next) => {
   try {
     const email = String(req.body.email || '').trim().toLowerCase()
-    if (!EMAIL_RE.test(email)) return res.status(400).json({ error: '邮箱格式不正确' })
+    if (!isEmail(email)) return res.status(400).json({ error: '邮箱格式不正确' })
     res.json({ ok: true, ...(await issueCode(req, email, 'login')) })
   } catch (e) {
     sendCodeError(res, next, e)
@@ -168,7 +181,7 @@ authRouter.post('/email/request-code', async (req, res, next) => {
 authRouter.post('/email/verify', async (req, res, next) => {
   try {
     const email = String(req.body.email || '').trim().toLowerCase()
-    if (!EMAIL_RE.test(email)) return res.status(400).json({ error: '邮箱格式不正确' })
+    if (!isEmail(email)) return res.status(400).json({ error: '邮箱格式不正确' })
     await verifyCode(email, 'login', String(req.body.code || ''))
     const row = await findOrCreateByEmail(email, nicknameFromEmail(email))
     if (row.status === 'banned') return res.status(403).json({ error: '该账号已被封禁，请联系管理员' })
@@ -201,7 +214,7 @@ authRouter.post('/google', async (req, res, next) => {
       return res.status(401).json({ error: 'Google 邮箱未验证' })
     }
     const email = String(info.email || '').trim().toLowerCase()
-    if (!EMAIL_RE.test(email)) return res.status(401).json({ error: '无法获取 Google 邮箱' })
+    if (!isEmail(email)) return res.status(401).json({ error: '无法获取 Google 邮箱' })
     const nickname = String(info.name || nicknameFromEmail(email)).slice(0, 16)
     const row = await findOrCreateByEmail(email, nickname)
     if (row.status === 'banned') return res.status(403).json({ error: '该账号已被封禁，请联系管理员' })
@@ -463,7 +476,7 @@ async function oauthCallback(req, res, next) {
     }
 
     const { email, verified, name } = p.profile(payload, src)
-    if (!EMAIL_RE.test(email)) return failBack(res, cst, 'noemail')
+    if (!isEmail(email)) return failBack(res, cst, 'noemail')
     // 拿不到「这个邮箱确实归他」的证据就不能凭它发身份 —— 本站是按邮箱合并账号的
     if (!verified) return failBack(res, cst, 'unverified')
 

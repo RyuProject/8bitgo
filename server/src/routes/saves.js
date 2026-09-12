@@ -13,7 +13,7 @@
  */
 import { Router } from 'express'
 import express from 'express'
-import { query, queryOne } from '../db.js'
+import { query, queryOne, withTransaction } from '../db.js'
 import { requireUser } from '../auth.js'
 
 /** 单份存档上限。GBA 快照几十 KB、DOS 变更包几百 KB，4MB 已经很宽裕 */
@@ -83,27 +83,36 @@ export const savesRouter = Router()
 // 云存档必须登录 —— 这就是它和「浏览器里的存档」最本质的区别
 savesRouter.use(requireUser)
 
-/** 把路径参数校验成一份存档的坐标；不合法就直接回错 */
-function coords(req, res) {
-  const runtime = String(req.params.runtime || '')
+/**
+ * 一份存档的坐标校验。**纯函数**，不碰 req / res。
+ *
+ * 单独拎出来是因为开放平台那条路（`/api/open/v1/saves`）也要用它，
+ * 而那边的错误体是 OAuth 形状、和站内不是一套 —— 共用「怎么判」，各写各的「怎么回」。
+ * 两边各判一遍的话，哪天加个引擎名只会改其中一处，
+ * 而症状是「站内能存，第三方说未知的引擎」。
+ *
+ * @returns {{ ok: true, runtime, slug, slot } | { ok: false, reason: 'runtime'|'slug'|'slot' }}
+ */
+export function saveCoords({ runtime, slug, slot }) {
+  const rt = String(runtime || '')
   // ⚠️ 这里**不要**再 decodeURIComponent：Express 取路由参数时已经解过一次了。
   // 再解一次的话，名字里带 % 的文件（`local:100%.zip`）会被解坏甚至抛错。
   // 编码本身就坏掉的路径（%zz）Express 会自己按 400 挡掉，轮不到我们。
-  const slug = String(req.params.slug || '')
-  const slot = Number(req.query.slot ?? 0)
-  if (!RUNTIMES.has(runtime)) {
-    res.status(400).json({ error: '未知的引擎' })
-    return null
-  }
-  if (!slugOk(slug)) {
-    res.status(400).json({ error: '游戏标识不合法' })
-    return null
-  }
-  if (!Number.isInteger(slot) || slot < 0 || slot > MAX_SLOT) {
-    res.status(400).json({ error: '存档位不合法' })
-    return null
-  }
-  return { runtime, slug, slot }
+  const sl = String(slug || '')
+  const n = Number(slot ?? 0)
+  if (!RUNTIMES.has(rt)) return { ok: false, reason: 'runtime' }
+  if (!slugOk(sl)) return { ok: false, reason: 'slug' }
+  if (!Number.isInteger(n) || n < 0 || n > MAX_SLOT) return { ok: false, reason: 'slot' }
+  return { ok: true, runtime: rt, slug: sl, slot: n }
+}
+
+/** 站内那一侧：校验不过就直接回站内形状的错 */
+function coords(req, res) {
+  const c = saveCoords({ runtime: req.params.runtime, slug: req.params.slug, slot: req.query.slot })
+  if (c.ok) return { runtime: c.runtime, slug: c.slug, slot: c.slot }
+  const msg = c.reason === 'runtime' ? '未知的引擎' : c.reason === 'slug' ? '游戏标识不合法' : '存档位不合法'
+  res.status(400).json({ error: msg })
+  return null
 }
 
 /** 我的存档清单（只给元信息，不带存档内容 —— 列表页不需要几百 KB 的二进制） */
@@ -211,37 +220,58 @@ savesRouter.put(
         return res.status(413).json({ error: '存档太大' })
       }
 
-      // 份数 + 总字节一起查，判定交给 saveQuotaError（纯函数，规则写在它头上）
-      const existing = await queryOne(
-        'SELECT size FROM saves WHERE user_id = ? AND runtime = ? AND game_slug = ? AND slot = ?',
-        [req.user.id, c.runtime, c.slug, c.slot],
-      )
-      const used = await queryOne(
-        'SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM saves WHERE user_id = ?',
-        [req.user.id],
-      )
-      const denied = saveQuotaError(
-        { count: Number(used?.n ?? 0), bytes: Number(used?.bytes ?? 0) },
-        Number(existing?.size ?? 0),
-        req.body.length,
-      )
-      if (denied) return res.status(denied.status).json({ error: denied.error })
+      /*
+        ⚠️ 配额的「查」和「写」必须在**同一个事务、同一把锁**下面。
 
-      /**
-       * ⚠️ updated_at 必须显式写，不能指望列上的 ON UPDATE CURRENT_TIMESTAMP。
-       *
-       * MySQL 在「所有列的新值和旧值都一样」时不会真的更新这一行，
-       * ON UPDATE CURRENT_TIMESTAMP 也就不触发。玩家在同一帧反复存档
-       * （或者 DOS 的变更包一个字节没变），时间戳就永远停在第一次那一下，
-       * 界面上的「最后存档时间」跟着一起卡住。
-       */
-      await query(
-        `INSERT INTO saves (user_id, runtime, game_slug, slot, size, data)
-              VALUES (?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE size = VALUES(size), data = VALUES(data),
-                                 updated_at = CURRENT_TIMESTAMP`,
-        [req.user.id, c.runtime, c.slug, c.slot, req.body.length, req.body],
-      )
+        原来这里是三条各自取连接的语句：查这一格原来多大 → 查这个人一共占了多少 →
+        判定 → 写。中间没有事务也没有锁，于是并发 PUT **不同档位**（不同 slot 不撞主键）
+        时，每一条读到的都是同一个旧的 SUM(size)，全部通过 `after > MAX_TOTAL_BYTES`
+        那一关。单账号可以稳定超出 64MB 上限，撑的是数据库磁盘（存档是 BLOB）。
+        而这条路由**一道限流都没有**，所以没有别的东西能兜住它。
+
+        锁的是 users 那一行而不是 saves 的行：新开一格时 saves 里根本没有行可锁，
+        FOR UPDATE 锁不住不存在的行（间隙锁的行为还取决于隔离级别和索引，不能押在上面）。
+        users 行一定存在，锁它等于把「这个人的存档写入」串行化 ——
+        代价只落在同一个账号自己并发存档的时候，那本来就该排队。
+      */
+      const result = await withTransaction(async (run) => {
+        // 这一行只为拿锁，取什么列不重要
+        await run('SELECT id FROM users WHERE id = ? FOR UPDATE', [req.user.id])
+
+        // 份数 + 总字节一起查，判定交给 saveQuotaError（纯函数，规则写在它头上）
+        const existing = (await run(
+          'SELECT size FROM saves WHERE user_id = ? AND runtime = ? AND game_slug = ? AND slot = ?',
+          [req.user.id, c.runtime, c.slug, c.slot],
+        ))[0]
+        const used = (await run(
+          'SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM saves WHERE user_id = ?',
+          [req.user.id],
+        ))[0]
+        const denied = saveQuotaError(
+          { count: Number(used?.n ?? 0), bytes: Number(used?.bytes ?? 0) },
+          Number(existing?.size ?? 0),
+          req.body.length,
+        )
+        if (denied) return { denied }
+
+        /**
+         * ⚠️ updated_at 必须显式写，不能指望列上的 ON UPDATE CURRENT_TIMESTAMP。
+         *
+         * MySQL 在「所有列的新值和旧值都一样」时不会真的更新这一行，
+         * ON UPDATE CURRENT_TIMESTAMP 也就不触发。玩家在同一帧反复存档
+         * （或者 DOS 的变更包一个字节没变），时间戳就永远停在第一次那一下，
+         * 界面上的「最后存档时间」跟着一起卡住。
+         */
+        await run(
+          `INSERT INTO saves (user_id, runtime, game_slug, slot, size, data)
+                VALUES (?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE size = VALUES(size), data = VALUES(data),
+                                   updated_at = CURRENT_TIMESTAMP`,
+          [req.user.id, c.runtime, c.slug, c.slot, req.body.length, req.body],
+        )
+        return { denied: null }
+      })
+      if (result.denied) return res.status(result.denied.status).json({ error: result.denied.error })
       res.json({ ok: true, size: req.body.length, updatedAt: Date.now() })
     } catch (e) {
       next(e)

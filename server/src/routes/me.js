@@ -9,9 +9,9 @@ import { favIds, recentIds, gameIdBySlug } from '../userdata.js'
 import { gamesRatedBy, recomputeGameRatings } from '../ratings-repo.js'
 import { issueCode, verifyCode, sendCodeError } from '../codes.js'
 import { checkAdultBirthDate } from '../../../shared/age.js'
+import { isEmail } from '../../../shared/email.js'
 import { normalizeAvatar } from '../../../shared/avatar.js'
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 export const meRouter = Router()
 meRouter.use(requireUser)
@@ -100,10 +100,27 @@ meRouter.post('/favorites/:slug', async (req, res, next) => {
     const { id } = req.user
     const gameId = await gameIdBySlug(req.params.slug)
     if (!gameId) return res.status(404).json({ error: '游戏不存在' })
-    const has = await queryOne('SELECT 1 AS x FROM favorites WHERE user_id = ? AND game_id = ?', [id, gameId])
-    if (has) await query('DELETE FROM favorites WHERE user_id = ? AND game_id = ?', [id, gameId])
-    else await query('INSERT INTO favorites (user_id, game_id) VALUES (?, ?)', [id, gameId])
-    res.json({ favorited: !has, favorites: await favIds(id) })
+    /*
+      ⚠️ 「先查再写」在这里会真的出故障，不是理论问题。
+
+      favorites 的主键是 (user_id, game_id)。原来是 SELECT → 分支 → 裸 INSERT：
+      用户双击一下收藏（或者两个标签页各点一次），两条请求都读到「还没收藏」，
+      两条 INSERT 都发出去，第二条 ER_DUP_ENTRY → 500。
+      而那时**第一条已经成功了** —— 界面显示「收藏失败」，库里其实有了，
+      界面陈述的状态是错的。
+
+      改成「先删，删不到才插」：两条语句各自原子，撞不出异常。
+      · 删到了 → 本来是收藏状态，这次是取消
+      · 没删到 → 本来没收藏，插进去（INSERT IGNORE 让并发的第二条安静地什么都不做）
+      同文件的 recents 用 ON DUPLICATE KEY UPDATE、collections 用 INSERT IGNORE，
+      这里是唯一漏掉的一处。
+    */
+    const removed = await query('DELETE FROM favorites WHERE user_id = ? AND game_id = ?', [id, gameId])
+    const favorited = Number(removed?.affectedRows ?? 0) === 0
+    if (favorited) {
+      await query('INSERT IGNORE INTO favorites (user_id, game_id) VALUES (?, ?)', [id, gameId])
+    }
+    res.json({ favorited, favorites: await favIds(id) })
   } catch (e) {
     next(e)
   }
@@ -221,7 +238,7 @@ async function rotateToken(userId) {
 meRouter.post('/email/request-code', async (req, res, next) => {
   try {
     const email = String(req.body.email || '').trim().toLowerCase()
-    if (!EMAIL_RE.test(email)) return res.status(400).json({ error: '邮箱格式不正确' })
+    if (!isEmail(email)) return res.status(400).json({ error: '邮箱格式不正确' })
     if (email === String(req.user.email).toLowerCase()) {
       return res.status(400).json({ error: '这已经是你当前的邮箱了' })
     }
@@ -244,7 +261,7 @@ meRouter.post('/email/request-code', async (req, res, next) => {
 meRouter.post('/email', async (req, res, next) => {
   try {
     const email = String(req.body.email || '').trim().toLowerCase()
-    if (!EMAIL_RE.test(email)) return res.status(400).json({ error: '邮箱格式不正确' })
+    if (!isEmail(email)) return res.status(400).json({ error: '邮箱格式不正确' })
     await verifyCode(email, 'bind', String(req.body.code || ''), req.user.id)
 
     // 验码这十分钟里可能有别人注册了同一个邮箱，所以这里必须再查一次。

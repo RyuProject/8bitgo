@@ -105,6 +105,8 @@ async function request<T>(method: string, path: string, { body, admin = false }:
   const res = await fetch(`${API_URL}${path}`, {
     method,
     headers: {
+      // 整个 API 都是 JSON；显式声明让 /api/oauth/authorize 这类按 Accept 分流的端点回 JSON 而不是 HTML
+      Accept: 'application/json',
       ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
       ...authHeaders(admin),
     },
