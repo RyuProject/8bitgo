@@ -82,6 +82,7 @@
     "test:favicon": "node scripts/test-favicon.mjs",
     "test:spatial-focus": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-spatial-focus.mjs",
     "test:tv-host": "node scripts/test-tv-host.mjs",
+    "test:tv-page": "node scripts/test-tv-page.mjs",
   "test:platforms": "node scripts/test-platforms.mjs",
     "test:j2me": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-j2me.mjs",
     "test:ejs-cores": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-ejs-cores.mjs",

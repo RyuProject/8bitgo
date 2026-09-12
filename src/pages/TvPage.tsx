@@ -4,8 +4,8 @@ import type { Game, PlatformId } from '@/types'
 import type { Lang } from '@/config/languages'
 import { platforms, platformMap } from '@/data/platforms'
 import { isPlatformEnabled } from '@/config/platforms'
-import { gameTitle } from '@/services/i18nData'
-import { useT } from '@/services/i18n'
+import { gameDescription, gameTitle } from '@/services/i18nData'
+import { useT, fmt } from '@/services/i18n'
 import { useLang } from '@/services/lang'
 import { useSeo } from '@/services/seo'
 import { tvOrigin } from '@/services/tvHost'
@@ -14,7 +14,7 @@ import { cx } from '@/lib/format'
 import { gradientFor } from '@/lib/gradients'
 import { fetchTv, computeRotation, type TvSignal } from '@/services/tv'
 import { fetchPageData } from '@/services/pageData'
-import { FocusScope, useFocusable } from '@/components/tv/FocusScope'
+import { FocusScope, useFocusable, useFocusedId } from '@/components/tv/FocusScope'
 
 /**
  * 8BitGo TV —— 十个脚下的 10-foot UI（客厅电视 / 投影）。
@@ -90,42 +90,66 @@ export function TvPage() {
   // ---- 大磁贴墙：每个平台拉一页热门，按平台分行 ----
   const { rows, error } = usePlatformWall(12)
 
+  // ---- 平台筛选 + 当前列表 ----
+  const [platform, setPlatform] = useState<PlatformId | 'all'>('all')
+  const list = !rows ? [] : platform === 'all' ? rows.flatMap((r) => r.items) : (rows.find((r) => r.id === platform)?.items ?? [])
+
+  /*
+    整屏不滚。
+
+    电视和车机上「往下滚还有内容」是一条走不通的路：遥控器没有滚轮，
+    车机屏幕在行驶中根本不该要求人去翻页。所以这一页是**一屏**：
+    h-dvh + overflow-hidden，真正会滚的只有左边那列表自己（焦点移动时由
+    FocusScope 的 ensureVisible 带着走）。
+
+    四周的 padding 是 overscan 安全边距：老电视会把画面边缘裁掉一圈，
+    贴边的字在客厅里是看不到的。
+  */
   return (
-    <div className="container-x py-8 sm:py-10">
-      <header className="flex items-center gap-3">
-        <span className="text-3xl" aria-hidden>📺</span>
-        <h1 className="text-2xl font-extrabold tracking-tight sm:text-3xl">{t.tv.title}</h1>
-      </header>
-      <p className="mt-1 text-sm text-muted">{t.tv.tagline}</p>
-      <p className="mt-2 text-xs text-dim">用方向键浏览 · 回车播放（电视遥控器同样适用）</p>
-
-      <FocusScope initialId="nowplaying" className="mt-6">
-        {/* 顶部「正在播」一条 */}
-        {!rotation || forceOffline || signalState === 'offline' ? (
-          <div className="flex h-48 items-center justify-center rounded-2xl border-2 border-dashed border-line text-center sm:h-60">
-            <div>
-              <p className="text-5xl" aria-hidden>📡</p>
-              <p className="mt-2 font-extrabold text-live">{t.tv.offAirTitle}</p>
-              <p className="text-sm text-muted">{t.tv.offAirBody}</p>
-            </div>
+    <div className="flex h-dvh flex-col overflow-hidden bg-bg px-8 py-6 sm:px-12 sm:py-8">
+      <FocusScope initialId="plat:all" className="flex min-h-0 flex-1 flex-col">
+        {/* ── 顶栏：站名 + 正在播 + 平台筛选 ── */}
+        <header className="shrink-0">
+          <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+            <h1 className="text-pixel text-xl font-extrabold tracking-widest text-fg sm:text-2xl">{t.tv.title}</h1>
+            {rotation && !forceOffline && signalState === 'ready' ? (
+              <NowPlayingChip game={rotation.current} lang={lang} t={t} />
+            ) : signalState === 'offline' || forceOffline ? (
+              <span className="text-xs text-dim">{t.tv.offAirTitle}</span>
+            ) : null}
           </div>
-        ) : (
-          <NowPlaying game={rotation.current} lang={lang} t={t} />
-        )}
 
-        {/* 按平台分行的大磁贴墙 */}
-        <div className="mt-8 space-y-8">
-          {!rows ? (
-            error ? (
-              <p className="rounded-2xl border border-dashed border-line py-16 text-center text-muted">{error}</p>
-            ) : (
-              Array.from({ length: 4 }).map((_, i) => (
-                <div key={i} className="h-48 animate-pulse rounded-2xl bg-surface-2" />
-              ))
-            )
-          ) : (
-            rows.map((row) => <PlatformRow key={row.id} row={row} lang={lang} />)
-          )}
+          {/* 平台筛选：横排一行，方向键走得到 */}
+          <nav className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2">
+            <FilterChip id="plat:all" label={t.tv.allChannels} active={platform === 'all'} onPick={() => setPlatform('all')} />
+            {(rows ?? []).map((r) => (
+              <FilterChip
+                key={r.id}
+                id={`plat:${r.id}`}
+                label={r.name}
+                active={platform === r.id}
+                onPick={() => setPlatform(r.id)}
+              />
+            ))}
+          </nav>
+          <p className="mt-2 text-[11px] tracking-widest text-dim">
+            {fmt(t.tv.playableGames, { n: list.length })} · 方向键选择 · 回车开始
+          </p>
+        </header>
+
+        {/* ── 主体：左列表 + 右大图。两边都不撑高页面，超出的部分列表自己滚 ── */}
+        <div className="mt-5 grid min-h-0 flex-1 gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+          <ul className="min-h-0 overflow-y-auto pr-2">
+            {!rows
+              ? Array.from({ length: 8 }).map((_, i) => (
+                  <li key={i} className="my-2 h-8 animate-pulse rounded bg-surface-2" />
+                ))
+              : list.map((g) => <ListRow key={g.slug} game={g} lang={lang} />)}
+            {rows && !list.length && <li className="py-8 text-muted">{error ?? t.tv.offAirBody}</li>}
+          </ul>
+
+          {/* 右边这块**不可聚焦**：它是左边焦点的放大镜，不是一个可以走进去的地方 */}
+          <Preview games={list} lang={lang} t={t} />
         </div>
       </FocusScope>
     </div>
@@ -134,79 +158,110 @@ export function TvPage() {
 
 /* ============================ 顶部「正在播」 ============================ */
 
-function NowPlaying({ game, lang, t }: { game: Game; lang: Lang; t: ReturnType<typeof useT> }) {
+/**
+ * ⚠️ 凡是挂了 `data-focus-id` 的元素，FocusScope 都会把它算成焦点候选
+ * （见那个文件里 `querySelectorAll('[data-focus-id]')`）。所以**挂了 id 就必须
+ * 用 useFocusable 画出焦点态** —— 否则方向键走到它身上时屏幕上什么都不亮，
+ * 用户看到的是「焦点凭空消失了」，再按一下又从别处冒出来。
+ * 这一条比它看起来重要：电视上没有鼠标指针兜底，焦点是唯一的位置感来源。
+ */
+function NowPlayingChip({ game, lang, t }: { game: Game; lang: Lang; t: ReturnType<typeof useT> }) {
   const { focused, setFocus } = useFocusable('nowplaying')
   return (
     <Link
       to={`/games/${game.slug}`}
       data-focus-id="nowplaying"
       onMouseEnter={setFocus}
-      aria-label={t.tv.watchNow}
       className={cx(
-        'group relative block h-56 overflow-hidden rounded-2xl border-2 transition sm:h-72',
-        focused ? 'z-10 border-coin ring-4 ring-coin' : 'border-transparent',
+        'inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs transition',
+        focused ? 'border-coin text-fg outline outline-2 outline-offset-2 outline-coin' : 'border-line text-muted',
       )}
     >
-      <ScreenBackground game={game} iconClassName="text-8xl sm:text-9xl" />
-      <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent" />
-      <div className="absolute left-4 top-4 flex items-center gap-2 rounded-lg bg-black/55 px-2.5 py-1.5 backdrop-blur">
-        <span className="h-2 w-2 rounded-full bg-live animate-blink" />
-        <span className="text-pixel text-sm font-bold text-coin">正在播 · {t.tv.live}</span>
+      <span className="h-2 w-2 rounded-full bg-live animate-blink" aria-hidden />
+      {t.tv.nowPlaying} · <span className="font-bold text-fg">{gameTitle(game, lang)}</span>
+    </Link>
+  )
+}
+
+/* ============================ 顶部筛选 ============================ */
+
+function FilterChip({ id, label, active, onPick }: { id: string; label: string; active: boolean; onPick: () => void }) {
+  const { focused, setFocus } = useFocusable(id)
+  return (
+    <button
+      type="button"
+      data-focus-id={id}
+      onMouseEnter={setFocus}
+      onClick={onPick}
+      aria-pressed={active}
+      className={cx(
+        'text-sm tracking-widest transition',
+        active ? 'font-bold text-fg' : 'text-dim hover:text-muted',
+        // 焦点框要粗、要高对比：客厅里离屏幕三米，细边框是看不见的
+        focused && 'rounded px-1 text-fg outline outline-2 outline-offset-4 outline-coin',
+      )}
+    >
+      {label}
+    </button>
+  )
+}
+
+/* ============================ 左：游戏列表 ============================ */
+
+function ListRow({ game, lang }: { game: Game; lang: Lang }) {
+  const id = `game:${game.slug}`
+  const { focused, setFocus } = useFocusable(id)
+  return (
+    <li>
+      <Link
+        to={`/games/${game.slug}`}
+        data-focus-id={id}
+        onMouseEnter={setFocus}
+        className={cx(
+          'flex items-center gap-3 rounded-lg px-2 py-2 text-lg transition sm:text-xl',
+          focused ? 'bg-surface-2 font-bold text-fg outline outline-2 outline-coin' : 'text-muted',
+        )}
+      >
+        <span aria-hidden className={cx('h-1.5 w-1.5 shrink-0 rounded-full', focused ? 'bg-coin' : 'bg-line')} />
+        <span className="truncate">{gameTitle(game, lang)}</span>
+      </Link>
+    </li>
+  )
+}
+
+/* ============================ 右：跟着焦点的大图 ============================ */
+
+function Preview({ games, lang, t }: { games: Game[]; lang: Lang; t: ReturnType<typeof useT> }) {
+  const focusedId = useFocusedId()
+  /*
+    焦点在筛选行上（还没进列表）时，预览就显示列表第一款 —— 留一块空白
+    更糟：这块占了半个屏幕，空着的时候整页看起来像没加载出来。
+  */
+  const slug = focusedId?.startsWith('game:') ? focusedId.slice('game:'.length) : ''
+  const game = games.find((g) => g.slug === slug) ?? games[0]
+  if (!game) return <div aria-hidden />
+
+  const plat = platformMap[game.platform]
+  return (
+    <div className="hidden min-h-0 flex-col justify-center lg:flex">
+      <div className="relative mx-auto aspect-[4/3] w-full max-w-xl overflow-hidden rounded-2xl border border-line">
+        <ScreenBackground game={game} iconClassName="text-8xl" />
+        <div className="absolute left-3 top-3 rounded-md bg-black/60 px-2 py-1 text-[11px] font-bold tracking-widest text-white backdrop-blur">
+          {plat?.shortName}
+        </div>
       </div>
-      <div className="absolute inset-x-0 bottom-0 p-4">
-        <p className="truncate text-2xl font-extrabold text-white drop-shadow sm:text-3xl">{gameTitle(game, lang)}</p>
-        <p className="mt-1 text-sm text-white/80">
-          {platformMap[game.platform]?.icon} {platformMap[game.platform]?.shortName}
+      <div className="mx-auto mt-4 w-full max-w-xl">
+        <p className="truncate text-2xl font-extrabold text-fg">{gameTitle(game, lang)}</p>
+        <p className="mt-1 text-sm text-muted">
+          {plat?.icon} {plat?.name}
           {game.year ? ` · ${game.year}` : ''}
         </p>
-        <span className="mt-3 inline-flex items-center gap-2 rounded-full bg-brand px-4 py-2 text-sm font-bold text-white">
+        <p className="mt-3 line-clamp-3 text-sm leading-relaxed text-dim">{gameDescription(game, lang)}</p>
+        <span className="mt-4 inline-flex items-center gap-2 rounded-full bg-brand px-5 py-2.5 text-sm font-bold text-white">
           ▶ {t.tv.watchNow}
         </span>
       </div>
-    </Link>
-  )
-}
-
-/* ============================ 平台行 + 大磁贴 ============================ */
-
-function PlatformRow({ row, lang }: { row: PlatformRow; lang: Lang }) {
-  return (
-    <section>
-      <h2 className="mb-3 flex items-center gap-2 px-1 text-lg font-extrabold">
-        <span aria-hidden>{row.icon}</span>
-        {row.name}
-      </h2>
-      <div className="flex gap-3 overflow-x-auto pb-4">
-        {row.items.map((g) => (
-          <WallTile key={g.slug} id={`${row.id}:${g.slug}`} game={g} lang={lang} />
-        ))}
-        <div className="w-2 shrink-0" aria-hidden />
-      </div>
-    </section>
-  )
-}
-
-function WallTile({ id, game, lang }: { id: string; game: Game; lang: Lang }) {
-  const { focused, setFocus } = useFocusable(id)
-  return (
-    <Link
-      to={`/games/${game.slug}`}
-      data-focus-id={id}
-      onMouseEnter={setFocus}
-      aria-label={gameTitle(game, lang)}
-      className={cx(
-        'group relative block w-[150px] shrink-0 overflow-hidden rounded-xl border-2 transition sm:w-[180px]',
-        focused ? 'z-10 scale-[1.06] border-coin ring-4 ring-coin' : 'border-transparent',
-      )}
-    >
-      <div className="aspect-[3/4] w-full">
-        <ScreenBackground game={game} iconClassName="text-5xl sm:text-6xl" />
-      </div>
-      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 to-transparent p-2">
-        <p className="truncate text-sm font-bold text-white">{gameTitle(game, lang)}</p>
-        <p className="truncate text-[11px] text-white/70">{platformMap[game.platform]?.shortName}</p>
-      </div>
-    </Link>
+    </div>
   )
 }
 

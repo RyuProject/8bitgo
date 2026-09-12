@@ -89,9 +89,8 @@ export function PickedSection({ games, curated }: { games: Game[]; curated: bool
 /**
  * 按累计游玩次数排出来的真榜。**不受站长精选影响**，只要有游戏就在。
  *
- * 和上面那一栏的分工，别看混了：
- *   · PickedSection —— 人挑的，后台没填就整栏没有；
- *   · 这一栏 —— 机器排的，一直在。没开精选时它就是首页第一眼看到的那一栏。
+ * 和 PickedSection 的分工，别看混了：那一栏是人挑的、后台没填就整栏没有；
+ * 这一栏是机器排的，一直在。位置在首页「和朋友一起玩」和「合集」之间（2026-09-12 定的）。
  *
  * ⚠️ 数据来自后端的 hottest 字段。老版本后端没有这个字段，这里会拿到空数组，
  * 于是整栏静默消失（2026-09-12 线上就是这样：前端构建过了，Node 没重启）。
@@ -115,10 +114,13 @@ export function MostPlayedSection({ games }: { games: Game[] }) {
         moreTo="/games"
       />
       {/*
-        5 列到 2 列。移动端不降到 1 列：这张卡本来就窄（小封面 + 居中文字），
-        一列会让每张卡横着拉得很长，反而更难扫。
+        宽屏两列、每列五行，而且是**竖着排**的：左边 1–5、右边 6–10。
+        靠 grid-flow-col + grid-rows-5 做到 —— 默认的按行填充会变成「1 2 / 3 4」，
+        眼睛要横着跳才能读出名次，榜就不像榜了。
+        auto-cols-fr 让两列等宽（flow-col 下列宽默认是 max-content，会被最长的标题撑歪）。
+        窄屏单列从上到下，本来就是一维的顺序。
       */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+      <div className="grid grid-cols-1 gap-2 md:grid-flow-col md:auto-cols-fr md:grid-rows-5 md:gap-x-3">
         {games.map((g, i) => (
           <GameRankCard
             key={g.slug}

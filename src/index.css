@@ -19,6 +19,32 @@
   font-display: swap;
 }
 
+/* ---------- TV / 车机那一屏：深色 ---------- */
+/*
+  站点主题是亮白底（下面那份令牌）。但 TV 子域必须是深色，这不是审美偏好：
+
+    · 客厅里一屏白光在三米外是刺眼的，晚上尤其；所有电视界面（机顶盒、游戏机、
+      流媒体）都是深色，用户的眼睛也是按这个预期来的。
+    · 车机更严重 —— 夜间行驶时一块全白的屏幕会毁掉驾驶员的暗适应，这是安全问题，
+      不是好不好看的问题。
+
+  做法是**覆盖同一批令牌**而不是把页面里的类名逐个换成深色：
+  TvPage 里写的还是 bg-bg / text-fg / border-line，在这个作用域下自动变深。
+  以后站点调色也只有一处要跟。
+*/
+.tv-surface {
+  --color-bg: #0b0b0f;
+  --color-surface: #14141a;
+  --color-surface-2: #1e1e27;
+  --color-surface-3: #2a2a36;
+  --color-line: #2e2e3a;
+  --color-line-strong: #3d3d4c;
+  --color-fg: #f4f4f6;
+  --color-muted: #a3a3b0;
+  --color-dim: #6f6f7e;
+  color-scheme: dark;
+}
+
 /* ---------- 8BitGo 设计令牌 ---------- */
 @theme {
   --font-sans:

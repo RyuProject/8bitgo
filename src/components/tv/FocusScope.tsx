@@ -141,6 +141,18 @@ export function FocusScope({
   )
 }
 
+/**
+ * 当前焦点落在谁身上。
+ *
+ * 「左列表 + 右大图」那种排版需要它：右边那块要跟着左边的焦点变，
+ * 而 useFocusable 只回答「我是不是被聚焦的那个」，答不了「现在聚焦的是谁」。
+ */
+export function useFocusedId(): string | null {
+  const ctx = useContext(FocusContext)
+  if (!ctx) throw new Error('useFocusedId 必须在 <FocusScope> 内使用')
+  return ctx.focusedId
+}
+
 export function useFocusable(id: string) {
   const ctx = useContext(FocusContext)
   if (!ctx) throw new Error('useFocusable 必须在 <FocusScope> 内使用')

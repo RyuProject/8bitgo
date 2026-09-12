@@ -8,6 +8,9 @@ import { Footer } from './Footer'
 import { AuthModal } from '@/components/auth/AuthModal'
 import { ImPanel } from '@/components/im/ImPanel'
 import { useT } from '@/services/i18n'
+import { onTvHost } from '@/services/tvHost'
+import { stripLang } from '@/config/languages'
+import { TV_ROUTE } from '../../../shared/tv-host.js'
 
 /** 路由切换时回到顶部；带 hash 时滚动到对应锚点；同时退出沉浸模式、关闭抽屉 */
 function RouteEffects() {
@@ -38,9 +41,41 @@ function RouteEffects() {
   return null
 }
 
+/**
+ * TV 子域（tv.8bitgo.com）的外壳：**什么都不套**。
+ *
+ * 侧边栏、顶栏、页脚、登录弹窗、站内消息 —— 这些在电视和车机上全是负担：
+ * 遥控器只有方向键和确定，点不到它们；它们却会抢走焦点（Tab 能走进去，
+ * 方向键焦点引擎也会把它们算成候选），于是按几下方向键焦点就跑到一个
+ * 根本用不了的菜单里出不来了。
+ *
+ * ⚠️ 不要改成复用 `immersive`：那是**页面内的运行时开关**（玩游戏时临时隐藏外壳），
+ * 带一个「退出沉浸」按钮，而且 RouteEffects 每次路由变化都会把它重置成 false。
+ * 子域上的「没有外壳」是这个站点形态本身的属性，不是一个可以退出的状态。
+ */
+function TvShell() {
+  return (
+    // tv-surface 把整批设计令牌换成深色（见 index.css 里那段的理由）
+    <div className="tv-surface min-h-dvh bg-bg">
+      <RouteEffects />
+      <Outlet />
+    </div>
+  )
+}
+
 function Shell() {
   const { immersive, setImmersive } = useShell()
   const t = useT()
+  const isTvRoute = stripLang(useLocation().pathname) === TV_ROUTE
+
+  /*
+    走空壳的两种情况：
+      · 在 TV 子域上 —— 那个域名整个是给电视 / 车机的；
+      · 路径就是 /tv —— 主域上这条已经 301 到子域了，但**本地开发不跳**
+        （见 shared/tv-host.js 里那条「正牌域名才跳」的白名单），
+        不认这一条的话，开发时预览 /tv 看到的是带侧边栏的样子，和线上不一致。
+  */
+  if (onTvHost() || isTvRoute) return <TvShell />
 
   return (
     <div className="min-h-dvh">

@@ -97,13 +97,13 @@ check('两栏都接上了，各取各的数据', () => {
   assert.match(home, /<MostPlayedSection games=\{data\?\.hottest \?\? \[\]\} \/>/)
 })
 
-check('⚠️ 首页七栏就是这个顺序：精选 → 最多人玩 → 平台 → 最新 → 一起玩 → 合集 → 分类', () => {
+check('⚠️ 首页七栏就是这个顺序：精选 → 平台 → 最新 → 一起玩 → 最多人玩 → 合集 → 分类', () => {
   const ORDER = [
     'PickedSection',
-    'MostPlayedSection',
     'PlatformsSection',
     'LatestSection',
     'TogetherSection',
+    'MostPlayedSection',
     'CollectionsSection',
     'GenreGridSection',
   ]
@@ -156,20 +156,21 @@ check('带名次角标（这一栏是榜，名次要看得见）', () => {
   assert.match(bodyOf('MostPlayedSection'), /rank=\{i \+ 1\}/)
 })
 
-console.log('\n── 排版：像参考图那样 ──')
+console.log('\n── 排版 ──')
 
-check('宽屏 5 列，窄屏不掉到 1 列', () => {
+check('⚠️ 宽屏两列而且是竖着排的（左 1–5、右 6–10），窄屏单列', () => {
   const grid = bodyOf('MostPlayedSection').match(/className="grid[^"]*"/)?.[0] ?? ''
-  assert.match(grid, /xl:grid-cols-5/, '宽屏不是 5 列')
-  assert.match(grid, /grid-cols-2/, '窄屏没兜住')
-  assert.doesNotMatch(grid, /grid-cols-1\b/, '掉到 1 列了：这张卡很窄，一列会横着拉得很长')
+  assert.match(grid, /grid-cols-1/, '窄屏不是单列')
+  assert.match(grid, /md:grid-flow-col/, '宽屏按行填充了 —— 会变成「1 2 / 3 4」，眼睛得横着跳才读得出名次')
+  assert.match(grid, /md:grid-rows-5/, '没固定五行，列数会跟着条数跑')
+  assert.match(grid, /md:auto-cols-fr/, 'flow-col 下列宽默认是 max-content，不给 fr 会被最长的标题撑歪')
 })
 
-check('卡片四件套都在：名次 / 平台 / 封面 / 简介', () => {
+check('一行四件套都在：名次 / 封面 / 标题 / 平台角标', () => {
   assert.match(card, /\{rank\}/, '没画名次')
-  assert.match(card, /platform\.shortName/, '没画平台角标')
   assert.match(card, /<GameCover game=\{game\} ratio="square"/, '封面不是方形小图')
-  assert.match(card, /gameDescription\(game, lang\)/, '没画简介')
+  assert.match(card, /gameTitle\(game, lang\)/, '没画标题')
+  assert.match(card, /platform\.shortName/, '没画平台角标')
 })
 
 check('⚠️ 名次用 tabular-nums（个位数和两位数要对齐）', () => {
@@ -177,11 +178,19 @@ check('⚠️ 名次用 tabular-nums（个位数和两位数要对齐）', () =>
   assert.match(card.slice(Math.max(0, i - 300), i), /tabular-nums/)
 })
 
-check('⚠️ 简介占住固定高度，否则同一行的卡高矮不齐', () => {
-  assert.match(card, /line-clamp-2 min-h-8/)
+check('⚠️ 金银铜是角标的底色，不是文字色（浅色主题的 surface 是纯白，亮色当文字读不出来）', () => {
+  const block = card.match(/const MEDAL_TONES[\s\S]*?\n\}/)?.[0]
+  assert.ok(block, '找不到 MEDAL_TONES —— 改了名字的话这条断言也要跟着改')
+  const tones = [...block.matchAll(/'([^']+)'/g)].map((m) => m[1])
+  assert.ok(tones.length >= 3, `只读到 ${tones.length} 档配色，前三名没配齐`)
+  for (const tone of tones) assert.match(tone, /(^|\s)bg-/, `「${tone}」没有底色`)
 })
 
-check('标题和简介走多语言函数，不是直接读字段', () => {
+check('⚠️ 不许拿 bg-white/x 当底色（深色主题看着好好的，浅色主题是纯白配纯白）', () => {
+  assert.doesNotMatch(card, /bg-white\//, '又用回 bg-white/x 了 —— 2026-09-12 平台角标就是这么隐形的')
+})
+
+check('标题走多语言函数，不是直接读字段', () => {
   assert.match(card, /gameTitle\(game, lang\)/)
   assert.doesNotMatch(card, /\{game\.title\}/, '直接渲染了 game.title —— 中文界面会显示原名')
 })
