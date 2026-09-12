@@ -7,6 +7,7 @@ import {
   ARCADE_FIGHTER_BUTTONS,
   ARCADE_GENERIC_BUTTONS,
   EJS_INDEX,
+  EJS_DPAD,
   EJS_KEY_BY_ID,
   EJS_PLATFORM_BUTTONS,
   PASSTHROUGH_RUNTIMES,
@@ -73,9 +74,40 @@ export function formatSpeed(bytesPerSecond: number): string {
  * ⚠️ 改任何一行之前先跑 `npm run test:keymap` —— 它会拿 emulator.min.js 逐条核。
  */
 
+/**
+ * 手柄上的槽位。**语言无关**，专给开局前那张手柄图（PadDiagram）用。
+ *
+ * ⚠️ 别拿 `button` 那个字段去认按钮 —— 它是**翻译过的**（'#dpad' → 「方向键」/「十字キー」/
+ * 「Steuerkreuz」…）。按文本认，八种语言里必然有一种认不出来，而认不出来的表现是
+ * 那颗按钮从图上**静默消失**，不是报错。所以身份走这个字段，文字只用来显示。
+ *
+ * 没有槽位的行（街机的「按键 1~6」、J2ME 的数字键、红白机的连发）不是遗漏：
+ * 它们在手柄上没有固定位置，PadDiagram 会把它们画成键帽，多到一定程度整张图退回键帽列。
+ */
+export type KeySlot = 'dpad' | 'a' | 'b' | 'x' | 'y' | 'l' | 'r' | 'start' | 'select'
+
+/** data 里的原始 label（没翻译过的那个）→ 槽位。认不出来的返回 undefined，不是错误 */
+const SLOT_OF_LABEL: Readonly<Record<string, KeySlot>> = {
+  '#dpad': 'dpad',
+  // 万代那台有两组方向键：X 组当十字键画，Y 组没有对应位置，落到键帽里
+  '#xPad': 'dpad',
+  A: 'a', B: 'b', X: 'x', Y: 'y', L: 'l', R: 'r',
+  Start: 'start', Select: 'select',
+}
+
 export interface KeymapRow {
   button: string
   key: string
+  /** 见 KeySlot。认不出来就不给 —— 调用方据此决定画不画得成一张手柄图 */
+  slot?: KeySlot
+  /**
+   * 一组方向键拆开之后的四颗键，顺序是**上 下 左 右**。
+   *
+   * `key` 是拼好给人读的那一串（「↑ ↓ ← →」），画十字的时候需要一颗一颗放，
+   * 而拿 `key.split(' ')` 去拆是错的：红白机绑到小键盘时那一格是「小键盘 8 2 4 6」，
+   * 拆出来是五段。所以拆开的那份在这里单独给。
+   */
+  parts?: string[]
 }
 
 /** 改键入口在哪儿。三档各有各的话要说，混成一句话就一定有一档是错的 */
@@ -135,7 +167,12 @@ export function getDefaultKeymap(runtimeId?: string, platform?: PlatformId): Key
   const label = (name: string): string =>
     name.startsWith('#') ? ((t.keymap as unknown as Record<string, string>)[name.slice(1)] ?? name.slice(1)) : name
   const rowsOf = (buttons: readonly EjsButton[]): KeymapRow[] =>
-    buttons.map(([name, id]) => ({ button: label(name), key: keysOf(id) }))
+    buttons.map(([name, id]) => ({
+      button: label(name),
+      key: keysOf(id),
+      slot: SLOT_OF_LABEL[name],
+      parts: Array.isArray(id) ? (id as readonly number[]).map((i) => EJS_KEY_BY_ID[i] ?? '—') : undefined,
+    }))
 
   // 红白机实际跑的是 jsnes（见 config/emulators.ts 的扩展名覆盖表），它的键位和 EmulatorJS 不一样
   if (runtimeId === 'jsnes') {
@@ -171,17 +208,24 @@ export function getDefaultKeymap(runtimeId?: string, platform?: PlatformId): Key
       return codes.map((c) => padKeyLabel(c)).join(' ')
     }
 
+    /** 拆开的四颗方向键（上 下 左 右）。dpadOf 那一串是给人读的，这一份是给手柄图摆位置的 */
+    const dpadParts = (seat: Seat): string[] =>
+      (['up', 'down', 'left', 'right'] as PadAction[]).map((d) => keyLabel(seat, d) || '—')
+
     /** 没绑键的动作不摆出来 —— 画一格按下去没反应的比不画更糟 */
     const seatRows = (seat: Seat): KeymapRow[] =>
-      [
-        { button: t.keymap.dpad, key: dpadOf(seat) },
-        { button: 'A', key: keyLabel(seat, 'a') },
-        { button: 'B', key: keyLabel(seat, 'b') },
-        { button: t.keymap.turboA, key: keyLabel(seat, 'turboA') },
-        { button: t.keymap.turboB, key: keyLabel(seat, 'turboB') },
-        { button: 'Start', key: keyLabel(seat, 'start') },
-        { button: 'Select', key: keyLabel(seat, 'select') },
-      ].filter((r) => r.key)
+      (
+        [
+          // parts 是拆开的四颗（上 下 左 右）；连发那两颗在手柄上没有固定位置，不给槽位
+          { button: t.keymap.dpad, key: dpadOf(seat), slot: 'dpad', parts: dpadParts(seat) },
+          { button: 'A', key: keyLabel(seat, 'a'), slot: 'a' },
+          { button: 'B', key: keyLabel(seat, 'b'), slot: 'b' },
+          { button: t.keymap.turboA, key: keyLabel(seat, 'turboA') },
+          { button: t.keymap.turboB, key: keyLabel(seat, 'turboB') },
+          { button: 'Start', key: keyLabel(seat, 'start'), slot: 'start' },
+          { button: 'Select', key: keyLabel(seat, 'select'), slot: 'select' },
+        ] as KeymapRow[]
+      ).filter((r) => r.key)
 
     return {
       rows: seatRows(0),
@@ -222,7 +266,7 @@ export function getDefaultKeymap(runtimeId?: string, platform?: PlatformId): Key
   if (runtimeId === 'j2me') {
     return {
       rows: [
-        { button: t.keymap.dpad, key: '↑ ↓ ← →' },
+        { button: t.keymap.dpad, key: '↑ ↓ ← →', slot: 'dpad', parts: ['↑', '↓', '←', '→'] },
         { button: t.keymap.j2meConfirm, key: 'Enter' },
         { button: t.keymap.j2meNum, key: '0 – 9' },
         { button: t.keymap.j2meSoftL, key: 'F1' },
@@ -259,13 +303,22 @@ export function getDefaultKeymap(runtimeId?: string, platform?: PlatformId): Key
     const f = ARCADE_FIGHTER_BUTTONS
     return {
       rows: [
-        { button: t.keymap.dpad, key: '↑ ↓ ← →' },
+        /*
+          ⚠️ 这一格**必须**从 EJS_KEY_BY_ID 现算，不能写死成「↑ ↓ ← →」。
+          街机跑的是 EmulatorJS，方向键是引擎的下标 4/5/6/7 —— 2026-09-12 我们把
+          默认键改成了 WASD（见 keymapData 的 EJS_KEY_OVERRIDE），写死的那份当场就成了假话：
+          表上写箭头、按下去不动，玩家只会以为游戏坏了。
+          （J2ME 那一支写死是对的：FreeJ2ME 的键盘映射是它自己定的，和引擎无关。）
+        */
+        { button: t.keymap.dpad, key: keysOf(EJS_DPAD), slot: 'dpad', parts: EJS_DPAD.map((i) => EJS_KEY_BY_ID[i] ?? '—') },
+        // 「按键 1~6」在手柄上没有固定位置（不同板子按键数都不一样），所以不给槽位 ——
+        // 六行没槽位会让 PadDiagram 整张图退回键帽列，那正是街机该有的样子
         ...ARCADE_GENERIC_BUTTONS.map((id, i) => ({
           button: fmt(t.keymap.arcadeBtn, { n: String(i + 1) }),
           key: keysOf(id),
         })),
-        { button: t.keymap.coin, key: keysOf(EJS_INDEX.select) },
-        { button: 'Start', key: keysOf(EJS_INDEX.start) },
+        { button: t.keymap.coin, key: keysOf(EJS_INDEX.select), slot: 'select' as const },
+        { button: 'Start', key: keysOf(EJS_INDEX.start), slot: 'start' as const },
       ],
       note: `${t.keymap.arcadeNote} ${fmt(t.keymap.arcadeFighter, {
         pl: keysOf(f.punchL),

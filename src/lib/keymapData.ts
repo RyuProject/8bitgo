@@ -20,7 +20,7 @@
  * 下标就是 libretro 的 RetroPad 编号 —— 注意 0 不是 A 而是 B，A 在 8：
  * 这是最容易抄反的一处。14 / 15（L3 / R3）引擎没给默认键，所以不在表里。
  */
-export const EJS_KEY_BY_ID: Readonly<Record<number, string>> = {
+export const EJS_STOCK_KEY_BY_ID: Readonly<Record<number, string>> = {
   0: 'X',
   1: 'S',
   2: 'V',
@@ -47,6 +47,63 @@ export const EJS_KEY_BY_ID: Readonly<Record<number, string>> = {
   25: '2',
   26: '3',
 }
+
+/**
+ * **我们自己定的默认键位**，通过 `EJS_defaultControls` 盖掉引擎出厂那套
+ * （见 adapters/emulatorjs.ts）。每项是 [引擎认的键名, 给人看的写法]。
+ *
+ * 为什么要盖：出厂那套是 Z/X/A/S + 方向键 —— 方向键在键盘最右边、动作键在最左边，
+ * 两只手要分开半个键盘；而且 Z/X 在不同键盘布局上位置会变（AZERTY 上 Z 在 W 的位置）。
+ * 改成左手 WASD、右手 UIJK，两手各管一块，和现在几乎所有 PC 游戏一致。
+ *
+ * ⚠️ 引擎认的键名必须是它 keyMap 里的那一份写法（小写，方向键叫 "up arrow" 这种）。
+ *    写错了不会报错 —— 那颗键会变成**绑不上**，按下去没反应。test:keymap 会逐个核。
+ *
+ * ⚠️ 20~23 是右摇杆 / N64 的 C 键，本来是 L J K I —— 正好和新的 U I J K 撞。
+ *    两颗按钮绑同一颗键在引擎里是**都会触发**，PS1 / N64 会莫名其妙地动摇杆。
+ *    所以顺手把它们挪到被腾出来的方向键上（方向键现在归 WASD 了）。
+ *    test:keymap 里有一条「最终表不许有重复键」，专门盯这件事。
+ */
+export const EJS_KEY_OVERRIDE: Readonly<Record<number, readonly [engine: string, label: string]>> = {
+  // 面键：B Y A X（注意 0 是 B、8 才是 A）
+  0: ['j', 'J'],
+  1: ['u', 'U'],
+  8: ['k', 'K'],
+  9: ['i', 'I'],
+  // 投币 / 选择、开始
+  2: ['shift', 'Shift'],
+  3: ['enter', 'Enter'],
+  // 十字键
+  4: ['w', 'W'],
+  5: ['s', 'S'],
+  6: ['a', 'A'],
+  7: ['d', 'D'],
+  // 右摇杆 / C 键：让位给 UIJK，搬到方向键上（上 下 左 右 = 23 22 21 20）
+  23: ['up arrow', '↑'],
+  22: ['down arrow', '↓'],
+  21: ['left arrow', '←'],
+  20: ['right arrow', '→'],
+}
+
+/**
+ * 最终生效的默认键位：引擎出厂那份**盖上**我们的覆盖。
+ * 界面上显示的就是这一份 —— 显示的必须是真正会生效的那个键，否则这张表比不显示更糟。
+ */
+export const EJS_KEY_BY_ID: Readonly<Record<number, string>> = {
+  ...EJS_STOCK_KEY_BY_ID,
+  ...Object.fromEntries(Object.entries(EJS_KEY_OVERRIDE).map(([id, [, label]]) => [Number(id), label])),
+}
+
+/**
+ * 交给引擎的 `EJS_defaultControls`。只动玩家 0，且只给 `value`（键盘）——
+ * 引擎是**逐颗按钮浅合并**的（`{...原有, ...给的}`），不给 value2 就保留它原来的手柄映射。
+ */
+export const EJS_DEFAULT_CONTROLS: Readonly<Record<number, Readonly<Record<number, { value: string }>>>> = {
+  0: Object.fromEntries(Object.entries(EJS_KEY_OVERRIDE).map(([id, [engine]]) => [Number(id), { value: engine }])),
+}
+
+/** 十字键的四个下标，顺序是**上 下 左 右**。各处都引这一份，别再手抄 [4,5,6,7] */
+export const EJS_DPAD: readonly number[] = [4, 5, 6, 7]
 
 /** 常用按钮的 libretro 下标。写代码时比记数字直观 */
 export const EJS_INDEX = {

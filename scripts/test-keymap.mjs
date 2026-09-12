@@ -26,6 +26,8 @@ import { readFileSync } from 'node:fs'
 
 const {
   EJS_KEY_BY_ID,
+  EJS_STOCK_KEY_BY_ID,
+  EJS_KEY_OVERRIDE,
   EJS_INDEX,
   EJS_SCHEME,
   EJS_PLATFORM_BUTTONS,
@@ -79,13 +81,58 @@ ok(Object.keys(defaults).length >= 14, `解析出 ${Object.keys(defaults).length
 const ARROWS = { 'up arrow': '↑', 'down arrow': '↓', 'left arrow': '←', 'right arrow': '→' }
 const norm = (s) => (ARROWS[s] ?? s).toLowerCase()
 
-console.log('\n── 1. EmulatorJS 的默认键位 ──')
-for (const [id, key] of Object.entries(EJS_KEY_BY_ID)) {
+console.log('\n── 1. EmulatorJS 的出厂默认键位 ──')
+/*
+  这一节核的是 EJS_STOCK_KEY_BY_ID（引擎**出厂**那份的抄本），不是 EJS_KEY_BY_ID。
+  我们现在用 EJS_defaultControls 盖掉了其中十几颗（见下一节），最终生效的是盖过之后那份。
+  出厂那份仍然要核 —— 它是「盖之前是什么」的唯一记录，升级引擎时它变了必须知道。
+*/
+for (const [id, key] of Object.entries(EJS_STOCK_KEY_BY_ID)) {
   const actual = defaults[id]
   ok(
     actual !== undefined && norm(actual) === norm(key),
-    `libretro ${id} = ${key}${actual !== undefined && norm(actual) === norm(key) ? '' : `，引擎里其实是 ${JSON.stringify(actual)}`}`,
+    `出厂 libretro ${id} = ${key}${actual !== undefined && norm(actual) === norm(key) ? '' : `，引擎里其实是 ${JSON.stringify(actual)}`}`,
   )
+}
+
+console.log('\n── 1b. 我们自己盖上去的默认键位 ──')
+/*
+  这一节盯三件事，每一件坏了都是**静默**的：
+    · 键名写错 -> 那颗键绑不上，按下去没反应（引擎不会报错）
+    · 盖到一个引擎没有的下标 -> 白盖，玩家按到的还是出厂键
+    · 和别的按钮撞了 -> 两颗按钮同时触发（PS1/N64 的右摇杆本来就在 I J K L 上）
+*/
+// 引擎的 keyMap：keyCode -> 它认的键名。键名不在这张表里就是绑不上
+const keyMapAt = ejsSrc.indexOf('keyMap={')
+assert.ok(keyMapAt > 0, '找不到 keyMap —— 打包格式变了，这个测试要跟着改')
+const engineKeyNames = new Set(
+  [...ejsSrc.slice(keyMapAt, keyMapAt + 3000).matchAll(/\d+:"([^"]*)"/g)].map((m) => m[1]).filter(Boolean),
+)
+ok(engineKeyNames.size > 50, `引擎的键名表解析出 ${engineKeyNames.size} 个`)
+
+for (const [id, [engine, label]] of Object.entries(EJS_KEY_OVERRIDE)) {
+  ok(engineKeyNames.has(engine), `libretro ${id} 覆盖成 ${JSON.stringify(engine)}，是引擎认得的键名`)
+  ok(defaults[id] !== undefined, `libretro ${id} 引擎本来就有这颗按钮（不然这条覆盖是白写的）`)
+  ok(EJS_KEY_BY_ID[id] === label, `libretro ${id} 界面上显示的是 ${label}（和真正生效的那颗一致）`)
+}
+
+
+// ⭐ 最终表不许有重复键 —— 两颗按钮绑同一颗键，引擎里是**都会触发**
+{
+  const seen = new Map()
+  const dupes = []
+  for (const [id, key] of Object.entries(EJS_KEY_BY_ID)) {
+    const k = norm(key)
+    if (seen.has(k)) dupes.push(`${key}（libretro ${seen.get(k)} 和 ${id}）`)
+    else seen.set(k, id)
+  }
+  ok(dupes.length === 0, `⭐ 最终默认键位没有重复${dupes.length ? `：${dupes.join('、')}` : ''}`)
+}
+
+// 覆盖必须真的交给引擎，否则表里写一套、玩家按到另一套
+{
+  const adapterSrc = readFileSync(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
+  ok(/EJS_defaultControls: EJS_DEFAULT_CONTROLS/.test(adapterSrc), '⭐ 适配器把 EJS_DEFAULT_CONTROLS 交给了引擎')
 }
 ok(EJS_INDEX.a === 8 && EJS_INDEX.b === 0, 'libretro 的 0 是 B、8 才是 A（别抄反）')
 
@@ -261,15 +308,53 @@ for (const key of [...needed].sort()) {
   ok(JSON.stringify(bottom) === JSON.stringify([f.kickL, f.kickM, f.kickH]), `下排从左到右 = 轻脚 中脚 重脚（${bottom.join(',')}）`)
 }
 
-/* ---------------- 开局前那行键位摘要 ---------------- */
+/* ---------------- 键位表里不许写死引擎的键 ---------------- */
 {
-  console.log('\n── 键位摘要不能把投币和 Start 切掉 ──')
+  console.log('\n── 引擎管的键不许写死 ──')
+  const lib = readFileSync(new URL('../src/lib/emulator.ts', import.meta.url), 'utf8')
+  /*
+    ⭐ 2026-09-12 真出过这个错：街机那一行的方向键写死成 '↑ ↓ ← →'，
+    而街机跑的是 EmulatorJS —— 同一天我们把默认方向键改成了 WASD，
+    于是表上写箭头、按下去不动。这种错 tsc 不响、页面照常渲染，只有玩家按下去才发现。
+
+    规矩：**引擎管的键一律从 EJS_KEY_BY_ID 现算**。唯一可以写死的是 J2ME ——
+    FreeJ2ME 的键盘映射是它自己定的（public/j2me/src/key.js），和引擎无关。
+  */
+  const j2meAt = lib.indexOf("if (runtimeId === 'j2me')")
+  assert.ok(j2meAt > 0, '找不到 j2me 那一支了 —— 这条断言要跟着改')
+  const j2meEnd = lib.indexOf("if (runtimeId === 'play')", j2meAt)
+  assert.ok(j2meEnd > j2meAt, '找不到 j2me 那一支的结尾')
+  for (const m of [...lib.matchAll(/'↑[^']*'/g)]) {
+    const inJ2me = m.index > j2meAt && m.index < j2meEnd
+    ok(inJ2me, `写死的方向键 ${m[0]} 只允许出现在 J2ME 那一支（在第 ${lib.slice(0, m.index).split('\n').length} 行）`)
+  }
+}
+
+/* ---------------- 开局前那张按键图 ---------------- */
+{
+  console.log('\n── 开局前那张按键图 ──')
   const player = readFileSync(new URL('../src/emulator/EmulatorPlayer.tsx', import.meta.url), 'utf8')
+  const diagram = readFileSync(new URL('../src/emulator/PadDiagram.tsx', import.meta.url), 'utf8')
+  /*
+    这里原来守的是一行**文字摘要**：它必须截断（街机九行摆不下），而截断不能伤到
+    「投币」和「Start」—— 那两个是唯一「不知道就开不了始」的键。守法是「不许用 slice(0,5)」
+    加「必须保留末两行」。
+
+    2026-09-12 改成画图之后，那一行连同它的截断一起没了：图上**一行不少**。
+    所以守的东西也换了 —— 现在守的是「没有任何一条键位被悄悄丢掉」，
+    这比守某个 slice 的写法更接近当初真正要的东西。
+  */
+  ok(/<PadDiagram/.test(player), '开局前那屏画了按键图')
+  ok(!/rows\.slice\(0, 3\)|keymapLine/.test(player), '⭐ 那行会截断的文字摘要已经没了（截断正是当初出事的地方）')
   ok(
-    !/\.rows\.slice\(0,\s*5\)/.test(player),
-    '⭐ 不许再用 slice(0,5) —— 街机 9 行表正好只留下方向键+按键1~4，把唯一「不知道就开不了始」的投币和 Start 切掉',
+    player.indexOf('<PadDiagram') < player.indexOf('<Button size="lg"'),
+    '按键图在「开始游戏」按钮**上面** —— 按钮在上的话，手已经点下去了才看到键位',
   )
-  ok(/rows\.slice\(-2\)/.test(player), '摘要保留末两行（各平台都是 Start/Select 在末尾）')
+  ok(/rows\.map\(/.test(diagram), '⭐ 退回键帽列时是整张表 rows.map，没有 slice —— 一条都不许丢')
+  ok(!/\.slice\(/.test(diagram), '⭐ 按键图里一处 slice 都没有')
+  // 身份走 slot，不许拿翻译过的文字去认按钮
+  ok(!/\.button ===|button\.includes|=== '方向键'/.test(diagram), '⭐ 没有按 button 文本认按钮（那是翻译过的，八种语言里必然有一种认不出来）')
+  ok(/r\.slot/.test(diagram) && /bySlot/.test(diagram), '按钮身份走 slot')
 }
 
 console.log(`\n全部通过 ✅  共 ${n} 项`)

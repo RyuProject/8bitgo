@@ -71,26 +71,61 @@ check('jsnes 的默认表解析出来了', () => {
   assert.ok(jsnesEntries.length >= 19, `只解析到 ${jsnesEntries.length} 条，jsnes 的写法变了`)
 })
 
-check('默认表逐条对上 jsnes（keyCode 17 那条除外，见文件里的说明）', () => {
+/*
+  ⚠️ 2026-09-12 起 **1P 不再照抄 jsnes 的键**：站里统一成左手 WASD + 右手 UIJK
+  （和 EmulatorJS 那边的 EJS_KEY_OVERRIDE 同一套）。红白机按一套、别的平台按另一套，
+  是最容易让人骂街的那种不一致。
+
+  所以这里守的东西换了：不再逐个键比对，而是守**语义一致** ——
+  jsnes 定义的每一个动作，在我们表里都还得有键绑着，一个都不能漏。
+  漏掉的表现是那颗按钮**静默失灵**（页面照常渲染、tsc 不响），正是这份测试存在的理由。
+  2P 那一组仍然逐条照抄 jsnes（小键盘，没跟着改）。
+*/
+check('jsnes 定义的每个动作，我们表里都有键绑着（1P 换了键，但一个动作都没丢）', () => {
+  const bound = new Set(Object.values(DEFAULT_PAD_KEYS))
   for (const e of jsnesEntries) {
-    if (e.keyCode === 17) continue // Ctrl 左右不分，我们刻意只绑右边
-    const code = KEYCODE_TO_CODE[e.keyCode]
-    assert.ok(code, `keyCode ${e.keyCode}（${e.label}）没在翻译表里 —— jsnes 加了新键`)
     const action = BUTTON_TO_ACTION[e.button]
     assert.ok(action, `不认识的按钮 ${e.button}`)
-    const expected = bindingOf(e.player === 2 ? 1 : 0, action)
-    assert.equal(
-      DEFAULT_PAD_KEYS[code],
-      expected,
-      `${code} 应当是 ${expected}（jsnes: keyCode ${e.keyCode} → ${e.button}，${e.player}P）`,
-    )
+    const binding = bindingOf(e.player === 2 ? 1 : 0, action)
+    assert.ok(bound.has(binding), `${binding}（jsnes: ${e.button}，${e.player}P）在默认表里没有键绑着`)
   }
 })
 
-check('SELECT 只绑右 Ctrl —— 左 Ctrl 是浏览器快捷键的前缀，不能同时当游戏键', () => {
-  assert.equal(DEFAULT_PAD_KEYS.ControlRight, '0:select')
-  assert.equal(DEFAULT_PAD_KEYS.ControlLeft, undefined)
-  assert.ok(jsnesEntries.some((e) => e.keyCode === 17 && e.button === 'BUTTON_SELECT'))
+check('2P 那一组仍然逐条照抄 jsnes（小键盘，这次没动）', () => {
+  for (const e of jsnesEntries) {
+    if (e.player !== 2) continue
+    const code = KEYCODE_TO_CODE[e.keyCode]
+    assert.ok(code, `keyCode ${e.keyCode}（${e.label}）没在翻译表里 —— jsnes 加了新键`)
+    const expected = bindingOf(1, BUTTON_TO_ACTION[e.button])
+    assert.equal(DEFAULT_PAD_KEYS[code], expected, `${code} 应当是 ${expected}`)
+  }
+})
+
+check('⭐ 1P 就是参考图那一套：WASD 方向、K/J 动作、Shift 投币、Enter 开始', () => {
+  const want = {
+    KeyW: '0:up', KeyS: '0:down', KeyA: '0:left', KeyD: '0:right',
+    KeyK: '0:a', KeyJ: '0:b', ShiftLeft: '0:select', Enter: '0:start',
+    KeyI: '0:turboA', KeyU: '0:turboB',
+  }
+  for (const [code, binding] of Object.entries(want)) {
+    assert.equal(DEFAULT_PAD_KEYS[code], binding, `${code} 应当是 ${binding}`)
+  }
+  // 老的那几颗必须真的让出来，否则一颗键绑两个动作，按一下同时触发两件事
+  for (const code of ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyX', 'KeyZ', 'KeyY', 'ControlRight']) {
+    assert.equal(DEFAULT_PAD_KEYS[code], undefined, `${code} 还绑着 ${DEFAULT_PAD_KEYS[code]} —— 老键位没让干净`)
+  }
+})
+
+check('⭐ 默认表里没有一颗键绑了两个动作', () => {
+  const seen = new Map()
+  for (const [code, binding] of Object.entries(DEFAULT_PAD_KEYS)) {
+    assert.ok(!seen.has(code), `${code} 重复`)
+    seen.set(code, binding)
+  }
+  // 反过来也查一遍：同一个动作被两颗键绑着是允许的（后路），但 1P 这次没有后路了
+  const p1 = Object.entries(DEFAULT_PAD_KEYS).filter(([, b]) => b.startsWith('0:'))
+  const actions = p1.map(([, b]) => b)
+  assert.equal(new Set(actions).size, actions.length, `1P 有动作被两颗键绑着：${actions.join(', ')}`)
 })
 
 check('小键盘那八个键不再依赖 NumLock（用的是物理位置 code）', () => {
@@ -99,10 +134,16 @@ check('小键盘那八个键不再依赖 NumLock（用的是物理位置 code）
   }
 })
 
-check('B 的默认键 Z 排在 Y 前面 —— 显示取第一个，表里要写 Z', () => {
+check('B 只有一颗默认键（那条 QWERTZ 后路已经没有存在的理由了）', () => {
+  /*
+    以前 B 绑了两颗：KeyZ，外加 KeyY —— QWERTZ 键盘上印着 Z 的物理键报的是 KeyY，
+    不补这一条，德国人按印着 Z 的键是没反应的。
+    现在 B 是 J，而 J 在 QWERTZ 上**不挪位置**，这条后路就没有意义了。
+    ⚠️ 哪天又把 B 挪回 Z / Y 这一带，记得把 KeyY 那条一起加回来。
+  */
   const codes = Object.keys(DEFAULT_PAD_KEYS).filter((c) => DEFAULT_PAD_KEYS[c] === '0:b')
-  assert.deepEqual(codes, ['KeyZ', 'KeyY'])
-  assert.equal(padKeyFor('0:b'), 'KeyZ')
+  assert.deepEqual(codes, ['KeyJ'])
+  assert.equal(padKeyFor('0:b'), 'KeyJ')
 })
 
 check('1P 和 2P 的键没有重叠', () => {
@@ -151,23 +192,30 @@ check('牌子上的显示名', () => {
 check('改一个键：新键生效，旧键让位', () => {
   assert.equal(setPadKey('0:a', 'KeyQ'), null)
   assert.equal(padKeyFor('0:a'), 'KeyQ')
-  assert.equal(getPadKeys().KeyX, undefined)
+  assert.equal(getPadKeys().KeyK, undefined, 'A 原来的 K 该让位了')
 })
 
 check('一个动作原有多个默认键时，改绑会把它们一起摘掉', () => {
+  /*
+    ⚠️ 这条测的是「一个动作绑了多颗键，改绑时要一起摘」的逻辑本身。
+    1P 现在**没有**这种情况了（以前 B 有 Z 和 Y 两颗，见上面那条），
+    所以拿 2P 的来测 —— 那一组仍然照抄 jsnes，而且逻辑是同一份代码。
+  */
   setPadKey('0:b', 'KeyQ')
   const map = getPadKeys()
-  assert.equal(map.KeyZ, undefined, 'Z 该让位了')
-  assert.equal(map.KeyY, undefined, 'QWERTZ 那条后路也该一起让位')
+  assert.equal(map.KeyJ, undefined, 'B 原来的 J 该让位了')
   assert.equal(map.KeyQ, '0:b')
 })
 
-check('抢别人的键：返回被抢的那条', () => {
-  const stolen = setPadKey('0:a', 'KeyZ')
+check('抢别人的键：返回被抢的那条，对方就此没键', () => {
+  /*
+    ⚠️ 以前 B 挂着 Z / Y 两颗，被抢走一颗还剩一颗，所以这条断言的是「还剩 Y」。
+    现在 1P 每个动作只有一颗键（那条 QWERTZ 后路删了），抢走就是真没了。
+  */
+  const stolen = setPadKey('0:a', 'KeyJ')
   assert.equal(stolen, '0:b')
-  assert.equal(padKeyFor('0:a'), 'KeyZ')
-  // B 默认挂着 Z / Y 两个键，被抢走 Z 之后还剩 Y —— 不该整个变成没键
-  assert.equal(padKeyFor('0:b'), 'KeyY')
+  assert.equal(padKeyFor('0:a'), 'KeyJ')
+  assert.equal(padKeyFor('0:b'), '')
 })
 
 check('抢走对方唯一的那个键，对方就真没键了', () => {
@@ -178,16 +226,16 @@ check('抢走对方唯一的那个键，对方就真没键了', () => {
 
 check('反复改同一条，最后那次说了算（不能被更早存的那条抢回去）', () => {
   setPadKey('0:a', 'KeyQ')
-  setPadKey('0:b', 'KeyW')
-  setPadKey('0:a', 'KeyW')
-  assert.equal(padKeyFor('0:a'), 'KeyW', '最后改的是 A，W 就该归 A')
+  setPadKey('0:b', 'KeyP')
+  setPadKey('0:a', 'KeyP')
+  assert.equal(padKeyFor('0:a'), 'KeyP', '最后改的是 A，P 就该归 A')
   assert.equal(padKeyFor('0:b'), '')
 })
 
 check('把抢来的键还回去，被抢的那条自己回来（不用点恢复默认）', () => {
   setPadKey('0:b', 'Enter') // 从 Start 手里抢走 Enter
   assert.equal(padKeyFor('0:start'), '')
-  setPadKey('0:b', 'KeyZ') // 还回默认
+  setPadKey('0:b', 'KeyJ') // 还回默认
   assert.equal(padKeyFor('0:start'), 'Enter', 'Start 应当自己回到 Enter')
   assert.equal(padKeysCustomized(), false, '全回默认了就不该再留差量')
 })
@@ -207,7 +255,7 @@ check('存的是差量，不是整张表', () => {
 check('改回默认值就把那条记录清掉', () => {
   setPadKey('0:a', 'KeyQ')
   assert.equal(padKeysCustomized(), true)
-  setPadKey('0:a', 'KeyX')
+  setPadKey('0:a', 'KeyK') // A 的默认键
   assert.equal(padKeysCustomized(), false)
   assert.equal(store.get('8bitgo.nes.keys'), undefined)
 })
@@ -224,16 +272,16 @@ check('不给绑的键、不认识的绑定，一律拒绝且不写盘', () => {
   assert.equal(setPadKey('0:a', 'F5'), null)
   assert.equal(setPadKey('9:a', 'KeyQ'), null)
   assert.equal(setPadKey('0:nope', 'KeyQ'), null)
-  assert.equal(padKeyFor('0:a'), 'KeyX')
+  assert.equal(padKeyFor('0:a'), 'KeyK')
   assert.equal(padKeysCustomized(), false)
 })
 
 check('存的是坏东西时逐条忽略，不整份丢掉', () => {
-  store.set('8bitgo.nes.keys', JSON.stringify({ '0:a': 'KeyQ', '0:b': 42, 'bad:key': 'KeyW', '0:start': 'F11' }))
+  store.set('8bitgo.nes.keys', JSON.stringify({ '0:a': 'KeyQ', '0:b': 42, 'bad:key': 'KeyP', '0:start': 'F11' }))
   assert.equal(padKeyFor('0:a'), 'KeyQ', '好的那条要生效')
-  assert.equal(padKeyFor('0:b'), 'KeyZ', '值不是字符串的忽略')
+  assert.equal(padKeyFor('0:b'), 'KeyJ', '值不是字符串的忽略')
   assert.equal(padKeyFor('0:start'), 'Enter', '不可绑的键忽略')
-  assert.equal(getPadKeys().KeyW, undefined, '认不出的绑定忽略')
+  assert.equal(getPadKeys().KeyP, undefined, '认不出的绑定忽略')
 })
 
 check('存的是坏 JSON 时退回默认，不抛异常', () => {

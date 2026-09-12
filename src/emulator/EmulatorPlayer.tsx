@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react'
 import type { DosBackend, DosWindowsVersion, GenreId, Platform, PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
-import { formatBytes, formatSpeed, getDefaultKeymap, isRomFileAccepted } from '@/lib/emulator'
+import { formatBytes, formatSpeed, isRomFileAccepted } from '@/lib/emulator'
 import { detectRom, describeDetection } from './detect'
 import { resolveRuntime, runtimesFor, extOf } from './registry'
 import type { Capability, LoadPhase, Runtime, RuntimeHandle, RuntimeId, ScreenLayoutState, StageMode } from './types'
@@ -21,6 +21,7 @@ import { shouldCaptureMouse } from './mouseCapture'
 import { platformBiosUrlSync } from '@/services/platformBios'
 import { EmulatorTools } from './EmulatorTools'
 import { TouchPad } from './TouchPad'
+import { PadDiagram } from './PadDiagram'
 import { LiveControls, type LiveControlsHandle } from './LiveControls'
 import { createPortal } from 'react-dom'
 import type { LiveViewerEntry } from '@/services/live'
@@ -2385,29 +2386,18 @@ export function EmulatorPlayer({
   // 速度为 0 时是空串，上面据此整格不画（见加载遮罩里的说明）
   const speedText = formatSpeed(loadSpeed)
   /**
-   * 开局前那一行键位摘要（桌面端）。🎮 那条提示只给触屏，而桌面玩家的键位表在页面下面 ——
-   * 播放器现在占满一屏，不滚根本看不到；结果就是按 ▶ 之后对着键盘乱试。
-   * 只取前几格（方向 / A / B / Start 之类），详表仍在下面。键盘直通的运行时（DOS / Flash）rows 为空，不画。
+   * 开局前那张按键图画不画（桌面端）。
+   *
+   * 🎮 那条提示只给触屏，而桌面玩家的键位表在页面下面 —— 播放器现在占满一屏，
+   * 不滚根本看不到；结果就是按 ▶ 之后对着键盘乱试。
+   *
+   * ⚠️ 这里以前是一行**文字摘要**，而且必须截断（街机九行摆不下），
+   * 截断又不能伤到「投币」和「Start」—— 那两个是唯一「不知道就开不了始」的键，
+   * 街机不投币按 Start 什么都不会发生，玩家会以为站坏了。
+   * 现在交给 PadDiagram 画，没有截断，那个取舍连同它的风险一起没了（详见那个文件的头）。
+   * 键盘直通的运行时（DOS / Flash）键位表是空的，PadDiagram 自己返回 null。
    */
-  const keymapLine = (() => {
-    if (busy || online || touchDevice || !romUrl) return ''
-    const rows = getDefaultKeymap((session?.runtime.id ?? pageRuntime?.id) as string | undefined, platform.id).rows
-    /**
-     * ⚠️ 别再用 `slice(0, 5)`。
-     *
-     * 街机那张表是 9 行：`方向键 / 按键1..6 / 投币 / Start`。取前 5 行留下的正好是
-     * 方向键 + 按键 1~4 —— 动作键砍掉两个不要紧，但**投币和 Start 一个都没露出来**，
-     * 而这两个才是唯一「不知道就开不了始」的键（街机不投币按 Start 什么都不会发生）。
-     * 玩家照着这行摘要按一遍，游戏停在 INSERT COIN 不动，然后认为站坏了。
-     *
-     * 改成「头三行 + 末两行」：各平台的表都是**动作键在中间、Start/Select 在末尾**，
-     * 所以这个取法对谁都合适（GBA 的 7 行同样从只露 A/B/L/R 变成也露 Start/Select）。
-     */
-    const fmt = (r: { button: string; key: string }) => `${r.button} ${r.key}`
-    if (rows.length <= 5) return rows.map(fmt).join(' · ')
-    // 中间省掉了行就给个记号，别让人以为这就是全部
-    return [...rows.slice(0, 3).map(fmt), '…', ...rows.slice(-2).map(fmt)].join(' · ')
-  })()
+  const showKeymap = !busy && !online && !touchDevice && Boolean(romUrl)
   const loadingLabel =
     loadPhase === 'starting'
       ? t.player.loadingStarting
@@ -2887,6 +2877,17 @@ export function EmulatorPlayer({
               )}
               {supported ? (
                 <>
+                  {/*
+                    按键图在按钮**上面**：玩家的视线从游戏名往下走，先看到手放哪儿，
+                    再看到「开始」。反过来的话，手已经点下去了才看到键位，等于没说。
+                  */}
+                  {showKeymap && (
+                    <PadDiagram
+                      runtimeId={(session?.runtime.id ?? pageRuntime?.id) as string | undefined}
+                      platform={platform.id}
+                      className="mb-1"
+                    />
+                  )}
                   <Button size="lg" disabled={(!online && romChecking) || joinBlocked} onClick={primaryAction}>
                     <span aria-hidden>{online ? (willWatch ? '👀' : '👥') : status === 'error' && romUrl ? '↻' : '▶'}</span>{' '}
                     {joining && online
@@ -2957,8 +2958,12 @@ export function EmulatorPlayer({
                       </>
                     ) : romUrl ? (
                       <>
-                        {fmt(t.player.cloudHint, { runtime: pageRuntime?.name ?? '' })}
-                        <br />
+                        {/*
+                          「ROM 将从云端加载，由 XXX 在浏览器内运行…」那句去掉了（2026-09-12）：
+                          说明性的话看一次就够，而这一屏现在上面多了一张按键图，再留一句
+                          纯解释的文字会把「也可以选本地 ROM / 切到联机」这两个**入口**挤下去。
+                          文案键 t.player.cloudHint 留着没删 —— 要恢复的话原样接回这里即可。
+                        */}
                         {t.player.alsoCan}
                         <button type="button" className="mx-1 underline underline-offset-2 hover:text-white" onClick={() => inputRef.current?.click()}>
                           {t.player.pickLocal}
@@ -3034,11 +3039,6 @@ export function EmulatorPlayer({
                         })}
                       </span>
                     </label>
-                  )}
-                  {keymapLine && (
-                    <p className="max-w-md text-[11px] leading-relaxed text-white/55 sm:text-xs">
-                      ⌨️ {keymapLine} · {t.player.keymapMore}
-                    </p>
                   )}
                 </>
               ) : (

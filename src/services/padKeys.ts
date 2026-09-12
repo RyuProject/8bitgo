@@ -87,18 +87,27 @@ export function parseBinding(b: string): { seat: Seat; action: PadAction } | nul
  *    所以留着可绑，玩家想给 2P 配就配。
  */
 export const DEFAULT_PAD_KEYS: Readonly<Record<string, PadBinding>> = {
-  ArrowUp: '0:up',
-  ArrowDown: '0:down',
-  ArrowLeft: '0:left',
-  ArrowRight: '0:right',
-  KeyX: '0:a',
-  KeyZ: '0:b',
-  // QWERTZ 上印着 Z 的那颗物理键报的是 KeyY。jsnes 默认表里也有这条后路（keyCode 89）
-  KeyY: '0:b',
-  ControlRight: '0:select',
+  /*
+    1P 用左手 WASD + 右手 UIJK（2026-09-12 改的），和 EmulatorJS 那边的
+    EJS_KEY_OVERRIDE 是同一套 —— 站里只该有一种默认键位，红白机和别的平台
+    按起来不一样才是最容易让人骂街的那种不一致。
+
+    ⚠️ 原来 1P 是方向键 + X/Z，连发在 S/A。改成 WASD 之后 S 和 A 被方向占了，
+       连发只能跟着挪（挪到 I / U，正好和面键 K / J 同一只手）。
+    ⚠️ 原来还有一条 `KeyY: '0:b'` 的后路 —— QWERTZ 键盘上印着 Z 的物理键报的是 KeyY。
+       现在 B 键是 J，J 在 QWERTZ 上不挪位置，这条后路没有存在的理由了，删掉。
+    ⚠️ 2P 那一组（小键盘）不动：它本来就不和任何字母键冲突。
+  */
+  KeyW: '0:up',
+  KeyS: '0:down',
+  KeyA: '0:left',
+  KeyD: '0:right',
+  KeyK: '0:a',
+  KeyJ: '0:b',
+  ShiftLeft: '0:select',
   Enter: '0:start',
-  KeyS: '0:turboA',
-  KeyA: '0:turboB',
+  KeyI: '0:turboA',
+  KeyU: '0:turboB',
 
   Numpad8: '1:up',
   Numpad2: '1:down',

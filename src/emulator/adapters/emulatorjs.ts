@@ -24,6 +24,7 @@
  */
 import type { PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
+import { EJS_DEFAULT_CONTROLS } from '@/lib/keymapData'
 import type { Capability, CaptureSources, LoadPhase, LoadProgress, MountOptions, RuntimeHandle, StageMode } from '../types'
 import { fetchBlobWithProgress, fetchWithProgress, throttleProgress } from '../loadProgress'
 import { romCacheGet, romCacheGetBlob, romCacheKey, romCachePut, romCachePutBlob } from '../romCache'
@@ -2533,6 +2534,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           // 街机：引擎没有 arcade 分支，不给这份布局手机上就只有 4 颗动作键、
           // 摇杆还会把对角线松掉、投币键写着「选择」。见 ARCADE_VIRTUAL_PAD 的注释
           ...(options.platform === 'arcade' ? { EJS_VirtualGamepadSettings: ARCADE_VIRTUAL_PAD } : {}),
+          /*
+            默认键位：左手 WASD、右手 UIJK、Shift 投币、Enter 开始（见 keymapData 的 EJS_KEY_OVERRIDE）。
+            引擎会把这份**逐颗按钮合并**进它出厂那套，没给的按钮（肩键、L2/R2）保持原样。
+
+            ⚠️ 只影响**没改过键的人**。引擎把玩家改过的键位存在 localStorage 里，
+            存过就一直用存的那份 —— 这是对的（不能替人把改过的键改回去），
+            但也意味着你自己的浏览器上大概率看不到这次改动，要清掉引擎的控制设置才看得到。
+          */
+          EJS_defaultControls: EJS_DEFAULT_CONTROLS,
           EJS_color: '#0078f2',
           EJS_backgroundColor: '#0b0b0f',
           // 跟着站点语言走。切语言是整页跳转（见 services/lang.ts 的 setLang），
