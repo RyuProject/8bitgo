@@ -114,13 +114,11 @@ export function MostPlayedSection({ games }: { games: Game[] }) {
         moreTo="/games"
       />
       {/*
-        宽屏两列、每列五行，而且是**竖着排**的：左边 1–5、右边 6–10。
-        靠 grid-flow-col + grid-rows-5 做到 —— 默认的按行填充会变成「1 2 / 3 4」，
-        眼睛要横着跳才能读出名次，榜就不像榜了。
-        auto-cols-fr 让两列等宽（flow-col 下列宽默认是 max-content，会被最长的标题撑歪）。
-        窄屏单列从上到下，本来就是一维的顺序。
+        5 列到 2 列。移动端不降到 1 列：一列会让每张卡横着拉得很长，反而更难扫。
+        ⚠️ 列数直接决定封面能有多大（卡片内宽 = 列宽 − 2×p-3）。要再加列之前先想清楚
+        封面会缩到多少 —— 「看不见 cover 上是什么」就是这么来的。
       */}
-      <div className="grid grid-cols-1 gap-2 md:grid-flow-col md:auto-cols-fr md:grid-rows-5 md:gap-x-3">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
         {games.map((g, i) => (
           <GameRankCard
             key={g.slug}

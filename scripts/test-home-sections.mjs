@@ -158,19 +158,25 @@ check('带名次角标（这一栏是榜，名次要看得见）', () => {
 
 console.log('\n── 排版 ──')
 
-check('⚠️ 宽屏两列而且是竖着排的（左 1–5、右 6–10），窄屏单列', () => {
+check('宽屏 5 列，窄屏不掉到 1 列', () => {
   const grid = bodyOf('MostPlayedSection').match(/className="grid[^"]*"/)?.[0] ?? ''
-  assert.match(grid, /grid-cols-1/, '窄屏不是单列')
-  assert.match(grid, /md:grid-flow-col/, '宽屏按行填充了 —— 会变成「1 2 / 3 4」，眼睛得横着跳才读得出名次')
-  assert.match(grid, /md:grid-rows-5/, '没固定五行，列数会跟着条数跑')
-  assert.match(grid, /md:auto-cols-fr/, 'flow-col 下列宽默认是 max-content，不给 fr 会被最长的标题撑歪')
+  assert.match(grid, /xl:grid-cols-5/, '宽屏不是 5 列')
+  assert.match(grid, /grid-cols-2/, '窄屏没兜住')
+  assert.doesNotMatch(grid, /grid-cols-1\b/, '掉到 1 列了：一列会让每张卡横着拉得很长')
 })
 
-check('一行四件套都在：名次 / 封面 / 标题 / 平台角标', () => {
+check('⚠️ 封面占满卡片宽度（缩成固定小宽度就「看不见 cover 上是什么」）', () => {
+  const wrap = card.match(/<div className="([^"]*)">\s*<GameCover/)?.[1]
+  assert.ok(wrap, '找不到包封面的那个 div —— 结构改了的话这条断言也要跟着改')
+  assert.match(wrap, /\bw-full\b/, `封面容器是「${wrap}」，没有 w-full`)
+  assert.doesNotMatch(wrap, /\bw-\d+\b/, `封面容器又被设成固定宽度了：「${wrap}」`)
+})
+
+check('卡片四件套都在：名次 / 平台 / 封面 / 简介', () => {
   assert.match(card, /\{rank\}/, '没画名次')
-  assert.match(card, /<GameCover game=\{game\} ratio="square"/, '封面不是方形小图')
-  assert.match(card, /gameTitle\(game, lang\)/, '没画标题')
   assert.match(card, /platform\.shortName/, '没画平台角标')
+  assert.match(card, /<GameCover game=\{game\} ratio="square"/, '封面不是方形图')
+  assert.match(card, /gameDescription\(game, lang\)/, '没画简介')
 })
 
 check('⚠️ 名次用 tabular-nums（个位数和两位数要对齐）', () => {
@@ -190,7 +196,11 @@ check('⚠️ 不许拿 bg-white/x 当底色（深色主题看着好好的，浅
   assert.doesNotMatch(card, /bg-white\//, '又用回 bg-white/x 了 —— 2026-09-12 平台角标就是这么隐形的')
 })
 
-check('标题走多语言函数，不是直接读字段', () => {
+check('⚠️ 简介占住固定高度，否则同一行的卡高矮不齐', () => {
+  assert.match(card, /line-clamp-2 min-h-8/)
+})
+
+check('标题和简介走多语言函数，不是直接读字段', () => {
   assert.match(card, /gameTitle\(game, lang\)/)
   assert.doesNotMatch(card, /\{game\.title\}/, '直接渲染了 game.title —— 中文界面会显示原名')
 })
