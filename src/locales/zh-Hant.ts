@@ -571,6 +571,7 @@ const zhHant: Translation = {
     nickname: '暱稱',
     joined: '{date} 加入',
     edit: '✏️ 編輯資料',
+    adminPanel: '🛠 進入後台',
     coins: 'G 幣',
     favorites: '稍後玩',
     recent: '最近瀏覽',

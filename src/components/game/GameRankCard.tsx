@@ -1,13 +1,11 @@
 import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import type { Game } from '@/types'
-import { platformMap } from '@/data/platforms'
 import { genreMap } from '@/data/genres'
 import { cx } from '@/lib/format'
 import { GameCover } from './GameCover'
-import { useLang } from '@/services/lang'
 import { useT } from '@/services/i18n'
-import { genreLabel, gameTitle, gameDescription } from '@/services/i18nData'
+import { genreLabel } from '@/services/i18nData'
 
 interface Props {
   game: Game
@@ -42,25 +40,30 @@ const MEDAL_TONES: Record<number, string> = {
 }
 
 /**
- * 榜单用的游戏卡片：**顶部一行名次+平台 → 满宽方形封面 → 标题 → 简介 → 底部元信息**。
+ * 榜单用的游戏卡片：**只有两层 —— 顶部一行「名次 + 类型」，下面一张满宽方形封面**。
+ * 游戏名和游玩次数都压在封面上（同一行，名字在左、次数在右）。
  *
- * 和 GameCard 的分工：那一张是「封面占满、信息压在图上」的横向轨道卡，
- * 适合一眼扫过去挑封面；这一张是**榜单**卡 —— 名次要第一眼看见、简介要能读。
+ * ⚠️ 封面下面**不要再加标题和简介**（2026-09-12 去掉的）。去掉之前那两样是重复的：
+ * 封面上本来就压着游戏名，下面再写一遍；简介在 110~130 像素宽的卡片里只能塞两行，
+ * 两行中文说不清任何事，却把卡片撑高一倍。
+ *
+ * ⚠️ 右上角是**游戏类型**，不是平台。平台角标封面自己左上角画着（GameCover 的
+ * showBadge），两处都画平台等于一张卡上同一件事说两遍，而类型没人说。
+ *
+ * ⚠️ 封面必须**占满卡片宽度**。上一版是居中的 `w-20`（80 像素），五列栅格下每张卡
+ * 内宽才 110~130 像素，等于故意把图缩到一半 —— 用户的原话是「看不见 cover 上是什么」。
+ * **别再给封面设固定宽度。**
+ *
+ * 和 GameCard 的分工：那一张是横向轨道卡；这一张是**榜单**卡，名次要第一眼看见。
  * 两种排版塞进同一个组件只会变成一堆互斥的 props，改一处必崩另一处。
  *
- * ⚠️ 封面必须**占满卡片宽度**（2026-09-12 改）。上一版是居中的 `w-20`（80 像素），
- * 五列栅格下每张卡内宽才 110~130 像素，等于故意把图缩到一半 —— 用户的原话是
- * 「看不见 cover 上是什么」。要腾地方就压别的：卡片内边距从 p-4 收到 p-3，
- * 名次从「2xl 大数字」换成小角标。**别再给封面设固定宽度。**
+ * 顺带：卡片里不再有长度不定的文字，所以同一行里的卡片天然等高 ——
+ * 以前靠「简介固定两行 min-h」撑出来的对齐，现在是结构本身保证的。
  */
 export function GameRankCard({ game, rank, metric, className }: Props) {
-  const lang = useLang()
   const t = useT()
-  const platform = platformMap[game.platform]
   const genreId = game.genres[0]
   const genre = genreId ? genreMap[genreId] : undefined
-  const title = gameTitle(game, lang)
-  const description = gameDescription(game, lang)
 
   return (
     <Link
@@ -85,43 +88,25 @@ export function GameRankCard({ game, rank, metric, className }: Props) {
           {rank}
         </span>
         {/*
-          平台角标。用 shortName（NES / ARCADE / HTML5），不是全名 ——
-          这一行只有半张卡宽，全名会把它挤到第二行去。
+          类型角标。
           ⚠️ 底色只能用主题变量。以前这里是 bg-white/5，**浅色主题下就是纯白配纯白**，
           等于没有底 —— 深色主题里看着好好的，切到浅色就露馅。
         */}
-        {platform && (
-          <span className="shrink-0 rounded bg-surface-3 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted">
-            {platform.shortName}
+        {genreId && (
+          <span className="min-w-0 truncate rounded bg-surface-3 px-1.5 py-0.5 text-[10px] font-semibold text-muted">
+            {genre?.icon && <span aria-hidden>{genre.icon} </span>}
+            {genreLabel(t, genreId, genre?.name)}
           </span>
         )}
       </div>
 
       {/* 封面：满宽方形，卡片有多宽它就有多宽（理由见组件头的 ⚠️） */}
       <div className="mt-2 w-full overflow-hidden rounded-lg">
-        <GameCover game={game} ratio="square" iconSize="md" still />
-      </div>
-
-      <h3 className="mt-2.5 truncate text-center text-sm font-semibold leading-tight" title={title}>
-        {title}
-      </h3>
-      {/*
-        简介固定两行。**必须占住高度**（min-h）：有的游戏没填简介，不占位的话
-        同一行里的卡片高矮不齐，底部那行元信息也跟着错开。
-      */}
-      <p className="mt-1 line-clamp-2 min-h-8 text-center text-xs leading-4 text-muted">{description}</p>
-
-      {/*
-        底部一行。mt-auto 把它压到卡片底边 —— 上面简介的实际行数即使不同，
-        这一行的位置也一致。
-      */}
-      <div className="mt-auto flex items-center justify-between gap-2 pt-2.5 text-[11px] text-muted">
-        <span className="truncate">
-          {genre?.icon && <span aria-hidden>{genre.icon} </span>}
-          {genreId ? genreLabel(t, genreId, genre?.name) : ''}
-        </span>
-        {/* 统计值缺省就整块不画：挂一个「0」会被读成「没人玩」，而真相是「还没统计到」 */}
-        {metric !== undefined && <span className="flex shrink-0 items-center gap-1">{metric}</span>}
+        {/*
+          游玩次数挂在封面标题**同一行的最右边**（GameCover 的 titleRight）。
+          统计值缺省就不传：挂一个「0」会被读成「没人玩」，而真相是「还没统计到」。
+        */}
+        <GameCover game={game} ratio="square" iconSize="md" still titleRight={metric} />
       </div>
     </Link>
   )

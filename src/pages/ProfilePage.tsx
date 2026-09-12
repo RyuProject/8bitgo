@@ -18,6 +18,7 @@ import { AccountSection } from '@/components/profile/AccountSection'
 import { CloudSaves } from '@/components/profile/CloudSaves'
 import { MyCollections } from '@/components/profile/MyCollections'
 import { DangerZone } from '@/components/profile/DangerZone'
+import { isStaff } from '../../shared/roles.js'
 // 头像选项和服务端校验共用一张表（shared/avatar.js）——
 // 各写一份就会出现「界面上能选、存进去被 400 拒掉」
 import { AVATARS, normalizeAvatar } from '../../shared/avatar.js'
@@ -171,6 +172,20 @@ export function ProfilePage() {
                   <Button size="sm" variant="secondary" onClick={() => setEditing(true)}>
                     {t.profile.edit}
                   </Button>
+                  {/*
+                    后台入口。**只是个链接，不是一道权限** —— 真正说了算的是服务端：
+                    /api/admin/verify 会自己再读一次 users.role（见 server/src/auth.js 的
+                    roleOfRequest）。这里用 isStaff 只是「别给玩家画一个点进去会 403 的按钮」，
+                    和 shared/roles.js 读同一张表，不会出现界面和服务端两套说法。
+
+                    ⚠️ user.role 是前端缓存的一份副本，改完角色要刷新页面才会更新。
+                    别把它当凭据用 —— 凭据是登录令牌本身。
+                  */}
+                  {isStaff(user.role) && (
+                    <Button size="sm" variant="secondary" to="/admin">
+                      {t.profile.adminPanel}
+                    </Button>
+                  )}
                   <Button
                     size="sm"
                     variant="ghost"

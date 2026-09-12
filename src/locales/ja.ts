@@ -554,6 +554,7 @@ const ja: Translation = {
     nickname: 'ニックネーム',
     joined: '{date} に登録',
     edit: '✏️ プロフィールを編集',
+    adminPanel: '🛠 管理画面',
     coins: 'Gコイン',
     favorites: 'あとで遊ぶ',
     recent: '最近見たゲーム',

@@ -11,6 +11,7 @@ import { useSeo } from '@/services/seo'
 import { tvOrigin } from '@/services/tvHost'
 import { romUrlForKey } from '@/services/roms'
 import { cx } from '@/lib/format'
+import { enterFullscreen } from '@/lib/fullscreen'
 import { gradientFor } from '@/lib/gradients'
 import { fetchTv, computeRotation, type TvSignal } from '@/services/tv'
 import { fetchPageData } from '@/services/pageData'
@@ -213,8 +214,18 @@ function ListRow({ game, lang }: { game: Game; lang: Lang }) {
   const { focused, setFocus } = useFocusable(id)
   return (
     <li>
+      {/*
+        回车（或点击）= 直接开玩：跳详情页并带 ?autoplay=1，同时把整页切进全屏。
+
+        ⚠️ 两件事都卡在同一条约束上，改之前先看 lib/fullscreen.ts 的文件头：
+          · 全屏必须在**手势的同步调用栈**里要 —— FocusScope 的回车是 el.click() 派发的，
+            所以挂在 onClick 上正好落在那一帧里；挪进 useEffect 就静默失败。
+          · 跳转必须是**同文档**的前端路由（<Link>），整页重载会把全屏状态丢掉，
+            而详情页那边没有手势可用，补不回来。**别把这里换成 <a>。**
+      */}
       <Link
-        to={`/games/${game.slug}`}
+        to={`/games/${game.slug}?autoplay=1`}
+        onClick={() => enterFullscreen()}
         data-focus-id={id}
         onMouseEnter={setFocus}
         className={cx(

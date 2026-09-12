@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import type { ReactNode } from 'react'
 import type { CoverGame } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { gradientFor } from '@/lib/gradients'
@@ -21,6 +22,16 @@ interface Props {
   showBadge?: boolean
   /** 右下角有其他角标时，为标题预留空间 */
   reserveBottomRight?: boolean
+  /**
+   * 放在**标题同一行最右边**的东西（榜单卡的游玩次数就挂在这儿）。
+   *
+   * 和 reserveBottomRight 的分工：那个是「外面另有角标，标题让个位置出来」，
+   * 这个是「东西就交给封面画，和标题排成一行」。两者一般不会同时用。
+   *
+   * ⚠️ 这一层压在深色渐变上，所以文字颜色由**封面这边**定成白色 ——
+   * 调用方按自己卡片的主题色传进来的话，浅色主题下就是白底配浅灰，看不见。
+   */
+  titleRight?: ReactNode
   /**
    * 首屏可见（LCP 候选）。开了就 eager + 高优先级下载、视频也预取 metadata。
    * 只给真正一进页面就能看到的那几张，给多了等于没分优先级。
@@ -170,6 +181,7 @@ export function GameCover({
   iconSize = 'md',
   showBadge = true,
   reserveBottomRight = false,
+  titleRight,
   priority = false,
   still = false,
   eager = false,
@@ -233,7 +245,21 @@ export function GameCover({
             reserveBottomRight && 'pr-14',
           )}
         >
-          <p className="line-clamp-2 text-[13px] font-bold leading-tight text-white drop-shadow">{title}</p>
+          {/*
+            标题和右边那个数排成一行。没传 titleRight 时这一行只有标题一个 flex-1 的孩子，
+            渲染结果和改之前一模一样（这个组件到处都在用，不能因为加插槽就动了别处的版式）。
+            items-end：标题占两行时，右边那个数和**最后一行**对齐，不会飘在半空。
+          */}
+          <div className="flex items-end justify-between gap-2">
+            <p className="line-clamp-2 min-w-0 flex-1 text-[13px] font-bold leading-tight text-white drop-shadow">
+              {title}
+            </p>
+            {titleRight !== undefined && (
+              <span className="shrink-0 text-[11px] font-semibold leading-tight text-white/90 drop-shadow">
+                {titleRight}
+              </span>
+            )}
+          </div>
         </div>
       )}
 

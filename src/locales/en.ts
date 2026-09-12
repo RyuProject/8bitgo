@@ -559,6 +559,7 @@ const en: Translation = {
     nickname: 'Nickname',
     joined: 'Joined {date}',
     edit: '✏️ Edit profile',
+    adminPanel: '🛠 Admin panel',
     coins: 'G Coins',
     favorites: 'Play later',
     recent: 'Recently viewed',

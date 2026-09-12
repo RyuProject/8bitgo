@@ -612,6 +612,7 @@ export const zhHans = {
     nickname: '昵称',
     joined: '{date} 加入',
     edit: '✏️ 编辑资料',
+    adminPanel: '🛠 进入后台',
     coins: 'G 币',
     favorites: '稍后玩',
     recent: '最近浏览',

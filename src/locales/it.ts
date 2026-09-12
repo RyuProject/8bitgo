@@ -560,6 +560,7 @@ const it: Translation = {
     nickname: 'Nickname',
     joined: 'Iscritto il {date}',
     edit: '✏️ Modifica profilo',
+    adminPanel: '🛠 Pannello admin',
     coins: 'G Coin',
     favorites: 'Da giocare',
     recent: 'Visti di recente',

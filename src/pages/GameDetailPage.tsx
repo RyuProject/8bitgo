@@ -56,6 +56,12 @@ export function GameDetailPage() {
   const watchOnly = searchParams.get('watch') === '1'
   // ?live= 是「一人玩多人看」的直播间（和联机房的观众席不是一回事）
   const liveInvite = searchParams.get('live') ?? undefined
+  /*
+    ?autoplay=1：进来就自动开一局。目前的来路只有 TV（遥控器回车即播）。
+    ⚠️ 不进 canonical —— useSeo 的 canonicalPath 取的是 pathname，不带查询串，
+    所以这个参数不会造出第二个可收录地址。
+  */
+  const autoStart = searchParams.get('autoplay') === '1'
   const t = useT()
   // 详情页要的就是这一款游戏和它的相关推荐，由后端一次给全 ——
   // v1 是把整个游戏库拉进内存再 find(slug)，几千款时光是首屏就得下载整个目录
@@ -340,6 +346,7 @@ export function GameDetailPage() {
                   cloudInvite={cloudInvite}
                   watch={watchOnly}
                   liveInvite={liveInvite}
+                  autoStart={autoStart}
                 livePanelSlot={watchLayout ? livePanelSlot : null}
                   icon={game.icon}
                   // 这一款指定的核心（街机尤其需要），以及平台级 BIOS（Neo Geo 缺了起不来）

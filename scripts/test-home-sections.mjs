@@ -166,17 +166,45 @@ check('宽屏 5 列，窄屏不掉到 1 列', () => {
 })
 
 check('⚠️ 封面占满卡片宽度（缩成固定小宽度就「看不见 cover 上是什么」）', () => {
-  const wrap = card.match(/<div className="([^"]*)">\s*<GameCover/)?.[1]
+  // strip() 把 {/* 注释 */} 抹成一对孤零零的 { }，所以中间要允许花括号残渣，不能只 \s*
+  const wrap = card.match(/<div className="([^"]*)">[\s{}]*<GameCover/)?.[1]
   assert.ok(wrap, '找不到包封面的那个 div —— 结构改了的话这条断言也要跟着改')
   assert.match(wrap, /\bw-full\b/, `封面容器是「${wrap}」，没有 w-full`)
   assert.doesNotMatch(wrap, /\bw-\d+\b/, `封面容器又被设成固定宽度了：「${wrap}」`)
 })
 
-check('卡片四件套都在：名次 / 平台 / 封面 / 简介', () => {
+check('卡片三件套：名次 / 类型 / 满宽方形封面', () => {
   assert.match(card, /\{rank\}/, '没画名次')
-  assert.match(card, /platform\.shortName/, '没画平台角标')
   assert.match(card, /<GameCover game=\{game\} ratio="square"/, '封面不是方形图')
-  assert.match(card, /gameDescription\(game, lang\)/, '没画简介')
+  assert.match(card, /genreLabel\(/, '右上角没画游戏类型')
+})
+
+check('⭐ 右上角是类型，不是平台（平台封面自己左上角画着，两处都画等于说两遍）', () => {
+  assert.doesNotMatch(
+    card,
+    /platform\.shortName/,
+    '卡片又自己画了一个平台角标 —— GameCover 的 showBadge 已经在封面左上角画了',
+  )
+})
+
+check('⭐ 游玩次数挂在封面标题同一行（titleRight），不是封面下面另起一行', () => {
+  assert.match(card, /titleRight=\{metric\}/, '次数没交给封面的标题行')
+  const cover = strip(read('src/components/game/GameCover.tsx'))
+  assert.match(cover, /titleRight/, 'GameCover 没有 titleRight 这个插槽')
+  // 那一层压在深色渐变上，颜色必须由封面这边定成白色（调用方按自己主题传色会在浅色主题下隐形）
+  const slot = cover.match(/\{titleRight !== undefined && \([\s\S]{0,260}/)?.[0] ?? ''
+  assert.match(slot, /text-white/, 'titleRight 没定成白色 —— 压在深色渐变上会看不见')
+})
+
+check('⭐ 封面下面不再有标题和简介（重复 + 两行中文说不清任何事）', () => {
+  /*
+    2026-09-12 去掉的。封面上本来就压着游戏名，下面再写一遍；而简介在
+    110~130 像素宽的卡片里只能塞两行，说不清任何事，却把卡片撑高一倍。
+    ⚠️ 顺带：卡片里不再有长度不定的文字，同一行的卡片就天然等高了 ——
+    以前那条「简介固定两行 min-h」的对齐要求，现在由结构本身保证，不需要断言了。
+  */
+  assert.doesNotMatch(card, /gameDescription\(/, '封面下面又加回简介了')
+  assert.doesNotMatch(card, /<h3/, '封面下面又加回标题了')
 })
 
 check('⚠️ 名次用 tabular-nums（个位数和两位数要对齐）', () => {
@@ -196,13 +224,14 @@ check('⚠️ 不许拿 bg-white/x 当底色（深色主题看着好好的，浅
   assert.doesNotMatch(card, /bg-white\//, '又用回 bg-white/x 了 —— 2026-09-12 平台角标就是这么隐形的')
 })
 
-check('⚠️ 简介占住固定高度，否则同一行的卡高矮不齐', () => {
-  assert.match(card, /line-clamp-2 min-h-8/)
-})
-
-check('标题和简介走多语言函数，不是直接读字段', () => {
-  assert.match(card, /gameTitle\(game, lang\)/)
-  assert.doesNotMatch(card, /\{game\.title\}/, '直接渲染了 game.title —— 中文界面会显示原名')
+check('标题走多语言函数，不是直接读字段', () => {
+  /*
+    标题现在由 GameCover 画（压在封面上），所以这条断言跟着搬到那边 ——
+    留在卡片上的话它会因为「卡片里根本没有标题」而恒真，等于不再保护任何东西。
+  */
+  const cover = strip(read('src/components/game/GameCover.tsx'))
+  assert.match(cover, /gameTitle\(game, lang\)/, '封面没走多语言函数取标题')
+  assert.doesNotMatch(cover, /\{game\.title\}/, '直接渲染了 game.title —— 中文界面会显示原名')
 })
 
 console.log('\n── 八种语言的文案 ──')

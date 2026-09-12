@@ -200,6 +200,14 @@ interface Props {
    * 配套要给 className 一个 max-sm:h-full，高度链才连得上（见 EmbedPage）。
    */
   fill?: boolean
+  /**
+   * 进页面就自动开一局，不用玩家再点一次「开始游戏」（详情页 ?autoplay=1）。
+   * 目前的来路只有 TV：遥控器上回车即播，再要求按一次「开始」是多余的一步。
+   *
+   * 只在**有云端 ROM、且这个平台有可用运行时**时才真的开得起来；
+   * 要玩家自己选本地 ROM 的那一路它什么都不做（也不会把「自动开过了」这个标记消耗掉）。
+   */
+  autoStart?: boolean
   /** 邀请链接带进来的 P2P 房间 id（详情页 ?p2p=） */
   invite?: string
   /** 邀请链接带进来的云端房间 id（详情页 ?room=，付费通道） */
@@ -460,6 +468,7 @@ export function EmulatorPlayer({
   onPlatformChange,
   onDetectFailed,
   retryRequest,
+  autoStart,
 }: Props) {
   const [status, setStatus] = useState<Status>('idle')
   const [file, setFile] = useState<File | null>(null)
@@ -2161,6 +2170,25 @@ export function EmulatorPlayer({
     },
     [platform, romUrl, pageRuntime, onDetectMismatch, onPlatformChange, onDetectFailed, t],
   )
+
+  /*
+    autoStart：?autoplay=1 进来的（TV 端回车直接开玩），不用再点一次「开始游戏」。
+
+    ⚠️ 只自动开**一次**，用 ref 记住。条件里只写 `status === 'idle'` 的话，玩家自己把这一局
+    停掉、或者切一次 ROM 语言（两者都会 reset() 回 idle），马上就会被这个 effect 重新拉起来 ——
+    玩家永远退不出这一局。上面 liveInvite 那个 ignoreInvite 闸是同一个教训。
+
+    条件和「想开房」那一路一致（见 wantMatchRef 那段）：`romUrl` 是异步探出来的，
+    没探到之前 start(null) 什么都不会发生，这时候**不能**把标记消耗掉，等地址回来再开。
+  */
+  const autoStartedRef = useRef(false)
+  useEffect(() => {
+    if (!autoStart || autoStartedRef.current) return
+    if (status !== 'idle' || session) return
+    if (!romUrl || !pageRuntime) return
+    autoStartedRef.current = true
+    void start(null)
+  }, [autoStart, status, session, romUrl, pageRuntime, start])
 
   /**
    * 外部重试：用户在识别失败后手动选了平台，页面把同一个文件递回来重跑一次。

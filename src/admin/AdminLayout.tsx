@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { Link, NavLink, Outlet, useOutletContext } from 'react-router-dom'
 import { cx } from '@/lib/format'
 import { useDocumentTitle } from '@/lib/useDocumentTitle'
-import { ApiError, api, apiEnabled, getAdminApiToken, setAdminApiToken } from '@/services/api'
+import { ApiError, api, apiEnabled, getAdminApiToken, getToken, setAdminApiToken } from '@/services/api'
 import { fetchAdminGames } from '@/services/store'
 import { ABILITIES, ROLE_LABELS, type Ability, type UserRole } from '../../shared/roles.js'
 
@@ -37,15 +37,30 @@ interface VerifyResult {
   abilities: Ability[]
 }
 
-/** 后台入口只信服务端对 ADMIN_TOKEN 的校验结果，密钥不会再被 Vite 打进公开的前端文件。 */
+/**
+ * 后台入口只信服务端的校验结果（`/api/admin/verify`），任何密钥都不会被 Vite 打进前端文件。
+ *
+ * 进得来的有**两条路**，服务端的 roleOfRequest 本来就认这两条（见 server/src/auth.js）：
+ *   1. 后台口令 ADMIN_TOKEN —— 不对应任何账号，给没有账号的人留的
+ *   2. **登录用户自己的账号**（users.role 是 admin / volunteer）
+ *
+ * ⚠️ 第 2 条以前在前端是断的：这里一上来就要求 sessionStorage 里已经有口令，
+ * 否则连问都不问直接弹密钥框 —— 管理员账号明明有权限，却被自己的界面挡在外面
+ * （2026-09-12 关掉 ADMIN_AUTH_DISABLED 那个后门之后就暴露了）。
+ * 现在只要手里有登录令牌就先去问一次服务端，**判断权限的仍然只有服务端**：
+ * 前端不读 role、不做任何本地授权，403 就退回密钥框。
+ */
 export function AdminLayout() {
   useDocumentTitle('后台管理')
   const [gate, setGate] = useState<GateState>(() => {
     try {
-      return getAdminApiToken() && sessionStorage.getItem(SESSION_KEY) === '1' ? 'checking' : 'locked'
+      // 这个标签页里已经用口令进过后台
+      if (getAdminApiToken() && sessionStorage.getItem(SESSION_KEY) === '1') return 'checking'
     } catch {
-      return 'locked'
+      /* sessionStorage 可能被隐私模式禁掉，当作没有 */
     }
+    // 没口令也可能进得来：登录令牌本身就是凭据，让服务端去认
+    return getToken() ? 'checking' : 'locked'
   })
 
   /** 服务端认下来的身份。不缓存在浏览器里 —— 那等于让前端自己给自己发权限 */

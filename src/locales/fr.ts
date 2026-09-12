@@ -560,6 +560,7 @@ const fr: Translation = {
     nickname: 'Pseudo',
     joined: 'Membre depuis le {date}',
     edit: '✏️ Modifier le profil',
+    adminPanel: '🛠 Espace admin',
     coins: 'G Coins',
     favorites: 'À jouer plus tard',
     recent: 'Vus récemment',
