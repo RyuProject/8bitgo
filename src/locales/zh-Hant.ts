@@ -734,6 +734,7 @@ const zhHant: Translation = {
   apps: {
     title: '應用中心',
     desc: '下載官方 SDK 與客戶端，或提交你自建的社群應用。',
+    openPlatform: '開放平台',
     sdk: '官方 SDK',
     app: 'APP 下載',
     community: '社群自建 APP',

@@ -730,6 +730,7 @@ const es: Translation = {
   apps: {
     title: 'Centro de aplicaciones',
     desc: 'Descarga los SDK y clientes oficiales, o envía una app que hayas creado para la comunidad.',
+    openPlatform: 'Plataforma abierta',
     sdk: 'SDK oficial',
     app: 'Descargas',
     community: 'Apps de la comunidad',

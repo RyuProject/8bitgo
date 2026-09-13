@@ -720,6 +720,7 @@ const ja: Translation = {
   apps: {
     title: 'アプリセンター',
     desc: '公式 SDK やクライアントをダウンロード、またはコミュニティ向けに作ったアプリを送信できます。',
+    openPlatform: 'オープンプラットフォーム',
     sdk: '公式 SDK',
     app: 'アプリのダウンロード',
     community: 'コミュニティ制作アプリ',

@@ -778,6 +778,7 @@ export const zhHans = {
   apps: {
     title: '应用中心',
     desc: '下载官方 SDK 与客户端，或提交你自建的社区应用。',
+    openPlatform: '开放平台',
     sdk: '官方 SDK',
     app: 'APP 下载',
     community: '社区自建 APP',

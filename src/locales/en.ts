@@ -730,6 +730,7 @@ const en: Translation = {
   apps: {
     title: 'Apps',
     desc: 'Download official SDKs and clients, or submit an app you built for the community.',
+    openPlatform: 'Open Platform',
     sdk: 'Official SDK',
     app: 'App Download',
     community: 'Community Apps',

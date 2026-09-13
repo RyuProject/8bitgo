@@ -731,6 +731,7 @@ const de: Translation = {
   apps: {
     title: 'App-Center',
     desc: 'Lade offizielle SDKs und Clients herunter oder reiche eine App ein, die du für die Community gebaut hast.',
+    openPlatform: 'Offene Plattform',
     sdk: 'Offizielles SDK',
     app: 'Download',
     community: 'Community-Apps',
