@@ -50,6 +50,7 @@ const AdminFriendLinks = lazyNamed(() => import('@/admin/AdminFriendLinks'), 'Ad
 const AdminRoms = lazyNamed(() => import('@/admin/AdminRoms'), 'AdminRoms')
 const AdminData = lazyNamed(() => import('@/admin/AdminData'), 'AdminData')
 const AdminOpenApps = lazyNamed(() => import('@/admin/AdminOpenApps'), 'AdminOpenApps')
+const AdminConfig = lazyNamed(() => import('@/admin/AdminConfig'), 'AdminConfig')
 
 const COMING_SOON_ROUTES = [
   '/apps',
@@ -145,6 +146,7 @@ export function AppRoutes() {
           <Route path="roms" element={<RouteChunk><AdminRoms /></RouteChunk>} />
           <Route path="data" element={<RouteChunk><AdminData /></RouteChunk>} />
           <Route path="open-apps" element={<RouteChunk><AdminOpenApps /></RouteChunk>} />
+          <Route path="config" element={<RouteChunk><AdminConfig /></RouteChunk>} />
         </Route>
       </Routes>
     </>

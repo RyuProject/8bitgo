@@ -171,12 +171,31 @@ OAuth 2.1 目前仍是 Internet-Draft（`draft-ietf-oauth-v2-1-15`），不作�
 
 | 端点 | 方法 | 说明 |
 |---|---|---|
-| `/.well-known/openid-configuration` | GET | 发现文档，接入方的现成库会自己读 |
-| `/.well-known/jwks.json` | GET | id_token / access token 的验签公钥 |
-| `/oauth/authorize` | GET | **前端页面**：登录态检查 + 授权同意界面 |
-| `/api/oauth/token` | POST | 换 token / 刷新 token |
-| `/api/open/v1/userinfo` | GET | OIDC 标准用户信息 |
-| `/api/oauth/revoke` | POST | 撤销 refresh token（RFC 7009） |
+| `/.well-known/oauth-authorization-server` | GET | ✅ RFC 8414 元数据，接入方的现成 OAuth 库会自己读 |
+| `/.well-known/jwks.json` | GET | ✅ access token 的验签公钥 |
+| `/open/authorize` | GET | ✅ **前端页面**：登录态检查 + 授权同意界面 |
+| `/api/oauth/authorize` | GET / POST | ✅ 同意页的数据接口（GET 预览要申请的权限，POST 确认） |
+| `/api/oauth/token` | POST | ✅ 授权码 + PKCE 换 access_token |
+| `/api/open/v1/me` | GET | ✅ 令牌自省（这枚令牌是谁的、有哪些 scope、什么时候过期） |
+| `/.well-known/openid-configuration` | — | ❌ **刻意不做**，见下方 |
+| `/api/open/v1/userinfo` | — | ❌ 没有 |
+| `/api/oauth/revoke` | — | ❌ 没有 |
+
+> ### ⚠️ 这一套是 OAuth 2.0，**不是 OIDC**（2026-09-13 核对）
+>
+> `routes/oauth.js` 里只有三条路由，签出来的**只有 `access_token`**。
+> **没有 `id_token`、没有 `userinfo`、没有 `refresh_token`、没有 revoke。**
+> 本节下面关于 id_token 声明的那几段，描述的是设计目标，不是今天的实现。
+>
+> 所以 `/.well-known/openid-configuration` 是**故意不提供**的：
+> 给出它，接入方的 OIDC 库会去要 id_token、去调 userinfo，
+> 然后在一个和真正原因毫无关系的地方失败（「id_token 缺失」「userinfo 404」），
+> 而真相是「这个服务压根不是 OIDC」。一个诚实的 404 比一份撒谎的发现文档省事得多。
+> 代替它的是 RFC 8414 的 `oauth-authorization-server` —— 那份只登记真的存在的东西，
+> 并且用 `x-not-supported` 明说缺哪四样。
+>
+> ⚠️ 另外：这张表以前把授权页写成 `/oauth/authorize`，而 `src/AppRoutes.tsx` 里
+> 真实挂的是 **`/open/authorize`**。照着文档抄进元数据时被测试拦下了。
 
 `/oauth/authorize` 做成前端路由而不是后端 302，是为了直接复用站内现有的登录弹窗和
 多语言外壳：未登录时走本站正常登录流程，登完回到同一页继续同意，不用再造一套登录页。

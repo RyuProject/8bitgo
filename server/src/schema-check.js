@@ -71,6 +71,32 @@ const EXPECTED_TABLES = [
     table: 'game_ratings',
     why: '游戏评分明细；缺了详情页的评分卡整块读不出来、打分全 500，而页面其它部分一切正常',
   },
+  /*
+    开放平台那几张。⚠️ 它们的缺席**特别难联想到库**：
+
+    开放平台是靠 .env 里的 OPEN_JWT_PRIVATE_KEY 开关的，而那个开关和建表是两件事。
+    只配了密钥、没跑 migrate 的状态下：/v1/health 正常、/v1/games 正常、
+    /.well-known/jwks.json 也正常 —— 看起来「开起来了」——
+    但 /open 控制台里一点「创建应用」就 500，取令牌永远 invalid_client。
+    查的人会去翻密钥、翻 scope、翻 bcrypt，因为「其它都好的」。
+  */
+  { table: 'oauth_apps', why: '开放平台的应用表；缺了 /open 控制台创建应用 500、取令牌永远 invalid_client' },
+  { table: 'oauth_app_secrets', why: '应用密钥（只存 bcrypt 哈希）；缺了任何 AppID + key 都认不出来' },
+  { table: 'oauth_app_reviews', why: '应用审核流水；缺了后台的开放平台审核页整块 500' },
+  { table: 'oauth_app_testers', why: '沙箱应用的测试账号白名单；缺了沙箱应用授权时 500' },
+  /*
+    ⚠️ **只有上面这 4 张。** migrate 里还会建 oauth_codes / oauth_authorizations /
+    oauth_tokens，但 2026-09-13 核对：代码一张都不查 ——
+    授权码走的是 routes/oauth.js 里的内存 Map（5 分钟 TTL，重启即丢，对一次性短码可以接受），
+    access token 是自包含 JWT 不落库。
+
+    把那三张也写进来的话，会对一台**完全正常**的库报「缺表」，
+    而运维照着提示跑完 migrate 发现什么都没变 —— 误报比不报更糟，
+    因为它会把下一次真实的告警也一起变成噪音。
+
+    （副作用值得知道：oauth_authorizations 不用 = 用户授权过哪些应用没有落库，
+      同意页每次都要重新问一遍，也没有「解除授权」的地方。要做那个功能时再把表用起来。）
+  */
 ]
 
 export async function checkSchema() {

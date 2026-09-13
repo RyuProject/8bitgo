@@ -14,7 +14,7 @@ const SESSION_KEY = '8bitgo.admin.unlocked'
  * 藏起来只是体面 —— 真正拦人的是服务端各路由上的 requireAbility（shared/roles.js
  * 是前后端共用的那张表）。这里的作用只是别让志愿者看见一堆点了就 403 的入口。
  */
-const TABS: { to: string; label: string; end?: boolean; need: Ability }[] = [
+const TABS: { to: string; label: string; end?: boolean; need: Ability; adminOnly?: true }[] = [
   { to: '/admin', label: '概览', end: true, need: 'content:edit' },
   { to: '/admin/games', label: '游戏', need: 'content:edit' },
   { to: '/admin/posts', label: '文章', need: 'content:edit' },
@@ -24,6 +24,17 @@ const TABS: { to: string; label: string; end?: boolean; need: Ability }[] = [
   { to: '/admin/users', label: '用户', need: 'users:manage' },
   { to: '/admin/roms', label: 'ROM 存储', need: 'site:manage' },
   { to: '/admin/data', label: '数据', need: 'site:manage' },
+  /*
+    ⚠️ `adminOnly` 不是「再保险一层」，是**和服务端对齐**。
+
+    /api/admin/config 用的是 requireAdmin（钉死 admin），不是 requireAbility('site:manage')——
+    理由见 server/src/routes/admin-config.js 的文件头：那一页回的是基础设施信息和密钥指纹，
+    不该跟着 ROLE_ABILITIES 那张**会被改**的表一起演化。
+    只写 need: 'site:manage' 的话，哪天有人把 site:manage 放给志愿者
+    （比如「让运营也能管 ROM 存储」），志愿者的导航里就会多出这个入口，
+    点进去稳定 403 —— 界面陈述的事实必须成立。
+  */
+  { to: '/admin/config', label: '配置', need: 'site:manage', adminOnly: true },
   // 开放平台的应用审核。单独一个权限点，理由见 shared/roles.js 里 apps:review 那段
   { to: '/admin/open-apps', label: '开放平台', need: 'apps:review' },
 ]
@@ -154,7 +165,7 @@ function AdminShell({ onLock, me }: { onLock: () => void; me: VerifyResult | nul
    * 真正的门在服务端，这里少给只是把人挡在自己的后台外面。
    */
   const abilities: Ability[] = me?.abilities ?? [...ABILITIES]
-  const tabs = TABS.filter((t) => abilities.includes(t.need))
+  const tabs = TABS.filter((t) => abilities.includes(t.need) && (!t.adminOnly || me?.role === 'admin'))
 
   return (
     <div className="min-h-dvh bg-bg text-fg">

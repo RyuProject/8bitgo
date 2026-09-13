@@ -52,6 +52,18 @@
 | `POST` | `/v1/token` | — | 换应用级 / 用户级令牌（`client_credentials` 或 `device_code`） |
 | `POST` | `/v1/device/code` | — | 设备码流程：拿 `user_code` / `device_code` |
 | `GET` | `/v1/health` | **公开** | 健康检查：服务存活 + 数据库连通（规格见 `/.well-known/openapi.json`） |
+
+另外两条**不在** `/v1` 下（它们按惯例挂在站点根）：
+
+| 方法 | 路径 | 鉴权 | 用途 |
+|---|---|---|---|
+| `GET` | `/.well-known/oauth-authorization-server` | **公开** | RFC 8414 元数据：端点地址、支持的 grant type 和 scope。现成的 OAuth 库会自己读 |
+| `GET` | `/.well-known/jwks.json` | **公开** | access token 的验签公钥。设备端**用不上**（你不需要验我们签的令牌，直接带上就行）；这是给要自己验签的服务端接入方的 |
+
+> ⚠️ **没有 `/.well-known/openid-configuration`，这是故意的。** 这套是 OAuth 2.0 不是 OIDC：
+> 只签 `access_token`，没有 `id_token` / `userinfo` / `refresh_token` / revoke。
+> 给出一份 OIDC 发现文档会让你的库去要那些不存在的东西，然后在一个和真正原因无关的地方失败。
+> RFC 8414 那份里有 `x-not-supported` 明说缺哪四样。
 | `GET` | `/v1/games` | **公开** | 游戏列表（分页 / 筛选） |
 | `GET` | `/v1/games/:slug` | **公开** | 游戏详情 |
 | `GET` | `/v1/platforms` | **公开** | 平台目录：`runtime` / `core` / `romExtensions` / `native` 建议 / `enabled`，本地客户端挑模拟器用（见 §12） |

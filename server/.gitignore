@@ -1,3 +1,14 @@
 node_modules/
-.env
 seed/*.json
+
+# ⚠️ 这里只挡 `.env` 是不够的：`.env.production`、`.env.backup`、`.env.old`
+# 这类文件照样会被提交，而这个仓库是**公开**的（github.com/RyuProject/8bitgo）。
+# 一次 `git add -A` 就够把数据库口令和所有 API key 推上去。
+# 改成整族忽略，只放行不含密钥的 example。
+.env
+.env.*
+!.env.example
+
+# 开放平台的 RS256 私钥放这儿
+secrets/
+*.pem

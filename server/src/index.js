@@ -42,6 +42,8 @@ import { openAppsRouter } from './routes/open-apps.js'
 import { openDeviceRouter } from './routes/open-device.js'
 import { oauthRouter } from './routes/oauth.js'
 import { adminOpenAppsRouter } from './routes/admin-open-apps.js'
+import { adminConfigRouter } from './routes/admin-config.js'
+import { wellKnownRouter } from './routes/well-known.js'
 import { diagRouter } from './routes/diag.js'
 import { submitGameRouter } from './routes/submit-game.js'
 import { tvRouter } from './routes/tv.js'
@@ -124,6 +126,12 @@ const OPENAPI_SPEC = (() => {
     return null
   }
 })()
+/*
+  开放平台的自发现：JWKS + RFC 8414 元数据。
+  ⚠️ 这两条不在 /api 下，不经过全局 noStore，缓存头由路由自己写。
+*/
+app.use('/.well-known', wellKnownRouter)
+
 app.get('/.well-known/openapi.json', (_req, res) => {
   if (!OPENAPI_SPEC) return res.status(404).json({ error: 'not_found', error_description: 'OpenAPI 规格未找到' })
   res.set('Access-Control-Allow-Origin', '*')
@@ -157,6 +165,8 @@ app.use('/api/open-device', openDeviceRouter)
 */
 app.use('/api/oauth', oauthRouter)
 app.use('/api/admin/open-apps', adminOpenAppsRouter)
+// 同理要排在 /api/admin 之前：adminRouter 里有 /:id 这类通配路由
+app.use('/api/admin/config', adminConfigRouter)
 
 app.use('/api/auth', authRouter)
 app.use('/api/games', gamesRouter)

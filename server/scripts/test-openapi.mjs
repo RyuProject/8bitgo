@@ -1576,6 +1576,156 @@ await check('⚠️ 沙箱应用对未授权的账号：同意页 allowed=false�
   assert.equal((await postR.json()).error, 'access_denied')
 })
 
+
+console.log('\n十一、自发现：JWKS + RFC 8414（刻意不提供 openid-configuration）')
+
+/*
+  ## 这一节在守什么
+
+  2026-09-13 核对：docs/open-platform.md §2.1 登记了 6 个 OIDC 端点，
+  而 oauth.js 里**只有 3 条路由**，签出来的**只有 access_token**。
+  也就是说 id_token / userinfo / revoke / refresh_token 四样都不存在，
+  jwks.json 和 openid-configuration 也不存在（jwkFromPublicKey 一个调用点都没有）。
+
+  这一节把新补的两条钉住，同时钉住那条**故意不做**的：
+  提供一份 openid-configuration 会让接入方的 OIDC 库去要 id_token、去调 userinfo，
+  然后在一个和真正原因毫无关系的地方失败。一个诚实的 404 比一份撒谎的发现文档好。
+*/
+
+const { wellKnownRouter } = await import('../src/routes/well-known.js')
+const { jwksFor } = await import('../src/open/discovery.js')
+const wkApp = express()
+wkApp.use('/.well-known', wellKnownRouter)
+const wkServer = wkApp.listen(0)
+await new Promise((r) => wkServer.once('listening', r))
+const wk = (p) => fetch(`http://127.0.0.1:${wkServer.address().port}/.well-known/${p}`)
+
+await check('JWKS 发得出来，而且 kid / alg 和签令牌用的那把对得上', async () => {
+  const r = await wk('jwks.json')
+  assert.equal(r.status, 200)
+  const body = await r.json()
+  assert.equal(body.keys.length, 1)
+  const k = body.keys[0]
+  assert.equal(k.kid, 'test-1', 'kid 和 OPEN_JWT_KID 对不上，接入方按 kid 选不中这把')
+  assert.equal(k.alg, 'RS256')
+  assert.equal(k.use, 'sig')
+  assert.ok(k.n && k.e, '没有 n / e，这不是一把能用的 RSA 公钥')
+})
+
+await check('⚠️ JWKS 的字段集合被钉死（哪怕喂进去的是私钥）', () => {
+  /*
+    ⚠️ 这条原来叫「绝不能出现私钥字段」，理由写的是「展开写法会漏 d / p / q」。
+    **那个理由是错的**：变异测试把挑字段换成 `{ ...jwk }`，测试照样全绿 ——
+    因为 `createPublicKey()` 喂进去私钥 PEM 也只导出 kty / n / e。
+    那条断言当时是在测一件不可能发生的事。
+
+    真正值得钉的是**字段集合本身**：这个响应是公开、可缓存的，
+    多一个没人审过的字段就是多一分信息外泄面。将来 Node 给 jwk 导出加了字段时，
+    这一条会红，逼人去看一眼那是什么 —— 这才是它的作用。
+  */
+  const fromPrivate = jwksFor({ publicKey: privateKey, kid: 'x', createPublicKey: crypto.createPublicKey })
+  assert.deepEqual(Object.keys(fromPrivate.keys[0]).sort(), ['alg', 'e', 'kid', 'kty', 'n', 'use'])
+  const fromPublic = jwksFor({ publicKey, kid: 'x', createPublicKey: crypto.createPublicKey })
+  assert.deepEqual(fromPrivate.keys[0].n, fromPublic.keys[0].n, '私钥和公钥导出的模数应该一样')
+})
+
+await check('JWKS 里那把公钥真的验得过我们签的令牌（端到端）', async () => {
+  const { access_token } = await getToken('games.read')
+  const k = (await (await wk('jwks.json')).json()).keys[0]
+  // 用 JWKS 里的 JWK 重建公钥，再去验一枚真的令牌 —— 对不上就是发了把没用的钥匙
+  const pub = crypto.createPublicKey({ key: k, format: 'jwk' })
+  const payload = jwtLib.verify(access_token, pub, { algorithms: ['RS256'] })
+  assert.equal(payload.cid, APP.id)
+})
+
+await check('开放平台没启用时 JWKS 回 503 而不是 404（404 的意思是「没这东西」）', async () => {
+  const { resetOpenConfig } = await import('../src/open/config.js')
+  const saved = process.env.OPEN_JWT_PRIVATE_KEY
+  delete process.env.OPEN_JWT_PRIVATE_KEY
+  resetOpenConfig()
+  try {
+    const r = await wk('jwks.json')
+    assert.equal(r.status, 503, `回了 ${r.status}`)
+    assert.match(String(r.headers.get('cache-control')), /no-store/, '把「暂时不可用」缓存起来了')
+  } finally {
+    process.env.OPEN_JWT_PRIVATE_KEY = saved
+    resetOpenConfig()
+  }
+})
+
+await check('⚠️ 元数据里**每一个** endpoint 都指向真实存在的路由', async () => {
+  /*
+    这才是这份文档唯一的价值：接入方的库会照着它发请求。
+    登记一个不存在的地址，对方得到的是 404，而 404 说的是「你路径写错了」——
+    真相却是「我们文档写错了」。
+
+    ⚠️ 原来这条只挑了两个端点手工核对，于是**加一个凭空捏造的
+    `introspection_endpoint` 照样全绿**（变异测试实测）。改成遍历所有 *_endpoint。
+  */
+  const m = await (await wk('oauth-authorization-server')).json()
+  assert.equal(m.issuer, 'https://8bitgo.com')
+  assert.deepEqual(m.code_challenge_methods_supported, ['S256'], 'PKCE 是强制的，且不收 plain')
+  assert.ok(m.grant_types_supported.includes('client_credentials'))
+  assert.ok(m.grant_types_supported.includes('urn:ietf:params:oauth:grant-type:device_code'))
+
+  const fs = await import('node:fs')
+  const read = (rel) => stripComments(fs.readFileSync(new URL(rel, import.meta.url), 'utf8'))
+  /** 真实路由表：挂载前缀 -> 那个文件里声明的路径 */
+  const routes = new Set()
+  const collect = (prefix, src, re) => {
+    for (const mm of src.matchAll(re)) routes.add(prefix + mm[1])
+  }
+  collect('/api/oauth', read('../src/routes/oauth.js'), /oauthRouter\.(?:get|post)\(\s*'([^']+)'/g)
+  collect('/api/open', read('../src/routes/open.js'), /openRouter\.(?:get|post)\(\s*'([^']+)'/g)
+  collect('/.well-known', read('../src/routes/well-known.js'), /wellKnownRouter\.get\(\s*'([^']+)'/g)
+  // /oauth/authorize 是**前端路由**（SSR catch-all 兜住），不在 Express 里
+  const appRoutes = fs.readFileSync(new URL('../../src/AppRoutes.tsx', import.meta.url), 'utf8')
+  for (const mm of appRoutes.matchAll(/path="(\/open\/[a-z-]+)"/g)) routes.add(mm[1])
+
+  assert.ok(routes.size >= 15, `只认出 ${routes.size} 条路由，正则漂了`)
+
+  const endpoints = Object.entries(m).filter(([k]) => k.endsWith('_endpoint') || k.endsWith('_uri'))
+  assert.ok(endpoints.length >= 4, `只有 ${endpoints.length} 个端点字段，断言的前提没了`)
+  for (const [key, url] of endpoints) {
+    const path = String(url).replace('https://8bitgo.com', '')
+    assert.ok(routes.has(path), `元数据的 ${key} 指向 ${path}，但源码里没有这条路由`)
+  }
+})
+
+await check('⚠️ 元数据明说不支持 id_token / userinfo / refresh / revoke（它们真的不存在）', async () => {
+  const m = await (await wk('oauth-authorization-server')).json()
+  assert.deepEqual(m['x-not-supported'].sort(), ['id_token', 'refresh_token', 'revocation', 'userinfo'])
+  // 反向核对：这四样在源码里确实一个都没有。哪天做了，要把它从这张「不支持」名单里拿掉
+  const oauthSrc = stripComments((await import('node:fs')).readFileSync(new URL('../src/routes/oauth.js', import.meta.url), 'utf8'))
+  assert.ok(!oauthSrc.includes('id_token'), 'id_token 已经做了，元数据还在说不支持')
+  assert.ok(!oauthSrc.includes('refresh_token'), 'refresh_token 已经做了，元数据还在说不支持')
+  assert.ok(!/userinfo|\/revoke/.test(oauthSrc), 'userinfo / revoke 已经做了，元数据还在说不支持')
+})
+
+await check('⚠️ 刻意不提供 openid-configuration（撒谎的发现文档比没有更糟）', async () => {
+  assert.equal((await wk('openid-configuration')).status, 404)
+  const src = stripComments((await import('node:fs')).readFileSync(new URL('../src/routes/well-known.js', import.meta.url), 'utf8'))
+  assert.ok(!src.includes('openid-configuration'), '加上了 openid-configuration —— 先把 id_token / userinfo 做出来再说')
+})
+
+await check('这两条放开到任意 Origin，且元数据不依赖密钥（没启用时也回）', async () => {
+  const r = await wk('oauth-authorization-server')
+  assert.equal(r.headers.get('access-control-allow-origin'), '*')
+  const { resetOpenConfig } = await import('../src/open/config.js')
+  const saved = process.env.OPEN_JWT_PRIVATE_KEY
+  delete process.env.OPEN_JWT_PRIVATE_KEY
+  resetOpenConfig()
+  try {
+    // 它只是一张地址表 —— 没配密钥时照样该回，接入方正好知道该往哪儿发
+    assert.equal((await wk('oauth-authorization-server')).status, 200)
+  } finally {
+    process.env.OPEN_JWT_PRIVATE_KEY = saved
+    resetOpenConfig()
+  }
+})
+
+wkServer.close()
+
 server.close()
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exit(failed ? 1 : 0)
