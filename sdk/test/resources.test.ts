@@ -20,6 +20,7 @@ const GAME = {
   lang_requested: 'en',
   lang_actual: { title: 'und', description: 'und' },
   platform: 'nes',
+  requires_windows: false,
   genres: [],
   tags: [],
   year: 1987,
@@ -49,9 +50,10 @@ test('games.list: 打 /v1/games 且查询串正确', async () => {
     seen = url
     return { status: 200, body: { items: [], page: 1, page_size: 24, total: 0, total_pages: 0 } }
   })
-  await c.games.list({ platform: 'nes', pageSize: 10, lang: 'ja' })
+  await c.games.list({ platform: 'dos', requiresWindows: false, pageSize: 10, lang: 'ja' })
   assert.ok(seen!.startsWith('https://example.test/api/open/v1/games?'))
-  assert.ok(seen!.includes('platform=nes'))
+  assert.ok(seen!.includes('platform=dos'))
+  assert.ok(seen!.includes('requires_windows=false'))
   assert.ok(seen!.includes('page_size=10'))
   assert.ok(seen!.includes('lang=ja'))
 })

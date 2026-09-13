@@ -156,6 +156,8 @@ export interface Game {
    * 只对 platform 为 dos 的游戏有意义。
    */
   dosExecutable?: string
+  /** 各语言 ROM 在 ZIP 内的启动路径；未填写的槽继续使用 dosExecutable 或自动猜测。 */
+  dosExecutables?: Partial<Record<RomLang, string>>
   /**
    * DOS 运行核心。留空等同 dosbox；dosboxX 可启动 Windows 3.x / 9x 的 .jsdos 系统镜像。
    * 这里只切换 CPU/虚拟机核心；系统由 dosSystem 提供，游戏 ZIP 作为另一块 FAT 盘挂入。

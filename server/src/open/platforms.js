@@ -217,7 +217,7 @@ const PLATFORM_ROWS = deepFreeze([
     native: {
       runnable: true,
       emulator: 'DOSBox',
-      note: 'jsdos 包是 Web 专用格式，本地 DOSBox 需先解包并整理成裸目录结构才能跑',
+      note: '普通 DOS 游戏可用 DOSBox；requires_windows=true 的游戏需要 Windows 3.x / 95 / 98 客体与 DOSBox-X，低性能设备可用 ?requires_windows=false 排除。jsdos 包在本地需先解包整理目录结构',
     },
   },
   {

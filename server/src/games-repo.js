@@ -8,7 +8,7 @@
  * WHERE game_id IN (...)，不会变成每款查三次。
  */
 import { jsonMemberPath, query, queryOne, withTransaction } from './db.js'
-import { gameRowToApi, gameApiToRow, dateTimeIso, romsOf, GENERIC_ROM_LANG } from './mappers.js'
+import { gameRowToApi, gameApiToRow, dateTimeIso, romRelationRows, GENERIC_ROM_LANG } from './mappers.js'
 import { buildGameTokens, queryTerms, tokenMatchSql, normalize, tokenize, escapeLike } from './search.js'
 import { BAYES_SCORE_SQL } from './ratings-repo.js'
 
@@ -29,7 +29,8 @@ export async function attachRelations(rows) {
   const [genreRows, tagRows, romRows] = await Promise.all([
     query(`SELECT game_id, genre_id FROM game_genres WHERE game_id IN (${holes})`, ids),
     query(`SELECT game_id, tag FROM game_tags WHERE game_id IN (${holes})`, ids),
-    query(`SELECT game_id, lang, object_key FROM game_roms WHERE game_id IN (${holes})`, ids),
+    // 迁移前旧表还没有 dos_executable；SELECT * 让前台读保持可用，缺列只影响后台写入。
+    query(`SELECT * FROM game_roms WHERE game_id IN (${holes})`, ids),
   ])
   // BIGINT 在 mysql2 里可能回成数字也可能回成字符串（取决于是否超出安全整数范围），
   // 两边都统一成字符串当 key，免得 Map 对不上导致关联数据凭空丢失
@@ -37,6 +38,7 @@ export async function attachRelations(rows) {
   const genres = new Map()
   const tags = new Map()
   const roms = new Map()
+  const dosExecutables = new Map()
   for (const r of genreRows) {
     const k = key(r.game_id)
     if (!genres.has(k)) genres.set(k, [])
@@ -51,10 +53,14 @@ export async function attachRelations(rows) {
     const k = key(r.game_id)
     if (!roms.has(k)) roms.set(k, {})
     roms.get(k)[r.lang] = r.object_key
+    if (r.lang !== GENERIC_ROM_LANG && r.dos_executable) {
+      if (!dosExecutables.has(k)) dosExecutables.set(k, {})
+      dosExecutables.get(k)[r.lang] = r.dos_executable
+    }
   }
   return rows.map((r) => {
     const k = key(r.id)
-    return gameRowToApi(r, { genres: genres.get(k) ?? [], tags: tags.get(k) ?? [], roms: roms.get(k) ?? {} })
+    return gameRowToApi(r, { genres: genres.get(k) ?? [], tags: tags.get(k) ?? [], roms: roms.get(k) ?? {}, dosExecutables: dosExecutables.get(k) ?? {} })
   })
 }
 
@@ -88,7 +94,7 @@ function orderBy(sort) {
 
 /**
  * 列表查询。
- * @param {object} q { platform, genre, developer, multiplayer, coin, q, sort, page, pageSize, includeHidden, excludeAdult }
+ * @param {object} q { platform, genre, developer, multiplayer, coin, q, sort, page, pageSize, includeHidden, excludeAdult, requiresWindows }
  * @returns {Promise<{items, total, page, pageSize, totalPages}>}
  */
 export async function listGames(q = {}) {
@@ -105,6 +111,10 @@ export async function listGames(q = {}) {
     where.push('g.platform = ?')
     params.push(String(q.platform))
   }
+  // DOS 平台也收录 Windows 客体游戏。设备按运行能力筛选时必须在 SQL 里完成，
+  // 让列表条目、total 和分页保持一致；NULL 是普通 DOS 游戏。
+  if (q.requiresWindows === true) where.push("g.platform = 'dos' AND g.dos_backend = 'dosboxX'")
+  else if (q.requiresWindows === false) where.push("(g.platform <> 'dos' OR COALESCE(g.dos_backend, '') <> 'dosboxX')")
   if (q.developer) {
     // 一款游戏可以录多家开发商；边界匹配避免「SNK」误命中「SNK Playmore」。
     where.push("FIND_IN_SET(?, REPLACE(REPLACE(g.developer, '，', ','), ', ', ',')) > 0")
@@ -593,12 +603,15 @@ async function writeRelations(run, gameId, game, only) {
     }
   }
   if (!only || only.roms) {
+    // ROM 存储页的 PATCH 只传 ROM key。重建关联表时保留仍指向同一 ZIP 的入口，
+    // 换了 key 的槽不能继承旧入口，否则可能启动新包里碰巧同名的错误程序。
+    const previous = await run('SELECT lang, object_key, dos_executable FROM game_roms WHERE game_id = ?', [gameId])
+    const roms = romRelationRows(game, previous, Boolean(only))
     await run('DELETE FROM game_roms WHERE game_id = ?', [gameId])
-    const roms = Object.entries(romsOf(game))
     if (roms.length) {
       await run(
-        `INSERT INTO game_roms (game_id, lang, object_key) VALUES ${roms.map(() => '(?, ?, ?)').join(', ')}`,
-        roms.flatMap(([lang, key]) => [gameId, lang, key]),
+        `INSERT INTO game_roms (game_id, lang, object_key, dos_executable) VALUES ${roms.map(() => '(?, ?, ?, ?)').join(', ')}`,
+        roms.flatMap((row) => [gameId, row.lang, row.key, row.dosExecutable]),
       )
     }
   }

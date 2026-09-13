@@ -8,7 +8,6 @@ import {
   COMMENT_MAX_LENGTH,
   canStillEdit,
   commentsAvailable,
-  countryFlag,
   countryName,
   deleteComment,
   editComment,
@@ -18,6 +17,7 @@ import {
   type CommentTarget,
 } from '@/services/comments'
 import { cx } from '@/lib/format'
+import { flagOrSvg } from '@/components/Flag'
 import { DmAvatar } from '@/components/im/DmButton'
 import { FEATURES } from '@/config/features'
 import { Stars } from '@/components/game/StarRating'
@@ -364,9 +364,9 @@ function CommentItem({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px]">
             <span className="max-w-[8rem] truncate text-xs font-semibold">{comment.author.nickname}</span>
-            {/* 国旗是 emoji 组合出来的，不需要图片资源；title 给出国家名，读屏也读得到 */}
+            {/* 国旗是 emoji 组合出来的（HK / MO 等系统字体不收的会兜底成内联 SVG）；title 给出国家名，读屏也读得到 */}
             <span title={countryName(comment.country)} aria-label={countryName(comment.country)}>
-              {countryFlag(comment.country)}
+              {flagOrSvg(comment.country)}
             </span>
             <span className="text-dim">·</span>
             <time className="text-dim" dateTime={comment.createdAt}>

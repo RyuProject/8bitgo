@@ -15,11 +15,13 @@ export const inputClass =
 /** 个人中心里的一块卡片。标题 + 说明 + 内容 */
 export function Panel({
   title,
+  titleExtra,
   desc,
   danger,
   children,
 }: {
   title: string
+  titleExtra?: ReactNode
   desc?: string
   /** 危险操作（注销账号）用红描边，视觉上和别的区块区分开 */
   danger?: boolean
@@ -32,7 +34,10 @@ export function Panel({
         danger ? 'border-live/40 bg-live/[0.03]' : 'border-line',
       )}
     >
-      <h3 className={cx('text-base font-extrabold', danger && 'text-live')}>{title}</h3>
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className={cx('text-base font-extrabold', danger && 'text-live')}>{title}</h3>
+        {titleExtra}
+      </div>
       {desc && <p className="mt-1 text-sm leading-relaxed text-muted">{desc}</p>}
       <div className="mt-4">{children}</div>
     </section>

@@ -4,7 +4,7 @@ import { useSeo } from '@/services/seo'
 import { apiEnabled } from '@/services/api'
 import { fetchApps, submitCommunityApp, type AppItem, type AppsGroup } from '@/services/apps'
 import { romUrlForKey } from '@/services/roms'
-import { Button, buttonClasses, chipClasses } from '@/components/ui/Button'
+import { Button, buttonClasses } from '@/components/ui/Button'
 
 /** 把存储的下载地址（外链或 R2 key）拼成可点击的 URL */
 function downloadHref(item: AppItem): string | null {
@@ -19,36 +19,38 @@ const inputCls =
 const btnPrimary = 'inline-flex items-center justify-center rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-white transition hover:bg-brand-hover disabled:cursor-wait disabled:opacity-60'
 const btnSecondary = 'inline-flex items-center justify-center rounded-lg border border-line bg-surface-2 px-4 py-2 text-sm font-semibold transition hover:bg-black/5 disabled:opacity-60'
 
-type TabId = keyof AppsGroup
-
 export function AppsPage() {
   const t = useT()
   const [group, setGroup] = useState<AppsGroup | null>(null)
-  const [error, setError] = useState('')
-  const [activeTab, setActiveTab] = useState<TabId>('app')
+  const [loading, setLoading] = useState(true)
   const [submitOpen, setSubmitOpen] = useState(false)
 
   useSeo({ title: t.apps.title, description: t.apps.desc })
 
   useEffect(() => {
-    if (!apiEnabled()) return
-    setError('')
+    if (!apiEnabled()) {
+      setGroup({ sdk: [], app: [], community: [] })
+      setLoading(false)
+      return
+    }
+    setLoading(true)
     fetchApps()
       .then(setGroup)
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : '加载失败'))
+      .catch((e) => {
+        // 应用中心是「未上线功能的占位」：接口拿不到（本地没起后端 / 库里没表）时，
+        // 直接渲染空区块，而不是甩一个红色 404 在脸上。
+        console.error('[apps] 加载失败', e)
+        setGroup({ sdk: [], app: [], community: [] })
+      })
+      .finally(() => setLoading(false))
   }, [])
 
-  const tabs: { id: TabId; label: string }[] = [
-    { id: 'sdk', label: t.apps.sdk },
-    { id: 'app', label: t.apps.app },
-    { id: 'community', label: t.apps.community },
-  ]
-
-  const items = group?.[activeTab] ?? []
+  const appItems = group?.app ?? []
+  const communityItems = group?.community ?? []
 
   return (
     <div className="container-x py-10">
-      <header className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+      <header className="mb-10 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h1 className="text-pixel text-2xl sm:text-3xl">{t.apps.title}</h1>
           <p className="mt-2 max-w-2xl text-muted">{t.apps.desc}</p>
@@ -59,58 +61,55 @@ export function AppsPage() {
         </Button>
       </header>
 
-      {error && (
-        <p className="mb-6 rounded-xl border border-line bg-surface px-4 py-3 text-sm text-live">{error}</p>
-      )}
+      <div className="space-y-12">
+        <Section title={t.apps.app} loading={loading} items={appItems} showSubmitter={false} />
+        <Section
+          title={t.apps.community}
+          loading={loading}
+          items={communityItems}
+          showSubmitter
+          onMore={() => setSubmitOpen(true)}
+        />
+      </div>
 
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap gap-2" role="tablist" aria-label={t.apps.title}>
-          {tabs.map((tab) => {
-            const active = tab.id === activeTab
-            const count = group?.[tab.id].length ?? 0
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                role="tab"
-                aria-selected={active}
-                onClick={() => setActiveTab(tab.id)}
-                className={chipClasses(active)}
-              >
-                {tab.label}
-                {group !== null && (
-                  <span
-                    className={`ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] ${
-                      active ? 'bg-white/20 text-white' : 'bg-black/10 text-muted'
-                    }`}
-                  >
-                    {count}
-                  </span>
-                )}
-              </button>
-            )
-          })}
-        </div>
+      {submitOpen && <SubmitModal onClose={() => setSubmitOpen(false)} />}
+    </div>
+  )
+}
 
-        {activeTab === 'community' && (
-          <button type="button" className={btnPrimary} onClick={() => setSubmitOpen(true)}>
+function Section({
+  title,
+  loading,
+  items,
+  showSubmitter,
+  onMore,
+}: {
+  title: string
+  loading: boolean
+  items: AppItem[]
+  showSubmitter?: boolean
+  onMore?: () => void
+}) {
+  const t = useT()
+  return (
+    <section>
+      <div className="mb-4 flex items-center justify-between gap-3 border-b border-line pb-2">
+        <h2 className="text-lg font-bold">{title}</h2>
+        {onMore && (
+          <button type="button" className={btnPrimary} onClick={onMore}>
             {t.apps.submit}
           </button>
         )}
       </div>
 
-      <section aria-live="polite" className="min-h-[16rem]">
-        {group === null ? (
-          <SkeletonGrid />
-        ) : items.length === 0 ? (
-          <Empty text={t.apps.empty} />
-        ) : (
-          <Grid items={items} showSubmitter={activeTab === 'community'} />
-        )}
-      </section>
-
-      {submitOpen && <SubmitModal onClose={() => setSubmitOpen(false)} />}
-    </div>
+      {loading ? (
+        <SkeletonGrid />
+      ) : items.length === 0 ? (
+        <Empty text={t.apps.empty} />
+      ) : (
+        <Grid items={items} showSubmitter={showSubmitter} />
+      )}
+    </section>
   )
 }
 

@@ -36,6 +36,8 @@ export function openGame(row, rel = {}, ctx = {}) {
     lang_actual: { title: title.lang, description: description.lang },
 
     platform: String(row.platform),
+    // 后台的 Windows 客体复选框落在 dos_backend；对外只给设备需要的能力标记。
+    requires_windows: row.platform === 'dos' && row.dos_backend === 'dosboxX',
     genres: rel.genres ?? [],
     tags: rel.tags ?? [],
     year: Number(row.year) || 0,

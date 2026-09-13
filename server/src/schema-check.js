@@ -16,6 +16,7 @@ const EXPECTED_COLUMNS = [
   { table: 'games', column: 'home_rank', why: '首页精选位' },
   { table: 'games', column: 'core', why: '按游戏覆盖模拟器核心' },
   { table: 'games', column: 'dos_executable', why: 'DOS 启动程序覆盖' },
+  { table: 'game_roms', column: 'dos_executable', why: '同一 DOS ZIP 按语言选择启动文件；缺列会让后台保存 500' },
   { table: 'games', column: 'dos_backend', why: 'DOS / Windows 客体运行核心选择' },
   { table: 'games', column: 'dos_system', why: '可复用的 Windows 客体系统镜像' },
   { table: 'games', column: 'dos_extras', why: 'DOS 附加文件（资料片 / 补丁）清单；缺了后台保存的附加文件会静默丢失' },

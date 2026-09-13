@@ -103,6 +103,7 @@ export function CloudSaves() {
   return (
     <Panel
       title={t.account.savesTitle}
+      titleExtra={<BetaTag label={t.account.savesBetaLabel} tooltip={t.account.savesBetaTooltip} />}
       desc={
         saves?.length
           ? `${t.account.savesSubtitle} · ${fmt(t.account.savesSummary, { n: saves.length, size: formatBytes(total) })}`
@@ -192,5 +193,22 @@ function SaveAction({
     >
       {children}
     </button>
+  )
+}
+
+/** 标题旁的 Beta 标记，鼠标悬停显示功能状态提示 */
+function BetaTag({ label, tooltip }: { label: string; tooltip: string }) {
+  return (
+    <span className="group relative inline-flex align-middle" aria-label={tooltip}>
+      <span className="inline-flex items-center rounded-full border border-coin/40 bg-coin-soft px-2 py-0.5 text-[11px] font-bold leading-none text-[#8a6d00]">
+        {label}
+      </span>
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 hidden w-56 -translate-x-1/2 rounded-md border border-line bg-surface-3 px-2.5 py-1.5 text-left text-xs font-normal leading-snug text-fg opacity-0 shadow-xl transition group-hover:opacity-100 sm:block"
+      >
+        {tooltip}
+      </span>
+    </span>
   )
 }

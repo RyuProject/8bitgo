@@ -44,6 +44,8 @@ export interface Game {
   /** 标题 / 简介**实际**落到了哪一门（und = 原名，没有语言可言）；接入方据此决定要不要显示「暂无译文」 */
   lang_actual: { title: string; description: string }
   platform: string
+  /** 后台 Windows 客体复选框；true 表示需要 Windows 3.x / 95 / 98 与 DOSBox-X */
+  requires_windows: boolean
   genres: string[]
   tags: string[]
   year: number
@@ -95,6 +97,8 @@ export interface GameListParams {
   /** 语言码；不传用站内 hreflang 的 x-default（en） */
   lang?: string
   platform?: string
+  /** false 排除 Windows 客体游戏；true 只看这类游戏。不传则不筛选 */
+  requiresWindows?: boolean
   genre?: string
   q?: string
   sort?: string

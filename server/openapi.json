@@ -152,6 +152,7 @@
             }
           },
           "platform": { "type": "string" },
+          "requires_windows": { "type": "boolean", "description": "DOS 游戏是否需要 Windows 3.x / 95 / 98 客体；对应后台的 Windows 复选框。其他平台为 false" },
           "genres": { "type": "array", "items": { "type": "string" } },
           "tags": { "type": "array", "items": { "type": "string" } },
           "year": { "type": "integer" },
@@ -168,7 +169,7 @@
           "adult": { "type": "boolean" },
           "rom_langs": { "type": "array", "items": { "type": "string" }, "description": "可选 ROM 语言码，* 表示通用件" }
         },
-        "required": ["slug", "title", "platform"]
+        "required": ["slug", "title", "platform", "requires_windows"]
       },
       "GamePage": {
         "type": "object",
@@ -423,8 +424,9 @@
         "parameters": [
           { "name": "page", "in": "query", "schema": { "type": "integer", "minimum": 1, "default": 1 } },
           { "name": "page_size", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 50, "default": 24 } },
-          { "name": "platform", "in": "query", "schema": { "type": "string" }, "description": "平台 id，见 /v1/platforms" },
-          { "name": "genre", "in": "query", "schema": { "type": "string" }, "description": "类型 id，见 /v1/genres" },
+          { "name": "platform", "in": "query", "schema": { "type": "string" }, "description": "机型 id，见 /v1/platforms；与 genre 同时传时取交集，再分页" },
+          { "name": "requires_windows", "in": "query", "schema": { "type": "boolean" }, "description": "false 排除需要 Windows 3.x / 95 / 98 客体的 DOS 游戏；true 只返回这类游戏。不传则不筛选。筛选在分页和 total 计算前完成" },
+          { "name": "genre", "in": "query", "schema": { "type": "string" }, "description": "类型 id，见 /v1/genres；与 platform 同时传时取交集，再分页" },
           { "name": "q", "in": "query", "schema": { "type": "string" }, "description": "搜索词" },
           { "name": "sort", "in": "query", "schema": { "type": "string", "enum": ["popular", "newest", "name", "rating", "home"] } },
           { "name": "lang", "in": "query", "schema": { "type": "string" }, "description": "语言码，默认 en（站内 x-default）" }

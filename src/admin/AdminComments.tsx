@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { GameComment } from '@/types'
 import {
-  countryFlag,
   countryName,
   fetchAdminComments,
   purgeComment,
@@ -13,6 +12,7 @@ import {
 import { apiEnabled } from '@/services/api'
 import { cx } from '@/lib/format'
 import { btnClass, inputClass } from './ui'
+import { flagOrSvg } from '@/components/Flag'
 
 const PAGE_SIZE = 30
 
@@ -211,7 +211,7 @@ export function AdminComments() {
                   </div>
                 </td>
                 <td className="whitespace-nowrap px-3 py-2 text-muted">
-                  <span aria-hidden>{countryFlag(item.country)}</span> {countryName(item.country)}
+                  <span aria-hidden>{flagOrSvg(item.country)}</span> {countryName(item.country)}
                 </td>
                 <td className="px-3 py-2">
                   {item.gameSlug ? (

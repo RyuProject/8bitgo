@@ -262,7 +262,7 @@ Authorization: Bearer eyJ...
 
 ## 4. 游戏列表 `GET /v1/games`
 
-需要 `games.read`。
+公开可读，不需要令牌。带令牌时仍会校验；无效令牌返回 401。
 
 ### 查询参数
 
@@ -270,8 +270,9 @@ Authorization: Bearer eyJ...
 |---|---|
 | `page` | 从 1 开始，默认 1 |
 | `page_size` | 默认 24，**上限 50**（超了按 50 截断，不报错） |
-| `platform` | 平台 id，如 `nes` / `dos` |
-| `genre` | 类型 id |
+| `platform` | 机型 id，如 `nes` / `gba`；可选值见 `GET /v1/platforms` |
+| `requires_windows` | `false` 排除需要 Windows 3.x / 95 / 98 客体的 DOS 游戏；`true` 只看这类游戏。不传则都包含 |
+| `genre` | 类型 id，如 `action` / `rpg`；可选值见 `GET /v1/genres` |
 | `q` | 关键词。传了 `q` 且没显式指定 `sort` 时按相关度排 |
 | `sort` | `popular`（默认）/ `newest` / `name` / `rating` / `home` |
 | `lang` | 见 §8。不传默认 **`en`** ⚠️ |
@@ -280,10 +281,23 @@ Authorization: Bearer eyJ...
 `OPEN_DEFAULT_LANG`）：开放接口的调用方是第三方，默认给中文会让人以为整库都是中文。
 要中文界面就**每次都显式传 `lang=zh-Hans`**。
 
+`platform` 和 `genre` 可以分别传，也可以同时传；同时传时只返回同时属于该机型和类型的游戏。
+筛选在分页和计算 `total` 之前完成。例如：
+
+```text
+GET /api/open/v1/games?platform=nes
+GET /api/open/v1/games?genre=action
+GET /api/open/v1/games?platform=nes&genre=action&page_size=10&page=1
+GET /api/open/v1/games?platform=dos&requires_windows=false
+```
+
+后台「Windows 3.x / 95 / 98（DOSBox-X）」复选框决定这个标记。低性能设备建议在每次拉列表时传
+`requires_windows=false`；筛选发生在分页和 `total` 计算之前，避免一页里出现无法运行的游戏。
+
 ⚠️ 开放平台**没有**站内那种 facets 聚合端点（`/api/games/facets` 是站内的）。
 但平台目录有专门的只读端点 `GET /v1/platforms`（见 §12）：它返回每个平台的
 `runtime` / `core` / `romExtensions` 和 `native` 建议，本地客户端挑模拟器就靠它。
-`genre` 的可选值仍只能从返回的 items 里认，或去站点上看。
+类型目录 `GET /v1/genres` 返回可用于 `genre` 的 id。
 
 ⚠️ 成人内容（`adult=1`）**整体排除**，下架的游戏对外也不存在。
 
@@ -309,6 +323,7 @@ Authorization: Bearer eyJ...
 | `lang_requested` | string | 你要的那门 |
 | `lang_actual` | `{title, description}` | 这两段文字**实际**是哪一门。`und` = 原名，没有语言可言 |
 | `platform` | string | |
+| `requires_windows` | bool | `true` = 这款 DOS 游戏需要 Windows 3.x / 95 / 98 客体与 DOSBox-X；其它游戏为 `false` |
 | `genres` | string[] | |
 | `tags` | string[] | |
 | `year` | number | 0 = 没填 |
@@ -343,7 +358,7 @@ Authorization: Bearer eyJ...
 
 ## 5. 游戏详情 `GET /v1/games/:slug`
 
-需要 `games.read`。参数只有 `lang`。返回体**就是上面那个游戏对象**（不是包一层）。
+公开可读。参数只有 `lang`。返回体**就是上面那个游戏对象**（不是包一层）。
 
 下架 / 成人 / 不存在，对外一律同一个 `404 not_found` ——
 区分开就成了「这游戏是不是被下架了」的查询器。

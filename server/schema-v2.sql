@@ -237,6 +237,8 @@ CREATE TABLE IF NOT EXISTS game_roms (
   game_id    BIGINT UNSIGNED NOT NULL,
   lang       VARCHAR(10)     NOT NULL DEFAULT '*',
   object_key VARCHAR(500)    NOT NULL,
+  -- 同一 ZIP 可绑定多个语言槽，各槽从自己的 BAT / EXE 等入口启动；NULL 回退 games.dos_executable。
+  dos_executable VARCHAR(255) NULL,
   PRIMARY KEY (game_id, lang),
   -- 后台「ROM 存储」页要反查「这个文件绑给了哪款游戏」
   KEY idx_object_key (object_key(191)),

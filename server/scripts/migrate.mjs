@@ -796,6 +796,12 @@ const patches = [
       }
     },
   },
+  {
+    name: 'game_roms.dos_executable（各语言 ROM 的 ZIP 内启动文件）',
+    table: 'game_roms',
+    needed: async () => !(await hasColumn('game_roms', 'dos_executable')),
+    run: () => conn.query('ALTER TABLE `game_roms` ADD COLUMN `dos_executable` VARCHAR(255) NULL AFTER `object_key`'),
+  },
 ]
 
 const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'login_codes', 'platform_bios', 'game_plays', 'developers', 'friend_links', 'friend_link_hits', 'game_comments', 'game_ratings', 'oauth_apps']

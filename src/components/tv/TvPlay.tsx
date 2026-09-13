@@ -4,7 +4,7 @@ import { GameAgeGuard } from '@/components/game/AgeGate'
 import { GameCover } from '@/components/game/GameCover'
 import { EmulatorPlayer } from '@/emulator/PlayerChunk'
 import { usePlatformBiosUrl } from '@/services/platformBios'
-import { romLangsOf, romUrlForKey, useRomUrl } from '@/services/roms'
+import { dosExecutableForRom, romLangsOf, romUrlForKey, useRomUrl } from '@/services/roms'
 import type { RomLang } from '@/config/languages'
 import { isPlatformEnabled } from '@/config/platforms'
 import { usePageData, type GameData } from '@/services/pageData'
@@ -119,7 +119,7 @@ export function TvPlay({ slug, onExit }: { slug: string; onExit: () => void }) {
               core={game.core}
               genres={game.genres}
               arcadeRomData={game.arcadeRomData}
-              dosExecutable={game.dosExecutable}
+              dosExecutable={dosExecutableForRom(game, rom)}
               dosBackend={game.dosBackend}
               dosSystemUrl={game.dosSystem ? romUrlForKey(game.dosSystem) : undefined}
               dosWindowsVersion={game.dosWindowsVersion}

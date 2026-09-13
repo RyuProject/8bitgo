@@ -1,7 +1,7 @@
 /**
  * 统一模拟器工具栏：暂停 / 存档 / 音量 / 手柄 / 截屏 / 录像。
  *
- * 各引擎的能力不一样（云联机暂停不了、Flash 没有存档……），
+ * 各引擎的能力不一样（云联机暂停不了、Flash 只支持游戏自己的进度……），
  * 所以按钮是按运行时上报的 caps 集合动态显示的 —— 支持才亮，不支持直接不画。
  *
  * 录像有硬上限 60 秒，录完当场下载到本地，全程不经过服务器。
@@ -557,6 +557,19 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
     }
   }
 
+  const recoverLegacyFlashSave = async () => {
+    if (saving || !handle.recoverLegacyFlashSave || !window.confirm(t.runtime.flashLegacyConfirm)) return
+    setSaving(true)
+    setSaveModal(false)
+    try {
+      say((await handle.recoverLegacyFlashSave()) || t.runtime.flashSaveImported)
+    } catch (e) {
+      say(fmt(tt.loadFail, { msg: e instanceof Error ? e.message : String(e) }))
+    } finally {
+      setSaving(false)
+    }
+  }
+
   /**
    * 面板上那三张卡。
    *
@@ -1054,6 +1067,12 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
         <SaveLoadModal
           cards={saveCards}
           busy={saving}
+          hint={runtimeId === 'ruffle' ? t.runtime.flashSaveHint : undefined}
+          legacyRecovery={handle.hasLegacyFlashSave?.() ? {
+            description: t.runtime.flashLegacyRecovery,
+            button: t.runtime.flashLegacyRecover,
+            onRecover: () => void recoverLegacyFlashSave(),
+          } : undefined}
           onClose={() => {
             setSaveModal(false)
             // 弹窗开的时候抢过焦点，关了要还 —— 否则读完档键盘手柄全是死的

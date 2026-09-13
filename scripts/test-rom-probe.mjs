@@ -33,10 +33,11 @@ const script = (...steps) => {
   calls = 0
 }
 
-const { probeRomUrl, probeRom, clearRomProbeCache, romCandidates, romProbeExpected } = await import(
+const { probeRomUrl, probeRom, clearRomProbeCache, romCandidates, romProbeExpected, dosExecutableForRom } = await import(
   fileURLToPath(new URL('../src/services/roms.ts', import.meta.url))
 )
 const { ROM_LANGS } = await import(fileURLToPath(new URL('../src/config/languages.ts', import.meta.url)))
+const { gameRowToApi, dosExecutableOf, relationsInPatch, romRelationRows } = await import(fileURLToPath(new URL('../server/src/mappers.js', import.meta.url)))
 
 let url = 0
 const next = () => `https://assets.example.com/roms/nes/game-${++url}.zip`
@@ -188,6 +189,36 @@ const next = () => `https://assets.example.com/roms/nes/game-${++url}.zip`
   // 同一个对象绑到多个槽时只探一次，别浪费 HEAD
   const game = { roms: { en: 'roms/nes/same.nes', ja: 'roms/nes/same.nes', es: 'roms/nes/same.nes' } }
   assert.equal(romCandidates(game, 'en').length, 1, '同一个 key 只保留第一次出现')
+}
+{
+  // 同一 ZIP 的 URL 一样，但所选语言槽必须保留，启动文件由它决定。
+  const game = {
+    roms: { en: 'roms/dos/shared.zip', 'zh-Hans': 'roms/dos/shared.zip' },
+    dosExecutable: 'START.BAT',
+    dosExecutables: { en: 'EN/RUN.BAT', 'zh-Hans': 'CN/RUN.BAT' },
+  }
+  const english = romCandidates(game, 'en')[0]
+  const chinese = romCandidates(game, 'zh-Hans')[0]
+  assert.equal(english.key, chinese.key)
+  assert.equal(dosExecutableForRom(game, english), 'EN/RUN.BAT')
+  assert.equal(dosExecutableForRom(game, chinese), 'CN/RUN.BAT')
+  assert.equal(dosExecutableForRom(game, { lang: 'ja' }), 'START.BAT', '未配置的语言使用原有默认入口')
+  assert.equal(dosExecutableForRom(game, {}), 'START.BAT', '旧版通用 ROM 沿用默认入口')
+  const fromApi = gameRowToApi(
+    { slug: 'shared', title: 'Shared DOS', platform: 'dos', dos_executable: 'START.BAT' },
+    { roms: game.roms, dosExecutables: game.dosExecutables },
+  )
+  assert.deepEqual(fromApi.dosExecutables, game.dosExecutables, 'API 把各语言入口送回后台编辑表单')
+  assert.equal(dosExecutableForRom(fromApi, chinese), 'CN/RUN.BAT')
+  assert.equal(dosExecutableOf('CN\\RUN.BAT'), 'CN/RUN.BAT', '后端将 DOS 反斜杠规整为 ZIP 相对路径')
+  assert.equal(dosExecutableOf('../RUN.BAT'), null, '不能把相对路径穿出 ZIP')
+  assert.equal(relationsInPatch({ dosExecutables: { en: 'EN/RUN.BAT' } }).roms, true, '只更新入口时也要写 ROM 关联表')
+  const previous = [{ lang: 'en', object_key: 'roms/dos/shared.zip', dos_executable: 'EN/RUN.BAT' }]
+  assert.equal(romRelationRows({ roms: { en: 'roms/dos/shared.zip' } }, previous, true)[0].dosExecutable, 'EN/RUN.BAT', '只改 ROM 绑定且 key 不变时保留入口')
+  assert.equal(romRelationRows({ roms: { en: 'roms/dos/new.zip' } }, previous, true)[0].dosExecutable, null, '换 ZIP 后旧入口不能沿用')
+  assert.equal(romRelationRows({ dosExecutables: { en: 'EN/NEW.BAT' } }, previous, true)[0].dosExecutable, 'EN/NEW.BAT', '只改入口时保留 ROM key')
+  assert.equal(romRelationRows({ roms: { en: 'roms/dos/shared.zip' } }, previous)[0].dosExecutable, 'EN/RUN.BAT', '旧后台整体保存相同 ROM 时不抹掉入口')
+  assert.equal(romRelationRows({ roms: { en: 'roms/dos/shared.zip' }, dosExecutables: {} }, previous)[0].dosExecutable, null, '新后台明确清空入口时可删除旧值')
 }
 {
   // 旧数据的无语言 rom 垫在最后，且不与语言槽重复

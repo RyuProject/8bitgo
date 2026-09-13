@@ -301,6 +301,9 @@ export interface RuntimeHandle {
   /** 存档文件的扩展名（默认 state）。Flash 导出的是一个 json 包，就写成 flashsave.json */
   saveExt?: string
   saveState?: () => Promise<Blob | null>
+  /** 旧 srcdoc 路径的 Flash 存档无法自动辨认游戏，只在玩家明确选择时恢复。 */
+  hasLegacyFlashSave?: () => boolean
+  recoverLegacyFlashSave?: () => Promise<string | void>
   /**
    * 文件系统式存档（DOS）：把盘上的改动固化下来，成功返回 true。
    * 没有可下载的文件，也没有对应的「读档」—— 下次进游戏时引擎会自动把改动装回去。

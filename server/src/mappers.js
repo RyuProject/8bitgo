@@ -380,6 +380,8 @@ export function gameRowToApi(r, rel = {}) {
   const byLang = { ...roms }
   delete byLang[GENERIC_ROM_LANG]
   if (Object.keys(byLang).length) g.roms = byLang
+  // 启动文件跟语言槽走；通用 ROM 继续用 games.dos_executable，旧数据无需迁移内容。
+  if (rel.dosExecutables && Object.keys(rel.dosExecutables).length) g.dosExecutables = rel.dosExecutables
 
   const tags = rel.tags ?? []
   if (tags.length) g.tags = tags
@@ -475,7 +477,7 @@ export function gameApiToPartialRow(patch) {
 /** 请求体里带了关联字段吗（决定 PATCH 要不要动关联表） */
 export function relationsInPatch(patch) {
   const has = (k) => Object.prototype.hasOwnProperty.call(patch ?? {}, k)
-  return { genres: has('genres'), tags: has('tags'), roms: has('rom') || has('roms') }
+  return { genres: has('genres'), tags: has('tags'), roms: has('rom') || has('roms') || has('dosExecutables') }
 }
 
 /** 把 API 对象里的 rom / roms 归一成 { lang: key } 的形式（通用 ROM 用 '*'） */
@@ -486,6 +488,21 @@ export function romsOf(g) {
     if (typeof key === 'string' && key.trim()) out[lang] = key.trim()
   }
   return out
+}
+
+/** 关联表重写时，同 key 的旧入口可沿用；换包后旧入口必须作废。 */
+export function romRelationRows(game, previous = [], partial = false) {
+  const hasRomKeys = Object.prototype.hasOwnProperty.call(game, 'rom') || Object.prototype.hasOwnProperty.call(game, 'roms')
+  const hasEntries = Object.prototype.hasOwnProperty.call(game, 'dosExecutables')
+  const oldByLang = new Map(previous.map((row) => [row.lang, row]))
+  const roms = hasRomKeys || !partial ? Object.entries(romsOf(game)) : previous.map((row) => [row.lang, row.object_key])
+  return roms.map(([lang, key]) => ({
+    lang,
+    key,
+    dosExecutable: lang === GENERIC_ROM_LANG ? null : hasEntries
+      ? dosExecutableOf(game.dosExecutables?.[lang])
+      : oldByLang.get(lang)?.object_key === key ? oldByLang.get(lang)?.dos_executable ?? null : null,
+  }))
 }
 
 /* ---------------- 博客 ---------------- */

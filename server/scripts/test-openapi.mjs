@@ -91,7 +91,16 @@ const JA_ONLY = { ...GAME, id: 3, slug: 'ja-only' }
  * 而且夹着它的那一页比 page_size 短。接入方查不出原因，只会觉得我们的分页时好时坏。
  */
 const ADULT_GAME = { ...GAME, id: 4, slug: 'adult-game', adult: 1 }
-const ALL_GAMES = [GAME, HIDDEN_GAME, JA_ONLY, ADULT_GAME]
+const GBA_GAME = { ...GAME, id: 5, slug: 'gba-rpg', platform: 'gba' }
+const DOS_GAME = { ...GAME, id: 6, slug: 'dos-game', platform: 'dos', dos_backend: null }
+const WIN31_GAME = { ...GAME, id: 7, slug: 'win31-game', platform: 'dos', dos_backend: 'dosboxX', dos_windows_version: '3x' }
+const WIN9X_GAME = { ...GAME, id: 8, slug: 'win9x-game', platform: 'dos', dos_backend: 'dosboxX', dos_windows_version: '9x' }
+const ALL_GAMES = [GAME, HIDDEN_GAME, JA_ONLY, ADULT_GAME, GBA_GAME, DOS_GAME, WIN31_GAME, WIN9X_GAME]
+const GAME_GENRES = [
+  { game_id: 1, genre_id: 'action' },
+  { game_id: 3, genre_id: 'puzzle' },
+  { game_id: 5, genre_id: 'rpg' },
+]
 const ROMS = [
   { game_id: 1, lang: '*', object_key: 'roms/contra.zip' },
   { game_id: 1, lang: 'ja', object_key: 'roms/contra-ja.zip' },
@@ -159,10 +168,21 @@ const SAVES = [
 ]
 
 /** 照着 WHERE 里真的写了什么来筛。多一个字少一个字都会反映到结果上 */
-function listVisible(s) {
+function listVisible(s, params = []) {
   let rows = ALL_GAMES
   if (s.includes('g.hidden = 0')) rows = rows.filter((g) => !g.hidden)
   if (s.includes('g.adult = 0')) rows = rows.filter((g) => !g.adult)
+  // 类型参数排在 JOIN 里，机型参数排在 WHERE 里；假库必须按 SQL 的占位符顺序取值。
+  // 否则两个条件同时传时，测试只验证了“有返回值”，没验证实际交集。
+  const hasGenre = s.includes('gg.genre_id = ?')
+  if (hasGenre) rows = rows.filter((g) => GAME_GENRES.some((r) => r.game_id === g.id && r.genre_id === params[0]))
+  if (s.includes('g.platform = ?')) rows = rows.filter((g) => g.platform === params[hasGenre ? 1 : 0])
+  if (s.includes("g.platform = 'dos' AND g.dos_backend = 'dosboxX'")) {
+    rows = rows.filter((g) => g.platform === 'dos' && g.dos_backend === 'dosboxX')
+  }
+  if (s.includes("g.platform <> 'dos' OR COALESCE(g.dos_backend, '') <> 'dosboxX'")) {
+    rows = rows.filter((g) => g.platform !== 'dos' || g.dos_backend !== 'dosboxX')
+  }
   return rows
 }
 
@@ -206,10 +226,14 @@ globalThis.__fakeDb = {
       真库里 total 和条目也是两条 SQL，只要路由漏传 excludeAdult，
       两边就会不一致。假库自己替被测代码筛掉 adult 的话，这个 bug 永远测不出来。
     */
-    if (s.startsWith('SELECT g.* FROM games')) return listVisible(s)
-    if (s.startsWith('SELECT COUNT') && s.includes('FROM games')) return [{ n: listVisible(s).length }]
+    if (s.startsWith('SELECT g.* FROM games')) {
+      const rows = listVisible(s, params)
+      const page = s.match(/LIMIT (\d+) OFFSET (\d+)/)
+      return page ? rows.slice(Number(page[2]), Number(page[2]) + Number(page[1])) : rows
+    }
+    if (s.startsWith('SELECT COUNT') && s.includes('FROM games')) return [{ n: listVisible(s, params).length }]
     if (s.startsWith('SELECT COUNT')) return [{ n: 1 }]
-    if (s.startsWith('SELECT game_id, genre_id')) return [{ game_id: 1, genre_id: 'action' }]
+    if (s.startsWith('SELECT game_id, genre_id')) return GAME_GENRES.filter((r) => params.includes(r.game_id))
     if (s.startsWith('SELECT game_id, tag')) return [{ game_id: 1, tag: '经典' }]
     if (s.startsWith('SELECT game_id, lang, object_key')) return ROMS
     /* ---- 用户数据（library / saves）。同样照着 SQL 说的做，不替被测代码过滤 ---- */
@@ -674,6 +698,63 @@ await check('⚠️ 用户数据和自省也没跟着公开', async () => {
                       '/api/open/v1/games/contra/embed']) {
     assert.equal((await api(path)).status, 401, `${path} 变成匿名可读了`)
   }
+})
+
+await check('按机型、按类型可单独或组合筛选，分页总数与交集一致', async () => {
+  const cases = [
+    ['platform=gba', ['gba-rpg']],
+    ['genre=action', ['contra']],
+    ['platform=nes&genre=puzzle', ['ja-only']],
+    ['platform=gba&genre=action', []],
+  ]
+  for (const [query, slugs] of cases) {
+    const response = await api(`/api/open/v1/games?${query}`)
+    assert.equal(response.status, 200, query)
+    const page = await response.json()
+    assert.deepEqual(page.items.map((g) => g.slug), slugs, query)
+    assert.equal(page.total, slugs.length, query)
+    assert.equal(page.total_pages, 1, query)
+  }
+
+  const secondPage = await (await api('/api/open/v1/games?platform=nes&page_size=1&page=2')).json()
+  assert.equal(secondPage.page, 2)
+  assert.equal(secondPage.page_size, 1)
+  assert.equal(secondPage.total, 2)
+  assert.equal(secondPage.total_pages, 2)
+  assert.equal(secondPage.items.length, 1)
+  assert.equal(secondPage.items[0].platform, 'nes')
+})
+
+await check('DOS 与 Windows 客体按后台复选框筛选，详情标记和分页总数一致', async () => {
+  const cases = [
+    ['platform=dos', ['dos-game', 'win31-game', 'win9x-game']],
+    ['platform=dos&requires_windows=false', ['dos-game']],
+    ['platform=dos&requires_windows=true', ['win31-game', 'win9x-game']],
+  ]
+  for (const [query, slugs] of cases) {
+    const response = await api(`/api/open/v1/games?${query}`)
+    assert.equal(response.status, 200, query)
+    const page = await response.json()
+    assert.deepEqual(page.items.map((g) => g.slug), slugs, query)
+    assert.equal(page.total, slugs.length, query)
+  }
+
+  const smallPage = await (await api('/api/open/v1/games?platform=dos&requires_windows=false&page_size=1')).json()
+  assert.equal(smallPage.total, 1)
+  assert.equal(smallPage.total_pages, 1)
+  assert.equal(smallPage.items[0].requires_windows, false)
+
+  const allCapable = await (await api('/api/open/v1/games?requires_windows=false&page_size=50')).json()
+  assert.equal(allCapable.total, 4)
+  assert.ok(allCapable.items.every((g) => g.requires_windows === false))
+  for (const [slug, expected] of [['dos-game', false], ['win31-game', true], ['win9x-game', true]]) {
+    const detail = await (await api(`/api/open/v1/games/${slug}`)).json()
+    assert.equal(detail.requires_windows, expected, slug)
+    assert.ok(!('dos_backend' in detail), '对外响应泄漏了运行核心的内部字段')
+  }
+  const bad = await api('/api/open/v1/games?requires_windows=maybe')
+  assert.equal(bad.status, 400)
+  assert.equal((await bad.json()).error, 'invalid_request')
 })
 
 await check('⚠️ total 和实际条目算在同一层（成人内容不能只在后半程被筛掉）', async () => {

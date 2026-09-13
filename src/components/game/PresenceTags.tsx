@@ -4,11 +4,11 @@ import { cx } from '@/lib/format'
 import {
   countryName,
   deviceEmoji,
-  flagEmoji,
   netEmoji,
   presenceEmpty,
   type Presence,
 } from '@/services/presence'
+import { flagOrSvg } from '@/components/Flag'
 
 /**
  * 房主 / 成员名片上的三个小格子：用什么设备玩 💻📱、人在哪 🇨🇳、网络好不好 👌🀄️👎。
@@ -50,7 +50,7 @@ export function PresenceTags({
   // 延迟是「房主到本站服务器」的，不是「你到房主」的 —— 画面走 WebRTC 直连，
   // 那条路服务器量不到。title 里把这句写清楚，别让人拿它当端到端延迟。
   const netTitle = presence.rtt === null ? netLabel : `${netLabel} · ${fmt(tr.netRtt, { ms: String(presence.rtt) })}`
-  const flag = flagEmoji(presence.country)
+  const flag = flagOrSvg(presence.country)
   const regionTitle = presence.country ? countryName(presence.country, lang) : tr.regionUnknown
 
   const showDevice = !skipUnknown || presence.device !== 'unknown'
@@ -66,7 +66,7 @@ export function PresenceTags({
       )}
       {showRegion && (
         <span role="img" aria-label={regionTitle} title={regionTitle}>
-          {/* 国旗字形在 Windows 上会退化成「CN」两个字母，是有意接受的（见 flagEmoji） */}
+          {/* 大多数国家的国旗走 emoji；HK / MO 等系统字体不收的，flagOrSvg 会兜底成内联 SVG */}
           {flag || '❓'}
         </span>
       )}

@@ -369,9 +369,13 @@ Content-Type: application/json
 
 | 端点 | 鉴权 | 说明 |
 |---|---|---|
-| `GET /v1/games` | 公开 | 分页列表。`platform` / `genre` / `q` / `sort` / `page` / `page_size≤50` / `lang` |
+| `GET /v1/games` | 公开 | 分页列表。`platform` / `requires_windows` / `genre` / `q` / `sort` / `page` / `page_size≤50` / `lang` |
 | `GET /v1/games/{slug}` | 公开 | 详情 |
 | `GET /v1/me` | 要令牌 | 这枚令牌是谁的、有哪些 scope、什么时候过期（排错的第一站） |
+
+DOS 平台包含普通 DOS 和 Windows 3.x / 95 / 98 客体游戏。后台的 Windows 复选框决定返回对象里的
+`requires_windows`；低性能设备可传 `?platform=dos&requires_windows=false` 只取普通 DOS 游戏。
+不传时两类都返回；筛选在分页和 `total` 计算前完成。
 
 > ⚠️ **成人内容（`adult=1`）在这条路上整体不存在，没有任何开关能打开。**
 > 过滤必须和 `total` 算在**同一层**（`listGames` 的 `excludeAdult`）——
@@ -389,7 +393,7 @@ GET /api/open/v1/games/contra?lang=fr
   "description": "Two commandos versus aliens.",
   "lang_requested": "fr",
   "lang_actual": { "title": "und", "description": "en" },   ← ⚠️ 这一栏是关键
-  "platform": "nes", "genres": ["action"], "tags": ["经典"],
+  "platform": "nes", "requires_windows": false, "genres": ["action"], "tags": ["经典"],
   "year": 1987, "developer": "Konami", "players": 2, "multiplayer": true,
   "icon": "🎮",
   "cover": "https://assets.8bitgo.com/covers/contra.jpg",

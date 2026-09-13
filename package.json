@@ -38,6 +38,7 @@
     "test:roms": "node scripts/test-rom-validation.mjs",
     "test:romcache": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-rom-cache.mjs",
     "test:flash-keys": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-flash-keys.mjs",
+    "test:ruffle-saves": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-ruffle-saves.mjs",
     "test:gamepad": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-gamepad-input.mjs",
     "test:chat-send": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-chat-send.mjs",
     "test:avatar": "node scripts/test-avatar.mjs",

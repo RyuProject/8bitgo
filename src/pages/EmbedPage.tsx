@@ -27,7 +27,7 @@ import { usePageData, type GameData } from '@/services/pageData'
 import { platformMap } from '@/data/platforms'
 import { isPlatformEnabled } from '@/config/platforms'
 import { langPrefix, type RomLang } from '@/config/languages'
-import { romLangsOf, romUrlForKey, useRomUrl } from '@/services/roms'
+import { dosExecutableForRom, romLangsOf, romUrlForKey, useRomUrl } from '@/services/roms'
 import { usePlatformBiosUrl } from '@/services/platformBios'
 import { useSeo } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
@@ -144,7 +144,7 @@ export function EmbedPage() {
           core={game.core}
           genres={game.genres}
           arcadeRomData={game.arcadeRomData}
-          dosExecutable={game.dosExecutable}
+          dosExecutable={dosExecutableForRom(game, rom)}
           dosBackend={game.dosBackend}
           dosSystemUrl={game.dosSystem ? romUrlForKey(game.dosSystem) : undefined}
           dosWindowsVersion={game.dosWindowsVersion}

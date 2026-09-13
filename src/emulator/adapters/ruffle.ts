@@ -15,6 +15,10 @@ import { canvasToBlob } from '../recorder'
 import { usableVideoSize } from '../videoTuning'
 import { focusFrame } from '../frameFocus'
 import { installAudioTap, type AudioTap } from '../audioTap'
+import {
+  FLASH_SAVE_FORMAT, LEGACY_FLASH_PREFIX, flashMovieUrl, flashSavePrefix,
+  readFlashEntries, readLegacyFlashEntries, restoreFlashEntries, validFlashEntries,
+} from '../ruffleSaves'
 import { getT, fmt } from '@/services/i18n'
 
 export { RUFFLE_PATH } from '../paths'
@@ -77,20 +81,6 @@ function fontConfig(): Record<string, unknown> {
   return cfg
 }
 
-const FRAME_HTML = `<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-  html, body { margin: 0; height: 100%; background: #0b0b0f; overflow: hidden; }
-  #host { width: 100%; height: 100%; }
-  #host > * { width: 100%; height: 100%; display: block; }
-</style>
-</head>
-<body><div id="host"></div></body>
-</html>`
-
 /**
  * Ruffle 的播放器接口。
  *
@@ -100,6 +90,7 @@ const FRAME_HTML = `<!doctype html>
  */
 interface RufflePlayerApi {
   load: (options: Record<string, unknown>) => Promise<void> | void
+  reload?: () => Promise<void>
   play?: () => void
   resume?: () => void
   pause?: () => void
@@ -120,79 +111,14 @@ interface RuffleGlobal {
 
 /* ---------------- Flash 存档（SharedObject）---------------- */
 
-/**
- * Flash 游戏的「存档」不是模拟器快照，而是游戏自己通过 SharedObject 写下的进度
- * （当年俗称 Flash cookie）。Ruffle 把它落在 localStorage 里，一条一个键。
- *
- * ⚠️ 我们的 iframe 是 srcdoc，srcdoc 继承父页面的源，所以这些存档其实就写在
- *    8bitgo 自己的 localStorage 里 —— 也就是说存档**本来就在生效**，
- *    玩家关掉页面下次再来进度还在。这里补的是导出 / 导入的口子。
- *
- * 判定一条 localStorage 是不是 Flash 存档，用的是 SOL 文件头（和 Ruffle 自己
- * 的判定完全一致，见 ruffle.js 里的那个 base64 校验函数）：
- *   00 BF <4 字节长度> "TCSO" 00 04 00 00 00 00
- * 按内容认而不是按键名认，所以不会误伤本站自己的 localStorage 键。
- */
-function isSolBase64(value: string): boolean {
-  try {
-    const raw = atob(value)
-    return (
-      raw.charCodeAt(0) === 0 &&
-      raw.charCodeAt(1) === 0xbf &&
-      raw.slice(6, 10) === 'TCSO' &&
-      [0, 4, 0, 0, 0, 0].every((b, i) => raw.charCodeAt(10 + i) === b)
-    )
-  } catch {
-    return false
-  }
-}
-
-/** 导出文件的格式标记，导入时要认 */
-const FLASH_SAVE_FORMAT = '8bitgo-flash-save'
-
 interface FlashSaveFile {
   format: string
   version: number
   game?: string
+  slug?: string
   savedAt?: string
-  /** localStorage 键 -> base64 的 SOL 内容 */
+  /** v1 是完整 localStorage 键；v2 是当前游戏路径下的槽名。 */
   entries: Record<string, string>
-}
-
-/**
- * 找出属于这个 SWF 的存档键。
- *
- * Ruffle 的键长这样：`<域名>/<swf 路径的各段>/<存档名>`。它自己在删除/替换存档时
- * 也是这么核对归属的：键要以域名开头，且中间那段路径要能在 swf 的 pathname 里找到。
- * 这里照抄同一套规则，免得把别的 Flash 游戏的存档一起打包走。
- *
- * 本地文件（走 data 加载）没有 swf URL，Ruffle 那边会退回页面域名，
- * 我们也只能按域名筛 —— 会把同域下别的 Flash 存档带上，所以只在拿不到 URL 时用。
- */
-function flashSaveKeys(swfUrl: URL | null): string[] {
-  const host = swfUrl?.hostname || location.hostname
-  const keys: string[] = []
-  let store: Storage
-  try {
-    store = localStorage
-  } catch {
-    return keys // 隐私模式下读不到就算了
-  }
-  for (let i = 0; i < store.length; i++) {
-    const key = store.key(i)
-    if (!key || !key.startsWith(host)) continue
-    const value = store.getItem(key)
-    if (!value || !isSolBase64(value)) continue
-    if (swfUrl) {
-      const middle = key.split('/').slice(1, -1).join('/')
-      // middle 为空说明这条键是「域名/槽名」两段式（存在站点根目录的 SOL）。
-      // 空串的话 includes('') 恒为真，会把同域下**所有**游戏的存档都算进来，
-      // 导出一个游戏的存档能把别的游戏一起带走。宁可漏掉这种也不能多带。
-      if (!middle || !swfUrl.pathname.includes(middle)) continue
-    }
-    keys.push(key)
-  }
-  return keys
 }
 
 /**
@@ -247,7 +173,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * ⚠️ 它在 <ruffle-player> 的 **shadow DOM** 里（Ruffle 内部 attachShadow({mode:'open'})，
    *    画布挂在 shadow 里的 #container 上），所以 iframe.contentDocument.querySelector('canvas')
    *    **永远返回 null** —— 这条路我实测过，走不通。必须从 player.shadowRoot 找。
-   *    srcdoc iframe 继承父页面的源，加上 shadow 是 open 模式，所以这里拿得到。
+   *    同源播放框加上 shadow 是 open 模式，所以这里拿得到。
    *
    * 每次现查、不缓存：读档会调 player.reload()，画布会被换掉。
    */
@@ -274,15 +200,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     return c && usableVideoSize(c.width, c.height) ? c : null
   }
 
-  /** 远程 ROM 才有 URL；本地文件走 data 加载，拿不到 */
-  const swfUrl: URL | null = (() => {
-    if (typeof options.game !== 'string') return null
-    try {
-      return new URL(options.game, location.href)
-    } catch {
-      return null
-    }
-  })()
+  /** Ruffle 的 data 模式按播放框地址和文件名造虚拟 URL，和下载网址无关。 */
+  let movieUrl: URL | null = null
+  let lastLoadOptions: Record<string, unknown> | null = null
+  const saveId = options.gameSlug || (typeof options.game === 'string' ? options.game : `local:${options.game.name}`)
+  const storage = (): Storage => {
+    try { return localStorage } catch { throw new Error(rt.flashStorageUnavailable) }
+  }
 
   /** 元素和门面上都可能有这些成员，挨个找第一个有的 */
   const canPause = (): boolean =>
@@ -306,7 +230,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   iframe.title = fmt(rt.flashTitle, { name: options.gameName })
   iframe.style.cssText = 'width:100%;height:100%;border:0;display:block;background:#0b0b0f'
   iframe.setAttribute('allow', 'fullscreen; autoplay; clipboard-write')
-  iframe.srcdoc = FRAME_HTML
+  // srcdoc 的 location 是 about:srcdoc；Ruffle 会拿它当 SWF 地址，所有游戏的
+  // SharedObject 因而落到同一条 /srcdoc/ 路径。用同源静态壳和逐游戏历史地址隔开。
+  // 2026-09-13 用自制 SWF 在真实浏览器量到的键：
+  // 127.0.0.1/flash-frames/smoke/save-smoke.swf/slot1；旧版则是 /srcdoc/slot1。
+  iframe.src = '/flash-frame.html'
 
   let destroyed = false
   /** SWF 下载的取消把手：换游戏后别让旧会话继续拉完整个 SWF（见 jsnes 同款注释） */
@@ -316,7 +244,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 把焦点交给播放器元素本身。
    *
    * ⚠️ 光 focusFrame(iframe) **不够**。Ruffle 只处理「它自己那个元素有焦点」时的键盘事件，
-   * 用 Playwright 在「外层页面 + 同源 srcdoc iframe」这套真实结构上量过（2026-09-04）：
+   * 用 Playwright 在「外层页面 + 同源 iframe」这套真实结构上量过（2026-09-04）：
    *
    *   焦点在外层按钮上                → 事件根本不进 iframe
    *   只 iframe.focus()（内部焦点在 body）→ 事件到了 iframe 的 window，但 defaultPrevented 是
@@ -344,7 +272,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    *   1. 它自己就这么干 —— 虚拟键盘（发行包 ruffle.js 的 virtualKeyboardInput）
    *      正是往 this.element 上 dispatch 一个 new KeyboardEvent(..., { key, bubbles: true })
    *   2. 发行包里 isTrusted 出现 0 次，它不区分真按键和合成事件
-   *   3. Ruffle 跑在自己的 srcdoc iframe 文档里，撞不到外层页面的监听
+   *   3. Ruffle 跑在自己的同源 iframe 文档里，撞不到外层页面的监听
    *
    * 派发目标是 <ruffle-player> 元素本身：画布在它的 shadow 里，往下派发不到；
    * 而 Ruffle 0.5.0 的监听实测挂在 iframe 的 **window** 上，所以必须 bubbles:true 让它冒上去。
@@ -380,6 +308,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     const win = iframe.contentWindow as (Window & { RufflePlayer?: RuffleGlobal }) | null
     const doc = iframe.contentDocument
     if (!win || !doc) {
+      options.onError?.(rt.flashInitFailed)
+      return
+    }
+    try {
+      win.history.replaceState(null, '', `/flash-frames/${encodeURIComponent(saveId)}/frame.html`)
+    } catch {
       options.onError?.(rt.flashInitFailed)
       return
     }
@@ -443,6 +377,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         if (isFile) {
           const loaded = await loadGameBytes(options.game, options.onProgress, aborter.signal)
           assertSwf(loaded.data)
+          movieUrl = flashMovieUrl(win.location.href, loaded.name)
           loadOptions = { ...base, data: loaded.data, swfFileName: loaded.name }
         } else {
           /**
@@ -457,6 +392,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           const url = options.game as string
           const loaded = await loadGameBytes(url, options.onProgress, aborter.signal)
           assertSwf(loaded.data)
+          movieUrl = flashMovieUrl(win.location.href, loaded.name)
           loadOptions = {
             ...base,
             data: loaded.data,
@@ -471,6 +407,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         // 这里要重新确认一次，别把旧会话的结果算到新会话头上
         if (destroyed) return
         options.onProgress?.({ phase: 'starting', ratio: 1 })
+        lastLoadOptions = loadOptions
         await api.load(loadOptions)
         if (destroyed) return
         // onReady 必须在 load 完成之后 —— 以前放在 load 之前，播放器会在 SWF 还没解析完
@@ -512,6 +449,43 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   container.appendChild(iframe)
   options.onCaps?.(caps)
+
+  /**
+   * Ruffle 重载前会销毁旧实例；销毁时旧 SharedObject 可能再写一次。
+   * 所以先从 DOM 拿掉播放器让旧实例落盘，再替换 localStorage，最后接回并重载。
+   */
+  const restoreGame = async (entries: Record<string, string>, replace: boolean): Promise<void> => {
+    if (!player || !api || !movieUrl || !lastLoadOptions || destroyed) throw new Error(rt.flashReloadFailed)
+    const currentPlayer = player
+    const currentApi = api
+    const parent = currentPlayer.parentElement
+    if (!parent) throw new Error(rt.flashReloadFailed)
+    const store = storage()
+    const prefix = flashSavePrefix(movieUrl)
+    const reload = async () => {
+      const target = [currentApi, currentPlayer].find((item) => typeof item.reload === 'function')
+      if (target?.reload) await target.reload()
+      else await currentApi.load(lastLoadOptions!)
+    }
+    currentPlayer.remove()
+    let before: Record<string, string> | null = null
+    try {
+      before = readFlashEntries(store, prefix)
+      restoreFlashEntries(store, prefix, entries, replace)
+      parent.appendChild(currentPlayer)
+      await reload()
+      downKeys.clear()
+      applyVolume()
+    } catch (error) {
+      // 读档失败不能把半份新进度留在浏览器；回到旧值后尽量把原游戏重开。
+      currentPlayer.remove()
+      try { if (before) restoreFlashEntries(store, prefix, before, true) } finally {
+        parent.appendChild(currentPlayer)
+        try { await reload() } catch { /* 原始错误更有用 */ }
+      }
+      throw error
+    }
+  }
 
   return {
     caps,
@@ -584,7 +558,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
        * 这次只是把同一份实现抽出来共用。
        *
        * ⚠️ 原来这里的注释担心「patch 一旦有闪失就是全站 Flash 没声音」。那个顾虑
-       * 建立在「改的是公共音频通路」上，而实际落点是**每一局自己那个 srcdoc iframe**：
+       * 建立在「改的是公共音频通路」上，而实际落点是**每一局自己那个 iframe**：
        * 换游戏就是新 realm，销毁时整个 realm 跟着没，patch 不会外溢到父页面或别的运行时。
        * 加上探针内部每一步都兜住了失败，最坏的结果就是回到今天 —— 没声音。
        *
@@ -636,19 +610,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     },
     saveExt: 'flashsave.json',
     async saveState() {
-      const keys = flashSaveKeys(swfUrl)
-      if (!keys.length) throw new Error(rt.flashNoSave)
-      const entries: Record<string, string> = {}
-      for (const key of keys) {
-        const value = localStorage.getItem(key)
-        if (value) entries[key] = value
-      }
-      // 带上键名一起导出：SOL 文件本身不含「它属于哪个存档槽」这个信息，
-      // 只导出裸 .sol 的话，导入时没有已存在的存档就无从下手
+      if (!movieUrl) throw new Error(rt.flashNoSave)
+      const entries = readFlashEntries(storage(), flashSavePrefix(movieUrl))
+      if (!Object.keys(entries).length) throw new Error(rt.flashNoSave)
+      // 只存当前游戏路径下的槽名；完整键含站点域名，跨设备/测试站恢复时会失效。
       const file: FlashSaveFile = {
         format: FLASH_SAVE_FORMAT,
-        version: 1,
+        version: 2,
         game: options.gameName,
+        slug: saveId,
         savedAt: new Date().toISOString(),
         entries,
       }
@@ -661,52 +631,34 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       } catch {
         throw new Error(rt.flashSaveBad)
       }
-      if (file?.format !== FLASH_SAVE_FORMAT || !file.entries) throw new Error(rt.flashSaveBad)
-      /**
-       * 只写**这个 SWF 自己**的键。
-       *
-       * Ruffle 的 SharedObject 全站共用一个 localStorage（srcdoc iframe 继承父页面的源），
-       * 键是「域名/swf 路径/存档名」。以前这里拿文件里的键原样 setItem —— 而本地文件那条路
-       * 导出时只能按域名筛（flashSaveKeys 的注释里写着），一次导出会把玩家玩过的**所有** Flash
-       * 游戏的存档打包进去。过几周他在另一个游戏里导入这份文件，那几十个游戏的进度就被整体
-       * 回滚到导出那天，界面还提示「导入成功」。
-       *
-       * 归属判断照抄 Ruffle 自己那套：域名要对得上；有 swf URL 时，键中间那段路径要能在
-       * pathname 里找到。判不出归属的一律跳过 —— 宁可这次导入什么都不写，也不能动别的游戏。
-       */
-      const host = swfUrl?.hostname || location.hostname
-      const mine = (key: string): boolean => {
-        if (!key.startsWith(host)) return false
-        if (!swfUrl) return true // 本地文件：只能按域名认，和导出时同一套标准
-        const middle = key.split('/').slice(1, -1).join('/')
-        return Boolean(middle) && swfUrl.pathname.includes(middle)
-      }
-      let written = 0
-      let skipped = 0
-      for (const [key, value] of Object.entries(file.entries)) {
-        // 再校验一遍：别把任意内容塞进 localStorage
-        if (typeof value !== 'string' || !isSolBase64(value)) continue
-        if (!mine(key)) {
-          skipped++
-          continue
+      if (file?.format !== FLASH_SAVE_FORMAT || !validFlashEntries(file.entries) || !movieUrl) throw new Error(rt.flashSaveBad)
+      let entries: Record<string, string>
+      if (file.version === 2) {
+        if (file.slug !== saveId) throw new Error(rt.flashSaveForeign)
+        entries = file.entries
+      } else if (file.version === 1) {
+        // 旧版文件只有显示名称而没有 slug，先核对名称，再把旧完整键映射到独立路径。
+        // 混入其它游戏的键一律整份拒绝，不能只导入其中一部分却提示成功。
+        if (file.game !== options.gameName) throw new Error(rt.flashSaveForeign)
+        const prefix = flashSavePrefix(movieUrl)
+        entries = Object.create(null)
+        for (const [key, value] of Object.entries(file.entries)) {
+          const source = key.startsWith(prefix) ? prefix : key.startsWith(LEGACY_FLASH_PREFIX) ? LEGACY_FLASH_PREFIX : null
+          if (!source || key.length === source.length) throw new Error(rt.flashSaveForeign)
+          entries[key.slice(source.length)] = value
         }
-        localStorage.setItem(key, value)
-        written++
-      }
-      if (!written) throw new Error(skipped ? rt.flashSaveForeign : rt.flashSaveBad)
-      // 重载会换掉整个实例，Ruffle 那边按住的键全没了。我们这份记录必须一起清，
-      // 否则「玩家按住右键读了个档」之后，那颗键在 downKeys 里永远是按下状态，
-      // 下一次按右再也发不出去（去重把它吃了）
-      downKeys.clear()
-      // SWF 是在启动时读 SharedObject 的，写完必须重载一次才生效 ——
-      // Ruffle 自带的存档管理器替换存档时也是这么做的（destroy + reload）
-      for (const target of [api, player] as (RufflePlayerApi | RufflePlayerElement | null)[]) {
-        const reload = (target as { reload?: () => Promise<void> } | null)?.reload
-        if (typeof reload === 'function') {
-          await reload.call(target)
-          break
-        }
-      }
+      } else throw new Error(rt.flashSaveBad)
+      if (!Object.keys(entries).length) throw new Error(rt.flashSaveBad)
+      await restoreGame(entries, file.version === 2)
+      return rt.flashSaveImported
+    },
+    hasLegacyFlashSave() {
+      try { return Object.keys(readLegacyFlashEntries(storage())).length > 0 } catch { return false }
+    },
+    async recoverLegacyFlashSave() {
+      const entries = readLegacyFlashEntries(storage())
+      if (!Object.keys(entries).length) throw new Error(rt.flashNoSave)
+      await restoreGame(entries, true)
       return rt.flashSaveImported
     },
     destroy() {
@@ -717,7 +669,6 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       // realm 跟着 iframe 一起没，不用还原 patch；只是别留着指向死 realm 的节点
       audioTap = null
       try {
-        iframe.srcdoc = ''
         iframe.src = 'about:blank'
       } catch {
         /* ignore */
@@ -726,4 +677,3 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     },
   }
 }
-

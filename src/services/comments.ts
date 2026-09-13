@@ -83,20 +83,6 @@ export function canStillEdit(comment: GameComment): boolean {
 /* ---------------- 国家 ---------------- */
 
 /**
- * 两位国家码 -> 国旗 emoji。
- *
- * 办法是把 'CN' 的两个字母换成对应的「区域指示符号」码点（U+1F1E6 起），
- * 系统字体自己会把它们组合成国旗 —— 不需要任何图片资源，也不用引国旗图标库。
- *
- * 'XX'（未知）和 'T1'（Cloudflare 对 Tor 出口的标记）不是国家，回一个地球。
- */
-export function countryFlag(code: string): string {
-  const c = String(code || '').toUpperCase()
-  if (!/^[A-Z]{2}$/.test(c) || c === 'XX' || c === 'T1') return '🌐'
-  return String.fromCodePoint(...[...c].map((ch) => 0x1f1e6 + ch.charCodeAt(0) - 65))
-}
-
-/**
  * 两位国家码 -> 当前站点语言下的国家名。
  *
  * Intl.DisplayNames 是浏览器内置的，八种语言的国家名不用我们自己维护一份。

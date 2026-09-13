@@ -244,7 +244,7 @@ function isErrorBody(v: unknown): v is OpenApiErrorBody {
 }
 
 /** 给资源拼查询串用的小工具（跳过 undefined / 空串）。 */
-export function buildQuery(params: Record<string, string | number | undefined | null>): string {
+export function buildQuery(params: Record<string, string | number | boolean | undefined | null>): string {
   const sp = new URLSearchParams()
   for (const [k, v] of Object.entries(params)) {
     if (v === undefined || v === null || v === '') continue

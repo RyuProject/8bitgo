@@ -182,6 +182,14 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
       return { ...f, roms }
     })
 
+  const setDosEntryLang = (lang: RomLang, path: string) =>
+    setForm((f) => {
+      const dosExecutables = { ...f.dosExecutables }
+      if (path) dosExecutables[lang] = path
+      else delete dosExecutables[lang]
+      return { ...f, dosExecutables }
+    })
+
   const submit = (e: FormEvent) => {
     e.preventDefault()
     const slug = slugify(form.slug || form.title)
@@ -193,8 +201,21 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
     if (windowsGuest && !/\.jsdos(?:[?#].*)?$/i.test(form.dosSystem!.trim())) {
       return setError('Windows 系统镜像必须是 .jsdos 文件、对象 key 或 URL')
     }
-    if (windowsGuest && !form.dosExecutable?.trim()) {
-      return setError('共享 Windows 系统模式必须填写 ZIP 内的自启动 EXE')
+    const cleanedDosEntries: Partial<Record<RomLang, string>> = {}
+    for (const l of ROM_LANGS) {
+      const raw = form.dosExecutables?.[l]?.trim()
+      if (!raw) continue
+      if (!form.roms?.[l]?.trim()) return setError(`${ROM_LANG_LABEL[l]} 填了启动文件，但还没有绑定 ROM ZIP`)
+      const path = raw.replace(/\\/g, '/').replace(/^\/+/, '')
+      // 与服务端 dosExecutableOf 一致；在提交前指出错误，避免后端丢掉无效路径却返回成功。
+      // eslint-disable-next-line no-control-regex
+      if (path.length > 200 || /[\x00-\x1f]/.test(path) || path.split('/').some((part) => !part || part === '.' || part === '..')) {
+        return setError(`${ROM_LANG_LABEL[l]} 的启动文件路径无效，请填写 ZIP 内的相对路径`)
+      }
+      cleanedDosEntries[l] = path
+    }
+    if (windowsGuest && !form.dosExecutable?.trim() && (!Object.keys(form.roms ?? {}).length || ROM_LANGS.some((l) => form.roms?.[l]?.trim() && !cleanedDosEntries[l]))) {
+      return setError('共享 Windows 系统模式需要默认自启动 EXE，或为每个已绑定语言填写启动文件')
     }
     let dosboxConfig: string | undefined
     if (form.platform === 'dos' && form.dosBackend === 'dosboxX') {
@@ -226,6 +247,8 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
       video: form.video?.trim() || undefined,
       rom: form.rom?.trim() || undefined,
       roms: Object.keys(cleanedRoms).length ? cleanedRoms : undefined,
+      // 空对象也显式提交：编辑时清空所有语言入口，服务端才知道这是有意清除。
+      dosExecutables: form.platform === 'dos' ? cleanedDosEntries : {},
       tags: tags.length ? tags : undefined,
       /**
        * rating / ratingCount / plays 都不在表单里填，编辑时原样带回、新建时是 0。
@@ -381,7 +404,7 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
                   </select>
                   <p className="mt-1 text-[11px] text-dim">决定播放器用 Program Manager 的 File → Run，还是开始菜单的 Run。</p>
                 </Field>
-                <Field label="Windows 自启动 EXE">
+                <Field label="默认 Windows 自启动 EXE">
                   <input
                     className={cx(inputClass, 'font-mono')}
                     value={form.dosExecutable ?? ''}
@@ -389,7 +412,7 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
                     placeholder="WINDEPTH.EXE 或 BIN/GAME.EXE"
                   />
                   <p className="mt-1 text-[11px] text-dim">
-                    游戏 ZIP 内的相对路径。Windows 3.x 会先打开 EXE 所在目录再运行，请填写类似 ZEEK1.EXE、BIN/GAME.EXE 的 DOS 8.3 英文路径。
+                    游戏 ZIP 内的相对路径；语言槽有单独入口时优先使用语言槽的值。Windows 3.x 会先打开 EXE 所在目录再运行，请填写类似 ZEEK1.EXE、BIN/GAME.EXE 的 DOS 8.3 英文路径。
                   </p>
                 </Field>
                 <Field label="开机等待（秒）">
@@ -444,7 +467,7 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
                 </Field>
               </>
             ) : (
-              <Field label="启动程序">
+              <Field label="默认启动程序">
                 <input
                   className={inputClass}
                   value={form.dosExecutable ?? ''}
@@ -452,7 +475,7 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
                   placeholder="PARANOID.COM 或 NFS/TNFS.EXE"
                 />
                 <p className="mt-1 text-[11px] text-dim">
-                  zip 包内的相对路径。留空 = 自动猜测 —— 共享软件的包里常混着安装器（INSTALL / MAKEEVAL），猜错时填这里一锤定音
+                  ZIP 包内的相对路径。语言槽没填入口时用这里；这里也留空则自动猜测。旧游戏的设置会继续生效。
                 </p>
               </Field>
             )}
@@ -566,20 +589,55 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
           <p className="mt-0.5 text-xs text-muted">
             玩家会先加载站点语言对应的 ROM；没有时依次回退到 <span className="font-medium text-fg">English → 日本語 → 简体中文 → 繁體中文</span>，全部没有时提示“游戏没有当前语言版本”。
           </p>
+          {form.platform === 'dos' && (
+            <p className="mt-1 text-xs text-muted">DOS 可以像以前一样每种语言上传不同包；若一个 ZIP 内含多语言，只上传一次，再把其他语言槽绑定到同一个 ZIP key，并分别填写 BAT / EXE 等启动文件的包内相对路径。</p>
+          )}
         </div>
         {ROM_LANGS.map((lang) => (
-          <RomField
-            key={lang}
-            lang={lang}
-            label={lang === 'en' ? 'English ROM（第一回退）' : lang === 'ja' ? '日本語 ROM（第二回退）' : `${ROM_LANG_LABEL[lang]} ROM`}
-            value={form.roms?.[lang] ?? ''}
-            platform={form.platform}
-            slug={slugify(form.slug || form.title)}
-            onChange={(key) => setRomLang(lang, key)}
-            allBoundKeys={allBoundKeys}
-            onHackFound={(hack) => applyHack(hack, true)}
-            onApplyHack={(hack) => applyHack(hack)}
-          />
+          <div key={lang} className="space-y-2">
+            {form.platform === 'dos' && (
+              <>
+                <Field label={`${ROM_LANG_LABEL[lang]} 启动文件（ZIP 内）`}>
+                  <input
+                    className={cx(inputClass, 'font-mono')}
+                    value={form.dosExecutables?.[lang] ?? ''}
+                    onChange={(e) => setDosEntryLang(lang, e.target.value)}
+                    placeholder="例如 CN/START.BAT、GAME.EXE"
+                  />
+                  <p className="mt-1 text-[11px] text-dim">
+                    {form.dosBackend === 'dosboxX' && form.dosSystem?.trim()
+                      ? '留空则用上面的默认 Windows 自启动 EXE；共享 Windows 系统模式不自动猜测。'
+                      : '留空则用上面的默认启动程序；默认也留空时由播放器自动猜测。'}
+                  </p>
+                </Field>
+                {ROM_LANGS.some((other) => other !== lang && form.roms?.[other]?.trim()) && (
+                  <select
+                    className={cx(inputClass, 'text-xs')}
+                    value=""
+                    onChange={(e) => e.target.value && setRomLang(lang, e.target.value)}
+                    aria-label={`给 ${ROM_LANG_LABEL[lang]} 复用已上传的 DOS ZIP`}
+                  >
+                    <option value="">复用其他语言已绑定的 ZIP（只绑定，不重复上传）</option>
+                    {ROM_LANGS.filter((other) => other !== lang && form.roms?.[other]?.trim()).map((other) => (
+                      <option key={other} value={form.roms![other]}>{ROM_LANG_LABEL[other]} · {form.roms![other]}</option>
+                    ))}
+                  </select>
+                )}
+              </>
+            )}
+            <RomField
+              lang={lang}
+              dosEntry={form.platform === 'dos' ? form.dosExecutables?.[lang] : undefined}
+              label={lang === 'en' ? 'English ROM（第一回退）' : lang === 'ja' ? '日本語 ROM（第二回退）' : `${ROM_LANG_LABEL[lang]} ROM`}
+              value={form.roms?.[lang] ?? ''}
+              platform={form.platform}
+              slug={slugify(form.slug || form.title)}
+              onChange={(key) => setRomLang(lang, key)}
+              allBoundKeys={allBoundKeys}
+              onHackFound={(hack) => applyHack(hack, true)}
+              onApplyHack={(hack) => applyHack(hack)}
+            />
+          </div>
         ))}
       </div>
 
@@ -1103,6 +1161,7 @@ function RomField({
   slug,
   onChange,
   lang,
+  dosEntry,
   label,
   allBoundKeys,
   onHackFound,
@@ -1113,6 +1172,7 @@ function RomField({
   slug: string
   onChange: (key: string) => void
   lang?: RomLang
+  dosEntry?: string
   label?: string
   /** 这款游戏当前绑定的全部对象 key（不去重）—— 判断旧文件是不是还被别的槽位共用 */
   allBoundKeys: string[]
@@ -1217,6 +1277,21 @@ function RomField({
       if (inputRef.current) inputRef.current.value = ''
       return
     }
+    if (platform === 'dos' && dosEntry?.trim() && /\.zip$/i.test(file.name)) {
+      try {
+        const wanted = dosEntry.trim().replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase()
+        const members = listZipEntries(await file.arrayBuffer())
+        if (!members.some((entry) => entry.name.toLowerCase() === wanted)) {
+          setMsg({ ok: false, text: `ZIP 内找不到 ${dosEntry.trim()}；请先改正启动文件路径再上传` })
+          if (inputRef.current) inputRef.current.value = ''
+          return
+        }
+      } catch (err) {
+        setMsg({ ok: false, text: err instanceof Error ? err.message : '无法读取 DOS ZIP 目录' })
+        if (inputRef.current) inputRef.current.value = ''
+        return
+      }
+    }
     // 光盘平台：格式和体积先问一句。转 .chd 这件事只有在**上传之前**说才有用
     if (!(await confirmDiscImage(platform, file))) {
       if (inputRef.current) inputRef.current.value = ''
@@ -1230,7 +1305,8 @@ function RomField({
     // 那是「某个包里的一个文件」，单传一个 swf 顶上去会和包里的其它文件对不上。
     // 街机认出了 romset 就一律用它 —— 哪怕字段里已经有 key。
     // 那个旧 key 十有八九正是「文件名不对所以跑不起来」的元凶，复用它等于把错留住。
-    const reusable = oldKey && !/^https?:/i.test(oldKey) && !isBundleKey(oldKey)
+    // 共用 ZIP 时，本槽重传必须另存为自己的语言 key；复用旧 key 会把其他语言一起覆盖。
+    const reusable = oldKey && allBoundKeys.filter((bound) => bound === oldKey).length <= 1 && !/^https?:/i.test(oldKey) && !isBundleKey(oldKey)
     const key = sniffed ? defKey(sniffed) : reusable ? oldKey : defKey(file.name)
     setMsg(null)
     if (!(await confirmUpload(key, file))) {
@@ -1355,7 +1431,9 @@ function RomField({
         hint={
           canUpload
             ? value.trim() && !/^https?:/i.test(value)
-              ? isBundleKey(value.trim())
+              ? allBoundKeys.filter((bound) => bound === value.trim()).length > 1
+                ? `这个文件还被其他语言槽使用；重新上传会改存 ${defKey('x.zip')}，不会覆盖共用 ZIP`
+                : isBundleKey(value.trim())
                 ? `这一槽绑的是多 SWF 包里的 ${value.trim().split('/').pop()}；再传一个 zip 会原地更新 ${dirOfKey(value.trim())}/`
                 : `再次上传会原地覆盖已绑定的 ${value.trim()}；想换存放位置就先改这里的 key 或清空`
               : isArcade

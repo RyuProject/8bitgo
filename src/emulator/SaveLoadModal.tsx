@@ -49,6 +49,8 @@ interface Props {
   onClose: () => void
   /** 正在存 / 正在读，按钮上要有反馈，也要防连点 */
   busy?: boolean
+  hint?: string
+  legacyRecovery?: { description: string; button: string; onRecover: () => void }
 }
 
 type ToolsT = ReturnType<typeof useT>['player']['tools']
@@ -91,7 +93,7 @@ function KeyChip({
   )
 }
 
-export function SaveLoadModal({ cards, onClose, busy }: Props) {
+export function SaveLoadModal({ cards, onClose, busy, hint, legacyRecovery }: Props) {
   const t = useT()
   const tt = t.player.tools
   const boxRef = useRef<HTMLDivElement>(null)
@@ -183,6 +185,8 @@ export function SaveLoadModal({ cards, onClose, busy }: Props) {
           </button>
         </div>
 
+        {hint && <p className="mt-3 text-sm leading-relaxed text-muted">{hint}</p>}
+
         <div className="mt-5 space-y-3">
           {cards.map((c) => (
             <div
@@ -255,6 +259,20 @@ export function SaveLoadModal({ cards, onClose, busy }: Props) {
             </div>
           ))}
         </div>
+
+        {legacyRecovery && (
+          <div className="mt-4 rounded-xl border border-line bg-surface-2 p-3">
+            <p className="text-sm leading-relaxed text-muted">{legacyRecovery.description}</p>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={legacyRecovery.onRecover}
+              className="mt-2 rounded-full border border-line px-4 py-1.5 text-sm font-semibold text-fg hover:border-brand hover:text-brand disabled:opacity-40"
+            >
+              {legacyRecovery.button}
+            </button>
+          </div>
+        )}
 
         <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-[11px]">
           {/* 正在改键时把「怎么取消 / 怎么解绑」说出来，别让玩家对着一个闪烁的牌子发愣 */}

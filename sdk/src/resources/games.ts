@@ -2,7 +2,7 @@
  * 8BitGo Open Platform SDK —— 游戏资源。
  *
  * 对应后端 `/api/open/v1/games*` 与 `/api/open/v1/rom/:grant`、`/api/open/v1/games/:slug/embed`。
- * 全部需要 `games.read`（ROM 凭据还需 `games.rom`）—— 令牌里没有对应 scope 时后端回 403。
+ * 游戏列表和详情公开可读；ROM 凭据仍需 `games.rom`，嵌入地址仍需 `games.read`。
  */
 import { BitgoOpenClient, buildQuery } from '../client'
 import type { EmbedGrant, Game, GameList, GameListParams, RomGrant } from '../types'
@@ -15,6 +15,7 @@ export class GamesResource {
     const q = buildQuery({
       lang: params.lang,
       platform: params.platform,
+      requires_windows: params.requiresWindows,
       genre: params.genre,
       q: params.q,
       sort: params.sort,

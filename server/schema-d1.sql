@@ -202,6 +202,7 @@ CREATE TABLE IF NOT EXISTS game_roms (
   game_id    INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
   lang       TEXT    NOT NULL DEFAULT '*',
   object_key TEXT    NOT NULL,
+  dos_executable TEXT,
   PRIMARY KEY (game_id, lang)
 );
 -- MySQL 那边是 object_key(191) 前缀索引（因为 utf8mb4 下 500 字符超了索引长度上限），

@@ -621,6 +621,14 @@ export interface RomResolution {
   retry: () => void
 }
 
+/** 启动入口必须跟随实际命中的语言槽；多个槽共用同一 ZIP 时不能靠对象 key 反推语言。 */
+export function dosExecutableForRom(
+  game: Pick<Game, 'dosExecutable' | 'dosExecutables'>,
+  rom: Pick<RomResolution, 'lang'>,
+): string | undefined {
+  return (rom.lang ? game.dosExecutables?.[rom.lang] : undefined) || game.dosExecutable
+}
+
 /**
  * 「没问出来」时自动重试的退避节奏（毫秒）。
  *

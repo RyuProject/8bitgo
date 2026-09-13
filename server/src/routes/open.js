@@ -551,10 +551,16 @@ function coverUrl(key) {
  */
 openRouter.get('/v1/games', optionalApp(), async (req, res, next) => {
   try {
+    const requiresWindows = req.query.requires_windows
+    // 设备用这个参数排除跑不动的 Windows 客体；拼错值不能静默退回全库。
+    if (requiresWindows !== undefined && requiresWindows !== 'true' && requiresWindows !== 'false') {
+      return fail(res, 400, 'invalid_request', 'requires_windows 只接受 true 或 false')
+    }
     const lang = normalizeLang(req.query.lang)
     const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(req.query.page_size) || 24))
     const result = await listGames({
       excludeAdult: true,
+      requiresWindows: requiresWindows === undefined ? undefined : requiresWindows === 'true',
       platform: req.query.platform ? String(req.query.platform) : undefined,
       genre: req.query.genre ? String(req.query.genre) : undefined,
       q: req.query.q ? String(req.query.q) : undefined,

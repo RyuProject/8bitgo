@@ -4,10 +4,12 @@ import { cx } from '@/lib/format'
 import { useAuthReady, useCurrentUser } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
 import { useSeo } from '@/services/seo'
-import { Button } from '@/components/ui/Button'
+import { Button, buttonClasses } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { Modal } from '@/components/ui/Modal'
 import { ApiError } from '@/services/api'
+import { fetchApps, type AppItem } from '@/services/apps'
+import { romUrlForKey } from '@/services/roms'
 import {
   addTester,
   createMyApp,
@@ -113,7 +115,7 @@ export function OpenPlatformPage() {
         </div>
       </header>
 
-      <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,1fr)_22rem]">
+      <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,1fr)_22rem] xl:grid-cols-[minmax(0,1fr)_25rem]">
         {/* 左：应用控制台 */}
         <section className="min-w-0">
           <div className="mb-4 flex items-center justify-between">
@@ -178,6 +180,8 @@ export function OpenPlatformPage() {
             接口文档见 <Link to="/about" className="underline underline-offset-2">关于页</Link> 里的开放平台一节。
             遇到问题把 AppID（不是 AppKey！）连同报错一起发给我们。
           </p>
+
+          <SdkDownloads />
         </section>
 
         {/* 右：API 参考 */}
@@ -226,6 +230,99 @@ function Landing({ onLogin }: { onLogin: () => void }) {
 
       <div className="mt-8">
         <DocsPanel />
+      </div>
+    </div>
+  )
+}
+
+/* ---------------- 官方 SDK（从 /api/apps 的 sdk 分组拉） ---------------- */
+
+/** 把存储的下载地址（外链或 R2 key）拼成可点击的 URL */
+function sdkHref(item: AppItem): string | null {
+  const raw = item.downloadUrl
+  if (!raw) return null
+  if (/^https?:\/\//i.test(raw)) return raw
+  return romUrlForKey(raw) || null
+}
+
+function SdkDownloads() {
+  const [items, setItems] = useState<AppItem[] | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    fetchApps()
+      .then((g) => alive && setItems(g.sdk))
+      .catch((e) => {
+        console.error('[open] 官方 SDK 加载失败', e)
+        if (alive) setItems([])
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  return (
+    <section className="mt-10">
+      <h2 className="mb-4 text-lg font-bold">官方 SDK</h2>
+      {items === null ? (
+        <div className="grid gap-4 sm:grid-cols-2">
+          {Array.from({ length: 2 }).map((_, i) => (
+            <div key={i} className="h-28 animate-pulse rounded-2xl bg-surface-2" />
+          ))}
+        </div>
+      ) : items.length === 0 ? (
+        <p className="text-sm text-muted">暂无官方 SDK。</p>
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2">
+          {items.map((s) => (
+            <SdkCard key={s.id} item={s} />
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function SdkCard({ item }: { item: AppItem }) {
+  const href = sdkHref(item)
+  return (
+    <div className="flex flex-col gap-3 rounded-2xl border border-line bg-surface p-4">
+      <div className="flex items-start gap-3">
+        <div className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-brand-soft text-2xl" aria-hidden>
+          {item.icon || '📦'}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <h3 className="truncate font-bold">{item.name}</h3>
+            {item.version && (
+              <span className="shrink-0 rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-muted">
+                v{item.version}
+              </span>
+            )}
+          </div>
+          {item.platform && (
+            <span className="mt-1 inline-block rounded bg-brand-soft px-1.5 py-0.5 text-[11px] font-semibold text-brand-hover">
+              {item.platform}
+            </span>
+          )}
+        </div>
+      </div>
+      {item.description && <p className="line-clamp-2 flex-1 text-sm leading-relaxed text-muted">{item.description}</p>}
+      <div className="mt-auto pt-1">
+        {href ? (
+          <a
+            href={href}
+            target="_blank"
+            rel="noreferrer noopener"
+            className={buttonClasses('primary', 'sm')}
+          >
+            下载
+          </a>
+        ) : (
+          <span className="inline-flex h-8 items-center rounded-lg border border-line bg-surface-2 px-3 text-xs font-semibold text-muted">
+            暂无下载
+          </span>
+        )}
       </div>
     </div>
   )
@@ -706,40 +803,68 @@ function SecretOnce({ data, onClose }: { data: SecretIssued & { appName: string 
 /* ---------------- 右侧：API 参考（可滚动的内容面板） ---------------- */
 
 /**
- * `/open` 右栏的**完整**开发文档，像阿里云控制台那样：左栏是操作台，右栏是可滚动的
- * API 参考，含鉴权、每个端点的字段、错误码、限流。内容对齐 `server/src/routes/open.js`
- * 与 `docs/esp-open-api.md`，改了接口记得同步这里。
- *
- * 这一版用标签页把原先一整面墙的小字拆开（鉴权 / 接口 / 参考），读起来不再压迫。
- * 外层 `<aside>` 是 `sticky top-6`，所以右栏只滚自己、不带着整页走。
+ * 右栏要让设备开发者在这里完成第一次请求，不能只堆端点名：
+ * 公开查询、Windows 客体筛选、令牌流程和错误处理都给出可直接照用的例子。
+ * 数值与权限以 `server/src/routes/open.js` 为准；接口变动时同步这份速查。
  */
 
-const DOC_ENDPOINTS: { method: 'GET' | 'POST'; path: string; scope: string; desc: string; detail?: string }[] = [
-  { method: 'POST', path: '/v1/token', scope: '—', desc: 'AppID + Key 换应用级令牌', detail: '请求体 JSON 或 x-www-form-urlencoded。grant_type=client_credentials。回 {access_token, token_type:"Bearer", expires_in:900, scope}。scope 不传=已获批应用级全部，传了必须是子集、不静默降级。' },
-  { method: 'POST', path: '/v1/device/code', scope: '—', desc: '设备码流程：要一串 user_code / device_code', detail: '回 {device_code, user_code, verification_uri:"/open/device", verification_uri_complete, expires_in:900, interval:5}。只有 confidential 客户端能用。' },
-  { method: 'GET', path: '/v1/me', scope: '无', desc: '自查令牌：client_id / kind / scope / expires_at', detail: '排错第一站。「为什么我调那个接口 403」先看这里的 scope。' },
-  { method: 'GET', path: '/v1/platforms', scope: '无', desc: '平台目录：每平台的模拟器 / ROM 扩展名 / 能否本地跑', detail: '返回 items：id / name / runtime / core / romExtensions / native{runnable,emulator,note}。本地客户端拿到游戏 platform 后查这张表挑模拟器。注意 dos(flash 包需解包)、flash、java 能本地跑但有格式坑；html5 是网页、ps2 仅串流，runnable:false。' },
-  { method: 'GET', path: '/v1/health', scope: '无（公开）', desc: '健康检查：服务存活 + 数据库连通', detail: '公开匿名端点，返回 {service:"8bitgo-open", db, timestamp}。监控和第三方可直接探，不会被令牌限流挡住。完整的机器可读 OpenAPI 挂在 /.well-known/openapi.json。' },
-  { method: 'GET', path: '/v1/genres', scope: '无', desc: '游戏类型枚举', detail: '返回 items：{id, name}。客户端画「按类型筛选」用，别把类型集合硬编码进固件——它会变。' },
-  { method: 'GET', path: '/v1/languages', scope: '无', desc: '游戏语言枚举', detail: '返回 items：{code, label, english}（如 zh-Hans / en / ja）。和 ?lang= 的合法取值一致。' },
-  { method: 'GET', path: '/v1/live/rooms', scope: '无', desc: '在播直播房间列表', detail: '返回 items：{roomId, title, gameSlug, gameName, platform, hostName, viewers, startedAt, hostAway, hostFrozen, netplayRoomId, coopOpen, coopTaken, presence}。?game=<slug> 只筛某一款。已脱敏：无主播 IP / 续播 token / 观众 socket.id。' },
-  { method: 'GET', path: '/v1/live/rooms/:roomId', scope: '无', desc: '单个直播房间快照', detail: '直链也能查到，不受「切后台下榜」影响。不存在回 404 not_found。' },
-  { method: 'GET', path: '/v1/collections', scope: '无', desc: '公开合集列表（分页）', detail: '返回 {items, page, page_size, total, total_pages}。items 是合集元信息（id/title/author/covers/gameCount…），封面走瘦身 Game，不含 ROM 地址。' },
-  { method: 'GET', path: '/v1/collections/:id', scope: '无', desc: '单个合集 + 里面的游戏', detail: '返回 {collection, games}。games 走开放平台白名单映射（和 /v1/games 同形状），不含 ROM 真实地址——和站内 /:id 那条（用 attachRelations）不同，那条会漏内部字段。下架/不存在回 404。' },
-  { method: 'GET', path: '/v1/games', scope: 'games.read', desc: '游戏列表（分页）', detail: '参数：page(默认1)、page_size(默认24,≤50)、platform、genre、q、sort(popular/newest/name/rating/home)、lang(默认 en)。回 {items,page,page_size,total,total_pages}。' },
-  { method: 'GET', path: '/v1/games/:slug', scope: 'games.read', desc: '游戏详情，返回单个游戏对象', detail: '下架 / 成人 / 不存在对外一律 404 not_found。' },
-  { method: 'GET', path: '/v1/games/:slug/rom', scope: 'games.rom', desc: '换 ROM 短期下载凭据', detail: '参数 lang（精确→通用件*，不做跨语言回退）。回 {url, expires_in:300, lang_actual, filename}。第二跳 GET /v1/rom/:grant 是 302 不带 Authorization，跟随到 assets 主机；凭据 5 分钟过期。' },
-  { method: 'GET', path: '/v1/games/:slug/embed', scope: 'games.read', desc: '换带签名、会过期的嵌入播放器地址', detail: '回 {url, expires_in, allow:"fullscreen; gamepad; autoplay; clipboard-write"}。' },
-  { method: 'GET', path: '/v1/library', scope: 'library.read', desc: '用户收藏与最近在玩（用户级令牌）', detail: '回 {favorites:[游戏对象], recent:[…]最多12条, favorites_total}。设备码流程换来的用户级令牌才能调。' },
-  { method: 'GET', path: '/v1/saves', scope: 'saves.read', desc: '用户存档清单（只元信息，不带内容）', detail: '回 {items:[{runtime, game_slug, slot, size, created_at, updated_at}]}。' },
-  { method: 'GET', path: '/v1/saves/:runtime/:slug', scope: 'saves.read', desc: '取一份存档的二进制（用户级令牌）', detail: '参数 slot(0–9)。回 application/octet-stream + x-save-updated-at。runtime 白名单：emulatorjs / jsdos / cloudgame / jsnes / ruffle / webretro / j2me。' },
+type DocEndpoint = { method: 'GET' | 'POST'; path: string; access: string; desc: string; detail: string }
+
+const DOC_ENDPOINT_GROUPS: { title: string; items: DocEndpoint[] }[] = [
+  {
+    title: '公开目录 · 无需令牌',
+    items: [
+      { method: 'GET', path: '/v1/games', access: '公开', desc: '分页查游戏', detail: '支持 platform、genre、q、sort、lang、page、page_size、requires_windows。返回 items、page、page_size、total、total_pages；所有筛选均在分页和 total 计算前完成。' },
+      { method: 'GET', path: '/v1/games/:slug', access: '公开', desc: '游戏详情', detail: '返回单个游戏对象；可传 lang。不存在、下架或成人内容统一返回 404 not_found。' },
+      { method: 'GET', path: '/v1/platforms', access: '公开', desc: '平台与本地模拟器建议', detail: '返回 items，包含 id、runtime、core、romExtensions、enabled 和 native{runnable,emulator,note}。DOS 下的 Windows 游戏还要看游戏对象的 requires_windows；不能仅凭 platform=dos 判断能否运行。' },
+      { method: 'GET', path: '/v1/genres', access: '公开', desc: '类型枚举', detail: '返回 items：{id,name}。类型 id 可传给游戏列表的 genre。' },
+      { method: 'GET', path: '/v1/languages', access: '公开', desc: '语言枚举', detail: '返回 items：{code,label,english}。语言码可传给 lang。' },
+      { method: 'GET', path: '/v1/collections', access: '公开', desc: '合集列表', detail: '分页返回 {items,page,page_size,total,total_pages}。' },
+      { method: 'GET', path: '/v1/collections/:id', access: '公开', desc: '合集详情及游戏', detail: '返回 {collection,games}；games 使用同一套对外游戏字段。' },
+      { method: 'GET', path: '/v1/live/rooms', access: '公开', desc: '在播房间', detail: '返回 {items}；可传 game=<slug> 只看一款游戏的房间。' },
+      { method: 'GET', path: '/v1/live/rooms/:roomId', access: '公开', desc: '单个房间快照', detail: '直链可查；房间不存在返回 404。' },
+      { method: 'GET', path: '/v1/health', access: '公开', desc: '服务与数据库健康状态', detail: '返回 {service,db,timestamp}；数据库不可用时 HTTP 503。这条探针不受目录限流。' },
+    ],
+  },
+  {
+    title: '应用令牌 · AppID + AppKey',
+    items: [
+      { method: 'POST', path: '/v1/token', access: 'AppID + AppKey', desc: '换 15 分钟访问令牌', detail: '请求体用 JSON 或 x-www-form-urlencoded；grant_type=client_credentials。scope 只能取已获批的应用级权限。不传 scope 时返回已获批的全部应用级权限。' },
+      { method: 'GET', path: '/v1/me', access: '有效令牌', desc: '自查令牌和权限', detail: '返回 client_id、kind、user_id、scope、expires_at；403 时先用它核对令牌类型与 scope。' },
+      { method: 'GET', path: '/v1/games/:slug/rom', access: 'games.rom', desc: '领取 ROM 下载凭据', detail: '可传 lang；仅匹配所选语言或通用件 *，不会改用另一门语言。返回 {url,expires_in:300,lang_actual,filename}。' },
+      { method: 'GET', path: '/v1/rom/:grant', access: '下载凭据', desc: '兑现 ROM 凭据', detail: '上一步返回的 url 就是此端点；不再带 Bearer，跟随 302 跳转下载。凭据 5 分钟过期，最多兑现 10 次。' },
+      { method: 'GET', path: '/v1/games/:slug/embed', access: 'games.read', desc: '获取嵌入播放器地址', detail: '返回 {url,expires_in,allow}。当前嵌入页未强制验证签名，不能把地址当作访问控制。' },
+    ],
+  },
+  {
+    title: '用户令牌 · 设备码授权',
+    items: [
+      { method: 'POST', path: '/v1/device/code', access: 'AppID + AppKey', desc: '申请设备授权码', detail: '返回 user_code、device_code、verification_uri、expires_in:900、interval:5。用户在手机上输入 user_code 并同意，设备再轮询 /v1/token。仅机密客户端可用。' },
+      { method: 'GET', path: '/v1/library', access: '用户令牌 · library.read', desc: '收藏与最近在玩', detail: '返回 favorites、recent（最多 12 款）和 favorites_total；收藏列表最多返回 100 款。' },
+      { method: 'GET', path: '/v1/saves', access: '用户令牌 · saves.read', desc: '存档清单', detail: '只返回 runtime、game_slug、slot、size、created_at、updated_at，不含存档内容。' },
+      { method: 'GET', path: '/v1/saves/:runtime/:slug', access: '用户令牌 · saves.read', desc: '下载单份存档', detail: '可传 slot=0…9，默认 0；返回 application/octet-stream，x-save-updated-at 是毫秒时间戳。' },
+    ],
+  },
+]
+
+const DOC_GAME_QUERIES: [string, string][] = [
+  ['platform', '平台 id，见 /v1/platforms；可与 genre 组合'],
+  ['requires_windows', 'false 排除 Windows 3.x / 95 / 98 客体；true 只看这类游戏；默认不筛选'],
+  ['genre', '类型 id，见 /v1/genres'],
+  ['q', '关键词；未指定 sort 时按相关度排序'],
+  ['sort', 'popular / newest / name / rating / home'],
+  ['page · page_size', '页码从 1 开始；每页默认 24，最多 50'],
+  ['lang', '语言码，默认 en；中文传 zh-Hans'],
 ]
 
 const DOC_ERRORS: [string, string, string][] = [
-  ['400', 'invalid_request', '请求体畸形 / 超 16KB（413 同码）'],
+  ['400', 'invalid_request', '参数格式不正确；requires_windows 只接受 true / false'],
   ['400', 'unsupported_grant_type', '只支持 client_credentials / device_code'],
   ['400', 'unauthorized_client', 'public 客户端不能用此端点'],
   ['400', 'invalid_scope', 'scope 不认识 / 未获批 / 要了用户级'],
+  ['400', 'authorization_pending', '用户尚未同意设备码，按 interval 继续轮询'],
+  ['400', 'slow_down', '设备码轮询过快，按返回的 interval 放慢'],
+  ['400', 'invalid_grant', '设备码无效或已被兑现'],
   ['401', 'invalid_client', 'AppID 或 key 不对（不区分）'],
   ['401', 'invalid_token', '令牌无效或过期 → 续一次、重试一次'],
   ['403', 'insufficient_scope', '差哪个 scope（响应带 scope 字段）'],
@@ -753,10 +878,13 @@ const DOC_ERRORS: [string, string, string][] = [
 ]
 
 const DOC_RATES: [string, string][] = [
-  ['取令牌 · 按 IP', '120 / 小时'],
-  ['取令牌 · 按 AppID', '60 / 小时'],
-  ['普通接口 · 按 AppID', '3600 / 小时'],
-  ['ROM 换凭据 · 按 AppID', '600 / 小时'],
+  ['匿名目录 · 单 IP', '300 / 分钟'],
+  ['匿名目录 · 全站', '3000 / 分钟'],
+  ['带令牌接口 · 单 AppID', '3600 / 小时'],
+  ['取令牌 · 单 IP / AppID', '120 / 60 每小时'],
+  ['申请设备码 · 单 IP / AppID', '各 60 / 小时'],
+  ['领取 ROM 凭据 · 单 AppID', '600 / 小时'],
+  ['兑现 ROM 凭据 · 单凭据 / IP', '10 / 5 分钟；60 / 分钟'],
 ]
 
 const DOC_GAME_FIELDS: [string, string, string][] = [
@@ -765,6 +893,7 @@ const DOC_GAME_FIELDS: [string, string, string][] = [
   ['lang_requested', 'string', '你要求的语言'],
   ['lang_actual', '{title,description}', '实际是哪门；und=原名'],
   ['platform', 'string', '平台 id，如 nes / dos'],
+  ['requires_windows', 'bool', 'DOS 游戏是否需要 Windows 3.x / 95 / 98 客体；其他平台为 false'],
   ['genres / tags', 'string[]', '类型 / 标签'],
   ['year', 'number', '0=没填'],
   ['developer', 'string', '开发商'],
@@ -806,18 +935,43 @@ function DocSection({ title, children }: { title: string; children: ReactNode })
   )
 }
 
+function DocCode({ code }: { code: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <div className="relative rounded-lg border border-line bg-surface-2">
+      <button
+        type="button"
+        className="absolute right-2 top-2 rounded border border-line bg-surface px-1.5 py-0.5 text-[10px] text-muted hover:text-fg"
+        onClick={() => void navigator.clipboard?.writeText(code).then(() => setCopied(true)).catch(() => setCopied(false))}
+        aria-label="复制代码示例"
+      >
+        {copied ? '已复制' : '复制'}
+      </button>
+      <pre className="overflow-x-auto whitespace-pre px-3 py-3 pr-12 font-mono text-[11px] leading-5 text-fg">{code}</pre>
+    </div>
+  )
+}
+
 function DocsPanel() {
   const [tab, setTab] = useState<'auth' | 'endpoints' | 'ref'>('auth')
   return (
-    <div className="overflow-hidden rounded-2xl border border-line bg-surface">
-      <div className="sticky top-0 z-10 flex border-b border-line bg-surface/95 backdrop-blur">
+    <div className="overflow-hidden rounded-2xl border border-line bg-surface" aria-label="开放平台 API 文档">
+      <div className="flex items-center justify-between border-b border-line px-4 py-3">
+        <strong className="text-sm">API 速查</strong>
+        <a href="/.well-known/openapi.json" target="_blank" rel="noreferrer" className="text-xs text-brand-hover underline underline-offset-2">机器可读规格 ↗</a>
+      </div>
+      <div className="flex border-b border-line bg-surface/95" role="tablist" aria-label="文档章节">
         {DOC_TABS.map((t) => (
           <button
             key={t.id}
             type="button"
+            role="tab"
+            id={`open-doc-tab-${t.id}`}
+            aria-controls="open-doc-panel"
+            aria-selected={tab === t.id}
             onClick={() => setTab(t.id)}
             className={cx(
-              'flex-1 px-3 py-2.5 text-xs font-bold transition',
+              'flex-1 px-2 py-3 text-xs font-bold transition focus-visible:outline-2 focus-visible:outline-brand',
               tab === t.id ? 'border-b-2 border-brand text-fg' : 'text-muted hover:text-fg',
             )}
           >
@@ -826,72 +980,81 @@ function DocsPanel() {
         ))}
       </div>
 
-      <div className="max-h-[calc(100vh-10rem)] space-y-5 overflow-y-auto p-4 text-[11px] leading-relaxed">
+      <div
+        key={tab}
+        role="tabpanel"
+        id="open-doc-panel"
+        aria-labelledby={`open-doc-tab-${tab}`}
+        className="max-h-[calc(100vh-10rem)] space-y-5 overflow-y-auto p-4 text-xs leading-5"
+      >
         {tab === 'auth' && (
           <>
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-wide text-dim">Base URL</p>
-              <code className="mt-1 block break-all rounded-lg border border-line bg-surface-2 px-2 py-1.5">https://8bitgo.com/api/open/v1</code>
+              <code className="mt-1 block break-all rounded-lg border border-line bg-surface-2 px-3 py-2 text-fg">https://8bitgo.com/api/open/v1</code>
             </div>
-            <DocSection title="鉴权">
-              <p className="text-muted">
-                <strong className="text-fg">游戏目录是公开的，不用令牌</strong>：
-                <code className="text-fg">/v1/games</code>、<code className="text-fg">/v1/games/:slug</code>、
-                <code className="text-fg">/v1/platforms</code>、<code className="text-fg">/v1/genres</code>、
-                <code className="text-fg">/v1/languages</code>、<code className="text-fg">/v1/live/rooms</code>、
-                <code className="text-fg">/v1/collections</code>、<code className="text-fg">/v1/health</code> 直接 GET 就行。
-              </p>
-              <p className="text-muted">
-                要令牌的是 ROM 凭据（<code className="text-fg">games.rom</code>）、嵌入地址（<code className="text-fg">games.read</code>）、
-                <code className="text-fg">/v1/me</code> 和用户数据：
-              </p>
-              <pre className="overflow-x-auto rounded-lg border border-line bg-surface-2 px-2 py-1.5 text-[10px] text-fg">Authorization: Bearer &lt;access_token&gt;</pre>
-              <p className="text-dim">
-                ⚠️ 公开接口<strong className="text-muted">可以不带这个头，但不能带错的</strong>：
-                完全不带 = 匿名放行；带了却已过期 = <code className="text-fg">401 invalid_token</code>，不会悄悄降级成匿名。
-                否则你的令牌过期之后列表照常刷新，直到某天调 ROM 才报错 —— 而那句错误指向的是 ROM 权限，不是过期。
-              </p>
-              <p className="text-muted">
-                应用级令牌（client_credentials）背后没有用户，拿不到 <code className="text-fg">library.* / saves.*</code>。
-                读用户数据要走设备码流程（RFC 8628）：先 <code className="text-fg">POST /v1/device/code</code> 拿码，
-                人在 <code className="text-fg">/open/device</code> 点同意，设备再 <code className="text-fg">POST /v1/token</code>
-                轮询 grant_type=device_code。注意 <code className="text-fg">authorization_pending</code> /{' '}
-                <code className="text-fg">slow_down</code> 是「接着等」，不是失败。
-              </p>
-              <p className="text-muted">CORS 放开到任意 Origin 且不带 cookie；认 <code className="text-fg">error</code> 字段而非中文的 error_description。</p>
-              <p className="text-dim">
-                本地客户端挑平台：<code className="text-fg">runtime=emulatorjs</code> 那 11 个与{' '}
-                <code className="text-fg">java</code> 是「下载即跑」（见 <code className="text-fg">/v1/platforms</code> 的 native 建议）；
-                <code className="text-fg">dos</code> 的 jsdos 包、<code className="text-fg">flash</code> 的 swf 要按 note 处理格式；
-                <code className="text-fg">html5</code> 不是 ROM 而是网页，<code className="text-fg">ps2</code> 是 1~4.7GB 的 DVD 镜像、
-                站上只按扇区串读不提供整份下载 —— 这两个本地拿不到可用的 ROM。
-              </p>
-              <p className="text-dim">
-                ⚠️ 每一行还带 <code className="text-fg">enabled</code>：站上并不是每个平台都开着，
-                <code className="text-fg">false</code> 的在前台是 404、列表里也查不到东西，客户端应当整个隐藏。这个名单会变，别写死。
-              </p>
+            <DocSection title="第一步 · 读取公开目录">
+              <p className="text-muted">游戏、平台、类型和语言目录可以直接 GET，无需创建应用或携带令牌。低性能设备查询普通 DOS 游戏：</p>
+              <DocCode code="curl 'https://8bitgo.com/api/open/v1/games?platform=dos&requires_windows=false&page_size=10&lang=zh-Hans'" />
+              <p className="text-dim">不传 <code className="text-fg">requires_windows</code> 时，DOS 和 Windows 客体游戏都会返回。<code className="text-fg">false</code> 排除需要 Windows 3.x / 95 / 98 的游戏。</p>
+            </DocSection>
+            <DocSection title="第二步 · 需要授权时取令牌">
+              <p className="text-muted">ROM 下载凭据、嵌入地址、令牌自查和用户数据需要令牌。先在左侧创建应用，保存只显示一次的 AppKey：</p>
+              <DocCode code="curl -u 'APP_ID:APP_KEY' -d grant_type=client_credentials 'https://8bitgo.com/api/open/v1/token'" />
+              <p className="text-muted">令牌有效期 15 分钟。后续请求带 <code className="text-fg">Authorization: Bearer &lt;access_token&gt;</code>；需要 ROM 时应用还须获批 <code className="text-fg">games.rom</code>。</p>
+              <p className="text-dim">公开接口不带 Authorization 就能读；带了无效或过期令牌会返回 <code className="text-fg">401 invalid_token</code>。</p>
+            </DocSection>
+            <DocSection title="第三步 · 读取玩家数据">
+              <p className="text-muted">应用级令牌没有玩家身份。设备先向 <code className="text-fg">POST /v1/device/code</code> 申请码，玩家在 <code className="text-fg">/open/device</code> 同意后，设备轮询 <code className="text-fg">POST /v1/token</code> 换用户令牌。</p>
+              <p className="text-dim"><code className="text-fg">authorization_pending</code> 与 <code className="text-fg">slow_down</code> 表示继续等待；轮询间隔以接口返回的 <code className="text-fg">interval</code> 为准。</p>
+            </DocSection>
+            <DocSection title="接入约定">
+              <p className="text-muted">响应中的 <code className="text-fg">error</code> 是稳定错误码；429 按 <code className="text-fg">Retry-After</code>（秒）退避。CORS 允许任意 Origin，接口不使用 cookie。</p>
+              <p className="text-dim">本地运行前先查 <code className="text-fg">/v1/platforms</code> 的 <code className="text-fg">native</code> 和 <code className="text-fg">enabled</code>，再看游戏的 <code className="text-fg">requires_windows</code>。Windows 客体需要 DOSBox-X；普通 DOS 与它不能仅凭 <code className="text-fg">platform=dos</code> 区分。</p>
             </DocSection>
           </>
         )}
 
         {tab === 'endpoints' && (
-          <DocSection title="接口">
-            {DOC_ENDPOINTS.map((e) => (
-              <div key={e.path} className="rounded-lg border border-line bg-surface p-2.5">
-                <div className="flex items-center gap-2">
-                  <MethodBadge method={e.method} />
-                  <code className="text-[11px] font-semibold text-fg">{e.path}</code>
-                </div>
-                <p className="mt-1 text-muted">需要 <code className="text-fg">{e.scope}</code> · {e.desc}</p>
-                {e.detail && <p className="mt-1 text-dim">{e.detail}</p>}
+          <>
+            <DocSection title="游戏列表 · 查询参数">
+              <p className="text-muted">所有条件先求交集，再计算 <code className="text-fg">total</code> 和分页；未传筛选条件时返回全部可公开游戏。</p>
+              <div className="space-y-1.5">
+                {DOC_GAME_QUERIES.map(([name, desc]) => (
+                  <div key={name} className="border-b border-line/60 pb-1.5 last:border-b-0">
+                    <code className="font-semibold text-fg">{name}</code> <span className="text-muted">{desc}</span>
+                  </div>
+                ))}
               </div>
+              <DocCode code="GET /v1/games?platform=dos&requires_windows=false&page_size=10" />
+            </DocSection>
+            {DOC_ENDPOINT_GROUPS.map((group) => (
+              <DocSection key={group.title} title={group.title}>
+                <div className="space-y-2">
+                  {group.items.map((e) => (
+                    <details key={e.path} className="group rounded-lg border border-line bg-surface-2/50">
+                      <summary className="flex cursor-pointer list-none items-start gap-2 px-3 py-2.5 [&::-webkit-details-marker]:hidden">
+                        <MethodBadge method={e.method} />
+                        <span className="min-w-0 flex-1">
+                          <code className="break-all font-semibold text-fg">{e.path}</code>
+                          <span className="mt-0.5 block text-[11px] text-muted">{e.desc} · {e.access}</span>
+                        </span>
+                        <span aria-hidden className="text-muted group-open:rotate-180">⌄</span>
+                      </summary>
+                      <p className="border-t border-line px-3 py-2.5 text-muted">{e.detail}</p>
+                    </details>
+                  ))}
+                </div>
+              </DocSection>
             ))}
-          </DocSection>
+          </>
         )}
 
         {tab === 'ref' && (
           <>
             <DocSection title="游戏对象字段">
+              <p className="text-muted">列表元素、详情和收藏中的游戏共用这套字段。普通 DOS 游戏的 <code className="text-fg">requires_windows</code> 为 false；勾选 Windows 客体后为 true。</p>
+              <DocCode code={'{"slug":"…","platform":"dos","requires_windows":false,"rom_langs":["*"]}'} />
               <div className="overflow-x-auto">
                 <table className="w-full border-collapse text-[10px]">
                   <thead>
@@ -912,7 +1075,7 @@ function DocsPanel() {
                   </tbody>
                 </table>
               </div>
-              <p className="text-dim">绝不会出现（内部字段）：id、rom / roms / object_key、hidden、core、dos_*、coin_reward、video 等。</p>
+              <p className="text-dim">不会返回 ROM 存储地址、后台运行参数或隐藏状态；请只依赖上表列出的对外字段。</p>
             </DocSection>
 
             <DocSection title="错误码">
@@ -927,7 +1090,7 @@ function DocsPanel() {
                   </thead>
                   <tbody>
                     {DOC_ERRORS.map(([http, err, desc]) => (
-                      <tr key={err}>
+                      <tr key={`${http}-${err}`}>
                         <td className="border-b border-line/60 py-1 pr-2 align-top text-dim">{http}</td>
                         <td className="border-b border-line/60 py-1 pr-2 align-top"><code className="text-fg">{err}</code></td>
                         <td className="border-b border-line/60 py-1 align-top text-muted">{desc}</td>
@@ -938,7 +1101,7 @@ function DocsPanel() {
               </div>
             </DocSection>
 
-            <DocSection title="限流（窗口均为 1 小时）">
+            <DocSection title="限流">
               <div className="overflow-x-auto">
                 <table className="w-full border-collapse text-[10px]">
                   <thead>
@@ -957,17 +1120,17 @@ function DocsPanel() {
                   </tbody>
                 </table>
               </div>
-              <p className="text-dim">429 带 Retry-After 头（秒），照它退避。普通接口平均约 1 QPS。</p>
+              <p className="text-dim">429 响应带 <code className="text-fg">Retry-After</code> 头，单位秒。匿名目录同时受单 IP 和全站配额限制；带令牌调用按 AppID 计数。</p>
             </DocSection>
 
-            <DocSection title="Scope">
+            <DocSection title="本页接口使用的 Scope">
               <ul className="space-y-1">
-                <li><code className="text-fg">games.read</code> <span className="rounded bg-brand-soft px-1 text-brand-hover">自助</span> <span className="text-dim">创建即给</span></li>
-                <li><code className="text-fg">games.rom</code> <span className="rounded bg-coin/20 px-1 text-coin">需审核</span> <span className="text-dim">assets 当前公开可读，凭据只是不主动给</span></li>
+                <li><code className="text-fg">games.read</code> <span className="rounded bg-brand-soft px-1 text-brand-hover">自助</span> <span className="text-dim">嵌入地址需要；公开游戏目录不需要</span></li>
+                <li><code className="text-fg">games.rom</code> <span className="rounded bg-coin/20 px-1 text-coin">需审核</span> <span className="text-dim">领取 ROM 下载凭据</span></li>
                 <li><code className="text-fg">library.read</code> <span className="rounded bg-coin/20 px-1 text-coin">需审核</span> <span className="text-dim">用户级，需设备码流程</span></li>
                 <li><code className="text-fg">saves.read</code> <span className="rounded bg-coin/20 px-1 text-coin">需审核</span> <span className="text-dim">用户级，需设备码流程</span></li>
-                <li><code className="text-fg line-through">saves.write</code> <span className="text-dim">待上线（敏感，要连配额/覆盖保护/审计一起做）</span></li>
               </ul>
+              <p className="text-dim">写入收藏和云存档的开放接口尚未上线；在申请单中勾选写入权限不会让本页出现相应端点。</p>
             </DocSection>
 
             <DocSection title="语言码">

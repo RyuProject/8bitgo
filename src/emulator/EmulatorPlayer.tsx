@@ -2387,17 +2387,17 @@ export function EmulatorPlayer({
     onRomLangChange?.(next)
   }
 
-  // 语言换完了，父组件把新的 romUrl 传下来，把这一局接着开起来
+  // 同一 ZIP 可以按语言运行不同 BAT；URL 没变也要等语言槽解析完成后重开。
   useEffect(() => {
     const pending = restartWithLangRef.current
-    if (!pending || !romUrl) return
+    if (!pending || !romUrl || romChecking) return
     restartWithLangRef.current = null
     void start(null)
     // start() 里会先清掉提示，所以这句要放它后面
     setNotice(fmt(t.player.romLangSwitched, { lang: ROM_LANG_LABEL[pending] }))
-    // 只认 romUrl 的变化：start 是 useCallback，放进依赖会让它在无关的重建时也触发
+    // 同 key 切换只变 romLang / checking；start 是 useCallback，不能放依赖造成无关重开。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [romUrl])
+  }, [romUrl, romLang, romChecking])
 
   const copyInvite = async () => {
     if (!gameSlug || !roomId) return
