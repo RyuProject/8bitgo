@@ -834,8 +834,23 @@ function DocsPanel() {
               <code className="mt-1 block break-all rounded-lg border border-line bg-surface-2 px-2 py-1.5">https://8bitgo.com/api/open/v1</code>
             </div>
             <DocSection title="鉴权">
-              <p className="text-muted">所有接口除 <code className="text-fg">GET /v1/rom/:grant</code> 外都要带：</p>
+              <p className="text-muted">
+                <strong className="text-fg">游戏目录是公开的，不用令牌</strong>：
+                <code className="text-fg">/v1/games</code>、<code className="text-fg">/v1/games/:slug</code>、
+                <code className="text-fg">/v1/platforms</code>、<code className="text-fg">/v1/genres</code>、
+                <code className="text-fg">/v1/languages</code>、<code className="text-fg">/v1/live/rooms</code>、
+                <code className="text-fg">/v1/collections</code>、<code className="text-fg">/v1/health</code> 直接 GET 就行。
+              </p>
+              <p className="text-muted">
+                要令牌的是 ROM 凭据（<code className="text-fg">games.rom</code>）、嵌入地址（<code className="text-fg">games.read</code>）、
+                <code className="text-fg">/v1/me</code> 和用户数据：
+              </p>
               <pre className="overflow-x-auto rounded-lg border border-line bg-surface-2 px-2 py-1.5 text-[10px] text-fg">Authorization: Bearer &lt;access_token&gt;</pre>
+              <p className="text-dim">
+                ⚠️ 公开接口<strong className="text-muted">可以不带这个头，但不能带错的</strong>：
+                完全不带 = 匿名放行；带了却已过期 = <code className="text-fg">401 invalid_token</code>，不会悄悄降级成匿名。
+                否则你的令牌过期之后列表照常刷新，直到某天调 ROM 才报错 —— 而那句错误指向的是 ROM 权限，不是过期。
+              </p>
               <p className="text-muted">
                 应用级令牌（client_credentials）背后没有用户，拿不到 <code className="text-fg">library.* / saves.*</code>。
                 读用户数据要走设备码流程（RFC 8628）：先 <code className="text-fg">POST /v1/device/code</code> 拿码，

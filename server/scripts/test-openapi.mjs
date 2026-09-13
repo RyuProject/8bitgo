@@ -25,7 +25,13 @@ const STUB = 'data:text/javascript,' + encodeURIComponent(`
   export const pool = null
   export async function query(sql, params) { return globalThis.__fakeDb.query(sql, params) }
   export async function queryOne(sql, params) { return globalThis.__fakeDb.queryOne(sql, params) }
-  export async function ping() { return true }
+  export async function ping() {
+    globalThis.__pingCount = (globalThis.__pingCount || 0) + 1
+    // 可控延迟：单飞只有在 ping 真的慢的时候才起作用，而「慢」正是要防的那个场景
+    const d = globalThis.__pingDelayMs || 0
+    if (d) await new Promise((r) => setTimeout(r, d))
+    return true
+  }
   export async function withTransaction(fn) { return fn({ query: (s, p) => globalThis.__fakeDb.query(s, p) }) }
   export function jsonMemberPath(name) { return name }
 `)
@@ -77,7 +83,15 @@ const GAME = {
 const HIDDEN_GAME = { ...GAME, id: 2, slug: 'secret-game', hidden: 1 }
 /** 只有日文版、没有通用件的游戏。用来验「ROM 不做跨语言回退」 */
 const JA_ONLY = { ...GAME, id: 3, slug: 'ja-only' }
-const ALL_GAMES = [GAME, HIDDEN_GAME, JA_ONLY]
+/**
+ * 成人游戏。专门用来验「列表的 total 和实际条目算在同一层」。
+ *
+ * 原来 `listGames` 完全不认识 adult，而 `openGamesBySlugs` 自己加了 `adult = 0` ——
+ * 于是 total 把它算进去、条目里又没有它。症状是「total 说 3，一页页翻到底只有 2 款」，
+ * 而且夹着它的那一页比 page_size 短。接入方查不出原因，只会觉得我们的分页时好时坏。
+ */
+const ADULT_GAME = { ...GAME, id: 4, slug: 'adult-game', adult: 1 }
+const ALL_GAMES = [GAME, HIDDEN_GAME, JA_ONLY, ADULT_GAME]
 const ROMS = [
   { game_id: 1, lang: '*', object_key: 'roms/contra.zip' },
   { game_id: 1, lang: 'ja', object_key: 'roms/contra-ja.zip' },
@@ -144,6 +158,14 @@ const SAVES = [
   },
 ]
 
+/** 照着 WHERE 里真的写了什么来筛。多一个字少一个字都会反映到结果上 */
+function listVisible(s) {
+  let rows = ALL_GAMES
+  if (s.includes('g.hidden = 0')) rows = rows.filter((g) => !g.hidden)
+  if (s.includes('g.adult = 0')) rows = rows.filter((g) => !g.adult)
+  return rows
+}
+
 globalThis.__fakeDb = {
   async query(sql, params = []) {
     const s = sql.replace(/\s+/g, ' ').trim()
@@ -179,7 +201,13 @@ globalThis.__fakeDb = {
       if (s.includes('adult = 0')) rows = rows.filter((g) => !g.adult)
       return rows
     }
-    if (s.startsWith('SELECT g.* FROM games')) return [GAME]
+    /*
+      列表和它的 COUNT。**两条走同一个过滤函数** —— 这正是要测的那件事：
+      真库里 total 和条目也是两条 SQL，只要路由漏传 excludeAdult，
+      两边就会不一致。假库自己替被测代码筛掉 adult 的话，这个 bug 永远测不出来。
+    */
+    if (s.startsWith('SELECT g.* FROM games')) return listVisible(s)
+    if (s.startsWith('SELECT COUNT') && s.includes('FROM games')) return [{ n: listVisible(s).length }]
     if (s.startsWith('SELECT COUNT')) return [{ n: 1 }]
     if (s.startsWith('SELECT game_id, genre_id')) return [{ game_id: 1, genre_id: 'action' }]
     if (s.startsWith('SELECT game_id, tag')) return [{ game_id: 1, tag: '经典' }]
@@ -523,13 +551,258 @@ await check('下架的游戏对外不存在（和「没这款」同一个 404）
   assert.equal(r.status, 404)
 })
 
-await check('没有令牌 / 令牌过期 -> 401', async () => {
-  assert.equal((await api('/api/open/v1/games/contra')).status, 401)
+await check('仍然要令牌的接口：没有令牌 / 令牌过期 -> 401', async () => {
+  /*
+    ⚠️ 这条原来打的是 /v1/games/contra —— 那条 2026-09-13 起是**公开**的，
+    再用它测「没令牌就 401」只会把一条本该变绿的用例钉在旧行为上。
+    换成两条仍然要令牌的：一条要 scope（rom），一条只要令牌（me）。
+  */
+  for (const path of ['/api/open/v1/games/contra/rom', '/api/open/v1/me']) {
+    assert.equal((await api(path)).status, 401, `${path} 放了匿名请求进来`)
+  }
+  const expired = issueAppToken({
+    privateKey, kid: 'test-1', issuer: 'https://8bitgo.com', appId: APP.id, scopes: ['games.rom'],
+    ttl: 60, now: Date.now() - 3600_000,
+  })
+  assert.equal(
+    (await api('/api/open/v1/games/contra/rom', { headers: { Authorization: `Bearer ${expired}` } })).status,
+    401,
+  )
+})
+
+console.log('\n三之二、公开目录：游戏列表不要令牌，ROM 要')
+
+/*
+  ## 这一节在守什么
+
+  2026-09-13 把游戏目录整个改成公开（`optionalApp`），只有 ROM 那条还要 Appkey。
+  一改成公开，三件事同时变成了「错了也看不出来」：
+
+    1. **坏令牌被当成匿名放行**。最自然的写法就是错的写法：
+       `const claims = verify(token); if (claims) req.openClaims = claims; next()`。
+       接入方的令牌过期之后列表照常 200，只是悄悄降了权限 ——
+       他们要到调 ROM 时才发现，而那句错误说的是「ROM 权限不够」，
+       不是「你的令牌两小时前就过期了」。**必须 401。**
+    2. **ROM 跟着一起开了**。用户明确要的是「列表公开、ROM 要 Appkey」。
+    3. **匿名那条路没有任何配额**。原来每一条都有 appId 可以计数，公开之后没有了。
+
+  另外补一条 total/条目一致性：见 ADULT_GAME 那段注释。
+*/
+
+await check('⚠️ 匿名（完全不带 Authorization 头）能读列表和详情', async () => {
+  const list = await api('/api/open/v1/games')
+  assert.equal(list.status, 200, '匿名读列表被挡了')
+  const page = await list.json()
+  assert.ok(Array.isArray(page.items) && page.items.length > 0, '匿名拿到的是空列表')
+
+  const one = await api('/api/open/v1/games/contra')
+  assert.equal(one.status, 200, '匿名读详情被挡了')
+  assert.equal((await one.json()).slug, 'contra')
+
+  for (const path of ['/api/open/v1/platforms', '/api/open/v1/genres', '/api/open/v1/languages',
+                      '/api/open/v1/live/rooms', '/api/open/v1/collections']) {
+    assert.equal((await api(path)).status, 200, `${path} 匿名读不了`)
+  }
+})
+
+await check('⚠️⚠️ 带了一枚坏令牌 -> 401，**不能**静默当成匿名放行', async () => {
   const expired = issueAppToken({
     privateKey, kid: 'test-1', issuer: 'https://8bitgo.com', appId: APP.id, scopes: ['games.read'],
     ttl: 60, now: Date.now() - 3600_000,
   })
-  assert.equal((await api('/api/open/v1/games/contra', { headers: { Authorization: `Bearer ${expired}` } })).status, 401)
+  for (const header of [
+    `Bearer ${expired}`,
+    'Bearer not-a-jwt-at-all',
+    'Bearer ',
+    'Basic ' + Buffer.from('a:b').toString('base64'),
+  ]) {
+    const r = await api('/api/open/v1/games', { headers: { Authorization: header } })
+    assert.equal(r.status, 401, `「${header.slice(0, 20)}…」被当成匿名放行了`)
+    assert.equal((await r.json()).error, 'invalid_token')
+  }
+})
+
+await check('⚠️⚠️ 开放平台密钥没配时，公开目录照样能读（它一把密钥都用不上）', async () => {
+  /*
+    这一条是 2026-09-13 线上实测逼出来的：当时生产环境 `/api/open/v1/platforms`
+    回的是 501 `开放平台未启用` —— server/.env 里一个 OPEN_ 变量都没有。
+
+    第一版的 optionalApp 里跟着查了一遍 openConfig()，于是「游戏列表公开」
+    **依赖一个和它完全无关的环境变量**：部署上去之后匿名调用方拿到的还是 501，
+    整个改动等于没做，而且本地测试全绿（测试环境里密钥是现生成的）。
+
+    公开目录只查数据库，不签也不验任何东西。要密钥的那些才该 501。
+  */
+  const { resetOpenConfig } = await import('../src/open/config.js')
+  const savedKey = process.env.OPEN_JWT_PRIVATE_KEY
+  delete process.env.OPEN_JWT_PRIVATE_KEY
+  resetOpenConfig()
+  try {
+    for (const path of ['/api/open/v1/games', '/api/open/v1/games/contra', '/api/open/v1/platforms',
+                        '/api/open/v1/genres', '/api/open/v1/languages', '/api/open/v1/live/rooms',
+                        '/api/open/v1/collections', '/api/open/v1/health']) {
+      assert.equal((await api(path)).status, 200, `${path} 因为没配签名密钥而不可用 —— 它根本用不到密钥`)
+    }
+    // 反过来：真的需要密钥的那些必须照旧 501，而不是被一起放开
+    for (const path of ['/api/open/v1/me', '/api/open/v1/games/contra/rom', '/api/open/v1/library']) {
+      assert.equal((await api(path)).status, 501, `${path} 在没有密钥的情况下没有报 501`)
+    }
+  } finally {
+    process.env.OPEN_JWT_PRIVATE_KEY = savedKey
+    resetOpenConfig()
+  }
+})
+
+await check('带了**有效**令牌时，公开接口不再挑 scope（否则匿名能读、带令牌反而 403）', async () => {
+  // 这枚令牌只有 games.rom，没有 games.read
+  const { access_token } = await getToken('games.rom')
+  const r = await api('/api/open/v1/games', { headers: { Authorization: `Bearer ${access_token}` } })
+  assert.equal(r.status, 200, '有效令牌反而比匿名权限还小')
+})
+
+await check('⚠️ ROM 凭据没跟着一起公开（用户要的是「列表公开、ROM 要 Appkey」）', async () => {
+  const r = await api('/api/open/v1/games/contra/rom')
+  assert.equal(r.status, 401, 'ROM 凭据接口变成匿名可取了')
+  // 拿一枚只有 games.read 的令牌也不行 —— 两个量级的风险，scope 分开
+  const { access_token } = await getToken('games.read')
+  const r2 = await api('/api/open/v1/games/contra/rom', { headers: { Authorization: `Bearer ${access_token}` } })
+  assert.equal(r2.status, 403)
+})
+
+await check('⚠️ 用户数据和自省也没跟着公开', async () => {
+  for (const path of ['/api/open/v1/me', '/api/open/v1/library', '/api/open/v1/saves',
+                      '/api/open/v1/games/contra/embed']) {
+    assert.equal((await api(path)).status, 401, `${path} 变成匿名可读了`)
+  }
+})
+
+await check('⚠️ total 和实际条目算在同一层（成人内容不能只在后半程被筛掉）', async () => {
+  const page = await (await api('/api/open/v1/games?page_size=50')).json()
+  assert.equal(
+    page.items.length, page.total,
+    `total=${page.total} 但这一页只有 ${page.items.length} 条 —— 两处过滤不一致`,
+  )
+  assert.ok(!page.items.some((g) => g.slug === 'adult-game'), '成人游戏出现在公开列表里')
+  assert.ok(!page.items.some((g) => g.slug === 'secret-game'), '下架游戏出现在公开列表里')
+  assert.ok(page.items.some((g) => g.slug === 'contra'), '正常游戏反而没了')
+})
+
+await check('⚠️ 公开之后匿名那条路仍然有配额（原来每条都有 appId 可以计数，现在没有）', async () => {
+  const { resetBuckets, take } = await import('../src/rateLimit.js')
+  const src = stripComments(
+    (await import('node:fs')).readFileSync(new URL('../src/routes/open.js', import.meta.url), 'utf8'),
+  )
+  /*
+    ⚠️ 这里断言的是**两个桶都在**，不是「代码里出现过 take 这个词」。
+    按 IP 那一道在反代没透传真实 IP 时会整个跳过（isMeaningfulIp），
+    所以全站那一道不是冗余，是唯一的下限 —— 只留一个都不算数。
+  */
+  assert.ok(src.includes('open:pub:ip:'), '匿名按 IP 那一层没了')
+  assert.ok(src.includes('open:pub:global'), '匿名全站兜底那一层没了')
+  assert.ok(src.includes('isMeaningfulIp('), '没判 IP 可不可信，反代配错会把所有人锁在门外')
+
+  // 真的把桶打满，确认 429 会发出来，而且带 Retry-After
+  resetBuckets()
+  for (let i = 0; i < 3000; i++) take('open:pub:global', 3000, 60_000)
+  const r = await api('/api/open/v1/games')
+  assert.equal(r.status, 429, '全站兜底那一道没接上')
+  assert.ok(Number(r.headers.get('retry-after')) > 0, '429 没带 Retry-After')
+  assert.equal((await r.json()).error, 'rate_limited')
+  resetBuckets() // 别把后面的用例一起锁死
+})
+
+await check('⚠️ /v1/health 不会被打穿数据库（缓存 + 单飞），但也不会被冻住', async () => {
+  const { expireHealthCache } = await import('../src/routes/open.js')
+  expireHealthCache()
+  globalThis.__pingCount = 0
+  // 并发 50 条 + 随后再来 10 条：真的 ping 只应该发生一次
+  await Promise.all(Array.from({ length: 50 }, () => api('/api/open/v1/health')))
+  for (let i = 0; i < 10; i++) await api('/api/open/v1/health')
+  assert.equal(
+    globalThis.__pingCount, 1,
+    `60 条请求打出了 ${globalThis.__pingCount} 次真实 ping —— 这条接口公开、匿名、不限流，` +
+      '而连接池是和 SSR / 直播共用的',
+  )
+  assert.equal((await (await api('/api/open/v1/health')).json()).db, true)
+
+  /*
+    ⚠️ 另一半：TTL 过了必须**真的再探一次**。
+    只测「不重复 ping」是不够的 —— 把 `healthInFlight = null` 那行删掉同样不重复 ping，
+    但那是因为它从此永远返回第一次的结果：数据库挂了这条接口也回 200。
+    健康检查撒谎比健康检查慢危险得多。（expireHealthCache 刻意不碰 in-flight，见那边注释。）
+  */
+  expireHealthCache()
+  await api('/api/open/v1/health')
+  assert.equal(
+    globalThis.__pingCount, 2,
+    'TTL 过期之后没有再探 —— 探测状态被冻在第一次的结果上了',
+  )
+
+  /*
+    ⚠️ 第三半：**单飞**本身。
+
+    上面那 50 条并发其实测不到它 —— 假的 ping 是同步落定的，第一条请求在第二条
+    从 socket 上被读出来之前就已经写好缓存了，于是全被 TTL 挡住，
+    `if (!healthInFlight)` 那道删掉照样绿（变异测试实测）。
+    而真实环境里 ping 要走一趟数据库，正是「慢」的时候并发才会堆起来 ——
+    也正是这条接口被当成打点用的那一刻。所以这里必须让 ping 真的慢下来再并发打。
+  */
+  expireHealthCache()
+  globalThis.__pingCount = 0
+  globalThis.__pingDelayMs = 150
+  try {
+    await Promise.all(Array.from({ length: 30 }, () => api('/api/open/v1/health')))
+  } finally {
+    globalThis.__pingDelayMs = 0
+  }
+  assert.equal(
+    globalThis.__pingCount, 1,
+    `ping 慢的时候 30 条并发打出了 ${globalThis.__pingCount} 次真实探测 —— 单飞没接上，` +
+      '而连接池是和 SSR / 直播共用的',
+  )
+})
+
+await check('⚠️ openapi.json 的 security 和真实路由表一致（规格骗人比没有规格更糟）', async () => {
+  const fs = await import('node:fs')
+  const spec = JSON.parse(fs.readFileSync(new URL('../openapi.json', import.meta.url), 'utf8'))
+  const src = stripComments(fs.readFileSync(new URL('../src/routes/open.js', import.meta.url), 'utf8'))
+
+  /** 从源码里把「这条路由挂的是哪个中间件」抠出来 */
+  const guards = new Map()
+  for (const m of src.matchAll(/openRouter\.(get|post)\('([^']+)'\s*,\s*([A-Za-z]+)\(([^)]*)\)/g)) {
+    guards.set(`${m[1]} ${m[2]}`, { fn: m[3], scope: m[4].replace(/['"]/g, '').trim() })
+  }
+  // 完全没有中间件的（health / rom 兑现 / token / device）单独认出来
+  for (const m of src.matchAll(/openRouter\.(get|post)\('([^']+)'\s*,\s*(?:tokenBody\s*,\s*)?async/g)) {
+    if (!guards.has(`${m[1]} ${m[2]}`)) guards.set(`${m[1]} ${m[2]}`, { fn: 'none', scope: '' })
+  }
+  assert.ok(guards.size >= 18, `只认出了 ${guards.size} 条路由，正则漂了`)
+
+  for (const [path, ops] of Object.entries(spec.paths)) {
+    for (const [method, op] of Object.entries(ops)) {
+      if (typeof op !== 'object') continue
+      // openapi 的 {slug} <-> express 的 :slug
+      const expressPath = path.replace(/\{(\w+)\}/g, ':$1')
+      const g = guards.get(`${method} ${expressPath}`)
+      assert.ok(g, `openapi.json 里有 ${method.toUpperCase()} ${path}，源码里没有这条路由`)
+      const sec = op.security ?? null
+      const anonymousOk = Array.isArray(sec) && sec.some((o) => Object.keys(o).length === 0)
+      const scopes = Array.isArray(sec) ? sec.flatMap((o) => Object.values(o).flat()) : []
+
+      if (g.fn === 'optionalApp') {
+        assert.ok(anonymousOk, `${path}：代码是公开的，规格却说必须带令牌`)
+        assert.deepEqual(scopes, [], `${path}：公开接口不该在规格里要 scope`)
+      } else if (g.fn === 'none') {
+        assert.equal(sec, null, `${path}：代码里没有任何鉴权，规格却写了 security`)
+      } else {
+        assert.ok(sec && !anonymousOk, `${path}：代码要令牌，规格却标成了可匿名`)
+        assert.deepEqual(
+          scopes, g.scope ? [g.scope] : [],
+          `${path}：规格写的 scope 和代码里的 ${g.fn}('${g.scope}') 对不上`,
+        )
+      }
+    }
+  }
 })
 
 console.log('\n四、ROM：独立 scope + 短期凭据')
@@ -605,6 +878,53 @@ await check('合法凭据 302 到资源地址，且不许被缓存', async () =>
   assert.match(String(r.headers.get('cache-control')), /no-store/)
 })
 
+await check('⚠️ 一张 ROM 凭据不能被无限兑现（它是唯一一条既没令牌、原先也没配额的路）', async () => {
+  const { resetBuckets } = await import('../src/rateLimit.js')
+  resetBuckets()
+  const { access_token } = await getToken('games.rom')
+  const { url } = await (
+    await api('/api/open/v1/games/contra/rom', { headers: { Authorization: `Bearer ${access_token}` } })
+  ).json()
+  const grant = url.split('/api/open/v1/rom/')[1]
+  /*
+    上游 /v1/games/:slug/rom 那道 600/小时 限的是**领票**，不是**兑票**。
+    领一张之后在五分钟里兑多少次，原来完全不设限 —— 抄走一张票就等于五分钟无限下。
+  */
+  let sawLimit = false
+  for (let i = 0; i < 40; i++) {
+    const r = await api(`/api/open/v1/rom/${grant}`, { redirect: 'manual' })
+    if (r.status === 429) { sawLimit = true; break }
+    assert.equal(r.status, 302, `第 ${i + 1} 次兑现回了 ${r.status}`)
+  }
+  assert.ok(sawLimit, '同一张凭据兑了 40 次都没被拦，按票的配额没接上')
+  resetBuckets()
+})
+
+await check('⚠️ 公开目录可以被边缘缓存，但用户数据和 ROM 绝不可以', async () => {
+  // 公开之后不盖掉 /api 那道 no-store 的话，每一条爬虫请求都会真的落到数据库上
+  for (const path of ['/api/open/v1/games', '/api/open/v1/games/contra']) {
+    const cc = String((await api(path)).headers.get('cache-control'))
+    assert.match(cc, /public/, `${path} 没有可缓存的响应头`)
+    assert.match(cc, /s-maxage=\d+/, `${path} 没给边缘节点缓存时间`)
+  }
+  /*
+    ⚠️ 反过来那一半更要紧：缓存头一旦写错方向，边缘会把一个人的数据发给下一个人。
+    直播房间是秒级变化的，缓存它等于把「谁在播」变成假的。
+  */
+  const { access_token } = await getToken('games.rom')
+  const { url } = await (
+    await api('/api/open/v1/games/contra/rom', { headers: { Authorization: `Bearer ${access_token}` } })
+  ).json()
+  const grant = url.split('/api/open/v1/rom/')[1]
+  for (const [path, init] of [
+    ['/api/open/v1/rom/' + grant, { redirect: 'manual' }],
+    ['/api/open/v1/live/rooms', undefined],
+  ]) {
+    const cc = String((await api(path, init)).headers.get('cache-control'))
+    assert.ok(!/public/.test(cc), `${path} 被标成了可公开缓存：${cc}`)
+  }
+})
+
 console.log('\n五、CORS 与自省')
 
 await check('⚠️ 开放接口放开到任意 Origin', async () => {
@@ -612,6 +932,21 @@ await check('⚠️ 开放接口放开到任意 Origin', async () => {
   assert.equal(r.headers.get('access-control-allow-origin'), '*')
   // 放开到 * 的接口一律不带 cookie（Bearer 走 header，天然没有 CSRF 面）
   assert.equal(r.headers.get('access-control-allow-credentials'), null)
+})
+
+await check('⚠️ 站内 /api/health 不把数据库异常原文回给匿名调用方', async () => {
+  /*
+    mysql2 的连接错误里带着主机名、端口，有时还带着出错的那条 SQL，
+    而这条接口任何人都能打。一句 db:false 调用方已经够用了，
+    真要排错的人看的是进程日志。
+  */
+  const src = stripComments(
+    (await import('node:fs')).readFileSync(new URL('../src/index.js', import.meta.url), 'utf8'),
+  )
+  const route = src.slice(src.indexOf("app.get('/api/health'"), src.indexOf("'/.well-known/openapi.json'"))
+  assert.ok(route.length > 50, '没定位到 /api/health 那段源码，断言漂了')
+  assert.ok(!/error:\s*String\(/.test(route), '/api/health 把异常原文回出去了')
+  assert.ok(/console\.error/.test(route), '异常既没回给调用方也没记日志，等于吞了')
 })
 
 await check('⚠️ 站内的 CORS 白名单没有跟着变松', async () => {

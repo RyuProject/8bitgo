@@ -19,8 +19,9 @@
 import express, { Router } from 'express'
 import { listGames } from '../games-repo.js'
 import { ping, query } from '../db.js'
-import { take } from '../rateLimit.js'
+import { take, isMeaningfulIp } from '../rateLimit.js'
 import { assetPublicUrl, publicSiteUrl } from '../site-urls.js'
+import { CACHE } from '../cache.js'
 import { clientIpFrom } from '../presence.js'
 import { openConfig } from '../open/config.js'
 import { authenticateApp, readClientCredentials } from '../open/apps.js'
@@ -99,12 +100,7 @@ const tokenBody = express.urlencoded({ extended: false, limit: '16kb' })
  * 便于调用方判断探测时差。
  */
 openRouter.get('/v1/health', async (req, res) => {
-  let dbOk = false
-  try {
-    dbOk = await ping()
-  } catch {
-    dbOk = false
-  }
+  const dbOk = await healthProbe()
   const status = dbOk ? 200 : 503
   res.status(status).json({
     service: '8bitgo-open',
@@ -112,6 +108,64 @@ openRouter.get('/v1/health', async (req, res) => {
     timestamp: new Date().toISOString(),
   })
 })
+
+/**
+ * ping 的结果缓存 + 单飞。**这不是性能优化，是可用性**。
+ *
+ * 这条接口公开、匿名、不限流（上面那段注释解释了为什么不能限流），
+ * 而 `ping()` 每一次都真的从**连接池**借一条连接出去。那个池子是 SSR、直播、
+ * 联机房间共用的 —— 也就是说一个 `while true; do curl …; done` 就能把它占满，
+ * 一条健康检查接口足以把整站拖下水。而且症状会反过来骗人：站真的开始 503 了，
+ * 监控看到的也是 503，于是「健康检查是对的」，没人会怀疑到健康检查本身。
+ *
+ * 两道一起才够：
+ *   · **TTL**：5 秒。监控探针（10~60 秒一次）完全无感，数据库那边封顶在每 5 秒一次。
+ *   · **单飞**：只有 TTL 挡不住「缓存冷的那一刻并发打进来 N 条」——
+ *     而并发打进来正是要防的事。同一时刻最多一次真的探测在飞，其余请求等它的结果。
+ *
+ * 代价：数据库刚恢复时，最多 5 秒之后这条接口才会由 503 变回 200。
+ */
+const HEALTH_TTL_MS = 5000
+let healthCache = { at: 0, ok: false }
+let healthInFlight = null
+
+function healthProbe() {
+  if (Date.now() - healthCache.at < HEALTH_TTL_MS) return Promise.resolve(healthCache.ok)
+  if (!healthInFlight) {
+    healthInFlight = (async () => {
+      let ok = false
+      try {
+        ok = await ping()
+      } catch {
+        ok = false
+      }
+      healthCache = { at: Date.now(), ok }
+      /*
+        ⚠️ **这一行不能少。** 漏了它 `healthInFlight` 永远非空，
+        于是这个函数从第二次调用起一直返回**第一次那个已经落定的 promise** ——
+        数据库真的挂了，这条接口也会永远回 200。
+        比「没有缓存」糟得多：没有缓存只是慢，这个是**健康检查本身在撒谎**。
+        （变异测试实测过：只删这一行，TTL 那条用例照样绿 ——
+         所以下面 expireHealthCache 刻意**不碰** healthInFlight，见那段注释。）
+      */
+      healthInFlight = null
+      return ok
+    })()
+  }
+  return healthInFlight
+}
+
+/**
+ * 只给测试用：把缓存**过期掉**（不是「重置整个状态」）。
+ *
+ * ⚠️ 刻意不动 `healthInFlight`。测试要问的是「TTL 到了之后会不会真的再探一次」，
+ * 而那件事成立的前提正是上面那行 `healthInFlight = null` 还在。
+ * 这里要是顺手把 in-flight 也清了，就等于替被测代码把它复位 ——
+ * 那行删掉测试也不会红。
+ */
+export function expireHealthCache() {
+  healthCache = { at: 0, ok: false }
+}
 
 /* ---------------- 设备码流程（RFC 8628） ---------------- */
 
@@ -340,6 +394,37 @@ function rateLimited(res, gate) {
 /* ---------------- 鉴权中间件 ---------------- */
 
 /**
+ * 匿名（公开接口）的配额。
+ *
+ * **按分钟，不是按小时**，和取令牌那几条刻意不同，两个理由：
+ *   · 语义：这里没有「猜密码」那种需要长时间锁定的事，误伤一个真实用户就要他等一小时，太重；
+ *   · 开销：`take` 用的是时间戳数组，上限多大数组就多长。
+ *     「一小时 N 万次」意味着满载时**每一条请求**都要 slice 一个几万元素的数组。
+ */
+const PUBLIC_PER_IP_PER_MIN = 300
+const PUBLIC_GLOBAL_PER_MIN = 3000
+
+/**
+ * 匿名调用方的限流。放行回 null，否则回那个已经用到顶的闸门。
+ *
+ * ⚠️ 反代没把真实访客 IP 透传下来时（`isMeaningfulIp` 为假）**跳过按 IP 那一道**。
+ * 那种情况下所有人塌缩成同一个值（Cloudflare 边缘节点地址 / 127.0.0.1），
+ * 按 IP 限流就从「按人」退化成「全站每分钟 N 次」—— 几个真实用户就能把其他人全锁在门外。
+ * 宁可放宽，不能误伤；兜底交给下面那条全站总量。
+ *
+ * ⚠️ 所以全站那一道**不是冗余**：按 IP 那道可能整个不执行，它是唯一的下限。
+ */
+function anonGate(req) {
+  const ip = clientIpFrom(req.ip, req.headers)
+  if (isMeaningfulIp(ip)) {
+    const byIp = take(`open:pub:ip:${ip}`, PUBLIC_PER_IP_PER_MIN, 60_000)
+    if (!byIp.ok) return byIp
+  }
+  const global = take('open:pub:global', PUBLIC_GLOBAL_PER_MIN, 60_000)
+  return global.ok ? null : global
+}
+
+/**
  * 要一枚带指定 scope 的开放平台令牌。
  *
  * ⚠️ 只认 `verifyOpenToken`。**不要**在这里「顺手也试试站内 JWT」——
@@ -357,9 +442,66 @@ function requireApp(scope) {
       return fail(res, 403, 'insufficient_scope', `需要 ${scope}`, { scope })
     }
     req.openClaims = claims
-    // 每应用每 IP 两层限流，和取令牌那条同一个理由
+    /*
+      按应用一层。
+
+      ⚠️ 这里原本写的是「每应用每 IP 两层限流，和取令牌那条同一个理由」——
+      两句都不对，2026-09-13 改掉：
+        1. 代码里从来只有 appId 这一层，没有 IP 那一层；
+        2. 而且在这条路上再加一层 IP **也没用**。取令牌那边需要它，是因为
+           `client_id` 在认证之前是调用方任意写的字符串；而这里令牌已经验过签名，
+           appId 是真的。再挂一个**同等上限**的 IP 桶，只会让一枚泄露的 key
+           从 N 台机器打过来时拿到 N 倍总配额（更差）；设成**更低**的上限又会把
+           「所有流量走一台服务器」这种正常接入方式直接卡死。
+      所以正确的做法是删掉那句假话，而不是补一个什么都不干的桶去对应它。
+      真正需要按 IP 的是**匿名**那条路（`anonGate`）：那里根本没有 appId 可以计数。
+    */
     const gate = take(`open:api:${claims.appId}`, 3600, 3600_000)
     if (!gate.ok) return rateLimited(res, gate)
+    next()
+  }
+}
+
+/**
+ * **公开**接口：不要求令牌，但带了就必须是有效的。
+ *
+ * ⚠️⚠️ **「带了一枚坏令牌」不能当匿名放行。**
+ *
+ * 这是这一改里最容易写错的一处：随手写成
+ * `const claims = verifyOpenToken(token) ; if (claims) req.openClaims = claims; next()`，
+ * 看上去「更宽容」，实际后果是接入方的令牌过期之后列表接口**照常回 200**，
+ * 只是悄悄降了权限 —— 他们要到调 ROM 那条时才发现，
+ * 而那句错误指向的是「ROM 权限不够」，不是「你的令牌两小时前就过期了」。
+ * 同一个形状的 bug 刚在后台口令那边踩过一次（错的 admin token 遮住了正确的登录态）。
+ *
+ * 所以：**没有 Authorization 头 = 匿名；有头但验不过 = 401。**
+ *
+ * ⚠️ 带了有效令牌时**不校验任何 scope**。资源本身已经是公开的，
+ * 再要求 `games.read` 就成了「匿名 curl 能读，带了只有 games.rom 的令牌反而 403」。
+ */
+function optionalApp() {
+  const strict = requireApp()
+  return (req, res, next) => {
+    /*
+      ⚠️⚠️ **这里刻意不查 `openConfig()`。**
+
+      公开目录一把密钥都用不上：它只查数据库，不签、不验任何东西。
+      而 `openConfig()` 为空的意思是「`OPEN_JWT_PRIVATE_KEY` 没配」——
+      那是**取令牌**这件事的前提，不是**读游戏列表**的前提。
+
+      这一条不是假设，是线上实测出来的：2026-09-13 生产环境 `/v1/platforms`
+      回的就是 501 `开放平台未启用`（`server/.env` 里一个 OPEN_ 变量都没有）。
+      如果这里跟着查一遍 cfg，那「游戏列表公开」就**依赖一个和它完全无关的环境变量** ——
+      部署上去之后匿名调用方拿到的还是 501，整个改动等于没做。
+
+      要密钥的那些（/v1/token、/v1/me、ROM、embed、设备码）照旧 501，那是对的：
+      它们是真的需要密钥。
+    */
+    // 整个头缺席才算匿名。`Bearer `、`Basic …`、一串空白都算「带了凭证」，交给严格那条去拒
+    // （带了令牌就必须验签，而验签要公钥 —— 所以那条路上 requireApp 仍然会 501）
+    if (String(req.headers.authorization || '').trim()) return strict(req, res, next)
+    const gate = anonGate(req)
+    if (gate) return rateLimited(res, gate)
     next()
   }
 }
@@ -396,16 +538,23 @@ function coverUrl(key) {
 }
 
 /**
- * `GET /v1/games` —— 分页列表。
+ * `GET /v1/games` —— 分页列表。**公开，不需要令牌**（2026-09-13）。
  *
- * 成人内容（`adult=1`）**整体排除**，除非应用单独申请并通过审核（`include_adult=1` + 已获批）。
- * 默认排除而不是默认包含：接入方不会想到要过滤，而我们知道它存在。
+ * 成人内容（`adult=1`）**整体排除**，没有任何开关能打开。
+ * （这里原本写着「除非应用单独申请并通过审核（include_adult=1 + 已获批）」——
+ *  那套东西一行代码都不存在。留着一句不存在的后门说明，比没有说明更糟：
+ *  会有人照着它去实现，也会有人以为已经实现了。）
+ *
+ * ⚠️ `excludeAdult` 必须传给 `listGames`，**不能**只靠下面 openGamesBySlugs 那道过滤：
+ * `total` 是 listGames 算的。两边不一致的症状是「total 说 100，一页页翻到底只有 87 款」，
+ * 而且某些页会短几条 —— 接入方查不出来，只会觉得我们的接口时好时坏。
  */
-openRouter.get('/v1/games', requireApp('games.read'), async (req, res, next) => {
+openRouter.get('/v1/games', optionalApp(), async (req, res, next) => {
   try {
     const lang = normalizeLang(req.query.lang)
     const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(req.query.page_size) || 24))
     const result = await listGames({
+      excludeAdult: true,
       platform: req.query.platform ? String(req.query.platform) : undefined,
       genre: req.query.genre ? String(req.query.genre) : undefined,
       q: req.query.q ? String(req.query.q) : undefined,
@@ -421,6 +570,7 @@ openRouter.get('/v1/games', requireApp('games.read'), async (req, res, next) => 
     */
     const slugs = result.items.map((g) => g.slug)
     const items = await openGamesBySlugs(slugs, lang)
+    res.set('Cache-Control', CACHE.api)
     res.json(openPage({ ...result, items }))
   } catch (e) {
     next(e)
@@ -466,13 +616,22 @@ async function relationsFor(rows) {
   return out
 }
 
-/** `GET /v1/games/:slug` */
-openRouter.get('/v1/games/:slug', requireApp('games.read'), async (req, res, next) => {
+/**
+ * `GET /v1/games/:slug` —— 详情。**公开，不需要令牌**。
+ *
+ * ⚠️ 这条和列表都盖掉了 /api 那道全局 no-store，换成 `CACHE.api`（边缘 5 分钟）。
+ * 前提是**响应对所有调用方完全一样** —— 现在确实如此（带不带令牌、是哪个应用，回的都一样）。
+ * 将来只要给这两条加上任何**按应用不同**的字段（比如「这个应用能不能看成人内容」），
+ * 必须当场改回 private/no-store，否则边缘会把 A 应用那份发给 B。
+ * 代价是后台下架一款游戏之后，开放接口那边最多还能看到它 5 分钟。
+ */
+openRouter.get('/v1/games/:slug', optionalApp(), async (req, res, next) => {
   try {
     const lang = normalizeLang(req.query.lang)
     const [item] = await openGamesBySlugs([String(req.params.slug)], lang)
     // 下架 / 成人 / 不存在，对外都是同一个 404：区分开就成了「这游戏是不是被下架了」的查询器
     if (!item) return fail(res, 404, 'not_found', '没有这款游戏')
+    res.set('Cache-Control', CACHE.api)
     res.json(item)
   } catch (e) {
     next(e)
@@ -490,13 +649,13 @@ openRouter.get('/v1/games/:slug', requireApp('games.read'), async (req, res, nex
  * 就知道该调哪个模拟器、ROM 是什么扩展名、这个平台到底能不能本地跑
  * （html5 是网页、ps2 只有串流，都 runnable:false）。
  *
- * 只要令牌有效就回（和 /v1/me 一样用 `requireApp()` 不带 scope），
- * 因为它只是静态参考，不是用户数据。数据来自 `open/platforms.js`。
+ * **公开，不需要令牌**：它只是一张静态参考表，而它描述的那些游戏本身已经是公开的。
+ * 数据来自 `open/platforms.js`。
  *
  * ⚠️ 每行带一个 `enabled` —— 站上并不是 16 个平台都开着（白名单在
  * shared/site-taxonomy.js）。不看这个字段的客户端会列出永远没有内容的分类。
  */
-openRouter.get('/v1/platforms', requireApp(), (req, res) => {
+openRouter.get('/v1/platforms', optionalApp(), (req, res) => {
   /*
     ⚠️ 这条要覆盖掉 /api 那道全局 noStore。
 
@@ -517,10 +676,10 @@ openRouter.get('/v1/platforms', requireApp(), (req, res) => {
 /**
  * `GET /v1/genres` —— 给客户端画「按类型筛选」用的枚举。
  *
- * 和 /v1/platforms 一样：静态参考、只要令牌有效即可（requireApp() 不带 scope）、
- * 可公开缓存一小时。数据来自 `open/taxonomy.js`（镜像 `GENRE_IDS` + `genres.ts`）。
+ * 和 /v1/platforms 一样：静态参考、**公开**、可缓存一小时。
+ * 数据来自 `open/taxonomy.js`（镜像 `GENRE_IDS` + `genres.ts`）。
  */
-openRouter.get('/v1/genres', requireApp(), (req, res) => {
+openRouter.get('/v1/genres', optionalApp(), (req, res) => {
   res.set('Cache-Control', 'public, max-age=3600')
   res.json({ items: OPEN_GENRES })
 })
@@ -530,7 +689,7 @@ openRouter.get('/v1/genres', requireApp(), (req, res) => {
  *
  * 同样静态参考、可缓存。数据直接来自 `shared/site-languages.js` 的 `SITE_LANGUAGES`。
  */
-openRouter.get('/v1/languages', requireApp(), (req, res) => {
+openRouter.get('/v1/languages', optionalApp(), (req, res) => {
   res.set('Cache-Control', 'public, max-age=3600')
   res.json({ items: OPEN_LANGUAGES })
 })
@@ -543,9 +702,12 @@ openRouter.get('/v1/languages', requireApp(), (req, res) => {
  * 复用 `live.js` 的 `liveRooms()`，它已经走 `publicRoom()` 脱敏：不含主播 IP、续播 token、
  * 观众 socket.id，只给大厅要展示的字段（标题 / 游戏 / 主播名 / 人数 / 联机房号 / 2P 位）。
  * 和站内 `/api/live/rooms` 同一份内存房间表；`?game=<slug>` 只筛某一款游戏。
- * 需要令牌（requireApp）但无特殊 scope，和 /v1/platforms 同级。
+ * **公开，不需要令牌** —— 站内的 `GET /api/live/rooms`（index.js）本来就是匿名可读的同一份数据，
+ * 在开放平台这边多加一道门只是形式。
+ *
+ * ⚠️ 这条**不加缓存**：房间是秒级变化的，缓存 30 秒等于把「谁在播」这件事变成假的。
  */
-openRouter.get('/v1/live/rooms', requireApp(), (req, res) => {
+openRouter.get('/v1/live/rooms', optionalApp(), (req, res) => {
   const gameSlug = typeof req.query.game === 'string' && req.query.game ? req.query.game : undefined
   res.json({ items: liveRooms({ gameSlug }) })
 })
@@ -554,7 +716,7 @@ openRouter.get('/v1/live/rooms', requireApp(), (req, res) => {
  * `GET /v1/live/rooms/:roomId` —— 单个房间快照。
  * 直链也能查到：不受「主播切后台太久了下榜」的影响（那是列表层面的过滤，单房照样在）。
  */
-openRouter.get('/v1/live/rooms/:roomId', requireApp(), (req, res) => {
+openRouter.get('/v1/live/rooms/:roomId', optionalApp(), (req, res) => {
   const room = liveRoom(req.params.roomId)
   if (!room) return fail(res, 404, 'not_found', '没有这个直播间')
   res.json(room)
@@ -563,10 +725,12 @@ openRouter.get('/v1/live/rooms/:roomId', requireApp(), (req, res) => {
 /* ---------------- 合集（只读） ---------------- */
 
 /**
- * `GET /v1/collections` —— 公开合集列表（分页）。
- * 复用 `collections.js` 的 `listPublicCollections`（同一段查询 + 安全 `decorate`）。
+ * `GET /v1/collections` —— 公开合集列表（分页）。**公开，不需要令牌**：
+ * 站内 `GET /api/collections` 走的是 `optionalUser`，本来就匿名可读同一批数据。
+ * 复用 `collections.js` 的 `listPublicCollections`（同一段查询 + 安全 `decorate`，
+ * `viewerId` 传 null，所以输出里不会有 `mine`）。
  */
-openRouter.get('/v1/collections', requireApp(), async (req, res, next) => {
+openRouter.get('/v1/collections', optionalApp(), async (req, res, next) => {
   try {
     const pageSize = Math.min(48, Math.max(1, Number(req.query.page_size) || 24))
     const { items, total, page, pageSize: size } = await listPublicCollections(req.query.page, pageSize)
@@ -582,7 +746,7 @@ openRouter.get('/v1/collections', requireApp(), async (req, res, next) => {
  * ⚠️ 游戏对象**不走**站内的 `attachRelations`（那会带出 ROM 真实地址等内部字段），
  * 而是用本文件的 `openGamesBySlugs` 白名单重新映射，和 /v1/games 的元素同一个形状。
  */
-openRouter.get('/v1/collections/:id', requireApp(), async (req, res, next) => {
+openRouter.get('/v1/collections/:id', optionalApp(), async (req, res, next) => {
   try {
     const lang = normalizeLang(req.query.lang)
     const found = await getPublicCollection(req.params.id)
@@ -595,6 +759,9 @@ openRouter.get('/v1/collections/:id', requireApp(), async (req, res, next) => {
 })
 
 /* ---------------- ROM：短期签名凭据 ---------------- */
+
+/** 一张 ROM 凭据最多能兑现多少次（余量留给断点续传 / 失败重试） */
+const ROM_GRANT_MAX_REDEEM = 10
 
 /**
  * `GET /v1/games/:slug/rom?lang=ja`
@@ -650,6 +817,11 @@ openRouter.get('/v1/games/:slug/rom', requireApp('games.rom'), async (req, res, 
  *
  * **这一条不要求 Bearer**：凭据自己就是授权（它绑了 app / slug / 有效期），
  * 而下载多半发生在浏览器或 curl 里，带不上 Authorization 头。
+ *
+ * ⚠️ 正因为不要求 Bearer，**这是整套接口里唯一一条既没有令牌、原先也没有任何配额的路**。
+ * 上游 `/v1/games/:slug/rom` 那道 600/小时 限的是**领票**，不是**兑票**：
+ * 领一张票之后在五分钟里兑多少次，原来完全不设限。
+ * 下面两道补上：一道按票（一张票最多兑这么多次），一道按 IP。
  */
 openRouter.get('/v1/rom/:grant', async (req, res, next) => {
   try {
@@ -659,6 +831,22 @@ openRouter.get('/v1/rom/:grant', async (req, res, next) => {
     if (!v.ok) {
       const status = v.reason === 'expired' ? 410 : 403
       return fail(res, status, v.reason === 'expired' ? 'grant_expired' : 'invalid_grant', '凭据无效或已过期')
+    }
+    /*
+      按票。正常一次就够；留到 ROM_GRANT_MAX_REDEEM 是给断点续传和失败重试的余量。
+      它把「抄走一张票 = 五分钟内无限下」变成「抄走一张票 = 最多再下 N 次」。
+
+      ⚠️ 计数**必须放在验签之后** —— 放前面的话，随便伪造一串字符就能往限流表里
+      净增一条记录，那正是 token 端点注释里写着要避免的那件事。
+      key 用票本身：signRomGrant 里那个随机 nonce 保证同一个应用同一秒领两次也是两张票。
+    */
+    const byGrant = take(`open:romdl:${req.params.grant}`, ROM_GRANT_MAX_REDEEM, ROM_GRANT_TTL_SEC * 1000)
+    if (!byGrant.ok) return rateLimited(res, byGrant)
+    // 按 IP：挡住「拿一批票从一台机器上刷」。反代没透传真实 IP 时跳过，理由见 anonGate
+    const ip = clientIpFrom(req.ip, req.headers)
+    if (isMeaningfulIp(ip)) {
+      const byIp = take(`open:romdl:ip:${ip}`, 60, 60_000)
+      if (!byIp.ok) return rateLimited(res, byIp)
     }
     const target = assetPublicUrl(v.key)
     if (!target) return fail(res, 404, 'not_found', 'ROM 不可用')

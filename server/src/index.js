@@ -94,13 +94,21 @@ app.use(express.json({ limit: '4mb' }))
 // 默认安全：漏配只是少一层缓存，配反了就可能把某个用户的数据缓存给下一个人。
 app.use('/api', noStore)
 
-// 健康检查
+/*
+  健康检查。公开、匿名。
+
+  ⚠️ **不把异常信息回给调用方**。原来这里是 `error: String(e.message || e)` ——
+  mysql2 的连接错误里带着主机名、端口，有时还带着出错的那条 SQL，
+  而这条接口任何人都能打。一句「db: false」调用方已经够用了，
+  真正要排错的人看的是进程日志，不是这个 JSON。
+*/
 app.get('/api/health', async (_req, res) => {
   try {
     const ok = await ping()
     res.json({ service: '8bitgo-api', db: ok })
   } catch (e) {
-    res.status(500).json({ service: '8bitgo-api', db: false, error: String(e.message || e) })
+    console.error('[health] 数据库探测失败', e)
+    res.status(500).json({ service: '8bitgo-api', db: false })
   }
 })
 

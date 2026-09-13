@@ -7,7 +7,7 @@
 > 每条数字和字段都标了源码出处。和设计稿冲突的地方**以源码为准**，
 > 并在正文里显式标出来（见 §7 的限流一节）。
 >
-> 核对基线：`server/src/routes/open.js` + `server/src/open/*`，2026-09-12。
+> 核对基线：`server/src/routes/open.js` + `server/src/open/*`，2026-09-13。
 
 ---
 
@@ -15,7 +15,7 @@
 
 | 你要做的 | 状态 | 说明 |
 |---|---|---|
-| 拉游戏列表 / 详情 | ✅ **可用** | `games.read`，自助创建应用当场就有这个权限 |
+| 拉游戏列表 / 详情 | ✅ **可用，且不需要 AppID** | 2026-09-13 起整个目录公开匿名可读，连令牌都不用取。固件里可以直接 GET |
 | 下载 ROM 到设备 | ✅ **可用** | `games.rom`，但这个 scope **要人工审核**才批；另见下面的 ⚠️ |
 | 云存档**读取** | ✅ **可用**（2026-09-12 加的） | `saves.read`，用户级 scope。要先走**设备码流程**拿一枚用户级令牌，见 §6.5 |
 | 收藏 / 最近在玩 | ✅ **可用**（2026-09-12 加的） | `library.read`，同上 |
@@ -41,29 +41,51 @@
 
 所有路由都挂在 Base URL `https://8bitgo.com/api/open/v1` 下。「需要 scope」一栏为「无 / —」表示只要令牌有效即可（不卡具体 scope）。
 
-| 方法 | 路径 | 需要 scope | 用途 |
+「鉴权」一栏三种取值：
+
+- **公开** —— 不带 `Authorization` 头就能调。**带了就必须是有效的**，见下面那条 ⚠️。
+- **要令牌** —— 任何有效的开放平台令牌都行，不卡具体 scope。
+- **`<scope>`** —— 要一枚带这个 scope 的令牌。
+
+| 方法 | 路径 | 鉴权 | 用途 |
 |---|---|---|---|
 | `POST` | `/v1/token` | — | 换应用级 / 用户级令牌（`client_credentials` 或 `device_code`） |
 | `POST` | `/v1/device/code` | — | 设备码流程：拿 `user_code` / `device_code` |
-| `GET` | `/v1/me` | 无 | 自查令牌的 `client_id` / `scope` / `expires_at` |
-| `GET` | `/v1/platforms` | 无 | 平台目录：`runtime` / `core` / `romExtensions` / `native` 建议 / `enabled`，本地客户端挑模拟器用（见 §12） |
-| `GET` | `/v1/health` | 无（**公开**） | 健康检查：服务存活 + 数据库连通（规格见 `/.well-known/openapi.json`） |
-| `GET` | `/v1/genres` | 无 | 游戏类型枚举（客户端画筛选器用） |
-| `GET` | `/v1/languages` | 无 | 游戏语言枚举（客户端画筛选器用） |
-| `GET` | `/v1/live/rooms` | 无 | 在播直播房间列表（`?game=<slug>` 可筛某一款） |
-| `GET` | `/v1/live/rooms/:roomId` | 无 | 单个直播房间快照（已脱敏，无 IP / token） |
-| `GET` | `/v1/collections` | 无 | 公开合集列表（分页） |
-| `GET` | `/v1/collections/:id` | 无 | 单个合集 + 里面的游戏（游戏走白名单映射） |
-| `GET` | `/v1/games` | `games.read` | 游戏列表（分页 / 筛选） |
-| `GET` | `/v1/games/:slug` | `games.read` | 游戏详情 |
+| `GET` | `/v1/health` | **公开** | 健康检查：服务存活 + 数据库连通（规格见 `/.well-known/openapi.json`） |
+| `GET` | `/v1/games` | **公开** | 游戏列表（分页 / 筛选） |
+| `GET` | `/v1/games/:slug` | **公开** | 游戏详情 |
+| `GET` | `/v1/platforms` | **公开** | 平台目录：`runtime` / `core` / `romExtensions` / `native` 建议 / `enabled`，本地客户端挑模拟器用（见 §12） |
+| `GET` | `/v1/genres` | **公开** | 游戏类型枚举（客户端画筛选器用） |
+| `GET` | `/v1/languages` | **公开** | 游戏语言枚举（客户端画筛选器用） |
+| `GET` | `/v1/live/rooms` | **公开** | 在播直播房间列表（`?game=<slug>` 可筛某一款） |
+| `GET` | `/v1/live/rooms/:roomId` | **公开** | 单个直播房间快照（已脱敏，无 IP / token） |
+| `GET` | `/v1/collections` | **公开** | 公开合集列表（分页） |
+| `GET` | `/v1/collections/:id` | **公开** | 单个合集 + 里面的游戏（游戏走白名单映射） |
 | `GET` | `/v1/games/:slug/rom` | `games.rom` | 换 ROM 短期下载凭据（两步式第一步） |
-| `GET` | `/v1/games/:slug/embed` | `games.read` | 换带签名、会过期的嵌入播放器地址 |
 | `GET` | `/v1/rom/:grant` | — | 兑现 ROM 凭据（两步式第二步，302 不带 `Authorization`） |
+| `GET` | `/v1/games/:slug/embed` | `games.read` | 换带签名、会过期的嵌入播放器地址 |
+| `GET` | `/v1/me` | 要令牌 | 自查令牌的 `client_id` / `scope` / `expires_at` |
 | `GET` | `/v1/library` | `library.read` | 用户收藏 / 最近在玩（用户级令牌） |
 | `GET` | `/v1/saves` | `saves.read` | 用户存档清单（用户级令牌） |
 | `GET` | `/v1/saves/:runtime/:slug` | `saves.read` | 取一份存档（用户级令牌） |
 
-> 全部路由的响应错误体一致（见 §8）；`/v1/rom/:grant` 是唯一的「不带 `Authorization` 也能调」的端点。
+> ### ⚠️ 「公开」的准确含义：可以不带令牌，但不能带错的
+>
+> **不带 `Authorization` 头 = 匿名，正常返回。
+> 带了这个头但令牌无效 / 已过期 = `401 invalid_token`，不会降级成匿名。**
+>
+> 这一条是专门写给固件作者的，因为反过来的设计会坑死人：坏令牌要是被当成匿名放行，
+> 你的设备在令牌过期之后**列表照常刷新**，一切看起来正常，直到某天用户点下载 ——
+> 那时报的错指向 ROM 权限，而真正的原因是两小时前令牌就过期了。
+>
+> 所以固件里的写法是：**要么完全不带这个头，要么保证带的是新鲜的令牌。**
+> 别在取令牌失败的时候把旧的那枚接着用。
+>
+> 另外，`games.read` 这个 scope 现在只剩 `/v1/games/:slug/embed` 在用。
+> 光要拉列表的应用**不需要申请任何 scope，也不需要创建应用**。
+
+> 全部路由的响应错误体一致（见 §8）；`/v1/rom/:grant` 和上面标「公开」的那些
+> 都可以不带 `Authorization` 调。
 >
 > 🤖 **机器可读规格**：完整的 OpenAPI 3.1 挂在 `/.well-known/openapi.json`（公开、匿名、CORS 放开），agents / 代码生成器可直接消费，对应源文件 `server/openapi.json`。
 
@@ -78,11 +100,25 @@
 | key | 32 字节随机、Base64URL，**只在创建/轮换时显示一次** |
 | CORS | `/api/open/*` 放开到任意 Origin，且**不带 cookie**。设备端用不上，但说明这套接口不依赖任何浏览器状态 |
 
-**服务端没开的话会怎样**：所有端点直接回 `501 temporarily_unavailable`。
-这不是你的请求写错了，是部署上没配 `OPEN_JWT_PRIVATE_KEY`（整套）或
-`OPEN_ROM_SECRET`（只影响 ROM 两条）。接线之前先用一条 curl 探一下：
+**服务端没配密钥的话会怎样**（2026-09-13 起分成两半）：
+
+| | 没配 `OPEN_JWT_PRIVATE_KEY` 时 |
+|---|---|
+| 公开目录（`/v1/games*`、`/v1/platforms`、`/v1/genres`、`/v1/languages`、`/v1/live/rooms*`、`/v1/collections*`、`/v1/health`） | **照常可用**。它们只查数据库，一把密钥都用不上 |
+| `/v1/token`、`/v1/device/code`、`/v1/me`、`/v1/library`、`/v1/saves*` | `501 temporarily_unavailable` |
+| `/v1/games/:slug/rom`、`/v1/rom/:grant` | `501`（另外没配 `OPEN_ROM_SECRET` 时也单独 501） |
+| `/v1/games/:slug/embed` | `501`（另外要 `OPEN_EMBED_SECRET`） |
+
+> 📌 **以前是「没配密钥就整套 501」。** 那会让「游戏列表公开」依赖一个和它完全无关的
+> 环境变量 —— 目录根本不签也不验任何东西。2026-09-13 拆开了。
+
+接线之前先各探一条：
 
 ```bash
+# 公开目录：不带任何令牌，应该直接回 200 + 一页游戏
+curl -i 'https://8bitgo.com/api/open/v1/games?page_size=1'
+
+# 要令牌的那半：501 就是部署上还没配密钥，不是你的请求写错了
 curl -i -X POST https://8bitgo.com/api/open/v1/token \
   -H 'Content-Type: application/json' \
   -d '{"grant_type":"client_credentials","client_id":"app_...","client_secret":"..."}'
@@ -459,14 +495,32 @@ Authorization: Bearer eyJ...
 
 ### 实际的限流数字
 
-全部来自 `open.js` 里的 `take(key, limit, windowMs)` 调用，窗口都是**一小时**：
+全部来自 `open.js` 里的 `take(key, limit, windowMs)` 调用：
 
-| 桶 | 上限/小时 | 位置 |
-|---|---|---|
-| 取令牌 · 按 IP | 120 | `open:token:ip:<ip>` |
-| 取令牌 · 按 AppID | 60 | `open:token:<client_id>` |
-| 普通接口 · 按 AppID | **3600** | `open:api:<app_id>` |
-| ROM 换凭据 · 按 AppID | **600** | `open:rom:<app_id>` |
+| 桶 | 上限 | 窗口 | 位置 |
+|---|---|---|---|
+| 取令牌 · 按 IP | 120 | 1 小时 | `open:token:ip:<ip>` |
+| 取令牌 · 按 AppID | 60 | 1 小时 | `open:token:<client_id>` |
+| 设备码 · 按 IP / AppID | 60 | 1 小时 | `open:device:ip:<ip>` / `open:device:<client_id>` |
+| **带令牌**的接口 · 按 AppID | **3600** | 1 小时 | `open:api:<app_id>` |
+| **匿名**（公开接口）· 按 IP | **300** | 1 分钟 | `open:pub:ip:<ip>` |
+| **匿名** · 全站兜底 | **3000** | 1 分钟 | `open:pub:global` |
+| ROM 换凭据 · 按 AppID | **600** | 1 小时 | `open:rom:<app_id>` |
+| ROM **兑现** · 按票 | 10 | 5 分钟（= 票的寿命） | `open:romdl:<grant>` |
+| ROM **兑现** · 按 IP | 60 | 1 分钟 | `open:romdl:ip:<ip>` |
+
+> 📌 **匿名那两档是 2026-09-13 随公开化一起加的。** 在那之前每一条接口背后都有一个
+> AppID 可以计数；公开之后没有了，只剩 IP。而 IP 这个维度本身不可靠 ——
+> 反代没把真实访客地址透传下来时所有人会塌缩成同一个值，
+> 那种情况下代码会**跳过按 IP 那一道**（宁可放宽也不误伤真实用户），
+> 全站那一道就成了唯一的下限。所以两档缺一不可。
+>
+> 📌 **一张 ROM 凭据最多兑 10 次。** 上面 600/小时 那道限的是**领票**，不是**兑票** ——
+> 领一张之后在它活着的五分钟里兑多少次，2026-09-13 之前完全不设限。
+> 正常一次就够，10 次是留给断点续传和失败重试的余量。
+>
+> 📌 **带令牌反而比匿名宽松**（3600/小时 ≈ 1 QPS，独享；匿名 300/分钟但要和所有人
+> 共享全站那 3000/分钟）。设备量大的话还是建议创建应用、带令牌调。
 
 > ⚠️ **和 `docs/open-platform.md` §1.3 不一致**。那张表写的是
 > 「沙箱 QPS 5 / 日 10 000，生产 QPS 50 / 日 200 000，按 tier 可调」，

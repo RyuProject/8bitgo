@@ -377,7 +377,7 @@
       "get": {
         "tags": ["catalog"],
         "summary": "平台目录（模拟器 / 扩展名 / 能否本地跑）",
-        "security": [{ "openToken": [] }],
+        "security": [{}, { "openToken": [] }],
         "responses": {
           "200": {
             "description": "成功",
@@ -391,7 +391,7 @@
       "get": {
         "tags": ["catalog"],
         "summary": "游戏类型枚举",
-        "security": [{ "openToken": [] }],
+        "security": [{}, { "openToken": [] }],
         "responses": {
           "200": {
             "description": "成功",
@@ -405,7 +405,7 @@
       "get": {
         "tags": ["catalog"],
         "summary": "游戏语言枚举",
-        "security": [{ "openToken": [] }],
+        "security": [{}, { "openToken": [] }],
         "responses": {
           "200": {
             "description": "成功",
@@ -419,7 +419,7 @@
       "get": {
         "tags": ["games"],
         "summary": "游戏列表（分页 / 筛选）",
-        "security": [{ "openToken": ["games.read"] }],
+        "security": [{}, { "openToken": [] }],
         "parameters": [
           { "name": "page", "in": "query", "schema": { "type": "integer", "minimum": 1, "default": 1 } },
           { "name": "page_size", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 50, "default": 24 } },
@@ -434,8 +434,8 @@
             "description": "成功",
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GamePage" } } }
           },
-          "401": { "description": "令牌无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
-          "403": { "description": "缺 games.read", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+          "401": { "description": "带了 Authorization 头但令牌无效 / 已过期（不带头 = 匿名，正常返回）", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "429": { "description": "超出配额，看 Retry-After", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
         }
       }
     },
@@ -443,7 +443,7 @@
       "get": {
         "tags": ["games"],
         "summary": "游戏详情",
-        "security": [{ "openToken": ["games.read"] }],
+        "security": [{}, { "openToken": [] }],
         "parameters": [
           { "name": "slug", "in": "path", "required": true, "schema": { "type": "string" } },
           { "name": "lang", "in": "query", "schema": { "type": "string" } }
@@ -454,8 +454,8 @@
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Game" } } }
           },
           "404": { "description": "不存在 / 下架 / 成人", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
-          "401": { "description": "令牌无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
-          "403": { "description": "缺 games.read", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+          "401": { "description": "带了 Authorization 头但令牌无效 / 已过期（不带头 = 匿名，正常返回）", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "429": { "description": "超出配额，看 Retry-After", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
         }
       }
     },
@@ -566,7 +566,7 @@
       "get": {
         "tags": ["games"],
         "summary": "当前在播的公开直播房间（带 ?game= 可筛选）",
-        "security": [{ "openToken": [] }],
+        "security": [{}, { "openToken": [] }],
         "parameters": [
           { "name": "game", "in": "query", "schema": { "type": "string" }, "description": "只看某一款游戏（slug）" }
         ],
@@ -583,7 +583,7 @@
       "get": {
         "tags": ["games"],
         "summary": "单个直播房间快照",
-        "security": [{ "openToken": [] }],
+        "security": [{}, { "openToken": [] }],
         "parameters": [
           { "name": "roomId", "in": "path", "required": true, "schema": { "type": "string" } }
         ],
@@ -601,7 +601,7 @@
       "get": {
         "tags": ["catalog"],
         "summary": "公开合集列表（分页）",
-        "security": [{ "openToken": [] }],
+        "security": [{}, { "openToken": [] }],
         "parameters": [
           { "name": "page", "in": "query", "schema": { "type": "integer", "minimum": 1, "default": 1 } },
           { "name": "page_size", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 48, "default": 24 } }
@@ -619,7 +619,7 @@
       "get": {
         "tags": ["catalog"],
         "summary": "单个合集 + 里面的游戏（游戏走开放平台白名单映射，不含 ROM 真实地址）",
-        "security": [{ "openToken": [] }],
+        "security": [{}, { "openToken": [] }],
         "parameters": [
           { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } },
           { "name": "lang", "in": "query", "schema": { "type": "string" } }

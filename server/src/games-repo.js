@@ -88,7 +88,7 @@ function orderBy(sort) {
 
 /**
  * 列表查询。
- * @param {object} q { platform, genre, developer, multiplayer, coin, q, sort, page, pageSize, includeHidden }
+ * @param {object} q { platform, genre, developer, multiplayer, coin, q, sort, page, pageSize, includeHidden, excludeAdult }
  * @returns {Promise<{items, total, page, pageSize, totalPages}>}
  */
 export async function listGames(q = {}) {
@@ -110,6 +110,15 @@ export async function listGames(q = {}) {
     where.push("FIND_IN_SET(?, REPLACE(REPLACE(g.developer, '，', ','), ', ', ',')) > 0")
     params.push(String(q.developer))
   }
+  /*
+    成人内容整体排除。**只有开放平台（routes/open.js）会传**。
+
+    ⚠️ 必须在这里过滤，不能让调用方拿到结果之后自己筛：`total` 和 `totalPages`
+    是这个函数算的。调用方事后再筛，症状是「total 说 100，一页页翻到底只有 87 款」，
+    而且夹着成人游戏的那几页会比 page_size 短。接入方查不出原因，
+    只会觉得我们的分页时好时坏 —— 这正是最难被报告的一类 bug。
+  */
+  if (q.excludeAdult) where.push('g.adult = 0')
   if (q.multiplayer) where.push('g.multiplayer = 1')
   if (q.coin) where.push('g.coin_reward > 0')
   // 字母索引（参照 /pro 那种 A-Z 快跳）：按标题首字母过滤。
