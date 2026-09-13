@@ -3,6 +3,7 @@ import { usePrefersReducedMotion } from '@/lib/motion'
 import type { LiveChatMessage } from '@/services/live'
 import { cx } from '@/lib/format'
 import { useT } from '@/services/i18n'
+import { UserRoleDot } from '@/components/UserRole'
 import { CHAT_MAX_LENGTH, chatTextLength, sanitizeChatText } from '../../shared/live-chat.js'
 import type { ChatSendResult } from './chatSend'
 import { appendChat } from './liveChatStore'
@@ -101,6 +102,7 @@ interface Flying extends LiveChatMessage {
 }
 
 export function LiveChatLane({ messages, className }: { messages: LiveChatMessage[]; className?: string }) {
+  const t = useT()
   const authorLabel = useAuthorLabel()
   const boxRef = useRef<HTMLDivElement>(null)
   const [flying, setFlying] = useState<Flying[]>([])
@@ -218,6 +220,10 @@ export function LiveChatLane({ messages, className }: { messages: LiveChatMessag
         >
           {m.host && '★ '}
           <span className="opacity-80">{authorLabel(m)}</span>
+          <UserRoleDot
+            role={m.role}
+            title={m.role === 'admin' ? t.common.roleAdmin : m.role === 'volunteer' ? t.common.roleVolunteer : undefined}
+          />
           <span className="mx-1 opacity-50">:</span>
           {m.text}
         </span>
@@ -518,8 +524,12 @@ export function LiveChatHistory({ messages, className }: { messages: LiveChatMes
         ) : (
           messages.map((m) => (
             <p key={m.id} className="break-words leading-snug">
-              <span className={cx('mr-1.5 text-xs', m.host ? 'font-bold text-live' : 'text-muted')}>
+              <span className={cx('mr-1.5 inline-flex items-center gap-1 text-xs', m.host ? 'font-bold text-live' : 'text-muted')}>
                 {authorLabel(m)}
+                <UserRoleDot
+                  role={m.role}
+                  title={m.role === 'admin' ? t.common.roleAdmin : m.role === 'volunteer' ? t.common.roleVolunteer : undefined}
+                />
               </span>
               <span className="text-fg">{m.text}</span>
             </p>

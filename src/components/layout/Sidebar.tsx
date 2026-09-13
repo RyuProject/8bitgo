@@ -20,6 +20,7 @@ import { useGuestRecents } from '@/services/recents'
 import { platformMap } from '@/data/platforms'
 import { gameTitle, platformLabel } from '@/services/i18nData'
 import { GameCover } from '@/components/game/GameCover'
+import { UserRoleRing } from '@/components/UserRole'
 
 export const SIDEBAR_WIDTH = 240
 export const SIDEBAR_COLLAPSED_WIDTH = 72
@@ -122,9 +123,14 @@ export function Sidebar() {
               )}
               title={t.sidebar.profile}
             >
-              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-brand-soft text-sm" aria-hidden>
-                {user.avatar}
-              </span>
+              <UserRoleRing
+                role={user.role}
+                title={user.role === 'admin' ? t.common.roleAdmin : user.role === 'volunteer' ? t.common.roleVolunteer : undefined}
+              >
+                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-brand-soft text-sm" aria-hidden>
+                  {user.avatar}
+                </span>
+              </UserRoleRing>
               <span className={cx('min-w-0', collapsed && 'lg:hidden')}>
                 <span className="block truncate text-sm font-semibold">{user.nickname}</span>
                 <span className="block truncate text-[11px] text-muted">

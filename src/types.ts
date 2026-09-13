@@ -366,6 +366,7 @@ export interface CommentAuthor {
   nickname: string
   /** 头像 emoji，和 users.avatar 同一个字段 */
   avatar: string
+  role?: UserRole
   email?: string
 }
 
@@ -377,6 +378,7 @@ export interface CommentQuote {
   id: string
   nickname: string
   avatar: string
+  role?: UserRole
   /** 已被隐藏 / 删除时为空串，前台显示占位文案 */
   content: string
   deleted: boolean

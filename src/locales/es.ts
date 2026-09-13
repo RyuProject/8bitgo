@@ -33,6 +33,8 @@ const es: Translation = {
     coinAmount: '🪙 {n} G Coins',
     coinBadge: '+{n} G Coins',
     liveBadge: 'En vivo',
+    roleAdmin: 'Admin',
+    roleVolunteer: 'Voluntario',
     instantPlay: '☁️ Juega al instante',
     scrollLeft: 'Desplazar a la izquierda',
     scrollRight: 'Desplazar a la derecha',
@@ -998,7 +1000,6 @@ const es: Translation = {
       whereCloud: 'la nube',
       whereLocal: 'este navegador',
       whereLocalPending: 'este navegador (aún sin sincronizar)',
-      liveOn: 'En directo · {n} viendo',
       /** Label on the live toggle in the chat bar: 📡 already says "live", so only the count here */
       liveViewerCount: '{n} viendo',
       liveLink: 'Copiar enlace',

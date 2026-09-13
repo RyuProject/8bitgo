@@ -259,15 +259,10 @@ check('⚠️ 直播按钮只报人数，用 liveViewerCount 而不是 liveOn', 
   }
 })
 
-check('⚠️ liveOn 没被顺手删掉 —— 观众端那块「观众席」徽标还在用', () => {
-  /*
-    这两条文案长得像，很容易被当成重复项合并掉。它们在**不同的位置**：
-    liveViewerCount 在按钮上（自带 📡 和高亮边框），liveOn 在观众端画面上方那块徽标里
-    （只有 📡，没有按钮的高亮，所以需要自己说「直播中」）。
-  */
+check('⚠️ 观众端画面上方的人数徽标已经移除', () => {
+  // 站长拍板：画面里只留红色「直播中」状态，「N 人观看」那条提示去掉。
   const player = code('src/emulator/EmulatorPlayer.tsx')
-  assert.match(player, /fmt\(t\.player\.tools\.liveOn, \{ n: String\(liveViewers\) \}\)/, '观众席徽标不再用 liveOn 了')
-  assert.ok(locStr('zh-Hans', 'liveOn'), 'zh-Hans 的 liveOn 被删了')
+  assert.doesNotMatch(player, /fmt\(t\.player\.tools\.liveOn/, '徽标去掉了，播放器里不该再用 liveOn')
 })
 
 check('⚠️ 提示文案里引用的按钮名，必须就是按钮上的字', () => {

@@ -17,6 +17,7 @@ import { getToken, apiBase, apiEnabled } from './api'
 import { getT } from './i18n'
 import { fetchIceConfig, type IceConfig } from './netplay'
 import type { Presence } from './presence'
+import type { UserRole } from '@/types'
 import { describeExport, looksLikeSocketIo, runAsCommonJs, umdGlobals } from '@/lib/umd'
 
 export interface LiveRoomInfo {
@@ -63,6 +64,8 @@ export interface LiveChatMessage {
   at: number
   /** 登录用户的昵称。游客没有这个字段 */
   name?: string
+  /** 发送者角色（admin / volunteer），游客和普通玩家不带的 */
+  role?: UserRole
   /** 游客号（4 位，跟着这次连接走）。登录用户没有这个字段 */
   guest?: string
   /** 是不是房主发的。服务端比对 hostSocketId 得出，伪造不了 */
@@ -89,6 +92,8 @@ export interface LiveChatMessage {
 export interface LiveViewerEntry {
   name?: string
   guest?: string
+  /** admin / volunteer 才有，普通玩家 / 游客不带 */
+  role?: UserRole
 }
 
 /** socket.io 客户端的最小接口，够用就行，不为它引一整套类型 */

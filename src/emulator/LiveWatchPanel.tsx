@@ -6,6 +6,7 @@ import { watchNetplayRoom, type NetplayRoom } from '@/services/netplay'
 import { LiveChatBar, LiveChatHistory } from './LiveChat'
 import type { ChatBarToggle } from './LiveChat'
 import type { ChatSendResult } from './chatSend'
+import { UserRoleDot } from '@/components/UserRole'
 
 /**
  * 观众看直播时右栏那块面板（2026-09-11，站长指定的观看 UI）。
@@ -33,7 +34,8 @@ const MATCH_MAX = 12
  * 一行「谁」。名字拿不到时（服务端还在异步解析，见 live.js 的 resolveViewerName）
  * 退回「观众」这个占位 —— **不要画成空白行**，那看着像掉了数据。
  */
-function Who({ label, tone }: { label: string; tone?: 'host' | 'player' }) {
+function Who({ label, tone, role }: { label: string; tone?: 'host' | 'player'; role?: import('@/types').UserRole }) {
+  const t = useT()
   return (
     <li className="flex items-center gap-1.5 truncate text-sm">
       <span
@@ -41,6 +43,10 @@ function Who({ label, tone }: { label: string; tone?: 'host' | 'player' }) {
         className={cx('h-1.5 w-1.5 shrink-0 rounded-full', tone === 'host' ? 'bg-live' : tone === 'player' ? 'bg-brand' : 'bg-line')}
       />
       <span className={cx('truncate', tone ? 'font-semibold text-fg' : 'text-muted')}>{label}</span>
+      <UserRoleDot
+        role={role}
+        title={role === 'admin' ? t.common.roleAdmin : role === 'volunteer' ? t.common.roleVolunteer : undefined}
+      />
     </li>
   )
 }
@@ -108,7 +114,7 @@ export function LiveWatchPanel({
               而且服务端刻意不发 socket.id（发了等于把「谁是谁」的句柄散给房间里所有人，
               见 live.js 的 viewerList）。没有稳定 id 可用，也不需要 —— 这是一段纯展示的短列表。
             */
-            <Who key={i} label={v.name || (v.guest ? `${tt.chatGuest} ${v.guest}` : tt.watchAnon)} />
+            <Who key={i} label={v.name || (v.guest ? `${tt.chatGuest} ${v.guest}` : tt.watchAnon)} role={v.role} />
           ))}
         </ul>
       </div>

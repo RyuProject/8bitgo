@@ -46,6 +46,8 @@ export const zhHans = {
     coinAmount: '🪙 {n} G 币',
     coinBadge: '+{n} G币',
     liveBadge: '直播中',
+    roleAdmin: '管理员',
+    roleVolunteer: '志愿者',
     instantPlay: '☁️ 即点即玩',
     scrollLeft: '向左滚动',
     scrollRight: '向右滚动',
@@ -1053,7 +1055,6 @@ export const zhHans = {
       whereCloud: '云端',
       whereLocal: '这个浏览器',
       whereLocalPending: '这个浏览器（待同步到云端）',
-      liveOn: '直播中 · {n} 人在看',
       /** 弹幕框上那颗直播按钮的字。📡 已经说明了「在播」，这里只报人数 */
       liveViewerCount: '{n} 人',
       liveLink: '复制观看链接',

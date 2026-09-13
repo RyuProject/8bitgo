@@ -31,6 +31,8 @@ const zhHant: Translation = {
     coinAmount: '🪙 {n} G 幣',
     coinBadge: '+{n} G幣',
     liveBadge: '直播中',
+    roleAdmin: '管理員',
+    roleVolunteer: '志願者',
     instantPlay: '☁️ 即點即玩',
     scrollLeft: '向左捲動',
     scrollRight: '向右捲動',
@@ -997,7 +999,6 @@ const zhHant: Translation = {
       whereCloud: '雲端',
       whereLocal: '這個瀏覽器',
       whereLocalPending: '這個瀏覽器（待同步到雲端）',
-      liveOn: '直播中 · {n} 人在看',
       /** 彈幕框上那顆直播按鈕的字。📡 已經說明了「在播」，這裡只報人數 */
       liveViewerCount: '{n} 人',
       liveLink: '複製觀看連結',

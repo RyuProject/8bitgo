@@ -33,6 +33,8 @@ const ja: Translation = {
     coinAmount: '🪙 {n} Gコイン',
     coinBadge: '+{n} Gコイン',
     liveBadge: '配信中',
+    roleAdmin: '管理者',
+    roleVolunteer: 'ボランティア',
     instantPlay: '☁️ すぐにプレイ',
     scrollLeft: '左へスクロール',
     scrollRight: '右へスクロール',
@@ -984,7 +986,6 @@ const ja: Translation = {
       whereCloud: 'クラウド',
       whereLocal: 'このブラウザ',
       whereLocalPending: 'このブラウザ（クラウド未同期）',
-      liveOn: '配信中 · {n} 人が視聴',
       /** Label on the live toggle in the chat bar: 📡 already says "live", so only the count here */
       liveViewerCount: '{n} 人',
       liveLink: '視聴リンクをコピー',

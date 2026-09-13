@@ -625,6 +625,8 @@ export function commentRowToApi(r, { admin = false } = {}) {
       id: r.user_id,
       nickname: r.nickname ?? '',
       avatar: r.avatar || '🕹️',
+      // 只把「需要让别人认出来」的角色带出去；普通玩家 / 脏数据就不发这一格
+      role: r.role === 'admin' || r.role === 'volunteer' ? r.role : undefined,
       // 后台要靠邮箱认人（昵称能改、能重名），前台一律不给
       email: admin ? (r.email ?? '') : undefined,
     },
@@ -638,6 +640,7 @@ export function commentRowToApi(r, { admin = false } = {}) {
           id: String(r.parent_id),
           nickname: r.parent_nickname ?? '',
           avatar: r.parent_avatar || '🕹️',
+          role: r.parent_role === 'admin' || r.parent_role === 'volunteer' ? r.parent_role : undefined,
           content:
             dbFlag(r.parent_hidden) || r.parent_deleted_at ? '' : String(r.parent_content ?? ''),
           deleted: dbFlag(r.parent_hidden) || Boolean(r.parent_deleted_at),

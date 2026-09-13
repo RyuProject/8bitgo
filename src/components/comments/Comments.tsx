@@ -19,6 +19,7 @@ import {
 import { cx } from '@/lib/format'
 import { flagOrSvg } from '@/components/Flag'
 import { DmAvatar } from '@/components/im/DmButton'
+import { UserRoleDot } from '@/components/UserRole'
 import { FEATURES } from '@/config/features'
 import { Stars } from '@/components/game/StarRating'
 import { Button } from '@/components/ui/Button'
@@ -359,11 +360,18 @@ function CommentItem({
           peerId={comment.author.id}
           nick={comment.author.nickname}
           avatar={comment.author.avatar}
+          role={comment.author.role}
           className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-brand-soft text-base"
         />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px]">
-            <span className="max-w-[8rem] truncate text-xs font-semibold">{comment.author.nickname}</span>
+            <span className="inline-flex max-w-[8rem] items-center gap-1 truncate text-xs font-semibold">
+              {comment.author.nickname}
+              <UserRoleDot
+                role={comment.author.role}
+                title={comment.author.role === 'admin' ? t.common.roleAdmin : comment.author.role === 'volunteer' ? t.common.roleVolunteer : undefined}
+              />
+            </span>
             {/* 国旗是 emoji 组合出来的（HK / MO 等系统字体不收的会兜底成内联 SVG）；title 给出国家名，读屏也读得到 */}
             <span title={countryName(comment.country)} aria-label={countryName(comment.country)}>
               {flagOrSvg(comment.country)}
@@ -385,7 +393,13 @@ function CommentItem({
             <div className="mt-1.5 rounded-lg border-l-2 border-brand/50 bg-surface-2 px-2.5 py-1.5 text-[11px]">
               <p className="truncate text-muted">
                 <span aria-hidden>{comment.quote.avatar} </span>
-                <span className="font-semibold">{comment.quote.nickname}</span>
+                <span className="inline-flex items-center gap-1 font-semibold">
+                  {comment.quote.nickname}
+                  <UserRoleDot
+                    role={comment.quote.role}
+                    title={comment.quote.role === 'admin' ? t.common.roleAdmin : comment.quote.role === 'volunteer' ? t.common.roleVolunteer : undefined}
+                  />
+                </span>
               </p>
               <p className={cx('mt-0.5 line-clamp-2 break-words', comment.quote.deleted ? 'italic text-dim' : 'text-muted')}>
                 {comment.quote.deleted ? c.quoteDeleted : comment.quote.content}

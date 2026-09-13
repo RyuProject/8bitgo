@@ -92,9 +92,9 @@ function pageParams(req) {
  * 同一个人的两条评论会挂着两个不同的星级 —— 看的人只会以为哪边坏了。
  */
 const SELECT_COLS = `
-  c.*, u.nickname, u.avatar, u.email, r.score AS rating_score,
+  c.*, u.nickname, u.avatar, u.role, u.email, r.score AS rating_score,
   p.content AS parent_content, p.hidden AS parent_hidden, p.deleted_at AS parent_deleted_at,
-  pu.nickname AS parent_nickname, pu.avatar AS parent_avatar`
+  pu.nickname AS parent_nickname, pu.avatar AS parent_avatar, pu.role AS parent_role`
 
 const FROM_JOINS = `
   FROM game_comments c

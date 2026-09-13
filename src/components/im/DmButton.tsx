@@ -3,6 +3,8 @@ import { cx } from '@/lib/format'
 import { useT } from '@/services/i18n'
 import { useAuthReady, useCurrentUser } from '@/services/auth'
 import { requestImDm } from '@/services/imClient'
+import { userRoleAvatarClass } from '@/components/UserRole'
+import type { UserRole } from '@/types'
 
 /**
  * 「给这个人发私信」的入口 —— 包在别人的头像上。
@@ -34,11 +36,13 @@ export function DmAvatar({
   nick,
   avatar,
   className,
+  role,
 }: {
   peerId: string
   nick: string
   avatar: string
   className: string
+  role?: UserRole
 }) {
   const t = useT()
   const me = useCurrentUser()
@@ -61,7 +65,7 @@ export function DmAvatar({
 
   if (!canDm) {
     return (
-      <span className={className} aria-hidden>
+      <span className={cx(className, userRoleAvatarClass(role))} aria-hidden>
         {avatar}
       </span>
     )
@@ -89,6 +93,7 @@ export function DmAvatar({
       className={cx(
         className,
         'transition hover:ring-2 hover:ring-brand/60 focus-visible:ring-2 focus-visible:ring-brand',
+        userRoleAvatarClass(role),
         busy && 'animate-pulse',
       )}
     >

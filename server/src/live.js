@@ -162,9 +162,12 @@ async function chatIdentity(socket) {
       const payload = verifyToken(token)
       const userId = payload?.sub ?? payload?.uid ?? payload?.id
       if (userId) {
-        const row = await queryOne('SELECT nickname FROM users WHERE id = ?', [String(userId)])
+        const row = await queryOne('SELECT nickname, role FROM users WHERE id = ?', [String(userId)])
         const nickname = str(row?.nickname, 40)
+        const role = str(row?.role, 20)
         if (nickname) identity = { name: nickname }
+        // 只带非普通角色：游客 / 普通玩家不需要额外标记，而 admin/volunteer 要给前端画身份环
+        if (nickname && (role === 'admin' || role === 'volunteer')) identity.role = role
       }
     } catch {
       // 验不过（过期、伪造、密钥换了）就当游客，不报错也不拒绝 ——
@@ -337,7 +340,7 @@ function viewerList(room) {
   const out = []
   for (const id of room.viewers) {
     const who = room.viewerNames.get(id)
-    if (who?.name) out.push({ name: who.name })
+    if (who?.name) out.push({ name: who.name, role: who.role })
     else if (who?.guest) out.push({ guest: who.guest })
     else out.push({})
   }
