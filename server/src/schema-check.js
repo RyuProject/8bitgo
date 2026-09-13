@@ -96,8 +96,9 @@ const EXPECTED_TABLES = [
 
     （副作用值得知道：oauth_authorizations 不用 = 用户授权过哪些应用没有落库，
       同意页每次都要重新问一遍，也没有「解除授权」的地方。要做那个功能时再把表用起来。）
-  */
-]
+    */
+    { table: 'apps', why: '应用中心：官方 SDK / APP 下载 / 社区上架；缺了 /apps 列表空、后台管理读写全 500' },
+    ]
 
 export async function checkSchema() {
   try {

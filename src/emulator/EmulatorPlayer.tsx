@@ -24,9 +24,11 @@ import { TouchPad } from './TouchPad'
 import { PadDiagram } from './PadDiagram'
 import { LiveControls, type LiveControlsHandle } from './LiveControls'
 import { createPortal } from 'react-dom'
-import type { LiveViewerEntry } from '@/services/live'
+import { connectLive, useLiveRooms, type LiveChatMessage, type LiveSocket, type LiveViewerEntry } from '@/services/live'
 import { LiveChatBar, LiveChatLane, useLiveChat } from './LiveChat'
 import { LiveWatchPanel } from './LiveWatchPanel'
+import { MatchChatPanel } from './MatchChatPanel'
+import { sendChatWithAck } from './chatSend'
 import type { Broadcast } from './broadcast'
 import { matchLocalArcadeHack } from './arcadeHack'
 import type { DosExtraSource } from '@/lib/dosExtras'
@@ -229,6 +231,9 @@ interface Props {
    * null / undefined = 不画（主播端、或者详情页没给位置）。
    */
   livePanelSlot?: HTMLElement | null
+  /** 联机玩家右栏的挂载点；观众仍只用 livePanelSlot。 */
+  matchPanelSlot?: HTMLElement | null
+  onMatchPlayerChange?: (active: boolean) => void
   /** 空闲态背景（例如封面） */
   backdrop?: ReactNode
   /**
@@ -439,6 +444,8 @@ export function EmulatorPlayer({
   watch = false,
   liveInvite,
   livePanelSlot = null,
+  matchPanelSlot = null,
+  onMatchPlayerChange,
   backdrop,
   onReport,
   icon,
@@ -555,6 +562,8 @@ export function EmulatorPlayer({
   const roomTokenRef = useRef<string>('')
   /** 我在房间里的身份。观众只收画面和声音，按键不生效 */
   const [role, setRole] = useState<RoomRole>('player')
+  /** 独立弹幕连接用房间令牌验成员身份；ref 仍供其它联机操作即时读取。 */
+  const [roomChatToken, setRoomChatToken] = useState('')
   /**
    * 我正在看的这个直播间，主播有没有同时开着联机房（有就是房号）。
    * 来源：liveview 的 onNetplay —— 进房时的 ack 带一次，主播中途点「联机」再推一次。
@@ -576,6 +585,7 @@ export function EmulatorPlayer({
 
   // P2P：从房间列表里找要加入的那个房间（判断满没满、还在不在）
   const p2pRooms = useNetplayRooms()
+  const liveRooms = useLiveRooms()
   const inviteRoom = inviteId ? p2pRooms.find((r) => r.roomId === inviteId) : undefined
   const inviteGone = Boolean(inviteId) && status === 'idle' && !inviteResolving && p2pRooms.length > 0 && !inviteRoom
   /** 房主掉线、正在换人：这时进去会被拒（room is changing host），先别让人点 */
@@ -599,6 +609,8 @@ export function EmulatorPlayer({
   /** 正在看的人数（自己所在的房间） */
   const myNetRoom = (session?.netplay || hosting) && roomId ? p2pRooms.find((r) => r.roomId === roomId) : undefined
   const viewers = myNetRoom?.spectators ?? 0
+  /** 直播与联机配对关系变化时让玩家重进弹幕通道，避免两边各聊各的。 */
+  const pairedLiveRoomId = liveRooms.find((r) => r.netplayRoomId === roomId)?.roomId ?? null
 
   // 云端：连接状态与手柄位
   const [cloudState, setCloudState] = useState<CloudState | null>(null)
@@ -671,6 +683,7 @@ export function EmulatorPlayer({
   const chat = useLiveChat()
   /** 我自己的推流会话。有它说明我是主播，发弹幕走它 */
   const [liveSession, setLiveSession] = useState<Broadcast | null>(null)
+  const [matchChatSocket, setMatchChatSocket] = useState<LiveSocket | null>(null)
 
   /**
    * 这一局有没有「直播间」这回事：我在推（liveSession）或者我在看（session.live）。
@@ -696,7 +709,61 @@ export function EmulatorPlayer({
    */
   const [coopLost, setCoopLost] = useState(false)
 
-  const liveChatOn = Boolean(liveSession) || Boolean(session?.live)
+  const liveChatOn = Boolean(liveSession) || Boolean(session?.live) ||
+    (Boolean(session?.netplay || hosting) && role === 'player')
+
+  useEffect(() => {
+    const active = status === 'running' && Boolean(session?.netplay || hosting) && role === 'player'
+    onMatchPlayerChange?.(active)
+  }, [status, session?.netplay, hosting, role, onMatchPlayerChange])
+
+  useEffect(() => () => onMatchPlayerChange?.(false), [onMatchPlayerChange])
+
+  /**
+   * 联机玩家只接弹幕，不加入直播观众席：既不占观看人数，也不让房主多推一条视频。
+   * 房主已经有 Broadcast socket 时复用它；没有同步直播时走独立的联机弹幕房。
+   */
+  useEffect(() => {
+    if (!roomId || !roomChatToken || status !== 'running' ||
+        !(session?.netplay || hosting) || role !== 'player' || liveSession) {
+      setMatchChatSocket(null)
+      return
+    }
+    let stopped = false
+    let socket: LiveSocket | null = null
+    setMatchChatSocket(null)
+    void connectLive().then((connected) => {
+      if (stopped) {
+        connected.close()
+        return
+      }
+      socket = connected
+      const join = () => {
+        connected.emit('join-match-chat', { netplayRoomId: roomId, token: roomChatToken },
+          (err: unknown, result?: { chat?: LiveChatMessage[] }) => {
+            if (stopped) return
+            if (err) {
+              setMatchChatSocket(null)
+              return
+            }
+            setMatchChatSocket(connected)
+            chat.clear()
+            for (const msg of result?.chat ?? []) chat.push({ ...msg, history: true })
+          })
+      }
+      connected.on('chat', chat.push as (...args: never[]) => void)
+      connected.on('connect', join)
+      connected.on('match-chat-moved', join)
+      connected.on('live-ended', join)
+      join()
+    }).catch(() => {
+      if (!stopped) setMatchChatSocket(null)
+    })
+    return () => {
+      stopped = true
+      socket?.close()
+    }
+  }, [session?.id, hosting, roomId, roomChatToken, role, status, liveSession, pairedLiveRoomId, chat.push, chat.clear])
 
 
   /**
@@ -775,6 +842,17 @@ export function EmulatorPlayer({
    * 两个同时在页面上是明确的 bug（同一件事两个入口，还都能打字）。
    */
   const watchPanelOn = Boolean(livePanelSlot) && Boolean(session?.live)
+  /** 手机没有右栏；输入框仍留在播放器下方，避免藏到资料区后面。 */
+  const [wideLayout, setWideLayout] = useState(false)
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 1024px)')
+    const sync = () => setWideLayout(mq.matches)
+    sync()
+    mq.addEventListener('change', sync)
+    return () => mq.removeEventListener('change', sync)
+  }, [])
+  const matchPanelOn = wideLayout && Boolean(matchPanelSlot) && status === 'running' &&
+    Boolean(session?.netplay || hosting) && role === 'player'
   const liveCap = watchingLiveStage ? liveStageStyle(geometry, immersive) : undefined
   /**
    * 是不是正处在原生全屏里。
@@ -823,6 +901,8 @@ export function EmulatorPlayer({
    * 舞台 DOM 结构在三种布局下完全一样，只换 className —— iframe 一旦被重新挂载游戏就重开了。
    */
   const playMode = immersive && compact && !fullscreen
+  /** 全屏时右栏在画面背后，不能留下看不见却能被 Tab 聚焦的输入框。 */
+  const matchPanelVisible = matchPanelOn && !fullscreen && !playMode
   /**
    * 叠加工具栏（09-07 用户拿 EmulatorJS 自带底栏当参考）：桌面端（鼠标）和全屏下，
    * 工具栏不再占框里的一行，而是压在画面底部的半透明条，玩着的时候自动收起、鼠标一动就出来 ——
@@ -1718,6 +1798,7 @@ export function EmulatorPlayer({
     if (!takeOver) claimTokenRef.current = ''
     // 上个房间的令牌对新房间没用；清掉，免得 /migrate 拿着旧令牌去证明新房间是我开的
     roomTokenRef.current = ''
+    setRoomChatToken('')
     /**
      * 接手的最后一步：新房间号（轮询到 extra.sessionid）和新房间的令牌（room-token 事件）
      * 谁先到说不准 —— 房间号往往在服务器 ack 之前就能看到。两样齐了才发 /migrate。
@@ -1750,6 +1831,7 @@ export function EmulatorPlayer({
         onToken: (tk) => {
           if (p2pStale()) return
           roomTokenRef.current = tk
+          setRoomChatToken(tk)
           tryMigrate()
         },
         onRoom: (id, host) => {
@@ -1834,6 +1916,7 @@ export function EmulatorPlayer({
     setRole('player')
     setIsHost(true)
     roleSwitchRef.current = null
+    setRoomChatToken('')
     const ok = handle.openNetplay({
       gameId: gameIdFor(gameSlug),
       roomName: gameName,
@@ -1843,7 +1926,10 @@ export function EmulatorPlayer({
       role: 'player',
       onSpectatorControl: (fn) => (roleSwitchRef.current = fn),
       onIdentity: (id) => (myIdRef.current = id),
-      onToken: (tk) => (roomTokenRef.current = tk),
+      onToken: (tk) => {
+        roomTokenRef.current = tk
+        setRoomChatToken(tk)
+      },
       onRoom: (id, host) => {
         setRoomId(id)
         setIsHost(host)
@@ -1949,6 +2035,7 @@ export function EmulatorPlayer({
     setIsHost(false)
     setRole('player')
     roleSwitchRef.current = null
+    setRoomChatToken('')
     // 让大厅立刻把房间卡片撤掉，不用等下一轮轮询
     refreshNetplayRooms()
   }
@@ -2399,6 +2486,14 @@ export function EmulatorPlayer({
     输入框那边本来就会因为 onSend 为 null 而自己禁用。
   */
   const chatBarOn = liveChatOn || Boolean(liveCtl) || Boolean(matchCtl) || Boolean(coopCtl)
+  const liveViewSend = handle?.liveChat
+  const chatSend = liveSession
+    ? (text: string) => liveSession.sendChat(text)
+    : matchChatSocket
+      ? (text: string) => sendChatWithAck(matchChatSocket, text)
+      : liveViewSend
+        ? (text: string) => liveViewSend(text)
+        : null
 
   const busy = status === 'loading' || status === 'running'
   /** 「在房间里」：挂载时就联机的，或者玩到一半点「联机匹配」开出来的 */
@@ -3596,10 +3691,9 @@ export function EmulatorPlayer({
       */}
     </div>
     {/*
-      ⚠️ `!watchPanelOn`：观众端的输入框已经搬到右栏面板里了（见 LiveWatchPanel），
-      这里再画一个就是同一件事两个入口。主播端 watchPanelOn 恒为 false，一如既往。
+      观众端和联机玩家在宽屏已有各自的右栏输入框，这里不能再画第二个入口。
     */}
-    {chatBarOn && !fullscreen && !playMode && !watchPanelOn && (
+    {chatBarOn && !fullscreen && !playMode && !watchPanelOn && !matchPanelVisible && (
       <LiveChatBar
         className="mt-2"
         /*
@@ -3607,13 +3701,7 @@ export function EmulatorPlayer({
           两个都没有 = 还没连上或者已经散场，传 null 让输入框禁用 ——
           让人打完一段字再告诉他发不出去是最差的一种。
         */
-        onSend={
-          liveSession
-            ? (text) => liveSession.sendChat(text)
-            : handle?.liveChat
-              ? (text) => handle.liveChat?.(text)
-              : null
-        }
+        onSend={chatSend}
         /* 这两个只有主播有；观众那一路 liveCtl / matchCtl 都是 null，按钮不画 */
         live={liveCtl && { on: liveCtl.on, label: liveCtl.label, hint: liveCtl.hint, toggle: liveCtl.toggle }}
         match={matchCtl}
@@ -3625,6 +3713,7 @@ export function EmulatorPlayer({
           右栏在的时候这一行整块不画。
         */
         history={chat.messages}
+        historyHint={netplayOn && role === 'player' ? t.player.tools.watchHistory : undefined}
       />
     )}
     {/*
@@ -3644,6 +3733,18 @@ export function EmulatorPlayer({
             coop={coopCtl}
           />,
           livePanelSlot,
+        )
+      : null}
+    {matchPanelVisible && matchPanelSlot
+      ? createPortal(
+          <MatchChatPanel
+            room={myNetRoom}
+            messages={chat.messages}
+            onSend={chatSend}
+            live={liveCtl && { on: liveCtl.on, label: liveCtl.label, hint: liveCtl.hint, toggle: liveCtl.toggle }}
+            match={matchCtl}
+          />,
+          matchPanelSlot,
         )
       : null}
     </>

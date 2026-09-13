@@ -1,0 +1,17 @@
+[Unit]
+Description=8BitGo 一键重部署（备份 + 拉取 + CI + 构建 + 迁移 + 重启）
+After=network-online.target mysql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+# 自动部署的开关：0 = 只重启 + 备份，不拉代码（当纯安全网）
+Environment=REPO_DIR=/var/www/8bitgo
+Environment=PULL_LATEST=1
+# 想更稳可加：Environment=RUN_TESTS=1（需要可用的测试库）
+# 不想要自动部署就设 PULL_LATEST=0
+ExecStart=/var/www/8bitgo/deploy/redeploy.sh
+
+[Install]
+WantedBy=multi-user.target

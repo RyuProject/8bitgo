@@ -20,6 +20,7 @@ const TABS: { to: string; label: string; end?: boolean; need: Ability; adminOnly
   { to: '/admin/posts', label: '文章', need: 'content:edit' },
   { to: '/admin/developers', label: '开发商', need: 'content:edit' },
   { to: '/admin/friend-links', label: '友情链接', need: 'content:edit' },
+  { to: '/admin/apps', label: '应用', need: 'content:edit' },
   { to: '/admin/comments', label: '评论', need: 'comments:review' },
   { to: '/admin/users', label: '用户', need: 'users:manage' },
   { to: '/admin/roms', label: 'ROM 存储', need: 'site:manage' },

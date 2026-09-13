@@ -136,7 +136,7 @@ export function PostPage() {
           </p>
         </header>
 
-        <div className="prose-pixel mt-8">{renderMarkdown(translatedContent ?? postContent(post, lang))}</div>
+        <div className="prose-pixel mt-8">{renderMarkdown(translatedContent ?? postContent(post, lang), { embeds: true })}</div>
       </article>
 
       {more.length > 0 && (

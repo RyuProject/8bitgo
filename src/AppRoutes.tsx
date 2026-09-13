@@ -24,6 +24,7 @@ import { TermsPage } from '@/pages/TermsPage'
 import { PrivacyPage } from '@/pages/PrivacyPage'
 import { SubmitGamePage } from '@/pages/SubmitGamePage'
 import { EmbedPage } from '@/pages/EmbedPage'
+import { AppsPage } from '@/pages/AppsPage'
 import { OAuthCallbackPage } from '@/pages/OAuthCallbackPage'
 import { OpenPlatformPage } from '@/pages/OpenPlatformPage'
 import { OpenDevicePage } from '@/pages/OpenDevicePage'
@@ -51,10 +52,10 @@ const AdminRoms = lazyNamed(() => import('@/admin/AdminRoms'), 'AdminRoms')
 const AdminData = lazyNamed(() => import('@/admin/AdminData'), 'AdminData')
 const AdminOpenApps = lazyNamed(() => import('@/admin/AdminOpenApps'), 'AdminOpenApps')
 const AdminConfig = lazyNamed(() => import('@/admin/AdminConfig'), 'AdminConfig')
+const AdminApps = lazyNamed(() => import('@/admin/AdminApps'), 'AdminApps')
 
-const COMING_SOON_ROUTES = [
-  '/apps',
-]
+// 应用中心（/apps）已经做出来了，不再进 coming soon
+const COMING_SOON_ROUTES: string[] = []
 
 export function AppRoutes() {
   // 前端路由换页时补一次头条自动收录的推送（index.html 里那段只推首屏那一个 URL）
@@ -101,6 +102,7 @@ export function AppRoutes() {
           <Route path="/terms" element={<TermsPage />} />
           <Route path="/privacy" element={<PrivacyPage />} />
           <Route path="/submit" element={<SubmitGamePage />} />
+          <Route path="/apps" element={<AppsPage />} />
           {/* 开放平台的开发者控制台。**不叫 /developers** —— 那个路径是站内的「开发商」
               浏览页（科乐美、SNK 那种），两个 developer 完全不是一回事，见 OpenPlatformPage 的注释 */}
           <Route path="/open" element={<OpenPlatformPage />} />
@@ -146,6 +148,7 @@ export function AppRoutes() {
           <Route path="roms" element={<RouteChunk><AdminRoms /></RouteChunk>} />
           <Route path="data" element={<RouteChunk><AdminData /></RouteChunk>} />
           <Route path="open-apps" element={<RouteChunk><AdminOpenApps /></RouteChunk>} />
+          <Route path="apps" element={<RouteChunk><AdminApps /></RouteChunk>} />
           <Route path="config" element={<RouteChunk><AdminConfig /></RouteChunk>} />
         </Route>
       </Routes>

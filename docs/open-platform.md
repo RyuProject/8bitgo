@@ -650,7 +650,11 @@ OPEN_EMBED_SECRET=           # 嵌入地址的 HMAC 密钥
 OPEN_ISSUER=https://8bitgo.com
 ```
 
-生成私钥：`openssl genpkey -algorithm RSA -pkcs8 -out open-jwt.pem -pkeyopt rsa_keygen_bits:2048`
+生成私钥：`openssl genpkey -algorithm RSA -out open-jwt.pem -pkeyopt rsa_keygen_bits:2048`
+
+> ⚠️ **没有 `-pkcs8` 这个开关**（2026-09-13 线上实测报 `Unknown cipher: pkcs8`）。
+> `genpkey` 本来就输出 PKCS#8（`-----BEGIN PRIVATE KEY-----`），多写这个参数会被当成加密算法名。
+> Node 的 `createPublicKey()` / RS256 签名验签实测都认这个格式。
 
 ⚠️ **配不全就整块关掉**（501），不要用空密钥把接口跑起来 ——
 「跑起来了但签名谁都能伪造」是最坏的一种状态：看着正常，没人会去查。

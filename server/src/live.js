@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { watchPresence, clientIpFrom, isPrivateIp, UNKNOWN_PRESENCE } from './presence.js'
 import { verifyToken } from './auth.js'
 import { queryOne } from './db.js'
+import { isNetplayPlayer, resolveRoomId } from './netplay.js'
 import {
   CHAT_ACK_EMPTY,
   CHAT_ACK_FAILED,
@@ -51,7 +52,7 @@ import {
  *                见 src/emulator/coopSeat.ts），这一条纯粹是为了**让别人的大厅看得见**
  *   stop-live                                           主播主动下播
  *   chat         {text}                                 + ack(err, {id})
- *                弹幕。房主和观众都能发；房间号取自 membership，**不看 payload**，
+ *                弹幕。房主、观众和联机玩家都能发；房间号取自 membership，**不看 payload**，
  *                名字和「是不是房主」也一律由服务端判（见 chatIdentity）
  *   ← chat           {id, at, name?, guest?, host, text}   广播给房间里所有人（含发的人自己）
  *   ← viewer-joined  {viewerId, replaces?}  发给主播，让它建一条新的 PeerConnection
@@ -236,8 +237,19 @@ function takeRoomChatToken(room) {
 
 /** roomId -> room */
 const rooms = new Map()
+/** 没有同步开播的联机房也能聊天；最后一位玩家离开时连历史一起清掉。 */
+const matchChats = new Map()
 /** socket.id -> {roomId, role} */
 const membership = new Map()
+
+const matchChatKey = (roomId) => `match:${roomId}`
+
+function linkedLiveRoom(netplayRoomId) {
+  for (const room of rooms.values()) {
+    if (room.netplayRoomId && resolveRoomId(room.netplayRoomId) === netplayRoomId) return room
+  }
+  return null
+}
 
 function publicRoom(room) {
   return {
@@ -466,6 +478,10 @@ function closeRoom(nsp, room, reason) {
   nsp.to(room.id).emit('live-ended', { roomId: room.id, reason })
   for (const viewerId of room.viewers) membership.delete(viewerId)
   if (room.hostSocketId) membership.delete(room.hostSocketId)
+  for (const id of room.matchPlayers) {
+    membership.delete(id)
+    nsp.sockets.get(id)?.leave(room.id)
+  }
   rooms.delete(room.id)
   notifyRoomList()
 }
@@ -521,6 +537,16 @@ function leave(nsp, socket) {
   if (!info) return
   membership.delete(socket.id)
   const room = rooms.get(info.roomId)
+  if (info.role === 'match') {
+    socket.leave(info.roomId)
+    if (room) room.matchPlayers.delete(socket.id)
+    else {
+      const match = matchChats.get(info.roomId)
+      match?.players.delete(socket.id)
+      if (match?.players.size === 0) matchChats.delete(info.roomId)
+    }
+    return
+  }
   if (!room) return
 
   if (info.role === 'host') {
@@ -611,6 +637,8 @@ export function attachLive(io) {
          * `viewerNames.delete`，server/scripts/test-live.mjs 有断言盯着。
          */
         viewerNames: new Map(),
+        /** 联机玩家只进弹幕通道，不占观众席，也不触发视频 offer。 */
+        matchPlayers: new Set(),
         awayTimer: null,
         awaySince: null,
         /** 主播是不是切到后台了（画面冻着）。见 host-visibility */
@@ -740,6 +768,31 @@ export function attachLive(io) {
       if (!again && !previous) notifyViewers(nsp, room)
     })
 
+    socket.on('join-match-chat', (payload, ack) => {
+      const asked = str(payload?.netplayRoomId, 64)
+      const netplayRoomId = resolveRoomId(asked)
+      const token = str(payload?.token, 64)
+      if (!netplayRoomId || !isNetplayPlayer(netplayRoomId, token)) return ack?.('not a player')
+      const prior = membership.get(socket.id)
+      if (prior && prior.role !== 'match') return ack?.('already in a room')
+      if (prior) leave(nsp, socket)
+
+      const live = linkedLiveRoom(netplayRoomId)
+      const key = live?.id ?? matchChatKey(netplayRoomId)
+      let match = null
+      if (!live) {
+        match = matchChats.get(key)
+        if (!match) {
+          match = { id: key, players: new Set(), chat: [], chatFlood: null }
+          matchChats.set(key, match)
+        }
+        match.players.add(socket.id)
+      } else live.matchPlayers.add(socket.id)
+      membership.set(socket.id, { roomId: key, role: 'match', netplayRoomId, token })
+      socket.join(key)
+      ack?.(null, { chat: live?.chat ?? match.chat, live: Boolean(live) })
+    })
+
     /**
      * 转发握手包。只在同一个房间内、且只在「主播 ↔ 观众」之间转 ——
      * 不加这层校验的话，任何人都能拿别人的 socketId 往里塞 SDP。
@@ -747,7 +800,7 @@ export function attachLive(io) {
      */
     socket.on('signal', (payload) => {
       const info = membership.get(socket.id)
-      if (!info) return
+      if (!info || info.role === 'match') return
       const room = rooms.get(info.roomId)
       if (!room) return
       let target
@@ -775,7 +828,11 @@ export function attachLive(io) {
       if (!room || room.hostSocketId !== socket.id) return
       const next = str(payload?.roomId, 64) || null
       // 大厅是轮询 /api/live/rooms 的（不像 netplay 那边有 SSE），改完等下一轮就看得到
+      const previous = room.netplayRoomId
       room.netplayRoomId = next
+      // 已在纯联机弹幕房的人要换到直播弹幕流；结束联机时则反向退回。
+      if (previous) nsp.to(room.id).emit('match-chat-moved')
+      if (next) nsp.to(matchChatKey(resolveRoomId(next))).emit('match-chat-moved')
       /**
        * 但**正在看的人不能等**：他们已经在房间里了，不会再去刷大厅。
        * 主播一点「联机」，观众那边就该立刻多出一个「加入联机」的入口 ——
@@ -841,7 +898,7 @@ export function attachLive(io) {
     })
 
     /**
-     * 发一条弹幕。房主和观众都能发，发完广播给这个房间里的**所有人**（含发的人自己 ——
+     * 发一条弹幕。房主、观众和联机玩家都能发，发完广播给这个房间里的**所有人**（含发的人自己 ——
      * 本地不做乐观回显，这样每个人看到的顺序都是服务端定的那一个）。
      *
      * ⚠️ 房间号**只从 membership 里取，绝不采信 payload**。
@@ -855,8 +912,13 @@ export function attachLive(io) {
     socket.on('chat', (payload, ack) => {
       const info = membership.get(socket.id)
       if (!info) return ack?.(CHAT_ACK_NO_ROOM)
-      const room = rooms.get(info.roomId)
+      const room = rooms.get(info.roomId) ?? matchChats.get(info.roomId)
       if (!room) return ack?.(CHAT_ACK_NOT_FOUND)
+      if (info.role === 'match' &&
+          (!isNetplayPlayer(info.netplayRoomId, info.token) ||
+            (rooms.has(info.roomId) && resolveRoomId(room.netplayRoomId) !== info.netplayRoomId))) {
+        return ack?.(CHAT_ACK_NO_ROOM)
+      }
 
       const text = sanitizeChatText(payload?.text)
       if (!text) return ack?.(CHAT_ACK_EMPTY)
@@ -873,7 +935,8 @@ export function attachLive(io) {
       */
       void chatIdentity(socket).then((identity) => {
         // 异步取身份的这几毫秒里房间可能已经散了 / 人已经走了，再确认一次
-        if (!rooms.has(room.id) || membership.get(socket.id)?.roomId !== room.id) return
+        if ((rooms.get(room.id) !== room && matchChats.get(room.id) !== room) || membership.get(socket.id)?.roomId !== room.id) return
+        if (info.role === 'match' && !isNetplayPlayer(info.netplayRoomId, info.token)) return ack?.(CHAT_ACK_NO_ROOM)
         const msg = {
           id: randomBytes(8).toString('base64url'),
           at: Date.now(),

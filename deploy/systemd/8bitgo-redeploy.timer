@@ -1,0 +1,13 @@
+[Unit]
+Description=每天低峰期跑一次 8BitGo 重部署
+# 默认 04:15（见 redeploy.sh 头部说明：00:00 是夜猫子活跃期 + 日期切换，且有 2~5s 502）。
+# 想改回 00:00：把下面这行换成 OnCalendar=*-*-* 00:00:00
+# 只想「重启 + 备份」不要自动部署：在 .service 里设 PULL_LATEST=0 即可，timer 不用动。
+
+[Timer]
+OnCalendar=*-*-* 04:15:00
+Persistent=true
+Unit=8bitgo-redeploy.service
+
+[Install]
+WantedBy=timers.target

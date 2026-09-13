@@ -11,8 +11,8 @@ import { appendChat } from './liveChatStore'
  * 直播弹幕。三块东西：
  *
  *   LiveChatLane     飘过画面的那一层（贴在舞台上，pointer-events-none）
- *   LiveChatBar      输入框。主播在画面下方，观众在右栏直播面板里
- *   LiveChatHistory  观众端右栏那段历史列表（2026-09-11 加回来的）
+ *   LiveChatBar      输入框。普通主播在画面下方，观众和联机玩家在各自右栏
+ *   LiveChatHistory  右栏的历史列表（2026-09-11 加回来的）
  *
  * ── 「要不要历史」这件事来回过两次，先读完再动 ────────────────
  * 09-07 站长说「不要历史记录」，于是列表整块删掉，取舍写的是「飘过就没了，气氛优先」。
@@ -73,8 +73,8 @@ export interface LiveChatState {
 }
 
 /**
- * 消息流。放在播放器那一层拿着 —— 主播和观众收弹幕的入口不是同一个
- * （前者是 Broadcast.onChat，后者是 LiveSession.onChat），但显示的东西是一样的。
+ * 消息流。放在播放器那一层拿着 —— 主播、观众和联机玩家的收弹幕入口各不同，
+ * 但显示的东西是一样的；本局切换身份时也不用另存一份。
  */
 export function useLiveChat(): LiveChatState {
   const [messages, setMessages] = useState<LiveChatMessage[]>([])
@@ -248,6 +248,7 @@ export function LiveChatBar({
   match,
   coop,
   history,
+  historyHint,
   className,
 }: {
   /**
@@ -283,6 +284,8 @@ export function LiveChatBar({
    * 这里不另存一份 —— 「关播后清除所有记录」是靠那一层做到的。
    */
   history?: LiveChatMessage[]
+  /** 联机玩家的记录也有玩家发言，提示文案由上游换成中性的一句。 */
+  historyHint?: string
   className?: string
 }) {
   const t = useT()
@@ -392,7 +395,7 @@ export function LiveChatBar({
             t={{
               on: historyOpen,
               label: tt.watchHistory,
-              hint: tt.chatHistoryHint,
+              hint: historyHint ?? tt.chatHistoryHint,
               toggle: () => setHistoryOpen((v) => !v),
             }}
           />
@@ -468,7 +471,7 @@ function ToggleButton({ icon, t, expands }: { icon: string; t: ChatBarToggle; ex
 /* ---------------- 观众端右栏：弹幕历史 ---------------- */
 
 /**
- * 弹幕历史列表。**只在观众端右栏用**（主播端画面下方仍然只有输入框，见文件头）。
+ * 弹幕历史列表。观众和联机玩家的右栏共用；普通主播在画面下方仍然只有输入框。
  *
  * 内容就是 `useLiveChat` 手里那个数组（最多 KEEP=100 条，跟着 session 清空），
  * 这里不自己存任何东西 —— 「关播后清除所有记录」是靠那一层做到的，别在这里加缓存。

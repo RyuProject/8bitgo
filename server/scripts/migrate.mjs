@@ -18,6 +18,7 @@ import 'dotenv/config'
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import mysql from 'mysql2/promise'
+import { ensureDatabase } from '../src/db-ensure.js'
 
 const DB_NAME = process.env.DB_NAME || '8bitgo'
 
@@ -255,6 +256,31 @@ const patches = [
           "`homepage` VARCHAR(300) NOT NULL DEFAULT ''," +
           '`updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,' +
           'PRIMARY KEY (`name`)' +
+          ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
+      ),
+  },
+  {
+    name: 'apps（应用中心：官方 SDK / APP 下载 / 社区上架，靠 kind 区分三个模块）',
+    table: null,
+    needed: async () => !(await hasTable('apps')),
+    run: () =>
+      conn.query(
+        'CREATE TABLE IF NOT EXISTS `apps` (' +
+          '`id` INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,' +
+          "`kind` ENUM('sdk','app','community') NOT NULL," +
+          '`name` VARCHAR(120) NOT NULL,' +
+          "`platform` VARCHAR(40) NOT NULL DEFAULT ''," +
+          '`version` VARCHAR(40) NULL,' +
+          '`description` TEXT NULL,' +
+          '`download_url` VARCHAR(500) NULL,' +
+          '`icon` VARCHAR(200) NULL,' +
+          '`sort_order` SMALLINT UNSIGNED NOT NULL DEFAULT 0,' +
+          '`published` TINYINT(1) NOT NULL DEFAULT 1,' +
+          '`submitter_name` VARCHAR(80) NULL,' +
+          '`submitter_contact` VARCHAR(200) NULL,' +
+          '`created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,' +
+          '`updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,' +
+          'KEY `idx_apps_kind_published` (`kind`, `published`, `sort_order`)' +
           ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
       ),
   },
@@ -775,8 +801,16 @@ const patches = [
 const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'login_codes', 'platform_bios', 'game_plays', 'developers', 'friend_links', 'friend_link_hits', 'game_comments', 'game_ratings', 'oauth_apps']
 
 try {
-  await conn.query(`CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`)
-  await conn.query(`USE \`${DB_NAME}\``)
+  /*
+    ⚠️ 这里**不要求**全局 CREATE 权限。库早就存在时，`CREATE DATABASE IF NOT EXISTS`
+    是纯空转，却会让一个只有 `GRANT ALL ON 某库.*` 的应用账号在第一句就被拒 ——
+    于是每加一张表都要去翻 root 口令，而「用 root 跑迁移」本身是个坏习惯。
+    详见 src/db-ensure.js。
+  */
+  const dbState = await ensureDatabase(conn, DB_NAME)
+  if (dbState === 'no-create-privilege') {
+    console.log(`（这个账号没有全局 CREATE 权限，但 \`${DB_NAME}\` 已经存在且连得进去 —— 继续）`)
+  }
 
   const server = await one('SELECT VERSION() AS v')
   console.log(`数据库：${DB_NAME} @ ${process.env.DB_HOST || '127.0.0.1'}:${process.env.DB_PORT || 3306}（${server?.v ?? '?'}）`)

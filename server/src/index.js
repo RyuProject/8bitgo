@@ -25,6 +25,8 @@ import { pageRouter } from './routes/page.js'
 import { platformBiosRouter } from './routes/platform-bios.js'
 import { developersRouter } from './routes/developers.js'
 import { friendLinksRouter } from './routes/friend-links.js'
+import { appsRouter } from './routes/apps.js'
+import { adminAppsRouter } from './routes/admin-apps.js'
 import { IN, friendLinkHostMap, hostOf, normalizeHost, recordFriendLinkHit } from './friend-link-hits.js'
 import { isCrawlerUa } from './sseGuard.js'
 import { checkSchema } from './schema-check.js'
@@ -43,6 +45,7 @@ import { openDeviceRouter } from './routes/open-device.js'
 import { oauthRouter } from './routes/oauth.js'
 import { adminOpenAppsRouter } from './routes/admin-open-apps.js'
 import { adminConfigRouter } from './routes/admin-config.js'
+import { openConfigDiagnosis } from './open/config.js'
 import { wellKnownRouter } from './routes/well-known.js'
 import { diagRouter } from './routes/diag.js'
 import { submitGameRouter } from './routes/submit-game.js'
@@ -186,6 +189,7 @@ app.use('/api/platform-bios', platformBiosRouter)
 app.use('/api/developers', developersRouter)
 // 首页「特别鸣谢」的后台管理；公开列表跟着 /api/page 的首页数据返回
 app.use('/api/friend-links', friendLinksRouter)
+app.use('/api/apps', appsRouter)
 // 云存档（必须登录，见 routes/saves.js）
 app.use('/api/saves', savesRouter)
 // P2P 联机的 ICE / TURN 配置（短期凭证，见 routes/ice.js）
@@ -196,6 +200,7 @@ app.use('/api/im', imRouter)
 app.use('/api/diag', diagRouter)
 // 用户提交游戏：登录后上传 ROM（multipart），ROM 作为邮件附件发出，不落存储
 app.use('/api/submit-game', submitGameRouter)
+app.use('/api/admin/apps', adminAppsRouter)
 // 8BitGo TV：直播频道的当前节目单（收不到信号时前端退回游戏库浏览）
 app.use('/api/tv', tvRouter)
 
@@ -461,6 +466,40 @@ if (/^(1|true|yes|on)$/i.test(process.env.IPX_ENABLED || '')) {
 
 httpServer.listen(PORT, () => {
   console.log(`8BitGo API 已启动：http://127.0.0.1:${PORT}`)
+
+  /*
+    开放平台的启动自检。
+
+    ⚠️ 这几行是被一次真实故障逼出来的：.env 配好、密钥文件也在，但取令牌一直 501 ——
+    因为文件是**在进程启动之后**才生成的，而配置只在启动时读一次。
+    当时 SSR / IPX / 发信 / TURN 都有启动日志，唯独开放平台一个字都不打，
+    于是「密钥没加载」这件事完全静默，只能靠一条条 curl 去猜。
+  */
+  const openDiag = openConfigDiagnosis()
+  if (openDiag.ok) {
+    const off = [!openDiag.romEnabled && 'ROM 凭据', !openDiag.embedEnabled && '嵌入地址'].filter(Boolean)
+    console.log(
+      `[open] 开放平台已启用${off.length ? `（${off.join(' / ')}还差密钥，那几条单独 501）` : ''}`,
+    )
+  } else if (openDiag.reason === 'not-configured') {
+    // 没配不是错误：公开目录（/v1/games、/v1/platforms…）本来就不需要密钥
+    console.log('[open] 开放平台：只开了公开目录。要令牌的那半没配密钥（OPEN_JWT_PRIVATE_KEY_PATH）')
+  } else {
+    console.warn('')
+    console.warn(`⚠️  [open] 开放平台配了密钥但用不了 —— 取令牌 / ROM / 嵌入地址会一律 501。`)
+    if (openDiag.reason === 'key-unreadable') {
+      console.warn(`     读不出这个文件：${openDiag.path}`)
+      console.warn('     · 文件存在吗？`ls -l` 一下')
+      console.warn('     · 跑 node 的用户读得到吗？（600 + 属主不对就读不到）')
+      console.warn('     · ⚠️ **文件是不是在这个进程启动之后才生成的？** 那就重启一次')
+    } else if (openDiag.reason === 'key-malformed') {
+      console.warn('     OPEN_JWT_PRIVATE_KEY 里不是 PEM 内容 —— 想给路径的话用 OPEN_JWT_PRIVATE_KEY_PATH')
+    } else {
+      console.warn(`     密钥读到了但解析不了：${openDiag.detail}`)
+      console.warn('     生成：openssl genpkey -algorithm RSA -out open-jwt.pem -pkeyopt rsa_keygen_bits:2048')
+    }
+    console.warn('')
+  }
   // 表结构落后于代码时，读接口一切正常、写接口全 500，症状极具误导性。
   // 启动时对一遍，把话说在前面
   void checkSchema()

@@ -325,6 +325,13 @@ function memberByToken(room, token) {
   return null
 }
 
+/** 直播弹幕只放真正占手柄位的联机成员进来，观众席仍走原来的观看通道。 */
+export function isNetplayPlayer(roomId, token) {
+  const room = getRoom(str(roomId, 64))
+  const member = room && memberByToken(room, str(token, 64))
+  return Boolean(member && member.role !== 'spectator')
+}
+
 function destroyRoom(room) {
   if (room.graceTimer) clearTimeout(room.graceTimer)
   if (room.claimTimer) clearTimeout(room.claimTimer)

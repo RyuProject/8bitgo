@@ -146,12 +146,15 @@ check('⚠️ 弹幕层要画在画面容器里（全屏 / 沉浸式也得看得
 
 check('⚠️ 发弹幕两个角色各走各的句柄，都没有就禁用输入框', () => {
   const src = code('src/emulator/EmulatorPlayer.tsx')
-  const i = src.indexOf('onSend={')
-  assert.ok(i > 0, '找不到 onSend')
-  const seg = src.slice(i, i + 400)
-  assert.match(seg, /liveSession\s*\n?\s*\?\s*\(text\) => liveSession\.sendChat\(text\)/, '主播走推流会话')
-  assert.match(seg, /handle\?\.liveChat/, '观众走 liveview 的 handle')
-  assert.match(seg, /:\s*null/, '两个都没有要传 null —— 让人打完一段字再说发不出去是最差的一种')
+  const i = src.indexOf('const chatSend =')
+  assert.ok(i > 0, '找不到发送句柄')
+  const seg = src.slice(i, i + 500)
+  assert.match(seg, /liveSession\.sendChat\(text\)/, '主播走推流会话')
+  assert.match(seg, /sendChatWithAck\(matchChatSocket, text\)/, '联机玩家走弹幕连接')
+  assert.match(src, /const liveViewSend = handle\?\.liveChat/, '观众走 liveview 的 handle')
+  assert.match(seg, /liveViewSend\(text\)/, '观众的发送句柄没接进去')
+  assert.match(seg, /:\s*null/, '都没有时要传 null —— 让人打完一段字再说发不出去是最差的一种')
+  assert.match(src, /onSend=\{chatSend\}/, '输入框没接到统一发送句柄')
 })
 
 check('⚠️ 不许本地回显（这就是漏接 onChat 会连自己的话都看不到的原因）', () => {

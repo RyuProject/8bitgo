@@ -90,16 +90,18 @@ export function GameDetailPage() {
    * 1440 的屏上满宽播放器是 1121 宽，缩回 8 列约 726 —— 小一圈，糊就被压下去了。
    * 站长的原话是「主播推过来的流糊没关系，观众端看起来糊就用小播放器来弥补」。
    *
-   * ⚠️ **判据是 URL 上的 `?live=`，不是运行时的 `session.live`。** 用 URL 的好处是它在
-   * 这个页面的整个生命周期里不变：版面不会在开播 / 断流的瞬间跳一下，也就不存在
-   * 「播放器被重新挂载 → 流断掉」的风险。代价是一个边角：观众点了「我自己玩」
-   * （EmulatorPlayer 内部的 ignoreInvite）之后 URL 上的 `?live=` 还在，版面会继续维持 8 列。
-   * 那种情况下画面小一点没什么害处，想要满宽点一下「沉浸模式」即可。
+   * ⚠️ **观看判据是 URL 上的 `?live=`**，不会因短暂断流跳版。
+   * 真正上场当联机玩家时由播放器明确回报 matchPlayer，右栏换成玩家弹幕面板；
+   * 只换网格类名和 portal 目标，播放器组件保持原位，不会被卸载重建。
    *
    * ⚠️ 沉浸模式优先级更高：那时整个侧栏是收起的（见 aside 的 className），
    * 播放器本来就该吃满 12 列。
    */
-  const watchLayout = Boolean(liveInvite) && !immersive
+  /** 联机玩家进房后把弹幕放到画面右边；观众仍只走上面的观看布局。 */
+  const [matchPlayer, setMatchPlayer] = useState(false)
+  const watchLayout = Boolean(liveInvite) && !matchPlayer && !immersive
+  const matchLayout = matchPlayer && !immersive
+  const twoColumn = watchLayout || matchLayout
   /**
    * 右栏那块直播面板的挂载点。播放器通过 portal 把面板画进这个节点。
    *
@@ -107,6 +109,7 @@ export function GameDetailPage() {
    * 而 useRef 挂上之后**不会触发重渲染** —— 播放器那边会一直看到 null，面板永远不出现。
    */
   const [livePanelSlot, setLivePanelSlot] = useState<HTMLElement | null>(null)
+  const [matchPanelSlot, setMatchPanelSlot] = useState<HTMLElement | null>(null)
   const user = useCurrentUser()
   const [shareOpen, setShareOpen] = useState(false)
   const [addToCollection, setAddToCollection] = useState(false)
@@ -296,15 +299,15 @@ export function GameDetailPage() {
       {/*
         播放器 + 资料区 + 侧栏**同一个 12 列网格**。
 
-        两种排法，靠 watchLayout 切，DOM 结构完全不变（只换类名）——
+        两种排法，靠 twoColumn 切，DOM 结构完全不变（只换类名）——
         **不能改成两套 JSX**：`<EmulatorPlayer>` 一旦在树里换了位置就会被卸载重建，
         正在看的那路直播当场断流、自己玩的那一局存档没落盘就没了。
 
           自己玩（默认）   [    播放器 12 列    ] / [ 资料区 8 ][ 侧栏 4 ]
-          看直播           [ 播放器 8 ][ 侧    ] / [ 资料区 8 ][   栏   ]
+          看直播 / 联机玩家 [ 播放器 8 ][ 侧    ] / [ 资料区 8 ][   栏   ]
       */}
       <div className="grid gap-8 lg:grid-cols-12">
-        <div className={cx('w-full', watchLayout ? 'lg:col-span-8' : 'lg:col-span-12')}>
+        <div className={cx('w-full', twoColumn ? 'lg:col-span-8' : 'lg:col-span-12')}>
           <GameAgeGuard
                 /*
                   门卫拦下来时画的也是个 16:9 的框，得和播放器一样宽 ——
@@ -348,6 +351,8 @@ export function GameDetailPage() {
                   liveInvite={liveInvite}
                   autoStart={autoStart}
                 livePanelSlot={watchLayout ? livePanelSlot : null}
+                matchPanelSlot={matchLayout ? matchPanelSlot : null}
+                onMatchPlayerChange={setMatchPlayer}
                   icon={game.icon}
                   // 这一款指定的核心（街机尤其需要），以及平台级 BIOS（Neo Geo 缺了起不来）
                   core={game.core}
@@ -545,11 +550,11 @@ export function GameDetailPage() {
             className={cx(
               'space-y-8 lg:col-span-4',
               /*
-                看直播时侧栏要和**播放器**顶边齐（参考图那样），所以显式排到第 9 列、从第 1 行
+                看直播或联机时侧栏要和**播放器**顶边齐，所以显式排到第 9 列、从第 1 行
                 起跨两行。不写的话自动排版是这样的：播放器占 8 列落在第 1 行、资料区 8 列放不下
                 → 第 2 行、侧栏再补到第 2 行右边 —— 侧栏就跑到标题旁边去了，和播放器差一整行。
               */
-              watchLayout && 'lg:col-start-9 lg:row-start-1 lg:row-span-2',
+              twoColumn && 'lg:col-start-9 lg:row-start-1 lg:row-span-2',
               immersive && 'hidden',
             )}
           >
@@ -565,6 +570,8 @@ export function GameDetailPage() {
             */}
             {watchLayout ? (
               <div ref={setLivePanelSlot} className="lg:sticky lg:top-20" />
+            ) : matchLayout ? (
+              <div ref={setMatchPanelSlot} className="lg:sticky lg:top-20" />
             ) : (
               <>
               <div className="rounded-2xl border border-line bg-surface p-5">

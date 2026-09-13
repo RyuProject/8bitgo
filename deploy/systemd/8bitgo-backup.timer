@@ -1,0 +1,12 @@
+[Unit]
+Description=每 6 小时备份数据库到 R2（每天一次 RPO 太粗，改 6h）
+# 默认每 6 小时一次，保留 30 天（在 8bitgo-backup.sh 的 KEEP_REMOTE_DAYS 里调）。
+# 最坏丢失从 24h 降到 6h。
+
+[Timer]
+OnCalendar=*-*-* 0/6:00:00
+Persistent=true
+Unit=8bitgo-backup.service
+
+[Install]
+WantedBy=timers.target

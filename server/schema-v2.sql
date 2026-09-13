@@ -349,6 +349,28 @@ CREATE TABLE IF NOT EXISTS users (
   KEY idx_role (role, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ---------- 应用中心 ----------
+-- 一张表管三个模块：kind=sdk 官方 SDK、kind=app APP 下载、kind=community 社区上架。
+-- 下载方式二选一：download_url 填外链，或把安装包传 R2 后把 key 存进同一列。
+-- submitter_name / submitter_contact 只给社区条目用（上架时记一笔是谁提交的）。
+CREATE TABLE IF NOT EXISTS apps (
+  id              INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  kind            ENUM('sdk','app','community') NOT NULL,
+  name            VARCHAR(120)  NOT NULL,
+  platform        VARCHAR(40)   NOT NULL DEFAULT '',
+  version         VARCHAR(40)   NULL,
+  description     TEXT           NULL,
+  download_url    VARCHAR(500)  NULL,
+  icon            VARCHAR(200)  NULL,
+  sort_order      SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  published       TINYINT(1)    NOT NULL DEFAULT 1,
+  submitter_name  VARCHAR(80)   NULL,
+  submitter_contact VARCHAR(200) NULL,
+  created_at      TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at      TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_apps_kind_published (kind, published, sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ---------- 稍后玩（v1 叫「收藏」）----------
 -- 改用 game_id 外键：删游戏时数据库自己级联，不再需要应用层去清孤儿行
 CREATE TABLE IF NOT EXISTS favorites (

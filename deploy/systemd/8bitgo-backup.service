@@ -1,0 +1,11 @@
+[Unit]
+Description=8BitGo 数据库备份 → Cloudflare R2
+After=network-online.target mysql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+# 复用既有的备份脚本（rclone → R2，自带校验）。
+# rclone 的 R2 remote 名叫 r2；若叫别的，用 R2_REMOTE=... 覆盖（见 8bitgo-backup.sh）。
+ExecStart=/var/www/8bitgo/deploy/backup/8bitgo-backup.sh
