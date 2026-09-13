@@ -20,11 +20,11 @@ export function renderMarkdown(source: string, opts?: { embeds?: boolean }): Rea
 function renderBlock(block: string, key: number, embeds: boolean): ReactNode {
   if (!block) return null
 
-  // 游戏内嵌：整块就是一个 <iframe>，且 src 指向本站 /embed/
-  if (embeds && /^<iframe\b[\s\S]*<\/iframe>$/i.test(block)) {
-    const node = renderEmbed(block, key)
+  // 游戏内嵌：整块或夹在段落里的 <iframe src="/embed/..."> 都拎出来渲染成可玩框。
+  if (embeds && /<iframe\b/i.test(block)) {
+    const node = renderEmbedBlock(block, key)
     if (node) return node
-    // 没过校验就当普通文字处理，不要凭空丢内容
+    // 没过校验（比如外站、别的标签）就当普通文字处理，不要凭空丢内容
   }
 
   const lines = block.split('\n')
@@ -72,6 +72,35 @@ function renderBlock(block: string, key: number, embeds: boolean): ReactNode {
 function attr(src: string, name: string): string | undefined {
   const m = src.match(new RegExp(`${name}\\s*=\\s*["']([^"']*)["']`, 'i'))
   return m ? m[1] : undefined
+}
+
+/** 一段文字里可能夹着一个 /embed/ 的 iframe：把 iframe 单独渲染成可玩框，前后的文字照常排。 */
+function renderEmbedBlock(block: string, key: number): ReactNode | null {
+  // 整块都是 iframe 的最老写法：直接渲染（过不了校验就退回文字）
+  if (/^<iframe\b[\s\S]*<\/iframe>$/i.test(block)) {
+    return renderEmbed(block, key)
+  }
+  // 否则按 iframe 切一刀：前面 / 后面是普通文字，中间是嵌入框。
+  // 用 div 装而不是 <p> —— 嵌入框是块级元素，塞进 <p> 非法，浏览器会把 <p> 截断。
+  const parts = block.split(/(<iframe\b[\s\S]*?<\/iframe>)/i)
+  let valid = false
+  const nodes = parts
+    .map((part, j) => {
+      if (!part) return null
+      if (/^<iframe\b/i.test(part)) {
+        const node = renderEmbed(part, key * 1000 + j)
+        if (node) {
+          valid = true
+          return node
+        }
+        // 非法 iframe 当普通文字（不 innerHTML，安全）
+        return <span key={j}>{inline(part)}</span>
+      }
+      if (!part.trim()) return null
+      return <span key={j}>{inline(part)}</span>
+    })
+    .filter(Boolean)
+  return valid ? <div key={key}>{nodes}</div> : null
 }
 
 /** 只认同源 /embed/ 的 iframe，其余一律返回 null（当文字处理） */
