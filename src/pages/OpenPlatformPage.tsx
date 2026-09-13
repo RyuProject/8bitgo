@@ -13,12 +13,14 @@ import { romUrlForKey } from '@/services/roms'
 import {
   addTester,
   createMyApp,
+  deleteMyApp,
   myApp,
   myApps,
   patchMyApp,
   removeTester,
   revokeSecret,
   rotateSecret,
+  sandboxRomSamples,
   SCOPE_LABELS,
   SELF_SERVE,
   statusLabel,
@@ -27,6 +29,7 @@ import {
   type OpenApp,
   type OpenAppDetail,
   type SecretIssued,
+  type SandboxRomSample,
 } from '@/services/openApps'
 
 /**
@@ -175,6 +178,8 @@ export function OpenPlatformPage() {
               ))}
             </ul>
           )}
+
+          <SandboxSampleList />
 
           <p className="mt-8 text-[11px] leading-relaxed text-dim">
             接口文档见 <Link to="/about" className="underline underline-offset-2">关于页</Link> 里的开放平台一节。
@@ -344,6 +349,25 @@ function EmptyApps({ onCreate }: { onCreate: () => void }) {
   )
 }
 
+function SandboxSampleList() {
+  const [samples, setSamples] = useState<SandboxRomSample[]>([])
+  const [error, setError] = useState('')
+  useEffect(() => {
+    void sandboxRomSamples().then((r) => setSamples(r.items)).catch((e) => setError(e instanceof Error ? e.message : String(e)))
+  }, [])
+  return (
+    <section className="mt-6 rounded-2xl border border-line bg-surface p-4 text-xs">
+      <h3 className="text-sm font-semibold">沙箱 ROM 测试游戏</h3>
+      <p className="mt-1 text-dim">申请 games.rom 后，无需审核即可用 AppKey 领取下列游戏的下载凭据；上产审批通过后才可访问全库。</p>
+      {error ? <p className="mt-2 text-live">样本目录暂时不可用：{error}</p> : samples.length ? (
+        <ul className="mt-2 grid gap-1 sm:grid-cols-2">
+          {samples.map((s) => <li key={s.platform}><code>{s.platform}</code> · {s.title} <code className="text-dim">({s.slug})</code></li>)}
+        </ul>
+      ) : <p className="mt-2 text-dim">站长尚未配置测试样本。</p>}
+    </section>
+  )
+}
+
 /* ---------------- 一个应用（卡片） ---------------- */
 
 function AppCard({ app, open, onToggle, onChanged }: { app: OpenApp; open: boolean; onToggle: () => void; onChanged: () => void }) {
@@ -382,6 +406,24 @@ function AppCard({ app, open, onToggle, onChanged }: { app: OpenApp; open: boole
     }
   }
 
+  const remove = async () => {
+    const warning =
+      app.status === 'live'
+        ? `「${app.name}」已上产，删除会让所有用户掉线、所有 AppKey 立刻失效。确定继续吗？`
+        : `确定删除「${app.name}」吗？应用和所有 AppKey、授权、审核记录都会被清除，不可恢复。`
+    if (!confirm(warning)) return
+    setBusy('delete')
+    setErr('')
+    try {
+      await deleteMyApp(app.id)
+      onChanged()
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy('')
+    }
+  }
+
   return (
     <li className="overflow-hidden rounded-2xl border border-line bg-surface transition hover:border-line-strong">
       <button type="button" onClick={onToggle} className="flex w-full items-center gap-3 px-4 py-3.5 text-left">
@@ -406,7 +448,7 @@ function AppCard({ app, open, onToggle, onChanged }: { app: OpenApp; open: boole
 
       {/* 速览统计 */}
       <div className="flex flex-wrap gap-2 px-4 pb-3">
-        <Stat label="已生效权限" value={String(app.approvedScopes.length)} />
+        <Stat label="已审核权限" value={String(app.approvedScopes.length)} />
         <Stat label="限流" value={`${app.limits.qps} QPS`} />
         <Stat label="类型" value={app.clientType === 'public' ? '公开' : '机密'} />
       </div>
@@ -421,7 +463,7 @@ function AppCard({ app, open, onToggle, onChanged }: { app: OpenApp; open: boole
           )}
 
           <div className="grid gap-3 sm:grid-cols-2">
-            <Info label="已生效的权限">
+            <Info label="已审核通过的权限">
               {app.approvedScopes.length ? app.approvedScopes.map((s) => <code key={s} className="mr-1.5">{s}</code>) : <span className="text-dim">无</span>}
             </Info>
             <Info label="申请中的权限">
@@ -436,6 +478,11 @@ function AppCard({ app, open, onToggle, onChanged }: { app: OpenApp; open: boole
             </Info>
             <Info label="客户端类型">{app.clientType === 'public' ? '公开（无 Key）' : '机密（有 Key）'}</Info>
           </div>
+          {app.status === 'sandbox' && app.requestedScopes.includes('games.rom') && (
+            <p className="rounded-lg bg-brand-soft px-3 py-2 text-xs leading-relaxed">
+              沙箱可用 <code>games.rom</code> 测试上方列出的逐机型样本；全库 ROM 仍需审核。修改权限后请重新获取访问令牌。
+            </p>
+          )}
 
           {/* AppID 复制 */}
           <div className="flex items-center gap-2">
@@ -544,9 +591,14 @@ function AppCard({ app, open, onToggle, onChanged }: { app: OpenApp; open: boole
                   className="w-full rounded-lg border border-line bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand"
                   placeholder="例：我在做一个红白机游戏的聚合导航站，游戏详情页用嵌入播放器让访客直接玩…"
                 />
-                <Button size="sm" disabled={busy !== '' || note.trim().length < 30} onClick={() => void run('submit', () => submitForReview(app.id, note.trim()))}>
-                  {busy === 'submit' ? '提交中…' : '提交审核'}
-                </Button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button size="sm" disabled={busy !== '' || note.trim().length < 30} onClick={() => void run('submit', () => submitForReview(app.id, note.trim()))}>
+                    {busy === 'submit' ? '提交中…' : '提交审核'}
+                  </Button>
+                  <Button size="sm" variant="danger" disabled={busy !== ''} onClick={() => void remove()}>
+                    {busy === 'delete' ? '删除中…' : '删除应用'}
+                  </Button>
+                </div>
               </div>
             )}
           </section>
@@ -739,8 +791,8 @@ function CreateForm({ onCancel, onDone }: { onCancel: () => void; onDone: (r: Se
       <div>
         <p className="text-xs font-semibold">要用到的权限</p>
         <p className="mt-1 text-[11px] leading-relaxed text-dim">
-          打勾的会写进申请单。其中 <b>games.read</b> 现在就给你，
-          其余的等申请上产时一起审 —— 勾上不影响你先把沙箱跑起来。
+          打勾的会写进申请单。<b>games.read</b> 立即可用；勾选 <b>games.rom</b> 后，
+          沙箱可下载逐机型测试样本，访问全库仍需审核。其余权限等申请上产时审核。
         </p>
         <div className="mt-2 grid gap-1.5 sm:grid-cols-2">
           {ALL_SCOPES.map((s) => (
@@ -748,7 +800,7 @@ function CreateForm({ onCancel, onDone }: { onCancel: () => void; onDone: (r: Se
               <input type="checkbox" checked={scopes.includes(s)} onChange={() => toggle(s)} className="mt-0.5" />
               <span className="min-w-0">
                 <code className="font-semibold">{s}</code>
-                {!SELF_SERVE.includes(s) && <span className="ml-1 rounded bg-coin-soft px-1 text-[10px] text-coin">需审核</span>}
+                {!SELF_SERVE.includes(s) && <span className="ml-1 rounded bg-coin-soft px-1 text-[10px] text-coin">{s === 'games.rom' ? '全库需审核' : '需审核'}</span>}
                 <span className="block text-dim">{SCOPE_LABELS[s]}</span>
               </span>
             </label>
@@ -817,6 +869,7 @@ const DOC_ENDPOINT_GROUPS: { title: string; items: DocEndpoint[] }[] = [
       { method: 'GET', path: '/v1/games', access: '公开', desc: '分页查游戏', detail: '支持 platform、genre、q、sort、lang、page、page_size、requires_windows。返回 items、page、page_size、total、total_pages；所有筛选均在分页和 total 计算前完成。' },
       { method: 'GET', path: '/v1/games/:slug', access: '公开', desc: '游戏详情', detail: '返回单个游戏对象；可传 lang。不存在、下架或成人内容统一返回 404 not_found。' },
       { method: 'GET', path: '/v1/platforms', access: '公开', desc: '平台与本地模拟器建议', detail: '返回 items，包含 id、runtime、core、romExtensions、enabled 和 native{runnable,emulator,note}。DOS 下的 Windows 游戏还要看游戏对象的 requires_windows；不能仅凭 platform=dos 判断能否运行。' },
+      { method: 'GET', path: '/v1/rom-samples', access: '公开', desc: '沙箱 ROM 测试游戏', detail: '返回每个已配置机型的一款样本 {platform,slug,title}；不含存储 key。未审核应用申请 games.rom 后可领取这些样本的下载凭据。' },
       { method: 'GET', path: '/v1/genres', access: '公开', desc: '类型枚举', detail: '返回 items：{id,name}。类型 id 可传给游戏列表的 genre。' },
       { method: 'GET', path: '/v1/languages', access: '公开', desc: '语言枚举', detail: '返回 items：{code,label,english}。语言码可传给 lang。' },
       { method: 'GET', path: '/v1/collections', access: '公开', desc: '合集列表', detail: '分页返回 {items,page,page_size,total,total_pages}。' },
@@ -829,9 +882,9 @@ const DOC_ENDPOINT_GROUPS: { title: string; items: DocEndpoint[] }[] = [
   {
     title: '应用令牌 · AppID + AppKey',
     items: [
-      { method: 'POST', path: '/v1/token', access: 'AppID + AppKey', desc: '换 15 分钟访问令牌', detail: '请求体用 JSON 或 x-www-form-urlencoded；grant_type=client_credentials。scope 只能取已获批的应用级权限。不传 scope 时返回已获批的全部应用级权限。' },
+      { method: 'POST', path: '/v1/token', access: 'AppID + AppKey', desc: '换 15 分钟访问令牌', detail: '请求体用 JSON 或 x-www-form-urlencoded；grant_type=client_credentials。沙箱申请 games.rom 后可取该 scope，但仅限测试样本；响应 rom_access 为 samples/full/none。' },
       { method: 'GET', path: '/v1/me', access: '有效令牌', desc: '自查令牌和权限', detail: '返回 client_id、kind、user_id、scope、expires_at；403 时先用它核对令牌类型与 scope。' },
-      { method: 'GET', path: '/v1/games/:slug/rom', access: 'games.rom', desc: '领取 ROM 下载凭据', detail: '可传 lang；仅匹配所选语言或通用件 *，不会改用另一门语言。返回 {url,expires_in:300,lang_actual,filename}。' },
+      { method: 'GET', path: '/v1/games/:slug/rom', access: 'games.rom', desc: '领取 ROM 下载凭据', detail: '沙箱只允许 /v1/rom-samples 所列游戏，其余返回 403 sandbox_resource_only；审核通过可访问全库。可传 lang；返回 {url,expires_in:300,lang_actual,filename}。' },
       { method: 'GET', path: '/v1/rom/:grant', access: '下载凭据', desc: '兑现 ROM 凭据', detail: '上一步返回的 url 就是此端点；不再带 Bearer，跟随 302 跳转下载。凭据 5 分钟过期，最多兑现 10 次。' },
       { method: 'GET', path: '/v1/games/:slug/embed', access: 'games.read', desc: '获取嵌入播放器地址', detail: '返回 {url,expires_in,allow}。当前嵌入页未强制验证签名，不能把地址当作访问控制。' },
     ],
@@ -1001,7 +1054,7 @@ function DocsPanel() {
             <DocSection title="第二步 · 需要授权时取令牌">
               <p className="text-muted">ROM 下载凭据、嵌入地址、令牌自查和用户数据需要令牌。先在左侧创建应用，保存只显示一次的 AppKey：</p>
               <DocCode code="curl -u 'APP_ID:APP_KEY' -d grant_type=client_credentials 'https://8bitgo.com/api/open/v1/token'" />
-              <p className="text-muted">令牌有效期 15 分钟。后续请求带 <code className="text-fg">Authorization: Bearer &lt;access_token&gt;</code>；需要 ROM 时应用还须获批 <code className="text-fg">games.rom</code>。</p>
+              <p className="text-muted">令牌有效期 15 分钟。后续请求带 <code className="text-fg">Authorization: Bearer &lt;access_token&gt;</code>。沙箱申请 <code className="text-fg">games.rom</code> 即可下载 <code>/v1/rom-samples</code> 中的样本；全库需审核通过。</p>
               <p className="text-dim">公开接口不带 Authorization 就能读；带了无效或过期令牌会返回 <code className="text-fg">401 invalid_token</code>。</p>
             </DocSection>
             <DocSection title="第三步 · 读取玩家数据">
@@ -1126,7 +1179,7 @@ function DocsPanel() {
             <DocSection title="本页接口使用的 Scope">
               <ul className="space-y-1">
                 <li><code className="text-fg">games.read</code> <span className="rounded bg-brand-soft px-1 text-brand-hover">自助</span> <span className="text-dim">嵌入地址需要；公开游戏目录不需要</span></li>
-                <li><code className="text-fg">games.rom</code> <span className="rounded bg-coin/20 px-1 text-coin">需审核</span> <span className="text-dim">领取 ROM 下载凭据</span></li>
+                <li><code className="text-fg">games.rom</code> <span className="rounded bg-coin/20 px-1 text-coin">全库需审核</span> <span className="text-dim">沙箱可领逐机型样本的 ROM 下载凭据</span></li>
                 <li><code className="text-fg">library.read</code> <span className="rounded bg-coin/20 px-1 text-coin">需审核</span> <span className="text-dim">用户级，需设备码流程</span></li>
                 <li><code className="text-fg">saves.read</code> <span className="rounded bg-coin/20 px-1 text-coin">需审核</span> <span className="text-dim">用户级，需设备码流程</span></li>
               </ul>

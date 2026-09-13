@@ -32,7 +32,7 @@ import { sendChatWithAck } from './chatSend'
 import type { Broadcast } from './broadcast'
 import { matchLocalArcadeHack } from './arcadeHack'
 import type { DosExtraSource } from '@/lib/dosExtras'
-import type { LiveSession, LiveViewState } from './adapters/liveview'
+import type { LiveSession } from './adapters/liveview'
 import type { NetplaySession } from './adapters/emulatorjs'
 import type { CloudSession, CloudState } from './adapters/cloudgame'
 import { p2pPlayable, cloudPlayable } from './paths'
@@ -52,7 +52,7 @@ import { useT, fmt } from '@/services/i18n'
 import { platformLabel } from '@/services/i18nData'
 import { ROM_LANG_LABEL, type RomLang } from '@/config/languages'
 import { FEATURES } from '@/config/features'
-import { desktopScreenAspect, liveStageStyle, mobileScreenAspect, stageHeightCap } from './screenAspect'
+import { desktopScreenAspect, liveStageStyle, mobileScreenAspect, stableLiveGeometry, stageHeightCap } from './screenAspect'
 import { recordPlay } from '@/services/store'
 import { recordRecent } from '@/services/auth'
 import { onMatchRequest } from '@/services/matchRequest'
@@ -822,8 +822,9 @@ export function EmulatorPlayer({
    *     给它 aspectRatio 会把后两段挤出去；而 390 宽的屏幕对 NES 只有 1.5 倍，压根不糊；
    *   · 普通分支（非全屏、非游玩布局）—— 那两种形态是玩家主动要求铺满视口的。
    *
-   * `geometry` 来自 liveview 上报的 `video.videoWidth/Height`（那一路以前从不上报，
-   * 09-11 补的）—— 注意**这是流的尺寸，不是游戏的原生尺寸**：主播推出去的画面是
+   * `geometry` 来自 liveview 上报的 `video.videoWidth/Height`（09-11 才补的），
+   * 但观众只保留本局见过的最大有效尺寸：WebRTC 网络降档会把解码尺寸缩小，
+   * 不能让播放器跟着缩。注意**这是流的尺寸，不是游戏的原生尺寸**：主播推出去的画面是
    * 他自己画布的大小（384×224 的街机实测推的是 2079×1098），所以第一版只按
    * 「流宽 × 3」限大小的那条上限在线上是空转的。现在是两条上限取小：
    * 流宽 × LIVE_MAX_SCALE，和一条不看流的绝对宽度 LIVE_MAX_WIDTH_PX。
@@ -1303,21 +1304,12 @@ export function EmulatorPlayer({
   const [liveRoster, setLiveRoster] = useState<LiveViewerEntry[]>([])
   /** 主播叫什么。`notice` 里那句是给提示条用的拼接串，面板要的是干净的名字 */
   const [liveHostName, setLiveHostName] = useState<string | null>(null)
-  const [liveState, setLiveState] = useState<LiveViewState | null>(null)
   /**
    * 主播切到后台了 —— 画面是**冻结**不是断开。
-   * 和 liveState 分开存：状态机那边只能报成 host-away，而「掉线了等它回来」
-   * 和「切到后台画面暂停」对观众来说是两件事，措辞不能混。
+   * 浏览器不给后台标签页出帧，这是浏览器行为；观众这侧把这一帧冻着，
+   * 用一层模糊的遮罩盖住（见播放器里的 liveHostPaused 浮层），比直接黑屏友好。
    */
   const [liveFrozen, setLiveFrozen] = useState(false)
-  /**
-   * 观众这一侧的链路判断（见 adapters/liveview.ts 的 LinkQuality）。
-   *
-   * 只在判断**不是 ok** 时才留着 —— 一切正常的时候观众席徽章上不该多一格字。
-   * 存的是 verdict 而不是整个统计：界面上要说的就是「谁的问题」，
-   * 帧率和丢包率是给控制台看的。
-   */
-  const [liveLink, setLiveLink] = useState<'local' | 'host' | null>(null)
 
   // 云端 ROM 也按其文件扩展名选引擎；还没拿到地址时退回平台默认
   const pageRuntime = resolveRuntime({ platform: platform.id, ext: extOf(romUrl) })
@@ -1521,7 +1513,7 @@ export function EmulatorPlayer({
       },
       onGeometry: (next) => {
         if (!isCurrent()) return
-        setGeometry(next)
+        setGeometry((current) => session.live ? stableLiveGeometry(current, next) : next)
       },
       onScreenLayout: (next) => {
         if (!isCurrent()) return
@@ -2075,7 +2067,6 @@ export function EmulatorPlayer({
       setNotice(null)
       setLiveViewers(0)
       setLiveFrozen(false)
-      setLiveState('connecting')
       // 换一间看：上一间的联机房号跟这一间无关，不清的话「加入联机」会指向别人的房间
       setLiveNetplayRoom(null)
       // begin() 里那两行同样要做：不清的话遮罩会用上一局的阶段和起始时间算进度，
@@ -2100,7 +2091,6 @@ export function EmulatorPlayer({
           onViewers: setLiveViewers,
           // 名单和人数分开报：徽章只要那个数，面板要名字（见 LiveWatchPanel）
           onRoster: setLiveRoster,
-          onState: setLiveState,
           onInfo: (info) => {
             setNotice(info.hostName ? `${info.title} · ${info.hostName}` : info.title)
             // 面板要的是干净的名字，不是上面那句拼好的提示
@@ -2125,16 +2115,8 @@ export function EmulatorPlayer({
             })
             setCoopAsking(false)
           },
-          onLinkQuality: (q) => {
-            setLiveLink(q.verdict === 'ok' ? null : q.verdict)
-            // 细节留给控制台：界面上说清「谁的问题」就够了，堆数字只会让人更慌
-            if (q.verdict !== 'ok') {
-              console.info(`[live] 链路 ${q.verdict}：${q.fps}fps，丢包 ${(q.loss * 100).toFixed(1)}%，RTT ${q.rttMs}ms`)
-            }
-          },
         },
       })
-      setLiveLink(null)
       setStatus('loading')
     },
     [platform.id],
@@ -2735,13 +2717,15 @@ export function EmulatorPlayer({
   }, [status])
 
   const statusLabel =
-    status === 'running'
-      ? t.player.statusRunning
-      : status === 'loading'
-        ? t.player.statusLoading
-        : status === 'error'
-          ? t.player.statusError
-          : t.player.statusIdle
+    watchingLive && status === 'running'
+      ? t.player.statusLive
+      : status === 'running'
+        ? t.player.statusRunning
+        : status === 'loading'
+          ? t.player.statusLoading
+          : status === 'error'
+            ? t.player.statusError
+            : t.player.statusIdle
 
   /** 空闲态主按钮 */
   const primaryAction = () => {
@@ -2982,6 +2966,24 @@ export function EmulatorPlayer({
                 ) : (
                   <span className="font-semibold text-white">{t.player.coopLost}</span>
                 )}
+              </div>
+            </div>
+          )}
+
+          {/*
+            主播切到后台 / 暂时离开：画面被浏览器冻住不是断开。盖一层轻微模糊的遮罩，
+            中间告诉观众「主播暂时离开」，别让冻结的最后一帧孤零零地晾着。
+            只在真的在看（已连上、在跑）时出现；连接中 / 出错那两个态各有自己的遮罩。
+            模糊交给 backdrop-blur —— 它直接糊住背后的冻结帧，比再叠一张图省事。
+          */}
+          {watchingLive && status === 'running' && liveFrozen && (
+            <div className="absolute inset-0 z-30 flex items-center justify-center backdrop-blur-sm">
+              <div className="absolute inset-0 bg-black/40" aria-hidden />
+              <div className="relative flex flex-col items-center gap-2 px-6 text-center">
+                <span aria-hidden className="text-3xl drop-shadow sm:text-4xl">
+                  🚪
+                </span>
+                <span className="text-base font-semibold text-white/90 sm:text-lg">{t.runtime.liveHostLeft}</span>
               </div>
             </div>
           )}
@@ -3348,7 +3350,9 @@ export function EmulatorPlayer({
             */
             'inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-semibold max-sm:hidden',
             status === 'running'
-              ? 'bg-online/15 text-online'
+              ? watchingLive
+                ? 'bg-live/15 text-live'
+                : 'bg-online/15 text-online'
               : status === 'loading'
                 ? 'bg-brand-soft text-brand-hover'
                 : status === 'error'
@@ -3356,7 +3360,12 @@ export function EmulatorPlayer({
                   : 'bg-white/5 text-muted',
           )}
         >
-          <span className={cx('h-1.5 w-1.5 rounded-full', status === 'running' ? 'bg-online' : 'bg-current')} />
+          <span
+            className={cx(
+              'h-1.5 w-1.5 rounded-full',
+              status === 'running' ? (watchingLive ? 'bg-live' : 'bg-online') : 'bg-current',
+            )}
+          />
           <span className="hidden sm:inline">{statusLabel}</span>
         </span>
 
@@ -3473,30 +3482,6 @@ export function EmulatorPlayer({
             // DOS 读档 = 原地重开这一局（见 restartSession）
             onRestart={restartSession}
           />
-        )}
-
-        {/* 观众席：直播间的人数和状态 */}
-        {session?.live && (
-          <span className="inline-flex items-center gap-1 rounded-md bg-live/15 px-2 py-1 font-semibold text-live">
-            📡 {fmt(t.player.tools.liveOn, { n: String(liveViewers) })}
-            {/* 过渡态给人话，别把 'reconnecting' 这种英文状态名直接糊上去 */}
-            {liveFrozen && <span className="font-normal text-muted">· {t.runtime.liveHostHidden}</span>}
-            {!liveFrozen && liveState === 'host-away' && (
-              <span className="font-normal text-muted">· {t.runtime.liveHostAway}</span>
-            )}
-            {liveState === 'reconnecting' && <span className="font-normal text-muted">· {t.runtime.liveReconnecting}</span>}
-            {liveState === 'connecting' && <span className="font-normal text-muted">· …</span>}
-            {/*
-              画面卡的时候，说清是谁的问题。这两件事该做的动作完全相反 ——
-              自己网差换个网络有用，主播扛不住换网络没用，只能等或者少看一会儿。
-              只在真的在看（没冻结、没掉线）时显示，否则会和上面那几句叠着说。
-            */}
-            {liveLink && !liveFrozen && liveState === 'watching' && (
-              <span className="font-normal text-muted">
-                · {liveLink === 'local' ? t.runtime.liveLinkLocal : t.runtime.liveLinkHost}
-              </span>
-            )}
-          </span>
         )}
 
         {/*

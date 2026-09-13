@@ -16,7 +16,7 @@
 | 你要做的 | 状态 | 说明 |
 |---|---|---|
 | 拉游戏列表 / 详情 | ✅ **可用，且不需要 AppID** | 2026-09-13 起整个目录公开匿名可读，连令牌都不用取。固件里可以直接 GET |
-| 下载 ROM 到设备 | ✅ **可用** | `games.rom`，但这个 scope **要人工审核**才批；另见下面的 ⚠️ |
+| 下载 ROM 到设备 | ✅ **可用** | 未审核应用申请 `games.rom` 后，每个已配置机型可下载一款站长选定的测试游戏；完整游戏库需审核。另见下面的 ⚠️ |
 | 云存档**读取** | ✅ **可用**（2026-09-12 加的） | `saves.read`，用户级 scope。要先走**设备码流程**拿一枚用户级令牌，见 §6.5 |
 | 收藏 / 最近在玩 | ✅ **可用**（2026-09-12 加的） | `library.read`，同上 |
 | 云存档**写入** | ❌ 还没有 | `saves.write` 在 `scopes.js` 里标着 sensitive，这一轮只做了只读。写入要连着配额、覆盖保护、删除审计一起想清楚 |
@@ -75,6 +75,7 @@
 | `GET` | `/v1/collections/:id` | **公开** | 单个合集 + 里面的游戏（游戏走白名单映射） |
 | `GET` | `/v1/games/:slug/rom` | `games.rom` | 换 ROM 短期下载凭据（两步式第一步） |
 | `GET` | `/v1/rom/:grant` | — | 兑现 ROM 凭据（两步式第二步，302 不带 `Authorization`） |
+| `GET` | `/v1/rom-samples` | 公开 | 查看沙箱允许下载的逐机型测试游戏 |
 | `GET` | `/v1/games/:slug/embed` | `games.read` | 换带签名、会过期的嵌入播放器地址 |
 | `GET` | `/v1/me` | 要令牌 | 自查令牌的 `client_id` / `scope` / `expires_at` |
 | `GET` | `/v1/library` | `library.read` | 用户收藏 / 最近在玩（用户级令牌） |
@@ -202,8 +203,9 @@ grant_type=client_credentials&client_id=app_xxxx&client_secret=yyyy
 | **放 body**（推荐，ESP 上最省事） | `client_id` / `client_secret` 两个字段写在 JSON 里 |
 | **HTTP Basic** | `Authorization: Basic base64(client_id + ":" + client_secret)`，body 里只留 `grant_type`。⚠️ 两段按 RFC 6749 §2.3.1 要先做 URL 编码 |
 
-`scope` 字段**可以不传**：不传就给「已获批 ∩ 应用级」的全部。
-传了就必须是已获批的子集 —— **不会静默降级**，少一个就整个请求 400，
+`scope` 字段**可以不传**：不传就给当前可用的应用级权限。
+未审核应用若在申请里选择了 `games.rom`，也能取到这个 scope，但只能下载
+`GET /v1/rom-samples` 列出的游戏。传入的 scope 必须是当前可用权限的子集 —— **不会静默降级**，少一个就整个请求 400，
 错误信息里会写明差哪个。
 
 ### 响应 `200`
@@ -213,11 +215,13 @@ grant_type=client_credentials&client_id=app_xxxx&client_secret=yyyy
   "access_token": "eyJ...",
   "token_type": "Bearer",
   "expires_in": 900,
-  "scope": "games.read games.rom"
+  "scope": "games.read games.rom",
+  "rom_access": "samples"
 }
 ```
 
 `expires_in` = **900 秒**（`open/tokens.js` 的 `OPEN_ACCESS_TTL_SEC`）。
+`rom_access` 对应用级令牌是 `none`、`samples` 或 `full`；审核通过并获批 `games.rom` 后为 `full`。
 
 ### 设备端缓存策略
 
@@ -367,7 +371,10 @@ GET /api/open/v1/games?platform=dos&requires_windows=false
 
 ## 6. ROM：两步式短期凭据
 
-需要 `games.rom`（**这个 scope 要人工审核**；自助创建的应用只有 `games.read`）。
+需要 `games.rom`。未审核应用在创建或编辑时申请该 scope，即可下载
+`GET /v1/rom-samples` 中站长为每个机型选定的一款测试游戏；申请其他游戏会收到
+`403 sandbox_resource_only`。完整游戏库须通过人工审核。某机型尚未配置合法样本时，目录里不会出现该机型。
+样本由站长全站统一选定，开发者不能自行指定，以免反复创建应用逐款下载整个游戏库。
 
 ### 第一步：换凭据 `GET /v1/games/:slug/rom?lang=ja`
 
@@ -532,7 +539,8 @@ GET /api/open/v1/games?platform=dos&requires_windows=false
 | **带令牌**的接口 · 按 AppID | **3600** | 1 小时 | `open:api:<app_id>` |
 | **匿名**（公开接口）· 按 IP | **300** | 1 分钟 | `open:pub:ip:<ip>` |
 | **匿名** · 全站兜底 | **3000** | 1 分钟 | `open:pub:global` |
-| ROM 换凭据 · 按 AppID | **600** | 1 小时 | `open:rom:<app_id>` |
+| ROM 换凭据 · 沙箱按 AppID | **10** | 1 小时 | `open:rom:sandbox:<app_id>` |
+| ROM 换凭据 · 上产按 AppID | **600** | 1 小时 | `open:rom:<app_id>` |
 | ROM **兑现** · 按票 | 10 | 5 分钟（= 票的寿命） | `open:romdl:<grant>` |
 | ROM **兑现** · 按 IP | 60 | 1 分钟 | `open:romdl:ip:<ip>` |
 
@@ -542,7 +550,7 @@ GET /api/open/v1/games?platform=dos&requires_windows=false
 > 那种情况下代码会**跳过按 IP 那一道**（宁可放宽也不误伤真实用户），
 > 全站那一道就成了唯一的下限。所以两档缺一不可。
 >
-> 📌 **一张 ROM 凭据最多兑 10 次。** 上面 600/小时 那道限的是**领票**，不是**兑票** ——
+> 📌 **一张 ROM 凭据最多兑 10 次。** 上面的 10/小时或 600/小时限的是**领票**，不是**兑票** ——
 > 领一张之后在它活着的五分钟里兑多少次，2026-09-13 之前完全不设限。
 > 正常一次就够，10 次是留给断点续传和失败重试的余量。
 >
@@ -553,7 +561,7 @@ GET /api/open/v1/games?platform=dos&requires_windows=false
 > 「沙箱 QPS 5 / 日 10 000，生产 QPS 50 / 日 200 000，按 tier 可调」，
 > 而代码里是**不分 tier 的固定小时桶**：`rate_tier` 字段查出来了
 > （`open/apps.js` 的 `authenticateApp`），但没有任何地方用它。
-> 按代码写固件：**平均 1 QPS，ROM 一小时 600 张凭据**。
+> 按代码写固件：**平均 1 QPS，沙箱 ROM 一小时 10 张凭据，上产一小时 600 张**。
 
 平均下来普通接口约 1 QPS。设备端正常轮询（几分钟一次）离这个上限很远，
 但**开机时连续翻页**很容易短时间打满 —— 列表拉完就缓存在 Flash/NVS 里，别每次开机重拉。
@@ -589,6 +597,8 @@ GET /api/open/v1/games?platform=dos&requires_windows=false
 | 401 | `invalid_client` | AppID 或 key 不对。⚠️ 两种失败**回同一句话**（防 AppID 枚举），别指望从这里区分 |
 | 401 | `invalid_token` | 令牌无效或过期 → 续一次，重试一次 |
 | 403 | `insufficient_scope` | 令牌没这个权限。响应里带 `scope` 字段告诉你差哪个 |
+| 403 | `sandbox_resource_only` | 沙箱申请了 `games.rom`，但这款不在测试样本目录；或站长已撤换样本 |
+| 403 | `app_not_authorized` | 应用已停用，或当前 ROM 权限已被撤销 |
 | 403 | `invalid_grant` | ROM 凭据签名不对 |
 | 404 | `not_found` | 没这款游戏（下架 / 成人 / 真不存在，对外不区分） |
 | 404 | `rom_unavailable` | 这款游戏没有可下载的 ROM |

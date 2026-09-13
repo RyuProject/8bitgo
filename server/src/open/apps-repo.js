@@ -247,6 +247,19 @@ export async function removeTester(appId, userId) {
 }
 
 /**
+ * 删除整个应用（仅开发者自己可删，路由层用 ownApp 鉴权）。
+ *
+ * 库里有多个外键指向 oauth_apps.id 并带 ON DELETE CASCADE：
+ *   oauth_app_secrets / oauth_authorizations / oauth_codes / oauth_tokens /
+ *   oauth_app_reviews / oauth_app_testers
+ * 所以主表一行删除会把 key、授权、审核流水、测试白名单一起清掉。
+ */
+export async function deleteApp(appId) {
+  const r = await query('DELETE FROM oauth_apps WHERE id = ?', [String(appId)])
+  return Number(r?.affectedRows ?? 0) > 0
+}
+
+/**
  * 这个用户能不能给这个应用授权。
  *
  * **沙箱应用只认申请人自己 + 白名单** —— 这一条是「先沙箱后审核」这个模型的立足点：

@@ -33,9 +33,9 @@ export interface OpenApp {
   /** 申请的权限里有用户级 scope —— 有就必须先登记回调地址才提交得了审核（服务端算的） */
   needsRedirect: boolean
   embedOrigins: string[]
-  /** 现在真的能用的 */
+  /** 人工审核通过或自助批准的；沙箱 games.rom 样本权限另看 requestedScopes。 */
   approvedScopes: string[]
-  /** 申请了、还没批的 */
+  /** 申请了的权限；其中 games.rom 在沙箱可访问站长指定的样本。 */
   requestedScopes: string[]
   status: AppStatus
   reviewState: ReviewState
@@ -73,6 +73,22 @@ export interface OpenAppReview {
   detail: string
   at: string | null
   actor: string
+}
+
+export interface SandboxRomSample {
+  platform: string
+  slug: string
+  title: string
+}
+
+export interface SandboxRomPlatform {
+  id: string
+  name: string
+  enabled: boolean
+}
+
+export async function sandboxRomSamples(): Promise<{ items: SandboxRomSample[] }> {
+  return api.get('/api/open/v1/rom-samples')
 }
 
 export interface OpenAppDetail {
@@ -120,6 +136,10 @@ export async function patchMyApp(id: string, patch: Partial<OpenAppInput>): Prom
   return api.patch(`/api/open-apps/${encodeURIComponent(id)}`, patch)
 }
 
+export async function deleteMyApp(id: string): Promise<{ ok: boolean }> {
+  return api.del(`/api/open-apps/${encodeURIComponent(id)}`)
+}
+
 export async function rotateSecret(id: string): Promise<SecretIssued> {
   return api.post(`/api/open-apps/${encodeURIComponent(id)}/secrets`, {})
 }
@@ -154,6 +174,14 @@ export interface ReviewQueueItem extends OpenApp {
 
 export async function reviewQueue(state = 'pending'): Promise<{ items: ReviewQueueItem[]; sensitiveScopes: string[] }> {
   return api.get(`/api/admin/open-apps?state=${encodeURIComponent(state)}`, true)
+}
+
+export async function reviewRomSamples(): Promise<{ platforms: SandboxRomPlatform[]; items: SandboxRomSample[] }> {
+  return api.get('/api/admin/open-apps/rom-samples', true)
+}
+
+export async function setReviewRomSample(platform: string, slug: string): Promise<{ items: SandboxRomSample[] }> {
+  return api.put(`/api/admin/open-apps/rom-samples/${encodeURIComponent(platform)}`, { slug }, true)
 }
 
 export async function reviewApp(id: string): Promise<OpenAppDetail & { app: ReviewQueueItem; sensitive: string[] }> {
@@ -194,7 +222,7 @@ export const SCOPE_LABELS: Record<string, string> = {
   profile: '昵称、头像',
   email: '邮箱',
   'games.read': '游戏元数据、封面、嵌入地址',
-  'games.rom': 'ROM 短期下载凭据',
+  'games.rom': '沙箱可下载逐机型测试样本；访问全库需审核',
   'library.read': '读收藏与最近在玩',
   'library.write': '写收藏与最近在玩',
   'saves.read': '读云存档',

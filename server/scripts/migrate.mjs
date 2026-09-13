@@ -802,9 +802,21 @@ const patches = [
     needed: async () => !(await hasColumn('game_roms', 'dos_executable')),
     run: () => conn.query('ALTER TABLE `game_roms` ADD COLUMN `dos_executable` VARCHAR(255) NULL AFTER `object_key`'),
   },
+  {
+    name: 'open_rom_samples（开放平台每机型一款沙箱测试 ROM）',
+    table: null,
+    skip: async () => (!(await hasTable('game_roms')) ? '还没有 v2 的 game_roms 表' : null),
+    needed: async () => !(await hasTable('open_rom_samples')),
+    run: () => conn.query(`CREATE TABLE IF NOT EXISTS open_rom_samples (
+      platform VARCHAR(20) NOT NULL PRIMARY KEY,
+      game_id BIGINT UNSIGNED NOT NULL,
+      UNIQUE KEY uniq_sample_game (game_id),
+      CONSTRAINT fk_ors_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`),
+  },
 ]
 
-const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'login_codes', 'platform_bios', 'game_plays', 'developers', 'friend_links', 'friend_link_hits', 'game_comments', 'game_ratings', 'oauth_apps']
+const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'login_codes', 'platform_bios', 'game_plays', 'developers', 'friend_links', 'friend_link_hits', 'game_comments', 'game_ratings', 'oauth_apps', 'open_rom_samples']
 
 try {
   /*

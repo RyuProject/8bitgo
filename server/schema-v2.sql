@@ -245,6 +245,16 @@ CREATE TABLE IF NOT EXISTS game_roms (
   CONSTRAINT fk_gr_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ---------- 开放平台沙箱 ROM 样本 ----------
+-- 每个平台至多一款，且只由站长选可供第三方测试的游戏。
+-- 不按应用分别选：否则反复建应用就能把整库拼出来。
+CREATE TABLE IF NOT EXISTS open_rom_samples (
+  platform VARCHAR(20) NOT NULL PRIMARY KEY,
+  game_id  BIGINT UNSIGNED NOT NULL,
+  UNIQUE KEY uniq_sample_game (game_id),
+  CONSTRAINT fk_ors_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ---------- 游玩去重名单 ----------
 -- games.plays 这个数字的来源。一个身份对一款游戏只有一行，主键就是去重规则本身：
 -- 重复上报会撞唯一键，直接被数据库挡掉，不需要应用层「先查再写」（那中间有并发窗口）。

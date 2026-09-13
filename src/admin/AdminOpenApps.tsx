@@ -6,12 +6,16 @@ import {
   rejectApp,
   restoreApp,
   reviewApp,
+  reviewRomSamples,
   reviewQueue,
+  setReviewRomSample,
   statusLabel,
   suspendApp,
   SCOPE_LABELS,
   type OpenAppReview,
   type ReviewQueueItem,
+  type SandboxRomPlatform,
+  type SandboxRomSample,
 } from '@/services/openApps'
 
 /**
@@ -86,6 +90,8 @@ export function AdminOpenApps() {
         </Button>
       </header>
 
+      <SandboxRomSamples />
+
       {loading ? (
         <p className="text-sm text-muted">加载中…</p>
       ) : err ? (
@@ -102,6 +108,76 @@ export function AdminOpenApps() {
         </ul>
       )}
     </div>
+  )
+}
+
+function SandboxRomSamples() {
+  const [platforms, setPlatforms] = useState<SandboxRomPlatform[]>([])
+  const [items, setItems] = useState<SandboxRomSample[]>([])
+  const [drafts, setDrafts] = useState<Record<string, string>>({})
+  const [busy, setBusy] = useState('')
+  const [err, setErr] = useState('')
+
+  const load = useCallback(async () => {
+    try {
+      const data = await reviewRomSamples()
+      setPlatforms(data.platforms)
+      setItems(data.items)
+      setDrafts(Object.fromEntries(data.platforms.map((p) => [p.id, data.items.find((s) => s.platform === p.id)?.slug ?? ''])))
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    }
+  }, [])
+
+  useEffect(() => { void load() }, [load])
+
+  const save = async (platform: string) => {
+    setBusy(platform)
+    setErr('')
+    try {
+      const result = await setReviewRomSample(platform, (drafts[platform] ?? '').trim())
+      setItems(result.items)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy('')
+    }
+  }
+
+  return (
+    <section className="rounded-xl border border-line bg-surface p-4 text-xs">
+      <h2 className="text-sm font-semibold">沙箱 ROM 测试样本</h2>
+      <p className="mt-1 leading-relaxed text-dim">
+        每个已开放机型最多指定一款，所有未审核应用共用。只选你确认有权向第三方提供测试下载的游戏；留空并保存可撤销。
+        HTML5 没有 ROM，PS2 当前不提供整盘下载。
+      </p>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        {platforms.map((p) => {
+          const saved = items.find((s) => s.platform === p.id)
+          const draft = drafts[p.id] ?? ''
+          return (
+            <div key={p.id} className="rounded-lg border border-line p-2.5">
+              <label htmlFor={`rom-sample-${p.id}`} className="block font-semibold">{p.name} <code className="text-dim">{p.id}</code>{!p.enabled && ' · 未开放'}</label>
+              <div className="mt-1.5 flex gap-2">
+                <input
+                  id={`rom-sample-${p.id}`}
+                  value={draft}
+                  onChange={(e) => setDrafts((prev) => ({ ...prev, [p.id]: e.target.value }))}
+                  disabled={!p.enabled || busy !== ''}
+                  placeholder="游戏 slug"
+                  className="min-w-0 flex-1 rounded border border-line bg-surface-2 px-2 py-1.5 outline-none focus:border-brand"
+                />
+                <Button size="sm" disabled={!p.enabled || busy !== '' || draft.trim() === (saved?.slug ?? '')} onClick={() => void save(p.id)}>
+                  {busy === p.id ? '保存中…' : '保存'}
+                </Button>
+              </div>
+              {saved && <p className="mt-1 truncate text-dim">当前：{saved.title} · {saved.slug}</p>}
+            </div>
+          )
+        })}
+      </div>
+      {err && <p className="mt-2 text-live">{err}</p>}
+    </section>
   )
 }
 

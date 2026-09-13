@@ -18,6 +18,7 @@ import {
   appForOwner,
   countAppsOfOwner,
   createApp,
+  deleteApp,
   getApp,
   issueSecret,
   listAppsOfOwner,
@@ -188,6 +189,17 @@ openAppsRouter.patch('/:id', async (req, res, next) => {
 
     await patchApp(app.id, patch)
     res.json({ app: appForOwner(await getApp(app.id)) })
+  } catch (e) {
+    next(e)
+  }
+})
+
+openAppsRouter.delete('/:id', async (req, res, next) => {
+  try {
+    const app = await ownApp(req, res)
+    if (!app) return
+    await deleteApp(app.id)
+    res.json({ ok: true })
   } catch (e) {
     next(e)
   }

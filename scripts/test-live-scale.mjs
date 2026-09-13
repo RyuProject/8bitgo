@@ -25,6 +25,7 @@ import {
   LIVE_MAX_WIDTH_PX,
   STAGE_CAP_EXPR,
   liveStageStyle,
+  stableLiveGeometry,
   stageHeightCap,
 } from '../src/emulator/screenAspect.ts'
 
@@ -50,6 +51,30 @@ const DOS = { width: 640, height: 480 }
 const NDS_STACK = { width: 256, height: 384 }
 
 /* ---------------- 一、算出来的尺寸 ---------------- */
+
+check('⚠️ 网络降分辨率只降画质，播放器宽高保持不变；恢复画质也不会跳动', () => {
+  const initial = stableLiveGeometry(null, NES)
+  const originalStyle = liveStageStyle(initial, false)
+  const degraded = stableLiveGeometry(initial, { width: 128, height: 120 })
+  assert.equal(degraded, initial, '收到低分辨率时不该把舞台改小')
+  assert.deepEqual(liveStageStyle(degraded, false), originalStyle)
+  const recovered = stableLiveGeometry(degraded, NES)
+  assert.equal(recovered, initial, '画质恢复到原档时不该重新布局')
+  assert.deepEqual(liveStageStyle(recovered, false), originalStyle)
+  assert.equal(stableLiveGeometry(initial, { width: 2, height: 2 }), initial, '废帧不能改布局')
+})
+
+check('真正更大的画面与双屏等像素布局仍可更新，换场后能重建尺寸', () => {
+  assert.deepEqual(stableLiveGeometry(NDS_STACK, { width: 512, height: 192 }), { width: 512, height: 192 })
+  assert.deepEqual(stableLiveGeometry(NES, DOS), DOS)
+  assert.deepEqual(stableLiveGeometry(null, GB), GB, '新一场直播不继承上一场的播放器尺寸')
+})
+
+check('观众端采用稳定几何，主播端仍然跟随核心上报的尺寸', () => {
+  const src = code('src/emulator/EmulatorPlayer.tsx')
+  assert.match(src, /session\.live \? stableLiveGeometry\(current, next\) : next/)
+  assert.match(src, /setGeometry\(null\)/, '换场必须清掉旧直播的尺寸')
+})
 
 check('按原生分辨率的整数倍限大小', () => {
   const s = liveStageStyle(NES, false)
@@ -252,13 +277,18 @@ check('⚠️ watchLayout 由 URL 的 ?live= 决定，不是运行时的 session
 })
 
 check('⚠️ 沉浸模式优先：那时侧栏是收起的，播放器该吃满 12 列', () => {
-  assert.match(GDP, /const watchLayout = Boolean\(liveInvite\) && !immersive/, '沉浸模式下还在按 8 列排')
+  assert.match(GDP, /const watchLayout = Boolean\(liveInvite\) && !matchPlayer && !immersive/, '沉浸模式下还在按 8 列排')
 })
 
-check('看直播时播放器缩到 8 列，自己玩时满宽 12 列', () => {
+check('看直播或联机时播放器缩到 8 列，自己玩时满宽 12 列', () => {
   assert.match(
     GDP,
-    /cx\('w-full', watchLayout \? 'lg:col-span-8' : 'lg:col-span-12'\)/,
+    /const twoColumn = watchLayout \|\| matchLayout/,
+    '两种侧栏布局必须共用同一判断',
+  )
+  assert.match(
+    GDP,
+    /cx\('w-full', twoColumn \? 'lg:col-span-8' : 'lg:col-span-12'\)/,
     '播放器那一层的列宽不对',
   )
 })
@@ -268,7 +298,7 @@ check('⚠️ 侧栏要显式排到第 9 列、第 1 行、跨两行', () => {
     不写这一条的话自动排版是：播放器 8 列落第 1 行 → 资料区 8 列放不下落第 2 行 →
     侧栏补到第 2 行右边。结果侧栏和**标题**齐平，比播放器矮一整行 —— 正是参考图里没有的样子。
   */
-  assert.match(GDP, /watchLayout && 'lg:col-start-9 lg:row-start-1 lg:row-span-2'/, '侧栏没有显式定位')
+  assert.match(GDP, /twoColumn && 'lg:col-start-9 lg:row-start-1 lg:row-span-2'/, '侧栏没有显式定位')
 })
 
 check('⚠️ 播放器只能有一处 JSX —— 两套版面绝不能写成两套 JSX', () => {

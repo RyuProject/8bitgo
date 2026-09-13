@@ -47,7 +47,7 @@
           },
           "client_id": { "type": "string", "description": "AppID" },
           "client_secret": { "type": "string", "description": "AppKey" },
-          "scope": { "type": "string", "description": "可选，空格分隔；不传=已获批全部。必须是子集，不静默降级" },
+          "scope": { "type": "string", "description": "可选，空格分隔；不传=当前可用的应用级权限。沙箱申请 games.rom 后仅可下载 /v1/rom-samples 中的样本；整库需要审核" },
           "device_code": { "type": "string", "description": "仅 device_code 流程需要" }
         },
         "required": ["grant_type", "client_id", "client_secret"]
@@ -58,7 +58,8 @@
           "access_token": { "type": "string" },
           "token_type": { "type": "string", "const": "Bearer" },
           "expires_in": { "type": "integer", "description": "秒，固定 900" },
-          "scope": { "type": "string", "description": "空格分隔的 scope 串" }
+          "scope": { "type": "string", "description": "空格分隔的 scope 串" },
+          "rom_access": { "type": "string", "enum": ["none", "samples", "full"], "description": "仅 client_credentials 响应提供：无 ROM、沙箱样本或完整游戏库" }
         },
         "required": ["access_token", "token_type", "expires_in"]
       },
@@ -388,6 +389,20 @@
         }
       }
     },
+    "/v1/rom-samples": {
+      "get": {
+        "tags": ["catalog"],
+        "summary": "未审核应用可下载的逐机型 ROM 测试样本",
+        "security": [{}, { "openToken": [] }],
+        "responses": {
+          "200": {
+            "description": "成功；items 只含已配置样本的平台、游戏 slug 与标题",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "items": { "type": "array", "items": { "type": "object", "properties": { "platform": { "type": "string" }, "slug": { "type": "string" }, "title": { "type": "string" } }, "required": ["platform", "slug", "title"] } } }, "required": ["items"] } } }
+          },
+          "401": { "description": "带了 Authorization 头但令牌无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
     "/v1/genres": {
       "get": {
         "tags": ["catalog"],
@@ -477,7 +492,7 @@
           },
           "404": { "description": "游戏不存在 / 无可用 ROM", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "401": { "description": "令牌无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
-          "403": { "description": "缺 games.rom 或未启用", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+          "403": { "description": "缺 games.rom、应用已停用，或沙箱申请了非样本游戏", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
         }
       }
     },
@@ -510,7 +525,7 @@
         ],
         "responses": {
           "302": { "description": "302 重定向到 ROM 下载地址（跟随到 assets 主机，凭据 5 分钟过期）" },
-          "403": { "description": "凭据无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "凭据无效、应用已停用，或沙箱样本已撤换", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "410": { "description": "凭据已过期", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
         }
       }

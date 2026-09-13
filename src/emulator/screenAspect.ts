@@ -1,5 +1,6 @@
 import type { PlatformId } from '@/types'
 import { isDualScreen } from './dualScreen'
+import { usableVideoSize } from './videoTuning'
 
 /**
  * 各平台画面的原生宽高比，只在**移动端**用来决定播放器画面区的高度。
@@ -223,7 +224,28 @@ export const LIVE_MAX_SCALE = 3
 export const LIVE_MAX_WIDTH_PX = 880
 
 /**
- * 观众端舞台的 inline style。`undefined` = 还不知道流多大，**不猜**（照常走类名那一套）。
+ * 观众端只让真正变大的流更新舞台尺寸；网络降档时只让视频在原框里变糊。
+ * WebRTC 的 videoWidth/Height 是**解码后的动态尺寸**，带宽不足会缩成一半，
+ * 若直接拿它重算 maxWidth，视频和播放器就一起缩；网络恢复时又一起放大。
+ * 同像素数但比例变了仍更新，以便 NDS 两块屏在上下叠和并排间切换。
+ */
+export function stableLiveGeometry(
+  previous: { width: number; height: number } | null,
+  next: { width: number; height: number },
+): { width: number; height: number } | null {
+  const w = Number(next.width)
+  const h = Number(next.height)
+  if (!usableVideoSize(w, h)) return previous
+  if (!previous) return next
+  const area = w * h
+  const previousArea = previous.width * previous.height
+  if (area < previousArea || (w === previous.width && h === previous.height)) return previous
+  return next
+}
+
+/**
+ * 观众端舞台的 inline style。传入观看期间保留的布局几何，网络降档不修改它。
+ * `undefined` = 还不知道流多大，**不猜**（照常走类名那一套）。
  *
  * 三件事一起做，缺一件都不对：
  *

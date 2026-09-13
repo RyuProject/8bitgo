@@ -24,6 +24,8 @@ import {
 } from '../open/apps-repo.js'
 import { approve, reject, restore, sensitiveAsks, suspend } from '../open/review.js'
 import { SENSITIVE_SCOPES } from '../open/scopes.js'
+import { OPEN_PLATFORMS } from '../open/platforms.js'
+import { listSandboxRomSamples, setSandboxRomSample } from '../open/sandbox-roms.js'
 
 /**
  * 这次审核动作记在谁名下。
@@ -77,6 +79,40 @@ adminOpenAppsRouter.get('/', async (req, res, next) => {
       })),
       sensitiveScopes: [...SENSITIVE_SCOPES],
     })
+  } catch (e) {
+    next(e)
+  }
+})
+
+/**
+ * 沙箱样本是全站共用的；站长选一款，各个未审核应用才能测同一款。
+ * 只允许上架、非成人、已绑定 ROM 的游戏，避免把未准备好的内容列给开发者。
+ */
+adminOpenAppsRouter.get('/rom-samples', async (req, res, next) => {
+  try {
+    res.json({
+      platforms: OPEN_PLATFORMS.filter((p) => p.native.runnable).map((p) => ({ id: p.id, name: p.nameZh, enabled: p.enabled })),
+      items: await listSandboxRomSamples(),
+    })
+  } catch (e) {
+    next(e)
+  }
+})
+
+adminOpenAppsRouter.put('/rom-samples/:platform', async (req, res, next) => {
+  try {
+    const platform = OPEN_PLATFORMS.find((p) => p.id === req.params.platform && p.native.runnable)
+    if (!platform) return bad(res, 'bad_platform', '这个平台不提供完整 ROM 下载')
+    if (!platform.enabled) return bad(res, 'platform_disabled', '这个平台尚未开放，不能设沙箱样本')
+    const slug = String(req.body?.slug ?? '').trim()
+    if (slug.length > 120) return bad(res, 'bad_slug', '游戏 slug 太长')
+    try {
+      await setSandboxRomSample(platform.id, slug)
+    } catch (e) {
+      if (e?.code === 'invalid_rom_sample') return bad(res, e.code, e.message)
+      throw e
+    }
+    res.json({ items: await listSandboxRomSamples() })
   } catch (e) {
     next(e)
   }

@@ -39,7 +39,16 @@ register('data:text/javascript,' + encodeURIComponent(`
   }
 `))
 
-const DB = { users: [], apps: [], secrets: [], reviews: [], testers: [] }
+const DB = {
+  users: [], apps: [], secrets: [], reviews: [], testers: [],
+  games: [
+    { id: 101, slug: 'sample-nes', title: '测试用 NES 游戏', platform: 'nes', hidden: 0, adult: 0 },
+    { id: 102, slug: 'other-nes', title: '另一款 NES 游戏', platform: 'nes', hidden: 0, adult: 0 },
+    { id: 103, slug: 'hidden-nes', title: '下架游戏', platform: 'nes', hidden: 1, adult: 0 },
+  ],
+  roms: [{ game_id: 101 }, { game_id: 102 }, { game_id: 103 }],
+  samples: [],
+}
 let reviewSeq = 0
 const clone = (o) => ({ ...o })
 
@@ -48,6 +57,28 @@ globalThis.__fakeDb = {
   async query(sql, params = []) {
     const q = String(sql).replace(/\s+/g, ' ').trim()
     const p = params
+
+    if (q.startsWith('SELECT s.platform, g.slug, g.title FROM open_rom_samples')) {
+      return DB.samples.flatMap((sample) => {
+        const game = DB.games.find((g) => g.id === sample.game_id && g.platform === sample.platform && !g.hidden && !g.adult)
+        return game && DB.roms.some((r) => r.game_id === game.id)
+          ? [{ platform: sample.platform, slug: game.slug, title: game.title }]
+          : []
+      })
+    }
+    if (q.startsWith('SELECT g.id FROM games g WHERE g.slug = ? AND g.platform = ?')) {
+      return DB.games.filter((g) => g.slug === p[0] && g.platform === p[1] && !g.hidden && !g.adult && DB.roms.some((r) => r.game_id === g.id))
+    }
+    if (q.startsWith('INSERT INTO open_rom_samples')) {
+      const existing = DB.samples.find((s) => s.platform === p[0])
+      if (existing) existing.game_id = p[1]
+      else DB.samples.push({ platform: p[0], game_id: p[1] })
+      return { affectedRows: 1 }
+    }
+    if (q.startsWith('DELETE FROM open_rom_samples')) {
+      DB.samples = DB.samples.filter((s) => s.platform !== p[0])
+      return { affectedRows: 1 }
+    }
 
     if (q.startsWith('SELECT * FROM users WHERE id')) return DB.users.filter((u) => u.id === p[0])
     if (q.startsWith('SELECT id, status FROM users WHERE email')) return DB.users.filter((u) => u.email === p[0])
@@ -253,6 +284,18 @@ const check = async (name, fn) => {
 const LONG_NOTE = '我在做一个红白机游戏的聚合导航站，想把 8BitGo 的游戏库嵌进去让访客直接玩，同时用 8BitGo 账号登录同步收藏。'
 
 console.log('\n一、建应用：当场进沙箱，当场发一把 key')
+
+await check('沙箱 ROM 样本只能由管理员按机型指定，且须是已上架并绑定 ROM 的游戏', async () => {
+  assert.equal((await call('PUT', '/api/admin/open-apps/rom-samples/nes', { body: { slug: 'sample-nes' } })).status, 403)
+  assert.equal((await call('PUT', '/api/admin/open-apps/rom-samples/nes', { who: 'admin', body: { slug: 'hidden-nes' } })).body.code, 'invalid_rom_sample')
+  assert.equal((await call('PUT', '/api/admin/open-apps/rom-samples/nes', { who: 'admin', body: { slug: 'sample-nes' } })).status, 200)
+  const replaced = await call('PUT', '/api/admin/open-apps/rom-samples/nes', { who: 'admin', body: { slug: 'other-nes' } })
+  assert.deepEqual(replaced.body.items, [{ platform: 'nes', slug: 'other-nes', title: '另一款 NES 游戏' }])
+  assert.equal(DB.samples.length, 1, '同一机型设第二款时，旧样本必须被替换')
+  assert.equal((await call('PUT', '/api/admin/open-apps/rom-samples/html5', { who: 'admin', body: { slug: 'sample-nes' } })).body.code, 'bad_platform')
+  const cleared = await call('PUT', '/api/admin/open-apps/rom-samples/nes', { who: 'admin', body: { slug: '' } })
+  assert.deepEqual(cleared.body.items, [])
+})
 
 let APP_ID = ''
 await check('⚠️ 敏感 scope 自助拿不到，只进「申请中」', async () => {

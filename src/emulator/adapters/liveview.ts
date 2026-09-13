@@ -385,7 +385,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   /*
     主播换游戏 / 换布局时流的分辨率会变（NDS 切上下叠、从 NES 换到 DOS）。
-    `resize` 正是「这条轨的尺寸变了」，不挂的话观众端会一直按第一帧那个尺寸限大小。
+    `resize` 正是「这条轨的尺寸变了」，不挂的话观众端无法跟上游戏布局变大。
+    上层会保留本局见过的最大有效尺寸；带宽导致的缩小不再牵着播放器一起缩。
   */
   video.addEventListener('resize', reportSize)
 
@@ -1146,4 +1147,3 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     },
   }
 }
-

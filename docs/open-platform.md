@@ -285,7 +285,7 @@ RS256 签名（不是 HS256）。理由：公开客户端手里没有 secret，�
 | `profile` | 昵称、头像、注册时间 | 否（登录的最小集） | P0 |
 | `email` | 邮箱 + 是否已验证 | 可 | P0 |
 | `games.read` | **嵌入播放器地址**（元数据和封面 2026-09-13 起公开，见 §3.1） | —（应用级，不涉及用户） | P0 |
-| `games.rom` | **ROM 的短期下载凭据** | —（应用级） | P0.5，**需人工审核** |
+| `games.rom` | **ROM 的短期下载凭据**；未审核时仅限站长指定的逐机型样本 | —（应用级） | P0.5，整库需人工审核 |
 | `library.read` | 收藏列表、最近在玩 | 可 | P1 |
 | `library.write` | 加/取消收藏、写最近在玩 | 可 | P1 |
 | `saves.read` | 列出、下载云存档 | 可 | P2 |
@@ -294,7 +294,7 @@ RS256 签名（不是 HS256）。理由：公开客户端手里没有 secret，�
 ### 3.1 哪些东西根本不需要 scope（2026-09-13）
 
 游戏目录**整个改成公开匿名可读**：`/v1/games`、`/v1/games/{slug}`、
-`/v1/platforms`、`/v1/genres`、`/v1/languages`、`/v1/live/rooms*`、`/v1/collections*`。
+`/v1/platforms`、`/v1/rom-samples`、`/v1/genres`、`/v1/languages`、`/v1/live/rooms*`、`/v1/collections*`。
 
 为什么：这些数据在 8bitgo.com 上本来就是**任何人打开浏览器就能看到**的，
 站内的 `/api/games`、`/api/collections`、`/api/live/rooms` 也一直是匿名可读的同一批内容。
@@ -306,7 +306,7 @@ RS256 签名（不是 HS256）。理由：公开客户端手里没有 secret，�
 
 | 还要令牌的 | 为什么 |
 |---|---|
-| `/v1/games/{slug}/rom` （`games.rom`） | 按 GB 计费的东西，而且是「把整库游戏本体带出站」 |
+| `/v1/games/{slug}/rom` （`games.rom`） | 按 GB 计费；未审核应用只准下载 `/v1/rom-samples` 列出的测试游戏，整库须审核 |
 | `/v1/games/{slug}/embed` （`games.read`） | 嵌入地址要绑到具体应用上做归因和签名 |
 | `/v1/library`、`/v1/saves*` | 别人的数据 |
 | `/v1/me` | 它的全部作用就是自查手里那枚令牌 |
@@ -353,10 +353,10 @@ Content-Type: application/json
 { "grant_type": "client_credentials",
   "client_id": "app_0123456789abcdef01234567",
   "client_secret": "…",
-  "scope": "games.read games.rom" }        ← 可省；省了就给「已获批 ∩ 应用级」的全部
+  "scope": "games.read games.rom" }        ← 可省；省了就给当前可用的应用级权限
 
 → { "access_token": "eyJ…", "token_type": "Bearer", "expires_in": 900,
-    "scope": "games.read games.rom" }
+    "scope": "games.read games.rom", "rom_access": "samples" }
 ```
 
 `Authorization: Basic base64(client_id:client_secret)` 也认 —— 现成的 OAuth 库默认发这一种，
@@ -488,9 +488,11 @@ GET /api/open/v1/games/contra/rom?lang=ja      （scope: games.rom）
 
 #### 版权与计量
 
-- ROM 一律**逐个应用人工审核**（`games.rom` 是敏感 scope，自助创建拿不到）。
-  审的不是技术，是「这家凭什么分发这些文件」。
-- ROM 单独一层配额（默认 600 次/小时/应用），和元数据那层分开：这是整套接口里
+- 未审核应用申请 `games.rom` 后，只能下载 `/v1/rom-samples` 中站长选定的逐机型样本；
+  完整游戏库仍逐个应用人工审核。站长只配置确认有权向第三方提供测试下载的游戏。
+- 上线这项功能先运行 `cd server && npm run migrate` 建 `open_rom_samples` 表，
+  再在后台「开放平台 · 应用审核」逐机型填写游戏 slug。空表不会自动放出任何 ROM 样本。
+- ROM 单独一层配额（沙箱 10 次/小时/应用，上产 600 次/小时/应用），和元数据那层分开：这是整套接口里
   唯一按 GB 计费的东西。
 - 想更进一步（按款控制哪些 ROM 可分发），加一列 `games.rom_open` 逐款勾选 ——
   设计上留了位置，本期不做。

@@ -150,6 +150,14 @@ export function ChatButton() {
 
   const badge = imUnreadLabel(unread)
   const label = badge ? `${t.topbar.chat} · ${badge}` : t.topbar.chat
+  /**
+   * 初始化中（首次连接，或断线后的重连）。
+   *
+   * **只认 'connecting'**，不能拿 `!imReady()` 去判 —— off / error / kicked /
+   * unavailable 这四档恰恰要留着那颗**可点的气泡**：点了能看到状态面板，
+   * 连不上时面板里还有「重试」。把它们一起画成转圈，等于把唯一的出口也转没了。
+   */
+  const loading = status === 'connecting'
 
   return (
     <div ref={ref} className="relative">
@@ -243,6 +251,7 @@ export function ChatButton() {
         aria-label={label}
         aria-haspopup={imReady() ? undefined : 'dialog'}
         aria-expanded={placeholder || undefined}
+        aria-busy={loading || undefined}
         className={cx(
           // z-10：长条是绝对定位的，不抬一手会盖在按钮上面把点击吃掉
           'relative z-10 grid h-9 w-9 place-items-center rounded-lg border border-line bg-surface transition hover:border-brand/60 hover:text-brand',
@@ -251,10 +260,27 @@ export function ChatButton() {
           preview && 'border-brand/60 text-brand',
         )}
       >
-        {/* 气泡。用 SVG 而不是 emoji：emoji 在各系统上大小和基线差得多，这是个 36px 的方钮，差一点就歪了 */}
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-          <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
-        </svg>
+        {/*
+          连上之前画一圈会转的加载环，连上（再看这行代码时就是 ready）之后换回气泡。
+
+          尺寸和气泡一致（18px 见方的容器里放 16px 的环），否则两种状态切换时按钮
+          里的东西会跳一下。用 border 画环而不是再引一个 spinner 组件 —— 项目里
+          AgeGate / PlayerChunk 也是这么画的，不为此多一个依赖。
+
+          `motion-reduce:animate-none`：转圈是纯装饰性的动效，对前庭敏感的人是负担。
+          关掉动画后它仍是一颗环，配合按钮上的 aria-busy，语义不丢。
+        */}
+        {loading ? (
+          <span
+            aria-hidden
+            className="h-4 w-4 animate-spin rounded-full border-2 border-line border-t-brand motion-reduce:animate-none"
+          />
+        ) : (
+          /* 气泡。用 SVG 而不是 emoji：emoji 在各系统上大小和基线差得多，这是个 36px 的方钮，差一点就歪了 */
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+          </svg>
+        )}
 
         {/*
           未读红点。压在按钮右上角，pointer-events-none —— 它不该把点击从按钮身上抢走。

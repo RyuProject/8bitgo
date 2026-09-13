@@ -51,6 +51,7 @@ SET FOREIGN_KEY_CHECKS = 0;
 DROP TABLE IF EXISTS game_genres;
 DROP TABLE IF EXISTS game_tags;
 DROP TABLE IF EXISTS game_roms;
+DROP TABLE IF EXISTS open_rom_samples;
 DROP TABLE IF EXISTS post_tags;
 DROP TABLE IF EXISTS favorites;
 DROP TABLE IF EXISTS recents;
@@ -246,6 +247,14 @@ CREATE TABLE IF NOT EXISTS game_roms (
   -- 后台「ROM 存储」页要反查「这个文件绑给了哪款游戏」
   KEY idx_object_key (object_key(191)),
   CONSTRAINT fk_gr_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 每个平台只给未审核应用一款站长指定的测试样本，不能由开发者自行挑选。
+CREATE TABLE IF NOT EXISTS open_rom_samples (
+  platform VARCHAR(20) NOT NULL PRIMARY KEY,
+  game_id  BIGINT UNSIGNED NOT NULL,
+  UNIQUE KEY uniq_sample_game (game_id),
+  CONSTRAINT fk_ors_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------- 博客文章 ----------

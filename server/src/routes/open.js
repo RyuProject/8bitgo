@@ -42,6 +42,7 @@ import { liveRooms, liveRoom } from '../live.js'
 import { listPublicCollections, getPublicCollection } from '../routes/collections.js'
 import { normalizeLang, pickRom } from '../open/i18n.js'
 import { ROM_GRANT_TTL_SEC, EMBED_TTL_SEC, signEmbed, signRomGrant, verifyRomGrant } from '../open/sign.js'
+import { canRedeemSandboxRom, isSandboxRomSample, listSandboxRomSamples, romAccessForApp } from '../open/sandbox-roms.js'
 
 export const openRouter = Router()
 
@@ -348,9 +349,12 @@ openRouter.post('/v1/token', tokenBody, async (req, res, next) => {
       })
     }
 
-    // 不传 scope 就给「已获批 ∩ 应用级」的全部；传了就必须是子集
+    // 不传 scope 就给当前可用的应用级权限；沙箱样本与上产全库仍由后面的状态检查区分。
     const approvedApp = app.approvedScopes.filter((s) => APP_SCOPES.includes(s))
-    let scopes = approvedApp
+    // 沙箱只把 games.rom 用于站长挑的样本；生产的 approved_scopes 仍须人工审核。
+    if (app.status === 'sandbox' && app.requestedScopes.includes('games.rom')) approvedApp.push('games.rom')
+    const availableApp = parseScopes(approvedApp.join(' ')).scopes
+    let scopes = availableApp
     if (req.body?.scope) {
       const parsed = parseScopes(req.body.scope)
       if (parsed.unknown.length) return fail(res, 400, 'invalid_scope', `不认识的 scope：${parsed.unknown.join(' ')}`)
@@ -359,7 +363,7 @@ openRouter.post('/v1/token', tokenBody, async (req, res, next) => {
         return fail(res, 400, 'invalid_scope', `${userLevel.join(' ')} 需要用户授权，不能用 client_credentials 取`)
       }
       // **不静默降级**：少给一个 scope 却照常发令牌，接入方要到线上功能失效才发现
-      const missing = missingScopes(parsed.scopes, approvedApp)
+      const missing = missingScopes(parsed.scopes, availableApp)
       if (missing.length) return fail(res, 400, 'invalid_scope', `应用未获批：${missing.join(' ')}`)
       scopes = parsed.scopes
     }
@@ -378,6 +382,7 @@ openRouter.post('/v1/token', tokenBody, async (req, res, next) => {
       token_type: 'Bearer',
       expires_in: OPEN_ACCESS_TTL_SEC,
       scope: formatScopes(scopes),
+      rom_access: scopes.includes('games.rom') ? (app.status === 'sandbox' ? 'samples' : 'full') : 'none',
     })
   } catch (e) {
     next(e)
@@ -677,6 +682,16 @@ openRouter.get('/v1/platforms', optionalApp(), (req, res) => {
   res.json({ items: OPEN_PLATFORMS })
 })
 
+/** 沙箱可测试的游戏目录。由站长指定，公开只露 slug，不露 ROM 对象 key。 */
+openRouter.get('/v1/rom-samples', optionalApp(), async (req, res, next) => {
+  try {
+    res.set('Cache-Control', 'public, max-age=30')
+    res.json({ items: await listSandboxRomSamples() })
+  } catch (e) {
+    next(e)
+  }
+})
+
 /* ---------------- 类型 / 语言目录（只读参考） ---------------- */
 
 /**
@@ -784,12 +799,20 @@ openRouter.get('/v1/games/:slug/rom', requireApp('games.rom'), async (req, res, 
   try {
     const cfg = openConfig()
     if (!cfg.romEnabled) return fail(res, 501, 'temporarily_unavailable', 'ROM 接口未启用')
+    const mode = await romAccessForApp(req.openClaims.appId)
+    if (!mode) return fail(res, 403, 'app_not_authorized', '应用已停用或没有当前 ROM 权限')
     const slug = String(req.params.slug)
     const row = await getRawGame(slug)
     if (!row) return fail(res, 404, 'not_found', '没有这款游戏')
 
+    if (mode === 'sandbox' && !(await isSandboxRomSample(row))) {
+      return fail(res, 403, 'sandbox_resource_only', '沙箱只能下载 /v1/rom-samples 列出的逐机型测试游戏')
+    }
+
     // ROM 单独一层配额：它是这套接口里唯一按 GB 计费的东西
-    const gate = take(`open:rom:${req.openClaims.appId}`, 600, 3600_000)
+    const gate = mode === 'sandbox'
+      ? take(`open:rom:sandbox:${req.openClaims.appId}`, 10, 3600_000)
+      : take(`open:rom:${req.openClaims.appId}`, 600, 3600_000)
     if (!gate.ok) return rateLimited(res, gate)
 
     const rel = await relationsFor([row])
@@ -804,6 +827,7 @@ openRouter.get('/v1/games/:slug/rom', requireApp('games.rom'), async (req, res, 
       slug,
       lang: hit.lang,
       key: hit.key,
+      mode,
     })
     res.json({
       // 凭据换成地址：注意 URL 里**没有** object key，抄走也只能下这一款、这几分钟
@@ -837,6 +861,13 @@ openRouter.get('/v1/rom/:grant', async (req, res, next) => {
     if (!v.ok) {
       const status = v.reason === 'expired' ? 410 : 403
       return fail(res, status, v.reason === 'expired' ? 'grant_expired' : 'invalid_grant', '凭据无效或已过期')
+    }
+    const currentAccess = await romAccessForApp(v.appId)
+    if (!currentAccess || (v.mode === 'live' && currentAccess !== 'live')) {
+      return fail(res, 403, 'app_not_authorized', '应用已停用或 ROM 权限已撤销')
+    }
+    if (v.mode === 'sandbox' && !(await canRedeemSandboxRom(v))) {
+      return fail(res, 403, 'sandbox_resource_only', '测试样本已变更或 ROM 已下架')
     }
     /*
       按票。正常一次就够；留到 ROM_GRANT_MAX_REDEEM 是给断点续传和失败重试的余量。

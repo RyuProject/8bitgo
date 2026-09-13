@@ -49,6 +49,7 @@ const EXPECTED_TABLES = [
   { table: 'platform_bios', why: '平台级 BIOS' },
   { table: 'game_plays', why: '游玩去重名单；缺了 POST /api/games/:slug/play 会 500，游玩数永远是 0' },
   { table: 'game_roms', why: '按语言分槽的 ROM' },
+  { table: 'open_rom_samples', why: '开放平台未审核应用的逐机型 ROM 测试样本；缺了沙箱领票和样本目录会 500' },
   { table: 'game_genres', why: '游戏分类' },
   { table: 'game_tags', why: '游戏标签' },
   { table: 'game_search_tokens', why: '搜索倒排索引' },

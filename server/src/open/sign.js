@@ -56,10 +56,11 @@ function sameSig(a, b) {
  * @param {string} o.slug     游戏
  * @param {string} o.lang     ROM 语言（'*' = 通用件）
  * @param {string} o.key      对象存储 key。**放在 payload 里但绝不单独出现在响应里**
+ * @param {'sandbox'|'live'} [o.mode] 领票时的授权档位；旧票缺该字段时按 live 复核
  * @param {number} [o.ttl]
  * @param {number} [o.now]
  */
-export function signRomGrant({ secret, appId, slug, lang, key, ttl = ROM_GRANT_TTL_SEC, now }) {
+export function signRomGrant({ secret, appId, slug, lang, key, mode = 'live', ttl = ROM_GRANT_TTL_SEC, now }) {
   if (!secret) throw new Error('缺少 OPEN_ROM_SECRET')
   const exp = Math.floor((now ?? Date.now()) / 1000) + Math.max(30, Math.floor(ttl))
   const payload = {
@@ -67,6 +68,8 @@ export function signRomGrant({ secret, appId, slug, lang, key, ttl = ROM_GRANT_T
     s: String(slug),
     l: String(lang || '*'),
     k: String(key),
+    // 兑换端不能只信「现在应用已上产」：沙箱期领的票始终只能兑样本。
+    m: mode === 'sandbox' ? 'sandbox' : 'live',
     e: exp,
     // 随机串：同一个应用同一分钟内反复领票，得到的凭据不一样 —— 便于按票追踪单次下载
     n: b64url(randomBytes(6)),
@@ -77,7 +80,7 @@ export function signRomGrant({ secret, appId, slug, lang, key, ttl = ROM_GRANT_T
 
 /**
  * 验一张 ROM 凭据。
- * @returns {{ ok: true, appId, slug, lang, key, exp } | { ok: false, reason: 'malformed'|'bad_signature'|'expired' }}
+ * @returns {{ ok: true, appId, slug, lang, key, mode, exp } | { ok: false, reason: 'malformed'|'bad_signature'|'expired' }}
  */
 export function verifyRomGrant(grant, { secret, now } = {}) {
   const [body, sig] = String(grant || '').split('.')
@@ -90,10 +93,11 @@ export function verifyRomGrant(grant, { secret, now } = {}) {
     return { ok: false, reason: 'malformed' }
   }
   if (!p?.k || !p?.a || !p?.s) return { ok: false, reason: 'malformed' }
+  if (p.m && p.m !== 'live' && p.m !== 'sandbox') return { ok: false, reason: 'malformed' }
   // ⚠️ 先验签再看过期：顺序反了的话，一张改过 e 的票会走到「过期」分支，
   // 攻击者就能从错误码里区分「签名错」和「只是过期」，那是一条信息泄露
   if (Number(p.e) * 1000 <= (now ?? Date.now())) return { ok: false, reason: 'expired' }
-  return { ok: true, appId: String(p.a), slug: String(p.s), lang: String(p.l || '*'), key: String(p.k), exp: Number(p.e) }
+  return { ok: true, appId: String(p.a), slug: String(p.s), lang: String(p.l || '*'), key: String(p.k), mode: p.m || 'live', exp: Number(p.e) }
 }
 
 /**

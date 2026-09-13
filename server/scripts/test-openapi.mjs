@@ -106,6 +106,7 @@ const ROMS = [
   { game_id: 1, lang: 'ja', object_key: 'roms/contra-ja.zip' },
   { game_id: 3, lang: 'ja', object_key: 'roms/ja-only.zip' },
 ]
+const SAMPLES = [{ platform: 'nes', game_id: 1 }]
 
 const APP = {
   id: 'app_0123456789abcdef01234567',
@@ -120,6 +121,7 @@ const APP = {
     而那正是这套权限模型的核心。
   */
   approved_scopes: 'games.read games.rom library.read saves.read',
+  requested_scopes: 'games.read games.rom library.read saves.read',
   rate_tier: 'live',
   redirect_uris: '["https://partner.example/cb"]',
   embed_origins: '["https://partner.example"]',
@@ -146,9 +148,17 @@ const APP2 = {
   */
   status: 'sandbox',
   approved_scopes: 'openid profile games.read',
+  requested_scopes: 'openid profile games.read',
   rate_tier: 'sandbox',
   redirect_uris: '["https://partner2.example/cb"]',
   embed_origins: '[]',
+}
+/** 第三个应用申请了 games.rom，但没有通过审核；只能使用站长选的样本。 */
+const APP3 = {
+  ...APP2,
+  id: 'app_222222222222222222222222',
+  name: '申请了 ROM 权限的沙箱应用',
+  requested_scopes: 'games.read games.rom',
 }
 const APP_SECRET = 'test-secret-value'
 let SECRET_HASH = ''
@@ -191,13 +201,16 @@ globalThis.__fakeDb = {
     const s = sql.replace(/\s+/g, ' ').trim()
     // authenticateApp 用的是另一套列（id, name, client_type, status, ...），和 getApp 不是一句 SQL
     if (s.startsWith('SELECT id, name, client_type, status, approved_scopes')) {
-      return [APP, APP2].filter((a) => a.id === params[0])
+      return [APP, APP2, APP3].filter((a) => a.id === params[0])
+    }
+    if (s.startsWith('SELECT status, approved_scopes, requested_scopes FROM oauth_apps')) {
+      return [APP, APP2, APP3].filter((a) => a.id === params[0])
     }
     if (s.startsWith('SELECT id, owner_id, name, description')) {
-      return [APP, APP2].filter((a) => a.id === params[0])
+      return [APP, APP2, APP3].filter((a) => a.id === params[0])
     }
     if (s.startsWith('SELECT id, secret_hash FROM oauth_app_secrets')) {
-      return [APP.id, APP2.id].includes(params[0]) ? [{ id: 's1', secret_hash: SECRET_HASH }] : []
+      return [APP.id, APP2.id, APP3.id].includes(params[0]) ? [{ id: 's1', secret_hash: SECRET_HASH }] : []
     }
     if (s.startsWith('UPDATE oauth_app_secrets')) return []
     // 同意页（/api/oauth/authorize、/api/open-device）要登录：这里给一个 id 对得上的用户
@@ -236,6 +249,25 @@ globalThis.__fakeDb = {
     if (s.startsWith('SELECT game_id, genre_id')) return GAME_GENRES.filter((r) => params.includes(r.game_id))
     if (s.startsWith('SELECT game_id, tag')) return [{ game_id: 1, tag: '经典' }]
     if (s.startsWith('SELECT game_id, lang, object_key')) return ROMS
+    if (s.startsWith('SELECT s.platform, g.slug, g.title FROM open_rom_samples')) {
+      return SAMPLES.flatMap((sample) => {
+        const game = ALL_GAMES.find((g) => g.id === sample.game_id && g.platform === sample.platform && !g.hidden && !g.adult)
+        return game && ROMS.some((rom) => rom.game_id === game.id)
+          ? [{ platform: sample.platform, slug: game.slug, title: game.title }]
+          : []
+      })
+    }
+    if (s.startsWith('SELECT 1 AS ok FROM open_rom_samples')) {
+      return SAMPLES.some((r) => r.platform === params[0] && r.game_id === params[1]) ? [{ ok: 1 }] : []
+    }
+    if (s.startsWith('SELECT s.platform FROM open_rom_samples')) {
+      return SAMPLES.flatMap((sample) => {
+        const game = ALL_GAMES.find((g) => g.id === sample.game_id && g.platform === sample.platform && g.slug === params[0] && !g.hidden && !g.adult)
+        return game && ROMS.some((rom) => rom.game_id === game.id && rom.object_key === params[1])
+          ? [{ platform: sample.platform }]
+          : []
+      })
+    }
     /* ---- 用户数据（library / saves）。同样照着 SQL 说的做，不替被测代码过滤 ---- */
     if (s.startsWith('SELECT g.slug FROM favorites')) {
       return params[0] === USER_ID ? [{ slug: 'contra' }] : []
@@ -893,6 +925,58 @@ await check('⚠️ games.read 不附带 ROM 权限（那是两个量级的风�
   const r = await api('/api/open/v1/games/contra/rom', { headers: { Authorization: `Bearer ${access_token}` } })
   assert.equal(r.status, 403)
   assert.equal((await r.json()).error, 'insufficient_scope')
+})
+
+await check('未审核应用申请 games.rom 后拿到样本权限，而不是整库权限', async () => {
+  const token = await getToken('games.read games.rom', APP3.id)
+  assert.ok(token.access_token)
+  assert.equal(token.scope, 'games.read games.rom')
+  assert.equal(token.rom_access, 'samples')
+  assert.equal((await getToken('games.rom')).rom_access, 'full')
+  const samples = await (await api('/api/open/v1/rom-samples')).json()
+  assert.deepEqual(samples.items, [{ platform: 'nes', slug: 'contra', title: 'Contra' }])
+  assert.ok(!JSON.stringify(samples).includes('roms/contra'), '公开样本目录泄露了对象 key')
+})
+
+await check('沙箱只能领样本的 ROM 凭据，不能领同机型其他游戏', async () => {
+  try {
+    const { access_token } = await getToken('games.rom', APP3.id)
+    const headers = { Authorization: `Bearer ${access_token}` }
+    const sample = await api('/api/open/v1/games/contra/rom', { headers })
+    assert.equal(sample.status, 200)
+    const { url } = await sample.json()
+    const grant = url.split('/api/open/v1/rom/')[1]
+    const redeemed = await api(`/api/open/v1/rom/${grant}`, { redirect: 'manual' })
+    assert.equal(redeemed.status, 302)
+    const other = await api('/api/open/v1/games/ja-only/rom?lang=ja', { headers })
+    assert.equal(other.status, 403)
+    assert.equal((await other.json()).error, 'sandbox_resource_only')
+
+    // 撤换样本后，已签发但未过期的沙箱票也必须立即失效。
+    SAMPLES.length = 0
+    const revoked = await api(`/api/open/v1/rom/${grant}`, { redirect: 'manual' })
+    assert.equal(revoked.status, 403)
+
+    // 旧票自身带沙箱标记，上产也不能把它变成一张不受样本限制的票。
+    APP3.status = 'live'
+    APP3.approved_scopes += ' games.rom'
+    const upgraded = await api(`/api/open/v1/rom/${grant}`, { redirect: 'manual' })
+    assert.equal(upgraded.status, 403)
+    APP3.status = 'sandbox'
+    APP3.approved_scopes = 'openid profile games.read'
+    SAMPLES.push({ platform: 'nes', game_id: 1 })
+
+    // 停用应用后，旧令牌与旧票都不能继续下载。
+    APP3.status = 'suspended'
+    const denied = await api('/api/open/v1/games/contra/rom', { headers })
+    assert.equal(denied.status, 403)
+    const stopped = await api(`/api/open/v1/rom/${grant}`, { redirect: 'manual' })
+    assert.equal(stopped.status, 403)
+  } finally {
+    APP3.status = 'sandbox'
+    APP3.approved_scopes = 'openid profile games.read'
+    SAMPLES.splice(0, SAMPLES.length, { platform: 'nes', game_id: 1 })
+  }
 })
 
 await check('有 games.rom 才给凭据，且凭据里不含对象 key', async () => {

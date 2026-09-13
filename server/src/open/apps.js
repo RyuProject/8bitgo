@@ -41,7 +41,7 @@ export async function authenticateApp(clientId, clientSecret) {
   const id = String(clientId || '')
   if (!APP_ID_RE.test(id)) return null
   const app = await queryOne(
-    'SELECT id, name, client_type, status, approved_scopes, rate_tier, embed_origins FROM oauth_apps WHERE id = ?',
+    'SELECT id, name, client_type, status, approved_scopes, requested_scopes, rate_tier, embed_origins FROM oauth_apps WHERE id = ?',
     [id],
   )
   if (!app || app.status === 'suspended') return null
@@ -71,6 +71,7 @@ export async function authenticateApp(clientId, clientSecret) {
     clientType: app.client_type,
     status: app.status,
     approvedScopes: parseScopes(app.approved_scopes).scopes,
+    requestedScopes: parseScopes(app.requested_scopes).scopes,
     rateTier: app.rate_tier || 'sandbox',
     embedOrigins: safeList(app.embed_origins),
   }
