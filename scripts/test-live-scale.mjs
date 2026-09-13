@@ -79,18 +79,18 @@ check('观众端采用稳定几何，主播端仍然跟随核心上报的尺寸'
 check('按原生分辨率的整数倍限大小', () => {
   const s = liveStageStyle(NES, false)
   assert.equal(s.maxWidth, `${256 * LIVE_MAX_SCALE}px`)
-  assert.ok(s.maxHeight.includes(`${240 * LIVE_MAX_SCALE}px`))
+  // 固定 16:9：高度从夹完的宽度按 9/16 折算
+  assert.ok(s.maxHeight.includes(`${144 * LIVE_MAX_SCALE}px`))
 })
 
-check('⚠️ 比例按**流的实际尺寸**给，不是 16:9', () => {
+check('⚠️ 观众端播放器固定 16:9，不跟着流的真实比例走', () => {
   /*
-    不给比例的话舞台还是 16:9，4:3 的流在里面 contain 一次 ——
-    maxWidth 限的是那个 16:9 的框，画面只能拿到 768 × 9/16 × 4/3 = 576 宽，
-    也就是 2.25 倍而不是 3 倍。少的那 0.75 倍正是「还是有点糊」的来源。
+    产品决定：观众端播放器一律 16:9。竖屏流 / 4:3 老主机流在画面里
+    object-fit:contain 居中留边，框不变形，详情页和列表布局也统一。
   */
-  assert.equal(liveStageStyle(NES, false).aspectRatio, '256 / 240')
-  assert.equal(liveStageStyle(NDS_STACK, false).aspectRatio, '256 / 384', '双屏上下叠是竖的')
-  assert.equal(liveStageStyle(DOS, false).aspectRatio, '640 / 480')
+  assert.equal(liveStageStyle(NES, false).aspectRatio, '16 / 9')
+  assert.equal(liveStageStyle(NDS_STACK, false).aspectRatio, '16 / 9', '双屏上下叠（竖）也收成 16:9')
+  assert.equal(liveStageStyle(DOS, false).aspectRatio, '16 / 9')
 })
 
 check('⚠️ 高度上限必须和视口上限做 min，不能顶掉它', () => {
@@ -102,7 +102,7 @@ check('⚠️ 高度上限必须和视口上限做 min，不能顶掉它', () =>
   const normal = liveStageStyle(NES, false)
   assert.match(normal.maxHeight, /^min\(/)
   assert.ok(normal.maxHeight.includes(STAGE_CAP_EXPR.normal), '少了视口那一半')
-  assert.ok(normal.maxHeight.includes('720px'), '少了分辨率那一半')
+  assert.ok(normal.maxHeight.includes(`${144 * LIVE_MAX_SCALE}px`), '少了分辨率那一半')
   // 沉浸模式那一档用的是另一个视口预算（顶栏藏了）
   const imm = liveStageStyle(NES, true)
   assert.ok(imm.maxHeight.includes(STAGE_CAP_EXPR.immersive))
@@ -153,18 +153,18 @@ check('⚠️ 两条上限取小的那个 —— 小源仍然走倍数，不被�
   assert.equal(liveStageStyle(GB, false).maxWidth, `${160 * LIVE_MAX_SCALE}px`)
 })
 
-check('⚠️ 高度从**夹完之后**的宽度折算，不是流高 × 倍数', () => {
+check('⚠️ 高度从**夹完之后**的宽度按 16:9 折算，不是流高 × 倍数', () => {
   /*
     绝对上限一旦生效，「流高 × 倍数」就比宽度允许的高度大得多，那条 min 等于没写：
-    DOS 640×480 夹到 880 宽之后高度只能是 660，而 480×3 = 1440 —— 写 1440 的话
-    高度这一路完全不设限，矮屏上靠视口那一半兜着，宽屏上舞台会比画面高出一大截黑边。
+    固定 16:9 之后，DOS 夹到绝对上限宽之后高度只能按 9/16 折算，和流的比例无关 ——
+    写「流高 × 倍数」（480×3 = 1440）的话高度一路完全不设限，矮屏上靠视口那一半兜着。
   */
   const dos = liveStageStyle(DOS, false)
-  assert.ok(dos.maxHeight.includes(`${Math.round(LIVE_MAX_WIDTH_PX * 480 / 640)}px`), `折算错了：${dos.maxHeight}`)
+  assert.ok(dos.maxHeight.includes(`${Math.round(LIVE_MAX_WIDTH_PX * 9 / 16)}px`), `折算错了：${dos.maxHeight}`)
   assert.ok(!dos.maxHeight.includes(`${480 * LIVE_MAX_SCALE}px`), '还在用流高 × 倍数')
-  // 小源没被夹时，折算出来就等于流高 × 倍数（两条路在这里必须重合）
+  // 小源没被夹时，按 16:9 折算出来的高度就是宽 × 9/16（两条路在这里必须重合）
   const nes = liveStageStyle(NES, false)
-  assert.ok(nes.maxHeight.includes(`${240 * LIVE_MAX_SCALE}px`), `小源那一路漂了：${nes.maxHeight}`)
+  assert.ok(nes.maxHeight.includes(`${144 * LIVE_MAX_SCALE}px`), `小源那一路漂了：${nes.maxHeight}`)
 })
 
 check('绝对上限可调，且至少是 1px', () => {

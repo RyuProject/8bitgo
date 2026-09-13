@@ -277,12 +277,15 @@ export function liveStageStyle(
   if (w <= 0 || h <= 0) return undefined
   const scale = Math.max(1, Math.floor(maxScale) || 1)
   const hardWidth = Math.max(1, Math.floor(maxWidthPx) || 1)
-  const capW = Math.min(w * scale, hardWidth)
-  // 高度从夹完的宽度折算，见上面第 3 条那条 ⚠️
-  const capH = Math.round((capW * h) / w)
+  // 观众端播放器固定 16:9 —— 不管主播推的是竖屏还是带黑边的非标流，框都不变形。
+  // 尺寸上限按流里较大的那条边算，竖屏流也不会被压成一条窄缝（画面里 object-fit:contain 会居中留边）。
+  const base = Math.max(w, h)
+  const capW = Math.min(base * scale, hardWidth)
+  // 高度从夹完的宽度按 16:9 折算（不再跟着流的真实比例走）
+  const capH = Math.round((capW * 9) / 16)
   const cap = immersive ? STAGE_CAP_EXPR.immersive : STAGE_CAP_EXPR.normal
   return {
-    aspectRatio: `${w} / ${h}`,
+    aspectRatio: '16 / 9',
     maxWidth: `${capW}px`,
     maxHeight: `min(${cap}, ${capH}px)`,
   }
