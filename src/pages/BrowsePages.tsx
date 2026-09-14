@@ -10,6 +10,7 @@ import { isPlatformEnabled } from '@/config/platforms'
 import { cx } from '@/lib/format'
 import { useSeo, breadcrumbSchema } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
+import { useLang } from '@/services/lang'
 import { gameDescription, gameTitle, genreDesc, genreLabel } from '@/services/i18nData'
 
 import { romUrlForKey } from '@/services/roms'
