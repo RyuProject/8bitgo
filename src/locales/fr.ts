@@ -690,6 +690,9 @@ const fr: Translation = {
 
   /* ---------------- Pages de navigation ---------------- */
   browse: {
+    linuxTitle: 'Émulateur Linux',
+    linuxCaption: 'Démarrez Alpine Linux dans votre navigateur avec QEMU.wasm et explorez le terminal.',
+    linuxAction: 'Démarrer Linux →',
     platformsTitle: 'Plateformes',
     platformsDesc:
       "{n} plateformes au total. De la NES 8 bits à la PlayStation 32 bits, des consoles portables aux bornes d'arcade — choisis la console de ton enfance.",

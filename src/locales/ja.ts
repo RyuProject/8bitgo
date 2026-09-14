@@ -680,6 +680,9 @@ const ja: Translation = {
 
   /* ---------------- 一覧ページ ---------------- */
   browse: {
+    linuxTitle: 'Linux エミュレーター',
+    linuxCaption: 'QEMU.wasm で Alpine Linux をブラウザー内に起動し、ターミナルを体験できます。',
+    linuxAction: 'Linux を起動 →',
     platformsTitle: 'ゲーム機',
     platformsDesc: '全 {n} 機種。8 ビットのファミコンから 32 ビットの PlayStation まで、携帯機からアーケードまで、思い出のハードを選んでください。',
     platformGroupPinned: '固定',

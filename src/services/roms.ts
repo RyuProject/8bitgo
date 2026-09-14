@@ -18,6 +18,7 @@ import { isPlayable } from '@/emulator'
 import type { Lang, RomLang } from '@/config/languages'
 import { ROM_LANGS, romLangFor } from '@/config/languages'
 import { useLang } from '@/services/lang'
+import { romArchiveRef } from '@/lib/romArchiveUrl'
 
 export const ROM_BASE_KEY = '8bitgo.rom.base'
 export const ROM_API_KEY = '8bitgo.rom.api'
@@ -507,16 +508,25 @@ export interface ProbeOutcome {
 const DEFINITE_MISS_STATUS = new Set([400, 401, 403, 404, 405, 410, 451])
 
 /**
- * 把对象的 ETag 写进查询串，给浏览器 HTTP 缓存和 EmulatorJS IndexedDB 缓存换 key。
+ * 把对象的 ETag 写进播放地址，给浏览器 HTTP 缓存和 IndexedDB 缓存换 key。
  *
  * R2 允许覆盖同一个对象 key；若播放地址永远不变，两个缓存都会继续交出旧 ROM。
  * ETag 随对象内容变化，既不会让没更新的 ROM 重复下载，也不依赖人工清缓存。
+ * 外站 ZIP 例外：ETag 写在 fragment，避免改动可能带签名的第三方查询串。
  */
 export function versionedRomUrl(url: string, etag: string | null): string {
   const version = etag?.replace(/^W\//, '').replaceAll('"', '').trim()
   if (!version) return url
-  const separator = url.includes('?') ? '&' : '?'
-  return `${url}${separator}romv=${encodeURIComponent(version)}`
+  if (romArchiveRef(url)) {
+    // 外站签名 URL 常不容许加查询参数；版本只写在浏览器不会发出的 fragment 里。
+    return `${url}${url.endsWith('#') ? '' : '&'}romv=${encodeURIComponent(version)}`
+  }
+  // fragment 是本站的解包指令；版本号必须插在它前面，才会成为真正的 URL 查询参数。
+  const hashAt = url.indexOf('#')
+  const address = hashAt < 0 ? url : url.slice(0, hashAt)
+  const fragment = hashAt < 0 ? '' : url.slice(hashAt)
+  const separator = address.includes('?') ? '&' : '?'
+  return `${address}${separator}romv=${encodeURIComponent(version)}${fragment}`
 }
 
 /** 探一次。区分「没有」和「没问出来」，后者留给上层重试 */
@@ -526,7 +536,25 @@ async function probeOnce(url: string, timeoutMs: number, allowHtml: boolean): Pr
   try {
     // no-store 很关键：这里正是为了发现「同一个 URL 的对象内容已经换了」，
     // 若 HEAD 自己也吃浏览器缓存，就永远读不到新的 ETag。
-    const res = await fetch(url, { method: 'HEAD', cache: 'no-store', signal: ctrl.signal })
+    let res: Response
+    const archive = romArchiveRef(url)
+    try {
+      res = await fetch(url, { method: 'HEAD', cache: 'no-store', signal: ctrl.signal })
+      if (archive && [403, 405, 501].includes(res.status)) {
+        // 有些文件站只准 GET，HEAD 的 403/405 不等于文件不存在。只取第一字节作探测。
+        res = await fetch(archive.sourceUrl, {
+          method: 'GET', headers: { Range: 'bytes=0-0' }, cache: 'no-store', signal: ctrl.signal,
+        })
+        void res.body?.cancel().catch(() => {})
+      }
+    } catch (error) {
+      if (!archive || ctrl.signal.aborted) throw error
+      // HEAD 的 CORS 权限也可能单独缺失；GET 能不能读由浏览器的 CORS 判定。
+      res = await fetch(archive.sourceUrl, {
+        method: 'GET', headers: { Range: 'bytes=0-0' }, cache: 'no-store', signal: ctrl.signal,
+      })
+      void res.body?.cancel().catch(() => {})
+    }
     if (!res.ok) return { url: '', certain: DEFINITE_MISS_STATUS.has(res.status), reason: 'http', status: res.status }
     // 地址配错时请求会落到本站的 SSR 兜底路由上，那边对任何路径都回 200 + HTML。
     // 只看 res.ok 的话会误判成「ROM 存在」，页面显示「即点即玩」，

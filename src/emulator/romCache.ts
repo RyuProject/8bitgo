@@ -12,7 +12,8 @@
  *
  * 缓存键 = 完整播放 URL。services/roms.ts 的 probeRomUrl 会把对象 ETag 拼成
  * `?romv=<etag>` 带进播放地址，所以 URL 本身就是内容寻址的：R2 上覆盖同一个 key 之后
- * etag 变、URL 变，自然不会命中旧的那份。**没有 romv 的地址一律不缓存** ——
+ * etag 变、URL 变，自然不会命中旧的那份。外站 ZIP 的版本在 fragment 里，
+ * 源站暴露 ETag 时用 romv；没有时只接受管理员明确填写的 v。**没有版本号一律不缓存** ——
  * 那种情况下没法判断远端内容换没换，而「半截 / 过期 ROM 复活」是这个项目栽过的坑
  * （见 AGENTS.md §2.6），宁可不缓存。
  *
@@ -25,6 +26,8 @@
  *   - romCacheGetBlob / romCachePutBlob：Blob，给光盘镜像用。几百 MB 到几 GB 的盘
  *     不能走上面那条 —— 那要求一整块连续内存，手机上分配不出来。
  */
+
+import { romArchiveRef } from '@/lib/romArchiveUrl'
 
 const DB_NAME = '8bitgo-roms'
 const DB_VERSION = 1
@@ -124,11 +127,12 @@ function ask<T>(req: IDBRequest<T>): Promise<T | null> {
  * 这个播放地址能不能缓存。返回 '' 表示不缓存。
  *
  * blob: / data: 是本地文件转出来的，本来就没走网络；
- * 没有 romv（内容版本号）的地址见文件头注释。
+ * 没有内容版本号的地址见文件头注释。
  */
 export function romCacheKey(url: string): string {
   if (!url || /^(blob|data):/i.test(url)) return ''
-  if (!/[?&]romv=/.test(url)) return ''
+  const source = url.split('#')[0]
+  if (!/[?&]romv=/.test(source) && !romArchiveRef(url)?.version) return ''
   return url
 }
 

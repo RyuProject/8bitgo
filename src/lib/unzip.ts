@@ -148,7 +148,7 @@ export function assertValidZip(buf: ArrayBuffer, label = 'ZIP'): ZipFileEntry[] 
 }
 
 /** 解出某一项的完整内容 */
-export async function extractZipEntry(buf: ArrayBuffer, entry: ZipFileEntry): Promise<Uint8Array> {
+export async function extractZipEntry(buf: ArrayBuffer, entry: ZipFileEntry, maxBytes = Infinity): Promise<Uint8Array> {
   const b = new Uint8Array(buf)
   const dv = new DataView(buf)
 
@@ -159,12 +159,25 @@ export async function extractZipEntry(buf: ArrayBuffer, entry: ZipFileEntry): Pr
   const dataStart = entry.offset + 30 + dv.getUint16(entry.offset + 26, true) + dv.getUint16(entry.offset + 28, true)
   const end = entry.compressedSize ? dataStart + entry.compressedSize : b.length
   const raw = b.subarray(dataStart, Math.min(end, b.length))
+  if (entry.uncompressedSize > maxBytes) throw new Error('zip: 解包后的 ROM 过大')
 
-  if (entry.method === 0) return raw
+  if (entry.method === 0) {
+    if (raw.byteLength > maxBytes) throw new Error('zip: 解包后的 ROM 过大')
+    return raw
+  }
   if (entry.method !== 8) throw new Error(`zip: 不支持的压缩方式 ${entry.method}`)
   if (typeof DecompressionStream === 'undefined') throw new Error('zip: 浏览器不支持 DecompressionStream')
 
-  const stream = new Blob([raw as BlobPart]).stream().pipeThrough(new DecompressionStream('deflate-raw'))
+  let extracted = 0
+  const limiter = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      extracted += chunk.byteLength
+      // ZIP 的元信息也可能说谎，不能只靠中央目录里声明的大小拦解压炸弹。
+      if (extracted > maxBytes) throw new Error('zip: 解包后的 ROM 过大')
+      controller.enqueue(chunk)
+    },
+  })
+  const stream = new Blob([raw as BlobPart]).stream().pipeThrough(new DecompressionStream('deflate-raw')).pipeThrough(limiter)
   return new Uint8Array(await new Response(stream).arrayBuffer())
 }
 

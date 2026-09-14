@@ -70,9 +70,15 @@ export function staticCacheHeaders(res, filePath) {
   const p = filePath.replace(/\\/g, '/')
   const set = (v) => res.setHeader('Cache-Control', v)
 
+  // pthread Worker 必须自己声明 COEP；只有顶层 /linux 声明会让 Worker 在加载时失败，
+  // QEMU 就永远卡在 Emscripten 的 loading-workers 依赖上，画面一片黑且不报错。
+  if (p.endsWith('/qemu-wasm/qemu-system-x86_64.worker.js')) {
+    res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
+  }
+
   if (p.includes('/assets/')) return set(CACHE.immutable)
   if (p.includes('/fonts/')) return set(CACHE.font)
-  if (p.includes('/ruffle/') || p.includes('/emulatorjs/') || p.includes('/j2me/') || p.includes('/jsdos/') || p.includes('/webretro/')) return set(CACHE.engine)
+  if (p.includes('/ruffle/') || p.includes('/emulatorjs/') || p.includes('/j2me/') || p.includes('/jsdos/') || p.includes('/webretro/') || p.includes('/qemu-wasm/')) return set(CACHE.engine)
   if (/\.(png|jpg|jpeg|gif|webp|avif|svg|ico)$/i.test(p)) return set(CACHE.image)
   if (/\/(robots\.txt|sitemap[^/]*\.xml)$/i.test(p)) return set(CACHE.meta)
   // 兜底：短缓存 + 允许边缘复用，总好过每次都回源

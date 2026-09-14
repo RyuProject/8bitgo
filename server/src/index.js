@@ -289,6 +289,20 @@ if (ssrAvailable()) {
   */
   app.use(tvRobots)
 
+  /**
+   * QEMU.wasm 的 pthread 和终端需要 SharedArrayBuffer。只给独立 Linux 页面加隔离头，
+   * 不能加到整站：主站的跨源字体、封面和统计脚本会被 COEP 拦掉。
+   * 这条在静态中间件之前，避免同名 HTML 绕开所需响应头。
+   */
+  app.get(['/linux', '/linux.html'], (_req, res) => {
+    res.set({
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+      'Cache-Control': CACHE.none,
+    })
+    res.sendFile('linux.html', { root: CLIENT_DIR })
+  })
+
   // 带哈希的构建产物可以长期缓存；index.html 不能缓存（每次都要走 SSR）
   app.use(
     express.static(CLIENT_DIR, {

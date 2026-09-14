@@ -255,7 +255,7 @@ export interface Game {
   adult?: boolean
   /** 后台下架：前台不展示 */
   hidden?: boolean
-  /** ROM 在对象存储中的 key（如 nes/contra.zip）或完整 URL；留空则按约定路径探测。作为各语言 ROM 的回退 */
+  /** ROM 对象 key 或完整 URL；外站 ZIP 可用 #rom=包内文件名 指定单个成员。留空则按约定路径探测。 */
   rom?: string
   /** 各语言 ROM：按玩家语言自动选用，缺失依次回退英语、日语、中文，再兼容旧版 rom */
   roms?: Partial<Record<RomLang, string>>

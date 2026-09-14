@@ -272,7 +272,8 @@ function loadJsDos(): Promise<DosFn> {
       ⚠️ 必须在 <script> 插进去**之前**：js-dos 的 store 在模块求值时就把 jspi 开关
       从 localStorage 读死了，之后没有任何 Dos() 参数能改它。见 ../jspiFlag.ts。
     */
-    if (armJspi()) console.info('[jsdos] 本次使用 JSPI 版 dosbox-X（Windows 客体）')
+    // 这里还没选本局的后端；JSPI 只对 DOSBox-X 生效，不能把普通 DOS 局误报成 Windows 客体。
+    armJspi()
 
     const script = document.createElement('script')
     script.src = `${JSDOS_PATH}js-dos.js`

@@ -17,8 +17,10 @@ globalThis.window = { setTimeout: setTimeout.bind(globalThis), clearTimeout: cle
 /** 按脚本排好的响应依次回，并记下发了几次请求 */
 let plan = []
 let calls = 0
-globalThis.fetch = async () => {
+let methods = []
+globalThis.fetch = async (_url, init = {}) => {
   calls++
+  methods.push(init.method ?? 'GET')
   const step = plan.shift()
   if (!step) throw new Error('fetch 次数超出脚本预期')
   if (step.throw) throw new Error(step.throw)
@@ -31,16 +33,31 @@ globalThis.fetch = async () => {
 const script = (...steps) => {
   plan = steps
   calls = 0
+  methods = []
 }
 
-const { probeRomUrl, probeRom, clearRomProbeCache, romCandidates, romProbeExpected, dosExecutableForRom } = await import(
+const { probeRomUrl, probeRom, clearRomProbeCache, romCandidates, romProbeExpected, dosExecutableForRom, versionedRomUrl } = await import(
   fileURLToPath(new URL('../src/services/roms.ts', import.meta.url))
 )
 const { ROM_LANGS } = await import(fileURLToPath(new URL('../src/config/languages.ts', import.meta.url)))
+const { romCacheKey } = await import(fileURLToPath(new URL('../src/emulator/romCache.ts', import.meta.url)))
 const { gameRowToApi, dosExecutableOf, relationsInPatch, romRelationRows } = await import(fileURLToPath(new URL('../server/src/mappers.js', import.meta.url)))
 
 let url = 0
 const next = () => `https://assets.example.com/roms/nes/game-${++url}.zip`
+
+/* ---------- 外站 ZIP：fragment 选内层文件，ETag 也只进 fragment，不污染签名 URL ---------- */
+{
+  const u = 'https://files.example.com/archive.zip?token=signed#rom=folder%2Fgame.nes'
+  const versioned = versionedRomUrl(u, '"etag-1"')
+  assert.equal(versioned, `${u}&romv=etag-1`)
+  assert.equal(romCacheKey(u), '', '无内容版本时不能缓存外站文件')
+  assert.equal(romCacheKey(`${u}&v=1`), `${u}&v=1`, '管理员手工版本可作为缓存键')
+  assert.equal(romCacheKey(versioned), versioned, 'ETag 版本可作为缓存键')
+  script({ status: 405 }, { status: 206, headers: { etag: '"etag-2"' } })
+  assert.equal(await probeRomUrl(u), `${u}&romv=etag-2`)
+  assert.deepEqual(methods, ['HEAD', 'GET'], 'HEAD 不可用时只用 GET Range 探一下')
+}
 
 /* ---------- 1. 服务器明确说没有 → 缓存，不重复问 ---------- */
 {

@@ -64,6 +64,10 @@ export async function fetchWithProgress(
     signal?: AbortSignal
     /** 拿到响应头之后的校验钩子，比如挡掉返回 HTML 的错误页 */
     check?: (res: Response) => void
+    /** 需要整块 ArrayBuffer 的调用方可设上限，防止未知长度的响应耗尽标签页内存。 */
+    maxBytes?: number
+    /** 外站包装 ZIP 不应另留一份 HTTP 缓存，真正缓存的是解出的 ROM。 */
+    cache?: RequestCache
   } = {},
 ): Promise<ArrayBuffer> {
   const phase = opts.phase ?? 'rom'
@@ -71,7 +75,7 @@ export async function fetchWithProgress(
 
   emit({ phase, loaded: 0 }, true)
 
-  const res = await fetch(url, { signal: opts.signal })
+  const res = await fetch(url, { signal: opts.signal, ...(opts.cache ? { cache: opts.cache } : {}) })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   opts.check?.(res)
 
@@ -79,9 +83,14 @@ export async function fetchWithProgress(
   const len = Number(res.headers.get('content-length'))
   // 压缩过的响应，Content-Length 对不上解压后的字节数，直接当作未知总量
   let total = !encoded && Number.isFinite(len) && len > 0 ? len : undefined
+  if (total !== undefined && total > (opts.maxBytes ?? Infinity)) {
+    void res.body?.cancel().catch(() => {})
+    throw new Error('文件过大，无法在浏览器内存中解包')
+  }
 
   if (!res.body) {
     const buf = await res.arrayBuffer()
+    if (buf.byteLength > (opts.maxBytes ?? Infinity)) throw new Error('文件过大，无法在浏览器内存中解包')
     if (total !== undefined && buf.byteLength !== total) {
       throw new Error(`下载不完整：应为 ${total} 字节，实际收到 ${buf.byteLength} 字节`)
     }
@@ -89,7 +98,7 @@ export async function fetchWithProgress(
     return buf
   }
 
-  const { chunks, loaded } = await drain(res.body, phase, total, emit)
+  const { chunks, loaded } = await drain(res.body, phase, total, emit, opts.maxBytes)
 
   // 拼成一整块。最后一帧用真实总量，进度条一定走到 100%
   const out = new Uint8Array(loaded)
@@ -115,6 +124,7 @@ async function drain(
   phase: LoadPhase,
   totalHint: number | undefined,
   emit: (p: LoadProgress, flush?: boolean) => void,
+  maxBytes = Infinity,
 ): Promise<{ chunks: Uint8Array[]; loaded: number }> {
   const reader = body.getReader()
   const chunks: Uint8Array[] = []
@@ -124,6 +134,10 @@ async function drain(
     const { done, value } = await reader.read()
     if (done) break
     if (!value) continue
+    if (loaded + value.byteLength > maxBytes) {
+      await reader.cancel().catch(() => {})
+      throw new Error('文件过大，无法在浏览器内存中解包')
+    }
     chunks.push(value)
     loaded += value.byteLength
     // 万一还是超了（服务器给的 Content-Length 本身就不对），转不确定态而不是显示 120%

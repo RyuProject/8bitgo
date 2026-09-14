@@ -690,6 +690,9 @@ const de: Translation = {
 
   /* ---------------- Übersichtsseiten ---------------- */
   browse: {
+    linuxTitle: 'Linux-Emulator',
+    linuxCaption: 'Starte Alpine Linux mit QEMU.wasm im Browser und entdecke das Terminal.',
+    linuxAction: 'Linux starten →',
     platformsTitle: 'Plattformen',
     platformsDesc:
       'Insgesamt {n} Plattformen. Vom 8-Bit-NES bis zur 32-Bit-PlayStation, von Handhelds bis zum Arcade-Automaten – wähl die Konsole deiner Kindheit.',

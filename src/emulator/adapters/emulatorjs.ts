@@ -35,7 +35,9 @@ import { getLang } from '@/services/lang'
 import type { Lang } from '@/config/languages'
 import { ICE_SERVERS, NETPLAY_URL, fetchIceConfig, gameIdFor, netplayUrlForFrame, socketIoScriptUrl, uploadState } from '@/services/netplay'
 import { guardInputChannel } from '../netplayGuard'
-import { isZip, listZipEntries } from '@/lib/unzip'
+import { assertValidZip, isZip, listZipEntries } from '@/lib/unzip'
+import { romArchiveRef } from '@/lib/romArchiveUrl'
+import { loadRemoteArchiveRom } from '../remoteArchive'
 import { matchArcadeHack, type ArcadeHack } from '@/data/arcadeHacks'
 import { deriveArcadeHackBytes } from '../arcadeHack'
 
@@ -1152,6 +1154,14 @@ export async function prepareRemoteArcadeRom(
   onProgress: MountOptions['onProgress'],
   signal: AbortSignal,
 ): Promise<{ url: string; name: string; hack: ArcadeHack | null }> {
+  if (romArchiveRef(url)) {
+    const extracted = await loadRemoteArchiveRom(url, onProgress, signal)
+    const data = await extracted.blob.arrayBuffer()
+    if (signal.aborted) throw new DOMException('已取消', 'AbortError')
+    if (!/\.zip$/i.test(extracted.name)) throw new InvalidArcadeArchiveError(extracted.name)
+    assertValidZip(data, '街机 ROM')
+    return arcadeBlobFrom(data, extracted.name)
+  }
   const name = arcadeRomsetName(url)
   if (!name || !/\.zip$/i.test(name)) throw new InvalidArcadeArchiveError(name || 'ROM')
 
@@ -1537,6 +1547,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let arcadeRomPrepared = false
   /** 同上，光盘那条路的。两条路的失败提示不一样，不能合成一个标志 */
   let discRomPrepared = false
+  /** 外层 ZIP 解包错误要原样报给玩家，不能误指向 EmulatorJS 资源。 */
+  let archiveRomPrepared = false
   /** 按指纹认出来、由 data/arcadeHacks.ts 提供的 RomData。管理员填了的话不会用到 */
   let builtInRomData = ''
 
@@ -2424,7 +2436,18 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
          * 光盘平台（PS1）：接管下载，为的是能缓存、能提前告诉玩家要下多少
          * （见 prepareRemoteDiscRom 的说明）。和街机那条互斥 —— 一个平台不会同时是两者。
          */
-        if (!isFile && isSelfDownloadPlatform(options.platform) && !isDiscPlatform(options.platform)) {
+        if (!isFile && romArchiveRef(remoteGameUrl) && options.platform !== 'arcade') {
+          const extracted = await loadRemoteArchiveRom(remoteGameUrl, (p) => {
+            beat()
+            options.onProgress?.(p)
+          }, prepareAbort.signal)
+          if (destroyed) return
+          preparedArcadeBlobUrl = URL.createObjectURL(extracted.blob)
+          gameUrl = preparedArcadeBlobUrl
+          engineGameName = extracted.name
+          archiveRomPrepared = true
+          if (isDiscPlatform(options.platform)) discRomPrepared = true
+        } else if (!isFile && isSelfDownloadPlatform(options.platform) && !isDiscPlatform(options.platform)) {
           /*
             自己下载的**卡带**平台（目前只有 NDS，见 paths.ts 的 SELF_DOWNLOAD_PLATFORMS）。
 
@@ -2658,6 +2681,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           return
         }
         if (error instanceof DOMException && error.name === 'AbortError') return
+        if (!isFile && romArchiveRef(remoteGameUrl) && !archiveRomPrepared && options.platform !== 'arcade') {
+          options.onError?.(error instanceof Error ? error.message : String(error))
+          return
+        }
         // 远程街机 ROM 的预下载也在这条链路里；把真实网络错误带出来，
         // 不要一律误报成「EmulatorJS 资源加载失败」。
         if (!isFile && options.platform === 'arcade' && !arcadeRomPrepared) {
@@ -2884,6 +2911,5 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     },
   }
 }
-
 
 

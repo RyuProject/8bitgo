@@ -4,6 +4,8 @@ import { romCacheGet, romCacheKey, romCachePut } from './romCache'
 import type { LoadProgress } from './types'
 import { assertNotHtml } from '@/lib/romValidation'
 import { romCacheDelete } from './romCache'
+import { romArchiveRef } from '@/lib/romArchiveUrl'
+import { loadRemoteArchiveRom } from './remoteArchive'
 
 export interface LoadedGameBytes {
   name: string
@@ -32,6 +34,13 @@ export async function loadGameBytes(
     onProgress?.({ phase: 'rom', loaded: data.byteLength, total: data.byteLength, ratio: 1 })
     assertNotHtml(data)
     return { name: game.name, data }
+  }
+
+  if (romArchiveRef(game)) {
+    const extracted = await loadRemoteArchiveRom(game, onProgress, signal)
+    const data = await extracted.blob.arrayBuffer()
+    if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
+    return { name: extracted.name, data, remoteUrl: game, fromCache: extracted.fromCache }
   }
 
   // 缓存键只有在播放地址带内容版本号（?romv=<etag>）时才成立，见 romCache.ts 的文件头注释

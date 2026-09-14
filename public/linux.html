@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#10121a">
+  <meta name="description" content="在浏览器中运行 Alpine Linux。由 8BitGo 自托管的 QEMU WebAssembly 驱动。">
+  <title>Linux 模拟器 · 8BitGo</title>
+  <link rel="stylesheet" href="/qemu-wasm/xterm.css">
+  <style>
+    :root{color-scheme:dark;font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;background:#10121a;color:#f0f0f4}
+    *{box-sizing:border-box}body{margin:0;min-height:100dvh}
+    a{color:#9dccff;text-decoration:none}a:hover{text-decoration:underline}
+    .shell{max-width:1180px;margin:auto;padding:0 20px 48px}
+    header{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:72px;border-bottom:1px solid #303440}
+    .brand{color:#fff;font-weight:900;letter-spacing:-.04em;font-size:24px}.brand span{color:#f8c644}
+    .back{font-size:14px;color:#adb4c5}
+    .intro{padding:38px 0 24px;display:flex;align-items:end;justify-content:space-between;gap:24px;flex-wrap:wrap}
+    .eyebrow{color:#f8c644;font-size:12px;font-weight:800;letter-spacing:.16em;text-transform:uppercase}
+    h1{font-size:clamp(30px,5vw,48px);line-height:1.1;margin:8px 0 12px;letter-spacing:-.04em}
+    p{margin:0;color:#adb4c5}.intro p{max-width:650px}
+    .chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px}.chip{border:1px solid #353b4b;border-radius:999px;padding:5px 10px;font-size:12px;color:#c0c6d3}
+    button{font:inherit;cursor:pointer}.start{background:#f8c644;color:#141414;border:0;border-radius:10px;font-weight:800;padding:13px 20px;white-space:nowrap}
+    .start:hover{background:#ffe082}.start:disabled{opacity:.5;cursor:wait}
+    .panel{overflow:hidden;border:1px solid #3a4050;border-radius:14px;background:#050607;box-shadow:0 24px 70px #0005}
+    .panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px;background:#20242e;border-bottom:1px solid #3a4050;padding:10px 14px;font-size:12px;color:#bfc5d1}
+    .dots{display:flex;gap:6px}.dots i{width:8px;height:8px;border-radius:50%;background:#f56767}.dots i:nth-child(2){background:#f8c644}.dots i:nth-child(3){background:#68c482}
+    .panel-label{display:flex;align-items:center;gap:10px}
+    #terminal{height:min(60dvh,590px);min-height:360px;padding:12px;overflow:auto}
+    #terminal .xterm{height:100%}
+    .placeholder{height:100%;display:grid;place-content:center;text-align:center;gap:8px;color:#969eac}.placeholder strong{font-size:18px;color:#dbe0e9}
+    #status{min-height:22px}.error{color:#ff8d8d!important}
+    .notes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:20px}
+    .note{border:1px solid #303440;background:#191d27;border-radius:12px;padding:16px}.note strong{display:block;font-size:14px;margin-bottom:5px}.note p{font-size:13px;line-height:1.55}
+    .credit{font-size:12px;margin-top:22px}
+    @media(max-width:720px){.shell{padding:0 12px 30px}header{min-height:60px}.intro{padding-top:26px}.notes{grid-template-columns:1fr}#terminal{height:55dvh;min-height:320px}}
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header><a class="brand" href="/">8Bit<span>Go</span></a><a id="back" class="back" href="/platforms">← 返回游戏平台</a></header>
+    <main>
+      <section class="intro">
+        <div>
+          <div class="eyebrow">QEMU · WebAssembly</div>
+          <h1 id="title">Linux 模拟器</h1>
+          <p id="intro">在浏览器里启动一台真正的 Alpine Linux 虚拟机。所有计算都在你的设备上完成。</p>
+          <div class="chips"><span class="chip">Alpine Linux · x86_64</span><span class="chip">512 MB RAM</span><span class="chip">QEMU.wasm</span></div>
+        </div>
+        <button id="start" class="start" type="button">启动 Linux</button>
+      </section>
+      <section class="panel" aria-label="Linux terminal">
+        <div class="panel-head"><div class="panel-label"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span>root@8bitgo:~</span></div><span id="status" role="status" aria-live="polite">尚未启动</span></div>
+        <div id="terminal"><div id="placeholder" class="placeholder"><strong>Alpine Linux</strong><span>点击「启动 Linux」打开终端</span></div></div>
+      </section>
+      <div class="notes">
+        <div class="note"><strong id="login-title">登录</strong><p id="login-note">看到 login: 后输入 root 并按回车。首次启动需下载约 140 MB，可能需要几分钟。</p></div>
+        <div class="note"><strong id="storage-title">临时环境</strong><p id="storage-note">这是体验用虚拟机。刷新或关闭页面后，虚拟机里的更改不会保存。</p></div>
+        <div class="note"><strong id="network-title">网络</strong><p id="network-note">当前镜像以离线模式运行；命令行与预装工具可用，虚拟机内不能联网。</p></div>
+      </div>
+      <p id="credit" class="credit"><span id="credit-qemu">模拟器基于 </span><a href="https://github.com/ktock/qemu-wasm" target="_blank" rel="noopener noreferrer">ktock/qemu-wasm</a><span id="credit-image">；Linux 镜像基于 </span><a id="demo-link" href="https://github.com/ktock/qemu-wasm-demo" target="_blank" rel="noopener noreferrer">上游 Alpine 演示</a><span id="credit-end">。</span><a id="source-link" href="/qemu-wasm/SOURCE.txt">源码与许可信息</a></p>
+    </main>
+  </div>
+  <script type="module" src="/qemu-wasm/start.js?v=7"></script>
+</body>
+</html>

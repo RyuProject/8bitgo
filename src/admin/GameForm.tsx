@@ -21,6 +21,7 @@ import {
 } from '@/services/roms'
 import { bundleBytes, bundleWarnings, pickMainSwf, planSwfBundleFromZip, type SwfBundleFile, type SwfBundlePlan } from '@/lib/swfBundle'
 import { assertValidZip, extractZipEntry, listZipEntries, isZip } from '@/lib/unzip'
+import { assertRomArchiveRef, impliedRomName, romArchiveRef } from '@/lib/romArchiveUrl'
 import {
   extraObjectName,
   extraPathProblem,
@@ -235,6 +236,21 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
     for (const l of ROM_LANGS) {
       const v = form.roms?.[l]?.trim()
       if (v) cleanedRoms[l] = v
+    }
+    for (const value of [form.rom?.trim(), ...Object.values(cleanedRoms)]) {
+      if (!value) continue
+      const ref = romArchiveRef(value)
+      if (!ref) continue
+      try {
+        if (value.length > 500) throw new Error('外站 ZIP 地址过长（数据库上限 500 字符）')
+        assertRomArchiveRef(ref)
+        if (!/^https?:\/\//i.test(ref.sourceUrl)) throw new Error('外站 ZIP 必须填写完整的 HTTP(S) 地址')
+        if (form.platform === 'html5') throw new Error('HTML5 游戏不能用 ZIP 单文件解包；请部署完整站点并填写入口 URL')
+        if (form.platform === 'java') throw new Error('Java 游戏当前需要服务端读取 JAR，不能使用仅浏览器解包的外站 ZIP')
+        if (form.platform === 'ps2') throw new Error('PS2 镜像需要按需读取，不能整包下载后在浏览器解包')
+      } catch (err) {
+        return setError(err instanceof Error ? err.message : 'ZIP 内 ROM 路径无效')
+      }
     }
 
     onSubmit({
@@ -1193,6 +1209,7 @@ function RomField({
   const [bundleAt, setBundleAt] = useState<BundleUploadProgress | null>(null)
   /** 街机 ROM 的自动识别结果，上传后显示在下面 */
   const [romset, setRomset] = useState<RomsetIdentification | null>(null)
+  const archiveRef = romArchiveRef(value)
   /** 识别出来的游戏需要 BIOS，但平台还没绑 —— 就是「Neo Geo BIOS 成员缺失」那个坑 */
   const [biosMissing, setBiosMissing] = useState<string | null>(null)
   const cfg = getRomConfig()
@@ -1481,6 +1498,69 @@ function RomField({
             </button>
           )}
         </div>
+        {!isHtml5 && /^https?:\/\//i.test(value) && (
+          <div className="space-y-2 rounded-md border border-line p-2 text-xs text-muted">
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={Boolean(archiveRef)}
+                onChange={(e) => {
+                  const source = value.split('#')[0]
+                  onChange(e.target.checked ? `${source}#rom=${impliedRomName(source) ? 'auto' : ''}&v=1` : (archiveRef?.sourceUrl ?? value))
+                }}
+              />
+              外站链接是外层 ZIP；在玩家浏览器里解出单个 ROM
+            </label>
+            {archiveRef && (
+              <>
+                {impliedRomName(archiveRef.sourceUrl) && (
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={archiveRef.auto}
+                      onChange={(e) => {
+                        const params = new URLSearchParams(value.slice(value.indexOf('#') + 1))
+                        params.set('rom', e.target.checked ? 'auto' : '')
+                        onChange(`${archiveRef.sourceUrl}#${params}`)
+                      }}
+                    />
+                    自动选择 ZIP 内唯一的 .{impliedRomName(archiveRef.sourceUrl).split('.').pop()} 文件
+                  </label>
+                )}
+              <div className="grid gap-2 sm:grid-cols-2">
+                {!archiveRef.auto && <label className="space-y-1">
+                  <span className="block">ZIP 内文件名（含文件夹）</span>
+                  <input
+                    className={cx(inputClass, 'font-mono')}
+                    value={archiveRef.entry}
+                    onChange={(e) => {
+                      const params = new URLSearchParams(value.slice(value.indexOf('#') + 1))
+                      params.set('rom', e.target.value)
+                      onChange(`${archiveRef.sourceUrl}#${params}`)
+                    }}
+                    placeholder={platform === 'arcade' ? 'romset.zip' : 'folder/game.nes'}
+                  />
+                </label>}
+                <label className="space-y-1">
+                  <span className="block">缓存版本（可选）</span>
+                  <input
+                    className={cx(inputClass, 'font-mono')}
+                    value={new URLSearchParams(value.slice(value.indexOf('#') + 1)).get('v') ?? ''}
+                    onChange={(e) => {
+                      const params = new URLSearchParams(value.slice(value.indexOf('#') + 1))
+                      if (e.target.value) params.set('v', e.target.value)
+                      else params.delete('v')
+                      onChange(`${archiveRef.sourceUrl}#${params}`)
+                    }}
+                    placeholder="源站不提供 ETag 时填 1"
+                  />
+                </label>
+              </div>
+              </>
+            )}
+            {archiveRef && <p>只适合 ZIP 中有一个可独立运行的 ROM；本站不存文件，玩家浏览器会尝试缓存解出的文件，配额不足仍可本次游玩。源站需允许跨域 GET。外层 ZIP 上限 256 MB、解出文件上限 512 MB；源文件更新时请更改缓存版本。街机原生 romset ZIP 不需要勾选。</p>}
+          </div>
+        )}
         {progress !== null && (
           <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-black/10">
             <div className="h-full bg-brand transition-[width]" style={{ width: `${progress}%` }} />

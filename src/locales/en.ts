@@ -689,6 +689,9 @@ const en: Translation = {
 
   /* ---------------- Browse pages ---------------- */
   browse: {
+    linuxTitle: 'Linux emulator',
+    linuxCaption: 'Boot Alpine Linux in your browser with QEMU.wasm and explore the command line.',
+    linuxAction: 'Start Linux →',
     platformsTitle: 'Platforms',
     platformsDesc:
       '{n} platforms in total. From the 8-bit NES to the 32-bit PlayStation, handhelds to arcade cabinets — pick the console you grew up with.',

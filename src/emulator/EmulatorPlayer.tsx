@@ -4,6 +4,7 @@ import { platformMap } from '@/data/platforms'
 import { formatBytes, formatSpeed, isRomFileAccepted } from '@/lib/emulator'
 import { detectRom, describeDetection } from './detect'
 import { resolveRuntime, runtimesFor, extOf } from './registry'
+import { romArchiveRef } from '@/lib/romArchiveUrl'
 import type { Capability, LoadPhase, Runtime, RuntimeHandle, RuntimeId, ScreenLayoutState, StageMode } from './types'
 import {
   createOverallRatio,
@@ -495,7 +496,8 @@ export function EmulatorPlayer({
   /* ---------------- 联机 ---------------- */
   // 联机需要云端 ROM：房主和访客都得能拿到同一个 ROM
   const p2pOk = Boolean(gameSlug) && Boolean(romUrl) && p2pPlayable(platform.id)
-  const cloudOk = FEATURES.cloudGame && Boolean(gameSlug) && cloudPlayable(platform.id)
+  // 云端房间由服务器取 ROM，不会执行玩家浏览器里的 ZIP 解包；这类外链只开放本地/P2P。
+  const cloudOk = FEATURES.cloudGame && Boolean(gameSlug) && !romArchiveRef(romUrl ?? '') && cloudPlayable(platform.id)
   const onlineOk = p2pOk || cloudOk
   /** 优先 P2P；P2P 不可用而云端可用时才走云端 */
   const channel: Channel = p2pOk ? 'p2p' : 'cloud'

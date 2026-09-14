@@ -695,6 +695,9 @@ const zhHant: Translation = {
   },
 
   browse: {
+    linuxTitle: 'Linux 模擬器',
+    linuxCaption: '在瀏覽器中啟動 Alpine Linux，使用 QEMU.wasm 體驗命令列。',
+    linuxAction: '啟動 Linux →',
     platformsTitle: '遊戲平台',
     platformsDesc: '共 {n} 個平台。從 8 位元紅白機到 32 位元 PlayStation，從掌機到街機，選一台你的童年主機。',
     platformGroupPinned: '頂置',

@@ -738,6 +738,9 @@ export const zhHans = {
 
   /* ---------------- 浏览页 ---------------- */
   browse: {
+    linuxTitle: 'Linux 模拟器',
+    linuxCaption: '在浏览器中启动 Alpine Linux，使用 QEMU.wasm 体验命令行。',
+    linuxAction: '启动 Linux →',
     platformsTitle: '游戏平台',
     platformsDesc: '共 {n} 个平台。从 8 位红白机到 32 位 PlayStation，从掌机到街机，选一台你的童年主机。',
     platformGroupPinned: '顶置',

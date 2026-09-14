@@ -1,0 +1,28 @@
+QEMU.wasm / Alpine Linux source and license information
+
+Original demo: https://github.com/ktock/qemu-wasm-demo
+QEMU.wasm source: https://github.com/ktock/qemu-wasm
+Upstream demo files: https://ktock.github.io/qemu-wasm-demo/images/alpine-x86_64/
+Upstream demo assets retrieved: 2026-09-14
+
+QEMU is GPL-2.0 (some libraries LGPL-2.1); license copies are in licenses/.
+The Alpine demo repository is Apache-2.0; its guest image also includes Alpine packages with their respective licenses.
+xterm.js 5.3.0 and xterm-pty 0.12.0 are MIT; license copies are in licenses/.
+This site uses the upstream QEMU build and guest image without modifying those binary files.
+The site-specific launcher is start.js, which boots the original Alpine image without the upstream demo network proxy.
+
+SHA-256 of vendored upstream files:
+dab94140dc2ea847181ba47ae4cbd759728e551d8fd9ba9de409711ed25eddcc  out.js
+f53107a35029d676aa551cd00d042f4f65af39a89bf72464494321fafdf54191  qemu-system-x86_64.wasm
+8efab02a9cb5ee63ced22e9853bce74cbb895d15a5fb3d5139fef855c50f62ea  qemu-system-x86_64.worker.js
+9e8a19991b404d4759b1a15093ba5555a6a13dcf60323871c6e2ddde295dc648  load-rootfs.js
+e2facfffb787471a8784863fd8bf77dd87f098809a9b5cd54d9f082929596b3a  load-rootfs.data
+7eeff850d00dd148bef92f171108bfb81162999d3f0f840e8d87af924e4f1792  load-kernel.js
+dd239e40daf62dfb34e1bedb281ee66a98ae9664935d0471c026726629a52c25  load-kernel.data
+28274428aebf8c8e4950a64ddb6aca326dd68418f50913019af5edffdc1001da  load-initramfs.js
+84fd4d99c66dc78302428ea381c14252aad2c604fc16021d19c7dd12679fc09c  load-initramfs.data
+617e4dc685cb2cedada4844f097eb18a56cf0f8bbd4c4e2e9231b4f07d0d8a88  load-rom.js
+15de099e1363ceb13a31b9d11836337bab974f9460836449330b20c0534d06c9  load-rom.data
+f0aea0f75f48559013ae6643c2479dd737d26da42d5524e6d2b70915ae6523c7  xterm.js
+832f3f2c603b43ad4351ff04970150cc7a873014276db126a6065c6dd81e4872  xterm.css
+2e7cbffea02dad1f72637c564534d104a13f9eec306deb9cc34fffe1faa58947  xterm-pty.js

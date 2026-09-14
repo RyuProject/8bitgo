@@ -689,6 +689,9 @@ const es: Translation = {
 
   /* ---------------- Páginas de exploración ---------------- */
   browse: {
+    linuxTitle: 'Emulador Linux',
+    linuxCaption: 'Inicia Alpine Linux en el navegador con QEMU.wasm y explora la terminal.',
+    linuxAction: 'Iniciar Linux →',
     platformsTitle: 'Plataformas',
     platformsDesc:
       '{n} plataformas en total. De la NES de 8 bits a la PlayStation de 32 bits, de las portátiles a los arcades: elige la consola de tu infancia.',

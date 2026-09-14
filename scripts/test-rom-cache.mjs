@@ -206,7 +206,7 @@ process.on('unhandledRejection', (e) => {
       '/roms/nes/a.zip?romv=x',
       '同源相对路径（ROM_BASE 填 /roms 时）也要认',
     )
-    console.log('✓ 缓存键：blob / data / 无 romv 一律不缓存')
+    console.log('✓ 缓存键：blob / data / 普通 URL 无 romv 不缓存')
   }
 
   /* --- 2. 存进去能原样读出来 --- */

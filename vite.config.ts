@@ -10,7 +10,29 @@ import { defineConfig } from 'vite'
  * `npm run build` 会依次跑完两个。
  */
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    react(),
+    tailwindcss(),
+    {
+      name: 'linux-isolated-page',
+      configureServer(server) {
+        server.middlewares.use((req, res, next) => {
+          // 开发时也必须走真实隔离路径；把头加给整站会拦掉跨源封面和字体。
+          const requestUrl = req.url || ''
+          const pathname = requestUrl.split('?')[0]
+          if (pathname === '/linux' || pathname === '/linux.html') {
+            res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
+            res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
+            if (pathname === '/linux') req.url = `/linux.html${requestUrl.slice('/linux'.length)}`
+          }
+          if (pathname === '/qemu-wasm/qemu-system-x86_64.worker.js') {
+            res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
+          }
+          next()
+        })
+      },
+    },
+  ],
   resolve: {
     alias: {
       '@': path.resolve(import.meta.dirname, './src'),

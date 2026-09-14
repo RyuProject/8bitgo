@@ -85,6 +85,7 @@ const PLATFORM_GROUPS: ReadonlyArray<{ titleKey: keyof Translation['browse']; id
 
 export function PlatformsPage() {
   const t = useT()
+  const lang = useLang()
   useSeo({
     title: t.browse.platformsTitle,
     description: t.seo.platforms,
@@ -157,6 +158,23 @@ export function PlatformsPage() {
           )}
         </div>
       )}
+      {/* Linux 是一台预装客体的虚拟机，不依赖游戏目录取数；取数失败时也应保持入口开放。 */}
+      <section aria-labelledby="linux-simulator-title" className="mt-10">
+        <h2 id="linux-simulator-title" className="mb-3 text-lg font-bold tracking-tight sm:text-xl">
+          {t.browse.linuxTitle}
+        </h2>
+        <a
+          href={`/linux?lang=${encodeURIComponent(lang)}`}
+          className="card-hover flex flex-col gap-3 rounded-card border border-line bg-surface p-5 hover:border-brand/60 sm:flex-row sm:items-center"
+        >
+          <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl border border-[#f8c644]/40 bg-[#f8c644]/10 text-2xl" aria-hidden>🐧</span>
+          <span className="min-w-0 flex-1">
+            <strong className="block text-base">Alpine Linux · QEMU.wasm</strong>
+            <span className="mt-1 block text-sm text-muted">{t.browse.linuxCaption}</span>
+          </span>
+          <span className="shrink-0 text-sm font-bold text-brand-hover">{t.browse.linuxAction}</span>
+        </a>
+      </section>
     </div>
   )
 }
