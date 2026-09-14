@@ -1,7 +1,6 @@
 /** 侧边栏 / 抽屉共用的导航配置（标题随语言变化，所以做成取 t 的函数） */
 import { FEATURES } from '@/config/features'
 import type { Translation } from '@/locales'
-import { getLang } from '@/services/lang'
 
 export interface NavLinkItem {
   label: string
@@ -53,7 +52,6 @@ export function exploreNavFor(t: Translation): NavLinkItem[] {
  */
 export function bottomNavFor(t: Translation): NavLinkItem[] {
   return [
-    { label: t.browse.linuxTitle, to: `/linux?lang=${encodeURIComponent(getLang())}`, icon: '🐧', external: true },
     { label: t.nav.blog, to: '/blog', icon: '📝' },
   ]
 }
