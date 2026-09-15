@@ -1,0 +1,27 @@
+/**
+ * SSR 同步渲染用的页面入口。renderToString 不会等待 React.lazy 的 import，
+ * 所以服务端继续静态拿组件，客户端构建则把这一入口替换成 Pages.client.tsx。
+ */
+export { GamesPage } from '@/pages/GamesPage'
+export { GameDetailPage } from '@/pages/GameDetailPage'
+export { PlayLocalPage } from '@/pages/PlayLocalPage'
+export { RoomsPage } from '@/pages/RoomsPage'
+export { CollectionsPage } from '@/pages/CollectionsPage'
+export { CollectionDetailPage } from '@/pages/CollectionDetailPage'
+export { DevelopersPage, GenresPage, PlatformsPage } from '@/pages/BrowsePages'
+export { GenrePage, PlatformPage } from '@/pages/CollectionPage'
+export { ComingSoonPage } from '@/pages/ComingSoonPage'
+export { NotFoundPage } from '@/pages/NotFoundPage'
+export { BlogPage } from '@/pages/BlogPage'
+export { PostPage } from '@/pages/PostPage'
+export { LoginPage } from '@/pages/LoginPage'
+export { ProfilePage } from '@/pages/ProfilePage'
+export { AboutPage } from '@/pages/AboutPage'
+export { SubmitGamePage } from '@/pages/SubmitGamePage'
+export { EmbedPage } from '@/pages/EmbedPage'
+export { AppsPage } from '@/pages/AppsPage'
+export { OAuthCallbackPage } from '@/pages/OAuthCallbackPage'
+export { OpenPlatformPage } from '@/pages/OpenPlatformPage'
+export { OpenDevicePage } from '@/pages/OpenDevicePage'
+export { OpenAuthorizePage } from '@/pages/OpenAuthorizePage'
+export { TvPage } from '@/pages/TvPage'

@@ -47,9 +47,11 @@ export default defineConfig({
     },
   ],
   resolve: {
-    alias: {
-      '@': path.resolve(import.meta.dirname, './src'),
-    },
+    alias: [
+      // 服务端同步组件、浏览器懒加载组件共用同一路由声明，避免 SSR 与水合路由漂移。
+      { find: '@/routes/Pages', replacement: path.resolve(import.meta.dirname, './src/routes/Pages.client.tsx') },
+      { find: '@', replacement: path.resolve(import.meta.dirname, './src') },
+    ],
   },
   build: {
     outDir: 'dist/client',

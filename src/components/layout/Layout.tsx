@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { Suspense, useEffect } from 'react'
 import { Outlet, useLocation } from 'react-router-dom'
 import { cx } from '@/lib/format'
 import { ShellProvider, useShell } from './ShellContext'
@@ -6,6 +6,7 @@ import { Sidebar } from './Sidebar'
 import { Topbar } from './Topbar'
 import { Footer } from './Footer'
 import { AuthModal } from '@/components/auth/AuthModal'
+import { PageSkeleton } from '@/components/ui/PageSkeleton'
 import { ImPanel } from '@/components/im/ImPanel'
 import { useT } from '@/services/i18n'
 import { onTvHost } from '@/services/tvHost'
@@ -91,7 +92,8 @@ function Shell() {
       >
         <Topbar />
         <main className="flex-1">
-          <Outlet />
+          {/* 只让正文在站内首次进入某页时等待 chunk；顶栏与侧栏不跟着闪退。SSR 同一边界留住水合中的 HTML。 */}
+          <Suspense fallback={<PageSkeleton />}><Outlet /></Suspense>
         </main>
         {!immersive && <Footer />}
       </div>

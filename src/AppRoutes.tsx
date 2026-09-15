@@ -5,40 +5,21 @@ import { RouteChunk, lazyNamed } from '@/routes/lazy'
 import { useAutoInclude } from '@/services/autoInclude'
 import { HomePage } from '@/pages/HomePage'
 import { onTvHost } from '@/services/tvHost'
-import { GamesPage } from '@/pages/GamesPage'
-import { GameDetailPage } from '@/pages/GameDetailPage'
-import { PlayLocalPage } from '@/pages/PlayLocalPage'
-import { RoomsPage } from '@/pages/RoomsPage'
-import { CollectionsPage } from '@/pages/CollectionsPage'
-import { CollectionDetailPage } from '@/pages/CollectionDetailPage'
-import { DevelopersPage, GenresPage, PlatformsPage } from '@/pages/BrowsePages'
-import { GenrePage, PlatformPage } from '@/pages/CollectionPage'
-import { ComingSoonPage } from '@/pages/ComingSoonPage'
-import { NotFoundPage } from '@/pages/NotFoundPage'
-import { BlogPage } from '@/pages/BlogPage'
-import { PostPage } from '@/pages/PostPage'
-import { LoginPage } from '@/pages/LoginPage'
-import { ProfilePage } from '@/pages/ProfilePage'
-import { AboutPage } from '@/pages/AboutPage'
+import {
+  GamesPage, GameDetailPage, PlayLocalPage, RoomsPage, CollectionsPage, CollectionDetailPage,
+  DevelopersPage, GenresPage, PlatformsPage, GenrePage, PlatformPage, ComingSoonPage,
+  NotFoundPage, BlogPage, PostPage, LoginPage, ProfilePage, AboutPage, SubmitGamePage,
+  EmbedPage, AppsPage, OAuthCallbackPage, OpenPlatformPage, OpenDevicePage,
+  OpenAuthorizePage, TvPage,
+} from '@/routes/Pages'
 import { TermsPage } from '@/pages/TermsPage'
 import { PrivacyPage } from '@/pages/PrivacyPage'
-import { SubmitGamePage } from '@/pages/SubmitGamePage'
-import { EmbedPage } from '@/pages/EmbedPage'
-import { AppsPage } from '@/pages/AppsPage'
-import { OAuthCallbackPage } from '@/pages/OAuthCallbackPage'
-import { OpenPlatformPage } from '@/pages/OpenPlatformPage'
-import { OpenDevicePage } from '@/pages/OpenDevicePage'
-import { OpenAuthorizePage } from '@/pages/OpenAuthorizePage'
-import { TvPage } from '@/pages/TvPage'
 
 /**
- * 后台整块按需加载。
+ * 前台与后台按页面加载。前台使用同一路由声明，但 Pages.tsx 在服务端同步导出页面、
+ * 客户端构建替换为 Pages.client.tsx 的懒组件；首页与法律页仍在主包中。
  *
- * 能这么干的前提是服务端根本不渲染 /admin（见 server/src/ssr.js 的 isAdminPath）——
- * renderToString 是同步的，碰上没解析完的 lazy 会直接抛。前台那些页面都要 SSR，
- * 所以只能留在主包里；后台不 SSR，正好整块摘出去。
- *
- * 前台页面**不要**照抄这个写法，会把服务端渲染打挂。
+ * 后台不做 SSR（见 server/src/ssr.js），它原本的 lazyNamed 路由继续保持原样。
  */
 const AdminLayout = lazyNamed(() => import('@/admin/AdminLayout'), 'AdminLayout')
 const AdminOverview = lazyNamed(() => import('@/admin/AdminOverview'), 'AdminOverview')
@@ -97,7 +78,7 @@ export function AppRoutes() {
           <Route path="/auth/callback" element={<OAuthCallbackPage />} />
           <Route path="/me" element={<ProfilePage />} />
           <Route path="/about" element={<AboutPage />} />
-          {/* 法律页。必须是静态 import（见上面那段注释）—— 应用商店和第三方登录的
+          {/* 法律页继续静态 import —— 应用商店和第三方登录的
               审核会来抓这两个 URL，SSR 挂了等于审核看到空壳 */}
           <Route path="/terms" element={<TermsPage />} />
           <Route path="/privacy" element={<PrivacyPage />} />
@@ -121,11 +102,11 @@ export function AppRoutes() {
         {/*
           第三方页面嵌入用的精简游玩页。刻意挂在 <Route element={<Layout />}> **外面** ——
           挂里面就会带上侧边栏、顶栏和页脚，在一个 640x480 的 iframe 里全是负担。
-          它仍然要走 SSR（服务端只跳过 /admin），所以 EmbedPage 只能静态引入，不能 lazy。
+          它仍然要走 SSR，服务端使用 Pages.tsx 的同步组件；浏览器端第一次进入才下载。
         */}
-        <Route path="/embed/:slug" element={<EmbedPage />} />
+        <Route path="/embed/:slug" element={<RouteChunk><EmbedPage /></RouteChunk>} />
         {/* Play! 的 pthread 需要顶层 COOP/COEP；服务端只给这条独立路由加隔离头。 */}
-        <Route path="/play/ps2/:slug" element={<EmbedPage standalonePs2 />} />
+        <Route path="/play/ps2/:slug" element={<RouteChunk><EmbedPage standalonePs2 /></RouteChunk>} />
 
         {/* 后台：独立外壳，不带前台侧边栏 */}
         <Route
