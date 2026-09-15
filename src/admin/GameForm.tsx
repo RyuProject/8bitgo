@@ -46,6 +46,7 @@ import { isPlayable } from '@/emulator'
 import { normalizeDevelopers } from '@/lib/developers'
 import { Field, btnClass, inputClass } from './ui'
 import { mergeDosboxConfigOverride, normalizeDosboxConfigOverride } from '../../shared/dosbox-config.js'
+import { normalizeDosStartupCommands } from '../../shared/dos-startup-commands.js'
 import { probeRange } from '@/emulator/remoteDisc'
 
 /*
@@ -195,6 +196,14 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
       return { ...f, dosExecutables }
     })
 
+  const setDosStartupCommandsLang = (lang: RomLang, commands: string) =>
+    setForm((f) => {
+      const dosStartupCommands = { ...f.dosStartupCommands }
+      if (commands) dosStartupCommands[lang] = commands
+      else delete dosStartupCommands[lang]
+      return { ...f, dosStartupCommands }
+    })
+
   const setRomBackupLang = (lang: RomLang, key: string) =>
     setForm((f) => {
       const romBackups = { ...(f.romBackups ?? {}) }
@@ -215,7 +224,21 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
       return setError('Windows 系统镜像必须是 .jsdos 文件、对象 key 或 URL')
     }
     const cleanedDosEntries: Partial<Record<RomLang, string>> = {}
+    const cleanedDosStartupCommands: Partial<Record<RomLang, string>> = {}
     for (const l of ROM_LANGS) {
+      try {
+        const commands = normalizeDosStartupCommands(form.dosStartupCommands?.[l])
+        if (commands) {
+          if (!form.roms?.[l]?.trim()) return setError(`${ROM_LANG_LABEL[l]} 填了启动前命令，但还没有绑定 ROM ZIP`)
+          if (windowsGuest) return setError('共享 Windows 系统模式不能使用 DOS 启动前命令')
+          if (/^\s*imgmount\b.*\.cue\b/im.test(commands) && form.dosBackend !== 'dosboxX') {
+            return setError(`${ROM_LANG_LABEL[l]} 使用 CUE 光盘镜像，请先在“运行环境”选择 DOSBox-X`)
+          }
+          cleanedDosStartupCommands[l] = commands
+        }
+      } catch (err) {
+        return setError(`${ROM_LANG_LABEL[l]}：${err instanceof Error ? err.message : '启动前命令无效'}`)
+      }
       const raw = form.dosExecutables?.[l]?.trim()
       if (!raw) continue
       if (!form.roms?.[l]?.trim()) return setError(`${ROM_LANG_LABEL[l]} 填了启动文件，但还没有绑定 ROM ZIP`)
@@ -286,6 +309,8 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
       romBackups: cleanedRomBackups,
       // 空对象也显式提交：编辑时清空所有语言入口，服务端才知道这是有意清除。
       dosExecutables: form.platform === 'dos' ? cleanedDosEntries : {},
+      // 清空最后一个语言命令时也要显式送空对象，服务端才能删掉旧命令。
+      dosStartupCommands: form.platform === 'dos' ? cleanedDosStartupCommands : {},
       tags: tags.length ? tags : undefined,
       /**
        * rating / ratingCount / plays 都不在表单里填，编辑时原样带回、新建时是 0。
@@ -421,10 +446,10 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
                     }))
                   }}
                 />
-                Windows 3.x / 95 / 98（DOSBox-X）
+                DOSBox-X（CUE 光盘 / Windows 3.x / 95 / 98）
               </label>
               <p className="mt-1 text-[11px] text-dim">
-                数据库平台仍是 DOS。勾选后可让多款游戏共用一份 Windows 系统镜像；每款游戏的 ROM 仍上传普通 ZIP。
+                数据库平台仍是 DOS。只挂 CUE 光盘时系统镜像留空；要运行 Windows 才需要填写系统镜像。
               </p>
             </Field>
             {form.dosBackend === 'dosboxX' ? (
@@ -648,6 +673,18 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
                     {form.dosBackend === 'dosboxX' && form.dosSystem?.trim()
                       ? '留空则用上面的默认 Windows 自启动 EXE；共享 Windows 系统模式不自动猜测。'
                       : '留空则用上面的默认启动程序；默认也留空时由播放器自动猜测。'}
+                  </p>
+                </Field>
+                <Field label={`${ROM_LANG_LABEL[lang]} 启动前命令（ZIP 内）`}>
+                  <textarea
+                    className={cx(inputClass, 'min-h-24 font-mono text-sm')}
+                    value={form.dosStartupCommands?.[lang] ?? ''}
+                    onChange={(e) => setDosStartupCommandsLang(lang, e.target.value)}
+                    placeholder={'imgmount d "./CD/HEROES2_fixed.cue" -t cdrom'}
+                    disabled={form.dosBackend === 'dosboxX' && Boolean(form.dosSystem?.trim())}
+                  />
+                  <p className="mt-1 text-[11px] text-dim">
+                    播放器已经挂载 ZIP 为 C 盘，命令会在上面的 BAT / EXE 启动前执行。光盘镜像必须在同一个 ZIP 内；中文版可挂载 ./CD/HEROES2_fixed.cue，免 CD 的英文版留空。CUE 光盘请选 DOSBox-X 核心，且不要再写 mount c、c: 或 heroes2.exe。
                   </p>
                 </Field>
                 {ROM_LANGS.some((other) => other !== lang && form.roms?.[other]?.trim()) && (

@@ -34,6 +34,7 @@ import { deleteSave, pullSave, pushSave } from '@/services/saves'
 import { loadGameBytes } from '../romLoader'
 import { loadSystemBytes, systemSourcesFor } from '../systemSource'
 import { armJspi } from '../jspiFlag'
+import { normalizeDosStartupCommands } from '../../../shared/dos-startup-commands.js'
 import { STARTING_MILESTONE, windowsGuestStartupBudgetMs } from '../loadProgress'
 import { assertTypeable, scheduleWindowsLaunch, windows3xLaunchCommands, type WindowsLaunchCi } from '../windowsLaunch'
 
@@ -470,12 +471,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       } else {
         // 普通 zip / exe 现场打成 bundle；已经是 bundle 的原样使用。
         // 后台指定了启动程序就按它生成 conf，压过 pickExecutable 的猜测。
+        const startupCommands = normalizeDosStartupCommands(options.dosStartupCommands)
         const bundle = await makeJsdosBundle(
           rom.name,
           gameBuf,
-          options.dosExecutable ? buildDosboxConf(options.dosExecutable) : undefined,
+          options.dosExecutable ? buildDosboxConf(options.dosExecutable, startupCommands) : undefined,
           dosboxConfig,
           options.dosExecutable,
+          startupCommands,
         )
         primaryUrl = URL.createObjectURL(bundle.blob)
         objectUrls.push(primaryUrl)
@@ -837,4 +840,3 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     },
   }
 }
-

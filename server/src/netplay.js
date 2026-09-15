@@ -1,5 +1,5 @@
 import express from 'express'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { Server } from 'socket.io'
 import { watchPresence, clientIpFrom, UNKNOWN_PRESENCE } from './presence.js'
 import { admitSse } from './sseGuard.js'
@@ -111,6 +111,8 @@ const MAX_NAME_LEN = 32
  * 收窄成「字母数字下划线短横线，最长 64」，下游就不用再逐处操心。
  */
 const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/
+/** 协议里的成员表和房间列表都是普通对象；这些键会覆盖原型入口或内建属性。 */
+const UNSAFE_OBJECT_IDS = new Set(['__proto__', 'constructor', 'prototype'])
 /**
  * 「长得像数组下标」的字符串（"0"、"7"、"123"）当对象键时会被 JS **排到最前面**，不管插入顺序。
  *
@@ -158,6 +160,9 @@ const rooms = new Map()
 const socketRoom = new Map()
 /** 旧 roomId -> 新 roomId（房主迁移后，让老邀请链接继续有效） */
 const aliases = new Map()
+/** /migrate 成功后短期保留回执：响应丢失时同一组令牌重试仍应返回成功。 */
+const completedMigrations = new Map()
+const tokenDigest = (token) => createHash('sha256').update(token).digest('hex')
 /** SSE 订阅者：{ res, watch }。房间有任何变化就推给他们，取代前端的轮询 */
 const watchers = new Set()
 /** /netplay 命名空间。destroyRoom 要靠它把残留的连接请出 socket.io 房间 */
@@ -502,7 +507,11 @@ function pickExtra(extra, userid, sessionid) {
  * （它会变成房主那边 inputsData 的 key；见 MAX_SYNC_ENTRIES 的说明）。
  */
 function validSync(e) {
-  if (!Array.isArray(e?.connected_input)) return false
+  if (!Array.isArray(e?.connected_input) || e.connected_input.length !== 3) return false
+  const [player, index, value] = e.connected_input
+  // 原样喂给核心的三个参数必须是有限数字；仅验帧号的话畸形数组会进入房主的模拟器。
+  if (!Number.isInteger(player) || player < 0 || player >= MAX_PLAYERS || !Number.isInteger(index) || index < 0 || index > 63) return false
+  if (typeof value !== 'number' || !Number.isFinite(value) || Math.abs(value) > 32768) return false
   const f = typeof e.frame === 'number' ? e.frame : typeof e.frame === 'string' && /^\d+$/.test(e.frame) ? Number(e.frame) : NaN
   return Number.isInteger(f) && f >= 0 && f < 2 ** 31
 }
@@ -567,7 +576,7 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
       const extra = payload?.extra && typeof payload.extra === 'object' ? payload.extra : {}
       const roomId = str(extra.sessionid, 64)
       const userid = str(extra.userid, 64)
-      if (!SAFE_ID.test(roomId) || !SAFE_ID.test(userid)) return ack?.('bad request')
+      if (!SAFE_ID.test(roomId) || !SAFE_ID.test(userid) || UNSAFE_OBJECT_IDS.has(roomId) || UNSAFE_OBJECT_IDS.has(userid)) return ack?.('bad request')
       if (isIndexLike(userid)) return ack?.('bad userid')
       // 别名也算占用：getRoom 先顺着别名解析，撞上别名的新房间谁也进不去
       if (rooms.has(roomId) || aliases.has(roomId)) return ack?.('room already exists')
@@ -624,7 +633,7 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
       const room = getRoom(str(extra.sessionid, 64))
       const userid = str(extra.userid, 64)
       if (!room) return ack?.('room not found')
-      if (!SAFE_ID.test(userid)) return ack?.('bad request')
+      if (!SAFE_ID.test(userid) || UNSAFE_OBJECT_IDS.has(userid)) return ack?.('bad request')
       if (isIndexLike(userid)) return ack?.('bad userid')
       /**
        * ⚠️ userid 是**客户端自己填的**，而且随 users-updated 广播给屋里每个人。
@@ -971,6 +980,10 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
     if (me.userid !== room.nextHostUserId) return res.status(403).json({ error: 'not the elected host' })
     if (room.claim && room.claim.userid !== me.userid) return res.status(409).json({ error: 'already claimed' })
 
+    // 同一个认领人重试时沿用原令牌和截止时间。否则他每隔几十秒再 POST 一次，
+    // 就能反复把 60 秒窗口续满，房间永久停在「等待新房主」且别人永远没机会接手。
+    if (room.claim) return res.json({ ok: true, roomId: room.id, claimToken: room.claim.token, expiresIn: Math.max(0, room.claim.expiresAt - Date.now()) })
+
     if (room.graceTimer) clearTimeout(room.graceTimer)
     if (room.claimTimer) clearTimeout(room.claimTimer)
     room.claim = { userid: me.userid, token: randomBytes(24).toString('base64url'), startedAt: Date.now(), expiresAt: Date.now() + CLAIM_WINDOW_MS }
@@ -1009,16 +1022,27 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
    * 任何访客都能用被选中者的 userid 开个房，把整屋子人劫到自己那儿去。
    */
   app.post('/api/netplay/rooms/:roomId/migrate', express.json(), (req, res) => {
-    const oldRoom = rooms.get(resolveRoomId(req.params.roomId))
     const newRoomId = str(req.body?.newRoomId, 64)
     const claimToken = str(req.get('x-netplay-token'), 64) || str(req.body?.claimToken, 64)
     const newRoomToken = str(req.body?.newRoomToken, 64)
+    const receipt = completedMigrations.get(req.params.roomId)
+    if (receipt && newRoomId === receipt.newRoomId && claimToken && newRoomToken
+      && tokenDigest(claimToken) === receipt.claimDigest && tokenDigest(newRoomToken) === receipt.newTokenDigest) {
+      const linked = rooms.get(newRoomId)
+      if (linked && aliases.get(req.params.roomId) === newRoomId && memberByToken(linked, newRoomToken)?.userid === linked.ownerUserId) {
+        return res.json({ ok: true, roomId: newRoomId, alreadyMigrated: true })
+      }
+    }
+    const oldRoom = rooms.get(resolveRoomId(req.params.roomId))
     const newRoom = rooms.get(newRoomId)
 
     if (!oldRoom || !oldRoom.awaitingHost) return res.status(409).json({ error: 'room is not awaiting a host' })
     if (!newRoom) return res.status(404).json({ error: 'new room not found' })
     if (newRoom === oldRoom) return res.status(400).json({ error: 'same room' })
     if (!claimToken || !oldRoom.claim || oldRoom.claim.token !== claimToken) return res.status(403).json({ error: 'not the elected host' })
+    // 两张令牌都真的对，也不能把另一款游戏的房间嫁接到旧邀请链接上：
+    // 访客会拿旧游戏 ROM 进入新房，画面与输入不同步，还会误以为是接管失败。
+    if (newRoom.gameId !== oldRoom.gameId || newRoom.domain !== oldRoom.domain) return res.status(409).json({ error: 'different game' })
     const owner = memberByToken(newRoom, newRoomToken)
     if (!owner || owner.userid !== newRoom.ownerUserId) return res.status(403).json({ error: 'not the owner of the new room' })
 
@@ -1039,6 +1063,10 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
     nsp.socketsLeave(roomKey(oldRoom.id))
     rooms.delete(oldRoom.id)
     aliases.set(oldRoom.id, newRoomId)
+    completedMigrations.set(oldRoom.id, { newRoomId, claimDigest: tokenDigest(claimToken), newTokenDigest: tokenDigest(newRoomToken) })
+    // 回执只供响应丢失时的短期重试；不能让令牌在内存里无限积压。
+    const forget = setTimeout(() => completedMigrations.delete(oldRoom.id), Math.max(CLAIM_WINDOW_MS, 60_000))
+    forget.unref?.()
     // 旧的别名也一起指过来，链子不要越接越长
     for (const [from, to] of aliases) if (to === oldRoom.id) aliases.set(from, newRoomId)
 

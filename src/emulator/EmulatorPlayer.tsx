@@ -61,16 +61,17 @@ import { onMatchRequest } from '@/services/matchRequest'
 import {
   claimRoom,
   downloadState,
-  fetchNetplayRoom,
   gameIdFor,
   inviteLink,
   migrateRoom,
+  probeNetplayRoom,
   netplayEnabled,
   playerName,
   refreshNetplayRooms,
   setRoomRole,
   useNetplayRooms,
   watchNetplayRoom,
+  type NetplayRoom,
   type RoomRole,
 } from '@/services/netplay'
 import { freePlayerIndex, keepAlive, roomLink, roomsEnabled, useRoom, MAX_PLAYERS } from '@/services/rooms'
@@ -256,6 +257,8 @@ interface Props {
   arcadeRomData?: string
   /** DOS 启动程序覆盖（zip 内相对路径），jsdos 运行时用 */
   dosExecutable?: string
+  /** 当前 ROM 语言的启动前命令；只在新 DOS 会话挂载时读取。 */
+  dosStartupCommands?: string
   /** DOS 运行核心：Windows 客体的完整 .jsdos 镜像必须走 DOSBox-X */
   dosBackend?: DosBackend
   /** 可复用的 Windows 系统 .jsdos；游戏 ROM 仍单独加载。 */
@@ -456,6 +459,7 @@ export function EmulatorPlayer({
   genres,
   arcadeRomData,
   dosExecutable,
+  dosStartupCommands,
   dosBackend,
   dosSystemUrl,
   dosExtras,
@@ -515,9 +519,18 @@ export function EmulatorPlayer({
     setResolvedInvite(undefined)
     if (!invite || ignoreInvite || !netplayEnabled()) return
     let stop = false
-    void fetchNetplayRoom(invite).then((room) => {
-      if (!stop) setResolvedInvite(room?.migratedTo || room?.roomId || invite)
-    })
+    const resolve = async () => {
+      if (stop) return
+      const result = await probeNetplayRoom(invite)
+      if (stop) return
+      if (result.kind === 'unreachable') {
+        // 旧邀请链接要靠这一步跟随新房号；一次 502 时退回旧 id 会被列表误判成「已关闭」。
+        window.setTimeout(() => void resolve(), 2000)
+        return
+      }
+      setResolvedInvite(result.kind === 'room' ? result.room.migratedTo || result.room.roomId : invite)
+    }
+    void resolve()
     return () => {
       stop = true
     }
@@ -1243,6 +1256,8 @@ export function EmulatorPlayer({
   // 同 core：只在挂载那一刻读一次，进依赖会把正在跑的游戏重启
   const dosExecutableRef = useRef(dosExecutable)
   dosExecutableRef.current = dosExecutable
+  const dosStartupCommandsRef = useRef(dosStartupCommands)
+  dosStartupCommandsRef.current = dosStartupCommands
   // 和启动程序一样，只在真正挂载 js-dos 时读取，后台配置变化不该打断已经开始的游戏
   const dosBackendRef = useRef(dosBackend)
   dosBackendRef.current = dosBackend
@@ -1487,6 +1502,7 @@ export function EmulatorPlayer({
       mouseCapture: shouldCaptureMouse(session.platform, genresRef.current),
       arcadeRomData: arcadeRomDataRef.current,
       dosExecutable: dosExecutableRef.current,
+      dosStartupCommands: dosStartupCommandsRef.current,
       dosBackend: dosBackendRef.current,
       dosSystemUrl: dosSystemUrlRef.current,
       dosExtras: dosExtrasRef.current,
@@ -1680,13 +1696,12 @@ export function EmulatorPlayer({
     /**
      * 房间「查不到」不等于房间「没了」。
      *
-     * fetchNetplayRoom 在网络抖动、502、超时时同样返回 null（见 services/netplay.ts 的 catch），
-     * 一次 null 就 endSession 意味着玩家的网卡一下，正在玩的联机局当场被拆、进度全丢。
-     * 要连着两次都查不到才认账 —— 服务器本来就留 60 秒宽限期，等一轮完全来得及。
+     * SSE 的 room-gone 再用 HTTP 404 确认一次；网络抖动 / 502 会由
+     * probeNetplayRoom 标成 unreachable，绝不当成散场。
      */
     let missCount = 0
     /** 处理一次房间快照（首次 fetch 与后续 SSE 推送共用同一段逻辑） */
-    const handle = async (room: Awaited<ReturnType<typeof fetchNetplayRoom>>) => {
+    const handle = async (room: NetplayRoom | null) => {
       if (stopped || cancelled) return
       if (!room) {
         missCount += 1
@@ -1731,7 +1746,11 @@ export function EmulatorPlayer({
       }
     }
 
-    const tick = async () => handle(await fetchNetplayRoom(roomId))
+    const tick = async () => {
+      const result = await probeNetplayRoom(roomId)
+      if (result.kind === 'unreachable') return
+      await handle(result.kind === 'room' ? result.room : null)
+    }
     // 首次立刻对一次，之后交给 SSE 推送（服务端有变化才发）。
     // 以前是每 2.5 秒轮询一次自己的房间，纯粹为了等「房主掉线」这个几乎不发生的事件；
     // 换成推送之后平时零请求，房主一掉线也是立刻知道，接手更快。
@@ -1773,7 +1792,7 @@ export function EmulatorPlayer({
      * 这一轮联机对应的会话号。
      *
      * ⚠️ netplay 的回调（onRoom / onHostLeft / …）是在**挂载 effect 之外**定义的，
-     * 那道 `isCurrent()` 总闸管不到它们。而 onHostLeft 里还挂着一个 fetchNetplayRoom()，
+     * 那道 `isCurrent()` 总闸管不到它们。而 onHostLeft 里还挂着一次房间查询，
      * 慢网上要几秒才落地 —— 这几秒里玩家完全可能已经点了「离开房间」、自己开了单机局。
      * 没有守卫的话，那个迟到的 promise 会把他**正在玩的另一局**拆掉重挂成联机访客，
      * 或者直接 endSession() + 红字「房主已离开」。begin() 之后会话号就是它。
@@ -1797,17 +1816,36 @@ export function EmulatorPlayer({
      * 接手的最后一步：新房间号（轮询到 extra.sessionid）和新房间的令牌（room-token 事件）
      * 谁先到说不准 —— 房间号往往在服务器 ack 之前就能看到。两样齐了才发 /migrate。
      */
+    let migrationInFlight = false
+    let migrationStartedAt = 0
     const tryMigrate = () => {
+      if (p2pStale() || migrationInFlight) return
       const from = migrateFromRef.current
       const to = migrateToRef.current
       const claim = claimTokenRef.current
       const tk = roomTokenRef.current
       if (!from || !to || !claim || !tk || from === to) return
-      migrateFromRef.current = ''
-      claimTokenRef.current = ''
+      if (!migrationStartedAt) migrationStartedAt = Date.now()
+      migrationInFlight = true
       void migrateRoom(from, to, claim, tk).then((okDone) => {
-        if (okDone) setNotice(t.player.tookOver)
-        refreshNetplayRooms()
+        migrationInFlight = false
+        if (p2pStale()) return
+        if (okDone) {
+          migrateFromRef.current = ''
+          claimTokenRef.current = ''
+          setNotice(t.player.tookOver)
+          refreshNetplayRooms()
+          return
+        }
+        // /migrate 是接手的最后一跳：一次 502 或断网就丢掉两张令牌的话，
+        // 新房仍在玩，旧邀请链接却会在认领窗口结束时死掉。窗口内继续试，
+        // 会话号一变（玩家主动离房 / 换游戏）就自动停止，不能把旧局接进新局。
+        if (Date.now() - migrationStartedAt < 45_000) {
+          window.setTimeout(tryMigrate, 2000)
+        } else {
+          setNotice(t.player.matchFailed)
+          refreshNetplayRooms()
+        }
       })
     }
     begin(romUrl, platform.id, emulatorJsMeta, {
@@ -1861,9 +1899,31 @@ export function EmulatorPlayer({
             return
           }
           const wanted = join ?? ''
-          void fetchNetplayRoom(wanted).then((room) => {
+          const lostAt = Date.now()
+          const checkRoom = async () => {
+            const result = await probeNetplayRoom(wanted)
             // 这几秒里玩家可能已经退出去开了别的局 —— 那这条迟到的消息与他无关了
             if (p2pStale()) return
+            if (result.kind === 'unreachable' && Date.now() - lostAt < 90_000) {
+              // Socket 断开和查询 502 往往是同一次网络抖动。等网络恢复再决定是否重进；
+              // 一次查不到就拆掉访客的游戏，用户连恢复连接的机会都没有。
+              setNotice(t.player.rejoining)
+              window.setTimeout(() => void checkRoom(), 2000)
+              return
+            }
+            const room = result.kind === 'room' ? result.room : null
+            if (room?.migratedTo && room.migratedTo !== wanted) {
+              // 信令断开的同时房主可能已经接完：旧链接仍指向新房，不能把访客当成散场踢掉。
+              setNotice(t.player.hostChanged)
+              startP2p(room.migratedTo, undefined, asRole)
+              return
+            }
+            if (room?.awaitingHost && Date.now() - lostAt < 90_000) {
+              // 我已从旧 socket 成员表里移除，不能认领；等接班人开好房后沿旧链接跟过去。
+              setNotice(t.player.hostChanged)
+              window.setTimeout(() => void checkRoom(), 2000)
+              return
+            }
             const alive = room && !room.awaitingHost && !room.migratedTo
             if (alive && !rejoinedRef.current) {
               rejoinedRef.current = true
@@ -1887,7 +1947,8 @@ export function EmulatorPlayer({
             endSession()
             setStatus('error')
             setError(t.player.hostLeft)
-          })
+          }
+          void checkRoom()
         },
       },
     })

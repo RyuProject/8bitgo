@@ -494,12 +494,20 @@ export function watchNetplayRoom(
   let stopped = false
   let es: EventSource | null = null
   let timer = 0
+  let polling = false
 
   const poll = async () => {
-    const room = await fetchNetplayRoom(roomId)
-    if (stopped) return
-    if (room) handlers.onRoom(room)
-    else handlers.onGone()
+    if (polling) return
+    polling = true
+    try {
+      const result = await probeNetplayRoom(roomId)
+      if (stopped) return
+      if (result.kind === 'room') handlers.onRoom(result.room)
+      else if (result.kind === 'gone') handlers.onGone()
+      // 502 / 断网不表示房间消失，保留上一份快照直到下次能连上服务器。
+    } finally {
+      polling = false
+    }
   }
 
   if (typeof EventSource === 'function') {
@@ -534,15 +542,29 @@ export function watchNetplayRoom(
   }
 }
 
-export async function fetchNetplayRoom(roomId: string): Promise<NetplayRoom | null> {
-  if (!netplayEnabled()) return null
+export type NetplayRoomProbe = { kind: 'room'; room: NetplayRoom } | { kind: 'gone' } | { kind: 'unreachable' }
+
+/** 把明确 404 和网络不可达分开，断网时不能把玩家误判成「房主走了」。 */
+export async function probeNetplayRoom(roomId: string): Promise<NetplayRoomProbe> {
+  if (!netplayEnabled()) return { kind: 'unreachable' }
+  const abort = new AbortController()
+  // 网络半断开时 fetch 可能一直挂着；每 3 秒的兜底轮询不能为同一房间堆出许多请求。
+  const timeout = setTimeout(() => abort.abort(), 8000)
   try {
-    const res = await fetch(`${apiBase()}/api/netplay/rooms/${encodeURIComponent(roomId)}`)
-    if (!res.ok) return null
-    return (await res.json()) as NetplayRoom
+    const res = await fetch(`${apiBase()}/api/netplay/rooms/${encodeURIComponent(roomId)}`, { signal: abort.signal })
+    if (res.status === 404) return { kind: 'gone' }
+    if (!res.ok) return { kind: 'unreachable' }
+    return { kind: 'room', room: (await res.json()) as NetplayRoom }
   } catch {
-    return null
+    return { kind: 'unreachable' }
+  } finally {
+    clearTimeout(timeout)
   }
+}
+
+export async function fetchNetplayRoom(roomId: string): Promise<NetplayRoom | null> {
+  const result = await probeNetplayRoom(roomId)
+  return result.kind === 'room' ? result.room : null
 }
 
 /**

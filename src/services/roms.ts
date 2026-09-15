@@ -707,6 +707,14 @@ export function dosExecutableForRom(
   return (rom.lang ? game.dosExecutables?.[rom.lang] : undefined) || game.dosExecutable
 }
 
+/** 命令跟随实际命中的语言槽；主备地址切换仍使用同一语言的配置。 */
+export function dosStartupCommandsForRom(
+  game: Pick<Game, 'dosStartupCommands'>,
+  rom: Pick<RomResolution, 'lang'>,
+): string | undefined {
+  return rom.lang ? game.dosStartupCommands?.[rom.lang] : undefined
+}
+
 /**
  * 「没问出来」时自动重试的退避节奏（毫秒）。
  *

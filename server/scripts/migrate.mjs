@@ -809,6 +809,12 @@ const patches = [
     run: () => conn.query('ALTER TABLE `game_roms` ADD COLUMN `backup_key` VARCHAR(500) NULL AFTER `object_key`'),
   },
   {
+    name: 'game_roms.dos_startup_commands（各语言 DOS 启动前命令）',
+    table: 'game_roms',
+    needed: async () => !(await hasColumn('game_roms', 'dos_startup_commands')),
+    run: () => conn.query('ALTER TABLE `game_roms` ADD COLUMN `dos_startup_commands` TEXT NULL AFTER `dos_executable`'),
+  },
+  {
     name: 'open_rom_samples（开放平台每机型一款沙箱测试 ROM）',
     table: null,
     skip: async () => (!(await hasTable('game_roms')) ? '还没有 v2 的 game_roms 表' : null),

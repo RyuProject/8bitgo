@@ -200,6 +200,12 @@ section('房主迁移')
   ok('拿成员令牌冒充认领被拒', r.status === 403)
   r = await migrate({ newRoomId: 'R2b', newRoomToken: 'nope' }, claim)
   ok('新房间令牌不对被拒', r.status === 403)
+  const wrongGame = await connect()
+  await open(wrongGame, extra('u-g1', 'R2-wrong', '小明', 999), 4)
+  await wait(50)
+  r = await migrate({ newRoomId: 'R2-wrong', newRoomToken: wrongGame.token }, claim)
+  ok('不能把另一款游戏的房间接到旧邀请链接', r.status === 409)
+  wrongGame.close()
 
   let migrated = null
   g2.on('data-message', (m) => {
@@ -207,6 +213,10 @@ section('房主迁移')
   })
   r = await migrate({ newRoomId: 'R2b', newRoomToken: newHost.token }, claim)
   ok('迁移成功', r.ok && (await r.json()).roomId === 'R2b')
+  r = await migrate({ newRoomId: 'R2b', newRoomToken: newHost.token }, claim)
+  ok('成功响应丢失后同一组令牌重试仍返回成功', r.ok && (await r.json()).alreadyMigrated === true)
+  r = await migrate({ newRoomId: 'R2b', newRoomToken: newHost.token }, 'wrong-claim')
+  ok('第三方不能借重复请求冒充成功', r.status === 403 || r.status === 409)
   await wait(100)
   ok('留在旧房间的人收到 host-migrated', migrated?.roomId === 'R2b')
 
@@ -315,8 +325,13 @@ if (process.env.NETPLAY_HOST_GRACE_MS) {
     await wait(150)
     const r = await fetch(`${API}/api/netplay/rooms/R5/claim`, { method: 'POST', headers: { 'x-netplay-token': g.token } })
     ok('认领成功', r.ok)
+    const first = r.ok ? await r.json() : null
+    await wait(Math.floor(Number(process.env.NETPLAY_CLAIM_WINDOW_MS) / 2))
+    const retry = await fetch(`${API}/api/netplay/rooms/R5/claim`, { method: 'POST', headers: { 'x-netplay-token': g.token } })
+    const second = retry.ok ? await retry.json() : null
+    ok('重复认领沿用原令牌、剩余窗口不会重新计时', second?.claimToken === first?.claimToken && second?.expiresIn < first?.expiresIn)
     g.close()
-    await wait(Number(process.env.NETPLAY_CLAIM_WINDOW_MS) + 300)
+    await wait(Math.ceil(Number(process.env.NETPLAY_CLAIM_WINDOW_MS) / 2) + 300)
     ok('认领窗口过了、屋里没人 → 解散', (await fetch(`${API}/api/netplay/rooms/R5`)).status === 404)
   }
 

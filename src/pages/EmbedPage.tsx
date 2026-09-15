@@ -27,7 +27,7 @@ import { usePageData, type GameData } from '@/services/pageData'
 import { platformMap } from '@/data/platforms'
 import { isPlatformEnabled } from '@/config/platforms'
 import { langPrefix, type RomLang } from '@/config/languages'
-import { dosExecutableForRom, romLangsOf, romUrlForKey, useRomUrl } from '@/services/roms'
+import { dosExecutableForRom, dosStartupCommandsForRom, romLangsOf, romUrlForKey, useRomUrl } from '@/services/roms'
 import { usePlatformBiosUrl } from '@/services/platformBios'
 import { useSeo } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
@@ -151,6 +151,7 @@ export function EmbedPage({ standalonePs2 = false }: Props) {
           genres={game.genres}
           arcadeRomData={game.arcadeRomData}
           dosExecutable={dosExecutableForRom(game, rom)}
+          dosStartupCommands={dosStartupCommandsForRom(game, rom)}
           dosBackend={game.dosBackend}
           dosSystemUrl={game.dosSystem ? romUrlForKey(game.dosSystem) : undefined}
           dosWindowsVersion={game.dosWindowsVersion}

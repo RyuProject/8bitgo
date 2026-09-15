@@ -61,6 +61,8 @@ export interface MountOptions {
    * 传了就按它生成 dosbox.conf，压过 pickExecutable 的猜测。
    */
   dosExecutable?: string
+  /** DOS 的 [autoexec] 在挂 C 盘后、启动程序前执行的命令。 */
+  dosStartupCommands?: string
   /** DOSBox-X 用来启动 Windows 客体的完整 .jsdos 磁盘镜像；留空走普通 DOSBox。 */
   dosBackend?: DosBackend
   /** Windows 客体系统的共享 .jsdos 镜像 URL；游戏文件仍由 game 单独提供。 */

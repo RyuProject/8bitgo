@@ -103,6 +103,14 @@ await sleep(150)
 const sync = hostGot.find((d) => d['sync-control'])
 ok(sync && sync['sync-control'].length === 1 && sync['sync-control'][0].connected_input[0] === 1, '访客只能发自己手柄位的按键')
 hostGot.length = 0
+guest.emit('data-message', { 'sync-control': [
+  { frame: 1, connected_input: [1, {}, 1] },
+  { frame: 1, connected_input: [1, 8, 'pressed'] },
+  { frame: 1, connected_input: [1, 8, 1] },
+] })
+await sleep(100)
+ok(hostGot.find((d) => d['sync-control'])?.['sync-control']?.length === 1, '畸形按键参数被丢，只留下有限数字的正常按键')
+hostGot.length = 0
 // 观众（手柄位满了之后进来的人）一个键都不许发
 const spectators = []
 for (let i = 0; i < 3; i++) {
@@ -300,6 +308,8 @@ const seven = await connect()
 ok((await new Promise((r) => seven.emit('join-room', { extra: extra('r1', '7'), password: '' }, (e) => r(e)))) === 'bad userid', '整数形 userid 进房被拒')
 ok((await new Promise((r) => seven.emit('open-room', { extra: extra('r-int', '12345'), maxPlayers: 2 }, r))) === 'bad userid', '整数形 userid 开房被拒')
 ok((await new Promise((r) => seven.emit('open-room', { extra: extra('bad id/with spaces', 'u-x'), maxPlayers: 2 }, r))) === 'bad request', '房间 id 只许字母数字下划线短横线')
+ok((await new Promise((r) => seven.emit('open-room', { extra: extra('__proto__', 'u-x'), maxPlayers: 2 }, r))) === 'bad request', '原型入口不能当房间 id')
+ok((await new Promise((r) => seven.emit('join-room', { extra: extra('r1', '__proto__'), password: '' }, (e) => r(e)))) === 'bad request', '原型入口不能当成员 id')
 ok((await new Promise((r) => seven.emit('open-room', { extra: 'not-an-object', maxPlayers: 2 }, r))) === 'bad request', 'extra 不是对象直接拒，不抛')
 seven.close()
 let orderSeen = null

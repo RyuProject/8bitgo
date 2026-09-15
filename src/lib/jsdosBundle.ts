@@ -284,7 +284,7 @@ function isDos83Path(path: string): boolean {
 }
 
 /** 生成一份能跑起来的 dosbox.conf */
-export function buildDosboxConf(exe: string | null): string {
+export function buildDosboxConf(exe: string | null, startupCommands?: string): string {
   const dir = exe && exe.includes('/') ? exe.slice(0, exe.lastIndexOf('/')) : ''
   const file = exe ? exe.slice(exe.lastIndexOf('/') + 1) : ''
   const lines = [
@@ -304,6 +304,8 @@ export function buildDosboxConf(exe: string | null): string {
     'mount c .',
     'c:',
   ]
+  // 光盘先于程序挂载；若放到 EXE 后面，带光盘校验的游戏已经弹出无盘提示。
+  if (startupCommands?.trim()) lines.push(...startupCommands.trim().replace(/\r\n?/g, '\n').split('\n'))
   /*
     ⚠️ 这里绝不能给 CD 加引号。
     DOSBox 的 CD 是 shell 内建命令，`DoCommand` 把整段原文直接交给 `CMD_CHDIR`，
@@ -596,6 +598,8 @@ export async function makeJsdosBundle(
   configOverride?: string,
   /** 后台填的启动程序原文，只用来做存在性校验（conf 已经由调用方生成好了） */
   dosExecutable?: string,
+  /** 有命令时不透传包内旧 autoexec，否则语言槽填写的挂盘命令会被静默忽略。 */
+  startupCommands?: string,
 ): Promise<BundleResult> {
   const entries = readZipEntries(buf)
   const bytes = new Uint8Array(buf)
@@ -618,6 +622,48 @@ export async function makeJsdosBundle(
     }
   }
 
+  if (startupCommands?.trim() && /\bimgmount\b[^\n]*\.cue\b/i.test(startupCommands) && !entries) {
+    throw new Error('CUE 光盘镜像必须与 DOS 游戏放在同一个 ZIP 内')
+  }
+  if (entries && startupCommands?.trim()) {
+    const byName = new Map(entries.map((entry) => [entry.name, entry]))
+    for (const line of startupCommands.split(/\r?\n/)) {
+      if (!/^\s*imgmount\b/i.test(line) || !/\.cue\b/i.test(line)) continue
+      const match = /^\s*imgmount\s+[a-z]\s+(?:"([^"]+)"|(\S+))/i.exec(line)
+      if (!match) throw new Error(`CUE 挂载命令格式无效：${line.trim()}`)
+      const cuePath = (match[1] ?? match[2]).replace(/\\/g, '/').replace(/^\.\//, '')
+      if (cuePath.startsWith('/') || cuePath.includes(':') || cuePath.split('/').includes('..')) {
+        throw new Error(`CUE 镜像必须填写 ZIP 内的相对路径：${cuePath}`)
+      }
+      // IMGMount 读的是 Web 虚拟宿主文件系统，路径大小写敏感；DOS 程序名那套大小写宽容不适用。
+      const cue = byName.get(cuePath)
+      if (!cue) throw new Error(`ZIP 里找不到挂载命令指定的 CUE 镜像（大小写须一致）：${cuePath}`)
+      if (cue.uncompressedSize > 65536) throw new Error(`CUE 文件大小异常：${cuePath}`)
+      const data = await extractZipEntry(buf, {
+        name: cue.name,
+        method: cue.method,
+        compressedSize: cue.compressedSize,
+        uncompressedSize: cue.uncompressedSize,
+        crc32: cue.crc,
+        offset: cue.localOffset,
+      })
+      const cueText = new TextDecoder().decode(data)
+      const cueDir = cuePath.includes('/') ? cuePath.slice(0, cuePath.lastIndexOf('/') + 1) : ''
+      for (const cueLine of cueText.split(/\r?\n/)) {
+        const track = /^\s*FILE\s+(?:"([^"]+)"|(\S+))/i.exec(cueLine)
+        if (!track) continue
+        const trackPath = (track[1] ?? track[2]).replace(/\\/g, '/')
+        if (trackPath.startsWith('/') || trackPath.includes(':') || trackPath.split('/').includes('..')) {
+          throw new Error(`CUE 音轨必须引用 ZIP 内的相对文件：${trackPath}`)
+        }
+        // CUE 的 FILE 相对自身目录，不是相对 ZIP 根；漏音轨时先报错才不会无盘进菜单。
+        if (!byName.has(cueDir + trackPath)) {
+          throw new Error(`ZIP 里找不到 CUE 引用的音轨文件：${cueDir + trackPath}`)
+        }
+      }
+    }
+  }
+
   const bundledConf = entries?.find((e) => e.name.toLowerCase() === '.jsdos/dosbox.conf')
   /*
     没有高级覆盖、**也没有指定启动程序**时才零拷贝透传；避免仅仅为了换一份几 KB 的
@@ -628,7 +674,7 @@ export async function makeJsdosBundle(
     管理员填了 PARANOID.COM 保存，玩家点开进的还是包里 conf 指向的安装界面，
     改三次配置清三次缓存都找不到原因。
   */
-  if (bundledConf && !configOverride?.trim() && !conf) {
+  if (bundledConf && !configOverride?.trim() && !conf && !startupCommands?.trim()) {
     return { blob: new Blob([buf], { type: 'application/zip' }), executable: null, passthrough: true }
   }
 
@@ -643,7 +689,9 @@ export async function makeJsdosBundle(
       offset: bundledConf.localOffset,
     })
     // 后台指定了启动程序就以我们生成的那份为基底，否则用包里自带的
-    const base = conf ?? new TextDecoder().decode(extracted)
+    const base = conf ?? (startupCommands?.trim()
+      ? buildDosboxConf(dosExecutable ?? pickExecutable(entries.map((e) => e.name)), startupCommands)
+      : new TextDecoder().decode(extracted))
     const merged = te.encode(mergeDosboxConfigOverride(base, configOverride)) as Uint8Array<ArrayBuffer>
     const out: OutEntry[] = []
     for (const e of entries) {
@@ -731,7 +779,7 @@ export async function makeJsdosBundle(
   }
 
   const confBytes = te.encode(
-    mergeDosboxConfigOverride(conf ?? buildDosboxConf(exe), configOverride),
+    mergeDosboxConfigOverride(conf ?? buildDosboxConf(exe, startupCommands), configOverride),
   ) as Uint8Array<ArrayBuffer>
   // conf 自己的父目录同理要先建好（单个 exe 的分支也走到这里，那边一个目录条目都没有）
   out.push({ name: '.jsdos/', method: 0, crc: 0, compressedSize: 0, uncompressedSize: 0, data: new Uint8Array(0) as Uint8Array<ArrayBuffer> })

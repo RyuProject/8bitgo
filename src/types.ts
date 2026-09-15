@@ -158,6 +158,8 @@ export interface Game {
   dosExecutable?: string
   /** 各语言 ROM 在 ZIP 内的启动路径；未填写的槽继续使用 dosExecutable 或自动猜测。 */
   dosExecutables?: Partial<Record<RomLang, string>>
+  /** 各语言 ROM 的启动前命令；播放器先挂 C 盘，再执行这些命令与对应启动文件。 */
+  dosStartupCommands?: Partial<Record<RomLang, string>>
   /**
    * 各语言 ROM 的同语言备用地址。播放器只在该语言的主地址失效或暂时不可达时使用，
    * 所以切换后仍沿用同一个语言槽的 DOS 启动入口、存档键和界面语言。

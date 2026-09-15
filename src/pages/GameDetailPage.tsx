@@ -5,7 +5,7 @@ import { recordRecent, toggleFavorite, useCurrentUser } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
 import type { RomLang } from '@/config/languages'
 import { ROM_LANG_ABBR } from '@/config/languages'
-import { dosExecutableForRom, romLangsOf, romUrlForKey, useRomUrl } from '@/services/roms'
+import { dosExecutableForRom, dosStartupCommandsForRom, romLangsOf, romUrlForKey, useRomUrl } from '@/services/roms'
 import { parseDosExtras, type DosExtraSource } from '@/lib/dosExtras'
 import { resolveRuntime, runtimesFor } from '@/emulator'
 import { p2pPlayable } from '@/emulator'
@@ -362,6 +362,7 @@ export function GameDetailPage() {
                   genres={game.genres}
                   arcadeRomData={game.arcadeRomData}
                   dosExecutable={dosExecutableForRom(game, rom)}
+                  dosStartupCommands={dosStartupCommandsForRom(game, rom)}
                   dosBackend={game.dosBackend}
                   dosSystemUrl={game.dosSystem ? romUrlForKey(game.dosSystem) : undefined}
                   dosExtras={dosExtraSources(game.dosExtras)}

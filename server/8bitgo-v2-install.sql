@@ -245,6 +245,8 @@ CREATE TABLE IF NOT EXISTS game_roms (
   backup_key VARCHAR(500)    NULL,
   -- 同一 ZIP 可绑定多个语言槽，各槽按自己的入口启动；NULL 回退 games.dos_executable。
   dos_executable VARCHAR(255) NULL,
+  -- 各语言光盘校验不同，挂盘命令跟随当前 ROM 槽。
+  dos_startup_commands TEXT NULL,
   PRIMARY KEY (game_id, lang),
   -- 后台「ROM 存储」页要反查「这个文件绑给了哪款游戏」
   KEY idx_object_key (object_key(191)),

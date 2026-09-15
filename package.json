@@ -62,6 +62,7 @@
     "test:arcade-hacks": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-arcade-hacks.mjs",
     "test:room-merge": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-room-merge.mjs",
     "test:netplay-guard": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-netplay-guard.mjs",
+    "test:netplay-sync": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-netplay-sync-guard.mjs",
     "test:bundle-split": "node scripts/test-bundle-split.mjs",
     "test:video-tuning": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-video-tuning.mjs",
     "test:chunked-fetch": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-chunked-fetch.mjs",

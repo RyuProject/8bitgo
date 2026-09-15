@@ -192,6 +192,40 @@ console.log('\n── 后台填的启动程序，包里必须真有 ──')
   ok(good.passthrough === false, '名字对得上就正常打包')
 }
 
+console.log('\n── 同一游戏中文先挂 CUE，免 CD 英文直接启动 ──')
+{
+  const archive = makeZip([
+    { name: 'HEROES2.EXE', data: EXE },
+    { name: 'CD/HEROES2_fixed.cue', data: te.encode('FILE "TRACK01.BIN" BINARY\n') },
+    { name: 'CD/TRACK01.BIN', data: EXE },
+  ])
+  const commands = 'imgmount d "./CD/HEROES2_fixed.cue" -t cdrom'
+  const chinese = await makeJsdosBundle('heroes.zip', archive, undefined, undefined, 'HEROES2.EXE', commands)
+  const chineseBytes = new TextDecoder().decode(await chinese.blob.arrayBuffer())
+  ok(chineseBytes.includes('mount c .\nc:\n' + commands + '\nHEROES2.EXE'), '⭐ 中文 autoexec 在启动程序前挂光盘，使用 ZIP 内相对路径')
+  const english = await makeJsdosBundle('heroes.zip', archive, undefined, undefined, 'HEROES2.EXE')
+  const englishBytes = new TextDecoder().decode(await english.blob.arrayBuffer())
+  ok(englishBytes.includes('mount c .\nc:\nHEROES2.EXE') && !englishBytes.includes('imgmount d'), '⭐ 英文槽没有挂盘命令，直接运行程序')
+  await throwsWith(
+    () => makeJsdosBundle('heroes.zip', makeZip([{ name: 'HEROES2.EXE', data: EXE }]), undefined, undefined, 'HEROES2.EXE', commands),
+    /找不到挂载命令指定的 CUE/,
+    '⭐ CUE 不在 ZIP 时开机前指出缺镜像，不让游戏进无盘菜单',
+  )
+  await throwsWith(
+    () => makeJsdosBundle('heroes.zip', archive, undefined, undefined, 'HEROES2.EXE', 'imgmount d "./CD/heroes2_fixed.cue" -t cdrom'),
+    /大小写须一致/,
+    '⭐ Web 宿主路径大小写敏感，填错 CUE 文件名不能假装挂载成功',
+  )
+  await throwsWith(
+    () => makeJsdosBundle('heroes.zip', makeZip([
+      { name: 'HEROES2.EXE', data: EXE },
+      { name: 'CD/HEROES2_fixed.cue', data: te.encode('FILE "TRACK01.BIN" BINARY\n') },
+    ]), undefined, undefined, 'HEROES2.EXE', commands),
+    /找不到 CUE 引用的音轨文件/,
+    '⭐ CUE 引用的 BIN 不在 ZIP 时提前报出文件名',
+  )
+}
+
 console.log('\n── 自带 dosbox.conf 的 .jsdos 包不能吞掉后台配置 ──')
 {
   const bundled = makeZip([

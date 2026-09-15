@@ -35,6 +35,7 @@ import { getLang } from '@/services/lang'
 import type { Lang } from '@/config/languages'
 import { ICE_SERVERS, NETPLAY_URL, fetchIceConfig, gameIdFor, netplayUrlForFrame, socketIoScriptUrl, uploadState } from '@/services/netplay'
 import { guardInputChannel } from '../netplayGuard'
+import { normalizeHostSync } from '../netplaySyncGuard'
 import { assertValidZip, isZip, listZipEntries } from '@/lib/unzip'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { loadRemoteArchiveRom } from '../remoteArchive'
@@ -456,6 +457,9 @@ interface EjsNetplay {
   socket?: { connected?: boolean } | null
   /** socketId → 和那个人的连接。房主这边靠它认出一条 DataChannel 对面坐的是谁（见 guardInputChannel） */
   peerConnections?: Record<string, { pc?: RTCPeerConnection | null; dataChannel?: RTCDataChannel | null } | undefined>
+  /** Socket.IO 消息入口是动态调用的，房主可在这里修正访客冻结后的旧帧号。 */
+  dataMessage?: (message: unknown) => void
+  currentFrame?: number
 }
 interface EjsGameManager {
   getState: () => Uint8Array
@@ -1298,6 +1302,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 后面点「联机匹配」时由 openNetplay() 补进来，游戏不用重开。
    */
   let netplay = options.netplay
+  /** 中途反复开 / 退联机时复用同一个引擎对象，不能把 dataMessage 一层层包起来。 */
+  const syncGuarded = new WeakSet<EjsNetplay>()
   /**
    * 房间分组用的数字 id。**始终**算出来，不再只在有联机会话时才有 ——
    * 玩家可能玩到一半才点「联机匹配」，那时引擎的配置已经定死，来不及再补。
@@ -1588,6 +1594,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       return
     }
     np.name = cfg.playerName
+
+    // 引擎 socket 回调每次都读 this.dataMessage，开房前包一次即可守住之后所有访客。
+    // 访客端保留原行为；房主端把输入定位到自己的帧轴，旧帧不会积压在 inputsData。
+    if (np.dataMessage && !syncGuarded.has(np)) {
+      const original = np.dataMessage.bind(np)
+      np.dataMessage = (message) => original(normalizeHostSync(message, np.owner, np.currentFrame ?? 0))
+      syncGuarded.add(np)
+    }
 
     // 接手别人的房间：先把存档载进去，不然游戏会从开机画面重来
     if (cfg.initialState && emu?.gameManager) {
@@ -2911,5 +2925,3 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     },
   }
 }
-
-

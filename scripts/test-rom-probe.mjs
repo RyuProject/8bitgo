@@ -36,12 +36,12 @@ const script = (...steps) => {
   methods = []
 }
 
-const { probeRomUrl, probeRom, clearRomProbeCache, conventionalKeys, romCandidates, romProbeExpected, dosExecutableForRom, versionedRomUrl, romKeysOf, unbindKeyPatch, shouldTryRomCandidateAfterUncertain } = await import(
+const { probeRomUrl, probeRom, clearRomProbeCache, conventionalKeys, romCandidates, romProbeExpected, dosExecutableForRom, dosStartupCommandsForRom, versionedRomUrl, romKeysOf, unbindKeyPatch, shouldTryRomCandidateAfterUncertain } = await import(
   fileURLToPath(new URL('../src/services/roms.ts', import.meta.url))
 )
 const { ROM_LANGS } = await import(fileURLToPath(new URL('../src/config/languages.ts', import.meta.url)))
 const { romCacheKey } = await import(fileURLToPath(new URL('../src/emulator/romCache.ts', import.meta.url)))
-const { gameRowToApi, dosExecutableOf, relationsInPatch, romRelationRows } = await import(fileURLToPath(new URL('../server/src/mappers.js', import.meta.url)))
+const { gameRowToApi, dosExecutableOf, dosStartupCommandsOf, relationsInPatch, romRelationRows } = await import(fileURLToPath(new URL('../server/src/mappers.js', import.meta.url)))
 // ts-loader 为了让 ROM 探测测试保持轻量，会把平台表换成空桩；这一项只补 PS2 真正用到的格式。
 const { platformMap: testPlatformMap } = await import('@/data/platforms')
 testPlatformMap.ps2 = { romExtensions: ['.iso', '.chd', '.cso', '.zso', '.isz', '.bin', '.elf'] }
@@ -256,30 +256,40 @@ const next = () => `https://assets.example.com/roms/nes/game-${++url}.zip`
     roms: { en: 'roms/dos/shared.zip', 'zh-Hans': 'roms/dos/shared.zip' },
     dosExecutable: 'START.BAT',
     dosExecutables: { en: 'EN/RUN.BAT', 'zh-Hans': 'CN/RUN.BAT' },
+    dosStartupCommands: { 'zh-Hans': 'imgmount d "./CD/HEROES2_fixed.cue" -t cdrom' },
   }
   const english = romCandidates(game, 'en')[0]
   const chinese = romCandidates(game, 'zh-Hans')[0]
   assert.equal(english.key, chinese.key)
   assert.equal(dosExecutableForRom(game, english), 'EN/RUN.BAT')
   assert.equal(dosExecutableForRom(game, chinese), 'CN/RUN.BAT')
+  assert.equal(dosStartupCommandsForRom(game, chinese), game.dosStartupCommands['zh-Hans'], '共用 ZIP 的中文槽独自挂载光盘')
+  assert.equal(dosStartupCommandsForRom(game, english), undefined, '免 CD 英文槽不会继承中文挂盘命令')
   assert.equal(dosExecutableForRom(game, { lang: 'ja' }), 'START.BAT', '未配置的语言使用原有默认入口')
   assert.equal(dosExecutableForRom(game, {}), 'START.BAT', '旧版通用 ROM 沿用默认入口')
   const fromApi = gameRowToApi(
     { slug: 'shared', title: 'Shared DOS', platform: 'dos', dos_executable: 'START.BAT' },
-    { roms: game.roms, dosExecutables: game.dosExecutables },
+    { roms: game.roms, dosExecutables: game.dosExecutables, dosStartupCommands: game.dosStartupCommands },
   )
   assert.deepEqual(fromApi.dosExecutables, game.dosExecutables, 'API 把各语言入口送回后台编辑表单')
+  assert.deepEqual(fromApi.dosStartupCommands, game.dosStartupCommands, 'API 把各语言命令送回后台编辑表单')
   assert.equal(dosExecutableForRom(fromApi, chinese), 'CN/RUN.BAT')
   assert.equal(dosExecutableOf('CN\\RUN.BAT'), 'CN/RUN.BAT', '后端将 DOS 反斜杠规整为 ZIP 相对路径')
   assert.equal(dosExecutableOf('../RUN.BAT'), null, '不能把相对路径穿出 ZIP')
   assert.equal(relationsInPatch({ dosExecutables: { en: 'EN/RUN.BAT' } }).roms, true, '只更新入口时也要写 ROM 关联表')
+  assert.equal(relationsInPatch({ dosStartupCommands: { 'zh-Hans': game.dosStartupCommands['zh-Hans'] } }).roms, true, '只更新挂盘命令时也要写 ROM 关联表')
   assert.equal(relationsInPatch({ romBackups: { en: 'roms/dos/shared-backup.zip' } }).roms, true, '只更新备用地址时也要写 ROM 关联表')
-  const previous = [{ lang: 'en', object_key: 'roms/dos/shared.zip', dos_executable: 'EN/RUN.BAT' }]
+  const previous = [{ lang: 'en', object_key: 'roms/dos/shared.zip', dos_executable: 'EN/RUN.BAT', dos_startup_commands: 'imgmount d "./CD/OLD.cue" -t cdrom' }]
   assert.equal(romRelationRows({ roms: { en: 'roms/dos/shared.zip' } }, previous, true)[0].dosExecutable, 'EN/RUN.BAT', '只改 ROM 绑定且 key 不变时保留入口')
   assert.equal(romRelationRows({ roms: { en: 'roms/dos/new.zip' } }, previous, true)[0].dosExecutable, null, '换 ZIP 后旧入口不能沿用')
   assert.equal(romRelationRows({ dosExecutables: { en: 'EN/NEW.BAT' } }, previous, true)[0].dosExecutable, 'EN/NEW.BAT', '只改入口时保留 ROM key')
   assert.equal(romRelationRows({ roms: { en: 'roms/dos/shared.zip' } }, previous)[0].dosExecutable, 'EN/RUN.BAT', '旧后台整体保存相同 ROM 时不抹掉入口')
   assert.equal(romRelationRows({ roms: { en: 'roms/dos/shared.zip' }, dosExecutables: {} }, previous)[0].dosExecutable, null, '新后台明确清空入口时可删除旧值')
+  assert.equal(romRelationRows({ roms: { en: 'roms/dos/shared.zip' } }, previous)[0].dosStartupCommands, previous[0].dos_startup_commands, '旧后台整体保存同一 ZIP 时保留挂盘命令')
+  assert.equal(romRelationRows({ roms: { en: 'roms/dos/new.zip' } }, previous)[0].dosStartupCommands, null, '换 ZIP 后不能继承旧光盘镜像路径')
+  assert.equal(romRelationRows({ dosStartupCommands: {} }, previous, true)[0].dosStartupCommands, null, '清空最后一个语言命令时可删除旧值')
+  assert.equal(dosStartupCommandsOf('imgmount d "./CD/DISC.cue" -t cdrom\r\n'), 'imgmount d "./CD/DISC.cue" -t cdrom', '后端规整多行挂盘命令')
+  assert.throws(() => dosStartupCommandsOf('[autoexec]\nmount c .'), /不能填写/, '命令不能注入 DOSBox 配置节')
 }
 {
   const previous = [{
