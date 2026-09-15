@@ -58,8 +58,15 @@ LOG="${LOG:-/var/log/8bitgo-backup.log}"
 
 log() { printf '%s  %s\n' "$(date '+%F %T')" "$*" | tee -a "$LOG" >&2; }
 die() { log "❌ $*"; exit 1; }
+# 服务器用 GNU 工具，本机验证可能用 BSD 工具；验备份大小时不能只认其中一种。
+file_size() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1" 2>/dev/null; }
+human_size() {
+  if command -v numfmt >/dev/null; then numfmt --to=iec "$1"
+  else awk -v n="$1" 'BEGIN { split("B KiB MiB GiB TiB", u); i=1; while (n>=1024 && i<5) { n/=1024; i++ } printf "%.1f%s", n, u[i] }'
+  fi
+}
 
-[ -r "$ENV_FILE" ] || die "读不到 $ENV_FILE（用 ENV_FILE=... 指对路径）"
+[ -r "$ENV_FILE" ] || die "读不到 ${ENV_FILE}（用 ENV_FILE=... 指对路径）"
 
 # 只取需要的那几个键，不 source 整个 .env —— 那里面有几十个变量，
 # 而且 source 会执行里面任何意外的 shell 语法
@@ -78,6 +85,12 @@ chmod 700 "$BACKUP_DIR"
 
 STAMP="$(date '+%Y%m%d-%H%M%S')"
 OUT="$BACKUP_DIR/${DB_NAME}-${STAMP}.sql.gz"
+# 同一秒内手动重试时不能用 mv 覆盖已经验过的上一份，否则新备份失败前就丢了旧文件。
+attempt=1
+while [ -e "$OUT" ]; do
+  OUT="$BACKUP_DIR/${DB_NAME}-${STAMP}-${attempt}.sql.gz"
+  attempt=$((attempt + 1))
+done
 TMP="$OUT.partial"
 
 # 口令文件。⚠️ trap 要在**创建之前**装好，否则中间任何一步失败都会把它留在盘上
@@ -115,18 +128,18 @@ if ! gzip -cd "$TMP" | tail -5 | grep -q 'Dump completed'; then
 fi
 
 # 体量哨兵：和上一份比，突然小很多多半是出了事（比如连错了一个空库）
-SIZE="$(stat -c %s "$TMP")"
+SIZE="$(file_size "$TMP")"
 PREV="$(ls -1t "$BACKUP_DIR"/${DB_NAME}-*.sql.gz 2>/dev/null | head -1 || true)"
 if [ -n "$PREV" ]; then
-  PREV_SIZE="$(stat -c %s "$PREV")"
+  PREV_SIZE="$(file_size "$PREV")"
   if [ "$SIZE" -lt $((PREV_SIZE / 2)) ]; then
-    die "新备份 $(numfmt --to=iec "$SIZE") 不到上一份 $(numfmt --to=iec "$PREV_SIZE") 的一半 —— 先人工看一眼，这轮不轮转"
+    die "新备份 $(human_size "$SIZE") 不到上一份 $(human_size "$PREV_SIZE") 的一半 —— 先人工看一眼，这轮不轮转"
   fi
 fi
 
 mv "$TMP" "$OUT"
 chmod 600 "$OUT"
-log "✅ 本地完成 $(numfmt --to=iec "$SIZE")：$OUT"
+log "✅ 本地完成 $(human_size "$SIZE")：$OUT"
 
 if [ "$LOCAL_ONLY" -eq 1 ]; then
   log "--local-only，跳过 R2"
@@ -140,7 +153,7 @@ else
   # ⚠️ 上传完要**回头核对**。rclone copy 成功退出不代表对面那份是完整的，
   #    而「以为传上去了」是备份里最贵的一种错。
   REMOTE_SIZE="$(rclone size "$DEST/$(basename "$OUT")" --json 2>/dev/null | sed -n 's/.*"bytes":\([0-9]*\).*/\1/p')"
-  [ "$REMOTE_SIZE" = "$SIZE" ] || die "上传后大小对不上：本地 $SIZE，R2 $REMOTE_SIZE"
+  [ "$REMOTE_SIZE" = "$SIZE" ] || die "上传后大小对不上：本地 ${SIZE}，R2 ${REMOTE_SIZE}"
   log "✅ 已上传到 $DEST/$(basename "$OUT")"
 fi
 

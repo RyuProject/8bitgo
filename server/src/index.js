@@ -9,7 +9,7 @@ import { normalizeUrl } from './url-normalize.js'
 import { tvRobots } from './tv-robots.js'
 import { playShell } from './routes/play.js'
 import { j2meJarProxy, uploadGate, uploadJar, releaseJar, keepaliveJar, startSweeper, MAX_BYTES, TTL_MS } from './j2me.js'
-import { ADMIN_AUTH_DISABLED, adminBackdoorFatal } from './auth.js'
+import { ADMIN_AUTH_DISABLED, adminBackdoorFatal, authSecretsFatal } from './auth.js'
 import { CACHE, noStore, staticCacheHeaders } from './cache.js'
 import { authRouter } from './routes/auth.js'
 import { gamesRouter } from './routes/games.js'
@@ -416,17 +416,17 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: '服务器内部错误' })
 })
 
-/**
- * 最后一道保险。代码里该 try/catch 的地方都补了，但只要漏一处，
- * Node 22 默认就会把未处理的 rejection 当未捕获异常，直接结束进程 ——
- * 对一个同时扛着 API 和 SSR 的进程来说，那就是整站 502。
- * 这里只记录不退出；真正的问题去日志里看。
- */
+/** 未处理的异步拒绝先记日志，避免一条统计任务的遗漏直接带倒整个站点。 */
 process.on('unhandledRejection', (reason) => {
   console.error('[未处理的 Promise 异常]', reason)
 })
+/**
+ * 未捕获的同步异常可能是监听端口失败：只记日志会让进程一直活着、但根本不接请求。
+ * 状态已经不可知时交给 PM2 重启，比让健康检查长期连接拒绝更容易发现和恢复。
+ */
 process.on('uncaughtException', (err) => {
   console.error('[未捕获异常]', err)
+  process.exit(1)
 })
 
 /*
@@ -440,10 +440,10 @@ process.on('uncaughtException', (err) => {
   判断在 auth.js 的 adminBackdoorFatal（纯函数，有测试）。这里只负责把进程停掉，
   而且要停在 **listen 之前** —— 端口一旦开了，后门就已经对外可达了。
 */
-const backdoorFatal = adminBackdoorFatal()
-if (backdoorFatal) {
+const startupFatal = adminBackdoorFatal() || authSecretsFatal()
+if (startupFatal) {
   console.error('')
-  console.error('  ❌ 拒绝启动：' + backdoorFatal)
+  console.error('  ❌ 拒绝启动：' + startupFatal)
   console.error('')
   process.exit(1)
 }

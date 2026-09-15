@@ -320,12 +320,15 @@ process.on('exit', () => {
   {
     // 总量超限：每个都在单文件上限之内，加起来超了。只限单文件的话这里会放行
     const each = new Uint8Array(8 * 1024 * 1024)
-    const r = await submit(VALID, [
-      ['rom_en', each, 'a.zip'],
-      ['rom_ja', each, 'b.zip'],
-      ['rom_zh', each, 'c.zip'],
-    ])
-    ok(r.status === 413, `三个 8MB（单个都合法、合计 24MB）被拒（${r.status}）`)
+    // 原先响应后直接销毁 socket，偶发 EPIPE 让调用方连 413 都看不到；多跑几次盯稳定性。
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const r = await submit(VALID, [
+        ['rom_en', each, 'a.zip'],
+        ['rom_ja', each, 'b.zip'],
+        ['rom_zh', each, 'c.zip'],
+      ])
+      ok(r.status === 413, `三个 8MB（合计 24MB）第 ${attempt + 1} 次被明确拒绝（${r.status}）`)
+    }
     ok(lastMail === null, '总量超限时没发信')
   }
 

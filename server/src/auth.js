@@ -73,6 +73,25 @@ export function adminBackdoorFatal(env = process.env) {
   )
 }
 
+/**
+ * 公开站点不能靠固定的开发密钥签 JWT：知道默认值的人可以替任意用户签一张令牌。
+ * 同样挡住示例文件里的占位口令，否则部署时忘了换值会把后台万能钥匙送给所有人。
+ */
+export function authSecretsFatal(env = process.env) {
+  const site = env.PUBLIC_SITE_URL || env.VITE_SITE_URL || ''
+  const publicDeployment = env.NODE_ENV === 'production' || !isLocalSiteUrl(site)
+  if (!publicDeployment) return ''
+  const jwtSecret = String(env.JWT_SECRET || '').trim()
+  if (!jwtSecret || jwtSecret === 'dev-secret-change-me' || jwtSecret === 'change-me-to-a-long-random-string') {
+    return 'JWT_SECRET 未配置或仍是公开的开发占位值；拒绝启动，避免任何人伪造登录令牌。'
+  }
+  const adminToken = String(env.ADMIN_TOKEN || '').trim()
+  if (adminToken === 'replace-with-a-long-random-key') {
+    return 'ADMIN_TOKEN 仍是示例文件里的公开占位值；拒绝启动，避免后台写操作被接管。'
+  }
+  return ''
+}
+
 export async function hashPassword(plain) {
   return bcrypt.hash(plain, 10)
 }

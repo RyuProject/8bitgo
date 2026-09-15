@@ -158,7 +158,18 @@ export function PlatformsPage() {
           )}
         </div>
       )}
-
+      {/* Linux 是独立虚拟机，不进游戏平台计数；入口仍应在平台总览里找得到。 */}
+      <a
+        href="/linux"
+        className="group mt-10 flex flex-wrap items-center gap-4 rounded-card border border-line bg-surface p-5 hover:border-brand/60"
+      >
+        <span className="grid h-14 w-14 shrink-0 place-items-center rounded-xl bg-brand-soft text-3xl" aria-hidden>🐧</span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-lg font-bold">{t.browse.linuxTitle}</span>
+          <span className="mt-1 block text-sm text-muted">{t.browse.linuxCaption}</span>
+        </span>
+        <span className="text-sm font-semibold text-brand-hover">{t.browse.linuxAction}</span>
+      </a>
     </div>
   )
 }

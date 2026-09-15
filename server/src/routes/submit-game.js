@@ -163,18 +163,14 @@ function uploadWithErrors(req, res, next) {
  *
  * 放在 multer 前面是有意的：等 multer 把两百兆收进内存再判断就晚了 ——
  * 内存已经吃掉了，用户也白等了一整趟上传。
- * 拒完顺手断开连接，不然 node 还会把剩下的字节老老实实收完。
+ * 超限时不交给 memoryStorage；只排空流、立即回 413。
+ * 如果回完就 destroy，浏览器还在上传时会随机收到 EPIPE 而不是这句错误，
+ * 用户以为网络坏了再传一次。排空多花带宽，但不把附件留在进程内存里。
  */
 function rejectOversizedBody(req, res, next) {
   const len = Number(req.headers['content-length'])
   if (Number.isFinite(len) && len > MAX_BODY_BYTES) {
-    res.on('finish', () => {
-      try {
-        req.destroy()
-      } catch {
-        /* 连接已经没了，无所谓 */
-      }
-    })
+    req.resume()
     return res.status(413).json({
       error: `ROM 附件总大小不能超过 ${mb(MAX_TOTAL_BYTES)}（邮件收不下），更大的请改填「ROM 下载链接」`,
     })

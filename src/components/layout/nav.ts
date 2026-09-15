@@ -74,9 +74,9 @@ export const communityLinks: CommunityLink[] = [
 export function footerLinksFor(t: Translation) {
   return [
     { label: t.nav.about, to: '/about' },
-    // 「服务与隐私」把原来的服务条款 + 隐私政策合并成一格。
-    // 目前先指向服务条款页；如果以后要做成合并的法律页，改这个 to 即可。
-    { label: '服务与隐私', to: '/terms' },
+    // 两份正文是独立页面；只给一个指向条款的入口会让隐私政策在页脚找不到。
+    { label: t.nav.terms, to: '/terms' },
+    { label: t.nav.privacy, to: '/privacy' },
     /*
       开放平台的开发者入口。放页脚是合适的位置：它面向的是少数人、偶尔来一次。
       ⚠️ 文案写死中文，和它指向的那一页一致 —— 那一页管理的东西（文档、scope 语义、

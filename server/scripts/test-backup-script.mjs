@@ -64,7 +64,7 @@ function env({ dump, rclone = true, rcloneSize = null }) {
 case "$1" in
   copy)  cp "$2" "${remote}/" ;;
   size)  f="${remote}/$(basename "\${2}")"
-         n=${rcloneSize === null ? '"$(stat -c %s "$f" 2>/dev/null || echo 0)"' : `"${rcloneSize}"`}
+         n=${rcloneSize === null ? '"$(stat -c %s "$f" 2>/dev/null || stat -f %z "$f" 2>/dev/null || echo 0)"' : `"${rcloneSize}"`}
          echo "{\\"count\\":1,\\"bytes\\":$n}" ;;
   delete) : ;;
 esac
@@ -155,6 +155,20 @@ check('⚠️ 新备份比上一份小一半以上 -> 拒绝轮转（多半是�
   assert.notEqual(r.code, 0, '体量骤降却照常轮转了')
   assert.match(r.out, /不到上一份/)
   assert.equal(kept(e).length, 1, '旧的那份好备份被挤掉了')
+})
+
+check('同一秒重试也保留两份已验过的备份，不覆盖旧文件', () => {
+  const e = env({ dump: GOOD_DUMP })
+  const fakeDate = join(e.bin, 'date')
+  writeFileSync(fakeDate, '#!/usr/bin/env bash\nif [ "$1" = "+%Y%m%d-%H%M%S" ]; then echo 20260915-000000; else /bin/date "$@"; fi\n')
+  chmodSync(fakeDate, 0o755)
+  assert.equal(run(e).code, 0)
+  const first = kept(e)[0]
+  const original = readFileSync(join(e.backups, first))
+  assert.equal(run(e).code, 0)
+  assert.equal(kept(e).length, 2, '同秒的新备份覆盖了第一份')
+  assert.deepEqual(readFileSync(join(e.backups, first)), original, '第一份的内容被改写了')
+  assert.equal(readdirSync(e.remote).length, 2, 'R2 上的同秒备份也被覆盖了')
 })
 
 check('⚠️⚠️ 上传后大小对不上 -> 报错（「以为传上去了」是最贵的错）', () => {

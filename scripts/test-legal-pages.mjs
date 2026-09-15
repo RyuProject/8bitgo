@@ -178,7 +178,8 @@ check('LegalDoc 不传 noindex，且钉了 canonicalPath', () => {
 
 check('/terms 和 /privacy 已经不是「即将上线」占位页', () => {
   const routes = read('src/AppRoutes.tsx')
-  const soon = routes.match(/const COMING_SOON_ROUTES = \[[\s\S]*?\]/)[0]
+  const soon = routes.match(/const COMING_SOON_ROUTES(?::[^=]+)? = \[[\s\S]*?\]/)?.[0]
+  assert.ok(soon, '找不到即将上线页面清单，不能跳过占位页检查')
   for (const p of ['/terms', '/privacy']) {
     assert.ok(!soon.includes(p), `${p} 还挂在 COMING_SOON_ROUTES 里`)
     assert.ok(routes.includes(`path="${p}"`), `${p} 没注册真实路由`)

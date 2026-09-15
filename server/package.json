@@ -58,7 +58,8 @@
     "test:config": "node scripts/test-config-report.mjs",
     "test:db-ensure": "node scripts/test-db-ensure.mjs",
     "test:open-config": "node scripts/test-open-config.mjs",
-    "test:backup": "node scripts/test-backup-script.mjs"
+    "test:backup": "node scripts/test-backup-script.mjs",
+    "test:startup": "node scripts/test-startup-failure.mjs"
   },
   "dependencies": {
     "@ip-location-db/geo-whois-asn-country-mmdb": "^2.3.2026061719",

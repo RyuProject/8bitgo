@@ -8,6 +8,9 @@ let seq = 0
 function makeBucket() {
   const objects = new Map()
   const uploads = new Map()
+  let failMarker = false
+  let failMarkerDelete = false
+  let pageSize = 1000
   const handle = (key, uploadId) => ({
     key,
     uploadId,
@@ -41,23 +44,32 @@ function makeBucket() {
   return {
     objects,
     uploads,
+    setFailMarker(value) { failMarker = value },
+    setFailMarkerDelete(value) { failMarkerDelete = value },
+    setPageSize(value) { pageSize = value },
     async put(key, body, opts) {
+      if (failMarker && key.startsWith('_uploads/')) throw new Error('marker write failed')
       const size = body ? (body.byteLength ?? 0) : 0
       objects.set(key, { size, httpEtag: '"e"', uploaded: new Date(), customMetadata: opts?.customMetadata ?? {} })
       return objects.get(key)
     },
-    async list({ prefix = '', limit = 1000 } = {}) {
-      const hits = [...objects.entries()]
+    async list({ prefix = '', cursor, limit = 1000 } = {}) {
+      const matches = [...objects.entries()]
         .filter(([k]) => k.startsWith(prefix))
-        .slice(0, limit)
+        .sort(([a], [b]) => a.localeCompare(b))
+      const start = cursor ? Number(cursor) : 0
+      const hits = matches
+        .slice(start, start + Math.min(limit, pageSize))
         .map(([k, v]) => ({ key: k, size: v.size, uploaded: v.uploaded, customMetadata: v.customMetadata }))
-      return { objects: hits, truncated: false, cursor: undefined }
+      const next = start + hits.length
+      return { objects: hits, truncated: next < matches.length, cursor: next < matches.length ? String(next) : undefined }
     },
     async head(key) {
       return objects.get(key) ? { ...objects.get(key), key, writeHttpMetadata() {} } : null
     },
     async delete(key) {
-      objects.delete(key)
+      if (failMarkerDelete && !Array.isArray(key) && key.startsWith('_uploads/')) throw new Error('marker delete failed')
+      for (const item of Array.isArray(key) ? key : [key]) objects.delete(item)
     },
     async createMultipartUpload(key) {
       const uploadId = `up-${++seq}`
@@ -127,6 +139,7 @@ for (const [n, len] of [[1, 8], [2, 8], [3, 2]]) {
 
 // 7. 片号越界要挡住
 check('partNumber 0 → 400', (await call(`${KEY}?uploadId=${created.uploadId}&partNumber=0`, { method: 'PUT', headers: auth, body: new Uint8Array(1) })).status === 400)
+check('partNumber 1junk → 400', (await call(`${KEY}?uploadId=${created.uploadId}&partNumber=1junk`, { method: 'PUT', headers: auth, body: new Uint8Array(1) })).status === 400)
 
 // 8. etag 对不上要回 fatal，让前端别死循环重试
 const bad = await call(`${KEY}?uploadId=${created.uploadId}`, {
@@ -136,6 +149,10 @@ const bad = await call(`${KEY}?uploadId=${created.uploadId}`, {
 })
 const badData = await bad.json()
 check('坏 etag → 400 + fatal', bad.status === 400 && badData.fatal === true, JSON.stringify(badData))
+check('重复片号 → 400', (await call(`${KEY}?uploadId=${created.uploadId}`, {
+  method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' },
+  body: JSON.stringify({ parts: [parts[0], parts[0]] }),
+})).status === 400)
 
 // 9. 正常合并
 const done = await call(`${KEY}?uploadId=${created.uploadId}`, {
@@ -172,6 +189,43 @@ check('直接 GET 标记 → 404', (await call('/_uploads/x.marker')).status ===
 // 14. CORS 预检要放行 POST
 const pre = await call(KEY, { method: 'OPTIONS' })
 check('预检放行 POST', (pre.headers.get('access-control-allow-methods') ?? '').includes('POST'))
+
+// 15. 创建后标记写失败必须撤回 R2 上传，否则后续分片既计费又从管理页消失。
+const before = bucket.uploads.size
+bucket.setFailMarker(true)
+const markerFailure = await call(`${KEY}?uploads`, { method: 'POST', headers: auth, body: '{}' })
+bucket.setFailMarker(false)
+check('标记写失败 → 503', markerFailure.status === 503)
+check('标记写失败已 abort 新上传', bucket.uploads.size === before)
+
+// 16. 残留多于一页时必须提供 cursor，否则后台永远看不到后面的占用。
+bucket.setPageSize(2)
+const c4 = await (await call(`${KEY}?uploads`, { method: 'POST', headers: auth, body: '{}' })).json()
+const c5 = await (await call(`${KEY}?uploads`, { method: 'POST', headers: auth, body: '{}' })).json()
+const c6 = await (await call(`${KEY}?uploads`, { method: 'POST', headers: auth, body: '{}' })).json()
+const first = await (await call('/multipart', { headers: auth })).json()
+const second = await (await call(`/multipart?cursor=${encodeURIComponent(first.cursor)}`, { headers: auth })).json()
+check('残留第一页标明截断和 cursor', first.uploads.length === 2 && first.truncated && Boolean(first.cursor))
+check('残留第二页覆盖所有上传', second.uploads.length === 1 && !second.truncated && new Set([...first.uploads, ...second.uploads].map((o) => o.uploadId)).size === 3)
+bucket.setPageSize(1000)
+for (const c of [c4, c5, c6]) await call(`${KEY}?uploadId=${c.uploadId}&marker=${encodeURIComponent(c.marker)}`, { method: 'DELETE', headers: auth })
+
+// 17. 多 SWF 包用一次批量请求删；坏 key 必须整批拒绝，不能先删一部分。
+bucket.objects.set('roms/flash/demo/a.swf', { size: 1, uploaded: new Date() })
+bucket.objects.set('roms/flash/demo/b.swf', { size: 1, uploaded: new Date() })
+const bulkBad = await call('/bulk', { method: 'POST', headers: auth, body: JSON.stringify({ keys: ['roms/flash/demo/a.swf', '_uploads/hidden.marker'] }) })
+check('批量删除包含内部标记 → 整批 400', bulkBad.status === 400 && bucket.objects.has('roms/flash/demo/a.swf'))
+const bulkDone = await (await call('/bulk', { method: 'POST', headers: auth, body: JSON.stringify({ keys: ['roms/flash/demo/a.swf', 'roms/flash/demo/b.swf'] }) })).json()
+check('批量删除两文件一次完成', bulkDone.ok === true && bulkDone.deleted.length === 2 && !bucket.objects.has('roms/flash/demo/a.swf') && !bucket.objects.has('roms/flash/demo/b.swf'))
+
+// 18. 分片已 abort 但账本删除失败时仍需报错；下次管理页操作可把残留标记补清。
+const c7 = await (await call(`${KEY}?uploads`, { method: 'POST', headers: auth, body: '{}' })).json()
+bucket.setFailMarkerDelete(true)
+const cleanupFailed = await call(`${KEY}?uploadId=${c7.uploadId}&marker=${encodeURIComponent(c7.marker)}`, { method: 'DELETE', headers: auth })
+bucket.setFailMarkerDelete(false)
+check('残留标记删除失败 → 503', cleanupFailed.status === 503 && bucket.objects.has(c7.marker))
+const cleanupRetried = await call(`${KEY}?uploadId=${c7.uploadId}&marker=${encodeURIComponent(c7.marker)}`, { method: 'DELETE', headers: auth })
+check('重复清理已 abort 上传仍可删标记', cleanupRetried.status === 200 && !bucket.objects.has(c7.marker))
 
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')
 process.exit(failed ? 1 : 0)

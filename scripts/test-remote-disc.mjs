@@ -11,7 +11,7 @@
  * LRU 算错则表现为「玩久了越来越卡」。这两类都不可能靠手点发现。
  */
 import assert from 'node:assert/strict'
-import { RemoteDisc, probeRange } from '../src/emulator/remoteDisc.ts'
+import { RemoteDisc, probeRange, httpRangeFetcher } from '../src/emulator/remoteDisc.ts'
 
 let failed = 0
 const check = async (name, fn) => {
@@ -185,6 +185,18 @@ await check('dispose 之后缓存放掉，不跟着页面一直留着', async ()
   assert.equal(calls.length, 2)
 })
 
+await check('短块不进缓存，重试时能得到完整的扇区', async () => {
+  let calls = 0
+  const { fetchRange } = fakeDisc()
+  const d = new RemoteDisc({ size: DISC_SIZE, chunkBytes: 1024, prefetch: false, fetchRange: async (a, b) => {
+    calls++
+    return calls === 1 ? new Uint8Array(512).buffer : fetchRange(a, b)
+  } })
+  await assert.rejects(() => d.slice(0, 2048).arrayBuffer(), /不完整/)
+  expectBytes(await d.slice(0, 2048).arrayBuffer(), 0, 2048)
+  assert.equal(calls, 3, '第一块失败后必须重新下载，而不是读取补零缓存')
+})
+
 console.log('四、Range 探测')
 
 const withFetch = async (impl, fn) => {
@@ -225,6 +237,29 @@ await check('网络错误 -> 不支持，不抛异常', async () => {
 await check('404 -> 不支持', async () => {
   const r = await withFetch(async () => res(404, {}), () => probeRange('https://example.com/game.iso'))
   assert.equal(r.rangeSupported, false)
+})
+
+await check('206 却只给了错误偏移，不能把这张盘判成可流式读取', async () => {
+  const r = await withFetch(async () => res(206, { 'content-range': 'bytes 1-2/1000' }), () => probeRange('https://example.test/disc.iso'))
+  assert.equal(r.rangeSupported, false)
+})
+
+await check('无视 Range 回 200 时立即取消响应体，避免整盘下载', async () => {
+  let canceled = false
+  await withFetch(async () => ({ ...res(200, { 'content-length': '4700372992' }), body: { cancel: async () => { canceled = true } } }), () => probeRange('https://example.test/disc.iso'))
+  assert.equal(canceled, true)
+})
+
+await check('后续读盘必须核对实际 Content-Range 和字节数', async () => {
+  await withFetch(async () => ({ ...res(206, { 'content-range': 'bytes 2-3/1000' }), body: { cancel: async () => {} } }), async () => {
+    await assert.rejects(() => httpRangeFetcher('https://example.test/disc.iso')(0, 1), /偏移不一致/)
+  })
+  await withFetch(async () => ({ ...res(206, { 'content-range': 'bytes 0-1/1000' }), arrayBuffer: async () => new Uint8Array([1]).buffer }), async () => {
+    await assert.rejects(() => httpRangeFetcher('https://example.test/disc.iso')(0, 1), /分段长度/)
+  })
+  await withFetch(async () => ({ ...res(206, { 'content-range': 'bytes 0-1/1000' }), arrayBuffer: async () => new Uint8Array([1, 2]).buffer }), async () => {
+    assert.deepEqual(new Uint8Array(await httpRangeFetcher('https://example.test/disc.iso')(0, 1)), new Uint8Array([1, 2]))
+  })
 })
 
 console.log(failed ? `\n${failed} 项未通过` : '\n全部通过 ✅')

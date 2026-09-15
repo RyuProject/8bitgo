@@ -201,9 +201,10 @@ try {
   // 并行请求的旧阶段晚到时，总进度不能倒退。
   assert.equal(overall({ phase: 'assets', ratio: 0.1 }), 0.8)
   // Windows 客体不能再沿用旧的“开机等待 + 45 秒”；慢设备挂 qcow2 本身就可能超过一分钟。
-  assert.equal(windowsGuestStartupBudgetMs(24), 264_000)
-  assert.equal(windowsGuestStartupBudgetMs(2), 245_000)
-  assert.equal(windowsGuestStartupBudgetMs(999), 360_000)
+  // 建盘的四分钟必须独立于图形信号、敲键和启动画面确认；旧断言漏了整条按键链。
+  assert.equal(windowsGuestStartupBudgetMs(24), 389_000)
+  assert.equal(windowsGuestStartupBudgetMs(2), 370_000)
+  assert.equal(windowsGuestStartupBudgetMs(999), 485_000)
 
   // 只有 DOS 射击游戏使用相对鼠标；其他类别和其他平台都不能误锁定指针。
   assert.equal(shouldCaptureMouse('dos', ['action', 'shooter']), true)
@@ -288,6 +289,8 @@ try {
     () => { win31Launched = true },
     '3x',
   )
+  // 先见到 DOS 文本模式，随后收到图形尺寸才可信；首帧就报 640×480 可能只是引擎启动画面。
+  frameSizeConsumer(720, 400)
   frameSizeConsumer(640, 480)
   runNextTimer(5_000)
   assert.deepEqual(keyEvents, [

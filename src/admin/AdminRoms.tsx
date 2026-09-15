@@ -9,6 +9,7 @@ import {
   deleteRomDir,
   dirOfKey,
   getRomConfig,
+  getRomPrefix,
   isBundleKey,
   isS3ApiUrl,
   listRomObjects,
@@ -151,6 +152,8 @@ export function AdminRoms() {
   const [test, setTest] = useState<Array<{ ok: boolean; text: string }> | null>(null)
   const [testing, setTesting] = useState(false)
   const [objects, setObjects] = useState<RomObject[] | null>(null)
+  const [listPrefix, setListPrefix] = useState(getRomPrefix())
+  const [loadedPrefix, setLoadedPrefix] = useState('')
   const [loading, setLoading] = useState(false)
   const [listError, setListError] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
@@ -249,8 +252,11 @@ export function AdminRoms() {
     saveRomConfig(cfg)
     setLoading(true)
     setListError(null)
+    setObjects(null)
     try {
-      setObjects(await listRomObjects())
+      const prefix = listPrefix.trim().replace(/^\/+|\/+$/g, '')
+      setObjects(await listRomObjects(prefix))
+      setLoadedPrefix(prefix)
     } catch (err) {
       setListError(err instanceof Error ? err.message : '列表失败')
     } finally {
@@ -372,6 +378,8 @@ export function AdminRoms() {
         : r.bundle.dir.toLowerCase().includes(needle) || r.bundle.files.some((f) => f.key.toLowerCase().includes(needle)),
     )
   }, [objects, filter])
+  // 几万条对象都画成 DOM 行会把管理页卡死；先保留完整数据供筛选与统计，只画前 500 行。
+  const visibleRows = rows.slice(0, 500)
 
   /** 这一行绑给了哪款游戏：包里任意一个文件被绑了都算 */
   const boundOfRow = (r: RomRow): Game | undefined =>
@@ -449,6 +457,14 @@ export function AdminRoms() {
           </Field>
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-2">
+          <span className="text-xs text-muted">列表目录</span>
+          <input
+            className={cx(inputClass, 'h-9 w-48 font-mono text-xs')}
+            value={listPrefix}
+            onChange={(e) => setListPrefix(e.target.value)}
+            placeholder="目录前缀，如 roms/ps2"
+            aria-label="R2 列表目录前缀"
+          />
           <button type="button" className={btnClass.primary} onClick={save}>
             保存配置
           </button>
@@ -483,7 +499,7 @@ export function AdminRoms() {
 
       {objects && (
         <Card
-          title={`桶内文件（${objects.length}，前缀 ${cfg.prefix || '/'}）`}
+          title={`桶内文件（${objects.length}，前缀 ${loadedPrefix || '/'}）`}
           extra={
             <div className="flex items-center gap-2">
               <input type="search" value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="筛选 key…" className={cx(inputClass, 'h-8 w-48 text-xs')} />
@@ -509,7 +525,7 @@ export function AdminRoms() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
-                {rows.map((row) => {
+                {visibleRows.map((row) => {
                   const boundGame = boundOfRow(row)
                   const suggestion = boundGame ? undefined : matchGame(rowKey(row), games)
                   return row.kind === 'file' ? (
@@ -547,6 +563,9 @@ export function AdminRoms() {
               </tbody>
             </table>
           </div>
+          {rows.length > visibleRows.length && (
+            <p className="mt-3 text-xs text-muted">匹配 {rows.length} 行，当前只显示前 {visibleRows.length} 行。请输入更窄的目录前缀或筛选 key，完整文件仍参与统计和自动匹配。</p>
+          )}
         </Card>
       )}
 
@@ -790,7 +809,7 @@ function BundleRow({
  * 未完成的分片上传。
  *
  * 为什么要专门有这么一个面板：R2 的 Workers binding **没有 listMultipartUploads**，
- * 一次失败的分片上传会在桶里留下若干**照常计费**的分片，而且从任何界面都看不见 ——
+ * 一次失败的分片上传会在桶里留下若干短期占用存储的分片，而且从任何界面都看不见 ——
  * 只能去 Cloudflare 控制台翻。所以 Worker 在 create 时往 `_uploads/` 写一个标记对象，
  * 这里列的就是那些标记（complete / abort 会把标记删掉，剩下的才是真残留）。
  *
@@ -863,12 +882,12 @@ function MultipartPanel() {
     >
       {error && <p className="mb-3 rounded-lg bg-live/15 px-3 py-2 text-sm text-live">{error}</p>}
       {items && items.length === 0 && !error && (
-        <p className="text-sm text-muted">没有残留。大文件上传失败后留下的分片会出现在这里，清掉才不会继续计费。</p>
+        <p className="text-sm text-muted">没有残留。上传失败后留下的分片会出现在这里；R2 默认在 7 天后自动中止未完成上传。</p>
       )}
       {items && items.length > 0 && (
         <>
           <p className="mb-3 text-xs text-muted">
-            这些分片还没合并成对象，会一直占用存储。想续传就回「游戏」页重新选<strong>同一个文件</strong>再点上传（只有发起上传的那台机器能续）；不打算续就在这里清掉。
+            这些分片在中止前占用存储；R2 默认 7 天后自动中止，自定义生命周期可能改变期限。想续传就回「游戏」页重新选<strong>同一个文件</strong>再点上传（只有发起上传的那台机器能续）；不打算续就在这里清掉标记和分片。
           </p>
           <div className="overflow-x-auto">
             <table className="w-full min-w-[720px] text-sm">

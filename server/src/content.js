@@ -33,6 +33,8 @@ let generation = 0
 export function invalidateContent() {
   generation += 1
   cache.clear()
+  // 后台写入后，新请求不能复用写入前还在飞的旧查询；否则首个访客仍会看到旧数据。
+  inflight.clear()
 }
 
 async function cached(key, loader) {
@@ -55,7 +57,10 @@ async function cached(key, loader) {
       }
       return data
     })
-    .finally(() => inflight.delete(key))
+    .finally(() => {
+      // 旧查询若晚于新查询完成，不能把新查询的共享记录误删。
+      if (inflight.get(key) === p) inflight.delete(key)
+    })
   inflight.set(key, p)
   return p
 }

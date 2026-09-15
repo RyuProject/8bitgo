@@ -17,6 +17,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 const src = readFileSync(new URL('../src/data/platforms.ts', import.meta.url), 'utf8')
+const browse = readFileSync(new URL('../src/pages/BrowsePages.tsx', import.meta.url), 'utf8')
 
 // 先把注释剥掉再匹配。否则像上面那段说明一样、写在 id 和 runtime 之间的长注释
 // 会把两者顶出正则的窗口，测试就会误报「平台不见了」（第一版就踩了）。
@@ -61,6 +62,10 @@ check('ps2 走 Play!，不能再回到“暂不支持在线运行”', () => {
   const ps2 = found.find((p) => p.id === 'ps2')
   assert.ok(ps2, 'ps2 平台不见了')
   assert.equal(ps2.runtime, "'play'")
+})
+
+check('已开放的 Linux 虚拟机在平台总览有入口', () => {
+  assert.ok(browse.includes('href="/linux"') && browse.includes('t.browse.linuxTitle') && browse.includes('t.browse.linuxAction'))
 })
 
 console.log(`\n✅ 平台表：${passed} 项检查通过`)

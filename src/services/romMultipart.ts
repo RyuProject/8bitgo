@@ -23,7 +23,7 @@
  *
  * ## 续传的前提：文件身份必须对得上
  *
- * 恢复前校验 文件名 + 字节数 + lastModified + 分片大小，四个全中才接着传。
+ * 恢复前校验 文件名 + 字节数 + lastModified + 分片大小 + 内容指纹，五个全中才接着传。
  * 少了这道校验，换了个文件接着传会拼出一个**损坏但看起来正常**的对象 ——
  * 大小对、etag 有、下载下来解压报错，而且完全静默。
  */
@@ -56,6 +56,8 @@ export interface PendingUpload {
   fileName: string
   fileSize: number
   lastModified: number
+  /** 取头、中、尾各 64 KiB 的 SHA-256；旧账本没指纹时不允许续传。 */
+  fileFingerprint: string
   parts: { partNumber: number; etag: string }[]
   updatedAt: number
 }
@@ -70,6 +72,9 @@ class UploadHttpError extends Error {
     this.fatal = fatal
   }
 }
+
+/** complete 的 200 响应无法确认结果；这时不能盲目重试已经可能完成的合并。 */
+class CompletionUncertainError extends Error {}
 
 /** 这个 Worker 还没部署分片接口（老版本）。roms.ts 收到它会退回单发 PUT */
 export class MultipartUnsupportedError extends Error {}
@@ -115,7 +120,7 @@ function clearState(key: string) {
 
 /** 本浏览器记着的未完成上传，新的在前 */
 export function listPendingUploads(): PendingUpload[] {
-  return Object.values(readStore()).sort((a, b) => b.updatedAt - a.updatedAt)
+  return Object.values(readStore()).filter((p) => Boolean(p.fileFingerprint)).sort((a, b) => b.updatedAt - a.updatedAt)
 }
 
 /** File 才有身份可校验；从 zip 里解出来的 Blob 没有名字和时间，只能不续传 */
@@ -126,19 +131,41 @@ function identityOf(file: Blob): { fileName: string; lastModified: number } | nu
   return { fileName: f.name, lastModified: f.lastModified }
 }
 
+/** 大 ISO 不适合先读完整文件；三处小样本能挡住常见的同名同大小同时间戳误续传。 */
+async function fingerprintOf(file: Blob): Promise<string | null> {
+  if (!globalThis.crypto?.subtle) return null
+  const sample = 64 * 1024
+  const offsets = [0, Math.max(0, Math.floor(file.size / 2) - sample / 2), Math.max(0, file.size - sample)]
+  try {
+    const chunks = await Promise.all(offsets.map((at) => file.slice(at, at + sample).arrayBuffer()))
+    const bytes = new Uint8Array(chunks.reduce((n, chunk) => n + chunk.byteLength, 0))
+    let at = 0
+    for (const chunk of chunks) {
+      bytes.set(new Uint8Array(chunk), at)
+      at += chunk.byteLength
+    }
+    const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
+    return [...hash].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+  } catch {
+    // 设备不支持读取 / 摘要时只禁用续传，正常上传仍可进行。
+    return null
+  }
+}
+
 /**
- * 找出可以接着传的记录。四项全中才认：
- * 同一个 key、同样的字节数、同样的文件名 + 修改时间、同样的分片大小。
+ * 找出可以接着传的记录。元数据和小样本指纹全中才认。
  */
-function resumableFor(key: string, file: Blob, ident: { fileName: string; lastModified: number }, partSize: number): PendingUpload | null {
+function resumableFor(key: string, file: Blob, ident: { fileName: string; lastModified: number }, partSize: number, fingerprint: string): PendingUpload | null {
   const found = readStore()[key]
   if (!found || !found.uploadId) return null
   if (found.fileSize !== file.size || found.partSize !== partSize) return null
   if (found.fileName !== ident.fileName || found.lastModified !== ident.lastModified) return null
+  if (!found.fileFingerprint || found.fileFingerprint !== fingerprint) return null
   if (!Array.isArray(found.parts)) return null
   const total = Math.max(1, Math.ceil(file.size / partSize))
   // 记录里出现越界的片号说明这份账本已经不可信了，宁可重传
-  if (found.parts.some((p) => !p.etag || p.partNumber < 1 || p.partNumber > total)) return null
+  if (found.parts.some((p) => !p.etag || !Number.isInteger(p.partNumber) || p.partNumber < 1 || p.partNumber > total)) return null
+  if (new Set(found.parts.map((p) => p.partNumber)).size !== found.parts.length) return null
   return found
 }
 
@@ -170,11 +197,13 @@ async function askJson<T>(ctx: Ctx, url: string, init: RequestInit, what: string
   }
   // 地址填成了本站域名时会落到 SSR 兜底路由，回的是 200 + 一个 HTML 页面（roms.ts 里
   // 那个「200 + HTML」的坑）。这里拿不到 JSON 就必须报错，否则后面读 data.uploadId 才炸
-  if (!data) throw new UploadHttpError(`${what}失败：Worker 返回的不是 JSON（地址是不是填成了站点域名？）`, res.status)
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new UploadHttpError(`${what}失败：Worker 返回的不是有效 JSON（地址是不是填成了站点域名？）`, res.status)
+  }
   return data
 }
 
-async function createUpload(ctx: Ctx, key: string, file: Blob, ident: { fileName: string; lastModified: number } | null, partSize: number): Promise<PendingUpload> {
+async function createUpload(ctx: Ctx, key: string, file: Blob, ident: { fileName: string; lastModified: number } | null, partSize: number, fingerprint: string): Promise<PendingUpload> {
   const data = await askJson<{ uploadId: string; marker: string }>(
     ctx,
     `${ctx.api}/${encodeKey(key)}?uploads`,
@@ -186,6 +215,9 @@ async function createUpload(ctx: Ctx, key: string, file: Blob, ident: { fileName
     },
     '开始分片上传',
   )
+  if (typeof data.uploadId !== 'string' || !data.uploadId || typeof data.marker !== 'string' || !data.marker.startsWith('_uploads/')) {
+    throw new Error('Worker 未返回有效的 uploadId 或残留标记；请核查 Worker 地址和版本')
+  }
   return {
     key,
     uploadId: data.uploadId,
@@ -194,6 +226,7 @@ async function createUpload(ctx: Ctx, key: string, file: Blob, ident: { fileName
     fileName: ident?.fileName ?? '',
     fileSize: file.size,
     lastModified: ident?.lastModified ?? 0,
+    fileFingerprint: fingerprint,
     parts: [],
     updatedAt: Date.now(),
   }
@@ -300,7 +333,7 @@ async function putPartWithRetry(ctx: Ctx, state: PendingUpload, partNumber: numb
 }
 
 async function completeUpload(ctx: Ctx, state: PendingUpload): Promise<number> {
-  const data = await askJson<{ size: number }>(
+  const data = await askJson<{ ok: boolean; key: string; size: number }>(
     ctx,
     `${ctx.api}/${encodeKey(state.key)}?uploadId=${encodeURIComponent(state.uploadId)}`,
     {
@@ -313,16 +346,23 @@ async function completeUpload(ctx: Ctx, state: PendingUpload): Promise<number> {
     },
     '合并分片',
   )
-  return Number(data?.size) || state.fileSize
+  if (data.ok !== true || data.key !== state.key) {
+    // 200 但缺少确认字段时，合并可能已发生；重复 complete 可能把真实成功说成失败。
+    throw new CompletionUncertainError(`Worker 未确认 ${state.key} 的分片合并；请到「ROM 存储」核查对象`)
+  }
+  const size = Number(data?.size)
+  if (!Number.isSafeInteger(size) || size !== state.fileSize) {
+    // R2 已合并成功，不能再重试 complete；更不能把错误大小假装成原文件大小去绑定。
+    throw new CompletionUncertainError(`R2 已完成上传，但对象大小是 ${data?.size ?? '未知'} 字节，原文件是 ${state.fileSize} 字节；请到「ROM 存储」核查这个 key`)
+  }
+  return size
 }
 
 async function abortUpload(ctx: Ctx, key: string, uploadId: string, marker: string): Promise<void> {
   const qs = new URLSearchParams({ uploadId })
   if (marker) qs.set('marker', marker)
-  await fetch(`${ctx.api}/${encodeKey(key)}?${qs.toString()}`, {
-    method: 'DELETE',
-    headers: { Authorization: `Bearer ${ctx.token}` },
-  })
+  const data = await askJson<{ ok: boolean }>(ctx, `${ctx.api}/${encodeKey(key)}?${qs.toString()}`, { method: 'DELETE' }, '清理分片')
+  if (data.ok !== true) throw new Error('Worker 未确认分片清理成功')
 }
 
 /* ---------------- 主流程 ---------------- */
@@ -342,10 +382,12 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
   if (total > MAX_PARTS) throw new Error(`文件太大：${total} 片超过 R2 的 10000 片上限`)
 
   const ident = identityOf(file)
-  const resumedState = ident ? resumableFor(key, file, ident, partSize) : null
-  const state = resumedState ?? (await createUpload(ctx, key, file, ident, partSize))
+  const fingerprint = ident ? await fingerprintOf(file) : null
+  const resumable = Boolean(ident && fingerprint)
+  const resumedState = ident && fingerprint ? resumableFor(key, file, ident, partSize, fingerprint) : null
+  const state = resumedState ?? (await createUpload(ctx, key, file, ident, partSize, fingerprint ?? ''))
   const resumed = resumedState ? resumedState.parts.length : 0
-  if (ident) saveState(state)
+  if (resumable) saveState(state)
 
   /** 除最后一片外都是 partSize —— R2 要求「除末片外等大」，这也是身份校验要带上 partSize 的原因 */
   const sizeOfPart = (n: number) => Math.min(partSize, file.size - (n - 1) * partSize)
@@ -382,7 +424,7 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
         finished.add(n)
         loaded.set(n, sizeOfPart(n))
         // 每传完一片就落一次账：浏览器崩了 / 关了页面也只丢正在传的那几片
-        if (ident) saveState(state)
+        if (resumable) saveState(state)
         report()
       } catch (err) {
         failure = err
@@ -392,7 +434,7 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
   }
 
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, Math.max(1, queue.length)) }, () => runner()))
-  if (failure) throw await explainFailure(failure, ctx, state, total, Boolean(ident))
+  if (failure) throw await explainFailure(failure, ctx, state, total, resumable)
 
   let size: number
   try {
@@ -400,7 +442,11 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
     // 因为一次网络抖动就把几十 MB 判成失败太可惜
     size = await withRetry(() => completeUpload(ctx, state), 3)
   } catch (err) {
-    throw await explainFailure(err, ctx, state, total, Boolean(ident))
+    if (err instanceof CompletionUncertainError) {
+      clearState(key)
+      throw err
+    }
+    throw await explainFailure(err, ctx, state, total, resumable)
   }
 
   clearState(key)
@@ -411,8 +457,8 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
 /**
  * 把失败翻译成人话，并决定「这次上传还能不能续」。
  *
- * 不能续的三种情况都要 abort，否则那些分片会**一直按存储计费**，
- * 而且从任何界面都看不见（binding 没有 listMultipartUploads，只能靠标记对象）：
+ * 不能续的三种情况都要 abort，否则分片在 R2 默认 7 天中止前仍占用存储；
+ * 自定义生命周期可能更长（binding 没有 listMultipartUploads，只能靠标记对象）：
  *   1. Worker 还没部署分片接口 —— 上层会退回单发 PUT，这个 uploadId 不会再被用到
  *   2. uploadId 作废 / 分片对不上（fatal）—— 再续也只会在 complete 那步失败
  *   3. 文件没有身份可校验（从 zip 解出来的 Blob）—— 本来就不支持续传
@@ -424,16 +470,22 @@ async function explainFailure(err: unknown, ctx: Ctx, state: PendingUpload, tota
   const fatal =
     !authProblem &&
     (err instanceof MultipartUnsupportedError || (err instanceof UploadHttpError && (err.fatal || !retryable(err))))
+  let cleanupConfirmed = true
   if (!resumable || fatal) {
-    await abortUpload(ctx, state.key, state.uploadId, state.marker).catch(() => {})
+    try {
+      await abortUpload(ctx, state.key, state.uploadId, state.marker)
+    } catch {
+      cleanupConfirmed = false
+    }
     clearState(state.key)
   } else {
     saveState(state)
   }
 
-  if (err instanceof MultipartUnsupportedError) return err
+  if (err instanceof MultipartUnsupportedError && cleanupConfirmed) return err
   const base = err instanceof Error ? err.message : String(err)
   const at = `已传 ${state.parts.length}/${total} 片`
+  if (!cleanupConfirmed) return new Error(`${base}（${at}；自动清理未确认，请到「ROM 存储」检查残留分片）`)
   if (!resumable) return new Error(`${base}（${at}，这次的分片已清理）`)
   if (fatal) return new Error(`${base}（本次分片上传已作废，续传记录已清理，请重新上传）`)
   return new Error(`${base}（${at}；重新选同一个文件再点上传，会从第 ${state.parts.length + 1} 片继续）`)
@@ -460,12 +512,22 @@ export async function listOrphanUploads(): Promise<OrphanUpload[]> {
   const api = getRomApi()
   const token = getRomToken()
   if (!api || !token) return []
-  const res = await fetch(`${api}/multipart`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' })
-  // 老版本 Worker 没这个接口，当成「没有残留」，不要在页面上报错
-  if (res.status === 404 || res.status === 405) return []
-  if (!res.ok) throw explainRomStatus(res.status, '读取未完成的分片上传')
-  const data = (await res.json()) as { uploads?: OrphanUpload[] }
-  return data.uploads ?? []
+  const uploads: OrphanUpload[] = []
+  const seen = new Set<string>()
+  let cursor = ''
+  for (;;) {
+    const url = `${api}/multipart${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' })
+    // 老版本 Worker 没这个接口，当成「没有残留」，不要在页面上报错。
+    if ((res.status === 404 || res.status === 405) && !cursor) return []
+    if (!res.ok) throw explainRomStatus(res.status, '读取未完成的分片上传')
+    const data = (await res.json()) as { uploads?: OrphanUpload[]; truncated?: boolean; cursor?: string }
+    uploads.push(...(data.uploads ?? []))
+    if (!data.truncated) return uploads.sort((a, b) => String(b.at).localeCompare(String(a.at)))
+    if (!data.cursor || seen.has(data.cursor)) throw new Error('R2 残留列表分页中断；请刷新后重试，当前列表不完整')
+    seen.add(data.cursor)
+    cursor = data.cursor
+  }
 }
 
 /** 放弃一次残留的分片上传：R2 里的分片和标记一起清掉，本地记录也顺手删了 */
@@ -475,12 +537,9 @@ export async function abortOrphanUpload(item: OrphanUpload): Promise<void> {
     await abortUpload(ctx, item.key, item.uploadId, item.marker)
   } else if (item.marker) {
     // 标记里连 key 都没有（不该出现，除非被手工改过）：至少把标记删掉，别让列表永远清不空
-    await fetch(`${ctx.api}/multipart?marker=${encodeURIComponent(item.marker)}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${ctx.token}` },
-    })
+    const data = await askJson<{ ok: boolean }>(ctx, `${ctx.api}/multipart?marker=${encodeURIComponent(item.marker)}`, { method: 'DELETE' }, '清理残留标记')
+    if (data.ok !== true) throw new Error('Worker 未确认残留标记清理成功')
   }
   const local = readStore()[item.key]
   if (local?.uploadId === item.uploadId) clearState(item.key)
 }
-

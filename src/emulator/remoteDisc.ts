@@ -135,6 +135,10 @@ export class RemoteDisc implements DiscSource {
     this.stats.requests++
     const p = this.fetchRange(start, endInclusive)
       .then((buf) => {
+        // 不完整的块如果进缓存，后续扇区会被 Uint8Array 默认的零填充悄悄弄坏。
+        if (buf.byteLength !== endInclusive - start + 1) {
+          throw new Error(`读盘块不完整：期望 ${endInclusive - start + 1} 字节，实际 ${buf.byteLength}`)
+        }
         this.stats.bytesFetched += buf.byteLength
         this.store(index, buf)
         return buf
@@ -192,9 +196,12 @@ export async function probeRange(url: string, signal?: AbortSignal): Promise<Pro
     // Content-Range: bytes 0-1/4700372992 —— 斜杠后面才是整盘大小，
     // 这一条比 Content-Length 可靠：206 的 Content-Length 说的是这一片的长度（2），不是整盘
     const cr = res.headers.get('content-range') ?? ''
-    const total = Number(cr.split('/')[1])
-    if (res.status === 206 && Number.isFinite(total) && total > 0) {
-      return { rangeSupported: true, size: total }
+    const match = /^bytes 0-1\/(\d+)$/i.exec(cr)
+    // 探测只要两个字节；看完响应头就关掉流，尤其不能把忽略 Range 的 200 整盘下载下来。
+    void res.body?.cancel().catch(() => {})
+    const size = match ? Number(match[1]) : 0
+    if (res.status === 206 && Number.isSafeInteger(size) && size > 1) {
+      return { rangeSupported: true, size }
     }
     const len = Number(res.headers.get('content-length'))
     return { rangeSupported: false, size: Number.isFinite(len) && len > 0 ? len : 0 }
@@ -207,7 +214,19 @@ export async function probeRange(url: string, signal?: AbortSignal): Promise<Pro
 export function httpRangeFetcher(url: string, signal?: AbortSignal): RangeFetcher {
   return async (start, endInclusive) => {
     const res = await fetch(url, { headers: { Range: `bytes=${start}-${endInclusive}` }, signal })
-    if (res.status !== 206) throw new Error(`读盘失败：期望 206，实际 ${res.status}`)
-    return res.arrayBuffer()
+    if (res.status !== 206) {
+      void res.body?.cancel().catch(() => {})
+      throw new Error(`读盘失败：期望 206，实际 ${res.status}`)
+    }
+    const match = /^bytes (\d+)-(\d+)\/(\d+)$/i.exec(res.headers.get('content-range') ?? '')
+    if (!match || Number(match[1]) !== start || Number(match[2]) !== endInclusive || Number(match[3]) <= endInclusive) {
+      void res.body?.cancel().catch(() => {})
+      throw new Error('读盘失败：服务器返回的 Content-Range 与请求偏移不一致')
+    }
+    const bytes = await res.arrayBuffer()
+    if (bytes.byteLength !== endInclusive - start + 1) {
+      throw new Error(`读盘失败：分段长度应为 ${endInclusive - start + 1}，实际 ${bytes.byteLength}`)
+    }
+    return bytes
   }
 }

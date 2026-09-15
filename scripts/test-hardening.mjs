@@ -136,6 +136,19 @@ check('⚠️ 后门 + 生产域名 = 必须拒绝启动', () => {
   )
 })
 
+check('⚠️ 公网站点拒绝固定 JWT 密钥和示例后台口令', () => {
+  const site = { PUBLIC_SITE_URL: 'https://8bitgo.com' }
+  assert.match(auth.authSecretsFatal(site), /JWT_SECRET/)
+  assert.match(auth.authSecretsFatal({ ...site, JWT_SECRET: 'dev-secret-change-me' }), /JWT_SECRET/)
+  assert.match(auth.authSecretsFatal({ ...site, JWT_SECRET: 'change-me-to-a-long-random-string' }), /JWT_SECRET/)
+  assert.match(auth.authSecretsFatal({ ...site, JWT_SECRET: 'random-login-secret', ADMIN_TOKEN: 'replace-with-a-long-random-key' }), /ADMIN_TOKEN/)
+  assert.equal(auth.authSecretsFatal({ ...site, JWT_SECRET: 'random-login-secret', ADMIN_TOKEN: 'random-admin-key' }), '')
+  assert.equal(auth.authSecretsFatal({ PUBLIC_SITE_URL: 'http://localhost:8788' }), '')
+  assert.match(auth.authSecretsFatal({ NODE_ENV: 'production', PUBLIC_SITE_URL: 'http://localhost:8788' }), /JWT_SECRET/)
+  const index = strip(read('server/src/index.js'))
+  assert.ok(index.indexOf('authSecretsFatal()') < index.indexOf('const PORT'), '固定密钥检查必须在监听之前')
+})
+
 console.log('\n── 其余几条 ──')
 
 check('⚠️ 分页参数取整（否则 LIMIT 2.5 直接把 /api/games 和 SSR 打成 500/503）', () => {

@@ -121,6 +121,8 @@ globalThis.__fakeDb = {
       const ids = params.slice(0, params.length).map(String)
       return games.filter((g) => ids.includes(String(g.id)) && !g.hidden).map((g) => ({ ...g }))
     }
+    // 详情复用 games-repo 的批量关联查询；ROM 关系为空也必须有真实的空表响应。
+    if (q.startsWith('SELECT * FROM game_roms WHERE game_id IN')) return []
     /*
       浏览量的两条。viewsBroken 打开时抛错，模拟「collection_views 还没迁移」——
       读写两侧都必须容错（读按 0、写按没数到），页面不能因为一个装饰性的数字挂掉。

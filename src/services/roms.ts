@@ -294,16 +294,40 @@ export function listRomDir(dir: string): Promise<RomObject[]> {
   return listRomObjects(dir.replace(/\/+$/, ''))
 }
 
-/**
- * 删掉整个包目录（keep 里的 key 保留），返回真正删掉的 key。
- * 逐个串行删：Worker 那边一个 key 一个请求，几十个并发打过去没有意义。
- */
+/** 删掉整包前先验证 Worker 确认的 key；旧 Worker 才退回逐文件删除。 */
+async function deleteRomBatch(keys: string[]): Promise<boolean> {
+  const res = await fetch(`${getRomApi()}/bulk`, {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ keys }),
+  })
+  const data = (await res.json().catch(() => null)) as { ok?: boolean; deleted?: string[]; error?: string } | null
+  if (res.status === 404 || res.status === 405 || (res.status === 400 && data?.error?.startsWith('POST 需要'))) return false
+  if (!res.ok) throw new Error(data?.error || explainRomStatus(res.status, '整包删除').message)
+  const confirmed = new Set(data?.deleted ?? [])
+  if (data?.ok !== true || !Array.isArray(data.deleted) || confirmed.size !== keys.length || keys.some((key) => !confirmed.has(key))) {
+    throw new Error('Worker 未确认整包删除的全部文件；请刷新 R2 列表核查')
+  }
+  probeCache.clear()
+  return true
+}
+
+/** 删掉整个包目录（keep 里的 key 保留），返回真正删掉的 key。 */
 export async function deleteRomDir(dir: string, keep: string[] = []): Promise<string[]> {
   const removed: string[] = []
-  for (const o of await listRomDir(dir)) {
-    if (keep.includes(o.key)) continue
-    await deleteRom(o.key)
-    removed.push(o.key)
+  const keepSet = new Set(keep)
+  const keys = (await listRomDir(dir)).map((o) => o.key).filter((key) => !keepSet.has(key))
+  for (let i = 0; i < keys.length; i += 1000) {
+    const batch = keys.slice(i, i + 1000)
+    if (batch.length > 1 && await deleteRomBatch(batch)) {
+      removed.push(...batch)
+      continue
+    }
+    // 已部署的旧 Worker 没有 /bulk；串行回退确保整包清理仍然能用。
+    for (const key of batch) {
+      await deleteRom(key)
+      removed.push(key)
+    }
   }
   return removed
 }
@@ -947,6 +971,7 @@ export async function listRomObjects(prefix = getRomPrefix()): Promise<RomObject
   const api = getRomApi()
   if (!api) throw new Error('尚未配置 Worker 地址')
   const out: RomObject[] = []
+  const seen = new Set<string>()
   let cursor = ''
   for (let i = 0; i < 50; i++) {
     const url = new URL(`${api}/list`)
@@ -956,7 +981,12 @@ export async function listRomObjects(prefix = getRomPrefix()): Promise<RomObject
     if (!res.ok) throw explainRomStatus(res.status, '列表')
     const data = (await res.json()) as { objects?: RomObject[]; cursor?: string; truncated?: boolean }
     out.push(...(data.objects ?? []))
-    if (!data.truncated || !data.cursor) break
+    if (!data.truncated) break
+    if (!data.cursor) throw new Error('R2 列表缺少下一页位置，当前结果不完整；请刷新后重试')
+    if (seen.has(data.cursor)) throw new Error('R2 列表分页位置重复，当前结果不完整；请刷新后重试')
+    // 到达页面护栏时必须明确报错；静默返回前 5 万个会让后面的文件在后台“消失”。
+    if (i === 49) throw new Error('这个前缀下文件过多，列表无法完整显示；请在「ROM 存储」按平台缩小目录前缀后重试')
+    seen.add(data.cursor)
     cursor = data.cursor
   }
   return out
@@ -1113,8 +1143,15 @@ function singlePut(file: Blob, cleanKey: string, api: string, onProgress?: Uploa
       )
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) {
+        let data: { ok?: boolean; key?: string; size?: number } | null = null
+        try { data = JSON.parse(xhr.responseText) } catch { /* Worker 地址填错时可能回 HTML。 */ }
+        // 仅凭 200 就把 key 写进游戏库会让播放器拿到 HTML 或不完整的对象。
+        if (data?.ok !== true || data.key !== cleanKey || data.size !== file.size) {
+          reject(new Error(`上传响应不完整或对象大小不符；请到「ROM 存储」核查 ${cleanKey}`))
+          return
+        }
         probeCache.clear()
-        resolve({ key: cleanKey, url: romUrlForKey(cleanKey), size: file.size })
+        resolve({ key: cleanKey, url: romUrlForKey(cleanKey), size: data.size })
       } else {
         reject(explainRomStatus(xhr.status, '上传'))
       }

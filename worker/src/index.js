@@ -5,6 +5,7 @@
  *   PUT      /<key>           一次传完（需 Authorization: Bearer <ADMIN_TOKEN>），只适合小文件
  *   DELETE   /<key>           删除对象（需口令）
  *   GET      /list?prefix=&cursor=   列出对象（需口令，只认 Authorization 头）
+ *   POST     /bulk            批量删除 1..1000 个对象（需口令，body 为 {keys:[...]}）
  *   GET      /ping            健康检查
  *
  * 分片上传（大文件走这条，理由见下）：
@@ -13,7 +14,7 @@
  *   PUT      /<key>?uploadId=&partNumber=  传一片，返回该片 etag（需口令）
  *   POST     /<key>?uploadId=              完成，body 为 {parts:[{partNumber,etag}]}（需口令）
  *   DELETE   /<key>?uploadId=              放弃（需口令）
- *   GET      /multipart                    列出未完成的分片上传（需口令）
+ *   GET      /multipart?cursor=            按页列出未完成的分片上传（需口令）
  *   DELETE   /multipart?marker=            只清残留标记，不动 R2（需口令）
  *
  * ## 为什么大文件必须分片
@@ -33,7 +34,7 @@
  * 这里是无状态的 —— 换浏览器就续不上，只能重传。
  */
 
-const RESERVED = new Set(['', 'ping', 'list', 'multipart'])
+const RESERVED = new Set(['', 'ping', 'list', 'multipart', 'bulk'])
 
 /**
  * 单个对象的上传上限。默认 512 MB，可在 wrangler.toml 的 [vars] 里用 MAX_UPLOAD_MB 覆盖。
@@ -55,7 +56,7 @@ const MAX_PART_BYTES = 32 * 1024 * 1024
  * 未完成分片上传的「标记对象」前缀。
  *
  * binding 也没有 listMultipartUploads。不留痕迹的话，一次失败的上传会在桶里留下
- * 一堆**照常计费**的分片，而且从任何界面都看不见（只能去 Cloudflare 控制台翻）。
+ * 一堆在 R2 默认 7 天自动中止前占用存储的分片，而且从任何界面都看不见。
  * 所以 create 时写一个空 body 的标记对象，信息全塞在 customMetadata 里 ——
  * 这样 list 一次就能连信息一起取回，不用给每个标记再 get 一遍（Workers 有子请求数上限）。
  * complete / abort 时删掉标记，后台「ROM 存储」页列出的就是真正的残留。
@@ -139,6 +140,20 @@ export default {
     if (path === 'multipart') {
       if (!authorized(request, env)) return json({ error: 'unauthorized' }, cors, 401)
       return handleMultipartIndex(request, env, url, cors)
+    }
+
+    if (path === 'bulk') {
+      if (!authorized(request, env)) return json({ error: 'unauthorized' }, cors, 401)
+      if (request.method !== 'POST') return json({ error: 'method not allowed' }, cors, 405)
+      const body = await request.json().catch(() => null)
+      const keys = body?.keys
+      // 整包删除一次最多交给 R2 1000 个 key；先整体验证，避免删了一半才发现坏输入。
+      if (!Array.isArray(keys) || !keys.length || keys.length > 1000 || keys.some((key) => typeof key !== 'string' || !validKey(key))) {
+        return json({ error: 'keys 必须是 1..1000 个合法对象 key' }, cors, 400)
+      }
+      const unique = [...new Set(keys)]
+      await env.ROMS.delete(unique)
+      return json({ ok: true, deleted: unique }, cors)
     }
 
     const key = path
@@ -241,24 +256,30 @@ async function createMultipart(request, env, key, cors) {
     httpMetadata: { contentType, cacheControl: OBJECT_CACHE_CONTROL },
   })
 
-  // 标记写失败不该让上传起不来（顶多是这次的残留在后台看不见），所以吞掉异常
+  // 标记写失败时必须中止刚创建的上传；否则残留分片从后台完全不可见。
   const marker = `${MULTIPART_PREFIX}${crypto.randomUUID()}.marker`
-  await env.ROMS.put(marker, new Uint8Array(0), {
-    customMetadata: {
-      key,
-      uploadId: upload.uploadId,
-      size: String(Number(meta?.size) || 0),
-      name: typeof meta?.name === 'string' ? meta.name.slice(0, 200) : '',
-      at: new Date().toISOString(),
-    },
-  }).catch(() => {})
+  try {
+    await env.ROMS.put(marker, new Uint8Array(0), {
+      customMetadata: {
+        key,
+        uploadId: upload.uploadId,
+        size: String(Number(meta?.size) || 0),
+        name: typeof meta?.name === 'string' ? meta.name.slice(0, 200) : '',
+        at: new Date().toISOString(),
+      },
+    })
+  } catch (err) {
+    let cleanupError = ''
+    try { await upload.abort() } catch (abortErr) { cleanupError = `；中止上传也失败：${errText(abortErr)}` }
+    return json({ error: `无法记录分片上传，已尝试清理：${errText(err)}${cleanupError}` }, cors, 503)
+  }
 
   return json({ ok: true, key, uploadId: upload.uploadId, marker, maxPartBytes: MAX_PART_BYTES }, cors)
 }
 
 /** 传一片。返回的 etag 前端必须存下来 —— complete 时要把全部分片的 etag 报回来 */
 async function uploadPart(request, env, key, uploadId, url, cors) {
-  const partNumber = Number.parseInt(url.searchParams.get('partNumber') ?? '', 10)
+  const partNumber = Number(url.searchParams.get('partNumber'))
   // R2 的分片编号是 1..10000；越界时 uploadPart 抛的错很难懂，先自己挡下来
   if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > 10000) {
     return json({ error: 'partNumber 必须是 1..10000 的整数' }, cors, 400)
@@ -272,6 +293,8 @@ async function uploadPart(request, env, key, uploadId, url, cors) {
   // 一片只有几 MB，离 Worker 那 128MB 内存上限很远 —— 每片是独立的一次调用，不会叠加。
   const body = await request.arrayBuffer()
   if (body.byteLength === 0) return json({ error: 'empty part' }, cors, 400)
+  // Content-Length 可以缺失或不可信；读完后再核一次，避免绕过 Worker 自己的片大小护栏。
+  if (body.byteLength > MAX_PART_BYTES) return json({ error: 'part too large' }, cors, 413)
 
   const upload = env.ROMS.resumeMultipartUpload(key, uploadId)
   try {
@@ -293,15 +316,15 @@ async function completeMultipart(request, env, key, uploadId, cors) {
   const normalized = parts
     .map((p) => ({ partNumber: Number(p?.partNumber), etag: String(p?.etag ?? '') }))
     .sort((a, b) => a.partNumber - b.partNumber)
-  if (normalized.some((p) => !Number.isInteger(p.partNumber) || p.partNumber < 1 || !p.etag)) {
+  if (normalized.length > 10000 || normalized.some((p, i) => !Number.isInteger(p.partNumber) || p.partNumber !== i + 1 || !p.etag)) {
     return json({ error: 'parts 里有非法的 partNumber 或空 etag' }, cors, 400)
   }
 
   const upload = env.ROMS.resumeMultipartUpload(key, uploadId)
   try {
     const object = await upload.complete(normalized)
-    await dropMarker(env, key, uploadId, body?.marker)
-    return json({ ok: true, key, size: object.size, etag: object.httpEtag, uploaded: object.uploaded }, cors)
+    const markerRemoved = await dropMarker(env, key, uploadId, body?.marker)
+    return json({ ok: true, key, size: object.size, etag: object.httpEtag, uploaded: object.uploaded, markerRemoved }, cors)
   } catch (err) {
     // 分片不全、除末片外大小不等、etag 对不上都落到这儿。这类错重试一万次也一样，
     // 所以带 fatal 让前端放弃并清掉本地记账，别卡在「续传→失败→续传」的循环里
@@ -319,8 +342,9 @@ async function abortMultipart(env, key, uploadId, marker, cors) {
     aborted = false
     error = errText(err)
   }
-  await dropMarker(env, key, uploadId, marker)
-  return json({ ok: true, key, aborted, error: error || undefined }, cors)
+  const markerRemoved = await dropMarker(env, key, uploadId, marker)
+  // R2 的分片即使已 abort，标记残留也不能伪装成清理完成；管理员需要看得见并能重试。
+  return json({ ok: markerRemoved, key, aborted, markerRemoved, error: markerRemoved ? error || undefined : '分片已尝试中止，但残留标记删除失败；请在 ROM 存储页重试' }, cors, markerRemoved ? 200 : 503)
 }
 
 /** 列出 / 清理未完成的分片上传 */
@@ -334,7 +358,8 @@ async function handleMultipartIndex(request, env, url, cors) {
   if (request.method !== 'GET') return json({ error: 'method not allowed' }, cors, 405)
 
   // include: customMetadata 让一次 list 就把信息带回来，不用逐个 get（子请求数有上限）
-  const result = await env.ROMS.list({ prefix: MULTIPART_PREFIX, limit: 1000, include: ['customMetadata'] })
+  const cursor = url.searchParams.get('cursor') || undefined
+  const result = await env.ROMS.list({ prefix: MULTIPART_PREFIX, cursor, limit: 1000, include: ['customMetadata'] })
   const uploads = result.objects.map((o) => {
     const m = o.customMetadata ?? {}
     return {
@@ -347,7 +372,7 @@ async function handleMultipartIndex(request, env, url, cors) {
     }
   })
   uploads.sort((a, b) => String(b.at).localeCompare(String(a.at)))
-  return json({ uploads, truncated: result.truncated }, cors)
+  return json({ uploads, truncated: result.truncated, cursor: result.truncated ? result.cursor : undefined }, cors)
 }
 
 /**
@@ -358,13 +383,15 @@ async function dropMarker(env, key, uploadId, marker) {
   try {
     if (typeof marker === 'string' && marker.startsWith(MULTIPART_PREFIX)) {
       await env.ROMS.delete(marker)
-      return
+      return true
     }
     const result = await env.ROMS.list({ prefix: MULTIPART_PREFIX, limit: 1000, include: ['customMetadata'] })
     const hit = result.objects.find((o) => o.customMetadata?.uploadId === uploadId && o.customMetadata?.key === key)
     if (hit) await env.ROMS.delete(hit.key)
+    return Boolean(hit) || !result.truncated
   } catch {
-    /* 标记删不掉只是多一条残留记录，不能让它把上传判成失败 */
+    // complete 不能因此变成失败，但 abort 会把 markerRemoved=false 报给前端供重试。
+    return false
   }
 }
 

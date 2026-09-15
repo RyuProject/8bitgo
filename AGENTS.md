@@ -164,11 +164,11 @@ Free / Pro 100 MB，Business 200 MB，Enterprise 500 MB，**由边缘节点执�
 8MB 一片、3 并发、单片失败重试、`localStorage` 记账后可断点续传（`src/services/romMultipart.ts`）。
 上限是按**单个请求**算的，所以分片顺带把 100MB 这道墙也绕开了。三个必须记住的约束：
 
-1. R2 要求**除最后一片外所有片等大**、最小 5MB、最多 10000 片 —— 改 `PART_SIZE` 会让旧的续传记录作废（身份校验带了 `partSize`，会自动作废，不会拼出坏文件）
+1. R2 要求**除最后一片外所有片等大**、最小 5MB、最多 10000 片 —— 改 `PART_SIZE` 会让旧的续传记录作废；续传还校验文件名、字节数、修改时间和头/中/尾内容指纹，防止把同名的另一份文件拼进旧分片
 2. binding **没有 `listParts`**：complete 时必须把每片的 `{partNumber, etag}` 全报回去，所以这份账只能记在前端 —— **换浏览器就续不上**
-3. binding 也**没有 `listMultipartUploads`**：没合并的分片会一直计费且任何界面都看不见，所以 Worker 在 `_uploads/` 下写标记对象，后台「ROM 存储」页靠它列出并清理残留
+3. binding 也**没有 `listMultipartUploads`**：没合并的分片在 R2 默认 7 天自动中止之前仍占用存储；自定义生命周期可能改变期限。Worker 在 `_uploads/` 下写标记对象，后台「ROM 存储」页靠它列出并清理残留；R2 自动中止后标记对象仍需手动清理
 
-改 `worker/src/index.js` 的分片部分后跑 `npm run test:multipart`（内存版 R2 mock，23 项断言）。
+改 `worker/src/index.js` 的分片部分后跑 `npm run test:multipart`（内存版 R2 mock）。
 
 ### 2.13 验证码不能放进程内存
 
