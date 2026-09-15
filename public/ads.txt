@@ -1,0 +1,13 @@
+# IAB Tech Lab ads.txt（Authorized Digital Sellers）。
+#
+# 为什么要有：没有它，AdSense 后台会一直提示「缺少 ads.txt」，部分买方也会
+# 因为查不到授权记录而直接放弃竞价 —— 表现是「广告位审核过了但没什么填充」。
+#
+# 只有一条记录，含义是：本域（8bitgo.com）只有 Google 自己可以直接售卖广告位，
+# 不是转售、也没有第三方代理。发布商 ID 与前端 AdSense 代码里的 client 一致
+# （src/components/ads/AdSenseSlot.tsx 的 PUBLISHER_ID）。
+#
+# 语法：<广告系统域名>, <发布商 ID>, <关系>, <认证机构 ID>
+#   DIRECT        = 本域与 Google 有直接合同关系（通过 AdSense）
+#   f08c47fec0942fa0 = Google 的 TAG 认证机构 ID，固定值
+google.com, pub-9765778307056404, DIRECT, f08c47fec0942fa0

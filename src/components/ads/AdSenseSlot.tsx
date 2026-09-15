@@ -55,7 +55,13 @@ export function AdSenseSlot({ slot, className, format = 'auto', responsive = tru
 
   return (
     <ins
-      className={['adsbygoogle', className].filter(Boolean).join(' ')}
+      /*
+        w-full 不能少。广告位常常落在 flex 的 items-center 容器里，此时子项在交叉轴上的
+        宽度由**内容**决定 —— <ins> 是空的，量出来就是 0，AdSense 读 offsetWidth=0 直接不填，
+        控制台报 "No slot size for availableWidth=0"，页面上就是一片空白（踩过）。
+        给一个确定的宽度，宽度上限交给调用方用 max-w-* 收。
+      */
+      className={['adsbygoogle', 'w-full', className].filter(Boolean).join(' ')}
       style={{ display: 'block' }}
       data-ad-client={PUBLISHER_ID}
       data-ad-slot={slot}

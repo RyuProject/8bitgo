@@ -86,7 +86,9 @@ export function staticCacheHeaders(res, filePath) {
   if (p.includes('/fonts/')) return set(CACHE.font)
   if (p.includes('/ruffle/') || p.includes('/emulatorjs/') || p.includes('/j2me/') || p.includes('/jsdos/') || p.includes('/webretro/') || p.includes('/qemu-wasm/') || p.includes('/play/')) return set(CACHE.engine)
   if (/\.(png|jpg|jpeg|gif|webp|avif|svg|ico)$/i.test(p)) return set(CACHE.image)
-  if (/\/(robots\.txt|sitemap[^/]*\.xml)$/i.test(p)) return set(CACHE.meta)
+  // ads.txt 跟 robots / sitemap 一样属于「构建时生成、但要能被外部频繁核对」的元文件，
+  // 走兜底那档 s-maxage=3600 会让广告主和爬虫拿着边缘缓存里的旧版本看半天。
+  if (/\/(robots\.txt|ads\.txt|sitemap[^/]*\.xml)$/i.test(p)) return set(CACHE.meta)
   // 兜底：短缓存 + 允许边缘复用，总好过每次都回源
   set('public, max-age=300, s-maxage=3600, stale-while-revalidate=3600')
 }
