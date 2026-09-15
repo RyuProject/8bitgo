@@ -114,6 +114,12 @@ function isNoStorePath(pathname) {
   return stripLang(pathname).split('/')[1] === 'auth'
 }
 
+/** Play! 官方 Web 构建固定启用 pthread；只有这条顶层路由需要跨源隔离。 */
+function isPs2PlayPath(pathname) {
+  const seg = stripLang(pathname).split('/').filter(Boolean)
+  return seg[0] === 'play' && seg[1] === 'ps2' && Boolean(seg[2])
+}
+
 export async function renderPage(req, res, next) {
   try {
     if (isAdminPath(req.path)) {
@@ -132,6 +138,7 @@ export async function renderPage(req, res, next) {
     // v2：按路由取数，只把这个页面要渲染的那部分注入 HTML。
     // v1 是把整个游戏库塞进每一个页面 —— 上千款游戏时首屏体积会失控。
     const [pathname, qs] = url.split('?')
+    const ps2Play = isPs2PlayPath(pathname)
     const data = await loadForRoute(stripLang(pathname), new URLSearchParams(qs ?? ''))
 
     /*
@@ -181,6 +188,13 @@ export async function renderPage(req, res, next) {
         'Content-Type': 'text/html; charset=utf-8',
         'Cache-Control': notFound ? CACHE.notFound : isNoStorePath(req.path) ? CACHE.none : CACHE.page,
         Vary: 'Accept-Encoding',
+        ...(ps2Play
+          ? {
+              'Cross-Origin-Opener-Policy': 'same-origin',
+              'Cross-Origin-Embedder-Policy': 'require-corp',
+              'X-Robots-Tag': 'noindex, follow',
+            }
+          : {}),
       })
       .end(page)
   } catch (e) {
@@ -210,6 +224,13 @@ export async function renderPage(req, res, next) {
           'Content-Type': 'text/html; charset=utf-8',
           'Cache-Control': CACHE.none,
           'Retry-After': '60',
+          ...(isPs2PlayPath(req.path)
+            ? {
+                'Cross-Origin-Opener-Policy': 'same-origin',
+                'Cross-Origin-Embedder-Policy': 'require-corp',
+                'X-Robots-Tag': 'noindex, follow',
+              }
+            : {}),
         })
         .end(getTemplate())
     } catch {

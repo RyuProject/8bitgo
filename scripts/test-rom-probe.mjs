@@ -36,15 +36,26 @@ const script = (...steps) => {
   methods = []
 }
 
-const { probeRomUrl, probeRom, clearRomProbeCache, romCandidates, romProbeExpected, dosExecutableForRom, versionedRomUrl } = await import(
+const { probeRomUrl, probeRom, clearRomProbeCache, conventionalKeys, romCandidates, romProbeExpected, dosExecutableForRom, versionedRomUrl, romKeysOf, unbindKeyPatch, shouldTryRomCandidateAfterUncertain } = await import(
   fileURLToPath(new URL('../src/services/roms.ts', import.meta.url))
 )
 const { ROM_LANGS } = await import(fileURLToPath(new URL('../src/config/languages.ts', import.meta.url)))
 const { romCacheKey } = await import(fileURLToPath(new URL('../src/emulator/romCache.ts', import.meta.url)))
 const { gameRowToApi, dosExecutableOf, relationsInPatch, romRelationRows } = await import(fileURLToPath(new URL('../server/src/mappers.js', import.meta.url)))
+// ts-loader 为了让 ROM 探测测试保持轻量，会把平台表换成空桩；这一项只补 PS2 真正用到的格式。
+const { platformMap: testPlatformMap } = await import('@/data/platforms')
+testPlatformMap.ps2 = { romExtensions: ['.iso', '.chd', '.cso', '.zso', '.isz', '.bin', '.elf'] }
 
 let url = 0
 const next = () => `https://assets.example.com/roms/nes/game-${++url}.zip`
+
+/* ---------- PS2 约定地址：ISO 直接给 Play!，不能让历史 ZIP 抢先 ---------- */
+{
+  const keys = conventionalKeys({ platform: 'ps2', slug: 'demo' })
+  assert.equal(keys[0], 'roms/ps2/demo.iso', 'PS2 默认先探裸 ISO')
+  assert.ok(keys.some((key) => key.endsWith('.chd')), 'PS2 也保留 Play! 支持的压缩光盘格式')
+  assert.ok(!keys.some((key) => key.endsWith('.zip')), 'PS2 不能把外层 ZIP 当成光盘镜像')
+}
 
 /* ---------- 外站 ZIP：fragment 选内层文件，ETag 也只进 fragment，不污染签名 URL ---------- */
 {
@@ -208,6 +219,38 @@ const next = () => `https://assets.example.com/roms/nes/game-${++url}.zip`
   assert.equal(romCandidates(game, 'en').length, 1, '同一个 key 只保留第一次出现')
 }
 {
+  // 同语言备用必须紧跟主地址；只有两者都失败才允许跨语言回退。
+  const game = {
+    roms: {
+      'zh-Hans': 'https://primary.example.com/game.zip',
+      en: 'roms/nes/game.en.zip',
+    },
+    romBackups: { 'zh-Hans': 'roms/nes/game.zh-Hans.zip' },
+  }
+  assert.deepEqual(
+    romCandidates(game, 'zh-Hans').map(({ key, lang, backup }) => ({ key, lang, backup: Boolean(backup) })),
+    [
+      { key: 'https://primary.example.com/game.zip', lang: 'zh-Hans', backup: false },
+      { key: 'roms/nes/game.zh-Hans.zip', lang: 'zh-Hans', backup: true },
+      { key: 'roms/nes/game.en.zip', lang: 'en', backup: false },
+    ],
+    '同语言备用排在其它语言之前',
+  )
+  const candidates = romCandidates(game, 'zh-Hans')
+  assert.equal(shouldTryRomCandidateAfterUncertain(candidates[0], candidates[1]), true, '主地址超时后仍尝试同语言备用')
+  assert.equal(shouldTryRomCandidateAfterUncertain(candidates[1], candidates[2]), false, '备用也无法确认时停止，不把本机断网误判成跨语言缺失')
+  assert.deepEqual(romKeysOf(game), [
+    'https://primary.example.com/game.zip',
+    'roms/nes/game.en.zip',
+    'roms/nes/game.zh-Hans.zip',
+  ], 'ROM 存储页也要把备用对象算作绑定')
+  assert.deepEqual(
+    unbindKeyPatch(game, 'roms/nes/game.zh-Hans.zip'),
+    { romBackups: undefined },
+    '从 ROM 存储页解绑备用对象时要清掉备用字段',
+  )
+}
+{
   // 同一 ZIP 的 URL 一样，但所选语言槽必须保留，启动文件由它决定。
   const game = {
     roms: { en: 'roms/dos/shared.zip', 'zh-Hans': 'roms/dos/shared.zip' },
@@ -230,12 +273,46 @@ const next = () => `https://assets.example.com/roms/nes/game-${++url}.zip`
   assert.equal(dosExecutableOf('CN\\RUN.BAT'), 'CN/RUN.BAT', '后端将 DOS 反斜杠规整为 ZIP 相对路径')
   assert.equal(dosExecutableOf('../RUN.BAT'), null, '不能把相对路径穿出 ZIP')
   assert.equal(relationsInPatch({ dosExecutables: { en: 'EN/RUN.BAT' } }).roms, true, '只更新入口时也要写 ROM 关联表')
+  assert.equal(relationsInPatch({ romBackups: { en: 'roms/dos/shared-backup.zip' } }).roms, true, '只更新备用地址时也要写 ROM 关联表')
   const previous = [{ lang: 'en', object_key: 'roms/dos/shared.zip', dos_executable: 'EN/RUN.BAT' }]
   assert.equal(romRelationRows({ roms: { en: 'roms/dos/shared.zip' } }, previous, true)[0].dosExecutable, 'EN/RUN.BAT', '只改 ROM 绑定且 key 不变时保留入口')
   assert.equal(romRelationRows({ roms: { en: 'roms/dos/new.zip' } }, previous, true)[0].dosExecutable, null, '换 ZIP 后旧入口不能沿用')
   assert.equal(romRelationRows({ dosExecutables: { en: 'EN/NEW.BAT' } }, previous, true)[0].dosExecutable, 'EN/NEW.BAT', '只改入口时保留 ROM key')
   assert.equal(romRelationRows({ roms: { en: 'roms/dos/shared.zip' } }, previous)[0].dosExecutable, 'EN/RUN.BAT', '旧后台整体保存相同 ROM 时不抹掉入口')
   assert.equal(romRelationRows({ roms: { en: 'roms/dos/shared.zip' }, dosExecutables: {} }, previous)[0].dosExecutable, null, '新后台明确清空入口时可删除旧值')
+}
+{
+  const previous = [{
+    lang: 'en',
+    object_key: 'https://primary.example.com/game.zip',
+    backup_key: 'roms/nes/game.en.zip',
+    dos_executable: null,
+  }]
+  assert.equal(
+    romRelationRows({ roms: { en: previous[0].object_key } }, previous)[0].backupKey,
+    previous[0].backup_key,
+    '旧后台保存相同主地址时不能抹掉备用地址',
+  )
+  assert.equal(
+    romRelationRows({ romBackups: { en: 'roms/nes/new-backup.zip' } }, previous, true)[0].backupKey,
+    'roms/nes/new-backup.zip',
+    '只改备用地址时保留主地址',
+  )
+  assert.equal(
+    romRelationRows({ romBackups: {} }, previous, true)[0].backupKey,
+    null,
+    '显式空对象可清除最后一个备用地址',
+  )
+  assert.equal(
+    romRelationRows({ roms: { en: 'roms/nes/different.zip' } }, previous)[0].backupKey,
+    null,
+    '换主文件时旧备用地址也要作废，避免语言包错配',
+  )
+  const api = gameRowToApi(
+    { slug: 'backup', title: 'Backup', platform: 'nes' },
+    { roms: { en: previous[0].object_key }, romBackups: { en: previous[0].backup_key } },
+  )
+  assert.deepEqual(api.romBackups, { en: previous[0].backup_key }, 'API 把备用地址送回播放器和后台')
 }
 {
   // 旧数据的无语言 rom 垫在最后，且不与语言槽重复

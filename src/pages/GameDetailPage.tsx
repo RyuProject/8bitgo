@@ -185,6 +185,8 @@ export function GameDetailPage() {
    * 命中的话详情页不内嵌模拟器，改成显示一个跳 /play/<slug> 的入口。
    */
   const isolatedEmbed = isolatedEmbedFor(game?.slug)
+  /** Play! 固定使用 pthread，PS2 和登记过的 HTML5 游戏一样必须进隔离整页。 */
+  const isolatedPlayer = Boolean(isolatedEmbed) || game?.platform === 'ps2'
   const seoTitle = game ? gameTitle(game, lang) : ''
   const seoPlatform = game ? platformMap[game.platform] : undefined
   const seoPlatformName = seoPlatform ? platformLabel(t, seoPlatform.id, seoPlatform.name) : ''
@@ -324,11 +326,12 @@ export function GameDetailPage() {
                   Google Fonts、收录脚本和跨源封面图会被一起掐掉。
                   这些游戏改成显示一个入口，跳到 /play/<slug>。理由见 shared/isolated-embeds.js。
                 */}
-                {isolatedEmbed ? (
+                {isolatedPlayer ? (
                   <IsolatedPlayCard
                     frameClassName={stageCap}
                     slug={game.slug}
                     gameName={game.title}
+                    ps2={game.platform === 'ps2'}
                     icon={game.icon}
                     backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority className="h-full w-full" />}
                   />
@@ -652,7 +655,7 @@ export function GameDetailPage() {
         onClose={() => setShareOpen(false)}
         slug={game.slug}
         title={seoTitle || game.title}
-        isolated={Boolean(isolatedEmbed)}
+        isolated={isolatedPlayer}
       />
     </div>
   )

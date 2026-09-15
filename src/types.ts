@@ -159,6 +159,11 @@ export interface Game {
   /** 各语言 ROM 在 ZIP 内的启动路径；未填写的槽继续使用 dosExecutable 或自动猜测。 */
   dosExecutables?: Partial<Record<RomLang, string>>
   /**
+   * 各语言 ROM 的同语言备用地址。播放器只在该语言的主地址失效或暂时不可达时使用，
+   * 所以切换后仍沿用同一个语言槽的 DOS 启动入口、存档键和界面语言。
+   */
+  romBackups?: Partial<Record<RomLang, string>>
+  /**
    * DOS 运行核心。留空等同 dosbox；dosboxX 可启动 Windows 3.x / 9x 的 .jsdos 系统镜像。
    * 这里只切换 CPU/虚拟机核心；系统由 dosSystem 提供，游戏 ZIP 作为另一块 FAT 盘挂入。
    */

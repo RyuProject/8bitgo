@@ -15,7 +15,7 @@
 | 后端 | `server/`，Express + MySQL，和前端**同源**（一个进程同时提供 `/api` 和静态资源） |
 | 存储 | Cloudflare R2 + Worker（`worker/`），公开读走 `assets.8bitgo.com` |
 | 部署 | 服务器上 `git pull && npm install && npm run build && pm2 restart 8bitgo-api`，前面挂 Cloudflare |
-| 模拟器 | EmulatorJS（主机/掌机/街机）、Ruffle（Flash）、js-dos、jsnes、webretro、FreeJ2ME |
+| 模拟器 | EmulatorJS（主机/掌机/街机）、Ruffle（Flash）、js-dos、jsnes、webretro、FreeJ2ME、Play!（PS2） |
 | 登录 | 邮箱验证码（**Resend** 发信）/ 密码 / Google，JWT 30 天，见 §2.13–2.14 |
 
 代码注释一律用中文，且**解释「为什么」而不是「是什么」**——现有注释里记着大量踩坑经过，改代码前先读注释。
@@ -325,6 +325,42 @@ curl -X POST http://127.0.0.1:8788/api/posts/<slug>/translate \
 # 第二次 cached:true（读库，不再调火山）
 ```
 
+### 2.18 外链 ROM 要按语言配备用源，健康检查只能在浏览器做
+
+`game_roms.backup_key` 是该行 `object_key` 的同语言备用地址，API 上对应
+`romBackups[lang]`。播放器顺序是「当前语言主地址 → 当前语言备用地址 → 其它语言」，
+所以 DOS 切到备用源后仍使用原语言槽的 BAT / EXE 入口。
+
+网络超时 / CORS 失败以前会立刻停止整条候选链，因为同一源站继续探没有意义；现在只有紧跟着的
+同语言备用地址可以越过这道停止线。备用也无法确认时仍停止，避免用户自己断网时把八种语言全等一遍。
+
+后台“检测主/备”由管理员浏览器直接发 HEAD / Range GET。**不要改成服务端代请求任意 URL**，
+否则后台可填写的外链会变成 SSRF 入口。浏览器报告“无法确认（网络或 CORS）”不等于文件必定不存在，
+但玩家浏览器同样无法跨域读取时通常也不能运行。
+
+部署这版先跑：
+
+```bash
+cd server && npm run migrate     # 增加 game_roms.backup_key，幂等
+```
+
+### 2.19 PS2 只能从独立隔离页启动，ISO 必须支持 HTTP Range
+
+PS2 使用 Play! 官方 Web 构建，`public/play/Play.js` 和 `Play.wasm` 是**同一批产物**，连同
+`runtime.json` 的长度 / SHA-256 与上游许可证一起提交。`npm run test:play` 和 prebuild 会校验；
+升级时两个文件必须一起换并更新 manifest，不能只覆盖其中一个。
+
+官方构建固定启用 pthread / SharedArrayBuffer，所以游戏详情页不直接挂模拟器，而是整页跳到
+`/play/ps2/:slug`。Express 与 Vite 开发服务器只给这条顶层文档发 COOP / COEP；改成 SPA
+内部跳转或 iframe 后，响应头不会生效，运行时会在 worker 初始化阶段崩掉。
+
+PS2 光盘通常数 GB，播放器通过 `src/emulator/remoteDisc.ts` 按 2MB 块发送 Range 请求，不能
+整份下载。后台直接上传 `.iso` / `.chd` / `.cso`，不要再包一层 ZIP；外链至少要正确响应
+`Range: bytes=0-0`，返回 206、`Content-Range` 和真实总大小。当前 R2 Worker 已支持这些头。
+
+Play! 浏览器版仍是实验性支持：90 秒内没有产生首帧就提示该镜像可能不兼容。不要为了让某个
+商业游戏通过而查找或分发 ROM；只测试站长有权使用的备份、自制程序或开源镜像。
+
 ---
 
 ## 3. 常用命令
@@ -334,6 +370,7 @@ npm run dev            # 开发（predev 自动准备 ruffle / js-dos / 字体�
 npm run build          # prebuild 会跑 check-emulatorjs.mjs 体检，缺东西直接失败
 npm run lint           # oxlint
 npm run test:multipart # Worker 分片上传接口的自测（内存版 R2 mock，不联网）
+npm run test:play      # Play! JS / WASM / 许可证完整性与接口特征
 
 npm run ejspatch       # 重打 blob 文件名补丁（升级引擎后必跑，幂等）
 npm run ejscores       # 重新复制核心（仅升级核心时）
@@ -355,7 +392,7 @@ npm run test:presence                  # 房主名片：设备 / 地区 / 网络
 
 `prebuild` 里的 `scripts/check-emulatorjs.mjs` 会检查五件事：引擎文件在不在、
 是不是自建版（有无 `dontExtractIfCore`）、blob 补丁打没打、**存档 ABI 补丁打没打**、
-核心在不在。任一缺失 → 构建失败。
+核心在不在；`scripts/check-play.mjs` 同时检查 Play! 的三份文件及其哈希。任一缺失 → 构建失败。
 
 ---
 

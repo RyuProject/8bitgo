@@ -31,7 +31,7 @@ import { useLocation } from 'react-router-dom'
  */
 
 /** 这些路径没有收录价值（后台、跨站嵌入、登录态相关），一条都不推。 */
-const SKIP = /^\/(admin|embed|auth|login|me)(\/|$)/
+const SKIP = /^\/(admin|embed|play|auth|login|me)(\/|$)/
 
 /** index.html 里那段脚本的 src。第一次进来时从 DOM 上读一次记住。 */
 let scriptSrc = ''

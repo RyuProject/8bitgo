@@ -317,16 +317,20 @@ for (const key of [...needed].sort()) {
     而街机跑的是 EmulatorJS —— 同一天我们把默认方向键改成了 WASD，
     于是表上写箭头、按下去不动。这种错 tsc 不响、页面照常渲染，只有玩家按下去才发现。
 
-    规矩：**引擎管的键一律从 EJS_KEY_BY_ID 现算**。唯一可以写死的是 J2ME ——
-    FreeJ2ME 的键盘映射是它自己定的（public/j2me/src/key.js），和引擎无关。
+    规矩：**EmulatorJS 管的键一律从 EJS_KEY_BY_ID 现算**。可以写死的是 J2ME 和 Play!：
+    FreeJ2ME 的键盘映射在 public/j2me/src/key.js 固定；Play! 的 Web 映射在上游
+    Source/ui_js/Main.cpp 固定，且 adapters/play.ts 就按同一张表派发事件。
   */
   const j2meAt = lib.indexOf("if (runtimeId === 'j2me')")
   assert.ok(j2meAt > 0, '找不到 j2me 那一支了 —— 这条断言要跟着改')
   const j2meEnd = lib.indexOf("if (runtimeId === 'play')", j2meAt)
   assert.ok(j2meEnd > j2meAt, '找不到 j2me 那一支的结尾')
+  const playEnd = lib.indexOf("if (runtimeId === 'webretro')", j2meEnd)
+  assert.ok(playEnd > j2meEnd, '找不到 play 那一支的结尾')
   for (const m of [...lib.matchAll(/'↑[^']*'/g)]) {
     const inJ2me = m.index > j2meAt && m.index < j2meEnd
-    ok(inJ2me, `写死的方向键 ${m[0]} 只允许出现在 J2ME 那一支（在第 ${lib.slice(0, m.index).split('\n').length} 行）`)
+    const inPlay = m.index > j2meEnd && m.index < playEnd
+    ok(inJ2me || inPlay, `写死的方向键 ${m[0]} 只允许出现在 J2ME / Play! 分支（在第 ${lib.slice(0, m.index).split('\n').length} 行）`)
   }
 }
 

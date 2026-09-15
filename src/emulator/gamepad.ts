@@ -34,11 +34,16 @@ export const GP = {
  */
 export type GamepadKeyMap<K> = Record<number, K>
 
-export interface GamepadBridgeOptions {
+export interface GamepadBridgeOptions<K = unknown> {
   /** 摇杆推到多少算方向键，默认 0.5 */
   axisThreshold?: number
   /** 左摇杆是否也映射成方向键（默认开） */
   stickAsDpad?: boolean
+  /**
+   * 把指定摇杆轴翻译成引擎自己的两个按键。
+   * Play! 的 Web 版只收键盘事件，左右摇杆也各自写死成四颗键，所以需要这条通道。
+   */
+  axisBindings?: readonly { axis: number; negative: K; positive: K }[]
   /**
    * 从哪儿读手柄。默认读本文档。
    *
@@ -64,11 +69,12 @@ export function hasGamepadApi(): boolean {
  * 开始轮询手柄。send(keyCode, pressed) 在状态变化时调用。
  * 返回的 stop() 会把还按着的键都松开，避免退出时角色一直往前跑。
  */
-export function startGamepadBridge<K>(map: GamepadKeyMap<K>, send: (key: K, pressed: boolean) => void, opts: GamepadBridgeOptions = {}): GamepadBridge {
+export function startGamepadBridge<K>(map: GamepadKeyMap<K>, send: (key: K, pressed: boolean) => void, opts: GamepadBridgeOptions<K> = {}): GamepadBridge {
   const threshold = opts.axisThreshold ?? 0.5
   const stickAsDpad = opts.stickAsDpad !== false
   const readPads = opts.getPads ?? (() => (navigator.getGamepads ? navigator.getGamepads() : []))
   const down = new Set<number>()
+  const axisDown = new Map<string, K>()
   let raf = 0
   let stopped = false
   let anyPad = false
@@ -85,6 +91,22 @@ export function startGamepadBridge<K>(map: GamepadKeyMap<K>, send: (key: K, pres
     } catch {
       /* 引擎已经销毁就忽略 */
     }
+  }
+
+  const setAxis = (id: string, key: K, pressed: boolean) => {
+    const was = axisDown.has(id)
+    if (pressed === was) return
+    if (pressed) axisDown.set(id, key)
+    else axisDown.delete(id)
+    try {
+      send(key, pressed)
+    } catch {
+      /* 引擎已经销毁就忽略 */
+    }
+  }
+
+  const releaseAxes = () => {
+    for (const [id, key] of Array.from(axisDown)) setAxis(id, key, false)
   }
 
   const tick = () => {
@@ -112,6 +134,7 @@ export function startGamepadBridge<K>(map: GamepadKeyMap<K>, send: (key: K, pres
     if (!pad) {
       // 手柄拔了：把按着的键全松开
       for (const i of Array.from(down)) set(i, false)
+      releaseAxes()
       return
     }
     // 先把这一帧「该按下哪些」算全，再统一比对。
@@ -131,6 +154,11 @@ export function startGamepadBridge<K>(map: GamepadKeyMap<K>, send: (key: K, pres
       if (y > threshold) want[GP.DOWN] = true
     }
     for (let i = 0; i < 16; i++) set(i, want[i])
+    for (const binding of opts.axisBindings ?? []) {
+      const value = pad.axes[binding.axis] ?? 0
+      setAxis(`${binding.axis}-`, binding.negative, value < -threshold)
+      setAxis(`${binding.axis}+`, binding.positive, value > threshold)
+    }
   }
 
   /**
@@ -165,6 +193,7 @@ export function startGamepadBridge<K>(map: GamepadKeyMap<K>, send: (key: K, pres
       raf = 0
       anyPad = false
       for (const i of Array.from(down)) set(i, false)
+      releaseAxes()
     }
   }
 
@@ -196,6 +225,7 @@ export function startGamepadBridge<K>(map: GamepadKeyMap<K>, send: (key: K, pres
         }
       }
       down.clear()
+      releaseAxes()
     },
     connected: () => anyPad,
   }

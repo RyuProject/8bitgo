@@ -1,0 +1,21 @@
+{
+  "name": "Play!",
+  "source": "https://playjs.purei.org/",
+  "upstream": "https://github.com/jpd002/Play-",
+  "fetchedAt": "2026-09-15",
+  "lastModified": "2026-09-03T18:52:08Z",
+  "files": {
+    "Play.js": {
+      "bytes": 206594,
+      "sha256": "5599ff16ae5e3534f9b779736aedfa20661821d57be7f03e587e31ef8d090317"
+    },
+    "Play.wasm": {
+      "bytes": 2211611,
+      "sha256": "5c6ace637a23f3416a8105d1a07786631994e8dfe34d603a9f62c3b47c47f1a2"
+    },
+    "LICENSE.txt": {
+      "bytes": 1336,
+      "sha256": "e9089da5950600267bb657503aba6eb59cb679b455c2997d341d83144144daab"
+    }
+  }
+}

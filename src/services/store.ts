@@ -71,6 +71,14 @@ export async function upsertGame(game: Game): Promise<Game> {
       )
     }
   }
+  for (const [lang, backup] of Object.entries(game.romBackups ?? {})) {
+    const savedBackup = saved.romBackups?.[lang as keyof NonNullable<Game['romBackups']>]
+    if (backup?.trim() && savedBackup !== backup.trim()) {
+      throw new Error(
+        '服务端没有保存 ROM 备用地址。请在服务器运行数据库迁移（cd server && npm run migrate）并重启 8bitgo-api，然后重新保存。',
+      )
+    }
+  }
   /*
     附加文件同理，而且它的静默失败最难查：后台一个个传完、点保存、绿字提示「已保存」，
     玩家进去却什么都没多 —— 因为那一列根本不存在，服务端悄悄把它丢了。

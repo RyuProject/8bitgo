@@ -46,6 +46,10 @@ README.md
 # @emulatorjs/cores = 官方全部 50 个核心，一句 npm install 拽下几百 MB。
 # 升级核心：npm run ejscores（见 scripts/copy-ejs-cores.mjs 头注释）。
 
+# Play! 的官方 Web 运行时（public/play/）也**故意提交**。生产机没有 emscripten，
+# 不能指望部署时现场编译；Play.js 和 Play.wasm 又必须同批更新。来源与哈希记录在
+# public/play/runtime.json，npm run test:play / prebuild 会一起校验。
+
 # Cloudflare Worker
 worker/node_modules
 worker/.wrangler

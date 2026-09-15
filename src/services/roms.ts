@@ -226,7 +226,9 @@ export function conventionalKeys(game: Game): string[] {
   // 同时兼容只有一个 HTML 文件的小作品。
   if (game.platform === 'html5') return [at(`${game.slug}/index.html`), at(`${game.slug}.html`)]
   const exts = platformMap[game.platform]?.romExtensions ?? ['.zip']
-  const ordered = ['.zip', ...exts.filter((e) => e !== '.zip')]
+  // PS2 的 Play! 需要直接看到光盘容器并按后缀选解析器；外层 ZIP 即使能探到也一定启动不了。
+  // 后台上传守卫已经拒绝新 ZIP，这里也别让历史遗留的 `<slug>.zip` 抢在 ISO 前面。
+  const ordered = game.platform === 'ps2' ? exts.filter((e) => e !== '.zip') : ['.zip', ...exts.filter((e) => e !== '.zip')]
   return ordered.map((ext) => at(`${game.slug}${ext}`))
 }
 
@@ -323,20 +325,20 @@ export function defaultMediaKey(kind: MediaKind, slug: string, fileName: string)
  * 过去都只看 game.rom 那一个字段 —— 只配了 roms.en 的游戏在后台一律显示「未绑定」，
  * 「自动匹配」会重复绑一次，删文件时也不会解绑。统一从这里取。
  */
-export function romKeysOf(game: Pick<Game, 'rom' | 'roms'>): string[] {
-  const keys = [game.rom, ...Object.values(game.roms ?? {})]
+export function romKeysOf(game: Pick<Game, 'rom' | 'roms' | 'romBackups'>): string[] {
+  const keys = [game.rom, ...Object.values(game.roms ?? {}), ...Object.values(game.romBackups ?? {})]
     .map((k) => (typeof k === 'string' ? k.trim() : ''))
     .filter(Boolean)
   return [...new Set(keys)]
 }
 
 /** 这款游戏是否已经绑定了任意一个 ROM */
-export function hasRom(game: Pick<Game, 'rom' | 'roms'>): boolean {
+export function hasRom(game: Pick<Game, 'rom' | 'roms' | 'romBackups'>): boolean {
   return romKeysOf(game).length > 0
 }
 
 /** 把某个对象 key 从游戏上解绑（通用 rom 与所有语言槽都清掉），返回要提交的补丁 */
-export function unbindKeyPatch(game: Pick<Game, 'rom' | 'roms'>, key: string): Partial<Game> {
+export function unbindKeyPatch(game: Pick<Game, 'rom' | 'roms' | 'romBackups'>, key: string): Partial<Game> {
   const patch: Partial<Game> = {}
   if (game.rom === key) patch.rom = undefined
   const roms = { ...(game.roms ?? {}) }
@@ -348,6 +350,15 @@ export function unbindKeyPatch(game: Pick<Game, 'rom' | 'roms'>, key: string): P
     }
   }
   if (touched) patch.roms = Object.keys(roms).length ? roms : undefined
+  const romBackups = { ...(game.romBackups ?? {}) }
+  let backupTouched = false
+  for (const [lang, value] of Object.entries(romBackups)) {
+    if (value === key) {
+      delete romBackups[lang as RomLang]
+      backupTouched = true
+    }
+  }
+  if (backupTouched) patch.romBackups = Object.keys(romBackups).length ? romBackups : undefined
   return patch
 }
 
@@ -370,6 +381,13 @@ export interface RomCandidate {
   key: string
   /** 通用 rom 没有语言槽，所以这里可能为空 */
   lang?: RomLang
+  /** true 表示同一语言槽的备用地址；启动入口等设置仍跟随 lang。 */
+  backup?: boolean
+}
+
+/** 网络类失败本来会停止整条回退链；唯一例外是紧跟主地址的同语言备用源。 */
+export function shouldTryRomCandidateAfterUncertain(current: RomCandidate, next?: RomCandidate): boolean {
+  return !current.backup && Boolean(next?.backup && next.lang === current.lang)
 }
 
 /**
@@ -380,7 +398,8 @@ export interface RomCandidate {
 const FALLBACK_PRIORITY: RomLang[] = ['en', 'ja', 'zh-Hans', 'zh-Hant']
 
 /**
- * 按语言列出 ROM 候选：当前语言 → 英语 → 日语 → 简体 → 繁体 → **其余所有语言槽** → 旧版通用 rom。
+ * 按语言列出 ROM 候选：每个语言的主地址 → 同语言备用地址，然后才到下一种语言；
+ * 语言顺序是当前语言 → 英语 → 日语 → 简体 → 繁体 → **其余所有语言槽** → 旧版通用 rom。
  *
  * 两个中文槽都在回退里，是因为后台允许分别上传简繁版本；不能因为简体槽为空，
  * 就在繁体槽明明有文件时误报「没有当前语言版本」。同一个 key 只保留第一次出现，
@@ -396,7 +415,7 @@ const FALLBACK_PRIORITY: RomLang[] = ['en', 'ja', 'zh-Hans', 'zh-Hant']
  * 「游戏没有当前语言版本」，而那个 ROM 明明就躺在 R2 上。
  * 所以现在从 ROM_LANGS 派生，以后往里加语言槽不用再记得改这儿。
  */
-export function romCandidates(game: Pick<Game, 'rom' | 'roms'>, lang: Lang, prefer?: RomLang | null): RomCandidate[] {
+export function romCandidates(game: Pick<Game, 'rom' | 'roms' | 'romBackups'>, lang: Lang, prefer?: RomLang | null): RomCandidate[] {
   const requested = prefer ?? romLangFor(lang)
   const order: RomLang[] = [requested, ...FALLBACK_PRIORITY, ...ROM_LANGS]
   const candidates: RomCandidate[] = []
@@ -404,9 +423,16 @@ export function romCandidates(game: Pick<Game, 'rom' | 'roms'>, lang: Lang, pref
 
   for (const candidateLang of order) {
     const key = game.roms?.[candidateLang]?.trim()
-    if (!key || seen.has(key)) continue
-    seen.add(key)
-    candidates.push({ key, lang: candidateLang })
+    if (key && !seen.has(key)) {
+      seen.add(key)
+      candidates.push({ key, lang: candidateLang })
+    }
+    // 备用必须紧跟自己的主地址，保证“同语言切源”优先于跨语言回退。
+    const backup = game.romBackups?.[candidateLang]?.trim()
+    if (backup && !seen.has(backup)) {
+      seen.add(backup)
+      candidates.push({ key: backup, lang: candidateLang, backup: true })
+    }
   }
 
   // game.rom 是旧数据里的无语言版本；继续兼容，避免升级后让原本能玩的游戏消失。
@@ -674,6 +700,8 @@ interface ProbeTrace {
   key: string
   url: string
   outcome: ProbeOutcome
+  lang?: RomLang
+  backup?: boolean
 }
 
 /**
@@ -694,9 +722,10 @@ interface ProbeTrace {
 function reportProbeFailure(game: Pick<Game, 'slug' | 'platform'>, traces: ProbeTrace[], unreachable: boolean) {
   const base = getRomBase()
   const overridden = Boolean(readLocal(ROM_BASE_KEY))
-  const lines = traces.map(({ key, url, outcome }) => {
+  const lines = traces.map(({ key, url, outcome, lang, backup }) => {
     const why = outcome.reason === 'http' ? `HTTP ${outcome.status}` : (outcome.reason ?? '未知')
-    return `  ${outcome.certain ? '确定没有' : '没问出来'}（${why}）  ${key}\n    ${url}`
+    const slot = lang ? `${lang}${backup ? ' 备用' : ' 主地址'}` : '通用地址'
+    return `  ${outcome.certain ? '确定没有' : '没问出来'}（${why}，${slot}）  ${key}\n    ${url}`
   })
   console.warn(
     [
@@ -769,7 +798,8 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
       const traces: ProbeTrace[] = []
       // 每个显式语言槽都要实际探测：绑定记录还在，不代表 R2 对象一定还在。
       // 当前槽丢失时继续按英语 → 日语 → 中文 → 其余语言槽回退，不能在第一个 404 就停住。
-      for (const candidate of candidates) {
+      for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
+        const candidate = candidates[candidateIndex]
         const url = romUrlForKey(candidate.key)
         if (!url) continue
         // iframe 导航不受 fetch CORS 限制；第三方 HTML5 游戏常常允许嵌入，却不允许跨域 HEAD。
@@ -780,11 +810,17 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
         }
         const outcome = await probeRom(url, 4000, game.platform === 'html5')
         if (outcome.url) {
+          if (candidate.backup) {
+            console.warn(`[8bitgo/rom] ${game.slug} 的 ${candidate.lang ?? '通用'} 主地址不可用，已切换到同语言备用地址：${candidate.key}`)
+          }
           if (!cancelled) setState({ status: 'found', url: outcome.url, key: candidate.key, lang: candidate.lang })
           return
         }
-        traces.push({ key: candidate.key, url, outcome })
+        traces.push({ key: candidate.key, url, outcome, lang: candidate.lang, backup: candidate.backup })
         if (!outcome.certain) {
+          // 主地址超时、CORS 或断网时仍要给同语言备用地址一次机会。
+          // 备用可以在另一个域名/R2 上，不能沿用“同一主机必然一起失败”的旧假设。
+          if (shouldTryRomCandidateAfterUncertain(candidate, candidates[candidateIndex + 1])) continue
           /*
             「没问出来」就**立刻收手**，别把剩下的候选挨个耗一遍。
 

@@ -57,4 +57,10 @@ check('java 走 j2me（这条是上面那个 bug 的原案发地）', () => {
   assert.equal(java.runtime, "'j2me'")
 })
 
+check('ps2 走 Play!，不能再回到“暂不支持在线运行”', () => {
+  const ps2 = found.find((p) => p.id === 'ps2')
+  assert.ok(ps2, 'ps2 平台不见了')
+  assert.equal(ps2.runtime, "'play'")
+})
+
 console.log(`\n✅ 平台表：${passed} 项检查通过`)

@@ -8,9 +8,8 @@
  * 所以这里只画一个和播放器同尺寸（16:9）的卡片，点了整页跳到 /play/<slug> ——
  * 人还在站内，只是换了一页。
  *
- * ⚠️ 必须用 <a> 而不是 react-router 的 <Link>：/play/<slug> 是由 Express 直接吐的外壳页
- * （见 server/src/routes/play.js），不是前端路由的一部分。走 <Link> 只会让 SPA 匹配不到
- * 而渲染 404 —— 隔离头也就永远发不出去。
+ * ⚠️ 必须用 <a> 而不是 react-router 的 <Link>：浏览器要重新请求顶层文档，Express 才能
+ * 给这条响应加 COOP / COEP。SPA 内部跳转不会换响应头，SharedArrayBuffer 仍然不可用。
  */
 import { buttonClasses } from '@/components/ui/Button'
 import { langPrefix } from '@/config/languages'
@@ -22,6 +21,8 @@ import type { ReactNode } from 'react'
 interface Props {
   slug: string
   gameName: string
+  /** PS2 固定走本站自己的隔离播放器；其余条目走 isolated-embeds 登记的外壳。 */
+  ps2?: boolean
   /** 空闲态的大图标，和 EmulatorPlayer 的 icon 一个意思 */
   icon?: string
   /** 背景（通常是封面），和播放器空闲态保持一致的观感 */
@@ -36,11 +37,11 @@ interface Props {
   frameClassName?: string
 }
 
-export function IsolatedPlayCard({ slug, gameName, icon, backdrop, className, frameClassName }: Props) {
+export function IsolatedPlayCard({ slug, gameName, ps2 = false, icon, backdrop, className, frameClassName }: Props) {
   const lang = useLang()
   const t = useT()
   // 语言前缀由 basename 承载，而这是一条整页跳转，得自己拼上，否则英文用户会掉到中文页
-  const href = `${langPrefix(lang)}/play/${encodeURIComponent(slug)}`
+  const href = `${langPrefix(lang)}/play/${ps2 ? 'ps2/' : ''}${encodeURIComponent(slug)}`
 
   return (
     <div className={cx('overflow-hidden rounded-2xl border border-line bg-black', className)}>

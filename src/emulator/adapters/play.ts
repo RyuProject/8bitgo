@@ -16,17 +16,11 @@
  * **别把它当成一个正常能玩的平台去运营**。真要 PS2 的兼容性，路只有一条：
  * 游戏跑在服务器上、画面串流（cloud-game + LRPS2）。
  *
- * ── 部署（没做这一步 PS2 平台不会出现）────────────────────────
- * 上游没有发布任何预编译产物，也没有 CDN 和 npm 包，只能自己构建：
- *
- *   git clone https://github.com/jpd002/Play-.git && cd Play- && git submodule update --init --recursive
- *   mkdir build && cd build
- *   emcmake cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF -DBUILD_PLAY=ON -DBUILD_PSFPLAYER=ON -DUSE_QT=OFF
- *   cmake --build . --config Release
- *
- * 把产物里的 `Play.js` 和 `Play.wasm` 放到同一个可公开访问的目录下，
- * 然后 `VITE_PLAY_PATH=/play/`（或完整 URL）。**只要这两个文件**——
- * 上游那个 React 壳（js/play_browser）我们不用，UI 是这个适配器自己搭的。
+ * ── 部署 ────────────────────────────────────────────────────
+ * 官方 Web 部署的 `Play.js` / `Play.wasm` 连同许可证、自身长度和 SHA-256 一起提交在
+ * `public/play/`，`.env.production` 与 `.env.development` 都把 `VITE_PLAY_PATH` 指到这里。
+ * prebuild 的 `scripts/check-play.mjs` 会阻止漏文件或 JS / wasm 分批升级。
+ * 上游 React 壳（js/play_browser）不使用，UI、远程读盘和输入由这个适配器接管。
  *
  * ── 盘不整份下载 ─────────────────────────────────────────────
  * PS2 是 DVD，一张 1~4.7GB，整份下下来既等不起也存不下。
@@ -34,22 +28,27 @@
  * 这两样，所以我们塞一个 HTTP Range 驱动的对象进去就行 —— 只下游戏真正读到的扇区。
  * 见 ../remoteDisc.ts。这是 PS2 能上网页的唯一前提，别改回整份下载。
  */
-import type { Capability, CaptureSources, MountOptions, RuntimeHandle } from '../types'
+import type { Capability, CaptureSources, MountOptions, PadButton, RuntimeHandle } from '../types'
 import { PLAY_PATH } from '../paths'
 import { getT, fmt } from '@/services/i18n'
 import { RemoteDisc, httpRangeFetcher, probeRange, type DiscSource } from '../remoteDisc'
-import { runAsCommonJs } from '@/lib/umd'
+import { GP, hasGamepadApi, startGamepadBridge, type GamepadBridge } from '../gamepad'
+import { canvasToBlob } from '../recorder'
 
 /** Emscripten 模块工厂（MODULARIZE 构建）。只列我们真正调到的那几样 */
 interface PlayModule {
   HEAPU8: Uint8Array
-  FS: { mkdir(path: string): void }
+  FS: {
+    mkdir(path: string): void
+    writeFile(path: string, data: Uint8Array): void
+  }
   canvas?: HTMLCanvasElement
   discImageDevice?: unknown
   ccall(name: string, ret: string | null, argTypes: string[], args: unknown[]): unknown
   bootDiscImage(fileName: string): void
   bootElf(fileName: string): void
   getFrames?: () => number
+  clearStats?: () => void
   pauseMainLoop?: () => void
   resumeMainLoop?: () => void
 }
@@ -133,20 +132,91 @@ function discNameOf(game: File | string, fallback: string): string {
 
 const ELF_RE = /\.elf$/i
 
+interface PlayKey {
+  code: string
+  key: string
+}
+
+const key = (code: string, value: string): PlayKey => ({ code, key: value })
+
+/**
+ * Play! 当前 Web 版只读键盘。物理手柄和屏幕手柄都在这里翻成它官方写死的键位，
+ * 否则桌面上只有键盘能玩、手机上则一颗能按的键都没有。
+ */
+const PLAY_GAMEPAD_MAP: Record<number, PlayKey> = {
+  [GP.A]: key('KeyZ', 'z'),
+  [GP.B]: key('KeyX', 'x'),
+  [GP.X]: key('KeyA', 'a'),
+  [GP.Y]: key('KeyS', 's'),
+  // 上游绑定名确实写的是 Key1…Key0，不是浏览器物理键盘通常上报的 Digit1…Digit0。
+  [GP.L1]: key('Key1', '1'),
+  [GP.R1]: key('Key8', '8'),
+  [GP.L2]: key('Key2', '2'),
+  [GP.R2]: key('Key9', '9'),
+  [GP.L3]: key('Key3', '3'),
+  [GP.R3]: key('Key0', '0'),
+  [GP.SELECT]: key('Backspace', 'Backspace'),
+  [GP.START]: key('Enter', 'Enter'),
+  [GP.UP]: key('ArrowUp', 'ArrowUp'),
+  [GP.DOWN]: key('ArrowDown', 'ArrowDown'),
+  [GP.LEFT]: key('ArrowLeft', 'ArrowLeft'),
+  [GP.RIGHT]: key('ArrowRight', 'ArrowRight'),
+}
+
+const PLAY_TOUCH_MAP: Record<PadButton, PlayKey> = {
+  up: PLAY_GAMEPAD_MAP[GP.UP],
+  down: PLAY_GAMEPAD_MAP[GP.DOWN],
+  left: PLAY_GAMEPAD_MAP[GP.LEFT],
+  right: PLAY_GAMEPAD_MAP[GP.RIGHT],
+  // 屏幕上的 A / B 对应 PS2 最常用的确认（×）/ 返回（○）。
+  a: PLAY_GAMEPAD_MAP[GP.A],
+  b: PLAY_GAMEPAD_MAP[GP.B],
+  select: PLAY_GAMEPAD_MAP[GP.SELECT],
+  start: PLAY_GAMEPAD_MAP[GP.START],
+}
+
+function dispatchKey(canvas: HTMLCanvasElement, value: PlayKey, down: boolean): void {
+  canvas.dispatchEvent(
+    new KeyboardEvent(down ? 'keydown' : 'keyup', {
+      code: value.code,
+      key: value.key,
+      bubbles: true,
+      cancelable: true,
+    }),
+  )
+}
+
+/**
+ * Play! 上游把数字行绑定成了 `Key1`…`Key0`，而浏览器标准事件实际叫 `Digit1`…`Digit0`。
+ * 这里补发一份上游能识别的事件，让实体键盘的肩键也能用；合成事件本身不会再次进入这个分支。
+ */
+function normalizeNumberKey(event: KeyboardEvent): void {
+  const match = /^Digit([0-9])$/.exec(event.code)
+  if (!match || !(event.currentTarget instanceof HTMLCanvasElement)) return
+  dispatchKey(event.currentTarget, key(`Key${match[1]}`, match[1]), event.type === 'keydown')
+}
+
 export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
   let destroyed = false
   let module: PlayModule | null = null
   let disc: RemoteDisc | null = null
+  let pad: GamepadBridge | null = null
+  let readyPoll = 0
+  let readyTimeout = 0
   let readyFired = false
   const caps = new Set<Capability>()
 
   const canvas = document.createElement('canvas')
   canvas.width = 640
-  canvas.height = 448
+  canvas.height = 480
+  // 上游 Main.cpp 把 WebGL 目标写死成 #outputCanvas；没有这个 id，initVm 会直接 assert。
+  canvas.id = 'outputCanvas'
   canvas.style.cssText = 'width:100%;height:100%;object-fit:contain;background:#000;display:block'
   // 键盘要能落到画布上，否则手柄输入全废（同 frameFocus.ts 里 iframe 那套的道理）
   canvas.tabIndex = 0
+  canvas.addEventListener('keydown', normalizeNumberKey, true)
+  canvas.addEventListener('keyup', normalizeNumberKey, true)
   container.appendChild(canvas)
 
   /**
@@ -161,6 +231,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       console.warn('[play] 运行中出错：', message)
       return
     }
+    window.clearInterval(readyPoll)
+    window.clearTimeout(readyTimeout)
     options.onError?.(message)
   }
 
@@ -169,30 +241,43 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       options.onError?.(rt.playNotDeployed)
       return
     }
+    if (!globalThis.crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') {
+      // 官方构建固定创建两个 pthread；普通详情页没有 COOP/COEP，创建共享内存时必崩。
+      options.onError?.(rt.playNeedsIsolation)
+      return
+    }
 
     /* ---- 1. 盘：先探 Range ---- */
-    let source: DiscSource
-    let discName: string
+    let source: DiscSource | null = null
+    let elfBytes: Uint8Array | null = null
+    const discName = discNameOf(options.game, 'game.iso')
+    const isElf = ELF_RE.test(discName)
     if (typeof options.game === 'string') {
       options.onProgress?.({ phase: 'rom', loaded: 0 })
-      const probe = await probeRange(options.game)
-      if (destroyed) return
-      if (!probe.rangeSupported || !probe.size) {
-        // 整份下载不是退路：PS2 一张盘几 GB，下不下来也存不下。
-        // 与其让玩家等十分钟再失败，不如现在就说清楚是服务器不支持 Range。
-        options.onError?.(rt.playNoRange)
-        return
+      if (isElf) {
+        const res = await fetch(options.game)
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        elfBytes = new Uint8Array(await res.arrayBuffer())
+        options.onProgress?.({ phase: 'rom', loaded: elfBytes.byteLength, total: elfBytes.byteLength, ratio: 1 })
+      } else {
+        const probe = await probeRange(options.game)
+        if (destroyed) return
+        if (!probe.rangeSupported || !probe.size) {
+          // 整份下载不是退路：PS2 一张盘几 GB，下不下来也存不下。
+          // 与其让玩家等十分钟再失败，不如现在就说清楚是服务器不支持 Range。
+          options.onError?.(rt.playNoRange)
+          return
+        }
+        disc = new RemoteDisc({ size: probe.size, fetchRange: httpRangeFetcher(options.game) })
+        source = disc
+        // 盘是按需读的，没有「下载完成」这一说 —— 直接把 rom 阶段推满，
+        // 后面的时间都花在引擎启动上，进度条不该卡在 40% 装死
+        options.onProgress?.({ phase: 'rom', loaded: probe.size, total: probe.size, ratio: 1, cached: true })
       }
-      disc = new RemoteDisc({ size: probe.size, fetchRange: httpRangeFetcher(options.game) })
-      source = disc
-      discName = discNameOf(options.game, 'game.iso')
-      // 盘是按需读的，没有「下载完成」这一说 —— 直接把 rom 阶段推满，
-      // 后面的时间都花在引擎启动上，进度条不该卡在 40% 装死
-      options.onProgress?.({ phase: 'rom', loaded: probe.size, total: probe.size, ratio: 1, cached: true })
     } else {
-      // 玩家自己选的本地文件：File 本来就支持 slice，直接当盘用，零拷贝
-      source = options.game
-      discName = options.game.name
+      if (isElf) elfBytes = new Uint8Array(await options.game.arrayBuffer())
+      else source = options.game
+      // 玩家自己选的本地光盘：File 本来就支持 slice，直接当盘用，零拷贝
       options.onProgress?.({ phase: 'rom', loaded: options.game.size, total: options.game.size, ratio: 1, cached: true })
     }
 
@@ -201,19 +286,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     const scriptUrl = `${PLAY_PATH}Play.js`
     let factory: PlayFactory
     try {
-      const src = await fetch(scriptUrl).then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`)
-        return r.text()
-      })
-      if (destroyed) return
       /**
-       * 走 runAsCommonJs 而不是插 <script>：Emscripten 的 MODULARIZE 产物也是一段 UMD，
-       * 页面上只要有别的脚本占了 module/exports/define，它就会往 window 上挂一个 `Play`。
-       * 这个仓库被全局名字坑过两次（js-dos 泄漏 io 顶掉 socket.io），不再走那条路。
+       * 2026-09 的官方产物是 ES module（末尾 `export default Play`），已经不是 UMD。
+       * 把源码塞进 CommonJS 包装器会直接 SyntaxError；按模块导入也让 pthread Worker
+       * 能用同一份 URL 重新加载自己，这是 Emscripten 当前生成代码要求的形态。
        */
-      const exported = runAsCommonJs(src)
-      if (typeof exported !== 'function') throw new Error('Play.js 没有导出模块工厂')
-      factory = exported as PlayFactory
+      const imported = (await import(/* @vite-ignore */ scriptUrl)) as { default?: PlayFactory }
+      if (destroyed) return
+      if (typeof imported.default !== 'function') throw new Error('Play.js 没有导出模块工厂')
+      factory = imported.default
     } catch (e) {
       if (!destroyed) options.onError?.(fmt(rt.playLoadFailed, { msg: e instanceof Error ? e.message : String(e) }))
       return
@@ -236,42 +317,102 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       } catch {
         /* 已存在 */
       }
-      instance.discImageDevice = new StreamingDiscDevice(
-        () => module,
-        source,
-        (e) => fail(fmt(rt.playDiscFailed, { msg: e.message })),
-      )
+      if (source) {
+        instance.discImageDevice = new StreamingDiscDevice(
+          () => module,
+          source,
+          (e) => fail(fmt(rt.playDiscFailed, { msg: e.message })),
+        )
+      }
       instance.ccall('initVm', null, [], [])
 
       options.onProgress?.({ phase: 'starting', loaded: 0 })
-      if (ELF_RE.test(discName)) instance.bootElf(discName)
-      else instance.bootDiscImage(discName)
+      if (isElf && elfBytes) {
+        const path = `/work/${discName}`
+        instance.FS.writeFile(path, elfBytes)
+        instance.bootElf(path)
+      } else {
+        instance.bootDiscImage(discName)
+      }
 
-      readyFired = true
-      // 截图和录制要 canvas，这两个是白给的；暂停 / 存档 Play! 这版没有稳定接口，不谎报
-      for (const c of ['screenshot', 'record'] as Capability[]) caps.add(c)
+      // 截图、录像和触屏键由本站接上；暂停 / 存档 Play! 这版没有稳定接口，不谎报。
+      for (const c of ['screenshot', 'record', 'touchpad'] as Capability[]) caps.add(c)
+      if (hasGamepadApi()) {
+        caps.add('gamepad')
+        pad = startGamepadBridge(PLAY_GAMEPAD_MAP, (button, down) => dispatchKey(canvas, button, down), {
+          // 十字键和左摇杆在 PS2 是两套输入；把摇杆当十字键会让许多 3D 游戏无法走动。
+          stickAsDpad: false,
+          axisBindings: [
+            { axis: 0, negative: key('KeyF', 'f'), positive: key('KeyH', 'h') },
+            { axis: 1, negative: key('KeyT', 't'), positive: key('KeyG', 'g') },
+            { axis: 2, negative: key('KeyJ', 'j'), positive: key('KeyL', 'l') },
+            { axis: 3, negative: key('KeyI', 'i'), positive: key('KeyK', 'k') },
+          ],
+        })
+      }
       options.onCaps?.(caps)
-      options.onReady?.()
-      options.onStart?.()
       canvas.focus()
+
+      const markReady = () => {
+        if (destroyed || readyFired) return
+        readyFired = true
+        window.clearInterval(readyPoll)
+        window.clearTimeout(readyTimeout)
+        options.onGeometry?.({ width: 640, height: 480 })
+        options.onReady?.()
+        options.onStart?.()
+      }
+      if (typeof instance.getFrames !== 'function') {
+        markReady()
+      } else {
+        // bootDiscImage() 只代表命令交给 VM；等到真的画出第一帧再撤加载遮罩。
+        instance.clearStats?.()
+        readyPoll = window.setInterval(() => {
+          if ((instance.getFrames?.() ?? 0) > 0) markReady()
+        }, 250)
+        readyTimeout = window.setTimeout(() => {
+          if (!readyFired) fail(rt.playStartTimeout)
+        }, 90_000)
+      }
     } catch (e) {
+      window.clearInterval(readyPoll)
+      window.clearTimeout(readyTimeout)
       if (!destroyed) options.onError?.(fmt(rt.playLoadFailed, { msg: e instanceof Error ? e.message : String(e) }))
     }
   }
 
-  void boot()
+  // 读远程 ELF / Range 探测也在引擎 try 之前，必须收住整个 boot 的拒绝；
+  // 否则网络错误只会变成控制台里的 unhandled rejection，玩家一直看到加载中。
+  void boot().catch((e: unknown) => {
+    window.clearInterval(readyPoll)
+    window.clearTimeout(readyTimeout)
+    if (!destroyed) options.onError?.(fmt(rt.playLoadFailed, { msg: e instanceof Error ? e.message : String(e) }))
+  })
 
   return {
     destroy: () => {
       destroyed = true
+      window.clearInterval(readyPoll)
+      window.clearTimeout(readyTimeout)
+      pad?.stop()
+      pad = null
       // 先断开读盘回调再拆模块：StreamingDiscDevice 里那几个 then 可能还在飞，
       // module 置空之后它们会自己什么都不做（见那边的注释）
+      module?.pauseMainLoop?.()
       module = null
       disc?.dispose()
       disc = null
+      canvas.removeEventListener('keydown', normalizeNumberKey, true)
+      canvas.removeEventListener('keyup', normalizeNumberKey, true)
       canvas.remove()
     },
     caps,
+    sendButton(button, down) {
+      const value = PLAY_TOUCH_MAP[button]
+      if (value) dispatchKey(canvas, value, down)
+    },
+    focus: () => canvas.focus(),
+    screenshot: () => canvasToBlob(canvas),
     captureSources: (): CaptureSources => ({ canvas }),
   }
 }

@@ -202,6 +202,7 @@ CREATE TABLE IF NOT EXISTS game_roms (
   game_id    INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
   lang       TEXT    NOT NULL DEFAULT '*',
   object_key TEXT    NOT NULL,
+  backup_key TEXT,
   dos_executable TEXT,
   PRIMARY KEY (game_id, lang)
 );

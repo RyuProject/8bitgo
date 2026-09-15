@@ -58,8 +58,8 @@ export function formatSpeed(bytesPerSecond: number): string {
  *     键位由游戏自己定（毁灭战士按 Ctrl 开枪，那是游戏的事，不是我们的）；
  *   · **J2ME** 相反 —— FreeJ2ME 的键盘映射是**固定**的（方向键 + 数字键 + 软键），
  *     说成「游戏自己定」等于把已知的事推给玩家去猜；
- *   · **PS2** 跑的是 Play!，EmulatorJS 那套键位一个字都传不进去（adapters/play.ts
- *     里根本没有键位映射），摆出来是纯粹编的；
+ *   · **PS2** 跑的是 Play!，键位来自上游 Main.cpp 的固定映射；本站再把标准手柄和
+ *     屏幕手柄翻成同一组键盘事件（adapters/play.ts）；
  *   · **世嘉MD** 是 A/B/C（六键手柄再加 X/Y/Z 和 MODE），不是 A/B/X/Y。
  *
  * 表里的键位不是猜的，都对着引擎 / 核心的源码核过（2026-09-07）：
@@ -281,9 +281,28 @@ export function getDefaultKeymap(runtimeId?: string, platform?: PlatformId): Key
     }
   }
 
-  /** PS2：Play! 自带键位，EmulatorJS 那套传不进去（adapters/play.ts 里没有任何键位映射） */
+  /** PS2：对照 Play! Source/ui_js/Main.cpp；标准手柄与触屏也由适配器翻成这些固定键位。 */
   if (runtimeId === 'play') {
-    return { rows: [], note: t.keymap.playNote, rebind: 'none', quickSave, pad: false, touch: 'none' }
+    return {
+      rows: [
+        { button: t.keymap.dpad, key: '↑ ↓ ← →', slot: 'dpad', parts: ['↑', '↓', '←', '→'] },
+        { button: '×', key: 'Z', slot: 'a' },
+        { button: '○', key: 'X', slot: 'b' },
+        { button: '□', key: 'A', slot: 'x' },
+        { button: '△', key: 'S', slot: 'y' },
+        { button: 'L1 / L2 / L3', key: '1 / 2 / 3' },
+        { button: 'R1 / R2 / R3', key: '8 / 9 / 0' },
+        { button: 'L Stick', key: 'F H / T G' },
+        { button: 'R Stick', key: 'J L / I K' },
+        { button: 'Start', key: 'Enter', slot: 'start' },
+        { button: 'Select', key: 'Backspace', slot: 'select' },
+      ],
+      note: t.keymap.playNote,
+      rebind: 'none',
+      quickSave,
+      pad: true,
+      touch: 'all',
+    }
   }
 
   /** NDS 的 webretro：键位、菜单、存读档全在 RetroArch 自己那套里（iframe 内按 F1） */

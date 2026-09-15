@@ -155,11 +155,10 @@ export const playMeta: Runtime = {
   // 给 15 只是和 webretro 对齐，表示「专精引擎优先于通用兜底」
   priority: 15,
   /**
-   * 没自建就当不存在。
+   * 运行时和开关必须一起部署。
    *
-   * ⚠️ 这一条不能放宽：上游没有任何预编译产物或 CDN，没配 VITE_PLAY_PATH 时
-   * Play.js 一定 404。available() 返回 false 之后 PS2 平台整个是「不可玩」状态，
-   * 玩家看到的是明确的提示，而不是点进去卡在加载界面。
+   * ⚠️ 这一条不能放宽：public/play/ 即使在仓库里，构建期漏掉 VITE_PLAY_PATH 时也不会
+   * 自动启用。available() 返回 false 后给出明确提示，避免玩家点进去才遇到 404。
    */
   available: () => Boolean(PLAY_PATH),
   supports: (platform) => platform === 'ps2',

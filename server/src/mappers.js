@@ -382,6 +382,8 @@ export function gameRowToApi(r, rel = {}) {
   if (Object.keys(byLang).length) g.roms = byLang
   // 启动文件跟语言槽走；通用 ROM 继续用 games.dos_executable，旧数据无需迁移内容。
   if (rel.dosExecutables && Object.keys(rel.dosExecutables).length) g.dosExecutables = rel.dosExecutables
+  // 备用地址必须保留语言归属；成功切源后 DOS 入口、存档与语言选择仍按原槽处理。
+  if (rel.romBackups && Object.keys(rel.romBackups).length) g.romBackups = rel.romBackups
 
   const tags = rel.tags ?? []
   if (tags.length) g.tags = tags
@@ -477,7 +479,7 @@ export function gameApiToPartialRow(patch) {
 /** 请求体里带了关联字段吗（决定 PATCH 要不要动关联表） */
 export function relationsInPatch(patch) {
   const has = (k) => Object.prototype.hasOwnProperty.call(patch ?? {}, k)
-  return { genres: has('genres'), tags: has('tags'), roms: has('rom') || has('roms') || has('dosExecutables') }
+  return { genres: has('genres'), tags: has('tags'), roms: has('rom') || has('roms') || has('romBackups') || has('dosExecutables') }
 }
 
 /** 把 API 对象里的 rom / roms 归一成 { lang: key } 的形式（通用 ROM 用 '*'） */
@@ -494,11 +496,20 @@ export function romsOf(g) {
 export function romRelationRows(game, previous = [], partial = false) {
   const hasRomKeys = Object.prototype.hasOwnProperty.call(game, 'rom') || Object.prototype.hasOwnProperty.call(game, 'roms')
   const hasEntries = Object.prototype.hasOwnProperty.call(game, 'dosExecutables')
+  const hasBackups = Object.prototype.hasOwnProperty.call(game, 'romBackups')
   const oldByLang = new Map(previous.map((row) => [row.lang, row]))
   const roms = hasRomKeys || !partial ? Object.entries(romsOf(game)) : previous.map((row) => [row.lang, row.object_key])
   return roms.map(([lang, key]) => ({
     lang,
     key,
+    backupKey: lang === GENERIC_ROM_LANG ? null : hasBackups
+      ? (() => {
+          const backup = typeof game.romBackups?.[lang] === 'string' ? game.romBackups[lang].trim() : ''
+          // 不能截断 URL：签名参数或 ZIP fragment 少一个字符都会变成另一条坏地址。
+          // eslint-disable-next-line no-control-regex
+          return backup && backup !== key && backup.length <= 500 && !/[\x00-\x1f]/.test(backup) ? backup : null
+        })()
+      : oldByLang.get(lang)?.object_key === key ? oldByLang.get(lang)?.backup_key ?? null : null,
     dosExecutable: lang === GENERIC_ROM_LANG ? null : hasEntries
       ? dosExecutableOf(game.dosExecutables?.[lang])
       : oldByLang.get(lang)?.object_key === key ? oldByLang.get(lang)?.dos_executable ?? null : null,

@@ -803,6 +803,12 @@ const patches = [
     run: () => conn.query('ALTER TABLE `game_roms` ADD COLUMN `dos_executable` VARCHAR(255) NULL AFTER `object_key`'),
   },
   {
+    name: 'game_roms.backup_key（同语言 ROM 备用地址）',
+    table: 'game_roms',
+    needed: async () => !(await hasColumn('game_roms', 'backup_key')),
+    run: () => conn.query('ALTER TABLE `game_roms` ADD COLUMN `backup_key` VARCHAR(500) NULL AFTER `object_key`'),
+  },
+  {
     name: 'open_rom_samples（开放平台每机型一款沙箱测试 ROM）',
     table: null,
     skip: async () => (!(await hasTable('game_roms')) ? '还没有 v2 的 game_roms 表' : null),

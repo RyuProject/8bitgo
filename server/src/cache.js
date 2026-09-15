@@ -75,10 +75,16 @@ export function staticCacheHeaders(res, filePath) {
   if (p.endsWith('/qemu-wasm/qemu-system-x86_64.worker.js')) {
     res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
   }
+  // Play.js 同时是主线程 ES module 和 pthread Worker 入口；官方部署也给它发这两项。
+  if (p.endsWith('/play/Play.js')) {
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
+    res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
+  }
 
   if (p.includes('/assets/')) return set(CACHE.immutable)
   if (p.includes('/fonts/')) return set(CACHE.font)
-  if (p.includes('/ruffle/') || p.includes('/emulatorjs/') || p.includes('/j2me/') || p.includes('/jsdos/') || p.includes('/webretro/') || p.includes('/qemu-wasm/')) return set(CACHE.engine)
+  if (p.includes('/ruffle/') || p.includes('/emulatorjs/') || p.includes('/j2me/') || p.includes('/jsdos/') || p.includes('/webretro/') || p.includes('/qemu-wasm/') || p.includes('/play/')) return set(CACHE.engine)
   if (/\.(png|jpg|jpeg|gif|webp|avif|svg|ico)$/i.test(p)) return set(CACHE.image)
   if (/\/(robots\.txt|sitemap[^/]*\.xml)$/i.test(p)) return set(CACHE.meta)
   // 兜底：短缓存 + 允许边缘复用，总好过每次都回源

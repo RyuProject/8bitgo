@@ -47,10 +47,9 @@ export const WEBRETRO_PATH: string = asDir(import.meta.env.VITE_WEBRETRO_PATH)
 /**
  * Play!（PS2）的自托管目录，里面要有 `Play.js` 和 `Play.wasm`。
  *
- * ⚠️ 和 EmulatorJS / Ruffle 不一样，**上游没有发布任何预编译产物**，也没有 CDN 和 npm 包
- * —— 只能自己用 emscripten 从 jpd002/Play- 构建（见 adapters/play.ts 的部署说明）。
- * 所以这里没有默认值：没配 VITE_PLAY_PATH 时 playMeta.available() 为 false，
- * PS2 平台整个不可玩，而不是让玩家点进去看一个 404。
+ * 运行时从 Play! 官方 Web 部署获取后连同校验信息提交在 public/play/，生产构建用
+ * scripts/check-play.mjs 防止只部署 JS 或只部署 wasm。这里仍不设默认值：构建期开关
+ * 缺失时应让 PS2 明确显示未部署，而不是让玩家点进去才遇到 404。
  */
 export const PLAY_PATH: string = asDir(import.meta.env.VITE_PLAY_PATH)
 

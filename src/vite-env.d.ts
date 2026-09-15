@@ -4,6 +4,7 @@ interface ImportMetaEnv {
   readonly VITE_EJS_PATH?: string
   readonly VITE_RUFFLE_PATH?: string
   readonly VITE_J2ME_PATH?: string
+  readonly VITE_PLAY_PATH?: string
   readonly VITE_CLOUDGAME_URL?: string
   readonly VITE_CLOUDGAME_ZONE?: string
   readonly VITE_API_URL?: string

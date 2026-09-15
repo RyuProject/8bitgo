@@ -15,6 +15,8 @@ import {
   isBundleKey,
   keepsOriginalFileName,
   listRomObjects,
+  clearRomProbeCache,
+  probeRom,
   romUrlForKey,
   uploadRom,
   type UploadStage,
@@ -44,6 +46,7 @@ import { isPlayable } from '@/emulator'
 import { normalizeDevelopers } from '@/lib/developers'
 import { Field, btnClass, inputClass } from './ui'
 import { mergeDosboxConfigOverride, normalizeDosboxConfigOverride } from '../../shared/dosbox-config.js'
+import { probeRange } from '@/emulator/remoteDisc'
 
 /*
   一键模板。点一下是**合并**进现有配置（mergeDosboxConfigOverride），不是覆盖，可以叠着点。
@@ -139,6 +142,7 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
   const allBoundKeys = [
     form.rom ?? '',
     ...Object.values(form.roms ?? {}),
+    ...Object.values(form.romBackups ?? {}),
     form.cover ?? '',
     form.video ?? '',
   ]
@@ -191,6 +195,14 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
       return { ...f, dosExecutables }
     })
 
+  const setRomBackupLang = (lang: RomLang, key: string) =>
+    setForm((f) => {
+      const romBackups = { ...(f.romBackups ?? {}) }
+      if (key.trim()) romBackups[lang] = key.trim()
+      else delete romBackups[lang]
+      return { ...f, romBackups }
+    })
+
   const submit = (e: FormEvent) => {
     e.preventDefault()
     const slug = slugify(form.slug || form.title)
@@ -233,12 +245,19 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
       .filter(Boolean)
 
     const cleanedRoms: Partial<Record<RomLang, string>> = {}
+    const cleanedRomBackups: Partial<Record<RomLang, string>> = {}
     for (const l of ROM_LANGS) {
       const v = form.roms?.[l]?.trim()
       if (v) cleanedRoms[l] = v
+      const backup = form.romBackups?.[l]?.trim()
+      if (!backup) continue
+      if (!v) return setError(`${ROM_LANG_LABEL[l]} 填了备用地址，但还没有主地址`)
+      if (backup === v) return setError(`${ROM_LANG_LABEL[l]} 的备用地址不能和主地址相同`)
+      cleanedRomBackups[l] = backup
     }
-    for (const value of [form.rom?.trim(), ...Object.values(cleanedRoms)]) {
+    for (const value of [form.rom?.trim(), ...Object.values(cleanedRoms), ...Object.values(cleanedRomBackups)]) {
       if (!value) continue
+      if (value.length > 500) return setError('ROM 地址过长（数据库上限 500 字符）')
       const ref = romArchiveRef(value)
       if (!ref) continue
       try {
@@ -263,6 +282,8 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
       video: form.video?.trim() || undefined,
       rom: form.rom?.trim() || undefined,
       roms: Object.keys(cleanedRoms).length ? cleanedRoms : undefined,
+      // 空对象也要送出：管理员清空最后一个备用地址时，服务端才能删除旧值。
+      romBackups: cleanedRomBackups,
       // 空对象也显式提交：编辑时清空所有语言入口，服务端才知道这是有意清除。
       dosExecutables: form.platform === 'dos' ? cleanedDosEntries : {},
       tags: tags.length ? tags : undefined,
@@ -603,10 +624,13 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
         <div>
           <p className="text-sm font-semibold">ROM 文件（按语言）</p>
           <p className="mt-0.5 text-xs text-muted">
-            玩家会先加载站点语言对应的 ROM；没有时依次回退到 <span className="font-medium text-fg">English → 日本語 → 简体中文 → 繁體中文</span>，全部没有时提示“游戏没有当前语言版本”。
+            每个语言先探主地址、再探同语言备用地址；两者都失败才依次回退到 <span className="font-medium text-fg">English → 日本語 → 简体中文 → 繁體中文</span>，全部没有时提示“游戏没有当前语言版本”。
           </p>
           {form.platform === 'dos' && (
             <p className="mt-1 text-xs text-muted">DOS 可以像以前一样每种语言上传不同包；若一个 ZIP 内含多语言，只上传一次，再把其他语言槽绑定到同一个 ZIP key，并分别填写 BAT / EXE 等启动文件的包内相对路径。</p>
+          )}
+          {form.platform === 'ps2' && (
+            <p className="mt-1 text-xs text-muted">PS2 直接上传 .iso（也支持 .chd / .cso 等 Play! 格式），不要套 ZIP。播放器会按需分段读盘，R2 与本站 Worker 已支持。</p>
           )}
         </div>
         {ROM_LANGS.map((lang) => (
@@ -646,9 +670,11 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
               dosEntry={form.platform === 'dos' ? form.dosExecutables?.[lang] : undefined}
               label={lang === 'en' ? 'English ROM（第一回退）' : lang === 'ja' ? '日本語 ROM（第二回退）' : `${ROM_LANG_LABEL[lang]} ROM`}
               value={form.roms?.[lang] ?? ''}
+              backupValue={form.romBackups?.[lang] ?? ''}
               platform={form.platform}
               slug={slugify(form.slug || form.title)}
               onChange={(key) => setRomLang(lang, key)}
+              onBackupChange={(key) => setRomBackupLang(lang, key)}
               allBoundKeys={allBoundKeys}
               onHackFound={(hack) => applyHack(hack, true)}
               onApplyHack={(hack) => applyHack(hack)}
@@ -1173,9 +1199,11 @@ interface PendingBundle {
  */
 function RomField({
   value,
+  backupValue,
   platform,
   slug,
   onChange,
+  onBackupChange,
   lang,
   dosEntry,
   label,
@@ -1184,9 +1212,11 @@ function RomField({
   onApplyHack,
 }: {
   value: string
+  backupValue: string
   platform: PlatformId
   slug: string
   onChange: (key: string) => void
+  onBackupChange: (key: string) => void
   lang?: RomLang
   dosEntry?: string
   label?: string
@@ -1209,6 +1239,12 @@ function RomField({
   const [bundleAt, setBundleAt] = useState<BundleUploadProgress | null>(null)
   /** 街机 ROM 的自动识别结果，上传后显示在下面 */
   const [romset, setRomset] = useState<RomsetIdentification | null>(null)
+  type HealthOutcome = Awaited<ReturnType<typeof probeRom>> & { rangeSupported?: boolean }
+  const [health, setHealth] = useState<{
+    checking: boolean
+    primary?: HealthOutcome
+    backup?: HealthOutcome
+  } | null>(null)
   const archiveRef = romArchiveRef(value)
   /** 识别出来的游戏需要 BIOS，但平台还没绑 —— 就是「Neo Geo BIOS 成员缺失」那个坑 */
   const [biosMissing, setBiosMissing] = useState<string | null>(null)
@@ -1216,12 +1252,57 @@ function RomField({
   const canUpload = Boolean(cfg.api && cfg.token)
   const isFlash = platform === 'flash'
   const isHtml5 = platform === 'html5'
+  const isPs2 = platform === 'ps2'
   /** 街机的 ROM key 保留原文件名 —— FBNeo 靠压缩包名认 romset，见 roms.ts 的 FILENAME_IS_IDENTITY */
   const isArcade = keepsOriginalFileName(platform)
   // Flash 额外收 zip：平台的 romExtensions 保持只有 .swf —— 那个列表还管着
   // 「玩本地 ROM」和格式识别，混进 zip 会让玩家以为拖个 zip 进播放器也能玩
   const accept = isFlash ? '.swf,.zip' : (platformMap[platform]?.romExtensions ?? ['.zip']).join(',')
   const defKey = (fileName: string) => (lang ? defaultRomKeyForLang(platform, slug, lang, fileName) : defaultKeyFor(platform, slug, fileName))
+  const exampleName = isPs2 ? 'game.iso' : 'x.zip'
+
+  useEffect(() => setHealth(null), [value, backupValue])
+
+  /**
+   * 检测必须从管理员浏览器发起：让服务端代请求任意后台 URL 会变成 SSRF 入口。
+   * 两个源并行探，避免主站超时四秒后才开始等备用站；播放器实际启动时仍按主→备顺序选择。
+   */
+  const checkHealth = async () => {
+    const primaryUrl = value.trim() ? romUrlForKey(value.trim()) : ''
+    const backupUrl = backupValue.trim() ? romUrlForKey(backupValue.trim()) : ''
+    const urls = [primaryUrl, backupUrl].filter(Boolean)
+    if (!urls.length) return
+    clearRomProbeCache(urls)
+    setHealth({ checking: true })
+    const checkOne = async (url: string): Promise<HealthOutcome> => {
+      const outcome = await probeRom(url, 6000, isHtml5)
+      if (!isPs2 || !outcome.url) return outcome
+      const controller = new AbortController()
+      const timer = window.setTimeout(() => controller.abort(), 6000)
+      try {
+        // 普通“文件存在”对 PS2 不够：Play! 要不断按扇区读，必须真的返回 206 + Content-Range。
+        const range = await probeRange(url, controller.signal)
+        return { ...outcome, rangeSupported: range.rangeSupported }
+      } finally {
+        window.clearTimeout(timer)
+      }
+    }
+    const [primary, backup] = await Promise.all([
+      primaryUrl ? checkOne(primaryUrl) : Promise.resolve(undefined),
+      backupUrl ? checkOne(backupUrl) : Promise.resolve(undefined),
+    ])
+    setHealth({ checking: false, primary, backup })
+  }
+
+  const healthText = (outcome: HealthOutcome | undefined) => {
+    if (!outcome) return ''
+    if (outcome.url && outcome.rangeSupported === false) return '❌ 无法验证 HTTP Range（PS2 必须返回 206）'
+    if (outcome.url && outcome.rangeSupported) return '✅ 可用（HTTP Range 206）'
+    if (outcome.url) return '✅ 可用'
+    if (!outcome.certain) return outcome.reason === 'timeout' ? '⚠️ 检测超时' : '⚠️ 浏览器无法确认（网络或 CORS）'
+    if (outcome.reason === 'html') return '❌ 返回的是网页，不是 ROM'
+    return `❌ HTTP ${outcome.status ?? '错误'}`
+  }
   /** 包目录：这一槽已经绑着某个包里的文件就原地更新，否则按约定新建 */
   const bundleDir = () => {
     const old = value.trim()
@@ -1449,7 +1530,7 @@ function RomField({
           canUpload
             ? value.trim() && !/^https?:/i.test(value)
               ? allBoundKeys.filter((bound) => bound === value.trim()).length > 1
-                ? `这个文件还被其他语言槽使用；重新上传会改存 ${defKey('x.zip')}，不会覆盖共用 ZIP`
+                ? `这个文件还被其他语言槽使用；重新上传会改存 ${defKey(exampleName)}，不会覆盖共用文件`
                 : isBundleKey(value.trim())
                 ? `这一槽绑的是多 SWF 包里的 ${value.trim().split('/').pop()}；再传一个 zip 会原地更新 ${dirOfKey(value.trim())}/`
                 : `再次上传会原地覆盖已绑定的 ${value.trim()}；想换存放位置就先改这里的 key 或清空`
@@ -1459,7 +1540,9 @@ function RomField({
                 ? `单个 .swf 存成 ${defKey('x.swf')}；多 SWF 的游戏直接选 .zip，整包会传到 ${bundleDirFor(platform, slug, lang)}/ 下`
                 : isHtml5
                   ? `可填写你有权嵌入的 HTTPS 游戏网址；单文件作品也可上传 .html。带 JS、WASM、图片等素材的项目请先完整部署，再填写它的 index.html 地址`
-                : `上传会存到 ${defKey('x.zip')} 这样的位置（扩展名跟随所选文件）并自动绑定；也可手填已有文件的 key 或完整 URL。留空则该语言不单独提供`
+                : isPs2
+                  ? `直接上传 ISO 会存到 ${defKey(exampleName)} 这样的位置并自动绑定；不要套 ZIP。也可手填支持 HTTP Range 的完整 URL`
+                  : `上传会存到 ${defKey(exampleName)} 这样的位置（扩展名跟随所选文件）并自动绑定；也可手填已有文件的 key 或完整 URL。留空则该语言不单独提供`
             : isHtml5
               ? '填写你有权嵌入的 HTTPS 游戏网址；目标站点必须允许 iframe 嵌入。单文件上传需先配置 Worker'
               : '手填对象 key 或完整 URL；要直接上传，请先在「ROM 存储」页配置 Worker 地址与口令'
@@ -1470,7 +1553,7 @@ function RomField({
             className={cx(inputClass, 'font-mono')}
             value={value}
             onChange={(e) => onChange(e.target.value)}
-            placeholder={isHtml5 ? 'https://game.example.com/' : defKey(isFlash ? 'x.swf' : 'x.zip')}
+            placeholder={isHtml5 ? 'https://game.example.com/' : defKey(isFlash ? 'x.swf' : exampleName)}
           />
           <input ref={inputRef} type="file" accept={accept} className="hidden" onChange={(e) => void onFile(e.target.files?.[0])} />
           <button
@@ -1478,7 +1561,7 @@ function RomField({
             className={cx(btnClass.secondary, 'shrink-0 whitespace-nowrap')}
             disabled={!canUpload || progress !== null || bundleAt !== null}
             onClick={() => inputRef.current?.click()}
-            title={canUpload ? (isFlash ? '选择 .swf，或选 .zip 上传多 SWF 整包' : isHtml5 ? '上传单文件 HTML 作品' : '选择文件并上传到 R2') : '需要先配置 Worker'}
+            title={canUpload ? (isFlash ? '选择 .swf，或选 .zip 上传多 SWF 整包' : isHtml5 ? '上传单文件 HTML 作品' : isPs2 ? '选择 .iso / .chd / .cso 等光盘镜像并上传到 R2' : '选择文件并上传到 R2') : '需要先配置 Worker'}
           >
             {progress === null ? (isFlash ? '☁️ 上传 SWF / ZIP' : isHtml5 ? '☁️ 上传 HTML' : '☁️ 上传到 R2') : `上传中 ${progress}%`}
           </button>
@@ -1498,7 +1581,49 @@ function RomField({
             </button>
           )}
         </div>
-        {!isHtml5 && /^https?:\/\//i.test(value) && (
+        {!isHtml5 && value.trim() && (
+          <details className="rounded-md border border-line p-2 text-xs text-muted">
+            <summary className="cursor-pointer select-none font-medium text-fg">
+              同语言备用地址{backupValue.trim() ? '（已配置）' : '（可选）'}
+            </summary>
+            <p className="mt-2 text-[11px] text-dim">
+              主地址 404、超时、跨域失败或暂时断网时，播放器先尝试这里；备用也失败才回退到其他语言。建议主、备放在不同域名。
+            </p>
+            <div className="mt-2 flex gap-2">
+              <input
+                className={cx(inputClass, 'font-mono')}
+                value={backupValue}
+                onChange={(e) => onBackupChange(e.target.value)}
+                placeholder="R2 对象 key 或完整 HTTPS URL"
+              />
+              {backupValue.trim() && (
+                <a
+                  href={romUrlForKey(backupValue.trim())}
+                  target="_blank"
+                  rel="noreferrer"
+                  className={cx(btnClass.secondary, 'shrink-0')}
+                >
+                  打开
+                </a>
+              )}
+              <button
+                type="button"
+                className={cx(btnClass.secondary, 'shrink-0 whitespace-nowrap')}
+                disabled={health?.checking}
+                onClick={() => void checkHealth()}
+              >
+                {health?.checking ? '检测中…' : '检测主/备'}
+              </button>
+            </div>
+            {health && !health.checking && (
+              <p className="mt-2 space-x-3">
+                <span>主地址：{healthText(health.primary)}</span>
+                {backupValue.trim() && <span>备用地址：{healthText(health.backup)}</span>}
+              </p>
+            )}
+          </details>
+        )}
+        {!isHtml5 && !isPs2 && /^https?:\/\//i.test(value) && (
           <div className="space-y-2 rounded-md border border-line p-2 text-xs text-muted">
             <label className="flex items-center gap-2">
               <input

@@ -20,13 +20,19 @@ export default defineConfig({
           // 开发时也必须走真实隔离路径；把头加给整站会拦掉跨源封面和字体。
           const requestUrl = req.url || ''
           const pathname = requestUrl.split('?')[0]
-          if (pathname === '/linux' || pathname === '/linux.html') {
+          const ps2Play = /^\/(?:zh-Hans\/|zh-Hant\/|en\/|es\/|fr\/|it\/|de\/|ja\/)?play\/ps2\/[^/]+\/?$/.test(pathname)
+          if (pathname === '/linux' || pathname === '/linux.html' || ps2Play) {
             res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
             res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
             if (pathname === '/linux') req.url = `/linux.html${requestUrl.slice('/linux'.length)}`
           }
           if (pathname === '/qemu-wasm/qemu-system-x86_64.worker.js') {
             res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
+          }
+          if (pathname === '/play/Play.js') {
+            res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
+            res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
+            res.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
           }
           next()
         })

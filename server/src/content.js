@@ -181,6 +181,17 @@ export function cachePage(raw) {
   return Math.min(n, MAX_CACHE_PAGE)
 }
 
+/** 游戏详情和 PS2 隔离播放页读的是同一份数据；集中一处避免两条路回退规则漂移。 */
+function loadGamePage(slug) {
+  return cached(`game:${slug}`, async () => {
+    const game = await getGameBySlug(slug)
+    if (!game || game.hidden) return { route: 'game', game: null }
+    // 相关推荐：同平台的其它游戏，够用且只要一条索引
+    const related = await listGames({ platform: game.platform, sort: 'popular', pageSize: 9 })
+    return { route: 'game', game, related: related.items.filter((g) => g.slug !== slug).slice(0, 8) }
+  })
+}
+
 export async function loadForRoute(pathname, search) {
   const seg = pathname.split('/').filter(Boolean)
   const qs = (k) => search?.get(k) ?? undefined
@@ -192,13 +203,7 @@ export async function loadForRoute(pathname, search) {
   if (seg[0] === 'games') {
     if (seg[1]) {
       const slug = decodeURIComponent(seg[1])
-      return cached(`game:${slug}`, async () => {
-        const game = await getGameBySlug(slug)
-        if (!game || game.hidden) return { route: 'game', game: null }
-        // 相关推荐：同平台的其它游戏，够用且只要一条索引
-        const related = await listGames({ platform: game.platform, sort: 'popular', pageSize: 9 })
-        return { route: 'game', game, related: related.items.filter((g) => g.slug !== slug).slice(0, 8) }
-      })
+      return loadGamePage(slug)
     }
     const q = {
       platform: qs('platform'), genre: qs('genre'), developer: qs('developer'),
@@ -210,6 +215,11 @@ export async function loadForRoute(pathname, search) {
     const key = q.q ? null : `games:${JSON.stringify({ ...q, page: cachePage(q.page) })}`
     const load = async () => ({ route: 'games', list: await listGames(q), facets: await loadFacets() })
     return key ? cached(key, load) : load()
+  }
+
+  // `/play/ps2/:slug` 是独立的跨源隔离播放器，但首屏仍需同一款游戏的数据。
+  if (seg[0] === 'play' && seg[1] === 'ps2' && seg[2]) {
+    return loadGamePage(decodeURIComponent(seg[2]))
   }
 
   // /platforms、/platforms/:id

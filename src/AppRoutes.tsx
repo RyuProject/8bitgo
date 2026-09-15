@@ -124,6 +124,8 @@ export function AppRoutes() {
           它仍然要走 SSR（服务端只跳过 /admin），所以 EmbedPage 只能静态引入，不能 lazy。
         */}
         <Route path="/embed/:slug" element={<EmbedPage />} />
+        {/* Play! 的 pthread 需要顶层 COOP/COEP；服务端只给这条独立路由加隔离头。 */}
+        <Route path="/play/ps2/:slug" element={<EmbedPage standalonePs2 />} />
 
         {/* 后台：独立外壳，不带前台侧边栏 */}
         <Route

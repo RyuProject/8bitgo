@@ -132,6 +132,8 @@
           首屏这一次就会把它送出去（SPA 内部跳转那一半在 services/autoInclude.ts）。
         */
         if (location.search) return
+        // PS2 独立页启用了 require-corp；这里主动跳过，避免第三方收录脚本被拦后留下噪声。
+        if (/^\/(?:(?:zh-Hans|zh-Hant|en|es|fr|it|de|ja)\/)?play\//.test(location.pathname)) return
         var el = document.createElement('script')
         el.src = 'https://lf1-cdn-tos.bytegoofy.com/goofy/ttzz/push.js?553648437e35e84f3b28cee0b9ed7edd7991cc1ed11bf34132b851984d3f927c3871f0d6a9220c04b06cd03d5ba8e733fe66d20303562cd119c1d6f449af6378'
         el.id = 'ttzz'

@@ -39,6 +39,7 @@ export async function attachRelations(rows) {
   const tags = new Map()
   const roms = new Map()
   const dosExecutables = new Map()
+  const romBackups = new Map()
   for (const r of genreRows) {
     const k = key(r.game_id)
     if (!genres.has(k)) genres.set(k, [])
@@ -53,6 +54,10 @@ export async function attachRelations(rows) {
     const k = key(r.game_id)
     if (!roms.has(k)) roms.set(k, {})
     roms.get(k)[r.lang] = r.object_key
+    if (r.lang !== GENERIC_ROM_LANG && r.backup_key) {
+      if (!romBackups.has(k)) romBackups.set(k, {})
+      romBackups.get(k)[r.lang] = r.backup_key
+    }
     if (r.lang !== GENERIC_ROM_LANG && r.dos_executable) {
       if (!dosExecutables.has(k)) dosExecutables.set(k, {})
       dosExecutables.get(k)[r.lang] = r.dos_executable
@@ -60,7 +65,13 @@ export async function attachRelations(rows) {
   }
   return rows.map((r) => {
     const k = key(r.id)
-    return gameRowToApi(r, { genres: genres.get(k) ?? [], tags: tags.get(k) ?? [], roms: roms.get(k) ?? {}, dosExecutables: dosExecutables.get(k) ?? {} })
+    return gameRowToApi(r, {
+      genres: genres.get(k) ?? [],
+      tags: tags.get(k) ?? [],
+      roms: roms.get(k) ?? {},
+      dosExecutables: dosExecutables.get(k) ?? {},
+      romBackups: romBackups.get(k) ?? {},
+    })
   })
 }
 
@@ -605,13 +616,13 @@ async function writeRelations(run, gameId, game, only) {
   if (!only || only.roms) {
     // ROM 存储页的 PATCH 只传 ROM key。重建关联表时保留仍指向同一 ZIP 的入口，
     // 换了 key 的槽不能继承旧入口，否则可能启动新包里碰巧同名的错误程序。
-    const previous = await run('SELECT lang, object_key, dos_executable FROM game_roms WHERE game_id = ?', [gameId])
+    const previous = await run('SELECT lang, object_key, backup_key, dos_executable FROM game_roms WHERE game_id = ?', [gameId])
     const roms = romRelationRows(game, previous, Boolean(only))
     await run('DELETE FROM game_roms WHERE game_id = ?', [gameId])
     if (roms.length) {
       await run(
-        `INSERT INTO game_roms (game_id, lang, object_key, dos_executable) VALUES ${roms.map(() => '(?, ?, ?, ?)').join(', ')}`,
-        roms.flatMap((row) => [gameId, row.lang, row.key, row.dosExecutable]),
+        `INSERT INTO game_roms (game_id, lang, object_key, backup_key, dos_executable) VALUES ${roms.map(() => '(?, ?, ?, ?, ?)').join(', ')}`,
+        roms.flatMap((row) => [gameId, row.lang, row.key, row.backupKey, row.dosExecutable]),
       )
     }
   }

@@ -51,7 +51,12 @@ function EmbedNotice({ children, action }: { children: React.ReactNode; action?:
   )
 }
 
-export function EmbedPage() {
+interface Props {
+  /** `/play/ps2/<slug>` 顶层已经带 COOP/COEP，可以在这里直接启动 Play!。 */
+  standalonePs2?: boolean
+}
+
+export function EmbedPage({ standalonePs2 = false }: Props) {
   const { slug = '' } = useParams<{ slug: string }>()
   const t = useT()
   const lang = useLang()
@@ -71,6 +76,7 @@ export function EmbedPage() {
    * 这一页在别人的域名里，router 的 basename 帮不上忙，用 <Link> 还会在 iframe 里套娃。
    */
   const homeUrl = `${langPrefix(lang)}/games/${encodeURIComponent(slug)}`
+  const ps2PlayUrl = `${langPrefix(lang)}/play/ps2/${encodeURIComponent(slug)}`
   const title = game ? gameTitle(game, lang) : slug
 
   let body: React.ReactNode
@@ -78,15 +84,15 @@ export function EmbedPage() {
     body = <EmbedNotice>{state.error}</EmbedNotice>
   } else if (state.status === 'loading') {
     body = <div className="h-full animate-pulse bg-black" />
-  } else if (!game || !platform || !isPlatformEnabled(platform.id)) {
+  } else if (!game || !platform || !isPlatformEnabled(platform.id) || (standalonePs2 && platform.id !== 'ps2')) {
     body = <EmbedNotice>{t.game.notFoundMsg}</EmbedNotice>
-  } else if (isolated) {
-    // SAB 游戏：顶层不是我们，隔离拿不到 —— 只给入口，不假装能跑
+  } else if (!standalonePs2 && (isolated || platform.id === 'ps2')) {
+    // SAB 游戏：普通第三方 iframe 拿不到隔离；PS2 给本站独立入口，其余回详情页。
     body = (
       <EmbedNotice
         action={
           <a
-            href={homeUrl}
+            href={platform.id === 'ps2' ? ps2PlayUrl : homeUrl}
             target="_blank"
             rel="noopener"
             className="inline-flex h-10 items-center rounded-full bg-brand px-5 text-sm font-bold text-white transition hover:bg-brand-hover"
@@ -153,6 +159,8 @@ export function EmbedPage() {
           dosSaveHint={game.dosSaveHint}
           biosUrl={biosUrl || undefined}
           romUrl={rom.status === 'found' ? rom.url : undefined}
+          // 详情页那颗「开始游戏」已经是一次明确操作，进隔离页后直接开机，避免连点两次。
+          autoStart={standalonePs2}
           romChecking={rom.status === 'checking'}
           romUnavailable={rom.status === 'missing'}
           romUnreachable={rom.unreachable}
