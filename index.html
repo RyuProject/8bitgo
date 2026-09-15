@@ -113,11 +113,17 @@
       蜘蛛来抓首页时就找不到验证串了。
       ⚠️ 验证通过后**不能删**：百度官方明确说「为使您的网站一直保持验证通过的状态，
       请保留验证的文件、html 标签，我们会去定期检查验证记录」——删了会掉验证状态。
+      AdSense 同理，它会定期回抓核对发布商身份，删掉会掉「网站所有权已验证」状态。
+
+      google-adsense-account 是 AdSense 的所有权验证 meta（后台「验证网站所有权 →
+      元标记」那一项）。它只管验证，不影响广告投放 —— 投放靠的是页面里
+      src/components/ads/AdSenseSlot.tsx 注入的广告代码，两者别混。
     -->
     <meta name="baidu-site-verification" content="codeva-nNJUgrBqRg" />
     <meta name="sogou_site_verification" content="oVuyKNKxkI" />
     <meta name="shenma-site-verification" content="66ff5965d00e6114dc938fed9a698263_1788614960" />
     <meta name="bytedance-verification-code" content="TPx+b4flhKHs7KiJcOf2" />
+    <meta name="google-adsense-account" content="ca-pub-9765778307056404" />
 
     <!--
       头条搜索自动收录。动态插入不会阻塞首屏；URL 必须保持纯文本，不能使用
