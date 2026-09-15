@@ -1337,7 +1337,7 @@ const it: Translation = {
     playNotDeployed: 'Il runtime PS2 non è stato installato (VITE_PLAY_PATH), quindi i giochi PS2 non partono ancora.',
     playNoRange: 'Il server di questa immagine non supporta i download parziali (HTTP Range), quindi la PS2 non può leggerla in streaming. Metti l’immagine su uno storage con supporto Range: R2, S3 e la maggior parte delle CDN ce l’hanno.',
     playLoadFailed: 'L’emulatore PS2 non è riuscito ad avviarsi: {msg}',
-    playNeedsIsolation: 'L’emulatore PS2 richiede l’isolamento tra origini. Avvialo dalla pagina del gioco per aprire il lettore dedicato.',
+    playNeedsIsolation: 'L’emulatore PS2 non ha ottenuto l’isolamento necessario del browser. Ricarica il lettore dedicato; se il problema continua, segnalalo al gestore del sito.',
     playStartTimeout: 'Avvio dell’emulatore PS2 scaduto: nessuna immagine è apparsa entro 90 secondi. Questa immagine potrebbe non essere compatibile con Play! per browser.',
     playDiscFailed: 'Lettura del disco non riuscita: {msg}',
     playExperimental: 'Il supporto PS2 è sperimentale: la maggior parte dei giochi non funziona nel browser e grafica o audio possono essere sbagliati.',

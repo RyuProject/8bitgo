@@ -133,6 +133,8 @@ const REWATCH_MAX = 3
  * 让重试真的有机会跑完；正常连上的话 freshPc 那边一到 connected 就把它清了。
  */
 const CONNECT_BUDGET_MS = 75_000
+/** offer 迟到时先来的 ICE 只保留有限条，避免恶意房主或坏脚本把观众标签页的内存堆满。 */
+const MAX_PENDING_ICE = 64
 
 /* ---------------- 观众端链路统计 ---------------- */
 
@@ -948,7 +950,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           if (!pc) return
           if (gen !== undefined && pcGen !== undefined && gen !== pcGen) return // 上一轮的候选
           if (pc.remoteDescription) void pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {})
-          else pendingIce.push(candidate)
+          else if (pendingIce.length < MAX_PENDING_ICE) pendingIce.push(candidate)
         }
       }) as (...args: never[]) => void)
 

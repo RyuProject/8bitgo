@@ -1336,7 +1336,7 @@ const en: Translation = {
     playNotDeployed: 'The PS2 runtime is not deployed (VITE_PLAY_PATH), so PS2 games cannot run yet.',
     playNoRange: 'The server holding this disc image does not support ranged downloads (HTTP Range), so PS2 cannot stream it. Host the image on storage that supports Range — R2, S3 and most CDNs do.',
     playLoadFailed: 'The PS2 emulator failed to start: {msg}',
-    playNeedsIsolation: 'The PS2 emulator requires cross-origin isolation. Start it from the game page to open the dedicated player.',
+    playNeedsIsolation: 'The PS2 emulator did not get the browser isolation it needs. Reload the dedicated player; if it still fails, report the issue to the site owner.',
     playStartTimeout: 'The PS2 emulator timed out: no video appeared within 90 seconds. This image may be incompatible with Play! for browsers.',
     playDiscFailed: 'Disc read failed: {msg}',
     playExperimental: 'PS2 support is experimental: most games will not run in a browser, and graphics or sound may be wrong.',

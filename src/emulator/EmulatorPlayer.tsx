@@ -38,6 +38,7 @@ import type { NetplaySession } from './adapters/emulatorjs'
 import type { CloudSession, CloudState } from './adapters/cloudgame'
 import { p2pPlayable, cloudPlayable } from './paths'
 import { canRestartInPlace } from './sessionRestart'
+import { AdSenseSlot } from '@/components/ads/AdSenseSlot'
 import { sessionCountsAsPlayed } from './playedScope'
 import { cloudGameMeta, emulatorJsMeta, liveViewMeta } from './runtimeMeta'
 /**
@@ -449,7 +450,6 @@ export function EmulatorPlayer({
   onMatchPlayerChange,
   backdrop,
   onReport,
-  icon,
   className,
   romUrl,
   core,
@@ -2997,11 +2997,12 @@ export function EmulatorPlayer({
               <div className="absolute inset-0 bg-gradient-to-t from-black via-black/60 to-black/20" />
 
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 px-6 text-center">
-              {icon && (
-                <span className="hidden text-6xl drop-shadow-[0_8px_16px_rgba(0,0,0,0.6)] sm:block sm:text-7xl" aria-hidden>
-                  {icon}
-                </span>
-              )}
+              {/*
+                空闲态原本这里是大号平台图标（🎮 之类）。按需求换成播放页广告位：
+                广告只在「还没开始跑」的空闲态出现，游戏一旦加载（busy）整块浮层就卸掉，
+                不会盖住画面，也不会影响性能。
+              */}
+              <AdSenseSlot slot="9386967599" className="max-w-xl" />
               {supported ? (
                 <>
                   {/*
@@ -3233,6 +3234,16 @@ export function EmulatorPlayer({
            */
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-black px-8">
             <div className="flex w-full max-w-xs flex-col items-center gap-3">
+              {/*
+                加载屏广告。三条原则：
+                1. 只在 status==='loading' 时挂载 —— 游戏没跑起来，不存在「挡住操作」；
+                   一旦进入 running，整个遮罩连同广告一起卸载，游玩过程零干扰。
+                2. horizontal + 关掉 full-width-responsive：auto 广告在竖屏容器里能长到两三百像素高，
+                   会把进度文案和进度条挤出屏幕；横幅式高度可控。
+                3. 放在文案**上方**而不是下方 —— 进度条和百分比必须留在原来视线位置，
+                   玩家抬头就能看到下载到哪了，不用在广告下面找。
+              */}
+              <AdSenseSlot slot="9386967599" format="horizontal" responsive={false} className="w-full" />
               {/*
                 这一行按阶段说人话：准备模拟器 / 下载引擎资源 / 下载游戏 / 启动。
                 以前是写死的「少女祈祷中....」—— 八种语言的站点上其他七种也是这四个汉字，

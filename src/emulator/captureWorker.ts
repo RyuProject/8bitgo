@@ -39,6 +39,7 @@ let last: VideoFrame | null = null
 let lastAt = 0
 let heartbeatMs = 500
 let heartbeat = 0
+let heartbeatWriting = false
 let snapTimer = 0
 let stopped = false
 /** 换源代际：旧的读循环靠它认出自己已经过时，别把旧画布的帧混进来 */
@@ -76,7 +77,8 @@ const snap = () => {
  * 编码器要的是单调递增，两套时钟混着走会让恢复后的真帧被当成「过时」丢掉。
  */
 const beat = () => {
-  if (stopped || !last || !writer) return
+  // writable 被编码器压住时只允许一张补帧排队，避免后台直播按时间无限累积 VideoFrame。
+  if (stopped || !last || !writer || heartbeatWriting || (writer.desiredSize ?? 1) <= 0) return
   const idle = now() - lastAt
   if (idle < heartbeatMs) return
   let dup: VideoFrame
@@ -85,7 +87,13 @@ const beat = () => {
   } catch {
     return
   }
-  writer.write(dup).catch(() => dup.close())
+  heartbeatWriting = true
+  try {
+    void writer.write(dup).catch(() => dup.close()).finally(() => { heartbeatWriting = false })
+  } catch {
+    heartbeatWriting = false
+    dup.close()
+  }
 }
 
 const pump = (readable: ReadableStream<VideoFrame>) => {

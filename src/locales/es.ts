@@ -1336,7 +1336,7 @@ const es: Translation = {
     playNotDeployed: 'El entorno de PS2 no está desplegado (VITE_PLAY_PATH), así que todavía no se pueden ejecutar juegos de PS2.',
     playNoRange: 'El servidor donde está esta imagen no admite descargas parciales (HTTP Range), así que PS2 no puede transmitirla. Aloja la imagen en un almacenamiento con soporte de Range: R2, S3 y la mayoría de CDN lo tienen.',
     playLoadFailed: 'El emulador de PS2 no pudo arrancar: {msg}',
-    playNeedsIsolation: 'El emulador de PS2 requiere aislamiento entre orígenes. Inícialo desde la página del juego para abrir el reproductor dedicado.',
+    playNeedsIsolation: 'El emulador de PS2 no obtuvo el aislamiento necesario del navegador. Recarga el reproductor dedicado; si sigue fallando, informa al responsable del sitio.',
     playStartTimeout: 'El emulador de PS2 agotó el tiempo de espera: no apareció imagen en 90 segundos. Esta imagen puede no ser compatible con Play! para navegadores.',
     playDiscFailed: 'Error al leer el disco: {msg}',
     playExperimental: 'La compatibilidad con PS2 es experimental: la mayoría de los juegos no funcionan en un navegador y la imagen o el sonido pueden fallar.',

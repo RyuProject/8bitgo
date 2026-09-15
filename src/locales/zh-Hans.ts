@@ -1356,7 +1356,7 @@ export const zhHans = {
     playNotDeployed: '尚未部署 PS2 运行时（VITE_PLAY_PATH），暂时无法运行 PS2 游戏',
     playNoRange: '这份镜像所在的服务器不支持分段下载（HTTP Range），PS2 没法边玩边读盘。请把镜像放到支持 Range 的存储上（R2 / S3 / 大多数 CDN 都支持）',
     playLoadFailed: 'PS2 模拟器启动失败：{msg}',
-    playNeedsIsolation: 'PS2 模拟器需要浏览器的跨源隔离环境，请从游戏详情页的“开始游戏”进入独立播放页',
+    playNeedsIsolation: 'PS2 模拟器没有获得所需的浏览器隔离环境。请刷新独立播放页；如果仍失败，请反馈给站长。',
     playStartTimeout: 'PS2 模拟器启动超时：90 秒内没有产生画面；这份镜像可能不兼容 Play! 浏览器版',
     playDiscFailed: '读盘失败：{msg}',
     playExperimental: 'PS2 是实验性支持：浏览器里跑不了大多数游戏，画面和声音也可能不对',

@@ -30,7 +30,7 @@ const STUBS = {
   */
   '@/services/live':
     'export const connectLive=async()=>globalThis.__fakeLiveSocket;' +
-    'export const liveIceServers=async()=>[];' +
+    'export const liveIceServers=async()=>await (globalThis.__fakeLiveIceServers?.() ?? []);' +
     'export const liveIceConfig=async()=>({iceServers:[],hasTurn:false,expiry:0});' +
     'export const liveEnabled=()=>true;' +
     'export const refreshLiveRooms=()=>{};',

@@ -1,7 +1,30 @@
 import path from 'node:path'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { defineConfig } from 'vite'
+
+/** 构建预览也要加隔离头；只在开发服务器加，预览中的 PS2 启动会直接失败。 */
+function isolationHeaders(req: IncomingMessage, res: ServerResponse, next: () => void) {
+  // 只隔离独立页；给整站加头会拦掉跨源封面和字体。
+  const requestUrl = req.url || ''
+  const pathname = requestUrl.split('?')[0]
+  const ps2Play = /^\/(?:zh-Hans\/|zh-Hant\/|en\/|es\/|fr\/|it\/|de\/|ja\/)?play\/ps2\/[^/]+\/?$/.test(pathname)
+  if (pathname === '/linux' || pathname === '/linux.html' || ps2Play) {
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
+    res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
+    if (pathname === '/linux') req.url = `/linux.html${requestUrl.slice('/linux'.length)}`
+  }
+  if (pathname === '/qemu-wasm/qemu-system-x86_64.worker.js') {
+    res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
+  }
+  if (pathname === '/play/Play.js') {
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
+    res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
+  }
+  next()
+}
 
 /**
  * 两套构建产物：
@@ -14,28 +37,12 @@ export default defineConfig({
     react(),
     tailwindcss(),
     {
-      name: 'linux-isolated-page',
+      name: 'isolated-pages',
       configureServer(server) {
-        server.middlewares.use((req, res, next) => {
-          // 开发时也必须走真实隔离路径；把头加给整站会拦掉跨源封面和字体。
-          const requestUrl = req.url || ''
-          const pathname = requestUrl.split('?')[0]
-          const ps2Play = /^\/(?:zh-Hans\/|zh-Hant\/|en\/|es\/|fr\/|it\/|de\/|ja\/)?play\/ps2\/[^/]+\/?$/.test(pathname)
-          if (pathname === '/linux' || pathname === '/linux.html' || ps2Play) {
-            res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
-            res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
-            if (pathname === '/linux') req.url = `/linux.html${requestUrl.slice('/linux'.length)}`
-          }
-          if (pathname === '/qemu-wasm/qemu-system-x86_64.worker.js') {
-            res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
-          }
-          if (pathname === '/play/Play.js') {
-            res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
-            res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
-            res.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
-          }
-          next()
-        })
+        server.middlewares.use(isolationHeaders)
+      },
+      configurePreviewServer(server) {
+        server.middlewares.use(isolationHeaders)
       },
     },
   ],

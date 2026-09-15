@@ -26,6 +26,8 @@ REPO_DIR="${REPO_DIR:-/var/www/8bitgo}"
 SERVER_DIR="${SERVER_DIR:-$REPO_DIR/server}"
 UNIT="${UNIT:-8bitgo}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8788/api/health}"
+PS2_CHECK_URL="${PS2_CHECK_URL:-http://127.0.0.1:8788/play/ps2/__deploy_check__}"
+PLAY_JS_CHECK_URL="${PLAY_JS_CHECK_URL:-http://127.0.0.1:8788/play/Play.js}"
 BACKUP_SCRIPT="${BACKUP_SCRIPT:-$REPO_DIR/deploy/backup/8bitgo-backup.sh}"
 LOG_DIR="${LOG_DIR:-/var/log}"
 LOG="$LOG_DIR/8bitgo-redeploy.log"
@@ -103,11 +105,11 @@ log "── 步骤 6/7  数据库迁移 ──"
 # ── 7. 重启 + 健康检查 ──
 log "── 步骤 7/7  重启 $UNIT + 健康检查 ──"
 systemctl restart "$UNIT" || die "systemctl restart 失败"
-if health_ok; then
+if health_ok && ps2_headers_ok; then
   log "✅ 部署完成：$(git rev-parse --short HEAD)"
   exit 0
 fi
-log "⚠️ 健康检查未通过，回滚到 ${BEFORE_COMMIT}"
+log "⚠️ 健康检查或 PS2 隔离响应头未通过，回滚到 ${BEFORE_COMMIT}"
 rollback
 log "❌ 部署失败且回滚后仍不健康，请立即人工处理"
 exit 1
@@ -120,6 +122,18 @@ health_ok() {
     sleep 2
   done
   return 1
+}
+
+ps2_headers_ok() {
+  local page_headers play_headers
+  # 404 的测试 slug 也必须带隔离头；只测已发布游戏会受数据库内容变化影响。
+  page_headers="$(curl -sSI --max-time 5 "$PS2_CHECK_URL")" || return 1
+  play_headers="$(curl -sSI --max-time 5 "$PLAY_JS_CHECK_URL")" || return 1
+  # 前端构建成功而后端没重启时，健康接口照样 200；这两项能抓出新旧版本错配。
+  printf '%s\n' "$page_headers" | grep -qi '^cross-origin-opener-policy: same-origin' || return 1
+  printf '%s\n' "$page_headers" | grep -qi '^cross-origin-embedder-policy: require-corp' || return 1
+  printf '%s\n' "$play_headers" | grep -qi '^cross-origin-embedder-policy: require-corp' || return 1
+  return 0
 }
 
 rollback() {

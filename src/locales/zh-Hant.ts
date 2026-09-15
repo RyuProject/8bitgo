@@ -1284,7 +1284,7 @@ const zhHant: Translation = {
     playNotDeployed: '尚未部署 PS2 執行環境（VITE_PLAY_PATH），暫時無法執行 PS2 遊戲',
     playNoRange: '這份映像檔所在的伺服器不支援分段下載（HTTP Range），PS2 沒辦法邊玩邊讀碟。請把映像檔放到支援 Range 的儲存空間（R2 / S3 / 多數 CDN 都支援）',
     playLoadFailed: 'PS2 模擬器啟動失敗：{msg}',
-    playNeedsIsolation: 'PS2 模擬器需要瀏覽器的跨來源隔離環境，請從遊戲詳情頁的「開始遊戲」進入獨立播放頁',
+    playNeedsIsolation: 'PS2 模擬器沒有獲得所需的瀏覽器隔離環境。請重新整理獨立播放頁；如果仍失敗，請回報給站長。',
     playStartTimeout: 'PS2 模擬器啟動逾時：90 秒內沒有產生畫面；這份映像檔可能不相容於 Play! 瀏覽器版',
     playDiscFailed: '讀碟失敗：{msg}',
     playExperimental: 'PS2 是實驗性支援：瀏覽器裡跑不了大多數遊戲，畫面和聲音也可能不對',

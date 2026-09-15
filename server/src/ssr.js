@@ -186,7 +186,8 @@ export async function renderPage(req, res, next) {
       .status(notFound ? 404 : 200)
       .set({
         'Content-Type': 'text/html; charset=utf-8',
-        'Cache-Control': notFound ? CACHE.notFound : isNoStorePath(req.path) ? CACHE.none : CACHE.page,
+        // 隔离头是播放器能否启动的条件；边缘沿用旧 HTML 会让新前端配旧响应头。
+        'Cache-Control': ps2Play ? CACHE.none : notFound ? CACHE.notFound : isNoStorePath(req.path) ? CACHE.none : CACHE.page,
         Vary: 'Accept-Encoding',
         ...(ps2Play
           ? {

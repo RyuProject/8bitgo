@@ -65,6 +65,8 @@ const SOURCE_CHECK_MS = 2_000
  */
 const DEGRADE_AFTER = 2
 const RECOVER_AFTER = 4
+/** 对端一直不回 SDP 时，候选只能暂存有限条；服务器也有限流，但仍不能让每条 pc 无限占内存。 */
+const MAX_PENDING_ICE = 64
 
 export type BroadcastState = 'connecting' | 'live' | 'reconnecting' | 'ended' | 'error'
 
@@ -315,13 +317,16 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
        * 结果：编码器封在 15，画布却回到 30 —— 「降档降了个寂寞」在已经证明扛不住的那台机器上原样复现。
        */
       built?.setCaptureFps(cappedFps)
-      if (built && !built.keepAlive) {
+      if (built) {
         // 没有 Insertable Streams 的浏览器：换源换的是轨，得挨个 sender 换过去（不用重新协商）
         built.onVideoTrackReplaced = (track) => {
-          for (const { pc } of peers.values()) {
+          for (const peer of peers.values()) {
+            const { pc } = peer
             for (const sender of pc.getSenders()) {
               if (sender.track?.kind !== 'video') continue
-              void sender.replaceTrack(track).then(() => tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, built?.videoSize(), dualScreenSource, options.native?.() ?? null))
+              void sender.replaceTrack(track)
+                .then(() => tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, built?.videoSize(), dualScreenSource, options.native?.() ?? null))
+                .catch(() => { if (!stopped && peers.get(peer.id) === peer) void addViewer(peer.id, true) })
             }
           }
         }
@@ -376,6 +381,9 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
   type Peer = { pc: RTCPeerConnection; gen: number; id: string; pending: RTCIceCandidateInit[]; remoteReady: boolean; dc?: RTCDataChannel }
   const peers = new Map<string, Peer>()
   let genCounter = 0
+  /** 等 ICE 配置的建连也要记账：观众离开或重新 watch 时，迟到的旧请求不能再开一条编码路。 */
+  const viewerRequests = new Map<string, number>()
+  let viewerRequestCounter = 0
   let viewers = 0
   let stopped = false
   /**
@@ -530,6 +538,12 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     if (peers.size === 0) releaseIfIdle()
   }
 
+  /** 离开 / 换 socket 时连尚未完成的 ICE 等待一起作废；只关现成的 pc 会漏掉等待中的请求。 */
+  const cancelViewer = (viewerId: string) => {
+    viewerRequests.delete(viewerId)
+    dropPeer(viewerId)
+  }
+
   /**
    * 给一个观众建连接并发 offer。
    * force=false 时，已有的连接还活着就不动它（主播重连回来对照名单用）；
@@ -542,6 +556,8 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       if (!force && alive(existing.pc)) return
       dropPeer(viewerId)
     }
+    const request = ++viewerRequestCounter
+    viewerRequests.set(viewerId, request)
     /**
      * ICE 配置**每条连接现取一次**，不能拿开播那一刻的那份用一整场。
      *
@@ -551,8 +567,10 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
      * fetchIceConfig 自带缓存（快过期才重新取），所以绝大多数调用只是读一下内存。
      */
     const iceServers = await liveIceServers()
-    if (stopped) return
-    // await 期间观众可能又重新 watch 了一轮：把那一条收掉，以这次为准（gen 更大，观众认新的）
+    // await 期间观众可能走了、换 id，或又 watch 一轮。只有最后一轮仍有效才能建连接；
+    // 否则旧请求会顶掉新 pc，甚至给已离开的观众持续编码。
+    if (stopped || viewerRequests.get(viewerId) !== request) return
+    viewerRequests.delete(viewerId)
     dropPeer(viewerId)
     const gen = ++genCounter
     const pc = new RTCPeerConnection({ iceServers })
@@ -788,6 +806,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
   }
 
   const teardown = () => {
+    viewerRequests.clear()
     if (statsTimer) {
       window.clearInterval(statsTimer)
       statsTimer = 0
@@ -850,6 +869,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     try {
       const data = await call<{ roomId: string; viewers?: string[] }>(socket, 'resume-live', { roomId, token })
       const current = new Set(data.viewers ?? [])
+      for (const id of viewerRequests.keys()) if (!current.has(id)) viewerRequests.delete(id)
       // 名单上没有的观众已经走了（宽限期里它们 disconnect 时主播不在，没收到 viewer-left）
       for (const id of Array.from(peers.keys())) if (!current.has(id)) dropPeer(id)
       // 名单上的：连接还活着的不动（信令断了画面没断），死了的重新 offer
@@ -893,7 +913,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     // 观众进来 / 观众重新 watch：都是「请给我一轮新的 offer」
     if (!payload?.viewerId) return
     // 它上一条连接用的是另一个 socket.id（信令重连过、画面也断了）：那条直接拆，不用等服务端的 viewer-left
-    if (payload.replaces && payload.replaces !== payload.viewerId) dropPeer(payload.replaces)
+    if (payload.replaces && payload.replaces !== payload.viewerId) cancelViewer(payload.replaces)
     void addViewer(payload.viewerId, true)
   }) as (...args: never[]) => void)
 
@@ -906,7 +926,8 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     const p = peers.get(payload.from)
     if (p && alive(p.pc)) {
       peers.delete(payload.from)
-      dropPeer(payload.to) // 新 id 下万一挂着别的连接（不该有），先收掉
+      viewerRequests.delete(payload.from)
+      cancelViewer(payload.to) // 新 id 下万一挂着别的连接（不该有），先收掉
       p.id = payload.to
       peers.set(payload.to, p)
       /*
@@ -916,17 +937,18 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       gate.rename(payload.from, payload.to)
       return
     }
-    dropPeer(payload.from)
+    cancelViewer(payload.from)
     void addViewer(payload.to, true)
   }) as (...args: never[]) => void)
 
   socket.on('viewer-left', ((payload: { viewerId?: string }) => {
-    if (payload?.viewerId) dropPeer(payload.viewerId)
+    if (payload?.viewerId) cancelViewer(payload.viewerId)
   }) as (...args: never[]) => void)
 
   socket.on('live-ended', ((payload: { roomId?: string; reason?: string }) => {
     // 只认自己这一间；stop() 自己发的 stop-live 回来的那条已经被 stopped 挡掉
     if (stopped || !roomId || payload?.roomId !== roomId) return
+    viewerRequests.clear()
     for (const id of Array.from(peers.keys())) dropPeer(id)
     releaseStream()
     roomId = ''
@@ -984,7 +1006,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     } else if (candidate) {
       // 远端描述还没落地就先攒着 —— WebRTC **不会**重发候选，丢一颗就少一条可能的通路（见 peers 的注释）
       if (p.remoteReady) void p.pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {})
-      else p.pending.push(candidate)
+      else if (p.pending.length < MAX_PENDING_ICE) p.pending.push(candidate)
     }
   }) as (...args: never[]) => void)
 

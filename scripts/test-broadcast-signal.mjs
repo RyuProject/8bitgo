@@ -302,6 +302,60 @@ console.log('\n── 观众又 watch 了一轮，旧 answer 迟到 ──')
   ok(pcNew._settle === null && pcNew.candidates.length === 0, '上一轮迟到的 answer / 候选一个都没喂给新连接')
 }
 
+/* ---------------- 6. ICE 配置迟到：离开和重试不能复活旧连接 ---------------- */
+console.log('\n── ICE 配置等待中的建连竞态 ──')
+{
+  const waiting = []
+  globalThis.__fakeLiveIceServers = () => new Promise((resolve) => waiting.push(resolve))
+
+  const beforeLeave = pcs.length
+  fire('viewer-joined', { viewerId: 'late-left' })
+  fire('viewer-left', { viewerId: 'late-left' })
+  waiting.shift()?.([])
+  await sleep(10)
+  ok(pcs.length === beforeLeave && offersTo('late-left').length === 0, '⭐ ICE 配置回来前观众已离开：不建连接、不发 offer')
+
+  const beforeRetry = pcs.length
+  fire('viewer-joined', { viewerId: 'retry' })
+  fire('viewer-joined', { viewerId: 'retry' })
+  const [old, latest] = waiting.splice(0)
+  latest?.([])
+  await sleep(10)
+  const active = pcs.at(-1)
+  old?.([])
+  await sleep(10)
+  ok(pcs.length === beforeRetry + 1 && !active.closed, '⭐ 新一轮先完成后旧一轮才回来：旧请求不顶掉新连接')
+  ok(offersTo('retry').length === 1, '同一观众反复 watch 只收到最新的一份 offer')
+
+  const beforeRebound = pcs.length
+  fire('viewer-joined', { viewerId: 'old-id' })
+  fire('viewer-joined', { viewerId: 'new-id', replaces: 'old-id' })
+  const [oldId, newId] = waiting.splice(0)
+  oldId?.([])
+  await sleep(10)
+  ok(pcs.length === beforeRebound && offersTo('old-id').length === 0, '旧 socket 的 ICE 等待在 replaces 后作废')
+  newId?.([])
+  await sleep(10)
+  ok(offersTo('new-id').length === 1, '新 socket 仍能拿到 offer')
+  delete globalThis.__fakeLiveIceServers
+}
+
+console.log('\n── SDP 迟到时暂存的候选有上限 ──')
+{
+  fire('viewer-joined', { viewerId: 'ice-flood' })
+  await sleep(20)
+  const floodPc = pcs.at(-1)
+  const gen = offersTo('ice-flood')[0]?.data.gen
+  for (let i = 0; i < 100; i++) {
+    fire('signal', { from: 'ice-flood', data: { candidate: { candidate: `candidate:${i}` }, gen } })
+  }
+  fire('signal', { from: 'ice-flood', data: { sdp: { type: 'answer', sdp: 'v=0 answer' }, gen } })
+  await sleep(10)
+  floodPc.settleRemote()
+  await sleep(10)
+  ok(floodPc.candidates.length === 64, `⭐ SDP 迟到时最多积压 64 颗候选（实际 ${floodPc.candidates.length}）`)
+}
+
 live.stop()
 console.log(`\n✅ 主播侧信令测试通过（${n} 项）`)
 process.exit(failedChecks ? 1 : 0)

@@ -1341,7 +1341,7 @@ const fr: Translation = {
     playNotDeployed: 'Le moteur PS2 n’est pas déployé (VITE_PLAY_PATH) : impossible de lancer des jeux PS2 pour l’instant.',
     playNoRange: 'Le serveur qui héberge cette image ne gère pas les téléchargements partiels (HTTP Range), la PS2 ne peut donc pas la lire en continu. Placez l’image sur un stockage compatible Range : R2, S3 et la plupart des CDN le sont.',
     playLoadFailed: 'L’émulateur PS2 n’a pas pu démarrer : {msg}',
-    playNeedsIsolation: 'L’émulateur PS2 exige une isolation inter-origines. Lancez-le depuis la page du jeu pour ouvrir le lecteur dédié.',
+    playNeedsIsolation: 'L’émulateur PS2 n’a pas obtenu l’isolation nécessaire du navigateur. Rechargez le lecteur dédié ; si le problème persiste, signalez-le au responsable du site.',
     playStartTimeout: 'Le démarrage de l’émulateur PS2 a expiré : aucune image n’est apparue en 90 secondes. Cette image est peut-être incompatible avec Play! pour navigateur.',
     playDiscFailed: 'Échec de lecture du disque : {msg}',
     playExperimental: 'La prise en charge de la PS2 est expérimentale : la plupart des jeux ne tournent pas dans un navigateur, et l’image ou le son peuvent être faux.',

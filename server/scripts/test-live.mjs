@@ -52,14 +52,37 @@ check('人数广播', (await once(host, 'viewers').catch(() => ({ count: -1 })))
 
 // 4. 双向转发握手包
 const toViewer = once(v1, 'signal')
-host.emit('signal', { target: viewerId, data: { sdp: 'OFFER' } })
+host.emit('signal', { target: viewerId, data: { sdp: { type: 'offer', sdp: 'OFFER' } } })
 const got = await toViewer
-check('主播 -> 观众', got?.data?.sdp === 'OFFER' && got.from === host.id)
+check('主播 -> 观众', got?.data?.sdp?.sdp === 'OFFER' && got.from === host.id)
 
 const toHost = once(host, 'signal')
-v1.emit('signal', { target: watch.data.hostId, data: { sdp: 'ANSWER' } })
+v1.emit('signal', { target: watch.data.hostId, data: { sdp: { type: 'answer', sdp: 'ANSWER' } } })
 const got2 = await toHost
-check('观众 -> 主播', got2?.data?.sdp === 'ANSWER' && got2.from === v1.id)
+check('观众 -> 主播', got2?.data?.sdp?.sdp === 'ANSWER' && got2.from === v1.id)
+
+// 满房时主播要同时给 12 位观众各发 SDP + ICE；不能沿用观众那份小额度挡掉后几位。
+let hostBurst = 0
+const countHostBurst = () => { hostBurst++ }
+v1.on('signal', countHostBurst)
+for (let i = 0; i < 12; i++) host.emit('signal', { target: viewerId, data: { sdp: { type: 'offer', sdp: `OFFER-${i}` } } })
+for (let i = 0; i < 120; i++) host.emit('signal', { target: viewerId, data: { candidate: { candidate: `candidate:host-${i}` } } })
+await new Promise((r) => setTimeout(r, 180))
+check('满房主播一轮 12 份 offer 和 120 颗 ICE 不被误限速', hostBurst === 132, `实际 ${hostBurst}`)
+v1.off('signal', countHostBurst)
+
+// 不鉴权的观看入口不能把任意对象或无限候选原样塞给主播；这两种输入以前都能不断涨内存。
+let badSignals = 0
+const countBad = () => { badSignals++ }
+host.on('signal', countBad)
+v1.emit('signal', { target: host.id, data: { sdp: 'not an RTCSessionDescription' } })
+v1.emit('signal', { target: host.id, data: { candidate: { candidate: 'x'.repeat(5000) } } })
+await new Promise((r) => setTimeout(r, 80))
+check('房内畸形 SDP / 超长 ICE 不转发', badSignals === 0)
+for (let i = 0; i < 100; i++) v1.emit('signal', { target: host.id, data: { candidate: { candidate: `candidate:${i}` } } })
+await new Promise((r) => setTimeout(r, 100))
+check('房内候选洪水被限速', badSignals > 0 && badSignals < 100, `实际 ${badSignals}`)
+host.off('signal', countBad)
 
 // 5. 越权：第三方拿着别人的 id 往里塞包，应该收不到
 const v2 = conn(); await once(v2, 'connect')
@@ -67,7 +90,7 @@ await call(v2, 'watch', { roomId })
 await once(host, 'viewer-joined')
 let leaked = false
 v1.once('signal', () => { leaked = true })
-v2.emit('signal', { target: v1.id, data: { sdp: 'EVIL' } })
+v2.emit('signal', { target: v1.id, data: { sdp: { type: 'answer', sdp: 'EVIL' } } })
 await new Promise((r) => setTimeout(r, 200))
 check('观众之间不能互发', !leaked)
 
@@ -75,7 +98,7 @@ check('观众之间不能互发', !leaked)
 const stranger = conn(); await once(stranger, 'connect')
 let leaked2 = false
 host.once('signal', () => { leaked2 = true })
-stranger.emit('signal', { target: host.id, data: { sdp: 'EVIL' } })
+stranger.emit('signal', { target: host.id, data: { sdp: { type: 'answer', sdp: 'EVIL' } } })
 await new Promise((r) => setTimeout(r, 200))
 check('房间外不能发', !leaked2)
 
@@ -94,6 +117,7 @@ host.emit('stop-live')
 check('下播通知观众', (await ended).reason === 'stopped')
 await new Promise((r) => setTimeout(r, 100))
 check('房间已清除', liveRooms().length === 0)
+check('下播清除 socket.io 内部房间', !server.of('/live').adapter.rooms.has(roomId))
 
 // 9. 主播断线：房间**不**立刻散场，观众收到 host-away，房间标成 hostAway
 const host2 = conn(); await once(host2, 'connect')
@@ -129,14 +153,14 @@ check('观众人数没丢', liveRoom(room2).viewers === 1)
 
 // 12. 观众手里拿的是旧主播 id 也没关系：观众的 signal 一律路由到当前主播
 const toNewHost = once(host3, 'signal')
-v3.emit('signal', { target: 'stale-old-host-id', data: { sdp: 'ANSWER2' } })
+v3.emit('signal', { target: 'stale-old-host-id', data: { sdp: { type: 'answer', sdp: 'ANSWER2' } } })
 const g3 = await toNewHost
-check('观众 signal 路由到当前主播', g3?.data?.sdp === 'ANSWER2' && g3.from === v3.id)
+check('观众 signal 路由到当前主播', g3?.data?.sdp?.sdp === 'ANSWER2' && g3.from === v3.id)
 // 反向：新主播能发给观众
 const toV3 = once(v3, 'signal')
-host3.emit('signal', { target: v3.id, data: { sdp: 'OFFER2', gen: 2 } })
+host3.emit('signal', { target: v3.id, data: { sdp: { type: 'offer', sdp: 'OFFER2' }, gen: 2 } })
 const g4 = await toV3
-check('新主播 -> 观众（带 gen）', g4?.data?.sdp === 'OFFER2' && g4.data.gen === 2 && g4.from === host3.id)
+check('新主播 -> 观众（带 gen）', g4?.data?.sdp?.sdp === 'OFFER2' && g4.data.gen === 2 && g4.from === host3.id)
 
 // 13. 接管：旧 socket 还没超时时新 socket 就来了（重连的常态）。令牌对就换人，旧的迟到的 disconnect 不散场
 const host4 = conn(); await once(host4, 'connect')

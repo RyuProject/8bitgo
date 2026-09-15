@@ -1337,7 +1337,7 @@ const de: Translation = {
     playNotDeployed: 'Die PS2-Laufzeit ist nicht eingerichtet (VITE_PLAY_PATH) — PS2-Spiele lassen sich noch nicht starten.',
     playNoRange: 'Der Server dieses Abbilds unterstützt keine Teil-Downloads (HTTP Range), daher kann PS2 nicht streamen. Lege das Abbild auf Speicher mit Range-Unterstützung (R2, S3 und die meisten CDNs können das).',
     playLoadFailed: 'Der PS2-Emulator konnte nicht starten: {msg}',
-    playNeedsIsolation: 'Der PS2-Emulator benötigt Cross-Origin-Isolation. Starte ihn über die Spielseite, um den eigenen Player zu öffnen.',
+    playNeedsIsolation: 'Der PS2-Emulator hat die nötige Browser-Isolation nicht erhalten. Lade den eigenen Player neu; wenn es weiter fehlschlägt, melde es dem Betreiber.',
     playStartTimeout: 'Zeitüberschreitung beim Start des PS2-Emulators: Innerhalb von 90 Sekunden erschien kein Bild. Dieses Abbild ist möglicherweise nicht mit Play! im Browser kompatibel.',
     playDiscFailed: 'Lesen von der Disc fehlgeschlagen: {msg}',
     playExperimental: 'PS2 wird nur experimentell unterstützt: Die meisten Spiele laufen im Browser nicht, Bild und Ton können falsch sein.',

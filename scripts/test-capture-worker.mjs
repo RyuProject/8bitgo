@@ -77,9 +77,12 @@ globalThis.self = {
 
 const written = []
 let writerClosed = false
+let blockHeartbeats = false
+const blockedHeartbeats = []
 const writable = {
   getWriter: () => ({
     write: async (f) => {
+      if (blockHeartbeats && f.tag === 'new') await new Promise((resolve) => blockedHeartbeats.push(resolve))
       // generator 的 writable 接管这一帧并负责 close —— 真实行为就是这样
       written.push({ tag: f.tag, ts: f.timestamp })
       f.close()
@@ -176,6 +179,16 @@ console.log('\n── 换源：旧的读循环必须自己退出 ──')
     written.some((f) => f.tag === 'new'),
     '新源的帧正常写出去',
   )
+}
+
+console.log('\n── 编码器背压：补帧不能无限排队 ──')
+{
+  blockHeartbeats = true
+  await tick(HB * 3.5)
+  ok(blockedHeartbeats.length === 1, `⭐ 写入口被卡住时只排一张补帧（实际 ${blockedHeartbeats.length}）`)
+  blockHeartbeats = false
+  for (const release of blockedHeartbeats.splice(0)) release()
+  await tick(20)
 }
 
 console.log('\n── 停 ──')

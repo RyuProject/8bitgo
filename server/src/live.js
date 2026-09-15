@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { watchPresence, clientIpFrom, isPrivateIp, UNKNOWN_PRESENCE } from './presence.js'
-import { verifyToken } from './auth.js'
+import { verifyToken, tokenVersionOf } from './auth.js'
 import { queryOne } from './db.js'
 import { isNetplayPlayer, resolveRoomId } from './netplay.js'
 import {
@@ -137,6 +137,58 @@ const FROZEN_CLOSE_MS = Number(process.env.LIVE_FROZEN_CLOSE_MS || 10 * 60_000)
 const str = (v, max = 120) => (typeof v === 'string' ? v.trim().slice(0, max) : '')
 
 /**
+ * 信令命名空间不要求登录。任何观众都能入房，若原样转发任意对象或无限量 ICE，
+ * 一人就能让主播的 pending 候选和 socket 写队列持续涨；格式不对的 SDP 还可能在主播回调里抛错。
+ */
+function validSignal(data, role) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return false
+  if (Object.keys(data).some((key) => !['sdp', 'candidate', 'error', 'gen'].includes(key))) return false
+  if (data.gen !== undefined && (!Number.isSafeInteger(data.gen) || data.gen < 0)) return false
+  const count = Number(data.sdp !== undefined) + Number(data.candidate !== undefined) + Number(data.error !== undefined)
+  if (count !== 1) return false
+  if (data.sdp !== undefined) {
+    const sdp = data.sdp
+    if (!sdp || typeof sdp !== 'object' || Array.isArray(sdp) || sdp.type !== (role === 'host' ? 'offer' : 'answer')) return false
+    if (Object.keys(sdp).some((key) => key !== 'type' && key !== 'sdp')) return false
+    if (typeof sdp.sdp !== 'string' || !sdp.sdp || sdp.sdp.length > 128_000) return false
+  } else if (data.candidate !== undefined) {
+    const c = data.candidate
+    if (!c || typeof c !== 'object' || Array.isArray(c) || typeof c.candidate !== 'string' || c.candidate.length > 4_096) return false
+    if (Object.keys(c).some((key) => !['candidate', 'sdpMid', 'sdpMLineIndex', 'usernameFragment'].includes(key))) return false
+    if (c.sdpMid != null && (typeof c.sdpMid !== 'string' || c.sdpMid.length > 64)) return false
+    if (c.sdpMLineIndex != null && (!Number.isInteger(c.sdpMLineIndex) || c.sdpMLineIndex < 0 || c.sdpMLineIndex > 32)) return false
+    if (c.usernameFragment != null && (typeof c.usernameFragment !== 'string' || c.usernameFragment.length > 256)) return false
+  } else if (role !== 'host' || data.error !== 'no-source') return false
+  try {
+    return JSON.stringify(data).length <= 140_000
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 观众一次只连主播，可用小桶；主播要同时给最多 12 人各发一轮 SDP + ICE，
+ * 用观众那份额度会把满房时后几个人的 offer 丢掉，造成黑屏。
+ */
+function takeSignalToken(socket, data, role) {
+  const now = Date.now()
+  const host = role === 'host'
+  const cap = host ? 256 : 64
+  const rate = host ? 128 : 32
+  const bucket = socket.data?.signalBucket ?? { tokens: cap, at: now }
+  bucket.tokens = Math.min(cap, bucket.tokens + Math.max(0, now - bucket.at) * rate / 1000)
+  bucket.at = now
+  const cost = data.sdp ? (host ? 8 : 16) : 1
+  if (bucket.tokens < cost) {
+    if (socket.data) socket.data.signalBucket = bucket
+    return false
+  }
+  bucket.tokens -= cost
+  if (socket.data) socket.data.signalBucket = bucket
+  return true
+}
+
+/**
  * 发弹幕的人是谁 —— **服务端说了算，绝不采信客户端报的名字**。
  *
  * /live 这个命名空间本身是不鉴权的（房主的 hostName 就是客户端自己报的）。
@@ -146,28 +198,32 @@ const str = (v, max = 120) => (typeof v === 'string' ? v.trim().slice(0, max) : 
  * 所以：握手里带了 JWT 就验签、拿账号昵称；没带就发一个从 socket.id 派生的游客号。
  * 游客号跟着连接走，同一场直播里同一个人前后是同一个号，但他改不了它。
  *
- * 结果缓存在 socket.data 上：多数观众一条都不发，没必要连上就查一次库；
- * 而发第一条之后再查也没意义（一次连接期间身份不会变）。
+ * 没带令牌的游客身份缓存在 socket.data；带令牌的账号每 30 秒重新查一次。
+ * 否则管理员被封、改密码或退出所有设备后，只要旧 socket 没断，仍能一直挂着身份环发弹幕。
  */
-async function chatIdentity(socket) {
-  if (socket.data?.chatIdentity) return socket.data.chatIdentity
+export async function chatIdentity(socket, findUser = queryOne) {
+  const token = str(socket.handshake?.auth?.token, 512)
+  const cached = socket.data?.chatIdentity
+  if (cached && (!token || Date.now() - (socket.data.chatIdentityAt || 0) < 30_000)) return cached
 
   /** 游客号：socket.id 的尾巴。够短能显示，也够区分同一场里的不同人 */
   const guest = String(socket.id || '').slice(-4).toLowerCase() || 'anon'
   let identity = { guest }
 
-  const token = str(socket.handshake?.auth?.token, 512)
   if (token) {
     try {
       const payload = verifyToken(token)
-      const userId = payload?.sub ?? payload?.uid ?? payload?.id
+      const userId = payload?.uid
       if (userId) {
-        const row = await queryOne('SELECT nickname, role FROM users WHERE id = ?', [String(userId)])
-        const nickname = str(row?.nickname, 40)
-        const role = str(row?.role, 20)
-        if (nickname) identity = { name: nickname }
-        // 只带非普通角色：游客 / 普通玩家不需要额外标记，而 admin/volunteer 要给前端画身份环
-        if (nickname && (role === 'admin' || role === 'volunteer')) identity.role = role
+        const row = await findUser('SELECT nickname, role, status, token_version FROM users WHERE id = ?', [String(userId)])
+        // 登录中间件也比 tv、也挡封号；直播弹幕若漏了这两道，旧令牌就能冒充已作废的身份。
+        if (row && row.status !== 'banned' && (Number(payload.tv) || 0) === tokenVersionOf(row)) {
+          const nickname = str(row.nickname, 40)
+          const role = str(row.role, 20)
+          if (nickname) identity = { name: nickname }
+          // 只带非普通角色：游客 / 普通玩家不需要额外标记，而 admin/volunteer 要给前端画身份环
+          if (nickname && (role === 'admin' || role === 'volunteer')) identity.role = role
+        }
       }
     } catch {
       // 验不过（过期、伪造、密钥换了）就当游客，不报错也不拒绝 ——
@@ -175,7 +231,10 @@ async function chatIdentity(socket) {
     }
   }
 
-  if (socket.data) socket.data.chatIdentity = identity
+  if (socket.data) {
+    socket.data.chatIdentity = identity
+    socket.data.chatIdentityAt = Date.now()
+  }
   return identity
 }
 
@@ -479,8 +538,14 @@ function closeRoom(nsp, room, reason) {
   room.awayTimer = null
   clearFrozenTimers(room)
   nsp.to(room.id).emit('live-ended', { roomId: room.id, reason })
-  for (const viewerId of room.viewers) membership.delete(viewerId)
-  if (room.hostSocketId) membership.delete(room.hostSocketId)
+  for (const viewerId of room.viewers) {
+    membership.delete(viewerId)
+    nsp.sockets.get(viewerId)?.leave(room.id)
+  }
+  if (room.hostSocketId) {
+    membership.delete(room.hostSocketId)
+    nsp.sockets.get(room.hostSocketId)?.leave(room.id)
+  }
   for (const id of room.matchPlayers) {
     membership.delete(id)
     nsp.sockets.get(id)?.leave(room.id)
@@ -806,6 +871,8 @@ export function attachLive(io) {
       if (!info || info.role === 'match') return
       const room = rooms.get(info.roomId)
       if (!room) return
+      const data = payload?.data
+      if (!validSignal(data, info.role) || !takeSignalToken(socket, data, info.role)) return
       let target
       if (info.role === 'host') {
         target = str(payload?.target, 64)
@@ -814,7 +881,7 @@ export function attachLive(io) {
         target = room.hostSocketId
         if (!target) return
       }
-      nsp.to(target).emit('signal', { from: socket.id, data: payload?.data })
+      nsp.to(target).emit('signal', { from: socket.id, data })
     })
 
     /**

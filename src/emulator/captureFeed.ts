@@ -237,6 +237,7 @@ export function createCaptureFeed(resolve: SourceResolver, fps: number, seed: Vi
   let last: VideoFrame | null = null
   let lastAt = 0
   let heartbeat = 0
+  let heartbeatWriting = false
   /** 换源计数。旧的转发循环靠它认出自己已经过时，别把旧画布的帧混进来 */
   let pumpGen = 0
 
@@ -311,7 +312,8 @@ export function createCaptureFeed(resolve: SourceResolver, fps: number, seed: Vi
    * 编码器要的是单调递增，两套时钟混着走会让恢复后的真帧被当成「过时」丢掉。
    */
   const beat = () => {
-    if (released || !last || !writer) return
+    // 编码器背压时不能每半秒再排一张 VideoFrame：一场长直播会把内存无限堆高。
+    if (released || !last || !writer || heartbeatWriting || (writer.desiredSize ?? 1) <= 0) return
     const idle = performance.now() - lastAt
     if (idle < HEARTBEAT_MS) return
     let dup: VideoFrame
@@ -320,10 +322,43 @@ export function createCaptureFeed(resolve: SourceResolver, fps: number, seed: Vi
     } catch {
       return
     }
-    writer.write(dup).catch(() => dup.close())
+    heartbeatWriting = true
+    try {
+      void writer.write(dup).catch(() => dup.close()).finally(() => { heartbeatWriting = false })
+    } catch {
+      heartbeatWriting = false
+      dup.close()
+    }
   }
 
   let keepAlive = false
+  let stream: MediaStream
+  let feed: CaptureFeed
+  /**
+   * Worker 交接后若运行时崩溃，writable 已被转移、主线程拿不回来。
+   * 改用原始画布轨，并通知所有 sender 换轨，至少让画面继续流动；旧 generator 必须停掉。
+   */
+  const recoverFromWorker = () => {
+    if (released || !keepAlive || !generator || !stream) return
+    pumpWorker?.terminate()
+    pumpWorker = null
+    pumpGen++
+    void reader?.cancel().catch(() => {})
+    reader = null
+    if (heartbeat) window.clearInterval(heartbeat)
+    heartbeat = 0
+    snapFrame?.close()
+    snapFrame = null
+    last?.close()
+    last = null
+    stream.removeTrack(generator)
+    stream.addTrack(raw.track)
+    generator.stop()
+    generator = null
+    keepAlive = false
+    feed?.onVideoTrackReplaced?.(raw.track)
+    console.warn('[live] 抓屏 Worker 中途退出，已改用原始画布轨继续推流')
+  }
   /**
    * 起主线程那套泵：generator 的 writer + 读循环 + 心跳。
    * 交接失败时也靠它把状态救回来 —— 任何时刻都必须有人在写 generator，
@@ -377,7 +412,13 @@ export function createCaptureFeed(resolve: SourceResolver, fps: number, seed: Vi
       if (last) {
         const s = last
         last = null
-        worker.postMessage({ t: 'seed', frame: s }, [s as unknown as Transferable])
+        try {
+          worker.postMessage({ t: 'seed', frame: s }, [s as unknown as Transferable])
+        } catch (e) {
+          // 转移失败时所有权仍在主线程；不关会在每次交接失败后漏一张 VideoFrame。
+          s.close()
+          throw e
+        }
       }
       if (!pump(raw.track)) throw new Error('worker pump failed')
       return true
@@ -411,8 +452,12 @@ export function createCaptureFeed(resolve: SourceResolver, fps: number, seed: Vi
       worker.terminate()
     }
     const timer = window.setTimeout(giveUp, WORKER_READY_MS)
-    worker.onerror = giveUp
-    worker.onmessageerror = giveUp
+    const onWorkerFailure = () => {
+      if (settled && pumpWorker === worker) recoverFromWorker()
+      else giveUp()
+    }
+    worker.onerror = onWorkerFailure
+    worker.onmessageerror = onWorkerFailure
     worker.onmessage = (e: MessageEvent<{ t?: string; frame?: VideoFrame }>) => {
       const msg = e.data
       if (msg?.t === 'ready') {
@@ -420,12 +465,16 @@ export function createCaptureFeed(resolve: SourceResolver, fps: number, seed: Vi
         settled = true
         window.clearTimeout(timer)
         upgrading = null
-        if (!handOver(worker)) worker.terminate()
+        if (!handOver(worker)) {
+          worker.terminate()
+          // writable 若已经转移，主线程那套也拉不回来；直接换原始轨才不会永久黑屏。
+          if (!writer) recoverFromWorker()
+        }
         return
       }
       if (msg?.t !== 'snap' || !msg.frame) return
       // 放掉之后还在路上的快照直接丢，别把它当种子攥着
-      if (released) {
+      if (released || pumpWorker !== worker || !keepAlive) {
         msg.frame.close()
         return
       }
@@ -476,11 +525,11 @@ export function createCaptureFeed(resolve: SourceResolver, fps: number, seed: Vi
   }
   if (!keepAlive) seed?.close()
 
-  const stream = new MediaStream([keepAlive && generator ? generator : raw.track, ...audio.tracks])
+  stream = new MediaStream([keepAlive && generator ? generator : raw.track, ...audio.tracks])
 
-  const feed: CaptureFeed = {
+  feed = {
     stream,
-    keepAlive,
+    get keepAlive() { return keepAlive },
     videoSize() {
       return raw.canvas ? { width: raw.canvas.width, height: raw.canvas.height } : sizeOfTrack(raw.track)
     },
@@ -583,7 +632,12 @@ export function createCaptureFeed(resolve: SourceResolver, fps: number, seed: Vi
       last = null
       if (pumpWorker) {
         // Worker 收到 stop 会自己关掉 writer、close 掉手里的帧，然后 self.close()
-        pumpWorker.postMessage({ t: 'stop' })
+        try {
+          pumpWorker.postMessage({ t: 'stop' })
+        } catch {
+          // Worker 已经崩溃时仍要让本地收尾走完，不能让 release() 半途抛出。
+          pumpWorker.terminate()
+        }
         pumpWorker = null
       }
       // 还在自证、没来得及交接的那个直接掐掉，别留着空转

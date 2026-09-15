@@ -249,6 +249,28 @@ console.log('\n── ⭐ Worker 报了 ready：干净交接 ──')
   ok(wk.msgs.includes('stop'), 'release 通知 Worker 收尾')
 }
 
+console.log('\n── ⭐ Worker 交接成功后中途崩溃：原始轨要继续推流 ──')
+{
+  workerMode = 'ready'
+  workers.length = 0
+  const { track, sources: src } = makeCanvas()
+  const feed = createCaptureFeed(() => src, 30)
+  await tick(60)
+  const wk = workers.at(-1)
+  const gen = generators.at(-1)
+  let replacement = null
+  feed.onVideoTrackReplaced = (t) => { replacement = t }
+  wk.onerror?.(new Error('Worker runtime crash'))
+  ok(wk.terminated, '运行中崩溃的 Worker 被终止')
+  ok(feed.keepAlive === false && feed.stream.getVideoTracks()[0] === track, '⭐ 改用仍活着的原始画布轨，不留下死 generator')
+  ok(replacement === track && gen.stopped, '⭐ 通知主播给所有发送端换轨，旧 generator 已停')
+  const lateSnap = new FakeVideoFrame()
+  wk.onmessage?.({ data: { t: 'snap', frame: lateSnap } })
+  ok(lateSnap.closed, '崩溃后排队到达的快照也会关掉，不再攥在主线程')
+  feed.release()?.close()
+  ok(track.readyState === 'ended', '停播时原始抓屏轨仍会收尾')
+}
+
 console.log('\n── ⭐ 换源时 pump 失败要整个回滚 ──')
 {
   workerMode = 'none'
@@ -279,7 +301,7 @@ console.log('\n── 源码守卫 ──')
 {
   const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')
   const feed = strip(readFileSync(new URL('../src/emulator/captureFeed.ts', import.meta.url), 'utf8'))
-  ok(/onerror = giveUp/.test(feed), 'Worker 挂了 onerror —— 加载失败是异步的，new Worker 的 try 接不住')
+  ok(/worker\.onerror = onWorkerFailure/.test(feed), 'Worker 挂了 onerror —— 加载和运行时失败都能处理')
   ok(/'ready'/.test(feed), '交接前要等 Worker 自报 ready')
   ok(/releaseLock\(\)/.test(feed), '交接前先 releaseLock')
   ok(/if \(!pump\(cand\.track\)\)/.test(feed), 'check() 看 pump 的返回值')
