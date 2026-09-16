@@ -361,6 +361,61 @@ PS2 光盘通常数 GB，播放器通过 `src/emulator/remoteDisc.ts` 按 2MB �
 Play! 浏览器版仍是实验性支持：90 秒内没有产生首帧就提示该镜像可能不兼容。不要为了让某个
 商业游戏通过而查找或分发 ROM；只测试站长有权使用的备份、自制程序或开源镜像。
 
+### 2.20 新 ROM 用 8BG 容器，不要把 Zstd 写死进数据库
+
+除 PS2、HTML5 目录和多文件 Flash 包外，后台新上传的单文件 ROM 会先按 8MB 原文分块，
+每块 **Zstd 19 + AES-256-GCM**，再上传成 `<原 key>.8bg`。文件头保存原文件名、codec、
+codecVersion、keyId 和每块 SHA-256；播放器解包后仍把 `.zip` / `.nes` / `.nds` 等原名交给核心。
+Zstd 解码前还必须核对 frame 自报的 content size 与分块表完全一致；只在解压后比大小挡不住
+恶意 frame 先诱导 WASM 申请几十 GB 内存。校验在 `assertZstdFrameContentSize()`，不要绕过。
+
+这里故意用自己的版本化容器，而不是直接上传 `.zst` 或 `.7z`：以后切 LZMA2 时只需在
+`scripts/pack-rom.mjs`、`scripts/unpack-rom.mjs`、`src/workers/romPackWorker.ts` 和 `src/services/romPack.ts` 的 codec
+分发表增加实现。文件头会写 `codec: lzma2`，现有 `codec: zstd` 的包继续读取；数据库只存对象
+key，所以**不用改表，也不用同一晚重压整个库**。不要把默认 codec 变成“旧包也按新算法解”。
+
+密钥根放 `server/.env` 的 `ROM_PACK_SECRET`（至少 32 字节）。轮换时保留旧密钥：
+`ROM_PACK_KEY_ID=v2` + `ROM_PACK_SECRET_V1` + `ROM_PACK_SECRET_V2`。匿名试玩意味着浏览器最终会拿到
+单包数据密钥，这层加密用于阻止 R2 对象被直接离线批量读取，不应宣传成不可破解 DRM。
+
+旧 ROM URL 完全兼容；数据库仍绑定 `a.zip` 时也会先探同目录 `a.zip.8bg`、再回退 `a.zip`，
+所以批量转换只需把新对象放在旧对象旁边，不必同时批量改库。没有数据库绑定的游戏会先探
+`<slug>.<ext>.8bg`，再探历史文件。
+后台第一次把旧对象重传成 8BG 时会保留旧对象并填入同语言备用槽，确认线上能玩后再清理。
+cloud-game 的 libretro 不认识 8BG；`deploy/cloudgame/sync-roms.sh` 会先在隔离暂存目录解密，
+全部成功后才替换 `games/`。云联机机的 `.env` 必须保留同一套 `ROM_PACK_SECRET[_Vn]`，
+否则同步应失败并继续使用上一份游戏库，不能把密文直接交给核心。
+本地打包与往返测试：
+
+```bash
+npm run rompack -- ./game.nes             # 输出 ./game.nes.8bg
+npm run romunpack -- ./game.nes.8bg       # 服务器侧流式还原（cloud-game 同步也走它）
+npm run test:rompack                       # Zstd 19 / AES-GCM / 摘要 / 原文件名
+```
+
+### 2.21 Flash 游戏内部在线槽和 Ruffle 快照是两套存档
+
+`/api/saves` 保存的是 Ruffle SharedObject 整体快照；`/api/flash-saves/v1` 是给老游戏原本依赖的
+第三方 API SWF 用的。两套格式不能共表，也不能互相覆盖。第一款接入的是 `infectonator-2`：Ruffle
+用 `urlRewriteRules` 把失效的 Armor Games AGI 地址改到
+`public/flash-api/armor-games/AGI.swf`，桥源码在 `flash-api/armor-games/`。
+
+这个游戏会先后提交 `profileonlineN` 和 `dataonlineN`。桥必须凑齐两半后调用一次 `write-slot`，
+服务端再用一行记录原子覆盖；读取时绝不能暴露半份槽。真实读取方法签名是
+`retrieveUserData(callback, key = null)`，callback 在前，别按常见写法调换。
+
+完整登录 JWT 不能进入 SWF。父页面先用它换一张由独立 `FLASH_SAVE_SECRET` 签名、绑定用户和游戏的
+短期令牌，再通过 FlashVars 传入。这个密钥至少 32 字符且不能与 `JWT_SECRET` 相同；允许的游戏 slug
+放在 `FLASH_SAVE_GAMES`。FlashVars 里的桥、API 和头像地址必须是绝对 URL，因为远程 ROM 的 `base`
+可能指向 R2，把 `/api/...` 误解到资源域名。
+
+部署前要迁移 `flash_save_slots` 表，并让构建检查桥源码、SWF 和 `dist` 三者哈希一致：
+
+```bash
+cd server && npm run migrate
+cd .. && npm run test:flash-online-save
+```
+
 ---
 
 ## 3. 常用命令
@@ -371,6 +426,9 @@ npm run build          # prebuild 会跑 check-emulatorjs.mjs 体检，缺东西
 npm run lint           # oxlint
 npm run test:multipart # Worker 分片上传接口的自测（内存版 R2 mock，不联网）
 npm run test:play      # Play! JS / WASM / 许可证完整性与接口特征
+npm run rompack -- <ROM> [输出.8bg]  # 制作 Zstd 19 + AES-GCM 的 8BG 容器
+npm run test:rompack   # 8BG 打包、解密、解压与摘要往返
+npm run test:flash-online-save # AGI 桥完整性 + Flash 在线存档契约
 
 npm run ejspatch       # 重打 blob 文件名补丁（升级引擎后必跑，幂等）
 npm run ejscores       # 重新复制核心（仅升级核心时）
@@ -410,7 +468,16 @@ npm run test:presence                  # 房主名片：设备 / 地区 / 网络
 
 ---
 
-## 5. 当前进度（2026-09-06，有时效性）
+## 5. 当前进度（2026-09-16，有时效性）
+
+### 本轮改动：8BG ROM 压缩加密容器（**尚未部署，需要配置密钥**）
+
+后台单文件 ROM 上传默认改成 Zstd 19 + AES-256-GCM 的 `.8bg`；旧 ROM 保持可玩，可逐款重传。
+容器按 codec 分派，后续加入 LZMA2 不改数据库，Zstd 和 LZMA2 包可以长期共存。PS2、HTML5 和
+多文件 Flash 包不走这条路径。部署前在 `server/.env` 配 `ROM_PACK_SECRET`，重新构建并重启 API；
+Worker 的 MIME 更新也要部署。无需数据库迁移。
+
+---
 
 ### 本轮改动：游戏简介 + 文章的按需翻译（**尚未部署，需要跑迁移**）
 

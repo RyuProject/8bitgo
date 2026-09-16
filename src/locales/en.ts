@@ -150,6 +150,7 @@ const en: Translation = {
   footer: {
     aria: 'Footer links',
     copyright: 'All game content is the property of its respective owners',
+    copyrightNotice: 'Copyright Notice',
   },
 
   /* ---------------- Language switcher ---------------- */

@@ -64,9 +64,18 @@ function digest(raw) {
 export function playIdentity(req) {
   // 'u' = 账号，'i' = IP。分开存是为了将来能分别统计和清理，
   // 也避免两类身份的摘要理论上撞在一起。
-  if (req.user?.id) return { kind: 'u', identity: digest(`u:${req.user.id}`) }
+  if (req.user?.id) return playIdentityForUser(req.user.id)
 
   const ip = clientIp(req)
   if (!ip) return null
   return { kind: 'i', identity: digest(`i:${ip}`) }
+}
+
+/**
+ * 开放平台的用户令牌不经过站内 optionalUser，所以不会有 req.user。
+ * 单独收用户 id、但仍走同一个摘要算法，才能保证同一账号在网页和其它设备上只占一条去重记录。
+ */
+export function playIdentityForUser(userId) {
+  const id = String(userId ?? '').trim()
+  return id ? { kind: 'u', identity: digest(`u:${id}`) } : null
 }

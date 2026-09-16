@@ -54,6 +54,13 @@ export interface LiveRoomInfo {
   presence?: Presence
 }
 
+export interface LiveCapacity {
+  used: number
+  max: number
+  remaining: number
+  available: boolean
+}
+
 /**
  * 一条弹幕。字段全部由服务端产出 —— 客户端报什么名字都不算数，
  * 所以这里没有「发送者自称」这种东西（见 server/src/live.js 的 chatIdentity）。
@@ -288,6 +295,22 @@ export async function fetchLiveRoom(roomId: string): Promise<LiveRoomInfo | null
     return (await res.json()) as LiveRoomInfo
   } catch {
     return null
+  }
+}
+
+/**
+ * 自动开播前的容量预检。请求失败时放行：旧后端尚未部署这个接口、或一瞬间断网，都不该永久
+ * 关掉直播；真正的 go-live 仍会在服务端按实时房间数拒绝，因而这里放行也不会突破上限。
+ */
+export async function canAutoStartLive(signal?: AbortSignal): Promise<boolean> {
+  if (!liveEnabled()) return false
+  try {
+    const res = await fetch(`${apiBase()}/api/live/capacity`, { cache: 'no-store', signal })
+    if (!res.ok) return true
+    const capacity = (await res.json()) as Partial<LiveCapacity>
+    return typeof capacity.available === 'boolean' ? capacity.available : true
+  } catch {
+    return true
   }
 }
 

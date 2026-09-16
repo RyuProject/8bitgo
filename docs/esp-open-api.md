@@ -7,7 +7,7 @@
 > 每条数字和字段都标了源码出处。和设计稿冲突的地方**以源码为准**，
 > 并在正文里显式标出来（见 §7 的限流一节）。
 >
-> 核对基线：`server/src/routes/open.js` + `server/src/open/*`，2026-09-13。
+> 核对基线：`server/src/routes/open.js` + `server/src/open/*`，2026-09-16。
 
 ---
 
@@ -20,9 +20,11 @@
 | 云存档**读取** | ✅ **可用**（2026-09-12 加的） | `saves.read`，用户级 scope。要先走**设备码流程**拿一枚用户级令牌，见 §6.5 |
 | 收藏 / 最近在玩 | ✅ **可用**（2026-09-12 加的） | `library.read`，同上 |
 | 云存档**写入** | ❌ 还没有 | `saves.write` 在 `scopes.js` 里标着 sensitive，这一轮只做了只读。写入要连着配额、覆盖保护、删除审计一起想清楚 |
-| 上报在玩 / 心跳 | ❌ **不存在** | 开放平台没有这个端点。站内有 `POST /api/games/:slug/play`，但那是站内接口，不认开放平台令牌 |
+| 上报真实开玩 | ✅ **可用** | `POST /v1/games/:slug/play`，要用户级 `library.write`；跨设备按账号去重，并同步最近在玩 |
+| 直播 / P2P 联机房间发现 | ✅ **可用** | 两套公开列表与详情接口；直播条目带观看地址，按游戏查联机房时带加入地址 |
+| Linux / 外部客户端开播 | ✅ **可用** | 用户级 `live.write` 换专用发布凭证，再连 Socket.IO `/live` 用 WebRTC 推流；完整协议见 `docs/live-publisher-api.md` |
 
-写入和心跳要怎么办，见 §10。
+云存档写入为什么暂未开放，见 §10；游玩上报见 §7。
 
 > 📌 **2026-09-12 之前，云存档那两行是 ❌。** 当时的状况是：`scopes.js` 里声明了
 > `library.read` / `saves.read`，而 `routes/open.js` 里**连路由都没有**；
@@ -69,8 +71,12 @@
 | `GET` | `/v1/platforms` | **公开** | 平台目录：`runtime` / `core` / `romExtensions` / `native` 建议 / `enabled`，本地客户端挑模拟器用（见 §12） |
 | `GET` | `/v1/genres` | **公开** | 游戏类型枚举（客户端画筛选器用） |
 | `GET` | `/v1/languages` | **公开** | 游戏语言枚举（客户端画筛选器用） |
+| `GET` | `/v1/live/capacity` | **公开** | 开播前查看全站直播房间是否还有空位；不预留席位 |
 | `GET` | `/v1/live/rooms` | **公开** | 在播直播房间列表（`?game=<slug>` 可筛某一款） |
 | `GET` | `/v1/live/rooms/:roomId` | **公开** | 单个直播房间快照（已脱敏，无 IP / token） |
+| `POST` | `/v1/live/publish-token` | `live.write` | 给 Linux、掌机等外部设备签发用途单一的开播凭证 |
+| `GET` | `/v1/netplay/rooms` | **公开** | P2P 联机房间列表；`?game=<slug>` 可筛选并取得 `joinUrl` |
+| `GET` | `/v1/netplay/rooms/:roomId` | **公开** | 单个 P2P 房间快照；房主迁移后旧 roomId 仍可查 |
 | `GET` | `/v1/collections` | **公开** | 公开合集列表（分页） |
 | `GET` | `/v1/collections/:id` | **公开** | 单个合集 + 里面的游戏（游戏走白名单映射） |
 | `GET` | `/v1/games/:slug/rom` | `games.rom` | 换 ROM 短期下载凭据（两步式第一步） |
@@ -79,6 +85,7 @@
 | `GET` | `/v1/games/:slug/embed` | `games.read` | 换带签名、会过期的嵌入播放器地址 |
 | `GET` | `/v1/me` | 要令牌 | 自查令牌的 `client_id` / `scope` / `expires_at` |
 | `GET` | `/v1/library` | `library.read` | 用户收藏 / 最近在玩（用户级令牌） |
+| `POST` | `/v1/games/:slug/play` | `library.write` | 游戏真正可玩后上报；跨设备按账号去重，同时刷新最近在玩 |
 | `GET` | `/v1/saves` | `saves.read` | 用户存档清单（用户级令牌） |
 | `GET` | `/v1/saves/:runtime/:slug` | `saves.read` | 取一份存档（用户级令牌） |
 
@@ -117,7 +124,7 @@
 
 | | 没配 `OPEN_JWT_PRIVATE_KEY` 时 |
 |---|---|
-| 公开目录（`/v1/games*`、`/v1/platforms`、`/v1/genres`、`/v1/languages`、`/v1/live/rooms*`、`/v1/collections*`、`/v1/health`） | **照常可用**。它们只查数据库，一把密钥都用不上 |
+| 公开目录（`/v1/games*` 的 GET、`/v1/platforms`、`/v1/genres`、`/v1/languages`、`/v1/live/rooms*`、`/v1/netplay/rooms*`、`/v1/collections*`、`/v1/health`） | **照常可用**。它们只读公开数据，一把密钥都用不上 |
 | `/v1/token`、`/v1/device/code`、`/v1/me`、`/v1/library`、`/v1/saves*` | `501 temporarily_unavailable` |
 | `/v1/games/:slug/rom`、`/v1/rom/:grant` | `501`（另外没配 `OPEN_ROM_SECRET` 时也单独 501） |
 | `/v1/games/:slug/embed` | `501`（另外要 `OPEN_EMBED_SECRET`） |
@@ -367,6 +374,50 @@ GET /api/open/v1/games?platform=dos&requires_windows=false
 下架 / 成人 / 不存在，对外一律同一个 `404 not_found` ——
 区分开就成了「这游戏是不是被下架了」的查询器。
 
+### 5.5 直播与 P2P 联机房间
+
+下面五条都是公开接口，不需要令牌：
+
+```text
+GET /api/open/v1/live/capacity
+GET /api/open/v1/live/rooms?game=contra
+GET /api/open/v1/live/rooms/<roomId>
+GET /api/open/v1/netplay/rooms?game=contra
+GET /api/open/v1/netplay/rooms/<roomId>?game=contra
+```
+
+- 容量接口返回 `{used,max,remaining,available}`。`used` 包含已经从大厅隐藏、但仍未关闭的房间，
+  所以不要用直播列表长度自己推算容量。
+- 容量是瞬时快照，不会预留席位。`available:true` 之后仍可能有别人先抢到最后一席，
+  客户端必须继续处理 `go-live` 回调中的 `server is full`。
+- 自动开播看到 `available:false` 时应直接跳过本局开播，不必启动采集、取 ICE 或连接信令；
+  游戏本身照常运行。查询失败时可以继续尝试 `go-live`，让服务端作最终裁决。
+- 直播条目带 `watchUrl`，直接打开就是 8BitGo 的观看页。
+- P2P 列表传 `game=<slug>` 后会附 `gameSlug` 与 `joinUrl`，设备能显示二维码或交给手机打开。
+- P2P 不传 `game` 时返回协议原生的数值 `gameId`；它是 slug 的 FNV-1a 32 位散列。
+- 这些 REST 接口只负责“有哪些房间、多少玩家”。直播画面与联机输入仍走 WebRTC，
+  握手由 Socket.IO 的 `/live` / `/netplay` 命名空间转发，不会把音视频压到 REST 响应里。
+- 房间秒级变化，调用方不要长期缓存；不存在统一回 `404 not_found`。
+
+### 5.6 Linux / 外部客户端开播
+
+开播不是把视频 POST 给 REST。设备先用设备码流程拿到带 `live.write` 的用户 access token，
+再换一枚最长一场直播使用的专用发布凭证：
+
+```http
+POST /api/open/v1/live/publish-token HTTP/1.1
+Authorization: Bearer <用户 access token>
+Content-Length: 0
+```
+
+响应给出 `publisher_token`、`signaling_url`、`socket_path`、`namespace`、`capacity_url` 和 `ice_url`。
+设备把 `publisher_token` 放在 Socket.IO 握手的 `auth.publisherToken`，连接 `/live` 后发送
+`go-live`；每来一位观众，就建立一条 WebRTC PeerConnection 并通过 `signal` 转发 SDP / ICE。
+
+这里故意不让 Socket.IO 长期携带 OAuth access token：它能访问用户授权的数据且只有 15 分钟；
+专用发布凭证默认 12 小时，只能开播，拿去调用 REST 会被令牌类型检查拒绝。
+事件、重连、Linux 采集源与最小客户端骨架见 [外部设备直播发布协议](./live-publisher-api.md)。
+
 ---
 
 ## 6. ROM：两步式短期凭据
@@ -486,7 +537,7 @@ GET /api/open/v1/games?platform=dos&requires_windows=false
 ⚠️ 沙箱应用只能授权给**开发者本人和登记过的测试账号**。别人输码会看到一句
 「这个应用还在沙箱阶段」，点不了同意。上产之后才对所有人开放。
 
-## 7. 用户数据（只读，要用户级令牌）
+## 7. 用户数据与游玩上报（要用户级令牌）
 
 需要走完 §6.5 拿到的那枚令牌，请求头照旧 `Authorization: Bearer …`。
 
@@ -504,6 +555,31 @@ GET /api/open/v1/games?platform=dos&requires_windows=false
 
 回的是**完整的游戏对象**而不是一串 slug：否则你拿到十个 slug 之后还得再发十次请求
 去换标题和封面。收藏一次最多给 100 条，`favorites_total` 告诉你有没有被截断。
+
+### `POST /v1/games/:slug/play` —— 其它设备上报一次真实开玩
+
+需要用户级 `library.write`。调用时机必须是**模拟器已经进入可玩状态**，不要在用户只打开详情、
+ROM 仍在下载或引擎启动失败时调用：
+
+```http
+POST /api/open/v1/games/contra/play HTTP/1.1
+Authorization: Bearer <设备码换来的用户令牌>
+Content-Length: 0
+```
+
+```json
+{"ok":true,"counted":true}
+```
+
+- `counted:true`：这个账号第一次玩这款，公开游戏对象里的 `plays` 会加 1。
+- `counted:false`：这个账号之前已经在网页、电视或另一台掌机上玩过；请求仍然成功，只是不重复加。
+- 接口同时刷新账号的“最近在玩”，所以其它设备的 `/v1/library` 会看到这款。
+- 网络超时可以放心重试；数据库主键 `(game_id, kind, identity)` 会挡住并发与重复上报。
+- **这里统计的是去重玩家数，不是启动会话数。** 同一账号每天玩十次仍只算 1；如果以后要统计
+  会话量，应另建事件表，不能把这张去重表改成可重复插入。
+
+为什么必须用用户级令牌：应用级令牌背后没有用户；允许客户端自报 `device_id` 等于允许它每次
+换个字符串刷数。设备码授权把网页和其它设备都归到同一账号，正好与现有统计口径一致。
 
 ### `GET /v1/saves` —— 存档清单
 
@@ -642,14 +718,8 @@ sensitive，而且要连着三件事一起想清楚才能上：单份 4 MB / 每
 而那枚令牌是全权限的 —— 能改邮箱、能删号。在一台可以被 dump Flash 的设备上放它，
 比放 client_secret 严重得多。
 
-### 在玩上报 / 心跳
-
-开放平台没有这个端点。站内的 `POST /api/games/:slug/play` 认的是站内登录态
-（`optionalUser`，不登录也能记，按 IP 归并），**不认开放平台令牌**。
-
-真要做，正确的形状是在 `/api/open/v1` 下加一条应用级的上报端点
-（`games.read` 就够 —— 它不读写任何用户数据），顺带解决按应用归因的统计。
-改动很小，但**现在确实没有**，别在固件里预留一个猜出来的路径。
+游玩上报已经可以走 §7 的 `POST /v1/games/:slug/play`。它不是常驻心跳：游戏进入可玩状态
+上报一次即可，后续重试与换设备由服务端按账号去重。
 
 ---
 
@@ -679,6 +749,7 @@ sensitive，而且要连着三件事一起想清楚才能上：单份 4 MB / 每
 0c. POST /v1/token 每 interval 秒轮一次  ← grant_type=…:device_code
     （authorization_pending / slow_down 都是「接着等」，不是失败）
 0d. 拿到用户级令牌 → GET /v1/library、GET /v1/saves
+0e. 游戏真正可玩后 → POST /v1/games/<slug>/play（需要 library.write）
 ```
 
 每一步的失败都认 `error` 字段，不认 `error_description`。

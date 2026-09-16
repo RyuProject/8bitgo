@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url'
 import assert from 'node:assert/strict'
 
 process.env.PLAY_HASH_SECRET = 'test-secret'
-const { playIdentity, clientIp } = await import('../src/playcount.js')
+const { playIdentity, playIdentityForUser, clientIp } = await import('../src/playcount.js')
 
 let failed = 0
 const check = (name, fn) => {
@@ -46,6 +46,13 @@ check('登录后换 IP 仍是同一个身份（跨设备不重复计数）', () 
   const a = playIdentity(req({ user: { id: 'u_abc' }, cf: '1.2.3.4' }))
   const b = playIdentity(req({ user: { id: 'u_abc' }, cf: '9.9.9.9' }))
   assert.equal(a.identity, b.identity)
+})
+
+check('开放设备的用户令牌与站内登录生成同一枚账号指纹', () => {
+  const site = playIdentity(req({ user: { id: 'u_abc' }, cf: '1.2.3.4' }))
+  const device = playIdentityForUser('u_abc')
+  assert.deepEqual(device, site)
+  assert.equal(playIdentityForUser(''), null)
 })
 
 check('同一 IP 下的两个账号是两个身份（宿舍/公司不互相顶掉）', () => {

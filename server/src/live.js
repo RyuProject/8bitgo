@@ -3,6 +3,8 @@ import { watchPresence, clientIpFrom, isPrivateIp, UNKNOWN_PRESENCE } from './pr
 import { verifyToken, tokenVersionOf } from './auth.js'
 import { queryOne } from './db.js'
 import { isNetplayPlayer, resolveRoomId } from './netplay.js'
+import { openConfig } from './open/config.js'
+import { verifyLivePublisherToken } from './open/live-publisher.js'
 import {
   CHAT_ACK_EMPTY,
   CHAT_ACK_FAILED,
@@ -37,6 +39,8 @@ import {
  * 要做几十上百人得在中间加 SFU（主播只推一路，服务器扇出）。
  *
  * ── socket.io 命名空间 /live ──────────────────────────────
+ *   外部设备主播握手 auth.publisherToken = `POST /api/open/v1/live/publish-token` 返回的专用票。
+ *   网页端的现有匿名「玩即播」不带这一格，继续兼容；一旦带了，验不过绝不降级成匿名。
  *   go-live      {gameSlug, gameName, title, platform}  + ack(err, {roomId, token})
  *   resume-live  {roomId, token}                        + ack(err, {roomId, viewers: [id]})
  *                主播断线重连后接回原来的房间（见下面「主播掉线」）
@@ -137,6 +141,20 @@ const FROZEN_CLOSE_MS = Number(process.env.LIVE_FROZEN_CLOSE_MS || 10 * 60_000)
 const str = (v, max = 120) => (typeof v === 'string' ? v.trim().slice(0, max) : '')
 
 /**
+ * 外部设备只在这个显式字段里放发布凭证。不能顺手复用 auth.token：那一格是站内 HS256
+ * 登录令牌，混用会让两套原本隔离的信任边界重新粘在一起。
+ */
+function publisherTokenOf(socket) {
+  return str(socket.handshake?.auth?.publisherToken, 8_192)
+}
+
+function publisherAuthError(message, code) {
+  const error = new Error(message)
+  error.data = { code }
+  return error
+}
+
+/**
  * 信令命名空间不要求登录。任何观众都能入房，若原样转发任意对象或无限量 ICE，
  * 一人就能让主播的 pending 候选和 socket 写队列持续涨；格式不对的 SDP 还可能在主播回调里抛错。
  */
@@ -191,11 +209,12 @@ function takeSignalToken(socket, data, role) {
 /**
  * 发弹幕的人是谁 —— **服务端说了算，绝不采信客户端报的名字**。
  *
- * /live 这个命名空间本身是不鉴权的（房主的 hostName 就是客户端自己报的）。
+ * /live 的网页入口允许匿名；正式外部设备主播则带专用发布凭证，名字在开房时按账号查库。
  * 弹幕不能沿用那套：它是实时广播、没有历史、事后删不掉，
  * 名字可伪造意味着任何人都能挂着房主或者别人的名字说话。
  *
- * 所以：握手里带了 JWT 就验签、拿账号昵称；没带就发一个从 socket.id 派生的游客号。
+ * 所以：设备主播用开房时已确认的账号昵称；网页握手带站内 JWT 就验签取昵称；
+ * 两者都没有才发一个从 socket.id 派生的游客号。
  * 游客号跟着连接走，同一场直播里同一个人前后是同一个号，但他改不了它。
  *
  * 没带令牌的游客身份缓存在 socket.data；带令牌的账号每 30 秒重新查一次。
@@ -210,7 +229,11 @@ export async function chatIdentity(socket, findUser = queryOne) {
   const guest = String(socket.id || '').slice(-4).toLowerCase() || 'anon'
   let identity = { guest }
 
-  if (token) {
+  const publisherName = str(socket.data?.livePublisherName, 40)
+  if (publisherName) {
+    // 外部设备的名字在开房时已经按用户 id 查库，不能再信它握手或 payload 里自报的名字。
+    identity = { name: publisherName }
+  } else if (token) {
     try {
       const payload = verifyToken(token)
       const userId = payload?.uid
@@ -654,93 +677,137 @@ function leave(nsp, socket) {
 /**
  * 挂到已有的 socket.io Server 上。
  * @param {import('socket.io').Server} io
+ * @param {{findUser?:(sql:string, params?:unknown[])=>Promise<object|null>}} [options]
  * @returns {{nsp: import('socket.io').Namespace, list: () => object[]}}
  */
-export function attachLive(io) {
+export function attachLive(io, options = {}) {
+  const findUser = options.findUser || queryOne
   const nsp = io.of('/live')
 
-  nsp.on('connection', (socket) => {
-    socket.on('go-live', (payload, ack) => {
-      if (membership.has(socket.id)) return ack?.('already in a room')
-      if (rooms.size >= MAX_ROOMS) return ack?.('server is full')
-      const ip = hostIp(socket)
-      if (ip && isPrivateIp(ip)) {
-        if (!warnedPrivateIp) {
-          warnedPrivateIp = true
-          console.warn(
-            `[live] 主播的 IP 是内网地址 ${ip}：反代没有把 X-Forwarded-For 传进来（/socket.io/ 那个 location 也要加）。` +
-              '每 IP 房间上限对这种地址不生效，否则全站会共用同一个额度。',
-          )
-        }
-      } else if (ip && MAX_ROOMS_PER_IP > 0) {
-        let mine = 0
-        for (const r of rooms.values()) if (r.hostIp === ip) mine++
-        if (mine >= MAX_ROOMS_PER_IP) return ack?.('too many rooms')
-      }
+  /**
+   * 不带 publisherToken 的网页主播和普通观众保持原样；带了就必须验过，不能失败后悄悄
+   * 降级成匿名主播。正式设备客户端据 connect_error.data.code 区分过期和服务未配置。
+   */
+  nsp.use((socket, next) => {
+    const token = publisherTokenOf(socket)
+    if (!token) return next()
+    const cfg = openConfig()
+    if (!cfg) return next(publisherAuthError('publisher authorization unavailable', 'publisher_auth_unavailable'))
+    const claims = verifyLivePublisherToken(token, { publicKey: cfg.publicKey, issuer: cfg.issuer })
+    if (!claims) return next(publisherAuthError('invalid or expired publisher token', 'invalid_publisher_token'))
+    socket.data.livePublisher = claims
+    next()
+  })
 
-      const id = randomBytes(9).toString('base64url')
-      const room = {
-        id,
-        // 续播凭证：主播断线重连后凭它 resume-live。观众看不到（publicRoom 不带它）
-        token: randomBytes(24).toString('base64url'),
-        title: str(payload?.title, 80) || str(payload?.gameName, 80) || 'Live',
-        gameSlug: str(payload?.gameSlug, 120),
-        gameName: str(payload?.gameName, 120),
-        platform: str(payload?.platform, 40),
-        hostName: str(payload?.hostName, 40),
-        startedAt: Date.now(),
-        viewers: new Set(),
-        /**
-         * 观众 socket.id → 观众自己带的 key。信令重连后 socket.id 会换，凭 key 认出
-         * 「还是这个人」，把旧 id 换掉而不是当新观众（见文件头「观众换了 socket」）。
-         */
-        viewerKeys: new Map(),
-        /**
-         * 观众 socket.id → 服务端派生的署名（`{name}` 或 `{guest}`，同 chatIdentity）。
-         *
-         * 和 `viewers` 分开存而不是把 Set 换成 Map：`viewers` 有十来处在用
-         * `for...of` / `Array.from` / `.has()` 的集合语义（resume-live 的 ack 直接
-         * `Array.from(room.viewers)`），换成 Map 会让那些地方悄悄拿到 [k,v] 对。
-         * ⚠️ 代价是这两份要手动保持同步 —— 每一处 `viewers.delete` 旁边都必须有一条
-         * `viewerNames.delete`，server/scripts/test-live.mjs 有断言盯着。
-         */
-        viewerNames: new Map(),
-        /** 联机玩家只进弹幕通道，不占观众席，也不触发视频 offer。 */
-        matchPlayers: new Set(),
-        awayTimer: null,
-        awaySince: null,
-        /** 主播是不是切到后台了（画面冻着）。见 host-visibility */
-        hostFrozen: false,
-        /** 切到后台是什么时候。大厅过滤（FROZEN_HIDE_MS）按它算 */
-        frozenSince: null,
-        /** 到点把房从列表里摘掉时要通知大厅一次 */
-        hideTimer: null,
-        /** 后台 + 零观众到点收房 */
-        frozenTimer: null,
-        /** 2P 位：主播报上来的（coop-state）。开播那一刻还不知道，先当没有 */
-        coopOpen: false,
-        coopTaken: false,
-        // hostSocketId / hostIp / presence 由 bindHost 填：主播重连时也走它，只写一处
-        hostSocketId: null,
-        hostIp: '',
-        /**
-         * 主播的名片。设备和国家在绑定那一刻就定死了，RTT 由 socket.io 的心跳
-         * 持续刷新，所以存的是个取快照的函数而不是一份数据。
-         */
-        presence: null,
-        /**
-         * 最近几条弹幕。中途进来的观众从 watch 的 ack 里拿到，不至于面对一片空白。
-         *
-         * 只在内存里，不落库：弹幕是「当下」的东西，房间散了就该跟着没。
-         * 存下来就得再配一套删除、举报、审核 —— 那是评论该干的事，不是弹幕。
-         */
-        chat: [],
-        /** 房间级洪水闸的桶（见 takeRoomChatToken）。跟着房间散场一起没，不需要清理 */
-        chatFlood: null,
+  nsp.on('connection', (socket) => {
+    socket.on('go-live', async (payload, ack) => {
+      if (membership.has(socket.id)) return ack?.('already in a room')
+      if (socket.data.liveOpening) return ack?.('already opening a room')
+      socket.data.liveOpening = true
+      try {
+        let publisher = null
+        const claims = socket.data.livePublisher
+        if (claims) {
+          // 令牌在 Socket.IO 首连时验过；用户状态再查一次，封禁账号不能拿旧票继续新开房。
+          const row = await findUser('SELECT nickname, status FROM users WHERE id = ?', [claims.userId])
+          if (!row || row.status === 'banned') return ack?.('publisher account unavailable')
+          publisher = {
+            appId: claims.appId,
+            userId: claims.userId,
+            hostName: str(row.nickname, 40) || 'Device player',
+          }
+          socket.data.livePublisherName = publisher.hostName
+        }
+
+        // 查用户期间同一条连接可能被别的事件放进房间；await 后必须再确认一次。
+        if (membership.has(socket.id)) return ack?.('already in a room')
+        if (rooms.size >= MAX_ROOMS) return ack?.('server is full')
+        const ip = hostIp(socket)
+        if (ip && isPrivateIp(ip)) {
+          if (!warnedPrivateIp) {
+            warnedPrivateIp = true
+            console.warn(
+              `[live] 主播的 IP 是内网地址 ${ip}：反代没有把 X-Forwarded-For 传进来（/socket.io/ 那个 location 也要加）。` +
+                '每 IP 房间上限对这种地址不生效，否则全站会共用同一个额度。',
+            )
+          }
+        } else if (ip && MAX_ROOMS_PER_IP > 0) {
+          let mine = 0
+          for (const r of rooms.values()) if (r.hostIp === ip) mine++
+          if (mine >= MAX_ROOMS_PER_IP) return ack?.('too many rooms')
+        }
+
+        const id = randomBytes(9).toString('base64url')
+        const room = {
+          id,
+          // 续播凭证：主播断线重连后凭它 resume-live。观众看不到（publicRoom 不带它）
+          token: randomBytes(24).toString('base64url'),
+          title: str(payload?.title, 80) || str(payload?.gameName, 80) || 'Live',
+          gameSlug: str(payload?.gameSlug, 120),
+          gameName: str(payload?.gameName, 120),
+          platform: str(payload?.platform, 40),
+          // 正式设备主播的显示名只能来自用户表；网页匿名直播保持现有自报名行为。
+          hostName: publisher?.hostName || str(payload?.hostName, 40),
+          publisher: publisher ? { appId: publisher.appId, userId: publisher.userId } : null,
+          startedAt: Date.now(),
+          viewers: new Set(),
+          /**
+           * 观众 socket.id → 观众自己带的 key。信令重连后 socket.id 会换，凭 key 认出
+           * 「还是这个人」，把旧 id 换掉而不是当新观众（见文件头「观众换了 socket」）。
+           */
+          viewerKeys: new Map(),
+          /**
+           * 观众 socket.id → 服务端派生的署名（`{name}` 或 `{guest}`，同 chatIdentity）。
+           *
+           * 和 `viewers` 分开存而不是把 Set 换成 Map：`viewers` 有十来处在用
+           * `for...of` / `Array.from` / `.has()` 的集合语义（resume-live 的 ack 直接
+           * `Array.from(room.viewers)`），换成 Map 会让那些地方悄悄拿到 [k,v] 对。
+           * ⚠️ 代价是这两份要手动保持同步 —— 每一处 `viewers.delete` 旁边都必须有一条
+           * `viewerNames.delete`，server/scripts/test-live.mjs 有断言盯着。
+           */
+          viewerNames: new Map(),
+          /** 联机玩家只进弹幕通道，不占观众席，也不触发视频 offer。 */
+          matchPlayers: new Set(),
+          awayTimer: null,
+          awaySince: null,
+          /** 主播是不是切到后台了（画面冻着）。见 host-visibility */
+          hostFrozen: false,
+          /** 切到后台是什么时候。大厅过滤（FROZEN_HIDE_MS）按它算 */
+          frozenSince: null,
+          /** 到点把房从列表里摘掉时要通知大厅一次 */
+          hideTimer: null,
+          /** 后台 + 零观众到点收房 */
+          frozenTimer: null,
+          /** 2P 位：主播报上来的（coop-state）。开播那一刻还不知道，先当没有 */
+          coopOpen: false,
+          coopTaken: false,
+          // hostSocketId / hostIp / presence 由 bindHost 填：主播重连时也走它，只写一处
+          hostSocketId: null,
+          hostIp: '',
+          /**
+           * 主播的名片。设备和国家在绑定那一刻就定死了，RTT 由 socket.io 的心跳
+           * 持续刷新，所以存的是个取快照的函数而不是一份数据。
+           */
+          presence: null,
+          /**
+           * 最近几条弹幕。中途进来的观众从 watch 的 ack 里拿到，不至于面对一片空白。
+           *
+           * 只在内存里，不落库：弹幕是「当下」的东西，房间散了就该跟着没。
+           * 存下来就得再配一套删除、举报、审核 —— 那是评论该干的事，不是弹幕。
+           */
+          chat: [],
+          /** 房间级洪水闸的桶（见 takeRoomChatToken）。跟着房间散场一起没，不需要清理 */
+          chatFlood: null,
+        }
+        rooms.set(id, room)
+        bindHost(nsp, room, socket)
+        ack?.(null, { roomId: id, token: room.token })
+      } catch (e) {
+        console.warn('[live] 外部设备开播失败：', e)
+        ack?.('failed')
+      } finally {
+        socket.data.liveOpening = false
       }
-      rooms.set(id, room)
-      bindHost(nsp, room, socket)
-      ack?.(null, { roomId: id, token: room.token })
     })
 
     socket.on('resume-live', (payload, ack) => {
@@ -749,6 +816,13 @@ export function attachLive(io) {
       if (!room) return ack?.('not found')
       const token = str(payload?.token, 64)
       if (!token || token !== room.token) return ack?.('forbidden')
+      if (room.publisher) {
+        const claims = socket.data.livePublisher
+        if (!claims || claims.appId !== room.publisher.appId || claims.userId !== room.publisher.userId) {
+          return ack?.('publisher authorization required')
+        }
+        socket.data.livePublisherName = room.hostName
+      }
 
       // 接管：旧 socket 还挂着（没到 ping 超时）的话，把它从房间里请出去
       const old = room.hostSocketId
@@ -1037,6 +1111,23 @@ export function liveRooms({ gameSlug } = {}) {
   const all = Array.from(rooms.values()).filter(listed)
   const picked = gameSlug ? all.filter((r) => r.gameSlug === gameSlug) : all
   return picked.sort((a, b) => b.viewers.size - a.viewers.size || a.startedAt - b.startedAt).map(publicRoom)
+}
+
+/**
+ * 给自动开播做的轻量预检。
+ *
+ * 这里必须看 rooms.size，不能拿 liveRooms().length 代替：主播切到后台太久后，房间会从大厅
+ * 隐藏，但仍然占着服务端席位；若把隐藏房漏掉，客户端会误以为还有空位，白做一次抓屏和信令连接。
+ * 这只是提前避开已满状态；并发争最后一个席位时仍由 go-live 里的同一条上限做最终裁决。
+ */
+export function liveCapacity() {
+  const used = rooms.size
+  return {
+    used,
+    max: MAX_ROOMS,
+    remaining: Math.max(0, MAX_ROOMS - used),
+    available: used < MAX_ROOMS,
+  }
 }
 
 export function liveRoom(roomId) {

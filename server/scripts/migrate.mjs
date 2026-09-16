@@ -452,6 +452,38 @@ const patches = [
     },
   },
   {
+    name: 'flash_save_slots（Flash 游戏内部的在线存档槽）',
+    table: null,
+    // profile/data 必须原子覆盖；拆成两行会让游戏读到一半新、一半旧的坏档。
+    skip: async () => (!(await hasTable('users')) ? '还没有 users 表' : null),
+    needed: async () => !(await hasTable('flash_save_slots')),
+    run: async () => {
+      await conn.query(
+        'CREATE TABLE IF NOT EXISTS `flash_save_slots` (' +
+          '`user_id` VARCHAR(40) NOT NULL,' +
+          '`game_slug` VARCHAR(160) NOT NULL,' +
+          '`slot` TINYINT UNSIGNED NOT NULL,' +
+          '`profile_json` JSON NOT NULL,' +
+          '`data_json` JSON NOT NULL,' +
+          '`size` INT UNSIGNED NOT NULL,' +
+          '`revision` INT UNSIGNED NOT NULL DEFAULT 1,' +
+          '`created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,' +
+          '`updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,' +
+          'PRIMARY KEY (`user_id`, `game_slug`, `slot`),' +
+          'KEY `idx_flash_save_user_time` (`user_id`, `updated_at`)' +
+          ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
+      )
+      try {
+        await conn.query(
+          'ALTER TABLE `flash_save_slots` ADD CONSTRAINT `fk_flash_save_user` ' +
+            'FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE CASCADE',
+        )
+      } catch (e) {
+        console.log(`   （外键没加上，注销账号时要自己清 Flash 在线档：${e.message}）`)
+      }
+    },
+  },
+  {
     name: '清理孤儿收藏（指向已删除游戏的记录）',
     table: 'favorites',
     needed: async () => {
@@ -828,7 +860,7 @@ const patches = [
   },
 ]
 
-const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'login_codes', 'platform_bios', 'game_plays', 'developers', 'friend_links', 'friend_link_hits', 'game_comments', 'game_ratings', 'oauth_apps', 'open_rom_samples']
+const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'flash_save_slots', 'login_codes', 'platform_bios', 'game_plays', 'developers', 'friend_links', 'friend_link_hits', 'game_comments', 'game_ratings', 'oauth_apps', 'open_rom_samples']
 
 try {
   /*

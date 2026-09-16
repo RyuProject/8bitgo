@@ -20,7 +20,8 @@ export const OPEN_SCOPES = Object.freeze({
   'games.read': { kind: 'app', desc: '游戏元数据、封面、嵌入地址' },
   'games.rom': { kind: 'app', desc: 'ROM 短期下载凭据', sensitive: true },
   'library.read': { kind: 'user', desc: '收藏与最近在玩' },
-  'library.write': { kind: 'user', desc: '写收藏与最近在玩' },
+  'library.write': { kind: 'user', desc: '写收藏、最近在玩，并上报一次真实开玩' },
+  'live.write': { kind: 'user', desc: '从 Linux、掌机等外部设备开启直播' },
   'saves.read': { kind: 'user', desc: '列出、下载云存档' },
   'saves.write': { kind: 'user', desc: '上传、覆盖、删除云存档', sensitive: true },
 })

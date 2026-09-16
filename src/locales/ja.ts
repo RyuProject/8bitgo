@@ -150,6 +150,7 @@ const ja: Translation = {
   footer: {
     aria: 'フッターリンク',
     copyright: 'ゲームコンテンツの著作権は各権利者に帰属します',
+    copyrightNotice: '「著作権表示」',
   },
 
   /* ---------------- 言語切り替え ---------------- */

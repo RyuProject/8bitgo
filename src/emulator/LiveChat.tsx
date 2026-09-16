@@ -199,9 +199,21 @@ export function LiveChatLane({ messages, className }: { messages: LiveChatMessag
   }, [])
 
   return (
+    /*
+      弹幕永远在最顶层，z-40 是这个「永远」的落点。舞台内的浮层上限是 z-30 ——
+      加载遮罩 z-10、工具条 z-20、「主播暂时离开」/「点一下回去玩」/ 手柄提示这些蒙版 z-30 ——
+      所以 40 一定盖得住它们。
+
+      2026-09-16 之前这里**没有** z-index，只靠 DOM 顺序排在蒙版前面。于是
+      「主播暂时离开」那张蒙版一出来就把整层弹幕糊住了，观众看不到别人在说什么。
+      改成显式 z-40 之后无论蒙版排在哪、加多少张，弹幕都在它们上面。
+
+      ⚠️ 敢放最顶层的前提是 pointer-events-none：它一个指针事件都不接，
+         所以盖住按钮也不会让按钮点不动。别把这条去掉。
+    */
     <div
       ref={boxRef}
-      className={cx('pointer-events-none absolute inset-0 overflow-hidden', className)}
+      className={cx('pointer-events-none absolute inset-0 z-40 overflow-hidden', className)}
       aria-hidden
     >
       {flying.map((m) => (

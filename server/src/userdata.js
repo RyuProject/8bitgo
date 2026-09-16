@@ -32,3 +32,28 @@ export async function gameIdBySlug(slug) {
   const rows = await query('SELECT id FROM games WHERE slug = ?', [slug])
   return rows[0]?.id
 }
+
+/**
+ * 记录最近游玩，只保留最近 12 条。站内页面和开放设备共用这一条写法，
+ * 否则设备上已经开玩、账号的「最近在玩」却没有它，两个入口会长期对不上。
+ */
+export async function recordRecent(userId, slug) {
+  const gameId = await gameIdBySlug(slug)
+  if (!gameId) return false
+  await query(
+    `INSERT INTO recents (user_id, game_id, played_at) VALUES (?, ?, CURRENT_TIMESTAMP(3))
+     ON DUPLICATE KEY UPDATE played_at = CURRENT_TIMESTAMP(3)`,
+    [userId, gameId],
+  )
+  // MySQL 不允许 DELETE 的子查询直接再读同一张表，所以保留这层派生表。
+  await query(
+    `DELETE FROM recents
+      WHERE user_id = ? AND game_id IN (
+        SELECT game_id FROM (
+          SELECT game_id FROM recents WHERE user_id = ? ORDER BY played_at DESC LIMIT 100 OFFSET 12
+        ) old
+      )`,
+    [userId, userId],
+  )
+  return true
+}

@@ -143,6 +143,7 @@ const zhHant: Translation = {
   footer: {
     aria: '頁尾連結',
     copyright: '遊戲內容版權歸各自所有者所有',
+    copyrightNotice: '「版權聲明」',
   },
 
   language: {

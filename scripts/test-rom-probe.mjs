@@ -36,7 +36,7 @@ const script = (...steps) => {
   methods = []
 }
 
-const { probeRomUrl, probeRom, clearRomProbeCache, conventionalKeys, romCandidates, romProbeExpected, dosExecutableForRom, dosStartupCommandsForRom, versionedRomUrl, romKeysOf, unbindKeyPatch, shouldTryRomCandidateAfterUncertain } = await import(
+const { probeRomUrl, probeRom, clearRomProbeCache, conventionalKeys, romCandidates, playbackRomCandidates, romProbeExpected, dosExecutableForRom, dosStartupCommandsForRom, versionedRomUrl, romKeysOf, unbindKeyPatch, shouldTryRomCandidateAfterUncertain, nextRomCandidateKey, slugFromKey } = await import(
   fileURLToPath(new URL('../src/services/roms.ts', import.meta.url))
 )
 const { ROM_LANGS } = await import(fileURLToPath(new URL('../src/config/languages.ts', import.meta.url)))
@@ -55,6 +55,14 @@ const next = () => `https://assets.example.com/roms/nes/game-${++url}.zip`
   assert.equal(keys[0], 'roms/ps2/demo.iso', 'PS2 默认先探裸 ISO')
   assert.ok(keys.some((key) => key.endsWith('.chd')), 'PS2 也保留 Play! 支持的压缩光盘格式')
   assert.ok(!keys.some((key) => key.endsWith('.zip')), 'PS2 不能把外层 ZIP 当成光盘镜像')
+}
+
+/* ---------- 8BG 约定地址：新容器优先，旧对象继续回退 ---------- */
+{
+  const keys = conventionalKeys({ platform: 'nes', slug: 'demo' })
+  assert.equal(keys[0], 'roms/nes/demo.zip.8bg', '未绑定游戏先探新的 8BG 容器')
+  assert.ok(keys.includes('roms/nes/demo.zip'), '旧 ROM 约定地址必须继续保留')
+  assert.equal(slugFromKey('roms/nes/super-mario-bros.nes.8bg'), 'super-mario-bros', '自动匹配要剥掉容器和 ROM 两层扩展名')
 }
 
 /* ---------- 外站 ZIP：fragment 选内层文件，ETag 也只进 fragment，不污染签名 URL ---------- */
@@ -239,6 +247,28 @@ const next = () => `https://assets.example.com/roms/nes/game-${++url}.zip`
   const candidates = romCandidates(game, 'zh-Hans')
   assert.equal(shouldTryRomCandidateAfterUncertain(candidates[0], candidates[1]), true, '主地址超时后仍尝试同语言备用')
   assert.equal(shouldTryRomCandidateAfterUncertain(candidates[1], candidates[2]), false, '备用也无法确认时停止，不把本机断网误判成跨语言缺失')
+  const playback = playbackRomCandidates({ platform: 'nes', ...game }, 'zh-Hans')
+  assert.deepEqual(
+    playback.slice(0, 4).map(({ key, derivedPacked, backup }) => ({ key, derivedPacked: Boolean(derivedPacked), backup: Boolean(backup) })),
+    [
+      { key: 'https://primary.example.com/game.zip', derivedPacked: false, backup: false },
+      { key: 'roms/nes/game.zh-Hans.zip.8bg', derivedPacked: true, backup: true },
+      { key: 'roms/nes/game.zh-Hans.zip', derivedPacked: false, backup: true },
+      { key: 'roms/nes/game.en.zip.8bg', derivedPacked: true, backup: false },
+    ],
+    '对象 key 自动先探旁边的 .8bg；完整外链保持原样，旧对象紧跟着兜底',
+  )
+  assert.equal(shouldTryRomCandidateAfterUncertain(playback[1], playback[2]), true, '派生 .8bg 超时也必须尝试原对象')
+  assert.equal(
+    nextRomCandidateKey(candidates.map((candidate) => candidate.key), candidates[0].key, new Set()),
+    candidates[1].key,
+    '主包真实加载失败后要切同语言备用，不能因为 HEAD 曾成功就反复打开主包',
+  )
+  assert.equal(
+    nextRomCandidateKey(candidates.map((candidate) => candidate.key), candidates[0].key, new Set([candidates[1].key])),
+    candidates[2].key,
+    '备用也失败后继续往后走，且不能重新选择已经失败的 key',
+  )
   assert.deepEqual(romKeysOf(game), [
     'https://primary.example.com/game.zip',
     'roms/nes/game.en.zip',

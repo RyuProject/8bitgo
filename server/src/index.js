@@ -31,8 +31,10 @@ import { IN, friendLinkHostMap, hostOf, normalizeHost, recordFriendLinkHit } fro
 import { isCrawlerUa } from './sseGuard.js'
 import { checkSchema } from './schema-check.js'
 import { savesRouter } from './routes/saves.js'
+import { flashSavesRouter } from './routes/flash-saves.js'
+import { flashSaveConfigured, flashSaveConfigurationError } from './flash-save-token.js'
 import { attachNetplay } from './netplay.js'
-import { attachLive, liveRoom, liveRooms, subscribeLiveRooms } from './live.js'
+import { attachLive, liveCapacity, liveRoom, liveRooms, subscribeLiveRooms } from './live.js'
 import { admitSse } from './sseGuard.js'
 import { iceRouter, registerTurnProbeTargets } from './routes/ice.js'
 import { startTurnHealth } from './turnProbe.js'
@@ -53,6 +55,8 @@ import { tvRouter } from './routes/tv.js'
 import { mailProvider, submitMailProvider } from './mail.js'
 import { gameSitemap, postSitemap, sitemapIndex, taxonomySitemap } from './routes/sitemaps.js'
 import { logSearchPushStatus } from './search-push.js'
+import { romPackRouter } from './routes/rom-pack.js'
+import { isRomPackConfigured } from './rom-pack-key.js'
 
 const app = express()
 app.disable('x-powered-by')
@@ -112,10 +116,10 @@ app.get('/api/health', async (_req, res) => {
     const ok = await ping()
     // 只报布尔能力，不暴露提交号或文件路径。部署时用它区分“库已经迁移”与
     // “PM2 其实还在跑另一个目录里的旧 API”，后者仅靠 db:true 完全看不出来。
-    res.json({ service: '8bitgo-api', db: ok, capabilities: { dosStartupCommands: true } })
+    res.json({ service: '8bitgo-api', db: ok, capabilities: { dosStartupCommands: true, romPack: isRomPackConfigured(), flashOnlineSave: flashSaveConfigured() } })
   } catch (e) {
     console.error('[health] 数据库探测失败', e)
-    res.status(500).json({ service: '8bitgo-api', db: false, capabilities: { dosStartupCommands: true } })
+    res.status(500).json({ service: '8bitgo-api', db: false, capabilities: { dosStartupCommands: true, romPack: isRomPackConfigured(), flashOnlineSave: flashSaveConfigured() } })
   }
 })
 
@@ -174,6 +178,7 @@ app.use('/api/admin/open-apps', adminOpenAppsRouter)
 app.use('/api/admin/config', adminConfigRouter)
 
 app.use('/api/auth', authRouter)
+app.use('/api/rom-pack', romPackRouter)
 app.use('/api/games', gamesRouter)
 app.use('/api/posts', postsRouter)
 // 游戏评论：读公开、发表必须登录、后台可隐藏（见 routes/comments.js）
@@ -194,6 +199,8 @@ app.use('/api/friend-links', friendLinksRouter)
 app.use('/api/apps', appsRouter)
 // 云存档（必须登录，见 routes/saves.js）
 app.use('/api/saves', savesRouter)
+// 旧 Flash 游戏自己调用的在线槽；与 Ruffle SharedObject 快照分表，避免两种格式互相覆盖。
+app.use('/api/flash-saves/v1', flashSavesRouter)
 // P2P 联机的 ICE / TURN 配置（短期凭证，见 routes/ice.js）
 app.use('/api/netplay/ice', iceRouter)
 // 站内消息的 IM 凭证（短期 UserSig，密钥不出服务器，见 routes/im.js）
@@ -221,6 +228,11 @@ app.get('/sitemaps/taxonomy-:language.xml', taxonomySitemap)
  * 纯静态托管（只有 CDN、没有这个后端）时仍然由那份文件兜底。
  */
 app.get('/sitemap.xml', sitemapIndex)
+
+// 自动开播先看全站还有没有席位；真正开房时 live.js 仍会再判一次，防止并发超额。
+app.get('/api/live/capacity', (_req, res) => {
+  res.json(liveCapacity())
+})
 
 // 正在直播的房间列表。?game=<slug> 只看某个游戏的
 app.get('/api/live/rooms', (req, res) => {
@@ -482,6 +494,11 @@ if (/^(1|true|yes|on)$/i.test(process.env.IPX_ENABLED || '')) {
 
 httpServer.listen(PORT, () => {
   console.log(`8BitGo API 已启动：http://127.0.0.1:${PORT}`)
+  if (isRomPackConfigured()) console.log('[rom-pack] 8BG 数据密钥已配置')
+  else console.warn('[rom-pack] 未配置 ROM_PACK_SECRET：旧 ROM 仍可玩，但 8BG 打包与播放不可用')
+  const flashSaveError = flashSaveConfigurationError()
+  if (flashSaveError) console.warn(`[flash-save] ${flashSaveError}：游戏仍可使用本地存档，在线槽未启用`)
+  else console.log('[flash-save] Flash 游戏在线存档已启用')
 
   /*
     开放平台的启动自检。

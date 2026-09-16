@@ -48,6 +48,7 @@ import { Field, btnClass, inputClass } from './ui'
 import { mergeDosboxConfigOverride, normalizeDosboxConfigOverride } from '../../shared/dosbox-config.js'
 import { normalizeDosStartupCommands } from '../../shared/dos-startup-commands.js'
 import { probeRange } from '@/emulator/remoteDisc'
+import { isRomPackBytes, isRomPackUrl, packRomForUpload, romPackKey, verifyRomPackBlob } from '@/services/romPack'
 
 /*
   一键模板。点一下是**合并**进现有配置（mergeDosboxConfigOverride），不是覆盖，可以叠着点。
@@ -1290,11 +1291,16 @@ function RomField({
   const isFlash = platform === 'flash'
   const isHtml5 = platform === 'html5'
   const isPs2 = platform === 'ps2'
+  /** PS2 保持原来的 Range 光盘路径；HTML5 是目录/页面。其余新上传 ROM 统一进入 8BG。 */
+  const shouldPack = !isPs2 && !isHtml5
   /** 街机的 ROM key 保留原文件名 —— FBNeo 靠压缩包名认 romset，见 roms.ts 的 FILENAME_IS_IDENTITY */
   const isArcade = keepsOriginalFileName(platform)
   // Flash 额外收 zip：平台的 romExtensions 保持只有 .swf —— 那个列表还管着
   // 「玩本地 ROM」和格式识别，混进 zip 会让玩家以为拖个 zip 进播放器也能玩
-  const accept = isFlash ? '.swf,.zip' : (platformMap[platform]?.romExtensions ?? ['.zip']).join(',')
+  const accept = [
+    ...(isFlash ? ['.swf', '.zip'] : (platformMap[platform]?.romExtensions ?? ['.zip'])),
+    ...(shouldPack ? ['.8bg'] : []),
+  ].join(',')
   const defKey = (fileName: string) => (lang ? defaultRomKeyForLang(platform, slug, lang, fileName) : defaultKeyFor(platform, slug, fileName))
   const exampleName = isPs2 ? 'game.iso' : 'x.zip'
 
@@ -1432,8 +1438,37 @@ function RomField({
       if (inputRef.current) inputRef.current.value = ''
       return
     }
-    // 街机：先认 romset。认出来就用 romset 短名当文件名，这是核心唯一认的东西
-    const sniffed = await sniffArcade(file)
+    // CLI 生成的 8BG 可以直接上传；再包一层会让播放器只拆掉外层，最终把 8BG 密文交给模拟器。
+    // 但四字节魔数不够：普通 ROM 可能碰巧以 8BG1 开头，半截包也照样有魔数。现成包在上传前
+    // 要把每一块解密、解压和校验一遍，同时确认它使用的是当前服务端仍保留的密钥。
+    const hasPackMagic = shouldPack && isRomPackBytes(await file.slice(0, 4).arrayBuffer())
+    let alreadyPacked = false
+    let packedOriginalName = ''
+    if (hasPackMagic) {
+      setMsg({ ok: true, text: `正在校验已有 8BG 容器 ${file.name}…` })
+      try {
+        const header = await verifyRomPackBlob(file, ({ loaded, total }) => {
+          setProgress(Math.min(49, Math.round((loaded / Math.max(1, total)) * 50)))
+        })
+        alreadyPacked = true
+        packedOriginalName = header.originalName
+        const allowed = platformMap[platform]?.romExtensions ?? ['.zip']
+        if (!allowed.some((ext) => packedOriginalName.toLowerCase().endsWith(ext.toLowerCase()))) {
+          throw new Error(`容器内是 ${packedOriginalName}，不属于 ${platform} 支持的格式（${allowed.join('、')}）`)
+        }
+      } catch (err) {
+        setMsg({ ok: false, text: err instanceof Error ? `8BG 容器不可用：${err.message}` : '8BG 容器不可用' })
+        setProgress(null)
+        if (inputRef.current) inputRef.current.value = ''
+        return
+      }
+    }
+    // 上面的 0–49% 只是本地校验；真正上传还没开始，确认弹窗期间不能留一条假进度。
+    setProgress(null)
+    // 街机：先认 romset。现成 8BG 已经在上面完整验证过，不再把整份密文误当 ZIP 读第二遍；
+    // 真正交给核心的包名来自容器头的 originalName。
+    const sniffed = alreadyPacked ? (platform === 'arcade' ? packedOriginalName : null) : await sniffArcade(file)
+    const needsPacking = shouldPack && !alreadyPacked
     const oldKey = value.trim()
     // 字段里已有 key（且不是完整 URL）就复用它 —— 同一个槽位始终对着同一个对象，
     // 这样重传就是原地覆盖，不会又生出一份。但包目录里的 key 不能复用：
@@ -1441,8 +1476,11 @@ function RomField({
     // 街机认出了 romset 就一律用它 —— 哪怕字段里已经有 key。
     // 那个旧 key 十有八九正是「文件名不对所以跑不起来」的元凶，复用它等于把错留住。
     // 共用 ZIP 时，本槽重传必须另存为自己的语言 key；复用旧 key 会把其他语言一起覆盖。
-    const reusable = oldKey && allBoundKeys.filter((bound) => bound === oldKey).length <= 1 && !/^https?:/i.test(oldKey) && !isBundleKey(oldKey)
-    const key = sniffed ? defKey(sniffed) : reusable ? oldKey : defKey(file.name)
+    const reusable = oldKey && allBoundKeys.filter((bound) => bound === oldKey).length <= 1 && !/^https?:/i.test(oldKey) && !oldKey.startsWith('/') && !isBundleKey(oldKey)
+    // 现成容器的外层文件名可能只是 output.8bg；对象 key 必须按头里的 game.nds / game.zip
+    // 生成，运行时选择在下载文件头之前就要靠这层扩展名判断，不能等解密后才知道。
+    const plainKey = sniffed ? defKey(sniffed) : reusable ? oldKey : defKey(alreadyPacked ? packedOriginalName : file.name)
+    const key = shouldPack ? romPackKey(plainKey) : plainKey
     setMsg(null)
     if (!(await confirmUpload(key, file))) {
       if (inputRef.current) inputRef.current.value = ''
@@ -1450,17 +1488,35 @@ function RomField({
     }
     setProgress(0)
     try {
-      const result = await uploadRom(file, key, (pct, at) => {
-        setProgress(pct)
+      let uploadFile: Blob = file
+      if (needsPacking) {
+        setMsg({ ok: true, text: `正在用 Zstd 19 压缩并加密 ${sniffed || file.name}…` })
+        const packed = await packRomForUpload(file, sniffed || file.name, ({ loaded, total }) => {
+          // 打包与上传各占进度条一半；Zstd 单块内部没有细进度，按已完成的 8MB 块推进。
+          setProgress(Math.min(49, Math.round((loaded / Math.max(1, total)) * 50)))
+        })
+        uploadFile = new File([packed.blob], key.split('/').pop() || `${file.name}.8bg`, {
+          type: packed.blob.type,
+          lastModified: file.lastModified,
+        })
+      }
+      const result = await uploadRom(uploadFile, key, (pct, at) => {
+        setProgress(needsPacking ? 50 + Math.round(pct / 2) : pct)
         if (at) setStage(at)
       })
       onChange(result.key)
-      const removed = await cleanupSuperseded(oldKey, result.key, allBoundKeys)
+      const migrationBackup = shouldPack && oldKey && oldKey !== result.key && !isRomPackUrl(oldKey)
+      if (migrationBackup && !backupValue.trim()) onBackupChange(oldKey)
+      // 第一次从明文/ZIP 迁到 8BG 时先留着旧对象。若备用栏空，就自动绑成回退地址；
+      // 等线上确认新包可玩后再由管理员删，不能在第一次上传成功时就把唯一退路抹掉。
+      const removed = migrationBackup ? null : await cleanupSuperseded(oldKey, result.key, allBoundKeys)
       setMsg({
         ok: true,
         text:
           `已上传到 R2：${result.key}（${human(result.size)}）` +
+          (needsPacking ? `；Zstd 19 + AES-256-GCM` : alreadyPacked ? '；沿用已有 8BG 容器' : '') +
           (sniffed ? `；已按识别结果命名为 ${sniffed}` : '') +
+          (migrationBackup ? `；旧文件 ${oldKey} 已保留${backupValue.trim() ? '' : '为备用地址'}` : '') +
           (removed ? `；旧文件 ${removed} 已删除` : ''),
       })
     } catch (err) {
@@ -1579,7 +1635,7 @@ function RomField({
                   ? `可填写你有权嵌入的 HTTPS 游戏网址；单文件作品也可上传 .html。带 JS、WASM、图片等素材的项目请先完整部署，再填写它的 index.html 地址`
                 : isPs2
                   ? `直接上传 ISO 会存到 ${defKey(exampleName)} 这样的位置并自动绑定；不要套 ZIP。也可手填支持 HTTP Range 的完整 URL`
-                  : `上传会存到 ${defKey(exampleName)} 这样的位置（扩展名跟随所选文件）并自动绑定；也可手填已有文件的 key 或完整 URL。留空则该语言不单独提供`
+                : `新上传会先做 Zstd 19 + AES-256-GCM，再存到 ${romPackKey(defKey(exampleName))} 并自动绑定；旧 ZIP/ROM 仍可直接填写和运行`
             : isHtml5
               ? '填写你有权嵌入的 HTTPS 游戏网址；目标站点必须允许 iframe 嵌入。单文件上传需先配置 Worker'
               : '手填对象 key 或完整 URL；要直接上传，请先在「ROM 存储」页配置 Worker 地址与口令'

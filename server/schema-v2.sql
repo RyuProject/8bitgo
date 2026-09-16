@@ -449,6 +449,25 @@ CREATE TABLE IF NOT EXISTS saves (
   CONSTRAINT fk_saves_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ---------- Flash 游戏自己的在线存档 ----------
+-- 这和上面的 Ruffle SharedObject 快照是两套东西：旧游戏会分别提交 profile/data，
+-- 但读取页只要看见 profile 就允许点击。把两半拆成两行会暴露“只有人物信息、没有进度”的坏档，
+-- 所以一槽一行、两份 JSON 在同一个事务里覆盖，读取时永远只会拿到完整的一对。
+CREATE TABLE IF NOT EXISTS flash_save_slots (
+  user_id       VARCHAR(40)      NOT NULL,
+  game_slug     VARCHAR(160)     NOT NULL,
+  slot          TINYINT UNSIGNED NOT NULL,
+  profile_json  JSON             NOT NULL,
+  data_json     JSON             NOT NULL,
+  size          INT UNSIGNED     NOT NULL,
+  revision      INT UNSIGNED     NOT NULL DEFAULT 1,
+  created_at    TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at    TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, game_slug, slot),
+  INDEX idx_flash_save_user_time (user_id, updated_at),
+  CONSTRAINT fk_flash_save_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ---------- 邮箱验证码 ----------
 -- 登录 / 换绑邮箱 / 注销账号共用这张表，purpose 区分用途，逻辑全在 src/codes.js。
 --

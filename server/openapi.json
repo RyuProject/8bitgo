@@ -3,7 +3,7 @@
   "info": {
     "title": "8BitGo 开放平台 API",
     "version": "1.0.0",
-    "description": "面向第三方应用 / 设备端的只读 API。鉴权用 OAuth2（client_credentials 取应用级令牌，设备码流程取用户级令牌），scope 隔离。完整字段与取值均对齐 `server/src/routes/open.js` 与 `docs/esp-open-api.md`。本文件挂在 `/.well-known/openapi.json`，供 agent / 代码生成器自发现。",
+    "description": "面向第三方应用 / 设备端的开放 API。目录、直播与联机房间公开只读；跨设备游玩上报和设备开播使用用户级令牌。鉴权用 OAuth2（client_credentials 取应用级令牌，设备码流程取用户级令牌），scope 隔离。完整字段与取值均对齐 `server/src/routes/open.js` 与 `docs/esp-open-api.md`。本文件挂在 `/.well-known/openapi.json`，供 agent / 代码生成器自发现。",
     "contact": { "name": "8BitGo", "url": "https://8bitgo.com/open" }
   },
   "servers": [
@@ -14,7 +14,8 @@
     { "name": "auth", "description": "取令牌 / 设备码 / 自省" },
     { "name": "catalog", "description": "静态参考目录（平台 / 类型 / 语言）" },
     { "name": "games", "description": "游戏发现与下载凭据" },
-    { "name": "user-data", "description": "用户级只读数据（收藏 / 存档）" }
+    { "name": "realtime", "description": "直播与 P2P 联机房间发现" },
+    { "name": "user-data", "description": "用户级数据（收藏 / 最近游玩 / 存档）" }
   ],
   "components": {
     "securitySchemes": {
@@ -22,7 +23,7 @@
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "JWT",
-        "description": "开放平台令牌（RS256 签发，与站内令牌互不相认）。放在 `Authorization: Bearer <token>`。用户级 scope（library.read / saves.read）只能由设备码流程获得。"
+        "description": "开放平台令牌（RS256 签发，与站内令牌互不相认）。放在 `Authorization: Bearer <token>`。用户级 scope（library.read / library.write / live.write / saves.read）只能由设备码或授权码流程获得。"
       }
     },
     "schemas": {
@@ -212,6 +213,43 @@
         },
         "required": ["favorites", "recent", "favorites_total"]
       },
+      "PlayReportResponse": {
+        "type": "object",
+        "description": "真实启动上报结果。同一账号对同一款游戏永久只计一次，重复或换设备上报时 counted=false。",
+        "properties": {
+          "ok": { "type": "boolean", "const": true },
+          "counted": { "type": "boolean", "description": "本次是否让公开 plays 增加 1" }
+        },
+        "required": ["ok", "counted"]
+      },
+      "LivePublisherGrant": {
+        "type": "object",
+        "description": "外部设备开播配置。publisher_token 只允许连接 /live 当主播，不能调用 REST 用户接口。",
+        "properties": {
+          "publisher_token": { "type": "string", "description": "Socket.IO 握手 auth.publisherToken 使用的专用凭证" },
+          "token_type": { "type": "string", "const": "LivePublisher" },
+          "expires_in": { "type": "integer", "description": "发布凭证有效秒数，默认 12 小时" },
+          "protocol": { "type": "string", "const": "8bitgo-live-v1" },
+          "signaling_url": { "type": "string", "format": "uri" },
+          "socket_path": { "type": "string", "const": "/socket.io" },
+          "namespace": { "type": "string", "const": "/live" },
+          "auth_field": { "type": "string", "const": "publisherToken" },
+          "capacity_url": { "type": "string", "format": "uri", "description": "开始采集前查询全站直播房间容量" },
+          "ice_url": { "type": "string", "format": "uri", "description": "获取 STUN/TURN RTCIceServer 列表" }
+        },
+        "required": ["publisher_token", "token_type", "expires_in", "protocol", "signaling_url", "socket_path", "namespace", "auth_field", "capacity_url", "ice_url"]
+      },
+      "LiveCapacity": {
+        "type": "object",
+        "description": "全站直播房间容量的瞬时快照。仅用于开播前预检，不预留席位；go-live 仍可能因并发竞争返回 server is full。",
+        "properties": {
+          "used": { "type": "integer", "minimum": 0, "description": "当前实际占用的房间数，包含已从大厅隐藏但尚未关闭的房间" },
+          "max": { "type": "integer", "minimum": 0, "description": "全站同时存在的直播房间上限" },
+          "remaining": { "type": "integer", "minimum": 0, "description": "当前剩余席位数，最低为 0" },
+          "available": { "type": "boolean", "description": "当前是否至少还有一个席位" }
+        },
+        "required": ["used", "max", "remaining", "available"]
+      },
       "SaveMeta": {
         "type": "object",
         "properties": {
@@ -256,9 +294,36 @@
           "netplayRoomId": { "type": ["string", "null"], "description": "配对的联机房号（也是联机房时才有）" },
           "coopOpen": { "type": "boolean", "description": "这一局允许观众上场当 2P" },
           "coopTaken": { "type": "boolean", "description": "2P 位是否已有人" },
-          "presence": { "type": "object", "description": "服务端看出来的主播设备/地区/网络，全未知时为占位对象" }
+          "presence": { "type": "object", "description": "服务端看出来的主播设备/地区/网络，全未知时为占位对象" },
+          "watchUrl": { "type": "string", "format": "uri", "description": "8BitGo 上可直接打开的观看地址" }
         },
-        "required": ["roomId", "title", "gameSlug", "platform", "viewers", "startedAt"]
+        "required": ["roomId", "title", "gameSlug", "platform", "viewers", "startedAt", "watchUrl"]
+      },
+      "NetplayRoom": {
+        "type": "object",
+        "description": "P2P 联机房间公开快照。画面、声音和输入走 WebRTC；这里仅用于发现房间。",
+        "properties": {
+          "roomId": { "type": "string" },
+          "gameId": { "type": ["integer", "string", "null"], "description": "协议里的游戏 id；本站房间为 slug 的 FNV-1a 32 位散列" },
+          "gameSlug": { "type": "string", "description": "请求带 ?game=<slug> 时提供" },
+          "joinUrl": { "type": "string", "format": "uri", "description": "请求带 ?game=<slug> 时提供的直接加入地址" },
+          "roomName": { "type": "string" },
+          "createdAt": { "type": "integer", "description": "epoch 毫秒" },
+          "host": { "type": ["object", "null"], "properties": { "nickname": { "type": "string" } } },
+          "presence": { "type": "object", "description": "房主的设备、地区与网络快照" },
+          "players": { "type": "integer" },
+          "max": { "type": "integer" },
+          "spectators": { "type": "integer" },
+          "maxSpectators": { "type": "integer" },
+          "hasPassword": { "type": "boolean" },
+          "members": { "type": "array", "items": { "type": "object", "properties": { "nickname": { "type": "string" }, "host": { "type": "boolean" }, "role": { "type": "string", "enum": ["player", "spectator"] }, "presence": { "type": "object" } } } },
+          "kind": { "type": "string", "const": "p2p" },
+          "awaitingHost": { "type": "boolean" },
+          "claimed": { "type": "boolean" },
+          "hasState": { "type": "boolean" },
+          "migratedTo": { "type": ["string", "null"] }
+        },
+        "required": ["roomId", "gameId", "roomName", "createdAt", "players", "max", "hasPassword", "members", "kind"]
       },
       "CollectionSummary": {
         "type": "object",
@@ -476,6 +541,23 @@
         }
       }
     },
+    "/v1/games/{slug}/play": {
+      "post": {
+        "tags": ["user-data"],
+        "summary": "上报一次真实开玩（跨设备按账号去重）",
+        "description": "只在模拟器真正进入可玩状态后调用。调用会同时刷新该账号的最近游玩；同一账号在网页、掌机、电视上玩同一款永久只增加一次公开 plays。",
+        "security": [{ "openToken": ["library.write"] }],
+        "parameters": [
+          { "name": "slug", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "已接收；看 counted 判断本次是否实际增加", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PlayReportResponse" } } } },
+          "401": { "description": "令牌无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "缺 library.write，或使用了没有用户身份的应用级令牌", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "404": { "description": "游戏不存在 / 下架 / 成人", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
     "/v1/games/{slug}/rom": {
       "get": {
         "tags": ["games"],
@@ -579,9 +661,35 @@
         }
       }
     },
+    "/v1/live/publish-token": {
+      "post": {
+        "tags": ["realtime"],
+        "summary": "为 Linux、掌机等外部设备签发专用开播凭证",
+        "description": "先用设备码流程取得带 live.write 的用户 access token，再调用此接口。返回的 publisher_token 放进 Socket.IO /live 握手的 auth.publisherToken；实时画面和声音走 WebRTC。",
+        "security": [{ "openToken": ["live.write"] }],
+        "responses": {
+          "200": { "description": "成功", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LivePublisherGrant" } } } },
+          "401": { "description": "access token 无效或过期", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "需要带 live.write 的用户级令牌", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "501": { "description": "开放平台未启用", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/v1/live/capacity": {
+      "get": {
+        "tags": ["realtime"],
+        "summary": "查询全站直播房间是否还有空位",
+        "description": "公开、无缓存的瞬时快照。available=false 时自动开播客户端应跳过本局开播；available=true 不代表预留成功，连接 /live 后仍必须处理 go-live 的 server is full。",
+        "security": [{}, { "openToken": [] }],
+        "responses": {
+          "200": { "description": "当前容量", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LiveCapacity" }, "example": { "used": 37, "max": 200, "remaining": 163, "available": true } } } },
+          "401": { "description": "带了 Authorization 头但令牌无效；完全不带令牌可匿名调用", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
     "/v1/live/rooms": {
       "get": {
-        "tags": ["games"],
+        "tags": ["realtime"],
         "summary": "当前在播的公开直播房间（带 ?game= 可筛选）",
         "security": [{}, { "openToken": [] }],
         "parameters": [
@@ -598,7 +706,7 @@
     },
     "/v1/live/rooms/{roomId}": {
       "get": {
-        "tags": ["games"],
+        "tags": ["realtime"],
         "summary": "单个直播房间快照",
         "security": [{}, { "openToken": [] }],
         "parameters": [
@@ -611,6 +719,38 @@
           },
           "404": { "description": "没有这个直播间", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
           "401": { "description": "令牌无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/v1/netplay/rooms": {
+      "get": {
+        "tags": ["realtime"],
+        "summary": "当前公开的 P2P 联机房间",
+        "description": "这是房间发现接口；实时画面、声音与输入仍走 WebRTC / Socket.IO 信令。传 game 后条目会附 gameSlug 与 joinUrl。",
+        "security": [{}, { "openToken": [] }],
+        "parameters": [
+          { "name": "game", "in": "query", "schema": { "type": "string" }, "description": "按游戏 slug 筛选；同时让响应带直接加入地址" }
+        ],
+        "responses": {
+          "200": { "description": "成功", "content": { "application/json": { "schema": { "type": "object", "properties": { "items": { "type": "array", "items": { "$ref": "#/components/schemas/NetplayRoom" } } }, "required": ["items"] } } } },
+          "401": { "description": "带了 Authorization 头但令牌无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/v1/netplay/rooms/{roomId}": {
+      "get": {
+        "tags": ["realtime"],
+        "summary": "单个 P2P 联机房间快照",
+        "description": "会顺着房主迁移别名查找，因此旧邀请链接仍可用。传 game 时会校验游戏并附 joinUrl。",
+        "security": [{}, { "openToken": [] }],
+        "parameters": [
+          { "name": "roomId", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "game", "in": "query", "schema": { "type": "string" }, "description": "可选游戏 slug；不匹配时返回 404" }
+        ],
+        "responses": {
+          "200": { "description": "成功", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NetplayRoom" } } } },
+          "404": { "description": "房间不存在或 game 不匹配", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "401": { "description": "带了 Authorization 头但令牌无效", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
         }
       }
     },

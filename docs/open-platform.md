@@ -287,14 +287,16 @@ RS256 签名（不是 HS256）。理由：公开客户端手里没有 secret，�
 | `games.read` | **嵌入播放器地址**（元数据和封面 2026-09-13 起公开，见 §3.1） | —（应用级，不涉及用户） | P0 |
 | `games.rom` | **ROM 的短期下载凭据**；未审核时仅限站长指定的逐机型样本 | —（应用级） | P0.5，整库需人工审核 |
 | `library.read` | 收藏列表、最近在玩 | 可 | P1 |
-| `library.write` | 加/取消收藏、写最近在玩 | 可 | P1 |
+| `library.write` | 加/取消收藏、写最近在玩、上报一次真实开玩 | 可 | P1 |
+| `live.write` | Linux、掌机等外部设备换取专用凭证并开启 WebRTC 直播 | 可 | P1 |
 | `saves.read` | 列出、下载云存档 | 可 | P2 |
 | `saves.write` | 上传、覆盖、删除云存档 | 可 | P2 |
 
 ### 3.1 哪些东西根本不需要 scope（2026-09-13）
 
 游戏目录**整个改成公开匿名可读**：`/v1/games`、`/v1/games/{slug}`、
-`/v1/platforms`、`/v1/rom-samples`、`/v1/genres`、`/v1/languages`、`/v1/live/rooms*`、`/v1/collections*`。
+`/v1/platforms`、`/v1/rom-samples`、`/v1/genres`、`/v1/languages`、`/v1/live/capacity`、`/v1/live/rooms*`、
+`/v1/netplay/rooms*`、`/v1/collections*`。
 
 为什么：这些数据在 8bitgo.com 上本来就是**任何人打开浏览器就能看到**的，
 站内的 `/api/games`、`/api/collections`、`/api/live/rooms` 也一直是匿名可读的同一批内容。
@@ -528,6 +530,8 @@ GET /api/open/v1/games/kof97/embed?lang=zh-Hans
 | `GET /me/library` | `library.read` |
 | `POST /me/favorites/{slug}` / `DELETE` | `library.write` |
 | `POST /me/recents/{slug}` | `library.write` |
+| `POST /v1/games/{slug}/play` | `library.write`（用户级；按账号跨设备去重，同时刷新最近在玩） |
+| `POST /v1/live/publish-token` | `live.write`（用户级；返回只允许连接 `/live` 的专用发布凭证） |
 | `GET /me/saves` | `saves.read` |
 | `GET /me/saves/{runtime}/{slug}` | `saves.read` |
 | `PUT /me/saves/{runtime}/{slug}` | `saves.write` |

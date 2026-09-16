@@ -78,6 +78,8 @@ function validKey(key) {
 const MIME = {
   zip: 'application/zip',
   '7z': 'application/x-7z-compressed',
+  // 8BG 是可演进的 ROM 容器，单独标类型后浏览器和 CDN 不会把它误判成普通压缩包。
+  '8bg': 'application/x-8bitgo-rom',
   swf: 'application/x-shockwave-flash',
   json: 'application/json',
   txt: 'text/plain; charset=utf-8',

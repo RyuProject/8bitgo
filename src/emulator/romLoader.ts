@@ -6,6 +6,7 @@ import { assertNotHtml } from '@/lib/romValidation'
 import { romCacheDelete } from './romCache'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { loadRemoteArchiveRom } from './remoteArchive'
+import { isRomPackBytes, unpackRomPack } from '@/services/romPack'
 
 export interface LoadedGameBytes {
   name: string
@@ -33,6 +34,11 @@ export async function loadGameBytes(
     const data = await game.arrayBuffer()
     onProgress?.({ phase: 'rom', loaded: data.byteLength, total: data.byteLength, ratio: 1 })
     assertNotHtml(data)
+    if (isRomPackBytes(data)) {
+      const unpacked = await unpackRomPack(data)
+      assertNotHtml(unpacked.data)
+      return { name: unpacked.name, data: unpacked.data }
+    }
     return { name: game.name, data }
   }
 
@@ -56,6 +62,11 @@ export async function loadGameBytes(
       // 坏的那条要**扔掉再走网络**，不然自动重试还是撞上它，这台浏览器上这款游戏就永远起不来
       try {
         assertNotHtml(cached)
+        if (isRomPackBytes(cached)) {
+          const unpacked = await unpackRomPack(cached)
+          assertNotHtml(unpacked.data)
+          return { name: unpacked.name, data: unpacked.data, remoteUrl: game, fromCache: true }
+        }
         return { name: fileNameFromUrl(game), data: cached, remoteUrl: game, fromCache: true }
       } catch {
         void romCacheDelete(cacheKey).catch(() => {})
@@ -73,6 +84,13 @@ export async function loadGameBytes(
     },
   })
   assertNotHtml(data)
+  if (isRomPackBytes(data)) {
+    const unpacked = await unpackRomPack(data)
+    assertNotHtml(unpacked.data)
+    // 解密、解压、摘要都通过后才缓存密文；截断包不能因为一次失败被永久钉在浏览器里。
+    if (cacheKey) void romCachePut(cacheKey, data).catch(() => {})
+    return { name: unpacked.name, data: unpacked.data, remoteUrl: game }
+  }
   // 不 await：写几百 MB 要花时间，没理由让玩家在 100% 的进度条前面干等。
   // 失败（配额满、无痕模式）在 romCachePut 内部静默吞掉，这里不需要 catch 以外的处理。
   if (cacheKey) void romCachePut(cacheKey, data).catch(() => {})

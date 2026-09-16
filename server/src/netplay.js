@@ -270,6 +270,27 @@ function detailedRoom(room) {
   }
 }
 
+/**
+ * 公开的 P2P 房间快照。站内 `/api/netplay/rooms` 与开放平台必须读同一份内存表，
+ * 否则一边显示房间、另一边查不到，而且进程重启前都不会自愈。
+ */
+export function netplayRooms({ gameId } = {}) {
+  return [...rooms.values()]
+    .filter((room) => gameId === undefined || String(room.gameId) === String(gameId))
+    .map(detailedRoom)
+    .sort((a, b) => b.createdAt - a.createdAt)
+}
+
+/** 单个公开房间；顺着房主迁移留下的别名查，老邀请链接仍然有效。 */
+export function netplayRoom(roomId) {
+  const asked = str(roomId, 64)
+  const room = getRoom(asked)
+  if (!room) return null
+  const out = detailedRoom(room)
+  if (room.id !== asked) out.migratedTo = room.id
+  return out
+}
+
 /** 广播给房间成员的用户表。令牌要摘掉——那是各人自己的凭证，不能广播 */
 /** 房间里的玩家数（占手柄位的那些）。没标角色的一律算玩家，兼容老客户端 */
 function playerCount(room) {
@@ -832,7 +853,7 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
     const w = { res, watch }
     watchers.add(w)
 
-    const list = [...rooms.values()].map(detailedRoom).sort((a, b) => b.createdAt - a.createdAt)
+    const list = netplayRooms()
     res.write(`event: rooms\ndata: ${JSON.stringify(list)}\n\n`)
     if (watch) res.write(roomEvent(watch))
 
@@ -854,7 +875,7 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
 
   /** 本站自己的房间列表（不按游戏过滤，侧边栏要显示所有正在玩的房间） */
   app.get('/api/netplay/rooms', (_req, res) => {
-    res.json([...rooms.values()].map(detailedRoom).sort((a, b) => b.createdAt - a.createdAt))
+    res.json(netplayRooms())
   })
 
   /**
@@ -862,12 +883,9 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
    * 查到的房间 id 变了就在 migratedTo 里告诉客户端，让它跟过去。
    */
   app.get('/api/netplay/rooms/:roomId', (req, res) => {
-    const asked = req.params.roomId
-    const room = getRoom(asked)
+    const room = netplayRoom(req.params.roomId)
     if (!room) return res.status(404).json({ error: 'room not found' })
-    const out = detailedRoom(room)
-    if (room.id !== asked) out.migratedTo = room.id
-    res.json(out)
+    res.json(room)
   })
 
   /** 房主上传最新存档（只留一份）。房主掉线时交给新房主，让游戏能接着玩 */

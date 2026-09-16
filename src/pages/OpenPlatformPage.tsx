@@ -204,7 +204,7 @@ function Landing({ onLogin }: { onLogin: () => void }) {
   const FEATURES = [
     { icon: '🎮', title: '游戏元数据', desc: '按语言取标题、封面、平台目录、ROM 扩展名' },
     { icon: '🔑', title: '账号与授权', desc: 'OAuth 2.0 设备码流程，读收藏与云存档' },
-    { icon: '📺', title: '嵌入与直播', desc: '带签名的嵌入播放器地址、在播房间列表' },
+    { icon: '📺', title: '嵌入、直播与联机', desc: 'Linux / 掌机开播、观看与 P2P 联机房间' },
   ]
   return (
     <div className="container-x py-10">
@@ -874,8 +874,10 @@ const DOC_ENDPOINT_GROUPS: { title: string; items: DocEndpoint[] }[] = [
       { method: 'GET', path: '/v1/languages', access: '公开', desc: '语言枚举', detail: '返回 items：{code,label,english}。语言码可传给 lang。' },
       { method: 'GET', path: '/v1/collections', access: '公开', desc: '合集列表', detail: '分页返回 {items,page,page_size,total,total_pages}。' },
       { method: 'GET', path: '/v1/collections/:id', access: '公开', desc: '合集详情及游戏', detail: '返回 {collection,games}；games 使用同一套对外游戏字段。' },
-      { method: 'GET', path: '/v1/live/rooms', access: '公开', desc: '在播房间', detail: '返回 {items}；可传 game=<slug> 只看一款游戏的房间。' },
-      { method: 'GET', path: '/v1/live/rooms/:roomId', access: '公开', desc: '单个房间快照', detail: '直链可查；房间不存在返回 404。' },
+      { method: 'GET', path: '/v1/live/rooms', access: '公开', desc: '在播房间', detail: '返回 {items}；可传 game=<slug> 只看一款游戏。每个条目带 watchUrl，可直接打开观看。' },
+      { method: 'GET', path: '/v1/live/rooms/:roomId', access: '公开', desc: '单个直播房间', detail: '返回已脱敏快照与 watchUrl；房间不存在返回 404。' },
+      { method: 'GET', path: '/v1/netplay/rooms', access: '公开', desc: 'P2P 联机房间', detail: '返回 {items}；传 game=<slug> 会筛选游戏，并给每个条目补 gameSlug 与 joinUrl。' },
+      { method: 'GET', path: '/v1/netplay/rooms/:roomId', access: '公开', desc: '单个联机房间', detail: '房主迁移后旧 roomId 仍可查询；可传 game=<slug> 校验游戏并取得 joinUrl。' },
       { method: 'GET', path: '/v1/health', access: '公开', desc: '服务与数据库健康状态', detail: '返回 {service,db,timestamp}；数据库不可用时 HTTP 503。这条探针不受目录限流。' },
     ],
   },
@@ -894,6 +896,8 @@ const DOC_ENDPOINT_GROUPS: { title: string; items: DocEndpoint[] }[] = [
     items: [
       { method: 'POST', path: '/v1/device/code', access: 'AppID + AppKey', desc: '申请设备授权码', detail: '返回 user_code、device_code、verification_uri、expires_in:900、interval:5。用户在手机上输入 user_code 并同意，设备再轮询 /v1/token。仅机密客户端可用。' },
       { method: 'GET', path: '/v1/library', access: '用户令牌 · library.read', desc: '收藏与最近在玩', detail: '返回 favorites、recent（最多 12 款）和 favorites_total；收藏列表最多返回 100 款。' },
+      { method: 'POST', path: '/v1/games/:slug/play', access: '用户令牌 · library.write', desc: '上报真实开玩', detail: '只在模拟器真正可玩后调用；同时刷新最近游玩。同一账号跨设备、换网络或重试都只增加一次，counted 表示本次是否实际计数。' },
+      { method: 'POST', path: '/v1/live/publish-token', access: '用户令牌 · live.write', desc: '外部设备领取开播凭证', detail: '返回只能连接 Socket.IO /live 的 12 小时发布凭证、信令地址和 ICE 地址；Linux、掌机及桌面客户端用它通过 WebRTC 开播。' },
       { method: 'GET', path: '/v1/saves', access: '用户令牌 · saves.read', desc: '存档清单', detail: '只返回 runtime、game_slug、slot、size、created_at、updated_at，不含存档内容。' },
       { method: 'GET', path: '/v1/saves/:runtime/:slug', access: '用户令牌 · saves.read', desc: '下载单份存档', detail: '可传 slot=0…9，默认 0；返回 application/octet-stream，x-save-updated-at 是毫秒时间戳。' },
     ],

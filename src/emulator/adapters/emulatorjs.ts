@@ -27,7 +27,7 @@ import { platformMap } from '@/data/platforms'
 import { EJS_DEFAULT_CONTROLS } from '@/lib/keymapData'
 import type { Capability, CaptureSources, LoadPhase, LoadProgress, MountOptions, RuntimeHandle, StageMode } from '../types'
 import { fetchBlobWithProgress, fetchWithProgress, throttleProgress } from '../loadProgress'
-import { romCacheGet, romCacheGetBlob, romCacheKey, romCachePut, romCachePutBlob } from '../romCache'
+import { romCacheDelete, romCacheGet, romCacheGetBlob, romCacheKey, romCachePut, romCachePutBlob } from '../romCache'
 import { focusFrame, frameGamepads } from '../frameFocus'
 import { installAudioTap, type AudioTap } from '../audioTap'
 import { getT, fmt } from '@/services/i18n'
@@ -41,6 +41,7 @@ import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { loadRemoteArchiveRom } from '../remoteArchive'
 import { matchArcadeHack, type ArcadeHack } from '@/data/arcadeHacks'
 import { deriveArcadeHackBytes } from '../arcadeHack'
+import { isRomPackBytes, isRomPackUrl, unpackRomPack, unpackRomPackBlob } from '@/services/romPack'
 
 /**
  * EmulatorJS 资源根路径。**默认是自托管的 /emulatorjs/，不是 CDN。**
@@ -1167,7 +1168,14 @@ export async function prepareRemoteArcadeRom(
     return arcadeBlobFrom(data, extracted.name)
   }
   const name = arcadeRomsetName(url)
-  if (!name || !/\.zip$/i.test(name)) throw new InvalidArcadeArchiveError(name || 'ROM')
+  if (!name || (!/\.zip$/i.test(name) && !isRomPackUrl(url))) throw new InvalidArcadeArchiveError(name || 'ROM')
+
+  const decodedArcade = async (stored: ArrayBuffer): Promise<{ data: ArrayBuffer; name: string }> => {
+    if (!isRomPackBytes(stored)) return { data: stored, name }
+    const unpacked = await unpackRomPack(stored)
+    if (!/\.zip$/i.test(unpacked.name)) throw new InvalidArcadeArchiveError(unpacked.name)
+    return { data: unpacked.data, name: unpacked.name }
+  }
 
   // ROM 不可变，反复玩同一款街机游戏没必要每次重下。缓存里的那份一定是下面
   // 验过中央目录才写进去的，半截 ZIP 永远进不来，所以命中后不用再验一遍。
@@ -1182,7 +1190,16 @@ export async function prepareRemoteArcadeRom(
       // 玩过一次的大 romset 第二次秒开，界面上却还写着「需下载 180 MB」，自相矛盾。
       onProgress?.({ phase: 'rom', loaded: cached.byteLength, total: cached.byteLength, ratio: 1, cached: true })
       // 缓存这一路也要认一遍：第二次玩同一款改版包不能因为走了缓存就少了 dat、也不能少了合成
-      return arcadeBlobFrom(cached, name)
+      try {
+        const decoded = await decodedArcade(cached)
+        assertValidZip(decoded.data, '街机 ROM')
+        return arcadeBlobFrom(decoded.data, decoded.name)
+      } catch (error) {
+        // 旧密钥被移除或缓存写到一半时，当场删掉并回网络；抛给播放器会触发备用源，
+        // 让一份完全正常的远端新包因为本机旧缓存而被本轮永久跳过。
+        await romCacheDelete(cacheKey).catch(() => {})
+        console.warn('[arcade] ROM 缓存不可用，重新下载：', error)
+      }
     }
   }
 
@@ -1196,10 +1213,11 @@ export async function prepareRemoteArcadeRom(
       if (/text\/html|application\/xhtml/i.test(type)) throw new InvalidArcadeArchiveError(name)
     },
   })
+  const decoded = await decodedArcade(data)
   // 只看开头的 PK 还不够：截断文件通常仍有正确文件头；中央目录在末尾，能列出来才算完整。
   let entryCount = 0
   try {
-    entryCount = isZip(data) ? listZipEntries(data).length : 0
+    entryCount = isZip(decoded.data) ? listZipEntries(decoded.data).length : 0
   } catch {
     // 畸形偏移可能让 DataView 主动抛错；对玩家而言同样就是损坏的 ZIP。
   }
@@ -1208,7 +1226,7 @@ export async function prepareRemoteArcadeRom(
   // 不 await：下面 Blob 会自己复制一份字节，data 不会被谁 transfer 走，写盘慢也不耽误开局。
   if (cacheKey) void romCachePut(cacheKey, data).catch(() => {})
 
-  return arcadeBlobFrom(data, name)
+  return arcadeBlobFrom(decoded.data, decoded.name)
 }
 
 /**
@@ -1257,7 +1275,13 @@ export async function prepareRemoteDiscRom(
   url: string,
   onProgress: MountOptions['onProgress'],
   signal: AbortSignal,
-): Promise<{ url: string; bytes: number }> {
+): Promise<{ url: string; bytes: number; name?: string }> {
+  const prepare = async (stored: Blob): Promise<{ url: string; bytes: number; name?: string }> => {
+    const magic = new Uint8Array(await stored.slice(0, 4).arrayBuffer())
+    if (!isRomPackBytes(magic)) return { url: URL.createObjectURL(stored), bytes: stored.size }
+    const unpacked = await unpackRomPackBlob(stored)
+    return { url: URL.createObjectURL(unpacked.blob), bytes: unpacked.blob.size, name: unpacked.name }
+  }
   const cacheKey = romCacheKey(url)
   if (cacheKey) {
     const cached = await romCacheGetBlob(cacheKey)
@@ -1266,7 +1290,13 @@ export async function prepareRemoteDiscRom(
       // 命中也要发满进度那一帧：播放器的加载遮罩靠进度回调收尾。
       // cached 标记让遮罩显示「已缓存」而不是「需下载 620 MB」—— 秒开时那行字必须对得上。
       onProgress?.({ phase: 'rom', loaded: cached.size, total: cached.size, ratio: 1, cached: true })
-      return { url: URL.createObjectURL(cached), bytes: cached.size }
+      try {
+        return await prepare(cached)
+      } catch (error) {
+        // 密文被截断或旧密钥配错时，当场回网络；若远端也坏，下面才把真实错误交给备用源。
+        await romCacheDelete(cacheKey).catch(() => {})
+        console.warn('[emulatorjs] ROM 缓存不可用，重新下载：', error)
+      }
     }
   }
 
@@ -1281,11 +1311,13 @@ export async function prepareRemoteDiscRom(
     },
   })
 
+  // 8BG 要先确认能解密解压再入缓存；否则一次坏响应会被钉在这台浏览器上，重试永远失败。
+  const prepared = await prepare(blob)
   // 不 await：写几百 MB 要花时间，不该让玩家在开局前干等。Blob 本身是不可变的，
-  // 下面 createObjectURL 之后照样能安全写盘
+  // prepare 产出的 URL 与这份密文缓存互不影响。
   if (cacheKey) void romCachePutBlob(cacheKey, blob).catch(() => {})
 
-  return { url: URL.createObjectURL(blob), bytes: blob.size }
+  return prepared
 }
 
 export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
@@ -2461,6 +2493,24 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           engineGameName = extracted.name
           archiveRomPrepared = true
           if (isDiscPlatform(options.platform)) discRomPrepared = true
+        } else if (!isFile && isRomPackUrl(remoteGameUrl) && options.platform !== 'arcade') {
+          /*
+            8BG 外层不是模拟器认识的 ROM 格式，所有平台都必须先还原成 manifest 里的
+            原文件名和字节。复用 Blob 路径后，大包会落盘，不要求一块连续内存；旧 URL
+            完全不进这支，所以现有未迁移游戏的行为一个字节不变。
+          */
+          const prepared = await prepareRemoteDiscRom(remoteGameUrl, (p) => {
+            beat()
+            options.onProgress?.(p)
+          }, prepareAbort.signal)
+          if (destroyed) {
+            URL.revokeObjectURL(prepared.url)
+            return
+          }
+          preparedArcadeBlobUrl = prepared.url
+          gameUrl = prepared.url
+          engineGameName = prepared.name || discNameFor(remoteGameUrl.replace(/\.8bg(?=\?|$)/i, ''), options.gameName)
+          if (isDiscPlatform(options.platform)) discRomPrepared = true
         } else if (!isFile && isSelfDownloadPlatform(options.platform) && !isDiscPlatform(options.platform)) {
           /*
             自己下载的**卡带**平台（目前只有 NDS，见 paths.ts 的 SELF_DOWNLOAD_PLATFORMS）。
@@ -2491,7 +2541,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               core.json 写的是 extensions:["nds"]。blob: 地址本身不带扩展名，
               喂错名字核心会当成裸镜像去解析（理由同 discNameFor 的注释）。
             */
-            engineGameName = discNameFor(remoteGameUrl, options.gameName)
+            engineGameName = prepared.name || discNameFor(remoteGameUrl, options.gameName)
           } catch (error) {
             // 真的被取消了（换游戏 / 退出播放器）就到此为止，别接着往下开局
             if (destroyed || prepareAbort.signal.aborted) return
@@ -2518,7 +2568,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
            * blob: 地址本身不带扩展名，这里不把名字喂对，核心会当成裸镜像去解析，
            * 报的是「格式不支持」而不是「名字不对」—— 完全指错方向。
            */
-          engineGameName = discNameFor(remoteGameUrl, options.gameName)
+          engineGameName = prepared.name || discNameFor(remoteGameUrl, options.gameName)
           discRomPrepared = true
         } else if (!isFile && options.platform === 'arcade') {
           const prepared = await prepareRemoteArcadeRom(
@@ -2696,6 +2746,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         }
         if (error instanceof DOMException && error.name === 'AbortError') return
         if (!isFile && romArchiveRef(remoteGameUrl) && !archiveRomPrepared && options.platform !== 'arcade') {
+          options.onError?.(error instanceof Error ? error.message : String(error))
+          return
+        }
+        // 非街机的 8BG 在预处理阶段失败时，把“密钥不匹配 / 第几块损坏”原样告诉玩家和运维；
+        // 归成笼统的“引擎资源加载失败”会把排查方向带到完全无关的 EmulatorJS 文件上。
+        if (!isFile && isRomPackUrl(remoteGameUrl) && options.platform !== 'arcade') {
           options.onError?.(error instanceof Error ? error.message : String(error))
           return
         }

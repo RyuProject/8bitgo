@@ -4,21 +4,39 @@
  */
 import { readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
+import { generateKeyPairSync } from 'node:crypto'
 import { Server } from 'socket.io'
 import { io as client } from 'socket.io-client'
-// 宽限期和每 IP 上限都是模块加载时读的环境变量，所以要先设好再 import
+// 宽限期、全站容量和每 IP 上限都是模块加载时读的环境变量，所以要先设好再 import
 process.env.LIVE_RESUME_GRACE_MS = '400'
+process.env.LIVE_MAX_ROOMS = '4'
 process.env.LIVE_MAX_ROOMS_PER_IP = '3'
 // 观众上限压到 3（别的段最多同时 3 个观众）：验「自己的幽灵不能把自己挤出满员的房间」时才凑得满
 process.env.LIVE_MAX_VIEWERS = '3'
 // 主播切后台：300ms 后从大厅摘掉，零观众 700ms 后收房（线上默认 90s / 10min）
 process.env.LIVE_FROZEN_HIDE_MS = '300'
 process.env.LIVE_FROZEN_CLOSE_MS = '700'
-const { attachLive, liveRooms, liveRoom } = await import('../src/live.js')
+const { privateKey: openPrivateKey } = generateKeyPairSync('rsa', {
+  modulusLength: 2048,
+  privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+  publicKeyEncoding: { type: 'spki', format: 'pem' },
+})
+process.env.OPEN_JWT_PRIVATE_KEY = openPrivateKey
+process.env.OPEN_JWT_KID = 'live-test-1'
+process.env.OPEN_ISSUER = 'https://8bitgo.com'
+const { attachLive, liveCapacity, liveRooms, liveRoom } = await import('../src/live.js')
+const { issueLivePublisherToken } = await import('../src/open/live-publisher.js')
 
 const http = createServer()
 const server = new Server(http, { cors: { origin: true } })
-const { list: lst } = attachLive(server)
+const { list: lst } = attachLive(server, {
+  findUser: async (_sql, params) => {
+    if (params?.[0] === 'u_linux') return { nickname: 'Linux 玩家', status: 'active' }
+    if (params?.[0] === 'u_other') return { nickname: '另一位玩家', status: 'active' }
+    if (params?.[0] === 'u_banned') return { nickname: '封禁玩家', status: 'banned' }
+    return null
+  },
+})
 await new Promise((r) => http.listen(0, r))
 const url = `http://127.0.0.1:${http.address().port}/live`
 const conn = () => client(url, { transports: ['websocket'], forceNew: true })
@@ -119,6 +137,65 @@ await new Promise((r) => setTimeout(r, 100))
 check('房间已清除', liveRooms().length === 0)
 check('下播清除 socket.io 内部房间', !server.of('/live').adapter.rooms.has(roomId))
 
+/* ── 正式外部设备主播：专用发布凭证 + 服务端身份 ─────────────────────────── */
+const publisherTicket = (userId) => issueLivePublisherToken({
+  privateKey: openPrivateKey,
+  kid: 'live-test-1',
+  issuer: 'https://8bitgo.com',
+  appId: 'app_linux',
+  userId,
+})
+const publisherConn = (ticket) => client(url, {
+  transports: ['websocket'],
+  forceNew: true,
+  auth: { publisherToken: ticket },
+})
+
+const invalidPublisher = publisherConn('not-a-ticket')
+const invalidError = await once(invalidPublisher, 'connect_error')
+check('伪造的设备发布凭证在握手阶段被拒', invalidError?.data?.code === 'invalid_publisher_token')
+invalidPublisher.close()
+
+const linuxHost = publisherConn(publisherTicket('u_linux'))
+await once(linuxHost, 'connect')
+const linuxLive = await call(linuxHost, 'go-live', {
+  title: 'Linux 掌机实况',
+  gameSlug: 'contra',
+  gameName: 'Contra',
+  platform: 'nes',
+  hostName: '客户端伪造的名字',
+})
+check('外部设备能正式开播', !linuxLive.err && Boolean(linuxLive.data?.roomId), linuxLive.err || '')
+const linuxRoom = linuxLive.data.roomId
+check('设备主播昵称由服务端账号决定', liveRoom(linuxRoom)?.hostName === 'Linux 玩家')
+check('公开房间快照不泄露发布应用和用户 id', !JSON.stringify(liveRoom(linuxRoom)).includes('app_linux'))
+
+// 留一位观众，主播连接切换时房间才会进入续播流程而不是立即散场。
+const linuxViewer = conn(); await once(linuxViewer, 'connect')
+const linuxJoined = once(linuxHost, 'viewer-joined')
+await call(linuxViewer, 'watch', { roomId: linuxRoom })
+await linuxJoined
+
+const otherPublisher = publisherConn(publisherTicket('u_other'))
+await once(otherPublisher, 'connect')
+const stolen = await call(otherPublisher, 'resume-live', { roomId: linuxRoom, token: linuxLive.data.token })
+check('别的账号拿到房间续播令牌也不能接管设备直播', stolen.err === 'publisher authorization required')
+otherPublisher.close()
+
+const linuxReconnect = publisherConn(publisherTicket('u_linux'))
+await once(linuxReconnect, 'connect')
+const resumed = await call(linuxReconnect, 'resume-live', { roomId: linuxRoom, token: linuxLive.data.token })
+check('同一设备账号能接管并续播', !resumed.err && resumed.data?.roomId === linuxRoom, resumed.err || '')
+
+const namedChat = once(linuxViewer, 'chat')
+await call(linuxReconnect, 'chat', { text: '设备直播已恢复', name: '假名字' })
+check('设备主播弹幕同样使用服务端账号昵称', (await namedChat)?.name === 'Linux 玩家')
+
+linuxReconnect.emit('stop-live')
+linuxHost.close(); linuxReconnect.close(); linuxViewer.close()
+await new Promise((r) => setTimeout(r, 100))
+check('设备下播后房间清除', liveRoom(linuxRoom) === null)
+
 // 9. 主播断线：房间**不**立刻散场，观众收到 host-away，房间标成 hostAway
 const host2 = conn(); await once(host2, 'connect')
 const l2 = await call(host2, 'go-live', { gameName: 'Metroid', gameSlug: 'metroid' })
@@ -214,6 +291,15 @@ for (let i = 0; i < 4; i++) {
   const r = await call(s, 'go-live', { gameName: `local${i}`, gameSlug: `local${i}` })
   check(`内网/回环地址不计每 IP 上限（第 ${i + 1} 间）`, !r.err, r.err || '')
 }
+check(
+  '全站直播间占满后容量接口报告不可自动开播',
+  liveCapacity().available === false && liveCapacity().remaining === 0 && liveCapacity().used === 4,
+  JSON.stringify(liveCapacity()),
+)
+const overflow = conn(); await once(overflow, 'connect')
+const overflowRes = await call(overflow, 'go-live', { gameName: 'overflow', gameSlug: 'overflow' })
+check('并发或绕过预检时服务端仍拒绝超额房间', overflowRes.err === 'server is full', overflowRes.err || '')
+overflow.close()
 for (const s of local) s.close()
 await new Promise((r) => setTimeout(r, 120))
 check('内网那几间断线后清掉', liveRooms().length === 0, `剩 ${liveRooms().length}`)

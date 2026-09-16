@@ -15,6 +15,7 @@ import { useSyncExternalStore } from 'react'
 import { fallbackAfterErrors } from './sseFallback'
 import { getCurrentUser } from './auth'
 import type { Presence } from './presence'
+import { netplayGameId } from '../../shared/netplay-game-id.js'
 
 export const NETPLAY_URL: string = (import.meta.env.VITE_NETPLAY_URL || '').replace(/\/+$/, '')
 
@@ -177,14 +178,7 @@ export function netplayUrlForFrame(): string {
  * EmulatorJS 要求 gameId 是数字（否则联机按钮不显示），而我们的游戏用 slug。
  * 用 FNV-1a 32 位散列把 slug 映射成稳定的数字，两边都能算，不需要额外存储。
  */
-export function gameIdFor(slug: string): number {
-  let h = 0x811c9dc5
-  for (let i = 0; i < slug.length; i++) {
-    h ^= slug.charCodeAt(i)
-    h = Math.imul(h, 0x01000193)
-  }
-  return h >>> 0
-}
+export const gameIdFor = netplayGameId
 
 /**
  * gameId → slug 的反查表。

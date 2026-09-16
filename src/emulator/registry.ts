@@ -17,6 +17,7 @@ import { EXT_RUNTIME_OVERRIDES } from '@/config/emulators'
 import type { ResolveContext, Runtime, RuntimeId } from './types'
 import { runtimeMetas } from './runtimeMeta'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
+import { romPackInnerName } from '../../shared/rom-pack-format.js'
 
 /**
  * 全部运行时。**这里放的是元数据，不含 mount** —— 挂载实现在 runtimes.ts，
@@ -46,9 +47,10 @@ function platformDefault(platform: PlatformId): Runtime | undefined {
 export function extOf(nameOrUrl: string | File | undefined | null): string | undefined {
   if (!nameOrUrl) return undefined
   // 外层是 ZIP，但选运行时要看实际交给引擎的内层文件。
-  const name = typeof nameOrUrl === 'string'
+  const wrapped = typeof nameOrUrl === 'string'
     ? (romArchiveRef(nameOrUrl)?.name || nameOrUrl.split(/[?#]/)[0])
     : nameOrUrl.name
+  const name = romPackInnerName(wrapped)
   const m = /\.([A-Za-z0-9]+)$/.exec(name)
   return m ? m[1].toLowerCase() : undefined
 }

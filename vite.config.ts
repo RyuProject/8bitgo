@@ -33,6 +33,10 @@ function isolationHeaders(req: IncomingMessage, res: ServerResponse, next: () =>
  * `npm run build` 会依次跑完两个。
  */
 export default defineConfig({
+  optimizeDeps: {
+    // 这个包用 import.meta.url 定位自带的 zstd.wasm，预打包后地址会丢；交给 Vite 原样处理。
+    exclude: ['@bokuweb/zstd-wasm'],
+  },
   plugins: [
     react(),
     tailwindcss(),

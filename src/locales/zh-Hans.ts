@@ -212,6 +212,8 @@ export const zhHans = {
   footer: {
     aria: '页脚链接',
     copyright: '游戏内容版权归各自所有者所有',
+    /** 归属声明后面的入口，指向 /terms#game-files（见 Footer.tsx 的注释） */
+    copyrightNotice: '「版权声明」',
   },
 
   /* ---------------- 语言切换 ---------------- */

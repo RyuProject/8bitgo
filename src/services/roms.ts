@@ -19,6 +19,7 @@ import type { Lang, RomLang } from '@/config/languages'
 import { ROM_LANGS, romLangFor } from '@/config/languages'
 import { useLang } from '@/services/lang'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
+import { isRomPackUrl, romPackKey } from '../../shared/rom-pack-format.js'
 
 export const ROM_BASE_KEY = '8bitgo.rom.base'
 export const ROM_API_KEY = '8bitgo.rom.api'
@@ -212,7 +213,7 @@ export function explicitRomUrl(game: Game): string {
   return game.rom ? romUrlForKey(game.rom) : ''
 }
 
-/** 约定 key：<前缀>/<platform>/<slug>.<ext>，zip 优先 */
+/** 约定 key：先探新的 <slug>.<ext>.8bg，再探历史 <slug>.<ext>，zip 优先。 */
 export function conventionalKeys(game: Game): string[] {
   const prefix = getRomPrefix()
   const at = (name: string) => `${prefix ? `${prefix}/` : ''}${game.platform}/${name}`
@@ -229,7 +230,9 @@ export function conventionalKeys(game: Game): string[] {
   // PS2 的 Play! 需要直接看到光盘容器并按后缀选解析器；外层 ZIP 即使能探到也一定启动不了。
   // 后台上传守卫已经拒绝新 ZIP，这里也别让历史遗留的 `<slug>.zip` 抢在 ISO 前面。
   const ordered = game.platform === 'ps2' ? exts.filter((e) => e !== '.zip') : ['.zip', ...exts.filter((e) => e !== '.zip')]
-  return ordered.map((ext) => at(`${game.slug}${ext}`))
+  const legacy = ordered.map((ext) => at(`${game.slug}${ext}`))
+  // 没有数据库绑定的老游戏也能原地把对象换成 .8bg；PS2 明确不走浏览器解包路径。
+  return game.platform === 'ps2' ? legacy : [...legacy.map((key) => `${key}.8bg`), ...legacy]
 }
 
 /** key 自带完整地址（外链或站内绝对路径），不需要根地址就能探 */
@@ -407,11 +410,22 @@ export interface RomCandidate {
   lang?: RomLang
   /** true 表示同一语言槽的备用地址；启动入口等设置仍跟随 lang。 */
   backup?: boolean
+  /** 数据库仍绑旧 key，但播放器先尝试旁边的 `<key>.8bg`；便于整库原地渐进迁移。 */
+  derivedPacked?: boolean
 }
 
 /** 网络类失败本来会停止整条回退链；唯一例外是紧跟主地址的同语言备用源。 */
 export function shouldTryRomCandidateAfterUncertain(current: RomCandidate, next?: RomCandidate): boolean {
+  // 派生的 .8bg 只是旧对象旁边的一条影子路径；它问不出来时必须仍给原对象机会，
+  // 否则“渐进迁移”反而会让所有尚未转换的游戏被一次 HEAD/CORS 波动挡住。
+  if (current.derivedPacked && next && current.lang === next.lang && current.backup === next.backup) return true
   return !current.backup && Boolean(next?.backup && next.lang === current.lang)
+}
+
+/** 运行期失败后只往后走，绝不能又选回已经失败的主包形成重启死循环。 */
+export function nextRomCandidateKey(keys: readonly string[], current: string, failed: ReadonlySet<string>): string | undefined {
+  const at = keys.indexOf(current)
+  return at < 0 ? undefined : keys.slice(at + 1).find((key) => !failed.has(key))
 }
 
 /**
@@ -463,6 +477,32 @@ export function romCandidates(game: Pick<Game, 'rom' | 'roms' | 'romBackups'>, l
   const generic = game.rom?.trim()
   if (generic && !seen.has(generic)) candidates.push({ key: generic })
   return candidates
+}
+
+/**
+ * 真正用于播放探测的候选。数据库无需同步改 key：把 `a.zip.8bg` 放到 `a.zip` 旁边，
+ * 玩家就会优先命中新包；没生成、损坏或密钥错则继续用原对象。完整外链不擅自改 URL，
+ * PS2/HTML5 也明确不走浏览器解包。
+ */
+export function playbackRomCandidates(game: Pick<Game, 'platform' | 'rom' | 'roms' | 'romBackups'>, lang: Lang, prefer?: RomLang | null): RomCandidate[] {
+  const raw = romCandidates(game, lang, prefer)
+  if (game.platform === 'ps2' || game.platform === 'html5') return raw
+  const out: RomCandidate[] = []
+  const seen = new Set<string>()
+  for (const candidate of raw) {
+    if (!selfContainedKey(candidate.key) && !isRomPackUrl(candidate.key)) {
+      const packed = romPackKey(candidate.key)
+      if (!seen.has(packed)) {
+        seen.add(packed)
+        out.push({ ...candidate, key: packed, derivedPacked: true })
+      }
+    }
+    if (!seen.has(candidate.key)) {
+      seen.add(candidate.key)
+      out.push(candidate)
+    }
+  }
+  return out
 }
 
 /** 返回语言回退链里的第一个候选；实际播放会继续探测后续候选是否存在。 */
@@ -697,6 +737,11 @@ export interface RomResolution {
   unreachable?: boolean
   /** 重新探测一遍，并先把这款游戏所有候选地址的缓存结论清掉 */
   retry: () => void
+  /**
+   * 文件存在但实际下载、解密或启动失败时跳过当前对象，继续探下一个候选。
+   * 返回 true 表示已经接管；播放器应等待新的 url，而不是继续显示当前文件的错误。
+   */
+  failover: (reason?: string) => boolean
 }
 
 /** 启动入口必须跟随实际命中的语言槽；多个槽共用同一 ZIP 时不能靠对象 key 反推语言。 */
@@ -785,13 +830,15 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
     初始态直接设 checking，避免搜索引擎和首屏用户先看到「选择本地 ROM」，
     水合后又突然变成「开始游戏」这种自相矛盾的文案。
   */
-  const [state, setState] = useState<Omit<RomResolution, 'retry'>>(() => ({
+  const [state, setState] = useState<Omit<RomResolution, 'retry' | 'failover'>>(() => ({
     status: romProbeExpected(game, lang, prefer) ? 'checking' : 'idle',
     url: '',
   }))
   const [attempt, setAttempt] = useState(0)
   /** 这一轮已经自动重试过几次。换游戏 / 换语言 / 玩家手动重试都要清零 */
   const autoRetries = useRef(0)
+  /** HEAD 成功但实际内容坏掉的 key。只在本次游戏/语言选择内跳过；手动重试会清空。 */
+  const runtimeFailures = useRef(new Set<string>())
 
   /**
    * 重试。先清掉这款游戏所有候选地址的探测结论 —— 否则「服务器明确说没有」那一类
@@ -800,12 +847,33 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
    */
   const retry = useCallback(() => {
     if (game) {
-      const keys = [...romCandidates(game, lang, prefer).map((c) => c.key), ...conventionalKeys(game)]
+      const keys = [...playbackRomCandidates(game, lang, prefer).map((c) => c.key), ...conventionalKeys(game)]
       clearRomProbeCache(keys.map((key) => romUrlForKey(key)).filter(Boolean))
     }
+    runtimeFailures.current.clear()
     autoRetries.current = 0
     setAttempt((n) => n + 1)
   }, [game, lang, prefer])
+
+  const failover = useCallback((reason?: string): boolean => {
+    if (!game || state.status !== 'found' || !state.key) return false
+    const bound = playbackRomCandidates(game, lang, prefer)
+    const chain = bound.length ? bound.map((candidate) => candidate.key) : conventionalKeys(game)
+    const next = nextRomCandidateKey(chain, state.key, runtimeFailures.current)
+    if (!next) return false
+
+    runtimeFailures.current.add(state.key)
+    // 当前 URL 的 HEAD 结论仍然是“存在”，无需抹掉；失败集才是这轮解析真正要看的信息。
+    // 留一行诊断，线上能直接看出是主包坏了后切备用，而不是误以为语言回退选错。
+    console.warn(
+      `[8bitgo/rom] ${game.slug} 的 ${state.key} 实际加载失败，跳过后尝试 ${next}` +
+        (reason ? `：${reason}` : ''),
+    )
+    autoRetries.current = 0
+    setState({ status: 'checking', url: '' })
+    setAttempt((n) => n + 1)
+    return true
+  }, [game, lang, prefer, state.status, state.key])
 
   /*
     换游戏 / 换语言时把自动重试的次数清零。
@@ -814,6 +882,7 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
     计数才累加得下去，不会变成无限重试。
   */
   useEffect(() => {
+    runtimeFailures.current.clear()
     autoRetries.current = 0
   }, [game, lang, prefer])
 
@@ -823,7 +892,7 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
     let timer = 0
     setState({ status: 'checking', url: '' })
     ;(async () => {
-      const candidates = romCandidates(game, lang, prefer)
+      const candidates = playbackRomCandidates(game, lang, prefer)
       /** 有没有哪个候选是「没问出来」，而不是服务器明确说没有。决定要不要自动重试 */
       let uncertain = false
       /** 每个候选探出来的结果，只在最终放弃时用来打诊断 */
@@ -832,6 +901,7 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
       // 当前槽丢失时继续按英语 → 日语 → 中文 → 其余语言槽回退，不能在第一个 404 就停住。
       for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
         const candidate = candidates[candidateIndex]
+        if (runtimeFailures.current.has(candidate.key)) continue
         const url = romUrlForKey(candidate.key)
         if (!url) continue
         // iframe 导航不受 fetch CORS 限制；第三方 HTML5 游戏常常允许嵌入，却不允许跨域 HEAD。
@@ -889,6 +959,7 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
 
       // 完全没有绑定记录的老游戏仍按历史约定探测文件名。
       for (const key of conventionalKeys(game)) {
+        if (runtimeFailures.current.has(key)) continue
         const url = romUrlForKey(key, base)
         const outcome = await probeRom(url, 4000, game.platform === 'html5')
         if (outcome.url) {
@@ -945,7 +1016,7 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
     return () => window.removeEventListener('online', again)
   }, [state.status, state.unreachable])
 
-  return { ...state, retry }
+  return { ...state, retry, failover }
 }
 
 /* ---------------- Worker 管理接口（后台用） ---------------- */
@@ -1087,6 +1158,8 @@ export function guessUploadType(key: string): string {
     wav: 'audio/wav',
     flv: 'video/x-flv',
     zip: 'application/zip',
+    // 8BG 自己带版本、编解码器和原始文件名，不能伪装成 zip；明确类型也方便 CDN 排查。
+    '8bg': 'application/x-8bitgo-rom',
   }
   return map[ext] ?? 'application/octet-stream'
 }
@@ -1189,7 +1262,10 @@ export function slugFromKey(key: string): string {
   const prefix = getRomPrefix()
   const i = prefix && parts[0] === prefix ? 1 : 0
   const name = parts.length >= i + 3 ? parts[i + 1] : (parts[parts.length - 1] ?? key)
+  // 8BG 是外层容器，真正的 ROM 扩展名仍在它前面（例如 contra.nes.8bg）。先剥容器，
+  // 再走原来的扩展名规则，否则后台“自动匹配”会把 slug 猜成 contra.nes。
   const noExt = name
+    .replace(/\.8bg$/i, '')
     .replace(/\.(zip|7z|nes|unf|fds|sfc|smc|fig|gba|gbc|gb|z64|n64|v64|md|gen|bin|smd|nds|ws|wsc|cue|iso|img|pbp|chd|exe|com|swf|jar)$/i, '')
     .toLowerCase()
     .replace(/[\s_]+/g, '-')

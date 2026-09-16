@@ -17,7 +17,7 @@
  *    一起放开。两套策略分开写，就是下面那个 `openCors`。
  */
 import express, { Router } from 'express'
-import { listGames } from '../games-repo.js'
+import { listGames, recordPlay as recordGamePlay } from '../games-repo.js'
 import { ping, query } from '../db.js'
 import { take, isMeaningfulIp } from '../rateLimit.js'
 import { assetPublicUrl, publicSiteUrl } from '../site-urls.js'
@@ -26,6 +26,10 @@ import { clientIpFrom } from '../presence.js'
 import { openConfig } from '../open/config.js'
 import { authenticateApp, readClientCredentials } from '../open/apps.js'
 import { issueAppToken, issueUserToken, verifyOpenToken, OPEN_ACCESS_TTL_SEC } from '../open/tokens.js'
+import {
+  issueLivePublisherToken,
+  LIVE_PUBLISHER_TTL_SEC,
+} from '../open/live-publisher.js'
 import {
   DEVICE_CODE_TTL_SEC,
   DEVICE_POLL_INTERVAL_SEC,
@@ -38,11 +42,15 @@ import { APP_SCOPES, formatScopes, hasScope, missingScopes, parseScopes } from '
 import { openGame, openPage } from '../open/mapper.js'
 import { OPEN_PLATFORMS } from '../open/platforms.js'
 import { OPEN_GENRES, OPEN_LANGUAGES } from '../open/taxonomy.js'
-import { liveRooms, liveRoom } from '../live.js'
+import { liveCapacity, liveRooms, liveRoom } from '../live.js'
+import { netplayRooms, netplayRoom } from '../netplay.js'
+import { playIdentityForUser } from '../playcount.js'
+import { netplayGameId } from '../../../shared/netplay-game-id.js'
 import { listPublicCollections, getPublicCollection } from '../routes/collections.js'
 import { normalizeLang, pickRom } from '../open/i18n.js'
 import { ROM_GRANT_TTL_SEC, EMBED_TTL_SEC, signEmbed, signRomGrant, verifyRomGrant } from '../open/sign.js'
 import { canRedeemSandboxRom, isSandboxRomSample, listSandboxRomSamples, romAccessForApp } from '../open/sandbox-roms.js'
+import { recordRecent } from '../userdata.js'
 
 export const openRouter = Router()
 
@@ -649,6 +657,31 @@ openRouter.get('/v1/games/:slug', optionalApp(), async (req, res, next) => {
   }
 })
 
+/**
+ * `POST /v1/games/:slug/play` —— 其它设备在游戏**真的进入可玩状态后**上报一次。
+ *
+ * 必须是设备码 / 授权码换来的用户级令牌，并带 `library.write`：只有账号身份才能与站内
+ * `game_plays` 的去重口径对齐。应用级令牌背后没有人；让它自报 device_id 等于允许调用方
+ * 随便换一个字符串刷数，所以这里不提供那条退路。
+ *
+ * 同一账号在网页、掌机、电视上玩同一款只计一次；重试也只会得到 counted:false。
+ * 上报同时刷新「最近在玩」，不然设备明明已经开玩，账号的 library 却长期看不到它。
+ */
+openRouter.post('/v1/games/:slug/play', requireUserScope('library.write'), async (req, res, next) => {
+  try {
+    const slug = String(req.params.slug)
+    // 下架 / 成人 / 不存在与公开详情同一个 404，不能借写接口探测隐藏内容。
+    if (!(await getRawGame(slug))) return fail(res, 404, 'not_found', '没有这款游戏')
+    const who = playIdentityForUser(req.openClaims.userId)
+    if (!who) return fail(res, 401, 'invalid_token', '用户令牌里没有有效账号')
+    const counted = await recordGamePlay(slug, who.kind, who.identity)
+    await recordRecent(req.openClaims.userId, slug)
+    res.set('Cache-Control', 'private, no-store').json({ ok: true, counted })
+  } catch (e) {
+    next(e)
+  }
+})
+
 /* ---------------- 平台目录（只读参考） ---------------- */
 
 /**
@@ -715,7 +748,70 @@ openRouter.get('/v1/languages', optionalApp(), (req, res) => {
   res.json({ items: OPEN_LANGUAGES })
 })
 
-/* ---------------- 直播房间发现（只读，公开信令信息） ---------------- */
+/* ---------------- 外部设备开播 + 直播 / 联机房间发现 ---------------- */
+
+/**
+ * `POST /v1/live/publish-token` —— 用短期用户 access token 换用途单一的设备开播凭证。
+ *
+ * access token 能读用户授权过的数据，不应在一场数小时的直播里长期挂在 Socket.IO 上；
+ * 发布凭证只能连接 `/live` 当主播，拿去调 REST 会因为 typ / aud 不同而验不过。
+ */
+openRouter.post('/v1/live/publish-token', requireUserScope('live.write'), (req, res) => {
+  const cfg = openConfig()
+  const publisherToken = issueLivePublisherToken({
+    privateKey: cfg.privateKey,
+    kid: cfg.kid,
+    issuer: cfg.issuer,
+    appId: req.openClaims.appId,
+    userId: req.openClaims.userId,
+  })
+  const base = publicSiteUrl()
+  res.set('Cache-Control', 'private, no-store').json({
+    publisher_token: publisherToken,
+    token_type: 'LivePublisher',
+    expires_in: LIVE_PUBLISHER_TTL_SEC,
+    protocol: '8bitgo-live-v1',
+    signaling_url: new URL('/live', base).href,
+    socket_path: '/socket.io',
+    namespace: '/live',
+    auth_field: 'publisherToken',
+    capacity_url: new URL('/api/open/v1/live/capacity', base).href,
+    ice_url: new URL('/api/netplay/ice', base).href,
+  })
+})
+
+/** 直播快照补一条能直接打开的观看地址；信令 token 等内部字段仍由 live.js 的白名单挡住。 */
+function openLiveRoom(room) {
+  if (!room) return null
+  const url = new URL(`/games/${encodeURIComponent(room.gameSlug)}`, publicSiteUrl())
+  url.searchParams.set('live', room.roomId)
+  return { ...room, watchUrl: url.href }
+}
+
+/**
+ * P2P 房间去掉房主迁移时的内部候选 id。传了 game slug 时顺手给可直接加入的地址；
+ * 没传时只有数值 gameId，调用方可用 shared/netplay-game-id.js 的 FNV-1a 规则匹配目录。
+ */
+function openNetplayRoom(room, gameSlug) {
+  if (!room) return null
+  const out = { ...room }
+  delete out.nextHostUserId
+  if (!gameSlug) return out
+  const url = new URL(`/games/${encodeURIComponent(gameSlug)}`, publicSiteUrl())
+  url.searchParams.set('p2p', room.roomId)
+  return { ...out, gameSlug, joinUrl: url.href }
+}
+
+/**
+ * `GET /v1/live/capacity` —— 开始采集和建 WebRTC 连接前的轻量预检。
+ *
+ * 设备端走版本化开放接口，站内网页走 `/api/live/capacity`；两条读的是同一份原始房间表。
+ * 这里不能按大厅列表长度推算，因为切后台后从大厅隐藏的房间仍然占用全站席位。
+ * 响应不缓存，而且只是一张瞬时快照；真正开房时 `go-live` 仍会原子复核。
+ */
+openRouter.get('/v1/live/capacity', optionalApp(), (_req, res) => {
+  res.json(liveCapacity())
+})
 
 /**
  * `GET /v1/live/rooms` —— 当前在播的公开房间列表。
@@ -730,7 +826,7 @@ openRouter.get('/v1/languages', optionalApp(), (req, res) => {
  */
 openRouter.get('/v1/live/rooms', optionalApp(), (req, res) => {
   const gameSlug = typeof req.query.game === 'string' && req.query.game ? req.query.game : undefined
-  res.json({ items: liveRooms({ gameSlug }) })
+  res.json({ items: liveRooms({ gameSlug }).map(openLiveRoom) })
 })
 
 /**
@@ -740,7 +836,27 @@ openRouter.get('/v1/live/rooms', optionalApp(), (req, res) => {
 openRouter.get('/v1/live/rooms/:roomId', optionalApp(), (req, res) => {
   const room = liveRoom(req.params.roomId)
   if (!room) return fail(res, 404, 'not_found', '没有这个直播间')
-  res.json(room)
+  res.json(openLiveRoom(room))
+})
+
+/**
+ * `GET /v1/netplay/rooms` —— 当前 P2P 联机房间。`?game=<slug>` 按游戏筛选，
+ * 并让每个条目多出 gameSlug / joinUrl；不筛选时保留协议原生的数值 gameId。
+ */
+openRouter.get('/v1/netplay/rooms', optionalApp(), (req, res) => {
+  const gameSlug = typeof req.query.game === 'string' && req.query.game ? req.query.game : undefined
+  const gameId = gameSlug ? netplayGameId(gameSlug) : undefined
+  res.json({ items: netplayRooms({ gameId }).map((room) => openNetplayRoom(room, gameSlug)) })
+})
+
+/** 单个 P2P 房间快照；房主迁移后仍可用旧 roomId 查询。 */
+openRouter.get('/v1/netplay/rooms/:roomId', optionalApp(), (req, res) => {
+  const gameSlug = typeof req.query.game === 'string' && req.query.game ? req.query.game : undefined
+  const room = netplayRoom(req.params.roomId)
+  if (!room || (gameSlug && String(room.gameId) !== String(netplayGameId(gameSlug)))) {
+    return fail(res, 404, 'not_found', '没有这个联机房间')
+  }
+  res.json(openNetplayRoom(room, gameSlug))
 })
 
 /* ---------------- 合集（只读） ---------------- */

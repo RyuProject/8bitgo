@@ -5,6 +5,7 @@ import { formatBytes, formatSpeed, isRomFileAccepted } from '@/lib/emulator'
 import { detectRom, describeDetection } from './detect'
 import { resolveRuntime, runtimesFor, extOf } from './registry'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
+import { isRomPackBytes, unpackRomPackBlob } from '@/services/romPack'
 import type { Capability, LoadPhase, Runtime, RuntimeHandle, RuntimeId, ScreenLayoutState, StageMode } from './types'
 import {
   createOverallRatio,
@@ -299,6 +300,11 @@ interface Props {
    */
   onRetryRom?: () => void
   /**
+   * HEAD 能确认文件存在、但真实下载/解密/启动失败时，让父层跳到备用 ROM。
+   * 返回 true 表示父层已经开始解析下一个地址，播放器不再展示当前文件的终态错误。
+   */
+  onRomLoadFailed?: (reason: string) => boolean
+  /**
    * 这款游戏绑了哪几种语言的 ROM。少于两种时不显示切换入口 ——
    * 只有一份 ROM 的话「切换语言」是个假选项。
    */
@@ -473,6 +479,7 @@ export function EmulatorPlayer({
   romUnavailable,
   romUnreachable,
   onRetryRom,
+  onRomLoadFailed,
   romLangs,
   romLang,
   onRomLangChange,
@@ -1616,9 +1623,34 @@ export function EmulatorPlayer({
         // ⚠️ 「哪些会话不能重挂」和读档那边是**同一个**判断，所以共用 canRestartInPlace ——
         // 以前这里手写了一遍，两份分叉的表现只会在联机时出现，而且不报错。
         const attempt = session.retryAttempt ?? 0
+        const canFailoverRom = () =>
+          !ready &&
+          typeof session.game === 'string' &&
+          canRestartInPlace(session) &&
+          Boolean(onRomLoadFailed?.(message))
+
+        // 完整性/密钥/codec 错误是确定性的，同一个包再下载一次不会变好。直接切数据库里保留的
+        // 旧 ROM 备用地址，避免迁移期玩家先白等一轮自动重试。
+        const deterministicPackFailure = /(?:8BG|ROM 包)/i.test(message)
+        if (deterministicPackFailure && canFailoverRom()) {
+          restartAfterRomFailureRef.current = true
+          endSession()
+          setError(null)
+          setStatus('idle')
+          return
+        }
         if (!ready && canRestartInPlace(session) && attempt < AUTO_RETRY_LIMIT) {
           setError(null)
           begin(session.game, session.platform, session.runtime, { retryAttempt: attempt + 1 })
+          return
+        }
+
+        // 普通网络/核心加载错误先按原规则重试一次；仍失败再尝试下一个 ROM 候选。
+        if (canFailoverRom()) {
+          restartAfterRomFailureRef.current = true
+          endSession()
+          setError(null)
+          setStatus('idle')
           return
         }
 
@@ -2232,6 +2264,24 @@ export function EmulatorPlayer({
       }
 
       /*
+        本地 `.8bg` 要先还原文件名和内容，再走原有的类型识别/运行时选择。只在各适配器里
+        补解密还不够：播放器会先看到外层 `.8bg`，在挂载适配器之前就以“格式不支持”拒绝。
+        File 包住 Blob 不会复制整份大 ROM，PS1/NDS 这类文件仍可由后面的 Blob 路径处理。
+      */
+      if (isRomPackBytes(await picked.slice(0, 4).arrayBuffer())) {
+        try {
+          const unpacked = await unpackRomPackBlob(picked)
+          picked = new File([unpacked.blob], unpacked.name, {
+            type: 'application/octet-stream',
+            lastModified: picked.lastModified,
+          })
+        } catch (err) {
+          setError(err instanceof Error ? err.message : '8BG ROM 包无法解开')
+          return
+        }
+      }
+
+      /*
         街机改版包：先认一遍指纹表。认出来就换成正确的包名、配好 RomData ——
         不然核心只会说一句「Romset is unknown」，玩家完全无从下手。
         放在 detectRom 之前：改版包和原版包的扩展名、魔数都一样，
@@ -2339,6 +2389,8 @@ export function EmulatorPlayer({
    * 等父组件把新地址传下来再重开（见下面那个 effect）。
    */
   const restartWithLangRef = useRef<RomLang | null>(null)
+  /** 当前 ROM 实际加载失败后，父层切到备用地址时保持“继续开这一局”的用户意图。 */
+  const restartAfterRomFailureRef = useRef(false)
 
   /**
    * 收掉当前这一局。
@@ -2443,6 +2495,18 @@ export function EmulatorPlayer({
     // 同 key 切换只变 romLang / checking；start 是 useCallback，不能放依赖造成无关重开。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [romUrl, romLang, romChecking])
+
+  useEffect(() => {
+    if (!restartAfterRomFailureRef.current || romChecking) return
+    // 后续候选也都不存在：留在正常的“没有在线版本”界面，不把自动开局意图挂到未来。
+    if (romUnavailable) {
+      restartAfterRomFailureRef.current = false
+      return
+    }
+    if (!romUrl || !pageRuntime) return
+    restartAfterRomFailureRef.current = false
+    void start(null)
+  }, [romUrl, romChecking, romUnavailable, pageRuntime, start])
 
   const copyInvite = async () => {
     if (!gameSlug || !roomId) return
@@ -2902,8 +2966,9 @@ export function EmulatorPlayer({
 
           {/*
             弹幕层。压在画面上，pointer-events-none —— 它绝不能挡住游戏的触摸和点击。
-            放在挂载点之后、其余浮层之前：要盖过游戏画面，但别盖过进度条、开始按钮、
-            手柄提示那些需要点的东西。
+            2026-09-16 起改成**永远在最顶层**：z-index 写在组件里（LiveChat.tsx 的 z-40）。
+            原先是靠 DOM 顺序排在浮层**之前**，结果「主播暂时离开」那张蒙版把弹幕整层糊住。
+            之所以敢放最上面，还是因为 pointer-events-none —— 盖得住，也照样点得到。
           */}
           {liveChatOn && <LiveChatLane messages={chat.messages} />}
 
@@ -3042,10 +3107,17 @@ export function EmulatorPlayer({
           {watchingLive && status === 'running' && liveFrozen && (
             <div className="absolute inset-0 z-30 flex items-center justify-center backdrop-blur-sm">
               <div className="absolute inset-0 bg-black/40" aria-hidden />
-              <div className="relative flex flex-col items-center gap-2 px-6 text-center">
-                <span aria-hidden className="text-3xl drop-shadow sm:text-4xl">
-                  🚪
-                </span>
+              {/*
+                等主播回来的这段空档放广告位（原来是 🚪 图标）。
+                这是「等」的状态不是「玩」的状态：画面本来就被冻住了，广告不挡任何操作。
+
+                ⚠️ 内层容器必须自己带 w-full + max-w-*。外层是 flex items-center，
+                flex 子项的宽度由内容决定，而空的 <ins> 没有内容 —— 不给宽度就退回 0，
+                AdSense 直接不填（和空闲态那个坑一模一样）。
+                horizontal：只占一条横幅，下面「主播暂时离开」那行字照旧露在视线里。
+              */}
+              <div className="relative flex w-full max-w-md flex-col items-center gap-3 px-6 text-center">
+                <AdSenseSlot slot="9386967599" format="horizontal" responsive={false} />
                 <span className="text-base font-semibold text-white/90 sm:text-lg">{t.runtime.liveHostLeft}</span>
               </div>
             </div>
@@ -3349,7 +3421,11 @@ export function EmulatorPlayer({
           <input
             ref={inputRef}
             type="file"
-            accept={onDetectMismatch === 'switch' ? undefined : platform.romExtensions.join(',')}
+            accept={
+              onDetectMismatch === 'switch'
+                ? undefined
+                : [...platform.romExtensions, ...(platform.id === 'ps2' || platform.id === 'html5' ? [] : ['.8bg'])].join(',')
+            }
             className="hidden"
             onChange={(e) => void start(e.target.files?.[0] ?? null)}
           />

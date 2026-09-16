@@ -18,7 +18,7 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { RuntimeHandle } from './types'
 import type { ChatBarToggle } from './LiveChat'
 import { canBroadcast, startBroadcast, type Broadcast } from './broadcast'
-import { liveEnabled, liveLink, refreshLiveRooms, type LiveChatMessage } from '@/services/live'
+import { canAutoStartLive, liveEnabled, liveLink, refreshLiveRooms, type LiveChatMessage } from '@/services/live'
 import { playerName } from '@/services/netplay'
 import { useT, fmt } from '@/services/i18n'
 import { cx } from '@/lib/format'
@@ -368,6 +368,7 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
     if (!on || !handle || !gameSlug) return
     let cancelled = false
     let timer = 0
+    const capacityAbort = new AbortController()
     // 重新开始尝试就回到「连接中」。已经在播的那一路（依赖变化引起的重跑）不动它
     if (!liveRef.current) setConnecting(true)
 
@@ -475,9 +476,20 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
       }
     }
 
-    void attempt(0)
+    void (async () => {
+      const hasSlot = await canAutoStartLive(capacityAbort.signal)
+      if (cancelled) return
+      if (!hasSlot) {
+        // 满位只跳过这次默认开播，游戏本身照常运行；以后重新进游戏时会再次检查。
+        setConnecting(false)
+        console.info('[live] 直播间位置已满，本局跳过自动开播')
+        return
+      }
+      await attempt(0)
+    })()
     return () => {
       cancelled = true
+      capacityAbort.abort()
       window.clearTimeout(timer)
       setNeedsManual(false)
       stop()

@@ -101,8 +101,8 @@ check('restartSession 走 canRestartInPlace 判定，没有另写一份', () => 
 })
 
 /*
-  「哪些会话不能重挂引擎」这个判断，播放器里有**两处**要用：读档，和加载失败后的自动重试
-  （onError 里那段 —— 它同样是 begin() 原地重挂）。两处必须是同一份。
+  「哪些会话不能重挂引擎」这个判断，播放器里有**三处**要用：工具栏重开、加载失败后的
+  自动重试，以及 ROM 迁移期间切备用文件（后两处都在 onError 里）。三处必须是同一份。
 
   以前自动重试那儿手写着 `!session.netplay && !session.cloud && !session.live`。
   留着它才是真正的风险：以后新增一种「游戏不在本机跑」的会话，
@@ -111,7 +111,8 @@ check('restartSession 走 canRestartInPlace 判定，没有另写一份', () => 
 */
 check('自动重试和读档共用同一份会话判断，没有第二份手写的', () => {
   const hits = player.match(/canRestartInPlace\(session\)/g) ?? []
-  assert.equal(hits.length, 2, `canRestartInPlace(session) 用了 ${hits.length} 处，应该是读档 + 自动重试两处`)
+  assert.equal(hits.length, 3, `canRestartInPlace(session) 用了 ${hits.length} 处，应该是重开 + 自动重试 + ROM 故障切换三处`)
+  assert.match(player, /typeof session\.game === 'string'[\s\S]{0,160}?canRestartInPlace\(session\)/)
   assert.match(player, /if \(!ready && canRestartInPlace\(session\) && attempt < AUTO_RETRY_LIMIT\)/)
   assert.doesNotMatch(
     player,

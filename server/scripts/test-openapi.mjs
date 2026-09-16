@@ -120,8 +120,8 @@ const APP = {
     混在一把 key 上才测得出「同一个应用，两条取令牌的路给的东西不一样」——
     而那正是这套权限模型的核心。
   */
-  approved_scopes: 'games.read games.rom library.read saves.read',
-  requested_scopes: 'games.read games.rom library.read saves.read',
+  approved_scopes: 'games.read games.rom library.read library.write live.write saves.read',
+  requested_scopes: 'games.read games.rom library.read library.write live.write saves.read',
   rate_tier: 'live',
   redirect_uris: '["https://partner.example/cb"]',
   embed_origins: '["https://partner.example"]',
@@ -176,6 +176,8 @@ const SAVES = [
     updated_at: '2026-09-02T00:00:00Z',
   },
 ]
+/** 开放设备上报游玩的内存去重表；key 与 game_plays 主键同形。 */
+const PLAY_ROWS = new Set()
 
 /** 照着 WHERE 里真的写了什么来筛。多一个字少一个字都会反映到结果上 */
 function listVisible(s, params = []) {
@@ -234,6 +236,24 @@ globalThis.__fakeDb = {
       if (s.includes('adult = 0')) rows = rows.filter((g) => !g.adult)
       return rows
     }
+    if (s.startsWith('SELECT id FROM games WHERE slug = ?')) {
+      const game = ALL_GAMES.find((g) => g.slug === params[0])
+      return game ? [{ id: game.id }] : []
+    }
+    if (s.startsWith('INSERT IGNORE INTO game_plays')) {
+      const [kind, identity, slug] = params
+      const game = ALL_GAMES.find((g) => g.slug === slug && !g.hidden)
+      if (!game) return { affectedRows: 0 }
+      const key = `${game.id}:${kind}:${identity}`
+      if (PLAY_ROWS.has(key)) return { affectedRows: 0 }
+      PLAY_ROWS.add(key)
+      return { affectedRows: 1 }
+    }
+    if (s.startsWith('UPDATE games SET plays = plays + 1')) {
+      const game = ALL_GAMES.find((g) => g.slug === params[0] && !g.hidden)
+      if (game) game.plays += 1
+      return { affectedRows: game ? 1 : 0 }
+    }
     /*
       列表和它的 COUNT。**两条走同一个过滤函数** —— 这正是要测的那件事：
       真库里 total 和条目也是两条 SQL，只要路由漏传 excludeAdult，
@@ -275,6 +295,8 @@ globalThis.__fakeDb = {
     if (s.startsWith('SELECT g.slug FROM recents')) {
       return params[0] === USER_ID ? [{ slug: 'contra' }] : []
     }
+    if (s.startsWith('INSERT INTO recents')) return { affectedRows: 1 }
+    if (s.startsWith('DELETE FROM recents')) return { affectedRows: 0 }
     if (s.startsWith('SELECT runtime, game_slug, slot, size, created_at, updated_at FROM saves')) {
       return params[0] === USER_ID ? SAVES : []
     }
@@ -314,6 +336,7 @@ const { openDeviceRouter } = await import('../src/routes/open-device.js')
 const { hashSecret } = await import('../src/open/apps.js')
 const { verifyToken } = await import('../src/auth.js')
 const { issueAppToken, verifyOpenToken } = await import('../src/open/tokens.js')
+const { verifyLivePublisherToken } = await import('../src/open/live-publisher.js')
 const { signToken } = await import('../src/auth.js')
 const { FORBIDDEN_OUT_KEYS } = await import('../src/open/mapper.js')
 const { isOpenPath, openErrorFor, openErrorMiddleware } = await import('../src/open/errors.js')
@@ -656,7 +679,7 @@ await check('⚠️ 匿名（完全不带 Authorization 头）能读列表和详
   assert.equal((await one.json()).slug, 'contra')
 
   for (const path of ['/api/open/v1/platforms', '/api/open/v1/genres', '/api/open/v1/languages',
-                      '/api/open/v1/live/rooms', '/api/open/v1/collections']) {
+                      '/api/open/v1/live/capacity', '/api/open/v1/live/rooms', '/api/open/v1/collections']) {
     assert.equal((await api(path)).status, 200, `${path} 匿名读不了`)
   }
 })
@@ -695,8 +718,8 @@ await check('⚠️⚠️ 开放平台密钥没配时，公开目录照样能读
   resetOpenConfig()
   try {
     for (const path of ['/api/open/v1/games', '/api/open/v1/games/contra', '/api/open/v1/platforms',
-                        '/api/open/v1/genres', '/api/open/v1/languages', '/api/open/v1/live/rooms',
-                        '/api/open/v1/collections', '/api/open/v1/health']) {
+                        '/api/open/v1/genres', '/api/open/v1/languages', '/api/open/v1/live/capacity', '/api/open/v1/live/rooms',
+                        '/api/open/v1/netplay/rooms', '/api/open/v1/collections', '/api/open/v1/health']) {
       assert.equal((await api(path)).status, 200, `${path} 因为没配签名密钥而不可用 —— 它根本用不到密钥`)
     }
     // 反过来：真的需要密钥的那些必须照旧 501，而不是被一起放开
@@ -730,6 +753,26 @@ await check('⚠️ 用户数据和自省也没跟着公开', async () => {
                       '/api/open/v1/games/contra/embed']) {
     assert.equal((await api(path)).status, 401, `${path} 变成匿名可读了`)
   }
+  const play = await api('/api/open/v1/games/contra/play', { method: 'POST' })
+  assert.equal(play.status, 401, '跨设备游玩上报变成匿名可写了')
+  const publish = await api('/api/open/v1/live/publish-token', { method: 'POST' })
+  assert.equal(publish.status, 401, '设备开播凭证变成匿名可领了')
+})
+
+await check('直播与 P2P 联机房间发现都有公开列表和详情', async () => {
+  const capacityResponse = await api('/api/open/v1/live/capacity')
+  assert.equal(capacityResponse.status, 200)
+  const capacity = await capacityResponse.json()
+  assert.deepEqual(Object.keys(capacity).sort(), ['available', 'max', 'remaining', 'used'])
+  assert.equal(capacity.available, capacity.used < capacity.max)
+  for (const path of ['/api/open/v1/live/rooms', '/api/open/v1/netplay/rooms?game=contra']) {
+    const r = await api(path)
+    assert.equal(r.status, 200, path)
+    assert.ok(Array.isArray((await r.json()).items), `${path} 没回 items`)
+  }
+  const missing = await api('/api/open/v1/netplay/rooms/not-a-room')
+  assert.equal(missing.status, 404)
+  assert.equal((await missing.json()).error, 'not_found')
 })
 
 await check('按机型、按类型可单独或组合筛选，分页总数与交集一致', async () => {
@@ -1083,6 +1126,7 @@ await check('⚠️ 公开目录可以被边缘缓存，但用户数据和 ROM �
   const grant = url.split('/api/open/v1/rom/')[1]
   for (const [path, init] of [
     ['/api/open/v1/rom/' + grant, { redirect: 'manual' }],
+    ['/api/open/v1/live/capacity', undefined],
     ['/api/open/v1/live/rooms', undefined],
   ]) {
     const cc = String((await api(path, init)).headers.get('cache-control'))
@@ -1529,6 +1573,7 @@ const userToken = async (scope) => {
   return j.access_token
 }
 const asUser = async (path, token) => api(path, { headers: { Authorization: `Bearer ${token}` } })
+const postAsUser = async (path, token) => api(path, { method: 'POST', headers: { Authorization: `Bearer ${token}` } })
 
 await check('/v1/library 回收藏和最近在玩，而且是完整的游戏对象', async () => {
   const t = await userToken('library.read')
@@ -1548,6 +1593,83 @@ await check('⚠️ 用户数据也走对外白名单，不能漏内部字段', 
   for (const k of FORBIDDEN_OUT_KEYS) {
     assert.ok(!text.includes(`"${k}"`), `library 里漏了内部字段 ${k}`)
   }
+})
+
+await check('其它设备真开玩后会计数；同账号换设备或重试不会重复加', async () => {
+  PLAY_ROWS.clear()
+  const before = GAME.plays
+  try {
+    // 两枚令牌代表同一账号在两台设备上分别完成了一次设备码授权。
+    const firstDevice = await userToken('library.write')
+    const secondDevice = await userToken('library.write')
+    const first = await postAsUser('/api/open/v1/games/contra/play', firstDevice)
+    assert.equal(first.status, 200)
+    assert.deepEqual(await first.json(), { ok: true, counted: true })
+    const repeated = await postAsUser('/api/open/v1/games/contra/play', secondDevice)
+    assert.equal(repeated.status, 200)
+    assert.deepEqual(await repeated.json(), { ok: true, counted: false })
+    assert.equal(GAME.plays, before + 1, '同一账号在两台设备上把次数加了两遍')
+    assert.match(repeated.headers.get('cache-control') ?? '', /no-store/)
+  } finally {
+    GAME.plays = before
+    PLAY_ROWS.clear()
+  }
+})
+
+await check('游玩上报必须是带 library.write 的用户令牌，应用令牌不能冒充玩家', async () => {
+  const readOnly = await userToken('library.read')
+  const noScope = await postAsUser('/api/open/v1/games/contra/play', readOnly)
+  assert.equal(noScope.status, 403)
+  assert.equal((await noScope.json()).error, 'insufficient_scope')
+
+  // 绕过正常取令牌流程，直接造一枚“有 scope 但 kind=app”的令牌，验证第二道门也在。
+  const appOnly = issueAppToken({
+    privateKey, kid: 'test-1', issuer: 'https://8bitgo.com', appId: APP.id, scopes: ['library.write'],
+  })
+  const noUser = await postAsUser('/api/open/v1/games/contra/play', appOnly)
+  assert.equal(noUser.status, 403)
+  assert.equal((await noUser.json()).error, 'insufficient_scope')
+})
+
+await check('游玩写接口不能用来探测下架、成人或不存在的游戏', async () => {
+  const token = await userToken('library.write')
+  for (const slug of ['secret-game', 'adult-game', 'does-not-exist']) {
+    const r = await postAsUser(`/api/open/v1/games/${slug}/play`, token)
+    assert.equal(r.status, 404, slug)
+    assert.equal((await r.json()).error, 'not_found', slug)
+  }
+})
+
+await check('Linux / 外部设备能用 live.write 换用途单一的长时段开播凭证', async () => {
+  const access = await userToken('live.write')
+  const r = await postAsUser('/api/open/v1/live/publish-token', access)
+  assert.equal(r.status, 200)
+  assert.match(r.headers.get('cache-control') ?? '', /no-store/)
+  const body = await r.json()
+  assert.equal(body.protocol, '8bitgo-live-v1')
+  assert.equal(body.namespace, '/live')
+  assert.equal(body.auth_field, 'publisherToken')
+  assert.equal(body.signaling_url, 'https://8bitgo.com/live')
+  assert.equal(body.capacity_url, 'https://8bitgo.com/api/open/v1/live/capacity')
+  assert.equal(body.ice_url, 'https://8bitgo.com/api/netplay/ice')
+  assert.ok(body.expires_in >= 900)
+  const claims = verifyLivePublisherToken(body.publisher_token, {
+    publicKey,
+    issuer: 'https://8bitgo.com',
+  })
+  assert.equal(claims?.userId, USER_ID)
+  assert.equal(claims?.appId, APP.id)
+  // 这枚票只能开播；REST access-token 验证器必须明确拒绝它。
+  assert.equal(verifyOpenToken(body.publisher_token, { publicKey, issuer: 'https://8bitgo.com' }), null)
+})
+
+await check('开播凭证必须由带 live.write 的用户令牌领取', async () => {
+  const wrongScope = await userToken('library.write')
+  assert.equal((await postAsUser('/api/open/v1/live/publish-token', wrongScope)).status, 403)
+  const appOnly = issueAppToken({
+    privateKey, kid: 'test-1', issuer: 'https://8bitgo.com', appId: APP.id, scopes: ['live.write'],
+  })
+  assert.equal((await postAsUser('/api/open/v1/live/publish-token', appOnly)).status, 403)
 })
 
 await check('/v1/saves 只给元信息，不带存档内容', async () => {

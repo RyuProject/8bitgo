@@ -166,6 +166,7 @@ export function EmbedPage({ standalonePs2 = false }: Props) {
           romUnavailable={rom.status === 'missing'}
           romUnreachable={rom.unreachable}
           onRetryRom={rom.retry}
+          onRomLoadFailed={rom.failover}
           romLangs={game ? romLangsOf(game) : []}
           romLang={rom.lang}
           onRomLangChange={setRomLang}

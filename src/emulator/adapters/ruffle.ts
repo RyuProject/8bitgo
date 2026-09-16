@@ -20,6 +20,7 @@ import {
   readFlashEntries, readLegacyFlashEntries, restoreFlashEntries, validFlashEntries,
 } from '../ruffleSaves'
 import { getT, fmt } from '@/services/i18n'
+import { flashOnlineSaveRuffleConfig, prepareFlashOnlineSave } from '@/services/flashOnlineSave'
 
 export { RUFFLE_PATH } from '../paths'
 import { RUFFLE_PATH } from '../paths'
@@ -204,6 +205,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let movieUrl: URL | null = null
   let lastLoadOptions: Record<string, unknown> | null = null
   const saveId = options.gameSlug || (typeof options.game === 'string' ? options.game : `local:${options.game.name}`)
+  // 会话申请和 ROM 下载并行；普通 Flash 游戏会立刻得到 null，不增加任何请求。
+  const flashOnlineSave = prepareFlashOnlineSave(options.gameSlug)
   const storage = (): Storage => {
     try { return localStorage } catch { throw new Error(rt.flashStorageUnavailable) }
   }
@@ -349,6 +352,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           host?.appendChild(player)
         }
 
+        const onlineSave = await flashOnlineSave
         const base = {
           autoplay: 'on',
           unmuteOverlay: 'visible',
@@ -369,6 +373,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           splashScreen: false,
           warnOnUnsupportedContent: false,
           publicPath: RUFFLE_PATH,
+          ...flashOnlineSaveRuffleConfig(onlineSave),
           // 中文 / 日文这类设备字体文本要靠它才画得出来，见文件顶部的说明
           ...fontConfig(),
         }

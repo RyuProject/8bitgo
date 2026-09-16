@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { query, queryOne } from '../db.js'
 import { requireUser, hashPassword, verifyPassword, signToken, tokenVersionOf } from '../auth.js'
 import { userRowToPublic } from '../mappers.js'
-import { favIds, recentIds, gameIdBySlug } from '../userdata.js'
+import { favIds, recentIds, gameIdBySlug, recordRecent } from '../userdata.js'
 // ⚠️ 2026-09-11：这两个在 DELETE /api/me 里用着，但一直没 import ——
 // 自助注销会在消费掉验证码之后抛 ReferenceError 变成 500，用户永远注销不了，
 // 而且每试一次白费一封验证码邮件。
@@ -130,24 +130,7 @@ meRouter.post('/favorites/:slug', async (req, res, next) => {
 meRouter.post('/recents/:slug', async (req, res, next) => {
   try {
     const { id } = req.user
-    const gameId = await gameIdBySlug(req.params.slug)
-    if (!gameId) return res.status(404).json({ error: '游戏不存在' })
-    await query(
-      `INSERT INTO recents (user_id, game_id, played_at) VALUES (?, ?, CURRENT_TIMESTAMP(3))
-       ON DUPLICATE KEY UPDATE played_at = CURRENT_TIMESTAMP(3)`,
-      [id, gameId],
-    )
-    // 超出 12 条的旧记录删掉。子查询要套一层派生表：
-    // MySQL 不允许在 DELETE 的子查询里直接再查同一张表。
-    await query(
-      `DELETE FROM recents
-        WHERE user_id = ? AND game_id IN (
-          SELECT game_id FROM (
-            SELECT game_id FROM recents WHERE user_id = ? ORDER BY played_at DESC LIMIT 100 OFFSET 12
-          ) old
-        )`,
-      [id, id],
-    )
+    if (!(await recordRecent(id, req.params.slug))) return res.status(404).json({ error: '游戏不存在' })
     res.json({ recent: await recentIds(id) })
   } catch (e) {
     next(e)

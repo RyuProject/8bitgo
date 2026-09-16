@@ -224,7 +224,8 @@ export const SCOPE_LABELS: Record<string, string> = {
   'games.read': '游戏元数据、封面、嵌入地址',
   'games.rom': '沙箱可下载逐机型测试样本；访问全库需审核',
   'library.read': '读收藏与最近在玩',
-  'library.write': '写收藏与最近在玩',
+  'library.write': '写收藏、最近在玩，并上报一次真实开玩',
+  'live.write': '从 Linux、掌机等外部设备开启直播',
   'saves.read': '读云存档',
   'saves.write': '写云存档',
 }

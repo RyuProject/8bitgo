@@ -34,6 +34,8 @@ import { canvasToBlob } from '../recorder'
 import { GP, hasGamepadApi, startGamepadBridge, type GamepadBridge } from '../gamepad'
 import { assertJar } from '@/lib/romValidation'
 import { focusFrame, frameGamepads } from '../frameFocus'
+import { loadGameBytes } from '../romLoader'
+import { isRomPackUrl } from '@/services/romPack'
 
 /* ---------------- 从 freej2me-web 源码里挖出来的接入点 ---------------- */
 
@@ -228,8 +230,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
 
   const isFile = typeof options.game !== 'string'
-  // 本地文件要先传到后端才能被 freej2me-web 取到，这需要后端存在
-  if (isFile && !apiEnabled()) {
+  const needsTempJar = isFile || (typeof options.game === 'string' && isRomPackUrl(options.game))
+  // 本地文件和 8BG 都要先变回普通 JAR 再放进临时目录，这需要后端存在。
+  if (needsTempJar && !apiEnabled()) {
     options.onError?.(rt.j2meLocalUnsupported)
     return deadHandle()
   }
@@ -434,12 +437,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   void (async () => {
     try {
       let name: string
-      if (isFile) {
+      if (needsTempJar) {
         // 本地 jar 要先传到后端才能被 freej2me-web 取到。fetch 拿不到上传进度
         // （只有 XHR 的 upload.onprogress 有），所以这里只报阶段，UI 转不确定态。
         options.onProgress?.({ phase: 'rom' })
-        const data = await (options.game as File).arrayBuffer()
-        options.onProgress?.({ phase: 'rom', loaded: data.byteLength, total: data.byteLength, ratio: 1 })
+        const loaded = await loadGameBytes(options.game, options.onProgress)
+        const data = loaded.data
         // 后端还会独立再验一次；前端先验是为了不上传明显损坏的包，也能立刻给玩家准确提示。
         assertJar(data)
         name = await uploadTempJar(data)
@@ -515,4 +518,3 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     },
   }
 }
-

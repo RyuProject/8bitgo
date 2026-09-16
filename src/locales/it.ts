@@ -150,6 +150,7 @@ const it: Translation = {
   footer: {
     aria: 'Link a piè di pagina',
     copyright: 'Tutti i contenuti dei giochi sono di proprietà dei rispettivi titolari',
+    copyrightNotice: 'Avviso sul copyright',
   },
 
   /* ---------------- Cambio lingua ---------------- */

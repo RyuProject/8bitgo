@@ -378,6 +378,7 @@ export function GameDetailPage() {
                   romUnavailable={rom.status === 'missing'}
                   romUnreachable={rom.unreachable}
                   onRetryRom={rom.retry}
+                  onRomLoadFailed={rom.failover}
                   romLangs={romLangs}
                   romLang={rom.lang}
                   onRomLangChange={setRomLang}

@@ -30,6 +30,7 @@
 cd deploy/cloudgame
 git clone --depth 1 https://github.com/giongto35/cloud-game.git      # 源码放在同目录，compose 会 build 它
 cp .env.example .env && vi .env                                       # PUBLIC_IP、TURN_SECRET、R2_BUCKET
+npm --prefix ../.. ci --omit=dev                                      # sync-roms.sh 的 8BG/Zstd 解包器
 ./render-config.sh                                                    # 生成 config.yaml
 ./sync-roms.sh                                                        # R2 → ./games（需要 rclone，见脚本头部）
 docker compose up -d --build                                          # 第一次 build gstreamer 要十几分钟
@@ -129,6 +130,9 @@ worker 数量可以适度超过核数 —— 房间不是时刻满负荷。但�
 
 cloud-game 只能跑它文件系统里的游戏，**不能上传本地文件**。`sync-roms.sh` 把 R2 的
 `roms/<platform>/<slug>.<ext>` 同步成 `./games/<platform 小写>/<slug>.<ext>`：
+
+- R2 中的 `<slug>.<ext>.8bg` 会先逐块解密解压成普通 ROM；`.env` 必须配置和主站一致的
+  `ROM_PACK_SECRET` / 历史轮换密钥，否则同步会立即失败并保留上一次可用文件
 
 - 游戏名 = 文件名去后缀 = slug。前端 `GAME_START` 发的就是 slug，所以 R2 里的 key 必须按约定命名
 - 目录名用来选核心（`config.template.yaml` 的 `cores.list` 键 / `folder`）
