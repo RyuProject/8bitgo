@@ -39,6 +39,7 @@ import type { NetplaySession } from './adapters/emulatorjs'
 import type { CloudSession, CloudState } from './adapters/cloudgame'
 import { p2pPlayable, cloudPlayable } from './paths'
 import { canRestartInPlace } from './sessionRestart'
+import { confirmAndReplayAnchorNavigation } from './leaveNavigation'
 import { AdSenseSlot } from '@/components/ads/AdSenseSlot'
 import { sessionCountsAsPlayed } from './playedScope'
 import { cloudGameMeta, emulatorJsMeta, liveViewMeta } from './runtimeMeta'
@@ -1147,9 +1148,20 @@ export function EmulatorPlayer({
    * 站内点链接那种 SPA 跳转走不到 beforeunload，由下面那个 click 守卫单独拦。
    */
   const watchingLive = Boolean(session?.live)
+  /** 确认后重放的那一条链接点击；第二次进捕获监听时凭它放行，避免递归确认。 */
+  const replayingLeaveAnchorRef = useRef<HTMLAnchorElement | null>(null)
+  /** 普通 <a> 会触发 beforeunload；站内确认已经问过一次，那次卸载不能再问第二遍。 */
+  const allowConfirmedUnloadRef = useRef(false)
+  const confirmedUnloadTimerRef = useRef(0)
   useEffect(() => {
     if (status !== 'running' || watchingLive) return
     const guard = (e: BeforeUnloadEvent) => {
+      if (allowConfirmedUnloadRef.current) {
+        allowConfirmedUnloadRef.current = false
+        window.clearTimeout(confirmedUnloadTimerRef.current)
+        confirmedUnloadTimerRef.current = 0
+        return
+      }
       e.preventDefault()
       // 老一点的浏览器要 returnValue 非空才弹；现代浏览器不显示自定义文字，给空串即可
       e.returnValue = ''
@@ -1162,8 +1174,8 @@ export function EmulatorPlayer({
    * 玩到一半误点一下，路由一换播放器整个卸载、handle.destroy()，半小时进度当场没了，连个确认都没有。
    *
    * 路由是 BrowserRouter，没有 useBlocker 可用，所以在 document 的**捕获阶段**拦 click：
-   * 它跑在 React 根节点的监听之前，这里 preventDefault 之后 <Link> 自己会跳过 navigate
-   * （react-router 的 Link 判 event.defaultPrevented）。
+   * 它跑在 React 根节点的监听之前。第一次点击总是拦住；玩家确定后重放同一个 anchor.click()，
+   * 让 React Router 收到一条没有经过同步 confirm 阻塞的新事件。
    * 只拦「会离开本页的同源左键点击」：新标签（target=_blank / 修饰键）、下载、外站、同页锚点都放过 ——
    * 这些不会拆掉正在跑的游戏。
    * 管不到的：地址栏 / 前进后退（那是 beforeunload 和 popstate 的事，后者拦不住）、代码里直接 navigate() 的少数路径。
@@ -1184,13 +1196,34 @@ export function EmulatorPlayer({
       }
       if (url.origin !== location.origin) return
       if (url.pathname === location.pathname && url.search === location.search) return
-      if (!window.confirm(t.player.leaveConfirm)) {
-        e.preventDefault()
-        e.stopPropagation()
-      }
+      confirmAndReplayAnchorNavigation(e, a, t.player.leaveConfirm, replayingLeaveAnchorRef, (message) => {
+        const accepted = window.confirm(message)
+        if (!accepted) return false
+
+        /*
+          React Router 的 <Link>（data-discover）重放后走 history，不触发 beforeunload。
+          裸 <a> 则会整页导航：这里给它一次短期通行证，避免玩家刚点过“确定”又看到浏览器
+          自己的第二个离页弹窗。若导航最终没发生，1.5 秒后自动恢复保护。
+        */
+        allowConfirmedUnloadRef.current = !a.hasAttribute('data-discover')
+        window.clearTimeout(confirmedUnloadTimerRef.current)
+        if (allowConfirmedUnloadRef.current) {
+          confirmedUnloadTimerRef.current = window.setTimeout(() => {
+            allowConfirmedUnloadRef.current = false
+            confirmedUnloadTimerRef.current = 0
+          }, 1500)
+        }
+        return true
+      })
     }
     document.addEventListener('click', onClick, true)
-    return () => document.removeEventListener('click', onClick, true)
+    return () => {
+      document.removeEventListener('click', onClick, true)
+      replayingLeaveAnchorRef.current = null
+      allowConfirmedUnloadRef.current = false
+      window.clearTimeout(confirmedUnloadTimerRef.current)
+      confirmedUnloadTimerRef.current = 0
+    }
   }, [status, watchingLive, t])
 
   /**
