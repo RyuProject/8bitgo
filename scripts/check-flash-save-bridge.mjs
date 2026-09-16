@@ -1,12 +1,17 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const source = readFileSync(join(root, 'flash-api/armor-games/src/test_fla/MainTimeline.as'))
-const swf = readFileSync(join(root, 'public/flash-api/armor-games/AGI.swf'))
+const swfPath = join(root, 'public/flash-api/armor-games/AGI.swf')
+assert.ok(
+  existsSync(swfPath),
+  '缺少 public/flash-api/armor-games/AGI.swf：它是必须随 Git 部署的构建产物；本地请运行 npm run flashbridge 后提交该文件',
+)
+const swf = readFileSync(swfPath)
 const manifest = JSON.parse(readFileSync(join(root, 'public/flash-api/armor-games/runtime.json'), 'utf8'))
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex')
 

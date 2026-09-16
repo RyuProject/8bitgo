@@ -33,6 +33,9 @@ README.md
 *.njsproj
 *.sln
 *.sw?
+# Flash 在线存档桥是构建期必需的正式产物；生产机没有 FFDec，必须随 Git 发布。
+# `*.sw?` 原本为了忽略编辑器交换文件，却也会匹配 `.swf`，所以在这里精确放行。
+!public/flash-api/armor-games/AGI.swf
 
 # 自建的 EmulatorJS（main 分支构建，约 1.6MB）**故意提交进仓库**，别再忽略它。
 # 理由：它和 ruffle / jsdos 不一样 —— 那两个 `npm run ruffle|jsdos` 能从 node_modules
