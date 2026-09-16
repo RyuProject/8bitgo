@@ -110,10 +110,12 @@ app.use('/api', noStore)
 app.get('/api/health', async (_req, res) => {
   try {
     const ok = await ping()
-    res.json({ service: '8bitgo-api', db: ok })
+    // 只报布尔能力，不暴露提交号或文件路径。部署时用它区分“库已经迁移”与
+    // “PM2 其实还在跑另一个目录里的旧 API”，后者仅靠 db:true 完全看不出来。
+    res.json({ service: '8bitgo-api', db: ok, capabilities: { dosStartupCommands: true } })
   } catch (e) {
     console.error('[health] 数据库探测失败', e)
-    res.status(500).json({ service: '8bitgo-api', db: false })
+    res.status(500).json({ service: '8bitgo-api', db: false, capabilities: { dosStartupCommands: true } })
   }
 })
 

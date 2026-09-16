@@ -85,7 +85,7 @@ export async function upsertGame(game: Game): Promise<Game> {
   )
   if (JSON.stringify(commandMap(game.dosStartupCommands)) !== JSON.stringify(commandMap(saved.dosStartupCommands))) {
     throw new Error(
-      '服务端没有保存 DOS 启动前命令。请在服务器运行数据库迁移（cd server && npm run migrate）并重启 8bitgo-api，然后重新保存。',
+      '服务端回包没有保留 DOS 启动前命令。若数据库迁移已显示“最新”，说明 PM2 正在运行旧代码或另一个目录；请检查 pm2 describe 8bitgo-api 的 script path / exec cwd 后重新启动正确入口。',
     )
   }
   for (const [lang, backup] of Object.entries(game.romBackups ?? {})) {
