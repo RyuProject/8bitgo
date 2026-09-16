@@ -31,6 +31,7 @@
     "test:coop-seat": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-coop-seat.mjs",
     "test:sse": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-sse-fallback.mjs",
     "test:sse-guard": "npm --prefix server run test:sse-guard",
+    "test:sfs": "npm --prefix server run test:sfs",
     "test:sitemap": "node scripts/test-sitemap.mjs",
     "test:robots": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-robots.mjs",
     "test:home-sections": "node scripts/test-home-sections.mjs",

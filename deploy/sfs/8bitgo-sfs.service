@@ -1,0 +1,37 @@
+[Unit]
+Description=8BitGo SAS3 SmartFoxServer 1.x sidecar
+After=network.target
+
+[Service]
+Type=simple
+User=8bitgo-sfs
+Group=8bitgo-sfs
+RuntimeDirectory=8bitgo-sfs
+RuntimeDirectoryMode=0700
+ExecStart=/opt/8bitgo-sfs/run-server.sh
+ExecStop=/opt/8bitgo-sfs/stop-server.sh
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=25
+
+# 8044 只允许 Node 从 loopback 访问。要给原生客户端开放 444，请用 nginx stream/HAProxy
+# 单独监听公网，再转到 127.0.0.1:8044；不要解除 sidecar 自身的这层隔离。
+IPAddressDeny=any
+IPAddressAllow=localhost
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6
+LimitNOFILE=65536
+MemoryMax=768M
+
+[Install]
+WantedBy=multi-user.target

@@ -57,6 +57,7 @@ import { gameSitemap, postSitemap, sitemapIndex, taxonomySitemap } from './route
 import { logSearchPushStatus } from './search-push.js'
 import { romPackRouter } from './routes/rom-pack.js'
 import { isRomPackConfigured } from './rom-pack-key.js'
+import { createSfsService } from './sfs.js'
 
 const app = express()
 app.disable('x-powered-by')
@@ -80,6 +81,9 @@ app.set('trust proxy', process.env.TRUST_PROXY || 'loopback')
 // 普通中间件 —— cors 排在后面的话，413 / 400 这类响应就没有跨域头，
 // 浏览器只报一句 CORS 错误，前端根本读不到「文件过大」这种真正的原因。
 const origins = (process.env.ALLOWED_ORIGINS || '*').split(',').map((s) => s.trim()).filter(Boolean)
+// SFS 是可选旁路：这里创建配置与只读接口，真正的 WebSocket 桥要到 httpServer 建好后才挂。
+// 默认 SFS_ENABLED=0，因此 Java sidecar 不存在也不会影响主站启动。
+const sfs = createSfsService()
 app.use(
   cors({
     origin: origins.includes('*') ? true : origins,
@@ -102,6 +106,7 @@ app.use(express.json({ limit: '4mb' }))
 // /api 默认一律不缓存。公开只读接口（games / posts）会自己覆盖成短缓存 ——
 // 默认安全：漏配只是少一层缓存，配反了就可能把某个用户的数据缓存给下一个人。
 app.use('/api', noStore)
+app.use('/api/sfs', sfs.router)
 
 /*
   健康检查。公开、匿名。
@@ -116,10 +121,10 @@ app.get('/api/health', async (_req, res) => {
     const ok = await ping()
     // 只报布尔能力，不暴露提交号或文件路径。部署时用它区分“库已经迁移”与
     // “PM2 其实还在跑另一个目录里的旧 API”，后者仅靠 db:true 完全看不出来。
-    res.json({ service: '8bitgo-api', db: ok, capabilities: { dosStartupCommands: true, romPack: isRomPackConfigured(), flashOnlineSave: flashSaveConfigured() } })
+    res.json({ service: '8bitgo-api', db: ok, capabilities: { dosStartupCommands: true, romPack: isRomPackConfigured(), flashOnlineSave: flashSaveConfigured(), sfs: sfs.config.enabled } })
   } catch (e) {
     console.error('[health] 数据库探测失败', e)
-    res.status(500).json({ service: '8bitgo-api', db: false, capabilities: { dosStartupCommands: true, romPack: isRomPackConfigured(), flashOnlineSave: flashSaveConfigured() } })
+    res.status(500).json({ service: '8bitgo-api', db: false, capabilities: { dosStartupCommands: true, romPack: isRomPackConfigured(), flashOnlineSave: flashSaveConfigured(), sfs: sfs.config.enabled } })
   }
 })
 
@@ -470,6 +475,8 @@ const io = attachNetplay(httpServer, app, origins)
 // 直播（一人玩多人看）。和 netplay 共用同一个 socket.io 服务，但走各自的命名空间。
 // 画面同样不经过服务器，这里只转发 WebRTC 握手（见 src/live.js）
 attachLive(io)
+// 旧 Flash 的裸 TCP 不能从浏览器直连；只接管 /sfs/sas3，其余 upgrade 继续交给 socket.io / IPX。
+sfs.attach(httpServer)
 startSweeper()
 
 /**

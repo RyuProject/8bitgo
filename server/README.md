@@ -97,6 +97,7 @@ server {
   location /api/ {
     proxy_pass http://127.0.0.1:8788;
     proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
     # 直面用户时用 $proxy_add_x_forwarded_for；**在 Cloudflare 后面必须用 $http_cf_connecting_ip**
     # （$remote_addr / $proxy_add_x_forwarded_for 给的都是 CF 边缘节点，不是访客）
     # 详见 deploy/live/README.md 的「在 Cloudflare 后面的话」
@@ -112,6 +113,9 @@ server {
 | 方法 | 路径 | 说明 | 鉴权 |
 | --- | --- | --- | --- |
 | GET | `/api/health` | 健康检查 | 无 |
+| GET | `/api/sfs/config` | SAS3 的 Ruffle / 原生客户端连接配置 | 无 |
+| GET | `/api/sfs/status` | SFS 开关、上游可达性、连接数与流量 | 无 |
+| WebSocket | `/sfs/sas3` | SAS3 WebSocket → SmartFox TCP 字节桥 | 无（同源限制 + 每 IP 上限） |
 | GET | `/api/games` `/api/games/:slug` | 游戏列表 / 单个 | 无 |
 | PUT/PATCH/DELETE | `/api/games/:slug` | 新增覆盖 / 局部改 / 删 | 管理员 |
 | GET | `/api/posts` `/api/posts/:slug` | 文章列表 / 单篇 | 无 |

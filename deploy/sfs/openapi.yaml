@@ -1,0 +1,115 @@
+openapi: 3.1.0
+info:
+  title: 8BitGo SFS 接入 API
+  version: 1.0.0
+  description: SAS3 的 SmartFoxServer 1.x 发现、状态与 WebSocket 桥接口。
+servers:
+  - url: https://8bitgo.com
+paths:
+  /api/sfs/config:
+    get:
+      summary: 取得浏览器及原生客户端连接配置
+      operationId: getSfsConfig
+      responses:
+        '200':
+          description: SFS 未启用时仍返回 200，enabled=false 且 ruffle 为空。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SfsConfig'
+  /api/sfs/status:
+    get:
+      summary: 检查 Java sidecar 与桥接容量
+      operationId: getSfsStatus
+      responses:
+        '200':
+          description: 状态快照。ready=false 不代表主站故障。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SfsStatus'
+  /sfs/sas3:
+    get:
+      summary: SAS3 WebSocket 到裸 TCP 的字节桥
+      description: 使用 WebSocket Upgrade；成功后每个二进制帧按原字节写入 SmartFox TCP。
+      x-websocket: true
+      responses:
+        '101': { description: Switching Protocols }
+        '403': { description: 浏览器 Origin 不在白名单 }
+        '429': { description: 总连接或每 IP 连接达到上限 }
+        '503': { description: SFS_ENABLED=0 }
+components:
+  schemas:
+    SocketProxy:
+      type: object
+      required: [host, port, proxyUrl]
+      properties:
+        host: { type: string, const: sas3server.ninjakiwi.com }
+        port: { type: integer, const: 444 }
+        proxyUrl: { type: string, format: uri }
+    SfsConfig:
+      type: object
+      required: [enabled, protocol, games, ruffle]
+      properties:
+        enabled: { type: boolean }
+        protocol: { type: string, const: SmartFoxServer 1.x }
+        games:
+          type: array
+          items: { type: string, const: sas3 }
+        websocket:
+          oneOf:
+            - type: 'null'
+            - type: object
+              required: [path, url]
+              properties:
+                path: { type: string }
+                url: { type: string, format: uri }
+        native:
+          description: 只有配置 SFS_PUBLIC_TCP_HOST 时才返回；原 SWF 不会自动读取它。
+          oneOf:
+            - type: 'null'
+            - type: object
+              required: [host, port]
+              properties:
+                host: { type: string }
+                port: { type: integer }
+                note: { type: string }
+        ruffle:
+          type: object
+          properties:
+            socketProxy:
+              type: array
+              items: { $ref: '#/components/schemas/SocketProxy' }
+            urlRewriteRules:
+              type: array
+              items:
+                type: array
+                prefixItems: [{ type: string }, { type: string }]
+                minItems: 2
+                maxItems: 2
+    SfsStatus:
+      type: object
+      required: [enabled, ready, upstream, connections, traffic]
+      properties:
+        enabled: { type: boolean }
+        ready: { type: boolean }
+        upstream:
+          type: object
+          required: [reachable, checkedAt]
+          properties:
+            reachable: { type: boolean }
+            checkedAt: { type: string, format: date-time }
+        connections:
+          type: object
+          properties:
+            active: { type: integer }
+            accepted: { type: integer }
+            rejected: { type: integer }
+            limit: { type: integer }
+            perIpLimit: { type: integer }
+        traffic:
+          type: object
+          properties:
+            fromClient: { type: integer }
+            fromUpstream: { type: integer }
+

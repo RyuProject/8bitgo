@@ -35,6 +35,7 @@
     "test:sse-guard": "node scripts/test-sse-guard.mjs",
     "test:ratelimit": "node scripts/test-rate-limit.mjs",
     "test:ipx": "node scripts/test-ipx.mjs",
+    "test:sfs": "node scripts/test-sfs.mjs",
     "test:rooms": "node scripts/test-rooms.mjs",
     "test:netplay": "NETPLAY_HOST_GRACE_MS=400 NETPLAY_CLAIM_WINDOW_MS=500 node scripts/test-netplay.mjs",
     "test:netplay:hardening": "node scripts/test-netplay-hardening.mjs",

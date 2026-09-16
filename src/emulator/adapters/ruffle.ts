@@ -14,6 +14,7 @@ import { assertSwf } from '@/lib/romValidation'
 import { canvasToBlob } from '../recorder'
 import { usableVideoSize } from '../videoTuning'
 import { focusFrame } from '../frameFocus'
+import { isTyping } from '../hotkeyBridge'
 import { installAudioTap, type AudioTap } from '../audioTap'
 import {
   FLASH_SAVE_FORMAT, LEGACY_FLASH_PREFIX, flashMovieUrl, flashSavePrefix,
@@ -21,6 +22,7 @@ import {
 } from '../ruffleSaves'
 import { getT, fmt } from '@/services/i18n'
 import { flashOnlineSaveRuffleConfig, prepareFlashOnlineSave } from '@/services/flashOnlineSave'
+import { prepareSfsRuffleConfig } from '@/services/sfs'
 
 export { RUFFLE_PATH } from '../paths'
 import { RUFFLE_PATH } from '../paths'
@@ -207,6 +209,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const saveId = options.gameSlug || (typeof options.game === 'string' ? options.game : `local:${options.game.name}`)
   // 会话申请和 ROM 下载并行；普通 Flash 游戏会立刻得到 null，不增加任何请求。
   const flashOnlineSave = prepareFlashOnlineSave(options.gameSlug)
+  // SFS 是可选旁路。后端没开或 Java sidecar 故障时得到空对象，不阻塞其余 Flash 游戏。
+  const sfsRuffleConfig = prepareSfsRuffleConfig()
   const storage = (): Storage => {
     try { return localStorage } catch { throw new Error(rt.flashStorageUnavailable) }
   }
@@ -242,6 +246,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let destroyed = false
   /** SWF 下载的取消把手：换游戏后别让旧会话继续拉完整个 SWF（见 jsnes 同款注释） */
   const aborter = new AbortController()
+  /** Ruffle 会在 load() resolve 后继续换内部节点；焦点补刷必须可取消，避免旧会话回头抢焦点。 */
+  let focusRaf = 0
+  let focusTimer = 0
+
+  const cancelFocusRetry = () => {
+    if (focusRaf) cancelAnimationFrame(focusRaf)
+    if (focusTimer) window.clearTimeout(focusTimer)
+    focusRaf = 0
+    focusTimer = 0
+  }
 
   /**
    * 把焦点交给播放器元素本身。
@@ -256,14 +270,49 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    *
    * 也就是说别的运行时「把焦点还给 iframe」就够了，Flash 得多走一步。
    * preventScroll 两处都要给：手机上没有它会把页面猛地滚到播放器（见 frameFocus.ts）。
+   *
+   * 8BG 让这条竞态更容易复现：解密完成后才调 Ruffle.load()，等 load() resolve 时，
+   * Ruffle 仍可能在随后一两帧重建 shadow DOM / 自动播放浮层。只抢一次焦点会被它马上
+   * 覆盖，玩家看到的就是「画面正常，但键盘要先点一下才认」。所以即时交一次，再在
+   * 下一帧和短延时各确认一次；如果玩家已经点到评论框等外层控件，补刷必须立刻停，
+   * 不能为了游戏把正在输入的光标抢走。
    */
-  const focusPlayer = () => {
+  const focusPlayerNow = () => {
     focusFrame(iframe)
     try {
-      player?.focus({ preventScroll: true })
+      if (!player) return
+      // 自定义元素没有 tabindex 时 HTMLElement.focus() 在部分浏览器里是空操作。
+      // 只在 Ruffle 自己没声明时补，避免覆盖它未来版本选择的 tab 顺序。
+      if (!player.hasAttribute('tabindex')) player.tabIndex = 0
+      player.focus({ preventScroll: true })
     } catch {
       /* 元素已经拆了就算了 */
     }
+  }
+
+  const focusPlayer = (force = false) => {
+    // 8BG 解密可能持续几秒；玩家等候期间已经点进评论框时，游戏就绪不能把输入光标抢走。
+    // 读档完成是例外：文件选择器 / 工具栏仍持有焦点，必须明确交还给刚重载的游戏。
+    if (destroyed || (!force && isTyping(document.activeElement))) return
+    cancelFocusRetry()
+    focusPlayerNow()
+
+    const retry = () => {
+      if (destroyed) return
+      const active = document.activeElement
+      // 第一次 focus 成功后，外层 activeElement 应该是 iframe。body / html / null 是浏览器
+      // 尚未落定焦点的过渡态，也可以补；其它元素说明玩家已经主动去操作页面，不能再抢。
+      if (active && active !== iframe && active !== document.body && active !== document.documentElement) return
+      focusPlayerNow()
+    }
+    focusRaf = requestAnimationFrame(() => {
+      focusRaf = 0
+      retry()
+    })
+    focusTimer = window.setTimeout(() => {
+      focusTimer = 0
+      retry()
+    }, 180)
   }
 
   /**
@@ -352,7 +401,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           host?.appendChild(player)
         }
 
-        const onlineSave = await flashOnlineSave
+        const [onlineSave, sfsConfig] = await Promise.all([flashOnlineSave, sfsRuffleConfig])
         const base = {
           autoplay: 'on',
           unmuteOverlay: 'visible',
@@ -373,6 +422,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           splashScreen: false,
           warnOnUnsupportedContent: false,
           publicPath: RUFFLE_PATH,
+          // SAS3.swf 写死 sas3server.ninjakiwi.com:444；Ruffle 用这张表把它改送同源 WSS 桥。
+          ...sfsConfig,
           ...flashOnlineSaveRuffleConfig(onlineSave),
           // 中文 / 日文这类设备字体文本要靠它才画得出来，见文件顶部的说明
           ...fontConfig(),
@@ -418,6 +469,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         // onReady 必须在 load 完成之后 —— 以前放在 load 之前，播放器会在 SWF 还没解析完
         // 就把加载遮罩撤掉，玩家对着空白舞台点半天
         options.onReady?.()
+        // 不只依赖外层播放器下一次 React effect：解密后的异步启动链较长，Ruffle 自己还会
+        // 在 load resolve 后换内部节点。这里从适配器内部钉住真正接键盘的元素。
+        focusPlayer()
 
         // 能力要等实例真的建起来才作数：SWF 加载之前 volume 的 setter 是空转的
         if (canPause()) caps.add('pause')
@@ -481,6 +535,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       await reload()
       downKeys.clear()
       applyVolume()
+      // 读档由外层工具栏发起，焦点此时在按钮上；状态仍是 running，不会再触发通用聚焦 effect。
+      focusPlayer(true)
     } catch (error) {
       // 读档失败不能把半份新进度留在浏览器；回到旧值后尽量把原游戏重开。
       currentPlayer.remove()
@@ -668,6 +724,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     },
     destroy() {
       destroyed = true
+      cancelFocusRetry()
       aborter.abort()
       player = null
       api = null
