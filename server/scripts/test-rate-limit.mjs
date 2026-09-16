@@ -157,7 +157,11 @@ console.log('\n── 路由层：这几道闸必须真的挂上去（源码守�
   }
 
   const me = read('../src/routes/me.js')
-  ok(/import \{[^}]*gamesRatedBy[^}]*\} from '\.\.\/ratings-repo\.js'/.test(me), '⭐ me.js 补上了 ratings-repo 的 import（注销原来必 500）')
+  ok(
+    /import \{[^}]*recomputeSql[^}]*\} from '\.\.\/ratings-repo\.js'/.test(me) &&
+      /withTransaction\(async \(run\)/.test(me),
+    '⭐ 注销会在同一事务里重算评分聚合（缺 import 会必 500，分两段会留下脏数据）',
+  )
 }
 
 Date.now = realNow

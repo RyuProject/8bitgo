@@ -55,7 +55,7 @@ try {
     stdin: {
       contents: [
         "export * from './src/lib/romValidation.ts'",
-        "export { assertValidZip, listZipEntries, extractZipEntry } from './src/lib/unzip.ts'",
+        "export { assertValidZip, assertValidZipBlob, listZipEntries, extractZipEntry } from './src/lib/unzip.ts'",
         "export { makeJsdosBundle } from './src/lib/jsdosBundle.ts'",
         "export { buildWindowsGuestConfig, windowsGuestLaunchCommand } from './src/lib/windowsGuest.ts'",
         "export { normalizeDosboxConfigOverride, mergeDosboxConfigOverride } from './shared/dosbox-config.js'",
@@ -75,6 +75,7 @@ try {
   })
   const {
     assertValidZip,
+    assertValidZipBlob,
     assertNesRom,
     assertSwf,
     assertJar,
@@ -108,8 +109,10 @@ try {
 
   const complete = zip([['game.nes', nes]])
   assert.equal(assertValidZip(arrayBuffer(complete)).length, 1)
+  assert.equal((await assertValidZipBlob(new Blob([complete]))).length, 1)
   const truncated = complete.subarray(0, complete.length - 10)
   assert.throws(() => assertValidZip(arrayBuffer(truncated)), /损坏|不完整/)
+  await assert.rejects(() => assertValidZipBlob(new Blob([truncated])), /损坏|不完整/)
 
   const swf = Buffer.alloc(8)
   swf.write('FWS', 0, 'ascii')

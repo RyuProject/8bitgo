@@ -32,7 +32,7 @@ const STUB = 'data:text/javascript,' + encodeURIComponent(`
     if (d) await new Promise((r) => setTimeout(r, d))
     return true
   }
-  export async function withTransaction(fn) { return fn({ query: (s, p) => globalThis.__fakeDb.query(s, p) }) }
+  export async function withTransaction(fn) { return fn((s, p) => globalThis.__fakeDb.query(s, p)) }
   export function jsonMemberPath(name) { return name }
 `)
 register('data:text/javascript,' + encodeURIComponent(`
@@ -178,6 +178,7 @@ const SAVES = [
 ]
 /** 开放设备上报游玩的内存去重表；key 与 game_plays 主键同形。 */
 const PLAY_ROWS = new Set()
+const OAUTH_CODES = new Map()
 
 /** 照着 WHERE 里真的写了什么来筛。多一个字少一个字都会反映到结果上 */
 function listVisible(s, params = []) {
@@ -215,6 +216,30 @@ globalThis.__fakeDb = {
       return [APP.id, APP2.id, APP3.id].includes(params[0]) ? [{ id: 's1', secret_hash: SECRET_HASH }] : []
     }
     if (s.startsWith('UPDATE oauth_app_secrets')) return []
+    if (s.startsWith('DELETE FROM oauth_codes WHERE expires_at')) return { affectedRows: 0 }
+    if (s.startsWith('INSERT INTO oauth_codes')) {
+      const [codeHash, appId, userId, scopes, redirectUri, challenge, expiresAt] = params
+      OAUTH_CODES.set(codeHash, {
+        code_hash: codeHash,
+        app_id: appId,
+        user_id: userId,
+        scopes,
+        redirect_uri: redirectUri,
+        code_challenge: challenge,
+        expires_at: expiresAt,
+        used_at: null,
+      })
+      return { affectedRows: 1 }
+    }
+    if (s.startsWith('SELECT code_hash, app_id, user_id, scopes, redirect_uri, code_challenge')) {
+      const row = OAUTH_CODES.get(params[0])
+      return row ? [row] : []
+    }
+    if (s.startsWith('UPDATE oauth_codes SET used_at')) {
+      const row = OAUTH_CODES.get(params[0])
+      if (row) row.used_at = new Date()
+      return { affectedRows: row ? 1 : 0 }
+    }
     // 同意页（/api/oauth/authorize、/api/open-device）要登录：这里给一个 id 对得上的用户
     if (s.startsWith('SELECT * FROM users WHERE id = ?')) {
       return params[0] === USER_ID ? [{ id: USER_ID, token_version: 0, status: 'active' }] : []
@@ -465,6 +490,15 @@ await check('⚠️ 没有 typ=at+jwt 的令牌不算 access token（哪怕是�
     algorithm: 'RS256',
   })
   assert.equal(verifyOpenToken(noTyp, { publicKey }), null)
+})
+
+await check('⚠️ access token 的 aud 必须和 cid 指向同一个应用', () => {
+  const crossed = jwtLib.sign(
+    { cid: APP.id, aud: APP2.id, sub: APP.id, kind: 'app', scope: 'games.read' },
+    privateKey,
+    { algorithm: 'RS256', header: { typ: 'at+jwt' } },
+  )
+  assert.equal(verifyOpenToken(crossed, { publicKey }), null, '受众和客户端混用的令牌被接受了')
 })
 
 await check('站内 verifyToken 把算法写死成 HS256（源码断言）', async () => {
@@ -1815,12 +1849,18 @@ await check('完整的授权码 + PKCE 流程换来用户级令牌，并读得�
   const { code, state } = await postR.json()
   assert.ok(code, '同意页没发回授权码')
   assert.equal(state, 'st2', 'state 没原样带回来 —— 第三方挡不住 CSRF')
+  const storedHash = crypto.createHash('sha256').update(code).digest('hex')
+  assert.equal(OAUTH_CODES.has(code), false, '数据库里存了授权码明文')
+  assert.ok(OAUTH_CODES.has(storedHash), '授权码没有以 SHA-256 形式落库，多实例之间无法共享')
 
   // 换令牌（机密客户端要 client_secret）
   const tokR = await api('/api/oauth/token', {
     method: 'POST',
     headers: FORM_CT,
-    body: form({ grant_type: 'authorization_code', client_id: APP.id, client_secret: APP_SECRET, code, code_verifier: verifier }),
+    body: form({
+      grant_type: 'authorization_code', client_id: APP.id, client_secret: APP_SECRET,
+      code, code_verifier: verifier, redirect_uri: CB,
+    }),
   })
   // ⚠️ 响应体只能读一次。断言消息里再 await 一次 .json() 会把它读空，
   // 于是下一行抛「Body has already been read」—— 真正的失败原因反而看不到了
@@ -1839,17 +1879,56 @@ await check('完整的授权码 + PKCE 流程换来用户级令牌，并读得�
 
 await check('⚠️ PKCE 对不上（verifier 错）-> invalid_grant', async () => {
   const { challenge } = makePkce()
+  const wrongVerifier = makePkce().verifier
   const { code } = await (await authzPost({ client_id: APP.id, redirect_uri: CB, response_type: 'code', scope: 'library.read', state: 's', code_challenge: challenge, code_challenge_method: 'S256', decision: 'approve' })).json()
-  const tokR = await api('/api/oauth/token', { method: 'POST', headers: FORM_CT, body: form({ grant_type: 'authorization_code', client_id: APP.id, client_secret: APP_SECRET, code, code_verifier: 'wrong-verifier' }) })
+  const tokR = await api('/api/oauth/token', {
+    method: 'POST', headers: FORM_CT,
+    body: form({ grant_type: 'authorization_code', client_id: APP.id, client_secret: APP_SECRET, code, code_verifier: wrongVerifier, redirect_uri: CB }),
+  })
   assert.equal((await tokR.json()).error, 'invalid_grant')
+})
+
+await check('⚠️ 授权码绑定 client_id + redirect_uri，串到别的应用或回调地址不能兑现', async () => {
+  const { verifier, challenge } = makePkce()
+  const q = { client_id: APP.id, redirect_uri: CB, response_type: 'code', scope: 'library.read', state: 's', code_challenge: challenge, code_challenge_method: 'S256' }
+  const { code } = await (await authzPost({ ...q, decision: 'approve' })).json()
+
+  // 以前这里会成功，并签出 cid=APP2、scope 却来自 APP 的混合令牌。
+  const wrongApp = await api('/api/oauth/token', {
+    method: 'POST', headers: FORM_CT,
+    body: form({
+      grant_type: 'authorization_code', client_id: APP2.id, client_secret: APP_SECRET,
+      code, code_verifier: verifier, redirect_uri: CB,
+    }),
+  })
+  assert.equal((await wrongApp.json()).error, 'invalid_grant')
+
+  const wrongRedirect = await api('/api/oauth/token', {
+    method: 'POST', headers: FORM_CT,
+    body: form({
+      grant_type: 'authorization_code', client_id: APP.id, client_secret: APP_SECRET,
+      code, code_verifier: verifier, redirect_uri: 'https://partner.example/other',
+    }),
+  })
+  assert.equal((await wrongRedirect.json()).error, 'invalid_grant')
+
+  // 错误的兑换尝试不能替真正的客户端烧掉授权码。
+  const correct = await api('/api/oauth/token', {
+    method: 'POST', headers: FORM_CT,
+    body: form({
+      grant_type: 'authorization_code', client_id: APP.id, client_secret: APP_SECRET,
+      code, code_verifier: verifier, redirect_uri: CB,
+    }),
+  })
+  assert.equal(correct.status, 200, JSON.stringify(await correct.json()))
 })
 
 await check('⚠️ 授权码一次性：重放同一枚 code -> invalid_grant', async () => {
   const { verifier, challenge } = makePkce()
   const { code } = await (await authzPost({ client_id: APP.id, redirect_uri: CB, response_type: 'code', scope: 'library.read', state: 's', code_challenge: challenge, code_challenge_method: 'S256', decision: 'approve' })).json()
-  const first = await api('/api/oauth/token', { method: 'POST', headers: FORM_CT, body: form({ grant_type: 'authorization_code', client_id: APP.id, client_secret: APP_SECRET, code, code_verifier: verifier }) })
+  const first = await api('/api/oauth/token', { method: 'POST', headers: FORM_CT, body: form({ grant_type: 'authorization_code', client_id: APP.id, client_secret: APP_SECRET, code, code_verifier: verifier, redirect_uri: CB }) })
   assert.equal(first.status, 200, `第一次换令牌就失败了：${JSON.stringify(await first.json())}`)
-  const again = await api('/api/oauth/token', { method: 'POST', headers: FORM_CT, body: form({ grant_type: 'authorization_code', client_id: APP.id, client_secret: APP_SECRET, code, code_verifier: verifier }) })
+  const again = await api('/api/oauth/token', { method: 'POST', headers: FORM_CT, body: form({ grant_type: 'authorization_code', client_id: APP.id, client_secret: APP_SECRET, code, code_verifier: verifier, redirect_uri: CB }) })
   assert.equal((await again.json()).error, 'invalid_grant', '同一枚 code 被换出两枚令牌 —— 抄走它的人可以一直换')
 })
 

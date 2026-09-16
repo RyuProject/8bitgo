@@ -100,6 +100,10 @@ CREATE TABLE IF NOT EXISTS games (
   -- 街机改版包（汉化、修改版）的 FBNeo RomData：写明包名、借用的驱动和整份 ROM 清单，
   -- 让不在驱动表里的 romset 也能跑。见 src/emulator/adapters/emulatorjs.ts。
   arcade_romdata TEXT NULL,
+  -- 2 / 4 / 6：触屏只画游戏真正使用的动作键；NULL 按六键兼容旧数据。
+  arcade_buttons TINYINT UNSIGNED NULL,
+  -- Flash 每款游戏自己决定监听什么键，不能拿一套通用手柄蒙；纯鼠标游戏留空。
+  flash_controls JSON NULL,
   -- 首页「精选」位的排序号。NULL = 不上首页，数字小的排前面。
   -- 一款都没设时，首页那一栏退回按 plays 自动排（见 server/src/content.js 的 loadHome）
   home_rank     SMALLINT UNSIGNED NULL,

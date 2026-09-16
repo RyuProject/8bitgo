@@ -6,9 +6,8 @@
  * 所以「屏幕上这颗按钮对应哪个键」在 Flash 这边只能是**逐游戏的数据**，
  * 跟街机那张改版包指纹表一个性质（见 arcadeHack.ts）。
  *
- * 为什么先写在代码里而不是 games 表上：这一版要先验证「合成键盘事件能不能被 Ruffle 吃到」。
- * 等表长起来、或者要让后台能配了，再挪成一个字段 —— 读的那头（ruffle.ts）不用动，
- * 只是 flashKeysFor() 从查表变成读 options。
+ * 正式配置现在来自 games.flash_controls；下面的代码表只给四款已经上线、但数据库还没补字段的
+ * 森林冰火人兜底。后台一保存就以数据库为准，不需要为了新增游戏重新构建前端。
  *
  * ── 为什么合成事件这条路成立 ──
  *   1. Ruffle 自己就是这么干的：它的虚拟键盘（发行包 ruffle.js 里的 virtualKeyboardInput）
@@ -16,7 +15,7 @@
  *   2. 发行包里 `isTrusted` 出现 0 次（ruffle.js 和两个 .wasm 都查过）——
  *      它不区分真按键和合成事件。
  */
-import type { PadButton } from './types'
+import type { FlashControls, FlashPad } from '@/types'
 
 /**
  * 一个键在 KeyboardEvent 上的三副面孔。
@@ -58,14 +57,8 @@ export function keyDesc(name: string): KeyDesc | null {
   return null
 }
 
-/** 一个玩家的键位：屏幕手柄的按钮 → 键名。没列的按钮就是这款游戏用不上 */
-export type FlashPad = Partial<Record<PadButton, string>>
-
-export interface FlashKeys {
-  p1: FlashPad
-  /** 同屏双打才有第二套。以后把观众提成 2P，用的就是它 */
-  p2?: FlashPad
-}
+/** 兼容旧名字，避免适配器和测试因为数据类型挪到公共模型而产生无意义改动。 */
+export type FlashKeys = FlashControls
 
 const ARROWS: FlashPad = { up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight' }
 const WASD: FlashPad = { up: 'KeyW', down: 'KeyS', left: 'KeyA', right: 'KeyD' }
@@ -120,9 +113,10 @@ export const FLASH_KEYS: Record<string, FlashKeys> = {
  * 什么都不会发生的十字键，而且开局提示还会跟着说一句「手柄在下面 👇」——
  * 比不画糟得多。宁可漏画，不可瞎画（和 html5 那一路不声明能力是同一个道理）。
  *
- * 也就是说：**表里没有的 Flash 游戏没有屏幕手柄**。加一款就往上面 FLASH_KEYS 里加一行，
- * 然后跑一遍 `npm run test:flash-keys`（键名 / 按钮名 / 两个玩家撞键都会被它拦下来）。
+ * 也就是说：**后台没有配置的 Flash 游戏没有屏幕手柄**。新增游戏应在后台选择预设或自定义；
+ * 下面这张常量表不再继续增长，只负责旧数据迁移期间兜底。
  */
-export function flashKeysFor(slug?: string): FlashKeys | null {
-  return (slug && FLASH_KEYS[slug]) || null
+export function flashKeysFor(slug?: string, configured?: FlashControls): FlashKeys | null {
+  // 数据库优先；代码表只为尚未迁到后台的旧游戏兜底，管理员保存后无需重新构建前端。
+  return configured || (slug && FLASH_KEYS[slug]) || null
 }

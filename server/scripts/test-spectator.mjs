@@ -11,6 +11,7 @@
 import express from 'express'
 import { createServer } from 'node:http'
 import { io as client } from 'socket.io-client'
+import { testGameRoomPolicy } from './helpers/netplay-game-policy.mjs'
 // 12 个观众全从 127.0.0.1 进来：每房间每 IP 的成员上限要关掉（那条规则在 test-netplay-hardening.mjs 里测）
 process.env.NETPLAY_MAX_MEMBERS_PER_IP = '0'
 const { attachNetplay } = await import('../src/netplay.js')
@@ -25,7 +26,7 @@ const section = (title) => console.log(`\n── ${title} ──`)
 
 const app = express()
 const http = createServer(app)
-attachNetplay(http, app, ['*'])
+attachNetplay(http, app, ['*'], { resolveGamePolicy: testGameRoomPolicy })
 await new Promise((r) => http.listen(9931, r))
 const WS = 'http://127.0.0.1:9931/netplay'
 const API = 'http://127.0.0.1:9931'

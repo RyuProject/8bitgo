@@ -5,6 +5,8 @@ import { queryOne } from './db.js'
 import { isNetplayPlayer, resolveRoomId } from './netplay.js'
 import { openConfig } from './open/config.js'
 import { verifyLivePublisherToken } from './open/live-publisher.js'
+import { dateOnly, dbFlag } from './mappers.js'
+import { isAdultByBirthDate } from '../../shared/age.js'
 import {
   CHAT_ACK_EMPTY,
   CHAT_ACK_FAILED,
@@ -40,7 +42,8 @@ import {
  *
  * ── socket.io 命名空间 /live ──────────────────────────────
  *   外部设备主播握手 auth.publisherToken = `POST /api/open/v1/live/publish-token` 返回的专用票。
- *   网页端的现有匿名「玩即播」不带这一格，继续兼容；一旦带了，验不过绝不降级成匿名。
+ *   网页端的普通游戏匿名「玩即播」不带这一格，继续兼容；成人游戏是例外，站内 JWT 也要验年龄。
+ *   一旦带了 publisherToken，验不过绝不降级成匿名。
  *   go-live      {gameSlug, gameName, title, platform}  + ack(err, {roomId, token})
  *   resume-live  {roomId, token}                        + ack(err, {roomId, viewers: [id]})
  *                主播断线重连后接回原来的房间（见下面「主播掉线」）
@@ -155,7 +158,72 @@ function publisherAuthError(message, code) {
 }
 
 /**
- * 信令命名空间不要求登录。任何观众都能入房，若原样转发任意对象或无限量 ICE，
+ * 成人直播沿用游戏播放器同一条年龄线：必须是有效注册账号、填过出生日期、且当前已满 18 岁。
+ *
+ * 这里同时给 HTTP 房间列表和 Socket.IO 进房使用，不能只在前端把按钮藏起来：直播房号和
+ * 信令事件都能被脚本直接调用，前端遮罩不是权限边界。
+ */
+export function adultLiveAccessError(user) {
+  if (!user || user.status === 'banned') return 'adult login required'
+  const birthDate = user.birth_date ? dateOnly(user.birth_date) : ''
+  if (!birthDate) return 'adult birth date required'
+  if (!isAdultByBirthDate(birthDate)) return 'adult age restricted'
+  return ''
+}
+
+/** HTTP 列表只需要一个布尔结论；具体拒绝原因留给游戏页现有的年龄门展示。 */
+export function canAccessAdultLive(user) {
+  return !adultLiveAccessError(user)
+}
+
+/**
+ * 从直播 socket 的两种身份里取账号：
+ *   - Linux / 其它客户端：专用 publisherToken 里的 userId
+ *   - 网页端：站内 JWT 里的 uid，并核对 token_version
+ *
+ * 结果短暂缓存 30 秒，避免每次断线重试 / 重复 watch 都查库；到期后重新确认封号、退出所有设备
+ * 和出生日期变更。成人房不能退化成游客身份，验不过就返回 null。
+ */
+async function liveAccount(socket, findUser) {
+  const publisher = socket.data?.livePublisher
+  const siteToken = str(socket.handshake?.auth?.token, 512)
+  const cacheKey = publisher ? `publisher:${publisher.userId}` : `site:${siteToken}`
+  if (
+    socket.data?.liveAccountKey === cacheKey &&
+    Date.now() - (socket.data.liveAccountAt || 0) < 30_000
+  ) {
+    return socket.data.liveAccount || null
+  }
+
+  let row = null
+  if (publisher?.userId) {
+    row = await findUser(
+      'SELECT id, nickname, status, birth_date, token_version FROM users WHERE id = ?',
+      [publisher.userId],
+    )
+  } else if (siteToken) {
+    const payload = verifyToken(siteToken)
+    if (payload?.uid) {
+      const found = await findUser(
+        'SELECT id, nickname, status, birth_date, token_version FROM users WHERE id = ?',
+        [String(payload.uid)],
+      )
+      if (found && found.status !== 'banned' && (Number(payload.tv) || 0) === tokenVersionOf(found)) row = found
+    }
+  }
+
+  if (row?.status === 'banned') row = null
+  if (socket.data) {
+    socket.data.liveAccountKey = cacheKey
+    socket.data.liveAccount = row
+    socket.data.liveAccountAt = Date.now()
+  }
+  return row
+}
+
+/**
+ * 普通直播的信令命名空间不要求登录；成人房在 go-live / watch / resume-live 单独验账号和年龄。
+ * 若原样转发任意对象或无限量 ICE，
  * 一人就能让主播的 pending 候选和 socket 写队列持续涨；格式不对的 SDP 还可能在主播回调里抛错。
  */
 function validSignal(data, role) {
@@ -475,24 +543,25 @@ function notifyViewers(nsp, room) {
  */
 const listWatchers = new Set()
 let listTimer = null
-/** 上一次真的推出去的列表。内容没变就不再推 —— 订阅者是**每个在线访客**，一次推送 = N 次写 */
-let lastListJson = ''
 
 /** 房间列表有变化就推给订阅者。同一轮的多次变化合并成一次；合并完内容还和上次一样就一个字都不发 */
 function notifyRoomList() {
   if (listTimer || listWatchers.size === 0) return
   listTimer = setTimeout(() => {
     listTimer = null
-    const json = JSON.stringify(liveRooms())
-    // 常见的「没变」：主播回前台但房本来就没被摘掉、被摘掉的房里有人进出、RTT 抖一下……
-    if (json === lastListJson) return
-    lastListJson = json
-    const payload = `event: rooms\ndata: ${json}\n\n`
-    for (const res of listWatchers) {
+    // 成人房只能推给通过年龄校验的订阅者。不能先推完整列表再让前端过滤：标题、游戏名、
+    // 主播名在那一步之前已经泄露。两份快照只各算一次，再按订阅者权限选择。
+    const publicJson = JSON.stringify(liveRooms())
+    const adultJson = JSON.stringify(liveRooms({ includeAdult: true }))
+    for (const watcher of listWatchers) {
+      const json = watcher.includeAdult ? adultJson : publicJson
+      // 常见的「没变」：成人房人数变化对游客不可见、主播回前台但房本来就没被摘掉……
+      if (json === watcher.lastJson) continue
+      watcher.lastJson = json
       try {
-        res.write(payload)
+        watcher.res.write(`event: rooms\ndata: ${json}\n\n`)
       } catch {
-        listWatchers.delete(res)
+        listWatchers.delete(watcher)
       }
     }
   }, 120)
@@ -503,14 +572,16 @@ function notifyRoomList() {
  * 挂一个 SSE 订阅者。返回取消订阅的函数。
  * 路由写在 index.js 里（那边才有 app），这里只管数据。
  */
-export function subscribeLiveRooms(res) {
-  listWatchers.add(res)
+export function subscribeLiveRooms(res, { includeAdult = false } = {}) {
+  const json = JSON.stringify(liveRooms({ includeAdult }))
+  const watcher = { res, includeAdult: Boolean(includeAdult), lastJson: json }
+  listWatchers.add(watcher)
   try {
-    res.write(`event: rooms\ndata: ${JSON.stringify(liveRooms())}\n\n`)
+    res.write(`event: rooms\ndata: ${json}\n\n`)
   } catch {
-    listWatchers.delete(res)
+    listWatchers.delete(watcher)
   }
-  return () => listWatchers.delete(res)
+  return () => listWatchers.delete(watcher)
 }
 
 /** 这间房该不该出现在大厅列表里：主播切后台超过 FROZEN_HIDE_MS 就不该 */
@@ -677,11 +748,15 @@ function leave(nsp, socket) {
 /**
  * 挂到已有的 socket.io Server 上。
  * @param {import('socket.io').Server} io
- * @param {{findUser?:(sql:string, params?:unknown[])=>Promise<object|null>}} [options]
+ * @param {{
+ *   findUser?:(sql:string, params?:unknown[])=>Promise<object|null>,
+ *   findGame?:(slug:string)=>Promise<object|null>
+ * }} [options]
  * @returns {{nsp: import('socket.io').Namespace, list: () => object[]}}
  */
 export function attachLive(io, options = {}) {
   const findUser = options.findUser || queryOne
+  const findGame = options.findGame || ((slug) => queryOne('SELECT adult FROM games WHERE slug = ? LIMIT 1', [slug]))
   const nsp = io.of('/live')
 
   /**
@@ -705,18 +780,29 @@ export function attachLive(io, options = {}) {
       if (socket.data.liveOpening) return ack?.('already opening a room')
       socket.data.liveOpening = true
       try {
+        const gameSlug = str(payload?.gameSlug, 120)
+        // 本地 ROM / 尚未入库的游戏查不到，沿用既有的普通直播；库里明确标成成人的必须走年龄门。
+        // 不能采信 payload.adult —— 客户端自己报「不是成人」就能绕过，等于没有校验。
+        const game = gameSlug ? await findGame(gameSlug) : null
+        const adult = dbFlag(game?.adult)
         let publisher = null
         const claims = socket.data.livePublisher
         if (claims) {
           // 令牌在 Socket.IO 首连时验过；用户状态再查一次，封禁账号不能拿旧票继续新开房。
-          const row = await findUser('SELECT nickname, status FROM users WHERE id = ?', [claims.userId])
-          if (!row || row.status === 'banned') return ack?.('publisher account unavailable')
+          const row = await liveAccount(socket, findUser)
+          if (!row) return ack?.('publisher account unavailable')
           publisher = {
             appId: claims.appId,
             userId: claims.userId,
             hostName: str(row.nickname, 40) || 'Device player',
           }
           socket.data.livePublisherName = publisher.hostName
+        }
+
+        if (adult) {
+          const account = await liveAccount(socket, findUser)
+          const accessError = adultLiveAccessError(account)
+          if (accessError) return ack?.(accessError)
         }
 
         // 查用户期间同一条连接可能被别的事件放进房间；await 后必须再确认一次。
@@ -743,7 +829,9 @@ export function attachLive(io, options = {}) {
           // 续播凭证：主播断线重连后凭它 resume-live。观众看不到（publicRoom 不带它）
           token: randomBytes(24).toString('base64url'),
           title: str(payload?.title, 80) || str(payload?.gameName, 80) || 'Live',
-          gameSlug: str(payload?.gameSlug, 120),
+          gameSlug,
+          /** 内部权限位，不进 publicRoom；列表和详情在序列化之前按它过滤。 */
+          adult,
           gameName: str(payload?.gameName, 120),
           platform: str(payload?.platform, 40),
           // 正式设备主播的显示名只能来自用户表；网页匿名直播保持现有自报名行为。
@@ -803,46 +891,72 @@ export function attachLive(io, options = {}) {
         bindHost(nsp, room, socket)
         ack?.(null, { roomId: id, token: room.token })
       } catch (e) {
-        console.warn('[live] 外部设备开播失败：', e)
+        console.warn('[live] 开播权限检查失败：', e)
         ack?.('failed')
       } finally {
         socket.data.liveOpening = false
       }
     })
 
-    socket.on('resume-live', (payload, ack) => {
+    socket.on('resume-live', async (payload, ack) => {
       if (membership.has(socket.id)) return ack?.('already in a room')
-      const room = rooms.get(str(payload?.roomId, 64))
-      if (!room) return ack?.('not found')
-      const token = str(payload?.token, 64)
-      if (!token || token !== room.token) return ack?.('forbidden')
-      if (room.publisher) {
-        const claims = socket.data.livePublisher
-        if (!claims || claims.appId !== room.publisher.appId || claims.userId !== room.publisher.userId) {
-          return ack?.('publisher authorization required')
+      if (socket.data.liveResuming) return ack?.('already resuming')
+      socket.data.liveResuming = true
+      try {
+        const room = rooms.get(str(payload?.roomId, 64))
+        if (!room) return ack?.('not found')
+        const token = str(payload?.token, 64)
+        if (!token || token !== room.token) return ack?.('forbidden')
+        if (room.publisher) {
+          const claims = socket.data.livePublisher
+          if (!claims || claims.appId !== room.publisher.appId || claims.userId !== room.publisher.userId) {
+            return ack?.('publisher authorization required')
+          }
+          socket.data.livePublisherName = room.hostName
         }
-        socket.data.livePublisherName = room.hostName
-      }
+        if (room.adult) {
+          const accessError = adultLiveAccessError(await liveAccount(socket, findUser))
+          if (accessError) return ack?.(accessError)
+        }
 
-      // 接管：旧 socket 还挂着（没到 ping 超时）的话，把它从房间里请出去
-      const old = room.hostSocketId
-      if (old && old !== socket.id) {
-        membership.delete(old)
-        nsp.sockets.get(old)?.leave(room.id)
+        // 查账号期间房间可能已经到期散场；不能把一个已删除的对象重新绑回 socket。
+        if (rooms.get(room.id) !== room) return ack?.('not found')
+        if (membership.has(socket.id)) return ack?.('already in a room')
+
+        // 接管：旧 socket 还挂着（没到 ping 超时）的话，把它从房间里请出去
+        const old = room.hostSocketId
+        if (old && old !== socket.id) {
+          membership.delete(old)
+          nsp.sockets.get(old)?.leave(room.id)
+        }
+        bindHost(nsp, room, socket)
+        // 观众要知道主播的新 id（它们的 signal 其实由服务端路由，但 from 过滤用得上）
+        socket.to(room.id).emit('host-back', { roomId: room.id, hostId: socket.id })
+        // 把当前观众名单交给主播：哪条 PeerConnection 还活着它自己知道，死了的重新 offer
+        ack?.(null, { roomId: room.id, viewers: Array.from(room.viewers) })
+      } catch (e) {
+        console.warn('[live] 续播权限检查失败：', e)
+        ack?.('failed')
+      } finally {
+        socket.data.liveResuming = false
       }
-      bindHost(nsp, room, socket)
-      // 观众要知道主播的新 id（它们的 signal 其实由服务端路由，但 from 过滤用得上）
-      socket.to(room.id).emit('host-back', { roomId: room.id, hostId: socket.id })
-      // 把当前观众名单交给主播：哪条 PeerConnection 还活着它自己知道，死了的重新 offer
-      ack?.(null, { roomId: room.id, viewers: Array.from(room.viewers) })
     })
 
-    socket.on('watch', (payload, ack) => {
-      const room = rooms.get(str(payload?.roomId, 64))
-      if (!room) return ack?.('not found')
-      const info = membership.get(socket.id)
-      const again = info?.role === 'viewer' && info.roomId === room.id
-      if (info && !again) return ack?.('already in a room')
+    socket.on('watch', async (payload, ack) => {
+      if (socket.data.liveWatching) return ack?.('already watching')
+      socket.data.liveWatching = true
+      try {
+        const room = rooms.get(str(payload?.roomId, 64))
+        if (!room) return ack?.('not found')
+        if (room.adult) {
+          const accessError = adultLiveAccessError(await liveAccount(socket, findUser))
+          if (accessError) return ack?.(accessError)
+        }
+        // 查账号期间主播可能已经下播；后面的 join 不能把人放进一个不存在的 socket.io 房。
+        if (rooms.get(room.id) !== room) return ack?.('not found')
+        const info = membership.get(socket.id)
+        const again = info?.role === 'viewer' && info.roomId === room.id
+        if (info && !again) return ack?.('already in a room')
 
       /**
        * 同一个观众换了 socket（信令重连）：名单里还挂着它上一条连接的 id。
@@ -904,35 +1018,56 @@ export function attachLive(io, options = {}) {
         那时候名字只服务于主播那句「XX 想上场当 2P」，没主播确实不需要。现在它还要供
         观众端的名单用（房间里所有人都看得到），主播在不在都得解析。
       */
-      if (!again) resolveViewerName(nsp, room, socket)
-      // 换 socket 不算人数变化：一个人还是一个人。
-      // （换 socket 那一路的名单由 resolveViewerName 解析完再广播）
-      if (!again && !previous) notifyViewers(nsp, room)
+        if (!again) resolveViewerName(nsp, room, socket)
+        // 换 socket 不算人数变化：一个人还是一个人。
+        // （换 socket 那一路的名单由 resolveViewerName 解析完再广播）
+        if (!again && !previous) notifyViewers(nsp, room)
+      } catch (e) {
+        console.warn('[live] 观看权限检查失败：', e)
+        ack?.('failed')
+      } finally {
+        socket.data.liveWatching = false
+      }
     })
 
-    socket.on('join-match-chat', (payload, ack) => {
-      const asked = str(payload?.netplayRoomId, 64)
-      const netplayRoomId = resolveRoomId(asked)
-      const token = str(payload?.token, 64)
-      if (!netplayRoomId || !isNetplayPlayer(netplayRoomId, token)) return ack?.('not a player')
-      const prior = membership.get(socket.id)
-      if (prior && prior.role !== 'match') return ack?.('already in a room')
-      if (prior) leave(nsp, socket)
-
-      const live = linkedLiveRoom(netplayRoomId)
-      const key = live?.id ?? matchChatKey(netplayRoomId)
-      let match = null
-      if (!live) {
-        match = matchChats.get(key)
-        if (!match) {
-          match = { id: key, players: new Set(), chat: [], chatFlood: null }
-          matchChats.set(key, match)
+    socket.on('join-match-chat', async (payload, ack) => {
+      if (socket.data.matchChatJoining) return ack?.('already joining')
+      socket.data.matchChatJoining = true
+      try {
+        const asked = str(payload?.netplayRoomId, 64)
+        const netplayRoomId = resolveRoomId(asked)
+        const token = str(payload?.token, 64)
+        if (!netplayRoomId || !isNetplayPlayer(netplayRoomId, token)) return ack?.('not a player')
+        const live = linkedLiveRoom(netplayRoomId)
+        if (live?.adult) {
+          const accessError = adultLiveAccessError(await liveAccount(socket, findUser))
+          if (accessError) return ack?.(accessError)
         }
-        match.players.add(socket.id)
-      } else live.matchPlayers.add(socket.id)
-      membership.set(socket.id, { roomId: key, role: 'match', netplayRoomId, token })
-      socket.join(key)
-      ack?.(null, { chat: live?.chat ?? match.chat, live: Boolean(live) })
+        if (!isNetplayPlayer(netplayRoomId, token)) return ack?.('not a player')
+        if (live && rooms.get(live.id) !== live) return ack?.('not found')
+        const prior = membership.get(socket.id)
+        if (prior && prior.role !== 'match') return ack?.('already in a room')
+        if (prior) leave(nsp, socket)
+
+        const key = live?.id ?? matchChatKey(netplayRoomId)
+        let match = null
+        if (!live) {
+          match = matchChats.get(key)
+          if (!match) {
+            match = { id: key, players: new Set(), chat: [], chatFlood: null }
+            matchChats.set(key, match)
+          }
+          match.players.add(socket.id)
+        } else live.matchPlayers.add(socket.id)
+        membership.set(socket.id, { roomId: key, role: 'match', netplayRoomId, token })
+        socket.join(key)
+        ack?.(null, { chat: live?.chat ?? match.chat, live: Boolean(live) })
+      } catch (e) {
+        console.warn('[live] 联机弹幕权限检查失败：', e)
+        ack?.('failed')
+      } finally {
+        socket.data.matchChatJoining = false
+      }
     })
 
     /**
@@ -1102,13 +1237,18 @@ export function attachLive(io, options = {}) {
     socket.on('disconnect', () => leave(nsp, socket))
   })
 
-  return { nsp, list: () => Array.from(rooms.values()).filter(listed).map(publicRoom) }
+  return { nsp, list: () => liveRooms() }
 }
 
-/** 给 REST 用：当前在播的房间 */
-export function liveRooms({ gameSlug } = {}) {
-  // 主播切后台太久的房不上列表（直链 liveRoom() 照样能查到 —— 那是人家发出去的链接）
-  const all = Array.from(rooms.values()).filter(listed)
+/**
+ * 给 REST / SSE 用：当前在播的房间。
+ *
+ * 默认永远不返回成人房；只有 HTTP 层已经核实账号年龄后才能显式传 includeAdult。
+ * 这样开放平台、TV、爬虫以及任何后来新增但忘了鉴权的调用方都会落在安全默认值上。
+ */
+export function liveRooms({ gameSlug, includeAdult = false } = {}) {
+  // 主播切后台太久的房不上列表（有权限的人用直链 liveRoom() 仍能查到 —— 那是人家发出去的链接）
+  const all = Array.from(rooms.values()).filter((room) => listed(room) && (includeAdult || !room.adult))
   const picked = gameSlug ? all.filter((r) => r.gameSlug === gameSlug) : all
   return picked.sort((a, b) => b.viewers.size - a.viewers.size || a.startedAt - b.startedAt).map(publicRoom)
 }
@@ -1130,7 +1270,7 @@ export function liveCapacity() {
   }
 }
 
-export function liveRoom(roomId) {
+export function liveRoom(roomId, { includeAdult = false } = {}) {
   const room = rooms.get(String(roomId || ''))
-  return room ? publicRoom(room) : null
+  return room && (includeAdult || !room.adult) ? publicRoom(room) : null
 }

@@ -16,6 +16,7 @@ process.env.LIVE_MAX_VIEWERS = '3'
 // 主播切后台：300ms 后从大厅摘掉，零观众 700ms 后收房（线上默认 90s / 10min）
 process.env.LIVE_FROZEN_HIDE_MS = '300'
 process.env.LIVE_FROZEN_CLOSE_MS = '700'
+process.env.JWT_SECRET = 'live-adult-access-test-secret-2026'
 const { privateKey: openPrivateKey } = generateKeyPairSync('rsa', {
   modulusLength: 2048,
   privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
@@ -25,21 +26,29 @@ process.env.OPEN_JWT_PRIVATE_KEY = openPrivateKey
 process.env.OPEN_JWT_KID = 'live-test-1'
 process.env.OPEN_ISSUER = 'https://8bitgo.com'
 const { attachLive, liveCapacity, liveRooms, liveRoom } = await import('../src/live.js')
+const { signToken } = await import('../src/auth.js')
 const { issueLivePublisherToken } = await import('../src/open/live-publisher.js')
 
 const http = createServer()
 const server = new Server(http, { cors: { origin: true } })
 const { list: lst } = attachLive(server, {
   findUser: async (_sql, params) => {
-    if (params?.[0] === 'u_linux') return { nickname: 'Linux 玩家', status: 'active' }
-    if (params?.[0] === 'u_other') return { nickname: '另一位玩家', status: 'active' }
+    if (params?.[0] === 'u_linux') return { nickname: 'Linux 玩家', status: 'active', birth_date: '1990-01-01', token_version: 0 }
+    if (params?.[0] === 'u_other') return { nickname: '另一位玩家', status: 'active', token_version: 0 }
+    if (params?.[0] === 'u_adult') return { nickname: '成年玩家', status: 'active', birth_date: '1990-01-01', token_version: 0 }
+    if (params?.[0] === 'u_child') return { nickname: '未成年玩家', status: 'active', birth_date: '2015-01-01', token_version: 0 }
     if (params?.[0] === 'u_banned') return { nickname: '封禁玩家', status: 'banned' }
     return null
   },
+  findGame: async (slug) => ({ adult: slug === 'adult-game' ? 1 : 0 }),
 })
 await new Promise((r) => http.listen(0, r))
 const url = `http://127.0.0.1:${http.address().port}/live`
-const conn = () => client(url, { transports: ['websocket'], forceNew: true })
+const conn = (token = '') => client(url, {
+  transports: ['websocket'],
+  forceNew: true,
+  auth: token ? { token } : undefined,
+})
 const call = (s, ev, arg) => new Promise((res) => s.emit(ev, arg, (err, data) => res({ err, data })))
 const once = (s, ev, ms = 2000) =>
   new Promise((res, rej) => { const t = setTimeout(() => rej(new Error(`超时: ${ev}`)), ms); s.once(ev, (d) => { clearTimeout(t); res(d) }) })
@@ -137,6 +146,62 @@ await new Promise((r) => setTimeout(r, 100))
 check('房间已清除', liveRooms().length === 0)
 check('下播清除 socket.io 内部房间', !server.of('/live').adapter.rooms.has(roomId))
 
+/* ── 成人游戏直播：开播、列表、直链、观看、续播全部在服务端守年龄门 ────────── */
+const anonymousAdultHost = conn(); await once(anonymousAdultHost, 'connect')
+const anonymousAdultLive = await call(anonymousAdultHost, 'go-live', { gameSlug: 'adult-game', gameName: 'Adult' })
+check('成人游戏不能匿名开播', anonymousAdultLive.err === 'adult login required', anonymousAdultLive.err || '')
+anonymousAdultHost.close()
+
+const noBirthHost = conn(signToken('u_other', 0)); await once(noBirthHost, 'connect')
+const noBirthLive = await call(noBirthHost, 'go-live', { gameSlug: 'adult-game', gameName: 'Adult' })
+check('注册但未填出生日期不能开成人直播', noBirthLive.err === 'adult birth date required', noBirthLive.err || '')
+noBirthHost.close()
+
+const childHost = conn(signToken('u_child', 0)); await once(childHost, 'connect')
+const childLive = await call(childHost, 'go-live', { gameSlug: 'adult-game', gameName: 'Adult' })
+check('未满 18 岁不能开成人直播', childLive.err === 'adult age restricted', childLive.err || '')
+childHost.close()
+
+const adultHost = conn(signToken('u_adult', 0)); await once(adultHost, 'connect')
+const adultLive = await call(adultHost, 'go-live', { gameSlug: 'adult-game', gameName: 'Adult' })
+check('已填生日且年满 18 岁可以开成人直播', !adultLive.err && Boolean(adultLive.data?.roomId), adultLive.err || '')
+const adultRoomId = adultLive.data.roomId
+check('游客房间列表看不到成人直播', liveRooms().length === 0)
+check('已通过年龄校验的列表能看到成人直播', liveRooms({ includeAdult: true }).some((r) => r.roomId === adultRoomId))
+check('游客拿成人房直链也查不到详情', liveRoom(adultRoomId) === null)
+check('已通过年龄校验才能查成人房详情', liveRoom(adultRoomId, { includeAdult: true })?.roomId === adultRoomId)
+
+const anonymousAdultViewer = conn(); await once(anonymousAdultViewer, 'connect')
+const anonymousWatch = await call(anonymousAdultViewer, 'watch', { roomId: adultRoomId })
+check('知道房号也不能匿名观看成人直播', anonymousWatch.err === 'adult login required', anonymousWatch.err || '')
+anonymousAdultViewer.close()
+
+const childViewer = conn(signToken('u_child', 0)); await once(childViewer, 'connect')
+const childWatch = await call(childViewer, 'watch', { roomId: adultRoomId })
+check('未满 18 岁知道房号也不能观看', childWatch.err === 'adult age restricted', childWatch.err || '')
+childViewer.close()
+
+const adultViewer = conn(signToken('u_adult', 0)); await once(adultViewer, 'connect')
+const adultJoined = once(adultHost, 'viewer-joined')
+const adultWatch = await call(adultViewer, 'watch', { roomId: adultRoomId })
+check('成年注册用户可以观看成人直播', !adultWatch.err, adultWatch.err || '')
+await adultJoined
+
+const adultAway = once(adultViewer, 'host-away')
+adultHost.close()
+await adultAway
+const anonymousResume = conn(); await once(anonymousResume, 'connect')
+const deniedResume = await call(anonymousResume, 'resume-live', { roomId: adultRoomId, token: adultLive.data.token })
+check('拿到续播令牌也不能匿名接管成人直播', deniedResume.err === 'adult login required', deniedResume.err || '')
+anonymousResume.close()
+const adultReconnect = conn(signToken('u_adult', 0)); await once(adultReconnect, 'connect')
+const adultResumed = await call(adultReconnect, 'resume-live', { roomId: adultRoomId, token: adultLive.data.token })
+check('成年账号能正常续播成人游戏', !adultResumed.err, adultResumed.err || '')
+adultReconnect.emit('stop-live')
+adultReconnect.close(); adultViewer.close()
+await new Promise((r) => setTimeout(r, 100))
+check('成人房下播后完整清除', liveRoom(adultRoomId, { includeAdult: true }) === null)
+
 /* ── 正式外部设备主播：专用发布凭证 + 服务端身份 ─────────────────────────── */
 const publisherTicket = (userId) => issueLivePublisherToken({
   privateKey: openPrivateKey,
@@ -155,6 +220,12 @@ const invalidPublisher = publisherConn('not-a-ticket')
 const invalidError = await once(invalidPublisher, 'connect_error')
 check('伪造的设备发布凭证在握手阶段被拒', invalidError?.data?.code === 'invalid_publisher_token')
 invalidPublisher.close()
+
+const noBirthPublisher = publisherConn(publisherTicket('u_other'))
+await once(noBirthPublisher, 'connect')
+const noBirthDeviceLive = await call(noBirthPublisher, 'go-live', { gameSlug: 'adult-game', gameName: 'Adult' })
+check('Linux/其它客户端账号未填生日也不能播成人游戏', noBirthDeviceLive.err === 'adult birth date required', noBirthDeviceLive.err || '')
+noBirthPublisher.close()
 
 const linuxHost = publisherConn(publisherTicket('u_linux'))
 await once(linuxHost, 'connect')

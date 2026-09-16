@@ -3,7 +3,7 @@ import crypto from 'crypto'
 import { readFileSync } from 'node:fs'
 import jwt from 'jsonwebtoken'
 import { query, queryOne } from '../db.js'
-import { hashPassword, verifyPassword, signToken, requireUser, tokenVersionOf } from '../auth.js'
+import { hashPassword, verifyPassword, signToken, requireUser, tokenVersionOf, passwordValidationError } from '../auth.js'
 import { isEmail } from '../../../shared/email.js'
 
 /**
@@ -42,11 +42,18 @@ async function findOrCreateByEmail(email, nickname) {
   if (!row) {
     const id = newId()
     const createdAt = new Date().toISOString().slice(0, 10)
+    /*
+      验证码、Google、Microsoft、Apple 都会走这里。两个回调同时落到同一邮箱时，
+      “先 SELECT、再裸 INSERT”会让输掉竞态的那一个撞 uniq_email 并回 500。
+      ON DUPLICATE KEY UPDATE 让唯一索引决定谁创建成功，然后两边都按邮箱读取同一账号；不能按
+      刚生成的 id 查，因为输掉竞态的那一边并没有写入自己的 id。
+    */
     await query(
-      'INSERT INTO users (id, email, nickname, avatar, password_hash, coins, role, status, created_at) VALUES (?,?,?,?,?,?,?,?,?)',
+      `INSERT INTO users (id, email, nickname, avatar, password_hash, coins, role, status, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE email = VALUES(email)`,
       [id, email, nickname, '🕹️', '', WELCOME_COINS, 'user', 'active', createdAt],
     )
-    row = await queryOne('SELECT * FROM users WHERE id = ?', [id])
+    row = await queryOne('SELECT * FROM users WHERE email = ?', [email])
   }
   return row
 }
@@ -116,7 +123,8 @@ authRouter.post('/register', async (req, res, next) => {
     const password = String(req.body.password || '')
     if (!isEmail(email)) return res.status(400).json({ error: '邮箱格式不正确' })
     if (nickname.length < 2 || nickname.length > 16) return res.status(400).json({ error: '昵称需要 2–16 个字符' })
-    if (password.length < 6) return res.status(400).json({ error: '密码至少 6 位' })
+    const passwordError = passwordValidationError(password)
+    if (passwordError) return res.status(400).json({ error: passwordError })
     if (!authGateOk(req, res, { kind: 'register' })) return
 
     const exists = await queryOne('SELECT id FROM users WHERE email = ?', [email])

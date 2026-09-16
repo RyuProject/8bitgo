@@ -7,14 +7,16 @@
  */
 import { createServer } from 'node:http'
 import express from 'express'
-import { roomsRouter } from '../src/routes/rooms.js'
+import { createRoomsRouter } from '../src/routes/rooms.js'
+
+const testGamePolicy = ({ gameSlug }) => ({ gameSlug, maxPlayers: gameSlug === 'four-player' ? 4 : 2 })
 
 let pass = 0, fail = 0
 const ok = (c, m) => { c ? (pass++, console.log('✅ ' + m)) : (fail++, console.log('❌ ' + m)) }
 
 const app = express()
 app.use(express.json())
-app.use('/api/rooms', roomsRouter)
+app.use('/api/rooms', createRoomsRouter({ resolveGamePolicy: testGamePolicy }))
 const httpServer = createServer(app)
 await new Promise((r) => httpServer.listen(0, r))
 const base = `http://127.0.0.1:${httpServer.address().port}`
@@ -51,6 +53,10 @@ ok(renew.roomId === 'c1', '带对令牌能继续心跳')
 console.log('\n── 后来者抢不到 host ──')
 const r2 = await (await beat({ roomId: 'c1', gameSlug: 'sf2', memberId: 'm-2', nickname: '第二人', playerIndex: 1, host: true })).json()
 ok(r2.members.filter((m) => m.host).length === 1 && r2.members.find((m) => m.host).nickname === '房主', '自称 host 的后来者不算 host')
+ok(r2.max === 2, '房间人数上限来自后台配置')
+
+const fakeFour = await beat({ roomId: 'c1', gameSlug: 'sf2', memberId: 'm-3', nickname: '第三人', playerIndex: 2 })
+ok(fakeFour.status === 409, '客户端不能占用后台未开放的 3P/4P 位置')
 
 console.log('\n── 离开房间要带令牌 ──')
 const noTok = await leave('c1', 'm-host', '')

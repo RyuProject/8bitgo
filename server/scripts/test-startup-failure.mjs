@@ -59,3 +59,17 @@ const secret = await child({ PUBLIC_SITE_URL: 'https://8bitgo.com', JWT_SECRET: 
 assert.equal(secret.code, 1, `公开站点带固定密钥仍然启动了：${secret.output.slice(-1000)}`)
 assert.match(secret.output, /JWT_SECRET/)
 console.log('✅ 固定密钥：公开站点在监听前拒绝启动')
+
+const weakJwt = await child({ PUBLIC_SITE_URL: 'https://8bitgo.com', JWT_SECRET: 'short-secret' })
+assert.equal(weakJwt.code, 1, `公开站点带短 JWT 密钥仍然启动了：${weakJwt.output.slice(-1000)}`)
+assert.match(weakJwt.output, /JWT_SECRET.*32/)
+console.log('✅ 短 JWT 密钥：公开站点在监听前拒绝启动')
+
+const reused = await child({
+  PUBLIC_SITE_URL: 'https://8bitgo.com',
+  JWT_SECRET: 'same-secret-value-0123456789abcdef',
+  ADMIN_TOKEN: 'same-secret-value-0123456789abcdef',
+})
+assert.equal(reused.code, 1, `登录密钥与后台口令复用时仍然启动了：${reused.output.slice(-1000)}`)
+assert.match(reused.output, /复用/)
+console.log('✅ 密钥复用：公开站点在监听前拒绝启动')

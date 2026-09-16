@@ -12,6 +12,7 @@
 import { normalizeDosboxConfigOverride } from '../../shared/dosbox-config.js'
 import { normalizeDosStartupCommands } from '../../shared/dos-startup-commands.js'
 import { isAdultByBirthDate } from '../../shared/age.js'
+import { normalizeGamePlayers } from '../../shared/netplay-players.js'
 
 /**
  * 数据库布尔列的唯一判断方式。
@@ -324,6 +325,73 @@ export function arcadeRomDataOf(v) {
   return s
 }
 
+const FLASH_BUTTONS = new Set(['up', 'down', 'left', 'right', 'a', 'b', 'select', 'start'])
+const FLASH_NAMED_KEYS = new Set([
+  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Enter', 'Escape', 'ShiftLeft', 'ControlLeft',
+])
+
+const badGameField = (message) => {
+  const error = new Error(message)
+  error.status = 400
+  error.expose = true
+  throw error
+}
+
+function flashControlsObject(v, strict = true) {
+  if (v == null || v === '') return null
+  let raw = v
+  if (typeof raw === 'string') {
+    try { raw = JSON.parse(raw) } catch { return strict ? badGameField('Flash 键位不是合法 JSON') : null }
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return strict ? badGameField('Flash 键位必须是包含 p1 的对象') : null
+  }
+
+  const out = {}
+  for (const player of ['p1', 'p2']) {
+    const pad = raw[player]
+    if (pad == null) continue
+    if (!pad || typeof pad !== 'object' || Array.isArray(pad)) {
+      return strict ? badGameField(`Flash ${player} 键位必须是对象`) : null
+    }
+    const clean = {}
+    const used = new Set()
+    for (const [button, key] of Object.entries(pad)) {
+      if (!FLASH_BUTTONS.has(button)) {
+        if (strict) badGameField(`Flash 键位含未知按钮：${button}`)
+        continue
+      }
+      const name = typeof key === 'string' ? key.trim() : ''
+      if (!FLASH_NAMED_KEYS.has(name) && !/^Key[A-Z]$/.test(name) && !/^Digit[0-9]$/.test(name)) {
+        if (strict) badGameField(`Flash ${button} 的键名无效：${String(key)}`)
+        continue
+      }
+      if (used.has(name)) {
+        if (strict) badGameField(`Flash ${player} 的多个按钮重复使用 ${name}`)
+        continue
+      }
+      used.add(name)
+      clean[button] = name
+    }
+    if (Object.keys(clean).length) out[player] = clean
+  }
+  if (!out.p1) return strict ? badGameField('Flash 键位至少要给 p1 配一个按钮') : null
+  return out
+}
+
+/** JSON 列入库时显式序列化，避免不同 mysql2 配置把普通对象写成 [object Object]。 */
+export function flashControlsOf(v) {
+  const controls = flashControlsObject(v, true)
+  return controls ? JSON.stringify(controls) : null
+}
+
+export function arcadeButtonsOf(v) {
+  if (v == null || v === '') return null
+  const n = Number(v)
+  if (n === 2 || n === 4 || n === 6) return n
+  return badGameField('街机动作键数量只能是 2、4 或 6')
+}
+
 export function gameRowToApi(r, rel = {}) {
   const g = {
     slug: r.slug,
@@ -333,7 +401,7 @@ export function gameRowToApi(r, rel = {}) {
     year: Number(r.year) || 0,
     developer: r.developer || '',
     plays: Number(r.plays) || 0,
-    players: Number(r.players) || 1,
+    players: normalizeGamePlayers(r.players),
     multiplayer: bool(r.multiplayer),
     coinReward: Number(r.coin_reward) || 0,
     icon: r.icon || '🎮',
@@ -375,6 +443,10 @@ export function gameRowToApi(r, rel = {}) {
   if (r.dosbox_config_override) g.dosboxConfig = r.dosbox_config_override
   if (r.dos_save_hint) g.dosSaveHint = r.dos_save_hint
   if (r.arcade_romdata) g.arcadeRomData = r.arcade_romdata
+  const flashControls = flashControlsObject(r.flash_controls, false)
+  if (flashControls) g.flashControls = flashControls
+  const arcadeButtons = arcadeButtonsOf(r.arcade_buttons)
+  if (arcadeButtons) g.arcadeButtons = arcadeButtons
   if (r.title_zh) g.titleZh = r.title_zh
   // 中文译名的繁体版（只可能有 zh-Hant 一个键）。没生成过就不挂这个字段，
   // 前端的 gameTitle() 会自然回退到 titleZh，繁体读者看到简体 —— 那是 2026-09-07
@@ -414,7 +486,7 @@ export function gameApiToRow(g) {
     platform: String(g.platform ?? ''),
     year: Number(g.year) || 0,
     developer: developersText(g.developer),
-    players: Number(g.players) || 1,
+    players: normalizeGamePlayers(g.players),
     multiplayer: g.multiplayer ? 1 : 0,
     coin_reward: Number(g.coinReward) || 0,
     icon: String(g.icon ?? '🎮'),
@@ -440,6 +512,8 @@ export function gameApiToRow(g) {
     dosbox_config_override: dosboxConfigOf(g.dosboxConfig),
     dos_save_hint: dosSaveHintOf(g.dosSaveHint),
     arcade_romdata: arcadeRomDataOf(g.arcadeRomData),
+    arcade_buttons: arcadeButtonsOf(g.arcadeButtons),
+    flash_controls: flashControlsOf(g.flashControls),
   }
 }
 
@@ -453,7 +527,7 @@ const FIELD_TO_COLUMN = {
   platform: ['platform', (v) => String(v ?? '')],
   year: ['year', (v) => Number(v) || 0],
   developer: ['developer', developersText],
-  players: ['players', (v) => Number(v) || 1],
+  players: ['players', normalizeGamePlayers],
   multiplayer: ['multiplayer', (v) => (v ? 1 : 0)],
   coinReward: ['coin_reward', (v) => Number(v) || 0],
   icon: ['icon', (v) => String(v ?? '🎮')],
@@ -478,6 +552,8 @@ const FIELD_TO_COLUMN = {
   dosboxConfig: ['dosbox_config_override', dosboxConfigOf],
   dosSaveHint: ['dos_save_hint', dosSaveHintOf],
   arcadeRomData: ['arcade_romdata', arcadeRomDataOf],
+  arcadeButtons: ['arcade_buttons', arcadeButtonsOf],
+  flashControls: ['flash_controls', flashControlsOf],
 }
 
 export function gameApiToPartialRow(patch) {

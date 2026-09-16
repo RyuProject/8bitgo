@@ -44,6 +44,8 @@ export function apiLabel(): string {
 
 const TOKEN_KEY = '8bitgo.token'
 const ADMIN_TOKEN_KEY = '8bitgo.api.admintoken'
+/** 同一标签页里 localStorage 不会触发 storage 事件，需要这条通知让长连接切换登录权限。 */
+export const TOKEN_CHANGED_EVENT = '8bitgo:token-changed'
 
 export function getToken(): string {
   try {
@@ -53,12 +55,16 @@ export function getToken(): string {
   }
 }
 export function setToken(token: string | null) {
+  let changed = false
   try {
+    const previous = localStorage.getItem(TOKEN_KEY) ?? ''
     if (token) localStorage.setItem(TOKEN_KEY, token)
     else localStorage.removeItem(TOKEN_KEY)
+    changed = previous !== (token || '')
   } catch {
     /* ignore */
   }
+  if (changed && typeof window !== 'undefined') window.dispatchEvent(new Event(TOKEN_CHANGED_EVENT))
 }
 export function getAdminApiToken(): string {
   try {

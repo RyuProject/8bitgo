@@ -21,10 +21,9 @@
  * 任何一步出错都必须退回「正常从网络下载」，不能让玩家玩不了游戏。
  *
  * ⚠️ 两套读写接口，按 ROM 大小分：
- *   - romCacheGet / romCachePut：ArrayBuffer，给卡带机 ROM 和街机 ZIP 用，
- *     调用方拿到字节本体去嗅探格式（listZipEntries、iNES 文件头之类）。
- *   - romCacheGetBlob / romCachePutBlob：Blob，给光盘镜像用。几百 MB 到几 GB 的盘
- *     不能走上面那条 —— 那要求一整块连续内存，手机上分配不出来。
+ *   - romCacheGet / romCachePut：ArrayBuffer，只给必须直接嗅探字节的小卡带 ROM。
+ *   - romCacheGetBlob / romCachePutBlob：Blob，给光盘和街机 ZIP。街机只切片读取中央目录，
+ *     不该为了验一个大包再申请一整块连续内存。
  */
 
 import { romArchiveRef } from '@/lib/romArchiveUrl'

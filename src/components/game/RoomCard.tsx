@@ -7,6 +7,7 @@ import { gameTitle, platformLabel } from '@/services/i18nData'
 import type { Room } from '@/services/rooms'
 import type { LiveRoomInfo } from '@/services/live'
 import { normalizePresence, type Presence } from '@/services/presence'
+import { normalizeGamePlayers } from '../../../shared/netplay-players.js'
 
 /** 统一的房间视图：P2P（房主浏览器跑）、云端（服务器跑）、直播（只看不玩）三种来源合并后长这样 */
 export interface RoomView {
@@ -55,7 +56,7 @@ export function cloudRoomView(r: Room): RoomView {
     roomId: r.roomId,
     gameSlug: r.gameSlug,
     players: r.players,
-    max: 4,
+    max: normalizeGamePlayers(r.max),
     spectators: 0,
     host: r.host,
     members: r.members.map((m) => ({ ...m, presence: normalizePresence(m.presence) })),
@@ -112,7 +113,8 @@ export function RoomCard({ room, compact = false }: { room: RoomView; compact?: 
   const live = room.kind === 'live'
   // 直播的画面此刻不动（主播掉线 / 切后台）：卡片上说清楚，别让人点进去猜
   const stalled = live ? (room.hostAway ? t.rooms.hostAway : room.hostPaused ? t.rooms.hostPaused : '') : ''
-  const max = live ? 1 : Math.max(room.max || 0, game?.players ?? 2)
+  // 房间上限已经由服务端按后台配置冻结，不能再拿客户端缓存里的 game.players 把它撑大。
+  const max = live ? 1 : normalizeGamePlayers(room.max || game?.players)
   // 直播没有手柄位，也就没有「满了」这回事：观众上限由服务端的 MAX_VIEWERS 兜着
   const full = !live && room.players >= max
   const viewers = room.spectators ?? 0

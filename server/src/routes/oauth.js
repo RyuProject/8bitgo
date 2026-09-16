@@ -13,10 +13,10 @@
  * PKCE 让「换令牌」这一步必须出示授权码时对应的 code_verifier，截获 code 没用。
  * 所以这里 **code_challenge 必填、且 method 只能是 S256**（plain 直接拒）。
  *
- * ## 授权码存在内存里
+ * ## 授权码只把哈希存在数据库里
  *
- * 和 device.js 同一个取舍：授权码寿命只有 5 分钟、一次性，重启就清空、多实例不共享。
- * 对用户级令牌来说能接受——用户重新走一遍授权即可。等哪天要跑多实例再换库。
+ * 站点重启或 PM2 多实例都不能让授权流程随机失效。明文只交给调用方，库里保存 SHA-256；
+ * 兑换时用行锁把“核验 + 标记已使用”串行化，两个并发请求不可能换出两枚令牌。
  */
 import express, { Router } from 'express'
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
@@ -27,6 +27,7 @@ import { issueUserToken, OPEN_ACCESS_TTL_SEC } from '../open/tokens.js'
 import { OPEN_SCOPES, parseScopes, missingScopes } from '../open/scopes.js'
 import { parseUriList } from '../open/review.js'
 import { requireUser } from '../auth.js'
+import { query, withTransaction } from '../db.js'
 import { publicSiteUrl } from '../site-urls.js'
 import { take } from '../rateLimit.js'
 import { clientIpFrom } from '../presence.js'
@@ -54,26 +55,34 @@ function fail(res, status, error, description, extra) {
   return res.status(status).json(body)
 }
 
-/* ---------------- 授权码存储（内存，5 分钟，一次性） ---------------- */
+/* ---------------- 授权码存储（数据库，60 秒，一次性） ---------------- */
 
-const codes = new Map()
-const CODE_TTL_SEC = 300
+// 设计文档对外承诺 60 秒。授权码出现在浏览器地址栏与第三方回调日志里，
+// 它不该和设备码一样活 5 分钟；PKCE 是第二道闸，不是延长 bearer 凭证寿命的理由。
+const CODE_TTL_SEC = 60
 
-function sweepCodes(now = Date.now()) {
-  for (const [k, v] of codes) if (v.expiresAt <= now) codes.delete(k)
-  return codes.size
-}
+const codeHash = (code) => createHash('sha256').update(String(code || '')).digest('hex')
 
-function issueAuthCode({ appId, userId, scopes, challenge }) {
-  sweepCodes()
+async function issueAuthCode({ appId, userId, scopes, challenge, redirectUri }) {
   const code = randomBytes(24).toString('base64url')
-  codes.set(code, {
-    appId: String(appId),
-    userId: String(userId),
-    scopes: [...scopes],
-    challenge: String(challenge),
-    expiresAt: Date.now() + CODE_TTL_SEC * 1000,
-  })
+  // 已使用的码保留一天，方便将来接入重放告警；更老的记录在发码时顺手清理，避免表只增不减。
+  await query(
+    'DELETE FROM oauth_codes WHERE expires_at < UTC_TIMESTAMP() - INTERVAL 1 DAY',
+  )
+  await query(
+    `INSERT INTO oauth_codes
+       (code_hash, app_id, user_id, scopes, redirect_uri, code_challenge, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [
+      codeHash(code),
+      String(appId),
+      String(userId),
+      (Array.isArray(scopes) ? scopes : []).join(' '),
+      String(redirectUri),
+      String(challenge),
+      new Date(Date.now() + CODE_TTL_SEC * 1000),
+    ],
+  )
   return code
 }
 
@@ -82,18 +91,44 @@ function issueAuthCode({ appId, userId, scopes, challenge }) {
  *
  * @returns {{ ok: true, appId, userId, scopes } | { error: 'invalid_grant' | 'expired_token' }}
  *
- * ⚠️ **一次性**：取出来立刻删，重放同一枚 code 直接 invalid_grant。
+ * ⚠️ **一次性**：成功后在同一事务内标记 used_at，重放同一枚 code 直接 invalid_grant。
  * ⚠️ PKCE 用**定长比较**：code_verifier 是用户控制的，普通 === 会泄露「前几位对没对」。
  */
-function redeemAuthCode(code, verifier) {
-  const row = codes.get(String(code || ''))
-  if (!row) return { error: 'invalid_grant' }
-  codes.delete(String(code))
-  if (row.expiresAt <= Date.now()) return { error: 'expired_token' }
-  const got = createHash('sha256').update(String(verifier || '')).digest()
-  const want = Buffer.from(row.challenge, 'base64url')
-  if (got.length !== want.length || !timingSafeEqual(got, want)) return { error: 'invalid_grant' }
-  return { ok: true, appId: row.appId, userId: row.userId, scopes: row.scopes }
+async function redeemAuthCode(code, { verifier, appId, redirectUri }) {
+  return withTransaction(async (run) => {
+    const rows = await run(
+      `SELECT code_hash, app_id, user_id, scopes, redirect_uri, code_challenge, expires_at, used_at
+         FROM oauth_codes WHERE code_hash = ? FOR UPDATE`,
+      [codeHash(code)],
+    )
+    const row = rows[0]
+    if (!row || row.used_at) return { error: 'invalid_grant' }
+    if (new Date(row.expires_at).getTime() <= Date.now()) return { error: 'expired_token' }
+
+    /*
+      授权码必须同时绑定 client_id 和 redirect_uri。
+
+      以前虽然把 appId 存进了 Map，兑现时却一个字都没核对：A 应用拿到的 code 可以在
+      B 应用的 /token 请求里兑现，最终令牌的 cid 还会被写成 B。那会绕过应用隔离、审核
+      与按应用限流。redirect_uri 也一样——登记时精确匹配，兑换时不比，相当于只做了半道。
+
+      失败时先别消费 code：知道 code、但不知道 verifier 的第三方不该能用一条错误请求把
+      正常登录烧掉。成功时更新持有 FOR UPDATE 锁的同一行，跨进程也只能成功一次。
+    */
+    if (String(row.app_id) !== String(appId || '') || String(row.redirect_uri) !== String(redirectUri || '')) {
+      return { error: 'invalid_grant' }
+    }
+    const got = createHash('sha256').update(String(verifier || '')).digest()
+    const want = Buffer.from(String(row.code_challenge || ''), 'base64url')
+    if (got.length !== want.length || !timingSafeEqual(got, want)) return { error: 'invalid_grant' }
+    await run('UPDATE oauth_codes SET used_at = UTC_TIMESTAMP() WHERE code_hash = ?', [row.code_hash])
+    return {
+      ok: true,
+      appId: String(row.app_id),
+      userId: String(row.user_id),
+      scopes: parseScopes(row.scopes).scopes,
+    }
+  })
 }
 
 /* ---------------- 参数校验（GET 和 POST 都要走一遍） ---------------- */
@@ -118,7 +153,11 @@ async function validateAuthorizeQuery(req) {
   }
   const method = get('code_challenge_method')
   const challenge = get('code_challenge')
-  if (!challenge || method !== 'S256') return { error: fail2('invalid_request', '必须带 code_challenge 且 method=S256（强制 PKCE）') }
+  // S256 的输出固定是 32 字节 SHA-256 的 base64url，也就是 43 个字符。
+  // 只判“非空”会签出永远兑不了的授权码，把接入方的拼写错误拖到流程最后才暴露。
+  if (!/^[A-Za-z0-9_-]{43}$/.test(challenge) || method !== 'S256') {
+    return { error: fail2('invalid_request', '必须带合法的 code_challenge 且 method=S256（强制 PKCE）') }
+  }
 
   // scope：不传给「全部已获批」；传了必须是子集（user 级 scope 这里允许，正是它的用途）
   let scopes = [...parseScopes(app.approved_scopes).scopes]
@@ -248,11 +287,12 @@ oauthRouter.post(
     if (decision === 'deny') {
       return redirectWithCode(res, v.redirectUri, v.state, null, 'access_denied')
     }
-    const code = issueAuthCode({
+    const code = await issueAuthCode({
       appId: v.app.id,
       userId: req.user.id,
       scopes: v.scopes,
       challenge: v.challenge,
+      redirectUri: v.redirectUri,
     })
     return redirectWithCode(res, v.redirectUri, v.state, code, null)
   } catch (e) {
@@ -305,14 +345,23 @@ oauthRouter.post('/token', tokenBody, async (req, res, next) => {
     }
 
     const app = await getApp(clientId)
-    if (!app) return fail(res, 401, 'invalid_client', 'AppID 不存在')
+    // 机密客户端会在 authenticateApp 里挡 suspended；公开客户端不走那一步，必须在这里补齐。
+    if (!app || app.status === 'suspended') return fail(res, 401, 'invalid_client', 'AppID 不存在或已停用')
     // 机密客户端必须验密钥；公开客户端靠 PKCE，没有 secret
     if (app.client_type === 'confidential') {
       const authed = await authenticateApp(clientId, clientSecret)
       if (!authed) return fail(res, 401, 'invalid_client', 'AppID 或 key 不正确')
     }
 
-    const r = redeemAuthCode(req.body?.code, req.body?.code_verifier)
+    const verifier = String(req.body?.code_verifier || '')
+    if (!/^[A-Za-z0-9._~-]{43,128}$/.test(verifier)) {
+      return fail(res, 400, 'invalid_grant', '授权码无效')
+    }
+    const r = await redeemAuthCode(req.body?.code, {
+      verifier,
+      appId: app.id,
+      redirectUri: req.body?.redirect_uri,
+    })
     if (!r.ok) {
       const status = r.error === 'expired_token' ? 400 : 400
       return fail(res, status, r.error, r.error === 'expired_token' ? '授权码已过期，请重新发起授权' : '授权码无效')

@@ -13,6 +13,7 @@ import { api, apiEnabled } from './api'
 import { getCurrentUser } from './auth'
 import { randomId } from './localStore'
 import type { Presence } from './presence'
+import { NETPLAY_MAX_PLAYERS } from '../../shared/netplay-players.js'
 
 export interface RoomMember {
   nickname: string
@@ -27,6 +28,8 @@ export interface Room {
   createdAt: number
   host: { nickname: string; userId: string | null } | null
   players: number
+  /** 后台为这款游戏配置的手柄位数；服务端会强制限制在 1..4。 */
+  max: number
   playerIndexes: number[]
   members: RoomMember[]
   /** 房主的设备 / 地区 / 网络。见 services/presence.ts */
@@ -45,7 +48,7 @@ interface HeartbeatResult extends Room {
   memberToken?: string
 }
 
-export const MAX_PLAYERS = 4
+export const MAX_PLAYERS = NETPLAY_MAX_PLAYERS
 const HEARTBEAT_MS = 10_000
 const LIST_POLL_MS = 8_000
 
@@ -235,7 +238,7 @@ export function useRoom(roomId: string | undefined): Room | null | undefined {
 }
 
 /** 下一个空闲的手柄位（0 起） */
-export function freePlayerIndex(room: Room | null | undefined, max = MAX_PLAYERS): number {
+export function freePlayerIndex(room: Room | null | undefined, max: number = MAX_PLAYERS): number {
   const taken = new Set(room?.playerIndexes ?? [])
   for (let i = 0; i < max; i++) if (!taken.has(i)) return i
   return max - 1

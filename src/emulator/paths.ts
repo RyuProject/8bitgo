@@ -35,8 +35,15 @@ const asDir = (raw: string | undefined, fallback = ''): string => {
  */
 export const EJS_PATH: string = asDir(import.meta.env.VITE_EJS_PATH, '/emulatorjs/')
 
-/** Ruffle（Flash）资源路径。由 scripts/copy-ruffle.mjs 复制到 public/ruffle/ */
-export const RUFFLE_PATH: string = asDir(import.meta.env.VITE_RUFFLE_PATH, '/ruffle/')
+/**
+ * Ruffle 的版本既进入 URL，也由构建检查和 npm 包互相校验。
+ * wasm / glue 文件名不是稳定的内容哈希；把版本放进目录后，旧 CDN 缓存不会和新版混用。
+ */
+export const RUFFLE_VERSION = '0.6.0'
+export const RUFFLE_PATH: string = asDir(
+  import.meta.env.VITE_RUFFLE_PATH,
+  `/ruffle/v${RUFFLE_VERSION}/`,
+)
 
 /** FreeJ2ME 资源路径。**没配置就是空** —— 空 = 该引擎 available() 为 false，解析阶段直接跳过 */
 export const J2ME_PATH: string = asDir(import.meta.env.VITE_J2ME_PATH)

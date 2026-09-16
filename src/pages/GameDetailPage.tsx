@@ -362,6 +362,8 @@ export function GameDetailPage() {
                   core={game.core}
                   genres={game.genres}
                   arcadeRomData={game.arcadeRomData}
+                  arcadeButtons={game.arcadeButtons}
+                  flashControls={game.flashControls}
                   dosExecutable={dosExecutableForRom(game, rom)}
                   dosStartupCommands={dosStartupCommandsForRom(game, rom)}
                   dosBackend={game.dosBackend}

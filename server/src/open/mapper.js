@@ -11,6 +11,7 @@
  * 明天 games 表加一列，黑名单不会报错，它会直接把新列发出去。
  */
 import { pickDescription, pickTitle, romLangs } from './i18n.js'
+import { normalizeGamePlayers } from '../../../shared/netplay-players.js'
 
 /**
  * @param row  games 表的一行（**原始行**，不是 gameRowToApi 的结果）
@@ -42,7 +43,7 @@ export function openGame(row, rel = {}, ctx = {}) {
     tags: rel.tags ?? [],
     year: Number(row.year) || 0,
     developer: row.developer || '',
-    players: Number(row.players) || 1,
+    players: normalizeGamePlayers(row.players),
     multiplayer: Boolean(Number(row.multiplayer)),
     /** emoji，没封面时的兜底显示 */
     icon: row.icon || '🎮',

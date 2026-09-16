@@ -141,12 +141,33 @@ check('⚠️ 公网站点拒绝固定 JWT 密钥和示例后台口令', () => {
   assert.match(auth.authSecretsFatal(site), /JWT_SECRET/)
   assert.match(auth.authSecretsFatal({ ...site, JWT_SECRET: 'dev-secret-change-me' }), /JWT_SECRET/)
   assert.match(auth.authSecretsFatal({ ...site, JWT_SECRET: 'change-me-to-a-long-random-string' }), /JWT_SECRET/)
-  assert.match(auth.authSecretsFatal({ ...site, JWT_SECRET: 'random-login-secret', ADMIN_TOKEN: 'replace-with-a-long-random-key' }), /ADMIN_TOKEN/)
-  assert.equal(auth.authSecretsFatal({ ...site, JWT_SECRET: 'random-login-secret', ADMIN_TOKEN: 'random-admin-key' }), '')
+  assert.match(auth.authSecretsFatal({ ...site, JWT_SECRET: 'j'.repeat(32), ADMIN_TOKEN: 'replace-with-a-long-random-key' }), /ADMIN_TOKEN/)
+  assert.match(auth.authSecretsFatal({ ...site, JWT_SECRET: 'too-short' }), /32/)
+  assert.match(auth.authSecretsFatal({ ...site, JWT_SECRET: 'j'.repeat(32), ADMIN_TOKEN: 'too-short' }), /ADMIN_TOKEN.*32/)
+  assert.match(auth.authSecretsFatal({ ...site, JWT_SECRET: 'x'.repeat(32), ADMIN_TOKEN: 'x'.repeat(32) }), /复用/)
+  assert.equal(auth.authSecretsFatal({ ...site, JWT_SECRET: 'j'.repeat(32), ADMIN_TOKEN: 'a'.repeat(32) }), '')
   assert.equal(auth.authSecretsFatal({ PUBLIC_SITE_URL: 'http://localhost:8788' }), '')
   assert.match(auth.authSecretsFatal({ NODE_ENV: 'production', PUBLIC_SITE_URL: 'http://localhost:8788' }), /JWT_SECRET/)
   const index = strip(read('server/src/index.js'))
   assert.ok(index.indexOf('authSecretsFatal()') < index.indexOf('const PORT'), '固定密钥检查必须在监听之前')
+})
+
+check('⚠️ bcrypt 的 72 字节静默截断被挡住', () => {
+  assert.equal(auth.passwordValidationError('123456'), '')
+  assert.equal(auth.passwordValidationError('a'.repeat(72)), '')
+  assert.match(auth.passwordValidationError('a'.repeat(73)), /72/)
+  // 24 个汉字正好 72 字节，第 25 个必须被拒；不能拿 JS 的字符数来判断。
+  assert.equal(auth.passwordValidationError('密'.repeat(24)), '')
+  assert.match(auth.passwordValidationError('密'.repeat(25)), /72/)
+})
+
+check('⚠️ 第三方/验证码首次登录不再被并发建号竞态打成 500', () => {
+  const route = strip(read('server/src/routes/auth.js'))
+  const start = route.indexOf('async function findOrCreateByEmail')
+  const end = route.indexOf('/* ---------------- 密码登录', start)
+  const body = route.slice(start, end)
+  assert.match(body, /ON DUPLICATE KEY UPDATE email = VALUES\(email\)/, '并发首登仍然会撞 uniq_email')
+  assert.match(body, /SELECT \* FROM users WHERE email = \?/, '输掉插入竞态后没有按邮箱读取赢家账号')
 })
 
 console.log('\n── 其余几条 ──')
@@ -195,6 +216,33 @@ check('⚠️ 收藏不再是「先查再裸 INSERT」（双击会 500，而且�
   assert.doesNotMatch(me, /INSERT INTO favorites/, '还是裸 INSERT，撞唯一键就是 500')
   assert.match(me, /INSERT IGNORE INTO favorites/)
   assert.match(me, /DELETE FROM favorites[\s\S]{0,200}affectedRows/, '不是「先删，删不到才插」那个形状')
+})
+
+check('⚠️ 用户后台修改是原子操作，最后一个管理员的判断在锁内完成', () => {
+  const users = strip(read('server/src/routes/users.js'))
+  const patchAt = users.indexOf("usersRouter.patch('/:id'")
+  const deleteAt = users.indexOf("usersRouter.delete('/:id'")
+  assert.ok(patchAt > 0 && deleteAt > patchAt, '找不到用户修改/删除路由')
+  const patchBody = users.slice(patchAt, deleteAt)
+  assert.match(patchBody, /withTransaction\(async \(run\)/, '修改用户没有事务，失败会留下半截写入')
+  assert.match(patchBody, /role = 'admin' AND status = 'active' ORDER BY id FOR UPDATE/, '最后管理员判断没有锁')
+  assert.ok(
+    patchBody.indexOf('if (!isRole(body.role))') < patchBody.indexOf('withTransaction(async (run)'),
+    'role 校验在事务/写入之后——错误请求仍可能先改掉金币',
+  )
+  const deleteBody = users.slice(deleteAt)
+  assert.match(deleteBody, /withTransaction\(async \(run\)/, '删除用户和评分聚合重算不在同一事务')
+  assert.match(deleteBody, /recomputeSql\(rated.length\)/, '级联删评分后没有在事务里重算聚合')
+})
+
+check('⚠️ 自助注销与评分聚合重算同成同败', () => {
+  const me = strip(read('server/src/routes/me.js'))
+  const i = me.indexOf("meRouter.delete('/'")
+  assert.ok(i > 0, '找不到自助注销路由')
+  const body = me.slice(i)
+  assert.match(body, /withTransaction\(async \(run\)/)
+  assert.match(body, /DELETE FROM users/)
+  assert.match(body, /recomputeSql\(rated.length\)/)
 })
 
 console.log('\n── P2：能被利用但代价有限的那几条 ──')

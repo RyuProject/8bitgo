@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import express from 'express'
 import { createServer } from 'node:http'
 import { io as client } from 'socket.io-client'
+import { testGameRoomPolicy } from './helpers/netplay-game-policy.mjs'
 
 process.env.NETPLAY_MAX_ROOMS_PER_IP = '0'
 process.env.NETPLAY_MAX_MEMBERS_PER_IP = '0'
@@ -12,8 +13,8 @@ const { attachLive, liveRoom } = await import('../src/live.js')
 
 const app = express()
 const http = createServer(app)
-const io = attachNetplay(http, app, ['*'])
-attachLive(io)
+const io = attachNetplay(http, app, ['*'], { resolveGamePolicy: testGameRoomPolicy })
+attachLive(io, { findGame: async () => ({ adult: 0 }) })
 await new Promise((resolve) => http.listen(0, '127.0.0.1', resolve))
 const base = `http://127.0.0.1:${http.address().port}`
 const sockets = []

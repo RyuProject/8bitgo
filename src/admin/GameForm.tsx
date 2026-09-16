@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
-import type { Game, GenreId, PlatformId } from '@/types'
+import type { FlashControlButton, Game, GenreId, PlatformId } from '@/types'
 import { ROM_LANGS, ROM_LANG_LABEL, type RomLang } from '@/config/languages'
 import { platforms, platformMap } from '@/data/platforms'
 import { genres } from '@/data/genres'
@@ -43,6 +43,7 @@ import { confirmUpload, confirmDiscImage, cleanupSuperseded, deleteRomObjects, h
 import { coreOptionsFor } from '@/config/emulators'
 import { FEATURES } from '@/config/features'
 import { isPlayable } from '@/emulator'
+import { NETPLAY_MAX_PLAYERS } from '../../shared/netplay-players.js'
 import { normalizeDevelopers } from '@/lib/developers'
 import { Field, btnClass, inputClass } from './ui'
 import { mergeDosboxConfigOverride, normalizeDosboxConfigOverride } from '../../shared/dosbox-config.js'
@@ -114,6 +115,19 @@ const EMPTY: Game = {
   roms: {},
 }
 
+const FLASH_CONTROL_PRESETS = {
+  arrows: { p1: { up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight' } },
+  arrowsSpace: { p1: { up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight', a: 'Space' } },
+  wasdSpace: { p1: { up: 'KeyW', down: 'KeyS', left: 'KeyA', right: 'KeyD', a: 'Space' } },
+  fireboy: {
+    p1: { up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight' },
+    p2: { up: 'KeyW', down: 'KeyS', left: 'KeyA', right: 'KeyD' },
+  },
+} satisfies Record<string, NonNullable<Game['flashControls']>>
+
+const cloneFlashControls = (value: NonNullable<Game['flashControls']>): NonNullable<Game['flashControls']> =>
+  JSON.parse(JSON.stringify(value))
+
 interface Props {
   /** 传入则为编辑模式 */
   initial?: Game
@@ -183,7 +197,7 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
 
   const setRomLang = (lang: RomLang, key: string) =>
     setForm((f) => {
-      const roms = { ...(f.roms ?? {}) }
+      const roms = { ...f.roms }
       if (key.trim()) roms[lang] = key.trim()
       else delete roms[lang]
       return { ...f, roms }
@@ -207,7 +221,7 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
 
   const setRomBackupLang = (lang: RomLang, key: string) =>
     setForm((f) => {
-      const romBackups = { ...(f.romBackups ?? {}) }
+      const romBackups = { ...f.romBackups }
       if (key.trim()) romBackups[lang] = key.trim()
       else delete romBackups[lang]
       return { ...f, romBackups }
@@ -345,6 +359,9 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
       dosSaveHint: form.platform === 'dos' && !windowsGuest ? form.dosSaveHint?.trim() || undefined : undefined,
       // 街机改版包专用；换成别的平台时要清掉，否则改完平台还留着一份没人读的 dat
       arcadeRomData: form.platform === 'arcade' ? form.arcadeRomData?.trim() || undefined : undefined,
+      arcadeButtons: form.platform === 'arcade' ? form.arcadeButtons : undefined,
+      // 纯鼠标 Flash 留空；有键位时屏幕手柄和实体手柄共用这一份配置。
+      flashControls: form.platform === 'flash' ? form.flashControls : undefined,
       dosboxConfig,
       // 空字符串写成 undefined，否则会存一条空的英文简介，
       // 前台判「有没有英文版」时就会误判成有
@@ -416,7 +433,7 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
         </Field>
         <Field label="最大玩家数">
           <select className={inputClass} value={form.players} onChange={(e) => set('players', Number(e.target.value) as Game['players'])}>
-            {[1, 2, 3, 4].map((n) => (
+            {Array.from({ length: NETPLAY_MAX_PLAYERS }, (_, i) => i + 1).map((n) => (
               <option key={n} value={n}>
                 {n} 人
               </option>
@@ -570,6 +587,18 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
           </>
         )}
         {form.platform === 'arcade' && (
+          <>
+          <Field label="街机动作键" hint="手机屏幕只显示游戏真正使用的按钮">
+            <select
+              className={inputClass}
+              value={form.arcadeButtons ?? 6}
+              onChange={(e) => set('arcadeButtons', Number(e.target.value) as Game['arcadeButtons'])}
+            >
+              <option value={2}>2 键</option>
+              <option value={4}>4 键</option>
+              <option value={6}>6 键</option>
+            </select>
+          </Field>
           <Field label="RomData（改版包）" className="col-span-2 sm:col-span-4">
             <textarea
               className={cx(inputClass, 'h-44 resize-y py-2 font-mono text-xs leading-5')}
@@ -585,6 +614,13 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
               必须同时写 ZipName 和 DrvName。骨架可以用 <code>npm run romdata -- &lt;包.zip&gt;</code> 从 zip 直接生成。
             </p>
           </Field>
+          </>
+        )}
+        {form.platform === 'flash' && (
+          <FlashControlsField
+            value={form.flashControls}
+            onChange={(value) => set('flashControls', value)}
+          />
         )}
         {coreOptions.length > 0 && (
           <Field label="模拟器核心">
@@ -803,6 +839,117 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
         </button>
       </div>
     </form>
+  )
+}
+
+const FLASH_BUTTON_LABEL: Record<FlashControlButton, string> = {
+  up: '上', down: '下', left: '左', right: '右', a: 'A', b: 'B', select: '选择', start: '开始',
+}
+const FLASH_KEY_OPTIONS = [
+  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Enter', 'Escape', 'ShiftLeft', 'ControlLeft',
+  ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((letter) => `Key${letter}`),
+  ...'0123456789'.split('').map((digit) => `Digit${digit}`),
+]
+
+function FlashControlsField({
+  value,
+  onChange,
+}: {
+  value?: Game['flashControls']
+  onChange: (value: Game['flashControls']) => void
+}) {
+  const serialized = value ? JSON.stringify(value) : ''
+  const preset = !value
+    ? 'mouse'
+    : Object.entries(FLASH_CONTROL_PRESETS).find(([, controls]) => JSON.stringify(controls) === serialized)?.[0] ?? 'custom'
+  const buttons = Object.keys(FLASH_BUTTON_LABEL) as FlashControlButton[]
+
+  const update = (player: 'p1' | 'p2', button: FlashControlButton, key: string) => {
+    const next = cloneFlashControls(value ?? { p1: {} })
+    const pad = { ...next[player] }
+    if (key) pad[button] = key
+    else delete pad[button]
+    if (player === 'p1') {
+      if (!Object.keys(pad).length) return onChange(undefined)
+      next.p1 = pad
+    } else if (Object.keys(pad).length) next.p2 = pad
+    else delete next.p2
+    onChange(next)
+  }
+
+  return (
+    <Field
+      label="Flash 控制方式"
+      hint="纯鼠标游戏不要配键位；键位同时用于手机屏幕和实体手柄"
+      className="col-span-2 sm:col-span-4"
+    >
+      <select
+        className={inputClass}
+        value={preset}
+        onChange={(e) => {
+          const name = e.target.value
+          if (name === 'mouse') onChange(undefined)
+          else if (name !== 'custom') onChange(cloneFlashControls(FLASH_CONTROL_PRESETS[name as keyof typeof FLASH_CONTROL_PRESETS]))
+        }}
+      >
+        <option value="mouse">纯鼠标 / 触屏点击（不显示手柄）</option>
+        <option value="arrows">方向键</option>
+        <option value="arrowsSpace">方向键 + 空格</option>
+        <option value="wasdSpace">WASD + 空格</option>
+        <option value="fireboy">双人：方向键 + WASD</option>
+        {preset === 'custom' && <option value="custom">自定义</option>}
+      </select>
+
+      {value && (
+        <div className="mt-3 space-y-3 rounded-lg border border-line bg-surface-2 p-3">
+          {(['p1', 'p2'] as const).map((player) => {
+            const enabled = player === 'p1' || Boolean(value.p2)
+            return (
+              <div key={player}>
+                <div className="mb-2 flex items-center gap-3 text-xs font-semibold text-muted">
+                  <span>{player === 'p1' ? '1P' : '2P'}</span>
+                  {player === 'p2' && (
+                    <label className="flex items-center gap-1 font-normal">
+                      <input
+                        type="checkbox"
+                        checked={enabled}
+                        onChange={(e) => {
+                          const next = cloneFlashControls(value)
+                          if (e.target.checked) next.p2 = {}
+                          else delete next.p2
+                          onChange(next)
+                        }}
+                      />
+                      同屏双人
+                    </label>
+                  )}
+                </div>
+                {enabled && (
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    {buttons.map((button) => (
+                      <label key={button} className="text-[11px] text-dim">
+                        {FLASH_BUTTON_LABEL[button]}
+                        <select
+                          className={cx(inputClass, 'mt-1 py-1 text-xs')}
+                          value={value[player]?.[button] ?? ''}
+                          onChange={(e) => update(player, button, e.target.value)}
+                        >
+                          <option value="">不使用</option>
+                          {FLASH_KEY_OPTIONS.map((key) => <option key={key} value={key}>{key}</option>)}
+                        </select>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+      <p className="mt-1 text-[11px] text-dim">
+        Flash 没有统一按键标准；不要给纯鼠标游戏套默认方向键。双人配置会同时开放直播观众的 2P 座位。
+      </p>
+    </Field>
   )
 }
 

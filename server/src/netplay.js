@@ -3,6 +3,8 @@ import { createHash, randomBytes } from 'node:crypto'
 import { Server } from 'socket.io'
 import { watchPresence, clientIpFrom, UNKNOWN_PRESENCE } from './presence.js'
 import { admitSse } from './sseGuard.js'
+import { resolveGameRoomPolicy } from './netplay-game-policy.js'
+import { NETPLAY_MAX_PLAYERS, normalizeGamePlayers } from '../../shared/netplay-players.js'
 
 /**
  * P2P 联机信令服务器（EmulatorJS netplay）+ 房主迁移。
@@ -43,7 +45,7 @@ import { admitSse } from './sseGuard.js'
  * 存档只在内存里，跟着房间一起消失。多实例部署时改成 Redis + 对象存储。
  */
 
-const MAX_PLAYERS = 4
+const MAX_PLAYERS = NETPLAY_MAX_PLAYERS
 /**
  * 观众上限。观众不占手柄位，但每人仍是房主那边的一条 WebRTC 上行流 ——
  * 家宽上行大约撑到十来路，所以这里给的是个保守值。
@@ -553,8 +555,9 @@ function playerIndexOf(room, socketId) {
  * @param httpServer node http server（app.listen 返回的那个不行，要用 createServer(app)）
  * @param app express app
  * @param origins CORS 白名单，与主服务保持一致
+ * @param options.resolveGamePolicy 测试可替换数据库查询；生产默认只认 games.players
  */
-export function attachNetplay(httpServer, app, origins = ['*']) {
+export function attachNetplay(httpServer, app, origins = ['*'], { resolveGamePolicy = resolveGameRoomPolicy } = {}) {
   const io = new Server(httpServer, {
     // EmulatorJS 客户端用默认的 /socket.io 路径连接，并把 URL 里的 /netplay 当命名空间
     cors: {
@@ -593,12 +596,38 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
      */
     socket.data.presence = watchPresence(socket)
 
-    socket.on('open-room', (payload, ack) => {
+    socket.on('open-room', async (payload, ack) => {
       const extra = payload?.extra && typeof payload.extra === 'object' ? payload.extra : {}
       const roomId = str(extra.sessionid, 64)
       const userid = str(extra.userid, 64)
       if (!SAFE_ID.test(roomId) || !SAFE_ID.test(userid) || UNSAFE_OBJECT_IDS.has(roomId) || UNSAFE_OBJECT_IDS.has(userid)) return ack?.('bad request')
       if (isIndexLike(userid)) return ack?.('bad userid')
+      const requestedGameId = gameIdOf(extra.game_id)
+      if (requestedGameId === null) return ack?.('bad request')
+
+      /**
+       * 人数只认后台 games.players。maxPlayers 是 EmulatorJS 协议自带字段，旧版服务端直接信它，
+       * 在控制台把 2 改成 4 就能绕过后台。game_slug 由我们的适配器补入，再与数字 game_id
+       * 交叉核对，不能拿另一款四人游戏的 slug 给当前游戏套额度。
+       */
+      let gamePolicy
+      try {
+        gamePolicy = await resolveGamePolicy({
+          gameSlug: str(extra.game_slug, 160),
+          gameId: requestedGameId,
+          requestedMax: payload?.maxPlayers,
+        })
+      } catch (error) {
+        console.error('[netplay] 读取游戏最大玩家数失败：', error)
+        return ack?.('game lookup failed')
+      }
+      const authoritativeMax = normalizeGamePlayers(gamePolicy?.maxPlayers)
+      if (!gamePolicy || authoritativeMax < 2) {
+        return ack?.('game does not support multiplayer')
+      }
+
+      // 数据库查询是异步的；等待期间别的请求可能已经占了房间名或这个 socket。
+      // 所有依赖当前内存状态的检查必须放在 await 之后重新做，才能避免并发开出两个同名房。
       // 别名也算占用：getRoom 先顺着别名解析，撞上别名的新房间谁也进不去
       if (rooms.has(roomId) || aliases.has(roomId)) return ack?.('room already exists')
       // 一个连接同时只能待在一个房间里，也就只能开一个房，否则一个脚本就能刷满
@@ -613,10 +642,11 @@ export function attachNetplay(httpServer, app, origins = ['*']) {
 
       const room = {
         id: roomId,
-        gameId: gameIdOf(extra.game_id),
+        gameId: gamePolicy.gameId,
+        gameSlug: gamePolicy.gameSlug,
         domain: str(extra.domain, 200),
         roomName: str(extra.room_name, 60) || 'Room',
-        maxPlayers: Math.max(2, Math.min(MAX_PLAYERS, Number(payload?.maxPlayers) || 2)),
+        maxPlayers: authoritativeMax,
         password: str(payload?.password, 60),
         ownerUserId: userid,
         ownerSocketId: socket.id,

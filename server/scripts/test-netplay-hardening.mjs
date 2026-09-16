@@ -5,6 +5,7 @@
 import { createServer } from 'node:http'
 import express from 'express'
 import { io as ioc } from 'socket.io-client'
+import { testGameRoomPolicy } from './helpers/netplay-game-policy.mjs'
 // 每 IP 上限是模块加载时读的，先设好再 import（测试里所有连接都是 127.0.0.1）
 process.env.NETPLAY_MAX_ROOMS_PER_IP = '3'
 // 每房间每 IP 的成员上限运行中现读 env，默认关掉，下面「第三批」里单独开一下测
@@ -21,7 +22,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const app = express()
 app.use('/api/netplay/ice', iceRouter)
 const httpServer = createServer(app)
-attachNetplay(httpServer, app, ['*'])
+attachNetplay(httpServer, app, ['*'], { resolveGamePolicy: testGameRoomPolicy })
 await new Promise((r) => httpServer.listen(0, r))
 const port = httpServer.address().port
 const base = `http://127.0.0.1:${port}`
@@ -344,10 +345,12 @@ ok(true, '畸形 webrtc-signal 不抛（服务器还活着）')
 
 console.log('\n── 第三批：公开列表不放大 ──')
 const bloat = await connect()
-await new Promise((r) => bloat.emit('open-room', { extra: { ...extra('r-bloat', 'u-bloat'), game_id: { junk: 'x'.repeat(5000) }, player_name: 'N'.repeat(5000), custom: 'y'.repeat(5000) }, maxPlayers: 2 }, r))
+const bloatAck = await new Promise((r) => bloat.emit('open-room', { extra: { ...extra('r-bloat', 'u-bloat'), game_id: { junk: 'x'.repeat(5000) }, player_name: 'N'.repeat(5000), custom: 'y'.repeat(5000) }, maxPlayers: 2 }, r))
 await sleep(80)
+ok(bloatAck === 'bad request', 'game_id 不是数字 / 短字串就拒绝（对象不进房间表）')
+ok((await fetch(`${base}/api/netplay/rooms/r-bloat`)).status === 404, '畸形 game_id 没有留下公开房间')
+await new Promise((r) => bloat.emit('open-room', { extra: { ...extra('r-bloat', 'u-bloat'), player_name: 'N'.repeat(5000), custom: 'y'.repeat(5000) }, maxPlayers: 2 }, r))
 const bloatRoom = await (await fetch(`${base}/api/netplay/rooms/r-bloat`)).json()
-ok(bloatRoom.gameId === null, 'game_id 不是数字 / 短字串就丢掉（对象不进列表）')
 ok(bloatRoom.host.nickname.length <= 32 && bloatRoom.members[0].nickname.length <= 32, '昵称截到 32')
 let bloatUsers = null
 const bloatPeer = await connect()

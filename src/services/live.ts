@@ -13,7 +13,7 @@
  */
 import { useSyncExternalStore } from 'react'
 import { fallbackAfterErrors } from './sseFallback'
-import { getToken, apiBase, apiEnabled } from './api'
+import { getToken, apiBase, apiEnabled, TOKEN_CHANGED_EVENT } from './api'
 import { getT } from './i18n'
 import { fetchIceConfig, type IceConfig } from './netplay'
 import type { Presence } from './presence'
@@ -118,6 +118,12 @@ export function liveEnabled(): boolean {
   return apiEnabled()
 }
 
+/** 成人房列表和详情由服务端按 JWT 年龄过滤，所以这些请求必须带当前登录令牌。 */
+function liveAuthHeaders(): Record<string, string> {
+  const token = getToken()
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
 /** socket.io 客户端脚本地址（后端 serveClient: true 会把它发出来） */
 export function socketScriptUrl(): string {
   return `${apiBase()}/socket.io/socket.io.js`
@@ -208,9 +214,8 @@ export async function connectLive(): Promise<LiveSocket> {
     transports: ['websocket', 'polling'],
     forceNew: true,
     /**
-     * 把登录令牌带进握手，**只为弹幕署名**：服务端验完签用账号昵称，
-     * 没带或验不过就发一个游客号（见 server/src/live.js 的 chatIdentity）。
-     * 信令本身仍然不需要登录 —— 看直播、开播都不要求账号，这一条不改。
+     * 把登录令牌带进握手：普通直播仍允许游客，服务端也会据此给弹幕署名；
+     * 成人游戏直播则把它作为真正的权限凭证，开播、续播和观看都会核对账号出生日期。
      */
     auth: { token: getToken() || undefined },
   })
@@ -279,7 +284,7 @@ export async function fetchLiveRooms(gameSlug?: string): Promise<LiveRoomInfo[]>
   if (!liveEnabled()) return []
   try {
     const url = `${apiBase()}/api/live/rooms${gameSlug ? `?game=${encodeURIComponent(gameSlug)}` : ''}`
-    const res = await fetch(url, { cache: 'no-store' })
+    const res = await fetch(url, { cache: 'no-store', headers: liveAuthHeaders() })
     if (!res.ok) return []
     return (await res.json()) as LiveRoomInfo[]
   } catch {
@@ -290,7 +295,10 @@ export async function fetchLiveRooms(gameSlug?: string): Promise<LiveRoomInfo[]>
 export async function fetchLiveRoom(roomId: string): Promise<LiveRoomInfo | null> {
   if (!liveEnabled()) return null
   try {
-    const res = await fetch(`${apiBase()}/api/live/rooms/${encodeURIComponent(roomId)}`, { cache: 'no-store' })
+    const res = await fetch(`${apiBase()}/api/live/rooms/${encodeURIComponent(roomId)}`, {
+      cache: 'no-store',
+      headers: liveAuthHeaders(),
+    })
     if (!res.ok) return null
     return (await res.json()) as LiveRoomInfo
   } catch {
@@ -330,7 +338,7 @@ const NO_LIVE_ROOMS: LiveRoomInfo[] = []
 
 /** 和 fetchLiveRooms 的区别：这个会把失败抛出来，让 store 能区分「没人在播」和「后端不可达」 */
 async function loadLiveRooms(): Promise<LiveRoomInfo[]> {
-  const res = await fetch(`${apiBase()}/api/live/rooms`, { cache: 'no-store' })
+  const res = await fetch(`${apiBase()}/api/live/rooms`, { cache: 'no-store', headers: liveAuthHeaders() })
   if (!res.ok) throw new Error(String(res.status))
   const list = (await res.json()) as LiveRoomInfo[]
   return Array.isArray(list) ? list : []
@@ -341,6 +349,8 @@ const liveStore = (() => {
   const listeners = new Set<() => void>()
   let es: EventSource | null = null
   let timer = 0
+  /** 当前连接按哪一张 JWT 建立；登录 / 退出后必须换通道，否则会沿用旧权限。 */
+  let connectedToken = ''
   const emit = () => listeners.forEach((l) => l())
 
   /** 列表空了要真的清空 —— 主播下播之后卡片必须消失，不能因为「保留上次结果」一直挂着 */
@@ -365,6 +375,16 @@ const liveStore = (() => {
   }
 
   const connect = () => {
+    connectedToken = getToken()
+    /*
+      EventSource 不能自定义 Authorization 头。游客继续用它享受低请求量；登录用户改用带 JWT 的
+      轮询，否则服务端只能把他当游客，年满 18 岁也永远看不到成人房。令牌绝不能塞进 URL，
+      那会进入访问日志、历史记录和 Referer。
+    */
+    if (connectedToken) {
+      startPolling()
+      return
+    }
     if (typeof EventSource !== 'function') {
       startPolling()
       return
@@ -401,14 +421,32 @@ const liveStore = (() => {
     }
   }
 
+  const reconnectForToken = () => {
+    if (getToken() === connectedToken) return
+    disconnect()
+    if (listeners.size > 0 && liveEnabled()) connect()
+  }
+
+  const onStorage = (event: StorageEvent) => {
+    if (!event.key || event.key === '8bitgo.token') reconnectForToken()
+  }
+
   return {
     get: () => rooms,
     subscribe(l: () => void) {
       listeners.add(l)
-      if (listeners.size === 1 && liveEnabled()) connect()
+      if (listeners.size === 1 && liveEnabled()) {
+        window.addEventListener(TOKEN_CHANGED_EVENT, reconnectForToken)
+        window.addEventListener('storage', onStorage)
+        connect()
+      }
       return () => {
         listeners.delete(l)
-        if (listeners.size === 0) disconnect()
+        if (listeners.size === 0) {
+          window.removeEventListener(TOKEN_CHANGED_EVENT, reconnectForToken)
+          window.removeEventListener('storage', onStorage)
+          disconnect()
+        }
       }
     },
     refresh,

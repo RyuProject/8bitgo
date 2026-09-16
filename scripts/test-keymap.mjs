@@ -282,16 +282,16 @@ for (const key of [...needed].sort()) {
   const adapter = readFileSync(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
   const code = adapter.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')
 
-  ok(/EJS_VirtualGamepadSettings:\s*ARCADE_VIRTUAL_PAD/.test(code), '街机注入了自己的屏幕手柄布局')
-  ok(/options\.platform === 'arcade' \?/.test(code), '只给街机注入，别的平台仍用引擎默认')
+  ok(/EJS_VirtualGamepadSettings:\s*arcadeVirtualPad\(options\.arcadeButtons \?\? 6\)/.test(code), '街机注入了按游戏裁剪的屏幕手柄布局')
+  ok(/options\.platform === 'arcade'[\s\S]{0,80}\? \{ EJS_VirtualGamepadSettings/.test(code), '只给街机注入，别的平台仍用引擎默认')
 
-  const from = code.indexOf('const ARCADE_VIRTUAL_PAD')
-  const body = code.slice(from, code.indexOf('\n]', from) + 2)
+  const from = code.indexOf('function arcadeVirtualPad')
+  const body = code.slice(from, code.indexOf('\n}\n', from) + 2)
 
   const inputs = [...body.matchAll(/input_value:\s*(\d+)/g)].map((m) => Number(m[1]))
   const want = [...ARCADE_GENERIC_BUTTONS, EJS_INDEX.select, EJS_INDEX.start]
   const sorted = (a) => JSON.stringify([...a].sort((x, y) => x - y))
-  ok(sorted(inputs) === sorted(want), `六颗动作键 + 投币 + Start，一个不多一个不少（${inputs.join(',')}）`)
+  ok(sorted(new Set(inputs)) === sorted(want), `2/4/6 键布局合起来仍只使用六颗动作键 + 投币 + Start（${[...new Set(inputs)].join(',')}）`)
   for (const id of ARCADE_GENERIC_BUTTONS) ok(inputs.includes(id), `键位表里的 libretro ${id} 屏幕上有对应按钮`)
 
   ok(/type: 'dpad'/.test(body), '方向走 dpad —— zone 那条会把对角线松掉')
@@ -301,11 +301,15 @@ for (const key of [...needed].sort()) {
   ok(ejsSrc.includes('INSERT COIN'), '引擎侧确实认 INSERT COIN 这个词条')
 
   // 摆位：上排三拳、下排三脚 —— 六键格斗的拳脚各占一排，和真机一致
-  const top = [...body.matchAll(/top: 0,[^}]*input_value:\s*(\d+)/g)].map((m) => Number(m[1]))
-  const bottom = [...body.matchAll(/top: 70,[^}]*input_value:\s*(\d+)/g)].map((m) => Number(m[1]))
   const f = ARCADE_FIGHTER_BUTTONS
-  ok(JSON.stringify(top) === JSON.stringify([f.punchL, f.punchM, f.punchH]), `上排从左到右 = 轻拳 中拳 重拳（${top.join(',')}）`)
-  ok(JSON.stringify(bottom) === JSON.stringify([f.kickL, f.kickM, f.kickH]), `下排从左到右 = 轻脚 中脚 重脚（${bottom.join(',')}）`)
+  const sixRows = [
+    ['arc_3', 145, 0, f.punchL], ['arc_4', 75, 0, f.punchM], ['arc_6', 5, 0, f.punchH],
+    ['arc_1', 145, 70, f.kickL], ['arc_2', 75, 70, f.kickM], ['arc_5', 5, 70, f.kickH],
+  ]
+  ok(
+    sixRows.every(([id, right, top, input]) => new RegExp(`id: '${id}'[^}]*right: ${right}[^}]*top: ${top}[^}]*input_value: ${input}`).test(body)),
+    '六键档仍按上排三拳、下排三脚排列',
+  )
 }
 
 /* ---------------- 键位表里不许写死引擎的键 ---------------- */
@@ -327,7 +331,7 @@ for (const key of [...needed].sort()) {
   assert.ok(j2meEnd > j2meAt, '找不到 j2me 那一支的结尾')
   const playEnd = lib.indexOf("if (runtimeId === 'webretro')", j2meEnd)
   assert.ok(playEnd > j2meEnd, '找不到 play 那一支的结尾')
-  for (const m of [...lib.matchAll(/'↑[^']*'/g)]) {
+  for (const m of lib.matchAll(/'↑[^']*'/g)) {
     const inJ2me = m.index > j2meAt && m.index < j2meEnd
     const inPlay = m.index > j2meEnd && m.index < playEnd
     ok(inJ2me || inPlay, `写死的方向键 ${m[0]} 只允许出现在 J2ME / Play! 分支（在第 ${lib.slice(0, m.index).split('\n').length} 行）`)
@@ -351,7 +355,7 @@ for (const key of [...needed].sort()) {
   ok(/<PadDiagram/.test(player), '开局前那屏画了按键图')
   ok(!/rows\.slice\(0, 3\)|keymapLine/.test(player), '⭐ 那行会截断的文字摘要已经没了（截断正是当初出事的地方）')
   ok(
-    player.indexOf('<PadDiagram') < player.indexOf('<Button size="lg"'),
+    player.indexOf('<PadDiagram') < player.indexOf('onClick={primaryAction}'),
     '按键图在「开始游戏」按钮**上面** —— 按钮在上的话，手已经点下去了才看到键位',
   )
   ok(/rows\.map\(/.test(diagram), '⭐ 退回键帽列时是整张表 rows.map，没有 slice —— 一条都不许丢')

@@ -85,7 +85,7 @@ export function verifyOpenToken(token, { publicKey, issuer, now } = {}) {
     payload = jwt.verify(token, publicKey, {
       algorithms: ['RS256'],
       ...(issuer ? { issuer } : {}),
-      // aud 由调用方按 client_id 自己比对（一把公钥服务所有应用），这里只验签名与时效
+      // 一把公钥服务所有应用，所以无法在 jwt.verify 参数里预先写死 audience；下面核对 aud === cid。
       clockTolerance: 5,
       ...(now ? { clockTimestamp: Math.floor(now / 1000) } : {}),
     })
@@ -96,7 +96,7 @@ export function verifyOpenToken(token, { publicKey, issuer, now } = {}) {
   const header = decodeHeader(token)
   if (header?.typ !== OPEN_TOKEN_TYP) return null
   if (payload.kind !== 'app' && payload.kind !== 'user') return null
-  if (!payload.cid || !payload.aud) return null
+  if (!payload.cid || !payload.aud || String(payload.aud) !== String(payload.cid)) return null
   return {
     appId: String(payload.cid),
     userId: payload.kind === 'user' ? String(payload.sub) : '',

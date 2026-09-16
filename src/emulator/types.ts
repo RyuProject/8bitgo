@@ -20,7 +20,7 @@
  *   2. 在 registry.ts 的 runtimes 里注册
  *   3.（可选）在 src/config/emulators.ts 里把某个扩展名指过去
  */
-import type { DosBackend, DosWindowsVersion, PlatformId } from '@/types'
+import type { ArcadeButtonCount, DosBackend, DosWindowsVersion, FlashControls, PlatformId } from '@/types'
 import type { CloudSession } from './adapters/cloudgame'
 import type { NetplaySession } from './adapters/emulatorjs'
 import type { LiveSession } from './adapters/liveview'
@@ -49,6 +49,12 @@ export interface MountOptions {
    * 仅 emulatorjs 运行时的 FBNeo 系核心会用到。
    */
   arcadeRomData?: string
+  /** 街机虚拟面板只展示这一款真正需要的 2 / 4 / 6 个动作键。 */
+  arcadeButtons?: ArcadeButtonCount
+  /** Flash 的逐游戏键位；纯鼠标游戏留空，避免画出无效按钮。 */
+  flashControls?: FlashControls
+  /** 不改 Flash 时间轴，只调整画质；街机则只应用核心确实公开的安全选项。 */
+  performanceProfile?: 'quality' | 'balanced' | 'performance'
   /** js-dos 是否用相对鼠标并请求指针锁定；射击类需要，依赖绝对坐标的游戏不能开启。 */
   mouseCapture?: boolean
   /**
@@ -273,6 +279,38 @@ export type Capability =
  */
 export type PadButton = 'up' | 'down' | 'left' | 'right' | 'a' | 'b' | 'select' | 'start'
 
+/** 玩家在改键面板里按下的那一下。两个字段都带上，实现自己挑认得出来的那个。 */
+export interface PadKeyPress {
+  /** KeyboardEvent.code —— 物理键位，桌面浏览器上最准 */
+  code: string
+  /** KeyboardEvent.key —— 手机虚拟键盘常常不给 code，只能靠这个字符 */
+  key: string
+}
+
+/**
+ * 屏幕手柄的键位可以改（**目前只有 DOS 这一路**提供）。
+ *
+ * 为什么是这样一个接口而不是直接给一张键位表：各运行时的键码空间完全不同
+ * （DOS 走 GLFW 键码，红白机走自己那套 PadAction），把「哪个数对应哪个键」
+ * 泄露给播放器，就等于让播放器认识六种引擎的内部编号。所以这里只交换
+ * **显示标签**和**原始按键**两样东西，换算留在适配器那一侧。
+ *
+ * 播放器（TouchPad）看到它就多画一颗「按键映射」：点开是小输入框，
+ * 点框弹手机键盘，按一个键、保存。
+ */
+export interface PadRemapApi {
+  /** 每颗按钮当前的显示标签（'↑' / 'W' / 'Ctrl' …）。永远返回完整的八颗 */
+  labels(): Record<PadButton, string>
+  /** 把一次按键换成显示标签，认不出来返回 null（面板据此说「这个键不支持」） */
+  preview(press: PadKeyPress): string | null
+  /** 写入一颗按钮的键位。只有玩家点了「保存」才会调到这里 */
+  bind(button: PadButton, press: PadKeyPress): void
+  /** 恢复出厂键位 */
+  reset(): void
+  /** 改过没有（决定显示不显示「恢复默认」） */
+  customized(): boolean
+}
+
 /** 录制 / 截屏要用到的画面与声音来源，由各适配器提供 */
 export interface CaptureSources {
   canvas?: HTMLCanvasElement | null
@@ -294,6 +332,11 @@ export interface RuntimeHandle {
   caps: Set<Capability>
   /** 暂停 / 继续 */
   setPaused?: (paused: boolean) => void
+  /**
+   * 有直播观众时后台标签页也必须继续出帧；最后一个观众离开后恢复自动暂停。
+   * 这比让每个运行时自行读取直播模块可靠，因为直播是在游戏启动之后才可能开启。
+   */
+  setBackgroundPlaybackRequired?: (required: boolean) => void
   /** 存档：返回一个可下载的文件；读档：吃回同样的文件 */
   /**
    * 'local'：saveState() 返回存档文件，由播放器下载到本地；
@@ -380,6 +423,13 @@ export interface RuntimeHandle {
    * 画一颗按下去没反应的按钮，比不画更让人困惑。
    */
   padButtons?: PadButton[]
+  /**
+   * 屏幕手柄的键位可以改。给了它，TouchPad 上就多一颗「按键映射」；
+   * 不给就是一套写死的键位（红白机 / Flash 这些）。
+   *
+   * 目前只有 DOS 提供 —— 那里的按键是玩家在键盘上会按什么就是什么，没有统一标准。
+   */
+  padRemap?: PadRemapApi
   /**
    * 这一局的 **2P 位**读哪几颗键（同屏双打的 Flash 游戏才有，见 flashKeys.ts 的 `keys.p2`）。
    *

@@ -223,6 +223,18 @@ const patches = [
     run: () => conn.query('ALTER TABLE `games` ADD COLUMN `arcade_romdata` TEXT NULL AFTER `dos_save_hint`'),
   },
   {
+    name: 'games.arcade_buttons（逐游戏街机虚拟动作键数量）',
+    table: 'games',
+    needed: async () => !(await hasColumn('games', 'arcade_buttons')),
+    run: () => conn.query('ALTER TABLE `games` ADD COLUMN `arcade_buttons` TINYINT UNSIGNED NULL AFTER `arcade_romdata`'),
+  },
+  {
+    name: 'games.flash_controls（逐游戏 Flash 键位）',
+    table: 'games',
+    needed: async () => !(await hasColumn('games', 'flash_controls')),
+    run: () => conn.query('ALTER TABLE `games` ADD COLUMN `flash_controls` JSON NULL AFTER `arcade_buttons`'),
+  },
+  {
     name: 'games.adult（成人游戏，前台启动前验证年满 18 岁）',
     table: 'games',
     needed: async () => !(await hasColumn('games', 'adult')),

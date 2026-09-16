@@ -9,9 +9,21 @@
  * 已在 adapters/emulatorjs.ts 的 showVirtualGamepad 里修好。所以这个浮层只对
  * 声明了 'touchpad' 能力的运行时出现，两套不会同时冒出来。
  */
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type MouseEvent, type PointerEvent } from 'react'
-import type { PadButton, RuntimeHandle } from './types'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent,
+  type PointerEvent,
+} from 'react'
+import { createPortal } from 'react-dom'
+import type { PadButton, PadKeyPress, RuntimeHandle } from './types'
 import { cx } from '@/lib/format'
+import { Modal } from '@/components/ui/Modal'
+import { fmt, useT } from '@/services/i18n'
 
 /**
  * 手柄整块的触摸样式。
@@ -57,6 +69,56 @@ function dirsFor(nx: number, ny: number): PadButton[] {
 
 const HIDDEN_KEY = '8bitgo.touchpad.hidden'
 
+/** 手柄角上那两颗小按钮（显示 / 隐藏、按键映射）共用的样式 */
+const MINI_BTN =
+  'pointer-events-auto rounded-md px-2 py-0.5 text-[11px] ' +
+  'border border-white/20 bg-black/40 text-white/70 backdrop-blur-sm'
+
+/**
+ * 改键面板的八行，顺序和手柄上的排布一致（方向上、Buttons 下）。
+ * 方向和 A/B/Start/Select 是通用符号，八种语言都不用翻。
+ */
+const PAD_ROWS: ReadonlyArray<readonly [PadButton, string]> = [
+  ['up', '↑'],
+  ['down', '↓'],
+  ['left', '←'],
+  ['right', '→'],
+  ['a', 'A'],
+  ['b', 'B'],
+  ['select', 'Select'],
+  ['start', 'Start'],
+]
+
+/**
+ * 改键面板下面那排「常用键」，填的是 KeyboardEvent.code。
+ *
+ * 挑的正是**手机键盘上打不出来**的那些：方向键、修饰键、回车 / Esc / Tab。
+ * 玩家真正会用键盘打的是字母和数字（WASD 那类），那些走输入框就行 ——
+ * 所以这排按钮不是「快捷方式」，是手机上唯一能给方向键的办法。
+ */
+const QUICK_CODES: readonly string[] = [
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+  'ControlLeft',
+  'AltLeft',
+  'ShiftLeft',
+  'Space',
+  'Enter',
+  'Escape',
+  'Tab',
+]
+
+/** 一份草稿里哪几个标签被占用了两次以上（用于把冲突的那两格标出来） */
+function duplicateLabels(labels: readonly string[]): Set<string> {
+  const count = new Map<string, number>()
+  for (const l of labels) if (l) count.set(l, (count.get(l) ?? 0) + 1)
+  const dupes = new Set<string>()
+  for (const [l, n] of count) if (n > 1) dupes.add(l)
+  return dupes
+}
+
 interface Props {
   handle: RuntimeHandle | null
   /**
@@ -86,6 +148,7 @@ interface Props {
 }
 
 export function TouchPad({ handle, layout = 'overlay', onInput, highlight, className }: Props) {
+  const t = useT()
   const [hidden, setHidden] = useState(() => {
     try {
       return localStorage.getItem(HIDDEN_KEY) === '1'
@@ -93,10 +156,35 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
       return false
     }
   })
+  /**
+   * 改键面板开着没有。只有适配器给了 padRemap 才有意义（目前只有 DOS）。
+   *
+   * ⚠️ 下面这几个 hook 必须在 `if (!send …) return null` **之前**，理由见文件里
+   * 那段「hook 数量从 7 变 9」的注释 —— 少一个都会让播放器子树整棵垮掉。
+   */
+  const [remapOpen, setRemapOpen] = useState(false)
+  /**
+   * 面板里的草稿：按了就写进这里，**点了「保存」才真正生效**。
+   * 玩家一次要改四五个键，改到一半就该能退出来，中途那半套键位不该已经在跑。
+   */
+  const [draft, setDraft] = useState<Partial<Record<PadButton, { press: PadKeyPress | null; label: string }>>>({})
+  /**
+   * 当前选中哪一行。下面那排「常用键」就是给这一行用的。
+   * 点整行（不是输入框）只选中、**不聚焦输入框** —— 手机上这一下不会弹键盘，
+   * 于是「点行 → 点常用键」是一条完全不用键盘的路径。
+   */
+  const [active, setActive] = useState<PadButton | null>(null)
+  /** 「这个键不支持」「改动没保存」那类提示 */
+  const [note, setNote] = useState('')
 
   /** 当前按住的键。松手要按这份精确松开 —— 不能一把 release 全部，A 和方向常常同时按着 */
   const held = useRef<Set<PadButton>>(new Set())
   const send = handle?.sendButton
+  /**
+   * 键位可改的运行时（目前只有 DOS）。有它才画那颗「按键映射」，
+   * 换算 / 存储都在适配器那一侧，这里只交换标签和原始按键。
+   */
+  const remap = handle?.padRemap
   /**
    * 这一局用得上的按钮。适配器不给就是八个键全有 —— 主机模拟器都是这样，
    * 只有 Flash 这种「每款游戏读的键都不一样」的才会缩到几颗（见 flashKeys.ts）。
@@ -319,24 +407,296 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
     </button>
   )
 
-  /** 显示 / 隐藏。浮层压着画面、行内一条也占高度，都得给玩家一个收起来的办法（选择记在本地） */
-  const toggle = (
-    <button
-      type="button"
-      aria-label={hidden ? 'Show on-screen controls' : 'Hide on-screen controls'}
-      onClick={() => {
-        // 点得到这颗按钮就说明他已经看见这一条了，开局提示可以收了
-        onInput?.()
-        setHidden((v) => !v)
-      }}
+  /* ---------------- 改键面板（只有给了 padRemap 的运行时才有） ---------------- */
+
+  /**
+   * 草稿里被两颗以上按钮占了的标签。输入框标黄、下面给一句提示。
+   *
+   * 不拦着不让存：极少情况下玩家真的想让两颗键发同一个键（比如 A 和 B 都想当开火）。
+   * 但绝大多数「按 A 和按 B 一个样」就是这么来的，所以必须让他看见。
+   */
+  const dupeLabels = duplicateLabels(PAD_ROWS.map(([b]) => draft[b]?.label ?? ''))
+
+  /** 这一局有没有未保存的改动。只有动过的格子才有 press（见 draftFromLabels） */
+  const dirty = PAD_ROWS.some(([b]) => Boolean(draft[b]?.press))
+
+  /**
+   * 「常用键」那排小按钮。
+   *
+   * 标签一律问适配器要（remap.preview），不在这一层写死 —— 换算表的唯一出处是
+   * dosPad.ts，两处各写一份迟早会飘。顺带自动过滤掉不支持的键。
+   */
+  const quickKeys = remap
+    ? QUICK_CODES.flatMap((code) => {
+        const label = remap.preview({ code, key: '' })
+        return label ? [[code, label] as const] : []
+      })
+    : []
+
+  /** 选中行的显示名，给「给「↑」选一个键」那句话用 */
+  const activeLabel = PAD_ROWS.find(([b]) => b === active)?.[1] ?? ''
+
+  /**
+   * 面板里的那一格。**用真的 input**，不是 div —— 手机上只有可编辑的输入框
+   * 才会弹出系统键盘，而玩家要的就是「点一下 → 弹键盘 → 按一个键」。
+   * 输入内容一律 preventDefault 掉，所以框里显示的永远是当前绑定的标签。
+   */
+  const captureKey = (button: PadButton, e: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (!remap) return
+    // 这一下不能漏出去：漏给快捷键就是「一边改键一边把档存了」，漏给播放器就是触发了别的按钮
+    e.preventDefault()
+    e.stopPropagation()
+    const press: PadKeyPress = { code: e.code, key: e.key }
+    const label = remap.preview(press)
+    if (!label) {
+      setNote(t.player.padMap.unsupported)
+      return
+    }
+    setNote('')
+    setDraft((d) => ({ ...d, [button]: { press, label } }))
+  }
+
+  /** 点「常用键」：直接绑到当前选中那一行，不用弹键盘。手机上的方向键 / Ctrl 只能这么给 */
+  const pickQuick = (code: string) => {
+    if (!remap || !active) return
+    const press: PadKeyPress = { code, key: '' }
+    const label = remap.preview(press)
+    if (!label) {
+      setNote(t.player.padMap.unsupported)
+      return
+    }
+    setNote('')
+    setDraft((d) => ({ ...d, [active]: { press, label } }))
+  }
+
+  const draftFromLabels = () => {
+    if (!remap) return {}
+    const labels = remap.labels()
+    const next: Partial<Record<PadButton, { press: PadKeyPress | null; label: string }>> = {}
+    for (const [button] of PAD_ROWS) next[button] = { press: null, label: labels[button] ?? '' }
+    return next
+  }
+
+  const openRemap = () => {
+    if (!remap) return
+    setDraft(draftFromLabels())
+    setActive(null)
+    setNote('')
+    setRemapOpen(true)
+    // 能点到这颗按钮，说明这一条他已经看见了，开局提示可以收
+    onInput?.()
+  }
+
+  /**
+   * 关面板。**有没保存的改动就先不关**，只提示一句。
+   *
+   * 遮罩点击和 Esc 走的都是这里 —— 玩家绑了五个键、手一滑点到旁边的黑边，
+   * 整份改动就没了，而且他根本不知道刚才丢了什么。要放弃得自己点「取消」。
+   */
+  const closeRemap = () => {
+    if (dirty) {
+      setNote(t.player.padMap.unsaved)
+      return
+    }
+    setRemapOpen(false)
+  }
+
+  /** 明确放弃这一份草稿 */
+  const cancelRemap = () => {
+    setRemapOpen(false)
+    setNote('')
+  }
+
+  const saveRemap = () => {
+    if (!remap) return
+    // 只写真正动过的那些：没碰过的格子 press 是 null，不重复写一遍存储
+    for (const [button] of PAD_ROWS) {
+      const d = draft[button]
+      if (d?.press) remap.bind(button, d.press)
+    }
+    setRemapOpen(false)
+    setNote('')
+  }
+
+  const resetRemap = () => {
+    if (!remap) return
+    remap.reset()
+    setDraft(draftFromLabels())
+    setActive(null)
+    setNote('')
+  }
+
+  /**
+   * 面板走 portal 挂到 body。
+   *
+   * 两个原因，都不能省：
+   *   1. 手柄根节点的 z-index 是 20，而弹幕层是 40 —— 留在原地会被弹幕糊在下面；
+   *   2. 播放器里有些祖先带 backdrop-blur（= 会变成 fixed 定位的包含块），
+   *      不 portal 的话 Modal 那个 `fixed inset-0` 会被算成「相对那块元素」。
+   */
+  const remapPanel =
+    remap && remapOpen && typeof document !== 'undefined'
+      ? createPortal(
+          <Modal
+            open
+            onClose={closeRemap}
+            title={t.player.padMap.title}
+            size="sm"
+            closeLabel={t.player.padMap.close}
+          >
+            <p className="text-xs leading-relaxed text-muted">{t.player.padMap.hint}</p>
+
+            <div className="mt-3 grid grid-cols-2 gap-x-2 gap-y-1">
+              {PAD_ROWS.map(([button, label]) => {
+                const current = draft[button]?.label ?? ''
+                const clash = current !== '' && dupeLabels.has(current)
+                return (
+                  <div
+                    key={button}
+                    /*
+                      点整行 = 选中它。手指点**不聚焦输入框**（所以不弹键盘）——
+                      键盘一弹起来正好盖住下面那排常用键，那条路就废了。
+                      鼠标点则顺手把光标送进输入框，桌面上少点一次。
+                    */
+                    onPointerDown={(e) => {
+                      setActive(button)
+                      if (e.pointerType === 'touch') return
+                      e.currentTarget.querySelector('input')?.focus()
+                    }}
+                    className={cx(
+                      'flex items-center justify-between gap-2 rounded-md px-2 py-1 transition-colors',
+                      active === button ? 'bg-brand-soft ring-1 ring-brand/40' : 'hover:bg-black/5',
+                    )}
+                  >
+                    <span className="shrink-0 text-xs text-muted">{label}</span>
+                    <input
+                      value={current}
+                      onChange={() => {}}
+                      onKeyDown={(e) => captureKey(button, e)}
+                      // 进焦点就全选：玩家再点一下是想换键，不是想在旧值上编辑
+                      onFocus={(e) => {
+                        setActive(button)
+                        e.currentTarget.select()
+                      }}
+                      inputMode="text"
+                      autoComplete="off"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      className={cx(
+                        'w-20 min-w-0 rounded-md border bg-bg px-2 py-1 text-center font-mono text-[11px]',
+                        clash ? 'border-coin text-coin' : 'border-line text-fg',
+                      )}
+                    />
+                  </div>
+                )
+              })}
+            </div>
+
+            {dupeLabels.size > 0 && (
+              <p className="mt-2 text-xs leading-relaxed text-coin">{t.player.padMap.conflict}</p>
+            )}
+
+            {/*
+              常用键。手机上系统键盘给不出方向键和 Ctrl，这一排是唯一的办法；
+              桌面上它也是个比「点框再按键」少一步的快捷方式。
+            */}
+            <p className="mt-3 text-xs leading-relaxed text-muted">
+              {active ? fmt(t.player.padMap.pickFor, { row: activeLabel }) : t.player.padMap.pickHint}
+            </p>
+            <div className="mt-1 flex flex-wrap gap-1">
+              {quickKeys.map(([code, label]) => (
+                <button
+                  key={code}
+                  type="button"
+                  disabled={!active}
+                  onClick={() => pickQuick(code)}
+                  className={cx(
+                    'rounded-md border px-2 py-1 font-mono text-[11px] font-semibold transition-colors',
+                    active
+                      ? 'border-line text-fg hover:border-brand hover:text-brand'
+                      : 'border-dashed border-line-strong text-dim',
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {note && <p className="mt-2 text-xs leading-relaxed text-brand-hover">{note}</p>}
+
+            <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
+              {/* 没改过的局不显示「恢复默认」——按钮点了什么都不会变，只会让人以为坏了 */}
+              {remap.customized() && (
+                <button
+                  type="button"
+                  onClick={resetRemap}
+                  className="rounded-md border border-line px-3 py-1.5 text-xs font-semibold text-fg hover:border-brand hover:text-brand"
+                >
+                  {t.player.padMap.reset}
+                </button>
+              )}
+              {/* 有改动才给「取消」：没有改动时它和右上角那个叉没区别 */}
+              {dirty && (
+                <button
+                  type="button"
+                  onClick={cancelRemap}
+                  className="rounded-md border border-line px-3 py-1.5 text-xs font-semibold text-muted hover:text-fg"
+                >
+                  {t.player.padMap.cancel}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={saveRemap}
+                className="rounded-md border border-brand bg-brand-soft px-4 py-1.5 text-xs font-bold text-brand-hover"
+              >
+                {t.player.padMap.save}
+              </button>
+            </div>
+          </Modal>,
+          document.body,
+        )
+      : null
+
+  /**
+   * 手柄角上那两颗小按钮：按键映射（只有 padRemap 存在时）+ 显示 / 隐藏。
+   * 位置和以前那颗「▾」完全一致，只是多了一颗 —— 它们是同一个层级的东西，
+   * 分成两个绝对定位会随长度错位。
+   */
+  const controls = (
+    <div
       className={cx(
-        'pointer-events-auto absolute rounded-md px-2 py-0.5 text-[11px]',
-        'border border-white/20 bg-black/40 text-white/70 backdrop-blur-sm',
+        'absolute flex items-center gap-1',
         inline ? 'right-1 top-1' : 'bottom-1 left-1/2 -translate-x-1/2',
       )}
     >
-      {hidden ? '🎮' : '▾'}
-    </button>
+      {remap && (
+        <button
+          type="button"
+          aria-label={t.player.padMap.title}
+          onClick={openRemap}
+          /*
+            改过键位的局把这颗按钮点亮 —— 玩家下次进来一眼就知道「这局我调过键」，
+            不用点开面板确认。（customized() 是一次同步的 localStorage 读，很便宜）
+          */
+          className={cx(MINI_BTN, remap.customized() && 'border-brand/60 text-brand-hover')}
+        >
+          {t.player.padMap.open}
+        </button>
+      )}
+      <button
+        type="button"
+        aria-label={hidden ? t.player.padMap.show : t.player.padMap.hide}
+        onClick={() => {
+          // 点得到这颗按钮就说明他已经看见这一条了，开局提示可以收了
+          onInput?.()
+          setHidden((v) => !v)
+        }}
+        className={MINI_BTN}
+      >
+        {hidden ? '🎮' : '▾'}
+      </button>
+    </div>
   )
 
   /*
@@ -357,7 +717,7 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
         )}
         style={PAD_STYLE}
       >
-        {toggle}
+        {controls}
         {hidden ? (
           <div className="h-7" />
         ) : (
@@ -384,6 +744,7 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
             )}
           </div>
         )}
+        {remapPanel}
       </div>
     )
   }
@@ -395,7 +756,7 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
       className={cx('pointer-events-none absolute inset-0 z-20 touch-none', className)}
       style={PAD_STYLE}
     >
-      {toggle}
+      {controls}
       {hidden ? null : (
         <>
           {hasDirs && dpad}
@@ -405,6 +766,7 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
           {sysButton('start', 'absolute bottom-[8%] left-1/2 translate-x-[15%]')}
         </>
       )}
+      {remapPanel}
     </div>
   )
 }

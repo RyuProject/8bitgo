@@ -11,6 +11,7 @@
 import express from 'express'
 import { createServer } from 'node:http'
 import { io as client } from 'socket.io-client'
+import { testGameRoomPolicy } from './helpers/netplay-game-policy.mjs'
 
 process.env.NETPLAY_HOST_GRACE_MS = '3000'
 process.env.NETPLAY_CLAIM_MS = '700'
@@ -24,7 +25,7 @@ const ok = (n, c) => { if (!c) failed++; console.log(`${c ? '✅' : '❌'} ${n}`
 
 const app = express()
 const http = createServer(app)
-attachNetplay(http, app, ['*'])
+attachNetplay(http, app, ['*'], { resolveGamePolicy: testGameRoomPolicy })
 await new Promise((r) => http.listen(9931, r))
 const API = 'http://127.0.0.1:9931'
 const connect = async () => {

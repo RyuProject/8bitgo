@@ -85,18 +85,51 @@ export function authSecretsFatal(env = process.env) {
   if (!jwtSecret || jwtSecret === 'dev-secret-change-me' || jwtSecret === 'change-me-to-a-long-random-string') {
     return 'JWT_SECRET 未配置或仍是公开的开发占位值；拒绝启动，避免任何人伪造登录令牌。'
   }
+  if (Buffer.byteLength(jwtSecret, 'utf8') < 32) {
+    return 'JWT_SECRET 少于 32 字节；拒绝启动，短密钥可能被离线猜出并用于伪造任意账号。'
+  }
   const adminToken = String(env.ADMIN_TOKEN || '').trim()
   if (adminToken === 'replace-with-a-long-random-key') {
     return 'ADMIN_TOKEN 仍是示例文件里的公开占位值；拒绝启动，避免后台写操作被接管。'
+  }
+  if (adminToken && Buffer.byteLength(adminToken, 'utf8') < 32) {
+    return 'ADMIN_TOKEN 少于 32 字节；拒绝启动，后台万能口令必须使用高熵随机值。'
+  }
+  if (adminToken && adminToken === jwtSecret) {
+    return 'ADMIN_TOKEN 与 JWT_SECRET 复用了同一个值；拒绝启动，一处泄露会同时失守后台与所有账号。'
+  }
+  return ''
+}
+
+/** bcrypt 只读取 UTF-8 编码后的前 72 字节；超出的部分对哈希完全没有影响。 */
+export const BCRYPT_MAX_PASSWORD_BYTES = 72
+
+/**
+ * 新密码的统一校验。
+ *
+ * 这里按**字节**而不是 JS 字符数卡 72：中文和 emoji 一个字符会占 3–4 字节。
+ * 不拦的话，两条肉眼不同、但前 72 字节相同的密码会生成等价哈希；用户以为改了密码，
+ * 旧密码前缀却仍然能登录。所有写密码入口都必须复用这一处。
+ */
+export function passwordValidationError(plain) {
+  const password = String(plain ?? '')
+  if (password.length < 6) return '密码至少 6 位'
+  if (Buffer.byteLength(password, 'utf8') > BCRYPT_MAX_PASSWORD_BYTES) {
+    return `密码不能超过 ${BCRYPT_MAX_PASSWORD_BYTES} 个 UTF-8 字节（中文通常占 3 个）`
   }
   return ''
 }
 
 export async function hashPassword(plain) {
-  return bcrypt.hash(plain, 10)
+  const error = passwordValidationError(plain)
+  if (error) throw new Error(error)
+  return bcrypt.hash(String(plain), 10)
 }
 export async function verifyPassword(plain, hash) {
-  return bcrypt.compare(plain, hash)
+  const password = String(plain ?? '')
+  // 旧实现会让“正确密码 + 任意超长后缀”也通过，因为 bcrypt 静默截断到 72 字节。
+  if (Buffer.byteLength(password, 'utf8') > BCRYPT_MAX_PASSWORD_BYTES) return false
+  return bcrypt.compare(password, hash)
 }
 
 /**

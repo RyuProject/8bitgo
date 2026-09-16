@@ -283,6 +283,12 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
     setViewersRaw(n)
     if (n === 0) setQuality('none')
   }, [])
+  useEffect(() => {
+    // Ruffle 等运行时在无人观看且页面隐藏时会自动暂停；真正有观众后必须继续出帧。
+    // 把人数变化从直播层明确传下去，避免运行时反向依赖直播模块或用轮询猜。
+    handle?.setBackgroundPlaybackRequired?.(active && viewers > 0)
+    return () => handle?.setBackgroundPlaybackRequired?.(false)
+  }, [handle, active, viewers])
   const [hidden, setHidden] = useState(readPrivate)
   /**
    * 自动开播还在尝试。落定后无论成没成都置 false —— 界面靠它把「连接中…」和

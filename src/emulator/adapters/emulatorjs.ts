@@ -22,12 +22,12 @@
  * ⚠️ 官方 CDN 的 stable / nightly 目前都是 4.2.3，**不含 netplay**。
  *    要用联机必须自建 EmulatorJS 构建，见 docs 或 README。
  */
-import type { PlatformId } from '@/types'
+import type { ArcadeButtonCount, PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { EJS_DEFAULT_CONTROLS } from '@/lib/keymapData'
 import type { Capability, CaptureSources, LoadPhase, LoadProgress, MountOptions, RuntimeHandle, StageMode } from '../types'
-import { fetchBlobWithProgress, fetchWithProgress, throttleProgress } from '../loadProgress'
-import { romCacheDelete, romCacheGet, romCacheGetBlob, romCacheKey, romCachePut, romCachePutBlob } from '../romCache'
+import { fetchBlobWithProgress, throttleProgress } from '../loadProgress'
+import { romCacheDelete, romCacheGetBlob, romCacheKey, romCachePutBlob } from '../romCache'
 import { focusFrame, frameGamepads } from '../frameFocus'
 import { installAudioTap, type AudioTap } from '../audioTap'
 import { getT, fmt } from '@/services/i18n'
@@ -36,12 +36,12 @@ import type { Lang } from '@/config/languages'
 import { ICE_SERVERS, NETPLAY_URL, fetchIceConfig, gameIdFor, netplayUrlForFrame, socketIoScriptUrl, uploadState } from '@/services/netplay'
 import { guardInputChannel } from '../netplayGuard'
 import { normalizeHostSync } from '../netplaySyncGuard'
-import { assertValidZip, isZip, listZipEntries } from '@/lib/unzip'
+import { assertValidZipBlob, type ZipFileEntry } from '@/lib/unzip'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { loadRemoteArchiveRom } from '../remoteArchive'
 import { matchArcadeHack, type ArcadeHack } from '@/data/arcadeHacks'
 import { deriveArcadeHackBytes } from '../arcadeHack'
-import { isRomPackBytes, isRomPackUrl, unpackRomPack, unpackRomPackBlob } from '@/services/romPack'
+import { isRomPackBytes, isRomPackUrl, unpackRomPackBlob } from '@/services/romPack'
 
 /**
  * EmulatorJS 资源根路径。**默认是自托管的 /emulatorjs/，不是 CDN。**
@@ -624,21 +624,38 @@ const LOG_LIMIT = 60
  * 落成左边一个干净的 2×2 方块（1 2 在下、3 4 在上），也是 KOF 在手柄上的通行摆法。
  * 按数字顺序 1 2 3 / 4 5 6 摆反而会把拳和脚打散（实测：拳会落到左上、右下、右中）。
  */
-const ARCADE_VIRTUAL_PAD: readonly Record<string, unknown>[] = [
-  // 上排：轻拳 中拳 重拳
-  { type: 'button', text: '3', id: 'arc_3', location: 'right', right: 145, top: 0, bold: true, input_value: 1 },
-  { type: 'button', text: '4', id: 'arc_4', location: 'right', right: 75, top: 0, bold: true, input_value: 9 },
-  { type: 'button', text: '6', id: 'arc_6', location: 'right', right: 5, top: 0, bold: true, input_value: 10 },
-  // 下排：轻脚 中脚 重脚
-  { type: 'button', text: '1', id: 'arc_1', location: 'right', right: 145, top: 70, bold: true, input_value: 0 },
-  { type: 'button', text: '2', id: 'arc_2', location: 'right', right: 75, top: 70, bold: true, input_value: 8 },
-  { type: 'button', text: '5', id: 'arc_5', location: 'right', right: 5, top: 70, bold: true, input_value: 11 },
+function arcadeVirtualPad(count: ArcadeButtonCount = 6): readonly Record<string, unknown>[] {
+  const actionButtons = count === 2
+    ? [
+        { type: 'button', text: '1', id: 'arc_1', location: 'right', right: 75, top: 35, bold: true, input_value: 0 },
+        { type: 'button', text: '2', id: 'arc_2', location: 'right', right: 5, top: 35, bold: true, input_value: 8 },
+      ]
+    : count === 4
+      ? [
+          { type: 'button', text: '3', id: 'arc_3', location: 'right', right: 75, top: 0, bold: true, input_value: 1 },
+          { type: 'button', text: '4', id: 'arc_4', location: 'right', right: 5, top: 0, bold: true, input_value: 9 },
+          { type: 'button', text: '1', id: 'arc_1', location: 'right', right: 75, top: 70, bold: true, input_value: 0 },
+          { type: 'button', text: '2', id: 'arc_2', location: 'right', right: 5, top: 70, bold: true, input_value: 8 },
+        ]
+      : [
+          // 上排：轻拳 中拳 重拳
+          { type: 'button', text: '3', id: 'arc_3', location: 'right', right: 145, top: 0, bold: true, input_value: 1 },
+          { type: 'button', text: '4', id: 'arc_4', location: 'right', right: 75, top: 0, bold: true, input_value: 9 },
+          { type: 'button', text: '6', id: 'arc_6', location: 'right', right: 5, top: 0, bold: true, input_value: 10 },
+          // 下排：轻脚 中脚 重脚
+          { type: 'button', text: '1', id: 'arc_1', location: 'right', right: 145, top: 70, bold: true, input_value: 0 },
+          { type: 'button', text: '2', id: 'arc_2', location: 'right', right: 75, top: 70, bold: true, input_value: 8 },
+          { type: 'button', text: '5', id: 'arc_5', location: 'right', right: 5, top: 70, bold: true, input_value: 11 },
+        ]
+  return [
+    ...actionButtons,
   // 八向摇杆走 dpad，别用 zone（理由见上面第 ② 条）
   { type: 'dpad', id: 'dpad', location: 'left', left: '50%', right: '50%', joystickInput: false, inputValues: [4, 5, 6, 7] },
   // 文案交给引擎的 localization()：zh.json 里 'INSERT COIN' → 「投币」
   { type: 'button', text: 'INSERT COIN', id: 'arc_coin', location: 'center', left: -5, fontSize: 13, block: true, input_value: 2 },
   { type: 'button', text: 'Start', id: 'arc_start', location: 'center', left: 60, fontSize: 15, block: true, input_value: 3 },
-]
+  ]
+}
 
 /**
  * 确定致命的**整句**。命中就当这一局起不来了。
@@ -1109,10 +1126,9 @@ class InvalidArcadeArchiveError extends Error {}
  * 认不出、包坏了、读取抛错都返回 null —— 这一步是锦上添花，
  * 绝不能因为它让本来能跑的游戏跑不起来。
  */
-function hackOf(buf: ArrayBuffer): ArcadeHack | null {
+function hackOfEntries(entries: readonly ZipFileEntry[]): ArcadeHack | null {
   try {
-    if (!isZip(buf)) return null
-    return matchArcadeHack(listZipEntries(buf).map((e) => e.crc32))
+    return matchArcadeHack(entries.map((e) => e.crc32))
   } catch {
     return null
   }
@@ -1140,18 +1156,24 @@ function hackOf(buf: ArrayBuffer): ArcadeHack | null {
  *
  * 两条路现在都走这里，同一张指纹表、同一套合成。
  */
-async function arcadeBlobFrom(data: ArrayBuffer, name: string): Promise<{ url: string; name: string; hack: ArcadeHack | null }> {
-  const hack = hackOf(data)
-  let bytes: ArrayBuffer | Uint8Array = data
+async function arcadeBlobFrom(
+  blob: Blob,
+  name: string,
+  entries: readonly ZipFileEntry[],
+): Promise<{ url: string; name: string; hack: ArcadeHack | null }> {
+  const hack = hackOfEntries(entries)
+  let output = blob
   if (hack?.derive) {
+    // 只有确实需要现场合成的少数改版包才申请整块内存；普通 romset 全程保持 Blob。
+    const data = await blob.arrayBuffer()
     // 合成失败不能静默放行 —— 放行的结果是 100% 起不来，而报错会指向完全无关的方向
-    const merged = await deriveArcadeHackBytes(data, listZipEntries(data), hack)
+    const merged = await deriveArcadeHackBytes(data, entries, hack)
     if (merged) {
-      bytes = merged
+      output = new Blob([merged as BlobPart], { type: 'application/zip' })
       console.info(`[arcade] ${hack.title}：已现场合成 ${hack.derive.outputs.join(' / ')} 并补进包里`)
     }
   }
-  return { url: URL.createObjectURL(new Blob([bytes as BlobPart], { type: 'application/zip' })), name, hack }
+  return { url: URL.createObjectURL(output), name, hack }
 }
 
 export async function prepareRemoteArcadeRom(
@@ -1161,39 +1183,39 @@ export async function prepareRemoteArcadeRom(
 ): Promise<{ url: string; name: string; hack: ArcadeHack | null }> {
   if (romArchiveRef(url)) {
     const extracted = await loadRemoteArchiveRom(url, onProgress, signal)
-    const data = await extracted.blob.arrayBuffer()
     if (signal.aborted) throw new DOMException('已取消', 'AbortError')
     if (!/\.zip$/i.test(extracted.name)) throw new InvalidArcadeArchiveError(extracted.name)
-    assertValidZip(data, '街机 ROM')
-    return arcadeBlobFrom(data, extracted.name)
+    const entries = await assertValidZipBlob(extracted.blob, '街机 ROM')
+    return arcadeBlobFrom(extracted.blob, extracted.name, entries)
   }
   const name = arcadeRomsetName(url)
   if (!name || (!/\.zip$/i.test(name) && !isRomPackUrl(url))) throw new InvalidArcadeArchiveError(name || 'ROM')
 
-  const decodedArcade = async (stored: ArrayBuffer): Promise<{ data: ArrayBuffer; name: string }> => {
-    if (!isRomPackBytes(stored)) return { data: stored, name }
-    const unpacked = await unpackRomPack(stored)
+  const decodedArcade = async (stored: Blob): Promise<{ blob: Blob; name: string }> => {
+    const magic = new Uint8Array(await stored.slice(0, 4).arrayBuffer())
+    if (!isRomPackBytes(magic)) return { blob: stored, name }
+    const unpacked = await unpackRomPackBlob(stored)
     if (!/\.zip$/i.test(unpacked.name)) throw new InvalidArcadeArchiveError(unpacked.name)
-    return { data: unpacked.data, name: unpacked.name }
+    return { blob: unpacked.blob, name: unpacked.name }
   }
 
   // ROM 不可变，反复玩同一款街机游戏没必要每次重下。缓存里的那份一定是下面
   // 验过中央目录才写进去的，半截 ZIP 永远进不来，所以命中后不用再验一遍。
   const cacheKey = romCacheKey(url)
   if (cacheKey) {
-    const cached = await romCacheGet(cacheKey)
+    const cached = await romCacheGetBlob(cacheKey, 'application/octet-stream')
     if (cached) {
       if (signal.aborted) throw new DOMException('已取消', 'AbortError')
       // 命中也要发满进度那一帧：播放器的加载遮罩靠进度回调收尾
       // ⚠️ 必须带 cached: true。EmulatorPlayer 对**任何** phase==='rom' 且 total≥64MB 的帧
       // 都会去更新那个「本局需下载 XXX MB」的遮罩文案（不只光盘平台），不带的话
       // 玩过一次的大 romset 第二次秒开，界面上却还写着「需下载 180 MB」，自相矛盾。
-      onProgress?.({ phase: 'rom', loaded: cached.byteLength, total: cached.byteLength, ratio: 1, cached: true })
+      onProgress?.({ phase: 'rom', loaded: cached.size, total: cached.size, ratio: 1, cached: true })
       // 缓存这一路也要认一遍：第二次玩同一款改版包不能因为走了缓存就少了 dat、也不能少了合成
       try {
         const decoded = await decodedArcade(cached)
-        assertValidZip(decoded.data, '街机 ROM')
-        return arcadeBlobFrom(decoded.data, decoded.name)
+        const entries = await assertValidZipBlob(decoded.blob, '街机 ROM')
+        return arcadeBlobFrom(decoded.blob, decoded.name, entries)
       } catch (error) {
         // 旧密钥被移除或缓存写到一半时，当场删掉并回网络；抛给播放器会触发备用源，
         // 让一份完全正常的远端新包因为本机旧缓存而被本轮永久跳过。
@@ -1203,7 +1225,7 @@ export async function prepareRemoteArcadeRom(
     }
   }
 
-  const data = await fetchWithProgress(url, {
+  const stored = await fetchBlobWithProgress(url, {
     phase: 'rom',
     onProgress,
     signal,
@@ -1213,20 +1235,15 @@ export async function prepareRemoteArcadeRom(
       if (/text\/html|application\/xhtml/i.test(type)) throw new InvalidArcadeArchiveError(name)
     },
   })
-  const decoded = await decodedArcade(data)
-  // 只看开头的 PK 还不够：截断文件通常仍有正确文件头；中央目录在末尾，能列出来才算完整。
-  let entryCount = 0
-  try {
-    entryCount = isZip(decoded.data) ? listZipEntries(decoded.data).length : 0
-  } catch {
-    // 畸形偏移可能让 DataView 主动抛错；对玩家而言同样就是损坏的 ZIP。
-  }
-  if (entryCount === 0) throw new InvalidArcadeArchiveError(name)
+  const decoded = await decodedArcade(stored)
+  // 只读 Blob 的尾部和目录；截断包会被拦住，但普通大包不再复制成连续 ArrayBuffer。
+  let entries: ZipFileEntry[]
+  try { entries = await assertValidZipBlob(decoded.blob, '街机 ROM') } catch { throw new InvalidArcadeArchiveError(name) }
 
-  // 不 await：下面 Blob 会自己复制一份字节，data 不会被谁 transfer 走，写盘慢也不耽误开局。
-  if (cacheKey) void romCachePut(cacheKey, data).catch(() => {})
+  // 不 await：Blob 不可变，写盘慢也不耽误开局；8BG 缓存的仍是密文，避免扩大磁盘占用。
+  if (cacheKey) void romCachePutBlob(cacheKey, stored).catch(() => {})
 
-  return arcadeBlobFrom(decoded.data, decoded.name)
+  return arcadeBlobFrom(decoded.blob, decoded.name, entries)
 }
 
 /**
@@ -1244,8 +1261,8 @@ export async function prepareRemoteArcadeRom(
  *      的一大半来源。接管之后 Content-Length 在第一帧就有了。
  *
  * ── 为什么是 Blob 不是 ArrayBuffer ──────────────────────────
- * 街机那条路（上面的 prepareRemoteArcadeRom）拿的是 ArrayBuffer，因为它要验中央目录、
- * 要算改版包指纹。光盘这条什么都不用验，只需要一个能交给引擎的 URL ——
+ * 街机那条路现在也保持 Blob，只读取尾部中央目录做校验和指纹；只有需要现场合成 ROM 的
+ * 少数已知改版包才转 ArrayBuffer。光盘这条连目录都不用验，只需要一个能交给引擎的 URL ——
  * 而 ArrayBuffer 要求一整块连续内存，700MB 的连续分配在手机上本来就悬，
  * 加上后面 Blob 一份、引擎 XHR 回来再一份，峰值是文件的两三倍，标签页直接被系统杀掉。
  * 走 Blob 则全程只有分片在内存里待过，浏览器还会把大 Blob 落到磁盘。
@@ -1507,8 +1524,31 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (typeof realIo !== 'function' || (realIo as { __8bit?: boolean }).__8bit) return
     const proxy = new Proxy(realIo as (...a: unknown[]) => unknown, {
       apply(target, thisArg, args) {
-        const sock = Reflect.apply(target, thisArg, args) as { on?: (ev: string, cb: (d: unknown) => void) => void } | undefined
+        const sock = Reflect.apply(target, thisArg, args) as {
+          on?: (ev: string, cb: (d: unknown) => void) => void
+          emit?: (event: string, ...args: unknown[]) => unknown
+        } | undefined
         try {
+          /**
+           * EmulatorJS 的 open-room 只发数字 game_id 和客户端自己决定的 maxPlayers。
+           * 服务端要按后台 games.players 定人数，就必须知道稳定的 slug，并核对 slug 的散列
+           * 确实等于 game_id。这里在 socket 发包的最后一刻补字段，不改上游压缩产物；
+           * 房主迁移时重新开房也会经过同一层，所以不会漏掉第二次开房。
+           */
+          if (sock?.emit && options.gameSlug && !options.gameSlug.startsWith('local:')) {
+            const realEmit = sock.emit.bind(sock)
+            sock.emit = (event: string, ...emitArgs: unknown[]) => {
+              if (event === 'open-room' && emitArgs[0] && typeof emitArgs[0] === 'object' && !Array.isArray(emitArgs[0])) {
+                const payload = emitArgs[0] as Record<string, unknown>
+                const rawExtra = payload.extra
+                const extra = rawExtra && typeof rawExtra === 'object' && !Array.isArray(rawExtra)
+                  ? rawExtra as Record<string, unknown>
+                  : {}
+                emitArgs[0] = { ...payload, extra: { ...extra, game_slug: options.gameSlug } }
+              }
+              return realEmit(event, ...emitArgs)
+            }
+          }
           sock?.on?.('room-token', (d: unknown) => {
             const token = (d as { token?: string } | null)?.token
             if (!token) return
@@ -2620,7 +2660,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           ...(options.biosUrl ? { EJS_biosUrl: options.biosUrl } : {}),
           // 街机：引擎没有 arcade 分支，不给这份布局手机上就只有 4 颗动作键、
           // 摇杆还会把对角线松掉、投币键写着「选择」。见 ARCADE_VIRTUAL_PAD 的注释
-          ...(options.platform === 'arcade' ? { EJS_VirtualGamepadSettings: ARCADE_VIRTUAL_PAD } : {}),
+          ...(options.platform === 'arcade'
+            ? { EJS_VirtualGamepadSettings: arcadeVirtualPad(options.arcadeButtons ?? 6) }
+            : {}),
           /*
             默认键位：左手 WASD、右手 UIJK、Shift 投币、Enter 开始（见 keymapData 的 EJS_KEY_OVERRIDE）。
             引擎会把这份**逐颗按钮合并**进它出厂那套，没给的按钮（肩键、L2/R2）保持原样。

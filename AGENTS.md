@@ -416,6 +416,45 @@ cd server && npm run migrate
 cd .. && npm run test:flash-online-save
 ```
 
+### 2.22 联机手柄位只认后台 `games.players`，全站硬上限 4
+
+后台“最大玩家数”是 P2P 和 cloud-game 房间的唯一人数准则：1 = 不允许开联机房，2 / 3 / 4 =
+对应数量的手柄位。EmulatorJS 的 `open-room.maxPlayers` 是客户端字段，绝不能直接相信；服务端会用
+适配器补入的 `game_slug` 查 `games.players`，同时核对 slug 的数字散列确实等于 `game_id`。
+
+上限统一在 `shared/netplay-players.js`，后台写入、站内/开放 API 输出、房间列表都经过同一套归一化。
+不要在新代码里再手写另一个 4。P2P 手柄位满后仍可按“观众”进入，观众不占玩家名额；云端房间没有
+观众席，人数和座位号都由 `/api/rooms/heartbeat` 按后台配置拒绝越界。
+
+自测：`cd server && npm run test:netplay:all`。这一项不改数据库结构，不需要迁移。
+
+### 2.23 成人游戏直播的年龄门必须守在服务端
+
+后台标为 `games.adult = 1` 的游戏，直播和游戏本体执行同一条规则：有效注册账号、已填写出生日期、
+且当前年满 18 岁。检查覆盖开播、观看、断线续播、联机弹幕、房间列表和房间详情；Linux / 其它
+客户端用 publisher token 里的用户 id 回查同一张 `users` 表，不能因为它不是网页端就跳过。
+
+房间内部保存 `adult` 权限位，但 `publicRoom()` 不把它发出去。`liveRooms()` / `liveRoom()` 默认
+隐藏成人房，只有 HTTP 层已经核实年龄后才显式传 `includeAdult: true`。这个默认值不能反转，否则
+开放平台、TV 或后来新增但忘记鉴权的调用方会把成人直播标题先泄露出去。Socket.IO 也必须重新
+验证，前端隐藏按钮和游戏页年龄遮罩都不是权限边界；知道房号或拿到续播 token 也不能绕过。
+
+浏览器 `EventSource` 不能带 Authorization：游客直播大厅走 SSE，登录用户改走带 JWT 的轮询；
+不要把 JWT 放进 SSE 查询串（会落进访问日志、历史和 Referer）。自测：
+`cd server && npm run test:live`。不改数据库结构，不需要迁移。
+
+### 2.24 Ruffle 运行时必须带版本目录，Flash / 街机按键由后台配置
+
+Ruffle 从 npm 复制到 `public/ruffle/v<version>/`，`runtime.json` 保存每个文件的长度和 SHA-256。
+版本路径可以安全缓存一年；升级 `@ruffle-rs/ruffle` 时必须同时改
+`src/emulator/paths.ts` 里的 `RUFFLE_VERSION`，否则 `npm run build` 会直接失败。不要把新文件覆盖到
+旧版本目录，否则边缘缓存会把新旧 WASM / JS 混在一起。
+
+Flash 手柄键位存在 `games.flash_controls` JSON，街机屏幕手柄的动作键数存在
+`games.arcade_buttons`（2 / 4 / 6）。这两列都是可空的：旧 Flash 游戏仍可用鼠标，旧街机默认六键，
+所以可以先迁移再慢慢在后台补配置。部署这版必须先跑 `cd server && npm run migrate`；
+自测用 `npm run test:ruffle-runtime && npm run test:game-controls && npm run test:keymap`。
+
 ---
 
 ## 3. 常用命令

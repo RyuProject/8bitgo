@@ -22,6 +22,7 @@ import { io as client } from 'socket.io-client'
 import { Server } from 'socket.io'
 import { attachLive, liveRooms } from '../src/live.js'
 import { attachNetplay } from '../src/netplay.js'
+import { testGameRoomPolicy } from './helpers/netplay-game-policy.mjs'
 import {
   clientIpFrom,
   countryFromHeaders,
@@ -151,7 +152,7 @@ section('直播房间')
 const liveHttp = createServer()
 // 同上：心跳设得远长于测试时长，量到 RTT 就只可能是提前探测的功劳
 const liveIo = new Server(liveHttp, { cors: { origin: true }, pingInterval: 30_000 })
-attachLive(liveIo)
+attachLive(liveIo, { findGame: async () => ({ adult: 0 }) })
 await new Promise((r) => liveHttp.listen(0, r))
 const liveUrl = `http://127.0.0.1:${liveHttp.address().port}/live`
 
@@ -209,7 +210,7 @@ ok(
 section('联机房间')
 const app = express()
 const npHttp = createServer(app)
-attachNetplay(npHttp, app, ['*'])
+attachNetplay(npHttp, app, ['*'], { resolveGamePolicy: testGameRoomPolicy })
 await new Promise((r) => npHttp.listen(0, r))
 const port = npHttp.address().port
 const npUrl = `http://127.0.0.1:${port}/netplay`

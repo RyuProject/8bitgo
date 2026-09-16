@@ -4,7 +4,7 @@
  * Ruffle 是用 Rust 编写、编译为 WebAssembly 的开源 Flash 播放器（MIT / Apache-2.0）。
  * 同样放进独立 iframe 里运行，便于销毁与隔离。
  *
- * 资源路径：默认 /ruffle/（由 scripts/copy-ruffle.mjs 从 npm 包复制到 public/ruffle/），
+ * 资源路径：默认 /ruffle/v<version>/（由 scripts/copy-ruffle.mjs 从 npm 包复制并校验），
  * 也可设置 VITE_RUFFLE_PATH 指向 CDN，例如 https://unpkg.com/@ruffle-rs/ruffle/
  */
 import type { CaptureSources, Capability, MountOptions, PadButton, RuntimeHandle } from '../types'
@@ -161,7 +161,25 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 这款游戏读哪几个键。Flash 没有统一手柄，只能逐游戏配（见 flashKeys.ts）。
    * null = 表里没有这款 —— 不画屏幕手柄，也不注入任何按键。
    */
-  const keys = flashKeysFor(options.gameSlug)
+  const keys = flashKeysFor(options.gameSlug, options.flashControls)
+  const gamepadButtonMapping = (() => {
+    if (!keys) return undefined
+    const mapping: Record<string, number> = {}
+    const bind = (button: string, control: PadButton) => {
+      const name = keys.p1[control]
+      const desc = name ? keyDesc(name) : null
+      if (desc) mapping[button] = desc.keyCode
+    }
+    bind('dpad-up', 'up')
+    bind('dpad-down', 'down')
+    bind('dpad-left', 'left')
+    bind('dpad-right', 'right')
+    bind('south', 'a')
+    bind('east', 'b')
+    bind('select', 'select')
+    bind('start', 'start')
+    return Object.keys(mapping).length ? mapping : undefined
+  })()
   /**
    * 已经按下、还没松开的键（按 code 记）。
    * 只为去重：Flash 游戏是轮询 Key.isDown 的，补发一次 down 没用，
@@ -219,6 +237,20 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const canPause = (): boolean =>
     [api, player].some((x) => x && (typeof x.pause === 'function' || typeof x.suspend === 'function'))
   const hasVolume = (): boolean => [api, player].some((x) => x && typeof x.volume === 'number')
+  const setEnginePaused = (next: boolean) => {
+    for (const target of [api, player]) {
+      if (!target) continue
+      try {
+        const fn = next ? (target.pause ?? target.suspend) : (target.play ?? target.resume)
+        if (typeof fn === 'function') {
+          fn.call(target)
+          return
+        }
+      } catch {
+        /* 换下一个门面 */
+      }
+    }
+  }
   const applyVolume = () => {
     for (const target of [api, player]) {
       if (!target || typeof target.volume !== 'number') continue
@@ -236,7 +268,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const iframe = document.createElement('iframe')
   iframe.title = fmt(rt.flashTitle, { name: options.gameName })
   iframe.style.cssText = 'width:100%;height:100%;border:0;display:block;background:#0b0b0f'
-  iframe.setAttribute('allow', 'fullscreen; autoplay; clipboard-write')
+  iframe.setAttribute('allow', 'fullscreen; autoplay; clipboard-write; gamepad')
   // srcdoc 的 location 是 about:srcdoc；Ruffle 会拿它当 SWF 地址，所有游戏的
   // SharedObject 因而落到同一条 /srcdoc/ 路径。用同源静态壳和逐游戏历史地址隔开。
   // 2026-09-13 用自制 SWF 在真实浏览器量到的键：
@@ -244,6 +276,20 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   iframe.src = '/flash-frame.html'
 
   let destroyed = false
+  let manuallyPaused = false
+  let backgroundPlaybackRequired = false
+  let visibilityPaused = false
+  const syncVisibility = () => {
+    if (destroyed) return
+    if (document.hidden && !backgroundPlaybackRequired && !manuallyPaused) {
+      visibilityPaused = true
+      setEnginePaused(true)
+    } else if (visibilityPaused && (!document.hidden || backgroundPlaybackRequired) && !manuallyPaused) {
+      visibilityPaused = false
+      setEnginePaused(false)
+    }
+  }
+  document.addEventListener('visibilitychange', syncVisibility)
   /** SWF 下载的取消把手：换游戏后别让旧会话继续拉完整个 SWF（见 jsnes 同款注释） */
   const aborter = new AbortController()
   /** Ruffle 会在 load() resolve 后继续换内部节点；焦点补刷必须可取消，避免旧会话回头抢焦点。 */
@@ -406,6 +452,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           autoplay: 'on',
           unmuteOverlay: 'visible',
           letterbox: 'on',
+          // Ruffle 自己的 none 模式无法在“开播后”动态恢复后台执行，所以由上面的
+          // visibilitychange 精确控制：无人观看时暂停，有直播观众时继续出帧。
+          backgroundExecutionMode: 'mainThread',
+          // 不碰 frameRate 和 preferredRenderer：前者会改游戏时间轴，后者官方只建议排错使用。
+          quality: options.performanceProfile === 'performance'
+            ? 'low'
+            : options.performanceProfile === 'balanced' ? 'medium' : 'high',
           /**
            * ⚠️ 千万别在这里填颜色。
            *
@@ -422,6 +475,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           splashScreen: false,
           warnOnUnsupportedContent: false,
           publicPath: RUFFLE_PATH,
+          ...(gamepadButtonMapping ? { gamepadButtonMapping } : {}),
           // SAS3.swf 写死 sas3server.ninjakiwi.com:444；Ruffle 用这张表把它改送同源 WSS 桥。
           ...sfsConfig,
           ...flashOnlineSaveRuffleConfig(onlineSave),
@@ -466,6 +520,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         lastLoadOptions = loadOptions
         await api.load(loadOptions)
         if (destroyed) return
+        syncVisibility()
         // onReady 必须在 load 完成之后 —— 以前放在 load 之前，播放器会在 SWF 还没解析完
         // 就把加载遮罩撤掉，玩家对着空白舞台点半天
         options.onReady?.()
@@ -484,6 +539,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         //   2. **只有键位表里认得这款游戏才画**。Flash 里一大半是纯鼠标游戏，
         //      给它们画一套没反应的十字键（外加一句「手柄在下面」的开局提示）比不画糟得多
         if (keys) caps.add('touchpad')
+        if (keys && typeof navigator.getGamepads === 'function') caps.add('gamepad')
         // 录像 / 开播 / 截图都靠画布，画布是在 load() 完成的那一刻出现的（实测），
         // 所以在这儿判断刚好，早一步查是 null
         if (stageCanvas()) {
@@ -555,19 +611,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     // 注意是 focusPlayer 不是 focusFrame —— 只把焦点给到 iframe，Ruffle 照样不收键盘
     focus: focusPlayer,
     setPaused(next: boolean) {
-      // 两套门面轮流试：老的 play/pause，新的 resume/suspend
-      for (const target of [api, player]) {
-        if (!target) continue
-        try {
-          const fn = next ? (target.pause ?? target.suspend) : (target.play ?? target.resume)
-          if (typeof fn === 'function') {
-            fn.call(target)
-            return
-          }
-        } catch {
-          /* 换下一个门面 */
-        }
-      }
+      manuallyPaused = next
+      visibilityPaused = false
+      setEnginePaused(next)
+      if (!next) syncVisibility()
+    },
+    setBackgroundPlaybackRequired(required: boolean) {
+      backgroundPlaybackRequired = required
+      syncVisibility()
     },
     setVolume(next: number) {
       volume = Math.max(0, Math.min(1, next))
@@ -580,6 +631,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
      * 同屏双打的游戏才在 flashKeys 里配了 p2，别的 Flash 游戏这里是空的，入口也就不出现。
      */
     coopButtons: keys?.p2 ? (Object.keys(keys.p2) as PadButton[]) : [],
+    gamepads: () => {
+      try { return Array.from(navigator.getGamepads?.() ?? []).filter(Boolean).map((pad) => pad!.id) } catch { return [] }
+    },
     /**
      * 屏幕手柄按下 / 松开。player 是座位号：0 = 1P（本机的屏幕手柄永远是它），
      * 1 = 2P（同屏双打的第二套键，留给「把观众提成 2P」那一步）。
@@ -724,6 +778,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     },
     destroy() {
       destroyed = true
+      document.removeEventListener('visibilitychange', syncVisibility)
       cancelFocusRetry()
       aborter.abort()
       player = null

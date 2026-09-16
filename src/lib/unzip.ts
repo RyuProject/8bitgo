@@ -147,6 +147,85 @@ export function assertValidZip(buf: ArrayBuffer, label = 'ZIP'): ZipFileEntry[] 
   return directory.entries
 }
 
+/**
+ * Blob 版中央目录校验。只读取文件尾、中央目录和每个成员的 30 字节本地头，
+ * 不再为了验证一个 200MB 街机包申请同样大的连续 ArrayBuffer。
+ */
+export async function assertValidZipBlob(blob: Blob, label = 'ZIP'): Promise<ZipFileEntry[]> {
+  if (blob.size < 22) throw new Error(`${label} 压缩包为空、已损坏或下载不完整`)
+  const tailStart = Math.max(0, blob.size - 22 - 65535)
+  const tailBuffer = await blob.slice(tailStart).arrayBuffer()
+  const tail = new Uint8Array(tailBuffer)
+  const tailView = new DataView(tailBuffer)
+  let eocd = -1
+  for (let i = tail.length - 22; i >= 0; i--) {
+    if (tailView.getUint32(i, true) === 0x06054b50) {
+      eocd = i
+      break
+    }
+  }
+  const invalid = () => { throw new Error(`${label} 压缩包为空、已损坏或下载不完整`) }
+  if (eocd < 0) return invalid()
+
+  const disk = tailView.getUint16(eocd + 4, true)
+  const centralDisk = tailView.getUint16(eocd + 6, true)
+  const diskCount = tailView.getUint16(eocd + 8, true)
+  const count = tailView.getUint16(eocd + 10, true)
+  const centralSize = tailView.getUint32(eocd + 12, true)
+  const centralOffset = tailView.getUint32(eocd + 16, true)
+  const commentLength = tailView.getUint16(eocd + 20, true)
+  const absoluteEocd = tailStart + eocd
+  if (
+    disk !== 0 || centralDisk !== 0 || diskCount !== count || count === 0 || count === 0xffff ||
+    eocd + 22 + commentLength > tail.length || centralOffset + centralSize > absoluteEocd ||
+    centralOffset + centralSize > blob.size
+  ) return invalid()
+
+  const centralBuffer = await blob.slice(centralOffset, centralOffset + centralSize).arrayBuffer()
+  const bytes = new Uint8Array(centralBuffer)
+  const view = new DataView(centralBuffer)
+  const entries: ZipFileEntry[] = []
+  const allEntries: ZipFileEntry[] = []
+  let p = 0
+  for (let i = 0; i < count; i++) {
+    if (p + 46 > bytes.length || view.getUint32(p, true) !== 0x02014b50) return invalid()
+    const flags = view.getUint16(p + 8, true)
+    const method = view.getUint16(p + 10, true)
+    const crc32 = view.getUint32(p + 16, true)
+    const compressedSize = view.getUint32(p + 20, true)
+    const uncompressedSize = view.getUint32(p + 24, true)
+    const nameLen = view.getUint16(p + 28, true)
+    const extraLen = view.getUint16(p + 30, true)
+    const commentLen = view.getUint16(p + 32, true)
+    const offset = view.getUint32(p + 42, true)
+    const next = p + 46 + nameLen + extraLen + commentLen
+    if (next > bytes.length || offset + 30 > blob.size) return invalid()
+    const name = decodeZipName(bytes.subarray(p + 46, p + 46 + nameLen), Boolean(flags & 0x800)).replace(/\\/g, '/')
+    const entry = { name, method, compressedSize, uncompressedSize, crc32, offset }
+    allEntries.push(entry)
+    if (!name.endsWith('/') && !name.startsWith('__MACOSX/') && !name.split('/').pop()?.startsWith('._')) {
+      entries.push(entry)
+    }
+    p = next
+  }
+  if (!entries.length) return invalid()
+
+  // 并发按小批次读本地头：成千上万个成员时不能同时制造成千上万个 Blob 请求。
+  for (let at = 0; at < allEntries.length; at += 64) {
+    const batch = allEntries.slice(at, at + 64)
+    const headers = await Promise.all(batch.map((entry) => blob.slice(entry.offset, entry.offset + 30).arrayBuffer()))
+    for (let i = 0; i < batch.length; i++) {
+      const header = headers[i]
+      if (header.byteLength !== 30) return invalid()
+      const local = new DataView(header)
+      if (local.getUint32(0, true) !== 0x04034b50) return invalid()
+      const dataStart = batch[i].offset + 30 + local.getUint16(26, true) + local.getUint16(28, true)
+      if (dataStart > blob.size || dataStart + batch[i].compressedSize > blob.size) return invalid()
+    }
+  }
+  return entries
+}
+
 /** 解出某一项的完整内容 */
 export async function extractZipEntry(buf: ArrayBuffer, entry: ZipFileEntry, maxBytes = Infinity): Promise<Uint8Array> {
   const b = new Uint8Array(buf)

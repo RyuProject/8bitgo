@@ -1,9 +1,9 @@
 import { Router } from 'express'
-import { query, queryOne } from '../db.js'
+import { query, withTransaction } from '../db.js'
 import { requireAbility, hasAbility } from '../auth.js'
 import { isRole, ROLE_LABELS } from '../../../shared/roles.js'
 import { userRowToPublic } from '../mappers.js'
-import { gamesRatedBy, recomputeGameRatings } from '../ratings-repo.js'
+import { recomputeSql } from '../ratings-repo.js'
 
 export const usersRouter = Router()
 usersRouter.use(requireAbility('users:manage'))
@@ -39,21 +39,6 @@ usersRouter.get('/', async (_req, res, next) => {
 const MAX_COIN_DELTA = 1_000_000
 
 /**
- * 还剩几个能用的管理员（不含被封禁的）。
- *
- * 三处护栏都靠它：封禁、删除、以及**把管理员降级**。最后一条最容易漏 ——
- * 把自己或者仅存的那个管理员改成志愿者，站里就再也没人能改角色了，
- * 只能回数据库里手工 UPDATE。
- */
-async function activeAdminCount(excludeId) {
-  const r = await queryOne(
-    "SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND status = 'active' AND id <> ?",
-    [excludeId ?? ''],
-  )
-  return Number(r?.n ?? 0)
-}
-
-/**
  * 调整金币 / 改状态（封禁 / 解封）。
  *
  * 两道护栏，以前都没有：
@@ -64,62 +49,80 @@ async function activeAdminCount(excludeId) {
 usersRouter.patch('/:id', async (req, res, next) => {
   try {
     const { id } = req.params
-    const target = await queryOne('SELECT id, role, status FROM users WHERE id = ?', [id])
-    if (!target) return res.status(404).json({ error: '用户不存在' })
-    // 参数校验放在任何写操作之前：同一个请求里带了别的字段时，不能改了一半再报错
-    if (req.body.birthDate !== undefined && req.body.birthDate !== null) {
+    const body = req.body && typeof req.body === 'object' ? req.body : {}
+    const hasCoins = body.coinsDelta !== undefined
+    const hasRole = body.role !== undefined
+    const hasStatus = body.status !== undefined
+    const clearBirthDate = body.birthDate === null
+
+    // 所有校验必须在事务和任何 UPDATE 之前完成。以前 coinsDelta 先落库、role 后校验，
+    // `{coinsDelta:100, role:'root'}` 会回 400，但金币已经真的加了——接口陈述与数据库相反。
+    if (body.birthDate !== undefined && body.birthDate !== null) {
       return res.status(400).json({ error: 'birthDate 只能清除（传 null），不能由后台代填' })
     }
-
-    if (req.body.coinsDelta !== undefined) {
-      const delta = Math.trunc(Number(req.body.coinsDelta))
+    let delta = 0
+    if (hasCoins) {
+      delta = Math.trunc(Number(body.coinsDelta))
       if (!Number.isFinite(delta)) return res.status(400).json({ error: 'coinsDelta 必须是数字' })
       if (Math.abs(delta) > MAX_COIN_DELTA) {
         return res.status(400).json({ error: `单次调整不能超过 ${MAX_COIN_DELTA.toLocaleString('en-US')} G 币` })
       }
-      if (delta !== 0) await query('UPDATE users SET coins = GREATEST(0, coins + ?) WHERE id = ?', [delta, id])
     }
-
-    /**
-     * 改角色。单独一道权限点（users:role）—— 能封号的人不一定就该能发权限，
-     * 而「发权限」是唯一一个能把权限扩散出去的操作，值得单独卡一道。
-     */
-    if (req.body.role !== undefined) {
+    if (hasRole) {
       if (!(await hasAbility(req, 'users:role'))) {
         return res.status(403).json({ error: '权限不足：需要 users:role' })
       }
-      const role = req.body.role
-      if (!isRole(role)) {
+      if (!isRole(body.role)) {
         return res.status(400).json({ error: `role 只能是 ${Object.keys(ROLE_LABELS).join(' / ')}` })
       }
-      // 把自己降级 = 当场把自己关在后台外面，而且大概率还是最后一个管理员
-      if (req.user?.id === id && role !== 'admin') {
-        return res.status(400).json({ error: '不能给自己降级' })
-      }
-      if (target.role === 'admin' && role !== 'admin' && (await activeAdminCount(id)) === 0) {
-        return res.status(400).json({ error: '这是最后一个可用的管理员，不能降级' })
-      }
-      if (role !== target.role) await query('UPDATE users SET role = ? WHERE id = ?', [role, id])
+    }
+    if (hasStatus && body.status !== 'active' && body.status !== 'banned') {
+      return res.status(400).json({ error: 'status 只能是 active / banned' })
     }
 
-    if (req.body.status === 'active' || req.body.status === 'banned') {
-      if (req.body.status === 'banned') {
-        if (req.user?.id === id) return res.status(400).json({ error: '不能封禁自己' })
-        if (target.role === 'admin' && (await activeAdminCount(id)) === 0) {
-          return res.status(400).json({ error: '这是最后一个可用的管理员，不能封禁' })
-        }
-      }
-      await query('UPDATE users SET status = ? WHERE id = ?', [req.body.status, id])
-    }
+    const result = await withTransaction(async (run) => {
+      /*
+        所有用户管理事务先按固定顺序锁住“当前可用管理员”集合，再锁目标用户。
+        不加锁时，两名管理员可以同时把对方降级/删除：两边都看到“还有另一个管理员”，
+        然后一起提交，站点瞬间变成零管理员。固定锁顺序也避免 A 先锁 A、B 先锁 B 的死锁。
+      */
+      const activeAdmins = await run(
+        "SELECT id FROM users WHERE role = 'admin' AND status = 'active' ORDER BY id FOR UPDATE",
+      )
+      const targets = await run('SELECT id, role, status FROM users WHERE id = ? FOR UPDATE', [id])
+      const target = targets[0]
+      if (!target) return { error: { status: 404, message: '用户不存在' } }
 
-    /**
-     * 清除出生日期（成人内容年龄验证）。
-     * 用户自己填一次就锁死（见 routes/me.js 的 PUT /birth-date），填错了只能从这里清掉让他重填。
-     * 只接受 null —— 后台不代填：出生日期是本人的声明，管理员替人填一个成年日期等于替人担责。
-     */
-    if (req.body.birthDate === null) {
-      await query('UPDATE users SET birth_date = NULL WHERE id = ?', [id])
-    }
+      const otherActiveAdmin = activeAdmins.some((row) => String(row.id) !== String(id))
+      const nextRole = hasRole ? body.role : target.role
+      const nextStatus = hasStatus ? body.status : target.status
+
+      if (req.user?.id === id && nextRole !== 'admin') {
+        return { error: { status: 400, message: '不能给自己降级' } }
+      }
+      if (req.user?.id === id && nextStatus === 'banned') {
+        return { error: { status: 400, message: '不能封禁自己' } }
+      }
+      if (target.role === 'admin' && target.status === 'active' &&
+          (nextRole !== 'admin' || nextStatus !== 'active') && !otherActiveAdmin) {
+        const action = nextRole !== 'admin' ? '降级' : '封禁'
+        return { error: { status: 400, message: `这是最后一个可用的管理员，不能${action}` } }
+      }
+
+      if (hasCoins && delta !== 0) {
+        await run('UPDATE users SET coins = GREATEST(0, coins + ?) WHERE id = ?', [delta, id])
+      }
+      if (hasRole && body.role !== target.role) {
+        await run('UPDATE users SET role = ? WHERE id = ?', [body.role, id])
+      }
+      if (hasStatus && body.status !== target.status) {
+        await run('UPDATE users SET status = ? WHERE id = ?', [body.status, id])
+      }
+      // 用户本人只能填一次；填错时管理员只负责清空，让本人重新声明。
+      if (clearBirthDate) await run('UPDATE users SET birth_date = NULL WHERE id = ?', [id])
+      return { error: null }
+    })
+    if (result.error) return res.status(result.error.status).json({ error: result.error.message })
 
     res.json({ ok: true })
   } catch (e) {
@@ -137,15 +140,28 @@ usersRouter.patch('/:id', async (req, res, next) => {
 usersRouter.delete('/:id', async (req, res, next) => {
   try {
     const { id } = req.params
-    const target = await queryOne('SELECT id, role FROM users WHERE id = ?', [id])
-    if (!target) return res.status(404).json({ error: '用户不存在' })
     if (req.user?.id === id) return res.status(400).json({ error: '不能删除自己' })
-    if (target.role === 'admin' && (await activeAdminCount(id)) === 0) {
-      return res.status(400).json({ error: '这是最后一个可用的管理员，不能删除' })
-    }
-    const rated = await gamesRatedBy(id)
-    await query('DELETE FROM users WHERE id = ?', [id])
-    await recomputeGameRatings(rated)
+
+    const result = await withTransaction(async (run) => {
+      const activeAdmins = await run(
+        "SELECT id FROM users WHERE role = 'admin' AND status = 'active' ORDER BY id FOR UPDATE",
+      )
+      const targets = await run('SELECT id, role, status FROM users WHERE id = ? FOR UPDATE', [id])
+      const target = targets[0]
+      if (!target) return { error: { status: 404, message: '用户不存在' } }
+      if (target.role === 'admin' && target.status === 'active' &&
+          !activeAdmins.some((row) => String(row.id) !== String(id))) {
+        return { error: { status: 400, message: '这是最后一个可用的管理员，不能删除' } }
+      }
+
+      // 评分明细会随用户级联删除；games 上的冗余聚合必须在同一个事务里同步重算。
+      const ratedRows = await run('SELECT DISTINCT game_id FROM game_ratings WHERE user_id = ?', [id])
+      const rated = [...new Set(ratedRows.map((row) => Number(row.game_id)).filter(Number.isFinite))]
+      await run('DELETE FROM users WHERE id = ?', [id])
+      if (rated.length) await run(recomputeSql(rated.length), rated)
+      return { error: null }
+    })
+    if (result.error) return res.status(result.error.status).json({ error: result.error.message })
     res.json({ ok: true })
   } catch (e) {
     next(e)

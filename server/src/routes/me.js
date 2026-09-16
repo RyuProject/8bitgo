@@ -1,12 +1,12 @@
 import { Router } from 'express'
-import { query, queryOne } from '../db.js'
-import { requireUser, hashPassword, verifyPassword, signToken, tokenVersionOf } from '../auth.js'
+import { query, queryOne, withTransaction } from '../db.js'
+import { requireUser, hashPassword, verifyPassword, signToken, tokenVersionOf, passwordValidationError } from '../auth.js'
 import { userRowToPublic } from '../mappers.js'
 import { favIds, recentIds, gameIdBySlug, recordRecent } from '../userdata.js'
 // ⚠️ 2026-09-11：这两个在 DELETE /api/me 里用着，但一直没 import ——
 // 自助注销会在消费掉验证码之后抛 ReferenceError 变成 500，用户永远注销不了，
 // 而且每试一次白费一封验证码邮件。
-import { gamesRatedBy, recomputeGameRatings } from '../ratings-repo.js'
+import { recomputeSql } from '../ratings-repo.js'
 import { issueCode, verifyCode, sendCodeError } from '../codes.js'
 import { checkAdultBirthDate } from '../../../shared/age.js'
 import { isEmail } from '../../../shared/email.js'
@@ -272,8 +272,8 @@ meRouter.post('/email', async (req, res, next) => {
 meRouter.put('/password', async (req, res, next) => {
   try {
     const password = String(req.body.password || '')
-    if (password.length < 6) return res.status(400).json({ error: '密码至少 6 位' })
-    if (password.length > 200) return res.status(400).json({ error: '密码太长了' })
+    const passwordError = passwordValidationError(password)
+    if (passwordError) return res.status(400).json({ error: passwordError })
 
     const hasPassword = Boolean(req.user.password_hash)
     if (hasPassword) {
@@ -349,9 +349,12 @@ meRouter.delete('/', async (req, res, next) => {
     await verifyCode(email, 'delete', String(req.body?.code || ''), req.user.id)
     // 评分聚合是 games 上的冗余列，级联删明细时数据库不会替我们降 ——
     // 先记下他投过哪些游戏，删完再重算（见 ratings-repo.js）
-    const rated = await gamesRatedBy(req.user.id)
-    await query('DELETE FROM users WHERE id = ?', [req.user.id])
-    await recomputeGameRatings(rated)
+    await withTransaction(async (run) => {
+      const ratedRows = await run('SELECT DISTINCT game_id FROM game_ratings WHERE user_id = ?', [req.user.id])
+      const rated = [...new Set(ratedRows.map((row) => Number(row.game_id)).filter(Number.isFinite))]
+      await run('DELETE FROM users WHERE id = ?', [req.user.id])
+      if (rated.length) await run(recomputeSql(rated.length), rated)
+    })
     res.json({ ok: true })
   } catch (e) {
     sendCodeError(res, next, e)

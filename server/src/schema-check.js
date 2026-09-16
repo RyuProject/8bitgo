@@ -29,6 +29,8 @@ const EXPECTED_COLUMNS = [
   { table: 'games', column: 'dosbox_config_override', why: '逐游戏 DOSBox-X 启动配置覆盖' },
   { table: 'games', column: 'dos_save_hint', why: '逐游戏的 DOS 存档按键说明' },
   { table: 'games', column: 'arcade_romdata', why: '街机改版包的 FBNeo RomData' },
+  { table: 'games', column: 'arcade_buttons', why: '逐游戏街机虚拟动作键数量' },
+  { table: 'games', column: 'flash_controls', why: '逐游戏 Flash 屏幕手柄与实体手柄键位' },
   { table: 'games', column: 'adult', why: '成人游戏 18 岁验证' },
   { table: 'games', column: 'created_at', why: '真实入库时间' },
   { table: 'games', column: 'rating_sum', why: '评分聚合；缺了详情页星星读得出来，但一有人打分 POST /api/ratings 就 500' },
@@ -87,23 +89,22 @@ const EXPECTED_TABLES = [
   */
   { table: 'oauth_apps', why: '开放平台的应用表；缺了 /open 控制台创建应用 500、取令牌永远 invalid_client' },
   { table: 'oauth_app_secrets', why: '应用密钥（只存 bcrypt 哈希）；缺了任何 AppID + key 都认不出来' },
+  { table: 'oauth_codes', why: 'OAuth 授权码（只存哈希）；缺了浏览器授权能到同意页，但换令牌时会 500' },
   { table: 'oauth_app_reviews', why: '应用审核流水；缺了后台的开放平台审核页整块 500' },
   { table: 'oauth_app_testers', why: '沙箱应用的测试账号白名单；缺了沙箱应用授权时 500' },
   /*
-    ⚠️ **只有上面这 4 张。** migrate 里还会建 oauth_codes / oauth_authorizations /
-    oauth_tokens，但 2026-09-13 核对：代码一张都不查 ——
-    授权码走的是 routes/oauth.js 里的内存 Map（5 分钟 TTL，重启即丢，对一次性短码可以接受），
-    access token 是自包含 JWT 不落库。
+    migrate 里还会建 oauth_authorizations / oauth_tokens，但当前代码一张都不查：
+    access token 是自包含 JWT，不落库；长期授权与 refresh token 尚未启用。
 
-    把那三张也写进来的话，会对一台**完全正常**的库报「缺表」，
+    把那两张也写进来的话，会对一台**完全正常**的库报「缺表」，
     而运维照着提示跑完 migrate 发现什么都没变 —— 误报比不报更糟，
     因为它会把下一次真实的告警也一起变成噪音。
 
     （副作用值得知道：oauth_authorizations 不用 = 用户授权过哪些应用没有落库，
       同意页每次都要重新问一遍，也没有「解除授权」的地方。要做那个功能时再把表用起来。）
     */
-    { table: 'apps', why: '应用中心：官方 SDK / APP 下载 / 社区上架；缺了 /apps 列表空、后台管理读写全 500' },
-    ]
+  { table: 'apps', why: '应用中心：官方 SDK / APP 下载 / 社区上架；缺了 /apps 列表空、后台管理读写全 500' },
+]
 
 export async function checkSchema() {
   try {

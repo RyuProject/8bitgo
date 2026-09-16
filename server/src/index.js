@@ -9,7 +9,7 @@ import { normalizeUrl } from './url-normalize.js'
 import { tvRobots } from './tv-robots.js'
 import { playShell } from './routes/play.js'
 import { j2meJarProxy, uploadGate, uploadJar, releaseJar, keepaliveJar, startSweeper, MAX_BYTES, TTL_MS } from './j2me.js'
-import { ADMIN_AUTH_DISABLED, adminBackdoorFatal, authSecretsFatal } from './auth.js'
+import { ADMIN_AUTH_DISABLED, adminBackdoorFatal, authSecretsFatal, optionalUser } from './auth.js'
 import { CACHE, noStore, staticCacheHeaders } from './cache.js'
 import { authRouter } from './routes/auth.js'
 import { gamesRouter } from './routes/games.js'
@@ -34,7 +34,7 @@ import { savesRouter } from './routes/saves.js'
 import { flashSavesRouter } from './routes/flash-saves.js'
 import { flashSaveConfigured, flashSaveConfigurationError } from './flash-save-token.js'
 import { attachNetplay } from './netplay.js'
-import { attachLive, liveCapacity, liveRoom, liveRooms, subscribeLiveRooms } from './live.js'
+import { attachLive, canAccessAdultLive, liveCapacity, liveRoom, liveRooms, subscribeLiveRooms } from './live.js'
 import { admitSse } from './sseGuard.js'
 import { iceRouter, registerTurnProbeTargets } from './routes/ice.js'
 import { startTurnHealth } from './turnProbe.js'
@@ -239,12 +239,15 @@ app.get('/api/live/capacity', (_req, res) => {
   res.json(liveCapacity())
 })
 
-// 正在直播的房间列表。?game=<slug> 只看某个游戏的
-app.get('/api/live/rooms', (req, res) => {
-  res.json(liveRooms({ gameSlug: typeof req.query.game === 'string' ? req.query.game : undefined }))
+// 正在直播的房间列表。?game=<slug> 只看某个游戏的。成人房必须由服务端核实登录和年龄后才返回。
+app.get('/api/live/rooms', optionalUser, (req, res) => {
+  res.json(liveRooms({
+    gameSlug: typeof req.query.game === 'string' ? req.query.game : undefined,
+    includeAdult: canAccessAdultLive(req.user),
+  }))
 })
-app.get('/api/live/rooms/:roomId', (req, res) => {
-  const room = liveRoom(req.params.roomId)
+app.get('/api/live/rooms/:roomId', optionalUser, (req, res) => {
+  const room = liveRoom(req.params.roomId, { includeAdult: canAccessAdultLive(req.user) })
   if (!room) return res.status(404).json({ error: 'room not found' })
   res.json(room)
 })
@@ -256,12 +259,12 @@ app.get('/api/live/rooms/:roomId', (req, res) => {
  * 和 netplay 的 /api/netplay/events 是同一套做法（那边更早改的）。
  * 用 SSE 不用 WebSocket：单向推送够用，浏览器自带断线重连，也不用再引依赖。
  */
-app.get('/api/live/events', (req, res) => {
+app.get('/api/live/events', optionalUser, (req, res) => {
   // 准入闸：爬虫直接拒、per-IP 与总量上限、最长存活时间。响应头也由它写。
   // 没有这道闸时爬虫会把这条流挂满源站，见 sseGuard.js 顶部那段病史。
   if (!admitSse(req, res)) return
 
-  const unsubscribe = subscribeLiveRooms(res)
+  const unsubscribe = subscribeLiveRooms(res, { includeAdult: canAccessAdultLive(req.user) })
   const beat = setInterval(() => {
     try {
       res.write(': ping\n\n')

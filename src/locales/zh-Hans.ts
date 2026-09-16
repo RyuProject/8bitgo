@@ -965,6 +965,10 @@ export const zhHans = {
     noRuntime: '{platform} 暂时没有可用的运行时',
     checkingCloud: '正在准备在线版本…',
     start: '开始游戏',
+    performanceLabel: '运行档位',
+    performanceQuality: '画质优先',
+    performanceBalanced: '均衡',
+    performanceFast: '流畅优先',
     pickRom: '选择 ROM 开始游戏',
     cloudHint: 'ROM 将从云端加载，由 {runtime} 在浏览器内运行，首次加载需要几秒钟。',
     alsoCan: '也可以',
@@ -1154,7 +1158,7 @@ export const zhHans = {
     padHintBelow: '触屏手柄在画面下方 👇',
     padHintOverlay: '触屏手柄就在画面上',
     padHintKeys: '十字键移动，A / B 是动作键（跳跃、开火），START 开始',
-    padHintKeysDos: 'DOS 游戏：十字键移动，A = Ctrl（多为开火 / 确定），B = Alt，START = 回车，SELECT = Esc 开菜单',
+    padHintKeysDos: 'DOS 游戏：十字键移动，A = Ctrl（多为开火 / 确定），B = Alt，START = 回车，SELECT = Esc 开菜单。不合手就在手柄上点 ⌨ 自己绑',
     padHintTouch: '这台机器用触屏玩 —— 直接点画面下方那块屏幕 👇',
     padHintTouchKeys: '要实体按键的游戏，在工具栏 🎮 里把「屏幕按键」调出来',
     padHintGot: '知道了',
@@ -1165,6 +1169,27 @@ export const zhHans = {
     exitImmersiveBtn: '退出沉浸模式',
     fullscreenTitle: '浏览器全屏',
     fullscreen: '⛶ 全屏',
+
+    /**
+     * 屏幕手柄的按键映射。只有 DOS 这一路有这个入口（别的运行时按钮是 A/B，
+     * 没有「绑到键盘哪个键」这回事，见 emulator/dosPad.ts）。
+     */
+    padMap: {
+      open: '⌨ 按键',
+      title: '按键映射',
+      hint: '点一行选中它，再点下面的常用键；想绑别的键就点右边那个框，用键盘打出来。',
+      pickHint: '先点上面一行，再点下面的常用键',
+      pickFor: '给「{row}」选一个键',
+      conflict: '有两颗按钮绑了同一个键，检查一下标黄的那两格',
+      unsaved: '改动还没保存 —— 点「保存」生效，或点「取消」放弃',
+      save: '保存',
+      cancel: '取消',
+      reset: '恢复默认',
+      unsupported: '这个键不支持，换一个试试',
+      show: '显示屏幕按键',
+      hide: '收起屏幕按键',
+      close: '关闭',
+    },
   },
 
   /* ---------------- 类型 ---------------- */

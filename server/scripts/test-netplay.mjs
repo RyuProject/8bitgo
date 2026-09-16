@@ -15,6 +15,7 @@
 import express from 'express'
 import { createServer } from 'node:http'
 import { io as client } from 'socket.io-client'
+import { testGameRoomPolicy } from './helpers/netplay-game-policy.mjs'
 // 这个测试从同一个 IP 开一堆房间，把每 IP 上限关掉（那条规则在 test-netplay-hardening.mjs 里测）
 process.env.NETPLAY_MAX_ROOMS_PER_IP = '0'
 // 同理：所有连接都来自 127.0.0.1，每房间每 IP 的成员上限也要关掉
@@ -31,7 +32,7 @@ const section = (title) => console.log(`\n── ${title} ──`)
 
 const app = express()
 const http = createServer(app)
-attachNetplay(http, app, ['*'])
+attachNetplay(http, app, ['*'], { resolveGamePolicy: testGameRoomPolicy })
 await new Promise((r) => http.listen(9921, r))
 const WS = 'http://127.0.0.1:9921/netplay'
 const API = 'http://127.0.0.1:9921'
@@ -48,6 +49,7 @@ const connect = async () => {
 const extra = (userid, sessionid, name, gameId = 42) => ({
   domain: 'localhost',
   game_id: gameId,
+  game_slug: 'test-game',
   room_name: '双截龙',
   player_name: name,
   userid,
@@ -89,6 +91,23 @@ section('基础协议')
   const [fullErr, fullUsers] = await join(third, extra('u3', 'R1', '路人'))
   ok('手柄位满了改成当观众进来', fullErr == null && fullUsers?.['u3']?.role === 'spectator')
   ok('原有两位仍是玩家', fullUsers?.['u-host']?.role !== 'spectator' && fullUsers?.['u-guest']?.role !== 'spectator')
+
+  const backendHost = await connect()
+  ok('后台双人配置能开房', (await open(backendHost, { ...extra('u-policy', 'R-policy', '后台人数'), game_slug: 'backend-two' }, 4)) == null)
+  const backendRoom = await getJson('/api/netplay/rooms/R-policy')
+  ok('客户端请求 4 人也会被后台配置压回 2 人', backendRoom.max === 2)
+  backendHost.close()
+
+  const cappedHost = await connect()
+  ok('四人游戏能开房', (await open(cappedHost, extra('u-cap', 'R-cap', '四人房'), 99)) == null)
+  const cappedRoom = await getJson('/api/netplay/rooms/R-cap')
+  ok('任何配置或请求都不能超过全站硬上限 4 人', cappedRoom.max === 4)
+  cappedHost.close()
+
+  const singleHost = await connect()
+  const singleAck = await open(singleHost, { ...extra('u-single', 'R-single', '单人游戏'), game_slug: 'single-player' }, 4)
+  ok('后台设为 1 人的游戏不能伪造成联机房', singleAck === 'game does not support multiplayer')
+  singleHost.close()
 
   const hostB = await connect()
   await open(hostB, extra('u-b', 'R-pw', '房主B'), 2, 'secret')

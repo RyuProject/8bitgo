@@ -24,11 +24,14 @@ export const CACHE = {
   /** 字体：名字不带哈希，但内容基本不会变；真要换字体请顺手改文件名 */
   font: 'public, max-age=31536000, immutable',
 
+  /** 带版本目录的引擎产物。版本升级会换 URL，所以可以放心长期缓存。 */
+  engineVersioned: 'public, max-age=31536000, immutable',
+
   /**
-   * Ruffle / js-dos 的 wasm / js：体积大、更新不频繁，但文件名固定。
-   * 浏览器缓存一天，边缘缓存 30 天，升级 Ruffle 后清一次 Cloudflare 缓存即可。
+   * 仍使用固定 URL 的引擎。这里不能再缓存 30 天：EmulatorJS 的文件名不带哈希，
+   * 补丁升级后长期命中旧边缘副本会让线上和构建验收成为两套代码。
    */
-  engine: 'public, max-age=86400, s-maxage=2592000, stale-while-revalidate=86400',
+  engine: 'public, max-age=300, s-maxage=3600, stale-while-revalidate=300',
 
   /** 图片、favicon 之类 */
   image: 'public, max-age=3600, s-maxage=604800, stale-while-revalidate=86400',
@@ -84,6 +87,7 @@ export function staticCacheHeaders(res, filePath) {
 
   if (p.includes('/assets/')) return set(CACHE.immutable)
   if (p.includes('/fonts/')) return set(CACHE.font)
+  if (/\/ruffle\/v[^/]+\//.test(p)) return set(CACHE.engineVersioned)
   if (p.includes('/ruffle/') || p.includes('/emulatorjs/') || p.includes('/j2me/') || p.includes('/jsdos/') || p.includes('/webretro/') || p.includes('/qemu-wasm/') || p.includes('/play/')) return set(CACHE.engine)
   if (/\.(png|jpg|jpeg|gif|webp|avif|svg|ico)$/i.test(p)) return set(CACHE.image)
   // ads.txt 跟 robots / sitemap 一样属于「构建时生成、但要能被外部频繁核对」的元文件，

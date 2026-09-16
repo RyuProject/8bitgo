@@ -34,6 +34,17 @@ import { deleteSave, pullSave, pushSave } from '@/services/saves'
 import { loadGameBytes } from '../romLoader'
 import { loadSystemBytes, systemSourcesFor } from '../systemSource'
 import { armJspi } from '../jspiFlag'
+import {
+  DOS_PAD_BUTTONS,
+  DOS_PAD_DEFAULT,
+  dosPadCustomized,
+  glfwKeyForPress,
+  glfwKeyLabel,
+  loadDosPadKeys,
+  resetDosPadKeys,
+  saveDosPadKeys,
+  type DosPadKeys,
+} from '../dosPad'
 import { normalizeDosStartupCommands } from '../../../shared/dos-startup-commands.js'
 import { STARTING_MILESTONE, windowsGuestStartupBudgetMs } from '../loadProgress'
 import { assertTypeable, scheduleWindowsLaunch, windows3xLaunchCommands, type WindowsLaunchCi } from '../windowsLaunch'
@@ -234,25 +245,10 @@ const DOS_PAD_MAP: Record<number, number> = {
   [GP.L1]: KBD.tab,
 }
 /**
- * 屏幕手柄（TouchPad）的八个键 → DOSBox 键码。
- *
- * 和上面 DOS_PAD_MAP 是同一套键位，只是索引不同（那份按 Gamepad API 的按钮下标，
- * 这份按我们自己的 PadButton 名字），所以两边改一处就得改另一处。
- * 手机上没有键盘，不给这一套的话 DOS 游戏在手机上纯属只能看 —— 连菜单都进不去。
- *
- * SELECT 给 Esc 而不是别的：DOS 游戏的暂停 / 退出菜单基本都在 Esc 上，
- * 手机玩家最容易卡住的地方就是「进了游戏出不来」。
+ * 屏幕手柄（TouchPad）的键位**不在这里写死** —— 和 DOS_PAD_MAP 不同，它是可以改的
+ * （主机模拟器的按钮是 A/B，DOS 的按钮是「键盘上的某个键」，每款游戏都不一样）。
+ * 默认表、换算、以及按游戏存取都在 ../dosPad.ts，这里只负责读出来喂给引擎。
  */
-const DOS_TOUCH_MAP: Record<PadButton, number> = {
-  up: KBD.up,
-  down: KBD.down,
-  left: KBD.left,
-  right: KBD.right,
-  a: KBD.leftCtrl,
-  b: KBD.leftAlt,
-  start: KBD.enter,
-  select: KBD.esc,
-}
 
 type DosFn = (el: HTMLElement, options: Record<string, unknown>) => DosProps
 
@@ -350,6 +346,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /** 鼠标上下反转（见 hookMouseInvert）。按游戏记忆，本地文件退回显示名 */
   const mouseKey = options.gameSlug || `local:${options.gameName}`
   let mouseInverted = options.mouseCapture ? mouseInvertStore.read(mouseKey) : false
+  /**
+   * 屏幕手柄的键位，按游戏记（见 ../dosPad.ts）。归档键和鼠标反转共用同一个口径：
+   * 「同一个游戏」的判定在两处不一致会让人莫名其妙（这里改了那儿没改）。
+   * 读一次缓着用：sendButton 在按下那一刻被调用，不能每次都去碰 localStorage。
+   */
+  const padKey = options.gameSlug || `local:${options.gameName}`
+  let padKeys: DosPadKeys = loadDosPadKeys(padKey)
   /** 最近一次存档落到哪儿了（云端 / 浏览器），给界面显示用 */
   let lastPush: { ok: boolean; where: 'cloud' | 'local' | null; error?: string } | null = null
   /** 最近一次固化出来的字节；导出成文件和「存不进去时退回下载」都用它 */
@@ -718,17 +721,46 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
      * 屏幕手柄按下 / 松开。播放器在触屏设备上画那一套浮层，按下就走这里
      * （声明了 'touchpad' 能力才画，见 types.ts 的 Capability）。
      *
-     * 直接送 DOSBox 键码，不合成 KeyboardEvent —— js-dos 的键盘处理在它自己的
+     * 送的是**玩家自己绑的键**（没绑过就是默认那套，见 ../dosPad.ts）。
+     * 直接送 GLFW 键码，不合成 KeyboardEvent —— js-dos 的键盘处理在它自己的
      * canvas 上，合成事件的 keyCode 在各浏览器上对不齐，而且会撞上页面别的监听。
      */
     sendButton(button, down) {
-      const key = DOS_TOUCH_MAP[button]
+      const key = padKeys[button]
       if (key === undefined) return
       try {
         ci?.sendKeyEvent(key, down)
       } catch {
         /* 引擎已经拆了就忽略 */
       }
+    },
+    /**
+     * 屏幕手柄的键位可以改（见 ../dosPad.ts）。
+     *
+     * 换算和存储都留在这一侧：键码是 js-dos 的 GLFW 编号，播放器不该认识它。
+     * 播放器只交换两样东西 —— 「这颗按钮现在显示什么」和「玩家刚按了哪个键」。
+     */
+    padRemap: {
+      labels() {
+        const out = {} as Record<PadButton, string>
+        for (const b of DOS_PAD_BUTTONS) out[b] = glfwKeyLabel(padKeys[b])
+        return out
+      },
+      preview(press) {
+        const key = glfwKeyForPress(press)
+        return key === null ? null : glfwKeyLabel(key)
+      },
+      bind(button, press) {
+        const key = glfwKeyForPress(press)
+        if (key === null) return
+        padKeys = { ...padKeys, [button]: key }
+        saveDosPadKeys(padKey, padKeys)
+      },
+      reset() {
+        padKeys = { ...DOS_PAD_DEFAULT }
+        resetDosPadKeys(padKey)
+      },
+      customized: () => dosPadCustomized(padKey),
     },
     destroy() {
       destroyed = true

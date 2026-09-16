@@ -31,6 +31,17 @@ export type DosBackend = 'dosbox' | 'dosboxX'
 /** Windows 3.x 仍是 Program Manager；Windows 9x 才有开始菜单，两者自启动快捷键不同。 */
 export type DosWindowsVersion = '3x' | '9x'
 
+/** Flash 没有统一手柄协议，后台按游戏把屏幕按钮映射到它实际监听的键盘键。 */
+export type FlashControlButton = 'up' | 'down' | 'left' | 'right' | 'a' | 'b' | 'select' | 'start'
+export type FlashPad = Partial<Record<FlashControlButton, string>>
+export interface FlashControls {
+  p1: FlashPad
+  p2?: FlashPad
+}
+
+/** 街机屏幕面板只画游戏真正用到的动作键，避免两键游戏铺满六个无效按钮。 */
+export type ArcadeButtonCount = 2 | 4 | 6
+
 export type GenreId =
   | 'action'
   | 'fighting'
@@ -149,6 +160,10 @@ export interface Game {
    * 只对走 FBNeo 系核心的街机游戏有意义；留空 = 按普通 romset 处理。
    */
   arcadeRomData?: string
+  /** 街机触屏面板的动作键数量；旧数据留空时按六键兼容。 */
+  arcadeButtons?: ArcadeButtonCount
+  /** Flash 屏幕手柄和实体手柄的逐游戏键位；纯鼠标游戏留空。 */
+  flashControls?: FlashControls
   /**
    * DOS 启动程序：zip 包内的相对路径（如 PARANOID.COM、NFS/TNFS.EXE）。
    * 留空由前端启发式去猜（src/lib/jsdosBundle.ts 的 pickExecutable）——

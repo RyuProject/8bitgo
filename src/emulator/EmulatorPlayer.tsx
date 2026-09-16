@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react'
-import type { DosBackend, DosWindowsVersion, GenreId, Platform, PlatformId } from '@/types'
+import type { ArcadeButtonCount, DosBackend, DosWindowsVersion, FlashControls, GenreId, Platform, PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { formatBytes, formatSpeed, isRomFileAccepted } from '@/lib/emulator'
 import { detectRom, describeDetection } from './detect'
@@ -38,6 +38,8 @@ import type { LiveSession } from './adapters/liveview'
 import type { NetplaySession } from './adapters/emulatorjs'
 import type { CloudSession, CloudState } from './adapters/cloudgame'
 import { p2pPlayable, cloudPlayable } from './paths'
+import { prewarmRuntime } from './prewarm'
+import { readPerformanceProfile, savePerformanceProfile, type PerformanceProfile } from './performanceProfile'
 import { canRestartInPlace } from './sessionRestart'
 import { confirmAndReplayAnchorNavigation } from './leaveNavigation'
 import { AdSenseSlot } from '@/components/ads/AdSenseSlot'
@@ -257,6 +259,10 @@ interface Props {
   genres?: readonly GenreId[]
   /** FBNeo RomData（.dat 文本）；街机改版包靠它挂到现成驱动上运行。 */
   arcadeRomData?: string
+  /** 街机触屏面板只显示这一款真正使用的动作键。 */
+  arcadeButtons?: ArcadeButtonCount
+  /** Flash 屏幕手柄与实体手柄共用的逐游戏键位。 */
+  flashControls?: FlashControls
   /** DOS 启动程序覆盖（zip 内相对路径），jsdos 运行时用 */
   dosExecutable?: string
   /** 当前 ROM 语言的启动前命令；只在新 DOS 会话挂载时读取。 */
@@ -465,6 +471,8 @@ export function EmulatorPlayer({
   core,
   genres,
   arcadeRomData,
+  arcadeButtons,
+  flashControls,
   dosExecutable,
   dosStartupCommands,
   dosBackend,
@@ -558,6 +566,7 @@ export function EmulatorPlayer({
    */
   const onlineByDefault = onlineOk && joining
   const [mode, setMode] = useState<Mode>(onlineByDefault ? 'online' : 'local')
+  const [performanceProfile, setPerformanceProfile] = useState<PerformanceProfile>(readPerformanceProfile)
   const online = mode === 'online' && onlineOk
 
   const [roomId, setRoomId] = useState<string | null>(null)
@@ -1291,6 +1300,12 @@ export function EmulatorPlayer({
   const arcadeRomDataRef = useRef(arcadeRomData)
   // 后台配的那份最权威（管理员可能手工调过），识别出来的只作兜底
   arcadeRomDataRef.current = arcadeRomData || localRomData
+  const arcadeButtonsRef = useRef(arcadeButtons)
+  arcadeButtonsRef.current = arcadeButtons
+  const flashControlsRef = useRef(flashControls)
+  flashControlsRef.current = flashControls
+  const performanceProfileRef = useRef(performanceProfile)
+  performanceProfileRef.current = performanceProfile
   const biosUrlRef = useRef(biosUrl)
   biosUrlRef.current = biosUrl
   // 同 core：只在挂载那一刻读一次，进依赖会把正在跑的游戏重启
@@ -1532,6 +1547,7 @@ export function EmulatorPlayer({
     const isCurrent = () => sessionCounter.current === mountedId
     /** 已经进入游戏后再报错属于运行期故障，不能按“加载失败”自动重启，免得吞掉玩家进度。 */
     let ready = false
+    const mountedAt = typeof performance !== 'undefined' ? performance.now() : Date.now()
     const handle = mountOf(session.runtime.id)(host, {
       platform: session.platform,
       game: session.game,
@@ -1541,6 +1557,9 @@ export function EmulatorPlayer({
       core: coreRef.current,
       mouseCapture: shouldCaptureMouse(session.platform, genresRef.current),
       arcadeRomData: arcadeRomDataRef.current,
+      arcadeButtons: arcadeButtonsRef.current,
+      flashControls: flashControlsRef.current,
+      performanceProfile: performanceProfileRef.current,
       dosExecutable: dosExecutableRef.current,
       dosStartupCommands: dosStartupCommandsRef.current,
       dosBackend: dosBackendRef.current,
@@ -1597,6 +1616,10 @@ export function EmulatorPlayer({
       onReady: () => {
         if (!isCurrent()) return
         ready = true
+        const elapsed = Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - mountedAt)
+        // 隐私页承诺不接第三方分析，所以这里只留在玩家本机的控制台 / Performance 面板。
+        // 排查“街机慢还是 Ruffle 慢”时至少有统一的运行时、平台和首帧耗时，不再靠体感猜。
+        console.info('[8bitgo/runtime-metric]', { runtime: session.runtime.id, platform: session.platform, readyMs: elapsed })
         setLoadRatio(null)
         setStatus('running')
         /*
@@ -1648,6 +1671,10 @@ export function EmulatorPlayer({
       },
       onError: (message: string) => {
         if (!isCurrent()) return
+        if (!ready) {
+          const elapsed = Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - mountedAt)
+          console.warn('[8bitgo/runtime-metric]', { runtime: session.runtime.id, platform: session.platform, failedMs: elapsed })
+        }
         const cloud = session.cloud
 
         // 只重试普通的本机加载。联机、云游戏和直播都带外部会话状态，擅自重建会造成重复房间；
@@ -3182,7 +3209,17 @@ export function EmulatorPlayer({
                       className="mb-1"
                     />
                   )}
-                  <Button size="lg" disabled={(!online && romChecking) || joinBlocked} onClick={primaryAction}>
+                  <Button
+                    size="lg"
+                    disabled={(!online && romChecking) || joinBlocked}
+                    onPointerEnter={() => {
+                      if (!online) prewarmRuntime(pageRuntime?.id, core ?? platform.core)
+                    }}
+                    onFocus={() => {
+                      if (!online) prewarmRuntime(pageRuntime?.id, core ?? platform.core)
+                    }}
+                    onClick={primaryAction}
+                  >
                     <span aria-hidden>{online ? (willWatch ? '👀' : '👥') : status === 'error' && romUrl ? '↻' : '▶'}</span>{' '}
                     {joining && online
                       ? willWatch
@@ -3202,6 +3239,24 @@ export function EmulatorPlayer({
                               : t.player.start
                             : t.player.pickRom}
                   </Button>
+                  {!online && pageRuntime?.id === 'ruffle' && (
+                    <label className="flex items-center gap-2 text-[11px] text-white/75">
+                      <span>{t.player.performanceLabel}</span>
+                      <select
+                        className="rounded-lg border border-white/25 bg-black/45 px-2 py-1 text-white outline-none focus:border-brand"
+                        value={performanceProfile}
+                        onChange={(e) => {
+                          const next = e.target.value as PerformanceProfile
+                          setPerformanceProfile(next)
+                          savePerformanceProfile(next)
+                        }}
+                      >
+                        <option value="quality">{t.player.performanceQuality}</option>
+                        <option value="balanced">{t.player.performanceBalanced}</option>
+                        <option value="performance">{t.player.performanceFast}</option>
+                      </select>
+                    </label>
+                  )}
                   <p className="max-w-md text-[11px] leading-relaxed text-white/70 sm:text-xs">
                     {joining && online ? (
                       <>
