@@ -59,7 +59,8 @@ function TvShell() {
     // tv-surface 把整批设计令牌换成深色（见 index.css 里那段的理由）
     <div className="tv-surface min-h-dvh bg-bg">
       <RouteEffects />
-      <Outlet />
+      {/* TV 没有普通站点的 main 容器，也必须接住首访下载 TvPage 时的 Suspense。 */}
+      <Suspense fallback={<PageSkeleton />}><Outlet /></Suspense>
     </div>
   )
 }

@@ -12,6 +12,7 @@
 import type { Game } from '@/types'
 import { api, apiEnabled } from './api'
 import type { Paged } from './pageData'
+import { normalizeDosStartupCommands } from '../../shared/dos-startup-commands.js'
 
 export interface AdminGameQuery {
   q?: string
@@ -70,6 +71,22 @@ export async function upsertGame(game: Game): Promise<Game> {
         '服务端没有保存 DOS 语言启动文件。请在服务器运行数据库迁移并重启 8bitgo-api，然后重新保存。',
       )
     }
+  }
+  /*
+    启动前命令是后加到 game_roms 的字段。旧服务端不认识它时仍会给整个 PUT 返回 200，
+    后台过去随即关闭表单并显示“已保存”，重新打开才发现文本消失。这里比较完整映射，
+    连“清空最后一条命令”也能核对；失败时保留弹窗，让管理员不必重填。
+  */
+  const commandMap = (value: Game['dosStartupCommands']) => Object.fromEntries(
+    Object.entries(value ?? {})
+      .map(([lang, commands]) => [lang, normalizeDosStartupCommands(commands)] as const)
+      .filter(([, commands]) => Boolean(commands))
+      .sort(([a], [b]) => a.localeCompare(b)),
+  )
+  if (JSON.stringify(commandMap(game.dosStartupCommands)) !== JSON.stringify(commandMap(saved.dosStartupCommands))) {
+    throw new Error(
+      '服务端没有保存 DOS 启动前命令。请在服务器运行数据库迁移（cd server && npm run migrate）并重启 8bitgo-api，然后重新保存。',
+    )
   }
   for (const [lang, backup] of Object.entries(game.romBackups ?? {})) {
     const savedBackup = saved.romBackups?.[lang as keyof NonNullable<Game['romBackups']>]

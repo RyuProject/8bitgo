@@ -290,6 +290,21 @@ const next = () => `https://assets.example.com/roms/nes/game-${++url}.zip`
   assert.equal(romRelationRows({ dosStartupCommands: {} }, previous, true)[0].dosStartupCommands, null, '清空最后一个语言命令时可删除旧值')
   assert.equal(dosStartupCommandsOf('imgmount d "./CD/DISC.cue" -t cdrom\r\n'), 'imgmount d "./CD/DISC.cue" -t cdrom', '后端规整多行挂盘命令')
   assert.throws(() => dosStartupCommandsOf('[autoexec]\nmount c .'), /不能填写/, '命令不能注入 DOSBox 配置节')
+  assert.throws(
+    () => dosStartupCommandsOf('imgmount d "D:\\Games\\homm2_cn\\CD\\HEROES2_fixed.cue" -t cdrom'),
+    /ZIP 内的相对路径/,
+    '后台不能保存站长电脑上的绝对路径，浏览器里的 DOSBox-X 看不见它',
+  )
+  assert.equal(
+    dosStartupCommandsOf('imgmount d "CD\\HEROES2_fixed.cue" -t cdrom'),
+    'imgmount d "CD\\HEROES2_fixed.cue" -t cdrom',
+    'ZIP 内的 DOS 风格相对路径仍然合法',
+  )
+  assert.throws(
+    () => dosStartupCommandsOf('imgmount d "https://files.example.com/HEROES2.cue" -t cdrom'),
+    /ZIP 内的相对路径/,
+    'CUE 不能绕过游戏 ZIP 读取外部 URL',
+  )
 }
 {
   const previous = [{

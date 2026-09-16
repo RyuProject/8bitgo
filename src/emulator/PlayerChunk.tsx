@@ -16,7 +16,7 @@ let preloaded = false
  *
  * 详情页要先过一遍年龄门（GameAgeGuard 的 access 接口，no-store）才挂播放器，而 lazy() 是
  * 挂载那一刻才开始下载 —— 两件事本来互不相干，却被串成了一条：接口 300ms + chunk 几百 KB，
- * 玩家白等一段。详情页一进来就调这个，chunk 和接口并行；等门放行时 LazyPlayer 拿到的是
+ * 玩家白等一段。详情页确认是内嵌游戏后调这个，chunk 和接口并行；等门放行时 LazyPlayer 拿到的是
  * 同一个模块 promise（ESM 模块缓存），Suspense 几乎不会再挂占位。
  * 失败不用管：真正挂载时 lazy() 会再试一次，那时才由它报错。
  */

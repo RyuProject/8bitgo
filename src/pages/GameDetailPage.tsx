@@ -153,13 +153,6 @@ export function GameDetailPage() {
    */
   const [translatedDescription, setTranslatedDescription] = useState<string | null>(null)
   useEffect(() => setRomLang(null), [slug])
-  /*
-    一进详情页就把播放器 chunk 拉起来，和取数 / 年龄门接口并行。
-    播放器要等 GameAgeGuard 放行才挂载，而 lazy() 是挂载那一刻才开始下载 ——
-    不预热的话「接口 → chunk → 播放器」是串行的，玩家多等一段纯黑。见 PlayerChunk.preloadPlayer。
-    跨源隔离的那几款（isolatedEmbed）用不到，但那要等 game 到了才知道；多下一个会被缓存的 chunk 不算代价。
-  */
-  useEffect(() => preloadPlayer(), [])
   const rom = useRomUrl(game, romLang)
   /** 这款游戏绑了哪几种语言的 ROM；少于两种时播放器不显示切换入口 */
   const romLangs = game ? romLangsOf(game) : []
@@ -187,6 +180,14 @@ export function GameDetailPage() {
   const isolatedEmbed = isolatedEmbedFor(game?.slug)
   /** Play! 固定使用 pthread，PS2 和登记过的 HTML5 游戏一样必须进隔离整页。 */
   const isolatedPlayer = Boolean(isolatedEmbed) || game?.platform === 'ps2'
+  /*
+    只给真的会内嵌播放器的游戏预热 chunk。年龄门必须等 game 到了才挂，
+    所以此时预热仍和 access 接口并行；PS2 / 隔离页 / 不存在的游戏用不上这 240 KB，
+    原先无条件预热会在玩家还没点击“开始游戏”时白白下载。
+  */
+  useEffect(() => {
+    if (game && !isolatedPlayer) preloadPlayer()
+  }, [game?.slug, isolatedPlayer])
   const seoTitle = game ? gameTitle(game, lang) : ''
   const seoPlatform = game ? platformMap[game.platform] : undefined
   const seoPlatformName = seoPlatform ? platformLabel(t, seoPlatform.id, seoPlatform.name) : ''
