@@ -3189,13 +3189,29 @@ export function EmulatorPlayer({
               <div className="scanlines absolute inset-0" aria-hidden />
               <div className="absolute inset-0 bg-gradient-to-t from-black via-black/60 to-black/20" />
 
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 px-6 text-center">
+              {/*
+                内容容器。两条约束都是「手机上按钮不能被挤没」：
+
+                1. **overflow-y-auto + 内层 m-auto，不用 justify-center。**
+                   justify-center 在内容超高时会把**两端一起**剪掉，而剪掉的那部分够不着
+                   （flex 的居中溢出不可滚动）—— 2026-09-17 线上就是这样：手机上画面框
+                   只有三百多像素高，广告一长，「开始游戏」整个消失，也没法滚出来。
+                   m-auto 有空间时同样居中，没空间时自己塌成 0 并允许滚动，按钮永远够得到。
+                2. 广告用 horizontal，理由见下面那一格。
+              */}
+              <div className="absolute inset-0 flex flex-col items-center overflow-y-auto overscroll-contain px-6 py-3 text-center">
+              <div className="m-auto flex w-full flex-col items-center gap-4">
               {/*
                 空闲态原本这里是大号平台图标（🎮 之类）。按需求换成播放页广告位：
                 广告只在「还没开始跑」的空闲态出现，游戏一旦加载（busy）整块浮层就卸掉，
                 不会盖住画面，也不会影响性能。
+
+                ⚠️ 必须是 horizontal + 关掉 full-width-responsive。默认的 auto 在方屏 /
+                竖屏容器里能长到两三百像素高，而手机上的画面框只有三百多像素 ——
+                广告一长就把「开始游戏」顶出去。加载屏那两处早就这么改了，
+                这一处当初漏掉，2026-09-17 被线上截图抓出来。
               */}
-              <AdSenseSlot slot="9386967599" className="max-w-xl" />
+              <AdSenseSlot slot="9386967599" format="horizontal" responsive={false} className="max-w-xl" />
               {supported ? (
                 <>
                   {/*
@@ -3429,6 +3445,7 @@ export function EmulatorPlayer({
                   )}
                 </p>
               )}
+              </div>
               </div>
             </div>
           )}
