@@ -20,7 +20,7 @@ export function Footer() {
       <div className="flex flex-col gap-3 px-4 py-5 text-xs text-dim sm:px-6 md:flex-row md:items-center md:justify-between lg:px-8">
         <nav className="flex flex-wrap gap-x-4 gap-y-2" aria-label={t.footer.aria}>
           {footerLinksFor(t).map((l) =>
-            'external' in l && l.external ? (
+            'href' in l ? (
               <a key={l.href} href={l.href} target="_blank" rel="noreferrer" className="transition hover:text-fg">
                 {l.label}
               </a>

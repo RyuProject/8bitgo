@@ -71,7 +71,14 @@ export const communityLinks: CommunityLink[] = [
   { id: 'facebook', label: 'Facebook', href: 'https://facebook.com' },
 ]
 
-export function footerLinksFor(t: Translation) {
+/**
+ * 页脚一条链接。写成**联合类型**而不是「to / href 都可有可无」：
+ * 后者会让 Footer 里的 `to={l.to}` 变成 `string | undefined`，编译器再也查不出
+ * 「两个都没写」这种错（那个节点点了哪儿也不会去）。`'href' in l` 现在能正确收窄。
+ */
+export type FooterLink = { label: string; to: string } | { label: string; href: string; external: true }
+
+export function footerLinksFor(t: Translation): FooterLink[] {
   return [
     { label: t.nav.about, to: '/about' },
     // 两份正文是独立页面；只给一个指向条款的入口会让隐私政策在页脚找不到。
