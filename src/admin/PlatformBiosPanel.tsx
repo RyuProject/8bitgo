@@ -13,6 +13,7 @@ import {
   unbindPlatformBios,
   type PlatformBiosMap,
 } from '@/services/platformBios'
+import { biosNameOfUrl } from '@/emulator/biosPlan'
 import { Card, btnClass, inputClass } from './ui'
 
 /**
@@ -87,6 +88,7 @@ function BiosRow({
   onUnbind,
   registerFileInput,
   onPickFile,
+  coveredBy,
 }: {
   title: ReactNode
   hint: string
@@ -102,6 +104,11 @@ function BiosRow({
   registerFileInput: (el: HTMLInputElement | null) => void
   /** 点「上传文件」时去戳本行那个隐藏 input（ref 存在父层，按 id 取） */
   onPickFile: () => void
+  /**
+   * 未绑定时的一句说明：这份 BIOS 由**别处**提供（平台级那份的文件名正好就是它）。
+   * 有它就说明「未绑定」是假警报，见下面徽标那一段。
+   */
+  coveredBy?: string
 }) {
   return (
     <div className="rounded-xl border border-line p-3">
@@ -109,11 +116,20 @@ function BiosRow({
         {title}
         {value ? (
           <span className="rounded bg-online/15 px-1.5 py-0.5 text-xs text-online">已绑定</span>
+        ) : coveredBy ? (
+          /*
+            「平台 BIOS 已提供」而不是红的「未绑定」：引擎只有一个 BIOS 槽位
+            （EJS_biosUrl），平台那格填的**正好就是**这份系统包时，播放器压根不会再下一遍
+            （见 emulator/biosPlan.ts 里那条判断）。标红只会让人以为缺东西、跑去绑一份
+            一模一样的 —— 那正是「neogeo 在两张卡里各出现一次」的来源。
+          */
+          <span className="rounded bg-online/15 px-1.5 py-0.5 text-xs text-online">平台 BIOS 已提供</span>
         ) : (
           <span className="rounded bg-live/15 px-1.5 py-0.5 text-xs text-live">未绑定</span>
         )}
       </div>
       <p className="mt-1 text-[11px] text-dim">{hint}</p>
+      {!value && coveredBy && <p className="mt-1 text-[11px] leading-relaxed text-online">{coveredBy}</p>}
 
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <input
@@ -350,6 +366,17 @@ export function PlatformBiosPanel() {
   const setNames = Array.from(
     new Set([...ARCADE_BIOS_SETS.map((s) => s.name), ...extraSets, ...boundSets]),
   )
+  /**
+   * 平台级那份 BIOS 的文件名对应的是哪个系统名（`roms/bios/neogeo.zip` → `neogeo`）。
+   *
+   * 引擎只有一个 BIOS 槽位（EJS_biosUrl）：平台那格填的**正好是**某个系统包时，
+   * 播放器不会再单独下那一份（见 emulator/biosPlan.ts 的那条判断）。所以那一行不该
+   * 红着「未绑定」吓人 —— 用户看到的现象就是「neogeo 怎么在两张卡里各出现一次」，
+   * 然后去绑一份一模一样的。这里按同一条规则标成「平台 BIOS 已提供」。
+   *
+   * 仍然可以绑（系统级优先），只是不再伪装成「缺东西」。
+   */
+  const coveredSet = biosNameOfUrl(map.arcade)
 
   return (
     <>
@@ -371,6 +398,13 @@ export function PlatformBiosPanel() {
           <code className="rounded bg-surface-2 px-1">scph5501.bin</code>。核心按固定文件名找 BIOS，
           存成 <code className="rounded bg-surface-2 px-1">bios/arcade.zip</code> 的话文件明明在，
           核心却会报「sp-s3.sp1 … is missing」。上传时会自动保留原文件名，别手动改成别的。
+        </p>
+        <p className="mt-1 text-[11px] leading-relaxed text-dim">
+          街机上还有一类<strong className="text-muted">不在这张卡里填</strong>：同一个平台底下的
+          <strong className="text-muted">另一套硬件</strong> —— IGS 的 PGM 板子（三国战纪 / 西游释厄传那一批）
+          要的是 <code className="rounded bg-surface-2 px-1">pgm.zip</code>，而这张卡一个平台只存一份。
+          那些按<strong className="text-muted">系统名</strong>绑在下面的「街机 BIOS 包（按系统）」里，
+          这里留 neogeo 那份就行。
         </p>
 
         {loading ? (
@@ -432,6 +466,11 @@ export function PlatformBiosPanel() {
                 }
                 hint={ARCADE_BIOS_SETS.find((s) => s.name === name)?.hint ?? `系统包 ${name}（自己加的）`}
                 placeholder={`bios/${name}.zip 或对象存储 key`}
+                coveredBy={
+                  name === coveredSet
+                    ? `平台那格填的是 ${map.arcade}，文件名正好就是它 —— 引擎已经拿到了，这里不用再绑一份。要单独给这个系统换一份也可以，绑了播放器优先用它。`
+                    : undefined
+                }
                 {...rowProps(biosSetKey(name))}
               />
             ))}

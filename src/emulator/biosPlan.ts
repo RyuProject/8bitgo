@@ -75,6 +75,18 @@ export function planBiosFiles(
     }
   }
 
+  /*
+    平台级那一份的文件名**正好就是它** → 什么都不做：EJS_biosUrl 已经把这个文件放进
+    虚拟文件系统了（核心就是在内容同目录按固定文件名找 BIOS 的），既不缺东西，
+    也不用再下一遍白花流量。
+
+    ⚠️ 这一条**必须**排在下面「没绑地址」那条判断**之前**：平台那格填的明明就是
+    pgm.zip、核心也确实拿得到，只是没人另外绑一份 `bios:pgm` —— 顺序反了就会打出
+    「后台没绑 bios:pgm 的地址」这句假警报，而它和「真没绑」的症状（核心报缺文件）
+    一模一样，白查半天。后台面板按同一条规则显示（见 PlatformBiosPanel 的 coveredSet）。
+  */
+  if (biosNameOfUrl(biosUrl) === name) return { files: [], warning: null }
+
   if (!biosSet?.url) {
     return {
       files: [],
@@ -83,9 +95,6 @@ export function planBiosFiles(
         '核心会报缺文件，去「ROM 存储 → 街机 BIOS 包」补一份。',
     }
   }
-
-  // 平台级那一份的文件名正好就是它：EJS_biosUrl 已经负责了，别再下一遍
-  if (biosNameOfUrl(biosUrl) === name) return { files: [], warning: null }
 
   return { files: [{ path: `/${name}.zip`, url: biosSet.url }], warning: null }
 }

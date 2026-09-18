@@ -212,6 +212,18 @@ assert.deepEqual(missing.files, [])
 assert.match(missing.warning ?? '', /bios:pgm/)
 assert.match(missing.warning ?? '', /街机 BIOS 包/)
 
+/*
+  ⭐ 平台级那份**的文件名正好就是它**、而系统级没单独绑 → 既不该写文件，也不该报「没绑」。
+  平台那格填的就是 pgm.zip，EJS_biosUrl 已经把文件放进虚拟文件系统了，核心找得到 ——
+  这时打一句「后台没绑 bios:pgm 的地址」是假警报，而它和「真没绑」的症状（核心报缺文件）
+  长得一模一样，会把人指到错的地方去。这条顺序是踩过的。
+*/
+assert.deepEqual(planBiosFiles('/bios/pgm.zip', { name: 'pgm', url: '' }), { files: [], warning: null })
+assert.deepEqual(planBiosFiles('https://assets.8bitgo.com/roms/bios/pgm.ZIP', { name: 'PGM', url: '' }), {
+  files: [],
+  warning: null,
+})
+
 // ⭐ 平台级那份是**别的**系统 → 必须额外写进去（这就是 PGM 起不来的那个缺口）
 assert.deepEqual(planBiosFiles(NEO, { name: 'pgm', url: PG }).files, [{ path: '/pgm.zip', url: PG }])
 
