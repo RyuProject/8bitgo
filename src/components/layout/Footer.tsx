@@ -19,11 +19,17 @@ export function Footer() {
     <footer className="mt-12">
       <div className="flex flex-col gap-3 px-4 py-5 text-xs text-dim sm:px-6 md:flex-row md:items-center md:justify-between lg:px-8">
         <nav className="flex flex-wrap gap-x-4 gap-y-2" aria-label={t.footer.aria}>
-          {footerLinksFor(t).map((l) => (
-            <Link key={l.to} to={l.to} className="transition hover:text-fg">
-              {l.label}
-            </Link>
-          ))}
+          {footerLinksFor(t).map((l) =>
+            'external' in l && l.external ? (
+              <a key={l.href} href={l.href} target="_blank" rel="noreferrer" className="transition hover:text-fg">
+                {l.label}
+              </a>
+            ) : (
+              <Link key={l.to} to={l.to} className="transition hover:text-fg">
+                {l.label}
+              </Link>
+            ),
+          )}
         </nav>
         <p className="leading-relaxed">
           © {year} {SITE_NAME} · {t.footer.copyright}{' '}

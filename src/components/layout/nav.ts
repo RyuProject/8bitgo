@@ -78,6 +78,16 @@ export function footerLinksFor(t: Translation) {
     { label: t.nav.terms, to: '/terms' },
     { label: t.nav.privacy, to: '/privacy' },
     /*
+      「提交游戏」走的是飞书多维表格的公开表单（投稿收集），不在站内路由里 ——
+      external: true 时 Footer 渲染成 <a target="_blank">，别把它塞进 react-router 的 Link。
+      文案写死中文，理由同下面的开放平台：表单本身只有中文一份。
+    */
+    {
+      label: '提交游戏',
+      href: 'https://cjpx75sqmptg.jp.larksuite.com/share/base/form/shrjpBzaQuvuhQdxKGJDfvgNqKC',
+      external: true,
+    },
+    /*
       开放平台的开发者入口。放页脚是合适的位置：它面向的是少数人、偶尔来一次。
       ⚠️ 文案写死中文，和它指向的那一页一致 —— 那一页管理的东西（文档、scope 语义、
       错误码）只有中文一份，给入口翻八种语言只会让人点进去发现看不懂。
