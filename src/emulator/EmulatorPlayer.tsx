@@ -20,7 +20,7 @@ import { isTyping } from './hotkeyBridge'
 import { observeFrameDocs } from './frameDocs'
 import { installScrollGuard } from './scrollGuard'
 import { shouldCaptureMouse } from './mouseCapture'
-import { platformBiosUrlSync } from '@/services/platformBios'
+import { biosSetUrlSync, platformBiosUrlSync } from '@/services/platformBios'
 import { EmulatorTools } from './EmulatorTools'
 import { TouchPad } from './TouchPad'
 import { PadDiagram } from './PadDiagram'
@@ -259,6 +259,18 @@ interface Props {
   genres?: readonly GenreId[]
   /** FBNeo RomData（.dat 文本）；街机改版包靠它挂到现成驱动上运行。 */
   arcadeRomData?: string
+  /**
+   * 这款街机游戏需要哪个 BIOS **系统包**（neogeo / pgm / …，见 Game.arcadeBios）。
+   * 地址由播放器按名字查绑定表，父组件不用管。
+   */
+  arcadeBios?: string
+  /**
+   * 街机 **DIP 开关**（见 Game.arcadeDip）：麻将类游戏要拨到麻将面板那一档。
+   *
+   * 原样往下传，解析交给适配器 —— 它得拿核心当场报上来的选项表才认得出是哪一项
+   * （键名里带驱动名，后台写不死，见 src/emulator/dipPlan.ts）。
+   */
+  arcadeDip?: string
   /** 街机触屏面板只显示这一款真正使用的动作键。 */
   arcadeButtons?: ArcadeButtonCount
   /** Flash 屏幕手柄与实体手柄共用的逐游戏键位。 */
@@ -471,6 +483,8 @@ export function EmulatorPlayer({
   core,
   genres,
   arcadeRomData,
+  arcadeBios,
+  arcadeDip,
   arcadeButtons,
   flashControls,
   dosExecutable,
@@ -1300,6 +1314,19 @@ export function EmulatorPlayer({
   const arcadeRomDataRef = useRef(arcadeRomData)
   // 后台配的那份最权威（管理员可能手工调过），识别出来的只作兜底
   arcadeRomDataRef.current = arcadeRomData || localRomData
+  /**
+   * 要哪个 BIOS 系统包。和 arcadeRomData 一样只在挂载那一刻读一次 ——
+   * 让它进 effect 依赖的话，「绑定表异步到货」会把正在玩的那一局重启一遍。
+   */
+  const arcadeBiosRef = useRef(arcadeBios)
+  arcadeBiosRef.current = arcadeBios
+  /**
+   * DIP 开关同 arcadeBios：只在挂载那一刻读一次。
+   * 它是**开局时**拨的（核心在 retro_load_game 之后才认得出来），
+   * 中途改它要把这一局重启一遍才有意义，不该进 effect 依赖。
+   */
+  const arcadeDipRef = useRef(arcadeDip)
+  arcadeDipRef.current = arcadeDip
   const arcadeButtonsRef = useRef(arcadeButtons)
   arcadeButtonsRef.current = arcadeButtons
   const flashControlsRef = useRef(flashControls)
@@ -1557,6 +1584,21 @@ export function EmulatorPlayer({
       core: coreRef.current,
       mouseCapture: shouldCaptureMouse(session.platform, genresRef.current),
       arcadeRomData: arcadeRomDataRef.current,
+      /*
+        这个 ROM 要哪个 BIOS 系统包，以及它绑在哪。
+
+        名字在这里定死（后台填的 / 识别出来的），地址**同步**查一次绑定表 ——
+        「玩本地 ROM」页和详情页的差别在这儿：详情页的 biosUrl 是父组件按平台算好传下来的，
+        而系统包这一层没有父组件参与，挂载这一刻查到什么就是什么（绑定表早在进页面时拉好了）。
+
+        查不到地址也照样把名字传下去：适配器会打一条明确的日志，比核心那句
+        「missing files」好查得多。那个 URL 要等核心去找，我们不能替它猜。
+      */
+      biosSet: arcadeBiosRef.current
+        ? { name: arcadeBiosRef.current.trim().toLowerCase(), url: biosSetUrlSync(arcadeBiosRef.current.trim().toLowerCase()) }
+        : undefined,
+      // 后台配的 DIP 开关（原样传；认哪一项、取值是什么都由适配器从核心选项表里当场定）
+      arcadeDip: arcadeDipRef.current,
       arcadeButtons: arcadeButtonsRef.current,
       flashControls: flashControlsRef.current,
       performanceProfile: performanceProfileRef.current,

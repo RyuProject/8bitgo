@@ -16,8 +16,15 @@ import { fallbackAfterErrors } from './sseFallback'
 import { getCurrentUser } from './auth'
 import type { Presence } from './presence'
 import { netplayGameId } from '../../shared/netplay-game-id.js'
+import { NETPLAY_URL, netplayEnabled } from './roomFlags'
 
-export const NETPLAY_URL: string = (import.meta.env.VITE_NETPLAY_URL || '').replace(/\/+$/, '')
+/**
+ * 信令地址与 `netplayEnabled()` 的定义在 ./roomFlags —— 那个文件零依赖，
+ * 好让 paths.ts / runtimeMeta.ts（它们只要一个布尔值）不必把本文件拖进主包。
+ * 上面 import 进来给本文件用，这里再转出去，只是为了不打断
+ * `import { NETPLAY_URL } from '@/services/netplay'` 这些既有调用方（适配器、后台表单）。
+ */
+export { NETPLAY_URL, netplayEnabled }
 
 /**
  * ICE 服务器。P2P 直连要穿 NAT，光靠 STUN 大约有一到两成的组合连不通
@@ -143,10 +150,6 @@ export function socketIoScriptUrl(): string {
   if (!NETPLAY_URL) return ''
   // NETPLAY_URL 形如 https://host/netplay，socket.io 的客户端脚本在同源根下
   return `${NETPLAY_URL.replace(/\/netplay$/, '')}/socket.io/socket.io.js`
-}
-
-export function netplayEnabled(): boolean {
-  return Boolean(NETPLAY_URL)
 }
 
 /**

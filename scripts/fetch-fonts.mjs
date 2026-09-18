@@ -1,15 +1,29 @@
 #!/usr/bin/env node
 /**
- * 下载「方舟像素字体」(Ark Pixel Font, SIL OFL 1.1) 到 public/fonts/ark-pixel/
+ * 把两个像素字体下载到 public/fonts/：
  *
- *   npm run fonts                 强制重新下载最新版本
- *   node scripts/fetch-fonts.mjs --if-missing
- *                                 已有文件则跳过（npm run dev 前会自动执行）
+ *   1. 方舟像素字体（Ark Pixel Font, SIL OFL 1.1）→ public/fonts/ark-pixel/
+ *      中文用。12px proportional 的 zh_cn 一份。
+ *   2. Geist Pixel（SIL OFL 1.1）→ public/fonts/geist-pixel/
+ *      西文用。**以前是从 Google Fonts 直接引的**（index.html 里一条
+ *      `<link rel="stylesheet">`），它跨源、且阻塞首屏渲染：浏览器得先连
+ *      fonts.googleapis.com 取 CSS、再连 fonts.gstatic.com 取字体文件，
+ *      两次握手都压在主线程之外的关键路径上。自托管之后这两跳全没了。
  *
- * 无法访问 GitHub 时，可手动从
- *   https://github.com/TakWolf/ark-pixel-font/releases
- * 下载 ark-pixel-font-12px-proportional-otf.woff2-v*.zip，然后：
- *   ARK_PIXEL_ZIP=/path/to/that.zip npm run fonts
+ *   npm run fonts                   强制重新下载
+ *   node scripts/fetch-fonts.mjs --if-missing   已有文件则跳过（npm run dev / prebuild 会自动执行）
+ *
+ * 两步互相独立：某一个下载失败不影响另一个（--if-missing 下只警告不报错）。
+ * 失败时页面都会**自动退回系统字体**（index.css 的 font-family 链），不会白屏。
+ *
+ * 无法访问网络时手动放置：
+ *   · 方舟 → https://github.com/TakWolf/ark-pixel-font/releases
+ *            下载 ark-pixel-font-12px-proportional-otf.woff2-v*.zip 后
+ *            `ARK_PIXEL_ZIP=/path/to/that.zip npm run fonts`
+ *   · Geist → https://fonts.google.com/specimen/Geist+Pixel 取下列两个 woff2，
+ *            按 index.css 里注释的文件名放进 public/fonts/geist-pixel/
+ *              geist-pixel-latin.woff2
+ *              geist-pixel-latin-ext.woff2
  */
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -24,13 +38,12 @@ const FLAVORS = ['zh_cn']
 const REPO = 'TakWolf/ark-pixel-font'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const outDir = join(root, 'public', 'fonts', 'ark-pixel')
+const arkDir = join(root, 'public', 'fonts', 'ark-pixel')
+const geistDir = join(root, 'public', 'fonts', 'geist-pixel')
 const ifMissing = process.argv.includes('--if-missing')
 const targets = FLAVORS.map((f) => `ark-pixel-${SIZE}px-${WIDTH}-${f}.${FORMAT}`)
 
-if (ifMissing && targets.every((t) => existsSync(join(outDir, t)))) {
-  process.exit(0)
-}
+/* ---------------- 方舟像素（中文） ---------------- */
 
 /** 极简 zip 解压（支持 stored / deflate），避免依赖系统 unzip / tar */
 function unzip(zipPath, dest) {
@@ -58,11 +71,11 @@ function unzip(zipPath, dest) {
     entries.push({ name, method, compSize, localOffset })
     offset += 46 + nameLen + extraLen + commentLen
   }
-  const root = resolve(dest)
+  const base = resolve(dest)
   for (const e of entries) {
     if (e.name.endsWith('/')) continue
     const target = resolve(dest, e.name)
-    if (!target.startsWith(root)) continue // 防止路径穿越
+    if (!target.startsWith(base)) continue // 防止路径穿越
     const lh = e.localOffset
     if (buf.readUInt32LE(lh) !== 0x04034b50) throw new Error('zip 文件头损坏')
     const start = lh + 30 + buf.readUInt16LE(lh + 26) + buf.readUInt16LE(lh + 28)
@@ -117,7 +130,7 @@ async function resolveZip(tmp) {
   return { zipPath, version: release.tag_name }
 }
 
-async function main() {
+async function arkPixel() {
   const tmp = mkdtempSync(join(tmpdir(), 'ark-pixel-'))
   try {
     const { zipPath, version } = await resolveZip(tmp)
@@ -125,28 +138,110 @@ async function main() {
     mkdirSync(extractDir, { recursive: true })
     unzip(zipPath, extractDir)
 
-    mkdirSync(outDir, { recursive: true })
+    mkdirSync(arkDir, { recursive: true })
     for (const name of targets) {
       const src = findFile(extractDir, name)
       if (!src) throw new Error(`压缩包中没有 ${name}`)
-      copyFileSync(src, join(outDir, name))
+      copyFileSync(src, join(arkDir, name))
     }
     const license = findFile(extractDir, 'OFL.txt')
-    if (license) copyFileSync(license, join(outDir, 'OFL.txt'))
-    writeFileSync(join(outDir, 'VERSION.txt'), `${version}\n`)
+    if (license) copyFileSync(license, join(arkDir, 'OFL.txt'))
+    writeFileSync(join(arkDir, 'VERSION.txt'), `${version}\n`)
 
-    console.log(`✔ 字体已就绪：${targets.join(', ')} → public/fonts/ark-pixel/（版本 ${version}）`)
+    console.log(`  中文：${targets.join(', ')}（版本 ${version}）`)
   } finally {
     rmSync(tmp, { recursive: true, force: true })
   }
 }
 
-main().catch((err) => {
-  const msg = err instanceof Error ? err.message : String(err)
-  if (ifMissing) {
-    console.warn(`⚠ 中文像素字体下载失败（${msg}），先使用系统字体。稍后可执行 npm run fonts 重试，或参考 scripts/fetch-fonts.mjs 顶部说明手动放置。`)
-    process.exit(0)
+/* ---------------- Geist Pixel（西文） ---------------- */
+
+const GEIST_CSS_URL = 'https://fonts.googleapis.com/css2?family=Geist+Pixel&display=swap'
+
+/**
+ * ⚠️ 必须带一个**现代浏览器**的 UA。
+ *
+ * Google Fonts 按 UA 决定返回什么格式：老 UA 拿到的是一整份 ttf，现代 UA 才拿到
+ * 切成 unicode-range 的 woff2。默认的 node fetch UA 会落到 ttf 那一支，
+ * 于是下载下来的东西有几百 KB 而且和 index.css 里声明的文件名对不上。
+ */
+const MODERN_UA =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+
+/** 我们只取这两份子集，和 index.css 里那两条 @font-face 一一对应 */
+const GEIST_SUBSETS = ['latin', 'latin-ext']
+const geistFile = (subset) => join(geistDir, `geist-pixel-${subset}.woff2`)
+
+/**
+ * 从 Google 的 CSS 里挑出两份子集。
+ *
+ * 返回的 CSS 长这样（每块前面有一条 `/* latin *​/` 注释标明子集）：
+ *   @font-face { … src: url(https://fonts.gstatic.com/…woff2) format('woff2'); … }
+ * 我们按注释切块，只认要的两份。
+ */
+function parseGeistCss(css) {
+  const out = new Map()
+  const re = /\/\*\s*([a-z-]+)\s*\*\/\s*@font-face\s*\{([\s\S]*?)\}/g
+  for (const m of css.matchAll(re)) {
+    const subset = m[1]
+    if (!GEIST_SUBSETS.includes(subset)) continue
+    const url = m[2].match(/url\((https:\/\/[^)]+\.woff2)\)/)
+    if (url) out.set(subset, url[1])
   }
-  console.error(`✖ 下载失败：${msg}`)
-  process.exit(1)
-})
+  return out
+}
+
+async function geistPixel() {
+  const cssRes = await fetch(GEIST_CSS_URL, { headers: { 'User-Agent': MODERN_UA } })
+  if (!cssRes.ok) throw new Error(`Google Fonts CSS 返回 ${cssRes.status}`)
+  const urls = parseGeistCss(await cssRes.text())
+
+  const missing = GEIST_SUBSETS.filter((s) => !urls.has(s))
+  if (missing.length) {
+    throw new Error(`Google 返回的 CSS 里没有这些子集：${missing.join(', ')}（字体改版了？更新本脚本）`)
+  }
+
+  mkdirSync(geistDir, { recursive: true })
+  const sizes = []
+  for (const subset of GEIST_SUBSETS) {
+    const res = await fetch(urls.get(subset), { headers: { 'User-Agent': MODERN_UA } })
+    if (!res.ok) throw new Error(`下载 ${subset} 失败：${res.status}`)
+    const buf = Buffer.from(await res.arrayBuffer())
+    writeFileSync(geistFile(subset), buf)
+    sizes.push(`${subset} ${Math.round(buf.length / 1024)}KB`)
+  }
+  writeFileSync(join(geistDir, 'VERSION.txt'), `google-css\nget ${GEIST_CSS_URL}\n`)
+  console.log(`  西文：${sizes.join('、')}`)
+}
+
+/* ---------------- 入口 ---------------- */
+
+const allArkPresent = targets.every((t) => existsSync(join(arkDir, t)))
+const allGeistPresent = GEIST_SUBSETS.every((s) => existsSync(geistFile(s)))
+
+if (ifMissing && allArkPresent && allGeistPresent) {
+  process.exit(0)
+}
+
+const steps = [
+  { name: '中文像素字体（方舟）', present: allArkPresent, run: arkPixel },
+  { name: '西文像素字体（Geist Pixel）', present: allGeistPresent, run: geistPixel },
+]
+
+for (const step of steps) {
+  if (ifMissing && step.present) {
+    console.log(`· ${step.name} 已存在，跳过`)
+    continue
+  }
+  try {
+    await step.run()
+    console.log(`✔ ${step.name} 已就绪`)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (!ifMissing) {
+      console.error(`✖ ${step.name} 下载失败：${msg}`)
+      process.exit(1)
+    }
+    console.warn(`⚠ ${step.name} 下载失败（${msg}），先退回系统字体。稍后可执行 npm run fonts 重试。`)
+  }
+}

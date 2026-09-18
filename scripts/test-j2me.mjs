@@ -13,7 +13,7 @@
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { buildJ2meUrl, isCrossOriginBase, j2meFileName } from '../src/emulator/j2meUrl.ts'
+import { CHEERPJ_ORIGIN, buildJ2meUrl, isCrossOriginBase, j2meFileName, j2meWarmTargets } from '../src/emulator/j2meUrl.ts'
 import { take } from '../server/src/rateLimit.js'
 
 let failed = 0
@@ -294,6 +294,72 @@ check('⭐ sendReady 要同时兜住 onStart —— 只发 onReady 的话计次�
   const body = adapterCode.slice(at, at + 400)
   assert.ok(body.includes('onReady'), 'sendReady 里缺 onReady')
   assert.ok(body.includes('onStart'), 'sendReady 里缺 onStart')
+})
+
+console.log('\n七、冷启动预热：清单与「什么时候才能预取 ROM」')
+
+/*
+  这一节守的是 2026-09-18 那轮 J2ME 冷启动优化。freej2me-web 的启动是串行的
+  （libmidi.wasm 3.4 MB → CheerpJ 几十秒 → freej2me-web.jar 952 KB → 游戏 jar），
+  预热的意义就是把前两段塞进 HTTP 缓存、把最后那段提前到 CheerpJ 引导期间下载。
+
+  清单本身在 j2meUrl.ts 里（纯函数），所以能在这里逐条钉住：路径一改就红，
+  而不是等到线上「怎么感觉还是那么慢」。
+*/
+check('预热清单正好是那三个引擎文件，且跟 base 的斜杠无关', () => {
+  const want = ['/j2me/freej2me-web.jar', '/j2me/libmidi/libmidi.wasm', '/j2me/libmidi/worklet.js']
+  assert.deepEqual(j2meWarmTargets('/j2me/'), want)
+  // 没写结尾斜杠时不能拼出 /j2me/freej2me-web.jar 变成 /j2mefreej2me-web.jar
+  assert.deepEqual(j2meWarmTargets('/j2me'), want)
+  // 绝对地址也要拼对（跨源部署时会走到这一支）
+  assert.deepEqual(j2meWarmTargets('https://cdn.example.com/j2me/')[1], 'https://cdn.example.com/j2me/libmidi/libmidi.wasm')
+})
+
+check('⭐ 预热清单里不能出现游戏 jar —— 那属于「玩家还没下决心」时不该碰的东西', () => {
+  for (const url of j2meWarmTargets('/j2me/')) {
+    assert.ok(!/\/jar\//.test(url), `${url} 看着像是游戏文件，引擎预热不该碰它`)
+  }
+})
+
+check('⭐ CheerpJ 只预热「源」，不能把版本路径抄进来', () => {
+  /*
+    run.html 里的真实地址是 https://cjrtnc.leaningtech.com/<版本>/loader.js，
+    版本号跟着上游升级走（当前 20260317_2978）。抄一份到这里，上游一升级就静默过期 ——
+    预连接连到一个没人用的地址，不报错、也没收益。
+    只连源就能拿到 DNS + TCP + TLS 那几跳，正是最贵的部分。
+  */
+  const u = new URL(CHEERPJ_ORIGIN)
+  assert.equal(u.pathname, '/', `${CHEERPJ_ORIGIN} 带了路径 —— 版本号请留在 run.html 里`)
+  assert.equal(u.protocol, 'https:')
+})
+
+check('⭐ 正式 ROM 可以预取，但**临时上传的那份不行**', () => {
+  /*
+    临时 jar 是我们刚 POST 上去的（字节就在内存里），再预取一遍等于同样的字节上下载两次，
+    而代理对临时文件发的是 no-store，预取下来也留不住。
+    这条断言用源码形状钉住那个判断不能被顺手删掉。
+  */
+  const at = adapterCode.indexOf('warmHttpCache(')
+  assert.ok(at > 0, '适配器里没有预热调用 —— 游戏 jar 又回到「CheerpJ 起完才开始下」了')
+  const before = adapterCode.slice(Math.max(0, at - 300), at)
+  assert.match(before, /needsTempJar/, '预热前面必须有 !needsTempJar 的岔路')
+  const src = adapterCode.indexOf('iframe.src = buildJ2meUrl')
+  assert.ok(at < src, '预热要排在设 iframe.src 之前，越早开始越好')
+})
+
+check('⚠️ 没有 hover 提前量的设备不预拉那几个大文件', () => {
+  /*
+    触摸设备上 prewarmRuntime 是被按钮的 onFocus 叫起来的 —— 那是点击的同一下，
+    而 iframe 自己一两秒后就会去拉同一份 3.4 MB。两个在途请求撞在一起不一定被合并，
+    最坏是同一份下两遍，比不预热更糟。所以只有真有 hover 提前量时才预拉
+    （预连接不受此限，它不发请求）。
+  */
+  const prewarmCode = codeOnly(readFileSync(new URL('../src/emulator/prewarm.ts', import.meta.url), 'utf8'))
+  const fn = prewarmCode.slice(prewarmCode.indexOf('function prewarmJ2me'))
+  assert.match(fn, /preconnectOrigin\(CHEERPJ_ORIGIN\)/, '预连接不该被设备判断挡掉')
+  const guard = fn.indexOf('hasHoverIntent')
+  const warm = fn.indexOf('warmHttpCache')
+  assert.ok(guard > 0 && warm > guard, '预拉引擎文件必须排在 hasHoverIntent 之后')
 })
 
 console.log(failed ? `\n${failed} 项失败` : `\nJ2ME 测试全部通过 ✅`)

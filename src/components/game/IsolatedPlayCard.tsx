@@ -2,7 +2,7 @@
  * 详情页上「这款游戏要整页打开」的入口卡片。
  *
  * 用在少数需要跨源隔离（SharedArrayBuffer）的 WebAssembly 大作上：它们没法内嵌在详情页里，
- * 因为隔离头必须发在**顶层文档**上，而详情页一开 require-corp，Google Fonts、
+ * 因为隔离头必须发在**顶层文档**上，而详情页一开 require-corp，
  * 字节的收录脚本和对象存储上的封面图会被一起掐掉。完整理由见 shared/isolated-embeds.js。
  *
  * 所以这里只画一个和播放器同尺寸（16:9）的卡片，点了整页跳到 /play/<slug> ——

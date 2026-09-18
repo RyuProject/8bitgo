@@ -30,6 +30,8 @@ const EXPECTED_COLUMNS = [
   { table: 'games', column: 'dos_save_hint', why: '逐游戏的 DOS 存档按键说明' },
   { table: 'games', column: 'arcade_romdata', why: '街机改版包的 FBNeo RomData' },
   { table: 'games', column: 'arcade_buttons', why: '逐游戏街机虚拟动作键数量' },
+  { table: 'games', column: 'arcade_bios', why: '街机游戏需要的 BIOS 系统包（neogeo / pgm）；缺列会让后台保存游戏 500' },
+  { table: 'games', column: 'arcade_dip', why: '街机 DIP 开关（麻将类游戏的摇杆 / 麻将那一档）；缺列会让后台保存游戏 500' },
   { table: 'games', column: 'flash_controls', why: '逐游戏 Flash 屏幕手柄与实体手柄键位' },
   { table: 'games', column: 'adult', why: '成人游戏 18 岁验证' },
   { table: 'games', column: 'created_at', why: '真实入库时间' },

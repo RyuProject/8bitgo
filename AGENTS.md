@@ -117,7 +117,7 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
 也不必先加载原版 romset 再去核心选项里勾（那是 RetroArch 的交互，网页上没法要求玩家做）。
 
 落地在三处：后台 `games.arcade_romdata` 列存 dat 文本；
-`src/emulator/adapters/emulatorjs.ts` 的 `installRomDataInjector()` 在 loader.js 之前给
+`src/emulator/adapters/emulatorjs.ts` 的 `installFsInjector()` 在 loader.js 之前给
 `window.EJS_emulator` 装 setter，包一层 `startGame()` 先把 dat 写进 FS；
 骨架用 `npm run romdata -- <包.zip> --drv <基础驱动> --fbneo <FBNeo>/src/burn/drv` 生成。
 
@@ -125,6 +125,32 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
 但 libretro 版没有这个函数（对照 `libretro/FBNeo` 的 `src/burner/libretro/romdata.cpp`），
 类型为 0 的行会被直接丢掉。生成脚本按 CRC 对照基础驱动源码把类型抄准，
 对不上的（也就是改版包换掉的那几个）留成 `TODO_TYPE` 由人来定。
+
+### 2.8.1 街机 BIOS 分两档：平台一份 + **按系统包**各一份
+
+引擎（EmulatorJS）只给**一个** BIOS 槽位（`EJS_biosUrl`），而 `arcade` 是**一个平台**却顶着
+好几套硬件：Neo Geo 要 `neogeo.zip`，IGS 的 PGM 板子要 `pgm.zip`（三国战纪、西游释厄传，
+索引里 173 个 romset）。平台那一格填了 neogeo，PGM 就**永远**起不来 ——
+报的是 `Romset is unknown` / `missing files`，和 ROM 对不对毫无关系（2026-09-18 加的第二档）。
+
+- **要哪个**：`games.arcade_bios` 存**系统名**（`neogeo` / `pgm`），不是地址。
+  上传时由 `identifyArcadeRomset()` 的候选里那个 `bios` 自动填，后台可以手工改
+  （识别不出来的汉化版、驱动表里没有的板子就靠手填 —— 这是这个功能的底线）。
+  存量数据不用重传 ROM：`cd server && npm run backfill-arcade-bios` 按文件短名查索引补，
+  加 `--dry-run` 只看结果。
+- **地址在哪**：`platform_bios` 表里键写成 `bios:<系统名>`（`bios:pgm`），
+  和平台级共用同一张表、同一套后台 UI（「ROM 存储 → 街机 BIOS 包」）。
+  没绑 `bios:<名>` 时退回平台级那一份，**但只在文件名正好等于那个系统名时才算数**。
+- **怎么进去**：引擎一个槽位塞不下两个包，所以额外那份由我们自己写进虚拟文件系统根目录
+  `/pgm.zip`（核心就是在内容同目录按 set 名找 BIOS 的）。
+  决策在 `src/emulator/biosPlan.ts`（纯函数，`npm run test:romdata` 覆盖），
+  落盘走 `installFsInjector()` —— 和 RomData 共用**同一个** `EJS_emulator` setter。
+
+⚠️ **`Object.defineProperty(window, 'EJS_emulator', …)` 只能有一个 setter**，后定义的会盖掉前一个，
+症状是「某个文件静默没写进去」。加新的 FS 注入一律往 `installFsInjector` 的清单里塞，
+别再写第二个注入器（`test:romdata` 有断言守着）。
+
+⚠️ BIOS 包要**和核心同一批**的 romset：换一个版本的 `pgm.zip` 就是 CRC 对不上 → 缺文件。
 
 ### 2.9 平台 BIOS 的边缘缓存会骗人
 

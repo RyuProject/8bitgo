@@ -7,7 +7,7 @@ import { Topbar } from './Topbar'
 import { Footer } from './Footer'
 import { AuthModal } from '@/components/auth/AuthModal'
 import { PageSkeleton } from '@/components/ui/PageSkeleton'
-import { ImPanel } from '@/components/im/ImPanel'
+import { useIdleImport } from '@/components/ui/useIdleImport'
 import { useT } from '@/services/i18n'
 import { onTvHost } from '@/services/tvHost'
 import { stripLang } from '@/config/languages'
@@ -65,6 +65,28 @@ function TvShell() {
   )
 }
 
+/**
+ * 站内消息抽屉的延迟挂载壳。
+ *
+ * 抽屉本身一直挂着（靠 transform 滑出，收起也有动画，见 ImPanel 头注释），
+ * 但**它连着的 services/imClient.ts（45 KB）不该在首屏**：访客里绝大多数没登录、
+ * 更不会去点那颗按钮，却要为它付下载和执行。
+ *
+ * 所以这里把挂载推迟到浏览器空闲（见 useIdleImport 的注释：为什么不用 React.lazy）。
+ * 推迟的只有挂载那一刻，不是「用到才加载」——登录用户的 IM 连接本来就等
+ * requestIdleCallback（timeout 8 秒）才开始，这里 800 毫秒的空闲窗口比它早得多，
+ * 顶栏那颗按钮的注册也不会晚到用户点得着。
+ *
+ * ⚠️ 别改成条件渲染（登录才挂）：imClient 的 startImWhenIdle 是在这里挂载时排的，
+ * 而它在服务端渲染时什么都不做是**故意的**（useCurrentUser 的 SSR 快照恒为 null）。
+ */
+const loadImPanel = () => import('@/components/im/ImPanel')
+
+function DeferredImPanel() {
+  const mod = useIdleImport(loadImPanel, { timeout: 800, fallbackMs: 200 })
+  return mod ? <mod.ImPanel /> : null
+}
+
 function Shell() {
   const { immersive, setImmersive } = useShell()
   const t = useT()
@@ -114,12 +136,13 @@ function Shell() {
       <AuthModal />
 
       {/*
-        站内消息的右侧抽屉。**一直挂着**（靠 transform 滑出，所以收起也有动画），
-        但它在服务端渲染时什么都不做：useCurrentUser() 的 SSR 快照恒为 null
+        站内消息的右侧抽屉。挂载之后**一直挂着**（靠 transform 滑出，所以收起也有动画），
+        但推迟到浏览器空闲才挂 —— 见上面 DeferredImPanel 的注释。
+        它在服务端渲染时什么都不做：useCurrentUser() 的 SSR 快照恒为 null
         （见 services/auth.ts 的注释），所以 SSR 出来就是一个空壳。
         SDK 那 700 KB 是 services/imClient.ts 里的动态 import，不在主包里。
       */}
-      <ImPanel />
+      <DeferredImPanel />
     </div>
   )
 }

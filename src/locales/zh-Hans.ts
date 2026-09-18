@@ -730,6 +730,9 @@ export const zhHans = {
     autoPlatform: '自动识别平台',
     currentPlatform: '当前平台：{name}',
     runtimeSuffix: '· 运行时：{name}',
+    biosLabel: '需要的 BIOS 包',
+    biosHint:
+      '街机有些板子必须有 BIOS 才跑得起来（Neo Geo 要 neogeo.zip，IGS 的 PGM 要 pgm.zip）。站上收录的游戏由后台填好，本地文件在这里手填：只写系统名，例如 pgm 或 neogeo；留空则用平台默认的那份。',
     romDataShow: '手动填 RomData（改版包）',
     romDataHide: '隐藏 RomData（改版包）',
     romDataHint:
@@ -1413,7 +1416,7 @@ export const zhHans = {
     ruffleNoApi: '未找到 Ruffle 播放器 API',
     flashLoadFailed: 'Flash 内容加载失败：{msg}',
     ejsNoCore: 'EmulatorJS 没有 {platform} 平台的核心',
-    ejsRomDataFailed: 'RomData 写入失败，游戏会按原始 romset 启动：{msg}',
+    ejsFsInjectFailed: '补丁文件没写进模拟器（RomData / BIOS 包都走这条通道），游戏会按原始配置启动：{msg}',
     ejsInitFailed: '无法初始化模拟器容器',
     ejsLoadFailed: '模拟器没能加载。请检查网络后点「重试」；一直不行请反馈给我们',
     ejsEngineError: '引擎报错：{msg}',

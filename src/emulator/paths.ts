@@ -17,7 +17,7 @@
  */
 import type { PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
-import { NETPLAY_URL } from '@/services/netplay'
+import { NETPLAY_URL } from '@/services/roomFlags'
 
 /** 末尾补上斜杠；空值原样返回（空 = 没配置 = 该引擎不可用） */
 const asDir = (raw: string | undefined, fallback = ''): string => {

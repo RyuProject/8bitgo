@@ -325,6 +325,82 @@ export function arcadeRomDataOf(v) {
   return s
 }
 
+/**
+ * 街机游戏需要的 **BIOS 系统包名**（`neogeo` / `pgm` / `skns` / …）。
+ *
+ * ## 它和平台级 BIOS 是两件事，别混
+ *
+ * `platform_bios` 表按**平台**绑一份（arcade → neogeo.zip），那是因为「一个平台共用一份」
+ * 在过去是对的。可街机这一个平台底下其实是好几套硬件：NeoGeo 要 neogeo.zip、
+ * IGS 的 PGM 板子要 pgm.zip，而引擎的 `EJS_biosUrl` 只接受**一个**地址 ——
+ * 于是不管配哪一份，另一类游戏必然起不来（报的都是 `missing files`，和 ROM 对不对无关）。
+ *
+ * 这一列存的**不是地址**，是**系统名**：内核要找的那个 set 名，也是压缩包该叫的名字
+ * （FBNeo 按固定文件名找 BIOS：它要 pgm.zip，你给它 `bios/arcade.zip` 就是没有）。
+ * 地址由后台按系统名绑（`platform_bios` 里 `bios:<系统名>` 那几行），换存储桶不用改数据。
+ *
+ * ## 为什么允许手工填
+ *
+ * 自动识别（src/lib/arcadeRomset.ts 的候选里带 bios）只认 FBNeo 驱动表里的包。
+ * 汉化版、魔改版、以及驱动表里根本没有的板子识别不出来。这时候管理员知道答案，
+ * 就得让他直接填 —— 填错了他自己看得见，比让玩家对着 `Romset is unknown` 强。
+ *
+ * 形状收紧到 `[a-z0-9_]`：FBNeo 的 set 名就是小写字母数字下划线（`ngp_ngp`、
+ * `astro_astrocde`、`nmk004`），带别的字符一定拼不出核心要找的文件名，
+ * 与其让它静默失效，不如在保存这一刻 400 掉。
+ */
+export function arcadeBiosOf(v) {
+  if (v == null) return null
+  const s = String(v).trim().toLowerCase()
+  if (!s) return null
+  if (!/^[a-z0-9_]{1,32}$/.test(s)) {
+    return badGameField('BIOS 系统名只能是字母、数字和下划线（例如 neogeo、pgm），长度不超过 32')
+  }
+  return s
+}
+
+/** `组名=值` 一条的形状。组名和值都不许含分隔符（逗号 / 分号 / 换行 / 等号），各限 32 字符 */
+const DIP_ASSIGN = /^[^=,;\n]{1,32}=[^=,;\n]{1,32}$/
+/** 预设关键字：自动认「摇杆 / 麻将」那一项并拨到麻将 */
+const DIP_PRESET = /^(mahjong|麻将)$/i
+/** 最多几条。和前端 dipPlan 的 MAX_INTENTS 对齐 */
+const DIP_MAX_PARTS = 4
+
+/**
+ * 街机 DIP 开关（麻将类游戏要拨的那一档）。写法与语义见 src/emulator/dipPlan.ts。
+ *
+ * 和 arcadeBiosOf 一样是**形状校验**，只是这里没有「必须是某个集合里的值」这回事 ——
+ * 组名和取值都由核心定（键名里还带驱动名），服务端无从查表。能查的只有两件事：
+ *
+ *   1. 别把分隔符写进去 —— `a=1, b=2` 是两条，`a=1; b=2` 也是；一条里再出现逗号会切歪；
+ *   2. 别写成一整段别的东西 —— 这一栏最终会被塞进核心的选项写入调用，
+ *      长度和条数都要有个头。
+ *
+ * ⚠️ **不要 toLowerCase**：这一栏允许写完整的核心选项键
+ * （`fbneo-dipswitch-kov-Controls=Mahjong`），而键名是大小写敏感的 ——
+ * 小写化之后就再也匹配不上，症状是「后台填了、跑起来没反应」。
+ * 只把每条两端的空白收干净、统一用 `, ` 连接，存进去的就是人可以再读一遍的样子。
+ */
+export function arcadeDipOf(v) {
+  if (v == null) return null
+  const s = String(v).trim()
+  if (!s) return null
+  if (s.length > 200) return badGameField('DIP 开关最多 200 个字符')
+  const parts = s.split(/[,;\n]/).map((t) => t.trim()).filter(Boolean)
+  if (!parts.length) return null
+  if (parts.length > DIP_MAX_PARTS) {
+    return badGameField(`DIP 开关最多 ${DIP_MAX_PARTS} 条（多条用逗号分隔）`)
+  }
+  for (const part of parts) {
+    if (DIP_PRESET.test(part) || DIP_ASSIGN.test(part)) continue
+    return badGameField(
+      `DIP 开关「${part}」看不懂：只能写 mahjong（自动找摇杆 / 麻将那一项），` +
+        '或者「组名=值」，例如 Controls=Mahjong',
+    )
+  }
+  return parts.join(', ')
+}
+
 const FLASH_BUTTONS = new Set(['up', 'down', 'left', 'right', 'a', 'b', 'select', 'start'])
 const FLASH_NAMED_KEYS = new Set([
   'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Enter', 'Escape', 'ShiftLeft', 'ControlLeft',
@@ -443,6 +519,11 @@ export function gameRowToApi(r, rel = {}) {
   if (r.dosbox_config_override) g.dosboxConfig = r.dosbox_config_override
   if (r.dos_save_hint) g.dosSaveHint = r.dos_save_hint
   if (r.arcade_romdata) g.arcadeRomData = r.arcade_romdata
+  // 这款游戏要哪个 BIOS 系统包（neogeo / pgm）。没填就不带这个字段，
+  // 播放器据此回落到「平台级 BIOS 那一份」——也就是加这个字段之前的行为。
+  if (r.arcade_bios) g.arcadeBios = r.arcade_bios
+  // DIP 开关（麻将类游戏要拨的那一档）。没填就不带这个字段 —— 播放器那边留空 = 完全不干预
+  if (r.arcade_dip) g.arcadeDip = r.arcade_dip
   const flashControls = flashControlsObject(r.flash_controls, false)
   if (flashControls) g.flashControls = flashControls
   const arcadeButtons = arcadeButtonsOf(r.arcade_buttons)
@@ -512,6 +593,8 @@ export function gameApiToRow(g) {
     dosbox_config_override: dosboxConfigOf(g.dosboxConfig),
     dos_save_hint: dosSaveHintOf(g.dosSaveHint),
     arcade_romdata: arcadeRomDataOf(g.arcadeRomData),
+    arcade_bios: arcadeBiosOf(g.arcadeBios),
+    arcade_dip: arcadeDipOf(g.arcadeDip),
     arcade_buttons: arcadeButtonsOf(g.arcadeButtons),
     flash_controls: flashControlsOf(g.flashControls),
   }
@@ -552,6 +635,8 @@ const FIELD_TO_COLUMN = {
   dosboxConfig: ['dosbox_config_override', dosboxConfigOf],
   dosSaveHint: ['dos_save_hint', dosSaveHintOf],
   arcadeRomData: ['arcade_romdata', arcadeRomDataOf],
+  arcadeBios: ['arcade_bios', arcadeBiosOf],
+  arcadeDip: ['arcade_dip', arcadeDipOf],
   arcadeButtons: ['arcade_buttons', arcadeButtonsOf],
   flashControls: ['flash_controls', flashControlsOf],
 }

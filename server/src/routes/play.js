@@ -3,7 +3,8 @@
  *
  * 为什么要单开一页、为什么不能把隔离头加在详情页上，见 shared/isolated-embeds.js 的说明。
  * 一句话：SharedArrayBuffer 要求**顶层文档**发 COOP + COEP，而 require-corp 会掐掉
- * 详情页上的 Google Fonts、字节收录脚本和跨源封面图，`credentialless` 又被 Safari 全线不支持。
+ * 详情页上的字节收录脚本和跨源封面图（没有 CORP 头的跨源资源一律拦掉），
+ * `credentialless` 又被 Safari 全线不支持。
  *
  * 这一页刻意不走 SSR、不引 React、不引任何第三方资源 —— 它只有一个 iframe 和一条返回链接。
  * 内容越少，require-corp 能掐掉的东西就越少，这是这个方案能成立的全部理由。

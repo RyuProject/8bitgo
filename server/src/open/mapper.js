@@ -84,6 +84,8 @@ export const FORBIDDEN_OUT_KEYS = Object.freeze([
   'rom', 'roms',     // 对象 key 原文 —— 给了就等于绕过全部凭据
   'object_key',
   'arcade_romdata',  // 街机改版包的内部清单
+  'arcade_bios', 'arcadeBios', // 街机要哪个 BIOS 包 —— 第三方接入方拿不到我们的 BIOS 文件，给了也没用
+  'arcade_dip', 'arcadeDip',   // DIP 开关写的是**我们播放器**接核心的方式（核心选项键名），对方跑自己的模拟器，拿了也用不上
   'dos_executable', 'dos_backend', 'dos_system', 'dos_windows_version',
   'dos_launch_delay', 'dosbox_config_override', 'dosboxConfig',
   'core',            // 我们用哪个核心跑是实现细节，会变

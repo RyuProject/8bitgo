@@ -671,6 +671,9 @@ const ja: Translation = {
     autoPlatform: 'ゲーム機を自動判別',
     currentPlatform: '現在のゲーム機：{name}',
     runtimeSuffix: '· ランタイム：{name}',
+    biosLabel: '必要な BIOS パッケージ',
+    biosHint:
+      '一部のアーケード基板は起動に BIOS が必要です（Neo Geo は neogeo.zip、IGS の PGM は pgm.zip）。ライブラリのゲームは管理画面で設定済みです。ローカルファイルの場合はシステム名だけを入力してください（pgm / neogeo）。空欄ならプラットフォーム既定の BIOS を使います。',
     romDataShow: 'RomData（改造版）を手入力',
     romDataHide: 'RomData（改造版）を隠す',
     romDataHint:
@@ -1328,7 +1331,7 @@ const ja: Translation = {
     ruffleNoApi: 'Ruffle プレイヤーの API が見つかりません',
     flashLoadFailed: 'Flash コンテンツの読み込みに失敗しました：{msg}',
     ejsNoCore: 'EmulatorJS に {platform} 用のコアがありません',
-    ejsRomDataFailed: 'RomData の書き込みに失敗しました。ゲームは元の romset として起動します：{msg}',
+    ejsFsInjectFailed: 'パッチファイルをエミュレータに書き込めませんでした（RomData と追加 BIOS パッケージは同じ経路です）。ゲームは元の構成で起動します：{msg}',
     ejsInitFailed: 'エミュレーターのコンテナを初期化できません',
     ejsEngineError: 'エミュレーターのエラー：{msg}',
     ejsArcadeRomInvalid: 'アーケードゲームのファイルが不完全か、有効な ZIP ではありません：{name}',

@@ -60,6 +60,32 @@ export default defineConfig({
   build: {
     outDir: 'dist/client',
     emptyOutDir: true,
+    rolldownOptions: {
+      output: {
+        /*
+          把 React 全家桶单独切一个 chunk。
+          
+          目的**不是**减少字节数（总量不变），而是让它的文件名不随业务代码变化：
+          /assets/ 下的文件名带内容哈希、响应头是一年 immutable（见 server/src/cache.js），
+          所以只要 react 那几条依赖没动，老访客和 Cloudflare 边缘都不用重新下载它。
+          不切的话它和业务代码挤在同一个 index chunk 里，改一行文案就整包作废 ——
+          那是首屏里最重的一块（gzip 四十多 KB）。
+
+          ⚠️ 只用 advancedChunks，别同时写 codeSplitting：rolldown 里两者同时给时
+          advancedChunks 会被**静默忽略**（见 rolldown 的 OutputOptions 注释）。
+          ⚠️ test 用正则匹配 node_modules 路径 —— react / react-dom / scheduler 是同一批
+          跟着 React 版本走的包，拆开会让它们互相 import 而被再次合并。
+        */
+        advancedChunks: {
+          groups: [
+            {
+              name: 'react-vendor',
+              test: /[\\/]node_modules[\\/](react|react-dom|scheduler|react-router|react-router-dom)[\\/]/,
+            },
+          ],
+        },
+      },
+    },
   },
   server: {
     port: 5173,

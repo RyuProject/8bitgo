@@ -229,6 +229,18 @@ const patches = [
     run: () => conn.query('ALTER TABLE `games` ADD COLUMN `arcade_buttons` TINYINT UNSIGNED NULL AFTER `arcade_romdata`'),
   },
   {
+    name: 'games.arcade_bios（这款街机游戏需要哪个 BIOS 系统包）',
+    table: 'games',
+    needed: async () => !(await hasColumn('games', 'arcade_bios')),
+    run: () => conn.query('ALTER TABLE `games` ADD COLUMN `arcade_bios` VARCHAR(32) NULL AFTER `arcade_buttons`'),
+  },
+  {
+    name: 'games.arcade_dip（街机 DIP 开关：麻将类游戏要拨的那一档）',
+    table: 'games',
+    needed: async () => !(await hasColumn('games', 'arcade_dip')),
+    run: () => conn.query('ALTER TABLE `games` ADD COLUMN `arcade_dip` VARCHAR(200) NULL AFTER `arcade_bios`'),
+  },
+  {
     name: 'games.flash_controls（逐游戏 Flash 键位）',
     table: 'games',
     needed: async () => !(await hasColumn('games', 'flash_controls')),

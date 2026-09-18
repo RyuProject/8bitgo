@@ -11,8 +11,7 @@ import { useT, fmt } from '@/services/i18n'
 import { useLang } from '@/services/lang'
 import { SocialIcon } from './SocialIcon'
 import { FEATURES } from '@/config/features'
-import { anyRoomsEnabled, useAllRooms } from '@/services/allRooms'
-import { useGamesTotal } from '@/services/gamesTotal'
+import { useIdleImport } from '@/components/ui/useIdleImport'
 import { api, apiEnabled } from '@/services/api'
 import { useCurrentUser as useUser } from '@/services/auth'
 import { useGamesBySlugs } from '@/services/gameCache'
@@ -168,33 +167,25 @@ export function Sidebar() {
   )
 }
 
-/** 计数徽标的静默样式：数字为 0 或纯静态计数时用，不抢「有人在线」那点绿色 */
-const COUNT_BADGE = 'inline-flex items-center rounded bg-black/5 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-muted'
-
 /**
- * 「一起玩」右侧的房间数 —— 联机房间 + 直播房间（useAllRooms 已经把三路合过）。
+ * 侧边栏两个计数徽标的实现都在 ./SidebarCounts 里，这里只留一个「空闲时再要」的壳。
  *
- * 以前 0 个房间时整块不渲染，结果这一栏平时看不出「现在有没有人在玩」，
- * 只有热闹的时候才冒出个数字。现在 0 也照样显示，只是收成灰色不带呼吸点。
- * 三条通道全都没开（无后端 / 无信令）时才真的不渲染 —— 那种情况下 0 是假的。
+ * 理由见那个文件的头注释：这两个数字要拖进整条联机链路和内置种子目录，
+ * 而它们只是导航栏右边的一小块装饰，不该出现在首屏的关键路径上。
+ *
+ * 空档期徽标位置是空的（不是显示 0）：服务端和客户端首帧都渲染 null，水合不会错位，
+ * 等 chunk 到货数字才出现。
  */
+const loadCounts = () => import('./SidebarCounts')
+
 function RoomCount() {
-  const rooms = useAllRooms()
-  if (!anyRoomsEnabled()) return null
-  if (rooms.length === 0) return <span className={COUNT_BADGE}>0</span>
-  return (
-    <span className="inline-flex items-center gap-1 rounded bg-online/15 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-online">
-      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-online" />
-      {rooms.length}
-    </span>
-  )
+  const mod = useIdleImport(loadCounts)
+  return mod ? <mod.RoomCount /> : null
 }
 
-/** 「全部游戏」右侧的游戏库总数 */
 function GamesCount() {
-  const total = useGamesTotal()
-  if (total === undefined) return null
-  return <span className={COUNT_BADGE}>{total.toLocaleString()}</span>
+  const mod = useIdleImport(loadCounts)
+  return mod ? <mod.GamesCount /> : null
 }
 
 /**

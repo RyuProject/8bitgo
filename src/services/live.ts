@@ -13,12 +13,13 @@
  */
 import { useSyncExternalStore } from 'react'
 import { fallbackAfterErrors } from './sseFallback'
-import { getToken, apiBase, apiEnabled, TOKEN_CHANGED_EVENT } from './api'
+import { getToken, apiBase, TOKEN_CHANGED_EVENT } from './api'
 import { getT } from './i18n'
 import { fetchIceConfig, type IceConfig } from './netplay'
 import type { Presence } from './presence'
 import type { UserRole } from '@/types'
 import { describeExport, looksLikeSocketIo, runAsCommonJs, umdGlobals } from '@/lib/umd'
+import { liveEnabled } from './roomFlags'
 
 export interface LiveRoomInfo {
   roomId: string
@@ -114,9 +115,11 @@ export interface LiveSocket {
 }
 type IoFactory = (uri: string, opts?: Record<string, unknown>) => LiveSocket
 
-export function liveEnabled(): boolean {
-  return apiEnabled()
-}
+/**
+ * `liveEnabled()` 的定义在 ./roomFlags —— runtimeMeta.ts 只需要这一个布尔值，
+ * 从本文件取会把整条直播链路拖进主包。这里转出去，别删。
+ */
+export { liveEnabled }
 
 /** 成人房列表和详情由服务端按 JWT 年龄过滤，所以这些请求必须带当前登录令牌。 */
 function liveAuthHeaders(): Record<string, string> {

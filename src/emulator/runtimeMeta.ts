@@ -18,7 +18,7 @@ import type { PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { platformLabel } from '@/services/i18nData'
 import { getT } from '@/services/i18n'
-import { liveEnabled } from '@/services/live'
+import { liveEnabled } from '@/services/roomFlags'
 import type { Runtime } from './types'
 import {
   CLOUDGAME_URL,

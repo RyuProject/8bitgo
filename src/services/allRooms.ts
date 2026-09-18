@@ -17,9 +17,9 @@ import { useMemo } from 'react'
 import { games } from '@/data/games'
 import { cloudRoomView, liveRoomView, type RoomView } from '@/components/game/RoomCard'
 import { normalizePresence } from './presence'
-import { netplayEnabled, slugForGameId, useNetplayRooms } from './netplay'
-import { roomsEnabled, useRooms } from './rooms'
-import { liveEnabled, useLiveRooms } from './live'
+import { slugForGameId, useNetplayRooms } from './netplay'
+import { useRooms } from './rooms'
+import { useLiveRooms } from './live'
 import { mergeLiveIntoP2p, type LiveEntry } from './roomMerge'
 
 /** 信令服务器只知道 gameId（slug 的散列），这里反查回 slug */
@@ -72,7 +72,8 @@ export function useAllRooms(): RoomView[] {
   }, [p2p, cloud, live])
 }
 
-/** 房间列表整体是否可用（三条通道有一条能用就算） */
-export function anyRoomsEnabled(): boolean {
-  return netplayEnabled() || roomsEnabled() || liveEnabled()
-}
+/**
+ * 房间列表整体是否可用（三条通道有一条能用就算）。
+ * 实现搬去了 ./roomFlags —— 这里转出只是为了不打断既有调用方。
+ */
+export { anyRoomsEnabled } from './roomFlags'

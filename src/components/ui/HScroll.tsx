@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { isValidElement, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { cx } from '@/lib/format'
 import { useT } from '@/services/i18n'
 
@@ -85,11 +85,21 @@ export function HScroll({
           gap,
         )}
       >
-        {items.map((child, i) => (
-          <div key={i} className={cx('shrink-0 snap-start', itemClassName)}>
-            {child}
-          </div>
-        ))}
+        {items.map((child, i) => {
+          /*
+            优先用子元素**自己**的 key（调用方给的都是 slug / 房间号这种稳定标识），
+            拿不到才退回下标。纯用下标的话，列表一旦在前面插入或换掉一项，
+            React 会按位置复用这些包裹层 —— 表现为封面闪一下重新加载、
+            hover / 焦点状态串到隔壁卡片上。
+            这是纯 key 的选择，不改变渲染结果，所以没有语言 / 布局上的副作用。
+          */
+          const key = isValidElement(child) && child.key != null ? child.key : i
+          return (
+            <div key={key} className={cx('shrink-0 snap-start', itemClassName)}>
+              {child}
+            </div>
+          )
+        })}
       </div>
 
       <ArrowButton side="left" visible={canLeft} onClick={() => scrollBy(-1)} />

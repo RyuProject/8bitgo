@@ -71,3 +71,44 @@ export function isCrossOriginBase(base: string, pageOrigin: string): boolean {
     return true
   }
 }
+
+/* ---------------- 预热清单 ---------------- */
+
+/**
+ * CheerpJ 运行时所在的 CDN。
+ *
+ * ⚠️ 这里**只写源，不写版本路径**。真实地址是
+ * `https://cjrtnc.leaningtech.com/<版本>/loader.js`，写在 `public/j2me/run.html` 里；
+ * 版本号跟着上游升级走（当前是 20260317_2978）。把它抄一份到这儿，
+ * 上游一升级就静默过期 —— 预连接连到一个不再使用的地址，什么都不会报。
+ * 只连源就能拿到绝大部分收益（DNS + TCP + TLS），而那几跳正好是最贵的。
+ */
+export const CHEERPJ_ORIGIN = 'https://cjrtnc.leaningtech.com'
+
+/**
+ * 值得在开玩之前先拉下来的引擎文件（**不含游戏 jar**）。
+ *
+ * 为什么是这三个：freej2me-web 的启动是**严格串行**的，中间那几十秒谁也躲不掉 ——
+ *   run.html（本站）
+ *   → src/main.js：`await window.libmidi.init()`   ← libmidi.wasm 3.4 MB **卡在这里**
+ *   → cheerpjInit()                               ← CheerpJ 从 CDN 起 JVM（几十秒）
+ *   → cheerpjRunLibrary(freej2me-web.jar)          ← 952 KB **卡在这里**
+ *   → FreeJ2ME.main(['jar', …])                    ← 这时才去取游戏
+ *
+ * 也就是说 3.4 MB 的 wasm 和 952 KB 的 jar 各自**独占**一段时间，而 CheerpJ 那几十秒里
+ * 连接是闲着的。提前把它们放进 HTTP 缓存，冷启动就少这两段等待。
+ *
+ * worklet.js 只有 12 KB，但它和 wasm 是一起被 `audioWorklet.addModule` 取的，
+ * 排在同一条关键路径上，顺手带上。
+ *
+ * ⚠️ 路径是死的：
+ *   · `libmidi.js` 里是 `fetch(new URL('libmidi.wasm', import.meta.url))`，
+ *     所以它相对 `/j2me/libmidi/libmidi.js` 解析；
+ *   · jar 是 `cheerpjRunLibrary(cheerpjWebRoot + "/freej2me-web.jar")`，
+ *     而 CheerpJ 的 `/app/` 前缀映射回站点根目录，最终就是我们这个 URL。
+ *   上游改目录结构时这里会静默失效（预热失败不影响开玩），不用当故障处理。
+ */
+export function j2meWarmTargets(base: string): string[] {
+  const dir = base.endsWith('/') ? base : `${base}/`
+  return [`${dir}freej2me-web.jar`, `${dir}libmidi/libmidi.wasm`, `${dir}libmidi/worklet.js`]
+}

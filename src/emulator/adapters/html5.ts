@@ -30,7 +30,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    *
    * ⚠️ 光授权不够。SharedArrayBuffer 还要求**顶层文档**发
    * COOP: same-origin + COEP: require-corp，且整条祖先链都隔离 —— 详情页做不到这件事
-   * （require-corp 会掐掉 Google Fonts、收录脚本和跨源封面图）。所以这类游戏走
+   * （require-corp 会掐掉没有 CORP 头的跨源资源：收录脚本、跨源封面图）。所以这类游戏走
    * server/src/routes/play.js 那条独立整页路由，登记表在 shared/isolated-embeds.js。
    * 这里授权只是把该给的给到位，让那条路径能用同一个运行时。
    */

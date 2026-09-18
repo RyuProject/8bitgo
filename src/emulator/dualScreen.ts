@@ -150,8 +150,13 @@ export function showsTouchScreen(value: string): boolean {
   return !(/\bonly\b/.test(v) && v.includes('top') && !v.includes('bottom'))
 }
 
-/** 把核心报的 values 摊平成字符串数组。它可能是 [{value,label}] 也可能是 [string] */
-function flatValues(raw: unknown): string[] {
+/**
+ * 把核心报的 values 摊平成字符串数组。它可能是 [{value,label}] 也可能是 [string]。
+ *
+ * 导出是给 dipPlan.ts 用的：那边读的是同一张 `getCoreOptionsJSON()` 表，
+ * 形状的定义方在这里，别再抄一份出去。
+ */
+export function flatValues(raw: unknown): string[] {
   if (!Array.isArray(raw)) return []
   const out: string[] = []
   for (const item of raw) {
@@ -169,11 +174,21 @@ function flatValues(raw: unknown): string[] {
  * 老格式的核心选项（`getCoreOptions()` 返回的那一大坨文本）。
  *
  * 一行一项，形如 `melonds_screen_layout|Top/Bottom; Top/Bottom|Left/Right|…`
- * —— 竖线前是 key、后面是默认值；分号后是取值表。取法照抄 EmulatorJS
- * 自己建菜单时那段（`s.split("|")[0]` / `n[1].split("|")`），它才是这份文本的定义方。
+ * —— 竖线前是 key、后面是当前值；分号后是取值表（出厂默认那一档带 `(Default) ` 前缀）。
+ * 取法照抄 EmulatorJS 自己建菜单时那段（`s.split("|")[0]` / `n[1].split("|")`），
+ * 它才是这份文本的定义方。
  *
- * 为什么要留这条路：`getCoreOptionsJSON` 是新加的 cwrap，老一点的核心构建里
+ * 为什么 `current` 和 `default` 填同一个值：这份文本里 `key|` 后面那一截就是
+ * **前端此刻生效的取值**（玩家改过就是改过的那档），引擎自己的设置菜单也是拿它当
+ * 当前值显示的（`menuOptionChanged` 那一行）。而「出厂默认」这一档只在取值表里用
+ * `(Default) ` 标出来 —— 我们目前不解析那个标记（没人需要它），所以两格一样。
+ * 分开填是给下面两条路用的：认得出当前值才谈得上「回读核对改了没有」。
+ *
+ * 为什么要留这条路：`getCoreOptionsJSON` 是后加的 cwrap，老一点的核心构建里
  * `Module._get_core_options_json` 根本不存在，引擎自己也是这么兜的。
+ * ⚠️ **我们自托管的这份 fbneo 就是那种构建**（2026-09-18 把 cores/fbneo-wasm.data
+ * 那个 7z 解开搜过：有 `get_core_options`，没有 `get_core_options_json`），
+ * 也就是说街机 DIP 开关实际走的就是这里 —— 改这个函数等于改 DIP 那条路。
  */
 export function parseCoreOptionsText(text: unknown): CoreOption[] {
   if (typeof text !== 'string' || !text.trim()) return []
@@ -185,7 +200,9 @@ export function parseCoreOptionsText(text: unknown): CoreOption[] {
     const key = head[0]?.trim()
     if (!key) continue
     const values = parts[1].split('|').map((v) => v.replace('(Default) ', '').trim()).filter(Boolean)
-    out.push({ key, default: head.length > 1 ? head[1]?.trim() : values[0], values })
+    // 没有 `key|值` 那一截时，当前值按取值表第一个算（引擎的兜底就是它）
+    const current = (head.length > 1 ? head[1]?.trim() : '') || values[0]
+    out.push({ key, current, default: current, values })
   }
   return out
 }

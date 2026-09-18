@@ -48,6 +48,14 @@ export function PlayLocalPage() {
    */
   const [romData, setRomData] = useState('')
   const [showRomData, setShowRomData] = useState(false)
+  /**
+   * 这个本地文件需要哪个 BIOS **系统包**（`neogeo` / `pgm`，见 Game.arcadeBios）。
+   *
+   * 本地文件在库里没有记录，也就没有人替它填过这一格：识别得出平台的只有扩展名和文件头，
+   * 而「PGM 板子要 pgm.zip、Neo Geo 要 neogeo.zip」是**核心靠 set 名**找的东西，
+   * 猜不出来就只能手填。留空 = 照旧用平台级那一份（也就是加这个功能之前的行为）。
+   */
+  const [biosSet, setBiosSet] = useState('')
 
   const platform = platformMap[platformId]
 
@@ -140,9 +148,23 @@ export function PlayLocalPage() {
             biosUrl={biosUrl || undefined}
             // 手写的 dat 压过播放器自己认出来的那份：人明确填了就听人的
             arcadeRomData={romData.trim() || undefined}
+            // 同理：手填的 BIOS 系统名压过「按平台默认那份」
+            arcadeBios={biosSet.trim().toLowerCase() || undefined}
           />
           {platformId === 'arcade' && (
             <div className="mt-3">
+              <label htmlFor="local-bios-set" className="text-xs text-muted">
+                {t.playLocal.biosLabel}
+              </label>
+              <input
+                id="local-bios-set"
+                className="mt-1 w-full max-w-xs rounded-lg border border-line bg-surface px-2 py-1.5 font-mono text-xs text-fg"
+                value={biosSet}
+                onChange={(e) => setBiosSet(e.target.value)}
+                spellCheck={false}
+                placeholder="pgm / neogeo"
+              />
+              <p className="mt-1 text-[11px] leading-relaxed text-dim">{t.playLocal.biosHint}</p>
               <button
                 type="button"
                 onClick={() => setShowRomData((v) => !v)}

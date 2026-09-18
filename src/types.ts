@@ -155,11 +155,30 @@ export interface Game {
    * 核心会把该驱动的包名「寄生」成 ZipName，并整个换用 dat 里的清单 ——
    * 于是汉化包里那几个和原版对不上的 GFX ROM 也能按自己的长度和 CRC 加载。
    *
-   * 触发方式见 adapters/emulatorjs.ts 的 installRomDataInjector：ROM 叫 wofcn.zip，
+   * 触发方式见 adapters/emulatorjs.ts 的 installFsInjector：ROM 叫 wofcn.zip，
    * 就在虚拟文件系统里放一份同名的 /wofcn.dat，核心自己会找到。
    * 只对走 FBNeo 系核心的街机游戏有意义；留空 = 按普通 romset 处理。
    */
   arcadeRomData?: string
+  /**
+   * 这款街机游戏需要哪个 **BIOS 系统包**（`neogeo` / `pgm` / `skns` …），
+   * 也就是核心要找的那个 set 名，不是地址。地址在后台按系统名绑（platform_bios 的 `bios:<名>`）。
+   *
+   * 空 = 不需要或还没填，播放器会回落到平台级 BIOS —— 也就是加这个字段之前的行为。
+   */
+  arcadeBios?: string
+  /**
+   * 街机 **DIP 开关**（实机主板上那组拨码）。
+   *
+   * 最典型的用处是麻将类游戏：核心出厂的默认档是「摇杆」，而麻将游戏要按麻将面板收键，
+   * 不拨这一档就是「方向键和碰吃杠全对不上」，界面上还不会报任何错。
+   *
+   * 写法（详见 src/emulator/dipPlan.ts）：
+   *   · `mahjong`             → 自动认「摇杆 / 麻将」那一项并拨到麻将
+   *   · `组名=值`（逗号分隔）  → 明确指定，例如 `Controls=Mahjong`
+   * 空 = 不干预。只有 FBNeo 系核心把 DIP 做成核心选项，别的核心填了不生效。
+   */
+  arcadeDip?: string
   /** 街机触屏面板的动作键数量；旧数据留空时按六键兼容。 */
   arcadeButtons?: ArcadeButtonCount
   /** Flash 屏幕手柄和实体手柄的逐游戏键位；纯鼠标游戏留空。 */

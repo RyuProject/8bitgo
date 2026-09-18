@@ -47,6 +47,7 @@
     "gen-sql": "node scripts/gen-sql.mjs",
     "gen-sql:empty": "node scripts/gen-sql.mjs --empty",
     "backfill-search": "node scripts/backfill-search.mjs",
+    "backfill-arcade-bios": "node scripts/backfill-arcade-bios.mjs",
     "test:search": "node scripts/test-search.mjs",
     "test:search:db": "node scripts/test-search-db.mjs",
     "indexnow": "node scripts/submit-indexnow.mjs",

@@ -13,7 +13,26 @@ import type { PlatformId } from '@/types'
 import { api, apiEnabled } from './api'
 import { romUrlForKey } from './roms'
 
-export type PlatformBiosMap = Partial<Record<PlatformId, string>>
+/**
+ * 绑定表。两种键混在同一张表里（后端也是同一张 `platform_bios` 表）：
+ *   · `<平台 id>`      —— 这个平台默认用哪份 BIOS（历史遗留的粗粒度）
+ *   · `bios:<系统名>`  —— **某个 BIOS 系统包**用哪份（`bios:neogeo`、`bios:pgm`）
+ *
+ * 后者是为了街机：一个平台底下好几套硬件，而引擎只吃一个 BIOS 地址，
+ * 「这个 ROM 要哪个系统包」必须能分开绑。键的格式两边必须一致，见
+ * server/src/routes/platform-bios.js 的 VALID_BIOS_SET。
+ */
+export type PlatformBiosMap = Partial<Record<PlatformId, string>> & Partial<Record<`bios:${string}`, string>>
+
+/**
+ * BIOS 系统包在绑定表里的键。
+ *
+ * ⚠️ 名字在这里**统一收口**成小写去空格：库里存的、后台填的、页面手输的都从这儿过一遍。
+ * 不归一化的话 `' PGM '` 查不到 `bios:pgm`，而失败是静默的（就是"没绑定"）。
+ */
+export function biosSetKey(name: string): `bios:${string}` {
+  return `bios:${String(name).trim().toLowerCase()}`
+}
 
 let cache: PlatformBiosMap | null = null
 /** 上次请求失败的时刻。失败之后不写 cache，靠这个做短退避 */
@@ -91,12 +110,24 @@ export function invalidatePlatformBios() {
 }
 
 /**
- * 某平台的 BIOS 完整 URL。没配就返回空串。
+ * 某个 BIOS **系统包**的地址（`neogeo` / `pgm` / `skns` …）。后台没绑就返回空串。
+ *
+ * 「玩本地 ROM」和后台表单那种「同一轮里就要用」的场合读这个（和 platformBiosUrlSync 同理）：
+ * 绑定表在进页面时就拉好了，同步读一次正好。
+ */
+export function biosSetUrlSync(name: string | undefined): string {
+  if (!name) return ''
+  const key = cache?.[biosSetKey(name)]
+  return key ? romUrlForKey(key) : ''
+}
+
+/**
+ * 订阅一个键（平台 id 或 `bios:<系统名>`）的地址。
  *
  * 组件里用：BIOS 是异步取的，第一帧多半还没到，所以返回值会从 '' 变成真实地址。
  * 播放器只在真正挂载引擎那一刻读它，不会因为这一次变化重启游戏。
  */
-export function usePlatformBiosUrl(platform: PlatformId | undefined): string {
+function useBiosUrlByKey(key: string | undefined): string {
   const [map, setMap] = useState<PlatformBiosMap>(() => cache ?? {})
   useEffect(() => {
     let alive = true
@@ -110,9 +141,15 @@ export function usePlatformBiosUrl(platform: PlatformId | undefined): string {
       listeners.delete(sync)
     }
   }, [])
-  const key = platform ? map[platform] : undefined
-  return key ? romUrlForKey(key) : ''
+  const raw = key ? (map as Record<string, string | undefined>)[key] : undefined
+  return raw ? romUrlForKey(raw) : ''
 }
+
+/** 某平台的 BIOS 完整 URL。没配就返回空串。 */
+export function usePlatformBiosUrl(platform: PlatformId | undefined): string {
+  return useBiosUrlByKey(platform)
+}
+
 
 /* ---------------- 后台写接口 ---------------- */
 
@@ -123,5 +160,16 @@ export async function bindPlatformBios(platform: PlatformId, objectKey: string):
 
 export async function unbindPlatformBios(platform: PlatformId): Promise<void> {
   await api.del(`/api/platform-bios/${encodeURIComponent(platform)}`, true)
+  invalidatePlatformBios()
+}
+
+/** 绑定某个 BIOS **系统包**（`neogeo` / `pgm` …）。接口和平台级共用一个，键带 `bios:` 前缀 */
+export async function bindBiosSet(name: string, objectKey: string): Promise<void> {
+  await api.put(`/api/platform-bios/${encodeURIComponent(biosSetKey(name))}`, { objectKey }, true)
+  invalidatePlatformBios()
+}
+
+export async function unbindBiosSet(name: string): Promise<void> {
+  await api.del(`/api/platform-bios/${encodeURIComponent(biosSetKey(name))}`, true)
   invalidatePlatformBios()
 }

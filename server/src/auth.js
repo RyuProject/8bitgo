@@ -187,6 +187,40 @@ function bearer(req) {
 }
 
 /**
+ * 一条请求里的用户行**只查一次**。
+ *
+ * 一次请求里问「我是谁」的地方不止一处，而且全都会打一次数据库：
+ *   · `requireAbility('content:edit')` 先问一次；
+ *   · 处理函数里再 `hasAbility(req, 'site:manage')` 分叉一次；
+ *   · 后台鉴权失败时 `requireAdmin` 还要再问一次去分辨「权限不够」和「凭证根本没生效」。
+ * 每次都是一个 `SELECT * FROM users WHERE id = ?` 的往返，而这三个答案在同一条请求里
+ * **必然相同** —— 令牌不会在中途换人。
+ *
+ * 表挂在 req 上（WeakMap）：请求对象结束生命就被回收，没有过期策略要维护，
+ * 也不存在「缓存到下一个请求」的串号风险。
+ *
+ * ⚠️ 只在鉴权这几个中间件里用。**路由自己的 `queryOne` 一律不经过这里** ——
+ * 改完密码 / 换绑邮箱那种「写完之后要读回新值」的地方（见 routes/me.js 的 rotateToken）
+ * 拿到的必须是刚写进去的行，不能是这条请求开头那份快照。
+ */
+const userRows = new WeakMap()
+
+function userRowFor(req, uid) {
+  let pending = userRows.get(req)
+  if (!pending) {
+    pending = queryOne('SELECT * FROM users WHERE id = ?', [uid])
+    /*
+      查询失败时把这次尝试从表里撤掉，否则同一条请求里后面几次鉴权会拿到同一个
+      rejected promise（错误被重复消费）；同时挂一个空的 catch，
+      避免这个 promise 在被 await 之前就变成「未处理的 rejection」。
+    */
+    pending.catch(() => userRows.delete(req))
+    userRows.set(req, pending)
+  }
+  return pending
+}
+
+/**
  * 已登录用户（JWT）。失败返回 401。req.user = 用户行
  *
  * ⚠️ 这三个中间件都是 async 且里面 await 数据库。Express 4 不会捕获 async 中间件抛出的
@@ -199,7 +233,7 @@ export async function requireUser(req, res, next) {
     const token = bearer(req)
     const payload = token && verifyToken(token)
     if (!payload?.uid) return res.status(401).json({ error: '请先登录' })
-    const user = await queryOne('SELECT * FROM users WHERE id = ?', [payload.uid])
+    const user = await userRowFor(req, payload.uid)
     if (!user) return res.status(401).json({ error: '登录已失效' })
     // 「退出所有设备」/ 改密码之后，旧令牌的 tv 落后于用户行，到这里被挡掉
     if (!versionMatches(payload, user)) return res.status(401).json({ error: '登录已在别处退出，请重新登录' })
@@ -217,7 +251,7 @@ export async function optionalUser(req, _res, next) {
     const token = bearer(req)
     const payload = token && verifyToken(token)
     if (payload?.uid) {
-      const user = await queryOne('SELECT * FROM users WHERE id = ?', [payload.uid])
+      const user = await userRowFor(req, payload.uid)
       // 版本对不上就当没登录 —— 可选登录的接口不该因为一个过期令牌而报错，
       // 但也绝不能把它当成有效身份
       if (user && versionMatches(payload, user)) req.user = user
@@ -250,7 +284,7 @@ export async function roleOfRequest(req) {
   if (ADMIN_TOKEN && token === ADMIN_TOKEN) return 'admin'
   const payload = token && verifyToken(token)
   if (payload?.uid) {
-    const user = await queryOne('SELECT * FROM users WHERE id = ?', [payload.uid])
+    const user = await userRowFor(req, payload.uid)
     if (user && versionMatches(payload, user) && user.status !== 'banned') {
       req.user = user
       return isRole(user.role) ? user.role : null
@@ -271,8 +305,11 @@ export async function isAdminRequest(req) {
 
 export async function requireAdmin(req, res, next) {
   try {
-    if (await isAdminRequest(req)) return next()
-    const why = authFailure(req, await roleOfRequest(req))
+    // 只问一次：以前是 isAdminRequest 问一遍、失败后 authFailure 又问一遍。
+    // 用户行现在按请求记忆（见 userRowFor），第二次不会打库了，但也没必要留着这段绕路
+    const role = await roleOfRequest(req)
+    if (role === 'admin') return next()
+    const why = authFailure(req, role)
     if (why) return res.status(403).json(why)
     return res.status(403).json({ error: '需要管理员权限（后台口令或管理员账号）' })
   } catch (e) {

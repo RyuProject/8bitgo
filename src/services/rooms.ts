@@ -9,7 +9,8 @@
  * 需要手动分享链接）。
  */
 import { useEffect, useState, useSyncExternalStore } from 'react'
-import { api, apiEnabled } from './api'
+import { api } from './api'
+import { roomsEnabled } from './roomFlags'
 import { getCurrentUser } from './auth'
 import { randomId } from './localStore'
 import type { Presence } from './presence'
@@ -84,9 +85,11 @@ export function displayName(): string {
   }
 }
 
-export function roomsEnabled(): boolean {
-  return apiEnabled()
-}
+/**
+ * `roomsEnabled()` 的定义在 ./roomFlags —— 理由和 liveEnabled 一样（见那个文件）。
+ * 这里转出去，别删。
+ */
+export { roomsEnabled } from './roomFlags'
 
 /** 联机页面链接：朋友打开即可加入 */
 export function roomLink(gameSlug: string, roomId: string): string {

@@ -26,7 +26,7 @@ import type { ArcadeButtonCount, PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { EJS_DEFAULT_CONTROLS } from '@/lib/keymapData'
 import type { Capability, CaptureSources, LoadPhase, LoadProgress, MountOptions, RuntimeHandle, StageMode } from '../types'
-import { fetchBlobWithProgress, throttleProgress } from '../loadProgress'
+import { fetchBlobWithProgress, fetchWithProgress, throttleProgress } from '../loadProgress'
 import { romCacheDelete, romCacheGetBlob, romCacheKey, romCachePutBlob } from '../romCache'
 import { focusFrame, frameGamepads } from '../frameFocus'
 import { installAudioTap, type AudioTap } from '../audioTap'
@@ -41,6 +41,7 @@ import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { loadRemoteArchiveRom } from '../remoteArchive'
 import { matchArcadeHack, type ArcadeHack } from '@/data/arcadeHacks'
 import { deriveArcadeHackBytes } from '../arcadeHack'
+import { planBiosFiles } from '../biosPlan'
 import { isRomPackBytes, isRomPackUrl, unpackRomPackBlob } from '@/services/romPack'
 
 /**
@@ -78,6 +79,11 @@ import {
   type LayoutOption,
   type TouchModeOption,
 } from '../dualScreen'
+/*
+  街机 DIP 开关（后台「DIP 开关」那一栏）。
+  决策全在 dipPlan.ts 那个纯函数里，这里只负责读核心选项、写值、回读核对。
+*/
+import { findDipOptions, planDipChanges, type DipPlan } from '../dipPlan'
 
 /**
  * 站点语言 → EmulatorJS 自带的界面语言包（data/localization/*.json）。
@@ -471,7 +477,7 @@ interface EjsGameManager {
   supportsStates?: () => boolean
   /** 把电池存档（SRAM）从核心刷进 /data/saves（cwrap cmd_savefiles）*/
   saveSaveFiles?: () => void
-  /** Emscripten 的虚拟文件系统。RomData 要往里塞一个 .dat，见 installRomDataInjector */
+  /** Emscripten 的虚拟文件系统。RomData / BIOS 要往里塞文件，见 installFsInjector */
   FS?: { writeFile: (path: string, data: string | Uint8Array) => void }
   /**
    * 核心自报的选项表（就是核心的 retro_core_options_v2），新版本才有 ——
@@ -481,6 +487,21 @@ interface EjsGameManager {
   getCoreOptionsJSON?: () => { options?: unknown[] } | null
   /** 老格式：一行一项的字符串（`key|default; a|b|c`）。只在 JSON 那个拿不到时兜底 */
   getCoreOptions?: () => string
+  /**
+   * 直接写一个核心选项（cwrap `ejs_set_variable`）。
+   *
+   * 引擎自己的设置菜单改一行时走的就是它。我们只拿它当**兜底**：
+   * DIP 开关是核心在 `retro_load_game` 里才注册成选项的，而设置菜单可能在那之前就建好了 ——
+   * 那一行不在菜单里时，`changeSettingOption` 只是往 allSettings 塞一格、转发不到核心
+   * （和 lockMouse 那个坑同源，见 releaseMouseLock）。见 applyArcadeDipDefault。
+   */
+  setVariable?: (key: string, value: string) => void
+  /**
+   * 重启这一局（cwrap `system_restart` → 核心的 `retro_reset()`）。引擎工具栏那个重启按钮
+   * 走的就是它。DIP 拨完要用一次 —— 那一档大多是被游戏在开机时读一次就定死的，
+   * 见 applyArcadeDipDefault 的第 6 条。
+   */
+  restart?: () => void
 }
 /**
  * 「这台机器本身就是靠戳屏幕玩的」—— 画布必须收得到指针事件，
@@ -503,8 +524,11 @@ interface EjsEmulator {
    * 中途开房（openNetplay）时引擎的 config 早就定死了，得补写这一格。
    */
   config?: { gameId?: number }
-  /** 引擎真正把 ROM 交给核心的那一步；RomData 注入器包在它外面 */
-  startGame?: () => void
+  /**
+   * 引擎真正把 ROM 交给核心的那一步；installFsInjector 包在它外面。
+   * 返回值写成 unknown：注入器那层是 async（要等 BIOS 字节到货），引擎不看返回值。
+   */
+  startGame?: () => unknown
   isNetplay?: boolean
   /** startGame() 一路跑完才置 true —— 兜底轮询靠它判断「到底开局了没有」 */
   started?: boolean
@@ -686,19 +710,39 @@ const FATAL_PHRASES = [
 ]
 
 /**
- * 把 FBNeo 的 RomData（.dat）塞进模拟器的虚拟文件系统。
+ * 要写进 Emscripten 虚拟文件系统的一个文件。
+ *
+ * `bytes` 允许是一个 promise：BIOS 包可能要下几 MB，我们在挂载那一刻就开始拉，
+ * 到真正开局时（几秒后）通常已经到货，`await` 不会真的等。
+ * 给 `null` 表示「没拿到」—— 那就不写，让核心自己去报缺哪个文件（比我们瞎猜强）。
+ */
+interface FsInjection {
+  path: string
+  bytes: string | Promise<Uint8Array | null>
+}
+
+/**
+ * 把文件塞进模拟器的虚拟文件系统（ROM 之外的那些：RomData、BIOS 包）。
  *
  * ── 为什么要有这东西 ─────────────────────────────────────────
- * 街机核心靠压缩包名认游戏（见 AGENTS.md §2.8）。汉化版、修改版这类包不在 FBNeo
- * 的驱动表里，叫什么名字都是「Romset is unknown」。FBNeo 给这种包留了 RomData：
- * 一份 .dat 写明 ZipName（包名）、DrvName（借哪个驱动跑）和整份 ROM 清单，
- * 核心把该驱动的包名「寄生」成 ZipName，并整个改用 dat 里的清单，
- * 于是和原版对不上的那几个 ROM 也能按自己的长度、CRC 加载。
+ * 引擎只认「ROM 一个地址 + BIOS 一个地址」，其余文件它插不进去，而 FBNeo 偏偏有两类
+ * 需求都得靠「和 ROM 并排的文件」满足：
  *
- * ── 为什么放在 ROM 旁边而不是 system 目录 ─────────────────────
+ *   1. **RomData（.dat）**：街机核心靠压缩包名认游戏（见 AGENTS.md §2.8）。汉化版、
+ *      修改版这类包不在 FBNeo 驱动表里，叫什么名字都是「Romset is unknown」。
+ *      FBNeo 给这种包留了 RomData：一份 .dat 写明 ZipName（包名）、DrvName（借哪个驱动跑）
+ *      和整份 ROM 清单，核心把该驱动的包名「寄生」成 ZipName 并改用 dat 里的清单，
+ *      于是和原版对不上的那几个 ROM 也能按自己的长度、CRC 加载。
+ *
+ *   2. **额外的 BIOS 系统包**：引擎只有一个 BIOS 槽位（`EJS_biosUrl`），而街机一个平台
+ *      底下其实是好几套硬件 —— Neo Geo 要 `neogeo.zip`、IGS 的 PGM 板子要 `pgm.zip`。
+ *      平台级那份照旧走 `EJS_biosUrl`，**这款游戏额外需要的那份**由这里写进去。
+ *
+ * ── 为什么放在 ROM 旁边而不是别处 ──────────────────────────────
  * 核心的 retro_dat_romset_path() 在内容名查不到驱动时，**先找和内容同目录的
- * `<basename>.dat`**，找不到才去 `<system>/fbneo/romdata/`。EmulatorJS 把 ROM 写在
- * 文件系统根目录（`callMain(["/" + fileName])`），所以 /wofcn.zip 对应 /wofcn.dat。
+ * `<basename>.dat`**，找不到才去 `<system>/fbneo/romdata/`；BIOS 也是按 set 名在
+ * 内容目录里找。EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`），
+ * 所以 /wofcn.zip 对应 /wofcn.dat，/kov.zip 对应和它并排的 /pgm.zip。
  * 走这条路还有两个好处：不必打开 fbneo-allow-patched-romsets，也不用先加载一遍
  * 原版 romset 再去核心选项里勾 —— 那是 RetroArch 那套交互，网页上没法要求玩家做。
  *
@@ -709,13 +753,17 @@ const FATAL_PHRASES = [
  * → **startGame()** → callMain。所以在 loader.js 之前给 window.EJS_emulator 装一个
  * setter，实例一挂上来就用自有属性盖掉原型上的 startGame。
  *
- * 写失败不拦着开局：那样至少还能按原始 romset 试一把，比直接黑屏强，
+ * ⚠️ **所有要写文件的地方共用这一个 setter。** `Object.defineProperty` 只能留一个
+ * setter —— 谁后定义谁生效，另一个的 wrap 永远不会被调用，而症状是「文件没写进去」
+ * 这种毫无线索的失败。原来是 RomData 一个人占着；要加 BIOS 时把这条通道抽成通用的一层，
+ * 而不是再写第二个注入器。
+ *
+ * 写失败不拦着开局：那样至少还能按原始 romset / 平台级 BIOS 试一把，比直接黑屏强，
  * 玩家会收到一条说明，日志里也留得下线索。
  */
-function installRomDataInjector(
+function installFsInjector(
   win: Window & Record<string, unknown>,
-  datPath: string,
-  dat: string,
+  injections: FsInjection[],
   onFail: (msg: string) => void,
 ): void {
   let emu: EjsEmulator | undefined
@@ -726,11 +774,21 @@ function installRomDataInjector(
     const original = next.startGame
     if (typeof original !== 'function') return
     wrapped = true
-    next.startGame = function (this: unknown) {
+    /**
+     * async 是有意的：BIOS 包的字节可能还在路上，等它到了再叫 original。
+     * 引擎不 await 这个返回值（`startGameFromDownload` 里是裸调用），
+     * 所以这里多出的一个微任务只影响「callMain 晚一丁点」，不会打乱引擎的状态机。
+     */
+    next.startGame = async function (this: unknown) {
       try {
         const fs = next.gameManager?.FS
         if (!fs) throw new Error('gameManager.FS 还没建好')
-        fs.writeFile(datPath, dat)
+        for (const item of injections) {
+          const bytes = typeof item.bytes === 'string' ? item.bytes : await item.bytes
+          // null = 没下下来。不写，核心自己会报「缺 xx」，那条比我们编的话准
+          if (bytes == null) continue
+          fs.writeFile(item.path, bytes)
+        }
       } catch (e) {
         onFail(e instanceof Error ? e.message : String(e))
       }
@@ -746,6 +804,46 @@ function installRomDataInjector(
       wrap(next)
     },
   })
+}
+
+/** BIOS 包体积上限。一份 BIOS 通常 1–3 MB，绑错 key 指到一个大文件时在这里挡住 */
+const BIOS_MAX_BYTES = 64 * 1024 * 1024
+
+/**
+ * 拉一个 BIOS 包的字节。
+ *
+ * ⚠️ **必须走 fetchWithProgress，不能用裸 fetch。** 两个原因，第一个是真的会出 BUG：
+ *
+ *   1. **卡死检测看不见它。** `STALL_MS` 是「30 秒没有任何网络动静就报卡住」，而那个心跳
+ *      （installNetTap 的 onBeat）挂在**引擎自己的** XHR / fetch 上 —— 我们这条下载它看不见。
+ *      于是慢网上下 1.5 MB 的 pgm.zip 超过 30 秒时，玩家会先看到「卡住了」，
+ *      而游戏其实照常在遮罩后面起来（`startGame` 只是被我们 await 住）。
+ *      走 fetchWithProgress 之后每读一块就拍一次心跳，这个假警报就没有了。
+ *   2. 顺带让进度条动起来：阶段报 `assets`（界面上是「正在下载引擎资源…」）——
+ *      BIOS 属于引擎侧的必需文件，不是游戏本体，别报成 `rom`。
+ *
+ * 失败返回 null 而不是抛：BIOS 拉不到时该由核心报「缺哪个文件」（它报得比我们准），
+ * 而不是让整个开局流程在这里断掉。
+ */
+function fetchBiosBytes(
+  url: string,
+  onBeat: () => void,
+  onProgress: ((p: LoadProgress) => void) | undefined,
+): Promise<Uint8Array | null> {
+  const emit = throttleProgress(onProgress)
+  return fetchWithProgress(url, {
+    phase: 'assets',
+    maxBytes: BIOS_MAX_BYTES,
+    onProgress: (p) => {
+      onBeat()
+      emit(p)
+    },
+  })
+    .then((buf) => new Uint8Array(buf))
+    .catch((e: unknown) => {
+      console.warn(`[emulatorjs] BIOS 包下载失败（游戏仍会尝试按原配置启动）：${url}`, e)
+      return null
+    })
 }
 
 function installErrorTap(
@@ -2186,6 +2284,130 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
 
   /**
+   * 读一遍核心的选项表，**不筛**：JSON 优先，拿不到退回老格式文本。
+   * DIP 那一层要自己认哪些是 DIP（见 dipPlan 的 findDipOptions），所以这里不做筛选。
+   *
+   * ⚠️ 我们自托管的 fbneo 走的是**老格式那一支**：2026-09-18 把
+   * `cores/fbneo-wasm.data` 那个 7z 解开搜过符号 —— 有 `get_core_options`、
+   * 没有 `get_core_options_json`。所以「JSON 优先」在当下等于没走到，
+   * 别把老格式那条路当摆设删掉（DIP 开关实际就是靠它读出来的）。
+   */
+  const readCoreOptions = (emu: EjsEmulator): unknown => {
+    const gm = emu.gameManager
+    const fromJson = gm?.getCoreOptionsJSON?.() ?? null
+    if (fromJson) return fromJson
+    if (typeof gm?.getCoreOptions === 'function') return parseCoreOptionsText(gm.getCoreOptions())
+    return null
+  }
+
+  /** 某个核心选项此刻的当前值（回读核对用）。读不到返回空串 */
+  const currentDipValue = (emu: EjsEmulator, key: string): string =>
+    findDipOptions(readCoreOptions(emu)).find((o) => o.key === key)?.current ?? ''
+
+  /**
+   * 把后台配的「DIP 开关」应用给核心 —— 麻将游戏要的那一档（见 dipPlan.ts 的长注释）。
+   *
+   * 五条约束，缺一条都会出别的毛病：
+   *
+   * 1. **只在后台真填了东西时动**。留空 = 不干预，一个字节都不该写。
+   * 2. **认不出来就什么都不做**。planDipChanges 找不到那一项 / 那一档时给空 changes
+   *    加一句把人话和候选都列出来的 warning —— 保持核心自己的默认，
+   *    绝不拿猜的字符串去写（写错的取值是**静默失效**的）。
+   * 3. **玩家自己选过就不动**。判据只能是 `emu.settings[key]`：只有
+   *    `changeSettingOption(k, v)`（第三参不为 true）才写那一格，也正是落进 localStorage
+   *    的那一份 = 玩家的选择。`getSettingValue()` 混着默认值，分不开。
+   *    ⚠️ 这一格是**按游戏**存的：以前在哪款麻将游戏里手选过 Joystick，那款就一直照玩家的来。
+   * 4. **走 changeSettingOption，回读不对再退回 setVariable**。理由是第 2 条那件事的续集：
+   *    DIP 选项在 `retro_load_game` 之后才存在，而引擎的设置菜单可能早就建好了 ——
+   *    菜单里没有那一行时前者的转发到不了核心（见 EjsGameManager.setVariable 的注释）。
+   * 5. **改完回读核对**，别只打一句「已改」：changeSettingOption 是 `?.()`，
+   *    它不在时是静默不做的。
+   * 6. **真改了东西就重启一次**。DIP 那一位（输入设备类型）大多是游戏**开机时**读一次
+   *    就定死的，而我们拨的时候它已经跑了几帧 —— 不重启的话玩家看到的还是「按什么都没反应」，
+   *    那正是这个功能要治的毛病。重启是安全的：FBNeo 的 `retro_reset()` 里会
+   *    `check_variables()` + `apply_dipswitches_from_variables()` 重新拨一遍
+   *    （见 libretro.cpp；`InputInit()` 只在 `retro_load_game` 里，重启抹不掉刚设的值），
+   *    所以它反而是**唯一**能让这一局从头按新 DIP 跑起来的动作 ——
+   *    引擎工具栏那个重启按钮走的就是同一个调用。
+   *
+   * 只在街机上调：别的平台没有 DIP 这回事，多写一格 allSettings 只是往「我们改过什么」
+   * 这份账里塞噪声。
+   */
+  const applyArcadeDipDefault = (emu: EjsEmulator) => {
+    const raw = options.arcadeDip?.trim()
+    if (!raw) return
+    /** 到循环结束时，是不是真有至少一处改成了（决定要不要重启） */
+    let changed = false
+
+    let plan: DipPlan
+    try {
+      plan = planDipChanges(raw, readCoreOptions(emu))
+    } catch (e) {
+      console.warn('[emulatorjs] 读核心选项失败，DIP 开关这块跳过：', e)
+      return
+    }
+    // warning 是给我们 / 管理员看的排查线索（核心那边不会报错，只是安静地不生效）
+    if (plan.warning) console.warn(`[arcade] ${plan.warning}`)
+    if (!plan.changes.length) return
+
+    for (const change of plan.changes) {
+      const chosen = emu.settings?.[change.key]
+      if (typeof chosen === 'string' && chosen && !sameValue(chosen, change.value)) {
+        console.info(
+          `[arcade] 玩家在引擎菜单里自己选过 ${change.key} = ${chosen}，DIP 不覆盖它` +
+            '（想拨回来：设置 → Core Options）',
+        )
+        continue
+      }
+      let effective = ''
+      try {
+        if (sameValue(currentDipValue(emu, change.key), change.value)) {
+          effective = change.value
+        } else {
+          emu.changeSettingOption?.(change.key, change.value, true)
+          effective = currentDipValue(emu, change.key)
+          if (!sameValue(effective, change.value)) {
+            emu.gameManager?.setVariable?.(change.key, change.value)
+            effective = currentDipValue(emu, change.key)
+          }
+        }
+      } catch (e) {
+        console.warn(`[arcade] 设置 DIP 失败：${change.key} = ${change.value}`, e)
+        continue
+      }
+      if (sameValue(effective, change.value)) {
+        changed = true
+        console.info(`[arcade] DIP → ${change.why}`)
+      } else if (!effective) {
+        // 老格式的核心选项（v1）里没有「当前值」这一栏，回读天然是空的 —— 这不是失败
+        changed = true
+        console.info(`[arcade] DIP 已交给引擎：${change.why}（这个核心报的是老格式选项，回读不到当前值）`)
+      } else {
+        console.warn(
+          `[arcade] DIP 没改成：${change.key} 回读到「${effective}」，期望 ${change.value}。` +
+            `changeSettingOption 在不在：${typeof emu.changeSettingOption}，` +
+            `setVariable 在不在：${typeof emu.gameManager?.setVariable}`,
+        )
+      }
+    }
+
+    /*
+      改完重启一次 —— 理由见上面第 6 条。只在真改了东西时做：
+      没改就重启等于白白让玩家多等一遍开机画面。
+      `?.()` 是因为老一点的引擎构建未必有这个公开方法（它是工具栏那个重启按钮的入口），
+      没有也不算错：DIP 已经写进核心了，只是这一局可能得玩家自己重开一次才吃到。
+    */
+    if (changed) {
+      try {
+        emu.gameManager?.restart?.()
+        console.info('[arcade] DIP 改完重启一次，让这一局从头按新 DIP 走')
+      } catch (e) {
+        console.warn('[arcade] DIP 改完想重启但失败了 —— 这一局可能要手动重开才生效：', e)
+      }
+    }
+  }
+
+  /**
    * 开局后把画面几何报出去，并（双屏机型）把屏幕布局摆正。
    *
    * 几何是**所有平台**都报的：播放器的容器比例本来靠查表，查表给的是 CRT 年代的
@@ -2432,6 +2654,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     options.onStart?.()
     refineCaps()
     applyTouchInput(win)
+    /*
+      街机 DIP 开关（后台那一栏 → 核心的核心选项，见 applyArcadeDipDefault）。
+
+      ⚠️ 挂在**开局之后**是硬约束，别挪到前面去：DIP 是核心在 retro_load_game 里
+      才注册成核心选项的，在那之前读选项表一个 dipswitch 键都没有，填了也白填。
+    */
+    if (options.platform === 'arcade') {
+      const emuForDip = emuOf()
+      if (emuForDip) applyArcadeDipDefault(emuForDip)
+    }
     /*
       指针优先的平台（画布本身就是触摸屏）绝不能让引擎锁鼠标指针，见 releaseMouseLock。
 
@@ -2703,20 +2935,46 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         // 装晚了那句「缺哪个文件」就已经过去了
         errorTap = installErrorTap(win, reportEngineError)
 
-        // RomData 也要赶在 loader.js 之前装：它靠接管 window.EJS_emulator 的赋值来生效，
+        // RomData / BIOS 也要赶在 loader.js 之前装：它靠接管 window.EJS_emulator 的赋值来生效，
         // loader.js 第一行就把实例挂上去了，晚一步就接不着。
+        const injections: FsInjection[] = []
+
         // 文件名必须和 ROM 同名（wofcn.zip → /wofcn.dat），这是核心自己的查找规则。
         const romData = options.arcadeRomData?.trim() || builtInRomData
         if (romData) {
-          const datPath = `/${engineGameName.replace(/\.[^.]*$/, '')}.dat`
-          installRomDataInjector(win, datPath, `${romData}\n`, (msg) => {
+          injections.push({ path: `/${engineGameName.replace(/\.[^.]*$/, '')}.dat`, bytes: `${romData}\n` })
+        }
+
+        /*
+          这款游戏额外需要的 BIOS 系统包（neogeo / pgm / …）。
+
+          引擎只有一个 BIOS 槽位（EJS_biosUrl，见下面 options.biosUrl 那一行），而街机
+          一个平台底下有好几套硬件 —— 平台级那份填了 neogeo.zip，PGM 的包就永远进不去，
+          玩家看到的是 `Romset is unknown` / `missing files`，和 ROM 对不对毫无关系。
+
+          写哪几个、什么时候干脆不写，全在 biosPlan.ts 里（那是纯函数，有单测）；
+          这里只负责把计划变成「下载 + 落盘」。
+        */
+        const plan = planBiosFiles(options.biosUrl, options.biosSet)
+        if (plan.warning) console.warn(plan.warning)
+        for (const file of plan.files) {
+          /*
+            bytes 传 promise：挂载这一刻就开始下，等到真正开局（几秒后）通常已经到货。
+            带上 beat 和 onProgress：这条下载引擎看不见，不拍心跳的话慢网上会被误判成「卡住了」，
+            而且进度条会一直停在原地（见 fetchBiosBytes 的注释）。
+          */
+          injections.push({ path: file.path, bytes: fetchBiosBytes(file.url, beat, options.onProgress) })
+        }
+
+        if (injections.length) {
+          installFsInjector(win, injections, (msg) => {
             /*
-              写失败**不拦着开局**（和上面 installRomDataInjector 的注释一致）：没了改版 dat，
+              写失败**不拦着开局**（和 installFsInjector 的注释一致）：没了改版 dat，
               核心还能按原始 romset 试一把，比直接红字强。以前这里走 onError —— 而 onReady 之后的
               onError 等于拆掉这一局（第一轮体检的铁律），一个可选的补丁没写进去就把游戏关了。
               真缺文件的话核心自己会报「缺 xxx」，那条走 errorTap，比这里更准。
             */
-            if (!destroyed) console.warn('[emulatorjs] RomData 没写进虚拟文件系统，按原始 romset 继续：', fmt(rt.ejsRomDataFailed, { msg }))
+            if (!destroyed) console.warn('[emulatorjs] 文件没写进虚拟文件系统，按原始配置继续：', fmt(rt.ejsFsInjectFailed, { msg }))
           })
         }
 

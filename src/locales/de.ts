@@ -681,6 +681,9 @@ const de: Translation = {
     autoPlatform: 'Plattform automatisch erkennen',
     currentPlatform: 'Plattform: {name}',
     runtimeSuffix: '· Runtime: {name}',
+    biosLabel: 'Benötigtes BIOS-Paket',
+    biosHint:
+      'Manche Arcade-Platinen brauchen ein BIOS zum Starten (Neo Geo: neogeo.zip, IGS PGM: pgm.zip). Bei Spielen aus dem Katalog ist das schon hinterlegt; für eine lokale Datei nur den Systemnamen eintragen — pgm oder neogeo. Leer lassen für die Standard-BIOS der Plattform.',
     romDataShow: 'RomData (Hacks) manuell eingeben',
     romDataHide: 'RomData (Hacks) ausblenden',
     romDataHint:
@@ -1388,7 +1391,7 @@ const de: Translation = {
     ruffleNoApi: 'Ruffle-Player-API nicht gefunden',
     flashLoadFailed: 'Flash-Inhalt konnte nicht geladen werden: {msg}',
     ejsNoCore: 'EmulatorJS hat keinen Core für {platform}',
-    ejsRomDataFailed: 'RomData konnte nicht eingespielt werden – das Spiel startet als unveränderter Romset: {msg}',
+    ejsFsInjectFailed: 'Die Patch-Dateien konnten nicht in den Emulator geschrieben werden (sowohl RomData als auch zusätzliche BIOS-Pakete laufen über diesen Weg) – das Spiel startet mit der ursprünglichen Konfiguration: {msg}',
     ejsInitFailed: 'Der Emulator-Container konnte nicht initialisiert werden',
     ejsEngineError: 'Emulator-Fehler: {msg}',
     ejsArcadeRomInvalid: 'Die Arcade-Datei ist unvollständig oder keine gültige ZIP-Datei: {name}',

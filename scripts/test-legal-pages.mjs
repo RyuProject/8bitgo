@@ -229,8 +229,13 @@ console.log('\n四、第三方主机的白名单（加了新脚本必须先更�
  * 目的是让「顺手加一个 CDN 脚本」这件事，必须先把政策改了才能过测试。
  */
 const HOSTS = {
-  'fonts.googleapis.com': { zh: 'Google Fonts', en: 'Google Fonts' },
-  'fonts.gstatic.com': { zh: 'Google Fonts', en: 'Google Fonts' },
+  /*
+   * 这里**只列 index.html 里还真的存在的外部主机**。
+   *
+   * fonts.googleapis.com / fonts.gstatic.com 曾经在表里 —— 2026-09-18 起英文字体
+   * （Geist Pixel）也改成自托管了，index.html 不再引 Google，所以两条一起删掉。
+   * 政策里对应的那一段也删了，否则就是「披露了一件已经不做的事」。
+   */
   'lf1-cdn-tos.bytegoofy.com': { zh: '字节跳动', en: 'ByteDance' },
 }
 
@@ -291,14 +296,11 @@ const FACTS = [
     probe: ['src/services/autoInclude.ts', 'pathname'],
     say: { zh: ['每次切换页面|每次切換頁面'], en: ['every in-site page change'] },
   },
-  {
-    id: 'google-fonts',
-    where: 'third-parties',
-    doc: 'privacy',
-    what: '英文字体从 Google 加载，等于每次页面加载都给 Google 一次 IP + UA',
-    probe: ['index.html', 'fonts.googleapis.com'],
-    say: { zh: ['Google Fonts'], en: ['Google Fonts'] },
-  },
+  /*
+   * 'google-fonts' 这条 2026-09-18 撤了：西文像素字体改成自托管（见 index.html 与
+   * src/index.css 的 @font-face），页面加载不再碰 Google 的服务器，也就没有可披露的事。
+   * 留着这条会逼着政策继续写一段已经不存在的行为。
+   */
   {
     id: 'anon-ip-plaintext',
     where: 'ip',
@@ -346,6 +348,14 @@ const FACTS = [
     what: '未配置时打洞回退到 Google 和 Twilio 的公共 STUN',
     probe: ['server/src/routes/ice.js', 'twilio'],
     say: { zh: ['Twilio'], en: ['Twilio'] },
+  },
+  {
+    id: 'cheerpj-cdn',
+    where: 'third-parties',
+    doc: 'privacy',
+    what: 'J2ME 游戏靠第三方 CheerpJ 在浏览器里跑 Java 虚拟机，运行时从 leaningtech 的 CDN 下载；而且指针一移到「开始游戏」上就开始预下载',
+    probe: ['src/emulator/j2meUrl.ts', 'cjrtnc.leaningtech.com'],
+    say: { zh: ['CheerpJ'], en: ['CheerpJ'] },
   },
   {
     id: 'dos-peer-server',

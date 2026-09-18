@@ -49,6 +49,16 @@ export interface MountOptions {
    * 仅 emulatorjs 运行时的 FBNeo 系核心会用到。
    */
   arcadeRomData?: string
+  /**
+   * 街机 DIP 开关 —— 实机主板上那组拨码，麻将类游戏靠它决定「按摇杆还是按麻将面板收键」。
+   *
+   * 写法两种（详见 src/emulator/dipPlan.ts）：
+   *   · `mahjong`            → 从核心报上来的选项里认「摇杆 / 麻将」那一项并拨到麻将
+   *   · `组名=值`（多条用逗号） → 明确指定，例如 `Controls=Mahjong`、`Test mode=Off`
+   * 留空 = 不干预。**只有 FBNeo 系核心把 DIP 做成了核心选项**，别的核心填了不生效
+   * （那种情况会往控制台打一条点名这件事的 warning）。
+   */
+  arcadeDip?: string
   /** 街机虚拟面板只展示这一款真正需要的 2 / 4 / 6 个动作键。 */
   arcadeButtons?: ArcadeButtonCount
   /** Flash 的逐游戏键位；纯鼠标游戏留空，避免画出无效按钮。 */
@@ -62,6 +72,16 @@ export interface MountOptions {
    * Neo Geo 这类平台没有它引擎根本起不来，和 ROM 对不对无关。
    */
   biosUrl?: string
+  /**
+   * 这款游戏**额外**需要的 BIOS 系统包：`name` 是核心要找的 set 名（neogeo / pgm / skns），
+   * `url` 是它的地址。
+   *
+   * 为什么和 biosUrl 并存：引擎只给一个 BIOS 槽位（`EJS_biosUrl`），而街机一个平台底下
+   * 有好几套硬件 —— 平台级那份（通常是 neogeo.zip）填进去了，PGM 的包还是进不来。
+   * 这一份由适配器写进虚拟文件系统的根目录 `/`，和 ROM 并排（核心就是在内容同目录找 set 的）。
+   * 名字**必须**是 set 名，见 mappers.js 的 arcadeBiosOf。
+   */
+  biosSet?: { name: string; url: string }
   /**
    * DOS 启动程序（zip 内相对路径，仅 jsdos 运行时用）。
    * 传了就按它生成 dosbox.conf，压过 pickExecutable 的猜测。

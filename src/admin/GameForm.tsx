@@ -36,7 +36,9 @@ import {
 } from '@/lib/dosExtras'
 import { identifyArcadeRomset, type RomsetIdentification } from '@/lib/arcadeRomset'
 import type { ArcadeHack } from '@/data/arcadeHacks'
-import { platformBiosUrlSync, fetchPlatformBios } from '@/services/platformBios'
+import { biosSetUrlSync, platformBiosUrlSync, fetchPlatformBios, loadedPlatformBios } from '@/services/platformBios'
+// 「平台级那份是不是正好要的这个系统」这条规则和播放器共用一份实现，别各写一份
+import { biosNameOfUrl } from '@/emulator/biosPlan'
 import { uploadSwfBundle, type BundleUploadProgress } from './swfUpload'
 import { compressCoverToWebp } from '@/lib/imageResize'
 import { confirmUpload, confirmDiscImage, cleanupSuperseded, deleteRomObjects, human, isDeletableKey } from './uploadGuards'
@@ -85,6 +87,25 @@ export function slugify(text: string): string {
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')
 }
+
+/**
+ * 街机 BIOS 系统名的候选。**只是候选**（datalist），输入框仍然是自由文本 ——
+ * 完整名单有 18 种（romset 索引里统计出来的），列在这里的是游戏数靠前的那些，
+ * 剩下的（`skns`、`decocass`、`cchip`…）手填就行：
+ * 价值在于「常见的能点，不用背」，而不在于穷举。
+ */
+const KNOWN_ARCADE_BIOS = [
+  'neogeo',
+  'pgm',
+  'ngp_ngp',
+  'skns',
+  'decocass',
+  'cchip',
+  'nmk004',
+  'midssio',
+  'isgsm',
+  'astro_astrocde',
+]
 
 const today = () => new Date().toISOString().slice(0, 10)
 
@@ -166,6 +187,35 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
     .filter(Boolean)
 
   const set = <K extends keyof Game>(key: K, value: Game[K]) => setForm((f) => ({ ...f, [key]: value }))
+
+  /*
+    打开表单就把 BIOS 绑定表拉下来。
+
+    上传文件的识别那条路本来会顺手拉一次（sniffArcade 里），但**手填系统名**的人不会触发它 ——
+    而手填恰恰是识别不出来时唯一的出路（汉化版、驱动表里没有的板子）。
+    没拉下来时下面那条即时校验只能闭嘴（宁可不说，也不能对着空表报「没绑定」）。
+  */
+  useEffect(() => {
+    void fetchPlatformBios()
+  }, [])
+
+  /**
+   * 「这个游戏要的 BIOS 还没绑地址」——值是系统名，没有就是 null。
+   *
+   * 两条路都算已绑定：
+   *   · 按系统绑了 `bios:pgm`（新的一档）
+   *   · 平台级那一份的**文件名正好就是它**（老站把 arcade 绑成 neogeo.zip 的情况）
+   *
+   * ⚠️ 绑定表没拉下来时返回 null —— 对着空表报「没绑定」比不报更糟（会把人骗去改配置）。
+   */
+  const biosUnbound = (() => {
+    if (!loadedPlatformBios()) return null
+    const name = form.arcadeBios?.trim().toLowerCase()
+    if (!name) return null
+    if (biosSetUrlSync(name)) return null
+    if (biosNameOfUrl(platformBiosUrlSync(form.platform)) === name) return null
+    return name
+  })()
 
   /**
    * 把识别到的改版包写进 RomData 字段。
@@ -359,6 +409,18 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
       dosSaveHint: form.platform === 'dos' && !windowsGuest ? form.dosSaveHint?.trim() || undefined : undefined,
       // 街机改版包专用；换成别的平台时要清掉，否则改完平台还留着一份没人读的 dat
       arcadeRomData: form.platform === 'arcade' ? form.arcadeRomData?.trim() || undefined : undefined,
+      // 非街机平台一律不带这个字段：留着的话换平台后旧的 BIOS 名会跟着走，
+      // 而 mappers 那边只做形状校验，它不知道这款游戏已经不该要 BIOS 了
+      arcadeBios: form.platform === 'arcade' ? form.arcadeBios?.trim().toLowerCase() || undefined : undefined,
+      /*
+        DIP 开关同理：非街机要清掉，否则换完平台还挂着一句没人读的话。
+
+        ⚠️ 这里**不能**像上面的 BIOS 名那样 toLowerCase()：那一栏允许写完整的核心选项键
+        （`fbneo-dipswitch-kov-Controls=Mahjong`），而键名是大小写敏感的 ——
+        小写化之后就再也匹配不上了，症状是「后台填了、跑起来没反应」。
+        组名那一段的大小写无所谓：匹配时两边都归一化（见 dipPlan 的 normName）。
+      */
+      arcadeDip: form.platform === 'arcade' ? form.arcadeDip?.trim() || undefined : undefined,
       arcadeButtons: form.platform === 'arcade' ? form.arcadeButtons : undefined,
       // 纯鼠标 Flash 留空；有键位时屏幕手柄和实体手柄共用这一份配置。
       flashControls: form.platform === 'flash' ? form.flashControls : undefined,
@@ -599,6 +661,58 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
               <option value={6}>6 键</option>
             </select>
           </Field>
+          <Field label="BIOS 包（系统名）" className="col-span-2">
+            <input
+              className={cx(inputClass, 'font-mono')}
+              list="known-arcade-bios"
+              value={form.arcadeBios ?? ''}
+              onChange={(e) => set('arcadeBios', e.target.value || undefined)}
+              spellCheck={false}
+              placeholder="neogeo / pgm"
+            />
+            <datalist id="known-arcade-bios">
+              {KNOWN_ARCADE_BIOS.map((n) => (
+                <option key={n} value={n} />
+              ))}
+            </datalist>
+            <p className="mt-1 text-[11px] text-dim">
+              核心按 <b>set 名</b>找 BIOS 包：Neo Geo 是 <code>neogeo</code>，IGS 的 PGM 板子是 <code>pgm</code>。
+              上传 ROM 时识别出来的会自动填上；识别不出来（汉化版、驱动表里没有的板子）就在这里手填。
+              留空 = 用平台默认那一份。地址在「ROM 存储 → 街机 BIOS 包」里按系统名绑。
+            </p>
+            {/*
+              手填这条路必须当场告诉人「这个系统还没绑地址」—— 上传那次识别会自动查一遍，
+              手输却不会，而缺 BIOS 的报错（核心说 missing files）看上去永远像 ROM 的问题。
+              绑定表没拉下来时不说话（见上面那条 useEffect 的说明）。
+            */}
+            {biosUnbound && (
+              <p className="mt-1 text-[11px] text-live">
+                ⚠️ 还没绑 <span className="font-mono">bios:{biosUnbound}</span> 的地址，
+                平台级那份也不是它 —— 现在直接开会报「缺文件」。
+                <Link to="/admin/roms" className="ml-1 text-brand-hover hover:underline">
+                  去绑定 →
+                </Link>
+              </p>
+            )}
+          </Field>
+          <Field label="DIP 开关" className="col-span-2">
+            <input
+              className={cx(inputClass, 'font-mono')}
+              value={form.arcadeDip ?? ''}
+              onChange={(e) => set('arcadeDip', e.target.value || undefined)}
+              spellCheck={false}
+              placeholder="mahjong"
+            />
+            <p className="mt-1 text-[11px] text-dim">
+              实机主板上那组拨码。目前只有一处用得上：<b>麻将类游戏</b>出厂是「摇杆」档，
+              不拨到麻将面板，方向键和碰吃杠全对不上 —— 而屏幕上不会报任何错，玩家只会觉得游戏坏了。
+              填 <code>mahjong</code> 会自动认出「摇杆 / 麻将」那一项并拨过去；
+              认不出来时浏览器控制台会把它看到的那几项和取值列出来，照着改写成
+              <code>组名=值</code>（例如 <code>Controls=Mahjong</code>，多条用逗号分隔）即可。
+              留空 = 不干预。只对走 <b>FBNeo 系核心</b>（fbneo / fbalpha2012）的街机有效 ——
+              MAME 2003 系没把 DIP 做成核心选项，填了不会生效（控制台会点名这件事）。
+            </p>
+          </Field>
           <Field label="RomData（改版包）" className="col-span-2 sm:col-span-4">
             <textarea
               className={cx(inputClass, 'h-44 resize-y py-2 font-mono text-xs leading-5')}
@@ -752,6 +866,8 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
               allBoundKeys={allBoundKeys}
               onHackFound={(hack) => applyHack(hack, true)}
               onApplyHack={(hack) => applyHack(hack)}
+              // 只填空的：管理员手填过就听他的（汉化版借用别的驱动时人比表准）
+              onBiosFound={(name) => setForm((f) => (f.arcadeBios?.trim() ? f : { ...f, arcadeBios: name }))}
             />
           </div>
         ))}
@@ -1395,6 +1511,7 @@ function RomField({
   allBoundKeys,
   onHackFound,
   onApplyHack,
+  onBiosFound,
 }: {
   value: string
   backupValue: string
@@ -1412,6 +1529,11 @@ function RomField({
    * 由父组件决定要不要自动填（现在的规则：字段是空的才自动填，不覆盖人写好的）。
    */
   onHackFound?: (hack: ArcadeHack) => void
+  /**
+   * 上传时认出这款游戏需要哪个 BIOS 系统包（`neogeo` / `pgm`）。
+   * 和 onHackFound 同理：字段在父组件手里，这里只报告，由父组件决定填不填。
+   */
+  onBiosFound?: (name: string) => void
   /** 管理员点「套用」时明确要求写入，覆盖也无所谓 */
   onApplyHack?: (hack: ArcadeHack) => void
 }) {
@@ -1432,7 +1554,6 @@ function RomField({
   } | null>(null)
   const archiveRef = romArchiveRef(value)
   /** 识别出来的游戏需要 BIOS，但平台还没绑 —— 就是「Neo Geo BIOS 成员缺失」那个坑 */
-  const [biosMissing, setBiosMissing] = useState<string | null>(null)
   const cfg = getRomConfig()
   const canUpload = Boolean(cfg.api && cfg.token)
   const isFlash = platform === 'flash'
@@ -1524,7 +1645,6 @@ function RomField({
    */
   const sniffArcade = async (file: File): Promise<string | null> => {
     setRomset(null)
-    setBiosMissing(null)
     if (!isArcade || !/\.(zip|7z)$/i.test(file.name)) return null
     try {
       const buf = await file.arrayBuffer()
@@ -1547,9 +1667,14 @@ function RomField({
       if (!hit) return null
 
       if (hit.bios) {
-        // 缓存可能还没拉过（后台刚打开就传文件），拉一次再判断
-        await fetchPlatformBios()
-        if (!platformBiosUrlSync(platform)) setBiosMissing(hit.bios)
+        /*
+          认出来了就替管理员填上（只填空的：他手填过就听他的 —— 汉化版借用别的驱动、
+          或者核心那批 romset 的 set 名和驱动表里不一致时，人比表准）。
+
+          「这个系统的 BIOS 绑了没有」由表单上那条即时校验去说（它同时覆盖手输的情况），
+          这里不再报第二遍。
+        */
+        onBiosFound?.(hit.bios)
       }
       return `${hit.name}.zip`
     } catch (err) {
@@ -1936,8 +2061,6 @@ function RomField({
         {romset && (
           <RomsetHint
             found={romset}
-            biosMissing={biosMissing}
-            platform={platform}
             onApplyHack={onApplyHack}
           />
         )}
@@ -2261,13 +2384,9 @@ function MediaField({
  */
 function RomsetHint({
   found,
-  biosMissing,
-  platform,
   onApplyHack,
 }: {
   found: RomsetIdentification
-  biosMissing: string | null
-  platform: PlatformId
   /** 一键把识别到的改版包写进表单（ROM 名 + RomData） */
   onApplyHack?: (hack: NonNullable<RomsetIdentification['hack']>) => void
 }) {
@@ -2336,14 +2455,6 @@ function RomsetHint({
             文件名保持原样上传了。核心只认 romset 短名，名字不对会报 Romset is unknown —— 确认是哪个版本后，手动把上面的 key 改成 &lt;romset&gt;.zip。
           </p>
         </div>
-      )}
-      {biosMissing && (
-        <p className="text-live">
-          ⚠️ 这游戏需要 <span className="font-mono">{biosMissing}</span> BIOS，但「{platform}」平台还没绑定 BIOS —— 现在直接开会报「四个 Neo Geo BIOS 成员缺失」。
-          <Link to="/admin/roms" className="ml-1 text-brand-hover hover:underline">
-            去绑定 →
-          </Link>
-        </p>
       )}
     </div>
   )

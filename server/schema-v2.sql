@@ -102,6 +102,13 @@ CREATE TABLE IF NOT EXISTS games (
   arcade_romdata TEXT NULL,
   -- 2 / 4 / 6：触屏只画游戏真正使用的动作键；NULL 按六键兼容旧数据。
   arcade_buttons TINYINT UNSIGNED NULL,
+  -- 这款街机游戏需要哪个 BIOS 系统包（neogeo / pgm / …），也就是核心要找的那个 set 名。
+  -- 空 = 不知道或不需要。识别不出来时管理员可以手工填；列排在 arcade_buttons
+  -- 之后是为了和 migrate 出来的老库列顺序一致（顺序不影响读，但两边不一样会让人怀疑漏了迁移）。
+  arcade_bios VARCHAR(32) NULL,
+  -- 街机 DIP 开关：实机那组拨码。麻将类游戏出厂是「摇杆」档，不拨到麻将面板就收不到键。
+  -- 写法是 `mahjong` 或 `组名=值`（多条逗号分隔），见 src/emulator/dipPlan.ts。
+  arcade_dip VARCHAR(200) NULL,
   -- Flash 每款游戏自己决定监听什么键，不能拿一套通用手柄蒙；纯鼠标游戏留空。
   flash_controls JSON NULL,
   -- 首页「精选」位的排序号。NULL = 不上首页，数字小的排前面。

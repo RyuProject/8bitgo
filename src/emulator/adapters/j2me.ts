@@ -36,6 +36,7 @@ import { assertJar } from '@/lib/romValidation'
 import { focusFrame, frameGamepads } from '../frameFocus'
 import { loadGameBytes } from '../romLoader'
 import { isRomPackUrl } from '@/services/romPack'
+import { warmHttpCache } from '../httpWarm'
 
 /* ---------------- 从 freej2me-web 源码里挖出来的接入点 ---------------- */
 
@@ -459,6 +460,22 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       } else {
         name = j2meFileName(options.game as string)
       }
+      /*
+        正式 ROM（对象存储里那份）在 CheerpJ 把 JVM 起来之前根本不会被取 ——
+        也就是说这份文件是**在几十秒之后**才开始下载的，而那几十秒里连接一直闲着。
+        这里提前拉一次把它放进 HTTP 缓存：CheerpJ 稍后那次请求会因为
+        j2meJarProxy 那条 `must-revalidate` 回来问一句，命中就是一个 304，
+        字节数从「整个 jar」降到零。jar 越大越划算（J2ME 常见 1–5 MB）。
+
+        ⚠️ **不能碰临时上传的那条路**：文件是我们刚 POST 上去的，本来就在内存里，
+        再拉一遍等于把同样的字节上下载两次，而且代理对临时文件发的是 no-store，
+        预取下来也留不住。所以只在 `!needsTempJar` 时才做。
+
+        ⚠️ 放在这里（而不是 prewarm.ts）是有意的：prewarm 是「玩家还没下决心」时跑的，
+        绝不能碰 ROM（成人门、语言槽都还没定）。走到这一行时播放器已经挂载、
+        年龄门已经过了，预取的是玩家这一局真的要玩的文件。
+      */
+      if (!needsTempJar) warmHttpCache(`${J2ME_PATH}jar/${name}`)
       srcSet = true
       options.onProgress?.({ phase: 'engine' })
       iframe.src = buildJ2meUrl(J2ME_PATH, name)

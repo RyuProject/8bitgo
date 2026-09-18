@@ -80,6 +80,10 @@ CREATE TABLE IF NOT EXISTS games (
   dos_save_hint  TEXT,
   -- 街机改版包的 FBNeo RomData（.dat 文本）。
   arcade_romdata TEXT,
+  -- 这款街机游戏需要哪个 BIOS 系统包（neogeo / pgm / …）。
+  arcade_bios    TEXT,
+  -- 街机 DIP 开关（麻将类游戏要拨到麻将面板那一档），见 src/emulator/dipPlan.ts。
+  arcade_dip     TEXT,
   home_rank      INTEGER,
   added_at       TEXT,
   created_at     TEXT    NOT NULL DEFAULT (CURRENT_TIMESTAMP),

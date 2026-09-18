@@ -7,10 +7,37 @@
 @import 'tailwindcss';
 
 /* ---------- 字体 ----------
- * 英文：Geist Pixel（index.html 里通过 Google Fonts 引入）
- * 中文：方舟像素字体 Ark Pixel 12px Proportional（本地 woff2，npm run fonts 自动下载）
+ * 英文：Geist Pixel（本地 woff2，两份 unicode-range 子集，npm run fonts 自动下载）
+ * 中文：方舟像素字体 Ark Pixel 12px Proportional（本地 woff2，同上）
  * Geist Pixel 只含拉丁字符，中文与中文标点会按顺序回退到 Ark Pixel，再回退到系统字体。
+ *
+ * ⚠️ 西文这两份**以前是 index.html 里一条 Google Fonts 的 <link rel="stylesheet">**。
+ * 那条链是：先连 fonts.googleapis.com 取 CSS（阻塞渲染）、再连 fonts.gstatic.com 取
+ * 字体文件，两次跨源握手全压在首屏关键路径上，而且只在西文界面才用得上。
+ * 自托管之后同一份文件从自家域名出，跨源那两跳没有了。
+ *
+ * unicode-range 必须和 Google 原样的那份保持一致：拆成两份子集的意义就是
+ * **拉到哪一份才下载哪一份** —— 合并成一条的话中文站用户也要下 latin-ext。
+ * 改文件名 / 换字体时记得同步 scripts/fetch-fonts.mjs 里的 GEIST_SUBSETS。
  */
+@font-face {
+  font-family: 'Geist Pixel';
+  src: url('/fonts/geist-pixel/geist-pixel-latin.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Geist Pixel';
+  src: url('/fonts/geist-pixel/geist-pixel-latin-ext.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
 @font-face {
   font-family: 'Ark Pixel';
   src: url('/fonts/ark-pixel/ark-pixel-12px-proportional-zh_cn.otf.woff2') format('woff2');

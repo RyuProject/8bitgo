@@ -570,13 +570,15 @@ Clearing this site's data removes all of the above (your browser's "clear site d
       body: `### On every visit
 
 - **ByteDance (Toutiao) URL submission** — on every page load, and on every in-site page change, the site loads a ByteDance script that submits **the current page URL** to it for search indexing. What it sees is the page address, your IP address and your browser information. This script currently has **no switch and no consent step**.
-- **Google Fonts** — one Latin interface font is loaded from Google's font service, so every page load makes a request to Google, which receives your IP address and browser information. (The Chinese pixel font is self-hosted and involves no third party.)
+
+(Both the Latin and Chinese pixel fonts are self-hosted and are not in the list above — loading a font does not hand any information to a third party.)
 
 ### Only when you trigger it
 
 - **Google / Microsoft / Apple sign-in** — loaded or redirected to only when you click the matching button. Credentials are sent to the relevant provider during verification.
 - **Hole punching and relay** — multiplayer and streaming need to traverse networks. Cloudflare's service is used by default; where it is not configured, the fallback is the public hole-punching servers of **Google** and **Twilio**. When relaying is engaged, the media passes through **Cloudflare** relay nodes (Cloudflare states that it does not retain relayed content; their policy governs).
 - **DOS multiplayer** — uses the third-party net.dos.zone as the peer server by default.
+- **Java (J2ME) mobile games** — these run a Java virtual machine in your browser through a third party, **CheerpJ**. Its runtime and engine files are downloaded from leaningtech's CDN (cjrtnc.leaningtech.com), which therefore receives your IP address and browser information. We start pre-downloading those files (about 4 MB in total) as soon as you move the pointer over, or tap, the Play button, so that clicking it does not mean waiting.
 - **Email delivery** — verification codes, deletion confirmations and game submissions are sent via **Resend**, which therefore sees the recipient address and the message content.
 
 ### Infrastructure, always in the path

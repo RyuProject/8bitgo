@@ -324,7 +324,7 @@ export function GameDetailPage() {
                 {/*
                   少数游戏（reVC 移植的 GTA 之类）要 SharedArrayBuffer，只能在一个
                   跨源隔离的整页里跑，塞不进详情页 —— 详情页一开 require-corp，
-                  Google Fonts、收录脚本和跨源封面图会被一起掐掉。
+                  收录脚本和跨源封面图会被一起掐掉。
                   这些游戏改成显示一个入口，跳到 /play/<slug>。理由见 shared/isolated-embeds.js。
                 */}
                 {isolatedPlayer ? (
@@ -362,6 +362,8 @@ export function GameDetailPage() {
                   core={game.core}
                   genres={game.genres}
                   arcadeRomData={game.arcadeRomData}
+                  arcadeBios={game.arcadeBios}
+                  arcadeDip={game.arcadeDip}
                   arcadeButtons={game.arcadeButtons}
                   flashControls={game.flashControls}
                   dosExecutable={dosExecutableForRom(game, rom)}

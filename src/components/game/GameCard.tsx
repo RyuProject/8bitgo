@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import { Link } from 'react-router-dom'
 import type { Game } from '@/types'
 import { platformMap } from '@/data/platforms'
@@ -20,8 +21,24 @@ interface Props {
   showCoin?: boolean
 }
 
-/** 游戏卡片（封面 + 标题 + 元信息） */
-export function GameCard({ game, className, coverRatio = 'square', rank, showCoin = true }: Props) {
+/**
+ * 游戏卡片（封面 + 标题 + 元信息）。
+ *
+ * ## 为什么这里包了一层 memo（2026-09-18）
+ *
+ * `/games` 是**无限续接**的：每往下滚一页就往同一个数组里 push 24 张卡，
+ * 而数组一变，整张网格连同**已经渲染过的那几百张**一起重渲染一遍 ——
+ * 卡片里的封面、角标、评分、以及三元表达式加起来不是零成本，
+ * 在手机上滚到第五六页就能感觉到那一下卡顿。
+ *
+ * 卡片的 props 全是稳定的（`game` 是同一个对象引用，其余是字符串 / 数字 / 布尔），
+ * 所以 memo 能真的挡下这些重渲染：新一页进来时，老卡片直接复用上一次的元素树。
+ * 语言或主题变化不受影响 —— 那两条走的是 useLang / useT 的订阅，绕不过 memo 也不会被它拦住。
+ *
+ * ⚠️ 加新 prop 时注意：传**每次渲染都新建的对象 / 数组 / 箭头函数**会让 memo 失效。
+ * 这个组件目前刻意不收回调，就是为了它。
+ */
+export const GameCard = memo(function GameCard({ game, className, coverRatio = 'square', rank, showCoin = true }: Props) {
   const lang = useLang()
   const t = useT()
   const platform = platformMap[game.platform]
@@ -86,4 +103,4 @@ export function GameCard({ game, className, coverRatio = 'square', rank, showCoi
       </div>
     </Link>
   )
-}
+})
