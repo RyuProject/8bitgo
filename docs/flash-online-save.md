@@ -406,3 +406,205 @@ CREATE TABLE flash_save_slots (
 9. 令牌过期、退出所有设备或账号被封禁后，旧 SWF 会话不能继续读写。
 10. 点击排行榜提交后，提交按钮会恢复，不会因为空实现永久消失。
 11. 其他 Flash 游戏仍走原来的 Ruffle SharedObject 云存档，没有额外请求或 URL 改写。
+
+---
+
+# 附：AGI2 方言（Kingdom Rush Frontiers）
+
+第二款接入的游戏是 Kingdom Rush Frontiers。它用的是 **Armor Games AGI2**，和上面
+Infectonator 2 的 AGI1 是两套完全不同的外部接口，所以桥、存储形状和响应格式都另起一套。
+
+## A1. 两代的关键差异
+
+| | AGI1（Infectonator 2） | AGI2（Kingdom Rush Frontiers） |
+| --- | --- | --- |
+| 桥文件 | `AGI.swf` | `AGI2.swf` |
+| 接口风格 | 方法式：`init / isLoggedIn / submitUserData / retrieveUserData / deleteUserData` | 对象式：`connect()` 返回 `user / storage / content / quests` 四个命名空间 |
+| 一次提交 | 连调两次（profile + data），服务端拼成一槽 | 一个 `key → value`，value 就是整份进度 |
+| 键 | `profileonline0..2` / `dataonline0..2` | `slot1` / `slot2` / `slot3` |
+| 读全量返回 | `{ success, data: { profileonlineN, dataonlineN, … } }` | `{ success, keys: { slot1, slot2, slot3 } }` |
+| 存储表 | `flash_save_slots`（成对覆盖） | `flash_save_kv`（key→value 覆盖） |
+| 入口参数 | `init(devKey, gameKey)` | `connect({ stage, apiKey })` |
+
+方言逐游戏绑定在 `server/src/flash-save-contract.js` 的 `GAME_PROTOCOLS`；新增游戏必须同时改
+那里和 `FLASH_SAVE_GAMES`。
+
+## A2. 服务端接口
+
+会话申请沿用 `POST /api/flash-saves/v1/session`，响应里多了 `protocol`，`bridgeUrl` 按方言给：
+
+```json
+{ "success": true, "data": {
+  "sessionToken": "eyJ...", "expiresAt": 1789545600000,
+  "endpoint": "/api/flash-saves/v1/kingdom-rush-frontiers",
+  "protocol": "agi2",
+  "bridgeUrl": "/flash-api/armor-games/AGI2.swf",
+  "username": "玩家昵称", "avatar_url": "/ui/logo-mark.png"
+} }
+```
+
+### 读
+
+```http
+POST /api/flash-saves/v1/kingdom-rush-frontiers/read
+{ "sessionToken": "eyJ..." }
+```
+
+```json
+{ "success": true, "keys": { "slot1": { …进度对象… }, "slot3": { … } } }
+```
+
+带 `key` 时只回那一个：`{ "success": true, "keys": { "slot1": { … } } }`；
+槽不存在就是 `{ "success": true, "keys": {} }`。
+
+> ⚠️ **只输出 slot1~3。** 真 Armor 服务当年会在 `keys` 里塞
+> `kingdomRushPremiumContentEnabled`，KRF 见到它等于 2 就解锁付费内容。白名单过滤写在
+> `agi2SaveMap()` 里，不要改成「原样透传」。
+
+### 写
+
+```http
+POST /api/flash-saves/v1/kingdom-rush-frontiers/write-slot
+{ "sessionToken": "eyJ...", "key": "slot1", "value": { …整份进度… } }
+```
+
+```json
+{ "success": true, "data": { "key": "slot1", "revision": 4, "updatedAt": 1789516800000 } }
+```
+
+校验：`key` 只能是 `slot1/2/3`；`value` 必须是普通 JSON 对象（非数组、非 null）；深度 ≤ 32；
+拒绝 `__proto__` / `prototype` / `constructor`；单个 value ≤ 2 MiB。
+
+### 删
+
+```http
+POST /api/flash-saves/v1/kingdom-rush-frontiers/delete-slot
+{ "sessionToken": "eyJ...", "key": "slot1" }
+```
+
+幂等：槽不存在也返回 `{ "success": true }`。
+
+### 配额
+
+AGI1 与 AGI2 分表存放，但**配额按账号统一计算**（两张表之和，见路由里的
+`FLASH_SAVE_TOTAL_SQL`）。只统计一张会给另一张留下绕过配额的后门。
+
+## A3. 数据库
+
+```sql
+CREATE TABLE IF NOT EXISTS flash_save_kv (
+  user_id       VARCHAR(40)      NOT NULL,
+  game_slug     VARCHAR(160)     NOT NULL,
+  save_key      VARCHAR(64)      NOT NULL,
+  value_json    JSON             NOT NULL,
+  size          INT UNSIGNED     NOT NULL,
+  revision      INT UNSIGNED     NOT NULL DEFAULT 1,
+  created_at    TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at    TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, game_slug, save_key),
+  INDEX idx_flash_save_kv_user_time (user_id, updated_at),
+  CONSTRAINT fk_flash_save_kv_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+```
+
+`cd server && npm run migrate` 会补建（老库和空库都能跑；`schema-v2.sql` 也已同步）。
+
+## A4. 桥接 AGI2.swf
+
+源码计划放在 `flash-api/armor-games/src-agi2/`，产物是
+`public/flash-api/armor-games/AGI2.swf`，随 Git 部署（构建方式与 AGI.swf 相同，见
+`flash-api/armor-games/README.md`）。
+
+已确认要暴露的面（按逆向结论）：
+
+```as3
+connect(options:Object):Object                      // options = { stage, apiKey }
+user.isGuest():Boolean
+user.getUsername():String
+user.getAvatarURL():String
+user.getUID():String
+storage.user.retrieve(options:Object):void           // options.key:"" = 取全部，回调得到 { success, keys }
+storage.user.submit(options:Object):void             // options = { key, value }
+storage.user.erase(options:Object):void              // options = { key }
+content.*                                            // 第一版一律返回空 / 失败
+quests.submit(...)                                   // 静默成功
+```
+
+> ⏳ **待核对**：`connect()` 的返回值形态、以及 `retrieve/submit/erase` 的回调是怎么传的
+> （options 内字段 / 第二参数 / 事件），需要对照游戏侧 `AgiV2Handler` 的反编译源码敲定后
+> 再写 AS3 实现。写错的表现是「桥加载成功但游戏读不到档」，而且不报错。
+
+## A5. 页面侧
+
+`src/services/flashOnlineSave.ts` 不再自己维护桥表，改为读 **`shared/flash-save-games.js`**
+（前后端唯一一份「游戏 → 方言 → 桥文件名」映射）：
+
+- `kingdom-rush-frontiers → agi2 → /flash-api/armor-games/AGI2.swf`；
+- `urlRewriteRules` 按桥文件名生成，只改写这款游戏真正会加载的那一代
+  （被补丁过的副本直接请求本站地址，规则是给仍指向 `agi.armorgames.com` 的副本兜底）。
+
+## A6. 验收清单
+
+1. 未登录进游戏：本地 3 槽可玩，在线槽禁用（半透明不可点）。
+2. 登录后进游戏：3 个在线槽可见，昵称正常，头像加载失败不影响槽位出现。
+3. 世界地图 / 过关 / 升级后自动保存，换浏览器登录能读回同一进度。
+4. 删除按钮清空该槽；重复删除不报错。
+5. `read` 响应里**绝不出现** `kingdomRushPremiumContentEnabled`，游戏内不出现 premium 内容。
+6. 请求体里把 `key` 换成 `slot4` / `PremiumEnabled` 一律 400。
+7. Infectonator 2 的 AGI1 流程与响应形状完全不受影响。
+
+---
+
+# 附二：静默失败的防护（审计后加固，2026-09-19）
+
+这套功能最危险的从来不是崩溃，而是**悄无声息地不工作**：游戏照跑、界面照常显示在线槽，
+只有玩家的进度没上去。下面每一条都在堵这一类。
+
+## B1. 唯一一份接入表
+
+`shared/flash-save-games.js` 是「游戏 → 方言 → 桥文件名」的**唯一来源**，前端和服务端都读它。
+以前这份信息散在三处（前端 `BRIDGES`、后端 `GAME_PROTOCOLS`、env 白名单），漏改一处的症状是
+「桥能加载、也能连上，就是读不到档」。
+
+`scripts/test-flash-save-consistency.mjs` 钉死四处一致（注册表 / 服务端读出的值 / 桥文件名与
+方言的配套关系 / 前端没有再写一份），并已并入 `npm run test:flash-online-save`。
+白名单默认值也改成从这张表推导，不再手写字符串。
+
+## B2. AGI1 桥（`AGI.swf`）
+
+| 加固 | 为什么 |
+| --- | --- |
+| 写失败**重试一次**（800ms，会话失效不重试） | 游戏忽略 `submitUserData` 回调里的错误，一次网络抖动等于这一关白打。服务端是 upsert，重试幂等 |
+| 失败时也解析 `loader.data` | 4xx/5xx 在 Ruffle 里走 `ioError`，不解析就把 `invalid_session` 一律报成 `network_error`，分不清「网断了」和「会话过期」 |
+| 收到 `invalid_session` 就摘掉登录态 | 让游戏把在线槽重新标成不可用 —— 这是「游戏忽略回调错误」前提下唯一可见的反馈 |
+| 读之前等**在飞的写**落库（上限 3s） | 刚过关触发保存、紧接着打开存档页时，不等会读到写之前那一份，像「刚存的档没生效」 |
+| 删除按「该槽已排了删除」去重 | 原先是 2 秒时间窗，会把「删档 → 重新存 → 再删」里的第二次删除吞掉，玩家以为删了其实还在 |
+| `gameKey` 校验失败时 `trace` 一条 | 校验失败是静默关闭整条链的，留个能在控制台查的线索 |
+
+## B3. 服务端
+
+- 会话限流 120 → **600/小时**：重开局 / 切布局 / 换语言都会重新挂载播放器并各申请一次会话，
+  原来的额度可能打满，之后整小时退游客态且无提示。
+- 配额改成**分表查**：一条 SQL 同时查两张表时，老库缺 `flash_save_kv` 会让本来好用的 AGI1
+  每次保存都 500；分开查时缺表只当 0。
+
+## B4. 页面侧
+
+- 会话在**内存里按「游戏 + 当前登录令牌」复用**（离到期不足 5 分钟不用）：省掉重复申请，
+  也避免打满限流。键里带登录令牌，所以登出 / 换号自动失效，不会留下可写窗口。
+- 会话申请失败区分两类：网络类失败重试一次；4xx（未登录 / 限流 / 未启用）直接退游客，不白打请求。
+- **临期提示**：运行时把会话到期时间报给播放器（`onFlashSaveSession`），
+  播放器在到期前 10 分钟提示一次（`player.flashSaveExpiringSoon`）。令牌经 FlashVars 进入 SWF
+  后换不掉，到期只能重进一局 —— 不说的话症状是「后半局的档都没了」。
+
+## B5. 产物校验
+
+`scripts/check-flash-save-bridge.mjs` 按源码存在性**逐代**强校验：源码在、产物缺 = 构建失败。
+以前只认 `AGI.swf`，AGI2 源码落地却漏提交 SWF 时构建照样全绿。
+
+## B6. 仍然存在的限制
+
+- 会话到期后**必须玩家手动重进**（FlashVars 只读一次，SWF 无法续期）。提示已加，但根治需要
+  ExternalInterface 一类的续期通道。
+- `retrieveUserData` 的等待上限 3 秒：极端情况下（后台标签页被节流）可能读到的仍是旧档。
+- 桥的修复要等边缘缓存过期（约 1 小时）才全球生效，与其它固定 URL 的引擎产物同一档。

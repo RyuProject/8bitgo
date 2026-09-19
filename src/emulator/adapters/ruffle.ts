@@ -448,6 +448,27 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         }
 
         const [onlineSave, sfsConfig] = await Promise.all([flashOnlineSave, sfsRuffleConfig])
+        // 每次挂载都报一次（游客态报 0）：播放器据此在会话临期前提示玩家重新进这一局
+        options.onFlashSaveSession?.(onlineSave?.expiresAt ?? 0)
+        const onlineSaveConfig = flashOnlineSaveRuffleConfig(onlineSave)
+        /*
+          ⚠️ SFS 和在线存档都要往 Ruffle 配置里放 `urlRewriteRules`，而对象展开是**覆盖**不是合并：
+          两个都命中时，后展开的那个会把前面整张表丢掉，症状是「另一个功能静默失效」——
+          SAS3 联机连不上，或者在线存档的请求打到 agi.armorgames.com。
+          所以这里显式合并（同一条来源地址以先出现的为准），再在 base 里最后写进去。
+        */
+        const rewriteRules: [string, string][] = []
+        const seenRewrite = new Set<string>()
+        for (const source of [sfsConfig.urlRewriteRules, onlineSaveConfig.urlRewriteRules]) {
+          if (!Array.isArray(source)) continue
+          for (const rule of source) {
+            if (!Array.isArray(rule) || rule.length !== 2) continue
+            const [from, to] = rule
+            if (typeof from !== 'string' || typeof to !== 'string' || seenRewrite.has(from)) continue
+            seenRewrite.add(from)
+            rewriteRules.push([from, to])
+          }
+        }
         const base = {
           autoplay: 'on',
           unmuteOverlay: 'visible',
@@ -478,7 +499,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           ...(gamepadButtonMapping ? { gamepadButtonMapping } : {}),
           // SAS3.swf 写死 sas3server.ninjakiwi.com:444；Ruffle 用这张表把它改送同源 WSS 桥。
           ...sfsConfig,
-          ...flashOnlineSaveRuffleConfig(onlineSave),
+          ...onlineSaveConfig,
+          // 合并后的改写表放最后：上面两个来源的任何一份都不能原样留下（见上面的注释）
+          ...(rewriteRules.length ? { urlRewriteRules: rewriteRules } : {}),
           // 中文 / 日文这类设备字体文本要靠它才画得出来，见文件顶部的说明
           ...fontConfig(),
         }

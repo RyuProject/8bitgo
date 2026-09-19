@@ -31,6 +31,7 @@ import { LiveChatBar, LiveChatLane, useLiveChat } from './LiveChat'
 import { LiveWatchPanel } from './LiveWatchPanel'
 import { MatchChatPanel } from './MatchChatPanel'
 import { sendChatWithAck } from './chatSend'
+import { SEAT_TTL_MS } from './coopSeat'
 import type { Broadcast } from './broadcast'
 import { matchLocalArcadeHack } from './arcadeHack'
 import type { DosExtraSource } from '@/lib/dosExtras'
@@ -153,6 +154,11 @@ const makeProgressClock = (phase: LoadPhase, startup = 0, milestones = false): P
 const DISC_NOTICE_BYTES = 64 * 1024 * 1024
 /** 自动重试只做一次：网络抖动能自愈，坏 ROM 也不会陷入无限刷新。 */
 const AUTO_RETRY_LIMIT = 1
+/**
+ * 在线存档会话还剩多久就开始提示玩家。
+ * 给足时间让他找机会重进一局（过关/读档空档），而不是等到存不上才发现。
+ */
+const FLASH_SAVE_EXPIRY_WARN_MS = 10 * 60_000
 /** 叠加工具栏：指针停多久后收起。EmulatorJS 自带底栏是 3 秒，视频播放器多在 2–3 秒 */
 const BAR_IDLE_MS = 2500
 /**
@@ -754,6 +760,11 @@ export function EmulatorPlayer({
    * 不说的话访客只会以为「卡了」或者「我的网断了」，而实际是房主收回了座位。
    */
   const [coopLost, setCoopLost] = useState(false)
+  /**
+   * 旧 Flash 游戏在线存档会话的到期时间（0 = 游客态 / 没拿到会话）。
+   * 由运行时上报，播放器据此在临期前提示一次 —— 见 onFlashSaveSession。
+   */
+  const [flashSaveExpiry, setFlashSaveExpiry] = useState(0)
 
   const liveChatOn = Boolean(liveSession) || Boolean(session?.live) ||
     (Boolean(session?.netplay || hosting) && role === 'player')
@@ -1637,6 +1648,14 @@ export function EmulatorPlayer({
       onScreenLayout: (next) => {
         if (!isCurrent()) return
         setScreenLayout(next)
+      },
+      /**
+       * 旧 Flash 游戏的在线存档会话到期时间。每次挂载都会报（游客态报 0），
+       * 所以换局时这个值总是被刷新，不会留着上一局的到期时间误报一次提示。
+       */
+      onFlashSaveSession: (expiresAt) => {
+        if (!isCurrent()) return
+        setFlashSaveExpiry(expiresAt)
       },
       onProgress: (next) => {
         if (!isCurrent()) return
@@ -2816,6 +2835,32 @@ export function EmulatorPlayer({
     const timer = window.setTimeout(() => setCoopLost(false), 6000)
     return () => window.clearTimeout(timer)
   }, [coopLost])
+  /*
+    「等房主同意…」不能永远挂着：主播那边的请求 SEAT_TTL_MS 就过期了（见 coopSeat.ts），
+    他可能压根没看见。到点把按钮退回「上场当 2P」，观众想再试就再点一次 ——
+    否则两边一个以为没声音就是没人来，一个以为卡死了，谁也不会想到是「过期了」。
+  */
+  useEffect(() => {
+    if (!coopAsking) return
+    const timer = window.setTimeout(() => setCoopAsking(false), SEAT_TTL_MS)
+    return () => window.clearTimeout(timer)
+  }, [coopAsking])
+  /*
+    Flash 在线存档会话临期提示。
+
+    令牌是启动时经 FlashVars 交给 SWF 的，**换不掉**（游戏已经在跑，参数只读一次），
+    所以到期之后玩家只能重新进这一局。不说的话症状极其隐蔽：游戏照常跑、界面照常显示
+    在线槽可存，只是后半局的档一条都没上去。提前 10 分钟说，让他自己挑空档重进。
+  */
+  useEffect(() => {
+    // 只有 ruffle 会报这个值：从 Flash 局切到别的运行时后没人来清零，
+    // 不加这道判断就会在别的游戏里弹一句「Flash 在线存档要过期了」
+    if (!flashSaveExpiry || session?.runtime.id !== 'ruffle') return
+    const delay = flashSaveExpiry - Date.now() - FLASH_SAVE_EXPIRY_WARN_MS
+    if (delay <= 0) return
+    const timer = window.setTimeout(() => setNotice(t.player.flashSaveExpiringSoon), delay)
+    return () => window.clearTimeout(timer)
+  }, [flashSaveExpiry, session?.runtime.id, t])
 
   /** 状态文案。徽章的 title 和可见文字共用一份，别在两处各写一遍三元 */
   /**
@@ -3165,9 +3210,10 @@ export function EmulatorPlayer({
 
             两侧共用这一块，但同时只可能出现一条：
               房主 —— 有人在等答复 → 带「让 TA 上场 / 忽略」两颗按钮
+              房主 —— 没人申请就点了「让人上场」→ 一句解释（nudge，几秒后自己消失）
               访客 —— 座位刚被收回 → 只是一句话，几秒后自己消失
           */}
-          {(liveCtl?.coop?.pending || coopLost) && (
+          {(liveCtl?.coop?.pending || liveCtl?.coop?.nudge || coopLost) && (
             <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex justify-center px-2 pt-2">
               <div className="pointer-events-auto flex items-center gap-2 rounded-xl border border-white/20 bg-black/80 px-3 py-2 text-left text-[11px] leading-snug text-white/90 shadow-lg backdrop-blur">
                 <span aria-hidden className="text-base leading-none">
@@ -3193,6 +3239,9 @@ export function EmulatorPlayer({
                       {t.player.coopIgnore}
                     </button>
                   </>
+                ) : liveCtl?.coop?.nudge ? (
+                  // 没人申请就点了「让人上场」：这颗按钮是个应答器，得把流程说清楚
+                  <span className="font-semibold text-white">{t.player.coopNudge}</span>
                 ) : (
                   <span className="font-semibold text-white">{t.player.coopLost}</span>
                 )}

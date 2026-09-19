@@ -47,6 +47,13 @@ export const MAX_MSG_LEN = 200
 export const KEYS_PER_SEC = 120
 /** 「我想上场」的限流（每秒）。不卡的话能刷爆房主那条提示 */
 export const WANTS_PER_SEC = 1
+/**
+ * 「我想上场」这条请求挂多久就算过期。
+ * 房主那边到点撤提示（LiveControls 的 seatWant），观众这边到点把
+ * 「等房主同意…」退回可再点 —— **两边必须同一个数**，不然房主已经忘了，
+ * 观众还挂在等待态，看起来就像卡死了。
+ */
+export const SEAT_TTL_MS = 45_000
 
 /** 协议里允许出现的按钮。抽象按钮层的好处：两边键位不用一致，映射在房主那边做 */
 const BUTTONS: readonly PadButton[] = ['up', 'down', 'left', 'right', 'a', 'b', 'select', 'start']

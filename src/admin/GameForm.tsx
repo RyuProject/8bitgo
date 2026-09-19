@@ -756,6 +756,7 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
                 街机这一个平台底下其实是好几套硬件：拳皇是 Neo Geo（fbneo），街霸 2 是 CPS2。
                 报「缺文件 / CRC 不匹配」时先换核心试试——<strong className="text-muted">每个核心认的 romset 版本不一样</strong>，
                 往往比换 ROM 有用。MAME 2003-Plus 兼容面最广，但也最慢。
+                更老的驱动（如 IGS027A（m027 驱动）的《明星三缺一》mxsqy102tw）只有「MAME 当前版」才带，那种情况就选它。
               </p>
             ) : form.platform === 'nds' ? (
               <p className="mt-1 text-[11px] text-dim">

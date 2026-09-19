@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "bytes": 4204,
-  "swfSha256": "ae3116949dee5aeff9f67d802df25902348ad5336410a7944cf9d062b278dc66",
-  "sourceSha256": "a2bca4acd89f6875bfc49842b43dbf4839b561ab0c3c6e02b8fa62ab839319ec",
+  "bytes": 4874,
+  "swfSha256": "1b4387bc453d73660e02bcfdae2377be82eff9b251e05838609a3e9902064147",
+  "sourceSha256": "0b67409b72285a2ef5909a9ca0f9760fa14af47fa3390532f4e2fff0d9ba4c55",
   "template": "https://raw.githubusercontent.com/ruffle-rs/ruffle/a4f5b5256e245693bc9077ef6c6b6abc95490e7f/tests/tests/swfs/avm2/array_access/test.swf"
 }

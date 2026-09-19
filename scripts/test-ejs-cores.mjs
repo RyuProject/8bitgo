@@ -27,7 +27,7 @@ import assert from 'node:assert/strict'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { CORE_OPTIONS } from '../src/config/emulators.ts'
+import { CORE_OPTIONS, SELF_BUILT_CORES } from '../src/config/emulators.ts'
 import { platforms } from '../src/data/platforms.ts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -119,6 +119,19 @@ for (const { id, from } of wanted) {
   const core = resolve(id)
   if (seen.has(`${id}`)) continue
   seen.add(`${id}`)
+  // 自构建核心（如 mame-current）：不在 EmulatorJS 别名表里（设计如此，EJS_core 直接传核心名），
+  // 由 scripts/build-mame-current-core.mjs 现编、产物丢进 public/emulatorjs/cores/。
+  // 没构建时不卡死整条构建，只警告；一旦有游戏选了它却没编，引擎回落 CDN 才会真的失败。
+  if (SELF_BUILT_CORES.has(id)) {
+    const haveJs = existsSync(join(coresDir, `${core}-wasm.data`))
+    const haveReport = existsSync(join(coresDir, 'reports', `${core}.json`))
+    if (haveJs && haveReport) console.log(`  ✅ ${id}（自构建核心，已就位）`)
+    else {
+      const missing = [!haveJs && `${core}-wasm.data`, !haveReport && `reports/${core}.json`].filter(Boolean).join('、')
+      console.warn(`  ⚠️  ${id} 是自构建核心，尚未构建：缺 ${missing}。用 scripts/build-mame-current-core.mjs 构建后放到 public/emulatorjs/cores/，否则选它的游戏会回落 CDN、初始化失败。`)
+    }
+    continue
+  }
   check(`${id}${core === id ? '' : ` → ${core}`}（${from}）`, () => {
     assert.ok(
       TABLE[id] || KNOWN.has(id),

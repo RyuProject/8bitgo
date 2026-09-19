@@ -142,7 +142,7 @@ const EJS_LANG: Record<Lang, string> = {
  * 里面只有可重新下载的工件（核心/ROM/BIOS 的副本），删了不丢任何用户数据；
  * 存档在另一个库（EmulatorJS-states）和我们自己的云存档里，不碰。
  */
-const EJS_CACHE_GENERATION = '2026-08-29.arcade-blob-loader'
+const EJS_CACHE_GENERATION = '2026-09-19.mame-current-both-opt'
 const EJS_CACHE_PURGED_KEY = '8bitgo.ejs.cachePurged'
 
 async function purgePoisonedEngineCache(): Promise<void> {
@@ -1435,6 +1435,23 @@ export async function prepareRemoteDiscRom(
   return prepared
 }
 
+/**
+ * FBNeo 系核心（含本站当前在用的 mame2003 / mame2003_plus）才认得 RomData(.dat) 与
+ * 「核心选项式」DIP 这两样 FBNeo 专属机制。
+ *
+ * 新增的「当前版 MAME」核心（如 mame-current，用来跑 IGS027A（m027 驱动）的 mxsqy102tw / 明星三缺一）
+ * 不走这套：它按自己的 ROM 文件名认游戏、用 MAME 自己的输入系统，塞 FBNeo 的 .dat 或
+ * 拨 FBNeo 风格的 DIP 只会让它困惑。所以这两处 FBNeo 专属逻辑必须按核心族守卫，
+ * 不能只靠「字段为空就不做」—— 否则哪天有人给一款 MAME 游戏误填了 arcadeRomData /
+ * arcadeDip，就会把 FBNeo 的机制喂给一个不认它的核心。
+ *
+ * ⚠️ 目前 arcade 平台实际在用的核心只有这三个；新核心一律排除。
+ * 这是白名单思路（只放行已知 FBNeo 族），所以新增任何非 FBNeo 核心都自动被隔离，
+ * 不会动到现有任何一款游戏。
+ */
+const FBNEO_FAMILY_CORES = new Set(['fbneo', 'mame2003', 'mame2003_plus'])
+const isFbneoFamilyCore = (core: string | undefined): boolean => (core ? FBNEO_FAMILY_CORES.has(core) : false)
+
 export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
   // 按游戏覆盖优先，其次才是平台默认。街机一个平台底下其实是好几套硬件，
@@ -2660,7 +2677,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       ⚠️ 挂在**开局之后**是硬约束，别挪到前面去：DIP 是核心在 retro_load_game 里
       才注册成核心选项的，在那之前读选项表一个 dipswitch 键都没有，填了也白填。
     */
-    if (options.platform === 'arcade') {
+    if (options.platform === 'arcade' && isFbneoFamilyCore(core)) {
       const emuForDip = emuOf()
       if (emuForDip) applyArcadeDipDefault(emuForDip)
     }
@@ -2941,7 +2958,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
         // 文件名必须和 ROM 同名（wofcn.zip → /wofcn.dat），这是核心自己的查找规则。
         const romData = options.arcadeRomData?.trim() || builtInRomData
-        if (romData) {
+        if (romData && isFbneoFamilyCore(core)) {
           injections.push({ path: `/${engineGameName.replace(/\.[^.]*$/, '')}.dat`, bytes: `${romData}\n` })
         }
 

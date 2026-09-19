@@ -135,6 +135,14 @@ export interface MountOptions {
    */
   onProgress?: (progress: LoadProgress) => void
   /**
+   * 旧 Flash 游戏的在线存档会话到期时间（毫秒）；0 = 游客模式 / 没拿到会话。
+   *
+   * 只有接了在线存档的 Flash 游戏会调，而且**每次挂载一定调一次**（拿不到也报 0）——
+   * 播放器据此在临期前提示玩家一次：令牌进了 SWF 就换不掉了（FlashVars 只读一次），
+   * 到期后只能重新进这一局，不说的话症状是「后半局的档都没存上」。
+   */
+  onFlashSaveSession?: (expiresAt: number) => void
+  /**
    * 资源齐了、这局可以真正开始玩了。
    *
    * ⚠️ 语义是「玩家可以动手了」，不是「iframe 的 document 加载完了」。

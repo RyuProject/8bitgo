@@ -18,6 +18,7 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { RuntimeHandle } from './types'
 import type { ChatBarToggle } from './LiveChat'
 import { canBroadcast, startBroadcast, type Broadcast } from './broadcast'
+import { SEAT_TTL_MS } from './coopSeat'
 import { canAutoStartLive, liveEnabled, liveLink, refreshLiveRooms, type LiveChatMessage } from '@/services/live'
 import { playerName } from '@/services/netplay'
 import { useT, fmt } from '@/services/i18n'
@@ -139,6 +140,11 @@ export interface LiveControlsHandle {
     accept: () => void
     /** 忽略这次请求（他可以再点，`want` 那条限流是 1 次/秒） */
     dismiss: () => void
+    /**
+     * 主播在没人申请时空点了一下「让人上场」。画面浮层借这一格说清楚
+     * 「座位只能观众申请」—— 不然一次静默的空点击看起来就像按钮坏了。
+     */
+    nudge?: boolean
   }) | null
 }
 
@@ -244,7 +250,7 @@ const RETRY_MAX = 15
 const AUDIO_WAIT_MAX = 8
 
 /** 「有人想上场」这条请求挂多久就算过期（房主没看见 / 那人已经走了） */
-const SEAT_WANT_TTL_MS = 45_000
+const SEAT_WANT_TTL_MS = SEAT_TTL_MS
 
 export function LiveControls({ handle, gameName, gameSlug, platform, active = true, netplayRoomId = null, captureRef, className,
   nativeGeometry = null,
@@ -264,6 +270,12 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
   const [seatWant, setSeatWant] = useState<{ id: string; name?: string } | null>(null)
   /** 现在谁持着 2P 位 */
   const [seatOf, setSeatOf] = useState<string | null>(null)
+  /**
+   * 主播在**没人申请**的时候点了「让人上场」——点一下给条反馈，几秒后自己消失。
+   * 这颗按钮天生是个应答器（座位只能观众申请、主播批准），空闲时点了本来什么都不发生，
+   * 但「什么都不发生」就是用户报的 bug：得说清楚「要等观众先点『上场当 2P』」。
+   */
+  const [coopNudge, setCoopNudge] = useState(false)
   /** 信令断了、正在重连。画面多半还在流（WebRTC 是点对点的），所以只是标记变灰，不撤掉 */
   const [reconnecting, setReconnecting] = useState(false)
   /**
@@ -427,11 +439,15 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
           /* ---------------- 「让观众上场当 2P」（见 coopSeat.ts） ---------------- */
           // 传函数：句柄可能比开播晚到，换游戏时这一项也会变
           coopButtons: () => handleRef.current?.coopButtons ?? [],
-          onSeatRequest: (viewerId, name) => setSeatWant({ id: viewerId, name }),
+          onSeatRequest: (viewerId, name) => {
+            setCoopNudge(false)
+            setSeatWant({ id: viewerId, name })
+          },
           onSeatChange: (viewerId) => {
             setSeatOf(viewerId)
             // 座位定了，那条「有人想上场」的提示就没意义了
             if (viewerId) setSeatWant(null)
+            setCoopNudge(false)
           },
           /*
             访客的按键 → 运行时的 2P 位。`1` 就是那个座位号（见 types.ts 的 sendButton）。
@@ -516,10 +532,14 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
         meta: { gameSlug, gameName, platform: platform ?? '', title: gameName, hostName: playerName() },
         // 分享标签页这一路游戏照样在本机的运行时里跑，2P 位一样有效
         coopButtons: () => handleRef.current?.coopButtons ?? [],
-        onSeatRequest: (viewerId, name) => setSeatWant({ id: viewerId, name }),
+        onSeatRequest: (viewerId, name) => {
+          setCoopNudge(false)
+          setSeatWant({ id: viewerId, name })
+        },
         onSeatChange: (viewerId) => {
           setSeatOf(viewerId)
           if (viewerId) setSeatWant(null)
+          setCoopNudge(false)
         },
         onGuestInput: (button, down) => handleRef.current?.sendButton?.(button, down, 1),
         onViewers: setViewers,
@@ -674,6 +694,12 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
     const timer = window.setTimeout(() => setSeatWant(null), SEAT_WANT_TTL_MS)
     return () => window.clearTimeout(timer)
   }, [seatWant])
+  // 「还没人申请」的提示几秒后自己撤掉，别一直挂在画面上
+  useEffect(() => {
+    if (!coopNudge) return
+    const timer = window.setTimeout(() => setCoopNudge(false), 4_000)
+    return () => window.clearTimeout(timer)
+  }, [coopNudge])
   const coopRef = useRef<{ want: string | null; seat: string | null }>({ want: null, seat: null })
   coopRef.current = { want: seatWant?.id ?? null, seat: seatOf }
   /** 恒定的包装函数，理由同 stableToggle */
@@ -683,6 +709,8 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
     const { want, seat } = coopRef.current
     if (seat) b.revokeSeat()
     else if (want) b.grantSeat(want)
+    // 没人申请也没人上场：这颗按钮此刻无事可做。与其让人以为坏了，不如说清楚原因
+    else setCoopNudge(true)
   }, [])
   const coopAccept = useCallback(() => {
     const b = liveRef.current
@@ -701,6 +729,7 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
         who: seatWant?.name,
         accept: coopAccept,
         dismiss: coopDismiss,
+        nudge: coopNudge,
       }
     : null
 

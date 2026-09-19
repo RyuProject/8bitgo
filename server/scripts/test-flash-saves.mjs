@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict'
 import {
+  agi2SaveKey,
+  agi2SaveMap,
+  flashSaveBridgeUrl,
   flashSaveGameEnabled,
   flashSaveKey,
+  flashSaveProtocol,
   flashSaveQuotaError,
   flashSaveSlot,
   legacyFlashSaveMap,
+  validateAgi2Value,
   validateFlashSavePair,
 } from '../src/flash-save-contract.js'
 import { flashSaveConfigured, signFlashSaveToken, verifyFlashSaveToken } from '../src/flash-save-token.js'
@@ -88,6 +93,57 @@ check('旧 AGI 全量结果只暴露完整槽，权益字段由服务端覆盖',
   assert.equal(data.dataonline0.index, 'online0')
   assert.equal(data.profileonline1, undefined)
   assert.equal(data.PremiumEnabled, 0)
+})
+
+/* ---------------- AGI2（Kingdom Rush Frontiers 那类） ---------------- */
+
+check('方言逐游戏绑定，未知 slug 退回 agi1 而不是乱猜', () => {
+  assert.equal(flashSaveProtocol('infectonator-2'), 'agi1')
+  assert.equal(flashSaveProtocol('kingdom-rush-frontiers'), 'agi2')
+  assert.equal(flashSaveProtocol('some-unreviewed-game'), 'agi1')
+  assert.equal(flashSaveBridgeUrl('infectonator-2'), '/flash-api/armor-games/AGI.swf')
+  assert.equal(flashSaveBridgeUrl('kingdom-rush-frontiers'), '/flash-api/armor-games/AGI2.swf')
+})
+
+check('AGI2 只认 slot1~3', () => {
+  assert.equal(agi2SaveKey('slot1'), 'slot1')
+  assert.equal(agi2SaveKey('slot3'), 'slot3')
+  for (const bad of ['slot0', 'slot4', 'slot', 'slots1', 'profileonline0', 'PremiumEnabled', '', null]) {
+    assert.equal(agi2SaveKey(bad), null, `${bad} 不该被接受`)
+  }
+})
+
+check('AGI2 的 value 必须是普通对象且不超上限', () => {
+  const ok = validateAgi2Value({ key: 'slot2', value: { levels: 1, starsWon: { '1': 3 } } })
+  assert.equal(ok.ok, true)
+  assert.equal(ok.key, 'slot2')
+  assert.ok(ok.size > 0)
+  assert.equal(validateAgi2Value({ key: 'slot9', value: {} }).code, 'invalid_request')
+  assert.equal(validateAgi2Value({ key: 'slot1', value: [] }).code, 'invalid_request')
+  assert.equal(validateAgi2Value({ key: 'slot1', value: null }).code, 'invalid_request')
+  const polluted = JSON.parse('{"levels":1,"__proto__":{"admin":true}}')
+  assert.equal(validateAgi2Value({ key: 'slot1', value: polluted }).code, 'invalid_request')
+})
+
+check('AGI2 全量读取只出 slot1~3，premium 标记一律滤掉', () => {
+  const keys = agi2SaveMap([
+    { save_key: 'slot1', value_json: { levels: 1 } },
+    { save_key: 'slot2', value_json: '{"levels":2}' },
+    // 真 Armor 服务当年会塞这一条，等于 2 就解锁付费内容 —— 白名单必须挡住
+    { save_key: 'kingdomRushPremiumContentEnabled', value_json: 2 },
+    { save_key: 'slot9', value_json: { levels: 9 } },
+    { save_key: 'slot3', value_json: null },
+  ])
+  assert.deepEqual(Object.keys(keys).sort(), ['slot1', 'slot2'])
+  assert.equal(keys.slot1.levels, 1)
+  assert.equal(keys.slot2.levels, 2)
+  assert.equal(keys.kingdomRushPremiumContentEnabled, undefined)
+})
+
+check('新游戏同时在白名单和方言表里才放行', () => {
+  const withKrf = { FLASH_SAVE_GAMES: 'infectonator-2,kingdom-rush-frontiers' }
+  assert.equal(flashSaveGameEnabled('kingdom-rush-frontiers', withKrf), true)
+  assert.equal(flashSaveGameEnabled('kingdom-rush-frontiers', { FLASH_SAVE_GAMES: 'infectonator-2' }), false)
 })
 
 console.log(`\n✅ Flash 在线存档契约 ${passed} 项通过`)

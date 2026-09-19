@@ -39,13 +39,59 @@
  * reports/<core>.json 也带上 —— 没有它引擎会禁用核心的 IndexedDB 缓存，
  * 每次进游戏都重新下核心。
  */
-import { copyFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { SELF_BUILT_CORES } from '../src/config/emulators.ts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const out = join(root, 'public', 'emulatorjs', 'cores')
 const ifMissing = process.argv.includes('--if-missing')
+
+/**
+ * 自构建核心（scripts/build-*.mjs 现编、npm 上没有）不归本脚本管 ——
+ * 但下面为了「复制结果干净」会整个删掉 cores/，所以得先抢救出来再放回去。
+ *
+ * 少了这一步，跑一次 npm run ejscores 就会把辛苦编出来的 mame-current 悄悄删掉：
+ * 它不在 @emulatorjs/core-* 里，test:ejs-cores 对它又只是警告、不拦构建，
+ * 于是「核心没了」这件事不会有任何一处报错，只会等到某款游戏打开时
+ * 回落 CDN、初始化失败才被发现 —— 而那时没人会想到是这次 npm run ejscores 干的。
+ */
+function preserveSelfBuilt() {
+  const kept = []
+  const tmp = join(root, 'public', 'emulatorjs', '.self-built-tmp')
+  rmSync(tmp, { recursive: true, force: true })
+  if (!existsSync(out)) return kept
+  mkdirSync(join(tmp, 'reports'), { recursive: true })
+
+  for (const c of SELF_BUILT_CORES) {
+    // cores/<core>-*.data（含 -legacy-、-thread- 变体）
+    for (const f of readdirSync(out)) {
+      if (f.startsWith(`${c}-`)) {
+        copyFileSync(join(out, f), join(tmp, f))
+        kept.push(f)
+      }
+    }
+    // cores/reports/<core>.json
+    const rd = join(out, 'reports')
+    if (existsSync(rd)) {
+      for (const f of readdirSync(rd)) {
+        if (f.startsWith(`${c}.`) || f.startsWith(`${c}-`)) {
+          copyFileSync(join(rd, f), join(tmp, 'reports', f))
+          kept.push(`reports/${f}`)
+        }
+      }
+    }
+  }
+  return kept
+}
+
+function restoreSelfBuilt(kept) {
+  if (!kept.length) return
+  const tmp = join(root, 'public', 'emulatorjs', '.self-built-tmp')
+  for (const rel of kept) copyFileSync(join(tmp, rel), join(out, rel))
+  rmSync(tmp, { recursive: true, force: true })
+}
 
 /** 平台 → 默认核心的对应关系见 EmulatorJS 的 getCores()（emulator.min.js 里的 u 表） */
 /*
@@ -90,6 +136,9 @@ if (missing.length) {
   process.exit(1)
 }
 
+// 自构建核心不在上面的 CORES 表里，先把它们捞出来，别被紧随其后的 rmSync 一起带走
+const keptSelfBuilt = preserveSelfBuilt()
+
 rmSync(out, { recursive: true, force: true })
 mkdirSync(join(out, 'reports'), { recursive: true })
 let n = 0
@@ -105,5 +154,13 @@ for (const c of CORES) {
     copyFileSync(report, join(out, 'reports', `${c}.json`))
     n++
   }
+}
+
+if (keptSelfBuilt.length) {
+  restoreSelfBuilt(keptSelfBuilt)
+  console.log(
+    `↩ 已原样保留 ${keptSelfBuilt.length} 个自构建核心文件（${[...SELF_BUILT_CORES].join('、')}）` +
+      `—— 它们不在 npm 上，本脚本不负责、也没法负责更新`,
+  )
 }
 console.log(`✔ EmulatorJS 核心已复制 ${n} 个文件到 public/emulatorjs/cores/（${CORES.length} 个核心 × 正常/legacy 两个变体）`)

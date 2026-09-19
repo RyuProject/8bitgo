@@ -479,6 +479,26 @@ CREATE TABLE IF NOT EXISTS flash_save_slots (
   CONSTRAINT fk_flash_save_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ---------- AGI2 游戏的在线存档（key → value） ----------
+-- 第二代兼容桥（Kingdom Rush Frontiers 那种）一次写一个 key→value，key 固定 slot1~3。
+-- 和上面 flash_save_slots 分表：成对槽要求「两个 JSON 一起覆盖」，key→value 是
+-- 「一个对象就是一份完整档」，硬塞进一张表会让两条读路径都长出方言分支。
+-- ⚠️ 读取时必须只输出 slot1~3：真 Armor 服务当年会在 keys 里塞
+-- kingdomRushPremiumContentEnabled，等于 2 就解锁付费内容，白名单是唯一不会忘的防法。
+CREATE TABLE IF NOT EXISTS flash_save_kv (
+  user_id       VARCHAR(40)      NOT NULL,
+  game_slug     VARCHAR(160)     NOT NULL,
+  save_key      VARCHAR(64)      NOT NULL,
+  value_json    JSON             NOT NULL,
+  size          INT UNSIGNED     NOT NULL,
+  revision      INT UNSIGNED     NOT NULL DEFAULT 1,
+  created_at    TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at    TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, game_slug, save_key),
+  INDEX idx_flash_save_kv_user_time (user_id, updated_at),
+  CONSTRAINT fk_flash_save_kv_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ---------- 邮箱验证码 ----------
 -- 登录 / 换绑邮箱 / 注销账号共用这张表，purpose 区分用途，逻辑全在 src/codes.js。
 --

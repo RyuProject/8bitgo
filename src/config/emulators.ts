@@ -86,6 +86,10 @@ export const CORE_OPTIONS: Record<string, Array<{ id: string; label: string }>> 
     { id: 'fbalpha2012_cps2', label: 'FB Alpha CPS2' },
     { id: 'mame2003_plus', label: 'MAME 2003-Plus（兼容面最广，较慢）' },
     { id: 'mame2003', label: 'MAME 2003' },
+    // 当前版 MAME（libretro mame_current）：IGS027A（m027 驱动）这类 IGS 新版驱动（明星三缺一 / mxsqy102tw）
+    // FBNeo 与 mame2016 都不带，只能用它。核心二进制由 scripts/build-mame-current-core.mjs
+    // 在构建机上现编，产物 mame-current-wasm.data 丢进 public/emulatorjs/cores/ 即可。
+    { id: 'mame-current', label: 'MAME 当前版（IGS027A / 明星三缺一这类新版驱动）' },
   ],
   psx: [
     { id: 'psx', label: 'PCSX-ReARMed（默认，快、省内存，手机首选）' },
@@ -102,3 +106,11 @@ export const CORE_OPTIONS: Record<string, Array<{ id: string; label: string }>> 
 export function coreOptionsFor(platform: string): Array<{ id: string; label: string }> {
   return CORE_OPTIONS[platform] ?? []
 }
+
+/**
+ * 自构建核心：引擎别名表里没有、由 scripts/build-*.mjs 现编并丢进
+ * public/emulatorjs/cores/ 的核心（当前只有 mame-current，给 IGS027A（m027）这类 IGS 新版驱动用）。
+ * test:ejs-cores 对它们跳过「引擎认识」校验，文件缺失时只警告、不卡整条构建——
+ * 否则还没编核心就会把所有部署都拦下来。
+ */
+export const SELF_BUILT_CORES = new Set<string>(['mame-current'])

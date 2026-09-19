@@ -99,6 +99,27 @@ const PRINT_ERR_FROM = 'printErr:t=>{this.debug&&console.log(t)}'
 const PRINT_ERR_TO = 'printErr:t=>{console.warn(t)}'
 
 /**
+ * 街机核心的 ROM / BIOS 必须保持 .zip 原样。
+ *
+ * 引擎给 ROM 与 BIOS 各带一份「不要解压」的核心白名单
+ *（downloadType.rom/bios.dontExtractIfCore），名单里是
+ * fbneo / fbalpha2012_* / same_cdi / mame / mame2003_plus / mame2003，
+ * 却**没有我们自建的 mame-current**。
+ *
+ * 后果（2026-09-19 实测，无头/有头 Chromium + 真实 mxsqy.zip + pgm.zip）：
+ *   引擎把 ROM 与 BIOS 解成散文件 → MAME 按 romset 名找不到压缩包 →
+ *   在 driver_device::device_start() 抛异常 → 而这套构建的链接没有开
+ *   异常捕获白名单（-sEXCEPTION_CATCHING_ALLOWED）→ wasm 直接 Abort，
+ *   玩家看到的只有一句「Failed to start game」。
+ *   日志佐证：`[EJS ROM] Core mame-current does not require special handling,
+ *   will attempt to extract if compressed.`
+ *
+ * 这里**不改那份名单**，而是改判定：上游以后增删名单都不会让这处失效。
+ */
+const KEEP_ZIP_FROM = 'e.dontExtractIfCore?.includes(this.getCore())'
+const KEEP_ZIP_TO = '(e.dontExtractIfCore?.includes(this.getCore())||"mame-current"===this.getCore())'
+
+/**
  * 每组：name 显示用；patches 是 [要找的原文, 替换后]；
  * legacy 可选，把「替换后」映射成更早一版补丁的样子，用来在引擎升级后接管旧补丁；
  * hint 是位置对不上时打给人看的排查思路。
@@ -137,6 +158,15 @@ const GROUPS = [
     hint: [
       '先确认引擎里 gameManager 的 getState 还是不是 EmulatorJSGetState 那一行；',
       '如果核心已经跟上（glue 里能 grep 到 EmulatorJSGetState），这一组可以整个删掉。',
+    ],
+  },
+  {
+    name: '街机 ROM 保持 zip（mame-current）',
+    patches: [[KEEP_ZIP_FROM, KEEP_ZIP_TO]],
+    hint: [
+      '在 download() 里找 `dontExtractIfCore?.includes(this.getCore())` 那个三元条件；',
+      '把 mame-current 也判成「不解压」—— 否则 MAME 拿不到 romset 压缩包会直接 Abort。',
+      '⚠️ 这一组没了的话，mame-current 的游戏 100% 起不来，且只有一句「Failed to start game」。',
     ],
   },
 ]

@@ -508,6 +508,42 @@ const patches = [
     },
   },
   {
+    name: 'flash_save_kv（AGI2 游戏的 key→value 在线存档）',
+    table: null,
+    /*
+      和第二代兼容桥（Kingdom Rush Frontiers 那种 AGI2）配套：一次写一个 key→value，
+      key 固定 slot1~3。它和 flash_save_slots 分表，是因为两套语义不同 ——
+      成对槽是「两个 JSON 必须一起覆盖」，key→value 是「一个对象就是一份档」，
+      硬塞进同一张表会让两条读路径都长出方言分支。
+    */
+    skip: async () => (!(await hasTable('users')) ? '还没有 users 表' : null),
+    needed: async () => !(await hasTable('flash_save_kv')),
+    run: async () => {
+      await conn.query(
+        'CREATE TABLE IF NOT EXISTS `flash_save_kv` (' +
+          '`user_id` VARCHAR(40) NOT NULL,' +
+          '`game_slug` VARCHAR(160) NOT NULL,' +
+          '`save_key` VARCHAR(64) NOT NULL,' +
+          '`value_json` JSON NOT NULL,' +
+          '`size` INT UNSIGNED NOT NULL,' +
+          '`revision` INT UNSIGNED NOT NULL DEFAULT 1,' +
+          '`created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,' +
+          '`updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,' +
+          'PRIMARY KEY (`user_id`, `game_slug`, `save_key`),' +
+          'KEY `idx_flash_save_kv_user_time` (`user_id`, `updated_at`)' +
+          ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
+      )
+      try {
+        await conn.query(
+          'ALTER TABLE `flash_save_kv` ADD CONSTRAINT `fk_flash_save_kv_user` ' +
+            'FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE CASCADE',
+        )
+      } catch (e) {
+        console.log(`   （外键没加上，注销账号时要自己清 Flash 在线档：${e.message}）`)
+      }
+    },
+  },
+  {
     name: '清理孤儿收藏（指向已删除游戏的记录）',
     table: 'favorites',
     needed: async () => {
@@ -884,7 +920,7 @@ const patches = [
   },
 ]
 
-const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'flash_save_slots', 'login_codes', 'platform_bios', 'game_plays', 'developers', 'friend_links', 'friend_link_hits', 'game_comments', 'game_ratings', 'oauth_apps', 'open_rom_samples']
+const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'flash_save_slots', 'flash_save_kv', 'login_codes', 'platform_bios', 'game_plays', 'developers', 'friend_links', 'friend_link_hits', 'game_comments', 'game_ratings', 'oauth_apps', 'open_rom_samples']
 
 try {
   /*
