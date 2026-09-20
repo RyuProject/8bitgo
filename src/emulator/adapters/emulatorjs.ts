@@ -41,7 +41,7 @@ import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { loadRemoteArchiveRom } from '../remoteArchive'
 import { matchArcadeHack, type ArcadeHack } from '@/data/arcadeHacks'
 import { deriveArcadeHackBytes } from '../arcadeHack'
-import { planBiosFiles } from '../biosPlan'
+import { biosNameOfUrl, planBiosFiles } from '../biosPlan'
 import { isRomPackBytes, isRomPackUrl, unpackRomPackBlob } from '@/services/romPack'
 
 /**
@@ -2931,11 +2931,56 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             engineGameName = `${prepared.hack.zipName}.zip`
             console.info(`[arcade] 按指纹认出改版包：${prepared.hack.title}（借 ${prepared.hack.driver} 驱动），已套用内置 RomData`)
           }
-          // MAME（mame-current）按 romset 文件名认驱动：上传文件名不标准时纠正成真实 romset 名，
-          // 否则核心按名字找不到驱动就回主菜单。只在 mame-current 上生效，不影响 FBNeo 系列。
+          // MAME（mame-current）按 romset 文件名认驱动：上传文件名不标准时纠正成真实 romset 名。
+          // 路径前缀（roms/）不在这里加 —— 统一在下面 Object.assign 之前做一次，覆盖所有来源。
           if (isMameCurrentCore(core) && engineGameName) {
             engineGameName = canonicalMameRomset(engineGameName)
           }
+        }
+
+        /**
+         * 平台级 BIOS（`EJS_biosUrl`）和这款游戏自己那套系统包是不是同一块板子。
+         * 两边名字都拿得到、又不相等 → 平台那份对这个游戏没用，别下（见下面 EJS_biosUrl 的注释）。
+         * 名字取不到（平台没配 / 游戏没识别出系统名）时一律保守处理：照旧下。
+         */
+        const platformBiosName = biosNameOfUrl(options.biosUrl)
+        const gameBiosName = options.biosSet?.name?.trim().toLowerCase() ?? ''
+        const skipPlatformBios = Boolean(platformBiosName && gameBiosName && platformBiosName !== gameBiosName)
+        /** 这次真正交给引擎去下载的平台级 BIOS（空串 = 标不设 EJS_biosUrl）。进度探针也用这个值 */
+        const engineBiosUrl = skipPlatformBios ? '' : (options.biosUrl ?? '')
+        if (skipPlatformBios) {
+          // 必须留痕：将来这款游戏报「缺文件」时，第一件事就是确认平台 BIOS 是被这条规则
+          // 主动跳过的 —— 后台「BIOS 包（系统名）」填错了系统名会走到这里
+          console.info(`[emulatorjs] 跳过平台级 BIOS（${platformBiosName}.zip）：这款游戏要的是 ${gameBiosName}.zip`)
+        }
+
+        /**
+         * ── mame-current 的两条硬约束（和 FBNeo 系列都不一样）──
+         *
+         * 1. **文件名即驱动名**：上传名常常不标准（明星三缺一在 MAME 里的真实 romset 是
+         *    mxsqy102tw，被存成了 mxsqy.zip），核心按名字找不到驱动就回主菜单 ——
+         *    和 FBNeo 那条同理（见 AGENTS 2.8）。别名表在上面 arcade 分支里已纠过，
+         *    这里再纠一次是为了覆盖「玩本地 ROM」页 —— 玩家拖进来的名字同样可能不标准。
+         *
+         * 2. **内容必须待在子目录里**：libretro-mame 取 basename 当驱动名、**取父目录当
+         *    rompath 和 system dir**（实测日志：`GET_SYSTEM_DIRECTORY: "/roms"`）。
+         *    引擎默认把 ROM 写在根目录并传 "/mxsqy102tw.zip"，根路径没有父目录可解析，
+         *    核心报 `Error parsing parent path` 后以 `No Driver Loaded` 启动 ——
+         *    玩家看到的是 MAME 系统菜单，日志里一个像样的报错都没有。
+         *
+         * 所以直接把 EJS_gameName 写成 `roms/<romset>.zip`：blob 游戏 URL 走 §2.7 那个补丁
+         * 取 EJS_gameName 当文件名，引擎的 writeFile 会自动建出中间目录，callMain 拿到的
+         * 就是 `/roms/<romset>.zip`。这条路**不依赖任何运行时时序**（早先靠 beforeStart 钩子
+         * 改 gameManager.fileName，线上出现过「代码已部署、ROM 也对，却照样回菜单」）。
+         *
+         * ⚠️ 这条只对「引擎拿 EJS_gameName 当文件名」的情形生效（blob 游戏 URL）。http(s)
+         * 直链时文件名取 URL 尾段，仍要靠下面 relocateMameRom 钩子改 fileName。两条都留着。
+         * ⚠️ 只在 mame-current 上做 —— FBNeo / mame2003 在根目录一直正常，别动它们。
+         */
+        const mameContentDir = isMameCurrentCore(core) ? 'roms/' : ''
+        if (mameContentDir && engineGameName && !engineGameName.startsWith(mameContentDir)) {
+          // startsWith 那个判断是幂等保护：名字里已经带了目录就不再叠一层 roms/roms/
+          engineGameName = mameContentDir + canonicalMameRomset(engineGameName)
         }
 
         Object.assign(win, {
@@ -2944,9 +2989,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           EJS_gameUrl: gameUrl,
           EJS_gameName: engineGameName,
           EJS_pathtodata: EJS_PATH,
-          // 平台级 BIOS。Neo Geo 这类平台不给就直接起不来；不需要 BIOS 的平台
-          // 这里是空串，等于没设
-          ...(options.biosUrl ? { EJS_biosUrl: options.biosUrl } : {}),
+          /*
+            平台级 BIOS。Neo Geo 这类平台不给就直接起不来；不需要 BIOS 的平台这里是空串。
+
+            ⚠️ 但**这款游戏自己的系统包和平台那格不是同一套硬件时，就别下平台那份了**：
+            一个街机包只可能跑在一块板子上 —— 平台级填着 neogeo.zip 而游戏要的是 pgm.zip
+            时，那 1.5 MB 下下来核心连看都不会看一眼（system dir 里它也不会被用到），
+            白白拖慢开局。相等时当然照旧传（见 biosPlan.ts 的同一条规则）。
+            EJS_biosUrl 只收一个包，游戏自己那份由 biosPlan 那条路写进虚拟文件系统。
+          */
+          ...(engineBiosUrl ? { EJS_biosUrl: engineBiosUrl } : {}),
           // 街机：引擎没有 arcade 分支，不给这份布局手机上就只有 4 颗动作键、
           // 摇杆还会把对角线松掉、投币键写着「选择」。见 ARCADE_VIRTUAL_PAD 的注释
           ...(options.platform === 'arcade'
@@ -3020,17 +3072,27 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             带上 beat 和 onProgress：这条下载引擎看不见，不拍心跳的话慢网上会被误判成「卡住了」，
             而且进度条会一直停在原地（见 fetchBiosBytes 的注释）。
           */
-          injections.push({ path: file.path, bytes: fetchBiosBytes(file.url, beat, options.onProgress) })
+          /*
+            ⚠️ 落盘目录必须和内容一致。核心是按 set 名在**内容所在目录**里找 BIOS 的，
+            而 mame-current 的内容被我们放进了 /roms（见上面 mameContentDir），
+            此时它的 system dir 就是 /roms（实测 `GET_SYSTEM_DIRECTORY: "/roms"`）。
+            BIOS 写到根目录核心一样看不见 —— 症状是 Neo Geo / PGM 报缺文件，
+            而「文件明明写进去了」，查起来毫无线索。FBNeo 系列内容在根目录，照旧。
+          */
+          const path = mameContentDir ? `/${mameContentDir}${file.path.replace(/^\//, '')}` : file.path
+          injections.push({ path, bytes: fetchBiosBytes(file.url, beat, options.onProgress) })
         }
 
         /**
-         * mame-current 的内容路径必须是「父目录/包名.zip」：核心从父目录解析 rompath，
-         * 从 basename 解析驱动名（libretro-mame 的 extract_directory/extract_basename）。
-         * 引擎却把 ROM 写在根目录并传 "/mxsqy102tw.zip" —— 根路径没有父目录可解析，
-         * 核心报 Error parsing parent path 后以 No Driver Loaded 启动，玩家看到 MAME 菜单。
-         * 这里赶在 callMain 前把 ROM 挪进 /roms/ 并改写 fileName，让引擎拿到
-         * /roms/mxsqy102tw.zip。只在 mame-current 上做：FBNeo / mame2003 在根目录
-         * 一直工作正常，别动它们（2026-09-20 本地复现验证，见 AGENTS.md）。
+         * ── 兜底：把 ROM / 平台级 BIOS 挪到 mame-current 该在的目录 ──
+         *
+         * 为什么还需要它：上面给 EJS_gameName 加 roms/ 前缀那条只在「引擎拿 EJS_gameName
+         * 当文件名」时生效（blob 游戏 URL）。**http(s) 直链时文件名取 URL 尾段**，
+         * 那就还得靠这里把 gameManager.fileName 改写掉。
+         *
+         * 顺带把引擎自己下载的平台级 BIOS 也镜像进 /roms —— 那份的落点是引擎定的（根目录，
+         * 文件名取 URL 尾段），我们改不了它的行为，只能开局前搬一次。
+         * 只在 mame-current 上做：FBNeo / mame2003 在根目录一直工作正常，别动它们。
          */
         const relocateMameRom = isMameCurrentCore(core)
           ? (emu: EjsEmulator) => {
@@ -3056,7 +3118,25 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             }
           : undefined
 
-        if (injections.length || relocateMameRom) {
+        /**
+         * 平台级 BIOS 的搬运。和 ROM 不同，这份是**引擎**下的（EJS_biosUrl），
+         * 我们只能开局前从根目录读出来、写进 /roms。没下到（skipPlatformBios 跳过了、
+         * 或者下载失败）就是空操作 —— 真缺文件时由核心自己点名，比我们编的话准。
+         */
+        const relocateMameBios = isMameCurrentCore(core) && platformBiosName
+          ? (emu: EjsEmulator) => {
+              const fs = emu.gameManager?.FS
+              if (!fs) return
+              try {
+                const bytes = fs.readFile?.(`/${platformBiosName}.zip`)
+                if (bytes) fs.writeFile(`/roms/${platformBiosName}.zip`, bytes)
+              } catch {
+                /* 见上：不拦开局 */
+              }
+            }
+          : undefined
+
+        if (injections.length || relocateMameRom || relocateMameBios) {
           installFsInjector(win, injections, (msg) => {
             /*
               写失败**不拦着开局**（和 installFsInjector 的注释一致）：没了改版 dat，
@@ -3065,13 +3145,19 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               真缺文件的话核心自己会报「缺 xxx」，那条走 errorTap，比这里更准。
             */
             if (!destroyed) console.warn('[emulatorjs] 文件没写进虚拟文件系统，按原始配置继续：', fmt(rt.ejsFsInjectFailed, { msg }))
-          }, relocateMameRom)
+          }, relocateMameRom || relocateMameBios
+            ? (emu) => {
+                // 顺序有讲究：先把 ROM 搬进 /roms（顺带 mkdir），再搬 BIOS
+                relocateMameRom?.(emu)
+                relocateMameBios?.(emu)
+              }
+            : undefined)
         }
 
         // 网络探针也要赶在 loader.js 之前包好，否则核心那一趟就漏过去了
         installNetTap(win, {
           gameUrl,
-          biosUrl: options.biosUrl,
+          biosUrl: engineBiosUrl,
           live: () => !destroyed && !started,
           onProgress: options.onProgress,
           onBeat: beat,

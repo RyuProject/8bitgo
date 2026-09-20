@@ -4,6 +4,17 @@
 <body>
 <div id="game" style="width:800px;height:600px"></div>
 <script>
+  // 自动化验证用：缓存全部控制台输出，供 agent-browser eval 读取
+  window.__logs = []
+  ;['log', 'info', 'warn', 'error'].forEach(function (k) {
+    var orig = console[k].bind(console)
+    console[k] = function () {
+      try { window.__logs.push(k + ': ' + Array.prototype.map.call(arguments, String).join(' ')) } catch (e) {}
+      orig.apply(null, arguments)
+    }
+  })
+</script>
+<script>
   // 完全复刻线上路径：fetch 本地 zip → blob URL → gameName=mxsqy102tw.zip → mame-current
   fetch('/__mxsqy.zip')
     .then(function (r) {

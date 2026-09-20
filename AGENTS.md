@@ -160,10 +160,23 @@ libretro-mame（mame-current）从内容路径解析两样东西：basename（�
 然后以 `No Driver Loaded` 启动。玩家看到的就是 MAME 系统菜单，日志里**一个像样的报错都没有**
 （2026-09-20 实测：ROM 名、核心驱动、zip 补丁全对，就卡在这一步）。
 
-修法在 `src/emulator/adapters/emulatorjs.ts`：给 `installFsInjector` 加了 `beforeStart` 钩子，
-mame-current 开局前把 ROM 复制进 `/roms/` 并改写 `gameManager.fileName` 为 `roms/<名>.zip`
-（引擎的 writeFile 会自动建中间目录，两种写入时序都覆盖）。**只在 mame-current 上做**——
-FBNeo / mame2003 在根目录一直工作正常，别动它们。
+修法在 `src/emulator/adapters/emulatorjs.ts`，**主修是给 `EJS_gameName` 直接带路径**：
+
+```ts
+if (isMameCurrentCore(core) && engineGameName) {
+  engineGameName = `roms/${canonicalMameRomset(engineGameName)}`
+}
+```
+
+blob 游戏 URL 走 §2.7 那个补丁取 `EJS_gameName` 当虚拟文件系统里的文件名，引擎的
+`writeFile` 会自动建出中间目录，`callMain` 拿到的就是 `/roms/<romset>.zip`。
+
+⚠️ **2026-09-20 二次返工教训**：最初只靠 `installFsInjector` 的 `beforeStart` 钩子
+在运行时改 `gameManager.fileName`，线上「代码已部署、ROM 也对」却照样回菜单——那条路要
+`Object.defineProperty(window,'EJS_emulator')` 的 setter 抢在引擎赋值之前生效，**时序上很脆**，
+而失败症状只是「没生效」，没有报错。现在**带路径是主修、钩子只作兜底**（http(s) 直链时
+文件名取 URL 尾段、不取 `EJS_gameName`，那种情况仍要钩子改 `fileName`；它见 `name` 里已有
+`/` 就跳过，不会重复搬）。**只在 mame-current 上做**——FBNeo / mame2003 在根目录一直正常。
 
 验收看核心日志（MAME 0.289 起要出这几行才算成）：
 
@@ -173,10 +186,37 @@ FBNeo / mame2003 在根目录一直工作正常，别动它们。
 [libretro INFO] Game description: Mingxing San Que Yi (Taiwan, V102TW)
 ```
 
+⚠️ **BIOS 也必须待在 `/roms` 里，不能留在根目录。** MAME 的 BIOS 搜索目录就是内容的父目录
+（实测核心日志：`GET_SYSTEM_DIRECTORY: "/roms"`，`SYSTEM DIR is empty, assume CONTENT DIR`）。
+而**引擎自己下的平台级 BIOS（`EJS_biosUrl`）落点是根目录**（文件名取 URL 尾段），
+验证过一次实测：`EJS_biosUrl=/__mxsqy.zip` 时虚拟文件系统是
+`ROOT=…,roms,__mxsqy.zip` + `/roms=mxsqy102tw.zip` —— 根目录那份 MAME 根本看不见。
+所以适配器里做了两件事：我们自己注入的 BIOS 包直接写 `/roms/<set>.zip`；
+引擎下的那份由 `relocateMameBios` 钩子从根目录镜像一份进 `/roms`。
+**只对 mame-current 生效**，FBNeo 系列内容就在根目录、BIOS 也照旧写根目录。
+症状提醒：漏了这一条，Neo Geo / PGM 报「缺文件」，而文件**看上去确实写进去了**。
+
+⚠️ 平台级 BIOS 与游戏自己的系统包**不是同一块板子时不再下载平台那份**（`skipPlatformBios`）：
+一个街机包只跑一块板子，平台填 neogeo.zip 而游戏要 pgm.zip 时那 1.5 MB 下下来核心不会用。
+会打一条 `[emulatorjs] 跳过平台级 BIOS（neogeo.zip）：这款游戏要的是 pgm.zip`——
+将来报缺文件时先看这条，确认不是「后台系统名填错」被这条规则主动跳过了。
+
 ⚠️ 文件名照样是身份（§2.8 那条对 MAME 同样成立）：错名游戏用
 `emulatorjs.ts` 里的 `MAME_ROMSET_ALIASES`（mxsqy → mxsqy102tw）纠偏。
 ⚠️ mame-current 必须 **non-merged** 单包自洽；缺一个成员就是一行
 `v-102tw.u39 NOT FOUND (tried in mxsqy102tw mxsqy)` 然后照样回菜单，别只盯着路径查。
+
+⚠️ **上传的 zip 里成员必须在顶层，不能套一层目录。** 2026-09-20 那份明星三缺一 ROM 的
+7 个成员里，`v-102tw.u39` 被放在 `mxsqy102tw/` 子目录下（其余 6 个在顶层）——MAME 只读
+zip 顶层条目，于是照旧报 `v-102tw.u39 NOT FOUND` 回菜单。拍平（去掉顶层目录前缀）后
+7 个成员全在顶层，本地与线上都直接进游戏。**踩坑点：8BG 只做外层包装（zstd + AES），
+内层 zip 的文件名与嵌套结构原样保留**，所以后台看 `originalName` / 文件大小都对，
+问题却在内层清单里——验收要列出 zip 成员看，别只看外层。
+
+该 romset 的成员与 CRC（对照 MAME 0.289）：
+`a8_027a.u41=f9ada8c4`、`igs_l2404.u23=dc8ff7ae`、`igs_l2405.u38=2f20eade`、
+`igs_s2402.u21=a3e3b2e0`、`igs_m2403.u22=53940332`、`v-102tw.u39=16095b98`（+ `igs_m2401.u39=32e69540`）。
+
 
 ### 2.9 平台 BIOS 的边缘缓存会骗人
 
