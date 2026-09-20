@@ -104,7 +104,7 @@
     "test:j2me": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-j2me.mjs",
     "test:ejs-cores": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-ejs-cores.mjs",
     "test:nds-layout": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-nds-layout.mjs",
-    "test:multipart": "node scripts/test-worker-multipart.mjs",
+    "test:worker": "npm --prefix worker test",
     "test:r2-upload-client": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-r2-upload-client.mjs",
     "build:client": "vite build",
     "postbuild:client": "node scripts/check-ruffle.mjs --dist && node scripts/check-emulatorjs.mjs --dist && node scripts/check-play.mjs --dist && node scripts/check-flash-save-bridge.mjs --dist",

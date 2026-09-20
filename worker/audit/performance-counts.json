@@ -1,0 +1,46 @@
+{
+  "environment": {
+    "node": "v22.16.0",
+    "storage": "in-memory R2 contract fixture",
+    "network": "none",
+    "metrics": "counts; not wall-clock or cloud measurements"
+  },
+  "samples": [
+    {
+      "version": "original",
+      "scenario": "bulk_1000_roms",
+      "r2DeleteCalls": 1000
+    },
+    {
+      "version": "original",
+      "scenario": "bulk_500_roms_500_covers",
+      "r2DeleteCalls": 1000
+    },
+    {
+      "version": "original",
+      "scenario": "8MiB_known_length_part",
+      "requestArrayBufferCalls": 1,
+      "inputChunksReadBeforeR2UploadPart": 128,
+      "totalInputChunks": 128,
+      "r2ReceivedReadableStream": false
+    },
+    {
+      "version": "fixed",
+      "scenario": "bulk_1000_roms",
+      "r2DeleteCalls": 1
+    },
+    {
+      "version": "fixed",
+      "scenario": "bulk_500_roms_500_covers",
+      "r2DeleteCalls": 2
+    },
+    {
+      "version": "fixed",
+      "scenario": "8MiB_known_length_part",
+      "requestArrayBufferCalls": 0,
+      "inputChunksReadBeforeR2UploadPart": 0,
+      "totalInputChunks": 128,
+      "r2ReceivedReadableStream": true
+    }
+  ]
+}

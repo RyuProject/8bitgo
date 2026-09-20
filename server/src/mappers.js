@@ -108,13 +108,15 @@ export function homeRankOf(v) {
  *
  * 不做白名单：核心列表是前端配置（src/config/emulators.ts），后端跟着抄一份迟早会走偏，
  * 而且换引擎版本时新核心会先在前端加上。这里只做形状约束 —— 核心名在 libretro 生态里
- * 一律是小写字母 / 数字 / 下划线，把别的字符挡掉就够了，不认识的名字交给引擎自己报错。
+ * 一般是小写字母 / 数字 / 下划线，但本项目自构建的「MAME 当前版」id 是 `mame-current`
+ * （连字符，对应 public/emulatorjs/cores/mame-current-wasm.data），所以减号也放行。
+ * 把别的字符挡掉就够了，不认识的名字交给引擎自己报错。
  */
 export function coreOf(v) {
   if (v == null) return null
   const s = String(v).trim().toLowerCase()
   if (!s) return null
-  return /^[a-z0-9_]{1,32}$/.test(s) ? s : null
+  return /^[a-z0-9_-]{1,32}$/.test(s) ? s : null
 }
 
 /**

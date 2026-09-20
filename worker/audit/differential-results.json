@@ -1,0 +1,278 @@
+{
+  "environment": {
+    "node": "v22.16.0",
+    "network": "mocked; no remote requests",
+    "storage": "in-memory API model; not native R2",
+    "streams": "Node WHATWG streams; workerd not installed"
+  },
+  "results": [
+    {
+      "id": "P01_proxy_absolute_target",
+      "before": {
+        "status": 200,
+        "targets": [
+          "https://untrusted.test/arbitrary"
+        ]
+      },
+      "after": {
+        "status": 400,
+        "targets": []
+      }
+    },
+    {
+      "id": "P02_proxy_query_preservation",
+      "before": [
+        "https://trusted.test/vcsky/a.dat"
+      ],
+      "after": [
+        "https://trusted.test/vcsky/a.dat?v=2&signature=test"
+      ]
+    },
+    {
+      "id": "P03_proxy_error_cache",
+      "before": {
+        "status": 503,
+        "cacheControl": "public, max-age=86400, immutable",
+        "cf": {
+          "cacheEverything": true,
+          "cacheTtl": 86400
+        }
+      },
+      "after": {
+        "status": 503,
+        "cacheControl": "no-store",
+        "cf": {
+          "cacheEverything": true,
+          "cacheTtlByStatus": {
+            "200-299": 86400,
+            "300-599": -1
+          }
+        }
+      }
+    },
+    {
+      "id": "P04_if_range_changed",
+      "before": {
+        "status": 206,
+        "body": "content"
+      },
+      "after": {
+        "status": 200,
+        "body": "new-content"
+      }
+    },
+    {
+      "id": "P05_if_match",
+      "before": {
+        "status": 304
+      },
+      "after": {
+        "status": 412
+      }
+    },
+    {
+      "id": "P06_suffix_range",
+      "before": {
+        "status": 200,
+        "body": "ef",
+        "contentLength": "6",
+        "contentRange": null
+      },
+      "after": {
+        "status": 206,
+        "body": "ef",
+        "contentLength": "2",
+        "contentRange": "bytes 4-5/6"
+      }
+    },
+    {
+      "id": "P07_conditional_HEAD",
+      "before": {
+        "status": 200
+      },
+      "after": {
+        "status": 304
+      }
+    },
+    {
+      "id": "P08_malformed_url",
+      "before": {
+        "uncaught": "URIError"
+      },
+      "after": {
+        "status": 400
+      }
+    },
+    {
+      "id": "P09_empty_upload_id_DELETE",
+      "before": {
+        "status": 200,
+        "finalObjectStillExists": false
+      },
+      "after": {
+        "status": 400,
+        "finalObjectStillExists": true
+      }
+    },
+    {
+      "id": "P10_cover_resurrection",
+      "before": {
+        "deleteStatus": 200,
+        "subsequentGet": 200,
+        "legacyCopyRemains": true
+      },
+      "after": {
+        "deleteStatus": 200,
+        "subsequentGet": 404,
+        "legacyCopyRemains": false
+      }
+    },
+    {
+      "id": "P11_dual_bucket_pagination",
+      "before": {
+        "seen": 4,
+        "pages": 1,
+        "error": "cursor belongs to another bucket"
+      },
+      "after": {
+        "seen": 10,
+        "pages": 3,
+        "error": null
+      }
+    },
+    {
+      "id": "P12_transient_abort",
+      "before": {
+        "status": 200,
+        "ok": true,
+        "markerRemains": false,
+        "activeUploadRemains": true
+      },
+      "after": {
+        "status": 503,
+        "ok": false,
+        "markerRemains": true,
+        "activeUploadRemains": true
+      }
+    },
+    {
+      "id": "P13_transient_part_failure",
+      "before": {
+        "status": 409,
+        "fatal": true,
+        "retryable": false
+      },
+      "after": {
+        "status": 503,
+        "fatal": false,
+        "retryable": true
+      }
+    },
+    {
+      "id": "P14_transient_complete_failure",
+      "before": {
+        "status": 400,
+        "fatal": true,
+        "retryable": false
+      },
+      "after": {
+        "status": 503,
+        "fatal": false,
+        "retryable": true
+      }
+    },
+    {
+      "id": "P15_wrong_marker_cleanup",
+      "before": {
+        "status": 200,
+        "unrelatedMarkerRemains": false,
+        "ownMarkerRemains": true
+      },
+      "after": {
+        "status": 200,
+        "unrelatedMarkerRemains": true,
+        "ownMarkerRemains": false
+      }
+    },
+    {
+      "id": "P16_cleanup_after_first_page",
+      "before": {
+        "claimedMarkerRemoved": true,
+        "actualMarkerRemains": true
+      },
+      "after": {
+        "claimedMarkerRemoved": true,
+        "actualMarkerRemains": false
+      }
+    },
+    {
+      "id": "P17_unknown_length_single_PUT_limit",
+      "before": {
+        "status": 200,
+        "storedSize": 2100000,
+        "chunksRead": 3,
+        "cancelled": false
+      },
+      "after": {
+        "status": 413,
+        "storedSize": 0,
+        "chunksRead": 2,
+        "cancelled": true
+      }
+    },
+    {
+      "id": "P18_bulk_delete_calls",
+      "before": {
+        "status": 200,
+        "romsCalls": 500,
+        "coversCalls": 500,
+        "totalCalls": 1000
+      },
+      "after": {
+        "status": 200,
+        "romsCalls": 1,
+        "coversCalls": 1,
+        "totalCalls": 2
+      }
+    },
+    {
+      "id": "P19_HTML_transformation_headers",
+      "before": {
+        "bodyBytes": 67,
+        "contentLength": "43",
+        "contentEncoding": "gzip",
+        "etag": "\"old-html\""
+      },
+      "after": {
+        "bodyBytes": 67,
+        "contentLength": null,
+        "contentEncoding": null,
+        "etag": null
+      }
+    },
+    {
+      "id": "P20_known_length_part_materialization",
+      "before": {
+        "status": 200,
+        "requestArrayBufferCalls": 1,
+        "r2ReceivedStream": false
+      },
+      "after": {
+        "status": 200,
+        "requestArrayBufferCalls": 0,
+        "r2ReceivedStream": true
+      }
+    },
+    {
+      "id": "P21_missing_upload_id_overwrites_final_object",
+      "before": {
+        "status": 200,
+        "finalObject": "one-part"
+      },
+      "after": {
+        "status": 400,
+        "finalObject": "original-complete-file"
+      }
+    }
+  ]
+}

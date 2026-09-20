@@ -134,7 +134,9 @@ Content-Type: application/json
 }
 ```
 
-不传 `key` 时返回所有完整槽。只有 profile 和 data 都存在的槽才会返回：
+不传 `key` 时返回所有完整槽。只有 profile 和 data 都存在的槽才会返回。
+响应顶层还会带一个 `revisions`（`{"0": 4, "2": 1}`，槽 → 当前版本号），**是给桥做条件更新用的**，
+游戏侧不看它。空槽不出现在里面（按 0 处理）。
 
 ```json
 {
@@ -234,6 +236,15 @@ Content-Type: application/json
 同一用户的写入要锁 `users` 行再计算配额，沿用现有云存档的并发配额做法。每个账号建议最多
 32 MiB Flash 在线存档；覆盖成更小的档案始终允许。
 
+**两个可选字段（2026-09-20 起的写入并发保护，见「附三」）：**
+
+| 字段 | 作用 |
+| --- | --- |
+| `expectedRevision` | 条件更新：只有服务端当前版本等于它才落库，否则 `409 stale_write`。不发就没有并发保护（旧桥兼容） |
+| `opId` | 幂等重放：同一个 ID 再来一次不会重复写，返回当前版本。客户端超时重试必须复用它 |
+
+响应里的 `revision` 是**代次表**里的版本号（不是本行自增），客户端拿它做下一次的条件更新。
+
 ### 5.3 删除一槽
 
 ```http
@@ -250,11 +261,16 @@ Content-Type: application/json
 
 ```json
 {
-  "success": true
+  "success": true,
+  "data": { "revision": 7 }
 }
 ```
 
 删除必须幂等。槽原本不存在时仍返回成功。
+
+`data.revision` 是删除**之后**的版本号：删档也推进代次（否则「删掉再存」会让版本号回到 1，
+一个基于旧版本 1 的迟到请求又能通过条件更新，即 ABA）。客户端要把它记下来，否则删档之后的
+第一次正常保存会带着删除前的版本撞条件更新，白丢一次。
 
 ## 6. 兼容 AGI.swf 的 ActionScript 契约
 
@@ -457,6 +473,10 @@ POST /api/flash-saves/v1/kingdom-rush-frontiers/read
 带 `key` 时只回那一个：`{ "success": true, "keys": { "slot1": { … } } }`；
 槽不存在就是 `{ "success": true, "keys": {} }`。
 
+两代一致：顶层还有 `revisions`（`{"slot1": 2}`，给桥做条件更新，游戏侧不看），
+写入也接受同样的 `opId` / `expectedRevision` —— 见「附三」。AGI2 的桥还没写，
+所以那两个字段目前只有 AGI1 在用。
+
 > ⚠️ **只输出 slot1~3。** 真 Armor 服务当年会在 `keys` 里塞
 > `kingdomRushPremiumContentEnabled`，KRF 见到它等于 2 就解锁付费内容。白名单过滤写在
 > `agi2SaveMap()` 里，不要改成「原样透传」。
@@ -511,28 +531,49 @@ CREATE TABLE IF NOT EXISTS flash_save_kv (
 
 ## A4. 桥接 AGI2.swf
 
-源码计划放在 `flash-api/armor-games/src-agi2/`，产物是
-`public/flash-api/armor-games/AGI2.swf`，随 Git 部署（构建方式与 AGI.swf 相同，见
-`flash-api/armor-games/README.md`）。
+源码：`flash-api/armor-games/src-agi2/KrfAgiBridge.as`；产物：
+`public/flash-api/armor-games/AGI2.swf`，随 Git 部署。构建见
+`flash-api/armor-games/README.md`（**AGI2 用自己的种子模板，不能换成 Ruffle 空壳**——
+游戏依赖文档类名 `KrfAgiBridge`）。
 
-已确认要暴露的面（按逆向结论）：
+### 对外接口（已按产物反编译核对，逐字不能改）
 
 ```as3
-connect(options:Object):Object                      // options = { stage, apiKey }
+// 文档类 KrfAgiBridge（顶层类，extends Sprite）
+connect(options:Object = null):void          // 读 FlashVars；options.callback 回调 {success:true}
+
+// 四个命名空间是**公开属性**，游戏从 Loader.content 直接取
 user.isGuest():Boolean
 user.getUsername():String
 user.getAvatarURL():String
 user.getUID():String
-storage.user.retrieve(options:Object):void           // options.key:"" = 取全部，回调得到 { success, keys }
-storage.user.submit(options:Object):void             // options = { key, value }
-storage.user.erase(options:Object):void              // options = { key }
-content.*                                            // 第一版一律返回空 / 失败
-quests.submit(...)                                   // 静默成功
+
+storage.user.retrieve(options:Object):void   // { key?, callback } -> 回调 { success, keys }
+storage.user.submit(options:Object):void     // { key, value, callback }
+storage.user.erase(options:Object):void      // { key, callback }
+
+content.retrievePurchases(options)           // { success:true, purchases:[] }
+content.retrieveProducts(options)            // { success:true, products:[] }
+content.showStore(options)                   // { success:false, error:{code:'store_unavailable'} }
+content.RESPONSE_USER_CANCELLED / RESPONSE_PURCHASE_FAILED / RESPONSE_PURCHASE_SUCCESS
+quests.submit(options)                       // { success:true, quest:{ progress, status:'completed' } }
+
+// 私有：readParameters / enqueue / pump / submitWrite / retriable / errorCode / post / callOnce
 ```
 
-> ⏳ **待核对**：`connect()` 的返回值形态、以及 `retrieve/submit/erase` 的回调是怎么传的
-> （options 内字段 / 第二参数 / 事件），需要对照游戏侧 `AgiV2Handler` 的反编译源码敲定后
-> 再写 AS3 实现。写错的表现是「桥加载成功但游戏读不到档」，而且不报错。
+三条固定约定（改桥时别动）：**回调一律放在 `options.callback`**（不是第二个参数）；
+`retrieve` 的响应是 `{success, keys}`，没有槽时给 `keys:{}` 而不是 null；
+`content` 的三个响应常量必须原样保留。
+
+### 与 AGI1 桥一致的三处加固
+
+| 加固 | 为什么 |
+| --- | --- |
+| 失败回调里也解析 `loader.data` | 4xx/5xx 在 Ruffle 里走 `ioError`，不解析就把 `invalid_session` 一律报成 `network_error` |
+| 收到 `invalid_session` 就摘掉登录态 | 游戏据此把在线槽标成不可用，这是唯一能让玩家看见的反馈 |
+| 写失败重试一次（800ms，会话失效不重试） | 游戏忽略回调里的错误，一次抖动 = 玩家这一程白跑；服务端 upsert 幂等 |
+
+队列是**全局串行**（不是每槽一条）：AGI2 一次提交就是一份完整档，串行化保证「后点的保存」在「先点的保存」之后落库。
 
 ## A5. 页面侧
 
@@ -587,6 +628,18 @@ quests.submit(...)                                   // 静默成功
   原来的额度可能打满，之后整小时退游客态且无提示。
 - 配额改成**分表查**：一条 SQL 同时查两张表时，老库缺 `flash_save_kv` 会让本来好用的 AGI1
   每次保存都 500；分开查时缺表只当 0。
+- 限额改走 `resource-limits.js` 的 `envNumber()`，三层上限按 **半份 ≤ 整槽 ≤ 账号总量** 约束。
+  原来写的 `Number(process.env.X || 默认)` 有个静默坑：`FLASH_SAVE_TOTAL_MAX_BYTES=abc` 得到
+  NaN，而 NaN 参与的所有比较都是 false —— **等于把限额整个关掉**，日志里一个字都没有。
+  现在非法值夹到最近边界或退回默认值，并且每次都 `console.warn` 出声。
+  > ⚠️ 和审计包给的版本有一处**刻意**差别：那边遇到非法值是抛异常让进程起不来。
+  > 这台 Express 同时扛着整站，配额填错属于「某个功能配置有误」，不该演成整站 502；
+  > 而退回默认值并不会让保护消失 —— 默认值就是安全的那一档。见 `resource-limits.js` 顶部注释。
+- **每次请求复核白名单**：会话令牌 8 小时有效，只在签发时查的话，游戏被停用后旧令牌
+  还能继续读写满 8 小时。中间件里每请求查一次 `flashSaveGameEnabled()`。
+- **删档进事务 + 重锁用户行**：中间件那次会话复核在事务外，账号注销 / 被封 / 令牌吊销
+  可能就发生在它和删除之间，而删除不可逆。两个方言的删除都走 `withTransaction` +
+  `SELECT … FOR UPDATE` 复核 `status` / `token_version`。
 
 ## B4. 页面侧
 
@@ -608,3 +661,106 @@ quests.submit(...)                                   // 静默成功
   ExternalInterface 一类的续期通道。
 - `retrieveUserData` 的等待上限 3 秒：极端情况下（后台标签页被节流）可能读到的仍是旧档。
 - 桥的修复要等边缘缓存过期（约 1 小时）才全球生效，与其它固定 URL 的引擎产物同一档。
+
+---
+
+# 附三：写入并发（R01 / R02，2026-09-20）
+
+审计报告把「存档写入的时序问题」列为本轮**没有**被局部修复消除的风险，这里补上。
+两条是不同的问题，一条解决在协议上，另一条只能在客户端做到「宁可失败、不许写坏」。
+
+## C1. R01：迟到的旧请求不许覆盖新存档
+
+**问题**：原实现是纯 upsert（`ON DUPLICATE KEY UPDATE`）——谁最后到谁说了算。
+一次被网络拖住的旧保存（比如客户端 12 秒超时后放弃、请求却还在路上）可以在一次更新的保存
+**之后**才到达服务端，把新档覆盖成旧状态。玩家看到的症状是「进度倒退了」。
+
+**设计**（两端一起改，字段全部**可选**，旧桥照样能写）：
+
+| 角色 | 做什么 |
+| --- | --- |
+| 服务端 | 每 (账号, 游戏, 槽) 维护一个**代次**：`flash_save_seqs.revision` + `last_op_id`（见 A3 后面的 SQL） |
+| 服务端 | 写入带 `expectedRevision`：不等于当前代次就 `409 stale_write`，**不落库** |
+| 服务端 | 写入带 `opId`：等于 `last_op_id` 就是重试，回当前版本、不再写（幂等重放） |
+| 服务端 | 读档回 `revisions`；删档也要推进代次（否则就是 ABA，见下），并在响应里回新版本 |
+| 客户端（桥） | 读档 / 写成功 / 删成功时同步本地 `revisions[slot]`；写入带上 `expectedRevision` 与 `opId` |
+
+版本号存在**代次表**而不是存档行上，是因为删除会把行删掉：如果版本号随行消失，
+「删档 → 再存」之后版本又从 1 开始，一个基于旧版本 1 的迟到请求恰好又能通过条件更新 ——
+这就是 ABA。代次表只有几行（每账号每游戏每槽一行），代价可以忽略。
+
+```sql
+CREATE TABLE IF NOT EXISTS flash_save_seqs (
+  user_id       VARCHAR(40)      NOT NULL,
+  game_slug     VARCHAR(160)     NOT NULL,
+  save_key      VARCHAR(64)      NOT NULL,   -- AGI1: "0"~"2"；AGI2: "slot1"~"slot3"
+  revision      INT UNSIGNED     NOT NULL DEFAULT 0,
+  last_op_id    VARCHAR(64)      NULL,       -- 最后一次成功应用的 opId；同 ID 再来 = 重试
+  updated_at    TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, game_slug, save_key),
+  CONSTRAINT fk_flash_save_seqs_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+```
+
+写入和**删除**都让 `revision` 前进一格：写入是 upsert 存档行 + 推进代次；删除是删行 + 推进代次。
+存档行上的 `revision` 现在等于代次表的值（不再是自己 `+1`），两处一致便于排查。
+
+**幂等重放**解决的是另一半：客户端超时重试是常态，没有 `opId` 的话「重试」等于「再写一遍」。
+桥的重试复用同一个 `opId`，服务端认出后回**当前**版本（不是当时那个），让客户端的本地版本
+重新对齐 —— 否则它下次会带着过期版本撞条件更新。
+
+**冲突之后**：桥会把该槽的本地版本丢掉（`stale_write` 不重试），下一次保存退化成无保护写入。
+为什么不顺手补一次读档：那会给「刚刚丢了一次保存」的路径再加一个往返，而游戏是忽略错误的，
+玩家只会觉得更卡。这笔账写在这里，不要在后面「顺手优化」成隐式读档。
+
+**残余**：不带 `expectedRevision` 的客户端没有并发保护。这是协议上二选一的事
+（「旧客户端照样能写」vs「迟到写入不许覆盖」不能同时成立），所以字段是可选的，
+而不是服务端硬性要求。
+
+## C2. R02：两半包的代际
+
+**先澄清一个事实**：本仓库的 AGI1 桥**不是**分两次请求提交的 —— `submitUserData` 收齐
+profile / data 两半后合成**一个** `/write-slot` 请求（`MainTimeline.as` 的 `enqueue`），
+所以服务端拿到的永远是原子的一对。审计报告里「服务端无法推断两半是否同属一次保存」
+在**游戏 → 桥**这一段仍然成立：游戏不给我们保存操作的 ID。
+
+桥原来的配对规则是「每槽每半各留一个，先到先配」，于是「profile 重复到达」时会出问题：
+`P1, P2, D1` 这种序列会把 **P2 和 D1** 配成一对（跨代次），而这份档表面完全正常。
+
+**现在的规则**：一旦检测到同一半重复到达，说明这次保存的两半归属已经不可判定，
+于是**丢掉旧的那一半，并把下一个到达的 data 半也丢掉**（`resync`），要求重新凑一对。
+在 `P1, P2, D1, D2` 下正好配对出 `P2 + D2`（一次都不丢）；在 `P1, P2, D1` 下丢掉这次保存。
+
+为什么敢丢：游戏每次送的都是**全量状态**，不是增量。少存一次只是云端的档晚一个保存点，
+而「旧 profile + 新 data」拼出来的坏档是玩家点开才发现的。
+
+另外，写入现在带 `opId`（两半共用同一个 ID），服务端把它落在 `last_op_id` 上 ——
+这份档从此有了一致的代次标识，重放和迟到都能被识别。
+
+**残余**：从根上证明两半同属一次保存，需要**游戏**给出保存 ID（我们改不了游戏内部）。
+现状是「客户端严格配对 + 服务端记录代次 + 宁可丢掉不配对」这三层兜底。
+
+## C3. 上线顺序
+
+```bash
+cd server && npm run migrate      # 建 flash_save_seqs（缺了的话写入直接 500，读档只降级）
+cd .. && npm run flashbridge      # 重编译 AGI.swf（客户端侧改动只有它）
+npm run test:flash-online-save    # 桥校验 + 一致性 + 契约
+npm --prefix server run test:flash-routes   # 路由级：条件更新 / 重放 / ABA
+```
+
+部署后注意两点：
+
+1. **桥要等边缘缓存过期**（约 1 小时）才全球生效：过期的旧桥不带新字段，
+   行为等于「没有并发保护」—— 不会出错，只是保护还没到位。
+2. 迁移完成前后**不要重启**：`write-slot` 依赖 `flash_save_seqs`，缺表会 500；
+   读档路径刻意只降级（拿不到 `revisions` 而已）。
+
+## C4. 验收清单
+
+1. 同一浏览器两个标签页同时存档：后保存的那份胜出，先保存的迟到请求返回 `409 stale_write`，
+   且**不改变**已存内容。
+2. 断网 → 存档 → 恢复：桥重试沿用同一个 `opId`，服务端的 `revision` 只前进一格（不是两格）。
+3. 删档后立刻再存：能存上，且不出现「删完又冒出旧档」。
+4. 旧标签页（缓存里的旧桥）继续能存：不带 `expectedRevision` 时写入仍然成功。
+5. `read` 响应里 `revisions` 与随后的写入版本号能对上（`revision` 单调递增）。

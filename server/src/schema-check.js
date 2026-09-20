@@ -65,6 +65,7 @@ const EXPECTED_TABLES = [
   { table: 'saves', why: '云存档；schema-v2 早期漏了这张表，缺了的话 /api/saves 全 500，玩家点「云端存档」就报错' },
   { table: 'flash_save_slots', why: 'Flash 游戏内部的在线槽；缺了的话替代 AGI 接口会全部 500' },
   { table: 'flash_save_kv', why: 'AGI2 游戏（Kingdom Rush Frontiers）的 key→value 在线档；缺了的话那一款读写全 500' },
+  { table: 'flash_save_seqs', why: '在线存档的写入代次；缺了的话条件更新与幂等重放全查不到（写入会 500）' },
   {
     table: 'game_comments',
     why: '游戏评论；缺了详情页评论区读不出来、发表全 500，而页面其它部分一切正常',

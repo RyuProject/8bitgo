@@ -499,6 +499,29 @@ CREATE TABLE IF NOT EXISTS flash_save_kv (
   CONSTRAINT fk_flash_save_kv_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ---------- 在线存档的写入代次（写入并发控制） ----------
+-- R01 的落点：存档请求可能被网络拖到「更晚的一次保存之后」才到达，而 upsert 只认
+-- 「谁来谁覆盖」—— 于是一份基于旧状态的档会把新档盖掉，玩家看到进度倒退。
+--
+-- 这张表记两件事：
+--   revision   —— 这个槽**历史最高**的版本号。写和删都 +1，所以删除不会让版本号回到 1
+--                 （ABA：删掉再存，旧的 expectedRevision 依然对不上，迟到的写照样被拒）。
+--   last_op_id —— 最后一次成功应用的客户端操作 ID。同一个 ID 再送一次 = 重试，
+--                 直接回当前版本、不重复写（客户端超时重试是常态，不能变成双写）。
+--
+-- 每 (账号, 游戏, 槽) 一行，一个账号最多几行，可以忽略体量。
+-- save_key 复用以兼容两代方言：AGI1 是 "0"/"1"/"2"，AGI2 是 "slot1"~"slot3"。
+CREATE TABLE IF NOT EXISTS flash_save_seqs (
+  user_id       VARCHAR(40)      NOT NULL,
+  game_slug     VARCHAR(160)     NOT NULL,
+  save_key      VARCHAR(64)      NOT NULL,
+  revision      INT UNSIGNED     NOT NULL DEFAULT 0,
+  last_op_id    VARCHAR(64)      NULL,
+  updated_at    TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, game_slug, save_key),
+  CONSTRAINT fk_flash_save_seqs_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ---------- 邮箱验证码 ----------
 -- 登录 / 换绑邮箱 / 注销账号共用这张表，purpose 区分用途，逻辑全在 src/codes.js。
 --

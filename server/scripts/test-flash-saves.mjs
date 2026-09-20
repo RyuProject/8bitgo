@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import {
+  FLASH_SAVE_PART_MAX_BYTES,
+  FLASH_SAVE_SLOT_MAX_BYTES,
+  FLASH_SAVE_TOTAL_MAX_BYTES,
   agi2SaveKey,
   agi2SaveMap,
   flashSaveBridgeUrl,
@@ -9,10 +12,12 @@ import {
   flashSaveQuotaError,
   flashSaveSlot,
   legacyFlashSaveMap,
+  parseFlashSaveOptions,
   validateAgi2Value,
   validateFlashSavePair,
 } from '../src/flash-save-contract.js'
 import { flashSaveConfigured, signFlashSaveToken, verifyFlashSaveToken } from '../src/flash-save-token.js'
+import { envNumber } from '../src/resource-limits.js'
 
 let passed = 0
 function check(name, fn) {
@@ -140,10 +145,109 @@ check('AGI2 全量读取只出 slot1~3，premium 标记一律滤掉', () => {
   assert.equal(keys.kingdomRushPremiumContentEnabled, undefined)
 })
 
+check('写入选项 opId / expectedRevision 可选，但边界要挡住', () => {
+  // 都不带 = 旧客户端，行为一字不变（这是刻意的：不能在服务端硬性要求新字段）
+  assert.deepEqual(parseFlashSaveOptions({}), { ok: true, opId: null, expectedRevision: null })
+  assert.equal(parseFlashSaveOptions({ opId: 'op-abcdefgh-1' }).opId, 'op-abcdefgh-1')
+  assert.equal(parseFlashSaveOptions({ expectedRevision: 0 }).expectedRevision, 0)
+  assert.equal(parseFlashSaveOptions({ expectedRevision: '7' }).expectedRevision, 7)
+  for (const bad of [
+    { opId: 'short' },
+    { opId: 'x'.repeat(65) },
+    { opId: 12 },
+    { expectedRevision: -1 },
+    { expectedRevision: 1.5 },
+    { expectedRevision: 'abc' },
+    { expectedRevision: 4294967296 },
+  ]) {
+    const result = parseFlashSaveOptions(bad)
+    assert.equal(result.ok, false, `${JSON.stringify(bad)} 不该被接受`)
+    assert.equal(result.code, 'invalid_request')
+  }
+})
+
 check('新游戏同时在白名单和方言表里才放行', () => {
   const withKrf = { FLASH_SAVE_GAMES: 'infectonator-2,kingdom-rush-frontiers' }
   assert.equal(flashSaveGameEnabled('kingdom-rush-frontiers', withKrf), true)
   assert.equal(flashSaveGameEnabled('kingdom-rush-frontiers', { FLASH_SAVE_GAMES: 'infectonator-2' }), false)
+})
+
+/* ---------------- 限额配置：填错环境变量不能静默关掉限额 ---------------- */
+
+/** 这些用例故意喂非法值，会触发 warn；测试输出里不需要那几行 */
+function muted(fn) {
+  const original = console.warn
+  console.warn = () => {}
+  try {
+    fn()
+  } finally {
+    console.warn = original
+  }
+}
+
+/** 在临时环境变量下跑一段，跑完还原（免得污染后面的用例） */
+function withEnv(name, value, fn) {
+  const restore = process.env[name]
+  process.env[name] = value
+  try {
+    fn()
+  } finally {
+    if (restore === undefined) delete process.env[name]
+    else process.env[name] = restore
+  }
+}
+
+check('数值型环境变量填错时退回默认值，而不是变成 NaN', () => {
+  const name = 'FLASH_SAVE_TEST_LIMIT'
+  delete process.env[name]
+  assert.equal(envNumber(name, 2048), 2048, '没配就用默认')
+  withEnv(name, '   ', () => assert.equal(envNumber(name, 2048), 2048, '只有空白也算没配'))
+  withEnv(name, 'abc', () => assert.equal(envNumber(name, 2048), 2048, 'NaN 必须退回默认值'))
+  withEnv(name, '3000', () => assert.equal(envNumber(name, 2048), 3000, '正常值原样生效'))
+  // 小数向下取整：字节数带小数没意义，取整既不报错也不会放大限额
+  withEnv(name, '3000.9', () => assert.equal(envNumber(name, 2048), 3000))
+  // J2ME 的几个 MB 值走 integer:false —— 「0.5MB」是真的有人会写的配置，不能取整掉
+  withEnv(name, '0.5', () => assert.equal(envNumber(name, 20, { min: 0.001, max: 256, integer: false }), 0.5))
+})
+
+check('数值型环境变量夹到最近的合法边界', () => {
+  const name = 'FLASH_SAVE_TEST_LIMIT'
+  withEnv(name, '0', () => assert.equal(envNumber(name, 2048, { min: 8, max: 4096 }), 8))
+  withEnv(name, '-5', () => assert.equal(envNumber(name, 2048, { min: 8, max: 4096 }), 8))
+  withEnv(name, '999999', () => assert.equal(envNumber(name, 2048, { min: 8, max: 4096 }), 4096))
+})
+
+check('非法值会出声，不是静默退回', () => {
+  const name = 'FLASH_SAVE_TEST_LIMIT'
+  const lines = []
+  const original = console.warn
+  console.warn = (...args) => lines.push(args.join(' '))
+  try {
+    withEnv(name, 'abc', () => envNumber(name, 2048))
+  } finally {
+    console.warn = original
+  }
+  assert.equal(lines.length, 1, '退回默认值时必须留一条日志')
+  assert.match(lines[0], new RegExp(name), '日志里得说清楚是哪个变量')
+})
+
+check('三层上限永远是有限正整数，且保持 半份 ≤ 整槽 ≤ 总量', () => {
+  /*
+    这条盯的是「有人把它写回 Number(process.env.X || 默认)」：
+    那样一旦填错就是 NaN，而 NaN 参与的所有比较都是 false —— 等于静默关掉限额，
+    正是 resource-limits.js 存在的理由。
+  */
+  muted(() => {
+    for (const [label, value] of [
+      ['PART', FLASH_SAVE_PART_MAX_BYTES],
+      ['SLOT', FLASH_SAVE_SLOT_MAX_BYTES],
+      ['TOTAL', FLASH_SAVE_TOTAL_MAX_BYTES],
+    ]) {
+      assert.ok(Number.isInteger(value) && value > 0, `${label} 不是有限正整数：${value}`)
+    }
+    assert.ok(FLASH_SAVE_PART_MAX_BYTES <= FLASH_SAVE_SLOT_MAX_BYTES, '半份上限不该大于整槽')
+    assert.ok(FLASH_SAVE_SLOT_MAX_BYTES <= FLASH_SAVE_TOTAL_MAX_BYTES, '单槽上限不该大于账号总量')
+  })
 })
 
 console.log(`\n✅ Flash 在线存档契约 ${passed} 项通过`)

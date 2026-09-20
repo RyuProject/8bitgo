@@ -544,6 +544,40 @@ const patches = [
     },
   },
   {
+    name: 'flash_save_seqs（在线存档的写入代次）',
+    table: null,
+    /*
+      R01：迟到的旧请求不许覆盖新存档。代次表记「这个槽历史最高的版本号」+「最后一次
+      成功应用的操作 ID」，于是：
+        · 写和删都推进版本号 —— 删掉再存不会让版本号回到 1，旧的 expectedRevision 依然对不上；
+        · 同一个 opId 再送一次是重试，直接回当前版本，不重复写。
+      和存档本体分表，是因为**删除**（hard delete）之后本体行就没了，版本号必须留在别处。
+    */
+    skip: async () => (!(await hasTable('users')) ? '还没有 users 表' : null),
+    needed: async () => !(await hasTable('flash_save_seqs')),
+    run: async () => {
+      await conn.query(
+        'CREATE TABLE IF NOT EXISTS `flash_save_seqs` (' +
+          '`user_id` VARCHAR(40) NOT NULL,' +
+          '`game_slug` VARCHAR(160) NOT NULL,' +
+          '`save_key` VARCHAR(64) NOT NULL,' +
+          '`revision` INT UNSIGNED NOT NULL DEFAULT 0,' +
+          '`last_op_id` VARCHAR(64) NULL,' +
+          '`updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,' +
+          'PRIMARY KEY (`user_id`, `game_slug`, `save_key`)' +
+          ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
+      )
+      try {
+        await conn.query(
+          'ALTER TABLE `flash_save_seqs` ADD CONSTRAINT `fk_flash_save_seqs_user` ' +
+            'FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE CASCADE',
+        )
+      } catch (e) {
+        console.log(`   （外键没加上，注销账号时要自己清 Flash 在线档代次：${e.message}）`)
+      }
+    },
+  },
+  {
     name: '清理孤儿收藏（指向已删除游戏的记录）',
     table: 'favorites',
     needed: async () => {
@@ -920,7 +954,7 @@ const patches = [
   },
 ]
 
-const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'flash_save_slots', 'flash_save_kv', 'login_codes', 'platform_bios', 'game_plays', 'developers', 'friend_links', 'friend_link_hits', 'game_comments', 'game_ratings', 'oauth_apps', 'open_rom_samples']
+const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'flash_save_slots', 'flash_save_kv', 'flash_save_seqs', 'login_codes', 'platform_bios', 'game_plays', 'developers', 'friend_links', 'friend_link_hits', 'game_comments', 'game_ratings', 'oauth_apps', 'open_rom_samples']
 
 try {
   /*

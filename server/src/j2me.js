@@ -19,9 +19,10 @@
  *    release / keepalive 刻意**不**限流：它们要求名字命中 `tmp-<32位十六进制>.jar`
  *    才做任何 IO，猜不到就是一句 204 空转，没有可放大的成本（那个随机名本身就是凭据）。
  */
-import { randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync, utimesSync, createReadStream } from 'node:fs'
-import { writeFile } from 'node:fs/promises'
+import { createReadStream } from 'node:fs'
+import { TemporaryJarStore } from './temporary-jar-store.js'
+import { readResponseBuffer } from './bounded-response.js'
+import { envNumber } from './resource-limits.js'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { assertJarBuffer } from './jar-validation.js'
@@ -39,12 +40,12 @@ export const TMP_DIR = process.env.J2ME_TMP_DIR
   ? path.resolve(process.env.J2ME_TMP_DIR)
   : path.resolve(fileURLToPath(new URL('../tmp/j2me', import.meta.url)))
 
-const MAX_MB = Number(process.env.J2ME_MAX_UPLOAD_MB || 20)
-const MAX_BYTES = MAX_MB * 1024 * 1024
+const MAX_MB = envNumber('J2ME_MAX_UPLOAD_MB', 20, { integer: false, min: 0.001, max: 256 })
+const MAX_BYTES = Math.floor(MAX_MB * 1024 * 1024)
 /** 兜底清扫：超过这个时间的临时文件一律删除，哪怕浏览器没来得及通知 */
-const TTL_MS = Number(process.env.J2ME_TMP_TTL_MS || 30 * 60_000)
+const TTL_MS = envNumber('J2ME_TMP_TTL_MS', 30 * 60_000, { max: 7 * 86400000 })
 /** 临时目录总量上限，防止被人当免费网盘刷爆磁盘 */
-const MAX_TOTAL_MB = Number(process.env.J2ME_TMP_TOTAL_MB || 500)
+const MAX_TOTAL_MB = envNumber('J2ME_TMP_TOTAL_MB', 500, { integer: false, min: 0.001, max: 102400 })
 
 /*
   限流额度。数字按「正常玩家玩得舒服、脚本刷不动」定：
@@ -54,9 +55,9 @@ const MAX_TOTAL_MB = Number(process.env.J2ME_TMP_TOTAL_MB || 500)
   这时候按 IP 限流会误伤真实用户，所以那一档直接跳过、只留全站闸 ——
   和 codes.js 里发验证码那条路的取舍完全一致。
 */
-const UPLOAD_PER_IP_PER_MIN = Number(process.env.J2ME_UPLOAD_PER_IP_MIN || 10)
-const UPLOAD_PER_IP_PER_HOUR = Number(process.env.J2ME_UPLOAD_PER_IP_HOUR || 60)
-const UPLOAD_GLOBAL_PER_MIN = Number(process.env.J2ME_UPLOAD_GLOBAL_MIN || 120)
+const UPLOAD_PER_IP_PER_MIN = envNumber('J2ME_UPLOAD_PER_IP_MIN', 10, { max: 100000 })
+const UPLOAD_PER_IP_PER_HOUR = envNumber('J2ME_UPLOAD_PER_IP_HOUR', 60, { max: 100000 })
+const UPLOAD_GLOBAL_PER_MIN = envNumber('J2ME_UPLOAD_GLOBAL_MIN', 120, { max: 100000 })
 const MINUTE = 60_000
 const HOUR = 3_600_000
 /** 反代没透传真实 IP 时只警告一次，别每次上传刷一行日志 */
@@ -67,94 +68,32 @@ const SAFE_NAME = /^[A-Za-z0-9._-]+\.(jar|jad)$/i
 /** 临时文件用固定格式的随机名，便于和正式 ROM 区分 */
 const TMP_NAME = /^tmp-[a-f0-9]{32}\.jar$/i
 
-function ensureDir() {
-  if (!existsSync(TMP_DIR)) mkdirSync(TMP_DIR, { recursive: true })
-}
+const store = new TemporaryJarStore({ directory: TMP_DIR, maxBytes: MAX_TOTAL_MB * 1024 * 1024, ttlMs: TTL_MS })
+const MAX_UPLOADS = envNumber('J2ME_UPLOAD_CONCURRENCY', 4, { max: 64 })
+const MAX_PROXIES = envNumber('J2ME_PROXY_CONCURRENCY', 4, { max: 64 })
+const PROXY_BYTES = Math.floor(envNumber('J2ME_PROXY_MAX_MB', 64, { integer: false, min: 0.001, max: 512 }) * 1024 * 1024)
+const PROXY_TIMEOUT = envNumber('J2ME_PROXY_TIMEOUT_MS', 30000, { max: 300000 })
+const UPLOAD_LEASE = Symbol('j2meUploadLease')
+let activeUploads = 0
+let activeProxies = 0
 
-function listTmp() {
-  ensureDir()
-  return readdirSync(TMP_DIR)
-    .filter((f) => TMP_NAME.test(f))
-    .map((f) => {
-      const p = path.join(TMP_DIR, f)
-      try {
-        return { name: f, path: p, ...statSync(p) }
-      } catch {
-        return null
-      }
-    })
-    .filter(Boolean)
-}
-
-/**
- * 删除过期的临时 jar，并顺手把**留下来的**总字节数算出来。
- *
- * 合成一趟是有原因的：原来上传路径上先 `sweepTmp()`（内部 listTmp）再单独
- * `listTmp()` 算总量 —— 同一个目录 readdir + 逐个 stat **跑两遍**，
- * 而这条路径是无需登录的公开端点。一遍就够。
- */
-function sweepAndTotal() {
-  const now = Date.now()
-  let removed = 0
-  let total = 0
-  for (const f of listTmp()) {
-    if (now - f.mtimeMs > TTL_MS) {
-      try {
-        unlinkSync(f.path)
-        removed++
-        continue
-      } catch {
-        /* 已经被删了就算了；删不掉的仍然算进总量，别让它凭空消失 */
-      }
-    }
-    total += f.size
-  }
-  if (removed) console.log(`[j2me] 清理过期临时 jar ${removed} 个`)
-  return { removed, total }
-}
-
-/** 删除过期的临时 jar。浏览器没通知到（崩溃 / 断网 / 强杀）时靠这个兜底。 */
-export function sweepTmp() {
-  return sweepAndTotal().removed
-}
-
-/** 启动定时清扫。间隔取 TTL 的 1/3，至少 1 分钟。 */
+/** Async cleanup; return value is now a Promise. All internal callers await/catch it. */
+export function sweepTmp() { return store.sweep() }
 export function startSweeper() {
-  ensureDir()
-  sweepTmp()
-  const every = Math.max(60_000, Math.floor(TTL_MS / 3))
-  const timer = setInterval(sweepTmp, every)
+  const sweep = () => { void sweepTmp().catch(e => console.error('[j2me] 清理失败：', e.message)) }
+  sweep()
+  const timer = setInterval(sweep, Math.max(60_000, Math.floor(TTL_MS / 3)))
   timer.unref?.()
   return timer
 }
-
-/** 刷新文件的修改时间，等于给它续期 */
-function touch(p) {
-  try {
-    const now = new Date()
-    utimesSync(p, now, now)
-  } catch {
-    /* 文件刚好被删了就算了 */
-  }
+function requestName(req) {
+  try { return (typeof req.body === 'string' ? JSON.parse(req.body) : req.body)?.name || '' }
+  catch { return '' }
 }
-
-/**
- * POST /api/j2me/keepalive   body: { name }
- * 玩家还在玩的时候前端定时调用，给临时文件续期。
- * 没有这个的话，连续玩超过 TTL 会被清扫掉，游戏中途读不到 jar。
- */
-export function keepaliveJar(req, res) {
-  let name = ''
-  try {
-    const b = req.body
-    name = typeof b === 'string' ? JSON.parse(b).name : b?.name || ''
-  } catch {
-    /* 忽略 */
-  }
-  if (!TMP_NAME.test(name || '')) return res.status(204).end()
-  const p = path.join(TMP_DIR, name)
-  if (existsSync(p)) touch(p)
-  res.status(204).end()
+export async function keepaliveJar(req, res) {
+  try { await store.touch(requestName(req)) }
+  catch (e) { console.error('[j2me] 续期失败：', e.message) }
+  if (!res.destroyed) res.status(204).end()
 }
 
 /* ---------------- 上传 ---------------- */
@@ -214,10 +153,30 @@ export function uploadGate(req, res, next) {
     console.warn('[j2me] 全站上传配额已用尽 —— 可能正在被刷，检查 nginx 是否透传了真实 IP')
     return res.status(429).json({ error: '当前上传请求过多，请稍后再试', retryAfter: global.retryAfter })
   }
+  if (activeUploads >= MAX_UPLOADS) {
+    res.setHeader('Retry-After', '1')
+    return res.status(503).json({ error: '上传繁忙，请稍后重试' })
+  }
+  activeUploads++
+  let released = false
+  const lease = { processing: false, release: null }
+  req[UPLOAD_LEASE] = lease
+  const onResponseDone = () => { if (!lease.processing) release() }
+  const release = () => {
+    if (released) return
+    released = true
+    activeUploads--
+    res.off('finish', onResponseDone)
+    res.off('close', onResponseDone)
+  }
+  lease.release = release
+  res.once('finish', onResponseDone)
+  res.once('close', onResponseDone)
   next()
 }
 
 export async function uploadJar(req, res) {
+  if (req[UPLOAD_LEASE]) req[UPLOAD_LEASE].processing = true
   try {
     // ⚠️ 限流和大小预检在 uploadGate 里，它挂在 express.raw **之前**（见 index.js）。
     // 别把那几行搬回来 —— 搬回来就等于「先收 20MB 再说拒绝」。
@@ -234,31 +193,19 @@ export async function uploadJar(req, res) {
       return res.status(400).json({ error: `不是有效的 J2ME JAR：${e.message}` })
     }
 
-    // 清扫 + 总量一趟算完（原来是 readdir/stat 全目录跑两遍，见 sweepAndTotal）
-    const { total } = sweepAndTotal()
-    if (total + buf.length > MAX_TOTAL_MB * 1024 * 1024) {
-      return res.status(507).json({ error: '服务器临时空间已满，请稍后再试' })
+    const name = await store.put(buf)
+    if (res.destroyed) {
+      await store.remove(name)
+      return
     }
-
-    ensureDir()
-    // 每次上传给一个**唯一**的文件名。
-    //
-    // 以前是按内容 sha256 命名、内容相同就复用同一个物理文件 —— 省空间，但两个人
-    // （或同一个人开两个标签页）玩同一个 .jar 时会共用一个文件，谁先关页面，
-    // release 就把文件删了，另一个人当场 404「临时文件已过期」，游戏中途挂掉。
-    // 这也等于给了任何人一个「上传同一个 jar → 立刻 release」删掉别人文件的口子。
-    // 临时文件本来就有 TTL 和总量上限兜着，重复一点空间换正确性是划算的。
-    const name = `tmp-${randomBytes(16).toString('hex')}.jar`
-    const dest = path.join(TMP_DIR, name)
-    // ⚠️ 异步写。原来是 writeFileSync —— 最大 20MB 的同步写会把整个事件循环按住，
-    // 而这台进程同时在跑 SSR 和 socket.io（直播 / 联机的信令）。
-    // 一个无需登录的公开端点不该有这种能力。
-    await writeFile(dest, buf)
-
     res.json({ name, expiresInMs: TTL_MS })
   } catch (e) {
     console.error('[j2me] 上传失败：', e.message)
-    res.status(500).json({ error: '上传失败' })
+    if (!res.destroyed && !res.headersSent) {
+      res.status(e.code === 'J2ME_QUOTA' ? 507 : 500).json({ error: e.code === 'J2ME_QUOTA' ? '服务器临时空间已满，请稍后再试' : '上传失败' })
+    }
+  } finally {
+    req[UPLOAD_LEASE]?.release()
   }
 }
 
@@ -268,21 +215,10 @@ export async function uploadJar(req, res) {
  * 用 POST 而不是 DELETE —— navigator.sendBeacon 只能发 POST。
  * 这是「尽力而为」：真没收到也没关系，上面的定时清扫会兜底。
  */
-export function releaseJar(req, res) {
-  let name = ''
-  try {
-    const b = req.body
-    name = typeof b === 'string' ? JSON.parse(b).name : b?.name || ''
-  } catch {
-    /* 解析失败按空处理 */
-  }
-  if (!TMP_NAME.test(name || '')) return res.status(204).end()
-  try {
-    unlinkSync(path.join(TMP_DIR, name))
-  } catch {
-    /* 不存在就算了 */
-  }
-  res.status(204).end()
+export async function releaseJar(req, res) {
+  try { await store.remove(requestName(req)) }
+  catch (e) { console.error('[j2me] 释放失败：', e.message) }
+  if (!res.destroyed) res.status(204).end()
 }
 
 /* ---------------- 取 jar ---------------- */
@@ -299,15 +235,19 @@ export async function j2meJarProxy(req, res) {
   // 1. 玩家临时上传的
   if (TMP_NAME.test(name)) {
     const p = path.join(TMP_DIR, name)
-    if (existsSync(p)) {
-      // 取一次就续一次命：正在玩的游戏不该被 TTL 清扫掉
-      touch(p)
+    let exists = false
+    try { exists = await store.touch(name) } catch { /* Handled as missing below. */ }
+    if (exists) {
       res.setHeader('Content-Type', 'application/java-archive')
       res.setHeader('X-Content-Type-Options', 'nosniff')
       res.setHeader('Cache-Control', 'no-store')
       // 这里刻意不再声明 Accept-Ranges：本分支根本没实现 Range，
       // 声明了会让客户端发 Range 请求然后每次都拿到整包。
+      if (req.method === 'HEAD') return res.status(200).end()
       const stream = createReadStream(p)
+      const onClose = () => stream.destroy()
+      res.once('close', onClose)
+      stream.once('close', () => res.off('close', onClose))
       // pipe 不转发错误。existsSync 与真正 open 之间有窗口，文件可能刚好被
       // release / TTL 清扫删掉 —— 没有这个监听，ENOENT 会变成未捕获异常直接杀掉进程。
       stream.on('error', (err) => {
@@ -323,6 +263,15 @@ export async function j2meJarProxy(req, res) {
   // 2. 对象存储
   if (!ROM_BASE) return res.status(404).send('ROM_BASE_URL 未配置')
   const target = `${ROM_BASE}/${ROM_PREFIX}/java/${encodeURIComponent(name)}`
+  if (activeProxies >= MAX_PROXIES) {
+    res.setHeader('Retry-After', '1')
+    return res.status(503).send('jar 代理繁忙')
+  }
+  activeProxies++
+  const controller = new AbortController()
+  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(PROXY_TIMEOUT)])
+  const onClose = () => { if (!res.writableEnded) controller.abort(new Error('Client disconnected')) }
+  res.once('close', onClose)
   try {
     /*
       条件请求要**原样转给上游**（2026-09-07 补）。
@@ -343,7 +292,8 @@ export async function j2meJarProxy(req, res) {
     if (req.headers.range) headers.range = req.headers.range
     if (req.headers['if-none-match']) headers['if-none-match'] = req.headers['if-none-match']
     if (req.headers['if-modified-since']) headers['if-modified-since'] = req.headers['if-modified-since']
-    const upstream = await fetch(target, { headers })
+    if (req.headers['if-range']) headers['if-range'] = req.headers['if-range']
+    const upstream = await fetch(target, { headers, signal, method: req.method === 'HEAD' ? 'HEAD' : 'GET' })
 
     /*
       304 必须在 `upstream.ok` 那道判断**之前**处理：304 不在 2xx 里，
@@ -361,9 +311,19 @@ export async function j2meJarProxy(req, res) {
     }
 
     if (!upstream.ok && upstream.status !== 206) {
+      await upstream.body?.cancel().catch(() => {})
       return res.status(upstream.status).send(`上游返回 ${upstream.status}`)
     }
-    const body = Buffer.from(await upstream.arrayBuffer())
+    if (req.method === 'HEAD') {
+      for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified']) {
+        const value = upstream.headers.get(h)
+        if (value) res.setHeader(h, value)
+      }
+      res.setHeader('Cache-Control', 'public, max-age=0, must-revalidate')
+      await upstream.body?.cancel().catch(() => {})
+      return res.status(upstream.status).end()
+    }
+    const body = await readResponseBuffer(upstream, PROXY_BYTES, signal)
     // 普通完整响应在转给 FreeJ2ME 前先验一次；Range 响应只有局部字节，不能冒充完整 JAR 去验。
     if (upstream.status === 200 && name.toLowerCase().endsWith('.jar')) {
       try {
@@ -386,7 +346,10 @@ export async function j2meJarProxy(req, res) {
     res.end(body)
   } catch (e) {
     console.error('[j2me] jar 代理失败：', e.message)
-    res.status(502).send('jar 获取失败')
+    if (!res.destroyed && !res.headersSent) res.status(signal.aborted && !controller.signal.aborted ? 504 : 502).send('jar 获取失败')
+  } finally {
+    res.off('close', onClose)
+    activeProxies--
   }
 }
 

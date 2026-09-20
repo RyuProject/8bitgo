@@ -30,5 +30,8 @@ BASE_PATH = "/embed/vc"
 VCSKY_UPSTREAM = "https://cdn.dos.zone/vcsky/"
 VCBR_UPSTREAM = "https://br.cdn.dos.zone/vcsky/"
 
-# 反代资源在 Cloudflare 边缘缓存多久（秒）。游戏数据是不变的，给足。
+# 成功资源的缓存 TTL（秒）。实际命中取决于部署/上游规则；错误响应不长期缓存。
 UPSTREAM_CACHE_TTL = "86400"
+
+# 整个重定向链等待响应头的上限，不是响应体下载或无进展超时。
+UPSTREAM_HEADER_TIMEOUT_MS = "15000"

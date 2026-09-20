@@ -24,7 +24,9 @@ const BRIDGES = [
   },
   {
     label: 'AGI2（Kingdom Rush Frontiers）',
-    source: 'flash-api/armor-games/src-agi2/test_fla/MainTimeline.as',
+    // ⚠️ 源码在源码树的根（顶层类 KrfAgiBridge），不是 test_fla/ 下 ——
+    // AGI2 的模板是自己那份已核对的 SWF，文档类就叫 KrfAgiBridge，见 build-flash-save-bridge.mjs
+    source: 'flash-api/armor-games/src-agi2/KrfAgiBridge.as',
     swf: 'public/flash-api/armor-games/AGI2.swf',
     manifest: 'public/flash-api/armor-games/runtime-agi2.json',
   },

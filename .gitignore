@@ -35,7 +35,15 @@ README.md
 *.sw?
 # Flash 在线存档桥是构建期必需的正式产物；生产机没有 FFDec，必须随 Git 发布。
 # `*.sw?` 原本为了忽略编辑器交换文件，却也会匹配 `.swf`，所以在这里精确放行。
+#
+# ⚠️ 每加一代桥都要在这里加一行。漏了不会报错，只是**文件悄悄不进 Git**：
+# 本地一切正常（文件就在磁盘上），部署到生产机才发现 404 —— 而在线存档拿不到桥
+# 既不报错也不影响游戏启动，只是玩家永远存不上档。
 !public/flash-api/armor-games/AGI.swf
+!public/flash-api/armor-games/AGI2.swf
+# AGI2 的种子模板：它的文档类就叫 KrfAgiBridge，是「名字的载体」，
+# 重建 AGI2.swf 时要用（FFDec 不能指定文档类），必须一起进仓库。
+!flash-api/armor-games/template-agi2.swf
 
 # 自建的 EmulatorJS（main 分支构建，约 1.6MB）**故意提交进仓库**，别再忽略它。
 # 理由：它和 ruffle / jsdos 不一样 —— 那两个 `npm run ruffle|jsdos` 能从 node_modules

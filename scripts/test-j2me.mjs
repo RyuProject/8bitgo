@@ -246,8 +246,15 @@ check('⭐ 超大的请求体在读之前就被拒（Content-Length 预检）', 
 })
 
 check('⭐ 20MB 的写不能是同步的（这台进程同时在跑 SSR 和 socket.io）', () => {
-  assert.doesNotMatch(serverCode, /writeFileSync/, '临时 jar 必须用异步 writeFile')
-  assert.match(serverCode, /await writeFile\(/)
+  /*
+    2026-09-20 改：落盘从 j2me.js 搬进了 TemporaryJarStore（F04 —— 配额检查、写临时文件、
+    rename 提交必须串行化，否则多个请求会看到同一个旧总量一起超配额）。
+    断言跟着搬，守的还是同一件事：20MB 不能同步写，否则整台进程（SSR + socket.io）一起卡住。
+  */
+  const storeCode = codeOnly(readFileSync(new URL('../server/src/temporary-jar-store.js', import.meta.url), 'utf8'))
+  assert.doesNotMatch(serverCode, /writeFileSync/, 'j2me.js 里不能出现同步写')
+  assert.doesNotMatch(storeCode, /writeFileSync/, '临时 jar 必须用异步 writeFile')
+  assert.match(storeCode, /await writeFile\(/, '落盘要在 TemporaryJarStore 里异步完成')
 })
 
 check('⭐ 代理不能强缓存一天（重传 ROM 后玩家会一直拿旧包）', () => {

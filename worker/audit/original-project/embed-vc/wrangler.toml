@@ -1,0 +1,34 @@
+# reVCDOS 的静态托管 + 资源反代 Worker，用来替掉仓库自带的 server.py / index.php。
+#
+# 部署：
+#   1. 把 reVCDOS 仓库里的 dist/ 整个复制（或软链）到 embed-vc/dist/
+#   2. cd worker/embed-vc && npx wrangler deploy
+#
+# 上线前务必读一遍 README.md 里的「路由必须对齐」那一节 —— 这是最容易翻车的地方。
+name = "8bitgo-embed-vc"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+# ⚠️ 必须为 true。默认是「静态资源先命中、Worker 都不跑」，那样就没人给 index.html
+# 补 COOP / COEP 头，游戏拿不到 SharedArrayBuffer，iframe 里直接白屏。
+run_worker_first = true
+# 深层路径（例如 /embed/vc/foo）没有对应文件时回落到 index.html
+not_found_handling = "single-page-application"
+
+[vars]
+# 这个 Worker 挂在哪个路径前缀下。
+#   - 走同源方案（8bitgo.com/embed/vc/*）→ 填 "/embed/vc"
+#   - 走独立子域名（vc.8bitgo.com）→ 留空
+# 填了之后 Worker 会把前缀剥掉再去查静态资源，index.html 里也会注入 <base>。
+BASE_PATH = "/embed/vc"
+
+# 游戏资源的上游。默认就是仓库 server.py 里那两个 DOS Zone CDN 地址。
+# 想改成自己的 R2 / 对象存储，把这两个换掉即可（注意 VCBR 的上游路径也是 /vcsky/）。
+VCSKY_UPSTREAM = "https://cdn.dos.zone/vcsky/"
+VCBR_UPSTREAM = "https://br.cdn.dos.zone/vcsky/"
+
+# 反代资源在 Cloudflare 边缘缓存多久（秒）。游戏数据是不变的，给足。
+UPSTREAM_CACHE_TTL = "86400"

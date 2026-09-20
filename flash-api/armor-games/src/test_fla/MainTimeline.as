@@ -35,6 +35,22 @@ package test_fla
        */
       private var writesInFlight:int = 0;
       private var scoreboardClose:Function = null;
+      /**
+       * 每个槽「服务端当前的写入版本号」，读档时和每次写成功后同步。
+       *
+       * 它是**条件更新**的凭据（R01）：写入时带上它，服务端只在这个值等于当前版本时才落库。
+       * 于是被网络拖到很后面的旧请求不会覆盖一份更新的档 —— 版本对不上，服务端直接 409。
+       * 拿不到版本（老服务端没有 revisions 字段）时不带这个参数，退化成原来的「谁来谁覆盖」。
+       */
+      private var revisions:Object = {};
+      /** 页面会话的操作 ID 前缀 + 计数器，给每次保存生成唯一 ID；重试复用同一个（见 submitWrite） */
+      private var sessionId:String = "";
+      private var opCounter:int = 0;
+      /**
+       * 这个槽正处于「两半对不上」的重同步状态：丢掉下一个到达的 data 半。
+       * 见 submitUserData 里重复半段的处理。
+       */
+      private var resync:Object = {};
 
       public function MainTimeline()
       {
@@ -45,6 +61,7 @@ package test_fla
       public function init(devKey:String, gameKey:String) : void
       {
          readParameters();
+         sessionId = newSessionId();
          gameAccepted = gameKey == "infect-2";
          if(!gameAccepted)
          {
@@ -108,9 +125,24 @@ package test_fla
          }
          if(state[parsed.kind] != null)
          {
+            /*
+               同一半重复到达 —— 这一次保存的两半已经没法确定谁配谁了。
+               所以除了丢掉旧的那一半，还要把**下一个到达的 data 半也丢掉**（resync）：
+               「旧 profile + 新 data」拼出来的档表面正常、实际错位，比丢一次保存严重得多
+               （游戏每次送的都是全量状态，下一次保存就补回来了）。
+               ⚠️ 这是客户端侧的补救：从根上解决需要游戏给每次保存一个 ID，那不在我们手里。
+            */
             failPair(slot,state,"duplicate_part");
             state = newPair(slot);
             pendingPairs[slot] = state;
+            resync[slot] = true;
+         }
+         if(parsed.kind == "data" && resync[slot] == true)
+         {
+            resync[slot] = false;
+            failPair(slot,state,"ambiguous_pair");
+            callOnce(callback,{"success":false,"error":"ambiguous_pair"});
+            return;
          }
          state[parsed.kind] = data;
          state.callbacks.push(callback);
@@ -122,6 +154,8 @@ package test_fla
                "kind":"write",
                "profile":state.profile,
                "data":state.data,
+               // 两半共用同一个操作 ID —— 这就是「共同批次号」；重试复用它，服务端据此去重
+               "opId":nextOpId(),
                "callbacks":state.callbacks.concat()
             });
          }
@@ -145,6 +179,8 @@ package test_fla
             var body:Object = {"sessionToken":sessionToken};
             if(key != null) body.key = key;
             post("/read",body,function(result:Object):void {
+               // 先把槽版本对齐，再交给游戏 —— 后续写入要用它做条件更新
+               mergeRevisions(result);
                callOnce(callback,result);
             });
          });
@@ -215,6 +251,44 @@ package test_fla
          return match ? {"kind":match[1],"slot":int(match[2])} : null;
       }
 
+      /** 会话前缀：同一页面会话里唯一就够 —— 跨会话的先后顺序由服务端的版本号解决，不靠这个 */
+      private function newSessionId() : String
+      {
+         var now:String = new Date().getTime().toString(16);
+         var noise:String = Math.floor(Math.random() * 0x1000000).toString(16);
+         return "s" + now + noise;
+      }
+
+      /** 服务端只接受 ^[A-Za-z0-9_-]{8,64}$，这里拼出来的长度在十几位 */
+      private function nextOpId() : String
+      {
+         opCounter++;
+         return sessionId + "-" + opCounter;
+      }
+
+      /**
+       * 记下服务端下发的槽版本（读档响应顶层的 revisions）。
+       *
+       * 读档是客户端唯一能「对齐版本」的时机：页面刷新后本地版本是空的，
+       * 不读一次就写入等于没有并发保护（见 revisions 的注释）。
+       */
+      private function mergeRevisions(result:Object) : void
+      {
+         try
+         {
+            if(result == null || result.revisions == null) return;
+            for(var key:String in result.revisions)
+            {
+               var value:Number = Number(result.revisions[key]);
+               if(!isNaN(value)) revisions[key] = value;
+            }
+         }
+         catch(error:Error)
+         {
+            // 版本号只影响并发保护，读坏了也不能影响这次读档的结果
+         }
+      }
+
       private function newPair(slot:int) : Object
       {
          var state:Object = {"profile":null,"data":null,"callbacks":[]};
@@ -262,6 +336,19 @@ package test_fla
          else
          {
             post("/delete-slot",{"sessionToken":sessionToken,"slot":slot},function(result:Object):void {
+               /*
+                 删除也会推进服务端的版本号。把它记下来，否则删档之后的第一次正常保存
+                 会带着删除前的版本撞条件更新，白丢一次（游戏忽略错误，玩家只看到「刚才那关没存上」）。
+                 删除失败时本地版本同样不可信，直接丢掉 —— 下一次保存退回无保护写入。
+               */
+               if(result != null && result.success === true && result.data != null && result.data.revision != null)
+               {
+                  revisions[slot] = Number(result.data.revision);
+               }
+               else
+               {
+                  delete revisions[slot];
+               }
                // 删除任务结束（成功或失败）就清标记，之后单独的一次删除还能正常发出去
                deleteQueued[slot] = false;
                finishTask(slot);
@@ -299,13 +386,40 @@ package test_fla
       private function submitWrite(slot:int, task:Object, attempt:int) : void
       {
          if(attempt == 0) writesInFlight++;
-         post("/write-slot",{
+         var body:Object = {
             "sessionToken":sessionToken,
             "slot":slot,
             "profile":task.profile,
             "data":task.data
-         },function(result:Object):void {
+         };
+         /*
+            幂等重放：重试复用同一个操作 ID，服务端认出「这份档已经写过了」就回当前版本、
+            不再写一遍。没有它的话，一次超时重试就会变成两次写入（写和读之间还可能被别的东西插进来）。
+         */
+         if(task.opId != null) body.opId = task.opId;
+         /*
+            条件更新：服务端当前版本就是我们知道的这个才允许落库。
+            不知道（这次会话还没读过档、或者服务端没下发 revisions）就不带 —— 退化成原来的
+            「谁来谁覆盖」。这条降级路径是给旧库 / 旧响应的，正常路径一定会带上。
+         */
+         if(revisions[slot] != null) body.expectedRevision = revisions[slot];
+         post("/write-slot",body,function(result:Object):void {
             var ok:Boolean = result != null && result.success === true;
+            if(ok && result.data != null && result.data.revision != null)
+            {
+               revisions[slot] = Number(result.data.revision);
+            }
+            else if(result != null && errorCode(result) == "stale_write")
+            {
+               /*
+                  版本对不上：这个槽已经被推到更新的版本（另一次保存、或另一台设备），
+                  而这次写入基于一份旧状态 —— 被拒掉是对的。
+                  本地版本必须丢掉：留着的话后面每一次保存都会带着同一个过期值继续被拒。
+                  代价是下一次保存没有并发保护（我们没有为它多跑一趟读档）。
+               */
+               delete revisions[slot];
+               trace("[8bitgo-flash-save] 槽 " + slot + " 的保存基于旧版本，已丢弃");
+            }
             if(!ok && loggedIn && attempt < 1 && retriable(result))
             {
                var timer:Timer = new Timer(800,1);

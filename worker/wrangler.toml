@@ -18,3 +18,13 @@ bucket_name = "8bitgo-image"
 # 允许跨域访问的来源，多个用逗号分隔；开发期用 * ，上线后改成你的站点域名，例如
 # ALLOWED_ORIGINS = "https://8bitgo.example.com,http://localhost:5173"
 ALLOWED_ORIGINS = "*"
+
+# 以下上限单位为 MiB，只约束单次 PUT；不能绕过平台入口大小上限。
+MAX_UPLOAD_MB = "512"
+# 缓存分两档，判据是**请求 URL 有没有版本戳**（完整理由见 src/index.js 顶部注释）：
+#   不带版本戳 —— 封面 / 视频 / logo：后台替换时复用同一个 key，长 TTL 会让玩家
+#                 长期看到旧图 → 短缓存 + 重验证
+#   带 ?romv=<etag> —— ROM：客户端按 ETag 拼的，内容换了 URL 就换（内容寻址）→ 长缓存
+# 这两行只是把代码里的默认值显式写出来；删掉同样能跑，改策略不必改代码。
+OBJECT_CACHE_CONTROL = "public, max-age=300, s-maxage=600, must-revalidate"
+VERSIONED_CACHE_CONTROL = "public, max-age=86400, s-maxage=2592000, stale-while-revalidate=86400"

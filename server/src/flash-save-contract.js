@@ -1,9 +1,25 @@
 import { flashSaveBridgeOf, flashSaveKnownSlugs, flashSaveProtocolOf } from '../../shared/flash-save-games.js'
+import { envNumber } from './resource-limits.js'
 
 export const FLASH_SAVE_SLOT_COUNT = 3
-export const FLASH_SAVE_PART_MAX_BYTES = Number(process.env.FLASH_SAVE_PART_MAX_BYTES || 1024 * 1024)
-export const FLASH_SAVE_SLOT_MAX_BYTES = Number(process.env.FLASH_SAVE_SLOT_MAX_BYTES || 2 * 1024 * 1024)
-export const FLASH_SAVE_TOTAL_MAX_BYTES = Number(process.env.FLASH_SAVE_TOTAL_MAX_BYTES || 32 * 1024 * 1024)
+
+/**
+ * 三层上限是**包含关系**：半份 ≤ 整槽 ≤ 账号总量。
+ *
+ * 上限就按这个关系给（而不是各自写一个 1GB），配错时会被夹到一个有意义的值：
+ * 「单槽比账号总量还大」夹到总量、「半份比整槽还大」夹到槽 —— 而不是放进一个等于没限制的数。
+ * ⚠️ 别退回 `Number(process.env.X || 默认)`：填错时那是 NaN，配额比较全部为 false，
+ * 等于静默关掉限额（见 resource-limits.js 顶部）。
+ */
+export const FLASH_SAVE_TOTAL_MAX_BYTES = envNumber('FLASH_SAVE_TOTAL_MAX_BYTES', 32 * 1024 * 1024, {
+  max: 1024 * 1024 * 1024,
+})
+export const FLASH_SAVE_SLOT_MAX_BYTES = envNumber('FLASH_SAVE_SLOT_MAX_BYTES', 2 * 1024 * 1024, {
+  max: FLASH_SAVE_TOTAL_MAX_BYTES,
+})
+export const FLASH_SAVE_PART_MAX_BYTES = envNumber('FLASH_SAVE_PART_MAX_BYTES', 1024 * 1024, {
+  max: FLASH_SAVE_SLOT_MAX_BYTES,
+})
 
 /**
  * 槽键正则从 FLASH_SAVE_SLOT_COUNT 推导，不写死 `[0-2]` / `[1-3]`：
@@ -104,6 +120,47 @@ export function agi2SaveMap(rows) {
 export function flashGameSlugOk(value) {
   const slug = String(value || '')
   return SLUG_RE.test(slug) && slug === slug.trim()
+}
+
+/* ---------------- 写入选项：幂等重放 + 条件更新（R01） ---------------- */
+
+/**
+ * 操作 ID：客户端每次保存生成一个，**重试要复用同一个**。
+ * 服务端靠它认出「这次已经写过了」，于是重试不会变成第二次写入，
+ * 也不会因为版本已经前进而被误判成「迟到的旧请求」。
+ */
+const OP_ID_RE = /^[A-Za-z0-9_-]{8,64}$/
+
+/**
+ * 解析可选的写入选项。两个字段都**可选** —— 这是刻意的：
+ *
+ *   · 旧客户端（还没升级的 AGI.swf、还没写的 AGI2.swf）不发这两个字段，行为一字不变；
+ *   · 新客户端发 opId 做幂等重放、发 expectedRevision 做条件更新。
+ *
+ * ⚠️ 不发 expectedRevision 的写入**没有并发保护**，迟到的旧请求仍然能覆盖新存档。
+ * 「旧客户端照样能写」和「迟到写入不许覆盖」在协议上不可能同时成立 —— 这一点写在
+ * docs/flash-online-save.md 的 R01 一节，不要在服务端硬性要求这个字段。
+ */
+export function parseFlashSaveOptions(body) {
+  const rawOp = body?.opId
+  const rawRev = body?.expectedRevision
+  let opId = null
+  if (rawOp !== undefined && rawOp !== null && rawOp !== '') {
+    if (typeof rawOp !== 'string' || !OP_ID_RE.test(rawOp)) {
+      return { ok: false, status: 400, code: 'invalid_request', message: '操作 ID 不合法' }
+    }
+    opId = rawOp
+  }
+  let expectedRevision = null
+  if (rawRev !== undefined && rawRev !== null && rawRev !== '') {
+    const value = Number(rawRev)
+    // 上限按 UNSIGNED INT 给：超过它就存不进 flash_save_seqs.revision 了
+    if (!Number.isSafeInteger(value) || value < 0 || value > 4294967295) {
+      return { ok: false, status: 400, code: 'invalid_request', message: 'expectedRevision 必须是非负整数' }
+    }
+    expectedRevision = value
+  }
+  return { ok: true, opId, expectedRevision }
 }
 
 export function flashSaveKey(value) {

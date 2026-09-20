@@ -1,0 +1,644 @@
+
+> test
+> node --test tests/*.test.mjs
+
+TAP version 13
+# Subtest: proxy rejects unsafe relative input /vcsky/https://untrusted.test/file
+ok 1 - proxy rejects unsafe relative input /vcsky/https://untrusted.test/file
+  ---
+  duration_ms: 17.429775
+  type: 'test'
+  ...
+# Subtest: proxy rejects unsafe relative input /vcsky///untrusted.test/file
+ok 2 - proxy rejects unsafe relative input /vcsky///untrusted.test/file
+  ---
+  duration_ms: 0.395975
+  type: 'test'
+  ...
+# Subtest: proxy rejects unsafe relative input /vcsky/%2f%2funtrusted.test/file
+ok 3 - proxy rejects unsafe relative input /vcsky/%2f%2funtrusted.test/file
+  ---
+  duration_ms: 0.551699
+  type: 'test'
+  ...
+# Subtest: proxy rejects unsafe relative input /vcsky/%5c%5cuntrusted.test/file
+ok 4 - proxy rejects unsafe relative input /vcsky/%5c%5cuntrusted.test/file
+  ---
+  duration_ms: 0.381699
+  type: 'test'
+  ...
+# Subtest: proxy rejects unsafe relative input /vcsky/%252e%252e/file
+ok 5 - proxy rejects unsafe relative input /vcsky/%252e%252e/file
+  ---
+  duration_ms: 0.451515
+  type: 'test'
+  ...
+# Subtest: proxy rejects unsafe relative input /vcsky/%252f%252funtrusted.test/file
+ok 6 - proxy rejects unsafe relative input /vcsky/%252f%252funtrusted.test/file
+  ---
+  duration_ms: 0.238882
+  type: 'test'
+  ...
+# Subtest: proxy rejects unsafe relative input /vcsky/%GG
+ok 7 - proxy rejects unsafe relative input /vcsky/%GG
+  ---
+  duration_ms: 0.402776
+  type: 'test'
+  ...
+# Subtest: vcsky and vcbr retain fixed upstream paths and QUERY parameters
+ok 8 - vcsky and vcbr retain fixed upstream paths and QUERY parameters
+  ---
+  duration_ms: 2.580087
+  type: 'test'
+  ...
+# Subtest: proxy forwards If-Range and does not forward Authorization/Cookie
+ok 9 - proxy forwards If-Range and does not forward Authorization/Cookie
+  ---
+  duration_ms: 1.750842
+  type: 'test'
+  ...
+# Subtest: upstream errors never get immutable/day-long browser or edge caching
+ok 10 - upstream errors never get immutable/day-long browser or edge caching
+  ---
+  duration_ms: 1.327159
+  type: 'test'
+  ...
+# Subtest: TTL 0 is honored instead of silently becoming one day
+ok 11 - TTL 0 is honored instead of silently becoming one day
+  ---
+  duration_ms: 0.560291
+  type: 'test'
+  ...
+# Subtest: negative/invalid TTL rejected before fetch
+ok 12 - negative/invalid TTL rejected before fetch
+  ---
+  duration_ms: 0.452521
+  type: 'test'
+  ...
+# Subtest: cross-origin redirects are blocked before issuing another fetch
+ok 13 - cross-origin redirects are blocked before issuing another fetch
+  ---
+  duration_ms: 0.566032
+  type: 'test'
+  ...
+# Subtest: same-origin redirects outside configured prefix are blocked
+ok 14 - same-origin redirects outside configured prefix are blocked
+  ---
+  duration_ms: 0.748004
+  type: 'test'
+  ...
+# Subtest: safe same-prefix redirect is followed manually and finitely
+ok 15 - safe same-prefix redirect is followed manually and finitely
+  ---
+  duration_ms: 0.617361
+  type: 'test'
+  ...
+# Subtest: redirect loops terminate after bounded fetches
+ok 16 - redirect loops terminate after bounded fetches
+  ---
+  duration_ms: 0.474212
+  type: 'test'
+  ...
+# Subtest: upstream header timeout produces 504, not an endless pending request
+ok 17 - upstream header timeout produces 504, not an endless pending request
+  ---
+  duration_ms: 15.606814
+  type: 'test'
+  ...
+# Subtest: HEAD proxy output never carries a body
+ok 18 - HEAD proxy output never carries a body
+  ---
+  duration_ms: 0.684173
+  type: 'test'
+  ...
+# Subtest: proxy strips hop-by-hop and connection-nominated headers, preserves upstream CSP
+ok 19 - proxy strips hop-by-hop and connection-nominated headers, preserves upstream CSP
+  ---
+  duration_ms: 0.622552
+  type: 'test'
+  ...
+# Subtest: HTML base injection drops stale length/encoding/validators and keeps isolation headers
+ok 20 - HTML base injection drops stale length/encoding/validators and keeps isolation headers
+  ---
+  duration_ms: 2.743983
+  type: 'test'
+  ...
+# Subtest: existing explicit base element remains unchanged
+ok 21 - existing explicit base element remains unchanged
+  ---
+  duration_ms: 0.669248
+  type: 'test'
+  ...
+# Subtest: HTML HEAD avoids reading/transformation body but sends consistent headers
+ok 22 - HTML HEAD avoids reading/transformation body but sends consistent headers
+  ---
+  duration_ms: 0.317669
+  type: 'test'
+  ...
+# Subtest: HTML conditionals are not passed through with pre-transform ETags
+ok 23 - HTML conditionals are not passed through with pre-transform ETags
+  ---
+  duration_ms: 0.442832
+  type: 'test'
+  ...
+# Subtest: missing ASSETS binding returns 503; invalid BASE_PATH returns 500
+ok 24 - missing ASSETS binding returns 503; invalid BASE_PATH returns 500
+  ---
+  duration_ms: 0.352915
+  type: 'test'
+  ...
+# Subtest: non-HTML static assets remain byte-identical
+ok 25 - non-HTML static assets remain byte-identical
+  ---
+  duration_ms: 0.564929
+  type: 'test'
+  ...
+# Subtest: read-only proxy refuses writes and allows OPTIONS
+ok 26 - read-only proxy refuses writes and allows OPTIONS
+  ---
+  duration_ms: 0.309596
+  type: 'test'
+  ...
+# Subtest: multipart complete preserves bytes, metadata and original success fields
+ok 27 - multipart complete preserves bytes, metadata and original success fields
+  ---
+  duration_ms: 43.610067
+  type: 'test'
+  ...
+# Subtest: known-length part is streamed; Request.arrayBuffer is never called
+ok 28 - known-length part is streamed; Request.arrayBuffer is never called
+  ---
+  duration_ms: 4.360194
+  type: 'test'
+  ...
+# Subtest: unknown-length part remains compatible via bounded fallback
+ok 29 - unknown-length part remains compatible via bounded fallback
+  ---
+  duration_ms: 4.526625
+  type: 'test'
+  ...
+# Subtest: unknown oversized part cancels at limit, never consumes arbitrary body to EOF
+ok 30 - unknown oversized part cancels at limit, never consumes arbitrary body to EOF
+  ---
+  duration_ms: 3.452897
+  type: 'test'
+  ...
+# Subtest: partNumber validation 0
+ok 31 - partNumber validation 0
+  ---
+  duration_ms: 4.830914
+  type: 'test'
+  ...
+# Subtest: partNumber validation 10001
+ok 32 - partNumber validation 10001
+  ---
+  duration_ms: 1.74954
+  type: 'test'
+  ...
+# Subtest: partNumber validation 1.2
+ok 33 - partNumber validation 1.2
+  ---
+  duration_ms: 1.880039
+  type: 'test'
+  ...
+# Subtest: partNumber validation nope
+ok 34 - partNumber validation nope
+  ---
+  duration_ms: 1.909994
+  type: 'test'
+  ...
+# Subtest: empty part rejected
+ok 35 - empty part rejected
+  ---
+  duration_ms: 2.244662
+  type: 'test'
+  ...
+# Subtest: transient uploadPart failures are retryable 503, not fatal 409
+ok 36 - transient uploadPart failures are retryable 503, not fatal 409
+  ---
+  duration_ms: 3.917678
+  type: 'test'
+  ...
+# Subtest: explicit NoSuchUpload is fatal 409
+ok 37 - explicit NoSuchUpload is fatal 409
+  ---
+  duration_ms: 0.859112
+  type: 'test'
+  ...
+# Subtest: transient complete failures preserve multipart session and marker
+ok 38 - transient complete failures preserve multipart session and marker
+  ---
+  duration_ms: 4.362892
+  type: 'test'
+  ...
+# Subtest: abort failure retains marker and reports failure instead of success
+ok 39 - abort failure retains marker and reports failure instead of success
+  ---
+  duration_ms: 1.85124
+  type: 'test'
+  ...
+# Subtest: explicit nonexistent upload abort still cleans matching marker
+ok 40 - explicit nonexistent upload abort still cleans matching marker
+  ---
+  duration_ms: 1.559281
+  type: 'test'
+  ...
+# Subtest: supplied unrelated marker cannot delete another upload ledger
+ok 41 - supplied unrelated marker cannot delete another upload ledger
+  ---
+  duration_ms: 6.328049
+  type: 'test'
+  ...
+# Subtest: legacy random markers are verified, and missing client marker scans beyond first page
+ok 42 - legacy random markers are verified, and missing client marker scans beyond first page
+  ---
+  duration_ms: 11.995871
+  type: 'test'
+  ...
+# Subtest: v2 marker cleanup uses point lookup, not bucket scans
+ok 43 - v2 marker cleanup uses point lookup, not bucket scans
+  ---
+  duration_ms: 3.531363
+  type: 'test'
+  ...
+# Subtest: legacy scan budget exhaustion returns markerRemoved=false, never false success
+ok 44 - legacy scan budget exhaustion returns markerRemoved=false, never false success
+  ---
+  duration_ms: 6.82609
+  type: 'test'
+  ...
+# Subtest: marker write failure aborts newly created session
+ok 45 - marker write failure aborts newly created session
+  ---
+  duration_ms: 2.673596
+  type: 'test'
+  ...
+# Subtest: marker write AND abort failure returns recoverable upload identity
+ok 46 - marker write AND abort failure returns recoverable upload identity
+  ---
+  duration_ms: 0.961805
+  type: 'test'
+  ...
+# Subtest: multipart listing advances independent cursors in both buckets
+ok 47 - multipart listing advances independent cursors in both buckets
+  ---
+  duration_ms: 10.621768
+  type: 'test'
+  ...
+# Subtest: explicit marker-only delete never claims the multipart upload was aborted
+ok 48 - explicit marker-only delete never claims the multipart upload was aborted
+  ---
+  duration_ms: 1.409615
+  type: 'test'
+  ...
+# Subtest: invalid parts rejected without completing R2
+ok 49 - invalid parts rejected without completing R2
+  ---
+  duration_ms: 2.136122
+  type: 'test'
+  ...
+# Subtest: JSON request size is capped before multipart session creation
+ok 50 - JSON request size is capped before multipart session creation
+  ---
+  duration_ms: 0.758207
+  type: 'test'
+  ...
+# Subtest: long UTF-8 key and filename remain supported with a long upload identifier
+ok 51 - long UTF-8 key and filename remain supported with a long upload identifier
+  ---
+  duration_ms: 1.355397
+  type: 'test'
+  ...
+# Subtest: PUT: unauthorized writes are rejected
+ok 52 - PUT: unauthorized writes are rejected
+  ---
+  duration_ms: 24.798697
+  type: 'test'
+  ...
+# Subtest: POST: unauthorized writes are rejected
+ok 53 - POST: unauthorized writes are rejected
+  ---
+  duration_ms: 0.599968
+  type: 'test'
+  ...
+# Subtest: DELETE: unauthorized writes are rejected
+ok 54 - DELETE: unauthorized writes are rejected
+  ---
+  duration_ms: 0.603544
+  type: 'test'
+  ...
+# Subtest: invalid URL percent encoding returns CORS JSON 400, not uncaught URIError
+ok 55 - invalid URL percent encoding returns CORS JSON 400, not uncaught URIError
+  ---
+  duration_ms: 1.150214
+  type: 'test'
+  ...
+# Subtest: unknown R2 failures return sanitized 503 with CORS and no-store
+ok 56 - unknown R2 failures return sanitized 503 with CORS and no-store
+  ---
+  duration_ms: 3.533252
+  type: 'test'
+  ...
+# Subtest: key length uses UTF-8 byte length, not JS characters
+ok 57 - key length uses UTF-8 byte length, not JS characters
+  ---
+  duration_ms: 0.974361
+  type: 'test'
+  ...
+# Subtest: internal upload markers cannot be read as objects
+ok 58 - internal upload markers cannot be read as objects
+  ---
+  duration_ms: 0.927985
+  type: 'test'
+  ...
+# Subtest: plain GET streams in one R2 call and uses revalidation policy
+ok 59 - plain GET streams in one R2 call and uses revalidation policy
+  ---
+  duration_ms: 2.913809
+  type: 'test'
+  ...
+# Subtest: legacy cover fallback and thumbnail fallback remain
+ok 60 - legacy cover fallback and thumbnail fallback remain
+  ---
+  duration_ms: 1.72262
+  type: 'test'
+  ...
+# Subtest: COVERS copy has read priority
+ok 61 - COVERS copy has read priority
+  ---
+  duration_ms: 1.495549
+  type: 'test'
+  ...
+# Subtest: HEAD never returns a body and ignores Range
+ok 62 - HEAD never returns a body and ignores Range
+  ---
+  duration_ms: 0.939746
+  type: 'test'
+  ...
+# Subtest: HEAD errors and ping have no body
+ok 63 - HEAD errors and ping have no body
+  ---
+  duration_ms: 1.266419
+  type: 'test'
+  ...
+# Subtest: Range bytes=1-3: 206 and correct byte count
+ok 64 - Range bytes=1-3: 206 and correct byte count
+  ---
+  duration_ms: 1.28969
+  type: 'test'
+  ...
+# Subtest: Range bytes=-2: 206 and correct byte count
+ok 65 - Range bytes=-2: 206 and correct byte count
+  ---
+  duration_ms: 0.883005
+  type: 'test'
+  ...
+# Subtest: Range bytes=4-: 206 and correct byte count
+ok 66 - Range bytes=4-: 206 and correct byte count
+  ---
+  duration_ms: 2.382368
+  type: 'test'
+  ...
+# Subtest: Range bytes=4-99: 206 and correct byte count
+ok 67 - Range bytes=4-99: 206 and correct byte count
+  ---
+  duration_ms: 0.852536
+  type: 'test'
+  ...
+# Subtest: Range bytes=-99: 206 and correct byte count
+ok 68 - Range bytes=-99: 206 and correct byte count
+  ---
+  duration_ms: 0.9875
+  type: 'test'
+  ...
+# Subtest: Range bytes=6-: 416 and correct byte count
+ok 69 - Range bytes=6-: 416 and correct byte count
+  ---
+  duration_ms: 0.405614
+  type: 'test'
+  ...
+# Subtest: Range bytes=-0: 416 and correct byte count
+ok 70 - Range bytes=-0: 416 and correct byte count
+  ---
+  duration_ms: 0.530028
+  type: 'test'
+  ...
+# Subtest: Range bytes=4-2: 416 and correct byte count
+ok 71 - Range bytes=4-2: 416 and correct byte count
+  ---
+  duration_ms: 0.36555
+  type: 'test'
+  ...
+# Subtest: Range bytes=0-1,3-4: 200 and correct byte count
+ok 72 - Range bytes=0-1,3-4: 200 and correct byte count
+  ---
+  duration_ms: 0.806271
+  type: 'test'
+  ...
+# Subtest: Range bytes=garbage: 200 and correct byte count
+ok 73 - Range bytes=garbage: 200 and correct byte count
+  ---
+  duration_ms: 3.007711
+  type: 'test'
+  ...
+# Subtest: If-Range mismatch returns complete NEW object, never partial mixed download
+ok 74 - If-Range mismatch returns complete NEW object, never partial mixed download
+  ---
+  duration_ms: 0.469075
+  type: 'test'
+  ...
+# Subtest: If-Range strong ETag retains ranges; weak/date validators use full object
+ok 75 - If-Range strong ETag retains ranges; weak/date validators use full object
+  ---
+  duration_ms: 0.596208
+  type: 'test'
+  ...
+# Subtest: If-Match mismatch is 412, not 304
+ok 76 - If-Match mismatch is 412, not 304
+  ---
+  duration_ms: 0.747301
+  type: 'test'
+  ...
+# Subtest: conditional HEAD supports 304
+ok 77 - conditional HEAD supports 304
+  ---
+  duration_ms: 0.593044
+  type: 'test'
+  ...
+# Subtest: If-None-Match supports weak and multiple validators
+ok 78 - If-None-Match supports weak and multiple validators
+  ---
+  duration_ms: 0.395254
+  type: 'test'
+  ...
+# Subtest: HTTP precondition precedence: If-Match > IUS; INM > IMS
+ok 79 - HTTP precondition precedence: If-Match > IUS; INM > IMS
+  ---
+  duration_ms: 0.660371
+  type: 'test'
+  ...
+# Subtest: nonexistent If-Match is 412; zero-byte Range is 416
+ok 80 - nonexistent If-Match is 412; zero-byte Range is 416
+  ---
+  duration_ms: 0.629261
+  type: 'test'
+  ...
+# Subtest: head/get concurrent overwrite retries rather than mixing metadata with bytes
+ok 81 - head/get concurrent overwrite retries rather than mixing metadata with bytes
+  ---
+  duration_ms: 0.96047
+  type: 'test'
+  ...
+# Subtest: list cursor separately advances BOTH buckets with short metadata pages
+ok 82 - list cursor separately advances BOTH buckets with short metadata pages
+  ---
+  duration_ms: 3.744415
+  type: 'test'
+  ...
+# Subtest: once a list bucket is finished it is NOT refetched
+ok 83 - once a list bucket is finished it is NOT refetched
+  ---
+  duration_ms: 4.915674
+  type: 'test'
+  ...
+# Subtest: list with only hidden markers can return empty page WITH continuation
+ok 84 - list with only hidden markers can return empty page WITH continuation
+  ---
+  duration_ms: 0.655876
+  type: 'test'
+  ...
+# Subtest: old/malformed/cross-prefix list cursor is rejected, not silently reused
+ok 85 - old/malformed/cross-prefix list cursor is rejected, not silently reused
+  ---
+  duration_ms: 1.286896
+  type: 'test'
+  ...
+# Subtest: 1000-key bulk delete uses one batched call, not 1000 awaits
+ok 86 - 1000-key bulk delete uses one batched call, not 1000 awaits
+  ---
+  duration_ms: 10.2263
+  type: 'test'
+  ...
+# Subtest: cover delete removes both copies; legacy file cannot resurrect
+ok 87 - cover delete removes both copies; legacy file cannot resurrect
+  ---
+  duration_ms: 1.396556
+  type: 'test'
+  ...
+# Subtest: partial cross-bucket failure returns failed keys, never false all-success
+ok 88 - partial cross-bucket failure returns failed keys, never false all-success
+  ---
+  duration_ms: 1.823104
+  type: 'test'
+  ...
+# Subtest: bulk validates every key before deleting any object
+ok 89 - bulk validates every key before deleting any object
+  ---
+  duration_ms: 0.566863
+  type: 'test'
+  ...
+# Subtest: single PUT unknown-length oversize stream is bounded before R2 commit
+ok 90 - single PUT unknown-length oversize stream is bounded before R2 commit
+  ---
+  duration_ms: 1.474523
+  type: 'test'
+  ...
+# Subtest: known-length PUT preserves streaming input
+ok 91 - known-length PUT preserves streaming input
+  ---
+  duration_ms: 0.787067
+  type: 'test'
+  ...
+# Subtest: oversized declared PUT is rejected before consuming body
+ok 92 - oversized declared PUT is rejected before consuming body
+  ---
+  duration_ms: 0.285606
+  type: 'test'
+  ...
+# Subtest: CORS reflects only allowed origins and includes conditional request headers
+ok 93 - CORS reflects only allowed origins and includes conditional request headers
+  ---
+  duration_ms: 0.22735
+  type: 'test'
+  ...
+# Subtest: empty uploadId cannot accidentally fall through to delete final object
+ok 94 - empty uploadId cannot accidentally fall through to delete final object
+  ---
+  duration_ms: 0.330071
+  type: 'test'
+  ...
+# Subtest: malformed multipart parameters cannot overwrite/delete final object: /a?partNumber=1
+ok 95 - malformed multipart parameters cannot overwrite/delete final object: /a?partNumber=1
+  ---
+  duration_ms: 0.410313
+  type: 'test'
+  ...
+# Subtest: malformed multipart parameters cannot overwrite/delete final object: /a?uploads
+ok 96 - malformed multipart parameters cannot overwrite/delete final object: /a?uploads
+  ---
+  duration_ms: 0.164801
+  type: 'test'
+  ...
+# Subtest: malformed multipart parameters cannot overwrite/delete final object: /a?marker=_uploads/m
+ok 97 - malformed multipart parameters cannot overwrite/delete final object: /a?marker=_uploads/m
+  ---
+  duration_ms: 0.128547
+  type: 'test'
+  ...
+# Subtest: malformed multipart parameters cannot overwrite/delete final object: /a?uploadId=x&uploadId=y
+ok 98 - malformed multipart parameters cannot overwrite/delete final object: /a?uploadId=x&uploadId=y
+  ---
+  duration_ms: 0.16914
+  type: 'test'
+  ...
+# Subtest: single-file bundle matches modular ROM responses and bytes
+ok 99 - single-file bundle matches modular ROM responses and bytes
+  ---
+  duration_ms: 36.167311
+  type: 'test'
+  ...
+# Subtest: standalone bundle completes the multipart round trip
+ok 100 - standalone bundle completes the multipart round trip
+  ---
+  duration_ms: 9.87482
+  type: 'test'
+  ...
+# Subtest: standalone embed blocks absolute upstream input
+ok 101 - standalone embed blocks absolute upstream input
+  ---
+  duration_ms: 1.115695
+  type: 'test'
+  ...
+# Subtest: known-length writer consumes FixedLengthStream with exact bytes (shim)
+ok 102 - known-length writer consumes FixedLengthStream with exact bytes (shim)
+  ---
+  duration_ms: 19.916823
+  type: 'test'
+  ...
+# Subtest: length mismatch rejected before writer commits (shim) 5
+ok 103 - length mismatch rejected before writer commits (shim) 5
+  ---
+  duration_ms: 1.825715
+  type: 'test'
+  ...
+# Subtest: length mismatch rejected before writer commits (shim) 2
+ok 104 - length mismatch rejected before writer commits (shim) 2
+  ---
+  duration_ms: 0.786915
+  type: 'test'
+  ...
+# Subtest: upstream write failure before reading does not hang pumping (shim)
+ok 105 - upstream write failure before reading does not hang pumping (shim)
+  ---
+  duration_ms: 1.08632
+  type: 'test'
+  ...
+1..105
+# tests 105
+# suites 0
+# pass 105
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 271.747741

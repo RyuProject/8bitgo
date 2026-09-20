@@ -1,0 +1,1825 @@
+--- original/.gitignore
++++ fixed/.gitignore
+@@ -0,0 +1,7 @@
++node_modules/
++.wrangler/
++.dev.vars
++.dev.vars.*
++.env
++.env.*
++.DS_Store
+--- original/README.md
++++ fixed/README.md
+@@ -1,67 +1,105 @@
+-# 8bitgo-roms · Cloudflare Worker
++# 8bitgo-roms · 审计修复版
+ 
+-把 R2 桶里的 ROM 以「可公开 GET」的方式提供给网站，并附带：
++审计日期：2026-09-20。原包两个 Worker 的接口、桶绑定和兼容日期保留；重点修复错误请求误删/覆盖最终对象、跨桶分页、续传故障恢复、HTTP 条件请求及资源反代边界。
+ 
+-- CORS（EmulatorJS 需要跨域读取文件）
+-- Range 请求（大文件断点 / 分段加载）
+-- 长缓存头（走 Cloudflare CDN）
+-- `/list` 列表接口（后台「ROM 存储」页用来一键匹配游戏，需口令）
++**这是经过离线回归的部署候选，不是 Cloudflare 线上验收结果。** 详细证据、性能取舍和剩余风险见 `AUDIT.md`。没有接入或修改你的 Cloudflare 账户、R2 数据和域名路由。
++
++## 文件与使用方式
++
++`src/index.js` 是 ROM Worker 入口，同时依赖 `src/common.js`、`src/http.js`；必须一起部署。`embed-vc/` 是独立的游戏静态托管/反代 Worker，不要将两个入口混用。
++
++使用 Wrangler 时保留整个工程。使用控制台单文件编辑器时，使用完整的 `standalone/rom-worker.js`；它由上述三个模块生成，没有外部 import。`standalone/embed-worker.js` 对应另一个 Worker，但仍需要配置 `ASSETS`、变量和静态资源。不要在控制台直接只粘贴模块化 `src/index.js`。
++
++## 本地检查
++
++需要 Node.js 22 或更新版本。运行时代码没有第三方依赖；测试使用 Node 内置工具，不必先执行 npm install。
++
++```bash
++cd worker
++npm run check
++npm test
++npm run test:original
++npm run benchmark
++npm run build:standalone
++```
++
++`npm test` 是离线模型测试。`test:original` 在本地夹具中对照原版与修复版；`benchmark` 只统计 R2 调用和数据读取次数，不测量真实云延迟。`tests/original/` 是供比较的未修复原代码，不能作为部署入口。
+ 
+ ## 部署
+ 
++先使用测试桶和独立测试 Worker 名称验证；确认后再恢复生产名称发布。下列命令会实际访问 Cloudflare，请在自己的环境中执行：
++
+ ```bash
+ cd worker
+-npx wrangler login                    # 首次
+-npx wrangler secret put ADMIN_TOKEN   # 输入一个口令，后台列文件时要用
++npx wrangler login
++# 已有 ADMIN_TOKEN 时不用重设；新部署需要通过 secret 配置。
++npx wrangler secret put ADMIN_TOKEN
++npx wrangler deploy --dry-run
+ npx wrangler deploy
+ ```
+ 
+-部署完成后会得到一个地址，例如 `https://8bitgo-roms.<你的子域>.workers.dev`。
+-把它填到网站 `.env` 的 `VITE_ROM_BASE_URL`，或在后台「ROM 存储」页里直接保存。
++原配置保留 `ROMS → 8bitgo`、`COVERS → 8bitgo-image`，`compatibility_date = "2026-01-01"`。缺省无 COVERS 的旧部署仍回退 ROMS。部署前核对控制台已有变量、Secret、路由和桶名称，不要把生产 ADMIN_TOKEN 写到公开仓库、前台构建变量或请求 URL。
+ 
+-`wrangler.toml` 里的 `bucket_name` 已写为 `8bitgo`，如桶名不同请修改。
++网站可继续把 ROM Worker 地址用作 `VITE_ROM_BASE_URL` 或后台 ROM 存储服务地址。公开读取仍无需口令；修改、列表和上传仍只接受 `Authorization: Bearer <ADMIN_TOKEN>`。CORS 不是权限控制，不阻止非浏览器请求。
+ 
+-## 接口
++## 接口（原有路径保留）
+ 
+-| 路径 | 说明 |
+-| --- | --- |
+-| `GET /ping` | 健康检查，返回 JSON（`writable` 表示是否已设置 ADMIN_TOKEN） |
+-| `GET /<key>` | 读取对象，路径即 key，例如 `/roms/nes/contra.zip`，支持 HEAD 与 Range |
+-| `PUT /<key>` | 上传对象（`Authorization: Bearer <ADMIN_TOKEN>`），请求体即文件内容；后台「上传 ROM」用的就是它 |
+-| `POST /<key>?uploads` | 开始分片上传，返回 `uploadId` 与标记对象（需口令） |
+-| `PUT /<key>?uploadId=&partNumber=` | 传一片，返回该片 `etag`（需口令） |
+-| `POST /<key>?uploadId=` | 合并，body 为 `{parts:[{partNumber,etag}]}`（需口令） |
+-| `DELETE /<key>?uploadId=` | 放弃这次分片上传（需口令） |
+-| `GET /multipart` | 列出未完成的分片上传（需口令） |
+-| `DELETE /<key>` | 删除对象（需口令） |
+-| `GET /list?prefix=&cursor=` | 列出对象（需口令） |
++| 方法与路径 | 用途 |
++|---|---|
++| `GET/HEAD /ping` 或 `/` | 健康检查，保留 writable / multipart 字段 |
++| `GET/HEAD /<key>` | 公开读取；ETag、条件请求和单段 Range |
++| `PUT /<key>` | 单次上传；需要 Bearer |
++| `DELETE /<key>` | 删除最终对象；需要 Bearer |
++| `POST /bulk` | `{ "keys": [...] }`，1～1000 个合法 key，去重后按桶批量删除 |
++| `GET /list?prefix=...&cursor=...` | 管理员分页列表 |
++| `POST /<key>?uploads` | 新建分片；JSON 可含 contentType、size、name |
++| `PUT /<key>?uploadId=<非空ID>&partNumber=<编号>` | 上传一片 |
++| `POST /<key>?uploadId=<非空ID>` | 合并；JSON 含 parts 数组及可选 marker |
++| `DELETE /<key>?uploadId=<非空ID>&marker=<可选标记>` | 中止分片，成功后清理对应标记 |
++| `GET /multipart?cursor=...` | 管理员分片标记列表 |
++| `DELETE /multipart?marker=...` | **仅删除标记，不中止实际分片**；独立管理动作 |
+ 
+-### 大文件必须走分片
++分片参数一旦出现，必须完整且与方法匹配。空 uploadId、缺少 uploadId 的 partNumber、重复参数等返回 400，**不再降级为普通 PUT/DELETE**。这是防止把一个分片写到最终对象或误删完整文件的必要变化。
+ 
+-Cloudflare 的请求体上限是**平台级的、由边缘节点执行**（Free / Pro 100 MB，Business 200 MB，
+-Enterprise 500 MB），在 Worker 代码之前就生效。超限时边缘直接 reset 连接，
+-浏览器**拿不到 413**，只会看到一句「无法连接 Worker」—— 而 `wrangler tail` 里
+-连这次请求的日志都没有。这正是后台传 100MB 游戏「有时候连不上」的真实原因。
++## 上传、续传与失败处理
+ 
+-所以后台对超过 24MB 的文件自动改走上面那套分片接口：上限按**单个请求**算，
+-8MB 一片离上限很远，还顺带支持断点续传（分片的 etag 记在浏览器的 localStorage 里，
+-所以换浏览器续不上，只能重传）。GBA / NES / SNES 的 ROM 远小于阈值，仍走一次 PUT。
++单次 PUT 的 `MAX_UPLOAD_MB` 默认 512，单位实际为 MiB；这只是应用上限，不能绕过 Cloudflare 的入口请求体上限。有 Content-Length 时走定长流，长度缺失时使用有界缓冲，单次未知长度上传上限为 `min(MAX_UPLOAD_MB, 32 MiB)`。分片仍最多 32 MiB；前端原来采用的 8 MiB 分片方案可以保留。
+ 
+-没合并的分片会**一直按存储计费**，而 binding 没有 `listMultipartUploads`，
+-所以 create 时会在 `_uploads/` 下写一个标记对象，后台「ROM 存储」页的
+-「未完成的分片上传」面板靠它列出并清理残留。建议再给桶加一条 lifecycle 规则
+-（Cloudflare 控制台 → R2 → 桶 → Settings → Object lifecycle rules），
+-把「未完成的分片上传」设成 7 天后自动放弃，兜住没人去点的那些。
++平台文档截至审计时列出的入口请求限制：Free/Pro 100 MB、Business 200 MB、Enterprise 可自助调至 5 GB；超限可返回 413，不能将所有网络错误归咎于固定的连接 reset。具体以账户、域名配置和最新平台文档为准。[1]
+ 
+-改动 `src/index.js` 的分片部分后，在仓库根目录跑 `npm run test:multipart` 自测。
++已知长度流使用 Cloudflare `FixedLengthStream`，不先调用 request.arrayBuffer()；未知长度请求为了兼容 R2 仍会有有界内存分配，并非所有输入都是零拷贝。Workers 的 128 MB 内存限制针对 isolate，多个并发请求可能共享它；前端仍应限制上传并发。[1][2]
+ 
+-## 与自定义域名配合
++发生 `503` 且 `retryable:true` / `fatal:false` 时保留 uploadId、marker、已完成分片的 etag，做有次数上限的指数退避，不要清空进度。只有明确识别为 NoSuchUpload 才返回 fatal=true；未知错误不擅自宣布会话失效。一般参数错误仍为 400/413。
+ 
+-公开读取可以走 R2 的自定义域名（例如 `assets.8bitgo.com`，在桶上配置 CORS 允许 GET/HEAD），
+-Worker 只用来做后台的上传、删除和列表。网站后台「ROM 存储」页里把两者分开填写即可。
++`complete` 成功但 `markerRemoved:false` 表示最终对象已经生成，只需清理标记，不能重新上传来“修复”。`abort` 失败会保留标记；标记写入和补偿 abort 同时失败时，返回 cleanupRequired 和会话身份供管理端处理。
+ 
+-## 不用 Worker 的替代方案
++`MAX_UPLOAD_MB` **不是整个 multipart 会话的总大小配额**。create 中的 size 是展示信息，完整会话额度、租户限额和全局并发控制尚未实现。合并成功但客户端丢失响应的跨请求幂等恢复也未实现。前端继续保管完整的 partNumber / etag 列表；这份包没有网站前端或后台上传器。
+ 
+-在 Cloudflare 控制台给桶开启公开访问（r2.dev 子域或自定义域名），并在桶的 CORS 策略里允许你的站点来源
+-（AllowedMethods 至少包含 GET、HEAD）。这种方式没有 `/list` 接口，后台需要手动填写每款游戏的 ROM key，
+-或按约定路径 `<platform>/<slug>.zip` 命名文件让前台自动探测。
++新标记 `_uploads/v2-<SHA256>.marker` 可按 key 和 uploadId 直接定位。旧随机标记兼容：优先验证客户端给定 marker，否则逐页搜索，最多 24 页；达到预算时返回清理未完成，不伪装“找不到就是已删除”。R2 默认会自动中止一定时间内未完成的分片，文档默认值为 7 天，但标记对象本身仍需管理；核对桶的实际生命周期配置。[3]
++
++## 分页与删除的兼容变化
++
++`/list` 与 `/multipart` 使用 `v2.` 复合 cursor，分别保存各桶位置。前端把 cursor 视为不透明字符串，URL 编码后原样传回，按 `truncated` 决定是否继续，**不要根据数组为空或少于 1000 条就提前结束**。旧版 cursor 失效后从第一页重新读取即可，不要删除 R2 对象。[3]
++
++返回行新增 `bucket` 字段。同一 key 在两个桶是两个物理对象，可能返回两行；未做逻辑去重或跨页全局时间排序。前端若要合并展示，应明确覆盖优先级，不要把重复 key 误判成同一记录。
++
++删除 `covers/...` 现在同时删除 COVERS 当前副本与 ROMS 中的迁移副本，避免删完回退读出旧封面。普通 ROM 仍只删 ROMS。此操作不是跨桶事务；部分失败返回 503 及 deleted/failed 列表，按 failed 重试。若业务只是迁移并保留旧副本，请不要把该删除接口当迁移工具。
++
++## 缓存和范围读取
++
++可覆盖的 ROM/封面默认 `Cache-Control: public, max-age=0, must-revalidate`。这会增加验证请求，换取同名对象更新后的正确性。生产确实采用内容哈希/不可变 key 时，才在 `OBJECT_CACHE_CONTROL` 中选择长 TTL；不要盲目恢复原来对所有 key 生效的长缓存。[4]
++
++历史浏览器/CDN 缓存和 R2 自定义域名的缓存不会因部署自动消失，需要按资源更新版本或失效缓存。Worker 默认策略也不能覆盖另一个直连 R2 域名已有对象的旧 metadata。
++
++不带 Range 和条件头、首次查找即命中的普通 GET 仍只调用一次 R2 get。Range/条件请求一般先 head 再按 ETag 读取：是正确性换取额外一次存储调用；若对象被并发覆盖最多重试 3 次。If-Range 仅强 ETag 匹配时继续分段；弱 ETag、日期形式无法确认强验证能力时保守返回完整 200。多段 Range 未实现，返回完整内容；有效但不可满足的单段返回 416。[3][4]
++
++## 公开域名替代方案
++
++可继续用 R2 自定义域名公开读取，Worker 只承担管理接口；独立配置该域名的 CORS、缓存和访问规则。直接访问 R2 域名不会自动执行此 Worker 的鉴权、范围修复、封面回退或缓存策略。是否选择这种部署结构需要与前端 URL 配置一起验证。
++
++## 官方依据
++
++[1] https://developers.cloudflare.com/workers/platform/limits/
++[2] https://developers.cloudflare.com/workers/runtime-apis/streams/transformstream/
++[3] https://developers.cloudflare.com/r2/api/workers/workers-api-reference/
++[4] https://www.rfc-editor.org/rfc/rfc9110.html
+--- original/embed-vc/README.md
++++ fixed/embed-vc/README.md
+@@ -1,37 +1,45 @@
+-# 8bitgo-embed-vc · 在 Cloudflare Worker 上跑 reVCDOS
++# 8bitgo-embed-vc · 审计修复版
+ 
+-用来替掉 [reVCDOS](https://github.com/Lolendor/reVCDOS) 自带的 `server.py` / `index.php`。
+-不需要 VPS，也不需要 Docker。
++这个独立 Worker 保留原有三项职责：使用 ASSETS 提供静态文件；为 HTML 设置 COOP/COEP 并按需注入 base；将 `/vcsky/` 和 `/vcbr/` 转发到配置好的 HTTPS 上游。
+ 
+-## 它替掉了什么
++**本次上传的压缩包没有 `dist/`、reVCDOS 游戏数据、网站的 play 路由代码或云存档服务。** 修复包也没有补造这些资源。仅部署 Worker 源码不能视为游戏已经可以完整运行。`--packed`、磁盘缓存、自定义云存档接口不在原上传包中，此次没有新增。
+ 
+-上游那份 FastAPI 后端只干三件事，这个 Worker 一一对上：
++## 修复内容
+ 
+-| server.py | 这里 |
+-| --- | --- |
+-| `StaticFiles(dist/)` | Workers Static Assets（`[assets]`） |
+-| HTML 上的 COOP / COEP 头 | `decorateHtml()` |
+-| `/vcsky/` `/vcbr/` 反代到 DOS Zone CDN | `proxy()` |
++资源路径不能再把固定上游替换成其他主机；重定向只允许同源、同配置路径前缀，最多跟随 3 次。查询串保留，包括版本号与签名；If-Range 等条件头按白名单转发，不转发客户端 Authorization/Cookie。
+ 
+-**带不过来的：** `--packed`（brotli 自定义档，Worker 没有 brotli 解压）、
+-`--vcsky_cache` / `--unpacked`（要写磁盘）、`--custom_saves`（要存档目录）。
+-dos.zone 被 DMCA 之后页面已经改成「玩家自备游戏数据」，前两个基本用不上；
+-存档要留的话得改成 R2 或 KV，`saves` 那几个接口自己补。
++仅成功的资源响应应用配置 TTL，错误响应 no-store，边缘缓存按状态指定规则。`UPSTREAM_CACHE_TTL=0` 现在真正生效。HTML 修改后移除过期的长度、编码、ETag 和摘要头；HTML 有 1 MiB 处理上限。资源响应正文继续流式转发，HTML 使用有界文本处理，不是 HTMLRewriter。
+ 
+-## 部署
++`UPSTREAM_HEADER_TIMEOUT_MS` 默认为 15000，覆盖整个重定向链等待响应头的时间；**不是完整下载超时，也不是响应体无进展超时**。响应头后的断流和真实客户端取消传播仍需在 Cloudflare 环境验收。
++
++## 部署准备
++
++将你已有并有权使用的完整前端静态构建产物放到 `worker/embed-vc/dist/`。不要把 ROM Worker 的文件放进去。确认 `dist/index.html`、脚本、WASM、数据路径都存在。单个 Workers Static Asset 的文档上限为 25 MiB，超限资源需采用独立对象存储方案并明确配置路径，当前 Worker 没有自动接管任意大文件的 R2 分支。[1]
+ 
+ ```bash
+-# 1. 把 reVCDOS 的 dist/ 放进来
+-git clone https://github.com/Lolendor/reVCDOS /tmp/revcdos
+-cp -R /tmp/revcdos/dist worker/embed-vc/dist
+-
+-# 2. 部署
+ cd worker/embed-vc
++# dist/ 必须先存在；先核对部署名、路由和变量，再执行。
++npx wrangler deploy --dry-run
+ npx wrangler deploy
+ ```
+ 
+-然后在 Cloudflare 控制台给它挂路由（**必须挂，见下**），并在本仓库
+-`shared/isolated-embeds.js` 里登记这款游戏：
++保留 `ASSETS` 绑定、`run_worker_first = true`、SPA 回退、兼容日期 `2026-01-01`。这是为了让 HTML 请求经过 Worker 处理，但不代表整个 iframe 祖先链的跨源隔离已验证。[2]
++
++原默认上游保留：`VCSKY_UPSTREAM=https://cdn.dos.zone/vcsky/`、`VCBR_UPSTREAM=https://br.cdn.dos.zone/vcsky/`。没有探测这些地址的实时可用性、游戏资源内容或授权条件；使用前自行核验所选项目和资源的适用许可。需要更换时配置明确的 HTTPS 基址，不能用用户提交的地址替代固定上游。
++
++## 同源路由
++
++保留 `BASE_PATH=/embed/vc` 时，按前端实际发出的 URL 配置路由，例如：
++
++```text
++8bitgo.com/embed/vc/*
++8bitgo.com/vcsky/*
++8bitgo.com/vcbr/*
++```
++
++base 标签只能影响相对路径，不能改变 `/assets/...` 这类根绝对路径。若静态页面有根绝对资源引用，要调整构建 base 或明确路由归属，不能盲目把整个主站 `/assets/*` 都接管到这个 Worker。
++
++原说明中提到的 `shared/isolated-embeds.js`、`server/src/routes/play.js` 属于外部主站工程，没有出现在上传包中。登记示例仍可作为集成参考，但不是本次已经完成的代码修改：
+ 
+ ```js
+ export const ISOLATED_EMBEDS = Object.freeze({
+@@ -39,45 +47,24 @@
+ })
+ ```
+ 
+-登记之后，`/games/gta-vice-city` 上不再内嵌模拟器，而是显示一个跳到
+-`/play/gta-vice-city` 的入口；那一页由 `server/src/routes/play.js` 吐出，
+-带着 COOP / COEP，里面 iframe 的就是这个 Worker。
++## 独立子域名
+ 
+-## ⚠️ 路由必须对齐 —— 最容易翻车的一步
++使用 `vc.8bitgo.com` 时可将 BASE_PATH 设为空，把资源托管在该子域名根路径。是否可以跨源 iframe 嵌入，要在实际主站上核对顶层页面的 COOP/COEP、Permissions-Policy、iframe allow、CSP、资源 CORS/CORP 以及第三方存储策略，不能仅凭本 Worker 的两个响应头就保证 SharedArrayBuffer 可用。[2]
+ 
+-`BASE_PATH = "/embed/vc"` 只能剥掉**我们收到的**请求前缀，救不了前端**硬写在代码里的
+-根绝对路径**。上游 `server.py` 把资源挂在根上（`/vcsky/{path}`、`/vcbr/{path}`），
+-所以 8bitgo.com 上至少要给这个 Worker 挂三条路由：
++## 缓存与严格重定向
+ 
+-```
+-8bitgo.com/embed/vc/*
+-8bitgo.com/vcsky/*
+-8bitgo.com/vcbr/*
+-```
++上游在另一个域名重定向、跳出 `/vcsky/` 目录或返回无 Location 的重定向时，修复版会拒绝。若合法资源依赖这类行为，应将配置改成可信最终基址并回归测试，不要恢复任意 follow。
+ 
+-`dist/` 里的 JS / WASM 路径同理：如果 index.html 引的是 `/assets/...` 而不是
+-`./assets/...`，那它会打到 8bitgo 自己的 Express 上（那里对 `/assets/` 是直接回 404 的）。
++固定 TTL 保留为 86400 秒，但只应用于可缓存的成功资源；去除了全局 immutable。上游缓存规则、Worker 部署域名、目标 zone 权限、响应状态以及 Cloudflare 的实际缓存行为都可能影响命中。**没有把 `cf` 参数测试冒充边缘缓存命中率测试。** 在目标域名上检查真实响应头、日志和重复请求结果。[3]
+ 
+-**部署完第一件事**：打开 `/play/<slug>`，看 DevTools → Network，把所有 404 的路径记下来，
+-要么补一条路由，要么改用下面的子域名方案。
++## 本地验证
+ 
+-### 嫌麻烦就用子域名
++在上一级 `worker/` 运行 `npm test`。测试使用模拟 fetch/ASSETS 与 Node Web API，没有实际部署到 Cloudflare，也没有加载完整游戏。主报告 `../AUDIT.md` 包含测试范围和未解决风险。
+ 
+-给这个 Worker 配一个 `vc.8bitgo.com`，`BASE_PATH` 留空 —— 根绝对路径天然就对了，
+-一条路由都不用拼。代价是 iframe 变成跨源：`play.js` 里已经带了
+-`allow="cross-origin-isolated"`，所以隔离照样成立；只是云存档要吃第三方 Cookie 的限制。
+-登记时把 `embed` 写成 `'https://vc.8bitgo.com/'` 即可。
++控制台单文件方式可用 `../standalone/embed-worker.js`，但配置与 `dist/` 仍不可省略。
+ 
+-## 别忘了
++## 官方依据
+ 
+-- **必须挂在域名路由上，不能只用 workers.dev 的地址。** `cf.cacheEverything` 在
+-  workers.dev 上会被忽略，那时每个资源请求都真的打到 dos.zone 去 —— 又慢又是在花别人的带宽。
+-- **单个静态文件上限 25 MiB**（文件数 Free 2 万 / Paid 10 万）。reVC 的 WASM 或数据包
+-  超了的话 `wrangler deploy` 会直接报错；把超限的那几个丢进 R2，在 `src/index.js` 里
+-  按路径加一条 R2 分支即可（写法参照 `../src/index.js` 那个 ROM Worker）。
+-- **免费版每天 10 万请求、单次调用 50 个子请求、10ms CPU。** 反代是纯流式转发，
+-  CPU 不是问题（等 I/O 不计入），请求数才是 —— 一局游戏会拉几百个资源文件，自己估一下。
+-- **dos.zone 的自托管条件**：署名 DOS.Zone Team 并链回 <https://dos.zone/revcdos/>、
+-  保留云存档功能、保留游戏内的 "Vice City by DOS.Zone Team" logo。
+-- 游戏数据本身是 Rockstar 的版权内容，上游正是因为这个吃过一次 DMCA。
+-  默认配置是**反代**而非自己存放，别顺手把它换成自己的 R2 再对外开放。
++[1] https://developers.cloudflare.com/workers/platform/limits/
++[2] https://developer.mozilla.org/en-US/docs/Web/API/Window/crossOriginIsolated
++[3] https://developers.cloudflare.com/workers/runtime-apis/request/
+--- original/embed-vc/src/index.js
++++ fixed/embed-vc/src/index.js
+@@ -1,159 +1,210 @@
+ /**
+- * reVCDOS 托管 Worker —— 用来替掉仓库自带的 server.py / index.php。
+- *
+- * 那份 Python 后端（FastAPI）其实只干三件事，全都是 Worker 的本职：
+- *
+- *   1. 把 dist/ 当静态站点发出去
+- *   2. 给 HTML 加 COOP / COEP 两个头（游戏要 SharedArrayBuffer，少一个就白屏）
+- *   3. 把 /vcsky/ 与 /vcbr/ 反代到 DOS Zone 的 CDN
+- *
+- * 带不过来的是那几个开关：`--packed`（brotli 的自定义档格式，Worker 没有 brotli 解压）、
+- * `--vcsky_cache` / `--unpacked`（要往磁盘写，Worker 没有文件系统）、
+- * `--custom_saves`（要存档目录，得改成 R2 或 KV）。
+- * dos.zone 被 DMCA 之后页面已经改成「玩家自备游戏数据」，前两个基本用不上了；
+- * 存档要留的话见 README。
+- *
+- * ## 为什么非得反代，不能让前端直连 cdn.dos.zone
+- *
+- * 因为 COEP: require-corp。开了它之后，页面里所有**跨源**且没带
+- * Cross-Origin-Resource-Policy 头的资源会被浏览器直接拦掉，而 cdn.dos.zone 不是我们的、
+- * 加不了那个头。反代一遍之后这些请求变成同源，问题就不存在了 ——
+- * 这也正是上游 server.py 要做这个代理的原因，别以为它只是图方便。
++ * reVCDOS static hosting / fixed-upstream resource proxy.
++ * Retains BASE_PATH, /vcsky/, /vcbr/, GET/HEAD, isolation headers and ASSETS.
++ * Does NOT include dist/ or implement cloud-save APIs (neither was in the upload).
+  */
+-
+-/** 只读站点，其它方法一律拒掉，免得被当成开放代理 */
+ const READ_METHODS = new Set(['GET', 'HEAD'])
+-
+-/**
+- * 需要原样转发给上游的请求头。
+- * Range 必须转 —— 游戏数据是大文件，前端靠分段拉取，丢了它会退化成每次整包下载。
+- */
+-const FORWARD_HEADERS = ['range', 'if-none-match', 'if-modified-since', 'accept', 'accept-encoding']
+-
+-/** 从上游响应里剥掉的头：这些由我们自己决定，或者是 hop-by-hop 的 */
++const FORWARD_HEADERS = [
++  'range', 'if-range', 'if-none-match', 'if-modified-since', 'if-match',
++  'if-unmodified-since', 'accept', 'accept-encoding',
++]
+ const STRIP_HEADERS = new Set([
+-  'set-cookie',
+-  'connection',
+-  'keep-alive',
+-  'transfer-encoding',
+-  'cross-origin-opener-policy',
+-  'cross-origin-embedder-policy',
+-  'content-security-policy',
+-  'x-frame-options',
++  'set-cookie', 'connection', 'keep-alive', 'transfer-encoding', 'proxy-authenticate',
++  'proxy-authorization', 'te', 'trailer', 'upgrade',
++  'cross-origin-opener-policy', 'cross-origin-embedder-policy',
+ ])
+-
++const REDIRECTS = new Set([301, 302, 303, 307, 308])
++const HTML_LIMIT = 1024 * 1024
++class ProxyError extends Error {
++  constructor(status, message) { super(message); this.status = status }
++}
++function errorResponse(error) {
++  return new Response(JSON.stringify({ error: error instanceof ProxyError ? error.message : '资源服务暂时不可用' }), {
++    status: error instanceof ProxyError ? error.status : 502,
++    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' },
++  })
++}
+ function basePath(env) {
+-  const p = (env.BASE_PATH ?? '').trim()
+-  if (!p || p === '/') return ''
+-  return p.endsWith('/') ? p.slice(0, -1) : p
+-}
+-
+-/**
+- * 把挂载前缀从路径上剥掉。
+- * 同源方案下浏览器请求的是 /embed/vc/index.html，而静态资源里的 key 是 /index.html。
+- */
+-function stripBase(pathname, base) {
+-  if (!base) return pathname
+-  if (pathname === base) return '/'
+-  return pathname.startsWith(`${base}/`) ? pathname.slice(base.length) : pathname
+-}
+-
+-/**
+- * 反代一条游戏资源。
+- *
+- * 用 fetch 的 cf.cacheEverything 让 Cloudflare 边缘替我们缓存，而不是自己操作 Cache API：
+- * Range 请求和手动 Cache API 配起来很容易出错（缓存住一个 206 再拿去回别的区间），
+- * 交给边缘处理最省事也最不容易错。
+- *
+- * ⚠️ cf.cacheEverything 只在 Worker 挂在**某个域名（zone）的路由**上时生效，
+- * workers.dev 的地址上会被忽略 —— 那时每次请求都会真的打到上游去。上线记得挂路由。
+- */
+-async function proxy(request, upstreamBase, rest, ttl) {
+-  const url = new URL(rest, upstreamBase)
++  const value = String(env.BASE_PATH ?? '').trim().replace(/\/+$/, '')
++  if (!value) return ''
++  if (!value.startsWith('/') || value.startsWith('//') || /[\\<>"'?#%\x00-\x20\x7f]/.test(value) || value.split('/').some(p => p === '.' || p === '..')) {
++    throw new ProxyError(500, 'BASE_PATH 配置无效')
++  }
++  return value
++}
++function stripBase(path, base) {
++  if (base && path === base) return '/'
++  return base && path.startsWith(base + '/') ? path.slice(base.length) : path
++}
++function parseNumber(value, fallback, maximum) {
++  if (value === undefined || value === '') return fallback
++  const n = Number(value)
++  if (!Number.isSafeInteger(n) || n < 0 || n > maximum) throw new ProxyError(500, '代理数值配置无效')
++  return n
++}
++/** Reject absolute/network paths, traversal, encoded separators and nested encodings. */
++function validateRelative(rest) {
++  if (rest.length > 8192 || /^[\\/]/.test(rest) || /^[a-z][a-z\d+.-]*:/i.test(rest)) throw new ProxyError(400, '资源路径无效')
++  for (const segment of rest.split('/')) {
++    let value = segment
++    for (let i = 0; i < 4; i++) {
++      if (/[\\/\x00-\x1f\x7f]/.test(value) || value === '.' || value === '..') throw new ProxyError(400, '资源路径无效')
++      if (!/%[\da-f]{2}/i.test(value)) break
++      try { value = decodeURIComponent(value) } catch { throw new ProxyError(400, '资源路径编码无效') }
++      if (i === 3) throw new ProxyError(400, '资源路径编码层数过多')
++    }
++    // Also catch a bare/invalid percent escape, not just recognized %xx sequences.
++    try { decodeURIComponent(segment) } catch { throw new ProxyError(400, '资源路径编码无效') }
++  }
++}
++function upstreamURL(base, rest, search) {
++  let root
++  try { root = new URL(base) } catch { throw new ProxyError(500, '上游配置无效') }
++  if (root.protocol !== 'https:' || root.username || root.password || root.search || root.hash) throw new ProxyError(500, '上游必须是不含认证和查询串的 HTTPS 基址')
++  if (!root.pathname.endsWith('/')) root.pathname += '/'
++  validateRelative(rest)
++  const url = new URL(root)
++  // Append to PATH, never resolve user-controlled input as an absolute URL.
++  url.pathname = root.pathname + rest
++  url.search = search
++  if (url.origin !== root.origin || !url.pathname.startsWith(root.pathname)) throw new ProxyError(400, '资源路径越界')
++  return { root, url }
++}
++function safeRedirect(location, current, root) {
++  let next
++  try { next = new URL(location, current) } catch { throw new ProxyError(502, '无效上游重定向') }
++  if (next.origin !== root.origin || next.protocol !== 'https:' || next.username || next.password || !next.pathname.startsWith(root.pathname)) {
++    throw new ProxyError(502, '上游重定向超出配置的资源目录')
++  }
++  validateRelative(next.pathname.slice(root.pathname.length))
++  return next
++}
++async function cancelBody(response) {
++  if (response.body && !response.body.locked) { try { await response.body.cancel() } catch { /* already closed */ } }
++}
++async function proxy(request, upstreamBase, rest, ttl, timeout, search) {
++  let { root, url } = upstreamURL(upstreamBase, rest, search)
+   const headers = new Headers()
+   for (const name of FORWARD_HEADERS) {
+-    const v = request.headers.get(name)
+-    if (v) headers.set(name, v)
+-  }
+-
+-  const upstream = await fetch(url.toString(), {
+-    method: request.method,
+-    headers,
+-    redirect: 'follow',
+-    cf: { cacheEverything: true, cacheTtl: ttl },
++    if (request.headers.has(name)) headers.set(name, request.headers.get(name))
++  }
++  const controller = new AbortController()
++  const onAbort = () => controller.abort(request.signal.reason)
++  if (request.signal.aborted) onAbort()
++  else request.signal.addEventListener('abort', onAbort, { once: true })
++  // Headers deadline across redirects. Body stays streaming; no unbounded buffering.
++  // There is intentionally no hard total download timeout for large game assets.
++  let expired = false
++  const timer = setTimeout(() => { expired = true; controller.abort() }, timeout)
++  let upstream
++  try {
++    for (let redirect = 0; ; redirect++) {
++      upstream = await fetch(url.toString(), {
++        method: request.method, headers, redirect: 'manual', signal: controller.signal,
++        cf: { cacheEverything: true, cacheTtlByStatus: { '200-299': ttl, '300-599': -1 } },
++      })
++      if (!REDIRECTS.has(upstream.status)) break
++      const location = upstream.headers.get('Location')
++      await cancelBody(upstream)
++      if (!location || redirect >= 3) throw new ProxyError(502, '上游重定向过多或缺少 Location')
++      url = safeRedirect(location, url, root)
++    }
++  } catch (error) {
++    if (expired) throw new ProxyError(504, '上游响应头超时')
++    throw error
++  } finally {
++    clearTimeout(timer)
++    request.signal.removeEventListener('abort', onAbort)
++  }
++  const out = new Headers()
++  const connectionTokens = new Set((upstream.headers.get('Connection') || '').toLowerCase().split(',').map(s => s.trim()))
++  for (const [k,v] of upstream.headers) if (!STRIP_HEADERS.has(k.toLowerCase()) && !connectionTokens.has(k.toLowerCase())) out.set(k,v)
++  out.set('Cross-Origin-Resource-Policy', 'same-origin')
++  out.set('X-Content-Type-Options', 'nosniff')
++  if (upstream.ok) out.set('Cache-Control', `public, max-age=${ttl}${ttl === 0 ? ', must-revalidate' : ''}`)
++  else if (upstream.status === 304) out.set('Cache-Control', `public, max-age=${ttl}`)
++  else out.set('Cache-Control', 'no-store')
++  if (request.method === 'HEAD') await cancelBody(upstream)
++  return new Response(request.method === 'HEAD' ? null : upstream.body, {
++    status: upstream.status, statusText: upstream.statusText, headers: out,
+   })
+-
+-  const out = new Headers()
+-  for (const [k, v] of upstream.headers) {
+-    if (!STRIP_HEADERS.has(k.toLowerCase())) out.set(k, v)
+-  }
+-  // 同源资源，不需要 CORP；但明确写一句省得以后换成子域名时忘了
+-  out.set('Cross-Origin-Resource-Policy', 'same-origin')
+-  out.set('Cache-Control', `public, max-age=${ttl}, immutable`)
+-
+-  return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers: out })
+-}
+-
+-/**
+- * 给 HTML 补上隔离头，并在有挂载前缀时注入 <base>。
+- *
+- * <base> 只救得了**相对**路径。reVCDOS 的前端如果请求的是根绝对路径（/vcsky/... 这种，
+- * 上游 server.py 就是把它们挂在根上的），<base> 管不着 —— 那些路径必须在
+- * Cloudflare 路由里单独指过来，见 README 的「路由必须对齐」。
+- */
+-async function decorateHtml(response, base) {
++}
++async function boundedHtml(response) {
++  const length = Number(response.headers.get('Content-Length'))
++  if (length > HTML_LIMIT) { await cancelBody(response); throw new ProxyError(502, 'HTML 超过处理上限') }
++  if (!response.body) return ''
++  const reader = response.body.getReader()
++  const decoder = new TextDecoder()
++  let result = '', size = 0
++  try {
++    while (true) {
++      const { done, value } = await reader.read()
++      if (done) break
++      size += value.byteLength
++      if (size > HTML_LIMIT) throw new ProxyError(502, 'HTML 超过处理上限')
++      result += decoder.decode(value, { stream: true })
++    }
++    return result + decoder.decode()
++  } catch (error) {
++    try { await reader.cancel(error) } catch { /* keep original error */ }
++    throw error
++  } finally { reader.releaseLock() }
++}
++async function decorateHtml(response, base, method) {
+   const headers = new Headers(response.headers)
+-  /**
+-   * 这两个头是全部关键。SharedArrayBuffer 只在**顶层文档**发了它们、且整条祖先链
+-   * 都隔离时才交出来；我们这一页是被 8bitgo 的 /play/<slug> 外壳 iframe 进去的，
+-   * 而 require-corp 的父页面只肯装载同样声明了 COEP 的子框架 —— 所以这里必须发。
+-   */
+   headers.set('Cross-Origin-Opener-Policy', 'same-origin')
+   headers.set('Cross-Origin-Embedder-Policy', 'require-corp')
+-  // 被 8bitgo 自己的外壳页嵌入，所以**不能**设 X-Frame-Options
+   headers.delete('X-Frame-Options')
+   headers.set('Cache-Control', 'no-cache')
+-
+-  if (!base) return new Response(response.body, { status: response.status, headers })
+-
+-  let html = await response.text()
+-  if (!/<base\s/i.test(html)) {
+-    html = html.replace(/<head([^>]*)>/i, `<head$1><base href="${base}/">`)
+-  }
++  if (!base) return new Response(method === 'HEAD' ? null : response.body, { status: response.status, headers })
++  // The representation is transformed; upstream validators and byte lengths no longer apply.
++  for (const name of ['Content-Length', 'Content-Encoding', 'ETag', 'Last-Modified', 'Content-MD5', 'Digest', 'Content-Digest', 'Repr-Digest', 'Accept-Ranges']) headers.delete(name)
++  if (method === 'HEAD') { await cancelBody(response); return new Response(null, { status: response.status, headers }) }
++  if ([204, 205, 304].includes(response.status)) return new Response(null, { status: response.status, headers })
++  // Keep existing <base> unchanged (same public behavior as the original Worker).
++  let html = await boundedHtml(response)
++  if (!/<base\s/i.test(html)) html = html.replace(/<head([^>]*)>/i, `<head$1><base href="${base}/">`)
+   return new Response(html, { status: response.status, headers })
+ }
+-
++async function handle(request, env) {
++  if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: { Allow: 'GET, HEAD, OPTIONS' } })
++  if (!READ_METHODS.has(request.method)) return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET, HEAD, OPTIONS', 'Cache-Control': 'no-store' } })
++  const url = new URL(request.url)
++  const base = basePath(env)
++  const path = stripBase(url.pathname, base)
++  const ttl = parseNumber(env.UPSTREAM_CACHE_TTL, 86400, 31536000)
++  const timeout = parseNumber(env.UPSTREAM_HEADER_TIMEOUT_MS, 15000, 120000)
++  if (!timeout) throw new ProxyError(500, '上游超时不能为零')
++  if (path.startsWith('/vcsky/')) return proxy(request, env.VCSKY_UPSTREAM, path.slice(7), ttl, timeout, url.search)
++  if (path.startsWith('/vcbr/')) return proxy(request, env.VCBR_UPSTREAM, path.slice(6), ttl, timeout, url.search)
++  if (!env.ASSETS) throw new ProxyError(503, '静态资源 ASSETS 绑定缺失')
++  // Setting pathname, instead of resolving "//host", prevents host changes here too.
++  const assetURL = new URL(url.origin)
++  assetURL.pathname = path
++  assetURL.search = url.search
++  const headers = new Headers(request.headers)
++  const likelyHtml = path.endsWith('/') || /\.html?$/i.test(path) || !path.split('/').pop().includes('.')
++  if (base && likelyHtml) {
++    for (const name of ['If-None-Match', 'If-Modified-Since', 'If-Match', 'If-Unmodified-Since', 'Range', 'If-Range']) headers.delete(name)
++  }
++  let response = await env.ASSETS.fetch(new Request(assetURL, { method: request.method, headers }))
++  let type = response.headers.get('Content-Type') || ''
++  // Unknown SPA routes can also produce HTML 304s. Re-fetch before transformation.
++  if (base && response.status === 304 && type.includes('text/html')) {
++    response = await env.ASSETS.fetch(new Request(assetURL, { method: request.method }))
++    type = response.headers.get('Content-Type') || ''
++  }
++  if (type.toLowerCase().includes('text/html')) return decorateHtml(response, base, request.method)
++  return response
++}
+ export default {
+   async fetch(request, env) {
+-    if (request.method === 'OPTIONS') {
+-      return new Response(null, { status: 204, headers: { Allow: 'GET, HEAD, OPTIONS' } })
+-    }
+-    if (!READ_METHODS.has(request.method)) {
+-      return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET, HEAD, OPTIONS' } })
+-    }
+-
+-    const url = new URL(request.url)
+-    const base = basePath(env)
+-    const path = stripBase(url.pathname, base)
+-    const ttl = Number.parseInt(env.UPSTREAM_CACHE_TTL ?? '', 10) || 86400
+-
+-    // 游戏资源。带不带挂载前缀都认 —— 前端到底请求哪一种，看 DevTools 的 Network 面板
+-    if (path.startsWith('/vcsky/')) {
+-      return proxy(request, env.VCSKY_UPSTREAM, path.slice('/vcsky/'.length), ttl)
+-    }
+-    if (path.startsWith('/vcbr/')) {
+-      // ⚠️ 上游那一侧的路径也是 /vcsky/（不是 /vcbr/），别按直觉改
+-      return proxy(request, env.VCBR_UPSTREAM, path.slice('/vcbr/'.length), ttl)
+-    }
+-
+-    // 其余交给静态资源。前缀剥掉之后再问，否则查的是 /embed/vc/index.html 这种不存在的 key
+-    const assetRequest = new Request(new URL(path + url.search, url.origin), request)
+-    const response = await env.ASSETS.fetch(assetRequest)
+-
+-    const type = response.headers.get('Content-Type') ?? ''
+-    if (type.includes('text/html')) return decorateHtml(response, base)
+-
+-    // 非 HTML 的静态资源是同源的，不需要 CORP，原样返回即可
++    let response
++    try { response = await handle(request, env) } catch (error) { response = errorResponse(error) }
++    if (request.method === 'HEAD' && response.body) {
++      await cancelBody(response)
++      return new Response(null, { status: response.status, headers: response.headers })
++    }
+     return response
+   },
+ }
+--- original/embed-vc/wrangler.toml
++++ fixed/embed-vc/wrangler.toml
+@@ -30,5 +30,8 @@
+ VCSKY_UPSTREAM = "https://cdn.dos.zone/vcsky/"
+ VCBR_UPSTREAM = "https://br.cdn.dos.zone/vcsky/"
+ 
+-# 反代资源在 Cloudflare 边缘缓存多久（秒）。游戏数据是不变的，给足。
++# 成功资源的缓存 TTL（秒）。实际命中取决于部署/上游规则；错误响应不长期缓存。
+ UPSTREAM_CACHE_TTL = "86400"
++
++# 整个重定向链等待响应头的上限，不是响应体下载或无进展超时。
++UPSTREAM_HEADER_TIMEOUT_MS = "15000"
+--- original/package.json
++++ fixed/package.json
+@@ -0,0 +1,16 @@
++{
++  "name": "8bitgo-workers-audited",
++  "private": true,
++  "type": "module",
++  "engines": {
++    "node": ">=22"
++  },
++  "scripts": {
++    "test": "node --test tests/*.test.mjs",
++    "test:multipart": "node --test tests/multipart.test.mjs",
++    "test:original": "node tests/compare-original.mjs",
++    "benchmark": "node tests/benchmark.mjs",
++    "check": "node --check src/index.js && node --check src/http.js && node --check src/common.js && node --check embed-vc/src/index.js",
++    "build:standalone": "node tools/build-standalone.mjs"
++  }
++}
+--- original/src/common.js
++++ fixed/src/common.js
+@@ -0,0 +1,182 @@
++/** Shared ROM Worker helpers. No Node-only APIs or production dependencies. */
++export const encoder = new TextEncoder()
++export class HttpError extends Error {
++  constructor(status, message, code = 'bad_request') {
++    super(message)
++    this.status = status
++    this.code = code
++  }
++}
++export function json(data, cors = {}, status = 200, extra = {}) {
++  return new Response(JSON.stringify(data), {
++    status,
++    headers: { ...cors, 'Content-Type': 'application/json; charset=utf-8',
++      'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...extra },
++  })
++}
++export function positiveInt(value, fallback, maximum = Number.MAX_SAFE_INTEGER) {
++  if (value === undefined || value === '') return fallback
++  const n = Number(value)
++  if (!Number.isSafeInteger(n) || n <= 0 || n > maximum) {
++    throw new HttpError(500, 'Worker 数值配置无效', 'invalid_configuration')
++  }
++  return n
++}
++export function declaredLength(request, limit) {
++  const s = request.headers.get('Content-Length')
++  if (s === null) return null
++  if (!/^\d+$/.test(s)) throw new HttpError(400, '无效的 Content-Length')
++  const n = Number(s)
++  if (!Number.isSafeInteger(n)) throw new HttpError(400, '无效的 Content-Length')
++  if (n > limit) throw new HttpError(413, '请求体超过大小上限', 'body_too_large')
++  return n
++}
++/** Bounded fallback only: never materialize arbitrary-sized JSON/unknown-length bodies. */
++export async function readLimited(request, limit) {
++  const declared = declaredLength(request, limit)
++  if (!request.body) {
++    if (declared > 0) throw new HttpError(400, '请求体长度不匹配')
++    return new Uint8Array(0)
++  }
++  const reader = request.body.getReader()
++  let length = 0
++  const chunks = []
++  try {
++    while (true) {
++      const { done, value } = await reader.read()
++      if (done) break
++      length += value.byteLength
++      if (length > limit) throw new HttpError(413, '请求体超过大小上限', 'body_too_large')
++      if (declared !== null && length > declared) throw new HttpError(400, '请求体长度不匹配')
++      chunks.push(value)
++    }
++    if (declared !== null && length !== declared) throw new HttpError(400, '请求体长度不匹配')
++    const out = new Uint8Array(length)
++    let offset = 0
++    for (const chunk of chunks) { out.set(chunk, offset); offset += chunk.byteLength }
++    return out
++  } catch (error) {
++    try { await reader.cancel(error) } catch { /* preserve the original error */ }
++    throw error
++  } finally { reader.releaseLock() }
++}
++export async function readJson(request, limit, allowEmpty = false) {
++  const bytes = await readLimited(request, limit)
++  if (!bytes.byteLength && allowEmpty) return {}
++  let value
++  try { value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) }
++  catch { throw new HttpError(400, '无效的 JSON 请求体', 'invalid_json') }
++  if (!value || typeof value !== 'object' || Array.isArray(value)) {
++    throw new HttpError(400, 'JSON 请求体必须是对象', 'invalid_json')
++  }
++  return value
++}
++/**
++ * Known-length request streams stay streaming. Workerd's FixedLengthStream verifies
++ * both too-short and too-long bodies and exposes the known length required by R2.
++ * Node fallback is exclusively for the offline fixtures, not the deployed path.
++ */
++export async function writeBody(request, limit, writer, unknownLimit = limit) {
++  const length = declaredLength(request, limit)
++  if (length === null) return writer(await readLimited(request, unknownLimit))
++  if (!request.body) {
++    if (length !== 0) throw new HttpError(400, '请求体长度不匹配')
++    return writer(new Uint8Array(0))
++  }
++  if (typeof FixedLengthStream === 'undefined') {
++    // Only used by Node tests. Request length is normally enforced by HTTP framing.
++    return writer(request.body)
++  }
++  const stream = new FixedLengthStream(length)
++  const cancel = new AbortController()
++  let pumpingError
++  const pumping = request.body.pipeTo(stream.writable, { signal: cancel.signal })
++    .catch((error) => { pumpingError = error })
++  try {
++    const result = await writer(stream.readable)
++    await pumping
++    if (pumpingError) throw new HttpError(400, '请求体传输不完整或长度不匹配', 'body_incomplete')
++    return result
++  } catch (error) {
++    cancel.abort(error)
++    // Abort alone can wait for an in-flight write whose reader never started.
++    // Cancel an unlocked readable too, releasing backpressure before awaiting pipeTo.
++    if (!stream.readable.locked) {
++      try { await stream.readable.cancel(error) } catch { /* preserve storage failure */ }
++    }
++    await pumping
++    throw error
++  }
++}
++export function corsHeaders(request, env) {
++  const allowed = (env.ALLOWED_ORIGINS || '*').split(',').map(s => s.trim()).filter(Boolean)
++  const origin = request.headers.get('Origin') || ''
++  const headers = {
++    'Access-Control-Allow-Methods': 'GET, HEAD, POST, PUT, DELETE, OPTIONS',
++    'Access-Control-Allow-Headers': 'Range, Authorization, Content-Type, If-None-Match, If-Range, If-Modified-Since, If-Match, If-Unmodified-Since',
++    'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, ETag, Last-Modified, Retry-After',
++    'Access-Control-Max-Age': '86400', Vary: 'Origin',
++  }
++  if (allowed.includes('*')) headers['Access-Control-Allow-Origin'] = '*'
++  else if (allowed.includes(origin)) headers['Access-Control-Allow-Origin'] = origin
++  return headers
++}
++export function authorized(request, env) {
++  if (typeof env.ADMIN_TOKEN !== 'string' || !env.ADMIN_TOKEN) return false
++  const match = /^Bearer\s+(.+)$/i.exec(request.headers.get('Authorization') || '')
++  if (!match) return false
++  const a = match[1].trim(), b = env.ADMIN_TOKEN
++  if (a.length !== b.length) return false
++  let diff = 0
++  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
++  return diff === 0
++}
++export function encodeCursor(data) {
++  const bytes = encoder.encode(JSON.stringify(data))
++  let raw = ''
++  for (const b of bytes) raw += String.fromCharCode(b)
++  return 'v2.' + btoa(raw).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '')
++}
++export function decodeCursor(raw, scope, buckets) {
++  const fresh = { scope, positions: Object.fromEntries(buckets.map(b => [b.name, ''])) }
++  if (!raw) return fresh
++  if (raw.length > 12000 || !/^v2\.[\w-]+$/.test(raw)) {
++    throw new HttpError(400, '分页游标已失效，请从第一页重新读取', 'invalid_cursor')
++  }
++  try {
++    let s = raw.slice(3).replaceAll('-', '+').replaceAll('_', '/')
++    s += '='.repeat((4 - s.length % 4) % 4)
++    const state = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(atob(s), c => c.charCodeAt(0))))
++    if (state.scope !== scope || !state.positions || typeof state.positions !== 'object' ||
++      Object.keys(state.positions).length !== buckets.length) throw new Error('scope')
++    for (const { name } of buckets) {
++      const p = state.positions[name]
++      if (p !== null && (typeof p !== 'string' || p.length > 4096)) throw new Error('position')
++    }
++    return state
++  } catch { throw new HttpError(400, '分页游标无效或与 prefix/桶配置不匹配', 'invalid_cursor') }
++}
++export async function listAcross(buckets, options, rawCursor, scope) {
++  const state = decodeCursor(rawCursor, scope, buckets)
++  const pages = await Promise.all(buckets.map(async ({ name, bucket }) => {
++    const cursor = state.positions[name]
++    if (cursor === null) return []
++    const page = await bucket.list({ ...options, ...(cursor ? { cursor } : {}) })
++    if (page.truncated && (!page.cursor || page.cursor === cursor)) {
++      throw new HttpError(503, '存储分页未前进，请重试', 'pagination_stalled')
++    }
++    state.positions[name] = page.truncated ? page.cursor : null
++    return page.objects.map(object => ({ object, bucket: name }))
++  }))
++  const truncated = Object.values(state.positions).some(p => p !== null)
++  return { entries: pages.flat(), truncated, cursor: truncated ? encodeCursor(state) : undefined }
++}
++/** Unknown/transient R2 failures MUST NOT invalidate a client's resumable upload. */
++export function storageFailure(error, cors, operation = 'storage') {
++  if (error instanceof HttpError) return json({ error: error.message, code: error.code }, cors, error.status)
++  const message = error instanceof Error ? error.message : String(error)
++  // Recognize only explicit NoSuchUpload. Generic 400/409/messages are not evidence.
++  const gone = error?.code === 'NoSuchUpload' || /\bNoSuchUpload\b/i.test(message)
++  if (gone) return json({ error: '分片会话不存在或已结束', code: 'upload_gone', fatal: true, retryable: false }, cors, 409)
++  return json({ error: `${operation} 暂时失败，请保留续传信息后重试`, code: 'storage_unavailable', fatal: false, retryable: true }, cors, 503, { 'Retry-After': '2' })
++}
+--- original/src/http.js
++++ fixed/src/http.js
+@@ -0,0 +1,134 @@
++/** HTTP representation / Range handling. Plain GET remains one R2 get(). */
++import { HttpError, json } from './common.js'
++
++export function thumbBaseKey(key) {
++  const match = /^(.*\/)?([^/]+)-96\.(png|jpe?g|webp|avif)$/i.exec(key || '')
++  return match ? `${match[1] || ''}${match[2]}.${match[3]}` : null
++}
++function etags(value) { return value?.match(/(?:W\/)?"[^"\r\n]*"|\*/g) || [] }
++function matches(value, tag, weak) {
++  return etags(value).some(v => v === '*' || (weak ? v.replace(/^W\//, '') === tag.replace(/^W\//, '') : !v.startsWith('W/') && v === tag))
++}
++function secondTime(date) {
++  const n = date instanceof Date ? date.getTime() : Date.parse(date)
++  return Number.isFinite(n) ? Math.floor(n / 1000) * 1000 : NaN
++}
++export function conditionStatus(headers, object) {
++  const tag = object.httpEtag
++  const time = secondTime(object.uploaded)
++  const match = headers.get('If-Match')
++  const none = headers.get('If-None-Match')
++  if (match !== null && !matches(match, tag, false)) return 412
++  const unmodified = secondTime(headers.get('If-Unmodified-Since'))
++  if (match === null && Number.isFinite(unmodified) && time > unmodified) return 412
++  if (none !== null && matches(none, tag, true)) return 304
++  const modified = secondTime(headers.get('If-Modified-Since'))
++  if (none === null && Number.isFinite(modified) && time <= modified) return 304
++  return 200
++}
++export function ifRangeMatches(value, object) {
++  if (!value) return true
++  if (value.startsWith('W/')) return false
++  if (value.startsWith('"')) return value === object.httpEtag
++  // Arbitrary R2 writes may occur twice within a second. We cannot establish that
++  // Last-Modified is a strong validator (RFC 9110 13.1.5), so date-only If-Range
++  // conservatively gets the complete object. Clients receive a strong ETag.
++  return false
++}
++/** Invalid syntax / multiple ranges are ignored (200); unsatisfiable single ranges get 416. */
++export function parseRange(value, size) {
++  if (!value || !value.startsWith('bytes=')) return null
++  const m = /^bytes=(\d*)-(\d*)$/.exec(value.trim())
++  if (!m || (!m[1] && !m[2])) return null
++  const a = m[1] ? Number(m[1]) : null
++  const b = m[2] ? Number(m[2]) : null
++  if ((a !== null && !Number.isSafeInteger(a)) || (b !== null && !Number.isSafeInteger(b))) return { unsatisfiable: true }
++  if (size === 0) return { unsatisfiable: true }
++  if (a === null) {
++    if (b === 0) return { unsatisfiable: true }
++    const length = Math.min(b, size)
++    return { offset: size - length, length }
++  }
++  if (a >= size || (b !== null && b < a)) return { unsatisfiable: true }
++  const end = b === null ? size - 1 : Math.min(b, size - 1)
++  return { offset: a, length: end - a + 1 }
++}
++function readBuckets(env, key) {
++  return key.startsWith('covers/') && env.COVERS && env.COVERS !== env.ROMS
++    ? [env.COVERS, env.ROMS] : [env.ROMS]
++}
++async function locate(env, key, method) {
++  const buckets = readBuckets(env, key)
++  const base = thumbBaseKey(key)
++  for (const servedKey of base ? [key, base] : [key]) {
++    for (const bucket of buckets) {
++      const object = await bucket[method](servedKey)
++      if (object) return { object, servedKey, bucket }
++    }
++  }
++  return null
++}
++function objectHeaders(object, servedKey, cors, policy, guessType) {
++  const headers = new Headers(cors)
++  object.writeHttpMetadata(headers)
++  headers.set('ETag', object.httpEtag)
++  headers.set('Last-Modified', new Date(object.uploaded).toUTCString())
++  headers.set('Accept-Ranges', 'bytes')
++  headers.set('Cache-Control', policy)
++  headers.set('X-Content-Type-Options', 'nosniff')
++  if (!headers.has('Content-Type')) headers.set('Content-Type', guessType(servedKey))
++  const filename = encodeURIComponent(servedKey.split('/').pop() || 'rom')
++  headers.set('Content-Disposition', `inline; filename="${filename}"; filename*=UTF-8''${filename}`)
++  return headers
++}
++async function cancelBody(object) {
++  if (object?.body && !object.body.locked) {
++    try { await object.body.cancel() } catch { /* response already closed */ }
++  }
++}
++export async function serveObject(request, env, key, cors, policy, guessType) {
++  const h = request.headers
++  const conditional = ['If-Match', 'If-None-Match', 'If-Modified-Since', 'If-Unmodified-Since'].some(n => h.has(n))
++  const needsMetadata = request.method === 'HEAD' || conditional || h.has('Range')
++  if (!needsMetadata) {
++    const found = await locate(env, key, 'get')
++    if (!found) return json({ error: 'not found' }, cors, 404)
++    const headers = objectHeaders(found.object, found.servedKey, cors, policy, guessType)
++    headers.set('Content-Length', String(found.object.size))
++    return new Response(found.object.body, { headers })
++  }
++  // Pin head->get to the ETag. If a concurrent overwrite happens, retry metadata,
++  // never combine the previous object's size/validator with new object bytes.
++  for (let attempt = 0; attempt < 3; attempt++) {
++    const found = await locate(env, key, 'head')
++    if (!found) return json({ error: h.has('If-Match') ? 'precondition failed' : 'not found' }, cors, h.has('If-Match') ? 412 : 404)
++    const { object: metadata, bucket, servedKey } = found
++    const headers = objectHeaders(metadata, servedKey, cors, policy, guessType)
++    const status = conditionStatus(h, metadata)
++    if (status !== 200) return new Response(null, { status, headers })
++    if (request.method === 'HEAD') {
++      // RFC 9110: Range is a GET-only modifier, not a HEAD modifier.
++      headers.set('Content-Length', String(metadata.size))
++      return new Response(null, { headers })
++    }
++    const range = ifRangeMatches(h.get('If-Range'), metadata) ? parseRange(h.get('Range'), metadata.size) : null
++    if (range?.unsatisfiable) {
++      headers.set('Content-Range', `bytes */${metadata.size}`)
++      return new Response(null, { status: 416, headers })
++    }
++    const object = await bucket.get(servedKey, {
++      onlyIf: { etagMatches: metadata.etag }, ...(range ? { range } : {}),
++    })
++    if (!object || !object.body || object.httpEtag !== metadata.httpEtag) {
++      await cancelBody(object)
++      continue
++    }
++    const finalHeaders = objectHeaders(object, servedKey, cors, policy, guessType)
++    if (range) {
++      finalHeaders.set('Content-Range', `bytes ${range.offset}-${range.offset + range.length - 1}/${object.size}`)
++      finalHeaders.set('Content-Length', String(range.length))
++    } else finalHeaders.set('Content-Length', String(object.size))
++    return new Response(object.body, { status: range ? 206 : 200, headers: finalHeaders })
++  }
++  throw new HttpError(503, '文件正在被并发更新，请重试', 'object_changed')
++}
+--- original/src/index.js
++++ fixed/src/index.js
+@@ -1,544 +1,281 @@
+ /**
+- * 8BitGo ROM Worker：R2 桶的读写代理。
+- *
+- *   GET/HEAD /<key>           读取对象（带 CORS / Range / 长缓存），例如 /roms/nes/contra.zip
+- *   PUT      /<key>           一次传完（需 Authorization: Bearer <ADMIN_TOKEN>），只适合小文件
+- *   DELETE   /<key>           删除对象（需口令）
+- *   GET      /list?prefix=&cursor=   列出对象（需口令，只认 Authorization 头）
+- *   POST     /bulk            批量删除 1..1000 个对象（需口令，body 为 {keys:[...]}）
+- *   GET      /ping            健康检查
+- *
+- * 分片上传（大文件走这条，理由见下）：
+- *
+- *   POST     /<key>?uploads                开始，返回 uploadId（需口令）
+- *   PUT      /<key>?uploadId=&partNumber=  传一片，返回该片 etag（需口令）
+- *   POST     /<key>?uploadId=              完成，body 为 {parts:[{partNumber,etag}]}（需口令）
+- *   DELETE   /<key>?uploadId=              放弃（需口令）
+- *   GET      /multipart?cursor=            按页列出未完成的分片上传（需口令）
+- *   DELETE   /multipart?marker=            只清残留标记，不动 R2（需口令）
+- *
+- * ## 为什么大文件必须分片
+- *
+- * Cloudflare 的请求体上限是**平台级的、由边缘节点执行**，在这份代码之前就生效：
+- * Free / Pro 100 MB，Business 200 MB，Enterprise 500 MB。超限时边缘直接 reset 连接，
+- * 浏览器**拿不到 413**（XHR 只触发 onerror），下面那句 Content-Length 检查一次都不会运行 ——
+- * 于是后台传 100MB 游戏时报的是「网络错误：无法连接 Worker」，看着像 Worker 挂了，
+- * 其实是文件太大。想确认是不是这个原因：失败时开 `npx wrangler tail`，
+- * 被边缘拦掉的请求在 Worker 日志里**一条记录都不会有**。
+- *
+- * 分片是唯一不换套餐就能传大文件的办法：上限按**单个请求**算，切成 8MB 一片后每片都离上限很远。
+- * 顺带换来断点续传 —— uploadId 和已传分片存在 R2 里，网络断了不用从 0 重来。
+- *
+- * ⚠️ R2 的 Workers binding **没有 listParts**：complete 时必须由调用方把每一片的
+- * {partNumber, etag} 全部报回来。所以「传到哪了」这份账记在前端（localStorage），
+- * 这里是无状态的 —— 换浏览器就续不上，只能重传。
++ * 8BitGo ROM Worker: public GET/HEAD; Bearer-protected PUT/DELETE/list/bulk/multipart.
++ * Bucket names, endpoints, JSON success fields and thumbnail fallback are preserved.
++ * Full audit / changed semantics are in AUDIT.md. No ROM or BIOS processing here.
+  */
++import {
++  HttpError, json, encoder, positiveInt, declaredLength, readJson, writeBody,
++  corsHeaders, authorized, listAcross, storageFailure,
++} from './common.js'
++import { serveObject } from './http.js'
+ 
+ const RESERVED = new Set(['', 'ping', 'list', 'multipart', 'bulk'])
+-
+-/**
+- * 单个对象的上传上限。默认 512 MB，可在 wrangler.toml 的 [vars] 里用 MAX_UPLOAD_MB 覆盖。
+- * 注意这**管不到**平台的请求体上限（见文件头），只是再卡一道防手滑。
+- */
+-const DEFAULT_MAX_UPLOAD_MB = 512
+-function maxUploadBytes(env) {
+-  const mb = Number.parseInt(env?.MAX_UPLOAD_MB ?? '', 10)
+-  return (Number.isFinite(mb) && mb > 0 ? mb : DEFAULT_MAX_UPLOAD_MB) * 1024 * 1024
+-}
+-
+-/**
+- * 一片的大小上限。前端用 8MB，这里留四倍余量当护栏：
+- * 分片本身也是普通请求，同样吃平台那 100MB 上限，切太大等于白分片。
+- */
++const MULTIPART_PREFIX = '_uploads/'
+ const MAX_PART_BYTES = 32 * 1024 * 1024
+-
+-/**
+- * 未完成分片上传的「标记对象」前缀。
+- *
+- * binding 也没有 listMultipartUploads。不留痕迹的话，一次失败的上传会在桶里留下
+- * 一堆在 R2 默认 7 天自动中止前占用存储的分片，而且从任何界面都看不见。
+- * 所以 create 时写一个空 body 的标记对象，信息全塞在 customMetadata 里 ——
+- * 这样 list 一次就能连信息一起取回，不用给每个标记再 get 一遍（Workers 有子请求数上限）。
+- * complete / abort 时删掉标记，后台「ROM 存储」页列出的就是真正的残留。
+- */
+-const MULTIPART_PREFIX = '_uploads/'
+-
+-/** 合法的对象 key：不允许 .. 、开头的斜杠、控制字符和反斜杠 */
++const MAX_JSON_BYTES = 2 * 1024 * 1024
++// Mutable keys MUST revalidate by default. A long TTL is only safe with versioned URLs.
++const DEFAULT_CACHE_CONTROL = 'public, max-age=0, must-revalidate'
++const MIME = {
++  zip: 'application/zip', '7z': 'application/x-7z-compressed', '8bg': 'application/x-8bitgo-rom',
++  swf: 'application/x-shockwave-flash', json: 'application/json', txt: 'text/plain; charset=utf-8',
++  webp: 'image/webp', avif: 'image/avif', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
++  gif: 'image/gif', mp4: 'video/mp4', webm: 'video/webm', wasm: 'application/wasm',
++}
++function guessType(key) { return MIME[key.split('.').pop()?.toLowerCase()] || 'application/octet-stream' }
++function cacheControl(env) {
++  const value = env.OBJECT_CACHE_CONTROL || DEFAULT_CACHE_CONTROL
++  if (/[\r\n]/.test(value)) throw new HttpError(500, '缓存配置无效', 'invalid_configuration')
++  return value
++}
++function maxUploadBytes(env) { return positiveInt(env.MAX_UPLOAD_MB, 512, 5 * 1024 * 1024) * 1024 * 1024 }
++function isCoverKey(key) { return key.startsWith('covers/') }
++function bucketForWrite(env, key) { return isCoverKey(key) && env.COVERS ? env.COVERS : env.ROMS }
++function allBuckets(env) {
++  return [{ name: 'ROMS', bucket: env.ROMS }, ...(env.COVERS && env.COVERS !== env.ROMS ? [{ name: 'COVERS', bucket: env.COVERS }] : [])]
++}
+ function validKey(key) {
+-  if (!key || key.length > 1024) return false
+-  if (key.includes('..') || key.includes('\\')) return false
+-  if (key.startsWith('/') || key.endsWith('/')) return false
+-  // 标记对象是内部账本，不能当普通对象读写 —— 否则谁都能把别人的 uploadId 抹掉
+-  if (key.startsWith(MULTIPART_PREFIX)) return false
+-  // 控制字符按码位判，不写成正则字面量：那样源文件里就得躺着真的控制字符，
+-  // 任何一次复制粘贴都可能把它们弄坏（改这行时踩过一次）
+-  return ![...key].some((ch) => ch.codePointAt(0) < 32 || ch.codePointAt(0) === 127)
+-}
+-
+-/**
+- * 封面单独放在 COVERS 桶（image.8bitgo.com），与 ROM 主桶（ROMS）隔离缓存命名空间，
+- * 免得大 ROM 下载把高频小封面从边缘缓存顶掉。
+- *
+- * 读：covers/ 开头的 key 先查 COVERS，查不到再回退 ROMS —— 迁移期旧封面由老桶透明服务。
+- * 写：covers/ 开头的 key 落到 COVERS，其余走 ROMS。
+- * COVERS 未绑定（旧部署）时全部退回 ROMS，保证不报错、不破坏既有行为。
+- */
+-function isCoverKey(key) {
+-  return typeof key === 'string' && key.startsWith('covers/')
+-}
+-function bucketsForRead(env, key) {
+-  const cover = env.COVERS
+-  if (!isCoverKey(key) || !cover) return [env.ROMS]
+-  return [cover, env.ROMS]
+-}
+-function bucketForWrite(env, key) {
+-  const cover = env.COVERS
+-  if (!isCoverKey(key) || !cover) return env.ROMS
+-  return cover
+-}
+-
+-const MIME = {
+-  zip: 'application/zip',
+-  '7z': 'application/x-7z-compressed',
+-  // 8BG 是可演进的 ROM 容器，单独标类型后浏览器和 CDN 不会把它误判成普通压缩包。
+-  '8bg': 'application/x-8bitgo-rom',
+-  swf: 'application/x-shockwave-flash',
+-  json: 'application/json',
+-  txt: 'text/plain; charset=utf-8',
+-  // 封面 / logo / 视频。只有请求没带 Content-Type 时才轮得到这里，
+-  // 但一轮到就是「浏览器把封面当文件下载」这种一眼看不出原因的故障
+-  webp: 'image/webp',
+-  avif: 'image/avif',
+-  jpg: 'image/jpeg',
+-  jpeg: 'image/jpeg',
+-  png: 'image/png',
+-  gif: 'image/gif',
+-  mp4: 'video/mp4',
+-  webm: 'video/webm',
+-}
+-
+-export default {
+-  async fetch(request, env) {
+-    const url = new URL(request.url)
+-    const cors = corsHeaders(request, env)
+-
+-    if (request.method === 'OPTIONS') {
+-      return new Response(null, { status: 204, headers: cors })
+-    }
+-
+-    const path = decodeURIComponent(url.pathname.replace(/^\/+/, ''))
+-
+-    if (path === '' || path === 'ping') {
+-      return json(
+-        {
+-          ok: true,
+-          service: '8bitgo-roms',
+-          writable: Boolean(env.ADMIN_TOKEN),
+-          // 前端据此判断「这个 Worker 支不支持分片」。老版本 Worker 没这个字段，
+-          // 前端就退回单发 PUT —— 不至于因为忘了 wrangler deploy 而把上传整个弄挂
+-          multipart: true,
+-          time: new Date().toISOString(),
+-        },
+-        cors,
+-      )
+-    }
+-
+-    if (path === 'list') {
+-      if (!authorized(request, env)) return json({ error: 'unauthorized' }, cors, 401)
+-      const prefix = url.searchParams.get('prefix') || undefined
+-      const cursor = url.searchParams.get('cursor') || undefined
+-      // covers/ 前缀的封面现在落在 COVERS 桶，列表要把两个桶都列出来合并
+-      const buckets = [env.ROMS, env.COVERS].filter(Boolean)
+-      let rawObjects = []
+-      let truncated = false
+-      let nextCursor
+-      for (const b of buckets) {
+-        const r = await b.list({ prefix, cursor: b === env.ROMS ? cursor : undefined, limit: 1000 })
+-        rawObjects = rawObjects.concat(r.objects)
+-        if (r.truncated) { truncated = true; nextCursor = r.cursor }
+-      }
+-      return json(
+-        {
+-          objects: rawObjects
+-            .filter((o) => !o.key.startsWith(MULTIPART_PREFIX))
+-            .map((o) => ({ key: o.key, size: o.size, uploaded: o.uploaded })),
+-          truncated,
+-          cursor: truncated ? nextCursor : undefined,
+-        },
+-        cors,
+-      )
+-    }
+-
+-    if (path === 'multipart') {
+-      if (!authorized(request, env)) return json({ error: 'unauthorized' }, cors, 401)
+-      return handleMultipartIndex(request, env, url, cors)
+-    }
+-
+-    if (path === 'bulk') {
+-      if (!authorized(request, env)) return json({ error: 'unauthorized' }, cors, 401)
+-      if (request.method !== 'POST') return json({ error: 'method not allowed' }, cors, 405)
+-      const body = await request.json().catch(() => null)
+-      const keys = body?.keys
+-      // 整包删除一次最多交给 R2 1000 个 key；先整体验证，避免删了一半才发现坏输入。
+-      if (!Array.isArray(keys) || !keys.length || keys.length > 1000 || keys.some((key) => typeof key !== 'string' || !validKey(key))) {
+-        return json({ error: 'keys 必须是 1..1000 个合法对象 key' }, cors, 400)
+-      }
+-      const unique = [...new Set(keys)]
+-      for (const k of unique) await bucketForWrite(env, k).delete(k)
+-      return json({ ok: true, deleted: unique }, cors)
+-    }
+-
+-    const key = path
+-    if (RESERVED.has(key) || !validKey(key)) return json({ error: 'not found' }, cors, 404)
+-
+-    // ---- 分片上传：三个动作靠查询串区分，key 始终是最终对象的 key ----
+-    const uploadId = url.searchParams.get('uploadId')
+-
+-    if (request.method === 'POST') {
+-      if (!authorized(request, env)) return json({ error: 'unauthorized' }, cors, 401)
+-      if (url.searchParams.has('uploads')) return createMultipart(request, env, key, cors)
+-      if (uploadId) return completeMultipart(request, env, key, uploadId, cors)
+-      return json({ error: 'POST 需要 ?uploads（开始）或 ?uploadId=（完成）' }, cors, 400)
+-    }
+-
+-    if (request.method === 'PUT' && uploadId) {
+-      if (!authorized(request, env)) return json({ error: 'unauthorized' }, cors, 401)
+-      return uploadPart(request, env, key, uploadId, url, cors)
+-    }
+-
+-    if (request.method === 'DELETE' && uploadId) {
+-      if (!authorized(request, env)) return json({ error: 'unauthorized' }, cors, 401)
+-      return abortMultipart(env, key, uploadId, url.searchParams.get('marker'), cors)
+-    }
+-
+-    if (request.method === 'PUT') {
+-      if (!authorized(request, env)) return json({ error: 'unauthorized' }, cors, 401)
+-      // 先看 Content-Length，超限直接回 413，不要把整个文件读进来再拒绝
+-      const limit = maxUploadBytes(env)
+-      const declared = Number(request.headers.get('Content-Length') || 0)
+-      if (declared > limit) {
+-        return json({ error: `file too large (max ${Math.round(limit / 1024 / 1024)} MB)` }, cors, 413)
+-      }
+-      const contentType = request.headers.get('Content-Type') || guessType(key)
+-      const object = await bucketForWrite(env, key).put(key, request.body, {
+-        httpMetadata: { contentType, cacheControl: OBJECT_CACHE_CONTROL },
+-      })
+-      return json({ ok: true, key, size: object.size, etag: object.httpEtag, uploaded: object.uploaded }, cors)
+-    }
+-
+-    if (request.method === 'DELETE') {
+-      if (!authorized(request, env)) return json({ error: 'unauthorized' }, cors, 401)
+-      await bucketForWrite(env, key).delete(key)
+-      return json({ ok: true, key }, cors)
+-    }
+-
+-    if (request.method !== 'GET' && request.method !== 'HEAD') {
+-      return json({ error: 'method not allowed' }, cors, 405)
+-    }
+-
+-    const found = await readObject(env, key, request.method, request.headers)
+-    if (!found) return json({ error: 'not found' }, cors, 404)
+-    const object = found.object
+-    const servedKey = found.servedKey || key
+-
+-    const headers = new Headers(cors)
+-    object.writeHttpMetadata(headers)
+-    headers.set('ETag', object.httpEtag)
+-    headers.set('Accept-Ranges', 'bytes')
+-    headers.set('Cache-Control', OBJECT_CACHE_CONTROL)
+-    if (!headers.get('Content-Type')) headers.set('Content-Type', guessType(servedKey))
+-    const filename = servedKey.split('/').pop() || 'rom'
+-    headers.set('Content-Disposition', `inline; filename="${encodeURIComponent(filename)}"`)
+-
+-    // 条件请求命中（onlyIf）时 R2 返回不带 body 的对象
+-    if (request.method === 'GET' && !('body' in object)) {
+-      return new Response(null, { status: 304, headers })
+-    }
+-
+-    let status = 200
+-    if (object.range && 'offset' in object.range) {
+-      const start = object.range.offset ?? 0
+-      const length = object.range.length ?? object.size - start
+-      const end = start + length - 1
+-      headers.set('Content-Range', `bytes ${start}-${end}/${object.size}`)
+-      headers.set('Content-Length', String(length))
+-      status = 206
+-    } else {
+-      headers.set('Content-Length', String(object.size))
+-    }
+-
+-    return new Response(request.method === 'HEAD' ? null : object.body, { status, headers })
+-  },
+-}
+-
+-/* ---------------- 分片上传 ---------------- */
+-
+-/**
+- * 开始一次分片上传。
+- *
+- * httpMetadata **只能在这里设**：complete() 不接受 contentType。
+- * 漏了的话对象会以 application/octet-stream 落地 —— ROM 无所谓，
+- * 但封面图会变成「浏览器提示下载」而不是显示出来。
+- */
++  return typeof key === 'string' && key.length > 0 && key.length <= 1024 && encoder.encode(key).length <= 1024 &&
++    !key.includes('..') && !key.includes('\\') && !key.startsWith('/') && !key.endsWith('/') &&
++    !key.startsWith(MULTIPART_PREFIX) && !/[\x00-\x1f\x7f]/.test(key)
++}
++function markerKeyValid(key) {
++  return typeof key === 'string' && key.startsWith(MULTIPART_PREFIX) && encoder.encode(key).length <= 1024 &&
++    !/[\x00-\x1f\x7f\\]/.test(key) && !key.includes('..') && !key.endsWith('/')
++}
++function validUploadId(id) {
++  return typeof id === 'string' && id.length > 0 && id.length <= 2048 && !/[\x00-\x20\x7f]/.test(id)
++}
++function methodNotAllowed(cors, allow) {
++  return json({ error: 'method not allowed' }, cors, 405, { Allow: allow })
++}
++async function objectList(env, url, cors) {
++  const prefix = url.searchParams.get('prefix') || ''
++  if (encoder.encode(prefix).length > 1024 || /[\x00-\x1f\x7f]/.test(prefix)) throw new HttpError(400, '无效 prefix')
++  const page = await listAcross(allBuckets(env), { prefix: prefix || undefined, limit: 1000 }, url.searchParams.get('cursor'), `objects:${prefix}`)
++  // Each physical object has a bucket identity. Same key in two buckets is not one object.
++  const objects = page.entries.filter(({ object }) => !object.key.startsWith(MULTIPART_PREFIX))
++    .map(({ object: o, bucket }) => ({ key: o.key, size: o.size, uploaded: o.uploaded, bucket }))
++  return json({ objects, truncated: page.truncated, cursor: page.cursor }, cors)
++}
++/** Delete the logical cover from both read buckets, so a legacy copy cannot reappear. */
++async function deleteKeys(env, keys) {
++  const jobs = []
++  const romKeys = [...keys] // all ROMs plus legacy cover copies
++  if (romKeys.length) jobs.push({ bucket: env.ROMS, keys: romKeys })
++  const coverKeys = keys.filter(isCoverKey)
++  if (env.COVERS && env.COVERS !== env.ROMS && coverKeys.length) jobs.push({ bucket: env.COVERS, keys: coverKeys })
++  const results = await Promise.allSettled(jobs.map(j => j.bucket.delete(j.keys)))
++  const failed = new Set()
++  results.forEach((r, i) => { if (r.status === 'rejected') jobs[i].keys.forEach(key => failed.add(key)) })
++  return { deleted: keys.filter(key => !failed.has(key)), failed: [...failed] }
++}
++async function deleteResponse(env, keys, cors, bulk) {
++  const result = await deleteKeys(env, keys)
++  if (result.failed.length) {
++    return json({ ok: false, ...result, retryable: true, error: '部分桶删除失败；仅重试 failed 中的 key。跨桶删除不是事务。' }, cors, 503, { 'Retry-After': '2' })
++  }
++  return json(bulk ? { ok: true, deleted: result.deleted } : { ok: true, key: keys[0] }, cors)
++}
++async function deterministicMarker(key, uploadId) {
++  const bytes = encoder.encode(JSON.stringify([key, uploadId]))
++  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
++  return `${MULTIPART_PREFIX}v2-${Array.from(hash, b => b.toString(16).padStart(2, '0')).join('')}.marker`
++}
+ async function createMultipart(request, env, key, cors) {
+-  const meta = await request.json().catch(() => ({}))
+-  const contentType = typeof meta?.contentType === 'string' && meta.contentType ? meta.contentType : guessType(key)
+-  const upload = await bucketForWrite(env, key).createMultipartUpload(key, {
+-    httpMetadata: { contentType, cacheControl: OBJECT_CACHE_CONTROL },
+-  })
+-
+-  // 标记写失败时必须中止刚创建的上传；否则残留分片从后台完全不可见。
+-  const marker = `${MULTIPART_PREFIX}${crypto.randomUUID()}.marker`
+-  try {
+-    await bucketForWrite(env, key).put(marker, new Uint8Array(0), {
+-      customMetadata: {
+-        key,
+-        uploadId: upload.uploadId,
+-        size: String(Number(meta?.size) || 0),
+-        name: typeof meta?.name === 'string' ? meta.name.slice(0, 200) : '',
+-        at: new Date().toISOString(),
+-      },
+-    })
+-  } catch (err) {
+-    let cleanupError = ''
+-    try { await upload.abort() } catch (abortErr) { cleanupError = `；中止上传也失败：${errText(abortErr)}` }
+-    return json({ error: `无法记录分片上传，已尝试清理：${errText(err)}${cleanupError}` }, cors, 503)
+-  }
+-
++  const meta = await readJson(request, 16 * 1024, true)
++  const contentType = typeof meta.contentType === 'string' && meta.contentType ? meta.contentType : guessType(key)
++  if (contentType.length > 256 || /[\r\n]/.test(contentType)) throw new HttpError(400, '无效 contentType')
++  if (meta.size !== undefined && (!Number.isSafeInteger(Number(meta.size)) || Number(meta.size) < 0)) throw new HttpError(400, '无效 size')
++  const bucket = bucketForWrite(env, key)
++  const upload = await bucket.createMultipartUpload(key, { httpMetadata: { contentType, cacheControl: cacheControl(env) } })
++  const marker = await deterministicMarker(key, upload.uploadId)
++  try {
++    // Preserve the original list-with-metadata interface without per-marker GETs.
++    const record = { key, uploadId: upload.uploadId, size: Number(meta.size) || 0,
++      name: typeof meta.name === 'string' ? meta.name.slice(0, 200) : '', at: new Date().toISOString() }
++    // Local 7,000-byte metadata guard leaves headroom below the documented
++    // 8,192-byte object metadata budget. Count UTF-8 bytes, not JS characters.
++    const customMetadata = Object.fromEntries(Object.entries(record).map(([k,v]) => [k, String(v)]))
++    const metadataBytes = Object.entries(customMetadata).reduce((n, [k,v]) => n + encoder.encode(k).length + encoder.encode(v).length, 0)
++    if (metadataBytes > 7000) {
++      // Legacy frontends rely on list metadata. Reject before committing an unlistable session.
++      throw new HttpError(400, 'key、文件名与分片标识合计过长，请缩短文件名', 'metadata_too_large')
++    }
++    await bucket.put(marker, new Uint8Array(0), { customMetadata })
++  } catch (error) {
++    let cleanupFailed = false
++    try { await upload.abort() } catch { cleanupFailed = true }
++    if (cleanupFailed) {
++      return json({ ok: false, error: '标记写入失败且分片中止失败，请保留返回的 uploadId 进行清理', key, uploadId: upload.uploadId, marker, retryable: true, cleanupRequired: true }, cors, 503)
++    }
++    if (error instanceof HttpError) throw error
++    return json({ error: '标记写入失败，已中止新建的分片会话', retryable: true }, cors, 503)
++  }
+   return json({ ok: true, key, uploadId: upload.uploadId, marker, maxPartBytes: MAX_PART_BYTES }, cors)
+ }
+-
+-/** 传一片。返回的 etag 前端必须存下来 —— complete 时要把全部分片的 etag 报回来 */
+ async function uploadPart(request, env, key, uploadId, url, cors) {
+   const partNumber = Number(url.searchParams.get('partNumber'))
+-  // R2 的分片编号是 1..10000；越界时 uploadPart 抛的错很难懂，先自己挡下来
+-  if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > 10000) {
+-    return json({ error: 'partNumber 必须是 1..10000 的整数' }, cors, 400)
+-  }
+-  const declared = Number(request.headers.get('Content-Length') || 0)
+-  if (declared > MAX_PART_BYTES) {
+-    return json({ error: `part too large (max ${Math.round(MAX_PART_BYTES / 1024 / 1024)} MB)` }, cors, 413)
+-  }
+-
+-  // 用 arrayBuffer 而不是把 request.body 直接递过去：uploadPart 对未知长度的流会抱怨。
+-  // 一片只有几 MB，离 Worker 那 128MB 内存上限很远 —— 每片是独立的一次调用，不会叠加。
+-  const body = await request.arrayBuffer()
+-  if (body.byteLength === 0) return json({ error: 'empty part' }, cors, 400)
+-  // Content-Length 可以缺失或不可信；读完后再核一次，避免绕过 Worker 自己的片大小护栏。
+-  if (body.byteLength > MAX_PART_BYTES) return json({ error: 'part too large' }, cors, 413)
+-
+-  const upload = bucketForWrite(env, key).resumeMultipartUpload(key, uploadId)
+-  try {
+-    const part = await upload.uploadPart(partNumber, body)
++  if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > 10000) throw new HttpError(400, 'partNumber 必须是 1..10000 的整数')
++  if (declaredLength(request, MAX_PART_BYTES) === 0 || !request.body) throw new HttpError(400, 'empty part')
++  try {
++    const upload = bucketForWrite(env, key).resumeMultipartUpload(key, uploadId)
++    const part = await writeBody(request, MAX_PART_BYTES, async body => {
++      if (body.byteLength === 0) throw new HttpError(400, 'empty part')
++      return upload.uploadPart(partNumber, body)
++    })
+     return json({ ok: true, partNumber: part.partNumber, etag: part.etag }, cors)
+-  } catch (err) {
+-    // uploadId 过期 / 已被 abort 时落到这儿。回 409 + fatal，让前端知道「这次续传作废，
+-    // 得重开一次」，而不是当成网络抖动一直重试同一片
+-    return json({ error: `uploadPart 失败：${errText(err)}`, fatal: true }, cors, 409)
+-  }
+-}
+-
+-/** 完成。parts 必须是全部分片，partNumber 从 1 连续，etag 与上传时返回的一致 */
++  } catch (error) { return storageFailure(error, cors, 'uploadPart') }
++}
+ async function completeMultipart(request, env, key, uploadId, cors) {
+-  const body = await request.json().catch(() => null)
+-  const parts = Array.isArray(body?.parts) ? body.parts : null
+-  if (!parts?.length) return json({ error: 'body 需要 {parts:[{partNumber,etag}]}' }, cors, 400)
+-
+-  const normalized = parts
+-    .map((p) => ({ partNumber: Number(p?.partNumber), etag: String(p?.etag ?? '') }))
+-    .sort((a, b) => a.partNumber - b.partNumber)
+-  if (normalized.length > 10000 || normalized.some((p, i) => !Number.isInteger(p.partNumber) || p.partNumber !== i + 1 || !p.etag)) {
+-    return json({ error: 'parts 里有非法的 partNumber 或空 etag' }, cors, 400)
+-  }
+-
+-  const upload = bucketForWrite(env, key).resumeMultipartUpload(key, uploadId)
+-  try {
+-    const object = await upload.complete(normalized)
+-    const markerRemoved = await dropMarker(env, key, uploadId, body?.marker)
++  const body = await readJson(request, MAX_JSON_BYTES)
++  const parts = body.parts
++  if (!Array.isArray(parts) || !parts.length || parts.length > 10000) throw new HttpError(400, 'body 需要 1..10000 个 parts')
++  const normalized = parts.map(p => ({ partNumber: Number(p?.partNumber), etag: typeof p?.etag === 'string' ? p.etag : '' })).sort((a,b) => a.partNumber - b.partNumber)
++  if (normalized.some((p, i) => p.partNumber !== i + 1 || !p.etag || p.etag.length > 256 || /[\x00-\x1f\x7f]/.test(p.etag))) {
++    throw new HttpError(400, 'parts 必须含连续 partNumber 和有效 etag')
++  }
++  try {
++    const object = await bucketForWrite(env, key).resumeMultipartUpload(key, uploadId).complete(normalized)
++    const markerRemoved = await dropMarker(env, key, uploadId, body.marker)
+     return json({ ok: true, key, size: object.size, etag: object.httpEtag, uploaded: object.uploaded, markerRemoved }, cors)
+-  } catch (err) {
+-    // 分片不全、除末片外大小不等、etag 对不上都落到这儿。这类错重试一万次也一样，
+-    // 所以带 fatal 让前端放弃并清掉本地记账，别卡在「续传→失败→续传」的循环里
+-    return json({ error: `complete 失败：${errText(err)}`, fatal: true }, cors, 400)
+-  }
+-}
+-
+-/** 放弃。abort 本身失败（uploadId 早就没了）也要把标记删掉，否则残留列表永远清不空 */
++  } catch (error) { return storageFailure(error, cors, 'complete') }
++}
+ async function abortMultipart(env, key, uploadId, marker, cors) {
+-  let aborted = true
+-  let error = ''
+   try {
+     await bucketForWrite(env, key).resumeMultipartUpload(key, uploadId).abort()
+-  } catch (err) {
+-    aborted = false
+-    error = errText(err)
++  } catch (error) {
++    // A failure is not evidence of absence. Retain the marker unless explicitly NoSuchUpload.
++    const message = error instanceof Error ? error.message : String(error)
++    if (error?.code !== 'NoSuchUpload' && !/\bNoSuchUpload\b/i.test(message)) {
++      return json({ ok: false, key, aborted: false, markerRemoved: false, fatal: false, retryable: true, error: '中止未确认成功，续传标记已保留，请重试' }, cors, 503, { 'Retry-After': '2' })
++    }
+   }
+   const markerRemoved = await dropMarker(env, key, uploadId, marker)
+-  // R2 的分片即使已 abort，标记残留也不能伪装成清理完成；管理员需要看得见并能重试。
+-  return json({ ok: markerRemoved, key, aborted, markerRemoved, error: markerRemoved ? error || undefined : '分片已尝试中止，但残留标记删除失败；请在 ROM 存储页重试' }, cors, markerRemoved ? 200 : 503)
+-}
+-
+-/** 列出 / 清理未完成的分片上传 */
++  return json({ ok: markerRemoved, key, aborted: true, markerRemoved, ...(markerRemoved ? {} : { retryable: true, error: '分片已中止，但标记清理未完成' }) }, cors, markerRemoved ? 200 : 503)
++}
+ async function handleMultipartIndex(request, env, url, cors) {
+   if (request.method === 'DELETE') {
+     const marker = url.searchParams.get('marker') || ''
+-    if (!marker.startsWith(MULTIPART_PREFIX)) return json({ error: 'bad marker' }, cors, 400)
+-    for (const b of [env.ROMS, env.COVERS].filter(Boolean)) await b.delete(marker)
+-    return json({ ok: true, marker }, cors)
+-  }
+-  if (request.method !== 'GET') return json({ error: 'method not allowed' }, cors, 405)
+-
+-  // include: customMetadata 让一次 list 就把信息带回来，不用逐个 get（子请求数有上限）
+-  // covers/ 的残留分片标记在 COVERS 桶，这里把两个桶都列出来合并
+-  const cursor = url.searchParams.get('cursor') || undefined
+-  const buckets = [env.ROMS, env.COVERS].filter(Boolean)
+-  let rawObjects = []
+-  let truncated = false
+-  let nextCursor
+-  for (const b of buckets) {
+-    const r = await b.list({ prefix: MULTIPART_PREFIX, cursor: b === env.ROMS ? cursor : undefined, limit: 1000, include: ['customMetadata'] })
+-    rawObjects = rawObjects.concat(r.objects)
+-    if (r.truncated) { truncated = true; nextCursor = r.cursor }
+-  }
+-  const uploads = rawObjects.map((o) => {
+-    const m = o.customMetadata ?? {}
+-    return {
+-      marker: o.key,
+-      key: m.key ?? '',
+-      uploadId: m.uploadId ?? '',
+-      size: Number(m.size) || 0,
+-      name: m.name ?? '',
+-      at: m.at ?? o.uploaded,
+-    }
+-  })
+-  uploads.sort((a, b) => String(b.at).localeCompare(String(a.at)))
+-  return json({ uploads, truncated, cursor: truncated ? nextCursor : undefined }, cors)
+-}
+-
+-/**
+- * 删掉这次上传的标记。
+- * 前端报了 marker 就直接删；没报（老前端、或本地记账丢了）就按 key + uploadId 找一遍。
+- */
+-async function dropMarker(env, key, uploadId, marker) {
+-  try {
+-    if (typeof marker === 'string' && marker.startsWith(MULTIPART_PREFIX)) {
+-      // 标记和上传在同一个桶，covers/ 的标记落在 COVERS 桶
+-      await bucketForWrite(env, key).delete(marker)
++    if (!markerKeyValid(marker)) throw new HttpError(400, 'bad marker')
++    // Explicit administrator operation: remove marker ONLY, do not claim to abort parts.
++    await Promise.all(allBuckets(env).map(b => b.bucket.delete(marker)))
++    return json({ ok: true, marker, markerOnly: true }, cors)
++  }
++  if (request.method !== 'GET') return methodNotAllowed(cors, 'GET, DELETE, OPTIONS')
++  const page = await listAcross(allBuckets(env), { prefix: MULTIPART_PREFIX, limit: 1000, include: ['customMetadata'] }, url.searchParams.get('cursor'), 'multipart')
++  const uploads = page.entries.map(({ object: o, bucket }) => {
++    const m = o.customMetadata || {}
++    return { marker: o.key, key: m.key || '', uploadId: m.uploadId || '', size: Number(m.size) || 0, name: m.name || '', at: m.at || o.uploaded, bucket }
++  }).sort((a,b) => String(b.at).localeCompare(String(a.at)))
++  return json({ uploads, truncated: page.truncated, cursor: page.cursor }, cors)
++}
++/** Fast v2 cleanup, validated supplied legacy marker, then bounded paginated legacy scan. */
++async function dropMarker(env, key, uploadId, supplied) {
++  try {
++    const bucket = bucketForWrite(env, key)
++    const deterministic = await deterministicMarker(key, uploadId)
++    const candidates = [...new Set([deterministic, ...(markerKeyValid(supplied) ? [supplied] : [])])]
++    for (const candidate of candidates) {
++      const object = await bucket.head(candidate)
++      if (!object) continue
++      if (object.customMetadata?.key !== key || object.customMetadata?.uploadId !== uploadId) continue
++      await bucket.delete(candidate)
+       return true
+     }
+-    for (const b of [env.ROMS, env.COVERS].filter(Boolean)) {
+-      const result = await b.list({ prefix: MULTIPART_PREFIX, limit: 1000, include: ['customMetadata'] })
+-      const hit = result.objects.find((o) => o.customMetadata?.uploadId === uploadId && o.customMetadata?.key === key)
+-      if (hit) {
+-        await b.delete(hit.key)
+-        return true
+-      }
++    // Old random-marker clients may not send the marker. Follow all pages up to a
++    // request budget; NEVER pretend a capped scan proved no marker exists.
++    let pages = 0
++    for (const { bucket: b } of allBuckets(env)) {
++      let cursor
++      do {
++        if (++pages > 24) return false
++        const page = await b.list({ prefix: MULTIPART_PREFIX, cursor, limit: 1000, include: ['customMetadata'] })
++        const hit = page.objects.find(o => o.customMetadata?.key === key && o.customMetadata?.uploadId === uploadId)
++        if (hit) { await b.delete(hit.key); return true }
++        if (page.truncated && (!page.cursor || page.cursor === cursor)) return false
++        cursor = page.truncated ? page.cursor : undefined
++      } while (cursor)
+     }
+     return true
+-  } catch {
+-    // complete 不能因此变成失败，但 abort 会把 markerRemoved=false 报给前端供重试。
+-    return false
+-  }
+-}
+-
+-function errText(err) {
+-  return err instanceof Error ? err.message : String(err)
+-}
+-
+-/* ---------------- 通用 ---------------- */
+-
+-function guessType(key) {
+-  const ext = key.split('.').pop()?.toLowerCase() ?? ''
+-  return MIME[ext] || 'application/octet-stream'
+-}
+-
+-/**
+- * `covers/xxx-96.webp` → `covers/xxx.webp`。不是缩略图 key 返回 null。
+- *
+- * 后缀 `-96` 是前端约定的缩略图命名，和 guessType 里的扩展名白名单对齐 ——
+- * 只对图片生效，ROM 之类（就算刚好叫 `xxx-96.zip`）不会被这里的兜底碰到。
+- */
+-/**
+- * 按 key 选桶读取对象，并支持 -96 缩略图回退到原图。
+- * covers/ 优先 COVERS 桶、再回退 ROMS；其余只查 ROMS。
+- * 缩略图（…-96.webp）在选中的桶里都查不到时，退回对应原图 key。
+- */
+-async function readObject(env, key, method, headers) {
+-  const buckets = bucketsForRead(env, key)
+-  for (const b of buckets) {
+-    const obj = method === 'HEAD' ? await b.head(key) : await b.get(key, { range: headers, onlyIf: headers })
+-    if (obj) return { object: obj }
+-  }
+-  const base = thumbBaseKey(key)
+-  if (base) {
+-    for (const b of buckets) {
+-      const obj = method === 'HEAD' ? await b.head(base) : await b.get(base, { range: headers, onlyIf: headers })
+-      if (obj) return { object: obj, servedKey: base }
+-    }
+-  }
+-  return null
+-}
+-
+-function thumbBaseKey(key) {
+-  const match = /^(.*\/)?([^/]+)-96\.(png|jpe?g|webp|avif)$/i.exec(key || '')
+-  if (!match) return null
+-  return `${match[1] || ''}${match[2]}.${match[3]}`
+-}
+-
+-function corsHeaders(request, env) {
+-  const allowed = (env.ALLOWED_ORIGINS || '*')
+-    .split(',')
+-    .map((s) => s.trim())
+-    .filter(Boolean)
+-  const origin = request.headers.get('Origin') || ''
+-  const allowOrigin = allowed.includes('*') ? '*' : allowed.includes(origin) ? origin : allowed[0] || '*'
+-  return {
+-    'Access-Control-Allow-Origin': allowOrigin,
+-    // POST 是分片上传的「开始 / 完成」用的。漏了它浏览器会在预检就把请求挡下来，
+-    // 报的还是一句笼统的 CORS 错误，看不出是方法没放行。
+-    'Access-Control-Allow-Methods': 'GET, HEAD, POST, PUT, DELETE, OPTIONS',
+-    'Access-Control-Allow-Headers': 'Range, Authorization, Content-Type, If-None-Match, If-Range, If-Modified-Since',
+-    'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, ETag',
+-    'Access-Control-Max-Age': '86400',
+-    Vary: 'Origin',
+-  }
+-}
+-
+-/**
+- * 对象的缓存策略。
+- *
+- * 以前是 immutable + 一年：同一个 key 换了文件（重新上传封面 / 修正版 ROM）之后，
+- * 已经访问过的浏览器一年之内都不会再问服务器一次，永远拿的是旧文件，
+- * 而且没有任何办法让它们更新。现在保留长 max-age（省流量），但去掉 immutable ——
+- * 用户刷新时会带 If-None-Match 回来问一句，没变就是一个 304，变了立刻拿到新的。
+- */
+-const OBJECT_CACHE_CONTROL = 'public, max-age=86400, s-maxage=2592000, stale-while-revalidate=86400'
+-
+-/** 定长比较，避免用 === 逐字符短路泄露口令长度 / 前缀 */
+-function timingSafeEqual(a, b) {
+-  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false
+-  let diff = 0
+-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
+-  return diff === 0
+-}
+-
+-/**
+- * 只认 Authorization: Bearer <ADMIN_TOKEN>。
+- *
+- * 以前还支持 ?token=xxx。查询串会被写进 Cloudflare 的访问日志、浏览器历史，
+- * 页面上任何一个外链的 Referer 里也会带上 —— 等于把可以删光整个桶的口令
+- * 到处抄送一遍。前端从来没用过这条路径，直接去掉。
+- */
+-function authorized(request, env) {
+-  if (!env.ADMIN_TOKEN) return false
+-  const header = request.headers.get('Authorization') || ''
+-  if (!header.startsWith('Bearer ')) return false
+-  return timingSafeEqual(header.slice(7).trim(), env.ADMIN_TOKEN)
+-}
+-
+-function json(data, cors, status = 200) {
+-  return new Response(JSON.stringify(data), {
+-    status,
+-    headers: { ...cors, 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' },
+-  })
+-}
++  } catch { return false }
++}
++async function handle(request, env, url, cors) {
++  if (request.method === 'OPTIONS') {
++    if (request.headers.has('Origin') && !cors['Access-Control-Allow-Origin']) return json({ error: 'origin not allowed' }, cors, 403)
++    return new Response(null, { status: 204, headers: cors })
++  }
++  let path
++  try { path = decodeURIComponent(url.pathname.replace(/^\/+/, '')) }
++  catch { throw new HttpError(400, 'URL 路径编码无效', 'invalid_path') }
++  if (path === '' || path === 'ping') {
++    if (!['GET', 'HEAD'].includes(request.method)) return methodNotAllowed(cors, 'GET, HEAD, OPTIONS')
++    return json({ ok: true, service: '8bitgo-roms', writable: Boolean(env.ADMIN_TOKEN), multipart: true, time: new Date().toISOString() }, cors)
++  }
++  const admin = ['list', 'bulk', 'multipart'].includes(path) || ['PUT', 'POST', 'DELETE'].includes(request.method)
++  if (admin && !authorized(request, env)) return json({ error: 'unauthorized' }, cors, 401)
++  if (!env.ROMS) throw new HttpError(503, 'ROMS 绑定缺失', 'missing_binding')
++  if (path === 'list') {
++    if (request.method !== 'GET') return methodNotAllowed(cors, 'GET, OPTIONS')
++    return objectList(env, url, cors)
++  }
++  if (path === 'multipart') return handleMultipartIndex(request, env, url, cors)
++  if (path === 'bulk') {
++    if (request.method !== 'POST') return methodNotAllowed(cors, 'POST, OPTIONS')
++    const body = await readJson(request, MAX_JSON_BYTES)
++    if (!Array.isArray(body.keys) || !body.keys.length || body.keys.length > 1000 || body.keys.some(k => !validKey(k))) {
++      throw new HttpError(400, 'keys 必须是 1..1000 个合法对象 key')
++    }
++    return deleteResponse(env, [...new Set(body.keys)], cors, true)
++  }
++  if (RESERVED.has(path) || !validKey(path)) return json({ error: 'not found' }, cors, 404)
++  const key = path
++  const hasUploadId = url.searchParams.has('uploadId')
++  const uploadId = url.searchParams.get('uploadId')
++  const startsUpload = url.searchParams.has('uploads')
++  const hasPart = url.searchParams.has('partNumber')
++  const hasMarker = url.searchParams.has('marker')
++  for (const parameter of ['uploadId', 'uploads', 'partNumber', 'marker']) {
++    if (url.searchParams.getAll(parameter).length > 1) throw new HttpError(400, '分片参数不能重复')
++  }
++  if (hasUploadId && !validUploadId(uploadId)) throw new HttpError(400, '无效 uploadId')
++  // A malformed multipart request must NEVER fall through to single PUT/DELETE:
++  // missing uploadId could otherwise overwrite a final object with one part, or delete it.
++  if (startsUpload && (request.method !== 'POST' || hasUploadId || hasPart || hasMarker)) throw new HttpError(400, 'uploads 仅可用于创建分片会话')
++  if (hasPart && (!hasUploadId || request.method !== 'PUT')) throw new HttpError(400, 'partNumber 需要 PUT 与有效 uploadId')
++  if (hasMarker && (!hasUploadId || request.method !== 'DELETE')) throw new HttpError(400, 'marker 需要 DELETE 与有效 uploadId')
++  if (hasUploadId && !['POST', 'PUT', 'DELETE'].includes(request.method)) throw new HttpError(400, 'uploadId 不适用于此请求方法')
++  if (request.method === 'POST') {
++    if (url.searchParams.has('uploads')) return createMultipart(request, env, key, cors)
++    if (uploadId) return completeMultipart(request, env, key, uploadId, cors)
++    throw new HttpError(400, 'POST 需要 ?uploads 或 ?uploadId=')
++  }
++  if (request.method === 'PUT' && uploadId) return uploadPart(request, env, key, uploadId, url, cors)
++  if (request.method === 'DELETE' && uploadId) return abortMultipart(env, key, uploadId, url.searchParams.get('marker'), cors)
++  if (request.method === 'PUT') {
++    const limit = maxUploadBytes(env)
++    const contentType = request.headers.get('Content-Type') || guessType(key)
++    // Unknown-length single uploads are bounded to 32 MiB. Larger uploads should
++    // supply Content-Length or use the existing multipart endpoint, not allocate 512 MiB.
++    const object = await writeBody(request, limit, body => bucketForWrite(env, key).put(key, body, {
++      httpMetadata: { contentType, cacheControl: cacheControl(env) },
++    }), Math.min(limit, MAX_PART_BYTES))
++    return json({ ok: true, key, size: object.size, etag: object.httpEtag, uploaded: object.uploaded }, cors)
++  }
++  if (request.method === 'DELETE') return deleteResponse(env, [key], cors, false)
++  if (!['GET', 'HEAD'].includes(request.method)) return methodNotAllowed(cors, 'GET, HEAD, PUT, POST, DELETE, OPTIONS')
++  return serveObject(request, env, key, cors, cacheControl(env), guessType)
++}
++export default {
++  async fetch(request, env) {
++    const cors = corsHeaders(request, env)
++    let response
++    try { response = await handle(request, env, new URL(request.url), cors) }
++    catch (error) { response = storageFailure(error, cors) }
++    // HEAD responses (including errors and /ping) MUST NOT contain a body.
++    if (request.method === 'HEAD' && response.body) {
++      try { await response.body.cancel() } catch { /* already closed */ }
++      return new Response(null, { status: response.status, headers: response.headers })
++    }
++    return response
++  },
++}
+--- original/tools/build-standalone.mjs
++++ fixed/tools/build-standalone.mjs
+@@ -0,0 +1,14 @@
++/** Dependency-free single-file build, only for these local helper modules. */
++import fs from 'node:fs/promises'
++const root = new URL('../',import.meta.url)
++const sources = []
++for (const path of ['src/common.js','src/http.js','src/index.js']) {
++  let source=await fs.readFile(new URL(path,root),'utf8')
++  source=source.replace(/^import\s+[\s\S]*?\sfrom\s+['"][^'"]+['"]\s*\n/gm,'')
++  if (path!=='src/index.js')source=source.replace(/^export /gm,'')
++  sources.push(`\n// ===== ${path} =====\n${source}`)
++}
++await fs.mkdir(new URL('standalone/',root),{recursive:true})
++await fs.writeFile(new URL('standalone/rom-worker.js',root),'// Generated by tools/build-standalone.mjs. Edit src/, then rebuild.\n'+sources.join('\n'))
++await fs.copyFile(new URL('embed-vc/src/index.js',root),new URL('standalone/embed-worker.js',root))
++console.log('Generated standalone/rom-worker.js and standalone/embed-worker.js')
+--- original/wrangler.toml
++++ fixed/wrangler.toml
+@@ -18,3 +18,8 @@
+ # 允许跨域访问的来源，多个用逗号分隔；开发期用 * ，上线后改成你的站点域名，例如
+ # ALLOWED_ORIGINS = "https://8bitgo.example.com,http://localhost:5173"
+ ALLOWED_ORIGINS = "*"
++
++# 以下上限单位为 MiB，只约束单次 PUT；不能绕过平台入口大小上限。
++MAX_UPLOAD_MB = "512"
++# 默认对可覆盖的 key 每次验证。仅内容寻址/不可变 URL 才适合恢复长 TTL。
++OBJECT_CACHE_CONTROL = "public, max-age=0, must-revalidate"

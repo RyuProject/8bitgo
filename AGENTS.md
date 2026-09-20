@@ -194,7 +194,10 @@ Free / Pro 100 MB，Business 200 MB，Enterprise 500 MB，**由边缘节点执�
 2. binding **没有 `listParts`**：complete 时必须把每片的 `{partNumber, etag}` 全报回去，所以这份账只能记在前端 —— **换浏览器就续不上**
 3. binding 也**没有 `listMultipartUploads`**：没合并的分片在 R2 默认 7 天自动中止之前仍占用存储；自定义生命周期可能改变期限。Worker 在 `_uploads/` 下写标记对象，后台「ROM 存储」页靠它列出并清理残留；R2 自动中止后标记对象仍需手动清理
 
-改 `worker/src/index.js` 的分片部分后跑 `npm run test:multipart`（内存版 R2 mock）。
+改 `worker/` 下任何源码后跑 `npm run test:worker`（内存版 R2 mock，不联网；分片只是其中一部分）。
+改了 `worker/src/` **还要**跑 `npm --prefix worker run build:standalone` 重建单文件包 ——
+`worker/tests/standalone.test.mjs` 会逐字节比对模块化实现和那份 bundle，忘了重建它就会红。
+（2026-09-20：旧的 `scripts/test-worker-multipart.mjs` 测的是重写前的接口形状，已删除。）
 
 ### 2.13 验证码不能放进程内存
 
@@ -489,7 +492,7 @@ Flash 手柄键位存在 `games.flash_controls` JSON，街机屏幕手柄的动�
 npm run dev            # 开发（predev 自动准备 ruffle / js-dos / 字体）
 npm run build          # prebuild 会跑 check-emulatorjs.mjs 体检，缺东西直接失败
 npm run lint           # oxlint
-npm run test:multipart # Worker 分片上传接口的自测（内存版 R2 mock，不联网）
+npm run test:worker    # Worker 全套自测（分片 / Range / 缓存策略 / 代理，内存版 R2 mock，不联网）
 npm run test:play      # Play! JS / WASM / 许可证完整性与接口特征
 npm run rompack -- <ROM> [输出.8bg]  # 制作 Zstd 19 + AES-GCM 的 8BG 容器
 npm run test:rompack   # 8BG 打包、解密、解压与摘要往返

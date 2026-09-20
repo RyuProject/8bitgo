@@ -1,0 +1,33 @@
+{
+  "date": "2026-09-20",
+  "node": "v22.16.0",
+  "source_zip": {
+    "name": "worker.zip",
+    "bytes": 21448,
+    "sha256": "296b11b03d00fa4e93beccd75cd42f68bc53e38687b51901c2ee4b7c0e0d1ab4",
+    "crc_valid": true,
+    "entries": 13,
+    "project_files": 6
+  },
+  "tests": {
+    "pass": 105,
+    "fail": 0,
+    "skip": 0,
+    "cancelled": 0,
+    "kind": "Node offline fixtures, not native Cloudflare R2/workerd"
+  },
+  "differential_cases": 21,
+  "production_js_syntax": "passed",
+  "standalone_parity": "passed by tests",
+  "original_config_ids_bindings_dates_vars": "unchanged; added explicit new variables",
+  "cloudflare_deployed": false,
+  "wrangler_dry_run_performed": false,
+  "native_r2_tested": false,
+  "real_games_tested": false,
+  "missing_original_assets": [
+    "embed-vc/dist/",
+    "website frontend/admin upload client",
+    "main-site play/iframe integration"
+  ],
+  "notes": "FixedLengthStream tested with a Node shim, not the native implementation; API-call counts are not cloud latency or billing measurements."
+}
