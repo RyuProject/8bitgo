@@ -14,7 +14,8 @@
       window.EJS_player = '#game'
       window.EJS_core = 'mame-current'
       window.EJS_gameUrl = URL.createObjectURL(blob)
-      window.EJS_gameName = 'mxsqy102tw.zip'
+      // mame-current 要求内容带父目录（父目录即 rompath）：根路径解析不出 parent path
+      window.EJS_gameName = 'roms/mxsqy102tw.zip'
       window.EJS_pathtodata = '/emulatorjs/'
       window.EJS_startOnLoaded = true
       window.EJS_FORCE_DEBUG_LOG = true

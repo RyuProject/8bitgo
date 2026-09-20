@@ -478,7 +478,16 @@ interface EjsGameManager {
   /** 把电池存档（SRAM）从核心刷进 /data/saves（cwrap cmd_savefiles）*/
   saveSaveFiles?: () => void
   /** Emscripten 的虚拟文件系统。RomData / BIOS 要往里塞文件，见 installFsInjector */
-  FS?: { writeFile: (path: string, data: string | Uint8Array) => void }
+  FS?: {
+    writeFile: (path: string, data: string | Uint8Array) => void
+    mkdir?: (path: string) => void
+    readFile?: (path: string) => Uint8Array
+  }
+  /**
+   * 引擎解析出的 ROM 文件名（含扩展名，不含路径）。startGame 里会拿它拼内容路径
+   * callMain(["/" + fileName])，mame-current 靠改写它换内容目录（见 relocateMameRom）。
+   */
+  fileName?: string
   /**
    * 核心自报的选项表（就是核心的 retro_core_options_v2），新版本才有 ——
    * 引擎自己的设置菜单就是拿它建的。屏幕布局那一项从这里认（见 dualScreen.ts）。
@@ -765,6 +774,7 @@ function installFsInjector(
   win: Window & Record<string, unknown>,
   injections: FsInjection[],
   onFail: (msg: string) => void,
+  beforeStart?: (emu: EjsEmulator) => void,
 ): void {
   let emu: EjsEmulator | undefined
   let wrapped = false
@@ -791,6 +801,13 @@ function installFsInjector(
         }
       } catch (e) {
         onFail(e instanceof Error ? e.message : String(e))
+      }
+      // 引擎时序类的修正（如 mame-current 的内容目录搬迁）同样要赶在 callMain 之前。
+      // 失败同样不拦开局：拦了只会把「能按老路径试一把」的机会也丢掉。
+      try {
+        beforeStart?.(next)
+      } catch (e) {
+        console.warn('[emulatorjs] startGame 前置修正失败，按引擎默认路径继续：', e)
       }
       return original.call(this)
     }
@@ -3006,7 +3023,40 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           injections.push({ path: file.path, bytes: fetchBiosBytes(file.url, beat, options.onProgress) })
         }
 
-        if (injections.length) {
+        /**
+         * mame-current 的内容路径必须是「父目录/包名.zip」：核心从父目录解析 rompath，
+         * 从 basename 解析驱动名（libretro-mame 的 extract_directory/extract_basename）。
+         * 引擎却把 ROM 写在根目录并传 "/mxsqy102tw.zip" —— 根路径没有父目录可解析，
+         * 核心报 Error parsing parent path 后以 No Driver Loaded 启动，玩家看到 MAME 菜单。
+         * 这里赶在 callMain 前把 ROM 挪进 /roms/ 并改写 fileName，让引擎拿到
+         * /roms/mxsqy102tw.zip。只在 mame-current 上做：FBNeo / mame2003 在根目录
+         * 一直工作正常，别动它们（2026-09-20 本地复现验证，见 AGENTS.md）。
+         */
+        const relocateMameRom = isMameCurrentCore(core)
+          ? (emu: EjsEmulator) => {
+              const gm = emu.gameManager
+              const fs = gm?.FS
+              const name = gm?.fileName
+              if (!gm || !fs || !name || name.includes('/')) return
+              try {
+                fs.mkdir?.('/roms')
+              } catch {
+                /* 目录已存在 */
+              }
+              try {
+                // ROM 已落盘就复制过去；还没写的话引擎随后会按新 fileName 直接写进
+                // /roms/（引擎的 writeFile 会自动创建中间目录），两种时序都覆盖。
+                const bytes = fs.readFile?.('/' + name)
+                if (bytes) fs.writeFile('/roms/' + name, bytes)
+              } catch {
+                /* 同上 */
+              }
+              gm.fileName = `roms/${name}`
+              console.info(`[emulatorjs] mame-current：内容路径改为 /roms/${name}（核心要从父目录解析 rompath）`)
+            }
+          : undefined
+
+        if (injections.length || relocateMameRom) {
           installFsInjector(win, injections, (msg) => {
             /*
               写失败**不拦着开局**（和 installFsInjector 的注释一致）：没了改版 dat，
@@ -3015,7 +3065,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               真缺文件的话核心自己会报「缺 xxx」，那条走 errorTap，比这里更准。
             */
             if (!destroyed) console.warn('[emulatorjs] 文件没写进虚拟文件系统，按原始配置继续：', fmt(rt.ejsFsInjectFailed, { msg }))
-          })
+          }, relocateMameRom)
         }
 
         // 网络探针也要赶在 loader.js 之前包好，否则核心那一趟就漏过去了

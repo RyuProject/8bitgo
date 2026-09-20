@@ -152,6 +152,32 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
 
 ⚠️ BIOS 包要**和核心同一批**的 romset：换一个版本的 `pgm.zip` 就是 CRC 对不上 → 缺文件。
 
+### 2.8.2 mame-current 的内容必须在子目录里：根路径解析不出 rompath
+
+libretro-mame（mame-current）从内容路径解析两样东西：basename（去扩展名）当驱动名，
+**父目录当 rompath**。引擎却把 ROM 写在文件系统根目录并传 `/mxsqy102tw.zip` —— 根路径
+没有父目录可解析，核心报 `Error parsing system name` / `Error parsing parent path`，
+然后以 `No Driver Loaded` 启动。玩家看到的就是 MAME 系统菜单，日志里**一个像样的报错都没有**
+（2026-09-20 实测：ROM 名、核心驱动、zip 补丁全对，就卡在这一步）。
+
+修法在 `src/emulator/adapters/emulatorjs.ts`：给 `installFsInjector` 加了 `beforeStart` 钩子，
+mame-current 开局前把 ROM 复制进 `/roms/` 并改写 `gameManager.fileName` 为 `roms/<名>.zip`
+（引擎的 writeFile 会自动建中间目录，两种写入时序都覆盖）。**只在 mame-current 上做**——
+FBNeo / mame2003 在根目录一直工作正常，别动它们。
+
+验收看核心日志（MAME 0.289 起要出这几行才算成）：
+
+```text
+[libretro INFO] Starting game: "/roms/mxsqy102tw.zip"
+[libretro INFO] Game name: mxsqy102tw
+[libretro INFO] Game description: Mingxing San Que Yi (Taiwan, V102TW)
+```
+
+⚠️ 文件名照样是身份（§2.8 那条对 MAME 同样成立）：错名游戏用
+`emulatorjs.ts` 里的 `MAME_ROMSET_ALIASES`（mxsqy → mxsqy102tw）纠偏。
+⚠️ mame-current 必须 **non-merged** 单包自洽；缺一个成员就是一行
+`v-102tw.u39 NOT FOUND (tried in mxsqy102tw mxsqy)` 然后照样回菜单，别只盯着路径查。
+
 ### 2.9 平台 BIOS 的边缘缓存会骗人
 
 后台改完 BIOS 绑定只调 `invalidateContent()`（清进程内缓存），**够不着 Cloudflare 边缘**。

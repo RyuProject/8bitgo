@@ -306,16 +306,6 @@ CREATE TABLE IF NOT EXISTS game_plays (
 -- ⚠️ **作者本人的浏览不入库**（在 routes/collections.js 里拦掉），所以这张表的
 --    行数就是「除作者以外多少人看过」。别在读的时候再去减作者，减不出来 ——
 --    表里根本没有那一行。
-CREATE TABLE IF NOT EXISTS collection_views (
-  collection_id BIGINT UNSIGNED NOT NULL,
-  -- 'u' = 账号，'i' = IP
-  kind          CHAR(1)  CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
-  -- HMAC-SHA256 的 base64url，固定 43 个字符
-  identity      CHAR(43) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
-  viewed_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (collection_id, kind, identity),
-  CONSTRAINT fk_cv_collection FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------- 博客文章 ----------
 CREATE TABLE IF NOT EXISTS posts (
@@ -693,6 +683,17 @@ CREATE TABLE IF NOT EXISTS collection_items (
   KEY idx_ci_game (game_id),
   CONSTRAINT fk_ci_col FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE,
   CONSTRAINT fk_ci_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS collection_views (
+  collection_id BIGINT UNSIGNED NOT NULL,
+  -- 'u' = 账号，'i' = IP
+  kind          CHAR(1)  CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  -- HMAC-SHA256 的 base64url，固定 43 个字符
+  identity      CHAR(43) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  viewed_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (collection_id, kind, identity),
+  CONSTRAINT fk_cv_collection FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------- 开放平台（第三方用 AppID + key 接入） ----------

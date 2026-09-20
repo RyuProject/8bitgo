@@ -23,7 +23,7 @@ NOFILE="${NOFILE:-65535}"
 [ -f "$APP_DIR/src/index.js" ] || { echo "❌ $APP_DIR/src/index.js 不存在，用 APP_DIR=... 指对路径"; exit 1; }
 
 echo "── 先看现在是谁在跑 ──"
-OLD_PID="$( (ss -lptnH 'sport = :8788' 2>/dev/null || true) | grep -oP 'pid=\K[0-9]+' | head -1)"
+OLD_PID="$( (ss -lptnH 'sport = :8788' 2>/dev/null || true) | grep -oP 'pid=\K[0-9]+' | head -1 || true)"
 RUN_USER=root
 
 # ── 找 node ──

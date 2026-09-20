@@ -1,0 +1,35 @@
+- generic [active]:
+  - generic:
+    - generic:
+      - button "重启"
+      - button "暂停"
+      - button "保存存档"
+      - button "读取存档"
+      - button "控制设置"
+      - button "作弊码"
+      - button "缓存管理器"
+      - button "导出存档文件"
+      - button "导入存档文件"
+      - button "联机对战"
+      - generic:
+        - button "静音"
+        - slider "Volume": "1"
+      - button "右键菜单"
+      - generic:
+        - button "软盘"
+      - generic:
+        - button "选项"
+      - button "全屏"
+      - button "Exit Emulation"
+    - generic:
+      - generic [ref=f1e1]:
+        - generic [ref=f1e2]: 开始
+        - generic [ref=f1e3]: 选择
+        - generic [ref=f1e4]: 快
+        - generic [ref=f1e5]: 慢
+      - generic [ref=f1e9]:
+        - generic [ref=f1e10]: "Y"
+        - generic [ref=f1e11]: X
+        - generic [ref=f1e12]: B
+        - generic [ref=f1e13]: A
+    - generic [ref=f1e14]: 下载游戏核心
