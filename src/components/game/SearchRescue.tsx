@@ -14,7 +14,7 @@ import { useT, fmt } from '@/services/i18n'
 import { gameTitle, platformLabel } from '@/services/i18nData'
 import { useLang } from '@/services/lang'
 import { fetchSearchFallback, searchEnabled, type SearchFallback } from '@/services/search'
-import { romUrlForKey } from '@/services/roms'
+import { coverThumbKey, romUrlForKey } from '@/services/roms'
 
 export function SearchRescue({ q, onPick }: { q: string; onPick?: (q: string) => void }) {
   const t = useT()
@@ -73,11 +73,16 @@ export function SearchRescue({ q, onPick }: { q: string; onPick?: (q: string) =>
                 {/* 封面存的是对象 key，得先拼成公开地址，直接用会裂图 */}
                 {romUrlForKey(g.cover ?? '') ? (
                   <img
-                    src={romUrlForKey(g.cover ?? '')}
+                    // 40px 的位置只下 96×96 缩略图；老封面没有缩略图就退回主图
+                    src={romUrlForKey(coverThumbKey(g.cover ?? '')) || romUrlForKey(g.cover ?? '')}
                     alt=""
                     loading="lazy"
+                    decoding="async"
                     onError={(e) => {
-                      e.currentTarget.style.visibility = 'hidden'
+                      const el = e.currentTarget
+                      const full = romUrlForKey(g.cover ?? '')
+                      if (full && !el.src.endsWith(full)) el.src = full
+                      else el.style.visibility = 'hidden'
                     }}
                     className="h-10 w-10 shrink-0 rounded bg-white/5 object-cover"
                   />

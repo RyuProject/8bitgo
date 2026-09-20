@@ -103,6 +103,11 @@ export function getRomBase(): string {
   return withScheme(trimSlash(readLocal(ROM_BASE_KEY) || import.meta.env.VITE_ROM_BASE_URL || ''))
 }
 
+/** 封面公开读取根地址（独立 image 桶 image.8bitgo.com）；未配置时退回 ROM 根地址 */
+export function getCoverBase(): string {
+  return withScheme(trimSlash(import.meta.env.VITE_COVER_URL || '')) || getRomBase()
+}
+
 /** 管理接口（Worker）地址，留空时退回公开根地址 */
 export function getRomApi(): string {
   return withScheme(trimSlash(readLocal(ROM_API_KEY) || import.meta.env.VITE_ROM_API_URL || '')) || getRomBase()
@@ -205,7 +210,31 @@ export function encodeKey(key: string): string {
 export function romUrlForKey(key: string, base = getRomBase()): string {
   if (/^https?:\/\//i.test(key)) return key
   if (key.startsWith('/')) return key
-  return base ? `${base}/${encodeKey(key)}` : ''
+  // 封面走独立的 image 桶（image.8bitgo.com），和 ROM 主桶隔离缓存命名空间，
+  // 免得大 ROM 下载把高频小封面从边缘缓存顶掉。新桶缺图时由 Worker 透明回退老桶。
+  const useBase = key.startsWith('covers/') ? getCoverBase() || base : base
+  return useBase ? `${useBase}/${encodeKey(key)}` : ''
+}
+
+const IMAGE_EXT_RE = /\.(png|jpe?g|webp|avif)$/i
+
+/**
+ * 封面的 96×96 缩略图 key：`covers/xxx.webp` → `covers/xxx-96.webp`。
+ *
+ * 只拼字符串，不探活 —— 老封面上传时还没有缩略图这一步，那种 key 取不到；
+ * 由 Worker 在 GET 时退回原图（见 worker/src/index.js 的 -96 兜底），
+ * 前端再用 onError 兜一层，所以这里不用等任何请求。
+ *
+ * @returns 缩略图 key；外链地址和无法识别的 key 返回空串（调用方应当直接用原图）
+ */
+export function coverThumbKey(key: string): string {
+  if (!key || /^https?:\/\//i.test(key)) return ''
+  const dot = key.lastIndexOf('.')
+  if (dot <= 0 || dot === key.length - 1) return ''
+  const ext = key.slice(dot)
+  // 只认图片：ROM 之类（.gba / .zip / .swf…）不生成缩略图，也别把它们的 key 改成 -96
+  if (!IMAGE_EXT_RE.test(ext)) return ''
+  return `${key.slice(0, dot)}-96${ext}`
 }
 
 /** 游戏明确绑定了 ROM 时返回其 URL，否则返回空串 */

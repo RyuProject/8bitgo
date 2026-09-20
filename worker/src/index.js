@@ -75,6 +75,28 @@ function validKey(key) {
   return ![...key].some((ch) => ch.codePointAt(0) < 32 || ch.codePointAt(0) === 127)
 }
 
+/**
+ * 封面单独放在 COVERS 桶（image.8bitgo.com），与 ROM 主桶（ROMS）隔离缓存命名空间，
+ * 免得大 ROM 下载把高频小封面从边缘缓存顶掉。
+ *
+ * 读：covers/ 开头的 key 先查 COVERS，查不到再回退 ROMS —— 迁移期旧封面由老桶透明服务。
+ * 写：covers/ 开头的 key 落到 COVERS，其余走 ROMS。
+ * COVERS 未绑定（旧部署）时全部退回 ROMS，保证不报错、不破坏既有行为。
+ */
+function isCoverKey(key) {
+  return typeof key === 'string' && key.startsWith('covers/')
+}
+function bucketsForRead(env, key) {
+  const cover = env.COVERS
+  if (!isCoverKey(key) || !cover) return [env.ROMS]
+  return [cover, env.ROMS]
+}
+function bucketForWrite(env, key) {
+  const cover = env.COVERS
+  if (!isCoverKey(key) || !cover) return env.ROMS
+  return cover
+}
+
 const MIME = {
   zip: 'application/zip',
   '7z': 'application/x-7z-compressed',
@@ -125,15 +147,23 @@ export default {
       if (!authorized(request, env)) return json({ error: 'unauthorized' }, cors, 401)
       const prefix = url.searchParams.get('prefix') || undefined
       const cursor = url.searchParams.get('cursor') || undefined
-      const result = await env.ROMS.list({ prefix, cursor, limit: 1000 })
+      // covers/ 前缀的封面现在落在 COVERS 桶，列表要把两个桶都列出来合并
+      const buckets = [env.ROMS, env.COVERS].filter(Boolean)
+      let rawObjects = []
+      let truncated = false
+      let nextCursor
+      for (const b of buckets) {
+        const r = await b.list({ prefix, cursor: b === env.ROMS ? cursor : undefined, limit: 1000 })
+        rawObjects = rawObjects.concat(r.objects)
+        if (r.truncated) { truncated = true; nextCursor = r.cursor }
+      }
       return json(
         {
-          // 前缀留空时会把 _uploads/ 的标记一起列出来，后台会显示成一堆 0 字节的怪文件
-          objects: result.objects
+          objects: rawObjects
             .filter((o) => !o.key.startsWith(MULTIPART_PREFIX))
             .map((o) => ({ key: o.key, size: o.size, uploaded: o.uploaded })),
-          truncated: result.truncated,
-          cursor: result.truncated ? result.cursor : undefined,
+          truncated,
+          cursor: truncated ? nextCursor : undefined,
         },
         cors,
       )
@@ -154,7 +184,7 @@ export default {
         return json({ error: 'keys 必须是 1..1000 个合法对象 key' }, cors, 400)
       }
       const unique = [...new Set(keys)]
-      await env.ROMS.delete(unique)
+      for (const k of unique) await bucketForWrite(env, k).delete(k)
       return json({ ok: true, deleted: unique }, cors)
     }
 
@@ -190,7 +220,7 @@ export default {
         return json({ error: `file too large (max ${Math.round(limit / 1024 / 1024)} MB)` }, cors, 413)
       }
       const contentType = request.headers.get('Content-Type') || guessType(key)
-      const object = await env.ROMS.put(key, request.body, {
+      const object = await bucketForWrite(env, key).put(key, request.body, {
         httpMetadata: { contentType, cacheControl: OBJECT_CACHE_CONTROL },
       })
       return json({ ok: true, key, size: object.size, etag: object.httpEtag, uploaded: object.uploaded }, cors)
@@ -198,7 +228,7 @@ export default {
 
     if (request.method === 'DELETE') {
       if (!authorized(request, env)) return json({ error: 'unauthorized' }, cors, 401)
-      await env.ROMS.delete(key)
+      await bucketForWrite(env, key).delete(key)
       return json({ ok: true, key }, cors)
     }
 
@@ -206,19 +236,18 @@ export default {
       return json({ error: 'method not allowed' }, cors, 405)
     }
 
-    const object =
-      request.method === 'HEAD'
-        ? await env.ROMS.head(key)
-        : await env.ROMS.get(key, { range: request.headers, onlyIf: request.headers })
-    if (!object) return json({ error: 'not found' }, cors, 404)
+    const found = await readObject(env, key, request.method, request.headers)
+    if (!found) return json({ error: 'not found' }, cors, 404)
+    const object = found.object
+    const servedKey = found.servedKey || key
 
     const headers = new Headers(cors)
     object.writeHttpMetadata(headers)
     headers.set('ETag', object.httpEtag)
     headers.set('Accept-Ranges', 'bytes')
     headers.set('Cache-Control', OBJECT_CACHE_CONTROL)
-    if (!headers.get('Content-Type')) headers.set('Content-Type', guessType(key))
-    const filename = key.split('/').pop() || 'rom'
+    if (!headers.get('Content-Type')) headers.set('Content-Type', guessType(servedKey))
+    const filename = servedKey.split('/').pop() || 'rom'
     headers.set('Content-Disposition', `inline; filename="${encodeURIComponent(filename)}"`)
 
     // 条件请求命中（onlyIf）时 R2 返回不带 body 的对象
@@ -254,14 +283,14 @@ export default {
 async function createMultipart(request, env, key, cors) {
   const meta = await request.json().catch(() => ({}))
   const contentType = typeof meta?.contentType === 'string' && meta.contentType ? meta.contentType : guessType(key)
-  const upload = await env.ROMS.createMultipartUpload(key, {
+  const upload = await bucketForWrite(env, key).createMultipartUpload(key, {
     httpMetadata: { contentType, cacheControl: OBJECT_CACHE_CONTROL },
   })
 
   // 标记写失败时必须中止刚创建的上传；否则残留分片从后台完全不可见。
   const marker = `${MULTIPART_PREFIX}${crypto.randomUUID()}.marker`
   try {
-    await env.ROMS.put(marker, new Uint8Array(0), {
+    await bucketForWrite(env, key).put(marker, new Uint8Array(0), {
       customMetadata: {
         key,
         uploadId: upload.uploadId,
@@ -298,7 +327,7 @@ async function uploadPart(request, env, key, uploadId, url, cors) {
   // Content-Length 可以缺失或不可信；读完后再核一次，避免绕过 Worker 自己的片大小护栏。
   if (body.byteLength > MAX_PART_BYTES) return json({ error: 'part too large' }, cors, 413)
 
-  const upload = env.ROMS.resumeMultipartUpload(key, uploadId)
+  const upload = bucketForWrite(env, key).resumeMultipartUpload(key, uploadId)
   try {
     const part = await upload.uploadPart(partNumber, body)
     return json({ ok: true, partNumber: part.partNumber, etag: part.etag }, cors)
@@ -322,7 +351,7 @@ async function completeMultipart(request, env, key, uploadId, cors) {
     return json({ error: 'parts 里有非法的 partNumber 或空 etag' }, cors, 400)
   }
 
-  const upload = env.ROMS.resumeMultipartUpload(key, uploadId)
+  const upload = bucketForWrite(env, key).resumeMultipartUpload(key, uploadId)
   try {
     const object = await upload.complete(normalized)
     const markerRemoved = await dropMarker(env, key, uploadId, body?.marker)
@@ -339,7 +368,7 @@ async function abortMultipart(env, key, uploadId, marker, cors) {
   let aborted = true
   let error = ''
   try {
-    await env.ROMS.resumeMultipartUpload(key, uploadId).abort()
+    await bucketForWrite(env, key).resumeMultipartUpload(key, uploadId).abort()
   } catch (err) {
     aborted = false
     error = errText(err)
@@ -354,15 +383,24 @@ async function handleMultipartIndex(request, env, url, cors) {
   if (request.method === 'DELETE') {
     const marker = url.searchParams.get('marker') || ''
     if (!marker.startsWith(MULTIPART_PREFIX)) return json({ error: 'bad marker' }, cors, 400)
-    await env.ROMS.delete(marker)
+    for (const b of [env.ROMS, env.COVERS].filter(Boolean)) await b.delete(marker)
     return json({ ok: true, marker }, cors)
   }
   if (request.method !== 'GET') return json({ error: 'method not allowed' }, cors, 405)
 
   // include: customMetadata 让一次 list 就把信息带回来，不用逐个 get（子请求数有上限）
+  // covers/ 的残留分片标记在 COVERS 桶，这里把两个桶都列出来合并
   const cursor = url.searchParams.get('cursor') || undefined
-  const result = await env.ROMS.list({ prefix: MULTIPART_PREFIX, cursor, limit: 1000, include: ['customMetadata'] })
-  const uploads = result.objects.map((o) => {
+  const buckets = [env.ROMS, env.COVERS].filter(Boolean)
+  let rawObjects = []
+  let truncated = false
+  let nextCursor
+  for (const b of buckets) {
+    const r = await b.list({ prefix: MULTIPART_PREFIX, cursor: b === env.ROMS ? cursor : undefined, limit: 1000, include: ['customMetadata'] })
+    rawObjects = rawObjects.concat(r.objects)
+    if (r.truncated) { truncated = true; nextCursor = r.cursor }
+  }
+  const uploads = rawObjects.map((o) => {
     const m = o.customMetadata ?? {}
     return {
       marker: o.key,
@@ -374,7 +412,7 @@ async function handleMultipartIndex(request, env, url, cors) {
     }
   })
   uploads.sort((a, b) => String(b.at).localeCompare(String(a.at)))
-  return json({ uploads, truncated: result.truncated, cursor: result.truncated ? result.cursor : undefined }, cors)
+  return json({ uploads, truncated, cursor: truncated ? nextCursor : undefined }, cors)
 }
 
 /**
@@ -384,13 +422,19 @@ async function handleMultipartIndex(request, env, url, cors) {
 async function dropMarker(env, key, uploadId, marker) {
   try {
     if (typeof marker === 'string' && marker.startsWith(MULTIPART_PREFIX)) {
-      await env.ROMS.delete(marker)
+      // 标记和上传在同一个桶，covers/ 的标记落在 COVERS 桶
+      await bucketForWrite(env, key).delete(marker)
       return true
     }
-    const result = await env.ROMS.list({ prefix: MULTIPART_PREFIX, limit: 1000, include: ['customMetadata'] })
-    const hit = result.objects.find((o) => o.customMetadata?.uploadId === uploadId && o.customMetadata?.key === key)
-    if (hit) await env.ROMS.delete(hit.key)
-    return Boolean(hit) || !result.truncated
+    for (const b of [env.ROMS, env.COVERS].filter(Boolean)) {
+      const result = await b.list({ prefix: MULTIPART_PREFIX, limit: 1000, include: ['customMetadata'] })
+      const hit = result.objects.find((o) => o.customMetadata?.uploadId === uploadId && o.customMetadata?.key === key)
+      if (hit) {
+        await b.delete(hit.key)
+        return true
+      }
+    }
+    return true
   } catch {
     // complete 不能因此变成失败，但 abort 会把 markerRemoved=false 报给前端供重试。
     return false
@@ -406,6 +450,39 @@ function errText(err) {
 function guessType(key) {
   const ext = key.split('.').pop()?.toLowerCase() ?? ''
   return MIME[ext] || 'application/octet-stream'
+}
+
+/**
+ * `covers/xxx-96.webp` → `covers/xxx.webp`。不是缩略图 key 返回 null。
+ *
+ * 后缀 `-96` 是前端约定的缩略图命名，和 guessType 里的扩展名白名单对齐 ——
+ * 只对图片生效，ROM 之类（就算刚好叫 `xxx-96.zip`）不会被这里的兜底碰到。
+ */
+/**
+ * 按 key 选桶读取对象，并支持 -96 缩略图回退到原图。
+ * covers/ 优先 COVERS 桶、再回退 ROMS；其余只查 ROMS。
+ * 缩略图（…-96.webp）在选中的桶里都查不到时，退回对应原图 key。
+ */
+async function readObject(env, key, method, headers) {
+  const buckets = bucketsForRead(env, key)
+  for (const b of buckets) {
+    const obj = method === 'HEAD' ? await b.head(key) : await b.get(key, { range: headers, onlyIf: headers })
+    if (obj) return { object: obj }
+  }
+  const base = thumbBaseKey(key)
+  if (base) {
+    for (const b of buckets) {
+      const obj = method === 'HEAD' ? await b.head(base) : await b.get(base, { range: headers, onlyIf: headers })
+      if (obj) return { object: obj, servedKey: base }
+    }
+  }
+  return null
+}
+
+function thumbBaseKey(key) {
+  const match = /^(.*\/)?([^/]+)-96\.(png|jpe?g|webp|avif)$/i.exec(key || '')
+  if (!match) return null
+  return `${match[1] || ''}${match[2]}.${match[3]}`
 }
 
 function corsHeaders(request, env) {

@@ -24,6 +24,7 @@
     "test:legal": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-legal-pages.mjs",
     "test:age": "node scripts/test-age-gate.mjs",
     "test:cover": "node scripts/test-cover-resize.mjs",
+    "test:cover-thumb": "node scripts/test-cover-thumb.mjs",
     "test:dos-backend": "node scripts/test-dos-backend.mjs",
     "test:dospad": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-dos-pad.mjs",
     "test:romdata": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-romdata.mjs",

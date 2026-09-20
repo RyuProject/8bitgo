@@ -319,7 +319,8 @@ export function GameDetailPage() {
                 className={stageCap}
                 slug={game.slug}
                 markedAdult={Boolean(game.adult)}
-                backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority className="h-full w-full" />}
+                // 背景那张是糊到底再压一层黑底的，96×96 完全够用，没必要下 300×300
+                backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority thumb className="h-full w-full" />}
               >
                 {/*
                   少数游戏（reVC 移植的 GTA 之类）要 SharedArrayBuffer，只能在一个
@@ -334,7 +335,8 @@ export function GameDetailPage() {
                     gameName={game.title}
                     ps2={game.platform === 'ps2'}
                     icon={game.icon}
-                    backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority className="h-full w-full" />}
+                    // 背景那张是糊到底再压一层黑底的，96×96 完全够用，没必要下 300×300
+                backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority thumb className="h-full w-full" />}
                   />
                 ) : (
                 <EmulatorPlayer
@@ -386,7 +388,8 @@ export function GameDetailPage() {
                   romLangs={romLangs}
                   romLang={rom.lang}
                   onRomLangChange={setRomLang}
-                  backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority className="h-full w-full" />}
+                  // 背景那张是糊到底再压一层黑底的，96×96 完全够用，没必要下 300×300
+                backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority thumb className="h-full w-full" />}
                   onReport={reportProblem}
                 />
                 )}

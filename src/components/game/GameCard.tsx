@@ -19,7 +19,19 @@ interface Props {
   /** 显示排名角标 */
   rank?: number
   showCoin?: boolean
+  /**
+   * 封面不走懒加载（首屏那几张用）。
+   * 惰性图要等滚动才真正开始下，一屏全是黑/渐变格子；首屏这几点字节不值得省。
+   */
+  eager?: boolean
 }
+
+/**
+ * 列表里首屏大致能看到的卡片数。这几个的封面不走懒加载 ——
+ * 惰性图要等滚动才真正开始下载，首屏省这几个字节、换来一屏占位格，不划算。
+ * 大盘列表（/games、平台页、类型页）共用这一个数，免得各写一份。
+ */
+export const ABOVE_FOLD_CARDS = 8
 
 /**
  * 游戏卡片（封面 + 标题 + 元信息）。
@@ -38,7 +50,7 @@ interface Props {
  * ⚠️ 加新 prop 时注意：传**每次渲染都新建的对象 / 数组 / 箭头函数**会让 memo 失效。
  * 这个组件目前刻意不收回调，就是为了它。
  */
-export const GameCard = memo(function GameCard({ game, className, coverRatio = 'square', rank, showCoin = true }: Props) {
+export const GameCard = memo(function GameCard({ game, className, coverRatio = 'square', rank, showCoin = true, eager }: Props) {
   const lang = useLang()
   const t = useT()
   const platform = platformMap[game.platform]
@@ -53,7 +65,7 @@ export const GameCard = memo(function GameCard({ game, className, coverRatio = '
       )}
     >
       <div className="relative">
-        <GameCover game={game} ratio={coverRatio} reserveBottomRight={game.multiplayer} />
+        <GameCover game={game} ratio={coverRatio} reserveBottomRight={game.multiplayer} eager={eager} />
         {rank !== undefined && (
           <span className="text-pixel absolute right-2 top-2 rounded bg-black/60 px-1.5 py-1 text-[11px] text-coin backdrop-blur">
             #{rank}

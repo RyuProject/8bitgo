@@ -16,6 +16,7 @@ import {
   keepsOriginalFileName,
   listRomObjects,
   clearRomProbeCache,
+  coverThumbKey,
   probeRom,
   romUrlForKey,
   uploadRom,
@@ -2263,6 +2264,19 @@ function MediaField({
       if (!(await confirmUpload(key, targetFile))) return
       setProgress(0)
       const result = await uploadRom(targetFile, key, setProgress)
+      /*
+        缩略图（96×96）跟着主图一起传，给搜索联想、首页样例、详情页背景那些
+        小尺寸位置用 —— 它们本来在下载 300×300 的主图。
+        ⚠️ 缩略图失败不能牵连主图：主图已经传完、key 也已经写进表单了，
+        这里失败了最多是「小图继续用大图」，不该把整个上传报成失败。
+      */
+      if (isCover && compressed?.thumb) {
+        try {
+          await uploadRom(compressed.thumb, coverThumbKey(result.key))
+        } catch (err) {
+          console.warn('[cover] 缩略图上传失败，小尺寸位置会继续用主图', err)
+        }
+      }
       onChange(result.key)
       const removed = await cleanupSuperseded(oldKey, result.key, allBoundKeys)
       const note = !compressed
@@ -2302,7 +2316,8 @@ function MediaField({
 
     if (!window.confirm(`${key}\n\n从 R2 删除这个${kind === 'covers' ? '封面图片' : '视频'}并解除绑定？此操作不可恢复。`)) return
     try {
-      const { removed, failed } = await deleteRomObjects([key])
+      // 封面的缩略图（96×96）是主图的附属品，一起删，别留成孤儿
+      const { removed, failed } = await deleteRomObjects([key, coverThumbKey(key)].filter(Boolean))
       onChange('')
       setMsg({
         ok: failed.length === 0,

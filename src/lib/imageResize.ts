@@ -25,8 +25,15 @@ import { centerSquare, resampleRGBA } from '../../shared/lanczos.js'
 
 /** 目标边长。封面在前台是 1:1 方框，300 足够 2× 屏下的卡片尺寸 */
 const TARGET = 300
+/**
+ * 缩略图边长。搜索联想、首页类型样例这类位置只显示 40~44px，却一直在下载 300×300 ——
+ * 多压一张 96 的，那些位置就只花三分之一的字节；卡片仍然用 300（2× 屏刚刚好）。
+ */
+export const THUMB_TARGET = 96
 /** WebP 质量。0.6 = quality 60 */
 const QUALITY = 0.6
+/** 缩略图质量。尺寸小了，压重了会出现色块，比主图高一点反而更小更好看 */
+const THUMB_QUALITY = 0.72
 /** 退回 JPEG 时的质量。JPEG 在同等观感下要比 WebP 高一点才不出块 */
 const JPEG_QUALITY = 0.82
 /**
@@ -45,6 +52,11 @@ export interface CompressedImage {
   /** 原图尺寸，给提示文案用 */
   sourceWidth: number
   sourceHeight: number
+  /**
+   * 96×96 缩略图，**可能没有** —— 编码失败时给 null，调用方照常只上传主图。
+   * 缺了它只是回到「小图也下大图」的老样子，不能让整个上传失败。
+   */
+  thumb: Blob | null
 }
 
 function toBlobAsync(canvas: HTMLCanvasElement, type: string, quality: number): Promise<Blob | null> {
@@ -101,10 +113,24 @@ export async function compressCoverToWebp(file: Blob): Promise<CompressedImage> 
     img.data.set(rgba)
     dctx.putImageData(img, 0, 0)
 
-    // 3) 编码。WebP 不被支持时 toBlob 会**静默**给一张 PNG，所以要查 type
+    // 3) 缩略图：从 300 再缩一份 96（同一套 Lanczos，只是输入已经是 300 的像素）
+    const { canvas: thumbCanvas, ctx: tctx } = makeCanvas(THUMB_TARGET, THUMB_TARGET)
+    const thumbImage = new ImageData(THUMB_TARGET, THUMB_TARGET)
+    thumbImage.data.set(resampleRGBA(rgba, TARGET, TARGET, THUMB_TARGET, THUMB_TARGET))
+    tctx.putImageData(thumbImage, 0, 0)
+
+    // 4) 编码。WebP 不被支持时 toBlob 会**静默**给一张 PNG，所以要查 type
     const webp = await toBlobAsync(dest, 'image/webp', QUALITY)
     if (webp && webp.type === 'image/webp') {
-      return { blob: webp, ext: '.webp', fellBackToJpeg: false, sourceWidth: srcW, sourceHeight: srcH }
+      const thumb = await toBlobAsync(thumbCanvas, 'image/webp', THUMB_QUALITY)
+      return {
+        blob: webp,
+        thumb: thumb && thumb.type === 'image/webp' ? thumb : null,
+        ext: '.webp',
+        fellBackToJpeg: false,
+        sourceWidth: srcW,
+        sourceHeight: srcH,
+      }
     }
 
     // JPEG 没有 alpha：先铺白底再合成，否则透明处会变成黑块
@@ -114,7 +140,20 @@ export async function compressCoverToWebp(file: Blob): Promise<CompressedImage> 
     fctx.drawImage(dest, 0, 0)
     const jpeg = await toBlobAsync(flat, 'image/jpeg', JPEG_QUALITY)
     if (!jpeg) throw new Error('封面编码失败：这个浏览器既不支持 WebP 也不支持 JPEG 编码')
-    return { blob: jpeg, ext: '.jpg', fellBackToJpeg: true, sourceWidth: srcW, sourceHeight: srcH }
+
+    const { canvas: flatThumb, ctx: ftctx } = makeCanvas(THUMB_TARGET, THUMB_TARGET)
+    ftctx.fillStyle = '#ffffff'
+    ftctx.fillRect(0, 0, THUMB_TARGET, THUMB_TARGET)
+    ftctx.drawImage(thumbCanvas, 0, 0)
+    const thumbJpeg = await toBlobAsync(flatThumb, 'image/jpeg', JPEG_QUALITY)
+    return {
+      blob: jpeg,
+      thumb: thumbJpeg,
+      ext: '.jpg',
+      fellBackToJpeg: true,
+      sourceWidth: srcW,
+      sourceHeight: srcH,
+    }
   } finally {
     bitmap.close?.()
   }

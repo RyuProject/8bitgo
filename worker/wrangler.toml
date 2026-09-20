@@ -9,6 +9,11 @@ compatibility_date = "2026-01-01"
 binding = "ROMS"
 bucket_name = "8bitgo"
 
+[[r2_buckets]]
+binding = "COVERS"
+# image.8bitgo.com 对应的 R2 桶名。
+bucket_name = "8bitgo-image"
+
 [vars]
 # 允许跨域访问的来源，多个用逗号分隔；开发期用 * ，上线后改成你的站点域名，例如
 # ALLOWED_ORIGINS = "https://8bitgo.example.com,http://localhost:5173"

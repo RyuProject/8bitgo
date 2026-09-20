@@ -5,7 +5,7 @@
  * 要守住的约束是「一个游戏 + 一个语言 = 一个 ROM」「一个游戏 = 一张封面」
  * 「一个平台 = 一份 BIOS」—— 原来三处都是不问直接 PUT，管理员看不到自己盖掉了什么。
  */
-import { deleteRom, deleteRomDir, dirOfKey, getRomConfig, headRom, isBundleKey } from '@/services/roms'
+import { coverThumbKey, deleteRom, deleteRomDir, dirOfKey, getRomConfig, headRom, isBundleKey } from '@/services/roms'
 
 // 封面图常常不到 1MB，一律按 MB 显示会变成一排「0.00 MB」，看不出差别
 export const human = (n: number) => (n < 1024 * 1024 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1024 / 1024).toFixed(2)} MB`)
@@ -61,6 +61,9 @@ export async function cleanupSuperseded(oldKey: string, newKey: string, allBound
   )
   if (!ok) return null
   await deleteRom(old)
+  // 连它的缩略图一起删（有的话）。没有就是空串，这里直接跳过
+  const oldThumb = coverThumbKey(old)
+  if (oldThumb) await deleteRom(oldThumb).catch(() => {})
   return old
 }
 

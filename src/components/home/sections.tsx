@@ -326,7 +326,16 @@ export function GenreGridSection({
               {games.map((g) => (
                 <li key={g.slug}>
                   <Link to={`/games/${g.slug}`} className="group flex items-center gap-3 rounded-xl p-1.5 transition hover:bg-black/[0.04]">
-                    <GameCover game={g} ratio="square" showTitle={false} showBadge={false} iconSize="sm" className="h-11 w-11 shrink-0 rounded-lg" />
+                    {/* 44px 的样例缩略图：只下 96×96 那张，不发 300×300 的主图 */}
+                    <GameCover
+                      game={g}
+                      ratio="square"
+                      showTitle={false}
+                      showBadge={false}
+                      iconSize="sm"
+                      thumb
+                      className="h-11 w-11 shrink-0 rounded-lg"
+                    />
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-sm font-semibold leading-tight">{gameTitle(g, lang)}</span>
                       <span className="block text-xs text-muted">{platformMap[g.platform]?.shortName}</span>

@@ -1,9 +1,9 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { CoverGame } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { gradientFor } from '@/lib/gradients'
-import { romUrlForKey } from '@/services/roms'
+import { coverThumbKey, romUrlForKey } from '@/services/roms'
 import { cx } from '@/lib/format'
 import { useT, fmt } from '@/services/i18n'
 import { useLang } from '@/services/lang'
@@ -54,6 +54,13 @@ interface Props {
    * 09-07 线上 KOF 合集「十款游戏只出一张封面、其余三格全黑」就是这么来的。
    */
   eager?: boolean
+  /**
+   * 用 96×96 缩略图代替 300×300 主图。
+   * 只给**显示尺寸很小**的位置开（搜索联想、首页类型样例那种 40~44px，以及详情页
+   * 那张被糊到底的背景）—— 卡片上 300 刚刚好，换成 96 会糊。
+   * 老封面没有缩略图时自动退回主图，见下面的 thumbFailed。
+   */
+  thumb?: boolean
   /** 封面图真正 load 完时调一次（<video> 那一路不会调）。轮播换图要靠它决定何时撤掉过渡层 */
   onImageLoad?: () => void
 }
@@ -185,6 +192,7 @@ export function GameCover({
   priority = false,
   still = false,
   eager = false,
+  thumb = false,
   onImageLoad,
 }: Props) {
   const t = useT()
@@ -194,14 +202,27 @@ export function GameCover({
   const platform = platformMap[game.platform]
   const coverSrc = game.cover ? romUrlForKey(game.cover) : ''
   const videoSrc = !still && game.video ? romUrlForKey(game.video) : ''
+  const thumbSrc = thumb && game.cover ? romUrlForKey(coverThumbKey(game.cover)) : ''
+  /**
+   * 缩略图取不到（老封面上传时还没有这一步，且服务端兜底也没生效）就退回主图。
+   * ⚠️ 必须记状态而不是每次重试：不记的话同一张图会反复 404 → 反复回退 → 死循环。
+   */
+  const [thumbFailed, setThumbFailed] = useState(false)
+  useEffect(() => setThumbFailed(false), [thumbSrc])
+  const imgSrc = thumbSrc && !thumbFailed ? thumbSrc : coverSrc
 
   return (
     <div
       className={cx('relative overflow-hidden', ratios[ratio], className)}
-      // 视频加载出来之前这层背景就是玩家看到的东西。
-      // 有封面图时用黑色（图片自己会铺满）；只有视频没有封面图时用程序化渐变，
-      // 否则 preload="none" 的卡片在播起来之前就是一块纯黑。
-      style={{ background: coverSrc ? '#000' : gradientFor(game.slug) }}
+      /*
+        图片到位之前，这层背景就是玩家真正看到的东西。
+
+        ⚠️ 一律用程序化渐变，**不要**因为「有封面图」就涂黑。封面是懒加载的，
+        在它下载下来之前那几百毫秒（弱网上是几秒）里，黑格子和「坏了」没有任何区别 ——
+        平台页一屏就是二十几张卡一起黑着，看起来像整页没加载出来。
+        渐变和无封面游戏那类卡片是同一套配色，等图片就位自己盖上去即可。
+      */
+      style={{ background: gradientFor(game.slug) }}
       role="img"
       aria-label={fmt(t.common.coverAlt, { title })}
     >
@@ -210,7 +231,7 @@ export function GameCover({
         <CoverVideo src={videoSrc} poster={coverSrc || undefined} priority={priority} />
       ) : coverSrc ? (
         <img
-          src={coverSrc}
+          src={imgSrc}
           alt={title}
           // 首屏那几张必须 eager：对着 LCP 图片加 loading="lazy"，
           // 等于让浏览器先跳过它、发现完别的资源再回头下，LCP 反而更慢
@@ -218,6 +239,10 @@ export function GameCover({
           fetchPriority={priority ? 'high' : 'auto'}
           decoding="async"
           onLoad={onImageLoad}
+          // 缩略图没对象（老封面）就换回主图；主图本身就坏了则留给渐变背景兜着
+          onError={() => {
+            if (thumbSrc && !thumbFailed) setThumbFailed(true)
+          }}
           className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
         />
       ) : (
