@@ -56,6 +56,72 @@ export function throttleProgress(sink: ProgressSink | undefined): (p: LoadProgre
  *   3. **浏览器不给 body 流**（极老的环境、某些 Service Worker 场景）——
  *      退回一次性 arrayBuffer()，只报开始和结束两帧。
  */
+
+/**
+ * 连续多久没有任何字节到达，就认定这次下载已经卡死（毫秒）。
+ *
+ * ⚠️ 这个看门狗补的是**最要命的一类缺陷**：`fetch` 本身**没有超时**。
+ * 中间设备把连接静默丢掉（DROP 而不是 RST）时，浏览器不会报错，而是慢慢等 TCP
+ * 超时 —— 实测三十几秒起步，有些网络下永远不来。这期间：
+ *
+ *   · 我们这条 `await` 永远不返回；
+ *   · 没有任何进度事件，所以播放器那套「阶段预算」只会让条子自己慢慢爬；
+ *   · 玩家看到的是永远转不完的加载遮罩，而且**没有任何错误可重试**。
+ *
+ * 30 秒取自本仓库自己的先例（systemSource 的系统镜像用 20s 首字节 / 25s 停滞）。
+ * 正常情况下大文件是**持续有字节**的，只有真断了才会连续 30 秒一个字节都没有，
+ * 所以这个阈值不会误伤慢网络。
+ */
+export const STALL_MS = 30_000
+
+interface StallGuard {
+  signal: AbortSignal
+  /** 每收到一块数据就调一次，重新计时 */
+  touch(): void
+  /** 这次中止是「卡死」引起的吗（用来把 AbortError 换成玩家看得懂的话） */
+  stalled(): boolean
+  stop(): void
+}
+
+/**
+ * 包一层「多久没字节就动手掐掉」。
+ *
+ * 掐断用的是内部的 AbortController：调用方自己的 signal 另接一路，
+ * 两者都中止同一个请求，但**能不能分辨是谁掐的**很关键 ——
+ * 玩家离开页面时我们照旧抛 AbortError（上层当「取消」处理，不报错），
+ * 卡死时则抛一条带原因的错，让遮罩变成可以重试的错误态。
+ */
+function createStallGuard(parent: AbortSignal | undefined, stallMs: number): StallGuard {
+  const controller = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let didStall = false
+
+  const clear = () => {
+    if (timer !== undefined) clearTimeout(timer)
+    timer = undefined
+  }
+  const touch = () => {
+    clear()
+    timer = setTimeout(() => {
+      didStall = true
+      controller.abort()
+    }, stallMs)
+  }
+  if (parent) {
+    if (parent.aborted) controller.abort()
+    else parent.addEventListener('abort', () => controller.abort(), { once: true })
+  }
+
+  return {
+    signal: controller.signal,
+    touch,
+    stalled: () => didStall,
+    stop: clear,
+  }
+}
+
+/** 卡死时统一这条文案：说清楚是「一个字节都没再来」，而不是笼统的网络错误 */
+const stallMessage = (stallMs: number) => `下载卡住了：${Math.round(stallMs / 1000)} 秒没有收到任何数据`
 export async function fetchWithProgress(
   url: string,
   opts: {
@@ -68,47 +134,62 @@ export async function fetchWithProgress(
     maxBytes?: number
     /** 外站包装 ZIP 不应另留一份 HTTP 缓存，真正缓存的是解出的 ROM。 */
     cache?: RequestCache
+    /** 覆盖「多久没字节算卡死」，只给测试用 */
+    stallMs?: number
   } = {},
 ): Promise<ArrayBuffer> {
   const phase = opts.phase ?? 'rom'
   const emit = throttleProgress(opts.onProgress)
+  const stallMs = opts.stallMs ?? STALL_MS
+  const guard = createStallGuard(opts.signal, stallMs)
 
   emit({ phase, loaded: 0 }, true)
+  // 首字节也要有期限：连接建立不起来 / 服务端不回响应头，是和「传了一半停住」不同的病，
+  // 但症状一样 —— 永远等下去。所以进 fetch 之前就武装。
+  guard.touch()
 
-  const res = await fetch(url, { signal: opts.signal, ...(opts.cache ? { cache: opts.cache } : {}) })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  opts.check?.(res)
+  try {
+    const res = await fetch(url, { signal: guard.signal, ...(opts.cache ? { cache: opts.cache } : {}) })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    opts.check?.(res)
 
-  const encoded = Boolean(res.headers.get('content-encoding'))
-  const len = Number(res.headers.get('content-length'))
-  // 压缩过的响应，Content-Length 对不上解压后的字节数，直接当作未知总量
-  let total = !encoded && Number.isFinite(len) && len > 0 ? len : undefined
-  if (total !== undefined && total > (opts.maxBytes ?? Infinity)) {
-    void res.body?.cancel().catch(() => {})
-    throw new Error('文件过大，无法在浏览器内存中解包')
-  }
-
-  if (!res.body) {
-    const buf = await res.arrayBuffer()
-    if (buf.byteLength > (opts.maxBytes ?? Infinity)) throw new Error('文件过大，无法在浏览器内存中解包')
-    if (total !== undefined && buf.byteLength !== total) {
-      throw new Error(`下载不完整：应为 ${total} 字节，实际收到 ${buf.byteLength} 字节`)
+    const encoded = Boolean(res.headers.get('content-encoding'))
+    const len = Number(res.headers.get('content-length'))
+    // 压缩过的响应，Content-Length 对不上解压后的字节数，直接当作未知总量
+    let total = !encoded && Number.isFinite(len) && len > 0 ? len : undefined
+    if (total !== undefined && total > (opts.maxBytes ?? Infinity)) {
+      void res.body?.cancel().catch(() => {})
+      throw new Error('文件过大，无法在浏览器内存中解包')
     }
-    emit({ phase, loaded: buf.byteLength, total: buf.byteLength, ratio: 1 }, true)
-    return buf
-  }
 
-  const { chunks, loaded } = await drain(res.body, phase, total, emit, opts.maxBytes)
+    if (!res.body) {
+      const buf = await res.arrayBuffer()
+      if (buf.byteLength > (opts.maxBytes ?? Infinity)) throw new Error('文件过大，无法在浏览器内存中解包')
+      if (total !== undefined && buf.byteLength !== total) {
+        throw new Error(`下载不完整：应为 ${total} 字节，实际收到 ${buf.byteLength} 字节`)
+      }
+      emit({ phase, loaded: buf.byteLength, total: buf.byteLength, ratio: 1 }, true)
+      return buf
+    }
 
-  // 拼成一整块。最后一帧用真实总量，进度条一定走到 100%
-  const out = new Uint8Array(loaded)
-  let at = 0
-  for (const c of chunks) {
-    out.set(c, at)
-    at += c.byteLength
+    const { chunks, loaded } = await drain(res.body, phase, total, emit, opts.maxBytes, guard.touch)
+
+    // 拼成一整块。最后一帧用真实总量，进度条一定走到 100%
+    const out = new Uint8Array(loaded)
+    let at = 0
+    for (const c of chunks) {
+      out.set(c, at)
+      at += c.byteLength
+    }
+    emit({ phase, loaded, total: loaded, ratio: 1 }, true)
+    return out.buffer
+  } catch (error) {
+    // 卡死掐断的也表现为 AbortError，但那不是玩家取消 —— 必须换成能显示、能重试的错误
+    if (guard.stalled()) throw new Error(stallMessage(stallMs))
+    throw error
+  } finally {
+    guard.stop()
   }
-  emit({ phase, loaded, total: loaded, ratio: 1 }, true)
-  return out.buffer
 }
 
 /**
@@ -125,6 +206,7 @@ async function drain(
   totalHint: number | undefined,
   emit: (p: LoadProgress, flush?: boolean) => void,
   maxBytes = Infinity,
+  touch?: () => void,
 ): Promise<{ chunks: Uint8Array[]; loaded: number }> {
   const reader = body.getReader()
   const chunks: Uint8Array[] = []
@@ -134,6 +216,8 @@ async function drain(
     const { done, value } = await reader.read()
     if (done) break
     if (!value) continue
+    // 有字节到达就推迟「卡死」判定：卡死看的是**流停了**，不是**流慢**
+    touch?.()
     if (loaded + value.byteLength > maxBytes) {
       await reader.cancel().catch(() => {})
       throw new Error('文件过大，无法在浏览器内存中解包')
@@ -178,6 +262,8 @@ export interface BlobFetchOptions {
   retries?: number
   /** 注入 fetch，只给测试用 */
   fetchImpl?: typeof fetch
+  /** 覆盖「多久没字节算卡死」，只给测试用 */
+  stallMs?: number
 }
 
 /**
@@ -236,6 +322,26 @@ const isAbort = (e: unknown) => e instanceof DOMException && e.name === 'AbortEr
  * 有些 CDN 对 HEAD 回 200 且带 Accept-Ranges，真发 Range 时却整份吐出来。
  */
 export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions = {}): Promise<Blob> {
+  const stallMs = opts.stallMs ?? STALL_MS
+  /*
+    一只看门狗管整次下载（含重试）：它只在**卡死**时掐断，非卡死的失败（500、连接被 reset）
+    不会碰 signal，所以重试沿用同一个 signal 是安全的 —— 换新的反而要在每个分支里重新接线。
+    卡死则**立刻抛**，不进重试：连续 30 秒一个字节都没有，重试只会再等 30 秒。
+  */
+  const guard = createStallGuard(opts.signal, stallMs)
+  guard.touch()
+  try {
+    return await blobWithProgressGuarded(url, opts, guard)
+  } catch (error) {
+    if (guard.stalled()) throw new Error(stallMessage(stallMs))
+    throw error
+  } finally {
+    guard.stop()
+  }
+}
+
+/** 真正的实现。看门狗由上面的 fetchBlobWithProgress 持有，这里只负责「收到字节就 touch」 */
+async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guard: StallGuard): Promise<Blob> {
   const phase = opts.phase ?? 'rom'
   const type = opts.type ?? 'application/octet-stream'
   const chunkBytes = opts.chunkBytes ?? CHUNK_BYTES
@@ -245,7 +351,7 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
 
   emit({ phase, loaded: 0 }, true)
 
-  const first = await doFetch(url, { headers: { Range: `bytes=0-${chunkBytes - 1}` }, signal: opts.signal })
+  const first = await doFetch(url, { headers: { Range: `bytes=0-${chunkBytes - 1}` }, signal: guard.signal })
   if (!first.ok) throw new Error(`HTTP ${first.status}`)
   opts.check?.(first)
 
@@ -262,7 +368,7 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
       emit({ phase, loaded: blob.size, total: blob.size, ratio: 1 }, true)
       return blob.type === type ? blob : new Blob([blob], { type })
     }
-    const { chunks, loaded } = await drain(first.body, phase, total, emit)
+    const { chunks, loaded } = await drain(first.body, phase, total, emit, Infinity, guard.touch)
     emit({ phase, loaded, total: loaded, ratio: 1 }, true)
     return new Blob(chunks as BlobPart[], { type })
   }
@@ -292,7 +398,7 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
       return blob
     }
     // drain 自带「收到的字节数和 Content-Length 对不上就抛」这道校验，正好当分片完整性检查
-    const { chunks } = await drain(res.body, phase, expect, relay)
+    const { chunks } = await drain(res.body, phase, expect, relay, Infinity, guard.touch)
     return new Blob(chunks as BlobPart[])
   }
 
@@ -305,11 +411,14 @@ export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions 
     let part: Blob | null = null
     for (let attempt = 0; ; attempt++) {
       try {
-        const res = await doFetch(url, { headers: { Range: `bytes=${done}-${end}` }, signal: opts.signal })
+        guard.touch()
+        const res = await doFetch(url, { headers: { Range: `bytes=${done}-${end}` }, signal: guard.signal })
         if (res.status !== 206) throw new Error(`分片请求失败：期望 206，实际 ${res.status}`)
         part = await take(res, expect)
         break
       } catch (e) {
+        // 卡死不是「这一次没成」：重试只会再等一整个看门狗周期，直接抛
+        if (guard.stalled()) throw e
         // 取消是用户意图，不是失败，别在这儿空转重试
         if (isAbort(e) || opts.signal?.aborted) throw e
         if (attempt >= retries) throw e

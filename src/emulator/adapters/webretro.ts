@@ -172,6 +172,8 @@ function mountRaw(container: HTMLElement, options: MountOptions): RawMount {
   let srcSet = false
   let poll: ReturnType<typeof setInterval> | null = null
   let readySent = false
+  /** 兜底看门狗。见下面 iframe.src 设置处那段注释：它**不能**挂在 load 回调里 */
+  let readyTimer: number | undefined
 
   const stopPoll = () => {
     if (poll) {
@@ -179,8 +181,15 @@ function mountRaw(container: HTMLElement, options: MountOptions): RawMount {
       poll = null
     }
   }
+  const stopReadyTimer = () => {
+    if (readyTimer !== undefined) {
+      clearTimeout(readyTimer)
+      readyTimer = undefined
+    }
+  }
   const sendReady = () => {
     stopPoll()
+    stopReadyTimer()
     if (readySent || destroyed) return
     readySent = true
     options.onReady?.()
@@ -238,11 +247,6 @@ function mountRaw(container: HTMLElement, options: MountOptions): RawMount {
       if (destroyed) return stopPoll()
       if (!tick()) sendReady()
     }, POLL_MS)
-    // 兜底：资源真的下不动时（断网、bundle 404），别让玩家永远卡在遮罩后面。
-    // 放行之后 webretro 自己的错误提示就能露出来，玩家至少看得见发生了什么。
-    setTimeout(() => {
-      if (!destroyed && !readySent) sendReady()
-    }, READY_TIMEOUT_MS)
   })
   iframe.addEventListener('error', () => {
     if (!destroyed) options.onError?.(fmt(rt.webretroLoadFailed, { path: WEBRETRO_PATH }))
@@ -259,6 +263,16 @@ function mountRaw(container: HTMLElement, options: MountOptions): RawMount {
       objectUrl = URL.createObjectURL(new Blob([rom.data], { type: 'application/octet-stream' }))
       srcSet = true
       options.onProgress?.({ phase: 'engine' })
+      /*
+        兜底看门狗**挂在这里，不能挂在 iframe 的 load 回调里**。
+        以前它挂在 load 里，于是「load 不触发」这一类故障（iframe 文档被中间设备挂住、
+        或资源永远不完成）会让定时器**永远不会被武装** —— 玩家就一直卡在遮罩后面，
+        而且没有任何错误可重试。断网测试时 load 会照常触发，所以这种写法看起来「测过了」。
+        放行之后 webretro 自己的错误提示就能露出来，玩家至少看得见发生了什么。
+      */
+      readyTimer = window.setTimeout(() => {
+        if (!destroyed && !readySent) sendReady()
+      }, READY_TIMEOUT_MS)
       iframe.src = buildUrl(core, objectUrl, rom.name)
       options.onStart?.()
     } catch (e) {
@@ -274,6 +288,7 @@ function mountRaw(container: HTMLElement, options: MountOptions): RawMount {
       destroyed = true
       abort.abort()
       stopPoll()
+      stopReadyTimer()
       try {
         iframe.src = 'about:blank'
       } catch {

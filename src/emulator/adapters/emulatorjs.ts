@@ -3041,14 +3041,25 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           })
           hookRoomToken(win)
 
-          // ICE 配置向服务端要：那边按请求现算一份短期 TURN 凭证，
-          // 凭证不进前端包，换 TURN 也不用重新构建（见 services/netplay.ts）
-          try {
-            const ice = await fetchIceConfig()
+          /*
+            ICE 配置向服务端要：那边按请求现算一份短期 TURN 凭证，
+            凭证不进前端包，换 TURN 也不用重新构建（见 services/netplay.ts）。
+
+            ⚠️ 这一句以前是**没有期限**的 `await fetchIceConfig()`，而它有两个要命的地方：
+              1. 它跑在 loader.js 之前，只要配了 NETPLAY_URL，**单机开局也要等它**；
+              2. 上面那只看门狗（watchStart）是刻意装在更后面的（装了会因为看不到心跳
+                 而误判「卡住」，见那段注释），所以这期间没有任何东西能救。
+            取 ICE 的机器被静默丢包时，玩家的单机 NES 也会跟着永远转圈。
+            给一个上限：正常 RTT 几十毫秒，6 秒没回来就先用兜底 STUN 开局 ——
+            真正联机时那条路会自己再取一次（onIceReady 不发就是了）。
+          */
+          const ice = await Promise.race([
+            fetchIceConfig(),
+            new Promise<never>((_, reject) => window.setTimeout(() => reject(new Error('ICE 配置超时')), 6_000)),
+          ]).catch(() => null)
+          if (ice) {
             win.EJS_netplayICEServers = ice.iceServers
             netplay?.onIceReady?.(ice.hasTurn)
-          } catch {
-            /* 取不到就用上面设的兜底 STUN */
           }
 
           // 包一层 RTCPeerConnection：观察连接状态、失败自动重试、限码率保帧率。

@@ -348,17 +348,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         if (shown === null || shown === true) sendReady()
         else options.onProgress?.({ phase: 'engine' })
       }, J2ME_POLL_MS)
-      /**
-       * 两分钟还没亮画面 = 起不来了，**不能**当成「可以玩了」。
-       * 以前这里 sendReady()：遮罩撤掉、状态变「运行中」、还记了一次游玩，玩家对着黑屏
-       * 完全不知道发生了什么，而且 ready 之后播放器那次自动重试的机会也一并作废。
-       * CheerpJ 是第三方 CDN，连不上是常事（公司网络、国内网络），报出来才有得救。
-       */
-      readyTimer = window.setTimeout(() => {
-        if (destroyed || readySent) return
-        stopPoll()
-        options.onError?.(rt.j2meStartTimeout)
-      }, J2ME_READY_TIMEOUT_MS)
+      /*
+        「两分钟还没亮画面就算失败」那个计时器不在这儿 —— 它挂在设 iframe.src 的地方，
+        因为那个位置两种部署（同源 / 跨源）都会经过。这里的 load 只负责同源时开始轮询。
+      */
     }
 
     const win = iframe.contentWindow
@@ -478,6 +471,20 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       if (!needsTempJar) warmHttpCache(`${J2ME_PATH}jar/${name}`)
       srcSet = true
       options.onProgress?.({ phase: 'engine' })
+      /*
+        启动看门狗挂在这里 —— **不是**在 iframe 的 load 回调里。
+        以前它只在「同源」那一支里武装，于是两种故障都能把玩家钉在遮罩后面：
+          · load 一直不触发（run.html 被中间设备挂住、请求永不完成）；
+          · 跨源部署（VITE_J2ME_PATH 指到别的域名）—— 那条路只等 load 就 sendReady，
+            没有任何超时，load 不来就永远没有错误可重试。
+        现在两边共用一个从「设 src」就开始计时的预算：CheerpJ 冷启动本来就慢，
+        但慢和死是两回事，到点必须报出来（j2meStartTimeout）。
+      */
+      readyTimer = window.setTimeout(() => {
+        if (destroyed || readySent) return
+        stopPoll()
+        options.onError?.(rt.j2meStartTimeout)
+      }, J2ME_READY_TIMEOUT_MS)
       iframe.src = buildJ2meUrl(J2ME_PATH, name)
     } catch (e) {
       if (destroyed) return
