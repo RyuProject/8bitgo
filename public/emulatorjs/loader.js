@@ -8,7 +8,7 @@ if (!scriptPath.endsWith("/")) {
     scriptPath += "/";
 }
 
-const debug = window.EJS_DEBUG_XX === true;
+const debug = window.EJS_DEBUG_XX === true || window.EJS_FORCE_DEBUG_LOG === true;
 
 if (debug) {
     console.log("Script Path:", scriptPath);
@@ -217,8 +217,9 @@ async function prepareLanguage() {
 (async function() {
     let EmulatorJS;
     if (debug) {
-        EmulatorJS = await loadScript("emulator.js");
-        await loadStyle("emulator.css");
+        // 临时诊断改动：debug 只开日志，不切到 src/ 开发版（本仓库只部署 min 版）
+        EmulatorJS = await loadScript("emulator.min.js");
+        await loadStyle("emulator.min.css");
     } else {
         EmulatorJS = await loadScript("emulator.min.js");
         await loadStyle("emulator.min.css");

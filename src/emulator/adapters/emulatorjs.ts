@@ -1452,6 +1452,24 @@ export async function prepareRemoteDiscRom(
 const FBNEO_FAMILY_CORES = new Set(['fbneo', 'mame2003', 'mame2003_plus'])
 const isFbneoFamilyCore = (core: string | undefined): boolean => (core ? FBNEO_FAMILY_CORES.has(core) : false)
 
+/**
+ * MAME（mame-current）和 FBNeo 一样「文件名即身份」：核心按 romset 文件名挑驱动。
+ * 但上传时文件名常常不标准——明星三缺一（IGS027A 的 mxsqy102tw 驱动）被存成了 mxsqy.zip，
+ * MAME 按名字找 `mxsqy` 驱动压根不存在，于是落到主菜单。这里在交给引擎前把内层文件名
+ * 纠正成 MAME 认得的 romset 名（只改 EJS_gameName，即引擎写进虚拟文件系统的文件名），
+ * 不影响 RomData（mame-current 不认 .dat，见上面 isFbneoFamilyCore 那段说明）。
+ * 键是上传文件名剥扩展名后的短名，值是 MAME 真实 romset 短名；以后再有这类错名游戏往里加即可。
+ */
+const MAME_ROMSET_ALIASES: Record<string, string> = {
+  mxsqy: 'mxsqy102tw',
+}
+const isMameCurrentCore = (core: string | undefined): boolean => core === 'mame-current'
+function canonicalMameRomset(name: string): string {
+  const short = name.replace(/\.[^.]*$/, '')
+  const canonical = MAME_ROMSET_ALIASES[short]
+  return canonical ? `${canonical}.zip` : name
+}
+
 export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
   // 按游戏覆盖优先，其次才是平台默认。街机一个平台底下其实是好几套硬件，
@@ -2895,6 +2913,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             builtInRomData = prepared.hack.romData
             engineGameName = `${prepared.hack.zipName}.zip`
             console.info(`[arcade] 按指纹认出改版包：${prepared.hack.title}（借 ${prepared.hack.driver} 驱动），已套用内置 RomData`)
+          }
+          // MAME（mame-current）按 romset 文件名认驱动：上传文件名不标准时纠正成真实 romset 名，
+          // 否则核心按名字找不到驱动就回主菜单。只在 mame-current 上生效，不影响 FBNeo 系列。
+          if (isMameCurrentCore(core) && engineGameName) {
+            engineGameName = canonicalMameRomset(engineGameName)
           }
         }
 

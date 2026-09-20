@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>EJS mame-current mxsqy 本地复现</title></head>
+<body>
+<div id="game" style="width:800px;height:600px"></div>
+<script>
+  // 完全复刻线上路径：fetch 本地 zip → blob URL → gameName=mxsqy102tw.zip → mame-current
+  fetch('/__mxsqy.zip')
+    .then(function (r) {
+      if (!r.ok) throw new Error('zip 加载失败 ' + r.status)
+      return r.blob()
+    })
+    .then(function (blob) {
+      window.EJS_player = '#game'
+      window.EJS_core = 'mame-current'
+      window.EJS_gameUrl = URL.createObjectURL(blob)
+      window.EJS_gameName = 'mxsqy102tw.zip'
+      window.EJS_pathtodata = '/emulatorjs/'
+      window.EJS_startOnLoaded = true
+      window.EJS_FORCE_DEBUG_LOG = true
+      var s = document.createElement('script')
+      s.src = '/emulatorjs/loader.js'
+      document.body.appendChild(s)
+    })
+    .catch(function (e) {
+      document.body.innerHTML = '<pre>测试页初始化失败: ' + e.message + '</pre>'
+    })
+</script>
+</body>
+</html>
