@@ -104,6 +104,7 @@ export const ENV_MANIFEST = [
   { name: 'FLASH_SAVE_SLOT_MAX_BYTES', group: '云存档', kind: 'config', file: 'flash-save-contract.js', note: 'Flash 在线档单槽两部分合计上限' },
   { name: 'FLASH_SAVE_TOTAL_MAX_BYTES', group: '云存档', kind: 'config', file: 'flash-save-contract.js', note: '单账号 Flash 在线档总配额' },
   { name: 'LIVE_FROZEN_CLOSE_MS', group: '直播', kind: 'config', file: 'live.js' },
+  { name: 'LIVE_GHOST_SWEEP_MS', group: '直播', kind: 'config', file: 'live.js' },
   { name: 'LIVE_FROZEN_HIDE_MS', group: '直播', kind: 'config', file: 'live.js' },
   { name: 'LIVE_MAX_ROOMS', group: '直播', kind: 'config', file: 'live.js' },
   { name: 'LIVE_MAX_ROOMS_PER_IP', group: '直播', kind: 'config', file: 'live.js' },

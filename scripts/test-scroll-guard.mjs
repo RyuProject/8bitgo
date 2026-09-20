@@ -113,4 +113,27 @@ dialog = null
 stop()
 ok(handlers.length === 0, '卸载后一个监听都不剩')
 
+console.log('── 没人吃这个键的时候不拦（观众看直播、还没上场当 2P）──')
+/*
+  那条路上方向键没有任何消费者（拿到 2P 座位之后才有：liveview 把方向键当手柄键发回房主），
+  拦掉只会让访客滚不动页面 —— 而看直播时页面本来就是要滚的。
+  拦过头比漏拦更糟，所以这一条和上面那几条「不拦」是同一个性质的用例。
+*/
+ok(!blocksScroll({ code: 'ArrowDown', consumes: false }), 'consumes:false：方向键放行（访客能滚页面）')
+ok(blocksScroll({ code: 'ArrowDown', consumes: true }), 'consumes:true：照旧拦')
+ok(blocksScroll({ code: 'ArrowDown' }), '不给这一项 = 默认有消费方，照旧拦（其余八个运行时不受影响）')
+ok(!blocksScroll({ code: 'Space', consumes: false }), 'Space 同理放行')
+ok(!blocksScroll({ code: 'ArrowDown', consumes: false, editable: false }), 'consumes 是独立的一维，不和其它放行条件互相影响')
+
+console.log('── 座位变化是「现取」的：不重装监听也要立刻生效 ──')
+let viewerSeated = false
+const stopViewer = installScrollGuard(null, { consumes: () => viewerSeated })
+ok(!fire('ArrowDown', el('CANVAS')), '观众没座位：方向键不被拦')
+viewerSeated = true
+ok(fire('ArrowDown', el('CANVAS')), '拿到 2P 座位：同一个监听立刻开始拦（传的是函数，不是值）')
+viewerSeated = false
+ok(!fire('ArrowDown', el('CANVAS')), '收回座位：又放行')
+stopViewer()
+ok(handlers.length === 0, '卸载后一个监听都不剩（观众这条路也干净）')
+
 console.log(`\n🎉 ${n} 项全过`)

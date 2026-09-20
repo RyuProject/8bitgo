@@ -186,6 +186,20 @@ blob 游戏 URL 走 §2.7 那个补丁取 `EJS_gameName` 当虚拟文件系统�
 [libretro INFO] Game description: Mingxing San Que Yi (Taiwan, V102TW)
 ```
 
+⚠️⚠️ **往 `/roms` 里写文件之前，父目录必须先建出来**（`fsWrite.ts` 的 `ensureParentDir`）。
+
+Emscripten 的 `FS.writeFile` **不会**创建中间目录 —— 2026-09-20 在真实引擎里实测：
+`fs.writeFile('/nodir/x.zip', …)` 抛 `ENOENT`，先 `fs.mkdir('/nodir')` 同一个调用就成功。
+而注入器（`installFsInjector`）用**一个 try 包住整个注入循环**，所以：
+
+- 一条写失败 → **后面所有注入都不写**；
+- 回报只有一句笼统的「文件没写进虚拟文件系统」，症状和「本来就绑错了地址」一模一样。
+
+`/roms` 是 `relocateMameRom` 才建的，而注入跑在它**之前**：blob 游戏那条路
+`/roms` 会被引擎写 ROM 时顺带建出来（引擎自己那段 writeFile 建目录），
+**直链游戏**那条路引擎把 ROM 写在根目录 —— `/roms` 根本不存在，BIOS 一条都写不进去。
+所以：**任何要写进子目录的注入，都得先 `ensureParentDir`**。回归 `npm run test:fs-write`。
+
 ⚠️ **BIOS 也必须待在 `/roms` 里，不能留在根目录。** MAME 的 BIOS 搜索目录就是内容的父目录
 （实测核心日志：`GET_SYSTEM_DIRECTORY: "/roms"`，`SYSTEM DIR is empty, assume CONTENT DIR`）。
 而**引擎自己下的平台级 BIOS（`EJS_biosUrl`）落点是根目录**（文件名取 URL 尾段），
@@ -200,6 +214,21 @@ blob 游戏 URL 走 §2.7 那个补丁取 `EJS_gameName` 当虚拟文件系统�
 一个街机包只跑一块板子，平台填 neogeo.zip 而游戏要 pgm.zip 时那 1.5 MB 下下来核心不会用。
 会打一条 `[emulatorjs] 跳过平台级 BIOS（neogeo.zip）：这款游戏要的是 pgm.zip`——
 将来报缺文件时先看这条，确认不是「后台系统名填错」被这条规则主动跳过了。
+
+⚠️ **跳过这件事有三个前提，缺一条都不许跳**（2026-09-20 补的，最初只比了名字）：
+
+1. **平台是 `arcade`**：「一个包只跑一块板子」是街机的事实。别的平台（PS1 那种）的
+   平台级 BIOS 是**必需**的，被一个手输的系统名顶掉就是整局起不来。
+2. **这款游戏自己那份真的会写进去**（`planBiosFiles` 的结果非空 = 绑了地址、名字也合法）：
+   否则跳掉平台那份等于**一份 BIOS 都不下**，比不跳更糟 —— 后台把系统名填错一个字母就会
+   走到这里，而症状和「真没绑地址」一模一样。这也是 `planBiosFiles` 必须在算
+   `skipPlatformBios` **之前**就调一次的原因（后面写文件时复用同一个结果，不重算）。
+3. 两边名字都取得到且不相等。
+
+⚠️ 给 `EJS_gameName` 拼 `roms/` 前缀时**只取末段**（`name.split('/').pop()`）：名字里若带了
+路径（目录拖放、或数据里存成 `sub/game.zip`），拼出来就是 `roms/sub/game.zip` ——
+核心的父目录于是变成 `/roms/sub`，rompath 和 **system dir 一起跑偏**，BIOS 又找不到了。
+末段同时就是核心认定的驱动名，所以这样取是等价的，且天然幂等（不会叠成 `roms/roms/`）。
 
 ⚠️ 文件名照样是身份（§2.8 那条对 MAME 同样成立）：错名游戏用
 `emulatorjs.ts` 里的 `MAME_ROMSET_ALIASES`（mxsqy → mxsqy102tw）纠偏。
@@ -217,6 +246,33 @@ zip 顶层条目，于是照旧报 `v-102tw.u39 NOT FOUND` 回菜单。拍平（
 `a8_027a.u41=f9ada8c4`、`igs_l2404.u23=dc8ff7ae`、`igs_l2405.u38=2f20eade`、
 `igs_s2402.u21=a3e3b2e0`、`igs_m2403.u22=53940332`、`v-102tw.u39=16095b98`（+ `igs_m2401.u39=32e69540`）。
 
+
+### 2.8.3 mame-current 的音频毛刺：窗口只有 64ms，且它对主线程卡顿极敏感
+
+核心的音频驱动（RetroArch 的 `RWebAudio`，编译在核心胶水层里）是**按块排期**的：
+每批音频一个新建的 `AudioBufferSourceNode`，靠时间戳首尾精确相接；能提前排多久由窗口决定，
+而窗口就是 `retroarch.cfg` 里的 **`audio_latency`**（引擎写死 64）。窗口算出的可用帧数不足时
+（`_RWebAudioWriteAvailFrames() < num_frames`）在 nonblock 下**整块丢弃**；队列排空后又要
+`ceil(now*1000)/1000 + MIN_START_OFFSET_SEC` 重新起算 —— 两者都是波形不连续，听感就是
+短促音效上的**毛刺**（MAME 实测到过 91ms 的主线程长任务，91 > 64，窗口必然被抽干）。
+
+修法：开局前把 cfg 里的 `audio_latency = 64` 改成 128（`src/emulator/mameAudio.ts` 的纯函数，
+`raiseMameAudioLatency` 钩子挂在 mame-current 的 `beforeStart` 链上，**只给 MAME**——
+它是本站最重的核心，FBNeo 那一批轻得多，没必要为它们付 +64ms 音画延迟）。
+
+**时机是成立的，已验证**：cfg 由引擎在建核心模块时写好，而核心是**在 `callMain` 里才读它**
+（实测 `startGame` 那一刻 cfg 里已经有 `audio_latency = 64`），我们的钩子正好卡在 `callMain` 之前。
+
+**验收看核心日志**（这是唯一的判据，`Buffer size` = latency × 48000 × 2ch × 4B）：
+
+```text
+[INFO] [RWebAudio] Device rate: 48000 Hz.
+[INFO] [RWebAudio] Buffer size: 49152 bytes.   # 128ms；默认 64ms 时是 24576
+```
+
+回归：`npm run test:mame-audio`（含「引擎还写不写 64」「cfg 路径有没有变」两条取证断言，
+引擎升级后它红了就重新取证，别直接改数字）。**注意它是延迟换稳定**：想调到别的值，
+改 `MAME_AUDIO_LATENCY_MS` 并同步上面那条「Buffer size」断言。
 
 ### 2.9 平台 BIOS 的边缘缓存会骗人
 
@@ -504,6 +560,21 @@ npm run test:rompack                       # Zstd 19 / AES-GCM / 摘要 / 原文
 放在 `FLASH_SAVE_GAMES`。FlashVars 里的桥、API 和头像地址必须是绝对 URL，因为远程 ROM 的 `base`
 可能指向 R2，把 `/api/...` 误解到资源域名。
 
+兼容桥有**两代、接口互不兼容**，是两个独立产物，不能互相顶替：
+
+| | AGI1 | AGI2 |
+|---|---|---|
+| 接入游戏 | `infectonator-2` | `kingdom-rush-frontiers` |
+| 桥 / 源码 | `AGI.swf` / `MainTimeline.as` | `AGI2.swf` / `KrfAgiBridge.as` |
+| 风格 | 方法式，profile + data 成对提交，键 `profileonlineN`/`dataonlineN` | 对象式，一次 `key→value`，键 `slot1..3` |
+| 存储 | `flash_save_slots` | `flash_save_kv` |
+
+「哪款游戏用哪套方言、加载哪个桥」只有一份，写在 `shared/flash-save-games.js`（前后端共用）；
+漏改一处或自己再抄一份的后果是「桥能加载、也能连上，就是读不到档」，且不报错。
+
+- **接口参考手册**（两代逐方法、逐字段、错误码、限额、排查线索）：`docs/agi-bridge-api.md`
+- **设计文档**（为什么分两套、令牌模型、R01/R02 并发问题的来龙去脉、验收清单）：`docs/flash-online-save.md`
+
 部署前要迁移 `flash_save_slots` 表，并让构建检查桥源码、SWF 和 `dist` 三者哈希一致：
 
 ```bash
@@ -549,6 +620,31 @@ Flash 手柄键位存在 `games.flash_controls` JSON，街机屏幕手柄的动�
 `games.arcade_buttons`（2 / 4 / 6）。这两列都是可空的：旧 Flash 游戏仍可用鼠标，旧街机默认六键，
 所以可以先迁移再慢慢在后台补配置。部署这版必须先跑 `cd server && npm run migrate`；
 自测用 `npm run test:ruffle-runtime && npm run test:game-controls && npm run test:keymap`。
+
+### 2.25 直播间房间的清理只认 `hostSocketId` 这个事实，不认 `membership`
+
+`server/src/live.js` 里 `membership`（`socket.id → {roomId, role}`）每个 socket **只有一条**，
+而 `rooms` 是另一张表 —— 两者一旦漂开，那间房就再也收不到任何清理：`stop-live`、
+`host-visibility`、断线都只会动 membership 指的那一间。
+
+2026-09-20 线上就出现了一间这样的房：主播**整个浏览器都关掉了**，它还挂在公开大厅里，
+`viewers: 0` 而 `hostAway: false`（服务端以为人还在），谁点进去都没有画面，而且不会自愈。
+（产生它的那条路径事后没钉死 —— 所以修法是「不假设它不再发生」。）
+
+三处一起守，缺一处都还会漏：
+
+1. `bindHost()` 绑主播之前，先关掉**同一个 socket** 名下的其它房间（`go-live` 和 `resume-live`
+   都走这个函数，所以挡在两处入口）。
+2. `leave()` **第一句**就按 `hostSocketId === socket.id` 扫一遍，不能只走下面那条 membership
+   分支（那条在漂移状态下会 `if (!info) return` 直接放过）。
+3. 兜底扫描（`GHOST_SWEEP_MS`，默认 30s）：房间记着的 `hostSocketId` 已经不在 `nsp.sockets` 里，
+   就按「主播离开」处理（有人看走宽限期、没人看直接散）。判据只能是这个**事实**。
+
+**给一款新 Runtime 加「屏幕方向键」这类按键时**：`scrollGuard` 是按 `status === 'running'`
+给所有运行时装的，而**看直播的访客没有 2P 座位时方向键没有任何消费者**，拦掉只会让他滚不动页面。
+所以它现在多了一维 `consumes`（传函数、每次按键现取）：访客没座位 = 不拦，拿到座位 = 立刻拦。
+自测：`npm run test:scroll`（含「座位变了不重装监听也要生效」）+ `cd server && npm run test:live`
+（含 `ghostRooms` 分类、停播重开不留旧房、以及三条防回退的源码断言）。
 
 ---
 

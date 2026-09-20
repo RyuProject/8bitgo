@@ -52,6 +52,17 @@ export type ScrollKeyContext = {
   activatable?: boolean
   /** 页面上开着模态框（存读档、分享、登录…） */
   dialogOpen?: boolean
+  /**
+   * 这个运行时**此刻**真的在吃方向键吗。省略 = 吃（绝大多数情况）。
+   *
+   * 唯一的 `false` 来自「观众看直播、还没上场当 2P」：那条路上没有任何东西消费方向键
+   * （有 2P 座位才会把方向键当手柄键发回房主），拦掉只会让访客**滚不动页面**
+   * —— 而看直播时页面本来就是要滚的（弹幕记录、下面的推荐位）。
+   *
+   * ⚠️ 判据必须是「这一局真的有人吃这个键」，不能写成「运行时不叫 xxx」：
+   * 观众一旦拿到 2P 座位，方向键就真的被消费了，那时必须重新开始拦。
+   */
+  consumes?: boolean
 }
 
 /**
@@ -73,6 +84,8 @@ export function blocksScroll(ctx: ScrollKeyContext): boolean {
   if (ctx.ctrl || ctx.alt || ctx.meta) return false
   if (ctx.editable) return false
   if (ctx.dialogOpen) return false
+  // 没人吃这个键就别拦（观众没上场时的方向键，见 ScrollKeyContext.consumes）
+  if (ctx.consumes === false) return false
   if (ctx.activatable && ctx.code === 'Space') return false
   return true
 }
@@ -102,9 +115,15 @@ function dialogOpen(): boolean {
  * 没在玩的时候方向键本来就该滚页面。
  *
  * @param host 播放器那一块 DOM；iframe 就在它里面
+ * @param options.consumes 这一局此刻有没有人在吃方向键（省略 = 有）。**传函数不传值**：
+ *        守卫是装在文档上的长寿命监听，而「观众有没有 2P 座位」随时会变 ——
+ *        调用方在每次按键时现取，就不必为座位变化重装一遍监听
  * @returns 卸载函数
  */
-export function installScrollGuard(host: HTMLElement | null | undefined): () => void {
+export function installScrollGuard(
+  host: HTMLElement | null | undefined,
+  options: { consumes?: () => boolean } = {},
+): () => void {
   const onKeyDown = (e: KeyboardEvent) => {
     // 已经有人拦过了（红白机那条路、快捷键）就不重复插手
     if (e.defaultPrevented) return
@@ -118,6 +137,7 @@ export function installScrollGuard(host: HTMLElement | null | undefined): () => 
         editable: isTyping(target),
         activatable: isActivatable(target),
         dialogOpen: dialogOpen(),
+        consumes: options.consumes?.() ?? true,
       })
     )
       return

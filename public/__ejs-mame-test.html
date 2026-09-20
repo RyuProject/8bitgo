@@ -15,6 +15,35 @@
   })
 </script>
 <script>
+  // 体检用：复刻适配器里「把 retroarch.cfg 的 audio_latency 提到 128」那一步，验证两件事：
+  //   1) 开局前（startGame 被调用的那一刻）cfg 里到底有没有 audio_latency
+  //   2) 改了以后核心日志里的 Buffer size 是不是从 24576 变成 49152
+  var CFG = '/home/web_user/.config/retroarch/retroarch.cfg'
+  Object.defineProperty(window, 'EJS_emulator', {
+    configurable: true,
+    set: function (emu) {
+      // 探测用：这个 defineProperty 只有 setter，读 window.EJS_emulator 拿到的是 undefined
+      window.__emu = emu
+      var orig = emu.startGame
+      emu.startGame = function () {
+        try {
+          var fs = emu.gameManager.FS
+          var txt = new TextDecoder().decode(fs.readFile(CFG))
+          window.__cfgBefore = txt
+          var after = txt.indexOf('audio_latency = 64') >= 0
+            ? txt.split('audio_latency = 64').join('audio_latency = 128')
+            : txt + (txt.endsWith('\n') ? '' : '\n') + 'audio_latency = 128\n'
+          fs.writeFile(CFG, after)
+          window.__cfgAfter = new TextDecoder().decode(fs.readFile(CFG))
+        } catch (e) {
+          window.__cfgErr = String(e)
+        }
+        return orig.apply(emu, arguments)
+      }
+    },
+  })
+</script>
+<script>
   // 完全复刻线上路径：fetch 本地 zip → blob URL → gameName=mxsqy102tw.zip → mame-current
   fetch('/__mxsqy.zip')
     .then(function (r) {

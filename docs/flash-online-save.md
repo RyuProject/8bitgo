@@ -3,6 +3,11 @@
 本文定义 8BitGo 为旧 Flash 游戏提供在线存档时使用的站内接口，以及替代第三方 API SWF
 需要实现的 ActionScript 契约。第一款接入游戏是 Infectonator 2 v1.6。
 
+> 📌 **接口本身的参考手册另有一篇：`docs/agi-bridge-api.md`。**
+> 那篇按「AGI1 / AGI2」两代方言逐方法、逐字段地列接口（含参数语义、回调形状、
+> 错误码、校验限额、排查线索）。**本文讲的是设计取舍与踩坑经过**（为什么分两套、
+> 为什么令牌不落盘、R01/R02 两条并发问题是怎么来的），改接口前建议两篇对照着看。
+
 ## 1. 已核对的游戏行为
 
 核对文件：`603478_Infectonator2ver1.6.swf`
@@ -310,10 +315,10 @@ cb({
 });
 ```
 
-- 未登录时第一版调用：
+- 未登录时**也是同一个形状**（只是 `loggedIn:false`、两个字符串为空 —— 桥照实回填，不另做形状）：
 
 ```as3
-cb({ success: true, loggedIn: false });
+cb({ success: true, loggedIn: false, username: "", avatar_url: "" });
 ```
 
 网络或桥接错误必须调用一次 `cb({ success:false, loggedIn:false })`，不能让游戏永久等待。
@@ -345,8 +350,11 @@ cb({ success: true, loggedIn: false });
 ### 删除桥接
 
 游戏会连续调用 `deleteUserData("profileonlineN")` 和 `deleteUserData("dataonlineN")`。
-兼容 SWF 将任意一个调用映射成删除整个 N 槽，并在 2 秒内合并同一槽的重复删除，避免中间刚写入的
-新存档被第二次删除。服务端删除本身仍然保持幂等。
+兼容 SWF 将任意一个调用映射成删除整个 N 槽，并按「**这个槽已经排了删除**」这个标记合并重复调用
+（`MainTimeline.as` 的 `deleteQueued`），避免中间刚写入的新存档被第二次删除。服务端删除本身仍然保持幂等。
+
+> ⚠️ 这里以前是「2 秒时间窗内去重」，2026-09-19 改掉了：时间窗会把「删档 → 重新存 → 再删」
+> 里的第二次删除一起吞掉，玩家删完看到槽空了、其实档还在。写入入队时会清掉这个标记。
 
 ### 排行榜空实现
 

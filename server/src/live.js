@@ -140,6 +140,21 @@ const FROZEN_HIDE_MS = Number(process.env.LIVE_FROZEN_HIDE_MS || 90_000)
  * 主播的 broadcast.ts 收到 live-ended 会进入休眠，回到前台自动重开一间。
  */
 const FROZEN_CLOSE_MS = Number(process.env.LIVE_FROZEN_CLOSE_MS || 10 * 60_000)
+/**
+ * 「主播 socket 已经不在了、房间却还挂着他」的扫描间隔。
+ *
+ * 这是**兜底**，不是主路径：正常断线由 `leave()` 收干净、`bindHost` 也不会让一个 socket
+ * 同时挂两间房。但 2026-09-20 线上出现过一间这样的房：主播**整个浏览器关掉**之后，
+ * 它在大厅里挂着 `viewers: 0` 而 `hostAway: false`（服务端以为人还在），
+ * 点进去什么都没有，而且不会自己消失。事后没能把产生它的那条路径钉死 ——
+ * 房间的清理全靠 `membership`（每个 socket 只有一条）这一件事本身就很脆：
+ * 只要有一处让它和 `rooms` 漂开，那间房就永远收不到任何清理。
+ *
+ * 所以这里不假设「漂移不会再发生」，而是每 30 秒按**事实**核一遍：
+ * 房间记着的 hostSocketId 还在不在 nsp.sockets 里。不在就按主播离开处理
+ * （有人看走宽限期、没人看直接散）——最坏情况下大厅最多多挂 30 秒。
+ */
+const GHOST_SWEEP_MS = Number(process.env.LIVE_GHOST_SWEEP_MS || 30_000)
 
 const str = (v, max = 120) => (typeof v === 'string' ? v.trim().slice(0, max) : '')
 
@@ -543,6 +558,8 @@ function notifyViewers(nsp, room) {
  */
 const listWatchers = new Set()
 let listTimer = null
+/** 幽灵房扫描的计时器（见 GHOST_SWEEP_MS）。全局一个：这个清扫和具体 nsp 无关，但只需要一份 */
+let ghostTimer = null
 
 /** 房间列表有变化就推给订阅者。同一轮的多次变化合并成一次；合并完内容还和上次一样就一个字都不发 */
 function notifyRoomList() {
@@ -680,8 +697,57 @@ function hostAway(nsp, room) {
   notifyRoomList()
 }
 
+/**
+ * 挑出「主播 socket 已经不在线」的房间。**纯函数**：只分类、不处理，便于单测
+ * （`server/scripts/test-live.mjs` 里直接喂构造出来的房间，不需要真的把服务端跑成漂移态）。
+ *
+ * 两类房间**不算**幽灵：
+ *   · `hostSocketId` 为空 —— 那是已经走过 `hostAway()` 的房，`awayTimer` 在管它；
+ *   · 记着的 socket 还在 —— 正常在播。
+ *
+ * ⚠️ 判据是「socket 还在不在 nsp.sockets 里」，而不是「membership 怎么说」：
+ * 这个函数存在的全部理由就是 membership 和 rooms 漂开之后兜底（见 GHOST_SWEEP_MS 的注释）。
+ *
+ * @param {Iterable<object>} roomList
+ * @param {(socketId: string) => boolean} hostAlive
+ */
+export function ghostRooms(roomList, hostAlive) {
+  const ghosts = []
+  for (const room of roomList) {
+    if (!room.hostSocketId) continue
+    if (hostAlive(room.hostSocketId)) continue
+    ghosts.push(room)
+  }
+  return ghosts
+}
+
+/**
+ * 收掉这个 socket 名下的房间：**没人看直接散、有人看走宽限期**（和断线同一条规则）。
+ * 只按 `hostSocketId` 找，不看 membership —— 理由同 ghostRooms。
+ */
+function releaseHostedRooms(nsp, socketId, reason = 'host-left') {
+  for (const room of [...rooms.values()]) {
+    if (room.hostSocketId !== socketId) continue
+    if (room.viewers.size === 0) closeRoom(nsp, room, reason)
+    else hostAway(nsp, room)
+  }
+}
+
 /** 把房间交给一个（新的）主播 socket */
 function bindHost(nsp, room, socket) {
+  /*
+    ⚠️ 一个 socket 同时只能当**一间**房的主播，多出来的那间在这里关掉。
+
+    房间的清理全靠 `membership`（socket.id → 一个 roomId，**一条**）：一个 socket 挂着
+    两间房时，`stop-live` / `host-visibility` / 断线都只会动 membership 指的那一间，
+    另一间从此收不到任何事件 —— 就是「幽灵房」的来源。放在这里而不是 `go-live` 里，
+    是因为 `resume-live` 也走这个函数，两个入口都要挡。
+    正常路径上这里扫不到东西（不带例外的那间本来就不该存在），留着是为了漂移之后能自愈。
+  */
+  for (const other of [...rooms.values()]) {
+    if (other === room || other.hostSocketId !== socket.id) continue
+    closeRoom(nsp, other, 'restarted')
+  }
   if (room.awayTimer) clearTimeout(room.awayTimer)
   room.awayTimer = null
   room.awaySince = null
@@ -695,6 +761,20 @@ function bindHost(nsp, room, socket) {
 }
 
 function leave(nsp, socket) {
+  /*
+    ⚠️ 先按「这个 socket 是哪几间房的主播」扫一遍，**不能只认下面那条 membership**。
+
+    membership 每个 socket 只有一条（socket.id → 一个 roomId）。一旦它和 `rooms` 漂开
+    —— 2026-09-20 线上那间挂到浏览器都被关掉还在的房就是这样 —— 这里会走到
+    `if (!info) return` 或 `room.hostSocketId !== socket.id` 而直接返回，
+    那间房的 `hostSocketId` 就永远指着一个死掉的 socket：`hostAway` 算不出 true，
+    宽限期、冻结计时、收房全都不生效，它就一直留在大厅里。
+
+    这一句是「按事实核一遍」：房间记着的 hostSocketId 就是自己，那就是自己该收的房。
+    正常断线时它顺手就把下面那条路径要做的事做完了（下面接着走也不会重复处理：
+    房已经散了就 return，走宽限期的 hostSocketId 已经是 null）。
+  */
+  releaseHostedRooms(nsp, socket.id)
   const info = membership.get(socket.id)
   if (!info) return
   membership.delete(socket.id)
@@ -710,6 +790,7 @@ function leave(nsp, socket) {
     return
   }
   if (!room) return
+
 
   if (info.role === 'host') {
     // 已经被另一个 socket 接管（旧连接迟到的 disconnect）：什么都不用做
@@ -1236,6 +1317,22 @@ export function attachLive(io, options = {}) {
     socket.on('leave', () => leave(nsp, socket))
     socket.on('disconnect', () => leave(nsp, socket))
   })
+
+  /*
+    兜底：定期把「主播 socket 已经不在线」的房间收掉（见 GHOST_SWEEP_MS 的注释）。
+
+    ⚠️ 判据只能是 `nsp.sockets` 这个**事实**，不能是 membership ——
+    这个扫描存在的唯一理由就是 membership 漂开之后还有人管。
+    unref()：这只是个清扫线程，不该因为它让进程迟迟退不出（测试里尤其明显）。
+  */
+  if (ghostTimer) clearInterval(ghostTimer)
+  ghostTimer = setInterval(() => {
+    for (const room of ghostRooms(rooms.values(), (id) => nsp.sockets.has(id))) {
+      if (room.viewers.size === 0) closeRoom(nsp, room, 'ghost-host')
+      else hostAway(nsp, room)
+    }
+  }, GHOST_SWEEP_MS)
+  ghostTimer.unref?.()
 
   return { nsp, list: () => liveRooms() }
 }

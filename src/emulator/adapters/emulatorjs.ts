@@ -42,6 +42,8 @@ import { loadRemoteArchiveRom } from '../remoteArchive'
 import { matchArcadeHack, type ArcadeHack } from '@/data/arcadeHacks'
 import { deriveArcadeHackBytes } from '../arcadeHack'
 import { biosNameOfUrl, planBiosFiles } from '../biosPlan'
+import { ensureParentDir } from '../fsWrite'
+import { MAME_AUDIO_LATENCY_MS, RETROARCH_CFG_PATH, raiseAudioLatency } from '../mameAudio'
 import { isRomPackBytes, isRomPackUrl, unpackRomPackBlob } from '@/services/romPack'
 
 /**
@@ -730,6 +732,15 @@ interface FsInjection {
   bytes: string | Promise<Uint8Array | null>
 }
 
+/*
+  写文件前的建目录逻辑在 fsWrite.ts —— 那段是独立的纯工具，有单测
+  （`npm run test:fs-write`）。这里只留一句必须写在调用点的事实：
+
+  ⚠️ Emscripten 的 writeFile 不会建父目录（实测抛 ENOENT），而下面整个注入循环
+  共用**一个 try** —— 一条写失败会连带后面所有注入都不写。mame-current 的 BIOS
+  写 /roms 时正好撞上这一条（那是 relocateMameRom 才建的目录，注入跑在它之前）。
+*/
+
 /**
  * 把文件塞进模拟器的虚拟文件系统（ROM 之外的那些：RomData、BIOS 包）。
  *
@@ -797,6 +808,11 @@ function installFsInjector(
           const bytes = typeof item.bytes === 'string' ? item.bytes : await item.bytes
           // null = 没下下来。不写，核心自己会报「缺 xx」，那条比我们编的话准
           if (bytes == null) continue
+          /*
+            ⚠️ 父目录必须先建好：mame-current 的 BIOS 要写进 /roms，而那个目录可能
+            还不存在（详见 ensureParentDir）。少这一句就是「文件没写进去、核心报缺文件」。
+          */
+          ensureParentDir(fs, item.path)
           fs.writeFile(item.path, bytes)
         }
       } catch (e) {
@@ -2941,11 +2957,28 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         /**
          * 平台级 BIOS（`EJS_biosUrl`）和这款游戏自己那套系统包是不是同一块板子。
          * 两边名字都拿得到、又不相等 → 平台那份对这个游戏没用，别下（见下面 EJS_biosUrl 的注释）。
-         * 名字取不到（平台没配 / 游戏没识别出系统名）时一律保守处理：照旧下。
+         *
+         * ⚠️ 跳过是有前提的，三条同时成立才敢跳（2026-09-20 补的，早先只比了名字）：
+         *
+         *   1. **平台是 arcade**。「一个包只跑一块板子」是街机的事实；别的平台（PS1 那种）
+         *      平台级 BIOS 是**必需**的，拿一个手输的系统名去把它顶掉就是整局起不来。
+         *   2. **这款游戏自己那份真的会写进去**（`plan.files` 非空 —— 绑了地址、名字也合法）。
+         *      否则跳掉平台那份等于**一份 BIOS 都不下**，比不跳更糟：后台把系统名填错一个字母
+         *      就会走到这里，而症状和「真没绑地址」一模一样。
+         *   3. 两边名字都取得到且不相等。
+         *
+         * 所以 plan 必须在**这里**就先算出来（下面写文件时复用同一个对象，不重算）。
          */
+        const biosPlan = planBiosFiles(options.biosUrl, options.biosSet)
         const platformBiosName = biosNameOfUrl(options.biosUrl)
         const gameBiosName = options.biosSet?.name?.trim().toLowerCase() ?? ''
-        const skipPlatformBios = Boolean(platformBiosName && gameBiosName && platformBiosName !== gameBiosName)
+        const skipPlatformBios = Boolean(
+          options.platform === 'arcade' &&
+            platformBiosName &&
+            gameBiosName &&
+            platformBiosName !== gameBiosName &&
+            biosPlan.files.length > 0,
+        )
         /** 这次真正交给引擎去下载的平台级 BIOS（空串 = 标不设 EJS_biosUrl）。进度探针也用这个值 */
         const engineBiosUrl = skipPlatformBios ? '' : (options.biosUrl ?? '')
         if (skipPlatformBios) {
@@ -2978,9 +3011,19 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
          * ⚠️ 只在 mame-current 上做 —— FBNeo / mame2003 在根目录一直正常，别动它们。
          */
         const mameContentDir = isMameCurrentCore(core) ? 'roms/' : ''
-        if (mameContentDir && engineGameName && !engineGameName.startsWith(mameContentDir)) {
-          // startsWith 那个判断是幂等保护：名字里已经带了目录就不再叠一层 roms/roms/
-          engineGameName = mameContentDir + canonicalMameRomset(engineGameName)
+        if (mameContentDir && engineGameName) {
+          /*
+            ⚠️ 只取**末段**再拼目录，别把整个名字往后接：内容名里若带了路径
+            （浏览器的目录拖放、或数据里存成 `sub/game.zip`），拼出来就是
+            `roms/sub/game.zip` —— 核心的父目录于是变成 `/roms/sub`，rompath 和
+            **system dir 一起跑偏**，BIOS 又找不到了（症状和这次修的那个一模一样）。
+            末段同时也是核心认定的驱动名（它只取 basename），所以这样取是等价的。
+
+            这一句同时也是幂等保护：已经是 `roms/x.zip` 时，末段还是 `x.zip`，
+            拼回来一模一样，不会叠成 roms/roms/。
+          */
+          const base = engineGameName.split('/').filter(Boolean).pop() ?? engineGameName
+          engineGameName = mameContentDir + canonicalMameRomset(base)
         }
 
         Object.assign(win, {
@@ -3064,7 +3107,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           写哪几个、什么时候干脆不写，全在 biosPlan.ts 里（那是纯函数，有单测）；
           这里只负责把计划变成「下载 + 落盘」。
         */
-        const plan = planBiosFiles(options.biosUrl, options.biosSet)
+        const plan = biosPlan
         if (plan.warning) console.warn(plan.warning)
         for (const file of plan.files) {
           /*
@@ -3136,7 +3179,46 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             }
           : undefined
 
-        if (injections.length || relocateMameRom || relocateMameBios) {
+        /**
+         * MAME 的音频窗口：把 retroarch.cfg 里的 `audio_latency = 64` 提到 128ms。
+         *
+         * 机制、取值理由和验证方法全写在 `../mameAudio.ts` 的模块注释里（那里是纯函数，
+         * 有 `npm run test:mame-audio` 守着）。这里只说三件**只在这层才成立**的事：
+         *
+         * 1. **时机**：cfg 是引擎在建核心模块时就写好的，而核心是在 `callMain` 里才去读它 ——
+         *    我们这一步正好卡在 `callMain` 之前，改完立刻生效，不需要重启。
+         * 2. **失败不拦开局**：读不到 / 写不进就按引擎默认的 64ms 继续（症状只是可能还有毛刺），
+         *    而拦下来是整局都玩不了 —— 和这个注入器里其它钩子同一条取舍。
+         * 3. **回读核对**：cfg 在虚拟文件系统里，写没写进去看不见，所以写完立刻读回来对一遍
+         *    并打日志。生效与否最终看核心那行 `[RWebAudio] Buffer size:` —— 64ms 是 24576 bytes，
+         *    128ms 应该是 49152 bytes。
+         *
+         * 只给 mame-current：它是本站最重的核心、也是唯一报过毛刺的；FBNeo 那一批轻得多，
+         * 没必要为它们付 +64ms 的音画延迟。
+         */
+        const raiseMameAudioLatency = isMameCurrentCore(core)
+          ? (emu: EjsEmulator) => {
+              const fs = emu.gameManager?.FS
+              if (!fs?.readFile || !fs.writeFile) return
+              try {
+                const bytes = fs.readFile(RETROARCH_CFG_PATH)
+                if (!bytes) return
+                const before = new TextDecoder().decode(bytes)
+                const after = raiseAudioLatency(before, MAME_AUDIO_LATENCY_MS)
+                if (after === before) return
+                fs.writeFile(RETROARCH_CFG_PATH, after)
+                const check = fs.readFile(RETROARCH_CFG_PATH)
+                const ok = check ? new TextDecoder().decode(check).includes(`audio_latency = ${MAME_AUDIO_LATENCY_MS}`) : false
+                console.info(
+                  `[emulatorjs] mame-current：音频窗口 ${MAME_AUDIO_LATENCY_MS}ms ${ok ? '已写入（核心日志里的 Buffer size 应为 49152 bytes）' : '回读不一致，按默认 64ms 继续'}`,
+                )
+              } catch (e) {
+                console.warn('[emulatorjs] 调 MAME 音频窗口失败，按引擎默认 64ms 继续：', e)
+              }
+            }
+          : undefined
+
+        if (injections.length || relocateMameRom || relocateMameBios || raiseMameAudioLatency) {
           installFsInjector(win, injections, (msg) => {
             /*
               写失败**不拦着开局**（和 installFsInjector 的注释一致）：没了改版 dat，
@@ -3145,11 +3227,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               真缺文件的话核心自己会报「缺 xxx」，那条走 errorTap，比这里更准。
             */
             if (!destroyed) console.warn('[emulatorjs] 文件没写进虚拟文件系统，按原始配置继续：', fmt(rt.ejsFsInjectFailed, { msg }))
-          }, relocateMameRom || relocateMameBios
+          }, relocateMameRom || relocateMameBios || raiseMameAudioLatency
             ? (emu) => {
-                // 顺序有讲究：先把 ROM 搬进 /roms（顺带 mkdir），再搬 BIOS
+                // 顺序有讲究：先把 ROM 搬进 /roms（顺带 mkdir），再搬 BIOS，最后改 cfg
                 relocateMameRom?.(emu)
                 relocateMameBios?.(emu)
+                raiseMameAudioLatency?.(emu)
               }
             : undefined)
         }

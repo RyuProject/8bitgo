@@ -1346,6 +1346,14 @@ export function EmulatorPlayer({
   performanceProfileRef.current = performanceProfile
   const biosUrlRef = useRef(biosUrl)
   biosUrlRef.current = biosUrl
+  /**
+   * 滚动守卫（长在 document 上、只装一次）要能**现判**这两件事：
+   * 当前是哪种运行时、观众此刻有没有 2P 座位。见 scrollGuard 的 consumes。
+   */
+  const sessionRef = useRef(session)
+  sessionRef.current = session
+  const coopSeatedRef = useRef(coopSeated)
+  coopSeatedRef.current = coopSeated
   // 同 core：只在挂载那一刻读一次，进依赖会把正在跑的游戏重启
   const dosExecutableRef = useRef(dosExecutable)
   dosExecutableRef.current = dosExecutable
@@ -2984,10 +2992,17 @@ export function EmulatorPlayer({
    * iframe 里那个文档，装一处、九个运行时全生效。
    *
    * 只在 running 装：没在玩的时候方向键本来就该滚页面。
+   *
+   * ⚠️ **观众看直播、又还没上场当 2P 时，这里不拦。** 那条路上没有任何东西消费方向键
+   * （拿到 2P 座位之后才有：`liveview` 把方向键当手柄键发回房主），拦住只会让访客
+   * 滚不动页面 —— 而看直播时页面本来就要滚（弹幕记录、下面的推荐位）。
+   * 判据传函数进守卫：座位随时会变，守卫却长在 document 上，不该为它重装一遍监听。
    */
   useEffect(() => {
     if (status !== 'running') return
-    return installScrollGuard(hostRef.current)
+    return installScrollGuard(hostRef.current, {
+      consumes: () => sessionRef.current?.runtime.id !== 'liveview' || coopSeatedRef.current,
+    })
   }, [status])
 
   const statusLabel =

@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { RuntimeHandle } from './types'
 import type { ChatBarToggle } from './LiveChat'
-import { canBroadcast, startBroadcast, type Broadcast } from './broadcast'
+import { canBroadcast, startBroadcast, type Broadcast, type BroadcastOptions } from './broadcast'
 import { SEAT_TTL_MS } from './coopSeat'
 import { canAutoStartLive, liveEnabled, liveLink, refreshLiveRooms, type LiveChatMessage } from '@/services/live'
 import { playerName } from '@/services/netplay'
@@ -382,6 +382,46 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
     refreshLiveRooms()
   }, [setViewers])
 
+  /**
+   * 两条开播路径（**自动开播** / **分享标签页**）必须一字不差的那一组选项。
+   *
+   * 以前这里是两份手抄的，于是分享标签页那一路漏掉过 `onChat`：走那条路开播的主播
+   * **看不到任何一条弹幕**（连自己发的也看不到 —— 服务端不做本地回显），
+   * 而观众那边一切正常，主播只会以为「没人说话」。那种漏改不会报错、也测不到，
+   * 而且两条路只在「抓不到画布的游戏」上分岔，正是最不容易被自己碰到的一批。
+   *
+   * 只有三样东西**故意不在这里**，因为它们本来就是两条路各自的差别：
+   *   · `sources` / `maxBitrate` / `native` —— 一个是画布+音频节点，一个是整个标签页的流
+   *   · `onState` —— 自动那路是「重连失败才收摊」，手动那路是「结束就停」
+   */
+  const sharedLiveOptions = (): Omit<BroadcastOptions, 'sources' | 'maxBitrate' | 'native' | 'onState'> => ({
+    meta: { gameSlug, gameName, platform: platform ?? '', title: gameName, hostName: playerName() },
+    /* ---------------- 「让观众上场当 2P」（见 coopSeat.ts） ---------------- */
+    // 传函数：句柄可能比开播晚到，换游戏时这一项也会变
+    coopButtons: () => handleRef.current?.coopButtons ?? [],
+    onSeatRequest: (viewerId, name) => {
+      setCoopNudge(false)
+      setSeatWant({ id: viewerId, name })
+    },
+    onSeatChange: (viewerId) => {
+      setSeatOf(viewerId)
+      // 座位定了，那条「有人想上场」的提示就没意义了
+      if (viewerId) setSeatWant(null)
+      setCoopNudge(false)
+    },
+    /*
+      访客的按键 → 运行时的 2P 位。`1` 就是那个座位号（见 types.ts 的 sendButton）。
+      ⚠️ 别在这里过滤 down === false：松开那一条同样要送，而且 broadcast 在收座 /
+      断线 / 停播时会**替访客补一轮松开** —— 漏掉的话角色一直朝墙里跑。
+    */
+    onGuestInput: (button, down) => handleRef.current?.sendButton?.(button, down, 1),
+    onViewers: setViewers,
+    // 弹幕直接转给播放器：LiveControls 只是工具条，不该拿着消息列表
+    onChat: (msg) => onChatRef.current?.(msg),
+    onQuality: (q) => setQuality(q.reason),
+    onRoom: setRoomId,
+  })
+
   useEffect(() => {
     if (!on || !handle || !gameSlug) return
     let cancelled = false
@@ -428,7 +468,6 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
           // 传函数不传对象：画布被运行时换掉（Ruffle 读档 reload）时 broadcast 会重新来要一次。
           // 传上面那个 sources 死对象的话，直播会永远冻在换画布前那一帧（见 captureFeed.ts）
           sources: () => handle.captureSources?.() ?? null,
-          meta: { gameSlug, gameName, platform: platform ?? '', title: gameName, hostName: playerName() },
           /*
             编码前把分辨率缩回原生（见 videoTuning 的 encodeScaleFor）。
             传函数不传值：几何比开播晚到，换游戏还会变。
@@ -436,30 +475,7 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
             没有「游戏原生尺寸」可言，按它去缩就是把站点 UI 一起缩成马赛克。
           */
           native: () => nativeRef.current,
-          /* ---------------- 「让观众上场当 2P」（见 coopSeat.ts） ---------------- */
-          // 传函数：句柄可能比开播晚到，换游戏时这一项也会变
-          coopButtons: () => handleRef.current?.coopButtons ?? [],
-          onSeatRequest: (viewerId, name) => {
-            setCoopNudge(false)
-            setSeatWant({ id: viewerId, name })
-          },
-          onSeatChange: (viewerId) => {
-            setSeatOf(viewerId)
-            // 座位定了，那条「有人想上场」的提示就没意义了
-            if (viewerId) setSeatWant(null)
-            setCoopNudge(false)
-          },
-          /*
-            访客的按键 → 运行时的 2P 位。`1` 就是那个座位号（见 types.ts 的 sendButton）。
-            ⚠️ 别在这里过滤 down === false：松开那一条同样要送，而且 broadcast 在收座 /
-            断线 / 停播时会**替访客补一轮松开** —— 漏掉的话角色一直朝墙里跑。
-          */
-          onGuestInput: (button, down) => handleRef.current?.sendButton?.(button, down, 1),
-          onViewers: setViewers,
-          // 弹幕直接转给播放器：LiveControls 只是工具条，不该拿着消息列表
-          onChat: (msg) => onChatRef.current?.(msg),
-          onQuality: (q) => setQuality(q.reason),
-          onRoom: setRoomId,
+          ...sharedLiveOptions(),
           onState: (state) => {
             if (state === 'reconnecting') setReconnecting(true)
             else if (state === 'live') setReconnecting(false)
@@ -529,32 +545,8 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
       const b = await startBroadcast({
         sources: { stream },
         maxBitrate: tabBitrate(stream),
-        meta: { gameSlug, gameName, platform: platform ?? '', title: gameName, hostName: playerName() },
-        // 分享标签页这一路游戏照样在本机的运行时里跑，2P 位一样有效
-        coopButtons: () => handleRef.current?.coopButtons ?? [],
-        onSeatRequest: (viewerId, name) => {
-          setCoopNudge(false)
-          setSeatWant({ id: viewerId, name })
-        },
-        onSeatChange: (viewerId) => {
-          setSeatOf(viewerId)
-          if (viewerId) setSeatWant(null)
-          setCoopNudge(false)
-        },
-        onGuestInput: (button, down) => handleRef.current?.sendButton?.(button, down, 1),
-        onViewers: setViewers,
-        /*
-          ⚠️ 这一条以前漏了（2026-09-10 查出来）：分享标签页这一路**没有接弹幕**，
-          于是走这条路开播的主播看不到任何一条弹幕 —— 连自己发的那条都看不到
-          （服务端不做本地回显，所有人看到的顺序都由它定）。
-          而观众那边一切正常，主播只会以为「没人说话」。
-
-          自动开播那一路一直是接着的，所以这个 bug 只在**抓不到画布**的游戏上出现
-          （跨源 HTML5 那些，见 needsManual）—— 恰好是最不容易被自己测到的一批。
-        */
-        onChat: (msg) => onChatRef.current?.(msg),
-        onQuality: (q) => setQuality(q.reason),
-        onRoom: setRoomId,
+        // 分享标签页这一路游戏照样在本机的运行时里跑，2P 位一样有效（共用块里有 coopButtons）
+        ...sharedLiveOptions(),
         onState: (state) => {
           if (state === 'reconnecting') setReconnecting(true)
           else if (state === 'live') setReconnecting(false)

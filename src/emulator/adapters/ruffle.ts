@@ -181,12 +181,18 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     return Object.keys(mapping).length ? mapping : undefined
   })()
   /**
-   * 已经按下、还没松开的键（按 code 记）。
+   * 已经按下、还没松开的键（按 **座位 + code** 记：`1:KeyA`）。
    * 只为去重：Flash 游戏是轮询 Key.isDown 的，补发一次 down 没用，
    * 而漏掉一次 up 就是角色卡着一直往一个方向走。
    * 不用在 destroy 里补松开 —— 屏幕手柄自己卸载时会 releaseAll，剩下的跟着 iframe 一起没。
+   *
+   * ⚠️ **必须带座位**。以前只按 code 去重，而 1P（本机屏幕手柄）和 2P（直播观众）
+   * 共用这一张表 —— 两个玩家撞到同一个键的配置下，2P 按下会被 1P 的按下状态吞掉：
+   * 一次都不发，也没有任何日志。现在 `npm run test:flash-keys` 强制两套键位不重叠，
+   * 所以线上碰不到；但那是隐含契约，这里不靠它（改配置的人不会知道有条依赖）。
    */
   const downKeys = new Set<string>()
+  const seatKey = (seat: number, code: string) => `${seat}:${code}`
 
   /**
    * 取 Ruffle 的画布。
@@ -673,12 +679,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         console.warn('[ruffle] 键位表里有个认不出来的键名：', name)
         return
       }
-      if (down === downKeys.has(desc.code)) return
+      const key = seatKey(seat, desc.code)
+      if (down === downKeys.has(key)) return
       // 按下时顺手把焦点要回来（松开不要 —— 松手去抢焦点没道理）。
       // 玩家可能刚点过页面上别的东西，那时候注入进去 Ruffle 是不理的
       if (down) focusPlayer()
-      if (down) downKeys.add(desc.code)
-      else downKeys.delete(desc.code)
+      if (down) downKeys.add(key)
+      else downKeys.delete(key)
       dispatchKey(desc, down)
     },
     captureSources(): CaptureSources | null {

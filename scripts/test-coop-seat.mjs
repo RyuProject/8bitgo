@@ -251,16 +251,23 @@ check('⚠️ 输入通道必须在 createOffer **之前**建', () => {
 
 check('⚠️ 访客的按键必须送到座位 1，不是 0', () => {
   const src = code('src/emulator/LiveControls.tsx')
-  // ⚠️ 必须**逐个**看：只 match 一次的话，两条路里有一条写错了照样是绿的（变异验过）
+  /*
+    两条开播路径（自动 / 分享标签页）从 2026-09-20 起**共用同一个选项块**
+    （`sharedLiveOptions()`），所以座位号在这里只该出现**一次**：
+    再出现第二次就意味着有人又把回调抄回某一条路里去了（那正是下面那条用例防的事）。
+  */
   const calls = src.match(/sendButton\?\.\(button, down, (\d+)\)/g) || []
-  assert.equal(calls.length, 2, '自动开播和分享标签页两条路都要接上访客的按键')
-  for (const c of calls) {
-    assert.ok(
-      c.endsWith(', 1)'),
-      `${c} —— 座位写成 0 就是让访客替 1P 按键，房主自己那个角色会被别人操作`,
-    )
-  }
-  assert.equal((src.match(/onGuestInput:/g) || []).length, 2)
+  assert.equal(calls.length, 1, `座位号只该写一次（两条路共用共享块），实际 ${calls.length} 处`)
+  assert.ok(
+    calls[0].endsWith(', 1)'),
+    `${calls[0]} —— 座位写成 0 就是让访客替 1P 按键，房主自己那个角色会被别人操作`,
+  )
+  assert.equal((src.match(/onGuestInput:/g) || []).length, 1, 'onGuestInput 只该在共享块里定义一次')
+  assert.equal(
+    (src.match(/\.\.\.sharedLiveOptions\(\)/g) || []).length,
+    2,
+    '两条开播路径都要 spread 这个共享块 —— 少一处，那条路就静默地缺一块功能',
+  )
 })
 
 check('⚠️ 两条开播路径的回调集合必须一致（漏接一个是静默的）', () => {
@@ -271,20 +278,31 @@ check('⚠️ 两条开播路径的回调集合必须一致（漏接一个是静
     2026-09-10 就靠这一条查出来：分享标签页那一路**没接 onChat**，走这条路开播的主播
     看不到任何弹幕（连自己发的都看不到，因为服务端不做本地回显），而观众那边一切正常，
     主播只会以为「没人说话」。跨源 HTML5 那些抓不到画布的游戏走的正是这条路。
+
+    ⚠️ 2026-09-20 起这条用例换成了**更强的形式**：两条路不再是「各抄一份、比比看一不一样」，
+    而是共用同一个 `sharedLiveOptions()` —— 不一致从「靠测试发现」变成了「根本写不出来」。
+    所以现在要钉的是三件事：共享块在、两条路都用了它、两条路自己没偷偷塞回调。
   */
   const src = code('src/emulator/LiveControls.tsx')
-  const callbacks = (anchor) => {
-    const i = src.indexOf(anchor)
-    assert.ok(i > 0, `找不到开播路径：${anchor}`)
-    const seg = src.slice(i, i + 2600)
-    return [...new Set([...seg.matchAll(/\b(on[A-Z]\w+):/g)].map((m) => m[1]))].sort()
+  assert.equal(
+    (src.match(/\.\.\.sharedLiveOptions\(\)/g) || []).length,
+    2,
+    '两条开播路径都要 spread 共享块（少一处就是那条路静默缺功能）',
+  )
+  const i = src.indexOf('const sharedLiveOptions')
+  assert.ok(i > 0, '找不到共享选项块')
+  const body = src.slice(i, src.indexOf('\n  })', i))
+  // 这几个是这个功能和弹幕赖以工作的，单独点名，别哪天被一起删掉
+  for (const must of ['onChat', 'onGuestInput', 'onSeatRequest', 'onSeatChange', 'onViewers', 'onQuality']) {
+    assert.ok(new RegExp(`\\b${must}:`).test(body), `共享选项块里缺 ${must}`)
   }
-  const auto = callbacks('sources: () => handle.captureSources')
-  const manual = callbacks('sources: { stream }')
-  assert.deepEqual(manual, auto, '两条路径接的回调不一样 —— 少的那一路会静默地缺一块功能')
-  // 这几个是这个功能和弹幕赖以工作的，单独点名，别哪天两边一起被删掉还判「一致」
-  for (const must of ['onChat', 'onGuestInput', 'onSeatRequest', 'onSeatChange']) {
-    assert.ok(auto.includes(must), `两条路径都缺 ${must}`)
+  // 两条路各自的开播调用里，除了 onState（那是它们唯一的差别）不该再单独写回调
+  for (const anchor of ['sources: () => handle.captureSources', 'sources: { stream }']) {
+    const j = src.indexOf(anchor)
+    assert.ok(j > 0, `找不到开播路径：${anchor}`)
+    const seg = src.slice(j, j + 900)
+    const own = [...new Set([...seg.matchAll(/\b(on[A-Z]\w+):/g)].map((m) => m[1]))].filter((k) => k !== 'onState')
+    assert.deepEqual(own, [], `${anchor} 里又单独写回调了（要加就加进共享块）：${own.join(', ')}`)
   }
 })
 

@@ -25,7 +25,7 @@ const { privateKey: openPrivateKey } = generateKeyPairSync('rsa', {
 process.env.OPEN_JWT_PRIVATE_KEY = openPrivateKey
 process.env.OPEN_JWT_KID = 'live-test-1'
 process.env.OPEN_ISSUER = 'https://8bitgo.com'
-const { attachLive, liveCapacity, liveRooms, liveRoom } = await import('../src/live.js')
+const { attachLive, ghostRooms, liveCapacity, liveRooms, liveRoom } = await import('../src/live.js')
 const { signToken } = await import('../src/auth.js')
 const { issueLivePublisherToken } = await import('../src/open/live-publisher.js')
 
@@ -942,6 +942,68 @@ lv.close()
 
   for (const s of [rh, rv1, rv2]) s.close()
   await sleep(60)
+}
+
+/* ---------------- 幽灵房：一个 socket 只能当一间房的主播，漂移了也要有人收 ---------------- */
+{
+  /*
+    线上事故（2026-09-20）：一间房在主播**整个浏览器都关掉**之后还挂在大厅里，
+    `viewers: 0` 而 `hostAway: false`（服务端以为人还在），点进去什么都没有。
+
+    起因没钉死，但它是「房间清理全靠 membership（每 socket 一条）」这条设计脆弱的必然结果：
+    只要有一处让 membership 和 rooms 漂开，那间房就再也收不到任何清理。
+    所以这里测三件事：分类函数对不对、一个 socket 会不会留下第二间房、
+    清理的代码是不是按 hostSocketId 这个**事实**扫的（而不是只认 membership）。
+  */
+  const alive = new Set(['s-live'])
+  const hostAlive = (id) => alive.has(id)
+  /** 本块自己的等一等（别的块里也是各定义一份，文件里没有全局的） */
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+  const mkRoom = (hostSocketId, viewers = []) => ({ id: `r-${hostSocketId}`, hostSocketId, viewers: new Set(viewers) })
+
+  check(
+    'ghostRooms：主播 socket 已经不在的房才算幽灵',
+    ghostRooms([mkRoom('s-gone'), mkRoom('s-live')], hostAlive).length === 1,
+    JSON.stringify(ghostRooms([mkRoom('s-gone'), mkRoom('s-live')], hostAlive).map((r) => r.id)),
+  )
+  check(
+    'ghostRooms：hostSocketId 为空的不算（那是走过 hostAway 的房，awayTimer 在管）',
+    ghostRooms([mkRoom(null), mkRoom('')], hostAlive).length === 0,
+  )
+  check('ghostRooms：有观众也算幽灵（断线后该通知他们，而不是留着不管）', ghostRooms([mkRoom('s-gone', ['v1'])], hostAlive).length === 1)
+
+  // 停播 → 立刻重开一间：旧的不能留在大厅里，也不能还记在这个 socket 名下
+  const ghostHost = conn()
+  const first = await call(ghostHost, 'go-live', { gameSlug: 'ghost-game', title: '第一间' })
+  const firstId = first.data?.roomId
+  check('停播前：这间房在大厅里', liveRooms().some((r) => r.roomId === firstId), `实际 ${firstId}`)
+  ghostHost.emit('stop-live')
+  await sleep(80)
+  const second = await call(ghostHost, 'go-live', { gameSlug: 'ghost-game', title: '第二间' })
+  await sleep(80)
+  const ids = liveRooms().map((r) => r.roomId)
+  check('停播后重开：旧房必须从大厅消失', !ids.includes(firstId), `旧 ${firstId} 还在：${ids.join(',')}`)
+  check('停播后重开：旧房必须真的被关掉（不是只从列表里过滤掉）', liveRoom(firstId) === null)
+  check('停播后重开：新的一间在大厅里', ids.includes(second.data?.roomId), `实际 ${ids.join(',')}`)
+  ghostHost.close()
+  await sleep(60)
+}
+
+/* ---------------- 源码断言：清理必须按 hostSocketId 这个事实走 ---------------- */
+{
+  const src = readFileSync(new URL('../src/live.js', import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '')
+  /*
+    ⚠️ 这两条是防「改回只认 membership」的。membership 每个 socket 只有一条，
+    而幽灵房的全部特征就是它和 rooms 漂开了 —— 只按它清理必然漏掉。
+  */
+  check('⚠️ 断线时按 hostSocketId 扫一遍房间（不能只认 membership）', /releaseHostedRooms\(nsp, socket\.id\)/.test(src))
+  check(
+    '⚠️ 绑主播时先关掉同一 socket 的其它房间（go-live 和 resume-live 都走这里）',
+    /other\.hostSocketId !== socket\.id/.test(src) && /closeRoom\(nsp, other, 'restarted'\)/.test(src),
+  )
+  check('⚠️ 有兜底扫描，且判据是「socket 还在不在 nsp.sockets 里」', /ghostRooms\(rooms\.values\(\), \(id\) => nsp\.sockets\.has\(id\)\)/.test(src))
 }
 
 /* ---------------- 源码断言：viewers 和 viewerNames 必须成对维护 ---------------- */
