@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Half-Life · 网页版</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: #0a0a0c; color: #e6e6e6; font: 14px/1.5 system-ui, sans-serif; }
+      #app { position: fixed; inset: 0; display: flex; flex-direction: column; }
+      #stage { position: relative; flex: 1; min-height: 0; background: #000; }
+      #canvas { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
+      #overlay {
+        position: absolute; inset: 0; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 14px;
+        background: radial-gradient(circle at 50% 30%, #16202b, #05070a);
+        text-align: center; padding: 24px;
+      }
+      #overlay.hidden { display: none; }
+      #title { font-size: 22px; font-weight: 700; letter-spacing: .5px; }
+      #sub { opacity: .7; max-width: 560px; }
+      #bar { width: min(460px, 80vw); height: 8px; border-radius: 6px; background: #1d2733; overflow: hidden; }
+      #bar > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #4caf50, #8bc34a); transition: width .2s; }
+      #phase { font-variant-numeric: tabular-nums; opacity: .85; }
+      #net { opacity: .6; font-size: 12px; }
+      #log { width: min(640px, 92vw); max-height: 32vh; overflow: auto; font: 12px/1.45 ui-monospace, monospace;
+             background: #0c1116; border: 1px solid #1d2733; border-radius: 8px; padding: 10px; text-align: left; }
+      #log .err { color: #ff6b6b; }
+      #errbox { color: #ff8a80; max-width: 620px; white-space: pre-wrap; }
+      .row { display: flex; gap: 10px; align-items: center; }
+      select, button { font: inherit; padding: 6px 12px; border-radius: 8px; border: 1px solid #2a3744; background: #141c24; color: #e6e6e6; }
+      button { cursor: pointer; }
+      button:hover { background: #1c2731; }
+      #hud { position: absolute; top: 8px; left: 8px; font: 12px ui-monospace, monospace; opacity: .55; pointer-events: none; }
+    </style>
+    <!-- 没有带 ?game=hl 时，自动补上参数并重载：复用 cs15 的资产目录（root=../cs15/），避免重复几百 MB 资源。 -->
+    <script>
+      if (!location.search.includes('game=hl')) {
+        const q = new URLSearchParams(location.search)
+        q.set('game', 'hl'); q.set('root', '../cs15/')
+        if (!q.has('map')) q.set('map', 'crossfire')
+        location.search = '?' + q.toString()
+      }
+    </script>
+  </head>
+  <body>
+    <div id="app">
+      <div id="stage">
+        <canvas id="canvas"></canvas>
+        <div id="hud"></div>
+        <div id="overlay">
+          <div id="title">Half-Life · 网页版</div>
+          <div id="sub">Xash3D-FWGS (WebAssembly) 引擎在浏览器里原生运行。首次会下载约 260&nbsp;MB 基础包（含 Half-Life 资产），之后只按需下你选的那张地图。</div>
+          <div class="row">
+            <label>地图
+              <select id="map">
+                <option value="crossfire">crossfire</option>
+                <option value="boot_camp">boot_camp</option>
+                <option value="c0a0">c0a0（开篇）</option>
+                <option value="ofboot1">ofboot1（蓝色偏移）</option>
+              </select>
+            </label>
+            <button id="start">开始</button>
+          </div>
+          <div id="bar"><i></i></div>
+          <div id="phase">待开始</div>
+          <div id="net"></div>
+          <pre id="errbox"></pre>
+          <div id="log"></div>
+        </div>
+      </div>
+    </div>
+    <!-- 直接复用 cs15 已打包好的引擎与加载器，仅通过查询参数切到 Half-Life 模式 -->
+    <script type="module" src="../cs15/cs15.bundle.js?v=20260921"></script>
+  </body>
+</html>

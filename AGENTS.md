@@ -14,7 +14,7 @@
 | 前端 | Vite + React 19 + TypeScript，带 SSR（`vite.config.server.ts` → `dist/server`） |
 | 后端 | `server/`，Express + MySQL，和前端**同源**（一个进程同时提供 `/api` 和静态资源） |
 | 存储 | Cloudflare R2 + Worker（`worker/`），公开读走 `assets.8bitgo.com` |
-| 部署 | 服务器上 `git pull && npm install && npm run build && pm2 restart 8bitgo-api`，前面挂 Cloudflare |
+| 部署 | 生产机 **38.76.186.225**，服务器上 `git pull && npm install && npm run build && systemctl restart 8bitgo`，前面挂 Cloudflare（部署形态见 §2.30） |
 | 模拟器 | EmulatorJS（主机/掌机/街机）、Ruffle（Flash）、js-dos、jsnes、webretro、FreeJ2ME、Play!（PS2） |
 | 登录 | 邮箱验证码（**Resend** 发信）/ 密码 / Google，JWT 30 天，见 §2.13–2.14 |
 
@@ -775,6 +775,12 @@ curl -sI https://8bitgo.com/web/PvZ | head -3          # 200 + text/html，且�
 curl -sI https://8bitgo.com/web/PvZ/pvz-portable.wasm | grep -i content-type   # application/wasm
 ```
 
+**cs15（CS 1.5 网页移植，2026-09-21 接入中）**：`public/web/cs15/` 整个目录**暂不进 git**
+（见 `.gitignore`）——`packs/base.zip.gz` 是 550M 的 Valve 游戏数据，超 GitHub 单文件上限，
+也不能公开发布；数据包计划放 R2。引擎 / 代码部分（`cs15.js` / `bundle` / `engine` / `lib` /
+`gfx`，约 36M）等数据包落位后再重新划进来。路由不用加：`/web/:name` 是通用的，要上线只需要
+让文件出现在服务器的 `public/web/cs15/`（`vite build` 会把它带进 `dist/client`）。
+
 ### 2.29 后台能热改的站点级配置：`site_settings` 表（首页公告条是第一个）
 
 为什么不是 `.env`：`config-manifest.js` 那页（后台「配置」）**只读是刻意的**，
@@ -817,6 +823,47 @@ cd server && npm run migrate
 
 回归：`npm run test:site-notice`（纯函数逐条 + 源码形状：位置在横幅之上、两个后台接口都要权限、
 s-maxage 必须很短、迁移里有这张表）。
+
+### 2.30 部署形态与换机记录（2026-09-21 已迁到 38.76.186.225）
+
+生产机是 **38.76.186.225**（Ubuntu 24.04，4C/4G）。旧机 103.242.13.112 已停服且
+`8bitgo.service` 已 disable，**只作回滚后路 —— 它的数据库已冻结，别再在上面改任何内容**，
+否则两边分叉。确认稳定后可退租。
+
+- **进程守护是 systemd `8bitgo.service`，不是 pm2**（§1 那行 pm2 是历史遗留，已改）。
+  由 `deploy/systemd/install-service.sh` 安装，`WorkingDirectory` 必须是 `server/` ——
+  `dotenv/config` 从 `process.cwd()` 找 `.env`，指错就静默全废（见 `deploy/systemd/README.md`）。
+- **nginx 站点在 `/etc/nginx/sites-available/8bitgo.com`**，生产版有三个专用 location
+  （`^~ /socket.io/`、`^~ /ipx/`、`= /api/netplay/events`）和 `client_max_body_size 32m`
+  （云存档 4MB / J2ME 20MB，**丢了上传必挂**）。XFF 用 `$http_cf_connecting_ip`（§2.16）。
+  连接槽已由 `deploy/nginx/tune-nginx.sh` 调到 8192 × 4 worker = 32768。
+- **防火墙 ufw 已启用：22 对外，80/443 只对 Cloudflare IP 段** —— 这不是可选项，
+  是采用 `$http_cf_connecting_ip` 换来的代价（否则该头可被直连源站伪造，见 §2.16）。
+- **备份：`8bitgo-backup.timer` 每 6 小时 → R2**。rclone 的 remote 名是 **`r2-8bitgo:`**，
+  unit 里用 `Environment=R2_REMOTE=r2-8bitgo` 覆盖脚本的默认值 `r2`。换机前旧机连定时器
+  都没装，备份全靠手动 —— 新机别再退回那个状态。
+- **看门狗：`8bitgo-watchdog.timer` 每分钟探测**，探到故障自动重启（认得 systemd 单元；
+  conf 全可省，见 `deploy/watchdog/8bitgo-watchdog.conf.example`）。
+- **两台机器的 `.env` 除 `DB_PASSWORD` 外一字不差**。`ROM_PACK_SECRET` / `FLASH_SAVE_SECRET` /
+  `JWT_SECRET` / `OPEN_*` 必须一致，否则旧 8BG 包解不开、所有人被踢下线；`DB_PASSWORD`
+  是每台机器自己的（新机 MySQL 账号 `eightbitgo_app` 用的是独立口令）。
+- **机密文件别漏**：`server/secrets/open-jwt.pem`（`OPEN_JWT_PRIVATE_KEY_PATH` 指着它，
+  开放平台签令牌用）不在 git 里，换机要单独 rsync。
+
+**下次再迁机照这个顺序**（2026-09-21 实操验证过）：
+
+1. 新机装 node（**版本对齐旧机**，两边都是 v22.23.2）、mysql、nginx、git、rclone；
+   顺手核对 `timedatectl` —— 新机 NTP 默认走 IPv6 而机器没有 IPv6 出站，
+   `System clock synchronized: no` 会一直挂着（TLS / JWT / TURN 都受影响）。
+2. 在**新机**生成一把临时密钥授权到旧机（迁完立刻删，别把本机私钥放上服务器）。
+3. `rsync -a --delete` 整个 `/var/www/8bitgo`，排除 `node_modules` 和 `dist`
+   （连脏改动一起镜像，保证与生产逐字节一致），并单独带走 `server/secrets/`、
+   `server/.env`、`/root/.config/rclone/rclone.conf`。
+4. 旧机跑 `deploy/backup/8bitgo-backup.sh --local-only` 出 dump（自带校验），传到新机导入。
+5. `npm ci`（根 + server）→ `npm run build` → `npm run migrate` → 用生产 vhost 替换新机的
+   （改证书路径）→ `nginx -t` → reload。
+6. 切 Cloudflare A 记录（秒级生效），**切完立刻停掉旧机应用再补最后一次 dump 导入** ——
+   切换前就连着的长连接（SSE / 联机 / 直播）用户还在往旧库写，这一步不做他们的写入就丢了。
 
 ---
 

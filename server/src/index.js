@@ -348,6 +348,11 @@ if (ssrAvailable()) {
   app.get(['/web/:name', '/web/:name/'], (req, res, next) => {
     const name = String(req.params?.name ?? '')
     if (!WEB_GAME_NAME.test(name)) return next()
+    // CS1.5（Xash3D-WASM）是实验性接入：1.5 资产 + 1.6 wasm 模块版本错配，进图会崩。
+    // 设 CS15_DISABLED=1 即可整页下线，不影响其它 /web/ 游戏（如 PvZ）。
+    if (name === 'cs15' && process.env.CS15_DISABLED === '1') {
+      return res.status(503).type('html').send('<h1>CS1.5 网页版暂未开放</h1><p>维护中。</p>')
+    }
     // 固定 URL（不含哈希），走「引擎」那档短缓存；见 cache.js 里 /web/ 的说明
     res.set('Cache-Control', CACHE.engine)
     res.sendFile(join(name, 'index.html'), { root: join(CLIENT_DIR, 'web') }, (err) => {

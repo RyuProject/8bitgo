@@ -1,0 +1,196 @@
+<!-- PvZ_AUTOPLAY_START -->
+<script>
+"use strict";
+(function () {
+  // 来源校验：若 <head> 里的来源校验脚本判定当前页面不在允许来源，会置 window.__PVZ_BLOCKED__。
+  // 这里直接退出，既不下载数据也不启动游戏——满足「仅允许 https://*.8bitgo.com 入口访问」的要求。
+  if (window.__PVZ_BLOCKED__) return;
+  var LOCALE = window.PVZ_LOCALE || '';
+  if (LOCALE) console.log('[PvZ] 当前语言：' + LOCALE);
+  // ===== 配置（可在引用本段前用 window.PVZ_DATA_BASE / PVZ_MANIFEST_URL / PVZ_DATA_VERSION / PVZ_LOCALE 覆盖）=====
+  // DATA_BASE：资源基址，相对页面目录（默认 './' = 与 index.html 同目录）。
+  //   只要「页面」和「数据」放在同一源（例如都在 html5.8bitgo.com/PvZ/ 下），fetch 即同源，
+  //   浏览器不发 Origin、也不校验 CORS——这种情况根本不需要配任何 CORS 头。
+  // MANIFEST_URL：资源清单（JSON），相对页面目录。每项：
+  //   { "r2": "R2 内相对路径", "fs": "写入 WASM 虚拟文件系统的目标路径" }
+  //   也支持纯字符串（此时 r2 === fs）。
+  //   引擎只认 FS 根下的 /main.pak 和 /properties/*（见原生 startGame 里的
+  //   Module.FS.writeFile("/"+o, …)），所以 fs 必须写成 "main.pak" 和 "properties/..."，
+  //   即使 R2 里 main.pak 被放在了 properties/ 子目录下，也用 r2 指实际位置、fs 指 "main.pak"。
+  var DATA_BASE = window.PVZ_DATA_BASE != null ? window.PVZ_DATA_BASE : './';
+  var MANIFEST_URL = window.PVZ_MANIFEST_URL != null ? window.PVZ_MANIFEST_URL : './pvz-manifest.json';
+  var DATA_VERSION = window.PVZ_DATA_VERSION || '3';
+  // 缓存键按语言+清单区分；并在下方叠加「清单内容签名」，清单任意变动都自动失效旧缓存。
+  var CACHE_BASE = 'pvz-data-files:' + (window.PVZ_LOCALE || 'default') + ':' + (window.PVZ_MANIFEST_URL || 'default');
+  function hashStr(s){var h=5381;for(var i=0;i<s.length;i++){h=((h<<5)+h+s.charCodeAt(i))|0;}return (h>>>0).toString(36);}
+  // 清单里每一项的 r2>fs 拼起来做签名；增删文件或改路径都会让签名变化 → 旧缓存失效、重新下载。
+  function sigOf(manifest){return hashStr(manifest.map(function(e){return e.r2+'>'+e.fs;}).join('|'));}
+  var IDB_NAME = 'pvz-portable';
+  var IDB_STORE = 'resources';
+  var autoStarted = false;
+
+  // 退出重载守护：避免引擎异常退出（缺资源/FATAL）造成无限刷新死循环。
+  // 60 秒内自动刷新超过 3 次即判定为异常，停止自动刷新，改为提示手动处理。
+  window.__pvzGuardedReload = function () {
+    try {
+      var KEY = 'pvz-reloads', now = Date.now();
+      var arr = JSON.parse(sessionStorage.getItem(KEY) || '[]');
+      arr = arr.filter(function (t) { return now - t < 60000; });
+      if (arr.length >= 3) { console.error('[PvZ] 自动刷新次数过多，已停止，避免死循环'); return false; }
+      arr.push(now); sessionStorage.setItem(KEY, JSON.stringify(arr));
+    } catch (e) {}
+    window.location.reload();
+    return true;
+  };
+  function setStatus(msg, isError) {
+    loadStatus.style.display = 'block';
+    loadStatus.textContent = msg;
+    loadStatus.classList.toggle('has-error', !!isError);
+  }
+  function enterLoading(msg) {
+    dropZone.classList.remove('ready');
+    dropZone.classList.add('loading');
+    dropZone.style.pointerEvents = 'none';
+    setStatus(msg, false);
+  }
+  function restoreUpload(msg) {
+    dropZone.classList.remove('loading');
+    dropZone.style.pointerEvents = '';
+    loadStatus.style.display = 'block';
+    loadStatus.textContent = msg || '';
+    loadStatus.classList.add('has-error');
+    collectedFiles.clear();
+    refreshUI();
+  }
+
+  function openDB() {
+    return new Promise(function (resolve, reject) {
+      var req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = function () { req.result.createObjectStore(IDB_STORE); };
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { reject(req.error); };
+    });
+  }
+  function idbGet(key) {
+    return openDB().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(IDB_STORE, 'readonly');
+        var r = tx.objectStore(IDB_STORE).get(key);
+        r.onsuccess = function () { resolve(r.result || null); };
+        r.onerror = function () { reject(r.error); };
+      }).then(function (v) { db.close(); return v; }, function (e) { db.close(); throw e; });
+    });
+  }
+  function idbPut(key, value) {
+    return openDB().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).put(value, key);
+        tx.oncomplete = function () { resolve(); };
+        tx.onerror = function () { reject(tx.error); };
+      }).then(function () { db.close(); }, function (e) { db.close(); throw e; });
+    });
+  }
+
+  // 清单项归一化为 { r2, fs }
+  function normEntry(e) {
+    if (typeof e === 'string') return { r2: e, fs: e };
+    return { r2: e.r2, fs: e.fs };
+  }
+
+  function loadManifest() {
+    var mUrl = MANIFEST_URL;
+    if (new URLSearchParams(location.search).has('nocache')) mUrl += (mUrl.indexOf('?') >= 0 ? '&' : '?') + '_=' + Date.now();
+    return fetch(mUrl, { credentials: 'same-origin', cache: 'no-cache' }).then(function (r) {
+      if (!r.ok) throw new Error('清单 HTTP ' + r.status);
+      return r.json();
+    }).then(function (list) {
+      if (!Array.isArray(list) || !list.length) throw new Error('清单为空或格式不对');
+      return list.map(normEntry);
+    });
+  }
+
+  // 整组文件缓存进 IndexedDB（按「清单内容签名 + DATA_VERSION」失效），避免每次重新下载几十 MB。
+  // 清单任意变动（增删文件 / 改路径 / 换包）都会让签名变化 → 自动失效旧缓存、重新下载最新文件。
+  function getFiles(manifest) {
+    var force = new URLSearchParams(location.search).has('nocache');
+    var sig = sigOf(manifest);
+    var key = CACHE_BASE + ':' + DATA_VERSION + ':' + sig;
+    if (!force) {
+      try {
+        return idbGet(key).then(function (cached) {
+          if (cached && cached.sig === sig && cached.files && cached.files.length) {
+            console.log('[PvZ] 命中本地缓存，跳过下载');
+            return cached.files;
+          }
+          return downloadAll(manifest, key, sig);
+        });
+      } catch (e) { /* 落到下载 */ }
+    }
+    return downloadAll(manifest, key, sig);
+  }
+
+  function downloadAll(manifest, key, sig) {
+    var files = [];
+    var total = manifest.length;
+    var idx = 0;
+    function next() {
+      if (idx >= total) {
+        idbPut(key, { sig: sig, files: files })
+          .catch(function (e) { console.warn('[PvZ] 写缓存失败：', e); });
+        return Promise.resolve(files);
+      }
+      var entry = manifest[idx++];
+      setStatus('下载资源 ' + idx + '/' + total + '：' + entry.fs, false);
+      return fetch(DATA_BASE + entry.r2, { credentials: 'same-origin' })
+        .then(function (r) {
+          if (!r.ok) throw new Error(entry.r2 + ' HTTP ' + r.status);
+          return r.arrayBuffer();
+        })
+        .then(function (buf) {
+          files.push({ fs: entry.fs, bytes: new Uint8Array(buf) });
+          return next();
+        });
+    }
+    return next();
+  }
+
+  function autoLoad() {
+    if (autoStarted) return;
+    autoStarted = true;
+    if (typeof gameStarted !== 'undefined' && gameStarted) { autoStarted = false; return; }
+    enterLoading('正在从服务器加载资源…');
+    loadManifest()
+      .then(getFiles)
+      .then(function (files) {
+        collectedFiles.clear();
+        for (var i = 0; i < files.length; i++) {
+          var f = files[i];
+          collectedFiles.set(f.fs, new File([f.bytes], f.fs.split('/').pop()));
+        }
+        // 引擎硬性要求 main.pak；properties/ 下的文件（default.xml 等覆盖配置）是可选的，
+        // 缺失时引擎用内置默认值，不应因此卡死启动——只告警。
+        if (!collectedFiles.has('main.pak')) {
+          restoreUpload('资源缺少 main.pak，请检查 pvz-manifest.json 的 r2 路径后重试，或手动选择资源。');
+          autoStarted = false;
+          return;
+        }
+        if (!Array.from(collectedFiles.keys()).some(function (k) { return k.indexOf('properties/') === 0; })) {
+          console.warn('[PvZ] 清单里没有 properties/ 下的文件；引擎可能缺少可选配置（如 default.xml），先用内置默认值尝试启动。若游戏报缺数据，请补充一个含内容的 properties/ 目录。');
+        }
+        refreshUI();
+        window.__pvzStartTs = Date.now();
+        startGame();
+      })
+      .catch(function (e) {
+        console.error('[PvZ] 自动加载失败：', e);
+        restoreUpload('自动加载失败（' + (e && e.message ? e.message : e) + '），可手动选择资源或刷新重试。');
+        autoStarted = false;
+      });
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', autoLoad, { once: true });
+  else autoLoad();
+})();
+</script>
+<!-- PvZ_AUTOPLAY_INJECTED -->

@@ -130,6 +130,16 @@ export default defineConfig(({ mode }) => {
   server: {
     port: 5173,
     open: false,
+    // 开发期代理：把 /api 转发到本机后端（默认 8788，见 server/src/index.js:511）。
+    // 配合前端的 VITE_API_URL=same-origin，npm run dev 时 5173 的页面能直接调后端，
+    // 不必额外配 CORS；生产由 Express 同源托管，不会走这里。
+    // 想改成别的后端地址：BACKEND_URL=http://127.0.0.1:9000 npm run dev
+    proxy: {
+      '/api': {
+        target: process.env.BACKEND_URL || 'http://127.0.0.1:8788',
+        changeOrigin: true,
+      },
+    },
   },
   }
 })

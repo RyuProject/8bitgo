@@ -88,6 +88,14 @@ public/webretro
 public/bios/*
 !public/bios/HOWTO.md
 
+# 自托管网页游戏的「游戏数据包」不进 git。
+# public/web/cs15/packs/ 里的 base.zip.gz 有 550M：远超 GitHub 单文件 100M 上限
+# （Git LFS 免费额度 1GB 存储 / 1GB 每月流量，服务器每次 git pull 都要拉一遍，扛不住），
+# 而且它是 Valve 的游戏数据 —— 进公开仓库等于对外分发，同上面 BIOS 那条的道理。
+# 数据包放对象存储 / 服务器本地；整个 cs15 目录先不进仓库，等数据包落到 R2 再重新划线。
+# （helf-life 目前只有一个 index.html，不受影响。）
+public/web/cs15
+
 # Cloudflare 源站证书与私钥（Authenticated Origin Pulls 的客户端证书）
 # 2026-09-06 被 GitGuardian 抓到：origin.key 从 8/26 起就在跟踪列表里，
 # 随当天的 push 暴露。文件留在磁盘上（nginx 还要用），但永远不进 git。
