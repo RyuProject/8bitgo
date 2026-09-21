@@ -345,9 +345,20 @@ if (ssrAvailable()) {
    * 不挡就能拼出越界路径；`sendFile` 的 root 越界保护是第二道。
    */
   const WEB_GAME_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
-  app.get(['/web/:name', '/web/:name/'], (req, res, next) => {
+  /*
+    第二层 `:sub` 是语言子目录（`/web/PvZ/cn/`、`/web/PvZ/en/`）。
+    Express 的 `:name` 不吃 `/`，只注册一层的话这两个地址匹配不上，会掉到 SSR 兜底
+    渲染成「页面不存在」——而同目录里带扩展名的 js / wasm / pvz-manifest.json 是
+    express.static 直接吐的，照样 200。于是症状是「文件都在，就是页面打不开」。
+    ⚠️ 两层都要过白名单：`..` 是合法的 `:sub` 取值，不校验就能拼出越界路径。
+    ⚠️ 只匹配「到目录为止」的两层；`/web/PvZ/cn/pvz-manifest.json` 是三层，
+    仍然走静态中间件，不受影响。
+  */
+  app.get(['/web/:name', '/web/:name/', '/web/:name/:sub', '/web/:name/:sub/'], (req, res, next) => {
     const name = String(req.params?.name ?? '')
+    const sub = req.params?.sub != null ? String(req.params.sub) : ''
     if (!WEB_GAME_NAME.test(name)) return next()
+    if (sub && !WEB_GAME_NAME.test(sub)) return next()
     // CS1.5（Xash3D-WASM）是实验性接入：1.5 资产 + 1.6 wasm 模块版本错配，进图会崩。
     // 设 CS15_DISABLED=1 即可整页下线，不影响其它 /web/ 游戏（如 PvZ）。
     if (name === 'cs15' && process.env.CS15_DISABLED === '1') {
@@ -355,7 +366,7 @@ if (ssrAvailable()) {
     }
     // 固定 URL（不含哈希），走「引擎」那档短缓存；见 cache.js 里 /web/ 的说明
     res.set('Cache-Control', CACHE.engine)
-    res.sendFile(join(name, 'index.html'), { root: join(CLIENT_DIR, 'web') }, (err) => {
+    res.sendFile(sub ? join(name, sub, 'index.html') : join(name, 'index.html'), { root: join(CLIENT_DIR, 'web') }, (err) => {
       // 目录里没有这一份就交回 SSR 渲染 404，别在这儿编错误页
       if (err && !res.headersSent) next()
     })

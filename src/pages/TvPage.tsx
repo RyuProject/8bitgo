@@ -12,8 +12,7 @@ import { tvOrigin } from '@/services/tvHost'
 import { romUrlForKey } from '@/services/roms'
 import { cx } from '@/lib/format'
 import { gradientFor } from '@/lib/gradients'
-import { fetchTv, computeRotation, type TvSignal } from '@/services/tv'
-import { fetchPageData } from '@/services/pageData'
+import { fetchTv, fetchTvWall, computeRotation, type TvSignal } from '@/services/tv'
 import { FocusScope, useFocusable, useFocusedId } from '@/components/tv/FocusScope'
 import { TvPlay } from '@/components/tv/TvPlay'
 import { enterFullscreen } from '@/lib/fullscreen'
@@ -345,8 +344,12 @@ interface PlatformRow {
 }
 
 /**
- * 每个启用的平台各拉一页热门，拼成「一行一个平台」的墙。
- * 一次并行请求就够（平台数不大），单个平台失败不影响其他行。
+ * 每个平台一页热门，拼成「一行一个平台」的墙 —— **一次请求拿全**。
+ *
+ * ⚠️ 以前这里是「每个平台各打一次 /api/page?path=/games」：16 个平台 = 16 个请求，
+ * 而服务端那条路每次都会算 facets（平台/类型/开发商三个聚合查询），
+ * 整屏还要等 Promise.all 里最慢的那个返回才渲染。现在走 /api/tv/wall：
+ * 一次请求、不算 facets、服务端还缓存了结果。
  */
 function usePlatformWall(per: number) {
   const [rows, setRows] = useState<PlatformRow[] | null>(null)
@@ -354,20 +357,23 @@ function usePlatformWall(per: number) {
 
   useEffect(() => {
     let cancelled = false
-    const enabled = platforms.filter((p) => isPlatformEnabled(p.id))
-    Promise.all(
-      enabled.map(async (p) => {
-        try {
-          const d = await fetchPageData('/games', { platform: p.id, sort: 'popular', page: 1, pageSize: per })
-          const items = d.route === 'games' ? d.list.items.slice(0, per) : []
-          return { id: p.id, name: p.name, icon: p.icon, items }
-        } catch {
-          return { id: p.id, name: p.name, icon: p.icon, items: [] as Game[] }
-        }
-      }),
-    )
-      .then((res) => {
-        if (!cancelled) setRows(res.filter((r) => r.items.length > 0))
+    fetchTvWall(per)
+      .then((wall) => {
+        if (cancelled) return
+        // 服务端按库里的分组顺序返回，这里按前台平台表重排 ——
+        // 导航行的顺序必须稳定，不能跟着数据库 GROUP BY 的结果漂。
+        const order = platforms.filter((p) => isPlatformEnabled(p.id)).map((p) => p.id)
+        const byId = new Map(platforms.map((p) => [p.id, p]))
+        const mapped = wall
+          .filter((r) => order.includes(r.id))
+          .map((r) => ({
+            id: r.id,
+            name: byId.get(r.id)?.name ?? String(r.id),
+            icon: byId.get(r.id)?.icon ?? '',
+            items: r.items.slice(0, per),
+          }))
+          .sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id))
+        setRows(mapped.filter((r) => r.items.length > 0))
       })
       .catch((e) => {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e))

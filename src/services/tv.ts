@@ -58,6 +58,28 @@ export async function fetchTv(platform?: PlatformId): Promise<TvSignal> {
   }
 }
 
+export interface TvWallRow {
+  id: PlatformId
+  items: Game[]
+}
+
+/**
+ * 拉「大磁贴墙」：每个平台一页热门，**一次请求拿全**。
+ *
+ * ⚠️ 别改回「每个平台各打一次 /api/page」——那条路每次都会算 facets
+ * （平台/类型/开发商三个聚合），16 个平台就是 16 份重复聚合 + 16 份 facets 回传，
+ * 而且 Promise.all 要等最慢的那个才渲染整屏。取不到就返回空数组，交给页面走兜底。
+ */
+export async function fetchTvWall(per = 12): Promise<TvWallRow[]> {
+  if (!apiEnabled()) return []
+  try {
+    const data = await api.get<{ rows: TvWallRow[] }>(`/api/tv/wall?per=${encodeURIComponent(String(per))}`)
+    return Array.isArray(data?.rows) ? data.rows : []
+  } catch {
+    return []
+  }
+}
+
 export interface TvRotation {
   /** 当前在播的游戏 */
   current: Game

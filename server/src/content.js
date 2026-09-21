@@ -38,7 +38,7 @@ export function invalidateContent() {
   inflight.clear()
 }
 
-async function cached(key, loader) {
+export async function cached(key, loader) {
   const hit = cache.get(key)
   if (hit && hit.generation === generation && Date.now() - hit.at < TTL) return hit.data
   const flying = inflight.get(key)
