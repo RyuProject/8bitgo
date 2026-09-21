@@ -1,7 +1,23 @@
 [
   {
-    "r2": "properties/en-main.pak",
+    "r2": "main.pak",
     "fs": "main.pak"
+  },
+  {
+    "r2": "properties/partner.xml",
+    "fs": "properties/partner.xml"
+  },
+  {
+    "r2": "properties/partner.xml.sig",
+    "fs": "properties/partner.xml.sig"
+  },
+  {
+    "r2": "properties/partner.xml.sig2",
+    "fs": "properties/partner.xml.sig2"
+  },
+  {
+    "r2": "properties/partner_logo.jpg",
+    "fs": "properties/partner_logo.jpg"
   },
   {
     "r2": "reanim/APPROACHING.png",
@@ -8472,19 +8488,7 @@
     "fs": "reanim/zombie_target.png"
   },
   {
-    "r2": "properties/partner_logo.jpg",
-    "fs": "properties/partner_logo.jpg"
-  },
-  {
-    "r2": "properties/partner.xml",
-    "fs": "properties/partner.xml"
-  },
-  {
-    "r2": "properties/partner.xml.sig",
-    "fs": "properties/partner.xml.sig"
-  },
-  {
-    "r2": "properties/partner.xml.sig2",
-    "fs": "properties/partner.xml.sig2"
+    "r2": "en-main.pak",
+    "fs": "en-main.pak"
   }
 ]
