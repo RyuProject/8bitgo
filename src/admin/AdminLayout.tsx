@@ -20,6 +20,13 @@ const TABS: { to: string; label: string; end?: boolean; need: Ability; adminOnly
   { to: '/admin/posts', label: '文章', need: 'content:edit' },
   { to: '/admin/developers', label: '开发商', need: 'content:edit' },
   { to: '/admin/friend-links', label: '友情链接', need: 'content:edit' },
+  /*
+    公告条用的不是 content:edit 而是 site:manage：它是在**替站点本身说话**
+    （「站点在波动」/「抱歉，是我搞坏的」），不是某一款游戏的资料 ——
+    志愿者的那一档权限是「改错了看得见也改得回来」的内容协作，
+    而这一条是每个访客进门第一眼看到的东西。服务端同一权限点，两边一致。
+  */
+  { to: '/admin/notice', label: '公告', need: 'site:manage' },
   { to: '/admin/apps', label: '应用', need: 'content:edit' },
   { to: '/admin/comments', label: '评论', need: 'comments:review' },
   { to: '/admin/users', label: '用户', need: 'users:manage' },

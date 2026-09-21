@@ -775,6 +775,49 @@ curl -sI https://8bitgo.com/web/PvZ | head -3          # 200 + text/html，且�
 curl -sI https://8bitgo.com/web/PvZ/pvz-portable.wasm | grep -i content-type   # application/wasm
 ```
 
+### 2.29 后台能热改的站点级配置：`site_settings` 表（首页公告条是第一个）
+
+为什么不是 `.env`：`config-manifest.js` 那页（后台「配置」）**只读是刻意的**，
+它回的是基础设施信息和密钥指纹，不该跟着一张会被运营改的表一起演化。
+那张文件的注释里给的出路就是这张表 —— **env 提供默认、库只做覆盖**。
+第一个住户是首页公告条（`name = 'notice'`，值是 JSON 文本）。
+
+**公告条**（2026-09-21）：显示在首页**搜索框与横幅之间**，两种语气，文案后台写。
+
+| | 接口 | 缓存 |
+|---|---|---|
+| 公开读 | `GET /api/site-notice` → `{ notice: { level, text } \| null }` | `CACHE.notice`，**只有 30 秒** |
+| 后台读 | `GET /api/admin/site-notice`（`site:manage`）→ 含 `enabled` 与关掉时的原文 | `no-store` |
+| 后台写 | `PUT /api/admin/site-notice`（`site:manage`）→ 回存下来的那一份 | — |
+
+- `warn` 黄 = **提示**（站点波动、功能在测试）；`error` 红 = **Sorry**（自己搞坏的）。
+  关闭不是第三种 level，而是 `enabled: false`；文本为空也等于关闭。
+- ⚠️ **公开读和后台读写必须是两个前缀**。公开那份要进边缘缓存，而按身份变内容的接口
+  一旦进缓存，管理员读到的原文会被下一个匿名访客拿到 —— 所以没有「加个参数返回完整版」那种设计。
+- ⚠️ **公开缓存只有 30 秒**（`CACHE.notice`，见 `npm run test:site-notice` 里那条断言）：
+  这条的用途就是「出事了立刻告诉所有人」，沿用其它内容那 5 分钟的 s-maxage
+  等于让公告**在它最该出现的时刻迟到五分钟**。
+- ⚠️ **公告跟着首页数据一起下发**（`content.js` 里 `loadVisibleNotice()`），不是前端再发一个请求：
+  SSR 出来就有，不会在水合后才冒出来把整屏推一下。改完调 `invalidateContent()`，
+  服务端那份缓存立刻作废；前面有 CDN 时首页 HTML 最多再晚 5 分钟。
+- 文案清洗在 `shared/site-notice.js`（折叠换行与连续空白、按**码点**截断 160、去控制字符）。
+  前台正文一律 `text-fg`，颜色只放边框和图标 —— 亮黄 `#ffc800` 在浅底上做正文几乎读不出来，
+  而这条是**要人真的读一遍**的东西。
+- 后台入口 `/admin/notice`，权限点是 `site:manage` **不是** `content:edit`：
+  它是在替**站点本身**说话，不是某款游戏的资料。
+
+⚠️ **部署要跑迁移**（新增了 `site_settings` 表）：
+
+```bash
+cd server && npm run migrate
+```
+
+没跑的话：首页照常（缺表时按「没有公告」处理，见 `site-notice.js` 的 `readStoredNoticeSoft`），
+但后台保存会 500 —— 后台页面会把这句话原样显示给管理员，并提示去跑迁移。
+
+回归：`npm run test:site-notice`（纯函数逐条 + 源码形状：位置在横幅之上、两个后台接口都要权限、
+s-maxage 必须很短、迁移里有这张表）。
+
 ---
 
 ## 3. 常用命令

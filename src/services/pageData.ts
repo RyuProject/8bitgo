@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Collection, Game, Post } from '@/types'
 import type { FriendLink } from './friendLinks'
+import type { VisibleSiteNotice } from '../../shared/site-notice.js'
 import { api, apiEnabled } from './api'
 import { startPageLoad } from './progress'
 
@@ -73,6 +74,12 @@ export interface HomeData {
   collections: Collection[]
   /** 首页特别鸣谢。image 为空是文字友链，有值则按 88×31 图片展示 */
   friendLinks: FriendLink[]
+  /**
+   * 公告条（搜索框与横幅之间那一条）。后台控制，没配 / 关掉时是 null。
+   *
+   * 可选：老服务端还没有这个字段，拿不到时就是不画这一条 —— 和 hottest 一样的道理。
+   */
+  notice?: VisibleSiteNotice | null
   total: number
 }
 export interface GamesData { route: 'games'; list: Paged<Game>; facets: Facets }

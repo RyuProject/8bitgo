@@ -40,6 +40,7 @@
     "test:sfs": "npm --prefix server run test:sfs",
     "test:sitemap": "node scripts/test-sitemap.mjs",
     "test:robots": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-robots.mjs",
+    "test:site-notice": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-site-notice.mjs",
     "test:home-sections": "node scripts/test-home-sections.mjs",
   "test:i18n-content": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-i18n-content.mjs",
     "test:timefactor": "node scripts/test-time-factor.mjs",

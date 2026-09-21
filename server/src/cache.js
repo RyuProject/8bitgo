@@ -33,6 +33,15 @@ export const CACHE = {
    */
   engine: 'public, max-age=300, s-maxage=3600, stale-while-revalidate=300',
 
+  /**
+   * 公告条（/api/site-notice）。**故意比别的内容短得多**。
+   *
+   * 它的用途就是「站点出事了，立刻告诉所有人」，而其它内容走的是 PAGE_S_MAXAGE(300)
+   * 那档 —— 公告迟到五分钟，恰好就错过了唯一需要它的那五分钟。
+   * 这里不给 stale-while-revalidate：可以先看旧的，不适合一条「正在故障」的声明。
+   */
+  notice: 'public, max-age=30, s-maxage=30',
+
   /** 图片、favicon 之类 */
   image: 'public, max-age=3600, s-maxage=604800, stale-while-revalidate=86400',
 

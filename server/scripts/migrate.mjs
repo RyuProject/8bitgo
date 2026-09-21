@@ -267,6 +267,20 @@ const patches = [
       ),
   },
   {
+    name: 'site_settings（后台能热改的站点级配置：目前是首页公告条）',
+    table: null,
+    needed: async () => !(await hasTable('site_settings')),
+    run: () =>
+      conn.query(
+        'CREATE TABLE IF NOT EXISTS `site_settings` (' +
+          '`name` VARCHAR(64) NOT NULL,' +
+          '`value` TEXT NOT NULL,' +
+          '`updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,' +
+          'PRIMARY KEY (`name`)' +
+          ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci',
+      ),
+  },
+  {
     name: 'developers（开发商的人工资料：logo / 简介 / 官网）',
     table: null,
     needed: async () => !(await hasTable('developers')),

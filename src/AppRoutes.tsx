@@ -29,6 +29,7 @@ const AdminUsers = lazyNamed(() => import('@/admin/AdminUsers'), 'AdminUsers')
 const AdminComments = lazyNamed(() => import('@/admin/AdminComments'), 'AdminComments')
 const AdminDevelopers = lazyNamed(() => import('@/admin/AdminDevelopers'), 'AdminDevelopers')
 const AdminFriendLinks = lazyNamed(() => import('@/admin/AdminFriendLinks'), 'AdminFriendLinks')
+const AdminNotice = lazyNamed(() => import('@/admin/AdminNotice'), 'AdminNotice')
 const AdminRoms = lazyNamed(() => import('@/admin/AdminRoms'), 'AdminRoms')
 const AdminData = lazyNamed(() => import('@/admin/AdminData'), 'AdminData')
 const AdminOpenApps = lazyNamed(() => import('@/admin/AdminOpenApps'), 'AdminOpenApps')
@@ -126,6 +127,7 @@ export function AppRoutes() {
           <Route path="posts" element={<RouteChunk><AdminPosts /></RouteChunk>} />
           <Route path="developers" element={<RouteChunk><AdminDevelopers /></RouteChunk>} />
           <Route path="friend-links" element={<RouteChunk><AdminFriendLinks /></RouteChunk>} />
+          <Route path="notice" element={<RouteChunk><AdminNotice /></RouteChunk>} />
           <Route path="users" element={<RouteChunk><AdminUsers /></RouteChunk>} />
           <Route path="comments" element={<RouteChunk><AdminComments /></RouteChunk>} />
           <Route path="roms" element={<RouteChunk><AdminRoms /></RouteChunk>} />

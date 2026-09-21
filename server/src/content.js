@@ -15,6 +15,7 @@ import { topCollections } from './routes/collections.js'
 import { query } from './db.js'
 import { attachPostTags } from './routes/posts.js'
 import { listPublicFriendLinks } from './friend-links.js'
+import { loadVisibleNotice } from './site-notice.js'
 
 const TTL = Number(process.env.SSR_CACHE_MS || 60_000)
 /** 缓存最多存多少个路由的结果 */
@@ -77,7 +78,7 @@ const HOT_SIZE = 10
 const GENRE_COLUMNS = ['action', 'adventure', 'rpg', 'puzzle']
 
 async function loadHome() {
-  const [picks, popular, newest, multiplayer, facets, collections, friendLinks, ...samples] = await Promise.all([
+  const [picks, popular, newest, multiplayer, facets, collections, friendLinks, notice, ...samples] = await Promise.all([
     // 首页第一栏：后台钦点的优先
     listHomePicks(HOME_SIZE),
     listGames({ sort: 'popular', pageSize: HOME_SIZE }),
@@ -89,6 +90,14 @@ async function loadHome() {
     topCollections(8).catch(() => []),
     // 新代码可能先于迁移上线。特别鸣谢缺表时只隐藏这一栏，不能拖垮整个首页。
     listPublicFriendLinks().catch(() => []),
+    /*
+      公告条（首页搜索框与横幅之间）。跟着首页数据一起下发，而不是让前端再发一个请求：
+
+        · SSR 出来就有 —— 前端自己取的话，公告会在水合之后才出现，把下面整屏推一下；
+        · 少一个首屏请求 —— 首页本来就够重了（这条只有几十字节，跟着走不花什么）。
+      读失败（表还没迁移）时是 null，整条不画，见 site-notice.js 的 readStoredNoticeSoft。
+    */
+    loadVisibleNotice(),
     ...GENRE_COLUMNS.map((id) => listGames({ genre: id, sort: 'popular', pageSize: 4 })),
   ])
   const genreSamples = {}
@@ -126,6 +135,8 @@ async function loadHome() {
     facets,
     collections,
     friendLinks,
+    /** 公告条。没有 / 关掉时是 null，前台据此整条不画 */
+    notice,
     total: popular.total,
   }
 }

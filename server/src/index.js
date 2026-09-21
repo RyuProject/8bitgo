@@ -24,6 +24,7 @@ import { adminRouter } from './routes/admin.js'
 import { roomsRouter } from './routes/rooms.js'
 import { pageRouter } from './routes/page.js'
 import { platformBiosRouter } from './routes/platform-bios.js'
+import { siteNoticeRouter, adminSiteNoticeRouter } from './routes/site-notice.js'
 import { developersRouter } from './routes/developers.js'
 import { friendLinksRouter } from './routes/friend-links.js'
 import { appsRouter } from './routes/apps.js'
@@ -199,6 +200,8 @@ app.use('/api/rooms', roomsRouter)
 // 按路由取数：SSR 与客户端共用同一份定义（见 routes/page.js）
 app.use('/api/page', pageRouter)
 app.use('/api/platform-bios', platformBiosRouter)
+app.use('/api/site-notice', siteNoticeRouter)
+app.use('/api/admin/site-notice', adminSiteNoticeRouter)
 app.use('/api/developers', developersRouter)
 // 首页「特别鸣谢」的后台管理；公开列表跟着 /api/page 的首页数据返回
 app.use('/api/friend-links', friendLinksRouter)

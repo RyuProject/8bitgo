@@ -1,5 +1,6 @@
 import { HomeHeading, HomeIntro } from '@/components/home/HomeIntro'
 import { HomeBanner } from '@/components/home/HomeBanner'
+import { NoticeBar } from '@/components/home/NoticeBar'
 import { CollectionsSection, FaqSection, GenreGridSection, LatestSection, MostPlayedSection, PickedSection, PlatformsSection, TogetherSection } from '@/components/home/sections'
 import { useSeo, faqSchema, organizationSchema, websiteSchema } from '@/services/seo'
 import { useT } from '@/services/i18n'
@@ -24,6 +25,12 @@ export function HomePage() {
     // 类型入口放在 space-y 容器外面，就不用负 margin 去抵消 space-y-10 了。
     <div className="pb-8">
       <HomeHeading />
+      {/*
+        公告条：夹在顶栏搜索框与横幅之间（后台控制，没配 / 关掉时它自己返回 null）。
+        ⚠️ 位置就是它存在的意义 —— 别挪到横幅下面或页面底部：那两句语气分别说的是
+        「站点在波动」和「抱歉，是我搞坏的」，玩家得在开始挑游戏**之前**看到。
+      */}
+      <NoticeBar notice={data?.notice} />
       {/* 标题里轮换的游戏名和右边那摞封面都来自热门这一栏 —— 数据没到时横幅自己有兜底 */}
       <HomeBanner games={data?.popular} />
 
