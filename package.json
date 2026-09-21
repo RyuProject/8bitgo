@@ -31,6 +31,7 @@
     "test:arcade-dip": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-arcade-dip.mjs",
     "test:mame-audio": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-mame-audio.mjs",
     "test:fs-write": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-fs-write.mjs",
+    "audit:rom-langs": "node scripts/audit-rom-langs.mjs",
     "test:indexnow": "node scripts/test-indexnow.mjs",
     "test:baidu": "node scripts/test-baidu-push.mjs",
     "test:coop-seat": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-coop-seat.mjs",

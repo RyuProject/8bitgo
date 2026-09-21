@@ -688,6 +688,50 @@ Win3.11 约 21MB），**别提交进仓库**；小游戏层 `public/__win95game.
 
 回归：`npm run test:dos-bundle` 的「桌面到底画完了没有」/「开机黑屏」/「壁纸静止」三节。
 
+### 2.27 「按语言切换 ROM」的槽里可能是**同一份 ROM** —— 切换器在骗人
+
+玩家反馈（2026-09-21，英文）：「Pokémon 几乎只有日文，虽然有切换语言的选项，但选了也没变化」。
+查下来是**数据**问题，不是切换逻辑的问题：`romCandidates()` 老老实实按语言取了不同的 key，
+问题是那些 `<slug>.<lang>.<ext>.8bg` **其实是同一份 ROM 被重复打包了 N 遍**。
+
+**怎么在不拿密钥的情况下证明**（这是这套判据的关键）：
+
+- 8BG 头带 `originalName`，还带每块的 `sha256` —— 那个摘要是**算在明文上**的
+  （`scripts/pack-rom.mjs`：`createHash('sha256').update(source)`）。
+  所以「所有块的摘要逐一相同」＝两份文件解密后**逐字节相同**，不需要密钥。
+- 密文**不能**用来比：nonce 是每文件随机的（`randomBytes(8)`），同一份明文打两次密文也不同。
+- 只读前 1MB 就够：头和分块表都在最前面。
+
+**要知道「这份内容到底是哪国语言」**（`--deep`）：从 `/api/rom-pack/key` 取密钥
+（浏览器解包用的同一个公开接口）解密第一块，再读平台自己的头：
+
+- GBA：游戏码在 `0xAC-0xAF`，末位 `J`=日 `E`=美 `F`=法 `D`=德 `S`=西 `I`=意 `P`=欧；
+- GB/GBC：`0x14A` 目标码，`0`=日版、`1`=海外版。
+
+⚠️ **`originalName` 不可信**，别拿它当语言：实测 `pokemon-emerald.ja.gba.8bg` 里装的是
+`BPEE`（美版英文），而 `originalName` 写着 `pokemon-emerald.zh-Hans.gba`。
+⚠️ **只有一个语言槽也会撒谎**：`pokemon-red` 只绑了 `zh-Hans` 一个槽，里面却是日版
+（GB 目标码 0）。所以「槽少」不等于「标签对」。
+
+**2026-09-21 实测范围**：394 款游戏里 133 款绑了两种以上语言，其中 **114 款（86%）**
+存在「多个槽内容相同」。典型：Pokémon Emerald / Ruby / FireRed 的 8 个槽全同；
+**Sapphire 的 8 个槽是 `AXPJ`（日版）** —— 正是那位玩家说的「只有日文」；
+大量 NES 游戏是 `en`/`es`/`zh-Hans` 指向同一个文件。
+
+**工具**：`npm run audit:rom-langs`（默认只报「多槽同内容」，发现即退出码 1）
+
+```bash
+npm run audit:rom-langs                          # 全量普查
+npm run audit:rom-langs -- --deep                # 再逐组解密，报出真实语言（gb/gbc/gba）
+npm run audit:rom-langs -- --slug=pokemon-ruby   # 单款（清理时用）
+```
+
+⚠️ 清理是**人**的决定，别让脚本猜该留哪个槽：Sapphire 唯一真正的 ROM 就是日版那份，
+把 8 个槽删到只剩哪个、要不要留 `zh-Hans` 这个标签，都得看后台实际有哪些文件。
+⚠️ 同一次普查还顺带发现两处**死链**（不是本问题，但要单独修）：
+`taiko-no-tatsujin-web` 的 8 个槽全指向同一个外链（HTTP 404）、
+`pokemon-white` 的 `zh-Hans` 指向 `roms/nds/中文.zh-Hans.nds`（404）。
+
 ---
 
 ## 3. 常用命令
