@@ -168,6 +168,16 @@ CREATE TABLE IF NOT EXISTS platform_bios (
   PRIMARY KEY (platform)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ---------- 站点设置（后台能热改的少量站点级配置） ----------
+-- 单向覆盖：env 提供默认、库只做覆盖（理由见 config-manifest.js 的文件头）。
+-- 值统一是 JSON 文本，形状由 shared/site-notice.js 校验。目前只有一格：notice（首页公告条）。
+CREATE TABLE IF NOT EXISTS site_settings (
+  name       VARCHAR(64) NOT NULL,
+  value      TEXT        NOT NULL,
+  updated_at TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ---------- 开发商资料 ----------
 -- 开发商本身不是独立实体：名单是从 games.developer 那一列 GROUP BY 出来的
 -- （一款游戏可以写多家，用逗号分隔）。这张表只存**人工补充**的那部分资料，

@@ -147,6 +147,15 @@ CREATE TABLE IF NOT EXISTS platform_bios (
   updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
 
+-- ---------- 站点设置（后台能热改的少量站点级配置） ----------
+-- 单向覆盖：env 提供默认、库只做覆盖（理由见 config-manifest.js 的文件头）。
+-- 值统一是 JSON 文本，形状由 shared/site-notice.js 校验。目前只有一格：notice（首页公告条）。
+CREATE TABLE IF NOT EXISTS site_settings (
+  name       TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
+);
+
 -- ---------- 首页特别鸣谢 / 友情链接 ----------
 -- image 为空就是文字友链；图片在前台统一按 88×31 比例展示。
 CREATE TABLE IF NOT EXISTS friend_links (

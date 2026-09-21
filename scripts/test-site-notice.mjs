@@ -93,12 +93,61 @@ console.log('\n── 接线（按源码形状）──')
   ok(content.includes('loadVisibleNotice'), '⭐ 首页数据里带公告（SSR 出来就有，前端不用再发一个请求）')
   ok(/return \{[\s\S]*?\n\s*notice,/.test(content), '首页回包里有 notice 字段')
 
+  /*
+    ⚠️ 这一条替代的是**本地跑不了的集成测试**：公告的写路径要真连上 MySQL 才验得了
+    （`npm run test:db` 那类），而本机只有一条到库的 SSH 隧道，平时是断的。
+    连不上时最可能翻车的不是逻辑，而是**列名对不上**（改名时只改了 SQL 或只改了 schema），
+    那种错误在开发机上永远复现不了，一上线就是「保存失败」。所以这里做一次静态交叉核对：
+    site-settings.js 里 SQL 用到的每一个列名，都必须真的在 schema 的建表语句里。
+  */
+  {
+    const repo = read('server/src/site-settings.js')
+    const ddl = read('server/schema-v2.sql').match(/CREATE TABLE IF NOT EXISTS site_settings \(([\s\S]*?)\) ENGINE/)[1]
+    const declared = new Set(
+      ddl
+        .split('\n')
+        .map((line) => line.trim().split(/\s+/)[0]?.replace(/`/g, '').toLowerCase())
+        .filter((name) => name && !name.startsWith('primary')),
+    )
+    const used = new Set()
+    for (const m of repo.matchAll(/INSERT INTO site_settings\s*\(([^)]+)\)/g)) {
+      m[1].split(',').forEach((c) => used.add(c.trim().replace(/`/g, '').toLowerCase()))
+    }
+    for (const m of repo.matchAll(/SELECT\s+([a-z_,\s]+?)\s+FROM site_settings/gi)) {
+      m[1].split(',').forEach((c) => used.add(c.trim().toLowerCase()))
+    }
+    const missing = [...used].filter((c) => !declared.has(c))
+    ok(used.size > 0 && missing.length === 0, `⭐ SQL 用到的列（${[...used].join(', ')}）都在表定义里（缺：${missing.join(', ') || '无'}）`)
+  }
+
   const tabs = read('src/admin/AdminLayout.tsx')
   ok(tabs.includes("to: '/admin/notice'"), '后台导航里有「公告」')
   ok(read('src/AppRoutes.tsx').includes('path="notice"'), '后台路由注册了 /admin/notice')
 
   ok(read('server/schema-v2.sql').includes('site_settings'), 'schema 里有 site_settings 表')
   ok(read('server/scripts/migrate.mjs').includes("hasTable('site_settings')"), '⭐ 迁移里有这张表 —— 少了它，后台保存会直接 500')
+
+  /*
+    ⚠️ 这个仓库有 6 份 schema / install SQL，加表时**只改 schema-v2.sql 是不够的**
+    （docs/open-platform.md 把它列成过上线检查项，AGENTS §2.15 也记着一次真实事故：
+    `saves` 当年只写在一个文件里，按另一份建的新库压根没有它）。
+
+    判据用「家族」而不是「名单」：**文件里有没有 platform_bios**。有就是 v2 家族
+    （schema-v2 / schema-d1 / 8bitgo-v2-install），新加的 v2 表都必须同步过去；
+    没有的那两份 `8bitgo-setup*.sql` 是 v1 结构，不该被要求跟着长。
+  */
+  const SCHEMA_FILES = [
+    'server/schema-v2.sql',
+    'server/schema-d1.sql',
+    'server/8bitgo-v2-install.sql',
+  ]
+  for (const file of SCHEMA_FILES) {
+    const sql = read(file)
+    ok(
+      sql.includes('site_settings'),
+      `⭐ ${file} 里也有 site_settings（v2 家族的三份 schema 都要同步，漏一份就有一种建库路径没有这张表）`,
+    )
+  }
 }
 
 console.log(`\n${fail ? '❌' : '✅'} 公告条：${pass} 项通过，${fail} 项失败`)
