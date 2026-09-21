@@ -1,0 +1,193 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Win95 客体自启动复现（真实链路）</title></head>
+<body>
+<div id="game" style="width:800px;height:600px"></div>
+<script type="module">
+  /*
+    本地复现页：走的是**真实模块**（windowsGuest / jsdosBundle / windowsLaunch），
+    只在外面套一层「把每一帧、每一次按键都记下来」的观测。
+    目的是拿到 Win95 客体这条链的现场证据：桌面什么时候真的画好、
+    敲键那一刻屏幕上是什么、键到底有没有进系统。
+  */
+  window.__logs = []
+  ;['log', 'info', 'warn', 'error'].forEach(function (k) {
+    var orig = console[k].bind(console)
+    console[k] = function () {
+      try {
+        window.__logs.push(k + ': ' + Array.prototype.map.call(arguments, String).join(' '))
+      } catch (e) {}
+      orig.apply(null, arguments)
+    }
+  })
+
+  import { readWindowsSystemConfig, buildWindowsGuestConfig, windowsGuestLaunchCommand } from '/src/lib/windowsGuest.ts'
+  import { makeWindowsGameLayer, hideJsdosConfigForLayer } from '/src/lib/jsdosBundle.ts'
+  import { scheduleWindowsLaunch, frameIsBlank, frameDiffRatio, assertTypeable } from '/src/emulator/windowsLaunch.ts'
+  import { armJspi } from '/src/emulator/jspiFlag.ts'
+
+  var t0 = Date.now()
+  var tl = []
+  var shots = []
+  var lastShotAt = -1e9
+  var prevFrame = null
+  var rec = function (ev, extra) {
+    var item = Object.assign({ t: Math.round(Date.now() - t0), ev: ev }, extra || {})
+    tl.push(item)
+    return item
+  }
+  window.__probe = { tl: tl, shots: shots, logs: window.__logs }
+
+  var full = document.createElement('canvas')
+  var small = document.createElement('canvas')
+  small.width = 256
+  small.height = 192
+  function thumb(frame) {
+    full.width = frame.width
+    full.height = frame.height
+    full.getContext('2d').putImageData(frame, 0, 0)
+    small.getContext('2d').drawImage(full, 0, 0, small.width, small.height)
+    return small.toDataURL('image/png')
+  }
+
+  /** 非主色像素占比：纯色壁纸≈0，画了图标/任务栏的桌面会明显上去 */
+  function structureRatio(frame) {
+    var total = frame.width * frame.height
+    var step = Math.max(1, Math.floor(total / 20000))
+    var counts = {}
+    var seen = 0
+    var i
+    for (i = 0; i < total; i += step) {
+      var at = i * 4
+      var key = (frame.data[at] << 16) | (frame.data[at + 1] << 8) | frame.data[at + 2]
+      counts[key] = (counts[key] || 0) + 1
+      seen++
+    }
+    var top = 0
+    for (var k in counts) if (counts[k] > top) top = counts[k]
+    // 再加上「底部横条是否和中间不一样」：Win95/98 的任务栏就靠这条认
+    var bottom = 0
+    var midY = Math.floor(frame.height / 2) * frame.width
+    var botY = (frame.height - 4) * frame.width
+    for (var x = 0; x < frame.width; x += 8) {
+      var a = (midY + x) * 4
+      var b = (botY + x) * 4
+      if (frame.data[a] !== frame.data[b] || frame.data[a + 1] !== frame.data[b + 1] || frame.data[a + 2] !== frame.data[b + 2]) bottom++
+    }
+    return { off: seen ? (seen - top) / seen : 0, bottomBar: bottom / Math.ceil(frame.width / 8) }
+  }
+
+  /** 记一帧：尺寸、是不是黑屏、和上一帧差多少、结构占比；顺带按节奏留缩略图 */
+  function observe(frame, label, forceShot) {
+    var diff = prevFrame ? frameDiffRatio(prevFrame, frame) : -1
+    var blank = frameIsBlank(frame)
+    var st = structureRatio(frame)
+    var t = Math.round(Date.now() - t0)
+    rec('frame', { w: frame.width, h: frame.height, blank: blank, diff: Number(diff.toFixed(4)), off: Number(st.off.toFixed(4)), bar: Number(st.bottomBar.toFixed(2)), label: label || '' })
+    if (forceShot || t - lastShotAt >= 3000 || t < 15000) {
+      lastShotAt = t
+      shots.push({ t: t, off: Number(st.off.toFixed(4)), bar: Number(st.bottomBar.toFixed(2)), png: thumb(frame) })
+    }
+    prevFrame = frame
+    return { diff: diff, blank: blank }
+  }
+
+  async function main() {
+    var qs = new URLSearchParams(location.search)
+    var SYS = qs.get('sys') || '/__win95.jsdos'
+    var GAMEZIP = qs.get('game') || '/__win95game.zip'
+    var VER = qs.get('ver') || '9x'
+    var sysBuf = await (await fetch(SYS)).arrayBuffer()
+    var gameBuf = await (await fetch(GAMEZIP)).arrayBuffer()
+    var systemConfig = await readWindowsSystemConfig(sysBuf)
+    var guest = buildWindowsGuestConfig(systemConfig, undefined)
+    var gameLayer = makeWindowsGameLayer(gameBuf, 'TEST.EXE', guest.gameDrive)
+    var cmd = windowsGuestLaunchCommand(guest, gameLayer.executable, VER, gameLayer.singleDir !== false)
+    assertTypeable(cmd)
+    /*
+      ⚠️ 只能调一次：hideJsdosConfigForLayer 是**原地改名**（改 ZIP 头里那 36 个字节），
+      第二次再调就找不到 .jsdos/dosbox.conf 了。适配器那边也只调一次。
+    */
+    var systemLayer = hideJsdosConfigForLayer(sysBuf)
+    window.__probe.config = {
+      gameDrive: guest.gameDrive,
+      launcher: guest.launcher,
+      command: cmd,
+      executable: gameLayer.executable,
+      singleDir: gameLayer.singleDir,
+      systemLayerBytes: systemLayer.length,
+      gameLayerBytes: gameLayer.bytes.length,
+    }
+    rec('config', window.__probe.config)
+
+    armJspi()
+    var script = document.createElement('script')
+    script.src = '/jsdos/js-dos.js'
+    var Dos = await new Promise(function (resolve, reject) {
+      script.onload = function () { window.Dos ? resolve(window.Dos) : reject(new Error('没有 Dos()')) }
+      script.onerror = function () { reject(new Error('js-dos.js 加载失败')) }
+      document.head.appendChild(script)
+    })
+
+    var destroyed = false
+    var ci = null
+    var launched = false
+    var failed = null
+    var polling = false
+
+    function poll() {
+      if (destroyed || !ci || polling) return
+      polling = true
+      ci.screenshot().then(function (frame) {
+        polling = false
+        if (!destroyed) observe(frame)
+      }).catch(function () { polling = false })
+    }
+
+    var props = Dos(document.getElementById('game'), {
+      dosboxConf: guest.dosboxConf,
+      jsdosConf: { version: '8' },
+      initFs: [systemLayer, gameLayer.bytes, { dosboxConf: guest.dosboxConf, jsdosConf: { version: '8' } }],
+      pathPrefix: '/jsdos/emulators/',
+      backend: 'dosboxX',
+      kiosk: true,
+      autoStart: true,
+      mouseCapture: false,
+      noCursor: true,
+      imageRendering: 'pixelated',
+      fastForwardOnBoot: 5,
+      onEvent: function (event, arg) {
+        rec('event', { name: event })
+        if (event === 'ci-ready' && arg && !ci) {
+          ci = arg
+          // 每一次按键都留痕：什么时候敲的、敲的是哪个键
+          var raw = ci.sendKeyEvent.bind(ci)
+          ci.sendKeyEvent = function (keyCode, pressed) {
+            rec('key', { k: keyCode, down: pressed })
+            return raw(keyCode, pressed)
+          }
+          rec('ci-ready')
+          var timer = setInterval(poll, 500)
+          window.__probe.stop = function () { clearInterval(timer); destroyed = true }
+          scheduleWindowsLaunch(
+            ci,
+            cmd,
+            24,
+            function () { return destroyed },
+            function () { launched = true; rec('markReady') },
+            '9x',
+            function (msg) { failed = msg; rec('failed', { msg: msg }) },
+            function (step) { rec('milestone', { step: step }) },
+          )
+        }
+      },
+    })
+    window.__probe.propsReady = !!props
+  }
+
+  main().catch(function (e) {
+    rec('fatal', { msg: String(e && e.message ? e.message : e) })
+  })
+</script>
+</body>
+</html>

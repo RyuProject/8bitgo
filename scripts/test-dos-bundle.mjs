@@ -21,7 +21,10 @@ const { makeJsdosBundle, makeWindowsGameLayer, buildDosboxConf } = await import(
 const { windowsGuestLaunchCommand } = await import(fileURLToPath(new URL('../src/lib/windowsGuest.ts', import.meta.url)))
 const {
   desktopSettled,
+  desktopContentRatio,
+  frameHasDesktopContent,
   frameDiffRatio,
+  frameIsBlank,
   scheduleWindowsLaunch,
   windowsLaunchDelayMs,
   DESKTOP_SETTLE_FLOOR_MS,
@@ -580,10 +583,50 @@ function mkFrame(w, h, fill) {
   }
   return f
 }
+/**
+ * 一帧「壳已经画出来了」的桌面：纯色底 + 底部任务栏 + 几个图标方块。
+ *
+ * 尺寸刻意照实测来（本地复现 system-win95-v1，640×480）：任务栏 640×28 占 5.8%、
+ * 四个 32×32 图标占 1.3%，合起来非主色像素约 7% —— 和真桌面量级一致。
+ * 桌面判定靠的就是这个比例（见 desktopContentRatio），拿「整屏一个颜色」的假帧测不出真行为。
+ */
+function mkDesktop(w, h, bg, bar) {
+  const f = { width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }
+  for (let i = 0; i < w * h; i++) {
+    const at = i * 4
+    f.data[at] = bg
+    f.data[at + 1] = bg
+    f.data[at + 2] = bg
+    f.data[at + 3] = 255
+  }
+  const paint = (x0, y0, bw, bh, v) => {
+    for (let y = y0; y < y0 + bh && y < h; y++) {
+      for (let x = x0; x < x0 + bw && x < w; x++) {
+        const at = (y * w + x) * 4
+        f.data[at] = v
+        f.data[at + 1] = v
+        f.data[at + 2] = v
+      }
+    }
+  }
+  paint(0, h - 28, w, 28, bar)
+  for (let k = 0; k < 4; k++) paint(8, 8 + k * 40, 32, 32, bar + 30)
+  return f
+}
+
 const TEXT = mkFrame(720, 400, 10)
-const DESKTOP = mkFrame(640, 480, 40)
-const DESKTOP_PAINTING = mkFrame(640, 480, 90)
+/** 壳已经画出来了（图标 + 任务栏） */
+const DESKTOP = mkDesktop(640, 480, 40, 190)
+/** 还在画：底色就不一样，所以两帧之间是「整屏都在变」 */
+const DESKTOP_PAINTING = mkDesktop(640, 480, 90, 200)
 const GAME = mkFrame(640, 480, 200)
+// Win95 进桌面之前那段纯黑图形模式（本站镜像没有 LOGO.SYS，连开机画面都没有）
+const BLACK = mkFrame(640, 480, 0)
+/**
+ * Win95 画出桌面**背景**、壳还没起来的那一段：一片纯青绿 + 一个光标。
+ * 实测非主色像素只占 0.04%～0.1%（光标那几十个像素），任务栏/图标一个都没有。
+ */
+const WALLPAPER = mkFrame(640, 480, 40)
 
 console.log('\n── 桌面到底画完了没有（desktopSettled）──')
 {
@@ -592,6 +635,23 @@ console.log('\n── 桌面到底画完了没有（desktopSettled）──')
   ok(desktopSettled(DESKTOP, DESKTOP) === true, '图形模式 + 两帧一样 = Program Manager 画完了')
   ok(desktopSettled(DESKTOP_PAINTING, DESKTOP) === false, '还在画（整屏都在变）就不算稳')
   ok(frameDiffRatio(TEXT, DESKTOP) === 1, '⭐ 尺寸变了直接算「全变了」—— 开机途中模式来回切时凑不满连续次数')
+  ok(frameIsBlank(BLACK) === true, '纯黑帧判为黑屏')
+  ok(frameIsBlank(DESKTOP) === false, '⭐ 真桌面**不能**判成黑屏 —— 误杀会把整条链打回「等满 24 秒硬敲」')
+  ok(
+    desktopSettled(BLACK, BLACK) === false,
+    '⭐ 静止的全黑帧不算桌面（Win95 进桌面前的那段黑屏，见下面那一节）',
+  )
+  ok(
+    desktopSettled(WALLPAPER, WALLPAPER) === false,
+    '⭐ 静止的纯壁纸也不算桌面 —— 壳（Explorer）还没起来，敲键一个都进不去',
+  )
+  ok(frameHasDesktopContent(DESKTOP) === true, '真桌面（图标 + 任务栏）判为「画了东西」')
+  ok(frameHasDesktopContent(WALLPAPER) === false, '纯壁纸判为「没画东西」')
+  const desktopRatio = desktopContentRatio(DESKTOP)
+  ok(
+    desktopRatio > 0.03 && desktopRatio < 0.15,
+    `真桌面的非主色像素占 ${(desktopRatio * 100).toFixed(1)}%（实测 system-win95-v1 是 7.1%，壁纸 0.1%）`,
+  )
 }
 
 /**
@@ -676,6 +736,80 @@ console.log('\n── 画面永远不静止时：退回老行为，绝不比以�
     !r.milestones.some(([, step]) => step === 'desktop'),
     '⭐ 但**不报** desktop 里程碑 —— 里程碑只报确证发生过的事，硬敲那条路不算',
   )
+}
+
+console.log('\n── Windows 95 的开机黑屏：不能把黑屏当成桌面 ──')
+{
+  /*
+    ⭐ 这一节守的是 2026-09-21 修掉的那个真 bug（windepth）。
+
+    Win95 的启动序列是：DOS 文本 → **静态黑屏**（640×480，本站这份镜像连 LOGO.SYS
+    都没有、开机画面也没有，所以那段就是纯黑，而且能持续好几秒）→ 桌面。
+    而 desktopSettled 原来的判据只有「图形模式 + 画面静止」—— 静止的黑屏**两条都满足**，
+    于是进图形模式刚满 2 秒就把 Ctrl+Esc / R 敲了出去，键全打在黑屏上。
+
+    更糟的是敲完那道确认抓不住它：黑屏 → 桌面本身就是一次远超 CHANGE_RATIO 的变化，
+    于是判「有反应」→ markReady → 既不自动重试也不报错。玩家看到「打开之后是回收站」，
+    而手动双击 D:\WINDEPTH.EXE 明明能跑 —— 这类反馈只会以「这游戏打不开」的形式回来。
+  */
+  // 敲完命令之后切到 GAME：真机上「运行」框弹出、关掉、游戏窗口出现本来就是一次大变化。
+  // 不给这个变化的话 finishLaunch 会正确地判失败（画面纹丝不动），那不是这一节要测的事。
+  const r = await runLaunch({
+    frameAt: (t, typedAt) =>
+      typedAt !== null && t > typedAt
+        ? GAME
+        : t < 1800
+          ? TEXT
+          : t < 8000
+            ? BLACK
+            : t < 8400
+              ? DESKTOP_PAINTING
+              : DESKTOP,
+  })
+  ok(r.firstKey !== null, '键敲出去了')
+  ok(
+    r.firstKey >= 8000,
+    `⭐ 等到真桌面出现（第 8 秒）之后才敲（实际第 ${(r.firstKey / 1000).toFixed(1)} 秒），没有敲在开机黑屏上`,
+  )
+  ok(r.failedAt === null, '真桌面之后再敲，按正常流程判成功（没有误报失败）')
+}
+
+console.log('\n── Windows 95 的壁纸静止：壳还没起来，不能当成桌面 ──')
+{
+  /*
+    ⭐ 这一节守的是 2026-09-21 **本地复现**（真实模块 + 真实 system-win95-v1 镜像）
+    抓出来的第二个真 bug，接在上面「开机黑屏」那节后面：
+
+    Win95 的启动序列其实是四段 —— DOS 文本 → 静态黑屏 → **纯青绿壁纸**
+    （屏幕上有小箭头光标，但图标和任务栏一个都没有，因为 Explorer 还没起来）→ 真桌面。
+
+    第三段又亮又静止，`desktopSettled` 原来的两条判据（图形模式 + 画面静止）**全部满足**，
+    于是 Ctrl+Esc / R 敲在一个还没有壳的系统上，一个键都进不去。更糟的是等图标和任务栏
+    画出来（远超 CHANGE_RATIO）又判「有反应」→ markReady：**既不重试也不报错**，
+    玩家看到的就是「打开之后停在桌面」。
+
+    实测时间线（本地复现，640×480，非主色像素占比）：
+      4.2s 壁纸（0.04%，静止）→ 5.2s 真桌面（7.1%，静止）
+    这里就按这条时间线摆帧。
+  */
+  const r = await runLaunch({
+    frameAt: (t, typedAt) =>
+      typedAt !== null && t > typedAt
+        ? GAME
+        : t < 1800
+          ? TEXT
+          : t < 3600
+            ? BLACK
+            : t < 5200
+              ? WALLPAPER
+              : DESKTOP,
+  })
+  ok(r.firstKey !== null, '键敲出去了')
+  ok(
+    r.firstKey >= 5200,
+    `⭐ 等真桌面（第 5.2 秒）出现之后才敲（实际第 ${(r.firstKey / 1000).toFixed(1)} 秒），没有敲在纯壁纸上`,
+  )
+  ok(r.failedAt === null, '真桌面之后再敲，按正常流程判成功（没有误报失败）')
 }
 
 console.log('\n── 敲完之后的确认：第一眼提前到 0.8 秒 ──')

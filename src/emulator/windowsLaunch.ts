@@ -92,7 +92,115 @@ export function frameDiffRatio(a: ImageData, b: ImageData): number {
   return seen ? diff / seen : 0
 }
 
+/** 单通道超过多少才算「这一格有内容」。真桌面（Win95 默认青绿底、Win3.11 浅灰底）远在它之上，纯黑屏是 0。 */
+const BLANK_LUMA_THRESHOLD = 16
+/**
+ * 有多少比例的像素「有内容」才不把这一帧当黑屏。
+ *
+ * 2% 定得很松：真桌面哪怕只是深色壁纸加一条任务栏也远超这个数，而纯黑帧是 0%。
+ * 宁可放过（黑屏上带一点鼠标残影仍按黑屏算），也不能误杀真桌面 ——
+ * 误杀的代价是整条启动链退化到「等满上限硬敲」。
+ */
+export const DESKTOP_MIN_LIT_RATIO = 0.02
+
+/**
+ * 这一帧是不是「几乎全黑」。
+ *
+ * ⚠️ 这条是 2026-09-21 修 windepth 时补的，坑值得写清楚：
+ * Windows 95 画出桌面**之前**会先进一段静态的黑色图形模式 —— 本站这份
+ * `system-win95-v1.jsdos` 连 `LOGO.SYS` 都没有（开机画面也没有），所以那段就是纯黑。
+ * 而 `desktopSettled` 原来的判据只有「图形模式 + 画面静止」，一段静止的黑屏**两条都满足**，
+ * 于是被当成桌面，`Ctrl+Esc` / `R` 全敲在黑屏上，一个键都没进系统。
+ *
+ * 更糟的是敲完那道确认也救不回来：黑屏 → 桌面本身是一次远超 `CHANGE_RATIO` 的变化，
+ * 于是判「有反应」→ `markReady()` → **既不重试也不报错**。玩家看到的就是「打开之后是回收站」，
+ * 而手动双击 `D:\WINDEPTH.EXE` 明明能跑。
+ *
+ * 所以只在这里挡住「什么时候可以敲键」，**不动** `finishLaunch` 的成败判据 ——
+ * 那条按既定策略是宁可放过失败，也不该为抓这种漏网把本来能成的局拆掉重来。
+ */
+export function frameIsBlank(frame: ImageData): boolean {
+  const total = frame.width * frame.height
+  if (!total) return true
+  const step = Math.max(1, Math.floor(total / 20_000))
+  let seen = 0
+  let lit = 0
+  for (let i = 0; i < total; i += step) {
+    const at = i * 4
+    seen++
+    // 任一通道亮过暗部阈值就算有内容：比做亮度加权便宜，判据也够用
+    if (
+      frame.data[at] > BLANK_LUMA_THRESHOLD ||
+      frame.data[at + 1] > BLANK_LUMA_THRESHOLD ||
+      frame.data[at + 2] > BLANK_LUMA_THRESHOLD
+    ) {
+      lit++
+    }
+  }
+  return seen ? lit / seen < DESKTOP_MIN_LIT_RATIO : true
+}
+
 /* ────────────────── 桌面到底画完了没有 ────────────────── */
+
+/**
+ * 抽样上限。整屏逐像素统计在 1024×768 上是三百万次，没必要（同 frameDiffRatio 的理由）。
+ */
+const CONTENT_SAMPLE_MAX = 20_000
+
+/**
+ * 这一帧里「画了多少不是背景的东西」：非主色像素占比。
+ *
+ * 主色 = 出现最多的那个颜色（Win95 默认青绿壁纸、Win3.11 浅灰底——都是**一整片纯色**）。
+ * 图标、任务栏、开始按钮、窗口标题栏这些都算「内容」。
+ *
+ * ── 为什么需要它（2026-09-21 本地复现实测）───────────────
+ * `system-win95-v1` 的启动序列是：
+ *
+ *     DOS 文本 → 静态黑屏 → **纯青绿壁纸（有小箭头光标，没有图标、没有任务栏）** → 真桌面
+ *
+ * 中间那段壁纸是**壳（Explorer）还没起来**的桌面背景：它又亮又静止，
+ * `desktopSettled` 那两条判据（图形模式 + 画面静止）**全部满足**，
+ * 于是 Ctrl+Esc / R 敲在一个还没有壳的系统上 —— 一个键都进不去。
+ * 然后图标和任务栏画出来（远超 CHANGE_RATIO）→ 判「有反应」→ markReady，
+ * **既不重试也不报错**，玩家看到的就是「打开之后停在桌面」。
+ *
+ * 实测（本地复现，system-win95-v1，640×480）：
+ *
+ *     纯青绿壁纸（壳没起来）   0.0004 ～ 0.0010
+ *     真桌面（图标+任务栏）    0.0707
+ *
+ * 差 70 倍，所以阈值取 **3%**：两边都留着几十倍余量，
+ * 换成别的壁纸 / 别的窗口管理器也不会擦边。
+ *
+ * ⚠️ 这道闸只影响「什么时候可以敲键」，**不参与成败判定**，而且只会**推迟**敲键：
+ * 认不出来的桌面等满 `waitSeconds` 上限照样敲（见 arm 里那条硬上限），
+ * 所以最坏情况退化成「不动这道闸」的老行为，不会比以前更差。
+ */
+export function desktopContentRatio(frame: ImageData): number {
+  const total = frame.width * frame.height
+  if (!total) return 0
+  const step = Math.max(1, Math.floor(total / CONTENT_SAMPLE_MAX))
+  const counts = new Map<number, number>()
+  let seen = 0
+  for (let i = 0; i < total; i += step) {
+    const at = i * 4
+    // 只算 RGB：alpha 在 DOSBox 的帧里恒为 255，带上它会把颜色种类翻一倍
+    const key = (frame.data[at] << 16) | (frame.data[at + 1] << 8) | frame.data[at + 2]
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+    seen++
+  }
+  let top = 0
+  for (const n of counts.values()) if (n > top) top = n
+  return seen ? (seen - top) / seen : 0
+}
+
+/** 有多少比例的像素是「非背景内容」才认为壳已经画出来了（实测壁纸 0.1% / 真桌面 7%） */
+export const DESKTOP_MIN_CONTENT_RATIO = 0.03
+
+/** 这一帧是不是「已经画了图标/任务栏」的桌面，而不是一片纯色背景 */
+export function frameHasDesktopContent(frame: ImageData): boolean {
+  return desktopContentRatio(frame) >= DESKTOP_MIN_CONTENT_RATIO
+}
 
 /**
  * 以前这里是 `later(windowsLaunchDelayMs(waitSeconds), launch)` —— 见到图形信号之后
@@ -141,6 +249,14 @@ export function desktopSettled(prev: ImageData | null, frame: ImageData): boolea
   if (!prev) return false
   // 还在文本模式 / 尺寸在变 = 还在开机，不管画面动不动都不能敲
   if (!isWindowsGraphicsMode(frame.width, frame.height)) return false
+  // ⚠️ 全黑静止的那一段不是桌面，是 Win95 还没画出来（详见 frameIsBlank 的注释）
+  if (frameIsBlank(frame)) return false
+  /*
+    ⚠️ 纯色壁纸静止的那一段同样不是桌面：壳还没起来，敲键一个都进不去。
+    壁纸是**亮的**，所以上面那条黑屏判据拦不住它 —— 必须再要一个「壳已经画出来了」的正向证据。
+    详见 desktopContentRatio 的注释（实测 0.001 vs 0.071）。
+  */
+  if (!frameHasDesktopContent(frame)) return false
   return frameDiffRatio(prev, frame) < DESKTOP_SETTLE_RATIO
 }
 

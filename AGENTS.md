@@ -646,6 +646,48 @@ Flash 手柄键位存在 `games.flash_controls` JSON，街机屏幕手柄的动�
 自测：`npm run test:scroll`（含「座位变了不重装监听也要生效」）+ `cd server && npm run test:live`
 （含 `ghostRooms` 分类、停播重开不留旧房、以及三条防回退的源码断言）。
 
+### 2.26 Windows 客体（Win3.x / 95 / 98）的自动启动：**「亮 + 静止」不等于桌面**
+
+`src/emulator/windowsLaunch.ts` 负责那条链：系统镜像（qcow2 → `boot c: -convertfat`）起来之后，
+敲 `Ctrl+Esc` → `R` → 输入 `D:\8BITGO\RUN.BAT` → 回车（3.x 走 File Manager 的 File > Run）。
+键是**开环**打进去的，所以「什么时候可以敲」只能靠画面判 —— 而**有两段画面的判据一模一样**：
+
+| 那一段 | 现象 | 拦它的判据 |
+|---|---|---|
+| Win95 进桌面前的**纯黑图形模式** | 全黑、静止 | `frameIsBlank`（2026-09-21） |
+| Win95 画出**桌面背景**、壳还没起来 | 青绿底 + 光标，**亮**、静止 | `frameHasDesktopContent`（2026-09-21） |
+
+实测非主色像素占比（本地复现 `system-win95-v1`，640×480，抽样两万点）：
+
+```
+纯黑                    0%
+纯青绿壁纸（只有光标）   0.04% ～ 0.1%
+Win95 真桌面（图标+任务栏） 7.1%
+Win3.11（程序管理器）    53%
+```
+
+阈值 3%：距最「稀」的真桌面还有 2 倍，距壁纸有 30 倍。
+
+**敲早了的症状**（两版）：键落在一个还没有壳的系统上 → 全丢；随后图标和任务栏画出来
+（远超 `CHANGE_RATIO`）→ 那道确认判「有反应」→ `markReady` → **既不重试也不报错**，
+玩家看到的就是「打开之后停在桌面」。更早那版是键被 BIOS 缓冲、晚些才交给桌面，
+`run` 里的 `r` 变成桌面上的逐字母定位、选中回收站，最后那个回车把它打开了 ——
+也就是玩家报的「打开之后是回收站」。
+
+⚠️ 这两道闸**只决定什么时候可以敲**，不参与成败判定，而且**只会推迟**敲键：
+认不出来的桌面等满 `waitSeconds` 上限照样敲，最坏情况退化成「没有这道闸」的老行为。
+
+⚠️ 本地复现 harness：`public/__win95-test.html?sys=/__win95.jsdos`（3.x 加 `&ver=3x`）——
+它 import 的是**真实模块**（windowsGuest / jsdosBundle / windowsLaunch），逐帧记下
+尺寸 / 是否黑屏 / 帧间差异 / 非主色占比，并把每次按键连同时间戳记下来，缩略图落在
+`window.__probe`。上面两张表和两个 bug 都是靠它抓的。镜像自己准备（Win95 约 33MB、
+Win3.11 约 21MB），**别提交进仓库**；小游戏层 `public/__win95game.zip`（77 字节的合法 MZ）
+可以直接用。
+⚠️ 用它时注意 `hideJsdosConfigForLayer` 是**原地改名**的，只能调一次（第二次就找不到
+`.jsdos/dosbox.conf`，报「系统镜像缺少 dosbox.conf」）。
+
+回归：`npm run test:dos-bundle` 的「桌面到底画完了没有」/「开机黑屏」/「壁纸静止」三节。
+
 ---
 
 ## 3. 常用命令
