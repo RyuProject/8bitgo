@@ -732,6 +732,49 @@ npm run audit:rom-langs -- --slug=pokemon-ruby   # 单款（清理时用）
 `taiko-no-tatsujin-web` 的 8 个槽全指向同一个外链（HTTP 404）、
 `pokemon-white` 的 `zh-Hans` 指向 `roms/nds/中文.zh-Hans.nds`（404）。
 
+### 2.28 自托管网页游戏放 `public/web/<名字>/`，访问地址 `https://8bitgo.com/web/<名字>`
+
+（2026-09-21 上 PvZ Portable 时定的约定。）
+
+三条硬性要求，缺一条就是「页面打不开」或「资源全取错」：
+
+1. **`public/web/<名字>/` 里放 `index.html` + 资源**，URL 是 `/web/<名字>`（**不带尾斜杠**，
+   这是站点 canonical 的写法 —— `normalizeUrl` 会把尾斜杠 301 掉）。
+2. **必须在 `server/src/index.js` 里加一条 `app.get(['/web/:name', '/web/:name/'])`**，
+   而且**要注册在 `express.static` 之前**。两个原因：
+   - 静态中间件是 `index: false`（首页归 SSR），目录 URL 不会自动吐 index.html，
+     它会一路走到 SSR 兜底（那条 catch-all 吃掉所有非 /api 的 GET）→ 渲染成「页面不存在」；
+   - 静态中间件对**目录**请求默认先 301 补尾斜杠，而 `normalizeUrl` 又 301 去掉尾斜杠 ——
+     两条互相踢皮球，就成了**无限重定向**。`/assets`、`/fonts`、`/bios` 这类目录 URL
+     今天就是这个样子（只是没人访问才没被发现），所以 `express.static` 也顺手加了
+     `redirect: false`，尾斜杠的规范化统一归 `normalizeUrl` 一家管。
+3. ⚠️ **HTML 里必须加 `<base href="/web/<名字>/">`**。页面里的相对路径
+   （`pvz-portable.js` / `pvz-portable.wasm` / `jszip.min.js`）在「目录 URL 不带尾斜杠」时，
+   浏览器会把 `PvZ` 当成**文件**，相对路径按 `/web/` 解析 → 全部 404。
+   实测症状：`window.JSZip === undefined`、wasm 从 `/web/pvz-portable.wasm` 取（404），
+   而页面自己的导入界面照常显示，看起来像「引擎没起来」而不是「路径错了」。
+   换名字 / 换位置时要一起改这一行。
+
+缓存：`cache.js` 里 `/web/` 走 `CACHE.engine`（固定 URL，既不永久缓存也不走兜底那一档）。
+
+**当前内容：PvZ Portable（WASM 0.2.3）**，对上游 HTML 有两处**本地补丁**，升级上游时要重打：
+
+1. jszip 从 `cdn.jsdelivr.net` 改自托管 `jszip.min.js`（3.10.1，MIT，保留许可证头）——
+   站点其它引擎都自托管，而且 jsdelivr 在国内常不可用，导入 `main.pak` 会直接失败；
+2. 上面那个 `<base>`。
+
+⚠️ 上游**不含任何游戏素材**（PopCap/EA 的 `main.pak`、`properties/` 都要玩家自己买），
+页面上的「拖 ZIP / 文件夹导入」就是让玩家提供这些文件的（存 IndexedDB）。
+⚠️ 想上架成游戏：平台选 `html5`，ROM 绑 `/web/PvZ`（html5 适配器把入口塞进 iframe，
+同源相对路径可以直接用）。
+
+验收：
+
+```bash
+curl -sI https://8bitgo.com/web/PvZ | head -3          # 200 + text/html，且不重定向
+curl -sI https://8bitgo.com/web/PvZ/pvz-portable.wasm | grep -i content-type   # application/wasm
+```
+
 ---
 
 ## 3. 常用命令

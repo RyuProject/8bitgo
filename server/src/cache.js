@@ -85,6 +85,12 @@ export function staticCacheHeaders(res, filePath) {
     res.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
   }
 
+  /*
+    自托管的网页游戏（`public/web/<名字>/`）：js / wasm 的文件名不带哈希，
+    所以走「固定 URL 的引擎」那档，而不是永久缓存 —— 换一版 PvZ 是**覆盖同名文件**，
+    边缘留旧副本会让线上和构建验收变成两套代码（和上面 EmulatorJS 那条同理）。
+  */
+  if (p.startsWith('/web/')) return set(CACHE.engine)
   if (p.includes('/assets/')) return set(CACHE.immutable)
   if (p.includes('/fonts/')) return set(CACHE.font)
   if (/\/ruffle\/v[^/]+\//.test(p)) return set(CACHE.engineVersioned)

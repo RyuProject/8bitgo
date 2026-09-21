@@ -2,6 +2,7 @@ import 'dotenv/config'
 import express from 'express'
 import { createServer } from 'node:http'
 import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import cors from 'cors'
 import { ping } from './db.js'
 import { ssrAvailable, renderPage, CLIENT_DIR } from './ssr.js'
@@ -325,10 +326,44 @@ if (ssrAvailable()) {
     res.sendFile('linux.html', { root: CLIENT_DIR })
   })
 
+  /**
+   * 自托管的网页游戏：`public/web/<名字>/` 整个目录（当前只有 PvZ）。
+   *
+   * 为什么要专门写一条：静态中间件是 `index: false`（首页归 SSR 渲染），目录 URL
+   * 不会自动吐 index.html，它会一路走到 SSR 兜底 —— 那条 catch-all 吃掉所有非 /api
+   * 的 GET —— 于是 `/web/PvZ` 会渲染成一个「页面不存在」。
+   * 目录里的 js / wasm 仍旧由 express.static 直接吐，这里只管目录 URL 那份 HTML。
+   *
+   * ⚠️ 必须注册在 `express.static` **之前**，和上面的 /linux 同理：静态中间件对
+   * **目录**请求会先 301 加一个尾斜杠，而 normalizeUrl 又会把尾斜杠 301 去掉 ——
+   * 两条互相踢皮球，`/web/PvZ` 会变成无限重定向（`/assets` 那种目录今天就是这个样子，
+   * 只是没人访问才没被发现）。这里先接住，两条 301 都轮不到。
+   * ⚠️ 名字必须白名单校验。Express 的 `:name` 不含 `/`，但 `..` 是合法参数值，
+   * 不挡就能拼出越界路径；`sendFile` 的 root 越界保护是第二道。
+   */
+  const WEB_GAME_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+  app.get(['/web/:name', '/web/:name/'], (req, res, next) => {
+    const name = String(req.params?.name ?? '')
+    if (!WEB_GAME_NAME.test(name)) return next()
+    // 固定 URL（不含哈希），走「引擎」那档短缓存；见 cache.js 里 /web/ 的说明
+    res.set('Cache-Control', CACHE.engine)
+    res.sendFile(join(name, 'index.html'), { root: join(CLIENT_DIR, 'web') }, (err) => {
+      // 目录里没有这一份就交回 SSR 渲染 404，别在这儿编错误页
+      if (err && !res.headersSent) next()
+    })
+  })
+
   // 带哈希的构建产物可以长期缓存；index.html 不能缓存（每次都要走 SSR）
   app.use(
     express.static(CLIENT_DIR, {
       index: false,
+      /*
+        ⚠️ `redirect: false`：默认行为是「目录请求 301 补一个尾斜杠」，而 normalizeUrl
+        干的是反过来的事（把尾斜杠 301 去掉）—— 两条互相踢皮球，`/assets`、`/fonts`、
+        `/bios` 这类目录 URL 会变成无限重定向（curl 跟满 5 跳就放弃）。尾斜杠的规范化
+        归 normalizeUrl 一家管，静态中间件这里只负责吐文件。
+      */
+      redirect: false,
       // 带哈希的产物永久缓存；字体、模拟器内核、图片各有各的时长，
       // 具体规则见 cache.js
       setHeaders: staticCacheHeaders,
