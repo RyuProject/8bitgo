@@ -1,5 +1,15 @@
 # 搜索引擎主动推送（IndexNow + 百度普通收录）
 
+## 迁机后先巡检
+
+在新服务器的仓库根目录运行 `node scripts/audit-migration.mjs --server`。它只读地检查
+首页 SSR 与 canonical、robots、动态 sitemap、游戏详情页、首屏 JS、数据库，以及
+应用/备份/看门狗服务；还会提示当前用户的 crontab 里是否有每日搜索推送任务。
+若任务装在其他用户或 systemd timer 下，需单独核对。输出不会包含 `.env` 密钥。
+
+这项检查只能发现技术层故障。流量掉在哪一步，需要在 Search Console 对比迁机前后
+的展示量、点击量、网页索引与抓取统计，并结合 Cloudflare 的请求量和 5xx 比例判断。
+
 ## 两条通道
 
 | | IndexNow（Bing / Yandex …） | 百度普通收录 |

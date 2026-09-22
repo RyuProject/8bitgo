@@ -119,6 +119,9 @@ public/bios/*
 # 数据包放对象存储 / 服务器本地；整个 cs15 目录先不进仓库，等数据包落到 R2 再重新划线。
 # （helf-life 目前只有一个 index.html，不受影响。）
 public/web/cs15
+# cs16：源码（index.html + cs16.js）进 git；只有 447M 的完整 CS1.6 资产包不进 git（Valve 游戏数据 + 超 100M 单文件上限）。
+# 部署时把 public/web/cs16/packs/ 整体传到服务器本地即可（运行时通过 ?root=../cs15/ 复用 cs15 引擎与 cs16-client wasm）。
+public/web/cs16/packs
 
 # Cloudflare 源站证书与私钥（Authenticated Origin Pulls 的客户端证书）
 # 2026-09-06 被 GitGuardian 抓到：origin.key 从 8/26 起就在跟踪列表里，

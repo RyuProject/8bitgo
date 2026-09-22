@@ -1,5 +1,5 @@
 import path from 'node:path'
-import { existsSync, mkdirSync, renameSync, rmSync, symlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
@@ -30,7 +30,7 @@ import { defineConfig, loadEnv } from 'vite'
  * 外加一个 `process.on('exit')` 兜底。前者挡「上次崩了」，后者挡「这次崩了」；
  * 只靠 closeBundle 的话，一次语法错误就会让目录凭空消失。
  */
-const HUGE_STATIC = ['web/cs15', 'qemu-wasm']
+const HUGE_STATIC = ['web/cs15', 'web/cs16', 'qemu-wasm']
 
 const PUBLIC_DIR = path.resolve(import.meta.dirname, 'public')
 const DIST_DIR = path.resolve(import.meta.dirname, 'dist/client')
@@ -108,9 +108,10 @@ function isolationHeaders(req: IncomingMessage, res: ServerResponse, next: () =>
 }
 
 /**
- * 提前和封面 / ROM 那个域名握手。
+ * 提前和封面域名握手。
  *
- * 封面都在对象存储的独立域名上（VITE_ROM_BASE_URL）。不预热的话，每一张封面在下载前
+ * 封面优先走 VITE_COVER_URL，没配时才退回 VITE_ROM_BASE_URL（和 roms.ts 保持一致）。
+ * 不预热的话，每一张封面在下载前
  * 都要先走一遍 DNS + TCP + TLS —— 首屏那一批图于是排队握手，看起来就是「图一张张慢慢
  * 冒出来」。这一步把握手提前到 HTML 一开始解析的时候，之后所有封面复用同一条连接。
  *
@@ -120,7 +121,7 @@ function isolationHeaders(req: IncomingMessage, res: ServerResponse, next: () =>
  * 匿名 CORS 连接，反而不会被这些图片复用 —— 字体才需要 crossorigin。
  */
 function coverOrigin(env: Record<string, string>): string {
-  const raw = String(env.VITE_ROM_BASE_URL || '').trim()
+  const raw = String(env.VITE_COVER_URL || env.VITE_ROM_BASE_URL || '').trim()
   if (!/^https?:\/\//i.test(raw)) return '' // 同源路径（/roms）不需要预热
   try {
     return new URL(raw).origin
@@ -147,6 +148,32 @@ export default defineConfig(({ mode }) => {
     react(),
     tailwindcss(),
     skipHugeStatic(),
+    /*
+      生产由 Express 的 `/web/:name` 路由 + express.static 直接提供每个 web 游戏页；
+      但 Vite dev 服务器没有这条路由，目录形式的 `/web/cs16/` 会被 SPA 兜底抢成根
+      index.html（React 路由匹配不到就渲染 404）。这里补一条仅 dev 用中间件：
+      把 `/web/<name>` 和 `/web/<name>/` 直接吐出 `public/web/<name>/index.html`，
+      让本地预览和线上行为一致。不影响生产（apply 只对 dev 生效）。
+    */
+    {
+      name: 'web-game-static',
+      apply: 'serve' as const,
+      configureServer(server) {
+        server.middlewares.use((req, res, next) => {
+          const url = (req.url || '').split('?')[0]
+          const m = /^\/web\/([^/]+)\/?$/.exec(url)
+          if (m) {
+            const file = path.join(PUBLIC_DIR, 'web', m[1], 'index.html')
+            if (existsSync(file)) {
+              res.setHeader('Content-Type', 'text/html; charset=utf-8')
+              res.end(readFileSync(file))
+              return
+            }
+          }
+          next()
+        })
+      },
+    },
     ...(origin
       ? [
           {

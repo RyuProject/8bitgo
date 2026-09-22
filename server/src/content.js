@@ -48,7 +48,7 @@ export function invalidateContent() {
  * promise，整站 SSR 对一个路由永久挂起，且没有任何报错。
  *
  * 超过这个时间就当作那次查询已经没意义了，丢掉记录、让下一个请求重新发起。
- * 旧查询真的回来时也不会写坏缓存 —— 它带着旧的 generation，本来就进不去。
+ * 旧查询真的回来时也不能写坏缓存 —— 缓存写入还要确认它仍是当前共享查询。
  */
 const INFLIGHT_MAX_MS = Number(process.env.SSR_INFLIGHT_MAX_MS || 15_000)
 
@@ -64,7 +64,9 @@ export async function cached(key, loader) {
   const startedAt = generation
   const p = loader()
     .then((data) => {
-      if (startedAt === generation) {
+      // 超时后同一个 key 可能已重新发起查询。旧查询即使终于返回，也不能
+      // 把新查询的结果覆盖回缓存；代数只在后台写入时变化，挡不住这类超时竞态。
+      if (startedAt === generation && inflight.get(key)?.p === p) {
         // 超量就丢掉最早写入的那批（Map 按插入顺序迭代）
         if (cache.size >= MAX_ENTRIES) {
           for (const k of cache.keys()) {
@@ -160,8 +162,14 @@ async function loadHome() {
   }
 }
 
-export async function loadFacets() {
-  const [platforms, genres, developers] = await Promise.all([platformCounts(), genreCounts(), developerCounts()])
+export async function loadFacets({ includeDevelopers = false } = {}) {
+  // 开发商统计要拆分字符串并运行窗口函数，只有 /developers 页面会展示它。
+  // 首页和普通列表页只需要平台/类型数量，省掉这条查询也缩短首屏等待。
+  const [platforms, genres, developers] = await Promise.all([
+    platformCounts(),
+    genreCounts(),
+    includeDevelopers ? developerCounts() : Promise.resolve([]),
+  ])
   return {
     platforms: platforms.map((r) => ({ id: r.platform, count: Number(r.n) })),
     genres: genres.map((r) => ({ id: r.genre, count: Number(r.n) })),
@@ -283,7 +291,7 @@ export async function loadForRoute(pathname, search) {
     return cached('genres', async () => ({ route: 'genres', facets: await loadFacets() }))
   }
 
-  if (seg[0] === 'developers') return cached('developers', async () => ({ route: 'developers', facets: await loadFacets() }))
+  if (seg[0] === 'developers') return cached('developers', async () => ({ route: 'developers', facets: await loadFacets({ includeDevelopers: true }) }))
 
   // 博客：数量级小，一次给全
   if (seg[0] === 'blog') {

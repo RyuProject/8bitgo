@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>Half-Life · 网页版</title>
+    <title>Counter-Strike 1.6 · 网页版</title>
     <style>
       :root { color-scheme: dark; }
       * { box-sizing: border-box; }
@@ -28,21 +28,12 @@
              background: #0c1116; border: 1px solid #1d2733; border-radius: 8px; padding: 10px; text-align: left; }
       #log .err { color: #ff6b6b; }
       #errbox { color: #ff8a80; max-width: 620px; white-space: pre-wrap; }
-      .row { display: flex; gap: 10px; align-items: center; }
+      .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: center; }
       select, button { font: inherit; padding: 6px 12px; border-radius: 8px; border: 1px solid #2a3744; background: #141c24; color: #e6e6e6; }
       button { cursor: pointer; }
       button:hover { background: #1c2731; }
       #hud { position: absolute; top: 8px; left: 8px; font: 12px ui-monospace, monospace; opacity: .55; pointer-events: none; }
     </style>
-    <!-- 没有带 ?game=hl 时，自动补上参数并重载：复用 cs15 的资产目录（root=../cs15/），避免重复几百 MB 资源。 -->
-    <script>
-      if (!location.search.includes('game=hl')) {
-        const q = new URLSearchParams(location.search)
-        q.set('game', 'hl'); q.set('root', '../cs15/')
-        if (!q.has('map')) q.set('map', 'crossfire')
-        location.search = '?' + q.toString()
-      }
-    </script>
   </head>
   <body>
     <div id="app">
@@ -50,15 +41,23 @@
         <canvas id="canvas"></canvas>
         <div id="hud"></div>
         <div id="overlay">
-          <div id="title">Half-Life · 网页版</div>
-          <div id="sub">Xash3D-FWGS (WebAssembly) 引擎在浏览器里原生运行。首次需下载约 550&nbsp;MB 基础包（含 Half-Life 资产），解压后约占 1.1&nbsp;GB 内存，之后只按需下你选的那张地图。</div>
+          <div id="title">Counter-Strike 1.6 · 网页版</div>
+          <div id="sub">Xash3D-FWGS (WebAssembly) 引擎原生运行完整 CS1.6（含全部地图）。首次需下载约 600&nbsp;MB 基础包，解压后约占 1.2&nbsp;GB 内存，之后即点即玩。进图后按 ~ 开控制台，<code>bot_add</code> 加电脑人。</div>
           <div class="row">
             <label>地图
               <select id="map">
-                <option value="crossfire">crossfire</option>
-                <option value="boot_camp">boot_camp</option>
-                <option value="c0a0">c0a0（开篇）</option>
-                <option value="ofboot1">ofboot1（蓝色偏移）</option>
+                <option value="de_dust2">de_dust2</option>
+                <option value="de_dust">de_dust</option>
+                <option value="de_inferno">de_inferno</option>
+                <option value="de_nuke">de_nuke</option>
+                <option value="de_aztec">de_aztec</option>
+                <option value="de_train">de_train</option>
+                <option value="de_cbble">de_cbble</option>
+                <option value="cs_office">cs_office</option>
+                <option value="cs_italy">cs_italy</option>
+                <option value="cs_assault">cs_assault</option>
+                <option value="cs_militia">cs_militia</option>
+                <option value="de_vertigo">de_vertigo</option>
               </select>
             </label>
             <button id="start">开始</button>
@@ -71,7 +70,6 @@
         </div>
       </div>
     </div>
-    <!-- 直接复用 cs15 已打包好的引擎与加载器，仅通过查询参数切到 Half-Life 模式 -->
-    <script type="module" src="../cs15/cs15.bundle.js?v=20260921"></script>
+    <script type="module" src="./cs16.js?v=20260922"></script>
   </body>
 </html>

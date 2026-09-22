@@ -85,6 +85,10 @@ Description=8BitGo SSR + API
 Documentation=file://$APP_DIR/README.md
 After=network-online.target mysql.service
 Wants=network-online.target
+# 起崩频率限制属于 [Unit] 段（不是 [Service]）：5 分钟内起崩 10 次就停下，
+# 说明是真故障不是抖动，别无限重启刷屏。放错段 systemd 会直接忽略（见 §2 部署踩坑）。
+StartLimitIntervalSec=300
+StartLimitBurst=10
 
 [Service]
 Type=simple
@@ -96,9 +100,6 @@ Environment=NODE_ENV=production
 # 崩了就拉起来 —— 这条就是这次装它的全部理由
 Restart=always
 RestartSec=2
-# 但别无限重启刷屏：5 分钟内起崩 10 次就停下，说明是真故障不是抖动
-StartLimitIntervalSec=300
-StartLimitBurst=10
 
 # SSE 长连接每条吃一个 fd，和 nginx 那侧一起抬
 LimitNOFILE=$NOFILE

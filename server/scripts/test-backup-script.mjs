@@ -14,7 +14,7 @@
  */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, chmodSync, rmSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, chmodSync, rmSync, mkdirSync, readdirSync, readFileSync, symlinkSync, accessSync, constants } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -69,8 +69,18 @@ case "$1" in
   delete) : ;;
 esac
 exit 0`)
+  } else {
+    // 「没装 rclone」必须用隔离 PATH 来模拟。只是不造桩还不够：
+    // 开发机若真装了 rclone，脚本会找到真实程序并尝试真实 remote。
+    for (const name of ['bash', 'date', 'tee', 'sed', 'tail', 'mkdir', 'chmod', 'mktemp', 'rm', 'cat', 'gzip', 'stat', 'ls', 'head', 'base64', 'mv', 'find', 'awk', 'grep']) {
+      const found = process.env.PATH.split(':').map((dir) => join(dir, name)).find((candidate) => {
+        try { accessSync(candidate, constants.X_OK); return true } catch { return false }
+      })
+      assert.ok(found, `测试需要 ${name}`)
+      symlinkSync(found, join(bin, name))
+    }
   }
-  return { dir, bin, backups, remote, tmp, envFile: join(dir, '.env') }
+  return { dir, bin, backups, remote, tmp, envFile: join(dir, '.env'), isolatedPath: !rclone }
 }
 
 function run(e, args = []) {
@@ -83,7 +93,7 @@ function run(e, args = []) {
   const r = spawnSync('bash', [SCRIPT, ...args], {
     env: {
       ...process.env,
-      PATH: `${e.bin}:${process.env.PATH}`,
+      PATH: e.isolatedPath ? e.bin : `${e.bin}:${process.env.PATH}`,
       ENV_FILE: e.envFile,
       BACKUP_DIR: e.backups,
       LOG: join(e.dir, 'log'),
