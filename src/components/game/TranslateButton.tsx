@@ -22,7 +22,7 @@
  * 不去刷新整个对象 —— 几十字的局部 setState 既便宜也不影响页面其它部分
  * （评论数、相关推荐之类都是独立的）。
  */
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useT } from '@/services/i18n'
 import { useLang } from '@/services/lang'
 import type { Lang } from '@/config/languages'
@@ -54,6 +54,15 @@ export function TranslateButton<T>({ endpoint, onTranslated, show = true, lang: 
   const lang = langProp ?? ctxLang
   const [status, setStatus] = useState<Status>('idle')
   const [errorMsg, setErrorMsg] = useState<string>('')
+  /** 「✓ 已翻译」那一下的定时器句柄。卸载时要清掉，否则会对着已卸载组件 setState */
+  const flashTimer = useRef(0)
+
+  useEffect(
+    () => () => {
+      if (flashTimer.current) window.clearTimeout(flashTimer.current)
+    },
+    [],
+  )
 
   if (!show) return null
 
@@ -68,7 +77,8 @@ export function TranslateButton<T>({ endpoint, onTranslated, show = true, lang: 
       // 闪一下反馈后让按钮淡出 —— 父组件会因为 show 改成 false
       // 而在下次渲染时不再挂这个按钮，但 1.5s 留个「✓ 已翻译」的视觉过渡，
       // 否则玩家会怀疑刚才那次点击没生效
-      setTimeout(() => setStatus('idle'), 1500)
+      if (flashTimer.current) window.clearTimeout(flashTimer.current)
+      flashTimer.current = window.setTimeout(() => setStatus('idle'), 1500)
     } catch (e) {
       // api.ts 已经把后端 error 字段塞进了 ApiError.message（见 ApiError 构造里的 msg 选取）。
       // 用 message + status 两份信息一起显示：503 一眼能看出是没配服务，

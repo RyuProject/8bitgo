@@ -207,9 +207,19 @@ const cache = (() => {
   }
 })()
 
+/**
+ * 水合期用的空快照，必须是**同一个引用**。
+ *
+ * React 要求 getServerSnapshot 两次调用的结果 `Object.is` 相等，否则它判定「服务端
+ * 快照变了」并要求重渲染 —— 写成 `() => []` 的话每次都是新数组，就直接踩进那条
+ * 「The result of getServerSnapshot should be cached to avoid an infinite loop」。
+ * 本站是 SSR + hydrateRoot（entry-client.tsx 开了 StrictMode），这条路径真的会走到。
+ */
+const NO_ROOMS: Room[] = []
+
 /** 在线房间列表（自动轮询，多个组件共享一个定时器） */
 export function useRooms(): Room[] {
-  return useSyncExternalStore(cache.subscribe, cache.get, () => [])
+  return useSyncExternalStore(cache.subscribe, cache.get, () => NO_ROOMS)
 }
 
 /**

@@ -405,12 +405,46 @@ function takeRoomChatToken(room) {
 
 /** roomId -> room */
 const rooms = new Map()
-/** 没有同步开播的联机房也能聊天；最后一位玩家离开时连历史一起清掉。 */
+/**
+ * 没有同步开播的联机房也能聊天；最后一位玩家离开时连历史一起清掉。
+ *
+ * ⚠️ 这个 Map 原来是**只加不减**的：清理只写在 leave() 里「room 不存在」那一条分支上，
+ * 而玩家一旦先以 `match:<id>` 进来、随后主播开播并 link-netplay 绑定，
+ * leave() 走的就是 `room.matchPlayers.delete(...)` 那条路 —— `match:<id>` 这条记录
+ * 的 players 从此再没人删，整条（连带 chat 数组）永久留在内存里。
+ * 一场直播开几个小时、联机房换几十个，就是几十条僵尸记录。
+ *
+ * 所以每条记一个 lastAt，由清扫按「没人 + 够久」回收（见 MATCH_CHAT_TTL_MS）。
+ */
 const matchChats = new Map()
 /** socket.id -> {roomId, role} */
 const membership = new Map()
 
 const matchChatKey = (roomId) => `match:${roomId}`
+
+/**
+ * 一条纯联机弹幕房多久没人就可以回收。
+ *
+ * 比 MEMBER_TTL 那类值大得多是故意的：玩家断线重连、页面刷新都会让 players
+ * 短暂归零，回收得太快会把人家正在聊的历史清掉。一天足够长，又足够短到
+ * 让「开一晚上直播」留下的僵尸记录第二天就没了。
+ */
+const MATCH_CHAT_TTL_MS = 24 * 60 * 60 * 1000
+
+/**
+ * 回收纯联机弹幕房。
+ *
+ * 判据是「**没人**」或者「**够久没动静**」，两个都要：
+ *   · 只看没人 —— 主播绑走之后那条记录 players 永远空着，本该立刻回收；
+ *   · 只看时间 —— 正在聊的房间会被误删。
+ * 挂在 ghostTimer 上跑（见文件末尾），不另起一个定时器。
+ */
+function sweepMatchChats(now = Date.now()) {
+  for (const [key, match] of matchChats) {
+    if (match.players.size > 0 && now - (match.lastAt ?? 0) < MATCH_CHAT_TTL_MS) continue
+    matchChats.delete(key)
+  }
+}
 
 function linkedLiveRoom(netplayRoomId) {
   for (const room of rooms.values()) {
@@ -661,6 +695,8 @@ function closeRoom(nsp, room, reason) {
     membership.delete(id)
     nsp.sockets.get(id)?.leave(room.id)
   }
+  // 散场时把这条直播绑过的联机弹幕房一起收掉：房间都没了，那段历史没人再看得到
+  if (room.netplayRoomId) matchChats.delete(matchChatKey(resolveRoomId(room.netplayRoomId)))
   rooms.delete(room.id)
   notifyRoomList()
 }
@@ -1135,10 +1171,11 @@ export function attachLive(io, options = {}) {
         if (!live) {
           match = matchChats.get(key)
           if (!match) {
-            match = { id: key, players: new Set(), chat: [], chatFlood: null }
+            match = { id: key, players: new Set(), chat: [], chatFlood: null, lastAt: Date.now() }
             matchChats.set(key, match)
           }
           match.players.add(socket.id)
+          match.lastAt = Date.now()
         } else live.matchPlayers.add(socket.id)
         membership.set(socket.id, { roomId: key, role: 'match', netplayRoomId, token })
         socket.join(key)
@@ -1190,6 +1227,14 @@ export function attachLive(io, options = {}) {
       // 大厅是轮询 /api/live/rooms 的（不像 netplay 那边有 SSE），改完等下一轮就看得到
       const previous = room.netplayRoomId
       room.netplayRoomId = next
+      /*
+        绑定之后，之前那条 `match:<id>` 记录立刻变成孤儿：
+        房间里的人被搬到直播弹幕流（room.matchPlayers），leave() 于是再也不会
+        走到「matchChats 里删人」那条分支 —— 那条记录的 players 永远空着，
+        连带 chat 历史一起留在内存里（见 matchChats 的注释）。
+        这里在搬人的同时把它删掉，别等一天后的清扫。
+      */
+      if (next) matchChats.delete(matchChatKey(resolveRoomId(next)))
       // 已在纯联机弹幕房的人要换到直播弹幕流；结束联机时则反向退回。
       if (previous) nsp.to(room.id).emit('match-chat-moved')
       if (next) nsp.to(matchChatKey(resolveRoomId(next))).emit('match-chat-moved')
@@ -1306,6 +1351,8 @@ export function attachLive(io, options = {}) {
         }
         room.chat.push(msg)
         if (room.chat.length > CHAT_HISTORY_SIZE) room.chat.splice(0, room.chat.length - CHAT_HISTORY_SIZE)
+        // 清扫靠 lastAt 判断「还在聊吗」，纯联机房没有房间对象可看，只能在这里记一笔
+        if (matchChats.get(room.id) === room) room.lastAt = Date.now()
         nsp.to(room.id).emit('chat', msg)
         ack?.(null, { id: msg.id })
       }).catch((e) => {
@@ -1331,6 +1378,9 @@ export function attachLive(io, options = {}) {
       if (room.viewers.size === 0) closeRoom(nsp, room, 'ghost-host')
       else hostAway(nsp, room)
     }
+    // 顺手回收纯联机弹幕房（见 sweepMatchChats 的注释）。挂在同一个定时器上，
+    // 不为它再开一个 interval —— 这种清扫线程多了，测试结束进程退不出去。
+    sweepMatchChats()
   }, GHOST_SWEEP_MS)
   ghostTimer.unref?.()
 

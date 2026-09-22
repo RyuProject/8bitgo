@@ -38,11 +38,29 @@ export function invalidateContent() {
   inflight.clear()
 }
 
+/**
+ * 一次查询最多允许飞多久。
+ *
+ * ⚠️ 没有这条，inflight 就是**永久挂起**的入口：db.js 只设了 connectTimeout，
+ * 没有查询超时，一条被锁等待 / 半死连接卡住的 SQL 会让那个 promise 永远不落定。
+ * 而 inflight 唯一的删除条件是「loader 自己落定」，cache 里又没有这一条 ——
+ * 于是之后每一个打这个 key 的请求（首页就是 `'home'`）都复用那个永不落定的
+ * promise，整站 SSR 对一个路由永久挂起，且没有任何报错。
+ *
+ * 超过这个时间就当作那次查询已经没意义了，丢掉记录、让下一个请求重新发起。
+ * 旧查询真的回来时也不会写坏缓存 —— 它带着旧的 generation，本来就进不去。
+ */
+const INFLIGHT_MAX_MS = Number(process.env.SSR_INFLIGHT_MAX_MS || 15_000)
+
 export async function cached(key, loader) {
   const hit = cache.get(key)
   if (hit && hit.generation === generation && Date.now() - hit.at < TTL) return hit.data
   const flying = inflight.get(key)
-  if (flying) return flying
+  if (flying) {
+    // 挂太久的那次不再复用：宁可多发一次查询，也不要让整个路由永久挂起
+    if (Date.now() - flying.at < INFLIGHT_MAX_MS) return flying.p
+    inflight.delete(key)
+  }
   const startedAt = generation
   const p = loader()
     .then((data) => {
@@ -60,9 +78,10 @@ export async function cached(key, loader) {
     })
     .finally(() => {
       // 旧查询若晚于新查询完成，不能把新查询的共享记录误删。
-      if (inflight.get(key) === p) inflight.delete(key)
+      const cur = inflight.get(key)
+      if (cur && cur.p === p) inflight.delete(key)
     })
-  inflight.set(key, p)
+  inflight.set(key, { p, at: Date.now() })
   return p
 }
 

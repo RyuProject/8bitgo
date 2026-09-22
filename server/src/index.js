@@ -12,6 +12,8 @@ import { playShell } from './routes/play.js'
 import { j2meJarProxy, uploadGate, uploadJar, releaseJar, keepaliveJar, startSweeper, MAX_BYTES, TTL_MS } from './j2me.js'
 import { ADMIN_AUTH_DISABLED, adminBackdoorFatal, authSecretsFatal, optionalUser } from './auth.js'
 import { CACHE, noStore, staticCacheHeaders } from './cache.js'
+import { gzipResponse } from './compress.js'
+import { take, clientKey } from './rateLimit.js'
 import { authRouter } from './routes/auth.js'
 import { gamesRouter } from './routes/games.js'
 import { postsRouter } from './routes/posts.js'
@@ -102,6 +104,16 @@ app.use(
     exposedHeaders: ['x-save-updated-at'],
   }),
 )
+
+/*
+  gzip。必须注册在所有路由**之前**，但要在 socket.io 那条路之外 ——
+  engine.io 自己 writeHead 并写响应，交给它会把长连接轮询的帧攒进 zlib 缓冲区里，
+  心跳就不再是即时的了（见 compress.js 里为什么用 headersSent 兜底，这里是第二道）。
+*/
+app.use((req, res, next) => {
+  if (req.url?.startsWith('/socket.io/')) return next()
+  return gzipResponse(req, res, next)
+})
 
 app.use(express.json({ limit: '4mb' }))
 
@@ -430,6 +442,17 @@ if (ssrAvailable()) {
         if (!host || host === normalizeHost(req.hostname)) return
         const id = (await friendLinkHostMap()).get(host)
         if (!id) return
+        /*
+          这道限流是 2026-09-22 补的。它挂在**每一个**页面请求上：
+          任何人只要在任意 GET 上带一个指向友链域名的 Referer 头，就能让每一次
+          SSR 渲染额外产生一次 INSERT。友链域名还是公开的（/api/page?path=/ 里就有）。
+          INSERT IGNORE 的去重只在「同一个人同一天」内有效，挡不住并发放大。
+
+          放在 hostMap 命中之后：没命中友链的那些请求（绝大多数）根本走不到这里，
+          不会给限流器添无谓的桶。
+        */
+        const gate = take(`friendlink:in:${clientKey(req)}`, 30, 60_000)
+        if (!gate.ok) return
         await recordFriendLinkHit(id, IN, req)
       } catch {
         /* 统计失败不该惊动任何人 */

@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { randomBytes } from 'node:crypto'
-import { verifyToken } from '../auth.js'
-import { queryOne } from '../db.js'
+import { optionalUser } from '../auth.js'
+import { takeAnonymous } from '../rateLimit.js'
 import { presenceFromRequest, UNKNOWN_PRESENCE } from '../presence.js'
 import { resolveGameRoomPolicy } from '../netplay-game-policy.js'
 import { NETPLAY_MAX_PLAYERS, normalizeGamePlayers } from '../../../shared/netplay-players.js'
@@ -80,14 +80,23 @@ const str = (v, max = 120) => (typeof v === 'string' ? v.trim().slice(0, max) : 
  * 可选登录：认得出用户就用他的真实昵称，认不出（没登录、令牌过期、数据库没起来）
  * 就当游客放行。房间是纯内存功能，不能被数据库拖住。
  */
-async function softUser(req, _res, next) {
+async function softUser(req, res, next) {
+  /*
+    ⚠️ 这里**必须**走 auth.js 的 optionalUser，不能再自己解一次令牌。
+    以前那版只 verifyToken 就认人，漏了两道闸：
+      · token_version（§2.14）—— 用户「退出所有设备」/ 改完密码之后，旧令牌在这里
+        照样解出真实 uid，并以他的昵称出现在 GET /api/rooms 的公开房间列表里；
+      · 封禁 —— 被封的账号照常开房上榜，封号对联机整个失效。
+    房间是内存功能，数据库抖了不能让它 500，所以把 optionalUser 的错误吞成「游客」：
+    传进去的 next 只记账，真正的 next() 由这里在最后统一调。
+  */
   try {
-    const h = req.headers.authorization || ''
-    const token = h.startsWith('Bearer ') ? h.slice(7).trim() : ''
-    const payload = token ? verifyToken(token) : null
-    if (payload?.uid) req.user = await queryOne('SELECT id, nickname FROM users WHERE id = ?', [payload.uid])
-  } catch {
-    /* 数据库不可用等情况：当作游客，不影响联机 */
+    await optionalUser(req, res, (e) => {
+      if (e) console.error('[rooms] 解析登录态失败，按游客处理：', e)
+    })
+  } catch (e) {
+    console.error('[rooms] 解析登录态失败，按游客处理：', e)
+    req.user = undefined
   }
   next()
 }
@@ -109,6 +118,16 @@ export function createRoomsRouter({ resolveGamePolicy = resolveGameRoomPolicy } 
   })
 
   router.post('/heartbeat', softUser, async (req, res) => {
+    /*
+      心跳是客户端定时器在打的（MEMBER_TTL 30 秒，实际间隔更短），而且**匿名**。
+      每打一次都要查一次 games 表核对人数上限。限流放在校验之后意义不大
+      （校验本身已经要查库了），所以这里是唯一能挡的位置。
+      正常一个浏览器最多同时开几个房间，每 IP 每分钟 120 次留了很大的余量
+      —— 一个房间的 4 个成员就算都在 NAT 后面也远打不到。
+    */
+    const gate = takeAnonymous(req, 'room-heartbeat', { perIp: 120, global: 4000 })
+    if (!gate.ok) return res.status(429).json({ error: '心跳太频繁了', retryAfter: gate.retryAfter })
+
     const roomId = str(req.body.roomId, 200)
     const gameSlug = str(req.body.gameSlug)
     const memberId = str(req.body.memberId, 64)

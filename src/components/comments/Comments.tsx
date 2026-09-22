@@ -347,6 +347,13 @@ function CommentItem({
       onDeleted(comment.id)
     } catch (e) {
       setError(e instanceof Error ? e.message : c.loadFailed)
+    } finally {
+      /*
+        成功路径**也要**复位 busy，和 save() 一样走 finally。
+        原来只在 catch 里复位，靠的是「父组件会把这条从列表里删掉 → 本组件卸载」
+        把问题盖住；一旦 onDeleted 的 id 和实际列表项对不上（并发删除、服务端
+        早已删掉），删除按钮就永久卡在 busy —— 用户只能刷新页面。
+      */
       setBusy(false)
     }
   }

@@ -69,13 +69,24 @@ function cleanContent(raw) {
  * 页码要封顶。
  *
  * 不封的话 `?page=1e20` 会算出一个天文数字的 OFFSET 交给 MySQL —— 超出 64 位就直接
- * 报错，玩家看到的是 500 而不是一页空列表。评论本来也不可能翻到第一万页。
+ * 报错，玩家看到的是 500 而不是一页空列表。
+ *
+ * ⚠️ 但**封顶不等于安全**，只看上限不看乘积就会漏掉深翻页这一半：
+ * 上限 10000 × 每页 50 = OFFSET 499950。MySQL 的 OFFSET 是「扫到再丢弃」，
+ * 它真的一行一行数过这五十万行才给你那 50 条，同一个请求还要再跑一次 COUNT(*)。
+ * 一条匿名 curl 就能换来一次几十秒的全表扫 —— 而这个接口是公开无鉴权的。
+ * 所以真正的闸门是**最大偏移量**，页码上限只是防溢出的第二道。
  */
 const MAX_PAGE = 10_000
+/** OFFSET 的硬上限。超过就当「翻不到那么深」，返回空列表而不是去扫全表 */
+const MAX_OFFSET = 5_000
 
 function pageParams(req) {
-  const page = Math.min(MAX_PAGE, Math.max(1, Math.trunc(Number(req.query.page)) || 1))
   const size = Math.min(MAX_PAGE_SIZE, Math.max(1, Math.trunc(Number(req.query.pageSize)) || DEFAULT_PAGE_SIZE))
+  let page = Math.min(MAX_PAGE, Math.max(1, Math.trunc(Number(req.query.page)) || 1))
+  // 深翻页：把页码拉回到闸门之内。**页码跟着一起改** —— 只截 offset 的话
+  // page 和 offset 就对不上了，响应里会出现「第 10000 页，但有内容」这种自相矛盾的东西
+  if ((page - 1) * size > MAX_OFFSET) page = Math.floor(MAX_OFFSET / size) + 1
   return { page, size, offset: (page - 1) * size }
 }
 

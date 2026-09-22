@@ -21,7 +21,7 @@ import { query, queryOne, withTransaction } from '../db.js'
 import { playIdentity } from '../playcount.js'
 import { requireUser, optionalUser, hasAbility } from '../auth.js'
 import { attachRelations } from '../games-repo.js'
-import { take, clientKey, isMeaningfulIp } from '../rateLimit.js'
+import { take, takeAnonymous, clientKey, isMeaningfulIp } from '../rateLimit.js'
 
 export const collectionsRouter = Router()
 
@@ -507,6 +507,12 @@ collectionsRouter.patch('/:id/hidden', requireUser, async (req, res, next) => {
  */
 collectionsRouter.post('/:id/view', optionalUser, async (req, res, next) => {
   try {
+    /*
+      同文件的 POST / 和 POST /:id/games 都有两道限流，唯独这条漏了 ——
+      而它挂在详情页的挂载路径上，是一个脚本最容易放大的匿名写接口。
+    */
+    const gate = takeAnonymous(req, 'collection-view', { perIp: 120, global: 3000 })
+    if (!gate.ok) return res.status(429).json({ error: '请求太频繁了，请稍后再试', retryAfter: gate.retryAfter })
     const id = Number(req.params.id)
     if (!Number.isFinite(id) || id <= 0) return res.status(404).json({ error: '合集不存在' })
     const row = await queryOne('SELECT id, user_id, hidden FROM collections WHERE id = ?', [id])

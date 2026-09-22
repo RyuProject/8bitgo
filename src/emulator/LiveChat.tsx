@@ -161,23 +161,32 @@ export function LiveChatLane({ messages, className }: { messages: LiveChatMessag
     const flyable = fresh.filter((m) => !m.history)
     if (!flyable.length) return
     const cap = reduced ? LANES : FLYING_MAX
+    /*
+      轨道分配和兜底闹钟**必须算在 setState 的 updater 外面**。
+
+      StrictMode 会把 updater 重复调用一遍来检测纯度（entry-client 开了 StrictMode）：
+        · `lane.current` 被多推进一格 —— 几条弹幕挤到相邻轨道上；
+        · `timers.current.set` 用同一个 id 覆盖两次 —— 第一个句柄再也拿不到，
+          只能等它自己到点触发，卸载时的清理就漏了一条。
+      把副作用挪出来，updater 里就只剩纯的「拼数组 + 按 cap 截断」。
+    */
+    const add = flyable.map((m) => {
+      lane.current = (lane.current + 1) % LANES
+      /*
+        id 是 base64url，取两个字符当种子，够把时长摊开一点。
+        ⚠️ `|| 0`：id 只有一个字符时 charCodeAt(1) 是 NaN，算出来的 dur 也是 NaN，
+        喂进 --danmaku-dur 就是一个非法值 —— 动画时长退回默认、animationend 什么时候来没准。
+        服务端给的 id 是 11 个字符，但这里不该依赖那个约定。
+      */
+      const seed = ((m.id.charCodeAt(0) || 0) + (m.id.charCodeAt(1) || 0)) % 5
+      return { ...m, lane: lane.current, dur: 8 + seed * 0.6 }
+    })
+    // 兜底闹钟：animationend 不来的时候靠它下场（见 ANIM_GRACE_MS）
+    for (const m of add) {
+      const ms = reduced ? STATIC_MS : m.dur * 1000 + ANIM_GRACE_MS
+      timers.current.set(m.id, window.setTimeout(() => drop(m.id), ms))
+    }
     setFlying((prev) => {
-      const add = flyable.map((m) => {
-        lane.current = (lane.current + 1) % LANES
-        /*
-          id 是 base64url，取两个字符当种子，够把时长摊开一点。
-          ⚠️ `|| 0`：id 只有一个字符时 charCodeAt(1) 是 NaN，算出来的 dur 也是 NaN，
-          喂进 --danmaku-dur 就是一个非法值 —— 动画时长退回默认、animationend 什么时候来没准。
-          服务端给的 id 是 11 个字符，但这里不该依赖那个约定。
-        */
-        const seed = ((m.id.charCodeAt(0) || 0) + (m.id.charCodeAt(1) || 0)) % 5
-        return { ...m, lane: lane.current, dur: 8 + seed * 0.6 }
-      })
-      // 兜底闹钟：animationend 不来的时候靠它下场（见 ANIM_GRACE_MS）
-      for (const m of add) {
-        const ms = reduced ? STATIC_MS : m.dur * 1000 + ANIM_GRACE_MS
-        timers.current.set(m.id, window.setTimeout(() => drop(m.id), ms))
-      }
       const next = [...prev, ...add]
       return next.length > cap ? next.slice(next.length - cap) : next
     })

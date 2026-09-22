@@ -45,6 +45,26 @@ README.md
 # 重建 AGI2.swf 时要用（FFDec 不能指定文档类），必须一起进仓库。
 !flash-api/armor-games/template-agi2.swf
 
+# 调试用的**真机 ROM** 不进 git。
+# `__ejs-mame-test.html` / `__win95-test.html` 这两份复现页面本身要留（它们是排查工具，
+# 只有几 KB），但它们跑的 ROM 是商业游戏 —— 曾经把 `__mxsqy.zip`（明星三缺一，5MB）
+# 提交进来，于是 https://8bitgo.com/__mxsqy.zip 直接 200，等于对外分发。
+# ROM 自己放到本地即可，页面拿不到时会报一句「zip 加载失败」，不影响其它功能。
+public/__*.zip
+!public/__win95game.zip   # 77 字节的合法 MZ 空壳，不是 ROM
+
+# QEMU WebAssembly 运行时（public/qemu-wasm/，约 140MB）。
+# 它只服务 /linux 这一个页面，是纯静态资源，构建期不需要存在。
+# 140MB 里光 load-rootfs.data 就 79MB —— 进 git 意味着每次 clone / 每次 git pull
+# 都要搬这么多，而它和 ruffle / jsdos / j2me 一样是「上游产物」，
+# 按同一套约定处理：加进 .gitignore，由 npm run qemu 在 predev / prebuild 时准备。
+# ⚠️ 放行的是本站自己写的那三样：start.js（引导器）、SOURCE.txt（来源 + SHA-256 清单，
+#    装的时候要拿它验哈希）、licenses/（GPL / Apache / MIT 的许可证副本，分发义务要求留着）。
+public/qemu-wasm/*
+!public/qemu-wasm/start.js
+!public/qemu-wasm/SOURCE.txt
+!public/qemu-wasm/licenses
+
 # 自建的 EmulatorJS（main 分支构建，约 1.6MB）**故意提交进仓库**，别再忽略它。
 # 理由：它和 ruffle / jsdos 不一样 —— 那两个 `npm run ruffle|jsdos` 能从 node_modules
 # 复制出来，这个得 clone EmulatorJS 仓库现构建，构建机上没人会去做这一步。
@@ -81,6 +101,10 @@ public/webretro
 
 # webretro 安装脚本的临时检出目录（正常会自动清掉，进程被杀时可能残留）
 .webretro-tmp
+
+# 构建期间用来把 public/ 下几个超大目录挪出去的暂存区（见 vite.config.ts 的
+# skipHugeStatic）。正常构建结束就立刻移回；进程被强杀时可能残留。
+.public-staging
 
 # 平台 BIOS（Neo Geo 这类平台必须有，见 public/bios/HOWTO.md）
 # 只忽略文件本身，保留说明文档：BIOS 一般是有版权的商业固件，

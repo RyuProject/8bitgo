@@ -8,17 +8,46 @@ import { recomputeSql } from '../ratings-repo.js'
 export const usersRouter = Router()
 usersRouter.use(requireAbility('users:manage'))
 
+/**
+ * 后台用户列表一次最多取多少人。
+ *
+ * 这条是管理员打开后台的**第一个请求**，而它原来是三条不带任何 WHERE / LIMIT 的查询：
+ * users 全表、favorites 全表 join games、recents 全表 join games，全部拉进内存。
+ * 上万用户时这一个接口就能同时吃满内存和连接池 —— 而且它拦在后台所有页面前面。
+ *
+ * 2000 对后台列表页绰绰有余（真要查某个具体用户有搜索）。
+ */
+const MAX_USERS = Number(process.env.ADMIN_USERS_MAX || 2000)
+
 /** 全部用户（含收藏 / 最近，供后台展示） */
 usersRouter.get('/', async (_req, res, next) => {
   try {
-    const users = await query('SELECT * FROM users ORDER BY created_at DESC')
+    const users = await query('SELECT * FROM users ORDER BY created_at DESC LIMIT ?', [MAX_USERS + 1])
+    if (users.length > MAX_USERS) {
+      console.warn(`[users] 后台用户列表被截断到 ${MAX_USERS} 条（表里还有更多），请改用搜索定位具体用户`)
+      users.length = MAX_USERS
+    }
+    const ids = users.map((u) => u.id)
     // v2 里这两张表存的是 game_id，join 回 games 拿 slug（对外一直用 slug）
-    const favs = await query(
-      'SELECT f.user_id, g.slug AS game_slug FROM favorites f JOIN games g ON g.id = f.game_id ORDER BY f.created_at DESC',
-    )
-    const recents = await query(
-      'SELECT r.user_id, g.slug AS game_slug FROM recents r JOIN games g ON g.id = r.game_id ORDER BY r.played_at DESC',
-    )
+    //
+    // ⚠️ 必须带上 `WHERE user_id IN (...)`：原来这两句是**全表 join**，
+    // 一个有一百万条 recents 的库会把一百万行拖进 Node 的内存里，
+    // 结果只用了前 12 条（下面 slice(0, 12)）。
+    const holes = ids.map(() => '?').join(',')
+    const favs = ids.length
+      ? await query(
+          `SELECT f.user_id, g.slug AS game_slug FROM favorites f JOIN games g ON g.id = f.game_id
+           WHERE f.user_id IN (${holes}) ORDER BY f.created_at DESC`,
+          ids,
+        )
+      : []
+    const recents = ids.length
+      ? await query(
+          `SELECT r.user_id, g.slug AS game_slug FROM recents r JOIN games g ON g.id = r.game_id
+           WHERE r.user_id IN (${holes}) ORDER BY r.played_at DESC`,
+          ids,
+        )
+      : []
     const byUser = (rows) => {
       const m = new Map()
       for (const r of rows) {

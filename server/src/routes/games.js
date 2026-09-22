@@ -24,10 +24,15 @@ import {
 } from '../games-repo.js'
 import { isTranslateConfigured, translateGateOk, translatePlan } from '../translate.js'
 import { gameDescriptionSource, renderField } from '../i18n-generate.js'
+import { takeAnonymous } from '../rateLimit.js'
 
 export const gamesRouter = Router()
 
 const truthy = (v) => v === '1' || v === 'true'
+
+/** 429 的统一写法。带上 retryAfter，前端才知道要等多久 */
+const tooMany = (res, retryAfter, msg = '请求太频繁了，请稍后再试') =>
+  res.status(429).json({ error: msg, retryAfter })
 
 // 数据库里的布尔列走 mysql2，tinyint(1) 回来的是数字 1/0，不是字符串。
 // 别用上面那个 truthy() —— 它只认查询串里的 '1'/'true'，套在数据行上会一律判 false。
@@ -46,6 +51,15 @@ export const dbFlag = (v) => v === 1 || v === true || v === '1'
  */
 gamesRouter.get('/', async (req, res, next) => {
   try {
+    /*
+      带 q 的那一路比翻页贵得多（分词 + 每词一条 UNION ALL 子查询），
+      而它又是匿名的。search.js 已经把「一次查询最多几个词」封住了，
+      这里再封住「一分钟最多查几次」—— 两道闸管的是两个不同的方向。
+    */
+    if (req.query.q) {
+      const gate = takeAnonymous(req, 'games-search', { perIp: 90, global: 1800 })
+      if (!gate.ok) return tooMany(res, gate.retryAfter)
+    }
     const wantAll = req.query.all === '1'
     if (wantAll && !(await hasAbility(req, 'content:edit'))) {
       return res.status(403).json({ error: '需要内容编辑权限才能查看全部游戏' })
@@ -85,6 +99,14 @@ gamesRouter.get('/', async (req, res, next) => {
  */
 gamesRouter.get('/suggest', async (req, res, next) => {
   try {
+    /*
+      用户每敲一个字就调一次，是整个站里调用最密的接口之一 —— 而它走的是和
+      /api/games 同一套分词 + UNION ALL 子查询（见 search.js 的 MAX_TERMS）。
+      不限流的话一个循环就能把这十条连接占满，SSR 和联机一起停摆。
+      每 IP 每分钟 120 次对真人输入绰绰有余（一分钟打不了 120 个字还每个字都联想）。
+    */
+    const gate = takeAnonymous(req, 'suggest', { perIp: 120, global: 2400 })
+    if (!gate.ok) return tooMany(res, gate.retryAfter)
     const items = await suggestGames(req.query.q, { limit: req.query.limit })
     publicApi(res)
     res.json({ items })
@@ -104,6 +126,8 @@ gamesRouter.get('/suggest', async (req, res, next) => {
  */
 gamesRouter.get('/search-fallback', async (req, res, next) => {
   try {
+    const gate = takeAnonymous(req, 'search-fallback', { perIp: 60, global: 1200 })
+    if (!gate.ok) return tooMany(res, gate.retryAfter)
     const out = await searchFallback(req.query.q, { limit: req.query.limit })
     publicApi(res)
     res.json(out)
@@ -151,11 +175,25 @@ gamesRouter.get('/by-slugs', async (req, res, next) => {
  */
 gamesRouter.get('/random', async (req, res, next) => {
   try {
+    const gate = takeAnonymous(req, 'games-random', { perIp: 60, global: 600 })
+    if (!gate.ok) return tooMany(res, gate.retryAfter)
     const exclude = String(req.query.exclude || '')
-    const rows = await query(
-      'SELECT * FROM games WHERE hidden = 0 AND slug <> ? ORDER BY RAND() LIMIT 1',
+    /*
+      ⚠️ 只随机出 id，再按主键把整行取回来 —— 不要写成
+      `SELECT * FROM games ... ORDER BY RAND() LIMIT 1`。
+
+      MySQL 的 ORDER BY 排的是**整行**：SELECT * 会把简介、ROM 配置这些长字段
+      一起拖进排序缓冲（max_length_for_sort_data 一超就退化成双路排序，
+      要为每一行多一次回表）。而这个接口是纯随机的，缓存不上，
+      每点一次「随便玩玩」都要付一次全表排序。
+      只排一个 bigint，代价降一个量级；第二句走主键，一次回表而已。
+    */
+    const picked = await query(
+      'SELECT id FROM games WHERE hidden = 0 AND slug <> ? ORDER BY RAND() LIMIT 1',
       [exclude],
     )
+    if (!picked.length) return res.status(404).json({ error: '还没有可玩的游戏' })
+    const rows = await query('SELECT * FROM games WHERE id = ? LIMIT 1', [picked[0].id])
     if (!rows.length) return res.status(404).json({ error: '还没有可玩的游戏' })
     const [game] = await attachRelations(rows)
     res.json(game)
@@ -207,14 +245,21 @@ gamesRouter.get('/facets', async (_req, res, next) => {
  *
  * 用 optionalUser 而不是 requireUser：非成人游戏游客也要能问，而且失效的令牌
  * 在这里只该被当成「没登录」，不该让整个播放器报错。
+ *
+ * ⚠️ optionalUser **不查 status**（它只比对 token_version），所以封禁要在这里自己挡：
+ * 被封的账号手里那张令牌还没过期，不挡的话他照样拿到 allowed:true 进成人游戏，
+ * 而同一件事在 live.js（adultLiveAccessError）、ratings.js、comments.js 都是挡了的。
+ * 这里按「没登录」处理而不是单独回一个 reason —— 年龄门本来只有三种未通过原因，
+ * 多一种要前端八种语言各加一句文案，而封禁账号需要的结论就是「不能进」。
  */
 gamesRouter.get('/:slug/access', optionalUser, async (req, res, next) => {
   try {
     const rows = await query('SELECT adult, hidden FROM games WHERE slug = ? LIMIT 1', [req.params.slug])
     const game = rows[0]
     if (!game || dbFlag(game.hidden)) return res.status(404).json({ error: '游戏不存在' })
+    const user = req.user?.status === 'banned' ? undefined : req.user
     res.setHeader('Cache-Control', 'no-store')
-    res.json(adultAccessVerdict(dbFlag(game.adult), req.user))
+    res.json(adultAccessVerdict(dbFlag(game.adult), user))
   } catch (e) {
     next(e)
   }
@@ -250,6 +295,14 @@ export function adultAccessVerdict(adult, user) {
  */
 gamesRouter.post('/:slug/play', optionalUser, async (req, res, next) => {
   try {
+    /*
+      recordPlay 是 INSERT IGNORE + UPDATE games SET plays = plays+1 两次写，
+      而这条路由**匿名**且原来是零限流 —— 一个循环脚本就能持续占住连接池。
+      正常玩家一分钟点不了 30 次「开始游戏」（每次都要重新加载模拟器），
+      给到每 IP 每分钟 60 次留足余量。
+    */
+    const gate = takeAnonymous(req, 'play', { perIp: 60, global: 1800 })
+    if (!gate.ok) return tooMany(res, gate.retryAfter)
     const who = playIdentity(req)
     // 既没登录、又拿不到任何 IP：宁可不记，也不要把这类请求全塞进同一个身份里
     if (!who) return res.json({ ok: true, counted: false })

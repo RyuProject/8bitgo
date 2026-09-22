@@ -1,8 +1,89 @@
 import path from 'node:path'
+import { existsSync, mkdirSync, renameSync, rmSync, symlinkSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { defineConfig, loadEnv } from 'vite'
+
+/**
+ * 把几个「又大又不需要加工」的静态目录排除在产物复制之外。
+ *
+ * `public/` 现在有 994MB，其中两个目录是纯数据、一个字节都不需要 Vite 碰：
+ *   · web/cs15   550MB —— CS1.5 的游戏数据包（Valve 的资产，不进 git）
+ *   · qemu-wasm  140MB —— /linux 那个页面的 QEMU 运行时（上游产物）
+ * 而 Vite 会把 `public/` **整个**复制到 `dist/client/` —— 每次构建先拷 690MB，
+ * 产物目录一度有 998MB。既占盘，也把构建时间从几秒拖到几十秒。
+ *
+ * Vite 没有「public 里排除某个子目录」的选项（`copyPublicDir` 只能全开或全关，
+ * 全关就得自己把剩下的 300MB 也拷一遍）。所以做法是**构建期间把目录挪出去**：
+ * buildStart 移走 → Vite 看不见 → closeBundle 移回来，并在产物里放一根软链，
+ * 这样 Express（`/web/:name` 那条路由和 express.static）和本地预览照样读得到
+ * —— 两者都会跟随软链。
+ *
+ * ⚠️⚠️ **移回来只能在 closeBundle 里做，不能提到 buildEnd**。
+ * rollup 的钩子顺序是 buildStart → buildEnd → renderStart → writeBundle → closeBundle，
+ * 而 Vite 复制 `public/` 就是在 renderStart 那一带（构建日志里 `vite:prepare-out-dir
+ * renderStart` 那一行）—— 在 buildEnd 里移回来的话，目录刚好赶在复制之前回到 public，
+ * 白忙一场，`dist` 照样 998MB。
+ *
+ * ⚠️ 于是失败时的自愈改为两条：下一次 buildStart 先把暂存区里的东西放回去（幂等），
+ * 外加一个 `process.on('exit')` 兜底。前者挡「上次崩了」，后者挡「这次崩了」；
+ * 只靠 closeBundle 的话，一次语法错误就会让目录凭空消失。
+ */
+const HUGE_STATIC = ['web/cs15', 'qemu-wasm']
+
+const PUBLIC_DIR = path.resolve(import.meta.dirname, 'public')
+const DIST_DIR = path.resolve(import.meta.dirname, 'dist/client')
+const STAGE_DIR = path.resolve(import.meta.dirname, '.public-staging')
+
+function restoreAll() {
+  for (const rel of HUGE_STATIC) {
+    const live = path.join(PUBLIC_DIR, rel)
+    const staged = path.join(STAGE_DIR, rel)
+    if (existsSync(staged) && !existsSync(live)) {
+      mkdirSync(path.dirname(live), { recursive: true })
+      renameSync(staged, live)
+    }
+  }
+}
+
+function skipHugeStatic() {
+  let armed = false
+  return {
+    name: 'skip-huge-static',
+    apply: 'build' as const,
+    buildStart() {
+      // 上一次构建崩在半路的话，暂存区里可能还留着东西 —— 先放回去再重新挪
+      restoreAll()
+      if (!armed) {
+        // 这次崩在半路的兜底。renameSync 是同步的，放在 exit 钩子里是安全的
+        process.on('exit', restoreAll)
+        armed = true
+      }
+      for (const rel of HUGE_STATIC) {
+        const live = path.join(PUBLIC_DIR, rel)
+        const staged = path.join(STAGE_DIR, rel)
+        if (!existsSync(live) || existsSync(staged)) continue
+        mkdirSync(path.dirname(staged), { recursive: true })
+        renameSync(live, staged)
+      }
+    },
+    closeBundle() {
+      restoreAll()
+      // 产物里不留实体，只留一根软链回源目录；源目录不在（生产机没放这些数据包）
+      // 就什么都不做，页面自然 404，不会静默出错
+      for (const rel of HUGE_STATIC) {
+        const live = path.join(PUBLIC_DIR, rel)
+        if (!existsSync(live)) continue
+        const dest = path.join(DIST_DIR, rel)
+        // 目录被挪走了，产物里本来不该有它；有就是上一次留下的旧实体，删掉再链
+        if (existsSync(dest)) rmSync(dest, { recursive: true, force: true })
+        mkdirSync(path.dirname(dest), { recursive: true })
+        symlinkSync(live, dest, 'dir')
+      }
+    },
+  }
+}
 
 /** 构建预览也要加隔离头；只在开发服务器加，预览中的 PS2 启动会直接失败。 */
 function isolationHeaders(req: IncomingMessage, res: ServerResponse, next: () => void) {
@@ -65,6 +146,7 @@ export default defineConfig(({ mode }) => {
   plugins: [
     react(),
     tailwindcss(),
+    skipHugeStatic(),
     ...(origin
       ? [
           {

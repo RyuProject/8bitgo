@@ -35,6 +35,24 @@ export const WEIGHT = {
 /** token 列的长度上限，超长的直接截断（正常 token 都在 20 以内） */
 export const MAX_TOKEN = 32
 
+/**
+ * 一次查询里「必须命中」的词条数量上限。
+ *
+ * ⚠️ 这条是**防 DoS 的硬闸**，不是给搜索质量兜底的：tokenMatchSql() 给 required
+ * 里的每一条生成一条独立子查询再 UNION ALL，条数 = 用户输入的长度。中文是逐字切的，
+ * 一句 5000 字的查询就是 5000 条子查询 —— MySQL 要么在解析递归上爆栈，要么把这条
+ * 连接占死很久。连接池只有十条，而 /api/games、/api/games/suggest、/api/page 三个
+ * 入口全是匿名且不限流的，一条 curl 就能让整站 API 和 SSR 一起停摆。
+ *
+ * 32 条对真人搜索绰绰有余（一句正常的话也就十几个字），超过的部分直接丢掉：
+ * 那必然不是人在搜，丢掉不会影响任何一次真实查询的结果。
+ *
+ * 同理，查询串整体也要截断 —— 光限条数不限长度的话，一条超长输入仍然会先在
+ * segments() / 繁转简上烧掉可观的 CPU。
+ */
+export const MAX_TERMS = 32
+export const MAX_QUERY = 200
+
 const CJK = /[㐀-鿿豈-﫿]/
 const isCjk = (ch) => CJK.test(ch)
 const isWordChar = (ch) => /[a-z0-9]/.test(ch)
@@ -194,25 +212,31 @@ export function buildGameTokens(game) {
  * @returns {{required: Array<{token, prefix}>, optional: Array<{token, prefix}>, empty: boolean}}
  */
 export function queryTerms(q, { prefixLast = true } = {}) {
-  const text = normalize(q).trim()
+  // 先按**字符**截断再归一化：超长输入不该有机会走到繁转简和分词上（见 MAX_QUERY）
+  const text = normalize(String(q ?? '').slice(0, MAX_QUERY)).trim()
   if (!text) return { required: [], optional: [], empty: true }
 
   const required = []
   const optional = []
   const segs = segments(text)
-  segs.forEach((seg, si) => {
+  for (const [si, seg] of segs.entries()) {
+    // required 已满就不再收：再多一条就多一条 UNION ALL 子查询（见 MAX_TERMS）
+    if (required.length >= MAX_TERMS) break
     const last = si === segs.length - 1
     if (seg.kind === 'word') {
       required.push({
         token: seg.text.slice(0, MAX_TOKEN),
         prefix: prefixLast && last,
       })
-      return
+      continue
     }
     const chars = [...seg.text]
-    for (const ch of chars) required.push({ token: ch, prefix: false })
+    for (const ch of chars) {
+      if (required.length >= MAX_TERMS) break
+      required.push({ token: ch, prefix: false })
+    }
     for (let i = 0; i + 1 < chars.length; i++) optional.push({ token: chars[i] + chars[i + 1], prefix: false })
-  })
+  }
 
   if (!required.length) return { required: [], optional: [], empty: true }
   return { required, optional, empty: false }
@@ -248,7 +272,9 @@ function termSql(t, req) {
 export function tokenMatchSql({ required, optional = [] }) {
   const parts = []
   const params = []
-  for (const t of required) {
+  // 再兜一道：就算调用方自己没限（比如将来新加的入口忘了），这里也不会生成
+  // 成千上万条 UNION ALL —— 条数直接决定 SQL 的解析成本（见 MAX_TERMS）
+  for (const t of required.slice(0, MAX_TERMS)) {
     const p = termSql(t, 1)
     parts.push(p.sql)
     params.push(...p.params)
@@ -259,7 +285,10 @@ export function tokenMatchSql({ required, optional = [] }) {
     parts.push(p.sql)
     params.push(...p.params)
   }
+  // ⚠️ 计数必须用**实际生成子查询的那一份**（counted），不能写 required.length：
+  // 上面裁过一刀之后两者会不等，HAVING 于是永远不成立，搜索静默变成零结果
+  const counted = Math.min(required.length, MAX_TERMS)
   const sql = `SELECT game_id, SUM(w) AS score FROM (${parts.join(' UNION ALL ')}) m
-               GROUP BY game_id HAVING SUM(req) = ${required.length}`
+               GROUP BY game_id HAVING SUM(req) = ${counted}`
   return { sql, params }
 }

@@ -33,8 +33,14 @@ export function useAllRooms(): RoomView[] {
   return useMemo(() => {
     const list: RoomView[] = []
 
+    /*
+      slugForGameId 内部有一个按 allSlugs.length 命中的模块级缓存，只看长度不保存引用。
+      原来写在循环里 `slugForGameId(r.gameId, allSlugs())` —— 每次都 `games.map(...)` 重新
+      建一个全量 slug 数组（房间数 × 游戏数 次分配），纯属浪费。提出来只建一次。
+    */
+    const slugs = allSlugs()
     for (const r of p2p) {
-      const slug = slugForGameId(r.gameId, allSlugs())
+      const slug = slugForGameId(r.gameId, slugs)
       if (!slug) continue // 认不出来的游戏（别的站点用了同一个信令服务器）就不展示
       list.push({
         roomId: r.roomId,

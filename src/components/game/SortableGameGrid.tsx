@@ -42,6 +42,8 @@ export function SortableGameGrid({ games, sortable, disabled, onReorder, renderA
   const onReorderRef = useRef(onReorder)
   onReorderRef.current = onReorder
   const rootRef = useRef<HTMLDivElement>(null)
+  /** 正在进行中的那次拖拽的解绑函数；没有在拖时为 null */
+  const detachRef = useRef<(() => void) | null>(null)
 
   const move = (slug: string, toIndex: number) => {
     const cur = orderRef.current
@@ -85,9 +87,7 @@ export function SortableGameGrid({ games, sortable, disabled, onReorder, renderA
     }
     const end = (ev: PointerEvent) => {
       if (ev.pointerId !== e.pointerId) return
-      document.removeEventListener('pointermove', onMove)
-      document.removeEventListener('pointerup', end)
-      document.removeEventListener('pointercancel', end)
+      detachRef.current?.()
       document.body.style.cursor = prevCursor
       document.body.style.userSelect = prevSelect
       try {
@@ -100,6 +100,19 @@ export function SortableGameGrid({ games, sortable, disabled, onReorder, renderA
     document.addEventListener('pointermove', onMove)
     document.addEventListener('pointerup', end)
     document.addEventListener('pointercancel', end)
+    /*
+      记下这次拖拽的解绑函数。
+      ⚠️ 原来只靠 `end()` 自己解绑 —— 而它要等用户真的抬手。拖到一半切走路由、
+      或被父组件卸载（比如列表刷新换了一批 key）时，三个 document 级监听就永久留着：
+      之后每一次鼠标移动都会走 `move()` → `onReorderRef.current(next)`，往已经
+      不存在的父组件写顺序，既泄漏又脏数据。卸载时统一解一次（见下面的 detachRef）。
+    */
+    detachRef.current = () => {
+      document.removeEventListener('pointermove', onMove)
+      document.removeEventListener('pointerup', end)
+      document.removeEventListener('pointercancel', end)
+      detachRef.current = null
+    }
   }
 
   const onHandleKey = (slug: string) => (e: ReactKeyboardEvent<HTMLButtonElement>) => {
@@ -121,9 +134,10 @@ export function SortableGameGrid({ games, sortable, disabled, onReorder, renderA
     })
   }
 
-  // 组件卸载时正在拖：把 body 上的样式还回去
+  // 组件卸载时正在拖：解绑监听 + 把 body 上的样式还回去
   useEffect(
     () => () => {
+      detachRef.current?.()
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
     },

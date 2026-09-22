@@ -169,6 +169,38 @@ export function clientKey(req) {
  * 所以这种情况下调用方应当**跳过按 IP 那道**，只留全站总量兜底：
  * 宁可放宽，也不能误伤真实用户。
  */
+/**
+ * 匿名接口的通用两道闸：**按 IP** + **全站总量**。
+ *
+ * 抽出来是因为下面这几个接口犯的是同一个错 —— 匿名、高频、每次都要查库写库，
+ * 却一道限流都没有：
+ *   POST /api/games/:slug/play      每次两条写（INSERT IGNORE + UPDATE）
+ *   POST /api/rooms/heartbeat       每次一次 SELECT（客户端定时器在打）
+ *   POST /api/collections/:id/view  读 + 写
+ *   GET  /api/games/random          全表 ORDER BY RAND()
+ *   GET  /api/games/suggest         用户每敲一个字一次
+ * 连接池只有十条，任意一个被脚本循环调用都足以把 API、SSR、socket.io 一起拖住。
+ *
+ * 用法和同文件里各处手写的两道闸完全一致，只是少抄一遍：
+ *
+ *     const gate = takeAnonymous(req, 'play', { perIp: 120 })
+ *     if (!gate.ok) return res.status(429).json({ error: '…', retryAfter: gate.retryAfter })
+ *
+ * @param {object} req
+ * @param {string} name    闸门名字，会拼成 `<name>:ip:<ip>` / `<name>:global`
+ * @param {number} perIp   每个 IP 每窗口允许多少次
+ * @param {number} global  全站每窗口允许多少次（兜底：IP 不可信 / 伪造 XFF 时只剩这一道）
+ */
+export function takeAnonymous(req, name, { perIp = 60, global: globalLimit = 1200, windowMs = 60_000 } = {}) {
+  const ip = clientKey(req)
+  if (isMeaningfulIp(ip)) {
+    const perIpGate = take(`${name}:ip:${ip}`, perIp, windowMs)
+    if (!perIpGate.ok) return perIpGate
+  }
+  // 总量那一道**总是**要打：反代没透传真实 IP 时（isMeaningfulIp 为假）它是唯一的闸
+  return take(`${name}:global`, globalLimit, windowMs)
+}
+
 export function isMeaningfulIp(ip) {
   if (!ip || ip === 'unknown') return false
   const v = String(ip).replace(/^::ffff:/, '')
