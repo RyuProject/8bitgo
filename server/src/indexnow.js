@@ -7,10 +7,12 @@
  */
 import {
   DEFAULT_SITE_URL,
+  gameContentLanguages,
   gameChangeUrls,
   gameDetailUrls,
   localizedPublicUrl,
   normalizeSiteUrls,
+  postContentLanguages,
   postChangeUrls,
   postDetailUrls,
   publicSiteUrl,
@@ -19,6 +21,7 @@ import {
 
 export {
   DEFAULT_SITE_URL,
+  gameContentLanguages,
   gameChangeUrls,
   gameDetailUrls,
   localizedPublicUrl,
@@ -27,6 +30,7 @@ export {
   publicSiteUrl,
   taxonomyDetailUrls,
   normalizeSiteUrls,
+  postContentLanguages,
   normalizeSiteUrls as normalizeIndexNowUrls,
 }
 

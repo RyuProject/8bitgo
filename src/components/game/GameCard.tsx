@@ -65,7 +65,13 @@ export const GameCard = memo(function GameCard({ game, className, coverRatio = '
       )}
     >
       <div className="relative">
-        <GameCover game={game} ratio={coverRatio} reserveBottomRight={game.multiplayer} eager={eager} />
+        {/*
+          封面上不画标题：卡片下方本来就有完整的游戏名（下面的 <h3>），
+          再在封面上压一层渐变条 + 同名文字是重复信息，还把封面本身盖掉一截。
+          同理不再挂「☁️ 即点即玩」角标 —— 一屏二十几张卡都挂着同一个标记，
+          既没区分度，也压住封面左下角（2026-09-23 站长要求去掉）。
+        */}
+        <GameCover game={game} ratio={coverRatio} showTitle={false} eager={eager} />
         {rank !== undefined && (
           <span className="text-pixel absolute right-2 top-2 rounded bg-black/60 px-1.5 py-1 text-[11px] text-coin backdrop-blur">
             #{rank}
@@ -74,11 +80,6 @@ export const GameCard = memo(function GameCard({ game, className, coverRatio = '
         {game.multiplayer && (
           <Badge tone="dark" className="absolute bottom-2 right-2">
             👥 {game.players}P
-          </Badge>
-        )}
-        {(game.playable || game.rom || game.roms) && (
-          <Badge tone="online" className="absolute bottom-2 left-2">
-            {t.common.instantPlay}
           </Badge>
         )}
         <div className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition duration-300 group-hover:bg-black/30 group-hover:opacity-100">

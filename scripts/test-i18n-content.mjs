@@ -23,7 +23,15 @@ import { fileURLToPath } from 'node:url'
 import { SITE_LANGUAGES, SITE_DEFAULT_LANGUAGE } from '../shared/site-languages.js'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
-const { gameTitle, postTitle, postExcerpt, postContent, needsPostTranslation } = await import(
+const {
+  gameSeoLanguagePlan,
+  gameTitle,
+  postSeoLanguagePlan,
+  postTitle,
+  postExcerpt,
+  postContent,
+  needsPostTranslation,
+} = await import(
   '../src/services/i18nData.ts'
 )
 
@@ -125,7 +133,36 @@ try {
   bad('needsPostTranslation 判据', e)
 }
 
-/* ---------------- 4. 八种语言互不相同 ---------------- */
+/* ---------------- 4. SEO 语言声明必须和真实正文一致 ---------------- */
+try {
+  const game = {
+    description: '中文正文',
+    descriptionEn: 'English body',
+    descriptionI18n: { fr: 'Texte français' },
+  }
+  assert.deepEqual(gameSeoLanguagePlan(game, 'fr'), {
+    contentLanguages: ['zh-Hans', 'en', 'fr'],
+    canonicalLanguage: 'fr',
+  })
+  assert.equal(gameSeoLanguagePlan(game, 'de').canonicalLanguage, 'en', '德文缺失时页面实际回退英文')
+  assert.equal(gameSeoLanguagePlan(game, 'zh-Hant').canonicalLanguage, 'zh-Hans', '繁体缺失时页面实际回退简体')
+
+  const post = {
+    titleI18n: { en: 'Title', fr: 'Titre' },
+    excerptI18n: { en: 'Excerpt', fr: 'Résumé' },
+    contentI18n: { en: 'Body' },
+  }
+  assert.deepEqual(postSeoLanguagePlan(post, 'en'), {
+    contentLanguages: ['zh-Hans', 'en'],
+    canonicalLanguage: 'en',
+  })
+  assert.equal(postSeoLanguagePlan(post, 'fr').canonicalLanguage, 'zh-Hans', '半翻译文章仍回退中文 canonical')
+  ok('SEO 语言声明：只列完整正文，缺译文 canonical 到实际回退版本')
+} catch (e) {
+  bad('SEO 语言声明', e)
+}
+
+/* ---------------- 5. 八种语言互不相同 ---------------- */
 try {
   /**
    * 这一节是整件事的**目的本身**：译文齐了之后，同一篇文章在八个语言前缀下的
@@ -150,7 +187,7 @@ try {
   bad('八种语言互不相同', e)
 }
 
-/* ---------------- 5. 源码扫描：不许直呈原文字段 ---------------- */
+/* ---------------- 6. 源码扫描：不许直呈原文字段 ---------------- */
 try {
   /**
    * ⚠️ 必须先剥注释。这两个文件里现在有好几处注释在讲「以前直接渲染 post.title」，

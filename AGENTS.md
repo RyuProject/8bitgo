@@ -1177,6 +1177,24 @@ ROM 存储和其它站级入口全部是管理员权限。后台列表统一带 
 6. 切 Cloudflare A 记录（秒级生效），**切完立刻停掉旧机应用再补最后一次 dump 导入** ——
    切换前就连着的长连接（SSE / 联机 / 直播）用户还在往旧库写，这一步不做他们的写入就丢了。
 
+### 2.31 按需翻译页不能把「界面已翻译」冒充成「正文已翻译」
+
+游戏和文章页面允许缺少译文时回退到英文或简体，这是给访客的可用性兜底；对搜索引擎则必须
+如实声明正文语言。只翻了导航、按钮和标题的 `/de/games/x` 如果仍 self-canonical，并列出八条
+hreflang，Google 会收到多份正文完全相同的 URL，抓取预算和规范页判断都会被拖累。
+
+- 前端：`gameSeoLanguagePlan` / `postSeoLanguagePlan` 算真正有正文的语言，以及当前 URL 实际回退
+  到哪门语言；`useSeo` 只输出这些 hreflang，并把 canonical、og:url、JSON-LD URL 一起指到
+  同一个版本。文章必须标题、摘要、正文三项都齐才算完整译文。
+- 后端：动态 sitemap 使用同一判据。改其中一边必须同步另一边，并跑
+  `npm run test:i18n-content && npm run test:sitemap && npm run test:indexnow`。IndexNow / 百度的
+  详情页自动推送与全量补交也按这个语言子集过滤；列表、平台、类型页仍推全部语言。
+- 图片 sitemap 只接收主域、`image.8bitgo.com`、`assets.8bitgo.com` 这类本站可验证域名；数据库
+  里的第三方热链可以继续在页面显示，但不能写进 `<image:loc>`。内部 `covers/` key 走
+  `COVER_BASE_URL`（默认 `https://image.8bitgo.com`）。
+- `normalizeMetaDescription` 只把 meta / OG / Twitter 摘要收敛到 160 个 Unicode 码点；页面正文
+  和 JSON-LD 保留全文。不要在调用方各自 `slice()`，否则中英文会按 UTF-16 截出半个字符。
+
 ---
 
 ## 3. 常用命令

@@ -72,6 +72,7 @@ export const ENV_MANIFEST = [
   { name: 'CODE_SEND_GLOBAL_PER_HOUR', group: '发信', kind: 'config', file: 'codes.js' },
   { name: 'CS15_DISABLED', group: '服务与地址', kind: 'config', file: 'index.js', note: '设成 1 让 /web/cs15 整页下线（实验性接入），不影响其它 /web/ 游戏' },
   { name: 'CODE_SEND_PER_IP_PER_HOUR', group: '发信', kind: 'config', file: 'codes.js' },
+  { name: 'COVER_BASE_URL', group: '服务与地址', kind: 'config', file: 'site-urls.js', note: '封面 CDN 根地址；留空使用 image.8bitgo.com' },
   { name: 'DB_HOST', group: '数据库', kind: 'config', file: 'db.js' },
   { name: 'DB_NAME', group: '数据库', kind: 'config', file: 'db.js' },
   { name: 'DB_PASSWORD', group: '数据库', kind: 'secret', file: 'db.js', note: '弱口令会被同机进程秒猜；DB_HOST 是回环所以外网打不到，但那不是理由' },

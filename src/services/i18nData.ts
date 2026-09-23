@@ -6,7 +6,7 @@
  * 所以新增一个类型/平台而忘了加翻译时，界面只会显示中文，不会崩。
  */
 import type { Translation } from '@/locales'
-import type { Lang } from '@/config/languages'
+import { LANGUAGES, type Lang } from '@/config/languages'
 
 type GenreKey = keyof Translation['genres']
 type PlatformKey = keyof Translation['platforms']
@@ -106,6 +106,32 @@ export function gameDescription(
 }
 
 /**
+ * 游戏详情页真正拥有正文的语言，以及当前 URL 应归到哪一份 canonical。
+ *
+ * 页面为了让访客至少能读懂，会把缺少的西语/法语等简介退回英文，繁体退回简体。
+ * 这个兜底不能被误报成「已经有八份译文」：否则 hreflang 会主动把五份相同英文正文
+ * 交给搜索引擎，canonical 又各指自己，正是 Search Console 判重复页的那种组合。
+ */
+export function gameSeoLanguagePlan(
+  game: { description?: string; descriptionEn?: string; descriptionI18n?: Record<string, string> },
+  current: Lang,
+): { contentLanguages: Lang[]; canonicalLanguage: Lang } {
+  const translated = game.descriptionI18n ?? {}
+  const contentLanguages = LANGUAGES
+    .map(({ code }) => code)
+    .filter((code) => {
+      if (code === 'zh-Hans') return true
+      if (code === 'en') return Boolean(String(translated.en || game.descriptionEn || '').trim())
+      return Boolean(String(translated[code] || '').trim())
+    })
+
+  if (contentLanguages.includes(current)) return { contentLanguages, canonicalLanguage: current }
+  // 繁体缺译文时页面显示的是简体；其它语言缺译文时先显示英文，再退回简体。
+  const canonicalLanguage = current !== 'zh-Hant' && contentLanguages.includes('en') ? 'en' : 'zh-Hans'
+  return { contentLanguages, canonicalLanguage }
+}
+
+/**
  * 这个语种要不要在游戏简介旁显示「翻译」按钮。
  *
  * 规则：
@@ -192,4 +218,33 @@ export function needsPostTranslation(
 ): boolean {
   if (lang === 'zh-Hans') return false
   return !(post.titleI18n?.[lang] && post.excerptI18n?.[lang] && post.contentI18n?.[lang])
+}
+
+/**
+ * 文章只有标题、摘要、正文三项都齐，才算一份可独立收录的译文。
+ * 只翻了正文却把该语言写进 hreflang，会让搜索摘要仍出现中文标题，搜索引擎也会把它
+ * 视为不完整或重复页面。缺译文的页面实际显示中文原文，因此 canonical 回到简体页。
+ */
+export function postSeoLanguagePlan(
+  post: {
+    titleI18n?: Record<string, string>
+    excerptI18n?: Record<string, string>
+    contentI18n?: Record<string, string>
+  },
+  current: Lang,
+): { contentLanguages: Lang[]; canonicalLanguage: Lang } {
+  const contentLanguages = LANGUAGES
+    .map(({ code }) => code)
+    .filter((code) => {
+      if (code === 'zh-Hans') return true
+      return Boolean(
+        String(post.titleI18n?.[code] || '').trim()
+        && String(post.excerptI18n?.[code] || '').trim()
+        && String(post.contentI18n?.[code] || '').trim(),
+      )
+    })
+  return {
+    contentLanguages,
+    canonicalLanguage: contentLanguages.includes(current) ? current : 'zh-Hans',
+  }
 }

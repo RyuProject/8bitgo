@@ -131,6 +131,9 @@ export function CollectionDetailPage() {
     description:
       c?.description || (c ? fmt(t.seo.collectionDesc, { title: c.title, n: c.gameCount }) : t.seo.collections),
     canonicalPath: `/collections/${id}`,
+    // 合集标题和简介由用户只写一份；语言前缀只翻译界面，不能冒充八份独立正文。
+    contentLanguages: ['zh-Hans'],
+    canonicalLanguage: 'zh-Hans',
     // 下架的合集不该被收录
     noindex: Boolean(c?.hidden),
   })

@@ -54,6 +54,7 @@ import {
   taxonomyBaiduUrls,
 } from '../src/baidu-push.js'
 import { taxonomyRows } from '../src/routes/sitemaps.js'
+import { gameContentLanguages, postContentLanguages } from '../src/site-urls.js'
 
 const argv = process.argv.slice(2)
 const has = (name) => argv.includes(name)
@@ -190,10 +191,10 @@ try {
   if (wants('games')) {
     const rows = all
       ? await query(
-          'SELECT slug, updated_at FROM games WHERE hidden = 0 ORDER BY COALESCE(updated_at, created_at, added_at) DESC',
+          'SELECT slug, updated_at, description_en, description_i18n FROM games WHERE hidden = 0 ORDER BY COALESCE(updated_at, created_at, added_at) DESC',
         )
       : await query(
-          `SELECT slug, updated_at FROM games
+          `SELECT slug, updated_at, description_en, description_i18n FROM games
             WHERE hidden = 0
               AND COALESCE(updated_at, created_at, added_at) >= DATE_SUB(NOW(), INTERVAL ? DAY)
             ORDER BY COALESCE(updated_at, created_at, added_at) DESC`,
@@ -202,7 +203,11 @@ try {
     groups.push({
       label: '游戏详情页',
       items: rows.length,
-      urls: rows.flatMap((row) => gameBaiduDetailUrls(row.slug, site, languages)),
+      urls: rows.flatMap((row) => {
+        const available = new Set(gameContentLanguages(row))
+        const eligible = languages.filter((code) => available.has(code))
+        return eligible.length ? gameBaiduDetailUrls(row.slug, site, eligible) : []
+      }),
     })
   }
 
@@ -210,10 +215,10 @@ try {
     // 只捞已发布的：草稿在前台是 404，推过去等于主动提交一批错误页。
     const rows = all
       ? await query(
-          'SELECT slug FROM posts WHERE published = 1 ORDER BY COALESCE(updated_at, created_at, `date`) DESC',
+          'SELECT slug, title_i18n, excerpt_i18n, content_i18n FROM posts WHERE published = 1 ORDER BY COALESCE(updated_at, created_at, `date`) DESC',
         )
       : await query(
-          `SELECT slug FROM posts
+          `SELECT slug, title_i18n, excerpt_i18n, content_i18n FROM posts
             WHERE published = 1
               AND COALESCE(updated_at, created_at, \`date\`) >= DATE_SUB(NOW(), INTERVAL ? DAY)
             ORDER BY COALESCE(updated_at, created_at, \`date\`) DESC`,
@@ -222,7 +227,11 @@ try {
     groups.push({
       label: '文章详情页',
       items: rows.length,
-      urls: rows.flatMap((row) => postBaiduDetailUrls(row.slug, site, languages)),
+      urls: rows.flatMap((row) => {
+        const available = new Set(postContentLanguages(row))
+        const eligible = languages.filter((code) => available.has(code))
+        return eligible.length ? postBaiduDetailUrls(row.slug, site, eligible) : []
+      }),
     })
   }
 

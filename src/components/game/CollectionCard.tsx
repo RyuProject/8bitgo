@@ -57,11 +57,11 @@ export function CollectionCard({ collection, className, priority }: Props) {
           {collection.title}
         </h3>
         {/*
-          描述为空时占一行占位文字，而不是把这一行去掉 —— 一行卡片里有的有描述有的没有，
-          高度参差不齐会让整排看起来是坏的（参考站也是这么处理的）
+          描述为空时仍占一行，但要写成包含标题和游戏数的真实摘要。
+          「还没有描述」曾被 Google 抓成首页摘要，既重复又没有搜索含义。
         */}
         <p className={cx('truncate text-[11px]', collection.description ? 'text-muted' : 'text-dim')}>
-          {collection.description || t.collections.noDescription}
+          {collection.description || fmt(t.seo.collectionDesc, { title: collection.title, n: collection.gameCount })}
         </p>
         <div className="flex items-center justify-between gap-2 pt-0.5 text-[11px] text-muted">
           <span className="flex min-w-0 items-center gap-1.5">
@@ -351,4 +351,3 @@ function useInView(ref: RefObject<HTMLElement | null>): boolean {
   }, [ref])
   return inView
 }
-

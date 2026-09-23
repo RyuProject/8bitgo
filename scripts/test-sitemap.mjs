@@ -16,7 +16,13 @@
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { buildGameSitemap, buildPostSitemap, buildSitemapIndex, hasLocalizedBody } from '../server/src/routes/sitemaps.js'
+import {
+  buildGameSitemap,
+  buildPostSitemap,
+  buildSitemapIndex,
+  hasLocalizedBody,
+  hasLocalizedPostBody,
+} from '../server/src/routes/sitemaps.js'
 
 let failed = 0
 const check = (name, fn) => {
@@ -65,10 +71,18 @@ check('英文认独立的 description_en 列（游戏的英文简介不在 descr
   assert.equal(hasLocalizedBody({ description_i18n: { en: 'x' } }, 'en', { i18n: 'description_i18n' }), true)
 })
 
-check('文章没有独立英文列，所以 en 也必须看 content_i18n', () => {
+check('文章没有独立英文列，标题、摘要、正文三份英文译文必须全部齐', () => {
   const post = { slug: 'p1', content: '中文正文', updated_at: '2026-09-01' }
   assert.deepEqual(locs(buildPostSitemap([post], 'en', SITE)), [])
-  assert.deepEqual(locs(buildPostSitemap([{ ...post, content_i18n: { en: 'English body' } }], 'en', SITE)), [
+  const translated = {
+    ...post,
+    title_i18n: { en: 'English title' },
+    excerpt_i18n: { en: 'English excerpt' },
+    content_i18n: { en: 'English body' },
+  }
+  assert.equal(hasLocalizedPostBody(translated, 'en'), true)
+  assert.equal(hasLocalizedPostBody({ ...translated, excerpt_i18n: {} }, 'en'), false)
+  assert.deepEqual(locs(buildPostSitemap([translated], 'en', SITE)), [
     `${SITE}/en/blog/p1`,
   ])
   // 基准语言照旧
@@ -93,8 +107,8 @@ check('⚠️ 游戏那句 SQL 必须把门控要读的列查出来（漏一列 
   assert.ok(rich.includes('description_en'), 'en 那一档靠 description_en，也必须查出来')
   const posts = src.match(/SELECT[^']*FROM posts WHERE published = 1[^']*/g) || []
   assert.ok(
-    posts.some((q) => q.includes('content_i18n')),
-    'posts 的主查询必须 SELECT content_i18n',
+    posts.some((q) => q.includes('title_i18n') && q.includes('excerpt_i18n') && q.includes('content_i18n')),
+    'posts 的主查询必须同时 SELECT 标题、摘要、正文三份译文',
   )
 })
 

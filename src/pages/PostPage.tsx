@@ -6,7 +6,7 @@ import { gradientFor } from '@/lib/gradients'
 import { useSeo, articleSchema, breadcrumbSchema } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
 import { useLang } from '@/services/lang'
-import { postContent, postExcerpt, postTitle, needsPostTranslation } from '@/services/i18nData'
+import { postContent, postExcerpt, postSeoLanguagePlan, postTitle, needsPostTranslation } from '@/services/i18nData'
 import { TranslateButton } from '@/components/game/TranslateButton'
 import { PostComments } from '@/components/comments/Comments'
 import { FEATURES } from '@/config/features'
@@ -42,12 +42,15 @@ export function PostPage() {
    */
   const heading = post ? translatedTitle || postTitle(post, lang) : ''
   const excerpt = post ? plainText(postExcerpt(post, lang)) : ''
+  const seoLanguages = post ? postSeoLanguagePlan(post, lang) : undefined
   useSeo(
     post
       ? {
           title: heading,
           description: excerpt,
           type: 'article',
+          contentLanguages: seoLanguages?.contentLanguages,
+          canonicalLanguage: seoLanguages?.canonicalLanguage,
           publishedTime: post.date,
           updatedTime: post.updatedAt || post.date,
           jsonLd: [
@@ -58,12 +61,13 @@ export function PostPage() {
               date: post.date,
               updated: post.updatedAt || post.date,
               author: post.author,
+              language: seoLanguages?.canonicalLanguage,
             }),
             breadcrumbSchema([
               { name: t.common.home, path: '/' },
               { name: t.common.blog, path: '/blog' },
               { name: heading, path: `/blog/${post.slug}` },
-            ]),
+            ], seoLanguages?.canonicalLanguage),
           ],
         }
       : { title: t.blog.notFoundTitle, noindex: true },

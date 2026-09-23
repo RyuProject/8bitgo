@@ -112,7 +112,28 @@ check('合集详情页在没有简介时按标题和数量拼一句', () => {
   assert.match(src, /fmt\(t\.seo\.collectionDesc, \{ title: c\.title, n: c\.gameCount \}\)/, '回退的那句不是拼出来的')
 })
 
-console.log('三、noindex 的页面要 follow，不能 nofollow')
+check('首页合集卡片不再把「还没有描述」暴露给搜索摘要', () => {
+  const src = code('src/components/game/CollectionCard.tsx')
+  assert.ok(!src.includes('t.collections.noDescription'), '合集卡片仍在输出无意义占位文案')
+  assert.match(
+    src,
+    /fmt\(t\.seo\.collectionDesc, \{ title: collection\.title, n: collection\.gameCount \}\)/,
+    '空简介没有按标题和游戏数生成唯一摘要',
+  )
+})
+
+console.log('三、过长简介要收敛成可读的搜索摘要')
+
+check('meta / Open Graph / Twitter 共用清理后的短摘要', () => {
+  const src = code('src/services/seo.ts')
+  assert.match(src, /normalizeMetaDescription\(description\)/, '页面描述没有经过摘要清理')
+  assert.match(src, /maxLength = 160/, '摘要上限不再是 160 个 Unicode 码点')
+  for (const tag of ["['name', 'description', shortDescription]", "['property', 'og:description', shortDescription]", "['name', 'twitter:description', shortDescription]"]) {
+    assert.ok(src.includes(tag), `${tag} 没有使用同一份短摘要`)
+  }
+})
+
+console.log('四、noindex 的页面要 follow，不能 nofollow')
 
 check('⚠️ noindex 配的是 follow', () => {
   /*
@@ -133,6 +154,11 @@ check('⚠️ noindex 的页面不写 canonical', () => {
   // 给一个不该被收录的页面写 canonical 等于自相矛盾，搜索引擎两条信号打架
   const src = code('src/services/seo.ts')
   assert.match(src, /if \(!noindex\) collected\.tags\.push\(`<link rel="canonical"/, 'noindex 页面又开始写 canonical 了')
+})
+
+check('⚠️ noindex 的页面不输出 JSON-LD', () => {
+  const src = code('src/services/seo.ts')
+  assert.match(src, /const visibleJsonLd = noindex \? \[\]/, 'noindex 页面仍可能输出结构化数据')
 })
 
 console.log(failed ? `\n${failed} 项未通过` : '\n全部通过 ✅')

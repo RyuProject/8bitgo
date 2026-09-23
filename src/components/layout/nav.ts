@@ -63,13 +63,12 @@ export interface CommunityLink {
   href: string
 }
 
-/** 侧边栏底部「玩家社区」：全部为外部链接，替换成你自己的社群地址即可 */
+/**
+ * 侧边栏只放真实账号。以前五个图标都指向平台首页，爬虫和玩家都会把它们当成
+ * 8BitGo 的官方账号；这种全站重复的错误外链比少几个社交图标更伤可信度。
+ */
 export const communityLinks: CommunityLink[] = [
-  { id: 'discord', label: 'Discord', href: 'https://discord.com' },
-  { id: 'x', label: 'X / Twitter', href: 'https://x.com' },
-  { id: 'youtube', label: 'YouTube', href: 'https://youtube.com' },
-  { id: 'instagram', label: 'Instagram', href: 'https://instagram.com' },
-  { id: 'facebook', label: 'Facebook', href: 'https://facebook.com' },
+  { id: 'x', label: 'X / Twitter', href: 'https://x.com/sohash_moledao' },
 ]
 
 /**

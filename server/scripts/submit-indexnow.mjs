@@ -2,7 +2,7 @@
  * 首次启用 IndexNow、或者自动提交曾经失败时，手动全量补交。
  *
  * 覆盖三类内容：上架游戏详情页、已发布文章详情页、平台/类型聚合页 ——
- * 每一类都会展开成全部 8 种语言的 URL。
+ * 聚合页展开全部 8 种语言；详情页只提交真正有正文的语言，避免主动推送回退正文的重复页。
  * （以前这里只捞游戏；文章和聚合页有独立的 H1、正文与结构化数据，却从来
  *   没被主动提交过。IndexNow 实际上没有配额压力，没有理由漏掉它们。）
  *
@@ -15,7 +15,15 @@
  */
 import 'dotenv/config'
 import { pool, query } from '../src/db.js'
-import { gameDetailUrls, postDetailUrls, publicSiteUrl, submitIndexNowUrls, taxonomyDetailUrls } from '../src/indexnow.js'
+import {
+  gameContentLanguages,
+  gameDetailUrls,
+  postContentLanguages,
+  postDetailUrls,
+  publicSiteUrl,
+  submitIndexNowUrls,
+  taxonomyDetailUrls,
+} from '../src/indexnow.js'
 import { taxonomyRows } from '../src/routes/sitemaps.js'
 
 const argv = process.argv.slice(2)
@@ -34,14 +42,22 @@ try {
   const groups = []
 
   if (wants('games')) {
-    const rows = await query('SELECT slug FROM games WHERE hidden = 0 ORDER BY id ASC')
-    groups.push({ label: '游戏详情页', items: rows.length, urls: rows.flatMap((row) => gameDetailUrls(row.slug, siteUrl)) })
+    const rows = await query('SELECT slug, description_en, description_i18n FROM games WHERE hidden = 0 ORDER BY id ASC')
+    groups.push({
+      label: '游戏详情页',
+      items: rows.length,
+      urls: rows.flatMap((row) => gameDetailUrls(row.slug, siteUrl, gameContentLanguages(row))),
+    })
   }
 
   if (wants('posts')) {
     // 草稿在前台是 404，不推。
-    const rows = await query('SELECT slug FROM posts WHERE published = 1 ORDER BY id ASC')
-    groups.push({ label: '文章详情页', items: rows.length, urls: rows.flatMap((row) => postDetailUrls(row.slug, siteUrl)) })
+    const rows = await query('SELECT slug, title_i18n, excerpt_i18n, content_i18n FROM posts WHERE published = 1 ORDER BY id ASC')
+    groups.push({
+      label: '文章详情页',
+      items: rows.length,
+      urls: rows.flatMap((row) => postDetailUrls(row.slug, siteUrl, postContentLanguages(row))),
+    })
   }
 
   if (wants('taxonomy')) {

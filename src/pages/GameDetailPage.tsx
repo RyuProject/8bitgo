@@ -21,7 +21,7 @@ import { useSeo, breadcrumbSchema, videoGameSchema } from '@/services/seo'
 import { useLang } from '@/services/lang'
 import { useT, fmt } from '@/services/i18n'
 import { getLang } from '@/services/lang'
-import { dosExtrasName, gameDescription, gameTitle, genreLabel, needsTranslation, platformDesc, platformLabel } from '@/services/i18nData'
+import { dosExtrasName, gameDescription, gameSeoLanguagePlan, gameTitle, genreLabel, needsTranslation, platformDesc, platformLabel } from '@/services/i18nData'
 import { EmulatorPlayer, preloadPlayer } from '@/emulator/PlayerChunk'
 import { stageHeightCap } from '@/emulator/screenAspect'
 import { IsolatedPlayCard } from '@/components/game/IsolatedPlayCard'
@@ -197,12 +197,15 @@ export function GameDetailPage() {
   // SEO 描述也要跟语言走：英文页面挂一段中文 meta description，
   // 搜索结果里就是一串看不懂的字，等于白写
   const seoDesc = game ? plainText(gameDescription(game, lang)) : ''
+  const seoLanguages = game ? gameSeoLanguagePlan(game, lang) : undefined
   useSeo(
     game
       ? {
           title: fmt(t.game.docTitle, { title: seoTitle }),
           // 优先用游戏自己的简介，没有再套通用模板
           description: seoDesc || fmt(t.seo.gameDesc, { title: seoTitle, platform: seoPlatformName }),
+          contentLanguages: seoLanguages?.contentLanguages,
+          canonicalLanguage: seoLanguages?.canonicalLanguage,
           image: game.cover,
           publishedTime: game.addedAt,
           updatedTime: game.updatedAt || game.addedAt,
@@ -220,12 +223,13 @@ export function GameDetailPage() {
               developer: game.developer,
               rating: game.rating,
               ratingCount: game.ratingCount,
+              language: seoLanguages?.canonicalLanguage,
             }),
             breadcrumbSchema([
               { name: t.common.home, path: '/' },
               { name: t.common.library, path: '/games' },
               { name: seoTitle, path: `/games/${game.slug}` },
-            ]),
+            ], seoLanguages?.canonicalLanguage),
           ],
         }
       : state.status === 'ready'

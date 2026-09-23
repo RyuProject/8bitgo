@@ -13,16 +13,15 @@
  * 说明：
  *  - canonical / og:url 用 VITE_SITE_URL + 当前 pathname（不带查询串，避免筛选参数
  *    产生成千上万个重复页面；需要收录带参数的页面时显式传 canonicalPath）。
- *  - hreflang：8 种语言各输出一条 alternate，外加 x-default 指向**英语**版
- *    （FALLBACK_LANG）—— x-default 的语义是「语言对不上的人看哪份」，
- *    对一个面向全球的站来说那应该是英语，而不是站点母语简体中文。
- *    index.html 里那段自动跳转脚本用的是同一套兜底规则，两边要保持一致。
+ *  - hreflang：普通页面输出 8 种语言；按需翻译详情页只输出真正有正文的语言。
+ *    x-default 优先指向英语版（FALLBACK_LANG）；没有英文正文时指向实际 canonical，
+ *    不能为了凑一条英语 alternate 而制造重复页。
  *  - 组件卸载时会把本页写入的标签清理掉，避免路由切换后残留上一页的 meta。
  */
 import { useEffect } from 'react'
 import { useT, fmt } from './i18n'
 import { getLang } from './lang'
-import { HREFLANG, LANGUAGES, FALLBACK_LANG, localizedPath, stripLang, type Lang } from '@/config/languages'
+import { DEFAULT_LANG, HREFLANG, LANGUAGES, FALLBACK_LANG, localizedPath, stripLang, type Lang } from '@/config/languages'
 import { romUrlForKey } from './roms'
 import { splitDevelopers } from '@/lib/developers'
 import { FEATURES } from '@/config/features'
@@ -81,6 +80,13 @@ export interface SeoOptions {
    * canonical 说「我在子域」，hreflang 说「我的各语言版本都在主域」。
    */
   canonicalOrigin?: string
+  /**
+   * 真正拥有独立正文的语言。按需翻译的详情页必须传；未翻译 URL 会 canonical 到
+   * canonicalLanguage，也不会再被 hreflang 冒充成一份独立译文。
+   */
+  contentLanguages?: readonly Lang[]
+  /** 当前 URL 没有独立正文时，它实际显示的是哪门语言的正文。 */
+  canonicalLanguage?: Lang
   /** 结构化数据，可传多个 */
   jsonLd?: object[]
 }
@@ -129,6 +135,60 @@ function contentTime(value?: string): string {
   const s = value?.trim() ?? ''
   if (!s) return ''
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T00:00:00+08:00` : s
+}
+
+/**
+ * 搜索摘要没有固定像素宽度，但把整篇千字简介塞进 description 只会让关键词被稀释，
+ * Google 最终仍会自行截断。这里按 Unicode 码点留 160 个字符，并尽量停在完整句子上；
+ * 页面正文和 JSON-LD 仍保留全文，只有 meta / Open Graph / Twitter 使用短摘要。
+ */
+export function normalizeMetaDescription(value?: string, maxLength = 160): string {
+  const clean = String(value || '').replace(/\s+/g, ' ').trim()
+  const chars = [...clean]
+  if (chars.length <= maxLength) return clean
+  const prefix = chars.slice(0, maxLength).join('')
+  const breaks = ['。', '！', '？', '. ', '! ', '? ', '；', '; ', '，', ', ', ' ']
+    .map((mark) => {
+      const index = prefix.lastIndexOf(mark)
+      return index < 0 ? -1 : index + mark.trimEnd().length
+    })
+  const boundary = Math.max(...breaks)
+  if (boundary >= Math.floor(maxLength * 0.65)) return prefix.slice(0, boundary).trim()
+  return `${chars.slice(0, maxLength - 1).join('').trimEnd()}…`
+}
+
+export interface SeoLanguagePlan {
+  contentLanguages: Lang[]
+  canonicalLanguage: Lang
+  defaultLanguage: Lang
+}
+
+/**
+ * hreflang 只列真正存在的译文，并让 canonical 跟页面正在回退显示的正文一致。
+ * 没传 contentLanguages 的普通静态页仍按旧规则输出全部语言，避免让调用方逐页重复声明。
+ */
+export function resolveSeoLanguagePlan(
+  current: Lang,
+  contentLanguages?: readonly Lang[],
+  preferredCanonical?: Lang,
+): SeoLanguagePlan {
+  const wanted = contentLanguages ? new Set(contentLanguages) : null
+  const available = LANGUAGES.map(({ code }) => code).filter((code) => !wanted || wanted.has(code))
+  if (!available.length) available.push(DEFAULT_LANG)
+  const canonicalLanguage = available.includes(current)
+    ? current
+    : preferredCanonical && available.includes(preferredCanonical)
+      ? preferredCanonical
+      : available.includes(FALLBACK_LANG)
+        ? FALLBACK_LANG
+        : available.includes(DEFAULT_LANG)
+          ? DEFAULT_LANG
+          : available[0]
+  return {
+    contentLanguages: available,
+    canonicalLanguage,
+    defaultLanguage: available.includes(FALLBACK_LANG) ? FALLBACK_LANG : canonicalLanguage,
+  }
 }
 
 /* ---------------- SSR：渲染期间收集 head ---------------- */
@@ -219,10 +279,13 @@ export function useSeo(opts: SeoOptions) {
     noindex = false,
     canonicalPath,
     canonicalOrigin,
+    contentLanguages,
+    canonicalLanguage,
     jsonLd,
   } = opts
 
   const lang = getLang()
+  const languagePlan = resolveSeoLanguagePlan(lang, contentLanguages, canonicalLanguage)
   const fullTitle = title
     ? fmt(t.site.titleTemplate, { title, site: SITE_NAME })
     : fmt(t.site.defaultTitle, { site: SITE_NAME })
@@ -240,7 +303,7 @@ export function useSeo(opts: SeoOptions) {
     const p = localizedPath(barePath, l)
     return canonicalOrigin ? canonicalOrigin + p : absoluteUrl(p)
   }
-  const canonicalUrl = urlInLang(lang)
+  const canonicalUrl = urlInLang(languagePlan.canonicalLanguage)
   /**
    * 社交卡片图。
    *
@@ -301,10 +364,11 @@ export function useSeo(opts: SeoOptions) {
     metas.push(['property', 'og:image:height', OG_DEFAULT_HEIGHT])
   }
   if (TWITTER_SITE) metas.push(['name', 'twitter:site', TWITTER_SITE])
-  if (description) {
-    metas.push(['name', 'description', description])
-    metas.push(['property', 'og:description', description])
-    metas.push(['name', 'twitter:description', description])
+  const shortDescription = normalizeMetaDescription(description)
+  if (shortDescription) {
+    metas.push(['name', 'description', shortDescription])
+    metas.push(['property', 'og:description', shortDescription])
+    metas.push(['name', 'twitter:description', shortDescription])
   }
   const published = contentTime(publishedTime)
   const updated = contentTime(updatedTime || publishedTime)
@@ -326,13 +390,16 @@ export function useSeo(opts: SeoOptions) {
   if (updated) metas.push(['property', 'bytedance:updated_time', updated])
   if (replied) metas.push(['property', 'bytedance:lrDate_time', replied])
 
-  // hreflang：每种语言一条，外加 x-default 指向英语版（语言对不上的人看这份）
+  // hreflang 只列有独立正文的语言；x-default 优先英语，没有英语时跟 canonical。
   const alternates: Array<[string, string]> = noindex
     ? []
     : [
-        ...LANGUAGES.map((l) => [HREFLANG[l.code], urlInLang(l.code)] as [string, string]),
-        ['x-default', urlInLang(FALLBACK_LANG)],
+        ...languagePlan.contentLanguages.map((code) => [HREFLANG[code], urlInLang(code)] as [string, string]),
+        ['x-default', urlInLang(languagePlan.defaultLanguage)],
       ]
+
+  // noindex 页面不参与富媒体结果；继续输出结构化数据只会制造互相冲突的抓取信号。
+  const visibleJsonLd = noindex ? [] : (jsonLd ?? [])
 
   // ---- 服务端：渲染期间收集，不碰 DOM ----
   if (import.meta.env.SSR && collected) {
@@ -344,7 +411,7 @@ export function useSeo(opts: SeoOptions) {
     for (const [hl, href] of alternates) {
       collected.tags.push(`<link rel="alternate" hreflang="${escapeAttr(hl)}" href="${escapeAttr(href)}" />`)
     }
-    for (const obj of jsonLd ?? []) {
+    for (const obj of visibleJsonLd) {
       collected.tags.push(
         `<script type="application/ld+json">${escapeJson(JSON.stringify(obj))}</script>`,
       )
@@ -352,7 +419,7 @@ export function useSeo(opts: SeoOptions) {
   }
 
   // jsonLd 是对象数组，直接进依赖会每次渲染都变；用序列化后的字符串比较
-  const jsonLdKey = jsonLd ? JSON.stringify(jsonLd) : ''
+  const jsonLdKey = visibleJsonLd.length ? JSON.stringify(visibleJsonLd) : ''
   const metaKey = JSON.stringify({ metas, alternates, canonicalUrl, noindex })
 
   // ---- 客户端：写入 DOM ----
@@ -362,7 +429,7 @@ export function useSeo(opts: SeoOptions) {
 
     // 本页没有 description 时要把上一页的删掉，否则客户端路由切过去之后
     // head 里还留着上一页的描述，和已经更新的 og:url 对不上。
-    if (!description) {
+    if (!shortDescription) {
       for (const sel of ['meta[name="description"]', 'meta[property="og:description"]', 'meta[name="twitter:description"]']) {
         document.head.querySelector(sel)?.remove()
       }
@@ -387,7 +454,7 @@ export function useSeo(opts: SeoOptions) {
     for (const [hl, href] of alternates) upsertLink('alternate', href, hl)
 
     const scripts: HTMLScriptElement[] = []
-    for (const obj of jsonLd ?? []) {
+    for (const obj of visibleJsonLd) {
       const el = document.createElement('script')
       el.type = 'application/ld+json'
       el.setAttribute(MARK, '')
@@ -438,8 +505,8 @@ function currentSsrPath(): string {
  * 等于把 7 种语言的权重都导回中文站，还和 canonical 自相矛盾。
  * 图片之类与语言无关的资源仍然用 absoluteUrl。
  */
-function langUrl(path: string): string {
-  return absoluteUrl(localizedPath(path, getLang()))
+function langUrl(path: string, language: Lang = getLang()): string {
+  return absoluteUrl(localizedPath(path, language))
 }
 
 /** Open Graph 的 og:locale 要求 language_TERRITORY，不能直接给 'en' / 'zh-Hans' */
@@ -507,6 +574,8 @@ export interface GameSchemaInput {
   rating?: number
   /** 评分人数 */
   ratingCount?: number
+  /** 当前 URL 回退到其它语言正文时，结构化数据里的 URL 也必须跟 canonical 走。 */
+  language?: Lang
 }
 
 /**
@@ -524,7 +593,7 @@ export function videoGameSchema(g: GameSchemaInput) {
     '@context': 'https://schema.org',
     '@type': 'VideoGame',
     name: g.name,
-    url: langUrl(`/games/${g.slug}`),
+    url: langUrl(`/games/${g.slug}`, g.language),
     playMode: 'SinglePlayer',
     applicationCategory: 'Game',
     // 浏览器里直接运行
@@ -567,13 +636,14 @@ export function articleSchema(p: {
   date?: string
   updated?: string
   author?: string
+  language?: Lang
 }) {
   const schema: Record<string, unknown> = {
     '@context': 'https://schema.org',
     '@type': 'BlogPosting',
     headline: p.title,
-    url: langUrl(`/blog/${p.slug}`),
-    mainEntityOfPage: langUrl(`/blog/${p.slug}`),
+    url: langUrl(`/blog/${p.slug}`, p.language),
+    mainEntityOfPage: langUrl(`/blog/${p.slug}`, p.language),
     publisher: { '@type': 'Organization', name: SITE_NAME },
   }
   if (p.excerpt) schema.description = p.excerpt
@@ -584,7 +654,7 @@ export function articleSchema(p: {
 }
 
 /** 面包屑：让搜索结果显示层级路径 */
-export function breadcrumbSchema(items: Array<{ name: string; path: string }>) {
+export function breadcrumbSchema(items: Array<{ name: string; path: string }>, language?: Lang) {
   return {
     '@context': 'https://schema.org',
     '@type': 'BreadcrumbList',
@@ -592,7 +662,7 @@ export function breadcrumbSchema(items: Array<{ name: string; path: string }>) {
       '@type': 'ListItem',
       position: i + 1,
       name: it.name,
-      item: langUrl(it.path),
+      item: langUrl(it.path, language),
     })),
   }
 }

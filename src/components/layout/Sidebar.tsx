@@ -385,7 +385,7 @@ function CommunityBox({ collapsed }: { collapsed: boolean }) {
       {/* 展开态 / 移动端抽屉 */}
       <fieldset className={cx('mb-4 rounded-xl border border-line-strong px-3 pb-3 pt-2', collapsed && 'lg:hidden')}>
         <legend className="px-1.5 text-xs font-semibold text-fg">{t.sidebar.community}</legend>
-        <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
           {communityLinks.map((c) => (
             <a
               key={c.id}

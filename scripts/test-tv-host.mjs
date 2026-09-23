@@ -220,10 +220,10 @@ check('⭐ canonical / og:url / hreflang 走同一个地址构造器', () => {
     搜索引擎两边都不信。所以三处必须共用同一个函数。
   */
   const seo = read('src/services/seo.ts')
-  assert.match(seo, /const canonicalUrl = urlInLang\(lang\)/, 'canonical 没走 urlInLang')
+  assert.match(seo, /const canonicalUrl = urlInLang\(languagePlan\.canonicalLanguage\)/, 'canonical 没走 urlInLang')
   assert.match(seo, /\['property', 'og:url', canonicalUrl\]/, 'og:url 和 canonical 不是同一个值')
-  assert.match(seo, /HREFLANG\[l\.code\], urlInLang\(l\.code\)/, 'hreflang 没走 urlInLang')
-  assert.match(seo, /\['x-default', urlInLang\(FALLBACK_LANG\)\]/, 'x-default 没走 urlInLang')
+  assert.match(seo, /HREFLANG\[code\], urlInLang\(code\)/, 'hreflang 没走 urlInLang')
+  assert.match(seo, /\['x-default', urlInLang\(languagePlan\.defaultLanguage\)\]/, 'x-default 没走 urlInLang')
   // 旧写法（直接 absoluteUrl）残留的话，那一处就绕过了 canonicalOrigin
   assert.doesNotMatch(seo, /absoluteUrl\(localizedPath\(barePath/, '还有地方直接用 absoluteUrl 拼 hreflang，绕过了子域')
 })

@@ -20,7 +20,7 @@ import {
   pickTaxonomyRows,
 } from '../server/src/routes/sitemaps.js'
 import { ENABLED_PLATFORM_IDS, GENRE_IDS } from '../shared/site-taxonomy.js'
-import { assetPublicUrl } from '../server/src/site-urls.js'
+import { assetPublicUrl, sitemapImagePublicUrl } from '../server/src/site-urls.js'
 
 let passed = 0
 async function check(name, fn) {
@@ -45,6 +45,24 @@ await check('游戏变更同时覆盖详情、游戏列表、平台与类型页'
   assert.ok(urls.includes('https://8bitgo.com/games/doom'))
   assert.ok(urls.includes('https://8bitgo.com/ja/platforms/dos'))
   assert.ok(urls.includes('https://8bitgo.com/de/genres/shooting'))
+})
+
+await check('自动推送只提交有正文的游戏详情页，聚合页仍覆盖全部语言', async () => {
+  const urls = gameChangeUrls(
+    {
+      slug: 'doom',
+      platform: 'dos',
+      genres: ['action'],
+      description_en: 'Doom is a shooter.',
+      description_i18n: JSON.stringify({ fr: 'Doom est un jeu de tir.' }),
+    },
+    'https://8bitgo.com',
+  )
+  assert.ok(urls.includes('https://8bitgo.com/games/doom'))
+  assert.ok(urls.includes('https://8bitgo.com/en/games/doom'))
+  assert.ok(urls.includes('https://8bitgo.com/fr/games/doom'))
+  assert.ok(!urls.includes('https://8bitgo.com/de/games/doom'))
+  assert.ok(urls.includes('https://8bitgo.com/de/games'), '德文游戏列表自身有本地化正文，仍应通知')
 })
 
 await check('只保留本站 URL，并去重和去掉 hash', async () => {
@@ -129,6 +147,19 @@ await check('文章变更同时覆盖详情页与博客列表', async () => {
   assert.ok(urls.includes('https://8bitgo.com/en/blog'))
 })
 
+await check('自动推送不提交半翻译文章详情页', async () => {
+  const urls = postChangeUrls({
+    slug: 'nes-history',
+    title_i18n: { en: 'NES history', fr: 'Histoire NES' },
+    excerpt_i18n: { en: 'A short history', fr: 'Résumé' },
+    content_i18n: { en: 'The full article' },
+  }, 'https://8bitgo.com')
+  assert.ok(urls.includes('https://8bitgo.com/blog/nes-history'))
+  assert.ok(urls.includes('https://8bitgo.com/en/blog/nes-history'))
+  assert.ok(!urls.includes('https://8bitgo.com/fr/blog/nes-history'))
+  assert.ok(urls.includes('https://8bitgo.com/fr/blog'), '法文博客列表仍有本地化界面内容')
+})
+
 await check('动态文章 sitemap 使用数据库更新时间和指定语言路径', async () => {
   // ⚠️ 同上：语言门控要求这一行真有德文正文，否则整份 sitemap 是空的
   const xml = buildPostSitemap(
@@ -136,6 +167,8 @@ await check('动态文章 sitemap 使用数据库更新时间和指定语言路�
       {
         slug: 'nes-history',
         updated_at: new Date('2026-09-02T08:00:00Z'),
+        title_i18n: JSON.stringify({ de: 'Die Geschichte des NES' }),
+        excerpt_i18n: JSON.stringify({ de: 'Ein kurzer Überblick.' }),
         content_i18n: JSON.stringify({ de: 'Die Geschichte des NES.' }),
       },
     ],
@@ -154,6 +187,8 @@ await check('三个时间列都为空时不写 lastmod，而不是退回 1970-01
         updated_at: null,
         created_at: null,
         date: null,
+        title_i18n: JSON.stringify({ en: 'No dates' }),
+        excerpt_i18n: JSON.stringify({ en: 'No dates at all.' }),
         content_i18n: JSON.stringify({ en: 'No dates at all.' }),
       },
     ],
@@ -288,6 +323,18 @@ await check('封面 key 换算成对象存储上的绝对地址，逐段编码',
   assert.equal(assetPublicUrl(null, 'https://8bitgo.com'), '')
 })
 
+await check('图片 sitemap 使用封面域，并丢弃无法验证的第三方热链', async () => {
+  assert.equal(
+    sitemapImagePublicUrl('covers/contra 2.jpg', 'https://8bitgo.com'),
+    'https://image.8bitgo.com/covers/contra%202.jpg',
+  )
+  assert.equal(
+    sitemapImagePublicUrl('https://assets.8bitgo.com/covers/legacy.jpg', 'https://8bitgo.com'),
+    'https://assets.8bitgo.com/covers/legacy.jpg',
+  )
+  assert.equal(sitemapImagePublicUrl('https://cdn.example.com/a.png', 'https://8bitgo.com'), '')
+})
+
 await check('游戏 sitemap 带图片扩展，没封面的条目跳过', async () => {
   // ⚠️ 两行都要带英文正文，否则语言门控会把它们滤光，下面的计数全变成 0（假绿）
   const xml = buildGameSitemap([
@@ -295,7 +342,7 @@ await check('游戏 sitemap 带图片扩展，没封面的条目跳过', async (
     { slug: 'bare', cover: null, updated_at: new Date('2026-09-01T00:00:00Z'), description_en: 'No cover.' },
   ], 'en', 'https://8bitgo.com')
   assert.match(xml, /xmlns:image="http:\/\/www\.google\.com\/schemas\/sitemap-image\/1\.1"/)
-  assert.match(xml, /<image:loc>https:\/\/assets\.8bitgo\.com\/covers\/contra\.jpg<\/image:loc>/)
+  assert.match(xml, /<image:loc>https:\/\/image\.8bitgo\.com\/covers\/contra\.jpg<\/image:loc>/)
   // 两条 URL，但只有一条带图
   assert.equal(xml.match(/<loc>/g).length, 2)
   assert.equal(xml.match(/<image:image>/g).length, 1)
@@ -327,13 +374,28 @@ await check('不输出 Google 已停止支持的 image 子标签', async () => {
 
 await check('文章 sitemap 不带图片扩展（文章配图是 emoji 图标）', async () => {
   const xml = buildPostSitemap(
-    [{ slug: 'nes-history', updated_at: new Date(), content_i18n: JSON.stringify({ en: 'A history.' }) }],
+    [{
+      slug: 'nes-history',
+      updated_at: new Date(),
+      title_i18n: JSON.stringify({ en: 'NES history' }),
+      excerpt_i18n: JSON.stringify({ en: 'A short history.' }),
+      content_i18n: JSON.stringify({ en: 'A history.' }),
+    }],
     'en',
     'https://8bitgo.com',
   )
   // ⚠️ 同上：不先确认有 URL 的话，「不含 image:」在空 sitemap 上自动成立（假绿）
   assert.match(xml, /<loc>/, '门控把这一行滤掉了，下面那条断言会变成空转')
   assert.ok(!xml.includes('image:'))
+})
+
+await check('文章只翻正文时不能进入该语言 sitemap', async () => {
+  const xml = buildPostSitemap(
+    [{ slug: 'partial', content_i18n: JSON.stringify({ fr: 'Seulement le corps.' }) }],
+    'fr',
+    'https://8bitgo.com',
+  )
+  assert.doesNotMatch(xml, /<loc>/)
 })
 
 await check('聚合页 URL：kind 白名单是硬的，脏数据不能决定路径前缀', async () => {
@@ -371,6 +433,8 @@ await check('补交脚本三类内容都接上了（防止又退回“只捞游�
     assert.match(src, /FROM posts/, `${file} 少了文章`)
     assert.match(src, /taxonomyRows/, `${file} 少了平台 / 类型页`)
     assert.match(src, /published = 1/, `${file} 必须只推已发布文章，草稿在前台是 404`)
+    assert.match(src, /gameContentLanguages/, `${file} 游戏详情补交没有按真实正文语言过滤`)
+    assert.match(src, /postContentLanguages/, `${file} 文章详情补交没有按完整译文过滤`)
   }
 })
 

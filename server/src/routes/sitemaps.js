@@ -3,7 +3,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { query } from '../db.js'
 import { CACHE } from '../cache.js'
-import { assetPublicUrl, localizedPublicUrl, publicSiteUrl } from '../site-urls.js'
+import { localizedPublicUrl, publicSiteUrl, sitemapImagePublicUrl } from '../site-urls.js'
 import { SITE_DEFAULT_LANGUAGE, SITE_LANGUAGES } from '../../../shared/site-languages.js'
 import { ENABLED_PLATFORM_IDS, GENRE_IDS } from '../../../shared/site-taxonomy.js'
 
@@ -106,8 +106,8 @@ function i18nText(raw, language) {
  * 所以规则是：**sitemap 只承诺那些正文确实是这门语言的 URL**。
  * 译文一生成，这里下一次被抓时就自动带上了 —— 不需要重新部署，也不用手工维护名单。
  *
- * ⚠️ 页面本身照旧可访问、head 里的 hreflang 照旧列全 8 种（Google 靠它归簇、
- * 也照样能从别处发现这些 URL）。这里减的只是「我们主动请它去抓」的那一份。
+ * ⚠️ 页面本身照旧可访问；head 里的 hreflang 也只列真正有正文的语言，和这里保持一致。
+ * 未翻译 URL 会 canonical 到它实际回退显示的英文或简体版本。
  *
  * ⚠️ 基准语言（zh-Hans）无条件保留：它是 canonical 那一条，
  * 连简介都还没写的游戏也得有一条 URL 进得去，否则整款游戏从 sitemap 里消失。
@@ -123,6 +123,16 @@ export function hasLocalizedBody(row, language, cols = {}) {
   // 英文简介在 games 里是独立的一列，不在 description_i18n 里
   if (language === 'en' && cols.en && String(row?.[cols.en] ?? '').trim()) return true
   return false
+}
+
+/**
+ * 文章的标题、摘要、正文是三份独立 JSON；只翻其中一份仍然是半中文页面。
+ * 三项都齐才允许进入该语言 sitemap，这个判据要和前端 postSeoLanguagePlan 保持一致。
+ */
+export function hasLocalizedPostBody(row, language) {
+  if (language === SITE_DEFAULT_LANGUAGE) return true
+  return ['title_i18n', 'excerpt_i18n', 'content_i18n']
+    .every((column) => Boolean(i18nText(row?.[column], language)))
 }
 
 /** 这一类的译文列在数据库里不存在（migrate 还没跑），已经退回过一次 */
@@ -174,9 +184,9 @@ export function buildGameSitemap(rows, language, siteUrl = publicSiteUrl(), { ga
     siteUrl,
     (row) => `/games/${encodeURIComponent(String(row.slug))}`,
     (row) => row.updated_at || row.created_at || row.added_at,
-    // 封面在独立的对象存储域上，所以这里必须换算成绝对地址（见 site-urls.js 的 assetPublicUrl）。
+    // 只提交本站可验证域名上的图片；第三方热链无法证明归属，见 sitemapImagePublicUrl。
     // 没绑封面的游戏用的是程序生成的渐变块，不是真图片，跳过。
-    (row) => assetPublicUrl(row.cover, siteUrl),
+    (row) => sitemapImagePublicUrl(row.cover, siteUrl),
   )
 }
 
@@ -210,8 +220,8 @@ export async function gameSitemap(req, res, next) {
 export function buildPostSitemap(rows, language, siteUrl = publicSiteUrl(), { gate = true } = {}) {
   // `date` 是作者手填的发布日期，可能留空也可能是未来日期，所以只当最后的兜底。
   return buildUrlsetSitemap(
-    // 同游戏那套；文章没有「独立英文正文」这一列，所以 en 也得看 content_i18n
-    gate ? rows.filter((row) => hasLocalizedBody(row, language, { i18n: 'content_i18n' })) : rows,
+    // 文章要标题、摘要、正文三项都齐；只看正文会把半翻译页面主动提交出去。
+    gate ? rows.filter((row) => hasLocalizedPostBody(row, language)) : rows,
     language,
     siteUrl,
     (row) => `/blog/${encodeURIComponent(String(row.slug))}`,
@@ -228,7 +238,7 @@ export async function postSitemap(req, res, next) {
     }
     const { rows, gate } = await sitemapRows(
       'posts',
-      'SELECT slug, `date`, created_at, updated_at, content_i18n FROM posts WHERE published = 1 ORDER BY id ASC',
+      'SELECT slug, `date`, created_at, updated_at, title_i18n, excerpt_i18n, content_i18n FROM posts WHERE published = 1 ORDER BY id ASC',
       'SELECT slug, `date`, created_at, updated_at FROM posts WHERE published = 1 ORDER BY id ASC',
     )
     res.setHeader('Cache-Control', CACHE.meta)
@@ -414,11 +424,11 @@ export function buildSitemapIndex({
  * 多这两句不会打到库上。
  */
 async function langsWithContent() {
-  const pick = (rows, gate, cols) => {
+  const pick = (rows, gate, predicate) => {
     if (!gate) return null
     const set = new Set()
     for (const { code } of SITE_LANGUAGES) {
-      if (rows.some((row) => hasLocalizedBody(row, code, cols))) set.add(code)
+      if (rows.some((row) => predicate(row, code))) set.add(code)
     }
     return set
   }
@@ -431,13 +441,14 @@ async function langsWithContent() {
       ),
       sitemapRows(
         'index-posts',
-        'SELECT content_i18n FROM posts WHERE published = 1',
+        'SELECT title_i18n, excerpt_i18n, content_i18n FROM posts WHERE published = 1',
         'SELECT slug FROM posts WHERE published = 1',
       ),
     ])
     return {
-      gamesLangs: pick(g.rows, g.gate, { i18n: 'description_i18n', en: 'description_en' }),
-      postsLangs: pick(p.rows, p.gate, { i18n: 'content_i18n' }),
+      gamesLangs: pick(g.rows, g.gate, (row, code) =>
+        hasLocalizedBody(row, code, { i18n: 'description_i18n', en: 'description_en' })),
+      postsLangs: pick(p.rows, p.gate, hasLocalizedPostBody),
     }
   } catch (error) {
     console.warn('[sitemap] 算不出各语言有没有内容，索引照旧全列：', error?.message)

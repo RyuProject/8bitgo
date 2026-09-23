@@ -14,14 +14,19 @@ export const DEFAULT_SITE_URL = 'https://8bitgo.com'
  * 对象存储（R2 / CDN）的公开根地址。
  *
  * 公开桶域名不是机密，所以留一个可用默认值 —— 否则服务器上少配一行 ROM_BASE_URL，
- * 症状是「页面里封面正常显示，但 sitemap / og:image 里的图片地址全是空的」：
- * 前端那份地址是构建时从 VITE_ROM_BASE_URL 烘进去的，服务端这份不是，两边会各自失效。
+ * 后端生成开放平台资源地址和 J2ME 代理地址时会变成空串，而前端仍可能因为构建期配置正常，
+ * 形成「页面能玩、服务端地址却失效」的不对称状态。
  * 这个默认值和 j2me.js 原来那个私有常量是同一个，现在统一到这里。
  */
 export const DEFAULT_ASSET_BASE_URL = 'https://assets.8bitgo.com'
+export const DEFAULT_COVER_BASE_URL = 'https://image.8bitgo.com'
 
 export function assetBaseUrl(env = process.env) {
   return String(env.ROM_BASE_URL || DEFAULT_ASSET_BASE_URL).trim().replace(/\/+$/, '')
+}
+
+export function coverBaseUrl(env = process.env) {
+  return String(env.COVER_BASE_URL || DEFAULT_COVER_BASE_URL).trim().replace(/\/+$/, '')
 }
 
 /** key 的每一段单独编码，保留斜杠。和前端 services/roms.ts 的 encodeKey 一致。 */
@@ -48,6 +53,38 @@ export function assetPublicUrl(key, siteUrl = publicSiteUrl(), base = assetBaseU
   if (/^https?:\/\//i.test(raw)) return raw
   if (raw.startsWith('/')) return new URL(raw, `${siteUrl}/`).href
   return base ? `${base}/${encodeAssetKey(raw)}` : ''
+}
+
+/**
+ * 图片 sitemap 只能提交本站能够在 Search Console 验证的域名。
+ *
+ * 数据库里还留着一些从资料站直接引用的旧封面；页面展示这些图没有问题，但把百度、
+ * 贴吧、下载站等第三方地址写进 image sitemap 后，站长无法验证那些域名，Google 也不会
+ * 接受这份归属声明。内部 covers/ key 则和前端一致走专用图片域，避免 sitemap 继续写到
+ * assets 域并绕过图片处理缓存。
+ */
+export function sitemapImagePublicUrl(
+  key,
+  siteUrl = publicSiteUrl(),
+  coverBase = coverBaseUrl(),
+  assetBase = assetBaseUrl(),
+) {
+  const raw = String(key || '').trim()
+  if (!raw) return ''
+  if (raw.startsWith('/')) return new URL(raw, `${siteUrl}/`).href
+  if (!/^https?:\/\//i.test(raw)) {
+    const base = raw.startsWith('covers/') ? (coverBase || assetBase) : assetBase
+    return base ? `${base}/${encodeAssetKey(raw)}` : ''
+  }
+  try {
+    const url = new URL(raw)
+    const trustedOrigins = new Set(
+      [siteUrl, coverBase, assetBase].filter(Boolean).map((value) => new URL(value).origin),
+    )
+    return trustedOrigins.has(url.origin) ? url.href : ''
+  } catch {
+    return ''
+  }
 }
 
 const ALL_LANGUAGE_CODES = Object.freeze(SITE_LANGUAGES.map(({ code }) => code))
@@ -79,6 +116,54 @@ export function resolveLanguages(languages) {
   return ALL_LANGUAGE_CODES.filter((code) => wanted.includes(code))
 }
 
+const hasOwn = (value, key) => Boolean(value && Object.prototype.hasOwnProperty.call(value, key))
+const field = (value, camel, snake) => hasOwn(value, camel) ? value[camel] : value?.[snake]
+
+function i18nMap(value) {
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value)
+    } catch {
+      return {}
+    }
+  }
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+}
+
+const present = (value) => Boolean(String(value ?? '').trim())
+
+/** 供 IndexNow / 百度推送复用的游戏正文语言判据；与动态 sitemap 保持一致。 */
+export function gameContentLanguages(game) {
+  const translated = i18nMap(field(game, 'descriptionI18n', 'description_i18n'))
+  const english = field(game, 'descriptionEn', 'description_en')
+  return ALL_LANGUAGE_CODES.filter((code) => {
+    if (code === SITE_DEFAULT_LANGUAGE) return true
+    if (code === 'en') return present(translated.en) || present(english)
+    return present(translated[code])
+  })
+}
+
+/** 文章标题、摘要、正文都齐才是一份能独立提交的译文。 */
+export function postContentLanguages(post) {
+  const title = i18nMap(field(post, 'titleI18n', 'title_i18n'))
+  const excerpt = i18nMap(field(post, 'excerptI18n', 'excerpt_i18n'))
+  const content = i18nMap(field(post, 'contentI18n', 'content_i18n'))
+  return ALL_LANGUAGE_CODES.filter((code) =>
+    code === SITE_DEFAULT_LANGUAGE
+      || (present(title[code]) && present(excerpt[code]) && present(content[code])))
+}
+
+function gameHasLanguageFields(game) {
+  return hasOwn(game, 'descriptionEn') || hasOwn(game, 'description_en')
+    || hasOwn(game, 'descriptionI18n') || hasOwn(game, 'description_i18n')
+}
+
+function postHasLanguageFields(post) {
+  return (hasOwn(post, 'titleI18n') || hasOwn(post, 'title_i18n'))
+    && (hasOwn(post, 'excerptI18n') || hasOwn(post, 'excerpt_i18n'))
+    && (hasOwn(post, 'contentI18n') || hasOwn(post, 'content_i18n'))
+}
+
 /** 默认语言不加前缀，其余语言和前端路由保持一致。 */
 export function localizedPublicUrl(pathname, language, siteUrl = publicSiteUrl()) {
   const path = pathname.startsWith('/') ? pathname : `/${pathname}`
@@ -103,12 +188,24 @@ export function gameDetailUrls(slug, siteUrl = publicSiteUrl(), languages) {
 export function gameChangeUrls(game, siteUrl = publicSiteUrl(), languages) {
   const slug = String(game?.slug || '').trim()
   if (!slug) return []
-  const paths = new Set([`/games/${encodeURIComponent(slug)}`, '/games'])
-  if (game?.platform) paths.add(`/platforms/${encodeURIComponent(String(game.platform))}`)
+  const detailPath = `/games/${encodeURIComponent(slug)}`
+  const aggregatePaths = new Set(['/games'])
+  if (game?.platform) aggregatePaths.add(`/platforms/${encodeURIComponent(String(game.platform))}`)
   for (const genre of Array.isArray(game?.genres) ? game.genres : []) {
-    if (genre) paths.add(`/genres/${encodeURIComponent(String(genre))}`)
+    if (genre) aggregatePaths.add(`/genres/${encodeURIComponent(String(genre))}`)
   }
-  return expand([...paths], siteUrl, languages)
+  const requested = resolveLanguages(languages)
+  // 删除时调用方只传 slug，没有正文列；此时必须推全部语言，让旧 URL 尽快被重抓成 404。
+  const hasLanguageFields = gameHasLanguageFields(game)
+  const available = hasLanguageFields ? new Set(gameContentLanguages(game)) : null
+  const detailLanguages = hasLanguageFields
+    ? requested.filter((code) => available.has(code))
+    : requested
+  return [
+    ...(detailLanguages.length ? expand([detailPath], siteUrl, detailLanguages) : []),
+    // 列表、平台、类型页自身有完整的界面正文，所以仍通知全部请求语言。
+    ...expand([...aggregatePaths], siteUrl, requested),
+  ]
 }
 
 /** 一篇文章的详情页。languages 留空表示全部语言。 */
@@ -128,7 +225,16 @@ export function postDetailUrls(slug, siteUrl = publicSiteUrl(), languages) {
 export function postChangeUrls(post, siteUrl = publicSiteUrl(), languages) {
   const slug = String(post?.slug || '').trim()
   if (!slug) return []
-  return expand([`/blog/${encodeURIComponent(slug)}`, '/blog'], siteUrl, languages)
+  const requested = resolveLanguages(languages)
+  const hasLanguageFields = postHasLanguageFields(post)
+  const available = hasLanguageFields ? new Set(postContentLanguages(post)) : null
+  const detailLanguages = hasLanguageFields
+    ? requested.filter((code) => available.has(code))
+    : requested
+  return [
+    ...(detailLanguages.length ? expand([`/blog/${encodeURIComponent(slug)}`], siteUrl, detailLanguages) : []),
+    ...expand(['/blog'], siteUrl, requested),
+  ]
 }
 
 /**
