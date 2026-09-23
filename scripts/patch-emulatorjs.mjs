@@ -99,6 +99,20 @@ const PRINT_ERR_FROM = 'printErr:t=>{this.debug&&console.log(t)}'
 const PRINT_ERR_TO = 'printErr:t=>{console.warn(t)}'
 
 /**
+ * libretro 的 ERROR 走 stdout，不走 stderr。
+ *
+ * 只打通上面的 printErr 仍有一个盲区：核心在完整初始化后拿到了
+ * RETRO_ENVIRONMENT_GET_LOG_INTERFACE，后续 `retro::error()` 会被 RetroArch 包成
+ * `[libretro ERROR] ...` 写到 stdout。引擎却仍用 `this.debug` 把 stdout 整体吞掉，
+ * 所以 melonDS DS 的「ROM 为什么被拒绝」这类关键错误线上完全看不见。
+ *
+ * 常规 stdout 不能全开（MAME 会刷屏），这里只无条件透出 libretro 的 ERROR；其它行仍只在
+ * EJS_DEBUG_XX 下输出。这样既能让错误探针和运维拿到根因，也不增加正常游戏的日志开销。
+ */
+const PRINT_OUT_FROM = 'print:t=>{this.debug&&console.log(t)}'
+const PRINT_OUT_TO = 'print:t=>{this.debug&&console.log(t),/^\\[libretro ERROR\\]/i.test(t)&&console.warn(t)}'
+
+/**
  * 街机核心的 ROM / BIOS 必须保持 .zip 原样。
  *
  * 引擎给 ROM 与 BIOS 各带一份「不要解压」的核心白名单
@@ -159,6 +173,14 @@ const GROUPS = [
       '在 initModule 里找 Emscripten 的 Module 配置，那对 print / printErr 回调；',
       '只把 printErr 改成无条件 console.warn，print 保持原样（stdout 会刷屏）。',
       '⚠️ 这一组没了的话，街机起不来时永远只有一句「Failed to start game」，查不出是缺 BIOS 还是 romset 不全。',
+    ],
+  },
+  {
+    name: 'libretro ERROR 出得来',
+    patches: [[PRINT_OUT_FROM, PRINT_OUT_TO]],
+    hint: [
+      '在 initModule 里找 Emscripten 的 print 回调；',
+      '只无条件输出 `[libretro ERROR]`，其余 stdout 仍受 debug 控制，避免 MAME 日志刷屏。',
     ],
   },
   {

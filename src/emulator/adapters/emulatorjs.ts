@@ -44,6 +44,12 @@ import { biosNameOfUrl, planBiosFiles } from '../biosPlan'
 import { ensureParentDir } from '../fsWrite'
 import { MAME_AUDIO_LATENCY_MS, RETROARCH_CFG_PATH, raiseAudioLatency } from '../mameAudio'
 import { NDS_AUDIO_BUFFER_BYTES_48K, NDS_AUDIO_LATENCY_MS } from '../ndsAudio'
+import {
+  NDS_CORE_OPTIONS_PATH,
+  NDS_SYSTEM_DIRECTORY,
+  configureNdsCoreOptions,
+  configureNdsSystemDirectory,
+} from '../ndsStartup'
 import { isRomPackBytes, isRomPackUrl, unpackRomPackBlob } from '@/services/romPack'
 
 /**
@@ -3229,7 +3235,47 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             }
           : undefined
 
-        if (injections.length || relocateMameRom || relocateMameBios || raiseCoreAudioLatency) {
+        /**
+         * melonDS DS 必须在 callMain 前拿到非根 system 目录和浏览器安全的首次启动选项。
+         * 详细根因与「为什么不能在 onReady 后再改」见 ndsStartup.ts。
+         */
+        const configureNdsStartup = options.platform === 'nds'
+          ? (emu: EjsEmulator) => {
+              const fs = emu.gameManager?.FS
+              if (!fs?.readFile || !fs.writeFile) return
+              const decoder = new TextDecoder()
+              try {
+                // ensureParentDir 创建的是父目录，所以用一个不会真正写入的占位路径把 system 本身建出来。
+                ensureParentDir(fs, `${NDS_SYSTEM_DIRECTORY}/.keep`)
+
+                const cfgBytes = fs.readFile(RETROARCH_CFG_PATH)
+                const cfgBefore = decoder.decode(cfgBytes)
+                const cfgAfter = configureNdsSystemDirectory(cfgBefore)
+                if (cfgAfter !== cfgBefore) fs.writeFile(RETROARCH_CFG_PATH, cfgAfter)
+
+                ensureParentDir(fs, NDS_CORE_OPTIONS_PATH)
+                let optBefore = ''
+                try {
+                  const optBytes = fs.readFile(NDS_CORE_OPTIONS_PATH)
+                  if (optBytes) optBefore = decoder.decode(optBytes)
+                } catch {
+                  // 首次运行没有 .opt 是正常路径；下面会创建。
+                }
+                const optAfter = configureNdsCoreOptions(optBefore)
+                if (optAfter !== optBefore) fs.writeFile(NDS_CORE_OPTIONS_PATH, optAfter)
+
+                const cfgOk = decoder.decode(fs.readFile(RETROARCH_CFG_PATH)).includes(`system_directory = "${NDS_SYSTEM_DIRECTORY}"`)
+                const optCheck = decoder.decode(fs.readFile(NDS_CORE_OPTIONS_PATH))
+                const optOk = optCheck.includes('melonds_sysfile_mode = "builtin"') &&
+                  optCheck.includes('melonds_homebrew_sdcard = "disabled"')
+                console.info(`[emulatorjs] NDS 启动环境：system 目录${cfgOk ? '已修正' : '回读失败'}，浏览器安全默认值${optOk ? '已写入' : '回读失败'}`)
+              } catch (e) {
+                console.warn('[emulatorjs] NDS 启动环境修正失败，按核心默认配置继续：', e)
+              }
+            }
+          : undefined
+
+        if (injections.length || relocateMameRom || relocateMameBios || raiseCoreAudioLatency || configureNdsStartup) {
           installFsInjector(win, injections, (msg) => {
             /*
               写失败**不拦着开局**（和 installFsInjector 的注释一致）：没了改版 dat，
@@ -3238,11 +3284,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               真缺文件的话核心自己会报「缺 xxx」，那条走 errorTap，比这里更准。
             */
             if (!destroyed) console.warn('[emulatorjs] 文件没写进虚拟文件系统，按原始配置继续：', fmt(rt.ejsFsInjectFailed, { msg }))
-          }, relocateMameRom || relocateMameBios || raiseCoreAudioLatency
+          }, relocateMameRom || relocateMameBios || raiseCoreAudioLatency || configureNdsStartup
             ? (emu) => {
-                // 顺序有讲究：先把 ROM 搬进 /roms（顺带 mkdir），再搬 BIOS，最后改 cfg
+                // 顺序有讲究：先处理内容/BIOS，再准备核心专属目录与选项，最后调音频窗口。
                 relocateMameRom?.(emu)
                 relocateMameBios?.(emu)
+                configureNdsStartup?.(emu)
                 raiseCoreAudioLatency?.(emu)
               }
             : undefined)

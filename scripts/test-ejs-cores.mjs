@@ -238,6 +238,12 @@ console.log('\n五、FATAL 判定（打通核心 stderr 之后的必要收紧）
   check('⭐ printErr 的补丁在位（没有它，三种完全不同的病都只报一句 Failed to start game）', () => {
     assert.ok(engine.includes('printErr:t=>{console.warn(t)}'), '跑一次 npm run ejspatch')
   })
+  check('⭐ libretro ERROR 不再被 debug 开关吞掉（melonDS 拒绝 ROM 时必须能看到根因）', () => {
+    assert.ok(
+      engine.includes('print:t=>{this.debug&&console.log(t),/^\\[libretro ERROR\\]/i.test(t)&&console.warn(t)}'),
+      '跑一次 npm run ejspatch',
+    )
+  })
 
   const adapter = readFileSync(join(root, 'src', 'emulator', 'adapters', 'emulatorjs.ts'), 'utf8')
   const from = adapter.indexOf('const FATAL_PHRASES')

@@ -39,7 +39,7 @@ export const EJS_PATH: string = asDir(import.meta.env.VITE_EJS_PATH, '/emulatorj
  * EmulatorJS 的文件名没有内容哈希，而 CDN 会缓存一个月。每次改自托管引擎或 loader
  * 都要加一代，让浏览器和边缘不再把旧 JS 与新核心拼在一起。
  */
-export const EJS_RUNTIME_GENERATION = '20260923-melondsds-webgl2'
+export const EJS_RUNTIME_GENERATION = '20260923-melondsds-core-errors'
 export const ejsRuntimeAsset = (name: string): string =>
   `${EJS_PATH}${name}?v=${encodeURIComponent(EJS_RUNTIME_GENERATION)}`
 
