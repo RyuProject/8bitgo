@@ -3,7 +3,7 @@
  * 给自建的 EmulatorJS（public/emulatorjs/emulator.min.js）打补丁。
  * 幂等：打过了再跑直接通过。升级引擎后必须重跑（见 deploy/netplay/README.md）。
  *
- * 目前两组补丁，互不相干，各自独立幂等。
+ * 各组补丁互不相干，各自独立幂等。
  *
  * ── 一、blob URL 文件名（只影响街机）─────────────────────────
  * 街机核心（FBNeo/MAME 系）靠**压缩包文件名**识别游戏：kof97.zip → 驱动 kof97。
@@ -120,6 +120,18 @@ const KEEP_ZIP_FROM = 'e.dontExtractIfCore?.includes(this.getCore())'
 const KEEP_ZIP_TO = '(e.dontExtractIfCore?.includes(this.getCore())||"mame-current"===this.getCore())'
 
 /**
+ * melonDS DS 只构建 WebGL2 版，必须让引擎无条件选择 `<core>-wasm.data`。
+ *
+ * 引擎通常会从 reports/melondsds.json 里的 defaultWebGL2 得到这个结论，但报告 URL
+ * 按小时版本化。新核心刚上线时，浏览器或边缘可能还留着同一小时内的 404；报告一旦
+ * 取不到，引擎就静默改下 `melondsds-legacy-wasm.data`，而这份文件根本不存在，随后
+ * 回落到坏掉的官方 CDN。把核心加入 requiresWebGL2 名单后，报告短暂失败也不会改选
+ * 不存在的 legacy 产物；真不支持 WebGL2 的浏览器则在下载前给出明确提示。
+ */
+const WEBGL2_CORES_FROM = 'm=["ppsspp","azahar"]'
+const WEBGL2_CORES_TO = 'm=["ppsspp","azahar","melondsds"]'
+
+/**
  * 每组：name 显示用；patches 是 [要找的原文, 替换后]；
  * legacy 可选，把「替换后」映射成更早一版补丁的样子，用来在引擎升级后接管旧补丁；
  * hint 是位置对不上时打给人看的排查思路。
@@ -167,6 +179,14 @@ const GROUPS = [
       '在 download() 里找 `dontExtractIfCore?.includes(this.getCore())` 那个三元条件；',
       '把 mame-current 也判成「不解压」—— 否则 MAME 拿不到 romset 压缩包会直接 Abort。',
       '⚠️ 这一组没了的话，mame-current 的游戏 100% 起不来，且只有一句「Failed to start game」。',
+    ],
+  },
+  {
+    name: 'melonDS DS 强制 WebGL2 核心',
+    patches: [[WEBGL2_CORES_FROM, WEBGL2_CORES_TO]],
+    hint: [
+      '在核心别名表后找 requiresWebGL2 使用的数组（当前含 ppsspp / azahar）；',
+      '把 melondsds 加进去，避免核心报告暂时 404 时误选不存在的 legacy 文件。',
     ],
   },
 ]

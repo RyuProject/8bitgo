@@ -67,6 +67,13 @@ if (!js.includes('this.functions.saveStateInfo()')) {
   )
 }
 
+if (!/m=\[[^\]]*"melondsds"[^\]]*\]/.test(js)) {
+  fail(
+    'emulator.min.js 没把 melondsds 列为强制 WebGL2 核心 —— 报告短暂 404 时会请求不存在的 legacy 文件',
+    'npm run ejspatch。melonDS DS 只发布 wasm 产物，不能让引擎回退到 melondsds-legacy-wasm.data',
+  )
+}
+
 if (!existsSync(join(dir, 'cores', 'fbneo-wasm.data'))) {
   fail(
     'public/emulatorjs/cores/ 里没有核心（至少 fbneo-wasm.data 该在）',

@@ -36,6 +36,14 @@ const asDir = (raw: string | undefined, fallback = ''): string => {
 export const EJS_PATH: string = asDir(import.meta.env.VITE_EJS_PATH, '/emulatorjs/')
 
 /**
+ * EmulatorJS 的文件名没有内容哈希，而 CDN 会缓存一个月。每次改自托管引擎或 loader
+ * 都要加一代，让浏览器和边缘不再把旧 JS 与新核心拼在一起。
+ */
+export const EJS_RUNTIME_GENERATION = '20260923-melondsds-webgl2'
+export const ejsRuntimeAsset = (name: string): string =>
+  `${EJS_PATH}${name}?v=${encodeURIComponent(EJS_RUNTIME_GENERATION)}`
+
+/**
  * Ruffle 的版本既进入 URL，也由构建检查和 npm 包互相校验。
  * wasm / glue 文件名不是稳定的内容哈希；把版本放进目录后，旧 CDN 缓存不会和新版混用。
  */

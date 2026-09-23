@@ -109,6 +109,11 @@ check('NDS 的默认值和历史值都硬切 melonDS DS，webretro 不再抢路�
   assert.equal(webretroCoreFor('nds'), undefined)
 })
 
+check('melonDS DS 即使核心报告暂时 404，也不会误选已删除的 legacy 产物', () => {
+  const engine = readFileSync(enginePath, 'utf8')
+  assert.match(engine, /m=\[[^\]]*"melondsds"[^\]]*\]/)
+})
+
 check('悬停预热使用真实核心文件名，不会请求平台别名 404', () => {
   for (const platform of platforms) {
     if (platform.runtime !== 'emulatorjs' || !platform.core) continue

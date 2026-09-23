@@ -68,7 +68,7 @@ import { isRomPackBytes, isRomPackUrl, unpackRomPackBlob } from '@/services/romP
  * 玩家看到的就是「Error loading EmulatorJS runtime」。本地有核心，这条路不会走。
  */
 export { EJS_PATH } from '../paths'
-import { EJS_PATH, emulatorJsCoreForGame, isDiscPlatform, isSelfDownloadPlatform } from '../paths'
+import { EJS_PATH, ejsRuntimeAsset, emulatorJsCoreForGame, isDiscPlatform, isSelfDownloadPlatform } from '../paths'
 import { applyTuning, sizeOfTrack, tuningFor, usableVideoSize } from '../videoTuning'
 import {
   findLayoutOption,
@@ -3032,6 +3032,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           EJS_gameUrl: gameUrl,
           EJS_gameName: engineGameName,
           EJS_pathtodata: EJS_PATH,
+          // 固定文件名会被 CDN 缓存一个月；显式版本化，避免旧引擎继续索取已删除的 NDS 核心。
+          EJS_paths: {
+            'emulator.min.js': ejsRuntimeAsset('emulator.min.js'),
+            'emulator.min.css': ejsRuntimeAsset('emulator.min.css'),
+          },
           /*
             平台级 BIOS。Neo Geo 这类平台不给就直接起不来；不需要 BIOS 的平台这里是空串。
 
@@ -3312,7 +3317,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
          */
         watchStart(win)
         if (destroyed) return
-        await injectScript(doc, `${EJS_PATH}loader.js`)
+        await injectScript(doc, ejsRuntimeAsset('loader.js'))
       } catch (error) {
         // 加载过程中被销毁的，别再往新会话上报错
         if (destroyed) return
