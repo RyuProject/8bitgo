@@ -15,6 +15,7 @@ import { extractRomFromZip, isZip } from '@/lib/unzip'
 import { assertNesRom } from '@/lib/romValidation'
 import { loadGameBytes } from '../romLoader'
 import { JSNES_MAPPERS, readNesMapper } from '../nesMapper'
+import { installJsnesSafeStop, probeJsnesStartup } from '../jsnesCompat'
 import { startGamepadInput, type GamepadInput } from '../gamepadInput'
 import { installPadKeyboard } from '../padKeyboard'
 import type { PadAction, Seat } from '@/services/padKeys'
@@ -139,6 +140,10 @@ interface JsnesFrameTimer {
 interface JsnesSpeakers {
   audioCtx?: AudioContext | null
   node?: AudioWorkletNode | null
+  /** 下面三项是 safe stop 对 jsnes 2.1.0 生命周期的最小镜像，升级包时由 test:jsnes 盯着 */
+  stop?: () => void
+  _removeResumeListeners?: () => void
+  batchPos?: number
   /** worklet 报缓冲区见底时调的回调。构造时装的那个会补两帧模拟，我们要换掉它 */
   onBufferUnderrun?: () => void
 }
@@ -217,6 +222,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
   /** 自己插进去的音量节点：jsnes 的 AudioWorklet 是直连 destination 的，中间没有增益 */
   let gain: GainNode | null = null
+  /** stop() 要据此判断能不能继续按上游写死的 destination 去 disconnect */
+  let audioRerouted = false
+  let speakerStopPatched = false
   let volume = 1
   const caps = new Set<Capability>()
 
@@ -401,6 +409,23 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     const node = speakers?.node
     if (destroyed || !speakers || !ctx || !node) return
 
+    if (!speakerStopPatched) {
+      installJsnesSafeStop(
+        speakers,
+        () => audioRerouted,
+        () => {
+          audioRerouted = false
+          try {
+            gain?.disconnect()
+          } catch {
+            /* context 已关时节点可能也已失效 */
+          }
+          gain = null
+        },
+      )
+      speakerStopPatched = true
+    }
+
     /**
      * AudioContext 得自己叫醒。
      *
@@ -461,23 +486,39 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       /* 旧的挂在已关闭的 context 上，断不开也无所谓 */
     }
     gain = null
+    audioRerouted = false
+    let g: GainNode | null = null
     try {
-      const g = ctx.createGain()
+      g = ctx.createGain()
       g.gain.value = volume
       node.disconnect()
       node.connect(g).connect(ctx.destination)
       gain = g
+      audioRerouted = true
       caps.add('volume')
       options.onCaps?.(caps)
     } catch {
+      // 改线若只做了一半，尽力恢复上游的直连；否则 safe stop 会误判，声音也会静默。
+      try {
+        node.disconnect()
+        node.connect(ctx.destination)
+      } catch {
+        /* context 已失效时只能等下一次 start 重建 */
+      }
+      try {
+        g?.disconnect()
+      } catch {
+        /* ignore */
+      }
       gain = null
+      audioRerouted = false
     }
   }
 
   void (async () => {
     try {
       options.onProgress?.({ phase: 'engine' })
-      const [{ Browser }, buf] = await Promise.all([import('jsnes'), readRom(options.game, options.onProgress, aborter.signal)])
+      const [{ Browser, NES }, buf] = await Promise.all([import('jsnes'), readRom(options.game, options.onProgress, aborter.signal)])
       options.onProgress?.({ phase: 'starting', ratio: 1 })
       if (destroyed) return
 
@@ -493,6 +534,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       const mapper = readNesMapper(buf)
       if (mapper !== null && !JSNES_MAPPERS.has(mapper)) {
         options.onUnsupported?.(`jsnes 未实现 mapper ${mapper}`)
+        return
+      }
+
+      const romData = toBinaryString(buf)
+      const startupError = probeJsnesStartup(NES, romData)
+      if (startupError) {
+        options.onUnsupported?.(`jsnes 开局自检失败：${startupError.message}`)
         return
       }
 
@@ -523,7 +571,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }) as unknown as JsnesBrowser
 
       try {
-        browser.loadROM(toBinaryString(buf))
+        browser.loadROM(romData)
       } catch (e) {
         const inst = browser
         browser = null
@@ -688,19 +736,20 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       padKeyboard = null
       gamepad?.stop()
       gamepad = null
+      // 先让 Browser.stop() 走 safe stop；若先手动断 gain，上游会再次按不存在的直连断开而抛错。
+      try {
+        browser?.destroy()
+      } catch {
+        /* 已经卸载过就忽略 */
+      }
       try {
         gain?.disconnect()
       } catch {
         /* ignore */
       }
       gain = null
-      try {
-        browser?.destroy()
-      } catch {
-        /* 已经卸载过就忽略 */
-      }
+      audioRerouted = false
       host.remove()
     },
   }
 }
-
