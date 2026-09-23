@@ -35,7 +35,7 @@ import { decompress as decompressZstd, init as initZstd } from '@bokuweb/zstd-wa
 import { unpackTarStream } from './tar-stream.js'
 
 const BASE = '/rodir/'
-const ASSET_VERSION = '20260923-zstd2'
+const ASSET_VERSION = '20260923-bots1'
 // 清单返回后会换成当前地图的真实压缩体积；这里仅用于清单到达前，避免进度条跳满。
 let expectedProgressBytes = 128 * 1024 * 1024
 const Q = new URLSearchParams(location.search)
@@ -43,9 +43,31 @@ const SUPPORTED_MAPS = new Set([
   'de_dust2', 'de_dust', 'de_inferno', 'de_nuke', 'de_aztec', 'de_train',
   'de_cbble', 'cs_office', 'cs_italy', 'cs_assault', 'cs_militia', 'de_vertigo',
 ])
-const requestedMap = Q.get('map') || document.getElementById('map')?.value || 'de_dust2'
+const DEFAULT_MAP = 'de_dust2'
+const DEFAULT_BOT_COUNT = 7
+const MAX_BOT_COUNT = 15
+
 // 查询参数最终会进入包路径和引擎参数；只接受已经打包并在页面公开的地图名。
-const MAP = SUPPORTED_MAPS.has(requestedMap) ? requestedMap : 'de_dust2'
+function selectedMap() {
+  const requested = Q.has('map') ? Q.get('map') : document.getElementById('map')?.value
+  return SUPPORTED_MAPS.has(requested) ? requested : DEFAULT_MAP
+}
+
+function parseBotCount(value) {
+  if (!/^\d{1,2}$/.test(String(value ?? ''))) return DEFAULT_BOT_COUNT
+  const count = Number(value)
+  return Number.isInteger(count) && count >= 0 && count <= MAX_BOT_COUNT ? count : DEFAULT_BOT_COUNT
+}
+
+function selectedBotCount() {
+  const requested = Q.has('bots') ? Q.get('bots') : document.getElementById('bots')?.value
+  return parseBotCount(requested)
+}
+
+// 自动启动链接也要让控件显示真实配置，方便问题现场一眼看出这局加载了什么。
+const queryMap = Q.get('map')
+if (SUPPORTED_MAPS.has(queryMap)) document.getElementById('map').value = queryMap
+if (Q.has('bots')) document.getElementById('bots').value = String(parseBotCount(Q.get('bots')))
 // 队伍选择 / 购买是 VGUI 菜单，CS 必须选队才会 spawn。留 ?vgui=0 便于对照排查。
 const VGUI_MENUS = Q.get('vgui') || '1'
 const USE_NEW_LIBS = Q.get('client') === 'new'
@@ -77,7 +99,7 @@ const ENGINE = `${ASSET_ROOT}/engine/dist`
 const LIB = `${ASSET_ROOT}/lib`
 // lib/ 下有 cstrike/ 与 valve/ 两套 dll；lib-new/cstrike 是官方 0.0.2（只有 cstrike）
 const CS = USE_NEW_LIBS ? `${ASSET_ROOT}/lib-new/cstrike` : `${LIB}/cstrike`
-const SERVER_LIB = USE_NEW_LIBS
+const GAME_SERVER_LIB = USE_NEW_LIBS
   ? 'dlls/cs_emscripten_wasm32.so'
   : 'dlls/cs_emscripten_wasm32.wasm'
 const versioned = (url) => url + (url.includes('?') ? '&' : '?') + 'v=' + ASSET_VERSION
@@ -362,9 +384,15 @@ const LIB_FILES = {
   'cl_dlls/client_emscripten_wasm32.wasm': `${CS}/cl_dlls/client_emscripten_wasm32.wasm`,
   'dlls/cs_emscripten_wasm32.wasm': `${CS}/dlls/cs_emscripten_wasm32.wasm`,
   'dlls/mp_emscripten_wasm32.wasm': `${CS}/dlls/cs_emscripten_wasm32.wasm`,
+  // YaPB 的 Emscripten 独立模式在没有 launcher 环境变量时，会回退到游戏目录下查找此路径。
+  'cstrike/dlls/cs_emscripten_wasm32.wasm': `${CS}/dlls/cs_emscripten_wasm32.wasm`,
   'dlls/yapb_emscripten_wasm32.wasm': `${LIB}/cstrike/dlls/yapb_emscripten_wasm32.wasm`,
+  'cstrike/dlls/yapb_emscripten_wasm32.wasm': `${LIB}/cstrike/dlls/yapb_emscripten_wasm32.wasm`,
 }
-if (USE_NEW_LIBS) LIB_FILES['dlls/cs_emscripten_wasm32.so'] = `${CS}/dlls/cs_emscripten_wasm32.so`
+if (USE_NEW_LIBS) {
+  LIB_FILES['dlls/cs_emscripten_wasm32.so'] = `${CS}/dlls/cs_emscripten_wasm32.so`
+  LIB_FILES['cstrike/dlls/cs_emscripten_wasm32.so'] = `${CS}/dlls/cs_emscripten_wasm32.so`
+}
 
 /**
  * locateFile：引擎要的每个库都指到自托管地址。
@@ -399,7 +427,7 @@ const LIBS_MAP = {
   xash: versioned(`${ENGINE}/xash.wasm`),
   menu: versioned(`${CS}/cl_dlls/menu_emscripten_wasm32.wasm`),
   client: versioned(`${CS}/cl_dlls/client_emscripten_wasm32.wasm`),
-  server: versioned(`${CS}/${SERVER_LIB}`),
+  server: versioned(`${CS}/${GAME_SERVER_LIB}`),
   render: {
     // 1.2.2 里 gles3compat 与 gl4es 是同一个文件（见 engine/dist/constants.js）
     gl4es: versioned(`${ENGINE}/libref_webgl2.wasm`),
@@ -585,9 +613,9 @@ function ensureBinds(xash) {
     'bind 1 slot1', 'bind 2 slot2', 'bind 3 slot3',
     'bind 4 slot4', 'bind 5 slot5', 'bind 6 slot6',
     'hud_fastswitch 1',
-    // 机器人（yapb wasm）：控制台加/减 bot
-    'alias addbot "bot_add"',
-    'alias delbot "bot_kill"',
+    // YaPB 的服务端命令以 yb 开头；旧的 bot_add/bot_kill 是另一套 Bot API，在这里无效。
+    'alias addbot "yb add"',
+    'alias delbot "yb kick"',
   ].join('\n') + '\n'
   const buf = new TextEncoder().encode(cfg)
   for (const dir of ['', 'cstrike/', 'valve/']) {
@@ -596,11 +624,65 @@ function ensureBinds(xash) {
   mark('键位绑定就位 (autoexec.cfg)')
 }
 
+/**
+ * 在地图级配置里精确覆盖 extras.pk3 自带的 9 Bot 默认值。
+ * 地图级配置由 YaPB 在图数据加载前执行；画面出来后还会再设一次 cvar，抵御不同引擎版本的
+ * ServerCommand 队列时序差异。
+ */
+function configureBots(xash, map, count) {
+  const FS = xash.em.FS
+  const liblistPath = `${BASE}cstrike/liblist.gam`
+  const decoder = new TextDecoder()
+  const encoder = new TextEncoder()
+  const originalLiblist = decoder.decode(FS.readFile(liblistPath))
+  // Xash 在 Emscripten 上以 gamedll_linux 的 basename 推导
+  // yapb_emscripten_wasm32.wasm；只预加载 YaPB 并不会改变实际 GameDLL。
+  const patchedLiblist = originalLiblist.replace(
+    /^gamedll_linux\s+"[^"]+"\s*$/m,
+    'gamedll_linux "dlls/yapb.so"',
+  )
+  if (patchedLiblist === originalLiblist) throw new Error('cstrike/liblist.gam 缺少 gamedll_linux，无法启用 YaPB')
+  FS.writeFile(liblistPath, encoder.encode(patchedLiblist))
+
+  const mapConfig = [
+    '// 由 8BitGo 启动界面生成；覆盖 YaPB 包内固定的 9 Bot 默认值。',
+    'yb_quota_mode "normal"',
+    `yb_quota "${count}"`,
+    'yb_autovacate "0"',
+    'yb_kick_after_player_connect "0"',
+    'yb_join_after_player "0"',
+    'yb_join_team "any"',
+    'yb_join_delay "1.0"',
+  ].join('\n') + '\n'
+  const configDir = `${BASE}cstrike/addons/yapb/conf/maps`
+  FS.mkdirTree(configDir)
+  FS.writeFile(`${configDir}/${map}.cfg`, encoder.encode(mapConfig))
+  window.__probe.info.botCount = count
+  window.__probe.info.botGameDll = `${BASE}cstrike/${GAME_SERVER_LIB}`
+  mark('BOT 配置就位', count ? `${count} 个 YaPB` : '不加入 BOT')
+}
+
+function enforceBotCount(xash, count) {
+  xash.Cmd_ExecuteString([
+    'yb_quota_mode normal',
+    'yb_autovacate 0',
+    'yb_kick_after_player_connect 0',
+    'yb_join_after_player 0',
+    `yb_quota ${count}`,
+  ].join(';'))
+}
+
 async function start() {
   if (started) return
   started = true
   const startButton = $('start')
   if (startButton) startButton.disabled = true
+  const mapSelect = $('map')
+  const botSelect = $('bots')
+  if (mapSelect) mapSelect.disabled = true
+  if (botSelect) botSelect.disabled = true
+  const map = selectedMap()
+  const botCount = selectedBotCount()
   const overlay = $('overlay'); if (overlay) overlay.classList.remove('hidden')
   const canvasEl = $('canvas')
   if (!(canvasEl instanceof HTMLCanvasElement)) throw new Error('游戏画布不存在，页面文件可能不完整')
@@ -643,12 +725,12 @@ async function start() {
     '+exec', 'autoexec.cfg',
     // CS 必须选队伍才会 spawn；队伍选择 / 购买是 VGUI 菜单，显式开启。
     '+_vgui_menus', VGUI_MENUS,
-    ...(MAP ? ['+map', MAP] : []),
+    ...(map ? ['+map', map] : []),
   ]
   window.__probe.args = args
 
   // 先取 14KB 清单并预热基础包/地图首片，让 R2 握手和引擎初始化并行。
-  const wanted = ['base', `maps/${MAP}`]
+  const wanted = ['base', `maps/${map}`]
   const packWarmup = FORCE_GZIP
     ? Promise.resolve(null)
     : prepareZstdPacks(wanted).catch((error) => {
@@ -659,6 +741,9 @@ async function start() {
   const xash = new Xash3D({
     module: {
       arguments: args,
+      // YaPB 是 GameDLL 代理层，必须由它再加载真正的 CS 服务端库。使用绝对 MEMFS 路径，
+      // 避免 Xash/side-module 对当前工作目录认知不一致时误报“不支持 cstrike”。
+      ENV: { XASH3D_GAMELIBPATH: `${BASE}cstrike/${GAME_SERVER_LIB}` },
       print: (s) => { window.__probe.log.push(s); log(s) },
       printErr: (s) => { window.__probe.log.push('[err] ' + s); log('[err] ' + s, 'err') },
       locateFile,
@@ -691,19 +776,24 @@ async function start() {
   window.__probe.info.assetCount = files
   window.__probe.info.assetBytes = raw
 
-  // extras.pk3 是随库分发的那份（lib/cstrike/extras.pk3，25MB），不是引擎包里那个小的
+  // extras.pk3 是 cstrike 的游戏包（含 YaPB 配置、导航图和语音），必须放进 cstrike/。
+  // 放在 /rodir 根目录时 Xash 不会把它加入 cstrike 搜索路径，表面能进图但 Bot 永远找不到 graph。
   const extras = await fetchBytes(`${LIB}/cstrike/extras.pk3?v=${ASSET_VERSION}`, 'CS 客户端 extras.pk3')
   if (!(extras[0] === 0x50 && extras[1] === 0x4b)) throw new Error('extras.pk3 不是有效 ZIP')
-  xash.em.FS.writeFile(BASE + 'extras.pk3', extras)
+  xash.em.FS.mkdirTree(BASE + 'cstrike')
+  xash.em.FS.writeFile(BASE + 'cstrike/extras.pk3', extras)
   mark('extras.pk3 就位')
 
   await loadHudFont(xash)
   ensureBinds(xash)
+  configureBots(xash, map, botCount)
 
   xash.em.FS.chdir(BASE)
   xash.main()
   mark('引擎主循环启动')
   await waitForFirstFrame(canvasEl, xash)
+  // YaPB 已完成 GameDLL/地图初始化；再次执行能保证最终数量严格等于启动页选择值。
+  enforceBotCount(xash, botCount)
   firstFrameReady = true
   mark('游戏画面就绪')
   if (overlay) overlay.classList.add('hidden')

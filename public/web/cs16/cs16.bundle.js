@@ -12690,7 +12690,7 @@ ${e}`);
       abort("Please compile your program with async support in order to use asynchronous operations like emscripten_wget_data");
     };
     _emscripten_wget_data.sig = "vpppp";
-    var ENV = {};
+    var ENV = Module["ENV"] ?? {};
     var getEnvStrings = () => {
       if (!getEnvStrings.strings) {
         var lang = (globalThis.navigator?.language ?? "C").replace("-", "_") + ".UTF-8";
@@ -17543,7 +17543,7 @@ async function unpackTarStream(stream, onFile, onProgress) {
 
 // public/web/cs16/cs16.js
 var BASE = "/rodir/";
-var ASSET_VERSION = "20260923-zstd2";
+var ASSET_VERSION = "20260923-bots1";
 var expectedProgressBytes = 128 * 1024 * 1024;
 var Q = new URLSearchParams(location.search);
 var SUPPORTED_MAPS = /* @__PURE__ */ new Set([
@@ -17560,8 +17560,25 @@ var SUPPORTED_MAPS = /* @__PURE__ */ new Set([
   "cs_militia",
   "de_vertigo"
 ]);
-var requestedMap = Q.get("map") || document.getElementById("map")?.value || "de_dust2";
-var MAP = SUPPORTED_MAPS.has(requestedMap) ? requestedMap : "de_dust2";
+var DEFAULT_MAP = "de_dust2";
+var DEFAULT_BOT_COUNT = 7;
+var MAX_BOT_COUNT = 15;
+function selectedMap() {
+  const requested = Q.has("map") ? Q.get("map") : document.getElementById("map")?.value;
+  return SUPPORTED_MAPS.has(requested) ? requested : DEFAULT_MAP;
+}
+function parseBotCount(value) {
+  if (!/^\d{1,2}$/.test(String(value ?? ""))) return DEFAULT_BOT_COUNT;
+  const count = Number(value);
+  return Number.isInteger(count) && count >= 0 && count <= MAX_BOT_COUNT ? count : DEFAULT_BOT_COUNT;
+}
+function selectedBotCount() {
+  const requested = Q.has("bots") ? Q.get("bots") : document.getElementById("bots")?.value;
+  return parseBotCount(requested);
+}
+var queryMap = Q.get("map");
+if (SUPPORTED_MAPS.has(queryMap)) document.getElementById("map").value = queryMap;
+if (Q.has("bots")) document.getElementById("bots").value = String(parseBotCount(Q.get("bots")));
 var VGUI_MENUS = Q.get("vgui") || "1";
 var USE_NEW_LIBS = Q.get("client") === "new";
 var PAGE_ROOT = new URL("./", document.baseURI);
@@ -17575,7 +17592,7 @@ var FORCE_GZIP_ROOT = Q.has("packsroot") ? PACKS_ROOT : LEGACY_PACKS_ROOT;
 var ENGINE = `${ASSET_ROOT}/engine/dist`;
 var LIB = `${ASSET_ROOT}/lib`;
 var CS = USE_NEW_LIBS ? `${ASSET_ROOT}/lib-new/cstrike` : `${LIB}/cstrike`;
-var SERVER_LIB = USE_NEW_LIBS ? "dlls/cs_emscripten_wasm32.so" : "dlls/cs_emscripten_wasm32.wasm";
+var GAME_SERVER_LIB = USE_NEW_LIBS ? "dlls/cs_emscripten_wasm32.so" : "dlls/cs_emscripten_wasm32.wasm";
 var versioned = (url) => url + (url.includes("?") ? "&" : "?") + "v=" + ASSET_VERSION;
 var $ = (id) => document.getElementById(id);
 var t0 = performance.now();
@@ -17832,9 +17849,15 @@ var LIB_FILES = {
   "cl_dlls/client_emscripten_wasm32.wasm": `${CS}/cl_dlls/client_emscripten_wasm32.wasm`,
   "dlls/cs_emscripten_wasm32.wasm": `${CS}/dlls/cs_emscripten_wasm32.wasm`,
   "dlls/mp_emscripten_wasm32.wasm": `${CS}/dlls/cs_emscripten_wasm32.wasm`,
-  "dlls/yapb_emscripten_wasm32.wasm": `${LIB}/cstrike/dlls/yapb_emscripten_wasm32.wasm`
+  // YaPB 的 Emscripten 独立模式在没有 launcher 环境变量时，会回退到游戏目录下查找此路径。
+  "cstrike/dlls/cs_emscripten_wasm32.wasm": `${CS}/dlls/cs_emscripten_wasm32.wasm`,
+  "dlls/yapb_emscripten_wasm32.wasm": `${LIB}/cstrike/dlls/yapb_emscripten_wasm32.wasm`,
+  "cstrike/dlls/yapb_emscripten_wasm32.wasm": `${LIB}/cstrike/dlls/yapb_emscripten_wasm32.wasm`
 };
-if (USE_NEW_LIBS) LIB_FILES["dlls/cs_emscripten_wasm32.so"] = `${CS}/dlls/cs_emscripten_wasm32.so`;
+if (USE_NEW_LIBS) {
+  LIB_FILES["dlls/cs_emscripten_wasm32.so"] = `${CS}/dlls/cs_emscripten_wasm32.so`;
+  LIB_FILES["cstrike/dlls/cs_emscripten_wasm32.so"] = `${CS}/dlls/cs_emscripten_wasm32.so`;
+}
 var locateFile2 = (path) => {
   const map = {
     "xash.wasm": `${ENGINE}/xash.wasm`,
@@ -17862,7 +17885,7 @@ var LIBS_MAP = {
   xash: versioned(`${ENGINE}/xash.wasm`),
   menu: versioned(`${CS}/cl_dlls/menu_emscripten_wasm32.wasm`),
   client: versioned(`${CS}/cl_dlls/client_emscripten_wasm32.wasm`),
-  server: versioned(`${CS}/${SERVER_LIB}`),
+  server: versioned(`${CS}/${GAME_SERVER_LIB}`),
   render: {
     // 1.2.2 里 gles3compat 与 gl4es 是同一个文件（见 engine/dist/constants.js）
     gl4es: versioned(`${ENGINE}/libref_webgl2.wasm`),
@@ -18024,9 +18047,9 @@ function ensureBinds(xash) {
     "bind 5 slot5",
     "bind 6 slot6",
     "hud_fastswitch 1",
-    // 机器人（yapb wasm）：控制台加/减 bot
-    'alias addbot "bot_add"',
-    'alias delbot "bot_kill"'
+    // YaPB 的服务端命令以 yb 开头；旧的 bot_add/bot_kill 是另一套 Bot API，在这里无效。
+    'alias addbot "yb add"',
+    'alias delbot "yb kick"'
   ].join("\n") + "\n";
   const buf = new TextEncoder().encode(cfg);
   for (const dir of ["", "cstrike/", "valve/"]) {
@@ -18037,11 +18060,55 @@ function ensureBinds(xash) {
   }
   mark("\u952E\u4F4D\u7ED1\u5B9A\u5C31\u4F4D (autoexec.cfg)");
 }
+function configureBots(xash, map, count) {
+  const FS2 = xash.em.FS;
+  const liblistPath = `${BASE}cstrike/liblist.gam`;
+  const decoder2 = new TextDecoder();
+  const encoder = new TextEncoder();
+  const originalLiblist = decoder2.decode(FS2.readFile(liblistPath));
+  const patchedLiblist = originalLiblist.replace(
+    /^gamedll_linux\s+"[^"]+"\s*$/m,
+    'gamedll_linux "dlls/yapb.so"'
+  );
+  if (patchedLiblist === originalLiblist) throw new Error("cstrike/liblist.gam \u7F3A\u5C11 gamedll_linux\uFF0C\u65E0\u6CD5\u542F\u7528 YaPB");
+  FS2.writeFile(liblistPath, encoder.encode(patchedLiblist));
+  const mapConfig = [
+    "// \u7531 8BitGo \u542F\u52A8\u754C\u9762\u751F\u6210\uFF1B\u8986\u76D6 YaPB \u5305\u5185\u56FA\u5B9A\u7684 9 Bot \u9ED8\u8BA4\u503C\u3002",
+    'yb_quota_mode "normal"',
+    `yb_quota "${count}"`,
+    'yb_autovacate "0"',
+    'yb_kick_after_player_connect "0"',
+    'yb_join_after_player "0"',
+    'yb_join_team "any"',
+    'yb_join_delay "1.0"'
+  ].join("\n") + "\n";
+  const configDir = `${BASE}cstrike/addons/yapb/conf/maps`;
+  FS2.mkdirTree(configDir);
+  FS2.writeFile(`${configDir}/${map}.cfg`, encoder.encode(mapConfig));
+  window.__probe.info.botCount = count;
+  window.__probe.info.botGameDll = `${BASE}cstrike/${GAME_SERVER_LIB}`;
+  mark("BOT \u914D\u7F6E\u5C31\u4F4D", count ? `${count} \u4E2A YaPB` : "\u4E0D\u52A0\u5165 BOT");
+}
+function enforceBotCount(xash, count) {
+  xash.Cmd_ExecuteString([
+    "yb_quota_mode normal",
+    "yb_autovacate 0",
+    "yb_kick_after_player_connect 0",
+    "yb_join_after_player 0",
+    `yb_quota ${count}`
+  ].join(";"));
+}
 async function start2() {
   if (started) return;
   started = true;
   const startButton = $("start");
   if (startButton) startButton.disabled = true;
+  const mapSelect = $("map");
+  const botSelect = $("bots");
+  if (mapSelect) mapSelect.disabled = true;
+  if (botSelect) botSelect.disabled = true;
+  const map = selectedMap();
+  const botCount = selectedBotCount();
   const overlay = $("overlay");
   if (overlay) overlay.classList.remove("hidden");
   const canvasEl = $("canvas");
@@ -18082,10 +18149,10 @@ async function start2() {
     // CS 必须选队伍才会 spawn；队伍选择 / 购买是 VGUI 菜单，显式开启。
     "+_vgui_menus",
     VGUI_MENUS,
-    ...MAP ? ["+map", MAP] : []
+    ...map ? ["+map", map] : []
   ];
   window.__probe.args = args2;
-  const wanted = ["base", `maps/${MAP}`];
+  const wanted = ["base", `maps/${map}`];
   const packWarmup = FORCE_GZIP ? Promise.resolve(null) : prepareZstdPacks(wanted).catch((error) => {
     log(`\u26A0\uFE0F Zstd \u9884\u70ED\u5931\u8D25\uFF0C\u7A0D\u540E\u4F1A\u5C1D\u8BD5\u5907\u7528\u5305\uFF1A${error}`, "err");
     return null;
@@ -18093,6 +18160,9 @@ async function start2() {
   const xash = new Xash3D2({
     module: {
       arguments: args2,
+      // YaPB 是 GameDLL 代理层，必须由它再加载真正的 CS 服务端库。使用绝对 MEMFS 路径，
+      // 避免 Xash/side-module 对当前工作目录认知不一致时误报“不支持 cstrike”。
+      ENV: { XASH3D_GAMELIBPATH: `${BASE}cstrike/${GAME_SERVER_LIB}` },
       print: (s2) => {
         window.__probe.log.push(s2);
         log(s2);
@@ -18129,14 +18199,17 @@ async function start2() {
   window.__probe.info.assetBytes = raw;
   const extras = await fetchBytes(`${LIB}/cstrike/extras.pk3?v=${ASSET_VERSION}`, "CS \u5BA2\u6237\u7AEF extras.pk3");
   if (!(extras[0] === 80 && extras[1] === 75)) throw new Error("extras.pk3 \u4E0D\u662F\u6709\u6548 ZIP");
-  xash.em.FS.writeFile(BASE + "extras.pk3", extras);
+  xash.em.FS.mkdirTree(BASE + "cstrike");
+  xash.em.FS.writeFile(BASE + "cstrike/extras.pk3", extras);
   mark("extras.pk3 \u5C31\u4F4D");
   await loadHudFont(xash);
   ensureBinds(xash);
+  configureBots(xash, map, botCount);
   xash.em.FS.chdir(BASE);
   xash.main();
   mark("\u5F15\u64CE\u4E3B\u5FAA\u73AF\u542F\u52A8");
   await waitForFirstFrame(canvasEl, xash);
+  enforceBotCount(xash, botCount);
   firstFrameReady = true;
   mark("\u6E38\u620F\u753B\u9762\u5C31\u7EEA");
   if (overlay) overlay.classList.add("hidden");

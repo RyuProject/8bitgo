@@ -1,5 +1,5 @@
 {
-  "assetVersion": "20260923-zstd2",
+  "assetVersion": "20260923-bots1",
   "files": [
     {
       "name": "PACKS.md",
@@ -8,13 +8,13 @@
     },
     {
       "name": "cs16.bundle.js",
-      "size": 737987,
-      "sha256": "35fb96b4cc44fc579c987575fc819f29ebde8d088f593da758b0f24862be9dd1"
+      "size": 741407,
+      "sha256": "a27c516e7737ee1660054d2f52e55e471e68de93048c3776420c69d96b19718e"
     },
     {
       "name": "cs16.js",
-      "size": 33284,
-      "sha256": "10c9837d1dc1dbb91da98b11fb189c1b772d838813bd03506d040512eed8c45c"
+      "size": 37310,
+      "sha256": "61a26c1294309eed2403f7b575fc2c5251f4827154d22fbcbcd504445c7bc218"
     },
     {
       "name": "engine/dist/constants.js",
@@ -28,8 +28,8 @@
     },
     {
       "name": "engine/dist/generated/xash.js",
-      "size": 712396,
-      "sha256": "ebc1ddf67439e47a85f0515123b49214e6766ad562773dafc163105e5d46049a"
+      "size": 712611,
+      "sha256": "36b5ae2558451284a88871e002f7f1eb92cdfdf96ed998df555273a70dff59d5"
     },
     {
       "name": "engine/dist/index.js",
@@ -118,8 +118,8 @@
     },
     {
       "name": "index.html",
-      "size": 4443,
-      "sha256": "37fc97e44dfa42a829ac198e4284aa23b3c32172c3048e993bc097ac120576b9"
+      "size": 5749,
+      "sha256": "7647e9cc52f61057368e4d553f949c0e58415dac973bcc51068c075a3a2c92b7"
     },
     {
       "name": "lib-new/cstrike/cl_dlls/client_emscripten_wasm32.wasm",

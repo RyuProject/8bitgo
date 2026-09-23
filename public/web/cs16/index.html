@@ -31,9 +31,12 @@
       #log .err { color: #ff6b6b; }
       #errbox { color: #ff8a80; max-width: 620px; white-space: pre-wrap; }
       .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: center; }
+      .field { display: inline-flex; gap: 8px; align-items: center; }
       select, button { font: inherit; padding: 6px 12px; border-radius: 8px; border: 1px solid #2a3744; background: #141c24; color: #e6e6e6; }
       button { cursor: pointer; }
       button:hover { background: #1c2731; }
+      button:disabled, select:disabled { cursor: wait; opacity: .65; }
+      #bot-hint { opacity: .62; font-size: 12px; }
       #hud { position: absolute; top: 8px; left: 8px; font: 12px ui-monospace, monospace; opacity: .55; pointer-events: none; }
     </style>
   </head>
@@ -44,9 +47,9 @@
         <div id="hud"></div>
         <div id="overlay">
           <div id="title">Counter-Strike 1.6 · 网页版</div>
-          <div id="sub">Xash3D-FWGS (WebAssembly) 引擎运行 CS1.6，内置 12 张经典地图。资源使用 Zstd 分片压缩，会边下载、边校验、边写入游戏盘。进图后按 ~ 打开控制台。</div>
+          <div id="sub">Xash3D-FWGS (WebAssembly) 引擎运行 CS1.6，内置 12 张经典地图和 YaPB 机器人。资源使用 Zstd 分片压缩，会边下载、边校验、边写入游戏盘。进图后按 ~ 打开控制台。</div>
           <div class="row">
-            <label>地图
+            <label class="field">地图
               <select id="map">
                 <option value="de_dust2">de_dust2</option>
                 <option value="de_dust">de_dust</option>
@@ -62,8 +65,29 @@
                 <option value="de_vertigo">de_vertigo</option>
               </select>
             </label>
+            <label class="field">BOT
+              <select id="bots">
+                <option value="0">0 个（纯单人）</option>
+                <option value="1">1 个</option>
+                <option value="2">2 个</option>
+                <option value="3">3 个</option>
+                <option value="4">4 个</option>
+                <option value="5">5 个</option>
+                <option value="6">6 个</option>
+                <option value="7" selected>7 个（推荐）</option>
+                <option value="8">8 个</option>
+                <option value="9">9 个</option>
+                <option value="10">10 个</option>
+                <option value="11">11 个</option>
+                <option value="12">12 个</option>
+                <option value="13">13 个</option>
+                <option value="14">14 个</option>
+                <option value="15">15 个（高负载）</option>
+              </select>
+            </label>
             <button id="start">开始</button>
           </div>
+          <div id="bot-hint">玩家 + 7 个 BOT 正好组成经典 4 对 4；移动设备建议不超过 7 个。</div>
           <div id="bar"><i></i></div>
           <div id="phase">待开始</div>
           <div id="net"></div>
@@ -77,6 +101,6 @@
       「目录 + 无扩展名」的裸模块写法，原生 ESM 解析不了（dev 会兜底成根 index.html）。
       官方 raw.js 那条路在本引擎版本（1.2.2）上会卡在版本检查，详见 cs16.js 头注释。
     -->
-    <script type="module" src="./cs16.bundle.js?v=20260923-zstd2"></script>
+    <script type="module" src="./cs16.bundle.js?v=20260923-bots1"></script>
   </body>
 </html>

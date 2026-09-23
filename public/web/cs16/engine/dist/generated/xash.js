@@ -8565,7 +8565,9 @@ var Xash3D = (() => {
         _emscripten_sleep.sig = "vi";
         var _emscripten_wget_data = (url, pbuffer, pnum, perror) => { abort("Please compile your program with async support in order to use asynchronous operations like emscripten_wget_data"); };
         _emscripten_wget_data.sig = "vpppp";
-        var ENV = {};
+        // 启动器需要给 Emscripten 侧模块传运行环境变量；否则 YaPB 无法通过
+        // XASH3D_GAMELIBPATH 找到被它代理的 CS GameDLL，只会在开图时主动终止。
+        var ENV = Module["ENV"] ?? {};
         var getEnvStrings = () => { if (!getEnvStrings.strings) {
             var lang = (globalThis.navigator?.language ?? "C").replace("-", "_") + ".UTF-8";
             var env = { USER: "web_user", LOGNAME: "web_user", PATH: "/", PWD: "/", HOME: "/home/web_user", LANG: lang, _: getExecutableName() };

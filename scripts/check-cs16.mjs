@@ -121,6 +121,25 @@ if (new URL('./cs16.bundle.js', productionBase).pathname !== '/web/cs16/cs16.bun
 if (index.includes('src="./cs16.js')) fail('index.html 仍在直接加载无法被浏览器解析的源码')
 if (!source.includes("const PAGE_ROOT = new URL('./', document.baseURI)")) fail('cs16.js 没从 document.baseURI 计算资源根')
 if (source.includes("new URL('./', location.href)")) fail('cs16.js 仍会在无尾斜杠页面把资源根算成 /web/')
+if (!index.includes('<select id="bots">') || !index.includes('<option value="7" selected>')) {
+  fail('开始界面缺少默认 7 人的 BOT 数量选择')
+}
+if (!source.includes("'cstrike/dlls/cs_emscripten_wasm32.wasm'") || !source.includes("'cstrike/dlls/yapb_emscripten_wasm32.wasm'") || !source.includes('\'gamedll_linux "dlls/yapb.so"\'')) {
+  fail('liblist.gam 没有通过 YaPB 代理接入 cstrike/dlls 下真正的 CS 服务端库')
+}
+if (!source.includes('ENV: { XASH3D_GAMELIBPATH: `${BASE}cstrike/${GAME_SERVER_LIB}` }')) {
+  fail('没有把真正的 CS GameDLL 绝对路径传给 YaPB')
+}
+const generatedXash = readFileSync(join(publicDir, 'engine/dist/generated/xash.js'), 'utf8')
+if (!generatedXash.includes('var ENV = Module["ENV"] ?? {};')) {
+  fail('Xash Emscripten 封装没有接收启动器环境变量，YaPB 会在开图时终止')
+}
+if (!source.includes('yb_quota_mode "normal"') || !source.includes('yb_autovacate "0"') || !source.includes('`yb_quota "${count}"`')) {
+  fail('BOT 数量没有通过地图级配置精确覆盖 YaPB 默认值')
+}
+if (source.includes('alias addbot "bot_add"') || source.includes('alias delbot "bot_kill"')) {
+  fail('autoexec.cfg 仍在使用非 YaPB 的无效 BOT 命令')
+}
 
 const required = [
   'index.html',
@@ -143,6 +162,17 @@ const required = [
   'gfx/fonts/FiraSans-Regular.ttf',
 ]
 for (const name of required) if (!existsSync(join(publicDir, name))) fail(`缺少 public/web/cs16/${name}`)
+
+// 没有导航图时 YaPB 会拒绝创建 Bot；每张启动页地图都必须在同一份 extras.pk3 里有图。
+let extrasEntries
+try {
+  extrasEntries = new Set(execFileSync('unzip', ['-Z1', join(publicDir, 'lib/cstrike/extras.pk3')], { encoding: 'utf8' }).trim().split('\n'))
+} catch (error) {
+  fail(`无法读取 extras.pk3：${error}`)
+}
+for (const map of ['de_dust2', 'de_dust', 'de_inferno', 'de_nuke', 'de_aztec', 'de_train', 'de_cbble', 'cs_office', 'cs_italy', 'cs_assault', 'cs_militia', 'de_vertigo']) {
+  if (!extrasEntries.has(`addons/yapb/data/graph/${map}.graph`)) fail(`extras.pk3 缺少 ${map} 的 YaPB 导航图`)
+}
 
 /* 源码和 bundle 必须逐字节对应；只改 cs16.js 忘记重打包，是这类独立页最常见的线上漂移。 */
 const temp = mkdtempSync(join(tmpdir(), '8bitgo-cs16-check-'))
@@ -211,5 +241,8 @@ if (!xashGlue.includes('requestedSize > 536870912') || !xashGlue.includes('retur
 if (!source.includes('https://assets.8bitgo.com/web/cs16/zstd-v1/')) fail('生产 Zstd 包没有指向 R2 自定义域名')
 if (!source.includes("crypto.subtle.digest('SHA-256'")) fail('Zstd 分片缺 SHA-256 完整性校验')
 if (!source.includes('chunkPromises.delete(chunk.compressedSha256)')) fail('Zstd 解压缓存不会释放，整包会常驻 JS 堆')
+if (!source.includes("FS.writeFile(BASE + 'cstrike/extras.pk3', extras)")) {
+  fail('extras.pk3 没放进 cstrike 搜索路径，YaPB 配置和导航图不会被挂载')
+}
 
 console.log(`✔ CS16 ${assetVersion} ${distMode ? '部署产物' : '公开目录'}完整（${manifest.files.length} 个文件）`)
