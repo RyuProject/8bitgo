@@ -15,6 +15,7 @@ const useDist = process.argv.includes('--dist')
 const root = useDist ? resolve(repo, 'dist/client/web/PvZ') : resolve(repo, 'public/web/PvZ')
 const sourceRoot = resolve(repo, 'public/web/PvZ')
 const html5AdapterPath = resolve(repo, 'src/emulator/adapters/html5.ts')
+const emulatorToolsPath = resolve(repo, 'src/emulator/EmulatorTools.tsx')
 const snippet = readFileSync(resolve(repo, 'scripts/pvz-web/autoplay-snippet.html'), 'utf8')
 const START = '<!-- PvZ_AUTOPLAY_START -->'
 const END = '<!-- PvZ_AUTOPLAY_INJECTED -->'
@@ -28,6 +29,14 @@ if (existsSync(html5AdapterPath)) {
   const html5Adapter = text(html5AdapterPath)
   ok(html5Adapter.includes("const PVZ_SHELL_VERSION = '20260923-save2'"), 'HTML5 播放器没有锁定当前 PvZ 外壳版本')
   ok(html5Adapter.includes('iframe.src = versionHtml5Entry(options.game)'), 'HTML5 播放器没有给 PvZ 入口补发布代次')
+}
+
+if (existsSync(emulatorToolsPath)) {
+  const tools = text(emulatorToolsPath)
+  const guard = 'if (!props.handle || props.caps.size === 0) return null'
+  const ready = 'function ReadyEmulatorTools('
+  ok(tools.includes(guard) && tools.indexOf(guard) < tools.indexOf(ready), '工具栏能力晚到保护不在无 Hook 外壳中')
+  ok(!tools.slice(tools.indexOf(ready)).includes('if (!handle || caps.size === 0) return null'), '工具栏又在 Hook 中途提前返回，会触发 React #310 白屏')
 }
 
 function extractSnippet(html) {

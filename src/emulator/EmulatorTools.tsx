@@ -88,8 +88,22 @@ function timeAgo(ts: number, lang: string): string {
 const BTN = 'inline-flex h-7 min-w-7 items-center justify-center gap-1 rounded-md border border-line px-1.5 text-muted transition-colors hover:border-brand hover:text-fg disabled:opacity-40'
 const BTN_ON = 'border-brand bg-brand-soft text-brand-hover'
 
-export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSaveHint,
-  screenLayout, stageRef, onRestart, saveRequest = 0, className }: Props) {
+/**
+ * 能力可能晚于游戏画面就绪才上报（HTML5 存档桥就是这样）。
+ *
+ * 把“还没能力就不画工具栏”的判断留在一个**不使用 Hook 的外壳**里；Ready 组件一旦挂载，
+ * 每次渲染都会完整执行同一组 Hook。以前直接在主组件中途 return，后面还有快捷键 useEffect，
+ * caps 从空集合变成 saveState 时就会触发 React #310，整个播放器白屏。
+ */
+export function EmulatorTools(props: Props) {
+  if (!props.handle || props.caps.size === 0) return null
+  return <ReadyEmulatorTools {...props} handle={props.handle} />
+}
+
+type ReadyProps = Omit<Props, 'handle'> & { handle: RuntimeHandle }
+
+function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSaveHint,
+  screenLayout, stageRef, onRestart, saveRequest = 0, className }: ReadyProps) {
   const t = useT()
   const lang = useLang()
   const tt = t.player.tools
@@ -305,8 +319,6 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
     const timer = window.setInterval(() => setElapsed(recRef.current?.elapsed() ?? 0), 200)
     return () => window.clearInterval(timer)
   }, [recording])
-
-  if (!handle || caps.size === 0) return null
 
   const applyVolume = (v: number, mute: boolean) => {
     setVolume(v)
