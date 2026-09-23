@@ -30,7 +30,9 @@ if (declared !== version) {
 const base = distMode ? join(root, 'dist', 'client') : join(root, 'public')
 const runtimeDir = join(base, 'ruffle', `v${version}`)
 const manifestFile = join(runtimeDir, 'runtime.json')
+const bootstrapFile = join(runtimeDir, 'bootstrap.json')
 if (!existsSync(manifestFile)) fail(`${manifestFile} 不存在；先运行 npm run ruffle`)
+if (!existsSync(bootstrapFile)) fail(`${bootstrapFile} 不存在；先运行 npm run ruffle`)
 
 let manifest
 try {
@@ -52,4 +54,20 @@ for (const file of manifest.files) {
 
 if (!manifest.files.some((file) => file.name === 'ruffle.js')) fail('清单里没有 ruffle.js')
 if (!manifest.files.some((file) => file.name.endsWith('.wasm'))) fail('清单里没有 wasm 核心')
+let bootstrapManifest
+try {
+  bootstrapManifest = JSON.parse(readFileSync(bootstrapFile, 'utf8'))
+} catch {
+  fail('bootstrap.json 不是合法 JSON')
+}
+if (bootstrapManifest.version !== version) fail('bootstrap.json 的版本不正确')
+const published = new Set(manifest.files.map((file) => file.name))
+for (const variant of ['modern', 'fallback']) {
+  const targets = bootstrapManifest.bootstrap?.[variant]
+  if (!Array.isArray(targets) || targets.length !== 2) fail(`清单缺少 ${variant} 预热入口`)
+  if (!targets.some((name) => name.endsWith('.js')) || !targets.some((name) => name.endsWith('.wasm'))) {
+    fail(`${variant} 预热入口必须恰好包含 core JS 和 WASM`)
+  }
+  for (const name of targets) if (!published.has(name)) fail(`${variant} 预热入口指向未发布文件 ${name}`)
+}
 console.log(`✔ Ruffle ${version} ${distMode ? '部署产物' : '公开目录'}完整且版本一致`)

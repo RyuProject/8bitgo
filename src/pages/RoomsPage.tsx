@@ -16,7 +16,8 @@ import { GameGridSkeleton } from '@/components/ui/PageSkeleton'
  */
 export function RoomsPage() {
   const t = useT()
-  // ?live=1 —— 同一批房间，换个看法：按「几个人在看」排，文案讲的是看而不是玩
+  // ?live=1 —— 只保留真的能观看的 P2P / 直播房间，并按「几个人在看」排。
+  // 云端房没有观众席；把它混进来会让「观看」按钮实际变成加入对局。
   const [searchParams] = useSearchParams()
   const live = searchParams.get('live') === '1'
   useSeo({
@@ -25,13 +26,15 @@ export function RoomsPage() {
     noindex: true,
   })
   const all = useAllRooms()
-  const rooms = live ? [...all].sort((a, b) => (b.spectators ?? 0) - (a.spectators ?? 0)) : all
+  const rooms = live
+    ? all.filter((room) => room.kind !== 'cloud').sort((a, b) => (b.spectators ?? 0) - (a.spectators ?? 0))
+    : all
   const enabled = anyRoomsEnabled()
-  // 推荐可联机的游戏。v2 不再全量加载，改成让后端筛出 multiplayer=1 的那一页，
-  // 前端再按「这个平台的模拟器支不支持联机」过一道 —— 后端不认识前端的运行时配置。
-  const suggestState = usePageData<GamesData>('/games', { multiplayer: 1, sort: 'popular' }, 'games')
+  // 联机页推荐能远程联机的游戏；直播页则推荐热门游戏——单人游戏开始游玩也会自动开播。
+  // 两种意图不能共用 multiplayer=1，否则空直播大厅会错误暗示「只有联机游戏能播」。
+  const suggestState = usePageData<GamesData>('/games', live ? { sort: 'popular' } : { multiplayer: 1, sort: 'popular' }, 'games')
   const suggestions = (suggestState.data?.list.items ?? [])
-    .filter((g) => p2pPlayable(g.platform) || cloudPlayable(g.platform))
+    .filter((g) => live || p2pPlayable(g.platform) || cloudPlayable(g.platform))
     .slice(0, 12)
 
   return (
@@ -44,9 +47,9 @@ export function RoomsPage() {
 
       <section className="mt-8">
         <SectionHeader
-          title={live ? t.rooms.liveH1 : t.rooms.liveTitle}
+          title={t.rooms.liveTitle}
           subtitle={enabled ? fmt(t.rooms.liveCount, { n: String(rooms.length) }) : undefined}
-          icon="👥"
+          icon={live ? '📡' : '👥'}
           actions={
             enabled ? (
               <span className="inline-flex items-center gap-1.5 text-xs text-muted">
@@ -74,7 +77,7 @@ export function RoomsPage() {
           <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {rooms.map((room) => (
               <li key={room.roomId}>
-                <RoomCard room={room} />
+                <RoomCard room={room} watchOnly={live} />
               </li>
             ))}
           </ul>
@@ -83,7 +86,12 @@ export function RoomsPage() {
 
       {(suggestState.status === 'loading' || suggestions.length > 0) && (
         <section className="mt-10">
-          <SectionHeader title={t.rooms.startTitle} subtitle={t.rooms.startSubtitle} icon="🎮" moreTo="/games?multiplayer=1" />
+          <SectionHeader
+            title={live ? t.rooms.liveStartTitle : t.rooms.startTitle}
+            subtitle={live ? t.rooms.liveStartSubtitle : t.rooms.startSubtitle}
+            icon={live ? '📡' : '🎮'}
+            moreTo={live ? '/games' : '/games?multiplayer=1'}
+          />
           {suggestState.status === 'loading' && !suggestState.data ? (
             <GameGridSkeleton
               count={6}

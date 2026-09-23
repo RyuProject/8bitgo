@@ -1,6 +1,7 @@
 import { createConnection } from 'node:net'
 import { Router } from 'express'
 import { WebSocket, WebSocketServer } from 'ws'
+import { SFS_GAME_SLUGS } from '../../shared/sfs-games.js'
 
 const DEFAULT_WS_PATH = '/sfs/sas3'
 const SAS3_HOST = 'sas3server.ninjakiwi.com'
@@ -219,10 +220,17 @@ export function createSfsService({ env = process.env, logger = console } = {}) {
   }
 
   router.get('/config', (req, res) => {
+    // 这是运行时开关，而且返回地址还取决于当前 Host / 公开协议。迁机或启停 sidecar 后若被
+    // 边缘缓存，Ruffle 会继续拿旧的 ws:// 或 enabled=false；在路由自身钉死，不能只赌全局中间件。
+    res.set({
+      'Cache-Control': 'no-store, no-cache, must-revalidate',
+      'CDN-Cache-Control': 'no-store',
+      'Cloudflare-CDN-Cache-Control': 'no-store',
+    })
     res.json({
       enabled: config.enabled,
       protocol: 'SmartFoxServer 1.x',
-      games: ['sas3'],
+      games: SFS_GAME_SLUGS,
       websocket: config.enabled ? { path: config.wsPath, url: publicWsUrl(req, config) } : null,
       native: config.enabled && config.publicTcpHost
         ? { host: config.publicTcpHost, port: config.publicTcpPort, note: '未修改的 SAS3.swf 仍需 hosts/DNS 或重打包才能使用此地址' }
@@ -232,12 +240,17 @@ export function createSfsService({ env = process.env, logger = console } = {}) {
   })
 
   router.get('/status', async (_req, res) => {
+    res.set({
+      'Cache-Control': 'no-store, no-cache, must-revalidate',
+      'CDN-Cache-Control': 'no-store',
+      'Cloudflare-CDN-Cache-Control': 'no-store',
+    })
     const reachable = await probe()
     res.json({
       enabled: config.enabled,
       ready: config.enabled && reachable,
       protocol: 'SmartFoxServer 1.x',
-      games: ['sas3'],
+      games: SFS_GAME_SLUGS,
       upstream: { reachable, checkedAt: new Date(probeCache.at || Date.now()).toISOString() },
       connections: {
         active: stats.active,
@@ -286,6 +299,7 @@ export function createSfsService({ env = process.env, logger = console } = {}) {
       let failed = false
       let pending = []
       let pendingBytes = 0
+      let forceCloseTimer = null
       const upstream = createConnection({ host: config.upstreamHost, port: config.upstreamPort })
       upstream.setNoDelay(true)
       upstream.setKeepAlive(true, 30_000)
@@ -294,6 +308,7 @@ export function createSfsService({ env = process.env, logger = console } = {}) {
       const release = () => {
         if (released) return
         released = true
+        clearTimeout(forceCloseTimer)
         stats.active = Math.max(0, stats.active - 1)
         if (ip) {
           const left = (perIp.get(ip) || 1) - 1
@@ -302,7 +317,19 @@ export function createSfsService({ env = process.env, logger = console } = {}) {
         }
       }
       const closeWs = (code, reason) => {
-        if (ws.readyState === WebSocket.OPEN) ws.close(code, reason)
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.close(code, reason)
+          /*
+            close() 只是发握手。恶意或坏掉的客户端可以一直不回 close 帧，让连接继续占着
+            全站 / 每 IP 名额；ws 自己的兜底要等约 30 秒。旁路失败后 1 秒足够收尾，随后强拆。
+          */
+          if (!forceCloseTimer) {
+            forceCloseTimer = setTimeout(() => {
+              if (ws.readyState !== WebSocket.CLOSED) ws.terminate()
+            }, 1000)
+            forceCloseTimer.unref?.()
+          }
+        }
         else if (ws.readyState !== WebSocket.CLOSED) ws.terminate()
       }
       const failUpstream = (reason) => {
@@ -316,12 +343,14 @@ export function createSfsService({ env = process.env, logger = console } = {}) {
         closeWs(1013, reason)
       }
       const writeUpstream = (buffer) => {
+        if (failed) return
         if (upstream.destroyed || !upstream.writable) return failUpstream('SFS upstream unavailable')
         upstream.write(buffer)
         if (upstream.writableLength > config.maxBufferedBytes) failUpstream('SFS upstream congested')
       }
 
       upstream.once('connect', () => {
+        if (failed) return upstream.destroy()
         upstreamReady = true
         stats.lastUpstreamConnectedAt = new Date().toISOString()
         probeCache = { at: Date.now(), promise: null, reachable: true }
@@ -346,6 +375,9 @@ export function createSfsService({ env = process.env, logger = console } = {}) {
       })
 
       ws.on('message', (data) => {
+        // failUpstream 已清空积压并开始关连接；这之后再收的数据必须直接丢。
+        // 原来仍会继续 push，而 failUpstream 因 failed=true 不再清第二次，关握手期间可无限长内存。
+        if (failed) return
         const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data)
         stats.bytesFromClient += buffer.length
         if (upstreamReady) return writeUpstream(buffer)

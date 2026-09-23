@@ -105,7 +105,7 @@ import { PresenceTags } from './PresenceTags'
 import { cx } from '@/lib/format'
 
 /** 房间卡片：封面 = 正在玩的游戏，下面是 host 与人数 */
-export function RoomCard({ room, compact = false }: { room: RoomView; compact?: boolean }) {
+export function RoomCard({ room, compact = false, watchOnly = false }: { room: RoomView; compact?: boolean; watchOnly?: boolean }) {
   const t = useT()
   const lang = useLang()
   const game = useGameBySlug(room.gameSlug)
@@ -124,7 +124,7 @@ export function RoomCard({ room, compact = false }: { room: RoomView; compact?: 
   const param = room.kind === 'p2p' ? 'p2p' : live ? 'live' : 'room'
   const to =
     `/games/${room.gameSlug}?${param}=${encodeURIComponent(room.roomId)}` +
-    (full && watchable ? '&watch=1' : '')
+    ((full || watchOnly) && watchable ? '&watch=1' : '')
   // 游戏库里认不出来的 slug（本地 ROM 开的播）就用主播报上来的游戏名，别露出 slug
   const label = game ? gameTitle(game, lang) : room.gameName || room.gameSlug
 

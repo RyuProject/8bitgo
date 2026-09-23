@@ -513,7 +513,7 @@ export function GameDetailPage() {
                 showLess={t.game.showLess}
               />
               <dl className="mt-5 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
-                <Meta label={t.game.year} value={String(game.year)} />
+                {game.year > 0 && <Meta label={t.game.year} value={String(game.year)} />}
                 <Meta
                   label={t.game.developer}
                   value={splitDevelopers(game.developer).map((name, index) => (

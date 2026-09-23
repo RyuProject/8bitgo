@@ -5,6 +5,7 @@ package test_fla
    import flash.events.IOErrorEvent;
    import flash.events.SecurityErrorEvent;
    import flash.events.TimerEvent;
+   import flash.external.ExternalInterface;
    import flash.net.URLLoader;
    import flash.net.URLRequest;
    import flash.net.URLRequestMethod;
@@ -22,8 +23,13 @@ package test_fla
       private var sessionToken:String = "";
       private var username:String = "";
       private var avatarUrl:String = "";
+      private var saveMode:String = "";
+      private var loginCallback:String = "";
+      private var expectedGameKey:String = "infect-2";
       private var loggedIn:Boolean = false;
       private var gameAccepted:Boolean = false;
+      /** 一局只弹一次：游戏可能会紧接着调 submit / delete，不能连弹两层登录框。 */
+      private var loginPromptSent:Boolean = false;
       private var pendingPairs:Object = {};
       private var queues:Object = {};
       private var busy:Object = {};
@@ -62,14 +68,15 @@ package test_fla
       {
          readParameters();
          sessionId = newSessionId();
-         gameAccepted = gameKey == "infect-2";
+         // 新游戏的 gameKey 由共用接入表下发；老页面没传时保留 infect-2 作兼容回退。
+         gameAccepted = expectedGameKey.length > 0 && gameKey == expectedGameKey;
          if(!gameAccepted)
          {
             /*
                校验失败时整条在线存档链是**静默关闭**的（游戏只会看到 isLoggedIn() 为 false），
                这里留一条能在控制台查到的线索，免得「为什么在线槽不亮」只能靠读源码回答。
             */
-            trace("[8bitgo-flash-save] gameKey 不匹配（收到 " + gameKey + "），在线存档已关闭");
+            trace("[8bitgo-flash-save] gameKey 不匹配（期望 " + expectedGameKey + "，收到 " + gameKey + "），在线存档已关闭");
          }
          loggedIn = gameAccepted && endpoint.length > 0 && sessionToken.length > 0;
       }
@@ -91,6 +98,7 @@ package test_fla
 
       public function showLogin(callback:Function) : void
       {
+         if(!loggedIn) notifyLoginRequired();
          callOnce(callback, {
             "success":true,
             "loggedIn":loggedIn,
@@ -107,6 +115,7 @@ package test_fla
       {
          if(!loggedIn)
          {
+            notifyLoginRequired();
             callOnce(callback,{"success":false,"error":"not_logged_in"});
             return;
          }
@@ -195,7 +204,11 @@ package test_fla
        */
       public function deleteUserData(key:String) : void
       {
-         if(!loggedIn) return;
+         if(!loggedIn)
+         {
+            notifyLoginRequired();
+            return;
+         }
          var parsed:Object = parseKey(key);
          if(!parsed) return;
          var slot:int = int(parsed.slot);
@@ -238,6 +251,32 @@ package test_fla
          sessionToken = stringValue(params.eightbitgo_save_token);
          username = stringValue(params.eightbitgo_username);
          avatarUrl = stringValue(params.eightbitgo_avatar_url);
+         saveMode = stringValue(params.eightbitgo_save_mode);
+         loginCallback = stringValue(params.eightbitgo_login_callback);
+         var configuredGameKey:String = stringValue(params.eightbitgo_agi_game_key);
+         if(configuredGameKey.length > 0) expectedGameKey = configuredGameKey;
+      }
+
+      /**
+       * 只在「确实是游客 + gameKey 对得上 + 玩家主动用在线槽」时告诉页面。
+       * unavailable 是已登录但会话服务出错，不能误弹登录；gameKey 错了则说明本来就不该由这个桥接管。
+       */
+      private function notifyLoginRequired() : void
+      {
+         if(loginPromptSent || saveMode != "guest" || !gameAccepted || loginCallback.length == 0) return;
+         if(!/^[A-Za-z_$][A-Za-z0-9_$.]{0,127}$/.test(loginCallback)) return;
+         try
+         {
+            if(ExternalInterface.available)
+            {
+               ExternalInterface.call(loginCallback,"login_required");
+               loginPromptSent = true;
+            }
+         }
+         catch(error:Error)
+         {
+            // 登录提示失败不能影响游戏原有的本地存档。
+         }
       }
 
       private function stringValue(value:*) : String

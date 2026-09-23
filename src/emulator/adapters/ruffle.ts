@@ -21,8 +21,13 @@ import {
   readFlashEntries, readLegacyFlashEntries, restoreFlashEntries, validFlashEntries,
 } from '../ruffleSaves'
 import { getT, fmt } from '@/services/i18n'
-import { flashOnlineSaveRuffleConfig, prepareFlashOnlineSave } from '@/services/flashOnlineSave'
+import {
+  FLASH_SAVE_LOGIN_CALLBACK,
+  flashOnlineSaveRuffleConfig,
+  prepareFlashOnlineSave,
+} from '@/services/flashOnlineSave'
 import { prepareSfsRuffleConfig } from '@/services/sfs'
+import { installRufflePixelRatioCap } from '../rufflePerformance'
 
 export { RUFFLE_PATH } from '../paths'
 import { RUFFLE_PATH } from '../paths'
@@ -104,6 +109,7 @@ interface RufflePlayerApi {
 /** 新版通过 player.ruffle() 取 API，旧版直接在元素上调用 load() */
 interface RufflePlayerElement extends HTMLElement, Partial<RufflePlayerApi> {
   ruffle?: () => RufflePlayerApi
+  readyState?: number
 }
 interface RuffleSource {
   createPlayer: () => RufflePlayerElement
@@ -145,6 +151,48 @@ function waitForFrame(video: HTMLVideoElement): Promise<void> {
       .requestVideoFrameCallback
     if (typeof rvfc === 'function') rvfc.call(video, finish)
     else video.addEventListener('loadeddata', () => window.setTimeout(finish, 120), { once: true })
+  })
+}
+
+/**
+ * `api.load()` 把字节交给 WASM 后就可能返回，元数据 / 舞台仍在下一轮任务里创建。
+ * 不等 `loadeddata` 就宣布 ready，会偶发先撤加载层、再露出黑框，截图 / 直播能力也会因为
+ * 当时还没有 canvas 而整局缺失。超时只放行不报错：老 SWF 的首帧脚本确实可能很慢。
+ */
+function waitForRuffleMetadata(player: RufflePlayerElement, signal: AbortSignal): Promise<void> {
+  if ((player.readyState ?? 0) >= 2) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    let timer = 0
+    const cleanup = () => {
+      window.clearTimeout(timer)
+      player.removeEventListener('loadedmetadata', onLoaded)
+      player.removeEventListener('loadeddata', onLoaded)
+      signal.removeEventListener('abort', onAbort)
+    }
+    const onLoaded = () => {
+      cleanup()
+      // 再让浏览器合成一帧，避免事件到了但 canvas 还没挂进 shadow DOM。
+      // 隐藏标签页可能完全停掉 rAF，所以同时放一个短定时兜底，直播后台启动不能卡死。
+      let finished = false
+      const finish = () => {
+        if (finished) return
+        finished = true
+        resolve()
+      }
+      requestAnimationFrame(finish)
+      window.setTimeout(finish, 120)
+    }
+    const onAbort = () => {
+      cleanup()
+      reject(new DOMException('已取消', 'AbortError'))
+    }
+    player.addEventListener('loadedmetadata', onLoaded)
+    player.addEventListener('loadeddata', onLoaded)
+    signal.addEventListener('abort', onAbort, { once: true })
+    timer = window.setTimeout(() => {
+      cleanup()
+      resolve()
+    }, 8000)
   })
 }
 
@@ -231,10 +279,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let movieUrl: URL | null = null
   let lastLoadOptions: Record<string, unknown> | null = null
   const saveId = options.gameSlug || (typeof options.game === 'string' ? options.game : `local:${options.game.name}`)
-  // 会话申请和 ROM 下载并行；普通 Flash 游戏会立刻得到 null，不增加任何请求。
+  // 会话申请与 iframe / Ruffle 初始化同时开始；普通 Flash 游戏会立刻得到 null，不增加请求。
   const flashOnlineSave = prepareFlashOnlineSave(options.gameSlug)
-  // SFS 是可选旁路。后端没开或 Java sidecar 故障时得到空对象，不阻塞其余 Flash 游戏。
-  const sfsRuffleConfig = prepareSfsRuffleConfig()
+  // 只有 SAS3 会请求这份旁路配置，普通 Flash 直接得到空对象，见 services/sfs.ts。
+  const sfsRuffleConfig = prepareSfsRuffleConfig(options.gameSlug)
   const storage = (): Storage => {
     try { return localStorage } catch { throw new Error(rt.flashStorageUnavailable) }
   }
@@ -273,7 +321,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   const iframe = document.createElement('iframe')
   iframe.title = fmt(rt.flashTitle, { name: options.gameName })
-  iframe.style.cssText = 'width:100%;height:100%;border:0;display:block;background:#0b0b0f'
+  iframe.style.cssText = 'width:100%;height:100%;border:0;display:block;background:#0b0b0f;contain:strict'
   iframe.setAttribute('allow', 'fullscreen; autoplay; clipboard-write; gamepad')
   // srcdoc 的 location 是 about:srcdoc；Ruffle 会拿它当 SWF 地址，所有游戏的
   // SharedObject 因而落到同一条 /srcdoc/ 路径。用同源静态壳和逐游戏历史地址隔开。
@@ -298,15 +346,45 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   document.addEventListener('visibilitychange', syncVisibility)
   /** SWF 下载的取消把手：换游戏后别让旧会话继续拉完整个 SWF（见 jsnes 同款注释） */
   const aborter = new AbortController()
+  /**
+   * 旧实现等 ruffle.js、在线存档和 SFS 全部回来后才开始下载游戏，冷启动被硬生生串行化。
+   * 这里在挂载一开始就拉字节，和 iframe、454 KB loader、14 MB WASM 并行；先失败也先挂一个
+   * 空 catch，防止脚本尚未 onload 时浏览器把拒绝记成未处理，真正错误仍由后面的 await 上报。
+   */
+  const gameBytes = loadGameBytes(options.game, options.onProgress, aborter.signal).then((loaded) => {
+    assertSwf(loaded.data)
+    return loaded
+  })
+  void gameBytes.catch(() => {})
   /** Ruffle 会在 load() resolve 后继续换内部节点；焦点补刷必须可取消，避免旧会话回头抢焦点。 */
   let focusRaf = 0
   let focusTimer = 0
+  let canvasCapsTimer = 0
 
   const cancelFocusRetry = () => {
     if (focusRaf) cancelAnimationFrame(focusRaf)
     if (focusTimer) window.clearTimeout(focusTimer)
     focusRaf = 0
     focusTimer = 0
+  }
+
+  /**
+   * 部分 SWF 会在元数据事件之后才创建真正的舞台 canvas。能力只查一次会让本局的截图、录屏和
+   * 直播入口永久消失，所以在启动后的短窗口内继续探测；找到即停，销毁也必须取消定时器。
+   */
+  const scheduleCanvasCapabilities = (deadline = Date.now() + 8000) => {
+    if (destroyed || caps.has('record')) return
+    if (stageCanvas()) {
+      caps.add('record')
+      caps.add('screenshot')
+      options.onCaps?.(caps)
+      return
+    }
+    if (Date.now() >= deadline) return
+    canvasCapsTimer = window.setTimeout(() => {
+      canvasCapsTimer = 0
+      scheduleCanvasCapabilities(deadline)
+    }, 100)
   }
 
   /**
@@ -427,11 +505,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       装的是**这个 iframe 自己的 realm**，不碰父页面，销毁时跟着 iframe 一起没。
       拿不到就是拿不到 —— captureSources 那边照旧只给画面，和以前一样是静音，不会更糟。
     */
+    installRufflePixelRatioCap(win)
     audioTap = installAudioTap(win as unknown as Window & Record<string, unknown>)
 
     const script = doc.createElement('script')
     script.src = `${RUFFLE_PATH}ruffle.js`
     script.onerror = () => {
+      aborter.abort()
       // 给运维看的细节（路径 / 该配哪个 env）进控制台；红字只说玩家能理解的那句
       console.warn(`[ruffle] failed to load ${RUFFLE_PATH}ruffle.js — run \`npm run ruffle\` or set VITE_RUFFLE_PATH`)
       if (!destroyed) options.onError?.(fmt(rt.ruffleLoadFailed, { path: RUFFLE_PATH }))
@@ -453,9 +533,22 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           host?.appendChild(player)
         }
 
-        const [onlineSave, sfsConfig] = await Promise.all([flashOnlineSave, sfsRuffleConfig])
+        const [loaded, onlineSave, sfsConfig] = await Promise.all([gameBytes, flashOnlineSave, sfsRuffleConfig])
         // 每次挂载都报一次（游客态报 0）：播放器据此在会话临期前提示玩家重新进这一局
         options.onFlashSaveSession?.(onlineSave?.expiresAt ?? 0)
+        /*
+          兼容桥跑在这个同源 iframe 里，ExternalInterface.call() 也只会在这里找函数。
+          只给真正的 guest 装回调：「unavailable」是已登录但会话服务故障，
+          这时弹登录框会让用户白登一遍，还把真故障藏起来。
+        */
+        const frameGlobals = win as unknown as Record<string, unknown>
+        if (onlineSave?.mode === 'guest') {
+          frameGlobals[FLASH_SAVE_LOGIN_CALLBACK] = () => {
+            if (!destroyed) options.onFlashSaveLoginRequired?.()
+          }
+        } else {
+          delete frameGlobals[FLASH_SAVE_LOGIN_CALLBACK]
+        }
         const onlineSaveConfig = flashOnlineSaveRuffleConfig(onlineSave)
         /*
           ⚠️ SFS 和在线存档都要往 Ruffle 配置里放 `urlRewriteRules`，而对象展开是**覆盖**不是合并：
@@ -479,13 +572,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           autoplay: 'on',
           unmuteOverlay: 'visible',
           letterbox: 'on',
+          // ExternalInterface 只对经过共用接入表审核的游戏开放；普通 SWF 仍保持关闭。
+          allowScriptAccess: Boolean(onlineSave),
           // Ruffle 自己的 none 模式无法在“开播后”动态恢复后台执行，所以由上面的
           // visibilitychange 精确控制：无人观看时暂停，有直播观众时继续出帧。
           backgroundExecutionMode: 'mainThread',
-          // 不碰 frameRate 和 preferredRenderer：前者会改游戏时间轴，后者官方只建议排错使用。
-          quality: options.performanceProfile === 'performance'
-            ? 'low'
-            : options.performanceProfile === 'balanced' ? 'medium' : 'high',
+          // 永久使用「流畅优先」。low 关闭昂贵的高阶抗锯齿；DPR 降载见 rufflePerformance.ts。
+          // 不碰 frameRate / preferredRenderer：前者会改时间轴，后者官方只建议排错使用。
+          quality: 'low',
           /**
            * ⚠️ 千万别在这里填颜色。
            *
@@ -514,8 +608,6 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         const isFile = typeof options.game !== 'string'
         let loadOptions: Record<string, unknown>
         if (isFile) {
-          const loaded = await loadGameBytes(options.game, options.onProgress, aborter.signal)
-          assertSwf(loaded.data)
           movieUrl = flashMovieUrl(win.location.href, loaded.name)
           loadOptions = { ...base, data: loaded.data, swfFileName: loaded.name }
         } else {
@@ -527,10 +619,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
            * 变成「当前页面」，素材全 404。所以必须显式把 base 设回 SWF 的目录 ——
            * base 是 Ruffle 的正式配置项（DEFAULT_CONFIG 里 base:null），给了 url 时
            * 它本来也是这么推的，这里只是把同一件事写明白。
-           */
+          */
           const url = options.game as string
-          const loaded = await loadGameBytes(url, options.onProgress, aborter.signal)
-          assertSwf(loaded.data)
           movieUrl = flashMovieUrl(win.location.href, loaded.name)
           loadOptions = {
             ...base,
@@ -547,7 +637,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         if (destroyed) return
         options.onProgress?.({ phase: 'starting', ratio: 1 })
         lastLoadOptions = loadOptions
-        await api.load(loadOptions)
+        /*
+         * 先把元数据监听挂好，再在微任务里调用 load，避免极快 SWF 抢先发事件。
+         * 两条 Promise 必须由同一个 Promise.all 持有：若 load 同步失败后玩家马上离开，独立的
+         * metadataReady 会在 abort 时形成无人接收的 rejection，污染全局错误上报。
+         */
+        await Promise.all([
+          Promise.resolve().then(() => api!.load(loadOptions)),
+          waitForRuffleMetadata(player, aborter.signal),
+        ])
         if (destroyed) return
         syncVisibility()
         // onReady 必须在 load 完成之后 —— 以前放在 load 之前，播放器会在 SWF 还没解析完
@@ -569,12 +667,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         //      给它们画一套没反应的十字键（外加一句「手柄在下面」的开局提示）比不画糟得多
         if (keys) caps.add('touchpad')
         if (keys && typeof navigator.getGamepads === 'function') caps.add('gamepad')
-        // 录像 / 开播 / 截图都靠画布，画布是在 load() 完成的那一刻出现的（实测），
-        // 所以在这儿判断刚好，早一步查是 null
+        // 大多数游戏此刻已有画布；少数游戏会晚一拍，下面的短轮询会在出现后补报能力。
         if (stageCanvas()) {
           caps.add('record')
           caps.add('screenshot')
-        }
+        } else scheduleCanvasCapabilities()
         if (hasVolume()) {
           caps.add('volume')
           applyVolume()
@@ -810,17 +907,22 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       destroyed = true
       document.removeEventListener('visibilitychange', syncVisibility)
       cancelFocusRetry()
+      if (canvasCapsTimer) window.clearTimeout(canvasCapsTimer)
+      canvasCapsTimer = 0
       aborter.abort()
+      const audioContext = audioTap?.ctx
       player = null
       api = null
-      // realm 跟着 iframe 一起没，不用还原 patch；只是别留着指向死 realm 的节点
-      audioTap = null
       try {
         iframe.src = 'about:blank'
       } catch {
         /* ignore */
       }
       iframe.remove()
+      // Ruffle 正常会在 disconnectedCallback 里销毁音频；再兜一层，避免异常启动留下音频线程。
+      if (audioContext && audioContext.state !== 'closed') void audioContext.close().catch(() => {})
+      // realm 跟着 iframe 一起没，不用还原 patch；只是别留着指向死 realm 的节点
+      audioTap = null
     },
   }
 }

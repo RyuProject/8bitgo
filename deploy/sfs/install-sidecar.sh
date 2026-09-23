@@ -70,4 +70,4 @@ echo
 echo "SAS3 sidecar 已安装但尚未启动。"
 echo "检查 ${config_dir}/flash.properties 后运行："
 echo "  sudo systemctl enable --now 8bitgo-sfs"
-echo "再在 8BitGo 的 server/.env 设置 SFS_ENABLED=1，并重启 8bitgo-api。"
+echo "再在 8BitGo 的 server/.env 设置 SFS_ENABLED=1，并运行 sudo systemctl restart 8bitgo。"

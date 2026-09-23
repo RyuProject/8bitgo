@@ -32,6 +32,8 @@ const TABLES = [
   'games',
   'posts',
   'users',
+  'volunteer_games',
+  'volunteer_posts',
   'platform_bios',
   'friend_links',
   'game_genres',

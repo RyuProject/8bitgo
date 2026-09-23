@@ -116,7 +116,8 @@ const EMPTY: Game = {
   titleZh: '',
   platform: 'nes',
   genres: ['action'],
-  year: 1990,
+  // 不知道发行年份时存 0，避免新游戏沿用一个看似真实的 1990 年。
+  year: 0,
   developer: '',
   rating: 0,
   ratingCount: 0,
@@ -154,11 +155,13 @@ interface Props {
   /** 传入则为编辑模式 */
   initial?: Game
   existingSlugs: string[]
+  /** 志愿者个人库只能编辑资料，不得借表单触发 R2 上传 / 删除。 */
+  personalLibrary?: boolean
   onSubmit: (game: Game) => void
   onCancel: () => void
 }
 
-export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) {
+export function GameForm({ initial, existingSlugs, personalLibrary = false, onSubmit, onCancel }: Props) {
   const [form, setForm] = useState<Game>(initial ?? { ...EMPTY, addedAt: today() })
   const [tagsText, setTagsText] = useState((initial?.tags ?? []).join(', '))
   const [slugTouched, setSlugTouched] = useState(Boolean(initial))
@@ -488,8 +491,8 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
       </Field>
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Field label="发行年份">
-          <input type="number" className={inputClass} value={form.year} onChange={(e) => set('year', Number(e.target.value))} />
+        <Field label="发行年份" hint="不确定可以留空，前台不会显示年份">
+          <input type="number" className={inputClass} value={form.year || ''} onChange={(e) => set('year', Number(e.target.value))} />
         </Field>
         <Field label="开发商" hint="多个开发商用逗号分隔">
           <input className={inputClass} value={form.developer} onChange={(e) => set('developer', e.target.value)} placeholder="Nintendo, HAL Laboratory" />
@@ -535,7 +538,11 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
             </Field>
             {form.dosBackend === 'dosboxX' ? (
               <>
-                <SystemImageField value={form.dosSystem ?? ''} onChange={(value) => set('dosSystem', value || undefined)} />
+                <SystemImageField
+                  value={form.dosSystem ?? ''}
+                  onChange={(value) => set('dosSystem', value || undefined)}
+                  allowStorage={!personalLibrary}
+                />
                 <Field label="Windows 版本">
                   <select
                     className={inputClass}
@@ -630,6 +637,7 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
               onLabelChange={(next) => set('dosExtrasLabel', next)}
               labelEn={form.dosExtrasLabelEn ?? ''}
               onLabelEnChange={(next) => set('dosExtrasLabelEn', next)}
+              allowStorage={!personalLibrary}
             />
             {/* Windows 客体不给「保存进度」按钮（存的是 qcow2 扇区，上游标为不可保存），所以不显示这一项 */}
             {!(form.dosBackend === 'dosboxX' && form.dosSystem?.trim()) && (
@@ -690,9 +698,11 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
               <p className="mt-1 text-[11px] text-live">
                 ⚠️ 还没绑 <span className="font-mono">bios:{biosUnbound}</span> 的地址，
                 平台级那份也不是它 —— 现在直接开会报「缺文件」。
-                <Link to="/admin/roms" className="ml-1 text-brand-hover hover:underline">
-                  去绑定 →
-                </Link>
+                {!personalLibrary && (
+                  <Link to="/admin/roms" className="ml-1 text-brand-hover hover:underline">
+                    去绑定 →
+                  </Link>
+                )}
               </p>
             )}
           </Field>
@@ -780,7 +790,7 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
             )}
           </Field>
         )}
-        <Field label="首页排序">
+        {!personalLibrary && <Field label="首页排序">
           <input
             type="number"
             min="0"
@@ -795,7 +805,7 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
             它<strong className="text-muted">不会顶掉任何东西</strong>：按游玩次数排的那份真榜一直在下面的「最多人玩的模拟器游戏」那一栏。
             全部留空时，精选那一栏整个不出现，首页第一栏就是真榜。
           </p>
-        </Field>
+        </Field>}
       </div>
 
       <div className="space-y-3 rounded-xl border border-line p-3">
@@ -870,6 +880,7 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
               onApplyHack={(hack) => applyHack(hack)}
               // 只填空的：管理员手填过就听他的（汉化版借用别的驱动时人比表准）
               onBiosFound={(name) => setForm((f) => (f.arcadeBios?.trim() ? f : { ...f, arcadeBios: name }))}
+              allowStorage={!personalLibrary}
             />
           </div>
         ))}
@@ -887,6 +898,7 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
           slug={slugify(form.slug || form.title)}
           onChange={(v) => set('cover', v)}
           allBoundKeys={allBoundKeys}
+          allowStorage={!personalLibrary}
         />
       </div>
 
@@ -898,6 +910,7 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
         slug={slugify(form.slug || form.title)}
         onChange={(v) => set('video', v)}
         allBoundKeys={allBoundKeys}
+        allowStorage={!personalLibrary}
       />
 
       <Field label="简介（中文）">
@@ -938,7 +951,8 @@ export function GameForm({ initial, existingSlugs, onSubmit, onCancel }: Props) 
           <input type="checkbox" checked={Boolean(form.adult)} onChange={(e) => set('adult', e.target.checked)} /> 成人游戏（需验证年满 18 岁）
         </label>
         <label className="inline-flex items-center gap-2">
-          <input type="checkbox" checked={Boolean(form.hidden)} onChange={(e) => set('hidden', e.target.checked)} /> 下架（前台不显示）
+          <input type="checkbox" checked={Boolean(form.hidden)} onChange={(e) => set('hidden', e.target.checked)} />{' '}
+          {personalLibrary ? '在我的库中隐藏' : '下架（前台不显示）'}
         </label>
       </div>
 
@@ -1106,6 +1120,7 @@ function DosExtrasField({
   onLabelChange,
   labelEn,
   onLabelEnChange,
+  allowStorage,
 }: {
   slug: string
   value: string[] | undefined
@@ -1114,13 +1129,14 @@ function DosExtrasField({
   onLabelChange: (value: string | undefined) => void
   labelEn: string
   onLabelEnChange: (value: string | undefined) => void
+  allowStorage: boolean
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [manual, setManual] = useState('')
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const cfg = getRomConfig()
-  const canUpload = Boolean(cfg.api && cfg.token)
+  const canUpload = allowStorage && Boolean(cfg.api && cfg.token)
   const refs = parseDosExtras(value)
 
   const write = (next: DosExtraRef[]) => {
@@ -1343,7 +1359,15 @@ function DosExtrasField({
  * Windows 镜像可能被几十款游戏引用，编辑其中一款时顺手删掉会把其它游戏一起弄坏。
  * 管理员可以解除当前游戏的绑定；真正删除共享对象仍到「ROM 存储」页明确操作。
  */
-function SystemImageField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+function SystemImageField({
+  value,
+  onChange,
+  allowStorage,
+}: {
+  value: string
+  onChange: (value: string) => void
+  allowStorage: boolean
+}) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [progress, setProgress] = useState<number | null>(null)
   /** 分片上传的进度明细（单发 PUT 时一直是 null） */
@@ -1353,7 +1377,7 @@ function SystemImageField({ value, onChange }: { value: string; onChange: (value
   const [optionsLoading, setOptionsLoading] = useState(false)
   const [optionsError, setOptionsError] = useState<string | null>(null)
   const cfg = getRomConfig()
-  const canUpload = Boolean(cfg.api && cfg.token)
+  const canUpload = allowStorage && Boolean(cfg.api && cfg.token)
 
   useEffect(() => {
     if (!canUpload) return
@@ -1474,7 +1498,11 @@ function SystemImageField({ value, onChange }: { value: string; onChange: (value
           </>
         )}
       </p>
-      {!canUpload && <p className="mt-1 text-[11px] text-dim">要直接上传，请先在「ROM 存储」页配置 Worker 地址与口令。</p>}
+      {!canUpload && (
+        <p className="mt-1 text-[11px] text-dim">
+          {allowStorage ? '要直接上传，请先在「ROM 存储」页配置 Worker 地址与口令。' : '个人库只保存文件引用，不能上传或删除对象存储文件。'}
+        </p>
+      )}
       {progress !== null && stageText(stage) && <p className="mt-1 font-mono text-[11px] text-dim">{stageText(stage)}</p>}
       {msg && <p className={cx('mt-1 text-xs', msg.ok ? 'text-brand' : 'text-live')}>{msg.text}</p>}
     </Field>
@@ -1514,6 +1542,7 @@ function RomField({
   onHackFound,
   onApplyHack,
   onBiosFound,
+  allowStorage,
 }: {
   value: string
   backupValue: string
@@ -1538,6 +1567,8 @@ function RomField({
   onBiosFound?: (name: string) => void
   /** 管理员点「套用」时明确要求写入，覆盖也无所谓 */
   onApplyHack?: (hack: ArcadeHack) => void
+  /** 志愿者库只保存资料引用，不能借这里改对象存储。 */
+  allowStorage: boolean
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [progress, setProgress] = useState<number | null>(null)
@@ -1557,7 +1588,7 @@ function RomField({
   const archiveRef = romArchiveRef(value)
   /** 识别出来的游戏需要 BIOS，但平台还没绑 —— 就是「Neo Geo BIOS 成员缺失」那个坑 */
   const cfg = getRomConfig()
-  const canUpload = Boolean(cfg.api && cfg.token)
+  const canUpload = allowStorage && Boolean(cfg.api && cfg.token)
   const isFlash = platform === 'flash'
   const isHtml5 = platform === 'html5'
   const isPs2 = platform === 'ps2'
@@ -2066,13 +2097,14 @@ function RomField({
             onApplyHack={onApplyHack}
           />
         )}
-        {!canUpload && (
+        {!canUpload && allowStorage && (
           <p className="mt-1 text-[11px] text-dim">
             <Link to="/admin/roms" className="text-brand-hover hover:underline">
               去配置 Worker →
             </Link>
           </p>
         )}
+        {!allowStorage && <p className="mt-1 text-[11px] text-dim">个人库可手填已有 key / URL，但不能上传或删除 ROM 文件。</p>}
       </Field>
       {pending && (
         <SwfBundlePanel
@@ -2217,6 +2249,7 @@ function MediaField({
   slug,
   onChange,
   allBoundKeys,
+  allowStorage,
 }: {
   kind: 'covers' | 'videos'
   label: string
@@ -2225,12 +2258,13 @@ function MediaField({
   slug: string
   onChange: (key: string) => void
   allBoundKeys: string[]
+  allowStorage: boolean
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [progress, setProgress] = useState<number | null>(null)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const cfg = getRomConfig()
-  const canUpload = Boolean(cfg.api && cfg.token)
+  const canUpload = allowStorage && Boolean(cfg.api && cfg.token)
   const accept = kind === 'videos' ? 'video/*' : 'image/*'
   const previewUrl = value ? romUrlForKey(value) : ''
 
@@ -2352,7 +2386,7 @@ function MediaField({
             type="button"
             className={cx(btnClass.danger, 'shrink-0')}
             onClick={() => void removeMedia()}
-            title={isDeletableKey(value) ? '从 R2 删除文件并解除绑定' : '解除绑定'}
+            title={allowStorage && isDeletableKey(value) ? '从 R2 删除文件并解除绑定' : '解除绑定（原文件保留）'}
           >
             删除
           </button>
@@ -2373,7 +2407,7 @@ function MediaField({
         </div>
       )}
       {msg && <p className={cx('mt-2 text-xs', msg.ok ? 'text-online' : 'text-live')}>{msg.text}</p>}
-      {!canUpload && (
+      {!canUpload && allowStorage && (
         <p className="mt-1 text-[11px] text-dim">
           直接上传需先在{' '}
           <Link to="/admin/roms" className="text-brand-hover hover:underline">
@@ -2382,6 +2416,7 @@ function MediaField({
           页配置 Worker 地址与口令；也可以手填图片 / 视频的完整 URL。
         </p>
       )}
+      {!allowStorage && <p className="mt-1 text-[11px] text-dim">个人库可手填图片 / 视频 URL，但不能上传或删除对象存储文件。</p>}
     </Field>
   )
 }

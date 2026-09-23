@@ -1,7 +1,7 @@
 import 'dotenv/config'
 import express from 'express'
 import { createServer } from 'node:http'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import cors from 'cors'
 import { ping } from './db.js'
@@ -355,8 +355,16 @@ if (ssrAvailable()) {
    * 只是没人访问才没被发现）。这里先接住，两条 301 都轮不到。
    * ⚠️ 名字必须白名单校验。Express 的 `:name` 不含 `/`，但 `..` 是合法参数值，
    * 不挡就能拼出越界路径；`sendFile` 的 root 越界保护是第二道。
-   */
+  */
   const WEB_GAME_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+  const CS16_REQUIRED_RUNTIME = [
+    'index.html',
+    'cs16.bundle.js',
+    'zstd.wasm',
+    'engine/dist/xash.wasm',
+    'lib/cstrike/cl_dlls/client_emscripten_wasm32.wasm',
+    'lib/cstrike/dlls/cs_emscripten_wasm32.wasm',
+  ]
   /*
     第二层 `:sub` 是语言子目录（`/web/PvZ/cn/`、`/web/PvZ/en/`）。
     Express 的 `:name` 不吃 `/`，只注册一层的话这两个地址匹配不上，会掉到 SSR 兜底
@@ -375,6 +383,19 @@ if (ssrAvailable()) {
     // 设 CS15_DISABLED=1 即可整页下线，不影响其它 /web/ 游戏（如 PvZ）。
     if (name === 'cs15' && process.env.CS15_DISABLED === '1') {
       return res.status(503).type('html').send('<h1>CS1.5 网页版暂未开放</h1><p>维护中。</p>')
+    }
+    /*
+      CS16 的页面很小，真正的运行时却分散在引擎、客户端 wasm 和 R2 数据包里。
+      任一文件在部署时漏掉，旧行为仍会返回 200，用户只能看到黑屏；这里把缺文件变成
+      明确的 503。R2 包由浏览器端清单和双 SHA 校验，这里只检查同源运行时。
+    */
+    if (name === 'cs16' && !sub) {
+      const missing = CS16_REQUIRED_RUNTIME.find((file) => !existsSync(join(CLIENT_DIR, 'web', 'cs16', file)))
+      if (missing) {
+        console.error(`[web/cs16] 运行文件缺失：${missing}`)
+        res.set('Cache-Control', CACHE.none)
+        return res.status(503).type('html').send('<h1>CS1.6 网页版正在维护</h1><p>运行文件尚未完整部署，请稍后再试。</p>')
+      }
     }
     // 固定 URL（不含哈希），走「引擎」那档短缓存；见 cache.js 里 /web/ 的说明
     res.set('Cache-Control', CACHE.engine)

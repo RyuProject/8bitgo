@@ -117,7 +117,7 @@ function corsHeaders(request, env) {
   const headers = {
     'Access-Control-Allow-Methods': 'GET, HEAD, POST, PUT, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Range, Authorization, Content-Type, If-None-Match, If-Range, If-Modified-Since, If-Match, If-Unmodified-Since',
-    'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, ETag, Last-Modified, Retry-After',
+    'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, ETag, Last-Modified, Retry-After, CF-Cache-Status',
     'Access-Control-Max-Age': '86400', Vary: 'Origin',
   }
   if (allowed.includes('*')) headers['Access-Control-Allow-Origin'] = '*'
@@ -352,6 +352,7 @@ const MAX_JSON_BYTES = 2 * 1024 * 1024
  */
 const DEFAULT_CACHE_CONTROL = 'public, max-age=300, s-maxage=600, must-revalidate'
 const VERSIONED_CACHE_CONTROL = 'public, max-age=86400, s-maxage=2592000, stale-while-revalidate=86400'
+const IMMUTABLE_CACHE_CONTROL = 'public, max-age=31536000, s-maxage=31536000, immutable'
 function cacheValue(env, name, fallback) {
   const value = env[name] || fallback
   if (/[\r\n]/.test(value)) throw new HttpError(500, '缓存配置无效', 'invalid_configuration')
@@ -365,6 +366,10 @@ function writeCacheControl(env) { return cacheValue(env, 'OBJECT_CACHE_CONTROL',
  * 服务端在不 HEAD 一次的前提下无法从 key 推断内容版本。
  */
 export function cachePolicy(env, url) {
+  // CS16 分片的路径本身就是压缩字节 SHA-256；它不会被原地替换，可以安全缓存一年。
+  if (/^\/web\/cs16\/zstd-v1\/chunks\/[a-f0-9]{64}\.zst$/.test(url?.pathname || '')) {
+    return cacheValue(env, 'IMMUTABLE_CACHE_CONTROL', IMMUTABLE_CACHE_CONTROL)
+  }
   const versioned = Boolean(url?.searchParams?.get('romv') || url?.searchParams?.get('v'))
   return versioned
     ? cacheValue(env, 'VERSIONED_CACHE_CONTROL', VERSIONED_CACHE_CONTROL)
@@ -375,6 +380,7 @@ const MIME = {
   swf: 'application/x-shockwave-flash', json: 'application/json', txt: 'text/plain; charset=utf-8',
   webp: 'image/webp', avif: 'image/avif', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
   gif: 'image/gif', mp4: 'video/mp4', webm: 'video/webm', wasm: 'application/wasm',
+  zst: 'application/zstd',
 }
 function guessType(key) { return MIME[key.split('.').pop()?.toLowerCase()] || 'application/octet-stream' }
 function maxUploadBytes(env) { return positiveInt(env.MAX_UPLOAD_MB, 512, 5 * 1024 * 1024) * 1024 * 1024 }

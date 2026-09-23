@@ -334,7 +334,13 @@ export function buildDosboxConf(exe: string | null, startupCommands?: string): s
     }
   }
   if (file) {
-    lines.push(file.includes(' ') ? `"${file}"` : file)
+    /*
+      DOSBox 的命令执行和上面的 CD 一样不会可靠地把长文件名 / 引号还原成宿主文件名。
+      这里没有 ZIP 清单，算不出一个不会撞名的别名，所以宁可明确拒绝。makeJsdosBundle
+      会先给这类启动文件补一个真实存在的 8.3 别名，再拿那个别名调用到这里。
+    */
+    if (!isDos83Path(file)) throw new Error(`DOS 启动文件名不是 8.3 格式，必须先生成启动别名：${file}`)
+    lines.push(file)
     lines.push(`@echo ${file} 已退出。如果刚才画面上什么都没发生，多半是找不到文件或缺少依赖。`)
   }
   else lines.push('@echo 没有找到可执行文件，请手动运行游戏。')
@@ -402,14 +408,75 @@ export const WINDOWS_GAME_ROOT = 'GAME'
 export const WINDOWS_LAUNCHER_PATH = '8BITGO/RUN.BAT'
 
 function safeArchivePath(path: string): string | null {
-  const clean = path.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+  const normalized = path.replace(/\\/g, '/')
+  // 去掉 `./` 是安全的常见归档写法；绝对路径和盘符会逃出游戏层，必须拒绝而不是悄悄削掉。
+  if (normalized.startsWith('/') || /^[a-z]:/i.test(normalized)) return null
+  const clean = normalized.replace(/^(?:\.\/)+/, '').replace(/\/+$/g, '')
   if (!clean) return null
   // 解包发生在模拟器的虚拟文件系统里，但 ../ 仍能覆盖系统层和最终 dosbox.conf。
   if (clean.split('/').some((part) => !part || part === '.' || part === '..')) return null
   // 客体 Windows 本身也处理不了文件名里的控制字符，越早报错越容易定位到包的问题。
   // eslint-disable-next-line no-control-regex
-  if (/[\x00-\x1f]/.test(clean)) return null
+  if (/[\x00-\x1f:]/.test(clean)) return null
   return clean
+}
+
+/** 把 ZIP 条目统一成安全的相对路径；普通 DOS 和 Windows 客体必须共用这道边界。 */
+function normalizeArchiveEntries(entries: ZipEntry[]): ZipEntry[] {
+  return entries.map((entry) => {
+    const directory = entry.name.endsWith('/')
+    const safe = safeArchivePath(entry.name)
+    if (!safe) throw new Error(`ZIP 含不安全的绝对路径、盘符或 ../ 路径：${entry.name}`)
+    return { ...entry, name: directory ? `${safe}/` : safe }
+  })
+}
+
+interface DosLaunchTarget {
+  /** 写进 autoexec 的真实路径。 */
+  path: string
+  /** 长文件名需要额外写进 ZIP 的 8.3 别名；原文件仍保留，避免破坏游戏自己的引用。 */
+  alias: OutEntry | null
+}
+
+/**
+ * DOS shell 不能可靠执行带空格、中文或超过 8.3 的文件名。归档里有真实清单时，为启动文件
+ * 增加一个同目录的 8.3 别名，内容直接复用原条目的压缩字节，不做解压 / 重压。
+ */
+function dosLaunchTarget(entries: ZipEntry[], buf: ArrayBuffer, executable: string): DosLaunchTarget {
+  const wanted = safeArchivePath(executable)
+  if (!wanted) throw new Error(`DOS 启动程序路径不安全：${executable}`)
+  const source = entries.find((entry) => !entry.name.endsWith('/') && entry.name.toLowerCase() === wanted.toLowerCase())
+  if (!source) throw new Error(`ZIP 里找不到后台配置的启动程序：${executable}`)
+
+  const slash = source.name.lastIndexOf('/')
+  const dir = slash >= 0 ? source.name.slice(0, slash + 1) : ''
+  const file = source.name.slice(slash + 1)
+  if (isDos83Path(file)) return { path: source.name, alias: null }
+
+  const ext = file.slice(file.lastIndexOf('.') + 1).toUpperCase()
+  if (!/^(EXE|COM|BAT)$/.test(ext)) throw new Error(`DOS 启动文件扩展名无效：${file}`)
+  const occupied = new Set(entries.map((entry) => entry.name.toLowerCase()))
+  let aliasName = ''
+  for (let i = 0; i < 100; i++) {
+    const stem = i === 0 ? '8BITGO' : `8BITG${String(i).padStart(2, '0')}`
+    const candidate = `${stem}.${ext}`
+    if (!occupied.has(`${dir}${candidate}`.toLowerCase())) {
+      aliasName = candidate
+      break
+    }
+  }
+  if (!aliasName) throw new Error(`DOS 启动目录里没有可用的 8.3 别名：${dir || '/'}`)
+  return {
+    path: `${dir}${aliasName}`,
+    alias: {
+      name: `${dir}${aliasName}`,
+      method: source.method,
+      crc: source.crc,
+      compressedSize: source.compressedSize,
+      uncompressedSize: source.uncompressedSize,
+      data: rawData(buf, source),
+    },
+  }
 }
 
 /**
@@ -430,10 +497,11 @@ export interface WindowsGameLayer {
 }
 
 export function makeWindowsGameLayer(buf: ArrayBuffer, executable: string, drive = 'd'): WindowsGameLayer {
-  const entries = readZipEntries(buf)
+  const parsed = readZipEntries(buf)
   const bytes = new Uint8Array(buf)
   const zipLike = bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b
-  if (!zipLike || !entries) throw new Error('Windows 客体游戏必须上传完整 ZIP，不能只上传单个 EXE')
+  if (!zipLike || !parsed) throw new Error('Windows 客体游戏必须上传完整 ZIP，不能只上传单个 EXE')
+  const entries = normalizeArchiveEntries(parsed)
   assertRepackable(entries)
 
   const files = entries
@@ -526,15 +594,15 @@ export interface ExtraFile {
  */
 export function mergeExtraFiles(buf: ArrayBuffer, extras: readonly ExtraFile[]): ArrayBuffer {
   if (!extras.length) return buf
-  const entries = readZipEntries(buf)
-  if (!entries) throw new Error('要加附加文件的 ROM 不是一个可读的 ZIP')
+  const parsed = readZipEntries(buf)
+  if (!parsed) throw new Error('要加附加文件的 ROM 不是一个可读的 ZIP')
+  const entries = normalizeArchiveEntries(parsed)
   assertRepackable(entries)
 
-  const clean = (p: string) => p.replace(/\\/g, '/').replace(/^\.?\//, '').replace(/^\/+/, '')
   const wanted = new Map<string, ExtraFile>()
   for (const e of extras) {
-    const path = clean(e.path)
-    if (!path || path.endsWith('/')) continue
+    const path = safeArchivePath(e.path)
+    if (!path) throw new Error(`附加文件含不安全的绝对路径、盘符或 ../ 路径：${e.path}`)
     wanted.set(path.toLowerCase(), { path, data: e.data })
   }
   if (!wanted.size) return buf
@@ -596,12 +664,13 @@ export async function makeJsdosBundle(
   buf: ArrayBuffer,
   conf?: string,
   configOverride?: string,
-  /** 后台填的启动程序原文，只用来做存在性校验（conf 已经由调用方生成好了） */
+  /** 后台填的启动程序；存在时既做校验，也覆盖自动猜测。 */
   dosExecutable?: string,
   /** 有命令时不透传包内旧 autoexec，否则语言槽填写的挂盘命令会被静默忽略。 */
   startupCommands?: string,
 ): Promise<BundleResult> {
-  const entries = readZipEntries(buf)
+  const parsed = readZipEntries(buf)
+  const entries = parsed ? normalizeArchiveEntries(parsed) : null
   const bytes = new Uint8Array(buf)
   const zipLike = bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b
   if (zipLike && !entries) throw new Error('DOS 压缩包为空、已损坏或下载不完整')
@@ -615,9 +684,11 @@ export async function makeJsdosBundle(
     在这里抛是在 Dos() 之前，能吃自动重试，最后给出一句指名道姓的错误。
     对照组：makeWindowsGameLayer 早就有同一道校验（找不到就 throw）。
   */
+  let configuredExecutable: string | null = null
   if (entries && dosExecutable?.trim()) {
-    const wanted = dosExecutable.trim().replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase()
-    if (!entries.some((e) => e.name.toLowerCase() === wanted)) {
+    const wanted = safeArchivePath(dosExecutable.trim())?.toLowerCase()
+    configuredExecutable = entries.find((e) => !e.name.endsWith('/') && e.name.toLowerCase() === wanted)?.name ?? null
+    if (!configuredExecutable) {
       throw new Error(`ZIP 里找不到后台配置的启动程序：${dosExecutable.trim()}`)
     }
   }
@@ -674,7 +745,7 @@ export async function makeJsdosBundle(
     管理员填了 PARANOID.COM 保存，玩家点开进的还是包里 conf 指向的安装界面，
     改三次配置清三次缓存都找不到原因。
   */
-  if (bundledConf && !configOverride?.trim() && !conf && !startupCommands?.trim()) {
+  if (bundledConf && !configOverride?.trim() && !conf && !configuredExecutable && !startupCommands?.trim()) {
     return { blob: new Blob([buf], { type: 'application/zip' }), executable: null, passthrough: true }
   }
 
@@ -688,10 +759,17 @@ export async function makeJsdosBundle(
       crc32: bundledConf.crc,
       offset: bundledConf.localOffset,
     })
-    // 后台指定了启动程序就以我们生成的那份为基底，否则用包里自带的
-    const base = conf ?? (startupCommands?.trim()
-      ? buildDosboxConf(dosExecutable ?? pickExecutable(entries.map((e) => e.name)), startupCommands)
-      : new TextDecoder().decode(extracted))
+    const picked = configuredExecutable ?? (startupCommands?.trim() ? pickExecutable(entries.map((e) => e.name)) : null)
+    const launch = picked ? dosLaunchTarget(entries, buf, picked) : null
+    // 后台指定了启动程序就以我们生成的那份为基底，否则用包里自带的。
+    // 长文件名必须改用真实写进包里的别名，不能继续沿用调用方提前生成的坏命令。
+    const base = launch?.alias
+      ? buildDosboxConf(launch.path, startupCommands)
+      : conf ?? (configuredExecutable
+          ? buildDosboxConf(launch?.path ?? configuredExecutable, startupCommands)
+          : startupCommands?.trim()
+            ? buildDosboxConf(launch?.path ?? picked, startupCommands)
+            : new TextDecoder().decode(extracted))
     const merged = te.encode(mergeDosboxConfigOverride(base, configOverride)) as Uint8Array<ArrayBuffer>
     const out: OutEntry[] = []
     for (const e of entries) {
@@ -705,6 +783,7 @@ export async function makeJsdosBundle(
         data: rawData(buf, e),
       })
     }
+    if (launch?.alias) out.push(launch.alias)
     if (!entries.some((e) => e.name.toLowerCase() === '.jsdos/')) {
       out.push({ name: '.jsdos/', method: 0, crc: 0, compressedSize: 0, uncompressedSize: 0, data: new Uint8Array(0) as Uint8Array<ArrayBuffer> })
     }
@@ -721,9 +800,10 @@ export async function makeJsdosBundle(
 
   const out: OutEntry[] = []
   let exe: string | null = null
+  let launchExe: string | null = null
 
   if (entries) {
-    exe = pickExecutable(entries.map((e) => e.name), name)
+    exe = configuredExecutable ?? pickExecutable(entries.map((e) => e.name), name)
     if (!exe) throw new Error('DOS 压缩包里没有可运行的 .exe、.com 或 .bat 文件')
 
     /**
@@ -768,18 +848,27 @@ export async function makeJsdosBundle(
         data: rawData(buf, e), // 压缩数据整段照抄，不解压
       })
     }
+    const launch = dosLaunchTarget(entries, buf, exe)
+    launchExe = launch.path
+    if (launch.alias) out.push(launch.alias)
   } else {
     // 不是 zip：当成单个可执行文件塞进去
     const file = name.split(/[\\/]/).pop() || 'game.exe'
     if (!/\.(exe|com|bat)$/i.test(file)) throw new Error('DOS 游戏必须是 ZIP、JSDOS、EXE、COM 或 BAT 文件')
     if (buf.byteLength === 0) throw new Error('DOS 游戏文件为空')
+    const safe = safeArchivePath(file)
+    if (!safe) throw new Error(`DOS 游戏文件名不安全：${file}`)
     const data = new Uint8Array(buf) as Uint8Array<ArrayBuffer>
     exe = file
-    out.push({ name: file, method: 0, crc: crc32(data), compressedSize: data.length, uncompressedSize: data.length, data })
+    const ext = file.slice(file.lastIndexOf('.') + 1).toUpperCase()
+    launchExe = isDos83Path(file) ? file : `8BITGO.${ext}`
+    out.push({ name: launchExe, method: 0, crc: crc32(data), compressedSize: data.length, uncompressedSize: data.length, data })
   }
 
+  // conf 参数来自旧调用方时只适用于原文件名；别名场景必须重建 autoexec，否则已修好的别名不会被执行。
+  const baseConf = launchExe !== exe ? buildDosboxConf(launchExe, startupCommands) : conf ?? buildDosboxConf(launchExe, startupCommands)
   const confBytes = te.encode(
-    mergeDosboxConfigOverride(conf ?? buildDosboxConf(exe, startupCommands), configOverride),
+    mergeDosboxConfigOverride(baseConf, configOverride),
   ) as Uint8Array<ArrayBuffer>
   // conf 自己的父目录同理要先建好（单个 exe 的分支也走到这里，那边一个目录条目都没有）
   out.push({ name: '.jsdos/', method: 0, crc: 0, compressedSize: 0, uncompressedSize: 0, data: new Uint8Array(0) as Uint8Array<ArrayBuffer> })

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
-import { Link, NavLink, Outlet, useOutletContext } from 'react-router-dom'
+import { Link, Navigate, NavLink, Outlet, useLocation, useOutletContext } from 'react-router-dom'
 import { cx } from '@/lib/format'
 import { useDocumentTitle } from '@/lib/useDocumentTitle'
 import { ApiError, api, apiEnabled, getAdminApiToken, getToken, setAdminApiToken } from '@/services/api'
@@ -16,8 +16,8 @@ const SESSION_KEY = '8bitgo.admin.unlocked'
  */
 const TABS: { to: string; label: string; end?: boolean; need: Ability; adminOnly?: true }[] = [
   { to: '/admin', label: '概览', end: true, need: 'content:edit' },
-  { to: '/admin/games', label: '游戏', need: 'content:edit' },
-  { to: '/admin/posts', label: '文章', need: 'content:edit' },
+  { to: '/admin/games', label: '游戏', need: 'games:edit' },
+  { to: '/admin/posts', label: '文章', need: 'posts:edit' },
   { to: '/admin/developers', label: '开发商', need: 'content:edit' },
   { to: '/admin/friend-links', label: '友情链接', need: 'content:edit' },
   /*
@@ -131,6 +131,7 @@ export function AdminLayout() {
 
 /** 验证成功后才挂载后台及其子路由，未登录时不会提前请求任何管理数据。 */
 function AdminShell({ onLock, me }: { onLock: () => void; me: VerifyResult | null }) {
+  const location = useLocation()
   /**
    * v1 在这里把整个游戏库和全部文章灌进一个前端 store，子页面再从里面读。
    * v2 没有那个 store 了 —— 每个子页面自己按需向后端取数（分页 / 按 slug）。
@@ -174,6 +175,15 @@ function AdminShell({ onLock, me }: { onLock: () => void; me: VerifyResult | nul
    */
   const abilities: Ability[] = me?.abilities ?? [...ABILITIES]
   const tabs = TABS.filter((t) => abilities.includes(t.need) && (!t.adminOnly || me?.role === 'admin'))
+  const routeTab = TABS.find((t) => (
+    t.end ? location.pathname === t.to : location.pathname === t.to || location.pathname.startsWith(`${t.to}/`)
+  ))
+  /*
+    只隐藏导航不算权限控制：手输 /admin/roms 仍会挂载页面，页面自己的副作用甚至可能先跑。
+    服务端当然还会拒绝，但这里也在 Outlet 挂载前挡住，让志愿者始终只进入获准的两个库。
+  */
+  const routeDenied = me?.role === 'volunteer' && (!routeTab || !tabs.includes(routeTab))
+  const firstAllowed = tabs[0]?.to ?? '/'
 
   return (
     <div className="min-h-dvh bg-bg text-fg">
@@ -217,7 +227,19 @@ function AdminShell({ onLock, me }: { onLock: () => void; me: VerifyResult | nul
       </header>
 
       <main className="mx-auto max-w-6xl px-4 py-6 sm:px-6">
-        <Outlet context={{ state: data, error: dataError, reload: load, abilities } satisfies AdminData} />
+        {routeDenied ? (
+          <Navigate to={firstAllowed} replace />
+        ) : (
+          <Outlet
+            context={{
+              state: data,
+              error: dataError,
+              reload: load,
+              abilities,
+              role: me?.role ?? 'admin',
+            } satisfies AdminData}
+          />
+        )}
       </main>
     </div>
   )
@@ -232,6 +254,8 @@ export interface AdminData {
   reload: () => void
   /** 当前身份能做什么（shared/roles.js）。子页面据此决定画不画某个操作 */
   abilities: Ability[]
+  /** 用于把「发布 / 上架」等主库语义改成志愿者个人库语义，不承担授权。 */
+  role: UserRole
 }
 
 /** 子页面读取当前数据源状态 */

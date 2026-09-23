@@ -42,7 +42,7 @@
         <div id="hud"></div>
         <div id="overlay">
           <div id="title">Counter-Strike 1.6 · 网页版</div>
-          <div id="sub">Xash3D-FWGS (WebAssembly) 引擎原生运行完整 CS1.6（含全部地图）。首次需下载约 600&nbsp;MB 基础包，解压后约占 1.2&nbsp;GB 内存，之后即点即玩。进图后按 ~ 开控制台，<code>bot_add</code> 加电脑人。</div>
+          <div id="sub">Xash3D-FWGS (WebAssembly) 引擎运行 CS1.6，内置 12 张经典地图。资源使用 Zstd 分片压缩，会边下载、边校验、边写入游戏盘。进图后按 ~ 打开控制台。</div>
           <div class="row">
             <label>地图
               <select id="map">
@@ -70,6 +70,11 @@
         </div>
       </div>
     </div>
-    <script type="module" src="./cs16.js?v=20260922"></script>
+    <!--
+      加载 esbuild 产物，不是 cs16.js 本体：引擎 dist 是 `export * from './net'` 这种
+      「目录 + 无扩展名」的裸模块写法，原生 ESM 解析不了（dev 会兜底成根 index.html）。
+      官方 raw.js 那条路在本引擎版本（1.2.2）上会卡在版本检查，详见 cs16.js 头注释。
+    -->
+    <script type="module" src="./cs16.bundle.js?v=20260923-zstd1"></script>
   </body>
 </html>

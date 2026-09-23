@@ -378,7 +378,16 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
    * 主播主线程忙（模拟器 + N 路编码）时 srflx 也会丢，剩下能配对的只有中继 —— 白走 TURN 流量，
    * 没配 TURN 的站点上则是同一路由器下的两个人都连不上。现在先攒着，远端描述落地后再一并加。
    */
-  type Peer = { pc: RTCPeerConnection; gen: number; id: string; pending: RTCIceCandidateInit[]; remoteReady: boolean; dc?: RTCDataChannel }
+  type Peer = {
+    pc: RTCPeerConnection
+    gen: number
+    id: string
+    pending: RTCIceCandidateInit[]
+    remoteReady: boolean
+    dc?: RTCDataChannel
+    /** 同一个观众生命周期只自动重建一次，避免对方反复 close 通道拖着主播无限 offer。 */
+    coopRecoveryAttempt: number
+  }
   const peers = new Map<string, Peer>()
   let genCounter = 0
   /** 等 ICE 配置的建连也要记账：观众离开或重新 watch 时，迟到的旧请求不能再开一条编码路。 */
@@ -459,9 +468,12 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     const taken = gate.seated() !== null
     const key = `${open}/${taken}`
     if (key === coopReported) return
-    coopReported = key
+    // 断线时不能把「想报」当成「已经报过」。原来先写 coopReported 再判断 connected，
+    // 这段时间里的状态变化会在重连后被去重掉，大厅就永久停在旧的「已占 / 空位」。
+    if (!socket.connected || !roomId) return
     try {
-      if (socket.connected) socket.emit('coop-state', { open, taken })
+      socket.emit('coop-state', { open, taken })
+      coopReported = key
     } catch {
       /* 信令断了就算了 —— 重连后这个函数还会被统计循环调到，那时再报 */
     }
@@ -513,7 +525,27 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       else if (msg.t === 'leave') revokeInternal()
       else if (msg.t === 'k') options.onGuestInput?.(msg.b, msg.d)
     }
-    dc.onclose = () => release(gate.forget(entry.id))
+    dc.onclose = () => {
+      // 先认这条连接仍是当前连接。dropPeer 会先从 Map 删除再关 pc，那个 onclose 不能反过来
+      // 把新连接或新持座人清掉，也不能触发一轮多余的重建。
+      if (peers.get(entry.id) !== entry) return
+      const wasSeated = gate.seated() === entry.id
+      release(gate.forget(entry.id))
+      if (wasSeated) options.onSeatChange?.(null)
+      reportCoop()
+
+      /*
+        DataChannel 一旦 closed，原连接上没有 API 能把同一条通道重新打开；视频可能仍在播，
+        观众端也就不会主动 rewatch，于是 2P 会永久失效。重建整条 PeerConnection 能重新协商通道。
+        同一个观众生命周期只自动重建一次；否则对方脚本反复 close 通道，就能逼主播无限建连接。
+        观众主动重新 watch 会建立新的生命周期，届时仍有一次恢复机会。
+      */
+      if (entry.coopRecoveryAttempt >= 1 || stopped) return
+      const viewerId = entry.id
+      window.setTimeout(() => {
+        if (!stopped && peers.get(viewerId) === entry) void addViewer(viewerId, true, entry.coopRecoveryAttempt + 1)
+      }, 0)
+    }
   }
 
   const dropPeer = (viewerId: string) => {
@@ -528,7 +560,10 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     const wasSeated = gate.seated() === viewerId
     viewerNames.delete(viewerId)
     release(gate.forget(viewerId))
-    if (wasSeated) options.onSeatChange?.(null)
+    if (wasSeated) {
+      options.onSeatChange?.(null)
+      reportCoop()
+    }
     try {
       p.pc.close()
     } catch {
@@ -549,7 +584,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
    * force=false 时，已有的连接还活着就不动它（主播重连回来对照名单用）；
    * force=true 是观众明确要求重来（它重新 watch 了），旧连接不管死活都换掉。
    */
-  const addViewer = async (viewerId: string, force: boolean) => {
+  const addViewer = async (viewerId: string, force: boolean, coopRecoveryAttempt = 0) => {
     if (stopped) return
     const existing = peers.get(viewerId)
     if (existing) {
@@ -574,7 +609,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     dropPeer(viewerId)
     const gen = ++genCounter
     const pc = new RTCPeerConnection({ iceServers })
-    const entry: Peer = { pc, gen, id: viewerId, pending: [], remoteReady: false }
+    const entry: Peer = { pc, gen, id: viewerId, pending: [], remoteReady: false, coopRecoveryAttempt }
     peers.set(viewerId, entry)
 
     // 第一个观众进来才真的开始抓屏
@@ -860,6 +895,9 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     roomId = data.roomId
     token = data.token
     options.onRoom?.(roomId)
+    // 新房间在服务端总是从 false/false 开始，不能拿上一间房的去重键跳过首次上报。
+    coopReported = ''
+    reportCoop()
     relink()
   }
 
@@ -879,6 +917,8 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       retuneFps()
       options.onState?.('live')
       relink()
+      // 断线期间座位可能变过；reportCoop 只在真正发出后才记去重键，这里负责补报。
+      reportCoop()
       // 服务端不记「切后台」这个状态跨断线：接回来要再报一次，否则主播明明在后台，
       // 中途进来的观众拿到的快照却是 hostFrozen=false，对着冻住的画面等 75 秒
       onVisibility()
@@ -1012,7 +1052,10 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
 
   socket.on('disconnect', (() => {
     // 信令断了，画面不一定断（WebRTC 是点对点的）。socket.io 会自己重连，连上再 resume
-    if (!stopped) options.onState?.('reconnecting')
+    if (!stopped) {
+      coopReported = ''
+      options.onState?.('reconnecting')
+    }
   }) as (...args: never[]) => void)
 
   // connectLive 已经消费掉首连的 connect，这里只会在**重连**时触发

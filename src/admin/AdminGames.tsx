@@ -40,7 +40,7 @@ const SEARCH_DEBOUNCE = 300
  */
 async function slugTaken(slug: string): Promise<boolean> {
   try {
-    await api.get<Game>(`/api/games/${encodeURIComponent(slug)}`, true)
+    await api.get<Game>(`/api/games/${encodeURIComponent(slug)}?library=mine`, true)
     return true
   } catch {
     return false
@@ -49,6 +49,7 @@ async function slugTaken(slug: string): Promise<boolean> {
 
 export function AdminGames() {
   const db = useAdminData()
+  const personalLibrary = db.role === 'volunteer'
   const [q, setQ] = useState('')
   const [debouncedQ, setDebouncedQ] = useState('')
   const [platform, setPlatform] = useState<PlatformId | 'all'>('all')
@@ -187,11 +188,15 @@ export function AdminGames() {
    * 删文件失败不影响「游戏已删除」这个结果，只把失败的 key 报出来让人工收尾。
    */
   const remove = async (g: Game) => {
-    const keys = romKeysOf(g).filter(isDeletableKey)
+    // 志愿者删的是自己的一条资料，不拥有对象存储；即使浏览器残留了 Worker 口令也绝不能顺手删文件。
+    const keys = personalLibrary ? [] : romKeysOf(g).filter(isDeletableKey)
     const tail = keys.length
       ? `\n\n同时会从 R2 删除这款游戏的 ${keys.length} 个 ROM 文件：\n${keys.slice(0, 5).map((k) => `  ${k}`).join('\n')}${keys.length > 5 ? `\n  …还有 ${keys.length - 5} 个` : ''}`
       : ''
-    if (!window.confirm(`确定删除「${g.titleZh ?? g.title}」？此操作会从数据库中移除该游戏，不可恢复。${tail}`)) return
+    const scope = personalLibrary
+      ? '只会从你的独立游戏库移除，不影响主游戏库、其他志愿者或 ROM 文件。'
+      : '此操作会从主数据库中移除该游戏，不可恢复。'
+    if (!window.confirm(`确定删除「${g.titleZh ?? g.title}」？${scope}${tail}`)) return
 
     try {
       await deleteGame(g.slug)
@@ -224,13 +229,15 @@ export function AdminGames() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold">游戏管理</h1>
+          <h1 className="text-xl font-bold">{personalLibrary ? '我的游戏库' : '游戏管理'}</h1>
           <p className="mt-1 text-sm text-muted">
             {!apiEnabled()
               ? '未配置后端（VITE_API_URL），后台读不到游戏，也保存不了修改。'
               : error
                 ? `⚠️ 取不到游戏列表：${error}`
-                : `共 ${total} 款（含已下架）。修改直接写入数据库，前台立即生效。`}
+                : personalLibrary
+                  ? `共 ${total} 款。这里是你的独立资料库，编辑和删除不会影响主游戏库或其他志愿者，内容也不会自动出现在前台。`
+                  : `共 ${total} 款（含已下架）。修改直接写入数据库，前台立即生效。`}
           </p>
         </div>
         <button type="button" className={btnClass.primary} onClick={() => setEditing({ mode: 'add' })} disabled={!apiEnabled()}>
@@ -257,15 +264,17 @@ export function AdminGames() {
         </select>
         <select className={cx(inputClass, 'w-32')} value={status} onChange={(e) => setStatus(e.target.value as Status)}>
           <option value="all">全部状态</option>
-          <option value="visible">上架中</option>
-          <option value="hidden">已下架</option>
+          <option value="visible">{personalLibrary ? '库内显示' : '上架中'}</option>
+          <option value="hidden">{personalLibrary ? '库内隐藏' : '已下架'}</option>
         </select>
         {/* 挑好首页位之后，对着这一档逐个传视频最省事 */}
-        <select className={cx(inputClass, 'w-36')} value={home} onChange={(e) => setHome(e.target.value as HomeFilter)}>
-          <option value="all">首页位：全部</option>
-          <option value="picked">只看首页位</option>
-          <option value="unpicked">未上首页</option>
-        </select>
+        {!personalLibrary && (
+          <select className={cx(inputClass, 'w-36')} value={home} onChange={(e) => setHome(e.target.value as HomeFilter)}>
+            <option value="all">首页位：全部</option>
+            <option value="picked">只看首页位</option>
+            <option value="unpicked">未上首页</option>
+          </select>
+        )}
         <select
           className={cx(inputClass, 'w-40')}
           value={effectiveSort}
@@ -305,7 +314,7 @@ export function AdminGames() {
               <th className="px-3 py-2 font-medium">游玩</th>
               {/* G 币功能没开的时候整列隐藏 —— 开关已经是 false，列还杵在那儿全是「—」 */}
               {FEATURES.coins && <th className="px-3 py-2 font-medium">G 币</th>}
-              <th className="px-3 py-2 font-medium">首页</th>
+              {!personalLibrary && <th className="px-3 py-2 font-medium">首页</th>}
               <th className="px-3 py-2 font-medium">ROM</th>
               <th className="px-3 py-2 font-medium">状态</th>
               <th className="px-3 py-2 text-right font-medium">操作</th>
@@ -324,7 +333,12 @@ export function AdminGames() {
                       <div className="min-w-0">
                         <p className="truncate font-medium">{g.titleZh ?? g.title}</p>
                         <p className="truncate text-xs text-dim">
-                          {g.title} · <Link to={`/games/${g.slug}`} target="_blank" className="hover:text-brand-hover">/{g.slug}</Link>
+                          {g.title} ·{' '}
+                          {personalLibrary ? (
+                            <span>/{g.slug}</span>
+                          ) : (
+                            <Link to={`/games/${g.slug}`} target="_blank" className="hover:text-brand-hover">/{g.slug}</Link>
+                          )}
                         </p>
                       </div>
                     </div>
@@ -340,7 +354,7 @@ export function AdminGames() {
                     首页位和视频放一格：挑好首页位之后要做的事就是给这几款补视频，
                     分成两列反而要来回对照
                   */}
-                  <td className="px-3 py-2 whitespace-nowrap">
+                  {!personalLibrary && <td className="px-3 py-2 whitespace-nowrap">
                     {g.homeRank ? (
                       <span className="rounded bg-brand-soft px-1.5 py-0.5 text-xs font-semibold text-brand-hover" title={`首页第 ${g.homeRank} 位`}>
                         ⭐ {g.homeRank}
@@ -357,7 +371,7 @@ export function AdminGames() {
                         ○
                       </span>
                     ) : null}
-                  </td>
+                  </td>}
                   <td className="px-3 py-2">
                     {(() => {
                       // 编辑弹窗只填「按语言的 ROM」（roms），以前这里只看 g.rom，
@@ -374,9 +388,9 @@ export function AdminGames() {
                   </td>
                   <td className="px-3 py-2">
                     {g.hidden ? (
-                      <span className="rounded bg-white/5 px-1.5 py-0.5 text-xs text-dim">已下架</span>
+                      <span className="rounded bg-white/5 px-1.5 py-0.5 text-xs text-dim">{personalLibrary ? '库内隐藏' : '已下架'}</span>
                     ) : (
-                      <span className="rounded bg-online/15 px-1.5 py-0.5 text-xs text-online">上架中</span>
+                      <span className="rounded bg-online/15 px-1.5 py-0.5 text-xs text-online">{personalLibrary ? '库内显示' : '上架中'}</span>
                     )}
                   </td>
                   <td className="px-3 py-2">
@@ -390,14 +404,14 @@ export function AdminGames() {
                         onClick={async () => {
                           try {
                             await setGameHidden(g.slug, !g.hidden)
-                            setToast(g.hidden ? '已上架' : '已下架')
+                            setToast(personalLibrary ? (g.hidden ? '已在你的库中显示' : '已在你的库中隐藏') : (g.hidden ? '已上架' : '已下架'))
                             reload()
                           } catch (err) {
                             setToast(err instanceof Error ? err.message : '操作失败')
                           }
                         }}
                       >
-                        {g.hidden ? '上架' : '下架'}
+                        {personalLibrary ? (g.hidden ? '显示' : '隐藏') : (g.hidden ? '上架' : '下架')}
                       </button>
                       <button type="button" className={cx(btnClass.small, 'text-live hover:bg-live/15')} onClick={() => remove(g)}>
                         删除
@@ -409,7 +423,7 @@ export function AdminGames() {
             })}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={FEATURES.coins ? 10 : 9} className="px-3 py-10 text-center text-sm text-muted">
+                <td colSpan={(FEATURES.coins ? 10 : 9) - (personalLibrary ? 1 : 0)} className="px-3 py-10 text-center text-sm text-muted">
                   {loading ? (
                     '正在读取数据库…'
                   ) : error ? (
@@ -428,6 +442,8 @@ export function AdminGames() {
                       <br />
                       <span className="text-xs">在前端 .env 里配好后端地址并重新构建，后台才能读写游戏库。</span>
                     </>
+                  ) : personalLibrary && total === 0 && !debouncedQ && platform === 'all' ? (
+                    '你的独立游戏库还没有游戏，点右上角「新增游戏」开始整理。'
                   ) : total === 0 && !debouncedQ && platform === 'all' ? (
                     <>
                       数据库里还没有游戏。
@@ -487,6 +503,7 @@ export function AdminGames() {
               initial={editing.mode === 'edit' ? editing.game : undefined}
               // 表单里这份只够挡住「和当前页某条重名」，真正的判重在 save() 里问后端
               existingSlugs={items.map((g) => g.slug)}
+              personalLibrary={personalLibrary}
               onSubmit={save}
               onCancel={() => setEditing(null)}
             />

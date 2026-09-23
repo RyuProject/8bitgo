@@ -5,7 +5,8 @@
  * v2 改成按路由取数：文章数量级小（几十到几百），后端 /api/page?path=/blog
  * 一次给全已发布的，前台在这份列表里找就行，不用再为单篇文章多打一次请求。
  *
- * 后台仍然需要「含草稿的全量列表」，那条路走 /api/posts?all=1（见 adminPosts）。
+ * 后台仍然需要「含草稿的全量列表」，那条路带 library=mine：管理员读主库，
+ * 志愿者只读自己的独立库（见 adminPosts）。
  */
 import type { Post } from '@/types'
 import { api, apiEnabled } from './api'
@@ -36,10 +37,10 @@ export function readMinutes(content: string): number {
 
 /* ---------------- 后台 ---------------- */
 
-/** 后台：拉全部文章（含草稿），需要管理员口令 */
+/** 后台：管理员拉主库，志愿者拉自己的独立库，二者都含草稿。 */
 export async function fetchAllPosts(): Promise<Post[]> {
   if (!apiEnabled()) return []
-  const list = await api.get<Post[]>('/api/posts?all=1', true)
+  const list = await api.get<Post[]>('/api/posts?all=1&library=mine', true)
   return Array.isArray(list) ? list : []
 }
 

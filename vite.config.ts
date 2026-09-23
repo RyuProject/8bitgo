@@ -1,5 +1,5 @@
 import path from 'node:path'
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
@@ -9,7 +9,7 @@ import { defineConfig, loadEnv } from 'vite'
  * 把几个「又大又不需要加工」的静态目录排除在产物复制之外。
  *
  * `public/` 现在有 994MB，其中两个目录是纯数据、一个字节都不需要 Vite 碰：
- *   · web/cs15   550MB —— CS1.5 的游戏数据包（Valve 的资产，不进 git）
+ *   · web/cs15/packs、web/cs16/packs —— 游戏数据包（Valve 的资产，不进 git）
  *   · qemu-wasm  140MB —— /linux 那个页面的 QEMU 运行时（上游产物）
  * 而 Vite 会把 `public/` **整个**复制到 `dist/client/` —— 每次构建先拷 690MB，
  * 产物目录一度有 998MB。既占盘，也把构建时间从几秒拖到几十秒。
@@ -30,7 +30,9 @@ import { defineConfig, loadEnv } from 'vite'
  * 外加一个 `process.on('exit')` 兜底。前者挡「上次崩了」，后者挡「这次崩了」；
  * 只靠 closeBundle 的话，一次语法错误就会让目录凭空消失。
  */
-const HUGE_STATIC = ['web/cs15', 'web/cs16', 'qemu-wasm']
+// 只能挪数据包子目录，不能再挪整个游戏目录：否则 Vite 不会把已跟踪的 index.html /
+// 加载器复制进构建产物，生产环境会一直服务上一次构建留下的旧代码。
+const HUGE_STATIC = ['web/cs15/packs', 'web/cs16/packs', 'qemu-wasm']
 
 const PUBLIC_DIR = path.resolve(import.meta.dirname, 'public')
 const DIST_DIR = path.resolve(import.meta.dirname, 'dist/client')
@@ -53,6 +55,19 @@ function skipHugeStatic() {
     name: 'skip-huge-static',
     apply: 'build' as const,
     buildStart() {
+      /*
+        旧版曾把整个 cs15 / cs16 目录做成绝对软链。Vite 的 emptyOutDir 为避免越界删除，
+        不会清掉指向 public 的目录软链；后续构建于是继续沿用旧入口，服务器打包出来仍可能
+        指向另一台机器的绝对路径。只清理这两个已知的历史软链，让本次复制重新落实体目录。
+      */
+      for (const name of ['cs15', 'cs16']) {
+        const legacy = path.join(DIST_DIR, 'web', name)
+        try {
+          if (lstatSync(legacy).isSymbolicLink()) rmSync(legacy, { force: true })
+        } catch {
+          /* 第一次构建本来就不存在 */
+        }
+      }
       // 上一次构建崩在半路的话，暂存区里可能还留着东西 —— 先放回去再重新挪
       restoreAll()
       if (!armed) {

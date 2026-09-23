@@ -45,6 +45,19 @@ export const RUFFLE_PATH: string = asDir(
   `/ruffle/v${RUFFLE_VERSION}/`,
 )
 
+/**
+ * js-dos 的 JS、DOSBox 和 DOSBox-X wasm 必须来自同一批产物。
+ *
+ * 这些文件以前全放在固定的 `/jsdos/`：升级 npm 包或本地补丁后，Cloudflare 与浏览器
+ * 最多一小时仍可能各自命中旧文件，最坏会拼成「新 js-dos.js + 旧 wasm」，玩家只看到黑屏。
+ * 版本进入 URL 后，旧缓存不会再参与新会话；构建检查还会把这里和 npm 包版本逐字核对。
+ */
+export const JSDOS_VERSION = '8.4.1'
+export const JSDOS_PATH: string = asDir(
+  import.meta.env.VITE_JSDOS_PATH,
+  `/jsdos/v${JSDOS_VERSION}/`,
+)
+
 /** FreeJ2ME 资源路径。**没配置就是空** —— 空 = 该引擎 available() 为 false，解析阶段直接跳过 */
 export const J2ME_PATH: string = asDir(import.meta.env.VITE_J2ME_PATH)
 

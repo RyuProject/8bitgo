@@ -74,7 +74,10 @@ try {
   const main = await fetch(`${origin}/main-project-still-works`).then((res) => res.json())
   assert.deepEqual(main, { ok: true }, '挂桥不能抢走普通 HTTP 路由')
 
-  const config = await fetch(`${origin}/api/sfs/config`).then((res) => res.json())
+  const configResponse = await fetch(`${origin}/api/sfs/config`)
+  assert.match(configResponse.headers.get('cache-control') || '', /no-store/, '运行时开关不能被浏览器或 CDN 缓存')
+  assert.equal(configResponse.headers.get('cdn-cache-control'), 'no-store')
+  const config = await configResponse.json()
   assert.equal(config.enabled, true)
   assert.equal(config.ruffle.socketProxy[0].host, 'sas3server.ninjakiwi.com')
   assert.equal(config.ruffle.socketProxy[0].port, 444)
@@ -98,7 +101,9 @@ try {
     '关闭状态应明确拒绝 WebSocket，不能悬挂连接或影响主路由',
   )
 
-  const statusBefore = await fetch(`${origin}/api/sfs/status`).then((res) => res.json())
+  const statusResponse = await fetch(`${origin}/api/sfs/status`)
+  assert.match(statusResponse.headers.get('cache-control') || '', /no-store/, '探活结果不能被缓存成旧状态')
+  const statusBefore = await statusResponse.json()
   assert.equal(statusBefore.ready, true, '状态接口应真实探测 Java TCP 上游')
 
   const wsUrl = `${origin.replace('http:', 'ws:')}/sfs/sas3`

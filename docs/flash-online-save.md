@@ -88,8 +88,10 @@ Content-Type: application/json
 服务端每次都校验：签名、`aud`、过期时间、路径里的 game slug、用户是否存在、账号状态及
 `token_version`。请求体里的用户 id 一律忽略，因为用户身份只能来自令牌。
 
-没有登录时不申请令牌，游戏仍可使用原本的本地 3 槽。第一版中点击游戏内“Login”可以提示玩家
-先在站点登录并重新进入游戏；以后再通过仅对该游戏开启的 `ExternalInterface` 接入登录弹窗。
+没有登录时不申请令牌，游戏仍可使用原本的本地 3 槽。玩家在游戏内主动点
+“Login”、写在线槽或删在线槽时，桥通过仅对已审核游戏开启的 `ExternalInterface`
+通知页面，页面打开站内登录弹窗并提示登录后重新进入本局。AGI2 开局自动读槽不弹，
+避免每次启动都打断玩家。
 
 ## 4. Ruffle 启动参数
 
@@ -102,6 +104,11 @@ Content-Type: application/json
     eightbitgo_save_token: sessionToken,
     eightbitgo_username: username,
     eightbitgo_avatar_url: 'https://8bitgo.com/ui/logo-mark.png',
+    eightbitgo_save_mode: 'authenticated',
+    eightbitgo_login_callback: '__eightbitgoFlashSaveLoginRequired',
+    eightbitgo_game_slug: 'infectonator-2',
+    eightbitgo_save_protocol: 'agi1',
+    eightbitgo_agi_game_key: 'infect-2',
   },
   urlRewriteRules: [
     [
@@ -300,7 +307,8 @@ showScoreboardList(columns:Array, board:String):void
 
 ### 登录方法
 
-- `init` 接受旧的 devKey/gameKey，但它们不能作为身份凭据；可以核对 gameKey 是否为 `infect-2`。
+- `init` 接受旧的 devKey/gameKey，但它们不能作为身份凭据；gameKey 要与
+  共用接入表的 `agiGameKey` 相同（通过 `eightbitgo_agi_game_key` 下发）。
 - `isLoggedIn` 必须同步返回。兼容 SWF 在初始化时根据 FlashVars 是否含有效格式的会话令牌设置状态。
 - `getUserData` 返回 `{ username, avatar_url }`。
 - `getUserName` 返回昵称字符串。
@@ -450,8 +458,7 @@ Infectonator 2 的 AGI1 是两套完全不同的外部接口，所以桥、存�
 | 存储表 | `flash_save_slots`（成对覆盖） | `flash_save_kv`（key→value 覆盖） |
 | 入口参数 | `init(devKey, gameKey)` | `connect({ stage, apiKey })` |
 
-方言逐游戏绑定在 `server/src/flash-save-contract.js` 的 `GAME_PROTOCOLS`；新增游戏必须同时改
-那里和 `FLASH_SAVE_GAMES`。
+方言逐游戏绑定在 `shared/flash-save-games.js` 的 `FLASH_SAVE_GAMES`；它是前后端共用的唯一接入表。
 
 ## A2. 服务端接口
 
@@ -482,8 +489,8 @@ POST /api/flash-saves/v1/kingdom-rush-frontiers/read
 槽不存在就是 `{ "success": true, "keys": {} }`。
 
 两代一致：顶层还有 `revisions`（`{"slot1": 2}`，给桥做条件更新，游戏侧不看），
-写入也接受同样的 `opId` / `expectedRevision` —— 见「附三」。AGI2 的桥还没写，
-所以那两个字段目前只有 AGI1 在用。
+写入也带同样的 `opId` / `expectedRevision` —— 见「附三」。两代桥都会在读档后对齐代次、
+重试时复用同一个 `opId`，防止迟到的旧写入把新档覆盖掉。
 
 > ⚠️ **只输出 slot1~3。** 真 Armor 服务当年会在 `keys` 里塞
 > `kingdomRushPremiumContentEnabled`，KRF 见到它等于 2 就解锁付费内容。白名单过滤写在
@@ -653,7 +660,9 @@ quests.submit(options)                       // { success:true, quest:{ progress
 
 - 会话在**内存里按「游戏 + 当前登录令牌」复用**（离到期不足 5 分钟不用）：省掉重复申请，
   也避免打满限流。键里带登录令牌，所以登出 / 换号自动失效，不会留下可写窗口。
-- 会话申请失败区分两类：网络类失败重试一次；4xx（未登录 / 限流 / 未启用）直接退游客，不白打请求。
+- 会话申请失败区分两类：网络类失败重试一次；4xx（令牌失效 / 限流 / 未启用）直接退不可用模式，不白打请求。
+- 桥上报登录意图时，页面只对 `mode=guest` 打开登录框；`mode=unavailable`
+  代表用户已登录但存档会话服务失败，不能把故障误报成「请登录」。
 - **临期提示**：运行时把会话到期时间报给播放器（`onFlashSaveSession`），
   播放器在到期前 10 分钟提示一次（`player.flashSaveExpiringSoon`）。令牌经 FlashVars 进入 SWF
   后换不掉，到期只能重进一局 —— 不说的话症状是「后半局的档都没了」。
@@ -665,9 +674,9 @@ quests.submit(options)                       // { success:true, quest:{ progress
 
 ## B6. 仍然存在的限制
 
-- 会话到期后**必须玩家手动重进**（FlashVars 只读一次，SWF 无法续期）。提示已加，但根治需要
-  ExternalInterface 一类的续期通道。
-- `retrieveUserData` 的等待上限 3 秒：极端情况下（后台标签页被节流）可能读到的仍是旧档。
+- 会话到期后**必须玩家手动重进**（FlashVars 只读一次）。ExternalInterface 已用于登录意图，
+  但要真正原地续期还得增加「页面向 SWF 反向更新令牌」的通道。
+- 两代桥的读前等写上限都是 3 秒：极端情况下（后台标签页被节流）仍可能读到旧档。
 - 桥的修复要等边缘缓存过期（约 1 小时）才全球生效，与其它固定 URL 的引擎产物同一档。
 
 ---

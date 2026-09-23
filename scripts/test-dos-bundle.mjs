@@ -281,6 +281,19 @@ console.log('\n── 条目名：GBK / 反斜杠 / __MACOSX ──')
   ])
   const names3 = namesOf(makeWindowsGameLayer(mac, 'GAME.EXE').bytes)
   ok(!names3.some((x) => x.includes('__MACOSX') || x.includes('/._')), '__MACOSX / ._* 被滤掉')
+
+  for (const unsafe of ['../GAME.EXE', '/GAME.EXE', 'C:/GAME.EXE']) {
+    await throwsWith(
+      () => makeJsdosBundle('unsafe.zip', makeZip([{ name: unsafe, data: EXE }])),
+      /不安全/,
+      `⭐ 普通 DOS 包拒绝越界路径 ${unsafe}`,
+    )
+    await throwsWith(
+      () => Promise.resolve(makeWindowsGameLayer(makeZip([{ name: unsafe, data: EXE }]), unsafe)),
+      /不安全/,
+      `⭐ Windows 游戏层也拒绝越界路径 ${unsafe}`,
+    )
+  }
 }
 
 console.log('\n── Windows 3.x：盘根只有在包里全在一层时才准收窄 ──')
@@ -364,9 +377,23 @@ console.log('\n── autoexec：CD 不许带引号，进不去的目录改挂 D
   const root = buildDosboxConf('GAME.EXE')
   ok(!/^cd /m.test(root) && !/mount d/.test(root), '启动程序在根上时既不 cd 也不挂盘')
 
-  const conf2 = buildDosboxConf('My Game.exe')
-  ok(conf2.includes('"My Game.exe"'), '文件名带空格仍然加引号（DOSBox 那边同样不剥，是另一个坑，待单独处理）')
-  ok(/@echo .*已退出/.test(conf2), '末尾留一句人话，真没跑起来时黑屏至少变成一行提示')
+  let longNameError = null
+  try { buildDosboxConf('My Game.exe') } catch (e) { longNameError = e }
+  ok(/8\.3/.test(longNameError?.message || ''), '⭐ 没有 ZIP 清单时不再生成明知跑不通的带引号命令')
+  const aliased = await makeJsdosBundle(
+    'my-game.zip',
+    makeZip([{ name: 'My Game.exe', data: EXE }]),
+    undefined,
+    undefined,
+    'My Game.exe',
+  )
+  const aliasedBytes = new Uint8Array(await aliased.blob.arrayBuffer())
+  const aliasedNames = namesOf(aliasedBytes)
+  ok(aliasedNames.includes('My Game.exe'), '长文件名原件仍保留，游戏内部按原名引用不会断')
+  ok(aliasedNames.includes('8BITGO.EXE'), '⭐ 同目录补出真实存在的 8.3 启动别名')
+  const aliasedText = new TextDecoder().decode(aliasedBytes)
+  ok(/\n8BITGO\.EXE\n/.test(aliasedText) && !aliasedText.includes('"My Game.exe"'), '⭐ autoexec 执行别名，不再停在 C:\\>')
+  ok(/@echo .*已退出/.test(root), '末尾留一句人话，真没跑起来时黑屏至少变成一行提示')
   const none = buildDosboxConf(null)
   ok(none.includes('没有找到可执行文件'), '猜不出启动程序时的提示保持不变')
 }
@@ -471,7 +498,11 @@ console.log('\n── 保护表里的键必须是模拟器真认识的 ──')
     上面那次就是差点在这里翻车：光看代码没法知道 `mouse_emulation` 是不是真名字。
     所以直接拿 wasm 里的字符串表对一遍 —— 名字在不在模拟器里，二进制说了算。
   */
-  const cores = ['public/jsdos/emulators/wdosbox-x.wasm', 'public/jsdos/emulators/wdosbox.wasm']
+  const jsdosVersion = JSON.parse(readFileSync(new URL('../node_modules/js-dos/package.json', import.meta.url), 'utf8')).version
+  const cores = [
+    `public/jsdos/v${jsdosVersion}/emulators/wdosbox-x.wasm`,
+    `public/jsdos/v${jsdosVersion}/emulators/wdosbox.wasm`,
+  ]
     .map((rel) => new URL('../' + rel, import.meta.url))
     .filter((u) => existsSync(u))
 

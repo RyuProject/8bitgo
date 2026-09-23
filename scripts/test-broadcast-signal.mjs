@@ -17,7 +17,6 @@
  *
  * 跑：npm run test:broadcast-signal
  */
-import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
 
 let n = 0
@@ -78,6 +77,30 @@ class FakeMediaStream {
   }
 }
 
+class FakeDataChannel {
+  constructor(label) {
+    this.label = label
+    this.readyState = 'connecting'
+    this.sent = []
+  }
+  send(data) {
+    if (this.readyState !== 'open') throw new Error('InvalidStateError: data channel is not open')
+    this.sent.push(data)
+  }
+  open() {
+    this.readyState = 'open'
+    this.onopen?.()
+  }
+  receive(data) {
+    this.onmessage?.({ data })
+  }
+  close() {
+    if (this.readyState === 'closed') return
+    this.readyState = 'closed'
+    this.onclose?.()
+  }
+}
+
 const canvas = {
   width: 256,
   height: 240,
@@ -95,6 +118,7 @@ class FakeRTCPeerConnection {
     this.localDescription = null
     this.candidates = []
     this._senders = []
+    this.dataChannels = []
     /** setRemoteDescription 故意不当场落地：由测试调 settleRemote() 才算完成 */
     this._settle = null
     this.closed = false
@@ -107,6 +131,11 @@ class FakeRTCPeerConnection {
   }
   getSenders() {
     return this._senders
+  }
+  createDataChannel(label) {
+    const dc = new FakeDataChannel(label)
+    this.dataChannels.push(dc)
+    return dc
   }
   async createOffer() {
     return { type: 'offer', sdp: 'v=0 offer' }
@@ -140,6 +169,7 @@ class FakeRTCPeerConnection {
   close() {
     this.closed = true
     this.connectionState = 'closed'
+    for (const dc of this.dataChannels) dc.close()
   }
 }
 class FakeRTCSessionDescription {
@@ -156,6 +186,7 @@ class FakeRTCIceCandidate {
 /** 假信令：记下监听 + 记下发出去的 signal */
 const handlers = new Map()
 const sent = []
+const coopStates = []
 const fakeSocket = {
   connected: true,
   on(event, fn) {
@@ -164,6 +195,7 @@ const fakeSocket = {
   off() {},
   emit(event, payload, ack) {
     if (event === 'signal') sent.push(payload)
+    if (event === 'coop-state') coopStates.push(payload)
     if (typeof ack === 'function') {
       if (event === 'go-live') ack(null, { roomId: 'r1', token: 't1' })
       else ack(null, {})
@@ -193,10 +225,15 @@ globalThis.__fakeLiveSocket = fakeSocket
 
 const { startBroadcast } = await import(fileURLToPath(new URL('../src/emulator/broadcast.ts', import.meta.url)))
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const seatChanges = []
+const guestInputs = []
 
 const live = await startBroadcast({
   sources: { canvas },
   meta: { gameSlug: 'contra', gameName: 'Contra', platform: 'nes', title: 'x', hostName: 'y' },
+  coopButtons: () => ['left', 'right'],
+  onSeatChange: (viewerId) => seatChanges.push(viewerId),
+  onGuestInput: (button, down) => guestInputs.push({ button, down }),
 })
 
 /* ---------------- 1. 候选在远端描述落地前到达：先攒着，落地后一并加 ---------------- */
@@ -354,6 +391,59 @@ console.log('\n── SDP 迟到时暂存的候选有上限 ──')
   floodPc.settleRemote()
   await sleep(10)
   ok(floodPc.candidates.length === 64, `⭐ SDP 迟到时最多积压 64 颗候选（实际 ${floodPc.candidates.length}）`)
+}
+
+/* ---------------- 8. 输入通道单独断开：座位清理，并自动重建一次 ---------------- */
+console.log('\n── 2P 输入通道断开自愈 ──')
+{
+  fire('viewer-joined', { viewerId: 'coop' })
+  await sleep(30)
+  const coopPc = pcs.at(-1)
+  const dc = coopPc.dataChannels[0]
+  ok(Boolean(dc), '房主在 offer 前创建了输入通道')
+  dc.open()
+  live.grantSeat('coop')
+  dc.receive('{"t":"k","b":"left","d":true}')
+  ok(live.seated() === 'coop', '观众拿到 2P 位')
+  ok(guestInputs.at(-1)?.button === 'left' && guestInputs.at(-1)?.down === true, '按键已经进入游戏')
+
+  const before = pcs.length
+  dc.close()
+  await sleep(40)
+  ok(live.seated() === null && seatChanges.at(-1) === null, '⭐ 通道断开立即清空房主 UI 的持座状态')
+  ok(guestInputs.at(-1)?.button === 'left' && guestInputs.at(-1)?.down === false, '⭐ 断开时补发 keyup，角色不会卡住')
+  ok(coopStates.at(-1)?.taken === false, '⭐ 大厅立即恢复为 2P 空位，不等下一轮 5 秒统计')
+  ok(pcs.length === before + 1 && coopPc.closed, '⭐ 视频仍活着但输入通道死掉时，自动重建连接重新协商通道')
+
+  // 同一位观众第二次再关通道也不能触发循环；否则恶意脚本能逼主播无限重建、吃满 CPU。
+  const retryPc = pcs.at(-1)
+  const retryDc = retryPc.dataChannels[0]
+  const afterRetry = pcs.length
+  retryDc.open()
+  retryDc.close()
+  await sleep(30)
+  ok(pcs.length === afterRetry, '同一观众第二次关通道时停止自动重建，避免无限 offer 循环')
+}
+
+/* ---------------- 9. 信令断开期间的座位变化：重连后必须补报 ---------------- */
+console.log('\n── 2P 状态跨信令重连补报 ──')
+{
+  fire('viewer-joined', { viewerId: 'coop-reconnect' })
+  await sleep(30)
+  pcs.at(-1).dataChannels[0].open()
+  live.grantSeat('coop-reconnect')
+  ok(coopStates.at(-1)?.taken === true, '前提：持座状态已经报给服务器')
+
+  const before = coopStates.length
+  fakeSocket.connected = false
+  fire('disconnect')
+  live.revokeSeat()
+  ok(coopStates.length === before, '信令断着时不把状态塞进 socket.io 离线队列')
+
+  fakeSocket.connected = true
+  fire('connect')
+  await sleep(30)
+  ok(coopStates.at(-1)?.taken === false, '⭐ 重连续播后补报断线期间的空座状态，大厅不会永久显示已占')
 }
 
 live.stop()

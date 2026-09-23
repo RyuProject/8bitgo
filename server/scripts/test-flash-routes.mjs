@@ -10,6 +10,7 @@ const identity=p=>p.slice(0,3).join(':')
 async function run(sql,p=[]) {
  const s=sql.replace(/\s+/g,' ').trim()
  const table=s.includes('flash_save_seqs')?seqs:s.includes('flash_save_kv')?kv:slots
+ if(s.includes('FROM games'))return ['infectonator-2','kingdom-rush-frontiers'].includes(String(p[0]))?[{slug:p[0],platform:'flash'}]:[]
  if(s.includes('FROM users')) {if(s.includes('FOR UPDATE'))locks++;return users.has(p[0])?[{...users.get(p[0])}]:[]}
  if(s.includes('SUM(size)'))return [{bytes:[...table.values()].filter(x=>x.user_id===p[0]).reduce((n,x)=>n+x.size,0)}]
  if(s.startsWith('SELECT')) {
@@ -39,20 +40,32 @@ globalThis.__flashDb={query:run,queryOne:async(s,p)=>(await run(s,p))[0],withTra
 }}
 stubs({
  'db.js':`export const query=(...a)=>globalThis.__flashDb.query(...a);export const queryOne=(...a)=>globalThis.__flashDb.queryOne(...a);export const withTransaction=(...a)=>globalThis.__flashDb.withTransaction(...a);`,
- 'auth.js':`export const tokenVersionOf=u=>Number(u?.token_version)||0;export const requireUser=(req,res,next)=>{req.user={id:'u1',token_version:7};next()};`,
+ 'auth.js':`export const tokenVersionOf=u=>Number(u?.token_version)||0;export const requireUser=(req,res,next)=>{if(req.headers.authorization!=='Bearer login-u1')return res.status(401).json({error:'请先登录'});req.user={id:'u1',nickname:'Player',token_version:7};next()};`,
  'shared/flash-save-games.js':`export const flashSaveKnownSlugs=()=>['infectonator-2','kingdom-rush-frontiers'];export const flashSaveProtocolOf=slug=>slug==='kingdom-rush-frontiers'?'agi2':'agi1';export const flashSaveBridgeOf=slug=>'/flash-api/armor-games/'+(slug==='kingdom-rush-frontiers'?'AGI2':'AGI')+'.swf';`,
 })
 const {flashSavesRouter}=await load('src/routes/flash-saves.js')
 const {signFlashSaveToken}=await load('src/flash-save-token.js')
 const app=express();app.use(express.json({limit:'4mb'}));app.use('/',flashSavesRouter)
-app.use((e,req,res,next)=>res.status(500).json({error:e.message}))
+app.use((e,req,res,_next)=>res.status(500).json({error:e.message}))
 const server=app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r))
 const url=`http://127.0.0.1:${server.address().port}`
 const tok=(slug,user='u1')=>signFlashSaveToken({userId:user,gameSlug:slug,tokenVersion:users.get(user).token_version}).token
+async function session(token='') {
+ const response=await fetch(`${url}/session`,{method:'POST',headers:{'content-type':'application/json',...(token?{authorization:`Bearer ${token}`}:{})},body:JSON.stringify({gameSlug:'infectonator-2'})})
+ return {status:response.status,body:await response.json()}
+}
 async function post(slug,method,body,token=tok(slug)) {
  const response=await fetch(`${url}/${slug}/${method}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({sessionToken:token,...body})})
  return {status:response.status,body:await response.json(),headers:response.headers}
 }
+test('session: guest cannot obtain an online-save token',async()=>{
+ const result=await session();assert.equal(result.status,401);assert.match(result.body.error,/登录/)
+})
+test('session: signed-in user receives a game-scoped bridge session',async()=>{
+ const result=await session('login-u1');assert.equal(result.status,200)
+ assert.equal(result.body.data.protocol,'agi1');assert.equal(result.body.data.bridgeUrl,'/flash-api/armor-games/AGI.swf')
+ assert.ok(result.body.data.sessionToken);assert.equal(result.body.data.username,'Player')
+})
 const cases=[{protocol:'AGI1',slug:'infectonator-2',write:{slot:0,profile:{index:'online0',saved:1},data:{index:'online0',score:123}},read:{key:'dataonline0'},del:{slot:0},table:slots},
  {protocol:'AGI2',slug:'kingdom-rush-frontiers',write:{key:'slot1',value:{score:123}},read:{key:'slot1'},del:{key:'slot1'},table:kv}]
 for(const c of cases){

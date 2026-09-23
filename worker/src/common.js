@@ -114,7 +114,7 @@ export function corsHeaders(request, env) {
   const headers = {
     'Access-Control-Allow-Methods': 'GET, HEAD, POST, PUT, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Range, Authorization, Content-Type, If-None-Match, If-Range, If-Modified-Since, If-Match, If-Unmodified-Since',
-    'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, ETag, Last-Modified, Retry-After',
+    'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, ETag, Last-Modified, Retry-After, CF-Cache-Status',
     'Access-Control-Max-Age': '86400', Vary: 'Origin',
   }
   if (allowed.includes('*')) headers['Access-Control-Allow-Origin'] = '*'

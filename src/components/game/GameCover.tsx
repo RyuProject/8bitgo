@@ -202,7 +202,9 @@ export function GameCover({
   const platform = platformMap[game.platform]
   const coverSrc = game.cover ? romUrlForKey(game.cover) : ''
   const videoSrc = !still && game.video ? romUrlForKey(game.video) : ''
-  const thumbSrc = thumb && game.cover ? romUrlForKey(coverThumbKey(game.cover)) : ''
+  // 外链没有本站生成的 -96 缩略图，直接用原图；空 key 不能被当作资源桶根地址。
+  const thumbKey = thumb && game.cover ? coverThumbKey(game.cover) : ''
+  const thumbSrc = thumbKey ? romUrlForKey(thumbKey) : ''
   /**
    * 缩略图取不到（老封面上传时还没有这一步，且服务端兜底也没生效）就退回主图。
    * ⚠️ 必须记状态而不是每次重试：不记的话同一张图会反复 404 → 反复回退 → 死循环。

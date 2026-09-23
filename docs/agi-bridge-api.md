@@ -47,7 +47,7 @@
 | 回调位置 | 独立参数（`submitUserData(k, d, cb)`） | `options.callback` |
 | `error` 形状 | **字符串**（`"not_logged_in"`） | **对象**（`{ code: "not_logged_in" }`） |
 | 队列粒度 | **每槽一条 FIFO** | **全局一条串行队列** |
-| 写入并发保护（`opId` / `expectedRevision`） | 有 | **还没有**（桥未升级，服务端字段可选） |
+| 写入并发保护（`opId` / `expectedRevision`） | 有 | 有 |
 
 > 接入表里查不到的 slug 一律**退回 AGI1**（`flashSaveProtocolOf`），这是为了不让新方言
 > 悄悄改掉老游戏的历史行为。白名单同时会挡住会话签发，所以表外游戏拿不到桥。
@@ -64,8 +64,13 @@
      └─ 已登录 → POST /api/flash-saves/v1/session 换短期令牌
 ② 页面 → Ruffle
    parameters: { eightbitgo_save_endpoint, eightbitgo_save_token,
-                 eightbitgo_username, eightbitgo_avatar_url }
+                 eightbitgo_username, eightbitgo_avatar_url,
+                 eightbitgo_save_mode, eightbitgo_login_callback,
+                 eightbitgo_game_slug, eightbitgo_save_protocol,
+                 eightbitgo_agi_game_key }
    urlRewriteRules: agi.armorgames.com/assets/agi/<这一代>.swf → 本站桥
+③a 游客在游戏内主动点在线存档 / 登录
+   桥 → ExternalInterface → 页面打开站内登录弹窗
 ③ 游戏 → 桥
    游戏从 Loader.content 拿到桥实例，调它那一代的方法
 ④ 桥 → 服务端
@@ -114,7 +119,7 @@ Content-Type: application/json
   会话在页面侧按「游戏 + 当前登录令牌」在内存里复用（离到期 < 5 分钟才重新申请），
   所以正常游玩打不满。
 
-### 3.2 FlashVars（桥只认这四个键）
+### 3.2 FlashVars
 
 | 键 | 出处 | 说明 |
 | --- | --- | --- |
@@ -122,8 +127,18 @@ Content-Type: application/json
 | `eightbitgo_save_token` | `data.sessionToken` | 游客模式是**空串**，桥据此把登录态判为 false |
 | `eightbitgo_username` | `data.username` | |
 | `eightbitgo_avatar_url` | `data.avatar_url` | 也已转绝对地址 |
+| `eightbitgo_save_mode` | 页面 | `authenticated` / `guest` / `unavailable`。最后一种是已登录但会话申请失败，不能误弹登录 |
+| `eightbitgo_login_callback` | 页面 | 桥向同源 Ruffle iframe 上报登录意图的 `ExternalInterface` 函数名 |
+| `eightbitgo_game_slug` | 共用接入表 | 给自建 Flash 游戏和排查日志用；权限仍以短期令牌里的 `game` 为准 |
+| `eightbitgo_save_protocol` | 共用接入表 | `agi1` / `agi2`，仅供桥与新游戏自检 |
+| `eightbitgo_agi_game_key` | 共用接入表 | AGI1 `init` 应当接受的 gameKey；AGI2 为空 |
 
-两个桥的登录判据都是 `endpoint && token` 都非空；AGI1 还额外要求 `gameKey == "infect-2"`。
+两个桥的登录判据都是 `endpoint && token` 都非空；AGI1 还要求游戏传入的
+`gameKey == eightbitgo_agi_game_key`。老页面没下发新参数时保留 `infect-2` 作兼容回退。
+
+`allowScriptAccess` **只对接入表里的游戏开放**；桥只在 `save_mode == guest`
+且玩家主动使用在线槽时回调。AGI2 开局自动 `retrieve` 不弹窗，
+否则玩家每次进游戏都会先被登录框挡住。
 
 ### 3.3 桥 → 服务端的请求纪律（检查桥改动时照这条对照）
 
@@ -220,11 +235,11 @@ showScoreboardList(columns:Array, board:String):void
 
 | 方法 | 行为 | 回调 |
 | --- | --- | --- |
-| `init(devKey, gameKey)` | 读 FlashVars；`gameKey == "infect-2"` 才认 | — |
+| `init(devKey, gameKey)` | 读 FlashVars；`gameKey` 要和接入表下发的 `agiGameKey` 一致 | — |
 | `isLoggedIn()` | **同步**返回布尔 | — |
 | `getUserData()` | `{ username, avatar_url }` | — |
 | `getUserName()` | 昵称字符串 | — |
-| `showLogin(cb)` | 立即回调（站内已经是登录态，没有弹窗） | `{success:true, loggedIn, username, avatar_url}`。**未登录时也是这个形状**，只是 `loggedIn:false` 且两个字符串为空 |
+| `showLogin(cb)` | 已登录直接回调；游客同时通知页面打开站内登录弹窗 | `{success:true, loggedIn, username, avatar_url}`。**未登录时也是这个形状**，只是 `loggedIn:false` 且两个字符串为空 |
 | `submitUserData(key, data, cb)` | 缓存这一半，两半齐了才发请求 | 见 4.2 |
 | `retrieveUserData(cb, key?)` | 全量或单键读 | 服务端响应原样（`{success, data, revisions}`） |
 | `deleteUserData(key)` | **没有回调**，静默 | — |
@@ -347,6 +362,7 @@ user.isGuest():Boolean
 user.getUsername():String
 user.getAvatarURL():String
 user.getUID():String                         // 未登录返回 "guest"
+user.showLogin(options:Object):void           // 游客打开站内登录框
 
 storage.user.retrieve(options:Object):void   // { key?, callback } → callback({success, keys})
 storage.user.submit(options:Object):void     // { key, value, callback }
@@ -390,8 +406,9 @@ quests.submit(options)                       // { progress?, callback } → {suc
   串行化保证「后点的保存」在「先点的保存」之后落库。
 - 写入失败等 800ms **重试一次**（同一套可重试错误码），重试期间 `busy` 不清。
 - 会话失效（`invalid_session`）摘登录态，同 AGI1。
-- **还没有** `opId` / `expectedRevision`：AGI2 的写入不带并发保护
-  （服务端字段可选，等桥升级）。也没有 AGI1 那种"读前等写"，因为提交是单份原子值。
+- 每次逻辑写入生成 `opId`，超时重试复用它；读响应合并 `revisions`，
+  后续写带 `expectedRevision`。迟到的旧请求因此不会覆盖新档。
+- 读前等全局变更队列清空（上限 3 秒），避免「刚存完立刻读」拿到旧档。
 
 ### 5.3 服务端接口（AGI2）
 
@@ -459,17 +476,57 @@ POST /api/flash-saves/v1/kingdom-rush-frontiers/delete-slot
 
 ## 7. 给一款新游戏接入
 
+### 7.1 新开发的 Flash 游戏（推荐）
+
+新游戏不用仿写 Armor Games API。加载 `AGI2.swf`、调一次 `connect()`，然后用
+`Loader.content.eightbitgo` 这个简化命名空间：
+
+```as3
+var api:Object = loader.content;
+api.connect({ callback: function(result:Object):void {
+  var save:Object = api.eightbitgo;
+
+  // 用户主动点「在线存档」时先查；未登录会打开 8BitGo 登录框。
+  if (!save.isLoggedIn()) {
+    save.showLogin(function(status:Object):void {});
+    return;
+  }
+
+  save.write("slot1", { level: 12, coins: 300 }, function(result:Object):void {});
+  save.read("slot1", function(result:Object):void {
+    if (result.success && result.value != null) trace(result.value.level);
+  });
+  // save.remove("slot1", callback);
+}});
+```
+
+简化接口固定为：
+
+```as3
+eightbitgo.isLoggedIn():Boolean
+eightbitgo.getUser():Object
+eightbitgo.showLogin(callback:Function = null):void
+eightbitgo.read(key:String, callback:Function):void
+eightbitgo.write(key:String, value:Object, callback:Function):void
+eightbitgo.remove(key:String, callback:Function):void
+```
+
+`key` 只能是 `slot1` / `slot2` / `slot3`，`value` 必须是可 JSON 序列化的对象，单槽最大 2MiB。
+完整站点 JWT 永远不会进入 SWF：页面只下发限定到当前游戏的短期存档令牌。
+
+### 7.2 现有 Armor Games 游戏
+
 1. **判断是第几代**：看游戏加载的是 `AGI.swf` 还是 `AGI2.swf`，
    以及它调的是方法式还是对象式接口。拿不准就看游戏 SWF 的反编译结果（对照第 4、5 节的方法名）。
 2. **加进接入表**：`shared/flash-save-games.js` 的 `FLASH_SAVE_GAMES`
-   （`slug → { protocol, bridge }`）。这是**唯一一处**，前后端都读它；
+   （AGI2：`slug → { protocol, bridge }`；AGI1 再加 `agiGameKey`）。这是**唯一一处**，前后端都读它；
    服务端的 env 白名单 `FLASH_SAVE_GAMES` 默认值就是这张表的全量，不用手写。
 3. **核对键与形状**：AGI1 的键是不是 `profileonlineN` / `dataonlineN`？
    AGI2 的键是不是 `slot1..3`？游戏有没有读 `PremiumEnabled` 一类的权益键
    （那必须由服务端生成，不能从玩家存档读）。
-4. **`init` 里的 gameKey 校验**：AGI1 现在硬编码 `infect-2`（`MainTimeline.as`）。
-   接新游戏时要么把 gameKey 提成 FlashVars（更好），要么在桥里加白名单 ——
-   **不要直接删掉这个校验**，它挡的是「别的 Armor Games SWF 被半兼容实现接管」。
+4. **AGI1 的 gameKey**：把游戏真实传给 `init` 的值写到该条目的 `agiGameKey`。
+   页面会通过 `eightbitgo_agi_game_key` 下发；**不要删掉校验**，它挡的是
+   「别的 Armor Games SWF 被半兼容实现接管」。
 5. **有源码/产物改动就重建**：`npm run flashbridge`，然后**把产物和 manifest 一起提交**
    （`AGI*.swf` + `runtime*.json`，随 Git 部署，线上不编译 Flash）。
 6. **跑回归**：`npm run test:flash-online-save`（见下）。它会核对源码 → 产物的哈希，
@@ -502,9 +559,7 @@ npm run flashbridge
 - **会话到期只能重进一局**：FlashVars 只读一次，SWF 换不掉令牌。
   播放器会在到期前 10 分钟提示一次（`player.flashSaveExpiringSoon`），
   但根治需要 `ExternalInterface` 一类的续期通道。
-- **AGI2 没有并发保护**：桥不发 `opId` / `expectedRevision`，迟到的旧写入仍可能覆盖新档
-  （AGI1 已经解决）。
-- **AGI1 的 3 秒等写上限**：极端情况下（后台标签页被节流）可能读到的仍是旧档。
+- **读档等写的 3 秒上限**：两代在极端情况下（后台标签页被节流）仍可能读到旧档。
 - **桥的修复要等边缘缓存过期**（约 1 小时）才全球生效：产物地址固定、不带内容哈希。
 - **游戏忽略回调里的错误**：AGI1 的 `submitUserData`、AGI2 的 `submit` 都可能在玩家毫无察觉时
   失败。桥的重试、`invalid_session` 摘登录态、控制台 trace 都是为这一点加的 ——

@@ -1,12 +1,18 @@
 import { Router } from 'express'
 import { jsonMemberPath, query, queryOne, withTransaction } from '../db.js'
-import { requireAbility, hasAbility } from '../auth.js'
+import { requireAbility, hasAbility, roleOfRequest } from '../auth.js'
 import { invalidateContent } from '../content.js'
 import { publicApi } from '../cache.js'
 import { postRowToApi, postApiToRow, dbFlag } from '../mappers.js'
 import { queuePostSearchPush } from '../search-push.js'
 import { isTranslateConfigured, translateGateOk, translatePlan } from '../translate.js'
 import { renderField, renderMarkdownField } from '../i18n-generate.js'
+import {
+  deleteVolunteerPost,
+  getVolunteerPost,
+  listVolunteerPosts,
+  saveVolunteerPost,
+} from '../volunteer-libraries.js'
 
 export const postsRouter = Router()
 
@@ -309,8 +315,18 @@ postsRouter.post('/:slug/translate', async (req, res, next) => {
 postsRouter.get('/', async (req, res, next) => {
   try {
     const wantAll = req.query.all === '1'
+    if (req.query.library === 'mine') {
+      const role = await roleOfRequest(req)
+      if (role === 'volunteer') {
+        const ownerId = String(req.user?.id ?? '')
+        if (!ownerId) return res.status(403).json({ error: '志愿者独立库必须使用账号登录' })
+        return res.json(await listVolunteerPosts(ownerId))
+      }
+      // 管理员仍然使用主文章库；普通玩家不能借这个参数读取草稿。
+      if (role !== 'admin') return res.status(403).json({ error: '需要文章库编辑权限' })
+    }
     if (wantAll && !(await hasAbility(req, 'content:edit'))) {
-      return res.status(403).json({ error: '需要内容编辑权限才能查看草稿' })
+      return res.status(403).json({ error: '只有管理员能查看主文章库的草稿' })
     }
     const rows = await query(
       wantAll
@@ -326,6 +342,17 @@ postsRouter.get('/', async (req, res, next) => {
 
 postsRouter.get('/:slug', async (req, res, next) => {
   try {
+    if (req.query.library === 'mine') {
+      const role = await roleOfRequest(req)
+      if (role === 'volunteer') {
+        const ownerId = String(req.user?.id ?? '')
+        if (!ownerId) return res.status(403).json({ error: '志愿者独立库必须使用账号登录' })
+        const personal = await getVolunteerPost(ownerId, req.params.slug)
+        if (!personal) return res.status(404).json({ error: '你的文章库里没有这篇文章' })
+        return res.json(personal)
+      }
+      if (role !== 'admin') return res.status(403).json({ error: '需要文章库编辑权限' })
+    }
     const row = await queryOne('SELECT * FROM posts WHERE slug = ?', [req.params.slug])
     if (!row) return res.status(404).json({ error: '文章不存在' })
     const [post] = await attachPostTags([row])
@@ -339,10 +366,15 @@ postsRouter.get('/:slug', async (req, res, next) => {
   }
 })
 
-postsRouter.put('/:slug', requireAbility('content:edit'), async (req, res, next) => {
+postsRouter.put('/:slug', requireAbility('posts:edit'), async (req, res, next) => {
   try {
     const slug = String(req.params.slug)
     if (!req.body?.title) return res.status(400).json({ error: '缺少标题' })
+    if (req.staffRole === 'volunteer') {
+      const ownerId = String(req.user?.id ?? '')
+      if (!ownerId) return res.status(403).json({ error: '志愿者独立库必须使用账号登录' })
+      return res.json(await saveVolunteerPost(ownerId, slug, req.body))
+    }
     /**
      * 保存前的这一行。两处要用：
      *   1. `published` —— 决定这次要不要通知搜索引擎（见下面 queuePostSearchPush）
@@ -402,9 +434,17 @@ postsRouter.put('/:slug', requireAbility('content:edit'), async (req, res, next)
   }
 })
 
-postsRouter.delete('/:slug', requireAbility('content:edit'), async (req, res, next) => {
+postsRouter.delete('/:slug', requireAbility('posts:edit'), async (req, res, next) => {
   try {
     const slug = String(req.params.slug)
+    if (req.staffRole === 'volunteer') {
+      const ownerId = String(req.user?.id ?? '')
+      if (!ownerId) return res.status(403).json({ error: '志愿者独立库必须使用账号登录' })
+      if (!(await deleteVolunteerPost(ownerId, slug))) {
+        return res.status(404).json({ error: '你的文章库里没有这篇文章' })
+      }
+      return res.json({ ok: true })
+    }
     // 删之前先看一眼发布状态：删完就查不到了，而「这篇是否被收录过」决定要不要推送。
     const before = await queryOne('SELECT published FROM posts WHERE slug = ?', [slug])
     // post_tags 有外键级联，跟着一起删

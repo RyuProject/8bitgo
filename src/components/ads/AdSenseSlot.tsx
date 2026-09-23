@@ -4,8 +4,27 @@ import { useEffect, useRef } from 'react'
 const PUBLISHER_ID = 'ca-pub-9765778307056404'
 const SCRIPT_SRC = `https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${PUBLISHER_ID}`
 
-// 脚本只需往页面里塞一次。用模块级标记锁住，组件卸载再挂载也不会重复注入。
-let scriptInjected = false
+// 广告位会随播放器状态频繁卸载，不能在脚本未加载时先把 push 排进全局队列：
+// 等队列被消费时，原来的 <ins> 可能早没了，官方脚本便报「所有广告位都已填充」。
+let scriptReady: Promise<boolean> | null = null
+
+function ensureScriptReady(): Promise<boolean> {
+  if (scriptReady) return scriptReady
+  scriptReady = new Promise<boolean>((resolve) => {
+    const script = document.createElement('script')
+    script.async = true
+    script.crossOrigin = 'anonymous'
+    script.src = SCRIPT_SRC
+    script.addEventListener('load', () => resolve(true), { once: true })
+    script.addEventListener('error', () => {
+      script.remove()
+      scriptReady = null
+      resolve(false)
+    }, { once: true })
+    document.head.appendChild(script)
+  })
+  return scriptReady
+}
 
 declare global {
   interface Window {
@@ -27,34 +46,38 @@ interface AdSenseSlotProps {
 }
 
 /**
- * 一个 AdSense 广告位。渲染 <ins> 后在挂载时调用 adsbygoogle.push({}) 触发填充。
- *
- * push 早于官方脚本加载也是安全的：脚本没到位时 window.adsbygoogle 还不存在，
- * 这行会先建一个数组当队列，等脚本就绪后由官方库自行消费。
+ * 一个 AdSense 广告位。只为仍在 DOM 且尚未被官方脚本处理的 <ins> 请求填充。
  */
 export function AdSenseSlot({ slot, className, format = 'auto', responsive = true }: AdSenseSlotProps) {
+  const insRef = useRef<HTMLModElement>(null)
   const pushedRef = useRef(false)
 
   useEffect(() => {
-    if (!scriptInjected) {
-      const s = document.createElement('script')
-      s.async = true
-      s.crossOrigin = 'anonymous'
-      s.src = SCRIPT_SRC
-      document.head.appendChild(s)
-      scriptInjected = true
-    }
-    if (pushedRef.current) return
-    pushedRef.current = true
-    try {
-      ;(window.adsbygoogle = window.adsbygoogle || []).push({})
-    } catch {
-      // 被广告拦截器拦掉时静默失败，不影响播放器其余功能
+    let mounted = true
+    let frame = 0
+    void ensureScriptReady().then((loaded) => {
+      if (!loaded || !mounted) return
+      // 等这一帧的 React 状态切换落到 DOM：玩家刚点开始时，空闲广告位会被卸载。
+      frame = window.requestAnimationFrame(() => {
+        const ins = insRef.current
+        if (!mounted || !ins?.isConnected || pushedRef.current || ins.hasAttribute('data-adsbygoogle-status')) return
+        pushedRef.current = true
+        try {
+          ;(window.adsbygoogle = window.adsbygoogle || []).push({})
+        } catch {
+          // 被广告拦截器拦掉时静默失败，不影响播放器其余功能
+        }
+      })
+    })
+    return () => {
+      mounted = false
+      if (frame) window.cancelAnimationFrame(frame)
     }
   }, [slot])
 
   return (
     <ins
+      ref={insRef}
       /*
         w-full 不能少。广告位常常落在 flex 的 items-center 容器里，此时子项在交叉轴上的
         宽度由**内容**决定 —— <ins> 是空的，量出来就是 0，AdSense 读 offsetWidth=0 直接不填，

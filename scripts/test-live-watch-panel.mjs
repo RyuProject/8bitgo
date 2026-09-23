@@ -147,5 +147,42 @@ check('⚠️ 面板只对观众开（主播端一个像素都不动）', () => 
   assert.match(src, /const watchPanelOn = Boolean\(livePanelSlot\) && Boolean\(session\?\.live\)/, '面板的开关判据不对')
 })
 
+console.log('五、公开边界与直播大厅意图')
+
+check('⚠️ 默认开播，但玩家的不公开选择必须长期保存', () => {
+  const src = code('src/emulator/LiveControls.tsx')
+  assert.match(src, /const PRIVATE_KEY = '8bit\.live\.private'/, '没有保存玩家的不公开选择')
+  assert.match(src, /useState\(readPrivate\)/, '没在开播前读取玩家的不公开选择')
+  assert.match(src, /function readPrivate[\s\S]*?catch\s*{\s*return false/, '本地存储不可用时没有回到默认开播')
+  assert.match(src, /writePrivate\(next\)/, '点「不公开」后没有记住选择')
+})
+
+check('⚠️ 直播大厅不能混入没有观众席的云端房', () => {
+  const src = code('src/pages/RoomsPage.tsx')
+  assert.match(src, /all\.filter\(\(room\) => room\.kind !== 'cloud'\)/, '云端房会把「观看」变成加入对局')
+})
+
+check('⚠️ 从直播大厅点 P2P 房必须强制进观众席', () => {
+  const page = code('src/pages/RoomsPage.tsx')
+  const card = code('src/components/game/RoomCard.tsx')
+  assert.match(page, /<RoomCard room=\{room\} watchOnly=\{live\}/, '直播页没有把观看意图交给房间卡')
+  assert.match(card, /\(full \|\| watchOnly\) && watchable/, '有空位的 P2P 房仍会把观众送进玩家席')
+})
+
+check('⚠️ 主播回来后只有真的收到画面才可以报正在观看', () => {
+  const src = code('src/emulator/adapters/liveview.ts')
+  const at = src.indexOf("s.on('host-back'")
+  assert.ok(at > 0, '找不到 host-back 恢复处理')
+  const body = src.slice(at, at + 900)
+  assert.match(body, /connected && gotFrame/, '只看 ICE connected 会把无帧黑屏误报成正在观看')
+  assert.match(body, /if \(connected\) armRewatch\(FIRST_OFFER_MS\)/, '连着但没帧时没有恢复闹钟')
+  assert.match(body, /else void rewatch\(\)/, '旧连接已经断开时没有立即重建')
+})
+
+check('侧边栏有独立直播入口', () => {
+  const src = code('src/components/layout/nav.ts')
+  assert.match(src, /to: '\/rooms\?live=1'/, '直播大厅仍然只能靠猜网址进入')
+})
+
 console.log(failed ? `\n${failed} 项未通过` : '\n全部通过 ✅')
 process.exit(failed ? 1 : 0)

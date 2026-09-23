@@ -5,6 +5,7 @@ package
    import flash.events.IOErrorEvent;
    import flash.events.SecurityErrorEvent;
    import flash.events.TimerEvent;
+   import flash.external.ExternalInterface;
    import flash.net.URLLoader;
    import flash.net.URLRequest;
    import flash.net.URLRequestMethod;
@@ -33,17 +34,31 @@ package
     */
    public dynamic class KrfAgiBridge extends Sprite
    {
-      /** 四个命名空间。游戏在 connect() 之后直接读它们，必须是公开属性 */
+      /** 四个旧 AGI2 命名空间。游戏在 connect() 之后直接读它们，必须是公开属性 */
       public var user:Object;
       public var storage:Object;
       public var content:Object;
       public var quests:Object;
+      /**
+       * 新 Flash 游戏用的简化接口：不用懂 Armor Games 的命名空间，
+       * 只需 eightbitgo.read / write / remove / showLogin。旧 KRF 完全不读它，因此是向后兼容的扩展。
+       */
+      public var eightbitgo:Object;
 
       private var endpoint:String = "";
       private var sessionToken:String = "";
       private var username:String = "";
       private var avatarUrl:String = "";
+      private var saveMode:String = "";
+      private var loginCallback:String = "";
       private var loggedIn:Boolean = false;
+      /** 一局只弹一次，避免一次保存又读又写时叠出多层登录框。 */
+      private var loginPromptSent:Boolean = false;
+      /** 每个槽的服务端代次，用来拒绝弱网下迟到的旧写入。 */
+      private var revisions:Object = {};
+      /** 页面会话内的操作 ID；同一次写入重试时复用，服务端才能幂等去重。 */
+      private var sessionId:String = "";
+      private var opCounter:int = 0;
 
       /**
        * 写入 / 删除的串行队列。
@@ -74,7 +89,8 @@ package
             "getUID": function():String
             {
                return username == "" ? "guest" : username;
-            }
+            },
+            "showLogin": this.showLoginFn
          };
 
          this.storage = {
@@ -83,6 +99,15 @@ package
                "submit": this.submitFn,
                "erase": this.eraseFn
             }
+         };
+
+         this.eightbitgo = {
+            "isLoggedIn": this.simpleIsLoggedIn,
+            "getUser": this.simpleGetUser,
+            "showLogin": this.simpleShowLogin,
+            "read": this.simpleRead,
+            "write": this.simpleWrite,
+            "remove": this.simpleRemove
          };
 
          /*
@@ -107,7 +132,78 @@ package
       public function connect(options:Object = null) : void
       {
          this.readParameters();
+         this.sessionId = this.newSessionId();
+         this.opCounter = 0;
+         this.revisions = {};
          this.callOnce(options == null ? null : options.callback, {"success":true});
+      }
+
+      /* ---------------- 8BitGo 简化接口（给新 Flash 游戏） ---------------- */
+
+      public function simpleIsLoggedIn() : Boolean
+      {
+         return this.loggedIn;
+      }
+
+      public function simpleGetUser() : Object
+      {
+         return {
+            "username":this.username,
+            "avatar_url":this.avatarUrl
+         };
+      }
+
+      public function simpleShowLogin(callback:Function = null) : void
+      {
+         if(!this.loggedIn) this.notifyLoginRequired();
+         this.callOnce(callback,{
+            "success":this.loggedIn,
+            "loggedIn":this.loggedIn,
+            "user":this.simpleGetUser(),
+            "error":this.loggedIn ? null : {"code":"not_logged_in"}
+         });
+      }
+
+      /** 简化读档只回一个 value，不把 AGI2 的 keys 容器泄给新游戏。 */
+      public function simpleRead(key:String, callback:Function) : void
+      {
+         if(!this.validKey(key))
+         {
+            this.callOnce(callback,{"success":false,"error":{"code":"invalid_key"}});
+            return;
+         }
+         this.retrieveFn({
+            "key":key,
+            "promptLogin":true,
+            "callback":function(result:Object):void
+            {
+               if(result != null && result.success === true)
+               {
+                  var value:Object = result.keys != null && result.keys.hasOwnProperty(key) ? result.keys[key] : null;
+                  callOnce(callback,{"success":true,"key":key,"value":value});
+               }
+               else
+               {
+                  callOnce(callback,result);
+               }
+            }
+         });
+      }
+
+      public function simpleWrite(key:String, value:Object, callback:Function) : void
+      {
+         this.submitFn({"key":key,"value":value,"callback":callback});
+      }
+
+      public function simpleRemove(key:String, callback:Function) : void
+      {
+         this.eraseFn({"key":key,"callback":callback});
+      }
+
+      /** 旧 AGI2 也可以通过 user.showLogin({callback}) 调同一个站内登录框。 */
+      public function showLoginFn(options:Object = null) : void
+      {
+         this.simpleShowLogin(options == null ? null : options.callback);
       }
 
       /**
@@ -121,21 +217,27 @@ package
          var callback:Function = options == null ? null : options.callback;
          if(!this.loggedIn)
          {
+            // 旧游戏开局会自动 retrieve，那不是用户意图；只有简化接口显式带了 promptLogin 才弹。
+            if(options != null && options.promptLogin === true) this.notifyLoginRequired();
             this.callOnce(callback,{
                "success":false,
                "error":{"code":"not_logged_in"}
             });
             return;
          }
-         this.post("/read",{"sessionToken":this.sessionToken},function(result:Object):void
+         this.waitForQueue(function():void
          {
-            // 一个槽都没有时服务端回的是 { success:true, keys:{} }；这里再兜一层，
-            // 免得游戏拿到 keys == null 就去 for-in 报错
-            if(Boolean(result.success) && result.keys == null)
+            post("/read",{"sessionToken":sessionToken},function(result:Object):void
             {
-               result.keys = {};
-            }
-            callOnce(callback,result);
+               // 一个槽都没有时服务端回的是 { success:true, keys:{} }；这里再兜一层，
+               // 免得游戏拿到 keys == null 就去 for-in 报错
+               if(Boolean(result.success) && result.keys == null)
+               {
+                  result.keys = {};
+               }
+               mergeRevisions(result);
+               callOnce(callback,result);
+            });
          });
       }
 
@@ -144,8 +246,14 @@ package
          var key:String = options == null ? "" : String(options.key);
          var value:Object = options == null ? null : options.value;
          var callback:Function = options == null ? null : options.callback;
+         if(!this.validKey(key))
+         {
+            this.callOnce(callback,{"success":false,"error":{"code":"invalid_key"}});
+            return;
+         }
          if(!this.loggedIn)
          {
+            this.notifyLoginRequired();
             this.callOnce(callback,{
                "success":false,
                "error":{"code":"not_logged_in"}
@@ -156,6 +264,7 @@ package
             "kind":"write",
             "key":key,
             "value":value,
+            "opId":this.nextOpId(),
             "callback":callback
          });
       }
@@ -164,8 +273,14 @@ package
       {
          var key:String = options == null ? "" : String(options.key);
          var callback:Function = options == null ? null : options.callback;
+         if(!this.validKey(key))
+         {
+            this.callOnce(callback,{"success":false,"error":{"code":"invalid_key"}});
+            return;
+         }
          if(!this.loggedIn)
          {
+            this.notifyLoginRequired();
             this.callOnce(callback,{
                "success":false,
                "error":{"code":"not_logged_in"}
@@ -242,6 +357,8 @@ package
          this.sessionToken = this.stringValue(params.eightbitgo_save_token);
          this.username = this.stringValue(params.eightbitgo_username);
          this.avatarUrl = this.stringValue(params.eightbitgo_avatar_url);
+         this.saveMode = this.stringValue(params.eightbitgo_save_mode);
+         this.loginCallback = this.stringValue(params.eightbitgo_login_callback);
          this.loggedIn = this.endpoint.length > 0 && this.sessionToken.length > 0;
          if(!this.loggedIn)
          {
@@ -253,6 +370,80 @@ package
       private function stringValue(value:*) : String
       {
          return value == null ? "" : String(value);
+      }
+
+      private function validKey(key:String) : Boolean
+      {
+         return /^slot[1-3]$/.test(String(key));
+      }
+
+      private function newSessionId() : String
+      {
+         var now:String = new Date().getTime().toString(16);
+         var noise:String = Math.floor(Math.random() * 0x1000000).toString(16);
+         return "s" + now + noise;
+      }
+
+      private function nextOpId() : String
+      {
+         if(this.sessionId.length == 0) this.sessionId = this.newSessionId();
+         this.opCounter++;
+         return this.sessionId + "-" + this.opCounter;
+      }
+
+      private function mergeRevisions(result:Object) : void
+      {
+         try
+         {
+            if(result == null || result.revisions == null) return;
+            for(var key:String in result.revisions)
+            {
+               var value:Number = Number(result.revisions[key]);
+               if(!isNaN(value)) this.revisions[key] = value;
+            }
+         }
+         catch(error:Error)
+         {
+            // 代次只影响并发保护，解析失败不能连这次读档也一起弄丢。
+         }
+      }
+
+      /**
+       * 读档前等排队中的写 / 删结束，避免玩家刚存完就看到旧档。
+       * 最多等 3 秒，极端弱网下宁可回旧档，也不能让读档界面无限转圈。
+       */
+      private function waitForQueue(proceed:Function, waited:int = 0) : void
+      {
+         if((!this.busy && this.queue.length == 0) || waited >= 3000)
+         {
+            proceed();
+            return;
+         }
+         var timer:Timer = new Timer(60,1);
+         timer.addEventListener(TimerEvent.TIMER_COMPLETE,function(event:TimerEvent):void
+         {
+            waitForQueue(proceed,waited + 60);
+         });
+         timer.start();
+      }
+
+      /** 只在真游客主动用在线槽时通知页面；会话服务故障不弹登录。 */
+      private function notifyLoginRequired() : void
+      {
+         if(this.loginPromptSent || this.saveMode != "guest" || this.loginCallback.length == 0) return;
+         if(!/^[A-Za-z_$][A-Za-z0-9_$.]{0,127}$/.test(this.loginCallback)) return;
+         try
+         {
+            if(ExternalInterface.available)
+            {
+               ExternalInterface.call(this.loginCallback,"login_required");
+               this.loginPromptSent = true;
+            }
+         }
+         catch(error:Error)
+         {
+            // 页面提示不可用时，本地档和游戏本体仍要继续跑。
+         }
       }
 
       private function enqueue(task:Object) : void
@@ -285,6 +476,14 @@ package
                "key":task.key
             },function(result:Object):void
             {
+               if(result != null && result.success === true && result.data != null && result.data.revision != null)
+               {
+                  revisions[task.key] = Number(result.data.revision);
+               }
+               else
+               {
+                  delete revisions[task.key];
+               }
                callOnce(task.callback,Boolean(result) && Boolean(result.success) ? {"success":true} : {
                   "success":false,
                   "error":errorCode(result)
@@ -304,13 +503,28 @@ package
        */
       private function submitWrite(task:Object, attempt:int) : void
       {
-         this.post("/write-slot",{
+         var body:Object = {
             "sessionToken":this.sessionToken,
             "key":task.key,
             "value":task.value
-         },function(result:Object):void
+         };
+         // 同一次逻辑保存的重试复用 opId，避免超时后已成功的请求被再写一遍。
+         if(task.opId != null) body.opId = task.opId;
+         // 只在先读过该槽、知道服务端代次时做条件更新；老响应没代次时保留兼容降级。
+         if(this.revisions[task.key] != null) body.expectedRevision = this.revisions[task.key];
+         this.post("/write-slot",body,function(result:Object):void
          {
             var ok:Boolean = Boolean(result) && Boolean(result.success);
+            if(ok && result.data != null && result.data.revision != null)
+            {
+               revisions[task.key] = Number(result.data.revision);
+            }
+            else if(result != null && String(errorCode(result).code) == "stale_write")
+            {
+               // 留着过期代次会让之后每次保存都撞 409；丢掉后下一次降级为无条件写入。
+               delete revisions[task.key];
+               trace("[8bitgo-flash-save] " + task.key + " 的保存基于旧版本，已丢弃");
+            }
             if(!ok && loggedIn && attempt < 1 && retriable(result))
             {
                var timer:Timer = new Timer(800,1);

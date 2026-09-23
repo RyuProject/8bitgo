@@ -1,0 +1,185 @@
+{
+  "assetVersion": "20260923-zstd1",
+  "files": [
+    {
+      "name": "PACKS.md",
+      "size": 3032,
+      "sha256": "9d2e339f32d8ae98c4361cf51b121bd28349fb1f5eb986eb591535d5053afd21"
+    },
+    {
+      "name": "cs16.bundle.js",
+      "size": 737999,
+      "sha256": "800d6f935b66ca3593474656e73b143d7eae696797687f0abca1a6397489458f"
+    },
+    {
+      "name": "cs16.js",
+      "size": 33168,
+      "sha256": "3e816d3a53adb2741a014be18176d66f3a6acc737fdee9b1fe047201422f973b"
+    },
+    {
+      "name": "engine/dist/constants.js",
+      "size": 522,
+      "sha256": "1b9f0fa372b2c3bb4a79d555b699e2a75d17763c9a5c0b72008c96bbc5a2ee40"
+    },
+    {
+      "name": "engine/dist/filesystem_stdio.wasm",
+      "size": 56427,
+      "sha256": "1be979f8cfae08192b59f6c08e8b27eb2eb56a1499219ae8b35106e85811e8f1"
+    },
+    {
+      "name": "engine/dist/generated/xash.js",
+      "size": 712396,
+      "sha256": "ebc1ddf67439e47a85f0515123b49214e6766ad562773dafc163105e5d46049a"
+    },
+    {
+      "name": "engine/dist/index.js",
+      "size": 78,
+      "sha256": "0294e769d616f80706a1a3e415d3040ca07c85d0bd003f3b7bee7fdebe230de6"
+    },
+    {
+      "name": "engine/dist/libmenu.wasm",
+      "size": 284681,
+      "sha256": "496afd048025bc9b28a01cc282cc465ead2acc3be4081c6f2cccf2b39cf62be5"
+    },
+    {
+      "name": "engine/dist/libref_soft.wasm",
+      "size": 154230,
+      "sha256": "8dca7719fc7b201a354966b54d6aa7a81e46cf30660eba077c2387265706e21e"
+    },
+    {
+      "name": "engine/dist/libref_webgl2.wasm",
+      "size": 210106,
+      "sha256": "325c1102d2865fed1028d8413f2b553e892ac6f18eaf5701990d81559e057f52"
+    },
+    {
+      "name": "engine/dist/net/emNet.js",
+      "size": 11,
+      "sha256": "8e609bb71c20b858c77f0e9f90bb1319db8477b13f9f965f1a1e18524bf50881"
+    },
+    {
+      "name": "engine/dist/net/index.js",
+      "size": 48,
+      "sha256": "e8e22e04c972747203890acc11e0dbf4b98ee5d3b53d6129f0aad2948dd8d9a9"
+    },
+    {
+      "name": "engine/dist/net/net.js",
+      "size": 5613,
+      "sha256": "8339c19ff2646be4a16740dc5a5bf9ad90eb29cb550190a0ad244748d0ee2dc7"
+    },
+    {
+      "name": "engine/dist/raw.js",
+      "size": 501468,
+      "sha256": "c2da7cb17457d0165a412ee692958d23792ee818f06be9430916a0d332c3deee"
+    },
+    {
+      "name": "engine/dist/utils/index.js",
+      "size": 47,
+      "sha256": "f476d1b358483763e8e3968f5946bc5d83c8c06b28bdad48c17577078b78c0f4"
+    },
+    {
+      "name": "engine/dist/utils/queue.js",
+      "size": 607,
+      "sha256": "f094363229cb25af8f805cadcc87e159d74cb605b66725efd5dd63f397be676d"
+    },
+    {
+      "name": "engine/dist/utils/rb.js",
+      "size": 1402,
+      "sha256": "212612a4d0f41dad16af86098f3c5a6d4fb1b6efde11c31b826483cecd1d9583"
+    },
+    {
+      "name": "engine/dist/valve/extras.pk3",
+      "size": 1488559,
+      "sha256": "fc0acba14e6f2e5ea613b983aeedb63c64bd7063c8e0d487db08be72eaf88852"
+    },
+    {
+      "name": "engine/dist/xash.wasm",
+      "size": 3923825,
+      "sha256": "b495d208747570c7ac01684a4ebb08a9b8e97f7fc0fd7d1f309a2e1b72f4f8db"
+    },
+    {
+      "name": "engine/dist/xash3d.js",
+      "size": 9601,
+      "sha256": "7282fcc241645725816fb3f5a2a6e02f3ae4f75a94049d565145bdb731f25100"
+    },
+    {
+      "name": "engine/package.json",
+      "size": 1953,
+      "sha256": "45c2d53a02f1473279b6f6b9ad87191805495bbb9f03a44b29acc8b22dd3f1b6"
+    },
+    {
+      "name": "gfx/fonts/FiraSans-Regular.ttf",
+      "size": 456996,
+      "sha256": "c29556a2719bf613ef3d5e070e40d903a8965d9c081beca1375dc1e6e0f93c23"
+    },
+    {
+      "name": "gfx/fonts/tahoma.ttf",
+      "size": 456996,
+      "sha256": "c29556a2719bf613ef3d5e070e40d903a8965d9c081beca1375dc1e6e0f93c23"
+    },
+    {
+      "name": "index.html",
+      "size": 4298,
+      "sha256": "43e23fb6271d951235f508d59eb3d036c4f1cc7a01454e092412d34326f8ebab"
+    },
+    {
+      "name": "lib-new/cstrike/cl_dlls/client_emscripten_wasm32.wasm",
+      "size": 482971,
+      "sha256": "085c2022cb2d6df0c63d3295f59bb779d06a049e912135b455bcfee90e34f1be"
+    },
+    {
+      "name": "lib-new/cstrike/cl_dlls/menu_emscripten_wasm32.wasm",
+      "size": 416427,
+      "sha256": "a9a635eb8860130ba8a2a8603ca58c55fafc863adc652716d533cc05c97d8aae"
+    },
+    {
+      "name": "lib-new/cstrike/dlls/cs_emscripten_wasm32.so",
+      "size": 1545003,
+      "sha256": "6f9ef8d6310c4e2716c5f5fbbed7ed7cb24cb21c243cf6173b61458fd5d8b1b7"
+    },
+    {
+      "name": "lib/cstrike/cl_dlls/client_emscripten_wasm32.wasm",
+      "size": 489444,
+      "sha256": "3a8b26a14ce562ab3bcfbf2a8f57c2822ae04c2a134caedbb03355003ea5ecf7"
+    },
+    {
+      "name": "lib/cstrike/cl_dlls/menu_emscripten_wasm32.wasm",
+      "size": 494161,
+      "sha256": "d5802742d32b9295efa7479114798c832248c758ee4474af0dafaa2773d7d086"
+    },
+    {
+      "name": "lib/cstrike/dlls/cs_emscripten_wasm32.wasm",
+      "size": 1323625,
+      "sha256": "9c838823ddec4f65986a0f8e715d7b22f01e2e9dc9de59fe03752bcdebdc0b97"
+    },
+    {
+      "name": "lib/cstrike/dlls/yapb_emscripten_wasm32.wasm",
+      "size": 1138334,
+      "sha256": "49ea57f33a0c57dcdf9208719caca52eb61013da470ac8dc7d370658166c9e30"
+    },
+    {
+      "name": "lib/cstrike/extras.pk3",
+      "size": 25111596,
+      "sha256": "49d5e00ce50ed01aace3a1c2035a2959c3f7e4457ca2b6c31d01e4cd2a7a5d69"
+    },
+    {
+      "name": "lib/valve/cl_dlls/client_emscripten_wasm32.wasm",
+      "size": 206433,
+      "sha256": "9899131ff1b213f6116d50abe3cdcffbc02d60a41c7d5fbc88d036aeb7f45e2e"
+    },
+    {
+      "name": "lib/valve/dlls/hl_emscripten_wasm32.wasm",
+      "size": 1072597,
+      "sha256": "bf0af8180933d71af77e3215328d54029dc2dde359a5dd0ed208d5229d65a99a"
+    },
+    {
+      "name": "tar-stream.js",
+      "size": 4061,
+      "sha256": "d64b610adfa6f56da793d1a5864d43dba34dc6d04a81a990c95d79ab2bb1d372"
+    },
+    {
+      "name": "zstd.wasm",
+      "size": 251806,
+      "sha256": "80260eee5795ee8072bb5821e203730c74dca3909938f5ac1128da67f96223df"
+    }
+  ]
+}

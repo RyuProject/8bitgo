@@ -351,6 +351,7 @@ const liveStore = (() => {
   let rooms: LiveRoomInfo[] = NO_LIVE_ROOMS
   const listeners = new Set<() => void>()
   let es: EventSource | null = null
+  let stopFallback: (() => void) | null = null
   let timer = 0
   /** 当前连接按哪一张 JWT 建立；登录 / 退出后必须换通道，否则会沿用旧权限。 */
   let connectedToken = ''
@@ -412,10 +413,12 @@ const liveStore = (() => {
       状态停在 CONNECTING，兜底一次都不会触发，列表就静静地不再更新。
       详见 sseFallback.ts。
     */
-    fallbackAfterErrors(es, startPolling)
+    stopFallback = fallbackAfterErrors(es, startPolling)
   }
 
   const disconnect = () => {
+    stopFallback?.()
+    stopFallback = null
     es?.close()
     es = null
     if (timer) {

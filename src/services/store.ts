@@ -28,7 +28,8 @@ export interface AdminGameQuery {
 }
 
 /**
- * 后台的游戏列表：带 ?all=1，所以包含已下架的，需要管理员口令。
+ * 后台的游戏列表：管理员拿主库，志愿者拿自己的独立库。
+ * `library=mine` 不是客户端授权开关，服务端仍按登录角色决定实际查哪张表。
  * 关键字、平台、上下架状态、排序全部由服务端处理 —— 在前端过滤会让
  * total 和翻页失去意义（「只看下架」变成在当前页的 24 条里挑）。
  */
@@ -36,7 +37,7 @@ export async function fetchAdminGames(q: AdminGameQuery = {}): Promise<Paged<Gam
   if (!apiEnabled()) {
     return { items: [], total: 0, page: 1, pageSize: 24, totalPages: 1 }
   }
-  const sp = new URLSearchParams({ all: '1' })
+  const sp = new URLSearchParams({ all: '1', library: 'mine' })
   if (q.q) sp.set('q', q.q)
   if (q.platform && q.platform !== 'all') sp.set('platform', q.platform)
   if (q.status && q.status !== 'all') sp.set('status', q.status)

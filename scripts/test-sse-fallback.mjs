@@ -69,27 +69,27 @@ check('服务端明确拒绝（CLOSED）立刻退，不用等次数', () => {
   assert.equal(gaveUp, 1, '老后端没有这个端点时应当立刻降级')
 })
 
-check('中间真连上过就归零：偶发抖动不该把长期可用的连接判死', () => {
+check('中间收到房间快照就归零：偶发抖动不该把长期可用的连接判死', () => {
   const es = fakeSse(0)
   let gaveUp = 0
   fallbackAfterErrors(es, () => gaveUp++)
   for (let i = 0; i < 20; i++) {
     es.fire('error')
-    es.fire('open')
+    es.fire('rooms')
   }
   assert.equal(gaveUp, 0)
   assert.equal(es.closed, false)
 })
 
-check('放弃只发生一次以后就不再重复回调（各处的 startPolling 也是幂等的）', () => {
+check('放弃只发生一次，以后的错误不再重复启动轮询', () => {
   const es = fakeSse(0)
   let gaveUp = 0
   fallbackAfterErrors(es, () => gaveUp++)
   for (let i = 0; i < SSE_ERROR_LIMIT; i++) es.fire('error')
   assert.equal(gaveUp, 1)
-  // close() 之后 readyState 变 2，再来的 error 会走 CLOSED 那一路 —— 调用方必须幂等
+  // close() 之后浏览器仍可能晚报一次 error，不能再启动第二份轮询。
   es.fire('error')
-  assert.equal(gaveUp, 2, '这里确实会再调一次，所以 onGiveUp 的幂等性是硬要求（见注释）')
+  assert.equal(gaveUp, 1)
 })
 
 check('close() 抛异常不影响降级', () => {
@@ -124,6 +124,50 @@ check('⚠️ sseFallback.ts 不许引用全局 EventSource（SSR 那侧没有�
   const src = readFileSync(path.join(ROOT, 'src/services/sseFallback.ts'), 'utf8')
   const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
   assert.ok(!/\bEventSource\b/.test(code), '用数值常量，别取全局')
+})
+
+const checkAsync = async (name, fn) => {
+  try {
+    await fn()
+    console.log(`  ✅ ${name}`)
+  } catch (e) {
+    failed++
+    console.error(`  ❌ ${name}\n     ${e.message}`)
+  }
+}
+
+await checkAsync('SSE 一直没有 open/error 时按首个快照超时退回轮询', async () => {
+  const es = fakeSse(0)
+  let gaveUp = 0
+  fallbackAfterErrors(es, () => gaveUp++, SSE_ERROR_LIMIT, 5)
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(gaveUp, 1)
+  assert.equal(es.closed, true)
+})
+
+await checkAsync('连接已打开却没有快照时仍须超时退回轮询', async () => {
+  const opened = fakeSse(0)
+  let gaveUp = 0
+  fallbackAfterErrors(opened, () => gaveUp++, SSE_ERROR_LIMIT, 5)
+  opened.fire('open')
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(gaveUp, 1)
+  assert.equal(opened.closed, true)
+})
+
+await checkAsync('收到快照或订阅已取消时，首个快照闹钟不能启动轮询', async () => {
+  const received = fakeSse(0)
+  const cancelled = fakeSse(0)
+  let gaveUp = 0
+  fallbackAfterErrors(received, () => gaveUp++, SSE_ERROR_LIMIT, 5)
+  const stop = fallbackAfterErrors(cancelled, () => gaveUp++, SSE_ERROR_LIMIT, 5)
+  received.fire('open')
+  received.fire('rooms')
+  stop()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(gaveUp, 0)
+  assert.equal(received.closed, false)
+  assert.equal(cancelled.closed, false)
 })
 
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过')

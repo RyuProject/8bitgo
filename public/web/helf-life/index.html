@@ -2,6 +2,8 @@
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
+    <!-- 生产路由会把尾斜杠去掉；base 保证 ../cs15 始终从 /web/helf-life/ 计算。 -->
+    <base href="/web/helf-life/" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Half-Life · 网页版</title>
     <style>
@@ -32,6 +34,7 @@
       select, button { font: inherit; padding: 6px 12px; border-radius: 8px; border: 1px solid #2a3744; background: #141c24; color: #e6e6e6; }
       button { cursor: pointer; }
       button:hover { background: #1c2731; }
+      button:disabled, select:disabled { cursor: wait; opacity: .55; }
       #hud { position: absolute; top: 8px; left: 8px; font: 12px ui-monospace, monospace; opacity: .55; pointer-events: none; }
     </style>
     <!-- 没有带 ?game=hl 时，自动补上参数并重载：复用 cs15 的资产目录（root=../cs15/），避免重复几百 MB 资源。 -->
@@ -51,7 +54,7 @@
         <div id="hud"></div>
         <div id="overlay">
           <div id="title">Half-Life · 网页版</div>
-          <div id="sub">Xash3D-FWGS (WebAssembly) 引擎在浏览器里原生运行。首次需下载约 550&nbsp;MB 基础包（含 Half-Life 资产），解压后约占 1.1&nbsp;GB 内存，之后只按需下你选的那张地图。</div>
+          <div id="sub">Xash3D-FWGS (WebAssembly) 引擎在浏览器里原生运行。首次需下载约 550&nbsp;MB 基础包（含 Half-Life 资产）；加载器会边解压边写入，避免压缩包与整份 ZIP 同时占用内存，之后只按需下你选的那张地图。</div>
           <div class="row">
             <label>地图
               <select id="map">
@@ -72,6 +75,6 @@
       </div>
     </div>
     <!-- 直接复用 cs15 已打包好的引擎与加载器，仅通过查询参数切到 Half-Life 模式 -->
-    <script type="module" src="../cs15/cs15.bundle.js?v=20260921"></script>
+    <script type="module" src="../cs15/cs15.bundle.js?v=20260923e"></script>
   </body>
 </html>

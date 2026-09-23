@@ -15,7 +15,12 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { FLASH_SAVE_GAMES, flashSaveBridgeOf, flashSaveProtocolOf } from '../shared/flash-save-games.js'
+import {
+  FLASH_SAVE_GAMES,
+  flashSaveBridgeOf,
+  flashSaveGameKeyOf,
+  flashSaveProtocolOf,
+} from '../shared/flash-save-games.js'
 import {
   FLASH_SAVE_BRIDGES,
   flashSaveBridgeUrl,
@@ -43,6 +48,10 @@ check('注册表里出现过的方言都受支持，且每款都带桥地址', (
     assert.ok(entry.bridge.startsWith('/flash-api/armor-games/'), `${slug} 的桥地址不在站内桥目录下`)
     assert.ok(flashSaveBridgeOf(slug) === entry.bridge, `${slug} 的桥地址从表里读出来不一致`)
     assert.ok(flashSaveProtocolOf(slug) === entry.protocol, `${slug} 的方言从表里读出来不一致`)
+    if (entry.protocol === 'agi1') {
+      assert.ok(entry.agiGameKey, `${slug} 是 AGI1 但没配 agiGameKey`)
+      assert.equal(flashSaveGameKeyOf(slug), entry.agiGameKey, `${slug} 的 AGI1 gameKey 读出来不一致`)
+    }
   }
 })
 
@@ -83,6 +92,44 @@ check('前端不再自己维护一份桥表', () => {
     source.includes("from '../../shared/flash-save-games.js'"),
     '前端没有从共用注册表读桥地址',
   )
+})
+
+check('游客只在游戏内主动用在线槽时才打开登录框', () => {
+  const service = readFileSync(join(root, 'src/services/flashOnlineSave.ts'), 'utf8')
+  const ruffle = readFileSync(join(root, 'src/emulator/adapters/ruffle.ts'), 'utf8')
+  const player = readFileSync(join(root, 'src/emulator/EmulatorPlayer.tsx'), 'utf8')
+  const agi1 = readFileSync(join(root, 'flash-api/armor-games/src/test_fla/MainTimeline.as'), 'utf8')
+  const agi2 = readFileSync(join(root, 'flash-api/armor-games/src-agi2/KrfAgiBridge.as'), 'utf8')
+
+  for (const key of ['eightbitgo_save_mode', 'eightbitgo_login_callback', 'FLASH_SAVE_LOGIN_CALLBACK']) {
+    assert.ok(service.includes(key), `启动参数缺 ${key}`)
+  }
+  assert.ok(ruffle.includes('allowScriptAccess: Boolean(onlineSave)'), '审核过的在线存档游戏没开 ExternalInterface')
+  assert.ok(ruffle.includes("onlineSave?.mode === 'guest'"), '页面没有区分游客和服务故障')
+  assert.ok(player.includes('onFlashSaveLoginRequired') && player.includes('openAuthModal()'), '播放器没有打开站内登录框')
+  for (const [label, source] of [['AGI1', agi1], ['AGI2', agi2]]) {
+    assert.ok(source.includes('ExternalInterface.call'), `${label} 没有向页面上报登录意图`)
+    assert.ok(source.includes('saveMode != "guest"'), `${label} 会把服务故障误报成未登录`)
+  }
+  // retrieve 是 KRF 开局自动调的；没有 promptLogin 门槛就会一进游戏弹窗。
+  assert.ok(agi2.includes('options.promptLogin === true'), 'AGI2 读档没有「用户主动」门槛')
+})
+
+check('AGI2 具备幂等重试、条件更新和给新游戏的简化接口', () => {
+  const source = readFileSync(join(root, 'flash-api/armor-games/src-agi2/KrfAgiBridge.as'), 'utf8')
+  for (const fragment of [
+    'public var eightbitgo:Object',
+    '"opId":this.nextOpId()',
+    'body.expectedRevision',
+    'mergeRevisions(result)',
+    'waitForQueue(function()',
+    '"showLogin": this.simpleShowLogin',
+    '"read": this.simpleRead',
+    '"write": this.simpleWrite',
+    '"remove": this.simpleRemove',
+  ]) {
+    assert.ok(source.includes(fragment), `AGI2 缺少关键链路：${fragment}`)
+  }
 })
 
 console.log(`\n✅ Flash 在线存档一致性 ${passed} 项通过`)

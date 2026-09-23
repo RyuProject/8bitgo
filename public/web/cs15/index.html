@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <!-- 生产路由会把尾斜杠去掉；base 保证相对脚本/引擎仍从 /web/cs15/ 解析。 -->
+    <base href="/web/cs15/" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Counter-Strike 1.5 · 网页版</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: #0a0a0c; color: #e6e6e6; font: 14px/1.5 system-ui, sans-serif; }
+      #app { position: fixed; inset: 0; display: flex; flex-direction: column; }
+      #stage { position: relative; flex: 1; min-height: 0; background: #000; }
+      #canvas { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
+      #overlay {
+        position: absolute; inset: 0; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 14px;
+        background: radial-gradient(circle at 50% 30%, #16202b, #05070a);
+        text-align: center; padding: 24px;
+      }
+      #overlay.hidden { display: none; }
+      #title { font-size: 22px; font-weight: 700; letter-spacing: .5px; }
+      #sub { opacity: .7; max-width: 560px; }
+      #bar { width: min(460px, 80vw); height: 8px; border-radius: 6px; background: #1d2733; overflow: hidden; }
+      #bar > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #4caf50, #8bc34a); transition: width .2s; }
+      #phase { font-variant-numeric: tabular-nums; opacity: .85; }
+      #net { opacity: .6; font-size: 12px; }
+      #log { width: min(640px, 92vw); max-height: 32vh; overflow: auto; font: 12px/1.45 ui-monospace, monospace;
+             background: #0c1116; border: 1px solid #1d2733; border-radius: 8px; padding: 10px; text-align: left; }
+      #log .err { color: #ff6b6b; }
+      #errbox { color: #ff8a80; max-width: 620px; white-space: pre-wrap; }
+      .row { display: flex; gap: 10px; align-items: center; }
+      select, button { font: inherit; padding: 6px 12px; border-radius: 8px; border: 1px solid #2a3744; background: #141c24; color: #e6e6e6; }
+      button { cursor: pointer; }
+      button:hover { background: #1c2731; }
+      button:disabled, select:disabled { cursor: wait; opacity: .55; }
+      #hud { position: absolute; top: 8px; left: 8px; font: 12px ui-monospace, monospace; opacity: .55; pointer-events: none; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div id="stage">
+        <canvas id="canvas"></canvas>
+        <div id="hud"></div>
+        <div id="overlay">
+          <div id="title">Counter-Strike 1.5 · 网页版</div>
+          <div id="sub">Xash3D-FWGS (WebAssembly) 引擎在浏览器里原生运行。资源已按公共运行时与单地图拆分，并用 Brotli 流式传输；首次约下载 80–100&nbsp;MB，每个文件写入前后都会做完整性校验。</div>
+          <div id="sub">进入后会自动加入一个 Bot；首次使用某张地图需约 20 秒生成导航，之后会从浏览器缓存直接恢复。按主键盘或小键盘 <b>+</b> 可继续增加，地址加 <code>?bots=0</code> 可关闭。</div>
+          <div class="row">
+            <label>模式
+              <select id="game">
+                <option value="cs" selected>Counter-Strike 1.5</option>
+                <option value="hl">Half-Life（同引擎，已验证可进图）</option>
+              </select>
+            </label>
+            <label>地图
+              <select id="map">
+                <option value="de_dust2">de_dust2</option>
+                <option value="de_dust">de_dust</option>
+                <option value="cs_office">cs_office</option>
+              </select>
+            </label>
+            <button id="start">开始</button>
+          </div>
+          <div id="bar"><i></i></div>
+          <div id="phase">待开始</div>
+          <div id="net"></div>
+          <pre id="errbox"></pre>
+          <div id="log"></div>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="./cs15.bundle.js?v=20260923e"></script>
+  </body>
+</html>

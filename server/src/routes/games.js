@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { requireAbility, hasAbility, optionalUser } from '../auth.js'
+import { requireAbility, hasAbility, optionalUser, roleOfRequest } from '../auth.js'
 import { invalidateContent } from '../content.js'
 import { publicApi } from '../cache.js'
 import { playIdentity } from '../playcount.js'
@@ -25,6 +25,14 @@ import {
 import { isTranslateConfigured, translateGateOk, translatePlan } from '../translate.js'
 import { gameDescriptionSource, renderField } from '../i18n-generate.js'
 import { takeAnonymous } from '../rateLimit.js'
+import { dosGameConfigError, mergeGamePatchForDosValidation } from '../dos-game-config.js'
+import {
+  deleteVolunteerGame,
+  getVolunteerGame,
+  listVolunteerGames,
+  patchVolunteerGame,
+  saveVolunteerGame,
+} from '../volunteer-libraries.js'
 
 export const gamesRouter = Router()
 
@@ -61,8 +69,27 @@ gamesRouter.get('/', async (req, res, next) => {
       if (!gate.ok) return tooMany(res, gate.retryAfter)
     }
     const wantAll = req.query.all === '1'
+    const wantOwnLibrary = req.query.library === 'mine'
+    if (wantOwnLibrary) {
+      const role = await roleOfRequest(req)
+      if (role === 'volunteer') {
+        const ownerId = String(req.user?.id ?? '')
+        if (!ownerId) return res.status(403).json({ error: '志愿者独立库必须使用账号登录' })
+        return res.json(await listVolunteerGames(ownerId, {
+          platform: req.query.platform,
+          status: req.query.status,
+          home: req.query.home == null ? undefined : truthy(req.query.home),
+          q: req.query.q,
+          sort: req.query.sort,
+          page: req.query.page,
+          pageSize: req.query.pageSize,
+        }))
+      }
+      // 管理员的「我的库」就是主库；普通用户不能借这个参数看草稿。
+      if (role !== 'admin') return res.status(403).json({ error: '需要游戏库编辑权限' })
+    }
     if (wantAll && !(await hasAbility(req, 'content:edit'))) {
-      return res.status(403).json({ error: '需要内容编辑权限才能查看全部游戏' })
+      return res.status(403).json({ error: '只有管理员能查看主游戏库的全部内容' })
     }
     const result = await listGames({
       platform: req.query.platform,
@@ -314,9 +341,20 @@ gamesRouter.post('/:slug/play', optionalUser, async (req, res, next) => {
 
 gamesRouter.get('/:slug', async (req, res, next) => {
   try {
+    if (req.query.library === 'mine') {
+      const role = await roleOfRequest(req)
+      if (role === 'volunteer') {
+        const ownerId = String(req.user?.id ?? '')
+        if (!ownerId) return res.status(403).json({ error: '志愿者独立库必须使用账号登录' })
+        const personal = await getVolunteerGame(ownerId, req.params.slug)
+        if (!personal) return res.status(404).json({ error: '你的游戏库里没有这款游戏' })
+        return res.json(personal)
+      }
+      if (role !== 'admin') return res.status(403).json({ error: '需要游戏库编辑权限' })
+    }
     const game = await getGameBySlug(req.params.slug)
     if (!game) return res.status(404).json({ error: '游戏不存在' })
-    // 已下架的对外当作不存在，只有能编辑内容的人（管理员 / 志愿者）取得到
+    // 已下架的主库内容只给管理员；志愿者的权限只覆盖个人库，不能借详情接口看主库草稿。
     if (game.hidden && !(await hasAbility(req, 'content:edit'))) {
       return res.status(404).json({ error: '游戏不存在' })
     }
@@ -413,11 +451,18 @@ gamesRouter.post('/:slug/translate-description', async (req, res, next) => {
 })
 
 /** 新增 / 整体覆盖一款游戏（后台）。主表与三张关联表在同一个事务里。 */
-gamesRouter.put('/:slug', requireAbility('content:edit'), async (req, res, next) => {
+gamesRouter.put('/:slug', requireAbility('games:edit'), async (req, res, next) => {
   try {
     const slug = String(req.params.slug)
     if (!req.body?.title) return res.status(400).json({ error: '缺少标题' })
     if (!req.body?.platform) return res.status(400).json({ error: '缺少平台' })
+    const dosError = dosGameConfigError(req.body)
+    if (dosError) return res.status(400).json({ error: dosError })
+    if (req.staffRole === 'volunteer') {
+      const ownerId = String(req.user?.id ?? '')
+      if (!ownerId) return res.status(403).json({ error: '志愿者独立库必须使用账号登录' })
+      return res.json(await saveVolunteerGame(ownerId, slug, req.body))
+    }
     await upsertGame(slug, req.body)
     invalidateContent()
     const saved = await getGameBySlug(slug)
@@ -432,9 +477,22 @@ gamesRouter.put('/:slug', requireAbility('content:edit'), async (req, res, next)
  * 局部更新（切换上下架、绑定 ROM …）。
  * 只写请求里带到的列 —— 整行回写会把 plays 之类的值按旧数据盖回去。
  */
-gamesRouter.patch('/:slug', requireAbility('content:edit'), async (req, res, next) => {
+gamesRouter.patch('/:slug', requireAbility('games:edit'), async (req, res, next) => {
   try {
     const slug = String(req.params.slug)
+    if (req.staffRole === 'volunteer') {
+      const ownerId = String(req.user?.id ?? '')
+      if (!ownerId) return res.status(403).json({ error: '志愿者独立库必须使用账号登录' })
+      const current = await getVolunteerGame(ownerId, slug)
+      if (!current) return res.status(404).json({ error: '你的游戏库里没有这款游戏' })
+      const dosError = dosGameConfigError(mergeGamePatchForDosValidation(current, req.body))
+      if (dosError) return res.status(400).json({ error: dosError })
+      return res.json(await patchVolunteerGame(ownerId, slug, req.body))
+    }
+    const current = await getGameBySlug(slug)
+    if (!current) return res.status(404).json({ error: '游戏不存在' })
+    const dosError = dosGameConfigError(mergeGamePatchForDosValidation(current, req.body))
+    if (dosError) return res.status(400).json({ error: dosError })
     const patchRow = gameApiToPartialRow(req.body)
     const relations = relationsInPatch(req.body)
     if (!Object.keys(patchRow).length && !relations.genres && !relations.tags && !relations.roms) {
@@ -458,8 +516,16 @@ gamesRouter.patch('/:slug', requireAbility('content:edit'), async (req, res, nex
  * R2 里的 ROM / 封面 / 视频文件不会被删除（可能被多款游戏共用），
  * 需要清理请到「后台 → ROM 存储」里手动删。
  */
-gamesRouter.delete('/:slug', requireAbility('content:edit'), async (req, res, next) => {
+gamesRouter.delete('/:slug', requireAbility('games:edit'), async (req, res, next) => {
   try {
+    if (req.staffRole === 'volunteer') {
+      const ownerId = String(req.user?.id ?? '')
+      if (!ownerId) return res.status(403).json({ error: '志愿者独立库必须使用账号登录' })
+      if (!(await deleteVolunteerGame(ownerId, req.params.slug))) {
+        return res.status(404).json({ error: '你的游戏库里没有这款游戏' })
+      }
+      return res.json({ ok: true })
+    }
     // 删除前先保留平台 / 类型，删除后除了详情 404，聚合页的内容和数量也发生了变化。
     const previous = await getGameBySlug(req.params.slug)
     if (!(await deleteGame(req.params.slug))) return res.status(404).json({ error: '游戏不存在' })

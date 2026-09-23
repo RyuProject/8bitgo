@@ -1,36 +1,68 @@
-// 把自动加载片段注入 public/web/PvZ/index.html（官方引擎页已把 jszip 换成本地）。
-// 可重入：index.html 里若已有自动加载块（带 START/END 哨兵，或旧版只带 END 哨兵），先剥离再注入。
+/*
+  把自动加载片段同步进 PvZ 的语言入口页（public/web/PvZ/cn|en/index.html）。
+
+  为什么要有这一层：snippet（autoplay-snippet.html）是**唯一来源**，cn / en 只是它的
+  产物（两个文件除了第 7 行的 PVZ_LOCALE / PVZ_MANIFEST_URL 之外完全一致）。
+  改了 snippet 就必须重跑本脚本，否则线上跑的还是旧片段 —— 2026-09-23 的版本就是
+  因为直接手改了 cn/en 而 snippet 留在旧版，两边悄悄分叉。
+
+  可重入：已有 START/END 哨兵就整体替换，没有就插到 </body> 前。
+
+  用法：
+    node scripts/pvz-web/inject-autoplay.mjs            # 同步 cn + en
+    node scripts/pvz-web/inject-autoplay.mjs cn         # 只同步指定语言
+*/
 import { readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(__dirname, '..', '..')
-const TARGET = resolve(ROOT, 'public/web/PvZ/index.html')
 const SNIPPET = resolve(__dirname, 'autoplay-snippet.html')
 
 const START = '<!-- PvZ_AUTOPLAY_START -->'
 const END = '<!-- PvZ_AUTOPLAY_INJECTED -->'
 
-let html = readFileSync(TARGET, 'utf8')
+const wanted = process.argv.slice(2)
+const LOCALES = wanted.length ? wanted : ['cn', 'en']
 
-// 剥离任何已存在的自动加载块
-if (html.includes(START)) {
-  const i = html.indexOf(START)
-  const j = html.indexOf(END)
-  if (j >= 0) html = html.slice(0, i) + html.slice(j + END.length)
-} else if (html.includes(END)) {
-  // 旧版：只有 END 哨兵，块从它前面紧邻的 <script> 起到 END 为止
-  const j = html.indexOf(END)
-  const k = html.lastIndexOf('<script>', j)
-  if (k >= 0) html = html.slice(0, k) + html.slice(j + END.length)
-}
-
-if (!html.includes('</body>')) {
-  console.error('找不到 </body>，无法注入')
+const snippet = readFileSync(SNIPPET, 'utf8')
+// 哨兵必须成对出现，否则下游（以及下次同步）会剥错位置
+if (!snippet.includes(START) || !snippet.includes(END)) {
+  console.error('autoplay-snippet.html 缺少 PvZ_AUTOPLAY 哨兵，拒绝注入')
   process.exit(1)
 }
 
-const snippet = readFileSync(SNIPPET, 'utf8')
-writeFileSync(TARGET, html.replace('</body>', snippet + '\n</body>'))
-console.log('已注入自动加载脚本 ->', TARGET)
+let changed = 0
+for (const locale of LOCALES) {
+  const target = resolve(ROOT, 'public/web/PvZ', locale, 'index.html')
+  let html
+  try {
+    html = readFileSync(target, 'utf8')
+  } catch (e) {
+    console.error('读不到 ' + target + '：' + e.message)
+    process.exit(1)
+  }
+
+  let out
+  if (html.includes(START) && html.includes(END)) {
+    const i = html.indexOf(START)
+    const j = html.indexOf(END)
+    out = html.slice(0, i) + snippet + html.slice(j + END.length)
+  } else if (html.includes('</body>')) {
+    out = html.replace('</body>', snippet + '\n</body>')
+  } else {
+    console.error('找不到 </body> 也没有哨兵，无法注入：' + target)
+    process.exit(1)
+  }
+
+  if (out !== html) {
+    writeFileSync(target, out)
+    changed++
+    console.log('已同步自动加载片段 ->', target)
+  } else {
+    console.log('无变化 ->', target)
+  }
+}
+
+if (changed) console.log('\n提示：改完片段后记得重新构建（npm run build），dist/client 里才是线上那份。')

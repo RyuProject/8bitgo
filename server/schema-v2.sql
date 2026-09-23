@@ -378,6 +378,31 @@ CREATE TABLE IF NOT EXISTS users (
   KEY idx_role (role, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ---------- 志愿者独立内容库 ----------
+-- 不往 games / posts 主表加 owner_id：公开站点有很多条主库查询，任何一条漏条件都会泄漏草稿。
+-- 独立表让公开读取从结构上碰不到志愿者内容；同一个 slug 也能同时存在于主库和不同志愿者库。
+CREATE TABLE IF NOT EXISTS volunteer_games (
+  owner_id  VARCHAR(40)  NOT NULL,
+  slug      VARCHAR(120) NOT NULL,
+  payload   JSON         NOT NULL,
+  created_at TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (owner_id, slug),
+  KEY idx_volunteer_games_owner_time (owner_id, updated_at DESC),
+  CONSTRAINT fk_volunteer_games_owner FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS volunteer_posts (
+  owner_id  VARCHAR(40)  NOT NULL,
+  slug      VARCHAR(120) NOT NULL,
+  payload   JSON         NOT NULL,
+  created_at TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (owner_id, slug),
+  KEY idx_volunteer_posts_owner_time (owner_id, updated_at DESC),
+  CONSTRAINT fk_volunteer_posts_owner FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ---------- 应用中心 ----------
 -- 一张表管三个模块：kind=sdk 官方 SDK、kind=app APP 下载、kind=community 社区上架。
 -- 下载方式二选一：download_url 填外链，或把安装包传 R2 后把 key 存进同一列。

@@ -7,10 +7,13 @@ import { cx } from '@/lib/format'
 import { apiEnabled } from '@/services/api'
 import { slugify } from './GameForm'
 import { Field, btnClass, inputClass } from './ui'
+import { useAdminData } from './AdminLayout'
 
 type Editing = { mode: 'add' } | { mode: 'edit'; post: Post } | null
 
 export function AdminPosts() {
+  const db = useAdminData()
+  const personalLibrary = db.role === 'volunteer'
   /**
    * v1 从前端的全量文章 store 里读，写完 store 自己会通知界面刷新。
    * v2 没有那个 store 了：进页面拉一次 /api/posts?all=1（含草稿），
@@ -52,7 +55,8 @@ export function AdminPosts() {
   }, [posts, q])
 
   const remove = async (p: Post) => {
-    if (!window.confirm(`确定删除文章「${p.title}」？`)) return
+    const scope = personalLibrary ? '只会从你的独立文章库移除，不影响主文章库或其他志愿者。' : '此操作会从主文章库删除。'
+    if (!window.confirm(`确定删除文章「${p.title}」？${scope}`)) return
     try {
       await deletePost(p.slug)
       setToast('已删除')
@@ -66,13 +70,15 @@ export function AdminPosts() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold">文章管理</h1>
+          <h1 className="text-xl font-bold">{personalLibrary ? '我的文章库' : '文章管理'}</h1>
           <p className="mt-1 text-sm text-muted">
             {!apiEnabled()
               ? '未配置后端（VITE_API_URL），后台读不到文章，也保存不了修改。'
               : error
                 ? `⚠️ 取不到文章列表：${error}`
-                : `共 ${posts.length} 篇，${posts.filter((p) => p.published).length} 篇已发布。草稿不会出现在前台。`}
+                : personalLibrary
+                  ? `共 ${posts.length} 篇，${posts.filter((p) => p.published).length} 篇已标记成稿。这里的文章不会自动发布到前台，编辑和删除也不会影响任何其他库。`
+                  : `共 ${posts.length} 篇，${posts.filter((p) => p.published).length} 篇已发布。草稿不会出现在前台。`}
           </p>
         </div>
         <div className="flex gap-2">
@@ -106,9 +112,13 @@ export function AdminPosts() {
                     <div className="min-w-0">
                       <p className="truncate font-medium">{p.title}</p>
                       <p className="truncate text-xs text-dim">
-                        <Link to={`/blog/${p.slug}`} target="_blank" className="hover:text-brand-hover">
-                          /blog/{p.slug}
-                        </Link>
+                        {personalLibrary ? (
+                          <span>/blog/{p.slug}</span>
+                        ) : (
+                          <Link to={`/blog/${p.slug}`} target="_blank" className="hover:text-brand-hover">
+                            /blog/{p.slug}
+                          </Link>
+                        )}
                       </p>
                     </div>
                   </div>
@@ -118,7 +128,7 @@ export function AdminPosts() {
                 <td className="px-3 py-2 tabular-nums text-muted">{p.date}</td>
                 <td className="px-3 py-2">
                   {p.published ? (
-                    <span className="rounded bg-online/15 px-1.5 py-0.5 text-xs text-online">已发布</span>
+                    <span className="rounded bg-online/15 px-1.5 py-0.5 text-xs text-online">{personalLibrary ? '已成稿' : '已发布'}</span>
                   ) : (
                     <span className="rounded bg-white/5 px-1.5 py-0.5 text-xs text-dim">草稿</span>
                   )}
@@ -136,14 +146,14 @@ export function AdminPosts() {
                           // setPostPublished 走的是 PUT（整体覆盖），要把原文一起带上，
                           // 所以传的是整篇 post 而不是 slug
                           await setPostPublished(p, !p.published)
-                          setToast(p.published ? '已转为草稿' : '已发布')
+                          setToast(p.published ? '已转为草稿' : personalLibrary ? '已标记成稿' : '已发布')
                           reload()
                         } catch (err) {
                           setToast(err instanceof Error ? err.message : '操作失败')
                         }
                       }}
                     >
-                      {p.published ? '转草稿' : '发布'}
+                      {p.published ? '转草稿' : personalLibrary ? '标记成稿' : '发布'}
                     </button>
                     <button type="button" className={cx(btnClass.small, 'text-live hover:bg-live/15')} onClick={() => remove(p)}>
                       删除
@@ -170,7 +180,7 @@ export function AdminPosts() {
                   ) : !apiEnabled() ? (
                     '未配置后端（VITE_API_URL），后台读不到文章。'
                   ) : (
-                    '没有文章'
+                    personalLibrary ? '你的独立文章库还没有文章，点右上角「写文章」开始创作。' : '没有文章'
                   )}
                 </td>
               </tr>
@@ -192,6 +202,7 @@ export function AdminPosts() {
               key={editing.mode === 'edit' ? editing.post.slug : 'new'}
               initial={editing.mode === 'edit' ? editing.post : undefined}
               existingSlugs={posts.map((p) => p.slug)}
+              personalLibrary={personalLibrary}
               onSubmit={async (post) => {
                 try {
                   await savePost(post)
@@ -225,7 +236,19 @@ const EMPTY: Post = {
   published: false,
 }
 
-function PostForm({ initial, existingSlugs, onSubmit, onCancel }: { initial?: Post; existingSlugs: string[]; onSubmit: (p: Post) => void; onCancel: () => void }) {
+function PostForm({
+  initial,
+  existingSlugs,
+  personalLibrary,
+  onSubmit,
+  onCancel,
+}: {
+  initial?: Post
+  existingSlugs: string[]
+  personalLibrary: boolean
+  onSubmit: (p: Post) => void
+  onCancel: () => void
+}) {
   const [form, setForm] = useState<Post>(initial ?? { ...EMPTY, date: new Date().toISOString().slice(0, 10) })
   const [tagsText, setTagsText] = useState((initial?.tags ?? []).join(', '))
   const [slugTouched, setSlugTouched] = useState(Boolean(initial))
@@ -249,7 +272,7 @@ function PostForm({ initial, existingSlugs, onSubmit, onCancel }: { initial?: Po
       ...form,
       slug,
       title: form.title.trim(),
-      excerpt: form.excerpt.trim() || form.content.replace(/[#>*`\-]/g, '').trim().slice(0, 80),
+      excerpt: form.excerpt.trim() || form.content.replace(/[-#>*`]/g, '').trim().slice(0, 80),
       tags: tagsText
         .split(/[,，]/)
         .map((t) => t.trim())
@@ -312,7 +335,8 @@ function PostForm({ initial, existingSlugs, onSubmit, onCancel }: { initial?: Po
       </div>
 
       <label className="inline-flex items-center gap-2 text-sm">
-        <input type="checkbox" checked={form.published} onChange={(e) => set('published', e.target.checked)} /> 发布（取消勾选则保存为草稿）
+        <input type="checkbox" checked={form.published} onChange={(e) => set('published', e.target.checked)} />{' '}
+        {personalLibrary ? '标记成稿（只在你的库中标记，不会发布到前台）' : '发布（取消勾选则保存为草稿）'}
       </label>
 
       {error && (

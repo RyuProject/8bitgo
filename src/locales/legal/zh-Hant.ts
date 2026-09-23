@@ -15,7 +15,7 @@ import type { LegalDocCopy } from './types'
  */
 
 const CONTACT = 'yeahcore@yeah.net'
-const UPDATED = '2026-09-07'
+const UPDATED = '2026-09-23'
 
 export const termsZhHant: LegalDocCopy = {
   seoTitle: '服務條款',

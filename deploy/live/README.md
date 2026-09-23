@@ -55,6 +55,31 @@ location /socket.io/ {
 }
 ```
 
+### 迁机后核对大厅事件流
+
+`/api/live/events` 和 `/api/netplay/events` 是 SSE：服务端一接上就发送首条房间事件，
+不能等到整个响应结束才交给浏览器。2026-09-22 线上实测普通 `/api/netplay/rooms`
+约 1 秒返回，但 `/api/netplay/events` 在一次 HTTP/2 探测中 28 秒没有响应头；
+浏览器另有 `ERR_HTTP2_PROTOCOL_ERROR` 报告，大厅也可能一直显示旧房间。
+
+先在**新服务器**分别检查本机和公网路径（两条命令都应立即出现响应头与 `event: rooms`；
+持续等后续事件是正常的，`--max-time` 到点退出也正常）：
+
+```bash
+curl -i -N --max-time 5 -A 'Mozilla/5.0' http://127.0.0.1:8788/api/netplay/events
+curl -i -N --max-time 5 -A 'Mozilla/5.0' https://8bitgo.com/api/netplay/events
+```
+
+本机及时、公网延迟时，核对 `/api/` 实际命中的 nginx `location` 是否禁用了
+`proxy_buffering`，并允许长连接（`proxy_read_timeout`）；应用已经发送
+`X-Accel-Buffering: no` 和 `Cache-Control: no-transform`。若 nginx 也及时，
+再检查 Cloudflare 对这两个精确路径的 Response Body Buffering 设置；
+[Cloudflare 官方排查文档](https://developers.cloudflare.com/rules/configuration-rules/response-body-inspection/)
+建议先对照源站与边缘响应，再按路径关闭响应体缓冲。
+
+仓库根目录的 `node scripts/audit-migration.mjs --server` 会自动检查首条 SSE 事件。
+前端另有 12 秒首连超时并退回轮询的保护，但代理层仍需要修好，才能保持实时更新。
+
 ### 国旗 / 网络格子是 ❓ 时先跑这一条
 
 ```bash

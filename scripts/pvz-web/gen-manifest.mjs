@@ -45,7 +45,8 @@ function walkProps(dir, rel) {
     if (st.isDirectory()) walkProps(full, r)
     // 跳过 properties/ 里可能混进来的 main.pak（它属于根，不在 properties/ 下）
     else if (name === 'main.pak') continue
-    else entries.push({ r2: r, fs: r })
+    // size 供加载器算总字节与进度；缺失时它会退化成按文件计数，不会出错
+    else entries.push({ r2: r, fs: r, size: st.size })
   }
 }
 
@@ -61,12 +62,12 @@ function walk(dir, rel) {
       if (name === 'properties' && !rel) walkProps(full, 'properties')
       else walk(full, r)
     } else if (name === 'main.pak' && !foundMain) {
-      entries.push({ r2: MAIN_R2, fs: 'main.pak' })
+      entries.push({ r2: MAIN_R2, fs: 'main.pak', size: st.size })
       foundMain = true
     } else if (rel && name !== 'main.pak') {
       // 其它资源文件（reanim/images/sounds…）：r2 === fs，原样写进 FS 根
       // 顶层（rel 为空）只收 main.pak，其余顶层杂文件（exe/dll 等）忽略
-      entries.push({ r2: r, fs: r })
+      entries.push({ r2: r, fs: r, size: st.size })
     }
   }
 }
@@ -83,9 +84,13 @@ writeFileSync(OUT, json)
 
 const propCount = entries.filter((e) => e.fs.startsWith('properties/')).length
 const reanimCount = entries.filter((e) => e.fs.startsWith('reanim/')).length
+const totalBytes = entries.reduce((n, e) => n + (e.size || 0), 0)
 console.log('已写入 ' + OUT)
 console.log('  文件总数: ' + entries.length + '（main.pak 1' + (reanimCount ? ' + reanim/ ' + reanimCount : '') + (propCount ? ' + properties/ ' + propCount : '') + '）')
+console.log('  总体积: ' + (totalBytes / 1048576).toFixed(1) + ' MB')
 console.log('  main.pak 的 R2 路径: ' + MAIN_R2)
+// 清单路径没变但内容换了一版时，靠 PVZ_DATA_VERSION 让浏览器整组失效旧缓存
+console.log('  提示：若是「换了一版资源但路径不变」，记得把页面里的 PVZ_DATA_VERSION +1')
 console.log('')
 console.log('下一步：把 main.pak、reanim/ 等整个资源目录、以及本 pvz-manifest.json')
 console.log('都上传到与 PvZ 引擎页（index.html）相同的目录（例如 html5.8bitgo.com/PvZ/）。')

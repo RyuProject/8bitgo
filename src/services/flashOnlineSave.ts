@@ -1,9 +1,17 @@
 import { ApiError, api, apiBase, apiEnabled, getToken } from './api'
 // 「哪款游戏用哪套方言、加载哪个桥」只有一份，前后端共用（见该文件顶部说明）
-import { flashSaveBridgeOf } from '../../shared/flash-save-games.js'
+import { flashSaveBridgeOf, flashSaveGameKeyOf, flashSaveProtocolOf } from '../../shared/flash-save-games.js'
 
 /** 会话还剩多久之内就不再复用了：太接近到期的话，交给游戏的是一个马上就会失效的令牌 */
 const SESSION_REUSE_MARGIN_MS = 5 * 60_000
+
+/**
+ * 桥通过 ExternalInterface 只能按名字调 iframe 里的函数。
+ * 名字和 FlashVars 放在同一个模块里，避免 AS3 和 Ruffle 适配器各写一份后漂移。
+ */
+export const FLASH_SAVE_LOGIN_CALLBACK = '__eightbitgoFlashSaveLoginRequired'
+
+export type FlashOnlineSaveMode = 'authenticated' | 'guest' | 'unavailable'
 
 interface SessionResponse {
   success: boolean
@@ -22,6 +30,11 @@ interface SessionResponse {
 export interface FlashOnlineSaveLaunch {
   bridgeUrl: string
   parameters: Record<string, string>
+  /**
+   * guest 才表示真的没登录；unavailable 是已登录但会话申请失败。
+   * 两者给 SWF 的 token 都是空，但页面绝不能把服务器故障误报成「请登录」。
+   */
+  mode: FlashOnlineSaveMode
   /**
    * 会话到期时间（毫秒）；0 = 游客模式或拿不到会话。
    * 播放器据此在临期前提示一次 —— 令牌进了 SWF 就换不掉了（FlashVars 只读一次），
@@ -56,7 +69,7 @@ function saveApiUrl(path: string): string {
  *
  * 为什么分两类：切后台回来、弱网抖一下都会让 fetch 直接抛，而一次失败就让整局退成游客态，
  * 玩家看到的是「在线槽忽然不能用了」，也没有任何重试入口。4xx 则是明确的拒绝
- * （没登录 / 被限流 / 未启用），重试只是白打一次请求 —— 那种情况直接退游客。
+ * （令牌失效 / 被限流 / 未启用），重试只是白打一次请求 —— 那种情况直接退不可用模式。
  */
 async function requestSession(gameSlug: string): Promise<SessionResponse | null> {
   try {
@@ -95,11 +108,19 @@ export async function prepareFlashOnlineSave(gameSlug?: string): Promise<FlashOn
   const guest: FlashOnlineSaveLaunch = {
     bridgeUrl: siteUrl(bridgeUrl),
     expiresAt: 0,
+    mode: 'guest',
     parameters: {
       eightbitgo_save_endpoint: saveApiUrl(`/api/flash-saves/v1/${encodeURIComponent(gameSlug)}`),
       eightbitgo_save_token: '',
       eightbitgo_username: '',
       eightbitgo_avatar_url: siteUrl('/ui/logo-mark.png'),
+      // 桥只在 guest 时呼叫登录弹窗；unavailable 代表故障，不该让用户反复登录。
+      eightbitgo_save_mode: 'guest',
+      eightbitgo_login_callback: FLASH_SAVE_LOGIN_CALLBACK,
+      eightbitgo_game_slug: gameSlug,
+      eightbitgo_save_protocol: flashSaveProtocolOf(gameSlug),
+      // AGI1 不再把 infect-2 写死在桥里，新游戏只需在共用接入表配一次。
+      eightbitgo_agi_game_key: flashSaveGameKeyOf(gameSlug),
     },
   }
   const authToken = getToken()
@@ -112,17 +133,24 @@ export async function prepareFlashOnlineSave(gameSlug?: string): Promise<FlashOn
   const response = await requestSession(gameSlug)
   if (!response?.success || !response.data?.sessionToken) {
     // 在线槽拿不到不能挡住整个游戏；游戏自己的本地槽和 Ruffle 快照仍然可用。
-    console.warn('[flash-save] 没拿到在线存档会话，按未登录模式启动')
-    return guest
+    console.warn('[flash-save] 已登录但没拿到在线存档会话，按不可用模式启动')
+    return {
+      ...guest,
+      mode: 'unavailable',
+      parameters: { ...guest.parameters, eightbitgo_save_mode: 'unavailable' },
+    }
   }
   const launch: FlashOnlineSaveLaunch = {
     bridgeUrl: siteUrl(response.data.bridgeUrl || bridgeUrl),
     expiresAt: Number(response.data.expiresAt) || 0,
+    mode: 'authenticated',
     parameters: {
+      ...guest.parameters,
       eightbitgo_save_endpoint: saveApiUrl(response.data.endpoint),
       eightbitgo_save_token: response.data.sessionToken,
       eightbitgo_username: response.data.username,
       eightbitgo_avatar_url: siteUrl(response.data.avatar_url),
+      eightbitgo_save_mode: 'authenticated',
     },
   }
   sessionCache.set(cacheKey, { expiresAt: launch.expiresAt, launch })

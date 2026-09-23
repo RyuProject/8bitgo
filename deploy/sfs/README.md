@@ -12,7 +12,7 @@ Ruffle 中的 SAS3.swf（写死 sas3server.ninjakiwi.com:444）
 ```
 
 Node 默认 `SFS_ENABLED=0`。即使 Java 没装、没启动或升级失败，Express、MySQL、直播、P2P、
-DOS IPX 和其它单机游戏仍照常工作。不要把 Java 进程并进 PM2 的 `8bitgo-api` 进程。
+DOS IPX 和其它单机游戏仍照常工作。不要把 Java 进程并进主站的 `8bitgo.service`。
 
 ## 1. 安装 Java sidecar
 
@@ -50,11 +50,12 @@ SFS_ALLOWED_ORIGINS=https://8bitgo.com,https://www.8bitgo.com
 然后重启主 API：
 
 ```bash
-pm2 restart 8bitgo-api
+sudo systemctl restart 8bitgo
 ```
 
-这是纯运行时开关，不用重建前端。Ruffle 每个页面会缓存一次 `/api/sfs/config`，取不到配置
-就继续单机启动，不会因为 SFS 抖动卡死所有 Flash 游戏。
+这是纯运行时开关，不用重建前端。Ruffle 会短期缓存 `/api/sfs/config`：有效配置 5 分钟，
+关闭状态 30 秒，请求失败 5 秒后重试。取不到配置仍继续单机启动，旁路恢复后新开的 Flash 游戏
+会自动重新取配置，不需要玩家整页刷新。
 
 ## 3. Nginx 与 Cloudflare
 
@@ -137,7 +138,7 @@ Authorization: Bearer <带 library.write 的用户级 token>
 ```bash
 # server/.env
 SFS_ENABLED=0
-pm2 restart 8bitgo-api
+sudo systemctl restart 8bitgo
 sudo systemctl disable --now 8bitgo-sfs
 ```
 

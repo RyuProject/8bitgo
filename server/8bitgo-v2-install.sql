@@ -55,6 +55,8 @@ DROP TABLE IF EXISTS open_rom_samples;
 DROP TABLE IF EXISTS post_tags;
 DROP TABLE IF EXISTS favorites;
 DROP TABLE IF EXISTS recents;
+DROP TABLE IF EXISTS volunteer_games;
+DROP TABLE IF EXISTS volunteer_posts;
 DROP TABLE IF EXISTS games;
 DROP TABLE IF EXISTS posts;
 DROP TABLE IF EXISTS users;
@@ -329,6 +331,30 @@ CREATE TABLE IF NOT EXISTS users (
   KEY idx_role (role, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ---------- 志愿者独立内容库 ----------
+-- 与主表物理分开，保证志愿者编辑 / 删除不会影响主库或其他账号。
+CREATE TABLE IF NOT EXISTS volunteer_games (
+  owner_id   VARCHAR(40)  NOT NULL,
+  slug       VARCHAR(120) NOT NULL,
+  payload    JSON         NOT NULL,
+  created_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (owner_id, slug),
+  KEY idx_volunteer_games_owner_time (owner_id, updated_at DESC),
+  CONSTRAINT fk_volunteer_games_owner FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS volunteer_posts (
+  owner_id   VARCHAR(40)  NOT NULL,
+  slug       VARCHAR(120) NOT NULL,
+  payload    JSON         NOT NULL,
+  created_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (owner_id, slug),
+  KEY idx_volunteer_posts_owner_time (owner_id, updated_at DESC),
+  CONSTRAINT fk_volunteer_posts_owner FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ---------- 稍后玩（v1 叫「收藏」）----------
 -- 改用 game_id 外键：删游戏时数据库自己级联，不再需要应用层去清孤儿行
 CREATE TABLE IF NOT EXISTS favorites (
@@ -442,7 +468,7 @@ CREATE TABLE IF NOT EXISTS game_ratings (
 -- ============================================================
 
 -- ============================================================
--- 自检：应该是 12 张表，全部 0 行
+-- 自检：列出当前库的全部表；新库至少要看见主表、关联表和两张 volunteer_* 独立库表。
 SELECT table_name FROM information_schema.TABLES
   WHERE table_schema = DATABASE() ORDER BY table_name;
 

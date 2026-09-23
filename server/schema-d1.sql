@@ -138,6 +138,30 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_email ON users (email);
+
+-- ---------- 志愿者独立内容库 ----------
+-- payload 是完整后台对象的 JSON 文本；(owner_id, slug) 让各账号天然隔离。
+CREATE TABLE IF NOT EXISTS volunteer_games (
+  owner_id   TEXT NOT NULL,
+  slug       TEXT NOT NULL,
+  payload    TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+  updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+  PRIMARY KEY (owner_id, slug),
+  FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_volunteer_games_owner_time ON volunteer_games (owner_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS volunteer_posts (
+  owner_id   TEXT NOT NULL,
+  slug       TEXT NOT NULL,
+  payload    TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+  updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+  PRIMARY KEY (owner_id, slug),
+  FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_volunteer_posts_owner_time ON volunteer_posts (owner_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_role          ON users (role, status);
 
 -- ---------- 平台级 BIOS ----------
@@ -315,6 +339,22 @@ BEGIN
   UPDATE posts SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
 END;
 
+CREATE TRIGGER IF NOT EXISTS trg_volunteer_games_updated_at
+AFTER UPDATE ON volunteer_games FOR EACH ROW
+WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+  UPDATE volunteer_games SET updated_at = CURRENT_TIMESTAMP
+   WHERE owner_id = NEW.owner_id AND slug = NEW.slug;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_volunteer_posts_updated_at
+AFTER UPDATE ON volunteer_posts FOR EACH ROW
+WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+  UPDATE volunteer_posts SET updated_at = CURRENT_TIMESTAMP
+   WHERE owner_id = NEW.owner_id AND slug = NEW.slug;
+END;
+
 CREATE TRIGGER IF NOT EXISTS trg_platform_bios_updated_at
 AFTER UPDATE ON platform_bios FOR EACH ROW
 WHEN NEW.updated_at = OLD.updated_at
@@ -344,8 +384,7 @@ END;
 -- ============================================================
 -- 建完自检：
 --   SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name;
---   -> 应该是 12 张：favorites game_genres game_roms game_search_tokens game_tags
---                    games platform_bios post_tags posts recents saves users
+--   -> 除主库与关联表外，必须包含 volunteer_games / volunteer_posts；少一张都会让志愿者后台 500。
 --
 -- 管理员账号同样建不了（要 bcrypt / PBKDF2 哈希）：先在网站上注册，然后
 --   UPDATE users SET role='admin' WHERE email='你的邮箱';

@@ -966,9 +966,41 @@ const patches = [
       CONSTRAINT fk_ors_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`),
   },
+  {
+    name: 'volunteer_games（每位志愿者隔离的个人游戏库）',
+    table: null,
+    skip: async () => (!(await hasTable('users')) ? '还没有 users 表' : !(await hasTable('game_tags')) ? '不是 v2 数据库' : null),
+    needed: async () => !(await hasTable('volunteer_games')),
+    run: () => conn.query(`CREATE TABLE IF NOT EXISTS volunteer_games (
+      owner_id VARCHAR(40) NOT NULL,
+      slug VARCHAR(120) NOT NULL,
+      payload JSON NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (owner_id, slug),
+      KEY idx_volunteer_games_owner_time (owner_id, updated_at DESC),
+      CONSTRAINT fk_volunteer_games_owner FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`),
+  },
+  {
+    name: 'volunteer_posts（每位志愿者隔离的个人文章库）',
+    table: null,
+    skip: async () => (!(await hasTable('users')) ? '还没有 users 表' : !(await hasTable('game_tags')) ? '不是 v2 数据库' : null),
+    needed: async () => !(await hasTable('volunteer_posts')),
+    run: () => conn.query(`CREATE TABLE IF NOT EXISTS volunteer_posts (
+      owner_id VARCHAR(40) NOT NULL,
+      slug VARCHAR(120) NOT NULL,
+      payload JSON NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (owner_id, slug),
+      KEY idx_volunteer_posts_owner_time (owner_id, updated_at DESC),
+      CONSTRAINT fk_volunteer_posts_owner FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`),
+  },
 ]
 
-const TABLES = ['games', 'posts', 'users', 'favorites', 'recents', 'saves', 'flash_save_slots', 'flash_save_kv', 'flash_save_seqs', 'login_codes', 'platform_bios', 'game_plays', 'developers', 'friend_links', 'friend_link_hits', 'game_comments', 'game_ratings', 'oauth_apps', 'open_rom_samples']
+const TABLES = ['games', 'posts', 'users', 'volunteer_games', 'volunteer_posts', 'favorites', 'recents', 'saves', 'flash_save_slots', 'flash_save_kv', 'flash_save_seqs', 'login_codes', 'platform_bios', 'game_plays', 'developers', 'friend_links', 'friend_link_hits', 'game_comments', 'game_ratings', 'oauth_apps', 'open_rom_samples']
 
 try {
   /*

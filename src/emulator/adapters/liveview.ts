@@ -830,7 +830,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     live.onViewers?.(info.viewers)
     // 主播不在：首连的看门狗别叫 —— 等多久由服务器的宽限期决定，到点它会发 live-ended
     if (hostAway) window.clearTimeout(watchdog)
-    live.onState?.(hostAway ? 'host-away' : pc?.connectionState === 'connected' ? 'watching' : 'connecting')
+    // WebRTC 显示 connected 只说明 ICE 通了，不代表视频已经有帧；误报 watching 会撤掉加载态，
+    // 留给观众一块没有任何恢复动作的黑屏。
+    live.onState?.(hostAway ? 'host-away' : pc?.connectionState === 'connected' && gotFrame ? 'watching' : 'connecting')
     return true
   }
 
@@ -1017,13 +1019,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         hostAway = false
         if (p?.hostId) hostId = p.hostId
         // 主播回来会对照名单重新 offer。它那边要是还以为这条连接活着（两边判断有时差），
-        // offer 就不会来 —— 所以上个闹钟，到点画面没通就主动去要
-        if (pc?.connectionState === 'connected') live.onState?.('watching')
-        else {
-          live.onState?.('connecting')
-          rewatchCount = 0
-          armRewatch()
-        }
+        // offer 就不会来。只有「连接还在且真见过帧」才算恢复；其余情况必须主动自愈。
+        const connected = pc?.connectionState === 'connected'
+        if (connected && gotFrame) return live.onState?.('watching')
+        live.onState?.('connecting')
+        rewatchCount = 0
+        // 旧连接已经断了就立刻要新 offer；连接还在但没帧，给主播的主动 offer 留一个短窗口。
+        if (connected) armRewatch(FIRST_OFFER_MS)
+        else void rewatch()
       }) as (...args: never[]) => void)
 
       s.on('live-ended', (() => {

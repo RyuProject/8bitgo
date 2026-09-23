@@ -393,6 +393,7 @@ const store = (() => {
   let rooms: NetplayRoom[] = NO_ROOMS
   const listeners = new Set<() => void>()
   let es: EventSource | null = null
+  let stopFallback: (() => void) | null = null
   let timer = 0
   const emit = () => listeners.forEach((l) => l())
 
@@ -434,10 +435,12 @@ const store = (() => {
       }
     })
     // 连续失败就退回轮询。判据为什么不能只看 CLOSED，见 sseFallback.ts
-    fallbackAfterErrors(es, startPolling)
+    stopFallback = fallbackAfterErrors(es, startPolling)
   }
 
   const disconnect = () => {
+    stopFallback?.()
+    stopFallback = null
     es?.close()
     es = null
     if (timer) {
@@ -490,6 +493,7 @@ export function watchNetplayRoom(
 
   let stopped = false
   let es: EventSource | null = null
+  let stopFallback: (() => void) | null = null
   let timer = 0
   let polling = false
 
@@ -522,8 +526,9 @@ export function watchNetplayRoom(
         if (!stopped) handlers.onGone()
       })
       // 同上：CLOSED 只覆盖「服务端明确拒绝」，传输层断流要靠计次，见 sseFallback.ts
-      fallbackAfterErrors(es, () => {
+      stopFallback = fallbackAfterErrors(es, () => {
         if (stopped || timer) return
+        void poll()
         timer = window.setInterval(() => void poll(), 3000)
       })
     } catch {
@@ -534,6 +539,7 @@ export function watchNetplayRoom(
 
   return () => {
     stopped = true
+    stopFallback?.()
     es?.close()
     if (timer) window.clearInterval(timer)
   }

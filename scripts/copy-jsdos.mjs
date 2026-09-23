@@ -1,158 +1,212 @@
 #!/usr/bin/env node
 /**
- * 把 npm 包 js-dos（DOSBox 的浏览器移植，GPL-2.0）复制到 public/jsdos/，
- * 供 src/emulator/adapters/jsdos.ts 以 /jsdos/js-dos.js 加载。
+ * 把 npm 包 js-dos（DOSBox / DOSBox-X 的浏览器移植，GPL-2.0）同步到带版本号的
+ * `public/jsdos/v<version>/`，并打上本站必须的兼容补丁。
  *
- *   npm run jsdos                              强制复制（站点已支持 Win9x，会包含 DOSBox-X）
- *   node scripts/copy-jsdos.mjs --if-missing   已有则跳过（dev / build 前自动执行）
- *   node scripts/copy-jsdos.mjs --with-dosbox-x  连 DOSBox-X 一起复制（多 15MB，跑 Win9x 才需要）
- *   node scripts/copy-jsdos.mjs --no-ipx-patch     不要去掉写死的 1900 端口（见下）
+ *   npm run jsdos                                  强制同步并包含 DOSBox-X
+ *   node scripts/copy-jsdos.mjs --if-missing       完整一致时才跳过
+ *   node scripts/copy-jsdos.mjs --with-dosbox-x    包含 DOSBox-X（Windows 客体必需）
+ *   node scripts/copy-jsdos.mjs --no-ipx-patch     保留上游写死的 1900 端口
  *
- * 默认只复制经典 DOSBox 内核（wdosbox，1.4MB）—— DOSBox-X 两个 wasm 加起来 15MB，
- * 绝大多数 DOS 游戏用不上，全量复制会让 public/ 直接胖 20MB。
+ * 不能再用「js-dos.js 存在就跳过」：npm 升级、补丁变化或复制中断都会留下新旧 JS/WASM
+ * 混用的目录。runtime.json 同时锁 npm 源文件、复制脚本和最终产物；其中任何一项变化都会
+ * 自动重建。版本进入 URL 后，浏览器和 CDN 的旧缓存也不会混进新会话。
  */
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { createHash } from 'node:crypto'
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
+import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+const scriptFile = fileURLToPath(import.meta.url)
+const root = join(dirname(scriptFile), '..')
 const src = join(root, 'node_modules', 'js-dos', 'dist')
-const out = join(root, 'public', 'jsdos')
+const packageFile = join(root, 'node_modules', 'js-dos', 'package.json')
+const publicRoot = join(root, 'public', 'jsdos')
 const ifMissing = process.argv.includes('--if-missing')
 const withDosboxX = process.argv.includes('--with-dosbox-x')
+const patchIpx = !process.argv.includes('--no-ipx-patch')
 const dosboxXFiles = ['wdosbox-x.js', 'wdosbox-x.wasm', 'wdosbox-x-jspi.js', 'wdosbox-x-jspi.wasm']
 
-/**
- * 把 js-dos.css 整个包进一个级联层（cascade layer）。
- *
- * 站点样式是 Tailwind v4，全部住在 @layer 里；js-dos.css 是 Tailwind v3 编译的、
- * **不带 layer** —— 而 CSS 规定不分层的样式压过所有分层样式，特异性再高也翻不了案。
- * 于是玩家一点「开始游戏」（js-dos.css 这时才挂进 <head>），它开头那套全局 reset
- * （a{color:inherit}、h1-h6{font-size:inherit}、.hidden{display:none}…）就把全站
- * 打回没有 CSS 的样子：按钮没底色、链接没颜色、布局塌成手机版。
- *
- * 包进 @layer jsdos 后它排进层序，而 src/index.css 的第一行把 jsdos 声明成
- * 优先级最低的层，站点样式就全压得住它；js-dos 自己的界面在层内级联不变。
- */
-function wrapCssInLayer(file) {
-  if (!existsSync(file)) return
-  const css = readFileSync(file, 'utf8')
-  if (css.startsWith('@layer jsdos{')) return
-  writeFileSync(file, `@layer jsdos{${css}}`)
-  console.log('✔ js-dos.css 已包进 @layer jsdos（防止它的全局 reset 压过站点样式）')
+const fail = (message) => {
+  console.error(`✖ js-dos 同步失败：${message}`)
+  process.exit(1)
 }
+const sha256Bytes = (value) => createHash('sha256').update(value).digest('hex')
+const sha256 = (file) => sha256Bytes(readFileSync(file))
 
-/**
- * 把 js-dos.js 整个包进一个 IIFE。
- *
- * upstream 的 dist/js-dos.js 是一个**没有外层函数**的经典脚本 —— 294 个顶层
- * `function` 声明和 289 个顶层 `var` 全都落在 window 上（连 e / t / n / o 这种
- * 单字母的也在里面）。其中最要命的一个叫 **`io`**：那是 immer 的 `each()`，
- * 而站内直播是靠 `window.io` 去认 socket.io 客户端的。于是只要页面上加载过
- * js-dos（任何一个 DOS 游戏页），自动开播必然抛
- * `TypeError: Reflect.ownKeys called on non-object`，而且报在 js-dos.js 里，
- * 看着完全不像是直播的问题。
- *
- * 包起来不影响它对外的接口：js-dos 想共享的东西是它自己显式写到 window 上的
- * （Dos / net / netConfig / wsMessage / WebRTCNet），这些照旧；包里**读**全局
- * 也照旧（作用域链没变），只是它的顶层声明不再往 window 上撒。
- *
- * 用 `.call(this)` 而不是直接 `()`：脚本顶层的 this 就是 window，非严格模式下
- * 直接调用得到的也是 window，但显式传进去更稳 —— 哪天上游加了 'use strict'，
- * 直接调用的 this 会变成 undefined。
- */
-const IIFE_HEAD = ';(function () {\n'
-const IIFE_TAIL = '\n}).call(this);\n'
-
-function wrapInIife(file) {
-  if (!existsSync(file)) return
-  const code = readFileSync(file, 'utf8')
-  if (code.startsWith(IIFE_HEAD)) return
-  writeFileSync(file, `${IIFE_HEAD}${code}${IIFE_TAIL}`)
-  console.log('✔ js-dos.js 已包进 IIFE（顶层的 io 不再顶掉 socket.io，直播才开得起来）')
-}
-
-const dosboxXReady = dosboxXFiles.every((name) => existsSync(join(out, 'emulators', name)))
-if (ifMissing && existsSync(join(out, 'js-dos.js')) && (!withDosboxX || dosboxXReady)) {
-  // 已有的拷贝也要确保包过层 / 包过 IIFE —— 老拷贝正是没包的那种
-  wrapCssInLayer(join(out, 'js-dos.css'))
-  wrapInIife(join(out, 'js-dos.js'))
-  process.exit(0)
-}
-
-if (!existsSync(join(src, 'js-dos.js'))) {
+if (!existsSync(join(src, 'js-dos.js')) || !existsSync(packageFile)) {
   const msg = '未找到 node_modules/js-dos，请先 npm install'
   if (ifMissing) {
     console.warn(`⚠ ${msg}；DOS 游戏暂不可用`)
     process.exit(0)
   }
-  console.error(`✖ ${msg}`)
-  process.exit(1)
+  fail(msg)
 }
 
-/** 用不上的东西：source map、调试符号，以及（默认情况下）DOSBox-X */
-function skip(name) {
-  if (name.endsWith('.map') || name.endsWith('.symbols')) return true
-  if (!withDosboxX && name.includes('wdosbox-x')) return true
+const { version } = JSON.parse(readFileSync(packageFile, 'utf8'))
+if (!/^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(version)) fail(`npm 包版本格式异常：${String(version)}`)
+const out = join(publicRoot, `v${version}`)
+const manifestFile = join(out, 'runtime.json')
+
+/** 类型声明和源码映射不会被浏览器读取，别把它们复制进每次部署的静态目录。 */
+function skip(relativeName) {
+  const name = relativeName.replace(/\\/g, '/')
+  if (name.endsWith('.map') || name.endsWith('.symbols') || name.endsWith('.d.ts')) return true
+  if (name.startsWith('emulators/types/')) return true
+  if (!withDosboxX && name.split('/').pop()?.startsWith('wdosbox-x')) return true
   return false
 }
 
-rmSync(out, { recursive: true, force: true })
-mkdirSync(out, { recursive: true })
-
-let count = 0
-let bytes = 0
-function copyDir(from, to) {
-  mkdirSync(to, { recursive: true })
-  for (const name of readdirSync(from)) {
-    if (skip(name)) continue
-    const s = join(from, name)
-    const d = join(to, name)
-    if (statSync(s).isDirectory()) copyDir(s, d)
+function listFiles(dir, base = dir) {
+  const listed = []
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name)
+    if (statSync(path).isDirectory()) listed.push(...listFiles(path, base))
     else {
-      copyFileSync(s, d)
-      bytes += statSync(d).size
-      count++
+      const relativeName = relative(base, path).replace(/\\/g, '/')
+      if (!skip(relativeName)) listed.push(relativeName)
     }
   }
+  return listed.sort()
 }
-copyDir(src, out)
+
+const sourceFiles = listFiles(src).map((name) => ({
+  name,
+  size: statSync(join(src, name)).size,
+  sha256: sha256(join(src, name)),
+}))
+const sourceFingerprint = sha256Bytes(JSON.stringify(sourceFiles))
+const copyScriptSha256 = sha256(scriptFile)
+
+function outputIsCurrent() {
+  if (!existsSync(manifestFile)) return false
+  try {
+    const manifest = JSON.parse(readFileSync(manifestFile, 'utf8'))
+    if (
+      manifest.version !== version ||
+      manifest.withDosboxX !== withDosboxX ||
+      manifest.ipxPatched !== patchIpx ||
+      manifest.sourceFingerprint !== sourceFingerprint ||
+      manifest.copyScriptSha256 !== copyScriptSha256 ||
+      !Array.isArray(manifest.files)
+    ) return false
+
+    const actualNames = listFiles(out).filter((name) => name !== 'runtime.json')
+    if (JSON.stringify(actualNames) !== JSON.stringify(manifest.files.map((file) => file.name))) return false
+    return manifest.files.every((file) => {
+      const target = join(out, file.name)
+      return existsSync(target) && statSync(target).size === file.size && sha256(target) === file.sha256
+    })
+  } catch {
+    return false
+  }
+}
+
+if (ifMissing && outputIsCurrent()) process.exit(0)
+
+rmSync(publicRoot, { recursive: true, force: true })
+mkdirSync(out, { recursive: true })
+for (const file of sourceFiles) {
+  const target = join(out, file.name)
+  mkdirSync(dirname(target), { recursive: true })
+  copyFileSync(join(src, file.name), target)
+}
 
 if (withDosboxX) {
   const missing = dosboxXFiles.filter((name) => !existsSync(join(out, 'emulators', name)))
-  if (missing.length) {
-    throw new Error(`DOSBox-X 资源不完整：${missing.join('、')}。请重新安装 js-dos 依赖后再构建。`)
-  }
+  if (missing.length) fail(`DOSBox-X 资源不完整：${missing.join('、')}。请重新安装 js-dos 依赖`)
+}
+
+/** Tailwind 全部在 cascade layer 里，上游未分层的全局 reset 必须放进最低优先级层。 */
+function wrapCssInLayer(file) {
+  const css = readFileSync(file, 'utf8')
+  if (css.startsWith('@layer jsdos{')) return
+  writeFileSync(file, `@layer jsdos{${css}}`)
 }
 
 /**
- * 去掉 IPX 联机里写死的 1900 端口。
- *
- * js-dos 连 IPX 服务器时拼的是 `<地址>:1900/ipx/<房间>`，这个端口号是硬编码的。
- * 1900 不在 Cloudflare 代理的端口列表里，照原样用就必须为它单开一个灰云子域名
- * 直连源站（暴露源站 IP）或者在源站另配一套 TLS。把这一处去掉之后，
- * IPX 就走主站同一个 443 端口的 /ipx/<房间>，橙云、现成证书、什么都不用改。
- *
- * 整个 js-dos.js 里这个字符串只出现一次；万一将来上游改了写法，这里会直接报错，
- * 而不是悄悄留下一个连不上的联机功能。
+ * 上游经典脚本有数百个顶层 var/function，其中 `io` 会覆盖 socket.io；IIFE 只隔离隐式全局，
+ * `window.Dos` 等显式导出不受影响。
  */
-if (!process.argv.includes('--no-ipx-patch')) {
-  const file = join(out, 'js-dos.js')
+const IIFE_HEAD = ';(function () {\n'
+const IIFE_TAIL = '\n}).call(this);\n'
+function wrapInIife(file) {
+  const code = readFileSync(file, 'utf8')
+  if (code.startsWith(IIFE_HEAD)) return
+  writeFileSync(file, `${IIFE_HEAD}${code}${IIFE_TAIL}`)
+}
+
+/**
+ * 上游每次 Dos() 都往 document 注册 fullscreen / pointerlock / visibilitychange，stop() 却不移除。
+ * 多开几局后，一次切后台会同时唤醒所有历史 Redux store，既泄漏完整模拟器对象，也会把
+ * visibilitychange 变成长任务。把监听器按实例记账，并在 stop() 时一起拆掉。
+ */
+function patchLifecycle(file) {
+  let code = readFileSync(file, 'utf8')
+  const head = 'window.Dos=(e,t={})=>{'
+  const stop = 'stop:async()=>{'
+  const listeners = ['fullscreenchange', 'pointerlockchange', 'visibilitychange']
+  if (code.split(head).length - 1 !== 1 || code.split(stop).length - 1 !== 1) {
+    fail('上游 Dos()/stop() 结构变化，无法确认会话监听器能被清理')
+  }
+  code = code.replace(
+    head,
+    head +
+      'const __8bitgoListeners=[],' +
+      '__8bitgoListen=(e,t)=>{document.addEventListener(e,t),__8bitgoListeners.push([e,t])},' +
+      '__8bitgoCleanup=()=>{for(const[e,t]of __8bitgoListeners)document.removeEventListener(e,t);' +
+      '__8bitgoListeners.length=0,null==navigator.keyboard||navigator.keyboard.unlock?.()};',
+  )
+  for (const type of listeners) {
+    const needle = `document.addEventListener("${type}",`
+    if (code.split(needle).length - 1 !== 1) fail(`上游 ${type} 监听结构变化，不能静默留下内存泄漏`)
+    code = code.replace(needle, `__8bitgoListen("${type}",`)
+  }
+  code = code.replace(stop, `${stop}__8bitgoCleanup();`)
+  writeFileSync(file, code)
+}
+
+/** 写死的 1900 端口过不了 Cloudflare；本站中继和主站共用 443 的 /ipx/。 */
+function patchIpxPort(file) {
+  if (!patchIpx) return
   const code = readFileSync(file, 'utf8')
   const needle = '":1900/ipx/"'
   const times = code.split(needle).length - 1
-  if (times === 1) {
-    writeFileSync(file, code.replace(needle, '"/ipx/"'))
-    console.log('✔ 已去掉 IPX 写死的 1900 端口 —— 中继可以和主站共用 443')
-  } else {
-    console.warn(`⚠ 没能给 IPX 打补丁：期望 1 处 ${needle}，实际找到 ${times} 处。`)
-    console.warn('  js-dos 可能改了写法。IPX 联机会退回到需要 1900 端口的老方式，')
-    console.warn('  服务端请改用 attachIpx({ port: 1900 })，详见 server/README.md。')
-  }
+  if (times !== 1) fail(`IPX 补丁期望 1 处 ${needle}，实际 ${times} 处；上游写法可能变了`)
+  writeFileSync(file, code.replace(needle, '"/ipx/"'))
 }
 
+const mainJs = join(out, 'js-dos.js')
+patchIpxPort(mainJs)
+patchLifecycle(mainJs)
 wrapCssInLayer(join(out, 'js-dos.css'))
-wrapInIife(join(out, 'js-dos.js'))
+wrapInIife(mainJs)
 
-console.log(`✔ js-dos 已复制 ${count} 个文件（${(bytes / 1024 / 1024).toFixed(1)} MB）到 public/jsdos/`)
+const files = listFiles(out)
+  .filter((name) => name !== 'runtime.json')
+  .map((name) => ({ name, size: statSync(join(out, name)).size, sha256: sha256(join(out, name)) }))
+writeFileSync(
+  manifestFile,
+  `${JSON.stringify({
+    version,
+    withDosboxX,
+    ipxPatched: patchIpx,
+    sourceFingerprint,
+    copyScriptSha256,
+    files,
+  }, null, 2)}\n`,
+  'utf8',
+)
+
+const bytes = files.reduce((sum, file) => sum + file.size, 0)
+console.log(`✔ js-dos ${version} 已同步 ${files.length} 个文件（${(bytes / 1024 / 1024).toFixed(1)} MB）到 public/jsdos/v${version}/`)
 if (!withDosboxX) console.log('  （未包含 DOSBox-X；需要跑 Windows 客体时加 --with-dosbox-x）')

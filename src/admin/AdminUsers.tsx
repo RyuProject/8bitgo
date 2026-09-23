@@ -41,7 +41,10 @@ export function AdminUsers() {
    */
   const changeRole = async (u: PublicUser, role: UserRole) => {
     if (role === u.role) return
-    if (role !== 'user' && !window.confirm(`把「${u.nickname}」设为${ROLE_LABELS[role]}？`)) return
+    const permissionNote = role === 'volunteer'
+      ? '\n\n志愿者只会获得自己的独立游戏库和文章库，不能修改主库、其他志愿者内容、评论或 ROM 存储。'
+      : ''
+    if (role !== 'user' && !window.confirm(`把「${u.nickname}」设为${ROLE_LABELS[role]}？${permissionNote}`)) return
     try {
       await adminSetRole(u.id, role)
       flash(`${u.nickname} → ${ROLE_LABELS[role]}`)
@@ -95,6 +98,7 @@ export function AdminUsers() {
           <p className="mt-1 text-sm text-muted">
             共 {users.length} 位用户，{users.filter((u) => u.status === 'banned').length} 位被封禁。{apiEnabled() ? '用户数据来自数据库。' : '未配置后端，只能看到在这台浏览器注册的账号。'}
           </p>
+          <p className="mt-1 text-xs text-dim">志愿者只拥有各自独立的游戏库和文章库；主库与其他志愿者的内容互相隔离。</p>
         </div>
         <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索昵称 / 邮箱…" className={cx(inputClass, 'w-64')} />
       </div>

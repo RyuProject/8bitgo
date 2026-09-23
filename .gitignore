@@ -116,11 +116,19 @@ public/bios/*
 # public/web/cs15/packs/ 里的 base.zip.gz 有 550M：远超 GitHub 单文件 100M 上限
 # （Git LFS 免费额度 1GB 存储 / 1GB 每月流量，服务器每次 git pull 都要拉一遍，扛不住），
 # 而且它是 Valve 的游戏数据 —— 进公开仓库等于对外分发，同上面 BIOS 那条的道理。
-# 数据包放对象存储 / 服务器本地；整个 cs15 目录先不进仓库，等数据包落到 R2 再重新划线。
-# （helf-life 目前只有一个 index.html，不受影响。）
-public/web/cs15
-# cs16：源码（index.html + cs16.js）进 git；只有 447M 的完整 CS1.6 资产包不进 git（Valve 游戏数据 + 超 100M 单文件上限）。
-# 部署时把 public/web/cs16/packs/ 整体传到服务器本地即可（运行时通过 ?root=../cs15/ 复用 cs15 引擎与 cs16-client wasm）。
+# 数据包放对象存储 / 服务器本地；加载器、引擎和开源 wasm 运行时必须进仓库，否则一次
+# `git pull && npm run build` 会继续发布旧加载器，甚至在新机器上直接 404。
+public/web/cs15/packs
+# 根规则会忽略任何名为 dist 的目录和所有 README；CS15 的自托管引擎产物与来源说明是
+# 运行时的一部分，必须在这里精确放行。
+!public/web/cs15/engine/dist/
+!public/web/cs15/engine/dist/**
+!public/web/cs15/engine/README.md
+# cs16：页面、引擎和 WebAssembly 客户端要进 git；只有 400M+ 的完整 CS1.6 资产包不进 git。
+# 根上的 `dist` 规则也会误伤 engine/dist，必须在这里精确放行，否则本地能玩、生产核心全 404。
+!public/web/cs16/engine/dist/
+!public/web/cs16/engine/dist/**
+# 生成包上传 R2，不随 git 或应用服务器发布；浏览器生产环境直接读 assets.8bitgo.com。
 public/web/cs16/packs
 
 # Cloudflare 源站证书与私钥（Authenticated Origin Pulls 的客户端证书）

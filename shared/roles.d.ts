@@ -8,6 +8,8 @@ export type UserRole = 'user' | 'volunteer' | 'admin'
  * server/scripts/test-roles.mjs 里有一条断言守着这件事。
  */
 export type Ability =
+  | 'games:edit'
+  | 'posts:edit'
   | 'content:edit'
   | 'comments:review'
   | 'users:manage'

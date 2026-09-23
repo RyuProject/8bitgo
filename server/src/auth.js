@@ -380,7 +380,12 @@ export function requireAbility(ability) {
   return async (req, res, next) => {
     try {
       const role = await roleOfRequest(req)
-      if (can(role, ability)) return next()
+      if (can(role, ability)) {
+        // 后续处理要用这个身份决定写主库还是志愿者独立库。
+        // 挂在请求上避免路由再猜 role；req.user 只有账号登录这条路才有。
+        req.staffRole = role
+        return next()
+      }
       // 401 和 403 在前端是两回事：AdminLayout 见到这两个码都会把后台重新锁上，
       // 所以这里统一给 403，并且把「缺哪一项」说清楚，免得排查时只看见一句「没权限」
       const why = authFailure(req, role)

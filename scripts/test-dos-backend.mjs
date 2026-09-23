@@ -10,6 +10,7 @@ import {
   gameApiToRow,
   gameRowToApi,
 } from '../server/src/mappers.js'
+import { dosGameConfigError, mergeGamePatchForDosValidation } from '../server/src/dos-game-config.js'
 
 assert.equal(dosBackendOf('dosboxX'), 'dosboxX')
 assert.equal(dosBackendOf('dosbox'), null)
@@ -76,5 +77,37 @@ assert.equal(gameRowToApi({ slug: 'doom', dos_save_hint: '按 F2 存档' }).dosS
 assert.equal(gameRowToApi({ slug: 'doom' }).dosSaveHint, undefined)
 assert.equal(gameApiToRow({ slug: 'doom', dosSaveHint: '按 F2 存档' }).dos_save_hint, '按 F2 存档')
 assert.deepEqual(gameApiToPartialRow({ dosSaveHint: '' }), { dos_save_hint: null })
+
+// 后台页面不是安全边界：批量导入和直接 API 写入也必须拦住「系统镜像下载完才发现没有 EXE」。
+const winGuest = {
+  platform: 'dos',
+  dosBackend: 'dosboxX',
+  dosSystem: 'systems/win95.jsdos',
+  roms: { en: 'roms/game.en.zip.8bg' },
+}
+assert.match(dosGameConfigError(winGuest), /缺少自启动 EXE/)
+assert.equal(dosGameConfigError({ ...winGuest, dosExecutables: { en: 'GAME.EXE' } }), null)
+assert.equal(dosGameConfigError({ ...winGuest, dosExecutable: 'GAME.EXE' }), null)
+assert.match(dosGameConfigError({ ...winGuest, dosSystem: 'systems/win95.zip' }), /必须是 \.jsdos/)
+assert.match(dosGameConfigError({ ...winGuest, dosSystem: 'systems/win95.jsdos\nignored' }), /必须是 \.jsdos/)
+assert.match(dosGameConfigError({ ...winGuest, roms: {} }), /必须绑定游戏 ZIP/)
+assert.match(dosGameConfigError({ ...winGuest, roms: undefined, rom: 'roms/game.zip.8bg' }), /通用 ROM 必须填写默认/)
+
+const current = { ...winGuest, dosExecutables: { en: 'OLD.EXE' } }
+assert.equal(
+  dosGameConfigError(mergeGamePatchForDosValidation(current, { roms: { en: 'roms/game.en.zip.8bg' } })),
+  null,
+  '对象 key 没变时仓储层会保留旧 EXE，校验也要保留',
+)
+assert.match(
+  dosGameConfigError(mergeGamePatchForDosValidation(current, { roms: { en: 'roms/new.en.zip.8bg' } })),
+  /缺少自启动 EXE/,
+  '换包会清掉旧 EXE，不能拿旧对象误判配置完整',
+)
+assert.match(
+  dosGameConfigError(mergeGamePatchForDosValidation(current, { dosExecutables: {} })),
+  /缺少自启动 EXE/,
+  '显式清空逐语言 EXE 必须被服务端拒绝',
+)
 
 console.log('DOS / Windows 客体核心映射测试通过')

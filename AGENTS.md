@@ -571,6 +571,18 @@ npm run test:rompack                       # Zstd 19 / AES-GCM / 摘要 / 原文
 
 「哪款游戏用哪套方言、加载哪个桥」只有一份，写在 `shared/flash-save-games.js`（前后端共用）；
 漏改一处或自己再抄一份的后果是「桥能加载、也能连上，就是读不到档」，且不报错。
+AGI1 的 `gameKey` 也配在同一条目的 `agiGameKey`，页面通过 FlashVars 下发；
+别再往 `MainTimeline.as` 里加新游戏硬编码。
+
+未登录时，桥只在玩家**主动**用在线槽或点登录时通过 `ExternalInterface`
+通知页面打开全站登录框；AGI2 开局自动 `retrieve` 不弹，否则一进游戏就拦路。
+`save_mode=guest` 才能弹，`unavailable` 是已登录但会话服务出错，不能误导用户反复登录。
+`allowScriptAccess` 仅对接入表里的游戏开放。
+
+新开发的 Flash 游戏统一用 AGI2 桥暴露的 `eightbitgo` 简化接口：
+`isLoggedIn / getUser / showLogin / read / write / remove`，不用再仿 Armor Games 命名空间。
+两代桥都已带 `opId` + `expectedRevision`、读前等写（上限 3 秒）；
+删除也要同步服务端返回的新代次，否则删档后第一次保存会撞 `stale_write`。
 
 - **接口参考手册**（两代逐方法、逐字段、错误码、限额、排查线索）：`docs/agi-bridge-api.md`
 - **设计文档**（为什么分两套、令牌模型、R01/R02 并发问题的来龙去脉、验收清单）：`docs/flash-online-save.md`
@@ -609,6 +621,18 @@ cd .. && npm run test:flash-online-save
 不要把 JWT 放进 SSE 查询串（会落进访问日志、历史和 Referer）。自测：
 `cd server && npm run test:live`。不改数据库结构，不需要迁移。
 
+### 2.23.1 默认开播，但「不公开」选择必须先于推流读取
+
+玩家开始游戏后会自动创建公开直播房间；点「不公开」后立即下播，并把选择写入
+`8bit.live.private`，以后的游戏也保持不公开。这个键要在 `useState` 初始化阶段读取，不能等 effect
+再补读：否则明明选了私密的玩家会先向大厅泄出一帧。本地存储不可用时回到产品默认值：开播。
+
+默认开播、全标签页采集风险和 WebRTC IP 风险必须同时写在条款、隐私政策和按钮说明里。
+
+`/rooms?live=1` 是观看入口，不是联机入口：云端房没有观众席，不能混进列表；P2P 房即使还有空手柄位，
+从这里点进去也必须带 `watch=1`，否则「观看」会静默变成加入对局。回归：`npm run test:watch-panel`；
+法律文案与存储键对账：`npm run test:legal`。
+
 ### 2.24 Ruffle 运行时必须带版本目录，Flash / 街机按键由后台配置
 
 Ruffle 从 npm 复制到 `public/ruffle/v<version>/`，`runtime.json` 保存每个文件的长度和 SHA-256。
@@ -616,10 +640,55 @@ Ruffle 从 npm 复制到 `public/ruffle/v<version>/`，`runtime.json` 保存每�
 `src/emulator/paths.ts` 里的 `RUFFLE_VERSION`，否则 `npm run build` 会直接失败。不要把新文件覆盖到
 旧版本目录，否则边缘缓存会把新旧 WASM / JS 混在一起。
 
+Ruffle 固定走「流畅优先」：配置 `quality: low`，并只在它自己的 iframe realm 内把
+`devicePixelRatio` 钳到 1（DPR 2 的画布像素量会降到四分之一）。前台不再给档位下拉；别重新加回
+`performanceProfile`。也不要用 `frameRate` 冒充性能优化（会直接改游戏时间轴），不要钉
+`preferredRenderer`（官方只把它当排错项，浏览器 / Ruffle 升级后最优后端会变）。
+
+冷启动的三条重资源必须并行：游戏 SWF、短期在线存档会话、Ruffle loader/WASM；不得把
+`loadGameBytes()` 放回 `script.onload` 后面才开始。鼠标悬停会依据 Ruffle 自己的五项 WASM 能力探针，
+只预热正确的一套 core JS + 约 14 MB WASM；`scripts/copy-ruffle.mjs` 从官方 loader 解析对应关系写进
+新 URL `bootstrap.json`，解析失败必须中止升级，不能同时预拉两份核心。省流量模式 / 2G 不预拉。
+不要把这份数据塞进同版本的 `runtime.json`：它已经被长期缓存过，原地加字段会让旧访客永远读不到。
+
+SmartFoxServer 配置只有 `shared/sfs-games.js` 里的游戏能请求（当前 `sas3`）；其它 Flash 一律直接空配置，
+否则旁路故障会把每一款游戏启动拖住 1.5 秒。`api.load()` 返回也不代表舞台已经创建，必须等
+`loadedmetadata/loadeddata` 再撤加载层；不等会偶发黑框并永久漏掉本局截图 / 录制 / 直播能力。
+详细取证和升级约束见 `docs/ruffle-performance.md`。
+
 Flash 手柄键位存在 `games.flash_controls` JSON，街机屏幕手柄的动作键数存在
 `games.arcade_buttons`（2 / 4 / 6）。这两列都是可空的：旧 Flash 游戏仍可用鼠标，旧街机默认六键，
 所以可以先迁移再慢慢在后台补配置。部署这版必须先跑 `cd server && npm run migrate`；
 自测用 `npm run test:ruffle-runtime && npm run test:game-controls && npm run test:keymap`。
+
+### 2.24.1 js-dos 的 JS / DOSBox / DOSBox-X 必须整套更新，stop 必须真清理
+
+js-dos 运行时从 npm 复制到 `public/jsdos/v<version>/`，版本同时写在
+`src/emulator/paths.ts` 的 `JSDOS_VERSION`。这不是目录整理：`js-dos.js`、`wdosbox.wasm`、
+`wdosbox-x.wasm` 和 JSPI 版是配套产物，固定 URL 覆盖升级会被浏览器 / Cloudflare 拼成新旧混合，
+症状通常只有黑屏。升级 `js-dos` 时必须同步改版本常量并跑 `npm run jsdos`；
+`scripts/check-jsdos.mjs` 会在构建前、复制到 `dist/client` 后各验一次清单、长度和 SHA-256。
+
+`scripts/copy-jsdos.mjs` 还打三项补丁，任何一项对不上都必须让构建失败：
+
+1. IIFE 隔离上游数百个顶层变量，尤其不能再让它的 `io` 覆盖 socket.io；
+2. IPX 地址去掉写死的 1900 端口，联机中继才能走 Cloudflare 后面的主站 443；
+3. 上游每次 `Dos()` 注册的 `fullscreenchange` / `pointerlockchange` / `visibilitychange` 要在
+   `stop()` 移除，并释放 `navigator.keyboard` 锁。原版只停核心、不拆这三条监听；多开几局后一次
+   切后台会唤醒所有历史 Redux store，完整模拟器对象也无法回收。
+
+普通 DOS 的 EXE / COM / BAT 若不是 8.3 文件名，不能直接在 autoexec 里加引号：DOSBox 那条命令
+不会可靠剥掉，引擎照样报 ready，实际只停在 `C:\>`。`makeJsdosBundle()` 会保留原文件，再在同目录
+补一个真实的 `8BITGO.EXE`（撞名时递增）供启动。ZIP 的绝对路径、盘符和 `../` 也在重打包前拒绝，
+否则能覆盖虚拟盘里的 `.jsdos/dosbox.conf`。
+
+Windows 系统镜像、游戏包和资料片从同一刻下载；ROM 进度在系统镜像完成前暂存，避免进度条先冲到
+80% 再长时间不动。资料片最多三路并发，并走共用的失速中止。回归：
+`npm run test:jsdos-runtime && npm run test:dos-bundle && npm run test:dos-extras && npm run test:system-source`。
+
+共享 Windows 系统模式必须有 `.jsdos` 系统镜像、游戏 ZIP，以及默认 EXE 或每个已绑定语言各自的
+EXE。不能只在后台表单拦：批量导入和直接 API 会绕过页面。`server/src/dos-game-config.js` 在
+PUT / PATCH 前按关联表的真实重写语义校验；启动时 `schema-check.js` 还会点名历史坏记录。
 
 ### 2.25 直播间房间的清理只认 `hostSocketId` 这个事实，不认 `membership`
 
@@ -768,6 +837,51 @@ npm run audit:rom-langs -- --slug=pokemon-ruby   # 单款（清理时用）
 ⚠️ 想上架成游戏：平台选 `html5`，ROM 绑 `/web/PvZ`（html5 适配器把入口塞进 iframe，
 同源相对路径可以直接用）。
 
+**对上游 HTML 的本地补丁**（升级上游时要重打，现在是这些）：jszip 自托管、上面那个
+`<base>`、wasm 的 `<link rel=preload>`、`cn` 的 `lang=zh-CN`、`startGame` 写盘让步。
+
+### 2.28.1 PvZ 资源加载：清单是 2000+ 个散文件，不是一个包
+
+**自动加载片段的唯一来源是 `scripts/pvz-web/autoplay-snippet.html`**，`cn/` 和 `en/` 的
+`index.html` 只是它的产物（两者除第 7 行的 `PVZ_LOCALE` / `PVZ_MANIFEST_URL` 外完全一致）。
+**改了片段必须跑 `npm run pvz:sync-snippet`**，否则 snippet 和线上那份悄悄分叉 ——
+2026-09-23 就是因为只手改了 `cn/en` 才埋下后面的坑。
+
+清单 2122 项 = `main.pak`（**44 MB**）+ `reanim/` 2117 个 + `properties/` 4 个。
+
+⚠️ **2026-09-23 事故（致命）**：`reanim/` 在存储端**一个都没有**。旧实现在第一个 404 处
+就 `throw`，整批下载前功尽弃 —— 已下好的 44MB `main.pak` 也被 `restoreUpload` 一起清掉，
+玩家看到的是「自动加载失败（reanim/xxx HTTP 404）」，既进不去游戏也看不出缺的是动画资源。
+现在 **`main.pak` 是必需、其余是可选**：可选资源缺失只记数跳过并明确提示，游戏仍尝试启动。
+
+⚠️ **路径陷阱**：真实请求 URL = `PVZ_DATA_BASE` **+** 清单里的 `r2`，不是「`/PvZ/` 前缀」。
+当前 `DATA_BASE = https://html5.8bitgo.com/PvZ/properties/`（注意末尾那层 `properties/`），
+所以 `reanim/` 必须落在 `PvZ/properties/reanim/`。`scripts/pvz-pack-data.sh` 早期写的是
+`PvZ/reanim/`，**差一层 → 2117 个文件全部 404**。
+改完/传完一律跑 **`npm run pvz:check-assets`** 自检（发 HEAD 抽查，不下载字节，
+按顶层目录汇总，`main.pak` 不可达退出码 2、可选缺失退出码 1）。
+
+原实现在「2000+ 个散文件」这个规模上有三宗罪，都已修：
+
+1. **串行 fetch** 一个接一个 → 改成并发池（默认 8，`?conc=` 可调，`?nocache=1` 强制重下）；
+2. **整组一个大对象存 IndexedDB**，清单动一项（签名变了）就要重下 44MB →
+   改成**按 `fs` 分条**缓存：只补下缺的那几个、清理清单里已没有的旧条目，
+   并顺手清掉旧版 `pvz-data-files:` 前缀那一坨。
+   「资源内容换了但路径没变」key 感知不到 —— 那种情况把 `PVZ_DATA_VERSION` +1 整组失效；
+3. `startGame` **每写 4 个文件才让出主线程一次** —— 2000 多个小文件会让出 500+ 次纯
+   `setTimeout` 开销，而 44MB 的 `main.pak` 一次写入又独占主线程很久 →
+   改成**按 4MB 字节预算**让步。
+
+另外两条容易忽略的：
+
+- 可选文件 404 会在 IndexedDB 记一笔 `{ failed, at }`（TTL 6 小时）。不记的话，
+  `reanim/` 漏传期间每次进页面都要把 2000 多个必然 404 的请求重放一遍，白等几十秒。
+- wasm 约 7MB，加了 `<link rel=preload as=fetch crossorigin>` 让它和 js 并行下载；
+  `moduleReadyPromise` 加了 120s 超时兜底 —— 原来它静默失败时页面永远卡在
+  「Preparing WebAssembly runtime…」，一个字的报错都没有。
+- 根目录那份 `pvz-manifest.json` **没有任何代码引用**（`cn`/`en` 各用各的），
+  是历史产物，它的 `main.pak` r2 还和 `cn/en` 不一致 —— 别拿它排查问题。
+
 验收：
 
 ```bash
@@ -775,11 +889,145 @@ curl -sI https://8bitgo.com/web/PvZ | head -3          # 200 + text/html，且�
 curl -sI https://8bitgo.com/web/PvZ/pvz-portable.wasm | grep -i content-type   # application/wasm
 ```
 
-**cs15（CS 1.5 网页移植，2026-09-21 接入中）**：`public/web/cs15/` 整个目录**暂不进 git**
-（见 `.gitignore`）——`packs/base.zip.gz` 是 550M 的 Valve 游戏数据，超 GitHub 单文件上限，
-也不能公开发布；数据包计划放 R2。引擎 / 代码部分（`cs15.js` / `bundle` / `engine` / `lib` /
-`gfx`，约 36M）等数据包落位后再重新划进来。路由不用加：`/web/:name` 是通用的，要上线只需要
-让文件出现在服务器的 `public/web/cs15/`（`vite build` 会把它带进 `dist/client`）。
+**cs15（CS 1.5 网页移植，2026-09-21 接入中）**：只有 `public/web/cs15/packs/` **不进 git**
+（见 `.gitignore`）——`base.zip.gz` 是 550M 的 Valve 游戏数据，超 GitHub 单文件上限，也不能公开发布；
+数据包放 R2 / 服务器本地。加载器、引擎和开源 wasm 运行时必须跟踪，否则生产机执行
+`git pull && npm run build` 仍会发布旧加载器。`vite.config.ts` 的 `skipHugeStatic` 也只能跳过
+`web/cs15/packs`，不能再跳过整个 `web/cs15`。路由不用加：`/web/:name` 是通用的。
+
+⚠️ **生产入口必须有 `<base>`。** 通用路由会把 `/web/cs15/` 规范化成无尾斜杠的
+`/web/cs15`；没有 `<base href="/web/cs15/">` 时，浏览器会把 `./cs15.bundle.js` 算成
+`/web/cs15.bundle.js`。`helf-life` 同理，且它的 `../cs15/` 会被误算到站点根目录。
+
+⚠️ **基础包必须边解压边写 FS。** 解压后 ZIP 约 1.1GB；若先 `arrayBuffer()` 整包再解析，
+550MB gzip + 1.1GB ZIP + Emscripten FS 文件副本会同时驻留，浏览器极易被系统杀掉。
+当前 pack 的 ZIP 条目必须保持 `store`（method 0）且不能用 data descriptor，加载器按本地头顺序
+流式写入。它还会检查 gzip 魔数，以兼容对象存储下发原始 gzip 和服务器透明解压两种情况。
+
+⚠️ **「没刀 / 没雷达 / 数字键不切枪」先看有没有真的出生。** 2026-09-23 曾把这三个现象
+误判成 cs16-client 的 slot 构建缺陷；直接检查 wasm 后，当前客户端其实完整导出了
+`CHudAmmo::UserCmd_Slot1..10`、`CHudAmmo::SlotInput`、`g_weaponselect` 和 `CL_CreateMove`。
+真凶是加载器用 `+map` 开监听服时没给 `maxplayers`：唯一客户端先占满服务器槽位，T/CT 都报
+`team is full`，玩家一直在观察状态，客户端自然没收到 WeaponList / CurWeapon，SlotInput 会按设计返回。
+
+修法已经写进 `cs15.js`：CS 启动参数带 `+maxplayers 8`，并默认 `_vgui_menus 0`（CS1.5 资产
+没有完整 CS1.6 VGUI2 资源）；`?vgui=1` 只留作排查。验收不能只看观察视角能否移动：要实际选队、
+选人物并出生，然后确认左上雷达出现，数字 3 显示刀、数字 2 显示手枪。无头浏览器实测日志应有
+`8 player server started`；若又变回 `Game started`，说明 maxplayers 参数丢了。
+
+当前基础包没有默认三张图对应的 CZ `.nav`，而服务器 wasm 内置了 CZ Bot。默认进入地图后执行
+一次 `bot_add`：首次约 20 秒自动分析并生成导航，写入 IndexedDB；以后在加载 pack 后、启动服务器前
+把缓存恢复到 `cstrike/maps/<map>.nav`，不会重复分析。主键盘 `+` / 小键盘 `+` 都会执行
+`bot_add`，`?bots=0` 才关闭。缓存键必须包含 `ASSET_VERSION`，换地图包或服务器 wasm 时 bump 版本，
+不能继续复用旧 nav。
+
+`lib/cstrike/dlls/yapb_emscripten_wasm32.wasm` 不是当前的 Bot 实现：它导出的是 `Meta_Attach`，
+属于 Metamod 插件；基础包没有 Metamod，所以仅把它写进 FS 并不会加载。现在实际使用的是
+`cs_emscripten_wasm32.wasm` 内置的 CZ Bot（`bot_add` / `bot_quota` / `bot_nav_analyze`）。
+
+### 2.28.2 CS1.5 的 550MB 不是 gzip 不够狠：先去掉 900MB 错装内容，再用 HTTP Brotli
+
+旧 `base.zip.gz` 下载 550MB、展开 1.05GB，其中混入约 283MB 其它地图、完整 289MB
+`valve/pak0.pak`、桌面 DLL/SO、回放和大量自定义地图素材。只换 zstd/Brotli 仍会让这些垃圾常驻
+MEMFS；而项目里的 `@bokuweb/zstd-wasm` 只有整包 API，会再造一份约 1GB 的 JS 缓冲区。
+
+`npm run cs15:repack` 会先把 PAK 还原成可筛选文件（外层同名散文件优先，保持 GoldSrc 覆盖语义），
+再输出公共 CS 运行时 + 三个单地图 store ZIP。当前结果：公共包 158.6MB 原始 / 62.1MB Brotli；
+de_dust2、de_dust、cs_office 主包分别约 2.5MB、2.1MB、7.2MB。Brotli 设 quality 11 / window 24，
+是发布期一次性成本；`npm run test:cs15` 会把 `.br` / `.gz` 全部解码，逐文件验 CRC，再核对文件数、
+展开字节数和整份 ZIP SHA-256。
+
+R2 上 `.zip.br` **必须**设置 `Content-Type: application/zip` + `Content-Encoding: br`。这样浏览器
+HTTP 栈原生流式解码，加载器收到的首字节直接是 `PK`；若忘了 Content-Encoding，加载器会明确报错
+并自动改用清单里的 `.zip.gz`（gzip 对象故意不设 Content-Encoding，由 DecompressionStream 解）。
+包名带内容哈希并可缓存一年，`index.json` 必须最后上传且设 `no-cache`。自动上传：
+`npm run cs15:upload -- --bucket <R2桶名>`；完整 CORS/验收说明见 `public/web/cs15/PACKS.md`。
+
+生产加载器默认读 `https://assets.8bitgo.com/web/cs15/packs`，localhost 才读本目录；临时桶可用
+`?packsroot=` 覆盖。加载器只接受安全的清单文件名、store ZIP、无 data descriptor 条目，边写 MEMFS
+边验 ZIP CRC，并以清单的文件数/总字节作第二道约束。改 `cs15.js` 或 `zip-stream.js` 后必须
+`npm run cs15:bundle && node scripts/check-cs15.mjs`；构建前后也会自动查源码与 bundle 是否一致。
+
+### 2.28.3 CS1.6 黑屏：运行时必须随代码部署，基础包必须流式展开
+
+2026-09-23 线上 `/web/cs16` 返回 200，但 `cs16.bundle.js`、引擎 wasm、客户端 wasm 和基础包
+全部 404。根因有两层：这些运行文件从未进仓库；根 `.gitignore` 的通用 `dist` 规则还会误伤
+`public/web/cs16/engine/dist/`。本地文件齐全不代表生产机执行 `git pull && npm run build` 后也有。
+现在引擎、`lib/`、`gfx/`、bundle、Zstd 解码器和 `runtime.json` 必须跟踪，只有
+`public/web/cs16/packs/` 保持忽略。构建前后的 `scripts/check-cs16.mjs` 会逐文件核对同源运行时的长度和 SHA-256，
+且拒绝历史遗留的「整个 cs16 目录是开发机绝对软链」产物。运行期再查关键文件，缺任一项
+直接返回 503 维护页，不能把缺文件伪装成游戏黑屏。
+
+旧 `base.zip.gz` 解压后约 823MB。先整包 `arrayBuffer()`、再展开、再写 MEMFS 会让压缩包、解压包
+和虚拟盘副本同时驻留，峰值超过 1.6GB，浏览器渲染进程会被系统杀掉。即使只改成流式，完整
+823MB 仍会占满 MEMFS，真实浏览器在 `xash.main()` 处明确报 `Aborted(OOM)`。第一轮只去掉其它地图，
+公共包展开后仍有 346MB，真实浏览器照样 OOM，所以不能把“流式解压成功”当成修好。现在拆成约
+75MB 的 `packs/base.tar.gz`（展开 132MB）和 `packs/maps/<地图>.tar.gz`（只加载当前一张），并剔除
+浏览器永远不会加载的原生 DLL/SO、HL 单人地图/模型/对白、原声、视频、菜单背景和无关天空/WAD。
+首次传输从约 430MB 降到约 110–140MB，写盘从 784MB 降到约 135–175MB。
+
+加载器用 `DecompressionStream` + USTAR 解析器边解压边写，每次只额外保留当前文件；解析器还验证
+头校验和、总大小和路径，避免外部 `packsroot` 用 `../` 覆盖动态库。查询参数里的地图名有白名单，
+不能拼任意包路径。重新生成全部 13 个包用 `npm run cs16:repack`。
+
+`cs16.js` 不是浏览器入口，改完必须跑 `npm run cs16:bundle`；再跑
+`npm run cs16:manifest` 更新清单。生产数据包走 R2，不再要求应用服务器保留被忽略的 `packs/`，
+所以新机器 `git pull && npm run build` 不会因为缺游戏数据包失败。数据包在打包机单独验收：
+
+```bash
+npm run test:cs16
+npm run build:client                   # 末尾必须显示 CS16 部署产物完整
+curl -I https://8bitgo.com/web/cs16/cs16.bundle.js
+curl -I https://8bitgo.com/web/cs16/engine/dist/xash.wasm
+curl -I https://assets.8bitgo.com/web/cs16/zstd-v1/catalog.json
+```
+
+页面只有探测到第一帧非黑画面后才撤加载层；必需 wasm 404、响应停滞、引擎提前退出、WebGL 上下文
+丢失和 60 秒内没有首帧都会显示可读错误，不能再静默露出黑色画布。数据包很大，部署后要清理
+Cloudflare 的 `/web/cs16/*` 旧缓存，至少清掉入口、bundle 和所有曾返回 404 的 URL。
+
+WebGL 默认 framebuffer 没有 `preserveDrawingBuffer` 时，浏览器合成后 `readPixels` 可能一直是黑色，
+不能只靠像素探测决定何时撤加载层。`Custom resource propagation complete` / 进入选队脚本说明服务端、
+客户端和渲染器均已完成初始化，可作为首帧兜底。原包没有这些地图的导航文件，页面不能承诺
+`bot_add` 可用；补齐与当前客户端匹配的导航数据前不要把这句加回来。
+
+⚠️ **Xash 1.2.2 的主 WASM 原版把内存写死为 initial=256MB / maximum=256MB。** 即使公共包已经
+压到展开 133MB，地图启动时给渲染器、模型和动态库分配内存仍会 `Aborted(OOM)`。运行
+`npm run cs16:engine-patch` 同时把 WASM maximum 原位改为 512MB，并把胶水层原来“任何扩容都
+直接 abort”的 `_emscripten_resize_heap` 接到已有的 `growMemory()`；initial 不变，所以浏览器仍
+按需增长。两半缺一不可：只改 WASM maximum，真实浏览器仍会 OOM。补丁是幂等的；
+`check-cs16.mjs` 会解析 WASM memory section 并检查胶水层扩容分支，少任一半就让构建失败。
+引擎和动态库的内部 fetch 也必须带 `ASSET_VERSION` 查询串；只给入口 bundle 加版本不能刷新
+已经被浏览器或 Cloudflare 缓存的旧 `xash.wasm`，表现会是补丁明明部署了，玩家仍在 256MB 处 OOM。
+
+### 2.28.4 CS1.6 的 R2 包用 16MB 独立 Zstd 帧，不能压成一个大帧
+
+真实基准（2026-09-23，公共 TAR 140,892,160 字节）：gzip 6 是 79,231,763 字节；Zstd 22
+单帧是 53,136,405 字节，但它的解压窗口达到 **128MB**。在 Xash 的 256–512MB WASM 内存、
+134MB MEMFS 和浏览器 JS 堆之外再加这块窗口，移动端很容易重现黑屏。现在按 16MB 原始 TAR
+切独立 Zstd 22 帧，合计 55,799,442 字节（约 53.2MiB），只多 2.7MB，却把每次解压的输入、
+输出和窗口限制在一片内；加载器只并行两片，消费后立刻删除 Promise 引用，不能让整包常驻 JS 堆。
+
+产物格式是 `public/web/cs16/packs/zstd-v1/catalog.json` + `chunks/<压缩SHA256>.zst`。每片同时记录
+压缩字节和解压字节的长度、SHA-256；浏览器逐片双校验，失败最多重试三次，再把原始片按顺序喂给
+USTAR 解析器。新浏览器优先用原生 `DecompressionStream('zstd')`，不支持时才加载 246KB 的
+`zstd.wasm`；不能退回“整个包交给 `@bokuweb/zstd-wasm`”的写法，那会重新制造百 MB 临时缓冲区。
+
+生成、验证、上传：
+
+```bash
+npm run cs16:repack
+npm run cs16:zstd
+npm run test:cs16
+npm run cs16:upload -- --bucket <R2桶名>
+```
+
+上传器先放所有内容寻址分片，最后才替换 `catalog.json`，避免清单短暂指向 404。分片必须设
+`Content-Type: application/zstd` 和一年 immutable，**绝不能设 `Content-Encoding: zstd`**；否则
+浏览器网络层会先动字节，应用层 SHA 校验和兼容解码都会失效。`catalog.json` 设 `no-cache`。
+生产默认根是 `https://assets.8bitgo.com/web/cs16/zstd-v1/`，localhost 默认本地；`?packsroot=`
+可指临时域名，`?packformat=gzip` 只用于旧包应急。R2 CORS、Cache Everything 和验收步骤见
+`public/web/cs16/PACKS.md`。
 
 ### 2.29 后台能热改的站点级配置：`site_settings` 表（首页公告条是第一个）
 
@@ -823,6 +1071,23 @@ cd server && npm run migrate
 
 回归：`npm run test:site-notice`（纯函数逐条 + 源码形状：位置在横幅之上、两个后台接口都要权限、
 s-maxage 必须很短、迁移里有这张表）。
+
+### 2.29.1 志愿者只写自己的游戏 / 文章库，绝不能把个人草稿混进主表
+
+志愿者权限只有 `games:edit` 和 `posts:edit`；`content:edit`、评论审核、开发商、应用、友情链接、
+ROM 存储和其它站级入口全部是管理员权限。后台列表统一带 `library=mine`：管理员仍读主库，
+志愿者则按服务端登录身份读 `volunteer_games` / `volunteer_posts`。
+
+⚠️ 个人库**故意是两张独立表**，不是给 `games` / `posts` 加 `owner_id`。公开站点、搜索、首页、
+收藏、翻译等有大量主库查询，只要其中一条漏写 `owner_id IS NULL`，个人草稿就会泄漏到公网；
+分表后这些代码从结构上根本查不到个人内容。同一个 slug 可以同时存在于主库和多个志愿者库。
+
+⚠️ 任何个人库 SQL 都必须由服务端使用 JWT 中的 `req.user.id`，并同时带 `owner_id`；不接受客户端
+传 owner id。删除个人游戏也只删资料行，**不能删 R2 文件**。管理员口令没有账号 id，所以永远
+按管理员身份操作主库，不能伪装成某个志愿者。
+
+部署必须 `cd server && npm run migrate`，否则志愿者接口会因缺表 500；启动自检会点名这两张表。
+回归：`npm run test:volunteer-libraries` + `npm --prefix server run test:roles`。
 
 ### 2.30 部署形态与换机记录（2026-09-21 已迁到 38.76.186.225）
 

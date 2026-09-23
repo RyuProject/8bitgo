@@ -25,6 +25,7 @@
     "test:oauth": "node scripts/test-oauth.mjs",
     "test:presence": "node scripts/test-presence.mjs",
     "test:roles": "node scripts/test-roles.mjs",
+    "test:volunteer-libraries": "node scripts/test-volunteer-libraries.mjs",
     "test:birth-date": "node scripts/test-birth-date.mjs",
     "test:collections": "node scripts/test-collections.mjs",
     "test:friend-links": "node scripts/test-friend-links.mjs",

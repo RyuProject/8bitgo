@@ -8,13 +8,12 @@
  * ⚠️ js-dos 只认「带 .jsdos/dosbox.conf 的 zip」，普通 zip 丢进去是起不来的。
  * 所以本地文件会先经 lib/jsdosBundle.ts 现场重打一个包（不解压，只补一份配置）。
  *
- * 资源默认从 /jsdos/ 加载（由 scripts/copy-jsdos.mjs 从 npm 包复制过来）。
+ * 资源默认从 /jsdos/v<version>/ 加载（由 scripts/copy-jsdos.mjs 从 npm 包复制过来）。
  * 想换成官方 CDN 就设 VITE_JSDOS_PATH=https://v8.js-dos.com/latest/
  */
 import type { Capability, CaptureSources, LoadProgress, MountOptions, PadButton, RuntimeHandle } from '../types'
 import { getT, fmt } from '@/services/i18n'
 import {
-  buildDosboxConf,
   hideJsdosConfigForLayer,
   makeJsdosBundle,
   makeWindowsGameLayer,
@@ -46,8 +45,9 @@ import {
   type DosPadKeys,
 } from '../dosPad'
 import { normalizeDosStartupCommands } from '../../../shared/dos-startup-commands.js'
-import { STARTING_MILESTONE, windowsGuestStartupBudgetMs } from '../loadProgress'
+import { fetchWithProgress, STARTING_MILESTONE, windowsGuestStartupBudgetMs } from '../loadProgress'
 import { assertTypeable, scheduleWindowsLaunch, windows3xLaunchCommands, type WindowsLaunchCi } from '../windowsLaunch'
+import { JSDOS_PATH } from '../paths'
 
 /** P2P 模式的撮合服务器。自建的话见 https://github.com/caiiiycuk/WebRTC-NET（Go） */
 export const JSDOS_PEER_SERVER: string = import.meta.env.VITE_JSDOS_PEER_SERVER || 'https://net.dos.zone'
@@ -139,11 +139,6 @@ function findAudioOut(since: number): { audioNode: AudioNode; audioContext: Audi
   }
   return null
 }
-
-export const JSDOS_PATH: string = (() => {
-  const p = import.meta.env.VITE_JSDOS_PATH || '/jsdos/'
-  return p.endsWith('/') ? p : `${p}/`
-})()
 
 type DosProps = {
   stop: () => Promise<void> | void
@@ -301,8 +296,9 @@ async function readRom(
  * 资料片关卡，回来说「你们这个扩展包是假的」，而日志里干干净净什么都没有。
  * 真·网络抖动那一路本来也会先把游戏 ROM 本身打掉，不会单独卡在这里。
  *
- * 串行取：这些包都是几百 KB 到几 MB 的小东西，并行省不下多少，
- * 出错时却能明确指出是哪一个 —— 报错信息里那个文件名就是后台要改的那一行。
+ * 最多三路并行。资料片已不全是几 MB（有的接近 500MB），完全串行会把开局时间直接相加；
+ * 全部一起开又会抢系统镜像的连接和内存。每条仍单独包装错误，所以后台能看到准确文件名。
+ * 下载走共用的失速保护，避免一个永远不结束的 fetch 把加载遮罩永久钉住。
  */
 async function loadExtras(
   list: readonly { url: string; path: string }[] | undefined,
@@ -310,14 +306,24 @@ async function loadExtras(
 ): Promise<ExtraFile[]> {
   if (!list?.length) return []
   const out: ExtraFile[] = []
-  for (const { url, path } of list) {
-    if (!url) throw new Error(`附加文件「${path}」没有可用地址（ROM 存储没配好？）`)
-    const res = await fetch(url, { signal })
-    if (!res.ok) throw new Error(`附加文件「${path}」下载失败（HTTP ${res.status}）`)
-    const buf = await res.arrayBuffer()
-    if (!buf.byteLength) throw new Error(`附加文件「${path}」是空的`)
-    out.push({ path, data: new Uint8Array(buf) })
+  let cursor = 0
+  const worker = async () => {
+    for (;;) {
+      const index = cursor++
+      if (index >= list.length) return
+      const { url, path } = list[index]
+      if (!url) throw new Error(`附加文件「${path}」没有可用地址（ROM 存储没配好？）`)
+      let buf: ArrayBuffer
+      try {
+        buf = await fetchWithProgress(url, { signal, phase: 'assets' })
+      } catch (e) {
+        throw new Error(`附加文件「${path}」下载失败（${e instanceof Error ? e.message : String(e)}）`)
+      }
+      if (!buf.byteLength) throw new Error(`附加文件「${path}」是空的`)
+      out[index] = { path, data: new Uint8Array(buf) }
+    }
   }
+  await Promise.all(Array.from({ length: Math.min(3, list.length) }, worker))
   return out
 }
 
@@ -384,6 +390,35 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       options.onProgress?.({ phase: 'engine' })
       const Dos = await loadJsDos()
       options.onProgress?.({ phase: 'engine', ratio: 1 })
+      let systemDone = !options.dosSystemUrl
+      let latestRomProgress: LoadProgress | undefined
+      let concurrentFailure: unknown = null
+      const settled = <T,>(promise: Promise<T>) => promise.then(
+        (value) => ({ value, error: null as unknown }),
+        (error: unknown) => {
+          concurrentFailure ??= error
+          // ROM / 资料片已经确定失败时，系统镜像继续下载没有任何价值；让错误立刻出现在界面上。
+          if (!abort.signal.aborted) abort.abort(error)
+          return { value: null as T | null, error }
+        },
+      )
+      /*
+        系统镜像、游戏包和附加文件互不依赖，必须从同一刻开始取。旧实现把它们完全串行：
+        Win95 镜像 30 秒 + 游戏 20 秒 + 资料片 40 秒，玩家就实打实等 90 秒。
+
+        ROM 的进度在系统镜像完成前先缓住，避免小 ROM 把界面推到 80% 后又长时间不动；
+        镜像完成后立刻补发最新一帧。这样总耗时取三者的最大值，进度仍按核心→镜像→ROM 前进。
+        settled 立即接住拒绝，防止某一路先失败、另一条还在下载时出现未处理的 Promise rejection。
+      */
+      const romTask = settled(readRom(
+        options.game,
+        (progress) => {
+          latestRomProgress = progress
+          if (systemDone) options.onProgress?.(progress)
+        },
+        abort.signal,
+      ))
+      const extrasTask = settled(loadExtras(options.dosExtras, abort.signal))
       /*
         系统镜像走**多源兜底**（见 ../systemSource）：主源是我们自己的资源域名，
         取不到或者卡死就换 js-dos 官方源。它是 Win9x/Win3.x 游戏的硬前提 ——
@@ -396,19 +431,29 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             abort.signal,
           )
         : Promise.resolve(null)
-      // 系统镜像通常远大于游戏 ZIP。以前三路并行时，小 ROM 会先把进度推到 80%，
-      // 随后大半分钟都在等镜像，看起来像卡死。按界面约定分段：核心/镜像 0–40%，
-      // 它们完成后才让游戏 ROM 进入 40–80%。少一点并行，换来可理解、不会骗人乱跳的进度。
-      const loadedSystem = await systemPromise
+      let loadedSystem: Awaited<ReturnType<typeof loadSystemBytes>> | null
+      try {
+        loadedSystem = await systemPromise
+      } catch (e) {
+        // 并发资源先失败时，AbortError 只是连带结果；玩家真正需要的是那条带文件名的原始错误。
+        if (concurrentFailure) throw concurrentFailure
+        throw e
+      }
       // 走了备用源就喊一声：这说明主源出问题了，而玩家那边是完全无感的
       if (loadedSystem?.usedFallback) {
         console.warn(`[jsdos] 主源取不到系统镜像，已改用${loadedSystem.label}`, loadedSystem.url)
       }
+      systemDone = true
       options.onProgress?.({ phase: 'assets', ratio: 1 })
-      const rom = await readRom(options.game, options.onProgress, abort.signal)
+      if (latestRomProgress) options.onProgress?.(latestRomProgress)
+      const romResult = await romTask
+      if (romResult.error) throw romResult.error
+      const rom = romResult.value!
       // 资料片 / 补丁现取现并。放在这里而不是分支里，是因为普通 DOS 和 Windows 客体两条路
       // 都是拿 gameBuf 当「这款游戏的 ZIP」，合并只需做一次。
-      const extras = await loadExtras(options.dosExtras, abort.signal)
+      const extrasResult = await extrasTask
+      if (extrasResult.error) throw extrasResult.error
+      const extras = extrasResult.value ?? []
       options.onProgress?.({ phase: 'starting' })
       if (destroyed) return
       const gameBuf = extras.length ? mergeExtraFiles(rom.buf, extras) : rom.buf
@@ -478,7 +523,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         const bundle = await makeJsdosBundle(
           rom.name,
           gameBuf,
-          options.dosExecutable ? buildDosboxConf(options.dosExecutable, startupCommands) : undefined,
+          undefined,
           dosboxConfig,
           options.dosExecutable,
           startupCommands,
@@ -694,6 +739,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
     } catch (e) {
       if (destroyed) return
+      // 任一路失败后，其余并发下载已经没有用途；立即停掉，避免错误页背后继续吞几十 MB。
+      abort.abort(e)
       options.onError?.(fmt(rt.jsdosLoadFailed, { msg: e instanceof Error ? e.message : String(e) }))
     }
   })()
@@ -766,6 +813,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       destroyed = true
       window.clearTimeout(readyFallback)
       abort.abort()
+      try {
+        if (document.pointerLockElement && host.contains(document.pointerLockElement)) document.exitPointerLock()
+      } catch {
+        /* 页面正在切换或浏览器不支持时不用再补救 */
+      }
       cancelWindowsLaunch?.()
       cancelWindowsLaunch = null
       pad?.stop()

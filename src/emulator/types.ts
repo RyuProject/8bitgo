@@ -63,8 +63,6 @@ export interface MountOptions {
   arcadeButtons?: ArcadeButtonCount
   /** Flash 的逐游戏键位；纯鼠标游戏留空，避免画出无效按钮。 */
   flashControls?: FlashControls
-  /** 不改 Flash 时间轴，只调整画质；街机则只应用核心确实公开的安全选项。 */
-  performanceProfile?: 'quality' | 'balanced' | 'performance'
   /** js-dos 是否用相对鼠标并请求指针锁定；射击类需要，依赖绝对坐标的游戏不能开启。 */
   mouseCapture?: boolean
   /**
@@ -142,6 +140,12 @@ export interface MountOptions {
    * 到期后只能重新进这一局，不说的话症状是「后半局的档都没存上」。
    */
   onFlashSaveSession?: (expiresAt: number) => void
+  /**
+   * 未登录玩家在游戏内**真的点了**在线存档 / 登录时上报。
+   * 只有接了站内桥的 Flash 游戏会调；适配器不能在启动时就弹，
+   * 否则 AGI2 那类开局自动查槽的游戏会一进页就被登录框挡住。
+   */
+  onFlashSaveLoginRequired?: () => void
   /**
    * 资源齐了、这局可以真正开始玩了。
    *

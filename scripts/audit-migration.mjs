@@ -71,6 +71,36 @@ const index = await checkPage('sitemap 索引', '/sitemap.xml', ({ body }) =>
 const games = await checkPage('中文游戏 sitemap', '/sitemaps/games-zh-Hans.xml', ({ body }) =>
   body.includes('<urlset') && /<url>/.test(body) ? '' : '没有游戏 URL')
 
+// SSE 是永不结束的响应，不能用 checkPage 的 response.text()；只读第一段就主动断开。
+// 迁机后实测普通 /api/netplay/rooms 能返回，事件流却有一次 28 秒没有响应头；
+// 浏览器还报告过 HTTP/2 协议错误，大厅可能因此等不到房间变化。
+try {
+  const response = await fetch(new URL('/api/netplay/events', site), {
+    redirect: 'manual',
+    signal: AbortSignal.timeout(12_000),
+    headers: { Accept: 'text/event-stream', 'User-Agent': 'Mozilla/5.0 8BitGo-Migration-Audit/1.0' },
+  })
+  if (!response.ok || !response.headers.get('content-type')?.includes('text/event-stream') || !response.body) {
+    report(false, '联机事件流', `HTTP ${response.status} 或响应类型不正确`)
+  } else {
+    const reader = response.body.getReader()
+    try {
+      let prefix = ''
+      while (prefix.length < 8192 && !prefix.includes('event: rooms')) {
+        const next = await reader.read()
+        if (next.done) break
+        prefix += new TextDecoder().decode(next.value)
+      }
+      const ok = prefix.includes('event: rooms')
+      report(ok, '联机事件流', ok ? '' : '首条房间事件未及时到达')
+    } finally {
+      void reader.cancel().catch(() => {})
+    }
+  }
+} catch (error) {
+  report(false, '联机事件流', `12 秒内没有收到首条事件：${error.message}`)
+}
+
 if (games) {
   const url = firstLoc(games.body)
   await checkPage('首个游戏详情页', url, ({ body, response }) => {
@@ -93,6 +123,22 @@ await checkPage('后端与数据库', '/api/health', ({ body }) => {
   try { return JSON.parse(body).db === true ? '' : '数据库未就绪' }
   catch { return '健康检查不是 JSON' }
 })
+
+/*
+  SFS 是可选旁路，所以「没开」只报警；但一旦 enabled=true，Java sidecar 不可达就是确定故障。
+  迁机最容易漏的是 /opt、systemd 单元和 server/.env：主站会完全正常，只有 Ruffle 原生联机失效。
+*/
+try {
+  const { response, body } = await get('/api/sfs/status')
+  if (!response.ok) report(false, 'Ruffle 原生联机', `状态接口 HTTP ${response.status}`)
+  else {
+    const status = JSON.parse(body)
+    if (!status.enabled) report(false, 'Ruffle 原生联机', 'SFS_ENABLED=0；SAS3 只能单机（迁机后请检查 sidecar 与 server/.env）', false)
+    else report(status.ready === true, 'Ruffle 原生联机', status.ready ? '' : '已启用，但 Java sidecar 不可达')
+  }
+} catch (error) {
+  report(false, 'Ruffle 原生联机', `状态检查失败：${error.message}`)
+}
 
 if (serverMode) {
   report(existsSync(path.join(root, 'server/.env')), '生产环境配置文件', 'server/.env')

@@ -11,12 +11,20 @@
  *   agi2  对象式（Kingdom Rush Frontiers）：user / storage / content / quests，
  *         按 key→value 存取，key 固定 slot1~3
  *
+ * agiGameKey 是 AGI1 的兼容标识（游戏传给 init 的 gameKey）。它不是密钥，
+ * 但能防止一个不相容的 Armor Games SWF 被这套半兼容桥静默接管。
+ * AGI2 和给新游戏用的 eightbitgo 简化接口不需要它。
+ *
  * ⚠️ 新增一款游戏时改这里 + 跑一遍脚本把桥产物构建出来（`npm run flashbridge`）。
  * 不在表里的 slug 拿不到桥地址，前端根本不会启动在线存档；服务端即使被 env 放行，
  * 也只会按 agi1 处理。这条约束由 scripts/test-flash-save-consistency.mjs 守着。
  */
 export const FLASH_SAVE_GAMES = Object.freeze({
-  'infectonator-2': { protocol: 'agi1', bridge: '/flash-api/armor-games/AGI.swf' },
+  'infectonator-2': {
+    protocol: 'agi1',
+    bridge: '/flash-api/armor-games/AGI.swf',
+    agiGameKey: 'infect-2',
+  },
   'kingdom-rush-frontiers': { protocol: 'agi2', bridge: '/flash-api/armor-games/AGI2.swf' },
 })
 
@@ -31,6 +39,11 @@ export function flashSaveBridgeOf(gameSlug) {
  */
 export function flashSaveProtocolOf(gameSlug) {
   return FLASH_SAVE_GAMES[String(gameSlug || '')]?.protocol || 'agi1'
+}
+
+/** AGI1 的 init gameKey；非 AGI1 或表外游戏返回空串。 */
+export function flashSaveGameKeyOf(gameSlug) {
+  return FLASH_SAVE_GAMES[String(gameSlug || '')]?.agiGameKey || ''
 }
 
 /** 已接入的游戏 slug。用于把 env 白名单的默认值钉在同一份表上 */

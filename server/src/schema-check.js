@@ -10,6 +10,7 @@
  * 只警告、不退出：缺列不影响前台读，站点该服务还是要服务。
  */
 import { query } from './db.js'
+import { dosGameConfigError } from './dos-game-config.js'
 
 /** 会随版本增加的列。新增迁移时同步往这里加一条 */
 const EXPECTED_COLUMNS = [
@@ -60,6 +61,8 @@ const EXPECTED_TABLES = [
   { table: 'game_tags', why: '游戏标签' },
   { table: 'game_search_tokens', why: '搜索倒排索引' },
   { table: 'post_tags', why: '文章标签' },
+  { table: 'volunteer_games', why: '志愿者独立游戏库；缺了志愿者的游戏列表和保存会 500' },
+  { table: 'volunteer_posts', why: '志愿者独立文章库；缺了志愿者的文章列表和保存会 500' },
   { table: 'developers', why: '开发商的人工资料（logo / 简介）；缺了开发商列表仍然能看，只是后台那一页读写全 500' },
   { table: 'friend_links', why: '首页特别鸣谢；缺了首页会隐藏这一栏，后台友情链接管理读写会 500' },
   { table: 'saves', why: '云存档；schema-v2 早期漏了这张表，缺了的话 /api/saves 全 500，玩家点「云端存档」就报错' },
@@ -126,20 +129,70 @@ export async function checkSchema() {
     )
     const missingTables = EXPECTED_TABLES.filter((e) => !tables.has(e.table))
 
-    if (!missingCols.length && !missingTables.length) return true
+    if (missingCols.length || missingTables.length) {
+      console.warn('')
+      console.warn('⚠️  数据库结构落后于代码，以下东西还没有：')
+      for (const e of missingTables) console.warn(`     · 表 ${e.table}（${e.why}）`)
+      for (const e of missingCols) console.warn(`     · 列 ${e.table}.${e.column}（${e.why}）`)
+      console.warn('')
+      console.warn('   现在的表现会是：前台读一切正常，但**写操作会 500** ——')
+      console.warn('   缺列多半是后台保存报 Unknown column，看起来像「新功能没做」；')
+      console.warn('   缺表则是某条接口单独 500（如 game_plays 之于游玩计数），更难联想到库。')
+      console.warn('')
+      console.warn('   补上：  cd server && npm run migrate')
+      console.warn('')
+      return false
+    }
 
-    console.warn('')
-    console.warn('⚠️  数据库结构落后于代码，以下东西还没有：')
-    for (const e of missingTables) console.warn(`     · 表 ${e.table}（${e.why}）`)
-    for (const e of missingCols) console.warn(`     · 列 ${e.table}.${e.column}（${e.why}）`)
-    console.warn('')
-    console.warn('   现在的表现会是：前台读一切正常，但**写操作会 500** ——')
-    console.warn('   缺列多半是后台保存报 Unknown column，看起来像「新功能没做」；')
-    console.warn('   缺表则是某条接口单独 500（如 game_plays 之于游玩计数），更难联想到库。')
-    console.warn('')
-    console.warn('   补上：  cd server && npm run migrate')
-    console.warn('')
-    return false
+    /*
+      结构齐全仍可能有「写得进去、永远启动不了」的数据。共享 Windows 模式最典型：
+      少一个 EXE 路径不会触发数据库错误，玩家却要先下载系统镜像和游戏包，最后才收到报错。
+      启动时只扫 DOSBox-X 的少量候选，及早把历史坏记录点名；新写入由路由同步阻止。
+    */
+    const rows = await query(
+      `SELECT g.slug, g.platform, g.dos_backend, g.dos_system, g.dos_executable,
+              gr.lang, gr.object_key, gr.dos_executable AS lang_dos_executable
+         FROM games g
+         LEFT JOIN game_roms gr ON gr.game_id = g.id
+        WHERE g.platform = 'dos'
+          AND g.dos_backend = 'dosboxX'
+          AND g.dos_system IS NOT NULL
+          AND g.dos_system <> ''`,
+    )
+    const games = new Map()
+    for (const row of rows) {
+      let game = games.get(row.slug)
+      if (!game) {
+        game = {
+          slug: row.slug,
+          platform: row.platform,
+          dosBackend: row.dos_backend,
+          dosSystem: row.dos_system,
+          dosExecutable: row.dos_executable,
+          roms: {},
+          dosExecutables: {},
+        }
+        games.set(row.slug, game)
+      }
+      if (!row.object_key) continue
+      if (row.lang === '*') game.rom = row.object_key
+      else game.roms[row.lang] = row.object_key
+      if (row.lang !== '*' && row.lang_dos_executable) {
+        game.dosExecutables[row.lang] = row.lang_dos_executable
+      }
+    }
+    const invalid = [...games.values()]
+      .map((game) => ({ slug: game.slug, error: dosGameConfigError(game) }))
+      .filter((item) => item.error)
+    if (invalid.length) {
+      console.warn('')
+      console.warn('⚠️  DOSBox-X / Windows 客体配置有致命缺项：')
+      for (const item of invalid) console.warn(`     · ${item.slug}：${item.error}`)
+      console.warn('   请在后台补齐；这类游戏当前会在下载完成后直接启动失败。')
+      console.warn('')
+      return false
+    }
+    return true
   } catch (e) {
     // 连不上库之类：这里不是主流程，别把启动搞挂
     console.warn('⚠️  表结构自检没跑成：', e instanceof Error ? e.message : String(e))

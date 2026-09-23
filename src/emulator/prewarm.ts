@@ -7,6 +7,7 @@ import type { RuntimeId } from './types'
 import { EJS_PATH, J2ME_PATH, RUFFLE_PATH } from './paths'
 import { CHEERPJ_ORIGIN, j2meWarmTargets } from './j2meUrl'
 import { preconnectOrigin, warmHttpCache } from './httpWarm'
+import { supportsRuffleWasmExtensions } from './rufflePerformance'
 
 /**
  * 这台设备上「指针停在按钮上」和「点击」之间是否真的有提前量。
@@ -40,13 +41,53 @@ function prewarmJ2me() {
   for (const url of j2meWarmTargets(J2ME_PATH)) warmHttpCache(url)
 }
 
-export function prewarmRuntime(runtime: RuntimeId | undefined, core?: string | null) {
+interface RuffleBootstrapManifest {
+  bootstrap?: {
+    modern?: string[]
+    fallback?: string[]
+  }
+}
+
+let ruffleCoreWarmStarted = false
+
+/** 流量节省模式和 2G 网络不为一次悬停预拉 14 MB；真正点击后仍由 Ruffle 正常下载。 */
+function allowsLargeHoverPrewarm(): boolean {
+  const connection = (navigator as Navigator & {
+    connection?: { saveData?: boolean; effectiveType?: string }
+  }).connection
+  return !connection?.saveData && connection?.effectiveType !== 'slow-2g' && connection?.effectiveType !== '2g'
+}
+
+async function prewarmRuffleCore() {
+  if (ruffleCoreWarmStarted || !allowsLargeHoverPrewarm()) return
+  ruffleCoreWarmStarted = true
+  try {
+    const response = await fetch(`${RUFFLE_PATH}bootstrap.json`, {
+      cache: 'force-cache',
+      credentials: 'same-origin',
+    })
+    if (!response.ok) return
+    const manifest = await response.json() as RuffleBootstrapManifest
+    const variant = supportsRuffleWasmExtensions() ? manifest.bootstrap?.modern : manifest.bootstrap?.fallback
+    if (!Array.isArray(variant) || variant.length !== 2) return
+    // 文件名来自构建时校验过的同目录清单；这里再挡路径字符，避免外部 CDN 的畸形清单。
+    for (const name of variant) {
+      if (/^[\w.-]+$/.test(name)) warmHttpCache(`${RUFFLE_PATH}${name}`)
+    }
+  } catch {
+    // 预热失败不能影响点击后的正式启动；ruffle.js 仍会走自己的兼容选择与错误处理。
+  }
+}
+
+export function prewarmRuntime(runtime: RuntimeId | undefined, core?: string | null, aggressive = false) {
   if (runtime === 'j2me') {
     prewarmJ2me()
     return
   }
   if (runtime === 'ruffle') {
     warmHttpCache(`${RUFFLE_PATH}ruffle.js`)
+    // 只有真实指针悬停才预拉大核心；focus 在触屏上与点击同时发生，抢拉会有重复下载风险。
+    if (aggressive) void prewarmRuffleCore()
     return
   }
   if (runtime !== 'emulatorjs') return

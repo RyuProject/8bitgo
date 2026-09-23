@@ -4,7 +4,13 @@
 # 约定（与已部署结构一致）：
 #   - 中文入口 PvZ/cn/ 用 R2 上的中文 main.pak（已部署在 properties/main.pak）。
 #   - 英文入口 PvZ/en/ 用英文 main.pak，单独放在 properties/en-main.pak。
-#   - reanim/ 是动画资源，中英文通用，两份清单共用同一批，只上传一份到 PvZ/reanim/。
+#   - reanim/ 是动画资源，中英文通用，两份清单共用同一批，只上传一份。
+#
+# ⚠️ 目标路径 = 页面里的 PVZ_DATA_BASE + 清单里的 r2，不是「/PvZ/ 前缀」这么简单。
+#    当前 DATA_BASE = https://html5.8bitgo.com/PvZ/properties/（注意末尾的 properties/），
+#    所以 reanim/ 要落在 PvZ/properties/reanim/ 下 —— 早期版本这里写的是 PvZ/reanim/，
+#    与页面实际请求差一层，结果 2117 个动画文件全部 404、游戏根本起不来（2026-09-23 事故）。
+#    上传完务必跑 `npm run pvz:check-assets` 自检一遍。
 #
 # 用法：
 #   ./scripts/pvz-pack-data.sh <英文 GOTY 资源目录>
@@ -37,18 +43,19 @@ echo "清单已写入："
 echo "  $CN_MANIFEST  (main.pak -> properties/main.pak，中文)"
 echo "  $EN_MANIFEST  (main.pak -> properties/en-main.pak，英文)"
 echo
-echo "下一步：把以下数据上传到 html5.8bitgo.com 的 /PvZ/ 前缀下（与引擎页同源，无需 CORS）："
-echo "  - 中文 main.pak            ->  PvZ/properties/main.pak   （你 R2 上已有的那份）"
+echo "下一步：把以下数据上传到 html5.8bitgo.com（与引擎页同源，无需 CORS）。"
+echo "⚠️ 目标路径 = 页面 PVZ_DATA_BASE + 清单 r2；当前 DATA_BASE 是 .../PvZ/properties/："
 echo "  - $SRC/main.pak (英文)     ->  PvZ/properties/en-main.pak"
-echo "  - $SRC/reanim/ 整个目录     ->  PvZ/reanim/              （中英文共用，只传一份）"
-echo "  - $CN_MANIFEST             ->  PvZ/cn/pvz-manifest.json"
-echo "  - $EN_MANIFEST             ->  PvZ/en/pvz-manifest.json"
+echo "  - $SRC/reanim/ 整个目录     ->  PvZ/properties/reanim/   （中英文共用，只传一份）"
+echo "  - 中文 main.pak             ->  PvZ/properties/main.pak  （R2 上已有的那份，别覆盖成英文的）"
+echo
+echo "清单（$CN_MANIFEST / $EN_MANIFEST）不用上传：页面从主站 8bitgo.com/web/PvZ/<lang>/"
+echo "取它，随仓库进 public/web/PvZ/ 并由 npm run build 带进 dist/client 即可。"
 echo
 echo "上传示例（rclone，bucket 名自取；aws s3 同理）："
 echo "  rclone copy \"$SRC/main.pak\"        r2:<bucket>/PvZ/properties/en-main.pak"
-echo "  rclone copy \"$SRC/reanim\"          r2:<bucket>/PvZ/reanim"
-echo "  rclone copy \"$CN_MANIFEST\"         r2:<bucket>/PvZ/cn/pvz-manifest.json"
-echo "  rclone copy \"$EN_MANIFEST\"         r2:<bucket>/PvZ/en/pvz-manifest.json"
+echo "  rclone copy \"$SRC/reanim\"          r2:<bucket>/PvZ/properties/reanim"
 echo
-echo "引擎页与入口页（public/web/PvZ/ 下的 index.html、cn/、en/、pvz-portable.*、jszip.min.js）"
-echo "也一并上传到 PvZ/ 前缀即可：rclone copy \"$ROOT/public/web/PvZ\" r2:<bucket>/PvZ"
+echo "上传后自检（发 HEAD 抽查，不下载字节）："
+echo "  npm run pvz:check-assets              # 两个语言都查"
+echo "  npm run pvz:check-assets -- --all     # 全量，慢但准"

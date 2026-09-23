@@ -39,6 +39,12 @@ test('versioned URL gets the long-lived policy, unversioned does not', async () 
   const plain=await worker.fetch(req('/covers/g.webp'),covers)
   assert.equal(plain.headers.get('Cache-Control'),'public, max-age=300, s-maxage=600, must-revalidate')
 })
+test('content-addressed CS16 Zstd shards are immutable and use the Zstd MIME type', async () => {
+  const e=environment(); const hash='a'.repeat(64); const key=`web/cs16/zstd-v1/chunks/${hash}.zst`; e.ROMS.seed(key,'frame')
+  const r=await worker.fetch(req(`/${key}?v=${hash}`),e)
+  assert.equal(r.headers.get('Cache-Control'),'public, max-age=31536000, s-maxage=31536000, immutable')
+  assert.equal(r.headers.get('Content-Type'),'application/zstd')
+})
 test('cache policy is overridable per class without a code change', async () => {
   const e=environment(); e.ROMS.seed('a.zip','abcdef')
   e.OBJECT_CACHE_CONTROL='public, max-age=60'; e.VERSIONED_CACHE_CONTROL='public, max-age=600'

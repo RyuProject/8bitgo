@@ -40,7 +40,6 @@ import type { NetplaySession } from './adapters/emulatorjs'
 import type { CloudSession, CloudState } from './adapters/cloudgame'
 import { p2pPlayable, cloudPlayable } from './paths'
 import { prewarmRuntime } from './prewarm'
-import { readPerformanceProfile, savePerformanceProfile, type PerformanceProfile } from './performanceProfile'
 import { canRestartInPlace } from './sessionRestart'
 import { confirmAndReplayAnchorNavigation } from './leaveNavigation'
 import { AdSenseSlot } from '@/components/ads/AdSenseSlot'
@@ -62,6 +61,7 @@ import { FEATURES } from '@/config/features'
 import { desktopScreenAspect, liveStageStyle, mobileScreenAspect, stableLiveGeometry, stageHeightCap } from './screenAspect'
 import { recordPlay } from '@/services/store'
 import { recordRecent } from '@/services/auth'
+import { openAuthModal } from '@/services/authModal'
 import { onMatchRequest } from '@/services/matchRequest'
 import {
   claimRoom,
@@ -586,7 +586,6 @@ export function EmulatorPlayer({
    */
   const onlineByDefault = onlineOk && joining
   const [mode, setMode] = useState<Mode>(onlineByDefault ? 'online' : 'local')
-  const [performanceProfile, setPerformanceProfile] = useState<PerformanceProfile>(readPerformanceProfile)
   const online = mode === 'online' && onlineOk
 
   const [roomId, setRoomId] = useState<string | null>(null)
@@ -1342,8 +1341,6 @@ export function EmulatorPlayer({
   arcadeButtonsRef.current = arcadeButtons
   const flashControlsRef = useRef(flashControls)
   flashControlsRef.current = flashControls
-  const performanceProfileRef = useRef(performanceProfile)
-  performanceProfileRef.current = performanceProfile
   const biosUrlRef = useRef(biosUrl)
   biosUrlRef.current = biosUrl
   /**
@@ -1620,7 +1617,6 @@ export function EmulatorPlayer({
       arcadeDip: arcadeDipRef.current,
       arcadeButtons: arcadeButtonsRef.current,
       flashControls: flashControlsRef.current,
-      performanceProfile: performanceProfileRef.current,
       dosExecutable: dosExecutableRef.current,
       dosStartupCommands: dosStartupCommandsRef.current,
       dosBackend: dosBackendRef.current,
@@ -1664,6 +1660,19 @@ export function EmulatorPlayer({
       onFlashSaveSession: (expiresAt) => {
         if (!isCurrent()) return
         setFlashSaveExpiry(expiresAt)
+      },
+      /**
+       * 桥只在游客真正点了「在线存档 / 登录」时上报，不在开局时拦路。
+       * 登录令牌只能在启动 SWF 时通过 FlashVars 注入，所以还要明说「重新进入」；
+       * 原地偷偷重开会丢掉玩家当前本地进度，不能替他做这个决定。
+       */
+      onFlashSaveLoginRequired: () => {
+        if (!isCurrent()) return
+        setNotice(t.player.flashSaveLoginRequired)
+        // 浏览器全屏只会渲染全屏元素的子树，全局登录框留在页面根部时会被完全遮住。
+        // 先请求退出全屏再打开弹窗；即使浏览器拒绝退出，也不能吞掉玩家的登录意图。
+        if (document.fullscreenElement) void document.exitFullscreen().catch(() => {})
+        openAuthModal()
       },
       onProgress: (next) => {
         if (!isCurrent()) return
@@ -1740,9 +1749,17 @@ export function EmulatorPlayer({
       },
       onError: (message: string) => {
         if (!isCurrent()) return
+        // 信令层偶尔只给空错误；直播又不会自动重挂，空串会让错误状态只剩黑框。
+        // 同时把具体原因留在本机控制台，光有 failedMs 无法区分「房间已散」和「网络没通」。
+        const failureReason = session.runtime.id === 'liveview' ? message.trim() || t.runtime.liveTimeout : message
         if (!ready) {
           const elapsed = Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - mountedAt)
-          console.warn('[8bitgo/runtime-metric]', { runtime: session.runtime.id, platform: session.platform, failedMs: elapsed })
+          console.warn('[8bitgo/runtime-metric]', {
+            runtime: session.runtime.id,
+            platform: session.platform,
+            failedMs: elapsed,
+            ...(session.runtime.id === 'liveview' ? { reason: failureReason } : {}),
+          })
         }
         const cloud = session.cloud
 
@@ -1797,7 +1814,7 @@ export function EmulatorPlayer({
           return
         }
 
-        setError(message)
+        setError(failureReason)
         setStatus('error')
       },
     })
@@ -3335,7 +3352,7 @@ export function EmulatorPlayer({
                     size="lg"
                     disabled={(!online && romChecking) || joinBlocked}
                     onPointerEnter={() => {
-                      if (!online) prewarmRuntime(pageRuntime?.id, core ?? platform.core)
+                      if (!online) prewarmRuntime(pageRuntime?.id, core ?? platform.core, true)
                     }}
                     onFocus={() => {
                       if (!online) prewarmRuntime(pageRuntime?.id, core ?? platform.core)
@@ -3361,24 +3378,6 @@ export function EmulatorPlayer({
                               : t.player.start
                             : t.player.pickRom}
                   </Button>
-                  {!online && pageRuntime?.id === 'ruffle' && (
-                    <label className="flex items-center gap-2 text-[11px] text-white/75">
-                      <span>{t.player.performanceLabel}</span>
-                      <select
-                        className="rounded-lg border border-white/25 bg-black/45 px-2 py-1 text-white outline-none focus:border-brand"
-                        value={performanceProfile}
-                        onChange={(e) => {
-                          const next = e.target.value as PerformanceProfile
-                          setPerformanceProfile(next)
-                          savePerformanceProfile(next)
-                        }}
-                      >
-                        <option value="quality">{t.player.performanceQuality}</option>
-                        <option value="balanced">{t.player.performanceBalanced}</option>
-                        <option value="performance">{t.player.performanceFast}</option>
-                      </select>
-                    </label>
-                  )}
                   <p className="max-w-md text-[11px] leading-relaxed text-white/70 sm:text-xs">
                     {joining && online ? (
                       <>

@@ -208,6 +208,9 @@ export function encodeKey(key: string): string {
  *   3. 其余 —— 当成对象存储的 key，拼上公开访问地址；没配地址时返回空串
  */
 export function romUrlForKey(key: string, base = getRomBase()): string {
+  // 外链封面没有 -96 缩略图，coverThumbKey 会返回空串。空串若继续拼根地址，
+  // 玩家页背景图就会请求 https://assets.8bitgo.com/，而不是退回原图。
+  if (!key.trim()) return ''
   if (/^https?:\/\//i.test(key)) return key
   if (key.startsWith('/')) return key
   // 封面走独立的 image 桶（image.8bitgo.com），和 ROM 主桶隔离缓存命名空间，

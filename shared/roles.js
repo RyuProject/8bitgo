@@ -5,15 +5,15 @@
  * 两边读同一张表才不会出现「界面上有这个按钮，点了 403」或者反过来的情况。
  *
  *   admin      管理员：全站，包括用户、角色、ROM 存储和数据导入
- *   volunteer  志愿者：内容协管 —— 游戏资料、文章、开发商、评论审核
+ *   volunteer  志愿者：只管自己的独立游戏库和文章库
  *   user       玩家：后台一概进不去（这是注册时的默认值）
  *
  * ── 为什么志愿者到「内容」为止 ──────────────────────────────
- * 志愿者是来帮忙整理游戏库和看评论的，不是来管人的。所以这条线画在
- * 「改的是内容，还是改的是人和站本身」：
+ * 志愿者是来准备内容的，不是直接改主库或审核别人的内容。
+ * 游戏和文章都落到以账号 id 分区的独立库；删除、编辑、「上架 / 发布」都只影响自己。
  *
- *   能改内容     → 改错了看得见、也改得回来（游戏资料、文章、开发商、评论可见性）
- *   不能碰人和站 → 封号、删号、改别人的角色、ROM 存储、批量导入、数据导出，
+ *   能改的       → 自己的游戏库、自己的文章库
+ *   不能碰的     → 主库、其他志愿者的库、开发商、友情链接、应用、评论、用户、ROM 存储、导入导出，
  *                  这些要么不可逆，要么一步就能让全站出问题
  *
  * 想调整分工，改下面那张 ROLE_ABILITIES 就行 —— 服务端的 requireAbility 和
@@ -33,7 +33,9 @@ export const ROLE_LABELS = {
 /**
  * 权限点。名字按「对象:动作」写，加新的时候优先复用已有的对象名。
  *
- *   content:edit    游戏、文章、开发商的增删改
+ *   games:edit      游戏库增删改（志愿者落自己的独立库）
+ *   posts:edit      文章库增删改（志愿者落自己的独立库）
+ *   content:edit    主库与其他站点内容管理，只给管理员
  *   comments:review 评论审核（改可见性、删评论）
  *   users:manage    用户列表、封禁 / 解封、删号
  *   users:role      改别人的角色
@@ -52,6 +54,8 @@ export const ROLE_LABELS = {
  * 想放给运营，改下面 ROLE_ABILITIES 里 volunteer 那一行就行，别去改路由。
  */
 export const ABILITIES = [
+  'games:edit',
+  'posts:edit',
   'content:edit',
   'comments:review',
   'users:manage',
@@ -64,7 +68,7 @@ export const ABILITIES = [
 /** 角色 -> 权限点。admin 直接引用 ABILITIES，以后加权限点它自动跟着长 */
 export const ROLE_ABILITIES = {
   user: [],
-  volunteer: ['content:edit', 'comments:review'],
+  volunteer: ['games:edit', 'posts:edit'],
   admin: ABILITIES,
 }
 
