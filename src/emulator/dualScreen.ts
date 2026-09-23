@@ -8,12 +8,12 @@
  * 多黑边、画面大小不变 —— 于是 2:3 的画面放进 16:9 的框里，**能用的宽度只有
  * 高度的三分之二**，一块 960×540 的播放器里画面只有 360×540，两侧各空 300px。
  *
- * melonDS 自己是支持换布局的（`melonds_screen_layout`，八种取值），换成
- * `Left/Right` 两块屏并排就是 512×192（8:3，横的），放进同一个 16:9 的框里
+ * melonDS DS 自己支持换布局（`melonds_screen_layout1`，17 种取值），换成
+ * `left-right` 两块屏并排就是 512×192（8:3，横的），放进同一个 16:9 的框里
  * 宽度占满、每块屏 480×360 —— 比上下叠那一档每块屏（360×270）线性大三分之一，
  * 面积大近八成。**这是桌面端 NDS 最直接的一笔收益，而且不花任何额外算力。**
  *
- * 反过来手机竖屏里容器是竖的，`Top/Bottom` 才是对的 —— 所以默认值必须按容器
+ * 反过来手机竖屏里容器是竖的，`top-bottom` 才是对的 —— 所以默认值必须按容器
  * 方向定，不能全站一个值。
  *
  * ── 为什么不查表写死取值 ────────────────────────────────────
@@ -28,20 +28,19 @@
  * 我们只对取值做**形态归类**（上下叠 / 并排 / 单屏 / 混合），归不了类的按未知处理
  * —— 未知不影响能不能切，只影响我们要不要跟着改容器比例。
  *
- * 取证（2026-09-07，把 public/emulatorjs/cores/melonds-wasm.data 那个 7z 解开，
- * 直接读 wasm 数据段里的 retro_core_option_v2_definition 数组）：
+ * 取证（2026-09-23，melonDS DS v1.3.1 的
+ * `src/libretro/config/definitions/screen.hpp`）：
  *
- *   melonds_screen_layout  默认 Top/Bottom
- *     Top/Bottom | Bottom/Top | Left/Right | Right/Left | Top Only | Bottom Only
- *     | Hybrid Top | Hybrid Bottom
- *   melonds_hybrid_small_screen  默认 Bottom（Bottom | Top | Duplicate）
- *   melonds_touch_mode           默认 Mouse（Mouse | Touch | Joystick | disabled）
- *                                ⚠️ 这个默认值是**错的那一档**，见下面 findTouchModeOption
+ *   melonds_screen_layout1  默认 top-bottom
+ *     top-bottom | bottom-top | left-right | right-left | top | bottom
+ *     | largescreen-* | flipped-largescreen-* | hybrid-* | flipped-hybrid-*
+ *     | rotate-left | rotate-right | rotate-180
+ *   melonds_hybrid_small_screen  默认 both（one | both）
+ *   melonds_touch_mode           默认 auto（joystick | touch | auto）
  *   melonds_screen_gap           默认 0（0…126）
  *
- * 同时确认了这个构建里**没有** threaded renderer / JIT / OpenGL 渲染器这三类选项，
- * 也没有 `melonds-thread-wasm.data` —— 所以「开多线程给 NDS 提速」在当前核心上
- * 不存在这条路，能减的只有像素（单屏布局）和我们自己那侧的开销。别再去找那个开关。
+ * `rotate-left/right` 是核心原生旋转：会调 libretro 的 screen rotation，且核心自己
+ * 同步触控矩阵。《节奏天国》要用它，不要给 canvas 套 CSS rotate。
  */
 import type { PlatformId } from '@/types'
 
@@ -111,15 +110,22 @@ export type LayoutShape = 'stack' | 'side' | 'single' | 'hybrid' | 'unknown'
   代价是可控的：唯一可能被多认进来的，就是字面写着「screen layout」的那一项，
   而在文本兜底那条路上它**正是**引擎自己用的 key。
 */
-const LAYOUT_KEY = /screen[\s_-]?s?[\s_-]?layout/i
+/*
+  必须锚定到结尾：melonDS DS 在 layout1 前面还有
+  `melonds_number_of_screen_layouts`，宽松的 /screen.*layout/ 会把它的 1–8 误当成布局值，
+  界面看似正常但点任何一档都不会换屏。
+*/
+const LAYOUT_KEY = /(?:^|[_-])screens?[\s_-]?layout\d*$/i
 
 /** 值里出现这些词就认得出形态。顺序有讲究：Only 要在 Top / Bottom 之前判 */
 export function layoutShape(value: string): LayoutShape {
   const v = String(value || '').trim().toLowerCase()
   if (!v) return 'unknown'
-  if (v.includes('hybrid')) return 'hybrid'
-  // 「只显示一块屏」：melonDS 写 `Top Only` / `Bottom Only`
-  if (/\bonly\b/.test(v)) return 'single'
+  if (v.includes('hybrid') || v.includes('largescreen')) return 'hybrid'
+  // 新核心用 `top` / `bottom`，旧 melonDS / DeSmuME 用 `Top Only` / `Bottom Only`。
+  if (v === 'top' || v === 'bottom' || /\bonly\b/.test(v)) return 'single'
+  // 旋转布局仍包含两块屏，真实几何交给切换后的 canvas 尺寸。
+  if (/^rotate-(left|right|180)$/.test(v)) return 'stack'
   // 并排：`Left/Right` / `Right/Left`
   if (v.includes('left') && v.includes('right')) return 'side'
   // 上下叠：`Top/Bottom` / `Bottom/Top`
@@ -146,6 +152,7 @@ export function layoutShape(value: string): LayoutShape {
 export function showsTouchScreen(value: string): boolean {
   const v = String(value || '').trim().toLowerCase()
   if (!v) return true
+  if (v === 'top') return false
   // `top only` / `only top` 都拦掉，别赌核心的词序
   return !(/\bonly\b/.test(v) && v.includes('top') && !v.includes('bottom'))
 }
@@ -252,7 +259,7 @@ export const WIDE_RATIO = 1.2
  * 哪一项是「触控模式」。
  *
  * ── 为什么要管这一项 ────────────────────────────────────────
- * melonDS 的 `melonds_touch_mode` **出厂默认是 `Mouse`**，而 libretro 里
+ * 旧 melonDS 的 `melonds_touch_mode` **出厂默认是 `Mouse`**，而 libretro 里
  * `RETRO_DEVICE_MOUSE` 报的是「movement **relative to the last poll**」——
  * **相对位移**。也就是说触控笔有一个玩家看不见的内部位置，鼠标/手指只是在推它，
  * 而不是「按哪儿笔就落哪儿」。`Touch` 才是 `RETRO_DEVICE_POINTER` 那一路：
@@ -281,6 +288,9 @@ export const WIDE_RATIO = 1.2
  * 写死就白改，而且看不出来。
  *
  * ── 作用范围刻意只到 melonDS ────────────────────────────────
+ * melonDS DS 1.3.1 改为 `auto`，但网页端仍主动选 `touch`：它明确对应
+ * Pointer 绝对坐标，避免鼠标和触屏首次输入在 auto 判定上出现模式抖动。
+ *
  * 正则 `/touch[\s_-]?mode/i` 命中 `melonds_touch_mode`，**不**命中 desmume 那一支的
  * `desmume_pointer_type`。这是有意的：desmume 的触控是一整组选项
  * （`desmume_pointer_type` / `desmume_pointer_mouse` / `desmume_mouse_speed` /
@@ -379,9 +389,15 @@ export function preferredLayout(values: string[], wide: boolean): string {
 export function layoutToken(value: string): string {
   const v = String(value || '').trim().toLowerCase()
   if (!v) return ''
+  if (v === 'rotate-left') return 'RotateLeft'
+  if (v === 'rotate-right') return 'RotateRight'
+  if (v === 'rotate-180') return 'Rotate180'
+  if (v.includes('flipped-largescreen')) return v.includes('bottom') ? 'FlippedLargeBottom' : 'FlippedLargeTop'
+  if (v.includes('largescreen')) return v.includes('bottom') ? 'LargeBottom' : 'LargeTop'
+  if (v.includes('flipped-hybrid')) return v.includes('bottom') ? 'FlippedHybridBottom' : 'FlippedHybridTop'
   const shape = layoutShape(v)
   if (shape === 'hybrid') return v.includes('bottom') ? 'HybridBottom' : 'HybridTop'
-  if (shape === 'single') return v.includes('bottom') ? 'BottomOnly' : 'TopOnly'
+  if (shape === 'single') return v === 'bottom' || v.includes('bottom') ? 'BottomOnly' : 'TopOnly'
   if (shape === 'side') return v.indexOf('right') < v.indexOf('left') ? 'SideRight' : 'SideLeft'
   if (shape === 'stack') return v.indexOf('bottom') < v.indexOf('top') ? 'StackBottom' : 'StackTop'
   return ''

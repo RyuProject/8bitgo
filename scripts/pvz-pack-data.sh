@@ -2,8 +2,8 @@
 # 生成 PvZ 网页版（中文 / 英文双入口）的资源清单，并提示如何把数据上传到 R2。
 #
 # 约定（与已部署结构一致）：
-#   - 中文入口 PvZ/cn/ 用 R2 上的中文 main.pak（已部署在 properties/main.pak）。
-#   - 英文入口 PvZ/en/ 用英文 main.pak，单独放在 properties/en-main.pak。
+#   - 页面 DATA_BASE 已经指向 R2 的 PvZ/properties/，所以清单里的 r2 只能写相对它的文件名。
+#   - 中文入口用 main.pak，英文入口用 en-main.pak；两者写进 WASM 后都叫 /main.pak。
 #   - reanim/ 是动画资源，中英文通用，两份清单共用同一批，只上传一份。
 #
 # ⚠️ 目标路径 = 页面里的 PVZ_DATA_BASE + 清单里的 r2，不是「/PvZ/ 前缀」这么简单。
@@ -33,15 +33,15 @@ ROOT="$(cd "$HERE/.." && pwd)"
 CN_MANIFEST="$ROOT/public/web/PvZ/cn/pvz-manifest.json"
 EN_MANIFEST="$ROOT/public/web/PvZ/en/pvz-manifest.json"
 
-# 中文清单：main.pak 指向 R2 上已部署的中文版（properties/main.pak）
-PVZ_MAIN_PAK_R2=properties/main.pak node "$HERE/pvz-web/gen-manifest.mjs" "$SRC" "$CN_MANIFEST"
-# 英文清单：main.pak 指向 properties/en-main.pak（英文版，下面单独上传）
-PVZ_MAIN_PAK_R2=properties/en-main.pak node "$HERE/pvz-web/gen-manifest.mjs" "$SRC" "$EN_MANIFEST"
+# DATA_BASE 已含 /PvZ/properties/。旧脚本再次写 properties/ 会请求到
+# /PvZ/properties/properties/main.pak；这里必须只写相对文件名。
+PVZ_MAIN_PAK_R2=main.pak node "$HERE/pvz-web/gen-manifest.mjs" "$SRC" "$CN_MANIFEST"
+PVZ_MAIN_PAK_R2=en-main.pak node "$HERE/pvz-web/gen-manifest.mjs" "$SRC" "$EN_MANIFEST"
 
 echo
 echo "清单已写入："
-echo "  $CN_MANIFEST  (main.pak -> properties/main.pak，中文)"
-echo "  $EN_MANIFEST  (main.pak -> properties/en-main.pak，英文)"
+echo "  $CN_MANIFEST  (FS main.pak <- R2 main.pak，中文)"
+echo "  $EN_MANIFEST  (FS main.pak <- R2 en-main.pak，英文)"
 echo
 echo "下一步：把以下数据上传到 html5.8bitgo.com（与引擎页同源，无需 CORS）。"
 echo "⚠️ 目标路径 = 页面 PVZ_DATA_BASE + 清单 r2；当前 DATA_BASE 是 .../PvZ/properties/："

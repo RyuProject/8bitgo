@@ -4,7 +4,7 @@
  * 既浪费流量也可能绕过访问时机。fetch 只填 HTTP 缓存，引擎稍后照常走自己的初始化。
  */
 import type { RuntimeId } from './types'
-import { EJS_PATH, J2ME_PATH, RUFFLE_PATH } from './paths'
+import { EJS_PATH, J2ME_PATH, RUFFLE_PATH, emulatorJsCoreFileFor } from './paths'
 import { CHEERPJ_ORIGIN, j2meWarmTargets } from './j2meUrl'
 import { preconnectOrigin, warmHttpCache } from './httpWarm'
 import { supportsRuffleWasmExtensions } from './rufflePerformance'
@@ -92,5 +92,6 @@ export function prewarmRuntime(runtime: RuntimeId | undefined, core?: string | n
   }
   if (runtime !== 'emulatorjs') return
   warmHttpCache(`${EJS_PATH}loader.js`)
-  if (core) warmHttpCache(`${EJS_PATH}cores/${encodeURIComponent(core)}-wasm.data`)
+  // EJS_core 可以写平台别名，但公开目录只存在实际核心名；gb 必须预热 gambatte，不能请求 gb-wasm.data。
+  if (core) warmHttpCache(`${EJS_PATH}cores/${encodeURIComponent(emulatorJsCoreFileFor(core))}-wasm.data`)
 }

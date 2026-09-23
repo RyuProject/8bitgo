@@ -58,6 +58,43 @@ export const JSDOS_PATH: string = asDir(
   `/jsdos/v${JSDOS_VERSION}/`,
 )
 
+/* ---------------- EmulatorJS：平台别名 → 实际核心文件 ---------------- */
+
+/**
+ * EmulatorJS 的 `EJS_core` 接受平台别名，但磁盘上的文件使用真实核心名。
+ * 例如 `gb` 会由引擎解析成 `gambatte`；预热发生在 loader.js 之前，不能直接请求
+ * `gb-wasm.data`，否则每次悬停都会制造一条 404。构建测试会把这张表逐项与自托管引擎核对。
+ */
+const EJS_DEFAULT_CORE_BY_ALIAS: Readonly<Record<string, string>> = Object.freeze({
+  arcade: 'fbneo',
+  gb: 'gambatte',
+  gba: 'mgba',
+  n64: 'mupen64plus_next',
+  // 引擎内建别名仍把 nds 指到停更的 melonds；站点在这一层硬切到自构建新核心。
+  nds: 'melondsds',
+  melonds: 'melondsds',
+  nes: 'fceumm',
+  psx: 'pcsx_rearmed',
+  segaMD: 'genesis_plus_gx',
+  snes: 'snes9x',
+  ws: 'mednafen_wswan',
+})
+
+/** 仅转换站点会用到的平台别名；后台直接选择的具体核心名原样返回。 */
+export function emulatorJsCoreFileFor(core: string): string {
+  return EJS_DEFAULT_CORE_BY_ALIAS[core] ?? core
+}
+
+/**
+ * 游戏表里可能还留着历史值 `nds` / `melonds`。没人使用 NDS 存档迁移，所以本次不做
+ * 双核心兼容期，开局时直接把这两个旧值归一到新核心；DeSmuME 等显式选择不受影响。
+ */
+export function emulatorJsCoreForGame(platform: PlatformId, requested?: string | null): string | undefined {
+  const core = requested || platformMap[platform]?.core
+  if (platform === 'nds' && (core === 'nds' || core === 'melonds')) return 'melondsds'
+  return core ?? undefined
+}
+
 /** FreeJ2ME 资源路径。**没配置就是空** —— 空 = 该引擎 available() 为 false，解析阶段直接跳过 */
 export const J2ME_PATH: string = asDir(import.meta.env.VITE_J2ME_PATH)
 
@@ -94,14 +131,16 @@ const WEBRETRO_PLATFORM_CORES: Partial<Record<PlatformId, string>> = {
 /**
  * 实际交给 webretro 跑的平台。
  *
- * 上面列了九个平台，这里却只放开 NDS —— 不是漏了，是刻意的：
+ * 上面保留了可用核心映射，但当前集合是空的。NDS 硬切 melonDS DS 之前曾在这里放开，
+ * 现在不再参与自动选路。其余平台也不能随手放开：
  * **联机（netplay）是 EmulatorJS 独有的**（房主浏览器跑游戏、画面经 WebRTC 推给访客）。
  * webretro 没有这套东西。把 NES / SNES / GBA 这些平台改判给 webretro，
  * 等于悄无声息地把它们的联机功能关掉。
  *
- * 想再放开某个平台，先确认该平台的联机不重要，再把 id 加进这个集合。
+ * 想放开某个平台，先确认该平台的联机不重要，再把 id 加进这个集合。
  */
-const WEBRETRO_ENABLED = new Set<PlatformId>(['nds'])
+// NDS 已硬切到 EmulatorJS 的 melonDS DS；保留适配器代码，但不再让它参与自动选路。
+const WEBRETRO_ENABLED = new Set<PlatformId>()
 
 export const webretroCoreFor = (platform: PlatformId): string | undefined =>
   WEBRETRO_ENABLED.has(platform) ? WEBRETRO_PLATFORM_CORES[platform] : undefined
@@ -109,6 +148,7 @@ export const webretroCoreFor = (platform: PlatformId): string | undefined =>
 /** 核心名 → 展示名，跟 webretro 的 coreNames 保持一致 */
 export const WEBRETRO_CORE_LABELS: Record<string, string> = {
   melonds: 'melonDS',
+  melondsds: 'melonDS DS',
   mupen64plus_next: 'Mupen64Plus-Next',
   mednafen_psx_hw: 'Beetle PSX HW',
   nestopia: 'Nestopia UE',

@@ -216,9 +216,7 @@ try {
 
   console.log(`✅ 已安装到 public/webretro/ —— ${files} 个文件，${(bytes / 1024 / 1024).toFixed(1)} MB`)
   console.log(`   核心 ${coreList.length} 个：${coreList.join(', ')}`)
-  if (!coreList.includes('melonds')) {
-    console.warn('   ⚠️ 没有 melonds 核心，NDS 跑不了（--cores 里加上 melonds）')
-  }
+  if (coreList.includes('melonds')) console.log('   ℹ️ 旧 melonds 仅作 webretro 手工资源；站点 NDS 已硬切 melonDS DS')
   if (patches.length) console.log(`   已打补丁：${patches.join('；')}`)
   else console.log('   ⚠️ --no-patch：bundle 仍走 jsDelivr，本地 ROM 也用不了')
   console.log('   下一步：.env 里设置 VITE_WEBRETRO_PATH=/webretro/')

@@ -1,0 +1,204 @@
+/*
+  PvZ 浏览器回归：用很小的假资源替代商业素材，只验证本站外壳的加载、缓存降级、存档和退出逻辑。
+*/
+import assert from 'node:assert/strict'
+import { createServer } from 'node:http'
+import { readFile } from 'node:fs/promises'
+import { extname, resolve } from 'node:path'
+import { chromium } from 'playwright'
+import { createHash } from 'node:crypto'
+import { gzipSync } from 'node:zlib'
+
+const root = resolve('public')
+const mime = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.wasm': 'application/wasm',
+}
+
+const server = createServer(async (req, res) => {
+  try {
+    let pathname = new URL(req.url, 'http://127.0.0.1').pathname
+    if (pathname === '/web/PvZ/cn' || pathname === '/web/PvZ/cn/') pathname = '/web/PvZ/cn/index.html'
+    if (pathname === '/web/PvZ/en' || pathname === '/web/PvZ/en/') pathname = '/web/PvZ/en/index.html'
+    const file = resolve(root, '.' + pathname)
+    if (!file.startsWith(root)) throw new Error('bad path')
+    const body = await readFile(file)
+    res.writeHead(200, { 'content-type': mime[extname(file)] || 'application/octet-stream' })
+    res.end(body)
+  } catch {
+    res.writeHead(404)
+    res.end('not found')
+  }
+})
+await new Promise((resolveReady) => server.listen(0, '127.0.0.1', resolveReady))
+const origin = `http://127.0.0.1:${server.address().port}`
+
+const engineStub = (syncFailure = false) => `
+window.__writes = [];
+window.__callMainCount = 0;
+(function () {
+  var dirs = new Set(['/']);
+  var files = Object.create(null);
+  Module.FS = {
+    filesystems: { IDBFS: {} },
+    mkdir: function (path) { if (dirs.has(path)) throw new Error('EEXIST'); dirs.add(path); },
+    stat: function (path) { if (dirs.has(path)) return { mode: 16384 }; if (files[path]) return { mode: 32768 }; throw new Error('ENOENT'); },
+    isDir: function (mode) { return mode === 16384; },
+    mount: function () {},
+    syncfs: function (populate, cb) { setTimeout(function () { cb(${syncFailure ? "new Error('mock IDB failure')" : 'null'}); }, 0); },
+    writeFile: function (path, bytes) { files[path] = new Uint8Array(bytes); window.__writes.push([path, bytes.byteLength]); },
+    readFile: function (path) { return files[path] || new Uint8Array(); },
+    readdir: function () { return ['.', '..']; },
+    unlink: function () {},
+    rmdir: function () {}
+  };
+  Module.callMain = function () { window.__callMainCount++; };
+  setTimeout(function () { Module.onRuntimeInitialized(); }, 0);
+})();
+`
+
+const mockReanimFiles = Array.from({ length: 2000 }, (_, i) => ({ path: `reanim/test-${i}.reanim`, size: 1 }))
+const mockHeader = Buffer.from(JSON.stringify({
+  format: '8bitgo.pvz.gzip-pack.v1',
+  fileCount: mockReanimFiles.length,
+  unpackedBytes: mockReanimFiles.length,
+  files: mockReanimFiles,
+}))
+const mockHeaderLength = Buffer.alloc(4)
+mockHeaderLength.writeUInt32LE(mockHeader.length)
+const mockBundle = gzipSync(Buffer.concat([
+  Buffer.from('8BPVZ1\n'),
+  mockHeaderLength,
+  mockHeader,
+  Buffer.alloc(mockReanimFiles.length, 7),
+]), { level: 9 })
+const digest = (body) => createHash('sha256').update(body).digest('hex')
+const manifest = {
+  format: '8bitgo.pvz.manifest.v2',
+  files: [
+    { r2: 'main.pak', fs: 'main.pak', size: 4, sha256: digest(Buffer.from([1, 2, 3, 4])) },
+    { r2: 'properties/default.xml', fs: 'properties/default.xml', size: 4, sha256: digest(Buffer.from([1, 2, 3, 4])) },
+  ],
+  bundles: [{
+    r2: 'packs/mock.pvzpack.gz',
+    fs: '@bundle/reanim',
+    format: '8bitgo.pvz.gzip-pack.v1',
+    size: mockBundle.byteLength,
+    sha256: digest(mockBundle),
+    fileCount: mockReanimFiles.length,
+    unpackedBytes: mockReanimFiles.length,
+  }],
+}
+
+async function makePage(browser, options = {}) {
+  const context = await browser.newContext()
+  if (options.idbOpenThrows) {
+    await context.addInitScript(() => {
+      indexedDB.open = function () { throw new Error('mock quota/private mode'); }
+    })
+  }
+  const page = await context.newPage()
+  const pageErrors = []
+  page.on('pageerror', (error) => pageErrors.push(error.message))
+  // 清单 URL 带发布代次，测试拦截也要覆盖查询串，避免把缓存失效策略误判成启动故障。
+  await page.route('**/web/PvZ/cn/pvz-manifest.json*', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify(manifest),
+  }))
+  await page.route('**/web/PvZ/pvz-portable.js', (route) => route.fulfill({
+    status: 200,
+    contentType: 'text/javascript',
+    body: engineStub(options.syncFailure),
+  }))
+  await page.route('**/web/PvZ/pvz-portable.wasm', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/wasm',
+    body: Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]),
+  }))
+  await page.route('https://html5.8bitgo.com/**', (route) => {
+    const path = new URL(route.request().url()).pathname
+    if (options.missingReanim && path.includes('/packs/')) {
+      return route.fulfill({ status: 404, headers: { 'access-control-allow-origin': '*' }, body: 'missing' })
+    }
+    if (path.includes('/packs/')) {
+      return route.fulfill({
+        status: 200,
+        headers: { 'content-type': 'application/gzip', 'content-length': String(mockBundle.byteLength), 'access-control-allow-origin': '*' },
+        body: mockBundle,
+      })
+    }
+    return route.fulfill({
+      status: 200,
+      headers: { 'content-type': 'application/octet-stream', 'content-length': '4', 'access-control-allow-origin': '*' },
+      body: Buffer.from([1, 2, 3, 4]),
+    })
+  })
+  return { context, page, pageErrors }
+}
+
+const browser = await chromium.launch({ headless: true })
+try {
+  {
+    const { context, page, pageErrors } = await makePage(browser)
+    await page.goto(origin + '/web/PvZ/cn', { waitUntil: 'domcontentloaded' })
+    await page.waitForFunction(() => document.body.classList.contains('game-mode'))
+    assert.equal(await page.evaluate(() => window.__callMainCount), 1)
+    const writes = await page.evaluate(() => window.__writes.map((item) => item[0]))
+    assert.equal(writes.length, 2002)
+    assert.ok(writes.includes('/main.pak'))
+    assert.ok(writes.includes('/properties/default.xml'))
+    assert.ok(writes.includes('/reanim/test-1999.reanim'))
+    assert.equal(await page.evaluate(() => normalizeSaveImportPath('../escape.dat')), '')
+    assert.equal(await page.evaluate(() => normalizeResourcePath('wrapper/main.pak')), 'main.pak')
+    assert.deepEqual(pageErrors, [])
+    await context.close()
+  }
+
+  {
+    const { context, page, pageErrors } = await makePage(browser, { idbOpenThrows: true })
+    await page.goto(origin + '/web/PvZ/cn', { waitUntil: 'domcontentloaded' })
+    await page.waitForFunction(() => document.body.classList.contains('game-mode'))
+    assert.equal(await page.evaluate(() => window.__callMainCount), 1, 'IndexedDB 缓存失败不应阻止本局启动')
+    assert.deepEqual(pageErrors, [])
+    await context.close()
+  }
+
+  {
+    const { context, page } = await makePage(browser, { missingReanim: true })
+    await page.goto(origin + '/web/PvZ/cn', { waitUntil: 'domcontentloaded' })
+    await page.waitForFunction(() => document.getElementById('loading-drop-zone').textContent.includes('必需资源'))
+    assert.equal(await page.evaluate(() => window.__callMainCount), 0)
+    assert.match(await page.locator('#loading-drop-zone').textContent(), /@bundle\/reanim/)
+    await context.close()
+  }
+
+  {
+    const { context, page } = await makePage(browser, { syncFailure: true })
+    await page.goto(origin + '/web/PvZ/cn', { waitUntil: 'domcontentloaded' })
+    await page.waitForFunction(() => document.getElementById('loading-drop-zone').textContent.includes('mock IDB failure'))
+    assert.equal(await page.evaluate(() => window.__callMainCount), 0, '首次存档读取失败时必须阻止启动，避免覆盖旧存档')
+    await context.close()
+  }
+
+  {
+    const { context, page } = await makePage(browser)
+    await page.goto(origin + '/web/PvZ/cn', { waitUntil: 'domcontentloaded' })
+    await page.waitForFunction(() => document.body.classList.contains('game-mode'))
+    await page.evaluate(() => {
+      window.__pvzStartTs = Date.now() - 9000
+      window.__pvzGuardedReload = () => false
+      window.onGameExit()
+    })
+    await page.waitForFunction(() => document.getElementById('loading-drop-zone').textContent.includes('已停止自动刷新'))
+    assert.equal(new URL(page.url()).pathname, '/web/PvZ/cn')
+    await context.close()
+  }
+
+  console.log('PvZ 浏览器回归通过：正常启动、缓存降级、必需资源、存档保护、刷新守卫均正常')
+} finally {
+  await browser.close()
+  await new Promise((resolveClose) => server.close(resolveClose))
+}

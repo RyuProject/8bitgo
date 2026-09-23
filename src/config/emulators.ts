@@ -27,20 +27,10 @@ export const EXT_RUNTIME_OVERRIDES: Record<string, RuntimeId> = {
   jad: 'j2me',
 
   /*
-    NDS：webretro 那一路的 melonDS。
-
-    ⚠️ 这里原来写的是「比 EmulatorJS 用的 desmume 分支稳」—— **事实错了**：
-    EmulatorJS 的 nds 默认核心一直就是 melonDS（它的核心表是
-    `nds:["melonds","desmume","desmume2015"]`，第一个是默认，`cores/` 里也确实有
-    melonds-*.data）。两条路跑的是同一个核心，webretro 并没有「更稳」这个优势。
-
-    留着这两行的真实理由只剩一个：webretro 是 RetroArch 的完整移植，
-    以后如果要用 EmulatorJS 没有的核心（比如 melonDS-DS），入口在那边。
-    需要自托管（npm run webretro + VITE_WEBRETRO_PATH），没部署时 available() 为 false，
-    这张表自动跳过、NDS 回落 EmulatorJS —— 现在线上走的就是回落这一路。
+    NDS 不再交给 webretro。2026-09-23 已把 melonDS DS 1.3.1 编成 EmulatorJS 的
+    自托管 `melondsds` 核心；这里若还强制 webretro，部署过 webretro 的机器反而会
+    悄悄继续跑旧 melonDS，形成「同一站点两种核心」的灰度事故。
   */
-  nds: 'webretro',
-  srl: 'webretro',
 
   // DOS：js-dos（DOSBox 浏览器移植）比 EmulatorJS 的 dosbox_pure 核心启动快、兼容性好。
   // .zip / .exe / .com 没写在这里 —— 那几个扩展名别的平台也在用，
@@ -70,14 +60,10 @@ export const EXT_RUNTIME_OVERRIDES: Record<string, RuntimeId> = {
  * 所以默认留 pcsx_rearmed（保证能跑起来），个别有画面问题、或者想要高清的游戏
  * 再单独换成 mednafen_psx_hw。
  *
- * NDS 是第三个：melonDS 准确度和兼容性都明显好过 desmume 那一支，所以它是默认；
- * 但它在网页上有一处硬短板 —— **一个降档手段都没有**（2026-09-07 把
- * public/emulatorjs/cores/melonds-wasm.data 解包读过核心选项表，一共 14 项：
- * 没有 frameskip、没有内部分辨率、没有 JIT、没有线程渲染器。JIT 在 wasm 里
- * 架构上就不可能；线程渲染器只在 `-thread` 变体里有，那个要 SharedArrayBuffer）。
- * desmume 那一支恰好有 `desmume_frameskip`（0–9）和 `desmume_internal_resolution`。
- * 所以这两个的定位是**按游戏兜底**：哪款 melonDS 跑不对或跑不动，单独给它换 ——
- * **不是全站提速**，全站换过去是拿准确度换帧率，得不偿失。
+ * NDS 是第三个：默认已经硬切到 melonDS DS 1.3.1（`melondsds`）。它是继续维护的
+ * 新核心，布局、触控和兼容性都比旧 `melonds` 完整；旧核心不再出现在下拉或资源目录。
+ * 站点普通详情页没有 COOP/COEP，故自构建的是兼容所有页面的非 pthread 软件渲染版。
+ * DeSmuME 两档仍保留作逐游戏兜底：某款游戏在新核心上跑不动时才单独切换。
  */
 export const CORE_OPTIONS: Record<string, Array<{ id: string; label: string }>> = {
   arcade: [
@@ -96,7 +82,7 @@ export const CORE_OPTIONS: Record<string, Array<{ id: string; label: string }>> 
     { id: 'mednafen_psx_hw', label: 'Beetle PSX HW（更准、可高清，吃性能）' },
   ],
   nds: [
-    { id: 'nds', label: 'melonDS（默认，最准，但没有降档手段）' },
+    { id: 'melondsds', label: 'melonDS DS 1.3.1（默认，持续维护）' },
     { id: 'desmume', label: 'DeSmuME（有帧跳 / 可调内部分辨率，跑不动时换它）' },
     { id: 'desmume2015', label: 'DeSmuME 2015（更老更轻，弱机兜底）' },
   ],
@@ -110,7 +96,12 @@ export function coreOptionsFor(platform: string): Array<{ id: string; label: str
 /**
  * 自构建核心：引擎别名表里没有、由 scripts/build-*.mjs 现编并丢进
  * public/emulatorjs/cores/ 的核心（当前只有 mame-current，给 IGS027A（m027）这类 IGS 新版驱动用）。
- * test:ejs-cores 对它们跳过「引擎认识」校验，文件缺失时只警告、不卡整条构建——
- * 否则还没编核心就会把所有部署都拦下来。
+ * test:ejs-cores 对它们跳过「引擎内建别名表」校验，改查实际产物。
+ * 默认核心在 REQUIRED_SELF_BUILT_CORES 里，缺失会阻断构建；只有可选核心可仅警告。
  */
-export const SELF_BUILT_CORES = new Set<string>(['mame-current'])
+export const MELONDSDS_VERSION = '1.3.1'
+
+export const SELF_BUILT_CORES = new Set<string>(['mame-current', 'melondsds'])
+
+/** 默认核心缺失必须阻断构建；可选核心（mame-current）缺失仍只提示。 */
+export const REQUIRED_SELF_BUILT_CORES = new Set<string>(['melondsds'])

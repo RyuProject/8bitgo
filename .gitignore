@@ -131,6 +131,9 @@ public/web/cs15/packs
 # 生成包上传 R2，不随 git 或应用服务器发布；浏览器生产环境直接读 assets.8bitgo.com。
 public/web/cs16/packs
 
+# PvZ 的 reanim/ 会打成约 50MB 的 gzip 流式包上传 R2。包本身不进 git，清单与加载器进 git。
+.pvz-data/
+
 # Cloudflare 源站证书与私钥（Authenticated Origin Pulls 的客户端证书）
 # 2026-09-06 被 GitGuardian 抓到：origin.key 从 8/26 起就在跟踪列表里，
 # 随当天的 push 暴露。文件留在磁盘上（nginx 还要用），但永远不进 git。

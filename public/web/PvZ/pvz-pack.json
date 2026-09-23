@@ -1,0 +1,10 @@
+{
+  "r2": "packs/reanim-9c99cbd1c1aa5510.pvzpack.gz",
+  "fs": "@bundle/reanim",
+  "format": "8bitgo.pvz.gzip-pack.v1",
+  "size": 51115898,
+  "sha256": "9c99cbd1c1aa5510732da2a6aa0361a90f3ce228371744ffeb04bf1e2eb5e888",
+  "fileCount": 2117,
+  "unpackedBytes": 108710710,
+  "localFile": ".pvz-data/reanim-9c99cbd1c1aa5510.pvzpack.gz"
+}

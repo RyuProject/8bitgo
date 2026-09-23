@@ -16,19 +16,21 @@
  * 靠人记得「加下拉选项时别忘了 npm run ejscores」是不行的 —— 已经忘过一次。
  *
  * ── 核心别名表从引擎里现读，不在这儿抄一份 ──────────────────
- * EJS_core 收的可能是**平台别名**（`psx` → pcsx_rearmed、`nds` → melonds、
- * `arcade` → fbneo），也可能是具体核心名（`mednafen_psx_hw`）。这张对应表是
+ * EJS_core 收的可能是**平台别名**（引擎原生 `psx` → pcsx_rearmed、
+ * `nds` → 旧 melonds、`arcade` → fbneo），也可能是具体核心名（`mednafen_psx_hw`）。这张对应表是
  * EmulatorJS 自己的（emulator.min.js 里那个 `const u={atari5200:["a5200"],…}`），
  * 我们**解析那个文件**而不是照抄一份：抄一份就多了一处会悄悄和引擎对不上的地方，
  * 而这个脚本存在的全部意义就是消灭「两处对不上还没人发现」。
  * 引擎是自托管、提交在仓库里的，所以这一步是离线、确定的。
  */
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { CORE_OPTIONS, SELF_BUILT_CORES } from '../src/config/emulators.ts'
+import { CORE_OPTIONS, MELONDSDS_VERSION, REQUIRED_SELF_BUILT_CORES, SELF_BUILT_CORES } from '../src/config/emulators.ts'
 import { platforms } from '../src/data/platforms.ts'
+import { emulatorJsCoreFileFor, emulatorJsCoreForGame, webretroCoreFor } from '../src/emulator/paths.ts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const coresDir = join(root, 'public', 'emulatorjs', 'cores')
@@ -88,7 +90,7 @@ check(`解析出 ${Object.keys(TABLE).length} 个平台别名`, () => {
   assert.ok(Object.keys(TABLE).length >= 20, `只读出 ${Object.keys(TABLE).length} 个，太少了，正则多半没匹配对`)
 })
 check('几个我们真用得上的别名对得上', () => {
-  // 这几条是从 emulator.min.js 里实读到的，不是推测的
+  // 这是引擎内建的历史表；站点在 paths.ts 另行硬切新核心。
   assert.deepEqual(TABLE.nds, ['melonds', 'desmume', 'desmume2015'])
   assert.equal(resolve('nds'), 'melonds')
   assert.equal(resolve('psx'), 'pcsx_rearmed')
@@ -97,6 +99,25 @@ check('几个我们真用得上的别名对得上', () => {
   // 但它本身不是别名，所以原样透传 —— 这正是它能作为街机备选的原因
   assert.equal(resolve('mame2003_plus'), 'mame2003_plus')
   assert.ok(!TABLE.arcade.includes('mame2003_plus'))
+})
+
+check('NDS 的默认值和历史值都硬切 melonDS DS，webretro 不再抢路由', () => {
+  assert.equal(emulatorJsCoreFileFor('nds'), 'melondsds')
+  assert.equal(emulatorJsCoreForGame('nds', 'nds'), 'melondsds')
+  assert.equal(emulatorJsCoreForGame('nds', 'melonds'), 'melondsds')
+  assert.equal(emulatorJsCoreForGame('nds', 'desmume'), 'desmume')
+  assert.equal(webretroCoreFor('nds'), undefined)
+})
+
+check('悬停预热使用真实核心文件名，不会请求平台别名 404', () => {
+  for (const platform of platforms) {
+    if (platform.runtime !== 'emulatorjs' || !platform.core) continue
+    assert.equal(
+      emulatorJsCoreFileFor(platform.core),
+      resolve(platform.core),
+      `${platform.id} 的预热映射与 EmulatorJS 别名表不一致`,
+    )
+  }
 })
 
 console.log('\n二、我们会交给引擎的每一个核心，都得真的发了')
@@ -119,14 +140,18 @@ for (const { id, from } of wanted) {
   const core = resolve(id)
   if (seen.has(`${id}`)) continue
   seen.add(`${id}`)
-  // 自构建核心（如 mame-current）：不在 EmulatorJS 别名表里（设计如此，EJS_core 直接传核心名），
-  // 由 scripts/build-mame-current-core.mjs 现编、产物丢进 public/emulatorjs/cores/。
-  // 没构建时不卡死整条构建，只警告；一旦有游戏选了它却没编，引擎回落 CDN 才会真的失败。
+  // 自构建核心不在 EmulatorJS 别名表里，EJS_core 直接传核心名。
+  // 默认核心 melonDS DS 缺失必须阻断；只有手工选用的 mame-current 可以仅警告。
   if (SELF_BUILT_CORES.has(id)) {
     const haveJs = existsSync(join(coresDir, `${core}-wasm.data`))
     const haveReport = existsSync(join(coresDir, 'reports', `${core}.json`))
     if (haveJs && haveReport) console.log(`  ✅ ${id}（自构建核心，已就位）`)
-    else {
+    else if (REQUIRED_SELF_BUILT_CORES.has(id)) {
+      check(`${id}（必需自构建核心）`, () => {
+        const missing = [!haveJs && `${core}-wasm.data`, !haveReport && `reports/${core}.json`].filter(Boolean).join('、')
+        assert.fail(`缺 ${missing}；运行 npm run build:melondsds，否则全部 NDS 都会开局失败`)
+      })
+    } else {
       const missing = [!haveJs && `${core}-wasm.data`, !haveReport && `reports/${core}.json`].filter(Boolean).join('、')
       console.warn(`  ⚠️  ${id} 是自构建核心，尚未构建：缺 ${missing}。用 scripts/build-mame-current-core.mjs 构建后放到 public/emulatorjs/cores/，否则选它的游戏会回落 CDN、初始化失败。`)
     }
@@ -157,6 +182,21 @@ for (const { id, from } of wanted) {
     )
   })
 }
+
+check(`melonDS DS 构建报告与代码锁定的 ${MELONDSDS_VERSION} 一致`, () => {
+  const report = JSON.parse(readFileSync(join(coresDir, 'reports', 'melondsds.json'), 'utf8'))
+  assert.equal(report.core, 'melondsds')
+  assert.equal(report.upstreamVersion, MELONDSDS_VERSION)
+  assert.match(report.upstreamCommit, /^[0-9a-f]{40}$/)
+  const binary = readFileSync(join(coresDir, 'melondsds-wasm.data'))
+  assert.equal(createHash('sha256').update(binary).digest('hex'), report.sha256, '核心二进制与构建报告不是同一批')
+})
+
+check('硬切已移除旧 melonDS 产物，不留双跑窗口', () => {
+  for (const relative of ['melonds-wasm.data', 'melonds-legacy-wasm.data', 'reports/melonds.json']) {
+    assert.equal(existsSync(join(coresDir, relative)), false, `${relative} 仍在发布目录`)
+  }
+})
 
 console.log('\n三、下拉的键必须是真的平台 id')
 

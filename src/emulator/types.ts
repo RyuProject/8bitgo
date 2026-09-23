@@ -8,7 +8,7 @@
  *   jsnes       NES (.nes)
  *   J2ME        Java 手机游戏 (.jar) —— 需自托管，见 adapters/j2me.ts
  *   js-dos      DOS 游戏 —— DOSBox 的浏览器移植，见 adapters/jsdos.ts
- *   webretro    任天堂 DS（melonDS）—— RetroArch 的 WASM 移植，需自托管，见 adapters/webretro.ts
+ *   webretro    历史备用的 RetroArch WASM 移植（当前不自动接管任何平台）
  *   Play!       PlayStation 2 —— **实验性**，需自托管，见 adapters/play.ts
  *   Cloud       云端联机：游戏跑在 cloud-game 服务器上，见 adapters/cloudgame.ts
  *
@@ -195,7 +195,7 @@ export interface MountOptions {
  * values 里的字符串原样来自核心，UI 只负责显示和回填，不认识也不解释它们。
  */
 export interface ScreenLayoutState {
-  /** 核心里那一项的 key（如 melonds_screen_layout）。调试用 */
+  /** 核心里那一项的 key（如 melonds_screen_layout1）。调试用 */
   key: string
   /** 核心自报的全部取值，顺序照它给的 */
   values: string[]

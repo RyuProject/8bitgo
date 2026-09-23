@@ -771,10 +771,9 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
               </p>
             ) : form.platform === 'nds' ? (
               <p className="mt-1 text-[11px] text-dim">
-                melonDS 最准，是默认；但它<strong className="text-muted">一个降档手段都没有</strong>（核心里没有帧跳、
-                没有内部分辨率、也没有 JIT——JIT 在网页上架构性地做不到）。
+                melonDS DS 1.3.1 是默认的持续维护核心，布局里自带《节奏天国》需要的左/右旋转。
                 所以只在<strong className="text-muted">这一款画面不对、或者手机上跑不动</strong>时才换成 DeSmuME：
-                它有帧跳和可调分辨率，代价是准确度不如 melonDS。不要为了「提速」全站换过去。
+                它有帧跳和可调分辨率，代价是准确度不如 melonDS DS。旧 melonDS 已下线，不再可选。
               </p>
             ) : form.platform === 'psx' ? (
               <p className="mt-1 text-[11px] text-dim">

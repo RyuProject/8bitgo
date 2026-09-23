@@ -52,10 +52,8 @@ const ifMissing = process.argv.includes('--if-missing')
  * 自构建核心（scripts/build-*.mjs 现编、npm 上没有）不归本脚本管 ——
  * 但下面为了「复制结果干净」会整个删掉 cores/，所以得先抢救出来再放回去。
  *
- * 少了这一步，跑一次 npm run ejscores 就会把辛苦编出来的 mame-current 悄悄删掉：
- * 它不在 @emulatorjs/core-* 里，test:ejs-cores 对它又只是警告、不拦构建，
- * 于是「核心没了」这件事不会有任何一处报错，只会等到某款游戏打开时
- * 回落 CDN、初始化失败才被发现 —— 而那时没人会想到是这次 npm run ejscores 干的。
+ * 少了这一步，跑一次 npm run ejscores 就会把辛苦编出来的核心悄悄删掉。
+ * melonDS DS 是默认核心，test:ejs-cores 会阻断构建；mame-current 是可选核心，仍只警告。
  */
 function preserveSelfBuilt() {
   const kept = []
@@ -118,7 +116,8 @@ const CORES = [
   'mednafen_psx_hw',    // psx 备选：Beetle PSX HW（更准、可高清，吃性能）
   'genesis_plus_gx',    // segaMD
   'mednafen_wswan',     // ws
-  'melonds',            // nds 默认
+  // nds 默认的 melondsds 是自构建核心，由 preserveSelfBuilt() 原样保留；
+  // 停更的旧 melonds 故意不再从 npm 复制回来。
   'desmume',            // nds 备选：有 frameskip 和内部分辨率，melonDS 两样都没有
   'desmume2015',        // nds 备选：更老更轻，弱机兜底
 ]

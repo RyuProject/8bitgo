@@ -136,7 +136,7 @@ export const platforms: Platform[] = [
     manufacturer: 'Nintendo',
     year: 2004,
     runtime: 'emulatorjs',
-    core: 'nds',
+    core: 'melondsds',
     romExtensions: ['.nds', '.srl', '.zip'],
     color: '#4fc3f7',
     icon: '📱',

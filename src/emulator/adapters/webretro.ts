@@ -1,15 +1,15 @@
 /**
  * webretro 运行时：RetroArch 的 WebAssembly 移植（BinBashBanana/webretro，GPL-3.0）。
  *
- * 目前只接管 **任天堂 DS**（melonDS 核心）—— EmulatorJS 用的 desmume 分支对 NDS
- * 兼容性一般，melonDS 明显更稳。其余平台维持现状走 EmulatorJS，原因见下面
- * ENABLED_PLATFORMS 的注释。
+ * 2026-09-23 NDS 已硬切 EmulatorJS 自托管的 melonDS DS 1.3.1，本适配器不再
+ * 自动接管任何平台。代码保留仅供将来接入 EmulatorJS 没有的核心，别再把 NDS
+ * 加回去，否则部署了 webretro 的机器会悄悄继续跑旧 melonDS。
  *
  * 安装：npm run webretro   （拉取到 public/webretro/，仓库自带编译好的 wasm，不需要 emscripten）
  * 启用：.env 设置 VITE_WEBRETRO_PATH=/webretro/
  *
  * 没设 VITE_WEBRETRO_PATH 时 available() 返回 false，解析阶段直接跳过它，
- * NDS 自动退回 EmulatorJS —— 所以「资源还没部署」不会让 NDS 变成不可玩。
+ * 现在 available() 即使为 true 也没有平台会选到它。
  *
  * ── 加载契约（读 webretro 的 assets/base.js 得来，非文档推测）──────────
  *
@@ -302,4 +302,3 @@ function mountRaw(container: HTMLElement, options: MountOptions): RawMount {
     },
   }
 }
-

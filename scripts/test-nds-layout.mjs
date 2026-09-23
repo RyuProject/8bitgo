@@ -9,9 +9,8 @@
  *      这一局**一个能按的东西都没有**，而且没有任何提示
  *   3. 比例取整取错方向 → 画面悄悄缩小，没人会为此报 bug
  *
- * MELONDS_OPTIONS 是**实测**得来的，不是照文档抄的：2026-09-07 把
- * public/emulatorjs/cores/melonds-wasm.data 那个 7z 解开，读 wasm 数据段里的
- * retro_core_option_v2_definition 数组打出来的。改核心版本后值可能变，
+ * MELONDSDS_OPTIONS 是从 melonDS DS v1.3.1 的
+ * `src/libretro/config/definitions/screen.hpp` 实读的。改核心版本后值可能变，
  * 重新取一次证再改这里。
  */
 import assert from 'node:assert/strict'
@@ -42,13 +41,21 @@ const check = (name, fn) => {
   }
 }
 
-/** melonDS 核心真实上报的那一项（EmulatorJS getCoreOptionsJSON 的形状） */
-const LAYOUT_VALUES = ['Top/Bottom', 'Bottom/Top', 'Left/Right', 'Right/Left', 'Top Only', 'Bottom Only', 'Hybrid Top', 'Hybrid Bottom']
-const MELONDS_OPTIONS = {
+/** melonDS DS 1.3.1 真实上报的 value（label 另有英文展示名） */
+const LAYOUT_VALUES = [
+  'top-bottom', 'bottom-top', 'left-right', 'right-left', 'top', 'bottom',
+  'largescreen-top', 'largescreen-bottom',
+  'flipped-largescreen-top', 'flipped-largescreen-bottom',
+  'hybrid-top', 'hybrid-bottom', 'flipped-hybrid-top', 'flipped-hybrid-bottom',
+  'rotate-left', 'rotate-right', 'rotate-180',
+]
+const MELONDSDS_OPTIONS = {
   options: [
-    { key: 'melonds_console_mode', desc: 'Console Mode', values: [{ value: 'DS' }, { value: 'DSi' }], default: 'DS' },
-    { key: 'melonds_touch_mode', desc: 'Touch Mode', values: [{ value: 'Mouse' }, { value: 'Touch' }, { value: 'Joystick' }, { value: 'disabled' }], default: 'Mouse' },
-    { key: 'melonds_screen_layout', desc: 'Screen Layout', values: LAYOUT_VALUES.map((value) => ({ value })), default: 'Top/Bottom' },
+    { key: 'melonds_console_mode', desc: 'Console Mode', values: [{ value: 'ds' }, { value: 'dsi' }], default: 'ds' },
+    { key: 'melonds_touch_mode', desc: 'Touch Mode', values: [{ value: 'joystick' }, { value: 'touch' }, { value: 'auto' }], default: 'auto' },
+    // 真实选项顺序里它在 layout1 前；绝不能把 1–8 当成布局。
+    { key: 'melonds_number_of_screen_layouts', desc: '# of Screen Layouts', values: ['1', '2', '3', '4', '5', '6', '7', '8'], default: '2' },
+    { key: 'melonds_screen_layout1', desc: 'Screen Layout #1', values: LAYOUT_VALUES.map((value) => ({ value })), default: 'top-bottom' },
     { key: 'melonds_screen_gap', desc: 'Screen Gap', values: [{ value: '0' }, { value: '1' }], default: '0' },
     { key: 'melonds_hybrid_small_screen', desc: 'Hybrid Small Screen Mode', values: [{ value: 'Bottom' }, { value: 'Top' }, { value: 'Duplicate' }], default: 'Bottom' },
   ],
@@ -56,16 +63,16 @@ const MELONDS_OPTIONS = {
 
 console.log('一、从核心自报的选项表里认出布局那一项')
 
-check('melonDS 的真实选项表 → 认出 melonds_screen_layout 与八个取值', () => {
-  const opt = findLayoutOption(MELONDS_OPTIONS)
+check('melonDS DS 1.3.1 的真实选项表 → 认出 layout1 与 17 个取值', () => {
+  const opt = findLayoutOption(MELONDSDS_OPTIONS)
   assert.ok(opt, '没认出来')
-  assert.equal(opt.key, 'melonds_screen_layout')
+  assert.equal(opt.key, 'melonds_screen_layout1')
   assert.deepEqual(opt.values, LAYOUT_VALUES)
-  assert.equal(opt.fallback, 'Top/Bottom')
+  assert.equal(opt.fallback, 'top-bottom')
 })
 
 check('裸数组也认（不是每个调用方都包一层 options）', () => {
-  assert.equal(findLayoutOption(MELONDS_OPTIONS.options)?.key, 'melonds_screen_layout')
+  assert.equal(findLayoutOption(MELONDSDS_OPTIONS.options)?.key, 'melonds_screen_layout1')
 })
 
 check('desmume 那一路的 key（screens_layout）也认得出', () => {
@@ -74,7 +81,7 @@ check('desmume 那一路的 key（screens_layout）也认得出', () => {
 })
 
 check('取值只有一个 → 当没有（只有一个选项的选择器没有意义）', () => {
-  assert.equal(findLayoutOption([{ key: 'melonds_screen_layout', values: ['Top/Bottom'] }]), null)
+  assert.equal(findLayoutOption([{ key: 'melonds_screen_layout1', values: ['top-bottom'] }]), null)
 })
 
 check('没有布局项的核心 → null，而不是拿别的项凑', () => {
@@ -171,14 +178,19 @@ check('不是文本 / 没有分号的行一律跳过，不抛', () => {
 console.log('三、形态归类')
 
 const SHAPES = {
-  'Top/Bottom': 'stack',
-  'Bottom/Top': 'stack',
-  'Left/Right': 'side',
-  'Right/Left': 'side',
-  'Top Only': 'single',
-  'Bottom Only': 'single',
-  'Hybrid Top': 'hybrid',
-  'Hybrid Bottom': 'hybrid',
+  'top-bottom': 'stack',
+  'bottom-top': 'stack',
+  'left-right': 'side',
+  'right-left': 'side',
+  top: 'single',
+  bottom: 'single',
+  'largescreen-top': 'hybrid',
+  'flipped-largescreen-bottom': 'hybrid',
+  'hybrid-top': 'hybrid',
+  'flipped-hybrid-bottom': 'hybrid',
+  'rotate-left': 'stack',
+  'rotate-right': 'stack',
+  'rotate-180': 'stack',
 }
 for (const [value, shape] of Object.entries(SHAPES)) {
   check(`${value} → ${shape}`, () => assert.equal(layoutShape(value), shape))
@@ -190,13 +202,13 @@ check('认不出的取值 → unknown（不是错误，只是我们不替它猜�
 
 console.log('四、⚠️ 触摸屏看不看得见 —— 判错就是「这一局没有任何输入」')
 
-check('只有 Top Only 藏掉触摸屏', () => {
+check('只有 top（只显示上屏）藏掉触摸屏', () => {
   for (const value of LAYOUT_VALUES) {
-    assert.equal(showsTouchScreen(value), value !== 'Top Only', `${value} 判错了`)
+    assert.equal(showsTouchScreen(value), value !== 'top', `${value} 判错了`)
   }
 })
-check('Bottom Only 恰恰是全触屏，必须算看得见', () => {
-  assert.equal(showsTouchScreen('Bottom Only'), true)
+check('bottom 恰恰是全触屏，必须算看得见', () => {
+  assert.equal(showsTouchScreen('bottom'), true)
 })
 check('词序反过来（Only Top）也拦得住 —— 别赌核心的写法', () => {
   assert.equal(showsTouchScreen('Only Top'), false)
@@ -208,11 +220,11 @@ check('空值按看得见处理（没量到不等于藏起来了）', () => {
 
 console.log('五、默认布局按容器方向定')
 
-check('宽容器 → 左右并排（上屏在左那个，不是 Right/Left）', () => {
-  assert.equal(preferredLayout(LAYOUT_VALUES, true), 'Left/Right')
+check('宽容器 → 左右并排（上屏在左那个，不是 right-left）', () => {
+  assert.equal(preferredLayout(LAYOUT_VALUES, true), 'left-right')
 })
 check('竖容器 → 上下叠（上屏在上）', () => {
-  assert.equal(preferredLayout(LAYOUT_VALUES, false), 'Top/Bottom')
+  assert.equal(preferredLayout(LAYOUT_VALUES, false), 'top-bottom')
 })
 check('⚠️ 单屏永远不做默认 —— Top Only 会让纯触控游戏没有输入', () => {
   for (const wide of [true, false]) {
@@ -239,14 +251,23 @@ check('isWideBox：明显是横的才算宽（1.2 这条线是刻意的）', () 
 console.log('六、文案键')
 
 const TOKENS = {
-  'Top/Bottom': 'StackTop',
-  'Bottom/Top': 'StackBottom',
-  'Left/Right': 'SideLeft',
-  'Right/Left': 'SideRight',
-  'Top Only': 'TopOnly',
-  'Bottom Only': 'BottomOnly',
-  'Hybrid Top': 'HybridTop',
-  'Hybrid Bottom': 'HybridBottom',
+  'top-bottom': 'StackTop',
+  'bottom-top': 'StackBottom',
+  'left-right': 'SideLeft',
+  'right-left': 'SideRight',
+  top: 'TopOnly',
+  bottom: 'BottomOnly',
+  'largescreen-top': 'LargeTop',
+  'largescreen-bottom': 'LargeBottom',
+  'flipped-largescreen-top': 'FlippedLargeTop',
+  'flipped-largescreen-bottom': 'FlippedLargeBottom',
+  'hybrid-top': 'HybridTop',
+  'hybrid-bottom': 'HybridBottom',
+  'flipped-hybrid-top': 'FlippedHybridTop',
+  'flipped-hybrid-bottom': 'FlippedHybridBottom',
+  'rotate-left': 'RotateLeft',
+  'rotate-right': 'RotateRight',
+  'rotate-180': 'Rotate180',
 }
 for (const [value, token] of Object.entries(TOKENS)) {
   check(`${value} → layout${token}`, () => assert.equal(layoutToken(value), token))
@@ -347,8 +368,8 @@ check('NDS 不是光盘平台 —— isDiscPlatform 的语义没被顺手改掉'
  */
 const MELONDS_TOUCH = {
   key: 'melonds_touch_mode',
-  values: ['Mouse', 'Touch', 'Joystick', 'disabled'],
-  default: 'Mouse',
+  values: ['joystick', 'touch', 'auto'],
+  default: 'auto',
 }
 /** desmume 那一支的一整组触控选项 —— 实读的 key 名，这一轮**刻意不接** */
 const DESMUME_TOUCH_KEYS = [
@@ -369,12 +390,11 @@ check('认出 melonDS 的触控模式项，并挑出绝对坐标那一档', () =
   assert.ok(opt, '应该认出来')
   assert.equal(opt.key, 'melonds_touch_mode')
   /*
-    这一条是整件事的要害：核心出厂默认是 Mouse = RETRO_DEVICE_MOUSE = **相对位移**，
-    而 Touch = RETRO_DEVICE_POINTER = **绝对坐标**（libretro.h 两段注释的原话）。
-    2026-09-07 的项目记忆里曾把这两者写反、并写着「别改」，09-08 订正。
+    核心默认 auto，网页端主动选 touch = RETRO_DEVICE_POINTER = **绝对坐标**。
+    这避免首次输入在鼠标/触屏之间切换时出现模式抖动。
   */
-  assert.equal(opt.absolute, 'Touch')
-  assert.equal(opt.fallback, 'Mouse', '核心的出厂默认就是那个错的档位')
+  assert.equal(opt.absolute, 'touch')
+  assert.equal(opt.fallback, 'auto')
   assert.notEqual(opt.absolute, opt.fallback, '要是这两个相等就说明核心改了默认，这条守卫该退休')
 })
 
@@ -384,9 +404,9 @@ check('{ options: [...] } 那种包一层的形状也认（引擎两种都可能
 
 check('取值是 {value,label} 对象数组时也认（getCoreOptionsJSON 的真实形状）', () => {
   const opt = findTouchModeOption([
-    { key: 'melonds_touch_mode', values: [{ value: 'Mouse' }, { value: 'Touch', label: '触摸' }] },
+    { key: 'melonds_touch_mode', values: [{ value: 'joystick' }, { value: 'touch', label: '触摸' }, { value: 'auto' }] },
   ])
-  assert.equal(opt?.absolute, 'Touch')
+  assert.equal(opt?.absolute, 'touch')
 })
 
 check('⚠️ 作用范围只到 melonDS —— desmume 那一整组一个都不许命中', () => {
@@ -404,7 +424,7 @@ check('⚠️ 作用范围只到 melonDS —— desmume 那一整组一个都不
 check('⚠️ 没有绝对坐标那一档时返回 null，绝不猜一个塞进去', () => {
   // 认不出就保持核心默认。塞一个不认识的字符串最好是静默失效，
   // 最坏是把玩家推到 Joystick（摇杆推光标）那一档，比现状更糟
-  assert.equal(findTouchModeOption([{ key: 'melonds_touch_mode', values: ['Mouse', 'Joystick'] }]), null)
+  assert.equal(findTouchModeOption([{ key: 'melonds_touch_mode', values: ['auto', 'joystick'] }]), null)
   assert.equal(findTouchModeOption([{ key: 'melonds_touch_mode', values: [] }]), null)
 })
 
@@ -414,9 +434,9 @@ check('脏输入不炸', () => {
 })
 
 check('current 与 fallback 原样带出来（适配器靠它判「已经对了就别再写」）', () => {
-  const opt = findTouchModeOption([{ ...MELONDS_TOUCH, current: 'Touch' }])
-  assert.equal(opt.current, 'Touch')
-  assert.equal(opt.fallback, 'Mouse')
+  const opt = findTouchModeOption([{ ...MELONDS_TOUCH, current: 'touch' }])
+  assert.equal(opt.current, 'touch')
+  assert.equal(opt.fallback, 'auto')
 })
 
 check('大小写/空格不敏感地挑绝对坐标那一档，但回填的是核心的原文', () => {

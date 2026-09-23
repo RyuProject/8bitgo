@@ -120,6 +120,24 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
         return tt.layoutHybridTop
       case 'HybridBottom':
         return tt.layoutHybridBottom
+      case 'LargeTop':
+        return tt.layoutLargeTop
+      case 'LargeBottom':
+        return tt.layoutLargeBottom
+      case 'FlippedLargeTop':
+        return tt.layoutFlippedLargeTop
+      case 'FlippedLargeBottom':
+        return tt.layoutFlippedLargeBottom
+      case 'FlippedHybridTop':
+        return tt.layoutFlippedHybridTop
+      case 'FlippedHybridBottom':
+        return tt.layoutFlippedHybridBottom
+      case 'RotateLeft':
+        return tt.layoutRotateLeft
+      case 'RotateRight':
+        return tt.layoutRotateRight
+      case 'Rotate180':
+        return tt.layoutRotate180
       default:
         return value
     }

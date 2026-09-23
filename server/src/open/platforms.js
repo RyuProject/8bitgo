@@ -157,7 +157,7 @@ const PLATFORM_ROWS = deepFreeze([
     manufacturer: 'Nintendo',
     year: 2004,
     runtime: 'emulatorjs',
-    core: 'nds',
+    core: 'melondsds',
     romExtensions: ['.nds', '.srl', '.zip'],
     native: { runnable: true, emulator: 'melonDS / DeSmuME', note: '' },
   },

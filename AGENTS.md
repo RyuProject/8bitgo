@@ -274,6 +274,30 @@ zip 顶层条目，于是照旧报 `v-102tw.u39 NOT FOUND` 回菜单。拍平（
 引擎升级后它红了就重新取证，别直接改数字）。**注意它是延迟换稳定**：想调到别的值，
 改 `MAME_AUDIO_LATENCY_MS` 并同步上面那条「Buffer size」断言。
 
+### 2.8.4 NDS：已硬切 melonDS DS 1.3.1，旧 melonDS 不再发布
+
+本站 NDS 默认核心是自构建 `melondsds-wasm.data`（上游 melonDS DS v1.3.1），
+`src/data/platforms.ts` 与后台下拉都直接写 `melondsds`。历史游戏数据若仍填 `nds` / `melonds`，
+`emulatorJsCoreForGame()` 会在开局时硬归一到新核心；旧 `melonds-*.data` 已删除，不留双跑窗口。
+用户确认没有 NDS 存档，所以没有做 `.sav` → `.srm` 或旧即时存档的迁移桥。
+
+普通游戏详情页没有全站 COOP/COEP，因此发布的是**非 pthread 软件渲染版**：JIT、OpenGL、
+threaded renderer 都在构建时关闭，避免 SharedArrayBuffer 初始化失败。间接 Wi-Fi 保留，
+pcap 直连网络在浏览器构建里关闭。可复现构建入口：`npm run build:melondsds`。
+DeSmuME / DeSmuME 2015 仍是逐游戏兜底，不会自动回落到旧 melonDS。
+
+音频的第一处瓶颈不是插值：旧核心默认 `melonds_audio_interpolation=None`，再关也没有收益。
+真正能直接修的是 EmulatorJS 写死的 `audio_latency = 64`：NDS 遇到超过 64ms 的
+主线程长任务时 RWebAudio 队列见底，听起来就是“一卡一卡”。`src/emulator/ndsAudio.ts`
+把 NDS 单独调到 96ms（MAME 仍是 128ms）；96 是稳定与《节奏天国》节拍延迟之间的折中。
+验收看核心日志：48kHz 下 `[RWebAudio] Buffer size: 36864 bytes`。回归：
+`npm run test:nds-audio`。若整台机器连 60fps 都跑不到，缓冲不能补算力，应逐游戏换轻核心。
+
+melonDS DS 自带 `rotate-left` / `rotate-right` 布局，优先用“双屏布局”里的原生旋转；
+它会连触控坐标一起转。《节奏天国黄金版 / Rhythm Heaven》这类游戏本来就要求把 DS 横拿。不要给 canvas 套
+`transform: rotate(...)`：那只转视觉，触控坐标、截图和直播都会错 90°。核心在原生旋转布局里
+自己调 libretro `set_screen_rotation` 并同步触控矩阵；玩家选择按游戏持久化，切换后重新实测画布几何。
+
 ### 2.9 平台 BIOS 的边缘缓存会骗人
 
 后台改完 BIOS 绑定只调 `invalidateContent()`（清进程内缓存），**够不着 Cloudflare 边缘**。
@@ -656,6 +680,11 @@ SmartFoxServer 配置只有 `shared/sfs-games.js` 里的游戏能请求（当前
 `loadedmetadata/loadeddata` 再撤加载层；不等会偶发黑框并永久漏掉本局截图 / 录制 / 直播能力。
 详细取证和升级约束见 `docs/ruffle-performance.md`。
 
+EmulatorJS 的悬停预热不能直接拿平台配置里的 `core` 拼文件名：`gb`、`gba`、`psx` 等是
+`EJS_core` 接受的**平台别名**，公开目录里实际是 `gambatte-wasm.data`、`mgba-wasm.data`、
+`pcsx_rearmed-wasm.data`。统一走 `paths.ts` 的 `emulatorJsCoreFileFor()`；`test:ejs-cores`
+会把它和自托管 `emulator.min.js` 里的真实别名表逐项核对，避免悬停必打一条 404。
+
 Flash 手柄键位存在 `games.flash_controls` JSON，街机屏幕手柄的动作键数存在
 `games.arcade_buttons`（2 / 4 / 6）。这两列都是可空的：旧 Flash 游戏仍可用鼠标，旧街机默认六键，
 所以可以先迁移再慢慢在后台补配置。部署这版必须先跑 `cd server && npm run migrate`；
@@ -826,67 +855,85 @@ npm run audit:rom-langs -- --slug=pokemon-ruby   # 单款（清理时用）
 
 缓存：`cache.js` 里 `/web/` 走 `CACHE.engine`（固定 URL，既不永久缓存也不走兜底那一档）。
 
-**当前内容：PvZ Portable（WASM 0.2.3）**，对上游 HTML 有两处**本地补丁**，升级上游时要重打：
+**当前内容：PvZ Portable（WASM 0.2.3）**。上游升级时保留这些本地集成：
 
 1. jszip 从 `cdn.jsdelivr.net` 改自托管 `jszip.min.js`（3.10.1，MIT，保留许可证头）——
    站点其它引擎都自托管，而且 jsdelivr 在国内常不可用，导入 `main.pak` 会直接失败；
-2. 上面那个 `<base>`。
+2. 上面那个 `<base>`、wasm preload、脚本加载失败回报和中文 `lang`；
+3. 上游内联运行逻辑已抽到共用的 `pvz-page.js`，里面还有 ZIP 安全限制、IDBFS 存档保护、
+   流式数据包和退出守卫，不能用新版 HTML 的旧内联脚本覆盖回来。
 
 ⚠️ 上游**不含任何游戏素材**（PopCap/EA 的 `main.pak`、`properties/` 都要玩家自己买），
 页面上的「拖 ZIP / 文件夹导入」就是让玩家提供这些文件的（存 IndexedDB）。
 ⚠️ 想上架成游戏：平台选 `html5`，ROM 绑 `/web/PvZ`（html5 适配器把入口塞进 iframe，
 同源相对路径可以直接用）。
 
-**对上游 HTML 的本地补丁**（升级上游时要重打，现在是这些）：jszip 自托管、上面那个
-`<base>`、wasm 的 `<link rel=preload>`、`cn` 的 `lang=zh-CN`、`startGame` 写盘让步。
+`npm run pvz:check` 会锁定 0.2.3 的 JS / WASM / JSZip 哈希，并检查上述集成和 dist 产物。
+升级上游时先核对变更、更新哈希，再跑 `npm run test:pvz`，不要为了让检查变绿直接改摘要。
 
-### 2.28.1 PvZ 资源加载：清单是 2000+ 个散文件，不是一个包
+### 2.28.1 PvZ 资源加载：2117 个 reanim 已合成一个可流式解包的 gzip
 
-**自动加载片段的唯一来源是 `scripts/pvz-web/autoplay-snippet.html`**，`cn/` 和 `en/` 的
-`index.html` 只是它的产物（两者除第 7 行的 `PVZ_LOCALE` / `PVZ_MANIFEST_URL` 外完全一致）。
-**改了片段必须跑 `npm run pvz:sync-snippet`**，否则 snippet 和线上那份悄悄分叉 ——
-2026-09-23 就是因为只手改了 `cn/en` 才埋下后面的坑。
+**自动加载片段的唯一来源是 `scripts/pvz-web/autoplay-snippet.html`**；资源导入、存档和退出处理的
+唯一来源是 `public/web/PvZ/pvz-page.js`。`cn/` 和 `en/` 共用后者，自动片段则是生成产物。
+**改了片段必须跑 `npm run pvz:sync-snippet`**，否则 snippet 和线上页面会悄悄分叉。
 
-清单 2122 项 = `main.pak`（**44 MB**）+ `reanim/` 2117 个 + `properties/` 4 个。
+旧清单是 2122 项 = `main.pak`（约 44 MB）+ `reanim/` 2117 个（103.7 MB）+ `properties/` 4 个。
+现在用 v2 清单：5 个普通文件 + 一个约 48.7 MB 的 `reanim-<sha>.pvzpack.gz`。浏览器用原生
+`DecompressionStream('gzip')` 边解压边写 WASM FS，冷启动从 **2122 个请求 / 约 148 MB** 降到
+**6 个请求 / 约 93 MB**；不会像 JSZip 那样同时把压缩包和 2117 个解压结果全留在内存。
 
-⚠️ **2026-09-23 事故（致命）**：`reanim/` 在存储端**一个都没有**。旧实现在第一个 404 处
-就 `throw`，整批下载前功尽弃 —— 已下好的 44MB `main.pak` 也被 `restoreUpload` 一起清掉，
-玩家看到的是「自动加载失败（reanim/xxx HTTP 404）」，既进不去游戏也看不出缺的是动画资源。
-现在 **`main.pak` 是必需、其余是可选**：可选资源缺失只记数跳过并明确提示，游戏仍尝试启动。
+⚠️ **2026-09-23 事故（致命）**：`reanim/` 在存储端一个都没有。旧版要么在第一个 404 处
+整批失败，要么拿半套资源强行启动后 `CppException` / 黑屏。现在 **`main.pak` 和 reanim 流式包
+都是必需资源**：任一个缺失就立即终止并点名 URL，不再进入必然崩溃的原生引擎。
+内容寻址对象的记录在 `public/web/PvZ/pvz-pack.json`。
 
-⚠️ **路径陷阱**：真实请求 URL = `PVZ_DATA_BASE` **+** 清单里的 `r2`，不是「`/PvZ/` 前缀」。
-当前 `DATA_BASE = https://html5.8bitgo.com/PvZ/properties/`（注意末尾那层 `properties/`），
-所以 `reanim/` 必须落在 `PvZ/properties/reanim/`。`scripts/pvz-pack-data.sh` 早期写的是
-`PvZ/reanim/`，**差一层 → 2117 个文件全部 404**。
-改完/传完一律跑 **`npm run pvz:check-assets`** 自检（发 HEAD 抽查，不下载字节，
-按顶层目录汇总，`main.pak` 不可达退出码 2、可选缺失退出码 1）。
+⚠️ **路径按 `PVZ_DATA_BASE + r2` 计算。** 当前 DATA_BASE 已经是
+`https://html5.8bitgo.com/PvZ/properties/`，所以清单只能写 `main.pak` / `en-main.pak` /
+`packs/...`。旧生成脚本又加了一层 `properties/`，请求会变成
+`PvZ/properties/properties/main.pak`；`scripts/pvz-pack-data.sh` 已修正。
 
-原实现在「2000+ 个散文件」这个规模上有三宗罪，都已修：
+打包与上传（大包不进 git，留在 `.pvz-data/`）：
 
-1. **串行 fetch** 一个接一个 → 改成并发池（默认 8，`?conc=` 可调，`?nocache=1` 强制重下）；
-2. **整组一个大对象存 IndexedDB**，清单动一项（签名变了）就要重下 44MB →
-   改成**按 `fs` 分条**缓存：只补下缺的那几个、清理清单里已没有的旧条目，
-   并顺手清掉旧版 `pvz-data-files:` 前缀那一坨。
-   「资源内容换了但路径没变」key 感知不到 —— 那种情况把 `PVZ_DATA_VERSION` +1 整组失效；
-3. `startGame` **每写 4 个文件才让出主线程一次** —— 2000 多个小文件会让出 500+ 次纯
-   `setTimeout` 开销，而 44MB 的 `main.pak` 一次写入又独占主线程很久 →
-   改成**按 4MB 字节预算**让步。
+```bash
+npm run pvz:pack -- --reanim <reanim目录> --cn-main <中文main.pak> --en-main <英文main.pak>
+npm run pvz:upload -- --dry-run       # 本地长度、SHA、两份清单一致性
+npm run pvz:upload -- --probe         # 只读验证 Worker 地址与口令，不上传
+npm run pvz:upload -- --yes           # 写入公开 R2，必须显式确认
+npm run pvz:check-assets              # 线上 HEAD + CORS 验收
+```
+
+上传器默认读 `server/.env` 的 `ADMIN_TOKEN`；若 Worker 使用另一把口令，用环境变量
+`PVZ_R2_TOKEN` 临时提供，别把它写进命令参数或提交进仓库。
+
+加载器还修了这些严重问题：
+
+1. 英文清单以前把中文 `main.pak` 写进 `/main.pak`，又多下载一个引擎不读的 `/en-main.pak`
+   （多浪费约 43 MB）；现在英文 R2 `en-main.pak` 正确映射到 FS `/main.pak`。
+2. 每个下载都校验长度 + SHA-256；缓存也校验 r2 / 长度 / SHA，截断对象或错误 HTML 不会永久
+   毒化 IndexedDB。中英文主包分开缓存，reanim 和配置共用，避免双份占空间。
+3. IndexedDB 在 Safari 私密模式或配额不足时，下载结果直接从内存启动本局；旧实现缓存写失败后
+   又只从缓存回读，明明资源已下完仍会报「缺 main.pak」。
+4. 下载有 30 秒无响应超时、两次网络重试和必需资源失败后的整池取消；写 WASM FS 每 4 MB
+   让出主线程，并在写完一项后释放 JS 数据，降低移动端 OOM 风险。
+5. ZIP / 文件夹导入限制文件数、单文件和解包后总大小，并拒绝 `..` / 绝对路径；旧版存档 ZIP
+   能写出 `/saves/userdata`，压缩炸弹也能直接吃光浏览器内存。
+6. IDBFS 首次读取失败会阻止启动，避免空存档随后覆盖旧存档；并发 sync 合并成串行队列，正常
+   退出先等最终写盘。旧版忽略首次 sync 错误，且退出后立即 reload，最近进度可能丢失。
+7. 旧退出守卫写成 `guard() || reload()`：守卫拒绝刷新时反而执行右边的强制 reload，完全失效；
+   启动计时还早于资源写盘，慢设备一开局崩溃也会被当成正常退出。两处均已修。
 
 另外两条容易忽略的：
 
-- 可选文件 404 会在 IndexedDB 记一笔 `{ failed, at }`（TTL 6 小时）。不记的话，
-  `reanim/` 漏传期间每次进页面都要把 2000 多个必然 404 的请求重放一遍，白等几十秒。
-- wasm 约 7MB，加了 `<link rel=preload as=fetch crossorigin>` 让它和 js 并行下载；
-  `moduleReadyPromise` 加了 120s 超时兜底 —— 原来它静默失败时页面永远卡在
-  「Preparing WebAssembly runtime…」，一个字的报错都没有。
-- 根目录那份 `pvz-manifest.json` **没有任何代码引用**（`cn`/`en` 各用各的），
-  是历史产物，它的 `main.pak` r2 还和 `cn/en` 不一致 —— 别拿它排查问题。
+- wasm 约 7MB，用 `<link rel=preload as=fetch crossorigin>` 与 js 并行下载；`moduleReadyPromise`
+  有 120s 超时，脚本标签也有 `onerror`，不再永远卡在「Preparing WebAssembly runtime…」。
+- 根目录那份 `pvz-manifest.json` 没有任何代码引用；`cn` / `en` 只读各自的 v2 清单。
 
 验收：
 
 ```bash
-curl -sI https://8bitgo.com/web/PvZ | head -3          # 200 + text/html，且不重定向
-curl -sI https://8bitgo.com/web/PvZ/pvz-portable.wasm | grep -i content-type   # application/wasm
+curl -sI https://8bitgo.com/web/PvZ | head -3
+curl -sI https://8bitgo.com/web/PvZ/pvz-portable.wasm | grep -i content-type
+npm run pvz:check && npm run test:pvz && npm run pvz:check-assets
 ```
 
 **cs15（CS 1.5 网页移植，2026-09-21 接入中）**：只有 `public/web/cs15/packs/` **不进 git**

@@ -10,8 +10,8 @@
   if (LOCALE) console.log('[PvZ] 当前语言：' + LOCALE);
 
   // ===== 配置（可在引用本段前用 window.PVZ_DATA_BASE / PVZ_MANIFEST_URL / PVZ_DATA_VERSION 覆盖）=====
-  // DATA_BASE：资源基址。页面与数据在同源（都是 https://html5.8bitgo.com/PvZ/...）时 fetch 同源，
-  //   浏览器不发 Origin、也不校验 CORS——这种情况根本不需要配任何 CORS 头。
+  // DATA_BASE：资源基址。当前页面在 8bitgo.com、数据在 html5.8bitgo.com，属于跨源请求，
+  //   R2 必须给 https://8bitgo.com 返回 Access-Control-Allow-Origin。
   // MANIFEST_URL：资源清单（JSON），相对页面目录。每项：
   //   { "r2": "存储端相对路径", "fs": "写入 WASM 虚拟文件系统的目标路径", "size": 字节数(可选) }
   //   也支持纯字符串（此时 r2 === fs）。
@@ -20,7 +20,7 @@
   //   即使存储端 main.pak 被放在了别处，也用 r2 指实际位置、fs 指 "main.pak"。
   var DATA_BASE = window.PVZ_DATA_BASE != null ? window.PVZ_DATA_BASE : './';
   var MANIFEST_URL = window.PVZ_MANIFEST_URL != null ? window.PVZ_MANIFEST_URL : './pvz-manifest.json';
-  var DATA_VERSION = window.PVZ_DATA_VERSION || '3';
+  var DATA_VERSION = window.PVZ_DATA_VERSION || '4';
 
   var qs = new URLSearchParams(location.search);
   var FORCE = qs.has('nocache');
@@ -30,6 +30,8 @@
   // wasm（约 7MB）加载失败时 moduleReadyPromise 可能永远不 resolve，页面会一直卡在
   // 「Preparing WebAssembly runtime…」且毫无提示 —— 给一个超时兜底。
   var WASM_TIMEOUT_MS = 120000;
+  // 只限制「迟迟收不到响应头」和流式下载中途长期没有新数据；不会误杀带宽慢但持续有进度的玩家。
+  var FETCH_STALL_TIMEOUT_MS = 30000;
   // 可选资源 404 后多久才重试。reanim/ 漏传时是 2000 多个 404，不记一笔的话
   // 每次进页面都要把这几千个请求重放一遍，白白浪费几十秒和大量流量。
   var MISSING_TTL_MS = 6 * 3600 * 1000;
@@ -42,14 +44,17 @@
     全部资源重新下载一遍；按 fs 分条后只补下缺的那几个。
     「资源内容变了但路径没变」无法用 key 感知 —— 那种情况 bump PVZ_DATA_VERSION 整组失效。
   */
-  var KEY_PREFIX = 'file:' + (LOCALE || 'default') + ':' + DATA_VERSION + ':';
+  var CACHE_ROOT = 'file:' + DATA_VERSION + ':';
+  var LOCALE_PREFIX = CACHE_ROOT + 'locale:' + (LOCALE || 'default') + ':';
+  var SHARED_PREFIX = CACHE_ROOT + 'shared:';
+  // main.pak 随语言变化，其它动画和配置中英文共用。分开命名能避免玩过两种语言后重复占用约 70MB。
+  function prefixFor(entry) { return entry.fs === 'main.pak' ? LOCALE_PREFIX : SHARED_PREFIX; }
+  function cacheKey(entry) { return prefixFor(entry) + entry.fs; }
   var OLD_PREFIX = 'pvz-data-files:'; // 旧版整组缓存的 key 前缀，命中后顺手清掉
 
-  // 引擎缺了它一定起不来；其余（reanim/、properties/）属于可选，缺了只告警。
-  // 这一条是 2026-09-23 的事故修复：reanim/ 这 2000 多个文件漏传时，旧实现在第一个
-  // 404 处就 throw，整批下载前功尽弃（连已下好的 44MB main.pak 也被 restoreUpload 清掉），
-  // 玩家看到的是「自动加载失败」而不是「缺了动画资源」。
-  function isRequired(fs) { return fs === 'main.pak'; }
+  // main.pak 和 reanim/ 都是运行必需资源。缺 reanim 时强行启动只会在原生层抛 CppException，
+  // 玩家得到黑屏/刷新循环；加载阶段直接报出缺失路径才是可恢复的行为。
+  function isRequired(fs) { return fs === 'main.pak' || fs.indexOf('reanim/') === 0 || fs === '@bundle/reanim'; }
 
   var autoStarted = false;
 
@@ -110,6 +115,7 @@
     loadStatus.textContent = msg || '';
     loadStatus.classList.add('has-error');
     collectedFiles.clear();
+    collectedBundles.length = 0;
     refreshUI();
   }
 
@@ -190,15 +196,21 @@
     var want = wantFs || null;
     return tx('readonly', function (store) {
       var d = deferred();
-      var req = store.openCursor(IDBKeyRange.bound(prefix, prefix + '￿'));
-      d.bind(new Promise(function (resolve, reject) {
-        req.onsuccess = function () {
-          var c = req.result;
-          if (!c) return resolve();
-          var fs = String(c.key).slice(prefix.length);
-          if (!want || want[fs]) onEach(fs, c.value);
-          c.continue();
-        };
+        var req = store.openCursor(IDBKeyRange.bound(prefix, prefix + '￿'));
+        d.bind(new Promise(function (resolve, reject) {
+          req.onsuccess = function () {
+            var c = req.result;
+            if (!c) return resolve();
+            var fs = String(c.key).slice(prefix.length);
+            try {
+              if (!want || want[fs]) onEach(fs, c.value);
+            } catch (e) {
+              reject(e);
+              try { c.source.transaction.abort(); } catch (ignored) {}
+              return;
+            }
+            c.continue();
+          };
         req.onerror = function () { reject(req.error); };
       }));
       return d;
@@ -206,8 +218,40 @@
   }
 
   function normEntry(e) {
-    if (typeof e === 'string') return { r2: e, fs: e, size: 0 };
-    return { r2: e.r2, fs: e.fs, size: Number(e.size) || 0 };
+    var out = typeof e === 'string'
+      ? { r2: e, fs: e, size: 0, sha256: '', bundle: null }
+      : {
+          r2: e && e.r2,
+          fs: e && e.fs,
+          size: Number(e && e.size) || 0,
+          sha256: String(e && e.sha256 || '').toLowerCase(),
+          bundle: e && e.bundle ? e.bundle : null,
+        };
+    var values = [out.r2, out.fs];
+    for (var i = 0; i < values.length; i++) {
+      var value = values[i];
+      if (typeof value !== 'string' || !value || value.length > 1024 || value.charAt(0) === '/' ||
+          value.indexOf('\\') >= 0 || value.indexOf('\0') >= 0 || value.split('/').some(function (p) { return p === '.' || p === '..'; }) ||
+          /^[a-z][a-z0-9+.-]*:/i.test(value)) {
+        throw new Error('清单包含不安全路径：' + String(value));
+      }
+    }
+    if (out.size < 0 || !Number.isSafeInteger(out.size)) throw new Error('清单 size 无效：' + out.fs);
+    if (out.sha256 && !/^[0-9a-f]{64}$/.test(out.sha256)) throw new Error('清单 sha256 无效：' + out.fs);
+    if (out.bundle) {
+      if (out.fs !== '@bundle/reanim' || out.bundle.format !== '8bitgo.pvz.gzip-pack.v1' ||
+          !Number.isSafeInteger(out.bundle.fileCount) || out.bundle.fileCount < 2000 ||
+          !Number.isSafeInteger(out.bundle.unpackedBytes) || out.bundle.unpackedBytes <= 0) {
+        throw new Error('清单 bundle 无效：' + out.fs);
+      }
+    }
+    return out;
+  }
+
+  function assetUrl(r2) {
+    // encodeURIComponent 按路径段处理空格、#、?；直接字符串相加会把 # 后面的文件名当成 URL fragment。
+    var encoded = r2.split('/').map(function (part) { return encodeURIComponent(part); }).join('/');
+    return new URL(encoded, DATA_BASE).href;
   }
 
   function loadManifest() {
@@ -216,13 +260,50 @@
     return fetch(mUrl, { credentials: 'same-origin', cache: 'no-cache' }).then(function (r) {
       if (!r.ok) throw new Error('清单 HTTP ' + r.status);
       return r.json();
-    }).then(function (list) {
+    }).then(function (payload) {
+      var list = payload;
+      if (!Array.isArray(payload) && payload && payload.format === '8bitgo.pvz.manifest.v2') {
+        if (!Array.isArray(payload.files) || !Array.isArray(payload.bundles)) throw new Error('v2 清单格式不对');
+        list = payload.files.concat(payload.bundles.map(function (bundle) {
+          return {
+            r2: bundle.r2,
+            fs: bundle.fs,
+            size: bundle.size,
+            sha256: bundle.sha256,
+            bundle: {
+              format: bundle.format,
+              fileCount: bundle.fileCount,
+              unpackedBytes: bundle.unpackedBytes,
+            },
+          };
+        }));
+      }
       if (!Array.isArray(list) || !list.length) throw new Error('清单为空或格式不对');
-      return list.map(normEntry);
+      var entries = list.map(normEntry), seen = {}, hasMain = false;
+      for (var i = 0; i < entries.length; i++) {
+        if (seen[entries[i].fs]) throw new Error('清单 fs 重复：' + entries[i].fs);
+        seen[entries[i].fs] = true;
+        if (entries[i].fs === 'main.pak') hasMain = true;
+      }
+      if (!hasMain) throw new Error('清单缺少 main.pak');
+      return entries;
     });
   }
 
   function fmtMB(bytes) { return (bytes / 1048576).toFixed(1) + ' MB'; }
+
+  function verifyBytes(entry, bytes) {
+    if (entry.size && bytes.byteLength !== entry.size) {
+      return Promise.reject(new Error(entry.r2 + ' 长度不符（应为 ' + entry.size + '，实际 ' + bytes.byteLength + '）'));
+    }
+    if (!entry.sha256) return Promise.resolve(bytes);
+    if (!window.crypto || !window.crypto.subtle) return Promise.reject(new Error('浏览器不支持 SHA-256 资源校验'));
+    return window.crypto.subtle.digest('SHA-256', bytes).then(function (digest) {
+      var hex = Array.prototype.map.call(new Uint8Array(digest), function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+      if (hex !== entry.sha256) throw new Error(entry.r2 + ' SHA-256 不匹配，已拒绝缓存和启动');
+      return bytes;
+    });
+  }
 
   /*
     下载：并发池 + 大文件流式读 + 失败重试 + 404 记一笔避免重放。
@@ -238,9 +319,15 @@
     });
 
     var total = order.length;
-    var doneCount = 0, doneBytes = 0, skipped = [];
+    var doneCount = 0, doneBytes = 0, skipped = [], downloaded = Object.create(null);
     var pendingPairs = [], pendingBytes = 0, flushChain = Promise.resolve();
-    var idx = 0, failed = null;
+    var idx = 0, failed = null, activeControllers = new Set();
+
+    function abortActive() {
+      activeControllers.forEach(function (controller) {
+        try { controller.abort(); } catch (ignored) {}
+      });
+    }
 
     function flush() {
       if (!pendingPairs.length) return;
@@ -251,17 +338,25 @@
         return idbPutMany(batch).catch(function (e) { console.warn('[PvZ] 写缓存失败：', e); });
       });
     }
-    function cache(fs, value) {
-      pendingPairs.push([KEY_PREFIX + fs, value]);
+    function cache(entry, value) {
+      pendingPairs.push([cacheKey(entry), value]);
       pendingBytes += value.size || 0;
       if (pendingPairs.length >= 64 || pendingBytes >= 8 * 1048576) flush();
     }
 
     function fetchBytes(entry) {
-      var url = DATA_BASE + entry.r2;
+      var url = assetUrl(entry.r2);
       var attempt = 0;
       function run() {
-        return fetch(url, { credentials: 'same-origin' }).then(function (r) {
+        var controller = new AbortController();
+        activeControllers.add(controller);
+        var stallTimer = setTimeout(function () { controller.abort(); }, FETCH_STALL_TIMEOUT_MS);
+        function resetStallTimer() {
+          clearTimeout(stallTimer);
+          stallTimer = setTimeout(function () { controller.abort(); }, FETCH_STALL_TIMEOUT_MS);
+        }
+        return fetch(url, { credentials: 'same-origin', signal: controller.signal }).then(function (r) {
+          resetStallTimer();
           if (!r.ok) {
             var err = new Error(entry.r2 + ' HTTP ' + r.status);
             err.httpStatus = r.status;
@@ -271,8 +366,11 @@
           if (!r.body || !len || len < 1048576) {
             // 小文件直接读：流式反而多一次 chunk 拼接
             return r.arrayBuffer().then(function (b) {
-              onProgress(b.byteLength, ++doneCount, total);
-              return new Uint8Array(b);
+              clearTimeout(stallTimer);
+              return verifyBytes(entry, new Uint8Array(b)).then(function (bytes) {
+                onProgress(bytes.byteLength, ++doneCount, total);
+                return bytes;
+              });
             });
           }
           /*
@@ -285,9 +383,13 @@
           function pump() {
             return reader.read().then(function (res) {
               if (res.done) {
-                onProgress(0, ++doneCount, total);
-                return off === cap ? buf : buf.slice(0, off);
+                clearTimeout(stallTimer);
+                return verifyBytes(entry, off === cap ? buf : buf.slice(0, off)).then(function (bytes) {
+                  onProgress(0, ++doneCount, total);
+                  return bytes;
+                });
               }
+              resetStallTimer();
               var chunk = res.value;
               if (off + chunk.length > cap) {
                 cap = Math.max(cap * 2, off + chunk.length);
@@ -302,12 +404,17 @@
           }
           return pump();
         }).catch(function (e) {
+          clearTimeout(stallTimer);
+          if (failed) throw e;
           // 4xx 不重试（重试也是同样的结果，白等）；网络类错误重试 2 次
           if (attempt < 2 && !(e && e.httpStatus >= 400 && e.httpStatus < 500)) {
             attempt++;
             return new Promise(function (res) { setTimeout(res, attempt * 400); }).then(run);
           }
           throw e;
+        }).finally(function () {
+          clearTimeout(stallTimer);
+          activeControllers.delete(controller);
         });
       }
       return run();
@@ -318,14 +425,21 @@
         if (failed || idx >= total) return Promise.resolve();
         var entry = order[idx++];
         return fetchBytes(entry).then(function (bytes) {
-          cache(entry.fs, { bytes: bytes, size: bytes.byteLength });
+          // 缓存写入失败（Safari 私密模式/配额不足）时仍用内存里的下载结果启动本局。
+          downloaded[entry.fs] = bytes;
+          cache(entry, { bytes: bytes, size: bytes.byteLength, r2: entry.r2, sha256: entry.sha256 });
           doneBytes += bytes.byteLength;
           return next();
         }, function (e) {
-          if (isRequired(entry.fs)) { failed = e; return; }
-          // 可选资源缺失（例如 reanim/ 漏传）不该拖垮整批下载。
-          // 记一笔「这个文件取不到」，短期内不再重放这几千个必然 404 的请求。
-          cache(entry.fs, { failed: (e && e.httpStatus) || 0, at: Date.now() });
+          if (isRequired(entry.fs)) {
+            if (!failed) {
+              failed = new Error('必需资源 ' + entry.fs + ' 加载失败：' + (e && e.message ? e.message : e));
+              abortActive();
+            }
+            return;
+          }
+          // 可选资源失败记一笔，避免每次打开都重放相同请求。
+          cache(entry, { failed: true, status: (e && e.httpStatus) || 0, at: Date.now(), r2: entry.r2 });
           skipped.push(entry.fs);
           return next();
         });
@@ -340,15 +454,19 @@
       return flushChain;
     }).then(function () {
       if (failed) throw failed;
-      return { skipped: skipped, bytes: doneBytes };
+      return { skipped: skipped, bytes: doneBytes, files: downloaded };
     });
   }
 
   function withTimeout(p, ms, msg) {
-    return Promise.race([
-      p,
-      new Promise(function (_, reject) { setTimeout(function () { reject(new Error(msg)); }, ms); }),
-    ]);
+    return new Promise(function (resolve, reject) {
+      var timer = setTimeout(function () { reject(new Error(msg)); }, ms);
+      Promise.resolve(p).then(function (value) {
+        clearTimeout(timer); resolve(value);
+      }, function (error) {
+        clearTimeout(timer); reject(error);
+      });
+    });
   }
 
   /*
@@ -356,25 +474,48 @@
     have 里是 fs -> Uint8Array，调用方负责转成 File 并释放。
   */
   function getFiles(manifest, onProgress) {
-    var fsSet = {}, totalSize = 0, i;
-    for (i = 0; i < manifest.length; i++) { fsSet[manifest[i].fs] = true; totalSize += manifest[i].size; }
+    var fsSet = {}, entryByFs = {}, totalSize = 0, allSizesKnown = true, i;
+    for (i = 0; i < manifest.length; i++) {
+      fsSet[manifest[i].fs] = true;
+      entryByFs[manifest[i].fs] = manifest[i];
+      totalSize += manifest[i].size;
+      if (!manifest[i].size) allSizesKnown = false;
+    }
     // 缓存里记着「取不到」的那些，最后要和本次下载失败的合并起来一起提示
     var carrySkipped = [];
 
-    var have = Object.create(null), haveCount = 0;
+    var have = Object.create(null), invalidKeys = [];
     // 「上次就没取到」且还在 TTL 内的条目：直接算作缺失，不再重放请求
     var stillMissing = Object.create(null);
 
-    function readCache(wantFs) {
-      if (FORCE) return Promise.resolve();
-      return idbEach(KEY_PREFIX, wantFs, function (fs, val) {
-        if (val && val.bytes) { have[fs] = val.bytes; haveCount++; }
-        else if (val && val.failed && Date.now() - (val.at || 0) < MISSING_TTL_MS) stillMissing[fs] = true;
+    function readPrefix(prefix) {
+      return idbEach(prefix, fsSet, function (fs, val) {
+        var entry = entryByFs[fs];
+        if (!entry || prefixFor(entry) !== prefix) return;
+        if (val && val.bytes) {
+          var actual = Number(val.bytes.byteLength);
+          var valid = actual > 0 && Number(val.size) === actual && val.r2 === entry.r2 &&
+            (!entry.size || entry.size === actual) && (!entry.sha256 || val.sha256 === entry.sha256);
+          if (valid) have[fs] = val.bytes;
+          else invalidKeys.push(prefix + fs);
+        } else if (val && val.failed === true && val.r2 === entry.r2 && Date.now() - (val.at || 0) < MISSING_TTL_MS) {
+          stillMissing[fs] = true;
+        }
       }).catch(function (e) { console.warn('[PvZ] 读缓存失败，改为全部下载：', e); });
     }
 
+    function readCache() {
+      if (FORCE) return Promise.resolve();
+      return Promise.all([readPrefix(LOCALE_PREFIX), readPrefix(SHARED_PREFIX)]).then(function () {
+        if (invalidKeys.length) {
+          console.warn('[PvZ] 丢弃 ' + invalidKeys.length + ' 条长度或来源不匹配的损坏缓存');
+          return idbDelete(invalidKeys).catch(function () {});
+        }
+      });
+    }
+
     // 第一轮：读缓存，挑出缺的
-    return readCache(fsSet).then(function () {
+    return readCache().then(function () {
       var missing = [], missingBytes = 0, skippedCache = [], j;
       for (j = 0; j < manifest.length; j++) {
         var fsv = manifest[j].fs;
@@ -389,26 +530,35 @@
       }
       // 分母用「本次真正要下的字节数」：命中缓存的那些不算在内，
       // 否则进度条会停在中间不动（看着像卡住）。
-      var progressTotal = missingBytes || totalSize || 1;
+      var progressTotal = allSizesKnown ? (missingBytes || totalSize || 0) : 0;
       var progressSeen = 0;
       setProgress(0);
       return downloadAll(missing, function (n, done, total) {
         progressSeen += n;
-        setProgress(progressSeen / progressTotal);
+        // 旧清单没有 size 时退化成按完成文件数推进，至少不会在第一个响应后直接跳到 100%。
+        setProgress(progressTotal ? progressSeen / progressTotal : done / Math.max(1, total));
         if (onProgress) onProgress(n, done, total);
       }).then(function (res) {
-        // 第二轮：只回读「这次新下载」的那批，避免把已缓存的 70MB 再反序列化一遍
-        var want = {};
-        for (var k = 0; k < missing.length; k++) want[missing[k].fs] = true;
-        return readCache(want).then(function () { return res; });
+        // 直接复用内存中的下载结果。若 IndexedDB 因私密模式或配额失败，本局仍然可以启动。
+        for (var fs in res.files) {
+          if (Object.prototype.hasOwnProperty.call(res.files, fs)) have[fs] = res.files[fs];
+        }
+        return res;
       });
     }).then(function (res) {
       // 清理：清单里已经没有的旧条目，以及旧版「整组一个大对象」的缓存
       var want = {};
-      for (var n = 0; n < manifest.length; n++) want[KEY_PREFIX + manifest[n].fs] = true;
-      return idbKeysWithPrefix(KEY_PREFIX).then(function (keys) {
-        return idbDelete(keys.filter(function (k) { return !want[k]; }));
-      }).catch(function () {}).then(function () {
+      for (var n = 0; n < manifest.length; n++) want[cacheKey(manifest[n])] = true;
+      return Promise.all([LOCALE_PREFIX, SHARED_PREFIX].map(function (prefix) {
+        return idbKeysWithPrefix(prefix).then(function (keys) {
+          return idbDelete(keys.filter(function (k) { return !want[k]; }));
+        }).catch(function () {});
+      })).then(function () {
+        // DATA_VERSION 已经体现在 CACHE_ROOT 中；顺手删除旧代次，避免升级后永久占着几十 MB。
+        return idbKeysWithPrefix('file:').then(function (keys) {
+          return idbDelete(keys.filter(function (k) { return k.indexOf(CACHE_ROOT) !== 0; }));
+        }).catch(function () {});
+      }).then(function () {
         return idbKeysWithPrefix(OLD_PREFIX).then(function (keys) {
           if (!keys.length) return;
           console.log('[PvZ] 清理旧版整组缓存 ' + keys.length + ' 条');
@@ -446,13 +596,24 @@
       .then(function (o) {
         var files = o.res.files, res = o.res;
         collectedFiles.clear();
+        collectedBundles.length = 0;
+        var entriesByFs = {};
+        for (var m = 0; m < o.manifest.length; m++) entriesByFs[o.manifest[m].fs] = o.manifest[m];
         var gotMain = false, count = 0, fs;
         for (fs in files) {
           if (!Object.prototype.hasOwnProperty.call(files, fs)) continue;
           var bytes = files[fs];
           if (!bytes) continue;
-          // 转成 File 后立刻释放 Uint8Array：否则同一份数据在 JS 堆里存两份（峰值翻倍）
-          collectedFiles.set(fs, new File([bytes], fs.split('/').pop()));
+          var manifestEntry = entriesByFs[fs];
+          if (manifestEntry && manifestEntry.bundle) {
+            collectedBundles.push({ bytes: bytes, meta: manifestEntry.bundle });
+            files[fs] = null;
+            count++;
+            continue;
+          }
+          // 直接把 Uint8Array 交给共用运行脚本；包装成 File/Blob 会再复制一份 44MB main.pak，
+          // 在移动端很容易因为 JS 堆峰值过高而被系统杀掉。
+          collectedFiles.set(fs, bytes);
           files[fs] = null;
           if (fs === 'main.pak') gotMain = true;
           count++;
@@ -471,12 +632,11 @@
           var desc = Object.keys(dirs).map(function (k) { return k + ' × ' + dirs[k]; }).join('、');
           var warn = '缺少 ' + res.skipped.length + ' 个可选资源（' + desc + '），游戏可能无法正常启动';
           console.warn('[PvZ] ' + warn + '；请用 npm run pvz:check-assets 自检资源是否上传完整');
-          // 缺的不是 main.pak，仍然尝试启动，但把缺失情况如实告诉玩家
+          // 这里只剩真正可选的覆盖配置；reanim/ 已在下载阶段作为必需资源拦住。
           setStatusNow('已加载 ' + count + ' 个文件；' + warn, false);
         }
         refreshUI();
-        window.__pvzStartTs = Date.now();
-        return wasmReady.then(function () { startGame(); }, function (e) {
+        return wasmReady.then(function () { return startGame(); }, function (e) {
           restoreUpload('引擎加载失败（' + (e && e.message ? e.message : e) + '），请检查网络后刷新重试。');
           autoStarted = false;
         });

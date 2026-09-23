@@ -10,10 +10,11 @@
 //   - 其它资源目录（reanim、images、sounds…）每个文件 r2 === fs === "<目录>/<相对路径>"。
 //   - properties/ 下是可选覆盖配置（default.xml 等），有就带上。
 //
-// R2 里 main.pak 若没放在目录根（例如被传进了 properties/ 子目录），
-// 用环境变量 PVZ_MAIN_PAK_R2 指它的真实相对路径，例如：
+// PVZ_MAIN_PAK_R2 是相对于页面 PVZ_DATA_BASE 的路径，不是相对于 bucket 根。
+// 若 DATA_BASE 指向 bucket 上级、而 main.pak 在 properties/ 子目录，才这样写：
 //   PVZ_MAIN_PAK_R2=properties/main.pak node scripts/pvz-web/gen-manifest.mjs <资源目录>
-import { readdirSync, statSync, existsSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { readdirSync, statSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const RES = process.argv[2] || process.env.PVZ_RESOURCE_DIR
@@ -32,6 +33,9 @@ const TOP_ALLOW = new Set([
 function isJunk(name) {
   return name === '.DS_Store' || name.startsWith('._')
 }
+function sha256(file) {
+  return createHash('sha256').update(readFileSync(file)).digest('hex')
+}
 
 const entries = []
 let foundMain = false
@@ -46,7 +50,7 @@ function walkProps(dir, rel) {
     // 跳过 properties/ 里可能混进来的 main.pak（它属于根，不在 properties/ 下）
     else if (name === 'main.pak') continue
     // size 供加载器算总字节与进度；缺失时它会退化成按文件计数，不会出错
-    else entries.push({ r2: r, fs: r, size: st.size })
+    else entries.push({ r2: r, fs: r, size: st.size, sha256: sha256(full) })
   }
 }
 
@@ -62,12 +66,12 @@ function walk(dir, rel) {
       if (name === 'properties' && !rel) walkProps(full, 'properties')
       else walk(full, r)
     } else if (name === 'main.pak' && !foundMain) {
-      entries.push({ r2: MAIN_R2, fs: 'main.pak', size: st.size })
+      entries.push({ r2: MAIN_R2, fs: 'main.pak', size: st.size, sha256: sha256(full) })
       foundMain = true
     } else if (rel && name !== 'main.pak') {
       // 其它资源文件（reanim/images/sounds…）：r2 === fs，原样写进 FS 根
       // 顶层（rel 为空）只收 main.pak，其余顶层杂文件（exe/dll 等）忽略
-      entries.push({ r2: r, fs: r, size: st.size })
+      entries.push({ r2: r, fs: r, size: st.size, sha256: sha256(full) })
     }
   }
 }
@@ -93,5 +97,5 @@ console.log('  main.pak 的 R2 路径: ' + MAIN_R2)
 console.log('  提示：若是「换了一版资源但路径不变」，记得把页面里的 PVZ_DATA_VERSION +1')
 console.log('')
 console.log('下一步：把 main.pak、reanim/ 等整个资源目录、以及本 pvz-manifest.json')
-console.log('都上传到与 PvZ 引擎页（index.html）相同的目录（例如 html5.8bitgo.com/PvZ/）。')
-console.log('页面与数据同源即可，无需任何 CORS 配置。')
+console.log('都上传到页面 PVZ_DATA_BASE 指向的目录；清单 r2 会直接追加在这个基址后。')
+console.log('若数据与页面跨源，R2 还必须允许页面来源的 CORS GET/HEAD。')

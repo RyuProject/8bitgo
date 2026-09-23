@@ -23,7 +23,6 @@
  *    要用联机必须自建 EmulatorJS 构建，见 docs 或 README。
  */
 import type { ArcadeButtonCount, PlatformId } from '@/types'
-import { platformMap } from '@/data/platforms'
 import { EJS_DEFAULT_CONTROLS } from '@/lib/keymapData'
 import type { Capability, CaptureSources, LoadPhase, LoadProgress, MountOptions, RuntimeHandle, StageMode } from '../types'
 import { fetchBlobWithProgress, fetchWithProgress, throttleProgress } from '../loadProgress'
@@ -44,6 +43,7 @@ import { deriveArcadeHackBytes } from '../arcadeHack'
 import { biosNameOfUrl, planBiosFiles } from '../biosPlan'
 import { ensureParentDir } from '../fsWrite'
 import { MAME_AUDIO_LATENCY_MS, RETROARCH_CFG_PATH, raiseAudioLatency } from '../mameAudio'
+import { NDS_AUDIO_BUFFER_BYTES_48K, NDS_AUDIO_LATENCY_MS } from '../ndsAudio'
 import { isRomPackBytes, isRomPackUrl, unpackRomPackBlob } from '@/services/romPack'
 
 /**
@@ -68,7 +68,7 @@ import { isRomPackBytes, isRomPackUrl, unpackRomPackBlob } from '@/services/romP
  * 玩家看到的就是「Error loading EmulatorJS runtime」。本地有核心，这条路不会走。
  */
 export { EJS_PATH } from '../paths'
-import { EJS_PATH, isDiscPlatform, isSelfDownloadPlatform } from '../paths'
+import { EJS_PATH, emulatorJsCoreForGame, isDiscPlatform, isSelfDownloadPlatform } from '../paths'
 import { applyTuning, sizeOfTrack, tuningFor, usableVideoSize } from '../videoTuning'
 import {
   findLayoutOption,
@@ -1507,7 +1507,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const rt = getT().runtime
   // 按游戏覆盖优先，其次才是平台默认。街机一个平台底下其实是好几套硬件，
   // 拳皇 / 街霸 / 老板子各要各的核心，光靠平台默认值盖不住
-  const core = options.core || platformMap[options.platform]?.core
+  const core = emulatorJsCoreForGame(options.platform, options.core)
   if (!core) {
     options.onError?.(fmt(rt.ejsNoCore, { platform: options.platform }))
     return { destroy: () => {}, caps: new Set<Capability>() }
@@ -3180,7 +3180,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           : undefined
 
         /**
-         * MAME 的音频窗口：把 retroarch.cfg 里的 `audio_latency = 64` 提到 128ms。
+         * 重型核心的音频窗口：把 retroarch.cfg 里写死的 `audio_latency = 64` 调大。
          *
          * 机制、取值理由和验证方法全写在 `../mameAudio.ts` 的模块注释里（那里是纯函数，
          * 有 `npm run test:mame-audio` 守着）。这里只说三件**只在这层才成立**的事：
@@ -3191,12 +3191,18 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
          *    而拦下来是整局都玩不了 —— 和这个注入器里其它钩子同一条取舍。
          * 3. **回读核对**：cfg 在虚拟文件系统里，写没写进去看不见，所以写完立刻读回来对一遍
          *    并打日志。生效与否最终看核心那行 `[RWebAudio] Buffer size:` —— 64ms 是 24576 bytes，
-         *    128ms 应该是 49152 bytes。
+         *    MAME 128ms 应该是 49152 bytes；NDS 96ms 应该是 36864 bytes。
          *
-         * 只给 mame-current：它是本站最重的核心、也是唯一报过毛刺的；FBNeo 那一批轻得多，
-         * 没必要为它们付 +64ms 的音画延迟。
+         * mame-current 用 128ms；单线程软件渲染的 NDS 用 96ms，给《节奏天国》少留一点节拍延迟。
+         * 其它较轻的核心仍用引擎默认值，不为没有症状的平台平白增加音画延迟。
          */
-        const raiseMameAudioLatency = isMameCurrentCore(core)
+        const audioLatencyPlan = isMameCurrentCore(core)
+          ? { label: 'mame-current', latencyMs: MAME_AUDIO_LATENCY_MS, expectedBytes: 49_152 }
+          : options.platform === 'nds'
+            ? { label: 'NDS', latencyMs: NDS_AUDIO_LATENCY_MS, expectedBytes: NDS_AUDIO_BUFFER_BYTES_48K }
+            : null
+
+        const raiseCoreAudioLatency = audioLatencyPlan
           ? (emu: EjsEmulator) => {
               const fs = emu.gameManager?.FS
               if (!fs?.readFile || !fs.writeFile) return
@@ -3204,21 +3210,21 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                 const bytes = fs.readFile(RETROARCH_CFG_PATH)
                 if (!bytes) return
                 const before = new TextDecoder().decode(bytes)
-                const after = raiseAudioLatency(before, MAME_AUDIO_LATENCY_MS)
+                const after = raiseAudioLatency(before, audioLatencyPlan.latencyMs)
                 if (after === before) return
                 fs.writeFile(RETROARCH_CFG_PATH, after)
                 const check = fs.readFile(RETROARCH_CFG_PATH)
-                const ok = check ? new TextDecoder().decode(check).includes(`audio_latency = ${MAME_AUDIO_LATENCY_MS}`) : false
+                const ok = check ? new TextDecoder().decode(check).includes(`audio_latency = ${audioLatencyPlan.latencyMs}`) : false
                 console.info(
-                  `[emulatorjs] mame-current：音频窗口 ${MAME_AUDIO_LATENCY_MS}ms ${ok ? '已写入（核心日志里的 Buffer size 应为 49152 bytes）' : '回读不一致，按默认 64ms 继续'}`,
+                  `[emulatorjs] ${audioLatencyPlan.label}：音频窗口 ${audioLatencyPlan.latencyMs}ms ${ok ? `已写入（核心日志里的 Buffer size 应为 ${audioLatencyPlan.expectedBytes} bytes）` : '回读不一致，按默认 64ms 继续'}`,
                 )
               } catch (e) {
-                console.warn('[emulatorjs] 调 MAME 音频窗口失败，按引擎默认 64ms 继续：', e)
+                console.warn(`[emulatorjs] 调 ${audioLatencyPlan.label} 音频窗口失败，按引擎默认 64ms 继续：`, e)
               }
             }
           : undefined
 
-        if (injections.length || relocateMameRom || relocateMameBios || raiseMameAudioLatency) {
+        if (injections.length || relocateMameRom || relocateMameBios || raiseCoreAudioLatency) {
           installFsInjector(win, injections, (msg) => {
             /*
               写失败**不拦着开局**（和 installFsInjector 的注释一致）：没了改版 dat，
@@ -3227,12 +3233,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               真缺文件的话核心自己会报「缺 xxx」，那条走 errorTap，比这里更准。
             */
             if (!destroyed) console.warn('[emulatorjs] 文件没写进虚拟文件系统，按原始配置继续：', fmt(rt.ejsFsInjectFailed, { msg }))
-          }, relocateMameRom || relocateMameBios || raiseMameAudioLatency
+          }, relocateMameRom || relocateMameBios || raiseCoreAudioLatency
             ? (emu) => {
                 // 顺序有讲究：先把 ROM 搬进 /roms（顺带 mkdir），再搬 BIOS，最后改 cfg
                 relocateMameRom?.(emu)
                 relocateMameBios?.(emu)
-                raiseMameAudioLatency?.(emu)
+                raiseCoreAudioLatency?.(emu)
               }
             : undefined)
         }
