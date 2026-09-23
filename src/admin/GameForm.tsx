@@ -426,7 +426,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
       */
       arcadeDip: form.platform === 'arcade' ? form.arcadeDip?.trim() || undefined : undefined,
       arcadeButtons: form.platform === 'arcade' ? form.arcadeButtons : undefined,
-      // 纯鼠标 Flash 留空；有键位时屏幕手柄和实体手柄共用这一份配置。
+      // Flash 配置同时保存画面兼容模式和键位；纯鼠标游戏也可能只留下显示模式。
       flashControls: form.platform === 'flash' ? form.flashControls : undefined,
       dosboxConfig,
       // 空字符串写成 undefined，否则会存一条空的英文简介，
@@ -989,11 +989,22 @@ function FlashControlsField({
   value?: Game['flashControls']
   onChange: (value: Game['flashControls']) => void
 }) {
-  const serialized = value ? JSON.stringify(value) : ''
-  const preset = !value
+  const displayMode = value?.displayMode ?? 'fit'
+  // 显示模式不属于键位预设；否则只切一次画面模式，方向键预设就会被误判成「自定义」。
+  const controlValue = value?.p1 && Object.keys(value.p1).length
+    ? { p1: value.p1, ...(value.p2 ? { p2: value.p2 } : {}) }
+    : undefined
+  const serialized = controlValue ? JSON.stringify(controlValue) : ''
+  const preset = !controlValue
     ? 'mouse'
     : Object.entries(FLASH_CONTROL_PRESETS).find(([, controls]) => JSON.stringify(controls) === serialized)?.[0] ?? 'custom'
   const buttons = Object.keys(FLASH_BUTTON_LABEL) as FlashControlButton[]
+
+  const replaceControls = (controls?: NonNullable<Game['flashControls']>) => {
+    const next = controls ? cloneFlashControls(controls) : {}
+    if (displayMode === 'ruffle') next.displayMode = 'ruffle'
+    onChange(next.p1 || next.displayMode ? next : undefined)
+  }
 
   const update = (player: 'p1' | 'p2', button: FlashControlButton, key: string) => {
     const next = cloneFlashControls(value ?? { p1: {} })
@@ -1001,40 +1012,65 @@ function FlashControlsField({
     if (key) pad[button] = key
     else delete pad[button]
     if (player === 'p1') {
-      if (!Object.keys(pad).length) return onChange(undefined)
-      next.p1 = pad
+      if (Object.keys(pad).length) next.p1 = pad
+      else {
+        delete next.p1
+        // 2P 不能脱离 1P 独立存在；删光 1P 时一起清掉，避免保存接口拒绝整张表单。
+        delete next.p2
+      }
     } else if (Object.keys(pad).length) next.p2 = pad
     else delete next.p2
-    onChange(next)
+    onChange(next.p1 || next.displayMode ? next : undefined)
   }
 
   return (
     <Field
-      label="Flash 控制方式"
-      hint="纯鼠标游戏不要配键位；键位同时用于手机屏幕和实体手柄"
+      label="Flash 显示与控制"
+      hint="默认按 SWF 原始比例居中；纯鼠标游戏不要配键位"
       className="col-span-2 sm:col-span-4"
     >
-      <select
-        className={inputClass}
-        value={preset}
-        onChange={(e) => {
-          const name = e.target.value
-          if (name === 'mouse') onChange(undefined)
-          else if (name !== 'custom') onChange(cloneFlashControls(FLASH_CONTROL_PRESETS[name as keyof typeof FLASH_CONTROL_PRESETS]))
-        }}
-      >
-        <option value="mouse">纯鼠标 / 触屏点击（不显示手柄）</option>
-        <option value="arrows">方向键</option>
-        <option value="arrowsSpace">方向键 + 空格</option>
-        <option value="wasdSpace">WASD + 空格</option>
-        <option value="fireboy">双人：方向键 + WASD</option>
-        {preset === 'custom' && <option value="custom">自定义</option>}
-      </select>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className="text-xs text-muted">
+          画面缩放
+          <select
+            className={cx(inputClass, 'mt-1')}
+            value={displayMode}
+            onChange={(e) => {
+              const next = cloneFlashControls(value ?? {})
+              if (e.target.value === 'ruffle') next.displayMode = 'ruffle'
+              else delete next.displayMode
+              onChange(next.p1 || next.displayMode ? next : undefined)
+            }}
+          >
+            <option value="fit">原始比例等比居中（推荐）</option>
+            <option value="ruffle">Ruffle 原始显示（兼容）</option>
+          </select>
+        </label>
+        <label className="text-xs text-muted">
+          操作方式
+          <select
+            className={cx(inputClass, 'mt-1')}
+            value={preset}
+            onChange={(e) => {
+              const name = e.target.value
+              if (name === 'mouse') replaceControls()
+              else if (name !== 'custom') replaceControls(FLASH_CONTROL_PRESETS[name as keyof typeof FLASH_CONTROL_PRESETS])
+            }}
+          >
+            <option value="mouse">纯鼠标 / 触屏点击（不显示手柄）</option>
+            <option value="arrows">方向键</option>
+            <option value="arrowsSpace">方向键 + 空格</option>
+            <option value="wasdSpace">WASD + 空格</option>
+            <option value="fireboy">双人：方向键 + WASD</option>
+            {preset === 'custom' && <option value="custom">自定义</option>}
+          </select>
+        </label>
+      </div>
 
-      {value && (
+      {controlValue && (
         <div className="mt-3 space-y-3 rounded-lg border border-line bg-surface-2 p-3">
           {(['p1', 'p2'] as const).map((player) => {
-            const enabled = player === 'p1' || Boolean(value.p2)
+            const enabled = player === 'p1' || Boolean(controlValue.p2)
             return (
               <div key={player}>
                 <div className="mb-2 flex items-center gap-3 text-xs font-semibold text-muted">
@@ -1045,7 +1081,7 @@ function FlashControlsField({
                         type="checkbox"
                         checked={enabled}
                         onChange={(e) => {
-                          const next = cloneFlashControls(value)
+                          const next = cloneFlashControls(value ?? controlValue)
                           if (e.target.checked) next.p2 = {}
                           else delete next.p2
                           onChange(next)
@@ -1062,7 +1098,7 @@ function FlashControlsField({
                         {FLASH_BUTTON_LABEL[button]}
                         <select
                           className={cx(inputClass, 'mt-1 py-1 text-xs')}
-                          value={value[player]?.[button] ?? ''}
+                          value={controlValue[player]?.[button] ?? ''}
                           onChange={(e) => update(player, button, e.target.value)}
                         >
                           <option value="">不使用</option>

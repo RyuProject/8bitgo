@@ -49,8 +49,8 @@ const zhHant: Translation = {
   },
 
   site: {
-    defaultTitle: '{site} — 免費線上玩復古模擬器遊戲',
-    titleTemplate: '{title} - {site}',
+    defaultTitle: '{site} — 免費線上玩經典復古遊戲｜紅白機·GBA·街機·Flash 模擬器',
+    titleTemplate: '{title}｜經典復古遊戲線上玩 - {site}',
   },
 
   nav: {
@@ -1409,6 +1409,7 @@ const zhHant: Translation = {
       gb: '',
       java: '',
     },
+    descriptionFallback: '在 8BitGo 可直接使用瀏覽器體驗相關經典遊戲內容，無需安裝模擬器，並可查看平台、類型、預設按鍵、即時存檔、手把和手機支援資訊，以及更多同平台和同類型的經典作品。',
     home: '免費線上玩經典模擬器遊戲。無需下載，打開瀏覽器就能暢玩 NES、SNES、GBA、PS1、N64、街機等上百款童年經典，支援即時存檔、手把與手機遊玩。',
     games: '瀏覽 8BitGo 經典遊戲庫：依平台、類型和開發商篩選紅白機、GBA、Game Boy、街機、DOS、Flash 與 J2ME 遊戲，全部可在瀏覽器直接開玩。',
     platforms: '依平台瀏覽復古遊戲：紅白機、超級任天堂、GBA、PS1、N64、街機、DOS 等，全部都能在瀏覽器裡免費遊玩。',

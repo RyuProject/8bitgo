@@ -112,7 +112,15 @@ const index = readFileSync(join(publicDir, 'index.html'), 'utf8')
 const assetVersion = source.match(/const ASSET_VERSION = ['"]([^'"]+)['"]/)?.[1]
 if (!assetVersion) fail('cs16.js 没有 ASSET_VERSION')
 if (!index.includes(`cs16.bundle.js?v=${assetVersion}`)) fail('index.html 没引用当前版本的 cs16.bundle.js')
+if (!index.includes('<base href="/web/cs16/"')) fail('index.html 缺少固定 /web/cs16/ base，无尾斜杠路由会把 bundle 解析到 /web/')
+const baseHref = index.match(/<base\s+href="([^"]+)"/)?.[1] || ''
+const productionBase = new URL(baseHref, 'https://8bitgo.com/web/cs16')
+if (new URL('./cs16.bundle.js', productionBase).pathname !== '/web/cs16/cs16.bundle.js') {
+  fail('无尾斜杠生产 URL 仍会把 cs16.bundle.js 解析到错误目录')
+}
 if (index.includes('src="./cs16.js')) fail('index.html 仍在直接加载无法被浏览器解析的源码')
+if (!source.includes("const PAGE_ROOT = new URL('./', document.baseURI)")) fail('cs16.js 没从 document.baseURI 计算资源根')
+if (source.includes("new URL('./', location.href)")) fail('cs16.js 仍会在无尾斜杠页面把资源根算成 /web/')
 
 const required = [
   'index.html',

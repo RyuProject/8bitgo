@@ -53,7 +53,7 @@ const fr: Translation = {
   /* ---------------- Titre du site ---------------- */
   site: {
     defaultTitle: '{site} — Jouer gratuitement aux jeux rétro sur émulateur en ligne',
-    titleTemplate: '{title} - {site}',
+    titleTemplate: '{title} | Jeux rétro classiques en ligne - {site}',
   },
 
   /* ---------------- Navigation ---------------- */
@@ -1469,6 +1469,7 @@ const fr: Translation = {
       gb: '',
       java: '',
     },
+    descriptionFallback: 'Explorez ce contenu dans votre navigateur avec 8BitGo, sans installer d’émulateur, avec les commandes, les sauvegardes, la manette et davantage de jeux classiques.',
     home: "Joue gratuitement en ligne aux classiques de l'émulation : des centaines de jeux NES, SNES, GBA, PS1, N64 et arcade dans ton navigateur, sans rien télécharger.",
     games: 'Parcours tous les jeux rétro de 8BitGo : filtre par plateforme, genre ou développeur, puis lance la partie en un clic, sans téléchargement ni installation.',
     platforms: 'Les jeux rétro par plateforme : NES, SNES, GBA, PS1, N64, arcade, DOS et bien plus, tous jouables gratuitement dans ton navigateur.',

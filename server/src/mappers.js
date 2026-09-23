@@ -419,13 +419,18 @@ function flashControlsObject(v, strict = true) {
   if (v == null || v === '') return null
   let raw = v
   if (typeof raw === 'string') {
-    try { raw = JSON.parse(raw) } catch { return strict ? badGameField('Flash 键位不是合法 JSON') : null }
+    try { raw = JSON.parse(raw) } catch { return strict ? badGameField('Flash 配置不是合法 JSON') : null }
   }
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return strict ? badGameField('Flash 键位必须是包含 p1 的对象') : null
+    return strict ? badGameField('Flash 配置必须是对象') : null
   }
 
   const out = {}
+  if (raw.displayMode != null) {
+    if (raw.displayMode !== 'fit' && raw.displayMode !== 'ruffle') {
+      if (strict) badGameField(`Flash 显示模式无效：${String(raw.displayMode)}`)
+    } else out.displayMode = raw.displayMode
+  }
   for (const player of ['p1', 'p2']) {
     const pad = raw[player]
     if (pad == null) continue
@@ -453,7 +458,10 @@ function flashControlsObject(v, strict = true) {
     }
     if (Object.keys(clean).length) out[player] = clean
   }
-  if (!out.p1) return strict ? badGameField('Flash 键位至少要给 p1 配一个按钮') : null
+  if (out.p2 && !out.p1) return strict ? badGameField('Flash 键位至少要给 p1 配一个按钮') : null
+  if (!out.p1 && !out.displayMode) {
+    return strict ? badGameField('Flash 配置至少要有显示模式或给 p1 配一个按钮') : null
+  }
   return out
 }
 

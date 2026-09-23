@@ -47,12 +47,9 @@ R2 桶的 CORS 最少允许：
 ]
 ```
 
-`assets.8bitgo.com` 必须是 R2 自定义域名，并为 `/web/cs16/zstd-v1/chunks/*` 配置 Cache Everything
-规则；R2 自定义域名才能使用 Cloudflare 边缘缓存，`.zst` 也不属于默认必缓存类型。建议同时开启
-Smart Tiered Cache，降低不同地区首次请求回源 R2 的次数。
-
-如果 `assets.8bitgo.com` 实际经过本仓库的 ROM Worker，还要发布本次 Worker 更新；它会给
-内容寻址分片返回一年 immutable，并补正确的 `application/zstd`：
+生产环境把 `assets.8bitgo.com` 接到本仓库的 ROM Worker；`worker/wrangler.toml` 的
+`WEBGAMES` 绑定必须指向 `8bitgo-webgame`。Worker 会按 `/web/cs15/`、`/web/cs16/` 前缀从
+这个桶读取，并给内容寻址分片返回一年 immutable、补正确的 `application/zstd`：
 
 ```bash
 cd worker && npx wrangler deploy

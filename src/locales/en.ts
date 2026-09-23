@@ -53,7 +53,7 @@ const en: Translation = {
   /* ---------------- Site title ---------------- */
   site: {
     defaultTitle: '{site} — Play Retro Emulator Games Free Online',
-    titleTemplate: '{title} - {site}',
+    titleTemplate: '{title} | Play Classic Retro Games Online - {site}',
   },
 
   /* ---------------- Navigation ---------------- */
@@ -1463,6 +1463,7 @@ const en: Translation = {
       gb: '',
       java: '',
     },
+    descriptionFallback: 'Explore it in your browser on 8BitGo with no emulator installation, plus platform details, controls, save states, gamepad support and more classic games.',
     home: 'Play classic emulator games free online. Hundreds of NES, SNES, GBA, PS1, N64 and arcade classics in your browser — no downloads, save states and gamepad support.',
     games: 'Browse every retro game on 8BitGo — filter by platform, genre or developer, then click and play instantly. No downloads, no installs.',
     platforms: 'Browse retro games by platform: NES, SNES, GBA, PS1, N64, arcade, DOS and more — all of them free to play right in your browser.',

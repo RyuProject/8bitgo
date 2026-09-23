@@ -35,8 +35,11 @@ export type DosWindowsVersion = '3x' | '9x'
 export type FlashControlButton = 'up' | 'down' | 'left' | 'right' | 'a' | 'b' | 'select' | 'start'
 export type FlashPad = Partial<Record<FlashControlButton, string>>
 export interface FlashControls {
-  p1: FlashPad
+  /** 纯鼠标游戏可以只保存显示模式，所以 p1 不能再作为整个对象的必填项。 */
+  p1?: FlashPad
   p2?: FlashPad
+  /** fit = 按 SWF 原始舞台等比居中；ruffle = 保留引擎原来的整框布局作兼容兜底。 */
+  displayMode?: 'fit' | 'ruffle'
 }
 
 /** 街机屏幕面板只画游戏真正用到的动作键，避免两键游戏铺满六个无效按钮。 */
@@ -183,7 +186,7 @@ export interface Game {
   arcadeDip?: string
   /** 街机触屏面板的动作键数量；旧数据留空时按六键兼容。 */
   arcadeButtons?: ArcadeButtonCount
-  /** Flash 屏幕手柄和实体手柄的逐游戏键位；纯鼠标游戏留空。 */
+  /** Flash 的画面模式与逐游戏键位；纯鼠标游戏可以只配置画面模式。 */
   flashControls?: FlashControls
   /**
    * DOS 启动程序：zip 包内的相对路径（如 PARANOID.COM、NFS/TNFS.EXE）。

@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import worker from '../src/index.js'
-import { environment, req, count, bytes, streamChunks } from './fixtures.mjs'
+import { Bucket, environment, req, count, bytes, streamChunks } from './fixtures.mjs'
 
 for (const method of ['PUT','POST','DELETE']) test(`${method}: unauthorized writes are rejected`, async () => {
   const e = environment(); const r = await worker.fetch(req('/game.zip', method), e); assert.equal(r.status,401); assert.equal(e.ROMS.calls.length,0)
@@ -24,6 +24,24 @@ test('plain GET streams in one R2 call and uses the short unversioned policy', a
   const e=environment(); e.ROMS.seed('a.zip','abcdef'); const r=await worker.fetch(req('/a.zip'),e)
   assert.equal(await r.text(),'abcdef'); assert.equal(count(e.ROMS,'get'),1); assert.equal(count(e.ROMS,'head'),0)
   assert.equal(r.headers.get('Content-Length'),'6'); assert.equal(r.headers.get('Cache-Control'),'public, max-age=300, s-maxage=600, must-revalidate')
+})
+test('CS1.5 and CS1.6 assets prefer WEBGAMES and fall back to the legacy ROMS bucket', async () => {
+  const e=environment(); e.WEBGAMES=new Bucket('webgames')
+  e.ROMS.seed('web/cs15/packs/index.json','legacy-cs15')
+  e.WEBGAMES.seed('web/cs15/packs/index.json','webgames-cs15')
+  e.WEBGAMES.seed('web/cs16/zstd-v1/catalog.json','webgames-cs16')
+  e.ROMS.seed('web/cs16/zstd-v1/fallback.json','legacy-cs16')
+
+  assert.equal(await (await worker.fetch(req('/web/cs15/packs/index.json'),e)).text(),'webgames-cs15')
+  assert.equal(await (await worker.fetch(req('/web/cs16/zstd-v1/catalog.json'),e)).text(),'webgames-cs16')
+  assert.equal(await (await worker.fetch(req('/web/cs16/zstd-v1/fallback.json'),e)).text(),'legacy-cs16')
+  assert.equal(count(e.WEBGAMES,'get'),3)
+  assert.equal(count(e.ROMS,'get'),1)
+})
+test('a Worker deployment without WEBGAMES keeps serving legacy CS assets', async () => {
+  const e=environment(); e.ROMS.seed('web/cs16/zstd-v1/catalog.json','legacy')
+  assert.equal(await (await worker.fetch(req('/web/cs16/zstd-v1/catalog.json'),e)).text(),'legacy')
+  assert.equal(count(e.ROMS,'get'),1)
 })
 /*
   缓存分两档的判据是 **URL 有没有版本戳**，不是 key —— 见 src/index.js 顶部那段。

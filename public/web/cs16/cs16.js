@@ -35,7 +35,7 @@ import { decompress as decompressZstd, init as initZstd } from '@bokuweb/zstd-wa
 import { unpackTarStream } from './tar-stream.js'
 
 const BASE = '/rodir/'
-const ASSET_VERSION = '20260923-zstd1'
+const ASSET_VERSION = '20260923-zstd2'
 // 清单返回后会换成当前地图的真实压缩体积；这里仅用于清单到达前，避免进度条跳满。
 let expectedProgressBytes = 128 * 1024 * 1024
 const Q = new URLSearchParams(location.search)
@@ -50,11 +50,11 @@ const MAP = SUPPORTED_MAPS.has(requestedMap) ? requestedMap : 'de_dust2'
 const VGUI_MENUS = Q.get('vgui') || '1'
 const USE_NEW_LIBS = Q.get('client') === 'new'
 
-// 引擎与库都在本目录下（自托管），ASSET_ROOT 默认就是 cs16 目录自身。
-// 解析成绝对 URL 并去尾斜杠，避免拼接时拼出 `//` 双斜杠。
-const ASSET_ROOT = (
-  Q.get('root') ? new URL(Q.get('root'), location.href) : new URL('./', location.href)
-).href.replace(/\/$/, '')
+// 必须从 document.baseURI 算：生产路由会把 `/web/cs16/` 规范化成无尾斜杠的
+// `/web/cs16`。若从 location.href 算 `./`，浏览器会退到 `/web/`，随后引擎、WASM、
+// 字体全部 404。入口页的 <base> 固定目录，这里和浏览器加载 bundle 使用同一个根。
+const PAGE_ROOT = new URL('./', document.baseURI)
+const ASSET_ROOT = new URL(Q.get('root') || './', PAGE_ROOT).href.replace(/\/$/, '')
 /*
  * 生产默认从 R2 的自定义域名下载 Zstd 分片；本机则读 public 里的同一份产物。
  * 内容分片以 SHA-256 命名，能放心设一年 immutable；catalog 只短缓存，发新版无需清旧分片。
@@ -63,13 +63,13 @@ const ASSET_ROOT = (
 const productionHost = location.hostname === '8bitgo.com' || location.hostname.endsWith('.8bitgo.com')
 const DEFAULT_ZSTD_ROOT = productionHost
   ? 'https://assets.8bitgo.com/web/cs16/zstd-v1/'
-  : new URL('./packs/zstd-v1/', location.href).href
+  : new URL('./packs/zstd-v1/', PAGE_ROOT).href
 const PACKS_ROOT = Q.get('packsroot')
-  ? new URL(Q.get('packsroot'), location.href).href.replace(/\/?$/, '/')
+  ? new URL(Q.get('packsroot'), PAGE_ROOT).href.replace(/\/?$/, '/')
   : DEFAULT_ZSTD_ROOT
 const LEGACY_PACKS_ROOT = Q.get('legacyroot')
-  ? new URL(Q.get('legacyroot'), location.href).href.replace(/\/?$/, '/')
-  : new URL('./packs/', location.href).href
+  ? new URL(Q.get('legacyroot'), PAGE_ROOT).href.replace(/\/?$/, '/')
+  : new URL('./packs/', PAGE_ROOT).href
 const FORCE_GZIP = Q.get('packformat') === 'gzip'
 const FORCE_GZIP_ROOT = Q.has('packsroot') ? PACKS_ROOT : LEGACY_PACKS_ROOT
 

@@ -157,6 +157,31 @@ export function normalizeMetaDescription(value?: string, maxLength = 160): strin
   return `${chars.slice(0, maxLength - 1).join('').trimEnd()}…`
 }
 
+/**
+ * 搜索摘要的安全下限。
+ *
+ * 固定页面的 SEO 文案可以逐条写够，但游戏、文章和玩家合集的简介来自数据库，无法保证
+ * 每条都足够完整。只在原文不足 80 个码点时补一段当前语言的站点上下文，既保留页面自己
+ * 的关键词，也避免所有短简介退化成同一句通用描述；最后仍由 normalizeMetaDescription
+ * 收敛到 160 个码点，搜索结果不会被一大段正文塞满。
+ */
+export const META_DESCRIPTION_MIN_LENGTH = 80
+
+export function completeMetaDescription(
+  value?: string,
+  expansion?: string,
+  minLength = META_DESCRIPTION_MIN_LENGTH,
+  maxLength = 160,
+): string {
+  const primary = String(value || '').replace(/\s+/g, ' ').trim()
+  if (!primary) return ''
+  if ([...primary].length >= minLength || !expansion?.trim()) {
+    return normalizeMetaDescription(primary, maxLength)
+  }
+  const separator = /[。！？.!?；;：:]$/.test(primary) ? ' ' : ' — '
+  return normalizeMetaDescription(`${primary}${separator}${expansion.trim()}`, maxLength)
+}
+
 export interface SeoLanguagePlan {
   contentLanguages: Lang[]
   canonicalLanguage: Lang
@@ -364,7 +389,9 @@ export function useSeo(opts: SeoOptions) {
     metas.push(['property', 'og:image:height', OG_DEFAULT_HEIGHT])
   }
   if (TWITTER_SITE) metas.push(['name', 'twitter:site', TWITTER_SITE])
-  const shortDescription = normalizeMetaDescription(description)
+  // 数据库里的游戏、文章和玩家合集可能只写了几个字。统一在这里补足上下文，避免每个
+  // 调用方各写一套规则，也保证 SSR、Open Graph 和客户端切页得到完全相同的摘要。
+  const shortDescription = completeMetaDescription(description, t.seo.descriptionFallback)
   if (shortDescription) {
     metas.push(['name', 'description', shortDescription])
     metas.push(['property', 'og:description', shortDescription])

@@ -38,7 +38,7 @@ ZIP 共 13 项；剔除目录和 macOS 辅助条目后，只有 6 个实际项�
 
 **原包没有 `embed-vc/dist/`、前端后台上传器、主站 server/play 路由、ROM/BIOS、模拟器核心或完整 reVCDOS 游戏资源。** 因此不能将本次结果写成“完整游戏已部署运行”或“游戏 FPS 提升”。
 
-原有部署身份保留：`8bitgo-roms`、`8bitgo-embed-vc`；ROMS 绑定到 `8bitgo`，COVERS 绑定到 `8bitgo-image`；两个 compatibility_date 均仍为 `2026-01-01`。没有写入或假定你的 ADMIN_TOKEN。
+原有部署身份保留：`8bitgo-roms`、`8bitgo-embed-vc`；ROMS 绑定到 `8bitgo`，COVERS 绑定到 `8bitgo-image`；两个 compatibility_date 均仍为 `2026-01-01`。2026-09-23 后续迁移另加只读 `WEBGAMES → 8bitgo-webgame`，只承接 `/web/cs15/`、`/web/cs16/` 的公开读取。没有写入或假定你的 ADMIN_TOKEN。
 
 ## 3. 发现总表
 

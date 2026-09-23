@@ -17543,7 +17543,7 @@ async function unpackTarStream(stream, onFile, onProgress) {
 
 // public/web/cs16/cs16.js
 var BASE = "/rodir/";
-var ASSET_VERSION = "20260923-zstd1";
+var ASSET_VERSION = "20260923-zstd2";
 var expectedProgressBytes = 128 * 1024 * 1024;
 var Q = new URLSearchParams(location.search);
 var SUPPORTED_MAPS = /* @__PURE__ */ new Set([
@@ -17564,11 +17564,12 @@ var requestedMap = Q.get("map") || document.getElementById("map")?.value || "de_
 var MAP = SUPPORTED_MAPS.has(requestedMap) ? requestedMap : "de_dust2";
 var VGUI_MENUS = Q.get("vgui") || "1";
 var USE_NEW_LIBS = Q.get("client") === "new";
-var ASSET_ROOT = (Q.get("root") ? new URL(Q.get("root"), location.href) : new URL("./", location.href)).href.replace(/\/$/, "");
+var PAGE_ROOT = new URL("./", document.baseURI);
+var ASSET_ROOT = new URL(Q.get("root") || "./", PAGE_ROOT).href.replace(/\/$/, "");
 var productionHost = location.hostname === "8bitgo.com" || location.hostname.endsWith(".8bitgo.com");
-var DEFAULT_ZSTD_ROOT = productionHost ? "https://assets.8bitgo.com/web/cs16/zstd-v1/" : new URL("./packs/zstd-v1/", location.href).href;
-var PACKS_ROOT = Q.get("packsroot") ? new URL(Q.get("packsroot"), location.href).href.replace(/\/?$/, "/") : DEFAULT_ZSTD_ROOT;
-var LEGACY_PACKS_ROOT = Q.get("legacyroot") ? new URL(Q.get("legacyroot"), location.href).href.replace(/\/?$/, "/") : new URL("./packs/", location.href).href;
+var DEFAULT_ZSTD_ROOT = productionHost ? "https://assets.8bitgo.com/web/cs16/zstd-v1/" : new URL("./packs/zstd-v1/", PAGE_ROOT).href;
+var PACKS_ROOT = Q.get("packsroot") ? new URL(Q.get("packsroot"), PAGE_ROOT).href.replace(/\/?$/, "/") : DEFAULT_ZSTD_ROOT;
+var LEGACY_PACKS_ROOT = Q.get("legacyroot") ? new URL(Q.get("legacyroot"), PAGE_ROOT).href.replace(/\/?$/, "/") : new URL("./packs/", PAGE_ROOT).href;
 var FORCE_GZIP = Q.get("packformat") === "gzip";
 var FORCE_GZIP_ROOT = Q.has("packsroot") ? PACKS_ROOT : LEGACY_PACKS_ROOT;
 var ENGINE = `${ASSET_ROOT}/engine/dist`;

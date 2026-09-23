@@ -32,6 +32,9 @@ npm run cs15:upload -- --bucket <你的R2桶名>
 `?packsroot=https://你的域名/前缀`。上传脚本会在清单发布后从公开域名 HEAD 每个主包，检查
 状态码、长度、CORS 和 `Content-Encoding: br`；测试域名可传 `--public-base https://…`。
 
+生产环境由 ROM Worker 把 `/web/cs15/` 映射到 `worker/wrangler.toml` 的 `WEBGAMES` 绑定，
+该绑定必须指向 `8bitgo-webgame`。文件上传完成后仍要发布 Worker，否则公开域名会继续查询旧桶。
+
 R2 桶还必须允许站点跨域 GET/HEAD。最小 CORS 规则：
 
 ```json

@@ -28,6 +28,7 @@ import {
 } from '@/services/flashOnlineSave'
 import { prepareSfsRuffleConfig } from '@/services/sfs'
 import { installRufflePixelRatioCap, RUFFLE_FIXED_QUALITY } from '../rufflePerformance'
+import { ruffleStageScale, ruffleStageSize } from '../ruffleStageFit'
 
 export { RUFFLE_PATH } from '../paths'
 import { RUFFLE_PATH } from '../paths'
@@ -110,6 +111,7 @@ interface RufflePlayerApi {
 interface RufflePlayerElement extends HTMLElement, Partial<RufflePlayerApi> {
   ruffle?: () => RufflePlayerApi
   readyState?: number
+  metadata?: unknown
 }
 interface RuffleSource {
   createPlayer: () => RufflePlayerElement
@@ -194,6 +196,52 @@ function waitForRuffleMetadata(player: RufflePlayerElement, signal: AbortSignal)
       resolve()
     }, 8000)
   })
+}
+
+/**
+ * 让 Ruffle 只按 SWF 的原始舞台尺寸渲染，再由浏览器把整个播放器等比缩放。
+ *
+ * 很多老游戏在 ActionScript 里设置了 noScale，并按固定坐标摆放界面。直接把 Ruffle 元素拉成
+ * 16:9 时，它们仍只画左上角的 4:3 舞台，其余区域就变成截图里的大片灰色。外层 CSS 缩放
+ * 不会改变游戏看到的舞台尺寸，同时也避免在超宽屏上为无内容区域创建更大的 WebGL 画布。
+ */
+function installRuffleStageFit(
+  win: Window & { ResizeObserver?: typeof ResizeObserver },
+  host: HTMLElement,
+  stage: HTMLElement,
+  metadata: unknown,
+): () => void {
+  const size = ruffleStageSize(metadata)
+  if (!size) return () => {}
+
+  stage.dataset.nativeFit = 'true'
+  stage.style.position = 'absolute'
+  stage.style.width = `${size.width}px`
+  stage.style.height = `${size.height}px`
+  // 用原始尺寸算出未缩放元素的位置，再围绕中心缩放；这样舞台比容器大时也不会被网格轨道挤偏。
+  stage.style.left = `calc(50% - ${size.width / 2}px)`
+  stage.style.top = `calc(50% - ${size.height / 2}px)`
+  stage.style.transformOrigin = 'center'
+
+  const update = () => {
+    const scale = ruffleStageScale(host.clientWidth, host.clientHeight, size)
+    if (scale) stage.style.transform = `scale(${scale})`
+  }
+  update()
+
+  let observer: ResizeObserver | null = null
+  if (typeof win.ResizeObserver === 'function') {
+    observer = new win.ResizeObserver(update)
+    observer.observe(host)
+  } else {
+    // 老浏览器没有 ResizeObserver 时，iframe 视口变化仍会触发 resize，至少保证横竖屏切换正确。
+    win.addEventListener('resize', update)
+  }
+
+  return () => {
+    observer?.disconnect()
+    win.removeEventListener('resize', update)
+  }
 }
 
 export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
@@ -360,6 +408,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let focusRaf = 0
   let focusTimer = 0
   let canvasCapsTimer = 0
+  let cancelStageFit = () => {}
 
   const cancelFocusRetry = () => {
     if (focusRaf) cancelAnimationFrame(focusRaf)
@@ -523,14 +572,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         if (!source) throw new Error(rt.ruffleNotInit)
         player = source.createPlayer()
         const host = doc.getElementById('host')
-        host?.appendChild(player)
+        const stage = doc.getElementById('stage') ?? host
+        stage?.appendChild(player)
         // ruffle.js 只是加载器，核心与自定义元素是按需异步注册的，需等元素升级完成
         await win.customElements.whenDefined(player.tagName.toLowerCase())
         // 极少数情况下（例如浏览器 locale 异常导致构造函数抛错）元素不会被升级，重建一次
         if (typeof player.ruffle !== 'function' && typeof player.load !== 'function') {
           player.remove()
           player = source.createPlayer()
-          host?.appendChild(player)
+          stage?.appendChild(player)
         }
 
         const [loaded, onlineSave, sfsConfig] = await Promise.all([gameBytes, flashOnlineSave, sfsRuffleConfig])
@@ -647,6 +697,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           waitForRuffleMetadata(player, aborter.signal),
         ])
         if (destroyed) return
+        // 默认修复固定舞台 SWF 的左上角缩放；少数依赖 Ruffle 原始整框布局的游戏可在后台逐款退回。
+        if (host && stage && options.flashControls?.displayMode !== 'ruffle') {
+          cancelStageFit()
+          cancelStageFit = installRuffleStageFit(win, host, stage, player.metadata)
+        }
         syncVisibility()
         // onReady 必须在 load 完成之后 —— 以前放在 load 之前，播放器会在 SWF 还没解析完
         // 就把加载遮罩撤掉，玩家对着空白舞台点半天
@@ -906,6 +961,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     destroy() {
       destroyed = true
       document.removeEventListener('visibilitychange', syncVisibility)
+      cancelStageFit()
       cancelFocusRetry()
       if (canvasCapsTimer) window.clearTimeout(canvasCapsTimer)
       canvasCapsTimer = 0

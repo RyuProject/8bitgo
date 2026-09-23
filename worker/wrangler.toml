@@ -20,6 +20,11 @@ binding = "COVERS"
 # image.8bitgo.com 对应的 R2 桶名。
 bucket_name = "8bitgo-image"
 
+[[r2_buckets]]
+binding = "WEBGAMES"
+# CS1.5 / CS1.6 的大包单独存放；公开读取仍统一走 assets.8bitgo.com。
+bucket_name = "8bitgo-webgame"
+
 [vars]
 # 允许跨域访问的来源，多个用逗号分隔；开发期用 * ，上线后改成你的站点域名，例如
 # ALLOWED_ORIGINS = "https://8bitgo.example.com,http://localhost:5173"

@@ -2,6 +2,8 @@
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
+    <!-- 生产路由会把尾斜杠去掉；base 保证脚本、WASM 和字体始终从 /web/cs16/ 解析。 -->
+    <base href="/web/cs16/" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Counter-Strike 1.6 · 网页版</title>
     <style>
@@ -75,6 +77,6 @@
       「目录 + 无扩展名」的裸模块写法，原生 ESM 解析不了（dev 会兜底成根 index.html）。
       官方 raw.js 那条路在本引擎版本（1.2.2）上会卡在版本检查，详见 cs16.js 头注释。
     -->
-    <script type="module" src="./cs16.bundle.js?v=20260923-zstd1"></script>
+    <script type="module" src="./cs16.bundle.js?v=20260923-zstd2"></script>
   </body>
 </html>

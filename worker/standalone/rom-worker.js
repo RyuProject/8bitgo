@@ -239,7 +239,13 @@ function parseRange(value, size) {
   const end = b === null ? size - 1 : Math.min(b, size - 1)
   return { offset: a, length: end - a + 1 }
 }
+function isWebGameKey(key) {
+  return key.startsWith('web/cs15/') || key.startsWith('web/cs16/')
+}
 function readBuckets(env, key) {
+  // CS 的大包已经迁到独立桶。迁移期仍回退旧 ROM 桶，避免漏传一个对象就让线上整局黑屏；
+  // 新桶绑定缺失时也保留旧部署行为，便于 Worker 与数据分两步发布。
+  if (isWebGameKey(key) && env.WEBGAMES && env.WEBGAMES !== env.ROMS) return [env.WEBGAMES, env.ROMS]
   return key.startsWith('covers/') && env.COVERS && env.COVERS !== env.ROMS
     ? [env.COVERS, env.ROMS] : [env.ROMS]
 }

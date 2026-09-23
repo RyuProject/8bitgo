@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * meta description 与 robots 的回归测试。跑：npm run test:seo-meta
+ * 页面标题、meta description 与 robots 的回归测试。跑：npm run test:seo-meta
  *
  * 病史（2026-09-11，Bing Webmaster Tools 报的三条「中度严重」里的两条）：
  *
@@ -59,6 +59,17 @@ const DESC_KEYS = [
  * 英文 50 个字符偏短，所以其他语言实际都在 100 以上，这条线只是兜底。
  */
 const MIN_DESC = 50
+const MIN_EXPANDED_DESC = 80
+const MIN_CJK_TITLE = 22
+const MIN_LATIN_TITLE = 35
+
+function siteBlock(lang) {
+  const src = read(`src/locales/${lang}.ts`)
+  const i = src.indexOf('\n  site: {')
+  assert.ok(i > 0, `${lang} 找不到 site 块`)
+  const j = src.indexOf('\n  },', i)
+  return src.slice(i, j)
+}
 
 function seoBlock(lang) {
   const src = read(`src/locales/${lang}.ts`)
@@ -75,7 +86,24 @@ function valueOf(block, key) {
   return dbl ? dbl[1] : null
 }
 
-console.log('一、每种语言的每条描述都不能太短')
+console.log('一、每种语言的页面标题都带搜索上下文')
+
+for (const lang of LANGS) {
+  const minTitle = ['zh-Hans', 'zh-Hant', 'ja'].includes(lang) ? MIN_CJK_TITLE : MIN_LATIN_TITLE
+  check(`${lang}：默认标题和普通页面标题都 ≥ ${minTitle} 码点`, () => {
+    const block = siteBlock(lang)
+    const defaultTitle = valueOf(block, 'defaultTitle')
+    const template = valueOf(block, 'titleTemplate')
+    assert.ok(defaultTitle, `${lang} 缺 site.defaultTitle`)
+    assert.ok(template, `${lang} 缺 site.titleTemplate`)
+    const expanded = template.replace('{title}', 'Games').replace('{site}', '8BitGo')
+    assert.ok([...defaultTitle.replace('{site}', '8BitGo')].length >= minTitle, `默认标题太短：${defaultTitle}`)
+    assert.ok([...expanded].length >= minTitle, `普通页面标题太短：${expanded}`)
+    assert.notEqual(template, '{title} - {site}', '仍是只有页面名和品牌名的旧模板')
+  })
+}
+
+console.log('二、每种语言的每条描述都不能太短')
 
 for (const lang of LANGS) {
   check(`${lang}：${DESC_KEYS.length} 条描述都 ≥ ${MIN_DESC} 码点`, () => {
@@ -91,7 +119,15 @@ for (const lang of LANGS) {
   })
 }
 
-console.log('二、界面文案不能拿来当描述')
+for (const lang of LANGS) {
+  check(`${lang}：短简介补充文案足以把摘要扩展到 ${MIN_EXPANDED_DESC} 码点`, () => {
+    const expansion = valueOf(seoBlock(lang), 'descriptionFallback')
+    assert.ok(expansion, `${lang} 缺 seo.descriptionFallback`)
+    assert.ok([...`短简介 — ${expansion}`].length >= MIN_EXPANDED_DESC, `补充后仍太短：${expansion}`)
+  })
+}
+
+console.log('三、界面文案不能拿来当描述')
 
 check('⚠️ 合集两个页面都不再用 collections.subtitle 当描述', () => {
   /*
@@ -122,18 +158,23 @@ check('首页合集卡片不再把「还没有描述」暴露给搜索摘要', (
   )
 })
 
-console.log('三、过长简介要收敛成可读的搜索摘要')
+console.log('四、短简介要补足上下文，过长简介要收敛成可读摘要')
 
-check('meta / Open Graph / Twitter 共用清理后的短摘要', () => {
+check('数据库短简介统一补到 80 码点，再供 meta / Open Graph / Twitter 共用', () => {
   const src = code('src/services/seo.ts')
-  assert.match(src, /normalizeMetaDescription\(description\)/, '页面描述没有经过摘要清理')
+  assert.match(src, /META_DESCRIPTION_MIN_LENGTH = 80/, '短简介下限不再是 80 个 Unicode 码点')
+  assert.match(
+    src,
+    /completeMetaDescription\(description, t\.seo\.descriptionFallback\)/,
+    '页面描述没有使用当前语言的补充文案',
+  )
   assert.match(src, /maxLength = 160/, '摘要上限不再是 160 个 Unicode 码点')
   for (const tag of ["['name', 'description', shortDescription]", "['property', 'og:description', shortDescription]", "['name', 'twitter:description', shortDescription]"]) {
     assert.ok(src.includes(tag), `${tag} 没有使用同一份短摘要`)
   }
 })
 
-console.log('四、noindex 的页面要 follow，不能 nofollow')
+console.log('五、noindex 的页面要 follow，不能 nofollow')
 
 check('⚠️ noindex 配的是 follow', () => {
   /*

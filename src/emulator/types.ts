@@ -61,7 +61,7 @@ export interface MountOptions {
   arcadeDip?: string
   /** 街机虚拟面板只展示这一款真正需要的 2 / 4 / 6 个动作键。 */
   arcadeButtons?: ArcadeButtonCount
-  /** Flash 的逐游戏键位；纯鼠标游戏留空，避免画出无效按钮。 */
+  /** Flash 的画面模式与逐游戏键位；纯鼠标游戏可以只配置画面模式。 */
   flashControls?: FlashControls
   /** js-dos 是否用相对鼠标并请求指针锁定；射击类需要，依赖绝对坐标的游戏不能开启。 */
   mouseCapture?: boolean

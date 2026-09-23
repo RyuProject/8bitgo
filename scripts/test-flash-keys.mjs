@@ -51,6 +51,13 @@ for (const [slug, keys] of Object.entries(FLASH_KEYS)) {
 assert.equal(flashKeysFor(undefined), null, '没有 slug（玩家自己传的 SWF）不该有手柄')
 assert.equal(flashKeysFor('这款不存在'), null, '表里没有的游戏不该有手柄')
 assert.equal(flashKeysFor('local:我的游戏.swf'), null, '本地文件不该有手柄')
+assert.equal(flashKeysFor('fireboy-and-watergirl', { displayMode: 'ruffle' }), null,
+  '数据库只保存显示模式时，不应把旧代码表的键位偷偷加回来')
+assert.deepEqual(
+  flashKeysFor('anything', { displayMode: 'ruffle', p1: { up: 'ArrowUp' } }),
+  { p1: { up: 'ArrowUp' } },
+  '运行时键位不应混入画面显示配置',
+)
 
 /* ---------- 5. 预设本身也得是合法键名 ---------- */
 for (const [name, pad] of Object.entries(PRESET)) {

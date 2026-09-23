@@ -57,8 +57,11 @@ export function keyDesc(name: string): KeyDesc | null {
   return null
 }
 
-/** 兼容旧名字，避免适配器和测试因为数据类型挪到公共模型而产生无意义改动。 */
-export type FlashKeys = FlashControls
+/** 运行时拿到的键位一定有 p1；显示模式只属于游戏配置，不应该混进按键注入。 */
+export interface FlashKeys {
+  p1: FlashPad
+  p2?: FlashPad
+}
 
 const ARROWS: FlashPad = { up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight' }
 const WASD: FlashPad = { up: 'KeyW', down: 'KeyS', left: 'KeyA', right: 'KeyD' }
@@ -117,6 +120,11 @@ export const FLASH_KEYS: Record<string, FlashKeys> = {
  * 下面这张常量表不再继续增长，只负责旧数据迁移期间兜底。
  */
 export function flashKeysFor(slug?: string, configured?: FlashControls): FlashKeys | null {
-  // 数据库优先；代码表只为尚未迁到后台的旧游戏兜底，管理员保存后无需重新构建前端。
-  return configured || (slug && FLASH_KEYS[slug]) || null
+  // 数据库优先；即使只保存了显示模式，也表示管理员已经明确配置过这款游戏，不能再把旧代码表
+  // 里的手柄偷偷加回来。纯鼠标游戏因此可以安全地单独选择 Ruffle 原始显示。
+  if (configured) {
+    if (!configured.p1 || !Object.keys(configured.p1).length) return null
+    return { p1: configured.p1, ...(configured.p2 ? { p2: configured.p2 } : {}) }
+  }
+  return (slug && FLASH_KEYS[slug]) || null
 }

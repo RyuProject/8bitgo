@@ -53,7 +53,7 @@ const de: Translation = {
   /* ---------------- Seitentitel ---------------- */
   site: {
     defaultTitle: '{site} — Retro-Emulator-Spiele kostenlos online spielen',
-    titleTemplate: '{title} - {site}',
+    titleTemplate: '{title} | Klassische Retro-Spiele online - {site}',
   },
 
   /* ---------------- Navigation ---------------- */
@@ -1464,6 +1464,7 @@ const de: Translation = {
       gb: '',
       java: '',
     },
+    descriptionFallback: 'Entdecke die Inhalte direkt im Browser mit 8BitGo, ohne Emulator-Installation, mit Plattforminfos, Steuerung, Speicherständen, Gamepad-Support und weiteren Klassikern.',
     home: 'Klassische Emulator-Spiele kostenlos im Browser: Hunderte Titel für NES, SNES, GBA, PS1, N64 und Arcade – ohne Download, mit Speicherpunkten und Gamepad-Support.',
     games: 'Alle Retro-Spiele auf 8BitGo durchstöbern: nach Plattform, Genre oder Entwickler filtern und sofort losspielen – ohne Download, ohne Installation.',
     platforms: 'Retro-Spiele nach Plattform: NES, SNES, GBA, PS1, N64, Arcade, DOS und mehr – alle kostenlos und direkt im Browser spielbar.',

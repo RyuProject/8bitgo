@@ -5,9 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   html, body { margin: 0; height: 100%; background: #0b0b0f; overflow: hidden; }
-  #host { width: 100%; height: 100%; contain: strict; }
-  #host > * { width: 100%; height: 100%; display: block; }
+  #host {
+    width: 100%; height: 100%; contain: strict; overflow: hidden;
+    display: grid; place-items: center; background: #0b0b0f;
+  }
+  #stage { width: 100%; height: 100%; min-width: 0; min-height: 0; transform-origin: center; }
+  #stage > * { width: 100%; height: 100%; display: block; }
 </style>
 </head>
-<body><div id="host"></div></body>
+<body><div id="host"><div id="stage"></div></div></body>
 </html>

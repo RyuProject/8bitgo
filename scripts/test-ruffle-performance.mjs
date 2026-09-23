@@ -8,6 +8,7 @@ import {
   RUFFLE_FIXED_QUALITY,
   supportsRuffleWasmExtensions,
 } from '../src/emulator/rufflePerformance.ts'
+import { ruffleStageScale, ruffleStageSize } from '../src/emulator/ruffleStageFit.ts'
 import { isSfsGame } from '../shared/sfs-games.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -23,6 +24,16 @@ const locked = {}
 Object.defineProperty(locked, 'devicePixelRatio', { configurable: false, value: 2 })
 assert.equal(installRufflePixelRatioCap(locked), 2, '浏览器拒绝覆盖时必须安全退回原值')
 
+console.log('── 原始舞台等比居中 ──')
+assert.deepEqual(ruffleStageSize({ width: 800, height: 600 }), { width: 800, height: 600 })
+assert.deepEqual(ruffleStageSize({ width: 799.6, height: 599.6 }), { width: 800, height: 600 })
+for (const bad of [null, {}, { width: '800', height: 600 }, { width: 0, height: 600 }, { width: Infinity, height: 600 }, { width: 20000, height: 600 }]) {
+  assert.equal(ruffleStageSize(bad), null, `损坏的舞台尺寸不应进入样式：${JSON.stringify(bad)}`)
+}
+assert.equal(ruffleStageScale(1920, 1080, { width: 800, height: 600 }), 1.8)
+assert.equal(ruffleStageScale(600, 900, { width: 800, height: 600 }), 0.75)
+assert.equal(ruffleStageScale(0, 900, { width: 800, height: 600 }), null)
+
 console.log('── WASM 变体选择 ──')
 let probes = 0
 assert.equal(supportsRuffleWasmExtensions(() => { probes++; return true }), true)
@@ -32,6 +43,7 @@ assert.equal(supportsRuffleWasmExtensions(() => { throw new Error('blocked') }),
 
 console.log('── 启动链与固定均衡档 ──')
 const adapter = read('src/emulator/adapters/ruffle.ts')
+const frame = read('public/flash-frame.html')
 const player = read('src/emulator/EmulatorPlayer.tsx')
 const types = read('src/emulator/types.ts')
 assert.equal(RUFFLE_FIXED_QUALITY, 'medium', 'Ruffle 默认画质必须固定为均衡档')
@@ -50,6 +62,11 @@ assert.match(adapter, /Promise\.resolve\(\)\.then\(\(\) => api!\.load\(loadOptio
   'load 与元数据等待必须由同一个 Promise.all 接管，避免销毁时出现未处理 rejection')
 assert.match(adapter, /scheduleCanvasCapabilities\(\)/, '舞台画布晚创建时必须补报截图 / 录屏能力')
 assert.match(adapter, /audioContext\.close\(\)\.catch/, '销毁时要兜底关闭残留音频线程')
+assert.match(adapter, /player\.metadata/, '元数据就绪后必须读取 SWF 原始舞台尺寸')
+assert.match(adapter, /new win\.ResizeObserver\(update\)/, '播放器容器变化时必须重新计算缩放')
+assert.match(adapter, /options\.flashControls\?\.displayMode !== 'ruffle'/, '必须保留逐游戏兼容退回开关')
+assert.match(adapter, /cancelStageFit\(\)/, '销毁会话时必须断开舞台尺寸监听')
+assert.match(frame, /id="stage"/, '独立舞台层不能被删掉，否则 CSS 缩放会直接改写 Ruffle 视口')
 
 console.log('── 大核心预热与旁路门控 ──')
 const manifest = JSON.parse(read('public/ruffle/v0.6.0/runtime.json'))
@@ -66,4 +83,4 @@ assert.match(prewarm, /bootstrap\.json/)
 assert.equal(isSfsGame('sas3'), true)
 assert.equal(isSfsGame('infectonator-2'), false)
 
-console.log('✅ Ruffle 均衡档、像素降载、启动并行、核心预热与 SFS 门控通过')
+console.log('✅ Ruffle 等比舞台、均衡档、像素降载、启动并行、核心预热与 SFS 门控通过')

@@ -1,6 +1,6 @@
 # 8bitgo-roms · 审计修复版
 
-审计日期：2026-09-20。原包两个 Worker 的接口、桶绑定和兼容日期保留；重点修复错误请求误删/覆盖最终对象、跨桶分页、续传故障恢复、HTTP 条件请求及资源反代边界。
+审计日期：2026-09-20。原包两个 Worker 的接口和兼容日期保留；重点修复错误请求误删/覆盖最终对象、跨桶分页、续传故障恢复、HTTP 条件请求及资源反代边界。2026-09-23 新增只读 `WEBGAMES` 绑定，用于从独立桶提供 CS 大包。
 
 **这是经过离线回归的部署候选，不是 Cloudflare 线上验收结果。** 详细证据、性能取舍和剩余风险见 `AUDIT.md`。没有接入或修改你的 Cloudflare 账户、R2 数据和域名路由。
 
@@ -38,7 +38,7 @@ npx wrangler deploy --dry-run
 npx wrangler deploy
 ```
 
-原配置保留 `ROMS → 8bitgo`、`COVERS → 8bitgo-image`，`compatibility_date = "2026-01-01"`。缺省无 COVERS 的旧部署仍回退 ROMS。部署前核对控制台已有变量、Secret、路由和桶名称，不要把生产 ADMIN_TOKEN 写到公开仓库、前台构建变量或请求 URL。
+当前配置为 `ROMS → 8bitgo`、`COVERS → 8bitgo-image`、`WEBGAMES → 8bitgo-webgame`，`compatibility_date = "2026-01-01"`。`/web/cs15/`、`/web/cs16/` 公开读取优先查 WEBGAMES，缺对象或旧部署未绑定时回退 ROMS；管理接口仍只管理 ROMS/COVERS。部署前核对控制台已有变量、Secret、路由和桶名称，不要把生产 ADMIN_TOKEN 写到公开仓库、前台构建变量或请求 URL。
 
 网站可继续把 ROM Worker 地址用作 `VITE_ROM_BASE_URL` 或后台 ROM 存储服务地址。公开读取仍无需口令；修改、列表和上传仍只接受 `Authorization: Bearer <ADMIN_TOKEN>`。CORS 不是权限控制，不阻止非浏览器请求。
 

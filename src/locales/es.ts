@@ -53,7 +53,7 @@ const es: Translation = {
   /* ---------------- Título del sitio ---------------- */
   site: {
     defaultTitle: '{site} — Juega gratis a juegos retro de emulador en línea',
-    titleTemplate: '{title} - {site}',
+    titleTemplate: '{title} | Juegos retro clásicos online - {site}',
   },
 
   /* ---------------- Navegación ---------------- */
@@ -1463,6 +1463,7 @@ const es: Translation = {
       gb: '',
       java: '',
     },
+    descriptionFallback: 'Explóralo en el navegador con 8BitGo sin instalar un emulador, con información de plataforma, controles, guardado rápido, mando y más juegos clásicos.',
     home: 'Juega gratis a los juegos de emulador clásicos: cientos de títulos de NES, SNES, GBA, PS1, N64 y arcade en tu navegador, sin descargas y con guardado rápido.',
     games: 'Explora todos los juegos retro de 8BitGo: filtra por plataforma, género o desarrollador y juega al instante, sin descargar ni instalar nada.',
     platforms: 'Juegos retro por plataforma: NES, SNES, GBA, PS1, N64, arcade, DOS y muchas más, todas gratis y listas para jugar en tu navegador.',

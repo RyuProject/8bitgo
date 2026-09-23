@@ -1192,8 +1192,10 @@ hreflang，Google 会收到多份正文完全相同的 URL，抓取预算和规�
 - 图片 sitemap 只接收主域、`image.8bitgo.com`、`assets.8bitgo.com` 这类本站可验证域名；数据库
   里的第三方热链可以继续在页面显示，但不能写进 `<image:loc>`。内部 `covers/` key 走
   `COVER_BASE_URL`（默认 `https://image.8bitgo.com`）。
-- `normalizeMetaDescription` 只把 meta / OG / Twitter 摘要收敛到 160 个 Unicode 码点；页面正文
-  和 JSON-LD 保留全文。不要在调用方各自 `slice()`，否则中英文会按 UTF-16 截出半个字符。
+- `completeMetaDescription` 会给不足 80 个 Unicode 码点的数据库简介补上当前语言的
+  `seo.descriptionFallback`，再由 `normalizeMetaDescription` 把 meta / OG / Twitter 摘要收敛到
+  160 个码点；页面正文和 JSON-LD 保留全文。不要在调用方各自 `slice()`，否则中英文会按
+  UTF-16 截出半个字符。普通页标题统一通过本地化的 `site.titleTemplate` 补足搜索意图关键词。
 
 ---
 
