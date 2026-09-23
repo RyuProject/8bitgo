@@ -174,6 +174,11 @@ try {
     assert.ok(writes.includes('/reanim/test-1999.reanim'))
     assert.equal(await page.evaluate(() => normalizeSaveImportPath('../escape.dat')), '')
     assert.equal(await page.evaluate(() => normalizeResourcePath('wrapper/main.pak')), 'main.pak')
+    assert.equal(await page.locator('#save-export-btn').textContent(), '💾 导出存档')
+    assert.equal(await page.locator('#save-import-btn').textContent(), '📂 读取存档')
+    const fileChooser = page.waitForEvent('filechooser')
+    await page.locator('#save-import-btn').click()
+    await fileChooser
     assert.deepEqual(pageErrors, [])
     await context.close()
   }
@@ -192,7 +197,10 @@ try {
 
     await frame.locator('#save-export-btn').click()
     await page.waitForFunction(() => window.__bridgeMessages.some((item) => item?.type === 'request-save'))
-    assert.equal(await frame.locator('#save-export-btn').textContent(), '💾 8BitGo 存档')
+    assert.equal(await frame.locator('#save-export-btn').textContent(), '💾 保存存档')
+    await frame.locator('#save-import-btn').click()
+    await page.waitForFunction(() => window.__bridgeMessages.some((item) => item?.type === 'request-load'))
+    assert.equal(await frame.locator('#save-import-btn').textContent(), '📂 读取存档')
 
     await page.evaluate(() => window.__bridgeSend('export', 41))
     await page.waitForFunction(() => window.__bridgeMessages.some((item) => item?.type === 'response' && item.requestId === 41))
@@ -202,7 +210,10 @@ try {
     })
     assert.deepEqual(zipMagic, [80, 75, 3, 4], '存档桥导出的不是 ZIP')
 
-    await frame.evaluate(() => Module.FS.unlink('/saves/userdata/player.dat'))
+    await frame.evaluate(() => {
+      Module.FS.unlink('/saves/userdata/player.dat')
+      Module.FS.writeFile('/saves/userdata/stale.dat', new Uint8Array([99]))
+    })
     await page.evaluate(() => {
       const response = window.__bridgeMessages.find((item) => item?.type === 'response' && item.requestId === 41)
       window.__bridgeSend('import', 42, response.data.slice(0))
@@ -212,6 +223,11 @@ try {
       await frame.evaluate(() => Array.from(Module.FS.readFile('/saves/userdata/player.dat'))),
       [8, 16, 32],
       '存档桥导入后没有恢复 userdata',
+    )
+    assert.equal(
+      await frame.evaluate(() => Module.FS.readdir('/saves/userdata').includes('stale.dat')),
+      false,
+      '读取完整快照后仍残留旧存档文件',
     )
     assert.deepEqual(pageErrors, [])
     await context.close()

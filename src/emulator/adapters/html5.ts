@@ -84,7 +84,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
       return
     }
-    if (message.type === 'request-save') {
+    // 保存和读取共用外层的三卡面板；区分消息名只是让游戏里的两个按钮语义明确。
+    if (message.type === 'request-save' || message.type === 'request-load') {
       if (saveBridgeReady) options.onSaveRequested?.()
       return
     }

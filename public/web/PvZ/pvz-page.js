@@ -44,6 +44,9 @@ const uploadSaveImportDirBtn = document.getElementById("upload-save-import-dir-b
 const uploadSaveClearBtn = document.getElementById("upload-save-clear-btn");
 const uploadSaveImportInput = document.getElementById("upload-save-import-input");
 const uploadSaveImportDirInput = document.getElementById("upload-save-import-dir-input");
+const saveExportBtn = document.getElementById("save-export-btn");
+const saveImportBtn = document.getElementById("save-import-btn");
+const saveImportInput = document.getElementById("save-import-input");
 const reselectLink = document.getElementById("reselect-link");
 
 function withTimeout(promise, ms, message) {
@@ -502,6 +505,20 @@ function collectSaveFiles(path) {
   return files;
 }
 
+/** 读档是“恢复快照”而不是合并目录；旧档多出来的文件必须一起移除，否则会串档。 */
+function clearSaveTree(path, removeRoot) {
+  let names;
+  try { names = Module.FS.readdir(path); } catch { return; }
+  for (const name of names) {
+    if (name === "." || name === "..") continue;
+    const child = path + "/" + name;
+    const stat = Module.FS.stat(child);
+    if (Module.FS.isDir(stat.mode)) clearSaveTree(child, true);
+    else Module.FS.unlink(child);
+  }
+  if (removeRoot) Module.FS.rmdir(path);
+}
+
 async function buildSaveArchive() {
   await ensureSaveFsReady();
   await syncSaves();
@@ -513,7 +530,8 @@ async function buildSaveArchive() {
 }
 
 async function exportSaves() {
-  const button = document.getElementById("save-export-btn");
+  const button = saveExportBtn;
+  const oldText = button.textContent;
   button.disabled = true;
   button.textContent = "⏳ Exporting…";
   try {
@@ -531,7 +549,7 @@ async function exportSaves() {
     alert("Export failed: " + error.message);
   } finally {
     button.disabled = false;
-    button.textContent = "💾 Export Saves";
+    button.textContent = oldText;
   }
 }
 
@@ -550,11 +568,33 @@ async function applySaveArchive(input) {
     }
     pending.push({ path: "/saves/userdata/" + item.path, bytes });
   }
-  for (const item of pending) {
-    ensureParentDirectories(item.path);
-    Module.FS.writeFile(item.path, item.bytes);
+  if (!pending.length) throw new Error("存档 ZIP 没有可读取的 userdata 文件");
+
+  // 先在内存留一份旧档：写入或持久化失败时回滚，不能让“读取失败”反而毁掉现有进度。
+  const previous = collectSaveFiles("/saves/userdata").map((path) => ({
+    path,
+    bytes: new Uint8Array(Module.FS.readFile(path)),
+  }));
+  try {
+    clearSaveTree("/saves/userdata", false);
+    for (const item of pending) {
+      ensureParentDirectories(item.path);
+      Module.FS.writeFile(item.path, item.bytes);
+    }
+    await syncSaves();
+  } catch (error) {
+    try {
+      clearSaveTree("/saves/userdata", false);
+      for (const item of previous) {
+        ensureParentDirectories(item.path);
+        Module.FS.writeFile(item.path, item.bytes);
+      }
+      await syncSaves();
+    } catch (rollbackError) {
+      console.error("Save rollback failed:", rollbackError);
+    }
+    throw error;
   }
-  await syncSaves();
 }
 
 async function importSaves(file, button) {
@@ -563,9 +603,11 @@ async function importSaves(file, button) {
   button.textContent = "⏳ Importing…";
   try {
     await applySaveArchive(file);
+    return true;
   } catch (error) {
     console.error("Import failed:", error);
     alert("Import failed: " + error.message);
+    return false;
   } finally {
     button.disabled = false;
     button.textContent = oldText;
@@ -592,10 +634,11 @@ function postSaveBridge(message, transfer) {
 
 function installSaveBridge() {
   if (!hasEightBitGoSaveHost()) return false;
-  const button = document.getElementById("save-export-btn");
   const chinese = (window.PVZ_LOCALE || document.documentElement.lang || "").toLowerCase().startsWith("zh");
-  button.textContent = chinese ? "💾 8BitGo 存档" : "💾 8BitGo Saves";
-  button.title = chinese ? "保存到云端、本浏览器或文件" : "Save to cloud, this browser, or a file";
+  saveExportBtn.textContent = chinese ? "💾 保存存档" : "💾 Save";
+  saveExportBtn.title = chinese ? "保存到云端、本浏览器或文件" : "Save to cloud, this browser, or a file";
+  saveImportBtn.textContent = chinese ? "📂 读取存档" : "📂 Load";
+  saveImportBtn.title = chinese ? "从云端、本浏览器或文件读取" : "Load from cloud, this browser, or a file";
 
   window.addEventListener("message", (event) => {
     if (event.source !== window.parent || event.origin !== location.origin) return;
@@ -824,9 +867,29 @@ reselectLink.addEventListener("click", (event) => {
 
 window.addEventListener("fullscreenchange", resizeCanvas);
 const saveBridgeInstalled = installSaveBridge();
-document.getElementById("save-export-btn").addEventListener("click", () => {
+const saveToolbarChinese = (window.PVZ_LOCALE || document.documentElement.lang || "").toLowerCase().startsWith("zh");
+if (!saveBridgeInstalled && saveToolbarChinese) {
+  saveExportBtn.textContent = "💾 导出存档";
+  saveExportBtn.title = "把当前存档导出为 ZIP 文件";
+  saveImportBtn.textContent = "📂 读取存档";
+  saveImportBtn.title = "从 ZIP 文件读取存档并重新启动游戏";
+}
+saveExportBtn.addEventListener("click", () => {
   if (saveBridgeInstalled) postSaveBridge({ type: "request-save" });
   else void exportSaves();
+});
+saveImportBtn.addEventListener("click", () => {
+  if (saveBridgeInstalled) postSaveBridge({ type: "request-load" });
+  else saveImportInput.click();
+});
+saveImportInput.addEventListener("change", async (event) => {
+  const file = event.target.files[0];
+  event.target.value = "";
+  if (!file) return;
+  const imported = await importSaves(file, saveImportBtn);
+  if (!imported) return;
+  alert(saveToolbarChinese ? "存档读取成功，游戏将重新启动。" : "Save loaded. The game will now restart.");
+  window.location.reload();
 });
 uploadSaveImportBtn.addEventListener("click", () => uploadSaveImportInput.click());
 uploadSaveImportInput.addEventListener("change", (event) => {

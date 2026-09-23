@@ -52,11 +52,13 @@ for (const locale of ['cn', 'en']) {
   ok((html.match(/PvZ_AUTOPLAY_START/g) || []).length === 1, `${locale}/index.html 自动加载片段重复`)
   ok(html.includes('<base href=/web/PvZ/>'), `${locale}/index.html 缺少固定 base`)
   ok(html.includes('<link rel=preload href=pvz-portable.wasm as=fetch crossorigin>'), `${locale}/index.html 缺少 wasm preload`)
-  ok(html.includes('<script src=pvz-page.js?v=20260923-save1></script>'), `${locale}/index.html 没有引用当前版本的共用运行脚本`)
+  ok(html.includes('<script src=pvz-page.js?v=20260923-save2></script>'), `${locale}/index.html 没有引用当前版本的共用运行脚本`)
+  ok(html.includes('id=save-import-btn'), `${locale}/index.html 缺少游戏内读取存档按钮`)
+  ok(html.includes('id=save-import-input'), `${locale}/index.html 缺少游戏内存档文件选择器`)
   ok(!html.includes('const collectedFiles'), `${locale}/index.html 又出现内联运行脚本，中英文会再次分叉`)
   ok(html.includes(config), `${locale}/index.html 语言或清单配置错误`)
   const engineAt = html.indexOf('<script src=pvz-portable.js async onerror=')
-  const runtimeAt = html.indexOf('<script src=pvz-page.js?v=20260923-save1></script>')
+  const runtimeAt = html.indexOf('<script src=pvz-page.js?v=20260923-save2></script>')
   const autoplayAt = html.indexOf(START)
   ok(engineAt >= 0 && runtimeAt > engineAt && autoplayAt > runtimeAt, `${locale}/index.html 脚本顺序错误`)
 
@@ -91,7 +93,7 @@ for (const name of ['pvz-page.js', 'pvz-portable.js', 'pvz-portable.wasm', 'jszi
 if (existsSync(resolve(root, 'pvz-page.js'))) {
   const runtime = text(resolve(root, 'pvz-page.js'))
   try { new Function(runtime) } catch (error) { errors.push(`pvz-page.js 语法错误：${error.message}`) }
-  for (const marker of ['inspectZip', 'unpackPvzBundle', 'DecompressionStream', 'EXIT_SAVE_TIMEOUT_MS', 'saveSyncQueued = true', 'window.__pvzStartTs = Date.now()', 'if (!window.__pvzGuardedReload())', '8bitgo-save-bridge', 'buildSaveArchive', 'applySaveArchive']) {
+  for (const marker of ['inspectZip', 'unpackPvzBundle', 'DecompressionStream', 'EXIT_SAVE_TIMEOUT_MS', 'saveSyncQueued = true', 'window.__pvzStartTs = Date.now()', 'if (!window.__pvzGuardedReload())', '8bitgo-save-bridge', 'buildSaveArchive', 'applySaveArchive', 'request-load']) {
     ok(runtime.includes(marker), `pvz-page.js 缺少关键保护：${marker}`)
   }
   ok(!runtime.includes('__pvzGuardedReload() || window.location.reload()'), '退出刷新守卫被兜底 reload 绕过')
