@@ -11,6 +11,26 @@ import { focusFrame, frameGamepads } from '../frameFocus'
 const SAVE_BRIDGE_SOURCE = '8bitgo-save-bridge'
 const SAVE_BRIDGE_VERSION = 1
 const SAVE_BRIDGE_TIMEOUT_MS = 15_000
+const PVZ_SHELL_VERSION = '20260923-save2'
+
+/**
+ * PvZ 的 HTML 外壳是固定文件名，Cloudflare 允许旧副本继续服务一小段时间。
+ * 后台游戏详情同样有边缘缓存：即使数据库已经换成带版本号的地址，详情接口仍可能短暂
+ * 返回不带查询串的旧地址。播放器在最后一跳补上发布代次，避免新增的存档按钮再次被旧壳吞掉。
+ *
+ * 只改本站精确的中英文入口；第三方 HTML5 游戏和 PvZ 的资源子路径都保持原样。
+ */
+export function versionHtml5Entry(value: string, base = location.href): string {
+  try {
+    const baseUrl = new URL(base)
+    const url = new URL(value, baseUrl)
+    if (url.origin !== baseUrl.origin || !/^\/web\/PvZ\/(?:cn|en)\/?$/.test(url.pathname)) return value
+    url.searchParams.set('shell', PVZ_SHELL_VERSION)
+    return url.href
+  } catch {
+    return value
+  }
+}
 
 interface SaveBridgeMessage {
   source?: string
@@ -146,7 +166,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   container.replaceChildren(iframe)
 
   if (typeof options.game === 'string') {
-    iframe.src = options.game
+    iframe.src = versionHtml5Entry(options.game)
   } else {
     // 单文件 HTML 可以直接运行；需要其它素材的项目应部署完整目录并绑定 index.html。
     objectUrl = URL.createObjectURL(options.game)

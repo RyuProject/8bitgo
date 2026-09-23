@@ -14,6 +14,7 @@ const repo = resolve(here, '..')
 const useDist = process.argv.includes('--dist')
 const root = useDist ? resolve(repo, 'dist/client/web/PvZ') : resolve(repo, 'public/web/PvZ')
 const sourceRoot = resolve(repo, 'public/web/PvZ')
+const html5AdapterPath = resolve(repo, 'src/emulator/adapters/html5.ts')
 const snippet = readFileSync(resolve(repo, 'scripts/pvz-web/autoplay-snippet.html'), 'utf8')
 const START = '<!-- PvZ_AUTOPLAY_START -->'
 const END = '<!-- PvZ_AUTOPLAY_INJECTED -->'
@@ -22,6 +23,12 @@ const errors = []
 const ok = (condition, message) => { if (!condition) errors.push(message) }
 const text = (path) => readFileSync(path, 'utf8')
 const sha256 = (path) => createHash('sha256').update(readFileSync(path)).digest('hex')
+
+if (existsSync(html5AdapterPath)) {
+  const html5Adapter = text(html5AdapterPath)
+  ok(html5Adapter.includes("const PVZ_SHELL_VERSION = '20260923-save2'"), 'HTML5 播放器没有锁定当前 PvZ 外壳版本')
+  ok(html5Adapter.includes('iframe.src = versionHtml5Entry(options.game)'), 'HTML5 播放器没有给 PvZ 入口补发布代次')
+}
 
 function extractSnippet(html) {
   const start = html.indexOf(START)
