@@ -8,6 +8,7 @@
  * 两种引擎的存档不是一回事，所以用 runtime 区分、互不覆盖：
  *   emulatorjs  内存快照（整台机器某一帧的状态），NES 约 20KB、GBA 几十 KB
  *   jsdos       DOS 文件系统的**变更包**（盘上被改过的文件），几 KB 到几百 KB
+ *   html5       接入本站存档桥的网页游戏存档包（例如 PvZ 的 userdata ZIP）
  *
  * 存档是二进制的，所以这里用 express.raw 收，不走全局的 express.json。
  */
@@ -32,7 +33,7 @@ const MAX_TOTAL_BYTES = Number(process.env.SAVE_MAX_TOTAL_BYTES || 64 * 1024 * 1
 const MAX_SLOT = 9
 
 /** 只认已知的引擎名，别让人往库里塞任意字符串 */
-const RUNTIMES = new Set(['emulatorjs', 'jsdos', 'cloudgame', 'jsnes', 'ruffle', 'webretro', 'j2me'])
+const RUNTIMES = new Set(['emulatorjs', 'jsdos', 'cloudgame', 'jsnes', 'ruffle', 'webretro', 'j2me', 'html5'])
 
 /**
  * 存档的 key 是 slug；本地文件没有 slug，前端会给个 `local:文件名` 的形式 ——

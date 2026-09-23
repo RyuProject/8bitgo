@@ -147,6 +147,13 @@ export interface MountOptions {
    */
   onFlashSaveLoginRequired?: () => void
   /**
+   * 内嵌网页游戏请求打开 8BitGo 的统一存档面板。
+   *
+   * 只表示「玩家点了游戏里的存档入口」，真正导出、上传和登录判断仍由外层完成；
+   * 网页游戏不能直接接触站点令牌，否则任何被收录页面都可能拿它冒充玩家。
+   */
+  onSaveRequested?: () => void
+  /**
    * 资源齐了、这局可以真正开始玩了。
    *
    * ⚠️ 语义是「玩家可以动手了」，不是「iframe 的 document 加载完了」。

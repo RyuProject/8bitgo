@@ -29,6 +29,8 @@ const MODULE_READY_TIMEOUT_MS = 120000;
 const EXIT_SAVE_TIMEOUT_MS = 10000;
 const RESOURCE_IMPORT_LIMITS = { maxArchive: 256 * MB, maxExpanded: 384 * MB, maxFile: 160 * MB, maxFiles: 10000 };
 const SAVE_IMPORT_LIMITS = { maxArchive: 64 * MB, maxExpanded: 128 * MB, maxFile: 32 * MB, maxFiles: 4096 };
+const SAVE_BRIDGE_SOURCE = "8bitgo-save-bridge";
+const SAVE_BRIDGE_VERSION = 1;
 
 const dropZone = document.getElementById("drop-zone");
 const fileInput = document.getElementById("file-input");
@@ -500,18 +502,23 @@ function collectSaveFiles(path) {
   return files;
 }
 
+async function buildSaveArchive() {
+  await ensureSaveFsReady();
+  await syncSaves();
+  const files = collectSaveFiles("/saves/userdata");
+  if (!files.length) throw new Error("No save data found.");
+  const zip = new JSZip();
+  for (const path of files) zip.file(path.replace(/^\/saves\//, ""), Module.FS.readFile(path));
+  return zip.generateAsync({ type: "uint8array", compression: "DEFLATE", compressionOptions: { level: 6 } });
+}
+
 async function exportSaves() {
   const button = document.getElementById("save-export-btn");
   button.disabled = true;
   button.textContent = "⏳ Exporting…";
   try {
-    await ensureSaveFsReady();
-    await syncSaves();
-    const files = collectSaveFiles("/saves/userdata");
-    if (!files.length) { alert("No save data found."); return; }
-    const zip = new JSZip();
-    for (const path of files) zip.file(path.replace(/^\/saves\//, ""), Module.FS.readFile(path));
-    const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } });
+    const bytes = await buildSaveArchive();
+    const blob = new Blob([bytes], { type: "application/zip" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -528,30 +535,34 @@ async function exportSaves() {
   }
 }
 
-async function importSaves(file, button) {
+async function applySaveArchive(input) {
   await ensureSaveFsReady();
+  if (byteLengthOf(input) > SAVE_IMPORT_LIMITS.maxArchive) throw new Error("存档 ZIP 超过 64 MB");
+  const zip = await JSZip.loadAsync(input);
+  const entries = inspectZip(zip, SAVE_IMPORT_LIMITS, normalizeSaveImportPath, "存档 ZIP");
+  const pending = [];
+  let actualTotal = 0;
+  for (const item of entries) {
+    const bytes = await item.entry.async("uint8array");
+    actualTotal += bytes.byteLength;
+    if (bytes.byteLength > SAVE_IMPORT_LIMITS.maxFile || actualTotal > SAVE_IMPORT_LIMITS.maxExpanded) {
+      throw new Error("存档 ZIP 解压后超过安全上限");
+    }
+    pending.push({ path: "/saves/userdata/" + item.path, bytes });
+  }
+  for (const item of pending) {
+    ensureParentDirectories(item.path);
+    Module.FS.writeFile(item.path, item.bytes);
+  }
+  await syncSaves();
+}
+
+async function importSaves(file, button) {
   button.disabled = true;
   const oldText = button.textContent;
   button.textContent = "⏳ Importing…";
   try {
-    if (file.size > SAVE_IMPORT_LIMITS.maxArchive) throw new Error("存档 ZIP 超过 64 MB");
-    const zip = await JSZip.loadAsync(file);
-    const entries = inspectZip(zip, SAVE_IMPORT_LIMITS, normalizeSaveImportPath, "存档 ZIP");
-    const pending = [];
-    let actualTotal = 0;
-    for (const item of entries) {
-      const bytes = await item.entry.async("uint8array");
-      actualTotal += bytes.byteLength;
-      if (bytes.byteLength > SAVE_IMPORT_LIMITS.maxFile || actualTotal > SAVE_IMPORT_LIMITS.maxExpanded) {
-        throw new Error("存档 ZIP 解压后超过安全上限");
-      }
-      pending.push({ path: "/saves/userdata/" + item.path, bytes });
-    }
-    for (const item of pending) {
-      ensureParentDirectories(item.path);
-      Module.FS.writeFile(item.path, item.bytes);
-    }
-    await syncSaves();
+    await applySaveArchive(file);
   } catch (error) {
     console.error("Import failed:", error);
     alert("Import failed: " + error.message);
@@ -559,6 +570,65 @@ async function importSaves(file, button) {
     button.disabled = false;
     button.textContent = oldText;
   }
+}
+
+/**
+ * 8BitGo 模拟器窗口只拿一份 ZIP，不直接摸 PvZ 的虚拟文件系统；账号令牌也永远不进 iframe。
+ * 单独打开本页时保留原来的下载行为，只有同源父窗口嵌入时才把按钮交给统一存档面板。
+ */
+function hasEightBitGoSaveHost() {
+  if (window.parent === window) return false;
+  try { return new URL(document.referrer).origin === location.origin; }
+  catch { return false; }
+}
+
+function postSaveBridge(message, transfer) {
+  window.parent.postMessage(
+    Object.assign({ source: SAVE_BRIDGE_SOURCE, version: SAVE_BRIDGE_VERSION }, message),
+    location.origin,
+    transfer || [],
+  );
+}
+
+function installSaveBridge() {
+  if (!hasEightBitGoSaveHost()) return false;
+  const button = document.getElementById("save-export-btn");
+  const chinese = (window.PVZ_LOCALE || document.documentElement.lang || "").toLowerCase().startsWith("zh");
+  button.textContent = chinese ? "💾 8BitGo 存档" : "💾 8BitGo Saves";
+  button.title = chinese ? "保存到云端、本浏览器或文件" : "Save to cloud, this browser, or a file";
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== window.parent || event.origin !== location.origin) return;
+    const message = event.data;
+    if (!message || message.source !== SAVE_BRIDGE_SOURCE || message.version !== SAVE_BRIDGE_VERSION ||
+        !Number.isInteger(message.requestId)) return;
+    if (message.type !== "export" && message.type !== "import") return;
+
+    void (async () => {
+      try {
+        if (message.type === "export") {
+          const bytes = await buildSaveArchive();
+          const data = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+          postSaveBridge({ type: "response", requestId: message.requestId, ok: true, data }, [data]);
+          return;
+        }
+        if (!(message.data instanceof ArrayBuffer) || message.data.byteLength === 0) {
+          throw new Error("导入的存档为空");
+        }
+        await applySaveArchive(new Uint8Array(message.data));
+        postSaveBridge({ type: "response", requestId: message.requestId, ok: true });
+      } catch (error) {
+        postSaveBridge({
+          type: "response",
+          requestId: message.requestId,
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })();
+  });
+  postSaveBridge({ type: "ready" });
+  return true;
 }
 
 async function importSaveDirectory(files, button) {
@@ -753,7 +823,11 @@ reselectLink.addEventListener("click", (event) => {
 });
 
 window.addEventListener("fullscreenchange", resizeCanvas);
-document.getElementById("save-export-btn").addEventListener("click", () => { void exportSaves(); });
+const saveBridgeInstalled = installSaveBridge();
+document.getElementById("save-export-btn").addEventListener("click", () => {
+  if (saveBridgeInstalled) postSaveBridge({ type: "request-save" });
+  else void exportSaves();
+});
 uploadSaveImportBtn.addEventListener("click", () => uploadSaveImportInput.click());
 uploadSaveImportInput.addEventListener("change", (event) => {
   const file = event.target.files[0];

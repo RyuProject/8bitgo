@@ -719,6 +719,8 @@ export function EmulatorPlayer({
   /** 当前视觉阶段的起点；真实回调停顿时，计时兜底从这里继续向前走。 */
   const progressClock = useRef<ProgressClock>(makeProgressClock('engine'))
   const [caps, setCaps] = useState<Set<Capability>>(() => new Set())
+  /** 内嵌网页游戏点了自己的存档入口；用递增号保证连续两次点击都能触发面板。 */
+  const [saveRequest, setSaveRequest] = useState(0)
   /**
    * 画面的**实测**尺寸（核心 av_info 的几何）。容器比例靠它，见 screenAspect.ts。
    * null = 还没量到 —— 那时一律按平台查表，别自己编一个值。
@@ -1673,6 +1675,10 @@ export function EmulatorPlayer({
         // 先请求退出全屏再打开弹窗；即使浏览器拒绝退出，也不能吞掉玩家的登录意图。
         if (document.fullscreenElement) void document.exitFullscreen().catch(() => {})
         openAuthModal()
+      },
+      onSaveRequested: () => {
+        if (!isCurrent()) return
+        setSaveRequest((current) => current + 1)
       },
       onProgress: (next) => {
         if (!isCurrent()) return
@@ -3837,6 +3843,7 @@ export function EmulatorPlayer({
             runtimeId={session?.runtime.id ?? activeRuntime?.id}
             dosSaveHint={dosSaveHint}
             screenLayout={screenLayout}
+            saveRequest={saveRequest}
             // 快捷键要能在游戏开着时按 —— 得从这一块里找到模拟器的 iframe。见 hotkeyBridge.ts
             stageRef={hostRef}
             // DOS 读档 = 原地重开这一局（见 restartSession）

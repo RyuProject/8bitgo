@@ -8,10 +8,31 @@
 import type { Capability, CaptureSources, MountOptions, RuntimeHandle } from '../types'
 import { focusFrame, frameGamepads } from '../frameFocus'
 
+const SAVE_BRIDGE_SOURCE = '8bitgo-save-bridge'
+const SAVE_BRIDGE_VERSION = 1
+const SAVE_BRIDGE_TIMEOUT_MS = 15_000
+
+interface SaveBridgeMessage {
+  source?: string
+  version?: number
+  type?: string
+  requestId?: number
+  ok?: boolean
+  data?: unknown
+  error?: string
+}
+
 export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const caps = new Set<Capability>()
   let destroyed = false
   let objectUrl = ''
+  let saveBridgeReady = false
+  let saveRequestId = 0
+  const pendingSaveRequests = new Map<number, {
+    resolve: (value: unknown) => void
+    reject: (error: Error) => void
+    timer: number
+  }>()
 
   const iframe = document.createElement('iframe')
   iframe.title = `${options.gameName} · HTML5`
@@ -43,6 +64,59 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     'sandbox',
     'allow-scripts allow-same-origin allow-forms allow-modals allow-pointer-lock allow-popups allow-downloads',
   )
+
+  /**
+   * 网页游戏只交换存档二进制，不碰登录令牌和 API 地址。
+   *
+   * 消息同时校验 source 和 origin：第三方跨源 HTML5 游戏即使伪造同名消息也接不进来；
+   * 只有本站同源、明确实现 v1 协议的页面（当前是 PvZ）才会获得 saveState 能力。
+   */
+  const onSaveBridgeMessage = (event: MessageEvent) => {
+    if (destroyed || event.source !== iframe.contentWindow || event.origin !== location.origin) return
+    const message = event.data as SaveBridgeMessage | null
+    if (!message || message.source !== SAVE_BRIDGE_SOURCE || message.version !== SAVE_BRIDGE_VERSION) return
+
+    if (message.type === 'ready') {
+      saveBridgeReady = true
+      if (!caps.has('saveState')) {
+        caps.add('saveState')
+        options.onCaps?.(caps)
+      }
+      return
+    }
+    if (message.type === 'request-save') {
+      if (saveBridgeReady) options.onSaveRequested?.()
+      return
+    }
+    if (message.type !== 'response' || !Number.isInteger(message.requestId)) return
+    const pending = pendingSaveRequests.get(message.requestId as number)
+    if (!pending) return
+    pendingSaveRequests.delete(message.requestId as number)
+    window.clearTimeout(pending.timer)
+    if (message.ok) pending.resolve(message.data)
+    else pending.reject(new Error(message.error || '网页游戏存档失败'))
+  }
+  window.addEventListener('message', onSaveBridgeMessage)
+
+  function requestSaveBridge(type: 'export' | 'import', data?: ArrayBuffer): Promise<unknown> {
+    if (!saveBridgeReady || !iframe.contentWindow) return Promise.reject(new Error('网页游戏存档尚未就绪'))
+    const requestId = ++saveRequestId
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        pendingSaveRequests.delete(requestId)
+        reject(new Error('网页游戏存档响应超时'))
+      }, SAVE_BRIDGE_TIMEOUT_MS)
+      pendingSaveRequests.set(requestId, { resolve, reject, timer })
+      const message = { source: SAVE_BRIDGE_SOURCE, version: SAVE_BRIDGE_VERSION, type, requestId, data }
+      try {
+        iframe.contentWindow?.postMessage(message, location.origin, data ? [data] : [])
+      } catch (error) {
+        pendingSaveRequests.delete(requestId)
+        window.clearTimeout(timer)
+        reject(error instanceof Error ? error : new Error(String(error)))
+      }
+    })
+  }
 
   let loaded = false
   iframe.addEventListener('load', () => {
@@ -116,6 +190,21 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   return {
     caps,
+    saveExt: 'pvzsave.zip',
+    async saveState() {
+      const data = await requestSaveBridge('export')
+      if (!(data instanceof ArrayBuffer) || data.byteLength === 0) throw new Error('网页游戏返回了空存档')
+      return new Blob([data], { type: 'application/zip' })
+    },
+    async loadState(data: ArrayBuffer) {
+      // 转移给 iframe 后这份 buffer 会被 detach；复制一份，别改掉调用方手里的云存档缓存。
+      await requestSaveBridge('import', data.slice(0))
+      saveBridgeReady = false
+      caps.delete('saveState')
+      options.onCaps?.(caps)
+      // PvZ 只在启动时读取玩家资料；导入后原地重载 iframe 才会真正使用新进度。
+      iframe.contentWindow?.location.reload()
+    },
     /**
      * 直播 / 录像的画面来源。
      *
@@ -164,6 +253,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     },
     destroy() {
       destroyed = true
+      window.removeEventListener('message', onSaveBridgeMessage)
+      for (const pending of pendingSaveRequests.values()) {
+        window.clearTimeout(pending.timer)
+        pending.reject(new Error('网页游戏已关闭'))
+      }
+      pendingSaveRequests.clear()
       try {
         iframe.src = 'about:blank'
       } catch {
@@ -174,4 +269,3 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     },
   }
 }
-

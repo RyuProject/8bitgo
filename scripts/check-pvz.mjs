@@ -91,7 +91,7 @@ for (const name of ['pvz-page.js', 'pvz-portable.js', 'pvz-portable.wasm', 'jszi
 if (existsSync(resolve(root, 'pvz-page.js'))) {
   const runtime = text(resolve(root, 'pvz-page.js'))
   try { new Function(runtime) } catch (error) { errors.push(`pvz-page.js 语法错误：${error.message}`) }
-  for (const marker of ['inspectZip', 'unpackPvzBundle', 'DecompressionStream', 'EXIT_SAVE_TIMEOUT_MS', 'saveSyncQueued = true', 'window.__pvzStartTs = Date.now()', 'if (!window.__pvzGuardedReload())']) {
+  for (const marker of ['inspectZip', 'unpackPvzBundle', 'DecompressionStream', 'EXIT_SAVE_TIMEOUT_MS', 'saveSyncQueued = true', 'window.__pvzStartTs = Date.now()', 'if (!window.__pvzGuardedReload())', '8bitgo-save-bridge', 'buildSaveArchive', 'applySaveArchive']) {
     ok(runtime.includes(marker), `pvz-page.js 缺少关键保护：${marker}`)
   }
   ok(!runtime.includes('__pvzGuardedReload() || window.location.reload()'), '退出刷新守卫被兜底 reload 绕过')

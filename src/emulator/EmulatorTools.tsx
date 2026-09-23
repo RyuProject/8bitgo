@@ -65,6 +65,8 @@ interface Props {
    * 重开等于把房间拆了）。不传时读档按钮退回整页刷新 —— 效果一样，只是慢。
    */
   onRestart?: () => void
+  /** 内嵌游戏自己的存档按钮发来的请求号；变化一次就打开一次统一存档面板。 */
+  saveRequest?: number
   className?: string
 }
 
@@ -87,7 +89,7 @@ const BTN = 'inline-flex h-7 min-w-7 items-center justify-center gap-1 rounded-m
 const BTN_ON = 'border-brand bg-brand-soft text-brand-hover'
 
 export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSaveHint,
-  screenLayout, stageRef, onRestart, className }: Props) {
+  screenLayout, stageRef, onRestart, saveRequest = 0, className }: Props) {
   const t = useT()
   const lang = useLang()
   const tt = t.player.tools
@@ -157,6 +159,7 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
   handleRef.current = handle
   /** 存档面板（三张卡：云端 / 这个浏览器 / 文件）。见 SaveLoadModal.tsx */
   const [saveModal, setSaveModal] = useState(false)
+  const seenSaveRequest = useRef(saveRequest)
   /** DOS「固化存档」正在飞：按钮压住，别让连点把 lastPush 判断搞反（见 doFsSave） */
   /** 正在存 / 正在读。防连点用，见 doSave 里的注释 */
   const [saving, setSaving] = useState(false)
@@ -195,12 +198,17 @@ export function EmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dos
 
   // 存档归档需要「哪个引擎 + 哪个游戏」两个坐标；缺一个就只能走文件导入导出。
   // ⚠️ 必须过 asSaveRuntime 白名单，不能直接把 RuntimeId 断言成 SaveRuntime ——
-  // html5（第三方游戏页自己管存储）和 liveview（在看别人直播，没有自己的机器状态）
-  // 都不是存档引擎，服务端也不认。以前直接断言的结果是：看直播的人一进页面
-  // 就发一个注定被 400 掉的 /api/saves/liveview/... 查询。
+  // HTML5 只有页面明确接入存档桥之后才会上报 saveState；普通第三方页面仍然没有按钮。
+  // liveview（在看别人直播，没有自己的机器状态）绝不能混进来，否则会发一个注定 400 的查询。
   const saveRuntime = asSaveRuntime(runtimeId)
-  const archivable = Boolean(saveRuntime && gameSlug)
+  const archivable = Boolean(saveRuntime && gameSlug && caps.has('saveState'))
   const toCloud = cloudSavesEnabled()
+
+  useEffect(() => {
+    if (saveRequest === seenSaveRequest.current) return
+    seenSaveRequest.current = saveRequest
+    if (caps.has('saveState')) setSaveModal(true)
+  }, [saveRequest, caps])
 
   const say = useCallback((text: string) => {
     setMsg(text)

@@ -20,6 +20,18 @@ const mime = {
 const server = createServer(async (req, res) => {
   try {
     let pathname = new URL(req.url, 'http://127.0.0.1').pathname
+    if (pathname === '/pvz-host.html') {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+      res.end(`<!doctype html><iframe id="game" src="/web/PvZ/cn"></iframe><script>
+        window.__bridgeMessages = [];
+        window.addEventListener('message', (event) => window.__bridgeMessages.push(event.data));
+        window.__bridgeSend = (type, requestId, data) => {
+          const payload = { source: '8bitgo-save-bridge', version: 1, type, requestId, data };
+          document.getElementById('game').contentWindow.postMessage(payload, location.origin, data ? [data] : []);
+        };
+      </script>`)
+      return
+    }
     if (pathname === '/web/PvZ/cn' || pathname === '/web/PvZ/cn/') pathname = '/web/PvZ/cn/index.html'
     if (pathname === '/web/PvZ/en' || pathname === '/web/PvZ/en/') pathname = '/web/PvZ/en/index.html'
     const file = resolve(root, '.' + pathname)
@@ -50,9 +62,18 @@ window.__callMainCount = 0;
     syncfs: function (populate, cb) { setTimeout(function () { cb(${syncFailure ? "new Error('mock IDB failure')" : 'null'}); }, 0); },
     writeFile: function (path, bytes) { files[path] = new Uint8Array(bytes); window.__writes.push([path, bytes.byteLength]); },
     readFile: function (path) { return files[path] || new Uint8Array(); },
-    readdir: function () { return ['.', '..']; },
-    unlink: function () {},
-    rmdir: function () {}
+    readdir: function (path) {
+      var prefix = path === '/' ? '/' : path + '/';
+      var names = new Set(['.', '..']);
+      for (var item of [...dirs, ...Object.keys(files)]) {
+        if (!item.startsWith(prefix) || item === path) continue;
+        var rest = item.slice(prefix.length);
+        if (rest) names.add(rest.split('/')[0]);
+      }
+      return [...names];
+    },
+    unlink: function (path) { delete files[path]; },
+    rmdir: function (path) { dirs.delete(path); }
   };
   Module.callMain = function () { window.__callMainCount++; };
   setTimeout(function () { Module.onRuntimeInitialized(); }, 0);
@@ -158,6 +179,45 @@ try {
   }
 
   {
+    const { context, page, pageErrors } = await makePage(browser)
+    await page.goto(origin + '/pvz-host.html', { waitUntil: 'domcontentloaded' })
+    const frame = await (await page.waitForSelector('#game')).contentFrame()
+    assert.ok(frame, 'PvZ iframe 没有加载')
+    await frame.waitForFunction(() => document.body.classList.contains('game-mode'))
+    await page.waitForFunction(() => window.__bridgeMessages.some((item) => item?.type === 'ready'))
+    await frame.evaluate(() => {
+      ensureDirectory('/saves/userdata')
+      Module.FS.writeFile('/saves/userdata/player.dat', new Uint8Array([8, 16, 32]))
+    })
+
+    await frame.locator('#save-export-btn').click()
+    await page.waitForFunction(() => window.__bridgeMessages.some((item) => item?.type === 'request-save'))
+    assert.equal(await frame.locator('#save-export-btn').textContent(), '💾 8BitGo 存档')
+
+    await page.evaluate(() => window.__bridgeSend('export', 41))
+    await page.waitForFunction(() => window.__bridgeMessages.some((item) => item?.type === 'response' && item.requestId === 41))
+    const zipMagic = await page.evaluate(() => {
+      const response = window.__bridgeMessages.find((item) => item?.type === 'response' && item.requestId === 41)
+      return Array.from(new Uint8Array(response.data).subarray(0, 4))
+    })
+    assert.deepEqual(zipMagic, [80, 75, 3, 4], '存档桥导出的不是 ZIP')
+
+    await frame.evaluate(() => Module.FS.unlink('/saves/userdata/player.dat'))
+    await page.evaluate(() => {
+      const response = window.__bridgeMessages.find((item) => item?.type === 'response' && item.requestId === 41)
+      window.__bridgeSend('import', 42, response.data.slice(0))
+    })
+    await page.waitForFunction(() => window.__bridgeMessages.some((item) => item?.type === 'response' && item.requestId === 42 && item.ok))
+    assert.deepEqual(
+      await frame.evaluate(() => Array.from(Module.FS.readFile('/saves/userdata/player.dat'))),
+      [8, 16, 32],
+      '存档桥导入后没有恢复 userdata',
+    )
+    assert.deepEqual(pageErrors, [])
+    await context.close()
+  }
+
+  {
     const { context, page, pageErrors } = await makePage(browser, { idbOpenThrows: true })
     await page.goto(origin + '/web/PvZ/cn', { waitUntil: 'domcontentloaded' })
     await page.waitForFunction(() => document.body.classList.contains('game-mode'))
@@ -197,7 +257,7 @@ try {
     await context.close()
   }
 
-  console.log('PvZ 浏览器回归通过：正常启动、缓存降级、必需资源、存档保护、刷新守卫均正常')
+  console.log('PvZ 浏览器回归通过：正常启动、缓存降级、必需资源、8BitGo 存档桥、刷新守卫均正常')
 } finally {
   await browser.close()
   await new Promise((resolveClose) => server.close(resolveClose))

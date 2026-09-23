@@ -8,6 +8,7 @@
  * 两种引擎的存档格式完全不同，用 runtime 分开存、互不覆盖：
  *   emulatorjs  内存快照 —— 精确到某一帧
  *   jsdos       DOS 文件系统的变更包 —— 玩家得先在游戏里存盘
+ *   html5       接入存档桥的网页游戏自己的存档包（当前是 PvZ ZIP）
  *
  * js-dos 的 fsChanges.pull/push/delete 三个钩子的签名正好和这里对得上，
  * 所以 DOS 那边是「玩家点存档 → 直接落到这里」，不需要中间层。
@@ -19,7 +20,7 @@ import { getSaveTarget, setSaveTarget, type SaveTarget } from './saveTarget'
 export { getSaveTarget, setSaveTarget, type SaveTarget }
 
 /** 存档属于哪个引擎。格式不通用，所以必须分开存 */
-export type SaveRuntime = 'emulatorjs' | 'jsdos' | 'cloudgame' | 'jsnes' | 'ruffle' | 'webretro' | 'j2me'
+export type SaveRuntime = 'emulatorjs' | 'jsdos' | 'cloudgame' | 'jsnes' | 'ruffle' | 'webretro' | 'j2me' | 'html5'
 
 /** 存档存在哪儿 */
 export type SaveWhere = 'cloud' | 'local'
@@ -39,10 +40,8 @@ export function effectiveSaveTarget(): Exclude<SaveTarget, 'download'> {
 /**
  * 合法的存档引擎名，和服务端 routes/saves.js 的 RUNTIMES 一字不差。
  *
- * ⚠️ RuntimeId 比这个宽：html5（第三方游戏页，自己管自己的存储）和 liveview
- * （看别人直播，压根没有自己的机器状态）都在 RuntimeId 里，但都不产生存档。
- * 所以从 RuntimeId 过来的值必须过 asSaveRuntime()，不能直接 as 断言 ——
- * 断言过去的结果是：看直播的人一进页面就发一个注定被服务端 400 掉的存档查询。
+ * ⚠️ RuntimeId 比这个宽：play 还没有统一存档格式，liveview 看别人直播也没有自己的状态。
+ * HTML5 虽然在白名单里，但只有页面主动接入存档桥才会上报能力；普通第三方页面不会触发写入。
  */
 const SAVE_RUNTIMES: ReadonlySet<string> = new Set([
   'emulatorjs',
@@ -52,6 +51,7 @@ const SAVE_RUNTIMES: ReadonlySet<string> = new Set([
   'ruffle',
   'webretro',
   'j2me',
+  'html5',
 ])
 
 /** 把 RuntimeId 之类的字符串收窄成存档引擎名；不是存档引擎就返回 null */

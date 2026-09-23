@@ -114,6 +114,8 @@ try {
   await put(alice, 'jsdos', 'contra', bytes('DOS 的变更包'))
   ok('同名游戏、不同引擎各存各的', (await textOf(await get(alice, 'emulatorjs', 'contra'))) === '第三关')
   ok('DOS 那份也在', (await textOf(await get(alice, 'jsdos', 'contra'))) === 'DOS 的变更包')
+  await put(alice, 'html5', 'plants-vs-zombies', bytes('PVZ userdata zip'))
+  ok('HTML5 存档桥使用独立命名空间', (await textOf(await get(alice, 'html5', 'plants-vs-zombies'))) === 'PVZ userdata zip')
 
   await put(alice, 'emulatorjs', 'contra', bytes('二号位'), 1)
   ok('存档位隔离', (await textOf(await get(alice, 'emulatorjs', 'contra', 0))) === '第三关')
@@ -126,7 +128,7 @@ try {
   /* ================= 四、清单 ================= */
   section('存档清单')
   const list = await (await fetch(`${API}/api/saves`, { headers: auth(alice) })).json()
-  ok('清单只列自己的', Array.isArray(list) && list.length === 3)
+  ok('清单只列自己的', Array.isArray(list) && list.length === 4)
   ok('清单不带存档内容', list.every((r) => !('data' in r)) && list.every((r) => r.size > 0))
   ok('按更新时间倒序', list.every((r, i) => i === 0 || list[i - 1].updatedAt >= r.updatedAt))
 
