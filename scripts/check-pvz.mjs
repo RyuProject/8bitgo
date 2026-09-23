@@ -52,11 +52,11 @@ for (const locale of ['cn', 'en']) {
   ok((html.match(/PvZ_AUTOPLAY_START/g) || []).length === 1, `${locale}/index.html 自动加载片段重复`)
   ok(html.includes('<base href=/web/PvZ/>'), `${locale}/index.html 缺少固定 base`)
   ok(html.includes('<link rel=preload href=pvz-portable.wasm as=fetch crossorigin>'), `${locale}/index.html 缺少 wasm preload`)
-  ok(html.includes('<script src=pvz-page.js></script>'), `${locale}/index.html 没有引用共用运行脚本`)
+  ok(html.includes('<script src=pvz-page.js?v=20260923-save1></script>'), `${locale}/index.html 没有引用当前版本的共用运行脚本`)
   ok(!html.includes('const collectedFiles'), `${locale}/index.html 又出现内联运行脚本，中英文会再次分叉`)
   ok(html.includes(config), `${locale}/index.html 语言或清单配置错误`)
   const engineAt = html.indexOf('<script src=pvz-portable.js async onerror=')
-  const runtimeAt = html.indexOf('<script src=pvz-page.js></script>')
+  const runtimeAt = html.indexOf('<script src=pvz-page.js?v=20260923-save1></script>')
   const autoplayAt = html.indexOf(START)
   ok(engineAt >= 0 && runtimeAt > engineAt && autoplayAt > runtimeAt, `${locale}/index.html 脚本顺序错误`)
 
