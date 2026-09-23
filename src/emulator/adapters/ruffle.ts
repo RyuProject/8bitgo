@@ -27,7 +27,7 @@ import {
   prepareFlashOnlineSave,
 } from '@/services/flashOnlineSave'
 import { prepareSfsRuffleConfig } from '@/services/sfs'
-import { installRufflePixelRatioCap } from '../rufflePerformance'
+import { installRufflePixelRatioCap, RUFFLE_FIXED_QUALITY } from '../rufflePerformance'
 
 export { RUFFLE_PATH } from '../paths'
 import { RUFFLE_PATH } from '../paths'
@@ -577,9 +577,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           // Ruffle 自己的 none 模式无法在“开播后”动态恢复后台执行，所以由上面的
           // visibilitychange 精确控制：无人观看时暂停，有直播观众时继续出帧。
           backgroundExecutionMode: 'mainThread',
-          // 永久使用「流畅优先」。low 关闭昂贵的高阶抗锯齿；DPR 降载见 rufflePerformance.ts。
-          // 不碰 frameRate / preferredRenderer：前者会改时间轴，后者官方只建议排错使用。
-          quality: 'low',
+          // 统一固定为「均衡」，不读取设备或用户旧设置，避免同一游戏在不同入口画质漂移。
+          // 高分屏开销由 DPR 钳制处理；不碰 frameRate / preferredRenderer，避免改变时间轴或兼容性。
+          quality: RUFFLE_FIXED_QUALITY,
           /**
            * ⚠️ 千万别在这里填颜色。
            *

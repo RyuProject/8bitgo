@@ -1,10 +1,11 @@
-/** Ruffle 固定流畅档、启动并行、像素降载和大核心预热回归。 */
+/** Ruffle 固定均衡档、启动并行、像素降载和大核心预热回归。 */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   installRufflePixelRatioCap,
+  RUFFLE_FIXED_QUALITY,
   supportsRuffleWasmExtensions,
 } from '../src/emulator/rufflePerformance.ts'
 import { isSfsGame } from '../shared/sfs-games.js'
@@ -29,11 +30,12 @@ assert.equal(probes, 5, '必须和 Ruffle 0.6 的五项能力探针一致')
 assert.equal(supportsRuffleWasmExtensions(() => false), false)
 assert.equal(supportsRuffleWasmExtensions(() => { throw new Error('blocked') }), false)
 
-console.log('── 启动链与固定流畅档 ──')
+console.log('── 启动链与固定均衡档 ──')
 const adapter = read('src/emulator/adapters/ruffle.ts')
 const player = read('src/emulator/EmulatorPlayer.tsx')
 const types = read('src/emulator/types.ts')
-assert.match(adapter, /quality:\s*'low'/, 'Ruffle 必须固定 low，不能再按设备退回高画质')
+assert.equal(RUFFLE_FIXED_QUALITY, 'medium', 'Ruffle 默认画质必须固定为均衡档')
+assert.match(adapter, /quality:\s*RUFFLE_FIXED_QUALITY/, '适配器必须使用唯一的固定画质常量')
 assert.doesNotMatch(adapter, /options\.performanceProfile/)
 assert.doesNotMatch(player, /performance(Label|Profile|Quality|Balanced|Fast)/, '开始区不应再出现运行档位')
 assert.doesNotMatch(types, /performanceProfile/)
@@ -64,4 +66,4 @@ assert.match(prewarm, /bootstrap\.json/)
 assert.equal(isSfsGame('sas3'), true)
 assert.equal(isSfsGame('infectonator-2'), false)
 
-console.log('✅ Ruffle 流畅档、像素降载、启动并行、核心预热与 SFS 门控通过')
+console.log('✅ Ruffle 均衡档、像素降载、启动并行、核心预热与 SFS 门控通过')
