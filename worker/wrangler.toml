@@ -5,6 +5,12 @@ name = "8bitgo-roms"
 main = "src/index.js"
 compatibility_date = "2026-01-01"
 
+# 玩家端固定使用这个公开地址；路由到 Worker 后才会执行 Range、CORS 与 Cache API。
+# R2 binding 直接返回的响应不会仅凭 Cache-Control 自动进入边缘缓存。
+routes = [
+  { pattern = "assets.8bitgo.com/*", zone_name = "8bitgo.com" },
+]
+
 [[r2_buckets]]
 binding = "ROMS"
 bucket_name = "8bitgo"
