@@ -544,6 +544,8 @@ export function gameRowToApi(r, rel = {}) {
   if (r.video) g.video = r.video
 
   const roms = rel.roms ?? {}
+  // 列表卡片只拿一个 has_rom 布尔值，不下发对象 key；详情页则从真实 roms 推导。
+  if (rel.playable || Object.keys(roms).length) g.playable = true
   // 通用 ROM 对外仍然叫 rom，按语言的仍然叫 roms —— 保持 v1 的对外形状
   if (roms[GENERIC_ROM_LANG]) g.rom = roms[GENERIC_ROM_LANG]
   const byLang = { ...roms }

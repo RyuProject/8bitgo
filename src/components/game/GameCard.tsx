@@ -76,7 +76,7 @@ export const GameCard = memo(function GameCard({ game, className, coverRatio = '
             👥 {game.players}P
           </Badge>
         )}
-        {game.rom && (
+        {(game.playable || game.rom || game.roms) && (
           <Badge tone="online" className="absolute bottom-2 left-2">
             {t.common.instantPlay}
           </Badge>

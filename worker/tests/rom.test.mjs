@@ -39,6 +39,73 @@ test('versioned URL gets the long-lived policy, unversioned does not', async () 
   const plain=await worker.fetch(req('/covers/g.webp'),covers)
   assert.equal(plain.headers.get('Cache-Control'),'public, max-age=300, s-maxage=600, must-revalidate')
 })
+test('versioned public GET is stored in edge cache without blocking the response path', async () => {
+  const previous = globalThis.caches
+  let stored
+  let matches = 0
+  let puts = 0
+  const waits = []
+  globalThis.caches = { default: {
+    async match() { matches += 1; return stored?.clone() },
+    async put(_request, response) { puts += 1; stored = response.clone(); await response.arrayBuffer() },
+  } }
+  const context = { waitUntil(promise) { waits.push(promise) } }
+  try {
+    const e = environment(); e.ROMS.seed('a.zip', 'abcdef')
+    const first = await worker.fetch(req('/a.zip?romv=etag-1'), e, context)
+    assert.equal(first.headers.get('X-8BitGo-Edge-Cache'), 'MISS')
+    assert.equal(await first.text(), 'abcdef')
+    await Promise.all(waits)
+    assert.equal(puts, 1)
+    assert.equal(count(e.ROMS, 'get'), 1)
+
+    const second = await worker.fetch(req('/a.zip?romv=etag-1'), e, context)
+    assert.equal(second.headers.get('X-8BitGo-Edge-Cache'), 'HIT')
+    assert.equal(await second.text(), 'abcdef')
+    assert.equal(count(e.ROMS, 'get'), 1)
+    assert.equal(matches, 2)
+  } finally {
+    if (previous === undefined) delete globalThis.caches
+    else globalThis.caches = previous
+  }
+})
+test('unversioned objects and reflected CORS responses bypass edge cache', async () => {
+  const previous = globalThis.caches
+  let calls = 0
+  globalThis.caches = { default: {
+    async match() { calls += 1 },
+    async put() { calls += 1 },
+  } }
+  const context = { waitUntil() { throw new Error('unversioned request must not schedule cache writes') } }
+  try {
+    const plain = environment(); plain.ROMS.seed('a.zip', 'plain')
+    assert.equal(await (await worker.fetch(req('/a.zip'), plain, context)).text(), 'plain')
+    const restricted = environment(); restricted.ALLOWED_ORIGINS = 'https://site.test'; restricted.ROMS.seed('a.zip', 'private-cors')
+    const request = req('/a.zip?romv=1', 'GET', undefined, { Origin: 'https://site.test' })
+    assert.equal(await (await worker.fetch(request, restricted, context)).text(), 'private-cors')
+    assert.equal(calls, 0)
+  } finally {
+    if (previous === undefined) delete globalThis.caches
+    else globalThis.caches = previous
+  }
+})
+test('edge cache failure falls back to R2 instead of taking ROM downloads down', async () => {
+  const previous = globalThis.caches
+  globalThis.caches = { default: {
+    async match() { throw new Error('temporary cache outage') },
+    async put() { throw new Error('must not store after a failed lookup') },
+  } }
+  try {
+    const e = environment(); e.ROMS.seed('a.zip', 'from-r2')
+    const r = await worker.fetch(req('/a.zip?romv=1'), e, { waitUntil() {} })
+    assert.equal(r.status, 200)
+    assert.equal(await r.text(), 'from-r2')
+    assert.equal(count(e.ROMS, 'get'), 1)
+  } finally {
+    if (previous === undefined) delete globalThis.caches
+    else globalThis.caches = previous
+  }
+})
 test('content-addressed CS16 Zstd shards are immutable and use the Zstd MIME type', async () => {
   const e=environment(); const hash='a'.repeat(64); const key=`web/cs16/zstd-v1/chunks/${hash}.zst`; e.ROMS.seed(key,'frame')
   const r=await worker.fetch(req(`/${key}?v=${hash}`),e)

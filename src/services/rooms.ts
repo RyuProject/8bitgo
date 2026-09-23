@@ -51,7 +51,12 @@ interface HeartbeatResult extends Room {
 
 export const MAX_PLAYERS = NETPLAY_MAX_PLAYERS
 const HEARTBEAT_MS = 10_000
-const LIST_POLL_MS = 8_000
+/*
+ * 云端房间暂时没有 SSE，轮询只能保留；但侧边栏挂在每个页面上，8 秒一次让线上
+ * 6 小时打出了 9241 次 /api/rooms。30 秒对大厅卡片足够，真正加入房间仍有心跳与
+ * useRoom 的单房查询；页面在后台时完全停，回来立刻刷新。
+ */
+const LIST_POLL_MS = 30_000
 
 /** 本浏览器的成员 id（游客也要有一个稳定身份） */
 const MEMBER_KEY = '8bitgo.room.member'
@@ -168,13 +173,19 @@ const cache = (() => {
   let rooms: Room[] = []
   const listeners = new Set<() => void>()
   let timer = 0
+  let refreshing = false
+  let onVisibility: (() => void) | null = null
   const emit = () => listeners.forEach((l) => l())
   const refresh = async () => {
+    if (refreshing) return
+    refreshing = true
     try {
       rooms = await fetchRooms()
       emit()
     } catch {
       /* 后端不可达时保留上次结果 */
+    } finally {
+      refreshing = false
     }
   }
   return {
@@ -196,11 +207,22 @@ const cache = (() => {
       listeners.add(l)
       if (listeners.size === 1 && roomsEnabled()) {
         void refresh()
-        timer = window.setInterval(() => void refresh(), LIST_POLL_MS)
+        timer = window.setInterval(() => {
+          if (document.visibilityState !== 'hidden') void refresh()
+        }, LIST_POLL_MS)
+        onVisibility = () => {
+          if (document.visibilityState === 'visible') void refresh()
+        }
+        document.addEventListener('visibilitychange', onVisibility)
       }
       return () => {
         listeners.delete(l)
-        if (listeners.size === 0) window.clearInterval(timer)
+        if (listeners.size === 0) {
+          window.clearInterval(timer)
+          timer = 0
+          if (onVisibility) document.removeEventListener('visibilitychange', onVisibility)
+          onVisibility = null
+        }
       }
     },
     refresh,

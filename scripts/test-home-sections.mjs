@@ -72,7 +72,7 @@ check('⚠️ hottest 不是从 popular 那个字段来的（精选一开就会�
 })
 
 check('⚠️ 没有为这一栏新增一次全库排序查询', () => {
-  const calls = content.match(/listGames\(\{ sort: 'popular', pageSize: HOME_SIZE \}\)/g) ?? []
+  const calls = content.match(/listGames\(\{ sort: 'popular', pageSize: HOME_SIZE, card: true \}\)/g) ?? []
   assert.equal(calls.length, 1, `按热度排的整库查询跑了 ${calls.length} 次 —— 首页是访问量最大的一页，切一下就够了`)
 })
 

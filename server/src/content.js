@@ -102,9 +102,9 @@ async function loadHome() {
   const [picks, popular, newest, multiplayer, facets, collections, friendLinks, notice, ...samples] = await Promise.all([
     // 首页第一栏：后台钦点的优先
     listHomePicks(HOME_SIZE),
-    listGames({ sort: 'popular', pageSize: HOME_SIZE }),
-    listGames({ sort: 'newest', pageSize: HOME_SIZE }),
-    listGames({ multiplayer: true, sort: 'popular', pageSize: HOME_SIZE }),
+    listGames({ sort: 'popular', pageSize: HOME_SIZE, card: true }),
+    listGames({ sort: 'newest', pageSize: HOME_SIZE, card: true }),
+    listGames({ multiplayer: true, sort: 'popular', pageSize: HOME_SIZE, card: true }),
     loadFacets(),
     // 合集那一栏。取 8 个：首页一行最多摆 4 个，多取一些是为了万一有空合集（还没加游戏）
     // 也能凑够一行；建不出来（表还没迁移）时不能把整个首页拖垮，所以单独兜一层
@@ -119,7 +119,7 @@ async function loadHome() {
       读失败（表还没迁移）时是 null，整条不画，见 site-notice.js 的 readStoredNoticeSoft。
     */
     loadVisibleNotice(),
-    ...GENRE_COLUMNS.map((id) => listGames({ genre: id, sort: 'popular', pageSize: 4 })),
+    ...GENRE_COLUMNS.map((id) => listGames({ genre: id, sort: 'popular', pageSize: 4, card: true })),
   ])
   const genreSamples = {}
   GENRE_COLUMNS.forEach((id, i) => {

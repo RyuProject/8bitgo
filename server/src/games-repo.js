@@ -81,6 +81,40 @@ export async function attachRelations(rows) {
   })
 }
 
+/**
+ * 首页卡片只需要封面、标题和几项统计，不能把简介、ROM 清单、DOS 配置、RomData 等
+ * 详情字段重复塞进五六十张卡片。线上首页的 /api/page JSON 因此膨胀到 155 KB，
+ * SSR HTML 达到 428 KB；其中一款游戏的双语简介就占 2 KB，画卡片时一个字都不用。
+ *
+ * 这里只补卡片真正消费的 genres；是否可立即游玩由 SELECT 的 has_rom 给出，
+ * 不读取、更不下发对象 key。详情页与后台仍走 attachRelations，数据形状不受影响。
+ */
+async function attachCardRelations(rows) {
+  if (!rows.length) return []
+  const ids = rows.map((r) => r.id)
+  const holes = ids.map(() => '?').join(',')
+  const genreRows = await query(`SELECT game_id, genre_id FROM game_genres WHERE game_id IN (${holes})`, ids)
+  const genres = new Map()
+  for (const row of genreRows) {
+    const key = String(row.game_id)
+    if (!genres.has(key)) genres.set(key, [])
+    genres.get(key).push(row.genre_id)
+  }
+  return rows.map((row) => gameRowToApi(row, {
+    genres: genres.get(String(row.id)) ?? [],
+    playable: Boolean(row.has_rom),
+  }))
+}
+
+/** 首页卡片严格需要的主表列；别改回 g.*，那会把长简介与运行配置重新灌进首屏。 */
+const CARD_COLUMNS = [
+  'g.id', 'g.slug', 'g.title', 'g.title_zh', 'g.title_i18n', 'g.platform',
+  'g.year', 'g.developer', 'g.plays', 'g.players', 'g.multiplayer', 'g.coin_reward',
+  'g.icon', 'g.cover', 'g.video', 'g.added_at', 'g.created_at', 'g.updated_at',
+  'g.adult', 'g.hidden', 'g.home_rank', 'g.rating_sum', 'g.rating_weight', 'g.rating_count',
+  'EXISTS(SELECT 1 FROM game_roms gr WHERE gr.game_id = g.id) AS has_rom',
+].join(', ')
+
 /** 把 ?sort= 翻成 ORDER BY。带 g. 前缀是因为按类型筛选时要 join。 */
 function orderBy(sort) {
   switch (sort) {
@@ -239,10 +273,10 @@ export async function listGames(q = {}) {
 
   // LIMIT / OFFSET 直接拼进 SQL：上面已经强制转成数字并夹在合理范围内，注不进东西
   const rows = await query(
-    `SELECT g.* FROM games g ${join} ${whereSql} ORDER BY ${order} LIMIT ${pageSize} OFFSET ${offset}`,
+    `SELECT ${q.card ? CARD_COLUMNS : 'g.*'} FROM games g ${join} ${whereSql} ORDER BY ${order} LIMIT ${pageSize} OFFSET ${offset}`,
     [...allParams, ...orderParams],
   )
-  return { items: await attachRelations(rows), total, page, pageSize, totalPages }
+  return { items: await (q.card ? attachCardRelations(rows) : attachRelations(rows)), total, page, pageSize, totalPages }
 }
 
 /* ---------------- 联想 & 搜不到时的补救 ---------------- */
@@ -407,10 +441,10 @@ export async function clearPlatformBios(platform) {
 export async function listHomePicks(limit) {
   const n = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(limit) || 12))
   const rows = await query(
-    `SELECT * FROM games WHERE hidden = 0 AND home_rank IS NOT NULL
+    `SELECT ${CARD_COLUMNS} FROM games g WHERE hidden = 0 AND home_rank IS NOT NULL
       ORDER BY home_rank ASC, plays DESC, id DESC LIMIT ${n}`,
   )
-  return attachRelations(rows)
+  return attachCardRelations(rows)
 }
 
 /**

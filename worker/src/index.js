@@ -41,6 +41,37 @@ function cacheValue(env, name, fallback) {
   if (/[\r\n]/.test(value)) throw new HttpError(500, '缓存配置无效', 'invalid_configuration')
   return value
 }
+
+/**
+ * 只有内容寻址的公开 GET 才进 Worker Cache API。
+ *
+ * Worker 从 R2 binding 直接返回 Response 时，Cloudflare 不会因为响应里写了
+ * `s-maxage` 就自动把它放进边缘缓存；线上一直显示 `CF-Cache-Status: DYNAMIC`
+ * 就是这个原因。这里补的是 Worker 自己的 Cache API，而不是再堆一层响应头。
+ *
+ * 未版本化 URL 绝不能进来：后台替换同一个 key 后，旧对象会在边缘活到 TTL 结束。
+ * `romv` / `v` 是对象 ETag 或内容哈希，内容变了 URL 必然变化，所以可以安全长缓存。
+ * CORS 不是 `*` 时也先跳过，避免把某个被允许 Origin 的反射响应给另一个 Origin。
+ */
+export function edgeCacheEligible(request, url, cors) {
+  if (request.method !== 'GET' || cors['Access-Control-Allow-Origin'] !== '*') return false
+  if (request.headers.has('Authorization')) return false
+  if (request.headers.has('If-Match') || request.headers.has('If-Unmodified-Since') || request.headers.has('If-Range')) return false
+  if (/\b(?:no-cache|no-store)\b/i.test(request.headers.get('Cache-Control') || '')) return false
+  const versioned = Boolean(url.searchParams.get('romv') || url.searchParams.get('v'))
+  const immutableShard = /^\/web\/cs16\/zstd-v1\/chunks\/[a-f0-9]{64}\.zst$/.test(url.pathname)
+  return versioned || immutableShard
+}
+
+function edgeCacheHeader(response, value) {
+  const headers = new Headers(response.headers)
+  headers.set('X-8BitGo-Edge-Cache', value)
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  })
+}
 /** 写对象元数据时用的策略；读的时候还会按请求 URL 再判一次（见 cachePolicy） */
 function writeCacheControl(env) { return cacheValue(env, 'OBJECT_CACHE_CONTROL', DEFAULT_CACHE_CONTROL) }
 /**
@@ -305,11 +336,35 @@ async function handle(request, env, url, cors) {
   return serveObject(request, env, key, cors, cachePolicy(env, url), guessType)
 }
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, context) {
     const cors = corsHeaders(request, env)
+    const url = new URL(request.url)
+    let edgeCache = edgeCacheEligible(request, url, cors) && context?.waitUntil
+      ? globalThis.caches?.default
+      : null
+    if (edgeCache) {
+      try {
+        const hit = await edgeCache.match(request)
+        if (hit) return edgeCacheHeader(hit, 'HIT')
+      } catch (error) {
+        // 边缘缓存是加速层，不是可用性依赖；某个 PoP 的 cache.match 故障时仍要回 R2。
+        console.warn('[rom-cache] edge match failed', error instanceof Error ? error.message : String(error))
+        edgeCache = null
+      }
+    }
     let response
-    try { response = await handle(request, env, new URL(request.url), cors) }
+    try { response = await handle(request, env, url, cors) }
     catch (error) { response = storageFailure(error, cors) }
+    if (edgeCache && response.status === 200 && response.body && !response.headers.has('Content-Range')) {
+      // clone 后立刻回玩家；75 MB 的 NDS ROM 写边缘缓存不能挡住首包。
+      const cacheKey = new Request(request.url, { method: 'GET' })
+      context.waitUntil(
+        edgeCache.put(cacheKey, response.clone()).catch((error) => {
+          console.warn('[rom-cache] edge put failed', error instanceof Error ? error.message : String(error))
+        }),
+      )
+      return edgeCacheHeader(response, 'MISS')
+    }
     // HEAD responses (including errors and /ping) MUST NOT contain a body.
     if (request.method === 'HEAD' && response.body) {
       try { await response.body.cancel() } catch { /* already closed */ }

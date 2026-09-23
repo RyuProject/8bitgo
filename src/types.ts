@@ -134,6 +134,8 @@ export interface Game {
   coinReward: number
   /** 封面上展示的 emoji */
   icon: string
+  /** 列表卡片只需要知道有没有 ROM，不应为了一个角标下载全部对象 key。 */
+  playable?: boolean
   /** 若有真实封面图可填写：对象存储 key（如 covers/contra.jpg）或完整 URL；留空则用程序生成封面 */
   cover?: string
   /** 卡片视频：对象存储 key（如 videos/contra.mp4）或完整 URL；4:3 横版最佳。有则优先于封面图播放 */
