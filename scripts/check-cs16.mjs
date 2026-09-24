@@ -163,12 +163,60 @@ const required = [
 ]
 for (const name of required) if (!existsSync(join(publicDir, name))) fail(`缺少 public/web/cs16/${name}`)
 
+/**
+ * 只读 ZIP/PK3 中央目录，不解压成员。
+ *
+ * 构建机不保证安装系统 unzip；为了列十几个文件名要求整台机器多一个包，既脆弱又没有
+ * 必要。extras.pk3 只有普通单卷 ZIP，中央目录已经包含完整成员名，直接解析即可。
+ */
+function zipEntryNames(file) {
+  const data = readFileSync(file)
+  let eocd = -1
+  for (let at = data.length - 22; at >= Math.max(0, data.length - 22 - 65535); at--) {
+    if (data.readUInt32LE(at) === 0x06054b50) {
+      eocd = at
+      break
+    }
+  }
+  if (eocd < 0) throw new Error('找不到 ZIP 中央目录结束记录')
+
+  const disk = data.readUInt16LE(eocd + 4)
+  const centralDisk = data.readUInt16LE(eocd + 6)
+  const diskEntries = data.readUInt16LE(eocd + 8)
+  const entries = data.readUInt16LE(eocd + 10)
+  const centralSize = data.readUInt32LE(eocd + 12)
+  let at = data.readUInt32LE(eocd + 16)
+  const centralEnd = at + centralSize
+  if (disk !== 0 || centralDisk !== 0 || diskEntries !== entries || entries === 0xffff) {
+    throw new Error('不支持分卷 ZIP 或 ZIP64')
+  }
+  if (centralEnd > eocd || centralEnd > data.length) throw new Error('ZIP 中央目录越界')
+
+  const names = []
+  for (let i = 0; i < entries; i++) {
+    if (at + 46 > centralEnd || data.readUInt32LE(at) !== 0x02014b50) {
+      throw new Error(`ZIP 第 ${i + 1} 个目录项损坏`)
+    }
+    const flags = data.readUInt16LE(at + 8)
+    const nameLength = data.readUInt16LE(at + 28)
+    const extraLength = data.readUInt16LE(at + 30)
+    const commentLength = data.readUInt16LE(at + 32)
+    const next = at + 46 + nameLength + extraLength + commentLength
+    if (next > centralEnd) throw new Error(`ZIP 第 ${i + 1} 个目录项越界`)
+    const encoding = flags & 0x800 ? 'utf8' : 'latin1'
+    names.push(data.toString(encoding, at + 46, at + 46 + nameLength).replace(/\\/g, '/'))
+    at = next
+  }
+  if (at !== centralEnd) throw new Error('ZIP 中央目录长度不一致')
+  return names
+}
+
 // 没有导航图时 YaPB 会拒绝创建 Bot；每张启动页地图都必须在同一份 extras.pk3 里有图。
 let extrasEntries
 try {
-  extrasEntries = new Set(execFileSync('unzip', ['-Z1', join(publicDir, 'lib/cstrike/extras.pk3')], { encoding: 'utf8' }).trim().split('\n'))
+  extrasEntries = new Set(zipEntryNames(join(publicDir, 'lib/cstrike/extras.pk3')))
 } catch (error) {
-  fail(`无法读取 extras.pk3：${error}`)
+  fail(`无法读取 extras.pk3：${error instanceof Error ? error.message : String(error)}`)
 }
 for (const map of ['de_dust2', 'de_dust', 'de_inferno', 'de_nuke', 'de_aztec', 'de_train', 'de_cbble', 'cs_office', 'cs_italy', 'cs_assault', 'cs_militia', 'de_vertigo']) {
   if (!extrasEntries.has(`addons/yapb/data/graph/${map}.graph`)) fail(`extras.pk3 缺少 ${map} 的 YaPB 导航图`)

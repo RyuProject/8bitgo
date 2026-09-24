@@ -3,6 +3,9 @@ QEMU.wasm / Alpine Linux source and license information
 Original demo: https://github.com/ktock/qemu-wasm-demo
 QEMU.wasm source: https://github.com/ktock/qemu-wasm
 Upstream demo files: https://ktock.github.io/qemu-wasm-demo/images/alpine-x86_64/
+xterm.js 5.3.0: https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js
+xterm.css 5.3.0: https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css
+xterm-pty 0.12.0: https://cdn.jsdelivr.net/npm/xterm-pty@0.12.0/index.js
 Upstream demo assets retrieved: 2026-09-14
 
 QEMU is GPL-2.0 (some libraries LGPL-2.1); license copies are in licenses/.

@@ -38,8 +38,18 @@ import path from 'node:path'
 const ROOT = path.resolve(import.meta.dirname, '..')
 const DIR = path.join(ROOT, 'public', 'qemu-wasm')
 const SOURCE = path.join(DIR, 'SOURCE.txt')
-/** 上游 demo 的静态资源目录（见 SOURCE.txt 顶部） */
-const BASE = 'https://ktock.github.io/qemu-wasm-demo/images/alpine-x86_64/'
+/** 上游 demo 的 QEMU / Alpine 静态资源目录（见 SOURCE.txt 顶部） */
+const QEMU_BASE = 'https://ktock.github.io/qemu-wasm-demo/images/alpine-x86_64/'
+/**
+ * 终端前端不是 alpine-x86_64 镜像的一部分。旧脚本把所有文件都拼到 QEMU_BASE，
+ * 三条请求必然 404；这里锁定 SOURCE.txt 已记录的 npm 版本，并继续用同一份 SHA-256
+ * 清单验收，CDN 即使返回了别的内容也不会被安装。
+ */
+const PACKAGE_URLS = {
+  'xterm.js': 'https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js',
+  'xterm.css': 'https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css',
+  'xterm-pty.js': 'https://cdn.jsdelivr.net/npm/xterm-pty@0.12.0/index.js',
+}
 
 const args = new Set(process.argv.slice(2))
 const ifMissing = args.has('--if-missing')
@@ -78,9 +88,9 @@ async function sha256Of(file) {
 }
 
 async function download(name) {
-  const url = BASE + encodeURIComponent(name)
+  const url = PACKAGE_URLS[name] ?? QEMU_BASE + encodeURIComponent(name)
   const res = await fetch(url, { redirect: 'follow' })
-  if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
+  if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}（${url}）`)
   const tmp = path.join(DIR, `.${name}.part`)
   await pipeline(Readable.fromWeb(res.body), createWriteStream(tmp))
   return tmp
