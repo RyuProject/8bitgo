@@ -936,6 +936,23 @@ curl -sI https://8bitgo.com/web/PvZ/pvz-portable.wasm | grep -i content-type
 npm run pvz:check && npm run test:pvz && npm run pvz:check-assets
 ```
 
+### 2.28.2 PvZ iPhone / iPad 软键盘：必须在可信触摸事件里再次聚焦
+
+PvZ Portable 的 WASM 会在文字框打开时调用 `WasmStartSoftKeyboard()`，把
+`Module.wasmSoftKeyboardState.active` 设为 true，再聚焦 `#pvz-soft-keyboard`。桌面浏览器没问题，
+但 SDL 先把触摸放进队列、游戏到下一帧才处理；iOS 此时已经离开用户手势调用栈，会静默拒绝
+`focus()`，表现为 New User 页面点名字输入框完全不弹键盘。
+
+修复在 `public/web/PvZ/pvz-page.js` 的 `installMobileSoftKeyboardAssist()`：只在 WASM 已明确进入
+文字输入状态时，允许下一次画布触摸在同步事件里重聚焦；同时显示一个 44px 的「打开键盘」按钮
+作为兜底。**不要改成每次点 Canvas 都 focus**，否则正常种植物也会反复弹键盘。Canvas 自己有
+`tabindex`，会在 pointerdown 后抢回焦点，所以最终还必须在合成 `click` 阶段校正一次。
+
+隐藏输入框也不能用 `display:none` 或完全透明；部分 iOS 版本会把它判定为不可交互。当前保持
+1px、`opacity:.01`、`font-size:16px`（避免 Safari 自动放大）并禁用指针命中。改外壳后同步提升
+`PVZ_SHELL_VERSION` 和 `pvz-page.js?v=`，否则 Cloudflare 仍可能发旧脚本。回归：
+`npm run test:pvz` 的触控用例会验证按钮显隐、按钮聚焦和 Canvas 重聚焦。
+
 **cs15（CS 1.5 网页移植，2026-09-21 接入中）**：只有 `public/web/cs15/packs/` **不进 git**
 （见 `.gitignore`）——`base.zip.gz` 是 550M 的 Valve 游戏数据，超 GitHub 单文件上限，也不能公开发布；
 数据包放 R2 / 服务器本地。加载器、引擎和开源 wasm 运行时必须跟踪，否则生产机执行

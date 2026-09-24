@@ -831,7 +831,9 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
             <p className="mt-1 text-xs text-muted">
               {form.platform === 'ps2'
                 ? 'PS2 直接上传 .iso（也支持 .chd / .cso 等 Play! 格式），不要套 ZIP。播放器会按需分段读盘。'
-                : 'GameCube / Wii 直接上传 .rvz 或 .iso（也支持平台列表里的其它 Dolphin 单文件格式），不要套 ZIP。推荐用桌面 Dolphin 转成 RVZ，播放器会按需分段读盘。'}
+                : form.platform === 'psp'
+                  ? 'PSP 直接上传 .iso；需要节省流量可用 .cso / .chd，不要套 ZIP。PPSSPP 会从 R2 按 2MB 分块读盘，不会先下载整份镜像。'
+                  : 'GameCube / Wii 直接上传 .rvz 或 .iso（也支持平台列表里的其它 Dolphin 单文件格式），不要套 ZIP。推荐用桌面 Dolphin 转成 RVZ，播放器会按需分段读盘。'}
             </p>
           )}
         </div>

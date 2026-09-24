@@ -64,6 +64,12 @@ check('ps2 走 Play!，不能再回到“暂不支持在线运行”', () => {
   assert.equal(ps2.runtime, "'play'")
 })
 
+check('PSP 固定走自建 PPSSPP，不退回 EmulatorJS 整盘下载', () => {
+  const psp = found.find((p) => p.id === 'psp')
+  assert.ok(psp, 'psp 平台不见了')
+  assert.equal(psp.runtime, "'ppsspp'")
+})
+
 check('GameCube / Wii 都固定走 wasm-dolphin', () => {
   for (const id of ['gamecube', 'wii']) {
     const platform = found.find((p) => p.id === id)

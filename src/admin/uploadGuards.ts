@@ -220,6 +220,7 @@ export async function confirmDiscImage(platform: string, file: File): Promise<bo
   const ext = (file.name.match(/\.[a-z0-9]+$/i)?.[0] ?? '').toLowerCase()
   const stem = file.name.replace(/\.[a-z0-9]+$/i, '')
   const notes: string[] = []
+  const ppssppDisc = platform === 'psp'
   const dolphinDisc = platform === 'gamecube' || platform === 'wii'
 
   /*
@@ -236,6 +237,14 @@ export async function confirmDiscImage(platform: string, file: File): Promise<bo
     两者隔着三层，谁也不会往那儿想。所以必须在**上传之前**拦住。
   */
   if (ARCHIVE_EXTS.has(ext)) {
+    if (ppssppDisc) {
+      window.alert(
+        `${file.name}（${human(file.size)}）\n\n` +
+          'PPSSPP 必须对光盘容器做随机读取，不能先把 ZIP / 7z / RAR 整包下载并在浏览器里解压。\n\n' +
+          '正确做法：先解压，再直接上传 .iso；需要节省流量时转换成 .cso 或 .chd，播放器仍能按需分段读盘。',
+      )
+      return false
+    }
     if (dolphinDisc) {
       window.alert(
         `${file.name}（${human(file.size)}）\n\n` +

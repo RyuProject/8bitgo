@@ -57,9 +57,14 @@ if (!args.includes('--skip-submodules')) {
   run('git', ['submodule', 'update', '--init', '--recursive', '--depth', '1'])
 }
 
-const emcmake = spawnSync('emcmake', ['--version'], { encoding: 'utf8' })
+const emcmake = spawnSync('emcmake', ['cmake', '--version'], { encoding: 'utf8' })
 if (emcmake.error || emcmake.status !== 0) {
   fail('找不到 emcmake。请安装并激活 Emscripten 5.0.7；上游 CI 也固定使用这一版。')
+}
+const emcc = spawnSync('emcc', ['--version'], { encoding: 'utf8' })
+const emccVersion = `${emcc.stdout || ''}\n${emcc.stderr || ''}`
+if (emcc.error || emcc.status !== 0 || !/\b5\.0\.7\b/.test(emccVersion)) {
+  fail('Emscripten 版本必须是 5.0.7；不同版本会改变 pthread 胶水与 WASM ABI，不能混用。')
 }
 
 const jobs = process.env.PPSSPP_JOBS || `-j${Math.max(1, Number(process.env.NUMBER_OF_PROCESSORS) || 4)}`

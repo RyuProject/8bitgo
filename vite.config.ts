@@ -105,17 +105,17 @@ function skipHugeStatic() {
   }
 }
 
-/** 构建预览也要加隔离头；缺少它时 Play! / Dolphin 会在创建共享内存前直接失败。 */
+/** 构建预览也要加隔离头；缺少它时 Play! / PPSSPP / Dolphin 会在创建共享内存前直接失败。 */
 function isolationHeaders(req: IncomingMessage, res: ServerResponse, next: () => void) {
   // 只隔离独立页；给整站加头会拦掉跨源封面和字体。
   const requestUrl = req.url || ''
   const pathname = requestUrl.split('?')[0]
-  const isolatedPlay = /^\/(?:zh-Hans\/|zh-Hant\/|en\/|es\/|fr\/|it\/|de\/|ja\/)?play\/(?:ps2|gamecube|wii)\/[^/]+\/?$/.test(pathname)
+  const isolatedPlay = /^\/(?:zh-Hans\/|zh-Hant\/|en\/|es\/|fr\/|it\/|de\/|ja\/)?play\/(?:psp|ps2|gamecube|wii)\/[^/]+\/?$/.test(pathname)
   const localPlay = /^\/(?:zh-Hans\/|zh-Hant\/|en\/|es\/|fr\/|it\/|de\/|ja\/)?play-local\/?$/.test(pathname)
   const builtinSlug = /^\/web\/([^/]+)\/?$/.exec(pathname)?.[1]
     || /^\/(?:zh-Hans\/|zh-Hant\/|en\/|es\/|fr\/|it\/|de\/|ja\/)?play\/([^/]+)\/?$/.exec(pathname)?.[1]
   const isolatedBuiltin = Boolean(builtinSlug && builtinWebGameFor(builtinSlug)?.isolated)
-  if (pathname === '/linux' || pathname === '/linux.html' || isolatedPlay || localPlay || isolatedBuiltin || pathname.startsWith('/dolphin/')) {
+  if (pathname === '/linux' || pathname === '/linux.html' || isolatedPlay || localPlay || isolatedBuiltin || pathname.startsWith('/dolphin/') || pathname.startsWith('/ppsspp/')) {
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
     res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
     if (pathname === '/linux') req.url = `/linux.html${requestUrl.slice('/linux'.length)}`
@@ -128,7 +128,7 @@ function isolationHeaders(req: IncomingMessage, res: ServerResponse, next: () =>
     res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
     res.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
   }
-  if (pathname.startsWith('/dolphin/')) {
+  if (pathname.startsWith('/dolphin/') || pathname.startsWith('/ppsspp/')) {
     res.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
   }
   next()

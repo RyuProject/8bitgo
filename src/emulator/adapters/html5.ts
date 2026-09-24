@@ -14,7 +14,7 @@ import { findHtml5Canvas, html5CanvasCapabilities, html5MediaBridge } from '../h
 const SAVE_BRIDGE_SOURCE = '8bitgo-save-bridge'
 const SAVE_BRIDGE_VERSION = 1
 const SAVE_BRIDGE_TIMEOUT_MS = 15_000
-const PVZ_SHELL_VERSION = '20260923-save2'
+const PVZ_SHELL_VERSION = '20260924-ioskb1'
 
 /**
  * PvZ 的 HTML 外壳是固定文件名，Cloudflare 允许旧副本继续服务一小段时间。

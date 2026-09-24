@@ -48,6 +48,9 @@ const saveExportBtn = document.getElementById("save-export-btn");
 const saveImportBtn = document.getElementById("save-import-btn");
 const saveImportInput = document.getElementById("save-import-input");
 const reselectLink = document.getElementById("reselect-link");
+const gameCanvas = document.getElementById("canvas");
+const canvasContainer = document.getElementById("canvas-container");
+const softKeyboardInput = document.getElementById("pvz-soft-keyboard");
 
 function withTimeout(promise, ms, message) {
   return new Promise((resolve, reject) => {
@@ -351,12 +354,127 @@ function handleDropZoneActivate(event) {
 }
 
 function resizeCanvas() {
-  const canvas = document.getElementById("canvas");
-  const container = document.getElementById("canvas-container");
-  const scale = Math.min(container.clientWidth / canvas.width, container.clientHeight / canvas.height);
-  canvas.style.width = Math.floor(canvas.width * scale) + "px";
-  canvas.style.height = Math.floor(canvas.height * scale) + "px";
+  const scale = Math.min(canvasContainer.clientWidth / gameCanvas.width, canvasContainer.clientHeight / gameCanvas.height);
+  gameCanvas.style.width = Math.floor(gameCanvas.width * scale) + "px";
+  gameCanvas.style.height = Math.floor(gameCanvas.height * scale) + "px";
 }
+
+/**
+ * iOS 只允许在一次真实点击的同步调用栈里弹出软键盘。游戏先把触摸放进 SDL 队列，
+ * 下一帧才调用 WasmStartSoftKeyboard；那时 input.focus() 已经失去用户授权，Safari 会静默拒绝。
+ * 这里不猜游戏画面的坐标：等 WASM 明确进入文字输入状态后，再让玩家点画布或辅助按钮，
+ * 并在这次可信手势里同步 focus。这样普通种植物、铲除等触摸不会误弹键盘。
+ */
+function installMobileSoftKeyboardAssist() {
+  if (!softKeyboardInput || !gameCanvas || !canvasContainer) return () => {};
+
+  const coarsePointer = typeof window.matchMedia === "function" ? window.matchMedia("(pointer: coarse)") : null;
+  const isTouchDevice = () => navigator.maxTouchPoints > 0 || Boolean(coarsePointer && coarsePointer.matches);
+  const chinese = (window.PVZ_LOCALE || document.documentElement.lang || "").toLowerCase().startsWith("zh");
+
+  // opacity 不能是 0：部分 iOS 版本会把完全不可见的表单控件判定为不可交互并拒绝弹键盘。
+  // 1px + pointer-events:none 让它仍属于可聚焦布局，同时不会盖住 Canvas 的任何触摸区域。
+  softKeyboardInput.setAttribute("aria-label", chinese ? "植物大战僵尸文字输入" : "Plants vs. Zombies text input");
+  softKeyboardInput.setAttribute("inputmode", "text");
+  softKeyboardInput.style.cssText = [
+    "position:fixed",
+    "top:0",
+    "left:50%",
+    "width:1px",
+    "height:1px",
+    "padding:0",
+    "border:0",
+    "opacity:.01",
+    "resize:none",
+    "pointer-events:none",
+    "font-size:16px",
+    "color:transparent",
+    "background:transparent",
+    "caret-color:transparent",
+    "transform:translateX(-50%)",
+    "z-index:1",
+  ].join(";");
+
+  const keyboardButton = document.createElement("button");
+  keyboardButton.id = "pvz-keyboard-btn";
+  keyboardButton.type = "button";
+  keyboardButton.hidden = true;
+  keyboardButton.textContent = chinese ? "⌨️ 打开键盘" : "⌨️ Keyboard";
+  keyboardButton.setAttribute("aria-label", chinese ? "打开文字输入键盘" : "Open the text input keyboard");
+  keyboardButton.style.cssText = [
+    "position:absolute",
+    "left:max(8px,env(safe-area-inset-left))",
+    "bottom:max(8px,env(safe-area-inset-bottom))",
+    "z-index:12",
+    "min-height:44px",
+    "padding:0 14px",
+    "border:1px solid #4ecca3",
+    "border-radius:8px",
+    "background:rgba(30,30,50,.88)",
+    "color:#4ecca3",
+    "font:600 16px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
+    "backdrop-filter:blur(4px)",
+    "touch-action:manipulation",
+  ].join(";");
+  canvasContainer.appendChild(keyboardButton);
+
+  // 桌面端原生键盘链路本来就正常，不挂触摸监听和轮询，避免给每个玩家增加无意义工作。
+  if (!isTouchDevice()) return () => {};
+
+  function keyboardRequested() {
+    return Boolean(gameStarted && Module.wasmSoftKeyboardState && Module.wasmSoftKeyboardState.active);
+  }
+
+  function focusSoftKeyboard() {
+    if (!isTouchDevice() || !keyboardRequested()) return false;
+    const scrollX = window.scrollX;
+    const scrollY = window.scrollY;
+    try { softKeyboardInput.focus({ preventScroll: true }); }
+    catch { softKeyboardInput.focus(); }
+    // 老 iOS 不认识 preventScroll；还原页面位置，避免 1px 输入框把游戏画面推走。
+    if (window.scrollX !== scrollX || window.scrollY !== scrollY) window.scrollTo(scrollX, scrollY);
+    return document.activeElement === softKeyboardInput;
+  }
+
+  function refreshKeyboardButton() {
+    const requested = isTouchDevice() && keyboardRequested();
+    keyboardButton.hidden = !requested;
+    keyboardButton.dataset.open = requested && document.activeElement === softKeyboardInput ? "true" : "false";
+  }
+
+  // capture 保证在 SDL 的触摸回调之前运行；只在引擎已经请求文字输入时接管焦点。
+  gameCanvas.addEventListener("pointerdown", () => {
+    if (keyboardRequested()) focusSoftKeyboard();
+  }, { capture: true });
+  // Canvas 带 tabindex，浏览器的 pointerdown 默认动作会把焦点抢回去；在手势结束时再校正一次。
+  gameCanvas.addEventListener("pointerup", () => {
+    if (keyboardRequested()) focusSoftKeyboard();
+  }, { capture: true });
+  // iOS 12 及更老版本没有 Pointer Events，保留 touchstart 兜底；重复 focus 是幂等的。
+  gameCanvas.addEventListener("touchstart", () => {
+    if (keyboardRequested()) focusSoftKeyboard();
+  }, { capture: true, passive: true });
+  gameCanvas.addEventListener("touchend", () => {
+    if (keyboardRequested()) focusSoftKeyboard();
+  }, { capture: true, passive: true });
+  // 触摸设备还会合成 click；在这条最终的可信事件里聚焦，压过 Canvas 的默认聚焦行为。
+  gameCanvas.addEventListener("click", () => {
+    if (keyboardRequested()) focusSoftKeyboard();
+  }, { capture: true });
+  keyboardButton.addEventListener("click", () => {
+    focusSoftKeyboard();
+    refreshKeyboardButton();
+  });
+  softKeyboardInput.addEventListener("focus", refreshKeyboardButton);
+  softKeyboardInput.addEventListener("blur", refreshKeyboardButton);
+
+  // 文字输入状态由 WASM 在主循环里切换，无法用 DOM 事件观察；低频检查只在本页生命周期内运行。
+  window.setInterval(refreshKeyboardButton, 150);
+  refreshKeyboardButton();
+  return refreshKeyboardButton;
+}
+
+const refreshMobileSoftKeyboard = installMobileSoftKeyboardAssist();
 
 function canSyncSaves() {
   return savesMounted && Module.FS && typeof Module.FS.syncfs === "function";
@@ -468,7 +586,8 @@ async function startGame() {
     loadStatus.style.display = "none";
     gameStarted = true;
     startSaveAutosync();
-    document.getElementById("canvas").focus();
+    gameCanvas.focus();
+    refreshMobileSoftKeyboard();
 
     // 必须在资源写盘之后计时；慢设备写 70MB 可能超过 8 秒，提前计时会把开局崩溃误判成正常退出。
     window.__pvzStartTs = Date.now();

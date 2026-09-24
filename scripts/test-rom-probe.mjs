@@ -51,6 +51,7 @@ const { gameRowToApi, dosExecutableOf, dosStartupCommandsOf, relationsInPatch, r
 // ts-loader 为了让 ROM 探测测试保持轻量，会把平台表换成空桩；补齐流式光盘真正用到的格式。
 const { platformMap: testPlatformMap } = await import('@/data/platforms')
 testPlatformMap.ps2 = { romExtensions: ['.iso', '.chd', '.cso', '.zso', '.isz', '.bin', '.elf'] }
+testPlatformMap.psp = { romExtensions: ['.iso', '.cso', '.chd', '.pbp', '.elf', '.prx'] }
 testPlatformMap.gamecube = { romExtensions: ['.iso', '.gcm', '.rvz', '.ciso', '.gcz', '.dol', '.elf'] }
 testPlatformMap.wii = { romExtensions: ['.iso', '.rvz', '.ciso', '.gcz', '.wbfs', '.wad', '.dol', '.elf'] }
 
@@ -63,6 +64,16 @@ const next = () => `https://assets.example.com/roms/nes/game-${++url}.zip`
   assert.equal(keys[0], 'roms/ps2/demo.iso', 'PS2 默认先探裸 ISO')
   assert.ok(keys.some((key) => key.endsWith('.chd')), 'PS2 也保留 Play! 支持的压缩光盘格式')
   assert.ok(!keys.some((key) => key.endsWith('.zip')), 'PS2 不能把外层 ZIP 当成光盘镜像')
+}
+
+/* ---------- PSP 约定地址：同样只探支持随机读取的裸容器 ---------- */
+{
+  const keys = conventionalKeys({ platform: 'psp', slug: 'demo' })
+  assert.equal(keys[0], 'roms/psp/demo.iso', 'PSP 默认先探裸 ISO')
+  assert.ok(keys.some((key) => key.endsWith('.cso')), 'PSP 应探 PPSSPP 支持的 CSO')
+  assert.ok(!keys.some((key) => key.endsWith('.zip') || key.endsWith('.8bg')), 'PSP 不能探外层 ZIP / 8BG')
+  const candidates = playbackRomCandidates({ platform: 'psp', rom: 'roms/psp/demo.cso' }, 'zh-Hans')
+  assert.deepEqual(candidates.map((candidate) => candidate.key), ['roms/psp/demo.cso'], 'PSP 绑定地址不能派生 8BG')
 }
 
 /* ---------- Dolphin 约定地址：同样必须是可随机读取的裸容器 ---------- */

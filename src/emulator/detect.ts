@@ -47,6 +47,8 @@ const EXT_TO_PLATFORM: Record<string, PlatformId> = {
   jad: 'java',
   cue: 'psx',
   iso: 'psx',
+  // CSO 是 PSP 最常见的随机可读压缩镜像；PS2 虽也有同名容器，本地自动识别优先 PSP。
+  cso: 'psp',
   // .iso 会由下面的光盘魔数覆盖；这些后缀本身只属于 Dolphin 平台。
   gcm: 'gamecube',
   wbfs: 'wii',
@@ -125,6 +127,7 @@ function sniffHeader(bytes: Uint8Array): RomDetection | null {
   if (head4 === 'NES\x1A') return { platform: 'nes', confidence: 'high', reason: d.ines }
   if (head3 === 'FWS' || head3 === 'CWS' || head3 === 'ZWS') return { platform: 'flash', confidence: 'high', reason: d.swf }
   if (head4 === 'UNIF') return { platform: 'nes', confidence: 'high', reason: d.unif }
+  if (head4 === 'CISO') return { platform: 'psp', confidence: 'high', reason: d.pspImage }
   if (ascii(bytes, 0, 3) === 'FDS' || ascii(bytes, 0, 4) === '\x01*NI') return { platform: 'nes', confidence: 'medium', reason: d.fds }
   const b = bytes
   // Wii / GameCube 都常用 .iso，必须先看盘头再让扩展名把它误判成 PS1。
@@ -140,6 +143,11 @@ function sniffHeader(bytes: Uint8Array): RomDetection | null {
     b[0x1c] === 0xc2 && b[0x1d] === 0x33 && b[0x1e] === 0x9f && b[0x1f] === 0x3d
   ) {
     return { platform: 'gamecube', confidence: 'high', reason: d.gamecubeDisc }
+  }
+  // ISO9660 的主卷描述符在第 16 扇区，system identifier 从扇区内偏移 8 开始。
+  // PSP 正版盘固定写 `PSP GAME`；必须排在通用 PSX 文本判断之前，同为 .iso 才不会串台。
+  if (bytes.length >= 0x8028 && ascii(bytes, 0x8008, 32).trimEnd().startsWith('PSP GAME')) {
+    return { platform: 'psp', confidence: 'high', reason: d.pspImage }
   }
   if (b[0] === 0x80 && b[1] === 0x37 && b[2] === 0x12 && b[3] === 0x40) return { platform: 'n64', confidence: 'high', reason: d.n64z64 }
   if (b[0] === 0x37 && b[1] === 0x80 && b[2] === 0x40 && b[3] === 0x12) return { platform: 'n64', confidence: 'high', reason: d.n64v64 }

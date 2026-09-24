@@ -228,7 +228,7 @@ index 0000000..b04142a
 +		s64 responseLast = -1;
 +		s64 responseTotal = -1;
 +		const bool rangeHeader = ParseContentRange(fetch, &responseFirst, &responseLast, &responseTotal);
-+		const bool exact = fetch->status == 206 && rangeHeader && responseFirst == offset &&
++		const bool exact = fetch->status == 206 && rangeHeader && fetch->data != nullptr && responseFirst == offset &&
 +			responseLast == requestedLast && responseTotal > 0 && fetch->numBytes == length;
 +		if (exact) {
 +			const u8 *begin = reinterpret_cast<const u8 *>(fetch->data);

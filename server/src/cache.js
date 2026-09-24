@@ -102,6 +102,13 @@ export function staticCacheHeaders(res, filePath) {
     res.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
     return set(CACHE.engineVersioned)
   }
+  // PPSSPP 同样是 pthread 构建；页面、胶水、Worker、WASM、data 必须处在同一个隔离上下文。
+  if (p.includes('/ppsspp/')) {
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
+    res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
+    return set(CACHE.engineVersioned)
+  }
 
   /*
     自托管的网页游戏（`public/web/<名字>/`）：js / wasm 的文件名不带哈希，

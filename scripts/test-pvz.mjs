@@ -114,7 +114,13 @@ const manifest = {
 }
 
 async function makePage(browser, options = {}) {
-  const context = await browser.newContext()
+  const context = await browser.newContext(options.mobile ? {
+    viewport: { width: 844, height: 390 },
+    screen: { width: 844, height: 390 },
+    hasTouch: true,
+    isMobile: true,
+    deviceScaleFactor: 2,
+  } : {})
   if (options.idbOpenThrows) {
     await context.addInitScript(() => {
       indexedDB.open = function () { throw new Error('mock quota/private mode'); }
@@ -179,6 +185,35 @@ try {
     const fileChooser = page.waitForEvent('filechooser')
     await page.locator('#save-import-btn').click()
     await fileChooser
+    assert.deepEqual(pageErrors, [])
+    await context.close()
+  }
+
+  {
+    const { context, page, pageErrors } = await makePage(browser, { mobile: true })
+    await page.goto(origin + '/web/PvZ/cn', { waitUntil: 'domcontentloaded' })
+    await page.waitForFunction(() => document.body.classList.contains('game-mode'))
+    assert.equal(await page.locator('#pvz-keyboard-btn').isHidden(), true, '游戏未请求文字输入时不应遮挡触控')
+
+    await page.evaluate(() => { Module.wasmSoftKeyboardState = { active: true } })
+    await page.locator('#pvz-keyboard-btn').waitFor({ state: 'visible' })
+    await page.locator('#pvz-keyboard-btn').click()
+    assert.equal(
+      await page.evaluate(() => document.activeElement?.id),
+      'pvz-soft-keyboard',
+      '移动端键盘按钮没有在可信点击中聚焦原生输入框',
+    )
+
+    await page.evaluate(() => document.getElementById('pvz-soft-keyboard').blur())
+    await page.locator('#canvas').tap({ position: { x: 400, y: 190 } })
+    assert.equal(
+      await page.evaluate(() => document.activeElement?.id),
+      'pvz-soft-keyboard',
+      'WASM 请求文字输入后，再点画布没有重新唤起原生输入框',
+    )
+
+    await page.evaluate(() => { Module.wasmSoftKeyboardState.active = false })
+    await page.locator('#pvz-keyboard-btn').waitFor({ state: 'hidden' })
     assert.deepEqual(pageErrors, [])
     await context.close()
   }
@@ -273,7 +308,7 @@ try {
     await context.close()
   }
 
-  console.log('PvZ 浏览器回归通过：正常启动、缓存降级、必需资源、8BitGo 存档桥、刷新守卫均正常')
+  console.log('PvZ 浏览器回归通过：正常启动、移动端软键盘、缓存降级、必需资源、8BitGo 存档桥、刷新守卫均正常')
 } finally {
   await browser.close()
   await new Promise((resolveClose) => server.close(resolveClose))

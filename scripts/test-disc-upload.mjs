@@ -216,6 +216,13 @@ reset()
 ok((await confirmDiscImage('ps2', fakeFile('game.iso', 400 * 1024 * 1024))) === true && !asked.confirm.length, 'PS2 的 .iso 是正常形态，不提醒')
 
 reset()
+ok((await confirmDiscImage('psp', fakeFile('monster-hunter.cso', 650 * 1024 * 1024))) === true && !asked.confirm.length, 'PSP 的正常大小 CSO 直接放行')
+
+reset()
+ok((await confirmDiscImage('psp', fakeFile('monster-hunter.zip', 650 * 1024 * 1024))) === false, 'PSP 光盘套 ZIP 会被硬拦')
+ok(asked.alert.length === 1 && /PPSSPP/.test(asked.alert[0]) && /\.cso/.test(asked.alert[0]), '提示改传可随机读取的 ISO / CSO / CHD')
+
+reset()
 ok((await confirmDiscImage('gamecube', fakeFile('wind-waker.rvz', 400 * 1024 * 1024))) === true && !asked.confirm.length, 'GameCube 的正常大小 RVZ 直接放行')
 
 reset()

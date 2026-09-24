@@ -1,7 +1,7 @@
 /*
  * 8BitGo ↔ PPSSPP 桥。
  *
- * 远程游戏只把 URL 作为 argv 交给打过补丁的核心。这里故意没有 fetch(url).arrayBuffer()：
+ * 远程游戏只把 URL 作为 argv 交给打过补丁的核心。这里故意没有“整盘请求后转内存”逻辑：
  * 一旦有人把整盘下载逻辑加回来，scripts/test-ppsspp-range.mjs 会直接失败。
  */
 (() => {

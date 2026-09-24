@@ -63,34 +63,7 @@ if (FORCE && existsSync(OUT)) {
 }
 mkdirSync(OUT, { recursive: true })
 
-// ───────────── 一、资产层：git LFS 克隆 ─────────────
-if (!BOOT_ONLY) {
-  try {
-    if (!existsSync(join(REPO_CACHE, '.git'))) {
-      log(`克隆上游仓库（含 LFS 资产）到 ${REPO_CACHE} …`)
-      execFileSync('git', ['clone', '--depth', '1', '-b', REF, UPSTREAM, REPO_CACHE], { stdio: 'inherit' })
-    } else {
-      log(`复用缓存仓库 ${REPO_CACHE}，拉取最新 + LFS …`)
-      execFileSync('git', ['-C', REPO_CACHE, 'fetch', '--depth', '1', 'origin', REF], { stdio: 'inherit' })
-      execFileSync('git', ['-C', REPO_CACHE, 'reset', '--hard', `origin/${REF}`], { stdio: 'inherit' })
-    }
-    // LFS 资产（docs/assets 约 722MB）
-    execFileSync('git', ['-C', REPO_CACHE, 'lfs', 'pull'], { stdio: 'inherit' })
-    const docsAssets = join(REPO_CACHE, 'docs/assets')
-    const docsApp = join(REPO_CACHE, 'docs/application.js')
-    if (!existsSync(docsAssets)) throw new Error(`上游仓库 docs/assets 不存在：${docsAssets}`)
-    copyDir(docsAssets, join(OUT, 'assets'))
-    if (existsSync(docsApp)) copyFile(docsApp, join(OUT, 'application.js'))
-    log('资产层就绪：docs/assets + application.js')
-  } catch (e) {
-    warn(`资产层拉取失败（不影响启动层）：${e.message}`)
-    warn('PvZ2 将无法加载游戏资源；请检查 git / git-lfs 是否可用，或手动把上游 docs/ 放到 public/web/PvZ2/')
-  }
-} else {
-  log('boot-only 模式：跳过 722MB 资产层（游戏资源会 404，仅用于验证接线）')
-}
-
-// ───────────── 二、启动 / 引擎层：线上递归抓取 ─────────────
+// 抓取队列（资产层与启动层共用一个队列，统一从 BASE 下载）
 const visited = new Set()
 const queue = []
 const enqueue = (raw) => {
@@ -101,6 +74,62 @@ const enqueue = (raw) => {
   queue.push(p)
 }
 
+// ───────────── 一、资产层：git LFS 优先，缺失则回退 ─────────────
+// 本机/部署机可能没装 git-lfs，所以优先尝试 git lfs，失败（或没装）时回退到
+// 「GIT_LFS_SKIP_SMUDGE 克隆拿目录树 + 按每个路径从线上逐文件下载真实二进制」。
+// 两种来源拿到的都是同一份官方分发，文件集一致。
+const hasLfs = (() => {
+  try {
+    execFileSync('git', ['lfs', 'version'], { stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
+})()
+
+if (!BOOT_ONLY) {
+  try {
+    const clone = (skipLfs) => {
+      if (!existsSync(join(REPO_CACHE, '.git'))) {
+        log(`克隆上游仓库（${skipLfs ? '跳过 LFS，仅取目录树' : '含 LFS 资产'}）到 ${REPO_CACHE} …`)
+        execFileSync('git', ['clone', '--depth', '1', '-b', REF, UPSTREAM, REPO_CACHE], {
+          stdio: 'inherit',
+          env: skipLfs ? { ...process.env, GIT_LFS_SKIP_SMUDGE: '1' } : process.env,
+        })
+      } else {
+        execFileSync('git', ['-C', REPO_CACHE, 'fetch', '--depth', '1', 'origin', REF], { stdio: 'inherit' })
+        execFileSync('git', ['-C', REPO_CACHE, 'reset', '--hard', `origin/${REF}`], { stdio: 'inherit' })
+      }
+    }
+    const docsAssets = join(REPO_CACHE, 'docs/assets')
+    const docsApp = join(REPO_CACHE, 'docs/application.js')
+
+    if (hasLfs) {
+      clone(false)
+      execFileSync('git', ['-C', REPO_CACHE, 'lfs', 'pull'], { stdio: 'inherit' })
+      if (!existsSync(docsAssets)) throw new Error(`上游仓库 docs/assets 不存在：${docsAssets}`)
+      copyDir(docsAssets, join(OUT, 'assets'))
+      if (existsSync(docsApp)) copyFile(docsApp, join(OUT, 'application.js'))
+      log('资产层就绪（git LFS）：docs/assets + application.js')
+    } else {
+      log('未检测到 git-lfs，改用「git 目录树 + 线上逐文件下载」拉取资产（不依赖 git-lfs）')
+      clone(true)
+      if (!existsSync(docsAssets)) throw new Error(`上游仓库 docs/assets 不存在：${docsAssets}`)
+      const rels = []
+      walkRel(docsAssets, '', rels)
+      log(`资源目录树含 ${rels.length} 个文件，将从 ${BASE}/assets/ 逐文件下载真实内容…`)
+      for (const rel of rels) enqueue('/assets/' + rel.replace(/^\/+/, ''))
+      enqueue('/application.js')
+    }
+  } catch (e) {
+    warn(`资产层拉取失败（不影响启动层）：${e.message}`)
+    warn('PvZ2 将无法加载游戏资源；可手动把上游 docs/ 放到 public/web/PvZ2/')
+  }
+} else {
+  log('boot-only 模式：跳过 722MB 资产层（游戏资源会 404，仅用于验证接线）')
+}
+
+// ───────────── 二、启动 / 引擎层：线上递归抓取 ─────────────
 // 种子：入口 + 已知启动文件（即使爬虫漏掉也能拉到）
 for (const seed of [
   '/',
@@ -281,6 +310,15 @@ function walk(dir, out) {
     const st = statSync(full)
     if (st.isDirectory()) walk(full, out)
     else out.push(full)
+  }
+}
+function walkRel(dir, prefix, out) {
+  for (const entry of readdirSafe(dir)) {
+    const full = join(dir, entry)
+    const rel = prefix ? posix.join(prefix, entry) : entry
+    const st = statSync(full)
+    if (st.isDirectory()) walkRel(full, rel, out)
+    else out.push(rel)
   }
 }
 function readdirSafe(dir) {
