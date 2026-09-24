@@ -42,9 +42,13 @@
  *    require-corp 的父页面只肯装载同样声明了 COEP 的子框架，否则 iframe 直接空白。
  *    reVCDOS 的 server.py 默认就是这么设的；自己写反代或 Worker 时注意别把这个头丢了。
  */
-export const ISOLATED_EMBEDS = Object.freeze({
-  // 'gta-vice-city': Object.freeze({ embed: '/embed/vc/', title: 'GTA: Vice City' }),
-})
+import { BUILTIN_WEB_GAMES } from './builtin-web-games.js'
+
+export const ISOLATED_EMBEDS = Object.freeze(Object.fromEntries(
+  Object.entries(BUILTIN_WEB_GAMES)
+    .filter(([, game]) => game.isolated)
+    .map(([slug, game]) => [slug, Object.freeze({ embed: game.entry, title: game.title })]),
+))
 
 /** 这个 slug 是否走独立的隔离整页。命中返回登记项，否则 undefined */
 export function isolatedEmbedFor(slug) {

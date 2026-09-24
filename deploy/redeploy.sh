@@ -92,9 +92,25 @@ log "── 步骤 4/7  CI 卡点：oxlint + tsc ──"
 ( cd "$REPO_DIR" && npx tsc -b ) || die "tsc 不过，停下"
 if [ "$RUN_TESTS" = "1" ]; then
   ( cd "$REPO_DIR" && npm test ) || die "npm test 不过，停下"
-fi
+  fi
 
-# ── 5. 构建 ──
+  # ── 4.5 同步 /web/Minecraft 的 Eaglercraft 客户端（可选）──
+  # eaglercraft/ 含反编译重编译的 Minecraft 1.8 逻辑与玩家资源，按版权红线不进 git
+  # （见 .gitignore）。它由 `npm run minecraft:fetch` 自托管进 public/web/Minecraft/eaglercraft/，
+  # 且因为是 gitignored，git reset --hard 不会清掉它 —— 「在部署机上跑过一次就常驻」，
+  # 后续 redeploy 都会带上。设 MINECRAFT_CLIENT_SRC 指向一份已构建好的客户端目录，
+  # 这里就在每次部署自动同步；不设则跳过（假定之前已就位）。
+  if [ -n "${MINECRAFT_CLIENT_SRC:-}" ]; then
+  if [ -d "$MINECRAFT_CLIENT_SRC" ]; then
+  log "── 步骤 4.5/7  同步 Eaglercraft 客户端（MINECRAFT_CLIENT_SRC）──"
+  ( cd "$REPO_DIR" && npm run minecraft:fetch -- --src "$MINECRAFT_CLIENT_SRC" ) \
+  || log "⚠️ minecraft:fetch 失败，继续构建（可能用到旧客户端或壳显示未部署）"
+  else
+  log "⚠️ MINECRAFT_CLIENT_SRC=$MINECRAFT_CLIENT_SRC 不存在，跳过同步"
+  fi
+  fi
+
+  # ── 5. 构建 ──
 log "── 步骤 5/7  构建（client + server 包）──"
 ( cd "$REPO_DIR" && npm run build ) || die "构建失败"
 

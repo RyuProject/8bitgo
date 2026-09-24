@@ -1,5 +1,5 @@
 /**
- * 光盘平台（PS1 / PS2）上传守卫的回归测试。
+ * 光盘平台（PS1 / PS2 / GameCube / Wii）上传守卫的回归测试。
  *
  * ── 为什么有这一套 ──────────────────────────────────────────
  * 2026-09-11 站长传《Gran Turismo》：手里是一个 zip，里面 `xxx.bin` + `xxx.cue`。
@@ -214,5 +214,17 @@ ok(/CDDA|BGM/.test(asked.confirm[0] ?? ''), 'PS1 的 .iso：说清楚会没有 B
 
 reset()
 ok((await confirmDiscImage('ps2', fakeFile('game.iso', 400 * 1024 * 1024))) === true && !asked.confirm.length, 'PS2 的 .iso 是正常形态，不提醒')
+
+reset()
+ok((await confirmDiscImage('gamecube', fakeFile('wind-waker.rvz', 400 * 1024 * 1024))) === true && !asked.confirm.length, 'GameCube 的正常大小 RVZ 直接放行')
+
+reset()
+ok((await confirmDiscImage('wii', fakeFile('wii-sports.zip', 200 * 1024 * 1024))) === false, 'Wii 光盘套 ZIP 会被硬拦')
+ok(asked.alert.length === 1 && /Dolphin|dolphin/.test(asked.alert[0]) && /\.rvz/.test(asked.alert[0]), '提示改传可随机读取的 ISO / RVZ')
+
+reset()
+confirmAnswer = true
+ok((await confirmDiscImage('gamecube', fakeFile('large.iso', 1400 * 1024 * 1024))) === true, 'GameCube 大 ISO 可以确认后继续上传')
+ok(asked.confirm.length === 1 && /RVZ|\.rvz/.test(asked.confirm[0]), '大镜像建议转成 RVZ，而不是 PS1 的 CHD')
 
 console.log(`\n✅ ${n} 项通过`)

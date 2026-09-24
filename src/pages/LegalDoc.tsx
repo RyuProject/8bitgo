@@ -1,8 +1,10 @@
 import { Link } from 'react-router-dom'
 import type { LegalDocCopy } from '@/locales/legal/types'
 import { renderMarkdown } from '@/lib/markdown'
-import { useSeo, breadcrumbSchema } from '@/services/seo'
+import { useSeo, breadcrumbSchema, resolveSeoLanguagePlan } from '@/services/seo'
 import { useT } from '@/services/i18n'
+import { useLang } from '@/services/lang'
+import { ENGLISH_FALLBACK_LONGFORM_LANGUAGES } from '@/config/languages'
 
 /**
  * 服务条款 / 隐私政策共用的排版外壳。
@@ -18,19 +20,28 @@ import { useT } from '@/services/i18n'
  *    section.id，body 里的小标题从 ### 起。
  *
  * 2. **不用 noindex。** 这两页必须能被收录：应用商店和第三方登录的审核会去抓它，
- *    抓不到等于没有。useSeo 只要不传 noindex，canonical 和八种语言的 hreflang
- *    就都是自动的（见 services/seo.ts）。
+ *    抓不到等于没有。简中 / 繁中 / 英文是三份真实正文；另外五种界面复用英文，
+ *    所以下面显式限制 hreflang，并把复用页 canonical 到英文。
  *
  * 3. **目录用原生 #锚点，不做 scrollIntoView。** 服务端渲染出来就是可点的普通链接，
  *    JS 没加载完也能用；scroll-mt-20 是为了不被吸顶导航盖住（照抄 AboutPage 的 #story）。
  */
 export function LegalDoc({ copy, path }: { copy: LegalDocCopy; path: '/terms' | '/privacy' }) {
   const t = useT()
+  const lang = useLang()
+  /*
+    五门非中文语言当前明确复用英文法律正文（见 locales/legal/en.ts）。不能因为导航壳
+    已翻译就把同一篇英文长文声明成六份独立内容；canonical、hreflang 与面包屑 URL
+    一起使用这份计划，避免三个信号互相打架。
+  */
+  const seoLanguages = resolveSeoLanguagePlan(lang, ENGLISH_FALLBACK_LONGFORM_LANGUAGES, 'en')
 
   useSeo({
     title: copy.seoTitle,
     description: copy.seoDescription,
     canonicalPath: path,
+    contentLanguages: seoLanguages.contentLanguages,
+    canonicalLanguage: seoLanguages.canonicalLanguage,
     updatedTime: copy.updated,
     jsonLd: [
       {
@@ -46,7 +57,7 @@ export function LegalDoc({ copy, path }: { copy: LegalDocCopy; path: '/terms' | 
       breadcrumbSchema([
         { name: t.common.home, path: '/' },
         { name: copy.h1, path },
-      ]),
+      ], seoLanguages.canonicalLanguage),
     ],
   })
 

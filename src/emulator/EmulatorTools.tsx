@@ -85,7 +85,11 @@ function timeAgo(ts: number, lang: string): string {
   }
 }
 
-const BTN = 'inline-flex h-7 min-w-7 items-center justify-center gap-1 rounded-md border border-line px-1.5 text-muted transition-colors hover:border-brand hover:text-fg disabled:opacity-40'
+/**
+ * 手机上 44px 才是能让拇指稳定命中的尺寸；sm 以上恢复原来的紧凑工具栏。
+ * 次要按钮虽然收进「⋯」，弹层里仍然是触控操作，所以也必须共用这一条。
+ */
+const BTN = 'inline-flex h-11 min-w-11 items-center justify-center gap-1 rounded-md border border-line px-2 text-muted transition-colors hover:border-brand hover:text-fg disabled:opacity-40 sm:h-7 sm:min-w-7 sm:px-1.5'
 const BTN_ON = 'border-brand bg-brand-soft text-brand-hover'
 
 /**

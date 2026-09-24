@@ -422,6 +422,18 @@ body {
   pointer-events: auto;
 }
 
+/*
+  游戏工具栏在手机上是唯一的暂停、存档和退出入口，命中区必须按拇指设计。
+  这里只抬高，不强迫文字按钮变宽；图标按钮自己的 min-w-11 在组件里负责，
+  所以 320px 屏幕仍能保持一行，ROM 语言和“取消加载”也不会只剩 32px 高。
+*/
+@media (max-width: 639.98px) {
+  [data-testid='emulator-toolbar'] button,
+  [data-testid='emulator-toolbar'] select {
+    min-height: 2.75rem;
+  }
+}
+
 /* CRT 扫描线 */
 @utility scanlines {
   background-image: repeating-linear-gradient(

@@ -81,7 +81,7 @@ const DEVELOPER_GRID = 'mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-3'
  */
 const PLATFORM_GROUPS: ReadonlyArray<{ titleKey: keyof Translation['browse']; ids: readonly PlatformId[] }> = [
   { titleKey: 'platformGroupPinned', ids: ['flash', 'arcade', 'dos', 'java', 'html5'] },
-  { titleKey: 'platformGroupNintendo', ids: ['nes', 'gba', 'gbc', 'gb'] },
+  { titleKey: 'platformGroupNintendo', ids: ['gamecube', 'wii', 'nes', 'gba', 'gbc', 'gb'] },
 ]
 
 export function PlatformsPage() {

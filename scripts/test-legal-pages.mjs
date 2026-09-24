@@ -197,7 +197,7 @@ check('⚠️ 两个页面是静态 import —— lazy 会把 SSR 打挂', () =>
   }
 })
 
-check('静态 sitemap 里有这两页（8 种语言各一条）', () => {
+check('静态 sitemap 只提交三份真实法律正文', () => {
   const gen = read('scripts/gen-sitemap.mjs')
   for (const p of ['/terms', '/privacy']) {
     assert.match(gen, new RegExp(`add\\('${p}'`), `gen-sitemap.mjs 里没有 add('${p}')`)
@@ -205,7 +205,14 @@ check('静态 sitemap 里有这两页（8 种语言各一条）', () => {
   const xml = read('public/sitemap-static.xml')
   for (const p of ['/terms', '/privacy']) {
     const hits = xml.match(new RegExp(`<loc>[^<]*${p}</loc>`, 'g')) ?? []
-    assert.equal(hits.length, 8, `sitemap-static.xml 里 ${p} 有 ${hits.length} 条，应该是 8 条（跑 npm run sitemap 重新生成）`)
+    /*
+      西 / 法 / 意 / 德 / 日共用英文正文，不是五份法律译文。把它们也放进 sitemap
+      会与页面 canonical 互相打架，并重现 GSC 的「Google 选择了不同规范网页」。
+    */
+    assert.equal(hits.length, 3, `sitemap-static.xml 里 ${p} 有 ${hits.length} 条，应该只有简中、繁中、英文 3 条`)
+    assert.match(xml, new RegExp(`<loc>https://8bitgo\\.com${p}</loc>`), `${p} 缺简体 canonical`)
+    assert.match(xml, new RegExp(`<loc>https://8bitgo\\.com/zh-Hant${p}</loc>`), `${p} 缺繁体 canonical`)
+    assert.match(xml, new RegExp(`<loc>https://8bitgo\\.com/en${p}</loc>`), `${p} 缺英文 canonical`)
   }
 })
 

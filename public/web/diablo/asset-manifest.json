@@ -1,0 +1,29 @@
+{
+  "files": {
+    "static/js/0.4865aac6.chunk.js": "/web/diablo/static/js/0.4865aac6.chunk.js",
+    "static/js/0.4865aac6.chunk.js.map": "/web/diablo/static/js/0.4865aac6.chunk.js.map",
+    "main.css": "/web/diablo/static/css/main.a94634a5.chunk.css",
+    "main.js": "/web/diablo/static/js/main.a13822cd.chunk.js",
+    "main.js.map": "/web/diablo/static/js/main.a13822cd.chunk.js.map",
+    "runtime~main.js": "/web/diablo/static/js/runtime~main.45b9120c.js",
+    "runtime~main.js.map": "/web/diablo/static/js/runtime~main.45b9120c.js.map",
+    "runtime~storage.js": "/web/diablo/static/js/runtime~storage.91a88aa4.js",
+    "runtime~storage.js.map": "/web/diablo/static/js/runtime~storage.91a88aa4.js.map",
+    "storage.js": "/web/diablo/static/js/storage.57fdef8a.chunk.js",
+    "storage.js.map": "/web/diablo/static/js/storage.57fdef8a.chunk.js.map",
+    "static/js/5.a151e62c.chunk.js": "/web/diablo/static/js/5.a151e62c.chunk.js",
+    "static/js/5.a151e62c.chunk.js.map": "/web/diablo/static/js/5.a151e62c.chunk.js.map",
+    "dfbe2b1a24aa1b834a9d.worker.js": "/web/diablo/dfbe2b1a24aa1b834a9d.worker.js",
+    "dfbe2b1a24aa1b834a9d.worker.js.map": "/web/diablo/dfbe2b1a24aa1b834a9d.worker.js.map",
+    "e364f123d0e96e5bdd06.worker.js": "/web/diablo/e364f123d0e96e5bdd06.worker.js",
+    "e364f123d0e96e5bdd06.worker.js.map": "/web/diablo/e364f123d0e96e5bdd06.worker.js.map",
+    "index.html": "/web/diablo/index.html",
+    "static/css/main.a94634a5.chunk.css.map": "/web/diablo/static/css/main.a94634a5.chunk.css.map",
+    "static/media/Diablo.wasm": "/web/diablo/static/media/Diablo.570bd59a.wasm",
+    "static/media/DiabloSpawn.wasm": "/web/diablo/static/media/DiabloSpawn.9c2373b2.wasm",
+    "static/media/ListFile.txt": "/web/diablo/static/media/ListFile.d60434ea.txt",
+    "static/media/MpqCmp.wasm": "/web/diablo/static/media/MpqCmp.8aa3c6dc.wasm",
+    "static/media/App.scss": "/web/diablo/static/media/shift.41ff50a3.svg",
+    "storage.html": "/web/diablo/storage.html"
+  }
+}

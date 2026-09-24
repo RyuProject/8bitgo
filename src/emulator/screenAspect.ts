@@ -25,6 +25,8 @@ const MOBILE_ASPECT: Partial<Record<PlatformId, string>> = {
   n64: 'aspect-[4/3]',
   psx: 'aspect-[4/3]',
   ps2: 'aspect-[4/3]',
+  gamecube: 'aspect-[4/3]',
+  wii: 'aspect-[4/3]',
   segaMD: 'aspect-[4/3]',
   arcade: 'aspect-[4/3]',
   dos: 'aspect-[4/3]',

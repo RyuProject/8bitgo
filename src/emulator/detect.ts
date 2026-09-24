@@ -47,6 +47,10 @@ const EXT_TO_PLATFORM: Record<string, PlatformId> = {
   jad: 'java',
   cue: 'psx',
   iso: 'psx',
+  // .iso 会由下面的光盘魔数覆盖；这些后缀本身只属于 Dolphin 平台。
+  gcm: 'gamecube',
+  wbfs: 'wii',
+  wad: 'wii',
   pbp: 'psx',
   chd: 'psx',
   img: 'psx',
@@ -123,6 +127,20 @@ function sniffHeader(bytes: Uint8Array): RomDetection | null {
   if (head4 === 'UNIF') return { platform: 'nes', confidence: 'high', reason: d.unif }
   if (ascii(bytes, 0, 3) === 'FDS' || ascii(bytes, 0, 4) === '\x01*NI') return { platform: 'nes', confidence: 'medium', reason: d.fds }
   const b = bytes
+  // Wii / GameCube 都常用 .iso，必须先看盘头再让扩展名把它误判成 PS1。
+  // 两个魔数都是 Dolphin 与硬件使用的标准大端字段：Wii 在 0x18，GC 在 0x1c。
+  if (
+    bytes.length >= 0x20 &&
+    b[0x18] === 0x5d && b[0x19] === 0x1c && b[0x1a] === 0x9e && b[0x1b] === 0xa3
+  ) {
+    return { platform: 'wii', confidence: 'high', reason: d.wiiDisc }
+  }
+  if (
+    bytes.length >= 0x20 &&
+    b[0x1c] === 0xc2 && b[0x1d] === 0x33 && b[0x1e] === 0x9f && b[0x1f] === 0x3d
+  ) {
+    return { platform: 'gamecube', confidence: 'high', reason: d.gamecubeDisc }
+  }
   if (b[0] === 0x80 && b[1] === 0x37 && b[2] === 0x12 && b[3] === 0x40) return { platform: 'n64', confidence: 'high', reason: d.n64z64 }
   if (b[0] === 0x37 && b[1] === 0x80 && b[2] === 0x40 && b[3] === 0x12) return { platform: 'n64', confidence: 'high', reason: d.n64v64 }
   if (b[0] === 0x40 && b[1] === 0x12 && b[2] === 0x37 && b[3] === 0x80) return { platform: 'n64', confidence: 'high', reason: d.n64n64 }

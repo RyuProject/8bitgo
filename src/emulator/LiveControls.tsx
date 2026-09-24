@@ -357,10 +357,21 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
   }, [netplayRoomId, live])
   /** 分享标签页拿到的流：停播时要把轨停掉，否则浏览器角上那条「正在分享」一直亮着 */
   const tabStreamRef = useRef<MediaStream | null>(null)
+  /**
+   * 手动分享流程的代次。
+   *
+   * `getDisplayMedia()` 会停在浏览器自己的选择器里，玩家完全可能在那段时间关播、换游戏或离开页面。
+   * Promise 不会因为 React 卸载而取消；若不另设代次，用户已经离开后那次选择仍会继续
+   * `startBroadcast()`，留下一个界面上看不见、也再没有 cleanup 能收掉的推流和屏幕共享轨。
+   * `stop()` 递增代次，两个 await 后都核一次；迟到的结果只负责把自己刚拿到的资源关干净。
+   */
+  const manualAttemptRef = useRef(0)
 
   const on = Boolean(handle) && Boolean(gameSlug) && liveEnabled() && active && !hidden
 
   const stop = useCallback(() => {
+    // 先作废还停在浏览器选择器 / 开播握手里的手动分享，再清已经落地的会话。
+    manualAttemptRef.current += 1
     if (tabStreamRef.current) {
       for (const tr of tabStreamRef.current.getTracks()) tr.stop()
       tabStreamRef.current = null
@@ -378,6 +389,7 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
     setRoomId('')
     setReconnecting(false)
     setViewers(0)
+    setManualBusy(false)
     // 下播了就让大厅立刻把卡片撤掉，不用等下一轮轮询
     refreshLiveRooms()
   }, [setViewers])
@@ -537,10 +549,16 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
   /** 玩家点了「开播」：选本标签页，画面带声音一起推 */
   const startManual = async () => {
     if (!gameSlug || manualBusy || liveRef.current) return
+    const attempt = ++manualAttemptRef.current
     setManualBusy(true)
     let stream: MediaStream | null = null
     try {
       stream = await shareTab(captureRef?.current ?? null)
+      if (attempt !== manualAttemptRef.current) {
+        // 玩家在选择器弹着时已经关播 / 换局；不能让迟到的授权在后台重新开播。
+        for (const tr of stream.getTracks()) tr.stop()
+        return
+      }
       tabStreamRef.current = stream
       const b = await startBroadcast({
         sources: { stream },
@@ -553,6 +571,13 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
           else if (state === 'ended') stop()
         },
       })
+      if (attempt !== manualAttemptRef.current) {
+        // 开播握手期间也可能离页。Broadcast 已经建出来了，必须连房间和采集资源一起拆掉。
+        b.stop()
+        for (const tr of stream.getTracks()) tr.stop()
+        if (tabStreamRef.current === stream) tabStreamRef.current = null
+        return
+      }
       liveRef.current = b
       setLive(b)
       setRoomId(b.roomId)
@@ -562,10 +587,11 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
     } catch (e) {
       // 多半是玩家在选择器里点了取消（NotAllowedError）—— 那就当没这回事
       if (stream) for (const tr of stream.getTracks()) tr.stop()
-      tabStreamRef.current = null
+      if (tabStreamRef.current === stream) tabStreamRef.current = null
       console.warn('[live] 分享标签页没成', e)
     } finally {
-      setManualBusy(false)
+      // 旧流程迟到时不能把更新一轮的 busy 提前撤掉。
+      if (attempt === manualAttemptRef.current) setManualBusy(false)
     }
   }
 

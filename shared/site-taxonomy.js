@@ -31,6 +31,8 @@ export const ENABLED_PLATFORM_IDS = Object.freeze([
   // 没自建时平台仍然可见但一款也玩不了 —— 所以在部署 Play.js/Play.wasm 之前
   // 别往这个平台上传游戏。详见 src/emulator/adapters/play.ts。
   'ps2',
+  // Dolphin 同样走独立隔离页；没有游戏时平台页不会出现在首页或 sitemap。
+  'gamecube', 'wii',
   /*
     NDS（2026-09-08 加）。**东西早就齐了，只是漏了这一行** ——
     平台定义在 src/data/platforms.ts（runtime: emulatorjs / core: melondsds）、三个核心也真发出去了

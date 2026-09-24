@@ -1,6 +1,8 @@
 import { Button, buttonClasses } from '@/components/ui/Button'
-import { useSeo } from '@/services/seo'
+import { resolveSeoLanguagePlan, useSeo } from '@/services/seo'
 import { useT } from '@/services/i18n'
+import { useLang } from '@/services/lang'
+import { ENGLISH_FALLBACK_LONGFORM_LANGUAGES } from '@/config/languages'
 import { CONTACT_EMAIL } from '@/components/layout/Logo'
 
 const STORY_ICONS = ['📦', '🔎', '▶️']
@@ -9,12 +11,20 @@ const VALUE_ICONS = ['⚡', '🧩', '🛠️']
 /** 关于页：用个人口吻讲清起点、转折和现在，不把独立项目包装成虚构的大团队。 */
 export function AboutPage() {
   const t = useT()
+  const lang = useLang()
   const copy = t.aboutPage
+  /*
+    西 / 法 / 意 / 德 / 日目前复用 aboutEnglish。页面仍保留对应语言的导航壳，
+    但搜索身份必须回到英文正文；等某门语言真的补完全文，再把它加入共享清单。
+  */
+  const seoLanguages = resolveSeoLanguagePlan(lang, ENGLISH_FALLBACK_LONGFORM_LANGUAGES, 'en')
 
   useSeo({
     title: copy.seoTitle,
     description: copy.seoDescription,
     canonicalPath: '/about',
+    contentLanguages: seoLanguages.contentLanguages,
+    canonicalLanguage: seoLanguages.canonicalLanguage,
     jsonLd: [
       {
         '@context': 'https://schema.org',

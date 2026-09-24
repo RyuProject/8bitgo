@@ -73,6 +73,10 @@ const LANGUAGES = await loadTs('src/config/languages.ts', 'LANGUAGES')
 const DEFAULT_LANG = await loadTs('src/config/languages.ts', 'DEFAULT_LANG')
 const FALLBACK_LANG = await loadTs('src/config/languages.ts', 'FALLBACK_LANG')
 const HREFLANG = await loadTs('src/config/languages.ts', 'HREFLANG')
+const ENGLISH_FALLBACK_LONGFORM_LANGUAGES = await loadTs(
+  'src/config/languages.ts',
+  'ENGLISH_FALLBACK_LONGFORM_LANGUAGES',
+)
 /**
  * 取全部游戏。
  *
@@ -161,18 +165,30 @@ const localized = (path, lang) => {
 }
 
 /**
- * 每个页面输出 8 条 URL（每种语言一条），每条都用 xhtml:link 列出全部语言版本。
- * Google 要求 hreflang 必须「互相指向」，所以每个语言版本都要带完整的 alternates。
+ * 这三页的西 / 法 / 意 / 德 / 日路由都复用英文长正文，不是独立译文。
+ * 页面 head 已 canonical 到英文；sitemap 也只能提交三条真正的 canonical，不能一边
+ * 在 head 里合并、一边又在 sitemap 里把重复 URL 当作收录目标重新递交。
+ */
+const ENGLISH_FALLBACK_LONGFORM_PATHS = new Set(['/about', '/terms', '/privacy'])
+const languagesFor = (path) => {
+  if (!ENGLISH_FALLBACK_LONGFORM_PATHS.has(path)) return LANGUAGES
+  const allowed = new Set(ENGLISH_FALLBACK_LONGFORM_LANGUAGES)
+  return LANGUAGES.filter((language) => allowed.has(language.code))
+}
+
+/**
+ * 普通页面输出 8 条 URL；共用英文长正文的三页只输出 3 条真实语言版本。
+ * 每条都列出同组的全部 alternate，满足 hreflang 必须双向互指的要求。
  */
 const entries = []
 for (const u of urls) {
-  for (const l of LANGUAGES) {
+  for (const l of languagesFor(u.path)) {
     entries.push({ ...u, lang: l.code, loc: SITE + localized(u.path, l.code) })
   }
 }
 
 const alternatesFor = (path) =>
-  LANGUAGES.map(
+  languagesFor(path).map(
     (l) => `    <xhtml:link rel="alternate" hreflang="${HREFLANG[l.code]}" href="${esc(SITE + localized(path, l.code))}" />`,
   ).join('\n') +
   // 和页面 head 保持一致：访客语言不在支持列表中时，统一落到英语版。
@@ -221,7 +237,7 @@ if (existsSync(robotsPath)) {
 }
 
 console.log(`✅ sitemap.xml：1 份静态 + 每种语言各 3 份动态（游戏 / 文章 / 平台类型），共 ${1 + LANGUAGES.length * 3} 份`)
-console.log(`   sitemap-static.xml：${entries.length} 条 URL（${urls.length} 个固定页面 × ${LANGUAGES.length} 种语言）`)
+console.log(`   sitemap-static.xml：${entries.length} 条 canonical URL（共用英文长正文的页面只列真实语言版本）`)
 console.log(`   由后端实时生成（下列数字只是构建时的快照，线上以数据库为准）：`)
 console.log(`     游戏 ${visibleGames.length} 款 / 文章 ${visiblePosts.length} 篇 / 平台 ${visiblePlatformCount} 个 / 类型 ${visibleGenreCount} 个`)
 console.log(`   域名：${SITE}`)

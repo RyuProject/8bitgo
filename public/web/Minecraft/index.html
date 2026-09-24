@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Minecraft · Eaglercraft 1.8</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin: 0; height: 100%; background: #0d0d12; color: #e8e8ee;
+      font-family: system-ui, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; }
+    #app { display: flex; flex-direction: column; align-items: center; justify-content: center;
+      height: 100%; gap: 16px; padding: 24px; box-sizing: border-box; text-align: center; }
+    h1 { font-size: 20px; margin: 0; }
+    p { max-width: 600px; line-height: 1.7; opacity: .85; margin: 0; }
+    code { background: #1c1c24; padding: 2px 6px; border-radius: 6px; font-size: 13px; }
+    #status { min-height: 20px; opacity: .7; font-size: 13px; }
+    .spinner { width: 26px; height: 26px; border: 3px solid #2a2a33; border-top-color: #4ea1ff;
+      border-radius: 50%; animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <h1>Minecraft · Eaglercraft 1.8</h1>
+    <div class="spinner" id="spinner"></div>
+    <p id="status">正在检查本地客户端…</p>
+  </div>
+  <script>
+    // 本站只托管这层开源启动壳，不托管任何 Minecraft 代码或资源（遵循版权红线）。
+    // 真正的 Eaglercraft 客户端由 operator 用 `npm run minecraft:fetch` 从「他自己正版
+    // Minecraft 1.8 构建」的上游产物自托管到 ./eaglercraft/；检测到就直接进游戏。
+    // 游戏本体（assets.epk 等）由玩家用自己合法拥有的 MC 1.8 通过上游工具生成后提供。
+    //
+    // ⚠️ 必须用「基于当前路径算出的绝对地址」跳转到 ./eaglercraft/index.html：
+    // 路由 /web/:name 是 sendFile 直接吐页面、URL 不留尾斜杠，浏览器会把 ./eaglercraft/
+    // 相对 /web/ 解析成 /web/eaglercraft/index.html（错一层）→ 永远 404。所以不能直接
+    // 写相对路径，要从 location.pathname 推出本壳所在目录再拼。
+    var status = document.getElementById('status')
+    var spinner = document.getElementById('spinner')
+
+    var base = location.pathname.replace(/\/index\.html$/i, '').replace(/\/+$/, '')
+    var ENGINE = base + '/eaglercraft/index.html'
+
+    fetch(ENGINE, { method: 'HEAD' })
+      .then(function (r) {
+        if (r.ok) {
+          status.textContent = '已检测到客户端，正在进入…'
+          window.location.replace(ENGINE)
+          return
+        }
+        showMissing()
+      })
+      .catch(showMissing)
+
+    function showMissing() {
+      spinner.remove()
+      status.innerHTML =
+        '未检测到已部署的客户端。请由 operator 用自己正版 Minecraft 1.8 构建 Eaglercraft，' +
+        '再执行 <code>npm run minecraft:fetch -- --src &lt;构建目录&gt;</code> 完成自托管。'
+    }
+  </script>
+</body>
+</html>

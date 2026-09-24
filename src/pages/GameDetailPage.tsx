@@ -44,6 +44,7 @@ import { CONTACT_EMAIL } from '@/components/layout/Logo'
 import { cx } from '@/lib/format'
 import { FEATURES } from '@/config/features'
 import { isolatedEmbedFor } from '../../shared/isolated-embeds.js'
+import { isIsolatedRuntimePlatform } from '../../shared/isolated-runtime-platforms.js'
 import { splitDevelopers } from '@/lib/developers'
 
 export function GameDetailPage() {
@@ -178,11 +179,11 @@ export function GameDetailPage() {
    * 命中的话详情页不内嵌模拟器，改成显示一个跳 /play/<slug> 的入口。
    */
   const isolatedEmbed = isolatedEmbedFor(game?.slug)
-  /** Play! 固定使用 pthread，PS2 和登记过的 HTML5 游戏一样必须进隔离整页。 */
-  const isolatedPlayer = Boolean(isolatedEmbed) || game?.platform === 'ps2'
+  /** Play! / Dolphin 固定使用 pthread，和登记过的 HTML5 游戏一样必须进隔离整页。 */
+  const isolatedPlayer = Boolean(isolatedEmbed) || isIsolatedRuntimePlatform(game?.platform)
   /*
     只给真的会内嵌播放器的游戏预热 chunk。年龄门必须等 game 到了才挂，
-    所以此时预热仍和 access 接口并行；PS2 / 隔离页 / 不存在的游戏用不上这 240 KB，
+    所以此时预热仍和 access 接口并行；pthread 模拟器 / 隔离页 / 不存在的游戏用不上这 240 KB，
     原先无条件预热会在玩家还没点击“开始游戏”时白白下载。
   */
   useEffect(() => {
@@ -337,7 +338,7 @@ export function GameDetailPage() {
                     frameClassName={stageCap}
                     slug={game.slug}
                     gameName={game.title}
-                    ps2={game.platform === 'ps2'}
+                    isolatedPlatform={isIsolatedRuntimePlatform(game.platform) ? game.platform : undefined}
                     icon={game.icon}
                     // 背景那张是糊到底再压一层黑底的，96×96 完全够用，没必要下 300×300
                 backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority thumb className="h-full w-full" />}
@@ -409,7 +410,7 @@ export function GameDetailPage() {
           */}
           {EXPERIMENTAL_PLATFORMS.has(platform.id) && (
             <p className="mt-3 rounded-xl border border-coin/40 bg-coin-soft px-3 py-2 text-xs text-muted">
-              ⚠️ {t.runtime.playExperimental}
+              ⚠️ {platform.runtime === 'dolphin' ? t.runtime.dolphinExperimental : t.runtime.playExperimental}
             </p>
           )}
         </div>

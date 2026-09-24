@@ -95,12 +95,35 @@ export function staticCacheHeaders(res, filePath) {
     res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
     res.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
   }
+  // wasm-dolphin 的页面、Worker 和 WASM 都在隔离页里加载；任一层少 COEP 都会白屏。
+  if (p.includes('/dolphin/')) {
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
+    res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
+    return set(CACHE.engineVersioned)
+  }
 
   /*
     自托管的网页游戏（`public/web/<名字>/`）：js / wasm 的文件名不带哈希，
     所以走「固定 URL 的引擎」那档，而不是永久缓存 —— 换一版 PvZ 是**覆盖同名文件**，
     边缘留旧副本会让线上和构建验收变成两套代码（和上面 EmulatorJS 那条同理）。
   */
+  /*
+    Terraria 的运行时文件（本地放一份时才走这里，线上通常由 server/src/terraria.js
+    从对象存储转发）。文件名里带内容哈希（`terraria.<hash>.dll`、`dotnet.native.<hash>.wasm`），
+    可以长期缓存；只有 `dotnet.js` 与 `blazor.boot.json` 这两个「入口」不带哈希，
+    必须短缓存 —— 否则换了构建，边缘还在指着上一版的哈希文件。
+    这套策略与代理那条路保持一致，别只改一边。
+  */
+  if (p.includes('/web/terraria/_framework/')) {
+    const file = p.slice(p.lastIndexOf('/') + 1)
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
+    // pthread Worker 入口要自己声明 COEP，同上面 qemu 那条。
+    // ⚠️ 名字是 `dotnet.native.worker.<hash>.mjs`，哈希在中间，别写成 endsWith('.worker.mjs')。
+    if (file.includes('.worker.')) res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
+    // ⚠️ `blazor.boot.json` 虽然后缀是 json，但它是「清单」不是内容寻址的产物。
+    return set(file === 'dotnet.js' || file === 'blazor.boot.json' ? CACHE.engine : CACHE.immutable)
+  }
   if (p.startsWith('/web/')) return set(CACHE.engine)
   if (p.includes('/assets/')) return set(CACHE.immutable)
   if (p.includes('/fonts/')) return set(CACHE.font)

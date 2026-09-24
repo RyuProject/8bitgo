@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      ⚠️ 必须写 <base>：生产路由会把 /web/terraria/ 规范化成不带尾斜杠的 /web/terraria
+      （见 server/src/index.js 的 normalizeUrl），此时浏览器会把 "terraria" 当成**文件**，
+      `./assets/index.js` 会被算成 /web/assets/index.js → 404。同 /web/PvZ、/web/cs15。
+    -->
+    <base href="/web/terraria/" />
+    <link rel="icon" href="./app.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0e0e66" />
+    <meta name="description" content="《泰拉瑞亚》(Terraria) 的浏览器移植版，用 .NET WebAssembly + FNA 运行。本页不含游戏素材：请自备正版本体的 Content 目录。" />
+    <meta name="robots" content="noindex" />
+    <link rel="canonical" href="https://8bitgo.com/web/terraria" />
+    <title>泰拉瑞亚 · 网页版 — 8bitgo</title>
+    <style>
+      /*
+        只在「运行时没起来」时用得上；正常路径完全不参与渲染。
+        ⚠️ 必须**整屏浮层（fixed + inset:0）**，不能让它顺着文档流排在 #app 后面 ——
+        app 自己的 index.css 给 #app 设了 height:100%，排下去就落到首屏之外，
+        玩家看到的还是一片白，得往下滚才看得到（实测过一次）。
+      */
+      #runtime-hint {
+        position: fixed;
+        inset: 0;
+        z-index: 10;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 1.5em;
+        background: #131313;
+        color: #f0f0f0;
+        font: 16px/1.7 system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      #runtime-hint > div {
+        max-width: 620px;
+        padding: 1.5em;
+        text-align: center;
+        border: 2px solid #f02424;
+        border-radius: 0.75rem;
+      }
+      #runtime-hint h1 { margin: 0 0 .4em; font-size: 1.2em; color: #f02424; }
+      #runtime-hint p { margin: .4em 0; }
+      #runtime-hint code { background: #2b2b2b; padding: 0 .3em; border-radius: 4px; }
+      #runtime-hint[hidden] { display: none; }
+    </style>
+    <script type="module" crossorigin src="./assets/index.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index.css" />
+  </head>
+  <body>
+    <noscript>需要开启 JavaScript 才能运行。</noscript>
+    <div id="app"></div>
+    <!--
+      兜底提示。为什么需要：这个应用的入口是
+        `await import("/web/terraria/_framework/dotnet.js")`
+      ——运行时文件取不到时**整个模块直接失败**，页面就是一片纯白，
+      控制台只有一句含糊的模块加载错误。而 `_framework/`（134.9MiB）不在 git 里、
+      靠 R2 回源，最容易出现的就是「页面部署了、运行时还没传」这种状态。
+      所以这里给一个可读的失败面（同 cs16 那条「必需运行文件缺失就报 503」的思路）。
+      判断依据：应用挂载时会用 id=app 的节点替换 #app 并渲染出子节点；
+      什么都没有就说明模块没跑起来。
+    -->
+    <div id="runtime-hint" hidden>
+      <div>
+        <h1>页面没能启动</h1>
+        <p>运行时文件加载失败。请刷新重试；若一直如此，多半是 <code>_framework/</code> 还没部署。</p>
+      </div>
+    </div>
+    <script>
+      setTimeout(function () {
+        var app = document.getElementById('app');
+        if (app && app.childElementCount === 0) document.getElementById('runtime-hint').hidden = false;
+      }, 12000);
+    </script>
+  </body>
+</html>

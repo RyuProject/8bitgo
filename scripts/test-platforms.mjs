@@ -64,6 +64,14 @@ check('ps2 走 Play!，不能再回到“暂不支持在线运行”', () => {
   assert.equal(ps2.runtime, "'play'")
 })
 
+check('GameCube / Wii 都固定走 wasm-dolphin', () => {
+  for (const id of ['gamecube', 'wii']) {
+    const platform = found.find((p) => p.id === id)
+    assert.ok(platform, `${id} 平台不见了`)
+    assert.equal(platform.runtime, "'dolphin'")
+  }
+})
+
 check('已开放的 Linux 虚拟机在平台总览有入口', () => {
   assert.ok(browse.includes('href="/linux"') && browse.includes('t.browse.linuxTitle') && browse.includes('t.browse.linuxAction'))
 })

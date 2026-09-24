@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "assets": [
+    {
+      "file": "Diablo.570bd59a.wasm",
+      "size": 1519717,
+      "sha256": "c54252a5dce7da8117c2c78c30c73b8d00590fc7a36f8bb3abc74f544a14d94b",
+      "r2": "web/diablo/runtime/Diablo.570bd59a.wasm.br"
+    },
+    {
+      "file": "DiabloSpawn.9c2373b2.wasm",
+      "size": 1381584,
+      "sha256": "2ccc7727552ab05385da15335c19ae561f4e4d7d3796d90ab104cb498b7530ba",
+      "r2": "web/diablo/runtime/DiabloSpawn.9c2373b2.wasm.br"
+    },
+    {
+      "file": "MpqCmp.8aa3c6dc.wasm",
+      "size": 156977,
+      "sha256": "9e9fbd0a538523486603284c91c162d8a23a0b7feea06a60fe44956925007485",
+      "r2": "web/diablo/runtime/MpqCmp.8aa3c6dc.wasm.br"
+    }
+  ]
+}

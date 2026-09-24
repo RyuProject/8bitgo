@@ -1,7 +1,7 @@
 # 8BitGo — 给接手的 AI 助手 / 开发者
 
 > Codex 会自动读取仓库根目录的 `AGENTS.md`，所以工程约定和「踩过的坑」都写在这儿。
-> 最后更新：2026-08-28。**「当前进度」一节有时效性，其余部分是长期有效的约定。**
+> 最后更新：2026-09-24。**「当前进度」一节有时效性，其余部分是长期有效的约定。**
 
 ---
 
@@ -1075,6 +1075,269 @@ npm run cs16:upload -- --bucket <R2桶名>
 生产默认根是 `https://assets.8bitgo.com/web/cs16/zstd-v1/`，localhost 默认本地；`?packsroot=`
 可指临时域名，`?packformat=gzip` 只用于旧包应急。R2 CORS、Cache Everything 和验收步骤见
 `public/web/cs16/PACKS.md`。
+
+### 2.28.5 /web/diablo：CRA v2 老工具链，WASM 核心走 R2 Brotli 流式代理
+
+上游 d07RiV/diabloweb（devilution 重建源码 → WebAssembly），2026-09-24 接入，地址 `/web/diablo`。
+路由不用加：`/web/:name` 是通用的（同 cs15）。
+
+- **不含任何游戏数据**：`DIABDAT.MPQ` 由玩家自己提供，只写进他自己浏览器的 IndexedDB
+  （库名 `diablo_fs`，存档 `.sv` 也在同一处）。页面上那句「不会上传到服务器」是实话，
+  别再加云端存档的暗示。
+- 上游界面里的 **「Play Shareware」按钮已删除**：那条路要 `/web/diablo/spawn.mpq`，
+  等于把上游的共享版数据托管到本站、或让页面去外链别人的站点 —— 两者都撞 §版权红线。
+  玩家自己手里有 `spawn.mpq` 时仍然可用（走文件选择那条路，会被识别成 shareware 分支）。
+- 源码 `diabloweb/`、页面/worker 产物 `public/web/diablo/` **两者都进 git**：产物进 git 的理由同
+  cs15/cs16（生产机 `git pull && npm run build` 不会重建它）；但三份 `.wasm` 会在构建末尾从
+  `public/` 剥离，只留下 `runtime-manifest.json`，经 `/web/diablo/static/media/<hash>.wasm`
+  同源流式代理到 R2 的 `web/diablo/runtime/<hash>.wasm.br`。
+
+五条构建约束，每条都真实踩过一次（`npm run diablo:build` 已把它们固化）：
+
+1. **上游的 `package-lock.json` 里带着 4 处未解决的 git 冲突标记**（node-sass / sass-graph 子树），
+   JSON 都解析不了 → `npm ci` 必失败，npm 退化成按 `^` 范围重新解析，于是拿到今天最新的
+   `@babel/core`，直接踩上第 2 条。仓库里这份已经修好并重新生成。
+2. **`preset-env` 不转译 class 字段，webpack 4 又不认它。** `preset-env` 只在「目标浏览器不支持
+   class 字段」时才处理，而 browserslist 数据一年年更新，2026 年的 `>0.2%, not dead` 全都支持 ——
+   结果是 `class App { files = new Map() }` 被原样丢给 webpack 4，报
+   `Module parse failed: Unexpected token`（有时更直接：`Missing class properties transform`）。
+   解法是给 babel 一份**不随 browserslist 漂移的目标**（`package.json` 里 `babel.targets` 写死
+   chrome/edge/firefox/safari 版本），并显式加上 `@babel/plugin-proposal-class-properties`。
+   副作用要一起记住：目标写死的那个集合必须**原生支持 async/await**，否则 `preset-env` 会把它
+   编成 regenerator，而 app 代码这条路没有 `@babel/plugin-transform-runtime` 兜底。
+3. **依赖里出现 `#private` 一律炸**（`preset-env` 7.9 不认私有字段，webpack 4 的 acorn 更不认）：
+   `peerjs` 从 1.5 起就有 `static #_ = ...`，所以钉在 `1.0.2`（= 上游 lockfile 的版本）。
+   升级依赖前先想一下它会不会带私有字段。
+4. **Node 17+ 跑 webpack 4 必须 `--openssl-legacy-provider`**：webpack 4 用 md4 算模块哈希，
+   OpenSSL 3 默认不提供，报 `error:0308010C:digital envelope routines::unsupported`。
+5. **worker-loader 的错误藏在 child compilation。** 旧 CRA 脚本只读顶层 `stats.errors`，
+   `game.worker.js` 的 eslint / 语法错误会被漏掉，控制台仍写“Compiled successfully”，最终 build 里
+   只有 public 图标、没有 index/JS/wasm。`diabloweb/scripts/build.js` 已把所有 children 的错误合并；
+   不要退回上游原版的那段 `stats.toJson({ errors: true })`。
+
+两处内存修复不能退：远程 MPQ 虽然一直发 Range，旧代码却先按 Content-Length 分配整份文件；
+本地 MPQ 也先 FileReader 全读再复制进 worker。现在两条路统一成 **1MiB 分块 + 最多 64 块 LRU**，
+远程必须严格拿到 `206 + 精确 Content-Range`，否则当场报错；500MB MPQ 不再额外常驻 500MB JS 堆。
+
+三份核心上传前用 **Brotli q11 + 16MiB window** 预压缩，真实结果约为：Diablo 23.1%、
+DiabloSpawn 23.6%、MpqCmp 32.6%（合计约 720KB）。R2 `.br` 对象不写 Content-Encoding，
+`server/src/r2-runtime-proxy.js` 流式回源后再补，浏览器边收边解码；服务端也不会整包缓冲。
+R2 同时保留原始对象，只给不支持 Brotli 的旧客户端与 Range 请求兜底，正常浏览器不会下载它。
+
+另外两处与「构建能不能跑起来」直接相关的改动：`node-sass` 在 Node 22 上根本编不出来
+（node-gyp + 老 libsass），换成 dart-sass，并把 `sass-loader` 从 7.1.0 升到 **7.3.1**
+（7.1.0 只认 `node-sass`，没有回退分支）；`config/env.js` 的 `VERSION` 改成读**本工程**的
+`package.json` —— `npm_package_version` 是「执行 `npm run` 的那个包」的版本，而本站是在仓库根目录
+跑 `npm run diablo:build` 再 fork 出子构建，环境变量会被继承，游戏主菜单底部曾印出主站版本 `v0.9.18`。
+
+另外三处刻意的删改，别被上游新版本覆盖回来：
+
+- **不注册 service worker**（webpack 配置里的 workbox `GenerateSW` 已删）。入口文件名不带内容哈希，
+  老访客被旧 SW 接管时就是「部署了也不生效、刷新也没用」，同 §2.5 那次事故。
+- **删掉 react-ga**：上游在 production 下会往它自己的 `UA-43123589-6` 打点，不该拿本站的流量
+  给别人刷数据。
+- `diabloweb/config/webpack.config.js` 里的 `WorkboxWebpackPlugin` 引用也一并删了。
+
+⚠️ **`public/web/diablo/` 里约 1.5MB 的 `.map` 是故意留的**：`App.js` 用
+`sourcemapped-stacktrace` 把 worker 抛出的栈映射回源码，删了错误框里就只剩压缩后的栈。
+
+验收：
+
+```bash
+npm run diablo:build     # 构建 + 同步 public/web/diablo + 自检
+npm run test:diablo      # 只自检（prebuild / postbuild:client 里也会跑）
+npm run diablo:upload -- --bucket 8bitgo   # q11 预压并上传三份核心；--dry-run 只准备不上传
+curl -sI https://8bitgo.com/web/diablo | head -3
+curl -sI https://8bitgo.com/web/diablo/static/media/Diablo.<hash>.wasm | grep -i content-type
+```
+
+⚠️ **光看 200 不算验收。** 这个页面最典型的故障形态是「页面能打开、游戏起不来」，
+而它会白屏或只在控制台留一句含糊报错。要真的走一遍：打开 `/web/diablo`（**不带尾斜杠**，
+生产就是不带）→ 选一个 MPQ → 等 `document.querySelector('.App').className` 变成
+`App started`（这一步说明 worker + wasm + FS 都起来了），再确认主菜单能出来。
+
+⚠️ 与 `check-cs16.mjs` 同理，`scripts/check-diabloweb.mjs` 会把 index.html 里**每一条**
+`/web/diablo/` 引用都拿去磁盘上核对，并检查 wasm 三件套（Diablo / DiabloSpawn / MpqCmp）
+与 `*.worker.js`；`--dist` 时再和 `public/` 逐字节比对。构建产物才是线上真正发的文件，
+而这些名字不带内容哈希，肉眼分不出新旧。
+
+想上架成游戏：平台选 `html5`、slug 必须是 `diablo`；前端会从 `shared/builtin-web-games.js`
+自动识别 `/web/diablo`，不再要求后台手绑 ROM。游戏数据不在站内，游戏详情页**别**写「内置」。
+
+### 2.28.6 /web/terraria：.NET WASM 的 Terraria 移植，运行时在 R2、前端是打过补丁的构建产物
+
+上游 Terrarium（velzie / MercuryWorkshop 的 celeste-wasm 一脉，Terraria 的 Blazor + FNA 移植），
+2026-09-24 接入，地址 `/web/terraria`。**这是全站唯一一个把商业游戏本体也一起发的页面**：
+`_framework/terraria.<hash>.dll`（20MB）就是 Terraria 客户端的 IL（`Terraria.*` 全套命名空间）。
+按运营方的决定按「和站内 ROM 库同样的尺度」处理；页面文案据此写死为「你必须拥有 Terraria」。
+
+**文件放哪儿**（细节见 `public/web/terraria/PACKS.md`）：
+
+| | |
+|---|---|
+| `public/web/terraria/`（入口 + assets + 图标，约 800KB） | git |
+| `_framework/`（134.9MiB，单个 wasm 100,104,513 字节） | R2 `web/terraria/_framework/`，不进 git、也不进 `dist`（已加进 `vite.config.ts` 的 `HUGE_STATIC`） |
+| 上游的 `sw.js` / `MILESTONE` | **不发**（前者作用域是站点根，后者只有它用） |
+
+线上取用是**同源**的：`/web/terraria/_framework/<文件>` → `server/src/terraria.js` 优先流式转发
+R2 的 `<文件>.br`，缺少时兼容原文件。上传器用 Brotli q11 + 16MiB window；代理全程背压，
+并发名额直到响应体真正结束才释放。不直连 R2 的原因：`dotnet.native.worker.<hash>.mjs` 是 pthread 的 Worker 入口，
+**跨源 Worker 不允许**；而且这一页跑在 `COEP: require-corp` 下，同源省掉一整套 CORS/CORP 配置。
+
+#### 上游只发布构建产物，所以是「打补丁」而不是改源码
+
+`npm run terraria:patch` 对 `assets/index.js`（217KB，已打包）做定点字符串替换，输入是
+`scripts/terraria-web/upstream/`（上游原件的副本）。每处替换都**必须命中一次**，否则直接失败 ——
+上游换版本时补丁点会漂移，那时要重新核对，别为了让构建变绿把断言删掉。
+
+⚠️ **补丁之后一定要真解析一遍**（`npm run terraria:check` 里用 esbuild，不打包、只解析）。
+这不是洁癖：删 Steam 登录路由时把收尾的 `)` 留在原地，浏览器只报一句 `Unexpected token ')'`，
+而**所有字符串检查全绿、构建也成功**。同理，只扫双引号字符串会漏掉藏在组件 CSS 模板串里的
+`url(/backdrop.png)`（症状是背景图 404 而界面照常可用，看着像设计如此），所以补丁表里另加了两条
+**正则**断言：`url(/…)` 与 `src:"/…"` 里不许出现「不在 /web/terraria 下的根绝对路径」。
+（`/tmp`、`/dev`、`/proc` 那些是 Emscripten 虚拟文件系统的路径，不是 URL，别一刀切。）
+
+#### 三件必须记住的事
+
+1. **两处 service worker 注册的作用域都是 `/`。** 上游靠它给缓存响应补 COOP/COEP 头、
+   装完再刷新一次。放过去等于给整个 8bitgo.com 装一个第三方 SW。本站改为服务端在这条路由上
+   直接发 COOP/COEP（同 `/linux`），SW 一处不留（`sw.js` 也不部署）。
+2. **上游会把 `window.fetch` 与 `window.WebSocket` 全局换掉**，走作者自己的 wisp 代理
+   （`wss://staging2.velzie.rip/`），并从 jsdelivr 取 `libcurl.wasm`；`preInit()` 里无条件执行。
+   本站整段移除（站内请求不该绕道别人的服务器，也违反「引擎自托管」）；实测移除后
+   `Program.PreInit()` 照常完成、游戏照常进引导页。
+3. **Steam 登录/下载已移除**（原来会让玩家在本页输入 Steam 账号密码，凭据过第三方 staging）。
+   只保留「拷贝本机 Content 目录」（Chromium）与「上传归档」两条自带数据的路；
+   `.NET` 侧的 `initSteam` / `downloadApp` 也改成直接失败，不给它留下任何能连上代理的入口。
+
+#### 验收（光看 200 不算）
+
+```bash
+npm run terraria:patch -- --src <解压后的构建目录>   # 首次导入
+npm run terraria:check                              # 补丁在位 + 引用齐全 + 真解析一遍
+npm run test:terraria                               # 上面的检查 + 代理回归测试（不联网）
+npm run terraria:upload -- --bucket <R2桶名> --zip <构建zip>   # q11 预压 + 原始回退，一起传 R2
+```
+
+⚠️ **必须真的在浏览器里开一次**（本地：把上游 `_framework/` 放进 `public/web/terraria/_framework/`，
+它已 gitignore，`express.static` 会优先命中）。要看到的是：
+
+- `crossOriginIsolated === true`、`typeof SharedArrayBuffer === 'function'`
+  （false 就说明 COOP/COEP 没发出去，游戏会卡在启动且几乎没有报错）；
+- `navigator.serviceWorker.getRegistrations()` 长度为 **0**；
+- `performance.getEntriesByType('resource')` 里**没有任何跨源请求**（出现 velzie.rip / jsdelivr 就是补丁掉了）；
+- 引导页出来、`_framework` 请求约 117 条 / 约 134MB、控制台 0 错误。
+
+⚠️ 页面本身能打开 ≠ 能玩：**上游不提供任何游戏素材**，玩家必须自己给 `Content/`（约 500MB）。
+没有素材时停在引导页是正常现象，不要把它当成「没跑起来」。
+
+想上架成游戏：平台选 `html5`、slug 必须是 `terraria`；`shared/builtin-web-games.js` 会自动识别
+`/web/terraria`，并把详情页入口切到带 COOP/COEP 的 `/play/terraria` 隔离薄壳，不再要求手绑 ROM。
+游戏素材不在站内，详情页别写成「内置」。
+
+### 2.28.7 /web/Minecraft：EaglercraftX 1.8，第三方 Minecraft 1.8 WebGL 移植
+
+上游 lax1dude/eaglercraft-1_8（gitflic.ru），2026-09-24 接入，地址 `/web/Minecraft`。
+**这是全站又一个「引擎自托管、游戏数据由玩家自备」的网页游戏，但版权处境比 terraria / diablo
+更敏感，务必照下面办。**
+
+- **上游性质先核实清楚**：EaglercraftX 1.8 是 Mojang《Minecraft》1.8 的**第三方逆向/移植**
+  （不是官方）。gitflic 那个仓库**只含源码 + 构建脚本，不含任何反编译的 MC 1.8 源码/资源，
+  也不含预构建产物**——构建时必须由 operator 自己提供正版 Minecraft 1.8 与 MCP 文件
+  （`mcp918/` 与 MC 1.8 由玩家/operator 自备）。产物是 `index.html` + `classes.js` +
+  `assets.epk`，由 `window.eaglercraftXOpts` 配置（`assetsURI: "assets.epk"`）。
+- **版权红线（同 terraria / diablo，但更紧）**：`classes.js` 是反编译重编译后的 MC 1.8 逻辑、
+  `assets.epk` 是 MC 资源——两者都属 Mojang 版权。**本站只托管开源启动壳
+  `public/web/Minecraft/index.html`（始终进 git），不托管任何 Eaglercraft 客户端或资源**。
+  真正的客户端由 operator 用自己合法拥有的 MC 1.8 构建后，经 `npm run minecraft:fetch` 自托管到
+  `public/web/Minecraft/eaglercraft/`；该目录已 gitignore，不进仓库、不分发。
+  游戏本体（assets.epk 等）由玩家用自己合法拥有的 MC 1.8 通过上游工具生成后提供——
+  页面别写成「内置」，详情页也别暗示本站提供任何 Minecraft 代码或素材。
+- **单线程，不需要隔离壳**：Eaglercraft 常规 JS 客户端是单线程，不依赖 SharedArrayBuffer，
+  所以 `shared/builtin-web-games.js` 里 `minecraft` 的 `isolated: false`，直接 `/web/Minecraft`
+  嵌入（同 PvZ / diablo），服务端不在这条路由上发 COOP/COEP，`vite.config.ts` 也不会给它加头。
+  路由不用加：`/web/:name` 是通用的（同 cs15 / PvZ）。
+- **自托管硬规则（fetch 脚本已固化）**：
+  1. 移除上游任何 `navigator.serviceWorker.register(...)`——不给整站装第三方 SW，
+     本站只靠服务端给 `/web/Minecraft` 发头。
+  2. 不出现 http(s) 外链（jsdelivr / unpkg / 作者服务器 …）；玩家在游戏里手填的多人服务器
+     地址是运行时输入，不在静态文件里，不受影响。fetch 脚本只**报告**外链、不擅自改写路径，
+     由 operator 人工确认。
+  3. 上游 Site 构建产物本就假定丢进子目录直接跑，路径是相对的，脚本原样拷贝即可。
+
+三步接入（operator 侧）：
+
+```bash
+# 1. 用自己正版 MC 1.8 按上游 README 构建出 Eaglercraft（index.html + classes.js + assets.epk …）
+# 2. 自托管到本站（剥离第三方 SW、报告外链）
+npm run minecraft:fetch -- --src <构建目录>
+# 3. 验收：无第三方 SW、无外链资源加载
+npm run minecraft:check
+```
+
+验收（光看 200 不算）：`npm run minecraft:check` 应「验收通过」；本地把构建目录导进
+`public/web/Minecraft/eaglercraft/` 后，浏览器开 `/web/Minecraft` 应直接进游戏，
+`performance.getEntriesByType('resource')` 里**没有任何跨源资源请求**（出现 jsdelivr / 作者域名
+就是补丁掉了）。Eaglercraft 自带的 multiplayer 服务器地址是玩家运行时手填，不算跨源违规。
+
+- **上线到 8bitgo.com 的部署要点**：`public/web/Minecraft/eaglercraft/` 被 gitignore，
+  `redeploy.sh` 的 `git reset --hard` 清不掉它，所以「在部署机上跑过一次 `npm run minecraft:fetch`
+  就常驻」，后续 `redeploy` 都会把它带进 `dist/client/`。更省事的做法：在部署机设置环境变量
+  `MINECRAFT_CLIENT_SRC` 指向一份已构建好的客户端目录，`redeploy.sh` 会在构建前自动同步
+  （不设则跳过，假定之前已就位）。两种情况下客户端都来自 operator 自己正版 MC 1.8 的构建，
+  不进 git、不分发。
+- **启动壳跳转用绝对路径**：`public/web/Minecraft/index.html` 基于 `location.pathname` 算出
+  `/web/Minecraft/eaglercraft/index.html` 再 `location.replace`。**不能写相对 `./eaglercraft/`**——
+  路由 `/web/:name` 直接 `sendFile` 吐页面、URL 不留尾斜杠，浏览器会把 `./eaglercraft/` 相对
+  `/web/` 解析成 `/web/eaglercraft/index.html`（错一层）→ 永远 404、进不去游戏。改壳时务必保留
+  这段绝对路径逻辑。
+
+想上架成游戏：平台选 `html5`、slug 必须是 `minecraft`；`shared/builtin-web-games.js` 会自动识别
+`/web/Minecraft`，详情页入口指向它，不再要求手绑 ROM。游戏代码与素材不在站内，详情页别写成「内置」。
+
+### 2.28.8 /web/celeste：Webleste（Celeste 2018 + Everest 的 .NET WASM 移植）
+
+上游 [MercuryWorkshop/celeste-wasm](https://github.com/MercuryWorkshop/celeste-wasm)（与 terraria
+同一作者一脉），2026-09-24 接入，地址 `/web/celeste`。**架构与 §2.28.6 完全同构**：.NET WASM + FNA，
+`_framework/` 130MiB 放 R2 由 `server/src/celeste.js` 代理回源，页面本体 14MB 进 git。
+两处上游结构差异：wasm 被切成 5 片 `dotnet.native.<hash>.wasm0..4`（前端拼回）；且没有
+`blazor.boot.json`，唯一不带内容哈希的入口是 `dotnet.js`（启动清单并进了 native 胶水）。
+注册表 `shared/builtin-web-games.js` 里 `isolated: true`（pthread/deputy thread 要
+SharedArrayBuffer），详情页走 `/play/celeste` 隔离薄壳，`/web/celeste` 路由单独发 COOP/COEP
+（与 terraria 同一分支）。版权处境与 terraria 相同（运营方既定尺度），素材由玩家自备。
+
+⚠️ **上游前端带着三样必须打掉的东西**（`scripts/patch-celeste-web.mjs`，8 处定点替换全部
+must-hit-once + esbuild 真解析）：
+
+1. **`window.fetch` 被全局劫持**：native fetch 失败回落 epoxy 客户端 → 默认发往 wisp 中继
+   `wss://anura.pro`。已整段还原为 native fetch（`/depot/` 下载拦截一并移除）；
+   Everest 自动下载里的 `epoxyFetch` 一并换掉。
+2. **`window.WebSocket` 被 Proxy 换成 EpxWs/EpxTcpWs**（SteamKit2 的 TCP 也从这儿走 wisp）。
+   已还原为原生 WebSocket —— 从此没有任何路径能碰到第三方中继。
+3. **index.html 有第三方统计**（`a.r58playz.dev/colonthree.js`）和 **Steam 账号密码登录 UI**
+   （SteamKit2 走 wisp TCP，网络断掉后登录永远失败）。统计整行删除（bundle 里的 `event()`
+   埋点在 umami 缺席时自动 no-op，删脚本安全）；登录对话框换成说明文字。
+   另把 wisp 默认地址改成 `127.0.0.1:9` 黑洞兜底。
+
+其余差异与坑：
+
+- ⚠️ **`<base href="/web/celeste/">` 是必须的**：上游 demo 在根路径，产物里全是相对引用；
+  生产 URL 不带尾斜杠时 `./assets/...` 会解析到 `/web/assets/...`（「diablo 当成文件」同源坑）。
+- ⚠️ `.wasm0..4` 分片必须归一成 `wasm` 处理（celeste.js 的 `extensionOf` + 上传脚本同款归一），
+  否则落到 1 小时缓存且不做 Brotli，边缘每次回源 100MB —— `test:celeste` 有断言钉着。
+- ⚠️ celeste 的 `_framework` 里有**带哈希的 .js**（terraria 没有），`EXTRA_CACHE` 必须有 `js` 档。
+- 上游 `_headers`（Cloudflare Pages 约定）和 `robots.txt` 不部署；COOP/COEP 由 Express 发。
+- 验收同 terraria：`crossOriginIsolated === true`、`performance` 里无跨源请求、
+  `_framework` 请求约 220 条 / 约 130MB、控制台 0 错误。**页面能开 ≠ 能玩**：玩家必须
+  自己拥有 Celeste (2018) 并在本页交出安装目录；没有素材停在引导页是正常现象。
+- 上架：平台 `html5`、slug 必须 `celeste`；`shared/builtin-web-games.js` 自动识别 `/web/celeste`。
+
+```bash
+npm run celeste:patch -- --src <webleste-loader 解压目录>   # 首次导入 / 上游换版
+npm run celeste:check                                      # prebuild / postbuild:client 都会跑
+npm run test:celeste                                       # 纯函数回归 + 上面的检查
+npm run celeste:upload -- --bucket <R2桶名> --src .celeste-framework   # q11 预压 + 原始回退
+```
 
 ### 2.29 后台能热改的站点级配置：`site_settings` 表（首页公告条是第一个）
 

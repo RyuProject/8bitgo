@@ -202,5 +202,32 @@ check('⚠️ noindex 的页面不输出 JSON-LD', () => {
   assert.match(src, /const visibleJsonLd = noindex \? \[\]/, 'noindex 页面仍可能输出结构化数据')
 })
 
+console.log('六、复用英文长正文的路由不能冒充独立译文')
+
+check('关于页与法律页只声明简中、繁中、英文三份真实长正文', () => {
+  const languages = code('src/config/languages.ts')
+  assert.match(
+    languages,
+    /ENGLISH_FALLBACK_LONGFORM_LANGUAGES\s*=\s*\[\s*'zh-Hans',\s*'zh-Hant',\s*'en',?\s*\]/,
+    '真实长正文语言清单必须只有 zh-Hans / zh-Hant / en',
+  )
+
+  for (const rel of ['src/pages/AboutPage.tsx', 'src/pages/LegalDoc.tsx']) {
+    const src = code(rel)
+    assert.match(src, /resolveSeoLanguagePlan\(lang, ENGLISH_FALLBACK_LONGFORM_LANGUAGES, 'en'\)/, `${rel} 没有把复用正文归到英文 canonical`)
+    assert.match(src, /contentLanguages: seoLanguages\.contentLanguages/, `${rel} 没有限制 hreflang`)
+    assert.match(src, /canonicalLanguage: seoLanguages\.canonicalLanguage/, `${rel} 没有同步 canonical`)
+  }
+})
+
+check('法律页的结构化面包屑跟随同一条 canonical', () => {
+  const src = code('src/pages/LegalDoc.tsx')
+  assert.match(
+    src,
+    /breadcrumbSchema\([\s\S]*?seoLanguages\.canonicalLanguage\)/,
+    'canonical 已切到英文时，面包屑 URL 仍可能留在重复语言路径',
+  )
+})
+
 console.log(failed ? `\n${failed} 项未通过` : '\n全部通过 ✅')
 process.exit(failed ? 1 : 0)

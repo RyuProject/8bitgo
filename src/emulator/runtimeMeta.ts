@@ -25,6 +25,7 @@ import {
   CLOUD_PLATFORM_CORES,
   EJS_EXTS,
   J2ME_PATH,
+  DOLPHIN_PATH,
   PLAY_PATH,
   WEBRETRO_CORE_LABELS,
   WEBRETRO_PATH,
@@ -165,6 +166,20 @@ export const playMeta: Runtime = {
   engineLabel: () => 'Play!',
 }
 
+export const dolphinMeta: Runtime = {
+  id: 'dolphin',
+  name: 'wasm-dolphin',
+  get description() {
+    return getT().runtime.dolphinDesc
+  },
+  // .nkit.iso 最后一段仍是 iso；其余列出 Dolphin DiscIO 常用的单文件容器。
+  extensions: ['iso', 'gcm', 'rvz', 'ciso', 'gcz', 'wbfs', 'wad', 'dol', 'elf'],
+  priority: 20,
+  available: () => Boolean(DOLPHIN_PATH),
+  supports: (platform) => platform === 'gamecube' || platform === 'wii',
+  engineLabel: () => 'Dolphin (WASM)',
+}
+
 export const cloudGameMeta: Runtime = {
   id: 'cloudgame',
   name: 'Cloud',
@@ -203,6 +218,7 @@ export const runtimeMetas: Record<Runtime['id'], Runtime> = {
   jsdos: jsdosMeta,
   webretro: webretroMeta,
   play: playMeta,
+  dolphin: dolphinMeta,
   cloudgame: cloudGameMeta,
   liveview: liveViewMeta,
 }

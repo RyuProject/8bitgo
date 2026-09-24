@@ -691,7 +691,7 @@ openRouter.post('/v1/games/:slug/play', requireUserScope('library.write'), async
  * （那些属于内部信息，且 `core` 在 FORBIDDEN_OUT_KEYS 里）。
  * 但一个要自己起本地模拟器的客户端，恰恰需要这三样：拿到 slug 后查这张表，
  * 就知道该调哪个模拟器、ROM 是什么扩展名、这个平台到底能不能本地跑
- * （html5 是网页、ps2 只有串流，都 runnable:false）。
+ * （html5 是网页、ps2 不提供整份镜像，都 runnable:false）。
  *
  * **公开，不需要令牌**：它只是一张静态参考表，而它描述的那些游戏本身已经是公开的。
  * 数据来自 `open/platforms.js`。

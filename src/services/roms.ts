@@ -20,6 +20,8 @@ import { ROM_LANGS, romLangFor } from '@/config/languages'
 import { useLang } from '@/services/lang'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { isRomPackUrl, romPackKey } from '../../shared/rom-pack-format.js'
+import { isStreamingDiscPlatform } from '../../shared/streaming-disc-platforms.js'
+import { builtinWebGameFor } from '../../shared/builtin-web-games.js'
 
 export const ROM_BASE_KEY = '8bitgo.rom.base'
 export const ROM_API_KEY = '8bitgo.rom.api'
@@ -257,14 +259,20 @@ export function conventionalKeys(game: Game): string[] {
   if (game.platform === 'flash') return [at(`${game.slug}.swf`), at(`${game.slug}/root.swf`)]
   // HTML5 游戏通常是一整套网站文件；约定把入口放在独立目录的 index.html，
   // 同时兼容只有一个 HTML 文件的小作品。
-  if (game.platform === 'html5') return [at(`${game.slug}/index.html`), at(`${game.slug}.html`)]
+  if (game.platform === 'html5') {
+    const builtin = builtinWebGameFor(game.slug)
+    return builtin
+      ? [builtin.entry]
+      : [at(`${game.slug}/index.html`), at(`${game.slug}.html`)]
+  }
   const exts = platformMap[game.platform]?.romExtensions ?? ['.zip']
-  // PS2 的 Play! 需要直接看到光盘容器并按后缀选解析器；外层 ZIP 即使能探到也一定启动不了。
+  // 流式光盘运行时需要直接看到容器并按后缀选解析器；外层 ZIP 即使能探到也一定启动不了。
   // 后台上传守卫已经拒绝新 ZIP，这里也别让历史遗留的 `<slug>.zip` 抢在 ISO 前面。
-  const ordered = game.platform === 'ps2' ? exts.filter((e) => e !== '.zip') : ['.zip', ...exts.filter((e) => e !== '.zip')]
+  const streamingDisc = isStreamingDiscPlatform(game.platform)
+  const ordered = streamingDisc ? exts.filter((e) => e !== '.zip') : ['.zip', ...exts.filter((e) => e !== '.zip')]
   const legacy = ordered.map((ext) => at(`${game.slug}${ext}`))
-  // 没有数据库绑定的老游戏也能原地把对象换成 .8bg；PS2 明确不走浏览器解包路径。
-  return game.platform === 'ps2' ? legacy : [...legacy.map((key) => `${key}.8bg`), ...legacy]
+  // 没有数据库绑定的老游戏也能原地把对象换成 .8bg；流式光盘明确不走浏览器解包路径。
+  return streamingDisc ? legacy : [...legacy.map((key) => `${key}.8bg`), ...legacy]
 }
 
 /** key 自带完整地址（外链或站内绝对路径），不需要根地址就能探 */
@@ -285,11 +293,12 @@ const selfContainedKey = (key: string) => /^https?:\/\//i.test(key) || key.start
 export function romProbeExpected(game: Game | undefined, lang: Lang, prefer?: RomLang | null): boolean {
   if (!game) return false
   const explicit = romCandidates(game, lang, prefer).map((c) => c.key)
-  // 外链 / 站内绝对路径不依赖根地址
-  if (explicit.some(selfContainedKey)) return true
+  const conventional = conventionalKeys(game)
+  // 外链 / 站内绝对路径不依赖根地址；内置网页游戏正是后一种，不能被空 ROM_BASE 挡掉。
+  if (explicit.some(selfContainedKey) || conventional.some(selfContainedKey)) return true
   // 根地址没配就是没接云端 ROM，这时老实显示「选择本地 ROM」，不要空转一帧
   if (!BUILTIN.base()) return false
-  return explicit.length > 0 || conventionalKeys(game).length > 0
+  return explicit.length > 0 || conventional.length > 0
 }
 
 /* ---------------- 多文件 ROM（Flash 多 SWF 包） ---------------- */
@@ -514,11 +523,11 @@ export function romCandidates(game: Pick<Game, 'rom' | 'roms' | 'romBackups'>, l
 /**
  * 真正用于播放探测的候选。数据库无需同步改 key：把 `a.zip.8bg` 放到 `a.zip` 旁边，
  * 玩家就会优先命中新包；没生成、损坏或密钥错则继续用原对象。完整外链不擅自改 URL，
- * PS2/HTML5 也明确不走浏览器解包。
+ * 流式光盘 / HTML5 也明确不走浏览器解包。
  */
 export function playbackRomCandidates(game: Pick<Game, 'platform' | 'rom' | 'roms' | 'romBackups'>, lang: Lang, prefer?: RomLang | null): RomCandidate[] {
   const raw = romCandidates(game, lang, prefer)
-  if (game.platform === 'ps2' || game.platform === 'html5') return raw
+  if (isStreamingDiscPlatform(game.platform) || game.platform === 'html5') return raw
   const out: RomCandidate[] = []
   const seen = new Set<string>()
   for (const candidate of raw) {
@@ -976,7 +985,9 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
       }
 
       const base = getRomBase()
-      if (!base || !isPlayable(game.platform)) {
+      const conventional = conventionalKeys(game)
+      const hasSelfContainedConvention = conventional.some(selfContainedKey)
+      if ((!base && !hasSelfContainedConvention) || !isPlayable(game.platform)) {
         // 这是配置问题（根地址没配、平台不支持），重试一万次也一样，不进重试。
         // 「平台还不支持」是正常状态（未上线的平台），不值得报；根地址空着是真的配错了。
         if (!base && isPlayable(game.platform)) {
@@ -990,7 +1001,7 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
       }
 
       // 完全没有绑定记录的老游戏仍按历史约定探测文件名。
-      for (const key of conventionalKeys(game)) {
+      for (const key of conventional) {
         if (runtimeFailures.current.has(key)) continue
         const url = romUrlForKey(key, base)
         const outcome = await probeRom(url, 4000, game.platform === 'html5')

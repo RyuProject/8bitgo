@@ -53,6 +53,7 @@ import { mergeDosboxConfigOverride, normalizeDosboxConfigOverride } from '../../
 import { normalizeDosStartupCommands } from '../../shared/dos-startup-commands.js'
 import { probeRange } from '@/emulator/remoteDisc'
 import { isRomPackBytes, isRomPackUrl, packRomForUpload, romPackKey, verifyRomPackBlob } from '@/services/romPack'
+import { isStreamingDiscPlatform } from '../../shared/streaming-disc-platforms.js'
 
 /*
   一键模板。点一下是**合并**进现有配置（mergeDosboxConfigOverride），不是覆盖，可以叠着点。
@@ -358,7 +359,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
         if (!/^https?:\/\//i.test(ref.sourceUrl)) throw new Error('外站 ZIP 必须填写完整的 HTTP(S) 地址')
         if (form.platform === 'html5') throw new Error('HTML5 游戏不能用 ZIP 单文件解包；请部署完整站点并填写入口 URL')
         if (form.platform === 'java') throw new Error('Java 游戏当前需要服务端读取 JAR，不能使用仅浏览器解包的外站 ZIP')
-        if (form.platform === 'ps2') throw new Error('PS2 镜像需要按需读取，不能整包下载后在浏览器解包')
+        if (isStreamingDiscPlatform(form.platform)) throw new Error('大光盘镜像需要按需读取，不能整包下载后在浏览器解包')
       } catch (err) {
         return setError(err instanceof Error ? err.message : 'ZIP 内 ROM 路径无效')
       }
@@ -816,8 +817,12 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
           {form.platform === 'dos' && (
             <p className="mt-1 text-xs text-muted">DOS 可以像以前一样每种语言上传不同包；若一个 ZIP 内含多语言，只上传一次，再把其他语言槽绑定到同一个 ZIP key，并分别填写 BAT / EXE 等启动文件的包内相对路径。</p>
           )}
-          {form.platform === 'ps2' && (
-            <p className="mt-1 text-xs text-muted">PS2 直接上传 .iso（也支持 .chd / .cso 等 Play! 格式），不要套 ZIP。播放器会按需分段读盘，R2 与本站 Worker 已支持。</p>
+          {isStreamingDiscPlatform(form.platform) && (
+            <p className="mt-1 text-xs text-muted">
+              {form.platform === 'ps2'
+                ? 'PS2 直接上传 .iso（也支持 .chd / .cso 等 Play! 格式），不要套 ZIP。播放器会按需分段读盘。'
+                : 'GameCube / Wii 直接上传 .rvz 或 .iso（也支持平台列表里的其它 Dolphin 单文件格式），不要套 ZIP。推荐用桌面 Dolphin 转成 RVZ，播放器会按需分段读盘。'}
+            </p>
           )}
         </div>
         {ROM_LANGS.map((lang) => (
@@ -1626,9 +1631,9 @@ function RomField({
   const canUpload = allowStorage && Boolean(cfg.api && cfg.token)
   const isFlash = platform === 'flash'
   const isHtml5 = platform === 'html5'
-  const isPs2 = platform === 'ps2'
-  /** PS2 保持原来的 Range 光盘路径；HTML5 是目录/页面。其余新上传 ROM 统一进入 8BG。 */
-  const shouldPack = !isPs2 && !isHtml5
+  const isStreamingDisc = isStreamingDiscPlatform(platform)
+  /** 大光盘保持 Range 随机读取；HTML5 是目录/页面。其余新上传 ROM 统一进入 8BG。 */
+  const shouldPack = !isStreamingDisc && !isHtml5
   /** 街机的 ROM key 保留原文件名 —— FBNeo 靠压缩包名认 romset，见 roms.ts 的 FILENAME_IS_IDENTITY */
   const isArcade = keepsOriginalFileName(platform)
   // Flash 额外收 zip：平台的 romExtensions 保持只有 .swf —— 那个列表还管着
@@ -1638,7 +1643,7 @@ function RomField({
     ...(shouldPack ? ['.8bg'] : []),
   ].join(',')
   const defKey = (fileName: string) => (lang ? defaultRomKeyForLang(platform, slug, lang, fileName) : defaultKeyFor(platform, slug, fileName))
-  const exampleName = isPs2 ? 'game.iso' : 'x.zip'
+  const exampleName = platform === 'gamecube' || platform === 'wii' ? 'game.rvz' : isStreamingDisc ? 'game.iso' : 'x.zip'
 
   useEffect(() => setHealth(null), [value, backupValue])
 
@@ -1655,11 +1660,11 @@ function RomField({
     setHealth({ checking: true })
     const checkOne = async (url: string): Promise<HealthOutcome> => {
       const outcome = await probeRom(url, 6000, isHtml5)
-      if (!isPs2 || !outcome.url) return outcome
+      if (!isStreamingDisc || !outcome.url) return outcome
       const controller = new AbortController()
       const timer = window.setTimeout(() => controller.abort(), 6000)
       try {
-        // 普通“文件存在”对 PS2 不够：Play! 要不断按扇区读，必须真的返回 206 + Content-Range。
+        // 普通“文件存在”对大光盘不够：模拟器会不断按扇区读，必须真的返回 206 + Content-Range。
         const range = await probeRange(url, controller.signal)
         return { ...outcome, rangeSupported: range.rangeSupported }
       } finally {
@@ -1675,7 +1680,7 @@ function RomField({
 
   const healthText = (outcome: HealthOutcome | undefined) => {
     if (!outcome) return ''
-    if (outcome.url && outcome.rangeSupported === false) return '❌ 无法验证 HTTP Range（PS2 必须返回 206）'
+    if (outcome.url && outcome.rangeSupported === false) return '❌ 无法验证 HTTP Range（流式光盘必须返回 206）'
     if (outcome.url && outcome.rangeSupported) return '✅ 可用（HTTP Range 206）'
     if (outcome.url) return '✅ 可用'
     if (!outcome.certain) return outcome.reason === 'timeout' ? '⚠️ 检测超时' : '⚠️ 浏览器无法确认（网络或 CORS）'
@@ -1973,8 +1978,8 @@ function RomField({
                 ? `单个 .swf 存成 ${defKey('x.swf')}；多 SWF 的游戏直接选 .zip，整包会传到 ${bundleDirFor(platform, slug, lang)}/ 下`
                 : isHtml5
                   ? `可填写你有权嵌入的 HTTPS 游戏网址；单文件作品也可上传 .html。带 JS、WASM、图片等素材的项目请先完整部署，再填写它的 index.html 地址`
-                : isPs2
-                  ? `直接上传 ISO 会存到 ${defKey(exampleName)} 这样的位置并自动绑定；不要套 ZIP。也可手填支持 HTTP Range 的完整 URL`
+                : isStreamingDisc
+                  ? `直接上传镜像会存到 ${defKey(exampleName)} 这样的位置并自动绑定；不要套 ZIP。也可手填支持 HTTP Range 的完整 URL`
                 : `新上传会先做 Zstd 19 + AES-256-GCM，再存到 ${romPackKey(defKey(exampleName))} 并自动绑定；旧 ZIP/ROM 仍可直接填写和运行`
             : isHtml5
               ? '填写你有权嵌入的 HTTPS 游戏网址；目标站点必须允许 iframe 嵌入。单文件上传需先配置 Worker'
@@ -1994,7 +1999,7 @@ function RomField({
             className={cx(btnClass.secondary, 'shrink-0 whitespace-nowrap')}
             disabled={!canUpload || progress !== null || bundleAt !== null}
             onClick={() => inputRef.current?.click()}
-            title={canUpload ? (isFlash ? '选择 .swf，或选 .zip 上传多 SWF 整包' : isHtml5 ? '上传单文件 HTML 作品' : isPs2 ? '选择 .iso / .chd / .cso 等光盘镜像并上传到 R2' : '选择文件并上传到 R2') : '需要先配置 Worker'}
+            title={canUpload ? (isFlash ? '选择 .swf，或选 .zip 上传多 SWF 整包' : isHtml5 ? '上传单文件 HTML 作品' : isStreamingDisc ? '选择平台支持的单文件光盘镜像并上传到 R2' : '选择文件并上传到 R2') : '需要先配置 Worker'}
           >
             {progress === null ? (isFlash ? '☁️ 上传 SWF / ZIP' : isHtml5 ? '☁️ 上传 HTML' : '☁️ 上传到 R2') : `上传中 ${progress}%`}
           </button>
@@ -2056,7 +2061,7 @@ function RomField({
             )}
           </details>
         )}
-        {!isHtml5 && !isPs2 && /^https?:\/\//i.test(value) && (
+        {!isHtml5 && !isStreamingDisc && /^https?:\/\//i.test(value) && (
           <div className="space-y-2 rounded-md border border-line p-2 text-xs text-muted">
             <label className="flex items-center gap-2">
               <input

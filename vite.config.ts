@@ -4,6 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { defineConfig, loadEnv } from 'vite'
+import { builtinWebGameFor } from './shared/builtin-web-games.js'
 
 /**
  * 把几个「又大又不需要加工」的静态目录排除在产物复制之外。
@@ -32,7 +33,11 @@ import { defineConfig, loadEnv } from 'vite'
  */
 // 只能挪数据包子目录，不能再挪整个游戏目录：否则 Vite 不会把已跟踪的 index.html /
 // 加载器复制进构建产物，生产环境会一直服务上一次构建留下的旧代码。
-const HUGE_STATIC = ['web/cs15/packs', 'web/cs16/packs', 'qemu-wasm']
+//
+// `web/terraria/_framework` 同理（134.9MiB 的 .NET 运行时，不进 git、线上走 R2）：
+// 它只会在「本机想离线跑」时出现在 public/ 里，那种时候不该让一次 npm run build
+// 顺手把它拷进 dist（慢，而且 dist 会白白胖一圈）。
+const HUGE_STATIC = ['web/cs15/packs', 'web/cs16/packs', 'qemu-wasm', 'web/terraria/_framework', 'web/celeste/_framework']
 
 const PUBLIC_DIR = path.resolve(import.meta.dirname, 'public')
 const DIST_DIR = path.resolve(import.meta.dirname, 'dist/client')
@@ -100,13 +105,17 @@ function skipHugeStatic() {
   }
 }
 
-/** 构建预览也要加隔离头；只在开发服务器加，预览中的 PS2 启动会直接失败。 */
+/** 构建预览也要加隔离头；缺少它时 Play! / Dolphin 会在创建共享内存前直接失败。 */
 function isolationHeaders(req: IncomingMessage, res: ServerResponse, next: () => void) {
   // 只隔离独立页；给整站加头会拦掉跨源封面和字体。
   const requestUrl = req.url || ''
   const pathname = requestUrl.split('?')[0]
-  const ps2Play = /^\/(?:zh-Hans\/|zh-Hant\/|en\/|es\/|fr\/|it\/|de\/|ja\/)?play\/ps2\/[^/]+\/?$/.test(pathname)
-  if (pathname === '/linux' || pathname === '/linux.html' || ps2Play) {
+  const isolatedPlay = /^\/(?:zh-Hans\/|zh-Hant\/|en\/|es\/|fr\/|it\/|de\/|ja\/)?play\/(?:ps2|gamecube|wii)\/[^/]+\/?$/.test(pathname)
+  const localPlay = /^\/(?:zh-Hans\/|zh-Hant\/|en\/|es\/|fr\/|it\/|de\/|ja\/)?play-local\/?$/.test(pathname)
+  const builtinSlug = /^\/web\/([^/]+)\/?$/.exec(pathname)?.[1]
+    || /^\/(?:zh-Hans\/|zh-Hant\/|en\/|es\/|fr\/|it\/|de\/|ja\/)?play\/([^/]+)\/?$/.exec(pathname)?.[1]
+  const isolatedBuiltin = Boolean(builtinSlug && builtinWebGameFor(builtinSlug)?.isolated)
+  if (pathname === '/linux' || pathname === '/linux.html' || isolatedPlay || localPlay || isolatedBuiltin || pathname.startsWith('/dolphin/')) {
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
     res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
     if (pathname === '/linux') req.url = `/linux.html${requestUrl.slice('/linux'.length)}`
@@ -117,6 +126,9 @@ function isolationHeaders(req: IncomingMessage, res: ServerResponse, next: () =>
   if (pathname === '/play/Play.js') {
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
     res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
+  }
+  if (pathname.startsWith('/dolphin/')) {
     res.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
   }
   next()
@@ -163,6 +175,16 @@ export default defineConfig(({ mode }) => {
     react(),
     tailwindcss(),
     skipHugeStatic(),
+    // 必须排在 web-game-static 前面：后者会直接 end(index.html)，排在后面就永远加不上隔离头。
+    {
+      name: 'isolated-pages',
+      configureServer(server) {
+        server.middlewares.use(isolationHeaders)
+      },
+      configurePreviewServer(server) {
+        server.middlewares.use(isolationHeaders)
+      },
+    },
     /*
       生产由 Express 的 `/web/:name` 路由 + express.static 直接提供每个 web 游戏页；
       但 Vite dev 服务器没有这条路由，目录形式的 `/web/cs16/` 会被 SPA 兜底抢成根
@@ -204,15 +226,6 @@ export default defineConfig(({ mode }) => {
           },
         ]
       : []),
-    {
-      name: 'isolated-pages',
-      configureServer(server) {
-        server.middlewares.use(isolationHeaders)
-      },
-      configurePreviewServer(server) {
-        server.middlewares.use(isolationHeaders)
-      },
-    },
   ],
   resolve: {
     alias: [

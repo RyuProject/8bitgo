@@ -14,6 +14,7 @@ import { CACHE } from './cache.js'
 import { publicSiteUrl } from './site-urls.js'
 import { requestHostname } from './url-normalize.js'
 import { tvRenderPath } from '../../shared/tv-host.js'
+import { isolatedRuntimeRoute } from '../../shared/isolated-runtime-platforms.js'
 
 const root = path.resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const CLIENT_DIR = path.join(root, 'dist/client')
@@ -114,10 +115,10 @@ function isNoStorePath(pathname) {
   return stripLang(pathname).split('/')[1] === 'auth'
 }
 
-/** Play! 官方 Web 构建固定启用 pthread；只有这条顶层路由需要跨源隔离。 */
-function isPs2PlayPath(pathname) {
-  const seg = stripLang(pathname).split('/').filter(Boolean)
-  return seg[0] === 'play' && seg[1] === 'ps2' && Boolean(seg[2])
+/** Play! / Dolphin 固定启用 pthread；本地 ROM 页也要能接住 GameCube / Wii 文件。 */
+function isIsolatedPlayPath(pathname) {
+  const route = stripLang(pathname)
+  return route === '/play-local' || Boolean(isolatedRuntimeRoute(route))
 }
 
 export async function renderPage(req, res, next) {
@@ -138,7 +139,7 @@ export async function renderPage(req, res, next) {
     // v2：按路由取数，只把这个页面要渲染的那部分注入 HTML。
     // v1 是把整个游戏库塞进每一个页面 —— 上千款游戏时首屏体积会失控。
     const [pathname, qs] = url.split('?')
-    const ps2Play = isPs2PlayPath(pathname)
+    const isolatedPlay = isIsolatedPlayPath(pathname)
     const data = await loadForRoute(stripLang(pathname), new URLSearchParams(qs ?? ''))
 
     /*
@@ -187,9 +188,9 @@ export async function renderPage(req, res, next) {
       .set({
         'Content-Type': 'text/html; charset=utf-8',
         // 隔离头是播放器能否启动的条件；边缘沿用旧 HTML 会让新前端配旧响应头。
-        'Cache-Control': ps2Play ? CACHE.none : notFound ? CACHE.notFound : isNoStorePath(req.path) ? CACHE.none : CACHE.page,
+        'Cache-Control': isolatedPlay ? CACHE.none : notFound ? CACHE.notFound : isNoStorePath(req.path) ? CACHE.none : CACHE.page,
         Vary: 'Accept-Encoding',
-        ...(ps2Play
+        ...(isolatedPlay
           ? {
               'Cross-Origin-Opener-Policy': 'same-origin',
               'Cross-Origin-Embedder-Policy': 'require-corp',
@@ -225,7 +226,7 @@ export async function renderPage(req, res, next) {
           'Content-Type': 'text/html; charset=utf-8',
           'Cache-Control': CACHE.none,
           'Retry-After': '60',
-          ...(isPs2PlayPath(req.path)
+          ...(isIsolatedPlayPath(req.path)
             ? {
                 'Cross-Origin-Opener-Policy': 'same-origin',
                 'Cross-Origin-Embedder-Policy': 'require-corp',

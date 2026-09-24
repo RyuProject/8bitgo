@@ -6,6 +6,7 @@ import { Suspense, type ReactNode } from 'react'
 import { lazyNamed } from '@/routes/lazy'
 import type { ComponentProps } from 'react'
 import type { EmulatorPlayer as EmulatorPlayerType } from './EmulatorPlayer'
+import { useT } from '@/services/i18n'
 
 const loadPlayer = () => import('./EmulatorPlayer')
 const LazyPlayer = lazyNamed(loadPlayer, 'EmulatorPlayer')
@@ -38,15 +39,26 @@ type PlayerProps = ComponentProps<typeof EmulatorPlayerType>
  * 门刚放行、chunk 没到的那几百毫秒里封面消失、变成黑板，看着像播放器坏了。
  */
 function PlayerFallback({ fill, backdrop }: { fill?: boolean; backdrop?: ReactNode }) {
-  if (fill) return <div className="h-full w-full bg-black" aria-busy="true" />
+  const t = useT()
+  const status = (
+    <div role="status" aria-live="polite" className="flex flex-col items-center gap-3 text-center">
+      <span className="h-8 w-8 animate-spin rounded-full border-2 border-white/25 border-t-brand" aria-hidden />
+      <span className="text-xs font-medium tracking-wide text-white/70">{t.player.statusLoading}</span>
+    </div>
+  )
+  if (fill) {
+    return (
+      <div className="flex h-full w-full items-center justify-center bg-black" aria-busy="true">
+        {status}
+      </div>
+    )
+  }
   return (
     <div className="overflow-hidden rounded-2xl border border-line bg-black" aria-busy="true">
       <div className="relative aspect-video w-full overflow-hidden bg-black">
         {backdrop && <div className="absolute inset-0 opacity-25 blur-sm">{backdrop}</div>}
         <div className="absolute inset-0 bg-black/80" />
-        <div className="absolute inset-0 flex items-center justify-center">
-          <span className="h-8 w-8 animate-spin rounded-full border-2 border-white/25 border-t-brand" aria-hidden />
-        </div>
+        <div className="absolute inset-0 flex items-center justify-center">{status}</div>
       </div>
     </div>
   )

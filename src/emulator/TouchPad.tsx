@@ -69,9 +69,14 @@ function dirsFor(nx: number, ny: number): PadButton[] {
 
 const HIDDEN_KEY = '8bitgo.touchpad.hidden'
 
-/** 手柄角上那两颗小按钮（显示 / 隐藏、按键映射）共用的样式 */
+/**
+ * 手柄角上那两颗小按钮（显示 / 隐藏、按键映射）共用的样式。
+ *
+ * 视觉可以小，命中区不能小：44px 是拇指稳定点中的下限。以前只有二十多像素，
+ * 而且行内布局里压在 A 键上方，玩家想收起手柄时很容易误按 A。
+ */
 const MINI_BTN =
-  'pointer-events-auto rounded-md px-2 py-0.5 text-[11px] ' +
+  'pointer-events-auto inline-flex min-h-11 min-w-11 items-center justify-center rounded-md px-2 py-1.5 text-[11px] ' +
   'border border-white/20 bg-black/40 text-white/70 backdrop-blur-sm'
 
 /**
@@ -270,6 +275,22 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
    */
   const btnPointers = useRef(new Map<PadButton, Set<number>>())
 
+  useEffect(() => {
+    /**
+     * iOS 的通知中心、来电和横竖屏切换都可能直接中断 pointer 序列，收不到 pointerup。
+     * 不在失焦时兜底释放，方向键或 A/B 就会永远保持按下，直到玩家重开游戏。
+     */
+    const releaseWhenHidden = () => {
+      if (document.visibilityState !== 'visible') releaseAll()
+    }
+    window.addEventListener('blur', releaseAll)
+    document.addEventListener('visibilitychange', releaseWhenHidden)
+    return () => {
+      window.removeEventListener('blur', releaseAll)
+      document.removeEventListener('visibilitychange', releaseWhenHidden)
+    }
+  }, [releaseAll])
+
   // 送不出去、或者适配器明说「这局一颗键都用不上」，整条就别画了 —— 画一个空壳更糟
   if (!send || (only && only.length === 0)) return null
 
@@ -353,7 +374,8 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
    * 在小屏上顶满、在大屏上小得点不准。上限（9rem / 4.5rem）是为平板和桌面触屏机兜的。
    */
   const DPAD = inline ? 'min(32vw, 9rem)' : 'min(30vw, 9rem)'
-  const FACE = inline ? 'min(16vw, 4.5rem)' : 'min(15vw, 4.5rem)'
+  // 极窄屏也不许缩到 44px 以下，否则 A/B 看得见却很难连续点中。
+  const FACE = inline ? 'clamp(2.75rem, 16vw, 4.5rem)' : 'clamp(2.75rem, 15vw, 4.5rem)'
 
   /** 十字键：整块都是感应区，按角度算方向 —— 这样斜方向和「滑着换方向」才顺 */
   const dpad = (
@@ -366,7 +388,13 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
         // 行内那一条是整条一起亮（见下面 inline 的容器），这里只管浮层
         !inline && highlight && 'animate-pad-pulse',
       )}
-      style={{ ...PAD_STYLE, width: DPAD, height: DPAD }}
+      style={{
+        ...PAD_STYLE,
+        width: DPAD,
+        height: DPAD,
+        // 横屏刘海会吃掉普通的 4% 留白；内联样式只在浮层形态盖过 left-[4%]。
+        left: inline ? undefined : 'max(4%, calc(env(safe-area-inset-left) + 0.5rem))',
+      }}
       {...dpadProps}
     >
       {/* 只是画给人看的箭头，事件都在外层那一块上 */}
@@ -380,27 +408,27 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
   )
 
   /** A / B。B 在左下、A 在右上，和实机手柄的斜排一致，拇指压着更顺 */
-  const faceButton = (button: 'a' | 'b', cls: string) =>
+  const faceButton = (button: 'a' | 'b', cls: string, positionStyle?: CSSProperties) =>
     !has(button) ? null : (
     <button
       type="button"
       aria-label={`Button ${button.toUpperCase()}`}
       {...btnProps(button)}
       className={cx(face, 'rounded-full font-bold', !inline && highlight && 'animate-pad-pulse', cls)}
-      style={{ ...PAD_STYLE, width: FACE, height: FACE }}
+      style={{ ...PAD_STYLE, width: FACE, height: FACE, ...positionStyle }}
     >
       {button.toUpperCase()}
     </button>
   )
 
-  /** SELECT / START：玩的时候基本不碰，做小一点，别抢地方 */
+  /** SELECT / START 视觉仍是小胶囊，但垂直命中区保持 44px，拇指不用瞄准文字本身 */
   const sysButton = (button: 'select' | 'start', cls: string) =>
     !has(button) ? null : (
     <button
       type="button"
       aria-label={button === 'select' ? 'Select' : 'Start'}
       {...btnProps(button)}
-      className={cx(face, 'rounded-full px-3 py-1 text-[10px] tracking-wider', cls)}
+      className={cx(face, 'min-h-11 rounded-full px-2 py-1 text-[10px] tracking-wider', cls)}
       style={PAD_STYLE}
     >
       {button === 'select' ? 'SELECT' : 'START'}
@@ -660,14 +688,17 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
 
   /**
    * 手柄角上那两颗小按钮：按键映射（只有 padRemap 存在时）+ 显示 / 隐藏。
-   * 位置和以前那颗「▾」完全一致，只是多了一颗 —— 它们是同一个层级的东西，
-   * 分成两个绝对定位会随长度错位。
+   *
+   * 行内布局给它们一条独立的 44px 工具轨，不能再绝对定位到右上角：那里正是 A 键，
+   * 两个命中区重叠时看起来两颗都能按，实际点到谁取决于层级，是移动端的致命误触点。
    */
   const controls = (
     <div
       className={cx(
-        'absolute flex items-center gap-1',
-        inline ? 'right-1 top-1' : 'bottom-1 left-1/2 -translate-x-1/2',
+        'flex items-center gap-1',
+        inline
+          ? 'min-h-11 justify-end px-[max(0.5rem,env(safe-area-inset-right))]'
+          : 'absolute left-1/2 top-2 -translate-x-1/2',
       )}
     >
       {remap && (
@@ -718,12 +749,10 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
         style={PAD_STYLE}
       >
         {controls}
-        {hidden ? (
-          <div className="h-7" />
-        ) : (
+        {hidden ? null : (
           <div
             className={cx(
-              'flex w-full items-center gap-2 px-3 py-2',
+              'flex w-full items-center gap-2 py-2 pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))]',
               // 只有十字键的游戏（森林冰火人这类）把它摆中间，别孤零零贴在左边
               dpadOnly ? 'justify-center' : 'justify-between',
             )}
@@ -761,7 +790,9 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
         <>
           {hasDirs && dpad}
           {faceButton('b', 'absolute bottom-[10%] right-[26%]')}
-          {faceButton('a', 'absolute bottom-[24%] right-[5%]')}
+          {faceButton('a', 'absolute bottom-[24%] right-[5%]', {
+            right: 'max(5%, calc(env(safe-area-inset-right) + 0.5rem))',
+          })}
           {sysButton('select', 'absolute bottom-[8%] left-1/2 -translate-x-[115%]')}
           {sysButton('start', 'absolute bottom-[8%] left-1/2 translate-x-[15%]')}
         </>

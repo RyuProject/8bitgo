@@ -1,0 +1,25 @@
+wasm-dolphin runtime used by 8BitGo
+
+Host project: https://github.com/dougchansan/wasm-dolphin
+Host commit: 7e38409ace3dda709c178312ff63fd92a3653cc7
+License: GPL-2.0-or-later (see LICENSE in this directory)
+
+The prebuilt Dolphin WebAssembly core records its exact Dolphin source commit,
+patch series, toolchain and artifact hashes in:
+
+  cores/dolphin/dolphin-core-upstream.build.json
+  provenance/dolphin-source.lock.json
+  provenance/dolphin-vendor-snapshot-v1.json
+  provenance/wasm-toolchain.lock.json
+
+8BitGo changes the browser host only: it adds an authenticated same-origin
+postMessage bridge and an HTTP Range-backed WORKERFS file so large disc images
+can be read on demand. Those modified JavaScript sources are distributed in
+this directory alongside the object code.
+
+Corresponding source for this release can be obtained from the exact host
+commit above:
+
+  https://github.com/dougchansan/wasm-dolphin/tree/7e38409ace3dda709c178312ff63fd92a3653cc7
+
+No game images, Nintendo keys or firmware are included.

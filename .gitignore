@@ -85,6 +85,14 @@ public/qemu-wasm/*
 worker/node_modules
 worker/.wrangler
 
+# /web/diablo 的上游源码工程（diabloweb/）。构建中间产物不进 git；
+# public/web/diablo/ 提交页面、worker 与 R2 清单，三份 wasm 由构建脚本剥离后走 R2 Brotli。
+# node_modules 已被上面的通用规则忽略，这里补一个 build。
+diabloweb/build
+.diablo-runtime-r2/
+# 根上的 README.md 规则会连上游那份一起忽略；那份写着 devilution 源码仓库的出处，要留。
+!diabloweb/README.md
+
 # Ruffle 运行时（npm run ruffle 从 node_modules 复制）
 public/ruffle
 
@@ -133,6 +141,35 @@ public/web/cs16/packs
 
 # PvZ 的 reanim/ 会打成约 50MB 的 gzip 流式包上传 R2。包本身不进 git，清单与加载器进 git。
 .pvz-data/
+
+# Terraria 上传脚本的解压暂存区（scripts/upload-terraria-r2.mjs 的默认 --src）。
+# 135MB 的 .NET 运行时先落到这里，再由脚本传到 R2。
+.terraria-framework/
+.terraria-framework-br/
+
+# Terraria（/web/terraria）的 .NET 运行时 `_framework/` 共 134.9MiB，
+# 其中 dotnet.native.wasm 单文件 100,104,513 字节（贴着 GitHub 单文件上限）。
+# 按 qemu-wasm / cs15-packs 同样的处理：放 R2（web/terraria/_framework/），
+# 由 server/src/terraria.js 代理回源；本机想跑就把上游那份放这里，静态中间件会优先命中。
+# 页面本身（入口 + assets + 图标）约 800KB，照常进 git。
+public/web/terraria/_framework
+
+# Celeste 上传脚本的解压暂存区（scripts/upload-celeste-r2.mjs 的默认 --src）。
+# 130MiB 的 .NET 运行时先落到这里，再由脚本传到 R2。
+.celeste-framework/
+.celeste-framework-br/
+
+# Celeste（/web/celeste）的 .NET 运行时 `_framework/` 共 130MiB（5 片 20MiB 的
+# dotnet.native.<hash>.wasm0..4 分片 + 204 个 dll）。处理与 terraria 完全一致：
+# 放 R2（web/celeste/_framework/），由 server/src/celeste.js 代理回源。
+# 页面本身（入口 + assets + 字体）约 14MB，照常进 git。
+public/web/celeste/_framework
+
+# /web/Minecraft 的 Eaglercraft 客户端（eaglercraft/ 子目录）：含反编译重编译的
+# Minecraft 1.8 逻辑（classes.js 等）与玩家自带资源（assets.epk），按本站版权红线
+# 不进 git。仅启动壳 public/web/Minecraft/index.html（开源、始终在 git）进仓库，
+# 客户端由 operator 用 `npm run minecraft:fetch -- --src <自建构建目录>` 自托管进来。
+public/web/Minecraft/eaglercraft
 
 # Cloudflare 源站证书与私钥（Authenticated Origin Pulls 的客户端证书）
 # 2026-09-06 被 GitGuardian 抓到：origin.key 从 8/26 起就在跟踪列表里，

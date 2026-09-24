@@ -14,7 +14,8 @@
  *
  * `native` 字段是给本地客户端的核心建议：
  *   runnable  —— 这个平台的 ROM 能不能被一台本地机器上的模拟器直接跑。
- *                false 的有两类：html5（根本不是 ROM，是网页）、ps2（只有云端串流，本地无模拟器）。
+ *                false 的有两类：html5（根本不是 ROM，是网页）、ps2（站内只提供 Range 读盘，
+ *                开放 API 拿不到可直接交给本地模拟器的整份镜像）。
  *   emulator  —— runnable 时，推荐的 Linux 原生模拟器（给的是项目名，客户端自己选发行版包）。
  *   note      —— 特别坑：比如 dos 的 jsdos 包是 Web 专用格式，本地 DOSBox 要先解包整理目录。
  */
@@ -78,6 +79,36 @@ const PLATFORM_ROWS = deepFreeze([
         所以 /v1/games/:slug/rom 这条路对 PS2 不成立 —— 不是「跑不了」，是「拿不到」。
       */
       note: '站上的 PS2 是 DVD 镜像（1~4.7GB），只按扇区串读、不提供整份下载，所以拿不到可直接使用的 ROM。本地有 PCSX2，但盘要你自己准备',
+    },
+  },
+  {
+    id: 'gamecube',
+    name: 'Nintendo GameCube',
+    nameZh: '任天堂 GameCube',
+    manufacturer: 'Nintendo',
+    year: 2001,
+    runtime: 'dolphin',
+    core: null,
+    romExtensions: ['.iso', '.gcm', '.rvz', '.ciso', '.gcz', '.dol', '.elf'],
+    native: {
+      runnable: true,
+      emulator: 'Dolphin',
+      note: '网页端用 wasm-dolphin 按 HTTP Range 分块读盘；第三方客户端若要本地运行，需自行准备完整镜像',
+    },
+  },
+  {
+    id: 'wii',
+    name: 'Nintendo Wii',
+    nameZh: '任天堂 Wii',
+    manufacturer: 'Nintendo',
+    year: 2006,
+    runtime: 'dolphin',
+    core: null,
+    romExtensions: ['.iso', '.rvz', '.ciso', '.gcz', '.wbfs', '.wad', '.dol', '.elf'],
+    native: {
+      runnable: true,
+      emulator: 'Dolphin',
+      note: '网页端目前没有 Wii Remote，只适合传统手柄游戏；站内镜像按 Range 分块读取，不提供整份下载',
     },
   },
   {

@@ -6,6 +6,7 @@
  * 「一个平台 = 一份 BIOS」—— 原来三处都是不问直接 PUT，管理员看不到自己盖掉了什么。
  */
 import { coverThumbKey, deleteRom, deleteRomDir, dirOfKey, getRomConfig, headRom, isBundleKey } from '@/services/roms'
+import { STREAMING_DISC_PLATFORM_IDS } from '../../shared/streaming-disc-platforms.js'
 
 // 封面图常常不到 1MB，一律按 MB 显示会变成一排「0.00 MB」，看不出差别
 export const human = (n: number) => (n < 1024 * 1024 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1024 / 1024).toFixed(2)} MB`)
@@ -126,7 +127,7 @@ export async function deleteRomObjects(keys: string[]): Promise<{ removed: strin
  * 用光盘的平台。这类平台的「ROM」是几百 MB 到几 GB 的整张盘，
  * 和卡带机那种几 MB 的文件不是一回事，上传前得多问一句。
  */
-const DISC_PLATFORMS = new Set(['psx', 'ps2'])
+const DISC_PLATFORMS = new Set(['psx', ...STREAMING_DISC_PLATFORM_IDS])
 
 /** 超过这个大小就提醒一次。PS1 用 .chd 压完通常在这条线以下 */
 const DISC_WARN_BYTES = 700 * 1024 * 1024
@@ -219,6 +220,7 @@ export async function confirmDiscImage(platform: string, file: File): Promise<bo
   const ext = (file.name.match(/\.[a-z0-9]+$/i)?.[0] ?? '').toLowerCase()
   const stem = file.name.replace(/\.[a-z0-9]+$/i, '')
   const notes: string[] = []
+  const dolphinDisc = platform === 'gamecube' || platform === 'wii'
 
   /*
     ⚠️ 压缩包这一条是 2026-09-11 站长上传《Gran Turismo》时踩出来的，症状是
@@ -234,6 +236,14 @@ export async function confirmDiscImage(platform: string, file: File): Promise<bo
     两者隔着三层，谁也不会往那儿想。所以必须在**上传之前**拦住。
   */
   if (ARCHIVE_EXTS.has(ext)) {
+    if (dolphinDisc) {
+      window.alert(
+        `${file.name}（${human(file.size)}）\n\n` +
+          'wasm-dolphin 必须对光盘容器做随机读取，不能先把 ZIP / 7z / RAR 整包下载并在浏览器里解压。\n\n' +
+          '正确做法：先解压，再直接上传 .iso；更推荐用桌面 Dolphin 转成 .rvz，体积更小且仍支持随机读取。',
+      )
+      return false
+    }
     const summary = ext === '.zip' ? await zipDirectorySummary(file) : null
     const need = file.size + (summary?.uncompressed ?? file.size * 2)
     const inner = summary?.names.length ? `\n\n包里是：${summary.names.slice(0, 6).join('、')}` : ''
@@ -267,11 +277,15 @@ export async function confirmDiscImage(platform: string, file: File): Promise<bo
     notes.push('.iso 只装得下数据轨，PS1 上带 CDDA 音轨的游戏会整局没有 BGM。')
   }
 
-  if (notes.length) {
+  if (notes.length && !dolphinDisc) {
     notes.push(`建议先用 chdman（MAME 自带）转成 .chd：\`${chdmanHint(`${stem}.cue`, `${stem}.chd`)}\`。无损、单文件，两个 PS1 核心都认。`)
   }
   if (file.size > DISC_WARN_BYTES) {
-    notes.push(`这份镜像有 ${human(file.size)}，玩家每次开局都要下这么多。转成 .chd 通常能省掉一半以上。`)
+    notes.push(
+      dolphinDisc
+        ? `这份镜像有 ${human(file.size)}。网页端虽然按需读盘，但首局仍会消耗不少流量；建议用桌面 Dolphin 转成 .rvz。`
+        : `这份镜像有 ${human(file.size)}，玩家每次开局都要下这么多。转成 .chd 通常能省掉一半以上。`,
+    )
   }
   if (!notes.length) return true
   return window.confirm(`${file.name}\n\n${notes.join('\n\n')}\n\n仍然按现在这份上传吗？`)

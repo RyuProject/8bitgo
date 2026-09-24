@@ -30,6 +30,20 @@ export const DEFAULT_LANG: Lang = SITE_DEFAULT_LANGUAGE
 export const FALLBACK_LANG: Lang = SITE_FALLBACK_LANGUAGE
 
 /**
+ * 关于页、服务条款和隐私政策目前真正拥有独立长正文的语言。
+ *
+ * 西 / 法 / 意 / 德 / 日界面暂时复用英文正文。它们的路由可以继续给用户访问，但不能
+ * 各自声明成一份可收录的译文，否则同一篇英文长文会带着六个 self-canonical URL，
+ * Google 只能替我们挑一条规范页。页面 head 与静态 sitemap 共用这份清单，后续某个
+ * 语种补完全文时只需在这里加入，避免两边再次分叉。
+ */
+export const ENGLISH_FALLBACK_LONGFORM_LANGUAGES = [
+  'zh-Hans',
+  'zh-Hant',
+  'en',
+] as const satisfies readonly Lang[]
+
+/**
  * ROM 语言槽：游戏可为这几种语言分别上传 ROM。
  * 站点支持的八种语言现在都有专属槽 —— 某款游戏没上传某个语言的 ROM 时，
  * 按语言选 ROM 会依次回退到英语、日语、中文（见 romCandidates），所以「有槽」不等于「必须填」。

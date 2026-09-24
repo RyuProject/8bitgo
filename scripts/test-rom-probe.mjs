@@ -46,10 +46,13 @@ assert.equal(romUrlForKey(coverThumbKey(externalCover), 'https://assets.8bitgo.c
 assert.equal(romUrlForKey(externalCover, 'https://assets.8bitgo.com'), externalCover)
 const { ROM_LANGS } = await import(fileURLToPath(new URL('../src/config/languages.ts', import.meta.url)))
 const { romCacheKey } = await import(fileURLToPath(new URL('../src/emulator/romCache.ts', import.meta.url)))
+const { isolatedEmbedFor } = await import(fileURLToPath(new URL('../shared/isolated-embeds.js', import.meta.url)))
 const { gameRowToApi, dosExecutableOf, dosStartupCommandsOf, relationsInPatch, romRelationRows } = await import(fileURLToPath(new URL('../server/src/mappers.js', import.meta.url)))
-// ts-loader 为了让 ROM 探测测试保持轻量，会把平台表换成空桩；这一项只补 PS2 真正用到的格式。
+// ts-loader 为了让 ROM 探测测试保持轻量，会把平台表换成空桩；补齐流式光盘真正用到的格式。
 const { platformMap: testPlatformMap } = await import('@/data/platforms')
 testPlatformMap.ps2 = { romExtensions: ['.iso', '.chd', '.cso', '.zso', '.isz', '.bin', '.elf'] }
+testPlatformMap.gamecube = { romExtensions: ['.iso', '.gcm', '.rvz', '.ciso', '.gcz', '.dol', '.elf'] }
+testPlatformMap.wii = { romExtensions: ['.iso', '.rvz', '.ciso', '.gcz', '.wbfs', '.wad', '.dol', '.elf'] }
 
 let url = 0
 const next = () => `https://assets.example.com/roms/nes/game-${++url}.zip`
@@ -61,6 +64,25 @@ const next = () => `https://assets.example.com/roms/nes/game-${++url}.zip`
   assert.ok(keys.some((key) => key.endsWith('.chd')), 'PS2 也保留 Play! 支持的压缩光盘格式')
   assert.ok(!keys.some((key) => key.endsWith('.zip')), 'PS2 不能把外层 ZIP 当成光盘镜像')
 }
+
+/* ---------- Dolphin 约定地址：同样必须是可随机读取的裸容器 ---------- */
+for (const platform of ['gamecube', 'wii']) {
+  const keys = conventionalKeys({ platform, slug: 'demo' })
+  assert.ok(keys[0].endsWith('.iso'), `${platform} 默认先探 ISO`)
+  assert.ok(keys.some((key) => key.endsWith('.rvz')), `${platform} 应探 Dolphin 的 RVZ 容器`)
+  assert.ok(!keys.some((key) => key.endsWith('.zip') || key.endsWith('.8bg')), `${platform} 不能探外层 ZIP / 8BG`)
+  const candidates = playbackRomCandidates({ platform, rom: `roms/${platform}/demo.rvz` }, 'zh-Hans')
+  assert.deepEqual(candidates.map((candidate) => candidate.key), [`roms/${platform}/demo.rvz`], `${platform} 绑定地址不能派生 8BG`)
+}
+
+/* ---------- 内置 Web 游戏：不依赖 ROM 根地址，也不该对自己的同源入口发 R2 HEAD ---------- */
+for (const [slug, entry] of [['diablo', '/web/diablo'], ['terraria', '/web/terraria']]) {
+  const game = { platform: 'html5', slug }
+  assert.deepEqual(conventionalKeys(game), [entry], `${slug} 应自动识别为站内 Web 游戏`)
+  assert.equal(romProbeExpected(game, 'zh-Hans'), true, `${slug} 没配 VITE_ROM_BASE_URL 也应可播放`)
+}
+assert.equal(isolatedEmbedFor('terraria')?.embed, '/web/terraria', 'Terraria 必须走隔离薄壳，SharedArrayBuffer 才可用')
+assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP，保持普通详情页即可')
 
 /* ---------- 8BG 约定地址：新容器优先，旧对象继续回退 ---------- */
 {

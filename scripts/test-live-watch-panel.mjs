@@ -179,6 +179,31 @@ check('⚠️ 主播回来后只有真的收到画面才可以报正在观看', 
   assert.match(body, /else void rewatch\(\)/, '旧连接已经断开时没有立即重建')
 })
 
+check('⚠️ 手动分享选择器迟到时不能在离页后偷偷开播', () => {
+  /*
+    getDisplayMedia 的选择器可以挂很久。期间组件卸载 / 玩家点关播后，Promise 仍会兑现；
+    两个 await（拿到屏幕流、建好 Broadcast）之后都必须核对代次，且 stop 要先作废旧代次。
+  */
+  const src = code('src/emulator/LiveControls.tsx')
+  assert.match(src, /const manualAttemptRef = useRef\(0\)/, '没有手动分享代次，无法识别迟到结果')
+  const stopAt = src.indexOf('const stop = useCallback')
+  const manualAt = src.indexOf('const startManual = async')
+  assert.ok(stopAt > 0 && manualAt > stopAt, '找不到停播或手动开播流程')
+  assert.match(src.slice(stopAt, manualAt), /manualAttemptRef\.current \+= 1/, '停播没有作废仍在等待的授权')
+  const manual = src.slice(manualAt, src.indexOf('const available', manualAt))
+  assert.match(manual, /const attempt = \+\+manualAttemptRef\.current/, '手动分享没有领取独立代次')
+  assert.ok((manual.match(/attempt !== manualAttemptRef\.current/g) ?? []).length >= 2, '拿流和开房后没有分别拦迟到结果')
+  assert.match(manual, /b\.stop\(\)/, '迟到但已经建好的直播房没有拆掉')
+  assert.match(manual, /for \(const tr of stream\.getTracks\(\)\) tr\.stop\(\)/, '迟到的屏幕共享轨没有停止')
+})
+
+check('播放器代码块加载时有可见、可读屏的状态，不再只剩黑框', () => {
+  const src = code('src/emulator/PlayerChunk.tsx')
+  assert.match(src, /role="status"/, '加载占位没有状态语义')
+  assert.match(src, /aria-live="polite"/, '读屏不会获知播放器正在加载')
+  assert.match(src, /t\.player\.statusLoading/, '加载占位仍只有一个难以察觉的小圆圈')
+})
+
 check('侧边栏有独立直播入口', () => {
   const src = code('src/components/layout/nav.ts')
   assert.match(src, /to: '\/rooms\?live=1'/, '直播大厅仍然只能靠猜网址进入')

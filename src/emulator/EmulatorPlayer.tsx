@@ -45,6 +45,7 @@ import { confirmAndReplayAnchorNavigation } from './leaveNavigation'
 import { AdSenseSlot } from '@/components/ads/AdSenseSlot'
 import { sessionCountsAsPlayed } from './playedScope'
 import { cloudGameMeta, emulatorJsMeta, liveViewMeta } from './runtimeMeta'
+import { isStreamingDiscPlatform } from '../../shared/streaming-disc-platforms.js'
 /**
  * 挂载实现。**只有这里引它** —— runtimes.ts 是唯一静态引入九个适配器的地方，
  * 而本组件由页面懒加载（见 PlayerChunk.tsx），所以引擎代码不进主包。
@@ -3328,7 +3329,7 @@ export function EmulatorPlayer({
                    m-auto 有空间时同样居中，没空间时自己塌成 0 并允许滚动，按钮永远够得到。
                 2. 广告用 horizontal，理由见下面那一格。
               */}
-              <div className="absolute inset-0 flex flex-col items-center overflow-y-auto overscroll-contain px-6 py-3 text-center">
+              <div className="absolute inset-0 flex flex-col items-center overflow-x-hidden overflow-y-auto overscroll-contain px-6 py-3 text-center">
               <div className="m-auto flex w-full flex-col items-center gap-4">
               {/*
                 空闲态原本这里是大号平台图标（🎮 之类）。按需求换成播放页广告位：
@@ -3344,14 +3345,16 @@ export function EmulatorPlayer({
               {supported ? (
                 <>
                   {/*
-                    按键图在按钮**上面**：玩家的视线从游戏名往下走，先看到手放哪儿，
-                    再看到「开始」。反过来的话，手已经点下去了才看到键位，等于没说。
+                    桌面端按键图仍放在开始按钮上方；窄屏必须直接收掉。
+                    390px 视口实测：广告 + 完整键位图会把 48px 高的主按钮顶到画面框下面，
+                    它虽然还在可滚容器里，却被播放器自己的工具栏盖住，玩家看到的就是“无法开始”。
+                    触屏玩家开局后会看到屏幕手柄提示，不会因此丢失操作说明。
                   */}
                   {showKeymap && (
                     <PadDiagram
                       runtimeId={(session?.runtime.id ?? pageRuntime?.id) as string | undefined}
                       platform={platform.id}
-                      className="mb-1"
+                      className="mb-1 max-sm:hidden"
                     />
                   )}
                   <Button
@@ -3640,7 +3643,7 @@ export function EmulatorPlayer({
             accept={
               onDetectMismatch === 'switch'
                 ? undefined
-                : [...platform.romExtensions, ...(platform.id === 'ps2' || platform.id === 'html5' ? [] : ['.8bg'])].join(',')
+                : [...platform.romExtensions, ...(isStreamingDiscPlatform(platform.id) || platform.id === 'html5' ? [] : ['.8bg'])].join(',')
             }
             className="hidden"
             onChange={(e) => void start(e.target.files?.[0] ?? null)}
@@ -3673,7 +3676,8 @@ export function EmulatorPlayer({
               : 'relative border-t border-line bg-surface py-1.5 sm:py-2',
             // 游玩布局：这一条压在视口最底下 —— 手指在上面一划不能把底下的页面滚走（touch-none），
             // 底边让出 iPhone 的 Home 指示条（safe-area），没有的设备上 max() 取回原来的 py
-            playMode && 'touch-none pb-[max(0.375rem,env(safe-area-inset-bottom))]',
+            playMode &&
+              'touch-none pb-[max(0.375rem,env(safe-area-inset-bottom))] pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))]',
           )}
           onPointerEnter={() => {
             barPinned.current = true
@@ -3973,15 +3977,8 @@ export function EmulatorPlayer({
               <Button
                 variant={immersive ? 'primary' : 'secondary'}
                 size="sm"
-                /*
-                  窄屏上收成和工具栏其余图标钮一样的 h-7 / px-1.5（那边是 EmulatorTools 的 BTN）。
-                  这两颗原本是 h-8 px-3 的 Button，在只画一个符号的手机上白占 14px 宽、4px 高，
-                  而 360pt 的屏幕上正好就差这十几个像素会把工具栏挤成两行。
-                  用 max-sm: 而不是裸 h-7：裸的和 Button 自己的 h-8 同层同特异性，
-                  Tailwind 把 h-8 排在 h-7 后面，追加的会被吃掉（和上面徽章那条是同一个坑）；
-                  带变体的规则生成在后面，才盖得住。
-                */
-                className="max-sm:h-7 max-sm:px-1.5"
+                /* 图标可以只留一个，命中区不能跟着缩；44px 才能在移动中稳定点中。 */
+                className="max-sm:h-11 max-sm:min-w-11 max-sm:px-2"
                 onClick={toggleImmersive}
                 title={t.player.immersiveTitle}
                 aria-label={immersive ? t.player.exitImmersive : t.player.enterImmersive}
@@ -3998,7 +3995,7 @@ export function EmulatorPlayer({
                 <Button
                   variant="secondary"
                   size="sm"
-                  className="max-sm:h-7 max-sm:px-1.5"
+                  className="max-sm:h-11 max-sm:min-w-11 max-sm:px-2"
                   onClick={toggleFullscreen}
                   title={t.player.fullscreenTitle}
                   aria-label={t.player.fullscreen}

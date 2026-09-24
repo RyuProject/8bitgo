@@ -46,6 +46,9 @@ const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
  */
 const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
 const src = strip(readFileSync(path.join(root, 'src/emulator/EmulatorPlayer.tsx'), 'utf8'))
+const tools = strip(readFileSync(path.join(root, 'src/emulator/EmulatorTools.tsx'), 'utf8'))
+const touchPad = strip(readFileSync(path.join(root, 'src/emulator/TouchPad.tsx'), 'utf8'))
+const css = strip(readFileSync(path.join(root, 'src/index.css'), 'utf8'))
 
 let n = 0
 const check = (name, fn) => {
@@ -161,6 +164,23 @@ check('叠加形态仍然是绝对定位压在画面上（这正是折行代价�
   // 这条不是在守布局，是在守**前提**：哪天工具栏不再叠在画面上了，
   // 上面那些规矩的理由就变了，应该有人来重新想一遍，而不是继续照抄
   assert.match(bar, /absolute inset-x-0 bottom-0/, '叠加工具栏不再绝对定位了？这一份的前提需要重审')
+})
+
+console.log('\n三、移动端触控命中区')
+
+check('⭐ 工具栏的图标按钮在手机上至少 44×44px', () => {
+  assert.match(tools, /const BTN = ['"][^'"]*h-11[^'"]*min-w-11/, 'EmulatorTools 的 BTN 没有 44×44px 手机命中区')
+  assert.match(css, /\[data-testid='emulator-toolbar'\] button[\s\S]*min-height:\s*2\.75rem/, '工具栏其它按钮没有 44px 最小高度兜底')
+})
+
+check('⭐ 屏幕手柄的系统键与收起按钮至少 44px，且行内控制轨不再盖住 A 键', () => {
+  assert.match(touchPad, /MINI_BTN[\s\S]*min-h-11[\s\S]*min-w-11/, '显示 / 隐藏与改键按钮的命中区太小')
+  assert.match(touchPad, /min-h-11 rounded-full[^'"]*tracking-wider/, 'SELECT / START 的命中高度不足 44px')
+  assert.match(touchPad, /inline\s*\? 'min-h-11 justify-end/, '行内手柄没有给控制按钮预留独立工具轨')
+})
+
+check('⭐ 窄屏首屏不渲染会遮住“开始游戏”的完整按键图', () => {
+  assert.match(src, /<PadDiagram[\s\S]*className="mb-1 max-sm:hidden"/, '窄屏仍会被完整按键图挤走主按钮')
 })
 
 console.log(`\n✅ 工具栏单行约束：${n} 项通过`)

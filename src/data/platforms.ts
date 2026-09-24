@@ -44,6 +44,39 @@ export const platforms: Platform[] = [
     description: '双摇杆时代的霸主，史上销量最高的主机。战神、旺达与巨像、真三国无双都在这里。',
   },
   {
+    id: 'gamecube',
+    name: 'Nintendo GameCube',
+    shortName: 'GC',
+    nameZh: '任天堂 GameCube',
+    manufacturer: 'Nintendo',
+    year: 2001,
+    /**
+     * wasm-dolphin 仍是研究原型：GameCube 能广泛启动，但性能与正确性都远低于桌面 Dolphin。
+     * 它固定走跨源隔离独立页，远程光盘由 Worker 按 HTTP Range 分块读取。
+     */
+    runtime: 'dolphin',
+    core: null,
+    romExtensions: ['.iso', '.gcm', '.rvz', '.ciso', '.gcz', '.dol', '.elf'],
+    color: '#6541a5',
+    icon: '🟪',
+    description: '任天堂的小方盒主机：任天堂明星大乱斗 DX、阳光马力欧、塞尔达传说 风之杖。',
+  },
+  {
+    id: 'wii',
+    name: 'Nintendo Wii',
+    shortName: 'WII',
+    nameZh: '任天堂 Wii',
+    manufacturer: 'Nintendo',
+    year: 2006,
+    /** Wii 光盘能启动，但上游尚未实现 Wii Remote；只适合支持传统手柄的少数游戏。 */
+    runtime: 'dolphin',
+    core: null,
+    romExtensions: ['.iso', '.rvz', '.ciso', '.gcz', '.wbfs', '.wad', '.dol', '.elf'],
+    color: '#74b9e6',
+    icon: '⚪',
+    description: '用体感把游戏带进客厅的主机：Wii Sports、马力欧银河、塞尔达传说 天空之剑。',
+  },
+  {
     id: 'flash',
     name: 'Flash / 网页游戏',
     shortName: 'FLASH',
@@ -274,10 +307,10 @@ export const platformMap: Record<string, Platform> = Object.fromEntries(
 /**
  * 「能跑，但别当成正常平台」的平台。
  *
- * 目前只有 PS2：浏览器里唯一的 PS2 模拟器（Play!）有两条浏览器沙箱造成的结构性限制，
- * 大多数游戏跑不起来或画面不对，详见 src/emulator/adapters/play.ts 的文件头。
+ * PS2 的 Play! 有浏览器沙箱造成的结构性限制；GameCube / Wii 的 wasm-dolphin 仍是研究原型，
+ * 且 Wii 没有 Wii Remote。具体限制见对应适配器的文件头与详情页提示。
  *
  * 这不是「还没做完」的意思 —— 做完了也是这样，所以要长期挂着这个标记。
  * 有它的平台在平台卡和游戏详情页上都会显示实验性提示。
  */
-export const EXPERIMENTAL_PLATFORMS = new Set<PlatformId>(['ps2'])
+export const EXPERIMENTAL_PLATFORMS = new Set<PlatformId>(['ps2', 'gamecube', 'wii'])

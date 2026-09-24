@@ -16,6 +16,7 @@ import { query } from './db.js'
 import { attachPostTags } from './routes/posts.js'
 import { listPublicFriendLinks } from './friend-links.js'
 import { loadVisibleNotice } from './site-notice.js'
+import { isolatedRuntimeRoute } from '../../shared/isolated-runtime-platforms.js'
 
 const TTL = Number(process.env.SSR_CACHE_MS || 60_000)
 /** 缓存最多存多少个路由的结果 */
@@ -224,7 +225,7 @@ export function cachePage(raw) {
   return Math.min(n, MAX_CACHE_PAGE)
 }
 
-/** 游戏详情和 PS2 隔离播放页读的是同一份数据；集中一处避免两条路回退规则漂移。 */
+/** 游戏详情和各模拟器隔离播放页读的是同一份数据；集中一处避免两条路回退规则漂移。 */
 function loadGamePage(slug) {
   return cached(`game:${slug}`, async () => {
     const game = await getGameBySlug(slug)
@@ -260,9 +261,10 @@ export async function loadForRoute(pathname, search) {
     return key ? cached(key, load) : load()
   }
 
-  // `/play/ps2/:slug` 是独立的跨源隔离播放器，但首屏仍需同一款游戏的数据。
-  if (seg[0] === 'play' && seg[1] === 'ps2' && seg[2]) {
-    return loadGamePage(decodeURIComponent(seg[2]))
+  // `/play/<平台>/:slug` 是独立的跨源隔离播放器，但首屏仍需同一款游戏的数据。
+  const isolatedPlay = isolatedRuntimeRoute(pathname)
+  if (isolatedPlay) {
+    return loadGamePage(decodeURIComponent(isolatedPlay.slug))
   }
 
   // /platforms、/platforms/:id

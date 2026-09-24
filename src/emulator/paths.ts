@@ -118,6 +118,13 @@ export const WEBRETRO_PATH: string = asDir(import.meta.env.VITE_WEBRETRO_PATH)
  */
 export const PLAY_PATH: string = asDir(import.meta.env.VITE_PLAY_PATH)
 
+/**
+ * wasm-dolphin 随仓库发布在版本目录里。目录名就是接入时锁定的上游提交短 SHA：
+ * 运行时文件互相用相对路径 import，升级时必须整目录换代，不能让边缘缓存拼出新旧混合物。
+ */
+export const DOLPHIN_VERSION = '7e38409'
+export const DOLPHIN_PATH: string = asDir(import.meta.env.VITE_DOLPHIN_PATH, `/dolphin/v${DOLPHIN_VERSION}/`)
+
 /** 云联机服务器地址。空 = 云联机整块功能隐藏 */
 export const CLOUDGAME_URL: string = (import.meta.env.VITE_CLOUDGAME_URL || '').replace(/\/+$/, '')
 export const CLOUDGAME_ZONE: string = import.meta.env.VITE_CLOUDGAME_ZONE || ''

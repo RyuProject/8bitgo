@@ -138,6 +138,33 @@ check('过滤之后 loc 前缀、lastmod、图片这些老行为不变', () => {
   assert.match(xml, /<urlset[^>]*>/)
 })
 
+console.log('\n── 静态长正文：sitemap 只提交真实 canonical ──')
+
+check('关于页、条款和隐私政策不再提交复用英文正文的五个语言 URL', () => {
+  const xml = readFileSync(new URL('../public/sitemap-static.xml', import.meta.url), 'utf8')
+  const submitted = new Set(locs(xml))
+  for (const path of ['about', 'terms', 'privacy']) {
+    assert.ok(submitted.has(`${SITE}/${path}`), `${path} 缺简体 canonical`)
+    assert.ok(submitted.has(`${SITE}/zh-Hant/${path}`), `${path} 缺繁体 canonical`)
+    assert.ok(submitted.has(`${SITE}/en/${path}`), `${path} 缺英文 canonical`)
+    for (const lang of ['es', 'fr', 'it', 'de', 'ja']) {
+      assert.ok(!submitted.has(`${SITE}/${lang}/${path}`), `${lang}/${path} 仍作为重复正文被提交`)
+    }
+  }
+})
+
+check('英文长正文条目的 hreflang 不再宣称五份不存在的译文', () => {
+  const xml = readFileSync(new URL('../public/sitemap-static.xml', import.meta.url), 'utf8')
+  const block = xml.match(/<url>\s*<loc>https:\/\/8bitgo\.com\/en\/terms<\/loc>([\s\S]*?)<\/url>/)?.[1] ?? ''
+  assert.ok(block, '找不到英文条款 sitemap 条目')
+  for (const lang of ['zh-Hans', 'zh-Hant', 'en', 'x-default']) {
+    assert.match(block, new RegExp(`hreflang="${lang}"`), `英文条款缺 ${lang} alternate`)
+  }
+  for (const lang of ['es', 'fr', 'it', 'de', 'ja']) {
+    assert.doesNotMatch(block, new RegExp(`hreflang="${lang}"`), `英文条款仍虚构 ${lang} alternate`)
+  }
+})
+
 /* ---------------- 索引不列空的语言 sitemap ---------------- */
 
 console.log('\n── 索引：没内容的语言别列进去 ──')

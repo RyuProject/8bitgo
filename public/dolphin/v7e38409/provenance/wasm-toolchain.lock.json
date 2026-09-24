@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "platform": "win32-x64",
+  "node": {
+    "version": "24.12.0",
+    "sha256": "2ffe3acc0458fdde999f50d11809bbe7c9b7ef204dcf17094e325d26ace101d8",
+    "candidates": [
+      "%ProgramFiles%/nodejs/node.exe"
+    ]
+  },
+  "emscripten": {
+    "version": "5.0.7",
+    "compilerCommit": "263db4cffa6f9fc2ec514a70abac81362ea41849",
+    "emsdkCommit": "bafd64c26bdaf10bd829163d1575b50b759a72d8",
+    "emccSha256": "96d44a6651660dff43fc04e55236577a10b7aa3a1410dd317d9edc2e99f10d12",
+    "emcmakeSha256": "bcf53c641417b7d386ad96780b6e3200239a92eaeb9756120caf3d072b56dc76",
+    "clangxxSha256": "8a2869747ed3cfa923dfce988ef032d56ce1a7b8098bec8cb0649c44222a4d3f",
+    "emccCandidates": [
+      "%USERPROFILE%/emsdk/upstream/emscripten/emcc.bat"
+    ],
+    "emcmakeCandidates": [
+      "%USERPROFILE%/emsdk/upstream/emscripten/emcmake.bat"
+    ]
+  },
+  "cmake": {
+    "version": "4.3.2",
+    "sha256": "9eb660bd159bb79ae45110b4af67392bb510c9be3e91e01f3ba3c8254436fe3c",
+    "candidates": [
+      "%ProgramFiles%/CMake/bin/cmake.exe",
+      "%APPDATA%/Python/Python312/Scripts/cmake.exe"
+    ]
+  },
+  "ninja": {
+    "version": "1.13.0.git.kitware.jobserver-pipe-1",
+    "sha256": "cb4590bad18f01607e819908d536fba71afbe36eb0f1d5a13c60d88d635ca959",
+    "candidates": [
+      "%LOCALAPPDATA%/Programs/Python/Python312/Scripts/ninja.exe"
+    ]
+  },
+  "rust": {
+    "toolchain": "nightly-x86_64-pc-windows-msvc",
+    "rustcVersion": "1.97.0-nightly",
+    "rustcCommit": "7c3c88f42ad444f4688b865591d84660be4ece2f",
+    "rustcSha256": "35fae85c1e5eae99dc2644a545b150d4fb955bd8538d6645ec4fd38c14094bd4",
+    "cargoVersion": "1.97.0-nightly",
+    "cargoCommit": "a343accce8526b128adc517d33348573d22920a3",
+    "cargoSha256": "f81d732063358c4f517b9ab7b24807b8a6eac884c05220a7b184d726fac8bce1",
+    "rustupSha256": "86478e53f769379d7f0ebfa7c9aa97cb76ca92233f79aa2cc0dbee2efaac73c7",
+    "rustSrcRequired": true,
+    "target": "wasm32-unknown-emscripten",
+    "rustcCandidates": [
+      "%USERPROFILE%/.rustup/toolchains/nightly-x86_64-pc-windows-msvc/bin/rustc.exe"
+    ],
+    "cargoCandidates": [
+      "%USERPROFILE%/.rustup/toolchains/nightly-x86_64-pc-windows-msvc/bin/cargo.exe"
+    ],
+    "rustupCandidates": [
+      "%USERPROFILE%/.cargo/bin/rustup.exe"
+    ]
+  },
+  "naga": {
+    "crateVersion": "0.1.0",
+    "dependencyVersion": "26.0.0",
+    "cargoLockHashMode": "lf-normalized",
+    "cargoLockSha256": "1f9dbc6ae36abff7af42626c17fb899275bcd7e134d36ec24a78ef79c8c4ce78",
+    "sourceRecords": [
+      {
+        "path": "tools/naga-spirv-wgsl/.cargo/config.toml",
+        "hashMode": "lf-normalized",
+        "size": 999,
+        "sha256": "3ef73f363df3091613d8fe90119fb0d9230f2c02545d7dee2fe9dbfaab469ce8"
+      },
+      {
+        "path": "tools/naga-spirv-wgsl/Cargo.toml",
+        "hashMode": "lf-normalized",
+        "size": 958,
+        "sha256": "34a75354d88e4eca3a187f5448862c5779fba12ed715dc02149fbfcc0d6573a0"
+      },
+      {
+        "path": "tools/naga-spirv-wgsl/src/lib.rs",
+        "hashMode": "lf-normalized",
+        "size": 6080,
+        "sha256": "8e1957b21099a570a8de30a6574bd200f87f79bce15959bac1a9d85c6d6c8b0d"
+      }
+    ]
+  }
+}

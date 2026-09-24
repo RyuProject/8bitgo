@@ -10,6 +10,9 @@ import { normalizeUrl } from './url-normalize.js'
 import { tvRobots } from './tv-robots.js'
 import { playShell } from './routes/play.js'
 import { j2meJarProxy, uploadGate, uploadJar, releaseJar, keepaliveJar, startSweeper, MAX_BYTES, TTL_MS } from './j2me.js'
+import { terrariaFrameworkProxy } from './terraria.js'
+import { celesteFrameworkProxy } from './celeste.js'
+import { diabloCoreProxy } from './diablo.js'
 import { ADMIN_AUTH_DISABLED, adminBackdoorFatal, authSecretsFatal, optionalUser } from './auth.js'
 import { CACHE, noStore, staticCacheHeaders } from './cache.js'
 import { gzipResponse } from './compress.js'
@@ -397,6 +400,22 @@ if (ssrAvailable()) {
         return res.status(503).type('html').send('<h1>CS1.6 网页版正在维护</h1><p>运行文件尚未完整部署，请稍后再试。</p>')
       }
     }
+    /*
+      Terraria 与 Celeste 都是 .NET WebAssembly + FNA 的移植，pthread（以及 dotnet 的
+      "deputy thread" 渲染）要 SharedArrayBuffer，而它只在**跨源隔离**的文档里可用 ——
+      必须给这两页单独发 COOP/COEP，和上面 /linux 那条同理，不能加到整站。
+
+      上游的做法是注册一个作用域为 `/` 的 service worker，靠它往缓存响应上补这两个头，
+      装完再刷新一次页面（见 scripts/patch-terraria-web.mjs 里删掉的那两处注册）。
+      那样既把整站交给了一个第三方 SW，又多要一次刷新；这里服务端一次发对更省事。
+    */
+    if ((name === 'terraria' || name === 'celeste') && !sub) {
+      res.set({
+        'Cross-Origin-Opener-Policy': 'same-origin',
+        'Cross-Origin-Embedder-Policy': 'require-corp',
+        'Cross-Origin-Resource-Policy': 'same-origin',
+      })
+    }
     // 固定 URL（不含哈希），走「引擎」那档短缓存；见 cache.js 里 /web/ 的说明
     res.set('Cache-Control', CACHE.engine)
     res.sendFile(sub ? join(name, sub, 'index.html') : join(name, 'index.html'), { root: join(CLIENT_DIR, 'web') }, (err) => {
@@ -426,6 +445,17 @@ if (ssrAvailable()) {
   // 必须注册在 express.static 之后 —— Express 按注册顺序匹配，
   // 放前面会让代理抢先，本地文件永远取不到。
   app.get('/j2me/jar/:name', j2meJarProxy)
+
+  /**
+   * Terraria 的 `_framework/`（134.9MiB）在对象存储里，本地有就优先命中上面的静态中间件。
+   * 和 `/j2me/jar/:name` 一样**必须注册在 express.static 之后**，理由见上一行注释；
+   * 详细取舍（为什么流式转发、为什么 accept-encoding 要固定成 identity）见 server/src/terraria.js。
+   */
+  app.get('/web/terraria/_framework/:file', terrariaFrameworkProxy)
+  // Celeste 的 `_framework/`（130MiB）同 terraria 放 R2；本地有就优先命中上面的静态中间件。
+  app.get('/web/celeste/_framework/:file', celesteFrameworkProxy)
+  // Diablo 的 webpack URL 保持不变；本地若放着 wasm 会先被 static 命中，生产才回源 R2。
+  app.get('/web/diablo/static/media/:file', diabloCoreProxy)
 
   /**
    * 跨源隔离的整页游玩外壳。必须注册在 SSR 兜底之前 —— 那条 catch-all 吃掉除 /api 外

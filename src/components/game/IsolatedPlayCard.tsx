@@ -17,12 +17,13 @@ import { useLang } from '@/services/lang'
 import { useT } from '@/services/i18n'
 import { cx } from '@/lib/format'
 import type { ReactNode } from 'react'
+import type { IsolatedRuntimePlatformId } from '../../../shared/isolated-runtime-platforms.js'
 
 interface Props {
   slug: string
   gameName: string
-  /** PS2 固定走本站自己的隔离播放器；其余条目走 isolated-embeds 登记的外壳。 */
-  ps2?: boolean
+  /** pthread 模拟器固定走自己的隔离路由；其余条目走 isolated-embeds 登记的外壳。 */
+  isolatedPlatform?: IsolatedRuntimePlatformId
   /** 空闲态的大图标，和 EmulatorPlayer 的 icon 一个意思 */
   icon?: string
   /** 背景（通常是封面），和播放器空闲态保持一致的观感 */
@@ -37,11 +38,11 @@ interface Props {
   frameClassName?: string
 }
 
-export function IsolatedPlayCard({ slug, gameName, ps2 = false, icon, backdrop, className, frameClassName }: Props) {
+export function IsolatedPlayCard({ slug, gameName, isolatedPlatform, icon, backdrop, className, frameClassName }: Props) {
   const lang = useLang()
   const t = useT()
   // 语言前缀由 basename 承载，而这是一条整页跳转，得自己拼上，否则英文用户会掉到中文页
-  const href = `${langPrefix(lang)}/play/${ps2 ? 'ps2/' : ''}${encodeURIComponent(slug)}`
+  const href = `${langPrefix(lang)}/play/${isolatedPlatform ? `${isolatedPlatform}/` : ''}${encodeURIComponent(slug)}`
 
   return (
     <div className={cx('overflow-hidden rounded-2xl border border-line bg-black', className)}>
