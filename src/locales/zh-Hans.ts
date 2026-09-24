@@ -1224,6 +1224,7 @@ export const zhHans = {
   /* ---------------- 平台 ---------------- */
   platforms: {
     psx: { name: '索尼 PlayStation', desc: '32 位时代的王者，3D 游戏的启蒙之地。铁拳、最终幻想、古惑狼都诞生于此。' },
+    psp: { name: '索尼 PSP', desc: '把主机级 3D 游戏装进口袋：怪物猎人、战神、最终幻想纷纷登上掌机。' },
     ps2: { name: '索尼 PlayStation 2', desc: '双摇杆时代的霸主，史上销量最高的主机。战神、旺达与巨像、真三国无双都在这里。' },
     gamecube: { name: '任天堂 GameCube', desc: '任天堂的小方盒主机：任天堂明星大乱斗 DX、阳光马力欧、塞尔达传说 风之杖。' },
     wii: { name: '任天堂 Wii', desc: '用体感把游戏带进客厅的主机：Wii Sports、马力欧银河、塞尔达传说 天空之剑。' },
@@ -1329,6 +1330,7 @@ export const zhHans = {
     wiiDisc: 'Wii 光盘魔数',
     dosExe: 'DOS 可执行文件',
     psxImage: '镜像内含 PLAYSTATION 标识',
+    pspImage: '镜像内含 PSP GAME 标识',
     sevenZip: '7z 无法预览内容，请按平台手动选择',
     zipContains: '压缩包内含 .{ext} 文件',
     zipArcade: '压缩包内为多段 ROM，疑似街机 (MAME/FBNeo) 格式',
@@ -1409,6 +1411,11 @@ export const zhHans = {
     dolphinLoadFailed: 'Dolphin 启动失败：{msg}',
     dolphinNeedsIsolation: 'Dolphin 没有获得 SharedArrayBuffer 所需的浏览器隔离环境。请刷新独立播放页。',
     dolphinStartTimeout: 'Dolphin 运行时两分钟仍未就绪；请使用桌面版 Chromium，并确认 WebGPU 已开启。',
+    ppssppDesc: 'PPSSPP 的浏览器 WebAssembly 移植；大镜像从 R2 按需分块读取',
+    ppssppNoRange: '这份 PSP 镜像不支持 HTTP Range，无法按需读盘。请把原始 ISO / CSO / CHD 放到支持 Range 的 R2、S3 或 CDN。',
+    ppssppLoadFailed: 'PPSSPP 启动失败：{msg}',
+    ppssppNeedsIsolation: 'PPSSPP 没有获得 SharedArrayBuffer 所需的浏览器隔离环境。请刷新独立播放页。',
+    ppssppStartTimeout: 'PPSSPP 运行时两分钟仍未就绪；请使用支持 WebAssembly 线程的新版 Chromium。',
     dolphinExperimental: 'GameCube / Wii 是实验性支持：需要性能较强的桌面 Chromium；Wii Remote 尚未实现，Wii 只适合支持传统手柄的少数游戏。',
     ejsDiscDownloadFailed: '光盘镜像下载失败：{msg}',
     discNeedDownload: '本局需下载 {size}',

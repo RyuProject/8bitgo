@@ -1147,6 +1147,7 @@ const ja: Translation = {
   /* ---------------- ゲーム機 ---------------- */
   platforms: {
     psx: { name: 'ソニー PlayStation', desc: '32 ビット時代の王者にして、3D ゲームの原点。鉄拳、ファイナルファンタジー、クラッシュ・バンディクーはここから生まれました。' },
+    psp: { name: 'ソニー PSP', desc: '据え置き級の 3D ゲームをポケットへ。モンスターハンター、ゴッド・オブ・ウォー、ファイナルファンタジーも登場しました。' },
     ps2: { name: 'ソニー PlayStation 2', desc: '史上最も売れた据置機にして、デュアルスティック時代を決定づけた一台。ゴッド・オブ・ウォー、ワンダと巨像、真・三國無双。' },
     gamecube: { name: 'ニンテンドー ゲームキューブ', desc: '任天堂の小さなキューブ。大乱闘スマッシュブラザーズDX、スーパーマリオサンシャイン、風のタクト。' },
     wii: { name: 'ニンテンドー Wii', desc: '体感操作をリビングへ広げたゲーム機。Wii Sports、スーパーマリオギャラクシー、スカイウォードソード。' },
@@ -1244,6 +1245,7 @@ const ja: Translation = {
     wiiDisc: 'Wii ディスクヘッダー',
     dosExe: 'DOS の実行ファイル',
     psxImage: 'イメージ内に PLAYSTATION の識別子あり',
+    pspImage: 'イメージ内に PSP GAME の識別子あり',
     sevenZip: '7z は中身をプレビューできません。ゲーム機を手動で選択してください',
     zipContains: '圧縮ファイル内に .{ext} ファイルあり',
     zipArcade: '圧縮ファイル内が分割された ROM のため、アーケード (MAME/FBNeo) 形式の可能性があります',
@@ -1324,6 +1326,11 @@ const ja: Translation = {
     dolphinLoadFailed: 'Dolphin の起動に失敗しました：{msg}',
     dolphinNeedsIsolation: 'Dolphin が SharedArrayBuffer に必要なブラウザー分離を取得できませんでした。専用プレイヤーを再読み込みしてください。',
     dolphinStartTimeout: '2 分経っても Dolphin の準備が完了しませんでした。デスクトップ版 Chromium を使い、WebGPU を有効にしてください。',
+    ppssppDesc: '大容量の R2 ディスクイメージを必要な範囲だけ読む PPSSPP WebAssembly ビルドです',
+    ppssppNoRange: 'この PSP イメージは HTTP Range に対応していないため、必要な部分だけを読めません。ISO / CSO / CHD を R2、S3、対応 CDN に置いてください。',
+    ppssppLoadFailed: 'PPSSPP の起動に失敗しました：{msg}',
+    ppssppNeedsIsolation: 'PPSSPP が SharedArrayBuffer に必要なブラウザー分離を取得できませんでした。専用プレイヤーを再読み込みしてください。',
+    ppssppStartTimeout: '2 分経っても PPSSPP の準備が完了しませんでした。WebAssembly スレッド対応の新しい Chromium を使用してください。',
     dolphinExperimental: 'GameCube / Wii は実験的対応で、高性能なデスクトップ版 Chromium が必要です。Wii リモコン入力は未実装のため、Wii はクラシック操作対応の一部タイトルに限られます。',
     ejsDiscDownloadFailed: 'ディスクイメージのダウンロードに失敗しました：{msg}',
     discNeedDownload: 'ダウンロード {size}',

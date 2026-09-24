@@ -1158,6 +1158,7 @@ const zhHant: Translation = {
 
   platforms: {
     psx: { name: 'Sony PlayStation', desc: '32 位元時代的王者，3D 遊戲的啟蒙之地。鐵拳、太空戰士、古惑狼都誕生於此。' },
+    psp: { name: 'Sony PSP', desc: '把主機級 3D 遊戲放進口袋：魔物獵人、戰神、太空戰士紛紛登上掌機。' },
     ps2: { name: 'Sony PlayStation 2', desc: '雙搖桿時代的霸主，史上銷量最高的主機。戰神、汪達與巨像、真三國無雙都在這裡。' },
     gamecube: { name: '任天堂 GameCube', desc: '任天堂的小方盒主機：任天堂明星大亂鬥 DX、陽光瑪利歐、薩爾達傳說 風之律動。' },
     wii: { name: '任天堂 Wii', desc: '用體感把遊戲帶進客廳的主機：Wii Sports、超級瑪利歐銀河、薩爾達傳說 天空之劍。' },
@@ -1252,6 +1253,7 @@ const zhHant: Translation = {
     wiiDisc: 'Wii 光碟魔數',
     dosExe: 'DOS 可執行檔',
     psxImage: '映像檔內含 PLAYSTATION 標記',
+    pspImage: '映像檔內含 PSP GAME 標記',
     sevenZip: '7z 無法預覽內容，請依平台手動選擇',
     zipContains: '壓縮檔內含 .{ext} 檔案',
     zipArcade: '壓縮檔內為多段 ROM，疑似街機 (MAME/FBNeo) 格式',
@@ -1331,6 +1333,11 @@ const zhHant: Translation = {
     dolphinLoadFailed: 'Dolphin 啟動失敗：{msg}',
     dolphinNeedsIsolation: 'Dolphin 沒有取得 SharedArrayBuffer 所需的瀏覽器隔離環境。請重新整理獨立播放頁。',
     dolphinStartTimeout: 'Dolphin 執行環境兩分鐘仍未就緒；請使用桌面版 Chromium，並確認 WebGPU 已啟用。',
+    ppssppDesc: 'PPSSPP 的瀏覽器 WebAssembly 移植；大型映像檔從 R2 按需分塊讀取',
+    ppssppNoRange: '這份 PSP 映像檔不支援 HTTP Range，無法按需讀碟。請把原始 ISO / CSO / CHD 放到支援 Range 的 R2、S3 或 CDN。',
+    ppssppLoadFailed: 'PPSSPP 啟動失敗：{msg}',
+    ppssppNeedsIsolation: 'PPSSPP 沒有取得 SharedArrayBuffer 所需的瀏覽器隔離環境。請重新整理獨立播放頁。',
+    ppssppStartTimeout: 'PPSSPP 執行環境兩分鐘仍未就緒；請使用支援 WebAssembly 執行緒的新版 Chromium。',
     dolphinExperimental: 'GameCube / Wii 是實驗性支援：需要效能較強的桌面 Chromium；Wii Remote 尚未實作，Wii 只適合支援傳統手把的少數遊戲。',
     ejsDiscDownloadFailed: '光碟映像檔下載失敗：{msg}',
     discNeedDownload: '本局需下載 {size}',
