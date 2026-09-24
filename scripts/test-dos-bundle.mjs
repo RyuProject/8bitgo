@@ -158,6 +158,18 @@ function namesOf(bytes) {
   return out
 }
 
+function centralFlagsOf(bytes, wanted) {
+  const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
+  const v = new DataView(b.buffer, b.byteOffset, b.byteLength)
+  for (let at = 0; at + 46 <= b.length; at++) {
+    if (v.getUint32(at, true) !== 0x02014b50) continue
+    const nameLen = v.getUint16(at + 28, true)
+    const name = new TextDecoder().decode(b.subarray(at + 46, at + 46 + nameLen))
+    if (name === wanted) return v.getUint16(at + 8, true)
+  }
+  return null
+}
+
 const EXE = te.encode('MZ')
 
 console.log('── 打不开的包必须在 Dos() 之前抛，不能留给黑屏 ──')
@@ -265,6 +277,7 @@ console.log('\n── 条目名：GBK / 反斜杠 / __MACOSX ──')
     '⭐ GBK 条目名解得出来（硬按 UTF-8 解会变成 U+FFFD，写回去就是另一个名字）',
   )
   ok(!names.some((x) => x.includes('\ufffd')), '包里不该出现替换符')
+  ok((centralFlagsOf(layer.bytes, 'GAME/游戏/GAME.EXE') & 0x0800) !== 0, '⭐ 重打后的中文条目明确标成 UTF-8，解包器不会按本地代码页再解一次')
 
   // 反斜杠分隔：推不出父目录的话 js-dos 写文件 ENOENT，DOSBox 直接退出且不报错
   const back = makeZip([{ nameBytes: te.encode('SUB\\GAME.EXE'), data: EXE }])
@@ -294,6 +307,24 @@ console.log('\n── 条目名：GBK / 反斜杠 / __MACOSX ──')
       `⭐ Windows 游戏层也拒绝越界路径 ${unsafe}`,
     )
   }
+
+  await throwsWith(
+    () => makeJsdosBundle('duplicate.zip', makeZip([
+      { name: 'GAME.EXE', data: EXE },
+      { name: 'game.exe', data: EXE },
+    ])),
+    /路径冲突/,
+    '⭐ DOS 大小写不敏感：同路径不同大小写不能再靠解包顺序碰运气',
+  )
+  await throwsWith(
+    () => makeJsdosBundle('parent-file.zip', makeZip([
+      { name: 'GAME.EXE', data: EXE },
+      { name: 'DATA', data: te.encode('file') },
+      { name: 'DATA/LEVEL.DAT', data: te.encode('level') },
+    ])),
+    /不能同时作为.*目录|路径冲突/,
+    '⭐ 父路径是文件时开机前报错，不留给 js-dos 解包 ENOENT 后黑屏',
+  )
 }
 
 console.log('\n── Windows 3.x：盘根只有在包里全在一层时才准收窄 ──')
@@ -393,9 +424,57 @@ console.log('\n── autoexec：CD 不许带引号，进不去的目录改挂 D
   ok(aliasedNames.includes('8BITGO.EXE'), '⭐ 同目录补出真实存在的 8.3 启动别名')
   const aliasedText = new TextDecoder().decode(aliasedBytes)
   ok(/\n8BITGO\.EXE\n/.test(aliasedText) && !aliasedText.includes('"My Game.exe"'), '⭐ autoexec 执行别名，不再停在 C:\\>')
-  ok(/@echo .*已退出/.test(root), '末尾留一句人话，真没跑起来时黑屏至少变成一行提示')
+  ok(/@echo .*exited\./.test(root), '末尾留一句 DOS 字符页能显示的人话，真没跑起来时不再乱码')
   const none = buildDosboxConf(null)
-  ok(none.includes('没有找到可执行文件'), '猜不出启动程序时的提示保持不变')
+  ok(none.includes('No executable was found.'), '猜不出启动程序时仍有 DOS 字符页能显示的提示')
+}
+
+console.log('\n── 普通 DOS 包必须显式开启游戏需要的内存接口 ──')
+{
+  /*
+    Heroes II 在进图形界面前会检查 6400K XMS + 480K 常规内存。
+    ZIP 没有自带 dosbox.conf 时会走这份精简配置，所以不能把成败寄托在
+    js-dos / DOSBox 某个版本的隐式默认值上。
+  */
+  const memory = buildDosboxConf('HEROES2.EXE')
+  ok(/\[dosbox\]\nmemsize=16(?:\n|$)/.test(memory), '自动配置明确给普通 DOS 游戏 16 MB 内存')
+  ok(/\[dos\]\nxms=true\nems=true\numb=true(?:\n|$)/.test(memory), '自动配置明确开启 XMS / EMS / UMB')
+  ok(memory.indexOf('[dosbox]') < memory.indexOf('[autoexec]'), '内存配置在启动游戏前已生效')
+
+  const tuned = await makeJsdosBundle(
+    'HEROES2.zip',
+    makeZip([{ name: 'HEROES2.EXE', data: EXE }]),
+    undefined,
+    '[dosbox]\nmemsize=32\n\n[dos]\nems=false',
+  )
+  const tunedText = new TextDecoder().decode(await tuned.blob.arrayBuffer())
+  ok(/\[dosbox\]\nmemsize=32/.test(tunedText), '普通 DOS 的逐游戏 memsize 覆盖写进最终 bundle')
+  ok(/\[dos\]\nxms=true\nems=false\numb=true/.test(tunedText), '普通 DOS 可以逐游戏关闭有兼容性冲突的 EMS')
+}
+
+console.log('\n── 普通 DOS 的附加文件直接并进最终 bundle ──')
+{
+  const bundled = await makeJsdosBundle(
+    'game.zip',
+    makeZip([
+      { name: 'GAME.EXE', data: EXE },
+      { name: 'DATA/PATCH.DAT', data: te.encode('old') },
+    ]),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    [
+      { path: 'DATA/PATCH.DAT', data: te.encode('new-patch') },
+      { path: 'MAPS/LEVEL1.MAP', data: te.encode('new-map') },
+    ],
+  )
+  const bytes = new Uint8Array(await bundled.blob.arrayBuffer())
+  const names = namesOf(bytes)
+  ok(names.filter((name) => name === 'DATA/PATCH.DAT').length === 1, '同名补丁直接替换，不留下两条顺序不明的文件')
+  ok(names.includes('MAPS/') && names.includes('MAPS/LEVEL1.MAP'), '新资料片目录在文件之前补进最终 bundle')
+  const text = new TextDecoder().decode(bytes)
+  ok(text.includes('new-patch') && !text.includes('old'), '最终 bundle 只保留补丁后的内容')
 }
 
 /**

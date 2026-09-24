@@ -5381,8 +5381,8 @@ ${e}`);
           MainLoop.nextRAF += 1e3 / 60;
         }
       }
-      var delay = Math.max(MainLoop.nextRAF - now, 0);
-      setTimeout(func2, delay);
+      var delay2 = Math.max(MainLoop.nextRAF - now, 0);
+      setTimeout(func2, delay2);
     }, requestAnimationFrame(func2) {
       if (globalThis.requestAnimationFrame) {
         requestAnimationFrame(func2);
@@ -17543,7 +17543,7 @@ async function unpackTarStream(stream, onFile, onProgress) {
 
 // public/web/cs16/cs16.js
 var BASE = "/rodir/";
-var ASSET_VERSION = "20260923-bots1";
+var ASSET_VERSION = "20260924-perf1";
 var expectedProgressBytes = 128 * 1024 * 1024;
 var Q = new URLSearchParams(location.search);
 var SUPPORTED_MAPS = /* @__PURE__ */ new Set([
@@ -17563,6 +17563,9 @@ var SUPPORTED_MAPS = /* @__PURE__ */ new Set([
 var DEFAULT_MAP = "de_dust2";
 var DEFAULT_BOT_COUNT = 7;
 var MAX_BOT_COUNT = 15;
+var PREBUILT_VIS_MAPS = new Set(SUPPORTED_MAPS);
+var BOT_VIS_GENERATION = "yapb-4.5-vis-v1";
+var AUTO_JOIN = Q.get("autojoin") !== "0";
 function selectedMap() {
   const requested = Q.has("map") ? Q.get("map") : document.getElementById("map")?.value;
   return SUPPORTED_MAPS.has(requested) ? requested : DEFAULT_MAP;
@@ -17599,7 +17602,7 @@ var t0 = performance.now();
 var marks = {};
 window.__probe = { marks, log: [], errors: [], info: {}, xash: null, net: { total: 0, byUrl: {} } };
 window.__probe.keys = [];
-var phase = "\u5F85\u5F00\u59CB";
+var phase = "Ready";
 var started = false;
 var firstFrameReady = false;
 window.addEventListener("keydown", (e) => {
@@ -17631,7 +17634,7 @@ function setPhase(text) {
   const p = $("phase");
   if (p) p.textContent = text;
   const n = $("net");
-  if (n) n.textContent = `\u5DF2\u63A5\u6536/\u5904\u7406 ${(window.__probe.net.total / 1048576).toFixed(1)} MB`;
+  if (n) n.textContent = `Received / processed ${(window.__probe.net.total / 1048576).toFixed(1)} MB`;
   const bar = document.querySelector("#bar > i");
   if (bar) {
     bar.style.width = Math.min(100, window.__probe.net.total / expectedProgressBytes * 100).toFixed(1) + "%";
@@ -17644,12 +17647,12 @@ async function fetchRequired(url, label, options = {}) {
   try {
     res = await fetch(url, { ...options, signal: controller.signal });
   } catch (error) {
-    throw new Error(`${label}\u8FDE\u63A5\u5931\u8D25\uFF1A${error instanceof Error && error.name === "AbortError" ? "30 \u79D2\u5185\u6CA1\u6709\u54CD\u5E94" : error}`);
+    throw new Error(`${label} connection failed: ${error instanceof Error && error.name === "AbortError" ? "no response within 30s" : error}`);
   } finally {
     clearTimeout(timer);
   }
-  if (!res.ok) throw new Error(`${label}\u4E0D\u53EF\u7528\uFF08HTTP ${res.status}\uFF09\uFF1A${new URL(url, location.href).pathname}`);
-  if (!res.body) throw new Error(`${label}\u6CA1\u6709\u54CD\u5E94\u4F53`);
+  if (!res.ok) throw new Error(`${label} unavailable (HTTP ${res.status}): ${new URL(url, location.href).pathname}`);
+  if (!res.body) throw new Error(`${label} has no response body`);
   return res;
 }
 function guardStream(stream, label, url) {
@@ -17662,7 +17665,7 @@ function guardStream(stream, label, url) {
         const next = await Promise.race([
           reader.read(),
           new Promise((_, reject) => {
-            timer = setTimeout(() => reject(new Error(`${label}\u4E0B\u8F7D\u505C\u6EDE\u8D85\u8FC7 30 \u79D2`)), 3e4);
+            timer = setTimeout(() => reject(new Error(`${label} stalled for over 30s`)), 3e4);
           })
         ]);
         if (next.done) return controller.close();
@@ -17705,26 +17708,26 @@ async function digestHex(bytes) {
 }
 function validatePackCatalog(catalog) {
   if (!catalog || catalog.format !== ZSTD_FORMAT || !catalog.packs || typeof catalog.packs !== "object") {
-    throw new Error("CS1.6 Zstd \u6E05\u5355\u683C\u5F0F\u4E0D\u517C\u5BB9");
+    throw new Error("Incompatible CS1.6 Zstd manifest format");
   }
   if (catalog.compression?.algorithm !== "zstd" || catalog.compression?.chunkRawBytes !== 16 * 1024 * 1024) {
-    throw new Error("CS1.6 Zstd \u6E05\u5355\u7684\u538B\u7F29\u53C2\u6570\u4E0D\u517C\u5BB9");
+    throw new Error("Incompatible compression parameters in CS1.6 Zstd manifest");
   }
   for (const [key2, pack] of Object.entries(catalog.packs)) {
-    if (!(key2 === "base" || /^maps\/[a-z0-9_]+$/.test(key2))) throw new Error(`Zstd \u6E05\u5355\u542B\u975E\u6CD5\u5305\u540D\uFF1A${key2}`);
+    if (!(key2 === "base" || /^maps\/[a-z0-9_]+$/.test(key2))) throw new Error(`Invalid pack name in Zstd manifest: ${key2}`);
     if (!Number.isSafeInteger(pack.rawBytes) || pack.rawBytes <= 0 || !Number.isSafeInteger(pack.compressedBytes) || pack.compressedBytes <= 0 || !SHA256_RE.test(pack.rawSha256) || !Array.isArray(pack.chunks) || !pack.chunks.length) {
-      throw new Error(`Zstd \u6E05\u5355\u4E2D\u7684 ${key2} \u5143\u6570\u636E\u65E0\u6548`);
+      throw new Error(`Invalid metadata for ${key2} in Zstd manifest`);
     }
     let rawBytes = 0, compressedBytes = 0;
     pack.chunks.forEach((chunk, index) => {
       if (chunk.index !== index || chunk.path !== `chunks/${chunk.compressedSha256}.zst` || !SHA256_RE.test(chunk.compressedSha256) || !SHA256_RE.test(chunk.rawSha256) || !Number.isSafeInteger(chunk.rawBytes) || chunk.rawBytes <= 0 || chunk.rawBytes > 16 * 1024 * 1024 || !Number.isSafeInteger(chunk.compressedBytes) || chunk.compressedBytes <= 0) {
-        throw new Error(`Zstd \u6E05\u5355\u4E2D\u7684 ${key2} \u7B2C ${index + 1} \u7247\u65E0\u6548`);
+        throw new Error(`Invalid chunk ${index + 1} for ${key2} in Zstd manifest`);
       }
       rawBytes += chunk.rawBytes;
       compressedBytes += chunk.compressedBytes;
     });
     if (rawBytes !== pack.rawBytes || compressedBytes !== pack.compressedBytes) {
-      throw new Error(`Zstd \u6E05\u5355\u4E2D\u7684 ${key2} \u6C47\u603B\u957F\u5EA6\u4E0D\u7B26`);
+      throw new Error(`Total length mismatch for ${key2} in Zstd manifest`);
     }
   }
   return catalog;
@@ -17732,12 +17735,12 @@ function validatePackCatalog(catalog) {
 async function getPackCatalog() {
   if (!catalogPromise) {
     catalogPromise = (async () => {
-      const bytes = await fetchBytes(`${PACKS_ROOT}catalog.json?v=${ASSET_VERSION}`, "CS1.6 \u5206\u7247\u6E05\u5355");
+      const bytes = await fetchBytes(`${PACKS_ROOT}catalog.json?v=${ASSET_VERSION}`, "CS1.6 chunk manifest");
       let catalog;
       try {
         catalog = JSON.parse(new TextDecoder().decode(bytes));
       } catch {
-        throw new Error("CS1.6 \u5206\u7247\u6E05\u5355\u4E0D\u662F\u5408\u6CD5 JSON");
+        throw new Error("CS1.6 chunk manifest is not valid JSON");
       }
       return validatePackCatalog(catalog);
     })();
@@ -17756,15 +17759,15 @@ async function decompressChunk(compressed, chunk, label) {
       raw = new Uint8Array(await new Response(stream).arrayBuffer());
     } catch (error) {
       nativeZstd = false;
-      log(`\u6D4F\u89C8\u5668\u539F\u751F Zstd \u4E0D\u53EF\u7528\uFF0C\u6539\u7528\u517C\u5BB9\u89E3\u7801\u5668\uFF1A${error}`);
+      log(`Native Zstd unavailable, using compatible decoder: ${error}`);
     }
   }
   if (!raw) {
     await ensureWasmZstd();
     raw = decompress(compressed);
   }
-  if (raw.byteLength !== chunk.rawBytes) throw new Error(`${label}\u89E3\u538B\u957F\u5EA6\u9519\u8BEF`);
-  if (await digestHex(raw) !== chunk.rawSha256) throw new Error(`${label}\u89E3\u538B\u540E SHA-256 \u6821\u9A8C\u5931\u8D25`);
+  if (raw.byteLength !== chunk.rawBytes) throw new Error(`${label} decompressed length mismatch`);
+  if (await digestHex(raw) !== chunk.rawSha256) throw new Error(`${label} SHA-256 mismatch after decompression`);
   return raw;
 }
 async function fetchChunkOnce(chunk, label, attempt) {
@@ -17772,8 +17775,8 @@ async function fetchChunkOnce(chunk, label, attempt) {
   chunkUrl.searchParams.set("v", chunk.compressedSha256);
   const url = chunkUrl.href;
   const compressed = await fetchBytes(url, label, attempt ? { cache: "reload" } : void 0);
-  if (compressed.byteLength !== chunk.compressedBytes) throw new Error(`${label}\u4E0B\u8F7D\u957F\u5EA6\u9519\u8BEF`);
-  if (await digestHex(compressed) !== chunk.compressedSha256) throw new Error(`${label}SHA-256 \u6821\u9A8C\u5931\u8D25`);
+  if (compressed.byteLength !== chunk.compressedBytes) throw new Error(`${label} download length mismatch`);
+  if (await digestHex(compressed) !== chunk.compressedSha256) throw new Error(`${label} SHA-256 mismatch`);
   return decompressChunk(compressed, chunk, label);
 }
 async function fetchChunk(chunk, label) {
@@ -17786,7 +17789,7 @@ async function fetchChunk(chunk, label) {
           return await fetchChunkOnce(chunk, label, attempt);
         } catch (error) {
           lastError = error;
-          if (attempt < 2) log(`\u26A0\uFE0F ${label}\u5931\u8D25\uFF0C\u6B63\u5728\u91CD\u8BD5 ${attempt + 2}/3\uFF1A${error}`, "err");
+          if (attempt < 2) log(`\u26A0\uFE0F ${label} failed, retrying ${attempt + 2}/3: ${error}`, "err");
         }
       }
       throw lastError;
@@ -17805,7 +17808,7 @@ function zstdPackStream(pack, key2) {
   const schedule = () => {
     while (inFlight.size < 2 && next + inFlight.size < pack.chunks.length) {
       const index = next + inFlight.size;
-      inFlight.set(index, fetchChunk(pack.chunks[index], `${key2} \u5206\u7247 ${index + 1}/${pack.chunks.length}`));
+      inFlight.set(index, fetchChunk(pack.chunks[index], `${key2} chunk ${index + 1}/${pack.chunks.length}`));
     }
   };
   schedule();
@@ -17828,13 +17831,14 @@ function zstdPackStream(pack, key2) {
 }
 async function prepareZstdPacks(keys) {
   const catalog = await getPackCatalog();
-  for (const key2 of keys) if (!catalog.packs[key2]) throw new Error(`Zstd \u6E05\u5355\u7F3A\u5C11 ${key2}`);
+  for (const key2 of keys) if (!catalog.packs[key2]) throw new Error(`Zstd manifest is missing ${key2}`);
   const total = keys.reduce((sum, key2) => sum + catalog.packs[key2].compressedBytes, 0);
-  expectedProgressBytes = total + 48 * 1024 * 1024;
-  const firstKey = keys[0];
-  const first = catalog.packs[firstKey].chunks[0];
-  void fetchChunk(first, `${firstKey} \u5206\u7247 1/${catalog.packs[firstKey].chunks.length}`).catch(() => {
-  });
+  expectedProgressBytes = total + 32 * 1024 * 1024;
+  for (const key2 of keys) {
+    const first = catalog.packs[key2].chunks[0];
+    void fetchChunk(first, `${key2} chunk 1/${catalog.packs[key2].chunks.length}`).catch(() => {
+    });
+  }
   return catalog;
 }
 function isGzip(b) {
@@ -17894,11 +17898,13 @@ var LIBS_MAP = {
   }
 };
 async function placeLibs(xash) {
+  const downloads = /* @__PURE__ */ new Map();
   const files = await Promise.all(Object.entries(LIB_FILES).map(async ([name2, url]) => {
     const assetUrl = versioned(url);
-    const buf = await fetchBytes(assetUrl, `\u52A8\u6001\u5E93 ${name2}`);
+    if (!downloads.has(assetUrl)) downloads.set(assetUrl, fetchBytes(assetUrl, `library ${name2}`));
+    const buf = await downloads.get(assetUrl);
     if (name2.endsWith(".wasm") && !(buf[0] === 0 && buf[1] === 97 && buf[2] === 115 && buf[3] === 109)) {
-      throw new Error(`\u52A8\u6001\u5E93 ${name2} \u4E0D\u662F\u6709\u6548 WASM\uFF08\u53EF\u80FD\u62FF\u5230\u4E86 404 HTML\uFF09`);
+      throw new Error(`library ${name2} is not valid WASM (got 404 HTML?)`);
     }
     return [name2, buf];
   }));
@@ -17939,7 +17945,7 @@ async function fetchPackBytes(url, label) {
       headBytes += value.byteLength;
     }
   }
-  if (!headBytes) throw new Error(`${label}\u662F\u7A7A\u6587\u4EF6`);
+  if (!headBytes) throw new Error(`${label} is empty`);
   const head = new Uint8Array(headBytes);
   let at = 0;
   for (const chunk of chunks) {
@@ -17948,7 +17954,7 @@ async function fetchPackBytes(url, label) {
   }
   const stream = prependChunk(head, reader);
   if (!isGzip(head)) return stream;
-  if (typeof DecompressionStream === "undefined") throw new Error("\u6D4F\u89C8\u5668\u4E0D\u652F\u6301\u6D41\u5F0F gzip \u89E3\u538B\uFF0C\u8BF7\u5347\u7EA7\u6D4F\u89C8\u5668");
+  if (typeof DecompressionStream === "undefined") throw new Error("Streaming gzip is not supported in this browser");
   return stream.pipeThrough(new DecompressionStream("gzip"));
 }
 async function writePack(xash, stream) {
@@ -17967,7 +17973,7 @@ async function writePack(xash, stream) {
       }
     },
     ({ files, bytes }) => {
-      if (files % 100 === 0) setPhase(`\u6B63\u5728\u5C55\u5F00\u8D44\u6E90\uFF1A${files} \u4E2A\u6587\u4EF6 / ${(bytes / 1048576).toFixed(0)} MB`);
+      if (files % 100 === 0) setPhase(`Extracting assets: ${files} files / ${(bytes / 1048576).toFixed(0)} MB`);
     }
   );
 }
@@ -17976,39 +17982,39 @@ async function loadPack(xash, file) {
     try {
       const catalog = await getPackCatalog();
       const pack = catalog.packs[file];
-      if (!pack) throw new Error(`Zstd \u6E05\u5355\u7F3A\u5C11 ${file}`);
+      if (!pack) throw new Error(`Zstd manifest is missing ${file}`);
       const result = await writePack(xash, zstdPackStream(pack, file));
       window.__probe.info.packFormat = nativeZstd ? "zstd-native" : "zstd-wasm";
-      log(`[cs16] ${file} \u4F7F\u7528 ${nativeZstd ? "\u6D4F\u89C8\u5668\u539F\u751F Zstd" : "Zstd WASM"}\uFF0C${pack.chunks.length} \u4E2A\u6821\u9A8C\u5206\u7247`);
+      log(`[cs16] ${file} via ${nativeZstd ? "native Zstd" : "Zstd WASM"}, ${pack.chunks.length} verified chunks`);
       return result;
     } catch (zstdError) {
-      log(`\u26A0\uFE0F ${file} \u7684 Zstd \u5206\u7247\u4E0D\u53EF\u7528\uFF0C\u5C1D\u8BD5 gzip \u5907\u7528\u5305\uFF1A${zstdError}`, "err");
+      log(`\u26A0\uFE0F Zstd chunks for ${file} unavailable, trying gzip fallback: ${zstdError}`, "err");
       try {
-        const stream2 = await fetchPackBytes(`${LEGACY_PACKS_ROOT}${file}.tar.gz?v=${ASSET_VERSION}`, `${file} gzip \u5907\u7528\u5305`);
+        const stream2 = await fetchPackBytes(`${LEGACY_PACKS_ROOT}${file}.tar.gz?v=${ASSET_VERSION}`, `${file} gzip fallback`);
         const result = await writePack(xash, stream2);
         window.__probe.info.packFormat = "gzip-fallback";
         return result;
       } catch (gzipError) {
-        throw new Error(`${file} \u52A0\u8F7D\u5931\u8D25\uFF1BZstd\uFF1A${zstdError}\uFF1Bgzip \u5907\u7528\uFF1A${gzipError}`);
+        throw new Error(`${file} failed to load; zstd: ${zstdError}; gzip fallback: ${gzipError}`);
       }
     }
   }
-  const stream = await fetchPackBytes(`${FORCE_GZIP_ROOT}${file}.tar.gz?v=${ASSET_VERSION}`, `${file} gzip \u5305`);
+  const stream = await fetchPackBytes(`${FORCE_GZIP_ROOT}${file}.tar.gz?v=${ASSET_VERSION}`, `${file} gzip pack`);
   window.__probe.info.packFormat = "gzip-forced";
   return writePack(xash, stream);
 }
-async function loadHudFont(xash) {
+async function loadHudFont(xash, fontPromise) {
   const FS2 = xash.em.FS;
   try {
-    const buf = await fetchBytes(`${ASSET_ROOT}/gfx/fonts/FiraSans-Regular.ttf?v=` + ASSET_VERSION, "HUD \u5B57\u4F53");
+    const buf = await (fontPromise || fetchBytes(`${ASSET_ROOT}/gfx/fonts/FiraSans-Regular.ttf?v=` + ASSET_VERSION, "HUD font"));
     for (const dir of ["gfx/fonts", "cstrike/gfx/fonts"]) {
       FS2.mkdirTree(`${BASE}${dir}`);
       FS2.writeFile(`${BASE}${dir}/FiraSans-Regular.ttf`, buf);
       FS2.writeFile(`${BASE}${dir}/tahoma.ttf`, buf);
     }
-    mark("HUD \u5B57\u4F53\u5C31\u4F4D");
+    mark("HUD font ready");
   } catch (e) {
-    log("\u26A0\uFE0F HUD \u5B57\u4F53\u52A0\u8F7D\u5931\u8D25\uFF1A" + e, "err");
+    log("\u26A0\uFE0F HUD font failed to load: " + e, "err");
   }
 }
 function waitForFirstFrame(canvas, xash, timeoutMs = 6e4) {
@@ -18017,11 +18023,11 @@ function waitForFirstFrame(canvas, xash, timeoutMs = 6e4) {
   const startedAt = performance.now();
   return new Promise((resolve, reject) => {
     const check = () => {
-      if (xash.exited) return reject(new Error("\u5F15\u64CE\u5728\u663E\u793A\u7B2C\u4E00\u5E27\u524D\u5DF2\u7ECF\u9000\u51FA"));
+      if (xash.exited) return reject(new Error("Engine exited before the first frame"));
       const fatalLine = window.__probe.log.find((line) => fatal.test(line));
-      if (fatalLine) return reject(new Error(`\u5F15\u64CE\u542F\u52A8\u5931\u8D25\uFF1A${fatalLine}`));
+      if (fatalLine) return reject(new Error(`Engine failed to start: ${fatalLine}`));
       if (window.__probe.log.some((line) => gameReady.test(line))) return resolve();
-      if (performance.now() - startedAt > timeoutMs) return reject(new Error("\u5730\u56FE\u542F\u52A8\u8D85\u8FC7 60 \u79D2\u4ECD\u6CA1\u6709\u753B\u9762"));
+      if (performance.now() - startedAt > timeoutMs) return reject(new Error("No frame after 60s of map startup"));
       const gl = canvas.getContext("webgl2") || canvas.getContext("webgl");
       if (gl && !gl.isContextLost() && canvas.width >= 64 && canvas.height >= 64) {
         const pixel = new Uint8Array(4);
@@ -18058,7 +18064,7 @@ function ensureBinds(xash) {
     } catch {
     }
   }
-  mark("\u952E\u4F4D\u7ED1\u5B9A\u5C31\u4F4D (autoexec.cfg)");
+  mark("Key bindings written (autoexec.cfg)");
 }
 function configureBots(xash, map, count) {
   const FS2 = xash.em.FS;
@@ -18070,10 +18076,10 @@ function configureBots(xash, map, count) {
     /^gamedll_linux\s+"[^"]+"\s*$/m,
     'gamedll_linux "dlls/yapb.so"'
   );
-  if (patchedLiblist === originalLiblist) throw new Error("cstrike/liblist.gam \u7F3A\u5C11 gamedll_linux\uFF0C\u65E0\u6CD5\u542F\u7528 YaPB");
+  if (patchedLiblist === originalLiblist) throw new Error("cstrike/liblist.gam lacks gamedll_linux; cannot enable YaPB");
   FS2.writeFile(liblistPath, encoder.encode(patchedLiblist));
   const mapConfig = [
-    "// \u7531 8BitGo \u542F\u52A8\u754C\u9762\u751F\u6210\uFF1B\u8986\u76D6 YaPB \u5305\u5185\u56FA\u5B9A\u7684 9 Bot \u9ED8\u8BA4\u503C\u3002",
+    "// Generated by the 8BitGo launcher; overrides the fixed 9-bot defaults baked into the YaPB pack.",
     'yb_quota_mode "normal"',
     `yb_quota "${count}"`,
     'yb_autovacate "0"',
@@ -18087,7 +18093,7 @@ function configureBots(xash, map, count) {
   FS2.writeFile(`${configDir}/${map}.cfg`, encoder.encode(mapConfig));
   window.__probe.info.botCount = count;
   window.__probe.info.botGameDll = `${BASE}cstrike/${GAME_SERVER_LIB}`;
-  mark("BOT \u914D\u7F6E\u5C31\u4F4D", count ? `${count} \u4E2A YaPB` : "\u4E0D\u52A0\u5165 BOT");
+  mark("Bot config ready", count ? `${count} YaPB` : "no bots");
 }
 function enforceBotCount(xash, count) {
   xash.Cmd_ExecuteString([
@@ -18097,6 +18103,150 @@ function enforceBotCount(xash, count) {
     "yb_join_after_player 0",
     `yb_quota ${count}`
   ].join(";"));
+}
+var BOT_VIS_DB = "8bitgo-cs16-yapb-vis";
+var BOT_VIS_STORE = "maps";
+function botVisPath(map) {
+  return `${BASE}cstrike/addons/yapb/data/train/${map}.vis`;
+}
+function validBotVis(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength < 24) return false;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const magic = view.getUint32(0, true);
+  const version = view.getInt32(4, true);
+  const options = view.getInt32(8, true);
+  const nodes = view.getInt32(12, true);
+  const compressed = view.getInt32(16, true);
+  const raw = view.getInt32(20, true);
+  return (magic === 1497452610 || magic === 1414480469) && version === 4 && (options & 4) === 4 && nodes >= 8 && nodes <= 8192 && compressed > 0 && raw === nodes * nodes && bytes.byteLength === 24 + compressed + nodes * 4;
+}
+function openBotVisDb() {
+  if (typeof indexedDB === "undefined") return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const request = indexedDB.open(BOT_VIS_DB, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore(BOT_VIS_STORE);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => resolve(null);
+  });
+}
+async function readBotVisCache(map) {
+  const db = await openBotVisDb();
+  if (!db) return null;
+  try {
+    return await new Promise((resolve) => {
+      const request = db.transaction(BOT_VIS_STORE, "readonly").objectStore(BOT_VIS_STORE).get(`${BOT_VIS_GENERATION}:${map}`);
+      request.onsuccess = () => {
+        const value = request.result;
+        const bytes = value ? new Uint8Array(value) : null;
+        resolve(validBotVis(bytes) ? bytes : null);
+        db.close();
+      };
+      request.onerror = () => {
+        resolve(null);
+        db.close();
+      };
+    });
+  } catch {
+    db.close();
+    return null;
+  }
+}
+async function writeBotVisCache(map, bytes) {
+  if (!validBotVis(bytes)) return false;
+  const db = await openBotVisDb();
+  if (!db) return false;
+  try {
+    return await new Promise((resolve) => {
+      const tx = db.transaction(BOT_VIS_STORE, "readwrite");
+      tx.objectStore(BOT_VIS_STORE).put(bytes.slice().buffer, `${BOT_VIS_GENERATION}:${map}`);
+      tx.oncomplete = () => {
+        resolve(true);
+        db.close();
+      };
+      tx.onerror = () => {
+        resolve(false);
+        db.close();
+      };
+      tx.onabort = () => {
+        resolve(false);
+        db.close();
+      };
+    });
+  } catch {
+    db.close();
+    return false;
+  }
+}
+async function loadBotVis(map) {
+  if (Q.get("novis") === "1") return null;
+  if (PREBUILT_VIS_MAPS.has(map)) {
+    try {
+      const bytes = await fetchBytes(`${ASSET_ROOT}/vis/${map}.vis?v=${ASSET_VERSION}`, `YaPB visibility table for ${map}`);
+      if (!validBotVis(bytes)) throw new Error("invalid YaPB visibility table");
+      return { bytes, source: "prebuilt" };
+    } catch (error) {
+      log(`\u26A0\uFE0F Prebuilt YaPB visibility table unavailable: ${error}`, "err");
+    }
+  }
+  const cached = await readBotVisCache(map);
+  return cached ? { bytes: cached, source: "cache" } : null;
+}
+function restoreBotVis(xash, map, prepared) {
+  if (!prepared) {
+    window.__probe.info.botVis = "rebuilding";
+    return false;
+  }
+  const path = botVisPath(map);
+  xash.em.FS.mkdirTree(path.slice(0, path.lastIndexOf("/")));
+  xash.em.FS.writeFile(path, prepared.bytes);
+  window.__probe.info.botVis = prepared.source;
+  mark("YaPB visibility ready", `${map} \xB7 ${prepared.source}`);
+  return true;
+}
+function watchGeneratedBotVis(xash, map) {
+  const path = botVisPath(map);
+  const deadline = performance.now() + 24e4;
+  let saving = false;
+  const timer = setInterval(async () => {
+    if (saving) return;
+    try {
+      const found = xash.em.FS.analyzePath(path);
+      if (found.exists) {
+        const bytes = xash.em.FS.readFile(path);
+        if (validBotVis(bytes)) {
+          saving = true;
+          clearInterval(timer);
+          const saved = await writeBotVisCache(map, bytes);
+          window.__probe.info.botVis = saved ? "generated-cached" : "generated-memory-only";
+          log(saved ? `[bots] ${map}.vis generated and cached; future launches skip the visibility rebuild.` : `[bots] ${map}.vis generated, but the browser refused persistent storage.`);
+          return;
+        }
+      }
+    } catch {
+    }
+    if (performance.now() >= deadline) {
+      clearInterval(timer);
+      window.__probe.info.botVis = "generation-timeout";
+      log("[bots] YaPB visibility generation exceeded 240 seconds; gameplay can continue.", "err");
+    }
+  }, 1e3);
+}
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+async function autoJoinPlayer(xash) {
+  if (!AUTO_JOIN) {
+    window.__probe.info.autoJoin = "disabled";
+    return;
+  }
+  setPhase("Joining Counter-Terrorists\u2026");
+  xash.Cmd_ExecuteString("jointeam 2");
+  await delay(180);
+  xash.Cmd_ExecuteString("joinclass 1");
+  await delay(320);
+  xash.Cmd_ExecuteString("sv_restart 1");
+  await delay(1150);
+  window.__probe.info.autoJoin = "counter-terrorists";
 }
 async function start2() {
   if (started) return;
@@ -18112,18 +18262,18 @@ async function start2() {
   const overlay = $("overlay");
   if (overlay) overlay.classList.remove("hidden");
   const canvasEl = $("canvas");
-  if (!(canvasEl instanceof HTMLCanvasElement)) throw new Error("\u6E38\u620F\u753B\u5E03\u4E0D\u5B58\u5728\uFF0C\u9875\u9762\u6587\u4EF6\u53EF\u80FD\u4E0D\u5B8C\u6574");
+  if (!(canvasEl instanceof HTMLCanvasElement)) throw new Error("Game canvas missing; the page files may be incomplete");
   let restoreTimer = 0;
   canvasEl?.addEventListener("webglcontextlost", (e) => {
     e.preventDefault();
     if (overlay) overlay.classList.remove("hidden");
-    setPhase("WebGL \u4E0A\u4E0B\u6587\u4E22\u5931\uFF0C\u6B63\u5728\u5C1D\u8BD5\u6062\u590D\u2026");
-    log("\u26A0\uFE0F WebGL \u4E0A\u4E0B\u6587\u4E22\u5931\uFF08\u591A\u4E3A GPU/\u5185\u5B58\u538B\u529B\uFF09\u2014\u2014\u753B\u9762\u4F1A\u53D8\u9ED1", "err");
-    restoreTimer = setTimeout(() => showError(new Error("WebGL \u4E0A\u4E0B\u6587 10 \u79D2\u5185\u672A\u6062\u590D\uFF0C\u8BF7\u5237\u65B0\u9875\u9762\u91CD\u8BD5")), 1e4);
+    setPhase("WebGL context lost, attempting restore\u2026");
+    log("\u26A0\uFE0F WebGL context lost (usually GPU/memory pressure) \u2014 screen goes black", "err");
+    restoreTimer = setTimeout(() => showError(new Error("WebGL context not restored within 10s; reload the page to retry")), 1e4);
   });
   canvasEl?.addEventListener("webglcontextrestored", () => {
     clearTimeout(restoreTimer);
-    log("WebGL \u4E0A\u4E0B\u6587\u5DF2\u6062\u590D");
+    log("WebGL context restored");
     if (firstFrameReady && overlay) overlay.classList.add("hidden");
   });
   const args2 = [
@@ -18154,8 +18304,18 @@ async function start2() {
   window.__probe.args = args2;
   const wanted = ["base", `maps/${map}`];
   const packWarmup = FORCE_GZIP ? Promise.resolve(null) : prepareZstdPacks(wanted).catch((error) => {
-    log(`\u26A0\uFE0F Zstd \u9884\u70ED\u5931\u8D25\uFF0C\u7A0D\u540E\u4F1A\u5C1D\u8BD5\u5907\u7528\u5305\uFF1A${error}`, "err");
+    log(`\u26A0\uFE0F Zstd prewarm failed, will try fallback pack later: ${error}`, "err");
     return null;
+  });
+  const extrasPromise = fetchBytes(`${LIB}/cstrike/extras.pk3?v=${ASSET_VERSION}`, "cs16 client extras.pk3");
+  const fontPromise = fetchBytes(`${ASSET_ROOT}/gfx/fonts/FiraSans-Regular.ttf?v=${ASSET_VERSION}`, "HUD font");
+  const botVisPromise = loadBotVis(map).catch((error) => {
+    log(`\u26A0\uFE0F YaPB visibility cache unavailable: ${error}`, "err");
+    return null;
+  });
+  void extrasPromise.catch(() => {
+  });
+  void fontPromise.catch(() => {
   });
   const xash = new Xash3D2({
     module: {
@@ -18180,52 +18340,55 @@ async function start2() {
   setInterval(() => {
     if (xash.exited && !window.__probe.exited) {
       window.__probe.exited = true;
-      log("\u26A0\uFE0F \u5F15\u64CE\u5DF2\u9000\u51FA", "err");
+      log("\u26A0\uFE0F Engine exited", "err");
     }
   }, 3e3);
   await xash.init();
-  mark("\u5F15\u64CE\u521D\u59CB\u5316\u5B8C\u6210");
+  mark("Engine initialized");
   await Promise.all([placeLibs(xash), packWarmup]);
-  mark("\u5F15\u64CE\u52A8\u6001\u5E93\u5C31\u4F4D");
+  mark("Engine libraries ready");
   window.__probe.info.packs = wanted;
   let files = 0, raw = 0;
   for (const pack of wanted) {
     const r = await loadPack(xash, pack);
     files += r.files;
     raw += r.bytes;
-    mark(`\u5199\u5165 ${pack}`, `${r.files} \u4E2A\u6587\u4EF6 / ${(r.bytes / 1048576).toFixed(1)} MB \u539F\u59CB`);
+    mark(`Wrote ${pack}`, `${r.files} files / ${(r.bytes / 1048576).toFixed(1)} MB raw`);
   }
   window.__probe.info.assetCount = files;
   window.__probe.info.assetBytes = raw;
-  const extras = await fetchBytes(`${LIB}/cstrike/extras.pk3?v=${ASSET_VERSION}`, "CS \u5BA2\u6237\u7AEF extras.pk3");
-  if (!(extras[0] === 80 && extras[1] === 75)) throw new Error("extras.pk3 \u4E0D\u662F\u6709\u6548 ZIP");
+  const extras = await extrasPromise;
+  if (!(extras[0] === 80 && extras[1] === 75)) throw new Error("extras.pk3 is not a valid ZIP");
   xash.em.FS.mkdirTree(BASE + "cstrike");
   xash.em.FS.writeFile(BASE + "cstrike/extras.pk3", extras);
-  mark("extras.pk3 \u5C31\u4F4D");
-  await loadHudFont(xash);
+  mark("extras.pk3 ready");
+  await loadHudFont(xash, fontPromise);
   ensureBinds(xash);
   configureBots(xash, map, botCount);
+  const botVisReady = restoreBotVis(xash, map, await botVisPromise);
   xash.em.FS.chdir(BASE);
   xash.main();
-  mark("\u5F15\u64CE\u4E3B\u5FAA\u73AF\u542F\u52A8");
+  if (!botVisReady) watchGeneratedBotVis(xash, map);
+  mark("Engine main loop started");
   await waitForFirstFrame(canvasEl, xash);
   enforceBotCount(xash, botCount);
+  await autoJoinPlayer(xash);
   firstFrameReady = true;
-  mark("\u6E38\u620F\u753B\u9762\u5C31\u7EEA");
+  mark("Game ready");
   if (overlay) overlay.classList.add("hidden");
 }
 function showError(e) {
   const raw = String(e && e.stack || e);
   const engineReason = [...window.__probe.log].reverse().find((line) => /(?:host_|error|failed|couldn't|abort)/i.test(line));
-  const msg = e instanceof Error && e.message || (engineReason ? `\u5F15\u64CE\u542F\u52A8\u5931\u8D25\uFF1A${engineReason}` : raw);
+  const msg = e instanceof Error && e.message || (engineReason ? `Engine failed to start: ${engineReason}` : raw);
   window.__probe.errors.push(msg);
-  mark("\u5931\u8D25");
+  mark("Failed");
   const box = $("errbox");
   if (box) box.textContent = "\u274C " + msg;
   const startButton = $("start");
   if (startButton) {
     startButton.disabled = false;
-    startButton.textContent = "\u5237\u65B0\u540E\u91CD\u8BD5";
+    startButton.textContent = "Reload to retry";
     startButton.onclick = () => location.reload();
   }
   log("\u274C " + msg, "err");

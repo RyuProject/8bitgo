@@ -1076,6 +1076,28 @@ npm run cs16:upload -- --bucket <R2桶名>
 可指临时域名，`?packformat=gzip` 只用于旧包应急。R2 CORS、Cache Everything 和验收步骤见
 `public/web/cs16/PACKS.md`。
 
+### 2.28.4.1 CS1.6 首局性能：PK3 要 Deflate，YaPB `.vis` 不能每局重算
+
+`lib/cstrike/extras.pk3` 上游包的 738 个成员曾全部使用 ZIP Store：25,111,596 字节几乎原样
+下载，其中还有大量 BMP/WAV。`npm run cs16:extras` 只把值得压缩的成员改成标准 Deflate，文件内容、
+路径和 CRC 不变，当前产物约 14.1MB（减少约 43.7%）。不要用系统 `zip/unzip` 做构建依赖；CI/生产机
+曾因没有 `unzip` 直接让 CS16 检查失败。`check-cs16.mjs` 会真实解压全部 738 项并逐项验 CRC，
+同时拒绝退回超过 16MiB 的 Store 大包。
+
+YaPB 的 `.graph` 只解决寻路，不含节点两两可见性。没有
+`addons/yapb/data/train/<map>.vis` 时，插件会在每帧切片追踪并打印 `Rebuilding vistable...`；
+de_dust2 实测约 78 秒，期间会持续吃主线程，旧页面刷新后还会从头再算。现在 12 张公开地图都随
+发布物带 `vis/<map>.vis`（合计约 784KB），启动前只取当前地图并写到 YaPB 的真实路径；若文件缺失
+或未来新增地图，首次算完后还会写入独立 IndexedDB，后续开图恢复。缓存代次是
+`BOT_VIS_GENERATION`，只有换 YaPB 数据格式或 graph 时才递增，不能跟 UI 版本走。
+`.vis` 必须由**同一份 graph + 当前 YaPB**在真实引擎里生成，不能跨版本抄；运行时和构建检查都验
+magic、v4、节点平方矩阵、压缩段和每节点 4 字节尾部统计，不完整就保留重建路径。
+
+玩家首帧出现不代表已经出生。启动器在 GameDLL 就绪后分三帧执行 `jointeam 2`、`joinclass 1`，
+再 `sv_restart 1`，否则命令挤在同一帧会被旧客户端丢掉，或玩家虽入队仍要等下一轮。`?autojoin=0`
+仅用于排查。首载关键路径还会并行预取 extras、HUD 字体、当前地图首片，并按 URL 去重动态库下载；
+不能为了并行把公共包更多分片常驻 JS 堆，现有边界仍是基础 16MB + 当前地图一片。
+
 ### 2.28.5 /web/diablo：CRA v2 老工具链，WASM 核心走 R2 Brotli 流式代理
 
 上游 d07RiV/diabloweb（devilution 重建源码 → WebAssembly），2026-09-24 接入，地址 `/web/diablo`。

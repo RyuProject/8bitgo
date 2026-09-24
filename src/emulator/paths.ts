@@ -119,6 +119,14 @@ export const WEBRETRO_PATH: string = asDir(import.meta.env.VITE_WEBRETRO_PATH)
 export const PLAY_PATH: string = asDir(import.meta.env.VITE_PLAY_PATH)
 
 /**
+ * PPSSPP 浏览器核心必须使用本站打过 Range 补丁的构建，不能退回上游网页壳：
+ * 上游只会把整份 ISO 挂进 WORKERFS，大游戏会在启动前完整下载并复制进内存。
+ * 不设默认值是刻意的——二进制没部署时让平台明确显示不可运行，绝不在线上白屏。
+ */
+export const PPSSPP_VERSION = '0dbfaca'
+export const PPSSPP_PATH: string = asDir(import.meta.env.VITE_PPSSPP_PATH)
+
+/**
  * wasm-dolphin 随仓库发布在版本目录里。目录名就是接入时锁定的上游提交短 SHA：
  * 运行时文件互相用相对路径 import，升级时必须整目录换代，不能让边缘缓存拼出新旧混合物。
  */

@@ -35,7 +35,7 @@ import { decompress as decompressZstd, init as initZstd } from '@bokuweb/zstd-wa
 import { unpackTarStream } from './tar-stream.js'
 
 const BASE = '/rodir/'
-const ASSET_VERSION = '20260923-bots1'
+const ASSET_VERSION = '20260924-perf1'
 // 清单返回后会换成当前地图的真实压缩体积；这里仅用于清单到达前，避免进度条跳满。
 let expectedProgressBytes = 128 * 1024 * 1024
 const Q = new URLSearchParams(location.search)
@@ -46,6 +46,11 @@ const SUPPORTED_MAPS = new Set([
 const DEFAULT_MAP = 'de_dust2'
 const DEFAULT_BOT_COUNT = 7
 const MAX_BOT_COUNT = 15
+// 12 张公开地图都随发布物带 YaPB 自己生成的可见性表；IDB 仍作为缺文件/未来新增地图的回退。
+const PREBUILT_VIS_MAPS = new Set(SUPPORTED_MAPS)
+// 只有 graph / YaPB 数据格式变化时才递增，不能跟着纯 UI 版本变化白白废掉玩家已算好的缓存。
+const BOT_VIS_GENERATION = 'yapb-4.5-vis-v1'
+const AUTO_JOIN = Q.get('autojoin') !== '0'
 
 // 查询参数最终会进入包路径和引擎参数；只接受已经打包并在页面公开的地图名。
 function selectedMap() {
@@ -109,7 +114,7 @@ const t0 = performance.now()
 const marks = {}
 window.__probe = { marks, log: [], errors: [], info: {}, xash: null, net: { total: 0, byUrl: {} } }
 window.__probe.keys = []
-let phase = '待开始'
+let phase = 'Ready'
 let started = false
 let firstFrameReady = false
 
@@ -140,7 +145,7 @@ function log(msg, cls) {
 function setPhase(text) {
   phase = text
   const p = $('phase'); if (p) p.textContent = text
-  const n = $('net'); if (n) n.textContent = `已接收/处理 ${(window.__probe.net.total / 1048576).toFixed(1)} MB`
+  const n = $('net'); if (n) n.textContent = `Received / processed ${(window.__probe.net.total / 1048576).toFixed(1)} MB`
   const bar = document.querySelector('#bar > i')
   if (bar) {
     bar.style.width = Math.min(100, (window.__probe.net.total / expectedProgressBytes) * 100).toFixed(1) + '%'
@@ -154,12 +159,12 @@ async function fetchRequired(url, label, options = {}) {
   try {
     res = await fetch(url, { ...options, signal: controller.signal })
   } catch (error) {
-    throw new Error(`${label}连接失败：${error instanceof Error && error.name === 'AbortError' ? '30 秒内没有响应' : error}`)
+    throw new Error(`${label} connection failed: ${error instanceof Error && error.name === 'AbortError' ? 'no response within 30s' : error}`)
   } finally {
     clearTimeout(timer)
   }
-  if (!res.ok) throw new Error(`${label}不可用（HTTP ${res.status}）：${new URL(url, location.href).pathname}`)
-  if (!res.body) throw new Error(`${label}没有响应体`)
+  if (!res.ok) throw new Error(`${label} unavailable (HTTP ${res.status}): ${new URL(url, location.href).pathname}`)
+  if (!res.body) throw new Error(`${label} has no response body`)
   return res
 }
 
@@ -174,7 +179,7 @@ function guardStream(stream, label, url) {
         const next = await Promise.race([
           reader.read(),
           new Promise((_, reject) => {
-            timer = setTimeout(() => reject(new Error(`${label}下载停滞超过 30 秒`)), 30_000)
+            timer = setTimeout(() => reject(new Error(`${label} stalled for over 30s`)), 30_000)
           }),
         ])
         if (next.done) return controller.close()
@@ -219,26 +224,26 @@ async function digestHex(bytes) {
 
 function validatePackCatalog(catalog) {
   if (!catalog || catalog.format !== ZSTD_FORMAT || !catalog.packs || typeof catalog.packs !== 'object') {
-    throw new Error('CS1.6 Zstd 清单格式不兼容')
+    throw new Error('Incompatible CS1.6 Zstd manifest format')
   }
   if (catalog.compression?.algorithm !== 'zstd' || catalog.compression?.chunkRawBytes !== 16 * 1024 * 1024) {
-    throw new Error('CS1.6 Zstd 清单的压缩参数不兼容')
+    throw new Error('Incompatible compression parameters in CS1.6 Zstd manifest')
   }
   for (const [key, pack] of Object.entries(catalog.packs)) {
-    if (!(key === 'base' || /^maps\/[a-z0-9_]+$/.test(key))) throw new Error(`Zstd 清单含非法包名：${key}`)
+    if (!(key === 'base' || /^maps\/[a-z0-9_]+$/.test(key))) throw new Error(`Invalid pack name in Zstd manifest: ${key}`)
     if (!Number.isSafeInteger(pack.rawBytes) || pack.rawBytes <= 0 || !Number.isSafeInteger(pack.compressedBytes) || pack.compressedBytes <= 0 || !SHA256_RE.test(pack.rawSha256) || !Array.isArray(pack.chunks) || !pack.chunks.length) {
-      throw new Error(`Zstd 清单中的 ${key} 元数据无效`)
+      throw new Error(`Invalid metadata for ${key} in Zstd manifest`)
     }
     let rawBytes = 0, compressedBytes = 0
     pack.chunks.forEach((chunk, index) => {
       if (chunk.index !== index || chunk.path !== `chunks/${chunk.compressedSha256}.zst` || !SHA256_RE.test(chunk.compressedSha256) || !SHA256_RE.test(chunk.rawSha256) || !Number.isSafeInteger(chunk.rawBytes) || chunk.rawBytes <= 0 || chunk.rawBytes > 16 * 1024 * 1024 || !Number.isSafeInteger(chunk.compressedBytes) || chunk.compressedBytes <= 0) {
-        throw new Error(`Zstd 清单中的 ${key} 第 ${index + 1} 片无效`)
+        throw new Error(`Invalid chunk ${index + 1} for ${key} in Zstd manifest`)
       }
       rawBytes += chunk.rawBytes
       compressedBytes += chunk.compressedBytes
     })
     if (rawBytes !== pack.rawBytes || compressedBytes !== pack.compressedBytes) {
-      throw new Error(`Zstd 清单中的 ${key} 汇总长度不符`)
+      throw new Error(`Total length mismatch for ${key} in Zstd manifest`)
     }
   }
   return catalog
@@ -247,9 +252,9 @@ function validatePackCatalog(catalog) {
 async function getPackCatalog() {
   if (!catalogPromise) {
     catalogPromise = (async () => {
-      const bytes = await fetchBytes(`${PACKS_ROOT}catalog.json?v=${ASSET_VERSION}`, 'CS1.6 分片清单')
+      const bytes = await fetchBytes(`${PACKS_ROOT}catalog.json?v=${ASSET_VERSION}`, 'CS1.6 chunk manifest')
       let catalog
-      try { catalog = JSON.parse(new TextDecoder().decode(bytes)) } catch { throw new Error('CS1.6 分片清单不是合法 JSON') }
+      try { catalog = JSON.parse(new TextDecoder().decode(bytes)) } catch { throw new Error('CS1.6 chunk manifest is not valid JSON') }
       return validatePackCatalog(catalog)
     })()
   }
@@ -270,15 +275,15 @@ async function decompressChunk(compressed, chunk, label) {
     } catch (error) {
       // 有的浏览器暴露构造器但实现还不能解完整帧；一次失败后固定走兼容 WASM，避免每片都试错。
       nativeZstd = false
-      log(`浏览器原生 Zstd 不可用，改用兼容解码器：${error}`)
+      log(`Native Zstd unavailable, using compatible decoder: ${error}`)
     }
   }
   if (!raw) {
     await ensureWasmZstd()
     raw = decompressZstd(compressed)
   }
-  if (raw.byteLength !== chunk.rawBytes) throw new Error(`${label}解压长度错误`)
-  if (await digestHex(raw) !== chunk.rawSha256) throw new Error(`${label}解压后 SHA-256 校验失败`)
+  if (raw.byteLength !== chunk.rawBytes) throw new Error(`${label} decompressed length mismatch`)
+  if (await digestHex(raw) !== chunk.rawSha256) throw new Error(`${label} SHA-256 mismatch after decompression`)
   return raw
 }
 
@@ -288,8 +293,8 @@ async function fetchChunkOnce(chunk, label, attempt) {
   chunkUrl.searchParams.set('v', chunk.compressedSha256)
   const url = chunkUrl.href
   const compressed = await fetchBytes(url, label, attempt ? { cache: 'reload' } : undefined)
-  if (compressed.byteLength !== chunk.compressedBytes) throw new Error(`${label}下载长度错误`)
-  if (await digestHex(compressed) !== chunk.compressedSha256) throw new Error(`${label}SHA-256 校验失败`)
+  if (compressed.byteLength !== chunk.compressedBytes) throw new Error(`${label} download length mismatch`)
+  if (await digestHex(compressed) !== chunk.compressedSha256) throw new Error(`${label} SHA-256 mismatch`)
   return decompressChunk(compressed, chunk, label)
 }
 
@@ -301,7 +306,7 @@ async function fetchChunk(chunk, label) {
       for (let attempt = 0; attempt < 3; attempt += 1) {
         try { return await fetchChunkOnce(chunk, label, attempt) } catch (error) {
           lastError = error
-          if (attempt < 2) log(`⚠️ ${label}失败，正在重试 ${attempt + 2}/3：${error}`, 'err')
+          if (attempt < 2) log(`⚠️ ${label} failed, retrying ${attempt + 2}/3: ${error}`, 'err')
         }
       }
       throw lastError
@@ -322,7 +327,7 @@ function zstdPackStream(pack, key) {
   const schedule = () => {
     while (inFlight.size < 2 && next + inFlight.size < pack.chunks.length) {
       const index = next + inFlight.size
-      inFlight.set(index, fetchChunk(pack.chunks[index], `${key} 分片 ${index + 1}/${pack.chunks.length}`))
+      inFlight.set(index, fetchChunk(pack.chunks[index], `${key} chunk ${index + 1}/${pack.chunks.length}`))
     }
   }
   schedule()
@@ -347,14 +352,16 @@ function zstdPackStream(pack, key) {
 
 async function prepareZstdPacks(keys) {
   const catalog = await getPackCatalog()
-  for (const key of keys) if (!catalog.packs[key]) throw new Error(`Zstd 清单缺少 ${key}`)
+  for (const key of keys) if (!catalog.packs[key]) throw new Error(`Zstd manifest is missing ${key}`)
   const total = keys.reduce((sum, key) => sum + catalog.packs[key].compressedBytes, 0)
-  // 另加约 48MB 引擎 / 客户端库 / extras，进度条按实际地图调整，不再长期卡在 60%。
-  expectedProgressBytes = total + 48 * 1024 * 1024
-  // 只预热公共包第一片；若连地图也预热，公共包的双缓冲之外会再常驻 16MB，移动端得不偿失。
-  const firstKey = keys[0]
-  const first = catalog.packs[firstKey].chunks[0]
-  void fetchChunk(first, `${firstKey} 分片 1/${catalog.packs[firstKey].chunks.length}`).catch(() => {})
+  // extras 改成 Deflate 后，进 git 的引擎 / 客户端库 / 字体 / extras 实际约 30MB。
+  expectedProgressBytes = total + 32 * 1024 * 1024
+  // 地图包都只有一片且最大约十几 MB；和公共包第一片同时预热，可以把地图下载藏在公共包写盘时间里。
+  // 这里不预热公共包第二片，仍把额外解压内存限制在「基础 16MB + 当前地图一片」。
+  for (const key of keys) {
+    const first = catalog.packs[key].chunks[0]
+    void fetchChunk(first, `${key} chunk 1/${catalog.packs[key].chunks.length}`).catch(() => {})
+  }
   return catalog
 }
 
@@ -437,12 +444,15 @@ const LIBS_MAP = {
 }
 
 async function placeLibs(xash) {
-  // HTTP/2 下并发取库能把多个往返重叠；全部验完后再写 MEMFS，失败时不会留下半套运行库。
+  // 同一份 CS GameDLL 要写到多个兼容路径，但下载一次就够；旧实现把相同 URL 并发取了 2–3 次，
+  // 即使命中 HTTP 缓存也会重复复制 ArrayBuffer，白耗启动时间和 JS 堆。
+  const downloads = new Map()
   const files = await Promise.all(Object.entries(LIB_FILES).map(async ([name, url]) => {
     const assetUrl = versioned(url)
-    const buf = await fetchBytes(assetUrl, `动态库 ${name}`)
+    if (!downloads.has(assetUrl)) downloads.set(assetUrl, fetchBytes(assetUrl, `library ${name}`))
+    const buf = await downloads.get(assetUrl)
     if (name.endsWith('.wasm') && !(buf[0] === 0 && buf[1] === 0x61 && buf[2] === 0x73 && buf[3] === 0x6d)) {
-      throw new Error(`动态库 ${name} 不是有效 WASM（可能拿到了 404 HTML）`)
+      throw new Error(`library ${name} is not valid WASM (got 404 HTML?)`)
     }
     return [name, buf]
   }))
@@ -490,13 +500,13 @@ async function fetchPackBytes(url, label) {
       headBytes += value.byteLength
     }
   }
-  if (!headBytes) throw new Error(`${label}是空文件`)
+  if (!headBytes) throw new Error(`${label} is empty`)
   const head = new Uint8Array(headBytes)
   let at = 0
   for (const chunk of chunks) { head.set(chunk, at); at += chunk.byteLength }
   const stream = prependChunk(head, reader)
   if (!isGzip(head)) return stream
-  if (typeof DecompressionStream === 'undefined') throw new Error('浏览器不支持流式 gzip 解压，请升级浏览器')
+  if (typeof DecompressionStream === 'undefined') throw new Error('Streaming gzip is not supported in this browser')
   return stream.pipeThrough(new DecompressionStream('gzip'))
 }
 
@@ -517,7 +527,7 @@ async function writePack(xash, stream) {
       }
     },
     ({ files, bytes }) => {
-      if (files % 100 === 0) setPhase(`正在展开资源：${files} 个文件 / ${(bytes / 1048576).toFixed(0)} MB`)
+      if (files % 100 === 0) setPhase(`Extracting assets: ${files} files / ${(bytes / 1048576).toFixed(0)} MB`)
     },
   )
 }
@@ -527,25 +537,25 @@ async function loadPack(xash, file) {
     try {
       const catalog = await getPackCatalog()
       const pack = catalog.packs[file]
-      if (!pack) throw new Error(`Zstd 清单缺少 ${file}`)
+      if (!pack) throw new Error(`Zstd manifest is missing ${file}`)
       const result = await writePack(xash, zstdPackStream(pack, file))
       window.__probe.info.packFormat = nativeZstd ? 'zstd-native' : 'zstd-wasm'
-      log(`[cs16] ${file} 使用 ${nativeZstd ? '浏览器原生 Zstd' : 'Zstd WASM'}，${pack.chunks.length} 个校验分片`)
+      log(`[cs16] ${file} via ${nativeZstd ? 'native Zstd' : 'Zstd WASM'}, ${pack.chunks.length} verified chunks`)
       return result
     } catch (zstdError) {
       // R2 临时不可用时，保留同源旧包作为应急兜底；已写入的同名文件会被完整 gzip 包覆盖。
-      log(`⚠️ ${file} 的 Zstd 分片不可用，尝试 gzip 备用包：${zstdError}`, 'err')
+      log(`⚠️ Zstd chunks for ${file} unavailable, trying gzip fallback: ${zstdError}`, 'err')
       try {
-        const stream = await fetchPackBytes(`${LEGACY_PACKS_ROOT}${file}.tar.gz?v=${ASSET_VERSION}`, `${file} gzip 备用包`)
+        const stream = await fetchPackBytes(`${LEGACY_PACKS_ROOT}${file}.tar.gz?v=${ASSET_VERSION}`, `${file} gzip fallback`)
         const result = await writePack(xash, stream)
         window.__probe.info.packFormat = 'gzip-fallback'
         return result
       } catch (gzipError) {
-        throw new Error(`${file} 加载失败；Zstd：${zstdError}；gzip 备用：${gzipError}`)
+        throw new Error(`${file} failed to load; zstd: ${zstdError}; gzip fallback: ${gzipError}`)
       }
     }
   }
-  const stream = await fetchPackBytes(`${FORCE_GZIP_ROOT}${file}.tar.gz?v=${ASSET_VERSION}`, `${file} gzip 包`)
+  const stream = await fetchPackBytes(`${FORCE_GZIP_ROOT}${file}.tar.gz?v=${ASSET_VERSION}`, `${file} gzip pack`)
   window.__probe.info.packFormat = 'gzip-forced'
   return writePack(xash, stream)
 }
@@ -561,18 +571,18 @@ async function loadPack(xash, file) {
  * —— Tahoma 字体槽加载失败会让整个 HUD 空白，表现为「没有小地图」。
  * 站点只分发 FiraSans（OFL 开源），故用同一份内容补齐 tahoma.ttf 那个槽位。
  */
-async function loadHudFont(xash) {
+async function loadHudFont(xash, fontPromise) {
   const FS = xash.em.FS
   try {
-    const buf = await fetchBytes(`${ASSET_ROOT}/gfx/fonts/FiraSans-Regular.ttf?v=` + ASSET_VERSION, 'HUD 字体')
+    const buf = await (fontPromise || fetchBytes(`${ASSET_ROOT}/gfx/fonts/FiraSans-Regular.ttf?v=` + ASSET_VERSION, 'HUD font'))
     for (const dir of ['gfx/fonts', 'cstrike/gfx/fonts']) {
       FS.mkdirTree(`${BASE}${dir}`)
       FS.writeFile(`${BASE}${dir}/FiraSans-Regular.ttf`, buf)
       FS.writeFile(`${BASE}${dir}/tahoma.ttf`, buf)
     }
-    mark('HUD 字体就位')
+    mark('HUD font ready')
   } catch (e) {
-    log('⚠️ HUD 字体加载失败：' + e, 'err')
+    log('⚠️ HUD font failed to load: ' + e, 'err')
   }
 }
 
@@ -582,13 +592,13 @@ function waitForFirstFrame(canvas, xash, timeoutMs = 60_000) {
   const startedAt = performance.now()
   return new Promise((resolve, reject) => {
     const check = () => {
-      if (xash.exited) return reject(new Error('引擎在显示第一帧前已经退出'))
+      if (xash.exited) return reject(new Error('Engine exited before the first frame'))
       const fatalLine = window.__probe.log.find((line) => fatal.test(line))
-      if (fatalLine) return reject(new Error(`引擎启动失败：${fatalLine}`))
+      if (fatalLine) return reject(new Error(`Engine failed to start: ${fatalLine}`))
       // WebGL 默认缓冲通常没有 preserveDrawingBuffer，合成后 readPixels 可能永远读到全黑。
       // 服务器、客户端和渲染器走完初始化并进入选队脚本时，画面循环已经真实启动，可作为兜底判据。
       if (window.__probe.log.some((line) => gameReady.test(line))) return resolve()
-      if (performance.now() - startedAt > timeoutMs) return reject(new Error('地图启动超过 60 秒仍没有画面'))
+      if (performance.now() - startedAt > timeoutMs) return reject(new Error('No frame after 60s of map startup'))
       const gl = canvas.getContext('webgl2') || canvas.getContext('webgl')
       if (gl && !gl.isContextLost() && canvas.width >= 64 && canvas.height >= 64) {
         const pixel = new Uint8Array(4)
@@ -621,7 +631,7 @@ function ensureBinds(xash) {
   for (const dir of ['', 'cstrike/', 'valve/']) {
     try { FS.writeFile(BASE + dir + 'autoexec.cfg', buf) } catch { /* 目录可能不存在，忽略 */ }
   }
-  mark('键位绑定就位 (autoexec.cfg)')
+  mark('Key bindings written (autoexec.cfg)')
 }
 
 /**
@@ -641,11 +651,11 @@ function configureBots(xash, map, count) {
     /^gamedll_linux\s+"[^"]+"\s*$/m,
     'gamedll_linux "dlls/yapb.so"',
   )
-  if (patchedLiblist === originalLiblist) throw new Error('cstrike/liblist.gam 缺少 gamedll_linux，无法启用 YaPB')
+  if (patchedLiblist === originalLiblist) throw new Error('cstrike/liblist.gam lacks gamedll_linux; cannot enable YaPB')
   FS.writeFile(liblistPath, encoder.encode(patchedLiblist))
 
   const mapConfig = [
-    '// 由 8BitGo 启动界面生成；覆盖 YaPB 包内固定的 9 Bot 默认值。',
+    '// Generated by the 8BitGo launcher; overrides the fixed 9-bot defaults baked into the YaPB pack.',
     'yb_quota_mode "normal"',
     `yb_quota "${count}"`,
     'yb_autovacate "0"',
@@ -659,7 +669,7 @@ function configureBots(xash, map, count) {
   FS.writeFile(`${configDir}/${map}.cfg`, encoder.encode(mapConfig))
   window.__probe.info.botCount = count
   window.__probe.info.botGameDll = `${BASE}cstrike/${GAME_SERVER_LIB}`
-  mark('BOT 配置就位', count ? `${count} 个 YaPB` : '不加入 BOT')
+  mark('Bot config ready', count ? `${count} YaPB` : 'no bots')
 }
 
 function enforceBotCount(xash, count) {
@@ -670,6 +680,161 @@ function enforceBotCount(xash, count) {
     'yb_join_after_player 0',
     `yb_quota ${count}`,
   ].join(';'))
+}
+
+const BOT_VIS_DB = '8bitgo-cs16-yapb-vis'
+const BOT_VIS_STORE = 'maps'
+
+function botVisPath(map) {
+  return `${BASE}cstrike/addons/yapb/data/train/${map}.vis`
+}
+
+/**
+ * YaPB v4 的 .vis 是 24 字节 StorageHeader + ULZ 数据 + 每节点 4 字节统计。
+ * 只看文件存在会把中途写了一半的缓存留到下次，随后 YaPB 仍会重建；这里把格式和总长一起验掉。
+ */
+function validBotVis(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength < 24) return false
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  const magic = view.getUint32(0, true)
+  const version = view.getInt32(4, true)
+  const options = view.getInt32(8, true)
+  const nodes = view.getInt32(12, true)
+  const compressed = view.getInt32(16, true)
+  const raw = view.getInt32(20, true)
+  return (magic === 0x59415042 || magic === 0x544f4255) && version === 4 && (options & 4) === 4 &&
+    nodes >= 8 && nodes <= 8192 && compressed > 0 && raw === nodes * nodes &&
+    bytes.byteLength === 24 + compressed + nodes * 4
+}
+
+function openBotVisDb() {
+  if (typeof indexedDB === 'undefined') return Promise.resolve(null)
+  return new Promise((resolve) => {
+    const request = indexedDB.open(BOT_VIS_DB, 1)
+    request.onupgradeneeded = () => request.result.createObjectStore(BOT_VIS_STORE)
+    request.onsuccess = () => resolve(request.result)
+    // Safari 私密模式等环境会禁用 IDB；游戏仍能运行，只是该地图下次需要重新计算。
+    request.onerror = () => resolve(null)
+  })
+}
+
+async function readBotVisCache(map) {
+  const db = await openBotVisDb()
+  if (!db) return null
+  try {
+    return await new Promise((resolve) => {
+      const request = db.transaction(BOT_VIS_STORE, 'readonly').objectStore(BOT_VIS_STORE).get(`${BOT_VIS_GENERATION}:${map}`)
+      request.onsuccess = () => {
+        const value = request.result
+        const bytes = value ? new Uint8Array(value) : null
+        resolve(validBotVis(bytes) ? bytes : null)
+        db.close()
+      }
+      request.onerror = () => { resolve(null); db.close() }
+    })
+  } catch {
+    db.close()
+    return null
+  }
+}
+
+async function writeBotVisCache(map, bytes) {
+  if (!validBotVis(bytes)) return false
+  const db = await openBotVisDb()
+  if (!db) return false
+  try {
+    return await new Promise((resolve) => {
+      const tx = db.transaction(BOT_VIS_STORE, 'readwrite')
+      // FS.readFile 的视图可能挂着整个 WASM 内存，必须 slice 后再交给 IndexedDB。
+      tx.objectStore(BOT_VIS_STORE).put(bytes.slice().buffer, `${BOT_VIS_GENERATION}:${map}`)
+      tx.oncomplete = () => { resolve(true); db.close() }
+      tx.onerror = () => { resolve(false); db.close() }
+      tx.onabort = () => { resolve(false); db.close() }
+    })
+  } catch {
+    db.close()
+    return false
+  }
+}
+
+async function loadBotVis(map) {
+  if (Q.get('novis') === '1') return null
+  if (PREBUILT_VIS_MAPS.has(map)) {
+    try {
+      const bytes = await fetchBytes(`${ASSET_ROOT}/vis/${map}.vis?v=${ASSET_VERSION}`, `YaPB visibility table for ${map}`)
+      if (!validBotVis(bytes)) throw new Error('invalid YaPB visibility table')
+      return { bytes, source: 'prebuilt' }
+    } catch (error) {
+      // 发布时漏文件不该阻断整局；退回浏览器缓存/本局重建，同时把真正原因留在现场日志。
+      log(`⚠️ Prebuilt YaPB visibility table unavailable: ${error}`, 'err')
+    }
+  }
+  const cached = await readBotVisCache(map)
+  return cached ? { bytes: cached, source: 'cache' } : null
+}
+
+function restoreBotVis(xash, map, prepared) {
+  if (!prepared) {
+    window.__probe.info.botVis = 'rebuilding'
+    return false
+  }
+  const path = botVisPath(map)
+  xash.em.FS.mkdirTree(path.slice(0, path.lastIndexOf('/')))
+  xash.em.FS.writeFile(path, prepared.bytes)
+  window.__probe.info.botVis = prepared.source
+  mark('YaPB visibility ready', `${map} · ${prepared.source}`)
+  return true
+}
+
+function watchGeneratedBotVis(xash, map) {
+  const path = botVisPath(map)
+  const deadline = performance.now() + 240_000
+  let saving = false
+  const timer = setInterval(async () => {
+    if (saving) return
+    try {
+      const found = xash.em.FS.analyzePath(path)
+      if (found.exists) {
+        const bytes = xash.em.FS.readFile(path)
+        if (validBotVis(bytes)) {
+          saving = true
+          clearInterval(timer)
+          const saved = await writeBotVisCache(map, bytes)
+          window.__probe.info.botVis = saved ? 'generated-cached' : 'generated-memory-only'
+          log(saved
+            ? `[bots] ${map}.vis generated and cached; future launches skip the visibility rebuild.`
+            : `[bots] ${map}.vis generated, but the browser refused persistent storage.`)
+          return
+        }
+      }
+    } catch { /* 文件可能正处于写入过程，下一轮再验完整长度。 */ }
+    if (performance.now() >= deadline) {
+      clearInterval(timer)
+      window.__probe.info.botVis = 'generation-timeout'
+      log('[bots] YaPB visibility generation exceeded 240 seconds; gameplay can continue.', 'err')
+    }
+  }, 1000)
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function autoJoinPlayer(xash) {
+  if (!AUTO_JOIN) {
+    window.__probe.info.autoJoin = 'disabled'
+    return
+  }
+  setPhase('Joining Counter-Terrorists…')
+  // 三条命令不能塞进同一个分号串：jointeam 会先切菜单状态，同一帧紧跟 joinclass 偶尔会被旧客户端丢掉。
+  xash.Cmd_ExecuteString('jointeam 2')
+  await delay(180)
+  xash.Cmd_ExecuteString('joinclass 1')
+  await delay(320)
+  // 监听服已经开始首回合时，单纯入队仍会等下一轮；重开一次确保玩家立刻拿到 HUD、武器和控制权。
+  xash.Cmd_ExecuteString('sv_restart 1')
+  await delay(1150)
+  window.__probe.info.autoJoin = 'counter-terrorists'
 }
 
 async function start() {
@@ -685,7 +850,7 @@ async function start() {
   const botCount = selectedBotCount()
   const overlay = $('overlay'); if (overlay) overlay.classList.remove('hidden')
   const canvasEl = $('canvas')
-  if (!(canvasEl instanceof HTMLCanvasElement)) throw new Error('游戏画布不存在，页面文件可能不完整')
+  if (!(canvasEl instanceof HTMLCanvasElement)) throw new Error('Game canvas missing; the page files may be incomplete')
   let restoreTimer = 0
 
   /*
@@ -696,13 +861,13 @@ async function start() {
   canvasEl?.addEventListener('webglcontextlost', (e) => {
     e.preventDefault()
     if (overlay) overlay.classList.remove('hidden')
-    setPhase('WebGL 上下文丢失，正在尝试恢复…')
-    log('⚠️ WebGL 上下文丢失（多为 GPU/内存压力）——画面会变黑', 'err')
-    restoreTimer = setTimeout(() => showError(new Error('WebGL 上下文 10 秒内未恢复，请刷新页面重试')), 10_000)
+    setPhase('WebGL context lost, attempting restore…')
+    log('⚠️ WebGL context lost (usually GPU/memory pressure) — screen goes black', 'err')
+    restoreTimer = setTimeout(() => showError(new Error('WebGL context not restored within 10s; reload the page to retry')), 10_000)
   })
   canvasEl?.addEventListener('webglcontextrestored', () => {
     clearTimeout(restoreTimer)
-    log('WebGL 上下文已恢复')
+    log('WebGL context restored')
     if (firstFrameReady && overlay) overlay.classList.add('hidden')
   })
 
@@ -734,9 +899,19 @@ async function start() {
   const packWarmup = FORCE_GZIP
     ? Promise.resolve(null)
     : prepareZstdPacks(wanted).catch((error) => {
-        log(`⚠️ Zstd 预热失败，稍后会尝试备用包：${error}`, 'err')
+        log(`⚠️ Zstd prewarm failed, will try fallback pack later: ${error}`, 'err')
         return null
       })
+  // 这三份小资源原来都排在 60MB+ 公共包之后串行下载。现在与引擎/数据包并行，写盘顺序仍保持不变。
+  const extrasPromise = fetchBytes(`${LIB}/cstrike/extras.pk3?v=${ASSET_VERSION}`, 'cs16 client extras.pk3')
+  const fontPromise = fetchBytes(`${ASSET_ROOT}/gfx/fonts/FiraSans-Regular.ttf?v=${ASSET_VERSION}`, 'HUD font')
+  const botVisPromise = loadBotVis(map).catch((error) => {
+    log(`⚠️ YaPB visibility cache unavailable: ${error}`, 'err')
+    return null
+  })
+  // 提前挂拒绝处理器，避免慢包写盘期间某个预取先失败而触发 unhandledrejection；真正错误仍在 await 时抛出。
+  void extrasPromise.catch(() => {})
+  void fontPromise.catch(() => {})
 
   const xash = new Xash3D({
     module: {
@@ -756,14 +931,14 @@ async function start() {
   setInterval(() => {
     if (xash.exited && !window.__probe.exited) {
       window.__probe.exited = true
-      log('⚠️ 引擎已退出', 'err')
+      log('⚠️ Engine exited', 'err')
     }
   }, 3000)
 
   await xash.init()
-  mark('引擎初始化完成')
+  mark('Engine initialized')
   await Promise.all([placeLibs(xash), packWarmup])
-  mark('引擎动态库就位')
+  mark('Engine libraries ready')
 
   // 公共运行时和当前地图分开，不能再把 300 多 MB 的其它地图写进 MEMFS 后才启动。
   window.__probe.info.packs = wanted
@@ -771,31 +946,34 @@ async function start() {
   for (const pack of wanted) {
     const r = await loadPack(xash, pack)
     files += r.files; raw += r.bytes
-    mark(`写入 ${pack}`, `${r.files} 个文件 / ${(r.bytes / 1048576).toFixed(1)} MB 原始`)
+    mark(`Wrote ${pack}`, `${r.files} files / ${(r.bytes / 1048576).toFixed(1)} MB raw`)
   }
   window.__probe.info.assetCount = files
   window.__probe.info.assetBytes = raw
 
   // extras.pk3 是 cstrike 的游戏包（含 YaPB 配置、导航图和语音），必须放进 cstrike/。
   // 放在 /rodir 根目录时 Xash 不会把它加入 cstrike 搜索路径，表面能进图但 Bot 永远找不到 graph。
-  const extras = await fetchBytes(`${LIB}/cstrike/extras.pk3?v=${ASSET_VERSION}`, 'CS 客户端 extras.pk3')
-  if (!(extras[0] === 0x50 && extras[1] === 0x4b)) throw new Error('extras.pk3 不是有效 ZIP')
+  const extras = await extrasPromise
+  if (!(extras[0] === 0x50 && extras[1] === 0x4b)) throw new Error('extras.pk3 is not a valid ZIP')
   xash.em.FS.mkdirTree(BASE + 'cstrike')
   xash.em.FS.writeFile(BASE + 'cstrike/extras.pk3', extras)
-  mark('extras.pk3 就位')
+  mark('extras.pk3 ready')
 
-  await loadHudFont(xash)
+  await loadHudFont(xash, fontPromise)
   ensureBinds(xash)
   configureBots(xash, map, botCount)
+  const botVisReady = restoreBotVis(xash, map, await botVisPromise)
 
   xash.em.FS.chdir(BASE)
   xash.main()
-  mark('引擎主循环启动')
+  if (!botVisReady) watchGeneratedBotVis(xash, map)
+  mark('Engine main loop started')
   await waitForFirstFrame(canvasEl, xash)
   // YaPB 已完成 GameDLL/地图初始化；再次执行能保证最终数量严格等于启动页选择值。
   enforceBotCount(xash, botCount)
+  await autoJoinPlayer(xash)
   firstFrameReady = true
-  mark('游戏画面就绪')
+  mark('Game ready')
   if (overlay) overlay.classList.add('hidden')
 }
 
@@ -803,14 +981,14 @@ function showError(e) {
   const raw = String((e && e.stack) || e)
   // Emscripten 有些致命错误只 throw `Infinity`，真正原因只写在上一行控制台里。
   const engineReason = [...window.__probe.log].reverse().find((line) => /(?:host_|error|failed|couldn't|abort)/i.test(line))
-  const msg = (e instanceof Error && e.message) || (engineReason ? `引擎启动失败：${engineReason}` : raw)
+  const msg = (e instanceof Error && e.message) || (engineReason ? `Engine failed to start: ${engineReason}` : raw)
   window.__probe.errors.push(msg)
-  mark('失败')
+  mark('Failed')
   const box = $('errbox'); if (box) box.textContent = '❌ ' + msg
   const startButton = $('start')
   if (startButton) {
     startButton.disabled = false
-    startButton.textContent = '刷新后重试'
+    startButton.textContent = 'Reload to retry'
     startButton.onclick = () => location.reload()
   }
   log('❌ ' + msg, 'err')

@@ -110,6 +110,20 @@ if [ "$RUN_TESTS" = "1" ]; then
   fi
   fi
 
+  # ── 4.6 同步 /web/PvZ2 的 PvZ2 Gardendless（可选）──
+  # 整个 public/web/PvZ2/ 不进 git（Apache-2.0 开源 Cocos 导出，约 722MB，含 LFS 资产），
+  # 由 `npm run pvzge:fetch` 从上游自托管进来。它是 gitignored，git reset --hard 清不掉它，
+  # 「部署机上跑过一次就常驻」；后续 redeploy 都带上。
+  #   - 默认：已存在就跳过（不重复拉 722MB）；
+  #   - 设 PVZGE_FETCH=1 强制每次重新拉取（上游更新后刷新）。
+  if [ "${PVZGE_FETCH:-0}" = "1" ] || [ ! -f "$REPO_DIR/public/web/PvZ2/index.html" ]; then
+    log "── 步骤 4.6/7  拉取 PvZ2 Gardendless（pvzge:fetch）──"
+    ( cd "$REPO_DIR" && npm run pvzge:fetch $( [ "${PVZGE_FETCH:-0}" = "1" ] && echo -- --force ) ) \
+      || log "⚠️ pvzge:fetch 失败，继续构建（PvZ2 可能 404 / 资源不全）"
+  else
+    log "── 步骤 4.6/7  PvZ2 已就位，跳过拉取 ──"
+  fi
+
   # ── 5. 构建 ──
 log "── 步骤 5/7  构建（client + server 包）──"
 ( cd "$REPO_DIR" && npm run build ) || die "构建失败"

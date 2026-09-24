@@ -377,13 +377,17 @@ ok(extraPathProblem('DATA/SC-002.MIX') === null, '子目录里的 8.3 名也放�
 
 const adapter = readFileSync(new URL('../src/emulator/adapters/jsdos.ts', import.meta.url), 'utf8')
 {
-  // 这条是整条链路里最容易被「顺手改回去」的一行：两个消费者都必须吃 gameBuf。
-  // 改回 rom.buf 的话资料片照样下载、照样合并，然后被整个丢掉 —— 而且一声不吭。
-  ok(/const gameBuf = extras\.length \? mergeExtraFiles\(rom\.buf, extras\) : rom\.buf/.test(adapter), '合并结果存进 gameBuf')
+  // Windows 客体需要完整游戏层，所以仍先合并；普通 DOS 直接把 extras 交给最终打包，
+  // 否则几百 MB 的 ROM 会「复制整包一次 → 再重打一次」，手机峰值内存翻倍。
+  ok(/const gameBuf = extras\.length \? mergeExtraFiles\(rom\.buf, extras\) : rom\.buf/.test(adapter), 'Windows 客体的合并结果存进 gameBuf')
   ok(!/makeWindowsGameLayer\(rom\.buf/.test(adapter), 'Windows 客体那条路不再直接用 rom.buf')
   ok(/makeWindowsGameLayer\(gameBuf/.test(adapter), 'Windows 客体那条路用 gameBuf')
   const call = adapter.slice(adapter.indexOf('await makeJsdosBundle('))
-  ok(/^await makeJsdosBundle\(\s*\n\s*rom\.name,\s*\n\s*gameBuf,/.test(call), '普通 DOS 那条路也用 gameBuf')
+  ok(/^await makeJsdosBundle\(\s*\n\s*rom\.name,\s*\n\s*rom\.buf,/.test(call), '⭐ 普通 DOS 不先复制完整 ROM')
+  ok(/startupCommands,\s*\n\s*\/\/[^\n]+\n\s*extras,/.test(call), '⭐ 普通 DOS 把附加文件直接交给最终 bundle 一次并入')
+  ok(/const dosboxConfig = options\.dosboxConfig/.test(adapter), '普通 DOS 的性能 / 兼容配置不再被静默丢弃')
+  ok(adapter.indexOf('const engineTask = loadJsDos()') < adapter.indexOf('const romTask = settled(readRom('), '引擎与 ROM 同时开始加载')
+  ok(!adapter.includes('const Dos = await loadJsDos()'), '不再等引擎脚本加载完才开始下载 ROM')
   // 取不到就抛，不静默跳过：少一条要么是 key 填错（永远不会自己好），
   // 要么这一局本来就跑不成预期的样子，而玩家只会以为「你们这个扩展包是假的」
   ok(/throw new Error\(`附加文件「\$\{path\}」下载失败/.test(adapter), '附加文件下不下来时抛错，不静默跳过')

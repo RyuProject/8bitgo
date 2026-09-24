@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import {
   dosBackendOf,
   dosboxConfigOf,
@@ -18,6 +19,7 @@ assert.equal(dosBackendOf('DOSBOX-X'), null)
 assert.equal(dosBackendOf(undefined), null)
 assert.equal(dosboxConfigOf(' [gus]\r\ngus=false '), '[gus]\ngus=false')
 assert.equal(dosboxConfigOf(undefined), null)
+assert.equal(dosboxConfigOf('[dos]\nems=false'), '[dos]\nems=false')
 assert.throws(() => dosboxConfigOf('[autoexec]\nmount c .'), /不允许编辑/)
 assert.throws(() => dosboxConfigOf('[sdl]\nmouse_emulation=always'), /统一管理/)
 
@@ -43,6 +45,12 @@ assert.equal(gameApiToRow({ slug: 'win95', dosboxConfig: '[cpu]\ncycles=20000' }
 assert.deepEqual(gameApiToPartialRow({ dosBackend: 'dosboxX' }), { dos_backend: 'dosboxX' })
 assert.deepEqual(gameApiToPartialRow({ dosBackend: undefined }), { dos_backend: null })
 assert.deepEqual(gameApiToPartialRow({ dosboxConfig: '' }), { dosbox_config_override: null })
+
+// 普通 DOS 也必须能在后台填写性能 / 内存兼容配置；以前表单只在 dosboxX 分支保存，输入会静默消失。
+const gameForm = readFileSync(new URL('../src/admin/GameForm.tsx', import.meta.url), 'utf8')
+assert.match(gameForm, /if \(form\.platform === 'dos'\) \{\s*\n\s*try \{\s*\n\s*dosboxConfig = normalizeDosboxConfigOverride/)
+assert.doesNotMatch(gameForm, /if \(form\.platform === 'dos' && form\.dosBackend === 'dosboxX'\) \{\s*\n\s*try \{\s*\n\s*dosboxConfig/)
+assert.match(gameForm, /form\.dosBackend === 'dosboxX' \? 'DOSBox-X' : 'DOSBox'/)
 
 assert.equal(dosSystemOf(' systems/win98.jsdos '), 'systems/win98.jsdos')
 assert.equal(dosSystemOf('bad\nvalue'), null)

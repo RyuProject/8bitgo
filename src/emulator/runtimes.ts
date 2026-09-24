@@ -17,6 +17,7 @@ import { mount as j2me } from './adapters/j2me'
 import { mount as jsdos } from './adapters/jsdos'
 import { mount as webretro } from './adapters/webretro'
 import { mount as play } from './adapters/play'
+import { mount as ppsspp } from './adapters/ppsspp'
 import { mount as dolphin } from './adapters/dolphin'
 import { mount as cloudgame } from './adapters/cloudgame'
 import { mount as liveview } from './adapters/liveview'
@@ -30,6 +31,7 @@ const MOUNTS: Record<RuntimeId, RuntimeMount> = {
   jsdos,
   webretro,
   play,
+  ppsspp,
   dolphin,
   cloudgame,
   liveview,

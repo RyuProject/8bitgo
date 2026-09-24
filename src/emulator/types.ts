@@ -10,6 +10,7 @@
  *   js-dos      DOS 游戏 —— DOSBox 的浏览器移植，见 adapters/jsdos.ts
  *   webretro    历史备用的 RetroArch WASM 移植（当前不自动接管任何平台）
  *   Play!       PlayStation 2 —— **实验性**，需自托管，见 adapters/play.ts
+ *   PPSSPP      PlayStation Portable —— **实验性**，HTTP Range 流式读盘，见 adapters/ppsspp.ts
  *   Dolphin     GameCube / Wii —— **实验性**，需跨源隔离，见 adapters/dolphin.ts
  *   Cloud       云端联机：游戏跑在 cloud-game 服务器上，见 adapters/cloudgame.ts
  *
@@ -27,7 +28,7 @@ import type { NetplaySession } from './adapters/emulatorjs'
 import type { LiveSession } from './adapters/liveview'
 import type { ChatSendResult } from './chatSend'
 
-export type RuntimeId = 'emulatorjs' | 'ruffle' | 'html5' | 'jsnes' | 'j2me' | 'jsdos' | 'webretro' | 'play' | 'dolphin' | 'cloudgame' | 'liveview'
+export type RuntimeId = 'emulatorjs' | 'ruffle' | 'html5' | 'jsnes' | 'j2me' | 'jsdos' | 'webretro' | 'play' | 'ppsspp' | 'dolphin' | 'cloudgame' | 'liveview'
 
 export interface MountOptions {
   /** 平台 id（运行时据此选择核心等参数） */

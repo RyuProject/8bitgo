@@ -1,5 +1,5 @@
 {
-  "assetVersion": "20260923-bots1",
+  "assetVersion": "20260924-perf1",
   "files": [
     {
       "name": "PACKS.md",
@@ -8,13 +8,13 @@
     },
     {
       "name": "cs16.bundle.js",
-      "size": 741407,
-      "sha256": "a27c516e7737ee1660054d2f52e55e471e68de93048c3776420c69d96b19718e"
+      "size": 745894,
+      "sha256": "a6cb079c492a9906bd9f8ea88e02c8f15e9b8acea430e0c61cdf74c58272d7f6"
     },
     {
       "name": "cs16.js",
-      "size": 37310,
-      "sha256": "61a26c1294309eed2403f7b575fc2c5251f4827154d22fbcbcd504445c7bc218"
+      "size": 44749,
+      "sha256": "443ab8a1c56c162729663ab48ab6cae8e40e5d9bbc09354dcbc27b28e53c5e97"
     },
     {
       "name": "engine/dist/constants.js",
@@ -118,8 +118,8 @@
     },
     {
       "name": "index.html",
-      "size": 5749,
-      "sha256": "7647e9cc52f61057368e4d553f949c0e58415dac973bcc51068c075a3a2c92b7"
+      "size": 5696,
+      "sha256": "1cb67ba08ead5fc02452c7096c41eced557cbd0cefff8bfc80954baa0b884f6b"
     },
     {
       "name": "lib-new/cstrike/cl_dlls/client_emscripten_wasm32.wasm",
@@ -158,8 +158,8 @@
     },
     {
       "name": "lib/cstrike/extras.pk3",
-      "size": 25111596,
-      "sha256": "49d5e00ce50ed01aace3a1c2035a2959c3f7e4457ca2b6c31d01e4cd2a7a5d69"
+      "size": 14136577,
+      "sha256": "c586dd142f7d850ad1cbbd5d1fcb68b3077a43d16067396ea42bcc3b2e2b2f4f"
     },
     {
       "name": "lib/valve/cl_dlls/client_emscripten_wasm32.wasm",
@@ -175,6 +175,66 @@
       "name": "tar-stream.js",
       "size": 4061,
       "sha256": "d64b610adfa6f56da793d1a5864d43dba34dc6d04a81a990c95d79ab2bb1d372"
+    },
+    {
+      "name": "vis/cs_assault.vis",
+      "size": 68532,
+      "sha256": "f3b66a4f4c4e92b6f40205a6b68b6fc6483db50fd69184124960837424161618"
+    },
+    {
+      "name": "vis/cs_italy.vis",
+      "size": 35400,
+      "sha256": "b389465d591c22b6fc7c8dbb25b2a69d7d8029018966a962f308daf04109dd09"
+    },
+    {
+      "name": "vis/cs_militia.vis",
+      "size": 52357,
+      "sha256": "33f9c286ba0d848c558f0be8b96ecbe716b56cd62ee02badb45fe2e0c6f269a1"
+    },
+    {
+      "name": "vis/cs_office.vis",
+      "size": 83308,
+      "sha256": "ba8d247e2e1f3d20df89f5a735965ed33b2b8ccedb18966cf770747a4728dcfb"
+    },
+    {
+      "name": "vis/de_aztec.vis",
+      "size": 63855,
+      "sha256": "ee58649a58babdf58195b868c9630d1b207e5ee15428c0fca8d72c59e70a42a5"
+    },
+    {
+      "name": "vis/de_cbble.vis",
+      "size": 68522,
+      "sha256": "316d6ec3c1de26eafad2d740f707b08a9c408bd0bef10f387da8fcd2c6bc37e9"
+    },
+    {
+      "name": "vis/de_dust.vis",
+      "size": 65076,
+      "sha256": "0e170a037d64ae77289c822418825a6bc52d290cd7146b874ba3108fcae1b32c"
+    },
+    {
+      "name": "vis/de_dust2.vis",
+      "size": 81122,
+      "sha256": "2341fdddd0d5ba3207cb570014bba93f65226229bbee58a593db582c6853f877"
+    },
+    {
+      "name": "vis/de_inferno.vis",
+      "size": 52150,
+      "sha256": "05225e9ead3bba7ba5561737e6cde379c0a2dcde611b3337b83b1ad785b0c2b0"
+    },
+    {
+      "name": "vis/de_nuke.vis",
+      "size": 77439,
+      "sha256": "49b7faab63b173bb757de46b0dd5e4612d209ad5b46ef246df3c772eea25d3bb"
+    },
+    {
+      "name": "vis/de_train.vis",
+      "size": 97050,
+      "sha256": "f87a31b1ba31fb790cd2eba6c0dcedaffe2677565f26ccf5764a38d80d96dcac"
+    },
+    {
+      "name": "vis/de_vertigo.vis",
+      "size": 44504,
+      "sha256": "2745f69c7de58b3c51a6b92f9675911f0ece4136bb7eb179aa9efb495e7c5d76"
     },
     {
       "name": "zstd.wasm",

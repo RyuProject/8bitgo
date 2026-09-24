@@ -11,7 +11,7 @@ import type { CaptureSources, Capability, MountOptions, PadButton, RuntimeHandle
 import { flashKeysFor, keyDesc, type KeyDesc } from '../flashKeys'
 import { loadGameBytes } from '../romLoader'
 import { assertSwf } from '@/lib/romValidation'
-import { canvasToBlob } from '../recorder'
+import { captureCanvasScreenshot } from '../recorder'
 import { usableVideoSize } from '../videoTuning'
 import { focusFrame } from '../frameFocus'
 import { isTyping } from '../hotkeyBridge'
@@ -130,30 +130,6 @@ interface FlashSaveFile {
   savedAt?: string
   /** v1 是完整 localStorage 键；v2 是当前游戏路径下的槽名。 */
   entries: Record<string, string>
-}
-
-/**
- * 等一个 <video> 真的拿到一帧。
- *
- * captureStream 出来的流挂到 video 上之后，videoWidth 要等第一帧解码完才有值，
- * 这之前 drawImage 画出来是空的。有 requestVideoFrameCallback 就用它（最准），
- * 没有就退回 loadeddata + 一小段安置时间。无论如何 1.5 秒后放行 —— 截图不能卡死。
- */
-function waitForFrame(video: HTMLVideoElement): Promise<void> {
-  return new Promise((resolve) => {
-    let done = false
-    const finish = () => {
-      if (done) return
-      done = true
-      window.clearTimeout(timer)
-      resolve()
-    }
-    const timer = window.setTimeout(finish, 1500)
-    const rvfc = (video as HTMLVideoElement & { requestVideoFrameCallback?: (cb: () => void) => number })
-      .requestVideoFrameCallback
-    if (typeof rvfc === 'function') rvfc.call(video, finish)
-    else video.addEventListener('loadeddata', () => window.setTimeout(finish, 120), { once: true })
-  })
 }
 
 /**
@@ -878,32 +854,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
        * 绕一圈走 captureStream：合成器交出来的帧是有内容的（实测像素与 SWF 舞台底色一致），
        * 落到一个隐藏 <video> 上再画一次就拿到真画面。代价是多等一帧。
        */
-      let stream: MediaStream | null = null
-      const video = document.createElement('video')
-      try {
-        stream = canvas.captureStream()
-        video.muted = true
-        video.playsInline = true
-        video.srcObject = stream
-        video.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none'
-        document.body.appendChild(video)
-        await video.play().catch(() => {})
-        await waitForFrame(video)
-        if (!video.videoWidth) return null
-        const out = document.createElement('canvas')
-        out.width = video.videoWidth
-        out.height = video.videoHeight
-        const ctx = out.getContext('2d')
-        if (!ctx) return null
-        ctx.drawImage(video, 0, 0)
-        return await canvasToBlob(out)
-      } catch {
-        return null
-      } finally {
-        stream?.getTracks().forEach((t) => t.stop())
-        video.srcObject = null
-        video.remove()
-      }
+      // Ruffle 的 WebGL 后备缓冲已清空时，直接 toBlob 只会产出透明图，所以不做直接读取兜底。
+      return captureCanvasScreenshot(canvas, { directFallback: false })
     },
     saveExt: 'flashsave.json',
     async saveState() {

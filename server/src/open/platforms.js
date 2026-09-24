@@ -53,6 +53,21 @@ const PLATFORM_ROWS = deepFreeze([
     native: { runnable: true, emulator: 'DuckStation / PCSX-ReARMed (RetroArch)', note: '' },
   },
   {
+    id: 'psp',
+    name: 'PlayStation Portable',
+    nameZh: '索尼 PSP',
+    manufacturer: 'Sony',
+    year: 2004,
+    runtime: 'ppsspp',
+    core: null,
+    romExtensions: ['.iso', '.cso', '.chd', '.pbp', '.elf', '.prx'],
+    native: {
+      runnable: true,
+      emulator: 'PPSSPP',
+      note: '网页端用自建 PPSSPP 按 HTTP Range 分块读盘；第三方客户端若要本地运行，需自行准备完整镜像',
+    },
+  },
+  {
     id: 'ps2',
     name: 'PlayStation 2',
     nameZh: '索尼 PlayStation 2',

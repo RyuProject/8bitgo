@@ -75,7 +75,7 @@ const DOSBOX_CONFIG_TEMPLATES = [
   { label: '鼠标 1:1', config: '[sdl]\nsensitivity=100\nraw_mouse_input=true' },
   { label: 'CPU 兼容模式', config: '[cpu]\ncore=normal' },
   { label: '⚡ 提速（放开 CPU）', config: '[cpu]\ncycles=max' },
-  { label: '⚡ 省内存（Win 3.x）', config: '[dosbox]\nmemsize=32' },
+  { label: '⚡ 内存 32 MB', config: '[dosbox]\nmemsize=32' },
   { label: '⚡ FM 音乐省 CPU', config: '[sblaster]\noplemu=fast' },
 ] as const
 
@@ -240,7 +240,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
       set('dosboxConfig', mergeDosboxConfigOverride(current, config).trim())
       setError(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'DOSBox-X 配置格式不正确')
+      setError(err instanceof Error ? err.message : 'DOSBox 配置格式不正确')
     }
   }
 
@@ -324,11 +324,11 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
       return setError('共享 Windows 系统模式需要默认自启动 EXE，或为每个已绑定语言填写启动文件')
     }
     let dosboxConfig: string | undefined
-    if (form.platform === 'dos' && form.dosBackend === 'dosboxX') {
+    if (form.platform === 'dos') {
       try {
         dosboxConfig = normalizeDosboxConfigOverride(form.dosboxConfig) || undefined
       } catch (err) {
-        return setError(err instanceof Error ? err.message : 'DOSBox-X 配置格式不正确')
+        return setError(err instanceof Error ? err.message : 'DOSBox 配置格式不正确')
       }
     }
 
@@ -577,45 +577,6 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
                   />
                   <p className="mt-1 text-[11px] text-dim">检测到 Windows 图形界面后再等待这么久；慢设备可适当调大。</p>
                 </Field>
-                <Field label="DOSBox-X 配置覆盖" className="col-span-2 sm:col-span-4">
-                  <textarea
-                    className={cx(inputClass, 'h-44 resize-y py-2 font-mono text-xs leading-5')}
-                    value={form.dosboxConfig ?? ''}
-                    onChange={(e) => set('dosboxConfig', e.target.value || undefined)}
-                    spellCheck={false}
-                    placeholder={'[cpu]\ncycles=20000\n\n[gus]\ngus=false'}
-                  />
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {DOSBOX_CONFIG_TEMPLATES.map((template) => (
-                      <button
-                        key={template.label}
-                        type="button"
-                        className={cx(btnClass.secondary, 'h-7 px-2 text-xs')}
-                        onClick={() => applyDosboxTemplate(template.config)}
-                      >
-                        {template.label}
-                      </button>
-                    ))}
-                    <button
-                      type="button"
-                      className={cx(btnClass.secondary, 'h-7 px-2 text-xs')}
-                      onClick={() => {
-                        set('dosboxConfig', undefined)
-                        setError(null)
-                      }}
-                    >
-                      恢复系统默认
-                    </button>
-                  </div>
-                  <p className="mt-1 text-[11px] text-dim">
-                    只保存需要覆盖的 INI 项；支持硬件、CPU、声卡和灵敏度设置。[autoexec]、鼠标捕获模式与游戏盘挂载由站点保护。
-                  </p>
-                  <p className="mt-1 text-[11px] text-dim">
-                    ⚡ 嫌慢先看这两个：站点默认 <code>cycles=auto</code>，实模式 DOS 游戏会按一个保守的固定速度跑，
-                    只有程序进保护模式才自动放开 —— 老游戏卡就点「提速」。Windows 3.x 的共享镜像默认
-                    <code>memsize=256</code>，这块内存开机就一次性分配掉，手机上很容易吃不消，点「省内存」降到 32 MB。
-                  </p>
-                </Field>
               </>
             ) : (
               <Field label="默认启动程序">
@@ -630,6 +591,55 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
                 </p>
               </Field>
             )}
+            <Field
+              label={`${form.dosBackend === 'dosboxX' ? 'DOSBox-X' : 'DOSBox'} 配置覆盖`}
+              className="col-span-2 sm:col-span-4"
+            >
+              <textarea
+                className={cx(inputClass, 'h-44 resize-y py-2 font-mono text-xs leading-5')}
+                value={form.dosboxConfig ?? ''}
+                onChange={(e) => set('dosboxConfig', e.target.value || undefined)}
+                spellCheck={false}
+                placeholder={'[cpu]\ncycles=max\n\n[dos]\nems=false'}
+              />
+              <div className="mt-2 flex flex-wrap gap-2">
+                {DOSBOX_CONFIG_TEMPLATES
+                  // raw_mouse_input 是 DOSBox-X 独有项，普通 DOSBox 上显示只会让管理员误以为已经生效。
+                  .filter((template) => form.dosBackend === 'dosboxX' || !template.config.includes('raw_mouse_input'))
+                  .map((template) => (
+                    <button
+                      key={template.label}
+                      type="button"
+                      className={cx(btnClass.secondary, 'h-7 px-2 text-xs')}
+                      onClick={() => applyDosboxTemplate(template.config)}
+                    >
+                      {template.label}
+                    </button>
+                  ))}
+                <button
+                  type="button"
+                  className={cx(btnClass.secondary, 'h-7 px-2 text-xs')}
+                  onClick={() => {
+                    set('dosboxConfig', undefined)
+                    setError(null)
+                  }}
+                >
+                  恢复系统默认
+                </button>
+              </div>
+              <p className="mt-1 text-[11px] text-dim">
+                只保存需要覆盖的 INI 项；支持内存、CPU、DOS 内存接口、声卡和灵敏度设置。[autoexec]、鼠标捕获模式与游戏盘挂载由站点保护。
+              </p>
+              {form.dosBackend === 'dosboxX' ? (
+                <p className="mt-1 text-[11px] text-dim">
+                  Windows 3.x 镜像默认 <code>memsize=256</code>，手机内存紧张时可降到 32 MB；实模式游戏偏慢时可尝试 <code>cycles=max</code>。
+                </p>
+              ) : (
+                <p className="mt-1 text-[11px] text-dim">
+                  普通 DOS 默认 16 MB、<code>cycles=auto</code>。后期保护模式游戏内存不足可设 32 MB；实模式动作游戏偏慢可用 <code>cycles=max</code>；老游戏与 EMS 冲突时可设 <code>[dos] ems=false</code>。
+                </p>
+              )}
+            </Field>
             <DosExtrasField
               slug={slugify(form.slug || form.title)}
               value={form.dosExtras}

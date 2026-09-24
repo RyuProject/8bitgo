@@ -1,5 +1,5 @@
 /**
- * DOSBox-X 游戏级配置覆盖。
+ * DOSBox / DOSBox-X 游戏级配置覆盖。
  *
  * 这份模块同时给浏览器和 Express 使用，规则必须只有一个来源：只在后台校验会让人绕过
  * 前端直接写入危险配置，只在播放器校验又会出现“保存成功、进游戏才报错”的假成功。
@@ -23,6 +23,7 @@ export const DOSBOX_CONFIG_ALLOWED_SECTIONS = Object.freeze([
   'speaker',
   'joystick',
   'serial',
+  'dos',
   'ipx',
 ])
 
@@ -58,7 +59,7 @@ const protectedKeys = new Map([
 ])
 
 function fail(line, message) {
-  throw new Error(`DOSBox-X 配置第 ${line} 行：${message}`)
+  throw new Error(`DOSBox 配置第 ${line} 行：${message}`)
 }
 
 /** 统一换行与行尾空白，避免同一份配置在浏览器和 MySQL 之间反复产生无意义差异。 */
@@ -82,7 +83,7 @@ export function normalizeDosboxConfigOverride(input) {
 export function parseDosboxConfigOverride(input) {
   const text = String(input ?? '').replace(/\r\n?/g, '\n')
   if (text.length > DOSBOX_CONFIG_MAX_LENGTH) {
-    throw new Error(`DOSBox-X 配置不能超过 ${DOSBOX_CONFIG_MAX_LENGTH / 1024} KB`)
+    throw new Error(`DOSBox 配置不能超过 ${DOSBOX_CONFIG_MAX_LENGTH / 1024} KB`)
   }
 
   const entries = []

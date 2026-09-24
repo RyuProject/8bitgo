@@ -171,6 +171,12 @@ public/web/celeste/_framework
 # 客户端由 operator 用 `npm run minecraft:fetch -- --src <自建构建目录>` 自托管进来。
 public/web/Minecraft/eaglercraft
 
+# PvZ2 Gardendless（/web/PvZ2）：开源 Cocos 导出，约 722MB+（assets/ 走 git LFS，
+# 启动/引擎层来自线上 play.pvzge.com）。整目录不进 git，由 npm run pvzge:fetch 在
+# 部署时自托管；见 scripts/fetch-pvzge.mjs。上游仓库的克隆缓存（含 LFS 资产）也忽略。
+public/web/PvZ2
+.pvzge-repo
+
 # Cloudflare 源站证书与私钥（Authenticated Origin Pulls 的客户端证书）
 # 2026-09-06 被 GitGuardian 抓到：origin.key 从 8/26 起就在跟踪列表里，
 # 随当天的 push 暴露。文件留在磁盘上（nginx 还要用），但永远不进 git。

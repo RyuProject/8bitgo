@@ -260,7 +260,7 @@ export function dosboxConfigOf(v) {
   try {
     return normalizeDosboxConfigOverride(v) || null
   } catch (cause) {
-    const error = new Error(cause instanceof Error ? cause.message : 'DOSBox-X 配置格式不正确')
+    const error = new Error(cause instanceof Error ? cause.message : 'DOSBox 配置格式不正确')
     error.status = 400
     error.expose = true
     throw error

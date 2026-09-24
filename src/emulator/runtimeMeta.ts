@@ -27,6 +27,7 @@ import {
   J2ME_PATH,
   DOLPHIN_PATH,
   PLAY_PATH,
+  PPSSPP_PATH,
   WEBRETRO_CORE_LABELS,
   WEBRETRO_PATH,
   webretroCoreFor,
@@ -180,6 +181,20 @@ export const dolphinMeta: Runtime = {
   engineLabel: () => 'Dolphin (WASM)',
 }
 
+export const ppssppMeta: Runtime = {
+  id: 'ppsspp',
+  name: 'PPSSPP',
+  get description() {
+    return getT().runtime.ppssppDesc
+  },
+  extensions: ['iso', 'cso', 'chd', 'pbp', 'elf', 'prx'],
+  priority: 20,
+  // 只有打过 Range 补丁的自建产物才可以启用；空值不会偷偷回退成整盘下载。
+  available: () => Boolean(PPSSPP_PATH),
+  supports: (platform) => platform === 'psp',
+  engineLabel: () => 'PPSSPP (WASM)',
+}
+
 export const cloudGameMeta: Runtime = {
   id: 'cloudgame',
   name: 'Cloud',
@@ -218,6 +233,7 @@ export const runtimeMetas: Record<Runtime['id'], Runtime> = {
   jsdos: jsdosMeta,
   webretro: webretroMeta,
   play: playMeta,
+  ppsspp: ppssppMeta,
   dolphin: dolphinMeta,
   cloudgame: cloudGameMeta,
   liveview: liveViewMeta,

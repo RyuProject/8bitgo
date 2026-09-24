@@ -240,6 +240,74 @@ export function canvasToBlob(canvas: HTMLCanvasElement, type = 'image/png'): Pro
   })
 }
 
+/**
+ * 等 captureStream 的第一帧真正落到 video。
+ *
+ * 不能只等 play()：它只表示播放请求被接受，此时 videoWidth 仍可能是 0，立刻 drawImage
+ * 会得到空图。requestVideoFrameCallback 是最准的判据；老浏览器退回 loadeddata，最后再用
+ * 超时兜底，保证截图按钮不会把界面永久挂住。
+ */
+function waitForCapturedFrame(video: HTMLVideoElement): Promise<void> {
+  return new Promise((resolve) => {
+    let done = false
+    const finish = () => {
+      if (done) return
+      done = true
+      window.clearTimeout(timer)
+      resolve()
+    }
+    const timer = window.setTimeout(finish, 1500)
+    const rvfc = (video as HTMLVideoElement & { requestVideoFrameCallback?: (cb: () => void) => number })
+      .requestVideoFrameCallback
+    if (typeof rvfc === 'function') rvfc.call(video, finish)
+    else video.addEventListener('loadeddata', () => window.setTimeout(finish, 120), { once: true })
+  })
+}
+
+/**
+ * 从 Canvas 截一张真实画面，兼容 Unity / Ruffle 这类 preserveDrawingBuffer=false 的 WebGL。
+ *
+ * WebGL 为了性能通常会在合成后清掉后备缓冲区；这时直接 canvas.toBlob() 得到的是黑图或
+ * 全透明图。captureStream 取的是浏览器合成器看到的帧，不要求游戏为了截图常驻保留缓冲，
+ * 因而不会给每一帧都增加显存复制成本。流式路径不可用时可以选择退回直接读取，普通 2D
+ * Canvas 在 Safari 等实现不完整的浏览器里仍能截图。
+ */
+export async function captureCanvasScreenshot(
+  canvas: HTMLCanvasElement,
+  options: { directFallback?: boolean } = {},
+): Promise<Blob | null> {
+  let stream: MediaStream | null = null
+  const video = document.createElement('video')
+  try {
+    if (typeof canvas.captureStream !== 'function') throw new Error('captureStream unavailable')
+    stream = canvas.captureStream()
+    video.muted = true
+    video.playsInline = true
+    video.srcObject = stream
+    video.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none'
+    document.body.appendChild(video)
+    await video.play().catch(() => {})
+    await waitForCapturedFrame(video)
+    if (!video.videoWidth || !video.videoHeight) throw new Error('captured frame unavailable')
+
+    const out = document.createElement('canvas')
+    out.width = video.videoWidth
+    out.height = video.videoHeight
+    const ctx = out.getContext('2d')
+    if (!ctx) throw new Error('2d canvas unavailable')
+    ctx.drawImage(video, 0, 0)
+    const blob = await canvasToBlob(out)
+    if (blob) return blob
+  } catch {
+    /* 下面按调用方选择退回普通 Canvas 截图 */
+  } finally {
+    stream?.getTracks().forEach((track) => track.stop())
+    video.srcObject = null
+    video.remove()
+  }
+  return options.directFallback === false ? null : canvasToBlob(canvas)
+}
+
 /** ImageData 转 blob（js-dos 的 ci.screenshot() 给的是 ImageData） */
 export function imageDataToBlob(data: ImageData, type = 'image/png'): Promise<Blob | null> {
   const canvas = document.createElement('canvas')

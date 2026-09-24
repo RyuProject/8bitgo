@@ -32,6 +32,9 @@ interface ZipEntry {
 
 const EOCD_SIG = 0x06054b50
 const CEN_SIG = 0x02014b50
+const ZIP32_MAX = 0xffffffff
+// 0xffff 在 EOCD 中是 ZIP64 哨兵；少用一个槽位，保证本站写出的包也能被自己的解析器读回。
+const ZIP32_MAX_ENTRIES = 0xfffe
 
 /** 从后往前找 EOCD（可能带注释，所以要扫一段） */
 function findEocd(v: DataView): number {
@@ -138,17 +141,32 @@ interface OutEntry {
  * 直接拼字节能省掉一整份。
  */
 function zipParts(entries: OutEntry[]): Uint8Array<ArrayBuffer>[] {
+  if (entries.length > ZIP32_MAX_ENTRIES) {
+    throw new Error(`DOS 压缩包文件过多（${entries.length} 个）；当前浏览器打包器不支持 ZIP64`)
+  }
   const parts: Uint8Array<ArrayBuffer>[] = []
   const central: Uint8Array<ArrayBuffer>[] = []
   let offset = 0
 
   for (const e of entries) {
     const name = te.encode(e.name) as Uint8Array<ArrayBuffer>
+    if (name.length > 0xffff) throw new Error(`DOS 压缩包路径过长：${e.name}`)
+    if (e.compressedSize !== e.data.length) {
+      throw new Error(`DOS 压缩包条目长度不一致：${e.name}`)
+    }
+    if (e.compressedSize > ZIP32_MAX || e.uncompressedSize > ZIP32_MAX) {
+      throw new Error(`DOS 压缩包条目超过 4 GB；当前浏览器打包器不支持 ZIP64：${e.name}`)
+    }
     const local = new Uint8Array(30 + name.length)
     const lv = new DataView(local.buffer)
     lv.setUint32(0, 0x04034b50, true)
     lv.setUint16(4, 20, true) // version needed
-    lv.setUint16(6, 0, true) // flags：不用数据描述符，长度都写在头里
+    /*
+      条目名是 TextEncoder 生成的 UTF-8，必须打通用标志 bit 11。
+      以前这里写 0：ASCII 游戏看不出来，中文文件名却会被解包器按本地代码页再解一次，
+      轻则乱码，重则游戏运行时找不到数据文件。bit 3 仍保持关闭，因为长度已经写在头里。
+    */
+    lv.setUint16(6, 0x0800, true)
     lv.setUint16(8, e.method, true)
     lv.setUint16(10, 0, true) // 时间
     lv.setUint16(12, 0x21, true) // 日期（1980-01-01）
@@ -166,7 +184,7 @@ function zipParts(entries: OutEntry[]): Uint8Array<ArrayBuffer>[] {
     cv.setUint32(0, CEN_SIG, true)
     cv.setUint16(4, 20, true)
     cv.setUint16(6, 20, true)
-    cv.setUint16(8, 0, true)
+    cv.setUint16(8, 0x0800, true)
     cv.setUint16(10, e.method, true)
     cv.setUint16(12, 0, true)
     cv.setUint16(14, 0x21, true)
@@ -179,9 +197,15 @@ function zipParts(entries: OutEntry[]): Uint8Array<ArrayBuffer>[] {
     central.push(cen)
 
     offset += local.length + e.data.length
+    if (offset > ZIP32_MAX) {
+      throw new Error('DOS 压缩包超过 4 GB；当前浏览器打包器不支持 ZIP64')
+    }
   }
 
   const centralSize = central.reduce((n, c) => n + c.length, 0)
+  if (centralSize > ZIP32_MAX || offset + centralSize + 22 > ZIP32_MAX) {
+    throw new Error('DOS 压缩包超过 4 GB；当前浏览器打包器不支持 ZIP64')
+  }
   const eocd = new Uint8Array(22)
   const ev = new DataView(eocd.buffer)
   ev.setUint32(0, EOCD_SIG, true)
@@ -291,6 +315,11 @@ export function buildDosboxConf(exe: string | null, startupCommands?: string): s
     '[sdl]',
     'autolock=false',
     '',
+    '[dosbox]',
+    // 不能只依赖内核默认值：部分浏览器构建在只给精简配置时没有把完整 XMS 暴露给游戏。
+    // Heroes II 这类 DOS4GW 游戏会在进图形界面前检查 XMS，失败时只留下一句“内存不足”。
+    'memsize=16',
+    '',
     '[cpu]',
     // auto：先按 DOS 时代的速度跑，遇到保护模式游戏自动放开
     'cycles=auto',
@@ -299,6 +328,12 @@ export function buildDosboxConf(exe: string | null, startupCommands?: string): s
     'rate=44100',
     'blocksize=1024',
     'prebuffer=25',
+    '',
+    '[dos]',
+    // 显式打开三种 DOS 内存接口，避免普通 ZIP 因没有自带 dosbox.conf 而依赖运行时隐式默认值。
+    'xms=true',
+    'ems=true',
+    'umb=true',
     '',
     '[autoexec]',
     'mount c .',
@@ -341,9 +376,10 @@ export function buildDosboxConf(exe: string | null, startupCommands?: string): s
     */
     if (!isDos83Path(file)) throw new Error(`DOS 启动文件名不是 8.3 格式，必须先生成启动别名：${file}`)
     lines.push(file)
-    lines.push(`@echo ${file} 已退出。如果刚才画面上什么都没发生，多半是找不到文件或缺少依赖。`)
+    // DOS 文本模式不是 UTF-8；把中文塞进 autoexec 只会变成玩家截图里那串乱码。
+    lines.push(`@echo ${file} exited. If no game appeared, files or dependencies may be missing.`)
   }
-  else lines.push('@echo 没有找到可执行文件，请手动运行游戏。')
+  else lines.push('@echo No executable was found. Run the game manually.')
   return lines.join('\n') + '\n'
 }
 
@@ -421,13 +457,55 @@ function safeArchivePath(path: string): string | null {
   return clean
 }
 
+/**
+ * DOS 盘大小写不敏感，文件也不能同时充当目录。
+ *
+ * ZIP 却允许 `DATA` + `DATA/LEVEL.DAT`、`GAME.EXE` + `game.exe` 甚至同名文件写两遍。
+ * 这种包交给 js-dos 后谁覆盖谁取决于解包顺序，父路径是文件时还会直接 ENOENT；两种情况
+ * 都只表现为黑屏。所以在重打包前把歧义变成一句明确错误。
+ */
+function assertNoPathCollisions(entries: readonly { name: string }[], label: string): void {
+  const seen = new Map<string, { name: string; directory: boolean }>()
+  for (const entry of entries) {
+    const directory = entry.name.endsWith('/')
+    const plain = directory ? entry.name.slice(0, -1) : entry.name
+    const key = plain.toLowerCase()
+    const previous = seen.get(key)
+    if (previous) {
+      // 重复目录没有歧义，后面的目录条目直接由 normalizeArchiveEntries 去重。
+      if (previous.directory && directory) continue
+      throw new Error(`${label} 路径冲突：「${previous.name}」与「${entry.name}」在 DOS 中是同一个位置`)
+    }
+    seen.set(key, { name: entry.name, directory })
+  }
+  for (const entry of seen.values()) {
+    const plain = entry.directory ? entry.name.slice(0, -1) : entry.name
+    const parts = plain.split('/')
+    for (let i = 1; i < parts.length; i++) {
+      const parent = seen.get(parts.slice(0, i).join('/').toLowerCase())
+      if (parent && !parent.directory) {
+        throw new Error(`${label} 路径冲突：「${parent.name}」是文件，不能同时作为「${entry.name}」的目录`)
+      }
+    }
+  }
+}
+
 /** 把 ZIP 条目统一成安全的相对路径；普通 DOS 和 Windows 客体必须共用这道边界。 */
 function normalizeArchiveEntries(entries: ZipEntry[]): ZipEntry[] {
-  return entries.map((entry) => {
+  const normalized = entries.map((entry) => {
     const directory = entry.name.endsWith('/')
     const safe = safeArchivePath(entry.name)
     if (!safe) throw new Error(`ZIP 含不安全的绝对路径、盘符或 ../ 路径：${entry.name}`)
     return { ...entry, name: directory ? `${safe}/` : safe }
+  })
+  assertNoPathCollisions(normalized, 'ZIP')
+  const directories = new Set<string>()
+  return normalized.filter((entry) => {
+    if (!entry.name.endsWith('/')) return true
+    const key = entry.name.toLowerCase()
+    if (directories.has(key)) return false
+    directories.add(key)
+    return true
   })
 }
 
@@ -573,6 +651,55 @@ export interface ExtraFile {
   data: Uint8Array<ArrayBuffer>
 }
 
+function planExtraFiles(extras: readonly ExtraFile[]): Map<string, ExtraFile> {
+  const wanted = new Map<string, ExtraFile>()
+  for (const extra of extras) {
+    const path = safeArchivePath(extra.path)
+    if (!path) throw new Error(`附加文件含不安全的绝对路径、盘符或 ../ 路径：${extra.path}`)
+    const key = path.toLowerCase()
+    const previous = wanted.get(key)
+    if (previous) throw new Error(`附加文件路径重复：「${previous.path}」与「${extra.path}」`)
+    wanted.set(key, { path, data: extra.data })
+  }
+  return wanted
+}
+
+/** 原包里被覆盖的文件先排除，再检查附加文件加入后是否产生 DOS 路径歧义。 */
+function assertExtrasFit(entries: readonly ZipEntry[], wanted: ReadonlyMap<string, ExtraFile>): void {
+  if (!wanted.size) return
+  const effective = entries
+    .filter((entry) => !wanted.has(entry.name.toLowerCase()))
+    .map((entry) => ({ name: entry.name }))
+  for (const extra of wanted.values()) effective.push({ name: extra.path })
+  assertNoPathCollisions(effective, 'ZIP 与附加文件')
+}
+
+/** 把附加文件及其缺失的父目录写成 ZIP 条目；文件本体保持 store，避免主线程同步压缩。 */
+function extraOutEntries(wanted: ReadonlyMap<string, ExtraFile>, existing: Iterable<string>): OutEntry[] {
+  const have = new Set([...existing].map((name) => name.toLowerCase()))
+  const out: OutEntry[] = []
+  const empty = new Uint8Array(0) as Uint8Array<ArrayBuffer>
+  for (const { path, data } of wanted.values()) {
+    const segments = path.split('/')
+    for (let i = 1; i < segments.length; i++) {
+      const directory = segments.slice(0, i).join('/') + '/'
+      if (have.has(directory.toLowerCase())) continue
+      have.add(directory.toLowerCase())
+      out.push({ name: directory, method: 0, crc: 0, compressedSize: 0, uncompressedSize: 0, data: empty })
+    }
+    have.add(path.toLowerCase())
+    out.push({
+      name: path,
+      method: 0,
+      crc: crc32(data),
+      compressedSize: data.length,
+      uncompressedSize: data.length,
+      data,
+    })
+  }
+  return out
+}
+
 /**
  * 把附加文件并进游戏的 ZIP。
  *
@@ -599,20 +726,14 @@ export function mergeExtraFiles(buf: ArrayBuffer, extras: readonly ExtraFile[]):
   const entries = normalizeArchiveEntries(parsed)
   assertRepackable(entries)
 
-  const wanted = new Map<string, ExtraFile>()
-  for (const e of extras) {
-    const path = safeArchivePath(e.path)
-    if (!path) throw new Error(`附加文件含不安全的绝对路径、盘符或 ../ 路径：${e.path}`)
-    wanted.set(path.toLowerCase(), { path, data: e.data })
-  }
+  const wanted = planExtraFiles(extras)
   if (!wanted.size) return buf
+  assertExtrasFit(entries, wanted)
 
   const out: OutEntry[] = []
-  const have = new Set<string>()
   for (const e of entries) {
     // 同名的让位给附加文件
     if (wanted.has(e.name.toLowerCase())) continue
-    have.add(e.name.toLowerCase())
     out.push({
       name: e.name,
       method: e.method,
@@ -623,33 +744,7 @@ export function mergeExtraFiles(buf: ArrayBuffer, extras: readonly ExtraFile[]):
     })
   }
 
-  const dir = (name: string): OutEntry => ({
-    name,
-    method: 0,
-    crc: 0,
-    compressedSize: 0,
-    uncompressedSize: 0,
-    data: new Uint8Array(0) as Uint8Array<ArrayBuffer>,
-  })
-
-  for (const { path, data } of wanted.values()) {
-    // 缺的父目录逐层补上，见上面那条 ⚠️
-    const segments = path.split('/')
-    for (let i = 1; i < segments.length; i++) {
-      const d = segments.slice(0, i).join('/') + '/'
-      if (have.has(d.toLowerCase())) continue
-      have.add(d.toLowerCase())
-      out.push(dir(d))
-    }
-    out.push({
-      name: path,
-      method: 0,
-      crc: crc32(data),
-      compressedSize: data.length,
-      uncompressedSize: data.length,
-      data,
-    })
-  }
+  out.push(...extraOutEntries(wanted, out.map((entry) => entry.name)))
 
   const bytes = buildZipBytes(out)
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
@@ -668,6 +763,8 @@ export async function makeJsdosBundle(
   dosExecutable?: string,
   /** 有命令时不透传包内旧 autoexec，否则语言槽填写的挂盘命令会被静默忽略。 */
   startupCommands?: string,
+  /** 普通 DOS 直接在最终 bundle 里并入附加文件，避免先复制一遍完整 ROM 再重打包。 */
+  extras: readonly ExtraFile[] = [],
 ): Promise<BundleResult> {
   const parsed = readZipEntries(buf)
   const entries = parsed ? normalizeArchiveEntries(parsed) : null
@@ -676,6 +773,18 @@ export async function makeJsdosBundle(
   if (zipLike && !entries) throw new Error('DOS 压缩包为空、已损坏或下载不完整')
 
   if (entries) assertRepackable(entries)
+  if (extras.length && !entries) throw new Error('单个 DOS 可执行文件不能附加资料片；请先把游戏打成 ZIP')
+  const wantedExtras = planExtraFiles(extras)
+  if (entries) assertExtrasFit(entries, wantedExtras)
+
+  /*
+    启动程序、CUE 和 bundle 配置会参与下面的控制流。极少数管理员若真用附加文件替换它们，
+    先走旧的完整合并路径以保持语义；常见的 MIX/DAT/地图/补丁则走零整包复制的快路径。
+  */
+  if ([...wantedExtras.values()].some((extra) => /(^\.jsdos\/|\.(?:exe|com|bat|cue)$)/i.test(extra.path))) {
+    const merged = mergeExtraFiles(buf, extras)
+    return makeJsdosBundle(name, merged, conf, configOverride, dosExecutable, startupCommands)
+  }
   /*
     ⚠️ 后台填的启动程序，包里必须真有。
     以前一个字都不验，直接拼进 [autoexec]：管理员填错一个字母（或者游戏换了个包），
@@ -697,7 +806,8 @@ export async function makeJsdosBundle(
     throw new Error('CUE 光盘镜像必须与 DOS 游戏放在同一个 ZIP 内')
   }
   if (entries && startupCommands?.trim()) {
-    const byName = new Map(entries.map((entry) => [entry.name, entry]))
+    const byName = new Map<string, ZipEntry | null>(entries.map((entry) => [entry.name, entry]))
+    for (const extra of wantedExtras.values()) byName.set(extra.path, null)
     for (const line of startupCommands.split(/\r?\n/)) {
       if (!/^\s*imgmount\b/i.test(line) || !/\.cue\b/i.test(line)) continue
       const match = /^\s*imgmount\s+[a-z]\s+(?:"([^"]+)"|(\S+))/i.exec(line)
@@ -745,7 +855,7 @@ export async function makeJsdosBundle(
     管理员填了 PARANOID.COM 保存，玩家点开进的还是包里 conf 指向的安装界面，
     改三次配置清三次缓存都找不到原因。
   */
-  if (bundledConf && !configOverride?.trim() && !conf && !configuredExecutable && !startupCommands?.trim()) {
+  if (bundledConf && !wantedExtras.size && !configOverride?.trim() && !conf && !configuredExecutable && !startupCommands?.trim()) {
     return { blob: new Blob([buf], { type: 'application/zip' }), executable: null, passthrough: true }
   }
 
@@ -774,6 +884,7 @@ export async function makeJsdosBundle(
     const out: OutEntry[] = []
     for (const e of entries) {
       if (e.name.toLowerCase() === '.jsdos/dosbox.conf') continue
+      if (wantedExtras.has(e.name.toLowerCase())) continue
       out.push({
         name: e.name,
         method: e.method,
@@ -784,6 +895,7 @@ export async function makeJsdosBundle(
       })
     }
     if (launch?.alias) out.push(launch.alias)
+    out.push(...extraOutEntries(wantedExtras, out.map((entry) => entry.name)))
     if (!entries.some((e) => e.name.toLowerCase() === '.jsdos/')) {
       out.push({ name: '.jsdos/', method: 0, crc: 0, compressedSize: 0, uncompressedSize: 0, data: new Uint8Array(0) as Uint8Array<ArrayBuffer> })
     }
@@ -833,12 +945,21 @@ export async function makeJsdosBundle(
         dirs.add(prefix)
       }
     }
+    for (const extra of wantedExtras.values()) {
+      const parts = extra.path.split('/')
+      let prefix = ''
+      for (let i = 0; i < parts.length - 1; i++) {
+        prefix += parts[i] + '/'
+        dirs.add(prefix)
+      }
+    }
     const empty = new Uint8Array(0) as Uint8Array<ArrayBuffer>
     for (const dir of [...dirs].sort((a, b) => a.split('/').length - b.split('/').length || (a < b ? -1 : 1))) {
       out.push({ name: dir, method: 0, crc: 0, compressedSize: 0, uncompressedSize: 0, data: empty })
     }
     for (const e of entries) {
       if (e.name.endsWith('/')) continue // 目录都在上面统一发过了
+      if (wantedExtras.has(e.name.toLowerCase())) continue
       out.push({
         name: e.name,
         method: e.method,
@@ -851,6 +972,7 @@ export async function makeJsdosBundle(
     const launch = dosLaunchTarget(entries, buf, exe)
     launchExe = launch.path
     if (launch.alias) out.push(launch.alias)
+    out.push(...extraOutEntries(wantedExtras, out.map((entry) => entry.name)))
   } else {
     // 不是 zip：当成单个可执行文件塞进去
     const file = name.split(/[\\/]/).pop() || 'game.exe'

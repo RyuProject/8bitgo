@@ -16,6 +16,25 @@ export const platforms: Platform[] = [
     description: '32 位时代的王者，3D 游戏的启蒙之地。铁拳、最终幻想、古惑狼都诞生于此。',
   },
   {
+    id: 'psp',
+    name: 'PlayStation Portable',
+    shortName: 'PSP',
+    nameZh: '索尼 PSP',
+    manufacturer: 'Sony',
+    year: 2004,
+    /**
+     * PSP 不能复用 EmulatorJS：它会先把整张 ISO 下载进浏览器内存。
+     * 这里固定走自建 PPSSPP，核心直接对 R2 发 HTTP Range 请求，按 2MB 块随机读盘。
+     */
+    runtime: 'ppsspp',
+    core: null,
+    // ZIP/7z 会破坏随机读取；PBP/ELF/PRX 主要用于自制程序，远程大游戏优先 ISO/CSO/CHD。
+    romExtensions: ['.iso', '.cso', '.chd', '.pbp', '.elf', '.prx'],
+    color: '#253a78',
+    icon: '🎮',
+    description: '把主机级 3D 游戏装进口袋：怪物猎人、战神、最终幻想纷纷登上掌机。',
+  },
+  {
     id: 'ps2',
     name: 'PlayStation 2',
     shortName: 'PS2',
@@ -313,4 +332,4 @@ export const platformMap: Record<string, Platform> = Object.fromEntries(
  * 这不是「还没做完」的意思 —— 做完了也是这样，所以要长期挂着这个标记。
  * 有它的平台在平台卡和游戏详情页上都会显示实验性提示。
  */
-export const EXPERIMENTAL_PLATFORMS = new Set<PlatformId>(['ps2', 'gamecube', 'wii'])
+export const EXPERIMENTAL_PLATFORMS = new Set<PlatformId>(['psp', 'ps2', 'gamecube', 'wii'])

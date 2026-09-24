@@ -388,9 +388,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       // js-dos 入口脚本由 loadJsDos() 用 <script> 拉，没有字节进度，只能先报核心阶段；
       // 系统镜像和 ROM 是我们自己 fetch 的，后两段都有真实进度。
       options.onProgress?.({ phase: 'engine' })
-      const Dos = await loadJsDos()
-      options.onProgress?.({ phase: 'engine', ratio: 1 })
+      let engineDone = false
       let systemDone = !options.dosSystemUrl
+      let latestSystemProgress: LoadProgress | undefined
       let latestRomProgress: LoadProgress | undefined
       let concurrentFailure: unknown = null
       const settled = <T,>(promise: Promise<T>) => promise.then(
@@ -403,18 +403,20 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         },
       )
       /*
-        系统镜像、游戏包和附加文件互不依赖，必须从同一刻开始取。旧实现把它们完全串行：
-        Win95 镜像 30 秒 + 游戏 20 秒 + 资料片 40 秒，玩家就实打实等 90 秒。
+        引擎脚本、系统镜像、游戏包和附加文件互不依赖，必须从同一刻开始取。
+        以前虽然后三项并行，最前面仍先 await js-dos.js：弱网下核心 4 秒 + ROM 12 秒就是 16 秒，
+        而不是两者较慢的 12 秒。普通 DOS 没有系统镜像，这段串行尤其显眼。
 
-        ROM 的进度在系统镜像完成前先缓住，避免小 ROM 把界面推到 80% 后又长时间不动；
-        镜像完成后立刻补发最新一帧。这样总耗时取三者的最大值，进度仍按核心→镜像→ROM 前进。
+        ROM 的进度在引擎 / 系统镜像完成前先缓住，避免小 ROM 把界面推到 80% 后又长时间不动；
+        两者完成后立刻补发最新一帧。这样总耗时取各路最大值，进度仍按核心→镜像→ROM 前进。
         settled 立即接住拒绝，防止某一路先失败、另一条还在下载时出现未处理的 Promise rejection。
       */
+      const engineTask = loadJsDos()
       const romTask = settled(readRom(
         options.game,
         (progress) => {
           latestRomProgress = progress
-          if (systemDone) options.onProgress?.(progress)
+          if (engineDone && systemDone) options.onProgress?.(progress)
         },
         abort.signal,
       ))
@@ -424,21 +426,35 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         取不到或者卡死就换 js-dos 官方源。它是 Win9x/Win3.x 游戏的硬前提 ——
         拿不到就什么都做不了，而玩家看到的只是一个永远不动的进度条。
       */
-      const systemPromise = options.dosSystemUrl
+      const systemTask = settled(options.dosSystemUrl
         ? loadSystemBytes(
             systemSourcesFor(options.dosSystemUrl),
-            (progress) => options.onProgress?.({ ...progress, phase: 'assets' }),
+            (progress) => {
+              latestSystemProgress = { ...progress, phase: 'assets' }
+              if (engineDone) options.onProgress?.(latestSystemProgress)
+            },
             abort.signal,
           )
-        : Promise.resolve(null)
-      let loadedSystem: Awaited<ReturnType<typeof loadSystemBytes>> | null
+        : Promise.resolve(null))
+
+      let Dos: DosFn
       try {
-        loadedSystem = await systemPromise
+        Dos = await engineTask
       } catch (e) {
-        // 并发资源先失败时，AbortError 只是连带结果；玩家真正需要的是那条带文件名的原始错误。
-        if (concurrentFailure) throw concurrentFailure
+        // 核心脚本失败时把三路下载一起停掉；settled 会把它们的拒绝接住，避免控制台再冒未处理异常。
+        abort.abort(e)
+        await Promise.all([romTask, extrasTask, systemTask])
         throw e
       }
+      engineDone = true
+      options.onProgress?.({ phase: 'engine', ratio: 1 })
+      if (latestSystemProgress) options.onProgress?.(latestSystemProgress)
+      if (systemDone && latestRomProgress) options.onProgress?.(latestRomProgress)
+
+      const systemResult = await systemTask
+      // 并发资源先失败时，AbortError 只是连带结果；玩家真正需要的是最先发生的原始错误。
+      if (systemResult.error) throw concurrentFailure ?? systemResult.error
+      const loadedSystem = systemResult.value
       // 走了备用源就喊一声：这说明主源出问题了，而玩家那边是完全无感的
       if (loadedSystem?.usedFallback) {
         console.warn(`[jsdos] 主源取不到系统镜像，已改用${loadedSystem.label}`, loadedSystem.url)
@@ -449,22 +465,24 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       const romResult = await romTask
       if (romResult.error) throw romResult.error
       const rom = romResult.value!
-      // 资料片 / 补丁现取现并。放在这里而不是分支里，是因为普通 DOS 和 Windows 客体两条路
-      // 都是拿 gameBuf 当「这款游戏的 ZIP」，合并只需做一次。
       const extrasResult = await extrasTask
       if (extrasResult.error) throw extrasResult.error
       const extras = extrasResult.value ?? []
       options.onProgress?.({ phase: 'starting' })
       if (destroyed) return
-      const gameBuf = extras.length ? mergeExtraFiles(rom.buf, extras) : rom.buf
-      // 高级配置属于 DOSBox-X；即使数据库里残留了错误字段，普通 DOSBox 也不能误吃进去。
-      const dosboxConfig = options.dosBackend === 'dosboxX' ? options.dosboxConfig : undefined
+      /*
+        普通 DOS 和 DOSBox-X 都认识这些硬件 / 性能配置。以前只把覆盖项交给 DOSBox-X，
+        导致普通 DOS 后台即使填了 cycles=max、memsize=32 或 ems=false 也会被静默丢掉。
+      */
+      const dosboxConfig = options.dosboxConfig
 
       let primaryUrl = ''
       let guest: WindowsGuestConfig | null = null
       let guestLaunchCommand = ''
       let initFs: unknown[] | undefined
       if (loadedSystem) {
+        // Windows 客体仍需要一个完整的游戏层；这条路才做整包合并。
+        const gameBuf = extras.length ? mergeExtraFiles(rom.buf, extras) : rom.buf
         if (!options.dosExecutable) throw new Error('Windows 客体游戏没有配置自启动 EXE')
         const systemConfig = await readWindowsSystemConfig(loadedSystem.data)
         guest = buildWindowsGuestConfig(systemConfig, dosboxConfig)
@@ -522,11 +540,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         const startupCommands = normalizeDosStartupCommands(options.dosStartupCommands)
         const bundle = await makeJsdosBundle(
           rom.name,
-          gameBuf,
+          rom.buf,
           undefined,
           dosboxConfig,
           options.dosExecutable,
           startupCommands,
+          // 直接并进最终 bundle，避免「整包复制一次 → 再解析并重打」的双倍峰值内存。
+          extras,
         )
         primaryUrl = URL.createObjectURL(bundle.blob)
         objectUrls.push(primaryUrl)

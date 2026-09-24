@@ -1,0 +1,9 @@
+{
+  "runtime": "PPSSPP WebAssembly",
+  "upstream": "https://github.com/root-hunter/ppsspp-wasm",
+  "commit": "0dbfaca62a8a924abc2c5dd5dd0733b668e5e68a",
+  "rangeStreaming": true,
+  "blockBytes": 2097152,
+  "memoryCacheBytes": 201326592,
+  "artifactsInstalled": false
+}

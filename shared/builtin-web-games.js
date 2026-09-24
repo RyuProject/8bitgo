@@ -30,6 +30,14 @@ export const BUILTIN_WEB_GAMES = Object.freeze({
     // 不需要 COOP/COEP 隔离壳；直接 /web/Minecraft 嵌入，同 PvZ / diablo。
     isolated: false,
   }),
+  pvz2: Object.freeze({
+    entry: '/web/PvZ2',
+    title: 'PvZ2 Gardendless',
+    // Cocos Creator 导出，单线程 WebGL，不依赖 SharedArrayBuffer / pthread，
+    // 不需要 COOP/COEP 隔离壳；整目录自托管到 /web/PvZ2（见 scripts/fetch-pvzge.mjs），
+    // 站内用 <base href="/web/PvZ2/"> 解析相对资源（同 PvZ / diablo / minecraft）。
+    isolated: false,
+  }),
 })
 
 export function builtinWebGameFor(slug) {

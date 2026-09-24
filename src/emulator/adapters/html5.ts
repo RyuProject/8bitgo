@@ -7,6 +7,9 @@
  */
 import type { Capability, CaptureSources, MountOptions, RuntimeHandle } from '../types'
 import { focusFrame, frameGamepads } from '../frameFocus'
+import { installAudioTap, type AudioTap } from '../audioTap'
+import { captureCanvasScreenshot } from '../recorder'
+import { findHtml5Canvas, html5CanvasCapabilities, html5MediaBridge } from '../html5Media'
 
 const SAVE_BRIDGE_SOURCE = '8bitgo-save-bridge'
 const SAVE_BRIDGE_VERSION = 1
@@ -48,6 +51,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let objectUrl = ''
   let saveBridgeReady = false
   let saveRequestId = 0
+  let mediaObserver: MutationObserver | null = null
+  let mediaPollTimer = 0
+  const mediaTaps = new WeakMap<Window, AudioTap>()
+  const liveMediaTaps = new Set<AudioTap>()
   const pendingSaveRequests = new Map<number, {
     resolve: (value: unknown) => void
     reject: (error: Error) => void
@@ -119,6 +126,101 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
   window.addEventListener('message', onSaveBridgeMessage)
 
+  const frameDocument = (): Document | null => {
+    try {
+      return iframe.contentDocument
+    } catch {
+      return null
+    }
+  }
+
+  const currentCanvas = (): HTMLCanvasElement | null => findHtml5Canvas(frameDocument())
+
+  /**
+   * 没接公开桥的普通同源页面也尽量补一个探针。
+   *
+   * load 之后装对「已经建好的 AudioContext」来不及，但很多游戏要等玩家第一次点击才建声音，
+   * 这条兜底仍能覆盖它们。Unity 想保证从第一声开始就能录，需在 loader 之前引入
+   * `/html5-api/8bitgo-media-bridge.js`；它和这里使用相同的探针键，不会被重复包两层。
+   */
+  const tapFor = (win: Window | null): AudioTap | null => {
+    if (!win) return null
+    const known = mediaTaps.get(win)
+    if (known) return known
+    let tap: AudioTap
+    try {
+      tap = installAudioTap(win as Window & Record<string, unknown>)
+    } catch {
+      // 第三方页面可能冻结内建构造函数；音频拿不到也不能阻止页面 ready 或画面录制。
+      return null
+    }
+    mediaTaps.set(win, tap)
+    liveMediaTaps.add(tap)
+    return tap
+  }
+
+  const setMediaCapability = (name: 'screenshot' | 'record', enabled: boolean): boolean => {
+    if (enabled === caps.has(name)) return false
+    if (enabled) caps.add(name)
+    else caps.delete(name)
+    return true
+  }
+
+  const refreshMediaCapabilities = (allowRemove = false) => {
+    if (destroyed) return
+    const found = html5CanvasCapabilities(currentCanvas())
+    let changed = false
+    if (found.screenshot || allowRemove) changed = setMediaCapability('screenshot', found.screenshot) || changed
+    if (found.record || allowRemove) changed = setMediaCapability('record', found.record) || changed
+    if (changed) options.onCaps?.(caps)
+  }
+
+  const stopMediaMonitoring = (removeCapabilities = false) => {
+    mediaObserver?.disconnect()
+    mediaObserver = null
+    if (mediaPollTimer) window.clearTimeout(mediaPollTimer)
+    mediaPollTimer = 0
+    if (removeCapabilities) refreshMediaCapabilities(true)
+  }
+
+  /**
+   * Canvas 常常等 WASM 下载完才出现，所以不能只在 iframe load 那一刻查一次。
+   * MutationObserver 接住正常的创建/换尺寸；两分钟的低频轮询接住引擎只改 JS width 属性、
+   * 或把真画面藏在后来完成导航的同源子 iframe 这两类观察不到的变化。
+   */
+  const startMediaMonitoring = () => {
+    stopMediaMonitoring(false)
+    const doc = frameDocument()
+    const win = iframe.contentWindow
+    if (!doc || !win) {
+      refreshMediaCapabilities(true)
+      return
+    }
+
+    // 页面自己预先加载了媒体桥时，installAudioTap 会拿回同一个探针；没有就装迟到兜底。
+    tapFor(win)
+    refreshMediaCapabilities(true)
+    if (doc.documentElement && typeof MutationObserver !== 'undefined') {
+      mediaObserver = new MutationObserver(() => refreshMediaCapabilities())
+      mediaObserver.observe(doc.documentElement, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        attributeFilter: ['width', 'height'],
+      })
+    }
+
+    const deadline = Date.now() + 120_000
+    const poll = () => {
+      if (destroyed) return
+      refreshMediaCapabilities()
+      // Canvas 一旦可用，后续即使引擎重建它，句柄每次都会现查，不必继续扫描整个 DOM。
+      if (caps.has('screenshot') || Date.now() >= deadline) return
+      mediaPollTimer = window.setTimeout(poll, 250)
+    }
+    poll()
+  }
+
   function requestSaveBridge(type: 'export' | 'import', data?: ArrayBuffer): Promise<unknown> {
     if (!saveBridgeReady || !iframe.contentWindow) return Promise.reject(new Error('网页游戏存档尚未就绪'))
     const requestId = ++saveRequestId
@@ -142,6 +244,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let loaded = false
   iframe.addEventListener('load', () => {
     if (destroyed) return
+    // 门户页跳进真正游戏页也会再次 load；就绪只报一次，媒体来源却必须跟着换到新文档。
+    startMediaMonitoring()
     /**
      * 只认第一次 load。
      *
@@ -171,42 +275,6 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     // 单文件 HTML 可以直接运行；需要其它素材的项目应部署完整目录并绑定 index.html。
     objectUrl = URL.createObjectURL(options.game)
     iframe.src = objectUrl
-  }
-
-  /**
-   * 从 iframe 里把游戏画布找出来。
-   *
-   * 只找得到**同源**的：跨源时 contentDocument 直接是 null（读它还会抛），
-   * 这不是可以绕过去的限制。
-   *
-   * 取面积最大的那块 —— 不少游戏除了主画布还挂着几张 1×1 或者小尺寸的
-   * （预乘纹理、字体度量、离屏合成用的），按 DOM 顺序取第一个经常取到它们。
-   * 同源的子 iframe 也往下找一层：门户式的 HTML5 游戏常常是「壳套一层真正的游戏页」。
-   */
-  function findCanvas(doc: Document | null, depth = 0): HTMLCanvasElement | null {
-    if (!doc) return null
-    let best: HTMLCanvasElement | null = null
-    let bestArea = 0
-    for (const c of Array.from(doc.querySelectorAll<HTMLCanvasElement>('canvas'))) {
-      const area = c.width * c.height
-      if (area > bestArea) {
-        best = c
-        bestArea = area
-      }
-    }
-    if (best) return best
-    if (depth >= 2) return null
-    for (const nested of Array.from(doc.querySelectorAll('iframe'))) {
-      let inner: Document | null = null
-      try {
-        inner = nested.contentDocument
-      } catch {
-        continue // 跨源的子框架，跳过
-      }
-      const found = findCanvas(inner, depth + 1)
-      if (found) return found
-    }
-    return null
   }
 
   return {
@@ -263,17 +331,45 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     },
     captureSources(): CaptureSources | null {
       if (destroyed) return null
-      let doc: Document | null = null
+      const canvas = currentCanvas()
+      if (!html5CanvasCapabilities(canvas).screenshot || !canvas) return null
+
+      const sourceWindow = canvas.ownerDocument.defaultView
+      const bridge = html5MediaBridge(sourceWindow)
+      let bridged: CaptureSources | null = null
       try {
-        doc = iframe.contentDocument
+        bridged = bridge?.captureSources?.() ?? null
       } catch {
-        return null // 跨源
+        /* 游戏桥坏了只降级成外层自动发现，不能让录制/直播一起挂 */
       }
-      const canvas = findCanvas(doc)
-      return canvas ? { canvas } : null
+      const tap = tapFor(sourceWindow)
+      return {
+        canvas,
+        audioNode: bridged?.audioNode ?? tap?.node ?? null,
+        audioContext: bridged?.audioContext ?? tap?.ctx ?? null,
+      }
+    },
+    async screenshot() {
+      const canvas = currentCanvas()
+      if (!html5CanvasCapabilities(canvas).screenshot || !canvas) return null
+
+      const bridge = html5MediaBridge(canvas.ownerDocument.defaultView)
+      if (bridge?.screenshot) {
+        try {
+          const shot = await bridge.screenshot()
+          // Blob 来自子 iframe 的 realm，不能用父窗口的 instanceof Blob 判断。
+          if (shot && typeof shot.size === 'number' && shot.size > 0 && typeof shot.arrayBuffer === 'function') {
+            return new Blob([await shot.arrayBuffer()], { type: shot.type || 'image/png' })
+          }
+        } catch {
+          /* 自定义截图失败就走下面的 Canvas 合成帧，不让扩展点拖垮通用能力 */
+        }
+      }
+      return captureCanvasScreenshot(canvas)
     },
     destroy() {
       destroyed = true
+      stopMediaMonitoring(false)
       window.removeEventListener('message', onSaveBridgeMessage)
       for (const pending of pendingSaveRequests.values()) {
         window.clearTimeout(pending.timer)
@@ -285,6 +381,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       } catch {
         /* ignore */
       }
+      // 页面正常导航会自己关；异常启动时再兜一次，避免 WebAudio 线程留到 GC 才释放。
+      for (const tap of liveMediaTaps) {
+        const ctx = tap.ctx
+        if (ctx && ctx.state !== 'closed') void ctx.close().catch(() => {})
+      }
+      liveMediaTaps.clear()
       iframe.remove()
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     },

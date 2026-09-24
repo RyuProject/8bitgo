@@ -1,0 +1,11 @@
+PPSSPP WebAssembly source and license
+=====================================
+
+Upstream fork: https://github.com/root-hunter/ppsspp-wasm
+Pinned commit: 0dbfaca62a8a924abc2c5dd5dd0733b668e5e68a
+Original project: https://github.com/hrydgard/ppsspp
+License: GPL-2.0-or-later (see the upstream LICENSE.TXT)
+
+8BitGo applies vendor/ppsspp/patches/0001-range-streaming.patch before building.
+That patch replaces browser HTTP disc access with strict HTTP Range reads and a bounded block cache.
+The unmodified upstream source plus this patch are sufficient to reproduce the distributed WASM files.

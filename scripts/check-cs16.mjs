@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { inflateRawSync } from 'node:zlib'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const publicDir = join(root, 'public/web/cs16')
@@ -141,6 +142,11 @@ if (source.includes('alias addbot "bot_add"') || source.includes('alias delbot "
   fail('autoexec.cfg 仍在使用非 YaPB 的无效 BOT 命令')
 }
 
+const supportedMaps = [
+  'de_dust2', 'de_dust', 'de_inferno', 'de_nuke', 'de_aztec', 'de_train',
+  'de_cbble', 'cs_office', 'cs_italy', 'cs_assault', 'cs_militia', 'de_vertigo',
+]
+
 const required = [
   'index.html',
   'cs16.js',
@@ -160,6 +166,7 @@ const required = [
   'lib/valve/dlls/hl_emscripten_wasm32.wasm',
   'lib/cstrike/extras.pk3',
   'gfx/fonts/FiraSans-Regular.ttf',
+  ...supportedMaps.map((map) => `vis/${map}.vis`),
 ]
 for (const name of required) if (!existsSync(join(publicDir, name))) fail(`缺少 public/web/cs16/${name}`)
 
@@ -169,7 +176,19 @@ for (const name of required) if (!existsSync(join(publicDir, name))) fail(`缺�
  * 构建机不保证安装系统 unzip；为了列十几个文件名要求整台机器多一个包，既脆弱又没有
  * 必要。extras.pk3 只有普通单卷 ZIP，中央目录已经包含完整成员名，直接解析即可。
  */
-function zipEntryNames(file) {
+const crcTable = new Uint32Array(256)
+for (let n = 0; n < 256; n += 1) {
+  let value = n
+  for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1
+  crcTable[n] = value >>> 0
+}
+function crc32(bytes) {
+  let value = 0xffffffff
+  for (const byte of bytes) value = crcTable[(value ^ byte) & 0xff] ^ (value >>> 8)
+  return (value ^ 0xffffffff) >>> 0
+}
+
+function zipEntries(file) {
   const data = readFileSync(file)
   let eocd = -1
   for (let at = data.length - 22; at >= Math.max(0, data.length - 22 - 65535); at--) {
@@ -192,34 +211,83 @@ function zipEntryNames(file) {
   }
   if (centralEnd > eocd || centralEnd > data.length) throw new Error('ZIP 中央目录越界')
 
-  const names = []
+  const result = []
   for (let i = 0; i < entries; i++) {
     if (at + 46 > centralEnd || data.readUInt32LE(at) !== 0x02014b50) {
       throw new Error(`ZIP 第 ${i + 1} 个目录项损坏`)
     }
     const flags = data.readUInt16LE(at + 8)
+    const method = data.readUInt16LE(at + 10)
+    const crc = data.readUInt32LE(at + 16)
+    const compressedBytes = data.readUInt32LE(at + 20)
+    const rawBytes = data.readUInt32LE(at + 24)
     const nameLength = data.readUInt16LE(at + 28)
     const extraLength = data.readUInt16LE(at + 30)
     const commentLength = data.readUInt16LE(at + 32)
+    const localOffset = data.readUInt32LE(at + 42)
     const next = at + 46 + nameLength + extraLength + commentLength
     if (next > centralEnd) throw new Error(`ZIP 第 ${i + 1} 个目录项越界`)
     const encoding = flags & 0x800 ? 'utf8' : 'latin1'
-    names.push(data.toString(encoding, at + 46, at + 46 + nameLength).replace(/\\/g, '/'))
+    const name = data.toString(encoding, at + 46, at + 46 + nameLength).replace(/\\/g, '/')
+    if (flags & 1 || (method !== 0 && method !== 8)) throw new Error(`${name} 使用不支持的 ZIP 加密/压缩方法`)
+    if (localOffset + 30 > data.length || data.readUInt32LE(localOffset) !== 0x04034b50) throw new Error(`${name} 本地文件头损坏`)
+    const localNameLength = data.readUInt16LE(localOffset + 26)
+    const localExtraLength = data.readUInt16LE(localOffset + 28)
+    const payloadAt = localOffset + 30 + localNameLength + localExtraLength
+    if (payloadAt + compressedBytes > data.length) throw new Error(`${name} 数据越界`)
+    const compressed = data.subarray(payloadAt, payloadAt + compressedBytes)
+    const raw = method === 0 ? compressed : inflateRawSync(compressed)
+    if (raw.byteLength !== rawBytes || crc32(raw) !== crc) throw new Error(`${name} 解压后长度或 CRC-32 不符`)
+    result.push({ name, method, compressedBytes, rawBytes, raw })
     at = next
   }
   if (at !== centralEnd) throw new Error('ZIP 中央目录长度不一致')
-  return names
+  return result
 }
 
 // 没有导航图时 YaPB 会拒绝创建 Bot；每张启动页地图都必须在同一份 extras.pk3 里有图。
 let extrasEntries
 try {
-  extrasEntries = new Set(zipEntryNames(join(publicDir, 'lib/cstrike/extras.pk3')))
+  extrasEntries = zipEntries(join(publicDir, 'lib/cstrike/extras.pk3'))
 } catch (error) {
   fail(`无法读取 extras.pk3：${error instanceof Error ? error.message : String(error)}`)
 }
-for (const map of ['de_dust2', 'de_dust', 'de_inferno', 'de_nuke', 'de_aztec', 'de_train', 'de_cbble', 'cs_office', 'cs_italy', 'cs_assault', 'cs_militia', 'de_vertigo']) {
-  if (!extrasEntries.has(`addons/yapb/data/graph/${map}.graph`)) fail(`extras.pk3 缺少 ${map} 的 YaPB 导航图`)
+const extrasByName = new Map(extrasEntries.map((entry) => [entry.name, entry]))
+for (const map of supportedMaps) {
+  if (!extrasByName.has(`addons/yapb/data/graph/${map}.graph`)) fail(`extras.pk3 缺少 ${map} 的 YaPB 导航图`)
+}
+const deflatedEntries = extrasEntries.filter((entry) => entry.method === 8).length
+if (deflatedEntries < 500 || statSync(join(publicDir, 'lib/cstrike/extras.pk3')).size > 16 * 1024 * 1024) {
+  fail('extras.pk3 退回了 Store 大包；运行 npm run cs16:extras')
+}
+
+// 每张可见性表都来自当前 YaPB 在真实引擎里生成；格式、节点平方矩阵和尾部统计必须自洽。
+for (const map of supportedMaps) {
+  const vis = readFileSync(join(publicDir, `vis/${map}.vis`))
+  if (vis.length < 24) fail(`${map}.vis 太短`)
+  const magic = vis.readUInt32LE(0)
+  const version = vis.readInt32LE(4)
+  const options = vis.readInt32LE(8)
+  const nodes = vis.readInt32LE(12)
+  const compressed = vis.readInt32LE(16)
+  const raw = vis.readInt32LE(20)
+  const graph = extrasByName.get(`addons/yapb/data/graph/${map}.graph`)?.raw
+  if ((magic !== 0x59415042 && magic !== 0x544f4255) || version !== 4 || (options & 4) !== 4 ||
+      nodes < 8 || raw !== nodes * nodes || vis.length !== 24 + compressed + nodes * 4 ||
+      !graph || graph.length < 24 || graph.readInt32LE(12) !== nodes) {
+    fail(`${map}.vis 不是完整的 YaPB v4 可见性表`)
+  }
+}
+
+if (!source.includes('const PREBUILT_VIS_MAPS = new Set(SUPPORTED_MAPS)')) {
+  fail('启动器没有给全部 12 张公开地图加载预生成可见性表')
+}
+
+if (!source.includes("xash.Cmd_ExecuteString('jointeam 2')") || !source.includes("xash.Cmd_ExecuteString('joinclass 1')") || !source.includes("xash.Cmd_ExecuteString('sv_restart 1')")) {
+  fail('启动器没有自动入队并重开首回合，玩家会停在观察视角')
+}
+if (!source.includes('const downloads = new Map()') || !source.includes('for (const key of keys)')) {
+  fail('启动关键路径没有保留动态库去重或当前地图预取')
 }
 
 /* 源码和 bundle 必须逐字节对应；只改 cs16.js 忘记重打包，是这类独立页最常见的线上漂移。 */

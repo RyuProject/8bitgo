@@ -1,4 +1,4 @@
-export type IsolatedRuntimePlatformId = 'ps2' | 'gamecube' | 'wii'
+export type IsolatedRuntimePlatformId = 'psp' | 'ps2' | 'gamecube' | 'wii'
 
 export const ISOLATED_RUNTIME_PLATFORM_IDS: readonly IsolatedRuntimePlatformId[]
 
