@@ -209,6 +209,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let watching = false
   let rewatchTimer = 0
   let rewatchCount = 0
+  /** 最近一次 watch 失败是不是临时故障；调用方据此决定要不要重新上闹钟。 */
+  let lastWatchRetryable = false
+  /** failed / 计时器 / socket connect 可能同时触发恢复；一次只允许一条 watch 在飞。 */
+  let recoveryInFlight = false
   /** 站点配了 TURN 中继没有。没有的话「连不上」十有八九是穿不过 NAT，提示要说得具体些 */
   let hasTurn = false
   /**
@@ -697,6 +701,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     pcGen = gen
     pcOffered = false
     pendingIce = []
+    // 这是“这一条连接”的诊断证据。若不清，上一轮见过 relay 会掩盖新一轮只有 host 的真实故障。
+    localCandidateTypes.clear()
     /**
      * ⚠️ 换连接就要重新证明有画面。
      *
@@ -766,6 +772,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    */
   const watch = async (reoffer = true): Promise<boolean> => {
     if (destroyed || !socket?.connected) return false
+    lastWatchRetryable = false
     const s = socket
     let info: WatchAck
     try {
@@ -786,9 +793,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         live.onState?.('watching')
         return false
       }
-      if (joined && msg !== 'not found' && msg !== 'full') {
-        // 重新 watch 超时 / 别的临时错误：留给下一次 connect 或者 rewatch 再试
-        live.onState?.('reconnecting')
+      const transient = msg === 'watch timeout' || msg === 'failed' || msg === 'already watching'
+      if (transient || (joined && msg !== 'not found' && msg !== 'full')) {
+        /**
+         * 首次 watch 的 ack 也可能丢：服务端已经把人放进房、主播甚至已经在发 offer，
+         * 浏览器却只看到 timeout。以前 joined=false 会立刻盖错误层；现在保留播放器并继续补试。
+         */
+        lastWatchRetryable = true
+        live.onState?.(gotFrame ? 'watching' : 'reconnecting')
         return false
       }
       fail(msg === 'not found' ? rt.liveGone : msg === 'full' ? rt.liveFull : fmt(rt.liveFailed, { msg }))
@@ -856,7 +868,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   /** 要一轮新 offer；等不到就再要，几次都没用才算断 */
   const rewatch = async () => {
-    if (destroyed || !socket?.connected) return
+    if (destroyed || !socket?.connected || recoveryInFlight) return
     // 主播冻着的时候重来多少次都等不到帧，记一笔，等它 host-frozen:false 回来再补（见 thawRewatch）
     if (hostFrozen) {
       thawRewatch = true
@@ -867,12 +879,22 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (rewatchCount >= REWATCH_MAX) return fail(joined && watching ? rt.liveLost : diagnose())
     rewatchCount += 1
     live.onState?.('reconnecting')
-    // 重连这一轮多半要新建 PeerConnection，凭证先刷一遍再要 offer
-    await refreshIce()
-    if (destroyed) return
-    const ok = await watch()
-    if (!ok || destroyed || hostAway) return
-    armRewatch()
+    recoveryInFlight = true
+    try {
+      // 重连这一轮多半要新建 PeerConnection，凭证先刷一遍再要 offer
+      await refreshIce()
+      if (destroyed) return
+      const ok = await watch()
+      if (!ok) {
+        // socket 还连着就不会再触发 connect；临时失败必须由自己的计时器继续推进。
+        if (lastWatchRetryable && !destroyed && socket?.connected && !hostAway && !hostFrozen) armRewatch(FIRST_OFFER_MS)
+        return
+      }
+      if (destroyed || hostAway) return
+      armRewatch()
+    } finally {
+      recoveryInFlight = false
+    }
   }
 
   /**
@@ -886,16 +908,25 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 画面还连着就不要新 offer（服务端会让主播把连接换个名字）；断了才要。
    */
   const rejoin = async () => {
-    if (destroyed || !socket?.connected) return
+    if (destroyed || !socket?.connected || recoveryInFlight) return
     window.clearTimeout(rewatchTimer)
     rewatchCount = 0
-    await refreshIce()
-    if (destroyed) return
-    const connected = pc?.connectionState === 'connected'
-    const ok = await watch(!connected)
-    if (!ok || destroyed || hostAway || hostFrozen) return
-    // 闹钟照上：到点有画面它什么都不做，没画面（要的 offer 没来 / 连着却不出帧）就再要一轮
-    armRewatch()
+    recoveryInFlight = true
+    try {
+      await refreshIce()
+      if (destroyed) return
+      const connected = pc?.connectionState === 'connected'
+      const ok = await watch(!connected)
+      if (!ok) {
+        if (lastWatchRetryable && !destroyed && socket?.connected && !hostAway && !hostFrozen) armRewatch(FIRST_OFFER_MS)
+        return
+      }
+      if (destroyed || hostAway || hostFrozen) return
+      // 闹钟照上：到点有画面它什么都不做，没画面（要的 offer 没来 / 连着却不出帧）就再要一轮
+      armRewatch()
+    } finally {
+      recoveryInFlight = false
+    }
   }
 
   void (async () => {
@@ -1056,6 +1087,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
        * 结果就是观众干等到总超时，中间一次重试都没有。
        */
       if (ok && !hostAway) armRewatch(FIRST_OFFER_MS)
+      else if (!ok && lastWatchRetryable && s.connected) armRewatch(FIRST_OFFER_MS)
       options.onCaps?.(caps)
     } catch (e) {
       if (destroyed) return

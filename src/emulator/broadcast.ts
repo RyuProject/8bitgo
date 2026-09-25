@@ -67,6 +67,8 @@ const DEGRADE_AFTER = 2
 const RECOVER_AFTER = 4
 /** 对端一直不回 SDP 时，候选只能暂存有限条；服务器也有限流，但仍不能让每条 pc 无限占内存。 */
 const MAX_PENDING_ICE = 64
+/** 信令已经连回来了但某次 resume ack 丢了时，不等下一次断线，主动再问一次。 */
+const RESUME_RETRY_MS = 2_000
 
 export type BroadcastState = 'connecting' | 'live' | 'reconnecting' | 'ended' | 'error'
 
@@ -204,8 +206,9 @@ type SignalData = { sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidate
 export function canBroadcast(sources: CaptureSources | null | undefined): boolean {
   if (!sources) return false
   if (sources.stream) {
-    if (!sources.stream.getTracks().length) return false
-    const { width, height } = sizeOfTrack(sources.stream.getVideoTracks()[0])
+    const video = sources.stream.getVideoTracks().find((track) => track.readyState !== 'ended')
+    if (!video) return false
+    const { width, height } = sizeOfTrack(video)
     // 尺寸读不出来时不拦：分享标签页那条流的源是屏幕，不可能是 2×2
     return !width || !height || usableVideoSize(width, height)
   }
@@ -419,6 +422,9 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
   let visibilityBound = false
   let roomId = ''
   let token = ''
+  /** resume-live 的确认丢了时在同一条已连上的 socket 上补试；不能指望再来一次 connect 事件。 */
+  let resumeTimer = 0
+  let resumeInFlight = false
   /**
    * 休眠：服务器把房收了（主播切后台太久、一个观众都没有 —— 见 live.js 的 host-idle），
    * 但主播这一局还在跑。不是错、也不用重连：人不在，房挂在大厅里只会骗人进来。
@@ -601,51 +607,77 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
      * 这种「播着播着新观众就进不来了」的 bug 上线后极难查。
      * fetchIceConfig 自带缓存（快过期才重新取），所以绝大多数调用只是读一下内存。
      */
-    const iceServers = await liveIceServers()
+    let iceServers: RTCIceServer[]
+    try {
+      iceServers = await liveIceServers()
+    } catch (e) {
+      // 这条函数由 socket 事件用 void 调用；异常若冒出去会变成 unhandled rejection，
+      // 严格浏览器/测试环境甚至会把整页打断。留给观众的 rewatch 再发起一轮即可。
+      if (viewerRequests.get(viewerId) === request) viewerRequests.delete(viewerId)
+      console.warn('[live] 读取 ICE 配置失败，等待观众重试', e)
+      return
+    }
     // await 期间观众可能走了、换 id，或又 watch 一轮。只有最后一轮仍有效才能建连接；
     // 否则旧请求会顶掉新 pc，甚至给已离开的观众持续编码。
     if (stopped || viewerRequests.get(viewerId) !== request) return
-    viewerRequests.delete(viewerId)
-    dropPeer(viewerId)
-    const gen = ++genCounter
-    const pc = new RTCPeerConnection({ iceServers })
-    const entry: Peer = { pc, gen, id: viewerId, pending: [], remoteReady: false, coopRecoveryAttempt }
-    peers.set(viewerId, entry)
-
-    // 第一个观众进来才真的开始抓屏
-    const media = ensureStream()
-    if (!media) {
-      // 画布已经没了 / 塌成废尺寸（换游戏、引擎拆了、播放器没布局好）：这条连接建不起来。
-      // 告诉观众一声再收掉 —— 它会隔几秒再来要一次，画布回来了就接上；一直没有它才报错
-      try {
-        socket.emit('signal', { target: entry.id, data: { error: 'no-source', gen } satisfies SignalData })
-      } catch {
-        /* ignore */
-      }
-      dropPeer(entry.id)
+    /**
+     * ICE 请求回来时信令可能已经断了。Socket.IO 会缓存 emit，但这些 signal 会在
+     * `resume-live` 恢复房间 membership **之前**冲到服务端，被当作房外消息直接丢掉。
+     * 不建这条注定收不到 answer 的连接；resume 成功后会按服务端名单重新建。
+     */
+    if (!socket.connected || dormant || !roomId) {
+      viewerRequests.delete(viewerId)
       return
     }
-    for (const track of media.stream.getTracks()) {
-      const sender = pc.addTrack(track, media.stream)
-      if (track.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, media.videoSize(), dualScreenSource, options.native?.() ?? null)
-    }
-
-    // ⚠️ 必须在 createOffer 之前：通道要进 SDP，否则得多走一轮重新协商
-    openInput(entry)
-
-    pc.onicecandidate = (ev) => {
-      if (ev.candidate) socket.emit('signal', { target: entry.id, data: { candidate: ev.candidate.toJSON(), gen } satisfies SignalData })
-    }
-    pc.onconnectionstatechange = () => {
-      // 观众那边断了就把连接收掉，别留着白占上行。它要是还在房间里，会自己重新 watch
-      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
-        if (peers.get(entry.id)?.pc === pc) dropPeer(entry.id)
-      }
-    }
-
+    viewerRequests.delete(viewerId)
+    dropPeer(viewerId)
+    let pc: RTCPeerConnection | null = null
+    let entry: Peer | null = null
     try {
+      const gen = ++genCounter
+      pc = new RTCPeerConnection({ iceServers })
+      entry = { pc, gen, id: viewerId, pending: [], remoteReady: false, coopRecoveryAttempt }
+      peers.set(viewerId, entry)
+
+      // 第一个观众进来才真的开始抓屏
+      const media = ensureStream()
+      if (!media) {
+        // 画布已经没了 / 塌成废尺寸（换游戏、引擎拆了、播放器没布局好）：这条连接建不起来。
+        // 告诉观众一声再收掉 —— 它会隔几秒再来要一次，画布回来了就接上；一直没有它才报错
+        if (socket.connected) {
+          socket.emit('signal', { target: entry.id, data: { error: 'no-source', gen } satisfies SignalData })
+        }
+        dropPeer(entry.id)
+        return
+      }
+      for (const track of media.stream.getTracks()) {
+        const sender = pc.addTrack(track, media.stream)
+        if (track.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, media.videoSize(), dualScreenSource, options.native?.() ?? null)
+      }
+
+      // ⚠️ 必须在 createOffer 之前：通道要进 SDP，否则得多走一轮重新协商
+      openInput(entry)
+
+      pc.onicecandidate = (ev) => {
+        // 断线时绝不能把候选塞进 Socket.IO 离线队列：它会早于 resume-live 被服务端丢掉。
+        if (ev.candidate && socket.connected && roomId && !dormant && peers.get(entry!.id) === entry) {
+          socket.emit('signal', { target: entry!.id, data: { candidate: ev.candidate.toJSON(), gen } satisfies SignalData })
+        }
+      }
+      pc.onconnectionstatechange = () => {
+        // 观众那边断了就把连接收掉，别留着白占上行。它要是还在房间里，会自己重新 watch
+        if (pc?.connectionState === 'failed' || pc?.connectionState === 'closed') {
+          if (entry && peers.get(entry.id)?.pc === pc) dropPeer(entry.id)
+        }
+      }
+
       const offer = await pc.createOffer()
       await pc.setLocalDescription(offer)
+      // createOffer / setLocalDescription 期间也可能断线或被新一轮顶掉；此时同样不能排队发旧 offer。
+      if (stopped || dormant || !socket.connected || !roomId || peers.get(entry.id) !== entry) {
+        if (peers.get(entry.id) === entry) dropPeer(entry.id)
+        return
+      }
       socket.emit('signal', { target: entry.id, data: { sdp: pc.localDescription ?? offer, gen } satisfies SignalData })
     } catch (e) {
       /**
@@ -657,10 +689,17 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
        * 结果这个观众一条 offer 都收不到，pc 停在 new（永远不会变 failed），
        * 主播这边 peers 里也没有它了，只能等观众自己 20 秒后再要一轮。
        */
-      if (peers.get(entry.id)?.pc !== pc) return
-      dropPeer(entry.id)
-      // 旧一轮被新一轮顶掉是正常现象，只有当前这条失败才值得往上报
-      options.onError?.(e instanceof Error ? e.message : String(e))
+      if (entry && peers.get(entry.id)?.pc !== pc) return
+      if (entry) dropPeer(entry.id)
+      else {
+        try {
+          pc?.close()
+        } catch {
+          /* ignore */
+        }
+      }
+      // 单个观众的浏览器能力 / 编码器失败不能把主播整场直播标成结束；观众会按自己的闹钟重试。
+      console.warn('[live] 给观众建立连接失败，等待对方重试', e)
     }
   }
 
@@ -842,6 +881,8 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
 
   const teardown = () => {
     viewerRequests.clear()
+    window.clearTimeout(resumeTimer)
+    resumeTimer = 0
     if (statsTimer) {
       window.clearInterval(statsTimer)
       statsTimer = 0
@@ -901,17 +942,39 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     relink()
   }
 
+  /** 信令已经连着时安排一次续播补试；重复失败由这条链自己推进，不等“下一次重连”。 */
+  const retryResume = () => {
+    window.clearTimeout(resumeTimer)
+    resumeTimer = 0
+    if (stopped || dormant || !roomId || !socket.connected) return
+    resumeTimer = window.setTimeout(() => {
+      resumeTimer = 0
+      void resume()
+    }, RESUME_RETRY_MS)
+  }
+
   /** socket 重连上来之后：先试着接回原房间，接不回去就重开 */
   const resume = async () => {
-    if (stopped) return
+    if (stopped || dormant || !roomId || !socket.connected || resumeInFlight) return
+    resumeInFlight = true
+    window.clearTimeout(resumeTimer)
+    resumeTimer = 0
     try {
       const data = await call<{ roomId: string; viewers?: string[] }>(socket, 'resume-live', { roomId, token })
       const current = new Set(data.viewers ?? [])
       for (const id of viewerRequests.keys()) if (!current.has(id)) viewerRequests.delete(id)
       // 名单上没有的观众已经走了（宽限期里它们 disconnect 时主播不在，没收到 viewer-left）
       for (const id of Array.from(peers.keys())) if (!current.has(id)) dropPeer(id)
-      // 名单上的：连接还活着的不动（信令断了画面没断），死了的重新 offer
-      for (const id of current) void addViewer(id, false)
+      /**
+       * 只有 `connected` 才能跨信令断线复用。new / connecting 可能正好在 offer 入队、
+       * 但服务端 membership 尚未恢复的窗口里断掉；把它当“活着”会永远不重发 offer。
+       */
+      for (const id of current) {
+        const peer = peers.get(id)
+        if (peer?.pc.connectionState === 'connected') continue
+        cancelViewer(id)
+        void addViewer(id, true)
+      }
       viewers = current.size
       options.onViewers?.(viewers)
       retuneFps()
@@ -928,10 +991,13 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       if (stopped) return
       // 房间已经没了（服务器重启 / 宽限期过了）：那就重开。老观众如果画面还连着，照样在看
       if (msg !== 'not found' && msg !== 'forbidden') {
-        // 其它错误（超时、又断了）：等下一次 connect 再来，socket.io 会一直重试
-        console.warn('[live] 续播失败，等下次重连', msg)
+        // ack 丢失时 socket 仍是 connected，不会再有下一次 connect；在当前连接上主动补试。
+        console.warn('[live] 续播失败，稍后在当前连接上重试', msg)
+        retryResume()
         return
       }
+    } finally {
+      resumeInFlight = false
     }
     try {
       await goLive()
@@ -1053,6 +1119,10 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
   socket.on('disconnect', (() => {
     // 信令断了，画面不一定断（WebRTC 是点对点的）。socket.io 会自己重连，连上再 resume
     if (!stopped) {
+      window.clearTimeout(resumeTimer)
+      resumeTimer = 0
+      // ICE 配置还在飞的请求必须作废；否则它回来后会把 signal 塞进离线队列。
+      viewerRequests.clear()
       coopReported = ''
       options.onState?.('reconnecting')
     }

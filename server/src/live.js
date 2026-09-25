@@ -892,7 +892,21 @@ export function attachLive(io, options = {}) {
   })
 
   nsp.on('connection', (socket) => {
+    /**
+     * 客户端的 ack 可能在网络切换时丢掉，而服务端其实已经完成了开播/续播。
+     * 同一条 socket 再问时要把原结果补回去，不能只回 already in a room ——
+     * 后者没有 roomId/token/观众名单，客户端从此既不能继续也不能恢复。
+     */
+    const boundHostRoom = () => {
+      const info = membership.get(socket.id)
+      if (info?.role !== 'host') return null
+      const room = rooms.get(info.roomId)
+      return room?.hostSocketId === socket.id ? room : null
+    }
+
     socket.on('go-live', async (payload, ack) => {
+      const existing = boundHostRoom()
+      if (existing) return ack?.(null, { roomId: existing.id, token: existing.token })
       if (membership.has(socket.id)) return ack?.('already in a room')
       if (socket.data.liveOpening) return ack?.('already opening a room')
       socket.data.liveOpening = true
@@ -923,6 +937,8 @@ export function attachLive(io, options = {}) {
         }
 
         // 查用户期间同一条连接可能被别的事件放进房间；await 后必须再确认一次。
+        const opened = boundHostRoom()
+        if (opened) return ack?.(null, { roomId: opened.id, token: opened.token })
         if (membership.has(socket.id)) return ack?.('already in a room')
         if (rooms.size >= MAX_ROOMS) return ack?.('server is full')
         const ip = hostIp(socket)
@@ -1016,14 +1032,21 @@ export function attachLive(io, options = {}) {
     })
 
     socket.on('resume-live', async (payload, ack) => {
+      const requestedRoomId = str(payload?.roomId, 64)
+      const requestedToken = str(payload?.token, 64)
+      const already = boundHostRoom()
+      if (already) {
+        if (already.id !== requestedRoomId) return ack?.('already in a room')
+        if (!requestedToken || requestedToken !== already.token) return ack?.('forbidden')
+        return ack?.(null, { roomId: already.id, viewers: Array.from(already.viewers) })
+      }
       if (membership.has(socket.id)) return ack?.('already in a room')
       if (socket.data.liveResuming) return ack?.('already resuming')
       socket.data.liveResuming = true
       try {
-        const room = rooms.get(str(payload?.roomId, 64))
+        const room = rooms.get(requestedRoomId)
         if (!room) return ack?.('not found')
-        const token = str(payload?.token, 64)
-        if (!token || token !== room.token) return ack?.('forbidden')
+        if (!requestedToken || requestedToken !== room.token) return ack?.('forbidden')
         if (room.publisher) {
           const claims = socket.data.livePublisher
           if (!claims || claims.appId !== room.publisher.appId || claims.userId !== room.publisher.userId) {
@@ -1038,6 +1061,11 @@ export function attachLive(io, options = {}) {
 
         // 查账号期间房间可能已经到期散场；不能把一个已删除的对象重新绑回 socket。
         if (rooms.get(room.id) !== room) return ack?.('not found')
+        const resumed = boundHostRoom()
+        if (resumed) {
+          if (resumed.id !== room.id || requestedToken !== resumed.token) return ack?.('already in a room')
+          return ack?.(null, { roomId: resumed.id, viewers: Array.from(resumed.viewers) })
+        }
         if (membership.has(socket.id)) return ack?.('already in a room')
 
         // 接管：旧 socket 还挂着（没到 ping 超时）的话，把它从房间里请出去

@@ -560,6 +560,16 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
         return
       }
       tabStreamRef.current = stream
+      /**
+       * ended 监听必须在开播握手**之前**挂。
+       * 玩家可能在那几秒里从浏览器提示条点“停止共享”；以前监听还没挂上，随后照样创建直播间，
+       * 观众只能看到永久黑屏。stop() 会递增代次，下面迟到的 Broadcast 随即自行收尾。
+       */
+      for (const tr of stream.getTracks()) {
+        tr.addEventListener('ended', () => {
+          if (tabStreamRef.current === stream) stop()
+        }, { once: true })
+      }
       const b = await startBroadcast({
         sources: { stream },
         maxBitrate: tabBitrate(stream),
@@ -571,7 +581,7 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
           else if (state === 'ended') stop()
         },
       })
-      if (attempt !== manualAttemptRef.current) {
+      if (attempt !== manualAttemptRef.current || !stream.getVideoTracks().some((track) => track.readyState === 'live')) {
         // 开播握手期间也可能离页。Broadcast 已经建出来了，必须连房间和采集资源一起拆掉。
         b.stop()
         for (const tr of stream.getTracks()) tr.stop()
@@ -582,8 +592,6 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
       setLive(b)
       setRoomId(b.roomId)
       refreshLiveRooms()
-      // 玩家在浏览器那条「正在分享」上点了停止：跟着下播
-      for (const tr of stream.getTracks()) tr.addEventListener('ended', () => stop(), { once: true })
     } catch (e) {
       // 多半是玩家在选择器里点了取消（NotAllowedError）—— 那就当没这回事
       if (stream) for (const tr of stream.getTracks()) tr.stop()

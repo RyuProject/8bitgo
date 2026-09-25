@@ -144,7 +144,10 @@ interface RawVideo {
 
 function captureRaw(sources: CaptureSources, fps: number): RawVideo | null {
   if (sources.stream) {
-    const track = sources.stream.getVideoTracks()[0]
+    // getDisplayMedia 的轨在用户点掉浏览器“停止共享”后仍留在 MediaStream 里，
+    // 只是 readyState 已经变成 ended。把它当可用源会建出一个房间、也能完成信令，
+    // 但观众永远收不到第一帧；必须在最靠近采集入口的地方拒绝它。
+    const track = sources.stream.getVideoTracks().find((item) => item.readyState !== 'ended')
     return track ? { track, owned: false, canvas: null } : null
   }
   const canvas = sources.canvas
@@ -168,7 +171,9 @@ export function probeCapture(sources: CaptureSources | null | undefined, fps: nu
 }
 
 function buildAudio(sources: CaptureSources): { tracks: MediaStreamTrack[]; release: () => void } {
-  if (sources.stream) return { tracks: sources.stream.getAudioTracks(), release: () => {} }
+  if (sources.stream) {
+    return { tracks: sources.stream.getAudioTracks().filter((track) => track.readyState !== 'ended'), release: () => {} }
+  }
   const { audioNode, audioContext } = sources
   if (audioNode && audioContext) {
     try {
