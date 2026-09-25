@@ -126,7 +126,7 @@ const tick = (ms) => new Promise((r) => setTimeout(r, ms))
 /* ---------------- 跑 ---------------- */
 
 const HB = 60
-send({ t: 'init', writable, heartbeatMs: HB, snapMs: 10_000 })
+send({ t: 'init', writable, heartbeatMs: HB, snapMs: 50 })
 
 console.log('── 转发 ──')
 {
@@ -193,6 +193,7 @@ console.log('\n── 编码器背压：补帧不能无限排队 ──')
 
 console.log('\n── 停 ──')
 {
+  ok(posted.some((m) => m.t === 'alive'), '⭐ 无论画面是否有新帧，Worker 都会报运行心跳')
   send({ t: 'stop' })
   await tick(30)
   ok(writerClosed, 'writer 关掉了')

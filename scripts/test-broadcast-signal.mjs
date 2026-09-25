@@ -187,6 +187,11 @@ class FakeRTCIceCandidate {
 const handlers = new Map()
 const sent = []
 const coopStates = []
+let goLiveFailures = 1
+let goLiveCalls = 0
+let resumeViewers = []
+let resumeFailures = 0
+let resumeCalls = 0
 const fakeSocket = {
   connected: true,
   on(event, fn) {
@@ -197,7 +202,20 @@ const fakeSocket = {
     if (event === 'signal') sent.push(payload)
     if (event === 'coop-state') coopStates.push(payload)
     if (typeof ack === 'function') {
-      if (event === 'go-live') ack(null, { roomId: 'r1', token: 't1' })
+      if (event === 'go-live') {
+        goLiveCalls++
+        if (goLiveFailures > 0) {
+          goLiveFailures--
+          ack('go-live timeout')
+        } else ack(null, { roomId: 'r1', token: 't1' })
+      }
+      else if (event === 'resume-live') {
+        resumeCalls++
+        if (resumeFailures > 0) {
+          resumeFailures--
+          ack('failed')
+        } else ack(null, { roomId: 'r1', viewers: resumeViewers })
+      }
       else ack(null, {})
     }
   },
@@ -235,6 +253,13 @@ const live = await startBroadcast({
   onSeatChange: (viewerId) => seatChanges.push(viewerId),
   onGuestInput: (button, down) => guestInputs.push({ button, down }),
 })
+ok(goLiveCalls === 2, '⭐ 首次 go-live 的确认丢失后会在同一 socket 上补试')
+
+{
+  const source = (await import('node:fs')).readFileSync(new URL('../src/emulator/broadcast.ts', import.meta.url), 'utf8')
+  ok(/PEER_DISCONNECTED_GRACE_MS/.test(source) && /connectionState === 'disconnected'/.test(source), '⭐ 主播会回收永久卡在 disconnected 的空编码路')
+  ok(/statsInFlight/.test(source) && /Promise\.all\(Array\.from\(peers\.values\(\)/.test(source), '⭐ 多观众统计并行读取且不重入，不再叠加主线程压力')
+}
 
 /* ---------------- 1. 候选在远端描述落地前到达：先攒着，落地后一并加 ---------------- */
 console.log('── ICE 候选不能丢 ──')
@@ -444,6 +469,50 @@ console.log('\n── 2P 状态跨信令重连补报 ──')
   fire('connect')
   await sleep(30)
   ok(coopStates.at(-1)?.taken === false, '⭐ 重连续播后补报断线期间的空座状态，大厅不会永久显示已占')
+}
+
+/* ---------------- 10. resume ack 丢失 + 未完成连接：当前 socket 内自愈 ---------------- */
+console.log('\n── 主播续播确认丢失与半连接自愈 ──')
+{
+  fire('viewer-joined', { viewerId: 'resume-stuck' })
+  await sleep(30)
+  const stuck = pcs.at(-1)
+  const beforeOffers = offersTo('resume-stuck').length
+  ok(stuck.connectionState === 'connecting', '前提：旧连接还卡在握手中，没有 answer')
+
+  fakeSocket.connected = false
+  fire('disconnect')
+  resumeViewers = ['resume-stuck']
+  resumeFailures = 1
+  const callsBefore = resumeCalls
+  fakeSocket.connected = true
+  fire('connect')
+  // 第一次 resume 被服务端处理但确认丢失/临时失败；socket 没再断，客户端也必须自己补试。
+  await sleep(2_150)
+  ok(resumeCalls >= callsBefore + 2, '⭐ resume 临时失败后在当前已连接 socket 上自动重试')
+  ok(stuck.closed, '⭐ 续播时不把 connecting 的半连接误当成可复用连接')
+  ok(offersTo('resume-stuck').length === beforeOffers + 1, '⭐ 服务端名单里的观众收到一份新 offer')
+}
+
+/* ---------------- 11. ICE 配置等待中断线：旧 offer 不能进入离线队列 ---------------- */
+console.log('\n── ICE 等待期间信令断开 ──')
+{
+  let resolveIce
+  globalThis.__fakeLiveIceServers = () => new Promise((resolve) => { resolveIce = resolve })
+  const beforePc = pcs.length
+  fire('viewer-joined', { viewerId: 'during-down' })
+  fakeSocket.connected = false
+  fire('disconnect')
+  resolveIce?.([])
+  await sleep(20)
+  ok(pcs.length === beforePc && offersTo('during-down').length === 0, '⭐ 断线后才回来的 ICE 配置不会建半连接或排队发 offer')
+
+  delete globalThis.__fakeLiveIceServers
+  resumeViewers = ['during-down']
+  fakeSocket.connected = true
+  fire('connect')
+  await sleep(40)
+  ok(offersTo('during-down').length === 1, '信令恢复并续播后按名单正常补发 offer')
 }
 
 live.stop()

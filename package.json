@@ -44,6 +44,7 @@
     "test:arcade-runtime": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-arcade-runtime.mjs",
     "test:mame-audio": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-mame-audio.mjs",
     "test:nds-audio": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-nds-audio.mjs",
+    "test:gba-video": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-gba-video.mjs",
     "test:nds-startup": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-nds-startup.mjs",
     "build:melondsds": "node scripts/build-melondsds-core.mjs",
     "test:fs-write": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-fs-write.mjs",

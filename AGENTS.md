@@ -779,6 +779,47 @@ PUT / PATCH 前按关联表的真实重写语义校验；启动时 `schema-check
 自测：`npm run test:scroll`（含「座位变了不重装监听也要生效」）+ `cd server && npm run test:live`
 （含 `ghostRooms` 分类、停播重开不留旧房、以及三条防回退的源码断言）。
 
+### 2.25.1 直播恢复请求必须幂等；信令断线期间不能排队发 SDP / ICE
+
+`go-live` / `resume-live` 可能已经被服务端执行，但 ack 恰好在网络切换时丢掉。客户端重试时，
+服务端若只回 `already in a room`，就拿不回 `roomId`、续播 token 和观众名单，主播界面会永久停在
+“重连中”（首次开播则会直接放弃整局）。所以同一 socket 已经是该房主播时，两条事件都必须补回原成功结果；客户端的
+首次 `go-live` 对 timeout / `already opening` / 临时 `failed` 做有限补试，
+`resume-live` 超时或临时失败也必须在**当前已连接 socket** 上定时补试，不能等一个不会再来的
+`connect` 事件。回归：`cd server && npm run test:live`、`npm run test:broadcast-signal`。
+
+主播信令断开时，正在 `liveIceServers()` / `createOffer()` 的请求一律作废；SDP / ICE 不能进入
+Socket.IO 离线队列。队列会在 `resume-live` 恢复 membership 之前冲到服务端，随后被静默丢掉。
+续播拿回观众名单后只保留 `connectionState === connected` 的 PeerConnection；`new` / `connecting`
+可能就是那次丢掉 offer 的半连接，必须拆掉重建。观众侧同理：`watch timeout` / `failed` /
+`already watching` 是可恢复错误，socket 仍连着也要重新上闹钟，而且 `failed`、闹钟与 socket 重连
+三个入口只能有一条恢复请求在飞。
+
+手动“分享标签页”的 `ended` 监听必须在 `startBroadcast()` **之前**挂，并在开房后再复核至少一条
+video track 仍是 `live`。用户可能在握手几秒内从浏览器提示条停止共享；MediaStream 仍保留那条
+`readyState=ended` 的轨，不能据“轨还在数组里”误开一个永远黑屏的房间。
+
+### 2.25.2 直播的“还在连接”不等于“还在出画面”
+
+WebRTC 的 `disconnected` 不保证后面一定会进 `failed`。网络切换时先给它宽限自愈；
+观众端 10 秒后仍没回来就主动 `rewatch()`，主播端 12 秒后收掉这路 PeerConnection，
+否则会一边给空连接编码、一边让观众永久看最后一帧。远端 video track 也能在
+`connectionState=connected` 时单独 `ended`，它同样必须触发恢复，不能只盯 ICE 状态。
+
+`captureStream()` 轨结束时，canvas 节点本身可能完全没换；`captureFeed.check()` 要允许在
+**同一块 canvas** 上重建新轨。转发 Worker 在拿走 generator 的 writable 之后每 2 秒报心跳，
+超时则回退到原始轨：不是每种 Worker/GPU 卡死都会发 `onerror`。
+
+手动分享只监听 **video track** 的 `ended`；音频轨单独结束只代表之后没声音，
+不应把仍正常的视频直播一起关掉。主播统计读取要并行且不重入；12 个观众若串行
+`getStats()` 并与下一轮叠加，自适应降帧会被重复计数、反而增加主线程压力。
+
+生产机是从 `dist/client` 现场服务，所以 `vite.config.ts` 的 `emptyOutDir` 必须是 `false`。
+2026-09-25 日志已取证到构建期 `dist/client/index.html` 短暂不存在，SSR 当场 500。
+旧哈希资源留着也能保证已打开的观众页在部署期间继续懒加载；`ssr.js` 在模板
+短暂读不到时要继续用内存里已有的完整模板。回归：`npm run test:watch-panel` +
+`npm run test:capture-worker` + `npm run test:capture-feed` + `npm run test:broadcast-signal`。
+
 ### 2.26 Windows 客体（Win3.x / 95 / 98）的自动启动：**「亮 + 静止」不等于桌面**
 
 `src/emulator/windowsLaunch.ts` 负责那条链：系统镜像（qcow2 → `boot c: -convertfat`）起来之后，

@@ -179,6 +179,14 @@ check('⚠️ 主播回来后只有真的收到画面才可以报正在观看', 
   assert.match(body, /else void rewatch\(\)/, '旧连接已经断开时没有立即重建')
 })
 
+check('⚠️ watch 临时失败后必须继续重试，且恢复请求不能并发', () => {
+  const src = code('src/emulator/adapters/liveview.ts')
+  assert.match(src, /const transient = msg === 'watch timeout'[\s\S]*?'already watching'/, '首次 ack 丢失仍会被当成永久失败')
+  assert.match(src, /lastWatchRetryable &&[\s\S]*?armRewatch\(FIRST_OFFER_MS\)/, '临时失败后没有重新上闹钟')
+  assert.match(src, /recoveryInFlight/, '多个恢复来源仍会并发发 watch')
+  assert.match(src, /localCandidateTypes\.clear\(\)/, '换连接后仍沿用上一轮 ICE 候选做诊断')
+})
+
 check('⚠️ 手动分享选择器迟到时不能在离页后偷偷开播', () => {
   /*
     getDisplayMedia 的选择器可以挂很久。期间组件卸载 / 玩家点关播后，Promise 仍会兑现；
@@ -195,6 +203,25 @@ check('⚠️ 手动分享选择器迟到时不能在离页后偷偷开播', () 
   assert.ok((manual.match(/attempt !== manualAttemptRef\.current/g) ?? []).length >= 2, '拿流和开房后没有分别拦迟到结果')
   assert.match(manual, /b\.stop\(\)/, '迟到但已经建好的直播房没有拆掉')
   assert.match(manual, /for \(const tr of stream\.getTracks\(\)\) tr\.stop\(\)/, '迟到的屏幕共享轨没有停止')
+  const listenAt = manual.indexOf("tr.addEventListener('ended'")
+  const startAt = manual.indexOf('const b = await startBroadcast')
+  assert.ok(listenAt > 0 && listenAt < startAt, 'ended 监听挂得太晚：握手期间停止共享会留下黑屏房')
+  assert.match(manual, /for \(const tr of stream\.getVideoTracks\(\)\)/, '音频轨单独结束不应该连视频直播一起关掉')
+  assert.match(manual, /getVideoTracks\(\)\.some\(\(track\) => track\.readyState === 'live'\)/, '开房后没有复核视频轨仍然存活')
+})
+
+check('观众端不会永久卡在 disconnected，视频轨单独 ended 也会自愈', () => {
+  const src = code('src/emulator/adapters/liveview.ts')
+  assert.match(src, /DISCONNECTED_GRACE_MS/, '没有 disconnected 恢复宽限')
+  assert.match(src, /next\.connectionState !== 'disconnected'[\s\S]*?void rewatch\(\)/, '宽限到期后没有重新 watch')
+  assert.match(src, /track\.onended = \(\) =>[\s\S]*?void rewatch\(\)/, '媒体轨结束后仍只等 ICE failed')
+})
+
+check('生产构建期间不拆掉正在看播用的旧入口和哈希资源', () => {
+  const vite = code('vite.config.ts')
+  const ssr = code('server/src/ssr.js')
+  assert.match(vite, /emptyOutDir: false/, 'Vite 仍会在现场构建前清空 dist\/client')
+  assert.match(ssr, /if \(template !== null\) return template/, 'index.html 短暂不存在时 SSR 不会使用已缓存的完整模板')
 })
 
 check('播放器代码块加载时有可见、可读屏的状态，不再只剩黑框', () => {

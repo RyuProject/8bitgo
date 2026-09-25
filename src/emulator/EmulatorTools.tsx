@@ -8,6 +8,7 @@
  */
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { Capability, RuntimeHandle, RuntimeId, ScreenLayoutState } from './types'
+import type { GbaVideoMode } from './gbaVideo'
 import { layoutToken, showsTouchScreen } from './dualScreen'
 import { canRecord, downloadBlob, mediaFileName, startRecording, MAX_RECORD_MS, type Recorder } from './recorder'
 import { useT, fmt } from '@/services/i18n'
@@ -165,7 +166,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
   const [paused, setPaused] = useState(false)
   const [volume, setVolume] = useState(handle?.volume ?? 1)
   const [muted, setMuted] = useState(false)
-  const [panel, setPanel] = useState<'volume' | 'gamepad' | 'fsSave' | 'fsLoad' | null>(null)
+  const [panel, setPanel] = useState<'volume' | 'gamepad' | 'gbaVideo' | 'fsSave' | 'fsLoad' | null>(null)
   /**
    * handle 走 ref 给快捷键那个 effect 用。
    *
@@ -200,6 +201,8 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
   const [pads, setPads] = useState<string[]>([])
   /** 鼠标上下反转（DOS 射击游戏）。初值从句柄读，之后本地维护 —— 和音量一样的做法 */
   const [mouseInv, setMouseInv] = useState(Boolean(handle?.mouseInverted))
+  /** GBA 画质只在运行时真正提供切换方法时使用；其它平台永远不画这个入口。 */
+  const [gbaVideoMode, setGbaVideoMode] = useState<GbaVideoMode>(handle.gbaVideoMode ?? 'pixel')
   const [recording, setRecording] = useState(false)
   const [elapsed, setElapsed] = useState(0)
   const recRef = useRef<Recorder | null>(null)
@@ -244,6 +247,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
     setMuted(false)
     setVolume(handle?.volume ?? 1)
     setMouseInv(Boolean(handle?.mouseInverted))
+    setGbaVideoMode(handle.gbaVideoMode ?? 'pixel')
     return () => {
       recRef.current?.cancel()
       recRef.current = null
@@ -758,7 +762,8 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
     caps.has('gamepad') ||
     caps.has('screenshot') ||
     caps.has('record') ||
-    Boolean(handle.setMouseInvert)
+    Boolean(handle.setMouseInvert) ||
+    Boolean(handle.setGbaVideoMode)
 
   return (
     <div className={cx('relative flex flex-wrap items-center gap-1.5', className)}>
@@ -889,6 +894,22 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
           </button>
         )}
 
+        {handle.setGbaVideoMode && (
+          <button
+            type="button"
+            className={cx(BTN, panel === 'gbaVideo' && BTN_ON)}
+            onClick={() => {
+              setPanel(panel === 'gbaVideo' ? null : 'gbaVideo')
+              setMore(false)
+            }}
+            title={tt.gbaVideo}
+            aria-label={tt.gbaVideo}
+            aria-expanded={panel === 'gbaVideo'}
+          >
+            ✨
+          </button>
+        )}
+
         {caps.has('gamepad') && (
           <button
             type="button"
@@ -981,6 +1002,39 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
             aria-label={tt.volume}
           />
           <span className="w-8 tabular-nums text-muted">{Math.round((muted ? 0 : volume) * 100)}</span>
+        </div>
+      )}
+
+      {panel === 'gbaVideo' && handle.setGbaVideoMode && (
+        <div className="absolute bottom-full left-0 z-20 mb-2 w-72 max-w-[calc(100vw-2rem)] rounded-lg border border-line bg-surface px-3 py-2 shadow-lg">
+          <p className="font-semibold text-fg">{tt.gbaVideo}</p>
+          <p className="mt-1 text-muted">{tt.gbaVideoHint}</p>
+          <div className="mt-2 grid gap-1.5">
+            {([
+              { mode: 'pixel', label: tt.gbaVideoPixel, desc: tt.gbaVideoPixelDesc },
+              { mode: 'smooth', label: tt.gbaVideoSmooth, desc: tt.gbaVideoSmoothDesc },
+              { mode: 'lcd', label: tt.gbaVideoLcd, desc: tt.gbaVideoLcdDesc },
+            ] satisfies { mode: GbaVideoMode; label: string; desc: string }[]).map((item) => (
+              <button
+                key={item.mode}
+                type="button"
+                aria-pressed={gbaVideoMode === item.mode}
+                onClick={() => {
+                  handle.setGbaVideoMode?.(item.mode)
+                  setGbaVideoMode(item.mode)
+                }}
+                className={cx(
+                  'rounded-md border px-2 py-1.5 text-left transition-colors',
+                  gbaVideoMode === item.mode
+                    ? 'border-brand bg-brand-soft text-brand-hover'
+                    : 'border-line text-fg hover:border-brand',
+                )}
+              >
+                <span className="block font-semibold">{item.label}</span>
+                <span className="block text-muted">{item.desc}</span>
+              </button>
+            ))}
+          </div>
         </div>
       )}
 

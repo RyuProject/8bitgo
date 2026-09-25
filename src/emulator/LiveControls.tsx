@@ -565,7 +565,9 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
        * 玩家可能在那几秒里从浏览器提示条点“停止共享”；以前监听还没挂上，随后照样创建直播间，
        * 观众只能看到永久黑屏。stop() 会递增代次，下面迟到的 Broadcast 随即自行收尾。
        */
-      for (const tr of stream.getTracks()) {
+      // 音频轨可能因为“停止共享标签页声音”单独结束；那不该把仍然正常的视频直播
+      // 一起关掉。只有唯一决定画面是否存在的视频轨结束，才算这次分享真的结束。
+      for (const tr of stream.getVideoTracks()) {
         tr.addEventListener('ended', () => {
           if (tabStreamRef.current === stream) stop()
         }, { once: true })

@@ -58,7 +58,15 @@ const now = () => (typeof performance !== 'undefined' ? performance.now() : Date
  * 种子本来就至少是 3 秒前的画面（空闲放手要等 3 秒），快照再旧 2 秒完全无所谓。
  */
 const snap = () => {
-  if (stopped || !last) return
+  if (stopped) return
+  try {
+    // 即使源还没给第一帧，也要证明 Worker 的事件循环仍在跑。主线程已经把唯一的
+    // writable 转移到这里，静默卡死若没有这句就不会触发 onerror，只会永久黑屏。
+    ctx.postMessage({ t: 'alive' })
+  } catch {
+    /* 主线程已经走了，后续 stop/onerror 会负责收尾 */
+  }
+  if (!last) return
   // ⚠️ copy 要声明在 try 外面：clone 成功但 postMessage 抛出时，这一帧没人接手，
   //    得由我们自己关掉。放在 try 里的话它就永远漏在那儿了（2 秒一次，无上限）。
   let copy: VideoFrame | null = null

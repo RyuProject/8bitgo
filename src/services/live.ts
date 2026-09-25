@@ -229,13 +229,8 @@ export async function connectLive(): Promise<LiveSocket> {
      * 这里就把 socket 关了 —— 服务器重启那几秒、网络抖一下，重连从此永久停止，
      * 主播的房间和观众的画面就这么没了，而且没有任何报错。
      */
-    const onConnect = () => {
-      window.clearTimeout(timer)
-      socket.off('connect', onConnect)
-      socket.off('connect_error', onError)
-      resolve()
-    }
-    const onError = ((err: Error) => {
+    let lastError: Error | null = null
+    const finishError = (err: Error) => {
       window.clearTimeout(timer)
       socket.off('connect', onConnect)
       socket.off('connect_error', onError)
@@ -248,8 +243,24 @@ export async function connectLive(): Promise<LiveSocket> {
       // 对着这句话没人猜得到该干什么。翻译成人话：后端代码是旧的，或者没重启。
       const msg = String(err?.message || '')
       reject(new Error(/invalid namespace/i.test(msg) ? getT().runtime.liveNoServer : msg || getT().runtime.liveNoServer))
+    }
+    const onConnect = () => {
+      window.clearTimeout(timer)
+      socket.off('connect', onConnect)
+      socket.off('connect_error', onError)
+      resolve()
+    }
+    const onError = ((err: Error) => {
+      const msg = String(err?.message || '')
+      // Invalid namespace 是部署配置错误，等多久也不会自己好；其余首次连接错误多半是
+      // Wi‑Fi/移动网络切换或服务器短暂重启，让 Socket.IO 在总预算内继续重试。
+      if (/invalid namespace/i.test(msg)) finishError(err)
+      else lastError = err
     }) as (...args: never[]) => void
-    const timer = window.setTimeout(() => onError(new Error(getT().runtime.liveTimeout) as never), 15_000)
+    const timer = window.setTimeout(
+      () => finishError(lastError ?? new Error(getT().runtime.liveTimeout)),
+      15_000,
+    )
     socket.on('connect', onConnect)
     socket.on('connect_error', onError)
   })
@@ -355,6 +366,8 @@ const liveStore = (() => {
   let timer = 0
   /** 当前连接按哪一张 JWT 建立；登录 / 退出后必须换通道，否则会沿用旧权限。 */
   let connectedToken = ''
+  /** 让旧连接 / 旧 JWT 发起的迟到响应失效，避免登出后短暂显示成人房或陈旧房间。 */
+  let generation = 0
   const emit = () => listeners.forEach((l) => l())
 
   /** 列表空了要真的清空 —— 主播下播之后卡片必须消失，不能因为「保留上次结果」一直挂着 */
@@ -364,8 +377,11 @@ const liveStore = (() => {
   }
 
   const refresh = async () => {
+    const mine = generation
+    const token = getToken()
     try {
-      apply(await loadLiveRooms())
+      const next = await loadLiveRooms()
+      if (mine === generation && token === getToken()) apply(next)
     } catch {
       /* 后端暂时不可达时保留上次结果，别闪一下空列表 */
     }
@@ -380,6 +396,7 @@ const liveStore = (() => {
 
   const connect = () => {
     connectedToken = getToken()
+    const mine = generation
     /*
       EventSource 不能自定义 Authorization 头。游客继续用它享受低请求量；登录用户改用带 JWT 的
       轮询，否则服务端只能把他当游客，年满 18 岁也永远看不到成人房。令牌绝不能塞进 URL，
@@ -400,6 +417,7 @@ const liveStore = (() => {
       return
     }
     es.addEventListener('rooms', (e) => {
+      if (mine !== generation || connectedToken) return
       try {
         const list = JSON.parse((e as MessageEvent<string>).data) as LiveRoomInfo[]
         if (Array.isArray(list)) apply(list)
@@ -413,10 +431,13 @@ const liveStore = (() => {
       状态停在 CONNECTING，兜底一次都不会触发，列表就静静地不再更新。
       详见 sseFallback.ts。
     */
-    stopFallback = fallbackAfterErrors(es, startPolling)
+    stopFallback = fallbackAfterErrors(es, () => {
+      if (mine === generation) startPolling()
+    })
   }
 
   const disconnect = () => {
+    generation++
     stopFallback?.()
     stopFallback = null
     es?.close()

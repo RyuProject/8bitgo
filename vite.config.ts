@@ -236,7 +236,16 @@ export default defineConfig(({ mode }) => {
   },
   build: {
     outDir: 'dist/client',
-    emptyOutDir: true,
+    /**
+     * 生产进程会直接从 dist/client 发静态文件，构建又是在同一目录现场进行。
+     * Vite 默认先清空目录：线上已取证到这一秒内 index.html 不存在，
+     * SSR 直接 500；旧页面迟加载的哈希 chunk 也会 404，直播观众刷新后就进不来。
+     *
+     * 不在构建前删旧产物：新文件写完后 index.html 才切到新哈希，而已打开页面
+     * 仍能按旧哈希懒加载。重复的只是 assets/ 下带内容哈希的小文件；
+     * public 里的大文件是同路径覆盖，不会每次复制出一份新名字。
+     */
+    emptyOutDir: false,
     rolldownOptions: {
       output: {
         /*

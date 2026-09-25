@@ -27,6 +27,7 @@ import type { CloudSession } from './adapters/cloudgame'
 import type { NetplaySession } from './adapters/emulatorjs'
 import type { LiveSession } from './adapters/liveview'
 import type { ChatSendResult } from './chatSend'
+import type { GbaVideoMode } from './gbaVideo'
 
 export type RuntimeId = 'emulatorjs' | 'ruffle' | 'html5' | 'jsnes' | 'j2me' | 'jsdos' | 'webretro' | 'play' | 'ppsspp' | 'dolphin' | 'cloudgame' | 'liveview'
 
@@ -600,6 +601,12 @@ export interface RuntimeHandle {
    * 当前值不从这里读，看 onScreenLayout 报上来的那份状态。
    */
   setScreenLayout?: (value: string) => void
+  /**
+   * GBA 专属画质档。核心只有 240×160 的最终像素帧，这里切的是显示层：
+   * 清晰像素 / ScaleHQ 平滑 / 轻量 LCD。其它平台不实现，工具栏就不会画入口。
+   */
+  gbaVideoMode?: GbaVideoMode
+  setGbaVideoMode?: (mode: GbaVideoMode) => void
   /**
    * 告诉运行时「这块画面现在是什么场合」。目前只有 EmulatorJS 实现（它的按键和画布都在
    * 自己的 iframe 里，外层 CSS 够不着）；不实现就等于「这引擎没这回事」，播放器跳过这一步。

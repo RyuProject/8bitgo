@@ -57,6 +57,13 @@ const SNAP_MS = 2000
 const WORKER_READY_MS = 3000
 
 /**
+ * Worker 已经接过唯一的 writable 之后，异常不一定都会冒成 onerror：浏览器进程回收、
+ * GPU/媒体管线卡死时可能只剩一个“还活着但再也不回消息”的 Worker。超过四轮快照周期
+ * 没有心跳就退回原始轨，宁可少掉静态画面补帧，也不能让观众永久停在最后一帧。
+ */
+const WORKER_STALL_MS = SNAP_MS * 4
+
+/**
  * 起一个转发泵 Worker。起不来就返回 null，退回主线程那条老路 —— 功能完全一样，
  * 只是逐帧搬运会重新占用模拟器那根线程。
  *
@@ -155,7 +162,7 @@ function captureRaw(sources: CaptureSources, fps: number): RawVideo | null {
   // 废画布（2×2 那种）抓出来是一条谁也看不懂的黑屏轨，不如没有
   if (!usableVideoSize(canvas.width, canvas.height)) return null
   const track = canvas.captureStream(fps).getVideoTracks()[0]
-  return track ? { track, owned: true, canvas } : null
+  return track && track.readyState !== 'ended' ? { track, owned: true, canvas } : null
 }
 
 /**
@@ -236,6 +243,10 @@ export function createCaptureFeed(resolve: SourceResolver, fps: number, seed: Vi
   let snapFrame: VideoFrame | null = null
   /** 正在自证的 Worker（还没交接）。release 时要把它掐掉 */
   let upgrading: Worker | null = null
+  /** Worker 运行期的心跳看门狗；加载期由 WORKER_READY_MS 单独负责。 */
+  let workerWatchdog = 0
+  let workerAliveAt = 0
+  let workerWasHidden = false
   let writer: WritableStreamDefaultWriter<VideoFrame> | null = null
   let reader: ReadableStreamDefaultReader<VideoFrame> | null = null
   /** 最后一帧的副本（心跳用）。换源时故意**不清**：新画布出第一帧之前观众继续看着旧画面，比黑一下好 */
@@ -345,6 +356,8 @@ export function createCaptureFeed(resolve: SourceResolver, fps: number, seed: Vi
    */
   const recoverFromWorker = () => {
     if (released || !keepAlive || !generator || !stream) return
+    if (workerWatchdog) window.clearInterval(workerWatchdog)
+    workerWatchdog = 0
     pumpWorker?.terminate()
     pumpWorker = null
     pumpGen++
@@ -414,6 +427,22 @@ export function createCaptureFeed(resolve: SourceResolver, fps: number, seed: Vi
         { t: 'init', writable: generator.writable, heartbeatMs: HEARTBEAT_MS, snapMs: SNAP_MS },
         [generator.writable as unknown as Transferable],
       )
+      workerAliveAt = performance.now()
+      workerWasHidden = typeof document !== 'undefined' && document.visibilityState === 'hidden'
+      workerWatchdog = window.setInterval(() => {
+        // 后台标签页的两边计时器都会被浏览器节流。回前台之后先等一轮真实心跳，
+        // 不要因为一段“睡眠时间”误杀仍然健康的 Worker。
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+          workerWasHidden = true
+          return
+        }
+        if (workerWasHidden) {
+          workerWasHidden = false
+          workerAliveAt = performance.now()
+          return
+        }
+        if (pumpWorker === worker && performance.now() - workerAliveAt > WORKER_STALL_MS) recoverFromWorker()
+      }, SNAP_MS)
       if (last) {
         const s = last
         last = null
@@ -428,6 +457,8 @@ export function createCaptureFeed(resolve: SourceResolver, fps: number, seed: Vi
       if (!pump(raw.track)) throw new Error('worker pump failed')
       return true
     } catch {
+      if (workerWatchdog) window.clearInterval(workerWatchdog)
+      workerWatchdog = 0
       pumpWorker = null
       // writable 已经转移出去的话 getWriter() 会抛，startMainPump 自己接得住
       if (!startMainPump()) console.warn('[live] 转发泵交接失败且没能退回主线程，这一路画面可能是死的')
@@ -477,7 +508,12 @@ export function createCaptureFeed(resolve: SourceResolver, fps: number, seed: Vi
         }
         return
       }
+      if (msg?.t === 'alive') {
+        if (!released && pumpWorker === worker && keepAlive) workerAliveAt = performance.now()
+        return
+      }
       if (msg?.t !== 'snap' || !msg.frame) return
+      workerAliveAt = performance.now()
       // 放掉之后还在路上的快照直接丢，别把它当种子攥着
       if (released || pumpWorker !== worker || !keepAlive) {
         msg.frame.close()
@@ -547,9 +583,12 @@ export function createCaptureFeed(resolve: SourceResolver, fps: number, seed: Vi
       if (!dead) return false
       const next = resolve()
       if (!next) return false
-      // 还是那块废画布 / 那条结束了的轨：这一轮等，下一轮再问
-      if (next.canvas && next.canvas === cur.canvas) return false
-      if (next.stream && next.stream.getVideoTracks()[0] === cur.track) return false
+      // 同一块**废画布**没法救；但“画布还好、captureStream 轨自己 ended”时必须允许
+      // 在同一块 canvas 上重新抓一条。原来的身份判断把这种情况永久挡死了。
+      const canvasBad = cur.canvas !== null && (!cur.canvas.isConnected || !usableVideoSize(cur.canvas.width, cur.canvas.height))
+      if (canvasBad && next.canvas === cur.canvas) return false
+      const nextLiveTrack = next.stream?.getVideoTracks().find((track) => track.readyState !== 'ended')
+      if (nextLiveTrack && nextLiveTrack === cur.track) return false
       const cand = captureRaw(next, curFps)
       if (!cand) return false
       raw = cand
@@ -622,6 +661,8 @@ export function createCaptureFeed(resolve: SourceResolver, fps: number, seed: Vi
       released = true
       pumpGen++
       if (heartbeat) window.clearInterval(heartbeat)
+      if (workerWatchdog) window.clearInterval(workerWatchdog)
+      workerWatchdog = 0
       void reader?.cancel().catch(() => {})
       reader = null
       void writer?.close().catch(() => {})

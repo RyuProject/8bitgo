@@ -41,15 +41,21 @@ async function getRender() {
 let template = null
 let templateMtime = 0
 function getTemplate() {
-  let mtime = 0
+  let mtime
   try {
     mtime = statSync(TEMPLATE).mtimeMs
   } catch {
-    /* 读不到就用缓存 */
+    /**
+     * 线上构建会先整理 dist/client，这个几秒窗口里 index.html 可能短暂不存在。
+     * 旧逻辑虽然注释写“用缓存”，却把 mtime 留成 0 后立刻 readFileSync，
+     * 实际是每个新访客都拿到 500。进程已经有一份完整模板时应继续服务它；
+     * 只有冷启动就没有产物时才让下面的 readFileSync 明确报错。
+     */
+    if (template !== null) return template
   }
   if (template === null || mtime !== templateMtime) {
     template = readFileSync(TEMPLATE, 'utf8')
-    templateMtime = mtime
+    templateMtime = mtime ?? 0
   }
   return template
 }

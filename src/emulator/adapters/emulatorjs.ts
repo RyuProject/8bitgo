@@ -48,6 +48,15 @@ import { arcadeCoreForRomData, supportsFbneoRomData } from '../arcadeCore'
 import { MAME_AUDIO_LATENCY_MS, RETROARCH_CFG_PATH, raiseAudioLatency } from '../mameAudio'
 import { NDS_AUDIO_BUFFER_BYTES_48K, NDS_AUDIO_LATENCY_MS } from '../ndsAudio'
 import {
+  GBA_ADDITIONAL_SHADERS,
+  GBA_DEFAULT_VIDEO_MODE,
+  configureGbaVideo,
+  gbaShaderForMode,
+  readGbaVideoMode,
+  writeGbaVideoMode,
+  type GbaVideoMode,
+} from '../gbaVideo'
+import {
   NDS_CORE_OPTIONS_PATH,
   NDS_SYSTEM_DIRECTORY,
   configureNdsCoreOptions,
@@ -634,6 +643,8 @@ interface EjsEmulator {
    * 也就是说两条都立刻对核心生效，区别只在「下一局还算不算数」。
    */
   changeSettingOption?: (key: string, value: string, isDefault?: boolean) => void
+  /** changeSettingOption 只改值；真正切 shader 的公开方法由 menuOptionChanged 间接调用。 */
+  enableShader?: (shader: string) => void
   /**
    * 引擎的「点画布就锁定鼠标指针」开关（设置菜单里的 Lock Mouse，出厂是开的）。
    * 走 changeSettingOption('lockMouse', …) 时引擎自己会经 handleSpecialOptions 改它；
@@ -1566,6 +1577,21 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     options.netplay?.gameId ??
     (options.gameSlug && !options.gameSlug.startsWith('local:') ? gameIdFor(options.gameSlug) : undefined)
 
+  /**
+   * GBA 画质按游戏记忆。自己拖进来的 ROM 没有 slug，就退到文件显示名；这仍然比把一款
+   * 游戏选的 LCD 效果串到所有 GBA 游戏安全。localStorage 的 getter 本身也可能在隐私模式
+   * 抛 SecurityError，所以连“拿 storage”都放进 try 里。
+   */
+  const gbaVideoGame = options.gameSlug?.trim() || options.gameName.trim() || 'default'
+  let gbaVideoMode: GbaVideoMode = GBA_DEFAULT_VIDEO_MODE
+  if (options.platform === 'gba') {
+    try {
+      gbaVideoMode = readGbaVideoMode(window.localStorage, gbaVideoGame)
+    } catch {
+      gbaVideoMode = GBA_DEFAULT_VIDEO_MODE
+    }
+  }
+
   const iframe = document.createElement('iframe')
   iframe.title = fmt(rt.emulatorTitle, { name: options.gameName })
   iframe.style.cssText = 'width:100%;height:100%;border:0;display:block;background:#0b0b0f'
@@ -1609,6 +1635,25 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /** EmulatorJS 的画布在 iframe 里，同源所以能直接拿 */
   const canvasOf = (): HTMLCanvasElement | null =>
     emuOf()?.canvas ?? iframe.contentDocument?.querySelector('canvas') ?? null
+
+  /**
+   * 即时切换 GBA shader。EmulatorJS 的 changeSettingOption 只更新设置值，菜单平时还会再走
+   * menuOptionChanged → enableShader；站内藏掉了那套菜单，所以这里把真正生效的后半步补齐。
+   * 第三参传 true：记忆由我们按游戏单独存，不能再让引擎的通用 shader 设置污染其它平台。
+   */
+  const applyGbaVideoMode = (emu: EjsEmulator | undefined, mode: GbaVideoMode) => {
+    if (!emu || options.platform !== 'gba') return
+    const shader = gbaShaderForMode(mode)
+    try {
+      emu.changeSettingOption?.('shader', shader, true)
+      emu.enableShader?.(shader)
+      emu.gameManager?.setVariable?.('shader', shader)
+      console.info(`[emulatorjs] GBA 画质：${mode}（${shader}）`)
+    } catch (e) {
+      // Shader 是增强项；编译失败时核心画面仍能正常输出，不能为了画质把整局拆掉。
+      console.warn(`[emulatorjs] GBA 画质切换失败，保留当前画面：${mode}`, e)
+    }
+  }
 
   /**
    * EmulatorJS 的改键记录属于 iframe，但开始页 / 详情页在父页面。启动后把玩家 0 的真实
@@ -2863,6 +2908,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (started || destroyed) return
     started = true
     window.clearInterval(startWatch)
+    // 默认配置会在引擎建菜单时应用一次；这里在核心与 shader 文件系统都就绪后再核对一次，
+    // 同时压过历史版本可能留下的 EmulatorJS 通用 shader 设置。
+    if (options.platform === 'gba') applyGbaVideoMode(win.EJS_emulator as EjsEmulator | undefined, gbaVideoMode)
     options.onReady?.()
     options.onStart?.()
     refineCaps()
@@ -3226,6 +3274,20 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             但也意味着你自己的浏览器上大概率看不到这次改动，要清掉引擎的控制设置才看得到。
           */
           EJS_defaultControls: options.platform === 'arcade' ? EJS_ARCADE_DEFAULT_CONTROLS : EJS_DEFAULT_CONTROLS,
+          /*
+            GBA 默认保持原始锐利像素；用户选过 ScaleHQ / LCD 后按游戏恢复。
+
+            不能给所有平台统一塞 shader：PS1 / 街机 / NDS 的源分辨率和画面结构完全不同，
+            2xScaleHQ 在 GBA 小字号上合适，不代表在双屏或 3D 内容上也合适。
+            LCD 是我们的一次采样轻量 shader，通过 EJS_shaders 合进引擎自带清单；ScaleHQ
+            直接复用当前自托管引擎内置资源，不多一次网络请求。
+          */
+          ...(options.platform === 'gba'
+            ? {
+                EJS_defaultOptions: { shader: gbaShaderForMode(gbaVideoMode) },
+                EJS_shaders: GBA_ADDITIONAL_SHADERS,
+              }
+            : {}),
           EJS_color: '#0078f2',
           EJS_backgroundColor: '#0b0b0f',
           // 跟着站点语言走。切语言是整页跳转（见 services/lang.ts 的 setLang），
@@ -3350,6 +3412,28 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           : undefined
 
         /**
+         * GBA 的 240×160 帧先做整数倍放大，避免非整数最近邻造成像素列宽忽粗忽细。
+         * 这必须在 callMain 前改 retroarch.cfg：核心启动后视频驱动已经按旧值建好，晚改只会
+         * 出现“日志说写成功、画面却完全没变”的假修复。失败时继续用默认画面，不拦开局。
+         */
+        const configureGbaScaling = options.platform === 'gba'
+          ? (emu: EjsEmulator) => {
+              const fs = emu.gameManager?.FS
+              if (!fs?.readFile || !fs.writeFile) return
+              try {
+                const before = new TextDecoder().decode(fs.readFile(RETROARCH_CFG_PATH))
+                const after = configureGbaVideo(before)
+                if (after !== before) fs.writeFile(RETROARCH_CFG_PATH, after)
+                const check = new TextDecoder().decode(fs.readFile(RETROARCH_CFG_PATH))
+                const ok = check.includes('video_smooth = false') && check.includes('video_scale_integer = true')
+                console.info(`[emulatorjs] GBA 整数缩放${ok ? '已启用' : '回读失败，按引擎默认画面继续'}`)
+              } catch (e) {
+                console.warn('[emulatorjs] GBA 整数缩放配置失败，按引擎默认画面继续：', e)
+              }
+            }
+          : undefined
+
+        /**
          * 重型核心的音频窗口：把 retroarch.cfg 里写死的 `audio_latency = 64` 调大。
          *
          * 机制、取值理由和验证方法全写在 `../mameAudio.ts` 的模块注释里（那里是纯函数，
@@ -3469,7 +3553,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             }
           : undefined
 
-        if (injections.length || relocateMameRom || relocateMameBios || raiseCoreAudioLatency || configureNdsStartup || selectNdsArchiveRom) {
+        if (injections.length || relocateMameRom || relocateMameBios || configureGbaScaling || raiseCoreAudioLatency || configureNdsStartup || selectNdsArchiveRom) {
           installFsInjector(win, injections, (path, msg) => {
             /*
               写失败**不拦着开局**（和 installFsInjector 的注释一致）：没了改版 dat，
@@ -3478,12 +3562,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               真缺文件的话核心自己会报「缺 xxx」，那条走 errorTap，比这里更准。
             */
             if (!destroyed) console.warn(`[emulatorjs] ${path || '待注入文件'} 没写进虚拟文件系统，按原始配置继续：`, fmt(rt.ejsFsInjectFailed, { msg }))
-          }, relocateMameRom || relocateMameBios || raiseCoreAudioLatency || configureNdsStartup || selectNdsArchiveRom
+          }, relocateMameRom || relocateMameBios || configureGbaScaling || raiseCoreAudioLatency || configureNdsStartup || selectNdsArchiveRom
             ? (emu) => {
                 // 顺序有讲究：先处理内容/BIOS，再准备核心专属目录与选项，最后调音频窗口。
                 relocateMameRom?.(emu)
                 relocateMameBios?.(emu)
                 selectNdsArchiveRom?.(emu)
+                configureGbaScaling?.(emu)
                 configureNdsStartup?.(emu)
                 raiseCoreAudioLatency?.(emu)
               }
@@ -3691,6 +3776,22 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     destroy,
     // EmulatorJS 默认 0.6，工具栏滑块要跟它对上
     volume,
+    ...(options.platform === 'gba'
+      ? {
+          get gbaVideoMode() {
+            return gbaVideoMode
+          },
+          setGbaVideoMode(mode: GbaVideoMode) {
+            gbaVideoMode = mode
+            try {
+              writeGbaVideoMode(window.localStorage, gbaVideoGame, mode)
+            } catch {
+              // localStorage getter 被禁用时也必须让本局即时切换。
+            }
+            applyGbaVideoMode(emuOf(), mode)
+          },
+        }
+      : {}),
     engineLog: () => errorTap?.lines.slice() ?? [],
     focus: () => focusFrame(iframe),
     gamepads: () => frameGamepads(iframe),

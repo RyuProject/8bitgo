@@ -69,6 +69,8 @@ const RECOVER_AFTER = 4
 const MAX_PENDING_ICE = 64
 /** 信令已经连回来了但某次 resume ack 丢了时，不等下一次断线，主动再问一次。 */
 const RESUME_RETRY_MS = 2_000
+/** ICE 的 disconnected 可能瞬时自愈，但也可能永远不进 failed；到点就收掉这路空编码。 */
+const PEER_DISCONNECTED_GRACE_MS = 12_000
 
 export type BroadcastState = 'connecting' | 'live' | 'reconnecting' | 'ended' | 'error'
 
@@ -390,6 +392,8 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     dc?: RTCDataChannel
     /** 同一个观众生命周期只自动重建一次，避免对方反复 close 通道拖着主播无限 offer。 */
     coopRecoveryAttempt: number
+    /** disconnected 不一定会继续变成 failed，必须自己给它一个回收期限。 */
+    disconnectTimer?: number
   }
   const peers = new Map<string, Peer>()
   let genCounter = 0
@@ -417,6 +421,8 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
   let cappedFps = captureFps
   let degradeStreak = 0
   let recoverStreak = 0
+  /** getStats 偶尔会卡过一个采样周期；不允许两轮同时改迟滞计数和帧率档位。 */
+  let statsInFlight = false
   let statsTimer = 0
   let sourceTimer = 0
   let visibilityBound = false
@@ -558,6 +564,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     const p = peers.get(viewerId)
     if (!p) return
     peers.delete(viewerId)
+    if (p.disconnectTimer) window.clearTimeout(p.disconnectTimer)
     /*
       ⚠️ 先松键再关连接。这个观众可能正持着 2P 位、手里按着方向键 ——
       不松的话游戏里那个角色会一直朝墙里跑，而且看起来像游戏卡住了，
@@ -665,8 +672,19 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
         }
       }
       pc.onconnectionstatechange = () => {
-        // 观众那边断了就把连接收掉，别留着白占上行。它要是还在房间里，会自己重新 watch
-        if (pc?.connectionState === 'failed' || pc?.connectionState === 'closed') {
+        const state = pc?.connectionState
+        if (state === 'connected') {
+          if (entry?.disconnectTimer) window.clearTimeout(entry.disconnectTimer)
+          if (entry) entry.disconnectTimer = 0
+        } else if (state === 'disconnected' && entry && !entry.disconnectTimer) {
+          // Chromium 有时会永远停在 disconnected，不再给 failed。继续留着会让编码器
+          // 对一条没有接收端的连接白跑整场；观众端稍早会主动 rewatch。
+          entry.disconnectTimer = window.setTimeout(() => {
+            entry!.disconnectTimer = 0
+            if (pc?.connectionState === 'disconnected' && peers.get(entry!.id) === entry) dropPeer(entry!.id)
+          }, PEER_DISCONNECTED_GRACE_MS)
+          // 观众那边断了就把连接收掉，别留着白占上行。它要是还在房间里，会自己重新 watch。
+        } else if (state === 'failed' || state === 'closed') {
           if (entry && peers.get(entry.id)?.pc === pc) dropPeer(entry.id)
         }
       }
@@ -754,82 +772,89 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       这里也顺带覆盖「句柄比开播晚到」和「中途换了游戏」两种情况。
     */
     reportCoop()
-    if (stopped || peers.size === 0) return
-    /**
-     * 收集每个观众上报的限制原因，循环结束后再取最坏的那个。
-     * 不在回调里直接维护「当前最坏值」——TypeScript 的控制流分析不跟踪闭包里的赋值，
-     * 循环后的比较会被判成恒假（TS2367）。分成收集 + 归约两步，类型和意图都更清楚。
-     */
-    const reasons: string[] = []
-    let minFps = Number.POSITIVE_INFINITY
-    let totalKbps = 0
-    let sawVideo = false
+    if (stopped || peers.size === 0 || statsInFlight) return
+    statsInFlight = true
+    try {
+      /**
+       * 收集每个观众上报的限制原因，循环结束后再取最坏的那个。
+       * 不在回调里直接维护「当前最坏值」——TypeScript 的控制流分析不跟踪闭包里的赋值，
+       * 循环后的比较会被判成恒假（TS2367）。分成收集 + 归约两步，类型和意图都更清楚。
+       */
+      const reasons: string[] = []
+      let minFps = Number.POSITIVE_INFINITY
+      let totalKbps = 0
+      let sawVideo = false
 
-    for (const { pc } of peers.values()) {
-      let report: RTCStatsReport
-      try {
-        report = await pc.getStats()
-      } catch {
-        continue
-      }
-      report.forEach((stat) => {
-        const s = stat as RTCStats & {
-          kind?: string
-          qualityLimitationReason?: string
-          framesPerSecond?: number
-          targetBitrate?: number
+      const reports = await Promise.all(Array.from(peers.values(), async ({ pc }) => {
+        try {
+          return await pc.getStats()
+        } catch {
+          return null
         }
-        if (s.type !== 'outbound-rtp' || s.kind !== 'video') return
-        sawVideo = true
-        if (s.qualityLimitationReason) reasons.push(s.qualityLimitationReason)
-        if (typeof s.framesPerSecond === 'number') minFps = Math.min(minFps, s.framesPerSecond)
-        if (typeof s.targetBitrate === 'number') totalKbps += Math.round(s.targetBitrate / 1000)
-      })
-    }
-    if (stopped || !sawVideo) return
+      }))
+      for (const report of reports) {
+        if (!report) continue
+        report.forEach((stat) => {
+          const s = stat as RTCStats & {
+            kind?: string
+            qualityLimitationReason?: string
+            framesPerSecond?: number
+            targetBitrate?: number
+          }
+          if (s.type !== 'outbound-rtp' || s.kind !== 'video') return
+          sawVideo = true
+          if (s.qualityLimitationReason) reasons.push(s.qualityLimitationReason)
+          if (typeof s.framesPerSecond === 'number') minFps = Math.min(minFps, s.framesPerSecond)
+          if (typeof s.targetBitrate === 'number') totalKbps += Math.round(s.targetBitrate / 1000)
+        })
+      }
+      if (stopped || !sawVideo) return
 
-    // 取最坏的那个观众，而不是平均：一个人卡不代表大家都卡，
-    // 但 CPU 被限住是主播这台机器的问题，对谁都成立，所以它优先级最高（带宽会自愈，CPU 不会）
-    const worst: QualityInfo['reason'] = reasons.includes('cpu')
-      ? 'cpu'
-      : reasons.includes('bandwidth')
-        ? 'bandwidth'
-        : reasons.some((r) => r !== 'none')
-          ? 'other'
-          : 'none'
+      // 取最坏的那个观众，而不是平均：一个人卡不代表大家都卡，
+      // 但 CPU 被限住是主播这台机器的问题，对谁都成立，所以它优先级最高（带宽会自愈，CPU 不会）
+      const worst: QualityInfo['reason'] = reasons.includes('cpu')
+        ? 'cpu'
+        : reasons.includes('bandwidth')
+          ? 'bandwidth'
+          : reasons.some((r) => r !== 'none')
+            ? 'other'
+            : 'none'
 
-    // 只有 CPU 受限才由我们出手降帧率；带宽受限交给浏览器自己调码率
-    if (worst === 'cpu') {
-      degradeStreak++
-      recoverStreak = 0
-      if (degradeStreak >= DEGRADE_AFTER) {
+      // 只有 CPU 受限才由我们出手降帧率；带宽受限交给浏览器自己调码率
+      if (worst === 'cpu') {
+        degradeStreak++
+        recoverStreak = 0
+        if (degradeStreak >= DEGRADE_AFTER) {
+          degradeStreak = 0
+          // 逐档减半，最低 10 帧 —— 再低就不像在动了，不如让人少几个观众
+          const next = Math.max(10, Math.round(statsCap / 2))
+          if (next < statsCap) {
+            statsCap = next
+            retuneFps()
+          }
+        }
+      } else {
         degradeStreak = 0
-        // 逐档减半，最低 10 帧 —— 再低就不像在动了，不如让人少几个观众
-        const next = Math.max(10, Math.round(statsCap / 2))
-        if (next < statsCap) {
-          statsCap = next
-          retuneFps()
+        if (statsCap < captureFps) {
+          recoverStreak++
+          if (recoverStreak >= RECOVER_AFTER) {
+            recoverStreak = 0
+            statsCap = Math.min(captureFps, statsCap * 2)
+            retuneFps()
+          }
         }
       }
-    } else {
-      degradeStreak = 0
-      if (statsCap < captureFps) {
-        recoverStreak++
-        if (recoverStreak >= RECOVER_AFTER) {
-          recoverStreak = 0
-          statsCap = Math.min(captureFps, statsCap * 2)
-          retuneFps()
-        }
-      }
-    }
 
-    options.onQuality?.({
-      reason: worst,
-      fps: Number.isFinite(minFps) ? Math.round(minFps) : 0,
-      kbps: totalKbps,
-      cappedFps,
-      viewers,
-    })
+      options.onQuality?.({
+        reason: worst,
+        fps: Number.isFinite(minFps) ? Math.round(minFps) : 0,
+        kbps: totalKbps,
+        cappedFps,
+        viewers,
+      })
+    } finally {
+      statsInFlight = false
+    }
   }
 
   /**
@@ -926,13 +951,33 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
   }
 
   const goLive = async () => {
-    const data = await call<{ roomId: string; token: string }>(socket, 'go-live', {
+    const payload = {
       title: options.meta.title,
       gameSlug: options.meta.gameSlug,
       gameName: options.meta.gameName,
       platform: options.meta.platform,
       hostName: options.meta.hostName,
-    })
+    }
+    let data: { roomId: string; token: string } | null = null
+    let lastError: unknown = null
+    /**
+     * 首次开播也会丢 ack：服务端房间已经建好，客户端却在 10 秒后当失败收摊。
+     * 服务端现在会对同一主播补回原 roomId/token，所以这里只重试“确认不确定”的错误；
+     * server is full / 权限错误等确定拒绝不能盲重试。
+     */
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        data = await call<{ roomId: string; token: string }>(socket, 'go-live', payload)
+        break
+      } catch (e) {
+        lastError = e
+        const msg = e instanceof Error ? e.message : String(e)
+        const uncertain = msg === 'go-live timeout' || msg === 'already opening a room' || msg === 'failed'
+        if (!uncertain || stopped || !socket.connected || attempt === 2) throw e
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 500))
+      }
+    }
+    if (!data) throw lastError instanceof Error ? lastError : new Error(String(lastError ?? 'go-live failed'))
     roomId = data.roomId
     token = data.token
     options.onRoom?.(roomId)

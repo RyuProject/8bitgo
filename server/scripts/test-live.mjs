@@ -62,6 +62,8 @@ await once(host, 'connect')
 const live = await call(host, 'go-live', { title: '塞尔达传说', gameSlug: 'zelda-gba', gameName: 'Zelda', platform: 'gba', hostName: 'Ryu' })
 check('开播', !live.err && live.data?.roomId, live.err || '')
 const roomId = live.data.roomId
+const liveAgain = await call(host, 'go-live', { title: '这次确认可能是补发', gameSlug: 'zelda-gba' })
+check('开播 ack 丢失后重试是幂等的', !liveAgain.err && liveAgain.data?.roomId === roomId && liveAgain.data?.token === live.data.token, liveAgain.err || '')
 
 // 2. 列表 / 详情
 check('房间列表', liveRooms().length === 1 && liveRooms()[0].title === '塞尔达传说')
@@ -294,6 +296,8 @@ const back = once(v3, 'host-back')
 const res = await call(host3, 'resume-live', { roomId: room2, token: token2 })
 check('续播成功', !res.err && res.data?.roomId === room2, res.err || '')
 check('主播拿到观众名单', Array.isArray(res.data?.viewers) && res.data.viewers.includes(v3.id))
+const resAgain = await call(host3, 'resume-live', { roomId: room2, token: token2 })
+check('续播 ack 丢失后重试是幂等的', !resAgain.err && resAgain.data?.roomId === room2 && resAgain.data?.viewers?.includes(v3.id), resAgain.err || '')
 const b = await back
 check('观众收到新的主播 id', b.hostId === host3.id)
 check('房间不再是 hostAway', liveRoom(room2).hostAway === false)

@@ -126,6 +126,11 @@ const FIRST_OFFER_MS = 8_000
 const REWATCH_TIMEOUT_MS = 20_000
 const REWATCH_MAX = 3
 /**
+ * ICE 的 disconnected 是“可能恢复”，不是“必然恢复”。Chromium 在网络切换后有时会永久
+ * 停在这个状态、永远不发 failed；给它十秒自愈，仍没回来就主动重新 watch。
+ */
+const DISCONNECTED_GRACE_MS = 10_000
+/**
  * 从进房到画面通的**总**预算。
  *
  * 以前这里是 25 秒，而重试机制是 20 秒 × 3 次 —— 看门狗必然先到，`fail()` 一调直接进错误遮罩，
@@ -208,6 +213,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let orphan = false
   let watching = false
   let rewatchTimer = 0
+  let disconnectTimer = 0
   let rewatchCount = 0
   /** 最近一次 watch 失败是不是临时故障；调用方据此决定要不要重新上闹钟。 */
   let lastWatchRetryable = false
@@ -362,6 +368,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (destroyed) return
     window.clearTimeout(watchdog)
     window.clearTimeout(rewatchTimer)
+    window.clearTimeout(disconnectTimer)
+    disconnectTimer = 0
     live.onState?.('error')
     options.onError?.(msg)
   }
@@ -671,6 +679,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   window.addEventListener('blur', onCoopBlur)
 
   const closePc = () => {
+    window.clearTimeout(disconnectTimer)
+    disconnectTimer = 0
     if (!pc) return
     const old = pc
     pc = null
@@ -723,8 +733,31 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       // 新一轮的轨替换旧一轮的同类轨：<video> 一直盯着同一个 MediaStream，不用重新赋 srcObject
       for (const track of ev.streams[0]?.getTracks() ?? [ev.track]) {
         if (stream.getTracks().includes(track)) continue
-        for (const old of stream.getTracks()) if (old.kind === track.kind) stream.removeTrack(old)
+        for (const old of stream.getTracks()) {
+          if (old.kind !== track.kind) continue
+          old.onended = null
+          stream.removeTrack(old)
+        }
         stream.addTrack(track)
+        if (track.kind === 'video') {
+          track.onended = () => {
+            // 媒体轨可以在 ICE 仍显示 connected 时单独结束（sender 替换失败、浏览器媒体管线重启）。
+            // 只等 connectionState 变 failed 的话，这块最后一帧会永远冒充“正在观看”。
+            if (destroyed || pc !== next || !stream.getTracks().includes(track)) return
+            gotFrame = false
+            frameWaiter?.()
+            if (hostFrozen) {
+              thawRewatch = true
+              live.onState?.('host-away')
+            } else if (hostAway) {
+              live.onState?.('host-away')
+            } else if (!socket?.connected) {
+              live.onState?.('reconnecting')
+            } else {
+              void rewatch()
+            }
+          }
+        }
       }
       tryPlay()
       // 轨到了就可以开始等第一帧 —— 比等 connectionState 变 connected 更早
@@ -734,6 +767,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       if (destroyed || pc !== next) return
       const s = next.connectionState
       if (s === 'connected') {
+        window.clearTimeout(disconnectTimer)
+        disconnectTimer = 0
         /**
          * 通道通了 ≠ 有画面了。第一帧还在路上，这时候把进度条撤掉只会露出一块黑屏。
          * 看门狗**故意不在这里清** —— 连上了却一直没有画面（主播没加轨、编码器起不来）
@@ -745,9 +780,28 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           waitForFirstFrame(markWatching)
         }
       } else if (s === 'disconnected') {
-        // ICE 的 disconnected 经常自己恢复；先只把标记变一下，failed 才动手
         live.onState?.(hostAway ? 'host-away' : 'reconnecting')
+        // 瞬断先留时间给 ICE 自己修；但不能无限等 failed —— 它在部分浏览器上永远不来。
+        if (!disconnectTimer) {
+          disconnectTimer = window.setTimeout(() => {
+            disconnectTimer = 0
+            if (destroyed || pc !== next || next.connectionState !== 'disconnected') return
+            gotFrame = false
+            if (hostFrozen) {
+              thawRewatch = true
+              live.onState?.('host-away')
+            } else if (hostAway) {
+              live.onState?.('host-away')
+            } else if (!socket?.connected) {
+              live.onState?.('reconnecting')
+            } else {
+              void rewatch()
+            }
+          }, DISCONNECTED_GRACE_MS)
+        }
       } else if (s === 'failed') {
+        window.clearTimeout(disconnectTimer)
+        disconnectTimer = 0
         if (orphan) return fail(rt.liveLost) // 服务器早不认这个房间了，画面也断了：真的结束
         if (hostAway) return live.onState?.('host-away') // 主播回来会重新 offer
         if (!socket?.connected) return live.onState?.('reconnecting') // socket 连上会重新 watch
@@ -1166,6 +1220,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       window.clearInterval(linkTimer)
       window.clearTimeout(watchdog)
       window.clearTimeout(rewatchTimer)
+      window.clearTimeout(disconnectTimer)
+      disconnectTimer = 0
       host.removeEventListener('click', onClick)
       video.removeEventListener('resize', reportSize)
       closePc()

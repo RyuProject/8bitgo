@@ -87,6 +87,16 @@ console.log('④ looksLikeSocketIo 认得出冒牌货')
   ck('普通对象不会被当成 socket.io', !looksLikeSocketIo({ Manager: 1 }))
 }
 
+console.log('⑤ 首次连接遇到瞬时网络错误不会立刻放弃')
+{
+  const live = readFileSync(join(root, 'src/services/live.ts'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '')
+  ck('Invalid namespace 这种确定错误仍然立即失败', /if \(\/invalid namespace\/i\.test\(msg\)\) finishError\(err\)/.test(live))
+  ck('其余 connect_error 先记下，给 Socket.IO 留自动重连预算', /else lastError = err/.test(live))
+  ck('总预算到期才真正关闭首连', /finishError\(lastError \?\? new Error\(getT\(\)\.runtime\.liveTimeout\)\)/.test(live))
+}
+
 console.log(`\n${pass}/${pass + fails.length} 通过`)
 if (fails.length) {
   console.error('失败：', fails.join(' / '))

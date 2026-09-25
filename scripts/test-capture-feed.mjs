@@ -159,7 +159,7 @@ class FakeWorker {
   }
 }
 
-const { createCaptureFeed } = await import('../src/emulator/captureFeed.ts')
+const { createCaptureFeed, probeCapture } = await import('../src/emulator/captureFeed.ts')
 
 function makeCanvas() {
   const track = new FakeTrack()
@@ -178,7 +178,37 @@ function makeCanvas() {
 
 /* ---------------- 跑 ---------------- */
 
-console.log('── 没有 Worker：主线程那条路必须自己能跑 ──')
+console.log('── 已结束的屏幕共享轨不能冒充可用画面 ──')
+{
+  const ended = new FakeTrack()
+  ended.stop()
+  const stream = new globalThis.MediaStream([ended])
+  ok(probeCapture({ stream }, 30) === false, '⭐ getDisplayMedia 已 ended 时拒绝开出永久黑屏直播')
+}
+
+console.log('\n── 同一块 canvas 的采集轨结束后必须能重建 ──')
+{
+  workerMode = 'none'
+  delete globalThis.Worker
+  const tracks = []
+  const canvas = {
+    width: 304,
+    height: 224,
+    isConnected: true,
+    captureStream() {
+      const track = new FakeTrack()
+      tracks.push(track)
+      return new globalThis.MediaStream([track])
+    },
+  }
+  const feed = createCaptureFeed(() => ({ canvas }), 30)
+  tracks[0].stop()
+  ok(feed.check() === true, '⭐ canvas 没换但旧轨 ended 时会重新 captureStream')
+  ok(tracks.length === 2 && tracks[1].readyState === 'live', '换上了同一 canvas 生成的新活轨')
+  feed.release()?.close()
+}
+
+console.log('\n── 没有 Worker：主线程那条路必须自己能跑 ──')
 {
   workerMode = 'none'
   delete globalThis.Worker
@@ -276,7 +306,21 @@ console.log('\n── ⭐ 换源时 pump 失败要整个回滚 ──')
   workerMode = 'none'
   delete globalThis.Worker
   const a = makeCanvas()
-  const b = makeCanvas()
+  const bTracks = []
+  const b = {
+    sources: {
+      canvas: {
+        width: 304,
+        height: 224,
+        isConnected: true,
+        captureStream() {
+          const track = new FakeTrack()
+          bTracks.push(track)
+          return new globalThis.MediaStream([track])
+        },
+      },
+    },
+  }
   let cur = a.sources
   const feed = createCaptureFeed(() => cur, 30)
   await tick(20)
@@ -289,11 +333,11 @@ console.log('\n── ⭐ 换源时 pump 失败要整个回滚 ──')
   processorThrows = false
   ok(swapped === false, '⭐ pump 失败时 check() 返回 false，不再谎报「无缝接上」')
   ok(a.track.readyState === 'live', '⭐ 旧轨没被停掉 —— 它还在出帧，观众不会冻住')
-  ok(b.track.readyState === 'ended', '刚建的那条被停掉了，没泄漏')
+  ok(bTracks[0].readyState === 'ended', '刚建的那条被停掉了，没泄漏')
 
   // 再试一次，这回接得上
   const again = feed.check()
-  ok(again === true, '下一拍重试成功')
+  ok(again === true && bTracks[1]?.readyState === 'live', '下一拍用新轨重试成功')
   feed.release()?.close()
 }
 
@@ -302,6 +346,7 @@ console.log('\n── 源码守卫 ──')
   const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')
   const feed = strip(readFileSync(new URL('../src/emulator/captureFeed.ts', import.meta.url), 'utf8'))
   ok(/worker\.onerror = onWorkerFailure/.test(feed), 'Worker 挂了 onerror —— 加载和运行时失败都能处理')
+  ok(/WORKER_STALL_MS/.test(feed) && /msg\?\.t === 'alive'/.test(feed), 'Worker 静默卡死也有心跳看门狗')
   ok(/'ready'/.test(feed), '交接前要等 Worker 自报 ready')
   ok(/releaseLock\(\)/.test(feed), '交接前先 releaseLock')
   ok(/if \(!pump\(cand\.track\)\)/.test(feed), 'check() 看 pump 的返回值')
