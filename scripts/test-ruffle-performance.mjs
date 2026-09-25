@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import {
   installRufflePixelRatioCap,
   RUFFLE_FIXED_QUALITY,
+  RUFFLE_RENDER_PIXEL_RATIO,
   supportsRuffleWasmExtensions,
 } from '../src/emulator/rufflePerformance.ts'
 import { ruffleStageScale, ruffleStageSize } from '../src/emulator/ruffleStageFit.ts'
@@ -14,12 +15,17 @@ import { isSfsGame } from '../shared/sfs-games.js'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const read = (path) => readFileSync(join(root, path), 'utf8')
 
-console.log('── 高分屏降载 ──')
+console.log('── 高分屏清晰度与抗锯齿平衡 ──')
 const retina = { devicePixelRatio: 2 }
-assert.equal(installRufflePixelRatioCap(retina), 1)
-assert.equal(retina.devicePixelRatio, 1, 'Retina iframe 必须按 1× 画布渲染')
+assert.equal(RUFFLE_RENDER_PIXEL_RATIO, 1.25, '画布上限必须给高抗锯齿保留性能余量')
+assert.equal(installRufflePixelRatioCap(retina), 1.25)
+assert.equal(retina.devicePixelRatio, 1.25, 'Retina iframe 应按 1.25× 画布渲染')
+const middle = { devicePixelRatio: 1.2 }
+assert.equal(installRufflePixelRatioCap(middle), 1.2, '低于上限的屏幕必须保留原生像素倍率')
 const regular = { devicePixelRatio: 1 }
 assert.equal(installRufflePixelRatioCap(regular), 1)
+const highDensity = { devicePixelRatio: 3 }
+assert.equal(installRufflePixelRatioCap(highDensity), 1.25, '超高分屏也不能绕过像素上限')
 const locked = {}
 Object.defineProperty(locked, 'devicePixelRatio', { configurable: false, value: 2 })
 assert.equal(installRufflePixelRatioCap(locked), 2, '浏览器拒绝覆盖时必须安全退回原值')
@@ -41,12 +47,12 @@ assert.equal(probes, 5, '必须和 Ruffle 0.6 的五项能力探针一致')
 assert.equal(supportsRuffleWasmExtensions(() => false), false)
 assert.equal(supportsRuffleWasmExtensions(() => { throw new Error('blocked') }), false)
 
-console.log('── 启动链与固定均衡档 ──')
+console.log('── 启动链与固定高抗锯齿档 ──')
 const adapter = read('src/emulator/adapters/ruffle.ts')
 const frame = read('public/flash-frame.html')
 const player = read('src/emulator/EmulatorPlayer.tsx')
 const types = read('src/emulator/types.ts')
-assert.equal(RUFFLE_FIXED_QUALITY, 'medium', 'Ruffle 默认画质必须固定为均衡档')
+assert.equal(RUFFLE_FIXED_QUALITY, 'high', 'Ruffle 默认画质必须固定为高抗锯齿档')
 assert.match(adapter, /quality:\s*RUFFLE_FIXED_QUALITY/, '适配器必须使用唯一的固定画质常量')
 assert.doesNotMatch(adapter, /options\.performanceProfile/)
 assert.doesNotMatch(player, /performance(Label|Profile|Quality|Balanced|Fast)/, '开始区不应再出现运行档位')
@@ -83,4 +89,4 @@ assert.match(prewarm, /bootstrap\.json/)
 assert.equal(isSfsGame('sas3'), true)
 assert.equal(isSfsGame('infectonator-2'), false)
 
-console.log('✅ Ruffle 等比舞台、均衡档、像素降载、启动并行、核心预热与 SFS 门控通过')
+console.log('✅ Ruffle 等比舞台、高抗锯齿、1.25× 像素上限、启动并行、核心预热与 SFS 门控通过')

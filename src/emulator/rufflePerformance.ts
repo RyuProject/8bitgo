@@ -1,13 +1,14 @@
 /**
- * Ruffle 的固定「均衡」参数。
+ * Ruffle 的固定「高清抗锯齿」参数。
  *
- * `quality: medium` 保留适度的舞台抗锯齿；Retina 屏上 Ruffle 仍会按
+ * `quality: high` 提高舞台抗锯齿；Retina 屏上 Ruffle 仍会按
  * CSS 尺寸 × devicePixelRatio 建画布，DPR=2 就是四倍填充量和四倍显存带宽。
- * Flash 素材本来大多只有 640×480 左右，在 iframe realm 内把 DPR 钳到 1，视觉损失有限，
- * 却能直接砍掉高分屏最重的 GPU 开销。它不改父页面，也不改游戏时间轴。
+ * 旧上限 1× 在大屏全屏时边缘偏糊，因此只在 iframe realm 内把 DPR 钳到 1.25：
+ * 像素量比 1× 增加 56.25%，同时仍比原生 DPR=2 少约 61%，给更高抗锯齿留出性能余量。
+ * 它不改父页面，也不改游戏时间轴。
  */
-export const RUFFLE_FIXED_QUALITY = 'medium' as const
-export const RUFFLE_RENDER_PIXEL_RATIO = 1
+export const RUFFLE_FIXED_QUALITY = 'high' as const
+export const RUFFLE_RENDER_PIXEL_RATIO = 1.25
 
 type PixelRatioTarget = { devicePixelRatio: number }
 

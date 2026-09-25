@@ -698,8 +698,9 @@ Ruffle 从 npm 复制到 `public/ruffle/v<version>/`，`runtime.json` 保存每�
 `src/emulator/paths.ts` 里的 `RUFFLE_VERSION`，否则 `npm run build` 会直接失败。不要把新文件覆盖到
 旧版本目录，否则边缘缓存会把新旧 WASM / JS 混在一起。
 
-Ruffle 固定走「流畅优先」：配置 `quality: low`，并只在它自己的 iframe realm 内把
-`devicePixelRatio` 钳到 1（DPR 2 的画布像素量会降到四分之一）。前台不再给档位下拉；别重新加回
+Ruffle 固定走「高清抗锯齿」：配置 `quality: high`，并只在它自己的 iframe realm 内把
+`devicePixelRatio` 钳到 1.25（DPR 2 时是 1.5625× CSS 像素，比原生 4× 少约 61%，节省的 GPU
+余量用于更高抗锯齿，又不会像旧 1× 上限那样在大屏发糊）。前台不再给档位下拉；别重新加回
 `performanceProfile`。也不要用 `frameRate` 冒充性能优化（会直接改游戏时间轴），不要钉
 `preferredRenderer`（官方只把它当排错项，浏览器 / Ruffle 升级后最优后端会变）。
 
