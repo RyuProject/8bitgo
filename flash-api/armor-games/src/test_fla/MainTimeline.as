@@ -453,10 +453,18 @@ package test_fla
                /*
                   版本对不上：这个槽已经被推到更新的版本（另一次保存、或另一台设备），
                   而这次写入基于一份旧状态 —— 被拒掉是对的。
-                  本地版本必须丢掉：留着的话后面每一次保存都会带着同一个过期值继续被拒。
-                  代价是下一次保存没有并发保护（我们没有为它多跑一趟读档）。
+                  新服务端把当前代次一起返回，直接对齐后续条件更新。只有旧服务端没有这个字段时
+                  才删除本地值；不能一律删掉，否则下一次保存会退化成无条件覆盖，等于把保护拆了。
                */
-               delete revisions[slot];
+               if(result.error != null && result.error.currentRevision != null &&
+                  !isNaN(Number(result.error.currentRevision)))
+               {
+                  revisions[slot] = Number(result.error.currentRevision);
+               }
+               else
+               {
+                  delete revisions[slot];
+               }
                trace("[8bitgo-flash-save] 槽 " + slot + " 的保存基于旧版本，已丢弃");
             }
             if(!ok && loggedIn && attempt < 1 && retriable(result))

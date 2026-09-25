@@ -132,4 +132,15 @@ check('AGI2 具备幂等重试、条件更新和给新游戏的简化接口', ()
   }
 })
 
+check('两代桥遇到写入冲突后仍保留条件更新保护', () => {
+  const bridges = [
+    ['AGI1', readFileSync(join(root, 'flash-api/armor-games/src/test_fla/MainTimeline.as'), 'utf8')],
+    ['AGI2', readFileSync(join(root, 'flash-api/armor-games/src-agi2/KrfAgiBridge.as'), 'utf8')],
+  ]
+  for (const [label, source] of bridges) {
+    assert.ok(source.includes('error.currentRevision'), `${label} 没有读取服务端当前代次`)
+    assert.ok(source.includes('Number(result.error.currentRevision)'), `${label} 没有恢复本地条件更新基线`)
+  }
+})
+
 console.log(`\n✅ Flash 在线存档一致性 ${passed} 项通过`)

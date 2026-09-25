@@ -22,3 +22,4 @@ export function flashSaveGameKeyOf(gameSlug?: string | null): string
 
 /** 已接入的游戏 slug */
 export function flashSaveKnownSlugs(): string[]
+export const FLASH_SAVE_BRIDGE_RELEASE: string

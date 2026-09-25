@@ -19,11 +19,12 @@
  * 线上构建不再编译 Flash。
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
+import { flashSaveBridgeOf } from '../shared/flash-save-games.js'
 
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const FFDEC = process.env.FFDEC || '/Applications/FFDec.app/Contents/Resources/ffdec.sh'
@@ -37,6 +38,7 @@ const BRIDGES = [
     sourceFile: 'test_fla/MainTimeline.as',
     template: { ruffle: RUFFLE_TEMPLATE_URL },
     output: 'public/flash-api/armor-games/AGI.swf',
+    releaseOutput: `public${flashSaveBridgeOf('infectonator-2')}`,
     manifest: 'public/flash-api/armor-games/runtime.json',
   },
   {
@@ -45,6 +47,7 @@ const BRIDGES = [
     sourceFile: 'KrfAgiBridge.as',
     template: { seed: 'flash-api/armor-games/template-agi2.swf' },
     output: 'public/flash-api/armor-games/AGI2.swf',
+    releaseOutput: `public${flashSaveBridgeOf('kingdom-rushfrontiers')}`,
     manifest: 'public/flash-api/armor-games/runtime-agi2.json',
   },
 ]
@@ -80,8 +83,10 @@ for (const bridge of BRIDGES) {
     continue
   }
   const output = join(ROOT, bridge.output)
+  const releaseOutput = join(ROOT, bridge.releaseOutput)
   const manifest = join(ROOT, bridge.manifest)
   mkdirSync(resolve(output, '..'), { recursive: true })
+  mkdirSync(resolve(releaseOutput, '..'), { recursive: true })
   execFileSync('bash', [FFDEC, '-config', 'useFlexAs3Compiler=false', '-importScript', resolveTemplate(bridge), output, sourceDir], {
     stdio: 'inherit',
     env: { ...process.env, HOME: work },
@@ -94,8 +99,10 @@ for (const bridge of BRIDGES) {
   const sourceSha256 = createHash('sha256').update(readFileSync(sourceFile)).digest('hex')
   const template = bridge.template.seed ? { seed: bridge.template.seed } : { url: bridge.template.ruffle }
   writeFileSync(manifest, `${JSON.stringify({ version: 1, bytes: bytes.length, swfSha256, sourceSha256, template }, null, 2)}\n`)
+  copyFileSync(output, releaseOutput)
   built++
   console.log(`✅ ${bridge.output}`)
+  console.log(`   发布副本 ${bridge.releaseOutput}`)
   console.log(`   ${bytes.length} bytes · sha256 ${swfSha256}`)
 }
 if (built === 0) throw new Error('没有任何一代桥被构建：检查上面被跳过的源码路径')

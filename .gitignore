@@ -41,6 +41,10 @@ README.md
 # 既不报错也不影响游戏启动，只是玩家永远存不上档。
 !public/flash-api/armor-games/AGI.swf
 !public/flash-api/armor-games/AGI2.swf
+# Cloudflare 会长缓存 SWF，因此每次桥升级还会生成一份带发布代次的不可变副本。
+# 只放行固定文件名，避免把该目录下的调试 SWF 一起带进 Git。
+!public/flash-api/armor-games/*/AGI.swf
+!public/flash-api/armor-games/*/AGI2.swf
 # AGI2 的种子模板：它的文档类就叫 KrfAgiBridge，是「名字的载体」，
 # 重建 AGI2.swf 时要用（FFDec 不能指定文档类），必须一起进仓库。
 !flash-api/armor-games/template-agi2.swf

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { flashSaveBridgeOf } from '../shared/flash-save-games.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex')
@@ -20,6 +21,7 @@ const BRIDGES = [
     label: 'AGI（AGI1：Infectonator 2）',
     source: 'flash-api/armor-games/src/test_fla/MainTimeline.as',
     swf: 'public/flash-api/armor-games/AGI.swf',
+    releaseSwf: `public${flashSaveBridgeOf('infectonator-2')}`,
     manifest: 'public/flash-api/armor-games/runtime.json',
   },
   {
@@ -28,6 +30,7 @@ const BRIDGES = [
     // AGI2 的模板是自己那份已核对的 SWF，文档类就叫 KrfAgiBridge，见 build-flash-save-bridge.mjs
     source: 'flash-api/armor-games/src-agi2/KrfAgiBridge.as',
     swf: 'public/flash-api/armor-games/AGI2.swf',
+    releaseSwf: `public${flashSaveBridgeOf('kingdom-rushfrontiers')}`,
     manifest: 'public/flash-api/armor-games/runtime-agi2.json',
   },
 ]
@@ -45,10 +48,14 @@ for (const bridge of BRIDGES) {
     `缺少 ${bridge.swf}：它是必须随 Git 部署的构建产物；本地请运行 npm run flashbridge 后提交该文件`,
   )
   const swf = readFileSync(swfPath)
+  const releasePath = join(root, bridge.releaseSwf)
+  assert.ok(existsSync(releasePath), `缺少不可变发布副本 ${bridge.releaseSwf}，请重新运行 npm run flashbridge`)
+  const releaseSwf = readFileSync(releasePath)
   const manifest = JSON.parse(readFileSync(join(root, bridge.manifest), 'utf8'))
   assert.ok(['FWS', 'CWS', 'ZWS'].includes(swf.subarray(0, 3).toString('ascii')), `${bridge.swf} 不是有效的 SWF`)
   assert.equal(swf.length, manifest.bytes, `${bridge.swf} 长度与 manifest 不符，请重新运行 npm run flashbridge`)
   assert.equal(sha(swf), manifest.swfSha256, `${bridge.swf} 内容与 manifest 不符，请重新运行 npm run flashbridge`)
+  assert.equal(sha(releaseSwf), manifest.swfSha256, `${bridge.releaseSwf} 没有同步当前桥，请重新运行 npm run flashbridge`)
   assert.equal(
     sha(readFileSync(sourcePath)),
     manifest.sourceSha256,
@@ -56,10 +63,16 @@ for (const bridge of BRIDGES) {
   )
   if (dist) {
     const builtPath = join(root, 'dist/client', bridge.swf.replace(/^public\//, ''))
+    const builtReleasePath = join(root, 'dist/client', bridge.releaseSwf.replace(/^public\//, ''))
     assert.equal(
       sha(readFileSync(builtPath)),
       manifest.swfSha256,
       `dist 里的 ${bridge.swf} 不是当前版本，请重新运行 npm run build`,
+    )
+    assert.equal(
+      sha(readFileSync(builtReleasePath)),
+      manifest.swfSha256,
+      `dist 里的 ${bridge.releaseSwf} 不是当前版本，请重新运行 npm run build`,
     )
   }
   checked++

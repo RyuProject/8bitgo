@@ -521,8 +521,17 @@ package
             }
             else if(result != null && String(errorCode(result).code) == "stale_write")
             {
-               // 留着过期代次会让之后每次保存都撞 409；丢掉后下一次降级为无条件写入。
-               delete revisions[task.key];
+               // 新服务端会返回当前代次；继续做条件更新，不能降级成无条件覆盖。
+               if(result.error != null && result.error.currentRevision != null &&
+                  !isNaN(Number(result.error.currentRevision)))
+               {
+                  revisions[task.key] = Number(result.error.currentRevision);
+               }
+               else
+               {
+                  // 兼容还没下发 currentRevision 的旧服务端。
+                  delete revisions[task.key];
+               }
                trace("[8bitgo-flash-save] " + task.key + " 的保存基于旧版本，已丢弃");
             }
             if(!ok && loggedIn && attempt < 1 && retriable(result))

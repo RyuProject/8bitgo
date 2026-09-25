@@ -70,6 +70,7 @@ export function readSfsConfig(env = process.env) {
     maxBufferedBytes: integer(env.SFS_MAX_BUFFERED_BYTES, 512 * 1024, 16 * 1024, 8 * 1024 * 1024),
     connectTimeoutMs: integer(env.SFS_CONNECT_TIMEOUT_MS, 3000, 250, 30_000),
     idleTimeoutMs: integer(env.SFS_IDLE_TIMEOUT_MS, 4 * 60 * 60 * 1000, 60_000, 24 * 60 * 60 * 1000),
+    heartbeatIntervalMs: integer(env.SFS_HEARTBEAT_INTERVAL_MS, 30_000, 1000, 5 * 60_000),
   })
 }
 
@@ -205,6 +206,7 @@ export function createSfsService({ env = process.env, logger = console } = {}) {
   let wss = null
   let upgradeHandler = null
   let attachedServer = null
+  let heartbeatTimer = null
   let probeCache = { at: 0, promise: null, reachable: false }
 
   const probe = async () => {
@@ -269,6 +271,27 @@ export function createSfsService({ env = process.env, logger = console } = {}) {
     attachedServer = httpServer
     wss = new WebSocketServer({ noServer: true, maxPayload: config.maxFrameBytes })
     wss.on('error', (error) => logger.warn?.('[sfs] WebSocket 服务异常：', error.message))
+    /*
+      浏览器断网、睡眠或 NAT 丢状态时不一定会发 close 帧。只靠 TCP idleTimeout 的话，
+      一条已经死亡的连接最长占着全站 / 每 IP 名额 4 小时，200 个幽灵连接就能让所有玩家 429。
+      WebSocket ping/pong 由浏览器协议栈自动处理，不经过 SAS3；连续一轮没有 pong 就强拆，
+      close 回调会同步释放名额并销毁对应的上游 TCP。
+    */
+    heartbeatTimer = setInterval(() => {
+      for (const client of wss?.clients || []) {
+        if (client.sfsAlive === false) {
+          client.terminate()
+          continue
+        }
+        client.sfsAlive = false
+        try {
+          client.ping()
+        } catch {
+          client.terminate()
+        }
+      }
+    }, config.heartbeatIntervalMs)
+    heartbeatTimer.unref?.()
 
     upgradeHandler = (req, socket, head) => {
       if (requestPath(req) !== config.wsPath) return
@@ -300,6 +323,8 @@ export function createSfsService({ env = process.env, logger = console } = {}) {
       let pending = []
       let pendingBytes = 0
       let forceCloseTimer = null
+      ws.sfsAlive = true
+      ws.on('pong', () => { ws.sfsAlive = true })
       const upstream = createConnection({ host: config.upstreamHost, port: config.upstreamPort })
       upstream.setNoDelay(true)
       upstream.setKeepAlive(true, 30_000)
@@ -409,6 +434,8 @@ export function createSfsService({ env = process.env, logger = console } = {}) {
 
   const close = () => {
     if (attachedServer && upgradeHandler) attachedServer.off('upgrade', upgradeHandler)
+    clearInterval(heartbeatTimer)
+    heartbeatTimer = null
     for (const client of wss?.clients || []) client.terminate()
     try { wss?.close() } catch { /* noServer 未接过连接时可以直接忽略 */ }
     wss = null

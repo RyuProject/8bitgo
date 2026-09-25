@@ -19,13 +19,26 @@
  * 不在表里的 slug 拿不到桥地址，前端根本不会启动在线存档；服务端即使被 env 放行，
  * 也只会按 agi1 处理。这条约束由 scripts/test-flash-save-consistency.mjs 守着。
  */
+/*
+ * 桥文件使用不可变发布目录，不能永远复用同一个 CDN URL。
+ * Cloudflare 会缓存 SWF；只覆盖 /AGI.swf 会出现“源站已修、玩家仍跑旧桥”且持续数小时。
+ * 游戏请求的原始文件名仍是 AGI.swf / AGI2.swf，前端只取目标 URL 的末段做匹配，
+ * 所以在中间加发布目录既能穿透旧缓存，也不改变旧游戏的加载地址。
+ */
+export const FLASH_SAVE_BRIDGE_RELEASE = '20260925-r03'
+
 export const FLASH_SAVE_GAMES = Object.freeze({
   'infectonator-2': {
     protocol: 'agi1',
-    bridge: '/flash-api/armor-games/AGI.swf',
+    bridge: `/flash-api/armor-games/${FLASH_SAVE_BRIDGE_RELEASE}/AGI.swf`,
     agiGameKey: 'infect-2',
   },
-  'kingdom-rush-frontiers': { protocol: 'agi2', bridge: '/flash-api/armor-games/AGI2.swf' },
+  // 线上历史 slug 本来就没有第二个连字符；这里必须与 games.slug 完全一致，
+  // 否则前端会在请求会话之前就判定为“未接入”，服务端配置再正确也不会生效。
+  'kingdom-rushfrontiers': {
+    protocol: 'agi2',
+    bridge: `/flash-api/armor-games/${FLASH_SAVE_BRIDGE_RELEASE}/AGI2.swf`,
+  },
 })
 
 /** 这一款接没接在线存档；没接返回 '' */

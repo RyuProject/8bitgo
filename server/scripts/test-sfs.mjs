@@ -23,6 +23,16 @@ const openWs = (url, origin) => new Promise((resolve, reject) => {
   ws.once('error', reject)
 })
 
+const waitClosed = (ws, timeoutMs = 3500) => new Promise((resolve, reject) => {
+  if (ws.readyState === WebSocket.CLOSED) return resolve()
+  const timer = setTimeout(() => reject(new Error('等待幽灵连接被心跳清理超时')), timeoutMs)
+  timer.unref()
+  ws.once('close', () => {
+    clearTimeout(timer)
+    resolve()
+  })
+})
+
 const rejectedStatus = (url, origin) => new Promise((resolve, reject) => {
   const ws = new WebSocket(url, { origin })
   ws.once('unexpected-response', (_request, response) => {
@@ -49,6 +59,7 @@ const service = createSfsService({
     SFS_TCP_PORT: String(upstreamAddress.port),
     SFS_MAX_PER_IP: '2',
     SFS_CONNECT_TIMEOUT_MS: '500',
+    SFS_HEARTBEAT_INTERVAL_MS: '1000',
   },
 })
 const disabled = createSfsService({ logger: silent, env: { SFS_ENABLED: '0', SFS_WS_PATH: '/sfs/disabled' } })
@@ -69,6 +80,7 @@ try {
   })
   assert.equal(parsed.enabled, true)
   assert.equal(parsed.maxFrameBytes, 1024 * 1024, '帧上限必须钳住')
+  assert.equal(parsed.heartbeatIntervalMs, 30_000)
   assert.equal(parsed.wsPath, '/sfs/sas3', '非法路径应回到安全默认值')
 
   const main = await fetch(`${origin}/main-project-still-works`).then((res) => res.json())
@@ -123,7 +135,17 @@ try {
   assert.equal(statusAfter.traffic.fromClient, 5)
   assert.equal(statusAfter.traffic.fromUpstream, 6)
 
-  console.log('SFS 自测通过：配置、状态、同源限制、WebSocket↔TCP 透明桥、主站隔离')
+  // 模拟浏览器睡眠 / NAT 丢状态：握手还在，但故意不自动回 pong。两轮心跳内必须释放名额。
+  const ghost = new WebSocket(wsUrl, { origin, autoPong: false })
+  await new Promise((resolve, reject) => {
+    ghost.once('open', resolve)
+    ghost.once('error', reject)
+  })
+  await waitClosed(ghost)
+  const afterHeartbeat = await fetch(`${origin}/api/sfs/status`).then((res) => res.json())
+  assert.equal(afterHeartbeat.connections.active, 0, '幽灵连接不能占用名额直到 4 小时 TCP 超时')
+
+  console.log('SFS 自测通过：配置、状态、同源限制、透明桥、心跳回收、主站隔离')
 } finally {
   service.close()
   disabled.close()

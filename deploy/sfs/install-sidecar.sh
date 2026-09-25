@@ -33,10 +33,10 @@ else
   git -C "${source_dir}" checkout --force v4.3
 fi
 
-# 标签名比 main 稳定，但 Git 标签理论上仍能被上游移动。和发布页公布的提交短哈希对一次，
-# 发生供应链漂移时宁可停止安装，也不要静默把未经复验的新代码送进生产。
-expected_commit=7cd3983
-actual_commit="$(git -C "${source_dir}" rev-parse --short=7 HEAD)"
+# 标签名比 main 稳定，但 Git 标签理论上仍能被上游移动。必须核对完整 160 位提交哈希：
+# 7 位短前缀只有 28 bit，恶意上游可以刻意制造同前缀提交，不能拿它做生产供应链边界。
+expected_commit=7cd3983110c7632d69d08fc578ddfd257bb90d15
+actual_commit="$(git -C "${source_dir}" rev-parse HEAD)"
 if [[ "${actual_commit}" != "${expected_commit}" ]]; then
   echo "FlashPrivateServer v4.3 指向 ${actual_commit}，预期 ${expected_commit}；已停止安装，请先审查上游变化。" >&2
   exit 1

@@ -22,19 +22,26 @@ import { flashSaveConfigured, signFlashSaveToken, verifyFlashSaveToken } from '.
 export const flashSavesRouter = Router()
 
 class HttpProblem extends Error {
-  constructor(status, code, message) {
+  constructor(status, code, message, details = {}) {
     super(message)
     this.status = status
     this.code = code
+    this.details = details
   }
 }
 
-function fail(res, status, code, message) {
-  return res.status(status).json({ success: false, error: { code, message } })
+function fail(res, status, code, message, details = {}) {
+  return res.status(status).json({ success: false, error: { code, message, ...details } })
 }
 
 function problem(res, error) {
-  return fail(res, error.status || 500, error.code || 'internal_error', error.message || '在线存档失败')
+  return fail(
+    res,
+    error.status || 500,
+    error.code || 'internal_error',
+    error.message || '在线存档失败',
+    error.details,
+  )
 }
 
 /**
@@ -83,7 +90,10 @@ async function bumpSaveSeq(run, userId, gameSlug, saveKey, opId) {
   await run(
     `INSERT INTO flash_save_seqs (user_id, game_slug, save_key, revision, last_op_id, updated_at)
        VALUES (?, ?, ?, 1, ?, CURRENT_TIMESTAMP)
-     ON DUPLICATE KEY UPDATE revision = revision + 1, last_op_id = VALUES(last_op_id), updated_at = CURRENT_TIMESTAMP`,
+     ON DUPLICATE KEY UPDATE
+       revision = revision + 1,
+       last_op_id = COALESCE(VALUES(last_op_id), last_op_id),
+       updated_at = CURRENT_TIMESTAMP`,
     [userId, gameSlug, saveKey, opId],
   )
   const rows = await run(
@@ -111,7 +121,17 @@ async function checkSaveWrite(run, { userId, gameSlug, saveKey, opId, expectedRe
     没带 expectedRevision 的写入不做检查 —— 旧客户端照样能写，代价写在 docs 的 R01 一节。
   */
   if (expectedRevision !== null && expectedRevision !== seq.revision) {
-    throw new HttpProblem(409, 'stale_write', '这次保存基于的版本已经过期，新存档不会被它覆盖')
+    /*
+      把当前代次交还给桥。原来桥收到 409 后只能删除本地代次，下一次保存便退化成
+      “不带 expectedRevision 的无条件覆盖”——刚挡住一次旧档，下一次又把门拆了。
+      当前代次不是秘密，只是这个账号 / 游戏 / 槽的单调整数；桥用它恢复条件更新。
+    */
+    throw new HttpProblem(
+      409,
+      'stale_write',
+      '这次保存基于的版本已经过期，新存档不会被它覆盖',
+      { currentRevision: seq.revision },
+    )
   }
   return { replay: false, revision: seq.revision }
 }
@@ -458,7 +478,8 @@ flashSavesRouter.post('/:gameSlug/delete-slot', requireFlashSession, async (req,
         [userId, gameSlug, target],
       )
       /*
-        删档也要推进代次（opId 传 null = 顺手清掉重放标记）。
+        删档也要推进代次。opId 传 null 时 bumpSaveSeq 会**保留**最近一次写入的重放标记：
+        否则一次已经成功、但响应在网络里超时的旧写请求，可能在删档后重放，把档复活。
         不推进的话：删掉 → 再存（版本号又从 1 开始）→ 一个基于旧版本 1 的迟到请求
         恰好又能通过条件更新，把新档盖掉。这就是 ABA —— 代次必须活得比存档行长。
       */

@@ -1,15 +1,22 @@
 openapi: 3.1.0
 info:
   title: 8BitGo SFS 接入 API
-  version: 1.0.0
-  description: SAS3 的 SmartFoxServer 1.x 发现、状态与 WebSocket 桥接口。
+  version: 1.1.0
+  description: |
+    SAS3 的 SmartFoxServer 1.x 发现、状态与 WebSocket 原始字节桥。
+    WebSocket 不是 JSON 房间 API；调用方必须会生成和解析 SFS 1.x 数据。
+externalDocs:
+  description: 完整的开发者接入指南
+  url: https://github.com/RyuProject/8bitgo/blob/main/docs/smartfoxserver-api.md
 servers:
   - url: https://8bitgo.com
+security: []
 paths:
   /api/sfs/config:
     get:
       summary: 取得浏览器及原生客户端连接配置
       operationId: getSfsConfig
+      description: 匿名、不缓存。浏览器跨域调用仍需命中 8BitGo 的 CORS 白名单。
       responses:
         '200':
           description: SFS 未启用时仍返回 200，enabled=false 且 ruffle 为空。
@@ -21,6 +28,7 @@ paths:
     get:
       summary: 检查 Java sidecar 与桥接容量
       operationId: getSfsStatus
+      description: 匿名、不缓存。计数器是当前 Node 进程生命周期内的值。
       responses:
         '200':
           description: 状态快照。ready=false 不代表主站故障。
@@ -31,7 +39,9 @@ paths:
   /sfs/sas3:
     get:
       summary: SAS3 WebSocket 到裸 TCP 的字节桥
-      description: 使用 WebSocket Upgrade；成功后每个二进制帧按原字节写入 SmartFox TCP。
+      description: |
+        使用 WebSocket Upgrade；成功后每个二进制帧按原字节写入 SmartFox TCP。
+        TCP 回程的 WebSocket 帧边界不等于 SFS 业务消息边界，客户端必须按字节流解析。
       x-websocket: true
       responses:
         '101': { description: Switching Protocols }
@@ -49,13 +59,16 @@ components:
         proxyUrl: { type: string, format: uri }
     SfsConfig:
       type: object
-      required: [enabled, protocol, games, ruffle]
+      required: [enabled, protocol, games, websocket, native, ruffle]
       properties:
         enabled: { type: boolean }
         protocol: { type: string, const: SmartFoxServer 1.x }
         games:
           type: array
-          items: { type: string, const: sas3 }
+          uniqueItems: true
+          items:
+            type: string
+            examples: [sas3, sas-zombie-assault-3]
         websocket:
           oneOf:
             - type: 'null'
@@ -89,10 +102,17 @@ components:
                 maxItems: 2
     SfsStatus:
       type: object
-      required: [enabled, ready, upstream, connections, traffic]
+      required: [enabled, ready, protocol, games, upstream, connections, traffic, lastUpstreamConnectedAt]
       properties:
         enabled: { type: boolean }
         ready: { type: boolean }
+        protocol: { type: string, const: SmartFoxServer 1.x }
+        games:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            examples: [sas3, sas-zombie-assault-3]
         upstream:
           type: object
           required: [reachable, checkedAt]
@@ -101,15 +121,21 @@ components:
             checkedAt: { type: string, format: date-time }
         connections:
           type: object
+          required: [active, accepted, rejected, limit, perIpLimit]
           properties:
-            active: { type: integer }
-            accepted: { type: integer }
-            rejected: { type: integer }
-            limit: { type: integer }
-            perIpLimit: { type: integer }
+            active: { type: integer, minimum: 0 }
+            accepted: { type: integer, minimum: 0 }
+            rejected: { type: integer, minimum: 0 }
+            limit: { type: integer, minimum: 1 }
+            perIpLimit: { type: integer, minimum: 1 }
         traffic:
           type: object
+          required: [fromClient, fromUpstream]
           properties:
-            fromClient: { type: integer }
-            fromUpstream: { type: integer }
-
+            fromClient: { type: integer, minimum: 0 }
+            fromUpstream: { type: integer, minimum: 0 }
+        lastUpstreamConnectedAt:
+          oneOf:
+            - type: 'null'
+            - type: string
+              format: date-time

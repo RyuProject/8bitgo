@@ -7,6 +7,7 @@
 > 那篇按「AGI1 / AGI2」两代方言逐方法、逐字段地列接口（含参数语义、回调形状、
 > 错误码、校验限额、排查线索）。**本文讲的是设计取舍与踩坑经过**（为什么分两套、
 > 为什么令牌不落盘、R01/R02 两条并发问题是怎么来的），改接口前建议两篇对照着看。
+> AGI 与 SFS 的统一速查入口是 `docs/agi-sfs-api.md`。
 
 ## 1. 已核对的游戏行为
 
@@ -64,7 +65,7 @@ Content-Type: application/json
     "expiresAt": 1789545600000,
     "endpoint": "/api/flash-saves/v1/infectonator-2",
     "username": "玩家昵称",
-    "bridgeUrl": "/flash-api/armor-games/AGI.swf",
+    "bridgeUrl": "/flash-api/armor-games/20260925-r03/AGI.swf",
     "avatar_url": "/ui/logo-mark.png"
   }
 }
@@ -113,11 +114,11 @@ Content-Type: application/json
   urlRewriteRules: [
     [
       'http://agi.armorgames.com/assets/agi/AGI.swf',
-      'https://8bitgo.com/flash-api/armor-games/AGI.swf',
+      'https://8bitgo.com/flash-api/armor-games/20260925-r03/AGI.swf',
     ],
     [
       'https://agi.armorgames.com/assets/agi/AGI.swf',
-      'https://8bitgo.com/flash-api/armor-games/AGI.swf',
+      'https://8bitgo.com/flash-api/armor-games/20260925-r03/AGI.swf',
     ],
   ],
 }
@@ -467,9 +468,9 @@ Infectonator 2 的 AGI1 是两套完全不同的外部接口，所以桥、存�
 ```json
 { "success": true, "data": {
   "sessionToken": "eyJ...", "expiresAt": 1789545600000,
-  "endpoint": "/api/flash-saves/v1/kingdom-rush-frontiers",
+  "endpoint": "/api/flash-saves/v1/kingdom-rushfrontiers",
   "protocol": "agi2",
-  "bridgeUrl": "/flash-api/armor-games/AGI2.swf",
+  "bridgeUrl": "/flash-api/armor-games/20260925-r03/AGI2.swf",
   "username": "玩家昵称", "avatar_url": "/ui/logo-mark.png"
 } }
 ```
@@ -477,7 +478,7 @@ Infectonator 2 的 AGI1 是两套完全不同的外部接口，所以桥、存�
 ### 读
 
 ```http
-POST /api/flash-saves/v1/kingdom-rush-frontiers/read
+POST /api/flash-saves/v1/kingdom-rushfrontiers/read
 { "sessionToken": "eyJ..." }
 ```
 
@@ -499,7 +500,7 @@ POST /api/flash-saves/v1/kingdom-rush-frontiers/read
 ### 写
 
 ```http
-POST /api/flash-saves/v1/kingdom-rush-frontiers/write-slot
+POST /api/flash-saves/v1/kingdom-rushfrontiers/write-slot
 { "sessionToken": "eyJ...", "key": "slot1", "value": { …整份进度… } }
 ```
 
@@ -513,7 +514,7 @@ POST /api/flash-saves/v1/kingdom-rush-frontiers/write-slot
 ### 删
 
 ```http
-POST /api/flash-saves/v1/kingdom-rush-frontiers/delete-slot
+POST /api/flash-saves/v1/kingdom-rushfrontiers/delete-slot
 { "sessionToken": "eyJ...", "key": "slot1" }
 ```
 
@@ -595,7 +596,7 @@ quests.submit(options)                       // { success:true, quest:{ progress
 `src/services/flashOnlineSave.ts` 不再自己维护桥表，改为读 **`shared/flash-save-games.js`**
 （前后端唯一一份「游戏 → 方言 → 桥文件名」映射）：
 
-- `kingdom-rush-frontiers → agi2 → /flash-api/armor-games/AGI2.swf`；
+- `kingdom-rushfrontiers → agi2 → /flash-api/armor-games/20260925-r03/AGI2.swf`；
 - `urlRewriteRules` 按桥文件名生成，只改写这款游戏真正会加载的那一代
   （被补丁过的副本直接请求本站地址，规则是给仍指向 `agi.armorgames.com` 的副本兜底）。
 
@@ -669,15 +670,16 @@ quests.submit(options)                       // { success:true, quest:{ progress
 
 ## B5. 产物校验
 
-`scripts/check-flash-save-bridge.mjs` 按源码存在性**逐代**强校验：源码在、产物缺 = 构建失败。
-以前只认 `AGI.swf`，AGI2 源码落地却漏提交 SWF 时构建照样全绿。
+`scripts/check-flash-save-bridge.mjs` 按源码存在性**逐代**强校验：源码在时，规范产物或当前发布代次副本
+任一缺失都会让构建失败。以前只认 `AGI.swf`，AGI2 源码落地却漏提交 SWF 时构建照样全绿。
 
 ## B6. 仍然存在的限制
 
 - 会话到期后**必须玩家手动重进**（FlashVars 只读一次）。ExternalInterface 已用于登录意图，
   但要真正原地续期还得增加「页面向 SWF 反向更新令牌」的通道。
 - 两代桥的读前等写上限都是 3 秒：极端情况下（后台标签页被节流）仍可能读到旧档。
-- 桥的修复要等边缘缓存过期（约 1 小时）才全球生效，与其它固定 URL 的引擎产物同一档。
+- 桥修复必须提升 `FLASH_SAVE_BRIDGE_RELEASE` 并发布新目录；当前会话返回不可变版本 URL，
+  不再等待旧固定地址的边缘缓存过期。
 
 ---
 
@@ -697,7 +699,7 @@ quests.submit(options)                       // { success:true, quest:{ progress
 | 角色 | 做什么 |
 | --- | --- |
 | 服务端 | 每 (账号, 游戏, 槽) 维护一个**代次**：`flash_save_seqs.revision` + `last_op_id`（见 A3 后面的 SQL） |
-| 服务端 | 写入带 `expectedRevision`：不等于当前代次就 `409 stale_write`，**不落库** |
+| 服务端 | 写入带 `expectedRevision`：不等于当前代次就 `409 stale_write`，**不落库**，并在 `error.currentRevision` 返回当前代次 |
 | 服务端 | 写入带 `opId`：等于 `last_op_id` 就是重试，回当前版本、不再写（幂等重放） |
 | 服务端 | 读档回 `revisions`；删档也要推进代次（否则就是 ABA，见下），并在响应里回新版本 |
 | 客户端（桥） | 读档 / 写成功 / 删成功时同步本地 `revisions[slot]`；写入带上 `expectedRevision` 与 `opId` |
@@ -720,15 +722,15 @@ CREATE TABLE IF NOT EXISTS flash_save_seqs (
 ```
 
 写入和**删除**都让 `revision` 前进一格：写入是 upsert 存档行 + 推进代次；删除是删行 + 推进代次。
+删除不会清掉最近一次成功写入的 `last_op_id`，否则那次写入的超时重放可能在删档后把档复活。
 存档行上的 `revision` 现在等于代次表的值（不再是自己 `+1`），两处一致便于排查。
 
 **幂等重放**解决的是另一半：客户端超时重试是常态，没有 `opId` 的话「重试」等于「再写一遍」。
 桥的重试复用同一个 `opId`，服务端认出后回**当前**版本（不是当时那个），让客户端的本地版本
 重新对齐 —— 否则它下次会带着过期版本撞条件更新。
 
-**冲突之后**：桥会把该槽的本地版本丢掉（`stale_write` 不重试），下一次保存退化成无保护写入。
-为什么不顺手补一次读档：那会给「刚刚丢了一次保存」的路径再加一个往返，而游戏是忽略错误的，
-玩家只会觉得更卡。这笔账写在这里，不要在后面「顺手优化」成隐式读档。
+**冲突之后**：桥不重试这份旧档；服务端把当前代次放进 `error.currentRevision`，桥直接同步它，
+因此下一次保存仍带条件更新，不会退化成无保护写入，也不需要为了恢复代次再补一次读档。
 
 **残余**：不带 `expectedRevision` 的客户端没有并发保护。这是协议上二选一的事
 （「旧客户端照样能写」vs「迟到写入不许覆盖」不能同时成立），所以字段是可选的，

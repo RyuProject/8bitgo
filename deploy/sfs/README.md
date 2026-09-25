@@ -1,5 +1,8 @@
 # SAS3 / SmartFoxServer 1.x 旁路部署
 
+> 第三方网页、Ruffle、Linux / 桌面客户端的公网接入方式，见
+> [`docs/smartfoxserver-api.md`](../../docs/smartfoxserver-api.md)。本文只讲服务端部署与运维。
+
 这套部署把联机拆成三层，SFS 故障不会拖垮主项目：
 
 ```text
@@ -28,7 +31,9 @@ sudo systemctl status 8bitgo-sfs --no-pager
 ```
 
 安装脚本固定使用 FlashPrivateServer `v4.3`（发布提交 `7cd3983`，标签漂移会拒绝安装），源码保留在
-`/opt/8bitgo-sfs/source`，构建出的 jar 单独放在 `/opt/8bitgo-sfs/flashserver.jar`。
+`/opt/8bitgo-sfs/source`，安装时核对完整提交
+`7cd3983110c7632d69d08fc578ddfd257bb90d15`，构建出的 jar 单独放在
+`/opt/8bitgo-sfs/flashserver.jar`。
 模板只启 SAS3/8044，其它协议端口全部关闭。systemd 再用 IP 过滤把 sidecar 锁到 loopback，
 所以 8044 即使监听在 `0.0.0.0` 也不能从公网直连。
 
@@ -155,6 +160,7 @@ FlashPrivateServer 使用 AGPL-3.0。部署和修改前请核对其许可要求�
 
 ## 9. 接口定义
 
+面向接入方的完整说明在 [`docs/smartfoxserver-api.md`](../../docs/smartfoxserver-api.md)，
 机器可读规格在 [`openapi.yaml`](./openapi.yaml)：
 
 - `GET /api/sfs/config`：Ruffle `socketProxy`、可选地图改写、可选原生 TCP 地址

@@ -50,6 +50,7 @@ check('短期令牌绑定用户、游戏和 token_version', () => {
 
 check('只有明确启用的 slug 才能签会话', () => {
   assert.equal(flashSaveGameEnabled('infectonator-2', env), true)
+  assert.equal(flashSaveGameEnabled('another-tested-game', env), false, '环境变量不能凭空开启接入表外游戏')
   assert.equal(flashSaveGameEnabled('unreviewed-game', env), false)
 })
 
@@ -104,10 +105,10 @@ check('旧 AGI 全量结果只暴露完整槽，权益字段由服务端覆盖',
 
 check('方言逐游戏绑定，未知 slug 退回 agi1 而不是乱猜', () => {
   assert.equal(flashSaveProtocol('infectonator-2'), 'agi1')
-  assert.equal(flashSaveProtocol('kingdom-rush-frontiers'), 'agi2')
+  assert.equal(flashSaveProtocol('kingdom-rushfrontiers'), 'agi2')
   assert.equal(flashSaveProtocol('some-unreviewed-game'), 'agi1')
-  assert.equal(flashSaveBridgeUrl('infectonator-2'), '/flash-api/armor-games/AGI.swf')
-  assert.equal(flashSaveBridgeUrl('kingdom-rush-frontiers'), '/flash-api/armor-games/AGI2.swf')
+  assert.match(flashSaveBridgeUrl('infectonator-2'), /\/AGI\.swf$/)
+  assert.match(flashSaveBridgeUrl('kingdom-rushfrontiers'), /\/AGI2\.swf$/)
 })
 
 check('AGI2 只认 slot1~3', () => {
@@ -167,9 +168,9 @@ check('写入选项 opId / expectedRevision 可选，但边界要挡住', () => 
 })
 
 check('新游戏同时在白名单和方言表里才放行', () => {
-  const withKrf = { FLASH_SAVE_GAMES: 'infectonator-2,kingdom-rush-frontiers' }
-  assert.equal(flashSaveGameEnabled('kingdom-rush-frontiers', withKrf), true)
-  assert.equal(flashSaveGameEnabled('kingdom-rush-frontiers', { FLASH_SAVE_GAMES: 'infectonator-2' }), false)
+  const withKrf = { FLASH_SAVE_GAMES: 'infectonator-2,kingdom-rushfrontiers' }
+  assert.equal(flashSaveGameEnabled('kingdom-rushfrontiers', withKrf), true)
+  assert.equal(flashSaveGameEnabled('kingdom-rushfrontiers', { FLASH_SAVE_GAMES: 'infectonator-2' }), false)
 })
 
 /* ---------------- 限额配置：填错环境变量不能静默关掉限额 ---------------- */

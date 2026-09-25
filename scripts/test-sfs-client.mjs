@@ -42,6 +42,13 @@ try {
   invalidateSfsRuffleConfig()
   assert.deepEqual(await prepareSfsRuffleConfig('infectonator-2'), {})
   assert.equal(calls, 0, '普通 Flash 不应为了 SAS3 配置多发请求')
+  assert.equal(
+    (await prepareSfsRuffleConfig('sas-zombie-assault-3')).socketProxy[0].port,
+    444,
+    '生产库的 SAS3 完整 slug 必须取得联机配置',
+  )
+  assert.equal(calls, 1)
+  calls = 0
 
   console.log('── 失败后能自愈 ──')
   globalThis.fetch = async (url) => {

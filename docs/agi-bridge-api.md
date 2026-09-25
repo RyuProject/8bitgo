@@ -7,6 +7,8 @@
 **这份文档回答什么**：两代桥各自的接口长什么样、每个参数什么语义、
 **哪些地方会静默失败**（这是这套功能最危险的部分）。
 
+第一次接入建议先看统一速查：[`agi-sfs-api.md`](./agi-sfs-api.md)。本文是 AGI 的完整参考手册。
+
 不在这里的内容：
 
 | 想知道 | 去看 |
@@ -34,8 +36,8 @@
 
 | | AGI1 | AGI2 |
 | --- | --- | --- |
-| 接入的游戏 | Infectonator 2（`infectonator-2`） | Kingdom Rush Frontiers（`kingdom-rush-frontiers`） |
-| 桥文件 | `/flash-api/armor-games/AGI.swf` | `/flash-api/armor-games/AGI2.swf` |
+| 接入的游戏 | Infectonator 2（`infectonator-2`） | Kingdom Rush Frontiers（`kingdom-rushfrontiers`） |
+| 桥文件 | `/flash-api/armor-games/20260925-r03/AGI.swf` | `/flash-api/armor-games/20260925-r03/AGI2.swf` |
 | 文档类（**不能改**） | `test_fla.MainTimeline` | `KrfAgiBridge`（包外顶层类） |
 | 源码 | `src/test_fla/MainTimeline.as` | `src-agi2/KrfAgiBridge.as` |
 | 模板 | 借 Ruffle 的开源回归测试 SWF 空壳 | 仓库里的 `template-agi2.swf`（名字的载体） |
@@ -102,7 +104,7 @@ Content-Type: application/json
   "expiresAt": 1789545600000,
   "endpoint": "/api/flash-saves/v1/infectonator-2",
   "protocol": "agi1",
-  "bridgeUrl": "/flash-api/armor-games/AGI.swf",
+  "bridgeUrl": "/flash-api/armor-games/20260925-r03/AGI.swf",
   "username": "玩家昵称",
   "avatar_url": "/ui/logo-mark.png"
 } }
@@ -167,7 +169,7 @@ Content-Type: application/json
 | 403 | `game_mismatch` | 令牌不能访问路径里的游戏 | 否 |
 | 404 | `game_not_enabled` | 该游戏未启用（白名单里没有） | 否 |
 | 409 | `quota_exceeded` | 账号总配额不足 | 否 |
-| 409 | `stale_write` | 条件更新失败：这份写入基于旧版本 | 否（并丢弃本地版本） |
+| 409 | `stale_write` | 条件更新失败：这份写入基于旧版本；`error.currentRevision` 是服务端当前代次 | 否（桥用当前代次恢复后续条件更新） |
 | 413 | `save_too_large` | 单个存档超限 | 否 |
 | 429 | `rate_limited` | 请求过于频繁 | 否 |
 | 503 | `not_configured` | 服务端没配 `FLASH_SAVE_SECRET` | 否 |
@@ -203,7 +205,7 @@ Content-Type: application/json
 | --- | --- |
 | 响应顶层 `revisions` | `{"0": 4}`（AGI1 槽号）/ `{"slot1": 2}`（AGI2）。**给桥用的**，游戏侧不看。空槽不出现 |
 | 请求 `expectedRevision` | 条件更新：服务端当前代次 ≠ 它就 `409 stale_write`，不落库 |
-| 请求 `opId` | 幂等重放：与 `last_op_id` 相同即认为「这份已经写过了」，回当前版本、不再写。**重试必须复用同一个 ID** |
+| 请求 `opId` | 幂等重放：与 `last_op_id` 相同即认为「这份已经写过了」，回当前版本、不再写。**重试必须复用同一个 ID**；删除推进代次时保留最近一次写入 ID，旧请求不能在删档后复活 |
 
 代次记在 `flash_save_seqs`（账号 + 游戏 + 键一行），**不在存档行上**：
 删档会删行，版本号跟着消失的话「删档 → 再存」之后又能用旧版本通过条件更新（ABA）。
@@ -284,9 +286,9 @@ showScoreboardList(columns:Array, board:String):void
 所以读继续等它。
 
 **版本对齐**：读档响应里的顶层 `revisions` 会并进本地表（`mergeRevisions`），
-写入带 `expectedRevision`，成功后回写新版本；`stale_write` 时**丢掉**本地版本，
-下一次保存退化成无保护写入（不为它多跑一趟读档 —— 那会再加一个往返，
-而游戏忽略错误，玩家只会觉得更卡）。
+写入带 `expectedRevision`，成功后回写新版本；`stale_write` 响应会带
+`error.currentRevision`，桥据此对齐本地版本，后续保存继续走条件更新。只有对接尚未下发该字段的
+旧服务端时才丢掉本地版本作为兼容降级。
 
 ### 4.3 服务端接口（AGI1）
 
@@ -413,7 +415,7 @@ quests.submit(options)                       // { progress?, callback } → {suc
 ### 5.3 服务端接口（AGI2）
 
 ```http
-POST /api/flash-saves/v1/kingdom-rush-frontiers/read
+POST /api/flash-saves/v1/kingdom-rushfrontiers/read
 { "sessionToken": "eyJ..." }
 ```
 
@@ -430,7 +432,7 @@ POST /api/flash-saves/v1/kingdom-rush-frontiers/read
 > 白名单过滤在 `agi2SaveMap()`（`server/src/flash-save-contract.js`），**不要改成原样透传**。
 
 ```http
-POST /api/flash-saves/v1/kingdom-rush-frontiers/write-slot
+POST /api/flash-saves/v1/kingdom-rushfrontiers/write-slot
 { "sessionToken": "eyJ...", "key": "slot1", "value": { …整份进度… } }
 ```
 
@@ -442,7 +444,7 @@ POST /api/flash-saves/v1/kingdom-rush-frontiers/write-slot
 深度 ≤ 32；拒绝危险键；单个 value ≤ 2MiB。
 
 ```http
-POST /api/flash-saves/v1/kingdom-rush-frontiers/delete-slot
+POST /api/flash-saves/v1/kingdom-rushfrontiers/delete-slot
 { "sessionToken": "eyJ...", "key": "slot1" }
 ```
 
@@ -560,7 +562,8 @@ npm run flashbridge
   播放器会在到期前 10 分钟提示一次（`player.flashSaveExpiringSoon`），
   但根治需要 `ExternalInterface` 一类的续期通道。
 - **读档等写的 3 秒上限**：两代在极端情况下（后台标签页被节流）仍可能读到旧档。
-- **桥的修复要等边缘缓存过期**（约 1 小时）才全球生效：产物地址固定、不带内容哈希。
+- **桥升级必须发布新代次**：修改 `FLASH_SAVE_BRIDGE_RELEASE`，同时提交版本目录里的
+  `AGI.swf` / `AGI2.swf`。不要只覆盖固定地址；固定 URL 可能仍被 Cloudflare 长时间缓存。
 - **游戏忽略回调里的错误**：AGI1 的 `submitUserData`、AGI2 的 `submit` 都可能在玩家毫无察觉时
   失败。桥的重试、`invalid_session` 摘登录态、控制台 trace 都是为这一点加的 ——
   改桥时别把它们当成冗余代码删掉。

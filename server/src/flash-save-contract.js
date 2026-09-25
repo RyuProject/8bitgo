@@ -1,4 +1,9 @@
-import { flashSaveBridgeOf, flashSaveKnownSlugs, flashSaveProtocolOf } from '../../shared/flash-save-games.js'
+import {
+  FLASH_SAVE_BRIDGE_RELEASE,
+  flashSaveBridgeOf,
+  flashSaveKnownSlugs,
+  flashSaveProtocolOf,
+} from '../../shared/flash-save-games.js'
 import { envNumber } from './resource-limits.js'
 
 export const FLASH_SAVE_SLOT_COUNT = 3
@@ -33,12 +38,21 @@ const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
 
 /** 只有明确接过兼容桥的游戏才能签会话，避免别的 Armor Games SWF 被半兼容实现接管。 */
 export function flashSaveGameEnabled(gameSlug, env = process.env) {
+  const slug = String(gameSlug || '')
+  /*
+    环境变量只负责“从已审核的接入表里再关掉几款”，不能凭空开启表外游戏。
+
+    以前只看 FLASH_SAVE_GAMES：运维多写一个 slug，就会把完全没核对过接口形状的 SWF
+    静默接到 AGI1 上。它通常不是立刻报错，而是能登录、能点保存、下一局却读不回来，
+    正好是最危险的假成功。接入表才是方言和桥文件的唯一事实来源，两边必须取交集。
+  */
+  if (!flashSaveKnownSlugs().includes(slug)) return false
   // 默认白名单直接来自共用接入表：写死一串 slug 会在加游戏时漂移（加了表忘了 env，或反过来）
   const enabled = String(env.FLASH_SAVE_GAMES || flashSaveKnownSlugs().join(','))
     .split(',')
     .map((slug) => slug.trim())
     .filter(Boolean)
-  return enabled.includes(String(gameSlug || ''))
+  return enabled.includes(slug)
 }
 
 /**
@@ -57,8 +71,8 @@ export function flashSaveGameEnabled(gameSlug, env = process.env) {
  * 前端也读它，所以不可能再出现「前端指 AGI2、后端按 AGI1 处理」这种静默错配。
  */
 export const FLASH_SAVE_BRIDGES = Object.freeze({
-  agi1: '/flash-api/armor-games/AGI.swf',
-  agi2: '/flash-api/armor-games/AGI2.swf',
+  agi1: `/flash-api/armor-games/${FLASH_SAVE_BRIDGE_RELEASE}/AGI.swf`,
+  agi2: `/flash-api/armor-games/${FLASH_SAVE_BRIDGE_RELEASE}/AGI2.swf`,
 })
 
 export function flashSaveProtocol(gameSlug) {

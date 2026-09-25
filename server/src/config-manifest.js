@@ -182,6 +182,7 @@ export const ENV_MANIFEST = [
   { name: 'SFS_MAX_BUFFERED_BYTES', group: 'SFS 1.x', kind: 'config', file: 'sfs.js' },
   { name: 'SFS_CONNECT_TIMEOUT_MS', group: 'SFS 1.x', kind: 'config', file: 'sfs.js' },
   { name: 'SFS_IDLE_TIMEOUT_MS', group: 'SFS 1.x', kind: 'config', file: 'sfs.js' },
+  { name: 'SFS_HEARTBEAT_INTERVAL_MS', group: 'SFS 1.x', kind: 'config', file: 'sfs.js', note: '断网幽灵连接的 WebSocket 心跳周期，默认 30 秒' },
   { name: 'SMTP_FROM', group: '发信', kind: 'config', file: 'index.js' },
   { name: 'SMTP_HOST', group: '发信', kind: 'config', file: 'index.js' },
   { name: 'SMTP_PASS', group: '发信', kind: 'secret', file: 'mail.js' },
