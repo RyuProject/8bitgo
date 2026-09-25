@@ -331,13 +331,18 @@ export function getDefaultKeymap(runtimeId?: string, platform?: PlatformId): Key
     return {
       rows: [
         /*
-          ⚠️ 这一格**必须**从 EJS_KEY_BY_ID 现算，不能写死成「↑ ↓ ← →」。
+          ⚠️ 这一格**必须**从 EJS_ARCADE_KEY_BY_ID 现算，不能写死成「↑ ↓ ← →」。
           街机跑的是 EmulatorJS，方向键是引擎的下标 4/5/6/7 —— 2026-09-12 我们把
           默认键改成了 WASD（见 keymapData 的 EJS_KEY_OVERRIDE），写死的那份当场就成了假话：
           表上写箭头、按下去不动，玩家只会以为游戏坏了。
           （J2ME 那一支写死是对的：FreeJ2ME 的键盘映射是它自己定的，和引擎无关。）
         */
-        { button: t.keymap.dpad, key: arcadeKeysOf(EJS_DPAD), slot: 'dpad', parts: EJS_DPAD.map((i) => EJS_ARCADE_KEY_BY_ID[i] ?? '—') },
+        {
+          button: t.keymap.dpad,
+          key: arcadeKeysOf(EJS_DPAD),
+          slot: 'dpad',
+          parts: EJS_DPAD.map((i) => EJS_ARCADE_KEY_BY_ID[i] ?? '—'),
+        },
         // 「按键 1~6」在手柄上没有固定位置（不同板子按键数都不一样），所以不给槽位 ——
         // 六行没槽位会让 PadDiagram 整张图退回键帽列，那正是街机该有的样子
         ...ARCADE_GENERIC_BUTTONS.map((id, i) => ({
