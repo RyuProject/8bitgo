@@ -16,6 +16,7 @@ import { gameDescription, gameTitle, genreDesc, genreLabel } from '@/services/i1
 import { romUrlForKey } from '@/services/roms'
 import { PlatformCard } from '@/components/game/PlatformCard'
 import { SkeletonBlock } from '@/components/ui/PageSkeleton'
+import { Button } from '@/components/ui/Button'
 
 /**
  * 平台 / 类型 / 开发商三个总览页。
@@ -55,11 +56,17 @@ function CardGridSkeleton({ count, grid, height }: { count: number; grid: string
   )
 }
 
-function LoadError({ message }: { message: string }) {
+function LoadError({ message, onRetry }: { message: string; onRetry?: () => void }) {
+  const t = useT()
   return (
-    <p className="mt-8 text-sm text-muted" role="alert">
-      {message}
-    </p>
+    <div className="mt-8" role="alert">
+      <p className="text-sm text-muted">{message}</p>
+      {onRetry && (
+        <Button type="button" variant="secondary" size="sm" className="mt-4" onClick={onRetry}>
+          {t.common.retry}
+        </Button>
+      )}
+    </div>
   )
 }
 
@@ -127,7 +134,7 @@ export function PlatformsPage() {
         desc={fmt(t.browse.platformsDesc, { n: enabled.length })}
       />
       {state.status === 'error' ? (
-        <LoadError message={state.error} />
+        <LoadError message={state.error} onRetry={state.retry} />
       ) : !facets ? (
         <CardGridSkeleton count={enabled.length} grid={cx('mt-8', PLATFORM_GRID)} height="h-44" />
       ) : (
@@ -195,7 +202,7 @@ export function GenresPage() {
     <div className="container-x py-8 sm:py-10">
       <PageIntro eyebrow="GENRES" title={t.browse.genresTitle} desc={t.browse.genresDesc} />
       {state.status === 'error' ? (
-        <LoadError message={state.error} />
+        <LoadError message={state.error} onRetry={state.retry} />
       ) : !facets ? (
         <CardGridSkeleton count={genres.length} grid={GENRE_GRID} height="h-52" />
       ) : (
@@ -250,7 +257,7 @@ export function DevelopersPage() {
         desc={developers ? fmt(t.browse.developersDesc, { n: developers.length }) : ''}
       />
       {state.status === 'error' ? (
-        <LoadError message={state.error} />
+        <LoadError message={state.error} onRetry={state.retry} />
       ) : !developers ? (
         <CardGridSkeleton count={12} grid={DEVELOPER_GRID} height="h-[88px]" />
       ) : (

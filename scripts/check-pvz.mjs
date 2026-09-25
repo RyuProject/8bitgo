@@ -19,6 +19,8 @@ const emulatorToolsPath = resolve(repo, 'src/emulator/EmulatorTools.tsx')
 const snippet = readFileSync(resolve(repo, 'scripts/pvz-web/autoplay-snippet.html'), 'utf8')
 const START = '<!-- PvZ_AUTOPLAY_START -->'
 const END = '<!-- PvZ_AUTOPLAY_INJECTED -->'
+const SHELL_VERSION = '20260924-resume1'
+const WASM_SHA256 = '851072d991cc7f5770244b9be7204ed03ff5ee769101446987bbd3e1329ec3a6'
 
 const errors = []
 const ok = (condition, message) => { if (!condition) errors.push(message) }
@@ -27,7 +29,7 @@ const sha256 = (path) => createHash('sha256').update(readFileSync(path)).digest(
 
 if (existsSync(html5AdapterPath)) {
   const html5Adapter = text(html5AdapterPath)
-  ok(html5Adapter.includes("const PVZ_SHELL_VERSION = '20260924-ioskb1'"), 'HTML5 播放器没有锁定当前 PvZ 外壳版本')
+  ok(html5Adapter.includes(`const PVZ_SHELL_VERSION = '${SHELL_VERSION}'`), 'HTML5 播放器没有锁定当前 PvZ 外壳版本')
   ok(html5Adapter.includes('iframe.src = versionHtml5Entry(options.game)'), 'HTML5 播放器没有给 PvZ 入口补发布代次')
 }
 
@@ -67,16 +69,19 @@ for (const locale of ['cn', 'en']) {
   ok(extractSnippet(html).trimEnd() === snippet.trimEnd(), `${locale}/index.html 的自动加载片段未与唯一来源同步（运行 npm run pvz:sync-snippet）`)
   ok((html.match(/PvZ_AUTOPLAY_START/g) || []).length === 1, `${locale}/index.html 自动加载片段重复`)
   ok(html.includes('<base href=/web/PvZ/>'), `${locale}/index.html 缺少固定 base`)
-  ok(html.includes('<link rel=preload href=pvz-portable.wasm as=fetch crossorigin>'), `${locale}/index.html 缺少 wasm preload`)
-  ok(html.includes('<script src=pvz-page.js?v=20260924-ioskb1></script>'), `${locale}/index.html 没有引用当前版本的共用运行脚本`)
+  ok(!html.includes('<link rel=preload href=pvz-portable.wasm as=fetch crossorigin>'), `${locale}/index.html 仍在 preload 完整 wasm，会和 Range 下载重复耗流量`)
+  ok(html.includes(`<script src=pvz-wasm-loader.js?v=${SHELL_VERSION}></script>`), `${locale}/index.html 没有引用断点下载器`)
+  ok(html.includes('instantiateWasm:window.__pvzInstantiateWasm'), `${locale}/index.html 没有把断点下载器接进 Emscripten`)
+  ok(html.includes(`<script src=pvz-page.js?v=${SHELL_VERSION}></script>`), `${locale}/index.html 没有引用当前版本的共用运行脚本`)
   ok(html.includes('id=save-import-btn'), `${locale}/index.html 缺少游戏内读取存档按钮`)
   ok(html.includes('id=save-import-input'), `${locale}/index.html 缺少游戏内存档文件选择器`)
   ok(!html.includes('const collectedFiles'), `${locale}/index.html 又出现内联运行脚本，中英文会再次分叉`)
   ok(html.includes(config), `${locale}/index.html 语言或清单配置错误`)
   const engineAt = html.indexOf('<script src=pvz-portable.js async onerror=')
-  const runtimeAt = html.indexOf('<script src=pvz-page.js?v=20260924-ioskb1></script>')
+  const loaderAt = html.indexOf(`<script src=pvz-wasm-loader.js?v=${SHELL_VERSION}></script>`)
+  const runtimeAt = html.indexOf(`<script src=pvz-page.js?v=${SHELL_VERSION}></script>`)
   const autoplayAt = html.indexOf(START)
-  ok(engineAt >= 0 && runtimeAt > engineAt && autoplayAt > runtimeAt, `${locale}/index.html 脚本顺序错误`)
+  ok(loaderAt >= 0 && engineAt > loaderAt && runtimeAt > engineAt && autoplayAt > runtimeAt, `${locale}/index.html 脚本顺序错误`)
 
   let manifest
   try { manifest = JSON.parse(text(manifestPath)) } catch (error) { errors.push(`${locale} 清单 JSON 无效：${error.message}`); continue }
@@ -102,8 +107,16 @@ for (const locale of ['cn', 'en']) {
   ok(bundle?.fileCount >= 2000 && bundle?.unpackedBytes > 100 * 1024 * 1024, `${locale} reanim 流式包元数据不完整`)
 }
 
-for (const name of ['pvz-page.js', 'pvz-portable.js', 'pvz-portable.wasm', 'jszip.min.js', 'pvz-pack.json']) {
+for (const name of ['pvz-page.js', 'pvz-wasm-loader.js', 'pvz-portable.js', 'pvz-portable.wasm', 'jszip.min.js', 'pvz-pack.json']) {
   ok(existsSync(resolve(root, name)), `${name} 缺失`)
+}
+
+if (existsSync(resolve(root, 'pvz-wasm-loader.js'))) {
+  const loader = text(resolve(root, 'pvz-wasm-loader.js'))
+  try { new Function(loader) } catch (error) { errors.push(`pvz-wasm-loader.js 语法错误：${error.message}`) }
+  for (const marker of ['Range:', 'Content-Range', 'CACHE_PREFIX', 'idbPutMany', 'MAX_ATTEMPTS', WASM_SHA256, 'WebAssembly.instantiate']) {
+    ok(loader.includes(marker), `pvz-wasm-loader.js 缺少关键保护：${marker}`)
+  }
 }
 
 if (existsSync(resolve(root, 'pvz-page.js'))) {
@@ -125,6 +138,9 @@ ok(snippet.includes("DATA_VERSION || '4'"), 'PvZ 资源缓存代次不是 4')
 ok(snippet.includes("fs.indexOf('reanim/') === 0"), 'reanim/ 没有按必需资源处理')
 ok(snippet.includes("fs === '@bundle/reanim'"), 'reanim 流式包没有按必需资源处理')
 ok(snippet.includes('downloaded[entry.fs] = bytes'), 'IndexedDB 写入失败时没有内存回退')
+for (const marker of ['RANGE_CHUNK_SIZE', "headers: { Range:", 'partPrefix(entry)', 'scheduleAutoRetry', 'AUTO_RETRY_LIMIT']) {
+  ok(snippet.includes(marker), `自动加载片段缺少弱网保护：${marker}`)
+}
 
 const packCatalogPath = resolve(root, 'pvz-pack.json')
 if (existsSync(packCatalogPath)) {
@@ -145,7 +161,7 @@ if (existsSync(packCatalogPath)) {
 
 const expectedHashes = {
   'pvz-portable.js': 'c4b6a4928cbf3d06824b75771907d556b0f49a8b61bb23ec17a77be2d9fffadd',
-  'pvz-portable.wasm': '851072d991cc7f5770244b9be7204ed03ff5ee769101446987bbd3e1329ec3a6',
+  'pvz-portable.wasm': WASM_SHA256,
   'jszip.min.js': 'acc7e41455a80765b5fd9c7ee1b8078a6d160bbbca455aeae854de65c947d59e',
 }
 for (const [name, expected] of Object.entries(expectedHashes)) {
@@ -154,7 +170,7 @@ for (const [name, expected] of Object.entries(expectedHashes)) {
 }
 
 if (useDist && existsSync(root)) {
-  for (const name of ['pvz-page.js', 'pvz-portable.js', 'pvz-portable.wasm', 'jszip.min.js', 'pvz-pack.json']) {
+  for (const name of ['pvz-page.js', 'pvz-wasm-loader.js', 'pvz-portable.js', 'pvz-portable.wasm', 'jszip.min.js', 'pvz-pack.json']) {
     const built = resolve(root, name)
     const source = resolve(sourceRoot, name)
     if (existsSync(built) && existsSync(source)) ok(sha256(built) === sha256(source), `dist 中的 ${name} 不是 public 最新版本`)

@@ -1309,7 +1309,7 @@ export function slugFromKey(key: string): string {
   // 再走原来的扩展名规则，否则后台“自动匹配”会把 slug 猜成 contra.nes。
   const noExt = name
     .replace(/\.8bg$/i, '')
-    .replace(/\.(zip|7z|nes|unf|fds|sfc|smc|fig|gba|gbc|gb|z64|n64|v64|md|gen|bin|smd|nds|ws|wsc|cue|iso|img|pbp|chd|exe|com|swf|jar)$/i, '')
+    .replace(/\.(zip|7z|nes|unf|fds|sfc|smc|fig|gba|gbc|gb|z64|n64|v64|md|gen|bin|smd|nds|srl|ws|wsc|cue|iso|img|pbp|chd|exe|com|swf|jar)$/i, '')
     .toLowerCase()
     .replace(/[\s_]+/g, '-')
   const lang = ROM_LANGS.find((l) => noExt.endsWith(`.${l.toLowerCase()}`))

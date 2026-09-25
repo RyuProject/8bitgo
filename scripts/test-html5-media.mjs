@@ -15,6 +15,12 @@ const {
   html5CanvasCapabilities,
   html5MediaBridge,
 } = await import(fileURLToPath(new URL('../src/emulator/html5Media.ts', import.meta.url)))
+const {
+  HTML5_RUNTIME_BRIDGE_SOURCE,
+  HTML5_RUNTIME_BRIDGE_VERSION,
+  html5CanvasHasFrame,
+  html5RuntimeSignal,
+} = await import(fileURLToPath(new URL('../src/emulator/html5Lifecycle.ts', import.meta.url)))
 
 let passed = 0
 const ok = (condition, message) => {
@@ -68,6 +74,20 @@ console.log('\n── 页面桥协议 ──')
   ok(html5MediaBridge({ [HTML5_MEDIA_BRIDGE_KEY]: { source: '8bitgo-media-bridge', version: 2 } }) === null, '未知协议版本安全降级')
 }
 
+console.log('\n── 启动就绪协议 ──')
+{
+  const playable = html5RuntimeSignal({
+    source: HTML5_RUNTIME_BRIDGE_SOURCE,
+    version: HTML5_RUNTIME_BRIDGE_VERSION,
+    type: 'game-playable',
+  })
+  ok(playable?.type === 'game-playable', '运行时桥能把 game_playable 与 iframe load 分开')
+  ok(html5RuntimeSignal({ source: HTML5_RUNTIME_BRIDGE_SOURCE, version: 2, type: 'game-playable' }) === null, '未知就绪协议版本不会误报成功')
+  ok(html5RuntimeSignal({ source: 'other', version: 1, type: 'game-playable' }) === null, '其它 postMessage 不能冒充游戏就绪')
+  ok(html5CanvasHasFrame({ width: 640, height: 360 }), '同源游戏的有效画布可作首帧兜底')
+  ok(!html5CanvasHasFrame({ width: 1, height: 1 }), '占位画布不会被算成首帧')
+}
+
 console.log('\n── 发布文件与 WebGL 截图策略 ──')
 {
   const bridgeSource = readFileSync(`${root}/public/html5-api/8bitgo-media-bridge.js`, 'utf8')
@@ -75,9 +95,11 @@ console.log('\n── 发布文件与 WebGL 截图策略 ──')
   const recorderSource = readFileSync(`${root}/src/emulator/recorder.ts`, 'utf8')
   ok(bridgeSource.includes("var TAP_KEY = '__8bitgoAudioTap'"), '页面桥复用公共音频探针键，避免重复旁路造成叠音')
   ok(adapterSource.includes('startMediaMonitoring()'), 'HTML5 页面每次导航后都会重新发现媒体能力')
+  const loadHandler = adapterSource.split("iframe.addEventListener('load'")[1].split("iframe.addEventListener('error'")[0]
+  ok(loadHandler.includes('options.onIframeLoaded?.()'), 'iframe load 只上报独立的 iframe_loaded 阶段')
+  ok(!loadHandler.includes('options.onReady?.()'), 'iframe 第一次 load 不再冒充 game_playable')
   ok(adapterSource.includes('captureCanvasScreenshot(canvas)'), 'HTML5 截图走 WebGL 合成帧方案')
   ok(recorderSource.includes('canvas.captureStream()'), '截图不强开 preserveDrawingBuffer，不给每一帧增加复制成本')
 }
 
 console.log(`\n✅ HTML5 媒体测试通过（${passed} 项）`)
-

@@ -92,6 +92,14 @@ export function prewarmRuntime(runtime: RuntimeId | undefined, core?: string | n
   }
   if (runtime !== 'emulatorjs') return
   warmHttpCache(ejsRuntimeAsset('loader.js'))
-  // EJS_core 可以写平台别名，但公开目录只存在实际核心名；gb 必须预热 gambatte，不能请求 gb-wasm.data。
-  if (core) warmHttpCache(`${EJS_PATH}cores/${encodeURIComponent(emulatorJsCoreFileFor(core))}-wasm.data`)
+  /*
+    EJS_core 可以写平台别名，但公开目录只存在实际核心名；gb 必须预热 gambatte，不能请求 gb-wasm.data。
+
+    核心可以大到几十 MB（mame-current 约 35MB）。触摸设备的 onFocus 和点击是同一刻，
+    此时预拉会与 iframe 的正式下载撞车，浏览器不保证合并两个在途请求。所以只在
+    真实鼠标悬停且不是省流 / 2G 时预拉大核心；loader.js 很小，仍然无条件预热。
+  */
+  if (core && hasHoverIntent() && allowsLargeHoverPrewarm()) {
+    warmHttpCache(`${EJS_PATH}cores/${encodeURIComponent(emulatorJsCoreFileFor(core))}-wasm.data`)
+  }
 }

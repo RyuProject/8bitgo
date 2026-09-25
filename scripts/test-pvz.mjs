@@ -16,6 +16,7 @@ const mime = {
   '.json': 'application/json; charset=utf-8',
   '.wasm': 'application/wasm',
 }
+const realWasmRanges = []
 
 const server = createServer(async (req, res) => {
   try {
@@ -32,11 +33,43 @@ const server = createServer(async (req, res) => {
       </script>`)
       return
     }
+    if (pathname === '/pvz-engine-smoke.html') {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+      res.end(`<!doctype html><base href="/web/PvZ/"><canvas id="canvas"></canvas>
+        <script src="pvz-wasm-loader.js?v=test"></script><script>
+        window.moduleReadyPromise = new Promise(function (resolve, reject) {
+          window._resolveModuleReady = resolve; window._rejectModuleReady = reject;
+        });
+        window.moduleReadyPromise.catch(function () {});
+        var Module = {
+          instantiateWasm: window.__pvzInstantiateWasm,
+          canvas: document.getElementById('canvas'),
+          noInitialRun: true,
+          onRuntimeInitialized: function () { window.__realRuntimeReady = true; window._resolveModuleReady(); },
+          onAbort: function (reason) { window._rejectModuleReady(new Error(reason)); },
+        };
+        </script><script src="pvz-portable.js"></script>`)
+      return
+    }
     if (pathname === '/web/PvZ/cn' || pathname === '/web/PvZ/cn/') pathname = '/web/PvZ/cn/index.html'
     if (pathname === '/web/PvZ/en' || pathname === '/web/PvZ/en/') pathname = '/web/PvZ/en/index.html'
     const file = resolve(root, '.' + pathname)
     if (!file.startsWith(root)) throw new Error('bad path')
     const body = await readFile(file)
+    const range = req.headers.range && /^bytes=(\d+)-(\d+)$/.exec(req.headers.range)
+    if (range && extname(file) === '.wasm') {
+      const start = Number(range[1])
+      const end = Math.min(Number(range[2]), body.byteLength - 1)
+      realWasmRanges.push(req.headers.range)
+      res.writeHead(206, {
+        'content-type': 'application/wasm',
+        'content-length': String(end - start + 1),
+        'content-range': `bytes ${start}-${end}/${body.byteLength}`,
+        'accept-ranges': 'bytes',
+      })
+      res.end(body.subarray(start, end + 1))
+      return
+    }
     res.writeHead(200, { 'content-type': mime[extname(file)] || 'application/octet-stream' })
     res.end(body)
   } catch {
@@ -76,7 +109,9 @@ window.__callMainCount = 0;
     rmdir: function (path) { dirs.delete(path); }
   };
   Module.callMain = function () { window.__callMainCount++; };
-  setTimeout(function () { Module.onRuntimeInitialized(); }, 0);
+  function runtimeReady() { setTimeout(function () { Module.onRuntimeInitialized(); }, 0); }
+  if (typeof Module.instantiateWasm === 'function') Module.instantiateWasm({}, runtimeReady);
+  else runtimeReady();
 })();
 `
 
@@ -96,6 +131,7 @@ const mockBundle = gzipSync(Buffer.concat([
   Buffer.alloc(mockReanimFiles.length, 7),
 ]), { level: 9 })
 const digest = (body) => createHash('sha256').update(body).digest('hex')
+const mockWasm = Buffer.from([0, 97, 115, 109, 1, 0, 0, 0])
 const manifest = {
   format: '8bitgo.pvz.manifest.v2',
   files: [
@@ -112,6 +148,13 @@ const manifest = {
     unpackedBytes: mockReanimFiles.length,
   }],
 }
+const largeMain = Buffer.alloc(4 * 1024 * 1024 + 1, 3)
+const largeManifest = {
+  ...manifest,
+  files: manifest.files.map((entry) => entry.fs === 'main.pak'
+    ? { ...entry, size: largeMain.byteLength, sha256: digest(largeMain) }
+    : entry),
+}
 
 async function makePage(browser, options = {}) {
   const context = await browser.newContext(options.mobile ? {
@@ -126,25 +169,51 @@ async function makePage(browser, options = {}) {
       indexedDB.open = function () { throw new Error('mock quota/private mode'); }
     })
   }
+  await context.addInitScript((config) => {
+    window.__PVZ_WASM_TEST_CONFIG__ = config
+  }, {
+    size: mockWasm.byteLength,
+    sha256: digest(mockWasm),
+    chunkSize: 4,
+    maxAttempts: options.wasmMaxAttempts || 3,
+    stallTimeoutMs: 1000,
+  })
   const page = await context.newPage()
   const pageErrors = []
-  page.on('pageerror', (error) => pageErrors.push(error.message))
+  page.on('pageerror', (error) => pageErrors.push(error.stack || error.message))
   // 清单 URL 带发布代次，测试拦截也要覆盖查询串，避免把缓存失效策略误判成启动故障。
   await page.route('**/web/PvZ/cn/pvz-manifest.json*', (route) => route.fulfill({
     status: 200,
     contentType: 'application/json',
-    body: JSON.stringify(manifest),
+    body: JSON.stringify(options.manifest || manifest),
   }))
   await page.route('**/web/PvZ/pvz-portable.js', (route) => route.fulfill({
     status: 200,
     contentType: 'text/javascript',
     body: engineStub(options.syncFailure),
   }))
-  await page.route('**/web/PvZ/pvz-portable.wasm', (route) => route.fulfill({
-    status: 200,
-    contentType: 'application/wasm',
-    body: Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]),
-  }))
+  let failedWasmRange = false
+  await page.route('**/web/PvZ/pvz-portable.wasm', (route) => {
+    const range = route.request().headers().range || ''
+    if (options.wasmRequests) options.wasmRequests.push(range || 'full')
+    if (!failedWasmRange && options.failWasmRangeOnce === range) {
+      failedWasmRange = true
+      return route.abort('timedout')
+    }
+    const match = /^bytes=(\d+)-(\d+)$/.exec(range)
+    if (!match) return route.fulfill({ status: 200, contentType: 'application/wasm', body: mockWasm })
+    const start = Number(match[1])
+    const end = Math.min(Number(match[2]), mockWasm.byteLength - 1)
+    return route.fulfill({
+      status: 206,
+      headers: {
+        'content-type': 'application/wasm',
+        'content-length': String(end - start + 1),
+        'content-range': `bytes ${start}-${end}/${mockWasm.byteLength}`,
+      },
+      body: mockWasm.subarray(start, end + 1),
+    })
+  })
   await page.route('https://html5.8bitgo.com/**', (route) => {
     const path = new URL(route.request().url()).pathname
     if (options.missingReanim && path.includes('/packs/')) {
@@ -157,10 +226,34 @@ async function makePage(browser, options = {}) {
         body: mockBundle,
       })
     }
+    const key = path.split('/PvZ/properties/')[1] || ''
+    const body = options.assetBodies?.[key] || Buffer.from([1, 2, 3, 4])
+    const range = route.request().headers().range || ''
+    if (options.resourceRangeRequests && key === 'main.pak') options.resourceRangeRequests.push(range || 'full')
+    if (key === 'main.pak' && range === options.failResourceRange && Number(options.failResourceRangeTimes || 0) > 0) {
+      options.failResourceRangeTimes--
+      return route.abort('timedout')
+    }
+    const match = /^bytes=(\d+)-(\d+)$/.exec(range)
+    if (match) {
+      const start = Number(match[1])
+      const end = Math.min(Number(match[2]), body.byteLength - 1)
+      return route.fulfill({
+        status: 206,
+        headers: {
+          'content-type': 'application/octet-stream',
+          'content-length': String(end - start + 1),
+          'content-range': `bytes ${start}-${end}/${body.byteLength}`,
+          'access-control-allow-origin': '*',
+          'access-control-expose-headers': 'Content-Length, Content-Range, Accept-Ranges',
+        },
+        body: body.subarray(start, end + 1),
+      })
+    }
     return route.fulfill({
       status: 200,
-      headers: { 'content-type': 'application/octet-stream', 'content-length': '4', 'access-control-allow-origin': '*' },
-      body: Buffer.from([1, 2, 3, 4]),
+      headers: { 'content-type': 'application/octet-stream', 'content-length': String(body.byteLength), 'access-control-allow-origin': '*' },
+      body,
     })
   })
   return { context, page, pageErrors }
@@ -168,6 +261,56 @@ async function makePage(browser, options = {}) {
 
 const browser = await chromium.launch({ headless: true })
 try {
+  {
+    const context = await browser.newContext()
+    const page = await context.newPage()
+    const pageErrors = []
+    page.on('pageerror', (error) => pageErrors.push(error.stack || error.message))
+    await page.goto(origin + '/pvz-engine-smoke.html', { waitUntil: 'domcontentloaded' })
+    await page.waitForFunction(() => window.__realRuntimeReady === true, null, { timeout: 30000 })
+    assert.ok(realWasmRanges.length > 1, '真实 WASM 没有通过 Range 分块加载')
+    assert.equal(await page.evaluate(() => window.__pvzWasmProgress?.phase), 'ready')
+    assert.deepEqual(pageErrors, [])
+    await context.close()
+  }
+
+  {
+    const wasmRequests = []
+    const { context, page, pageErrors } = await makePage(browser, {
+      failWasmRangeOnce: 'bytes=4-7',
+      wasmMaxAttempts: 1,
+      wasmRequests,
+    })
+    await page.goto(origin + '/web/PvZ/cn', { waitUntil: 'domcontentloaded' })
+    await page.waitForFunction(() => document.body.classList.contains('game-mode'), null, { timeout: 15000 })
+    assert.deepEqual(
+      wasmRequests,
+      ['bytes=0-3', 'bytes=4-7', 'bytes=4-7'],
+      '刷新重试后应复用首块，只从失败的 WASM 分块继续',
+    )
+    assert.deepEqual(pageErrors, [])
+    await context.close()
+  }
+
+  {
+    const resourceRangeRequests = []
+    const options = {
+      manifest: largeManifest,
+      assetBodies: { 'main.pak': largeMain },
+      failResourceRange: 'bytes=2097152-4194303',
+      failResourceRangeTimes: 3,
+      resourceRangeRequests,
+    }
+    const { context, page, pageErrors } = await makePage(browser, options)
+    await page.goto(origin + '/web/PvZ/cn', { waitUntil: 'domcontentloaded' })
+    await page.waitForFunction(() => document.body.classList.contains('game-mode'), null, { timeout: 20000 })
+    assert.equal(resourceRangeRequests.filter((range) => range === 'bytes=0-2097151').length, 1, '大资源刷新后不应重下已缓存首块')
+    assert.equal(resourceRangeRequests.filter((range) => range === 'bytes=2097152-4194303').length, 4, '失败分块应先重试三次，刷新后再续传')
+    assert.equal(resourceRangeRequests.filter((range) => range === 'bytes=4194304-4194304').length, 1, '续传后应继续补齐最后一块')
+    assert.deepEqual(pageErrors, [])
+    await context.close()
+  }
+
   {
     const { context, page, pageErrors } = await makePage(browser)
     await page.goto(origin + '/web/PvZ/cn', { waitUntil: 'domcontentloaded' })
@@ -308,7 +451,7 @@ try {
     await context.close()
   }
 
-  console.log('PvZ 浏览器回归通过：正常启动、移动端软键盘、缓存降级、必需资源、8BitGo 存档桥、刷新守卫均正常')
+  console.log('PvZ 浏览器回归通过：WASM/大资源断点重试、正常启动、移动端软键盘、缓存降级、必需资源、8BitGo 存档桥、刷新守卫均正常')
 } finally {
   await browser.close()
   await new Promise((resolveClose) => server.close(resolveClose))

@@ -23,9 +23,10 @@
  *    要用联机必须自建 EmulatorJS 构建，见 docs 或 README。
  */
 import type { ArcadeButtonCount, PlatformId } from '@/types'
-import { EJS_DEFAULT_CONTROLS } from '@/lib/keymapData'
+import { EJS_ARCADE_DEFAULT_CONTROLS, EJS_DEFAULT_CONTROLS } from '@/lib/keymapData'
 import type { Capability, CaptureSources, LoadPhase, LoadProgress, MountOptions, RuntimeHandle, StageMode } from '../types'
 import { fetchBlobWithProgress, fetchWithProgress, throttleProgress } from '../loadProgress'
+import { downloadResumeStore } from '../downloadResume'
 import { romCacheDelete, romCacheGetBlob, romCacheKey, romCachePutBlob } from '../romCache'
 import { focusFrame, frameGamepads } from '../frameFocus'
 import { installAudioTap, type AudioTap } from '../audioTap'
@@ -42,6 +43,8 @@ import { matchArcadeHack, type ArcadeHack } from '@/data/arcadeHacks'
 import { deriveArcadeHackBytes } from '../arcadeHack'
 import { biosNameOfUrl, planBiosFiles } from '../biosPlan'
 import { ensureParentDir } from '../fsWrite'
+import { writeFsInjections, type FsInjection } from '../fsInjection'
+import { arcadeCoreForRomData, supportsFbneoRomData } from '../arcadeCore'
 import { MAME_AUDIO_LATENCY_MS, RETROARCH_CFG_PATH, raiseAudioLatency } from '../mameAudio'
 import { NDS_AUDIO_BUFFER_BYTES_48K, NDS_AUDIO_LATENCY_MS } from '../ndsAudio'
 import {
@@ -49,8 +52,11 @@ import {
   NDS_SYSTEM_DIRECTORY,
   configureNdsCoreOptions,
   configureNdsSystemDirectory,
+  installNdsCoreOptionsGuard,
+  type NdsCoreOptionsFs,
 } from '../ndsStartup'
 import { isRomPackBytes, isRomPackUrl, unpackRomPackBlob } from '@/services/romPack'
+import { assertNdsRomBlob } from '@/lib/romValidation'
 
 /**
  * EmulatorJS 资源根路径。**默认是自托管的 /emulatorjs/，不是 CDN。**
@@ -492,6 +498,15 @@ interface EjsGameManager {
     readFile?: (path: string) => Uint8Array
   }
   /**
+   * RetroArch 胶水层在核心初始化时通过这个回调生成 `.opt`。它发生在 callMain 内，
+   * 比 startGame 前置钩子更晚；NDS 安全选项必须包住它才能避免被最终写入覆盖。
+   */
+  Module?: {
+    callbacks?: {
+      setupCoreSettingFile?: (path: string) => void
+    }
+  }
+  /**
    * 引擎解析出的 ROM 文件名（含扩展名，不含路径）。startGame 里会拿它拼内容路径
    * callMain(["/" + fileName])，mame-current 靠改写它换内容目录（见 relocateMameRom）。
    */
@@ -724,27 +739,20 @@ const FATAL_PHRASES = [
   // 引擎自己：运行时没加载上 / startGame 抛了
   'error loading emulatorjs',
   'failed to start game',
+  // melonDS DS：这几句之后核心只会退回 RetroArch 的 No Items，不会再给 ready/error 事件。
+  'loaded an empty file as content, please load a valid nintendo ds rom',
+  'failed to load the content data, the frontend may have a bug',
+  'failed to create melonds ds system subdirectory',
+  'failed to get system directory',
 ]
-
-/**
- * 要写进 Emscripten 虚拟文件系统的一个文件。
- *
- * `bytes` 允许是一个 promise：BIOS 包可能要下几 MB，我们在挂载那一刻就开始拉，
- * 到真正开局时（几秒后）通常已经到货，`await` 不会真的等。
- * 给 `null` 表示「没拿到」—— 那就不写，让核心自己去报缺哪个文件（比我们瞎猜强）。
- */
-interface FsInjection {
-  path: string
-  bytes: string | Promise<Uint8Array | null>
-}
 
 /*
   写文件前的建目录逻辑在 fsWrite.ts —— 那段是独立的纯工具，有单测
   （`npm run test:fs-write`）。这里只留一句必须写在调用点的事实：
 
-  ⚠️ Emscripten 的 writeFile 不会建父目录（实测抛 ENOENT），而下面整个注入循环
-  共用**一个 try** —— 一条写失败会连带后面所有注入都不写。mame-current 的 BIOS
-  写 /roms 时正好撞上这一条（那是 relocateMameRom 才建的目录，注入跑在它之前）。
+  ⚠️ Emscripten 的 writeFile 不会建父目录（实测抛 ENOENT）。注入现在由
+  fsInjection.ts 逐文件 try/catch：一份 RomData 或 BIOS 坏掉只报它自己，后面的
+  必需 BIOS 仍然会继续写，避免一个可选文件把整个板子的启动链一起拆掉。
 */
 
 /**
@@ -790,8 +798,9 @@ interface FsInjection {
 function installFsInjector(
   win: Window & Record<string, unknown>,
   injections: FsInjection[],
-  onFail: (msg: string) => void,
+  onFail: (path: string, msg: string) => void,
   beforeStart?: (emu: EjsEmulator) => void,
+  shouldContinue: () => boolean = () => true,
 ): void {
   let emu: EjsEmulator | undefined
   let wrapped = false
@@ -807,23 +816,15 @@ function installFsInjector(
      * 所以这里多出的一个微任务只影响「callMain 晚一丁点」，不会打乱引擎的状态机。
      */
     next.startGame = async function (this: unknown) {
-      try {
-        const fs = next.gameManager?.FS
-        if (!fs) throw new Error('gameManager.FS 还没建好')
-        for (const item of injections) {
-          const bytes = typeof item.bytes === 'string' ? item.bytes : await item.bytes
-          // null = 没下下来。不写，核心自己会报「缺 xx」，那条比我们编的话准
-          if (bytes == null) continue
-          /*
-            ⚠️ 父目录必须先建好：mame-current 的 BIOS 要写进 /roms，而那个目录可能
-            还不存在（详见 ensureParentDir）。少这一句就是「文件没写进去、核心报缺文件」。
-          */
-          ensureParentDir(fs, item.path)
-          fs.writeFile(item.path, bytes)
-        }
-      } catch (e) {
-        onFail(e instanceof Error ? e.message : String(e))
-      }
+      const fs = next.gameManager?.FS
+      if (!fs) onFail('', 'gameManager.FS 还没建好')
+      else await writeFsInjections(fs, injections, onFail)
+      /*
+        玩家可能在等 BIOS 时退出。AbortController 会让下载很快返回 null，
+        但若还继续 original.startGame()，已从 DOM 移除的 iframe 仍会启动 WASM，
+        白占数百 MB 内存和 CPU。文件写完后再判一次会话是否存活，才能真正停住。
+      */
+      if (!shouldContinue()) return
       // 引擎时序类的修正（如 mame-current 的内容目录搬迁）同样要赶在 callMain 之前。
       // 失败同样不拦开局：拦了只会把「能按老路径试一把」的机会也丢掉。
       try {
@@ -868,11 +869,13 @@ function fetchBiosBytes(
   url: string,
   onBeat: () => void,
   onProgress: ((p: LoadProgress) => void) | undefined,
+  signal: AbortSignal,
 ): Promise<Uint8Array | null> {
   const emit = throttleProgress(onProgress)
   return fetchWithProgress(url, {
     phase: 'assets',
     maxBytes: BIOS_MAX_BYTES,
+    signal,
     onProgress: (p) => {
       onBeat()
       emit(p)
@@ -880,6 +883,8 @@ function fetchBiosBytes(
   })
     .then((buf) => new Uint8Array(buf))
     .catch((e: unknown) => {
+      // 玩家退出 / 换游戏就立刻停止 BIOS 下载，这是正常取消，不应写成故障日志。
+      if (signal.aborted || (e instanceof DOMException && e.name === 'AbortError')) return null
       console.warn(`[emulatorjs] BIOS 包下载失败（游戏仍会尝试按原配置启动）：${url}`, e)
       return null
     })
@@ -1352,6 +1357,8 @@ export async function prepareRemoteArcadeRom(
       try {
         const decoded = await decodedArcade(cached)
         const entries = await assertValidZipBlob(decoded.blob, '街机 ROM')
+        // 两个标签页并发下载时，慢的那个可能在完整缓存写好后又留下几片；命中完整包时顺手收尾。
+        void downloadResumeStore.clear(cacheKey).catch(() => {})
         return arcadeBlobFrom(decoded.blob, decoded.name, entries)
       } catch (error) {
         // 旧密钥被移除或缓存写到一半时，当场删掉并回网络；抛给播放器会触发备用源，
@@ -1366,6 +1373,9 @@ export async function prepareRemoteArcadeRom(
     phase: 'rom',
     onProgress,
     signal,
+    // 街机大包与 NDS 共用 8MB Range 断点续传。romCacheKey 只对带 romv /
+    // 归档版本的内容生成；无版本 URL 可能原地换包，不许拼入旧分片。
+    resumeKey: cacheKey || undefined,
     check: (res) => {
       const type = res.headers.get('content-type') ?? ''
       // 地址或反代配错时，SSR 常会回 200 + HTML；状态码正常也绝不能交给核心。
@@ -1429,12 +1439,20 @@ export async function prepareRemoteDiscRom(
   url: string,
   onProgress: MountOptions['onProgress'],
   signal: AbortSignal,
+  options: { resumeAcrossRefresh?: boolean; validate?: (blob: Blob) => Promise<void> } = {},
 ): Promise<{ url: string; bytes: number; name?: string }> {
   const prepare = async (stored: Blob): Promise<{ url: string; bytes: number; name?: string }> => {
     const magic = new Uint8Array(await stored.slice(0, 4).arrayBuffer())
-    if (!isRomPackBytes(magic)) return { url: URL.createObjectURL(stored), bytes: stored.size }
-    const unpacked = await unpackRomPackBlob(stored)
-    return { url: URL.createObjectURL(unpacked.blob), bytes: unpacked.blob.size, name: unpacked.name }
+    let playable = stored
+    let name: string | undefined
+    if (isRomPackBytes(magic)) {
+      const unpacked = await unpackRomPackBlob(stored)
+      playable = unpacked.blob
+      name = unpacked.name
+    }
+    // 必须在 createObjectURL 和正式入缓存之前验；失败时不能留下 URL，也不能钉住坏缓存。
+    await options.validate?.(playable)
+    return { url: URL.createObjectURL(playable), bytes: playable.size, name }
   }
   const cacheKey = romCacheKey(url)
   if (cacheKey) {
@@ -1445,7 +1463,10 @@ export async function prepareRemoteDiscRom(
       // cached 标记让遮罩显示「已缓存」而不是「需下载 620 MB」—— 秒开时那行字必须对得上。
       onProgress?.({ phase: 'rom', loaded: cached.size, total: cached.size, ratio: 1, cached: true })
       try {
-        return await prepare(cached)
+        const prepared = await prepare(cached)
+        // 两个标签页同时下载时，后完成的那页可能在完整缓存写入后又留下几片；命中完整 ROM 时顺手收尾。
+        if (options.resumeAcrossRefresh) void downloadResumeStore.clear(cacheKey).catch(() => {})
+        return prepared
       } catch (error) {
         // 密文被截断或旧密钥配错时，当场回网络；若远端也坏，下面才把真实错误交给备用源。
         await romCacheDelete(cacheKey).catch(() => {})
@@ -1458,6 +1479,8 @@ export async function prepareRemoteDiscRom(
     phase: 'rom',
     onProgress,
     signal,
+    // 只在明确要求且 URL 带内容版本时落临时分片。无版本地址原地换包后会混入旧片，宁可重下。
+    resumeKey: options.resumeAcrossRefresh ? cacheKey : undefined,
     check: (res) => {
       const type = res.headers.get('content-type') ?? ''
       // 地址或反代配错时，SSR 常会回 200 + HTML；状态码正常也绝不能当成镜像交给核心
@@ -1475,28 +1498,11 @@ export async function prepareRemoteDiscRom(
 }
 
 /**
- * FBNeo 系核心（含本站当前在用的 mame2003 / mame2003_plus）才认得 RomData(.dat) 与
- * 「核心选项式」DIP 这两样 FBNeo 专属机制。
- *
- * 新增的「当前版 MAME」核心（如 mame-current，用来跑 IGS027A（m027 驱动）的 mxsqy102tw / 明星三缺一）
- * 不走这套：它按自己的 ROM 文件名认游戏、用 MAME 自己的输入系统，塞 FBNeo 的 .dat 或
- * 拨 FBNeo 风格的 DIP 只会让它困惑。所以这两处 FBNeo 专属逻辑必须按核心族守卫，
- * 不能只靠「字段为空就不做」—— 否则哪天有人给一款 MAME 游戏误填了 arcadeRomData /
- * arcadeDip，就会把 FBNeo 的机制喂给一个不认它的核心。
- *
- * ⚠️ 目前 arcade 平台实际在用的核心只有这三个；新核心一律排除。
- * 这是白名单思路（只放行已知 FBNeo 族），所以新增任何非 FBNeo 核心都自动被隔离，
- * 不会动到现有任何一款游戏。
- */
-const FBNEO_FAMILY_CORES = new Set(['fbneo', 'mame2003', 'mame2003_plus'])
-const isFbneoFamilyCore = (core: string | undefined): boolean => (core ? FBNEO_FAMILY_CORES.has(core) : false)
-
-/**
  * MAME（mame-current）和 FBNeo 一样「文件名即身份」：核心按 romset 文件名挑驱动。
  * 但上传时文件名常常不标准——明星三缺一（IGS027A 的 mxsqy102tw 驱动）被存成了 mxsqy.zip，
  * MAME 按名字找 `mxsqy` 驱动压根不存在，于是落到主菜单。这里在交给引擎前把内层文件名
  * 纠正成 MAME 认得的 romset 名（只改 EJS_gameName，即引擎写进虚拟文件系统的文件名），
- * 不影响 RomData（mame-current 不认 .dat，见上面 isFbneoFamilyCore 那段说明）。
+ * 不影响 RomData（mame-current 不认 FBNeo .dat，能力边界见 arcadeCore.ts）。
  * 键是上传文件名剥扩展名后的短名，值是 MAME 真实 romset 短名；以后再有这类错名游戏往里加即可。
  */
 const MAME_ROMSET_ALIASES: Record<string, string> = {
@@ -1513,10 +1519,19 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const rt = getT().runtime
   // 按游戏覆盖优先，其次才是平台默认。街机一个平台底下其实是好几套硬件，
   // 拳皇 / 街霸 / 老板子各要各的核心，光靠平台默认值盖不住
-  const core = emulatorJsCoreForGame(options.platform, options.core)
-  if (!core) {
+  const resolvedCore = emulatorJsCoreForGame(options.platform, options.core)
+  if (!resolvedCore) {
     options.onError?.(fmt(rt.ejsNoCore, { platform: options.platform }))
     return { destroy: () => {}, caps: new Set<Capability>() }
+  }
+  // 先收窄成确定的 string 再允许 RomData 纠正它；否则 TypeScript 会因为变量可变而丢掉上面的空值判定。
+  let core: string = resolvedCore
+  if (options.platform === 'arcade') {
+    const corrected = arcadeCoreForRomData(core, options.arcadeRomData)
+    if (corrected !== core) {
+      console.warn(`[arcade] ${core} 不支持 FBNeo RomData，已自动切换为 ${corrected}，避免必然出现 Romset is unknown`)
+      core = corrected
+    }
   }
   /**
    * 联机会话。**可变**：一开始可能没有（玩家先自己开着玩），
@@ -1789,6 +1804,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const remoteGameUrl = isFile ? '' : (options.game as string)
   let gameUrl = isFile ? URL.createObjectURL(options.game as File) : remoteGameUrl
   let engineGameName = isFile ? (options.game as File).name : options.gameName
+  /** NDS ZIP 内唯一的 ROM；开局前强制使用，绕过引擎“扩展名不认识就取第一个文件”的兜底。 */
+  let ndsArchiveEntry = ''
+  let ndsRomValidated = options.platform !== 'nds'
+  const validateNds = options.platform === 'nds'
+    ? async (blob: Blob) => {
+        ndsArchiveEntry = (await assertNdsRomBlob(blob)).archiveEntry ?? ''
+        ndsRomValidated = true
+      }
+    : undefined
   /** 远程街机 ROM 的预下载可以随会话销毁立刻取消，避免切游戏后还在后台吞几十 MB。 */
   const prepareAbort = new AbortController()
   /** 预下载生成的 blob:。引擎通常会自行回收，销毁时再兜一次是幂等的。 */
@@ -2734,7 +2758,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       ⚠️ 挂在**开局之后**是硬约束，别挪到前面去：DIP 是核心在 retro_load_game 里
       才注册成核心选项的，在那之前读选项表一个 dipswitch 键都没有，填了也白填。
     */
-    if (options.platform === 'arcade' && isFbneoFamilyCore(core)) {
+    if (options.platform === 'arcade' && options.arcadeDip?.trim()) {
       const emuForDip = emuOf()
       if (emuForDip) applyArcadeDipDefault(emuForDip)
     }
@@ -2819,6 +2843,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
     void (async () => {
       try {
+        // 本地文件不走下面的预下载分支，也必须挡住错误页、截断 ROM 与 ZIP 解压炸弹。
+        if (isFile && validateNds) await validateNds(options.game as File)
+
         /**
          * 只处理「远程 + 街机」：本地文件本来就是 Blob，其他平台的压缩包需要让引擎照常
          * 解开，不能一刀切。必须在写 EJS_* 和加载 loader.js 之前完成，否则引擎会抢先
@@ -2834,6 +2861,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             options.onProgress?.(p)
           }, prepareAbort.signal)
           if (destroyed) return
+          await validateNds?.(extracted.blob)
           preparedArcadeBlobUrl = URL.createObjectURL(extracted.blob)
           gameUrl = preparedArcadeBlobUrl
           engineGameName = extracted.name
@@ -2845,10 +2873,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             原文件名和字节。复用 Blob 路径后，大包会落盘，不要求一块连续内存；旧 URL
             完全不进这支，所以现有未迁移游戏的行为一个字节不变。
           */
-          const prepared = await prepareRemoteDiscRom(remoteGameUrl, (p) => {
-            beat()
-            options.onProgress?.(p)
-          }, prepareAbort.signal)
+          const prepared = await prepareRemoteDiscRom(
+            remoteGameUrl,
+            (p) => {
+              beat()
+              options.onProgress?.(p)
+            },
+            prepareAbort.signal,
+            { resumeAcrossRefresh: options.platform === 'nds', validate: validateNds },
+          )
           if (destroyed) {
             URL.revokeObjectURL(prepared.url)
             return
@@ -2861,11 +2894,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           /*
             自己下载的**卡带**平台（目前只有 NDS，见 paths.ts 的 SELF_DOWNLOAD_PLATFORMS）。
 
-            和光盘那条走的是同一个 prepareRemoteDiscRom，但**失败处理刻意不同**：
-            光盘平台没得选（几百 MB 交给引擎的单条 XHR 本来就跑不完），失败就得报错；
-            NDS 一直是引擎自己下的，所以这里失败只要**退回老路**就行 ——
-            玩家最坏也只是没吃到缓存和断点重传，而不是本来能玩的游戏突然打不开。
-            这一条的价值全在「不要为了一个优化把可玩性赔进去」，别改成往上报错。
+            失败不能再退回引擎自己的整包 XHR：已经落盘的 8MB 分片会被抛在一边，播放器也
+            收不到错误，无法触发那次自动重试；弱网用户于是先等我们的超时，再从 0 下载整包。
+            现在把错误交回播放器：它会自动重挂一次，同一个 romv 键只补缺片；仍失败时再显示
+            「重试」按钮。无 Range / 无 IndexedDB 已经在下载器内部降级，不需要用第二套下载器兜。
           */
           try {
             const prepared = await prepareRemoteDiscRom(
@@ -2875,6 +2907,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                 options.onProgress?.(p)
               },
               prepareAbort.signal,
+              { resumeAcrossRefresh: true, validate: validateNds },
             )
             if (destroyed) {
               URL.revokeObjectURL(prepared.url)
@@ -2891,7 +2924,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           } catch (error) {
             // 真的被取消了（换游戏 / 退出播放器）就到此为止，别接着往下开局
             if (destroyed || prepareAbort.signal.aborted) return
-            console.warn('[emulatorjs] 自己下载 ROM 失败，改让引擎自己下：', error)
+            const message = error instanceof Error ? error.message : String(error)
+            console.warn('[emulatorjs] NDS 分片下载失败，保留已完成分片并交给播放器重试：', error)
+            options.onError?.(message)
+            return
           }
         } else if (!isFile && isDiscPlatform(options.platform)) {
           const prepared = await prepareRemoteDiscRom(
@@ -2951,6 +2987,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           if (!options.arcadeRomData?.trim() && prepared.hack?.romData) {
             builtInRomData = prepared.hack.romData
             engineGameName = `${prepared.hack.zipName}.zip`
+            const corrected = arcadeCoreForRomData(core, builtInRomData)
+            if (corrected !== core) {
+              console.warn(`[arcade] 改版包需要 RomData，${core} 不会读取，已自动切换为 ${corrected}`)
+              core = corrected
+            }
             console.info(`[arcade] 按指纹认出改版包：${prepared.hack.title}（借 ${prepared.hack.driver} 驱动），已套用内置 RomData`)
           }
           // MAME（mame-current）按 romset 文件名认驱动：上传文件名不标准时纠正成真实 romset 名。
@@ -3059,14 +3100,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             ? { EJS_VirtualGamepadSettings: arcadeVirtualPad(options.arcadeButtons ?? 6) }
             : {}),
           /*
-            默认键位：左手 WASD、右手 UIJK、Shift 投币、Enter 开始（见 keymapData 的 EJS_KEY_OVERRIDE）。
+            默认键位：左手 WASD、右手 UIJK、Enter 开始。主机的 Select 是 Shift；街机投币
+            沿用 EmulatorJS / libretro 原生的 V，和 FBNeo、MAME 及旧控制记录保持一致。
             引擎会把这份**逐颗按钮合并**进它出厂那套，没给的按钮（肩键、L2/R2）保持原样。
 
             ⚠️ 只影响**没改过键的人**。引擎把玩家改过的键位存在 localStorage 里，
             存过就一直用存的那份 —— 这是对的（不能替人把改过的键改回去），
             但也意味着你自己的浏览器上大概率看不到这次改动，要清掉引擎的控制设置才看得到。
           */
-          EJS_defaultControls: EJS_DEFAULT_CONTROLS,
+          EJS_defaultControls: options.platform === 'arcade' ? EJS_ARCADE_DEFAULT_CONTROLS : EJS_DEFAULT_CONTROLS,
           EJS_color: '#0078f2',
           EJS_backgroundColor: '#0b0b0f',
           // 跟着站点语言走。切语言是整页跳转（见 services/lang.ts 的 setLang），
@@ -3104,7 +3146,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
         // 文件名必须和 ROM 同名（wofcn.zip → /wofcn.dat），这是核心自己的查找规则。
         const romData = options.arcadeRomData?.trim() || builtInRomData
-        if (romData && isFbneoFamilyCore(core)) {
+        if (romData && supportsFbneoRomData(core)) {
           injections.push({ path: `/${engineGameName.replace(/\.[^.]*$/, '')}.dat`, bytes: `${romData}\n` })
         }
 
@@ -3134,7 +3176,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             而「文件明明写进去了」，查起来毫无线索。FBNeo 系列内容在根目录，照旧。
           */
           const path = mameContentDir ? `/${mameContentDir}${file.path.replace(/^\//, '')}` : file.path
-          injections.push({ path, bytes: fetchBiosBytes(file.url, beat, options.onProgress) })
+          injections.push({ path, bytes: fetchBiosBytes(file.url, beat, options.onProgress, prepareAbort.signal) })
         }
 
         /**
@@ -3236,12 +3278,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           : undefined
 
         /**
-         * melonDS DS 必须在 callMain 前拿到非根 system 目录和浏览器安全的首次启动选项。
-         * 详细根因与「为什么不能在 onReady 后再改」见 ndsStartup.ts。
+         * NDS 核心必须在 callMain 前拿到非根 system 目录；melonDS DS 还需要浏览器安全选项。
+         * DeSmuME 的选项路径和 key 完全不同，不能给它写一份看似成功、实际永远没人读的
+         * `melonDS DS.opt`。详细根因与最终写入时序见 ndsStartup.ts。
          */
         const configureNdsStartup = options.platform === 'nds'
           ? (emu: EjsEmulator) => {
-              const fs = emu.gameManager?.FS
+              const gm = emu.gameManager
+              const fs = gm?.FS
               if (!fs?.readFile || !fs.writeFile) return
               const decoder = new TextDecoder()
               try {
@@ -3252,6 +3296,21 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                 const cfgBefore = decoder.decode(cfgBytes)
                 const cfgAfter = configureNdsSystemDirectory(cfgBefore)
                 if (cfgAfter !== cfgBefore) fs.writeFile(RETROARCH_CFG_PATH, cfgAfter)
+                const cfgOk = decoder.decode(fs.readFile(RETROARCH_CFG_PATH)).includes(`system_directory = "${NDS_SYSTEM_DIRECTORY}"`)
+                if (core !== 'melondsds') {
+                  console.info(`[emulatorjs] NDS 启动环境（${core}）：system 目录${cfgOk ? '已修正' : '回读失败'}`)
+                  return
+                }
+
+                /*
+                  致命时序守卫：下面直接写 `.opt` 只是核心不触发回调时的兜底；正常路径里
+                  EmulatorJS 会在 callMain 内晚一步覆盖它。真正保证核心读到安全值的是包住
+                  setupCoreSettingFile，在引擎最终写入后立即校正。见 ndsStartup.ts。
+                */
+                const guarded = installNdsCoreOptionsGuard(gm?.Module?.callbacks, fs as NdsCoreOptionsFs, (ok, error) => {
+                  if (ok) console.info('[emulatorjs] NDS 核心选项最终写入已校正（玩家选择保留）')
+                  else console.warn('[emulatorjs] NDS 核心选项最终写入校正失败，按核心默认配置继续：', error ?? '回读不一致')
+                })
 
                 ensureParentDir(fs, NDS_CORE_OPTIONS_PATH)
                 let optBefore = ''
@@ -3264,35 +3323,55 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                 const optAfter = configureNdsCoreOptions(optBefore)
                 if (optAfter !== optBefore) fs.writeFile(NDS_CORE_OPTIONS_PATH, optAfter)
 
-                const cfgOk = decoder.decode(fs.readFile(RETROARCH_CFG_PATH)).includes(`system_directory = "${NDS_SYSTEM_DIRECTORY}"`)
                 const optCheck = decoder.decode(fs.readFile(NDS_CORE_OPTIONS_PATH))
                 const optOk = optCheck.includes('melonds_sysfile_mode = "builtin"') &&
-                  optCheck.includes('melonds_homebrew_sdcard = "disabled"')
-                console.info(`[emulatorjs] NDS 启动环境：system 目录${cfgOk ? '已修正' : '回读失败'}，浏览器安全默认值${optOk ? '已写入' : '回读失败'}`)
+                  optCheck.includes('melonds_homebrew_sdcard = "disabled"') &&
+                  optCheck.includes('melonds_show_current_layout = "disabled"')
+                console.info(
+                  `[emulatorjs] NDS 启动环境：system 目录${cfgOk ? '已修正' : '回读失败'}，` +
+                    `核心选项兜底${optOk ? '已写入' : '回读失败'}，最终写入守卫${guarded ? '已安装' : '缺失'}`,
+                )
               } catch (e) {
                 console.warn('[emulatorjs] NDS 启动环境修正失败，按核心默认配置继续：', e)
               }
             }
           : undefined
 
-        if (injections.length || relocateMameRom || relocateMameBios || raiseCoreAudioLatency || configureNdsStartup) {
-          installFsInjector(win, injections, (msg) => {
+        /**
+         * EmulatorJS 解 ZIP 后会按核心 core.json 的扩展名挑内容，认不出就退回包内第一个文件。
+         * 自构建 melonDS DS 的元数据目前没有 `.srl`，所以 `README + game.srl` 会稳定打开 README。
+         * 下载前的中央目录校验已经证明包里恰好一个 NDS ROM，这里直接把同一个路径交给 callMain；
+         * 不改文件、不复制几百 MB，只纠正选择结果。DeSmuME 兜底也一起受益。
+         */
+        const selectNdsArchiveRom = options.platform === 'nds'
+          ? (emu: EjsEmulator) => {
+              if (!ndsArchiveEntry || !emu.gameManager) return
+              const before = emu.gameManager.fileName
+              emu.gameManager.fileName = ndsArchiveEntry
+              console.info(`[emulatorjs] NDS ZIP 内容：${before || '未选择'} → ${ndsArchiveEntry}`)
+            }
+          : undefined
+
+        if (injections.length || relocateMameRom || relocateMameBios || raiseCoreAudioLatency || configureNdsStartup || selectNdsArchiveRom) {
+          installFsInjector(win, injections, (path, msg) => {
             /*
               写失败**不拦着开局**（和 installFsInjector 的注释一致）：没了改版 dat，
               核心还能按原始 romset 试一把，比直接红字强。以前这里走 onError —— 而 onReady 之后的
               onError 等于拆掉这一局（第一轮体检的铁律），一个可选的补丁没写进去就把游戏关了。
               真缺文件的话核心自己会报「缺 xxx」，那条走 errorTap，比这里更准。
             */
-            if (!destroyed) console.warn('[emulatorjs] 文件没写进虚拟文件系统，按原始配置继续：', fmt(rt.ejsFsInjectFailed, { msg }))
-          }, relocateMameRom || relocateMameBios || raiseCoreAudioLatency || configureNdsStartup
+            if (!destroyed) console.warn(`[emulatorjs] ${path || '待注入文件'} 没写进虚拟文件系统，按原始配置继续：`, fmt(rt.ejsFsInjectFailed, { msg }))
+          }, relocateMameRom || relocateMameBios || raiseCoreAudioLatency || configureNdsStartup || selectNdsArchiveRom
             ? (emu) => {
                 // 顺序有讲究：先处理内容/BIOS，再准备核心专属目录与选项，最后调音频窗口。
                 relocateMameRom?.(emu)
                 relocateMameBios?.(emu)
+                selectNdsArchiveRom?.(emu)
                 configureNdsStartup?.(emu)
                 raiseCoreAudioLatency?.(emu)
               }
-            : undefined)
+            : undefined,
+          () => !destroyed)
         }
 
         // 网络探针也要赶在 loader.js 之前包好，否则核心那一趟就漏过去了
@@ -3393,6 +3472,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         if (!isFile && isDiscPlatform(options.platform) && !discRomPrepared) {
           const message = error instanceof Error ? error.message : String(error)
           options.onError?.(fmt(rt.ejsDiscDownloadFailed, { msg: message }))
+          return
+        }
+        // 本地 NDS 不走预下载分支；格式校验失败时必须原样报，不能误说成 EmulatorJS 资源坏了。
+        if (options.platform === 'nds' && !ndsRomValidated) {
+          options.onError?.(error instanceof Error ? error.message : String(error))
           return
         }
         // 给运维看的细节进控制台；红字只说玩家能理解的那句

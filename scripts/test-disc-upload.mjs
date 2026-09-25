@@ -37,7 +37,7 @@ const reset = () => {
   confirmAnswer = true
 }
 
-const { confirmDiscImage } = await import(fileURLToPath(new URL('../src/admin/uploadGuards.ts', import.meta.url)))
+const { canReuseRomObjectKey, confirmDiscImage } = await import(fileURLToPath(new URL('../src/admin/uploadGuards.ts', import.meta.url)))
 
 let n = 0
 let failed = 0
@@ -56,6 +56,11 @@ process.on('exit', () => {
     process.exitCode = 1
   }
 })
+
+ok(canReuseRomObjectKey('roms/psp/game.iso', 'replacement.ISO', false), '同格式 ISO 可以安全原地覆盖')
+ok(!canReuseRomObjectKey('roms/psp/game.chd', 'replacement.iso', false), 'ISO 不能写进旧 CHD key')
+ok(!canReuseRomObjectKey('roms/psp/game.cso', 'replacement.iso', false), 'ISO 不能写进旧 CSO key')
+ok(canReuseRomObjectKey('roms/nds/game.8bg', 'replacement.nds', true), '8BG 外层统一，内部格式变化不影响对象扩展名')
 
 /* ---------------- 造 zip ---------------- */
 

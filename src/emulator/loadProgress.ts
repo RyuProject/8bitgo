@@ -12,6 +12,11 @@
  * 一个字都不用碰，反正整个加载期间都被遮罩盖着。
  */
 import type { LoadPhase, LoadProgress } from './types'
+import {
+  downloadResumeStore,
+  type DownloadResumeSnapshot,
+  type DownloadResumeStore,
+} from './downloadResume'
 import { windowsLaunchDelayMs, WINDOWS_GRAPHICS_SIGNAL_FALLBACK_MS, WINDOWS_LAUNCH_VERIFY_MS } from './windowsLaunch'
 
 /** 进度回调节流：下载一个几十 MB 的 ROM 会触发上千次 chunk，全都 setState 会把主线程拖垮 */
@@ -95,6 +100,7 @@ function createStallGuard(parent: AbortSignal | undefined, stallMs: number): Sta
   const controller = new AbortController()
   let timer: ReturnType<typeof setTimeout> | undefined
   let didStall = false
+  const abortFromParent = () => controller.abort()
 
   const clear = () => {
     if (timer !== undefined) clearTimeout(timer)
@@ -109,14 +115,17 @@ function createStallGuard(parent: AbortSignal | undefined, stallMs: number): Sta
   }
   if (parent) {
     if (parent.aborted) controller.abort()
-    else parent.addEventListener('abort', () => controller.abort(), { once: true })
+    else parent.addEventListener('abort', abortFromParent, { once: true })
   }
 
   return {
     signal: controller.signal,
     touch,
     stalled: () => didStall,
-    stop: clear,
+    stop: () => {
+      clear()
+      parent?.removeEventListener('abort', abortFromParent)
+    },
   }
 }
 
@@ -264,6 +273,13 @@ export interface BlobFetchOptions {
   fetchImpl?: typeof fetch
   /** 覆盖「多久没字节算卡死」，只给测试用 */
   stallMs?: number
+  /**
+   * 带内容版本的持久化键。设置后，完整分片会落进临时 IndexedDB，刷新页面只补缺失片。
+   * 没有可靠版本号时必须留空，否则同一个 URL 被覆盖后可能把两代 ROM 拼在一起。
+   */
+  resumeKey?: string
+  /** 注入临时分片仓库，只给测试用；生产默认使用 downloadResumeStore。 */
+  resumeStore?: DownloadResumeStore
 }
 
 /**
@@ -276,8 +292,8 @@ export const CHUNK_BYTES = 8 * 1024 * 1024
  * ⚠️ 小文件不需要特判：第一个 Range 请求要的就是 `bytes=0-<片长-1>`，
  * 比这短的文件一次就回全了，循环一次都不进。所以这里没有「多大以上才分片」的阈值。
  *
- * 而且这条路目前只有光盘平台在走（见 adapters/emulatorjs.ts 的 prepareRemoteDiscRom）——
- * 卡带机 ROM 走的是 loadGameBytes 那条 ArrayBuffer 路径，一个字节都不受影响。
+ * 这条路目前用于光盘平台和 NDS（见 adapters/emulatorjs.ts 的 prepareRemoteDiscRom）；
+ * 其它小卡带 ROM 仍走 loadGameBytes 的 ArrayBuffer 路径，一个字节都不受影响。
  */
 
 /** 单片重试次数。三次退避（0.5s / 1s / 2s）足够熬过一次 Wi-Fi 切换 */
@@ -323,20 +339,43 @@ const isAbort = (e: unknown) => e instanceof DOMException && e.name === 'AbortEr
  */
 export async function fetchBlobWithProgress(url: string, opts: BlobFetchOptions = {}): Promise<Blob> {
   const stallMs = opts.stallMs ?? STALL_MS
+  const retries = opts.retries ?? CHUNK_RETRIES
+  let highWater = 0
+  const guardedOpts: BlobFetchOptions = opts.onProgress
+    ? {
+        ...opts,
+        // 超时重试会重新进入下载器；进度不能因此从已完成的 80MB 倒退到 0。
+        onProgress: (progress) => {
+          highWater = Math.max(highWater, progress.loaded ?? 0)
+          opts.onProgress?.({
+            ...progress,
+            loaded: highWater,
+            ratio: progress.total ? Math.min(highWater / progress.total, 1) : progress.ratio,
+          })
+        },
+      }
+    : opts
   /*
-    一只看门狗管整次下载（含重试）：它只在**卡死**时掐断，非卡死的失败（500、连接被 reset）
-    不会碰 signal，所以重试沿用同一个 signal 是安全的 —— 换新的反而要在每个分支里重新接线。
-    卡死则**立刻抛**，不进重试：连续 30 秒一个字节都没有，重试只会再等 30 秒。
+    一只看门狗管一次下载尝试；普通网络错误由分片循环重试，卡死则必须换一只新的
+    AbortController 才能重试（已经 abort 的 signal 永远不会复活）。
+
+    这里的外层重试很重要：卡死可能发生在第一片，也可能发生在已下了几百 MB 之后。
+    带 resumeKey 时，已完成分片已经落进 IndexedDB，新尝试只补缺片；不带持久化键时
+    至少仍会自动再试，而不是让 fetch 永久挂住。退避与普通分片一致。
   */
-  const guard = createStallGuard(opts.signal, stallMs)
-  guard.touch()
-  try {
-    return await blobWithProgressGuarded(url, opts, guard)
-  } catch (error) {
-    if (guard.stalled()) throw new Error(stallMessage(stallMs))
-    throw error
-  } finally {
-    guard.stop()
+  for (let attempt = 0; ; attempt++) {
+    const guard = createStallGuard(opts.signal, stallMs)
+    guard.touch()
+    try {
+      return await blobWithProgressGuarded(url, guardedOpts, guard)
+    } catch (error) {
+      if (!guard.stalled()) throw error
+      if (opts.signal?.aborted) throw error
+      if (attempt >= retries) throw new Error(stallMessage(stallMs))
+    } finally {
+      guard.stop()
+    }
+    await sleep(500 * 2 ** attempt, opts.signal)
   }
 }
 
@@ -348,73 +387,193 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
   const retries = opts.retries ?? CHUNK_RETRIES
   const doFetch = opts.fetchImpl ?? fetch
   const emit = throttleProgress(opts.onProgress)
+  const resumeKey = opts.resumeKey ?? ''
+  let resumeStore: DownloadResumeStore | null = resumeKey ? (opts.resumeStore ?? downloadResumeStore) : null
+  let reportedLoaded = 0
 
   emit({ phase, loaded: 0 }, true)
 
-  const first = await doFetch(url, { headers: { Range: `bytes=0-${chunkBytes - 1}` }, signal: guard.signal })
-  if (!first.ok) throw new Error(`HTTP ${first.status}`)
-  opts.check?.(first)
+  /** 重试中的残片会让“本次已收到”回退；UI 只能停住，不能从 70% 倒退到 65%。 */
+  const emitTotal = (loaded: number, total: number | undefined, flush = false) => {
+    reportedLoaded = Math.max(reportedLoaded, loaded)
+    emit({
+      phase,
+      loaded: reportedLoaded,
+      total,
+      ratio: total ? Math.min(reportedLoaded / total, 1) : undefined,
+    }, flush)
+  }
 
-  /* ---- 服务器不认 Range：这一条就是整份，按老路读完 ---- */
-  if (first.status !== 206) {
-    const encoded = Boolean(first.headers.get('content-encoding'))
-    const len = Number(first.headers.get('content-length'))
+  const clearResume = async () => {
+    if (!resumeStore) return
+    try {
+      await resumeStore.clear(resumeKey)
+    } catch {
+      /* 临时缓存清不掉不能把一份已经完整的 ROM 判成下载失败。 */
+    }
+  }
+
+  const loadResume = async (): Promise<DownloadResumeSnapshot | null> => {
+    if (!resumeStore) return null
+    try {
+      return await resumeStore.load(resumeKey, chunkBytes)
+    } catch {
+      // Safari 隐私模式和配额故障都可能让 IDB 抛错；本局直接退回内存下载。
+      resumeStore = null
+      return null
+    }
+  }
+
+  const savePart = async (total: number, index: number, blob: Blob) => {
+    if (!resumeStore) return
+    try {
+      // await 很重要：进度一旦报到下一片，刷新后这一片就应该真的已经落盘。
+      const stored = await resumeStore.put(resumeKey, total, chunkBytes, index, blob)
+      if (stored === false) resumeStore = null
+    } catch {
+      resumeStore = null
+    }
+  }
+
+  /** Range 回包必须精确对应请求；只验长度挡不住 CDN 把“别的一片等长数据”发回来。 */
+  const assertContentRange = (res: Response, start: number, end: number, total: number) => {
+    const match = /^bytes\s+(\d+)-(\d+)\/(\d+)$/i.exec(res.headers.get('content-range') ?? '')
+    if (
+      !match
+      || Number(match[1]) !== start
+      || Number(match[2]) !== end
+      || Number(match[3]) !== total
+    ) {
+      throw new Error(`分片范围不匹配：期望 bytes ${start}-${end}/${total}`)
+    }
+  }
+
+  /** 服务器忽略 Range 时把 200 当整份读；已缓存的残片全部作废，不能混着拼。 */
+  const takeWhole = async (res: Response): Promise<Blob> => {
+    const encoded = Boolean(res.headers.get('content-encoding'))
+    const len = Number(res.headers.get('content-length'))
     const total = !encoded && Number.isFinite(len) && len > 0 ? len : undefined
-    if (!first.body) {
-      const blob = await first.blob()
+    if (!res.body) {
+      const blob = await res.blob()
       if (total !== undefined && blob.size !== total) {
         throw new Error(`下载不完整：应为 ${total} 字节，实际收到 ${blob.size} 字节`)
       }
-      emit({ phase, loaded: blob.size, total: blob.size, ratio: 1 }, true)
+      emitTotal(blob.size, blob.size, true)
+      await clearResume()
       return blob.type === type ? blob : new Blob([blob], { type })
     }
-    const { chunks, loaded } = await drain(first.body, phase, total, emit, Infinity, guard.touch)
-    emit({ phase, loaded, total: loaded, ratio: 1 }, true)
+    const { chunks, loaded } = await drain(
+      res.body,
+      phase,
+      total,
+      (p) => emitTotal(p.loaded ?? 0, p.total),
+      Infinity,
+      guard.touch,
+    )
+    emitTotal(loaded, loaded, true)
+    await clearResume()
     return new Blob(chunks as BlobPart[], { type })
   }
 
-  /* ---- 206：Content-Range 的斜杠后面才是整份大小 ---- */
-  // 206 的 Content-Length 说的是这一片的长度，不是整份 —— 拿它当总量会让进度条一开始就满
-  const total = Number((first.headers.get('content-range') ?? '').split('/')[1])
-  if (!Number.isFinite(total) || total <= 0) {
-    // 回了 206 却说不清整份多大，没法分片。把这一片读完当整份用
-    const blob = await first.blob()
-    emit({ phase, loaded: blob.size, total: blob.size, ratio: 1 }, true)
-    return new Blob([blob], { type })
+  let total = 0
+  let parts: Array<Blob | undefined> = []
+  let completed = 0
+  const resumed = await loadResume()
+
+  if (resumed) {
+    total = resumed.total
+    const count = Math.ceil(total / chunkBytes)
+    let valid = resumed.chunkBytes === chunkBytes && Number.isSafeInteger(total) && total > 0
+    parts = Array.from({ length: count }, () => undefined as Blob | undefined)
+    for (const [index, blob] of resumed.parts) {
+      const expected = Math.min(chunkBytes, total - index * chunkBytes)
+      if (!Number.isInteger(index) || index < 0 || index >= count || !(blob instanceof Blob) || blob.size !== expected) {
+        valid = false
+        break
+      }
+      parts[index] = blob
+      completed += blob.size
+    }
+    if (!valid || completed === 0) {
+      await clearResume()
+      parts = []
+      total = 0
+      completed = 0
+    } else {
+      emitTotal(completed, total, true)
+    }
   }
 
-  const parts: Blob[] = []
-  let done = 0
-  /** 把分片内的进度换算成整份的进度 */
-  const relay = (p: LoadProgress) => {
-    const loaded = done + (p.loaded ?? 0)
-    emit({ phase, loaded, total, ratio: Math.min(loaded / total, 1) })
-  }
-
-  const take = async (res: Response, expect: number) => {
+  /** 把分片内的字节换算成“已经完整落盘的分片 + 当前片”的整份进度。 */
+  const takePart = async (res: Response, expect: number) => {
+    const relay = (p: LoadProgress) => emitTotal(completed + (p.loaded ?? 0), total)
     if (!res.body) {
       const blob = await res.blob()
       if (blob.size !== expect) throw new Error(`分片不完整：应为 ${expect} 字节，实际 ${blob.size}`)
       return blob
     }
-    // drain 自带「收到的字节数和 Content-Length 对不上就抛」这道校验，正好当分片完整性检查
     const { chunks } = await drain(res.body, phase, expect, relay, Infinity, guard.touch)
     return new Blob(chunks as BlobPart[])
   }
 
-  parts.push(await take(first, Math.min(chunkBytes, total)))
-  done += parts[0].size
+  /* 没有续传现场时，第一个请求同时探测 Range 支持并取得整份大小。 */
+  if (total === 0) {
+    /*
+      第一片既是探测又是真数据，过去却在下面的逐片重试循环之外：Wi‑Fi 切换恰好发生在
+      第一个请求时会直接失败，而第二片以后才有三次重试。弱网最常断在建连阶段，等于把
+      重试留给了更不容易失败的部分。把“请求 + 响应头校验 + 读完整片”整体放进同一规则，
+      截断的首片也不会被误当成一次不可恢复的整局失败。
+    */
+    for (let attempt = 0; ; attempt++) {
+      try {
+        guard.touch()
+        const first = await doFetch(url, { headers: { Range: `bytes=0-${chunkBytes - 1}` }, signal: guard.signal })
+        if (!first.ok) throw new Error(`HTTP ${first.status}`)
+        opts.check?.(first)
+        if (first.status !== 206) return takeWhole(first)
 
-  while (done < total) {
-    const end = Math.min(done + chunkBytes, total) - 1
-    const expect = end - done + 1
+        const match = /^bytes\s+(\d+)-(\d+)\/(\d+)$/i.exec(first.headers.get('content-range') ?? '')
+        const firstTotal = Number(match?.[3])
+        if (!match || Number(match[1]) !== 0 || !Number.isSafeInteger(firstTotal) || firstTotal <= 0) {
+          throw new Error('分片响应缺少有效的 Content-Range')
+        }
+        const firstEnd = Math.min(chunkBytes, firstTotal) - 1
+        if (Number(match[2]) !== firstEnd) throw new Error(`分片范围不匹配：期望 bytes 0-${firstEnd}/${firstTotal}`)
+
+        const firstPart = await takePart(first, firstEnd + 1)
+        total = firstTotal
+        parts = Array.from({ length: Math.ceil(total / chunkBytes) }, () => undefined as Blob | undefined)
+        await savePart(total, 0, firstPart)
+        parts[0] = firstPart
+        completed = firstPart.size
+        emitTotal(completed, total, true)
+        break
+      } catch (error) {
+        // 卡死会在外层换一只新的 AbortController；这里不能拿已 abort 的 signal 空转。
+        if (guard.stalled()) throw error
+        if (isAbort(error) || opts.signal?.aborted) throw error
+        if (attempt >= retries) throw error
+        await sleep(500 * 2 ** attempt, opts.signal)
+      }
+    }
+  }
+
+  for (let index = 0; index < parts.length; index++) {
+    if (parts[index]) continue
+    const start = index * chunkBytes
+    const end = Math.min(start + chunkBytes, total) - 1
+    const expect = end - start + 1
     let part: Blob | null = null
     for (let attempt = 0; ; attempt++) {
       try {
         guard.touch()
-        const res = await doFetch(url, { headers: { Range: `bytes=${done}-${end}` }, signal: guard.signal })
-        if (res.status !== 206) throw new Error(`分片请求失败：期望 206，实际 ${res.status}`)
-        part = await take(res, expect)
+        const res = await doFetch(url, { headers: { Range: `bytes=${start}-${end}` }, signal: guard.signal })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        opts.check?.(res)
+        // 某些 CDN 会在配置变化后忽略 Range。它返回的是完整 200，直接采用，不再浪费已缓存片。
+        if (res.status !== 206) return takeWhole(res)
+        assertContentRange(res, start, end, total)
+        part = await takePart(res, expect)
         break
       } catch (e) {
         // 卡死不是「这一次没成」：重试只会再等一整个看门狗周期，直接抛
@@ -426,12 +585,17 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
         await sleep(500 * 2 ** attempt, opts.signal)
       }
     }
-    parts.push(part)
-    done += part.size
+    await savePart(total, index, part)
+    parts[index] = part
+    completed += part.size
+    emitTotal(completed, total, true)
   }
 
-  emit({ phase, loaded: total, total, ratio: 1 }, true)
-  return new Blob(parts, { type })
+  const complete = parts as Blob[]
+  emitTotal(total, total, true)
+  // 成功合并后临时片立即释放；完整 ROM 会由上层写入正式缓存，避免长期占两份空间。
+  await clearResume()
+  return new Blob(complete, { type })
 }
 
 /* ---------------- 合成一条 0→100 的总进度 ---------------- */

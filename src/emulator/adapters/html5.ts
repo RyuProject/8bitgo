@@ -10,11 +10,12 @@ import { focusFrame, frameGamepads } from '../frameFocus'
 import { installAudioTap, type AudioTap } from '../audioTap'
 import { captureCanvasScreenshot } from '../recorder'
 import { findHtml5Canvas, html5CanvasCapabilities, html5MediaBridge } from '../html5Media'
+import { html5CanvasHasFrame, html5RuntimeSignal } from '../html5Lifecycle'
 
 const SAVE_BRIDGE_SOURCE = '8bitgo-save-bridge'
 const SAVE_BRIDGE_VERSION = 1
 const SAVE_BRIDGE_TIMEOUT_MS = 15_000
-const PVZ_SHELL_VERSION = '20260924-ioskb1'
+const PVZ_SHELL_VERSION = '20260924-resume1'
 
 /**
  * PvZ 的 HTML 外壳是固定文件名，Cloudflare 允许旧副本继续服务一小段时间。
@@ -53,6 +54,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let saveRequestId = 0
   let mediaObserver: MutationObserver | null = null
   let mediaPollTimer = 0
+  let firstFrame = false
+  let playable = false
+  let canvasProbeScheduled = false
   const mediaTaps = new WeakMap<Window, AudioTap>()
   const liveMediaTaps = new Set<AudioTap>()
   const pendingSaveRequests = new Map<number, {
@@ -136,6 +140,35 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   const currentCanvas = (): HTMLCanvasElement | null => findHtml5Canvas(frameDocument())
 
+  const markFirstFrame = () => {
+    if (destroyed || firstFrame) return
+    firstFrame = true
+    options.onStart?.()
+  }
+
+  const markPlayable = () => {
+    if (destroyed || playable) return
+    playable = true
+    markFirstFrame()
+    options.onReady?.()
+  }
+
+  /**
+   * 跨域网页不能读 DOM，所以给愿意配合的游戏一条极小的 postMessage 协议。
+   * 不校验 origin 是有意的：入口可能部署在独立域；event.source 已经把消息锁死到当前 iframe，
+   * 它最多能给自己的这一局报就绪，碰不到令牌、存档或其它页面。
+   */
+  const onRuntimeBridgeMessage = (event: MessageEvent) => {
+    if (destroyed || event.source !== iframe.contentWindow) return
+    const signal = html5RuntimeSignal(event.data)
+    if (!signal) return
+    if (signal.type === 'first-frame') markFirstFrame()
+    else if (signal.type === 'game-playable') markPlayable()
+    else if (signal.type === 'first-interaction') options.onFirstInteraction?.()
+    else options.onError?.(signal.detail || 'HTML5 游戏报告启动失败')
+  }
+  window.addEventListener('message', onRuntimeBridgeMessage)
+
   /**
    * 没接公开桥的普通同源页面也尽量补一个探针。
    *
@@ -168,11 +201,20 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   const refreshMediaCapabilities = (allowRemove = false) => {
     if (destroyed) return
-    const found = html5CanvasCapabilities(currentCanvas())
+    const canvas = currentCanvas()
+    const found = html5CanvasCapabilities(canvas)
     let changed = false
     if (found.screenshot || allowRemove) changed = setMediaCapability('screenshot', found.screenshot) || changed
     if (found.record || allowRemove) changed = setMediaCapability('record', found.record) || changed
     if (changed) options.onCaps?.(caps)
+    if (!playable && html5CanvasHasFrame(canvas) && !canvasProbeScheduled) {
+      canvasProbeScheduled = true
+      // 连过两次绘制机会再确认，避免只创建了默认 300×150 空画布就被立即当成可玩。
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        canvasProbeScheduled = false
+        if (html5CanvasHasFrame(currentCanvas())) markPlayable()
+      }))
+    }
   }
 
   const stopMediaMonitoring = (removeCapabilities = false) => {
@@ -254,12 +296,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
      * 播放器那边等于**再记一次游玩**（游玩次数虚高），还会把焦点从玩家正在打字的
      * 评论框里抢进 iframe，后面敲的字全打进游戏里。
      */
+    options.onIframeLoaded?.()
     if (loaded) return
     loaded = true
-    options.onReady?.()
-    // 焦点交给 iframe，否则里面的游戏收不到键盘和手柄（见 frameFocus.ts）
-    focusFrame(iframe)
+    // 这里只撤加载遮罩。真实成功必须等运行时桥或同源 canvas 探针，不能再拿 load 冒充。
+    options.onSurfaceReady?.()
   })
+  // 跨域 iframe 读不到内部事件；用户亲手点进去时浏览器会把焦点交给 iframe，这仍是可靠的首次操作信号。
+  iframe.addEventListener('focus', () => options.onFirstInteraction?.())
   iframe.addEventListener('error', () => {
     if (destroyed) return
     options.onError?.('HTML5 游戏页面加载失败。请检查入口地址，以及目标站点是否允许被 iframe 嵌入。')
@@ -371,6 +415,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       destroyed = true
       stopMediaMonitoring(false)
       window.removeEventListener('message', onSaveBridgeMessage)
+      window.removeEventListener('message', onRuntimeBridgeMessage)
       for (const pending of pendingSaveRequests.values()) {
         window.clearTimeout(pending.timer)
         pending.reject(new Error('网页游戏已关闭'))

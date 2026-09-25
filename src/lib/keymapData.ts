@@ -102,6 +102,30 @@ export const EJS_DEFAULT_CONTROLS: Readonly<Record<number, Readonly<Record<numbe
   0: Object.fromEntries(Object.entries(EJS_KEY_OVERRIDE).map(([id, [engine]]) => [Number(id), { value: engine }])),
 }
 
+/**
+ * 街机的投币键必须沿用 EmulatorJS / libretro 的原生 SELECT 默认值 V。
+ *
+ * 其它主机把 SELECT 放在 Shift 上是本站为了统一手感做的覆盖；但 FBNeo、MAME 的街机
+ * 配置和旧玩家已经保存的控制设置长期都把 V 当投币。继续把通用覆盖交给街机，会出现
+ * 「开始页写 Shift、实际游戏仍按旧记录里的 V」的双重真相。
+ *
+ * 这里不是再手抄一整套街机键位：只把下标 2 恢复成已由 test:keymap 对过引擎源码的
+ * 出厂值，其余 WASD / UIJK 仍共用本站默认。玩家主动改键后的记录仍由引擎优先，不清空。
+ */
+export const EJS_ARCADE_KEY_BY_ID: Readonly<Record<number, string>> = {
+  ...EJS_KEY_BY_ID,
+  2: EJS_STOCK_KEY_BY_ID[2],
+}
+
+/** 街机交给引擎的默认键位：不覆盖 SELECT，让 FBNeo / MAME 使用原生 V 投币。 */
+export const EJS_ARCADE_DEFAULT_CONTROLS: Readonly<Record<number, Readonly<Record<number, { value: string }>>>> = {
+  0: Object.fromEntries(
+    Object.entries(EJS_KEY_OVERRIDE)
+      .filter(([id]) => Number(id) !== 2)
+      .map(([id, [engine]]) => [Number(id), { value: engine }]),
+  ),
+}
+
 /** 十字键的四个下标，顺序是**上 下 左 右**。各处都引这一份，别再手抄 [4,5,6,7] */
 export const EJS_DPAD: readonly number[] = [4, 5, 6, 7]
 

@@ -23,7 +23,8 @@ import {
   type UploadStage,
 } from '@/services/roms'
 import { bundleBytes, bundleWarnings, pickMainSwf, planSwfBundleFromZip, type SwfBundleFile, type SwfBundlePlan } from '@/lib/swfBundle'
-import { assertValidZip, extractZipEntry, listZipEntries, isZip } from '@/lib/unzip'
+import { assertValidZip, assertValidZipBlob, extractZipEntry, isZip, listZipEntries } from '@/lib/unzip'
+import { arcadeArchiveLayoutProblem } from '@/lib/arcadeArchive'
 import { assertRomArchiveRef, impliedRomName, romArchiveRef } from '@/lib/romArchiveUrl'
 import {
   extraObjectName,
@@ -42,7 +43,7 @@ import { biosSetUrlSync, platformBiosUrlSync, fetchPlatformBios, loadedPlatformB
 import { biosNameOfUrl } from '@/emulator/biosPlan'
 import { uploadSwfBundle, type BundleUploadProgress } from './swfUpload'
 import { compressCoverToWebp } from '@/lib/imageResize'
-import { confirmUpload, confirmDiscImage, cleanupSuperseded, deleteRomObjects, human, isDeletableKey } from './uploadGuards'
+import { canReuseRomObjectKey, confirmUpload, confirmDiscImage, cleanupSuperseded, deleteRomObjects, human, isDeletableKey } from './uploadGuards'
 import { coreOptionsFor } from '@/config/emulators'
 import { FEATURES } from '@/config/features'
 import { isPlayable } from '@/emulator'
@@ -54,6 +55,16 @@ import { normalizeDosStartupCommands } from '../../shared/dos-startup-commands.j
 import { probeRange } from '@/emulator/remoteDisc'
 import { isRomPackBytes, isRomPackUrl, packRomForUpload, romPackKey, verifyRomPackBlob } from '@/services/romPack'
 import { isStreamingDiscPlatform } from '../../shared/streaming-disc-platforms.js'
+import {
+  createPspConversion,
+  pspChdKey,
+  pspConversionCapability,
+  pspConversionLabel,
+  pspStagingKey,
+  rememberPspConversion,
+  rememberedPspConversion,
+  waitForPspConversion,
+} from '@/services/pspConversion'
 
 /*
   一键模板。点一下是**合并**进现有配置（mergeDosboxConfigOverride），不是覆盖，可以叠着点。
@@ -889,6 +900,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
               backupValue={form.romBackups?.[lang] ?? ''}
               platform={form.platform}
               slug={slugify(form.slug || form.title)}
+              persistedSlug={initial?.slug}
               onChange={(key) => setRomLang(lang, key)}
               onBackupChange={(key) => setRomBackupLang(lang, key)}
               allBoundKeys={allBoundKeys}
@@ -1585,6 +1597,7 @@ function RomField({
   backupValue,
   platform,
   slug,
+  persistedSlug,
   onChange,
   onBackupChange,
   lang,
@@ -1600,6 +1613,8 @@ function RomField({
   backupValue: string
   platform: PlatformId
   slug: string
+  /** 只有编辑已有游戏才有值；新建表单不能仅凭一个尚未保存的 slug 去改数据库里的同名游戏。 */
+  persistedSlug?: string
   onChange: (key: string) => void
   onBackupChange: (key: string) => void
   lang?: RomLang
@@ -1631,6 +1646,8 @@ function RomField({
   const [bundleAt, setBundleAt] = useState<BundleUploadProgress | null>(null)
   /** 街机 ROM 的自动识别结果，上传后显示在下面 */
   const [romset, setRomset] = useState<RomsetIdentification | null>(null)
+  /** 同一个语言槽只恢复一次；父表单每次 setForm 都会重绘，不能因此启动第二条轮询。 */
+  const resumedPspJob = useRef('')
   type HealthOutcome = Awaited<ReturnType<typeof probeRom>> & { rangeSupported?: boolean }
   const [health, setHealth] = useState<{
     checking: boolean
@@ -1658,6 +1675,39 @@ function RomField({
   const exampleName = platform === 'gamecube' || platform === 'wii' ? 'game.rvz' : isStreamingDisc ? 'game.iso' : 'x.zip'
 
   useEffect(() => setHealth(null), [value, backupValue])
+
+  /*
+    ISO 上传完以后转换发生在服务器，管理员关闭 / 刷新页面不会中断。
+    这里从 localStorage 找回任务只是为了恢复进度条和表单值；已有游戏即使不回来，
+    服务端也会用 compare-and-swap 把最终 CHD 原子绑定到数据库。
+  */
+  useEffect(() => {
+    // 查询任务只依赖后台管理员会话，不应被浏览器里的 R2 上传令牌挡住；这样关闭标签页后仍能恢复进度。
+    if (platform !== 'psp' || !lang || !slug || !allowStorage) return
+    const id = rememberedPspConversion(slug, lang)
+    if (!id || resumedPspJob.current === id) return
+    resumedPspJob.current = id
+    const controller = new AbortController()
+    setProgress(45)
+    setMsg({ ok: true, text: '正在恢复上次未完成的 PSP ISO → CHD 任务…' })
+    void waitForPspConversion(id, (job) => {
+      setProgress(45 + Math.round(job.progress * 0.55))
+      setMsg({ ok: true, text: `${pspConversionLabel(job)} ${job.progress}%${job.message ? `；${job.message}` : ''}` })
+    }, controller.signal).then((job) => {
+      onChange(job.targetKey)
+      rememberPspConversion(slug, lang, null)
+      setProgress(null)
+      setMsg({ ok: true, text: `后台转换完成并恢复绑定：${job.targetKey}（${human(job.outputSize ?? 0)}）` })
+    }).catch((error) => {
+      if (error instanceof Error && error.name === 'AbortError') return
+      rememberPspConversion(slug, lang, null)
+      setProgress(null)
+      setMsg({ ok: false, text: error instanceof Error ? error.message : '恢复 PSP 转换任务失败' })
+    })
+    return () => controller.abort()
+    // onChange 是父组件每次渲染新建的闭包，加入依赖会让同一个任务不断 abort/restart。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [platform, lang, slug, allowStorage])
 
   /**
    * 检测必须从管理员浏览器发起：让服务端代请求任意后台 URL 会变成 SSRF 入口。
@@ -1726,15 +1776,24 @@ function RomField({
    * 才改名 —— 差一个 ROM 就套上父集的名字，换来的是「missing files」，比不改还糟。
    * 顺带查一下这游戏要不要 BIOS、平台绑没绑，缺了当场红字提醒。
    *
-   * 整条链路都是尽力而为：索引拉不到、包认不出来，都安安静静走原来的流程。
+   * 驱动识别是尽力而为：索引拉不到、包认不出来，都安安静静走原流程。
+   * 但 ZIP 完整性和目录结构不是“识别失败”：截断包或成员套子目录交给
+   * FBNeo / MAME 一定报缺文件，必须在上传前阻止。
+   *
+   * 只读 Blob 尾部的中央目录和每个本地头，避免 200MB 大包再申请一块同大的
+   * ArrayBuffer；这个峰值在手机后台页会直接把标签页杀掉。
    */
   const sniffArcade = async (file: File): Promise<string | null> => {
     setRomset(null)
-    if (!isArcade || !/\.(zip|7z)$/i.test(file.name)) return null
+    if (!isArcade) return null
+    if (!/\.zip$/i.test(file.name)) throw new Error('街机 ROM 必须是 .zip：FBNeo / MAME 靠 ZIP 文件名和根目录成员识别 romset')
+
+    const entries = await assertValidZipBlob(file, '街机 ROM')
+    const layoutProblem = arcadeArchiveLayoutProblem(entries)
+    if (layoutProblem) throw new Error(layoutProblem)
+
     try {
-      const buf = await file.arrayBuffer()
-      if (!isZip(buf)) return null
-      const found = await identifyArcadeRomset(listZipEntries(buf))
+      const found = await identifyArcadeRomset(entries)
       if (!found) return null
       setRomset(found)
 
@@ -1824,7 +1883,14 @@ function RomField({
     setProgress(null)
     // 街机：先认 romset。现成 8BG 已经在上面完整验证过，不再把整份密文误当 ZIP 读第二遍；
     // 真正交给核心的包名来自容器头的 originalName。
-    const sniffed = alreadyPacked ? (platform === 'arcade' ? packedOriginalName : null) : await sniffArcade(file)
+    let sniffed: string | null
+    try {
+      sniffed = alreadyPacked ? (platform === 'arcade' ? packedOriginalName : null) : await sniffArcade(file)
+    } catch (err) {
+      setMsg({ ok: false, text: err instanceof Error ? err.message : '街机 ROM 校验失败' })
+      if (inputRef.current) inputRef.current.value = ''
+      return
+    }
     const needsPacking = shouldPack && !alreadyPacked
     const oldKey = value.trim()
     // 字段里已有 key（且不是完整 URL）就复用它 —— 同一个槽位始终对着同一个对象，
@@ -1833,18 +1899,86 @@ function RomField({
     // 街机认出了 romset 就一律用它 —— 哪怕字段里已经有 key。
     // 那个旧 key 十有八九正是「文件名不对所以跑不起来」的元凶，复用它等于把错留住。
     // 共用 ZIP 时，本槽重传必须另存为自己的语言 key；复用旧 key 会把其他语言一起覆盖。
-    const reusable = oldKey && allBoundKeys.filter((bound) => bound === oldKey).length <= 1 && !/^https?:/i.test(oldKey) && !oldKey.startsWith('/') && !isBundleKey(oldKey)
+    // 光盘核心靠扩展名选容器。旧槽是 .cso/.chd、这次选的是 .iso 时绝不能“原地复用”旧名字，
+    // 否则能力降级路径会把 ISO 字节写进 .chd/.cso，播放器只会得到一份看似存在的坏文件。
+    const sameStoredFormat = canReuseRomObjectKey(oldKey, alreadyPacked ? packedOriginalName : file.name, shouldPack)
+    const reusable = oldKey && sameStoredFormat && allBoundKeys.filter((bound) => bound === oldKey).length <= 1 && !/^https?:/i.test(oldKey) && !oldKey.startsWith('/') && !isBundleKey(oldKey)
     // 现成容器的外层文件名可能只是 output.8bg；对象 key 必须按头里的 game.nds / game.zip
     // 生成，运行时选择在下载文件头之前就要靠这层扩展名判断，不能等解密后才知道。
     const plainKey = sniffed ? defKey(sniffed) : reusable ? oldKey : defKey(alreadyPacked ? packedOriginalName : file.name)
     const key = shouldPack ? romPackKey(plainKey) : plainKey
+    let pspIsoToChd = false
+    let finalKey = key
+    if (platform === 'psp' && /\.iso$/i.test(file.name)) {
+      let unavailable = ''
+      try {
+        const capability = await pspConversionCapability()
+        if (capability.available && file.size <= capability.maxIsoBytes) {
+          pspIsoToChd = true
+          finalKey = pspChdKey(key)
+        } else {
+          unavailable = capability.reason || `ISO 超过后台上限 ${human(capability.maxIsoBytes)}`
+        }
+      } catch (error) {
+        unavailable = error instanceof Error ? error.message : '无法连接后台转换服务'
+      }
+      if (!pspIsoToChd) {
+        const direct = window.confirm(
+          `这份 PSP ISO 暂时不能自动转成 CHD：${unavailable}\n\n` +
+          '可以继续按原始 ISO 上传，但玩家会消耗更多流量。仍然直接上传 ISO 吗？',
+        )
+        if (!direct) {
+          if (inputRef.current) inputRef.current.value = ''
+          return
+        }
+      }
+    }
     setMsg(null)
-    if (!(await confirmUpload(key, file))) {
+    if (!(await confirmUpload(finalKey, file))) {
       if (inputRef.current) inputRef.current.value = ''
       return
     }
     setProgress(0)
     try {
+      if (pspIsoToChd && lang) {
+        const stagingKey = pspStagingKey()
+        setMsg({ ok: true, text: `正在断点上传临时 ISO；上传后服务器会自动转为 ${finalKey}` })
+        await uploadRom(file, stagingKey, (pct, at) => {
+          // 临时 ISO 上传占前 45%，服务器下载 / 转换 / 校验 / 发布占后 55%。
+          setProgress(Math.round(pct * 0.45))
+          if (at) setStage(at)
+        })
+        setStage(null)
+        setProgress(45)
+        setMsg({ ok: true, text: 'ISO 已到 R2，正在创建持久转换任务…' })
+        const job = await createPspConversion({
+          sourceKey: stagingKey,
+          targetKey: finalKey,
+          sourceSize: file.size,
+          // 新建表单里的 slug 还没入库，可能正好撞到一款旧游戏；只给真实存在的编辑对象做自动绑定。
+          ...(persistedSlug ? { gameSlug: persistedSlug, lang, expectedCurrentKey: oldKey } : {}),
+          // 上面的 confirmUpload 已经让管理员明确确认过目标位置可能被覆盖。
+          overwrite: true,
+        })
+        rememberPspConversion(slug, lang, job.id)
+        const completed = await waitForPspConversion(job.id, (next) => {
+          setProgress(45 + Math.round(next.progress * 0.55))
+          setMsg({ ok: true, text: `${pspConversionLabel(next)} ${next.progress}%${next.message ? `；${next.message}` : ''}` })
+        })
+        rememberPspConversion(slug, lang, null)
+        onChange(completed.targetKey)
+        const removed = await cleanupSuperseded(oldKey, completed.targetKey, allBoundKeys)
+        const ratio = completed.outputSize && completed.sourceSize
+          ? `；压缩后 ${(completed.outputSize / completed.sourceSize * 100).toFixed(1)}%`
+          : ''
+        setMsg({
+          ok: true,
+          text: `PSP CHD 已校验并发布：${completed.targetKey}（${human(completed.outputSize ?? 0)}）${ratio}` +
+            (completed.bound ? '；已原子绑定到游戏' : `；${completed.message || '请保存表单完成绑定'}`) +
+            (removed ? `；旧文件 ${removed} 已删除` : ''),
+        })
+        return
+      }
       let uploadFile: Blob = file
       if (needsPacking) {
         setMsg({ ok: true, text: `正在用 Zstd 19 压缩并加密 ${sniffed || file.name}…` })
@@ -1857,7 +1991,7 @@ function RomField({
           lastModified: file.lastModified,
         })
       }
-      const result = await uploadRom(uploadFile, key, (pct, at) => {
+      const result = await uploadRom(uploadFile, finalKey, (pct, at) => {
         setProgress(needsPacking ? 50 + Math.round(pct / 2) : pct)
         if (at) setStage(at)
       })

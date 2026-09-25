@@ -62,6 +62,8 @@ interface CollectionProps {
   more: InfiniteList<Game>
   /** 取数失败的原因 */
   error?: string
+  /** 原地重试当前请求，不必把整页和已下载的封面重新载入 */
+  onRetry?: () => void
   onPage: (p: number) => void
   /** 「用更多条件筛选」跳回 /games 的链接 */
   filterHref: string
@@ -80,6 +82,7 @@ function Collection({
   more,
   page: urlPage,
   error,
+  onRetry,
   onPage,
   filterHref,
 }: CollectionProps) {
@@ -134,9 +137,14 @@ function Collection({
       </div>
 
       {error ? (
-        <p className="mt-8 text-sm text-muted" role="alert">
-          {error}
-        </p>
+        <div className="mt-8" role="alert">
+          <p className="text-sm text-muted">{error}</p>
+          {onRetry && (
+            <Button type="button" variant="secondary" size="sm" className="mt-4" onClick={onRetry}>
+              {t.common.retry}
+            </Button>
+          )}
+        </div>
       ) : !list ? (
         <GameGridSkeleton
           count={12}
@@ -257,6 +265,7 @@ export function PlatformPage() {
       more={more}
       page={page}
       error={state.status === 'error' ? state.error : undefined}
+      onRetry={state.status === 'error' ? state.retry : undefined}
       onPage={(p) => {
         const next = new URLSearchParams(params)
         if (p <= 1) next.delete('page')
@@ -300,6 +309,7 @@ export function GenrePage() {
       more={more}
       page={page}
       error={state.status === 'error' ? state.error : undefined}
+      onRetry={state.status === 'error' ? state.retry : undefined}
       onPage={(p) => {
         const next = new URLSearchParams(params)
         if (p <= 1) next.delete('page')

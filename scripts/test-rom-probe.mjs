@@ -101,6 +101,7 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
   assert.equal(keys[0], 'roms/nes/demo.zip.8bg', '未绑定游戏先探新的 8BG 容器')
   assert.ok(keys.includes('roms/nes/demo.zip'), '旧 ROM 约定地址必须继续保留')
   assert.equal(slugFromKey('roms/nes/super-mario-bros.nes.8bg'), 'super-mario-bros', '自动匹配要剥掉容器和 ROM 两层扩展名')
+  assert.equal(slugFromKey('roms/nds/rhythm-heaven.srl'), 'rhythm-heaven', 'NDS 的 .srl 上传后也要能自动匹配游戏')
 }
 
 /* ---------- 外站 ZIP：fragment 选内层文件，ETag 也只进 fragment，不污染签名 URL ---------- */

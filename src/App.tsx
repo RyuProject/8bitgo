@@ -1,5 +1,6 @@
 import { BrowserRouter } from 'react-router-dom'
 import { AppRoutes } from './AppRoutes'
+import { AppErrorBoundary } from '@/components/AppErrorBoundary'
 
 /**
  * 浏览器端的应用外壳。
@@ -10,8 +11,10 @@ import { AppRoutes } from './AppRoutes'
  */
 export default function App({ basename }: { basename?: string }) {
   return (
-    <BrowserRouter basename={basename || '/'}>
-      <AppRoutes />
-    </BrowserRouter>
+    <AppErrorBoundary>
+      <BrowserRouter basename={basename || '/'}>
+        <AppRoutes />
+      </BrowserRouter>
+    </AppErrorBoundary>
   )
 }

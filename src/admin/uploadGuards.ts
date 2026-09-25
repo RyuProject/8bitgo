@@ -12,6 +12,17 @@ import { STREAMING_DISC_PLATFORM_IDS } from '../../shared/streaming-disc-platfor
 export const human = (n: number) => (n < 1024 * 1024 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1024 / 1024).toFixed(2)} MB`)
 
 /**
+ * 同一个对象 key 能不能原地复用。
+ * 8BG 外层统一是 .8bg，里面的原始扩展名写在容器头；裸光盘则必须让 key 扩展名和真实格式一致。
+ */
+export function canReuseRomObjectKey(oldKey: string, incomingName: string, willPack: boolean): boolean {
+  if (willPack) return true
+  const incoming = /\.[^./]+$/.exec(incomingName)?.[0].toLowerCase() || ''
+  const existing = /\.[^./]+$/.exec(oldKey)?.[0].toLowerCase() || ''
+  return incoming !== '' && incoming === existing
+}
+
+/**
  * 上传前的重复检查。返回 false 表示管理员选择放弃。
  *
  * 「一个游戏 + 一个语言 = 一个 ROM」「一个游戏 = 一张封面」是这里要守住的约束。

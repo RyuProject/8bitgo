@@ -31,10 +31,13 @@
  *   PVZGE_UPSTREAM 资产层 git 仓库，默认 https://github.com/Gzh0821/pvzge_web.git
  *   PVZGE_REF   资产层分支/标签，默认 master
  *   PVZGE_REPO_CACHE 仓库克隆缓存目录，默认 .pvzge-repo（已在 .gitignore）
+ *   PVZGE_TREE       本地已克隆的上游 docs/ 目录（含 assets/ 与 application.js）。
+ *                     设了它就直接用这棵树的路径列表去线上逐文件下载，完全不碰 git/git-lfs——
+ *                     适合 git 不可达或没装 git-lfs 的机器（部署机可提前 clone 一次后设此变量）。
  */
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync, readdirSync } from 'node:fs'
 import { dirname, join, posix, resolve, extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -48,7 +51,12 @@ const REPO_CACHE = resolve(ROOT, process.env.PVZGE_REPO_CACHE || '.pvzge-repo')
 const BOOT_ONLY = process.argv.includes('--boot-only')
 const IF_MISSING = process.argv.includes('--if-missing')
 const FORCE = process.argv.includes('--force')
-const args = process.argv.slice(2).filter((a) => !a.startsWith('--')).reduce((m, a) => ((m[a] = true), m), {})
+// 单个请求超过 60s 直接放弃（线上偶发连接挂死，没有超时整个抓取会卡死永远不退出，
+// 部署脚本里挂这个就等于部署卡住。放弃的只是单个文件，脚本尾部 check 只校验关键文件与
+// 资产目录非空，个别大纹理 404 / 超时不会让构建失败）。
+const FETCH_TIMEOUT_MS = Number(process.env.PVZGE_FETCH_TIMEOUT_MS || 60000)
+// 已存在且非空的文件跳过（断点续传 / 幂等）：重跑只补缺失的少数文件，不重下 722MB。
+const RESUME = !FORCE && !process.argv.includes('--no-resume')
 
 const log = (...a) => console.log('[pvzge]', ...a)
 const warn = (...a) => console.warn('[pvzge] ⚠️', ...a)
@@ -74,10 +82,21 @@ const enqueue = (raw) => {
   queue.push(p)
 }
 
-// ───────────── 一、资产层：git LFS 优先，缺失则回退 ─────────────
-// 本机/部署机可能没装 git-lfs，所以优先尝试 git lfs，失败（或没装）时回退到
-// 「GIT_LFS_SKIP_SMUDGE 克隆拿目录树 + 按每个路径从线上逐文件下载真实二进制」。
-// 两种来源拿到的都是同一份官方分发，文件集一致。
+// ───────────── 一、资产层 ─────────────
+// 目标：拿到 public/web/PvZ2/assets/ 与 application.js。来源优先级（都指向同一份官方分发）：
+//   1) git-lfs 拉完整仓库（最快，需 git-lfs 且 git 可达）；
+//   2) 本地已有上游 docs/ 树 —— 设 PVZGE_TREE 指向它，只取路径列表；
+//   3) 从上游 git 浅克隆（跳过 LFS）拿目录树。
+// 2/3 之后都按每个资源路径从线上 BASE/assets/ 逐文件下载真实二进制，
+// 完全不依赖 git-lfs / 实时 git 可用性（部署机若 git 不可达，设 PVZGE_TREE 即可）。
+function useLiveTreeAssets(treeAssets) {
+  const rels = []
+  walkRel(treeAssets, '', rels)
+  log(`资源目录树含 ${rels.length} 个文件，将从 ${BASE}/assets/ 逐文件下载真实内容…`)
+  for (const rel of rels) enqueue('/assets/' + rel.replace(/^\/+/, ''))
+  enqueue('/application.js')
+}
+
 const hasLfs = (() => {
   try {
     execFileSync('git', ['lfs', 'version'], { stdio: 'ignore' })
@@ -90,40 +109,67 @@ const hasLfs = (() => {
 if (!BOOT_ONLY) {
   try {
     const clone = (skipLfs) => {
+      const env = skipLfs ? { ...process.env, GIT_LFS_SKIP_SMUDGE: '1' } : process.env
       if (!existsSync(join(REPO_CACHE, '.git'))) {
-        log(`克隆上游仓库（${skipLfs ? '跳过 LFS，仅取目录树' : '含 LFS 资产'}）到 ${REPO_CACHE} …`)
-        execFileSync('git', ['clone', '--depth', '1', '-b', REF, UPSTREAM, REPO_CACHE], {
-          stdio: 'inherit',
-          env: skipLfs ? { ...process.env, GIT_LFS_SKIP_SMUDGE: '1' } : process.env,
-        })
+        // 浅克隆偶发 `fetch-pack: invalid index-pack output`（git 内存/网络抖动），重试几次
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            log(`克隆上游仓库（${skipLfs ? '跳过 LFS，仅取目录树' : '含 LFS 资产'}）到 ${REPO_CACHE} … (第 ${attempt} 次)`)
+            execFileSync('git', ['clone', '--depth', '1', '-b', REF, UPSTREAM, REPO_CACHE], { stdio: 'inherit', env })
+            return
+          } catch (e) {
+            if (attempt === 3) throw e
+            rmSync(REPO_CACHE, { recursive: true, force: true })
+          }
+        }
       } else {
         execFileSync('git', ['-C', REPO_CACHE, 'fetch', '--depth', '1', 'origin', REF], { stdio: 'inherit' })
         execFileSync('git', ['-C', REPO_CACHE, 'reset', '--hard', `origin/${REF}`], { stdio: 'inherit' })
       }
     }
-    const docsAssets = join(REPO_CACHE, 'docs/assets')
-    const docsApp = join(REPO_CACHE, 'docs/application.js')
+    const docsAssets = () => join(REPO_CACHE, 'docs/assets')
+    const docsApp = () => join(REPO_CACHE, 'docs/application.js')
+    // 解析资源目录树：优先 PVZGE_TREE（本地上游 docs/），否则尝试 git 浅克隆拿树
+    const resolveTree = () => {
+      const nonEmpty = (a) => existsSync(a) && readdirSync(a).length > 0
+      const t = process.env.PVZGE_TREE ? process.env.PVZGE_TREE.replace(/\/+$/, '') : ''
+      if (t) {
+        const a = t.endsWith('/assets') ? t : join(t, 'assets')
+        return nonEmpty(a) ? a : null
+      }
+      try {
+        clone(true)
+      } catch {
+        /* git 不可达时忽略，下方会报缺树 */
+      }
+      const a = docsAssets()
+      // 注意：git 克隆失败可能在 .pvzge-repo 残留空 docs/assets，必须校验非空
+      return nonEmpty(a) ? a : null
+    }
 
     if (hasLfs) {
-      clone(false)
-      execFileSync('git', ['-C', REPO_CACHE, 'lfs', 'pull'], { stdio: 'inherit' })
-      if (!existsSync(docsAssets)) throw new Error(`上游仓库 docs/assets 不存在：${docsAssets}`)
-      copyDir(docsAssets, join(OUT, 'assets'))
-      if (existsSync(docsApp)) copyFile(docsApp, join(OUT, 'application.js'))
-      log('资产层就绪（git LFS）：docs/assets + application.js')
+      try {
+        clone(false)
+        execFileSync('git', ['-C', REPO_CACHE, 'lfs', 'pull'], { stdio: 'inherit' })
+        if (!existsSync(docsAssets())) throw new Error('上游仓库 docs/assets 不存在')
+        copyDir(docsAssets(), join(OUT, 'assets'))
+        if (existsSync(docsApp())) copyFile(docsApp(), join(OUT, 'application.js'))
+        log('资产层就绪（git LFS）：docs/assets + application.js')
+      } catch (lfsErr) {
+        warn(`git-lfs 路径失败（${lfsErr.message}），回退到线上逐文件下载`)
+        const tree = resolveTree()
+        if (!tree) throw new Error('无法获取资源目录树（git 不可达且无 PVZGE_TREE）')
+        useLiveTreeAssets(tree)
+      }
     } else {
-      log('未检测到 git-lfs，改用「git 目录树 + 线上逐文件下载」拉取资产（不依赖 git-lfs）')
-      clone(true)
-      if (!existsSync(docsAssets)) throw new Error(`上游仓库 docs/assets 不存在：${docsAssets}`)
-      const rels = []
-      walkRel(docsAssets, '', rels)
-      log(`资源目录树含 ${rels.length} 个文件，将从 ${BASE}/assets/ 逐文件下载真实内容…`)
-      for (const rel of rels) enqueue('/assets/' + rel.replace(/^\/+/, ''))
-      enqueue('/application.js')
+      log('未检测到 git-lfs，改用「目录树 + 线上逐文件下载」拉取资产（不依赖 git-lfs）')
+      const tree = resolveTree()
+      if (!tree) throw new Error('无法获取资源目录树（git 不可达且无 PVZGE_TREE）')
+      useLiveTreeAssets(tree)
     }
   } catch (e) {
     warn(`资产层拉取失败（不影响启动层）：${e.message}`)
-    warn('PvZ2 将无法加载游戏资源；可手动把上游 docs/ 放到 public/web/PvZ2/')
+    warn('PvZ2 将无法加载游戏资源；可手动把上游 docs/ 放到 public/web/PvZ2/，或设置 PVZGE_TREE 指向本地上游 docs/ 目录')
   }
 } else {
   log('boot-only 模式：跳过 722MB 资产层（游戏资源会 404，仅用于验证接线）')
@@ -204,17 +250,23 @@ async function run() {
 }
 
 async function fetchOne(p) {
+  // 断点续传：已存在的非空文件直接跳过，重跑只补缺失的少数文件
+  const relay = p === '/' ? 'index.html' : p.replace(/^\//, '')
+  const outPath = join(OUT, relay)
+  if (RESUME && existsSync(outPath) && (() => { try { return statSync(outPath).size > 0 } catch { return false } })()) {
+    return
+  }
   const url = BASE + p
+  const ac = new AbortController()
+  const timer = setTimeout(() => ac.abort(), FETCH_TIMEOUT_MS)
   try {
-    const res = await fetch(url, { redirect: 'follow' })
+    const res = await fetch(url, { redirect: 'follow', signal: ac.signal })
     if (!res.ok) {
       warn(`启动层跳过 ${p}: HTTP ${res.status}`)
       return
     }
     const buf = Buffer.from(await res.arrayBuffer())
-    // `/` 落地成 index.html；其它路径去掉前导斜杠
-    const rel = p === '/' ? 'index.html' : p.replace(/^\//, '')
-    const outPath = join(OUT, rel)
+    clearTimeout(timer)
     mkdirSync(dirname(outPath), { recursive: true })
     writeFileSync(outPath, buf)
     fetched++
@@ -323,7 +375,7 @@ function walkRel(dir, prefix, out) {
 }
 function readdirSafe(dir) {
   try {
-    return require('node:fs').readdirSync(dir)
+    return readdirSync(dir)
   } catch {
     return []
   }

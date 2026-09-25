@@ -61,6 +61,7 @@ import { ROM_LANG_LABEL, type RomLang } from '@/config/languages'
 import { FEATURES } from '@/config/features'
 import { desktopScreenAspect, liveStageStyle, mobileScreenAspect, stableLiveGeometry, stageHeightCap } from './screenAspect'
 import { recordPlay } from '@/services/store'
+import { newStartupId, recordStartupEvent, type StartupEventName } from '@/services/startupFunnel'
 import { recordRecent } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
 import { onMatchRequest } from '@/services/matchRequest'
@@ -155,6 +156,8 @@ const makeProgressClock = (phase: LoadPhase, startup = 0, milestones = false): P
 const DISC_NOTICE_BYTES = 64 * 1024 * 1024
 /** 自动重试只做一次：网络抖动能自愈，坏 ROM 也不会陷入无限刷新。 */
 const AUTO_RETRY_LIMIT = 1
+/** 启动超过两分钟仍没有 game_playable，漏斗记一次超时；运行时自己的重试/错误处理照常继续。 */
+const STARTUP_TIMEOUT_MS = 120_000
 /**
  * 在线存档会话还剩多久就开始提示玩家。
  * 给足时间让他找机会重进一局（过关/读档空档），而不是等到存不上才发现。
@@ -182,6 +185,10 @@ interface ActiveSession {
   /** 实际运行的平台（本地文件被识别为其他平台时可能与页面平台不同） */
   platform: PlatformId
   runtime: Runtime
+  /** 同一次点击的自动重试 / 换核心共用一个 id，避免把一次失败膨胀成多次启动。 */
+  startupAttemptId: string
+  /** 从玩家点击开始算，不因适配器自动重挂而归零。 */
+  startedAt: number
   /** P2P 联机会话（游戏在房主浏览器里跑） */
   netplay?: NetplaySession
   /** 云端联机会话（游戏在服务器上跑） */
@@ -205,6 +212,11 @@ interface Props {
    * 不传（玩本地 ROM 页）就没有联机入口。
    */
   gameSlug?: string
+  /** 详情页生成的本次访问 id；本地 ROM 页不传，也就不会被算进线上游戏漏斗。 */
+  startupVisitId?: string
+  /** 隔离播放器跨整页导航继承的那次点击；只供第一次 begin 消费，自动重试走 session 自己的值。 */
+  initialStartupAttemptId?: string
+  initialStartupStartedAt?: number
   /** 该游戏支持的最大玩家数（决定房间容量）。> 1 时默认走联机 */
   maxPlayers?: number
   /**
@@ -474,6 +486,9 @@ export function EmulatorPlayer({
   platform,
   gameName,
   gameSlug,
+  startupVisitId,
+  initialStartupAttemptId,
+  initialStartupStartedAt,
   maxPlayers = 2,
   fill = false,
   invite,
@@ -1310,6 +1325,11 @@ export function EmulatorPlayer({
   const frameRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const sessionCounter = useRef(0)
+  const inheritedStartupRef = useRef(
+    initialStartupAttemptId && initialStartupStartedAt
+      ? { id: initialStartupAttemptId, startedAt: initialStartupStartedAt, consumed: false }
+      : null,
+  )
   // gameName 只用于存档 / 截图命名，放进 effect 依赖会导致「切换语言就把正在跑的游戏重启」
   const gameNameRef = useRef(gameName)
   gameNameRef.current = gameName
@@ -1440,10 +1460,33 @@ export function EmulatorPlayer({
     game: File | string,
     targetPlatform: PlatformId,
     runtime: Runtime,
-    extra?: { netplay?: NetplaySession; cloud?: CloudSession; retryAttempt?: number; ruledOut?: RuntimeId[] },
+    extra?: {
+      netplay?: NetplaySession
+      cloud?: CloudSession
+      retryAttempt?: number
+      ruledOut?: RuntimeId[]
+      startupAttemptId?: string
+      startedAt?: number
+    },
   ) => {
+    const inherited = !extra?.startupAttemptId && inheritedStartupRef.current && !inheritedStartupRef.current.consumed
+      ? inheritedStartupRef.current
+      : null
+    if (inherited) inherited.consumed = true
+    const startupAttemptId = extra?.startupAttemptId ?? inherited?.id ?? newStartupId()
+    const startedAt = extra?.startedAt ?? inherited?.startedAt ?? Date.now()
     sessionCounter.current += 1
-    setSession({ id: sessionCounter.current, game, platform: targetPlatform, runtime, ...extra })
+    setSession({ id: sessionCounter.current, game, platform: targetPlatform, runtime, ...extra, startupAttemptId, startedAt })
+    if (!extra?.startupAttemptId && !inherited && runtime.id !== 'liveview' && startupVisitId) {
+      recordStartupEvent(gameSlugRef.current, {
+        visitId: startupVisitId,
+        attemptId: startupAttemptId,
+        event: 'start_click',
+        runtime: runtime.id,
+        platform: targetPlatform,
+        elapsedMs: 0,
+      })
+    }
     /*
       自动重试、以及 mapper 认不出之后换引擎（ruledOut），都仍是**同一次开始游戏**：
       保留玩家已经看到的进度，避免失败瞬间从高位跳回 0%，看起来像整个加载被推倒重来。
@@ -1594,7 +1637,30 @@ export function EmulatorPlayer({
     /** 已经进入游戏后再报错属于运行期故障，不能按“加载失败”自动重启，免得吞掉玩家进度。 */
     let ready = false
     const mountedAt = typeof performance !== 'undefined' ? performance.now() : Date.now()
-    const handle = mountOf(session.runtime.id)(host, {
+    const reportStartup = (event: StartupEventName, detail?: string) => {
+      if (!startupVisitId || !gameSlugRef.current || session.runtime.id === 'liveview') return
+      recordStartupEvent(gameSlugRef.current, {
+        visitId: startupVisitId,
+        attemptId: session.startupAttemptId,
+        event,
+        runtime: session.runtime.id,
+        platform: session.platform,
+        elapsedMs: Math.max(0, Date.now() - session.startedAt),
+        detail,
+      })
+    }
+    const reportStartupFailure = (reason: string) => {
+      reportStartup(/(?:超时|timeout|timed out)/i.test(reason) ? 'timeout' : 'failed', reason)
+    }
+    const timeoutTimer = window.setTimeout(() => {
+      if (isCurrent() && !ready) reportStartup('timeout', '等待 game_playable 超过 120 秒')
+    }, Math.max(0, STARTUP_TIMEOUT_MS - (Date.now() - session.startedAt)))
+    const slowTimer = window.setTimeout(() => {
+      if (isCurrent() && !ready) reportStartup('slow_start', '等待 game_playable 已超过 20 秒')
+    }, Math.max(0, 20_000 - (Date.now() - session.startedAt)))
+    let handle: RuntimeHandle
+    try {
+      handle = mountOf(session.runtime.id)(host, {
       platform: session.platform,
       game: session.game,
       gameName: gameNameRef.current,
@@ -1681,6 +1747,22 @@ export function EmulatorPlayer({
         if (!isCurrent()) return
         setSaveRequest((current) => current + 1)
       },
+      onIframeLoaded: () => {
+        if (!isCurrent()) return
+        reportStartup('iframe_loaded')
+        // HTML5 的脚本/WASM由子页面自己下载，父层看不到字节；document load 是这一路唯一的资源边界。
+        reportStartup('download_complete')
+      },
+      onSurfaceReady: () => {
+        if (!isCurrent()) return
+        // iframe 壳已显示就撤掉外层遮罩，但不设 ready、不计游玩；后续仍等真正的 game_playable。
+        setLoadRatio(null)
+        setStatus('running')
+      },
+      onFirstInteraction: () => {
+        if (!isCurrent()) return
+        reportStartup('first_interaction')
+      },
       onProgress: (next) => {
         if (!isCurrent()) return
         // 只认 rom 阶段的第一个带总量的帧：核心和系统镜像也走进度回调，
@@ -1694,6 +1776,12 @@ export function EmulatorPlayer({
         speedMeter.current.push(next.loaded)
         const actual = Math.min(LOAD_PROGRESS_CEILING, overallRatio.current(next))
         setLoadRatio((current) => Math.max(current ?? 0, actual))
+        if (
+          session.runtime.id !== 'html5' &&
+          (next.phase === 'starting' || (next.phase === 'rom' && Boolean(next.total) && Number(next.loaded) >= Number(next.total)))
+        ) {
+          reportStartup('download_complete')
+        }
         // 实际进度已经把这个阶段跑满了（下载真的完成），立刻进下一阶段。
         // EmulatorJS 就是靠这一条从 80% 走出来的 —— 它自己不报 starting
         if (actual >= LOAD_PHASE_RANGE[progressClock.current.phase][1] - 1e-6) advanceProgressPhase()
@@ -1701,9 +1789,14 @@ export function EmulatorPlayer({
       onReady: () => {
         if (!isCurrent()) return
         ready = true
+        window.clearTimeout(timeoutTimer)
+        window.clearTimeout(slowTimer)
+        // 拿不到完整下载阶段的运行时在这里兜底；同一事件客户端与数据库都会去重。
+        reportStartup('download_complete')
+        reportStartup('game_playable')
         const elapsed = Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - mountedAt)
-        // 隐私页承诺不接第三方分析，所以这里只留在玩家本机的控制台 / Performance 面板。
-        // 排查“街机慢还是 Ruffle 慢”时至少有统一的运行时、平台和首帧耗时，不再靠体感猜。
+        // 详细对象仍只留在本机控制台；上面的第一方漏斗只上传阶段、耗时和运行时，不碰 ROM 地址 / UA / IP。
+        // 排查“街机慢还是 Ruffle 慢”时因此有统一口径，也没有接入任何第三方分析脚本。
         console.info('[8bitgo/runtime-metric]', { runtime: session.runtime.id, platform: session.platform, readyMs: elapsed })
         setLoadRatio(null)
         setStatus('running')
@@ -1728,6 +1821,10 @@ export function EmulatorPlayer({
           if (liveInviteRef.current) void recordRecent(gameSlugRef.current)
         }
       },
+      onStart: () => {
+        if (!isCurrent()) return
+        reportStartup('first_frame')
+      },
       /*
         引擎说「这份 ROM 得换个人跑」（目前只有 jsnes 会说：它只实现了 21 个 mapper）。
 
@@ -1745,6 +1842,7 @@ export function EmulatorPlayer({
             (next ? `，换 ${next.id} 重来` : '，而且没有别的引擎可用了'),
         )
         if (!next) {
+          reportStartupFailure(reason)
           endSession()
           setError(reason)
           setStatus('error')
@@ -1752,7 +1850,11 @@ export function EmulatorPlayer({
         }
         setError(null)
         setNotice(fmt(t.player.runtimeFellBack, { runtime: next.name }))
-        begin(session.game, session.platform, next, { ruledOut })
+        begin(session.game, session.platform, next, {
+          ruledOut,
+          startupAttemptId: session.startupAttemptId,
+          startedAt: session.startedAt,
+        })
       },
       onError: (message: string) => {
         if (!isCurrent()) return
@@ -1794,7 +1896,11 @@ export function EmulatorPlayer({
         }
         if (!ready && canRestartInPlace(session) && attempt < AUTO_RETRY_LIMIT) {
           setError(null)
-          begin(session.game, session.platform, session.runtime, { retryAttempt: attempt + 1 })
+          begin(session.game, session.platform, session.runtime, {
+            retryAttempt: attempt + 1,
+            startupAttemptId: session.startupAttemptId,
+            startedAt: session.startedAt,
+          })
           return
         }
 
@@ -1817,14 +1923,27 @@ export function EmulatorPlayer({
           setMode('local')
           setError(null)
           setNotice(fmt(t.player.cloudFellBack, { msg: message }))
-          begin(fb.url, platform.id, fb.runtime)
+          begin(fb.url, platform.id, fb.runtime, {
+            startupAttemptId: session.startupAttemptId,
+            startedAt: session.startedAt,
+          })
           return
         }
 
         setError(failureReason)
+        reportStartupFailure(failureReason)
         setStatus('error')
       },
-    })
+      })
+    } catch (error) {
+      window.clearTimeout(timeoutTimer)
+      window.clearTimeout(slowTimer)
+      const message = error instanceof Error ? error.message : String(error)
+      reportStartupFailure(message)
+      setError(message)
+      setStatus('error')
+      return
+    }
     setHandle(handle)
     setCaps(new Set(handle.caps))
     /*
@@ -1835,6 +1954,8 @@ export function EmulatorPlayer({
     setGeometry(null)
     setScreenLayout(null)
     return () => {
+      window.clearTimeout(timeoutTimer)
+      window.clearTimeout(slowTimer)
       setHandle(null)
       setCaps(new Set())
       setGeometry(null)
@@ -2334,6 +2455,9 @@ export function EmulatorPlayer({
         game: '',
         platform: platform.id,
         runtime: liveViewMeta,
+        // 直播不进启动漏斗，但 ActiveSession 保持完整形状，避免后续生命周期出现特殊空值分支。
+        startupAttemptId: newStartupId(),
+        startedAt: Date.now(),
         live: {
           roomId,
           onViewers: setLiveViewers,
@@ -2984,9 +3108,15 @@ export function EmulatorPlayer({
    *  · 刚跑起来 —— 排在 rAF 里，等自动沉浸那次重排落定，别和它抢
    *  · 进出全屏 / 游玩布局 —— 玩家是点我们的按钮进去的，焦点跟着落在按钮上，得还回去
    *  · 手柄接上 —— gamepadconnected 打在**外层**恰恰说明焦点在外层，正是该还回去的时候
-   */
+  */
   useEffect(() => {
     if (status !== 'running' || !handle?.focus) return
+    /*
+      HTML5 单独让玩家第一次点进 iframe：跨域页的内部事件父页看不见，只能靠这次真实 focus
+      识别“首次操作”。如果这里自动 focus，它会在玩家还没碰游戏时制造一条假操作；而且网页游戏
+      的音频本来也必须经过真实手势才能解锁。其它模拟器仍按原规则自动接键盘 / 手柄。
+    */
+    if (session?.runtime.id === 'html5') return
     /**
      * ⚠️ 玩家正在输入框里打字时不能抢。
      *
@@ -3005,7 +3135,7 @@ export function EmulatorPlayer({
       cancelAnimationFrame(raf)
       window.removeEventListener('gamepadconnected', give)
     }
-  }, [status, handle, fullscreen, playMode])
+  }, [status, handle, fullscreen, playMode, session?.id])
 
   /**
    * 游戏跑着的时候，不让方向键 / 空格滚页面。
@@ -3028,6 +3158,58 @@ export function EmulatorPlayer({
       consumes: () => sessionRef.current?.runtime.id !== 'liveview' || coopSeatedRef.current,
     })
   }, [status])
+
+  /**
+   * 首次操作必须在真正的游戏舞台里发生：点工具栏、评论框或「开始游戏」本身都不算。
+   * 同源 iframe 的事件不会冒泡到父页，所以沿用 observeFrameDocs 在每个 document 各装一次；
+   * 跨域 HTML5 则由适配器的 iframe focus / 运行时桥补上。
+   */
+  useEffect(() => {
+    if (status !== 'running' || !session || !startupVisitId || !gameSlug || session.runtime.id === 'liveview') return
+    const host = frameRef.current
+    let done = false
+    const mark = () => {
+      if (done) return
+      done = true
+      recordStartupEvent(gameSlug, {
+        visitId: startupVisitId,
+        attemptId: session.startupAttemptId,
+        event: 'first_interaction',
+        runtime: session.runtime.id,
+        platform: session.platform,
+        elapsedMs: Math.max(0, Date.now() - session.startedAt),
+      })
+    }
+    const stop = observeFrameDocs(host, (doc) => {
+      const insideStage = (target: EventTarget | null) => {
+        if (doc !== document) return true
+        return Boolean(host && target instanceof Node && host.contains(target))
+      }
+      const onPointer = (event: Event) => {
+        if (insideStage(event.target)) mark()
+      }
+      const onKey = (event: Event) => {
+        if (!isTyping(event.target) && insideStage(event.target)) mark()
+      }
+      doc.addEventListener('pointerdown', onPointer, true)
+      doc.addEventListener('keydown', onKey, true)
+      return () => {
+        doc.removeEventListener('pointerdown', onPointer, true)
+        doc.removeEventListener('keydown', onKey, true)
+      }
+    })
+    const gamepadTimer = window.setInterval(() => {
+      try {
+        if (navigator.getGamepads?.().some((pad) => pad?.buttons.some((button) => button.pressed))) mark()
+      } catch {
+        /* 浏览器禁用 Gamepad API 时只少一条输入信号，不影响游戏 */
+      }
+    }, 250)
+    return () => {
+      stop()
+      window.clearInterval(gamepadTimer)
+    }
+  }, [status, session?.id, startupVisitId, gameSlug])
 
   const statusLabel =
     watchingLive && status === 'running'

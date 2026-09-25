@@ -272,6 +272,48 @@ CREATE TABLE IF NOT EXISTS game_roms (
   CONSTRAINT fk_gr_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ---------- PSP ISO → CHD 后台转换任务 ----------
+-- 源 ISO 已由浏览器分片上传到 R2；这里只记对象身份和状态，不把大文件塞进数据库。
+-- source_etag 是防拼包护栏：任务真正下载时用 If-Match 钉住创建任务时看到的那一代对象。
+CREATE TABLE IF NOT EXISTS psp_conversion_jobs (
+  id                   CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+  source_key           VARCHAR(500) NOT NULL,
+  target_key           VARCHAR(500) NOT NULL,
+  source_size          BIGINT UNSIGNED NOT NULL,
+  source_etag          VARCHAR(160) NOT NULL,
+  -- 创建任务时目标对象的 ETag；空串表示当时不存在。发布前后二次比较，避免覆盖并发上传。
+  target_etag_before   VARCHAR(160) NOT NULL DEFAULT '',
+  output_size          BIGINT UNSIGNED NULL,
+  -- complete 成功后立即记住最终对象身份；服务重启可直接收尾，不必重新压缩覆盖一遍。
+  output_etag          VARCHAR(160) NULL,
+  -- slug 能改，真正自动绑定必须钉住创建任务时解析到的数字主键。
+  game_id              BIGINT UNSIGNED NULL,
+  game_slug            VARCHAR(120) NULL,
+  lang                 VARCHAR(10) NULL,
+  expected_current_key VARCHAR(500) NOT NULL DEFAULT '',
+  allow_overwrite      TINYINT(1) NOT NULL DEFAULT 0,
+  actor_id             VARCHAR(40) NULL,
+  status               VARCHAR(24) NOT NULL DEFAULT 'queued',
+  progress             TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  bound                TINYINT(1) NOT NULL DEFAULT 0,
+  -- 0=保留、1=已删、2=清扫器已领取；2 防止“点击重试”和 24 小时清扫同时动同一份源。
+  source_deleted       TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  message              VARCHAR(500) NULL,
+  error                VARCHAR(1000) NULL,
+  -- 未完成的 R2 multipart 也要落盘；进程崩溃后先 abort，不能默默留下收费分片。
+  upload_id            VARCHAR(2048) NULL,
+  upload_marker        VARCHAR(500) NULL,
+  upload_parts         JSON NULL,
+  created_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  completed_at         TIMESTAMP NULL,
+  UNIQUE KEY uniq_psp_source (source_key(191)),
+  KEY idx_psp_jobs_queue (status, created_at),
+  KEY idx_psp_jobs_target (target_key(191)),
+  KEY idx_psp_jobs_game_id (game_id, lang, created_at),
+  KEY idx_psp_jobs_game (game_slug, lang, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ---------- 开放平台沙箱 ROM 样本 ----------
 -- 每个平台至多一款，且只由站长选可供第三方测试的游戏。
 -- 不按应用分别选：否则反复建应用就能把整库拼出来。
@@ -301,6 +343,30 @@ CREATE TABLE IF NOT EXISTS game_plays (
   played_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (game_id, kind, identity),
   CONSTRAINT fk_gp_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------- 游戏启动漏斗（第一方、90 天） ----------
+-- 一次详情页访问用 visit_id 串起来；每次点「开始」再生成 attempt_id。
+-- 不保存 IP / UA：国家由后端在写入时解析，足够定位区域性 CDN / R2 故障。
+-- 唯一键既挡浏览器重试，也避免 StrictMode 或重复回调把同一阶段算两遍。
+CREATE TABLE IF NOT EXISTS game_startup_events (
+  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  game_id     BIGINT UNSIGNED NOT NULL,
+  visit_id    VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  attempt_id  VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
+  event       VARCHAR(24) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  runtime     VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
+  platform    VARCHAR(20) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
+  country     CHAR(2) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'XX',
+  elapsed_ms  INT UNSIGNED NULL,
+  detail      VARCHAR(160) NULL,
+  created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_startup_event (visit_id, attempt_id, event),
+  KEY idx_startup_time (created_at),
+  KEY idx_startup_game_time (game_id, created_at),
+  KEY idx_startup_runtime_time (runtime, created_at),
+  KEY idx_startup_country_time (country, created_at),
+  CONSTRAINT fk_startup_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------- 合集浏览量（多少人看过，按人去重） ----------

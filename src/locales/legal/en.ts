@@ -27,6 +27,7 @@ import type { LegalDocCopy } from './types'
 
 const CONTACT = 'yeahcore@yeah.net'
 const UPDATED = '2026-09-23'
+const PRIVACY_UPDATED = '2026-09-25'
 
 export const termsEnglish: LegalDocCopy = {
   seoTitle: 'Terms of Service',
@@ -328,13 +329,13 @@ export const privacyEnglish: LegalDocCopy = {
     'The 8BitGo privacy policy: what we collect, what "streaming is on by default" means, how IP addresses and browser storage are used, which third parties are involved, how long data is kept, and how to delete yours.',
   h1: 'Privacy Policy',
   updatedLabel: 'Last updated',
-  updated: UPDATED,
+  updated: PRIVACY_UPDATED,
   tocLabel: 'Contents',
   intro: `This policy explains what information 8BitGo collects, why, who it goes to, how long it is kept, and how you get rid of it.
 
 We have tried to describe **what the code actually does** rather than adapt a generic template. A few items do not read well — game sessions stream publicly by default, and anonymous ratings store an IP address in the clear — but writing them down is the point.
 
-**If you read one line of this:** no cookies, no ads, no analytics, no profiling, nothing sold; but **playing a game creates a public stream room by default**, so please read section 7.`,
+**If you read one line of this:** no cookies, no ads, only limited first-party game-startup health metrics that contain no IP address or User-Agent, no profiling, nothing sold; but **playing a game creates a public stream room by default**, so please read section 7.`,
   sections: [
     {
       id: 'controller',
@@ -354,6 +355,7 @@ There is no data protection officer and no representative office. All mail is ha
 - **A country or region inferred from it** — used for regional markers and distribution stats. This step happens **offline on our own server** against a local IP-geolocation database. **Your IP is never sent to a third-party geolocation service.**
 - **Browser and device type** — inferred from the User-Agent, to decide whether to show touch or keyboard hints.
 - **Which games you played, for counting** — so that play counts can be tallied without keeping IP addresses around, we store a **one-way hash** of the IP as a de-duplication key (section 9).
+- **Game-startup stages and timing** — to find cases where someone clicks Play but never reaches the game, we record detail-page load, Play click, download completion, HTML5 page load, first frame, playable state, first interaction, and failure or timeout, together with the game, runtime, platform, country or region inferred offline from the IP, and elapsed milliseconds. Startup records **do not store the IP address, User-Agent, ROM URL or account ID**; a random visit identifier only joins stages of the same startup and does not identify you persistently across pages.
 - **Any anonymous rating you choose to leave** — see the note in section 9 about ratings storing an IP address.
 
 Without an account we do not know who you are, and we do not assign you an identifier that can be tracked across other sites.`,
@@ -609,7 +611,7 @@ Note that this is **not the same thing** as the ByteDance entry in the previous 
       body: `This list is here because "not doing it" needs stating as clearly as doing it:
 
 - **No advertising** and no ad-network tracking code.
-- **No analytics tooling** — no Google Analytics, no Baidu Tongji, nothing of that kind.
+- **No third-party analytics tooling** — no Google Analytics, no Baidu Tongji, nothing of that kind. The site only keeps the first-party game-startup health metrics described in section 2, and does not use them for profiling or advertising.
 - **No profiling.** We do not tag you with interests and do not run personalised ad targeting.
 - **We do not sell, rent or trade** your personal information.
 - **We do not send visitor IP addresses to third-party geolocation services** — country lookup happens offline on our own server.
@@ -624,6 +626,7 @@ Note that this is **not the same thing** as the ByteDance entry in the previous 
 - **Sign-in token** — 30 days; invalidated at once by a password change, an email change or "sign out everywhere".
 - **Email verification codes** — valid 10 minutes, deleted on successful use. Cleanup happens opportunistically the next time a code is sent; **there is no scheduled job** — so in a quiet period expired rows may linger a while. Codes themselves are stored hashed, never in the clear.
 - **Guest recently-played** — the last 12 entries; writing a new one pushes out the oldest.
+- **Game-startup health events** — 90 days, used only to diagnose startup failures, timeouts and performance; the records contain no IP address, User-Agent, ROM URL or account ID.
 - **Comments** — kept long term. Deleting your own hides it from the site but keeps the record; closing your account deletes it fully.
 - **The clear-text IP on anonymous ratings** — **no expiry, no cleanup** (section 9).
 - **Play-count and view-count hash identifiers** — **no expiry**, and retained after an account is closed.

@@ -55,6 +55,8 @@ function cacheValue(env, name, fallback) {
  */
 export function edgeCacheEligible(request, url, cors) {
   if (request.method !== 'GET' || cors['Access-Control-Allow-Origin'] !== '*') return false
+  // Cache API 按 URL 命中整份 200，不能保证替 Range 请求切成 206；流式光盘必须直接走 R2 Range。
+  if (request.headers.has('Range')) return false
   if (request.headers.has('Authorization')) return false
   if (request.headers.has('If-Match') || request.headers.has('If-Unmodified-Since') || request.headers.has('If-Range')) return false
   if (/\b(?:no-cache|no-store)\b/i.test(request.headers.get('Cache-Control') || '')) return false
@@ -333,7 +335,9 @@ async function handle(request, env, url, cors) {
   }
   if (request.method === 'DELETE') return deleteResponse(env, [key], cors, false)
   if (!['GET', 'HEAD'].includes(request.method)) return methodNotAllowed(cors, 'GET, HEAD, PUT, POST, DELETE, OPTIONS')
-  return serveObject(request, env, key, cors, cachePolicy(env, url), guessType)
+  // 只把 romv 当 Range 对象版本锁；普通 GET 的 v/romv 还可能是人工发布号或内容哈希。
+  const rangeVersion = request.headers.has('Range') ? (url.searchParams.get('romv') || '') : ''
+  return serveObject(request, env, key, cors, cachePolicy(env, url), guessType, rangeVersion)
 }
 export default {
   async fetch(request, env, context) {

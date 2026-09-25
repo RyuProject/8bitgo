@@ -6,13 +6,17 @@ PSP 不走 EmulatorJS。站点使用独立 PPSSPP WebAssembly 运行时，远程
 以 URL 直接交给核心，由 `WasmRangeFileLoader` 发 HTTP Range 请求：
 
 - 固定 2 MiB 一块；
-- 内存 LRU 上限 192 MiB；
+- 内存 LRU 上限 96 MiB（48 块；给固定 512 MiB 的 PPSSPP 共享堆留出游戏/JIT 空间）；
 - 每个响应必须是 `206`，且 `Content-Range` 必须与请求完全一致；
-- 单块失败最多重试三次；
-- 远程对象在读取过程中大小发生变化会立即中止，避免把两个版本的镜像拼在一起；
+- 只对网络错误、408、429 和 5xx 退避重试，永久性 4xx 不空转；
+- 第一段优先锁定强 ETag（其次 Last-Modified），后续请求带 `If-Match` /
+  `If-Unmodified-Since`；对象即使被同尺寸覆盖也会中止，避免把两个版本拼成一张盘；
+- 核心把真实取回字节和致命错误回传给页面，页面等到“真实读盘 + 首帧”后才宣布启动成功；
 - 主程序由 `PROXY_TO_PTHREAD` 放进 Worker，同步 Range 只阻塞模拟线程，不阻塞页面。
 
 本地文件仍走 WORKERFS；游戏内存档和 PPSSPP 设置挂到 IDBFS，每 30 秒及离开页面时同步。
+同步请求会串行合并，避免定时器与离页写入互相踩踏；初次读取 IDBFS 失败时本局禁用回写，
+防止用空目录覆盖玩家已有存档。
 
 ## 为什么不接 EmulatorJS 的 PSP 核心
 
@@ -41,8 +45,22 @@ npm run ppsspp:check
 emsdk 清单没有这版预编译工具链，现场从 LLVM 源码编译既慢又会消耗大量磁盘。
 
 构建脚本会幂等应用 `vendor/ppsspp/patches/0001-range-streaming.patch`，把同一批
-`PPSSPPSDL.js/.wasm/.data/.worker.js` 放入 `public/ppsspp/v0dbfaca/`，并把每个文件的
-字节数和 SHA-256 写回 `runtime.json`。缺任何一个文件或混入另一批产物，检查都会失败。
+`PPSSPPSDL.js/.wasm/.data` 放入 `public/ppsspp/v0dbfaca/`，并把每个文件的
+字节数和 SHA-256 写回 `runtime.json`。Range v2 还会在清单里写入 96 MiB 缓存、遥测和对象
+校验能力；缺任何一个文件、缺核心标记或混入另一批产物，检查都会失败。
+
+Emscripten 5.0.7 的 pthread Worker 复用 `PPSSPPSDL.js` 自身，不会生成旧版工具链常见的
+`PPSSPPSDL.worker.js`。检查脚本会验证主 JS 中的自身 Worker 启动标记，确保
+`PROXY_TO_PTHREAD` 确实生效。
+
+`v0dbfaca` 目录发的是 immutable 缓存，页面用 `?r=2` 给 HTML 桥和三件套做内容代次。
+改桥或重编核心时必须递增 `host.js` 里的 `RUNTIME_REVISION` 以及 `index.html` 的查询串，
+否则老访客会继续运行浏览器里缓存一年的旧文件。
+
+`runtime.json.rangeLoaderRevision` 是二进制能力的真值。值为 1 时，桥层的首帧判定、旧核心
+错误接管、探测超时和存档保护已经生效，但核心仍使用 192 MiB 缓存，并靠播放 URL 的
+`romv` + 文件大小避免版本混读；重新执行上述构建后会写成 2，才表示 96 MiB、条件请求和
+原生遥测已经编进 WASM。检查脚本会对 v1 明确告警，不能把源码补丁误当成已发布二进制。
 
 不要在生产机的普通 `npm run build` 里现场编译 PPSSPP；它需要完整 Emscripten 工具链和大量
 临时空间。和 EmulatorJS 自建引擎一样，应当在构建机生成并提交（或完整同步）版本目录。
@@ -65,7 +83,8 @@ VITE_PPSSPP_PATH=/ppsspp/v0dbfaca/
 - `Range` 请求返回 `206`；
 - 返回准确的 `Content-Range`、`Content-Length`、`Accept-Ranges`；
 - CORS 暴露上述响应头；
-- `Access-Control-Allow-Headers` 允许 `Range`。
+- `Access-Control-Allow-Headers` 允许 `Range`、`If-Match`、`If-Unmodified-Since`；
+- CORS 要暴露 `ETag` 或 `Last-Modified`，否则只能退回 URL 的 `romv` + 大小校验。
 
 后台“检测”会真的发一个 Range 请求验证，不是只做 HEAD。验证失败的地址不会交给 PPSSPP。
 

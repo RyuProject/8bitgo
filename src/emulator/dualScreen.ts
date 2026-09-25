@@ -287,18 +287,16 @@ export const WIDE_RATIO = 1.2
  * （只往 allSettings 里塞一格，不报错不生效）。核心换一版、取值改个大小写，
  * 写死就白改，而且看不出来。
  *
- * ── 作用范围刻意只到 melonDS ────────────────────────────────
+ * ── 作用范围只认两条经过实读的精确 key ───────────────────────
  * melonDS DS 1.3.1 改为 `auto`，但网页端仍主动选 `touch`：它明确对应
  * Pointer 绝对坐标，避免鼠标和触屏首次输入在 auto 判定上出现模式抖动。
  *
- * 正则 `/touch[\s_-]?mode/i` 命中 `melonds_touch_mode`，**不**命中 desmume 那一支的
- * `desmume_pointer_type`。这是有意的：desmume 的触控是一整组选项
- * （`desmume_pointer_type` / `desmume_pointer_mouse` / `desmume_mouse_speed` /
- * **`desmume_pointer_colour`**（能画出看得见的笔尖）/ `desmume_pointer_stylus_pressure`），
- * 语义和 melonDS 不同，值得单独一轮 —— 先把 melonDS 这一个变量验通再铺开。
- * （`Mouse Speed` 这个选项本身就是相对模式的证据：绝对映射不需要速度倍率。）
+ * DeSmuME / DeSmuME 2015 是弱机兜底，但它们的出厂值也是相对位移的 `mouse`；两个核心
+ * 的 wasm 实读值都是 `desmume_pointer_type = mouse|touch`，所以同样只改这一项为 `touch`。
+ * 其它 DeSmuME 指针项（颜色、压力、摇杆死区等）都保持玩家设置；绝不能用 `/pointer/`
+ * 这种宽泛匹配，否则看起来像是在修触控，实际会悄悄改掉一整组无关选项。
  */
-const TOUCH_MODE_KEY = /touch[\s_-]?mode/i
+const TOUCH_MODE_KEY = /^(?:melonds_touch_mode|desmume_pointer_type)$/i
 
 /**
  * 绝对坐标那个取值。只认 `Touch` 这一种写法 —— 认不出就返回 null、什么都不做，

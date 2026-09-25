@@ -26,7 +26,7 @@
  * 把合成产物追加进递给引擎的包，dat 里引用合成产物。
  * **玩家上传的原始文件始终不动**（File 不可变，这里产出的是新 File）。
  */
-import { isZip, listZipEntries, extractZipEntry, appendZipEntries, type ZipFileEntry } from '@/lib/unzip'
+import { appendZipEntries, assertValidZipBlob, extractZipEntry, type ZipFileEntry } from '@/lib/unzip'
 import { matchArcadeHack, type ArcadeHack, type ArcadeHackDerive } from '@/data/arcadeHacks'
 
 export interface ArcadeHackMatch {
@@ -84,19 +84,20 @@ export async function deriveArcadeHackBytes(
 export async function matchLocalArcadeHack(file: File): Promise<ArcadeHackMatch | null> {
   if (!/\.zip$/i.test(file.name)) return null
   try {
-    const buf = await file.arrayBuffer()
-    if (!isZip(buf)) return null
-    const entries = listZipEntries(buf)
+    // 普通街机包只需要中央目录里的 CRC：读 Blob 尾部即可，不为 200MB 包
+    // 额外申请一块同大连续内存。只有极少数需要现场合成成员的改版包才读全份字节。
+    const entries = await assertValidZipBlob(file, '街机 ROM')
     const hack = matchArcadeHack(entries.map((e) => e.crc32))
     if (!hack) return null
 
     const wanted = `${hack.zipName}.zip`
     if (!hack.derive) {
-      // 名字已经对了就别白复制一份几 MB 的 File
-      const renamed = file.name === wanted ? file : new File([buf], wanted, { type: file.type })
+      // File 包 File 只建 Blob 视图，不像 ArrayBuffer 路径那样先复制一整份进 JS 堆。
+      const renamed = file.name === wanted ? file : new File([file], wanted, { type: file.type })
       return { hack, file: renamed }
     }
 
+    const buf = await file.arrayBuffer()
     const merged = await deriveArcadeHackBytes(buf, entries, hack)
     return { hack, file: new File([(merged ?? buf) as BlobPart], wanted, { type: file.type }) }
   } catch (err) {

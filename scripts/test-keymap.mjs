@@ -26,8 +26,10 @@ import { readFileSync } from 'node:fs'
 
 const {
   EJS_KEY_BY_ID,
+  EJS_ARCADE_KEY_BY_ID,
   EJS_STOCK_KEY_BY_ID,
   EJS_KEY_OVERRIDE,
+  EJS_ARCADE_DEFAULT_CONTROLS,
   EJS_INDEX,
   EJS_SCHEME,
   EJS_PLATFORM_BUTTONS,
@@ -132,7 +134,10 @@ for (const [id, [engine, label]] of Object.entries(EJS_KEY_OVERRIDE)) {
 // 覆盖必须真的交给引擎，否则表里写一套、玩家按到另一套
 {
   const adapterSrc = readFileSync(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
-  ok(/EJS_defaultControls: EJS_DEFAULT_CONTROLS/.test(adapterSrc), '⭐ 适配器把 EJS_DEFAULT_CONTROLS 交给了引擎')
+  ok(
+    /EJS_defaultControls:\s*options\.platform === 'arcade' \? EJS_ARCADE_DEFAULT_CONTROLS : EJS_DEFAULT_CONTROLS/.test(adapterSrc),
+    '⭐ 适配器按平台把对应的默认键位交给了引擎',
+  )
 }
 ok(EJS_INDEX.a === 8 && EJS_INDEX.b === 0, 'libretro 的 0 是 B、8 才是 A（别抄反）')
 
@@ -236,6 +241,15 @@ ok(
   '两套街机映射用的是同六颗键，只是分工不同（FBNeo 的 FIRE01..06 和 COL_TOP/BOTTOM 都落在这六颗上）',
 )
 ok(schemes.__generic__['2'] !== undefined, '投币用的下标 2 在通用方案里（引擎会把它的标签换成 INSERT COIN）')
+ok(EJS_ARCADE_KEY_BY_ID[2] === 'V', '街机开始页显示 V 投币，与 EmulatorJS / libretro 原生 SELECT 键一致')
+ok(EJS_ARCADE_DEFAULT_CONTROLS[0][2] === undefined, '街机不再用全站 Shift 覆盖 SELECT，FBNeo / MAME 会沿用原生 V')
+{
+  const adapterSrc = readFileSync(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
+  ok(
+    /options\.platform === 'arcade' \? EJS_ARCADE_DEFAULT_CONTROLS : EJS_DEFAULT_CONTROLS/.test(adapterSrc),
+    '适配器只给街机传街机默认键位，不影响其它主机的 Select',
+  )
+}
 
 /* ── 4. 快速存 / 读档名单 ────────────────────────────────── */
 console.log('\n── 4. 快速存 / 读档（F2 / F4）装不装得上 ──')
@@ -321,7 +335,8 @@ for (const key of [...needed].sort()) {
     而街机跑的是 EmulatorJS —— 同一天我们把默认方向键改成了 WASD，
     于是表上写箭头、按下去不动。这种错 tsc 不响、页面照常渲染，只有玩家按下去才发现。
 
-    规矩：**EmulatorJS 管的键一律从 EJS_KEY_BY_ID 现算**。可以写死的是 J2ME 和 Play!：
+    规矩：**EmulatorJS 管的键一律从键位表现算**。通用平台读 EJS_KEY_BY_ID，
+    街机读 EJS_ARCADE_KEY_BY_ID（它只把投币恢复为核心原生 V）。可以写死的是 J2ME 和 Play!：
     FreeJ2ME 的键盘映射在 public/j2me/src/key.js 固定；Play! 的 Web 映射在上游
     Source/ui_js/Main.cpp 固定，且 adapters/play.ts 就按同一张表派发事件。
   */
@@ -336,6 +351,10 @@ for (const key of [...needed].sort()) {
     const inPlay = m.index > j2meEnd && m.index < playEnd
     ok(inJ2me || inPlay, `写死的方向键 ${m[0]} 只允许出现在 J2ME / Play! 分支（在第 ${lib.slice(0, m.index).split('\n').length} 行）`)
   }
+  ok(
+    /button: t\.keymap\.coin, key: arcadeKeysOf\(EJS_INDEX\.select\)/.test(lib),
+    '街机投币提示从街机键位表现算，不会又退回全站 Shift',
+  )
 }
 
 /* ---------------- 开局前那张按键图 ---------------- */

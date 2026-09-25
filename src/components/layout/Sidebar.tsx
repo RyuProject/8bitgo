@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { cx } from '@/lib/format'
 import { useCurrentUser } from '@/services/auth'
@@ -30,11 +30,54 @@ export const SIDEBAR_COLLAPSED_WIDTH = 72
  *  - lg 以下：作为抽屉从左侧滑出，带遮罩
  */
 export function Sidebar() {
-  const { mobileOpen, setMobileOpen, immersive } = useShell()
+  const { mobileOpen, setMobileOpen, immersive, desktop } = useShell()
   const user = useCurrentUser()
   const t = useT()
+  const closeRef = useRef<HTMLButtonElement>(null)
+  const previousFocusRef = useRef<HTMLElement | null>(null)
   // 折叠功能已取消：侧边栏在桌面端始终展开
   const collapsed = false
+  const mobileModal = mobileOpen && !desktop
+  const hiddenMobileDrawer = !mobileOpen && !desktop
+
+  /**
+   * 移动抽屉是真正的模态导航：打开后把焦点送进去、Tab 不逃到遮罩后的页面，Esc 可关闭，
+   * 关闭后把焦点还给汉堡按钮。否则键盘和读屏用户会在看不见的页面控件间迷路。
+   */
+  useEffect(() => {
+    if (!mobileModal) return
+    previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    requestAnimationFrame(() => closeRef.current?.focus())
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setMobileOpen(false)
+        return
+      }
+      if (event.key !== 'Tab') return
+      const aside = closeRef.current?.closest('aside')
+      const focusable = aside
+        ? Array.from(aside.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), select, input, [tabindex]:not([tabindex="-1"])'))
+        : []
+      if (!focusable.length) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      previousFocusRef.current?.focus()
+      previousFocusRef.current = null
+    }
+  }, [mobileModal, setMobileOpen])
 
   return (
     <>
@@ -49,7 +92,10 @@ export function Sidebar() {
       />
 
       <aside
+        id="site-sidebar"
         aria-label={t.sidebar.aria}
+        aria-hidden={hiddenMobileDrawer || undefined}
+        inert={hiddenMobileDrawer}
         className={cx(
           'fixed inset-y-0 left-0 z-50 flex w-60 flex-col border-r border-line bg-surface transition-transform duration-300 ease-out',
           // 移动端：抽屉；桌面端：常驻；沉浸模式下整体移出
@@ -63,10 +109,11 @@ export function Sidebar() {
 
           <div className="flex items-center gap-1">
             <button
+              ref={closeRef}
               type="button"
               onClick={() => setMobileOpen(false)}
               aria-label={t.sidebar.closeMenu}
-              className="grid h-8 w-8 place-items-center rounded-lg text-muted hover:bg-black/5 hover:text-fg lg:hidden"
+              className="grid h-10 w-10 place-items-center rounded-lg text-muted hover:bg-black/5 hover:text-fg lg:hidden"
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M6 6l12 12M18 6L6 18" />

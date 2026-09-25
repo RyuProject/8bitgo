@@ -156,13 +156,23 @@ export interface MountOptions {
    */
   onSaveRequested?: () => void
   /**
+   * 运行时的外壳已经可见，可以撤掉加载遮罩，但这不代表游戏能玩。
+   * 当前只给 HTML5 iframe 用：跨域页面没有接就绪桥时，至少不能让整页一直盖着黑幕。
+   */
+  onSurfaceReady?: () => void
+  /** HTML5 iframe 的 document 完成一次导航；只用于诊断，严禁据此计真实游玩。 */
+  onIframeLoaded?: () => void
+  /**
    * 资源齐了、这局可以真正开始玩了。
    *
    * ⚠️ 语义是「玩家可以动手了」，不是「iframe 的 document 加载完了」。
    * 播放器就是靠它把加载遮罩撤掉的，早调一步玩家就会对着黑屏乱按。
    */
   onReady?: () => void
+  /** 运行时已经产出首帧 / 真正进入主循环。多数适配器会紧跟 onReady 报这一项。 */
   onStart?: () => void
+  /** HTML5 子页面通过运行时桥确认玩家第一次真实输入。其它运行时由播放器统一监听。 */
+  onFirstInteraction?: () => void
   onError?: (message: string) => void
   /**
    * 「这份 ROM 我跑不了，换个引擎吧」—— 和 onError 是两回事。

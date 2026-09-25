@@ -31,7 +31,46 @@ function langPrefix(lang) {
   return !lang || lang === SITE_DEFAULT_LANGUAGE ? '' : `/${lang}`
 }
 
-function shell({ slug, lang, embed, title }) {
+function funnelScript(slug, funnel) {
+  if (!funnel) return ''
+  // 三个值都经过严格白名单；仍把 `<` 转义，避免以后放宽字段时误造出 </script>。
+  const config = JSON.stringify({ slug, ...funnel }).replace(/</g, '\\u003c')
+  return `<script>
+(() => {
+  const c=${config}, frame=document.querySelector('iframe'), sent=new Set();
+  const report=(event,detail) => {
+    if(sent.has(event)) return;
+    sent.add(event);
+    fetch('/api/games/'+encodeURIComponent(c.slug)+'/startup', {
+      method:'POST', headers:{'Content-Type':'application/json','Accept':'application/json'}, keepalive:true,
+      body:JSON.stringify({visitId:c.visitId,attemptId:c.attemptId,event,runtime:'html5',platform:'',elapsedMs:Math.max(0,Date.now()-c.startedAt),detail})
+    }).then(r=>{if(!r.ok) throw new Error(String(r.status))}).catch(()=>sent.delete(event));
+  };
+  const playable=()=>{report('first_frame');report('game_playable')};
+  const inspect=()=>{
+    try {
+      const canvas=frame.contentDocument&&frame.contentDocument.querySelector('canvas');
+      if(canvas&&canvas.width>1&&canvas.height>1) requestAnimationFrame(()=>requestAnimationFrame(playable));
+    } catch {}
+  };
+  frame.addEventListener('load',()=>{report('iframe_loaded');report('download_complete');inspect()});
+  frame.addEventListener('focus',()=>report('first_interaction'));
+  window.addEventListener('message',(event)=>{
+    if(event.source!==frame.contentWindow) return;
+    const m=event.data;
+    if(!m||m.source!=='8bitgo-runtime-bridge'||m.version!==1) return;
+    if(m.type==='first-frame') report('first_frame');
+    else if(m.type==='game-playable') playable();
+    else if(m.type==='first-interaction') report('first_interaction');
+    else if(m.type==='failed') report('failed',String(m.detail||'HTML5 游戏报告启动失败').slice(0,160));
+  });
+  setTimeout(()=>{if(!sent.has('game_playable'))report('slow_start','等待 game_playable 已超过 20 秒')},Math.max(0,20000-(Date.now()-c.startedAt)));
+  setTimeout(()=>{if(!sent.has('game_playable'))report('timeout','等待 game_playable 超过 120 秒')},Math.max(0,120000-(Date.now()-c.startedAt)));
+})();
+</script>`
+}
+
+function shell({ slug, lang, embed, title, funnel }) {
   const back = `${langPrefix(lang)}/games/${encodeURIComponent(slug)}`
   return `<!doctype html>
 <html lang="${escapeHtml(lang || SITE_DEFAULT_LANGUAGE)}">
@@ -71,6 +110,7 @@ function shell({ slug, lang, embed, title }) {
   title="${escapeHtml(title || slug)}"
   allow="fullscreen; autoplay; gamepad; cross-origin-isolated; clipboard-read; clipboard-write"
   referrerpolicy="strict-origin-when-cross-origin"></iframe>
+${funnelScript(slug, funnel)}
 </body>
 </html>`
 }
@@ -88,6 +128,13 @@ export function playShell(req, res, next) {
   const entry = isolatedEmbedFor(slug)
   if (!entry) return next()
 
+  const idOk = (value) => /^[A-Za-z0-9_-]{8,64}$/.test(String(value ?? ''))
+  const startedAt = Number(req.query.fs)
+  const funnel = idOk(req.query.fv) && idOk(req.query.fa) && Number.isFinite(startedAt) &&
+    startedAt <= Date.now() + 5_000 && startedAt >= Date.now() - 10 * 60_000
+    ? { visitId: String(req.query.fv), attemptId: String(req.query.fa), startedAt }
+    : null
+
   res
     .status(200)
     .set({
@@ -103,5 +150,5 @@ export function playShell(req, res, next) {
       'X-Robots-Tag': 'noindex, follow',
       'Cache-Control': 'public, max-age=0, s-maxage=300',
     })
-    .end(shell({ slug, lang, embed: entry.embed, title: entry.title }))
+    .end(shell({ slug, lang, embed: entry.embed, title: entry.title, funnel }))
 }

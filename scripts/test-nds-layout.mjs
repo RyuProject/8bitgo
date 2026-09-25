@@ -355,7 +355,7 @@ check('⚠️ 小 ROM 的平台绝不能进来 —— 多一次 Blob 拷贝换�
     assert.equal(isSelfDownloadPlatform(p), false, `${p} 不该自己下`)
 })
 check('NDS 不是光盘平台 —— isDiscPlatform 的语义没被顺手改掉', () => {
-  // 这两个集合分开是有意的：光盘那条失败就报错，NDS 失败要退回引擎自己下
+  // 两个集合分开是类型语义；NDS 同样自己分片下载，失败交给播放器按断点自动重试。
   assert.equal(isDiscPlatform('nds'), false)
   assert.equal(isDiscPlatform('psx'), true)
 })
@@ -371,7 +371,7 @@ const MELONDS_TOUCH = {
   values: ['joystick', 'touch', 'auto'],
   default: 'auto',
 }
-/** desmume 那一支的一整组触控选项 —— 实读的 key 名，这一轮**刻意不接** */
+/** desmume 那一支的一整组触控选项 —— 只允许精确接 pointer_type */
 const DESMUME_TOUCH_KEYS = [
   'desmume_pointer_type',
   'desmume_pointer_mouse',
@@ -409,13 +409,15 @@ check('取值是 {value,label} 对象数组时也认（getCoreOptionsJSON 的真
   assert.equal(opt?.absolute, 'touch')
 })
 
-check('⚠️ 作用范围只到 melonDS —— desmume 那一整组一个都不许命中', () => {
-  /*
-    desmume 的触控是一整组语义不同的选项（含 pointer_colour，能画出看得见的笔尖），
-    值得单独一轮。这一条钉住「这次只动 melonDS」这个决定：
-    哪天有人把正则放宽到 /point/，这里会红，那时必须连带把 desmume 的默认值一起想清楚。
-  */
-  for (const key of DESMUME_TOUCH_KEYS) {
+check('DeSmuME 两代的相对 mouse 默认值会切到绝对 touch', () => {
+  const opt = findTouchModeOption([{ key: 'desmume_pointer_type', values: ['mouse', 'touch'], default: 'mouse' }])
+  assert.equal(opt?.key, 'desmume_pointer_type')
+  assert.equal(opt?.absolute, 'touch')
+  assert.equal(opt?.fallback, 'mouse')
+})
+
+check('DeSmuME 其它指针项一个都不许误命中', () => {
+  for (const key of DESMUME_TOUCH_KEYS.filter((key) => key !== 'desmume_pointer_type')) {
     const opt = findTouchModeOption([{ key, values: ['mouse', 'touch', 'absolute'] }])
     assert.equal(opt, null, `${key} 不该被当成触控模式项`)
   }

@@ -30,19 +30,46 @@ cso.set(new TextEncoder().encode('CISO'))
 assert.equal((await detectRom(fakeFile('game.cso', cso))).platform, 'psp', 'CSO 魔数应识别为 PSP')
 
 const adapter = readFileSync(new URL('../src/emulator/adapters/ppsspp.ts', import.meta.url), 'utf8')
-assert.match(adapter, /probeRange\(options\.game\)/)
+assert.match(adapter, /probeRange\(options\.game, probeController\.signal\)/)
+assert.match(adapter, /RANGE_PROBE_TIMEOUT_MS = 20_000/)
+assert.match(adapter, /probeController\.abort\(\)/)
 assert.match(adapter, /request\('mount-remote'/)
+assert.match(adapter, /message\.type === 'runtime-error'/)
+assert.match(adapter, /if \(bootStarted \|\| destroyed\) return/)
+assert.match(adapter, /index\.html\?embed=1&r=2/)
 assert.doesNotMatch(adapter, /fetch\s*\(options\.game/)
 assert.doesNotMatch(adapter, /arrayBuffer\s*\(\)/)
 
 const host = readFileSync(new URL('../public/ppsspp/v0dbfaca/host.js', import.meta.url), 'utf8')
 assert.match(host, /arguments:\s*\[gamePath\]/)
 assert.match(host, /FS\.mount\(IDBFS/)
+assert.match(host, /__ppssppRangeError/)
+assert.match(host, /canvas\.width !== 300 \|\| canvas\.height !== 150/)
+assert.match(host, /rangeReadConfirmed/)
+assert.match(host, /saveSyncEnabled = false/)
+assert.match(host, /syncRunning/)
+const runtimeInit = /onRuntimeInitialized\(\)\s*\{([\s\S]*?)\n\s*\},\n\s*onAbort/.exec(host)?.[1] ?? ''
+assert.ok(runtimeInit, '必须能定位 PPSSPP onRuntimeInitialized 回调')
+assert.doesNotMatch(runtimeInit, /respond\s*\(/, 'WASM 初始化完成不等于游戏已读盘，不能提前回复成功')
 assert.doesNotMatch(host, /fetch\s*\(\s*(?:remote(?:\?\.)?\.url|gamePath)/)
 assert.doesNotMatch(host, /arrayBuffer\s*\(/)
 
 const patch = readFileSync(new URL('../vendor/ppsspp/patches/0001-range-streaming.patch', import.meta.url), 'utf8')
-for (const marker of ['EMSCRIPTEN_FETCH_SYNCHRONOUS', 'fetch->status == 206', 'BLOCK_BYTES = 2 * 1024 * 1024', '-sPROXY_TO_PTHREAD=1']) {
+for (const marker of [
+  'EMSCRIPTEN_FETCH_SYNCHRONOUS',
+  'fetch->status == 206',
+  'BLOCK_BYTES = 2 * 1024 * 1024',
+  'MAX_CACHE_BYTES = 96 * 1024 * 1024',
+  '-sPROXY_TO_PTHREAD=1',
+  '__ppssppRangeProgress',
+  '__ppssppRangeError',
+  'If-Match',
+  'If-Unmodified-Since',
+  'status == 412',
+  'status == 429',
+  'emscripten_thread_sleep',
+  'HTTP Range offset overflow',
+]) {
   assert.ok(patch.includes(marker), `核心补丁缺少 ${marker}`)
 }
 

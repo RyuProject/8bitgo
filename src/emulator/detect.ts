@@ -38,6 +38,8 @@ const EXT_TO_PLATFORM: Record<string, PlatformId> = {
   gen: 'segaMD',
   smd: 'segaMD',
   nds: 'nds',
+  // .srl 是同一份 DS 卡带镜像的常用后缀；平台上传白名单已经接受，检测层也必须一致。
+  srl: 'nds',
   ws: 'ws',
   wsc: 'ws',
   swf: 'flash',

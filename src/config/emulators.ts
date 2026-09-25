@@ -95,13 +95,14 @@ export function coreOptionsFor(platform: string): Array<{ id: string; label: str
 
 /**
  * 自构建核心：引擎别名表里没有、由 scripts/build-*.mjs 现编并丢进
- * public/emulatorjs/cores/ 的核心（当前只有 mame-current，给 IGS027A（m027）这类 IGS 新版驱动用）。
+ * public/emulatorjs/cores/ 的核心（mame-current 给 IGS027A 这类新驱动用，melondsds 是 NDS 默认核心）。
  * test:ejs-cores 对它们跳过「引擎内建别名表」校验，改查实际产物。
- * 默认核心在 REQUIRED_SELF_BUILT_CORES 里，缺失会阻断构建；只有可选核心可仅警告。
+ * 只要已经出现在后台下拉里就是对玩家的可用承诺：产物缺失必须阻断构建，
+ * 不能只打一条线上根本没人看的警告后继续发布。
  */
 export const MELONDSDS_VERSION = '1.3.1'
 
 export const SELF_BUILT_CORES = new Set<string>(['mame-current', 'melondsds'])
 
-/** 默认核心缺失必须阻断构建；可选核心（mame-current）缺失仍只提示。 */
-export const REQUIRED_SELF_BUILT_CORES = new Set<string>(['melondsds'])
+/** 两个都被正式暴露给后台，缺任意一个都不准发布。 */
+export const REQUIRED_SELF_BUILT_CORES = new Set<string>(['mame-current', 'melondsds'])

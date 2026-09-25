@@ -53,7 +53,8 @@ const ifMissing = process.argv.includes('--if-missing')
  * 但下面为了「复制结果干净」会整个删掉 cores/，所以得先抢救出来再放回去。
  *
  * 少了这一步，跑一次 npm run ejscores 就会把辛苦编出来的核心悄悄删掉。
- * melonDS DS 是默认核心，test:ejs-cores 会阻断构建；mame-current 是可选核心，仍只警告。
+ * melonDS DS 是默认核心，mame-current 也已出现在后台下拉里；两者缺失都会被
+ * test:ejs-cores 阻断，不允许发布一个“可选但必挂”的核心。
  */
 function preserveSelfBuilt() {
   const kept = []

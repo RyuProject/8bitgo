@@ -22,7 +22,7 @@
  * 链接必须 target="_blank"，否则会在 iframe 里套娃打开整站。
  */
 import { useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useSearchParams } from 'react-router-dom'
 import { usePageData, type GameData } from '@/services/pageData'
 import { platformMap } from '@/data/platforms'
 import { isPlatformEnabled } from '@/config/platforms'
@@ -62,6 +62,7 @@ interface Props {
 
 export function EmbedPage({ standalonePlatform }: Props) {
   const { slug = '' } = useParams<{ slug: string }>()
+  const [searchParams] = useSearchParams()
   const t = useT()
   const lang = useLang()
   const state = usePageData<GameData>(`/games/${encodeURIComponent(slug)}`, undefined, 'game')
@@ -71,6 +72,12 @@ export function EmbedPage({ standalonePlatform }: Props) {
   const [romLang, setRomLang] = useState<RomLang | null>(null)
   const rom = useRomUrl(game, romLang)
   const isolated = isolatedEmbedFor(slug)
+  const funnelVisitId = /^[A-Za-z0-9_-]{8,64}$/.test(searchParams.get('fv') ?? '') ? searchParams.get('fv') ?? undefined : undefined
+  const funnelAttemptId = /^[A-Za-z0-9_-]{8,64}$/.test(searchParams.get('fa') ?? '') ? searchParams.get('fa') ?? undefined : undefined
+  const rawStartedAt = Number(searchParams.get('fs'))
+  const funnelStartedAt = Number.isFinite(rawStartedAt) && rawStartedAt <= Date.now() + 5_000 && rawStartedAt >= Date.now() - 10 * 60_000
+    ? rawStartedAt
+    : undefined
 
   // 薄壳页不进索引 —— 详情页才是这款游戏的正主
   useSeo({ title: game ? gameTitle(game, lang) : slug, noindex: true })
@@ -87,7 +94,21 @@ export function EmbedPage({ standalonePlatform }: Props) {
 
   let body: React.ReactNode
   if (state.status === 'error') {
-    body = <EmbedNotice>{state.error}</EmbedNotice>
+    body = (
+      <EmbedNotice
+        action={state.retry && (
+          <button
+            type="button"
+            onClick={state.retry}
+            className="inline-flex h-10 items-center rounded-full bg-brand px-5 text-sm font-bold text-white transition hover:bg-brand-hover"
+          >
+            {t.common.retry}
+          </button>
+        )}
+      >
+        {state.error}
+      </EmbedNotice>
+    )
   } else if (state.status === 'loading') {
     body = <div className="h-full animate-pulse bg-black" />
   } else if (!game || !platform || !isPlatformEnabled(platform.id) || (standalonePlatform && platform.id !== standalonePlatform)) {
@@ -136,6 +157,9 @@ export function EmbedPage({ standalonePlatform }: Props) {
           platform={platform}
           gameName={game.title}
           gameSlug={game.slug}
+          startupVisitId={funnelVisitId}
+          initialStartupAttemptId={funnelAttemptId}
+          initialStartupStartedAt={funnelStartedAt}
           /* 跨站 iframe 里联机指望不上（信令要登录态），压成 1 让播放器别画多人入口 */
           maxPlayers={1}
           /*

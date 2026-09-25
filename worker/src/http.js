@@ -9,6 +9,9 @@ function etags(value) { return value?.match(/(?:W\/)?"[^"\r\n]*"|\*/g) || [] }
 function matches(value, tag, weak) {
   return etags(value).some(v => v === '*' || (weak ? v.replace(/^W\//, '') === tag.replace(/^W\//, '') : !v.startsWith('W/') && v === tag))
 }
+function etagVersion(tag) {
+  return String(tag || '').replace(/^W\//, '').replaceAll('"', '').trim()
+}
 function secondTime(date) {
   const n = date instanceof Date ? date.getTime() : Date.parse(date)
   return Number.isFinite(n) ? Math.floor(n / 1000) * 1000 : NaN
@@ -92,7 +95,7 @@ async function cancelBody(object) {
     try { await object.body.cancel() } catch { /* response already closed */ }
   }
 }
-export async function serveObject(request, env, key, cors, policy, guessType) {
+export async function serveObject(request, env, key, cors, policy, guessType, expectedVersion = '') {
   const h = request.headers
   const conditional = ['If-Match', 'If-None-Match', 'If-Modified-Since', 'If-Unmodified-Since'].some(n => h.has(n))
   const needsMetadata = request.method === 'HEAD' || conditional || h.has('Range')
@@ -110,6 +113,11 @@ export async function serveObject(request, env, key, cors, policy, guessType) {
     if (!found) return json({ error: h.has('If-Match') ? 'precondition failed' : 'not found' }, cors, h.has('If-Match') ? 412 : 404)
     const { object: metadata, bucket, servedKey } = found
     const headers = objectHeaders(metadata, servedKey, cors, policy, guessType)
+    // Range v1 的旧 PPSSPP 核心还不会发 If-Match，但播放 URL 已带对象 ETag。
+    // Worker 在这里补上代次校验，宁可 412 明确中止，也不能在同一局里混读新旧光盘扇区。
+    if (expectedVersion && etagVersion(metadata.httpEtag) !== expectedVersion) {
+      return new Response(null, { status: 412, headers })
+    }
     const status = conditionStatus(h, metadata)
     if (status !== 200) return new Response(null, { status, headers })
     if (request.method === 'HEAD') {

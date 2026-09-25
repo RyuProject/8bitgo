@@ -226,7 +226,8 @@ export const isDiscPlatform = (platform: string): boolean => DISC_PLATFORMS.has(
  *      第二次进同一款游戏还要再下 128MB。romCache.ts 的文件头点名说要解决
  *      「PSX / NDS 每次进游戏都重下几百 MB」，但这条路一直没接上 NDS。
  *   2. **断了不能续** —— 引擎是一条 XHR 到底，128MB 下到 90% 掉线就从头再来；
- *      我们自己那条是 8MB 一片、每片三次重试（见 loadProgress 的 CHUNK_BYTES）。
+ *      我们自己那条是 8MB 一片、每片三次重试，完整片还会暂存在独立 IndexedDB，
+ *      刷新页面后按 romv 内容版本只补缺片（见 loadProgress / downloadResume）。
  *   3. **开局前不知道要下多少** —— 接管之后 Content-Length 第一帧就有，
  *      播放器那行「本局需下载 XXX」才出得来。
  *

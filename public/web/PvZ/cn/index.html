@@ -1,4 +1,4 @@
-<!doctypehtml><html lang=zh-CN><head><meta charset=utf-8><base href=/web/PvZ/><link rel=preload href=pvz-portable.wasm as=fetch crossorigin><script>(function(){var h=location.hostname,p=location.protocol;var local=h==='localhost'||h==='127.0.0.1'||h==='[::1]';var ok=h==='8bitgo.com'||h.endsWith('.8bitgo.com')||local;if(ok&&!local&&p!=='https:')ok=false;if(!ok){window.__PVZ_BLOCKED__=true;document.addEventListener('DOMContentLoaded',function(){document.body.innerHTML='<div style=\"max-width:620px;margin:22vh auto;padding:2em;text-align:center;background:#1a1a2e;color:#eee;border-radius:12px;font-family:sans-serif\"><h1 style=\"color:#4ecca3;margin-bottom:.5em\">访问受限</h1><p>本游戏仅允许通过 <code style=\"color:#4ecca3\">https://*.8bitgo.com</code> 访问。</p></div>';});}})();</script><!-- 8bitgo: 相对基址，使本页可整体部署到任意子目录（如 /PvZ/ 或 /web/PvZ/），所有相对引用（jszip、pvz-portable.wasm、pvz-manifest.json、properties/）都自动解析到同目录、同源，无需改 CORS。 --><meta content="width=device-width,initial-scale=1"name=viewport><title>PvZ Portable — Web</title><script src=jszip.min.js></script><style>*{box-sizing:border-box;margin:0;padding:0}body{background:#1a1a2e;color:#eee;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;min-height:100vh}body.upload-mode{display:flex;flex-direction:column;align-items:stretch;justify-content:center;overflow-x:hidden;overflow-y:auto}body.game-mode{overflow:hidden}#upload-screen{text-align:center;padding:2em 1.25em;max-width:600px;width:min(600px,100%);min-height:100vh;margin:0 auto;display:flex;flex-direction:column;justify-content:center}#upload-screen h1{font-size:1.8em;margin-bottom:.35em;color:#4ecca3}#upload-screen h1 a{color:inherit;text-decoration:none}#upload-screen h1 a:hover{text-decoration:underline}#project-links{display:flex;flex-wrap:wrap;justify-content:center;gap:.9em;font-size:.9em;margin-bottom:.75em}#project-links a{color:#4ecca3;text-decoration:underline}#upload-screen p{margin:.5em 0;line-height:1.5;color:#bbb}#upload-screen .note{font-size:.85em;color:#888;margin-top:1em}#drop-zone{border:2px dashed #4ecca3;border-radius:12px;padding:2em;margin:1.5em 0;transition:background .3s,border-color .3s,transform .2s}#drop-zone.dragover,#drop-zone:hover{background:rgba(78,204,163,.1)}#drop-zone.ready{border-style:solid;border-color:#4ecca3;background:rgba(78,204,163,.08);cursor:pointer}#drop-zone.ready:hover{background:rgba(78,204,163,.18);transform:translateY(-1px)}#drop-zone input{display:none}#drop-zone-title{margin:0 0 .4em;color:#eee}#drop-zone-subtitle{font-size:.85em;color:#888;margin:0 0 1.2em}#drop-zone.loading #drop-zone-subtitle,#drop-zone.loading #drop-zone-title,#drop-zone.loading #resource-split-actions,#drop-zone.ready #drop-zone-subtitle,#drop-zone.ready #drop-zone-title,#drop-zone.ready #resource-split-actions{display:none}#drop-zone-ready-title{display:none;font-size:1.35em;font-weight:700;color:#4ecca3;margin:.3em 0}#drop-zone-ready-subtitle{display:none;font-size:.85em;color:#bbb;margin:.2em 0 .6em}#drop-zone-reselect{display:none;font-size:.8em;color:#888;margin-top:.5em}#drop-zone-reselect a{color:#4ecca3;cursor:pointer;text-decoration:underline}#drop-zone.ready #drop-zone-ready-subtitle,#drop-zone.ready #drop-zone-ready-title,#drop-zone.ready #drop-zone-reselect,#drop-zone.ready #file-list{display:block}#drop-zone.ready #file-list div{display:inline-block}#drop-zone.loading #loading-drop-zone{display:none;color:#bbb;font-size:.95em;margin:.4em 0}#load-bar{display:none;height:8px;border-radius:6px;background:rgba(78,204,163,.18);overflow:hidden;margin:1em auto 0;max-width:420px}#load-bar>i{display:block;height:100%;width:0;background:#4ecca3;transition:width .18s linear}#drop-zone.loading #load-bar{display:block}#drop-zone.loading #drop-zone-ready-subtitle,#drop-zone.loading #drop-zone-ready-title,#drop-zone.loading #drop-zone-reselect,#drop-zone.loading #file-list{display:none}#resource-split-actions{display:grid;grid-template-columns:1fr 1fr;gap:.9em}.resource-action{appearance:none;background:rgba(43,43,64,.85);color:#eee;border:1px solid rgba(78,204,163,.55);border-radius:10px;padding:1.15em 1em;cursor:pointer;text-align:center;transition:transform .18s,background .18s,border-color .18s}.resource-action:hover{background:rgba(78,204,163,.12);border-color:#4ecca3;transform:translateY(-1px)}.resource-action strong{display:block;font-size:1.02em;color:#4ecca3;margin-bottom:.35em}.resource-action span{display:block;font-size:.85em;line-height:1.4;color:#bbb}#file-list{text-align:center;margin:.5em 0 0;font-size:.85em;display:none}#file-list.has-items{display:block}#file-list div{padding:2px 0;color:#aaa;display:inline-block;margin:0 .5em}#file-list div.ok{color:#4ecca3}#file-list div.missing{color:#e74c3c}#loading-drop-zone{display:none;margin-top:.6em;color:#4ecca3;font-size:.9em}#loading-drop-zone.has-error{display:block;color:#e74c3c}#upload-save-actions{display:flex;flex-wrap:wrap;justify-content:center;gap:.6em;margin-top:.75em}#upload-save-actions button{background:#2b2b40;color:#4ecca3;border:1px solid #4ecca3;border-radius:8px;padding:.6em 1em;cursor:pointer}#upload-save-actions button:hover{background:rgba(78,204,163,.12)}#upload-save-actions button:disabled{opacity:.4;cursor:default}#canvas-container{display:none;width:100vw;height:100vh;position:fixed;inset:0;justify-content:center;align-items:center;background:#000;overflow:hidden}#canvas-container:fullscreen{width:100%;height:100%}canvas#canvas{display:block;background:#000;outline:0}#pvz-soft-keyboard{position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;opacity:0;resize:none;pointer-events:none;font-size:16px}#save-toolbar{position:absolute;top:8px;right:8px;display:flex;gap:6px;z-index:10;flex-wrap:wrap;justify-content:flex-end;max-width:calc(100vw - 16px)}#save-toolbar button{background:rgba(30,30,50,.75);color:#4ecca3;border:1px solid #4ecca3;border-radius:6px;padding:.35em .8em;font-size:.85em;cursor:pointer;backdrop-filter:blur(4px);transition:background .2s}#save-toolbar button:hover{background:rgba(78,204,163,.2)}#save-toolbar button:disabled{opacity:.4;cursor:default}@media (max-height:760px),(max-width:640px){body.upload-mode{justify-content:flex-start}#upload-screen{padding:1.25em 1em 2em;justify-content:flex-start}#drop-zone{padding:1.25em;margin:1em 0}#resource-split-actions{grid-template-columns:1fr}}</style></head><body class=upload-mode><div id=upload-screen><h1><a href=https://github.com/wszqkzqk/PvZ-Portable target=_blank rel="noopener noreferrer">PvZ Portable | Play Anywhere</a></h1><p id=project-links><a href=https://github.com/wszqkzqk/PvZ-Portable target=_blank rel="noopener noreferrer">GitHub</a> <a href=https://github.com/wszqkzqk/PvZ-Portable/issues target=_blank rel="noopener noreferrer">Issues</a> <a href=https://github.com/wszqkzqk/PvZ-Portable/releases target=_blank rel="noopener noreferrer">Releases</a></p><p>Community-driven re-implementation for <strong>all desktop, mobile, and web</strong>. Play instantly in your browser with no installation. <strong>No game resources are included.</strong></p><p>To use this engine, you <strong>MUST</strong> legally purchase the original game on <a href=https://store.steampowered.com/app/3590/Plants_vs_Zombies_GOTY_Edition/ target=_blank style=color:#4ecca3;text-decoration:underline>Steam</a> or <a href=https://www.ea.com/games/plants-vs-zombies/plants-vs-zombies target=_blank style=color:#4ecca3;text-decoration:underline>EA's official website</a>.<br>Please provide your own <code>main.pak</code> and <code>properties/</code> folder from your legally purchased copy of Plants vs. Zombies GOTY Edition.</p><p style="font-size:.85em;color:#888;font-style:italic;line-height:1.4;max-width:600px;margin:0 auto 1.5em auto">Disclaimer: This strictly educational project is a community-driven engine re-implementation. It is not affiliated with, authorized, or endorsed by PopCap Games or Electronic Arts.</p><div id=drop-zone><p id=drop-zone-title>📂 Drop resources here — import and play instantly!</p><p id=drop-zone-subtitle>Drop a ZIP or folder containing <code>main.pak</code> & <code>properties/</code>, or pick one below:</p><div id=resource-split-actions><button id=browse-zip-btn class=resource-action type=button><strong>Import Resource ZIP</strong> <span>Select a ZIP package that contains <code>main.pak</code> and <code>properties/</code>.</span></button> <button id=browse-folder-btn class=resource-action type=button><strong>Select Resource Folder</strong> <span>Select a folder that directly contains <code>main.pak</code> and <code>properties/</code>.</span></button></div><p id=drop-zone-ready-title>▶ Start Game</p><p id=drop-zone-ready-subtitle>Resources loaded successfully. Click here to launch!</p><div id=file-list></div><p id=drop-zone-reselect><a id=reselect-link>Re-select resources</a></p><div id=loading-drop-zone></div><div id=load-bar><i></i></div><input id=file-input type=file multiple webkitdirectory> <input id=resource-zip-input type=file style=display:none accept=.zip,application/zip,application/x-zip-compressed></div><div id=upload-save-actions><button id=upload-save-import-btn title="Import saves from ZIP before starting">Import Save ZIP</button> <button id=upload-save-import-dir-btn title="Import saves from a folder before starting">Import Save Folder</button> <button id=upload-save-clear-btn title="Delete all saved data stored in this browser">Clear Browser Saves</button></div><input id=upload-save-import-input type=file style=display:none accept=.zip> <input id=upload-save-import-dir-input type=file style=display:none multiple webkitdirectory><p class=note>Your files stay in your browser and are never uploaded to any server.<br>Resources can be loaded from a ZIP package or a resource folder. Saves are stored locally in your browser via IndexedDB and can be imported from ZIP or folder.</p><p class=note>Starting the game indicates that you have read the notices above and acknowledge the no-warranty terms of the LGPL v3.0-or-later license for this code.</p><p class=note>Copyright (C) 2026 Zhou Qiankang &lt;<a href=mailto:wszqkzqk@qq.com style=color:#4ecca3;text-decoration:underline>wszqkzqk@qq.com</a>></p></div><div id=canvas-container><div id=save-toolbar><button id=save-export-btn title="Export saves as ZIP">💾 Export Saves</button> <button id=save-import-btn title="Load saves from ZIP">📂 Load Saves</button><input id=save-import-input type=file style=display:none accept=.zip></div><canvas height=600 id=canvas tabindex=0 width=800></canvas></div><textarea autocapitalize=off autocomplete=off autocorrect=off enterkeyhint=done id=pvz-soft-keyboard spellcheck=false></textarea><script>window.moduleReadyPromise=new Promise((function(n,e){window._resolveModuleReady=n,window._rejectModuleReady=e}));var Module={canvas:document.getElementById("canvas"),noInitialRun:!0,onRuntimeInitialized:function(){window._resolveModuleReady()},onAbort:function(n){window._rejectModuleReady(new Error(n))},print:function(n){console.log(n)},printErr:function(n){console.warn(n)}};Module.canvas.addEventListener("contextmenu",(function(n){n.preventDefault()}))</script><script src=pvz-portable.js async onerror="window._rejectModuleReady(new Error('pvz-portable.js加载失败'))"></script><script src=pvz-page.js?v=20260924-ioskb1></script>
+<!doctypehtml><html lang=zh-CN><head><meta charset=utf-8><base href=/web/PvZ/><script>(function(){var h=location.hostname,p=location.protocol;var local=h==='localhost'||h==='127.0.0.1'||h==='[::1]';var ok=h==='8bitgo.com'||h.endsWith('.8bitgo.com')||local;if(ok&&!local&&p!=='https:')ok=false;if(!ok){window.__PVZ_BLOCKED__=true;document.addEventListener('DOMContentLoaded',function(){document.body.innerHTML='<div style=\"max-width:620px;margin:22vh auto;padding:2em;text-align:center;background:#1a1a2e;color:#eee;border-radius:12px;font-family:sans-serif\"><h1 style=\"color:#4ecca3;margin-bottom:.5em\">访问受限</h1><p>本游戏仅允许通过 <code style=\"color:#4ecca3\">https://*.8bitgo.com</code> 访问。</p></div>';});}})();</script><!-- 8bitgo: 相对基址，使本页可整体部署到任意子目录（如 /PvZ/ 或 /web/PvZ/），所有相对引用（jszip、pvz-portable.wasm、pvz-manifest.json、properties/）都自动解析到同目录、同源，无需改 CORS。 --><meta content="width=device-width,initial-scale=1"name=viewport><title>PvZ Portable — Web</title><script src=jszip.min.js></script><style>*{box-sizing:border-box;margin:0;padding:0}body{background:#1a1a2e;color:#eee;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;min-height:100vh}body.upload-mode{display:flex;flex-direction:column;align-items:stretch;justify-content:center;overflow-x:hidden;overflow-y:auto}body.game-mode{overflow:hidden}#upload-screen{text-align:center;padding:2em 1.25em;max-width:600px;width:min(600px,100%);min-height:100vh;margin:0 auto;display:flex;flex-direction:column;justify-content:center}#upload-screen h1{font-size:1.8em;margin-bottom:.35em;color:#4ecca3}#upload-screen h1 a{color:inherit;text-decoration:none}#upload-screen h1 a:hover{text-decoration:underline}#project-links{display:flex;flex-wrap:wrap;justify-content:center;gap:.9em;font-size:.9em;margin-bottom:.75em}#project-links a{color:#4ecca3;text-decoration:underline}#upload-screen p{margin:.5em 0;line-height:1.5;color:#bbb}#upload-screen .note{font-size:.85em;color:#888;margin-top:1em}#drop-zone{border:2px dashed #4ecca3;border-radius:12px;padding:2em;margin:1.5em 0;transition:background .3s,border-color .3s,transform .2s}#drop-zone.dragover,#drop-zone:hover{background:rgba(78,204,163,.1)}#drop-zone.ready{border-style:solid;border-color:#4ecca3;background:rgba(78,204,163,.08);cursor:pointer}#drop-zone.ready:hover{background:rgba(78,204,163,.18);transform:translateY(-1px)}#drop-zone input{display:none}#drop-zone-title{margin:0 0 .4em;color:#eee}#drop-zone-subtitle{font-size:.85em;color:#888;margin:0 0 1.2em}#drop-zone.loading #drop-zone-subtitle,#drop-zone.loading #drop-zone-title,#drop-zone.loading #resource-split-actions,#drop-zone.ready #drop-zone-subtitle,#drop-zone.ready #drop-zone-title,#drop-zone.ready #resource-split-actions{display:none}#drop-zone-ready-title{display:none;font-size:1.35em;font-weight:700;color:#4ecca3;margin:.3em 0}#drop-zone-ready-subtitle{display:none;font-size:.85em;color:#bbb;margin:.2em 0 .6em}#drop-zone-reselect{display:none;font-size:.8em;color:#888;margin-top:.5em}#drop-zone-reselect a{color:#4ecca3;cursor:pointer;text-decoration:underline}#drop-zone.ready #drop-zone-ready-subtitle,#drop-zone.ready #drop-zone-ready-title,#drop-zone.ready #drop-zone-reselect,#drop-zone.ready #file-list{display:block}#drop-zone.ready #file-list div{display:inline-block}#drop-zone.loading #loading-drop-zone{display:none;color:#bbb;font-size:.95em;margin:.4em 0}#load-bar{display:none;height:8px;border-radius:6px;background:rgba(78,204,163,.18);overflow:hidden;margin:1em auto 0;max-width:420px}#load-bar>i{display:block;height:100%;width:0;background:#4ecca3;transition:width .18s linear}#drop-zone.loading #load-bar{display:block}#drop-zone.loading #drop-zone-ready-subtitle,#drop-zone.loading #drop-zone-ready-title,#drop-zone.loading #drop-zone-reselect,#drop-zone.loading #file-list{display:none}#resource-split-actions{display:grid;grid-template-columns:1fr 1fr;gap:.9em}.resource-action{appearance:none;background:rgba(43,43,64,.85);color:#eee;border:1px solid rgba(78,204,163,.55);border-radius:10px;padding:1.15em 1em;cursor:pointer;text-align:center;transition:transform .18s,background .18s,border-color .18s}.resource-action:hover{background:rgba(78,204,163,.12);border-color:#4ecca3;transform:translateY(-1px)}.resource-action strong{display:block;font-size:1.02em;color:#4ecca3;margin-bottom:.35em}.resource-action span{display:block;font-size:.85em;line-height:1.4;color:#bbb}#file-list{text-align:center;margin:.5em 0 0;font-size:.85em;display:none}#file-list.has-items{display:block}#file-list div{padding:2px 0;color:#aaa;display:inline-block;margin:0 .5em}#file-list div.ok{color:#4ecca3}#file-list div.missing{color:#e74c3c}#loading-drop-zone{display:none;margin-top:.6em;color:#4ecca3;font-size:.9em}#loading-drop-zone.has-error{display:block;color:#e74c3c}#upload-save-actions{display:flex;flex-wrap:wrap;justify-content:center;gap:.6em;margin-top:.75em}#upload-save-actions button{background:#2b2b40;color:#4ecca3;border:1px solid #4ecca3;border-radius:8px;padding:.6em 1em;cursor:pointer}#upload-save-actions button:hover{background:rgba(78,204,163,.12)}#upload-save-actions button:disabled{opacity:.4;cursor:default}#canvas-container{display:none;width:100vw;height:100vh;position:fixed;inset:0;justify-content:center;align-items:center;background:#000;overflow:hidden}#canvas-container:fullscreen{width:100%;height:100%}canvas#canvas{display:block;background:#000;outline:0}#pvz-soft-keyboard{position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;opacity:0;resize:none;pointer-events:none;font-size:16px}#save-toolbar{position:absolute;top:8px;right:8px;display:flex;gap:6px;z-index:10;flex-wrap:wrap;justify-content:flex-end;max-width:calc(100vw - 16px)}#save-toolbar button{background:rgba(30,30,50,.75);color:#4ecca3;border:1px solid #4ecca3;border-radius:6px;padding:.35em .8em;font-size:.85em;cursor:pointer;backdrop-filter:blur(4px);transition:background .2s}#save-toolbar button:hover{background:rgba(78,204,163,.2)}#save-toolbar button:disabled{opacity:.4;cursor:default}@media (max-height:760px),(max-width:640px){body.upload-mode{justify-content:flex-start}#upload-screen{padding:1.25em 1em 2em;justify-content:flex-start}#drop-zone{padding:1.25em;margin:1em 0}#resource-split-actions{grid-template-columns:1fr}}</style></head><body class=upload-mode><div id=upload-screen><h1><a href=https://github.com/wszqkzqk/PvZ-Portable target=_blank rel="noopener noreferrer">PvZ Portable | Play Anywhere</a></h1><p id=project-links><a href=https://github.com/wszqkzqk/PvZ-Portable target=_blank rel="noopener noreferrer">GitHub</a> <a href=https://github.com/wszqkzqk/PvZ-Portable/issues target=_blank rel="noopener noreferrer">Issues</a> <a href=https://github.com/wszqkzqk/PvZ-Portable/releases target=_blank rel="noopener noreferrer">Releases</a></p><p>Community-driven re-implementation for <strong>all desktop, mobile, and web</strong>. Play instantly in your browser with no installation. <strong>No game resources are included.</strong></p><p>To use this engine, you <strong>MUST</strong> legally purchase the original game on <a href=https://store.steampowered.com/app/3590/Plants_vs_Zombies_GOTY_Edition/ target=_blank style=color:#4ecca3;text-decoration:underline>Steam</a> or <a href=https://www.ea.com/games/plants-vs-zombies/plants-vs-zombies target=_blank style=color:#4ecca3;text-decoration:underline>EA's official website</a>.<br>Please provide your own <code>main.pak</code> and <code>properties/</code> folder from your legally purchased copy of Plants vs. Zombies GOTY Edition.</p><p style="font-size:.85em;color:#888;font-style:italic;line-height:1.4;max-width:600px;margin:0 auto 1.5em auto">Disclaimer: This strictly educational project is a community-driven engine re-implementation. It is not affiliated with, authorized, or endorsed by PopCap Games or Electronic Arts.</p><div id=drop-zone><p id=drop-zone-title>📂 Drop resources here — import and play instantly!</p><p id=drop-zone-subtitle>Drop a ZIP or folder containing <code>main.pak</code> & <code>properties/</code>, or pick one below:</p><div id=resource-split-actions><button id=browse-zip-btn class=resource-action type=button><strong>Import Resource ZIP</strong> <span>Select a ZIP package that contains <code>main.pak</code> and <code>properties/</code>.</span></button> <button id=browse-folder-btn class=resource-action type=button><strong>Select Resource Folder</strong> <span>Select a folder that directly contains <code>main.pak</code> and <code>properties/</code>.</span></button></div><p id=drop-zone-ready-title>▶ Start Game</p><p id=drop-zone-ready-subtitle>Resources loaded successfully. Click here to launch!</p><div id=file-list></div><p id=drop-zone-reselect><a id=reselect-link>Re-select resources</a></p><div id=loading-drop-zone></div><div id=load-bar><i></i></div><input id=file-input type=file multiple webkitdirectory> <input id=resource-zip-input type=file style=display:none accept=.zip,application/zip,application/x-zip-compressed></div><div id=upload-save-actions><button id=upload-save-import-btn title="Import saves from ZIP before starting">Import Save ZIP</button> <button id=upload-save-import-dir-btn title="Import saves from a folder before starting">Import Save Folder</button> <button id=upload-save-clear-btn title="Delete all saved data stored in this browser">Clear Browser Saves</button></div><input id=upload-save-import-input type=file style=display:none accept=.zip> <input id=upload-save-import-dir-input type=file style=display:none multiple webkitdirectory><p class=note>Your files stay in your browser and are never uploaded to any server.<br>Resources can be loaded from a ZIP package or a resource folder. Saves are stored locally in your browser via IndexedDB and can be imported from ZIP or folder.</p><p class=note>Starting the game indicates that you have read the notices above and acknowledge the no-warranty terms of the LGPL v3.0-or-later license for this code.</p><p class=note>Copyright (C) 2026 Zhou Qiankang &lt;<a href=mailto:wszqkzqk@qq.com style=color:#4ecca3;text-decoration:underline>wszqkzqk@qq.com</a>></p></div><div id=canvas-container><div id=save-toolbar><button id=save-export-btn title="Export saves as ZIP">💾 Export Saves</button> <button id=save-import-btn title="Load saves from ZIP">📂 Load Saves</button><input id=save-import-input type=file style=display:none accept=.zip></div><canvas height=600 id=canvas tabindex=0 width=800></canvas></div><textarea autocapitalize=off autocomplete=off autocorrect=off enterkeyhint=done id=pvz-soft-keyboard spellcheck=false></textarea><script src=pvz-wasm-loader.js?v=20260924-resume1></script><script>window.moduleReadyPromise=new Promise((function(n,e){window._resolveModuleReady=n,window._rejectModuleReady=e}));window.moduleReadyPromise.catch(function(){});var Module={instantiateWasm:window.__pvzInstantiateWasm,canvas:document.getElementById("canvas"),noInitialRun:!0,onRuntimeInitialized:function(){window._resolveModuleReady()},onAbort:function(n){window._rejectModuleReady(new Error(n))},print:function(n){console.log(n)},printErr:function(n){console.warn(n)}};Module.canvas.addEventListener("contextmenu",(function(n){n.preventDefault()}))</script><script src=pvz-portable.js async onerror="window._rejectModuleReady(new Error('pvz-portable.js加载失败'))"></script><script src=pvz-page.js?v=20260924-resume1></script>
 
 
 
@@ -39,6 +39,10 @@
   var WASM_TIMEOUT_MS = 120000;
   // 只限制「迟迟收不到响应头」和流式下载中途长期没有新数据；不会误杀带宽慢但持续有进度的玩家。
   var FETCH_STALL_TIMEOUT_MS = 30000;
+  // main.pak / reanim 包按 2MB Range 分块；每块落盘后刷新也能续传，避免 40~50MB 文件断线后归零。
+  var RANGE_RESUME_THRESHOLD = 4 * 1048576;
+  var RANGE_CHUNK_SIZE = 2 * 1048576;
+  var AUTO_RETRY_LIMIT = 3;
   // 可选资源 404 后多久才重试。reanim/ 漏传时是 2000 多个 404，不记一笔的话
   // 每次进页面都要把这几千个请求重放一遍，白白浪费几十秒和大量流量。
   var MISSING_TTL_MS = 6 * 3600 * 1000;
@@ -57,6 +61,7 @@
   // main.pak 随语言变化，其它动画和配置中英文共用。分开命名能避免玩过两种语言后重复占用约 70MB。
   function prefixFor(entry) { return entry.fs === 'main.pak' ? LOCALE_PREFIX : SHARED_PREFIX; }
   function cacheKey(entry) { return prefixFor(entry) + entry.fs; }
+  function partPrefix(entry) { return 'part:' + DATA_VERSION + ':' + entry.sha256 + ':' + entry.size + ':' + RANGE_CHUNK_SIZE + ':'; }
   var OLD_PREFIX = 'pvz-data-files:'; // 旧版整组缓存的 key 前缀，命中后顺手清掉
 
   // main.pak 和 reanim/ 都是运行必需资源。缺 reanim 时强行启动只会在原生层抛 CppException，
@@ -126,6 +131,39 @@
     refreshUI();
   }
 
+  function retryState() {
+    var key = 'pvz-load-retries:' + DATA_VERSION;
+    var state = { count: 0, at: 0 };
+    try {
+      state = JSON.parse(sessionStorage.getItem(key) || '{}');
+      if (!state || Date.now() - Number(state.at || 0) > 5 * 60 * 1000) state = { count: 0, at: 0 };
+    } catch (e) { state = { count: 0, at: 0 }; }
+    return {
+      count: Number(state.count) || 0,
+      save: function (count) {
+        try { sessionStorage.setItem(key, JSON.stringify({ count: count, at: Date.now() })); } catch (e) {}
+      },
+      clear: function () { try { sessionStorage.removeItem(key); } catch (e) {} },
+    };
+  }
+
+  function scheduleAutoRetry(label, error) {
+    var state = retryState();
+    if (state.count >= AUTO_RETRY_LIMIT) return false;
+    var next = state.count + 1;
+    state.save(next);
+    var delay = [1000, 3000, 6000][next - 1];
+    setStatusNow(label + '（' + (error && error.message ? error.message : error) + '），' +
+      Math.ceil(delay / 1000) + ' 秒后从断点自动重试（' + next + '/' + AUTO_RETRY_LIMIT + '）…', false);
+    setTimeout(function () {
+      if (!window.__pvzGuardedReload()) {
+        restoreUpload('自动重试次数过多，已停止。请稍后手动刷新；已完成的下载分块会保留。');
+        autoStarted = false;
+      }
+    }, delay);
+    return true;
+  }
+
   // ===== IndexedDB：连接只开一次复用。旧实现每次 get/put 都 indexedDB.open，
   // ===== 几千条资源时开关连接本身就是一笔可观的开销。
   var dbPromise = null;
@@ -167,6 +205,17 @@
     if (!pairs.length) return Promise.resolve();
     return tx('readwrite', function (store) {
       for (var i = 0; i < pairs.length; i++) store.put(pairs[i][1], pairs[i][0]);
+    });
+  }
+  function idbGet(key) {
+    return tx('readonly', function (store) {
+      var d = deferred();
+      var req = store.get(key);
+      d.bind(new Promise(function (resolve, reject) {
+        req.onsuccess = function () { resolve(req.result); };
+        req.onerror = function () { reject(req.error); };
+      }));
+      return d;
     });
   }
   // 列出某前缀下的所有 key（用于清理失效缓存）。IDB 没有前缀查询，用 key range 模拟。
@@ -351,7 +400,175 @@
       if (pendingPairs.length >= 64 || pendingBytes >= 8 * 1048576) flush();
     }
 
+    function retryableError(error) {
+      var status = Number(error && error.httpStatus) || 0;
+      return !status || status === 408 || status === 425 || status === 429 || status >= 500;
+    }
+
+    function readResponse(response, expectedLength, controller, resetStallTimer, progress) {
+      if (!response.body || !response.body.getReader) {
+        return response.arrayBuffer().then(function (buffer) {
+          var bytes = new Uint8Array(buffer);
+          if (expectedLength && bytes.byteLength !== expectedLength) throw new Error('响应长度不符');
+          if (progress) progress(bytes.byteLength);
+          return bytes;
+        });
+      }
+      var reader = response.body.getReader();
+      var cap = expectedLength || 1048576, buf = new Uint8Array(cap), off = 0;
+      function pump() {
+        return reader.read().then(function (res) {
+          if (res.done) {
+            if (expectedLength && off !== expectedLength) throw new Error('响应长度不符（应为 ' + expectedLength + '，实际 ' + off + '）');
+            return off === cap ? buf : buf.slice(0, off);
+          }
+          resetStallTimer();
+          var chunk = res.value;
+          if (off + chunk.length > cap) {
+            cap = Math.max(cap * 2, off + chunk.length);
+            var next = new Uint8Array(cap);
+            next.set(buf.subarray(0, off));
+            buf = next;
+          }
+          buf.set(chunk, off); off += chunk.length;
+          if (progress) progress(off);
+          return pump();
+        });
+      }
+      return pump();
+    }
+
+    function fetchRange(entry, index, committedBytes) {
+      var start = index * RANGE_CHUNK_SIZE;
+      var end = Math.min(entry.size, start + RANGE_CHUNK_SIZE) - 1;
+      var expectedLength = end - start + 1;
+      var attempt = 0;
+      function run() {
+        attempt++;
+        var controller = new AbortController();
+        activeControllers.add(controller);
+        var stallTimer = setTimeout(function () { controller.abort(); }, FETCH_STALL_TIMEOUT_MS);
+        function resetStallTimer() {
+          clearTimeout(stallTimer);
+          stallTimer = setTimeout(function () { controller.abort(); }, FETCH_STALL_TIMEOUT_MS);
+        }
+        return fetch(assetUrl(entry.r2), {
+          credentials: 'same-origin',
+          cache: 'no-store',
+          signal: controller.signal,
+          headers: { Range: 'bytes=' + start + '-' + end },
+        }).then(function (response) {
+          resetStallTimer();
+          if (response.status !== 206 && response.status !== 200) {
+            var error = new Error(entry.r2 + ' HTTP ' + response.status);
+            error.httpStatus = response.status;
+            throw error;
+          }
+          if (response.status === 200) {
+            return readResponse(response, entry.size, controller, resetStallTimer, function (received) {
+              onProgress(Math.max(0, received - (this.last || 0)), doneCount, total);
+              this.last = received;
+            }.bind({ last: 0 })).then(function (bytes) { return { full: true, bytes: bytes }; });
+          }
+          var match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(String(response.headers.get('content-range') || ''));
+          if (!match || Number(match[1]) !== start || Number(match[2]) !== end || Number(match[3]) !== entry.size) {
+            throw new Error(entry.r2 + ' Content-Range 不匹配');
+          }
+          var last = 0;
+          return readResponse(response, expectedLength, controller, resetStallTimer, function (received) {
+            onProgress(Math.max(0, received - last), doneCount, total);
+            last = received;
+          }).then(function (bytes) { return { full: false, bytes: bytes }; });
+        }).catch(function (error) {
+          clearTimeout(stallTimer);
+          if (!failed && attempt < 3 && retryableError(error)) {
+            return new Promise(function (resolve) { setTimeout(resolve, attempt * 500); }).then(run);
+          }
+          error.retryable = retryableError(error);
+          throw error;
+        }).finally(function () {
+          clearTimeout(stallTimer);
+          activeControllers.delete(controller);
+        });
+      }
+      return run();
+    }
+
+    function fetchBytesResumable(entry) {
+      var prefix = partPrefix(entry);
+      var count = Math.ceil(entry.size / RANGE_CHUNK_SIZE);
+      var parts = new Array(count);
+      // 直接把每块写进最终缓冲，避免“所有分块 + 完整文件”同时驻留导致移动端峰值翻倍。
+      var assembled = new Uint8Array(entry.size);
+      var indexes = Array.from({ length: count }, function (_, index) { return index; });
+      var prepare = FORCE ? idbKeysWithPrefix(prefix).then(idbDelete).catch(function () {}) : Promise.resolve();
+      return prepare.then(function () {
+        return Promise.all(indexes.map(function (index) {
+          return idbGet(prefix + index).then(function (value) {
+            var bytes = value && value.bytes instanceof Uint8Array ? value.bytes : null;
+            var expected = Math.min(RANGE_CHUNK_SIZE, entry.size - index * RANGE_CHUNK_SIZE);
+            if (bytes && bytes.byteLength === expected && value.sha256 === entry.sha256 && value.index === index) {
+              assembled.set(bytes, index * RANGE_CHUNK_SIZE);
+              parts[index] = true;
+            }
+          }).catch(function () {});
+        }));
+      }).then(function () {
+        var committed = 0;
+        for (var i = 0; i < parts.length; i++) {
+          if (parts[i]) committed += Math.min(RANGE_CHUNK_SIZE, entry.size - i * RANGE_CHUNK_SIZE);
+        }
+        // 命中的断点也计入本轮进度，页面会直接跳到上次已完成的位置，而不是假装从 0 开始。
+        if (committed) onProgress(committed, doneCount, total);
+        var next = 0;
+        var full = null;
+        function savePart(index, result) {
+          if (result.full) { full = result.bytes; assembled = null; return Promise.resolve(); }
+          assembled.set(result.bytes, index * RANGE_CHUNK_SIZE);
+          parts[index] = true;
+          committed += result.bytes.byteLength;
+          return idbPutMany([[prefix + index, {
+            index: index,
+            sha256: entry.sha256,
+            bytes: result.bytes,
+          }]]).catch(function (error) { console.warn('[PvZ] 资源断点写入失败：', error); });
+        }
+        function nextPart() {
+          if (full) return Promise.resolve();
+          while (next < count && parts[next]) next++;
+          if (next >= count) return Promise.resolve();
+          var index = next++;
+          return fetchRange(entry, index, committed).then(function (result) {
+            return savePart(index, result).then(nextPart);
+          });
+        }
+        return nextPart().then(function () {
+          var bytes = full;
+          if (!bytes) bytes = assembled;
+          if (!full) {
+            for (var index = 0; index < parts.length; index++) {
+              if (!parts[index]) throw new Error(entry.r2 + ' 断点分块缺失：' + index);
+            }
+          }
+          return verifyBytes(entry, bytes).catch(function (error) {
+            error.retryable = true;
+            return idbKeysWithPrefix(prefix).then(idbDelete).catch(function () {}).then(function () { throw error; });
+          }).then(function (verified) {
+            // 完整对象先成功落盘，才删除分块；否则配额不足时刷新会把已经下载的进度也丢掉。
+            var value = { bytes: verified, size: verified.byteLength, r2: entry.r2, sha256: entry.sha256 };
+            return idbPutMany([[cacheKey(entry), value]]).then(function () {
+              return idbKeysWithPrefix(prefix).then(idbDelete);
+            }).catch(function () {}).then(function () {
+              onProgress(0, ++doneCount, total);
+              return verified;
+            });
+          });
+        });
+      });
+    }
+
     function fetchBytes(entry) {
+      if (entry.size >= RANGE_RESUME_THRESHOLD && entry.sha256) return fetchBytesResumable(entry);
       var url = assetUrl(entry.r2);
       var attempt = 0;
       function run() {
@@ -414,10 +631,11 @@
           clearTimeout(stallTimer);
           if (failed) throw e;
           // 4xx 不重试（重试也是同样的结果，白等）；网络类错误重试 2 次
-          if (attempt < 2 && !(e && e.httpStatus >= 400 && e.httpStatus < 500)) {
+          if (attempt < 2 && retryableError(e)) {
             attempt++;
             return new Promise(function (res) { setTimeout(res, attempt * 400); }).then(run);
           }
+          e.retryable = retryableError(e);
           throw e;
         }).finally(function () {
           clearTimeout(stallTimer);
@@ -441,6 +659,7 @@
           if (isRequired(entry.fs)) {
             if (!failed) {
               failed = new Error('必需资源 ' + entry.fs + ' 加载失败：' + (e && e.message ? e.message : e));
+              failed.retryable = !!(e && e.retryable);
               abortActive();
             }
             return;
@@ -595,7 +814,8 @@
     var wasmReady = window.moduleReadyPromise
       ? withTimeout(window.moduleReadyPromise, WASM_TIMEOUT_MS, 'WebAssembly 运行时加载超时（' + (WASM_TIMEOUT_MS / 1000) + 's）')
       : Promise.resolve();
-
+    // 资源和 wasm 并行下载；资源链结束前 wasm 可能已经失败，先标记为已处理，稍后仍会读取同一拒绝原因。
+    wasmReady.catch(function () {});
     loadManifest()
       .then(function (manifest) {
         return getFiles(manifest, onProgress).then(function (res) { return { manifest: manifest, res: res }; });
@@ -643,14 +863,20 @@
           setStatusNow('已加载 ' + count + ' 个文件；' + warn, false);
         }
         refreshUI();
-        return wasmReady.then(function () { return startGame(); }, function (e) {
-          restoreUpload('引擎加载失败（' + (e && e.message ? e.message : e) + '），请检查网络后刷新重试。');
-          autoStarted = false;
+        return wasmReady.then(function () {
+          retryState().clear();
+          return startGame();
+        }, function (e) {
+          if (!scheduleAutoRetry('引擎加载失败', e)) {
+            restoreUpload('引擎加载失败（' + (e && e.message ? e.message : e) + '），自动重试已用完；请稍后刷新。已完成的分块不会重下。');
+            autoStarted = false;
+          }
         });
       })
       .catch(function (e) {
         if (!autoStarted) return; // 上面已经给过提示
         console.error('[PvZ] 自动加载失败：', e);
+        if (e && e.retryable && scheduleAutoRetry('资源加载失败', e)) return;
         restoreUpload('自动加载失败（' + (e && e.message ? e.message : e) + '），可手动选择资源或刷新重试。');
         autoStarted = false;
       });
@@ -661,6 +887,10 @@
 })();
 </script>
 <!-- PvZ_AUTOPLAY_INJECTED -->
+
+
+
+
 
 
 

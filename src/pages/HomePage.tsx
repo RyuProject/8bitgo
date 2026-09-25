@@ -6,6 +6,7 @@ import { useSeo, faqSchema, organizationSchema, websiteSchema } from '@/services
 import { useT } from '@/services/i18n'
 import { usePageData, type HomeData } from '@/services/pageData'
 import { GameCardSkeleton, SkeletonBlock } from '@/components/ui/PageSkeleton'
+import { Button } from '@/components/ui/Button'
 
 export function HomePage() {
   const t = useT()
@@ -45,7 +46,14 @@ export function HomePage() {
       */}
       {state.status === 'error' && (
         <div className="container-x pt-6">
-          <p className="rounded-card border border-line bg-surface px-4 py-3 text-sm text-muted">{state.error}</p>
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-card border border-line bg-surface px-4 py-3 text-sm text-muted" role="alert">
+            <p>{state.error}</p>
+            {state.retry && (
+              <Button type="button" variant="secondary" size="sm" onClick={state.retry}>
+                {t.common.retry}
+              </Button>
+            )}
+          </div>
         </div>
       )}
 

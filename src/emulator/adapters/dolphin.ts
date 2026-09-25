@@ -143,6 +143,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
       options.onCaps?.(caps)
       options.onReady?.()
+      options.onStart?.()
       iframe.focus()
       iframe.contentWindow?.focus()
     } catch (error) {

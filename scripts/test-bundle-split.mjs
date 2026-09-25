@@ -147,7 +147,20 @@ const { seen: lazySeen } = closure(path.join(ROOT, 'src/emulator/PlayerChunk.tsx
  * 加了新适配器却忘了加进来的话，这条断言照样绿 —— 它只查「名单里的都到得了」，
  * 查不出「有个新的没进名单」。所以下面额外按目录清点一次。
  */
-const ADAPTERS = ['emulatorjs', 'ruffle', 'html5', 'jsnes', 'j2me', 'jsdos', 'webretro', 'play', 'cloudgame', 'liveview']
+const ADAPTERS = [
+  'emulatorjs',
+  'ruffle',
+  'html5',
+  'jsnes',
+  'j2me',
+  'jsdos',
+  'webretro',
+  'play',
+  'ppsspp',
+  'dolphin',
+  'cloudgame',
+  'liveview',
+]
 
 // 目录里有几个适配器，名单里就该有几个 —— 这一条才真的挡得住「新加的忘了登记」
 const onDisk = fs

@@ -79,6 +79,33 @@ function server(size, opts = {}) {
   return { fetchImpl, calls }
 }
 
+/** 跨两次 fetchBlobWithProgress 调用保存现场，等价于浏览器刷新前后的 IndexedDB。 */
+function memoryResumeStore() {
+  const sessions = new Map()
+  let clears = 0
+  return {
+    async load(key, chunkBytes) {
+      const session = sessions.get(key)
+      if (!session || session.chunkBytes !== chunkBytes) return null
+      return { total: session.total, chunkBytes, parts: new Map(session.parts) }
+    },
+    async put(key, total, chunkBytes, index, blob) {
+      let session = sessions.get(key)
+      if (!session || session.total !== total || session.chunkBytes !== chunkBytes) {
+        session = { total, chunkBytes, parts: new Map() }
+        sessions.set(key, session)
+      }
+      session.parts.set(index, blob)
+    },
+    async clear(key) {
+      clears++
+      sessions.delete(key)
+    },
+    sessions,
+    get clears() { return clears },
+  }
+}
+
 const readAll = async (blob) => new Uint8Array(await blob.arrayBuffer())
 const expectExact = (bytes, size) => {
   assert.equal(bytes.length, size, `长度应为 ${size}，实际 ${bytes.length}`)
@@ -123,6 +150,24 @@ await check('服务器不认 Range：退回整份下载，照样能用', async (
 })
 
 console.log('二、断点重传')
+
+await check('第一片建连失败也会重试（不能只有第二片以后才有重试）', async () => {
+  const size = 2048
+  const { fetchImpl, calls } = server(size, { failOn: [1] })
+  const blob = await fetchBlobWithProgress('u', { fetchImpl, chunkBytes: 1024, retries: 2 })
+  expectExact(await readAll(blob), size)
+  assert.equal(calls.length, 3, '首片重试一次 + 第二片，应共三次请求')
+  assert.equal(calls[0], calls[1], '重试的必须仍是第 0 片')
+})
+
+await check('第一片截断会重试，残片不能进入最终 Blob', async () => {
+  const size = 2048
+  const { fetchImpl, calls } = server(size, { truncate: [1] })
+  const blob = await fetchBlobWithProgress('u', { fetchImpl, chunkBytes: 1024, retries: 2 })
+  expectExact(await readAll(blob), size)
+  assert.equal(calls.length, 3)
+  assert.equal(calls[0], calls[1])
+})
 
 await check('中间一片失败：只重传那一片，不是从头来', async () => {
   const size = 4096
@@ -175,7 +220,129 @@ await check('取消：不空转重试，直接抛 AbortError', async () => {
   assert.ok(calls.length <= 2, `取消后不该继续重试，实际发了 ${calls.length} 次`)
 })
 
-console.log('三、进度')
+await check('连接卡死会换新 signal 自动重试，进度不倒退', async () => {
+  const size = 300
+  const next = server(size)
+  let calls = 0
+  const seen = []
+  const fetchImpl = async (url, init) => {
+    calls++
+    if (calls > 1) return next.fetchImpl(url, init)
+    return await new Promise((resolve, reject) => {
+      init.signal.addEventListener('abort', () => reject(new DOMException('超时', 'AbortError')), { once: true })
+    })
+  }
+  const blob = await fetchBlobWithProgress('u', {
+    fetchImpl,
+    chunkBytes: 1024,
+    retries: 1,
+    stallMs: 5,
+    onProgress: (progress) => seen.push(progress.loaded ?? 0),
+  })
+  expectExact(await readAll(blob), size)
+  assert.equal(calls, 2, '卡死那次和自动重试各一次')
+  for (let i = 1; i < seen.length; i++) assert.ok(seen[i] >= seen[i - 1], `进度倒退：${seen[i - 1]} -> ${seen[i]}`)
+})
+
+console.log('三、跨刷新续传')
+
+await check('刷新前已完成的分片落盘，刷新后只补缺失片', async () => {
+  const size = 4096
+  const resumeStore = memoryResumeStore()
+  const firstRun = server(size, { failOn: [3] })
+  await assert.rejects(
+    () => fetchBlobWithProgress('u', {
+      fetchImpl: firstRun.fetchImpl,
+      chunkBytes: 1024,
+      retries: 0,
+      resumeKey: 'rom?v=1',
+      resumeStore,
+    }),
+    /network error/,
+  )
+  assert.deepEqual([...resumeStore.sessions.get('rom?v=1').parts.keys()], [0, 1], '刷新前应已保存前两片')
+
+  // 第二次调用代表页面刷新：用同一个内容版本键和同一个持久化仓库恢复。
+  const secondRun = server(size)
+  const blob = await fetchBlobWithProgress('u', {
+    fetchImpl: secondRun.fetchImpl,
+    chunkBytes: 1024,
+    resumeKey: 'rom?v=1',
+    resumeStore,
+  })
+  expectExact(await readAll(blob), size)
+  assert.deepEqual(secondRun.calls, ['bytes=2048-3071', 'bytes=3072-4095'])
+  assert.equal(resumeStore.sessions.has('rom?v=1'), false, '合并成功后应清掉临时片，避免占双份空间')
+})
+
+await check('内容版本变化：旧分片绝不能给新 ROM 复用', async () => {
+  const size = 2048
+  const resumeStore = memoryResumeStore()
+  await resumeStore.put('rom?v=old', size, 1024, 0, new Blob([bodyFor(0, 1023)]))
+  const next = server(size)
+  const blob = await fetchBlobWithProgress('u', {
+    fetchImpl: next.fetchImpl,
+    chunkBytes: 1024,
+    resumeKey: 'rom?v=new',
+    resumeStore,
+  })
+  expectExact(await readAll(blob), size)
+  assert.equal(next.calls[0], 'bytes=0-1023', '版本键变化后必须从第 0 片重新开始')
+})
+
+await check('所有分片都已落盘：刷新后零网络请求也能完成合并', async () => {
+  const size = 2048
+  const resumeStore = memoryResumeStore()
+  await resumeStore.put('rom?v=1', size, 1024, 0, new Blob([bodyFor(0, 1023)]))
+  await resumeStore.put('rom?v=1', size, 1024, 1, new Blob([bodyFor(1024, 2047)]))
+  const blob = await fetchBlobWithProgress('u', {
+    fetchImpl: async () => { throw new Error('不应该联网') },
+    chunkBytes: 1024,
+    resumeKey: 'rom?v=1',
+    resumeStore,
+  })
+  expectExact(await readAll(blob), size)
+  assert.equal(resumeStore.sessions.has('rom?v=1'), false)
+})
+
+await check('临时存储不可用：降级为普通下载，不影响开局', async () => {
+  const size = 2048
+  const brokenStore = {
+    async load() { throw new Error('IndexedDB disabled') },
+    async put() { throw new Error('quota exceeded') },
+    async clear() { throw new Error('IndexedDB disabled') },
+  }
+  const { fetchImpl } = server(size)
+  const blob = await fetchBlobWithProgress('u', {
+    fetchImpl,
+    chunkBytes: 1024,
+    resumeKey: 'rom?v=1',
+    resumeStore: brokenStore,
+  })
+  expectExact(await readAll(blob), size)
+})
+
+await check('服务端回错 Range：拒绝等长错片，不能静默拼坏 ROM', async () => {
+  const size = 2048
+  const { fetchImpl: good } = server(size)
+  const wrong = async (url, init) => {
+    const response = await good(url, init)
+    const original = response.headers
+    return {
+      ...response,
+      headers: headers({
+        'content-range': response.status === 206 ? 'bytes 0-1023/2048' : original.get('content-range'),
+        'content-length': original.get('content-length'),
+      }),
+    }
+  }
+  await assert.rejects(
+    () => fetchBlobWithProgress('u', { fetchImpl: wrong, chunkBytes: 1024, retries: 0 }),
+    /分片范围不匹配/,
+  )
+})
+
+console.log('四、进度')
 
 await check('进度是整份的口径，不是分片内的（否则每片都会从 0 重来一遍）', async () => {
   const size = 4096
@@ -205,7 +372,7 @@ await check('进度是整份的口径，不是分片内的（否则每片都会�
   assert.equal(last.ratio, 1)
 })
 
-console.log('四、默认值')
+console.log('五、默认值')
 
 await check('默认片长是 8MB', () => {
   assert.equal(CHUNK_BYTES, 8 * 1024 * 1024)

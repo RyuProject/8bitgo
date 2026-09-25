@@ -2,8 +2,27 @@
   "runtime": "PPSSPP WebAssembly",
   "upstream": "https://github.com/root-hunter/ppsspp-wasm",
   "commit": "0dbfaca62a8a924abc2c5dd5dd0733b668e5e68a",
+  "emscripten": "5.0.7",
   "rangeStreaming": true,
+  "rangeLoaderRevision": 1,
   "blockBytes": 2097152,
   "memoryCacheBytes": 201326592,
-  "artifactsInstalled": false
+  "rangeTelemetry": false,
+  "objectValidator": "romv-and-size",
+  "workerModel": "self-script",
+  "artifactsInstalled": true,
+  "artifacts": {
+    "PPSSPPSDL.js": {
+      "bytes": 371356,
+      "sha256": "009be6301f13bf3de63904e77c46c929b71945fc4fdf3d76def1d56d75d9ec46"
+    },
+    "PPSSPPSDL.wasm": {
+      "bytes": 14249790,
+      "sha256": "ed03e1cb6f90ffe29b37ce712f199a78182bc02d71ebe8cbe9a97cb0effed194"
+    },
+    "PPSSPPSDL.data": {
+      "bytes": 22417304,
+      "sha256": "881e5472ccb56513e5e8fa0e95214e7827c66ccbdac2912e78d572584e687e0b"
+    }
+  }
 }

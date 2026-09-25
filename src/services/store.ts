@@ -187,3 +187,46 @@ export interface AdminStats {
 export async function fetchAdminStats(): Promise<AdminStats> {
   return api.get<AdminStats>('/api/admin/stats', true)
 }
+
+export interface StartupAggregate {
+  detailViews: number
+  starts: number
+  downloads: number
+  iframeLoads: number
+  firstFrames: number
+  playable: number
+  interactions: number
+  failures: number
+  timeouts: number
+  slowStarts: number
+  avgPlayableMs: number | null
+  maxPlayableMs: number | null
+  /** 0～100 的百分数，不是 0～1。 */
+  playableRate: number
+}
+
+export interface StartupGroup extends StartupAggregate {
+  id: string
+  label: string
+}
+
+export interface StartupStats {
+  days: number
+  slowThresholdMs: number
+  summary: StartupAggregate
+  byGame: StartupGroup[]
+  byRuntime: StartupGroup[]
+  byCountry: StartupGroup[]
+  recentSlow: Array<{
+    slug: string
+    title: string
+    runtime: string
+    country: string
+    elapsedMs: number
+    createdAt: string
+  }>
+}
+
+export async function fetchStartupStats(days = 7): Promise<StartupStats> {
+  return api.get<StartupStats>(`/api/admin/startup-stats?days=${Math.max(1, Math.min(90, Math.round(days)))}`, true)
+}

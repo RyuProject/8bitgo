@@ -183,6 +183,23 @@ test('If-Range strong ETag retains ranges; weak/date validators use full object'
 test('If-Match mismatch is 412, not 304',async()=>{
   const e=environment();e.ROMS.seed('a');const r=await worker.fetch(req('/a','GET',undefined,{'If-Match':'"wrong"'}),e);assert.equal(r.status,412);assert.equal(count(e.ROMS,'get'),0)
 })
+test('Range romv pins the R2 object generation even for clients without If-Match',async()=>{
+  const e=environment();const o=e.ROMS.seed('disc.chd','abcdef')
+  const good=await worker.fetch(req(`/disc.chd?romv=${o.etag}`,'GET',undefined,{Range:'bytes=0-1'}),e)
+  assert.equal(good.status,206);assert.equal(await good.text(),'ab')
+  e.ROMS.seed('disc.chd','new-content')
+  const stale=await worker.fetch(req(`/disc.chd?romv=${o.etag}`,'GET',undefined,{Range:'bytes=0-1'}),e)
+  assert.equal(stale.status,412);assert.equal(stale.body,null)
+})
+test('Range requests bypass full-object edge cache and always reach version validation',async()=>{
+  const previous=globalThis.caches;let calls=0
+  globalThis.caches={default:{async match(){calls++;return new Response('wrong-full-object')},async put(){calls++}}}
+  try{
+    const e=environment();const o=e.ROMS.seed('disc.chd','abcdef')
+    const r=await worker.fetch(req(`/disc.chd?romv=${o.etag}`,'GET',undefined,{Range:'bytes=2-3'}),e,{waitUntil(){}})
+    assert.equal(r.status,206);assert.equal(await r.text(),'cd');assert.equal(calls,0)
+  }finally{if(previous===undefined)delete globalThis.caches;else globalThis.caches=previous}
+})
 test('conditional HEAD supports 304',async()=>{
   const e=environment();const o=e.ROMS.seed('a');const r=await worker.fetch(req('/a','HEAD',undefined,{'If-None-Match':o.httpEtag}),e);assert.equal(r.status,304);assert.equal(r.body,null)
 })

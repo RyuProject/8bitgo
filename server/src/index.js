@@ -54,6 +54,8 @@ import { openDeviceRouter } from './routes/open-device.js'
 import { oauthRouter } from './routes/oauth.js'
 import { adminOpenAppsRouter } from './routes/admin-open-apps.js'
 import { adminConfigRouter } from './routes/admin-config.js'
+import { pspConversionsRouter } from './routes/psp-conversions.js'
+import { startPspConversionQueue } from './psp-conversion.js'
 import { openConfigDiagnosis } from './open/config.js'
 import { wellKnownRouter } from './routes/well-known.js'
 import { diagRouter } from './routes/diag.js'
@@ -198,6 +200,8 @@ app.use('/api/oauth', oauthRouter)
 app.use('/api/admin/open-apps', adminOpenAppsRouter)
 // 同理要排在 /api/admin 之前：adminRouter 里有 /:id 这类通配路由
 app.use('/api/admin/config', adminConfigRouter)
+// 必须排在 /api/admin 之前：adminRouter 有通配参数，先挂可避免任务 id 被当成普通后台资源 id。
+app.use('/api/admin/psp-conversions', pspConversionsRouter)
 
 app.use('/api/auth', authRouter)
 app.use('/api/rom-pack', romPackRouter)
@@ -634,6 +638,8 @@ httpServer.listen(PORT, () => {
   console.log(`8BitGo API 已启动：http://127.0.0.1:${PORT}`)
   if (isRomPackConfigured()) console.log('[rom-pack] 8BG 数据密钥已配置')
   else console.warn('[rom-pack] 未配置 ROM_PACK_SECRET：旧 ROM 仍可玩，但 8BG 打包与播放不可用')
+  // 后台队列自己做能力检查；没装 chdman / 没配 Worker 时只禁用 PSP 自动压缩，不拖垮主站。
+  void startPspConversionQueue().catch((error) => console.error('[psp-convert] 队列启动失败：', error))
   const flashSaveError = flashSaveConfigurationError()
   if (flashSaveError) console.warn(`[flash-save] ${flashSaveError}：游戏仍可使用本地存档，在线槽未启用`)
   else console.log('[flash-save] Flash 游戏在线存档已启用')

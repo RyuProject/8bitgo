@@ -6,6 +6,7 @@ import { postApiToRow, buildUpsert } from '../mappers.js'
 import { upsertGame, adminStats } from '../games-repo.js'
 import { invalidateContent } from '../content.js'
 import { queueGameSearchPush, queuePostSearchPush } from '../search-push.js'
+import { startupStats } from '../startup-metrics.js'
 
 export const adminRouter = Router()
 
@@ -92,6 +93,16 @@ adminRouter.post('/import', requireAdmin, async (req, res, next) => {
 adminRouter.get('/stats', requireAbility('content:edit'), async (_req, res, next) => {
   try {
     res.json(await adminStats())
+  } catch (e) {
+    next(e)
+  }
+})
+
+/** 启动成功率与 20 秒性能告警；按游戏 / 运行时 / 国家分别聚合，避免在浏览器拉原始事件。 */
+adminRouter.get('/startup-stats', requireAbility('content:edit'), async (req, res, next) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store')
+    res.json(await startupStats(req.query.days))
   } catch (e) {
     next(e)
   }

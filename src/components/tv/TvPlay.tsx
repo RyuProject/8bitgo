@@ -80,7 +80,18 @@ export function TvPlay({ slug, onExit }: { slug: string; onExit: () => void }) {
     <div className="flex h-dvh flex-col overflow-hidden bg-black">
       <div className="min-h-0 flex-1">
         {state.status === 'error' ? (
-          <p className="flex h-full items-center justify-center px-8 text-center text-white/70">{state.error}</p>
+          <div className="flex h-full flex-col items-center justify-center gap-5 px-8 text-center text-white/70" role="alert">
+            <p>{state.error}</p>
+            {state.retry && (
+              <button
+                type="button"
+                onClick={state.retry}
+                className="rounded-xl border border-white/25 px-5 py-2.5 font-semibold text-white transition hover:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+              >
+                {t.common.retry}
+              </button>
+            )}
+          </div>
         ) : state.status === 'loading' || !game ? (
           <div className="h-full animate-pulse bg-black" />
         ) : !platform || !isPlatformEnabled(platform.id) ? (

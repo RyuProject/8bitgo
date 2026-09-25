@@ -9,8 +9,9 @@
  *   fs.mkdir('/nodir_test') 之后同一个调用  →  成功
  *
  * ── 它为什么会变成致命缺陷 ───────────────────────────────────
- * 调用方（`emulatorjs.ts` 的 installFsInjector）用**一个 try 包住整个注入循环**，
- * 所以一条写失败会连带后面所有注入都不写，而回报只有一句笼统的注入失败。
+ * 调用方（`emulatorjs.ts` 的 installFsInjector）曾经用**一个 try 包住整个注入循环**，
+ * 所以一条写失败会连带后面所有注入都不写。现在已改为逐文件隔离，
+ * 但建目录这条硬约束仍然需要在独立单测里守住。
  *
  * mame-current 就正好踩在这里：它的内容必须待在 `/roms`（核心拿父目录当 rompath
  * 和 system dir，实测 `GET_SYSTEM_DIRECTORY: "/roms"`），于是 BIOS 也要写进 `/roms`；
@@ -26,6 +27,11 @@
 /** 只需要 mkdir —— 调用方那边是 Emscripten 的 FS，这里不想把它的类型拖进来 */
 export interface MutableDirFs {
   mkdir?: (path: string) => void
+}
+
+/** 文件注入只用到这两个 FS 能力，不把整套 Emscripten 类型拖进纯函数测试。 */
+export interface WritableFs extends MutableDirFs {
+  writeFile: (path: string, bytes: string | Uint8Array) => void
 }
 
 /**

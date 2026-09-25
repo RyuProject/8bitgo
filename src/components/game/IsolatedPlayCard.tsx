@@ -18,6 +18,7 @@ import { useT } from '@/services/i18n'
 import { cx } from '@/lib/format'
 import type { ReactNode } from 'react'
 import type { IsolatedRuntimePlatformId } from '../../../shared/isolated-runtime-platforms.js'
+import { newStartupId, recordStartupEvent } from '@/services/startupFunnel'
 
 interface Props {
   slug: string
@@ -36,9 +37,11 @@ interface Props {
    * 见 emulator/screenAspect.ts 的 stageHeightCap。
    */
   frameClassName?: string
+  /** 详情页启动漏斗要跨一次整页导航，短 id 随 URL 带进隔离播放器，不写 cookie。 */
+  startupVisitId?: string
 }
 
-export function IsolatedPlayCard({ slug, gameName, isolatedPlatform, icon, backdrop, className, frameClassName }: Props) {
+export function IsolatedPlayCard({ slug, gameName, isolatedPlatform, icon, backdrop, className, frameClassName, startupVisitId }: Props) {
   const lang = useLang()
   const t = useT()
   // 语言前缀由 basename 承载，而这是一条整页跳转，得自己拼上，否则英文用户会掉到中文页
@@ -59,7 +62,31 @@ export function IsolatedPlayCard({ slug, gameName, isolatedPlatform, icon, backd
             </span>
           )}
           {/* 按钮说「开始游戏」，和播放器那颗一致；游戏名在页面标题里已经有了 */}
-          <a href={href} className={buttonClasses('primary', 'lg')} aria-label={`${t.player.start} · ${gameName}`}>
+          <a
+            href={href}
+            onClick={(event) => {
+              if (!startupVisitId) return
+              const attemptId = newStartupId()
+              const startedAt = Date.now()
+              const runtime = isolatedPlatform === 'psp' ? 'ppsspp' : isolatedPlatform === 'ps2' ? 'play' : isolatedPlatform ? 'dolphin' : 'html5'
+              recordStartupEvent(slug, {
+                visitId: startupVisitId,
+                attemptId,
+                event: 'start_click',
+                runtime,
+                platform: isolatedPlatform ?? '',
+                elapsedMs: 0,
+              })
+              // 默认导航继续执行；只把短期漏斗 id 带到新页面，首帧/失败才能归回同一次点击。
+              const url = new URL(event.currentTarget.href)
+              url.searchParams.set('fv', startupVisitId)
+              url.searchParams.set('fa', attemptId)
+              url.searchParams.set('fs', String(startedAt))
+              event.currentTarget.href = url.href
+            }}
+            className={buttonClasses('primary', 'lg')}
+            aria-label={`${t.player.start} · ${gameName}`}
+          >
             <span aria-hidden>▶</span> {t.player.start}
           </a>
           <p className="max-w-sm text-xs text-muted">{t.player.isolatedHint}</p>

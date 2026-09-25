@@ -15,7 +15,7 @@ import { ChatButton } from './ChatButton'
  */
 export function Topbar() {
   const t = useT()
-  const { setMobileOpen, immersive } = useShell()
+  const { mobileOpen, setMobileOpen, immersive } = useShell()
   const [searchOpen, setSearchOpen] = useState(false)
   const user = useCurrentUser()
   const location = useLocation()
@@ -31,7 +31,9 @@ export function Topbar() {
           type="button"
           onClick={() => setMobileOpen(true)}
           aria-label={t.topbar.openMenu}
-          className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-fg hover:bg-black/5 lg:hidden"
+          aria-controls="site-sidebar"
+          aria-expanded={mobileOpen}
+          className="grid h-10 w-10 shrink-0 place-items-center rounded-lg text-fg hover:bg-black/5 lg:hidden"
         >
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
             <path d="M4 7h16M4 12h16M4 17h16" />
@@ -48,7 +50,8 @@ export function Topbar() {
             onClick={() => setSearchOpen((v) => !v)}
             aria-label={t.topbar.search}
             aria-expanded={searchOpen}
-            className="grid h-9 w-9 place-items-center rounded-lg text-muted hover:bg-black/5 hover:text-fg md:hidden"
+            aria-controls="mobile-search-panel"
+            className="grid h-10 w-10 place-items-center rounded-lg text-muted hover:bg-black/5 hover:text-fg md:hidden"
           >
             <SearchIcon />
           </button>
@@ -78,6 +81,9 @@ export function Topbar() {
 
       {/* 移动端展开的搜索行 */}
       <div
+        id="mobile-search-panel"
+        aria-hidden={!searchOpen}
+        inert={!searchOpen}
         className={cx(
           'grid overflow-hidden transition-[grid-template-rows] duration-300 md:hidden',
           searchOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]',

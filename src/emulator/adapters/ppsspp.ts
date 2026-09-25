@@ -5,7 +5,7 @@
  * Emscripten 内存。PSP 镜像常见 1~1.8GB，手机还没进游戏就会被内存峰值杀掉。
  *
  * 本适配器只传 URL、文件名和已验证的总大小。真正的随机读取发生在自建 PPSSPP 核心的
- * WasmRangeFileLoader 中：2MB 固定块、192MB LRU、每次响应必须是 206。这样浏览器不会
+ * WasmRangeFileLoader 中：2MB 固定块、96MB LRU、每次响应必须是 206。这样浏览器不会
  * 持有整张盘，断线重试也只重取当前块。
  */
 import type { Capability, MountOptions, RuntimeHandle } from '../types'
@@ -17,6 +17,7 @@ const BRIDGE_SOURCE = '8bitgo-ppsspp-bridge'
 const BRIDGE_VERSION = 1
 const HOST_TIMEOUT_MS = 120_000
 const MOUNT_TIMEOUT_MS = 180_000
+const RANGE_PROBE_TIMEOUT_MS = 20_000
 
 interface BridgeMessage {
   source?: string
@@ -53,8 +54,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const caps = new Set<Capability>()
   let destroyed = false
   let ready = false
+  let bootStarted = false
   let requestId = 0
   let hostTimer = 0
+  let fatalReported = false
+  const probeController = new AbortController()
   const pending = new Map<number, {
     resolve: (value: unknown) => void
     reject: (error: Error) => void
@@ -92,6 +96,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     })
   }
 
+  const reportFatal = (message: string) => {
+    if (destroyed || fatalReported) return
+    fatalReported = true
+    options.onError?.(fmt(rt.ppssppLoadFailed, { msg: message }))
+  }
+
   async function prepareGame(): Promise<File | RemoteDiscDescriptor> {
     if (options.game instanceof File) {
       options.onProgress?.({
@@ -105,7 +115,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
 
     options.onProgress?.({ phase: 'rom', loaded: 0 })
-    const probe = await probeRange(options.game)
+    // host-ready 只说明 iframe 的桥已经加载，不能拿它当网络超时。旧实现会在一个永不返回的
+    // Range 探测上无限挂住，而且 destroy 后请求仍继续占连接；这里给探测独立的截止时间。
+    const probeTimer = window.setTimeout(() => probeController.abort(), RANGE_PROBE_TIMEOUT_MS)
+    const probe = await probeRange(options.game, probeController.signal).finally(() => {
+      window.clearTimeout(probeTimer)
+    })
     if (!probe.rangeSupported || !probe.size) throw new Error(rt.ppssppNoRange)
     options.onProgress?.({ phase: 'rom', loaded: 2, total: probe.size })
     return {
@@ -116,6 +131,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
 
   async function boot(): Promise<void> {
+    // iframe 恢复缓存或脚本被重复执行时可能再次发 host-ready；第二次 boot 会同时挂两张盘，
+    // 而 host 只允许 start 一次，外层就会把真实成功误报成失败。
+    if (bootStarted || destroyed) return
+    bootStarted = true
     try {
       if (!globalThis.crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') {
         throw new Error(rt.ppssppNeedsIsolation)
@@ -138,7 +157,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       iframe.contentWindow?.focus()
     } catch (error) {
       if (!destroyed) {
-        options.onError?.(fmt(rt.ppssppLoadFailed, { msg: error instanceof Error ? error.message : String(error) }))
+        reportFatal(error instanceof Error ? error.message : String(error))
       }
     }
   }
@@ -159,6 +178,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       options.onProgress?.({ phase: 'rom', loaded, total, ratio: total ? Math.min(1, loaded / total) : undefined })
       return
     }
+    if (message.type === 'runtime-error') {
+      reportFatal(message.error || 'PPSSPP 运行时发生致命错误')
+      return
+    }
     if (message.type !== 'response' || !Number.isInteger(message.requestId)) return
     const entry = pending.get(message.requestId as number)
     if (!entry) return
@@ -170,15 +193,20 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   window.addEventListener('message', onMessage)
 
   iframe.addEventListener('error', () => {
-    if (!destroyed) options.onError?.(fmt(rt.ppssppLoadFailed, { msg: '运行时页面加载失败' }))
+    reportFatal('运行时页面加载失败')
   })
 
   options.onCaps?.(caps)
   options.onProgress?.({ phase: 'engine', loaded: 0 })
   container.replaceChildren(iframe)
-  iframe.src = `${PPSSPP_PATH}index.html?embed=1`
+  // 版本目录是 immutable；查询串必须跟 host.js 的 RUNTIME_REVISION 同步，否则老访客连
+  // 新 index.html 都拿不到，更不会看到里面带代次的桥与核心地址。
+  iframe.src = `${PPSSPP_PATH}index.html?embed=1&r=2`
   hostTimer = window.setTimeout(() => {
-    if (!destroyed && !ready) options.onError?.(rt.ppssppStartTimeout)
+    if (!destroyed && !ready && !fatalReported) {
+      fatalReported = true
+      options.onError?.(rt.ppssppStartTimeout)
+    }
   }, HOST_TIMEOUT_MS)
 
   return {
@@ -199,6 +227,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     destroy() {
       if (destroyed) return
       destroyed = true
+      probeController.abort()
       window.clearTimeout(hostTimer)
       window.removeEventListener('message', onMessage)
       for (const entry of pending.values()) {

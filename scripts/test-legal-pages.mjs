@@ -325,6 +325,25 @@ const FACTS = [
     say: { zh: ['HMAC'], en: ['HMAC'] },
   },
   {
+    id: 'startup-health-metrics',
+    where: 'no-account',
+    doc: 'privacy',
+    what: '第一方启动漏斗记录启动阶段、耗时与粗粒度国家，但不落 IP、User-Agent、ROM 地址或账号 ID',
+    probe: ['server/src/startup-metrics.js', 'game_startup_events'],
+    say: {
+      zh: ['游戏启动阶段与耗时|遊戲啟動階段與耗時', '不保存 IP', 'User-Agent', 'ROM 地址|ROM 位址', '账号 ID|帳號 ID'],
+      en: ['Game-startup stages and timing', 'do not store the IP address', 'User-Agent', 'ROM URL', 'account ID'],
+    },
+  },
+  {
+    id: 'startup-health-retention',
+    where: 'retention',
+    doc: 'privacy',
+    what: '启动健康事件保留 90 天后由服务端清理',
+    probe: ['server/src/startup-metrics.js', 'RETENTION_DAYS'],
+    say: { zh: ['90 天'], en: ['90 days'] },
+  },
+  {
     id: 'auto-broadcast',
     where: 'broadcast',
     doc: 'privacy',

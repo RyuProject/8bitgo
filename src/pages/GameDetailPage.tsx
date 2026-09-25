@@ -46,6 +46,7 @@ import { FEATURES } from '@/config/features'
 import { isolatedEmbedFor } from '../../shared/isolated-embeds.js'
 import { isIsolatedRuntimePlatform } from '../../shared/isolated-runtime-platforms.js'
 import { splitDevelopers } from '@/lib/developers'
+import { newStartupId, recordStartupEvent } from '@/services/startupFunnel'
 
 export function GameDetailPage() {
   const { slug = '' } = useParams<{ slug: string }>()
@@ -70,6 +71,20 @@ export function GameDetailPage() {
   // data.game 为 null 表示后端确认没有这款游戏；undefined 是「还没拿到」，两者不能混为一谈
   const game = state.data?.game ?? undefined
   const related = state.data?.related ?? []
+  /** 每次进入一款游戏只生成一个访问 id；站内切到另一款时必须换，不能把两页串成一条漏斗。 */
+  const startupVisitRef = useRef<{ slug: string; id: string } | null>(null)
+  if (!startupVisitRef.current || startupVisitRef.current.slug !== slug) {
+    startupVisitRef.current = { slug, id: newStartupId() }
+  }
+  const startupVisitId = startupVisitRef.current.id
+  useEffect(() => {
+    if (!game?.slug) return
+    recordStartupEvent(game.slug, {
+      visitId: startupVisitId,
+      event: 'detail_view',
+      platform: game.platform,
+    })
+  }, [game?.slug, game?.platform, startupVisitId])
   const { immersive, setImmersive } = useShell()
   /**
    * 播放器那一块的**高度**上限（2026-09-07 从「限宽 + 居中」改过来的，站长拿红线标了要对齐）。
@@ -339,6 +354,7 @@ export function GameDetailPage() {
                     slug={game.slug}
                     gameName={game.title}
                     isolatedPlatform={isIsolatedRuntimePlatform(game.platform) ? game.platform : undefined}
+                    startupVisitId={startupVisitId}
                     icon={game.icon}
                     // 背景那张是糊到底再压一层黑底的，96×96 完全够用，没必要下 300×300
                 backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority thumb className="h-full w-full" />}
@@ -355,6 +371,7 @@ export function GameDetailPage() {
                   platform={platform}
                   gameName={game.title}
                   gameSlug={game.slug}
+                  startupVisitId={startupVisitId}
                   maxPlayers={game.players}
                   invite={invite}
                   cloudInvite={cloudInvite}

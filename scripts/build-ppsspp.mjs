@@ -17,6 +17,7 @@ import { spawnSync } from 'node:child_process'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const VERSION = '0dbfaca'
+const RANGE_LOADER_REVISION = 2
 const PINNED_COMMIT = '0dbfaca62a8a924abc2c5dd5dd0733b668e5e68a'
 const PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0001-range-streaming.patch')
 const OUTPUT = join(root, 'public', 'ppsspp', `v${VERSION}`)
@@ -51,6 +52,13 @@ if (capture('git', ['rev-parse', 'HEAD']) !== PINNED_COMMIT) {
 if (!existsSync(join(source, 'Core', 'FileLoaders', 'WasmRangeFileLoader.cpp'))) {
   run('git', ['apply', '--check', PATCH])
   run('git', ['apply', PATCH])
+} else {
+  const loader = readFileSync(join(source, 'Core', 'FileLoaders', 'WasmRangeFileLoader.cpp'), 'utf8')
+  for (const marker of ['__ppssppRangeProgress', '__ppssppRangeError', 'If-Match', 'If-Unmodified-Since']) {
+    if (!loader.includes(marker)) {
+      fail(`源码目录里已有旧版 Range 补丁（缺少 ${marker}）；请改用停在锁定提交的干净检出目录重新构建`)
+    }
+  }
 }
 
 if (!args.includes('--skip-submodules')) {
@@ -71,9 +79,22 @@ const jobs = process.env.PPSSPP_JOBS || `-j${Math.max(1, Number(process.env.NUMB
 run('make', ['wasm-release', 'CMAKE=cmake', `WASM_JOBS=${jobs}`])
 
 const buildDir = join(source, 'build-wasm-release')
-const names = ['PPSSPPSDL.js', 'PPSSPPSDL.wasm', 'PPSSPPSDL.data', 'PPSSPPSDL.worker.js']
+// Emscripten 5 的 pthread 入口复用主 JS（pthreadMainJs = _scriptName），不会再生成
+// 单独的 *.worker.js。这里必须验主 JS 的自举标记，不能靠一个并不存在的第四文件判断线程支持。
+const names = ['PPSSPPSDL.js', 'PPSSPPSDL.wasm', 'PPSSPPSDL.data']
 for (const name of names) {
   if (!existsSync(join(buildDir, name))) fail(`构建完成但缺少 ${join(buildDir, name)}`)
+}
+const runtimeScript = readFileSync(join(buildDir, 'PPSSPPSDL.js'), 'utf8')
+if (!runtimeScript.includes('pthreadMainJs=_scriptName') || !runtimeScript.includes('new Worker(pthreadMainJs')) {
+  fail('PPSSPPSDL.js 缺少 Emscripten 5 自身 Worker 启动标记，PROXY_TO_PTHREAD 可能没有生效')
+}
+for (const marker of ['__ppssppRangeProgress', '__ppssppRangeError']) {
+  if (!runtimeScript.includes(marker)) fail(`PPSSPPSDL.js 缺少 Range v${RANGE_LOADER_REVISION} 标记 ${marker}，核心补丁可能没有编进产物`)
+}
+const runtimeWasm = readFileSync(join(buildDir, 'PPSSPPSDL.wasm')).toString('latin1')
+for (const marker of ['If-Match', 'If-Unmodified-Since', 'HTTP Range offset overflow']) {
+  if (!runtimeWasm.includes(marker)) fail(`PPSSPPSDL.wasm 缺少 Range v${RANGE_LOADER_REVISION} 标记 ${marker}，核心补丁可能没有编进产物`)
 }
 
 mkdirSync(OUTPUT, { recursive: true })
@@ -95,8 +116,12 @@ const manifest = {
   commit: PINNED_COMMIT,
   emscripten: '5.0.7',
   rangeStreaming: true,
+  rangeLoaderRevision: RANGE_LOADER_REVISION,
   blockBytes: 2 * 1024 * 1024,
-  memoryCacheBytes: 192 * 1024 * 1024,
+  memoryCacheBytes: 96 * 1024 * 1024,
+  rangeTelemetry: true,
+  objectValidator: 'etag-or-last-modified',
+  workerModel: 'self-script',
   artifactsInstalled: true,
   artifacts,
 }

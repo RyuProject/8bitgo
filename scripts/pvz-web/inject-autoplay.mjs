@@ -22,6 +22,7 @@ const SNIPPET = resolve(__dirname, 'autoplay-snippet.html')
 
 const START = '<!-- PvZ_AUTOPLAY_START -->'
 const END = '<!-- PvZ_AUTOPLAY_INJECTED -->'
+const SHELL_VERSION = '20260924-resume1'
 
 const wanted = process.argv.slice(2)
 const LOCALES = wanted.length ? wanted : ['cn', 'en']
@@ -31,6 +32,33 @@ const snippet = readFileSync(SNIPPET, 'utf8')
 if (!snippet.includes(START) || !snippet.includes(END)) {
   console.error('autoplay-snippet.html 缺少 PvZ_AUTOPLAY 哨兵，拒绝注入')
   process.exit(1)
+}
+
+function syncRuntimeShell(html) {
+  let out = html
+  // 原生 preload 会和 Range 下载器并行拉一份完整 wasm，弱网下反而把带宽和流量翻倍。
+  out = out.replace('<link rel=preload href=pvz-portable.wasm as=fetch crossorigin>', '')
+  if (!out.includes('src=pvz-wasm-loader.js')) {
+    out = out.replace(
+      '<script>window.moduleReadyPromise=',
+      `<script src=pvz-wasm-loader.js?v=${SHELL_VERSION}></script><script>window.moduleReadyPromise=`,
+    )
+  }
+  if (!out.includes('instantiateWasm:window.__pvzInstantiateWasm')) {
+    out = out.replace('var Module={canvas:', 'var Module={instantiateWasm:window.__pvzInstantiateWasm,canvas:')
+  }
+  if (!out.includes('window.moduleReadyPromise.catch(function(){})')) {
+    // async 引擎可能在 autoplay 片段挂上错误处理前就失败；先挂空 catch，避免浏览器抛 unhandledrejection。
+    out = out.replace('));var Module={', '));window.moduleReadyPromise.catch(function(){});var Module={')
+  }
+  out = out.replace(/<script src=pvz-page\.js\?v=[^>]+><\/script>/, `<script src=pvz-page.js?v=${SHELL_VERSION}></script>`)
+  if (!out.includes(`src=pvz-wasm-loader.js?v=${SHELL_VERSION}`) ||
+      !out.includes(`src=pvz-page.js?v=${SHELL_VERSION}`) ||
+      !out.includes('instantiateWasm:window.__pvzInstantiateWasm') ||
+      !out.includes('window.moduleReadyPromise.catch(function(){})')) {
+    throw new Error('PvZ 运行时外壳缺少断点下载器挂载点')
+  }
+  return out
 }
 
 let changed = 0
@@ -55,6 +83,8 @@ for (const locale of LOCALES) {
     console.error('找不到 </body> 也没有哨兵，无法注入：' + target)
     process.exit(1)
   }
+
+  out = syncRuntimeShell(out)
 
   if (out !== html) {
     writeFileSync(target, out)

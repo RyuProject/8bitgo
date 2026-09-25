@@ -536,6 +536,7 @@ function startSaveAutosync() {
 async function startGame() {
   if (gameStarted || startGameInFlight) return;
   startGameInFlight = true;
+  let resourcesStartedWriting = false;
   dropZone.classList.remove("ready");
   dropZone.classList.add("loading");
   dropZone.style.pointerEvents = "none";
@@ -553,6 +554,7 @@ async function startGame() {
       collectedBundles.reduce((sum, bundle) => sum + bundle.meta.unpackedBytes, 0) || 1;
     let writtenBytes = 0;
     let yieldBytes = 0;
+    resourcesStartedWriting = true;
     for (const [path, file] of entries) {
       const size = byteLengthOf(file);
       if (window.__pvzSetProgress) window.__pvzSetProgress((writtenBytes + size) / totalBytes);
@@ -594,8 +596,12 @@ async function startGame() {
     Module.callMain([]);
   } catch (error) {
     console.error("Failed to start game:", error);
-    collectedFiles.clear();
-    collectedBundles.length = 0;
+    // 运行时尚未就绪时没有动过玩家选择的资源，保留 File/Uint8Array；若引擎随后就绪可直接再次启动，
+    // 一旦已经写过 WASM 文件系统，部分条目会被主动释放，此时必须清空，避免拿半套资源重跑。
+    if (resourcesStartedWriting) {
+      collectedFiles.clear();
+      collectedBundles.length = 0;
+    }
     loadStatus.textContent = "Error: " + (error.message || error);
     loadStatus.classList.add("has-error");
     document.getElementById("canvas-container").style.display = "none";

@@ -58,7 +58,7 @@ new file mode 100644
 index 0000000..768a594
 --- /dev/null
 +++ b/Core/FileLoaders/WasmRangeFileLoader.h
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,76 @@
 +// Copyright (c) 2012- PPSSPP Project.
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -78,7 +78,9 @@ index 0000000..768a594
 +// Browser-only random-access loader.  A PSP ISO is commonly larger than the
 +// WebAssembly heap budget, so retaining or downloading the entire object is
 +// deliberately forbidden.  Reads are aligned to fixed 2 MiB HTTP ranges and
-+// held in a bounded in-memory LRU.
++// held in a bounded in-memory LRU.  Every request after the first one is also
++// pinned to the first response validator so two object versions can never be
++// mixed into one emulated disc.
 +class WasmRangeFileLoader : public FileLoader {
 +public:
 +	explicit WasmRangeFileLoader(const Path &filename);
@@ -104,16 +106,24 @@ index 0000000..768a594
 +	};
 +
 +	static constexpr s64 BLOCK_BYTES = 2 * 1024 * 1024;
-+	static constexpr size_t MAX_CACHE_BYTES = 192 * 1024 * 1024;
++	// PPSSPP's pthread build reserves a 512 MiB shared heap.  A 192 MiB cache left
++	// too little headroom for textures/JIT on mobile; 96 MiB still keeps 48 blocks.
++	static constexpr size_t MAX_CACHE_BYTES = 96 * 1024 * 1024;
 +
 +	void Prepare();
 +	bool FetchRange(s64 offset, size_t length, std::vector<u8> *output, s64 *totalSize);
 +	void SetError(const std::string &message);
++	void ReportProgress(size_t bytes, s64 totalSize);
++	void ReportFatalError(const std::string &message);
 +
 +	Path filename_;
 +	s64 fileSize_ = 0;
 +	std::once_flag preparedFlag_;
 +	std::atomic<bool> cancelled_{false};
++	std::atomic<bool> fatalReported_{false};
++	std::atomic<u64> downloadedBytes_{0};
++	std::string validatorName_;
++	std::string validatorValue_;
 +
 +	std::mutex readMutex_;
 +	std::unordered_map<s64, CacheEntry> cache_;
@@ -130,7 +140,7 @@ new file mode 100644
 index 0000000..b04142a
 --- /dev/null
 +++ b/Core/FileLoaders/WasmRangeFileLoader.cpp
-@@ -0,0 +1,216 @@
+@@ -0,0 +1,310 @@
 +// Copyright (c) 2012- PPSSPP Project.
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
@@ -144,6 +154,7 @@ index 0000000..b04142a
 +#include <cstring>
 +#include <limits>
 +
++#include <emscripten.h>
 +#include <emscripten/fetch.h>
 +#include <emscripten/threading.h>
 +
@@ -151,30 +162,53 @@ index 0000000..b04142a
 +
 +namespace {
 +
-+bool ParseContentRange(emscripten_fetch_t *fetch, s64 *first, s64 *last, s64 *total) {
++std::string ResponseHeader(emscripten_fetch_t *fetch, const char *wantedName) {
 +	const size_t length = emscripten_fetch_get_response_headers_length(fetch);
 +	if (length == 0)
-+		return false;
++		return {};
 +
 +	std::string headers(length + 1, '\0');
 +	emscripten_fetch_get_response_headers(fetch, headers.data(), headers.size());
++	std::string wanted(wantedName);
++	std::transform(wanted.begin(), wanted.end(), wanted.begin(), [](unsigned char c) { return (char)std::tolower(c); });
++
 +	size_t at = 0;
 +	while (at < headers.size()) {
 +		size_t end = headers.find('\n', at);
 +		if (end == std::string::npos)
 +			end = headers.size();
 +		std::string line = headers.substr(at, end - at);
++		if (!line.empty() && line.back() == '\r')
++			line.pop_back();
++		const size_t colon = line.find(':');
++		if (colon != std::string::npos) {
++			std::string name = line.substr(0, colon);
++			std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return (char)std::tolower(c); });
++			if (name == wanted) {
++				size_t valueAt = colon + 1;
++				while (valueAt < line.size() && std::isspace((unsigned char)line[valueAt]))
++					++valueAt;
++				return line.substr(valueAt);
++			}
++		}
++		at = end + 1;
++	}
++	return {};
++}
++
++bool ParseContentRange(emscripten_fetch_t *fetch, s64 *first, s64 *last, s64 *total) {
++	std::string line = ResponseHeader(fetch, "content-range");
++	if (!line.empty()) {
 +		std::transform(line.begin(), line.end(), line.begin(), [](unsigned char c) { return (char)std::tolower(c); });
 +		long long parsedFirst = -1;
 +		long long parsedLast = -1;
 +		long long parsedTotal = -1;
-+		if (std::sscanf(line.c_str(), "content-range: bytes %lld-%lld/%lld", &parsedFirst, &parsedLast, &parsedTotal) == 3) {
++		if (std::sscanf(line.c_str(), "bytes %lld-%lld/%lld", &parsedFirst, &parsedLast, &parsedTotal) == 3) {
 +			*first = (s64)parsedFirst;
 +			*last = (s64)parsedLast;
 +			*total = (s64)parsedTotal;
 +			return true;
 +		}
-+		at = end + 1;
 +	}
 +	return false;
 +}
@@ -188,6 +222,28 @@ index 0000000..b04142a
 +	latestError_ = message;
 +}
 +
++void WasmRangeFileLoader::ReportProgress(size_t bytes, s64 totalSize) {
++	const u64 loaded = downloadedBytes_.fetch_add((u64)bytes) + (u64)bytes;
++	const u32 loadedLow = (u32)loaded;
++	const u32 loadedHigh = (u32)(loaded >> 32);
++	const u64 total = totalSize > 0 ? (u64)totalSize : 0;
++	const u32 totalLow = (u32)total;
++	const u32 totalHigh = (u32)(total >> 32);
++	MAIN_THREAD_EM_ASM({
++		const loaded = ($0 >>> 0) + ($1 >>> 0) * 4294967296;
++		const total = ($2 >>> 0) + ($3 >>> 0) * 4294967296;
++		globalThis.__ppssppRangeProgress?.(loaded, total);
++	}, loadedLow, loadedHigh, totalLow, totalHigh);
++}
++
++void WasmRangeFileLoader::ReportFatalError(const std::string &message) {
++	if (fatalReported_.exchange(true))
++		return;
++	MAIN_THREAD_EM_ASM({
++		globalThis.__ppssppRangeError?.(UTF8ToString($0));
++	}, message.c_str());
++}
++
 +std::string WasmRangeFileLoader::LatestError() const {
 +	std::lock_guard<std::mutex> guard(errorMutex_);
 +	return latestError_;
@@ -199,16 +255,26 @@ index 0000000..b04142a
 +	if (emscripten_is_main_runtime_thread()) {
 +		SetError("HTTP Range read reached the browser main thread");
 +		ERROR_LOG(Log::Loader, "PPSSPP Range fetch must run in a pthread");
++		ReportFatalError(LatestError());
 +		return false;
 +	}
 +
++	if (length - 1 > (size_t)std::numeric_limits<s64>::max() || offset > std::numeric_limits<s64>::max() - (s64)(length - 1)) {
++		SetError("HTTP Range offset overflow");
++		ReportFatalError(LatestError());
++		return false;
++	}
 +	const s64 requestedLast = offset + (s64)length - 1;
 +	const std::string rangeValue = "bytes=" + std::to_string(offset) + "-" + std::to_string(requestedLast);
-+	const char *requestHeaders[] = {
++	std::vector<const char *> requestHeaders = {
 +		"Range", rangeValue.c_str(),
 +		"Accept", "application/octet-stream",
-+		nullptr,
 +	};
++	if (!validatorName_.empty()) {
++		requestHeaders.push_back(validatorName_.c_str());
++		requestHeaders.push_back(validatorValue_.c_str());
++	}
++	requestHeaders.push_back(nullptr);
 +
 +	for (int attempt = 1; attempt <= 3 && !cancelled_.load(); ++attempt) {
 +		emscripten_fetch_attr_t attr;
@@ -216,7 +282,7 @@ index 0000000..b04142a
 +		std::strcpy(attr.requestMethod, "GET");
 +		attr.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY | EMSCRIPTEN_FETCH_SYNCHRONOUS;
 +		attr.timeoutMSecs = 30000;
-+		attr.requestHeaders = requestHeaders;
++		attr.requestHeaders = requestHeaders.data();
 +
 +		emscripten_fetch_t *fetch = emscripten_fetch(&attr, filename_.c_str());
 +		if (!fetch) {
@@ -231,11 +297,34 @@ index 0000000..b04142a
 +		const bool exact = fetch->status == 206 && rangeHeader && fetch->data != nullptr && responseFirst == offset &&
 +			responseLast == requestedLast && responseTotal > 0 && fetch->numBytes == length;
 +		if (exact) {
++			const std::string responseValidator = validatorName_.empty()
++				? std::string()
++				: ResponseHeader(fetch, validatorName_ == "If-Match" ? "etag" : "last-modified");
++			if (!validatorName_.empty() && responseValidator != validatorValue_) {
++				SetError("Remote disc validator changed while it was being read");
++				emscripten_fetch_close(fetch);
++				ReportFatalError(LatestError());
++				return false;
++			}
++			if (validatorName_.empty()) {
++				validatorValue_ = ResponseHeader(fetch, "etag");
++				// If-Match uses strong comparison; sending a weak ETag would make every
++				// later request fail with 412 even when the object did not change.
++				if (!validatorValue_.empty() && validatorValue_.rfind("W/", 0) != 0 && validatorValue_.rfind("w/", 0) != 0) {
++					validatorName_ = "If-Match";
++				} else {
++					validatorValue_ = ResponseHeader(fetch, "last-modified");
++					if (!validatorValue_.empty())
++						validatorName_ = "If-Unmodified-Since";
++				}
++			}
 +			const u8 *begin = reinterpret_cast<const u8 *>(fetch->data);
 +			output->assign(begin, begin + fetch->numBytes);
 +			if (totalSize)
 +				*totalSize = responseTotal;
++			const size_t received = fetch->numBytes;
 +			emscripten_fetch_close(fetch);
++			ReportProgress(received, responseTotal);
 +			return true;
 +		}
 +
@@ -247,8 +336,20 @@ index 0000000..b04142a
 +			(long long)offset, (long long)requestedLast);
 +		SetError(detail);
 +		ERROR_LOG(Log::Loader, "%s", detail);
++		const unsigned status = (unsigned)fetch->status;
 +		emscripten_fetch_close(fetch);
++		if (status == 412) {
++			SetError("Remote disc changed while it was being read");
++			break;
++		}
++		const bool retryable = status == 0 || status == 408 || status == 429 || status >= 500;
++		if (!retryable)
++			break;
++		if (attempt < 3)
++			emscripten_thread_sleep(250 * attempt);
 +	}
++	if (!cancelled_.load())
++		ReportFatalError(LatestError());
 +	return false;
 +}
 +
@@ -292,7 +393,8 @@ index 0000000..b04142a
 +		return 0;
 +
 +	std::lock_guard<std::mutex> guard(readMutex_);
-+	const s64 wantedEnd = std::min<s64>(fileSize_, absolutePos + (s64)bytes);
++	const s64 room = fileSize_ - absolutePos;
++	const s64 wantedEnd = bytes > (size_t)room ? fileSize_ : absolutePos + (s64)bytes;
 +	s64 cursor = absolutePos;
 +	size_t written = 0;
 +
@@ -312,6 +414,7 @@ index 0000000..b04142a
 +				break;
 +			if (observedSize != fileSize_) {
 +				SetError("Remote disc changed size while it was being read");
++				ReportFatalError(LatestError());
 +				break;
 +			}
 +
@@ -336,6 +439,7 @@ index 0000000..b04142a
 +		const size_t take = std::min<size_t>(available, (size_t)(wantedEnd - cursor));
 +		if (take == 0) {
 +			SetError("Range block was shorter than requested");
++			ReportFatalError(LatestError());
 +			break;
 +		}
 +		std::memcpy(reinterpret_cast<u8 *>(data) + written, block->data() + inside, take);

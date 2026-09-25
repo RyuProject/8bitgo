@@ -998,9 +998,96 @@ const patches = [
       CONSTRAINT fk_volunteer_posts_owner FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`),
   },
+  {
+    name: 'game_startup_events（第一方启动漏斗与 20 秒性能告警）',
+    table: null,
+    skip: async () => (!(await hasTable('game_roms')) ? '不是 v2 数据库' : null),
+    needed: async () => !(await hasTable('game_startup_events')),
+    run: () => conn.query(`CREATE TABLE IF NOT EXISTS game_startup_events (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      game_id BIGINT UNSIGNED NOT NULL,
+      visit_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+      attempt_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
+      event VARCHAR(24) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+      runtime VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
+      platform VARCHAR(20) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
+      country CHAR(2) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'XX',
+      elapsed_ms INT UNSIGNED NULL,
+      detail VARCHAR(160) NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uniq_startup_event (visit_id, attempt_id, event),
+      KEY idx_startup_time (created_at),
+      KEY idx_startup_game_time (game_id, created_at),
+      KEY idx_startup_runtime_time (runtime, created_at),
+      KEY idx_startup_country_time (country, created_at),
+      CONSTRAINT fk_startup_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`),
+  },
+  {
+    name: 'psp_conversion_jobs（PSP ISO → CHD 后台压缩队列）',
+    table: null,
+    skip: async () => (!(await hasTable('game_roms')) ? '不是 v2 数据库' : null),
+    needed: async () => !(await hasTable('psp_conversion_jobs')),
+    run: () => conn.query(`CREATE TABLE IF NOT EXISTS psp_conversion_jobs (
+      id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+      source_key VARCHAR(500) NOT NULL,
+      target_key VARCHAR(500) NOT NULL,
+      source_size BIGINT UNSIGNED NOT NULL,
+      source_etag VARCHAR(160) NOT NULL,
+      target_etag_before VARCHAR(160) NOT NULL DEFAULT '',
+      output_size BIGINT UNSIGNED NULL,
+      output_etag VARCHAR(160) NULL,
+      game_id BIGINT UNSIGNED NULL,
+      game_slug VARCHAR(120) NULL,
+      lang VARCHAR(10) NULL,
+      expected_current_key VARCHAR(500) NOT NULL DEFAULT '',
+      allow_overwrite TINYINT(1) NOT NULL DEFAULT 0,
+      actor_id VARCHAR(40) NULL,
+      status VARCHAR(24) NOT NULL DEFAULT 'queued',
+      progress TINYINT UNSIGNED NOT NULL DEFAULT 0,
+      bound TINYINT(1) NOT NULL DEFAULT 0,
+      source_deleted TINYINT UNSIGNED NOT NULL DEFAULT 0,
+      message VARCHAR(500) NULL,
+      error VARCHAR(1000) NULL,
+      upload_id VARCHAR(2048) NULL,
+      upload_marker VARCHAR(500) NULL,
+      upload_parts JSON NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      completed_at TIMESTAMP NULL,
+      UNIQUE KEY uniq_psp_source (source_key(191)),
+      KEY idx_psp_jobs_queue (status, created_at),
+      KEY idx_psp_jobs_target (target_key(191)),
+      KEY idx_psp_jobs_game_id (game_id, lang, created_at),
+      KEY idx_psp_jobs_game (game_slug, lang, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`),
+  },
+  {
+    name: 'psp_conversion_jobs（目标对象版本锁 + 稳定游戏主键 + 发布恢复）',
+    table: 'psp_conversion_jobs',
+    needed: async () =>
+      !(await hasColumn('psp_conversion_jobs', 'target_etag_before')) ||
+      !(await hasColumn('psp_conversion_jobs', 'output_etag')) ||
+      !(await hasColumn('psp_conversion_jobs', 'game_id')) ||
+      !(await hasIndex('psp_conversion_jobs', 'idx_psp_jobs_game_id')),
+    run: async () => {
+      if (!(await hasColumn('psp_conversion_jobs', 'target_etag_before'))) {
+        await conn.query("ALTER TABLE `psp_conversion_jobs` ADD COLUMN `target_etag_before` VARCHAR(160) NOT NULL DEFAULT '' AFTER `source_etag`")
+      }
+      if (!(await hasColumn('psp_conversion_jobs', 'output_etag'))) {
+        await conn.query('ALTER TABLE `psp_conversion_jobs` ADD COLUMN `output_etag` VARCHAR(160) NULL AFTER `output_size`')
+      }
+      if (!(await hasColumn('psp_conversion_jobs', 'game_id'))) {
+        await conn.query('ALTER TABLE `psp_conversion_jobs` ADD COLUMN `game_id` BIGINT UNSIGNED NULL AFTER `output_etag`')
+      }
+      if (!(await hasIndex('psp_conversion_jobs', 'idx_psp_jobs_game_id'))) {
+        await conn.query('ALTER TABLE `psp_conversion_jobs` ADD INDEX `idx_psp_jobs_game_id` (`game_id`, `lang`, `created_at`)')
+      }
+    },
+  },
 ]
 
-const TABLES = ['games', 'posts', 'users', 'volunteer_games', 'volunteer_posts', 'favorites', 'recents', 'saves', 'flash_save_slots', 'flash_save_kv', 'flash_save_seqs', 'login_codes', 'platform_bios', 'game_plays', 'developers', 'friend_links', 'friend_link_hits', 'game_comments', 'game_ratings', 'oauth_apps', 'open_rom_samples']
+const TABLES = ['games', 'posts', 'users', 'volunteer_games', 'volunteer_posts', 'favorites', 'recents', 'saves', 'flash_save_slots', 'flash_save_kv', 'flash_save_seqs', 'login_codes', 'platform_bios', 'game_plays', 'game_startup_events', 'psp_conversion_jobs', 'developers', 'friend_links', 'friend_link_hits', 'game_comments', 'game_ratings', 'oauth_apps', 'open_rom_samples']
 
 try {
   /*

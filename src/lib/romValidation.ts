@@ -4,7 +4,7 @@
  * 模拟器核心仍是最终裁判；这里负责在启动核心之前挡住 HTML 错误页、截断压缩包和明显
  * 不属于目标平台的文件。提前报出“文件损坏/格式不对”比让每个核心吐一条晦涩错误可靠。
  */
-import { assertValidZip, extractRomFromZip, isZip, type ZipFileEntry } from './unzip'
+import { assertValidZip, assertValidZipBlob, extractRomFromZip, isZip, type ZipFileEntry } from './unzip'
 
 function ascii(bytes: Uint8Array, start: number, length: number): string {
   return String.fromCharCode(...bytes.subarray(start, Math.min(bytes.length, start + length)))
@@ -67,7 +67,7 @@ function isNdsHeader(buf: ArrayBuffer): boolean {
   return b.length >= 0x200 && b[0xc0] === 0x24 && b[0xc1] === 0xff && b[0xc2] === 0xae && b[0xc3] === 0x51
 }
 
-function assertNdsSections(buf: ArrayBuffer): void {
+function assertNdsSections(buf: ArrayBuffer, totalBytes = buf.byteLength): void {
   const view = new DataView(buf)
   for (const [label, offsetAt, sizeAt] of [
     ['ARM9', 0x20, 0x2c],
@@ -75,10 +75,65 @@ function assertNdsSections(buf: ArrayBuffer): void {
   ] as const) {
     const offset = view.getUint32(offsetAt, true)
     const size = view.getUint32(sizeAt, true)
-    if (size > 0 && (offset < 0x200 || offset + size > buf.byteLength)) {
+    if (size > 0 && (offset < 0x200 || offset + size > totalBytes)) {
       throw new Error(`NDS ROM 下载不完整：${label} 程序段超出文件范围`)
     }
   }
+}
+
+/** 任天堂 DS 卡带的官方容量上限是 512 MiB；超过它的 ZIP 多半是损坏头或解压炸弹。 */
+const MAX_NDS_ROM_BYTES = 512 * 1024 * 1024
+
+export interface NdsBlobValidation {
+  /** ZIP 包里唯一的 ROM 路径；裸 ROM 没有。适配器用它绕过 EmulatorJS“取第一个文件”的兜底。 */
+  archiveEntry?: string
+}
+
+/**
+ * 大 NDS ROM 的流式路径只读文件头和 ZIP 中央目录，不把几百 MB Blob 变回 ArrayBuffer。
+ *
+ * 这道校验必须发生在 romCachePutBlob **之前**：反代有时会 200 返回 JSON/HTML 错误体，
+ * 若先缓存，之后每次重试都会从 IndexedDB 复活同一份假 ROM，网络恢复也救不回来。
+ * ZIP 还要钉住“恰好一个 ROM”与解压大小；否则 EmulatorJS 会在找不到支持扩展名时取包内
+ * 第一个文件，README 排在 `.srl` 前面就会把文本交给核心，表现仍是无原因的 No Items。
+ */
+export async function assertNdsRomBlob(blob: Blob): Promise<NdsBlobValidation> {
+  if (blob.size === 0) throw new Error('NDS ROM 文件为空')
+  const head = await blob.slice(0, 0x200).arrayBuffer()
+  assertNotHtml(head, 'NDS ROM')
+
+  if (isZip(head)) {
+    const entries = await assertValidZipBlob(blob, 'NDS ROM')
+    if (entries.length > 128) throw new Error('NDS ZIP 文件过多，疑似错误的整包或解压炸弹')
+    let unpackedTotal = 0
+    for (const entry of entries) {
+      // EJS 会把包内每一项写进虚拟文件系统；先挡掉目录穿越，不能只检查最后选中的 ROM。
+      if (
+        entry.name.startsWith('/')
+        // eslint-disable-next-line no-control-regex -- ZIP 路径不能含 NUL/控制字符；这是输入校验，不是文本搜索。
+        || /[\x00-\x1f]/.test(entry.name)
+        || entry.name.split('/').some((part) => !part || part === '.' || part === '..')
+      ) throw new Error(`NDS ZIP 内含不安全路径：${entry.name}`)
+      unpackedTotal += entry.uncompressedSize
+    }
+    if (unpackedTotal > MAX_NDS_ROM_BYTES + 16 * 1024 * 1024) {
+      throw new Error('NDS ZIP 解开后的总大小异常，疑似解压炸弹')
+    }
+    const roms = entries.filter((entry) => /\.(?:nds|srl)$/i.test(entry.name))
+    if (roms.length !== 1) {
+      throw new Error(roms.length
+        ? 'NDS ZIP 内有多个 ROM，请每个压缩包只保留一款游戏'
+        : 'NDS ZIP 内找不到 .nds 或 .srl ROM')
+    }
+    if (roms[0].uncompressedSize < 0x200) throw new Error('NDS ZIP 内的 ROM 文件过短')
+    if (roms[0].uncompressedSize > MAX_NDS_ROM_BYTES) throw new Error('NDS ZIP 解开后超过 512MB，疑似损坏或解压炸弹')
+    return { archiveEntry: roms[0].name }
+  }
+
+  if (blob.size > MAX_NDS_ROM_BYTES) throw new Error('NDS ROM 超过 512MB，不是有效的 DS 卡带镜像')
+  if (!isNdsHeader(head)) throw new Error('不是有效的 NDS ROM（缺少 Nintendo DS 文件头）')
+  assertNdsSections(head, blob.size)
+  return {}
 }
 
 /** ZIP 版 NDS 解出真正的 ROM 再验证，避免把包装层交给 webretro 猜。 */

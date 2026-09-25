@@ -1,6 +1,6 @@
 /** ROM 双层校验的纯函数回归测试：重点覆盖“开头正确、末尾被截断”这种线上真实故障。 */
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -79,6 +79,7 @@ try {
     assertNesRom,
     assertSwf,
     assertJar,
+    assertNdsRomBlob,
     prepareNdsRom,
     makeJsdosBundle,
     listZipEntries,
@@ -127,10 +128,33 @@ try {
   const prepared = await prepareNdsRom(arrayBuffer(ndsZip), 'wrapper.zip')
   assert.equal(prepared.name, 'folder/game.nds')
   assert.equal(prepared.data.byteLength, nds.length)
+  assert.deepEqual(await assertNdsRomBlob(new Blob([nds])), {})
+  assert.deepEqual(
+    await assertNdsRomBlob(new Blob([zip([['README.txt', 'help'], ['folder/game.srl', nds]])])),
+    { archiveEntry: 'folder/game.srl' },
+    'ZIP 里 README 排在 .srl 前面时也必须点名真正的 ROM',
+  )
+  await assert.rejects(
+    () => assertNdsRomBlob(new Blob([zip([['a.nds', nds], ['b.nds', nds]])])),
+    /多个 ROM/,
+  )
+  await assert.rejects(
+    () => assertNdsRomBlob(new Blob([zip([['../escape.nds', nds]])])),
+    /不安全路径/,
+  )
+  await assert.rejects(
+    () => assertNdsRomBlob(new Blob([Buffer.from('{"error":"expired"}')])),
+    /不是有效的 NDS ROM/,
+    '200 + JSON 错误体不能进入正式 ROM 缓存',
+  )
   const shortNds = Buffer.from(nds)
   shortNds.writeUInt32LE(0x200, 0x20)
   shortNds.writeUInt32LE(1, 0x2c)
   await assert.rejects(() => prepareNdsRom(arrayBuffer(shortNds), 'short.nds'), /不完整/)
+  await assert.rejects(() => assertNdsRomBlob(new Blob([shortNds])), /不完整/)
+
+  const detectSource = await readFile(new URL('../src/emulator/detect.ts', import.meta.url), 'utf8')
+  assert.match(detectSource, /\bsrl:\s*'nds'/, '.srl 本地文件与 ZIP 必须能在检测层识别成 NDS')
 
   const jar = zip([
     ['META-INF/MANIFEST.MF', Buffer.from('Manifest-Version: 1.0\nMIDlet-1: Game,,Main\n')],

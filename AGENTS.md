@@ -104,11 +104,19 @@ grep -c 'this.functions.saveStateInfo()' public/emulatorjs/emulator.min.js   # �
 现在后台上传街机 ROM 会**自动识别**（`src/lib/arcadeRomset.ts`）：读 zip 中央目录里每个成员的
 CRC-32（不用解压），比对 `public/arcade-romsets.bin`（8721 个 romset / 12.7 万条 CRC）。
 完全命中才自动改名；部分命中只列候选——拿父集的名字去套残缺包只会换来 missing files。
+完整性校验走 `assertValidZipBlob()`，只读文件尾部 / 中央目录 / 本地头，不再把整个大包
+复制成 ArrayBuffer；ZIP 成员套子目录会在上传前直接拦下，因为街机核心只读根目录。
+玩家下载带 `romv` / 归档版本的街机大包时与 NDS 共用 8MB Range 断点续传；无版本 URL
+不留分片，避免 R2 原地换包后把两代 ROM 拼在一起。
 
 **不在驱动表里的包（汉化版、修改版）走 RomData**，别去改名硬套。FBNeo 给这种包留了口子：
 一份 `.dat` 写明 `ZipName`（包名）、`DrvName`（借哪个驱动跑）和**整份** ROM 清单，
 核心会把该驱动的包名「寄生」成 ZipName，并整个改用 dat 里的清单 ——
 汉化包里那几个和原版对不上的 GFX ROM 就是这样加载的。
+
+⚠️ **RomData 只是 FBNeo 能力，不是“FBNeo 系街机核心”通用能力。** 已发布 wasm 取证只有
+`fbneo-wasm.data` 包含 `RomData / ZipName / DrvName`，`mame2003` / `mame2003_plus` 都没有。
+有 `arcade_romdata` 的游戏开局时会硬纠正到 `fbneo`，别再把 MAME 当成支持 `.dat`。
 
 触发方式挑的是最省事的一条：核心的 `retro_dat_romset_path()` 在内容名查不到驱动时，
 **先找和内容同目录的 `<basename>.dat`**，找不到才去 `<system>/fbneo/romdata/`。
@@ -120,6 +128,8 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
 `src/emulator/adapters/emulatorjs.ts` 的 `installFsInjector()` 在 loader.js 之前给
 `window.EJS_emulator` 装 setter，包一层 `startGame()` 先把 dat 写进 FS；
 骨架用 `npm run romdata -- <包.zip> --drv <基础驱动> --fbneo <FBNeo>/src/burn/drv` 生成。
+注入循环必须经 `writeFsInjections()` **逐文件隔离失败**：一份 dat / BIOS 写失败只记它自己，
+后面的 BIOS 仍要继续写；不准再用一个 try 包住整个循环。
 
 ⚠️ 第四列的类型**必须写**。FBNeo 独立版在类型留空时会用 `RDSetRomsType()` 按驱动名 + 长度猜，
 但 libretro 版没有这个函数（对照 `libretro/FBNeo` 的 `src/burner/libretro/romdata.cpp`），
@@ -286,6 +296,28 @@ threaded renderer 都在构建时关闭，避免 SharedArrayBuffer 初始化失�
 pcap 直连网络在浏览器构建里关闭。可复现构建入口：`npm run build:melondsds`。
 DeSmuME / DeSmuME 2015 仍是逐游戏兜底，不会自动回落到旧 melonDS。
 
+NDS ROM 由适配器自己按 **8MB Range** 顺序下载；每片完成后写进独立的
+`8bitgo-rom-downloads` IndexedDB，所以刷新页面、浏览器崩溃或断网重开后会只补缺失片。
+临时片只认带 `romv` / 归档版本的内容键，防止 R2 原地换包后把两代 ROM 拼在一起；完整合并后
+立即清临时片，再由 `romCache` 保存完整 ROM，避免长期占双份空间。临时会话保留 7 天、最多 4 款；
+无痕模式、配额满或 IndexedDB 故障一律降级为普通下载，不能影响开局。实现见
+`src/emulator/downloadResume.ts` 与 `fetchBlobWithProgress`，回归：`npm run test:chunked-fetch`。
+
+⚠️ 首个 Range 请求同样必须进重试循环；它既是能力探测也是第 0 片，弱网最常在建连时断。
+连续 30 秒无字节会 abort 当前 signal，再换新的 controller 重试（已 abort 的 signal 不能复活）。
+NDS 分片失败不能退回 EmulatorJS 的整包 XHR：那会无视已落盘分片，还吞掉播放器的自动重试。
+
+NDS 在写入完整 ROM 缓存前会读文件头 / ZIP 中央目录：只允许一个 `.nds` / `.srl`，限制
+解压后大小与成员数，并拒绝目录穿越。校验还会记住包内真正的 ROM 路径，开局前纠正
+EmulatorJS 的“扩展名不认识就取第一个成员”兜底（典型失败是 README 排在 `.srl` 前）。
+`200 + HTML/JSON` 错误体因此不会被永久钉进 `romCache`。回归：`npm run test:roms`。
+`.srl` 也必须出现在本地检测与 `slugFromKey()` 的后缀表里，否则后台虽允许上传，却无法按文件名
+自动匹配游戏；回归：`npm run test:rom-probe`。
+
+⚠️ melonDS 的 `.opt` 不能只在 `startGame()` 前写：EmulatorJS 会在 `callMain()` 内通过
+`setupCoreSettingFile` 再覆盖一次。`installNdsCoreOptionsGuard()` 必须包住这个最终回调，先保留
+玩家设置，再补 `builtin` / 禁 4GB homebrew SD / 关闭布局 OSD；回归：`npm run test:nds-startup`。
+
 音频的第一处瓶颈不是插值：旧核心默认 `melonds_audio_interpolation=None`，再关也没有收益。
 真正能直接修的是 EmulatorJS 写死的 `audio_latency = 64`：NDS 遇到超过 64ms 的
 主线程长任务时 RWebAudio 队列见底，听起来就是“一卡一卡”。`src/emulator/ndsAudio.ts`
@@ -297,6 +329,8 @@ melonDS DS 自带 `rotate-left` / `rotate-right` 布局，优先用“双屏布�
 它会连触控坐标一起转。《节奏天国黄金版 / Rhythm Heaven》这类游戏本来就要求把 DS 横拿。不要给 canvas 套
 `transform: rotate(...)`：那只转视觉，触控坐标、截图和直播都会错 90°。核心在原生旋转布局里
 自己调 libretro `set_screen_rotation` 并同步触控矩阵；玩家选择按游戏持久化，切换后重新实测画布几何。
+DeSmuME / DeSmuME 2015 的弱机兜底也要把 `desmume_pointer_type` 从相对坐标 `mouse` 调为
+绝对坐标 `touch`；只精确改这一项，颜色、压力、摇杆死区等其它 pointer 选项不碰。
 
 ### 2.9 平台 BIOS 的边缘缓存会骗人
 
@@ -1499,6 +1533,37 @@ hreflang，Google 会收到多份正文完全相同的 URL，抓取预算和规�
   160 个码点；页面正文和 JSON-LD 保留全文。不要在调用方各自 `slice()`，否则中英文会按
   UTF-16 截出半个字符。普通页标题统一通过本地化的 `site.titleTemplate` 补足搜索意图关键词。
 
+### 2.32 PSP ISO 后台压缩必须产出可随机读取的 CHD，不能套 8BG 整包
+
+PSP 玩家启动后会持续 Range 随机读扇区，所以大 ISO 不能再套一层必须整包解密/解压的 8BG。
+后台上传 `.iso` 时先走浏览器现有的 R2 multipart 断点续传到随机 `psp-staging/<uuid>.iso`，
+API 服务器再用 `chdman createdvd -hs 2048 -c zstd` 生成 CHD；完整 `chdman verify` 通过后才用
+R2 multipart 发布到最终 `roms/psp/*.chd`。`.cso` / `.chd` 保持直传。
+
+- 任务在 `psp_conversion_jobs` 表里持久化，服务重启会重新排队；前端 localStorage 只负责恢复
+  进度显示，不能成为任务唯一状态。部署必须先 `cd server && npm run migrate`。
+- 下载临时 ISO 时用创建任务时记住的 ETag + `If-Match` 钉住对象代次，避免 R2 原地覆盖后拼错内容；
+  最终对象也记住“任务创建时的 ETag”，发布前与 complete 前各核对一次，转换期间有人上传了新版就中止，
+  不能拿几小时前的转换结果覆盖它。写回游戏绑定用 compare-and-swap，并钉住游戏数字主键；slug 改名或
+  新建表单撞到旧 slug 都不能把 CHD 绑错游戏。
+- 最终 CHD 只在 multipart complete 后可见。complete 响应断线时按目标 ETag 是否变化判定真成功，
+  不能无脑重传；发布成功后把输出 ETag 落库，若进程在数据库绑定前重启就凭 ETag 直接收尾，不再压缩
+  覆盖一遍。进程崩溃留下的 uploadId 会在重跑前 abort。
+- 成功任务先标 completed 再删临时 ISO；失败源保留 24 小时，随后清扫。顺序反过来会在进程退出
+  窗口制造既无法重试、状态又未完成的死任务。清扫器先用数据库 CAS 领取源文件，避免和“手动重试”
+  同时发生；`source_deleted` 的 0 / 1 / 2 分别是保留 / 已删 / 正在清理。
+- 前端创建任务把随机 `source_key` 当幂等键：响应途中断线可以重试，服务端只返回原任务。旧槽是
+  `.chd` / `.cso` 而新文件是 `.iso` 时绝不复用旧 key，否则转换服务降级时会把 ISO 字节写进错误扩展名。
+- 当前公开 PPSSPP 仍是 Range v1，不会主动发 `If-Match`。播放 URL 已带 `romv=<ETag>`，Worker 必须在
+  每次 Range 前把它与 R2 当前 ETag 比较；不一致返回 412。Range 也必须绕过整包 Cache API，避免缓存的
+  200 响应跳过版本校验。改完要部署 `worker/standalone/rom-worker.js`，只改源站前端不算完成。
+- 源站要装近期 MAME 的 `chdman`，并在 `server/.env` 配 `PSP_CONVERT_WORKER_URL`；转换临时盘
+  至少留 `2 × ISO + 256MB`。默认并发 1，最多 2，避免压缩任务抢光玩家请求的 CPU / IO；
+  `PSP_CONVERT_TIMEOUT_MINUTES` 默认 180，超时会先 SIGTERM、10 秒后 SIGKILL，不能让一个挂死的
+  `chdman` 永久堵住整个单并发队列。
+
+回归：`cd server && npm run test:psp-conversion`；再跑根目录 `npm run build`。
+
 ---
 
 ## 3. 常用命令
@@ -1518,6 +1583,7 @@ npm run ejscores       # 重新复制核心（仅升级核心时）
 npm run romsets <dir>  # 重新生成街机 romset 索引，需 FBNeo 源码，见脚本头注释
 
 cd server && npm run migrate   # 补数据库表 / 列，幂等
+cd server && npm run test:psp-conversion # PSP ISO → CHD 参数、校验与接线回归
 ```
 
 发信与验证码（都在 server 目录，都不联网）：

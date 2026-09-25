@@ -25,6 +25,8 @@ import {
 import { isTranslateConfigured, translateGateOk, translatePlan } from '../translate.js'
 import { gameDescriptionSource, renderField } from '../i18n-generate.js'
 import { takeAnonymous } from '../rateLimit.js'
+import { clientIpFrom, resolveCountry } from '../presence.js'
+import { isSlowStartup, normalizeStartupEvent, recordStartupEvent } from '../startup-metrics.js'
 import { dosGameConfigError, mergeGamePatchForDosValidation } from '../dos-game-config.js'
 import {
   deleteVolunteerGame,
@@ -334,6 +336,40 @@ gamesRouter.post('/:slug/play', optionalUser, async (req, res, next) => {
     // 既没登录、又拿不到任何 IP：宁可不记，也不要把这类请求全塞进同一个身份里
     if (!who) return res.json({ ok: true, counted: false })
     res.json({ ok: true, counted: await recordPlay(req.params.slug, who.kind, who.identity) })
+  } catch (e) {
+    next(e)
+  }
+})
+
+/**
+ * 第一方启动漏斗。它与 /play 的永久去重计数分开：这里关心的是每一次启动到底卡在哪，
+ * 所以同一玩家今天启动十次就应当保留十次，但同一阶段的网络重放仍由唯一键挡掉。
+ *
+ * 地区只信服务端看到的连接信息，不接收前端上报；库里也不保存 IP。
+ */
+gamesRouter.post('/:slug/startup', async (req, res, next) => {
+  try {
+    const gate = takeAnonymous(req, 'startup-funnel', { perIp: 360, global: 12_000 })
+    if (!gate.ok) return tooMany(res, gate.retryAfter)
+    let normalized
+    try {
+      normalized = normalizeStartupEvent(req.body)
+    } catch (error) {
+      return res.status(400).json({ error: error instanceof Error ? error.message : '启动事件格式不正确' })
+    }
+    const ip = clientIpFrom(req.socket?.remoteAddress, req.headers)
+    const result = await recordStartupEvent(req.params.slug, normalized, resolveCountry(ip, req.headers) || 'XX')
+    if (!result.accepted) return res.status(404).json({ error: '游戏不存在' })
+    if (isSlowStartup(result.event)) {
+      console.warn('[startup] 启动超过 20 秒', {
+        slug: req.params.slug,
+        runtime: result.event.runtime || 'unknown',
+        platform: result.event.platform || 'unknown',
+        country: result.country,
+        elapsedMs: result.event.elapsedMs,
+      })
+    }
+    res.json({ ok: true, recorded: result.recorded })
   } catch (e) {
     next(e)
   }

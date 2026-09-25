@@ -6,6 +6,7 @@ import type { PlatformId } from '@/types'
 import {
   ARCADE_FIGHTER_BUTTONS,
   ARCADE_GENERIC_BUTTONS,
+  EJS_ARCADE_KEY_BY_ID,
   EJS_INDEX,
   EJS_DPAD,
   EJS_KEY_BY_ID,
@@ -158,6 +159,13 @@ function keysOf(id: number | readonly number[]): string {
   return Array.isArray(id)
     ? (id as readonly number[]).map((i) => EJS_KEY_BY_ID[i] ?? '—').join(' ')
     : (EJS_KEY_BY_ID[id as number] ?? '—')
+}
+
+/** 街机只有投币键例外：沿用核心原生的 V，其余仍是本站的 WASD / UIJK。 */
+function arcadeKeysOf(id: number | readonly number[]): string {
+  return Array.isArray(id)
+    ? (id as readonly number[]).map((i) => EJS_ARCADE_KEY_BY_ID[i] ?? '—').join(' ')
+    : (EJS_ARCADE_KEY_BY_ID[id as number] ?? '—')
 }
 
 export function getDefaultKeymap(runtimeId?: string, platform?: PlatformId): KeymapInfo {
@@ -329,23 +337,23 @@ export function getDefaultKeymap(runtimeId?: string, platform?: PlatformId): Key
           表上写箭头、按下去不动，玩家只会以为游戏坏了。
           （J2ME 那一支写死是对的：FreeJ2ME 的键盘映射是它自己定的，和引擎无关。）
         */
-        { button: t.keymap.dpad, key: keysOf(EJS_DPAD), slot: 'dpad', parts: EJS_DPAD.map((i) => EJS_KEY_BY_ID[i] ?? '—') },
+        { button: t.keymap.dpad, key: arcadeKeysOf(EJS_DPAD), slot: 'dpad', parts: EJS_DPAD.map((i) => EJS_ARCADE_KEY_BY_ID[i] ?? '—') },
         // 「按键 1~6」在手柄上没有固定位置（不同板子按键数都不一样），所以不给槽位 ——
         // 六行没槽位会让 PadDiagram 整张图退回键帽列，那正是街机该有的样子
         ...ARCADE_GENERIC_BUTTONS.map((id, i) => ({
           button: fmt(t.keymap.arcadeBtn, { n: String(i + 1) }),
-          key: keysOf(id),
+          key: arcadeKeysOf(id),
         })),
-        { button: t.keymap.coin, key: keysOf(EJS_INDEX.select), slot: 'select' as const },
-        { button: 'Start', key: keysOf(EJS_INDEX.start), slot: 'start' as const },
+        { button: t.keymap.coin, key: arcadeKeysOf(EJS_INDEX.select), slot: 'select' as const },
+        { button: 'Start', key: arcadeKeysOf(EJS_INDEX.start), slot: 'start' as const },
       ],
       note: `${t.keymap.arcadeNote} ${fmt(t.keymap.arcadeFighter, {
-        pl: keysOf(f.punchL),
-        pm: keysOf(f.punchM),
-        ph: keysOf(f.punchH),
-        kl: keysOf(f.kickL),
-        km: keysOf(f.kickM),
-        kh: keysOf(f.kickH),
+        pl: arcadeKeysOf(f.punchL),
+        pm: arcadeKeysOf(f.punchM),
+        ph: arcadeKeysOf(f.punchH),
+        kl: arcadeKeysOf(f.kickL),
+        km: arcadeKeysOf(f.kickM),
+        kh: arcadeKeysOf(f.kickH),
       })}`,
       rebind: 'engine',
       quickSave,

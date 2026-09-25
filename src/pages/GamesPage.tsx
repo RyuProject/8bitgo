@@ -1,4 +1,4 @@
-import { useCallback, type ReactNode } from 'react'
+import { useCallback, useState, type ReactNode } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { SearchRescue } from '@/components/game/SearchRescue'
 import type { Game, GenreId, PlatformId, SortKey } from '@/types'
@@ -18,6 +18,7 @@ import { Pagination } from '@/components/ui/Pagination'
 import { Button, chipClasses } from '@/components/ui/Button'
 import { GameGridSkeleton } from '@/components/ui/PageSkeleton'
 import { FEATURES } from '@/config/features'
+import { cx } from '@/lib/format'
 
 function sortsFor(t: Translation): Array<{ key: SortKey; label: string }> {
   return [
@@ -64,6 +65,9 @@ export function GamesPage() {
   const sortParam = params.get('sort') as SortKey | null
   const sort: SortKey = sortParam && SORT_KEYS.includes(sortParam) ? sortParam : 'popular'
   const page = Math.max(1, Number(params.get('page') ?? 1) || 1)
+  const activeFilterCount = [platformId, genreId, developer, multiplayer, coin, q].filter(Boolean).length
+  // 手机首屏优先把游戏露出来；从带筛选的分享链接进入时默认展开，避免条件被藏住。
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(activeFilterCount > 0)
 
   const platform = platformId ? platformMap[platformId] : undefined
   const genre = genreId ? genreMap[genreId] : undefined
@@ -250,7 +254,27 @@ export function GamesPage() {
       </div>
 
       {/* 筛选 */}
-      <div className="mt-6 space-y-3">
+      <button
+        type="button"
+        aria-controls="game-library-filters"
+        aria-expanded={mobileFiltersOpen}
+        onClick={() => setMobileFiltersOpen((open) => !open)}
+        className="mt-6 flex min-h-11 w-full items-center justify-between rounded-xl border border-line bg-surface px-4 text-sm font-bold shadow-sm sm:hidden"
+      >
+        <span>⚙️ {t.common.moreFilters.replace(/\s*→\s*$/, '')}</span>
+        <span className="flex items-center gap-2">
+          {activeFilterCount > 0 && (
+            <span className="grid min-w-6 place-items-center rounded-full bg-brand px-1.5 py-0.5 text-xs text-white">
+              {activeFilterCount}
+            </span>
+          )}
+          <span aria-hidden className={cx('transition-transform', mobileFiltersOpen && 'rotate-180')}>⌄</span>
+        </span>
+      </button>
+      <div
+        id="game-library-filters"
+        className={cx('space-y-3 sm:mt-6 sm:block', mobileFiltersOpen ? 'mt-4' : 'hidden')}
+      >
         <FilterRow label={t.games.filterPlatform}>
           <FilterChip active={!platformId} onClick={() => set('platform', null)}>
             {t.common.all}
@@ -317,7 +341,7 @@ export function GamesPage() {
 
       {/* 结果 */}
       {state.status === 'error' ? (
-        <LoadError message={state.error} />
+        <LoadError message={state.error} onRetry={state.retry} />
       ) : !list ? (
         <GameGridSkeleton
           count={10}
@@ -397,13 +421,19 @@ function FilterChip({ active, onClick, children }: { active: boolean; onClick: (
 }
 
 /** 取数失败。复用空结果那套外壳，避免为一个边缘状态再造一套样式。 */
-function LoadError({ message }: { message: string }) {
+function LoadError({ message, onRetry }: { message: string; onRetry?: () => void }) {
+  const t = useT()
   return (
     <div className="mt-6 rounded-2xl border border-dashed border-line py-16 text-center" role="alert">
       <p className="text-4xl" aria-hidden>
         📡
       </p>
       <p className="mt-3 font-semibold">{message}</p>
+      {onRetry && (
+        <Button type="button" variant="secondary" size="sm" className="mt-5" onClick={onRetry}>
+          {t.common.retry}
+        </Button>
+      )}
     </div>
   )
 }

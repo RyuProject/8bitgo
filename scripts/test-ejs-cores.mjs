@@ -146,7 +146,7 @@ for (const { id, from } of wanted) {
   if (seen.has(`${id}`)) continue
   seen.add(`${id}`)
   // 自构建核心不在 EmulatorJS 别名表里，EJS_core 直接传核心名。
-  // 默认核心 melonDS DS 缺失必须阻断；只有手工选用的 mame-current 可以仅警告。
+  // 两个核心都已对后台开放；缺少任何一个都会让已配置的游戏 100% 开局失败，必须阻断构建。
   if (SELF_BUILT_CORES.has(id)) {
     const haveJs = existsSync(join(coresDir, `${core}-wasm.data`))
     const haveReport = existsSync(join(coresDir, 'reports', `${core}.json`))
@@ -154,7 +154,8 @@ for (const { id, from } of wanted) {
     else if (REQUIRED_SELF_BUILT_CORES.has(id)) {
       check(`${id}（必需自构建核心）`, () => {
         const missing = [!haveJs && `${core}-wasm.data`, !haveReport && `reports/${core}.json`].filter(Boolean).join('、')
-        assert.fail(`缺 ${missing}；运行 npm run build:melondsds，否则全部 NDS 都会开局失败`)
+        const buildCommand = id === 'mame-current' ? 'node scripts/build-mame-current-core.mjs' : 'npm run build:melondsds'
+        assert.fail(`缺 ${missing}；运行 ${buildCommand}，否则选用 ${id} 的游戏会开局失败`)
       })
     } else {
       const missing = [!haveJs && `${core}-wasm.data`, !haveReport && `reports/${core}.json`].filter(Boolean).join('、')
@@ -265,8 +266,18 @@ console.log('\n五、FATAL 判定（打通核心 stderr 之后的必要收紧）
     check(`⭐ 不误杀：${line.slice(0, 44)}`, () => assert.ok(!hits(line), '这句在「游戏能跑」时也会出现'))
   }
 
-  for (const line of ['Romset is unknown', 'FATAL ERROR: required files are missing', 'Error loading EmulatorJS runtime']) {
+  for (const line of [
+    'Romset is unknown',
+    'FATAL ERROR: required files are missing',
+    'Error loading EmulatorJS runtime',
+    'Loaded an empty file as content, please load a valid Nintendo DS ROM.',
+    'Failed to create melonDS DS system subdirectory at "/system"',
+  ]) {
     check(`认得出致命：${line.slice(0, 44)}`, () => assert.ok(hits(line)))
+  }
+
+  for (const line of ['Failed to load state from slot 1', 'Failed to open host microphone']) {
+    check(`NDS 非致命不误杀：${line}`, () => assert.ok(!hits(line)))
   }
 }
 

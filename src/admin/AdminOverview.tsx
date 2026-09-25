@@ -3,7 +3,14 @@ import { Link } from 'react-router-dom'
 import type { Game, Post } from '@/types'
 import type { Facets, Paged } from '@/services/pageData'
 import { api, apiEnabled } from '@/services/api'
-import { fetchAdminGames, fetchAdminStats, type AdminStats } from '@/services/store'
+import {
+  fetchAdminGames,
+  fetchAdminStats,
+  fetchStartupStats,
+  type AdminStats,
+  type StartupGroup,
+  type StartupStats,
+} from '@/services/store'
 import { fetchAllPosts } from '@/services/posts'
 import { platformMap, platforms } from '@/data/platforms'
 import { genreMap } from '@/data/genres'
@@ -26,6 +33,7 @@ interface OverviewData {
   top: Game[]
   recent: Game[]
   posts: Post[]
+  startup: StartupStats
 }
 
 /**
@@ -44,7 +52,7 @@ interface OverviewData {
  * 上千款游戏时光为了这几个数字就要下载整个目录。
  */
 async function loadOverview(): Promise<OverviewData> {
-  const [stats, facets, top, recent, posts] = await Promise.all([
+  const [stats, facets, top, recent, posts, startup] = await Promise.all([
     fetchAdminStats(),
     api.get<Facets>('/api/games/facets'),
     // 后端列表默认按 plays 倒序，第一页就是排行榜；顺带把 total 也带回来了，
@@ -53,8 +61,47 @@ async function loadOverview(): Promise<OverviewData> {
     // fetchAdminGames 没有 sort 参数（后台列表用不到），所以「最近上线」直接走接口
     api.get<Paged<Game>>(`/api/games?all=1&sort=newest&pageSize=${RECENT_SIZE}`, true),
     fetchAllPosts(),
+    fetchStartupStats(7),
   ])
-  return { stats, facets, total: top.total, top: top.items, recent: recent.items, posts }
+  return { stats, facets, total: top.total, top: top.items, recent: recent.items, posts, startup }
+}
+
+const startupTime = (ms: number | null) => ms == null ? '—' : ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
+
+function StartupBreakdown({ title, rows }: { title: string; rows: StartupGroup[] }) {
+  return (
+    <Card title={title}>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[32rem] text-sm">
+          <thead className="text-left text-xs text-muted">
+            <tr>
+              <th className="pb-2 font-medium">项目</th>
+              <th className="pb-2 text-right font-medium">开始</th>
+              <th className="pb-2 text-right font-medium">可玩</th>
+              <th className="pb-2 text-right font-medium">成功率</th>
+              <th className="pb-2 text-right font-medium text-live">&gt;20s</th>
+              <th className="pb-2 text-right font-medium">平均</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-line">
+            {rows.slice(0, 10).map((row) => (
+              <tr key={row.id}>
+                <td className="max-w-48 truncate py-2" title={row.label}>{row.label}</td>
+                <td className="py-2 text-right tabular-nums text-muted">{row.starts}</td>
+                <td className="py-2 text-right tabular-nums">{row.playable}</td>
+                <td className="py-2 text-right tabular-nums">{row.playableRate.toFixed(1)}%</td>
+                <td className="py-2 text-right tabular-nums text-live">{row.slowStarts}</td>
+                <td className="py-2 text-right tabular-nums text-muted">{startupTime(row.avgPlayableMs)}</td>
+              </tr>
+            ))}
+            {!rows.length && (
+              <tr><td colSpan={6} className="py-5 text-center text-sm text-muted">还没有启动数据</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  )
 }
 
 export function AdminOverview() {
@@ -153,6 +200,33 @@ export function AdminOverview() {
           value={stats?.posts.published ?? posts.filter((p) => p.published).length}
           sub={`${stats?.posts.draft ?? posts.filter((p) => !p.published).length} 篇草稿`}
         />
+      </div>
+
+      <div>
+        <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+          <div>
+            <h2 className="font-semibold">启动漏斗 · 最近 7 天</h2>
+            <p className="mt-1 text-xs text-muted">可玩成功率以“点击开始”为分母；超过 20 秒的成功启动单独告警。</p>
+          </div>
+          <span className="text-xs text-muted">详情页 {data?.startup.summary.detailViews ?? 0} 次</span>
+        </div>
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+          <Stat label="点击开始" value={data?.startup.summary.starts ?? 0} sub="每次主动启动一条" />
+          <Stat label="成功可玩" value={data?.startup.summary.playable ?? 0} sub={`${(data?.startup.summary.playableRate ?? 0).toFixed(1)}% 成功率`} />
+          <Stat label="首帧" value={data?.startup.summary.firstFrames ?? 0} sub="运行时确认进入主循环" />
+          <Stat label="慢启动" value={data?.startup.summary.slowStarts ?? 0} sub="可玩耗时超过 20 秒" />
+          <Stat
+            label="失败 / 超时"
+            value={(data?.startup.summary.failures ?? 0) + (data?.startup.summary.timeouts ?? 0)}
+            sub={`平均可玩 ${startupTime(data?.startup.summary.avgPlayableMs ?? null)}`}
+          />
+        </div>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-3">
+        <StartupBreakdown title="按游戏" rows={data?.startup.byGame ?? []} />
+        <StartupBreakdown title="按运行时" rows={data?.startup.byRuntime ?? []} />
+        <StartupBreakdown title="按地区" rows={data?.startup.byCountry ?? []} />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">

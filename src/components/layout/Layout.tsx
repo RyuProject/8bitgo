@@ -88,7 +88,7 @@ function DeferredImPanel() {
 }
 
 function Shell() {
-  const { immersive, setImmersive } = useShell()
+  const { immersive, setImmersive, mobileOpen, desktop } = useShell()
   const t = useT()
   const isTvRoute = stripLang(useLocation().pathname) === TV_ROUTE
 
@@ -101,6 +101,8 @@ function Shell() {
   */
   if (onTvHost() || isTvRoute) return <TvShell />
 
+  const mobileNavigationOpen = mobileOpen && !desktop
+
   return (
     <div className="min-h-dvh">
       <RouteEffects />
@@ -108,6 +110,8 @@ function Shell() {
 
       {/* 内容区：桌面端为侧边栏留出宽度 */}
       <div
+        aria-hidden={mobileNavigationOpen || undefined}
+        inert={mobileNavigationOpen}
         className={cx(
           'flex min-h-dvh flex-col transition-[padding] duration-300 ease-out',
           immersive ? 'lg:pl-0' : 'lg:pl-60',

@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react'
 
 /**
  * 应用壳状态：
@@ -21,6 +21,7 @@ export interface ShellState {
   toggleCollapsed: () => void
   mobileOpen: boolean
   setMobileOpen: (v: boolean) => void
+  desktop: boolean
   immersive: boolean
   setImmersive: (v: boolean) => void
   toggleImmersive: () => void
@@ -36,12 +37,25 @@ const defaultState: ShellState = {
   toggleCollapsed: noop,
   mobileOpen: false,
   setMobileOpen: noop,
+  desktop: true,
   immersive: false,
   setImmersive: noop,
   toggleImmersive: noop,
 }
 
 const ShellContext = createContext<ShellState>(defaultState)
+
+const DESKTOP_QUERY = '(min-width: 1024px)'
+
+function subscribeDesktop(onChange: () => void) {
+  const media = window.matchMedia(DESKTOP_QUERY)
+  media.addEventListener('change', onChange)
+  return () => media.removeEventListener('change', onChange)
+}
+
+function desktopSnapshot() {
+  return window.matchMedia(DESKTOP_QUERY).matches
+}
 
 function readCollapsed(): boolean {
   try {
@@ -66,6 +80,8 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   const [collapsed, setCollapsedState] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [immersive, setImmersive] = useState(false)
+  // 服务端按桌面端输出；hydrate 后立刻同步真实断点，避免首帧 HTML 对不上。
+  const desktop = useSyncExternalStore(subscribeDesktop, desktopSnapshot, () => true)
 
   const setCollapsed = useCallback((v: boolean) => {
     setCollapsedState(v)
@@ -94,13 +110,18 @@ export function ShellProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [immersive])
 
-  // 抽屉打开时锁定页面滚动
+  // 横竖屏切到桌面断点时关闭抽屉。否则 mobileOpen 会继续锁住 body，桌面页面突然不能滚。
   useEffect(() => {
-    document.body.style.overflow = mobileOpen ? 'hidden' : ''
+    if (desktop) setMobileOpen(false)
+  }, [desktop])
+
+  // 只有移动抽屉打开时锁定页面滚动；桌面侧栏不是模态层。
+  useEffect(() => {
+    document.body.style.overflow = mobileOpen && !desktop ? 'hidden' : ''
     return () => {
       document.body.style.overflow = ''
     }
-  }, [mobileOpen])
+  }, [desktop, mobileOpen])
 
   const value = useMemo<ShellState>(
     () => ({
@@ -110,11 +131,12 @@ export function ShellProvider({ children }: { children: ReactNode }) {
       toggleCollapsed,
       mobileOpen,
       setMobileOpen,
+      desktop,
       immersive,
       setImmersive,
       toggleImmersive,
     }),
-    [collapsed, setCollapsed, toggleCollapsed, mobileOpen, immersive, toggleImmersive],
+    [collapsed, setCollapsed, toggleCollapsed, mobileOpen, desktop, immersive, toggleImmersive],
   )
 
   return <ShellContext.Provider value={value}>{children}</ShellContext.Provider>
