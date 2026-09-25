@@ -209,7 +209,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   // r=11 临时补齐 PPSSPP 启动阶段追踪，确认崩溃发生在音频之后的哪一步。
   // r=12 移除 pthread 第一帧中非法重设主线程计时器的调用。
   // r=13 给首帧的音频填充、事件轮询与 NativeFrame 加一次性定位点。
-  iframe.src = `${PPSSPP_PATH}index.html?embed=1&r=13`
+  // r=14 证实真正故障是 Emscripten 在代理 WebGL 的整数令牌上执行本地 VBO 预帧维护。
+  // r=15 去掉一次性诊断日志并发布同一修复的正式核心；r=16 让 immutable 的入口页也失效。
+  iframe.src = `${PPSSPP_PATH}index.html?embed=1&r=16`
   hostTimer = window.setTimeout(() => {
     if (!destroyed && !ready && !fatalReported) {
       fatalReported = true

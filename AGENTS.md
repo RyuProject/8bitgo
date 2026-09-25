@@ -1596,9 +1596,9 @@ R2 multipart 发布到最终 `roms/psp/*.chd`。`.cso` / `.chd` 保持直传。
   同时发生；`source_deleted` 的 0 / 1 / 2 分别是保留 / 已删 / 正在清理。
 - 前端创建任务把随机 `source_key` 当幂等键：响应途中断线可以重试，服务端只返回原任务。旧槽是
   `.chd` / `.cso` 而新文件是 `.iso` 时绝不复用旧 key，否则转换服务降级时会把 ISO 字节写进错误扩展名。
-- 当前公开 PPSSPP 仍是 Range v1，不会主动发 `If-Match`。播放 URL 已带 `romv=<ETag>`，Worker 必须在
-  每次 Range 前把它与 R2 当前 ETag 比较；不一致返回 412。Range 也必须绕过整包 Cache API，避免缓存的
-  200 响应跳过版本校验。改完要部署 `worker/standalone/rom-worker.js`，只改源站前端不算完成。
+- 当前公开 PPSSPP 是 Range v2：2MB 分块、96MB 内存 LRU，并主动带 `If-Match` / `If-Unmodified-Since`
+  钉住同一代镜像。播放 URL 同时带 `romv=<ETag>`，Worker 必须在每次 Range 前把它与 R2 当前 ETag 比较；
+  不一致返回 412。Range 也必须绕过整包 Cache API，避免缓存的 200 响应跳过版本校验。
 - 源站要装近期 MAME 的 `chdman`，并在 `server/.env` 配 `PSP_CONVERT_WORKER_URL`；转换临时盘
   至少留 `2 × ISO + 256MB`。默认并发 1，最多 2，避免压缩任务抢光玩家请求的 CPU / IO；
   `PSP_CONVERT_TIMEOUT_MINUTES` 默认 180，超时会先 SIGTERM、10 秒后 SIGKILL，不能让一个挂死的
@@ -1661,11 +1661,21 @@ Emscripten GL 导出发生符号类型冲突；补丁因此让浏览器构建直
 `libSDL2-mt.a` 和最终链接产物。不要只手改构建机缓存，否则 emsdk 清缓存后故障会原样回来。
 
 ⚠️ 只修采样率仍不够：SDL 的 `ScriptProcessor` 随后会在浏览器主线程直接 `dynCall` C 音频回调，
-而 PPSSPP 的 main 和 `thread_local` 音频状态都在 pthread；结果是首帧前继续报
-`Cannot set properties of undefined (setting '0')`。`0003-pthread-audio-ring.patch` 因此绕过 SDL
-WebAudio 设备：PPSSPP 工作线程在主循环里产出 float stereo PCM 到共享 Wasm 环形缓冲区，浏览器主线程
-只用 `Atomics` 取样播放，绝不再回调 Wasm。运行时 JS 必须包含 `__ppssppAudio`、
+而 PPSSPP 的 main 和 `thread_local` 音频状态都在 pthread，不能让浏览器主线程进入那份 Wasm 线程状态。
+`0003-pthread-audio-ring.patch` 因此绕过 SDL WebAudio 设备：PPSSPP 工作线程在主循环里产出 float stereo
+PCM 到共享 Wasm 环形缓冲区，浏览器主线程只用 `Atomics` 取样播放，绝不再回调 Wasm。运行时 JS 必须包含 `__ppssppAudio`、
 `Atomics.load(HEAPU32`，`runtime.json` 必须声明 `pthreadAudioContext=shared-ring-buffer`；缺任一项都拒绝发布。
+
+⚠️ `-sFULL_ES3=1` 会注册一条每帧维护临时 VBO 的 JS 钩子，但 `PROXY_TO_PTHREAD` 的 Worker 侧
+`GL.currentContext` 只是主线程真实 WebGL 上下文的**整数令牌**，没有 `tempVertexBufferCounters1`。
+首帧因此会报 `Cannot set properties of undefined (setting '0')`，而 C++ 的帧回调一次都没进入。
+`0004-emscripten-proxied-webgl-preloop.patch` 只让这条本地 VBO 钩子跳过代理上下文；真实 GL 调用仍照常代理，
+不能靠禁用 `FULL_ES3` 或把整数令牌伪造成 JS 上下文。构建和发布检查会核对生成 JS 里的保护条件。
+
+⚠️ 已发布过一版把 `VITE_PPSSPP_PATH` 目录直接塞进 iframe，老 bundle 会请求
+`/ppsspp/v0dbfaca?embed=1&r=2`（没有 `index.html`）。静态中间件关闭目录重定向后它必然 404，
+玩家要白等 120 秒才看到超时。`server/src/index.js` 为这个精确旧地址保留了 `no-store` 302，
+跳到当前显式入口；以后递增 `adapters/ppsspp.ts` 的入口代次时必须同步那条跳转和回归断言。
 
 回归：`npm run test:ppsspp && npm run test:worker`。
 

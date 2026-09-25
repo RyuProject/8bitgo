@@ -349,6 +349,18 @@ if (ssrAvailable()) {
   })
 
   /**
+   * 旧 PSP 前端曾把运行时目录直接当成 iframe 地址，生成
+   * `/ppsspp/v0dbfaca?embed=1&r=2`。static 明确关闭了目录重定向，所以老访客命中缓存
+   * bundle 后会得到 404，并一直等到 120 秒启动超时。这里保留一个不缓存的兼容跳转：
+   * 让旧 bundle 也进入当前显式 index.html，同时查询串代次保证不会再拿到旧入口页。
+   * 更新 PPSSPP 入口代次时，必须同步这里和 adapters/ppsspp.ts 的 r 值。
+   */
+  app.get('/ppsspp/v0dbfaca', (_req, res) => {
+    res.set('Cache-Control', CACHE.none)
+    res.redirect(302, '/ppsspp/v0dbfaca/index.html?embed=1&r=16')
+  })
+
+  /**
    * 自托管的网页游戏：`public/web/<名字>/` 整个目录（当前只有 PvZ）。
    *
    * 为什么要专门写一条：静态中间件是 `index: false`（首页归 SSR 渲染），目录 URL

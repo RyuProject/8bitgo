@@ -12,16 +12,17 @@
   "workerModel": "self-script",
   "offscreenFramebuffer": true,
   "webglContext": "proxy-always-offscreen-framebuffer",
+  "proxiedWebglPreloop": "skip-worker-token",
   "pthreadAudioContext": "shared-ring-buffer",
   "artifactsInstalled": true,
   "artifacts": {
     "PPSSPPSDL.js": {
-      "bytes": 382384,
-      "sha256": "12e44eea2ed72db3514a22418ce30144ad47d303d5387f92721e7a2b0ffc29d4"
+      "bytes": 381937,
+      "sha256": "ca04dfff9098c2dc0604e9bdf696ba87c375cc92603ec8f238db62e056440d98"
     },
     "PPSSPPSDL.wasm": {
-      "bytes": 14228400,
-      "sha256": "6480760c14f8d16385212f15206b0b7b80530a9c686dd7e9c140048acfddfa69"
+      "bytes": 14225751,
+      "sha256": "43caa3dfb24c81ab604680f72afaa206f076de710ef6f2c0e8e1b2d3b438dac0"
     },
     "PPSSPPSDL.data": {
       "bytes": 22417304,

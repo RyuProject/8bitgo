@@ -11,7 +11,7 @@
   const VERSION = 1
   // 版本目录本身会被永久缓存；查询串是这次兼容性补丁的内容代次，避免老访客继续命中
   // “核心还没读盘就报启动成功”的旧胶水。以后替换任一运行时文件都必须一起递增。
-  const RUNTIME_REVISION = '12'
+  const RUNTIME_REVISION = '15'
   const RUNTIME_SCRIPT = `PPSSPPSDL.js?r=${RUNTIME_REVISION}`
   const SAVE_ROOT = '/home/web_user/.config/ppsspp'
   const canvas = document.getElementById('canvas')

@@ -1,0 +1,15 @@
+--- a/src/lib/libwebgl.js
++++ b/src/lib/libwebgl.js
+@@ -255,7 +255,11 @@
+   $GL__postset: `
+     // Signal GL rendering layer that processing of a new frame is about to
+     // start. This helps it optimize VBO double-buffering and reduce GPU stalls.
+-    registerPreMainLoop(() => GL.newRenderingFrameStarted());
++    registerPreMainLoop(() => {
++      // 代理上下文在工作线程里只是一个整数令牌，没有本地 VBO 双缓冲状态。
++      // 真正的 WebGL 上下文位于浏览器主线程；不能在这里把令牌当成 JS 上下文对象。
++      if (!GL.currentContextIsProxied) GL.newRenderingFrameStarted();
++    });
+   `,
+ #endif
+   $GL: {

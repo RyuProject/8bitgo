@@ -22,6 +22,7 @@ const PINNED_COMMIT = '0dbfaca62a8a924abc2c5dd5dd0733b668e5e68a'
 const PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0001-range-streaming.patch')
 const SDL_AUDIO_PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0002-sdl2-pthread-audio.patch')
 const PTHREAD_AUDIO_PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0003-pthread-audio-ring.patch')
+const PROXIED_WEBGL_PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0004-emscripten-proxied-webgl-preloop.patch')
 const OUTPUT = join(root, 'public', 'ppsspp', `v${VERSION}`)
 const args = process.argv.slice(2)
 const sourceAt = args.indexOf('--source')
@@ -49,6 +50,7 @@ if (!existsSync(join(source, '.git')) || !existsSync(join(source, 'CMakeLists.tx
 if (!existsSync(PATCH)) fail(`补丁不存在：${PATCH}`)
 if (!existsSync(SDL_AUDIO_PATCH)) fail(`SDL 音频补丁不存在：${SDL_AUDIO_PATCH}`)
 if (!existsSync(PTHREAD_AUDIO_PATCH)) fail(`pthread 音频桥补丁不存在：${PTHREAD_AUDIO_PATCH}`)
+if (!existsSync(PROXIED_WEBGL_PATCH)) fail(`WebGL 代理补丁不存在：${PROXIED_WEBGL_PATCH}`)
 if (capture('git', ['rev-parse', 'HEAD']) !== PINNED_COMMIT) {
   fail(`源码提交不匹配，必须是 ${PINNED_COMMIT}；不要在未知上游版本上硬套二进制补丁`)
 }
@@ -70,7 +72,11 @@ const sdlMainText = readFileSync(sdlMain, 'utf8')
 if (!sdlMainText.includes('Wasm audio bridge started')) {
   run('git', ['apply', '--check', PTHREAD_AUDIO_PATCH])
   run('git', ['apply', PTHREAD_AUDIO_PATCH])
-} else if (!sdlMainText.includes("Module['__ppssppAudio']") || !sdlMainText.includes('PumpWasmAudioBridge()')) {
+} else if (
+  !sdlMainText.includes("Module['__ppssppAudio']") ||
+  !sdlMainText.includes('PumpWasmAudioBridge()') ||
+  !sdlMainText.includes('每帧重复设置同一个定时器只会增加 Worker 调度抖动')
+) {
   fail('源码目录里已有旧版 pthread 音频桥；请改用停在锁定提交的干净检出目录重新构建')
 }
 
@@ -93,6 +99,18 @@ if (emcc.error || emcc.status !== 0 || !/\b5\.0\.7\b/.test(emccVersion)) {
 // 后面的 PPSSPP 链接会自动重编 SDL。这样构建机清缓存或重装 emsdk 后不会把崩溃带回来。
 const emccPath = realpathSync(capture('which', ['emcc'], root))
 const emscriptenRoot = dirname(emccPath)
+const webglSource = join(emscriptenRoot, 'src', 'lib', 'libwebgl.js')
+if (!existsSync(webglSource)) fail(`找不到 Emscripten WebGL 库源码：${webglSource}`)
+const webglSourceText = readFileSync(webglSource, 'utf8')
+if (!webglSourceText.includes('if (!GL.currentContextIsProxied) GL.newRenderingFrameStarted();')) {
+  if (!webglSourceText.includes('registerPreMainLoop(() => GL.newRenderingFrameStarted());')) {
+    fail('Emscripten WebGL 预帧钩子与锁定版本不符，拒绝在未知源码上套补丁')
+  }
+  // FULL_ES3 会启用本地 VBO 双缓冲钩子，但代理到主线程的上下文在 Worker 里只是整数令牌；
+  // 第一帧若把令牌当上下文对象写入就会崩溃，所以只跳过代理上下文的本地维护。
+  run('patch', ['--dry-run', '-p1', '-i', PROXIED_WEBGL_PATCH], emscriptenRoot)
+  run('patch', ['-p1', '-i', PROXIED_WEBGL_PATCH], emscriptenRoot)
+}
 const sdlPortsRoot = join(emscriptenRoot, 'cache', 'ports', 'sdl2')
 if (!existsSync(sdlPortsRoot)) run('embuilder', ['build', 'sdl2'], root)
 const sdlSourceDir = readdirSync(sdlPortsRoot, { withFileTypes: true })
@@ -140,6 +158,9 @@ if (!runtimeScript.includes('createOffscreenFramebuffer') || !runtimeScript.incl
 if (runtimeScript.includes('transferControlToOffscreen')) {
   fail('PPSSPPSDL.js 错误启用了 OffscreenCanvas；PPSSPP 代理回主线程创建 EGL 上下文时会崩溃')
 }
+if (!/registerPreMainLoop\(\(\)=>\{if\(!GL\.currentContextIsProxied\)GL\.newRenderingFrameStarted\(\)/.test(runtimeScript)) {
+  fail('PPSSPPSDL.js 缺少代理 WebGL 上下文预帧保护；FULL_ES3 会在首帧把整数令牌当对象写入并崩溃')
+}
 for (const marker of ['proxyContextToMainThread', 'emscripten_webgl_do_create_context']) {
   if (!runtimeScript.includes(marker)) {
     fail(`PPSSPPSDL.js 缺少 WebGL Worker 代理标记 ${marker}；SDL/EGL 单独建上下文会让 pthread 的 GLctx 为空`)
@@ -186,6 +207,7 @@ const manifest = {
   workerModel: 'self-script',
   offscreenFramebuffer: true,
   webglContext: 'proxy-always-offscreen-framebuffer',
+  proxiedWebglPreloop: 'skip-worker-token',
   pthreadAudioContext: 'shared-ring-buffer',
   artifactsInstalled: true,
   artifacts,

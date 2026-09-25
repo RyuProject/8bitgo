@@ -171,15 +171,18 @@
  }
  
  static void UpdateScreenDPI(SDL_Window *window) {
-@@ -1686,6 +1833,7 @@
+@@ -1685,7 +1832,9 @@
+ 	GraphicsContext *graphicsContext = state->graphicsContext;
  	InputStateTracker *inputTracker = state->inputTracker;
  
- 	UpdateEmscriptenMainLoopTiming();
+-	UpdateEmscriptenMainLoopTiming();
++	// 初次 emscripten_set_main_loop_arg 已经按 WASM_MAIN_LOOP_FPS 设置调度器；
++	// 每帧重复设置同一个定时器只会增加 Worker 调度抖动，不会带来新的限帧信息。
 +	PumpWasmAudioBridge();
  
  	{
  		SDL_Event event;
-@@ -2326,10 +2474,7 @@
+@@ -2326,10 +2475,7 @@
  	graphicsContext->Shutdown();
  	delete graphicsContext;
  

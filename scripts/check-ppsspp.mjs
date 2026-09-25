@@ -40,10 +40,10 @@ const runtimeInit = /onRuntimeInitialized\(\)\s*\{([\s\S]*?)\n\s*\},\n\s*onAbort
 if (!runtimeInit || /respond\s*\(/.test(runtimeInit)) {
   fail('host.js 在 onRuntimeInitialized 阶段就回复成功；此时 PPSSPP 还没有执行 main 或读取镜像')
 }
-if (!/host\.js\?r=12/.test(need(join(runtimeDir, 'index.html')).toString('utf8'))) {
+if (!/host\.js\?r=15/.test(need(join(runtimeDir, 'index.html')).toString('utf8'))) {
   fail('index.html 没有给桥脚本加内容代次，immutable 缓存会继续返回旧启动逻辑')
 }
-if (!/index\.html\?embed=1&r=13/.test(adapter)) {
+if (!/index\.html\?embed=1&r=16/.test(adapter)) {
   fail('PPSSPP iframe 入口没有内容代次，immutable 缓存会让老访客继续拿旧 index.html')
 }
 if (/fetch\s*\(\s*(?:remote(?:\?\.)?\.url|gamePath)/.test(host) || /arrayBuffer\s*\(/.test(host)) {
@@ -78,6 +78,13 @@ const pthreadAudioPatch = need(join(root, 'vendor', 'ppsspp', 'patches', '0003-p
 for (const marker of ['Wasm audio bridge started', "Module['__ppssppAudio']", 'PumpWasmAudioBridge()']) {
   if (!pthreadAudioPatch.includes(marker)) fail(`pthread 音频桥补丁缺少 ${marker}`)
 }
+if (!pthreadAudioPatch.includes('每帧重复设置同一个定时器只会增加 Worker 调度抖动')) {
+  fail('pthread 音频桥补丁仍会在每帧重复重设 Emscripten 调度器')
+}
+const proxiedWebglPatch = need(join(root, 'vendor', 'ppsspp', 'patches', '0004-emscripten-proxied-webgl-preloop.patch')).toString('utf8')
+if (!proxiedWebglPatch.includes('if (!GL.currentContextIsProxied) GL.newRenderingFrameStarted();')) {
+  fail('WebGL 代理补丁没有跳过 Worker 中只有整数令牌的代理上下文')
+}
 
 const manifest = JSON.parse(need(join(runtimeDir, 'runtime.json')).toString('utf8'))
 if (manifest.commit !== '0dbfaca62a8a924abc2c5dd5dd0733b668e5e68a') fail('runtime.json 的上游提交没有锁定')
@@ -94,6 +101,9 @@ if (loaderRevision === 2 && (manifest.rangeTelemetry !== true || manifest.object
 if (manifest.workerModel !== 'self-script') fail('runtime.json 没有声明 Emscripten 5 的自身 Worker 模型')
 if (manifest.webglContext !== 'proxy-always-offscreen-framebuffer') {
   fail('runtime.json 没有声明 WebGL Worker 代理上下文模型')
+}
+if (manifest.proxiedWebglPreloop !== 'skip-worker-token') {
+  fail('runtime.json 没有声明代理 WebGL 上下文的预帧保护')
 }
 if (manifest.pthreadAudioContext !== 'shared-ring-buffer') {
   fail('runtime.json 没有声明共享音频桥；SDL 主线程回调会进入错误的 pthread Wasm 状态')
@@ -122,6 +132,9 @@ if (installed) {
   }
   if (runtimeScript.includes('transferControlToOffscreen')) {
     fail('PPSSPPSDL.js 错误启用了 OffscreenCanvas；PPSSPP 代理回主线程创建 EGL 上下文时会崩溃')
+  }
+  if (!/registerPreMainLoop\(\(\)=>\{if\(!GL\.currentContextIsProxied\)GL\.newRenderingFrameStarted\(\)/.test(runtimeScript)) {
+    fail('PPSSPPSDL.js 缺少代理 WebGL 上下文预帧保护')
   }
   if (!runtimeScript.includes('IDBFS') || !/FS\.filesystems=\{[^}]*IDBFS[^}]*\}/.test(runtimeScript)) {
     fail('PPSSPPSDL.js 没有链接 IDBFS；host.js 会在存档挂载阶段中止启动')
