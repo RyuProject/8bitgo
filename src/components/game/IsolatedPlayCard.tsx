@@ -1,9 +1,9 @@
 /**
  * 详情页上「这款游戏要整页打开」的入口卡片。
  *
- * 用在少数需要跨源隔离（SharedArrayBuffer）的 WebAssembly 大作上：它们没法内嵌在详情页里，
- * 因为隔离头必须发在**顶层文档**上，而详情页一开 require-corp，
- * 字节的收录脚本和对象存储上的封面图会被一起掐掉。完整理由见 shared/isolated-embeds.js。
+ * 用在仍需单独跨源隔离页（SharedArrayBuffer）的 WebAssembly 大作上。隔离头必须发在
+ * **顶层文档**上；PSP 已经让正常详情页成为隔离文档，因此不会再经过这张卡，
+ * PS2 / Dolphin 暂时仍保留独立页。完整理由见 shared/isolated-embeds.js。
  *
  * 所以这里只画一个和播放器同尺寸（16:9）的卡片，点了整页跳到 /play/<slug> ——
  * 人还在站内，只是换了一页。
@@ -23,7 +23,7 @@ import { newStartupId, recordStartupEvent } from '@/services/startupFunnel'
 interface Props {
   slug: string
   gameName: string
-  /** pthread 模拟器固定走自己的隔离路由；其余条目走 isolated-embeds 登记的外壳。 */
+  /** 仍使用独立页的 pthread 模拟器走自己的隔离路由；其余条目走 isolated-embeds 登记的外壳。 */
   isolatedPlatform?: IsolatedRuntimePlatformId
   /** 空闲态的大图标，和 EmulatorPlayer 的 icon 一个意思 */
   icon?: string

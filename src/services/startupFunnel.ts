@@ -51,7 +51,7 @@ export function recordStartupEvent(slug: string | undefined, payload: StartupEve
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify(payload),
-    // PSP / Dolphin 会从详情页整页跳到隔离播放器；不用 keepalive 的话，点击事件会在导航时被取消。
+    // PS2 / Dolphin 会从详情页整页跳到隔离播放器；不用 keepalive 的话，点击事件会在导航时被取消。
     keepalive: true,
   }).then((response) => {
     if (!response.ok) throw new Error(`startup metric ${response.status}`)

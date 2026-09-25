@@ -128,6 +128,10 @@ function isIsolatedPlayPath(pathname) {
 }
 
 export async function renderPage(req, res, next) {
+  const isolatedPlayRequest = isIsolatedPlayPath(req.path)
+  // 数据取到后若确认是 PSP 详情页，即使 React SSR 随后失败，空壳也必须保留隔离头；
+  // 否则浏览器虽能客户端渲染出“开始游戏”，PPSSPP 却会因为没有 SharedArrayBuffer 必挂。
+  let isolatedDocumentForFallback = isolatedPlayRequest
   try {
     if (isAdminPath(req.path)) {
       return res
@@ -147,6 +151,14 @@ export async function renderPage(req, res, next) {
     const [pathname, qs] = url.split('?')
     const isolatedPlay = isIsolatedPlayPath(pathname)
     const data = await loadForRoute(stripLang(pathname), new URLSearchParams(qs ?? ''))
+    /**
+     * PSP 不再跳到铺满视口的精简页：正常详情页本身就是顶层隔离文档，
+     * 所以玩家按“开始”后仍留在播放器、标题、资料与侧栏同在的页面里。
+     * 这里只给 PSP 开；PS2 / Dolphin 仍保留独立页，避免一次改变所有实验运行时。
+     */
+    const inlinePspPlayer = data?.route === 'game' && data.game?.platform === 'psp'
+    const isolatedDocument = isolatedPlay || inlinePspPlayer
+    isolatedDocumentForFallback = isolatedDocument
 
     /*
       TV 子域（tv.8bitgo.com）的根要渲 TV 页而不是首页。判定走 shared/tv-host.js，
@@ -196,11 +208,12 @@ export async function renderPage(req, res, next) {
         // 隔离头是播放器能否启动的条件；边缘沿用旧 HTML 会让新前端配旧响应头。
         'Cache-Control': isolatedPlay ? CACHE.none : notFound ? CACHE.notFound : isNoStorePath(req.path) ? CACHE.none : CACHE.page,
         Vary: 'Accept-Encoding',
-        ...(isolatedPlay
+        ...(isolatedDocument
           ? {
               'Cross-Origin-Opener-Policy': 'same-origin',
               'Cross-Origin-Embedder-Policy': 'require-corp',
-              'X-Robots-Tag': 'noindex, follow',
+              // /play/* 是重复的播放器外壳；/games/* PSP 详情页仍是正牌可收录页面。
+              ...(isolatedPlay ? { 'X-Robots-Tag': 'noindex, follow' } : {}),
             }
           : {}),
       })
@@ -232,11 +245,12 @@ export async function renderPage(req, res, next) {
           'Content-Type': 'text/html; charset=utf-8',
           'Cache-Control': CACHE.none,
           'Retry-After': '60',
-          ...(isIsolatedPlayPath(req.path)
+          ...(isolatedDocumentForFallback
             ? {
                 'Cross-Origin-Opener-Policy': 'same-origin',
                 'Cross-Origin-Embedder-Policy': 'require-corp',
-                'X-Robots-Tag': 'noindex, follow',
+                // 正常 PSP 详情页是可收录内容；只有重复的 /play 外壳需要 noindex。
+                ...(isolatedPlayRequest ? { 'X-Robots-Tag': 'noindex, follow' } : {}),
               }
             : {}),
         })

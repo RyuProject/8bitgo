@@ -1,5 +1,5 @@
 /**
- * PPSSPP 的独立浏览器运行时。
+ * PPSSPP 浏览器运行时。
  *
  * 这里不能接 EmulatorJS 的 PPSSPP 核心：那条路会先把整份 ISO 下载成 Blob，再复制进
  * Emscripten 内存。PSP 镜像常见 1~1.8GB，手机还没进游戏就会被内存峰值杀掉。

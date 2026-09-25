@@ -271,6 +271,9 @@ function objectHeaders(object, servedKey, cors, policy, guessType) {
   headers.set('Accept-Ranges', 'bytes')
   headers.set('Cache-Control', policy)
   headers.set('X-Content-Type-Options', 'nosniff')
+  // 这些对象本来就是公开读取且 CORS=*；显式允许跨源嵌入后，启用 COEP 的 PSP 详情页
+  // 仍能显示 image.8bitgo.com 的封面/视频，而不会被 require-corp 当场拦掉。
+  headers.set('Cross-Origin-Resource-Policy', 'cross-origin')
   if (!headers.has('Content-Type')) headers.set('Content-Type', guessType(servedKey))
   const filename = encodeURIComponent(servedKey.split('/').pop() || 'rom')
   headers.set('Content-Disposition', `inline; filename="${filename}"; filename*=UTF-8''${filename}`)
@@ -386,6 +389,8 @@ function cacheValue(env, name, fallback) {
  */
 export function edgeCacheEligible(request, url, cors) {
   if (request.method !== 'GET' || cors['Access-Control-Allow-Origin'] !== '*') return false
+  // Cache API 按 URL 命中整份 200，不能保证替 Range 请求切成 206；流式光盘必须直接走 R2 Range。
+  if (request.headers.has('Range')) return false
   if (request.headers.has('Authorization')) return false
   if (request.headers.has('If-Match') || request.headers.has('If-Unmodified-Since') || request.headers.has('If-Range')) return false
   if (/\b(?:no-cache|no-store)\b/i.test(request.headers.get('Cache-Control') || '')) return false

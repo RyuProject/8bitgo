@@ -106,7 +106,10 @@ export function AppRoutes() {
           它仍然要走 SSR，服务端使用 Pages.tsx 的同步组件；浏览器端第一次进入才下载。
         */}
         <Route path="/embed/:slug" element={<RouteChunk><EmbedPage /></RouteChunk>} />
-        {/* PPSSPP / Play! / Dolphin 的 pthread 需要顶层 COOP/COEP；服务端只给这些独立路由加隔离头。 */}
+        {/*
+          Play! / Dolphin 仍从详情页跳到这些隔离路由。PSP 的正常详情页已经由服务端直接加
+          COOP/COEP，旧 /play/psp 链接只保留兼容，不能再把新访客送到铺满视口的精简页。
+        */}
         <Route path="/play/psp/:slug" element={<RouteChunk><EmbedPage standalonePlatform="psp" /></RouteChunk>} />
         <Route path="/play/ps2/:slug" element={<RouteChunk><EmbedPage standalonePlatform="ps2" /></RouteChunk>} />
         <Route path="/play/gamecube/:slug" element={<RouteChunk><EmbedPage standalonePlatform="gamecube" /></RouteChunk>} />

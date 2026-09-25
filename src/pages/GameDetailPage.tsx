@@ -194,16 +194,57 @@ export function GameDetailPage() {
    * 命中的话详情页不内嵌模拟器，改成显示一个跳 /play/<slug> 的入口。
    */
   const isolatedEmbed = isolatedEmbedFor(game?.slug)
-  /** Play! / Dolphin 固定使用 pthread，和登记过的 HTML5 游戏一样必须进隔离整页。 */
-  const isolatedPlayer = Boolean(isolatedEmbed) || isIsolatedRuntimePlatform(game?.platform)
+  /**
+   * PPSSPP 也需要跨源隔离，但它不再跳到铺满视口的精简页：服务端会直接给 PSP 的
+   * 正常详情页加 COOP/COEP，因此播放器、标题、资料与侧栏都可以和其它平台保持一致。
+   * PS2 / Dolphin 暂时仍用精简隔离页；它们的兼容性提示和启动形态另行保留。
+   */
+  const requiresIsolation = Boolean(isolatedEmbed) || isIsolatedRuntimePlatform(game?.platform)
+  const usesIsolatedLaunchCard = requiresIsolation && game?.platform !== 'psp'
+  /**
+   * 从游戏列表经 React Router 进入 PSP 页时，浏览器沿用原文档，不会重新请求 SSR 的隔离头。
+   * 自动完整刷新一次，让当前 URL 真正变成带 COOP/COEP 的顶层文档；sessionStorage 与导航类型
+   * 双重挡住响应头配置错误时的无限刷新。刷新前先不挂播放器，免得 PPSSPP 在旧文档里白启动一次。
+   */
+  const pspNeedsDocumentReload = typeof window !== 'undefined'
+    && game?.platform === 'psp'
+    && !window.crossOriginIsolated
+  const [pspIsolationReloadFailed, setPspIsolationReloadFailed] = useState(false)
+  useEffect(() => {
+    if (game?.platform !== 'psp' || typeof window === 'undefined') {
+      setPspIsolationReloadFailed(false)
+      return
+    }
+    const reloadKey = `8bitgo:psp-isolation:${window.location.pathname}`
+    if (window.crossOriginIsolated) {
+      try { window.sessionStorage.removeItem(reloadKey) } catch { /* 无痕/禁存储不影响已经隔离的页面 */ }
+      setPspIsolationReloadFailed(false)
+      return
+    }
+
+    try {
+      if (window.sessionStorage.getItem(reloadKey) === '1') {
+        setPspIsolationReloadFailed(true)
+        return
+      }
+      window.sessionStorage.setItem(reloadKey, '1')
+    } catch {
+      const navigation = window.performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined
+      if (navigation?.type === 'reload') {
+        setPspIsolationReloadFailed(true)
+        return
+      }
+    }
+    window.location.reload()
+  }, [game?.platform, game?.slug])
   /*
     只给真的会内嵌播放器的游戏预热 chunk。年龄门必须等 game 到了才挂，
     所以此时预热仍和 access 接口并行；pthread 模拟器 / 隔离页 / 不存在的游戏用不上这 240 KB，
     原先无条件预热会在玩家还没点击“开始游戏”时白白下载。
   */
   useEffect(() => {
-    if (game && !isolatedPlayer) preloadPlayer()
-  }, [game?.slug, isolatedPlayer])
+    if (game && !usesIsolatedLaunchCard) preloadPlayer()
+  }, [game?.slug, usesIsolatedLaunchCard])
   const seoTitle = game ? gameTitle(game, lang) : ''
   const seoPlatform = game ? platformMap[game.platform] : undefined
   const seoPlatformName = seoPlatform ? platformLabel(t, seoPlatform.id, seoPlatform.name) : ''
@@ -343,12 +384,24 @@ export function GameDetailPage() {
                 backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority thumb className="h-full w-full" />}
               >
                 {/*
-                  少数游戏（reVC 移植的 GTA 之类）要 SharedArrayBuffer，只能在一个
-                  跨源隔离的整页里跑，塞不进详情页 —— 详情页一开 require-corp，
-                  收录脚本和跨源封面图会被一起掐掉。
-                  这些游戏改成显示一个入口，跳到 /play/<slug>。理由见 shared/isolated-embeds.js。
+                  PSP 的普通详情页会自动换成隔离顶层文档；其余登记过的游戏与 PS2 / Dolphin
+                  暂时仍显示入口卡，再跳到 /play/<slug>。理由见 shared/isolated-embeds.js。
                 */}
-                {isolatedPlayer ? (
+                {pspNeedsDocumentReload ? (
+                  <div className={cx('flex aspect-video w-full flex-col items-center justify-center gap-4 rounded-2xl border border-line bg-black px-6 text-center text-sm text-muted', stageCap)}>
+                    <p>{pspIsolationReloadFailed ? t.runtime.ppssppNeedsIsolation : t.player.loadingEngine}</p>
+                    {pspIsolationReloadFailed && (
+                      <Button
+                        onClick={() => {
+                          try { window.sessionStorage.removeItem(`8bitgo:psp-isolation:${window.location.pathname}`) } catch { /* 仍允许用户手动再试 */ }
+                          window.location.reload()
+                        }}
+                      >
+                        {t.common.retry}
+                      </Button>
+                    )}
+                  </div>
+                ) : usesIsolatedLaunchCard ? (
                   <IsolatedPlayCard
                     frameClassName={stageCap}
                     slug={game.slug}
@@ -427,7 +480,11 @@ export function GameDetailPage() {
           */}
           {EXPERIMENTAL_PLATFORMS.has(platform.id) && (
             <p className="mt-3 rounded-xl border border-coin/40 bg-coin-soft px-3 py-2 text-xs text-muted">
-              ⚠️ {platform.runtime === 'dolphin' ? t.runtime.dolphinExperimental : t.runtime.playExperimental}
+              ⚠️ {platform.runtime === 'ppsspp'
+                ? t.runtime.ppssppExperimental
+                : platform.runtime === 'dolphin'
+                  ? t.runtime.dolphinExperimental
+                  : t.runtime.playExperimental}
             </p>
           )}
         </div>
@@ -687,7 +744,7 @@ export function GameDetailPage() {
         onClose={() => setShareOpen(false)}
         slug={game.slug}
         title={seoTitle || game.title}
-        isolated={isolatedPlayer}
+        isolated={requiresIsolation}
       />
     </div>
   )

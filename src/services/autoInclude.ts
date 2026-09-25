@@ -57,6 +57,8 @@ export function useAutoInclude() {
   const firstRun = useRef(true)
 
   useEffect(() => {
+    // PSP 正常详情页本身就是跨源隔离文档；第三方收录脚本会被 COEP 拦截，别反复制造失败请求。
+    if (globalThis.crossOriginIsolated) return
     if (firstRun.current) {
       firstRun.current = false
       // 首屏那次由 index.html 发出，这里只把 src 记下来备用，别重复推一遍

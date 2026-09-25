@@ -1606,6 +1606,24 @@ R2 multipart 发布到最终 `roms/psp/*.chd`。`.cso` / `.chd` 保持直传。
 
 回归：`cd server && npm run test:psp-conversion`；再跑根目录 `npm run build`。
 
+### 2.32.1 PSP 必须留在普通详情页内启动，不能再复用 PS2 的独立播放器外壳
+
+PPSSPP 的 pthread 仍然需要 `Cross-Origin-Opener-Policy: same-origin` 与
+`Cross-Origin-Embedder-Policy: require-corp`，但这不等于必须跳到 `/play/psp/<slug>`。
+正常 `/games/<slug>` 本来就是顶层文档：SSR 取到游戏数据并确认平台为 `psp` 后，直接给这份详情页
+加隔离头，`GameDetailPage` 同时绕过 `IsolatedPlayCard`、原地挂载 `EmulatorPlayer`。这样玩家点开始后
+仍能看到标题、资料、侧栏和普通播放器尺寸；旧 `/play/psp/*` 只为历史链接保留。站内 SPA 跳转不会
+重新请求响应头，所以第一次从列表进入 PSP 详情页时要自动完整刷新一次，并防住错误配置导致的刷新循环。
+
+⚠️ 开了 `require-corp` 后，跨域封面、视频和 ROM 响应必须明确允许被隔离页加载。公开 R2 Worker
+除了 `Access-Control-Allow-Origin: *`，还必须发
+`Cross-Origin-Resource-Policy: cross-origin`；否则页面本身正常，封面/媒体却会被浏览器静默拦截。
+隔离页也不加载字节的外部收录脚本，避免第三方响应缺 CORP 反复报错。改这套响应头后要同时部署
+站点和 `worker/standalone/rom-worker.js`，并清理 Cloudflare 已缓存的 PSP 详情页 HTML；旧缓存没有
+COOP/COEP，前端再新也拿不到 `SharedArrayBuffer`。
+
+回归：`npm run test:ppsspp && npm run test:worker`。
+
 ---
 
 ## 3. 常用命令

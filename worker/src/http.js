@@ -85,6 +85,9 @@ function objectHeaders(object, servedKey, cors, policy, guessType) {
   headers.set('Accept-Ranges', 'bytes')
   headers.set('Cache-Control', policy)
   headers.set('X-Content-Type-Options', 'nosniff')
+  // 这些对象本来就是公开读取且 CORS=*；显式允许跨源嵌入后，启用 COEP 的 PSP 详情页
+  // 仍能显示 image.8bitgo.com 的封面/视频，而不会被 require-corp 当场拦掉。
+  headers.set('Cross-Origin-Resource-Policy', 'cross-origin')
   if (!headers.has('Content-Type')) headers.set('Content-Type', guessType(servedKey))
   const filename = encodeURIComponent(servedKey.split('/').pop() || 'rom')
   headers.set('Content-Disposition', `inline; filename="${filename}"; filename*=UTF-8''${filename}`)

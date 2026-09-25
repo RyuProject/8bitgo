@@ -15,7 +15,7 @@ const fakeFile = (name, bytes) => ({
 })
 
 assert.equal(isStreamingDiscPlatform('psp'), true, 'PSP 上传必须保留裸镜像，不能进入 8BG/ZIP')
-assert.equal(isIsolatedRuntimePlatform('psp'), true, 'PPSSPP pthread 必须进入 COOP/COEP 独立页')
+assert.equal(isIsolatedRuntimePlatform('psp'), true, 'PPSSPP pthread 必须运行在带 COOP/COEP 的顶层文档')
 assert.deepEqual(isolatedRuntimeRoute('/play/psp/monster-hunter'), {
   platform: 'psp',
   slug: 'monster-hunter',
@@ -30,6 +30,15 @@ cso.set(new TextEncoder().encode('CISO'))
 assert.equal((await detectRom(fakeFile('game.cso', cso))).platform, 'psp', 'CSO 魔数应识别为 PSP')
 
 const adapter = readFileSync(new URL('../src/emulator/adapters/ppsspp.ts', import.meta.url), 'utf8')
+const detail = readFileSync(new URL('../src/pages/GameDetailPage.tsx', import.meta.url), 'utf8')
+const ssr = readFileSync(new URL('../server/src/ssr.js', import.meta.url), 'utf8')
+const workerHttp = readFileSync(new URL('../worker/src/http.js', import.meta.url), 'utf8')
+assert.match(detail, /usesIsolatedLaunchCard = requiresIsolation && game\?\.platform !== 'psp'/, 'PSP 不应再跳铺满视口的精简播放器')
+assert.match(detail, /pspNeedsDocumentReload[\s\S]*?window\.location\.reload\(\)/, '站内跳进 PSP 详情页后必须重新请求隔离文档')
+assert.match(detail, /platform\.runtime === 'ppsspp'[\s\S]*?ppssppExperimental/, 'PSP 不能再显示 PS2 实验性提示')
+assert.match(ssr, /data\?\.route === 'game' && data\.game\?\.platform === 'psp'/, 'PSP 正常详情页必须由服务端加隔离头')
+assert.match(ssr, /isolatedDocument[\s\S]*?'Cross-Origin-Opener-Policy': 'same-origin'[\s\S]*?'Cross-Origin-Embedder-Policy': 'require-corp'/, 'PSP 详情页缺少 COOP/COEP')
+assert.match(workerHttp, /'Cross-Origin-Resource-Policy', 'cross-origin'/, '隔离详情页的跨源封面会被 COEP 拦截')
 assert.match(adapter, /probeRange\(options\.game, probeController\.signal\)/)
 assert.match(adapter, /RANGE_PROBE_TIMEOUT_MS = 20_000/)
 assert.match(adapter, /probeController\.abort\(\)/)
