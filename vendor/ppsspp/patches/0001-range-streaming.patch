@@ -2,16 +2,18 @@ diff --git a/CMakeLists.txt b/CMakeLists.txt
 index 934d303..8b32c1a 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -345,6 +345,8 @@ if(EMSCRIPTEN)
+@@ -345,6 +345,10 @@ if(EMSCRIPTEN)
  	add_link_options("-sWASM_BIGINT=1")
  	add_link_options("-sPTHREAD_POOL_SIZE=Math.max(4,navigator.hardwareConcurrency||4)")
  	add_link_options("-sINCOMING_MODULE_JS_API=canvas,locateFile,print,printErr,setStatus,monitorRunDependencies,preRun,onRuntimeInitialized,onAbort,arguments,SDL2")
 +	add_link_options("-sFETCH=1")
 +	add_link_options("-sPROXY_TO_PTHREAD=1")
++	add_link_options("-sOFFSCREEN_FRAMEBUFFER=1")
  	add_link_options("-lworkerfs.js")
++	add_link_options("-lidbfs.js")
  	if(WASM_PRELOAD_ASSETS)
  		add_link_options("--preload-file" "${CMAKE_SOURCE_DIR}/assets@${CMAKE_INSTALL_FULL_DATADIR}/ppsspp/assets")
-@@ -2553,6 +2555,8 @@ set(CoreSrc
+@@ -2553,6 +2557,8 @@ set(CoreSrc
  	Core/FileLoaders/DiskCachingFileLoader.h
  	Core/FileLoaders/HTTPFileLoader.cpp
  	Core/FileLoaders/HTTPFileLoader.h
@@ -135,6 +137,240 @@ index 0000000..768a594
 +};
 +
 +#endif  // __EMSCRIPTEN__
+diff --git a/SDL/SDLGLGraphicsContext.cpp b/SDL/SDLGLGraphicsContext.cpp
+index 1c28b08..9bceb52 100644
+--- a/SDL/SDLGLGraphicsContext.cpp
++++ b/SDL/SDLGLGraphicsContext.cpp
+@@ -12,6 +12,11 @@
+ #include "Core/ConfigValues.h"
+ #include "Core/System.h"
+ 
++#if defined(__EMSCRIPTEN__)
++#include <emscripten/html5_webgl.h>
++static EMSCRIPTEN_WEBGL_CONTEXT_HANDLE g_webGLContext = 0;
++#endif
++
+ #if defined(USING_EGL)
+ #include "EGL/egl.h"
+ #endif
+@@ -316,9 +321,7 @@ int SDLGLGraphicsContext::Init(SDL_Window *&window, int x, int y, int w, int h,
+ 	};
+ 	GLVersionPair attemptVersions[] = {
+ #if defined(__EMSCRIPTEN__)
+-		// WebGL2 exposes an OpenGL ES 3.0 style context.  Do not probe 3.2/3.1
+-		// first: with OffscreenCanvas, failed retries can leave the HTML canvas
+-		// transferred and make later getContext() attempts crash.
++		// 浏览器只提供 WebGL2/GLES 3.0 这一档能力，不要先探测不存在的 3.2/3.1。
+ 		{3, 0},
+ #elif defined(USING_GLES2)
+ 		{3, 2}, {3, 1}, {3, 0}, {2, 0},
+@@ -361,11 +364,38 @@ int SDLGLGraphicsContext::Init(SDL_Window *&window, int x, int y, int w, int h,
+ 			continue;
+ 		}
+ 
++#if defined(__EMSCRIPTEN__)
++		// SDL 的 Emscripten EGL 入口会把整个建上下文函数代理到浏览器主线程：真实上下文
++		// 虽然建成了，PPSSPP 所在的 pthread 却没有 GLctx，第一次 glGet* 就会崩溃。
++		// HTML5 WebGL API 会同时建立 Worker 侧代理；OffscreenFramebuffer 再负责把后备缓冲
++		// 呈现到主线程 canvas，整个过程不转移 canvas 的所有权。
++		EmscriptenWebGLContextAttributes attrs;
++		emscripten_webgl_init_context_attributes(&attrs);
++		attrs.alpha = false;
++		attrs.depth = true;
++		attrs.stencil = true;
++		attrs.antialias = false;
++		attrs.majorVersion = 2;
++		attrs.minorVersion = 0;
++		attrs.enableExtensionsByDefault = true;
++		attrs.explicitSwapControl = true;
++		attrs.proxyContextToMainThread = EMSCRIPTEN_WEBGL_CONTEXT_PROXY_ALWAYS;
++		attrs.renderViaOffscreenBackBuffer = true;
++		g_webGLContext = emscripten_webgl_create_context("#canvas", &attrs);
++		if (g_webGLContext > 0 && emscripten_webgl_make_context_current(g_webGLContext) == EMSCRIPTEN_RESULT_SUCCESS) {
++			glContext = reinterpret_cast<SDL_GLContext>(1);
++			break;
++		}
++		if (g_webGLContext > 0)
++			emscripten_webgl_destroy_context(g_webGLContext);
++		g_webGLContext = 0;
++#else
+ 		glContext = SDL_GL_CreateContext(window);
+ 		if (glContext != nullptr) {
+-			// Victory, got one.
++			// 已成功取得平台原生 GL 上下文。
+ 			break;
+ 		}
++#endif
+ 
+ 		// Let's keep trying.  To be safe, destroy the window - docs say needed to change profile.
+ 		// in practice, it doesn't seem to matter, but maybe it differs by platform.
+@@ -375,7 +405,7 @@ int SDLGLGraphicsContext::Init(SDL_Window *&window, int x, int y, int w, int h,
+ 	if (glContext == nullptr) {
+ #if defined(__EMSCRIPTEN__)
+ 		NativeShutdown();
+-		fprintf(stderr, "SDL_GL_CreateContext failed for WebGL2/GLES 3.0: %s\n", SDL_GetError());
++		fprintf(stderr, "emscripten_webgl_create_context failed for proxied WebGL2/GLES 3.0\n");
+ 		SDL_Quit();
+ 		return 2;
+ #else
+@@ -449,7 +479,10 @@ int SDLGLGraphicsContext::Init(SDL_Window *&window, int x, int y, int w, int h,
+ 	bool success = draw_->CreatePresets();
+ 	_assert_(success);
+ 	renderManager_->SetSwapFunction([&]() {
+-#ifdef USING_EGL
++#if defined(__EMSCRIPTEN__)
++		// 显式提交让 PPSSPP 的渲染队列和 OffscreenFramebuffer 的呈现时机保持一致。
++		emscripten_webgl_commit_frame();
++#elif defined(USING_EGL)
+ 		if (useEGLSwap)
+ 			eglSwapBuffers(g_eglDisplay, g_eglSurface);
+ 		else
+@@ -461,7 +494,9 @@ int SDLGLGraphicsContext::Init(SDL_Window *&window, int x, int y, int w, int h,
+ 
+ 	renderManager_->SetSwapIntervalFunction([&](int interval) {
+ 		INFO_LOG(Log::G3D, "SDL SwapInterval: %d", interval);
++#if !defined(__EMSCRIPTEN__)
+ 		SDL_GL_SetSwapInterval(interval);
++#endif
+ 	});
+ 
+ 	window_ = window;
+@@ -476,7 +511,13 @@ void SDLGLGraphicsContext::ShutdownFromRenderThread() {
+ #ifdef USING_EGL
+ 	EGL_Close();
+ #endif
++#if defined(__EMSCRIPTEN__)
++	if (g_webGLContext > 0)
++		emscripten_webgl_destroy_context(g_webGLContext);
++	g_webGLContext = 0;
++#else
+ 	SDL_GL_DeleteContext(glContext);
++#endif
+ 	glContext = nullptr;
+ 	window_ = nullptr;
+ }
+diff --git a/Common/GPU/OpenGL/GLCommon.h b/Common/GPU/OpenGL/GLCommon.h
+index 26f9220d7..adba7ab35 100644
+--- a/Common/GPU/OpenGL/GLCommon.h
++++ b/Common/GPU/OpenGL/GLCommon.h
+@@ -6,8 +6,15 @@
+ #include <OpenGLES/ES3/gl.h>
+ #include <OpenGLES/ES3/glext.h>
+ #elif defined(USING_GLES2)
++#if defined(__EMSCRIPTEN__)
++// WebGL2 的 GLES3 入口由 Emscripten 直接提供。继续套用移动端的动态函数指针桩会让
++// OFFSCREEN_FRAMEBUFFER 提供的 GL 函数与同名数据符号冲突，最终无法链接。
++#include <GLES3/gl3.h>
++#include <GLES2/gl2ext.h>
++#else
+ #include <GLES2/gl2.h>
+ #include <GLES2/gl2ext.h>
++#endif
+ #define GL_BGRA_EXT 0x80E1
+ #else // OpenGL
+ #include "GL/glew.h"
+diff --git a/Common/GPU/OpenGL/gl3stub.c b/Common/GPU/OpenGL/gl3stub.c
+index 2c0a90744..8a43516cb 100644
+--- a/Common/GPU/OpenGL/gl3stub.c
++++ b/Common/GPU/OpenGL/gl3stub.c
+@@ -22,6 +22,7 @@
+ #if !PPSSPP_PLATFORM(IOS)
+ 
+ #ifdef __EMSCRIPTEN__
++#if 0
+ #include <SDL2/SDL.h>
+ #include <stdio.h>
+ 
+@@ -159,6 +160,33 @@ GLboolean gl3stubInit() {
+     // Core WebGL2 functions must be present; optional EXT functions may be null.
+     return GL_TRUE;
+ }
++#endif
++
++// WebGL2 的核心 GLES3 入口由 Emscripten 直接提供；只有浏览器扩展继续动态查询。
++#include <SDL2/SDL.h>
++
++GL_APICALL void  (* GL_APIENTRY glQueryCounter) (GLuint id, GLenum target);
++GL_APICALL void  (* GL_APIENTRY glGetQueryObjecti64v) (GLuint id, GLenum pname, GLint64 *params);
++GL_APICALL void  (* GL_APIENTRY glGetQueryObjectui64v) (GLuint id, GLenum pname, GLuint64 *params);
++GL_APICALL void  (* GL_APIENTRY glBindFragDataLocationIndexedEXT) (GLuint program, GLuint colorNumber, GLuint index, const GLchar *name);
++GL_APICALL void  (* GL_APIENTRY glBindFragDataLocationEXT) (GLuint program, GLuint color, const GLchar *name);
++GL_APICALL GLint (* GL_APIENTRY glGetProgramResourceLocationIndexEXT) (GLuint program, GLenum programInterface, const GLchar *name);
++GL_APICALL GLint (* GL_APIENTRY glGetFragDataIndexEXT) (GLuint program, const GLchar *name);
++GL_APICALL void  (* GL_APIENTRY glBufferStorageEXT) (GLenum target, GLsizeiptr size, const void *data, GLbitfield flags);
++GL_APICALL void  (* GL_APIENTRY glCopyImageSubDataOES) (GLuint srcName, GLenum srcTarget, GLint srcLevel, GLint srcX, GLint srcY, GLint srcZ, GLuint dstName, GLenum dstTarget, GLint dstLevel, GLint dstX, GLint dstY, GLint dstZ, GLsizei width, GLsizei height, GLsizei depth);
++
++GLboolean gl3stubInit() {
++	glQueryCounter = (void *)SDL_GL_GetProcAddress("glQueryCounterEXT");
++	glGetQueryObjecti64v = (void *)SDL_GL_GetProcAddress("glGetQueryObjecti64vEXT");
++	glGetQueryObjectui64v = (void *)SDL_GL_GetProcAddress("glGetQueryObjectui64vEXT");
++	glBindFragDataLocationIndexedEXT = (void *)SDL_GL_GetProcAddress("glBindFragDataLocationIndexedEXT");
++	glBindFragDataLocationEXT = (void *)SDL_GL_GetProcAddress("glBindFragDataLocationEXT");
++	glGetProgramResourceLocationIndexEXT = (void *)SDL_GL_GetProcAddress("glGetProgramResourceLocationIndexEXT");
++	glGetFragDataIndexEXT = (void *)SDL_GL_GetProcAddress("glGetFragDataIndexEXT");
++	glBufferStorageEXT = (void *)SDL_GL_GetProcAddress("glBufferStorageEXT");
++	glCopyImageSubDataOES = (void *)SDL_GL_GetProcAddress("glCopyImageSubDataOES");
++	return GL_TRUE;
++}
+ #else
+ 
+ #include "EGL/egl.h"
+@@ -402,6 +430,7 @@ GLboolean gl3stubInit() {
+ }
+ #endif // !__EMSCRIPTEN__
+ 
++#ifndef __EMSCRIPTEN__
+ /* Function pointer definitions */
+ GL_APICALL void           (* GL_APIENTRY glReadBuffer) (GLenum mode);
+ GL_APICALL void           (* GL_APIENTRY glDrawRangeElements) (GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const GLvoid* indices);
+@@ -525,6 +554,7 @@ GL_APICALL void           (* GL_APIENTRY glBufferStorageEXT) (GLenum target, GLs
+ 
+ /* OES_copy_image, etc. */
+ GL_APICALL void           (* GL_APIENTRY glCopyImageSubDataOES) (GLuint srcName, GLenum srcTarget, GLint srcLevel, GLint srcX, GLint srcY, GLint srcZ, GLuint dstName, GLenum dstTarget, GLint dstLevel, GLint dstX, GLint dstY, GLint dstZ, GLsizei width, GLsizei height, GLsizei depth);
++#endif
+ 
+ #else
+ 
+diff --git a/Common/GPU/OpenGL/gl3stub.h b/Common/GPU/OpenGL/gl3stub.h
+index 70f0217f7..40b1fbb9f 100644
+--- a/Common/GPU/OpenGL/gl3stub.h
++++ b/Common/GPU/OpenGL/gl3stub.h
+@@ -15,6 +15,27 @@
+ 
+ #if defined(USING_GLES2)
+ 
++#ifdef __EMSCRIPTEN__
++#include <GLES3/gl3.h>
++#include <GLES2/gl2ext.h>
++#ifdef __cplusplus
++extern "C" {
++#endif
++GLboolean gl3stubInit();
++extern GL_APICALL void  (* GL_APIENTRY glQueryCounter) (GLuint id, GLenum target);
++extern GL_APICALL void  (* GL_APIENTRY glGetQueryObjecti64v) (GLuint id, GLenum pname, GLint64 *params);
++extern GL_APICALL void  (* GL_APIENTRY glGetQueryObjectui64v) (GLuint id, GLenum pname, GLuint64 *params);
++extern GL_APICALL void  (* GL_APIENTRY glBindFragDataLocationIndexedEXT) (GLuint program, GLuint colorNumber, GLuint index, const GLchar *name);
++extern GL_APICALL void  (* GL_APIENTRY glBindFragDataLocationEXT) (GLuint program, GLuint color, const GLchar *name);
++extern GL_APICALL GLint (* GL_APIENTRY glGetProgramResourceLocationIndexEXT) (GLuint program, GLenum programInterface, const GLchar *name);
++extern GL_APICALL GLint (* GL_APIENTRY glGetFragDataIndexEXT) (GLuint program, const GLchar *name);
++extern GL_APICALL void  (* GL_APIENTRY glBufferStorageEXT) (GLenum target, GLsizeiptr size, const void *data, GLbitfield flags);
++extern GL_APICALL void  (* GL_APIENTRY glCopyImageSubDataOES) (GLuint srcName, GLenum srcTarget, GLint srcLevel, GLint srcX, GLint srcY, GLint srcZ, GLuint dstName, GLenum dstTarget, GLint dstLevel, GLint dstX, GLint dstY, GLint dstZ, GLsizei width, GLsizei height, GLsizei depth);
++#ifdef __cplusplus
++}
++#endif
++#else
++
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
+@@ -524,5 +545,6 @@ extern GL_APICALL void           (* GL_APIENTRY glCopyImageSubDataOES) (GLuint s
+ }
+ #endif
+ 
+-#endif   // USING_GLES2
++#endif   // __EMSCRIPTEN__
+ 
++#endif   // USING_GLES2
 diff --git a/Core/FileLoaders/WasmRangeFileLoader.cpp b/Core/FileLoaders/WasmRangeFileLoader.cpp
 new file mode 100644
 index 0000000..b04142a

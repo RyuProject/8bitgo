@@ -1,0 +1,193 @@
+--- a/SDL/SDLMain.cpp
++++ b/SDL/SDLMain.cpp
+@@ -259,9 +259,151 @@
+ }
+ 
+ static SDL_AudioDeviceID audioDev = 0;
++
++#ifdef __EMSCRIPTEN__
++// SDL2 的 WebAudio 驱动会让浏览器主线程直接 dynCall C 音频回调。PROXY_TO_PTHREAD 下
++// PPSSPP 的 main 和线程局部状态都在 Worker，那条跨线程回调会破坏运行时状态。
++// 这里改成 Worker 主循环产出 PCM，浏览器主线程只从共享 Wasm 内存播放，不再回调 Wasm。
++static constexpr uint32_t WASM_AUDIO_RING_FRAMES = 16384;
++static constexpr uint32_t WASM_AUDIO_RING_MASK = WASM_AUDIO_RING_FRAMES - 1;
++static constexpr uint32_t WASM_AUDIO_TARGET_FRAMES = 4096;
++static constexpr uint32_t WASM_AUDIO_CHUNK_FRAMES = 1024;
++alignas(64) static float g_wasmAudioRing[WASM_AUDIO_RING_FRAMES * 2];
++alignas(64) static uint32_t g_wasmAudioRead = 0;
++alignas(64) static uint32_t g_wasmAudioWrite = 0;
++static std::vector<float> g_wasmAudioScratch;
++static bool g_wasmAudioReady = false;
++
++static bool InitWasmAudioBridge() {
++	__atomic_store_n(&g_wasmAudioRead, 0, __ATOMIC_RELEASE);
++	__atomic_store_n(&g_wasmAudioWrite, 0, __ATOMIC_RELEASE);
++	const int sampleRate = MAIN_THREAD_EM_ASM_INT({
++		const AudioContextClass = globalThis.AudioContext || globalThis.webkitAudioContext;
++		if (!AudioContextClass)
++			return 0;
++
++		const previous = Module['__ppssppAudio'];
++		if (previous) {
++			try { previous.node.disconnect(); } catch (_) {}
++			try { previous.context.close(); } catch (_) {}
++		}
++
++		const context = new AudioContextClass({ latencyHint: 'interactive' });
++		const node = context.createScriptProcessor($4, 0, 2);
++		const readSlot = $0 >>> 2;
++		const writeSlot = $1 >>> 2;
++		const ringBase = $2 >>> 2;
++		const ringMask = $3 >>> 0;
++		node.onaudioprocess = (event) => {
++			growMemViews();
++			const left = event.outputBuffer.getChannelData(0);
++			const right = event.outputBuffer.getChannelData(1);
++			let read = Atomics.load(HEAPU32, readSlot) >>> 0;
++			const write = Atomics.load(HEAPU32, writeSlot) >>> 0;
++			const available = Math.min((write - read) >>> 0, ringMask + 1);
++			const copied = Math.min(left.length, available);
++			for (let i = 0; i < copied; ++i) {
++				const sample = ringBase + (((read + i) & ringMask) * 2);
++				left[i] = HEAPF32[sample];
++				right[i] = HEAPF32[sample + 1];
++			}
++			if (copied < left.length) {
++				left.fill(0, copied);
++				right.fill(0, copied);
++			}
++			if (copied)
++				Atomics.store(HEAPU32, readSlot, (read + copied) >>> 0);
++		};
++		node.connect(context.destination);
++		const resume = () => {
++			if (context.state === 'suspended')
++				context.resume().catch(() => {});
++		};
++		resume();
++		document.addEventListener('pointerdown', resume, { capture: true, passive: true });
++		document.addEventListener('keydown', resume, { capture: true });
++		const audio = {};
++		audio.context = context;
++		audio.node = node;
++		audio.resume = resume;
++		Module['__ppssppAudio'] = audio;
++		return context.sampleRate | 0;
++	}, &g_wasmAudioRead, &g_wasmAudioWrite, g_wasmAudioRing, WASM_AUDIO_RING_MASK, 2048);
+ 
++	if (sampleRate <= 0) {
++		ERROR_LOG(Log::Audio, "Web Audio API is not available");
++		return false;
++	}
++	g_sampleRate = sampleRate;
++	g_retFmt.freq = sampleRate;
++	g_retFmt.format = AUDIO_F32;
++	g_retFmt.channels = 2;
++	g_retFmt.samples = 2048;
++	g_wasmAudioReady = true;
++	INFO_LOG(Log::Audio, "Wasm audio bridge started: freq=%d samples=%d", sampleRate, g_retFmt.samples);
++	return true;
++}
++
++static void PumpWasmAudioBridge() {
++	if (!g_wasmAudioReady)
++		return;
++	uint32_t read = __atomic_load_n(&g_wasmAudioRead, __ATOMIC_ACQUIRE);
++	uint32_t write = __atomic_load_n(&g_wasmAudioWrite, __ATOMIC_RELAXED);
++	uint32_t queued = write - read;
++	if (queued > WASM_AUDIO_RING_FRAMES) {
++		// 主线程若曾长期挂起，丢掉无法解释的旧游标比播放陈旧声音更安全。
++		read = write;
++		queued = 0;
++		__atomic_store_n(&g_wasmAudioRead, read, __ATOMIC_RELEASE);
++	}
++
++	while (queued < WASM_AUDIO_TARGET_FRAMES) {
++		const uint32_t frames = std::min({
++			WASM_AUDIO_CHUNK_FRAMES,
++			WASM_AUDIO_TARGET_FRAMES - queued,
++			WASM_AUDIO_RING_FRAMES - queued,
++		});
++		if (!frames)
++			break;
++		g_wasmAudioScratch.resize(frames * 2);
++		sdl_mixaudio_callback(nullptr, reinterpret_cast<Uint8 *>(g_wasmAudioScratch.data()),
++			(int)(frames * 2 * sizeof(float)));
++
++		const uint32_t at = write & WASM_AUDIO_RING_MASK;
++		const uint32_t first = std::min(frames, WASM_AUDIO_RING_FRAMES - at);
++		memcpy(&g_wasmAudioRing[at * 2], g_wasmAudioScratch.data(), first * 2 * sizeof(float));
++		if (first < frames) {
++			memcpy(g_wasmAudioRing, g_wasmAudioScratch.data() + first * 2,
++				(frames - first) * 2 * sizeof(float));
++		}
++		write += frames;
++		queued += frames;
++		__atomic_store_n(&g_wasmAudioWrite, write, __ATOMIC_RELEASE);
++	}
++}
++
++static void StopWasmAudioBridge() {
++	g_wasmAudioReady = false;
++	MAIN_THREAD_EM_ASM({
++		const audio = Module['__ppssppAudio'];
++		if (!audio)
++			return;
++		document.removeEventListener('pointerdown', audio.resume, { capture: true });
++		document.removeEventListener('keydown', audio.resume, { capture: true });
++		try { audio.node.disconnect(); } catch (_) {}
++		try { audio.context.close(); } catch (_) {}
++		delete Module['__ppssppAudio'];
++	});
++}
++#endif
++
+ // Must be called after NativeInit().
+ static void InitSDLAudioDevice(const std::string &name = "") {
++#ifdef __EMSCRIPTEN__
++	// 不打开 SDL WebAudio 设备：它的 ScriptProcessor 会从浏览器主线程直接回调 pthread Wasm。
++	InitWasmAudioBridge();
++	return;
++#else
+ 	SDL_AudioSpec fmt;
+ 	memset(&fmt, 0, sizeof(fmt));
+ 	fmt.freq = g_sampleRate;
+@@ -336,13 +478,18 @@
+ 				g_retFmt.freq, g_retFmt.format, g_retFmt.channels, g_retFmt.samples);
+ 		}
+ 	}
++#endif
+ }
+ 
+ static void StopSDLAudioDevice() {
++#ifdef __EMSCRIPTEN__
++	StopWasmAudioBridge();
++#else
+ 	if (audioDev > 0) {
+ 		SDL_PauseAudioDevice(audioDev, 1);
+ 		SDL_CloseAudioDevice(audioDev);
+ 	}
++#endif
+ }
+ 
+ static void UpdateScreenDPI(SDL_Window *window) {
+@@ -1686,6 +1833,7 @@
+ 	InputStateTracker *inputTracker = state->inputTracker;
+ 
+ 	UpdateEmscriptenMainLoopTiming();
++	PumpWasmAudioBridge();
+ 
+ 	{
+ 		SDL_Event event;
+@@ -2326,10 +2474,7 @@
+ 	graphicsContext->Shutdown();
+ 	delete graphicsContext;
+ 
+-	if (audioDev > 0) {
+-		SDL_PauseAudioDevice(audioDev, 1);
+-		SDL_CloseAudioDevice(audioDev);
+-	}
++	StopSDLAudioDevice();
+ 	SDL_Quit();
+ #if PPSSPP_PLATFORM(RPI)
+ 	bcm_host_deinit();

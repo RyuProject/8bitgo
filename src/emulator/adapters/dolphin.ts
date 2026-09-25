@@ -189,7 +189,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   options.onCaps?.(caps)
   options.onProgress?.({ phase: 'engine', loaded: 0 })
   container.replaceChildren(iframe)
-  iframe.src = `${DOLPHIN_PATH}index.html?embed=1`
+  // 入口代次绕开旧的“删 index.html”301 边缘缓存；核心目录本身已经带构建版本。
+  iframe.src = `${DOLPHIN_PATH}index.html?embed=1&r=1`
   hostTimer = window.setTimeout(() => {
     if (!destroyed && !ready) options.onError?.(rt.dolphinStartTimeout)
   }, HOST_TIMEOUT_MS)

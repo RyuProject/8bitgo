@@ -476,7 +476,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /* ---- 观众端链路质量采样 ---- */
   let linkTimer = 0
   /** 上一轮的累计值，用来算这一段区间的增量（getStats 给的是从头累计的） */
-  let lastPkts = { received: 0, lost: 0 }
+  let lastPkts = { received: 0, lost: 0, bytes: 0, at: 0 }
 
   /**
    * 读一轮 inbound-rtp，判断「卡是谁的问题」。
@@ -495,6 +495,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     let fps = 0
     let received = 0
     let lost = 0
+    let bytes = 0
     let rttMs = 0
     report.forEach((stat) => {
       const t = stat as RTCStats & {
@@ -502,12 +503,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         framesPerSecond?: number
         packetsReceived?: number
         packetsLost?: number
+        bytesReceived?: number
         state?: string
         currentRoundTripTime?: number
       }
       if (t.type === 'inbound-rtp' && t.kind === 'video') {
         if (typeof t.framesPerSecond === 'number') fps = t.framesPerSecond
         if (typeof t.packetsReceived === 'number') received += t.packetsReceived
+        if (typeof t.bytesReceived === 'number') bytes += t.bytesReceived
         // packetsLost 可以是负数（重排序被算回来），夹到 0
         if (typeof t.packetsLost === 'number') lost += Math.max(0, t.packetsLost)
       } else if (t.type === 'candidate-pair' && t.state === 'succeeded' && typeof t.currentRoundTripTime === 'number') {
@@ -517,10 +520,18 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
     const dRecv = Math.max(0, received - lastPkts.received)
     const dLost = Math.max(0, lost - lastPkts.lost)
-    lastPkts = { received, lost }
+    const now = performance.now()
+    const elapsed = lastPkts.at > 0 ? Math.max(1, now - lastPkts.at) : LINK_STATS_INTERVAL_MS
+    const dBytes = Math.max(0, bytes - lastPkts.bytes)
+    lastPkts = { received, lost, bytes, at: now }
     // 这一段区间里几乎没收到包就别下结论 —— 样本太小，判什么都是噪声
     if (dRecv + dLost < 50) return
     const loss = dLost / (dRecv + dLost)
+    const kbps = Math.round((dBytes * 8) / elapsed)
+
+    // 每位观众只把自己的质量回给主播；主播据此只调这一条 sender。
+    // 走已有 DataChannel，不经过信令服务器，也不会让弱网观众拖累全房。
+    sendCoop({ t: 'q', loss, rtt: rttMs, fps: Math.round(fps), kbps })
 
     const verdict: LinkQuality['verdict'] =
       loss >= LOSS_BAD ? 'local' : fps > 0 && fps < ASSUMED_HOST_FPS * HOST_SLOW_RATIO ? 'host' : 'ok'
@@ -539,7 +550,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
     // 有画面了才开始采样：没画面时读出来的全是握手期的噪声
     if (!linkTimer) {
-      lastPkts = { received: 0, lost: 0 }
+      lastPkts = { received: 0, lost: 0, bytes: 0, at: 0 }
       linkTimer = window.setInterval(() => void sampleLink(), LINK_STATS_INTERVAL_MS)
     }
     live.onState?.(hostFrozen ? 'host-away' : 'watching')
@@ -576,7 +587,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 「我主动下场」这条路上房主是被动的，等他察觉之前那几百毫秒里键还按着。
    */
   const releaseCoopKeys = () => {
-    for (const b of [...coopDown]) sendCoop({ t: 'k', b, d: false })
+    for (const b of coopDown) sendCoop({ t: 'k', b, d: false })
     coopDown.clear()
   }
 

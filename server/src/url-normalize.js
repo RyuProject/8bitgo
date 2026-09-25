@@ -18,7 +18,7 @@ import { tvRedirect } from '../../shared/tv-host.js'
  * 指向了无斜杠那份，搜索引擎最终不会重复收录 —— 但两份都会被抓、外链权重也散在
  * 两个 URL 上。一次 301 就把它们合并了，也顺带让日志和统计只剩一种写法。
  *
- * ── 二、`/index.html` → `/`（2026-09-07，Search Console 报出来的）────
+ * ── 二、站点页面的 `/index.html` → `/`（2026-09-07，Search Console 报出来的）─
  * `index.html` 是 `dist/client/` 里一个**真实文件**，而 `express.static` 的
  * `index: false` 只关掉「**目录**请求自动吐 index.html」，**不阻止**显式请求
  * `/index.html` —— 那条请求直接被静态中间件吐了原始构建模板，**绕过 SSR**。
@@ -31,6 +31,8 @@ import { tvRedirect } from '../../shared/tv-host.js'
  *      所以 Search Console 报的是**「被 noindex 标记排除」**，而 curl 看到的是
  *      `index,follow` —— 两边看起来矛盾，其实是渲染前后两个阶段。
  * 归一到目录本身，这个 URL 就不存在了。`/it/index.html` 同理 → `/it`。
+ * 但模拟器和网页游戏目录里的 `index.html` 是**真实运行入口**，绝不能去掉；PPSSPP 曾因此
+ * 被 301 到不存在的 `/ppsspp/<版本>`，iframe 最终 404，玩家只看到黑框。
  *
  * ── 三、`www.` → 裸域（2026-09-07，同一份 Search Console 报告查出来的）──
  * `www.8bitgo.com` 之前**整站都能打开**，一条重定向都没有 —— 每个页面都有两份，
@@ -55,8 +57,9 @@ import { tvRedirect } from '../../shared/tv-host.js'
  *  2. **必须先把开头的多余斜杠折掉**。`//evil.com/` 的 pathname 就是 `//evil.com/`，
  *     直接去尾会得到 `//evil.com` —— 那是协议相对 URL，等于开了一个跳到外站的开放重定向。
  *  3. 用 originalUrl 切出 pathname 和查询串，保持原有的百分号编码不被重新编码一遍。
- *  4. 去 `index.html` 的正则必须锚在 `(^|/)` 和 `$` 上：少了前面那半，`/myindex.html`
- *     会被切成 `/my`；少了后面那半，`/assets/index-abc.js` 之类也会中招。
+ *  4. 去站点页 `index.html` 的正则必须锚在 `(^|/)` 和 `$` 上：少了前面那半，
+ *     `/myindex.html` 会被切成 `/my`；少了后面那半，`/assets/index-abc.js` 之类也会中招。
+ *     `dolphin` / `j2me` / `ppsspp` / `web` 四个公开运行时根目录必须跳过这一刀。
  *  5. 比 host 之前要先把端口切掉（`www.8bitgo.com:8080`）、转小写、并且认一下
  *     `X-Forwarded-Host` —— 见下面 `requestHostname()` 的注释。
  *
@@ -101,6 +104,13 @@ export function requestHostname(req) {
   return String(raw).split(',')[0].trim().toLowerCase().replace(/:\d+$/, '')
 }
 
+/** 这些目录里的 index.html 是 iframe / 网页游戏真入口，不是站点页面的重复 URL。 */
+const RUNTIME_INDEX_ROOTS = new Set(['dolphin', 'j2me', 'ppsspp', 'web'])
+function isRuntimeIndexPath(pathname) {
+  const parts = pathname.replace(/^\/+/, '').split('/')
+  return RUNTIME_INDEX_ROOTS.has(parts[0]) && /^index\.html$/i.test(parts.at(-1) || '')
+}
+
 export function normalizeUrl(req, res, next) {
   if (req.method !== 'GET' && req.method !== 'HEAD') return next()
   const cut = req.originalUrl.indexOf('?')
@@ -109,8 +119,8 @@ export function normalizeUrl(req, res, next) {
   if (pathname.startsWith('/api/')) return next()
   // 开头的多余斜杠先折掉（见注意 2），再去尾斜杠
   let clean = '/' + pathname.replace(/^\/+/, '').replace(/\/+$/, '')
-  // 显式请求的 index.html 归到它所在的目录：/index.html → /、/it/index.html → /it
-  clean = clean.replace(/(^|\/)index\.html$/i, '')
+  // 只归一站点页面；模拟器内部的 index.html 是实际文件，去掉就会把 iframe 送进 404。
+  if (!isRuntimeIndexPath(clean)) clean = clean.replace(/(^|\/)index\.html$/i, '')
   if (clean === '') clean = '/'
 
   // host 归一和路径归一合成同一次 301（见开头）。带上 origin 就是跨主机跳转，

@@ -55,6 +55,7 @@ import { normalizeDosStartupCommands } from '../../shared/dos-startup-commands.j
 import { probeRange } from '@/emulator/remoteDisc'
 import { isRomPackBytes, isRomPackUrl, packRomForUpload, romPackKey, verifyRomPackBlob } from '@/services/romPack'
 import { isStreamingDiscPlatform } from '../../shared/streaming-disc-platforms.js'
+import { flashCompatibilityIssue } from '@/emulator/flashCompatibility'
 import {
   createPspConversion,
   pspChdKey,
@@ -1833,6 +1834,21 @@ function RomField({
       await openBundle(file)
       if (inputRef.current) inputRef.current.value = ''
       return
+    }
+    if (isFlash && /\.swf$/i.test(file.name)) {
+      setMsg({ ok: true, text: `正在检查 ${file.name} 的网页兼容性…` })
+      try {
+        const issue = await flashCompatibilityIssue(await file.arrayBuffer())
+        if (issue) {
+          setMsg({ ok: false, text: `${issue.message}；这份文件没有上传` })
+          if (inputRef.current) inputRef.current.value = ''
+          return
+        }
+      } catch (error) {
+        setMsg({ ok: false, text: error instanceof Error ? `无法检查 SWF：${error.message}` : '无法检查 SWF' })
+        if (inputRef.current) inputRef.current.value = ''
+        return
+      }
     }
     if (platform === 'dos' && dosEntry?.trim() && /\.zip$/i.test(file.name)) {
       try {

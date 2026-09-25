@@ -9,6 +9,8 @@ compatibility_date = "2026-01-01"
 # R2 binding 直接返回的响应不会仅凭 Cache-Control 自动进入边缘缓存。
 routes = [
   { pattern = "assets.8bitgo.com/*", zone_name = "8bitgo.com" },
+  # 封面独立域名也必须经过同一个 Worker，才能带 CORS / CORP 并读取 COVERS 桶。
+  { pattern = "image.8bitgo.com/*", zone_name = "8bitgo.com" },
 ]
 
 [[r2_buckets]]

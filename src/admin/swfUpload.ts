@@ -15,6 +15,7 @@ import { extractZipEntry } from '@/lib/unzip'
 import type { SwfBundleFile } from '@/lib/swfBundle'
 import { deleteRom, listRomDir, uploadRom } from '@/services/roms'
 import { human } from './uploadGuards'
+import { flashCompatibilityIssue } from '@/emulator/flashCompatibility'
 
 export interface BundleUploadProgress {
   /** 已经传完的文件数 */
@@ -71,6 +72,15 @@ export async function uploadSwfBundle({
   if (!picked.length) throw new Error('一个文件都没勾选')
   if (!main) throw new Error('还没选主 SWF')
   if (!picked.some((f) => f.path === main)) throw new Error(`主 SWF ${main} 没有被勾选上传`)
+
+  /*
+    整包也要在第一个 PUT 之前检查主 SWF。放进上传循环里才检查会留下“前几个素材已经上传、
+    主文件被拦”的半成品目录；下一次排查时看见文件都在，反而更像 Ruffle 的问题。
+  */
+  const mainFile = picked.find((file) => file.path === main)!
+  const mainData = await extractZipEntry(zip, mainFile.entry)
+  const compatibilityIssue = await flashCompatibilityIssue(new Uint8Array(mainData).buffer)
+  if (compatibilityIssue) throw new Error(`${main}：${compatibilityIssue.message}；整包没有上传`)
 
   const base = dir.replace(/\/+$/, '')
   const keyOf = (path: string) => `${base}/${path}`

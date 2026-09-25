@@ -174,7 +174,11 @@ export interface MountOptions {
   onStart?: () => void
   /** HTML5 子页面通过运行时桥确认玩家第一次真实输入。其它运行时由播放器统一监听。 */
   onFirstInteraction?: () => void
-  onError?: (message: string) => void
+  /**
+   * scope = runtime 表示播放器外壳 / 引擎本身没起来，不是 ROM 内容坏了。
+   * 父层据此禁止切换语言或备用 ROM；换多少份内容都修不好同一个运行时故障。
+   */
+  onError?: (message: string, scope?: 'runtime' | 'content') => void
   /**
    * 「这份 ROM 我跑不了，换个引擎吧」—— 和 onError 是两回事。
    *

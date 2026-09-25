@@ -32,7 +32,7 @@ const k = (b, d) => encode({ t: 'k', b, d })
 
 /* ---------------- 一、解析：拿不准的一律 null ---------------- */
 
-check('认得四种消息', () => {
+check('认得控制与质量消息', () => {
   assert.deepEqual(parse('{"t":"want"}'), { t: 'want' })
   assert.deepEqual(parse(k('left', true)), { t: 'k', b: 'left', d: true })
   assert.deepEqual(parse('{"t":"hello","coop":true,"buttons":["up","a"]}'), {
@@ -42,6 +42,9 @@ check('认得四种消息', () => {
   })
   assert.deepEqual(parse('{"t":"seat","on":false}'), { t: 'seat', on: false })
   assert.deepEqual(parse('{"t":"leave"}'), { t: 'leave' })
+  assert.deepEqual(parse('{"t":"q","loss":0.04,"rtt":320,"fps":24,"kbps":900}'), {
+    t: 'q', loss: 0.04, rtt: 320, fps: 24, kbps: 900,
+  })
 })
 
 check('⚠️ 脏输入一个都不许放过', () => {
@@ -56,6 +59,8 @@ check('⚠️ 脏输入一个都不许放过', () => {
     '{"t":"hello"}',                      // 缺 coop
     '{"t":"seat"}',                       // 缺 on
     '{"t":"whatever"}',
+    '{"t":"q","loss":-1,"rtt":20,"fps":30,"kbps":500}',
+    '{"t":"q","loss":0.1,"rtt":null,"fps":30,"kbps":500}',
     JSON.stringify({ t: 'k', b: 'left', d: true, extra: 'x'.repeat(MAX_MSG_LEN) }), // 超长
   ]
   for (const raw of bad) assert.equal(parse(raw), null, `应当拒绝：${String(raw).slice(0, 40)}`)
@@ -115,6 +120,7 @@ check('房主发的那两种消息，房主自己收到时必须丢（只可能�
   g.grant('v')
   assert.equal(g.admit('v', '{"t":"seat","on":true}'), null)
   assert.equal(g.admit('v', '{"t":"hello","coop":true}'), null)
+  assert.equal(g.admit('v', '{"t":"q","loss":0,"rtt":20,"fps":30,"kbps":500}'), null, '质量消息不能混进按键闸')
 })
 
 /* ---------------- 三、松键：这个功能最要紧的性质 ---------------- */

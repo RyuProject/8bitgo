@@ -249,6 +249,51 @@ export function sizeOfTrack(track: MediaStreamTrack | null | undefined): { width
   }
 }
 
+type TuningJob = {
+  latest: VideoTuning | null
+  running: boolean
+}
+
+/**
+ * 同一条 sender 的 setParameters 必须串行。
+ *
+ * 网络档位和主播 CPU 档位可能在同一轮统计里一起变化；直接并发调用时，Chromium 会拒绝其中一次，
+ * 更糟的是调用方已经记住「档位改过了」，之后不会重试。这里只保留等待期间的最新值，旧值不排队，
+ * 既避免 InvalidModificationError，也避免网络抖动积出一长串过期参数。
+ */
+const tuningJobs = new WeakMap<RTCRtpSender, TuningJob>()
+
+async function drainTuning(sender: RTCRtpSender, job: TuningJob): Promise<void> {
+  if (job.running) return
+  job.running = true
+  try {
+    while (job.latest) {
+      const tuning = job.latest
+      job.latest = null
+      try {
+        const params = sender.getParameters()
+        if (!params.encodings?.length) params.encodings = [{}]
+        for (const e of params.encodings) {
+          e.maxBitrate = tuning.maxBitrate
+          e.maxFramerate = tuning.maxFramerate
+          // 主播播放器可能是原生画面的 5 倍；编码前缩回真实信息量，能同时省掉每位观众
+          // 那一路的编码 CPU 和上行，且不会损失游戏本来就不存在的细节。
+          e.scaleResolutionDownBy = tuning.scaleResolutionDownBy
+        }
+        ;(params as RTCRtpSendParameters & { degradationPreference?: string }).degradationPreference =
+          tuning.degradationPreference
+        await sender.setParameters(params)
+      } catch {
+        /* 老浏览器 / 协商切换期失败只代表少一层优化；若期间来了新值，循环仍会继续尝试最新值。 */
+      }
+    }
+  } finally {
+    job.running = false
+    if (!job.latest) tuningJobs.delete(sender)
+    else void drainTuning(sender, job)
+  }
+}
+
 /**
  * 把参数写到发送端上。
  *
@@ -264,25 +309,13 @@ export function applyTuning(sender: RTCRtpSender, tuning: VideoTuning): void {
   } catch {
     /* 老浏览器没有 contentHint */
   }
-  try {
-    const params = sender.getParameters()
-    if (!params.encodings?.length) params.encodings = [{}]
-    for (const e of params.encodings) {
-      e.maxBitrate = tuning.maxBitrate
-      e.maxFramerate = tuning.maxFramerate
-      /*
-        编码前先缩回原生（见 encodeScaleFor）。这一条是**主播端性能和上行流量**的大头：
-        恐龙快打实测 2079×1098 → 424×224，像素数降 26 倍，码率从顶满的 6Mbps 降到 1Mbps。
-        观众看到的清晰度不降反升 —— 缩掉的那些像素本来就是插值出来的。
-      */
-      e.scaleResolutionDownBy = tuning.scaleResolutionDownBy
-    }
-    ;(params as RTCRtpSendParameters & { degradationPreference?: string }).degradationPreference =
-      tuning.degradationPreference
-    void sender.setParameters(params)
-  } catch {
-    /* 浏览器不支持就按默认来，只是少一层优化 */
+  let job = tuningJobs.get(sender)
+  if (!job) {
+    job = { latest: null, running: false }
+    tuningJobs.set(sender, job)
   }
+  job.latest = tuning
+  void drainTuning(sender, job)
 }
 
 /* ---------------- 观众数 → 帧率 ---------------- */

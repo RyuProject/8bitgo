@@ -16,6 +16,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const publicDir = join(root, 'public', 'dolphin', VERSION)
 const useDist = process.argv.includes('--dist')
 const runtimeDir = useDist ? join(root, 'dist', 'client', 'dolphin', VERSION) : publicDir
+const adapter = readFileSync(join(root, 'src', 'emulator', 'adapters', 'dolphin.ts'), 'utf8')
 
 const fail = (message) => {
   console.error(`✖ wasm-dolphin 检查失败：${message}`)
@@ -43,6 +44,9 @@ const required = [
 for (const relative of required) {
   const file = join(runtimeDir, relative)
   if (!existsSync(file) || readFileSync(file).byteLength === 0) fail(`缺少 ${relative}`)
+}
+if (!/index\.html\?embed=1&r=1/.test(adapter)) {
+  fail('Dolphin iframe 入口缺内容代次，旧 301/HTML 会继续被边缘缓存命中')
 }
 
 const source = readFileSync(join(runtimeDir, 'SOURCE.txt'), 'utf8')

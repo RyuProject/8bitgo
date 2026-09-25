@@ -355,6 +355,18 @@ check('/index.html 必须 301 到目录本身', () => {
   assert.equal(run('GET', '/it/terms/index.html/').location, '/it/terms')
 })
 
+check('模拟器和网页游戏的 index.html 是运行入口，不能被 SEO 归一规则删掉', () => {
+  for (const url of [
+    '/ppsspp/v0dbfaca/index.html?embed=1&r=6',
+    '/dolphin/v7e38409/index.html?embed=1&r=1',
+    '/j2me/index.html',
+    '/web/terraria/index.html',
+    '/web/PvZ/cn/index.html',
+  ]) {
+    assert.ok(run('GET', url).nexted, `${url} 被错误重定向到 ${run('GET', url).location}`)
+  }
+})
+
 check('www. 必须 301 到裸域，并和路径归一合成同一跳', () => {
   /*
     同一份 Search Console 报告（2026-09-07）：示例 URL 是

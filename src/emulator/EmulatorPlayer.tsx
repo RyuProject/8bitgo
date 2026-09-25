@@ -1856,7 +1856,7 @@ export function EmulatorPlayer({
           startedAt: session.startedAt,
         })
       },
-      onError: (message: string) => {
+      onError: (message: string, errorScope?: 'runtime' | 'content') => {
         if (!isCurrent()) return
         // 信令层偶尔只给空错误；直播又不会自动重挂，空串会让错误状态只剩黑框。
         // 同时把具体原因留在本机控制台，光有 failedMs 无法区分「房间已散」和「网络没通」。
@@ -1880,13 +1880,21 @@ export function EmulatorPlayer({
         const attempt = session.retryAttempt ?? 0
         const canFailoverRom = () =>
           !ready &&
+          errorScope !== 'runtime' &&
           typeof session.game === 'string' &&
           canRestartInPlace(session) &&
           Boolean(onRomLoadFailed?.(message))
 
+        /*
+          运行时基础设施故障（例如 Ruffle 播放壳没有初始化）与 ROM 无关。旧逻辑在同一份
+          引擎故障上先重试，再把英语、中文等候选 ROM 挨个判坏：一次 iframe 竞态最终放大成
+          二十多次启动和整条语言链误切。runtime 仍保留一次原地重试用于网络抖动，但绝不污染
+          ROM 失败集；只有适配器明确/默认认定为内容故障时才允许 failover。
+        */
+
         // 完整性/密钥/codec 错误是确定性的，同一个包再下载一次不会变好。直接切数据库里保留的
         // 旧 ROM 备用地址，避免迁移期玩家先白等一轮自动重试。
-        const deterministicPackFailure = /(?:8BG|ROM 包)/i.test(message)
+        const deterministicPackFailure = /(?:8BG|ROM 包|Flash 站点锁)/i.test(message)
         if (deterministicPackFailure && canFailoverRom()) {
           restartAfterRomFailureRef.current = true
           endSession()

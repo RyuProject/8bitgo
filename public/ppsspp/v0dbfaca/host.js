@@ -11,7 +11,7 @@
   const VERSION = 1
   // 版本目录本身会被永久缓存；查询串是这次兼容性补丁的内容代次，避免老访客继续命中
   // “核心还没读盘就报启动成功”的旧胶水。以后替换任一运行时文件都必须一起递增。
-  const RUNTIME_REVISION = '2'
+  const RUNTIME_REVISION = '12'
   const RUNTIME_SCRIPT = `PPSSPPSDL.js?r=${RUNTIME_REVISION}`
   const SAVE_ROOT = '/home/web_user/.config/ppsspp'
   const canvas = document.getElementById('canvas')
@@ -192,8 +192,12 @@
       preRun: [() => {
         // PSP/SAVEDATA、即时存档与配置都放进 IDBFS。先把旧内容拉进来再放行 main，
         // 否则 PPSSPP 会在空目录上启动，稍后同步时反而把已有存档覆盖掉。
+        // Emscripten 5 把可挂载后端收进 FS.filesystems，不再把 IDBFS / WORKERFS
+        // 暴露成全局变量；直接引用全局名会在真正读盘前抛 ReferenceError。
+        const idbfs = FS.filesystems?.IDBFS
+        if (!idbfs) throw new Error('PPSSPP 核心缺少 IDBFS，无法安全加载和保存进度')
         FS.mkdirTree(SAVE_ROOT)
-        FS.mount(IDBFS, {}, SAVE_ROOT)
+        FS.mount(idbfs, {}, SAVE_ROOT)
         addRunDependency('8bitgo-ppsspp-idbfs')
         FS.syncfs(true, (error) => {
           if (error) {
@@ -208,8 +212,10 @@
         })
 
         if (isLocal) {
+          const workerfs = FS.filesystems?.WORKERFS
+          if (!workerfs) throw new Error('PPSSPP 核心缺少 WORKERFS，无法打开本地镜像')
           FS.mkdirTree('/game')
-          FS.mount(WORKERFS, { files: [file] }, '/game')
+          FS.mount(workerfs, { files: [file] }, '/game')
         }
       }],
       onRuntimeInitialized() {

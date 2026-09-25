@@ -1622,6 +1622,51 @@ PPSSPP 的 pthread 仍然需要 `Cross-Origin-Opener-Policy: same-origin` 与
 站点和 `worker/standalone/rom-worker.js`，并清理 Cloudflare 已缓存的 PSP 详情页 HTML；旧缓存没有
 COOP/COEP，前端再新也拿不到 `SharedArrayBuffer`。
 
+PPSSPP iframe 的入口必须保留完整的 `/ppsspp/<版本>/index.html`。`server/src/url-normalize.js`
+只可把站点页面的 `index.html` 归一掉；`dolphin` / `j2me` / `ppsspp` / `web` 下的是公开运行时真文件，
+删掉会 301 到不存在的目录 URL 再返回 404。`test:robots` 同时守住 SEO 规范化和这条例外。
+修规则后还要提升适配器里 iframe URL 的入口代次，绕开 Cloudflare 已缓存的旧 301。
+
+⚠️ Emscripten 5 的 `IDBFS` / `WORKERFS` 不是页面全局变量，挂载必须从
+`FS.filesystems.IDBFS` / `FS.filesystems.WORKERFS` 取；否则核心下载完会在 `preRun` 直接报
+`IDBFS is not defined`，玩家只看到 40% 后失败。CMake 还必须显式链接 `-lidbfs.js`，只写桥代码
+不够；`scripts/check-ppsspp.mjs` 会同时检查 host 引用方式和二进制是否真的含 IDBFS。每次改
+`host.js` 或核心产物，都要同步提升 `RUNTIME_REVISION`、`index.html` 的 `host.js?r=` 和适配器入口代次。
+
+⚠️ `-sPROXY_TO_PTHREAD=1` 和 `-sOFFSCREEN_FRAMEBUFFER=1` 还不等于 GL 会自动跨线程工作。
+SDL 的 Emscripten EGL 入口把整个 `eglCreateContext` 代理到主线程，只在那里建立真实上下文，
+PPSSPP 所在的 pthread 仍没有 `GLctx`；首次 `glGetString` / `glGetIntegerv` 就会报
+`Cannot read properties of undefined (reading 'getParameter')`。浏览器构建必须在
+`SDL/SDLGLGraphicsContext.cpp` 直接调用 `emscripten_webgl_create_context`，设置
+`EMSCRIPTEN_WEBGL_CONTEXT_PROXY_ALWAYS` + `renderViaOffscreenBackBuffer` +
+`explicitSwapControl`，并在换帧时调用 `emscripten_webgl_commit_frame()`。这才会同时建立
+Worker 侧代理上下文，并把后备缓冲呈现到主线程 canvas。
+
+不要换成 `-sOFFSCREENCANVAS_SUPPORT=1`：SDL/EGL 仍会代理回主线程，而已经
+`transferControlToOffscreen()` 的 canvas 不能再在主线程 `getContext()`，Chrome 会抛
+`InvalidStateError: Cannot get context from a canvas that has transferred its control to offscreen`。
+
+PPSSPP 原来的 `gl3stub.c` 把 GLES3 核心函数声明成动态函数指针，和 OffscreenFramebuffer 的
+Emscripten GL 导出发生符号类型冲突；补丁因此让浏览器构建直接使用 `<GLES3/gl3.h>` 的核心入口，
+只有可选扩展继续走 `SDL_GL_GetProcAddress`。验收以 `PPSSPPSDL.js` 同时含
+`createOffscreenFramebuffer` / `renderViaOffscreenBackBuffer` / `proxyContextToMainThread` /
+`emscripten_webgl_do_create_context`，且不含 `transferControlToOffscreen` 为准；构建与发布检查
+都会拦截错误产物。
+
+⚠️ SDL2 的 Emscripten 音频驱动虽然用 `MAIN_THREAD_EM_ASM_INT` 在主线程创建 `AudioContext`，
+但 2.32.10 读取原生采样率的那一处却用了普通 `EM_ASM_INT`。`PROXY_TO_PTHREAD` 下它会去工作线程的
+`Module.SDL2` 读主线程对象，开局在首帧前报
+`Cannot read properties of undefined (reading 'audioContext')`。`0002-sdl2-pthread-audio.patch`
+把该读取也代理回主线程；`scripts/build-ppsspp.mjs` 会先解出并打补丁，再精确失效
+`libSDL2-mt.a` 和最终链接产物。不要只手改构建机缓存，否则 emsdk 清缓存后故障会原样回来。
+
+⚠️ 只修采样率仍不够：SDL 的 `ScriptProcessor` 随后会在浏览器主线程直接 `dynCall` C 音频回调，
+而 PPSSPP 的 main 和 `thread_local` 音频状态都在 pthread；结果是首帧前继续报
+`Cannot set properties of undefined (setting '0')`。`0003-pthread-audio-ring.patch` 因此绕过 SDL
+WebAudio 设备：PPSSPP 工作线程在主循环里产出 float stereo PCM 到共享 Wasm 环形缓冲区，浏览器主线程
+只用 `Atomics` 取样播放，绝不再回调 Wasm。运行时 JS 必须包含 `__ppssppAudio`、
+`Atomics.load(HEAPU32`，`runtime.json` 必须声明 `pthreadAudioContext=shared-ring-buffer`；缺任一项都拒绝发布。
+
 回归：`npm run test:ppsspp && npm run test:worker`。
 
 ---

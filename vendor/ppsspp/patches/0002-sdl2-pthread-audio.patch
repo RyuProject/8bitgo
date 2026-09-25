@@ -1,0 +1,16 @@
+diff --git a/src/audio/emscripten/SDL_emscriptenaudio.c b/src/audio/emscripten/SDL_emscriptenaudio.c
+--- a/src/audio/emscripten/SDL_emscriptenaudio.c
++++ b/src/audio/emscripten/SDL_emscriptenaudio.c
+@@ -259,8 +259,10 @@ static int EMSCRIPTENAUDIO_OpenDevice(_THIS, const char *devname)
+ #endif
+     this->hidden = (struct SDL_PrivateAudioData *)0x1;
+ 
+-    /* limit to native freq */
+-    this->spec.freq = EM_ASM_INT({
++    /* 音频上下文由上面的 MAIN_THREAD_EM_ASM_INT 在浏览器主线程创建。
++       PROXY_TO_PTHREAD 下这里若留在工作线程，会读取另一份 Module.SDL2，
++       在游戏首帧前因 audioContext 不存在而中止。 */
++    this->spec.freq = MAIN_THREAD_EM_ASM_INT({
+       var SDL2 = Module['SDL2'];
+       return SDL2.audioContext.sampleRate;
+     });

@@ -29,6 +29,8 @@ import {
 import { prepareSfsRuffleConfig } from '@/services/sfs'
 import { installRufflePixelRatioCap, RUFFLE_FIXED_QUALITY } from '../rufflePerformance'
 import { ruffleStageScale, ruffleStageSize } from '../ruffleStageFit'
+import { isRuffleFrameReady } from '../ruffleFrame'
+import { flashCompatibilityIssue } from '../flashCompatibility'
 
 export { RUFFLE_PATH } from '../paths'
 import { RUFFLE_PATH } from '../paths'
@@ -351,7 +353,6 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   // SharedObject 因而落到同一条 /srcdoc/ 路径。用同源静态壳和逐游戏历史地址隔开。
   // 2026-09-13 用自制 SWF 在真实浏览器量到的键：
   // 127.0.0.1/flash-frames/smoke/save-smoke.swf/slot1；旧版则是 /srcdoc/slot1。
-  iframe.src = '/flash-frame.html'
 
   let destroyed = false
   let manuallyPaused = false
@@ -384,6 +385,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let focusRaf = 0
   let focusTimer = 0
   let canvasCapsTimer = 0
+  let frameInitTimer = 0
+  let frameInitialized = false
   let cancelStageFit = () => {}
 
   const cancelFocusRetry = () => {
@@ -511,17 +514,28 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
 
   iframe.addEventListener('load', () => {
-    if (destroyed) return
+    if (destroyed || frameInitialized) return
     const win = iframe.contentWindow as (Window & { RufflePlayer?: RuffleGlobal }) | null
     const doc = iframe.contentDocument
-    if (!win || !doc) {
-      options.onError?.(rt.flashInitFailed)
-      return
-    }
+    /*
+      ⚠️ 不能把每一次 load 都当成 `/flash-frame.html` 已经回来。
+
+      Chrome 153 / 部分 WebView 会在 iframe 插入 DOM 时先为初始 about:blank 派发 load，
+      再请求上面设置的 src。about:blank 也有 contentWindow / contentDocument，旧代码因此立刻
+      对它调用 replaceState，抛 SecurityError 后把整个播放器拆掉；线上抓到的证据是报错时
+      `/flash-frame.html` 的资源请求次数仍为 0。只有静态壳的专用标记和舞台都在才继续，
+      真正的壳加载失败则由下面的定时器统一报错，不能在这次假事件里抢跑。
+    */
+    if (!win || !doc || !isRuffleFrameReady(doc)) return
+    frameInitialized = true
+    if (frameInitTimer) window.clearTimeout(frameInitTimer)
+    frameInitTimer = 0
     try {
       win.history.replaceState(null, '', `/flash-frames/${encodeURIComponent(saveId)}/frame.html`)
-    } catch {
-      options.onError?.(rt.flashInitFailed)
+    } catch (error) {
+      aborter.abort()
+      console.warn('[ruffle] 无法建立逐游戏播放地址，Flash 存档隔离未能初始化：', error)
+      options.onError?.(rt.flashInitFailed, 'runtime')
       return
     }
 
@@ -539,7 +553,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       aborter.abort()
       // 给运维看的细节（路径 / 该配哪个 env）进控制台；红字只说玩家能理解的那句
       console.warn(`[ruffle] failed to load ${RUFFLE_PATH}ruffle.js — run \`npm run ruffle\` or set VITE_RUFFLE_PATH`)
-      if (!destroyed) options.onError?.(fmt(rt.ruffleLoadFailed, { path: RUFFLE_PATH }))
+      if (!destroyed) options.onError?.(fmt(rt.ruffleLoadFailed, { path: RUFFLE_PATH }), 'runtime')
     }
     script.onload = async () => {
       if (destroyed) return
@@ -560,6 +574,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         }
 
         const [loaded, onlineSave, sfsConfig] = await Promise.all([gameBytes, flashOnlineSave, sfsRuffleConfig])
+        /*
+          这类站点锁不会抛异常：Armor Games 片头播完后只打一行 LOCATION IS VALID: false，
+          随即故意停在黑帧。必须在交给 Ruffle 前按取证过的摘要拦住，播放器才能把这次启动
+          当成确定性坏 ROM，立即走同款游戏的其它语言版本，而不是宣布 ready 后永久黑屏。
+        */
+        const compatibilityIssue = await flashCompatibilityIssue(loaded.data)
+        if (compatibilityIssue) throw new Error(compatibilityIssue.message)
         // 每次挂载都报一次（游客态报 0）：播放器据此在会话临期前提示玩家重新进这一局
         options.onFlashSaveSession?.(onlineSave?.expiresAt ?? 0)
         /*
@@ -713,13 +734,29 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         // 销毁之后的报错不再上报：否则玩家刚拖进来的新游戏会被上一个的错误顶掉，
         // 画面消失、只剩一条红色提示，而新的模拟器其实还在后台出声
         if (destroyed) return
-        options.onError?.(fmt(rt.flashLoadFailed, { msg: err instanceof Error ? err.message : String(err) }))
+        options.onError?.(fmt(rt.flashLoadFailed, { msg: err instanceof Error ? err.message : String(err) }), 'content')
       }
     }
     doc.head.appendChild(script)
   })
 
+  // 静态壳只有几百字节；超时说明请求被拦、反代回错页面或同源访问失效。
+  // 必须有兜底，否则忽略初始 about:blank 后会永远停在「正在准备模拟器」。
+  frameInitTimer = window.setTimeout(() => {
+    frameInitTimer = 0
+    if (destroyed || frameInitialized) return
+    aborter.abort()
+    console.warn('[ruffle] /flash-frame.html 未在 10 秒内完成同源初始化')
+    options.onError?.(rt.flashInitFailed, 'runtime')
+  }, 10_000)
   container.appendChild(iframe)
+  /*
+    先挂进 DOM 再设 src。Chrome 153 的 detached iframe 若预先设置 src，插入时会先派发
+    about:blank 的 load；在慢机 / WebView 中后续真实导航还可能被这次初始提交吞掉，表现为
+    壳页面的网络请求始终为 0。挂载后显式导航既消除这条差异，上一段的标记检查又能安全忽略
+    appendChild 同步或异步产生的 about:blank 事件。
+  */
+  iframe.src = '/flash-frame.html'
   options.onCaps?.(caps)
 
   /**
@@ -917,6 +954,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       cancelFocusRetry()
       if (canvasCapsTimer) window.clearTimeout(canvasCapsTimer)
       canvasCapsTimer = 0
+      if (frameInitTimer) window.clearTimeout(frameInitTimer)
+      frameInitTimer = 0
       aborter.abort()
       const audioContext = audioTap?.ctx
       player = null

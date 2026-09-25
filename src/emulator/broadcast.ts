@@ -31,9 +31,17 @@ import { type LiveChatMessage, connectLive, liveIceServers, type LiveSocket } fr
 // 弹幕的清洗 / 限流 / ack 都在 chatSend.ts 里（两条发送路径共用一份，见那边的文件头）
 import { sendChatWithAck, type ChatSendResult } from './chatSend'
 import { applyTuning, fpsForViewers, sizeOfTrack, tuningFor, usableVideoSize } from './videoTuning'
-import { COOP_CHANNEL, createSeatGate, encode as encodeCoop, type CoopMsg } from './coopSeat'
+import { COOP_CHANNEL, createSeatGate, encode as encodeCoop, parse as parseCoop, type CoopMsg } from './coopSeat'
 import { isDualScreen } from './dualScreen'
 import { createCaptureFeed, probeCapture, type CaptureFeed, type SourceResolver } from './captureFeed'
+import {
+  initialLiveQualityState,
+  observeLiveQuality,
+  tuningForLiveTier,
+  type LiveQualityState,
+  type LiveQualityTier,
+  type ViewerNetworkSample,
+} from './liveAdaptiveQuality'
 
 /**
  * 码率上限的**手动覆盖**。设了就一律用它，不再按分辨率算。
@@ -240,10 +248,13 @@ function tuneSender(
    * 见 videoTuning 的 encodeScaleFor。拿不到就不缩。
    */
   native: { width: number; height: number } | null = null,
+  /** 每位观众自己的网络档位；不能拿最差那位去降低全房画质。 */
+  quality: LiveQualityTier = 'high',
 ) {
   // ⚠️ 尺寸要调用方从采集源上拿（feed.videoSize()）。走 Insertable Streams 时 sender.track 是
   // generator 轨，getSettings() 多半是空的 —— 空就会被当成大源去缩分辨率，Game Boy 直接成马赛克
-  applyTuning(sender, tuningFor({ width: size.width, height: size.height, fps: maxFramerate, maxBitrate, dualScreen, native }))
+  const base = tuningFor({ width: size.width, height: size.height, fps: maxFramerate, maxBitrate, dualScreen, native })
+  applyTuning(sender, tuningForLiveTier(base, quality))
 }
 
 /** 这条连接还值得留着吗（还在握手、或者已经通了） */
@@ -330,7 +341,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
             for (const sender of pc.getSenders()) {
               if (sender.track?.kind !== 'video') continue
               void sender.replaceTrack(track)
-                .then(() => tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, built?.videoSize(), dualScreenSource, options.native?.() ?? null))
+                .then(() => tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, built?.videoSize(), dualScreenSource, options.native?.() ?? null, peer.quality.tier))
                 .catch(() => { if (!stopped && peers.get(peer.id) === peer) void addViewer(peer.id, true) })
             }
           }
@@ -394,6 +405,13 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     coopRecoveryAttempt: number
     /** disconnected 不一定会继续变成 failed，必须自己给它一个回收期限。 */
     disconnectTimer?: number
+    /** 这一路独立的网络档位；弱网观众不能拖低其他人的画质。 */
+    quality: LiveQualityState
+    /** 观众最近一次回传的收流统计。每份只消费一次，防止同一坏样本被重复计数。 */
+    feedback?: ViewerNetworkSample & { at: number }
+    feedbackConsumedAt: number
+    /** 回报最多每 3 秒收一份，避免恶意页面用 DataChannel 给主播主线程灌 JSON。 */
+    feedbackAcceptedAt: number
   }
   const peers = new Map<string, Peer>()
   let genCounter = 0
@@ -529,6 +547,17 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       if (gate.seated() === entry.id) tellSeat(entry.id, true)
     }
     dc.onmessage = (ev) => {
+      // 按键最高每秒 120 条，不能为了低频质量回报让每颗键都 JSON.parse 两遍。
+      // 本站 encode() 固定把 t 放第一个；其它写法即使合法也只会被按键闸安全丢弃。
+      const mightBeQuality = typeof ev.data === 'string' && ev.data.startsWith('{"t":"q",')
+      const control = mightBeQuality ? parseCoop(ev.data) : null
+      if (control?.t === 'q') {
+        const now = Date.now()
+        if (now - entry.feedbackAcceptedAt < 3_000) return
+        entry.feedback = { loss: control.loss, rttMs: control.rtt, fps: control.fps, kbps: control.kbps, at: now }
+        entry.feedbackAcceptedAt = now
+        return
+      }
       // ⚠️ 身份用 entry.id 现取，不能闭包捕获创建时的 viewerId：观众信令重连后
       // 服务端发 viewer-rebound，这条**还在流的**连接会被改名（见 Peer 的注释）
       const msg: CoopMsg | null = gate.admit(entry.id, ev.data)
@@ -643,7 +672,17 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     try {
       const gen = ++genCounter
       pc = new RTCPeerConnection({ iceServers })
-      entry = { pc, gen, id: viewerId, pending: [], remoteReady: false, coopRecoveryAttempt }
+      entry = {
+        pc,
+        gen,
+        id: viewerId,
+        pending: [],
+        remoteReady: false,
+        coopRecoveryAttempt,
+        quality: initialLiveQualityState(),
+        feedbackConsumedAt: 0,
+        feedbackAcceptedAt: 0,
+      }
       peers.set(viewerId, entry)
 
       // 第一个观众进来才真的开始抓屏
@@ -659,7 +698,7 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       }
       for (const track of media.stream.getTracks()) {
         const sender = pc.addTrack(track, media.stream)
-        if (track.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, media.videoSize(), dualScreenSource, options.native?.() ?? null)
+        if (track.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, media.videoSize(), dualScreenSource, options.native?.() ?? null, entry.quality.tier)
       }
 
       // ⚠️ 必须在 createOffer 之前：通道要进 SDP，否则得多走一轮重新协商
@@ -725,9 +764,10 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
   const applyFpsCap = (next: number) => {
     if (next === cappedFps) return
     cappedFps = next
-    for (const { pc } of peers.values()) {
+    for (const peer of peers.values()) {
+      const { pc } = peer
       for (const sender of pc.getSenders()) {
-        if (sender.track?.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, built?.videoSize(), dualScreenSource, options.native?.() ?? null)
+        if (sender.track?.kind === 'video') tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, built?.videoSize(), dualScreenSource, options.native?.() ?? null, peer.quality.tier)
       }
     }
     /**
@@ -753,6 +793,15 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
    */
   const retuneFps = () => applyFpsCap(Math.min(statsCap, fpsForViewers(viewers, captureFps)))
 
+  /** 只重调一位观众；不重建 PeerConnection、不换轨，因此不会黑屏或打断声音。 */
+  const retunePeer = (peer: Peer) => {
+    if (peers.get(peer.id) !== peer) return
+    for (const sender of peer.pc.getSenders()) {
+      if (sender.track?.kind !== 'video') continue
+      tuneSender(sender, options.maxBitrate ?? MAX_BITRATE_OVERRIDE, cappedFps, built?.videoSize(), dualScreenSource, options.native?.() ?? null, peer.quality.tier)
+    }
+  }
+
   /**
    * 读一轮 WebRTC 统计，必要时降档。
    *
@@ -760,9 +809,9 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
    * 比我们从帧率倒推可靠得多。取「最坏的那个观众」而不是平均 ——
    * 一个人卡不代表大家都卡，但 CPU 被限住是主播这台机器的问题，对谁都成立。
    *
-   * 我们只动帧率，不动码率：码率浏览器自己就在按带宽估计调（BWE），
-   * 再插一手只会互相打架。而**帧率是它不会替我们省的那一项** ——
-   * 编码路数 × 帧率才是主播 CPU 的真实负担。
+   * 这里的**全局控制环**只动帧率：CPU 是主播整机问题，编码路数 × 帧率才是主播负担。
+   * 带宽则由上面那段每观众控制环配合浏览器 BWE 独立调码率 / 分辨率，不能拿最差的一位
+   * 去降低全房画质。两种限制分开处理，才不会网络抖一下就拖慢主播自己的游戏。
    */
   const statsTick = async () => {
     /*
@@ -785,15 +834,18 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
       let totalKbps = 0
       let sawVideo = false
 
-      const reports = await Promise.all(Array.from(peers.values(), async ({ pc }) => {
+      const reports = await Promise.all(Array.from(peers.values(), async (peer) => {
         try {
-          return await pc.getStats()
+          return { peer, report: await peer.pc.getStats() }
         } catch {
-          return null
+          return { peer, report: null }
         }
       }))
-      for (const report of reports) {
+      const now = Date.now()
+      for (const { peer, report } of reports) {
         if (!report) continue
+        let peerSawVideo = false
+        let peerBandwidthLimited = false
         report.forEach((stat) => {
           const s = stat as RTCStats & {
             kind?: string
@@ -803,10 +855,24 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
           }
           if (s.type !== 'outbound-rtp' || s.kind !== 'video') return
           sawVideo = true
+          peerSawVideo = true
+          if (s.qualityLimitationReason === 'bandwidth') peerBandwidthLimited = true
           if (s.qualityLimitationReason) reasons.push(s.qualityLimitationReason)
           if (typeof s.framesPerSecond === 'number') minFps = Math.min(minFps, s.framesPerSecond)
           if (typeof s.targetBitrate === 'number') totalKbps += Math.round(s.targetBitrate / 1000)
         })
+        if (!peerSawVideo || peers.get(peer.id) !== peer) continue
+        const fresh = peer.feedback && peer.feedback.at > peer.feedbackConsumedAt && now - peer.feedback.at <= STATS_INTERVAL_MS * 3
+          ? peer.feedback
+          : undefined
+        if (fresh) peer.feedbackConsumedAt = fresh.at
+        const previousTier = peer.quality.tier
+        peer.quality = observeLiveQuality(peer.quality, {
+          bandwidthLimited: peerBandwidthLimited,
+          expectedFps: Math.min(cappedFps, previousTier === 'low' ? 18 : previousTier === 'balanced' ? 24 : cappedFps),
+          sample: fresh,
+        }, now)
+        if (peer.quality.tier !== previousTier) retunePeer(peer)
       }
       if (stopped || !sawVideo) return
 

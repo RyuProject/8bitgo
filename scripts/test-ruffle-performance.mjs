@@ -10,6 +10,7 @@ import {
   supportsRuffleWasmExtensions,
 } from '../src/emulator/rufflePerformance.ts'
 import { ruffleStageScale, ruffleStageSize } from '../src/emulator/ruffleStageFit.ts'
+import { isRuffleFrameReady } from '../src/emulator/ruffleFrame.ts'
 import { isSfsGame } from '../shared/sfs-games.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -49,8 +50,8 @@ assert.equal(supportsRuffleWasmExtensions(() => { throw new Error('blocked') }),
 
 console.log('── 启动链与固定高抗锯齿档 ──')
 const adapter = read('src/emulator/adapters/ruffle.ts')
-const frame = read('public/flash-frame.html')
 const player = read('src/emulator/EmulatorPlayer.tsx')
+const frame = read('public/flash-frame.html')
 const types = read('src/emulator/types.ts')
 assert.equal(RUFFLE_FIXED_QUALITY, 'high', 'Ruffle 默认画质必须固定为高抗锯齿档')
 assert.match(adapter, /quality:\s*RUFFLE_FIXED_QUALITY/, '适配器必须使用唯一的固定画质常量')
@@ -73,6 +74,26 @@ assert.match(adapter, /new win\.ResizeObserver\(update\)/, '播放器容器变�
 assert.match(adapter, /options\.flashControls\?\.displayMode !== 'ruffle'/, '必须保留逐游戏兼容退回开关')
 assert.match(adapter, /cancelStageFit\(\)/, '销毁会话时必须断开舞台尺寸监听')
 assert.match(frame, /id="stage"/, '独立舞台层不能被删掉，否则 CSS 缩放会直接改写 Ruffle 视口')
+
+console.log('── iframe 初始空文档竞态 ──')
+const frameDoc = (marker, ids = []) => ({
+  documentElement: { getAttribute: (name) => name === 'data-8bitgo-ruffle-frame' ? marker : null },
+  getElementById: (id) => ids.includes(id) ? {} : null,
+})
+assert.equal(isRuffleFrameReady(frameDoc(null, [])), false, '初始 about:blank 不能被当成播放壳')
+assert.equal(isRuffleFrameReady(frameDoc('1', ['host'])), false, '不完整的壳不能启动 Ruffle')
+assert.equal(isRuffleFrameReady(frameDoc('1', ['host', 'stage'])), true)
+assert.match(frame, /data-8bitgo-ruffle-frame="1"/, '静态壳必须保留专用就绪标记')
+assert.match(adapter, /if \(!win \|\| !doc \|\| !isRuffleFrameReady\(doc\)\) return/,
+  'load 事件必须忽略 iframe 的初始 about:blank 文档')
+assert.match(adapter, /frameInitTimer = window\.setTimeout[\s\S]*10_000/,
+  '忽略假 load 后仍需有初始化超时，避免错误响应让界面永久等待')
+assert.ok(adapter.indexOf('container.appendChild(iframe)') < adapter.indexOf("iframe.src = '/flash-frame.html'"),
+  'iframe 必须先挂载再导航，避免 detached iframe 的真实 src 请求被初始空文档吞掉')
+assert.match(adapter, /options\.onError\?\.\(rt\.flashInitFailed, 'runtime'\)/,
+  '播放壳初始化失败必须标成运行时故障，不能误判成某一种语言 ROM 损坏')
+assert.match(player, /errorScope !== 'runtime'[\s\S]*onRomLoadFailed\?\.\(message\)/,
+  '运行时故障不得触发 ROM 语言/备用地址切换')
 
 console.log('── 大核心预热与旁路门控 ──')
 const manifest = JSON.parse(read('public/ruffle/v0.6.0/runtime.json'))

@@ -60,7 +60,7 @@ const BUTTONS: readonly PadButton[] = ['up', 'down', 'left', 'right', 'a', 'b', 
 const BUTTON_SET = new Set<string>(BUTTONS)
 
 /**
- * 通道上跑的四种消息。
+ * 通道上除了 2P 控制，也承载一条低频的观众链路质量回报。
  *
  *   hello  房主 → 访客   通道一开就发，告诉他这局有没有 2P 位（能力发现）
  *   want   访客 → 房主   我想上场
@@ -68,6 +68,7 @@ const BUTTON_SET = new Set<string>(BUTTONS)
  *                        那样房主要等 DataChannel 关掉才察觉，中间那段键还按着）
  *   seat   房主 → 访客   给你 / 收回，附上「你能按哪几颗」
  *   k      访客 → 房主   一次按键（**没有座位号**，见文件头）
+ *   q      访客 → 房主   最近 5 秒的收流质量；只允许影响这位观众自己的编码档位
  */
 export type CoopMsg =
   | { t: 'hello'; coop: boolean; buttons?: PadButton[] }
@@ -75,6 +76,7 @@ export type CoopMsg =
   | { t: 'leave' }
   | { t: 'seat'; on: boolean; buttons?: PadButton[] }
   | { t: 'k'; b: PadButton; d: boolean }
+  | { t: 'q'; loss: number; rtt: number; fps: number; kbps: number }
 
 export function encode(msg: CoopMsg): string {
   return JSON.stringify(msg)
@@ -103,6 +105,14 @@ export function parse(raw: unknown): CoopMsg | null {
     case 'k':
       if (typeof m.b !== 'string' || !BUTTON_SET.has(m.b) || typeof m.d !== 'boolean') return null
       return { t: 'k', b: m.b as PadButton, d: m.d }
+    case 'q': {
+      const loss = finiteIn(m.loss, 0, 1)
+      const rtt = finiteIn(m.rtt, 0, 10_000)
+      const fps = finiteIn(m.fps, 0, 240)
+      const kbps = finiteIn(m.kbps, 0, 100_000)
+      if (loss === null || rtt === null || fps === null || kbps === null) return null
+      return { t: 'q', loss, rtt, fps, kbps }
+    }
     case 'hello':
       if (typeof m.coop !== 'boolean') return null
       return { t: 'hello', coop: m.coop, ...(buttonList(m.buttons) ? { buttons: buttonList(m.buttons) } : {}) }
@@ -114,6 +124,12 @@ export function parse(raw: unknown): CoopMsg | null {
     default:
       return null
   }
+}
+
+/** 质量回报来自不可信的对端：只收有限数值，NaN / Infinity / 负数全部拒绝。 */
+function finiteIn(value: unknown, min: number, max: number): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) return null
+  return value
 }
 
 /** 按钮清单：认不出的成员直接剔掉；一个都不剩就当没给 */
@@ -210,7 +226,7 @@ export function createSeatGate(buttons?: () => readonly PadButton[]): SeatGate {
         else down.delete(msg.b)
         return msg
       }
-      // hello / seat 是房主发给访客的，房主这边收到只能是对面在乱发
+      // hello / seat 是房主发给访客的；q 由直播自适应层单独消费，绝不能混进按键闸。
       return null
     },
     grant(from) {

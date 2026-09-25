@@ -201,7 +201,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   container.replaceChildren(iframe)
   // 版本目录是 immutable；查询串必须跟 host.js 的 RUNTIME_REVISION 同步，否则老访客连
   // 新 index.html 都拿不到，更不会看到里面带代次的桥与核心地址。
-  iframe.src = `${PPSSPP_PATH}index.html?embed=1&r=2`
+  // r=6 虽然保留了主线程 canvas，但 SDL/EGL 只在主线程建出上下文，Worker 的 GLctx 仍为空。
+  // r=7 改由 Emscripten WebGL API 建立 Worker 代理上下文，再用 OffscreenFramebuffer 呈现。
+  // r=8 把 SDL 原生采样率读取代理回主线程，但 SDL 随后仍会从主线程回调 pthread Wasm。
+  // r=9 改成共享环形音频缓冲区，浏览器音频回调不再进入错误的线程局部状态。
+  // r=10 给桥初始化加故障边界，避免底层异常丢失具体步骤和调用栈。
+  // r=11 临时补齐 PPSSPP 启动阶段追踪，确认崩溃发生在音频之后的哪一步。
+  // r=12 移除 pthread 第一帧中非法重设主线程计时器的调用。
+  // r=13 给首帧的音频填充、事件轮询与 NativeFrame 加一次性定位点。
+  iframe.src = `${PPSSPP_PATH}index.html?embed=1&r=13`
   hostTimer = window.setTimeout(() => {
     if (!destroyed && !ready && !fatalReported) {
       fatalReported = true

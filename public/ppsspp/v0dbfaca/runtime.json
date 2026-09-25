@@ -4,21 +4,24 @@
   "commit": "0dbfaca62a8a924abc2c5dd5dd0733b668e5e68a",
   "emscripten": "5.0.7",
   "rangeStreaming": true,
-  "rangeLoaderRevision": 1,
+  "rangeLoaderRevision": 2,
   "blockBytes": 2097152,
-  "memoryCacheBytes": 201326592,
-  "rangeTelemetry": false,
-  "objectValidator": "romv-and-size",
+  "memoryCacheBytes": 100663296,
+  "rangeTelemetry": true,
+  "objectValidator": "etag-or-last-modified",
   "workerModel": "self-script",
+  "offscreenFramebuffer": true,
+  "webglContext": "proxy-always-offscreen-framebuffer",
+  "pthreadAudioContext": "shared-ring-buffer",
   "artifactsInstalled": true,
   "artifacts": {
     "PPSSPPSDL.js": {
-      "bytes": 371356,
-      "sha256": "009be6301f13bf3de63904e77c46c929b71945fc4fdf3d76def1d56d75d9ec46"
+      "bytes": 382384,
+      "sha256": "12e44eea2ed72db3514a22418ce30144ad47d303d5387f92721e7a2b0ffc29d4"
     },
     "PPSSPPSDL.wasm": {
-      "bytes": 14249790,
-      "sha256": "ed03e1cb6f90ffe29b37ce712f199a78182bc02d71ebe8cbe9a97cb0effed194"
+      "bytes": 14228400,
+      "sha256": "6480760c14f8d16385212f15206b0b7b80530a9c686dd7e9c140048acfddfa69"
     },
     "PPSSPPSDL.data": {
       "bytes": 22417304,
