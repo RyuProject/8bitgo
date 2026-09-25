@@ -128,6 +128,7 @@
     "test:ssr-cache": "node scripts/test-ssr-content-cache.mjs",
   "test:hotkeys": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-hotkeys.mjs",
     "test:keymap": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-keymap.mjs",
+    "test:ejs-keymap": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-emulatorjs-keymap.mjs",
     "test:padkeys": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-pad-keys.mjs",
     "test:im": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-im.mjs",
     "test:im-session": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-im-session.mjs",

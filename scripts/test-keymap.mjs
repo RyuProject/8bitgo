@@ -352,7 +352,7 @@ for (const key of [...needed].sort()) {
     ok(inJ2me || inPlay, `写死的方向键 ${m[0]} 只允许出现在 J2ME / Play! 分支（在第 ${lib.slice(0, m.index).split('\n').length} 行）`)
   }
   ok(
-    /button: t\.keymap\.coin, key: arcadeKeysOf\(EJS_INDEX\.select\)/.test(lib),
+    /button: t\.keymap\.coin, key: arcadeKeysOf\(EJS_INDEX\.select, currentArcadeKeys\)/.test(lib),
     '街机投币提示从街机键位表现算，不会又退回全站 Shift',
   )
 }

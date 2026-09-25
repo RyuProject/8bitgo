@@ -57,6 +57,12 @@ import {
 } from '../ndsStartup'
 import { isRomPackBytes, isRomPackUrl, unpackRomPackBlob } from '@/services/romPack'
 import { assertNdsRomBlob } from '@/lib/romValidation'
+import {
+  emulatorJsKeyLabel,
+  emulatorJsRelevantKeyIds,
+  publishEmulatorJsKeymap,
+  shouldMigrateEmulatorJsDefaults,
+} from '@/services/emulatorjsKeymap'
 
 /**
  * EmulatorJS 资源根路径。**默认是自托管的 /emulatorjs/，不是 CDN。**
@@ -583,6 +589,17 @@ interface EjsEmulator {
    * 我们照抄这一句就把入口补回来了。
    */
   controlMenu?: HTMLElement
+  /**
+   * 玩家 0~3 的真实控制映射。setupKeys 后 value 是 KeyboardEvent.keyCode；value2 是手柄键，
+   * 本次同步只读 / 改 value，绝不碰玩家的手柄配置。
+   */
+  controls?: Record<number, Record<number, { value?: number | string; value2?: unknown; [key: string]: unknown }>>
+  defaultControllers?: Record<number, Record<number, { value?: number | string; value2?: unknown; [key: string]: unknown }>>
+  keyMap?: Record<number, string>
+  setupKeys?: () => void
+  checkGamepadInputs?: () => void
+  saveSettings?: () => unknown
+  stopAllAutofire?: () => void
   /** 引擎自己有没有开着弹窗（改键 / 金手指 / 联机 / 输入框）。给 hotkeyBridge 让路用 */
   isPopupOpen?: () => boolean
   /**
@@ -1592,6 +1609,104 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /** EmulatorJS 的画布在 iframe 里，同源所以能直接拿 */
   const canvasOf = (): HTMLCanvasElement | null =>
     emuOf()?.canvas ?? iframe.contentDocument?.querySelector('canvas') ?? null
+
+  /**
+   * EmulatorJS 的改键记录属于 iframe，但开始页 / 详情页在父页面。启动后把玩家 0 的真实
+   * 键盘映射同步回来；以后页面展示的是这份，而不是永远写死一张“默认表”。
+   */
+  let keymapSyncTimer = 0
+  let lastKeymapFingerprint = ''
+  let keymapSaveHooked = false
+
+  const readKeyboardMap = (emu: EjsEmulator): Record<number, string> => {
+    const controls = emu.controls?.[0]
+    if (!controls) return {}
+    const out: Record<number, string> = {}
+    for (const id of emulatorJsRelevantKeyIds(options.platform)) {
+      const value = controls[id]?.value
+      if (value === undefined || value === null || value === 0 || value === '') {
+        out[id] = '—'
+        continue
+      }
+      const engineName = typeof value === 'number' ? emu.keyMap?.[value] : String(value)
+      out[id] = engineName ? emulatorJsKeyLabel(engineName) : `Key ${value}`
+    }
+    return out
+  }
+
+  const syncKeyboardMap = () => {
+    if (destroyed) return
+    const emu = emuOf()
+    if (!emu) return
+    const keys = readKeyboardMap(emu)
+    const fingerprint = JSON.stringify(keys)
+    if (!Object.keys(keys).length || fingerprint === lastKeymapFingerprint) return
+    lastKeymapFingerprint = fingerprint
+    publishEmulatorJsKeymap(options.gameSlug, options.platform, keys)
+  }
+
+  /** saveSettings 也会被音量滑块频繁调用，100ms 合并一次，避免每个 mousemove 都扫一遍映射。 */
+  const scheduleKeyboardMapSync = () => {
+    if (keymapSyncTimer || destroyed) return
+    keymapSyncTimer = window.setTimeout(() => {
+      keymapSyncTimer = 0
+      syncKeyboardMap()
+    }, 100)
+  }
+
+  const saveControls = (emu: EjsEmulator) => {
+    emu.setupKeys?.()
+    emu.checkGamepadInputs?.()
+    emu.saveSettings?.()
+    // saveSettings 的包装也会排一次；这里直接同步让“恢复默认”的界面反馈没有 100ms 空档。
+    syncKeyboardMap()
+  }
+
+  /**
+   * 默认键位换代时只改玩家 0 的键盘 value；value2（手柄）、连发和 2P~4P 全保留。
+   * 是否允许迁移由本站缓存里的 customized 标志决定，旧版就主动改过键的人不会被覆盖。
+   */
+  const migrateDefaultKeyboard = (emu: EjsEmulator): boolean => {
+    if (!shouldMigrateEmulatorJsDefaults(options.gameSlug, options.platform)) return false
+    const controls = emu.controls?.[0]
+    const defaults = emu.defaultControllers?.[0]
+    if (!controls || !defaults) return false
+    for (const id of emulatorJsRelevantKeyIds(options.platform)) {
+      const next = defaults[id]?.value
+      if (next === undefined) continue
+      controls[id] = { ...controls[id], value: next }
+    }
+    saveControls(emu)
+    return true
+  }
+
+  const hookControlPersistence = (emu: EjsEmulator) => {
+    if (keymapSaveHooked) return
+    keymapSaveHooked = true
+    const original = emu.saveSettings
+    if (original) {
+      emu.saveSettings = function () {
+        const result = original.call(this)
+        scheduleKeyboardMapSync()
+        return result
+      }
+    }
+    // 必须先判迁移再首次 publish；publish 会把记录升级到当前代次。
+    if (!migrateDefaultKeyboard(emu)) syncKeyboardMap()
+  }
+
+  /** 外层工具栏的一键恢复。行为与引擎改键面板里的 Reset 相同，并立即更新操作说明。 */
+  const resetControls = () => {
+    const emu = emuOf()
+    if (!emu?.defaultControllers) return
+    try {
+      emu.stopAllAutofire?.()
+      emu.controls = JSON.parse(JSON.stringify(emu.defaultControllers)) as NonNullable<EjsEmulator['controls']>
+      saveControls(emu)
+    } catch (error) {
+      console.warn('[emulatorjs] 恢复默认键位失败，保留现有设置：', error)
+    }
+  }
 
   /**
    * 引擎那些元素**属于 iframe 那个 realm**，所以 `instanceof HTMLElement` 恒为 false ——
@@ -2752,6 +2867,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     options.onStart?.()
     refineCaps()
     applyTouchInput(win)
+    const emuForKeys = emuOf()
+    if (emuForKeys) hookControlPersistence(emuForKeys)
     /*
       街机 DIP 开关（后台那一栏 → 核心的核心选项，见 applyArcadeDipDefault）。
 
@@ -3498,6 +3615,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     window.clearInterval(stateTimer)
     window.clearInterval(startWatch)
     window.clearInterval(saveFlushTimer)
+    window.clearTimeout(keymapSyncTimer)
+    keymapSyncTimer = 0
     // 盯几何那个是**有上限**的短定时器，正常自己会停；这里兜一道，
     // 免得玩家在切完布局那 3 秒里退出播放器，留一个跑在已销毁 iframe 上的回调
     window.clearInterval(geometryWatch)
@@ -3586,6 +3705,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         /* 元素已经被引擎拆了就当没这回事 */
       }
     },
+    resetControls,
     popupOpen() {
       try {
         return emuOf()?.isPopupOpen?.() === true

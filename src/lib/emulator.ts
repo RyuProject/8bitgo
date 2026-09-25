@@ -155,31 +155,38 @@ const QUICK_SAVE = new Set(QUICK_SAVE_RUNTIMES)
 const PASSTHROUGH = new Set(PASSTHROUGH_RUNTIMES)
 
 /** 一颗（或一组方向）按钮的默认键。一组会连起来显示成「↑ ↓ ← →」 */
-function keysOf(id: number | readonly number[]): string {
+function keysOf(id: number | readonly number[], keymap: Readonly<Record<number, string>> = EJS_KEY_BY_ID): string {
   return Array.isArray(id)
-    ? (id as readonly number[]).map((i) => EJS_KEY_BY_ID[i] ?? '—').join(' ')
-    : (EJS_KEY_BY_ID[id as number] ?? '—')
+    ? (id as readonly number[]).map((i) => keymap[i] ?? '—').join(' ')
+    : (keymap[id as number] ?? '—')
 }
 
 /** 街机只有投币键例外：沿用核心原生的 V，其余仍是本站的 WASD / UIJK。 */
-function arcadeKeysOf(id: number | readonly number[]): string {
-  return Array.isArray(id)
-    ? (id as readonly number[]).map((i) => EJS_ARCADE_KEY_BY_ID[i] ?? '—').join(' ')
-    : (EJS_ARCADE_KEY_BY_ID[id as number] ?? '—')
+function arcadeKeysOf(id: number | readonly number[], keymap: Readonly<Record<number, string>>): string {
+  return keysOf(id, keymap)
 }
 
-export function getDefaultKeymap(runtimeId?: string, platform?: PlatformId): KeymapInfo {
+export function getDefaultKeymap(
+  runtimeId?: string,
+  platform?: PlatformId,
+  /** EmulatorJS 启动后回传的真实键位；没有时才用站点默认。 */
+  effectiveEjsKeys?: Readonly<Record<number, string>> | null,
+): KeymapInfo {
   const t = getT()
   const quickSave = Boolean(runtimeId && QUICK_SAVE.has(runtimeId))
+  const currentEjsKeys = effectiveEjsKeys ? { ...EJS_KEY_BY_ID, ...effectiveEjsKeys } : EJS_KEY_BY_ID
+  const currentArcadeKeys = effectiveEjsKeys
+    ? { ...EJS_ARCADE_KEY_BY_ID, ...effectiveEjsKeys }
+    : EJS_ARCADE_KEY_BY_ID
   /** `#xxx` 是要翻译的行名（见 keymapData 的 EjsButton），其余是键名 / 符号，不用翻 */
   const label = (name: string): string =>
     name.startsWith('#') ? ((t.keymap as unknown as Record<string, string>)[name.slice(1)] ?? name.slice(1)) : name
   const rowsOf = (buttons: readonly EjsButton[]): KeymapRow[] =>
     buttons.map(([name, id]) => ({
       button: label(name),
-      key: keysOf(id),
+      key: keysOf(id, currentEjsKeys),
       slot: SLOT_OF_LABEL[name],
-      parts: Array.isArray(id) ? (id as readonly number[]).map((i) => EJS_KEY_BY_ID[i] ?? '—') : undefined,
+      parts: Array.isArray(id) ? (id as readonly number[]).map((i) => currentEjsKeys[i] ?? '—') : undefined,
     }))
 
   // 红白机实际跑的是 jsnes（见 config/emulators.ts 的扩展名覆盖表），它的键位和 EmulatorJS 不一样
@@ -339,26 +346,26 @@ export function getDefaultKeymap(runtimeId?: string, platform?: PlatformId): Key
         */
         {
           button: t.keymap.dpad,
-          key: arcadeKeysOf(EJS_DPAD),
+          key: arcadeKeysOf(EJS_DPAD, currentArcadeKeys),
           slot: 'dpad',
-          parts: EJS_DPAD.map((i) => EJS_ARCADE_KEY_BY_ID[i] ?? '—'),
+          parts: EJS_DPAD.map((i) => currentArcadeKeys[i] ?? '—'),
         },
         // 「按键 1~6」在手柄上没有固定位置（不同板子按键数都不一样），所以不给槽位 ——
         // 六行没槽位会让 PadDiagram 整张图退回键帽列，那正是街机该有的样子
         ...ARCADE_GENERIC_BUTTONS.map((id, i) => ({
           button: fmt(t.keymap.arcadeBtn, { n: String(i + 1) }),
-          key: arcadeKeysOf(id),
+          key: arcadeKeysOf(id, currentArcadeKeys),
         })),
-        { button: t.keymap.coin, key: arcadeKeysOf(EJS_INDEX.select), slot: 'select' as const },
-        { button: 'Start', key: arcadeKeysOf(EJS_INDEX.start), slot: 'start' as const },
+        { button: t.keymap.coin, key: arcadeKeysOf(EJS_INDEX.select, currentArcadeKeys), slot: 'select' as const },
+        { button: 'Start', key: arcadeKeysOf(EJS_INDEX.start, currentArcadeKeys), slot: 'start' as const },
       ],
       note: `${t.keymap.arcadeNote} ${fmt(t.keymap.arcadeFighter, {
-        pl: arcadeKeysOf(f.punchL),
-        pm: arcadeKeysOf(f.punchM),
-        ph: arcadeKeysOf(f.punchH),
-        kl: arcadeKeysOf(f.kickL),
-        km: arcadeKeysOf(f.kickM),
-        kh: arcadeKeysOf(f.kickH),
+        pl: arcadeKeysOf(f.punchL, currentArcadeKeys),
+        pm: arcadeKeysOf(f.punchM, currentArcadeKeys),
+        ph: arcadeKeysOf(f.punchH, currentArcadeKeys),
+        kl: arcadeKeysOf(f.kickL, currentArcadeKeys),
+        km: arcadeKeysOf(f.kickM, currentArcadeKeys),
+        kh: arcadeKeysOf(f.kickH, currentArcadeKeys),
       })}`,
       rebind: 'engine',
       quickSave,

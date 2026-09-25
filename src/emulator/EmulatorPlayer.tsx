@@ -3536,6 +3536,7 @@ export function EmulatorPlayer({
                     <PadDiagram
                       runtimeId={(session?.runtime.id ?? pageRuntime?.id) as string | undefined}
                       platform={platform.id}
+                      gameSlug={gameSlug}
                       className="mb-1 max-sm:hidden"
                     />
                   )}

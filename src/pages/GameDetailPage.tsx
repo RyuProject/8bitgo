@@ -576,7 +576,7 @@ export function GameDetailPage() {
             {/* 操作说明 */}
             <section className="mt-8">
               <h2 className="text-lg font-bold">{t.game.controls}</h2>
-              <KeymapCards runtimeId={runtime?.id} platform={platform.id} />
+              <KeymapCards runtimeId={runtime?.id} platform={platform.id} gameSlug={game.slug} />
             </section>
           </div>
 

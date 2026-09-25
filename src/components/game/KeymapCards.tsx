@@ -3,6 +3,7 @@ import type { PlatformId } from '@/types'
 import { getDefaultKeymap } from '@/lib/emulator'
 import { comboLabel, getHotkeys, onHotkeysChange } from '@/services/hotkeys'
 import { onPadKeysChange } from '@/services/padKeys'
+import { getEmulatorJsKeymap, onEmulatorJsKeymapChange } from '@/services/emulatorjsKeymap'
 import { useT } from '@/services/i18n'
 import { cx } from '@/lib/format'
 
@@ -18,19 +19,25 @@ import { cx } from '@/lib/format'
 interface Props {
   runtimeId?: string
   platform?: PlatformId
+  /** 有 slug 才能取到这款游戏上次由 EmulatorJS 回传的真实键位。 */
+  gameSlug?: string
   /** 'sm' 是给窄栏用的（PlayLocalPage 的侧列） */
   size?: 'md' | 'sm'
   className?: string
 }
 
-export function KeymapCards({ runtimeId, platform, size = 'md', className }: Props) {
+export function KeymapCards({ runtimeId, platform, gameSlug, size = 'md', className }: Props) {
   const t = useT()
   const [, bump] = useState(0)
   // 玩家在播放器里改了存读档快捷键或红白机键位，这张表得立刻跟上，不能还写着旧的
   useEffect(() => onHotkeysChange(() => bump((n) => n + 1)), [])
   useEffect(() => onPadKeysChange(() => bump((n) => n + 1)), [])
+  useEffect(() => onEmulatorJsKeymapChange(() => bump((n) => n + 1)), [])
 
-  const keymap = getDefaultKeymap(runtimeId, platform)
+  const effectiveKeys = runtimeId === 'emulatorjs' && platform
+    ? getEmulatorJsKeymap(gameSlug, platform)
+    : null
+  const keymap = getDefaultKeymap(runtimeId, platform, effectiveKeys)
   const hotkeys = getHotkeys()
 
   /*

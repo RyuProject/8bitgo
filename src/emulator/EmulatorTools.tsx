@@ -1024,17 +1024,28 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
           {runtimeId === 'jsnes' && <NesKeyBinder />}
           {caps.has('remapKeys') && handle?.openControls && (
             <div className="mt-2 border-t border-line pt-2">
-              <button
-                type="button"
-                onClick={() => {
-                  handle.openControls?.()
-                  // 面板弹在播放器里、和这个下拉不在一层，留着这个下拉只会挡住它
-                  setPanel(null)
-                }}
-                className="rounded-md border border-line px-2 py-0.5 font-semibold text-fg hover:border-brand hover:text-brand"
-              >
-                {tt.remapKeys}
-              </button>
+              <div className="flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    handle.openControls?.()
+                    // 面板弹在播放器里、和这个下拉不在一层，留着这个下拉只会挡住它
+                    setPanel(null)
+                  }}
+                  className="rounded-md border border-line px-2 py-0.5 font-semibold text-fg hover:border-brand hover:text-brand"
+                >
+                  {tt.remapKeys}
+                </button>
+                {handle.resetControls && (
+                  <button
+                    type="button"
+                    onClick={() => handle.resetControls?.()}
+                    className="rounded-md border border-line px-2 py-0.5 font-semibold text-muted hover:border-brand hover:text-brand"
+                  >
+                    {tt.padReset}
+                  </button>
+                )}
+              </div>
               <p className="mt-1 text-muted">{tt.remapKeysHint}</p>
             </div>
           )}

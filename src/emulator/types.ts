@@ -565,6 +565,11 @@ export interface RuntimeHandle {
    */
   openControls?: () => void
   /**
+   * 恢复运行时的默认按键。EmulatorJS 会同时持久化并回传新映射，
+   * 让开始页和详情页的操作说明立即跟上。
+   */
+  resetControls?: () => void
+  /**
    * 引擎自己正开着弹窗吗（改键 / 金手指 / 联机 / 输入框）。
    *
    * 给 hotkeyBridge 用：它在**iframe 文档的捕获阶段**监听并且

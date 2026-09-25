@@ -1,6 +1,8 @@
+import { useEffect, useState } from 'react'
 import type { PlatformId } from '@/types'
 import { getDefaultKeymap, type KeymapRow, type KeySlot } from '@/lib/emulator'
 import { cx } from '@/lib/format'
+import { getEmulatorJsKeymap, onEmulatorJsKeymapChange } from '@/services/emulatorjsKeymap'
 
 /**
  * 开局前那一屏的按键图。
@@ -34,6 +36,7 @@ const LOOSE_MAX = 2
 interface Props {
   runtimeId?: string
   platform?: PlatformId
+  gameSlug?: string
   className?: string
 }
 
@@ -60,8 +63,14 @@ function Cap({ k, label, shape = 'square' }: { k: string; label?: string; shape?
   )
 }
 
-export function PadDiagram({ runtimeId, platform, className }: Props) {
-  const { rows } = getDefaultKeymap(runtimeId, platform)
+export function PadDiagram({ runtimeId, platform, gameSlug, className }: Props) {
+  const [, bumpKeymap] = useState(0)
+  // 引擎加载旧设置、改键或恢复默认后会发事件；下一帧直接重画，不要求玩家刷新页面。
+  useEffect(() => onEmulatorJsKeymapChange(() => bumpKeymap((n) => n + 1)), [])
+  const effectiveKeys = runtimeId === 'emulatorjs' && platform
+    ? getEmulatorJsKeymap(gameSlug, platform)
+    : null
+  const { rows } = getDefaultKeymap(runtimeId, platform, effectiveKeys)
   if (!rows.length) return null
 
   const bySlot = new Map<KeySlot, KeymapRow>()
