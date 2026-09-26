@@ -34,6 +34,10 @@ check('550KB 中文字体不再 preload，也不强制慢网下载', () => {
   assert.doesNotMatch(html, /rel="preload"[\s\S]{0,180}ark-pixel/, 'Ark Pixel 仍在关键资源 preload')
   const face = css.match(/@font-face \{[\s\S]*?font-family: 'Ark Pixel';[\s\S]*?\}/)?.[0] ?? ''
   assert.match(face, /font-display: optional/, 'Ark Pixel 慢网仍会强制 swap')
+  const theme = css.match(/@theme \{[\s\S]*?\n\}/)?.[0] ?? ''
+  assert.doesNotMatch(theme, /'Ark Pixel'/, '移动端基础字体栈仍会触发 Ark Pixel 下载')
+  const desktop = css.match(/@media \(hover: hover\) and \(pointer: fine\) \{[\s\S]*?\n\}/)?.[0] ?? ''
+  assert.match(desktop, /'Ark Pixel'/, '桌面端没有保留 Ark Pixel 品牌字体')
 })
 
 check('SSR 在启动时预热模板和渲染入口，部署窗口继续用内存副本', () => {

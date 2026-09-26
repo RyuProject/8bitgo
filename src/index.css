@@ -9,7 +9,7 @@
 /* ---------- 字体 ----------
  * 英文：Geist Pixel（本地 woff2，两份 unicode-range 子集，npm run fonts 自动下载）
  * 中文：方舟像素字体 Ark Pixel 12px Proportional（本地 woff2，同上）
- * Geist Pixel 只含拉丁字符，中文与中文标点会按顺序回退到 Ark Pixel，再回退到系统字体。
+ * Geist Pixel 只含拉丁字符；手机的中文直接走系统字体，桌面鼠标设备才回退到 Ark Pixel。
  *
  * ⚠️ 西文这两份**以前是 index.html 里一条 Google Fonts 的 <link rel="stylesheet">**。
  * 那条链是：先连 fonts.googleapis.com 取 CSS（阻塞渲染）、再连 fonts.gstatic.com 取
@@ -76,9 +76,9 @@
 /* ---------- 8BitGo 设计令牌 ---------- */
 @theme {
   --font-sans:
-    'Geist Pixel', 'Ark Pixel', ui-sans-serif, system-ui, -apple-system, 'PingFang SC',
+    'Geist Pixel', ui-sans-serif, system-ui, -apple-system, 'PingFang SC',
     'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', 'Helvetica Neue', Arial, sans-serif;
-  --font-pixel: 'Geist Pixel', 'Ark Pixel', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  --font-pixel: 'Geist Pixel', ui-monospace, 'SFMono-Regular', Menlo, monospace;
 
   /* 配色参考 Duolingo：亮白底 + 亮绿主色，圆角、活泼、柔和 */
   --color-bg: #ffffff;
@@ -202,6 +202,20 @@
     50% {
       box-shadow: inset 0 0 0 2px rgba(88, 204, 2, 0.15);
     }
+  }
+}
+
+/*
+ * 537KB 的 Ark Pixel 只服务有鼠标悬停能力的桌面端。移动端首屏本来就受带宽和 CPU 限制，
+ * 为装饰字体付这笔下载会直接推迟封面 LCP；系统中文字体在小屏上也更清楚。
+ * 用能力查询而不是屏宽：横屏手机仍是触摸设备，窄窗口的桌面仍然值得保留品牌字体。
+ */
+@media (hover: hover) and (pointer: fine) {
+  :root {
+    --font-sans:
+      'Geist Pixel', 'Ark Pixel', ui-sans-serif, system-ui, -apple-system, 'PingFang SC',
+      'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', 'Helvetica Neue', Arial, sans-serif;
+    --font-pixel: 'Geist Pixel', 'Ark Pixel', ui-monospace, 'SFMono-Regular', Menlo, monospace;
   }
 }
 
