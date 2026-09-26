@@ -198,6 +198,23 @@ function patchAdjustedPointerLock(file) {
 }
 
 /**
+ * js-dos 启动时会主动锁住 Escape 等按键，但 iframe / WebView 常常禁止 Keyboard Lock。
+ * 上游没有处理返回 Promise 的拒绝，控制台会出现全局 InvalidStateError，和 Pointer Lock 失败
+ * 长得几乎一样，既污染监控也会把鼠标问题带偏。键盘锁只是增强能力，拒绝时静默降级即可。
+ */
+function patchKeyboardLockRejection(file) {
+  const code = readFileSync(file, 'utf8')
+  const needle = 'null==(n=navigator.keyboard)||n.lock(["KeyW","Escape"]);'
+  if (code.split(needle).length - 1 !== 1) {
+    fail('上游 Keyboard Lock 结构变化，无法确认失败 Promise 已被处理')
+  }
+  writeFileSync(file, code.replace(
+    needle,
+    'null==(n=navigator.keyboard)||n.lock(["KeyW","Escape"])?.catch(()=>{});',
+  ))
+}
+
+/**
  * 本站已经把逐游戏鼠标速度 / Y 轴反转收进播放器的 🎮 面板，不能再让 js-dos 在画面左侧
  * 重复画一根全站设置滑条。上游那层「点击捕获」蒙版也会长期压暗游戏，并让玩家误以为还要
  * 点一个确认按钮；真正的 Pointer Lock 本来就直接绑在 canvas 的 pointerdown 上，裁掉提示层
@@ -244,6 +261,7 @@ function patchIpxPort(file) {
 const mainJs = join(out, 'js-dos.js')
 patchIpxPort(mainJs)
 patchAdjustedPointerLock(mainJs)
+patchKeyboardLockRejection(mainJs)
 patchMinimalMouseCaptureUi(mainJs)
 patchLifecycle(mainJs)
 wrapCssInLayer(join(out, 'js-dos.css'))

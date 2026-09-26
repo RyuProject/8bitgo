@@ -226,6 +226,7 @@ check('Windows 客体走 ci 绝对桥，《主题医院》由适配器独占指�
   assert.match(jsdos, /pressButton\(attempt\.button\)/)
   assert.match(jsdos, /attempt\.timeout = window\.setTimeout/)
   assert.match(jsdos, /const result = surface\.requestPointerLock\(\) as Promise<void> \| undefined/)
+  assert.match(jsdos, /\.catch\(\(\) => finishFailedCapture\(attempt\)\)/)
   assert.match(jsdos, /document\.addEventListener\('fullscreenchange', onFullscreenChange\)/)
 })
 

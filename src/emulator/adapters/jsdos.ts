@@ -439,10 +439,12 @@ function hookCapturedAbsoluteDosMouse(
       // 不请求 unadjustedMovement：保留玩家系统鼠标加速，与站外桌面手感一致。
       const result = surface.requestPointerLock() as Promise<void> | undefined
       if (result && typeof result.then === 'function') {
-        void result.then(
-          () => clearCaptureAttempt(attempt),
-          () => finishFailedCapture(attempt),
-        )
+        // 个别 WebView 只在显式 catch 时才把 Pointer Lock 拒绝标成已处理；末尾再收一次口，
+        // 防止降级过程中任何输入接口异常变成全局 unhandledrejection，污染线上错误监控。
+        void result
+          .then(() => clearCaptureAttempt(attempt))
+          .catch(() => finishFailedCapture(attempt))
+          .catch((error: unknown) => console.warn('[jsdos] 鼠标捕获降级失败', error))
       }
     } catch {
       finishFailedCapture(attempt)

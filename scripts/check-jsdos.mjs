@@ -105,6 +105,9 @@ for (const marker of ['__8bitgoListeners', '__8bitgoCleanup', 'navigator.keyboar
 }
 if (js.includes('unadjustedMovement')) fail('Pointer Lock 仍在绕过系统鼠标加速')
 if (!js.includes('requestPointerLock()')) fail('找不到使用系统加速的 Pointer Lock 补丁')
+if (!js.includes('n.lock(["KeyW","Escape"])?.catch(()=>{})')) {
+  fail('Keyboard Lock 拒绝仍可能变成全局未处理异常')
+}
 if (!js.includes('function Xa(){return null}')) fail('js-dos 仍可能显示重复的鼠标灵敏度侧栏')
 if (!js.includes('function Dl(){return null}')) fail('js-dos 仍可能显示鼠标捕获黑色蒙版')
 if (js.includes('i&&l&&zi("div",{class:"w-2 flex-shrink-0"})')) fail('kiosk 仍为鼠标侧栏保留空白边')

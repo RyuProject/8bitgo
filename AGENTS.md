@@ -371,7 +371,9 @@ Lock 下 clientX/Y 已经不是真实位置）。kiosk 桌面路径的捕获面�
 
 `scripts/copy-jsdos.mjs` 还会裁掉上游重复的灵敏度侧栏、黑色捕获蒙版和提示文字；真正的
 `requestPointerLock()` 仍直接绑在 canvas 点击上。改这段补丁后要运行 `npm run jsdos`，并让
-`scripts/check-jsdos.mjs` 同时确认三块 UI 都已移除，不能只看运行时版本号。
+`scripts/check-jsdos.mjs` 同时确认三块 UI 都已移除，不能只看运行时版本号。上游还会无条件调用
+`navigator.keyboard.lock()`；iframe / WebView 拒绝时必须吃掉 Promise rejection，否则控制台会有
+一个和鼠标捕获失败极像的全局 `InvalidStateError`，排查时很容易误判成 Pointer Lock 又坏了。
 
 ### 2.8.6 Win95 老 DirectDraw 游戏：客体桌面与游戏分辨率必须一致
 
