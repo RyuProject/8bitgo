@@ -253,7 +253,7 @@ ok(EJS_ARCADE_DEFAULT_CONTROLS[0][2] === undefined, '街机不再用全站 Shift
 
 /* ── 4. 快速存 / 读档名单 ────────────────────────────────── */
 console.log('\n── 4. 快速存 / 读档（F2 / F4）装不装得上 ──')
-const ADAPTERS = ['emulatorjs', 'ruffle', 'html5', 'jsnes', 'j2me', 'jsdos', 'webretro', 'play', 'cloudgame', 'liveview']
+const ADAPTERS = ['emulatorjs', 'ruffle', 'html5', 'jsnes', 'j2me', 'jsdos', 'webretro', 'play', 'ppsspp', 'cloudgame', 'liveview']
 for (const id of ADAPTERS) {
   const src = readFileSync(new URL(`../src/emulator/adapters/${id}.ts`, import.meta.url), 'utf8')
   // caps 里出现 saveState 的两种写法：初始化时列进 new Set，或后来 caps.add

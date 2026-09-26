@@ -1,0 +1,42 @@
+{
+  "runtime": "PPSSPP WebAssembly",
+  "runtimeGeneration": "v4",
+  "upstream": "https://github.com/root-hunter/ppsspp-wasm",
+  "commit": "0dbfaca62a8a924abc2c5dd5dd0733b668e5e68a",
+  "emscripten": "5.0.7",
+  "rangeStreaming": true,
+  "rangeLoaderRevision": 4,
+  "blockBytes": 2097152,
+  "chdBlockBytes": 2097152,
+  "memoryCacheBytes": 100663296,
+  "rangeTelemetry": true,
+  "objectValidator": "etag-or-last-modified",
+  "workerModel": "self-script",
+  "offscreenFramebuffer": true,
+  "webglContext": "proxy-always-offscreen-framebuffer",
+  "proxiedWebglPreloop": "skip-worker-token",
+  "pthreadAudioContext": "shared-ring-buffer-worklet",
+  "performanceProfile": "adaptive-canvas-v1",
+  "maxCanvasPixels": 522240,
+  "pthreadPoolMax": 8,
+  "lto": true,
+  "performanceTelemetry": true,
+  "inputLatencyProfile": "inflight-1-vsync-off",
+  "preloadAssetsProfile": "runtime-no-debugger",
+  "webFeaturesBridge": "savestate-controls-v1",
+  "artifactsInstalled": true,
+  "artifacts": {
+    "PPSSPPSDL.js": {
+      "bytes": 379755,
+      "sha256": "3124501d94a3685735cb289d34bfd22f16c4143bc5fa84cb9eb50558bff8280a"
+    },
+    "PPSSPPSDL.wasm": {
+      "bytes": 16000509,
+      "sha256": "e397a778895663200adccfb6466922ed5a3806885edbc076308a00d3be3024f3"
+    },
+    "PPSSPPSDL.data": {
+      "bytes": 19434861,
+      "sha256": "1b2a982c85a1c25577e4d154a0f21c91c72f070a7f30a6e6f7465e2d6e941e82"
+    }
+  }
+}

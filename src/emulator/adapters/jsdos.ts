@@ -48,6 +48,7 @@ import { normalizeDosStartupCommands } from '../../../shared/dos-startup-command
 import { fetchWithProgress, STARTING_MILESTONE, windowsGuestStartupBudgetMs } from '../loadProgress'
 import { assertTypeable, scheduleWindowsLaunch, windows3xLaunchCommands, type WindowsLaunchCi } from '../windowsLaunch'
 import { JSDOS_PATH } from '../paths'
+import { DOS_MOUSE_SENSITIVITY_DEFAULT, normalizeDosMouseSensitivity } from '../dosMouse'
 
 /** P2P 模式的撮合服务器。自建的话见 https://github.com/caiiiycuk/WebRTC-NET（Go） */
 export const JSDOS_PEER_SERVER: string = import.meta.env.VITE_JSDOS_PEER_SERVER || 'https://net.dos.zone'
@@ -153,6 +154,7 @@ type DosProps = {
   save?: () => Promise<boolean>
   setPaused?: (paused: boolean) => void
   setVolume?: (volume: number) => void
+  setMouseSensitivity?: (sensitivity: number) => void
 }
 
 /** js-dos 的底层接口，ci-ready 事件里给出来 */
@@ -175,6 +177,7 @@ interface DosCi extends WindowsLaunchCi {
  * 毁灭战士压根没有上下视角。一个全局开关会让玩家在两类游戏之间来回切。
  */
 const MOUSE_INVERT_KEY = '8bitgo.dos.mouseInvertY'
+const MOUSE_SENSITIVITY_KEY = '8bitgo.dos.mouseSensitivity'
 const mouseInvertStore = {
   read(game: string): boolean {
     try {
@@ -189,6 +192,27 @@ const mouseInvertStore = {
       else localStorage.removeItem(`${MOUSE_INVERT_KEY}:${game}`)
     } catch {
       /* 隐私模式 / 存储满了：这一局还是反转的，只是下次记不住 */
+    }
+  },
+}
+
+/**
+ * js-dos 自带的灵敏度是全站共用 localStorage，而且 kiosk 模式下玩家看不到它的滑块。
+ * 不同游戏自己的鼠标驱动 / 内置速度差异很大，因此另存一份逐游戏值，再显式传给引擎。
+ */
+const mouseSensitivityStore = {
+  read(game: string): number {
+    try {
+      return normalizeDosMouseSensitivity(localStorage.getItem(`${MOUSE_SENSITIVITY_KEY}:${game}`))
+    } catch {
+      return DOS_MOUSE_SENSITIVITY_DEFAULT
+    }
+  },
+  write(game: string, value: number) {
+    try {
+      localStorage.setItem(`${MOUSE_SENSITIVITY_KEY}:${game}`, String(normalizeDosMouseSensitivity(value)))
+    } catch {
+      /* 无痕模式 / 配额异常只影响记忆，当前这一局仍立即生效 */
     }
   },
 }
@@ -352,6 +376,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /** 鼠标上下反转（见 hookMouseInvert）。按游戏记忆，本地文件退回显示名 */
   const mouseKey = options.gameSlug || `local:${options.gameName}`
   let mouseInverted = options.mouseCapture ? mouseInvertStore.read(mouseKey) : false
+  let mouseSensitivity = options.mouseCapture
+    ? mouseSensitivityStore.read(mouseKey)
+    : DOS_MOUSE_SENSITIVITY_DEFAULT
   /**
    * 屏幕手柄的键位，按游戏记（见 ../dosPad.ts）。归档键和鼠标反转共用同一个口径：
    * 「同一个游戏」的判定在两处不一致会让人莫名其妙（这里改了那儿没改）。
@@ -579,8 +606,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         // 中继联机时必须放出来，玩家要在它的设置面板里填 IPX 服务器和房间
         kiosk: !ipx?.showUi,
         autoStart: true,
-        // 射击类需要相对位移并锁定鼠标；策略等游戏必须保留绝对坐标，否则点击会错位。
+        // 桌面端 DOS 统一用客体自己的光标：点击画面锁定，Esc 释放，系统指针不会跑出窗口。
         mouseCapture: Boolean(options.mouseCapture),
+        // 0.5 = 1×。逐游戏保存，避免一款老游戏的高灵敏度把下一款也带偏。
+        mouseSensitivity,
         // DOS 游戏会自己绘制软件光标。系统光标叠在上面会出现两只不同步的鼠标。
         noCursor: true,
         // P2P 联机：一方开服，另一方按 peer id 连过去
@@ -774,13 +803,20 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     get mouseInverted() {
       return mouseInverted
     },
-    // 只有开了相对鼠标（射击类，见 emulator/mouseCapture.ts）才给这个开关：
-    // 绝对坐标的游戏反了 Y 光标会镜像。工具栏按 setMouseInvert 在不在决定画不画按钮
+    get mouseSensitivity() {
+      return mouseSensitivity
+    },
+    // 只有相对鼠标会话才提供速度 / 反转设置；触屏端引擎会自行降级，不请求 Pointer Lock。
     ...(options.mouseCapture
       ? {
           setMouseInvert(on: boolean) {
             mouseInverted = on
             mouseInvertStore.write(mouseKey, on)
+          },
+          setMouseSensitivity(value: number) {
+            mouseSensitivity = normalizeDosMouseSensitivity(value)
+            mouseSensitivityStore.write(mouseKey, mouseSensitivity)
+            props?.setMouseSensitivity?.(mouseSensitivity)
           },
         }
       : {}),

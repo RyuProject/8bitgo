@@ -1,9 +1,11 @@
 import type { GenreId, PlatformId } from '@/types'
 
 /**
- * 只有 DOS 射击游戏需要相对鼠标：它们通常把鼠标当作持续转向输入，光标碰到画布边缘就会失控。
- * 菜单、策略和模拟经营游戏依赖绝对坐标，锁定鼠标反而会让游戏光标与点击位置错位。
+ * DOSBox 里的鼠标必须留在客体里：射击游戏用它持续转向，策略 / Windows 客体则自己画光标。
+ * 若只给 shooter 标签开相对鼠标，标签缺失或分类为 action 的游戏里系统指针会直接跑出画面，
+ * 客体光标随即停住。js-dos 在触屏设备上会自行禁用 Pointer Lock，所以这里对全部 DOS 开启；
+ * 桌面端点击画面捕获、Esc 释放，和本地 DOSBox 的行为一致。
  */
-export function shouldCaptureMouse(platform: PlatformId, genres?: readonly GenreId[]): boolean {
-  return platform === 'dos' && Boolean(genres?.includes('shooter'))
+export function shouldCaptureMouse(platform: PlatformId, _genres?: readonly GenreId[]): boolean {
+  return platform === 'dos'
 }

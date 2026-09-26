@@ -4,7 +4,7 @@
  * 既浪费流量也可能绕过访问时机。fetch 只填 HTTP 缓存，引擎稍后照常走自己的初始化。
  */
 import type { RuntimeId } from './types'
-import { EJS_PATH, J2ME_PATH, RUFFLE_PATH, ejsRuntimeAsset, emulatorJsCoreFileFor } from './paths'
+import { EJS_PATH, J2ME_PATH, PPSSPP_RUNTIME_PATH, RUFFLE_PATH, ejsRuntimeAsset, emulatorJsCoreFileFor } from './paths'
 import { CHEERPJ_ORIGIN, j2meWarmTargets } from './j2meUrl'
 import { preconnectOrigin, warmHttpCache } from './httpWarm'
 import { supportsRuffleWasmExtensions } from './rufflePerformance'
@@ -88,6 +88,20 @@ export function prewarmRuntime(runtime: RuntimeId | undefined, core?: string | n
     warmHttpCache(`${RUFFLE_PATH}ruffle.js`)
     // 只有真实指针悬停才预拉大核心；focus 在触屏上与点击同时发生，抢拉会有重复下载风险。
     if (aggressive) void prewarmRuffleCore()
+    return
+  }
+  if (runtime === 'ppsspp') {
+    // 入口与桥很小，键盘 focus（包括触屏点击同一刻）也可以安全预热。38MB 的 JS/WASM/data
+    // 只在桌面真实悬停且不是省流/2G 时拉：这段提前量能把 PSP 冷启动下载移出点击关键路径，
+    // 又不会让只是滚过手机详情页的访客付出大核心流量。
+    warmHttpCache(`${PPSSPP_RUNTIME_PATH}index.html?embed=1`)
+    warmHttpCache(`${PPSSPP_RUNTIME_PATH}host.js`)
+    if (aggressive && hasHoverIntent() && allowsLargeHoverPrewarm()) {
+      warmHttpCache(`${PPSSPP_RUNTIME_PATH}PPSSPPSDL.js`)
+      warmHttpCache(`${PPSSPP_RUNTIME_PATH}PPSSPPSDL.wasm`)
+      warmHttpCache(`${PPSSPP_RUNTIME_PATH}PPSSPPSDL.data`)
+      warmHttpCache(`${PPSSPP_RUNTIME_PATH}audio-worklet.js`)
+    }
     return
   }
   if (runtime !== 'emulatorjs') return

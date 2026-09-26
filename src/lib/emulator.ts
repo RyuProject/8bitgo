@@ -320,6 +320,30 @@ export function getDefaultKeymap(
     }
   }
 
+  /** PSP：对照 PPSSPP Core/KeyMapDefaults.cpp 的 Web/SDL QWERTY 默认映射。 */
+  if (runtimeId === 'ppsspp') {
+    return {
+      rows: [
+        { button: t.keymap.dpad, key: '↑ ↓ ← →', slot: 'dpad', parts: ['↑', '↓', '←', '→'] },
+        { button: '×', key: 'Z', slot: 'a' },
+        { button: '○', key: 'X', slot: 'b' },
+        { button: '□', key: 'A', slot: 'x' },
+        { button: '△', key: 'S', slot: 'y' },
+        { button: 'L', key: 'Q', slot: 'l' },
+        { button: 'R', key: 'W', slot: 'r' },
+        { button: 'Analog', key: 'I K J L' },
+        { button: 'Start', key: 'Space', slot: 'start' },
+        { button: 'Select', key: 'Enter', slot: 'select' },
+      ],
+      note: '',
+      // 入口在站点工具栏，但真正的绑定页、键盘/手柄识别与持久化全由 PPSSPP 原生实现。
+      rebind: 'ours',
+      quickSave,
+      pad: true,
+      touch: 'all',
+    }
+  }
+
   /** NDS 的 webretro：键位、菜单、存读档全在 RetroArch 自己那套里（iframe 内按 F1） */
   if (runtimeId === 'webretro') {
     return { rows: [], note: t.keymap.retroarchNote, rebind: 'none', quickSave, pad: true, touch: 'none' }

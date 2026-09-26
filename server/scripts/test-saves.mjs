@@ -112,8 +112,10 @@ try {
   /* ================= 三、互不覆盖 ================= */
   section('不同引擎 / 存档位 / 用户之间互不覆盖')
   await put(alice, 'jsdos', 'contra', bytes('DOS 的变更包'))
+  await put(alice, 'ppsspp', 'contra', bytes('PSP 即时状态'))
   ok('同名游戏、不同引擎各存各的', (await textOf(await get(alice, 'emulatorjs', 'contra'))) === '第三关')
   ok('DOS 那份也在', (await textOf(await get(alice, 'jsdos', 'contra'))) === 'DOS 的变更包')
+  ok('PSP 那份也在且不会覆盖其它引擎', (await textOf(await get(alice, 'ppsspp', 'contra'))) === 'PSP 即时状态')
   await put(alice, 'html5', 'plants-vs-zombies', bytes('PVZ userdata zip'))
   ok('HTML5 存档桥使用独立命名空间', (await textOf(await get(alice, 'html5', 'plants-vs-zombies'))) === 'PVZ userdata zip')
 
@@ -128,7 +130,7 @@ try {
   /* ================= 四、清单 ================= */
   section('存档清单')
   const list = await (await fetch(`${API}/api/saves`, { headers: auth(alice) })).json()
-  ok('清单只列自己的', Array.isArray(list) && list.length === 4)
+  ok('清单只列自己的', Array.isArray(list) && list.length === 5)
   ok('清单不带存档内容', list.every((r) => !('data' in r)) && list.every((r) => r.size > 0))
   ok('按更新时间倒序', list.every((r, i) => i === 0 || list[i - 1].updatedAt >= r.updatedAt))
 

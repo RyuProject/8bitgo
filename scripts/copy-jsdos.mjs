@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * 把 npm 包 js-dos（DOSBox / DOSBox-X 的浏览器移植，GPL-2.0）同步到带版本号的
- * `public/jsdos/v<version>/`，并打上本站必须的兼容补丁。
+ * `public/jsdos/v<asset-version>/`，并打上本站必须的兼容补丁。
  *
  *   npm run jsdos                                  强制同步并包含 DOSBox-X
  *   node scripts/copy-jsdos.mjs --if-missing       完整一致时才跳过
@@ -30,6 +30,7 @@ const scriptFile = fileURLToPath(import.meta.url)
 const root = join(dirname(scriptFile), '..')
 const src = join(root, 'node_modules', 'js-dos', 'dist')
 const packageFile = join(root, 'node_modules', 'js-dos', 'package.json')
+const pathsFile = join(root, 'src', 'emulator', 'paths.ts')
 const publicRoot = join(root, 'public', 'jsdos')
 const ifMissing = process.argv.includes('--if-missing')
 const withDosboxX = process.argv.includes('--with-dosbox-x')
@@ -54,7 +55,14 @@ if (!existsSync(join(src, 'js-dos.js')) || !existsSync(packageFile)) {
 
 const { version } = JSON.parse(readFileSync(packageFile, 'utf8'))
 if (!/^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(version)) fail(`npm 包版本格式异常：${String(version)}`)
-const out = join(publicRoot, `v${version}`)
+const pathsSource = readFileSync(pathsFile, 'utf8')
+const declaredVersion = pathsSource.match(/export const JSDOS_VERSION\s*=\s*['"]([^'"]+)['"]/)?.[1]
+const assetVersion = pathsSource.match(/export const JSDOS_ASSET_VERSION\s*=\s*['"]([^'"]+)['"]/)?.[1]
+if (declaredVersion !== version) fail(`paths.ts 声明 ${declaredVersion || '空'}，npm 安装的是 ${version}`)
+if (!assetVersion || !assetVersion.startsWith(`${version}-`)) {
+  fail(`JSDOS_ASSET_VERSION 必须以 ${version}- 开头，当前是 ${assetVersion || '空'}`)
+}
+const out = join(publicRoot, `v${assetVersion}`)
 const manifestFile = join(out, 'runtime.json')
 
 /** 类型声明和源码映射不会被浏览器读取，别把它们复制进每次部署的静态目录。 */
@@ -93,6 +101,7 @@ function outputIsCurrent() {
     const manifest = JSON.parse(readFileSync(manifestFile, 'utf8'))
     if (
       manifest.version !== version ||
+      manifest.assetVersion !== assetVersion ||
       manifest.withDosboxX !== withDosboxX ||
       manifest.ipxPatched !== patchIpx ||
       manifest.sourceFingerprint !== sourceFingerprint ||
@@ -175,6 +184,19 @@ function patchLifecycle(file) {
   writeFileSync(file, code)
 }
 
+/**
+ * Pointer Lock 的 unadjustedMovement 会绕过操作系统鼠标加速。网页外的鼠标是加速后的，
+ * 进 DOS 画面却突然变成原始计数，用户感受到的就是速度完全不同。本站默认 0.5 正好是 1×，
+ * 因此保留系统加速才最接近桌面手感；每款游戏的额外差异再由工具栏灵敏度补偿。
+ */
+function patchAdjustedPointerLock(file) {
+  const code = readFileSync(file, 'utf8')
+  const needle = 'requestPointerLock({unadjustedMovement:!0})'
+  const count = code.split(needle).length - 1
+  if (count !== 2) fail(`上游原始鼠标锁定结构变化，期望 2 处、实际 ${count} 处`)
+  writeFileSync(file, code.replaceAll(needle, 'requestPointerLock()'))
+}
+
 /** 写死的 1900 端口过不了 Cloudflare；本站中继和主站共用 443 的 /ipx/。 */
 function patchIpxPort(file) {
   if (!patchIpx) return
@@ -187,6 +209,7 @@ function patchIpxPort(file) {
 
 const mainJs = join(out, 'js-dos.js')
 patchIpxPort(mainJs)
+patchAdjustedPointerLock(mainJs)
 patchLifecycle(mainJs)
 wrapCssInLayer(join(out, 'js-dos.css'))
 wrapInIife(mainJs)
@@ -198,6 +221,7 @@ writeFileSync(
   manifestFile,
   `${JSON.stringify({
     version,
+    assetVersion,
     withDosboxX,
     ipxPatched: patchIpx,
     sourceFingerprint,
@@ -208,5 +232,5 @@ writeFileSync(
 )
 
 const bytes = files.reduce((sum, file) => sum + file.size, 0)
-console.log(`✔ js-dos ${version} 已同步 ${files.length} 个文件（${(bytes / 1024 / 1024).toFixed(1)} MB）到 public/jsdos/v${version}/`)
+console.log(`✔ js-dos ${version} 已同步 ${files.length} 个文件（${(bytes / 1024 / 1024).toFixed(1)} MB）到 public/jsdos/v${assetVersion}/`)
 if (!withDosboxX) console.log('  （未包含 DOSBox-X；需要跑 Windows 客体时加 --with-dosbox-x）')

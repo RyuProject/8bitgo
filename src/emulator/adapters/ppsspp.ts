@@ -8,8 +8,9 @@
  * WasmRangeFileLoader 中：2MB 固定块、96MB LRU、每次响应必须是 206。这样浏览器不会
  * 持有整张盘，断线重试也只重取当前块。
  */
-import type { Capability, MountOptions, RuntimeHandle } from '../types'
-import { PPSSPP_PATH } from '../paths'
+import type { Capability, CaptureSources, MountOptions, RuntimeHandle } from '../types'
+import { focusFrame, frameGamepads } from '../frameFocus'
+import { PPSSPP_RUNTIME_PATH } from '../paths'
 import { probeRange } from '../remoteDisc'
 import { fmt, getT } from '@/services/i18n'
 
@@ -35,6 +36,16 @@ interface RemoteDiscDescriptor {
   url: string
   name: string
   size: number
+}
+
+interface PPSSPPFrameWindow extends Window {
+  Module?: {
+    __ppssppAudio?: {
+      context?: AudioContext
+      node?: AudioNode
+    }
+    __ppssppBridgePopupOpen?: () => boolean
+  }
 }
 
 function discNameOf(game: File | string, fallback: string): string {
@@ -141,8 +152,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
       const game = await prepareGame()
       if (destroyed) return
-      if (game instanceof File) await request('mount-local', { file: game })
-      else await request('mount-remote', { remote: game })
+      // 存档包必须带站内游戏身份，不能只信 PPSSPP 盘内文件名：同一游戏的地区版/汉化版
+      // 可能共享标题，读错状态的结果通常不是明确报错，而是几分钟后随机崩溃。
+      const stateId = options.gameSlug || `local:${discNameOf(options.game, options.gameName)}`
+      if (game instanceof File) await request('mount-local', { file: game, stateId })
+      else await request('mount-remote', { remote: game, stateId })
       if (destroyed) return
 
       ready = true
@@ -150,11 +164,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       caps.add('gamepad')
       // PPSSPP 自己绘制完整 PSP 触屏按键，不再叠本站只有八键的通用面板。
       caps.add('enginePad')
+      caps.add('saveState')
+      caps.add('remapKeys')
       options.onCaps?.(caps)
       options.onReady?.()
       options.onStart?.()
-      iframe.focus()
-      iframe.contentWindow?.focus()
+      focusFrame(iframe)
     } catch (error) {
       if (!destroyed) {
         reportFatal(error instanceof Error ? error.message : String(error))
@@ -199,8 +214,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   options.onCaps?.(caps)
   options.onProgress?.({ phase: 'engine', loaded: 0 })
   container.replaceChildren(iframe)
-  // 版本目录是 immutable；查询串必须跟 host.js 的 RUNTIME_REVISION 同步，否则老访客连
-  // 新 index.html 都拿不到，更不会看到里面带代次的桥与核心地址。
+  // 版本目录是 immutable；这里换的是 index.html 的入口代次，不和核心/桥/data 的缓存数字
+  // 强行保持一致。漏掉它时，老访客连新 index.html 都拿不到，更不会看到里面的新桥地址。
   // r=6 虽然保留了主线程 canvas，但 SDL/EGL 只在主线程建出上下文，Worker 的 GLctx 仍为空。
   // r=7 改由 Emscripten WebGL API 建立 Worker 代理上下文，再用 OffscreenFramebuffer 呈现。
   // r=8 把 SDL 原生采样率读取代理回主线程，但 SDL 随后仍会从主线程回调 pthread Wasm。
@@ -210,8 +225,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   // r=12 移除 pthread 第一帧中非法重设主线程计时器的调用。
   // r=13 给首帧的音频填充、事件轮询与 NativeFrame 加一次性定位点。
   // r=14 证实真正故障是 Emscripten 在代理 WebGL 的整数令牌上执行本地 VBO 预帧维护。
-  // r=15 去掉一次性诊断日志并发布同一修复的正式核心；r=16 让 immutable 的入口页也失效。
-  iframe.src = `${PPSSPP_PATH}index.html?embed=1&r=16`
+  // v4 根据真实冷启动数据把 CHD Range 恢复为 2MB，并裁掉 data 里的远程调试器资源、
+  // 降低解包前内存峰值。Cloudflare 对这组静态资源忽略查询串，因此必须换实体目录；
+  // 不能再用 `?r=`，否则边缘会把旧 data 和新 JS 拼成不可启动的一套。
+  iframe.src = `${PPSSPP_RUNTIME_PATH}index.html?embed=1`
   hostTimer = window.setTimeout(() => {
     if (!destroyed && !ready && !fatalReported) {
       fatalReported = true
@@ -221,18 +238,50 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   return {
     caps,
+    saveExt: 'ppssppstate',
+    async saveState() {
+      const payload = await request('save-state', {}) as { data?: unknown } | null
+      const data = payload?.data
+      if (!(data instanceof ArrayBuffer) || data.byteLength === 0) return null
+      return new Blob([data], { type: 'application/octet-stream' })
+    },
+    async loadState(data: ArrayBuffer) {
+      if (!data.byteLength) throw new Error('PSP 存档文件是空的')
+      await request('load-state', { data })
+    },
+    openControls() {
+      post('open-controls')
+      focusFrame(iframe)
+    },
+    popupOpen() {
+      try {
+        return Boolean((iframe.contentWindow as PPSSPPFrameWindow | null)?.Module?.__ppssppBridgePopupOpen?.())
+      } catch {
+        return false
+      }
+    },
+    captureSources(): CaptureSources | null {
+      try {
+        const frame = iframe.contentWindow as PPSSPPFrameWindow | null
+        // iframe 有自己的 Window 构造器；拿子文档的 canvas 去做父窗口 instanceof 会得到 false。
+        // 按元素类型和 captureStream 能力判断，Safari/Chromium 的同源 frame 都能正确通过。
+        const frameCanvas = iframe.contentDocument?.getElementById('canvas') as HTMLCanvasElement | null
+        if (!frameCanvas || frameCanvas.tagName !== 'CANVAS' || typeof frameCanvas.captureStream !== 'function') return null
+        const audio = frame?.Module?.__ppssppAudio
+        return {
+          canvas: frameCanvas,
+          audioNode: audio?.node ?? null,
+          audioContext: audio?.context ?? null,
+        }
+      } catch {
+        return null
+      }
+    },
     focus() {
-      iframe.focus()
-      iframe.contentWindow?.focus()
+      focusFrame(iframe)
     },
     gamepads() {
-      try {
-        return Array.from(iframe.contentWindow?.navigator.getGamepads?.() ?? [])
-          .filter((pad): pad is Gamepad => Boolean(pad))
-          .map((pad) => pad.id)
-      } catch {
-        return []
-      }
+      return frameGamepads(iframe)
     },
     destroy() {
       if (destroyed) return

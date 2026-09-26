@@ -84,6 +84,13 @@ export function staticCacheHeaders(res, filePath) {
   const p = filePath.replace(/\\/g, '/')
   const set = (v) => res.setHeader('Cache-Control', v)
 
+  // /play-local 是跨源隔离文档，它内嵌这个同源页时，子文档也必须声明
+  // COEP。否则 Chromium 不报 SWF 错误，而是直接把 iframe 换成 chrome-error 黑屏。
+  if (p.endsWith('/flash-frame.html')) {
+    res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
+  }
+
   // pthread Worker 必须自己声明 COEP；只有顶层 /linux 声明会让 Worker 在加载时失败，
   // QEMU 就永远卡在 Emscripten 的 loading-workers 依赖上，画面一片黑且不报错。
   if (p.endsWith('/qemu-wasm/qemu-system-x86_64.worker.js')) {

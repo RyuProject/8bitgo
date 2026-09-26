@@ -53,6 +53,8 @@ const adapter = read('src/emulator/adapters/ruffle.ts')
 const player = read('src/emulator/EmulatorPlayer.tsx')
 const frame = read('public/flash-frame.html')
 const types = read('src/emulator/types.ts')
+const vite = read('vite.config.ts')
+const serverCache = read('server/src/cache.js')
 assert.equal(RUFFLE_FIXED_QUALITY, 'high', 'Ruffle 默认画质必须固定为高抗锯齿档')
 assert.match(adapter, /quality:\s*RUFFLE_FIXED_QUALITY/, '适配器必须使用唯一的固定画质常量')
 assert.doesNotMatch(adapter, /options\.performanceProfile/)
@@ -92,6 +94,10 @@ assert.ok(adapter.indexOf('container.appendChild(iframe)') < adapter.indexOf("if
   'iframe 必须先挂载再导航，避免 detached iframe 的真实 src 请求被初始空文档吞掉')
 assert.match(adapter, /options\.onError\?\.\(rt\.flashInitFailed, 'runtime'\)/,
   '播放壳初始化失败必须标成运行时故障，不能误判成某一种语言 ROM 损坏')
+assert.match(vite, /flashFrame[\s\S]*?Cross-Origin-Embedder-Policy', 'require-corp'[\s\S]*?Cross-Origin-Resource-Policy', 'same-origin'/,
+  '开发服务器必须让跨源隔离的 play-local 可以内嵌 Flash 播放壳')
+assert.match(serverCache, /flash-frame\.html'[\s\S]*?Cross-Origin-Embedder-Policy', 'require-corp'[\s\S]*?Cross-Origin-Resource-Policy', 'same-origin'/,
+  '生产静态服务不能把 Flash 播放壳拦成 chrome-error 黑屏')
 assert.match(player, /errorScope !== 'runtime'[\s\S]*onRomLoadFailed\?\.\(message\)/,
   '运行时故障不得触发 ROM 语言/备用地址切换')
 

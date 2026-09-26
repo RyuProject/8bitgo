@@ -1,0 +1,111 @@
+--- a/SDL/SDLMain.cpp
++++ b/SDL/SDLMain.cpp
+@@ -68,6 +68,9 @@
+ #include "Core/Core.h"
+ #include "Core/Config.h"
+ #include "Core/ConfigValues.h"
++#include "Core/ControlMapper.h"
++#include "Core/KeyMap.h"
++#include "Core/SaveState.h"
+ #include "SDLGLGraphicsContext.h"
+ #if defined(PPSSPP_SDL_HAS_VULKAN)
+ #include "SDLVulkanGraphicsContext.h"
+@@ -399,11 +402,90 @@ static void StopWasmAudioBridge() {
+ 	});
+ }
++
++// 浏览器外壳的存档按钮和改键入口必须在 PPSSPP 自己的主循环里执行：PROXY_TO_PTHREAD
++// 下，从浏览器主线程直接 ccall 会落到错误的线程局部状态。命令槽位放在共享 Wasm 内存里，
++// JS 只做一次原子写；每帧在工作线程读取，不再为“有没有命令”同步代理到主线程 60 次。
++enum WasmBridgeCommand : int {
++	WASM_BRIDGE_NONE = 0,
++	WASM_BRIDGE_SAVE_STATE = 1,
++	WASM_BRIDGE_LOAD_STATE = 2,
++	WASM_BRIDGE_SHOW_CONTROLS = 3,
++};
++
++static int g_wasmBridgeCommand = WASM_BRIDGE_NONE;
++static int g_wasmBridgePopupOpen = 0;
++static std::atomic<bool> g_wasmBridgeStateBusy{false};
++
++static void NotifyWasmBridgeStateResult(SaveState::Status status, std::string_view) {
++	g_wasmBridgeStateBusy.store(false, std::memory_order_release);
++	const int result = status == SaveState::Status::FAILURE ? -1 : 1;
++	MAIN_THREAD_ASYNC_EM_ASM({
++		const callback = Module['__ppssppNativeResult'];
++		if (typeof callback === 'function')
++			callback($0);
++	}, result);
++}
++
++static void InitWasmControlBridge() {
++	__atomic_store_n(&g_wasmBridgeCommand, WASM_BRIDGE_NONE, __ATOMIC_RELEASE);
++	__atomic_store_n(&g_wasmBridgePopupOpen, 0, __ATOMIC_RELEASE);
++	MAIN_THREAD_EM_ASM({
++		const commandSlot = $0 >>> 2;
++		const popupSlot = $1 >>> 2;
++		Module['__ppssppBridgeSetCommand'] = (command) =>
++			Atomics.compareExchange(HEAP32, commandSlot, 0, command | 0) === 0;
++		Module['__ppssppBridgePopupOpen'] = () => Atomics.load(HEAP32, popupSlot) !== 0;
++	}, &g_wasmBridgeCommand, &g_wasmBridgePopupOpen);
++}
++
++static void PollWasmControlBridge() {
++	// 外层快捷键在 PPSSPP 自己的菜单/改键页打开时必须让开，否则 F2/F4 会先被站点吃掉，
++	// 玩家既绑不上键，还会意外覆盖即时存档。
++	__atomic_store_n(&g_wasmBridgePopupOpen, GetUIState() != UISTATE_INGAME, __ATOMIC_RELEASE);
++
++	const int command = __atomic_exchange_n(&g_wasmBridgeCommand, WASM_BRIDGE_NONE, __ATOMIC_ACQ_REL);
++	if (command == WASM_BRIDGE_NONE)
++		return;
++	if (command == WASM_BRIDGE_SHOW_CONTROLS) {
++		System_PostUIMessage(UIMessage::SHOW_CONTROL_MAPPING);
++		return;
++	}
++
++	// 工具栏把即时存档固定到 0 号槽。玩家在 PPSSPP 原生菜单切到别的槽之后，站点的“读档”
++	// 仍然只会读回自己刚导出的那一份，不会因为当前槽位变化而静默读错。
++	if (g_wasmBridgeStateBusy.exchange(true, std::memory_order_acq_rel)) {
++		MAIN_THREAD_ASYNC_EM_ASM({
++			const callback = Module['__ppssppNativeResult'];
++			if (typeof callback === 'function')
++				callback(-2);
++		});
++		return;
++	}
++	const std::string prefix = SaveState::GetGamePrefix(g_paramSFO);
++	if (prefix.empty()) {
++		g_wasmBridgeStateBusy.store(false, std::memory_order_release);
++		MAIN_THREAD_ASYNC_EM_ASM({
++			const callback = Module['__ppssppNativeResult'];
++			if (typeof callback === 'function')
++				callback(-1);
++		});
++		return;
++	}
++	if (command == WASM_BRIDGE_SAVE_STATE) {
++		SaveState::SaveSlot(prefix, 0, &NotifyWasmBridgeStateResult);
++	} else if (command == WASM_BRIDGE_LOAD_STATE) {
++		SaveState::LoadSlot(prefix, 0, &NotifyWasmBridgeStateResult);
++	} else {
++		g_wasmBridgeStateBusy.store(false, std::memory_order_release);
++	}
++}
+ #endif
+ 
+ // Must be called after NativeInit().
+ static void InitSDLAudioDevice(const std::string &name = "") {
+ #ifdef __EMSCRIPTEN__
+ 	// 不打开 SDL WebAudio 设备：它的 ScriptProcessor 会从浏览器主线程直接回调 pthread Wasm。
++	InitWasmControlBridge();
+ 	InitWasmAudioBridge();
+ 	return;
+ #else
+@@ -1834,6 +1917,7 @@ static void EmscriptenMainLoop(void *arg) {
+ 	// 初次 emscripten_set_main_loop_arg 已经按 WASM_MAIN_LOOP_FPS 设置调度器；
+ 	// 每帧重复设置同一个定时器只会增加 Worker 调度抖动，不会带来新的限帧信息。
+ 	PumpWasmAudioBridge();
++	PollWasmControlBridge();
+ 
+ 	{
+ 		SDL_Event event;

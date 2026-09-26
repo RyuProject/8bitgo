@@ -4,8 +4,9 @@
   "commit": "0dbfaca62a8a924abc2c5dd5dd0733b668e5e68a",
   "emscripten": "5.0.7",
   "rangeStreaming": true,
-  "rangeLoaderRevision": 2,
+  "rangeLoaderRevision": 4,
   "blockBytes": 2097152,
+  "chdBlockBytes": 2097152,
   "memoryCacheBytes": 100663296,
   "rangeTelemetry": true,
   "objectValidator": "etag-or-last-modified",
@@ -13,20 +14,28 @@
   "offscreenFramebuffer": true,
   "webglContext": "proxy-always-offscreen-framebuffer",
   "proxiedWebglPreloop": "skip-worker-token",
-  "pthreadAudioContext": "shared-ring-buffer",
+  "pthreadAudioContext": "shared-ring-buffer-worklet",
+  "performanceProfile": "adaptive-canvas-v1",
+  "maxCanvasPixels": 522240,
+  "pthreadPoolMax": 8,
+  "lto": true,
+  "performanceTelemetry": true,
+  "inputLatencyProfile": "inflight-1-vsync-off",
+  "preloadAssetsProfile": "runtime-no-debugger",
+  "webFeaturesBridge": "savestate-controls-v1",
   "artifactsInstalled": true,
   "artifacts": {
     "PPSSPPSDL.js": {
-      "bytes": 381937,
-      "sha256": "ca04dfff9098c2dc0604e9bdf696ba87c375cc92603ec8f238db62e056440d98"
+      "bytes": 379755,
+      "sha256": "3124501d94a3685735cb289d34bfd22f16c4143bc5fa84cb9eb50558bff8280a"
     },
     "PPSSPPSDL.wasm": {
-      "bytes": 14225751,
-      "sha256": "43caa3dfb24c81ab604680f72afaa206f076de710ef6f2c0e8e1b2d3b438dac0"
+      "bytes": 16000509,
+      "sha256": "e397a778895663200adccfb6466922ed5a3806885edbc076308a00d3be3024f3"
     },
     "PPSSPPSDL.data": {
-      "bytes": 22417304,
-      "sha256": "881e5472ccb56513e5e8fa0e95214e7827c66ccbdac2912e78d572584e687e0b"
+      "bytes": 19434861,
+      "sha256": "1b2a982c85a1c25577e4d154a0f21c91c72f070a7f30a6e6f7465e2d6e941e82"
     }
   }
 }

@@ -20,7 +20,7 @@ import { getSaveTarget, setSaveTarget, type SaveTarget } from './saveTarget'
 export { getSaveTarget, setSaveTarget, type SaveTarget }
 
 /** 存档属于哪个引擎。格式不通用，所以必须分开存 */
-export type SaveRuntime = 'emulatorjs' | 'jsdos' | 'cloudgame' | 'jsnes' | 'ruffle' | 'webretro' | 'j2me' | 'html5'
+export type SaveRuntime = 'emulatorjs' | 'jsdos' | 'cloudgame' | 'jsnes' | 'ruffle' | 'webretro' | 'j2me' | 'html5' | 'ppsspp'
 
 /** 存档存在哪儿 */
 export type SaveWhere = 'cloud' | 'local'
@@ -52,6 +52,7 @@ const SAVE_RUNTIMES: ReadonlySet<string> = new Set([
   'webretro',
   'j2me',
   'html5',
+  'ppsspp',
 ])
 
 /** 把 RuntimeId 之类的字符串收窄成存档引擎名；不是存档引擎就返回 null */
@@ -70,6 +71,8 @@ export interface SaveMeta {
 
 /** 后端配的上限是 4MB；这里先在前端拦一道，省得白传一趟 */
 export const MAX_SAVE_BYTES = 4 * 1024 * 1024
+/** PSP 的即时状态包含整台掌机内存，浏览器本地允许更大；云端仍守 4MB 的账号配额。 */
+export const MAX_LOCAL_PSP_SAVE_BYTES = 96 * 1024 * 1024
 
 /**
  * 能不能用云存档。
@@ -257,7 +260,8 @@ export async function pushSave(
   target: Exclude<SaveTarget, 'download'> = effectiveSaveTarget(),
 ): Promise<PushedSave> {
   if (data.length === 0) return { ok: false, where: null, error: 'empty' }
-  if (data.length > MAX_SAVE_BYTES) return { ok: false, where: null, error: 'too-large' }
+  const localLimit = runtime === 'ppsspp' ? MAX_LOCAL_PSP_SAVE_BYTES : MAX_SAVE_BYTES
+  if (data.length > localLimit) return { ok: false, where: null, error: 'too-large' }
 
   const key = localKey(runtime, gameSlug, slot)
   return serializePush(key, () => pushOne(key, runtime, gameSlug, data, slot, target))
@@ -295,6 +299,12 @@ async function pushOne(
   const localOk = await idbPut(key, data, stamp, toCloud || wantedCloud)
 
   if (!toCloud) return { ok: localOk, where: localOk ? 'local' : null }
+
+  // PSP 状态可能有几十 MB。先把它安全落在本机，再拒绝超出云端单份配额的上传；
+  // 不能在写本地之前统一拦掉，否则“选云端”会让玩家连浏览器备份也一起失去。
+  if (data.length > MAX_SAVE_BYTES) {
+    return { ok: localOk, where: localOk ? 'local' : null, error: 'too-large', cloudFailed: true }
+  }
 
   try {
     const res = await fetch(cloudUrl(runtime, gameSlug, slot), {

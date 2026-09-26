@@ -30,6 +30,7 @@ import { SaveLoadModal, type SaveLoadCard } from './SaveLoadModal'
 import { installHotkeys } from './hotkeyBridge'
 import type { HotkeyAction } from '@/services/hotkeys'
 import { cx } from '@/lib/format'
+import { DOS_MOUSE_SENSITIVITY_DEFAULT, dosMouseSpeedMultiplier } from './dosMouse'
 
 interface Props {
   handle: RuntimeHandle | null
@@ -201,6 +202,10 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
   const [pads, setPads] = useState<string[]>([])
   /** 鼠标上下反转（DOS 射击游戏）。初值从句柄读，之后本地维护 —— 和音量一样的做法 */
   const [mouseInv, setMouseInv] = useState(Boolean(handle?.mouseInverted))
+  /** DOS 鼠标速度按游戏记忆；0.5 是上游算法的 1×，不是 50% 速度。 */
+  const [mouseSensitivity, setMouseSensitivity] = useState(
+    handle.mouseSensitivity ?? DOS_MOUSE_SENSITIVITY_DEFAULT,
+  )
   /** GBA 画质只在运行时真正提供切换方法时使用；其它平台永远不画这个入口。 */
   const [gbaVideoMode, setGbaVideoMode] = useState<GbaVideoMode>(handle.gbaVideoMode ?? 'pixel')
   const [recording, setRecording] = useState(false)
@@ -247,6 +252,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
     setMuted(false)
     setVolume(handle?.volume ?? 1)
     setMouseInv(Boolean(handle?.mouseInverted))
+    setMouseSensitivity(handle.mouseSensitivity ?? DOS_MOUSE_SENSITIVITY_DEFAULT)
     setGbaVideoMode(handle.gbaVideoMode ?? 'pixel')
     return () => {
       recRef.current?.cancel()
@@ -300,7 +306,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
    * 点完把焦点还给运行时。
    *
    * ⚠️ **不开面板的按钮全都要走这个。** 下面那个 `prevPanel` 的 effect 只覆盖了
-   * 「面板从开到关」那一下，而 ⏸ / 🖱️ / 📷 / ⏺ / ⋯ 这几颗**根本不开面板** ——
+   * 「面板从开到关」那一下，而 ⏸ / 📷 / ⏺ / ⋯ 这几颗**根本不开面板** ——
    * 点完焦点就停在外层 `<button>` 上，而引擎跑在 iframe 里，从这一刻起收不到 keydown、
    * iframe 侧的 `getGamepads()` 也全是 null（见 frameFocus.ts 的文件头，当时只修了面板那一半）。
    *
@@ -332,6 +338,11 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
     setVolume(v)
     setMuted(mute)
     handle.setVolume?.(mute ? 0 : v)
+  }
+
+  const applyMouseSensitivity = (value: number) => {
+    setMouseSensitivity(value)
+    handle.setMouseSensitivity?.(value)
   }
 
   const togglePause = () => {
@@ -763,6 +774,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
     caps.has('screenshot') ||
     caps.has('record') ||
     Boolean(handle.setMouseInvert) ||
+    Boolean(handle.setMouseSensitivity) ||
     Boolean(handle.setGbaVideoMode)
 
   return (
@@ -910,7 +922,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
           </button>
         )}
 
-        {caps.has('gamepad') && (
+        {(caps.has('gamepad') || Boolean(handle.setMouseSensitivity)) && (
           <button
             type="button"
             className={cx(BTN, panel === 'gamepad' && BTN_ON)}
@@ -922,30 +934,6 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
             aria-expanded={panel === 'gamepad'}
           >
             🎮
-          </button>
-        )}
-
-        {/*
-          鼠标上下反转。只有 js-dos 开了相对鼠标（射击类，见 emulator/mouseCapture.ts）的那一局
-          才有 setMouseInvert。Build 引擎那批 DOS 射击游戏（毁灭公爵 3D、影武者、血祭…）出厂默认
-          前推 = 低头，当年要进 SETUP.EXE 才翻得过来，网页里玩家进不了 SETUP，只能在这儿翻。
-          按游戏记忆（见 adapters/jsdos.ts），亮着 = 这款游戏已经反转。
-        */}
-        {handle.setMouseInvert && (
-          <button
-            type="button"
-            className={cx(BTN, mouseInv && BTN_ON)}
-            onClick={refocus(() => {
-              const next = !mouseInv
-              handle.setMouseInvert?.(next)
-              setMouseInv(next)
-              say(next ? tt.mouseYOn : tt.mouseYOff)
-            })}
-            title={mouseInv ? tt.mouseYInverted : tt.mouseYNormal}
-            aria-label={tt.mouseY}
-            aria-pressed={mouseInv}
-          >
-            🖱️
           </button>
         )}
 
@@ -1044,22 +1032,68 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
             'absolute bottom-full left-0 z-20 mb-2 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-lg border border-line bg-surface px-3 py-2 shadow-lg',
             // 红白机那一路多一整块改键表格，w-64 摆不下两列；
             // 双屏布局那一排是八个中文选项，同样要宽一点，并且要能滚
-            runtimeId === 'jsnes' || layoutValues.length > 1 ? 'max-h-[70vh] w-72' : 'w-64',
+            runtimeId === 'jsnes' || layoutValues.length > 1 || handle.setMouseSensitivity
+              ? 'max-h-[70vh] w-72'
+              : 'w-64',
           )}
         >
-          <p className={cx('font-semibold', pads.length ? 'text-online' : 'text-muted')}>
-            {pads.length ? fmt(tt.gamepadOn, { n: String(pads.length) }) : tt.gamepadOff}
-          </p>
-          {pads.map((id) => (
-            <p key={id} className="mt-1 truncate text-muted" title={id}>
-              · {id}
-            </p>
-          ))}
-          {/* 红白机的映射是我们自己实现的（见 gamepadInput.ts），所以能把具体键位说清楚；
-              别的引擎是引擎自带的映射，只能给一句笼统的 */}
-          <p className="mt-2 border-t border-line pt-2 text-muted">
-            {runtimeId === 'jsnes' ? tt.gamepadHintNes : tt.gamepadHint}
-          </p>
+          {caps.has('gamepad') && (
+            <>
+              <p className={cx('font-semibold', pads.length ? 'text-online' : 'text-muted')}>
+                {pads.length ? fmt(tt.gamepadOn, { n: String(pads.length) }) : tt.gamepadOff}
+              </p>
+              {pads.map((id) => (
+                <p key={id} className="mt-1 truncate text-muted" title={id}>
+                  · {id}
+                </p>
+              ))}
+              {/* 红白机的映射是我们自己实现的（见 gamepadInput.ts），所以能把具体键位说清楚；
+                  别的引擎是引擎自带的映射，只能给一句笼统的 */}
+              <p className="mt-2 border-t border-line pt-2 text-muted">
+                {runtimeId === 'jsnes' ? tt.gamepadHintNes : tt.gamepadHint}
+              </p>
+            </>
+          )}
+
+          {/* DOS 鼠标是输入设备设置，收进 🎮 面板后不再额外占玩家工具栏。 */}
+          {handle.setMouseSensitivity && (
+            <div className={cx(caps.has('gamepad') && 'mt-2 border-t border-line pt-2')}>
+              <div className="flex items-center justify-between gap-3">
+                <p className="font-semibold text-fg">{tt.mouseSpeed}</p>
+                <span className="tabular-nums text-muted">
+                  {Math.round(dosMouseSpeedMultiplier(mouseSensitivity) * 100)}%
+                </span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={mouseSensitivity}
+                onChange={(e) => applyMouseSensitivity(Number(e.target.value))}
+                className="mt-2 w-full accent-brand"
+                aria-label={tt.mouseSpeed}
+              />
+              <p className="mt-1 text-muted">{tt.mouseCaptureHint}</p>
+              {handle.setMouseInvert && (
+                <button
+                  type="button"
+                  className={cx('mt-2 w-full rounded-md border px-2 py-1.5 text-left transition-colors',
+                    mouseInv ? 'border-brand bg-brand-soft text-brand-hover' : 'border-line text-fg hover:border-brand')}
+                  onClick={() => {
+                    const next = !mouseInv
+                    handle.setMouseInvert?.(next)
+                    setMouseInv(next)
+                    say(next ? tt.mouseYOn : tt.mouseYOff)
+                  }}
+                  aria-pressed={mouseInv}
+                >
+                  <span className="block font-semibold">{tt.mouseY}</span>
+                  <span className="block text-muted">{mouseInv ? tt.mouseYInverted : tt.mouseYNormal}</span>
+                </button>
+              )}
+            </div>
+          )}
 
           {/*
             键盘改键分两路：

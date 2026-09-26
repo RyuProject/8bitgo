@@ -124,6 +124,25 @@ check('自动重试和读档共用同一份会话判断，没有第二份手写�
 check('重开用的是同一局的 ROM / 平台 / 运行时（是重开，不是重新挑）', () =>
   assert.match(player, /begin\(session\.game,\s*session\.platform,\s*session\.runtime\)/))
 
+console.log('\n── DOS 鼠标设置：收进手柄面板 ──')
+
+check('工具栏不再画独立鼠标按钮', () => {
+  assert.doesNotMatch(tools, /🖱️/)
+  assert.doesNotMatch(tools, /panel === 'dosMouse'/)
+})
+
+check('DOS 没插手柄时也保留 🎮 入口', () =>
+  assert.match(tools, /caps\.has\('gamepad'\) \|\| Boolean\(handle\.setMouseSensitivity\)/))
+
+check('鼠标速度与上下反转都在 gamepad 面板内', () => {
+  const i = tools.indexOf("{panel === 'gamepad' && (")
+  assert.ok(i > 0, '找不到 gamepad 面板')
+  const body = tools.slice(i)
+  assert.match(body, /handle\.setMouseSensitivity/)
+  assert.match(body, /tt\.mouseSpeed/)
+  assert.match(body, /handle\.setMouseInvert/)
+})
+
 console.log('\n── 工具栏：📂 读档 ──')
 
 check("panel 状态里有 'fsLoad'", () => assert.match(tools, /'fsSave'\s*\|\s*'fsLoad'/))

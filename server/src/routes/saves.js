@@ -33,7 +33,7 @@ const MAX_TOTAL_BYTES = Number(process.env.SAVE_MAX_TOTAL_BYTES || 64 * 1024 * 1
 const MAX_SLOT = 9
 
 /** 只认已知的引擎名，别让人往库里塞任意字符串 */
-const RUNTIMES = new Set(['emulatorjs', 'jsdos', 'cloudgame', 'jsnes', 'ruffle', 'webretro', 'j2me', 'html5'])
+const RUNTIMES = new Set(['emulatorjs', 'jsdos', 'cloudgame', 'jsnes', 'ruffle', 'webretro', 'j2me', 'html5', 'ppsspp'])
 
 /**
  * 存档的 key 是 slug；本地文件没有 slug，前端会给个 `local:文件名` 的形式 ——

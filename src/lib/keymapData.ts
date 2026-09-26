@@ -270,7 +270,7 @@ export const ARCADE_FIGHTER_BUTTONS: Readonly<Record<string, number>> = {
  *
  * ⚠️ js-dos 只有 `fsSave`（把整个文件系统固化下来），不是 saveState —— 它不在名单里。
  */
-export const QUICK_SAVE_RUNTIMES: readonly string[] = ['emulatorjs', 'jsnes', 'ruffle', 'html5', 'cloudgame']
+export const QUICK_SAVE_RUNTIMES: readonly string[] = ['emulatorjs', 'jsnes', 'ruffle', 'html5', 'cloudgame', 'ppsspp']
 
 /** 键盘直通给游戏的那几种运行时：键位是游戏自己定的，我们给不出表 */
 export const PASSTHROUGH_RUNTIMES: readonly string[] = ['jsdos', 'ruffle', 'html5']

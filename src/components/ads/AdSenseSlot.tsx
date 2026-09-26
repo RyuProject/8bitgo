@@ -1,5 +1,10 @@
 import { useEffect, useRef } from 'react'
 
+// Google 广告平台审核期间先关闭实际投放：组件直接返回 null，因此不会创建广告 DOM、加载
+// googlesyndication 脚本或请求 doubleclick。审核通过后只需改回 true；所有权验证 meta 与
+// ads.txt 继续保留，否则反而可能让 Google 无法确认站点归属。
+const ADS_ENABLED = false
+
 // AdSense 的发布商 ID，全站共用，记在这里避免散落到各处
 const PUBLISHER_ID = 'ca-pub-9765778307056404'
 const SCRIPT_SRC = `https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${PUBLISHER_ID}`
@@ -48,7 +53,12 @@ interface AdSenseSlotProps {
 /**
  * 一个 AdSense 广告位。只为仍在 DOM 且尚未被官方脚本处理的 <ins> 请求填充。
  */
-export function AdSenseSlot({ slot, className, format = 'auto', responsive = true }: AdSenseSlotProps) {
+export function AdSenseSlot(props: AdSenseSlotProps) {
+  if (!ADS_ENABLED) return null
+  return <EnabledAdSenseSlot {...props} />
+}
+
+function EnabledAdSenseSlot({ slot, className, format = 'auto', responsive = true }: AdSenseSlotProps) {
   const insRef = useRef<HTMLModElement>(null)
   const pushedRef = useRef(false)
 

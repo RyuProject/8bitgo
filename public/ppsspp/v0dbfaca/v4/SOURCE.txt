@@ -1,0 +1,13 @@
+PPSSPP WebAssembly source and license
+=====================================
+
+Upstream fork: https://github.com/root-hunter/ppsspp-wasm
+Pinned commit: 0dbfaca62a8a924abc2c5dd5dd0733b668e5e68a
+Original project: https://github.com/hrydgard/ppsspp
+License: GPL-2.0-or-later (see the upstream LICENSE.TXT)
+
+8BitGo applies vendor/ppsspp/patches/0001 through 0008 before building. They add strict
+HTTP Range streaming, pthread-safe WebGL and audio, the save/control bridge, and the
+adaptive browser performance profile, plus measured CHD cold-start and preload-data
+optimizations. The pinned source plus those patches reproduce the distributed WASM files;
+scripts/build-ppsspp.mjs is the canonical build entry point.

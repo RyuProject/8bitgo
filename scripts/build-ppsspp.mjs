@@ -17,14 +17,20 @@ import { spawnSync } from 'node:child_process'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const VERSION = '0dbfaca'
-const RANGE_LOADER_REVISION = 2
+const RUNTIME_GENERATION = 'v4'
+const RANGE_LOADER_REVISION = 4
 const PINNED_COMMIT = '0dbfaca62a8a924abc2c5dd5dd0733b668e5e68a'
 const PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0001-range-streaming.patch')
 const SDL_AUDIO_PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0002-sdl2-pthread-audio.patch')
 const PTHREAD_AUDIO_PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0003-pthread-audio-ring.patch')
 const PROXIED_WEBGL_PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0004-emscripten-proxied-webgl-preloop.patch')
-const OUTPUT = join(root, 'public', 'ppsspp', `v${VERSION}`)
+const WEB_FEATURES_PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0005-web-save-controls-bridge.patch')
+const PERFORMANCE_PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0006-web-performance.patch')
+const CHD_RANGE_PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0007-chd-range-performance.patch')
+const COLD_START_PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0008-web-cold-start.patch')
+const OUTPUT = join(root, 'public', 'ppsspp', `v${VERSION}`, RUNTIME_GENERATION)
 const args = process.argv.slice(2)
+const installExisting = args.includes('--install-existing')
 const sourceAt = args.indexOf('--source')
 const source = resolve(sourceAt >= 0 ? args[sourceAt + 1] || '' : process.env.PPSSPP_SOURCE_DIR || '')
 
@@ -51,6 +57,10 @@ if (!existsSync(PATCH)) fail(`补丁不存在：${PATCH}`)
 if (!existsSync(SDL_AUDIO_PATCH)) fail(`SDL 音频补丁不存在：${SDL_AUDIO_PATCH}`)
 if (!existsSync(PTHREAD_AUDIO_PATCH)) fail(`pthread 音频桥补丁不存在：${PTHREAD_AUDIO_PATCH}`)
 if (!existsSync(PROXIED_WEBGL_PATCH)) fail(`WebGL 代理补丁不存在：${PROXIED_WEBGL_PATCH}`)
+if (!existsSync(WEB_FEATURES_PATCH)) fail(`浏览器存档/改键桥补丁不存在：${WEB_FEATURES_PATCH}`)
+if (!existsSync(PERFORMANCE_PATCH)) fail(`浏览器性能补丁不存在：${PERFORMANCE_PATCH}`)
+if (!existsSync(CHD_RANGE_PATCH)) fail(`CHD Range 性能补丁不存在：${CHD_RANGE_PATCH}`)
+if (!existsSync(COLD_START_PATCH)) fail(`Web 冷启动补丁不存在：${COLD_START_PATCH}`)
 if (capture('git', ['rev-parse', 'HEAD']) !== PINNED_COMMIT) {
   fail(`源码提交不匹配，必须是 ${PINNED_COMMIT}；不要在未知上游版本上硬套二进制补丁`)
 }
@@ -78,6 +88,60 @@ if (!sdlMainText.includes('Wasm audio bridge started')) {
   !sdlMainText.includes('每帧重复设置同一个定时器只会增加 Worker 调度抖动')
 ) {
   fail('源码目录里已有旧版 pthread 音频桥；请改用停在锁定提交的干净检出目录重新构建')
+}
+
+const sdlMainAfterAudio = readFileSync(sdlMain, 'utf8')
+if (!sdlMainAfterAudio.includes('__ppssppBridgeSetCommand')) {
+  run('git', ['apply', '--check', WEB_FEATURES_PATCH])
+  run('git', ['apply', WEB_FEATURES_PATCH])
+} else if (
+  !sdlMainAfterAudio.includes('__ppssppBridgePopupOpen') ||
+  !sdlMainAfterAudio.includes('SaveState::SaveSlot(prefix, 0') ||
+  !sdlMainAfterAudio.includes('UIMessage::SHOW_CONTROL_MAPPING')
+) {
+  fail('源码目录里已有旧版浏览器存档/改键桥；请改用停在锁定提交的干净检出目录重新构建')
+}
+
+const performanceMarkers = [
+  ['SDL/SDLMain.cpp', 'AudioWorkletNode'],
+  ['SDL/SDLMain.cpp', 'ReportWasmPerformance'],
+  ['SDL/SDLMain.cpp', 'ALLOW_HIGHDPI 会让 SDL 再乘一次 DPR'],
+  ['CMakeLists.txt', 'Math.min(8,Math.max(4,navigator.hardwareConcurrency||4))'],
+  ['Makefile', '-DWASM_ENABLE_LTO=ON'],
+  ['Core/Config.cpp', 'Web display side: %d pixels. Choosing scale %d'],
+]
+if (!performanceMarkers.every(([name, marker]) => readFileSync(join(source, name), 'utf8').includes(marker))) {
+  run('git', ['apply', '--check', PERFORMANCE_PATCH])
+  run('git', ['apply', PERFORMANCE_PATCH])
+}
+for (const [name, marker] of performanceMarkers) {
+  if (!readFileSync(join(source, name), 'utf8').includes(marker)) {
+    fail(`性能补丁没有完整应用：${name} 缺少 ${marker}`)
+  }
+}
+
+const rangeLoaderSource = join(source, 'Core', 'FileLoaders', 'WasmRangeFileLoader.cpp')
+const rangeLoaderHeader = join(source, 'Core', 'FileLoaders', 'WasmRangeFileLoader.h')
+if (!readFileSync(rangeLoaderSource, 'utf8').includes('CHD_BLOCK_BYTES')) {
+  run('git', ['apply', '--check', CHD_RANGE_PATCH])
+  run('git', ['apply', CHD_RANGE_PATCH])
+}
+if (!readFileSync(rangeLoaderSource, 'utf8').includes('blockBytes_ = CHD_BLOCK_BYTES')) {
+  fail('CHD Range 性能补丁没有完整应用')
+}
+
+const cmakeSource = join(source, 'CMakeLists.txt')
+const coldStartApplied = readFileSync(cmakeSource, 'utf8').includes('*/assets/debugger/*') &&
+  readFileSync(rangeLoaderHeader, 'utf8').includes('CHD_BLOCK_BYTES = 2 * 1024 * 1024')
+if (!coldStartApplied) {
+  run('git', ['apply', '--check', COLD_START_PATCH])
+  run('git', ['apply', COLD_START_PATCH])
+}
+if (
+  !readFileSync(cmakeSource, 'utf8').includes('*/assets/debugger/*') ||
+  !readFileSync(rangeLoaderHeader, 'utf8').includes('CHD_BLOCK_BYTES = 2 * 1024 * 1024')
+) {
+  fail('Web 冷启动补丁没有完整应用')
 }
 
 if (!args.includes('--skip-submodules')) {
@@ -129,18 +193,22 @@ if (!/this->spec\.freq\s*=\s*MAIN_THREAD_EM_ASM_INT\s*\(/.test(sdlAudioText)) {
   run('patch', ['--dry-run', '-p1', '-i', SDL_AUDIO_PATCH], sdlSource)
   run('patch', ['-p1', '-i', SDL_AUDIO_PATCH], sdlSource)
 }
-const sdlThreadedArchive = join(emscriptenRoot, 'cache', 'sysroot', 'lib', 'wasm32-emscripten', 'libSDL2-mt.a')
-if (existsSync(sdlThreadedArchive)) unlinkSync(sdlThreadedArchive)
 const buildDir = join(source, 'build-wasm-release')
-// Emscripten 端口库不是 CMake 的显式输入；只删 libSDL2-mt.a 时，旧的最终产物仍可能被判定为最新。
-// 精确删掉可再生的链接产物，确保本次一定把修过的 SDL 静态库链接进去。
-for (const name of ['PPSSPPSDL.js', 'PPSSPPSDL.wasm']) {
-  const artifact = join(buildDir, name)
-  if (existsSync(artifact)) unlinkSync(artifact)
-}
+if (!installExisting) {
+  const sdlThreadedArchive = join(emscriptenRoot, 'cache', 'sysroot', 'lib', 'wasm32-emscripten', 'libSDL2-mt.a')
+  if (existsSync(sdlThreadedArchive)) unlinkSync(sdlThreadedArchive)
+  // Emscripten 端口库不是 CMake 的显式输入；只删 libSDL2-mt.a 时，旧的最终产物仍可能被判定为最新。
+  // 精确删掉可再生的链接产物，确保本次一定把修过的 SDL 静态库链接进去。
+  for (const name of ['PPSSPPSDL.js', 'PPSSPPSDL.wasm']) {
+    const artifact = join(buildDir, name)
+    if (existsSync(artifact)) unlinkSync(artifact)
+  }
 
-const jobs = process.env.PPSSPP_JOBS || `-j${Math.max(1, Number(process.env.NUMBER_OF_PROCESSORS) || 4)}`
-run('make', ['wasm-release', 'CMAKE=cmake', `WASM_JOBS=${jobs}`])
+  const jobs = process.env.PPSSPP_JOBS || `-j${Math.max(1, Number(process.env.NUMBER_OF_PROCESSORS) || 4)}`
+  run('make', ['wasm-release', 'CMAKE=cmake', `WASM_JOBS=${jobs}`])
+} else {
+  console.log('ℹ 使用 build-wasm-release 中现有产物，仅执行完整性验收与安装')
+}
 
 // Emscripten 5 的 pthread 入口复用主 JS（pthreadMainJs = _scriptName），不会再生成
 // 单独的 *.worker.js。这里必须验主 JS 的自举标记，不能靠一个并不存在的第四文件判断线程支持。
@@ -148,7 +216,18 @@ const names = ['PPSSPPSDL.js', 'PPSSPPSDL.wasm', 'PPSSPPSDL.data']
 for (const name of names) {
   if (!existsSync(join(buildDir, name))) fail(`构建完成但缺少 ${join(buildDir, name)}`)
 }
-const runtimeScript = readFileSync(join(buildDir, 'PPSSPPSDL.js'), 'utf8')
+const runtimeScriptPath = join(buildDir, 'PPSSPPSDL.js')
+let runtimeScript = readFileSync(runtimeScriptPath, 'utf8')
+const asyncPackageNeedle = 'if(!fetched){fetched=await fetchPromise}processPackageData(fetched)'
+const asyncPackageReplacement = 'if(fetched?.then){fetched=await fetched}else if(!fetched){fetched=await fetchPromise}processPackageData(fetched)'
+if (runtimeScript.includes(asyncPackageNeedle)) {
+  // Emscripten 5 会直接把 getPreloadedPackage 的返回值交给解包器；网络重试必然是异步的，
+  // 所以生成物必须显式等待 Promise。只改这一处稳定片段，未知生成器输出一律拒绝发布。
+  runtimeScript = runtimeScript.replace(asyncPackageNeedle, asyncPackageReplacement)
+  writeFileSync(runtimeScriptPath, runtimeScript)
+} else if (!runtimeScript.includes(asyncPackageReplacement)) {
+  fail('PPSSPPSDL.js 的预加载器结构与锁定的 Emscripten 5.0.7 不符，无法安全接入异步重试')
+}
 if (!runtimeScript.includes('pthreadMainJs=_scriptName') || !runtimeScript.includes('new Worker(pthreadMainJs')) {
   fail('PPSSPPSDL.js 缺少 Emscripten 5 自身 Worker 启动标记，PROXY_TO_PTHREAD 可能没有生效')
 }
@@ -169,11 +248,17 @@ for (const marker of ['proxyContextToMainThread', 'emscripten_webgl_do_create_co
 if (!runtimeScript.includes('IDBFS') || !/FS\.filesystems=\{[^}]*IDBFS[^}]*\}/.test(runtimeScript)) {
   fail('PPSSPPSDL.js 没有链接 IDBFS；这份产物会在存档挂载阶段中止启动')
 }
+if (runtimeScript.includes('/assets/debugger/')) {
+  fail('PPSSPPSDL.data 仍包含浏览器播放器不会使用的远程调试器资源')
+}
 for (const marker of ['__ppssppRangeProgress', '__ppssppRangeError']) {
   if (!runtimeScript.includes(marker)) fail(`PPSSPPSDL.js 缺少 Range v${RANGE_LOADER_REVISION} 标记 ${marker}，核心补丁可能没有编进产物`)
 }
-for (const marker of ['__ppssppAudio', 'node.onaudioprocess', 'const readSlot=', 'createScriptProcessor']) {
+for (const marker of ['__ppssppAudio', 'AudioWorkletNode', 'ppsspp-audio', 'createScriptProcessor', '__ppssppPerformance']) {
   if (!runtimeScript.includes(marker)) fail(`PPSSPPSDL.js 缺少 pthread 共享音频桥标记 ${marker}`)
+}
+for (const marker of ['__ppssppBridgeSetCommand', '__ppssppBridgePopupOpen', '__ppssppNativeResult']) {
+  if (!runtimeScript.includes(marker)) fail(`PPSSPPSDL.js 缺少 PSP 存档/改键桥标记 ${marker}`)
 }
 const runtimeWasm = readFileSync(join(buildDir, 'PPSSPPSDL.wasm')).toString('latin1')
 for (const marker of ['If-Match', 'If-Unmodified-Since', 'HTTP Range offset overflow']) {
@@ -195,12 +280,14 @@ for (const name of names) {
 
 const manifest = {
   runtime: 'PPSSPP WebAssembly',
+  runtimeGeneration: RUNTIME_GENERATION,
   upstream: 'https://github.com/root-hunter/ppsspp-wasm',
   commit: PINNED_COMMIT,
   emscripten: '5.0.7',
   rangeStreaming: true,
   rangeLoaderRevision: RANGE_LOADER_REVISION,
   blockBytes: 2 * 1024 * 1024,
+  chdBlockBytes: 2 * 1024 * 1024,
   memoryCacheBytes: 96 * 1024 * 1024,
   rangeTelemetry: true,
   objectValidator: 'etag-or-last-modified',
@@ -208,7 +295,15 @@ const manifest = {
   offscreenFramebuffer: true,
   webglContext: 'proxy-always-offscreen-framebuffer',
   proxiedWebglPreloop: 'skip-worker-token',
-  pthreadAudioContext: 'shared-ring-buffer',
+  pthreadAudioContext: 'shared-ring-buffer-worklet',
+  performanceProfile: 'adaptive-canvas-v1',
+  maxCanvasPixels: 960 * 544,
+  pthreadPoolMax: 8,
+  lto: true,
+  performanceTelemetry: true,
+  inputLatencyProfile: 'inflight-1-vsync-off',
+  preloadAssetsProfile: 'runtime-no-debugger',
+  webFeaturesBridge: 'savestate-controls-v1',
   artifactsInstalled: true,
   artifacts,
 }

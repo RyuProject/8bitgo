@@ -351,13 +351,13 @@ if (ssrAvailable()) {
   /**
    * 旧 PSP 前端曾把运行时目录直接当成 iframe 地址，生成
    * `/ppsspp/v0dbfaca?embed=1&r=2`。static 明确关闭了目录重定向，所以老访客命中缓存
-   * bundle 后会得到 404，并一直等到 120 秒启动超时。这里保留一个不缓存的兼容跳转：
-   * 让旧 bundle 也进入当前显式 index.html，同时查询串代次保证不会再拿到旧入口页。
-   * 更新 PPSSPP 入口代次时，必须同步这里和 adapters/ppsspp.ts 的 r 值。
+   * bundle 后会得到 404，并一直等到 120 秒启动超时。这里保留一个不缓存的兼容跳转。
+   * Cloudflare 对这组静态资源忽略查询串，所以必须跳到当前实体代次目录；升级 PPSSPP
+   * 时同步这里与 src/emulator/paths.ts 的 PPSSPP_RUNTIME_GENERATION。
    */
   app.get('/ppsspp/v0dbfaca', (_req, res) => {
     res.set('Cache-Control', CACHE.none)
-    res.redirect(302, '/ppsspp/v0dbfaca/index.html?embed=1&r=16')
+    res.redirect(302, '/ppsspp/v0dbfaca/v4/index.html?embed=1')
   })
 
   /**

@@ -1,0 +1,58 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index c98a69d..ef69081 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -355,6 +355,10 @@ if(EMSCRIPTEN)
+ 	add_link_options("-lidbfs.js")
+ 	if(WASM_PRELOAD_ASSETS)
+ 		add_link_options("--preload-file" "${CMAKE_SOURCE_DIR}/assets@${CMAKE_INSTALL_FULL_DATADIR}/ppsspp/assets")
++		# 浏览器播放器不会开放远程调试器；它的 React bundle、source map 和图标接近 3 MiB，
++		# 却会在每次冷启动时跟着游戏必需字体一起下载、复制和解包。只从 Web data 包排除，
++		# 原始 assets 目录与其它平台构建保持不变。
++		add_link_options("--exclude-file" "*/assets/debugger/*")
+ 	endif()
+ 	if(WASM_MAX_PERF AND CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo)$")
+ 		add_compile_options(-O3 -DNDEBUG)
+diff --git a/Core/FileLoaders/WasmRangeFileLoader.h b/Core/FileLoaders/WasmRangeFileLoader.h
+index 4606d23..2a5bd90 100644
+--- a/Core/FileLoaders/WasmRangeFileLoader.h
++++ b/Core/FileLoaders/WasmRangeFileLoader.h
+@@ -18,9 +18,10 @@
+ // Browser-only random-access loader.  A PSP ISO is commonly larger than the
+ // WebAssembly heap budget, so retaining or downloading the entire object is
+ // deliberately forbidden. ISO/CSO use 2 MiB ranges for sequential throughput;
+-// CHD uses 512 KiB because libchdr asks for small compressed hunks at scattered
+-// offsets and 2 MiB otherwise turns every useful read into roughly 4x traffic.
+-// Downloaded ranges are held in a bounded in-memory LRU. Every request is also
++// CHD keeps the same 2 MiB request size: a production 693.6 MiB cold-start trial
++// showed that 512 KiB increased serial CDN round trips and regressed core-to-game
++// boot from about 86 to 93 seconds. Downloaded ranges are held in a bounded
++// in-memory LRU. Every request is also
+ // pinned to the first response validator so two object versions can never be
+ // mixed into one emulated disc.
+ class WasmRangeFileLoader : public FileLoader {
+@@ -50,7 +51,7 @@ private:
+ 	};
+ 
+ 	static constexpr s64 DEFAULT_BLOCK_BYTES = 2 * 1024 * 1024;
+-	static constexpr s64 CHD_BLOCK_BYTES = 512 * 1024;
++	static constexpr s64 CHD_BLOCK_BYTES = 2 * 1024 * 1024;
+ 	// PPSSPP's pthread build reserves a 512 MiB shared heap.  A 192 MiB cache left
+ 	// too little headroom for textures/JIT on mobile; 96 MiB still keeps 48 blocks.
+ 	static constexpr size_t MAX_CACHE_BYTES = 96 * 1024 * 1024;
+diff --git a/Core/FileLoaders/WasmRangeFileLoader.cpp b/Core/FileLoaders/WasmRangeFileLoader.cpp
+index 3587001..fcd17b2 100644
+--- a/Core/FileLoaders/WasmRangeFileLoader.cpp
++++ b/Core/FileLoaders/WasmRangeFileLoader.cpp
+@@ -73,8 +73,9 @@ bool ParseContentRange(emscripten_fetch_t *fetch, s64 *first, s64 *last, s64 *to
+ }  // namespace
+ 
+ WasmRangeFileLoader::WasmRangeFileLoader(const Path &filename) : filename_(filename) {
+-	// CHD 的压缩 hunk 通常只有数百 KiB 且分散在镜像内；沿用 ISO 的 2 MiB 对齐块会把
+-	// 标题画面前的随机读放大到接近整盘。512 KiB 覆盖常见 hunk，又不会制造海量请求。
++	// Range 读取目前是模拟线程里的同步请求，不能只按 hunk 大小追求更小的伴读。
++	// 线上 693.6 MiB CHD 实测 512 KiB 把串行 CDN 往返放大，核心到游戏从约 86 秒
++	// 退化到约 93 秒；2 MiB 是当前链路上吞吐、往返和 96 MiB LRU 的实测平衡点。
+ 	if (filename_.GetFileExtension() == ".chd")
+ 		blockBytes_ = CHD_BLOCK_BYTES;
+ }

@@ -66,7 +66,7 @@ export interface MountOptions {
   arcadeButtons?: ArcadeButtonCount
   /** Flash 的画面模式与逐游戏键位；纯鼠标游戏可以只配置画面模式。 */
   flashControls?: FlashControls
-  /** js-dos 是否用相对鼠标并请求指针锁定；射击类需要，依赖绝对坐标的游戏不能开启。 */
+  /** js-dos 是否用相对鼠标并请求指针锁定；桌面端 DOS 默认开启，Esc 可释放。 */
   mouseCapture?: boolean
   /**
    * BIOS 文件地址（平台级，见 services/platformBios.ts）。
@@ -642,6 +642,9 @@ export interface RuntimeHandle {
   setMouseInvert?: (on: boolean) => void
   /** 鼠标上下当前是否反转（setMouseInvert 的现值），工具栏用它决定按钮亮不亮 */
   mouseInverted?: boolean
+  /** js-dos 鼠标速度（0~1，中点 0.5 = 1×）；按游戏记忆。 */
+  setMouseSensitivity?: (sensitivity: number) => void
+  mouseSensitivity?: number
 }
 
 export interface Runtime {

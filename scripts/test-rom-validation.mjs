@@ -61,6 +61,7 @@ try {
         "export { normalizeDosboxConfigOverride, mergeDosboxConfigOverride } from './shared/dosbox-config.js'",
         "export { createOverallRatio, fetchWithProgress, windowsGuestStartupBudgetMs } from './src/emulator/loadProgress.ts'",
         "export { shouldCaptureMouse } from './src/emulator/mouseCapture.ts'",
+        "export { dosMouseSpeedMultiplier, normalizeDosMouseSensitivity } from './src/emulator/dosMouse.ts'",
         "export { isWindowsGraphicsMode, scheduleWindowsLaunch, windows3xLaunchCommands, windowsLaunchDelayMs } from './src/emulator/windowsLaunch.ts'",
       ].join('\n'),
       resolveDir: process.cwd(),
@@ -91,6 +92,8 @@ try {
     createOverallRatio,
     fetchWithProgress,
     shouldCaptureMouse,
+    dosMouseSpeedMultiplier,
+    normalizeDosMouseSensitivity,
     isWindowsGraphicsMode,
     scheduleWindowsLaunch,
     windows3xLaunchCommands,
@@ -111,6 +114,14 @@ try {
   const complete = zip([['game.nes', nes]])
   assert.equal(assertValidZip(arrayBuffer(complete)).length, 1)
   assert.equal((await assertValidZipBlob(new Blob([complete]))).length, 1)
+  const withEmptyMember = arrayBuffer(zip([
+    ['_offline/empty.txt', Buffer.alloc(0)],
+    ['after.bin', Buffer.from([1, 2, 3])],
+  ]))
+  const emptyEntry = listZipEntries(withEmptyMember).find((entry) => entry.name === '_offline/empty.txt')
+  assert.ok(emptyEntry)
+  assert.equal((await extractZipEntry(withEmptyMember, emptyEntry)).byteLength, 0,
+    '0 字节成员必须仍是空文件，不能把后续数据和中央目录一起泄漏出去')
   const truncated = complete.subarray(0, complete.length - 10)
   assert.throws(() => assertValidZip(arrayBuffer(truncated)), /损坏|不完整/)
   await assert.rejects(() => assertValidZipBlob(new Blob([truncated])), /损坏|不完整/)
@@ -233,11 +244,15 @@ try {
   assert.equal(windowsGuestStartupBudgetMs(2), 370_000)
   assert.equal(windowsGuestStartupBudgetMs(999), 485_000)
 
-  // 只有 DOS 射击游戏使用相对鼠标；其他类别和其他平台都不能误锁定指针。
+  // 所有 DOS 游戏都捕获桌面鼠标；否则系统指针出画面后，客体光标也会停住。
   assert.equal(shouldCaptureMouse('dos', ['action', 'shooter']), true)
-  assert.equal(shouldCaptureMouse('dos', ['strategy']), false)
-  assert.equal(shouldCaptureMouse('dos'), false)
+  assert.equal(shouldCaptureMouse('dos', ['strategy']), true)
+  assert.equal(shouldCaptureMouse('dos'), true)
   assert.equal(shouldCaptureMouse('nes', ['shooter']), false)
+  assert.equal(normalizeDosMouseSensitivity(null), 0.5)
+  assert.equal(normalizeDosMouseSensitivity(-1), 0)
+  assert.equal(normalizeDosMouseSensitivity(2), 1)
+  assert.equal(dosMouseSpeedMultiplier(0.5), 1)
 
   // ci-ready 时的 720×400 仍是 DOSBox 文本画面，不能从这里开始自启动倒计时。
   assert.equal(isWindowsGraphicsMode(720, 400), false)

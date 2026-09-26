@@ -31,6 +31,7 @@ import { installRufflePixelRatioCap, RUFFLE_FIXED_QUALITY } from '../rufflePerfo
 import { ruffleStageScale, ruffleStageSize } from '../ruffleStageFit'
 import { isRuffleFrameReady } from '../ruffleFrame'
 import { flashCompatibilityIssue } from '../flashCompatibility'
+import { flashLegacyBundleRules, type FlashUrlRewriteRule } from '../flashLegacyBundle'
 
 export { RUFFLE_PATH } from '../paths'
 import { RUFFLE_PATH } from '../paths'
@@ -581,6 +582,24 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         */
         const compatibilityIssue = await flashCompatibilityIssue(loaded.data)
         if (compatibilityIssue) throw new Error(compatibilityIssue.message)
+        const bundleBaseUrl = typeof options.game === 'string'
+          ? new URL('.', new URL(options.game, location.href)).href
+          : null
+        const legacyRuleSpecs = await flashLegacyBundleRules(
+          loaded.data,
+          options.gameSlug,
+          bundleBaseUrl,
+        )
+        /*
+          Ruffle 的配置代码跑在 iframe realm，内部用 `instanceof RegExp` 判断规则类型。
+          父页面创建的 RegExp 跨 realm 后会判断成 false，随后被当字符串调用 replace，整局直接
+          启动失败。因此必须用 iframe 自己的构造函数克隆一遍；和上面的 KeyboardEvent 同理。
+        */
+        const frameGlobal = win as Window & typeof globalThis
+        const legacyBundleRules: FlashUrlRewriteRule[] = legacyRuleSpecs.map(([from, to]) => [
+          typeof from === 'string' ? from : new frameGlobal.RegExp(from.source, from.flags),
+          to,
+        ])
         // 每次挂载都报一次（游客态报 0）：播放器据此在会话临期前提示玩家重新进这一局
         options.onFlashSaveSession?.(onlineSave?.expiresAt ?? 0)
         /*
@@ -598,20 +617,23 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         }
         const onlineSaveConfig = flashOnlineSaveRuffleConfig(onlineSave)
         /*
-          ⚠️ SFS 和在线存档都要往 Ruffle 配置里放 `urlRewriteRules`，而对象展开是**覆盖**不是合并：
-          两个都命中时，后展开的那个会把前面整张表丢掉，症状是「另一个功能静默失效」——
+          ⚠️ 旧 SDK 资源、SFS 和在线存档都要往 Ruffle 配置里放 `urlRewriteRules`，而对象展开
+          是**覆盖**不是合并：多个功能同时命中时，后展开的会把前面整张表丢掉，症状是静默失效——
           SAS3 联机连不上，或者在线存档的请求打到 agi.armorgames.com。
           所以这里显式合并（同一条来源地址以先出现的为准），再在 base 里最后写进去。
         */
-        const rewriteRules: [string, string][] = []
+        const rewriteRules: FlashUrlRewriteRule[] = []
         const seenRewrite = new Set<string>()
-        for (const source of [sfsConfig.urlRewriteRules, onlineSaveConfig.urlRewriteRules]) {
+        const isRegExp = (value: unknown): value is RegExp => Object.prototype.toString.call(value) === '[object RegExp]'
+        for (const source of [legacyBundleRules, sfsConfig.urlRewriteRules, onlineSaveConfig.urlRewriteRules]) {
           if (!Array.isArray(source)) continue
           for (const rule of source) {
             if (!Array.isArray(rule) || rule.length !== 2) continue
             const [from, to] = rule
-            if (typeof from !== 'string' || typeof to !== 'string' || seenRewrite.has(from)) continue
-            seenRewrite.add(from)
+            if (!(typeof from === 'string' || isRegExp(from)) || typeof to !== 'string') continue
+            const key = typeof from === 'string' ? `text:${from}` : `regexp:${from.source}/${from.flags}`
+            if (seenRewrite.has(key)) continue
+            seenRewrite.add(key)
             rewriteRules.push([from, to])
           }
         }

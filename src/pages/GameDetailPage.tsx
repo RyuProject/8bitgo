@@ -475,16 +475,18 @@ export function GameDetailPage() {
             必须在玩家点「开始」**之前**就看得到 —— PS2 大多数游戏在浏览器里跑不起来，
             让人先等一分钟加载再看到一句报错，那是把他的时间和对站点的信任一起花掉。
 
+            PSP 已经固定走自建 PPSSPP + Range 流式读盘，这句「实验性 / 可能很慢」
+            不再给玩家提供有用信息，反而会让正常运行的游戏看起来不可靠，所以只在这里排除 PSP；
+            平台卡片原有的实验标记不受影响。
+
             注：它和播放器、标题、资料区**同宽**（都是内容列）。09-07 把限宽换成限高之后
             这一整列就都对齐了，不需要再为它单独调什么。
           */}
-          {EXPERIMENTAL_PLATFORMS.has(platform.id) && (
+          {EXPERIMENTAL_PLATFORMS.has(platform.id) && platform.id !== 'psp' && (
             <p className="mt-3 rounded-xl border border-coin/40 bg-coin-soft px-3 py-2 text-xs text-muted">
-              ⚠️ {platform.runtime === 'ppsspp'
-                ? t.runtime.ppssppExperimental
-                : platform.runtime === 'dolphin'
-                  ? t.runtime.dolphinExperimental
-                  : t.runtime.playExperimental}
+              ⚠️ {platform.runtime === 'dolphin'
+                ? t.runtime.dolphinExperimental
+                : t.runtime.playExperimental}
             </p>
           )}
         </div>

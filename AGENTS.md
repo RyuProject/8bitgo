@@ -1596,9 +1596,14 @@ R2 multipart 发布到最终 `roms/psp/*.chd`。`.cso` / `.chd` 保持直传。
   同时发生；`source_deleted` 的 0 / 1 / 2 分别是保留 / 已删 / 正在清理。
 - 前端创建任务把随机 `source_key` 当幂等键：响应途中断线可以重试，服务端只返回原任务。旧槽是
   `.chd` / `.cso` 而新文件是 `.iso` 时绝不复用旧 key，否则转换服务降级时会把 ISO 字节写进错误扩展名。
-- 当前公开 PPSSPP 是 Range v2：2MB 分块、96MB 内存 LRU，并主动带 `If-Match` / `If-Unmodified-Since`
+- 当前公开 PPSSPP 是 Range v4：ISO/CSO/CHD 都用 2MB 分块，共用 96MB 内存 LRU，
+  并主动带 `If-Match` / `If-Unmodified-Since`
   钉住同一代镜像。播放 URL 同时带 `romv=<ETag>`，Worker 必须在每次 Range 前把它与 R2 当前 ETag 比较；
   不一致返回 412。Range 也必须绕过整包 Cache API，避免缓存的 200 响应跳过版本校验。
+  **不要再凭 CHD hunk 大小把 Range 改小。** Range v3 曾只给 CHD 改成 512KB，理论伴读是 2MB 的
+  四分之一，但当前 loader 是模拟线程里的同步请求，生产 CDN 往返数也变成约四倍。693.6MB 测试盘
+  真实冷启动从核心到游戏由约 86 秒退化到约 93 秒，因此 v4 恢复 2MB。以后调分块必须在同一地区、
+  冷缓存、同一镜像上以 `Booted` 日志计时；不能用“单次请求更小”推导“启动更快”。
 - 源站要装近期 MAME 的 `chdman`，并在 `server/.env` 配 `PSP_CONVERT_WORKER_URL`；转换临时盘
   至少留 `2 × ISO + 256MB`。默认并发 1，最多 2，避免压缩任务抢光玩家请求的 CPU / IO；
   `PSP_CONVERT_TIMEOUT_MINUTES` 默认 180，超时会先 SIGTERM、10 秒后 SIGKILL，不能让一个挂死的
@@ -1630,8 +1635,8 @@ PPSSPP iframe 的入口必须保留完整的 `/ppsspp/<版本>/index.html`。`se
 ⚠️ Emscripten 5 的 `IDBFS` / `WORKERFS` 不是页面全局变量，挂载必须从
 `FS.filesystems.IDBFS` / `FS.filesystems.WORKERFS` 取；否则核心下载完会在 `preRun` 直接报
 `IDBFS is not defined`，玩家只看到 40% 后失败。CMake 还必须显式链接 `-lidbfs.js`，只写桥代码
-不够；`scripts/check-ppsspp.mjs` 会同时检查 host 引用方式和二进制是否真的含 IDBFS。每次改
-`host.js` 或核心产物，都要同步提升 `RUNTIME_REVISION`、`index.html` 的 `host.js?r=` 和适配器入口代次。
+不够；`scripts/check-ppsspp.mjs` 会同时检查 host 引用方式和二进制是否真的含 IDBFS。缓存代次按
+下方 PSP 性能小节的四层规则更新，不能再把桥、核心和 data 绑成同一个数字。
 
 ⚠️ `-sPROXY_TO_PTHREAD=1` 和 `-sOFFSCREEN_FRAMEBUFFER=1` 还不等于 GL 会自动跨线程工作。
 SDL 的 Emscripten EGL 入口把整个 `eglCreateContext` 代理到主线程，只在那里建立真实上下文，
@@ -1663,8 +1668,79 @@ Emscripten GL 导出发生符号类型冲突；补丁因此让浏览器构建直
 ⚠️ 只修采样率仍不够：SDL 的 `ScriptProcessor` 随后会在浏览器主线程直接 `dynCall` C 音频回调，
 而 PPSSPP 的 main 和 `thread_local` 音频状态都在 pthread，不能让浏览器主线程进入那份 Wasm 线程状态。
 `0003-pthread-audio-ring.patch` 因此绕过 SDL WebAudio 设备：PPSSPP 工作线程在主循环里产出 float stereo
-PCM 到共享 Wasm 环形缓冲区，浏览器主线程只用 `Atomics` 取样播放，绝不再回调 Wasm。运行时 JS 必须包含 `__ppssppAudio`、
-`Atomics.load(HEAPU32`，`runtime.json` 必须声明 `pthreadAudioContext=shared-ring-buffer`；缺任一项都拒绝发布。
+PCM 到共享 Wasm 环形缓冲区，浏览器音频线程只用 `Atomics` 取样播放，绝不再回调 Wasm。`0006-web-performance.patch`
+把消费端从会被页面布局、聊天和直播 UI 长任务打断的 `ScriptProcessor` 升成 `AudioWorklet`；旧浏览器才回退。
+运行时 JS 必须同时包含 `__ppssppAudio` / `AudioWorkletNode` / `createScriptProcessor`，`runtime.json` 必须声明
+`pthreadAudioContext=shared-ring-buffer-worklet`；缺任一项都拒绝发布。
+
+这份自建音频节点同时是 PSP 直播的声音采集源：`adapters/ppsspp.ts` 每次开播都从同源 iframe
+现取 canvas 与 `Module.__ppssppAudio`，再交给全站 `captureFeed`。不能只返回 canvas，否则主播本机
+有声音、观众端会永久静音；也不能缓存第一次拿到的节点，音频设备重建后旧节点已经失效。AudioWorklet
+模块加载是异步的，所以 `__ppssppAudio.node` 必须是一开始就创建的稳定 Gain 总线；worklet / fallback
+只替换总线的输入源。若把 `node` 留成 null，玩家在首帧后立刻开播会永久漏掉本次音轨。
+
+### 2.32.2 PSP 性能：不能让 Retina 尺寸决定 WebGL 后备缓冲
+
+PSP 原生只有 480×272。旧 Web 壳让 SDL 带 `ALLOW_HIGHDPI`，在桌面 Retina 上实测创建到
+1948×1096；但 PPSSPP 内部仍只渲染 960×544，代理 WebGL 每帧白复制、合成并给直播编码器输入
+约 4 倍无新增细节的像素。`host.js` 现在按设备能力固定三档后备缓冲：480×272（省流量/弱机）、
+720×408（中档）和最高 960×544（强机）；核心的 Web 默认内部分辨率只在最高档选 2x，另两档选 1x。
+不要再按 CSS 尺寸、DPR 或浏览器全屏尺寸回写 canvas 的 width/height。
+
+浏览器 SDL 窗口不再启用 `SDL_WINDOW_ALLOW_HIGHDPI`，启动参数显式带 `--windowed --xres --yres`。
+这和页面 CSS 的响应式铺满是两件事：CSS 仍可把 960×544 画面放大到播放器宽度，只有昂贵的后备缓冲
+被限制。最高档从 2,135,008 像素降到 522,240（少 75.5%），同时降低代理呈现与开播编码负载。
+
+发布核心还必须保持 `WASM_ENABLE_LTO=ON`，pthread 预热池限制在 4–8 条；浏览器报 16/32 核时
+预建同等数量 Worker 只会拖慢启动，而当前 PPSSPP Web 实测总线程不超过 6。核心每 300 帧上报一次
+VPS/FPS、实际 FPS、画布尺寸和音频模式，供真机确认选档与掉速，不能逐帧跨线程发消息。
+`runtime.json` 以 `performanceProfile=adaptive-canvas-v1`、`maxCanvasPixels=522240`、
+`pthreadPoolMax=8`、`lto=true` 和 `performanceTelemetry=true` 固化验收。
+
+⚠️ 核心代码、桥和约 19MB 的 `PPSSPPSDL.data` 必须作为**一个实体目录原子换代**。Web 构建会通过
+`0008-web-cold-start.patch` 排除不会在播放器中开放的 `assets/debugger/`（React 调试器、source map
+和图标接近 3MB）；游戏字体、VFPU 表、语言、控制器表和兼容数据库全部保留。2026-09-25 线上取证发现，
+Cloudflare 对这组静态文件的缓存键**忽略查询串**：请求 `PPSSPPSDL.data?r=17` 仍命中旧的 r16
+（22,417,304B，`CF-Cache-Status: HIT`），而新清单需要 19,434,861B。查询参数不能再承担版本隔离，
+否则新 JS、旧 data 和旧 Wasm 会被拼在同一局里。当前整套资源发布在
+`public/ppsspp/v0dbfaca/v4/`；下次桥、JS、Wasm、data 或 AudioWorklet 任一项改变就复制/构建到
+`v5/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，不原地覆盖。
+
+Emscripten
+自带的 preload fetch 没有重试，`host.js` 用 `getPreloadedPackage` 接管：优先读浏览器缓存，连续
+30 秒无字节才中止当前连接，最多自动重试 3 次；已知长度时直接写进最终 ArrayBuffer，不能先存分片
+再复制一整份（移动端会在解包前多出约 19MB 峰值）。
+Emscripten 5 的生成胶水默认不会等待 `getPreloadedPackage` 返回的 Promise，会把 Promise 直接当
+ArrayBuffer 解包并报 `bad input to processPackageData Promise`；构建脚本会在锁定的生成片段上补
+`await`，结构对不上就拒绝发布。验收必须用真实浏览器走完一次核心 data 下载，不能只看 HTTP 200。
+
+桌面端玩家把鼠标移到“开始游戏”时，`prewarmRuntime('ppsspp')` 会在非省流/非 2G 网络并行预热
+入口、桥、JS、Wasm、data 和 AudioWorklet，尽量把约 34MB 的核心下载移出点击关键路径。触摸设备的
+focus 和点击发生在同一刻，没有真实提前量，只预热小入口与桥，禁止同时抢拉大核心造成重复下载。
+
+输入延迟不能只靠“把画质调低”。PPSSPP 默认 `InflightFrames=3`，老访客的单游戏配置还会覆盖
+新默认；`host.js` 因此在 Wasm 文件系统写入一次性的 `8bitgo-performance.ini`，并通过
+`--appendconfig=` 让它在全局/单游戏配置之后合并：`InflightFrames=1`、`VerticalSync=False`、
+`LowLatencyPresent=True`，同时固定 `FrameSkip=0` / `AutoFrameSkip=False`，避免用跳帧换取看似
+更快但会漏输入的假流畅。弱机与四核设备关闭独立 SAS 音频仿真线程，减少 pthread 争用；强机才开。
+这份策略在 `runtime.json.inputLatencyProfile=inflight-1-vsync-off` 固化，改值要同步发布代次与回归。
+
+开局、打开改键页和工具栏交互后统一走 `focusFrame(iframe)`，避免焦点留在外层按钮造成“第一次按键
+没反应”；手柄枚举也必须走 `frameGamepads(iframe)`，因为浏览器按文档隔离手柄激活权限。
+
+PSP 即时存档和改键不是靠模拟快捷键完成的。`0005-web-save-controls-bridge.patch` 在 PPSSPP 工作线程
+主循环里轮询共享命令槽：0 号槽存/读调用原生 `SaveState`，改键调用原生
+`SHOW_CONTROL_MAPPING`。浏览器导出的 `.ppssppstate` 带站内游戏身份、长度和格式头，导入前会先
+让当前游戏生成自己的真实槽位路径；不允许相信外部文件名直接覆盖，避免地区版/汉化版互相串档。
+本地统一存档允许 96MB，云端仍受 4MB 单份配额；超出云端配额时必须保住浏览器本地副本并明确提示。
+PPSSPP 自己的 SAVEDATA、原生状态和按键配置仍由 IDBFS 每 30 秒及离页时同步。
+
+PPSSPP 的 immutable 缓存只认**物理目录代次**，不再分 `?r=` 四层：`v4/` 内的 index、host、
+AudioWorklet、JS、Wasm、data 与 runtime.json 必须同批发布。虽然某次可能只改 20KB 的桥，仍要换到
+下一个目录；这是用少量重复存储换取边缘缓存绝不会混代。不要重新引入 `RUNTIME_REVISION` / `DATA_REVISION`
+或给文件补查询参数假装失效，它们在当前 Cloudflare 规则下不生效。
+构建验收还要确认 `runtime.json.webFeaturesBridge=savestate-controls-v1`，并跑
+`npm run test:ppsspp && npm run test:keymap && npm run test:capture-feed`。
 
 ⚠️ `-sFULL_ES3=1` 会注册一条每帧维护临时 VBO 的 JS 钩子，但 `PROXY_TO_PTHREAD` 的 Worker 侧
 `GL.currentContext` 只是主线程真实 WebGL 上下文的**整数令牌**，没有 `tempVertexBufferCounters1`。
@@ -1675,7 +1751,7 @@ PCM 到共享 Wasm 环形缓冲区，浏览器主线程只用 `Atomics` 取样�
 ⚠️ 已发布过一版把 `VITE_PPSSPP_PATH` 目录直接塞进 iframe，老 bundle 会请求
 `/ppsspp/v0dbfaca?embed=1&r=2`（没有 `index.html`）。静态中间件关闭目录重定向后它必然 404，
 玩家要白等 120 秒才看到超时。`server/src/index.js` 为这个精确旧地址保留了 `no-store` 302，
-跳到当前显式入口；以后递增 `adapters/ppsspp.ts` 的入口代次时必须同步那条跳转和回归断言。
+跳到当前 `v4/index.html`；以后换实体目录时必须同步那条跳转和回归断言。
 
 回归：`npm run test:ppsspp && npm run test:worker`。
 

@@ -236,7 +236,9 @@ export async function extractZipEntry(buf: ArrayBuffer, entry: ZipFileEntry, max
     throw new Error('zip: 本地文件头损坏')
   }
   const dataStart = entry.offset + 30 + dv.getUint16(entry.offset + 26, true) + dv.getUint16(entry.offset + 28, true)
-  const end = entry.compressedSize ? dataStart + entry.compressedSize : b.length
+  // 0 字节是合法成员，不是“中央目录没给长度”。旧写法会从它的 dataStart 一直切到 ZIP 末尾，
+  // 后台于是把整个压缩包当成 empty.txt 上传；Flash 的空响应兜底也会变成数 MB 垃圾数据。
+  const end = dataStart + entry.compressedSize
   const raw = b.subarray(dataStart, Math.min(end, b.length))
   if (entry.uncompressedSize > maxBytes) throw new Error('zip: 解包后的 ROM 过大')
 

@@ -1,0 +1,63 @@
+diff --git a/Core/FileLoaders/WasmRangeFileLoader.h b/Core/FileLoaders/WasmRangeFileLoader.h
+index b04142a..4606d23 100644
+--- a/Core/FileLoaders/WasmRangeFileLoader.h
++++ b/Core/FileLoaders/WasmRangeFileLoader.h
+@@ -15,9 +15,11 @@
+ #include "Core/Loaders.h"
+ 
+ // Browser-only random-access loader.  A PSP ISO is commonly larger than the
+-// WebAssembly heap budget, so retaining or downloading the entire object is
+-// deliberately forbidden.  Reads are aligned to fixed 2 MiB HTTP ranges and
+-// held in a bounded in-memory LRU.  Every request after the first one is also
++// WebAssembly heap budget, so retaining or downloading the entire object is
++// deliberately forbidden. ISO/CSO use 2 MiB ranges for sequential throughput;
++// CHD uses 512 KiB because libchdr asks for small compressed hunks at scattered
++// offsets and 2 MiB otherwise turns every useful read into roughly 4x traffic.
++// Downloaded ranges are held in a bounded in-memory LRU. Every request is also
+ // pinned to the first response validator so two object versions can never be
+ // mixed into one emulated disc.
+ class WasmRangeFileLoader : public FileLoader {
+@@ -48,7 +50,8 @@ private:
+ 		u64 usedAt = 0;
+ 	};
+ 
+-	static constexpr s64 BLOCK_BYTES = 2 * 1024 * 1024;
++	static constexpr s64 DEFAULT_BLOCK_BYTES = 2 * 1024 * 1024;
++	static constexpr s64 CHD_BLOCK_BYTES = 512 * 1024;
+ 	// PPSSPP's pthread build reserves a 512 MiB shared heap.  A 192 MiB cache left
+ 	// too little headroom for textures/JIT on mobile; 96 MiB still keeps 48 blocks.
+ 	static constexpr size_t MAX_CACHE_BYTES = 96 * 1024 * 1024;
+@@ -60,6 +63,7 @@ private:
+ 	void ReportFatalError(const std::string &message);
+ 
+ 	Path filename_;
++	s64 blockBytes_ = DEFAULT_BLOCK_BYTES;
+ 	s64 fileSize_ = 0;
+ 	std::once_flag preparedFlag_;
+ 	std::atomic<bool> cancelled_{false};
+diff --git a/Core/FileLoaders/WasmRangeFileLoader.cpp b/Core/FileLoaders/WasmRangeFileLoader.cpp
+index b04142a..3587001 100644
+--- a/Core/FileLoaders/WasmRangeFileLoader.cpp
++++ b/Core/FileLoaders/WasmRangeFileLoader.cpp
+@@ -73,6 +73,10 @@ bool ParseContentRange(emscripten_fetch_t *fetch, s64 *first, s64 *last, s64 *to
+ }  // namespace
+ 
+ WasmRangeFileLoader::WasmRangeFileLoader(const Path &filename) : filename_(filename) {
++	// CHD 的压缩 hunk 通常只有数百 KiB 且分散在镜像内；沿用 ISO 的 2 MiB 对齐块会把
++	// 标题画面前的随机读放大到接近整盘。512 KiB 覆盖常见 hunk，又不会制造海量请求。
++	if (filename_.GetFileExtension() == ".chd")
++		blockBytes_ = CHD_BLOCK_BYTES;
+ }
+ void WasmRangeFileLoader::SetError(const std::string &message) {
+ 	std::lock_guard<std::mutex> guard(errorMutex_);
+@@ -254,8 +258,8 @@ size_t WasmRangeFileLoader::ReadAt(s64 absolutePos, size_t bytes, void *data, Fla
+ 	size_t written = 0;
+ 
+ 	while (cursor < wantedEnd && !cancelled_.load()) {
+-		const s64 blockStart = (cursor / BLOCK_BYTES) * BLOCK_BYTES;
+-		const size_t blockLength = (size_t)std::min<s64>(BLOCK_BYTES, fileSize_ - blockStart);
++		const s64 blockStart = (cursor / blockBytes_) * blockBytes_;
++		const size_t blockLength = (size_t)std::min<s64>(blockBytes_, fileSize_ - blockStart);
+ 		std::vector<u8> transient;
+ 		const std::vector<u8> *block = nullptr;
+

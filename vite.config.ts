@@ -115,10 +115,17 @@ function isolationHeaders(req: IncomingMessage, res: ServerResponse, next: () =>
   const builtinSlug = /^\/web\/([^/]+)\/?$/.exec(pathname)?.[1]
     || /^\/(?:zh-Hans\/|zh-Hant\/|en\/|es\/|fr\/|it\/|de\/|ja\/)?play\/([^/]+)\/?$/.exec(pathname)?.[1]
   const isolatedBuiltin = Boolean(builtinSlug && builtinWebGameFor(builtinSlug)?.isolated)
+  // /play-local 为 PSP 等 pthread 核心开了 COEP。它里面的 Flash 播放框即使同源，
+  // 文档自身没有 COEP 也会被 Chromium 替换成 chrome-error://chromewebdata/ 黑屏。
+  const flashFrame = pathname === '/flash-frame.html'
   if (pathname === '/linux' || pathname === '/linux.html' || isolatedPlay || localPlay || isolatedBuiltin || pathname.startsWith('/dolphin/') || pathname.startsWith('/ppsspp/')) {
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
     res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
     if (pathname === '/linux') req.url = `/linux.html${requestUrl.slice('/linux'.length)}`
+  }
+  if (flashFrame) {
+    res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
   }
   if (pathname === '/qemu-wasm/qemu-system-x86_64.worker.js') {
     res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')

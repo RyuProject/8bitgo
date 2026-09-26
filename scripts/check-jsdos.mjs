@@ -24,15 +24,18 @@ const sha256 = (file) => createHash('sha256').update(readFileSync(file)).digest(
 
 if (!existsSync(pkgFile)) fail('npm 包不存在，请先 npm install')
 const { version } = JSON.parse(readFileSync(pkgFile, 'utf8'))
-const declared = readFileSync(pathsFile, 'utf8').match(/export const JSDOS_VERSION\s*=\s*['"]([^'"]+)['"]/)?.[1]
+const pathsSource = readFileSync(pathsFile, 'utf8')
+const declared = pathsSource.match(/export const JSDOS_VERSION\s*=\s*['"]([^'"]+)['"]/)?.[1]
+const assetVersion = pathsSource.match(/export const JSDOS_ASSET_VERSION\s*=\s*['"]([^'"]+)['"]/)?.[1]
 if (declared !== version) fail(`src/emulator/paths.ts 声明 ${declared || '空'}，npm 安装的是 ${version}`)
+if (!assetVersion || !assetVersion.startsWith(`${version}-`)) fail(`JSDOS_ASSET_VERSION 没有跟随当前上游版本 ${version}`)
 
-const publicDir = join(root, 'public', 'jsdos', `v${version}`)
-const runtimeDir = distMode ? join(root, 'dist', 'client', 'jsdos', `v${version}`) : publicDir
+const publicDir = join(root, 'public', 'jsdos', `v${assetVersion}`)
+const runtimeDir = distMode ? join(root, 'dist', 'client', 'jsdos', `v${assetVersion}`) : publicDir
 const publicManifest = join(publicDir, 'runtime.json')
 const manifestFile = join(runtimeDir, 'runtime.json')
 if (!existsSync(publicManifest)) fail('public/jsdos 的 runtime.json 不存在；先运行 npm run jsdos')
-if (!existsSync(manifestFile)) fail(`${distMode ? 'dist/client' : 'public'}/jsdos/v${version}/runtime.json 不存在`)
+if (!existsSync(manifestFile)) fail(`${distMode ? 'dist/client' : 'public'}/jsdos/v${assetVersion}/runtime.json 不存在`)
 if (distMode && !readFileSync(manifestFile).equals(readFileSync(publicManifest))) {
   fail('dist/client/jsdos 的清单落后于 public；请重新构建客户端')
 }
@@ -43,7 +46,7 @@ try {
 } catch {
   fail('runtime.json 不是合法 JSON')
 }
-if (manifest.version !== version || manifest.withDosboxX !== true || manifest.ipxPatched !== true) {
+if (manifest.version !== version || manifest.assetVersion !== assetVersion || manifest.withDosboxX !== true || manifest.ipxPatched !== true) {
   fail('runtime.json 的版本或 DOSBox-X / IPX 补丁标记不正确')
 }
 if (manifest.copyScriptSha256 !== sha256(copyScript)) fail('复制补丁脚本已经变化，public 仍是旧产物；请运行 npm run jsdos')
@@ -94,6 +97,8 @@ if (js.includes('":1900/ipx/"') || !js.includes('"/ipx/"')) fail('IPX 仍在使�
 for (const marker of ['__8bitgoListeners', '__8bitgoCleanup', 'navigator.keyboard.unlock']) {
   if (!js.includes(marker)) fail(`会话清理补丁缺关键特征 ${marker}`)
 }
+if (js.includes('unadjustedMovement')) fail('Pointer Lock 仍在绕过系统鼠标加速')
+if (!js.includes('requestPointerLock()')) fail('找不到使用系统加速的 Pointer Lock 补丁')
 for (const type of ['fullscreenchange', 'pointerlockchange', 'visibilitychange']) {
   if (!js.includes(`__8bitgoListen("${type}",`)) fail(`${type} 监听没有纳入 stop() 清理`)
 }
@@ -104,4 +109,4 @@ for (const name of required.filter((name) => name.endsWith('.wasm'))) {
   if (!wasm.subarray(0, 4).equals(Buffer.from([0x00, 0x61, 0x73, 0x6d]))) fail(`${name} 不是有效 WASM`)
 }
 
-console.log(`✔ js-dos ${version} ${distMode ? '部署产物' : '公开目录'}完整（DOSBox / DOSBox-X 配套，三项补丁在位）`)
+console.log(`✔ js-dos ${version} ${distMode ? '部署产物' : '公开目录'}完整（DOSBox / DOSBox-X 配套，鼠标与会话补丁在位）`)

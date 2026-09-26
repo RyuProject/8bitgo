@@ -58,12 +58,16 @@ export const RUFFLE_PATH: string = asDir(
  *
  * 这些文件以前全放在固定的 `/jsdos/`：升级 npm 包或本地补丁后，Cloudflare 与浏览器
  * 最多一小时仍可能各自命中旧文件，最坏会拼成「新 js-dos.js + 旧 wasm」，玩家只看到黑屏。
- * 版本进入 URL 后，旧缓存不会再参与新会话；构建检查还会把这里和 npm 包版本逐字核对。
+ * 版本进入 URL 后，旧缓存不会再参与新会话；构建检查还会把上游版本和 npm 包逐字核对。
+ *
+ * 本站会对 js-dos.js 打补丁，而这些文件是一年 immutable：只要补丁会改变产物，
+ * JSDOS_ASSET_VERSION 就必须换代。否则代码已部署，玩家却会继续命中上一份 CDN 缓存。
  */
 export const JSDOS_VERSION = '8.4.1'
+export const JSDOS_ASSET_VERSION = '8.4.1-8bitgo.1'
 export const JSDOS_PATH: string = asDir(
   import.meta.env.VITE_JSDOS_PATH,
-  `/jsdos/v${JSDOS_VERSION}/`,
+  `/jsdos/v${JSDOS_ASSET_VERSION}/`,
 )
 
 /* ---------------- EmulatorJS：平台别名 → 实际核心文件 ---------------- */
@@ -125,6 +129,14 @@ export const PLAY_PATH: string = asDir(import.meta.env.VITE_PLAY_PATH)
  */
 export const PPSSPP_VERSION = '0dbfaca'
 export const PPSSPP_PATH: string = asDir(import.meta.env.VITE_PPSSPP_PATH)
+/**
+ * Cloudflare 对这组静态文件的缓存键会忽略查询串，所以 PPSSPP 不能靠 `?r=` 换代。
+ * 桥、Wasm 或 data 任一项变化都发布到新的实体目录，保证边缘不会拼出两代运行时。
+ */
+export const PPSSPP_RUNTIME_GENERATION = 'v4'
+export const PPSSPP_RUNTIME_PATH: string = PPSSPP_PATH
+  ? asDir(`${PPSSPP_PATH}${PPSSPP_RUNTIME_GENERATION}`)
+  : ''
 
 /**
  * wasm-dolphin 随仓库发布在版本目录里。目录名就是接入时锁定的上游提交短 SHA：

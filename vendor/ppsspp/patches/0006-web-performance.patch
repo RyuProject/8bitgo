@@ -1,0 +1,239 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 197b0a9..98b8d92 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -344,7 +344,9 @@ if(EMSCRIPTEN)
+ 	add_link_options("-sGL_ENABLE_GET_PROC_ADDRESS=1")
+ 	add_link_options("-sGL_SUPPORT_AUTOMATIC_ENABLE_EXTENSIONS=1")
+ 	add_link_options("-sWASM_BIGINT=1")
+-	add_link_options("-sPTHREAD_POOL_SIZE=Math.max(4,navigator.hardwareConcurrency||4)")
++	# 浏览器报告 16/32 核时把同样数量的 512 MiB 共享堆 Worker 全部预热只会增加启动和调度成本；
++	# PPSSPP Web 实测最多使用 6 条工作线程，留到 8 条仍有余量。
++	add_link_options("-sPTHREAD_POOL_SIZE=Math.min(8,Math.max(4,navigator.hardwareConcurrency||4))")
+ 	add_link_options("-sINCOMING_MODULE_JS_API=canvas,locateFile,print,printErr,setStatus,monitorRunDependencies,preRun,onRuntimeInitialized,onAbort,arguments,SDL2")
+ 	add_link_options("-sFETCH=1")
+ 	add_link_options("-sPROXY_TO_PTHREAD=1")
+diff --git a/Core/Config.cpp b/Core/Config.cpp
+index 522ccae..8640b7f 100644
+--- a/Core/Config.cpp
++++ b/Core/Config.cpp
+@@ -413,6 +413,13 @@ static int DefaultInternalResolution() {
+ 	// Auto on Windows and Linux, 2x on large screens and iOS, 1x elsewhere.
+ #if defined(USING_WIN_UI) || defined(USING_QT_UI)
+ 	return 0;
++#elif defined(__EMSCRIPTEN__)
++	// Web 外壳会把无意义的 Retina 后备缓冲限制到 PSP 的整数倍。阈值不能继续沿用
++	// 桌面窗口的 1000px，否则 960×544 的高性能档反而退回 1x 内部渲染。
++	int longestDisplaySide = std::max(System_GetPropertyInt(SYSPROP_DISPLAY_XRES), System_GetPropertyInt(SYSPROP_DISPLAY_YRES));
++	int scale = longestDisplaySide >= 900 ? 2 : 1;
++	INFO_LOG(Log::G3D, "Web display side: %d pixels. Choosing scale %d", longestDisplaySide, scale);
++	return scale;
+ #elif PPSSPP_PLATFORM(IOS)
+ 	return 2;
+ #else
+diff --git a/Makefile b/Makefile
+index 519158a..cd15a74 100644
+--- a/Makefile
++++ b/Makefile
+@@ -34,7 +34,7 @@ wasm-dev-build:
+ wasm-dev: wasm-dev-config wasm-dev-build
+ 
+ wasm-release-config:
+-	emcmake $(CMAKE) -S . -B $(WASM_RELEASE_BUILD_DIR) $(WASM_COMMON_CMAKE_ARGS) -DCMAKE_BUILD_TYPE=Release -DWASM_MAX_PERF=ON -DWASM_ENABLE_LTO=OFF -DWASM_MALLOC=mimalloc
++	emcmake $(CMAKE) -S . -B $(WASM_RELEASE_BUILD_DIR) $(WASM_COMMON_CMAKE_ARGS) -DCMAKE_BUILD_TYPE=Release -DWASM_MAX_PERF=ON -DWASM_ENABLE_LTO=ON -DWASM_MALLOC=mimalloc
+ 
+ wasm-release-build:
+ 	$(CMAKE) --build $(WASM_RELEASE_BUILD_DIR) $(WASM_JOBS)
+diff --git a/SDL/SDLMain.cpp b/SDL/SDLMain.cpp
+index 1e6fead..0e0bf89 100644
+--- a/SDL/SDLMain.cpp
++++ b/SDL/SDLMain.cpp
+@@ -83,6 +83,7 @@ SDLJoystick *joystick = NULL;
+ #include "Core/ControlMapper.h"
+ #include "Core/KeyMap.h"
+ #include "Core/SaveState.h"
++#include "Core/HW/Display.h"
+ #include "SDLGLGraphicsContext.h"
+ #if defined(PPSSPP_SDL_HAS_VULKAN)
+ #include "SDLVulkanGraphicsContext.h"
+@@ -292,43 +293,88 @@ static bool InitWasmAudioBridge() {
+ 		}
+ 
+ 		const context = new AudioContextClass({ latencyHint: 'interactive' });
+-		const node = context.createScriptProcessor($4, 0, 2);
+ 		const readSlot = $0 >>> 2;
+ 		const writeSlot = $1 >>> 2;
+ 		const ringBase = $2 >>> 2;
+ 		const ringMask = $3 >>> 0;
+-		node.onaudioprocess = (event) => {
+-			growMemViews();
+-			const left = event.outputBuffer.getChannelData(0);
+-			const right = event.outputBuffer.getChannelData(1);
+-			let read = Atomics.load(HEAPU32, readSlot) >>> 0;
+-			const write = Atomics.load(HEAPU32, writeSlot) >>> 0;
+-			const available = Math.min((write - read) >>> 0, ringMask + 1);
+-			const copied = Math.min(left.length, available);
+-			for (let i = 0; i < copied; ++i) {
+-				const sample = ringBase + (((read + i) & ringMask) * 2);
+-				left[i] = HEAPF32[sample];
+-				right[i] = HEAPF32[sample + 1];
+-			}
+-			if (copied < left.length) {
+-				left.fill(0, copied);
+-				right.fill(0, copied);
+-			}
+-			if (copied)
+-				Atomics.store(HEAPU32, readSlot, (read + copied) >>> 0);
+-		};
+-		node.connect(context.destination);
+ 		const resume = () => {
+ 			if (context.state === 'suspended')
+ 				context.resume().catch(() => {});
+ 		};
++		// 直播可能在 worklet 的模块异步加载完成前就请求音轨；用同步创建的静音总线作为
++		// 稳定采集节点，真正的 worklet / fallback 只替换它的输入源。
++		const output = context.createGain();
++		output.connect(context.destination);
++		const audio = ({ context, node: output, source: null, resume, stopped: false });
++		const install = (node, mode) => {
++			if (audio.stopped) {
++				try { node.disconnect(); } catch (_) {}
++				return;
++			}
++			audio.source = node;
++			node.connect(output);
++			Module['__ppssppAudioMode'] = mode;
++			globalThis.__ppssppAudioMode?.(mode);
++		};
++		const installFallback = () => {
++			if (audio.stopped || audio.source)
++				return;
++			const node = context.createScriptProcessor($4, 0, 2);
++			node.onaudioprocess = (event) => {
++				growMemViews();
++				const left = event.outputBuffer.getChannelData(0);
++				const right = event.outputBuffer.getChannelData(1);
++				let read = Atomics.load(HEAPU32, readSlot) >>> 0;
++				const write = Atomics.load(HEAPU32, writeSlot) >>> 0;
++				const available = Math.min((write - read) >>> 0, ringMask + 1);
++				const copied = Math.min(left.length, available);
++				for (let i = 0; i < copied; ++i) {
++					const sample = ringBase + (((read + i) & ringMask) * 2);
++					left[i] = HEAPF32[sample];
++					right[i] = HEAPF32[sample + 1];
++				}
++				if (copied < left.length) {
++					left.fill(0, copied);
++					right.fill(0, copied);
++				}
++				if (copied)
++					Atomics.store(HEAPU32, readSlot, (read + copied) >>> 0);
++			};
++			install(node, 'script-processor');
++		};
++		const workletUrl = Module['__ppssppAudioWorkletUrl'];
++		if (context.audioWorklet && typeof AudioWorkletNode === 'function' && workletUrl) {
++			context.audioWorklet.addModule(workletUrl).then(() => {
++				if (audio.stopped)
++					return;
++				const node = new AudioWorkletNode(context, 'ppsspp-audio', {
++					numberOfInputs: 0,
++					numberOfOutputs: 1,
++					outputChannelCount: [2],
++				});
++				node.port.onmessage = (event) => {
++					if (event.data?.type === 'stats')
++						globalThis.__ppssppAudioStats?.(event.data);
++				};
++				node.port.postMessage({
++					type: 'init',
++					memory: HEAPF32.buffer,
++					readSlot,
++					writeSlot,
++					ringBase,
++					ringMask,
++				});
++				install(node, 'worklet');
++			}).catch((error) => {
++				console.warn('[ppsspp] AudioWorklet failed, using ScriptProcessor', error);
++				installFallback();
++			});
++		} else {
++			installFallback();
++		}
+ 		resume();
+ 		document.addEventListener('pointerdown', resume, { capture: true, passive: true });
+ 		document.addEventListener('keydown', resume, { capture: true });
+-		const audio = {};
+-		audio.context = context;
+-		audio.node = node;
+-		audio.resume = resume;
+ 		Module['__ppssppAudio'] = audio;
+ 		return context.sampleRate | 0;
+ 	}, &g_wasmAudioRead, &g_wasmAudioWrite, g_wasmAudioRing, WASM_AUDIO_RING_MASK, 2048);
+@@ -391,11 +437,14 @@ static void StopWasmAudioBridge() {
+ 		const audio = Module['__ppssppAudio'];
+ 		if (!audio)
+ 			return;
++		audio.stopped = true;
+ 		document.removeEventListener('pointerdown', audio.resume, { capture: true });
+ 		document.removeEventListener('keydown', audio.resume, { capture: true });
+-		try { audio.node.disconnect(); } catch (_) {}
++		try { audio.source?.disconnect(); } catch (_) {}
++		try { audio.node?.disconnect(); } catch (_) {}
+ 		try { audio.context.close(); } catch (_) {}
+ 		delete Module['__ppssppAudio'];
++		delete Module['__ppssppAudioMode'];
+ 	});
+ }
+ 
+@@ -1908,6 +1957,30 @@ struct EmscriptenMainLoopState {
+ 	int forceGLVersion;
+ };
+ 
++static void ReportWasmPerformance() {
++	static int framesUntilReport = 300;
++	if (--framesUntilReport > 0)
++		return;
++	framesUntilReport = 300;
++	float vps = 0.0f;
++	float fps = 0.0f;
++	float actualFps = 0.0f;
++	__DisplayGetFPS(&vps, &fps, &actualFps);
++	MAIN_THREAD_ASYNC_EM_ASM({
++		const callback = globalThis.__ppssppPerformance;
++		if (typeof callback === 'function') {
++			callback({
++				vps: $0,
++				fps: $1,
++				actualFps: $2,
++				canvasWidth: Module['canvas']?.width || 0,
++				canvasHeight: Module['canvas']?.height || 0,
++				audioMode: Module['__ppssppAudioMode'] || 'pending',
++			});
++		}
++	}, vps, fps, actualFps);
++}
++
+ static void EmscriptenMainLoop(void *arg) {
+ 	auto *state = (EmscriptenMainLoopState *)arg;
+ 	SDL_Window *window = state->window;
+@@ -1946,6 +2019,7 @@ static void EmscriptenMainLoop(void *arg) {
+ 	// ran NativeFrame above and pushed tasks) and for the threaded path
+ 	// (emu worker pushed tasks asynchronously).
+ 	graphicsContext->ThreadFrameAvailable();
++	ReportWasmPerformance();
+ 
+ 	{
+ 		std::lock_guard<std::mutex> guard(g_mutexWindow);
+@@ -2170,6 +2244,10 @@ int main(int argc, char *argv[]) {
+ 	mode |= SDL_WINDOW_FULLSCREEN;
+ #elif defined(USING_FBDEV) || PPSSPP_PLATFORM(SWITCH)
+ 	mode |= SDL_WINDOW_FULLSCREEN_DESKTOP;
++#elif defined(__EMSCRIPTEN__)
++	// 外壳已经按设备能力选择后备缓冲；ALLOW_HIGHDPI 会让 SDL 再乘一次 DPR，
++	// 代理 WebGL 每帧复制数百万个没有额外细节的像素。
++	mode |= SDL_WINDOW_RESIZABLE;
+ #else
+ 	mode |= SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
+ #endif

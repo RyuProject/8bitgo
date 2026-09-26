@@ -357,7 +357,7 @@ check('/index.html 必须 301 到目录本身', () => {
 
 check('模拟器和网页游戏的 index.html 是运行入口，不能被 SEO 归一规则删掉', () => {
   for (const url of [
-    '/ppsspp/v0dbfaca/index.html?embed=1&r=6',
+    '/ppsspp/v0dbfaca/v4/index.html?embed=1',
     '/dolphin/v7e38409/index.html?embed=1&r=1',
     '/j2me/index.html',
     '/web/terraria/index.html',

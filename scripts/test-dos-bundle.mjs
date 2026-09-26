@@ -577,7 +577,9 @@ console.log('\n── 保护表里的键必须是模拟器真认识的 ──')
     上面那次就是差点在这里翻车：光看代码没法知道 `mouse_emulation` 是不是真名字。
     所以直接拿 wasm 里的字符串表对一遍 —— 名字在不在模拟器里，二进制说了算。
   */
-  const jsdosVersion = JSON.parse(readFileSync(new URL('../node_modules/js-dos/package.json', import.meta.url), 'utf8')).version
+  const pathsSource = readFileSync(new URL('../src/emulator/paths.ts', import.meta.url), 'utf8')
+  const jsdosVersion = pathsSource.match(/export const JSDOS_ASSET_VERSION\s*=\s*['"]([^'"]+)['"]/)?.[1]
+  if (!jsdosVersion) throw new Error('src/emulator/paths.ts 缺 JSDOS_ASSET_VERSION')
   const cores = [
     `public/jsdos/v${jsdosVersion}/emulators/wdosbox-x.wasm`,
     `public/jsdos/v${jsdosVersion}/emulators/wdosbox.wasm`,
