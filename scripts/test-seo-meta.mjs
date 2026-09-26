@@ -233,5 +233,17 @@ check('法律页的结构化面包屑跟随同一条 canonical', () => {
   )
 })
 
+console.log('七、跨平台同名游戏必须有唯一搜索标题')
+
+check('详情页的 title 带平台缩写，H1 仍保持干净的游戏名', () => {
+  const page = code('src/pages/GameDetailPage.tsx')
+  const i18n = code('src/services/i18nData.ts')
+  assert.match(page, /gameSeoTitle\(seoTitle, seoPlatform\?\.shortName \?\? '', lang\)/, '没有用平台缩写生成搜索标题')
+  assert.match(page, /title: fmt\(t\.game\.docTitle, \{ title: seoDocumentTitle \}\)/, 'meta title 没有使用唯一标题')
+  assert.match(page, /<h1[^>]*>\{seoTitle\}<\/h1>/, 'H1 不应被平台后缀污染')
+  assert.match(i18n, /`\$\{cleanTitle\}（\$\{cleanPlatform\}）`/, 'CJK 标题没有使用全角括号')
+  assert.match(i18n, /`\$\{cleanTitle\} \(\$\{cleanPlatform\}\)`/, '拉丁语言标题没有使用平台后缀')
+})
+
 console.log(failed ? `\n${failed} 项未通过` : '\n全部通过 ✅')
 process.exit(failed ? 1 : 0)

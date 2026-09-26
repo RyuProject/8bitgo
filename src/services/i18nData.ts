@@ -57,6 +57,23 @@ export function gameTitle(
 }
 
 /**
+ * 详情页的搜索标题要带平台版本。
+ *
+ * 同名游戏跨平台非常常见：例如 FC 与街机《双截龙》、NDS 与网页版《植物大战僵尸》。
+ * 页面正文和 ROM 明明不同，若 title 只写游戏名，搜索引擎看到的却是一组成对的重复页，
+ * 搜索结果里玩家也分不清点进去的是哪个版本。平台缩写放在游戏名后、通用站点模板前，
+ * 既让每一版拥有稳定的独立检索词，又不会把冗长的平台全称塞进本来就有限的标题空间。
+ */
+export function gameSeoTitle(title: string, platform: string, lang: Lang): string {
+  const cleanTitle = title.trim()
+  const cleanPlatform = platform.trim()
+  if (!cleanPlatform) return cleanTitle
+  return lang === 'zh-Hans' || lang === 'zh-Hant' || lang === 'ja'
+    ? `${cleanTitle}（${cleanPlatform}）`
+    : `${cleanTitle} (${cleanPlatform})`
+}
+
+/**
  * 按当前语言选可选资料片的名字（开始界面那个开关上的「隐秘行动」）。
  *
  * 只有两档，和 gameTitle 一样不走按需翻译：这是专有名词，机器翻出来的

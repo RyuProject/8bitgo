@@ -21,7 +21,7 @@ import { useSeo, breadcrumbSchema, videoGameSchema } from '@/services/seo'
 import { useLang } from '@/services/lang'
 import { useT, fmt } from '@/services/i18n'
 import { getLang } from '@/services/lang'
-import { dosExtrasName, gameDescription, gameSeoLanguagePlan, gameTitle, genreLabel, needsTranslation, platformDesc, platformLabel } from '@/services/i18nData'
+import { dosExtrasName, gameDescription, gameSeoLanguagePlan, gameSeoTitle, gameTitle, genreLabel, needsTranslation, platformDesc, platformLabel } from '@/services/i18nData'
 import { EmulatorPlayer, preloadPlayer } from '@/emulator/PlayerChunk'
 import { stageHeightCap } from '@/emulator/screenAspect'
 import { IsolatedPlayCard } from '@/components/game/IsolatedPlayCard'
@@ -248,6 +248,7 @@ export function GameDetailPage() {
   const seoTitle = game ? gameTitle(game, lang) : ''
   const seoPlatform = game ? platformMap[game.platform] : undefined
   const seoPlatformName = seoPlatform ? platformLabel(t, seoPlatform.id, seoPlatform.name) : ''
+  const seoDocumentTitle = game ? gameSeoTitle(seoTitle, seoPlatform?.shortName ?? '', lang) : ''
   // 平台级 BIOS。必须在下面那几个 early return 之前调 —— hook 的调用顺序每次渲染都要一致。
   // 异步到货，第一帧一般是空串；播放器只在挂载引擎那一刻读它，不会因此重启游戏
   const biosUrl = usePlatformBiosUrl(seoPlatform?.id)
@@ -258,7 +259,7 @@ export function GameDetailPage() {
   useSeo(
     game
       ? {
-          title: fmt(t.game.docTitle, { title: seoTitle }),
+          title: fmt(t.game.docTitle, { title: seoDocumentTitle }),
           // 优先用游戏自己的简介，没有再套通用模板
           description: seoDesc || fmt(t.seo.gameDesc, { title: seoTitle, platform: seoPlatformName }),
           contentLanguages: seoLanguages?.contentLanguages,
