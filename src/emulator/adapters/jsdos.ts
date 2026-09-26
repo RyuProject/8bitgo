@@ -240,10 +240,16 @@ const mouseSensitivityStore = {
  * 所以在实例上盖一个同名方法就够了，不用碰引擎。`inverted` 是现读的，切开关立刻生效。
  * 绝对坐标那条 `sendMouseMotion` 不碰：反了 Y 光标会镜像，菜单点不准。
  */
-function hookMouseInvert(c: DosCi, inverted: () => boolean) {
+function hookMouseInvert(c: DosCi, inverted: () => boolean): () => void {
   const raw = c.sendMouseRelativeMotion
-  if (typeof raw !== 'function') return
-  c.sendMouseRelativeMotion = (x, y) => raw.call(c, x, inverted() ? -y : y)
+  if (typeof raw !== 'function') return () => {}
+  const wrapped = (x: number, y: number) => raw.call(c, x, inverted() ? -y : y)
+  c.sendMouseRelativeMotion = wrapped
+  return () => {
+    // ci-ready 理论上只到一次，但后端重连会再到；只拆自己的这一层，避免重复包裹后 Y 轴
+    // 反转两次变回正常，也避免未来别的输入扩展装在我们之后时被清理函数误删。
+    if (c.sendMouseRelativeMotion === wrapped) c.sendMouseRelativeMotion = raw
+  }
 }
 
 /**
@@ -259,13 +265,18 @@ function hookLockedAbsoluteMouse(c: DosCi, host: HTMLElement, inverted: () => bo
   const rawAbsolute = c.sendMouseMotion
   if (typeof rawRelative !== 'function' || typeof rawAbsolute !== 'function') {
     // 极老的 js-dos 没暴露绝对坐标接口时至少保留原行为；当前自托管版本两条接口都有。
-    hookMouseInvert(c, inverted)
-    return () => {}
+    console.warn('[jsdos] 当前运行时缺少绝对鼠标接口，已退回相对鼠标')
+    return hookMouseInvert(c, inverted)
   }
 
   let pointer = { x: 0.5, y: 0.5 }
-  const canvasRect = () => {
-    const canvas = host.querySelector('canvas')
+  const activeCanvas = () => {
+    const locked = document.pointerLockElement
+    // 渲染后端或全屏切换可能重建 canvas；锁定中的那个才是此刻真正接收鼠标的画面。
+    if (locked?.tagName === 'CANVAS' && host.contains(locked)) return locked as HTMLCanvasElement
+    return host.querySelector('canvas')
+  }
+  const canvasRect = (canvas = activeCanvas()) => {
     const rect = canvas?.getBoundingClientRect() ?? host.getBoundingClientRect()
     return lockedAbsoluteContentRect(rect, {
       width: c.width?.() ?? 0,
@@ -275,22 +286,28 @@ function hookLockedAbsoluteMouse(c: DosCi, host: HTMLElement, inverted: () => bo
   const seedFromClick = (event: PointerEvent | MouseEvent) => {
     // 锁定后 clientX/Y 不再代表真实位置；每次点击都重置会让客体光标跳回锁定点。
     if (document.pointerLockElement) return
-    const rect = canvasRect()
+    const canvas = activeCanvas()
+    // 非 kiosk 的联机页还带 js-dos 侧栏。监听器挂在 host 的捕获阶段，所以必须只认画布；
+    // 否则玩家点侧栏设置也会把游戏光标钳到屏幕边缘。
+    if (!canvas || event.target !== canvas) return
+    const rect = canvasRect(canvas)
     pointer = lockedAbsolutePointerAtClientPosition(event.clientX, event.clientY, rect)
     rawAbsolute.call(c, pointer.x, pointer.y)
   }
   const startEvent = typeof PointerEvent === 'function' ? 'pointerdown' : 'mousedown'
   host.addEventListener(startEvent, seedFromClick as EventListener, true)
 
-  c.sendMouseRelativeMotion = (x, y) => {
+  const wrapped = (x: number, y: number) => {
     const rect = canvasRect()
     pointer = advanceLockedAbsolutePointer(pointer, x, y, rect, inverted())
     rawAbsolute.call(c, pointer.x, pointer.y)
   }
+  c.sendMouseRelativeMotion = wrapped
 
   return () => {
     host.removeEventListener(startEvent, seedFromClick as EventListener, true)
-    c.sendMouseRelativeMotion = rawRelative
+    // 与相对鼠标钩子一样，只恢复自己安装的函数；重连/销毁交错时不覆盖更新的一层。
+    if (c.sendMouseRelativeMotion === wrapped) c.sendMouseRelativeMotion = rawRelative
   }
 }
 
@@ -776,7 +793,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                 cancelMouseHook?.()
                 cancelMouseHook = guest || needsLockedAbsoluteDosMouse(options.gameSlug)
                   ? hookLockedAbsoluteMouse(ci, host, () => mouseInverted)
-                  : (hookMouseInvert(ci, () => mouseInverted), null)
+                  : hookMouseInvert(ci, () => mouseInverted)
               }
               // DOSBox 真的在跑、命令接口也有了，这才是「玩家可以动手」。Windows 客体另算（等自启动）
               if (!guest) markReady()

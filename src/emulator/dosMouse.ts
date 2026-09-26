@@ -11,7 +11,9 @@ const LOCKED_ABSOLUTE_MOUSE_GAMES = new Set([
 ])
 
 export function needsLockedAbsoluteDosMouse(gameSlug?: string): boolean {
-  return Boolean(gameSlug && LOCKED_ABSOLUTE_MOUSE_GAMES.has(gameSlug))
+  // slug 正常来自 API，仍在这里做一次归一化：本地 ROM / 嵌入页若带了大小写或首尾空格，
+  // 不该悄悄掉回会让光标失控的相对坐标路径。
+  return Boolean(gameSlug && LOCKED_ABSOLUTE_MOUSE_GAMES.has(gameSlug.trim().toLowerCase()))
 }
 
 export function normalizeDosMouseSensitivity(value: unknown): number {

@@ -332,6 +332,31 @@ melonDS DS 自带 `rotate-left` / `rotate-right` 布局，优先用“双屏布�
 DeSmuME / DeSmuME 2015 的弱机兜底也要把 `desmume_pointer_type` 从相对坐标 `mouse` 调为
 绝对坐标 `touch`；只精确改这一项，颜色、压力、摇杆死区等其它 pointer 选项不碰。
 
+### 2.8.5 js-dos 鼠标不是一个开关：捕获方式与坐标协议必须分开
+
+桌面端 DOS 游戏统一使用 Pointer Lock，解决鼠标撞到浏览器边缘后游戏内光标停住的问题；但
+**“要不要捕获”不等于“给客体发相对坐标还是绝对坐标”**。js-dos 8 默认把两者绑在一起：
+`mouseCapture=true` 后界面层固定调用 `sendMouseRelativeMotion()`。这对 Doom 一类无限转向的 FPS
+是对的，却会破坏两类游戏：
+
+- Windows 3.x / 9x 客体镜像装的是 DOSBox-X 集成鼠标驱动，要 `sendMouseMotion(0~1, 0~1)`；
+  把正负位移喂给这条链会被钳成四个角，《凯撒大帝 3》就是这个症状。
+- 个别原生 DOS 图形界面对绝对位置更稳定；《主题医院》已经在真实页面复现，按 slug 收进
+  `src/emulator/dosMouse.ts` 的兼容清单。不要按 `strategy` 标签一刀切，标签不能证明输入协议。
+
+修复在 `src/emulator/adapters/jsdos.ts`：Pointer Lock 仍由 js-dos 负责，ci 边界把相对位移按
+实际内容区累积成 0～1，再送 `sendMouseMotion()`。实际内容区必须用 `ci.width()/height()` 从
+canvas 的 CSS 矩形扣掉黑边；直接拿播放器宽高会让 4:3 游戏永远到不了左右边缘。首次捕获按
+点击位置校准，但锁定后的点击不能重复校准（Pointer Lock 下 clientX/Y 已经不是真实位置）。
+非 kiosk 还有 js-dos 侧栏，校准事件也只能认 canvas，不能让侧栏点击把游戏光标推到边缘。
+
+普通相对鼠标与绝对桥的钩子都必须返回清理函数。`ci-ready` 在后端重连时可能再次到达；不清理
+就会把 Y 轴反转包两层，结果看起来像开关失效。回归：`npm run test:dos-load`。
+
+`scripts/copy-jsdos.mjs` 还会裁掉上游重复的灵敏度侧栏、黑色捕获蒙版和提示文字；真正的
+`requestPointerLock()` 仍直接绑在 canvas 点击上。改这段补丁后要运行 `npm run jsdos`，并让
+`scripts/check-jsdos.mjs` 同时确认三块 UI 都已移除，不能只看运行时版本号。
+
 ### 2.9 平台 BIOS 的边缘缓存会骗人
 
 后台改完 BIOS 绑定只调 `invalidateContent()`（清进程内缓存），**够不着 Cloudflare 边缘**。

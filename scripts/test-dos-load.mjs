@@ -199,14 +199,34 @@ check('宽屏播放器按实际 4:3 游戏区换算，左右黑边不占鼠标�
 
 check('Windows 客体与《主题医院》接绝对坐标桥，其他 DOS 仍接原来的相对鼠标', () => {
   assert.equal(needsLockedAbsoluteDosMouse('theme-hospital'), true)
+  assert.equal(needsLockedAbsoluteDosMouse(' Theme-Hospital '), true)
   assert.equal(needsLockedAbsoluteDosMouse('doom'), false)
   assert.equal(needsLockedAbsoluteDosMouse(), false)
   assert.match(jsdos, /guest\s*\|\|\s*needsLockedAbsoluteDosMouse\(options\.gameSlug\)/)
   assert.match(jsdos, /\?\s*hookLockedAbsoluteMouse\(ci, host/)
-  assert.match(jsdos, /:\s*\(hookMouseInvert\(ci/)
+  assert.match(jsdos, /:\s*hookMouseInvert\(ci/)
   assert.match(jsdos, /rawAbsolute\.call\(c, pointer\.x, pointer\.y\)/)
   assert.match(jsdos, /lockedAbsoluteContentRect\(rect/)
   assert.match(jsdos, /if \(document\.pointerLockElement\) return/)
+  assert.match(jsdos, /event\.target !== canvas/)
+  assert.match(jsdos, /c\.sendMouseRelativeMotion === wrapped/)
+})
+
+check('竖屏播放器出现上下黑边时，也只按实际游戏画面换算坐标', () => {
+  const rect = lockedAbsoluteContentRect(
+    { left: 20, top: 10, width: 800, height: 800 },
+    { width: 640, height: 480 },
+  )
+  assert.deepEqual(rect, { left: 20, top: 110, width: 800, height: 600 })
+  assert.deepEqual(lockedAbsolutePointerAtClientPosition(420, 110, rect), { x: 0.5, y: 0 })
+  assert.deepEqual(lockedAbsolutePointerAtClientPosition(420, 710, rect), { x: 0.5, y: 1 })
+})
+
+check('异常位移不会把绝对光标污染成 NaN，下一帧仍可继续移动', () => {
+  assert.deepEqual(
+    advanceLockedAbsolutePointer({ x: 0.25, y: 0.75 }, Number.NaN, Number.POSITIVE_INFINITY, { width: 800, height: 600 }),
+    { x: 0.25, y: 0.75 },
+  )
 })
 
 console.log('\n── 工具栏：📂 读档 ──')

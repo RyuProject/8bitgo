@@ -210,6 +210,15 @@ export function usePageData<T extends PageData>(
       .finally(done)
     return () => {
       cancelled = true
+      /*
+        React StrictMode 在开发环境会故意执行「effect → cleanup → effect」来找副作用。
+        第一轮已经把 loadedKey 标成完成、请求回来后却因 cancelled 不落状态；第二轮若还看见
+        这个 key 就直接跳过，于是本地游戏页永久停在骨架屏，真实鼠标链路也没法验收。
+
+        只清掉仍属于本 effect 的 key：路由已经切走、下一轮已经登记新 key 时不能反过来抹掉它。
+        生产环境正常卸载也会走这里，但 ref 随组件一起销毁，不会增加额外请求。
+      */
+      if (loadedKey.current === key) loadedKey.current = null
     }
   }, [key, attempt, retry])
 
