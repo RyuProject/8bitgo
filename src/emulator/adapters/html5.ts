@@ -311,7 +311,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   options.onCaps?.(caps)
   options.onProgress?.({ phase: 'starting' })
-  container.replaceChildren(iframe)
+  // replaceChildren 到 Safari 13.1 才有；播放器容器本来就应该只剩这一项。
+  container.textContent = ''
+  container.appendChild(iframe)
 
   if (typeof options.game === 'string') {
     iframe.src = versionHtml5Entry(options.game)

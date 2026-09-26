@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, 
 import type { Game } from '@/types'
 import { GameCard } from './GameCard'
 import { cx } from '@/lib/format'
+import { cssEscape } from '@/lib/cssEscape'
 import { useT } from '@/services/i18n'
 
 interface Props {
@@ -130,7 +131,7 @@ export function SortableGameGrid({ games, sortable, disabled, onReorder, renderA
     move(slug, Math.max(0, Math.min(cur.length - 1, to)))
     // 卡片换了位置，焦点要跟着那颗手柄走，不然下一次按键作用在别的卡上
     requestAnimationFrame(() => {
-      rootRef.current?.querySelector<HTMLButtonElement>(`[data-sortable-slug="${CSS.escape(slug)}"] [data-sort-handle]`)?.focus()
+      rootRef.current?.querySelector<HTMLButtonElement>(`[data-sortable-slug="${cssEscape(slug)}"] [data-sort-handle]`)?.focus()
     })
   }
 

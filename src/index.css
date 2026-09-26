@@ -230,7 +230,19 @@ html {
 
 body {
   @apply bg-bg text-fg font-sans antialiased;
+  /* dvh 在旧 iOS 不存在；先写 vh 让整页仍有高度，支持的新浏览器再用动态视口覆盖。 */
+  min-height: 100vh;
   min-height: 100dvh;
+}
+
+/* Tailwind 的 min-h-dvh / h-dvh 在旧 iOS 会整条声明失效；用同特异性的 vh 退路兜底。 */
+@supports not (height: 100dvh) {
+  .min-h-dvh {
+    min-height: 100vh;
+  }
+  .h-dvh {
+    height: 100vh;
+  }
 }
 
 ::selection {

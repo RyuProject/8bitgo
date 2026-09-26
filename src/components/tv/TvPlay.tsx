@@ -149,6 +149,7 @@ export function TvPlay({ slug, onExit }: { slug: string; onExit: () => void }) {
               onRomLoadFailed={rom.failover}
               romLangs={romLangsOf(game)}
               romLang={rom.lang}
+              romLangSelection={romLang}
               onRomLangChange={setRomLang}
               backdrop={
                 <GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority className="h-full w-full" />

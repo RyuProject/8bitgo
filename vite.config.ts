@@ -1,6 +1,7 @@
 import path from 'node:path'
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import legacy from '@vitejs/plugin-legacy'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { defineConfig, loadEnv } from 'vite'
@@ -42,6 +43,30 @@ const HUGE_STATIC = ['web/cs15/packs', 'web/cs16/packs', 'qemu-wasm', 'web/terra
 const PUBLIC_DIR = path.resolve(import.meta.dirname, 'public')
 const DIST_DIR = path.resolve(import.meta.dirname, 'dist/client')
 const STAGE_DIR = path.resolve(import.meta.dirname, '.public-staging')
+
+/**
+ * 主站（浏览、登录、搜索、后台）能安全覆盖到的浏览器下限。
+ *
+ * 模拟器本体仍会受 WebAssembly / WebGL / 内存大小约束，不能因为页面能打开就承诺每个核心
+ * 都能跑；但至少这些设备不会在 React 挂载前因为新语法白屏。Vite 8 的默认下限已经抬到
+ * Chrome 111 / Safari 16.4，这对仍在使用旧 iPhone、安卓 WebView、电视浏览器的玩家太激进。
+ *
+ * 不含 IE 11：React 19、CSS 自定义属性、WebAssembly 和本站的模块化运行时都没有一条可靠的
+ * IE 路线。硬塞一份能解析的 JS 只会把白屏推迟到下一步，并不等于真的兼容。
+ */
+const LEGACY_BROWSER_TARGETS = [
+  'Chrome >= 64',
+  'ChromeAndroid >= 64',
+  'Edge >= 79',
+  'Firefox >= 67',
+  'Safari >= 12',
+  'iOS >= 12',
+  'Samsung >= 9',
+  'not IE 11',
+]
+
+/** CSS 也要按同一代浏览器降级；否则 JS 能跑，压缩器却可能产出旧 WebView 不认的颜色语法。 */
+const LEGACY_CSS_TARGETS = ['chrome64', 'edge79', 'firefox67', 'safari12', 'ios12']
 
 function restoreAll() {
   for (const rel of HUGE_STATIC) {
@@ -180,6 +205,14 @@ export default defineConfig(({ mode }) => {
   },
   plugins: [
     react(),
+    legacy({
+      targets: LEGACY_BROWSER_TARGETS,
+      // 这两项是 DOM / Fetch 能力，不在 core-js 的语言特性检测范围内；旧 Safari 必须单独补。
+      additionalLegacyPolyfills: [
+        'wicg-inert',
+        'abortcontroller-polyfill/dist/polyfill-patch-fetch',
+      ],
+    }),
     tailwindcss(),
     skipHugeStatic(),
     // 必须排在 web-game-static 前面：后者会直接 end(index.html)，排在后面就永远加不上隔离头。
@@ -243,6 +276,7 @@ export default defineConfig(({ mode }) => {
   },
   build: {
     outDir: 'dist/client',
+    cssTarget: LEGACY_CSS_TARGETS,
     /**
      * 生产进程会直接从 dist/client 发静态文件，构建又是在同一目录现场进行。
      * Vite 默认先清空目录：线上已取证到这一秒内 index.html 不存在，

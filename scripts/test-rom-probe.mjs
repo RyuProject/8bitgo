@@ -36,7 +36,7 @@ const script = (...steps) => {
   methods = []
 }
 
-const { probeRomUrl, probeRom, clearRomProbeCache, conventionalKeys, romCandidates, playbackRomCandidates, romProbeExpected, dosExecutableForRom, dosStartupCommandsForRom, versionedRomUrl, romKeysOf, unbindKeyPatch, shouldTryRomCandidateAfterUncertain, nextRomCandidateKey, slugFromKey, romUrlForKey, coverThumbKey } = await import(
+const { probeRomUrl, probeRom, clearRomProbeCache, conventionalKeys, romCandidates, playbackRomCandidates, playbackRomCandidatesForSelection, romProbeExpected, dosExecutableForRom, dosStartupCommandsForRom, versionedRomUrl, romKeysOf, unbindKeyPatch, shouldTryRomCandidateAfterUncertain, nextRomCandidateKey, slugFromKey, romUrlForKey, coverThumbKey } = await import(
   fileURLToPath(new URL('../src/services/roms.ts', import.meta.url))
 )
 // 红宝石封面是外链：没有 -96 缩略图时必须回原图，不能把空 key 拼成资源域名根目录。
@@ -258,6 +258,11 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
     romCandidates(game, 'zh-Hans', 'es').map((c) => c.lang),
     ['es', 'en', 'ja', 'zh-Hans'],
     'prefer 排第一，回退链仍在（所选槽的对象可能已经被删了）',
+  )
+  assert.deepEqual(
+    playbackRomCandidatesForSelection({ platform: 'psp', ...game }, 'zh-Hans', 'es').map((c) => c.lang),
+    ['es'],
+    '玩家手动选西语时只能启动西语镜像，不能静默回退后仍声称切换成功',
   )
 }
 {

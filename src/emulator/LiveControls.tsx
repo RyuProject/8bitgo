@@ -23,6 +23,7 @@ import { canAutoStartLive, liveEnabled, liveLink, refreshLiveRooms, type LiveCha
 import { playerName } from '@/services/netplay'
 import { useT, fmt } from '@/services/i18n'
 import { cx } from '@/lib/format'
+import { copyText } from '@/lib/clipboard'
 
 interface Props {
   handle: RuntimeHandle | null
@@ -632,9 +633,12 @@ export function LiveControls({ handle, gameName, gameSlug, platform, active = tr
     if (!live || !roomId || !gameSlug) return
     const url = liveLink(gameSlug, roomId)
     try {
-      await navigator.clipboard.writeText(url)
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 2000)
+      if (await copyText(url)) {
+        setCopied(true)
+        window.setTimeout(() => setCopied(false), 2000)
+      } else {
+        setManualLink(url)
+      }
     } catch {
       // 剪贴板被拦（非 https / 没授权）就把链接显示出来让人手动复制
       setManualLink(url)

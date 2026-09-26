@@ -546,6 +546,22 @@ export function playbackRomCandidates(game: Pick<Game, 'platform' | 'rom' | 'rom
   return out
 }
 
+/**
+ * 播放器里的语言下拉是一次明确选择，不是“站点语言偏好”。
+ *
+ * 自动选语言时仍保留完整回退链，让只有西语 ROM 的游戏在中文站点也能玩；玩家亲手点了
+ * 日本語之后则只允许日语主地址 / 备用地址。否则日语对象恰好 404 时会静默启动英语版，
+ * 播放器却提示“已换成日本語版本”—— 对 PSP 这种地区版状态不兼容的平台尤其危险。
+ */
+export function playbackRomCandidatesForSelection(
+  game: Pick<Game, 'platform' | 'rom' | 'roms' | 'romBackups'>,
+  lang: Lang,
+  prefer?: RomLang | null,
+): RomCandidate[] {
+  const candidates = playbackRomCandidates(game, lang, prefer)
+  return prefer ? candidates.filter((candidate) => candidate.lang === prefer) : candidates
+}
+
 /** 返回语言回退链里的第一个候选；实际播放会继续探测后续候选是否存在。 */
 export function effectiveRomKey(game: Game, lang: Lang, prefer?: RomLang | null): string {
   return romCandidates(game, lang, prefer)[0]?.key ?? ''
@@ -646,7 +662,8 @@ const DEFINITE_MISS_STATUS = new Set([400, 401, 403, 404, 405, 410, 451])
  * 外站 ZIP 例外：ETag 写在 fragment，避免改动可能带签名的第三方查询串。
  */
 export function versionedRomUrl(url: string, etag: string | null): string {
-  const version = etag?.replace(/^W\//, '').replaceAll('"', '').trim()
+  // replaceAll 在旧 Safari / 电视 WebView 不存在；正则在这里语义完全相同。
+  const version = etag?.replace(/^W\//, '').replace(/"/g, '').trim()
   if (!version) return url
   if (romArchiveRef(url)) {
     // 外站签名 URL 常不容许加查询参数；版本只写在浏览器不会发出的 fragment 里。
@@ -888,7 +905,7 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
    */
   const retry = useCallback(() => {
     if (game) {
-      const keys = [...playbackRomCandidates(game, lang, prefer).map((c) => c.key), ...conventionalKeys(game)]
+      const keys = [...playbackRomCandidatesForSelection(game, lang, prefer).map((c) => c.key), ...conventionalKeys(game)]
       clearRomProbeCache(keys.map((key) => romUrlForKey(key)).filter(Boolean))
     }
     runtimeFailures.current.clear()
@@ -898,7 +915,7 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
 
   const failover = useCallback((reason?: string): boolean => {
     if (!game || state.status !== 'found' || !state.key) return false
-    const bound = playbackRomCandidates(game, lang, prefer)
+    const bound = playbackRomCandidatesForSelection(game, lang, prefer)
     const chain = bound.length ? bound.map((candidate) => candidate.key) : conventionalKeys(game)
     const next = nextRomCandidateKey(chain, state.key, runtimeFailures.current)
     if (!next) return false
@@ -933,7 +950,7 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
     let timer = 0
     setState({ status: 'checking', url: '' })
     ;(async () => {
-      const candidates = playbackRomCandidates(game, lang, prefer)
+      const candidates = playbackRomCandidatesForSelection(game, lang, prefer)
       /** 有没有哪个候选是「没问出来」，而不是服务器明确说没有。决定要不要自动重试 */
       let uncertain = false
       /** 每个候选探出来的结果，只在最终放弃时用来打诊断 */

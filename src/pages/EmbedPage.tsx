@@ -201,6 +201,7 @@ export function EmbedPage({ standalonePlatform }: Props) {
           onRomLoadFailed={rom.failover}
           romLangs={game ? romLangsOf(game) : []}
           romLang={rom.lang}
+          romLangSelection={romLang}
           onRomLangChange={setRomLang}
           backdrop={<GameCover game={game} ratio="wide" showTitle={false} showBadge={false} priority className="h-full w-full" />}
         />

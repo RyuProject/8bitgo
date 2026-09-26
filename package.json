@@ -161,7 +161,7 @@
     "test:worker": "npm --prefix worker test",
     "test:r2-upload-client": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-r2-upload-client.mjs",
     "build:client": "vite build",
-    "postbuild:client": "node scripts/check-ruffle.mjs --dist && node scripts/check-jsdos.mjs --dist && node scripts/check-cs15.mjs --dist && node scripts/check-cs16.mjs --dist && node scripts/check-pvz.mjs --dist && node scripts/check-diabloweb.mjs --dist && node scripts/check-terraria-web.mjs --dist && node scripts/check-celeste-web.mjs --dist && node scripts/check-emulatorjs.mjs --dist && node scripts/check-play.mjs --dist && node scripts/check-dolphin.mjs --dist && node scripts/check-ppsspp.mjs --dist --source-only && node scripts/check-flash-save-bridge.mjs --dist && node scripts/check-pvzge.mjs --dist",
+    "postbuild:client": "node scripts/check-ruffle.mjs --dist && node scripts/check-jsdos.mjs --dist && node scripts/check-cs15.mjs --dist && node scripts/check-cs16.mjs --dist && node scripts/check-pvz.mjs --dist && node scripts/check-diabloweb.mjs --dist && node scripts/check-terraria-web.mjs --dist && node scripts/check-celeste-web.mjs --dist && node scripts/check-emulatorjs.mjs --dist && node scripts/check-play.mjs --dist && node scripts/check-dolphin.mjs --dist && node scripts/check-ppsspp.mjs --dist --source-only && node scripts/check-flash-save-bridge.mjs --dist && node scripts/check-pvzge.mjs --dist && node scripts/test-browser-compat.mjs --dist",
     "build:server": "vite build --config vite.config.server.ts",
     "start:ssr": "node server/src/index.js",
     "j2me": "node scripts/setup-j2me.mjs",
@@ -180,6 +180,7 @@
   "test:watch-panel": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-live-watch-panel.mjs",
     "test:seo-meta": "node scripts/test-seo-meta.mjs",
     "test:seo-performance": "node scripts/test-seo-performance.mjs",
+    "test:browser-compat": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-browser-compat.mjs",
     "test:jspi": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-jspi-flag.mjs",
     "test:jsdos-runtime": "node scripts/check-jsdos.mjs",
     "test:cs16": "node scripts/test-cs16-pack.mjs && node scripts/check-cs16.mjs",
@@ -200,13 +201,16 @@
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-legacy": "^8.2.3",
     "@vitejs/plugin-react": "^6.1.0",
+    "abortcontroller-polyfill": "^1.7.8",
     "esbuild": "^0.28.2",
     "js-dos": "^8.4.1",
     "oxlint": "^1.79.0",
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.2",
     "vite": "^8.2.2",
+    "wicg-inert": "^3.1.3",
     "wrangler": "^4.141.0"
   }
 }

@@ -64,7 +64,7 @@ export const RUFFLE_PATH: string = asDir(
  * JSDOS_ASSET_VERSION 就必须换代。否则代码已部署，玩家却会继续命中上一份 CDN 缓存。
  */
 export const JSDOS_VERSION = '8.4.1'
-export const JSDOS_ASSET_VERSION = '8.4.1-8bitgo.1'
+export const JSDOS_ASSET_VERSION = '8.4.1-8bitgo.2'
 export const JSDOS_PATH: string = asDir(
   import.meta.env.VITE_JSDOS_PATH,
   `/jsdos/v${JSDOS_ASSET_VERSION}/`,

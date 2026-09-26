@@ -48,7 +48,16 @@ import { normalizeDosStartupCommands } from '../../../shared/dos-startup-command
 import { fetchWithProgress, STARTING_MILESTONE, windowsGuestStartupBudgetMs } from '../loadProgress'
 import { assertTypeable, scheduleWindowsLaunch, windows3xLaunchCommands, type WindowsLaunchCi } from '../windowsLaunch'
 import { JSDOS_PATH } from '../paths'
-import { DOS_MOUSE_SENSITIVITY_DEFAULT, normalizeDosMouseSensitivity } from '../dosMouse'
+import {
+  DOS_MOUSE_SENSITIVITY_DEFAULT,
+  needsLockedAbsoluteDosMouse,
+  normalizeDosMouseSensitivity,
+} from '../dosMouse'
+import {
+  advanceLockedAbsolutePointer,
+  lockedAbsoluteContentRect,
+  lockedAbsolutePointerAtClientPosition,
+} from '../lockedAbsoluteMouse'
 
 /** P2P 模式的撮合服务器。自建的话见 https://github.com/caiiiycuk/WebRTC-NET（Go） */
 export const JSDOS_PEER_SERVER: string = import.meta.env.VITE_JSDOS_PEER_SERVER || 'https://net.dos.zone'
@@ -104,7 +113,9 @@ function installAudioTap() {
   audioTapInstalled = true
   try {
     const Native = window.AudioContext
-    if (typeof Native === 'function') {
+    // WeakRef 无法可靠 polyfill；旧 Safari 选择「游戏照常有声、只是直播抓不到 DOS 声音」，
+    // 不能为了附加能力把 AudioContext 构造本身变成一次 ReferenceError。
+    if (typeof Native === 'function' && typeof WeakRef === 'function') {
       const Tapped = class extends Native {
         constructor(...args: ConstructorParameters<typeof AudioContext>) {
           super(...args)
@@ -161,10 +172,14 @@ type DosProps = {
 interface DosCi extends WindowsLaunchCi {
   pause: () => void
   resume: () => void
+  width?: () => number
+  height?: () => number
   screenshot: () => Promise<ImageData>
   sendKeyEvent: (keyCode: number, pressed: boolean) => void
   /** 相对鼠标位移（指针锁定 / 触屏拖动那一路）。js-dos 的界面层在事件发生时调它 */
   sendMouseRelativeMotion?: (x: number, y: number) => void
+  /** 0～1 的绝对鼠标坐标；Windows 客体里的 DOSBox-X 集成鼠标驱动消费这一条。 */
+  sendMouseMotion?: (x: number, y: number) => void
   exit: () => Promise<void>
 }
 
@@ -229,6 +244,54 @@ function hookMouseInvert(c: DosCi, inverted: () => boolean) {
   const raw = c.sendMouseRelativeMotion
   if (typeof raw !== 'function') return
   c.sendMouseRelativeMotion = (x, y) => raw.call(c, x, inverted() ? -y : y)
+}
+
+/**
+ * Windows 客体与少数绝对坐标 DOS 游戏仍然要用 Pointer Lock（玩家点击画面后鼠标不能从边缘
+ * 跑出去），但不能把锁定后的相对位移原样送给客体。Windows 的 `dboxmpi.drv` 只消费 0～1
+ * 绝对位置；《主题医院》这类界面游戏切到相对包后，软件光标也不能正确跟随屏幕位置。
+ *
+ * 所以保留 js-dos 的点击捕获，只在 ci 边界把相对位移累积为绝对坐标。第一次点击先用落点校准，
+ * Esc 释放后再次点击也会重新对齐。其余 DOS 不走这里，射击游戏仍拿原生相对位移。
+ */
+function hookLockedAbsoluteMouse(c: DosCi, host: HTMLElement, inverted: () => boolean): () => void {
+  const rawRelative = c.sendMouseRelativeMotion
+  const rawAbsolute = c.sendMouseMotion
+  if (typeof rawRelative !== 'function' || typeof rawAbsolute !== 'function') {
+    // 极老的 js-dos 没暴露绝对坐标接口时至少保留原行为；当前自托管版本两条接口都有。
+    hookMouseInvert(c, inverted)
+    return () => {}
+  }
+
+  let pointer = { x: 0.5, y: 0.5 }
+  const canvasRect = () => {
+    const canvas = host.querySelector('canvas')
+    const rect = canvas?.getBoundingClientRect() ?? host.getBoundingClientRect()
+    return lockedAbsoluteContentRect(rect, {
+      width: c.width?.() ?? 0,
+      height: c.height?.() ?? 0,
+    })
+  }
+  const seedFromClick = (event: PointerEvent | MouseEvent) => {
+    // 锁定后 clientX/Y 不再代表真实位置；每次点击都重置会让客体光标跳回锁定点。
+    if (document.pointerLockElement) return
+    const rect = canvasRect()
+    pointer = lockedAbsolutePointerAtClientPosition(event.clientX, event.clientY, rect)
+    rawAbsolute.call(c, pointer.x, pointer.y)
+  }
+  const startEvent = typeof PointerEvent === 'function' ? 'pointerdown' : 'mousedown'
+  host.addEventListener(startEvent, seedFromClick as EventListener, true)
+
+  c.sendMouseRelativeMotion = (x, y) => {
+    const rect = canvasRect()
+    pointer = advanceLockedAbsolutePointer(pointer, x, y, rect, inverted())
+    rawAbsolute.call(c, pointer.x, pointer.y)
+  }
+
+  return () => {
+    host.removeEventListener(startEvent, seedFromClick as EventListener, true)
+    c.sendMouseRelativeMotion = rawRelative
+  }
 }
 
 /**
@@ -362,6 +425,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let pad: GamepadBridge | null = null
   const objectUrls: string[] = []
   let cancelWindowsLaunch: (() => void) | null = null
+  let cancelMouseHook: (() => void) | null = null
   let volume = 1
   let paused = false
   /** onReady 的延时兜底定时器，销毁时要清掉 */
@@ -707,8 +771,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                 普通 DOS 一个都不会来。
               */
               if (guest) options.onProgress?.({ phase: 'starting', startup: STARTING_MILESTONE.ci })
-              // 相对鼠标的上下方向由我们说了算（见 hookMouseInvert）；只有开了指针锁定的游戏才有相对位移
-              if (options.mouseCapture) hookMouseInvert(ci, () => mouseInverted)
+              // Windows 客体和已确认的绝对坐标 DOS 游戏先还原绝对位置；FPS 等仍保留无限相对位移。
+              if (options.mouseCapture) {
+                cancelMouseHook?.()
+                cancelMouseHook = guest || needsLockedAbsoluteDosMouse(options.gameSlug)
+                  ? hookLockedAbsoluteMouse(ci, host, () => mouseInverted)
+                  : (hookMouseInvert(ci, () => mouseInverted), null)
+              }
               // DOSBox 真的在跑、命令接口也有了，这才是「玩家可以动手」。Windows 客体另算（等自启动）
               if (!guest) markReady()
               if (guest && !cancelWindowsLaunch) {
@@ -876,6 +945,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
       cancelWindowsLaunch?.()
       cancelWindowsLaunch = null
+      cancelMouseHook?.()
+      cancelMouseHook = null
       pad?.stop()
       pad = null
       try {

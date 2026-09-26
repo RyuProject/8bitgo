@@ -31,6 +31,12 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { canRestartInPlace } from '@/emulator/sessionRestart'
+import { needsLockedAbsoluteDosMouse } from '@/emulator/dosMouse'
+import {
+  advanceLockedAbsolutePointer,
+  lockedAbsoluteContentRect,
+  lockedAbsolutePointerAtClientPosition,
+} from '@/emulator/lockedAbsoluteMouse'
 
 const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
 const read = (rel) => readFileSync(path.join(root, rel), 'utf8')
@@ -45,6 +51,7 @@ const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$
 
 const tools = strip(read('src/emulator/EmulatorTools.tsx'))
 const player = strip(read('src/emulator/EmulatorPlayer.tsx'))
+const jsdos = strip(read('src/emulator/adapters/jsdos.ts'))
 
 /**
  * 全部跑完再汇总，不在第一条就退出。
@@ -141,6 +148,65 @@ check('鼠标速度与上下反转都在 gamepad 面板内', () => {
   assert.match(body, /handle\.setMouseSensitivity/)
   assert.match(body, /tt\.mouseSpeed/)
   assert.match(body, /handle\.setMouseInvert/)
+})
+
+console.log('\n── 绝对坐标游戏：Pointer Lock 相对位移转绝对坐标 ──')
+
+check('默认位置从屏幕中心开始，移动量按当前画布尺寸归一化', () => {
+  assert.deepEqual(
+    advanceLockedAbsolutePointer({ x: 0.5, y: 0.5 }, 80, -60, { width: 800, height: 600 }),
+    { x: 0.6, y: 0.4 },
+  )
+})
+
+check('绝对坐标始终钳在 0～1，不会再把正负位移直接变成四个角', () => {
+  assert.deepEqual(
+    advanceLockedAbsolutePointer({ x: 0.95, y: 0.05 }, 800, -600, { width: 800, height: 600 }),
+    { x: 1, y: 0 },
+  )
+})
+
+check('全屏切换时画布短暂为 0×0，就保持原位而不是再次撞角', () => {
+  assert.deepEqual(
+    advanceLockedAbsolutePointer({ x: 0.3, y: 0.7 }, 40, -20, { width: 0, height: 0 }),
+    { x: 0.3, y: 0.7 },
+  )
+})
+
+check('Windows 客体的上下反转仍只反转 Y 轴', () => {
+  assert.deepEqual(
+    advanceLockedAbsolutePointer({ x: 0.5, y: 0.5 }, 80, 60, { width: 800, height: 600 }, true),
+    { x: 0.6, y: 0.4 },
+  )
+})
+
+check('点击捕获时按画布落点校准，Esc 后重新点击不会从旧位置接着跳', () => {
+  assert.deepEqual(
+    lockedAbsolutePointerAtClientPosition(300, 250, { left: 100, top: 100, width: 800, height: 600 }),
+    { x: 0.25, y: 0.25 },
+  )
+})
+
+check('宽屏播放器按实际 4:3 游戏区换算，左右黑边不占鼠标坐标', () => {
+  const rect = lockedAbsoluteContentRect(
+    { left: 0, top: 0, width: 1_000, height: 600 },
+    { width: 640, height: 480 },
+  )
+  assert.deepEqual(rect, { left: 100, top: 0, width: 800, height: 600 })
+  assert.deepEqual(lockedAbsolutePointerAtClientPosition(100, 300, rect), { x: 0, y: 0.5 })
+  assert.deepEqual(lockedAbsolutePointerAtClientPosition(900, 300, rect), { x: 1, y: 0.5 })
+})
+
+check('Windows 客体与《主题医院》接绝对坐标桥，其他 DOS 仍接原来的相对鼠标', () => {
+  assert.equal(needsLockedAbsoluteDosMouse('theme-hospital'), true)
+  assert.equal(needsLockedAbsoluteDosMouse('doom'), false)
+  assert.equal(needsLockedAbsoluteDosMouse(), false)
+  assert.match(jsdos, /guest\s*\|\|\s*needsLockedAbsoluteDosMouse\(options\.gameSlug\)/)
+  assert.match(jsdos, /\?\s*hookLockedAbsoluteMouse\(ci, host/)
+  assert.match(jsdos, /:\s*\(hookMouseInvert\(ci/)
+  assert.match(jsdos, /rawAbsolute\.call\(c, pointer\.x, pointer\.y\)/)
+  assert.match(jsdos, /lockedAbsoluteContentRect\(rect/)
+  assert.match(jsdos, /if \(document\.pointerLockElement\) return/)
 })
 
 console.log('\n── 工具栏：📂 读档 ──')

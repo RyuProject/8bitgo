@@ -21,6 +21,7 @@ import { Button } from '@/components/ui/Button'
 import { useT, fmt } from '@/services/i18n'
 import { langPrefix } from '@/config/languages'
 import { useLang } from '@/services/lang'
+import { copyText } from '@/lib/clipboard'
 
 const SIZES = [
   { w: 640, h: 480 },
@@ -88,12 +89,7 @@ export function ShareDialog({
     ` allow="fullscreen; autoplay; gamepad"></iframe>`
 
   const copy = async (text: string, which: 'link' | 'code') => {
-    try {
-      await navigator.clipboard.writeText(text)
-      setCopied(which)
-    } catch {
-      /* 剪贴板不可用时忽略 —— 文本框本身可以手选复制 */
-    }
+    if (await copyText(text)) setCopied(which)
   }
 
   return (

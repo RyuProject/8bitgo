@@ -63,6 +63,66 @@ function toBlobAsync(canvas: HTMLCanvasElement, type: string, quality: number): 
   return new Promise((resolve) => canvas.toBlob(resolve, type, quality))
 }
 
+type DecodedImage = {
+  source: CanvasImageSource
+  width: number
+  height: number
+  close: () => void
+}
+
+/**
+ * createImageBitmap 到 Safari 15 才算稳定，旧 iPhone 退回 <img> + object URL。
+ * 两条路统一成 CanvasImageSource，后面的裁切和编码不用分叉。
+ */
+async function decodeImage(file: Blob): Promise<DecodedImage> {
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' })
+      return {
+        source: bitmap,
+        width: bitmap.width,
+        height: bitmap.height,
+        close: () => bitmap.close?.(),
+      }
+    } catch {
+      // 有些 WebKit 暴露了函数却不接受 imageOrientation；直接走兼容路径比重试参数更稳。
+    }
+  }
+
+  const url = URL.createObjectURL(file)
+  const image = new Image()
+  image.decoding = 'async'
+  try {
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve()
+      image.onerror = () => reject(new Error('图片解码失败'))
+      image.src = url
+    })
+  } catch (error) {
+    URL.revokeObjectURL(url)
+    throw error
+  }
+  return {
+    source: image,
+    width: image.naturalWidth,
+    height: image.naturalHeight,
+    close: () => {
+      image.src = ''
+      URL.revokeObjectURL(url)
+    },
+  }
+}
+
+/** 只读尺寸也共用同一条兼容解码路径，避免后台预检把旧 Safari 的合法图片误判成未知。 */
+export async function readImageDimensions(file: Blob): Promise<{ width: number; height: number }> {
+  const decoded = await decodeImage(file)
+  try {
+    return { width: decoded.width, height: decoded.height }
+  } finally {
+    decoded.close()
+  }
+}
+
 /** 建一个 2D 画布；拿不到上下文一律当浏览器不支持，报人话 */
 function makeCanvas(w: number, h: number): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } {
   const canvas = document.createElement('canvas')
@@ -82,17 +142,16 @@ function makeCanvas(w: number, h: number): { canvas: HTMLCanvasElement; ctx: Can
  * @throws 图片解不开、画布不可用、编码全部失败时抛 Error，消息可直接显示给管理员
  */
 export async function compressCoverToWebp(file: Blob): Promise<CompressedImage> {
-  let bitmap: ImageBitmap
+  let decoded: DecodedImage
   try {
-    // imageOrientation 显式声明：手机拍的照片带 EXIF 旋转，默认值各浏览器不一致
-    bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' })
+    decoded = await decodeImage(file)
   } catch {
     throw new Error('这个文件解不开，换一张 PNG / JPG / WebP 试试（SVG 和动图可能不受支持）')
   }
 
   try {
-    const srcW = bitmap.width
-    const srcH = bitmap.height
+    const srcW = decoded.width
+    const srcH = decoded.height
     if (!srcW || !srcH) throw new Error('图片尺寸为 0，文件可能已损坏')
 
     // 1) 居中裁出正方形；同时把过大的原图降到 PRE_MAX，两步在一次 drawImage 里做完
@@ -101,7 +160,7 @@ export async function compressCoverToWebp(file: Blob): Promise<CompressedImage> 
     const { ctx: sctx } = makeCanvas(stage, stage)
     sctx.imageSmoothingEnabled = true
     sctx.imageSmoothingQuality = 'high'
-    sctx.drawImage(bitmap, crop.sx, crop.sy, crop.size, crop.size, 0, 0, stage, stage)
+    sctx.drawImage(decoded.source, crop.sx, crop.sy, crop.size, crop.size, 0, 0, stage, stage)
     const staged = sctx.getImageData(0, 0, stage, stage).data
 
     // 2) Lanczos3 缩到 300×300（stage 已经是正方形，所以这里只是等比缩小）
@@ -155,6 +214,6 @@ export async function compressCoverToWebp(file: Blob): Promise<CompressedImage> 
       sourceHeight: srcH,
     }
   } finally {
-    bitmap.close?.()
+    decoded.close()
   }
 }

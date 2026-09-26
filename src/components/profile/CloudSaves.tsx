@@ -25,11 +25,18 @@ import { useLang } from '@/services/lang'
 import { gameTitle, platformLabel } from '@/services/i18nData'
 import { useGamesBySlugs } from '@/services/gameCache'
 import { deleteCloudSave, fetchCloudSave, listCloudSaves, type SaveMeta } from '@/services/saves'
+import { ROM_LANG_LABEL, type RomLang } from '@/config/languages'
+import { parsePspVariantSaveSlug } from '@/emulator/romLanguage'
 import { Notice, Panel } from './shared'
 
 /** 存档的唯一坐标。同一款游戏的不同存档位是不同的行 */
 function keyOf(s: SaveMeta) {
   return `${s.runtime}/${s.gameSlug}/${s.slot}`
+}
+
+/** 只有 PPSSPP 会写这种后缀；别把普通游戏碰巧同名的 slug 当成 PSP 变体。 */
+function identityOf(s: SaveMeta): { gameSlug: string; romLang?: RomLang } {
+  return s.runtime === 'ppsspp' ? parsePspVariantSaveSlug(s.gameSlug) : { gameSlug: s.gameSlug }
 }
 
 export function CloudSaves() {
@@ -49,7 +56,9 @@ export function CloudSaves() {
 
   // 存档列表里的 slug 可能是 `local:文件名`（玩家自己拖进来的 ROM，站内没有这款游戏），
   // 那种取不到游戏信息，下面按「本地文件」显示
-  const slugs = (saves ?? []).map((s) => s.gameSlug).filter((s) => !s.startsWith('local:'))
+  const slugs = (saves ?? [])
+    .map((s) => identityOf(s).gameSlug)
+    .filter((s) => !s.startsWith('local:'))
   const games = useGamesBySlugs(slugs)
   const titleOf = (slug: string) => {
     if (slug.startsWith('local:')) return slug.slice('local:'.length) || t.account.savesLocalGame
@@ -126,18 +135,19 @@ export function CloudSaves() {
       ) : (
         <ul className="divide-y divide-line">
           {saves.map((s) => {
-            const platform = platformOf(s.gameSlug)
-            const isLocal = s.gameSlug.startsWith('local:')
+            const identity = identityOf(s)
+            const platform = platformOf(identity.gameSlug)
+            const isLocal = identity.gameSlug.startsWith('local:')
             const working = busy === keyOf(s)
             return (
               <li key={keyOf(s)} className="flex flex-wrap items-center gap-x-3 gap-y-2 py-3">
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-bold">
                     {isLocal ? (
-                      titleOf(s.gameSlug)
+                      titleOf(identity.gameSlug)
                     ) : (
-                      <Link to={`/games/${s.gameSlug}`} className="hover:text-brand-hover hover:underline">
-                        {titleOf(s.gameSlug)}
+                      <Link to={`/games/${identity.gameSlug}`} className="hover:text-brand-hover hover:underline">
+                        {titleOf(identity.gameSlug)}
                       </Link>
                     )}
                   </p>
@@ -145,6 +155,7 @@ export function CloudSaves() {
                     {isLocal ? t.account.savesLocalGame : platform ? platformLabel(t, platform, platform) : s.runtime}
                     {' · '}
                     {fmt(t.account.savesSlot, { n: s.slot })}
+                    {identity.romLang ? ` · ${ROM_LANG_LABEL[identity.romLang]}` : ''}
                     {' · '}
                     {formatBytes(s.size)}
                     {' · '}

@@ -43,6 +43,8 @@ import { prewarmRuntime } from './prewarm'
 import { canRestartInPlace } from './sessionRestart'
 import { confirmAndReplayAnchorNavigation } from './leaveNavigation'
 import { AdSenseSlot } from '@/components/ads/AdSenseSlot'
+import { copyText } from '@/lib/clipboard'
+import { listenMediaQuery } from '@/lib/mediaQuery'
 import { sessionCountsAsPlayed } from './playedScope'
 import { cloudGameMeta, emulatorJsMeta, liveViewMeta } from './runtimeMeta'
 import { isStreamingDiscPlatform } from '../../shared/streaming-disc-platforms.js'
@@ -58,6 +60,11 @@ import { useShell } from '@/components/layout/ShellContext'
 import { useT, fmt } from '@/services/i18n'
 import { platformLabel } from '@/services/i18nData'
 import { ROM_LANG_LABEL, type RomLang } from '@/config/languages'
+import {
+  canResumeRomLanguageSwitch,
+  nextRomLanguageRestart,
+  pspVariantSaveSlug,
+} from './romLanguage'
 import { FEATURES } from '@/config/features'
 import { desktopScreenAspect, liveStageStyle, mobileScreenAspect, stableLiveGeometry, stageHeightCap } from './screenAspect'
 import { recordPlay } from '@/services/store'
@@ -185,6 +192,8 @@ interface ActiveSession {
   /** 实际运行的平台（本地文件被识别为其他平台时可能与页面平台不同） */
   platform: PlatformId
   runtime: Runtime
+  /** 会话创建时冻结的存档身份；PSP 多语言版本必须各用各的档位。 */
+  saveSlug?: string
   /** 同一次点击的自动重试 / 换核心共用一个 id，避免把一次失败膨胀成多次启动。 */
   startupAttemptId: string
   /** 从玩家点击开始算，不因适配器自动重挂而归零。 */
@@ -349,6 +358,8 @@ interface Props {
   romLangs?: RomLang[]
   /** 当前用的是哪一种（由 useRomUrl 反查出来） */
   romLang?: RomLang
+  /** 玩家最后一次明确选择；探测失败时仍保留，不能让下拉框假装切回了别的版本。 */
+  romLangSelection?: RomLang | null
   /** 玩家选了别的语言。父组件据此换 romUrl，换完这边会自动重开这一局 */
   onRomLangChange?: (lang: RomLang) => void
   /**
@@ -527,6 +538,7 @@ export function EmulatorPlayer({
   onRomLoadFailed,
   romLangs,
   romLang,
+  romLangSelection,
   onRomLangChange,
   onDetectMismatch = 'warn',
   onPlatformChange,
@@ -540,6 +552,10 @@ export function EmulatorPlayer({
   const [notice, setNotice] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
   const [session, setSession] = useState<ActiveSession | null>(null)
+  /** 切语言时旧会话已拆掉，仍要记住新地址到货后自动重开的意图。 */
+  const restartWithLangRef = useRef<RomLang | null>(null)
+  /** 当前 ROM 实际加载失败后，父层切到备用地址时保持“继续开这一局”的用户意图。 */
+  const restartAfterRomFailureRef = useRef(false)
   /**
    * 从玩家上传的包里认出来的 RomData（见 arcadeHack.ts）。
    * 入库游戏由后台配 arcadeRomData，「玩本地 ROM」这一路只能靠现场识别。
@@ -874,8 +890,7 @@ export function EmulatorPlayer({
     const mq = window.matchMedia(NARROW_MQ)
     const sync = () => setNarrow(mq.matches)
     sync()
-    mq.addEventListener('change', sync)
-    return () => mq.removeEventListener('change', sync)
+    return listenMediaQuery(mq, sync)
   }, [])
   /** 矮视口（见 SHORT_MQ）。同样要订阅：手机转个方向它就变 */
   const [shortViewport, setShortViewport] = useState(false)
@@ -884,8 +899,7 @@ export function EmulatorPlayer({
     const mq = window.matchMedia(SHORT_MQ)
     const sync = () => setShortViewport(mq.matches)
     sync()
-    mq.addEventListener('change', sync)
-    return () => mq.removeEventListener('change', sync)
+    return listenMediaQuery(mq, sync)
   }, [])
   /**
    * 看直播时把画面限在**流的原生分辨率的几倍**以内（2026-09-11，站长报「大播放器 → 串流很糊」）。
@@ -923,8 +937,7 @@ export function EmulatorPlayer({
     const mq = window.matchMedia('(min-width: 1024px)')
     const sync = () => setWideLayout(mq.matches)
     sync()
-    mq.addEventListener('change', sync)
-    return () => mq.removeEventListener('change', sync)
+    return listenMediaQuery(mq, sync)
   }, [])
   const matchPanelOn = wideLayout && Boolean(matchPanelSlot) && status === 'running' &&
     Boolean(session?.netplay || hosting) && role === 'player'
@@ -1336,6 +1349,11 @@ export function EmulatorPlayer({
   // 同理：游玩计数只在 onReady 里读一次，不该让它把正在跑的会话重建
   const gameSlugRef = useRef(gameSlug)
   gameSlugRef.current = gameSlug
+  // PSP 多语言版的即时状态不能共用基础 slug；在 begin() 那一刻把实际解析到的语言冻结进会话。
+  const romLangRef = useRef(romLang)
+  romLangRef.current = romLang
+  const romLangCountRef = useRef(romLangs?.length ?? 0)
+  romLangCountRef.current = romLangs?.length ?? 0
   // 核心与 BIOS 也走 ref：BIOS 是异步取回来的，进依赖的话它一到货就会把
   // 正在跑的游戏重启一遍；这两个值只在挂载引擎那一刻读一次就够了
   const coreRef = useRef(core)
@@ -1475,8 +1493,13 @@ export function EmulatorPlayer({
     if (inherited) inherited.consumed = true
     const startupAttemptId = extra?.startupAttemptId ?? inherited?.id ?? newStartupId()
     const startedAt = extra?.startedAt ?? inherited?.startedAt ?? Date.now()
+    const saveSlug = typeof game !== 'string'
+      ? `local:${game.name}`
+      : runtime.id === 'ppsspp' && gameSlugRef.current
+        ? pspVariantSaveSlug(gameSlugRef.current, romLangRef.current, romLangCountRef.current)
+        : gameSlugRef.current
     sessionCounter.current += 1
-    setSession({ id: sessionCounter.current, game, platform: targetPlatform, runtime, ...extra, startupAttemptId, startedAt })
+    setSession({ id: sessionCounter.current, game, platform: targetPlatform, runtime, saveSlug, ...extra, startupAttemptId, startedAt })
     if (!extra?.startupAttemptId && !inherited && runtime.id !== 'liveview' && startupVisitId) {
       recordStartupEvent(gameSlugRef.current, {
         visitId: startupVisitId,
@@ -2518,6 +2541,9 @@ export function EmulatorPlayer({
 
   const start = useCallback(
     async (picked: File | null) => {
+      // 玩家在语言探测失败后改选本地文件，说明他已经放弃那次自动重开；旧请求日后恢复
+      // 也不能突然盖掉正在玩的本地会话。
+      if (picked) restartWithLangRef.current = null
       setError(null)
       setNotice(null)
 
@@ -2673,10 +2699,6 @@ export function EmulatorPlayer({
    * ROM 换了就是另一份程序，没法热切 —— 只能把会话拆掉、
    * 等父组件把新地址传下来再重开（见下面那个 effect）。
    */
-  const restartWithLangRef = useRef<RomLang | null>(null)
-  /** 当前 ROM 实际加载失败后，父层切到备用地址时保持“继续开这一局”的用户意图。 */
-  const restartAfterRomFailureRef = useRef(false)
-
   /**
    * 收掉当前这一局。
    *
@@ -2702,8 +2724,7 @@ export function EmulatorPlayer({
    */
   const saveSlugOf = (s: ActiveSession | null): string | undefined => {
     if (!s) return gameSlugRef.current
-    if (typeof s.game !== 'string') return `local:${s.game.name}`
-    return gameSlugRef.current
+    return s.saveSlug ?? gameSlugRef.current
   }
   /** 工具栏用的那一份（存档 / 读档 / 归档都按它走） */
   const saveSlug = saveSlugOf(session)
@@ -2731,6 +2752,8 @@ export function EmulatorPlayer({
       : undefined
 
   const reset = () => {
+    // 玩家主动停掉 / 更换本地 ROM 时，不能让一次尚未完成的语言探测日后把他重新拉进云端 ROM。
+    restartWithLangRef.current = null
     // 主动离开房间后，URL 里的 ?p2p= / ?room= 就不该再把人拉回同一个房间
     // 直播也算：离开之后别被上面那个自动开看的 effect 又拽回去
     if (session?.netplay || session?.cloud || session?.live || joining) setIgnoreInvite(true)
@@ -2760,26 +2783,34 @@ export function EmulatorPlayer({
    * 「黑一下，然后是另一个语言的同一款游戏」，不用自己再点一次开始。
    */
   const switchRomLang = (next: RomLang) => {
-    if (!next || next === romLang) return
+    if (!next || next === (romLangSelection ?? romLang)) return
+    const restartTarget = nextRomLanguageRestart(restartWithLangRef.current, Boolean(session), next)
     // 有会话在跑才需要重开；空闲状态直接换地址就行，玩家还没开始
     if (session) {
-      restartWithLangRef.current = next
       reset()
     }
+    // 连点时 session 已经被第一下拆掉，但重开意图仍在；后一次选择必须覆盖前一次。
+    restartWithLangRef.current = restartTarget
     onRomLangChange?.(next)
   }
 
   // 同一 ZIP 可以按语言运行不同 BAT；URL 没变也要等语言槽解析完成后重开。
   useEffect(() => {
     const pending = restartWithLangRef.current
-    if (!pending || !romUrl || romChecking) return
+    if (!pending || !canResumeRomLanguageSwitch({
+      pending,
+      selected: romLangSelection ?? pending,
+      resolved: romLang,
+      romUrl,
+      checking: romChecking,
+    })) return
     restartWithLangRef.current = null
     void start(null)
     // start() 里会先清掉提示，所以这句要放它后面
     setNotice(fmt(t.player.romLangSwitched, { lang: ROM_LANG_LABEL[pending] }))
     // 同 key 切换只变 romLang / checking；start 是 useCallback，不能放依赖造成无关重开。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [romUrl, romLang, romChecking])
+  }, [romUrl, romLang, romLangSelection, romChecking])
 
   useEffect(() => {
     if (!restartAfterRomFailureRef.current || romChecking) return
@@ -2797,8 +2828,7 @@ export function EmulatorPlayer({
     if (!gameSlug || !roomId) return
     const link = session?.cloud ? roomLink(gameSlug, roomId) : inviteLink(gameSlug, roomId)
     try {
-      await navigator.clipboard.writeText(link)
-      setCopied(true)
+      if (await copyText(link)) setCopied(true)
     } catch {
       /* 剪贴板不可用时忽略 */
     }
@@ -4116,7 +4146,7 @@ export function EmulatorPlayer({
             <label className="relative" title={t.player.romLangTitle}>
               <span className="sr-only">{t.player.romLang}</span>
               <select
-                value={romLang ?? ''}
+                value={romLangSelection ?? romLang ?? ''}
                 onChange={(e) => switchRomLang(e.target.value as RomLang)}
                 className={cx(buttonClasses('secondary', 'sm'), 'cursor-pointer appearance-none pr-7')}
               >

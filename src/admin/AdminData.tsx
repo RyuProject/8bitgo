@@ -7,6 +7,7 @@ import { games as builtinGames } from '@/data/games'
 import { posts as builtinPosts } from '@/data/posts'
 import { Card, btnClass, inputClass } from './ui'
 import { cx } from '@/lib/format'
+import { copyText } from '@/lib/clipboard'
 
 /** 后端列表接口一页最多给 100 条，导出时要按这个上限翻页 */
 const EXPORT_PAGE_SIZE = 100
@@ -190,7 +191,7 @@ export function AdminData() {
   const copy = async () => {
     try {
       const json = await collect()
-      await navigator.clipboard.writeText(json)
+      if (!(await copyText(json))) throw new Error('浏览器没有允许写入剪贴板')
       setMsg({ ok: true, text: '已复制到剪贴板' })
     } catch (err) {
       setMsg({ ok: false, text: (err instanceof Error ? err.message : '复制失败') + '（可改用下载）' })

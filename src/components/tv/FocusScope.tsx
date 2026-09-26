@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from 'react'
 import { pickInDirection, type Direction, type FocusRect } from '@/lib/spatialFocus'
+import { cssEscape } from '@/lib/cssEscape'
 
 /** 电视安全边距（overscan）：焦点元素至少离视口边缘这么远，避免被扫描线/圆角切掉 */
 const DEFAULT_OVERSCAN = 120
@@ -54,7 +55,7 @@ export function FocusScope({
   overscanRef.current = overscan
 
   const scrollTo = useCallback((id: string) => {
-    const el = scopeRef.current?.querySelector<HTMLElement>(`[data-focus-id="${CSS.escape(id)}"]`)
+    const el = scopeRef.current?.querySelector<HTMLElement>(`[data-focus-id="${cssEscape(id)}"]`)
     if (el) ensureVisible(el, overscanRef.current)
   }, [])
 
@@ -76,7 +77,7 @@ export function FocusScope({
     if (!autoFocus) return
     const scope = scopeRef.current
     if (!scope) return
-    const hasCurrent = focusedId && scope.querySelector(`[data-focus-id="${CSS.escape(focusedId)}"]`)
+    const hasCurrent = focusedId && scope.querySelector(`[data-focus-id="${cssEscape(focusedId)}"]`)
     if (hasCurrent) return
     const first = scope.querySelector<HTMLElement>('[data-focus-id]')
     if (first?.dataset.focusId) setFocusedId(first.dataset.focusId)
@@ -124,7 +125,7 @@ export function FocusScope({
       if (e.key === 'Enter') {
         const id = focusedRef.current
         if (!id) return
-        const el = scope.querySelector<HTMLElement>(`[data-focus-id="${CSS.escape(id)}"]`)
+        const el = scope.querySelector<HTMLElement>(`[data-focus-id="${cssEscape(id)}"]`)
         el?.click()
       }
     }

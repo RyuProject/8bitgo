@@ -26,7 +26,8 @@ function validInput(value: unknown): value is { connected_input: [number, number
 export function normalizeHostSync(message: unknown, owner: boolean, currentFrame: number): unknown {
   if (!owner || !message || typeof message !== 'object' || Array.isArray(message)) return message
   const data = message as Record<string, unknown>
-  if (!Object.hasOwn(data, 'sync-control')) return message
+  // Object.hasOwn 要到 Safari 15.4 才有；这里不能让联机按键因为一个语法无关的辅助 API 中断。
+  if (!Object.prototype.hasOwnProperty.call(data, 'sync-control')) return message
 
   // 永远只占用离当前帧约 20 帧的一小段窗口，不能让远期 / 过期帧把 inputsData 撑大。
   const frame = Math.min(2 ** 31 - 1, Math.max(0, Number.isFinite(currentFrame) ? Math.floor(currentFrame) : 0) + FRAME_LEAD)

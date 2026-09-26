@@ -4,6 +4,12 @@ import { readFileSync } from 'node:fs'
 import { detectRom } from '../src/emulator/detect.ts'
 import { isStreamingDiscPlatform } from '../shared/streaming-disc-platforms.js'
 import { isIsolatedRuntimePlatform, isolatedRuntimeRoute } from '../shared/isolated-runtime-platforms.js'
+import {
+  canResumeRomLanguageSwitch,
+  nextRomLanguageRestart,
+  parsePspVariantSaveSlug,
+  pspVariantSaveSlug,
+} from '../src/emulator/romLanguage.ts'
 
 const fakeFile = (name, bytes) => ({
   name,
@@ -29,7 +35,31 @@ const cso = new Uint8Array(64)
 cso.set(new TextEncoder().encode('CISO'))
 assert.equal((await detectRom(fakeFile('game.cso', cso))).platform, 'psp', 'CSO 魔数应识别为 PSP')
 
+/* ---------- 多语言切换：存档隔离与异步竞态 ---------- */
+assert.equal(pspVariantSaveSlug('project-diva', 'ja', 2), 'project-diva~psp-ja', 'PSP 多语言版必须隔离存档键')
+assert.equal(pspVariantSaveSlug('project-diva', 'ja', 1), 'project-diva', '单语言 PSP 保留历史存档键')
+assert.deepEqual(parsePspVariantSaveSlug('project-diva~psp-zh-Hans'), {
+  gameSlug: 'project-diva',
+  romLang: 'zh-Hans',
+})
+assert.deepEqual(parsePspVariantSaveSlug('not-a-marker~psp-xx'), { gameSlug: 'not-a-marker~psp-xx' })
+assert.deepEqual(parsePspVariantSaveSlug('local:demo~psp-ja'), { gameSlug: 'local:demo~psp-ja' }, '本地文件名不能被误拆成站内语言变体')
+assert.equal(nextRomLanguageRestart(null, false, 'ja'), null, '空闲页切语言只换地址，不应擅自开机')
+assert.equal(nextRomLanguageRestart(null, true, 'ja'), 'ja', '运行中切语言必须等新地址后重开')
+assert.equal(nextRomLanguageRestart('ja', false, 'en'), 'en', '快速连点时最后一次选择必须覆盖旧的重开目标')
+assert.equal(canResumeRomLanguageSwitch({
+  pending: 'ja', selected: 'ja', resolved: 'ja', romUrl: 'https://assets.example/ja.cso', checking: false,
+}), true, '选择、解析结果与地址一致后才能重开')
+assert.equal(canResumeRomLanguageSwitch({
+  pending: 'ja', selected: 'en', resolved: 'en', romUrl: 'https://assets.example/en.cso', checking: false,
+}), false, '旧的日语请求不能盖掉玩家后选的英语')
+assert.equal(canResumeRomLanguageSwitch({
+  pending: 'ja', selected: 'ja', resolved: 'en', romUrl: 'https://assets.example/en.cso', checking: false,
+}), false, '跨语言回退不能冒充玩家选择的版本并自动重开')
+
 const adapter = readFileSync(new URL('../src/emulator/adapters/ppsspp.ts', import.meta.url), 'utf8')
+const player = readFileSync(new URL('../src/emulator/EmulatorPlayer.tsx', import.meta.url), 'utf8')
+const profileSaves = readFileSync(new URL('../src/components/profile/CloudSaves.tsx', import.meta.url), 'utf8')
 const prewarm = readFileSync(new URL('../src/emulator/prewarm.ts', import.meta.url), 'utf8')
 const paths = readFileSync(new URL('../src/emulator/paths.ts', import.meta.url), 'utf8')
 const host = readFileSync(new URL('../public/ppsspp/v0dbfaca/v4/host.js', import.meta.url), 'utf8')
@@ -73,6 +103,9 @@ assert.match(adapter, /focusFrame\(iframe\)/, 'PSP 启动和工具栏交互后�
 assert.match(adapter, /frameGamepads\(iframe\)/, 'PSP 手柄状态必须从实际运行游戏的 iframe 读取')
 assert.match(adapter, /caps\.add\('saveState'\)/, 'PSP 启动后必须上报统一即时存档能力')
 assert.match(adapter, /caps\.add\('remapKeys'\)/, 'PSP 启动后必须提供原生改键入口')
+assert.match(player, /pspVariantSaveSlug\(gameSlugRef\.current, romLangRef\.current, romLangCountRef\.current\)/, 'PSP 多语言会话没有冻结语言专属存档键')
+assert.match(player, /canResumeRomLanguageSwitch\(/, 'PSP 语言切换必须挡住旧探测结果抢跑')
+assert.match(profileSaves, /parsePspVariantSaveSlug/, '个人页必须把 PSP 存档后缀还原成基础游戏链接')
 assert.match(adapter, /captureSources\(\)/, 'PSP 必须把画布和声音暴露给直播链路')
 assert.doesNotMatch(adapter, /fetch\s*\(options\.game/)
 assert.doesNotMatch(adapter, /arrayBuffer\s*\(\)/)

@@ -46,8 +46,14 @@ try {
 } catch {
   fail('runtime.json 不是合法 JSON')
 }
-if (manifest.version !== version || manifest.assetVersion !== assetVersion || manifest.withDosboxX !== true || manifest.ipxPatched !== true) {
-  fail('runtime.json 的版本或 DOSBox-X / IPX 补丁标记不正确')
+if (
+  manifest.version !== version ||
+  manifest.assetVersion !== assetVersion ||
+  manifest.withDosboxX !== true ||
+  manifest.ipxPatched !== true ||
+  manifest.mouseCaptureChromePatched !== true
+) {
+  fail('runtime.json 的版本或 DOSBox-X / IPX / 鼠标捕获界面补丁标记不正确')
 }
 if (manifest.copyScriptSha256 !== sha256(copyScript)) fail('复制补丁脚本已经变化，public 仍是旧产物；请运行 npm run jsdos')
 if (!Array.isArray(manifest.files) || !manifest.files.length) fail('runtime.json 没有文件清单')
@@ -99,6 +105,12 @@ for (const marker of ['__8bitgoListeners', '__8bitgoCleanup', 'navigator.keyboar
 }
 if (js.includes('unadjustedMovement')) fail('Pointer Lock 仍在绕过系统鼠标加速')
 if (!js.includes('requestPointerLock()')) fail('找不到使用系统加速的 Pointer Lock 补丁')
+if (!js.includes('function Xa(){return null}')) fail('js-dos 仍可能显示重复的鼠标灵敏度侧栏')
+if (!js.includes('function Dl(){return null}')) fail('js-dos 仍可能显示鼠标捕获黑色蒙版')
+if (js.includes('i&&l&&zi("div",{class:"w-2 flex-shrink-0"})')) fail('kiosk 仍为鼠标侧栏保留空白边')
+if (!js.includes('for(const o of nc.starters)e.addEventListener(o,t,n)')) {
+  fail('找不到画布点击直接请求 Pointer Lock 的监听器')
+}
 for (const type of ['fullscreenchange', 'pointerlockchange', 'visibilitychange']) {
   if (!js.includes(`__8bitgoListen("${type}",`)) fail(`${type} 监听没有纳入 stop() 清理`)
 }

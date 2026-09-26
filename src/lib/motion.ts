@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { listenMediaQuery } from './mediaQuery'
 
 /**
  * 系统的「减少动态效果」开关。
@@ -17,8 +18,7 @@ export function usePrefersReducedMotion(): boolean {
     const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
     const sync = () => setReduced(mq.matches)
     sync()
-    mq.addEventListener('change', sync)
-    return () => mq.removeEventListener('change', sync)
+    return listenMediaQuery(mq, sync)
   }, [])
   return reduced
 }

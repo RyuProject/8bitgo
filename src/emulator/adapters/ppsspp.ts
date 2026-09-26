@@ -213,7 +213,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   options.onCaps?.(caps)
   options.onProgress?.({ phase: 'engine', loaded: 0 })
-  container.replaceChildren(iframe)
+  // replaceChildren 到 Safari 13.1 才有；播放器容器本来就应该只剩这一项。
+  container.textContent = ''
+  container.appendChild(iframe)
   // 版本目录是 immutable；这里换的是 index.html 的入口代次，不和核心/桥/data 的缓存数字
   // 强行保持一致。漏掉它时，老访客连新 index.html 都拿不到，更不会看到里面的新桥地址。
   // r=6 虽然保留了主线程 canvas，但 SDL/EGL 只在主线程建出上下文，Worker 的 GLctx 仍为空。

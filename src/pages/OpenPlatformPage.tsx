@@ -10,6 +10,7 @@ import { Modal } from '@/components/ui/Modal'
 import { ApiError } from '@/services/api'
 import { fetchApps, type AppItem } from '@/services/apps'
 import { romUrlForKey } from '@/services/roms'
+import { copyText as writeClipboardText } from '@/lib/clipboard'
 import {
   addTester,
   createMyApp,
@@ -999,7 +1000,7 @@ function DocCode({ code }: { code: string }) {
       <button
         type="button"
         className="absolute right-2 top-2 rounded border border-line bg-surface px-1.5 py-0.5 text-[10px] text-muted hover:text-fg"
-        onClick={() => void navigator.clipboard?.writeText(code).then(() => setCopied(true)).catch(() => setCopied(false))}
+        onClick={() => void writeClipboardText(code).then(setCopied)}
         aria-label="复制代码示例"
       >
         {copied ? '已复制' : '复制'}
@@ -1217,11 +1218,7 @@ const ACTION_LABELS: Record<string, string> = {
 const INPUT = 'w-full rounded-lg border border-line bg-surface-2 px-3 py-2 text-sm outline-none focus:border-brand'
 
 async function copyText(text: string) {
-  try {
-    await navigator.clipboard?.writeText(text)
-  } catch {
-    /* 剪贴板不可用时忽略，文本框/代码块本身可手选复制 */
-  }
+  await writeClipboardText(text)
 }
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {

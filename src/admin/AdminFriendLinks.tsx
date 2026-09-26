@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { cx } from '@/lib/format'
+import { readImageDimensions } from '@/lib/imageResize'
 import { apiEnabled } from '@/services/api'
 import {
   deleteFriendLink,
@@ -328,10 +329,7 @@ function ImageField({ name, value, onChange }: { name: string; value: string; on
 
 async function imageSize(file: File): Promise<{ width: number; height: number } | null> {
   try {
-    const bitmap = await createImageBitmap(file)
-    const size = { width: bitmap.width, height: bitmap.height }
-    bitmap.close()
-    return size
+    return await readImageDimensions(file)
   } catch {
     // SVG 或旧浏览器可能读不到尺寸，不为了这一项预检查挡住上传；首页仍会用 object-contain 防变形。
     return null

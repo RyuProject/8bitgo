@@ -197,6 +197,40 @@ function patchAdjustedPointerLock(file) {
   writeFileSync(file, code.replaceAll(needle, 'requestPointerLock()'))
 }
 
+/**
+ * 本站已经把逐游戏鼠标速度 / Y 轴反转收进播放器的 🎮 面板，不能再让 js-dos 在画面左侧
+ * 重复画一根全站设置滑条。上游那层「点击捕获」蒙版也会长期压暗游戏，并让玩家误以为还要
+ * 点一个确认按钮；真正的 Pointer Lock 本来就直接绑在 canvas 的 pointerdown 上，裁掉提示层
+ * 不会改变捕获行为。最后一处把 kiosk 为滑条预留的 8px 空栏一起拿掉，避免留下彩色细边。
+ *
+ * 这里故意按当前锁定版本的函数边界严格匹配：上游升级后若压缩符号变化，应先重新取证，
+ * 不能静默发布一个又出现重复滑条 / 黑色蒙版的运行时。
+ */
+function patchMinimalMouseCaptureUi(file) {
+  let code = readFileSync(file, 'utf8')
+  const replaceFunction = (start, end, replacement, label, requiredMarker) => {
+    if (code.split(start).length - 1 !== 1 || code.split(end).length - 1 !== 1) {
+      fail(`上游 ${label} 结构变化，无法移除重复的鼠标捕获界面`)
+    }
+    const from = code.indexOf(start)
+    const to = code.indexOf(end, from)
+    if (to <= from || !code.slice(from, to).includes(requiredMarker)) {
+      fail(`上游 ${label} 内容变化，无法确认补丁目标`)
+    }
+    code = `${code.slice(0, from)}${replacement}${code.slice(to)}`
+  }
+
+  replaceFunction('function Xa(e){', 'function Ga(', 'function Xa(){return null}', '鼠标灵敏度侧栏', 'sidebar-slider')
+  replaceFunction('function Dl(){', 'function Tl(){', 'function Dl(){return null}', '鼠标捕获提示层', 'clickToLockModal')
+
+  const kioskSpacer = 'i&&l&&zi("div",{class:"w-2 flex-shrink-0"}),'
+  if (code.split(kioskSpacer).length - 1 !== 1) {
+    fail('上游 kiosk 鼠标侧栏留白结构变化，无法确认补丁目标')
+  }
+  code = code.replace(kioskSpacer, '')
+  writeFileSync(file, code)
+}
+
 /** 写死的 1900 端口过不了 Cloudflare；本站中继和主站共用 443 的 /ipx/。 */
 function patchIpxPort(file) {
   if (!patchIpx) return
@@ -210,6 +244,7 @@ function patchIpxPort(file) {
 const mainJs = join(out, 'js-dos.js')
 patchIpxPort(mainJs)
 patchAdjustedPointerLock(mainJs)
+patchMinimalMouseCaptureUi(mainJs)
 patchLifecycle(mainJs)
 wrapCssInLayer(join(out, 'js-dos.css'))
 wrapInIife(mainJs)
@@ -224,6 +259,7 @@ writeFileSync(
     assetVersion,
     withDosboxX,
     ipxPatched: patchIpx,
+    mouseCaptureChromePatched: true,
     sourceFingerprint,
     copyScriptSha256,
     files,

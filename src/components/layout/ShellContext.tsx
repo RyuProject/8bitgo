@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { listenMediaQuery } from '@/lib/mediaQuery'
 
 /**
  * 应用壳状态：
@@ -49,8 +50,7 @@ const DESKTOP_QUERY = '(min-width: 1024px)'
 
 function subscribeDesktop(onChange: () => void) {
   const media = window.matchMedia(DESKTOP_QUERY)
-  media.addEventListener('change', onChange)
-  return () => media.removeEventListener('change', onChange)
+  return listenMediaQuery(media, onChange)
 }
 
 function desktopSnapshot() {

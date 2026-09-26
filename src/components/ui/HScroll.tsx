@@ -39,18 +39,27 @@ export function HScroll({
     const el = ref.current
     if (!el) return
     el.addEventListener('scroll', update, { passive: true })
-    const ro = new ResizeObserver(update)
-    ro.observe(el)
+    const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(update) : null
+    ro?.observe(el)
+    // ResizeObserver 到 Safari 13.1 才有；旧浏览器至少在窗口尺寸变化时重算箭头。
+    if (!ro) window.addEventListener('resize', update, { passive: true })
     return () => {
       el.removeEventListener('scroll', update)
-      ro.disconnect()
+      ro?.disconnect()
+      if (!ro) window.removeEventListener('resize', update)
     }
   }, [update])
 
   const scrollBy = (dir: 1 | -1) => {
     const el = ref.current
     if (!el) return
-    el.scrollBy({ left: dir * el.clientWidth * 0.85, behavior: 'smooth' })
+    const left = dir * el.clientWidth * 0.85
+    try {
+      el.scrollBy({ left, behavior: 'smooth' })
+    } catch {
+      // 旧 WebKit 只有 scrollLeft，不接受 ScrollToOptions 对象。
+      el.scrollLeft += left
+    }
   }
 
   const items = Array.isArray(children) ? children : [children]
