@@ -26,7 +26,7 @@ export function normalizeDosMouseSensitivity(value: unknown): number {
   return Math.min(1, Math.max(0, n))
 }
 
-/** 只给界面展示；实际换算仍由 js-dos 做，避免我们和上游输入算法分叉。 */
+/** 复用 js-dos 的同一条指数曲线；《主题医院》的适配器自管路径也不能出现另一套手感。 */
 export function dosMouseSpeedMultiplier(value: number): number {
   return Math.pow(8, normalizeDosMouseSensitivity(value) * 2 - 1)
 }

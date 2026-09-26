@@ -1,0 +1,30 @@
+/* 让原本只按桌面横屏设计的上游界面在手机播放器里仍保留可操作的主矿场。 */
+@media (max-width: 760px) {
+  :root { --ui-scale: 1 !important; }
+  .topbar { gap: 6px !important; padding: 6px 8px !important; min-height: 52px !important; }
+  .topbar__logo { margin: 0 !important; padding-right: 6px !important; }
+  .logo-sub, .topbar__round, .topbar__hero-rate { display: none !important; }
+  .logo-text { font-size: 14px !important; }
+  .topbar__hero { justify-content: flex-start !important; }
+  .topbar__hero-cash { font-size: 20px !important; }
+  .tb-btn { font-size: 0 !important; padding: 7px !important; }
+  .tb-btn svg { width: 18px; height: 18px; }
+  .rsb { display: none !important; }
+  .table-wrap { min-height: 150px !important; max-height: 34vh !important; padding: 8px 8px 6px !important; }
+  .table-assets { padding: 0 8px 8px !important; }
+  .settings { width: min(360px, 94vw) !important; max-height: 90vh; overflow-y: auto; }
+}
+
+@media (max-height: 560px) {
+  .table-wrap { display: none !important; }
+  .topbar { min-height: 44px !important; padding-top: 4px !important; padding-bottom: 4px !important; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

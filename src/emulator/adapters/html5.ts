@@ -48,6 +48,10 @@ interface SaveBridgeMessage {
 
 export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const caps = new Set<Capability>()
+  // PvZ 返回 ZIP；Digiverse 直接交换它原生的 JSON，扩展名和 MIME 不能再冒充 ZIP。
+  const saveFormat = options.gameSlug === 'gamblers-table'
+    ? { ext: 'gamblers.json', mime: 'application/json' }
+    : { ext: 'pvzsave.zip', mime: 'application/zip' }
   let destroyed = false
   let objectUrl = ''
   let saveBridgeReady = false
@@ -325,11 +329,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   return {
     caps,
-    saveExt: 'pvzsave.zip',
+    saveExt: saveFormat.ext,
     async saveState() {
       const data = await requestSaveBridge('export')
       if (!(data instanceof ArrayBuffer) || data.byteLength === 0) throw new Error('网页游戏返回了空存档')
-      return new Blob([data], { type: 'application/zip' })
+      return new Blob([data], { type: saveFormat.mime })
     },
     async loadState(data: ArrayBuffer) {
       // 转移给 iframe 后这份 buffer 会被 detach；复制一份，别改掉调用方手里的云存档缓存。
@@ -337,7 +341,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       saveBridgeReady = false
       caps.delete('saveState')
       options.onCaps?.(caps)
-      // PvZ 只在启动时读取玩家资料；导入后原地重载 iframe 才会真正使用新进度。
+      // PvZ 和 Digiverse 都只在启动时读取玩家资料；导入后原地重载才会使用新进度。
       iframe.contentWindow?.location.reload()
     },
     /**

@@ -344,11 +344,27 @@ DeSmuME / DeSmuME 2015 的弱机兜底也要把 `desmume_pointer_type` 从相对
 - 个别原生 DOS 图形界面对绝对位置更稳定；《主题医院》已经在真实页面复现，按 slug 收进
   `src/emulator/dosMouse.ts` 的兼容清单。不要按 `strategy` 标签一刀切，标签不能证明输入协议。
 
-修复在 `src/emulator/adapters/jsdos.ts`：Pointer Lock 仍由 js-dos 负责，ci 边界把相对位移按
-实际内容区累积成 0～1，再送 `sendMouseMotion()`。实际内容区必须用 `ci.width()/height()` 从
-canvas 的 CSS 矩形扣掉黑边；直接拿播放器宽高会让 4:3 游戏永远到不了左右边缘。首次捕获按
-点击位置校准，但锁定后的点击不能重复校准（Pointer Lock 下 clientX/Y 已经不是真实位置）。
-非 kiosk 还有 js-dos 侧栏，校准事件也只能认 canvas，不能让侧栏点击把游戏光标推到边缘。
+修复在 `src/emulator/adapters/jsdos.ts`。Windows 客体保留 js-dos 的 Pointer Lock，在 ci 边界把
+相对位移累积成 0～1，再送 `sendMouseMotion()`；《主题医院》则把传给 js-dos 的
+`mouseCapture` 关掉，由适配器独占 pointerdown / move / up、自己请求 Pointer Lock 并发绝对坐标。
+后者不能再只靠“替换 ci 上的一个方法”：js-dos 的 React effect / 输入层一改挂载时序，就可能
+继续从旧闭包发相对包，表面看兼容分支已命中，游戏里仍只在四角跳。
+
+实际内容区必须用 `ci.width()/height()` 从捕获表面的 CSS 矩形扣掉黑边；直接拿播放器宽高会让
+4:3 游戏永远到不了左右边缘。首次捕获按点击位置校准，但锁定后的点击不能重复校准（Pointer
+Lock 下 clientX/Y 已经不是真实位置）。kiosk 桌面路径的捕获面是 canvas，Layers / 触屏路径则
+可能是 `.emulator-mouse-overlay`，两种都要认；非 kiosk 还有侧栏，侧栏事件绝不能拿来校准。
+
+锁定后的 pointerdown **只能发按键，不能再读 clientX/Y**；否则每次点击都会把游戏光标拉回
+浏览器锁定点。pointerup / pointercancel 要挂在 document 捕获阶段，窗口失焦、Esc 解锁和全屏
+切换也要主动放掉所有已按鼠标键——DOM 在拖出画布或失去 Pointer Lock 后不保证补发 pointerup，
+漏掉就是游戏里永久拖拽。老 Safari 的 `requestPointerLock()` 还可能返回 void，不能无条件 `.then()`。
+
+⚠️ Pointer Lock 会在部分 WebView / 浏览器策略下拒绝。绝对坐标 DOS 的适配器接管路径必须在
+拒绝后退回未锁定的 `clientX/Y → 0～1`，不能像上游那样每次点击都只重试捕获、永远不给游戏
+发送鼠标按键。拒绝发生得快时要补发第一次点击；既不 resolve 也不报错的 WebView 用 750ms
+兜底，避免第一下永久丢失。成功锁定时第一下仍只负责 capture，之后的点击才给游戏，保持原有
+交互语义；普通 / 全屏切换后允许重新探测一次，因为部分 WebView 只在原生全屏放行 Pointer Lock。
 
 普通相对鼠标与绝对桥的钩子都必须返回清理函数。`ci-ready` 在后端重连时可能再次到达；不清理
 就会把 Y 轴反转包两层，结果看起来像开关失效。回归：`npm run test:dos-load`。
@@ -356,6 +372,24 @@ canvas 的 CSS 矩形扣掉黑边；直接拿播放器宽高会让 4:3 游戏永
 `scripts/copy-jsdos.mjs` 还会裁掉上游重复的灵敏度侧栏、黑色捕获蒙版和提示文字；真正的
 `requestPointerLock()` 仍直接绑在 canvas 点击上。改这段补丁后要运行 `npm run jsdos`，并让
 `scripts/check-jsdos.mjs` 同时确认三块 UI 都已移除，不能只看运行时版本号。
+
+### 2.8.6 Win95 老 DirectDraw 游戏：客体桌面与游戏分辨率必须一致
+
+《凯撒大帝 3》不是 ROM 损坏，也不是再调鼠标灵敏度就能好：游戏包里的 `CAESAR3/c3.inf`
+把 `resolutionId`（偏移 16 的 little-endian int32）存成 3 = 1024×768，而共享 Win95 镜像和
+DOSBox-X 帧缓冲是 800×600。原版 DirectDraw 把画面缩进客体桌面时，软件光标的绘制位置与
+按钮命中坐标用了不同缩放比例，所以越往右下偏得越远；典型症状是光标还在输入框上方，
+下面的 Continue 已经 hover。游戏内按 F8（800×600）后同一位置立即正常，就是这条的判据。
+
+启动前由 `src/emulator/windowsGameCompatibility.ts` 把 `resolutionId` 改成 2，作为同路径 extra
+与后台附加文件**一次性**合并进游戏层；不要在游戏启动后靠固定延时模拟 F8（片头长短和慢设备
+会让按键时序漂移），也不要做一组写死的鼠标比例补偿（玩家按 F7/F8/F9 后会立刻再次失准）。
+设置档必须是原版 560 字节且编号在 1～3，格式不对就明确报错，不猜。回归：
+`npm run test:dos-bundle`。
+
+《主题医院》不是这条：它是原生 DOS 640×480，画布和帧缓冲同为 4:3；它的问题在 Pointer Lock
+把相对位移送给只认绝对位置的软件光标，走 `needsLockedAbsoluteDosMouse()` 那条桥修，不套
+Win95 或 Caesar 的分辨率补丁。
 
 ### 2.9 平台 BIOS 的边缘缓存会骗人
 

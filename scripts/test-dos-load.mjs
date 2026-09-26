@@ -180,7 +180,7 @@ check('Windows 客体的上下反转仍只反转 Y 轴', () => {
   )
 })
 
-check('点击捕获时按画布落点校准，Esc 后重新点击不会从旧位置接着跳', () => {
+check('点击捕获时按实际捕获层的落点校准，Esc 后重新点击不会从旧位置接着跳', () => {
   assert.deepEqual(
     lockedAbsolutePointerAtClientPosition(300, 250, { left: 100, top: 100, width: 800, height: 600 }),
     { x: 0.25, y: 0.25 },
@@ -197,19 +197,36 @@ check('宽屏播放器按实际 4:3 游戏区换算，左右黑边不占鼠标�
   assert.deepEqual(lockedAbsolutePointerAtClientPosition(900, 300, rect), { x: 1, y: 0.5 })
 })
 
-check('Windows 客体与《主题医院》接绝对坐标桥，其他 DOS 仍接原来的相对鼠标', () => {
+check('Windows 客体走 ci 绝对桥，《主题医院》由适配器独占指针事件，其他 DOS 保留相对鼠标', () => {
   assert.equal(needsLockedAbsoluteDosMouse('theme-hospital'), true)
   assert.equal(needsLockedAbsoluteDosMouse(' Theme-Hospital '), true)
   assert.equal(needsLockedAbsoluteDosMouse('doom'), false)
   assert.equal(needsLockedAbsoluteDosMouse(), false)
-  assert.match(jsdos, /guest\s*\|\|\s*needsLockedAbsoluteDosMouse\(options\.gameSlug\)/)
-  assert.match(jsdos, /\?\s*hookLockedAbsoluteMouse\(ci, host/)
+  assert.match(jsdos, /adapterOwnsAbsoluteDosMouse\s*=\s*Boolean/)
+  assert.match(jsdos, /mouseCapture:\s*Boolean\(options\.mouseCapture\s*&&\s*!adapterOwnsAbsoluteDosMouse\)/)
+  assert.match(jsdos, /guest\s*\?\s*hookLockedAbsoluteMouse\(ci, host/)
+  assert.match(jsdos, /adapterOwnsAbsoluteDosMouse\s*\?\s*hookCapturedAbsoluteDosMouse/)
   assert.match(jsdos, /:\s*hookMouseInvert\(ci/)
   assert.match(jsdos, /rawAbsolute\.call\(c, pointer\.x, pointer\.y\)/)
   assert.match(jsdos, /lockedAbsoluteContentRect\(rect/)
   assert.match(jsdos, /if \(document\.pointerLockElement\) return/)
-  assert.match(jsdos, /event\.target !== canvas/)
+  assert.match(jsdos, /classList\.contains\('emulator-mouse-overlay'\)/)
+  assert.match(jsdos, /pointerSurface\(event\.target\)/)
+  assert.match(jsdos, /event\.target !== surface/)
   assert.match(jsdos, /c\.sendMouseRelativeMotion === wrapped/)
+  assert.match(jsdos, /captureUnavailable = true/)
+  assert.match(jsdos, /surface\.requestPointerLock\(\)/)
+  assert.match(jsdos, /event\.stopPropagation\(\)/)
+  assert.match(jsdos, /dosMouseSpeedMultiplier\(sensitivity\(\)\)/)
+  assert.match(jsdos, /document\.pointerLockElement === surface/)
+  assert.match(jsdos, /if \(!locked\) sendClientPosition\(event, surface\)/)
+  assert.match(jsdos, /for \(const type of endEvents\) document\.addEventListener\(type, onEnd as EventListener, true\)/)
+  assert.match(jsdos, /document\.addEventListener\('pointerlockerror', onPointerLockError\)/)
+  assert.match(jsdos, /window\.addEventListener\('blur', onBlur\)/)
+  assert.match(jsdos, /pressButton\(attempt\.button\)/)
+  assert.match(jsdos, /attempt\.timeout = window\.setTimeout/)
+  assert.match(jsdos, /const result = surface\.requestPointerLock\(\) as Promise<void> \| undefined/)
+  assert.match(jsdos, /document\.addEventListener\('fullscreenchange', onFullscreenChange\)/)
 })
 
 check('竖屏播放器出现上下黑边时，也只按实际游戏画面换算坐标', () => {

@@ -110,6 +110,35 @@ export function readZipEntries(buf: ArrayBuffer): ZipEntry[] | null {
   return out
 }
 
+/**
+ * 读取 ZIP 里的一个小文件，给启动前的兼容补丁使用。
+ *
+ * 不把 ZipEntry 暴露出去：调用方只该关心「包里这份文件的真实名字和解压后字节」，
+ * 不能绕过本文件里的路径归一化、压缩算法与 CRC 校验各自再写一套 ZIP 解析器。
+ */
+export async function readZipFile(
+  buf: ArrayBuffer,
+  wantedPath: string,
+): Promise<{ path: string; data: Uint8Array<ArrayBuffer> } | null> {
+  const wanted = safeArchivePath(wantedPath)
+  if (!wanted) throw new Error(`要读取的 DOS 压缩包路径不安全：${wantedPath}`)
+  const parsed = readZipEntries(buf)
+  if (!parsed) throw new Error('DOS ROM 不是一个可读的 ZIP')
+  const entries = normalizeArchiveEntries(parsed)
+  assertRepackable(entries)
+  const entry = entries.find((candidate) => !candidate.name.endsWith('/') && candidate.name.toLowerCase() === wanted.toLowerCase())
+  if (!entry) return null
+  const data = await extractZipEntry(buf, {
+    name: entry.name,
+    method: entry.method,
+    compressedSize: entry.compressedSize,
+    uncompressedSize: entry.uncompressedSize,
+    crc32: entry.crc,
+    offset: entry.localOffset,
+  })
+  return { path: entry.name, data: data as Uint8Array<ArrayBuffer> }
+}
+
 /** 取某条目「压缩后」的原始字节：本地头的长度字段跟中央目录可能不一样，必须现读 */
 function rawData(buf: ArrayBuffer, e: ZipEntry): Uint8Array<ArrayBuffer> {
   const v = new DataView(buf)

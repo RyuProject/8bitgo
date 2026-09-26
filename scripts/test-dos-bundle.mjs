@@ -15,10 +15,13 @@ import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { normalizeDosboxConfigOverride, mergeDosboxConfigOverride } from '../shared/dosbox-config.js'
 
-const { makeJsdosBundle, makeWindowsGameLayer, buildDosboxConf } = await import(
+const { makeJsdosBundle, makeWindowsGameLayer, buildDosboxConf, mergeExtraFiles, readZipFile } = await import(
   fileURLToPath(new URL('../src/lib/jsdosBundle.ts', import.meta.url))
 )
 const { windowsGuestLaunchCommand } = await import(fileURLToPath(new URL('../src/lib/windowsGuest.ts', import.meta.url)))
+const { windowsGameCompatibilityExtras } = await import(
+  fileURLToPath(new URL('../src/emulator/windowsGameCompatibility.ts', import.meta.url))
+)
 const {
   desktopSettled,
   desktopContentRatio,
@@ -194,6 +197,56 @@ console.log('── 打不开的包必须在 Dos() 之前抛，不能留给黑�
   // store 和 deflate 是我们搬得动的，不能误伤
   const fine = makeWindowsGameLayer(makeZip([{ name: 'GAME.EXE', data: EXE, method: 0 }]), 'GAME.EXE')
   ok(fine.bytes instanceof Uint8Array, 'store(0) 正常通过')
+}
+
+console.log('\n── Caesar III：游戏分辨率必须与 Win95 的 800×600 对齐 ──')
+{
+  const c3Inf = (resolution, size = 560) => {
+    const data = new Uint8Array(size)
+    if (size >= 20) {
+      const view = new DataView(data.buffer)
+      view.setInt32(0, 16, true)
+      view.setInt32(16, resolution, true)
+    }
+    return data
+  }
+  const rom = makeZip([
+    { name: 'CAESAR3/c3.exe', data: EXE },
+    { name: 'CAESAR3/c3.inf', data: c3Inf(3) },
+  ])
+  const extras = await windowsGameCompatibilityExtras('caesar-3', 'CAESAR3/c3.exe', rom, [])
+  ok(extras.length === 1 && extras[0].path === 'CAESAR3/c3.inf', '1024×768 的 c3.inf 会生成一份同路径覆盖文件')
+  ok(new DataView(extras[0].data.buffer, extras[0].data.byteOffset).getInt32(16, true) === 2, '⭐ resolutionId 从 3 改成 2（800×600）')
+
+  const merged = mergeExtraFiles(rom, extras)
+  const patched = await readZipFile(merged, 'caesar3/C3.INF')
+  ok(Boolean(patched) && new DataView(patched.data.buffer, patched.data.byteOffset).getInt32(16, true) === 2, '补丁真正覆盖 ZIP 内的设置档，且查找不受路径大小写影响')
+
+  const already800 = makeZip([
+    { name: 'CAESAR3/c3.exe', data: EXE },
+    { name: 'CAESAR3/c3.inf', data: c3Inf(2) },
+  ])
+  const noPatch = await windowsGameCompatibilityExtras('caesar-3', 'CAESAR3/c3.exe', already800, [])
+  ok(noPatch.length === 0, '本来就是 800×600 时不重打八十多 MB 的 ROM')
+
+  const unrelatedExtras = [{ path: 'PATCH.DAT', data: te.encode('keep') }]
+  const untouched = await windowsGameCompatibilityExtras('theme-hospital', 'HOSPITAL.EXE', rom, unrelatedExtras)
+  ok(untouched === unrelatedExtras, '主题医院是原生 DOS 640×480，不套用 Win95/Caesar 的补丁')
+
+  const adminInf = { path: 'CAESAR3/C3.INF', data: c3Inf(1) }
+  const replaced = await windowsGameCompatibilityExtras('caesar-3', 'CAESAR3/c3.exe', rom, [adminInf])
+  ok(replaced.length === 1 && replaced[0].path === adminInf.path, '后台已有同路径附加文件时原位替换，不产生 ZIP 重名条目')
+  ok(new DataView(replaced[0].data.buffer, replaced[0].data.byteOffset).getInt32(16, true) === 2, '后台附加的 640×480 设置同样纠正到 800×600')
+
+  const malformed = makeZip([
+    { name: 'CAESAR3/c3.exe', data: EXE },
+    { name: 'CAESAR3/c3.inf', data: c3Inf(3, 32) },
+  ])
+  await throwsWith(
+    () => windowsGameCompatibilityExtras('caesar-3', 'CAESAR3/c3.exe', malformed, []),
+    /c3\.inf 长度异常/,
+    '设置档格式不对时明确报错，不按猜测去改未知文件',
+  )
 }
 
 console.log('\n── 后台填的启动程序，包里必须真有 ──')

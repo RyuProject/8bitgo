@@ -50,6 +50,7 @@ import { assertTypeable, scheduleWindowsLaunch, windows3xLaunchCommands, type Wi
 import { JSDOS_PATH } from '../paths'
 import {
   DOS_MOUSE_SENSITIVITY_DEFAULT,
+  dosMouseSpeedMultiplier,
   needsLockedAbsoluteDosMouse,
   normalizeDosMouseSensitivity,
 } from '../dosMouse'
@@ -58,6 +59,7 @@ import {
   lockedAbsoluteContentRect,
   lockedAbsolutePointerAtClientPosition,
 } from '../lockedAbsoluteMouse'
+import { windowsGameCompatibilityExtras } from '../windowsGameCompatibility'
 
 /** P2P 模式的撮合服务器。自建的话见 https://github.com/caiiiycuk/WebRTC-NET（Go） */
 export const JSDOS_PEER_SERVER: string = import.meta.env.VITE_JSDOS_PEER_SERVER || 'https://net.dos.zone'
@@ -180,6 +182,8 @@ interface DosCi extends WindowsLaunchCi {
   sendMouseRelativeMotion?: (x: number, y: number) => void
   /** 0～1 的绝对鼠标坐标；Windows 客体里的 DOSBox-X 集成鼠标驱动消费这一条。 */
   sendMouseMotion?: (x: number, y: number) => void
+  /** 0 = 左键，1 = 其它键；适配器接管绝对坐标 DOS 的事件时要和移动包一起自己发送。 */
+  sendMouseButton?: (button: number, pressed: boolean) => void
   exit: () => Promise<void>
 }
 
@@ -253,12 +257,12 @@ function hookMouseInvert(c: DosCi, inverted: () => boolean): () => void {
 }
 
 /**
- * Windows 客体与少数绝对坐标 DOS 游戏仍然要用 Pointer Lock（玩家点击画面后鼠标不能从边缘
- * 跑出去），但不能把锁定后的相对位移原样送给客体。Windows 的 `dboxmpi.drv` 只消费 0～1
- * 绝对位置；《主题医院》这类界面游戏切到相对包后，软件光标也不能正确跟随屏幕位置。
+ * Windows 客体仍然要用 Pointer Lock（玩家点击画面后鼠标不能从边缘跑出去），但不能把锁定
+ * 后的相对位移原样送给客体。Windows 的 `dboxmpi.drv` 只消费 0～1 绝对位置；把正负位移直接
+ * 喂进去会被客体钳成四角。
  *
  * 所以保留 js-dos 的点击捕获，只在 ci 边界把相对位移累积为绝对坐标。第一次点击先用落点校准，
- * Esc 释放后再次点击也会重新对齐。其余 DOS 不走这里，射击游戏仍拿原生相对位移。
+ * Esc 释放后再次点击也会重新对齐。原生绝对坐标 DOS 走下面完整接管事件的版本。
  */
 function hookLockedAbsoluteMouse(c: DosCi, host: HTMLElement, inverted: () => boolean): () => void {
   const rawRelative = c.sendMouseRelativeMotion
@@ -270,14 +274,26 @@ function hookLockedAbsoluteMouse(c: DosCi, host: HTMLElement, inverted: () => bo
   }
 
   let pointer = { x: 0.5, y: 0.5 }
-  const activeCanvas = () => {
+  const pointerSurface = (preferred?: EventTarget | null) => {
+    const usable = (candidate: EventTarget | null): candidate is HTMLElement =>
+      candidate instanceof HTMLElement
+      && host.contains(candidate)
+      && (candidate.tagName === 'CANVAS' || candidate.classList.contains('emulator-mouse-overlay'))
+
+    /*
+      js-dos 8 真正接收 pointerdown / Pointer Lock 的不是 canvas，而是盖在它上面的
+      `.emulator-mouse-overlay`。此前这里只认 canvas，导致玩家第一次点击时校准被直接跳过：
+      浏览器光标从点击处消失，客体光标却仍从 50%/50% 开始，表现成“修了四角但仍然错位”。
+      preferred 先认事件实际命中的层；锁定之后再认 pointerLockElement，兼容旧版直接锁 canvas。
+    */
+    const preferredSurface = preferred ?? null
+    if (usable(preferredSurface)) return preferredSurface
     const locked = document.pointerLockElement
-    // 渲染后端或全屏切换可能重建 canvas；锁定中的那个才是此刻真正接收鼠标的画面。
-    if (locked?.tagName === 'CANVAS' && host.contains(locked)) return locked as HTMLCanvasElement
-    return host.querySelector('canvas')
+    if (usable(locked)) return locked
+    return host.querySelector<HTMLElement>('.emulator-mouse-overlay') ?? host.querySelector('canvas')
   }
-  const canvasRect = (canvas = activeCanvas()) => {
-    const rect = canvas?.getBoundingClientRect() ?? host.getBoundingClientRect()
+  const surfaceRect = (surface = pointerSurface()) => {
+    const rect = surface?.getBoundingClientRect() ?? host.getBoundingClientRect()
     return lockedAbsoluteContentRect(rect, {
       width: c.width?.() ?? 0,
       height: c.height?.() ?? 0,
@@ -286,11 +302,11 @@ function hookLockedAbsoluteMouse(c: DosCi, host: HTMLElement, inverted: () => bo
   const seedFromClick = (event: PointerEvent | MouseEvent) => {
     // 锁定后 clientX/Y 不再代表真实位置；每次点击都重置会让客体光标跳回锁定点。
     if (document.pointerLockElement) return
-    const canvas = activeCanvas()
-    // 非 kiosk 的联机页还带 js-dos 侧栏。监听器挂在 host 的捕获阶段，所以必须只认画布；
-    // 否则玩家点侧栏设置也会把游戏光标钳到屏幕边缘。
-    if (!canvas || event.target !== canvas) return
-    const rect = canvasRect(canvas)
+    const surface = pointerSurface(event.target)
+    // 非 kiosk 的联机页还带 js-dos 侧栏。监听器挂在 host 的捕获阶段，所以只能认画布或
+    // 它的鼠标覆盖层；否则玩家点侧栏设置也会把游戏光标钳到屏幕边缘。
+    if (!surface || event.target !== surface) return
+    const rect = surfaceRect(surface)
     pointer = lockedAbsolutePointerAtClientPosition(event.clientX, event.clientY, rect)
     rawAbsolute.call(c, pointer.x, pointer.y)
   }
@@ -298,7 +314,7 @@ function hookLockedAbsoluteMouse(c: DosCi, host: HTMLElement, inverted: () => bo
   host.addEventListener(startEvent, seedFromClick as EventListener, true)
 
   const wrapped = (x: number, y: number) => {
-    const rect = canvasRect()
+    const rect = surfaceRect()
     pointer = advanceLockedAbsolutePointer(pointer, x, y, rect, inverted())
     rawAbsolute.call(c, pointer.x, pointer.y)
   }
@@ -308,6 +324,230 @@ function hookLockedAbsoluteMouse(c: DosCi, host: HTMLElement, inverted: () => bo
     host.removeEventListener(startEvent, seedFromClick as EventListener, true)
     // 与相对鼠标钩子一样，只恢复自己安装的函数；重连/销毁交错时不覆盖更新的一层。
     if (c.sendMouseRelativeMotion === wrapped) c.sendMouseRelativeMotion = rawRelative
+  }
+}
+
+/**
+ * 原生 DOS 的绝对坐标游戏不能只在 ci 上“替换相对位移方法”。js-dos 的桌面 kiosk 路径会自己
+ * 负责 Pointer Lock，而 Layers / 触屏路径又有另一套事件层；上游一旦调整 effect 的挂载顺序，
+ * 我们替换的方法可能被旧闭包绕过，结果就是绝对坐标修复看似启用，游戏里仍只在四角跳。
+ *
+ * 这里让适配器完整接管这类游戏的指针事件：正常浏览器仍是第一次点击立即锁定，锁定后的相对
+ * 位移在本站转换成 0～1；Pointer Lock 被浏览器拒绝时则退回未锁定的绝对坐标，至少保证光标和
+ * 点击可用。Windows 客体仍走上面的 ci 桥，不改它已经验证过的 DOSBox-X 集成驱动链。
+ */
+function hookCapturedAbsoluteDosMouse(
+  c: DosCi,
+  host: HTMLElement,
+  inverted: () => boolean,
+  sensitivity: () => number,
+): () => void {
+  const rawAbsolute = c.sendMouseMotion
+  const rawButton = c.sendMouseButton
+  if (typeof rawAbsolute !== 'function' || typeof rawButton !== 'function') {
+    console.warn('[jsdos] 当前运行时缺少绝对鼠标接口，已退回相对鼠标')
+    return hookMouseInvert(c, inverted)
+  }
+
+  let pointer = { x: 0.5, y: 0.5 }
+  let captureUnavailable = false
+  type CaptureAttempt = {
+    button: number
+    released: boolean
+    startedAt: number
+    timeout: number | null
+  }
+  let pendingCapture: CaptureAttempt | null = null
+  const pressed = new Set<number>()
+  const releaseTimers = new Set<number>()
+  const pointerSurface = (target?: EventTarget | null) => {
+    const candidate = target instanceof HTMLElement ? target : null
+    if (
+      candidate
+      && host.contains(candidate)
+      && (candidate.tagName === 'CANVAS' || candidate.classList.contains('emulator-mouse-overlay'))
+    ) return candidate
+    const locked = document.pointerLockElement
+    if (locked instanceof HTMLElement && host.contains(locked)) return locked
+    return host.querySelector<HTMLElement>('canvas, .emulator-mouse-overlay')
+  }
+  const contentRect = (surface: HTMLElement) => lockedAbsoluteContentRect(surface.getBoundingClientRect(), {
+    width: c.width?.() ?? 0,
+    height: c.height?.() ?? 0,
+  })
+  const eventButton = (event: PointerEvent | MouseEvent) => event.button === 0 ? 0 : 1
+  const ownsEvent = (event: Event) => {
+    const surface = pointerSurface(event.target)
+    return surface && event.target === surface ? surface : null
+  }
+  const takeEvent = (event: Event) => {
+    // 监听器在 host 的捕获阶段；拦住 js-dos 自己那套相对/绝对处理，避免同一次移动发出两份包。
+    event.preventDefault()
+    event.stopPropagation()
+  }
+  const sendClientPosition = (event: PointerEvent | MouseEvent, surface: HTMLElement) => {
+    pointer = lockedAbsolutePointerAtClientPosition(event.clientX, event.clientY, contentRect(surface))
+    rawAbsolute.call(c, pointer.x, pointer.y)
+  }
+  const pressButton = (button: number) => {
+    if (pressed.has(button)) return
+    pressed.add(button)
+    rawButton.call(c, button, true)
+  }
+  const releaseButton = (button: number) => {
+    if (!pressed.delete(button)) return
+    rawButton.call(c, button, false)
+  }
+  const releaseAllButtons = () => {
+    for (const button of pressed) releaseButton(button)
+  }
+  const clearCaptureAttempt = (attempt: CaptureAttempt) => {
+    if (attempt.timeout !== null) window.clearTimeout(attempt.timeout)
+    attempt.timeout = null
+    if (pendingCapture === attempt) pendingCapture = null
+  }
+  const cancelPendingCapture = () => {
+    if (pendingCapture) clearCaptureAttempt(pendingCapture)
+  }
+  const finishFailedCapture = (attempt: CaptureAttempt) => {
+    captureUnavailable = true
+    if (pendingCapture !== attempt) return
+    clearCaptureAttempt(attempt)
+    // 拒绝通常同步或在下一微任务到达。太迟才失败就不能补发陈旧点击，避免误触数秒后的菜单。
+    if (Date.now() - attempt.startedAt > 1_000) return
+    pressButton(attempt.button)
+    if (attempt.released) {
+      const timer = window.setTimeout(() => {
+        releaseTimers.delete(timer)
+        releaseButton(attempt.button)
+      }, 60)
+      releaseTimers.add(timer)
+    }
+  }
+  const beginCapture = (surface: HTMLElement, button: number) => {
+    const attempt: CaptureAttempt = {
+      button,
+      released: false,
+      startedAt: Date.now(),
+      timeout: null,
+    }
+    pendingCapture = attempt
+    // 老 Safari 的 requestPointerLock 返回 void；另外也有 WebView 会既不 resolve 也不发 error。
+    // 先设兜底计时器，确保这两种实现不会把第一下点击永久吃掉。
+    attempt.timeout = window.setTimeout(() => finishFailedCapture(attempt), 750)
+    try {
+      // 不请求 unadjustedMovement：保留玩家系统鼠标加速，与站外桌面手感一致。
+      const result = surface.requestPointerLock() as Promise<void> | undefined
+      if (result && typeof result.then === 'function') {
+        void result.then(
+          () => clearCaptureAttempt(attempt),
+          () => finishFailedCapture(attempt),
+        )
+      }
+    } catch {
+      finishFailedCapture(attempt)
+    }
+  }
+  const onStart = (event: PointerEvent | MouseEvent) => {
+    const surface = ownsEvent(event)
+    if (!surface) return
+    takeEvent(event)
+    const locked = document.pointerLockElement === surface
+    // Pointer Lock 后 clientX/Y 会冻结在锁定点；再按它校准会让每次点击都把游戏光标拉回旧位置。
+    if (!locked) sendClientPosition(event, surface)
+
+    const button = eventButton(event)
+    if (!locked && !captureUnavailable) {
+      beginCapture(surface, button)
+      // 第一下只负责捕获，和 js-dos 原生行为一致，避免点进画面时误按菜单。
+      return
+    }
+
+    pressButton(button)
+  }
+  const onMove = (event: PointerEvent | MouseEvent) => {
+    const surface = ownsEvent(event)
+    if (!surface) return
+    takeEvent(event)
+    if (document.pointerLockElement === surface) {
+      // 与 js-dos 上游一致：先把单帧异常尖峰截到 ±50，再应用逐游戏灵敏度。
+      const scale = dosMouseSpeedMultiplier(sensitivity())
+      const dx = Math.max(-50, Math.min(50, event.movementX)) * scale
+      const dy = Math.max(-50, Math.min(50, event.movementY)) * scale
+      pointer = advanceLockedAbsolutePointer(pointer, dx, dy, contentRect(surface), inverted())
+      rawAbsolute.call(c, pointer.x, pointer.y)
+    } else {
+      // 浏览器 / WebView 不允许 Pointer Lock 时仍可玩；系统指针与游戏软件光标会一一对应。
+      sendClientPosition(event, surface)
+    }
+  }
+  const onEnd = (event: PointerEvent | MouseEvent) => {
+    const surface = ownsEvent(event)
+    // 未锁定时拖出画布再松开，pointerup 会落在 host 外；仍必须放键，不能留下“永久按住”。
+    if (surface) takeEvent(event)
+    if (event.type === 'pointercancel') {
+      cancelPendingCapture()
+      releaseAllButtons()
+      return
+    }
+    const button = eventButton(event)
+    if (pendingCapture?.button === button) {
+      pendingCapture.released = true
+      return
+    }
+    releaseButton(button)
+  }
+  const onPointerLockChange = () => {
+    const locked = document.pointerLockElement
+    if (locked && host.contains(locked)) {
+      captureUnavailable = false
+      cancelPendingCapture()
+    } else {
+      // Esc、全屏切换或浏览器夺走 Pointer Lock 时，DOM 不保证再补一个 pointerup。
+      releaseAllButtons()
+    }
+  }
+  const onPointerLockError = () => {
+    if (pendingCapture) finishFailedCapture(pendingCapture)
+  }
+  const onBlur = () => {
+    cancelPendingCapture()
+    releaseAllButtons()
+  }
+  const onFullscreenChange = () => {
+    // WebView 在普通模式可能禁用 Pointer Lock、进入原生全屏后却允许；切换后给它一次重新探测机会。
+    captureUnavailable = false
+    cancelPendingCapture()
+    releaseAllButtons()
+  }
+
+  const pointerEvents = typeof PointerEvent === 'function'
+  const startEvent = pointerEvents ? 'pointerdown' : 'mousedown'
+  const moveEvent = pointerEvents ? 'pointermove' : 'mousemove'
+  const endEvents = pointerEvents ? ['pointerup', 'pointercancel'] : ['mouseup']
+  host.addEventListener(startEvent, onStart as EventListener, true)
+  host.addEventListener(moveEvent, onMove as EventListener, true)
+  // 放键监听在 document：未锁定降级时，拖出画布再松开也能收得到。
+  for (const type of endEvents) document.addEventListener(type, onEnd as EventListener, true)
+  document.addEventListener('pointerlockchange', onPointerLockChange)
+  document.addEventListener('pointerlockerror', onPointerLockError)
+  document.addEventListener('fullscreenchange', onFullscreenChange)
+  window.addEventListener('blur', onBlur)
+
+  return () => {
+    host.removeEventListener(startEvent, onStart as EventListener, true)
+    host.removeEventListener(moveEvent, onMove as EventListener, true)
+    for (const type of endEvents) document.removeEventListener(type, onEnd as EventListener, true)
+    document.removeEventListener('pointerlockchange', onPointerLockChange)
+    document.removeEventListener('pointerlockerror', onPointerLockError)
+    document.removeEventListener('fullscreenchange', onFullscreenChange)
+    window.removeEventListener('blur', onBlur)
+    for (const timer of releaseTimers) window.clearTimeout(timer)
+    releaseTimers.clear()
+    cancelPendingCapture()
+    releaseAllButtons()
+    const locked = document.pointerLockElement
+    if (locked && host.contains(locked)) document.exitPointerLock()
   }
 }
 
@@ -590,8 +830,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       let initFs: unknown[] | undefined
       if (loadedSystem) {
         // Windows 客体仍需要一个完整的游戏层；这条路才做整包合并。
-        const gameBuf = extras.length ? mergeExtraFiles(rom.buf, extras) : rom.buf
         if (!options.dosExecutable) throw new Error('Windows 客体游戏没有配置自启动 EXE')
+        const compatibleExtras = await windowsGameCompatibilityExtras(
+          options.gameSlug,
+          options.dosExecutable,
+          rom.buf,
+          extras,
+        )
+        const gameBuf = compatibleExtras.length ? mergeExtraFiles(rom.buf, compatibleExtras) : rom.buf
         const systemConfig = await readWindowsSystemConfig(loadedSystem.data)
         guest = buildWindowsGuestConfig(systemConfig, dosboxConfig)
         const gameLayer = makeWindowsGameLayer(gameBuf, options.dosExecutable, guest.gameDrive)
@@ -674,6 +920,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
 
       const ipx = options.ipx
+      const adapterOwnsAbsoluteDosMouse = Boolean(
+        options.mouseCapture && !guest && needsLockedAbsoluteDosMouse(options.gameSlug),
+      )
       props = Dos(host, {
         ...(guest
           ? { dosboxConf: guest.dosboxConf, jsdosConf: { version: '8' }, initFs }
@@ -687,8 +936,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         // 中继联机时必须放出来，玩家要在它的设置面板里填 IPX 服务器和房间
         kiosk: !ipx?.showUi,
         autoStart: true,
-        // 桌面端 DOS 统一用客体自己的光标：点击画面锁定，Esc 释放，系统指针不会跑出窗口。
-        mouseCapture: Boolean(options.mouseCapture),
+        /*
+          桌面端 DOS 统一点击画面锁定。只有《主题医院》这类绝对坐标 DOS 游戏例外地把上游开关
+          关掉：捕获仍由 hookCapturedAbsoluteDosMouse 完成，但不会再让 js-dos 同时安装一套
+          相对鼠标监听器。坐标协议与“要不要捕获”因此真正解耦，而不是靠覆盖一个方法碰时序。
+        */
+        mouseCapture: Boolean(options.mouseCapture && !adapterOwnsAbsoluteDosMouse),
         // 0.5 = 1×。逐游戏保存，避免一款老游戏的高灵敏度把下一款也带偏。
         mouseSensitivity,
         // DOS 游戏会自己绘制软件光标。系统光标叠在上面会出现两只不同步的鼠标。
@@ -788,12 +1041,19 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                 普通 DOS 一个都不会来。
               */
               if (guest) options.onProgress?.({ phase: 'starting', startup: STARTING_MILESTONE.ci })
-              // Windows 客体和已确认的绝对坐标 DOS 游戏先还原绝对位置；FPS 等仍保留无限相对位移。
+              // Windows 客体继续用 ci 桥；原生绝对坐标 DOS 由适配器独占事件，避免 js-dos 重复发包。
               if (options.mouseCapture) {
                 cancelMouseHook?.()
-                cancelMouseHook = guest || needsLockedAbsoluteDosMouse(options.gameSlug)
+                cancelMouseHook = guest
                   ? hookLockedAbsoluteMouse(ci, host, () => mouseInverted)
-                  : hookMouseInvert(ci, () => mouseInverted)
+                  : adapterOwnsAbsoluteDosMouse
+                    ? hookCapturedAbsoluteDosMouse(
+                        ci,
+                        host,
+                        () => mouseInverted,
+                        () => mouseSensitivity,
+                      )
+                    : hookMouseInvert(ci, () => mouseInverted)
               }
               // DOSBox 真的在跑、命令接口也有了，这才是「玩家可以动手」。Windows 客体另算（等自启动）
               if (!guest) markReady()

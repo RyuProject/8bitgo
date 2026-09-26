@@ -1,0 +1,18 @@
+{
+  "format": "8bitgo.web-game-source.v1",
+  "name": "Digiverse",
+  "upstream": "https://github.com/gaaiyeoi/gamblers-table",
+  "commit": "446e6ce66f4f12e0afadce4e3fbe9c7f8f37f883",
+  "builtWith": "Vite 5.4.21",
+  "base": "/web/gamblers-table/",
+  "target": "es2017",
+  "license": "not-declared",
+  "assets": {
+    "index.html": "cfee3923bbb1cf70f7d8707758c86ae679da8a1fabc48ac6dbe1b9e9013d1f2f",
+    "8bitgo-bridge.js": "203f0ea0c5c6cca430b4cf2fbf43445bd0877fb24b48354fc1682d245b1c4f34",
+    "8bitgo-overrides.css": "afeabce7698d5834e21e6f6a6bec4c059d196c775bdfbb197191bb15336b2953",
+    "assets/index-VNb_f7pf.js": "66f1e522df236e0da79250e5101ddd758a2441fa51d020adce519570e3190b03",
+    "assets/index-p1UALJiM.css": "6c414c11de2d0a94054b62fcaa0c038db448109f31aa81471072f2117f883eb3",
+    "fonts/ark-pixel-16px-zh-cn.woff2": "1d020ef2b0d71323c3b6763b681db881639f0ebce2841568966c5b7b8c0499cf"
+  }
+}
