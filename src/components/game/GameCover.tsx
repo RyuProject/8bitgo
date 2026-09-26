@@ -33,8 +33,8 @@ interface Props {
    */
   titleRight?: ReactNode
   /**
-   * 首屏可见（LCP 候选）。开了就 eager + 高优先级下载、视频也预取 metadata。
-   * 只给真正一进页面就能看到的那几张，给多了等于没分优先级。
+   * 首屏可见（LCP 候选）。开了就让静态图片 eager + 高优先级下载。
+   * 视频故意不跟随这个开关预取：触屏设备把 MP4 当首屏资源时，一张卡就能吃掉数 MB。
    */
   priority?: boolean
   /**
@@ -79,11 +79,11 @@ const iconSizes = {
 }
 
 /**
- * 封面视频：**滚到能看见就自动播**（静音、循环、行内），移出视口就暂停。
+ * 封面视频：桌面端滚到能看见就自动播（静音、循环、行内），移出视口就暂停。
  *
- * 之前是「悬停才播」，但后台的说明写的是「有视频时卡片会自动播放（静音循环）」——
- * 说的和做的不一致，而且触屏设备根本没有悬停，等于永远看不到视频，
- * 卡片上只剩一块黑（preload="none" 不会拉任何一帧，没设封面图就没有 poster 可显示）。
+ * 触屏设备只显示 poster，不自动拉视频。首页移动端实测曾把一张 1.9MB MP4 选成 LCP，
+ * LCP 被拖到 7 秒；而手指滚动时“进入视口”不代表用户想看预览，自动播只会抢游戏封面、
+ * 字体和脚本的带宽。没有 poster 时下层的程序化渐变仍在，不会出现黑块。
  *
  * 之所以不直接写 autoPlay 而要用 IntersectionObserver：
  * 首页一屏能排十几张卡，全都 autoPlay 等于同时下载十几个视频、解码十几路画面，
@@ -91,7 +91,7 @@ const iconSizes = {
  *
  * 另外尊重「减少动态效果」的系统设置：开了就不自动播，仍然可以悬停播放。
  */
-function CoverVideo({ src, poster, priority }: { src: string; poster?: string; priority?: boolean }) {
+function CoverVideo({ src, poster }: { src: string; poster?: string }) {
   const ref = useRef<HTMLVideoElement>(null)
 
   useEffect(() => {
@@ -130,6 +130,11 @@ function CoverVideo({ src, poster, priority }: { src: string; poster?: string; p
     // 不自动播，但悬停播放和上面的循环兜底照常 —— 是玩家自己把鼠标放上去的
     if (reduced) return () => v.removeEventListener('ended', onEnded)
 
+    // 触屏 / 粗指针设备不预加载也不自动播。桌面浏览器才把视频当“悬停预览”资源。
+    const hoverCapable =
+      typeof matchMedia === 'function' && matchMedia('(hover: hover) and (pointer: fine)').matches
+    if (!hoverCapable) return () => v.removeEventListener('ended', onEnded)
+
     // 不支持 IntersectionObserver 的老浏览器：退回悬停播放，不做自动播
     if (typeof IntersectionObserver !== 'function') return () => v.removeEventListener('ended', onEnded)
 
@@ -166,8 +171,8 @@ function CoverVideo({ src, poster, priority }: { src: string; poster?: string; p
       muted
       loop
       playsInline
-      // muted + playsInline 是浏览器允许自动播放的前提，缺一个都会被拦
-      preload={priority ? 'metadata' : 'none'}
+      // 一律从 none 开始；桌面端进入视口或悬停后再拉，移动端永远只用 poster。
+      preload="none"
       className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
       // 悬停仍然生效：自动播被系统设置或省电模式拦下时，这是兜底
       onMouseEnter={() => void ref.current?.play().catch(() => {})}
@@ -230,7 +235,7 @@ export function GameCover({
     >
       {/* 背景层：视频 / 封面图 / 程序化封面 */}
       {videoSrc ? (
-        <CoverVideo src={videoSrc} poster={coverSrc || undefined} priority={priority} />
+        <CoverVideo src={videoSrc} poster={coverSrc || undefined} />
       ) : coverSrc ? (
         <img
           src={imgSrc}

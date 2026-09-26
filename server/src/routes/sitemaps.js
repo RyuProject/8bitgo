@@ -1,6 +1,3 @@
-import { statSync } from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { query } from '../db.js'
 import { CACHE } from '../cache.js'
 import { localizedPublicUrl, publicSiteUrl, sitemapImagePublicUrl } from '../site-urls.js'
@@ -338,20 +335,6 @@ export async function taxonomySitemap(req, res, next) {
 
 /* ---------------- sitemap 索引 ---------------- */
 
-const STATIC_SITEMAP = path.join(
-  fileURLToPath(new URL('../../../', import.meta.url)),
-  'dist/client/sitemap-static.xml',
-)
-
-/** 构建产物里那份静态 sitemap 的时间；没构建过就不写 lastmod（协议里它是可选的）。 */
-function staticSitemapLastmod() {
-  try {
-    return dateOnly(statSync(STATIC_SITEMAP).mtime)
-  } catch {
-    return ''
-  }
-}
-
 /**
  * sitemap 索引。
  *
@@ -363,7 +346,6 @@ function staticSitemapLastmod() {
  */
 export function buildSitemapIndex({
   siteUrl = publicSiteUrl(),
-  staticLastmod = '',
   gamesLastmod = '',
   postsLastmod = '',
   taxonomyLastmod = '',
@@ -391,7 +373,9 @@ export function buildSitemapIndex({
    * 等于每次上架都骗它回来重抓一批没变过的文章；反过来漏更新则是它永远不回来。
    */
   const files = [
-    { loc: `${siteUrl}/sitemap-static.xml`, lastmod: staticLastmod },
+    // 固定页面没有可信的内容更新时间。构建/部署时间不是内容更新时间，伪造 lastmod
+    // 会让每次发版都诱导爬虫重抓 About、条款等完全没变的页面，所以这项明确省略。
+    { loc: `${siteUrl}/sitemap-static.xml`, lastmod: '' },
     ...SITE_LANGUAGES.filter(({ code }) => hasGames(code)).map(({ code }) => ({
       loc: `${siteUrl}/sitemaps/games-${code}.xml`,
       lastmod: gamesLastmod,
@@ -475,7 +459,6 @@ export async function sitemapIndex(_req, res, next) {
     res.type('application/xml; charset=utf-8').send(
       buildSitemapIndex({
         siteUrl: publicSiteUrl(),
-        staticLastmod: staticSitemapLastmod(),
         gamesLastmod,
         postsLastmod,
         taxonomyLastmod,

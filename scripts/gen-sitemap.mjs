@@ -117,7 +117,6 @@ if (!Array.isArray(posts)) posts = await loadTs('src/data/posts.ts', 'posts')
 const visibleGames = games.filter((g) => !g.hidden && isPlatformEnabledId(g.platform))
 const visiblePosts = posts.filter((p) => p.published !== false)
 
-const today = new Date().toISOString().slice(0, 10)
 const urls = []
 const add = (path, priority, changefreq) => urls.push({ path, priority, changefreq })
 
@@ -199,7 +198,6 @@ const staticXml = `<?xml version="1.0" encoding="UTF-8"?>
 ${entries.map((u) => `  <url>
     <loc>${esc(u.loc)}</loc>
 ${alternatesFor(u.path)}
-    <lastmod>${today}</lastmod>
     <changefreq>${u.changefreq}</changefreq>
     <priority>${u.priority}</priority>
   </url>`).join('\n')}
@@ -223,7 +221,6 @@ const sitemapIndex = `<?xml version="1.0" encoding="UTF-8"?>
 <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 ${sitemapFiles.map((loc) => `  <sitemap>
     <loc>${esc(loc)}</loc>
-    <lastmod>${today}</lastmod>
   </sitemap>`).join('\n')}
 </sitemapindex>
 `

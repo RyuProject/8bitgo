@@ -43,7 +43,8 @@
   src: url('/fonts/ark-pixel/ark-pixel-12px-proportional-zh_cn.otf.woff2') format('woff2');
   font-weight: 400;
   font-style: normal;
-  font-display: swap;
+  /* 536KB 的中文字体不能挡住首屏：慢网直接保留系统字体，避免加载完再整页换字造成 CLS。 */
+  font-display: optional;
 }
 
 /* ---------- TV / 车机那一屏：深色 ---------- */

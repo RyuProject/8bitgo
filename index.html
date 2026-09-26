@@ -183,14 +183,10 @@
       href="/fonts/geist-pixel/geist-pixel-latin.woff2"
       crossorigin
     />
-    <!-- 中文：方舟像素字体（本地文件，SIL OFL；由 npm run fonts 下载到 public/fonts/ark-pixel/） -->
-    <link
-      rel="preload"
-      as="font"
-      type="font/woff2"
-      href="/fonts/ark-pixel/ark-pixel-12px-proportional-zh_cn.otf.woff2"
-      crossorigin
-    />
+    <!--
+      中文像素字体有 550KB，不放进首屏 preload。弱网先用系统中文字体，避免它和 LCP 封面
+      抢带宽；缓存命中或浏览器判断来得及时再由 @font-face 使用。
+    -->
   </head>
   <body>
     <div id="root"></div>

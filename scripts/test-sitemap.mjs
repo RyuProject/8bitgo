@@ -165,6 +165,23 @@ check('英文长正文条目的 hreflang 不再宣称五份不存在的译文', 
   }
 })
 
+check('静态页面不拿构建日期冒充内容更新时间', () => {
+  const staticXml = readFileSync(new URL('../public/sitemap-static.xml', import.meta.url), 'utf8')
+  const fallbackIndex = readFileSync(new URL('../public/sitemap.xml', import.meta.url), 'utf8')
+  assert.doesNotMatch(staticXml, /<lastmod>/, '固定页面的 lastmod 仍会随每次构建变化')
+  assert.doesNotMatch(fallbackIndex, /<lastmod>/, '构建期兜底索引仍在给所有子 sitemap 伪造今天')
+  const dynamic = buildSitemapIndex({
+    siteUrl: SITE,
+    gamesLastmod: '2026-09-20',
+    postsLastmod: '2026-09-21',
+    taxonomyLastmod: '2026-09-20',
+  })
+  const staticEntry = dynamic.match(/<sitemap>\s*<loc>https:\/\/8bitgo\.com\/sitemap-static\.xml<\/loc>([\s\S]*?)<\/sitemap>/)?.[1] ?? ''
+  assert.doesNotMatch(staticEntry, /<lastmod>/, '动态索引仍拿部署时间标记静态 sitemap')
+  assert.match(dynamic, /<lastmod>2026-09-20<\/lastmod>/, '数据库驱动的游戏/分类 lastmod 不该被删')
+  assert.match(dynamic, /<lastmod>2026-09-21<\/lastmod>/, '数据库驱动的文章 lastmod 不该被删')
+})
+
 /* ---------------- 索引不列空的语言 sitemap ---------------- */
 
 console.log('\n── 索引：没内容的语言别列进去 ──')

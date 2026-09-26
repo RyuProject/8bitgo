@@ -166,12 +166,16 @@ export function normalizeMetaDescription(value?: string, maxLength = 160): strin
  * 收敛到 160 个码点，搜索结果不会被一大段正文塞满。
  */
 export const META_DESCRIPTION_MIN_LENGTH = 80
+export const META_DESCRIPTION_MAX_LENGTH = 160
+export const CJK_META_DESCRIPTION_MIN_LENGTH = 50
+export const CJK_META_DESCRIPTION_MAX_LENGTH = 90
+const CJK_META_LANGUAGES = new Set<Lang>(['zh-Hans', 'zh-Hant', 'ja'])
 
 export function completeMetaDescription(
   value?: string,
   expansion?: string,
   minLength = META_DESCRIPTION_MIN_LENGTH,
-  maxLength = 160,
+  maxLength = META_DESCRIPTION_MAX_LENGTH,
 ): string {
   const primary = String(value || '').replace(/\s+/g, ' ').trim()
   if (!primary) return ''
@@ -389,9 +393,16 @@ export function useSeo(opts: SeoOptions) {
     metas.push(['property', 'og:image:height', OG_DEFAULT_HEIGHT])
   }
   if (TWITTER_SITE) metas.push(['name', 'twitter:site', TWITTER_SITE])
-  // 数据库里的游戏、文章和玩家合集可能只写了几个字。统一在这里补足上下文，避免每个
-  // 调用方各写一套规则，也保证 SSR、Open Graph 和客户端切页得到完全相同的摘要。
-  const shortDescription = completeMetaDescription(description, t.seo.descriptionFallback)
+  // CJK 一个字承载的信息远多于拉丁字母。以前所有语言都硬凑 80~160 个码点，中文首页
+  // 被补成一整段并在第 160 个字截断，既不像自然摘要，也会在标点边界留下半句话。
+  // 数据库短简介仍统一补上下文，只是按语言选择符合实际搜索摘要的长度。
+  const cjkDescription = CJK_META_LANGUAGES.has(lang)
+  const shortDescription = completeMetaDescription(
+    description,
+    t.seo.descriptionFallback,
+    cjkDescription ? CJK_META_DESCRIPTION_MIN_LENGTH : META_DESCRIPTION_MIN_LENGTH,
+    cjkDescription ? CJK_META_DESCRIPTION_MAX_LENGTH : META_DESCRIPTION_MAX_LENGTH,
+  )
   if (shortDescription) {
     metas.push(['name', 'description', shortDescription])
     metas.push(['property', 'og:description', shortDescription])

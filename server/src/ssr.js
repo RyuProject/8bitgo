@@ -22,16 +22,37 @@ const TEMPLATE = path.join(CLIENT_DIR, 'index.html')
 const SERVER_ENTRY = path.join(root, 'dist/server/entry-server.js')
 
 export function ssrAvailable() {
-  return existsSync(TEMPLATE) && existsSync(SERVER_ENTRY)
+  const available = existsSync(TEMPLATE) && existsSync(SERVER_ENTRY)
+  if (available) {
+    // 生产部署会在旧进程仍接流量时原地重建 dist。启动时就把两份 SSR 关键产物放进内存，
+    // 后续几秒的“旧 dist 已删、新 dist 未写完”窗口仍能给爬虫完整 HTML，而不是偶发 500。
+    primeTemplate()
+    void loadRender().catch((error) => console.error('[ssr] 预加载渲染入口失败：', error))
+  }
+  return available
 }
 
 let renderFn = null
-async function getRender() {
-  if (!renderFn) {
-    const mod = await import(path.toNamespacedPath(SERVER_ENTRY))
-    renderFn = mod.render
+let renderPromise = null
+function loadRender() {
+  if (renderFn) return Promise.resolve(renderFn)
+  if (!renderPromise) {
+    renderPromise = import(path.toNamespacedPath(SERVER_ENTRY))
+      .then((mod) => {
+        renderFn = mod.render
+        return renderFn
+      })
+      .catch((error) => {
+        // 启动时的预加载若失败，别把拒绝的 Promise 永久钉住；下一次请求还能自愈重试。
+        renderPromise = null
+        throw error
+      })
   }
-  return renderFn
+  return renderPromise
+}
+
+async function getRender() {
+  return renderFn || loadRender()
 }
 
 // 模板缓存。按 mtime 判断是否需要重读：
@@ -40,6 +61,12 @@ async function getRender() {
 // 加这一下，构建完不重启 node 也不会挂。
 let template = null
 let templateMtime = 0
+function primeTemplate() {
+  if (template !== null || !existsSync(TEMPLATE)) return
+  template = readFileSync(TEMPLATE, 'utf8')
+  templateMtime = statSync(TEMPLATE).mtimeMs
+}
+
 function getTemplate() {
   let mtime
   try {

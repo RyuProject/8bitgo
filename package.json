@@ -179,6 +179,7 @@
     "test:watch-scope": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-watch-scope.mjs",
   "test:watch-panel": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-live-watch-panel.mjs",
     "test:seo-meta": "node scripts/test-seo-meta.mjs",
+    "test:seo-performance": "node scripts/test-seo-performance.mjs",
     "test:jspi": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-jspi-flag.mjs",
     "test:jsdos-runtime": "node scripts/check-jsdos.mjs",
     "test:cs16": "node scripts/test-cs16-pack.mjs && node scripts/check-cs16.mjs",

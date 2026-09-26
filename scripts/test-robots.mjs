@@ -355,6 +355,18 @@ check('/index.html 必须 301 到目录本身', () => {
   assert.equal(run('GET', '/it/terms/index.html/').location, '/it/terms')
 })
 
+check('默认语言前缀必须 301 到裸路径，并和其它归一规则合成一跳', () => {
+  assert.deepEqual([run('GET', '/zh-Hans').status, run('GET', '/zh-Hans').location], [301, '/'])
+  assert.equal(run('GET', '/zh-Hans/games?page=2').location, '/games?page=2')
+  assert.equal(run('GET', '/zh-Hans/index.html').location, '/')
+  assert.equal(
+    run('GET', '/zh-Hans/games/', 'www.8bitgo.com').location,
+    'https://8bitgo.com/games',
+    '默认语言 + 尾斜杠 + www 必须一次跳完',
+  )
+  assert.ok(run('GET', '/en/games').nexted, '非默认语言不能被去掉')
+})
+
 check('模拟器和网页游戏的 index.html 是运行入口，不能被 SEO 归一规则删掉', () => {
   for (const url of [
     '/ppsspp/v0dbfaca/v4/index.html?embed=1',

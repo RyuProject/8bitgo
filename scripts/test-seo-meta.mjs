@@ -160,15 +160,19 @@ check('首页合集卡片不再把「还没有描述」暴露给搜索摘要', (
 
 console.log('四、短简介要补足上下文，过长简介要收敛成可读摘要')
 
-check('数据库短简介统一补到 80 码点，再供 meta / Open Graph / Twitter 共用', () => {
+check('短简介按 CJK / 拉丁语言分别收敛，再供 meta / Open Graph / Twitter 共用', () => {
   const src = code('src/services/seo.ts')
   assert.match(src, /META_DESCRIPTION_MIN_LENGTH = 80/, '短简介下限不再是 80 个 Unicode 码点')
+  assert.match(src, /META_DESCRIPTION_MAX_LENGTH = 160/, '拉丁语摘要上限不再是 160 个 Unicode 码点')
+  assert.match(src, /CJK_META_DESCRIPTION_MIN_LENGTH = 50/, 'CJK 摘要下限不再是 50 个 Unicode 码点')
+  assert.match(src, /CJK_META_DESCRIPTION_MAX_LENGTH = 90/, 'CJK 摘要上限不再是 90 个 Unicode 码点')
+  assert.match(src, /CJK_META_LANGUAGES\.has\(lang\)/, '没有按当前页面语言选择摘要长度')
   assert.match(
     src,
-    /completeMetaDescription\(description, t\.seo\.descriptionFallback\)/,
+    /completeMetaDescription\([\s\S]*?description,[\s\S]*?t\.seo\.descriptionFallback,[\s\S]*?CJK_META_DESCRIPTION_MIN_LENGTH[\s\S]*?CJK_META_DESCRIPTION_MAX_LENGTH/,
     '页面描述没有使用当前语言的补充文案',
   )
-  assert.match(src, /maxLength = 160/, '摘要上限不再是 160 个 Unicode 码点')
+  assert.match(src, /maxLength = META_DESCRIPTION_MAX_LENGTH/, '默认摘要上限没有复用统一常量')
   for (const tag of ["['name', 'description', shortDescription]", "['property', 'og:description', shortDescription]", "['name', 'twitter:description', shortDescription]"]) {
     assert.ok(src.includes(tag), `${tag} 没有使用同一份短摘要`)
   }

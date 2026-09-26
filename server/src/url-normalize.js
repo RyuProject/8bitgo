@@ -6,6 +6,7 @@
 import { CACHE } from './cache.js'
 import { publicSiteUrl } from './site-urls.js'
 import { tvRedirect } from '../../shared/tv-host.js'
+import { SITE_DEFAULT_LANGUAGE } from '../../shared/site-languages.js'
 
 /**
  * URL 归一（原名 `normalizeTrailingSlash`，现在管尾斜杠、`/index.html`、`www.` 三件事）。
@@ -122,6 +123,12 @@ export function normalizeUrl(req, res, next) {
   // 只归一站点页面；模拟器内部的 index.html 是实际文件，去掉就会把 iframe 送进 404。
   if (!isRuntimeIndexPath(clean)) clean = clean.replace(/(^|\/)index\.html$/i, '')
   if (clean === '') clean = '/'
+
+  // 默认语言的 canonical 是裸路径；历史外链或手输的 /zh-Hans/... 若也回 200，就会让
+  // 每个中文页面多一份重复 URL。和尾斜杠、www 一次性归一，避免再多一跳。
+  const defaultLanguagePrefix = `/${SITE_DEFAULT_LANGUAGE}`
+  if (clean === defaultLanguagePrefix) clean = '/'
+  else if (clean.startsWith(`${defaultLanguagePrefix}/`)) clean = clean.slice(defaultLanguagePrefix.length)
 
   // host 归一和路径归一合成同一次 301（见开头）。带上 origin 就是跨主机跳转，
   // 顺带把 http 升成 https；不带则保持相对，免得把 localhost 上的请求跳到线上。
