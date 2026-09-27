@@ -81,6 +81,7 @@
 | `GET` | `/v1/collections/:id` | **公开** | 单个合集 + 里面的游戏（游戏走白名单映射） |
 | `GET` | `/v1/games/:slug/rom` | `games.rom` | 换 ROM 短期下载凭据（两步式第一步） |
 | `GET` | `/v1/rom/:grant` | — | 兑现 ROM 凭据（两步式第二步，302 不带 `Authorization`） |
+| `GET` | `/v1/rom-plain/:grant` | — | 服务端转码后的**明文** ROM（中间件：服务端自己解密 + 解压再发给设备，给没自解码能力的低端设备） |
 | `GET` | `/v1/rom-samples` | 公开 | 查看沙箱允许下载的逐机型测试游戏 |
 | `GET` | `/v1/games/:slug/embed` | `games.read` | 换带签名、会过期的嵌入播放器地址 |
 | `GET` | `/v1/me` | 要令牌 | 自查令牌的 `client_id` / `scope` / `expires_at` |
@@ -468,6 +469,48 @@ Content-Length: 0
 3. **没有断点续传的承诺**。第二跳是对象存储，通常支持 `Range`，但这是它的行为、
    不是这套接口的承诺。要断点续传就自己在第二跳的地址上试 `Range`，
    失败了退回整包重下 —— 别把它当成协议的一部分。
+
+---
+
+### 6.1 服务端转码（`/v1/rom-plain/:grant`）：给没有自解码能力的低端设备
+
+站点里的 ROM 是 **8BG 容器**：先 zstd 压缩、再 AES-256-GCM 加密。浏览器的 Worker 在本地做
+「解密 + 解压」；但 ESP32 这类低端设备没这个能力 —— 它拿到 8BG 字节也解不开。
+
+所以加了一条**中间件**端点。它和 `/v1/rom/:grant` 用**同一张凭据**（也是两步式、也是 302 那张票），
+但**不 302**：服务端取回 8BG 对象、逐块解密解压、把**原生 ROM 的明文**流式吐给设备。
+设备这一侧只要会收字节、会写文件就行，完全不用碰 zstd / AES。
+
+**请求**（和 §6 完全一样，只是 URL 换成 `rom-plain`）：
+
+```http
+GET /api/open/v1/rom-plain/<grant> HTTP/1.1
+```
+
+**响应**：
+
+- 成功：`200`，`Content-Type: application/octet-stream`，`Content-Disposition: attachment; filename=<原始文件名>`，
+  正文是解密解压后的明文 ROM。
+- 成功（带 `Range`）：`206`，`Content-Range: bytes <start>-<end>/<total>`，正文是那一段明文。
+- 非 8BG 对象（明文 ROM）：直接透传，行为和 `/v1/rom/:grant` 等价（只是流而非 302）。
+- 凭据问题：与 `/v1/rom/:grant` 同（失效 `410`、非法 `403`、超额 `429`）。
+- 太大：`413 payload_too_large`（单 ROM 明文超过 `ROM_TRANSCODE_MAX_BYTES`，默认 512MB）。
+- 服务繁忙：`503 server_busy`（并发解压数超过 `ROM_TRANSCODE_CONCURRENCY`，默认 2；超额拒服务，不是排队）。
+- 取回或转码失败：`502 bad_gateway`。
+
+**断点续传**：支持。8BG 每个分块独立压缩+加密，所以服务端按字节范围映射出需要的分块、
+只解密解压那几块，WiFi 断了能从断点续 —— 几十上百 MB 的 ROM 重来一遍等于白烧服务端 CPU。
+设备照常发 `Range: bytes=<start>-<end>`，拿到 `206 + Content-Range` 即可。
+
+**代价谁来挡**（解压是 CPU + 带宽开销，必须挡住放大面）：
+
+- 不落盘 —— 边解边吐，峰值内存约等于一个分块（8MB）。
+- 每块都校验 sha256 与声明的 sourceSize，zip-bomb 级别的恶意包在单块边界就被挡下。
+- 密钥不落库：直接复用 ROM 打包那套 `deriveRomPackKey`（由 `ROM_PACK_SECRET` 派生）。
+- 单 ROM 大小上限、全局并发闸、按 AppID/IP 限流（同 §6 那两道），超额拒服务。
+
+> 这套接口的「安全模型」见 §1 方案 1：自己架一层中转，ESP 只认自己的服务端，secret 留在服务端。
+> 多一跳，但也顺带解决了限流、ROM 缓存、和「换 key 不用重刷固件」。
 
 ---
 

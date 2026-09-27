@@ -77,6 +77,10 @@ CREATE TABLE IF NOT EXISTS games (
   -- 街机尤其需要：同一个「街机」平台底下，拳皇要 fbneo、街霸2 要 fbalpha2012_cps2、
   -- 有些老游戏只有 mame2003_plus 跑得动，一个平台默认值盖不住。
   core          VARCHAR(32)   NULL,
+  -- 逐游戏覆盖运行时（引擎）。NULL = 用平台默认引擎。
+  -- 例如 NES 平台默认 jsnes，但某些 ROM 用 EmulatorJS 更兼容，可在此逐游戏指定。
+  -- 不是 ENUM：合法性交给 src/emulator/registry.ts 在解析时校验，加新引擎不必改表结构。
+  runtime       VARCHAR(32)   NULL,
   -- DOS 启动程序（zip 内相对路径，如 NFS/TNFS.EXE）。
   -- NULL = 交给前端启发式去猜（src/lib/jsdosBundle.ts 的 pickExecutable）
   dos_executable VARCHAR(255)  NULL,

@@ -1,30 +1,30 @@
 /**
  * 随主站发布的 HTML5 / WebAssembly 游戏入口。
  *
- * 这些不是 R2 里的单文件 ROM，而是 `public/web/<name>/` 下的一整套网站。
+ * 这些不是 R2 里的单文件 ROM，而是各自独立部署的一整套网站。
  * 把入口集中在 shared/，前端的 ROM 解析、隔离页登记和服务端测试才能认同一份事实；
- * 否则后台忘记手填 ROM 地址时，明明文件已经部署，详情页仍会说“没有在线版本”。
+ * 每款游戏使用各自的 Pages 自定义域名；项目自带的 pages.dev 域只作故障排查与回退。
  */
 export const BUILTIN_WEB_GAMES = Object.freeze({
   diablo: Object.freeze({
-    entry: '/web/diablo',
+    entry: 'https://diablo.8bitgo.com/web/diablo/',
     title: 'Diablo',
     isolated: false,
   }),
   terraria: Object.freeze({
-    entry: '/web/terraria',
+    entry: 'https://terraria.8bitgo.com/web/terraria/',
     title: 'Terraria',
     // .NET WASM 的 pthread 依赖 SharedArrayBuffer，必须从带 COOP/COEP 的顶层页启动。
     isolated: true,
   }),
   celeste: Object.freeze({
-    entry: '/web/celeste',
+    entry: 'https://celeste.8bitgo.com/web/celeste/',
     title: 'Celeste',
     // 与 terraria 同架构（.NET WASM + FNA + pthread 渲染），同样必须跨源隔离。
     isolated: true,
   }),
   minecraft: Object.freeze({
-    entry: '/web/Minecraft',
+    entry: 'https://minecraft.8bitgo.com/web/Minecraft/',
     title: 'Minecraft (Eaglercraft 1.8)',
     // EaglercraftX 1.8 常规 JS 客户端是单线程，不依赖 SharedArrayBuffer，
     // 不需要 COOP/COEP 隔离壳；直接 /web/Minecraft 嵌入，同 PvZ / diablo。
@@ -39,10 +39,16 @@ export const BUILTIN_WEB_GAMES = Object.freeze({
     isolated: false,
   }),
   'gamblers-table': Object.freeze({
-    entry: '/web/gamblers-table',
+    entry: 'https://gamblers-table.8bitgo.com/web/gamblers-table/',
     title: 'Digiverse',
     // 上游是 Vue + DOM/CSS 的单线程游戏，不依赖 SharedArrayBuffer；
     // 普通详情页 iframe 可以保留同源 localStorage，便于云存档桥导入导出。
+    isolated: false,
+  }),
+  'plants-vs-zombies': Object.freeze({
+    entry: 'https://pvz.8bitgo.com/web/PvZ/cn/',
+    title: 'Plants vs. Zombies',
+    // PvZ Portable 是单线程 WASM；独立项目仍可在普通播放器 iframe 内运行和交换云存档。
     isolated: false,
   }),
 })

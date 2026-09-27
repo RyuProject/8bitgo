@@ -89,6 +89,10 @@ public/qemu-wasm/*
 worker/node_modules
 worker/.wrangler
 
+# 六款网页游戏的 Cloudflare Pages Direct Upload 产物。
+# Minecraft 会被复制进来，其中含 operator 本机合法自建、按版权规则不能提交的资源。
+.cloudflare-pages/
+
 # /web/diablo 的上游源码工程（diabloweb/）。构建中间产物不进 git；
 # public/web/diablo/ 提交页面、worker 与 R2 清单，三份 wasm 由构建脚本剥离后走 R2 Brotli。
 # node_modules 已被上面的通用规则忽略，这里补一个 build。

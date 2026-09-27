@@ -29,8 +29,9 @@ const useDist = process.argv.includes('--dist')
 const runtimeDir = useDist ? join(root, 'dist/client/web/celeste') : publicDir
 const fail = (message) => { console.error(`✖ Celeste 检查失败：${message}`); process.exit(1) }
 
-if (builtinWebGameFor('celeste')?.entry !== '/web/celeste') fail('内置 Web 游戏注册表没有识别 celeste')
-if (isolatedEmbedFor('celeste')?.embed !== '/web/celeste') fail('celeste 没注册到隔离薄壳（SharedArrayBuffer 会不可用）')
+const pagesEntry = 'https://celeste.8bitgo.com/web/celeste/'
+if (builtinWebGameFor('celeste')?.entry !== pagesEntry) fail('内置 Web 游戏注册表没有指向 Celeste 独立 Pages')
+if (isolatedEmbedFor('celeste')?.embed !== pagesEntry) fail('celeste 没用独立 Pages 注册隔离薄壳（SharedArrayBuffer 会不可用）')
 
 const indexFile = join(runtimeDir, 'index.html')
 if (!existsSync(indexFile)) fail(`缺少 ${indexFile}（先跑 npm run celeste:patch）`)

@@ -288,6 +288,13 @@ export interface ResolveContext {
   platform: PlatformId
   /** 文件扩展名，不带点、小写。来自本地文件名或云端 ROM 的 key */
   ext?: string
+  /**
+   * 逐游戏的运行时覆盖（来自 GameRecord.runtime）。
+   * 设了就优先于「扩展名覆盖表」和「平台默认引擎」生效 —— 例如 NES 平台默认 jsnes，
+   * 但某款 ROM 在 EmulatorJS 上更兼容时，后台可逐游戏指定 emulatorjs。
+   * 仅当该运行时确实可用且支持本平台时才采纳，否则回落默认逻辑（避免脏数据让游戏打不开）。
+   */
+  runtimeOverride?: RuntimeId | null
 }
 
 /** 运行时能提供的能力。播放器按这个集合决定显示哪些按钮 —— 支持才亮，不支持不显示 */

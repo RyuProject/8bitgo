@@ -51,6 +51,23 @@ import { normalizeLang, pickRom } from '../open/i18n.js'
 import { ROM_GRANT_TTL_SEC, EMBED_TTL_SEC, signEmbed, signRomGrant, verifyRomGrant } from '../open/sign.js'
 import { canRedeemSandboxRom, isSandboxRomSample, listSandboxRomSamples, romAccessForApp } from '../open/sandbox-roms.js'
 import { recordRecent } from '../userdata.js'
+import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
+import {
+  ROM_PACK_MAX_ENCODED_CHUNK_BYTES,
+  ROM_PACK_MAX_HEADER_BYTES,
+  ByteReader,
+  decryptRomPackChunk,
+  deriveRomPackKey,
+  isRomPackHeadPrefix,
+  planRomPackChunks,
+  readRomPackHead,
+  releaseTranscodeSlot,
+  resolveZstd,
+  romPackInnerName,
+  romTranscodeLimits,
+  tryAcquireTranscodeSlot,
+} from '../rom-pack-transcode.js'
 
 export const openRouter = Router()
 
@@ -959,50 +976,66 @@ openRouter.get('/v1/games/:slug/rom', requireApp('games.rom'), async (req, res, 
 })
 
 /**
- * `GET /v1/rom/:grant` —— 兑现凭据。
+ * 验一张 ROM 凭据，并复核应用当前授权档位。
+ * `/v1/rom/:grant` 与 `/v1/rom-plain/:grant` 共用本函数 —— 任何一边漏了复核，
+ * 就等于给另一张开了后门（例如只给转码那张加了 sandbox 校验、302 那张忘了）。
+ * 失败时已 res 回包，调用方直接 return；成功时回 { v, target }。
+ */
+async function redeemRomGrant(req, res) {
+  const cfg = openConfig()
+  if (!cfg?.romEnabled) { fail(res, 501, 'temporarily_unavailable', 'ROM 接口未启用'); return null }
+  const v = verifyRomGrant(req.params.grant, { secret: cfg.romSecret })
+  if (!v.ok) {
+    const status = v.reason === 'expired' ? 410 : 403
+    fail(res, status, v.reason === 'expired' ? 'grant_expired' : 'invalid_grant', '凭据无效或已过期')
+    return null
+  }
+  const currentAccess = await romAccessForApp(v.appId)
+  if (!currentAccess || (v.mode === 'live' && currentAccess !== 'live')) {
+    fail(res, 403, 'app_not_authorized', '应用已停用或 ROM 权限已撤销')
+    return null
+  }
+  if (v.mode === 'sandbox' && !(await canRedeemSandboxRom(v))) {
+    fail(res, 403, 'sandbox_resource_only', '测试样本已变更或 ROM 已下架')
+    return null
+  }
+  /*
+    按票。正常一次就够；留到 ROM_GRANT_MAX_REDEEM 是给断点续传和失败重试的余量。
+    它把「抄走一张票 = 五分钟内无限下」变成「抄走一张票 = 最多再下 N 次」。
+
+    ⚠️ 计数**必须放在验签之后** —— 放前面的话，随便伪造一串字符就能往限流表里
+    净增一条记录，那正是 token 端点注释里写着要避免的那件事。
+    key 用票本身：signRomGrant 里那个随机 nonce 保证同一个应用同一秒领两次也是两张票。
+  */
+  const byGrant = take(`open:romdl:${req.params.grant}`, ROM_GRANT_MAX_REDEEM, ROM_GRANT_TTL_SEC * 1000)
+  if (!byGrant.ok) { rateLimited(res, byGrant); return null }
+  // 按 IP：挡住「拿一批票从一台机器上刷」。反代没透传真实 IP 时跳过，理由见 anonGate
+  const ip = clientIpFrom(req.ip, req.headers)
+  if (isMeaningfulIp(ip)) {
+    const byIp = take(`open:romdl:ip:${ip}`, 60, 60_000)
+    if (!byIp.ok) { rateLimited(res, byIp); return null }
+  }
+  const target = assetPublicUrl(v.key)
+  if (!target) { fail(res, 404, 'not_found', 'ROM 不可用'); return null }
+  return { v, target }
+}
+
+/**
+ * `GET /v1/rom/:grant` —— 兑现凭据（302 直链）。
  *
  * **这一条不要求 Bearer**：凭据自己就是授权（它绑了 app / slug / 有效期），
  * 而下载多半发生在浏览器或 curl 里，带不上 Authorization 头。
  *
  * ⚠️ 正因为不要求 Bearer，**这是整套接口里唯一一条既没有令牌、原先也没有任何配额的路**。
  * 上游 `/v1/games/:slug/rom` 那道 600/小时 限的是**领票**，不是**兑票**：
- * 领一张票之后在五分钟里兑多少次，原来完全不设限。
- * 下面两道补上：一道按票（一张票最多兑这么多次），一道按 IP。
+ * 领一张票之后在五分钟里兑多少次，原来完全不设限。上面 redeemRomGrant 里两道限流补上了：
+ * 一道按票（一张票最多兑这么多次），一道按 IP。
  */
 openRouter.get('/v1/rom/:grant', async (req, res, next) => {
   try {
-    const cfg = openConfig()
-    if (!cfg?.romEnabled) return fail(res, 501, 'temporarily_unavailable', 'ROM 接口未启用')
-    const v = verifyRomGrant(req.params.grant, { secret: cfg.romSecret })
-    if (!v.ok) {
-      const status = v.reason === 'expired' ? 410 : 403
-      return fail(res, status, v.reason === 'expired' ? 'grant_expired' : 'invalid_grant', '凭据无效或已过期')
-    }
-    const currentAccess = await romAccessForApp(v.appId)
-    if (!currentAccess || (v.mode === 'live' && currentAccess !== 'live')) {
-      return fail(res, 403, 'app_not_authorized', '应用已停用或 ROM 权限已撤销')
-    }
-    if (v.mode === 'sandbox' && !(await canRedeemSandboxRom(v))) {
-      return fail(res, 403, 'sandbox_resource_only', '测试样本已变更或 ROM 已下架')
-    }
-    /*
-      按票。正常一次就够；留到 ROM_GRANT_MAX_REDEEM 是给断点续传和失败重试的余量。
-      它把「抄走一张票 = 五分钟内无限下」变成「抄走一张票 = 最多再下 N 次」。
-
-      ⚠️ 计数**必须放在验签之后** —— 放前面的话，随便伪造一串字符就能往限流表里
-      净增一条记录，那正是 token 端点注释里写着要避免的那件事。
-      key 用票本身：signRomGrant 里那个随机 nonce 保证同一个应用同一秒领两次也是两张票。
-    */
-    const byGrant = take(`open:romdl:${req.params.grant}`, ROM_GRANT_MAX_REDEEM, ROM_GRANT_TTL_SEC * 1000)
-    if (!byGrant.ok) return rateLimited(res, byGrant)
-    // 按 IP：挡住「拿一批票从一台机器上刷」。反代没透传真实 IP 时跳过，理由见 anonGate
-    const ip = clientIpFrom(req.ip, req.headers)
-    if (isMeaningfulIp(ip)) {
-      const byIp = take(`open:romdl:ip:${ip}`, 60, 60_000)
-      if (!byIp.ok) return rateLimited(res, byIp)
-    }
-    const target = assetPublicUrl(v.key)
-    if (!target) return fail(res, 404, 'not_found', 'ROM 不可用')
+    const redeemed = await redeemRomGrant(req, res)
+    if (!redeemed) return
+    const { target } = redeemed
     // 302 而不是代理转发：ROM 动辄几十上百 MB，全走源站的带宽没必要。
     // P-1 做完之后这里换成对象存储的预签名地址（同样是 302），调用方无感。
     res.set('Cache-Control', 'private, no-store').redirect(302, target)
@@ -1010,6 +1043,169 @@ openRouter.get('/v1/rom/:grant', async (req, res, next) => {
     next(e)
   }
 })
+
+/**
+ * `GET /v1/rom-plain/:grant` —— 服务端转码后的明文 ROM（中间件）。
+ *
+ * 和 /v1/rom/:grant 用同一张凭据，但**不 302**：服务端取回 8BG 对象、逐块解密解压，
+ * 把原生 ROM 流式吐给设备。给没有 zstd / AES-256-GCM 解码能力的低端设备用。
+ *
+ * 特性：
+ *   · 支持 Range 断点续传：按 8BG 分块索引映射，只解密解压命中的块。低端设备 WiFi 不稳，
+ *     几十上百 MB 的 ROM 断网重来一次等于白烧一遍服务端 CPU，所以必须能续。
+ *   · 非 8BG 对象（明文 ROM）直接透传，行为和 /v1/rom/:grant 等价（只是流而非 302）。
+ *   · 单 ROM 大小上限、全局并发闸、按 AppID/IP 限流，超额拒服务（见 romTranscodeLimits）。
+ *   · 峰值内存约一个分块（8MB），不落盘。
+ */
+openRouter.get('/v1/rom-plain/:grant', async (req, res, next) => {
+  try {
+    const redeemed = await redeemRomGrant(req, res)
+    if (!redeemed) return
+    const limits = romTranscodeLimits()
+    // 并发闸只在转码这一路收口：302 那路只是个重定向，不占 CPU/带宽，不该吃名额。
+    if (!tryAcquireTranscodeSlot(limits)) {
+      return fail(res, 503, 'server_busy', '转码服务繁忙，请稍后重试')
+    }
+    try {
+      await streamRomPlain({ req, res, target: redeemed.target, limits })
+    } finally {
+      releaseTranscodeSlot()
+    }
+  } catch (e) {
+    next(e)
+  }
+})
+
+/** 解析设备发来的 Range: bytes=start-end（end 含，缺省补到边界）。 */
+function parseRomRange(req, total) {
+  const h = String(req.headers.range || '')
+  const m = h.match(/^bytes=(\d*)-(\d*)$/)
+  if (!m) return { start: 0, end: total, isRange: false }
+  const start = m[1] === '' ? 0 : Number(m[1])
+  const end = m[2] === '' ? total : Number(m[2]) + 1 // 转成半开区间，和 plan 对齐
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || start >= total) {
+    return { unsatisfiable: true, total }
+  }
+  return { start, end: Math.min(total, end), isRange: true }
+}
+
+/** 非 8BG：把请求（含 Range）原样透传上游对象存储，行为和 302 那路等价。 */
+async function pipeRomPassthrough({ req, res, target, signal }) {
+  const upstream = await fetch(target, {
+    headers: req.headers.range ? { Range: req.headers.range } : {},
+    redirect: 'follow',
+    signal,
+  })
+  if (!upstream.ok && upstream.status !== 206) {
+    res.set('Cache-Control', 'private, no-store')
+    return res.status(upstream.status || 502).end()
+  }
+  if (upstream.status === 206) res.status(206)
+  if (upstream.headers.get('content-range')) res.set('Content-Range', upstream.headers.get('content-range'))
+  if (upstream.headers.get('content-length')) res.set('Content-Length', upstream.headers.get('content-length'))
+  res.set('Content-Type', upstream.headers.get('content-type') || 'application/octet-stream')
+  res.set('Accept-Ranges', 'bytes')
+  res.set('Cache-Control', 'private, no-store')
+  await pipeline(Readable.fromWeb(upstream.body), res)
+}
+
+/**
+ * 取回 8BG 对象 → 解密解压 → 流式吐明文。失败时若响应头还没发，回 502/413 JSON；
+ * 已经开写了只能掐断连接（pipeline 会自己处理客户端 abort）。
+ */
+async function streamRomPlain({ req, res, target, limits }) {
+  const ac = new AbortController()
+  const timer = setTimeout(() => ac.abort(), limits.timeoutMs)
+  req.on('close', () => ac.abort())
+  // 一次性辅助：取上游首块前 8 字节并释放连接（上游若忽略 Range 返回 200，cancel 能避免整包下载）
+  const peek8 = async () => {
+    const r = await fetch(target, { headers: { Range: 'bytes=0-7' }, redirect: 'follow', signal: ac.signal })
+    if (!r.ok && r.status !== 206) throw new Error(`取 ROM 头失败：${r.status}`)
+    const rd = r.body.getReader()
+    const { value, done } = await rd.read()
+    await rd.cancel().catch(() => {})
+    if (done || !value) throw new Error('ROM 头为空')
+    return Buffer.from(value).subarray(0, 8)
+  }
+  try {
+    const head8 = await peek8()
+    if (head8.byteLength < 8 || !isRomPackHeadPrefix(head8)) {
+      return await pipeRomPassthrough({ req, res, target, signal: ac.signal })
+    }
+    // 取完整头（最多 1MB 头的区间）。8BG 头是 JSON，通常几百字节，1MB 上限足够。
+    const headRes = await fetch(
+      target,
+      { headers: { Range: `bytes=0-${ROM_PACK_MAX_HEADER_BYTES + 7}` }, redirect: 'follow', signal: ac.signal },
+    )
+    if (!headRes.ok && headRes.status !== 206) throw new Error(`取 ROM 头失败：${headRes.status}`)
+    const { header, dataOffset } = await readRomPackHead(ByteReader.fromWeb(headRes.body))
+    await headRes.body.cancel?.().catch(() => {})
+    if (header.originalSize > limits.maxBytes) {
+      res.set('Cache-Control', 'private, no-store')
+      return res.status(413).json({ error: 'payload_too_large', error_description: `ROM 明文超过上限 ${limits.maxBytes} 字节` })
+    }
+    for (const c of header.chunks) {
+      if (c.cipherSize > ROM_PACK_MAX_ENCODED_CHUNK_BYTES) throw new Error('ROM 分块超出格式上限')
+    }
+    const key = deriveRomPackKey(header.packageId, header.keyId)
+    await resolveZstd()
+    const range = parseRomRange(req, header.originalSize)
+    if (range.unsatisfiable) {
+      res.set('Content-Range', `bytes */${header.originalSize}`)
+      res.set('Cache-Control', 'private, no-store')
+      return res.status(416).end()
+    }
+    const plan = planRomPackChunks(header, range.start, range.end)
+    const innerName = romPackInnerName(header.originalName)
+    const asciiName = innerName.replace(/[^\x20-\x7e]/g, '_')
+    // 响应头
+    res.set('Content-Type', 'application/octet-stream')
+    res.set('Content-Disposition', `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(innerName)}`)
+    res.set('Accept-Ranges', 'bytes')
+    res.set('Cache-Control', 'private, no-store')
+    res.set('Content-Length', String(range.end - range.start))
+    if (range.isRange) {
+      res.status(206)
+      res.set('Content-Range', `bytes ${range.start}-${range.end - 1}/${header.originalSize}`)
+    }
+    if (req.method === 'HEAD') return res.end()
+    // 取命中分块对应的密文区间（分块在 payload 内连续）
+    let payloadStart = 0
+    for (let i = 0; i < plan[0].index; i++) payloadStart += header.chunks[i].cipherSize
+    let payloadEnd = payloadStart
+    for (let i = plan[0].index; i <= plan[plan.length - 1].index; i++) payloadEnd += header.chunks[i].cipherSize
+    const payRes = await fetch(
+      target,
+      { headers: { Range: `bytes=${dataOffset + payloadStart}-${dataOffset + payloadEnd - 1}` }, redirect: 'follow', signal: ac.signal },
+    )
+    if (!payRes.ok && payRes.status !== 206) throw new Error(`取 ROM 数据失败：${payRes.status}`)
+    const reader = ByteReader.fromWeb(payRes.body)
+    // 上游若忽略 Range 返回完整对象（200），应先跳过前面的字节再读命中的块
+    if (payRes.status !== 206) await reader.readExactly(dataOffset + payloadStart)
+    const gen = async function* () {
+      for (const step of plan) {
+        const encrypted = await reader.readExactly(header.chunks[step.index].cipherSize)
+        const source = await decryptRomPackChunk({ header, key, index: step.index, encrypted })
+        yield step.skipHead > 0 || step.takeLen < source.byteLength
+          ? source.subarray(step.skipHead, step.skipHead + step.takeLen)
+          : source
+      }
+    }
+    await pipeline(Readable.from(gen()), res)
+  } catch (e) {
+    if (!res.headersSent) {
+      res.set('Cache-Control', 'private, no-store')
+      if (/超过上限|payload_too_large/.test(String(e.message))) {
+        return res.status(413).json({ error: 'payload_too_large', error_description: e.message })
+      }
+      return res.status(502).json({ error: 'bad_gateway', error_description: 'ROM 取回或转码失败' })
+    }
+    try { res.destroy() } catch {}
+    throw e
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 async function getRawGame(slug) {
   const rows = await query('SELECT * FROM games WHERE slug = ? AND hidden = 0 AND adult = 0 LIMIT 1', [slug])

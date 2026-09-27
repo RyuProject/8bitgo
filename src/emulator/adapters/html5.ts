@@ -16,8 +16,42 @@ const SAVE_BRIDGE_SOURCE = '8bitgo-save-bridge'
 const SAVE_BRIDGE_VERSION = 1
 const SAVE_BRIDGE_TIMEOUT_MS = 15_000
 const PVZ_SHELL_VERSION = '20260924-resume1'
+const LEGACY_PAGES_ENTRIES = [
+  ['/web/PvZ', 'https://pvz.8bitgo.com'],
+  ['/web/diablo', 'https://diablo.8bitgo.com'],
+  ['/web/Minecraft', 'https://minecraft.8bitgo.com'],
+  ['/web/celeste', 'https://celeste.8bitgo.com'],
+  ['/web/terraria', 'https://terraria.8bitgo.com'],
+  ['/web/gamblers-table', 'https://gamblers-table.8bitgo.com'],
+] as const
+const MANAGED_SAVE_BRIDGE_HOSTS = new Set([
+  'gamblers-table.8bitgo.com',
+  'digiverse.8bitgo.com',
+  'pvz.8bitgo.com',
+  '8bitgo-pvz.pages.dev',
+])
 
 /**
+ * 存档消息默认仍限同源；只有本站自己管理、专门承载游戏的少数精确域名例外。
+ * 不能放宽成 `*.8bitgo.com`：任意一个被接管的旧子域都不该获得读写玩家存档的资格。
+ */
+export function html5SaveBridgeOrigin(value: string | Blob, base = location.href): string | null {
+  try {
+    const page = new URL(base)
+    if (typeof value !== 'string') return page.origin
+    const game = new URL(value, page)
+    if (game.origin === page.origin) return game.origin
+    if (game.protocol === 'https:' && MANAGED_SAVE_BRIDGE_HOSTS.has(game.hostname.toLowerCase())) return game.origin
+  } catch {
+    /* 非法入口会在后面的 iframe 导航里按原有错误路径处理；这里只关闭存档能力。 */
+  }
+  return null
+}
+
+/**
+ * 数据库里的存量游戏仍可能绑定主站 `/web/...`。入口在播放器最后一跳迁移，才能保证
+ * “每款游戏一个 Pages 项目”不依赖逐条改生产数据库；只认主站精确路径，第三方入口不碰。
+ *
  * PvZ 的 HTML 外壳是固定文件名，Cloudflare 允许旧副本继续服务一小段时间。
  * 后台游戏详情同样有边缘缓存：即使数据库已经换成带版本号的地址，详情接口仍可能短暂
  * 返回不带查询串的旧地址。播放器在最后一跳补上发布代次，避免新增的存档按钮再次被旧壳吞掉。
@@ -28,7 +62,18 @@ export function versionHtml5Entry(value: string, base = location.href): string {
   try {
     const baseUrl = new URL(base)
     const url = new URL(value, baseUrl)
-    if (url.origin !== baseUrl.origin || !/^\/web\/PvZ\/(?:cn|en)\/?$/.test(url.pathname)) return value
+    let migrated = false
+    if (url.origin === baseUrl.origin) {
+      const legacy = LEGACY_PAGES_ENTRIES.find(([path]) => url.pathname === path || url.pathname.startsWith(`${path}/`))
+      if (legacy) {
+        const [path, origin] = legacy
+        const suffix = url.pathname.slice(path.length)
+        url.href = `${origin}${path}${suffix}${url.search}${url.hash}`
+        migrated = true
+      }
+    }
+    const managedPvz = url.protocol === 'https:' && ['pvz.8bitgo.com', '8bitgo-pvz.pages.dev'].includes(url.hostname.toLowerCase())
+    if ((url.origin !== baseUrl.origin && !managedPvz) || !/^\/web\/PvZ\/(?:cn|en)\/?$/.test(url.pathname)) return migrated ? url.href : value
     url.searchParams.set('shell', PVZ_SHELL_VERSION)
     return url.href
   } catch {
@@ -55,6 +100,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let destroyed = false
   let objectUrl = ''
   let saveBridgeReady = false
+  // 必须先迁移入口再确定消息来源；否则旧的同源 PvZ 入口会被导航到 Pages，
+  // 但存档桥仍只接受主站 origin，表现为游戏能玩却永远没有云存档按钮。
+  const frameEntry = typeof options.game === 'string' ? versionHtml5Entry(options.game) : null
+  const saveBridgeOrigin = html5SaveBridgeOrigin(frameEntry ?? options.game)
   let saveRequestId = 0
   let mediaObserver: MutationObserver | null = null
   let mediaPollTimer = 0
@@ -103,11 +152,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /**
    * 网页游戏只交换存档二进制，不碰登录令牌和 API 地址。
    *
-   * 消息同时校验 source 和 origin：第三方跨源 HTML5 游戏即使伪造同名消息也接不进来；
-   * 只有本站同源、明确实现 v1 协议的页面（当前是 PvZ）才会获得 saveState 能力。
+   * 消息同时校验 source 和精确 origin：第三方跨源 HTML5 游戏即使伪造同名消息也接不进来；
+   * 只有本站同源页面或上面白名单里的 Pages 项目才会获得 saveState 能力。
    */
   const onSaveBridgeMessage = (event: MessageEvent) => {
-    if (destroyed || event.source !== iframe.contentWindow || event.origin !== location.origin) return
+    if (destroyed || !saveBridgeOrigin || event.source !== iframe.contentWindow || event.origin !== saveBridgeOrigin) return
     const message = event.data as SaveBridgeMessage | null
     if (!message || message.source !== SAVE_BRIDGE_SOURCE || message.version !== SAVE_BRIDGE_VERSION) return
 
@@ -268,7 +317,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
 
   function requestSaveBridge(type: 'export' | 'import', data?: ArrayBuffer): Promise<unknown> {
-    if (!saveBridgeReady || !iframe.contentWindow) return Promise.reject(new Error('网页游戏存档尚未就绪'))
+    if (!saveBridgeReady || !saveBridgeOrigin || !iframe.contentWindow) return Promise.reject(new Error('网页游戏存档尚未就绪'))
     const requestId = ++saveRequestId
     return new Promise((resolve, reject) => {
       const timer = window.setTimeout(() => {
@@ -278,7 +327,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       pendingSaveRequests.set(requestId, { resolve, reject, timer })
       const message = { source: SAVE_BRIDGE_SOURCE, version: SAVE_BRIDGE_VERSION, type, requestId, data }
       try {
-        iframe.contentWindow?.postMessage(message, location.origin, data ? [data] : [])
+        iframe.contentWindow?.postMessage(message, saveBridgeOrigin, data ? [data] : [])
       } catch (error) {
         pendingSaveRequests.delete(requestId)
         window.clearTimeout(timer)
@@ -320,7 +369,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   container.appendChild(iframe)
 
   if (typeof options.game === 'string') {
-    iframe.src = versionHtml5Entry(options.game)
+    iframe.src = frameEntry as string
   } else {
     // 单文件 HTML 可以直接运行；需要其它素材的项目应部署完整目录并绑定 index.html。
     objectUrl = URL.createObjectURL(options.game)

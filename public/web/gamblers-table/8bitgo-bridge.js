@@ -14,9 +14,23 @@
   const STORAGE_KEY = 'coin-flip-game:save'
   const MAX_SAVE_BYTES = 2 * 1024 * 1024
 
+  /** Pages 子域只信任主站父窗口；同源部署与本地检查仍按原路径工作。 */
+  const parentOrigin = (() => {
+    if (window.parent === window) return ''
+    try {
+      const origin = new URL(document.referrer).origin
+      if (origin === window.location.origin) return origin
+      const parent = new URL(origin)
+      if (parent.protocol === 'https:' && (parent.hostname === '8bitgo.com' || parent.hostname === 'www.8bitgo.com')) return origin
+    } catch {
+      /* referrer 缺失时不能退回 `*`，否则任意嵌入站都能导出存档。 */
+    }
+    return ''
+  })()
+
   const send = (message, transfer) => {
-    if (window.parent === window) return
-    window.parent.postMessage(message, window.location.origin, transfer || [])
+    if (!parentOrigin) return
+    window.parent.postMessage(message, parentOrigin, transfer || [])
   }
 
   const runtime = (type, detail) => send({ source: RUNTIME_SOURCE, version: VERSION, type, detail })
@@ -38,7 +52,7 @@
   }
 
   window.addEventListener('message', (event) => {
-    if (event.source !== window.parent || event.origin !== window.location.origin) return
+    if (event.source !== window.parent || event.origin !== parentOrigin) return
     const message = event.data
     if (!message || message.source !== SAVE_SOURCE || message.version !== VERSION || !Number.isInteger(message.requestId)) return
     try {

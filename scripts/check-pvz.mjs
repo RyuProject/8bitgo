@@ -30,7 +30,11 @@ const sha256 = (path) => createHash('sha256').update(readFileSync(path)).digest(
 if (existsSync(html5AdapterPath)) {
   const html5Adapter = text(html5AdapterPath)
   ok(html5Adapter.includes(`const PVZ_SHELL_VERSION = '${SHELL_VERSION}'`), 'HTML5 播放器没有锁定当前 PvZ 外壳版本')
-  ok(html5Adapter.includes('iframe.src = versionHtml5Entry(options.game)'), 'HTML5 播放器没有给 PvZ 入口补发布代次')
+  ok(
+    html5Adapter.includes("const frameEntry = typeof options.game === 'string' ? versionHtml5Entry(options.game) : null")
+      && html5Adapter.includes('iframe.src = frameEntry as string'),
+    'HTML5 播放器没有给 PvZ 入口补发布代次',
+  )
 }
 
 if (existsSync(emulatorToolsPath)) {

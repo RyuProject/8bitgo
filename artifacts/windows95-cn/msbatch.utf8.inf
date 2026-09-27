@@ -1,0 +1,86 @@
+; 8BitGo Windows 95 OSR 2.5 简体中文无人值守安装参数。
+; 使用“压缩安装”作为基线，避免把联机服务、示例和无关外设驱动带进网页镜像。
+
+[BatchSetup]
+Version=3.0 (32-bit)
+SaveDate=09/26/26
+
+[Version]
+Signature="$CHICAGO$"
+
+[Setup]
+Express=1
+InstallType=0
+InstallDir=C:\WINDOWS
+EBD=0
+Uninstall=0
+VRC=1
+ProductKey="02398003002258864"
+TimeZone="China"
+DevicePath=0
+
+[NameAndOrg]
+Display=0
+Name="8BitGo"
+Org=""
+
+[Network]
+Display=0
+
+; 只保留游戏常用的声音、视频解码和音量控制；其余附件由安装后清理脚本复核。
+[OptionalComponents]
+"无障碍选项"=0
+"附件"=1
+"通讯"=0
+"磁盘工具"=1
+"多媒体"=1
+"屏幕保护程序"=0
+"磁盘压缩工具"=0
+"画图"=0
+"超级终端"=0
+"Defrag"=1
+"计算器"=0
+"备份"=0
+"电话拨号程序"=0
+"飞行 Windows"=0
+"Microsoft 传真"=0
+"Microsoft 传真服务"=0
+"Microsoft 传真浏览器"=0
+"The Microsoft Network"=0
+"音频压缩"=1
+"视频压缩"=1
+"录音机"=0
+"音量控制"=1
+"媒体播放机"=1
+"Microsoft Exchange"=0
+"Microsoft Mail Services"=0
+"公文包"=0
+"文档模板"=0
+"写字板"=0
+"拨号网络"=0
+"直接电缆连接"=0
+"鼠标指针"=0
+"Windows 95 漫游"=0
+"联机使用手册"=0
+"桌面壁纸"=0
+"系统监视器"=0
+"网络监视器"=0
+"字符映射表"=0
+"Additional Screen Savers"=0
+"游戏"=0
+"快速查看"=0
+"System Resource Meter"=0
+"CompuServe Mail Services"=0
+"Sample Sounds"=0
+"Musica Sound Scheme"=0
+"Jungle Sound Scheme"=0
+"Robotz Sound Scheme"=0
+"Utopia Sound Scheme"=0
+"CD 播放器"=0
+
+; 空段明确告诉安装程序不要进入打印机选择页。
+[Printers]
+
+[System]
+Locale=L0804
+SelectedKeyboard=KEYBOARD_00000409

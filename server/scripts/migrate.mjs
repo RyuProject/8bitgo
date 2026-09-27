@@ -105,6 +105,16 @@ const patches = [
     run: () => conn.query('ALTER TABLE `games` ADD COLUMN `core` VARCHAR(32) NULL AFTER `hidden`'),
   },
   {
+    name: 'games.runtime（逐游戏覆盖运行时：NES 可在 jsnes 与 emulatorjs 间切换）',
+    table: 'games',
+    needed: async () => !(await hasColumn('games', 'runtime')),
+    /**
+     * 不是 ENUM：以后会接入更多运行时（如 SNES 的某款），而 ENUM 加值只能整列 MODIFY，
+     * 不如存自由字符串、合法性交给运行时注册表校验。空 = 平台默认引擎（见 src/emulator/registry.ts）。
+     */
+    run: () => conn.query('ALTER TABLE `games` ADD COLUMN `runtime` VARCHAR(32) NULL AFTER `core`'),
+  },
+  {
     name: 'games.description_en（英文简介）',
     table: 'games',
     needed: async () => !(await hasColumn('games', 'description_en')),

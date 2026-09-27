@@ -70,7 +70,7 @@ if (existsSync(bridgePath)) {
     '8bitgo-save-bridge',
     'coin-flip-game:save',
     "event.source !== window.parent",
-    "event.origin !== window.location.origin",
+    "event.origin !== parentOrigin",
     "runtime('game-playable')",
     'MAX_SAVE_BYTES',
   ]) ok(bridge.includes(marker), `8bitgo-bridge.js 缺少关键保护：${marker}`)
@@ -103,7 +103,9 @@ if (existsSync(bridgePath)) {
   try {
     vm.runInNewContext(bridge, {
       window: windowObject,
+      document: { referrer: 'https://8bitgo.com/games/gamblers-table' },
       localStorage,
+      URL,
       requestAnimationFrame: (callback) => callback(),
       TextEncoder,
       TextDecoder,
@@ -167,7 +169,7 @@ if (bundlePath && existsSync(resolve(root, bundlePath))) {
 
 const registry = await import(pathToFileURL(resolve(repo, 'shared/builtin-web-games.js')).href)
 const registered = registry.builtinWebGameFor('gamblers-table')
-ok(registered?.entry === '/web/gamblers-table', '内置 Web 游戏表没有注册 gamblers-table')
+ok(registered?.entry === 'https://gamblers-table.8bitgo.com/web/gamblers-table/', '内置 Web 游戏表没有指向 gamblers-table 独立 Pages')
 ok(registered?.isolated === false, 'Digiverse 不应误走 COOP/COEP 隔离壳')
 
 const adapterPath = resolve(repo, 'src/emulator/adapters/html5.ts')

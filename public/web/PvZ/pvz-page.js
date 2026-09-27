@@ -741,24 +741,34 @@ async function importSaves(file, button) {
 
 /**
  * 8BitGo 模拟器窗口只拿一份 ZIP，不直接摸 PvZ 的虚拟文件系统；账号令牌也永远不进 iframe。
- * 单独打开本页时保留原来的下载行为，只有同源父窗口嵌入时才把按钮交给统一存档面板。
+ * 单独打开本页时保留原来的下载行为；主站同源嵌入或本站专用 Pages 子域嵌入时，
+ * 才把按钮交给统一存档面板。不能接受任意 `*.8bitgo.com`，避免旧子域被接管后读取存档。
  */
-function hasEightBitGoSaveHost() {
+function eightBitGoSaveHostOrigin() {
   if (window.parent === window) return false;
-  try { return new URL(document.referrer).origin === location.origin; }
-  catch { return false; }
+  try {
+    const origin = new URL(document.referrer).origin;
+    if (origin === location.origin) return origin;
+    const parent = new URL(origin);
+    if (parent.protocol === "https:" && (parent.hostname === "8bitgo.com" || parent.hostname === "www.8bitgo.com")) return origin;
+  } catch {}
+  return "";
 }
 
+let saveBridgeHostOrigin = "";
+
 function postSaveBridge(message, transfer) {
+  if (!saveBridgeHostOrigin) return;
   window.parent.postMessage(
     Object.assign({ source: SAVE_BRIDGE_SOURCE, version: SAVE_BRIDGE_VERSION }, message),
-    location.origin,
+    saveBridgeHostOrigin,
     transfer || [],
   );
 }
 
 function installSaveBridge() {
-  if (!hasEightBitGoSaveHost()) return false;
+  saveBridgeHostOrigin = eightBitGoSaveHostOrigin();
+  if (!saveBridgeHostOrigin) return false;
   const chinese = (window.PVZ_LOCALE || document.documentElement.lang || "").toLowerCase().startsWith("zh");
   saveExportBtn.textContent = chinese ? "💾 保存存档" : "💾 Save";
   saveExportBtn.title = chinese ? "保存到云端、本浏览器或文件" : "Save to cloud, this browser, or a file";
@@ -766,7 +776,7 @@ function installSaveBridge() {
   saveImportBtn.title = chinese ? "从云端、本浏览器或文件读取" : "Load from cloud, this browser, or a file";
 
   window.addEventListener("message", (event) => {
-    if (event.source !== window.parent || event.origin !== location.origin) return;
+    if (event.source !== window.parent || event.origin !== saveBridgeHostOrigin) return;
     const message = event.data;
     if (!message || message.source !== SAVE_BRIDGE_SOURCE || message.version !== SAVE_BRIDGE_VERSION ||
         !Number.isInteger(message.requestId)) return;

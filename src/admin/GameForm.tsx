@@ -149,6 +149,8 @@ const EMPTY: Game = {
   hidden: false,
   rom: '',
   roms: {},
+  // 逐游戏运行时覆盖；目前只有 NES 能在 jsnes 与 emulatorjs 之间切换，其余平台留空走默认引擎
+  runtime: null,
 }
 
 const FLASH_CONTROL_PRESETS = {
@@ -412,6 +414,8 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
       homeRank: Number(form.homeRank) > 0 ? Math.round(Number(form.homeRank)) : undefined,
       // 空字符串要写成 undefined，否则会当成「核心名叫空串」存进去
       core: form.core?.trim() || undefined,
+      // 逐游戏运行时覆盖：仅 NES 适用。非 NES 一律下发 null，清掉可能残留的覆盖值
+      runtime: form.platform === 'nes' ? (form.runtime ?? undefined) : null,
       // 普通 DOS 用它生成 autoexec；共享 Windows 3.x 直接运行它，95/98 则写进启动批处理。
       // 旧式“系统和游戏揉在一个 .jsdos”没有共享系统字段，仍按原 bundle 的 conf 启动。
       dosExecutable: form.platform === 'dos' ? form.dosExecutable?.trim() || undefined : undefined,
@@ -810,6 +814,22 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
                 只在这一款有具体问题时才换。
               </p>
             )}
+          </Field>
+        )}
+        {form.platform === 'nes' && (
+          <Field label="模拟器引擎">
+            <select
+              className={inputClass}
+              value={form.runtime ?? ''}
+              onChange={(e) => set('runtime', (e.target.value || undefined) as typeof form.runtime)}
+            >
+              <option value="">jsnes（默认，轻量、启动快）</option>
+              <option value="emulatorjs">EmulatorJS（兼容性更好，需下载核心）</option>
+            </select>
+            <p className="mt-1 text-[11px] text-dim">
+              NES 默认用 <b>jsnes</b>（纯 JS、内存占用小）。个别 ROM 在 jsnes 上画面不对或跑不起来时，
+              换成 <b>EmulatorJS</b>——它走 fceumm 这类核心，准确度更高，但首次启动要额外下载核心。
+            </p>
           </Field>
         )}
         {!personalLibrary && <Field label="首页排序">

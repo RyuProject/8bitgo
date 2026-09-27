@@ -17,10 +17,11 @@
  *
  * 需要 wrangler 已经登录（`npx wrangler login`）或已配 CLOUDFLARE_API_TOKEN。
  */
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 import { celesteFrameworkAsset } from '../server/src/celeste.js'
 import {
   mib,
@@ -40,6 +41,8 @@ const staging = arg('src') || join(root, '.celeste-framework')
 const compressedDir = arg('br-stage') || join(root, '.celeste-framework-br')
 const dryRun = process.argv.includes('--dry-run')
 const skipPublicCheck = process.argv.includes('--skip-public-check')
+const uploadConcurrency = Math.max(1, Math.min(12, Number(arg('concurrency')) || 4))
+const execFileAsync = promisify(execFile)
 
 if (!dryRun && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(bucket || '')) {
   console.error('用法：npm run celeste:upload -- --bucket <R2桶名> [--src .celeste-framework] [--dry-run] [--br-stage <目录>]')
@@ -68,7 +71,9 @@ if (wasmChunks.length === 0) throw new Error('_framework/ 里没有任何 dotnet
   去取哈希文件；先传入口就意味着有一段时间清单指向还不存在的对象。
 */
 const ENTRY_FILES = ['dotnet.js']
-const ordered = [...files.filter((f) => !ENTRY_FILES.includes(f)), ...ENTRY_FILES.filter((f) => files.includes(f))]
+const contentFiles = files.filter((f) => !ENTRY_FILES.includes(f))
+const entryFiles = ENTRY_FILES.filter((f) => files.includes(f))
+const ordered = [...contentFiles, ...entryFiles]
 
 const total = ordered.reduce((sum, name) => sum + statSync(join(frameworkDir, name)).size, 0)
 console.log(`· ${ordered.length} 个文件，共 ${(total / 1048576).toFixed(1)} MiB → ${bucket}/${prefix}/`)
@@ -107,30 +112,58 @@ if (dryRun) {
 }
 
 const wrangler = join(root, 'node_modules/.bin/wrangler')
-for (const name of ordered) {
+async function putObject(args, label) {
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    try {
+      await execFileAsync(wrangler, args, { cwd: root })
+      return
+    } catch (error) {
+      if (attempt === 4) throw error
+      // R2 偶发断连不该让 400 多对象的整批上传从零人工重启；同键 PUT 可安全重试。
+      const delay = 500 * (2 ** (attempt - 1))
+      console.warn(`重试 ${label}（${attempt}/4，${delay}ms 后）`)
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, delay))
+    }
+  }
+}
+
+async function uploadFile(name) {
   const asset = celesteFrameworkAsset(name)
   if (!asset) throw new Error(`文件名不合法：${name}`)
-  console.log(`上传原始回退 ${prefix}/${name}…`)
-  execFileSync(wrangler, [
+  await putObject([
     'r2', 'object', 'put', `${bucket}/${prefix}/${name}`,
     '--file', join(frameworkDir, name),
     '--content-type', asset.contentType,
     '--cache-control', asset.cacheControl,
     '--remote', '--force',
-  ], { cwd: root, stdio: 'inherit' })
+  ], name)
 
   if (compression.assets[name]) {
-    console.log(`上传 Brotli ${prefix}/${name}.br…`)
-    execFileSync(wrangler, [
+    await putObject([
       'r2', 'object', 'put', `${bucket}/${prefix}/${name}.br`,
       '--file', join(compressedDir, `${name}.br`),
       // 这里故意不写 Content-Encoding；由同源代理在发给浏览器时补，避免 Node fetch 自动解压。
       '--content-type', 'application/octet-stream',
       '--cache-control', asset.cacheControl,
       '--remote', '--force',
-    ], { cwd: root, stdio: 'inherit' })
+    ], `${name}.br`)
+  }
+  console.log(`✔ ${prefix}/${name}${compression.assets[name] ? ' + .br' : ''}`)
+}
+
+/*
+  每个对象仍由 Wrangler 独立上传，但有限并发可以避免 400 多次进程启动和网络握手完全串行。
+  入口不能只“排在最后一个批次”：同一批里的任务是并发的，dotnet.js 仍可能比旁边三个文件
+  先完成。必须等全部内容哈希文件成功后，再单独发布入口。
+*/
+console.log(`· ${uploadConcurrency} 路并发上传原始回退与 Brotli 对象`)
+async function uploadBatches(names) {
+  for (let start = 0; start < names.length; start += uploadConcurrency) {
+    await Promise.all(names.slice(start, start + uploadConcurrency).map(uploadFile))
   }
 }
+await uploadBatches(contentFiles)
+await uploadBatches(entryFiles)
 
 execFileSync(wrangler, [
   'r2', 'object', 'put', `${bucket}/${prefix}/compression-manifest.json`,

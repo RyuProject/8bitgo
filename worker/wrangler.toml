@@ -11,6 +11,10 @@ routes = [
   { pattern = "assets.8bitgo.com/*", zone_name = "8bitgo.com" },
   # 封面独立域名也必须经过同一个 Worker，才能带 CORS / CORP 并读取 COVERS 桶。
   { pattern = "image.8bitgo.com/*", zone_name = "8bitgo.com" },
+  # 这两个自定义域名原先只存在于 Cloudflare 控制台。Wrangler 部署会用本文件覆盖远端
+  # 路由，若不一并声明，后台上传/PSP 转换使用的 roms 域名会在一次正常发布后消失。
+  { pattern = "roms.8bitgo.com", custom_domain = true },
+  { pattern = "image.8bitgo.com", custom_domain = true },
 ]
 
 [[r2_buckets]]

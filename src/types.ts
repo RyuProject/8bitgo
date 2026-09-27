@@ -102,6 +102,23 @@ export interface Genre {
   description: string
 }
 
+/**
+ * 运行时（模拟器引擎）标识。
+ * 与 src/emulator/types.ts 的 RuntimeId 取值一致 —— 刻意不跨模块 import，否则会和
+ * emulator/types.ts 反向依赖 @/types 形成循环依赖。新增引擎时两个地方一起改。
+ */
+export type RuntimeId =
+  | 'emulatorjs'
+  | 'ruffle'
+  | 'html5'
+  | 'jsnes'
+  | 'j2me'
+  | 'jsdos'
+  | 'webretro'
+  | 'play'
+  | 'ppsspp'
+  | 'dolphin'
+
 export interface Game {
   slug: string
   title: string
@@ -154,6 +171,12 @@ export interface Game {
    * 更老的板子可能只有 mame2003_plus 跑得动。
    */
   core?: string
+  /**
+   * 逐游戏覆盖运行时（引擎）。空 = 用平台默认引擎（platforms.ts 的 runtime 字段）。
+   * 例如 NES 平台默认 jsnes，但某些 ROM 在 EmulatorJS 上更兼容，可在此逐游戏指定 emulatorjs。
+   * 合法性由 src/emulator/registry.ts 在解析时校验：覆盖值不可用或不支持本平台时回落默认引擎。
+   */
+  runtime?: RuntimeId | null
   /**
    * FBNeo RomData：一份 .dat 文本，把一个**不在驱动表里**的 romset 挂到现成的驱动上。
    *

@@ -63,6 +63,12 @@ export function resolveRuntime(target: PlatformId | ResolveContext): Runtime | u
   const ctx: ResolveContext = typeof target === 'string' ? { platform: target } : target
   const { platform, ext } = ctx
 
+  // 逐游戏覆盖优先：但必须可用且支持本平台，否则回落默认逻辑
+  if (ctx.runtimeOverride) {
+    const forced = getRuntime(ctx.runtimeOverride)
+    if (forced?.available() && forced.supports(platform)) return forced
+  }
+
   if (ext) {
     // 1. 覆盖表优先
     const forced = getRuntime(EXT_RUNTIME_OVERRIDES[ext])

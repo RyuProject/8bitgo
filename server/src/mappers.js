@@ -120,6 +120,16 @@ export function coreOf(v) {
 }
 
 /**
+ * 逐游戏覆盖运行时（如 NES 在 jsnes 与 emulatorjs 之间切换）。
+ * 只做形状约束：非空字符串原样落库，空值回落到平台默认引擎。
+ */
+export function runtimeOf(v) {
+  if (v == null) return null
+  const s = String(v).trim().toLowerCase()
+  return s ? s : null
+}
+
+/**
  * DOS 启动程序：zip 内相对路径（如 NFS/TNFS.EXE）。
  * 反斜杠统一成正斜杠（DOS 习惯写法照收），去掉开头的斜杠；
  * 拒绝空段 / . / .. 与控制字符 —— 这个值最终会拼进 dosbox.conf 的 autoexec，
@@ -513,6 +523,8 @@ export function gameRowToApi(r, rel = {}) {
   if (r.home_rank != null) g.homeRank = Number(r.home_rank)
   // 没覆盖核心的游戏同样不带这个字段，前台自己回落到平台默认
   if (r.core) g.core = r.core
+  // 逐游戏覆盖运行时（NES 可在 jsnes 与 emulatorjs 间切换）。空则回落平台默认引擎
+  if (r.runtime) g.runtime = r.runtime
   // 只有 DOS 游戏会填；不带字段 = 前端启发式自己猜
   if (r.dos_executable) g.dosExecutable = r.dos_executable
   if (r.dos_backend === 'dosboxX') g.dosBackend = 'dosboxX'
@@ -636,6 +648,7 @@ const FIELD_TO_COLUMN = {
   addedAt: ['added_at', (v) => (v ? String(v).slice(0, 10) : null)],
   homeRank: ['home_rank', homeRankOf],
   core: ['core', coreOf],
+  runtime: ['runtime', runtimeOf],
   dosExecutable: ['dos_executable', dosExecutableOf],
   dosBackend: ['dos_backend', dosBackendOf],
   dosSystem: ['dos_system', dosSystemOf],

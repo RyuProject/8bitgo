@@ -87,12 +87,16 @@ for (const platform of ['gamecube', 'wii']) {
 }
 
 /* ---------- 内置 Web 游戏：不依赖 ROM 根地址，也不该对自己的同源入口发 R2 HEAD ---------- */
-for (const [slug, entry] of [['diablo', '/web/diablo'], ['terraria', '/web/terraria']]) {
+for (const [slug, entry] of [
+  ['diablo', 'https://diablo.8bitgo.com/web/diablo/'],
+  ['terraria', 'https://terraria.8bitgo.com/web/terraria/'],
+  ['plants-vs-zombies', 'https://pvz.8bitgo.com/web/PvZ/cn/'],
+]) {
   const game = { platform: 'html5', slug }
   assert.deepEqual(conventionalKeys(game), [entry], `${slug} 应自动识别为站内 Web 游戏`)
   assert.equal(romProbeExpected(game, 'zh-Hans'), true, `${slug} 没配 VITE_ROM_BASE_URL 也应可播放`)
 }
-assert.equal(isolatedEmbedFor('terraria')?.embed, '/web/terraria', 'Terraria 必须走隔离薄壳，SharedArrayBuffer 才可用')
+assert.equal(isolatedEmbedFor('terraria')?.embed, 'https://terraria.8bitgo.com/web/terraria/', 'Terraria 必须通过独立 Pages 走隔离薄壳')
 assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP，保持普通详情页即可')
 
 /* ---------- 8BG 约定地址：新容器优先，旧对象继续回退 ---------- */

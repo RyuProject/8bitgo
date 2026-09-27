@@ -28,8 +28,9 @@ const useDist = process.argv.includes('--dist')
 const runtimeDir = useDist ? join(root, 'dist/client/web/terraria') : publicDir
 const fail = (message) => { console.error(`✖ Terraria 检查失败：${message}`); process.exit(1) }
 
-if (builtinWebGameFor('terraria')?.entry !== '/web/terraria') fail('内置 Web 游戏注册表没有识别 terraria')
-if (isolatedEmbedFor('terraria')?.embed !== '/web/terraria') fail('terraria 没注册到隔离薄壳（SharedArrayBuffer 会不可用）')
+const pagesEntry = 'https://terraria.8bitgo.com/web/terraria/'
+if (builtinWebGameFor('terraria')?.entry !== pagesEntry) fail('内置 Web 游戏注册表没有指向 Terraria 独立 Pages')
+if (isolatedEmbedFor('terraria')?.embed !== pagesEntry) fail('terraria 没用独立 Pages 注册隔离薄壳（SharedArrayBuffer 会不可用）')
 
 const indexFile = join(runtimeDir, 'index.html')
 if (!existsSync(indexFile)) fail(`缺少 ${indexFile}（先跑 npm run terraria:patch）`)

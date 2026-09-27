@@ -66,6 +66,26 @@ function readBuckets(env, key) {
   return key.startsWith('covers/') && env.COVERS && env.COVERS !== env.ROMS
     ? [env.COVERS, env.ROMS] : [env.ROMS]
 }
+function exactByteRange(value) {
+  const match = /^bytes=(\d+)-(\d+)$/.exec(String(value || '').trim())
+  if (!match) return null
+  const offset = Number(match[1])
+  const end = Number(match[2])
+  if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(end) || end < offset) return null
+  const length = end - offset + 1
+  return Number.isSafeInteger(length) ? { offset, length } : null
+}
+async function locatePinnedRange(env, key, etag, range) {
+  const buckets = readBuckets(env, key)
+  const base = thumbBaseKey(key)
+  for (const servedKey of base ? [key, base] : [key]) {
+    for (const bucket of buckets) {
+      const object = await bucket.get(servedKey, { onlyIf: { etagMatches: etag }, range })
+      if (object) return { object, servedKey }
+    }
+  }
+  return null
+}
 async function locate(env, key, method) {
   const buckets = readBuckets(env, key)
   const base = thumbBaseKey(key)
@@ -109,6 +129,39 @@ export async function serveObject(request, env, key, cors, policy, guessType, ex
     headers.set('Content-Length', String(found.object.size))
     return new Response(found.object.body, { headers })
   }
+
+  const pinnedRange = expectedVersion && request.method === 'GET' && !h.has('If-Range') &&
+    !h.has('If-None-Match') && !h.has('If-Modified-Since') && !h.has('If-Unmodified-Since')
+    ? exactByteRange(h.get('Range')) : null
+  if (pinnedRange) {
+    // PPSSPP 的播放地址已经把强 ETag 固定进 romv。旧实现仍先 HEAD、再带 onlyIf GET，
+    // 每个 2 MiB 分片都串行等待两次 R2 往返；冷对象偶尔因此超过核心的 30 秒上限，
+    // 浏览器只能报没有状态码的 HTTP 0。直接把 romv 交给 R2 的原子条件 GET，一次调用
+    // 同时完成版本校验和 Range 读取；对象刚好被替换时仍只会得到 412，绝不混读两代光盘。
+    const expectedHttpEtag = `"${expectedVersion}"`
+    if (h.has('If-Match') && !matches(h.get('If-Match'), expectedHttpEtag, false)) {
+      return new Response(null, { status: 412, headers: new Headers(cors) })
+    }
+    const found = await locatePinnedRange(env, key, expectedVersion, pinnedRange)
+    if (!found) return json({ error: 'not found' }, cors, 404)
+    const { object, servedKey } = found
+    const headers = objectHeaders(object, servedKey, cors, policy, guessType)
+    if (!object.body || etagVersion(object.httpEtag) !== expectedVersion) {
+      await cancelBody(object)
+      return new Response(null, { status: 412, headers })
+    }
+    if (pinnedRange.offset >= object.size) {
+      await cancelBody(object)
+      headers.set('Content-Range', `bytes */${object.size}`)
+      return new Response(null, { status: 416, headers })
+    }
+    const offset = Number(object.range?.offset ?? pinnedRange.offset)
+    const length = Number(object.range?.length ?? Math.min(pinnedRange.length, object.size - pinnedRange.offset))
+    headers.set('Content-Range', `bytes ${offset}-${offset + length - 1}/${object.size}`)
+    headers.set('Content-Length', String(length))
+    return new Response(object.body, { status: 206, headers })
+  }
+
   // Pin head->get to the ETag. If a concurrent overwrite happens, retry metadata,
   // never combine the previous object's size/validator with new object bytes.
   for (let attempt = 0; attempt < 3; attempt++) {

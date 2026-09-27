@@ -7,7 +7,7 @@ import type { RomLang } from '@/config/languages'
 import { ROM_LANG_ABBR } from '@/config/languages'
 import { dosExecutableForRom, dosStartupCommandsForRom, romLangsOf, romUrlForKey, useRomUrl } from '@/services/roms'
 import { parseDosExtras, type DosExtraSource } from '@/lib/dosExtras'
-import { resolveRuntime, runtimesFor } from '@/emulator'
+import { resolveRuntime, runtimesFor, getRuntime, type Runtime } from '@/emulator'
 import { p2pPlayable } from '@/emulator'
 import { visitCountsAsPlayed } from '@/emulator/playedScope'
 import { requestMatch } from '@/services/matchRequest'
@@ -314,7 +314,13 @@ export function GameDetailPage() {
   // 只用 resolveRuntime(platform.id) 会走到「平台默认引擎」那一档（platforms.ts 的 runtime
   // 字段），显示的是兜底引擎而不是真正会跑的那个：NDS 装了 webretro 仍写着 EmulatorJS，
   // NES 明明由 jsnes 接管也一样。
-  const runtime = runtimesFor(platform.id)[0] ?? resolveRuntime(platform.id)
+  // 逐游戏运行时覆盖（GameRecord.runtime）：NES 可在 jsnes 与 emulatorjs 间切换。
+  // 仅当覆盖值确实可用且支持本平台时才采纳，否则回落平台默认引擎
+  const overrideRuntime = game.runtime ? getRuntime(game.runtime) : undefined
+  const runtime: Runtime =
+    overrideRuntime?.available() && overrideRuntime.supports(platform.id)
+      ? overrideRuntime
+      : (runtimesFor(platform.id)[0] ?? resolveRuntime(platform.id))
   // 「支持语言」格：从 game.roms 里读出真正绑了哪些语言槽，映射成 CN / EN / JP 缩写。
   // romLangsOf 只返回有 key 的槽，所以「数据库里有那个语言的 ROM 就写什么」。
   const supportedLangs = Array.from(
@@ -425,6 +431,7 @@ export function GameDetailPage() {
                   platform={platform}
                   gameName={game.title}
                   gameSlug={game.slug}
+                  runtime={game.runtime}
                   startupVisitId={startupVisitId}
                   maxPlayers={game.players}
                   invite={invite}

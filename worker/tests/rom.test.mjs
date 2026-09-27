@@ -187,9 +187,18 @@ test('Range romv pins the R2 object generation even for clients without If-Match
   const e=environment();const o=e.ROMS.seed('disc.chd','abcdef')
   const good=await worker.fetch(req(`/disc.chd?romv=${o.etag}`,'GET',undefined,{Range:'bytes=0-1'}),e)
   assert.equal(good.status,206);assert.equal(await good.text(),'ab')
+  assert.equal(count(e.ROMS,'head'),0);assert.equal(count(e.ROMS,'get'),1)
   e.ROMS.seed('disc.chd','new-content')
   const stale=await worker.fetch(req(`/disc.chd?romv=${o.etag}`,'GET',undefined,{Range:'bytes=0-1'}),e)
   assert.equal(stale.status,412);assert.equal(stale.body,null)
+})
+test('Range romv keeps matching If-Match on the one-call R2 path',async()=>{
+  const e=environment();const o=e.ROMS.seed('disc.chd','abcdef')
+  const good=await worker.fetch(req(`/disc.chd?romv=${o.etag}`,'GET',undefined,{Range:'bytes=2-3','If-Match':o.httpEtag}),e)
+  assert.equal(good.status,206);assert.equal(await good.text(),'cd')
+  assert.equal(count(e.ROMS,'head'),0);assert.equal(count(e.ROMS,'get'),1)
+  const stale=await worker.fetch(req(`/disc.chd?romv=${o.etag}`,'GET',undefined,{Range:'bytes=2-3','If-Match':'"other"'}),e)
+  assert.equal(stale.status,412);assert.equal(count(e.ROMS,'get'),1)
 })
 test('Range requests bypass full-object edge cache and always reach version validation',async()=>{
   const previous=globalThis.caches;let calls=0

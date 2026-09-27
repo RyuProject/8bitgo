@@ -20,9 +20,9 @@ const LONG = 'public, max-age=31536000, s-maxage=31536000, immutable'
 
 /* ---------------- 注册表 ---------------- */
 
-assert.equal(builtinWebGameFor('celeste')?.entry, '/web/celeste')
+assert.equal(builtinWebGameFor('celeste')?.entry, 'https://celeste.8bitgo.com/web/celeste/')
 assert.equal(builtinWebGameFor('celeste')?.isolated, true, 'celeste 必须 isolated（.NET WASM pthread 依赖 SharedArrayBuffer）')
-assert.equal(isolatedEmbedFor('celeste')?.embed, '/web/celeste', '隔离薄壳必须自动派生出 /play/celeste')
+assert.equal(isolatedEmbedFor('celeste')?.embed, 'https://celeste.8bitgo.com/web/celeste/', '隔离薄壳必须指向独立 Pages')
 assert.ok(BUILTIN_WEB_GAMES.celeste, 'celeste 必须登记在 BUILTIN_WEB_GAMES')
 
 /* ---------------- celesteFrameworkAsset：类型 ---------------- */

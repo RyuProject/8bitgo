@@ -283,6 +283,8 @@ interface Props {
   romUrl?: string
   /** 这一款游戏指定的模拟器核心。不传就用平台默认 */
   core?: string
+  /** 逐游戏的运行时覆盖（来自 GameRecord.runtime）；NES 可在 jsnes 与 emulatorjs 间切换 */
+  runtime?: RuntimeId | null
   /** 游戏类别；DOS 射击游戏据此启用相对鼠标锁定。 */
   genres?: readonly GenreId[]
   /** FBNeo RomData（.dat 文本）；街机改版包靠它挂到现成驱动上运行。 */
@@ -514,6 +516,8 @@ export function EmulatorPlayer({
   className,
   romUrl,
   core,
+  /** 逐游戏的运行时覆盖（来自 GameRecord.runtime），NES 可在 jsnes / emulatorjs 间切换 */
+  runtime,
   genres,
   arcadeRomData,
   arcadeBios,
@@ -1467,8 +1471,9 @@ export function EmulatorPlayer({
    */
   const [liveFrozen, setLiveFrozen] = useState(false)
 
-  // 云端 ROM 也按其文件扩展名选引擎；还没拿到地址时退回平台默认
-  const pageRuntime = resolveRuntime({ platform: platform.id, ext: extOf(romUrl) })
+  // 云端 ROM 也按其文件扩展名选引擎；还没拿到地址时退回平台默认。
+  // runtimeOverride 是逐游戏覆盖（GameRecord.runtime）：NES 可在 jsnes 与 emulatorjs 间切换
+  const pageRuntime = resolveRuntime({ platform: platform.id, ext: extOf(romUrl), runtimeOverride: runtime })
   const supported = Boolean(pageRuntime) || onlineOk
   // 云端联机连不上时的本地兜底（用 ref，避免挂载 effect 捕获到旧值）
   const localFallbackRef = useRef<{ url?: string; runtime?: Runtime }>({})
