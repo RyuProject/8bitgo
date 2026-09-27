@@ -39,10 +39,11 @@ export const BUILTIN_WEB_GAMES = Object.freeze({
     isolated: false,
   }),
   'gamblers-table': Object.freeze({
-    entry: 'https://gamblers-table.8bitgo.com/web/gamblers-table/',
-    title: 'Digiverse',
-    // 上游是 Vue + DOM/CSS 的单线程游戏，不依赖 SharedArrayBuffer；
-    // 普通详情页 iframe 可以保留同源 localStorage，便于云存档桥导入导出。
+    entry: '/web/gamblers-table/',
+    title: 'Gamblers Table',
+    // Godot 4 Web 导出，单线程（GODOT_THREADS_ENABLED=false），不依赖 SharedArrayBuffer，
+    // 不需要 COOP/COEP 隔离壳；整目录自托管到 /web/gamblers-table/（同 diablo / minecraft / pvz2）。
+    // 注：Godot 版未实现 8BitGo 存档桥，本作暂无 JSON 云存档（仅本地进度）。
     isolated: false,
   }),
   'plants-vs-zombies': Object.freeze({

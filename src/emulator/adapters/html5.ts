@@ -22,7 +22,6 @@ const LEGACY_PAGES_ENTRIES = [
   ['/web/Minecraft', 'https://minecraft.8bitgo.com'],
   ['/web/celeste', 'https://celeste.8bitgo.com'],
   ['/web/terraria', 'https://terraria.8bitgo.com'],
-  ['/web/gamblers-table', 'https://gamblers-table.8bitgo.com'],
 ] as const
 const MANAGED_SAVE_BRIDGE_HOSTS = new Set([
   'gamblers-table.8bitgo.com',

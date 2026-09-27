@@ -5,16 +5,6 @@
  * 根绝对路径。保留路径可以避免重写压缩后的脚本，也让源站与 Pages 能平滑回退。
  */
 export const WEB_GAME_PAGES = Object.freeze({
-  'gamblers-table': Object.freeze({
-    project: '8bitgo-gamblers-table',
-    domain: 'gamblers-table.8bitgo.com',
-    sourceDir: 'gamblers-table',
-    entry: '/web/gamblers-table/',
-    title: 'Digiverse',
-    runtime: '',
-    isolated: false,
-    html: [],
-  }),
   pvz: Object.freeze({
     project: '8bitgo-pvz',
     domain: 'pvz.8bitgo.com',
