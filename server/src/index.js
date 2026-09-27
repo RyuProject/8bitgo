@@ -399,6 +399,15 @@ if (ssrAvailable()) {
     const sub = req.params?.sub != null ? String(req.params.sub) : ''
     if (!WEB_GAME_NAME.test(name)) return next()
     if (sub && !WEB_GAME_NAME.test(sub)) return next()
+    /*
+      直接访问 /web/<name>（无结尾斜杠）时，浏览器会把相对资源（index.js / index.wasm /
+      index.pck）解析到 /web/ 而非 /web/<name>/，导致脚本与二进制全部 404、页面黑屏。
+      express.static 默认会 301 补尾斜杠，但路由抢先响应了目录请求、静态中间件没机会补，
+      这里手动补上。仅对顶层（无 :sub）生效，避免改变 PvZ 等带语言子目录的既有行为。
+    */
+    if (!sub && !req.path.endsWith('/')) {
+      return res.redirect(301, req.originalUrl + '/')
+    }
     // CS1.5（Xash3D-WASM）是实验性接入：1.5 资产 + 1.6 wasm 模块版本错配，进图会崩。
     // 设 CS15_DISABLED=1 即可整页下线，不影响其它 /web/ 游戏（如 PvZ）。
     if (name === 'cs15' && process.env.CS15_DISABLED === '1') {
