@@ -101,10 +101,21 @@ export function emulatorJsCoreFileFor(core: string): string {
  * 游戏表里可能还留着历史值 `nds` / `melonds`。没人使用 NDS 存档迁移，所以本次不做
  * 双核心兼容期，开局时直接把这两个旧值归一到新核心；DeSmuME 等显式选择不受影响。
  */
+/**
+ * 平台默认核心在 platformMap 里存的是「平台别名」（`nes` / `segaMD` / `gb` …），
+ * 不是 EmulatorJS 真正的核心目录名（`fceumm` / `genesis_plus_gx` / `gambatte` …）。
+ * 别名必须过 emulatorJsCoreFileFor 翻译成真名，否则 EJS_core 会被设成 `nes` 这种
+ * 不存在的目录名，核心下载 404、开局直接失败，播放器再回落到 jsnes —— 表现就是
+ * 「后台选了 EmulatorJS 却自己跳回 jsnes」。prewarm 取核心文件路径时也是这么翻的，
+ * 这里不翻就会和预热对不上。
+ *
+ * ⚠️ 只在「没显式指定核心」或「指定的是别名」时翻译：游戏记录里直接存的真名
+ * （`fceumm` / `fbneo` / `mame-current` …）原样返回，避免把已经正确的核心又改坏。
+ */
 export function emulatorJsCoreForGame(platform: PlatformId, requested?: string | null): string | undefined {
-  const core = requested || platformMap[platform]?.core
-  if (platform === 'nds' && (core === 'nds' || core === 'melonds')) return 'melondsds'
-  return core ?? undefined
+  let core = requested || platformMap[platform]?.core
+  if (platform === 'nds' && (core === 'nds' || core === 'melonds')) core = 'melondsds'
+  return emulatorJsCoreFileFor(core ?? '') || undefined
 }
 
 /** FreeJ2ME 资源路径。**没配置就是空** —— 空 = 该引擎 available() 为 false，解析阶段直接跳过 */

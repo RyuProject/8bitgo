@@ -606,6 +606,7 @@ export function gameApiToRow(g) {
     added_at: g.addedAt ? String(g.addedAt).slice(0, 10) : null,
     home_rank: homeRankOf(g.homeRank),
     core: coreOf(g.core),
+    runtime: runtimeOf(g.runtime),
     dos_executable: dosExecutableOf(g.dosExecutable),
     dos_backend: dosBackendOf(g.dosBackend),
     dos_system: dosSystemOf(g.dosSystem),
