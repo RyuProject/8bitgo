@@ -41,6 +41,7 @@ import { savesRouter } from './routes/saves.js'
 import { flashSavesRouter } from './routes/flash-saves.js'
 import { flashSaveConfigured, flashSaveConfigurationError } from './flash-save-token.js'
 import { attachNetplay } from './netplay.js'
+import { attachJsnesNetplay } from './jsnes-netplay.js'
 import { attachLive, canAccessAdultLive, liveCapacity, liveRoom, liveRooms, subscribeLiveRooms } from './live.js'
 import { admitSse } from './sseGuard.js'
 import { iceRouter, registerTurnProbeTargets } from './routes/ice.js'
@@ -622,6 +623,9 @@ const io = attachNetplay(httpServer, app, origins)
 // 直播（一人玩多人看）。和 netplay 共用同一个 socket.io 服务，但走各自的命名空间。
 // 画面同样不经过服务器，这里只转发 WebRTC 握手（见 src/live.js）
 attachLive(io)
+// jsnes 的 P2P 联机信令：与 EmulatorJS netplay 完全独立的一条路，走 /jsnes-netplay（见 jsnes-netplay.js）。
+// 同样只转发 WebRTC 握手，画面与输入都不经过服务器。
+attachJsnesNetplay(httpServer, app, origins)
 // 旧 Flash 的裸 TCP 不能从浏览器直连；只接管 /sfs/sas3，其余 upgrade 继续交给 socket.io / IPX。
 sfs.attach(httpServer)
 startSweeper()

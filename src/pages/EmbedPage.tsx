@@ -192,6 +192,7 @@ export function EmbedPage({ standalonePlatform }: Props) {
           dosSaveHint={game.dosSaveHint}
           biosUrl={biosUrl || undefined}
           romUrl={rom.status === 'found' ? rom.url : undefined}
+          romSize={rom.status === 'found' ? rom.size : undefined}
           // 详情页那颗「开始游戏」已经是一次明确操作，进隔离页后直接开机，避免连点两次。
           autoStart={Boolean(standalonePlatform)}
           romChecking={rom.status === 'checking'}

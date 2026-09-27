@@ -19,6 +19,8 @@ import { installJsnesSafeStop, probeJsnesStartup } from '../jsnesCompat'
 import { startGamepadInput, type GamepadInput } from '../gamepadInput'
 import { installPadKeyboard } from '../padKeyboard'
 import type { PadAction, Seat } from '@/services/padKeys'
+import { JsnesNetplay, encodeInput, NETPLAY_ACTIONS } from '../jsnesNetplay'
+import type { JsnesNetplaySession } from '../types'
 
 /**
  * 手柄键 → jsnes 的按键编号（node_modules/jsnes/src/controller.js 的静态常量）。
@@ -214,6 +216,23 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let readyFired = false
   /** 摘掉「点一下唤醒声音」那组一次性监听。没挂过就是 null */
   let unlockAudio: (() => void) | null = null
+
+  /* ── jsnes P2P 联机（与 EmulatorJS netplay 完全独立）────────────────
+   * 两端各跑一份 jsnes，每帧把「本地输入 + 对方输入」一起喂进模拟器，
+   * 靠 jsnes 的确定性把两边画面锁在同一条时间线上。详见 jsnesNetplay.ts。 */
+  let netplay: JsnesNetplay | null = null
+  let netplayActive = false
+  const netplaySession: { current: JsnesNetplaySession | null } = { current: options.jsnesNetplay ?? null }
+  /** 本地这一侧当前按下的键，按座位记（netplayActive 时 sendAction 只写这一份） */
+  const localInput: Record<number, Record<string, boolean>> = { 0: {}, 1: {} }
+  /** 已经施加到模拟器上的按键位掩码（避免每帧重复发 down/up） */
+  const appliedSeatBits: Record<number, number> = { 0: -1, 1: -1 }
+  /** 同步帧计数器 */
+  let applyFrame = 0
+  /** 本地输入的环形缓冲，长度 = bufferFrames + 1，用来把本地输入也延迟同样多帧 */
+  const localRing: number[] = []
+  let lastRemoteBits = 0
+  let netplayRaf = 0
   /** 补帧的定时器：暂停和销毁时要一起收掉 */
   const catchupTimers = new Set<number>()
   const clearCatchup = () => {
@@ -245,6 +264,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * seat 0 = 一号手柄，1 = 二号。jsnes 的手柄编号是**从 1 开始**的。
    */
   const sendAction = (action: PadAction, down: boolean, seat: Seat = 0) => {
+    /**
+     * 联机时本地键盘 / 手柄 / 触屏的输入**不立即施加**，而是先记进 localInput，
+     * 由同步帧循环在每帧统一施加「本地 + 对方」两份输入 —— 这才是锁步同步的正确性来源。
+     * 本机玩家永远是「我这个座位」，所以忽略调用方传来的 seat，统一写进 netplay.seat。
+     */
+    if (netplayActive && netplay) {
+      localInput[netplay.seat][action] = down
+      return
+    }
     const nes = browser?.nes
     const code = NES_BUTTON[action]
     if (!nes || code === undefined) return
@@ -297,6 +325,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const installClock = (ft: JsnesFrameTimer) => {
     lastRafAt = performance.now()
     ft.onAnimationFrame = (time: number) => {
+      // 联机接管后这套时钟立即退出：任何残留的回调只返回、不再续链，
+      // 避免和同步帧循环抢着喂帧把两边锁步打乱。
+      if (netplayActive) return
       // 先续上下一拍，后面无论走哪条分支都不会断链
       ft.requestAnimationFrame()
       lastRafAt = performance.now()
@@ -515,6 +546,139 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
   }
 
+  /** 把某个座位的按键位掩码施加到 jsnes（只在变化时发 down/up，避免每帧刷） */
+  const applySeat = (seat: number, bits: number) => {
+    const nes = browser?.nes
+    if (!nes) return
+    const prev = appliedSeatBits[seat] ?? -1
+    if (prev === bits) return
+    const controller = seat === 1 ? 2 : 1
+    for (let i = 0; i < NETPLAY_ACTIONS.length; i++) {
+      const on = (bits & (1 << i)) !== 0
+      const was = (prev & (1 << i)) !== 0
+      if (on === was) continue
+      const code = NES_BUTTON[NETPLAY_ACTIONS[i]]
+      if (code === undefined) continue
+      if (on) nes.buttonDown?.(controller, code)
+      else nes.buttonUp?.(controller, code)
+    }
+    appliedSeatBits[seat] = bits
+  }
+
+  /**
+   * 同步帧循环：每帧把「本地输入（延迟 D 帧）+ 对方输入（同帧号、同样延迟）」施加后推进一帧。
+   * 两边延迟一致 → 施加的输入对完全一致 → jsnes 确定性 → 画面同步。
+   */
+  const startNetplayLoop = (ft: JsnesFrameTimer) => {
+    const interval = ft.interval
+    const stepOne = () => {
+      if (!netplayActive || !netplay) return
+      const mySeat = netplay.seat
+      const other = mySeat === 0 ? 1 : 0
+      const D = netplay.bufferFrames
+      const localBits = encodeInput(localInput[mySeat])
+      netplay.sendLocal(applyFrame, localBits)
+      // 本地输入也延迟 D 帧，用定长环形缓冲
+      localRing.push(localBits)
+      while (localRing.length > D + 1) localRing.shift()
+      const idx = applyFrame - D
+      if (idx < 0) {
+        applySeat(mySeat, 0)
+        applySeat(other, 0)
+      } else {
+        const lb = localRing[0]
+        let rb = netplay.remoteBitsFor(idx)
+        if (rb === undefined) rb = lastRemoteBits
+        else lastRemoteBits = rb
+        applySeat(mySeat, lb)
+        applySeat(other, rb)
+        netplay.pruneRemote(idx - 1)
+      }
+      ft.generateFrame()
+      ft.onWriteFrame()
+      applyFrame++
+    }
+    const tick = (time: number) => {
+      if (!netplayActive) return
+      // 让音频欠载逻辑以为 rAF 还活着，别来抢帧时钟
+      lastRafAt = performance.now()
+      const excess = time % interval
+      const aligned = time - excess
+      if (ft.lastFrameTime === false) {
+        ft.lastFrameTime = aligned
+        netplayRaf = requestAnimationFrame(tick)
+        return
+      }
+      let num = Math.round((aligned - ft.lastFrameTime) / interval)
+      if (num === 0) {
+        netplayRaf = requestAnimationFrame(tick)
+        return
+      }
+      if (num < 0) {
+        ft.lastFrameTime = aligned - interval
+        num = 1
+      } else if (num > MAX_CATCHUP_FRAMES) {
+        ft.lastFrameTime = aligned - MAX_CATCHUP_FRAMES * interval
+        num = MAX_CATCHUP_FRAMES
+      }
+      stepOne()
+      const timeToNext = interval - excess
+      for (let i = 1; i < num; i++) {
+        const id = window.setTimeout(() => {
+          catchupTimers.delete(id)
+          if (netplayActive && !destroyed) stepOne()
+        }, (i * timeToNext) / num)
+        catchupTimers.add(id)
+      }
+      netplayRaf = requestAnimationFrame(tick)
+    }
+    netplayRaf = requestAnimationFrame(tick)
+  }
+
+  /** 开 / 加入 jsnes 联机；返回是否成功发起了连接 */
+  const startNetplay = async (): Promise<boolean> => {
+    if (netplay || !netplaySession.current || !browser?.nes) return false
+    const session = netplaySession.current
+    const np = new JsnesNetplay({
+      roomId: session.roomId,
+      seat: session.mode === 'host' ? 0 : 1,
+      bufferFrames: session.bufferFrames ?? 2,
+      onState: session.onLinkState,
+      onPeerCount: session.onPlayers,
+      onRoom: session.onRoom,
+      onHostLeft: session.onHostLeft,
+    })
+    try {
+      await np.connect()
+    } catch (e) {
+      console.warn('[jsnes-netplay] 连接失败', e)
+      return false
+    }
+    netplay = np
+    netplayActive = true
+    // 接管帧时钟：停掉 jsnes 自带循环，改由同步循环驱动
+    try {
+      browser.stop?.()
+    } catch {
+      /* 已经停了也无妨 */
+    }
+    applyFrame = 0
+    localRing.length = 0
+    lastRemoteBits = 0
+    appliedSeatBits[0] = -1
+    appliedSeatBits[1] = -1
+    localInput[0] = {}
+    localInput[1] = {}
+    const ft = browser._frameTimer
+    if (ft) startNetplayLoop(ft)
+    return true
+  }
+
+  /** 引擎起来后若带着联机会话，立刻开房 / 进房 */
+  const maybeStartNetplay = () => {
+    if (netplaySession.current && !netplay) void startNetplay()
+  }
+
   void (async () => {
     try {
       options.onProgress?.({ phase: 'engine' })
@@ -632,6 +796,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       readyFired = true
       options.onReady?.()
       options.onStart?.()
+      // 带着联机会话挂载时，引擎起来立刻开房 / 进房
+      maybeStartNetplay()
     } catch (e) {
       if (destroyed) return
       const msg = e instanceof Error ? e.message : String(e)
@@ -663,6 +829,32 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     },
     // 屏幕手柄和物理手柄走同一个入口（见 sendPad）
     sendButton: sendPad,
+    // ── jsnes P2P 联机：在已运行的这一局上开 / 加入，不重开（见 startNetplay）──
+    openJsnesNetplay: (session) => {
+      if (netplay || !browser?.nes) return false
+      netplaySession.current = session
+      if (readyFired) void startNetplay()
+      return true
+    },
+    closeNetplay: () => {
+      if (!netplay) return
+      netplayActive = false
+      if (netplayRaf) cancelAnimationFrame(netplayRaf)
+      netplay.close()
+      netplay = null
+      netplaySession.current = null
+      // 恢复 jsnes 自带帧时钟
+      try {
+        browser?.start?.()
+      } catch {
+        /* 已经停了也无妨 */
+      }
+      if (browser?._frameTimer) installClock(browser._frameTimer)
+      localInput[0] = {}
+      localInput[1] = {}
+      appliedSeatBits[0] = -1
+      appliedSeatBits[1] = -1
+    },
     screenshot: async () => {
       const c = canvas()
       return c ? canvasToBlob(c) : null

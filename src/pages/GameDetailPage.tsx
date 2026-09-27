@@ -463,6 +463,7 @@ export function GameDetailPage() {
                   dosSaveHint={game.dosSaveHint}
                   biosUrl={biosUrl || undefined}
                   romUrl={rom.status === 'found' ? rom.url : undefined}
+                  romSize={rom.status === 'found' ? rom.size : undefined}
                   romChecking={rom.status === 'checking'}
                   romUnavailable={rom.status === 'missing'}
                   romUnreachable={rom.unreachable}

@@ -646,6 +646,13 @@ export interface ProbeOutcome {
   reason?: 'http' | 'html' | 'network' | 'timeout'
   /** reason === 'http' 时服务器给的状态码 */
   status?: number
+  /**
+   * 文件字节数（HEAD 响应的 Content-Length）。只在 HEAD 成功那条路径上有值；
+   * 走 GET Range 兜底探测时 Content-Length 是那一片的长度，不能当整份大小，故不取。
+   * 播放器拿它按 ROM 大小分流引擎（如 NES：小 ROM 用 jsnes、大 ROM 用 EmulatorJS），
+   * 顺带省掉一次单独的 HEAD 探测。
+   */
+  size?: number
 }
 
 /**
@@ -709,7 +716,12 @@ async function probeOnce(url: string, timeoutMs: number, allowHtml: boolean): Pr
     // 点下去才在模拟器里报一句莫名其妙的「不是合法的 ROM」。
     const type = res.headers.get('content-type') || ''
     if (!allowHtml && /text\/html|application\/xhtml/i.test(type)) return { url: '', certain: true, reason: 'html' }
-    return { url: versionedRomUrl(url, res.headers.get('etag')), certain: true }
+    const len = Number(res.headers.get('content-length'))
+    return {
+      url: versionedRomUrl(url, res.headers.get('etag')),
+      certain: true,
+      size: Number.isFinite(len) && len > 0 ? len : undefined,
+    }
   } catch {
     // 超时（abort）、断网、CORS 被拒、被浏览器插件拦掉，全都是「没问出来」。
     // fetch 对这几种一律抛一个不带信息的 TypeError（CORS 的细节只在控制台里，
@@ -783,6 +795,8 @@ export async function probeUrl(url: string, timeoutMs = 4000): Promise<boolean> 
 export interface RomResolution {
   status: 'idle' | 'checking' | 'found' | 'missing'
   url: string
+  /** ROM 字节数（来自探测时的 HEAD Content-Length）；播放器按它分流引擎，没有就是未知 */
+  size?: number
   key?: string
   /** 用的是哪个语言槽。通用 rom 和约定 key 探测出来的没有语言，为 undefined */
   lang?: RomLang
@@ -973,7 +987,7 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
           if (candidate.backup) {
             console.warn(`[8bitgo/rom] ${game.slug} 的 ${candidate.lang ?? '通用'} 主地址不可用，已切换到同语言备用地址：${candidate.key}`)
           }
-          if (!cancelled) setState({ status: 'found', url: outcome.url, key: candidate.key, lang: candidate.lang })
+          if (!cancelled) setState({ status: 'found', url: outcome.url, key: candidate.key, lang: candidate.lang, size: outcome.size })
           return
         }
         traces.push({ key: candidate.key, url, outcome, lang: candidate.lang, backup: candidate.backup })
@@ -1023,7 +1037,7 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
         const url = romUrlForKey(key, base)
         const outcome = await probeRom(url, 4000, game.platform === 'html5')
         if (outcome.url) {
-          if (!cancelled) setState({ status: 'found', url: outcome.url, key })
+          if (!cancelled) setState({ status: 'found', url: outcome.url, key, size: outcome.size })
           return
         }
         traces.push({ key, url, outcome })

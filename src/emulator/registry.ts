@@ -70,6 +70,35 @@ export function resolveRuntime(target: PlatformId | ResolveContext): Runtime | u
   }
 
   if (ext) {
+    // 0. NES 的运行时选择（覆盖「扩展名覆盖表」里写死的 nes→jsnes）：
+    //    - 先看是不是要走 jsnes 联机（?jsnesp2p=）：是就强制 jsnes，EmulatorJS 没有 openJsnesNetplay。
+    //      但已知 mapper 不支持时（ctx.jsnesCompatible === false）不强制，否则会被钉到一个
+    //      既会失败、又没有联机能力的引擎上。
+    //    - 否则按 ROM 大小分流：小 ROM 用轻量 jsnes，大 ROM 用 EmulatorJS（性能更好）。
+    //      小 ROM 里若已知 mapper 不支持，则直接选 EmulatorJS，省掉「先试 jsnes 再换引擎」的闪动；
+    //      已知支持或不明时仍乐观试 jsnes（不明时挂载阶段还有 onUnsupported 兜底）。
+    //    逐游戏运行时覆盖（runtimeOverride）已在上面优先处理，这里只动「默认」行为，不抢显式指定。
+    //    大小还没探到时回落默认 jsnes —— 既符合「NES 默认 jsnes」的设计，也不会拿错引擎开局。
+    if (platform === 'nes') {
+      const small = getRuntime('jsnes')
+      const big = getRuntime('emulatorjs')
+      // jsnes 联机必须 jsnes；但已知 mapper 不支持时强制必败，且 EmulatorJS 无 openJsnesNetplay，
+      // 故不强制，回落下面正常分流（走 EmulatorJS 的联机系统）。
+      if (ctx.jsnesNetplay && ctx.jsnesCompatible !== false && small?.available() && small.supports('nes')) return small
+      if (ctx.romSize != null) {
+        if (ctx.romSize < NES_JSNES_MAX_BYTES) {
+          if (ctx.jsnesCompatible === false) {
+            // 小 ROM 但 mapper 认不出：直接交给 EmulatorJS，别浪费一次 jsnes 尝试。
+            if (big?.available() && big.supports('nes')) return big
+          } else if (small?.available() && small.supports('nes')) {
+            return small
+          }
+        } else if (big?.available() && big.supports('nes')) {
+          return big
+        }
+      }
+    }
+
     // 1. 覆盖表优先
     const forced = getRuntime(EXT_RUNTIME_OVERRIDES[ext])
     if (forced?.available() && forced.supports(platform)) return forced
@@ -84,6 +113,15 @@ export function resolveRuntime(target: PlatformId | ResolveContext): Runtime | u
   // 3. 平台默认
   return platformDefault(platform)
 }
+
+/**
+ * NES 按 ROM 大小分流的阈值。
+ * 小 ROM（如简单 NROM 卡带）< 25KB 用轻量的纯 JS 引擎 jsnes，启动快、包小；
+ * 大 ROM（绝大多数商业游戏）>= 25KB 用 EmulatorJS（fceumm 等 RetroArch 核心），
+ * mapper 覆盖更全、性能更好，且能复用站点的联机 / 金手指等能力。
+ * 这个阈值只是经验切分，不是硬边界：两边都跑得动的游戏，小 ROM 用 jsnes 更省事。
+ */
+export const NES_JSNES_MAX_BYTES = 25 * 1024
 
 /** 平台是否可在线运行（任意一个可用的本地引擎支持它即可） */
 export function isPlayable(platform: PlatformId): boolean {
