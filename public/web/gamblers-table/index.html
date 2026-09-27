@@ -2,6 +2,11 @@
 <html lang="en">
 	<head>
 		<meta charset="utf-8">
+		<!-- 站点会规范化去掉 URL 结尾斜杠，直接访问 /web/gamblers-table（无斜杠）时，
+		     浏览器会把 index.js / index.wasm / index.pck 等相对路径解析到 /web/ 而非
+		     /web/gamblers-table/，导致脚本与二进制 404、页面黑屏。固定 base 后无论带不带
+		     结尾斜杠，资源都解析到 /web/gamblers-table/ 下（已确认这些 URL 均返回 200）。 -->
+		<base href="/web/gamblers-table/">
 		<meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1.0">
 		<title>Gamblers Table</title>
 		<style>
