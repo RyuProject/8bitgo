@@ -13,7 +13,7 @@
  * 比画面串流省带宽、延迟也更低，但要求两边 jsnes 版本与 ROM 完全一致。
  */
 import { fetchIceConfig, NETPLAY_URL } from '@/services/netplay'
-import type { PadAction } from './types'
+import type { PadAction } from '@/services/padKeys'
 
 /** 手柄按键 → 位序。顺序固定，适配器和引擎必须共用同一份 */
 export const NETPLAY_ACTIONS: PadAction[] = [
@@ -129,7 +129,7 @@ export class JsnesNetplay {
         break
       }
       case 'signal': {
-        void this.onSignal(msg.from as string, msg.data as { sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit })
+        void this.onSignal(msg.data as { sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit })
         break
       }
       case 'peer-left': {
@@ -182,7 +182,7 @@ export class JsnesNetplay {
     this.signal({ sdp: pc.localDescription!.toJSON() })
   }
 
-  private async onSignal(from: string, data: { sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit }) {
+  private async onSignal(data: { sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit }) {
     const pc = this.pc
     if (!pc) return
     if (data.sdp) {
@@ -222,7 +222,7 @@ export class JsnesNetplay {
   /** 清掉比某帧更老的输入缓存 */
   pruneRemote(beforeFrame: number) {
     for (const k of Object.keys(this.remoteByFrame)) {
-      if (Number(k) < beforeFrame) delete this.remoteByFrame[k]
+      if (Number(k) < beforeFrame) delete this.remoteByFrame[Number(k)]
     }
   }
 

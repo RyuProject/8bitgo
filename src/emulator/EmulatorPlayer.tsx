@@ -658,6 +658,10 @@ export function EmulatorPlayer({
    * 交给 registry 的 jsnesCompatible，让「选引擎」阶段就避开已知的失败，而不是等挂载时再换。
    */
   const [jsnesCompatible, setJsnesCompatible] = useState<boolean | undefined>(undefined)
+  /** 当前运行时句柄 + 它上报的能力集合（决定工具栏画哪些按钮）。
+   *  必须在引用它的 ?jsnesp2p effect 之前声明：该 effect 的依赖数组在渲染期访问 handle，
+   *  若声明在它之后会触发 TDZ（TS2448/2454 + 运行时 ReferenceError）。 */
+  const [handle, setHandle] = useState<RuntimeHandle | null>(null)
 
   // 带 ?jsnesp2p=CODE 直接进房（与 EmulatorJS 联机的 ?p2p= 平行，两条路互不干扰）
   useEffect(() => {
@@ -748,8 +752,6 @@ export function EmulatorPlayer({
   const cloudJoinPending = Boolean(cloudInviteId) && roomsEnabled() && cloudJoinRoom === undefined
   const myCloudRoom = useRoom(session?.cloud ? (roomId ?? undefined) : undefined)
 
-  /** 当前运行时句柄 + 它上报的能力集合（决定工具栏画哪些按钮） */
-  const [handle, setHandle] = useState<RuntimeHandle | null>(null)
   /**
    * 加载进度：存的是**合成后**的整条进度（0~1），不是适配器报的分阶段进度。
    * 合成逻辑在 loadProgress.ts 的 createOverallRatio —— 每次加载新建一个，

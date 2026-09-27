@@ -121,7 +121,7 @@ export function JsnesNetplayPanel({ handle, gameSlug, gameName, onClose }: Props
       <div className="w-full max-w-md rounded-lg border border-white/10 bg-neutral-900 p-5 text-sm text-neutral-100 shadow-xl">
         <div className="mb-4 flex items-center justify-between">
           <h3 className="text-base font-semibold">NES 联机（jsnes）</h3>
-          <button onClick={leave} className={buttonClasses({ variant: 'ghost', size: 'sm' })}>
+          <button onClick={leave} className={buttonClasses('ghost', 'sm')}>
             关闭
           </button>
         </div>
