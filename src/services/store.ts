@@ -66,6 +66,19 @@ export async function upsertGame(game: Game): Promise<Game> {
       '服务端没有保存 Windows 系统镜像。请在服务器运行数据库迁移并重启 8bitgo-api，然后重新保存。',
     )
   }
+  /*
+    逐游戏运行时（NES 可在 jsnes 与 emulatorjs 间切换）后加到 game_roms 的字段。
+    旧服务端不认识它时仍会给整个 PUT 返回 200，后台随即关闭表单并显示“已保存”，
+    重新打开才发现又被打回默认引擎。这里用服务端回包做一次回读校验，让版本错位
+    当场报清楚，也保留尚未保存的表单内容。
+  */
+  const requestedRuntime = game.runtime ?? null
+  const persistedRuntime = saved.runtime ?? null
+  if (requestedRuntime !== persistedRuntime) {
+    throw new Error(
+      '服务端没有保存「模拟器引擎」设置。请在服务器运行数据库迁移并重启 8bitgo-api，然后重新保存。',
+    )
+  }
   for (const [lang, entry] of Object.entries(game.dosExecutables ?? {})) {
     if (entry?.trim() && saved.dosExecutables?.[lang as keyof NonNullable<Game['dosExecutables']>] !== entry.trim()) {
       throw new Error(
