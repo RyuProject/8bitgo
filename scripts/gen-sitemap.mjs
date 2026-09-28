@@ -125,7 +125,10 @@ add('/games', '0.9', 'daily')
 add('/platforms', '0.8', 'weekly')
 add('/genres', '0.8', 'weekly')
 add('/developers', '0.6', 'weekly')
-add('/play-local', '0.6', 'monthly')
+// ⚠️ /play-local 不进 sitemap：它是隔离运行文档（服务端按 isIsolatedPlayPath 给
+// X-Robots-Tag: noindex, follow 以启用 SharedArrayBuffer），页面本身没有 noindex meta，
+// 但响应头已经是 noindex。两者同时存在会在 Search Console 报「已提交网址被标记为 noindex」。
+// 它仍可被访问和规范化，只是不主动提交给爬虫。
 add('/blog', '0.7', 'weekly')
 add('/about', '0.5', 'monthly')
 // 法律页。优先级低但**必须在这里** —— 应用商店和第三方登录（Google / Apple /

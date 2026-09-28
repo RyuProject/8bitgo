@@ -53,7 +53,7 @@ const ja: Translation = {
   /* ---------------- サイトタイトル ---------------- */
   site: {
     defaultTitle: '{site} — レトロゲームのエミュレーターをブラウザで無料プレイ',
-    titleTemplate: '{title}｜懐かしのレトロゲームをオンラインで遊ぶ - {site}',
+    titleTemplate: '{title}｜{site}',
   },
 
   /* ---------------- ナビゲーション ---------------- */

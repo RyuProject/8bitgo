@@ -144,7 +144,7 @@ export const PPSSPP_PATH: string = asDir(import.meta.env.VITE_PPSSPP_PATH)
  * Cloudflare 对这组静态文件的缓存键会忽略查询串，所以 PPSSPP 不能靠 `?r=` 换代。
  * 桥、Wasm 或 data 任一项变化都发布到新的实体目录，保证边缘不会拼出两代运行时。
  */
-export const PPSSPP_RUNTIME_GENERATION = 'v6'
+export const PPSSPP_RUNTIME_GENERATION = 'v7'
 export const PPSSPP_RUNTIME_PATH: string = PPSSPP_PATH
   ? asDir(`${PPSSPP_PATH}${PPSSPP_RUNTIME_GENERATION}`)
   : ''

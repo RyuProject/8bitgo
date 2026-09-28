@@ -50,7 +50,7 @@ const zhHant: Translation = {
 
   site: {
     defaultTitle: '{site} — 免費線上玩經典復古遊戲｜紅白機·GBA·街機·Flash 模擬器',
-    titleTemplate: '{title}｜經典復古遊戲線上玩 - {site}',
+    titleTemplate: '{title}｜{site}',
   },
 
   nav: {

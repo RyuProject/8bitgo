@@ -90,16 +90,22 @@ console.log('一、每种语言的页面标题都带搜索上下文')
 
 for (const lang of LANGS) {
   const minTitle = ['zh-Hans', 'zh-Hant', 'ja'].includes(lang) ? MIN_CJK_TITLE : MIN_LATIN_TITLE
-  check(`${lang}：默认标题和普通页面标题都 ≥ ${minTitle} 码点`, () => {
+  check(`${lang}：默认标题≥${minTitle} 码点，且模板是「页面名 - 品牌」形态`, () => {
     const block = siteBlock(lang)
     const defaultTitle = valueOf(block, 'defaultTitle')
     const template = valueOf(block, 'titleTemplate')
     assert.ok(defaultTitle, `${lang} 缺 site.defaultTitle`)
     assert.ok(template, `${lang} 缺 site.titleTemplate`)
-    const expanded = template.replace('{title}', 'Games').replace('{site}', '8BitGo')
+    // 默认标题（站点标语）仍然要够长，它承担首页的搜索上下文。
     assert.ok([...defaultTitle.replace('{site}', '8BitGo')].length >= minTitle, `默认标题太短：${defaultTitle}`)
-    assert.ok([...expanded].length >= minTitle, `普通页面标题太短：${expanded}`)
-    assert.notEqual(template, '{title} - {site}', '仍是只有页面名和品牌名的旧模板')
+    // 模板必须是「页面名 + 品牌」的干净形态：含 {title} 与 {site}，且不再把整句营销标语
+    // 硬编码进每个内页标题（那会造成「Play X Online | Play Classic Retro Games Online - 8BitGo」
+    // 这种双分隔符 + 关键词堆砌的标题，Google 会判为低质量并改写）。
+    assert.ok(template.includes('{title}') && template.includes('{site}'), `模板必须含 {title} 与 {site}：${template}`)
+    // 用代表性短标题验证模板能正确展开成「页面名 - 品牌」，且不会退化成空标题。
+    const sample = template.replace('{title}', 'Pong').replace('{site}', '8BitGo')
+    assert.ok(sample.includes('Pong') && sample.includes('8BitGo'), `模板未正确展开：${sample}`)
+    assert.ok([...sample].length >= 6, `模板展开后过短（可能丢了品牌）：${sample}`)
   })
 }
 

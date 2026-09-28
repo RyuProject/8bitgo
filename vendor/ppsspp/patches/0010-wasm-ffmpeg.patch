@@ -1,0 +1,22 @@
+diff --git a/Makefile b/Makefile
+index 1df252b..ead50a4 100644
+--- a/Makefile
++++ b/Makefile
+@@ -6,6 +6,8 @@ WASM_MAIN_LOOP_FPS ?= 60
+ WASM_INITIAL_MEMORY ?= 536870912
+ WASM_MAXIMUM_MEMORY ?= 4294967296
+ CMAKE ?= $(or $(wildcard /usr/bin/cmake),cmake)
++WASM_USE_FFMPEG ?= OFF
++WASM_FFMPEG_DIR ?=
+ 
+ WASM_COMMON_CMAKE_ARGS := \
+ 	-G Ninja \
+@@ -14,6 +16,7 @@ WASM_COMMON_CMAKE_ARGS := \
+ 	-DVULKAN=OFF \
+ 	-DUSE_NO_MMAP=ON \
+-	-DUSE_FFMPEG=OFF \
++	-DUSE_FFMPEG=$(WASM_USE_FFMPEG) \
++	-DFFMPEG_DIR=$(WASM_FFMPEG_DIR) \
+ 	-DUSE_DISCORD=OFF \
+ 	-DUSE_MINIUPNPC=OFF \
+ 	-DUSE_SYSTEM_LIBSDL2=OFF \

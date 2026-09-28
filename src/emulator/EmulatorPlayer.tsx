@@ -181,12 +181,14 @@ const BAR_IDLE_MS = 2500
  * 但视频播放器底下没有可点的东西，游戏有：点击式冒险（《Fran Bow》那种）的抽屉把手、
  * 对话选项就长在画面最底下，而这类游戏鼠标一直在动 —— 工具栏于是常年亮着压在上面。
  *
- * 改成只认底部这一条带。取「15% 或 72px 取大」：72px 是为了让这条带**至少盖住工具栏自己**
- * （pt-7 + 按钮 + pb-2 ≈ 64px），不然从按钮上方往下移动时，指针已经压在渐变带上了却还没进热区，
- * 工具栏要等碰到按钮才出来，手感是「按钮会躲」。
+ * 09-28 起收窄：原来取「15% 或 72px 取大」，72px 是为了让热区至少盖住工具栏自身
+ * （pt-7 + 按钮 + pb-2 ≈ 64px），从按钮上方往下移动时指针压在渐变带上也能把工具栏唤出来。
+ * 但用户反馈这条带太大，玩到画面下半部就误唤出工具栏压住画面。现在改成**最底边约 10px** 窄带 ——
+ * 只有把指针贴到画面最下沿才亮，平时不挡。和收起态那两条 10px 感应条（见下方 ~4403 的 h-2.5）对齐：
+ * ratio 归 0、纯按固定像素，不再随画面高度放大成一条大热区。
  */
-const BAR_HOT_ZONE_RATIO = 0.15
-const BAR_HOT_ZONE_MIN = 72
+const BAR_HOT_ZONE_RATIO = 0
+const BAR_HOT_ZONE_MIN = 10
 
 interface ActiveSession {
   id: number
@@ -4032,7 +4034,7 @@ export function EmulatorPlayer({
                     player-overlay-bar 把这一块的设计令牌换成深色（index.css），里面的按钮 / 徽章 / 弹出面板全跟着变。
                     收起 = 透明 + 下沉 2px + 不接指针；元素留在 DOM 里，Tab 到里面的按钮时靠 onFocus 再钉出来。
                   */
-                  'player-overlay-bar absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/60 to-black/0 pb-2 pt-7 transition-[opacity,transform] duration-200',
+                  'player-overlay-bar absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 via-black/35 to-black/0 pb-1.5 pt-3 transition-[opacity,transform] duration-200',
                   barHidden && 'pointer-events-none translate-y-0.5 opacity-0',
                 )
               : 'relative border-t border-line bg-surface py-1.5 sm:py-2',

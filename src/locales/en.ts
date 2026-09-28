@@ -53,7 +53,7 @@ const en: Translation = {
   /* ---------------- Site title ---------------- */
   site: {
     defaultTitle: '{site} — Play Retro Emulator Games Free Online',
-    titleTemplate: '{title} | Play Classic Retro Games Online - {site}',
+    titleTemplate: '{title} - {site}',
   },
 
   /* ---------------- Navigation ---------------- */

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const VERSION = '0dbfaca'
-const RUNTIME_GENERATION = 'v6'
+const RUNTIME_GENERATION = 'v7'
 const useDist = process.argv.includes('--dist')
 const sourceOnly = process.argv.includes('--source-only')
 const publicDir = join(root, 'public', 'ppsspp', `v${VERSION}`, RUNTIME_GENERATION)
@@ -40,6 +40,8 @@ for (const marker of [
   "AUDIO_WORKLET_SCRIPT = 'audio-worklet.js'",
   'getPreloadedPackage',
   'fetchCoreData',
+  "MEMSTICK_DIRS = ['PSP', 'PSP/SYSTEM', 'PSP/SAVEDATA', 'PSP/PPSSPP_STATE', 'PSP/GAME']",
+  "MEMSTICK_SEED_FILES = ['PSP/SYSTEM/controls.ini']",
 ]) {
   if (!host.includes(marker)) fail(`host.js 缺少桥标记 ${marker}`)
 }
@@ -48,10 +50,10 @@ if (!runtimeInit || /respond\s*\(/.test(runtimeInit)) {
   fail('host.js 在 onRuntimeInitialized 阶段就回复成功；此时 PPSSPP 还没有执行 main 或读取镜像')
 }
 if (!/<script src="host\.js"><\/script>/.test(need(join(runtimeDir, 'index.html')).toString('utf8'))) {
-  fail('v6 index.html 没有引用同一实体目录里的 host.js')
+  fail('v7 index.html 没有引用同一实体目录里的 host.js')
 }
-if (!/PPSSPP_RUNTIME_GENERATION = 'v6'/.test(paths) || !/PPSSPP_RUNTIME_PATH/.test(adapter)) {
-  fail('PPSSPP iframe 没有使用 v6 实体目录；查询串不能穿透当前 Cloudflare 缓存键')
+if (!/PPSSPP_RUNTIME_GENERATION = 'v7'/.test(paths) || !/PPSSPP_RUNTIME_PATH/.test(adapter)) {
+  fail('PPSSPP iframe 没有使用 v7 实体目录；查询串不能穿透当前 Cloudflare 缓存键')
 }
 if (/fetch\s*\(\s*(?:remote(?:\?\.)?\.url|gamePath)/.test(host)) {
   fail('host.js 出现整盘下载代码；远程镜像只能把 URL 交给 C++ Range loader')
@@ -77,14 +79,20 @@ for (const marker of [
 if (/'--memstick',\s*SAVE_ROOT/.test(host)) {
   fail('host.js 把 memstick 选项拆成两个 argv；PPSSPP 会把路径误认成第二个待启动文件')
 }
+if (!/for \(const directory of MEMSTICK_DIRS\) FS\.mkdirTree/.test(host)) {
+  fail('host.js 没有在放行 PPSSPP main 前准备 SYSTEM/SAVEDATA/状态目录；首次启动会无法保存配置')
+}
+if (!/FS\.stat\(path\)[\s\S]*?FS\.writeFile\(path, new Uint8Array\(\)\)/.test(host)) {
+  fail('host.js 没有保留已有控制器配置并只在首次启动补空 controls.ini')
+}
 if (host.includes('核心没有 Range 遥测回调，使用首帧兼容判据')) {
-  fail('v6 仍会在没有真实读盘时把空画布误报成游戏已启动')
+  fail('v7 仍会在没有真实读盘时把空画布误报成游戏已启动')
 }
 if (!/gameBootConfirmed/.test(host) || !/BOOTED_LOG_PATTERN = \/\\bBooted\\s\+\.\+\\\.\\\.\\\.\//.test(host)) {
-  fail('v6 没有等待 PPSSPP 的 Booted 日志；Range 遥测跨线程丢失时会再次超时')
+  fail('v7 没有等待 PPSSPP 的 Booted 日志；Range 遥测跨线程丢失时会再次超时')
 }
 if (!/print\(text\)[\s\S]*?observeCoreLog\(message\)[\s\S]*?printErr\(text\)[\s\S]*?observeCoreLog\(message\)/.test(host)) {
-  fail('v6 没有同时观察 stdout/stderr；不同 Emscripten 日志路由下会漏掉 Booted')
+  fail('v7 没有同时观察 stdout/stderr；不同 Emscripten 日志路由下会漏掉 Booted')
 }
 if (!/MOUNT_TIMEOUT_MS = 300_000/.test(adapter)) {
   fail('PSP 冷启动仍可能被旧的短超时误杀')
@@ -153,6 +161,14 @@ const coldStartPatch = need(join(root, 'vendor', 'ppsspp', 'patches', '0008-web-
 for (const marker of ['CHD_BLOCK_BYTES = 2 * 1024 * 1024', '--exclude-file', '*/assets/debugger/*', '约 86 秒', '约 93 秒']) {
   if (!coldStartPatch.includes(marker)) fail(`PSP 冷启动补丁缺少 ${marker}`)
 }
+const workerCanvasPatch = need(join(root, 'vendor', 'ppsspp', 'patches', '0009-worker-offscreen-canvas.patch')).toString('utf8')
+for (const marker of ['-sOFFSCREENCANVAS_SUPPORT=1', 'EMSCRIPTEN_WEBGL_CONTEXT_PROXY_FALLBACK', 'attrs.renderViaOffscreenBackBuffer = false']) {
+  if (!workerCanvasPatch.includes(marker)) fail(`Worker OffscreenCanvas 补丁缺少 ${marker}`)
+}
+const wasmFfmpegPatch = need(join(root, 'vendor', 'ppsspp', 'patches', '0010-wasm-ffmpeg.patch')).toString('utf8')
+for (const marker of ['WASM_USE_FFMPEG ?= OFF', '-DUSE_FFMPEG=$(WASM_USE_FFMPEG)', '-DFFMPEG_DIR=$(WASM_FFMPEG_DIR)']) {
+  if (!wasmFfmpegPatch.includes(marker)) fail(`Web FFmpeg 补丁缺少 ${marker}`)
+}
 for (const marker of [
   "runtime === 'ppsspp'",
   '${PPSSPP_RUNTIME_PATH}index.html?embed=1',
@@ -184,11 +200,15 @@ if (loaderRevision === 4 && (manifest.chdBlockBytes !== 2097152 || manifest.prel
   fail('Range v4 清单没有声明实测 2 MiB CHD 分片或精简的 Web data 包')
 }
 if (manifest.workerModel !== 'self-script') fail('runtime.json 没有声明 Emscripten 5 的自身 Worker 模型')
-if (manifest.webglContext !== 'proxy-always-offscreen-framebuffer') {
-  fail('runtime.json 没有声明 WebGL Worker 代理上下文模型')
+if (
+  manifest.offscreenCanvas !== true ||
+  manifest.offscreenFramebuffer !== 'fallback' ||
+  manifest.webglContext !== 'worker-offscreen-canvas-with-proxy-fallback'
+) {
+  fail('runtime.json 没有声明 Worker OffscreenCanvas 主路径与代理回退模型')
 }
-if (manifest.proxiedWebglPreloop !== 'skip-worker-token') {
-  fail('runtime.json 没有声明代理 WebGL 上下文的预帧保护')
+if (manifest.proxiedWebglPreloop !== 'fallback-skip-worker-token') {
+  fail('runtime.json 没有声明回退代理 WebGL 上下文的预帧保护')
 }
 if (manifest.pthreadAudioContext !== 'shared-ring-buffer-worklet') {
   fail('runtime.json 没有声明 AudioWorklet 共享音频桥；页面主线程卡顿会造成 PSP 爆音')
@@ -210,6 +230,14 @@ if (
 }
 if (manifest.webFeaturesBridge !== 'savestate-controls-v1') {
   fail('runtime.json 没有声明 PSP 即时存档/改键桥')
+}
+if (
+  manifest.mediaEngine !== 'ffmpeg-h264-audio-minimal' ||
+  manifest.ffmpegCommit !== '1e3b4965632f60b1d85360261d1b9dd45444bc71' ||
+  !Array.isArray(manifest.mediaDecoders) ||
+  !['h264', 'aac', 'atrac3', 'atrac3p', 'mp3'].every((codec) => manifest.mediaDecoders.includes(codec))
+) {
+  fail('runtime.json 没有声明锁定的 PSP H.264/音频解码能力')
 }
 
 const binaries = ['PPSSPPSDL.js', 'PPSSPPSDL.wasm', 'PPSSPPSDL.data']
@@ -236,8 +264,8 @@ if (installed) {
   for (const marker of ['proxyContextToMainThread', 'emscripten_webgl_do_create_context']) {
     if (!runtimeScript.includes(marker)) fail(`PPSSPPSDL.js 缺少 WebGL Worker 代理标记 ${marker}`)
   }
-  if (runtimeScript.includes('transferControlToOffscreen')) {
-    fail('PPSSPPSDL.js 错误启用了 OffscreenCanvas；PPSSPP 代理回主线程创建 EGL 上下文时会崩溃')
+  if (!runtimeScript.includes('transferControlToOffscreen') || !runtimeScript.includes('offscreenCanvases')) {
+    fail('PPSSPPSDL.js 缺少 Worker OffscreenCanvas 转交；显卡指令会重新走容易花屏的主线程逐条代理路径')
   }
   if (!/registerPreMainLoop\(\(\)=>\{if\(!GL\.currentContextIsProxied\)GL\.newRenderingFrameStarted\(\)/.test(runtimeScript)) {
     fail('PPSSPPSDL.js 缺少代理 WebGL 上下文预帧保护')
@@ -261,6 +289,9 @@ if (installed) {
     const runtimeWasm = need(join(runtimeDir, 'PPSSPPSDL.wasm')).toString('latin1')
     for (const marker of ['If-Match', 'If-Unmodified-Since', 'HTTP Range offset overflow']) {
       if (!runtimeWasm.includes(marker)) fail(`Range v2 WASM 缺少 ${marker}，清单与核心不一致`)
+    }
+    if (!runtimeWasm.includes('H.264')) {
+      fail('PPSSPPSDL.wasm 缺少 H.264 解码器；开场视频会显示为彩色花屏')
     }
     for (const marker of ['SkipBufferEffects', 'SkipGPUReadbackMode', 'HighQualityDepth', 'InflightFrames', 'LowLatencyPresent']) {
       if (!runtimeWasm.includes(marker)) fail(`PPSSPP 二进制不认识兼容配置 ${marker}`)

@@ -1,0 +1,40 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index ef69081..fb7ce15 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -347,6 +347,7 @@ if(EMSCRIPTEN)
+ 	add_link_options("-sINCOMING_MODULE_JS_API=canvas,locateFile,print,printErr,setStatus,monitorRunDependencies,preRun,onRuntimeInitialized,onAbort,arguments,SDL2")
+ 	add_link_options("-sFETCH=1")
+ 	add_link_options("-sPROXY_TO_PTHREAD=1")
++	add_link_options("-sOFFSCREENCANVAS_SUPPORT=1")
+ 	add_link_options("-sOFFSCREEN_FRAMEBUFFER=1")
+ 	add_link_options("-lworkerfs.js")
+ 	add_link_options("-lidbfs.js")
+diff --git a/SDL/SDLGLGraphicsContext.cpp b/SDL/SDLGLGraphicsContext.cpp
+index 9bceb52..bb4ca1f 100644
+--- a/SDL/SDLGLGraphicsContext.cpp
++++ b/SDL/SDLGLGraphicsContext.cpp
+@@ -365,7 +365,10 @@ int SDLGLGraphicsContext::Init(SDL_Window *&window, int x, int y, int w, int h,
+ 		// SDL 的 Emscripten EGL 入口会把整个建上下文函数代理到浏览器主线程：真实上下文
+ 		// 虽然建成了，PPSSPP 所在的 pthread 却没有 GLctx，第一次 glGet* 就会崩溃。
+-		// HTML5 WebGL API 会同时建立 Worker 侧代理；OffscreenFramebuffer 再负责把后备缓冲
+-		// 呈现到主线程 canvas，整个过程不转移 canvas 的所有权。
++		// PROXY_TO_PTHREAD 会把 #canvas 转交给运行主函数的 Worker；优先在同一线程直接创建
++		// OffscreenCanvas WebGL，避免把 PPSSPP 的 framebuffer 指令逐条代理到主线程后再做一次
++		// OffscreenFramebuffer 拷贝。游戏频繁切换渲染目标时，这条直接路径还能减少跨线程排队；
++		// 浏览器不支持 Worker WebGL 时，
++		// FALLBACK 才退回旧代理路径，OFFSCREEN_FRAMEBUFFER 仍为这个兼容分支提供显式交换。
+ 		EmscriptenWebGLContextAttributes attrs;
+ 		emscripten_webgl_init_context_attributes(&attrs);
+ 		attrs.alpha = false;
+@@ -380,8 +383,8 @@ int SDLGLGraphicsContext::Init(SDL_Window *&window, int x, int y, int w, int h,
+ 		attrs.minorVersion = 0;
+ 		attrs.enableExtensionsByDefault = true;
+ 		attrs.explicitSwapControl = true;
+-		attrs.proxyContextToMainThread = EMSCRIPTEN_WEBGL_CONTEXT_PROXY_ALWAYS;
+-		attrs.renderViaOffscreenBackBuffer = true;
++		attrs.proxyContextToMainThread = EMSCRIPTEN_WEBGL_CONTEXT_PROXY_FALLBACK;
++		attrs.renderViaOffscreenBackBuffer = false;
+ 		g_webGLContext = emscripten_webgl_create_context("#canvas", &attrs);
+ 		if (g_webGLContext > 0 && emscripten_webgl_make_context_current(g_webGLContext) == EMSCRIPTEN_RESULT_SUCCESS) {
+ 			glContext = reinterpret_cast<SDL_GLContext>(1);

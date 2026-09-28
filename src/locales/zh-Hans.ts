@@ -66,7 +66,7 @@ export const zhHans = {
   /* ---------------- 站点标题 ---------------- */
   site: {
     defaultTitle: '{site} — 经典游戏在线玩｜街机·红白机·GBA·Flash',
-    titleTemplate: '{title}｜经典复古游戏在线玩 - {site}',
+    titleTemplate: '{title}｜{site}',
   },
 
   /* ---------------- 导航 ---------------- */

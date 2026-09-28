@@ -17,7 +17,7 @@ import { spawnSync } from 'node:child_process'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const VERSION = '0dbfaca'
-const RUNTIME_GENERATION = 'v6'
+const RUNTIME_GENERATION = 'v7'
 const RANGE_LOADER_REVISION = 4
 const PINNED_COMMIT = '0dbfaca62a8a924abc2c5dd5dd0733b668e5e68a'
 const PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0001-range-streaming.patch')
@@ -28,7 +28,11 @@ const WEB_FEATURES_PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0005-web-s
 const PERFORMANCE_PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0006-web-performance.patch')
 const CHD_RANGE_PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0007-chd-range-performance.patch')
 const COLD_START_PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0008-web-cold-start.patch')
+const WORKER_CANVAS_PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0009-worker-offscreen-canvas.patch')
+const WASM_FFMPEG_PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0010-wasm-ffmpeg.patch')
 const OUTPUT = join(root, 'public', 'ppsspp', `v${VERSION}`, RUNTIME_GENERATION)
+const FFMPEG_COMMIT = '1e3b4965632f60b1d85360261d1b9dd45444bc71'
+const FFMPEG_LIBRARIES = ['avcodec', 'avformat', 'avutil', 'swresample', 'swscale']
 const args = process.argv.slice(2)
 const installExisting = args.includes('--install-existing')
 const sourceAt = args.indexOf('--source')
@@ -61,6 +65,8 @@ if (!existsSync(WEB_FEATURES_PATCH)) fail(`浏览器存档/改键桥补丁不存
 if (!existsSync(PERFORMANCE_PATCH)) fail(`浏览器性能补丁不存在：${PERFORMANCE_PATCH}`)
 if (!existsSync(CHD_RANGE_PATCH)) fail(`CHD Range 性能补丁不存在：${CHD_RANGE_PATCH}`)
 if (!existsSync(COLD_START_PATCH)) fail(`Web 冷启动补丁不存在：${COLD_START_PATCH}`)
+if (!existsSync(WORKER_CANVAS_PATCH)) fail(`Worker OffscreenCanvas 补丁不存在：${WORKER_CANVAS_PATCH}`)
+if (!existsSync(WASM_FFMPEG_PATCH)) fail(`Web FFmpeg 补丁不存在：${WASM_FFMPEG_PATCH}`)
 if (capture('git', ['rev-parse', 'HEAD']) !== PINNED_COMMIT) {
   fail(`源码提交不匹配，必须是 ${PINNED_COMMIT}；不要在未知上游版本上硬套二进制补丁`)
 }
@@ -144,6 +150,33 @@ if (
   fail('Web 冷启动补丁没有完整应用')
 }
 
+const workerCanvasApplied = readFileSync(cmakeSource, 'utf8').includes('-sOFFSCREENCANVAS_SUPPORT=1') &&
+  readFileSync(join(source, 'SDL', 'SDLGLGraphicsContext.cpp'), 'utf8')
+    .includes('EMSCRIPTEN_WEBGL_CONTEXT_PROXY_FALLBACK')
+if (!workerCanvasApplied) {
+  run('git', ['apply', '--check', WORKER_CANVAS_PATCH])
+  run('git', ['apply', WORKER_CANVAS_PATCH])
+}
+if (
+  !readFileSync(cmakeSource, 'utf8').includes('-sOFFSCREENCANVAS_SUPPORT=1') ||
+  !readFileSync(join(source, 'SDL', 'SDLGLGraphicsContext.cpp'), 'utf8')
+    .includes('attrs.proxyContextToMainThread = EMSCRIPTEN_WEBGL_CONTEXT_PROXY_FALLBACK')
+) {
+  fail('Worker OffscreenCanvas 补丁没有完整应用')
+}
+
+const makefileSource = join(source, 'Makefile')
+if (!readFileSync(makefileSource, 'utf8').includes('WASM_USE_FFMPEG ?= OFF')) {
+  run('git', ['apply', '--check', WASM_FFMPEG_PATCH])
+  run('git', ['apply', WASM_FFMPEG_PATCH])
+}
+if (
+  !readFileSync(makefileSource, 'utf8').includes('-DUSE_FFMPEG=$(WASM_USE_FFMPEG)') ||
+  !readFileSync(makefileSource, 'utf8').includes('-DFFMPEG_DIR=$(WASM_FFMPEG_DIR)')
+) {
+  fail('Web FFmpeg 补丁没有完整应用')
+}
+
 if (!args.includes('--skip-submodules')) {
   run('git', ['submodule', 'update', '--init', '--recursive', '--depth', '1'])
 }
@@ -156,6 +189,53 @@ const emcc = spawnSync('emcc', ['--version'], { encoding: 'utf8' })
 const emccVersion = `${emcc.stdout || ''}\n${emcc.stderr || ''}`
 if (emcc.error || emcc.status !== 0 || !/\b5\.0\.7\b/.test(emccVersion)) {
   fail('Emscripten 版本必须是 5.0.7；不同版本会改变 pthread 胶水与 WASM ABI，不能混用。')
+}
+
+const ffmpegSource = join(source, 'ffmpeg')
+const ffmpegBuildDir = join(source, 'build-wasm-ffmpeg')
+const ffmpegInstallDir = join(ffmpegBuildDir, 'install')
+if (!installExisting) {
+  if (!existsSync(join(ffmpegSource, 'configure'))) {
+    fail('FFmpeg 子模块没有初始化；不要用 --skip-submodules，或先手工初始化锁定的 ffmpeg 子模块')
+  }
+  if (capture('git', ['rev-parse', 'HEAD'], ffmpegSource) !== FFMPEG_COMMIT) {
+    fail(`FFmpeg 子模块提交不匹配，必须是 ${FFMPEG_COMMIT}`)
+  }
+  mkdirSync(ffmpegBuildDir, { recursive: true })
+  const ffmpegArchivesReady = FFMPEG_LIBRARIES.every((name) => existsSync(join(ffmpegInstallDir, 'lib', `lib${name}.a`)))
+  if (!ffmpegArchivesReady) {
+    // PSP 游戏里的 PSMF/PMP 视频只需要 H.264 与四种常见音频；裁掉编码器、网络和设备，
+    // 否则 Web 核心会无谓增加几十 MB，启动时间也会明显变长。
+    run('emconfigure', [join(ffmpegSource, 'configure'),
+      `--prefix=${ffmpegInstallDir}`,
+      '--cc=emcc', '--cxx=em++', '--ar=emar', '--ranlib=emranlib', '--nm=emnm',
+      '--enable-cross-compile', '--target-os=none', '--arch=wasm32',
+      '--disable-asm', '--disable-inline-asm', '--disable-stripping',
+      '--disable-programs', '--disable-doc', '--disable-debug', '--disable-network',
+      '--disable-avdevice', '--disable-avfilter', '--disable-postproc', '--disable-hwaccels',
+      '--disable-encoders', '--disable-muxers', '--disable-filters', '--disable-bsfs',
+      '--disable-devices', '--disable-protocols', '--disable-demuxers', '--disable-decoders',
+      '--disable-parsers', '--disable-xlib', '--disable-iconv',
+      '--enable-demuxer=mpegps,mpegvideo,h264,pmp,aac,mp3',
+      '--enable-decoder=h264,aac,atrac3,atrac3p,mp3,mp3float',
+      '--enable-parser=h264,aac,mpegaudio',
+      '--extra-cflags=-pthread', '--extra-cxxflags=-pthread', '--extra-ldflags=-pthread',
+    ], ffmpegBuildDir)
+    const ffmpegJobs = process.env.PPSSPP_JOBS || `-j${Math.max(1, Number(process.env.NUMBER_OF_PROCESSORS) || 4)}`
+    run('make', [ffmpegJobs], ffmpegBuildDir)
+    run('make', ['install'], ffmpegBuildDir)
+  }
+  const ffmpegConfig = readFileSync(join(ffmpegBuildDir, 'config.h'), 'utf8')
+  for (const marker of [
+    'CONFIG_H264_DECODER 1',
+    'CONFIG_AAC_DECODER 1',
+    'CONFIG_ATRAC3_DECODER 1',
+    'CONFIG_ATRAC3P_DECODER 1',
+    'CONFIG_MP3_DECODER 1',
+    'CONFIG_H264_PARSER 1',
+  ]) {
+    if (!ffmpegConfig.includes(marker)) fail(`精简 FFmpeg 缺少 ${marker}`)
+  }
 }
 
 // SDL 的 WebAudio 驱动会在主线程创建 AudioContext，却曾在 pthread 里直接读取采样率。
@@ -195,6 +275,17 @@ if (!/this->spec\.freq\s*=\s*MAIN_THREAD_EM_ASM_INT\s*\(/.test(sdlAudioText)) {
 }
 const buildDir = join(source, 'build-wasm-release')
 if (!installExisting) {
+  const cmakeCachePath = join(buildDir, 'CMakeCache.txt')
+  const expectedFfmpegDir = `FFMPEG_DIR:UNINITIALIZED=${ffmpegInstallDir}`
+  const cachedFfmpegPathsArePinned = (cache) => cache.includes(expectedFfmpegDir) &&
+    FFMPEG_LIBRARIES.every((name) => cache.includes(
+      `FFmpeg_LIBRARY_${name}:FILEPATH=${join(ffmpegInstallDir, 'lib', `lib${name}.a`)}`,
+    ))
+  if (existsSync(cmakeCachePath) && !cachedFfmpegPathsArePinned(readFileSync(cmakeCachePath, 'utf8'))) {
+    // CMake 会把每个 av* 静态库的绝对路径各自缓存；只更新 FFMPEG_DIR 仍可能链接上一套库。
+    // CMakeCache 是可再生构建状态，路径改变时丢弃它才能保证锁定子模块真正进入最终 Wasm。
+    unlinkSync(cmakeCachePath)
+  }
   const sdlThreadedArchive = join(emscriptenRoot, 'cache', 'sysroot', 'lib', 'wasm32-emscripten', 'libSDL2-mt.a')
   if (existsSync(sdlThreadedArchive)) unlinkSync(sdlThreadedArchive)
   // Emscripten 端口库不是 CMake 的显式输入；只删 libSDL2-mt.a 时，旧的最终产物仍可能被判定为最新。
@@ -205,9 +296,25 @@ if (!installExisting) {
   }
 
   const jobs = process.env.PPSSPP_JOBS || `-j${Math.max(1, Number(process.env.NUMBER_OF_PROCESSORS) || 4)}`
-  run('make', ['wasm-release', 'CMAKE=cmake', `WASM_JOBS=${jobs}`])
+  run('make', [
+    'wasm-release',
+    'CMAKE=cmake',
+    `WASM_JOBS=${jobs}`,
+    'WASM_USE_FFMPEG=ON',
+    `WASM_FFMPEG_DIR=${ffmpegInstallDir}`,
+  ])
 } else {
   console.log('ℹ 使用 build-wasm-release 中现有产物，仅执行完整性验收与安装')
+}
+
+const cmakeCache = readFileSync(join(buildDir, 'CMakeCache.txt'), 'utf8')
+if (!cmakeCache.includes('USE_FFMPEG:BOOL=ON')) {
+  fail('build-wasm-release 没有启用 FFmpeg；PSP 开场 H.264 视频会显示为彩色花屏')
+}
+if (!installExisting && !FFMPEG_LIBRARIES.every((name) => cmakeCache.includes(
+  `FFmpeg_LIBRARY_${name}:FILEPATH=${join(ffmpegInstallDir, 'lib', `lib${name}.a`)}`,
+))) {
+  fail('PPSSPP 没有链接锁定子模块构建出的 FFmpeg 静态库')
 }
 
 // Emscripten 5 的 pthread 入口复用主 JS（pthreadMainJs = _scriptName），不会再生成
@@ -232,10 +339,10 @@ if (!runtimeScript.includes('pthreadMainJs=_scriptName') || !runtimeScript.inclu
   fail('PPSSPPSDL.js 缺少 Emscripten 5 自身 Worker 启动标记，PROXY_TO_PTHREAD 可能没有生效')
 }
 if (!runtimeScript.includes('createOffscreenFramebuffer') || !runtimeScript.includes('renderViaOffscreenBackBuffer')) {
-  fail('PPSSPPSDL.js 缺少 OffscreenFramebuffer 支持；pthread 的 GL 调用无法安全代理到主线程')
+  fail('PPSSPPSDL.js 缺少 OffscreenFramebuffer 回退；不支持 Worker WebGL 的浏览器将无法呈现')
 }
-if (runtimeScript.includes('transferControlToOffscreen')) {
-  fail('PPSSPPSDL.js 错误启用了 OffscreenCanvas；PPSSPP 代理回主线程创建 EGL 上下文时会崩溃')
+if (!runtimeScript.includes('transferControlToOffscreen') || !runtimeScript.includes('offscreenCanvases')) {
+  fail('PPSSPPSDL.js 缺少 Worker OffscreenCanvas 转交；所有 GL 指令会继续走已知错误的主线程代理路径')
 }
 if (!/registerPreMainLoop\(\(\)=>\{if\(!GL\.currentContextIsProxied\)GL\.newRenderingFrameStarted\(\)/.test(runtimeScript)) {
   fail('PPSSPPSDL.js 缺少代理 WebGL 上下文预帧保护；FULL_ES3 会在首帧把整数令牌当对象写入并崩溃')
@@ -263,6 +370,9 @@ for (const marker of ['__ppssppBridgeSetCommand', '__ppssppBridgePopupOpen', '__
 const runtimeWasm = readFileSync(join(buildDir, 'PPSSPPSDL.wasm')).toString('latin1')
 for (const marker of ['If-Match', 'If-Unmodified-Since', 'HTTP Range offset overflow']) {
   if (!runtimeWasm.includes(marker)) fail(`PPSSPPSDL.wasm 缺少 Range v${RANGE_LOADER_REVISION} 标记 ${marker}，核心补丁可能没有编进产物`)
+}
+if (!runtimeWasm.includes('H.264')) {
+  fail('PPSSPPSDL.wasm 缺少 H.264 解码器标记；PSP 游戏视频仍会花屏')
 }
 
 mkdirSync(OUTPUT, { recursive: true })
@@ -292,9 +402,10 @@ const manifest = {
   rangeTelemetry: true,
   objectValidator: 'etag-or-last-modified',
   workerModel: 'self-script',
-  offscreenFramebuffer: true,
-  webglContext: 'proxy-always-offscreen-framebuffer',
-  proxiedWebglPreloop: 'skip-worker-token',
+  offscreenCanvas: true,
+  offscreenFramebuffer: 'fallback',
+  webglContext: 'worker-offscreen-canvas-with-proxy-fallback',
+  proxiedWebglPreloop: 'fallback-skip-worker-token',
   pthreadAudioContext: 'shared-ring-buffer-worklet',
   performanceProfile: 'adaptive-canvas-v1',
   maxCanvasPixels: 960 * 544,
@@ -306,6 +417,9 @@ const manifest = {
   startupReadinessProfile: 'core-boot-log-v1',
   preloadAssetsProfile: 'runtime-no-debugger',
   webFeaturesBridge: 'savestate-controls-v1',
+  mediaEngine: 'ffmpeg-h264-audio-minimal',
+  ffmpegCommit: FFMPEG_COMMIT,
+  mediaDecoders: ['h264', 'aac', 'atrac3', 'atrac3p', 'mp3', 'mp3float'],
   artifactsInstalled: true,
   artifacts,
 }

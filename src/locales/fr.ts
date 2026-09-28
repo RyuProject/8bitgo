@@ -53,7 +53,7 @@ const fr: Translation = {
   /* ---------------- Titre du site ---------------- */
   site: {
     defaultTitle: '{site} — Jouer gratuitement aux jeux rétro sur émulateur en ligne',
-    titleTemplate: '{title} | Jeux rétro classiques en ligne - {site}',
+    titleTemplate: '{title} - {site}',
   },
 
   /* ---------------- Navigation ---------------- */

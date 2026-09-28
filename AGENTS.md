@@ -1657,7 +1657,7 @@ R2 multipart 发布到最终 `roms/psp/*.chd`。`.cso` / `.chd` 保持直传。
   同时发生；`source_deleted` 的 0 / 1 / 2 分别是保留 / 已删 / 正在清理。
 - 前端创建任务把随机 `source_key` 当幂等键：响应途中断线可以重试，服务端只返回原任务。旧槽是
   `.chd` / `.cso` 而新文件是 `.iso` 时绝不复用旧 key，否则转换服务降级时会把 ISO 字节写进错误扩展名。
-- 当前公开 PPSSPP 是实体目录 v6、Range loader v4：ISO/CSO/CHD 都用 2MB 分块，共用 96MB 内存 LRU，
+- 当前公开 PPSSPP 是实体目录 v7、Range loader v4：ISO/CSO/CHD 都用 2MB 分块，共用 96MB 内存 LRU，
   并主动带 `If-Match` / `If-Unmodified-Since`
   钉住同一代镜像。播放 URL 同时带 `romv=<ETag>`，Worker 必须在每次 Range 前把它与 R2 当前 ETag 比较；
   不一致返回 412。Range 也必须绕过整包 Cache API，避免缓存的 200 响应跳过版本校验。
@@ -1697,27 +1697,23 @@ PPSSPP iframe 的入口必须保留完整的 `/ppsspp/<版本>/index.html`。`se
 `FS.filesystems.IDBFS` / `FS.filesystems.WORKERFS` 取；否则核心下载完会在 `preRun` 直接报
 `IDBFS is not defined`，玩家只看到 40% 后失败。CMake 还必须显式链接 `-lidbfs.js`，只写桥代码
 不够；`scripts/check-ppsspp.mjs` 会同时检查 host 引用方式和二进制是否真的含 IDBFS。缓存代次按
-下方 PSP 性能小节的四层规则更新，不能再把桥、核心和 data 绑成同一个数字。
+下方 PSP 性能小节的实体目录规则更新，桥、核心和 data 必须作为同一代原子发布。
 
 ⚠️ `-sPROXY_TO_PTHREAD=1` 和 `-sOFFSCREEN_FRAMEBUFFER=1` 还不等于 GL 会自动跨线程工作。
 SDL 的 Emscripten EGL 入口把整个 `eglCreateContext` 代理到主线程，只在那里建立真实上下文，
 PPSSPP 所在的 pthread 仍没有 `GLctx`；首次 `glGetString` / `glGetIntegerv` 就会报
 `Cannot read properties of undefined (reading 'getParameter')`。浏览器构建必须在
 `SDL/SDLGLGraphicsContext.cpp` 直接调用 `emscripten_webgl_create_context`，设置
-`EMSCRIPTEN_WEBGL_CONTEXT_PROXY_ALWAYS` + `renderViaOffscreenBackBuffer` +
-`explicitSwapControl`，并在换帧时调用 `emscripten_webgl_commit_frame()`。这才会同时建立
-Worker 侧代理上下文，并把后备缓冲呈现到主线程 canvas。
-
-不要换成 `-sOFFSCREENCANVAS_SUPPORT=1`：SDL/EGL 仍会代理回主线程，而已经
-`transferControlToOffscreen()` 的 canvas 不能再在主线程 `getContext()`，Chrome 会抛
-`InvalidStateError: Cannot get context from a canvas that has transferred its control to offscreen`。
+`EMSCRIPTEN_WEBGL_CONTEXT_PROXY_FALLBACK` + `renderViaOffscreenBackBuffer=false`。配合
+`-sOFFSCREENCANVAS_SUPPORT=1`，支持的浏览器会把 canvas 直接转交 Worker；不能转交时才回退到
+主线程代理。v6 的 `PROXY_ALWAYS + OffscreenFramebuffer` 每条 GL 调用都跨线程，虽然能出画面，
+却会给 framebuffer-heavy 游戏增加不必要的排队与拷贝；v7 的直接 Worker 上下文才是主路径。
 
 PPSSPP 原来的 `gl3stub.c` 把 GLES3 核心函数声明成动态函数指针，和 OffscreenFramebuffer 的
 Emscripten GL 导出发生符号类型冲突；补丁因此让浏览器构建直接使用 `<GLES3/gl3.h>` 的核心入口，
 只有可选扩展继续走 `SDL_GL_GetProcAddress`。验收以 `PPSSPPSDL.js` 同时含
-`createOffscreenFramebuffer` / `renderViaOffscreenBackBuffer` / `proxyContextToMainThread` /
-`emscripten_webgl_do_create_context`，且不含 `transferControlToOffscreen` 为准；构建与发布检查
-都会拦截错误产物。
+`transferControlToOffscreen` / `offscreenCanvases`，并保留作为回退的 `createOffscreenFramebuffer` /
+`proxyContextToMainThread` / `emscripten_webgl_do_create_context` 为准；构建与发布检查都会拦截错误产物。
 
 ⚠️ SDL2 的 Emscripten 音频驱动虽然用 `MAIN_THREAD_EM_ASM_INT` 在主线程创建 `AudioContext`，
 但 2.32.10 读取原生采样率的那一处却用了普通 `EM_ASM_INT`。`PROXY_TO_PTHREAD` 下它会去工作线程的
@@ -1758,12 +1754,18 @@ VPS/FPS、实际 FPS、画布尺寸和音频模式，供真机确认选档与掉
 `runtime.json` 以 `performanceProfile=adaptive-canvas-v1`、`maxCanvasPixels=522240`、
 `pthreadPoolMax=8`、`lto=true` 和 `performanceTelemetry=true` 固化验收。
 
-⚠️ 自适应只选最终画布与 SAS 线程，不再提高游戏的内部分辨率。2026-09-28 实测《寂静岭：起源》
-同一来源的 CHD 能通过严格 Range 校验并启动，但强机档的 2x + 单帧低延迟配置会放大它异常宽、跨帧
-复用的 framebuffer 问题；PPSSPP 上游也仍把这款游戏的图形调查保持为未解决。v6 继续给**所有 PSP**
-统一写入 `InternalResolution=1`、`SkipBufferEffects=False`、`SkipGPUReadbackMode=0`、
-`HighQualityDepth=True`、`FrameSkip=0` / `AutoFrameSkip=False`。不要再按某款游戏加一串 slug 特判：
-完整缓冲/回读是正确性基线，代价只是少一点放大画质和性能捷径。
+⚠️ 自适应只选最终画布与 SAS 线程，不再提高游戏的内部分辨率。v7 给**所有 PSP**统一写入
+`InternalResolution=1`、`SkipBufferEffects=False`、`SkipGPUReadbackMode=0`、`HighQualityDepth=True`、
+`FrameSkip=0` / `AutoFrameSkip=False`。不要再按某款游戏加一串 slug 特判：完整缓冲/回读是正确性
+基线，代价只是少一点放大画质和性能捷径。
+
+⚠️ 《寂静岭：起源》冷启动时出现的彩色花屏不是 CHD、Range 或 framebuffer 损坏，而是 Web 构建
+曾固定 `USE_FFMPEG=OFF`：游戏已经 Booted，但开场 PSMF 的 H.264 帧没有解码器。参考站能直接到标题
+是因为页面自动读取了旧进度，跳过开场，不能拿它和无存档冷启动比较。`0010-wasm-ffmpeg.patch` 让
+Makefile 接受锁定的 FFmpeg 目录；`scripts/build-ppsspp.mjs` 从 PPSSPP 自己固定的 ffmpeg 子模块提交
+`1e3b4965632f60b1d85360261d1b9dd45444bc71` 构建最小 wasm 静态库，只保留 H.264、AAC、ATRAC3、
+ATRAC3+ 和 MP3 解码。构建/发布检查必须同时看到 `USE_FFMPEG:BOOL=ON`、Wasm 中的 `H.264` 标记与
+`runtime.json.mediaEngine=ffmpeg-h264-audio-minimal`，否则会复发“能启动、视频却花屏”。
 
 ⚠️ 核心代码、桥和约 19MB 的 `PPSSPPSDL.data` 必须作为**一个实体目录原子换代**。Web 构建会通过
 `0008-web-cold-start.patch` 排除不会在播放器中开放的 `assets/debugger/`（React 调试器、source map
@@ -1771,8 +1773,8 @@ VPS/FPS、实际 FPS、画布尺寸和音频模式，供真机确认选档与掉
 Cloudflare 对这组静态文件的缓存键**忽略查询串**：请求 `PPSSPPSDL.data?r=17` 仍命中旧的 r16
 （22,417,304B，`CF-Cache-Status: HIT`），而新清单需要 19,434,861B。查询参数不能再承担版本隔离，
 否则新 JS、旧 data 和旧 Wasm 会被拼在同一局里。当前整套资源发布在
-`public/ppsspp/v0dbfaca/v6/`；下次桥、JS、Wasm、data 或 AudioWorklet 任一项改变就复制/构建到
-`v7/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，不原地覆盖。
+`public/ppsspp/v0dbfaca/v7/`；下次桥、JS、Wasm、data 或 AudioWorklet 任一项改变就复制/构建到
+`v8/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，不原地覆盖。
 
 Emscripten
 自带的 preload fetch 没有重试，`host.js` 用 `getPreloadedPackage` 接管：优先读浏览器缓存，连续
@@ -1788,7 +1790,7 @@ focus 和点击发生在同一刻，没有真实提前量，只预热小入口�
 
 输入延迟不能只靠“把画质调低”。老访客的单游戏配置还会覆盖新默认；`host.js` 因此在 Wasm
 文件系统写入一次性的 `8bitgo-performance.ini`，并通过 `--appendconfig=` 让它在全局/单游戏配置
-之后合并。v6 不再用最激进的单帧呈现：`InflightFrames=2`、`VerticalSync=False`、
+之后合并。v7 不再用最激进的单帧呈现：`InflightFrames=2`、`VerticalSync=False`、
 `LowLatencyPresent=False`，同时固定 `FrameSkip=0` / `AutoFrameSkip=False`。这会多一点输入延迟，
 但给浏览器的代理 framebuffer 呈现留出余量；弱机与四核设备仍关闭独立 SAS 音频仿真线程，减少
 pthread 争用，强机才开。这份策略在
@@ -1801,6 +1803,13 @@ pthread 争用，强机才开。这份策略在
 为 ms0 文件。PPSSPP 的长参数必须写成一个带等号的 argv；拆成 `--memstick`、路径两个 argv 会把路径
 误认成第二个启动文件并报 `Can only boot one file`。不要把 ISO/CSO/CHD 复制到 `SAVE_ROOT`，也不要靠
 修改 ROM 的反盗版补丁解决路径问题。
+
+IDBFS 挂到 `SAVE_ROOT` 后、移除 run dependency 之前必须预建 `PSP/SYSTEM`、`PSP/SAVEDATA`、
+`PSP/PPSSPP_STATE` 和 `PSP/GAME`。PPSSPP 会在 main 的最早阶段立即保存 `ppsspp.ini` 与
+`controls.ini`；只创建挂载根目录会让首次启动虽然能进游戏，却在控制台报无法保存配置，之后改键和
+存档也处于不确定状态。`controls.ini` 的保存逻辑还会先读旧文件，首次安装必须补一个空文件；只在
+`FS.stat` 确认缺失时创建，绝不能覆盖玩家已有改键。目录准备放在 `try/finally` 内，失败仍要解除依赖，
+不能把页面永久卡在加载中。
 
 开局、打开改键页和工具栏交互后统一走 `focusFrame(iframe)`，避免焦点留在外层按钮造成“第一次按键
 没反应”；手柄枚举也必须走 `frameGamepads(iframe)`，因为浏览器按文档隔离手柄激活权限。
@@ -1815,12 +1824,12 @@ PPSSPP 自己的 SAVEDATA、原生状态和按键配置仍由 IDBFS 每 30 秒�
 ⚠️ 远程盘的“启动成功”不能只等 `__ppssppRangeProgress`。该回调从 pthread 经
 `MAIN_THREAD_EM_ASM` 回页面，在部分浏览器里会晚到或完全看不到；v5 因此出现过镜像仍在正常 Range
 读取、外层却在 180 秒报“PPSSPP 响应超时”。也不能恢复“canvas 尺寸变化后一秒算成功”，那只是 SDL
-创建了黑窗口。v6 改为在 stdout 与 stderr 两路都等待 PPSSPP 成功打开内容后固定输出的
+创建了黑窗口。v7 在 stdout 与 stderr 两路都等待 PPSSPP 成功打开内容后固定输出的
 `Booted <path>...` 日志，并把大型 CHD 的
 mount 上限放到 300 秒；Range 回调只负责进度、对象大小校验和明确错误。`runtime.json` 用
 `startupReadinessProfile=core-boot-log-v1` 固化这条判据。
 
-PPSSPP 的 immutable 缓存只认**物理目录代次**，不再分 `?r=` 四层：`v6/` 内的 index、host、
+PPSSPP 的 immutable 缓存只认**物理目录代次**，不再分 `?r=` 四层：`v7/` 内的 index、host、
 AudioWorklet、JS、Wasm、data 与 runtime.json 必须同批发布。虽然某次可能只改 20KB 的桥，仍要换到
 下一个目录；这是用少量重复存储换取边缘缓存绝不会混代。不要重新引入 `RUNTIME_REVISION` / `DATA_REVISION`
 或给文件补查询参数假装失效，它们在当前 Cloudflare 规则下不生效。
@@ -1836,7 +1845,7 @@ AudioWorklet、JS、Wasm、data 与 runtime.json 必须同批发布。虽然某�
 ⚠️ 已发布过一版把 `VITE_PPSSPP_PATH` 目录直接塞进 iframe，老 bundle 会请求
 `/ppsspp/v0dbfaca?embed=1&r=2`（没有 `index.html`）。静态中间件关闭目录重定向后它必然 404，
 玩家要白等 120 秒才看到超时。`server/src/index.js` 为这个精确旧地址保留了 `no-store` 302，
-跳到当前 `v6/index.html`；以后换实体目录时必须同步那条跳转和回归断言。
+跳到当前 `v7/index.html`；以后换实体目录时必须同步那条跳转和回归断言。
 
 回归：`npm run test:ppsspp && npm run test:worker`。
 
