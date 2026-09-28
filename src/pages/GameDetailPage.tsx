@@ -17,7 +17,7 @@ import { genreMap } from '@/data/genres'
 import { isPlatformEnabled } from '@/config/platforms'
 import { formatCount, formatPlayers } from '@/lib/format'
 import { usePlatformBiosUrl } from '@/services/platformBios'
-import { useSeo, breadcrumbSchema, videoGameSchema } from '@/services/seo'
+import { useSeo, breadcrumbSchema, videoGameSchema, faqSchema } from '@/services/seo'
 import { useLang } from '@/services/lang'
 import { useT, fmt } from '@/services/i18n'
 import { getLang } from '@/services/lang'
@@ -256,6 +256,18 @@ export function GameDetailPage() {
   // 搜索结果里就是一串看不懂的字，等于白写
   const seoDesc = game ? plainText(gameDescription(game, lang)) : ''
   const seoLanguages = game ? gameSeoLanguagePlan(game, lang) : undefined
+  // 游戏详情页常见问题：用现有翻译 token 拼出随语言走的问答，补足可被爬虫读懂的正文，
+  // 并配合 faqSchema 结构化数据争取「人们还问 / 精选摘要」露出。未翻译的语言（faqNs 缺失）自动跳过。
+  const faqNs = t.game.faq
+  const faqVars = { title: seoTitle, platform: seoPlatformName, year: game?.year ? String(game.year) : '' }
+  const faqItems = game && faqNs
+    ? [
+        { q: fmt(faqNs.playQ, faqVars), a: fmt(faqNs.playA, faqVars) },
+        { q: fmt(faqNs.platformQ, faqVars), a: fmt(faqNs.platformA, faqVars) },
+        { q: fmt(faqNs.saveQ, faqVars), a: fmt(faqNs.saveA, faqVars) },
+        { q: fmt(faqNs.mobileQ, faqVars), a: fmt(faqNs.mobileA, faqVars) },
+      ]
+    : []
   useSeo(
     game
       ? {
@@ -288,6 +300,7 @@ export function GameDetailPage() {
               { name: t.common.library, path: '/games' },
               { name: seoTitle, path: `/games/${game.slug}` },
             ], seoLanguages?.canonicalLanguage),
+            ...(faqItems.length ? [faqSchema(faqItems)] : []),
           ],
         }
       : state.status === 'ready'
@@ -641,6 +654,22 @@ export function GameDetailPage() {
                 </div>
               )}
             </section>
+
+            {/* 常见问题：可见问答 + faqSchema 结构化数据，补足可被爬虫读懂的页面正文，
+                并争取「人们还问」/ 精选摘要的露出（faqSchema 在 useSeo 里按 faqItems 注入） */}
+            {game && faqItems.length > 0 && (
+              <section className="mt-8">
+                <h2 className="text-lg font-bold">{faqNs.faqTitle}</h2>
+                <dl className="mt-4 space-y-4">
+                  {faqItems.map((item, i) => (
+                    <div key={i}>
+                      <dt className="font-semibold">{item.q}</dt>
+                      <dd className="mt-1 text-sm leading-relaxed text-muted">{item.a}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </section>
+            )}
 
             {/* 操作说明 */}
             <section className="mt-8">

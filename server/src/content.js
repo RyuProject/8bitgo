@@ -230,10 +230,56 @@ function loadGamePage(slug) {
   return cached(`game:${slug}`, async () => {
     const game = await getGameBySlug(slug)
     if (!game || game.hidden) return { route: 'game', game: null }
-    // 相关推荐：同平台的其它游戏，够用且只要一条索引
-    const related = await listGames({ platform: game.platform, sort: 'popular', pageSize: 9 })
-    return { route: 'game', game, related: related.items.filter((g) => g.slug !== slug).slice(0, 8) }
+    const related = await loadRelatedGames(game)
+    return { route: 'game', game, related }
   })
+}
+
+/**
+ * 相关推荐：做成「主题簇」而非「同平台热门榜」，强化同系列 / 同厂商 / 同类型的内链。
+ *
+ * 旧逻辑只取同平台按热度前 8（content.js 原来一行 `listGames({ platform, sort:'popular' })`），
+ * 对 Metal Slug 4 这种游戏，推出来的其实是随机热门街机，而不是《合金弹头》系列 —— 既不利于
+ * 用户找续作，也让 Google 抓不到「这几款是同一系列」的内链信号，整簇权威性上不去。
+ *
+ * 现在按三档信号分别取候选、加权聚合、去重后取前 8：
+ *   3 分 · 同厂商（系列 / 厂商簇，权重最高）
+ *   2 分 · 同类型 + 同平台（题材簇，Metal Slug 全系都靠这档聚起来）
+ *   1 分 · 同平台（兜底，补满剩余位）
+ * 同分再按热度排，保证顺序稳定。三档各取 12 条候选，在已缓存的 `game:slug` 里只跑一次。
+ */
+async function loadRelatedGames(game) {
+  const slug = game.slug
+  // 厂商可能录了多家（「SNK, Mega Enterprise」）。listGames 的 developer 过滤是按
+  // FIND_IN_SET 边界匹配的，必须传单个厂商 token，否则整串当成一个值去比永远命中不了。
+  const primaryDev = String(game.developer || '')
+    .split(/[,，]/)[0]
+    ?.trim()
+  const [devRows, genreRows, platRows] = await Promise.all([
+    primaryDev
+      ? listGames({ developer: primaryDev, sort: 'popular', pageSize: 12 })
+      : { items: [] },
+    Array.isArray(game.genres) && game.genres.length
+      ? listGames({ genre: game.genres[0], platform: game.platform, sort: 'popular', pageSize: 12 })
+      : { items: [] },
+    listGames({ platform: game.platform, sort: 'popular', pageSize: 12 }),
+  ])
+
+  const seen = new Set([slug])
+  const scored = []
+  const push = (rows, score) => {
+    for (const g of rows.items || []) {
+      if (seen.has(g.slug)) continue
+      seen.add(g.slug)
+      scored.push({ g, score })
+    }
+  }
+  push(devRows, 3) // 同厂商优先
+  push(genreRows, 2) // 同类型同平台次之
+  push(platRows, 1) // 同平台兜底
+
+  scored.sort((a, b) => b.score - a.score || (b.g.plays ?? 0) - (a.g.plays ?? 0))
+  return scored.slice(0, 8).map((x) => x.g)
 }
 
 export async function loadForRoute(pathname, search) {

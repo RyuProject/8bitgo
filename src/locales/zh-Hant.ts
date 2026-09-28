@@ -348,6 +348,17 @@ const zhHant: Translation = {
     coinLogin: '登入領取',
     relatedTitle: '你可能也喜歡',
     relatedSubtitle: '同平台、同類型或同一開發商的作品',
+    faqTitle: "常見問題",
+    faq: {
+      playQ: "怎麼玩 {title}？",
+      playA: "你可以在 8BitGo 直接用瀏覽器免費線上玩 {title}，無需下載，也不用安裝任何模擬器。",
+      platformQ: "{title} 是什麼平台的遊戲？",
+      platformA: "{title} 最初發佈於 {platform} 平台。在 8BitGo 上無需任何額外設定，打開瀏覽器即可遊玩。",
+      saveQ: "在 {title} 裡能保存進度嗎？",
+      saveA: "可以。8BitGo 上的多數模擬器都支援即時存檔，登入後還能把支援的存檔同步到雲端。",
+      mobileQ: "{title} 在手機上能玩嗎？",
+      mobileA: "可以。8BitGo 會自動適配觸控設備，提供螢幕虛擬按鍵，也支援連接藍牙手把。",
+    },
   },
 
   /* ---------------- 遊戲留言 ---------------- */

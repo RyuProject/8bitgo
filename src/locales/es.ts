@@ -368,6 +368,17 @@ const es: Translation = {
     coinLogin: 'Inicia sesión para cobrarlos',
     relatedTitle: 'También te puede gustar',
     relatedSubtitle: 'Misma plataforma, mismo género o de la misma desarrolladora',
+    faqTitle: "Preguntas frecuentes",
+    faq: {
+      playQ: "¿Cómo puedo jugar a {title}?",
+      playA: "Puedes jugar a {title} en línea y gratis directamente en tu navegador en 8BitGo. No necesitas descargar nada ni instalar ningún emulador.",
+      platformQ: "¿En qué plataforma es {title}?",
+      platformA: "El lanzamiento original de {title} fue para la plataforma {platform}. En 8BitGo juegas directamente en el navegador sin configuración adicional.",
+      saveQ: "¿Puedo guardar mi progreso en {title}?",
+      saveA: "Sí. La mayoría de los emuladores de 8BitGo admiten guardados rápidos, e iniciar sesión te permite sincronizar las partidas compatibles en la nube.",
+      mobileQ: "¿Funciona {title} en el móvil?",
+      mobileA: "Sí. 8BitGo se adapta a dispositivos táctiles, con controles en pantalla o soporte para mandos Bluetooth.",
+    },
   },
 
   /* ---------------- Comentarios ---------------- */

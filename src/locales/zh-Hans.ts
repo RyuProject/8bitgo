@@ -431,6 +431,17 @@ export const zhHans = {
     coinLogin: '登录领取',
     relatedTitle: '你可能也喜欢',
     relatedSubtitle: '同平台、同类型或同一开发商的作品',
+    faqTitle: "常见问题",
+    faq: {
+      playQ: "怎么玩 {title}？",
+      playA: "你可以在 8BitGo 直接用浏览器免费在线玩 {title}，无需下载，也不用安装任何模拟器。",
+      platformQ: "{title} 是什么平台的游戏？",
+      platformA: "{title} 最初发布于 {platform} 平台。在 8BitGo 上无需任何额外设置，打开浏览器即可游玩。",
+      saveQ: "在 {title} 里能保存进度吗？",
+      saveA: "可以。8BitGo 上的多数模拟器都支持即时存档，登录后还能把支持的存档同步到云端。",
+      mobileQ: "{title} 在手机上能玩吗？",
+      mobileA: "可以。8BitGo 会自动适配触屏设备，提供屏幕虚拟按键，也支持连接蓝牙手柄。",
+    },
   },
 
   /* ---------------- 游戏评论 ---------------- */
