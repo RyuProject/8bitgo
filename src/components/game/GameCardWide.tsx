@@ -6,7 +6,8 @@ import { GameCover } from './GameCover'
 import { Badge } from '@/components/ui/Badge'
 import { RatingText } from './StarRating'
 import { useLang } from '@/services/lang'
-import { gameTitle } from '@/services/i18nData'
+import { useT } from '@/services/i18n'
+import { gameTitle, platformLabel } from '@/services/i18nData'
 
 interface Props {
   game: Game
@@ -24,6 +25,7 @@ interface Props {
  */
 export function GameCardWide({ game, className, isNew }: Props) {
   const lang = useLang()
+  const t = useT()
   const platform = platformMap[game.platform]
   // 中文界面下要显示中文译名。以前这里直接写 game.title，于是「最新上线」整块
   // 在中文站上全是英文原名，而旁边用 GameCard 的区块却是中文 —— 同一页两套名字
@@ -48,7 +50,7 @@ export function GameCardWide({ game, className, isNew }: Props) {
         </h3>
         <p className="mt-1 flex items-center justify-between text-[11px] text-muted">
           <span>
-            {platform.name}{game.year > 0 ? ` · ${game.year}` : ''}
+            {platformLabel(t, game.platform, platform.name)}{game.year > 0 ? ` · ${game.year}` : ''}
           </span>
           <span className="flex shrink-0 items-center gap-1.5">
             <RatingText rating={game.rating} count={game.ratingCount} />

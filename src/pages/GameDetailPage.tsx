@@ -635,7 +635,7 @@ export function GameDetailPage() {
                 <Meta label={t.game.players} value={formatPlayers(game.players)} />
                 <Meta label={t.game.supportedLanguages} value={supportedLangs || '—'} />
               </dl>
-              {game.tags && game.tags.length > 0 && (
+              {game.tags && game.tags.length > 0 && lang === 'zh-Hans' && (
                 <div className="mt-4 flex flex-wrap gap-2">
                   {game.tags.map((t) => (
                     <InternalLink

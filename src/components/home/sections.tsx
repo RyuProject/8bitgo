@@ -463,10 +463,21 @@ function SpecialThanksBox({ links }: { links: FriendLink[] }) {
   )
 }
 
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname
+  } catch {
+    return ''
+  }
+}
+
 function FriendLinkButton({ link }: { link: FriendLink }) {
   const [broken, setBroken] = useState(false)
+  const lang = useLang()
   // 空串代表文字友链；先判空，避免资源根地址被误当成图片 URL。
   const src = broken || !link.image ? '' : romUrlForKey(link.image)
+  // 中文界面用中文站名；其它语言没有翻译源，退回域名，避免英文页出现中文品牌名
+  const displayName = lang === 'zh-Hans' ? link.name : (hostOf(link.url) || link.name)
   return (
     <a
       href={link.url}
@@ -487,8 +498,8 @@ function FriendLinkButton({ link }: { link: FriendLink }) {
         但为了那一小部分人给每个链接挂两个监听器不划算。
       */
       onClick={() => reportFriendLinkClick(link.id)}
-      aria-label={link.name}
-      title={link.name}
+      aria-label={displayName}
+      title={displayName}
       className={cx(
         'grid h-[31px] shrink-0 place-items-center overflow-hidden rounded-[3px] outline-offset-4 transition focus-visible:outline-2 focus-visible:outline-brand',
         src
@@ -499,7 +510,7 @@ function FriendLinkButton({ link }: { link: FriendLink }) {
       {src ? (
         <img
           src={src}
-          alt={link.name}
+          alt={displayName}
           width={88}
           height={31}
           loading="lazy"
@@ -508,7 +519,7 @@ function FriendLinkButton({ link }: { link: FriendLink }) {
           className="h-[31px] w-[88px] object-contain"
         />
       ) : (
-        <span className="max-w-full truncate whitespace-nowrap">{link.name}</span>
+        <span className="max-w-full truncate whitespace-nowrap">{displayName}</span>
       )}
     </a>
   )
