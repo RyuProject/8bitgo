@@ -90,7 +90,7 @@ export function footerLinksFor(t: Translation): FooterLink[] {
       文案本地化（表单本身只有中文一份，但链接文字用访客的语言更友好）。
     */
     {
-      label: t.footer.submitGame,
+      label: t.nav.submitGame,
       href: 'https://cjpx75sqmptg.jp.larksuite.com/share/base/form/shrjpBzaQuvuhQdxKGJDfvgNqKC',
       external: true,
     },
@@ -100,6 +100,6 @@ export function footerLinksFor(t: Translation): FooterLink[] {
     */
     { label: t.apps.openPlatform, to: '/open' },
     ...(FEATURES.live ? [{ label: '8BitGo TV', to: '/tv' }] : []),
-    { label: t.footer.playLocal, to: '/play-local' },
+    { label: t.nav.playLocal, to: '/play-local' },
   ]
 }
