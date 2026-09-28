@@ -17,7 +17,7 @@ import { spawnSync } from 'node:child_process'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const VERSION = '0dbfaca'
-const RUNTIME_GENERATION = 'v4'
+const RUNTIME_GENERATION = 'v5'
 const RANGE_LOADER_REVISION = 4
 const PINNED_COMMIT = '0dbfaca62a8a924abc2c5dd5dd0733b668e5e68a'
 const PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0001-range-streaming.patch')
@@ -301,7 +301,8 @@ const manifest = {
   pthreadPoolMax: 8,
   lto: true,
   performanceTelemetry: true,
-  inputLatencyProfile: 'inflight-1-vsync-off',
+  inputLatencyProfile: 'inflight-2-vsync-off-buffered-native',
+  graphicsCompatibilityProfile: 'buffered-native-v1',
   preloadAssetsProfile: 'runtime-no-debugger',
   webFeaturesBridge: 'savestate-controls-v1',
   artifactsInstalled: true,

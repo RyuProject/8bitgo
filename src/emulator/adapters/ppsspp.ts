@@ -227,7 +227,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   // r=12 移除 pthread 第一帧中非法重设主线程计时器的调用。
   // r=13 给首帧的音频填充、事件轮询与 NativeFrame 加一次性定位点。
   // r=14 证实真正故障是 Emscripten 在代理 WebGL 的整数令牌上执行本地 VBO 预帧维护。
-  // v4 根据真实冷启动数据把 CHD Range 恢复为 2MB，并裁掉 data 里的远程调试器资源、
+  // v5 保留 v4 实测更快的 2MB CHD Range，并把所有 PSP 游戏收敛到原生分辨率完整缓冲档；
+  // 同时裁掉 data 里的远程调试器资源、
   // 降低解包前内存峰值。Cloudflare 对这组静态资源忽略查询串，因此必须换实体目录；
   // 不能再用 `?r=`，否则边缘会把旧 data 和新 JS 拼成不可启动的一套。
   iframe.src = `${PPSSPP_RUNTIME_PATH}index.html?embed=1`

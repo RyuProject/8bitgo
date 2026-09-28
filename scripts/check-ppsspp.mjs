@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const VERSION = '0dbfaca'
-const RUNTIME_GENERATION = 'v4'
+const RUNTIME_GENERATION = 'v5'
 const useDist = process.argv.includes('--dist')
 const sourceOnly = process.argv.includes('--source-only')
 const publicDir = join(root, 'public', 'ppsspp', `v${VERSION}`, RUNTIME_GENERATION)
@@ -48,10 +48,10 @@ if (!runtimeInit || /respond\s*\(/.test(runtimeInit)) {
   fail('host.js 在 onRuntimeInitialized 阶段就回复成功；此时 PPSSPP 还没有执行 main 或读取镜像')
 }
 if (!/<script src="host\.js"><\/script>/.test(need(join(runtimeDir, 'index.html')).toString('utf8'))) {
-  fail('v4 index.html 没有引用同一实体目录里的 host.js')
+  fail('v5 index.html 没有引用同一实体目录里的 host.js')
 }
-if (!/PPSSPP_RUNTIME_GENERATION = 'v4'/.test(paths) || !/PPSSPP_RUNTIME_PATH/.test(adapter)) {
-  fail('PPSSPP iframe 没有使用 v4 实体目录；查询串不能穿透当前 Cloudflare 缓存键')
+if (!/PPSSPP_RUNTIME_GENERATION = 'v5'/.test(paths) || !/PPSSPP_RUNTIME_PATH/.test(adapter)) {
+  fail('PPSSPP iframe 没有使用 v5 实体目录；查询串不能穿透当前 Cloudflare 缓存键')
 }
 if (/fetch\s*\(\s*(?:remote(?:\?\.)?\.url|gamePath)/.test(host)) {
   fail('host.js 出现整盘下载代码；远程镜像只能把 URL 交给 C++ Range loader')
@@ -61,16 +61,24 @@ if (!/arguments:\s*\[[\s\S]*?'--windowed'[\s\S]*?'--xres'[\s\S]*?'--yres'/.test(
 }
 for (const marker of [
   '--appendconfig=${PERFORMANCE_CONFIG_PATH}',
+  "'--memstick', SAVE_ROOT",
+  'InternalResolution = 1',
+  'SkipBufferEffects = False',
+  'SkipGPUReadbackMode = 0',
+  'HighQualityDepth = True',
   'VerticalSync = False',
-  'LowLatencyPresent = True',
-  'InflightFrames = 1',
+  'LowLatencyPresent = False',
+  'InflightFrames = 2',
   'FrameSkip = 0',
   'AutoFrameSkip = False',
 ]) {
-  if (!host.includes(marker)) fail(`host.js 缺少浏览器低延迟配置 ${marker}`)
+  if (!host.includes(marker)) fail(`host.js 缺少 PSP 通用兼容配置 ${marker}`)
+}
+if (host.includes('核心没有 Range 遥测回调，使用首帧兼容判据')) {
+  fail('v5 仍会在没有真实 Range 读取时把空画布误报成游戏已启动')
 }
 if (!/FS\.writeFile\(PERFORMANCE_CONFIG_PATH,[\s\S]*?performanceConfig\(profile\)/.test(host)) {
-  fail('host.js 没有在 PPSSPP 启动前写入低延迟配置')
+  fail('host.js 没有在 PPSSPP 启动前写入通用兼容配置')
 }
 for (const marker of ["registerProcessor('ppsspp-audio'", 'Atomics.load', 'Atomics.store']) {
   if (!audioWorklet.includes(marker)) fail(`audio-worklet.js 缺少共享音频消费标记 ${marker}`)
@@ -181,8 +189,11 @@ if (
 ) {
   fail('runtime.json 缺少 PSP 自适应画布、线程上限、LTO 或性能遥测声明')
 }
-if (manifest.inputLatencyProfile !== 'inflight-1-vsync-off') {
-  fail('runtime.json 没有声明 PSP 的 1 帧呈现低延迟配置')
+if (
+  manifest.inputLatencyProfile !== 'inflight-2-vsync-off-buffered-native' ||
+  manifest.graphicsCompatibilityProfile !== 'buffered-native-v1'
+) {
+  fail('runtime.json 没有声明 PSP 的原生分辨率、完整缓冲与两帧呈现兼容档')
 }
 if (manifest.webFeaturesBridge !== 'savestate-controls-v1') {
   fail('runtime.json 没有声明 PSP 即时存档/改键桥')
@@ -237,6 +248,9 @@ if (installed) {
     const runtimeWasm = need(join(runtimeDir, 'PPSSPPSDL.wasm')).toString('latin1')
     for (const marker of ['If-Match', 'If-Unmodified-Since', 'HTTP Range offset overflow']) {
       if (!runtimeWasm.includes(marker)) fail(`Range v2 WASM 缺少 ${marker}，清单与核心不一致`)
+    }
+    for (const marker of ['SkipBufferEffects', 'SkipGPUReadbackMode', 'HighQualityDepth', 'InflightFrames', 'LowLatencyPresent']) {
+      if (!runtimeWasm.includes(marker)) fail(`PPSSPP 二进制不认识兼容配置 ${marker}`)
     }
   }
   for (const name of binaries) {

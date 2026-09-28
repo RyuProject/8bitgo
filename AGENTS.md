@@ -1,7 +1,7 @@
 # 8BitGo — 给接手的 AI 助手 / 开发者
 
 > Codex 会自动读取仓库根目录的 `AGENTS.md`，所以工程约定和「踩过的坑」都写在这儿。
-> 最后更新：2026-09-24。**「当前进度」一节有时效性，其余部分是长期有效的约定。**
+> 最后更新：2026-09-28。**「当前进度」一节有时效性，其余部分是长期有效的约定。**
 
 ---
 
@@ -1657,7 +1657,7 @@ R2 multipart 发布到最终 `roms/psp/*.chd`。`.cso` / `.chd` 保持直传。
   同时发生；`source_deleted` 的 0 / 1 / 2 分别是保留 / 已删 / 正在清理。
 - 前端创建任务把随机 `source_key` 当幂等键：响应途中断线可以重试，服务端只返回原任务。旧槽是
   `.chd` / `.cso` 而新文件是 `.iso` 时绝不复用旧 key，否则转换服务降级时会把 ISO 字节写进错误扩展名。
-- 当前公开 PPSSPP 是 Range v4：ISO/CSO/CHD 都用 2MB 分块，共用 96MB 内存 LRU，
+- 当前公开 PPSSPP 是实体目录 v5、Range loader v4：ISO/CSO/CHD 都用 2MB 分块，共用 96MB 内存 LRU，
   并主动带 `If-Match` / `If-Unmodified-Since`
   钉住同一代镜像。播放 URL 同时带 `romv=<ETag>`，Worker 必须在每次 Range 前把它与 R2 当前 ETag 比较；
   不一致返回 412。Range 也必须绕过整包 Cache API，避免缓存的 200 响应跳过版本校验。
@@ -1745,7 +1745,7 @@ PCM 到共享 Wasm 环形缓冲区，浏览器音频线程只用 `Atomics` 取�
 PSP 原生只有 480×272。旧 Web 壳让 SDL 带 `ALLOW_HIGHDPI`，在桌面 Retina 上实测创建到
 1948×1096；但 PPSSPP 内部仍只渲染 960×544，代理 WebGL 每帧白复制、合成并给直播编码器输入
 约 4 倍无新增细节的像素。`host.js` 现在按设备能力固定三档后备缓冲：480×272（省流量/弱机）、
-720×408（中档）和最高 960×544（强机）；核心的 Web 默认内部分辨率只在最高档选 2x，另两档选 1x。
+720×408（中档）和最高 960×544（强机）；核心内部分辨率统一固定 1x，三档只改变最终呈现画布。
 不要再按 CSS 尺寸、DPR 或浏览器全屏尺寸回写 canvas 的 width/height。
 
 浏览器 SDL 窗口不再启用 `SDL_WINDOW_ALLOW_HIGHDPI`，启动参数显式带 `--windowed --xres --yres`。
@@ -1758,14 +1758,21 @@ VPS/FPS、实际 FPS、画布尺寸和音频模式，供真机确认选档与掉
 `runtime.json` 以 `performanceProfile=adaptive-canvas-v1`、`maxCanvasPixels=522240`、
 `pthreadPoolMax=8`、`lto=true` 和 `performanceTelemetry=true` 固化验收。
 
+⚠️ 自适应只选最终画布与 SAS 线程，不再提高游戏的内部分辨率。2026-09-28 实测《寂静岭：起源》
+同一来源的 CHD 能通过严格 Range 校验并启动，但强机档的 2x + 单帧低延迟配置会放大它异常宽、跨帧
+复用的 framebuffer 问题；PPSSPP 上游也仍把这款游戏的图形调查保持为未解决。v5 因此给**所有 PSP**
+统一写入 `InternalResolution=1`、`SkipBufferEffects=False`、`SkipGPUReadbackMode=0`、
+`HighQualityDepth=True`、`FrameSkip=0` / `AutoFrameSkip=False`。不要再按某款游戏加一串 slug 特判：
+完整缓冲/回读是正确性基线，代价只是少一点放大画质和性能捷径。
+
 ⚠️ 核心代码、桥和约 19MB 的 `PPSSPPSDL.data` 必须作为**一个实体目录原子换代**。Web 构建会通过
 `0008-web-cold-start.patch` 排除不会在播放器中开放的 `assets/debugger/`（React 调试器、source map
 和图标接近 3MB）；游戏字体、VFPU 表、语言、控制器表和兼容数据库全部保留。2026-09-25 线上取证发现，
 Cloudflare 对这组静态文件的缓存键**忽略查询串**：请求 `PPSSPPSDL.data?r=17` 仍命中旧的 r16
 （22,417,304B，`CF-Cache-Status: HIT`），而新清单需要 19,434,861B。查询参数不能再承担版本隔离，
 否则新 JS、旧 data 和旧 Wasm 会被拼在同一局里。当前整套资源发布在
-`public/ppsspp/v0dbfaca/v4/`；下次桥、JS、Wasm、data 或 AudioWorklet 任一项改变就复制/构建到
-`v5/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，不原地覆盖。
+`public/ppsspp/v0dbfaca/v5/`；下次桥、JS、Wasm、data 或 AudioWorklet 任一项改变就复制/构建到
+`v6/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，不原地覆盖。
 
 Emscripten
 自带的 preload fetch 没有重试，`host.js` 用 `getPreloadedPackage` 接管：优先读浏览器缓存，连续
@@ -1779,12 +1786,19 @@ ArrayBuffer 解包并报 `bad input to processPackageData Promise`；构建脚�
 入口、桥、JS、Wasm、data 和 AudioWorklet，尽量把约 34MB 的核心下载移出点击关键路径。触摸设备的
 focus 和点击发生在同一刻，没有真实提前量，只预热小入口与桥，禁止同时抢拉大核心造成重复下载。
 
-输入延迟不能只靠“把画质调低”。PPSSPP 默认 `InflightFrames=3`，老访客的单游戏配置还会覆盖
-新默认；`host.js` 因此在 Wasm 文件系统写入一次性的 `8bitgo-performance.ini`，并通过
-`--appendconfig=` 让它在全局/单游戏配置之后合并：`InflightFrames=1`、`VerticalSync=False`、
-`LowLatencyPresent=True`，同时固定 `FrameSkip=0` / `AutoFrameSkip=False`，避免用跳帧换取看似
-更快但会漏输入的假流畅。弱机与四核设备关闭独立 SAS 音频仿真线程，减少 pthread 争用；强机才开。
-这份策略在 `runtime.json.inputLatencyProfile=inflight-1-vsync-off` 固化，改值要同步发布代次与回归。
+输入延迟不能只靠“把画质调低”。老访客的单游戏配置还会覆盖新默认；`host.js` 因此在 Wasm
+文件系统写入一次性的 `8bitgo-performance.ini`，并通过 `--appendconfig=` 让它在全局/单游戏配置
+之后合并。v5 不再用最激进的单帧呈现：`InflightFrames=2`、`VerticalSync=False`、
+`LowLatencyPresent=False`，同时固定 `FrameSkip=0` / `AutoFrameSkip=False`。这会多一点输入延迟，
+但给浏览器的代理 framebuffer 呈现留出余量；弱机与四核设备仍关闭独立 SAS 音频仿真线程，减少
+pthread 争用，强机才开。这份策略在
+`runtime.json.inputLatencyProfile=inflight-2-vsync-off-buffered-native` 与
+`graphicsCompatibilityProfile=buffered-native-v1` 固化，改值要同步发布代次与回归。
+
+⚠️ 光盘路径与记忆棒必须是两个命名空间。远程盘作为 `https://…` 交给 Range loader，本地盘只挂在
+`/game`；`host.js` 另用 `--memstick /home/web_user/.config/ppsspp` 强制记忆棒根目录，并只把这一棵
+挂到 IDBFS。这样既接近实体 UMD，也避免 DJMAX 一类会检查记忆棒中是否存在镜像的游戏把本站盘误判
+为 ms0 文件。不要把 ISO/CSO/CHD 复制到 `SAVE_ROOT`，也不要靠修改 ROM 的反盗版补丁解决路径问题。
 
 开局、打开改键页和工具栏交互后统一走 `focusFrame(iframe)`，避免焦点留在外层按钮造成“第一次按键
 没反应”；手柄枚举也必须走 `frameGamepads(iframe)`，因为浏览器按文档隔离手柄激活权限。
@@ -1796,7 +1810,7 @@ PSP 即时存档和改键不是靠模拟快捷键完成的。`0005-web-save-cont
 本地统一存档允许 96MB，云端仍受 4MB 单份配额；超出云端配额时必须保住浏览器本地副本并明确提示。
 PPSSPP 自己的 SAVEDATA、原生状态和按键配置仍由 IDBFS 每 30 秒及离页时同步。
 
-PPSSPP 的 immutable 缓存只认**物理目录代次**，不再分 `?r=` 四层：`v4/` 内的 index、host、
+PPSSPP 的 immutable 缓存只认**物理目录代次**，不再分 `?r=` 四层：`v5/` 内的 index、host、
 AudioWorklet、JS、Wasm、data 与 runtime.json 必须同批发布。虽然某次可能只改 20KB 的桥，仍要换到
 下一个目录；这是用少量重复存储换取边缘缓存绝不会混代。不要重新引入 `RUNTIME_REVISION` / `DATA_REVISION`
 或给文件补查询参数假装失效，它们在当前 Cloudflare 规则下不生效。
@@ -1812,7 +1826,7 @@ AudioWorklet、JS、Wasm、data 与 runtime.json 必须同批发布。虽然某�
 ⚠️ 已发布过一版把 `VITE_PPSSPP_PATH` 目录直接塞进 iframe，老 bundle 会请求
 `/ppsspp/v0dbfaca?embed=1&r=2`（没有 `index.html`）。静态中间件关闭目录重定向后它必然 404，
 玩家要白等 120 秒才看到超时。`server/src/index.js` 为这个精确旧地址保留了 `no-store` 302，
-跳到当前 `v4/index.html`；以后换实体目录时必须同步那条跳转和回归断言。
+跳到当前 `v5/index.html`；以后换实体目录时必须同步那条跳转和回归断言。
 
 回归：`npm run test:ppsspp && npm run test:worker`。
 
