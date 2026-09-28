@@ -17,7 +17,9 @@ import { fmt, getT } from '@/services/i18n'
 const BRIDGE_SOURCE = '8bitgo-ppsspp-bridge'
 const BRIDGE_VERSION = 1
 const HOST_TIMEOUT_MS = 120_000
-const MOUNT_TIMEOUT_MS = 180_000
+// 大型 CHD 的冷启动实测可超过两分钟；启动完成由核心的 Booted 信号判定，五分钟只负责兜住
+// 真正卡死的会话，不能再让一个与镜像大小无关的短计时器误杀仍在正常 Range 读盘的游戏。
+const MOUNT_TIMEOUT_MS = 300_000
 const RANGE_PROBE_TIMEOUT_MS = 20_000
 
 interface BridgeMessage {

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const VERSION = '0dbfaca'
-const RUNTIME_GENERATION = 'v5'
+const RUNTIME_GENERATION = 'v6'
 const useDist = process.argv.includes('--dist')
 const sourceOnly = process.argv.includes('--source-only')
 const publicDir = join(root, 'public', 'ppsspp', `v${VERSION}`, RUNTIME_GENERATION)
@@ -48,10 +48,10 @@ if (!runtimeInit || /respond\s*\(/.test(runtimeInit)) {
   fail('host.js 在 onRuntimeInitialized 阶段就回复成功；此时 PPSSPP 还没有执行 main 或读取镜像')
 }
 if (!/<script src="host\.js"><\/script>/.test(need(join(runtimeDir, 'index.html')).toString('utf8'))) {
-  fail('v5 index.html 没有引用同一实体目录里的 host.js')
+  fail('v6 index.html 没有引用同一实体目录里的 host.js')
 }
-if (!/PPSSPP_RUNTIME_GENERATION = 'v5'/.test(paths) || !/PPSSPP_RUNTIME_PATH/.test(adapter)) {
-  fail('PPSSPP iframe 没有使用 v5 实体目录；查询串不能穿透当前 Cloudflare 缓存键')
+if (!/PPSSPP_RUNTIME_GENERATION = 'v6'/.test(paths) || !/PPSSPP_RUNTIME_PATH/.test(adapter)) {
+  fail('PPSSPP iframe 没有使用 v6 实体目录；查询串不能穿透当前 Cloudflare 缓存键')
 }
 if (/fetch\s*\(\s*(?:remote(?:\?\.)?\.url|gamePath)/.test(host)) {
   fail('host.js 出现整盘下载代码；远程镜像只能把 URL 交给 C++ Range loader')
@@ -61,7 +61,7 @@ if (!/arguments:\s*\[[\s\S]*?'--windowed'[\s\S]*?'--xres'[\s\S]*?'--yres'/.test(
 }
 for (const marker of [
   '--appendconfig=${PERFORMANCE_CONFIG_PATH}',
-  "'--memstick', SAVE_ROOT",
+  '`--memstick=${SAVE_ROOT}`',
   'InternalResolution = 1',
   'SkipBufferEffects = False',
   'SkipGPUReadbackMode = 0',
@@ -74,8 +74,20 @@ for (const marker of [
 ]) {
   if (!host.includes(marker)) fail(`host.js 缺少 PSP 通用兼容配置 ${marker}`)
 }
+if (/'--memstick',\s*SAVE_ROOT/.test(host)) {
+  fail('host.js 把 memstick 选项拆成两个 argv；PPSSPP 会把路径误认成第二个待启动文件')
+}
 if (host.includes('核心没有 Range 遥测回调，使用首帧兼容判据')) {
-  fail('v5 仍会在没有真实 Range 读取时把空画布误报成游戏已启动')
+  fail('v6 仍会在没有真实读盘时把空画布误报成游戏已启动')
+}
+if (!/gameBootConfirmed/.test(host) || !/BOOTED_LOG_PATTERN = \/\\bBooted\\s\+\.\+\\\.\\\.\\\.\//.test(host)) {
+  fail('v6 没有等待 PPSSPP 的 Booted 日志；Range 遥测跨线程丢失时会再次超时')
+}
+if (!/print\(text\)[\s\S]*?observeCoreLog\(message\)[\s\S]*?printErr\(text\)[\s\S]*?observeCoreLog\(message\)/.test(host)) {
+  fail('v6 没有同时观察 stdout/stderr；不同 Emscripten 日志路由下会漏掉 Booted')
+}
+if (!/MOUNT_TIMEOUT_MS = 300_000/.test(adapter)) {
+  fail('PSP 冷启动仍可能被旧的短超时误杀')
 }
 if (!/FS\.writeFile\(PERFORMANCE_CONFIG_PATH,[\s\S]*?performanceConfig\(profile\)/.test(host)) {
   fail('host.js 没有在 PPSSPP 启动前写入通用兼容配置')
@@ -153,6 +165,7 @@ for (const marker of [
 
 const manifest = JSON.parse(need(join(runtimeDir, 'runtime.json')).toString('utf8'))
 if (manifest.runtimeGeneration !== RUNTIME_GENERATION) fail('runtime.json 的实体目录代次不正确')
+if (manifest.startupReadinessProfile !== 'core-boot-log-v1') fail('runtime.json 没有声明基于核心 Booted 日志的启动判据')
 if (manifest.commit !== '0dbfaca62a8a924abc2c5dd5dd0733b668e5e68a') fail('runtime.json 的上游提交没有锁定')
 if (manifest.rangeStreaming !== true || manifest.blockBytes !== 2097152) {
   fail('runtime.json 的 Range 参数不正确')

@@ -1657,7 +1657,7 @@ R2 multipart 发布到最终 `roms/psp/*.chd`。`.cso` / `.chd` 保持直传。
   同时发生；`source_deleted` 的 0 / 1 / 2 分别是保留 / 已删 / 正在清理。
 - 前端创建任务把随机 `source_key` 当幂等键：响应途中断线可以重试，服务端只返回原任务。旧槽是
   `.chd` / `.cso` 而新文件是 `.iso` 时绝不复用旧 key，否则转换服务降级时会把 ISO 字节写进错误扩展名。
-- 当前公开 PPSSPP 是实体目录 v5、Range loader v4：ISO/CSO/CHD 都用 2MB 分块，共用 96MB 内存 LRU，
+- 当前公开 PPSSPP 是实体目录 v6、Range loader v4：ISO/CSO/CHD 都用 2MB 分块，共用 96MB 内存 LRU，
   并主动带 `If-Match` / `If-Unmodified-Since`
   钉住同一代镜像。播放 URL 同时带 `romv=<ETag>`，Worker 必须在每次 Range 前把它与 R2 当前 ETag 比较；
   不一致返回 412。Range 也必须绕过整包 Cache API，避免缓存的 200 响应跳过版本校验。
@@ -1760,7 +1760,7 @@ VPS/FPS、实际 FPS、画布尺寸和音频模式，供真机确认选档与掉
 
 ⚠️ 自适应只选最终画布与 SAS 线程，不再提高游戏的内部分辨率。2026-09-28 实测《寂静岭：起源》
 同一来源的 CHD 能通过严格 Range 校验并启动，但强机档的 2x + 单帧低延迟配置会放大它异常宽、跨帧
-复用的 framebuffer 问题；PPSSPP 上游也仍把这款游戏的图形调查保持为未解决。v5 因此给**所有 PSP**
+复用的 framebuffer 问题；PPSSPP 上游也仍把这款游戏的图形调查保持为未解决。v6 继续给**所有 PSP**
 统一写入 `InternalResolution=1`、`SkipBufferEffects=False`、`SkipGPUReadbackMode=0`、
 `HighQualityDepth=True`、`FrameSkip=0` / `AutoFrameSkip=False`。不要再按某款游戏加一串 slug 特判：
 完整缓冲/回读是正确性基线，代价只是少一点放大画质和性能捷径。
@@ -1771,8 +1771,8 @@ VPS/FPS、实际 FPS、画布尺寸和音频模式，供真机确认选档与掉
 Cloudflare 对这组静态文件的缓存键**忽略查询串**：请求 `PPSSPPSDL.data?r=17` 仍命中旧的 r16
 （22,417,304B，`CF-Cache-Status: HIT`），而新清单需要 19,434,861B。查询参数不能再承担版本隔离，
 否则新 JS、旧 data 和旧 Wasm 会被拼在同一局里。当前整套资源发布在
-`public/ppsspp/v0dbfaca/v5/`；下次桥、JS、Wasm、data 或 AudioWorklet 任一项改变就复制/构建到
-`v6/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，不原地覆盖。
+`public/ppsspp/v0dbfaca/v6/`；下次桥、JS、Wasm、data 或 AudioWorklet 任一项改变就复制/构建到
+`v7/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，不原地覆盖。
 
 Emscripten
 自带的 preload fetch 没有重试，`host.js` 用 `getPreloadedPackage` 接管：优先读浏览器缓存，连续
@@ -1788,7 +1788,7 @@ focus 和点击发生在同一刻，没有真实提前量，只预热小入口�
 
 输入延迟不能只靠“把画质调低”。老访客的单游戏配置还会覆盖新默认；`host.js` 因此在 Wasm
 文件系统写入一次性的 `8bitgo-performance.ini`，并通过 `--appendconfig=` 让它在全局/单游戏配置
-之后合并。v5 不再用最激进的单帧呈现：`InflightFrames=2`、`VerticalSync=False`、
+之后合并。v6 不再用最激进的单帧呈现：`InflightFrames=2`、`VerticalSync=False`、
 `LowLatencyPresent=False`，同时固定 `FrameSkip=0` / `AutoFrameSkip=False`。这会多一点输入延迟，
 但给浏览器的代理 framebuffer 呈现留出余量；弱机与四核设备仍关闭独立 SAS 音频仿真线程，减少
 pthread 争用，强机才开。这份策略在
@@ -1796,9 +1796,11 @@ pthread 争用，强机才开。这份策略在
 `graphicsCompatibilityProfile=buffered-native-v1` 固化，改值要同步发布代次与回归。
 
 ⚠️ 光盘路径与记忆棒必须是两个命名空间。远程盘作为 `https://…` 交给 Range loader，本地盘只挂在
-`/game`；`host.js` 另用 `--memstick /home/web_user/.config/ppsspp` 强制记忆棒根目录，并只把这一棵
+`/game`；`host.js` 另用 `--memstick=/home/web_user/.config/ppsspp` 强制记忆棒根目录，并只把这一棵
 挂到 IDBFS。这样既接近实体 UMD，也避免 DJMAX 一类会检查记忆棒中是否存在镜像的游戏把本站盘误判
-为 ms0 文件。不要把 ISO/CSO/CHD 复制到 `SAVE_ROOT`，也不要靠修改 ROM 的反盗版补丁解决路径问题。
+为 ms0 文件。PPSSPP 的长参数必须写成一个带等号的 argv；拆成 `--memstick`、路径两个 argv 会把路径
+误认成第二个启动文件并报 `Can only boot one file`。不要把 ISO/CSO/CHD 复制到 `SAVE_ROOT`，也不要靠
+修改 ROM 的反盗版补丁解决路径问题。
 
 开局、打开改键页和工具栏交互后统一走 `focusFrame(iframe)`，避免焦点留在外层按钮造成“第一次按键
 没反应”；手柄枚举也必须走 `frameGamepads(iframe)`，因为浏览器按文档隔离手柄激活权限。
@@ -1810,7 +1812,15 @@ PSP 即时存档和改键不是靠模拟快捷键完成的。`0005-web-save-cont
 本地统一存档允许 96MB，云端仍受 4MB 单份配额；超出云端配额时必须保住浏览器本地副本并明确提示。
 PPSSPP 自己的 SAVEDATA、原生状态和按键配置仍由 IDBFS 每 30 秒及离页时同步。
 
-PPSSPP 的 immutable 缓存只认**物理目录代次**，不再分 `?r=` 四层：`v5/` 内的 index、host、
+⚠️ 远程盘的“启动成功”不能只等 `__ppssppRangeProgress`。该回调从 pthread 经
+`MAIN_THREAD_EM_ASM` 回页面，在部分浏览器里会晚到或完全看不到；v5 因此出现过镜像仍在正常 Range
+读取、外层却在 180 秒报“PPSSPP 响应超时”。也不能恢复“canvas 尺寸变化后一秒算成功”，那只是 SDL
+创建了黑窗口。v6 改为在 stdout 与 stderr 两路都等待 PPSSPP 成功打开内容后固定输出的
+`Booted <path>...` 日志，并把大型 CHD 的
+mount 上限放到 300 秒；Range 回调只负责进度、对象大小校验和明确错误。`runtime.json` 用
+`startupReadinessProfile=core-boot-log-v1` 固化这条判据。
+
+PPSSPP 的 immutable 缓存只认**物理目录代次**，不再分 `?r=` 四层：`v6/` 内的 index、host、
 AudioWorklet、JS、Wasm、data 与 runtime.json 必须同批发布。虽然某次可能只改 20KB 的桥，仍要换到
 下一个目录；这是用少量重复存储换取边缘缓存绝不会混代。不要重新引入 `RUNTIME_REVISION` / `DATA_REVISION`
 或给文件补查询参数假装失效，它们在当前 Cloudflare 规则下不生效。
@@ -1826,7 +1836,7 @@ AudioWorklet、JS、Wasm、data 与 runtime.json 必须同批发布。虽然某�
 ⚠️ 已发布过一版把 `VITE_PPSSPP_PATH` 目录直接塞进 iframe，老 bundle 会请求
 `/ppsspp/v0dbfaca?embed=1&r=2`（没有 `index.html`）。静态中间件关闭目录重定向后它必然 404，
 玩家要白等 120 秒才看到超时。`server/src/index.js` 为这个精确旧地址保留了 `no-store` 302，
-跳到当前 `v5/index.html`；以后换实体目录时必须同步那条跳转和回归断言。
+跳到当前 `v6/index.html`；以后换实体目录时必须同步那条跳转和回归断言。
 
 回归：`npm run test:ppsspp && npm run test:worker`。
 
