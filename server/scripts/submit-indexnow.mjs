@@ -1,7 +1,7 @@
 /**
  * 首次启用 IndexNow、或者自动提交曾经失败时，手动全量补交。
  *
- * 覆盖三类内容：上架游戏详情页、已发布文章详情页、平台/类型聚合页 ——
+ * 覆盖四类内容：上架游戏详情页、已发布文章详情页、平台/类型聚合页、公开用户合集 ——
  * 聚合页展开全部 8 种语言；详情页只提交真正有正文的语言，避免主动推送回退正文的重复页。
  * （以前这里只捞游戏；文章和聚合页有独立的 H1、正文与结构化数据，却从来
  *   没被主动提交过。IndexNow 实际上没有配额压力，没有理由漏掉它们。）
@@ -9,7 +9,7 @@
  * 用法：
  *   cd server && npm run indexnow
  *   cd server && npm run indexnow -- --dry-run     # 只打印，不发请求
- *   cd server && npm run indexnow -- --only games  # games / posts / taxonomy
+ *   cd server && npm run indexnow -- --only games  # games / posts / taxonomy / collections
  *
  * 只提交本站 URL；IndexNow 单次最多 10,000 条，底层会自动分批。
  */
@@ -18,6 +18,7 @@ import { pool, query } from '../src/db.js'
 import {
   gameContentLanguages,
   gameDetailUrls,
+  collectionDetailUrls,
   postContentLanguages,
   postDetailUrls,
   publicSiteUrl,
@@ -27,7 +28,7 @@ import {
 import { taxonomyRows } from '../src/routes/sitemaps.js'
 
 const argv = process.argv.slice(2)
-const KINDS = ['games', 'posts', 'taxonomy']
+const KINDS = ['games', 'posts', 'taxonomy', 'collections']
 const only = argv.includes('--only') ? argv[argv.indexOf('--only') + 1] : undefined
 const dryRun = argv.includes('--dry-run')
 
@@ -64,6 +65,11 @@ try {
     // 复用 sitemap 那份筛选：空平台、白名单外的平台、已下线的类型都已经被剔掉了。
     const rows = await taxonomyRows()
     groups.push({ label: '平台 / 类型页', items: rows.length, urls: taxonomyDetailUrls(rows, siteUrl) })
+  }
+
+  if (wants('collections')) {
+    const rows = await query('SELECT id FROM collections WHERE hidden = 0 ORDER BY id ASC')
+    groups.push({ label: '用户合集详情页', items: rows.length, urls: collectionDetailUrls(rows, siteUrl) })
   }
 
   const seen = new Set()

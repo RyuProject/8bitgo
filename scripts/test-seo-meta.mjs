@@ -154,6 +154,19 @@ check('合集详情页在没有简介时按标题和数量拼一句', () => {
   assert.match(src, /fmt\(t\.seo\.collectionDesc, \{ title: c\.title, n: c\.gameCount \}\)/, '回退的那句不是拼出来的')
 })
 
+check('合集列表与详情都接入 SSR 路由数据，不再把骨架屏发给爬虫', () => {
+  const content = code('server/src/content.js')
+  const pageData = code('src/services/pageData.ts')
+  const listPage = code('src/pages/CollectionsPage.tsx')
+  const detailPage = code('src/pages/CollectionDetailPage.tsx')
+  assert.match(content, /route: 'collections'[\s\S]*?listPublicCollections/, '合集列表没有在 SSR 取数')
+  assert.match(content, /route: 'collection'[\s\S]*?getPublicCollectionDetail/, '合集详情没有在 SSR 取数')
+  assert.match(pageData, /interface CollectionsData \{ route: 'collections'/, '缺少合集列表的页面数据类型')
+  assert.match(pageData, /interface CollectionData \{ route: 'collection'/, '缺少合集详情的页面数据类型')
+  assert.match(listPage, /usePageData<CollectionsData>/, '合集列表首屏没有消费 SSR 数据')
+  assert.match(detailPage, /usePageData<CollectionData>/, '合集详情首屏没有消费 SSR 数据')
+})
+
 check('首页合集卡片不再把「还没有描述」暴露给搜索摘要', () => {
   const src = code('src/components/game/CollectionCard.tsx')
   assert.ok(!src.includes('t.collections.noDescription'), '合集卡片仍在输出无意义占位文案')

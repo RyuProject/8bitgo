@@ -63,7 +63,7 @@ import { diagRouter } from './routes/diag.js'
 import { submitGameRouter } from './routes/submit-game.js'
 import { tvRouter } from './routes/tv.js'
 import { mailProvider, submitMailProvider } from './mail.js'
-import { gameSitemap, postSitemap, sitemapIndex, taxonomySitemap } from './routes/sitemaps.js'
+import { collectionSitemap, gameSitemap, postSitemap, sitemapIndex, taxonomySitemap } from './routes/sitemaps.js'
 import { logSearchPushStatus } from './search-push.js'
 import { romPackRouter } from './routes/rom-pack.js'
 import { isRomPackConfigured } from './rom-pack-key.js'
@@ -250,6 +250,8 @@ app.get('/sitemaps/posts-:language.xml', postSitemap)
 // 平台页 / 类型页：「哪些平台和类型有游戏」同样只有数据库知道。烘在构建期的后果
 // 已经真实发生过 —— 线上 sitemap 长期只剩 flash 和 html5 两个平台页、类型页一条没有。
 app.get('/sitemaps/taxonomy-:language.xml', taxonomySitemap)
+// 用户合集同样来自数据库；详情只收默认语言，避免把同一份用户正文重复提交 8 次。
+app.get('/sitemaps/collections.xml', collectionSitemap)
 /**
  * sitemap 索引同样接管掉，覆盖构建产物里的 public/sitemap.xml。
  * 那份静态文件里游戏 sitemap 的 lastmod 停在构建当天，之后上架多少游戏都不变，

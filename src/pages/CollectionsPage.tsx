@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import type { Collection } from '@/types'
+import type { CollectionPage } from '@/types'
 import { listCollections } from '@/services/collections'
+import { usePageData, type CollectionsData } from '@/services/pageData'
 import { CollectionCard } from '@/components/game/CollectionCard'
 import { CollectionFormDialog } from '@/components/game/CollectionFormDialog'
 import { SectionHeader } from '@/components/ui/SectionHeader'
@@ -26,25 +27,30 @@ export function CollectionsPage() {
   const [params, setParams] = useSearchParams()
   const page = Math.max(1, Number(params.get('page')) || 1)
 
-  const [items, setItems] = useState<Collection[]>([])
-  const [total, setTotal] = useState(0)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const state = usePageData<CollectionsData>('/collections', { page }, 'collections')
+  /** 新建后只覆盖当前页；正常首屏与翻页始终以统一的 SSR / page API 数据为准。 */
+  const [refreshed, setRefreshed] = useState<CollectionPage | null>(null)
+  const [refreshError, setRefreshError] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
 
-  const load = useCallback(() => {
-    setLoading(true)
-    setError(null)
-    listCollections(page, PAGE_SIZE)
-      .then((r) => {
-        setItems(r.items)
-        setTotal(r.total)
-      })
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setLoading(false))
+  // URL 翻页时旧的手动刷新结果已经不属于当前页，不能盖住 usePageData 的新数据。
+  useEffect(() => {
+    setRefreshed(null)
+    setRefreshError(null)
   }, [page])
 
-  useEffect(load, [load])
+  const refresh = useCallback(() => {
+    setRefreshError(null)
+    return listCollections(page, PAGE_SIZE)
+      .then(setRefreshed)
+      .catch((e: unknown) => setRefreshError(e instanceof Error ? e.message : String(e)))
+  }, [page])
+
+  const list = refreshed ?? state.data?.list
+  const items = list?.items ?? []
+  const total = list?.total ?? 0
+  const loading = !list && state.status === 'loading'
+  const error = refreshError ?? (state.status === 'error' ? state.error : null)
 
   useSeo({
     title: t.collections.title,
@@ -120,7 +126,7 @@ export function CollectionsPage() {
           onClose={() => setCreating(false)}
           onSaved={() => {
             setCreating(false)
-            load()
+            void refresh()
           }}
         />
       )}

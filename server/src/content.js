@@ -11,7 +11,7 @@
  * 而不是整个库，且带容量上限，不会被爬虫翻页翻到内存爆掉。
  */
 import { listGames, listHomePicks, getGameBySlug, platformCounts, genreCounts, developerCounts } from './games-repo.js'
-import { topCollections } from './routes/collections.js'
+import { getPublicCollectionDetail, listPublicCollections, topCollections } from './routes/collections.js'
 import { query } from './db.js'
 import { attachPostTags } from './routes/posts.js'
 import { listPublicFriendLinks } from './friend-links.js'
@@ -340,6 +340,24 @@ export async function loadForRoute(pathname, search) {
   }
 
   if (seg[0] === 'developers') return cached('developers', async () => ({ route: 'developers', facets: await loadFacets({ includeDevelopers: true }) }))
+
+  // 合集以前只在浏览器 useEffect 里取数，SSR 永远是一屏骨架；搜索引擎因此看不到
+  // 卡片链接、合集标题和里面的游戏。和其它公开内容页一样在进程内取好再渲染。
+  if (seg[0] === 'collections') {
+    if (seg[1]) {
+      const raw = Number(decodeURIComponent(seg[1]))
+      const id = Number.isInteger(raw) && raw > 0 ? raw : 0
+      return cached(`collection:${id}`, async () => ({
+        route: 'collection',
+        detail: await getPublicCollectionDetail(id),
+      }))
+    }
+    const page = cachePage(qs('page'))
+    return cached(`collections:${page}`, async () => ({
+      route: 'collections',
+      list: await listPublicCollections(page, 24),
+    }))
+  }
 
   // 博客：数量级小，一次给全
   if (seg[0] === 'blog') {

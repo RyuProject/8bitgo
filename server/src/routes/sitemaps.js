@@ -333,6 +333,36 @@ export async function taxonomySitemap(req, res, next) {
 }
 
 
+/* ---------------- 用户合集 sitemap ---------------- */
+
+/**
+ * 合集详情只有默认语言这一份真实正文（其它语言前缀 canonical 回来），所以不按 8 种语言拆。
+ * `/collections` 列表页本身是固定入口，放在 sitemap-static.xml；这里仅列数据库里仍公开的详情。
+ */
+export function buildCollectionSitemap(rows, siteUrl = publicSiteUrl()) {
+  return buildUrlsetSitemap(
+    rows,
+    SITE_DEFAULT_LANGUAGE,
+    siteUrl,
+    (row) => `/collections/${Number(row.id)}`,
+    (row) => row.updated_at || row.created_at,
+  )
+}
+
+export async function collectionSitemap(_req, res, next) {
+  try {
+    const rows = await query(
+      'SELECT id, created_at, updated_at FROM collections WHERE hidden = 0 ORDER BY id ASC',
+    )
+    res.setHeader('Cache-Control', CACHE.meta)
+    res.setHeader('Vary', 'Accept-Encoding')
+    res.type('application/xml; charset=utf-8').send(buildCollectionSitemap(rows))
+  } catch (error) {
+    next(error)
+  }
+}
+
+
 /* ---------------- sitemap 索引 ---------------- */
 
 /**
@@ -349,6 +379,8 @@ export function buildSitemapIndex({
   gamesLastmod = '',
   postsLastmod = '',
   taxonomyLastmod = '',
+  collectionsLastmod = '',
+  hasCollections = true,
   /**
    * 哪几门语言的游戏 / 文章 sitemap 里**真的有 URL**。传 null = 全都有。
    *
@@ -376,6 +408,7 @@ export function buildSitemapIndex({
     // 固定页面没有可信的内容更新时间。构建/部署时间不是内容更新时间，伪造 lastmod
     // 会让每次发版都诱导爬虫重抓 About、条款等完全没变的页面，所以这项明确省略。
     { loc: `${siteUrl}/sitemap-static.xml`, lastmod: '' },
+    ...(hasCollections ? [{ loc: `${siteUrl}/sitemaps/collections.xml`, lastmod: collectionsLastmod }] : []),
     ...SITE_LANGUAGES.filter(({ code }) => hasGames(code)).map(({ code }) => ({
       loc: `${siteUrl}/sitemaps/games-${code}.xml`,
       lastmod: gamesLastmod,
@@ -442,9 +475,10 @@ async function langsWithContent() {
 
 export async function sitemapIndex(_req, res, next) {
   try {
-    const [gameRows, postRows, langs] = await Promise.all([
+    const [gameRows, postRows, collectionRows, langs] = await Promise.all([
       query('SELECT MAX(COALESCE(updated_at, created_at, added_at)) AS latest FROM games WHERE hidden = 0'),
       query('SELECT MAX(COALESCE(updated_at, created_at)) AS latest FROM posts WHERE published = 1'),
+      query('SELECT COUNT(*) AS n, MAX(COALESCE(updated_at, created_at)) AS latest FROM collections WHERE hidden = 0'),
       langsWithContent(),
     ])
     // 一篇文章都没发布 / 一款游戏都没上架时 MAX() 是 NULL。这时不写 lastmod
@@ -452,6 +486,7 @@ export async function sitemapIndex(_req, res, next) {
     // 让搜索引擎白跑一趟，正好是我们想避免的那件事。
     const gamesLastmod = dateOnly(gameRows?.[0]?.latest)
     const postsLastmod = dateOnly(postRows?.[0]?.latest)
+    const collectionsLastmod = dateOnly(collectionRows?.[0]?.latest)
     // 平台页 / 类型页的内容就是那批游戏，所以跟着游戏的最新更新时间走。
     const taxonomyLastmod = gamesLastmod
     res.setHeader('Cache-Control', CACHE.meta)
@@ -462,6 +497,8 @@ export async function sitemapIndex(_req, res, next) {
         gamesLastmod,
         postsLastmod,
         taxonomyLastmod,
+        collectionsLastmod,
+        hasCollections: Number(collectionRows?.[0]?.n) > 0,
         // 没译文的语言那一份是空的，空 sitemap 在 GSC 里是永久错误 —— 干脆别列
         gamesLangs: langs.gamesLangs,
         postsLangs: langs.postsLangs,

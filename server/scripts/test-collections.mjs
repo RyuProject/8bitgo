@@ -281,7 +281,7 @@ try {
   )
   register(pathToFileURL(hooks))
 
-  const { collectionsRouter } = await import('../src/routes/collections.js')
+  const { collectionsRouter, getPublicCollectionDetail } = await import('../src/routes/collections.js')
   const { signToken } = await import('../src/auth.js')
 
   const app = express()
@@ -335,6 +335,10 @@ process.on('exit', () => {
   ok((await call('POST', '/1/games', { body: { gameSlug: 'contra' } })).status === 401, '没登录不能加游戏')
   ok((await call('GET', '/')).status === 200, '但列表是公开的')
   ok((await call('GET', '/1')).status === 200, '详情也是公开的')
+  const ssrDetail = await getPublicCollectionDetail(1)
+  ok(ssrDetail?.collection.title === '合金弹头', 'SSR 公开详情拿得到合集正文')
+  ok(ssrDetail?.games.map((g) => g.slug).join(',') === 'metal-slug', 'SSR 公开详情带按展示顺序装配的游戏')
+  ok(ssrDetail?.canReview === false && !ssrDetail?.collection.mine, 'SSR 公共缓存不混入登录权限')
 
   console.log('\n── 作者本人 ──')
   reset()

@@ -84,7 +84,7 @@ function canonicalHost() {
   if (hostCache.key !== key) {
     const origin = publicSiteUrl()
     const host = new URL(origin).hostname.toLowerCase()
-    hostCache = { key, val: { origin, wwwHost: `www.${host}` } }
+    hostCache = { key, val: { origin, host, wwwHost: `www.${host}`, tvHost: `tv.${host}` } }
   }
   return hostCache.val
 }
@@ -118,6 +118,34 @@ export function normalizeUrl(req, res, next) {
   const pathname = cut >= 0 ? req.originalUrl.slice(0, cut) : req.originalUrl
   const search = cut >= 0 ? req.originalUrl.slice(cut) : ''
   if (pathname.startsWith('/api/')) return next()
+
+  const site = canonicalHost()
+  const hostname = requestHostname(req)
+  /*
+    ── 四、未知的本站子域直接 404（2026-09-29，Bing Site Explorer 查出来的）──
+
+    DNS / Cloudflare 的通配记录会把不存在的 `anything.<裸域>` 也送进这个 Express。
+    以前应用不看 Host，最终由 SSR 把它当主站首页回 200；Bing 因此发现了大量
+    adminlogin / kakao / 随机字符串之类的“站点”，每个又能展开整棵主站 URL。
+
+    不能把它们 301 到首页：那会把一批本来不存在的地址变成“重定向软 404”，
+    搜索引擎仍得逐条抓。正确语义就是 404，并明确 noindex。只拦截**确实属于本站裸域**
+    的未知子域；localhost、内网 IP、Cloudflare 预览域和其它测试 host 都照旧放行。
+
+    `www` 留给下面的 canonical 301，`tv` 是同一应用承载的真实子域。assets / image /
+    html5 等真实服务正常情况下由各自的 Worker / Pages 接住；若它们误落到主站源站，
+    回 404 也比静默吐主站首页安全。
+  */
+  const unknownSiteSubdomain =
+    hostname.endsWith(`.${site.host}`) && hostname !== site.wwwHost && hostname !== site.tvHost
+  if (unknownSiteSubdomain) {
+    return res
+      .set({ 'Cache-Control': CACHE.notFound, 'X-Robots-Tag': 'noindex, nofollow' })
+      .status(404)
+      .type('text/plain')
+      .send('Not Found')
+  }
+
   // 开头的多余斜杠先折掉（见注意 2），再去尾斜杠
   let clean = '/' + pathname.replace(/^\/+/, '').replace(/\/+$/, '')
   // 只归一站点页面；模拟器内部的 index.html 是实际文件，去掉就会把 iframe 送进 404。
@@ -132,12 +160,11 @@ export function normalizeUrl(req, res, next) {
 
   // host 归一和路径归一合成同一次 301（见开头）。带上 origin 就是跨主机跳转，
   // 顺带把 http 升成 https；不带则保持相对，免得把 localhost 上的请求跳到线上。
-  const { origin, wwwHost } = canonicalHost()
-  const hostname = requestHostname(req)
+  const { origin, wwwHost } = site
   let prefix = hostname === wwwHost ? origin : ''
 
   /*
-    ── 四、TV 子域（2026-09-12）─────────────────────────────
+    ── 五、TV 子域（2026-09-12）─────────────────────────────
     `/tv` 这一页搬到了 `tv.<裸域>`，规则全在 shared/tv-host.js 里（前后端共用一份）。
     这里只负责把它**并进同一次 301** —— 和上面三条一样，一个请求最多吃一次。
     `www.8bitgo.com/tv` 因此是一步到位跳 `https://tv.8bitgo.com/`，

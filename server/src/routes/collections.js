@@ -255,6 +255,45 @@ export async function getPublicCollection(id) {
   }
 }
 
+/**
+ * 按作者排好的顺序取一个合集里的公开游戏。
+ *
+ * 站内 API 和 SSR 必须走同一份排序逻辑；否则浏览器水合前后卡片会换位，既会触发
+ * React hydration 警告，也会让爬虫读到一套、玩家看到另一套。
+ */
+async function gamesForCollection(id) {
+  const itemRows = await query(
+    `SELECT ci.game_id, ci.created_at, ci.position FROM collection_items ci
+     WHERE ci.collection_id = ?
+     ORDER BY (ci.position IS NULL) ASC, ci.position ASC, ci.created_at DESC, ci.game_id DESC LIMIT ?`,
+    [id, MAX_ITEMS],
+  )
+  if (!itemRows.length) return []
+  const ids = itemRows.map((r) => String(r.game_id))
+  const holes = ids.map(() => '?').join(',')
+  const gameRows = await query(`SELECT * FROM games WHERE id IN (${holes}) AND hidden = 0`, ids)
+  const list = await attachRelations(gameRows)
+  const byId = new Map(list.map((g, i) => [String(gameRows[i].id), g]))
+  // IN 查询不承诺顺序，必须按 collection_items 的结果重新排一遍。
+  return ids.map((gid) => byId.get(gid)).filter(Boolean)
+}
+
+/**
+ * SSR 用的公开合集详情。
+ *
+ * 不能让 SSR 去请求自己的 HTTP API：那会多一趟网络、丢失同进程缓存，而且服务启动期间
+ * 还可能形成“自己等自己”的故障。这里直接复用 API 的装配函数，但永远按匿名访客返回，
+ * 登录后的 mine / canReview 再由客户端静默刷新。
+ */
+export async function getPublicCollectionDetail(id) {
+  const cid = idOf(id)
+  if (!cid) return null
+  const row = await queryOne(`${SELECT_WITH_AUTHOR} WHERE c.id = ?`, [cid])
+  if (!row || Number(row.hidden)) return null
+  const [decorated, games] = await Promise.all([decorate([row], null), gamesForCollection(cid)])
+  return { collection: decorated[0], games, canReview: false }
+}
+
 /* ---------------- 公开读 ---------------- */
 
 /**
@@ -306,39 +345,16 @@ collectionsRouter.get('/:id', optionalUser, async (req, res, next) => {
       return res.status(404).json({ error: '合集不存在' })
     }
 
-    /*
-      顺序：作者排过的（position 非空）在前、按 position 升序；没排过的垫在后面、按加入时间倒序。
-      作者从没拖过时全是 NULL，顺序和以前一模一样（最新放入的在前）。
-      排过之后再加进来的新游戏 position 是 NULL → 自动排到末尾，像给清单追加一条，
-      而不是插到作者精心排好的前面去。
-    */
-    const itemRows = await query(
-      `SELECT ci.game_id, ci.created_at, ci.position FROM collection_items ci
-       WHERE ci.collection_id = ?
-       ORDER BY (ci.position IS NULL) ASC, ci.position ASC, ci.created_at DESC, ci.game_id DESC LIMIT ?`,
-      [id, MAX_ITEMS],
-    )
-    let games = []
-    if (itemRows.length) {
-      const ids = itemRows.map((r) => String(r.game_id))
-      const holes = ids.map(() => '?').join(',')
-      const gameRows = await query(`SELECT * FROM games WHERE id IN (${holes}) AND hidden = 0`, ids)
-      const list = await attachRelations(gameRows)
-      const byId = new Map(list.map((g, i) => [String(gameRows[i].id), g]))
-      // 按 collection_items 的顺序还原，别用 IN 查询回来的顺序
-      games = ids.map((gid) => byId.get(gid)).filter(Boolean)
-    }
-    const [covers, counts, views] = await Promise.all([coversFor([id]), countsFor([id]), viewCountsFor([id])])
+    const [games, decorated, canReview] = await Promise.all([
+      gamesForCollection(id),
+      decorate([row], viewerId),
+      hasAbility(req, 'collections:review'),
+    ])
     res.json({
-      collection: rowToApi(row, {
-        covers: covers.get(String(id)) ?? [],
-        gameCount: counts.get(String(id)) ?? 0,
-        viewCount: views.get(String(id)) ?? 0,
-        viewerId,
-      }),
+      collection: decorated[0],
       games,
       // 有审核权的人才知道这个合集被下架了；普通人根本看不到下架的合集
-      canReview: await hasAbility(req, 'collections:review'),
+      canReview,
     })
   } catch (e) {
     next(e)

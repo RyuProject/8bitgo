@@ -187,7 +187,7 @@ check('声明了 sitemap 入口', () => {
 
 /** 极简的 req/res 替身，只实现中间件用到的那几个方法 */
 function run(method, originalUrl, host) {
-  const out = { nexted: false, status: 0, location: '', headers: {} }
+  const out = { nexted: false, status: 0, location: '', headers: {}, type: '', body: '' }
   // host 不传就是「没有 host 头」—— 那种请求只会走路径归一，不会被跨主机跳转，
   // 所以上面那些老用例的期望值都还是相对路径。
   const req = { method, originalUrl, headers: host ? { host } : {} }
@@ -199,6 +199,18 @@ function run(method, originalUrl, host) {
     redirect(status, location) {
       out.status = status
       out.location = location
+    },
+    status(status) {
+      out.status = status
+      return res
+    },
+    type(type) {
+      out.type = type
+      return res
+    },
+    send(body) {
+      out.body = body
+      return res
     },
   }
   normalizeUrl(req, res, () => {
@@ -402,11 +414,11 @@ check('www. 必须 301 到裸域，并和路径归一合成同一跳', () => {
 
 check('www 归一不能踩到别的 host', () => {
   // 裸域本身、localhost、内网 IP、健康检查一律不动
-  for (const host of ['8bitgo.com', 'localhost:5173', '127.0.0.1:8787', '10.0.0.5', 'assets.8bitgo.com']) {
+  for (const host of ['8bitgo.com', 'localhost:5173', '127.0.0.1:8787', '10.0.0.5']) {
     assert.ok(run('GET', '/games', host).nexted, `${host} 不该被跳`)
   }
   // 相似但不相等的主机名不能被前缀匹配蒙过去
-  for (const host of ['www.8bitgo.com.evil.com', 'notwww.8bitgo.com', 'www8bitgo.com']) {
+  for (const host of ['www.8bitgo.com.evil.com', 'www8bitgo.com']) {
     assert.ok(run('GET', '/games', host).nexted, `${host} 不该被跳`)
   }
   // /api/ 连 host 都不归一：跨主机 301 会让浏览器把 POST 降级
@@ -419,6 +431,18 @@ check('www 归一不能踩到别的 host', () => {
   assert.equal(hit, 'https://8bitgo.com/games', 'X-Forwarded-Host 也要认（取第一段）')
   // 写请求一律不碰
   assert.ok(run('POST', '/games', 'www.8bitgo.com').nexted)
+})
+
+check('未知的本站子域必须回 404，不能再把主站首页复制成无限多个 host', () => {
+  for (const host of ['random-8bg-probe.8bitgo.com', 'adminlogin.8bitgo.com', 'notwww.8bitgo.com', 'assets.8bitgo.com']) {
+    const r = run('GET', '/games', host)
+    assert.equal(r.status, 404, `${host} 没有回 404`)
+    assert.equal(r.body, 'Not Found')
+    assert.equal(r.headers['X-Robots-Tag'], 'noindex, nofollow')
+    assert.equal(r.location, '', '未知子域不能重定向到首页制造软 404')
+  }
+  assert.ok(run('GET', '/games', 'tv.8bitgo.com').nexted, '真实的 TV 子域不能被误伤')
+  assert.ok(run('GET', '/games', 'preview.example.workers.dev').nexted, '外部预览域不能被误伤')
 })
 
 check('⚠️ 裸域不是硬编码的 —— 换 PUBLIC_SITE_URL 要跟着换', () => {

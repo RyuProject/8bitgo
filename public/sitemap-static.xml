@@ -673,6 +673,118 @@
     <priority>0.7</priority>
   </url>
   <url>
+    <loc>https://8bitgo.com/collections</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://8bitgo.com/collections" />
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://8bitgo.com/zh-Hant/collections" />
+    <xhtml:link rel="alternate" hreflang="en" href="https://8bitgo.com/en/collections" />
+    <xhtml:link rel="alternate" hreflang="es" href="https://8bitgo.com/es/collections" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://8bitgo.com/fr/collections" />
+    <xhtml:link rel="alternate" hreflang="it" href="https://8bitgo.com/it/collections" />
+    <xhtml:link rel="alternate" hreflang="de" href="https://8bitgo.com/de/collections" />
+    <xhtml:link rel="alternate" hreflang="ja" href="https://8bitgo.com/ja/collections" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://8bitgo.com/en/collections" />
+    <changefreq>daily</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://8bitgo.com/zh-Hant/collections</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://8bitgo.com/collections" />
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://8bitgo.com/zh-Hant/collections" />
+    <xhtml:link rel="alternate" hreflang="en" href="https://8bitgo.com/en/collections" />
+    <xhtml:link rel="alternate" hreflang="es" href="https://8bitgo.com/es/collections" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://8bitgo.com/fr/collections" />
+    <xhtml:link rel="alternate" hreflang="it" href="https://8bitgo.com/it/collections" />
+    <xhtml:link rel="alternate" hreflang="de" href="https://8bitgo.com/de/collections" />
+    <xhtml:link rel="alternate" hreflang="ja" href="https://8bitgo.com/ja/collections" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://8bitgo.com/en/collections" />
+    <changefreq>daily</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://8bitgo.com/en/collections</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://8bitgo.com/collections" />
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://8bitgo.com/zh-Hant/collections" />
+    <xhtml:link rel="alternate" hreflang="en" href="https://8bitgo.com/en/collections" />
+    <xhtml:link rel="alternate" hreflang="es" href="https://8bitgo.com/es/collections" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://8bitgo.com/fr/collections" />
+    <xhtml:link rel="alternate" hreflang="it" href="https://8bitgo.com/it/collections" />
+    <xhtml:link rel="alternate" hreflang="de" href="https://8bitgo.com/de/collections" />
+    <xhtml:link rel="alternate" hreflang="ja" href="https://8bitgo.com/ja/collections" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://8bitgo.com/en/collections" />
+    <changefreq>daily</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://8bitgo.com/es/collections</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://8bitgo.com/collections" />
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://8bitgo.com/zh-Hant/collections" />
+    <xhtml:link rel="alternate" hreflang="en" href="https://8bitgo.com/en/collections" />
+    <xhtml:link rel="alternate" hreflang="es" href="https://8bitgo.com/es/collections" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://8bitgo.com/fr/collections" />
+    <xhtml:link rel="alternate" hreflang="it" href="https://8bitgo.com/it/collections" />
+    <xhtml:link rel="alternate" hreflang="de" href="https://8bitgo.com/de/collections" />
+    <xhtml:link rel="alternate" hreflang="ja" href="https://8bitgo.com/ja/collections" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://8bitgo.com/en/collections" />
+    <changefreq>daily</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://8bitgo.com/fr/collections</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://8bitgo.com/collections" />
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://8bitgo.com/zh-Hant/collections" />
+    <xhtml:link rel="alternate" hreflang="en" href="https://8bitgo.com/en/collections" />
+    <xhtml:link rel="alternate" hreflang="es" href="https://8bitgo.com/es/collections" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://8bitgo.com/fr/collections" />
+    <xhtml:link rel="alternate" hreflang="it" href="https://8bitgo.com/it/collections" />
+    <xhtml:link rel="alternate" hreflang="de" href="https://8bitgo.com/de/collections" />
+    <xhtml:link rel="alternate" hreflang="ja" href="https://8bitgo.com/ja/collections" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://8bitgo.com/en/collections" />
+    <changefreq>daily</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://8bitgo.com/it/collections</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://8bitgo.com/collections" />
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://8bitgo.com/zh-Hant/collections" />
+    <xhtml:link rel="alternate" hreflang="en" href="https://8bitgo.com/en/collections" />
+    <xhtml:link rel="alternate" hreflang="es" href="https://8bitgo.com/es/collections" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://8bitgo.com/fr/collections" />
+    <xhtml:link rel="alternate" hreflang="it" href="https://8bitgo.com/it/collections" />
+    <xhtml:link rel="alternate" hreflang="de" href="https://8bitgo.com/de/collections" />
+    <xhtml:link rel="alternate" hreflang="ja" href="https://8bitgo.com/ja/collections" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://8bitgo.com/en/collections" />
+    <changefreq>daily</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://8bitgo.com/de/collections</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://8bitgo.com/collections" />
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://8bitgo.com/zh-Hant/collections" />
+    <xhtml:link rel="alternate" hreflang="en" href="https://8bitgo.com/en/collections" />
+    <xhtml:link rel="alternate" hreflang="es" href="https://8bitgo.com/es/collections" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://8bitgo.com/fr/collections" />
+    <xhtml:link rel="alternate" hreflang="it" href="https://8bitgo.com/it/collections" />
+    <xhtml:link rel="alternate" hreflang="de" href="https://8bitgo.com/de/collections" />
+    <xhtml:link rel="alternate" hreflang="ja" href="https://8bitgo.com/ja/collections" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://8bitgo.com/en/collections" />
+    <changefreq>daily</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://8bitgo.com/ja/collections</loc>
+    <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://8bitgo.com/collections" />
+    <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://8bitgo.com/zh-Hant/collections" />
+    <xhtml:link rel="alternate" hreflang="en" href="https://8bitgo.com/en/collections" />
+    <xhtml:link rel="alternate" hreflang="es" href="https://8bitgo.com/es/collections" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://8bitgo.com/fr/collections" />
+    <xhtml:link rel="alternate" hreflang="it" href="https://8bitgo.com/it/collections" />
+    <xhtml:link rel="alternate" hreflang="de" href="https://8bitgo.com/de/collections" />
+    <xhtml:link rel="alternate" hreflang="ja" href="https://8bitgo.com/ja/collections" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://8bitgo.com/en/collections" />
+    <changefreq>daily</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
     <loc>https://8bitgo.com/about</loc>
     <xhtml:link rel="alternate" hreflang="zh-Hans" href="https://8bitgo.com/about" />
     <xhtml:link rel="alternate" hreflang="zh-Hant" href="https://8bitgo.com/zh-Hant/about" />

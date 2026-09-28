@@ -12,7 +12,7 @@
  *     和 SSR 用的是同一个函数。
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Collection, Game, Post } from '@/types'
+import type { Collection, CollectionDetail, CollectionPage, Game, Post } from '@/types'
 import type { FriendLink } from './friendLinks'
 import type { VisibleSiteNotice } from '../../shared/site-notice.js'
 import { api, apiEnabled } from './api'
@@ -89,12 +89,15 @@ export interface PlatformData { route: 'platform'; id: string; list: Paged<Game>
 export interface GenresData { route: 'genres'; facets: Facets }
 export interface GenreData { route: 'genre'; id: string; list: Paged<Game> }
 export interface DevelopersData { route: 'developers'; facets: Facets }
+export interface CollectionsData { route: 'collections'; list: CollectionPage }
+export interface CollectionData { route: 'collection'; detail: CollectionDetail | null }
 export interface BlogData { route: 'blog'; posts: Post[] }
 export interface OtherData { route: 'other'; facets: Facets }
 
 export type PageData =
   | HomeData | GamesData | GameData | PlatformsData | PlatformData
-  | GenresData | GenreData | DevelopersData | BlogData | OtherData
+  | GenresData | GenreData | DevelopersData | CollectionsData | CollectionData
+  | BlogData | OtherData
 
 /* ---------------- 首屏数据 ---------------- */
 

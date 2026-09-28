@@ -7,6 +7,7 @@
  */
 import {
   DEFAULT_SITE_URL,
+  collectionDetailUrls,
   gameContentLanguages,
   gameChangeUrls,
   gameDetailUrls,
@@ -21,6 +22,7 @@ import {
 
 export {
   DEFAULT_SITE_URL,
+  collectionDetailUrls,
   gameContentLanguages,
   gameChangeUrls,
   gameDetailUrls,

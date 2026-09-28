@@ -4,6 +4,7 @@ import { SITE_LANGUAGES } from '../shared/site-languages.js'
 import {
   DEFAULT_INDEXNOW_KEY,
   buildIndexNowPayload,
+  collectionDetailUrls,
   gameChangeUrls,
   gameDetailUrls,
   normalizeIndexNowUrls,
@@ -14,6 +15,7 @@ import {
 } from '../server/src/indexnow.js'
 import {
   buildGameSitemap,
+  buildCollectionSitemap,
   buildPostSitemap,
   buildSitemapIndex,
   buildTaxonomySitemap,
@@ -204,23 +206,25 @@ await check('三个时间列都为空时不写 lastmod，而不是退回 1970-01
   assert.ok(!xml.includes('1970'))
 })
 
-await check('sitemap 索引列出全部三类，各自的 lastmod 互不影响', async () => {
+await check('sitemap 索引列出全部四类，各自的 lastmod 互不影响', async () => {
   const xml = buildSitemapIndex({
     siteUrl: 'https://8bitgo.com',
     staticLastmod: '2026-08-20',
     gamesLastmod: '2026-09-01',
     postsLastmod: '2026-09-02',
     taxonomyLastmod: '2026-09-01',
+    collectionsLastmod: '2026-09-03',
   })
   for (const { code } of SITE_LANGUAGES) {
     assert.ok(xml.includes(`https://8bitgo.com/sitemaps/games-${code}.xml`), `缺游戏 ${code}`)
     assert.ok(xml.includes(`https://8bitgo.com/sitemaps/posts-${code}.xml`), `缺文章 ${code}`)
     assert.ok(xml.includes(`https://8bitgo.com/sitemaps/taxonomy-${code}.xml`), `缺平台类型 ${code}`)
   }
-  // 索引里一共 1 + 8×3 条
-  assert.equal(xml.match(/<sitemap>/g).length, 1 + SITE_LANGUAGES.length * 3)
+  // 索引里一共 1 份静态 + 1 份合集 + 8×3 份其它动态内容
+  assert.equal(xml.match(/<sitemap>/g).length, 2 + SITE_LANGUAGES.length * 3)
   assert.match(xml, /posts-en\.xml<\/loc>\n    <lastmod>2026-09-02</)
   assert.match(xml, /games-en\.xml<\/loc>\n    <lastmod>2026-09-01</)
+  assert.match(xml, /collections\.xml<\/loc>\n    <lastmod>2026-09-03</)
 })
 
 await check('某一类没有内容时，只有它的条目不带 lastmod', async () => {
@@ -246,6 +250,20 @@ await check('平台页与类型页按名单顺序输出，lastmod 取该页最�
   assert.match(xml, /<lastmod>2026-08-15<\/lastmod>/)
   // 平台/类型页没有封面，不该带图片扩展
   assert.ok(!xml.includes('image:'))
+})
+
+await check('用户合集 sitemap 只提交默认语言 canonical，并使用合集更新时间', async () => {
+  const xml = buildCollectionSitemap([
+    { id: 5, updated_at: new Date('2026-09-03T00:00:00Z') },
+  ], 'https://8bitgo.com')
+  assert.match(xml, /<loc>https:\/\/8bitgo\.com\/collections\/5<\/loc>/)
+  assert.match(xml, /<lastmod>2026-09-03<\/lastmod>/)
+  assert.doesNotMatch(xml, /\/en\/collections\/5/)
+})
+
+await check('没有公开合集时，索引不列空 sitemap', async () => {
+  const xml = buildSitemapIndex({ siteUrl: 'https://8bitgo.com', hasCollections: false })
+  assert.doesNotMatch(xml, /sitemaps\/collections\.xml/)
 })
 
 await check('空页面、白名单外的平台、已下线的类型都不进 sitemap', async () => {
@@ -431,7 +449,12 @@ await check('聚合页 URL 默认展开全部语言，且同一个 id 只出一�
   assert.equal(new Set(urls).size, urls.length)
 })
 
-await check('补交脚本三类内容都接上了（防止又退回“只捞游戏”）', () => {
+await check('用户合集详情 URL 去重、拒绝脏 id，且只生成默认语言', async () => {
+  const urls = collectionDetailUrls([{ id: 5 }, { id: 5 }, { id: 0 }, { id: 'bad' }], 'https://8bitgo.com')
+  assert.deepEqual(urls, ['https://8bitgo.com/collections/5'])
+})
+
+await check('补交脚本覆盖游戏、文章、分类与公开合集（防止又退回“只捞游戏”）', () => {
   for (const file of ['../server/scripts/submit-indexnow.mjs', '../server/scripts/submit-baidu.mjs']) {
     const src = readFileSync(new URL(file, import.meta.url), 'utf8')
     assert.match(src, /FROM games/, `${file} 少了游戏`)
@@ -441,6 +464,9 @@ await check('补交脚本三类内容都接上了（防止又退回“只捞游�
     assert.match(src, /gameContentLanguages/, `${file} 游戏详情补交没有按真实正文语言过滤`)
     assert.match(src, /postContentLanguages/, `${file} 文章详情补交没有按完整译文过滤`)
   }
+  const indexNow = readFileSync(new URL('../server/scripts/submit-indexnow.mjs', import.meta.url), 'utf8')
+  assert.match(indexNow, /FROM collections/, 'IndexNow 补交少了公开合集')
+  assert.match(indexNow, /collectionDetailUrls/, 'IndexNow 合集没有复用 canonical URL 算法')
 })
 
 console.log(`✅ IndexNow / sitemap：${passed} 项检查通过`)

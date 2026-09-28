@@ -18,6 +18,7 @@ import { Button } from '@/components/ui/Button'
 import { GameGridSkeleton } from '@/components/ui/PageSkeleton'
 import { useSeo } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
+import { usePageData, type CollectionData } from '@/services/pageData'
 import { NotFoundPage } from './NotFoundPage'
 
 /** /collections/:id —— 一个合集里的全部游戏 */
@@ -25,15 +26,22 @@ export function CollectionDetailPage() {
   const { id = '' } = useParams()
   const t = useT()
   const navigate = useNavigate()
-  const [data, setData] = useState<CollectionDetail | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [missing, setMissing] = useState(false)
+  const pageState = usePageData<CollectionData>(`/collections/${encodeURIComponent(id)}`, undefined, 'collection')
+  const initial = pageState.data?.detail ?? null
+  const [data, setData] = useState<CollectionDetail | null>(initial)
+  const [loading, setLoading] = useState(pageState.status !== 'ready')
+  const [missing, setMissing] = useState(pageState.status === 'ready' && !initial)
   const [editing, setEditing] = useState(false)
   const [adding, setAdding] = useState(false)
   const [busy, setBusy] = useState(false)
   /** 排序没存上时给一句话；存上了就静默 */
   const [sortError, setSortError] = useState<string | null>(null)
   const saveOrderTimer = useRef(0)
+  /**
+   * SSR 已经给了公开正文时，水合后仍要静默请求一次带登录态的接口：作者的 mine 与管理员的
+   * canReview 不能写进公共 HTML 缓存。静默刷新保留现有正文，不把完整页面又闪回骨架。
+   */
+  const ssrId = useRef(pageState.status === 'ready' ? id : '')
 
   /**
    * silent=true 时不切骨架屏：已经有数据、只是要和服务端对一下账（关掉「添加游戏」弹窗之后）。
@@ -57,7 +65,11 @@ export function CollectionDetailPage() {
     [id],
   )
 
-  useEffect(() => load(), [load])
+  useEffect(() => {
+    const hasSsr = ssrId.current === id
+    ssrId.current = ''
+    load(hasSsr)
+  }, [id, load])
 
   /**
    * 记一次浏览。**每个合集只发一次**，不跟着 `load(true)` 那些静默刷新走 ——

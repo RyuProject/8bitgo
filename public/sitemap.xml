@@ -4,6 +4,9 @@
     <loc>https://8bitgo.com/sitemap-static.xml</loc>
   </sitemap>
   <sitemap>
+    <loc>https://8bitgo.com/sitemaps/collections.xml</loc>
+  </sitemap>
+  <sitemap>
     <loc>https://8bitgo.com/sitemaps/games-zh-Hans.xml</loc>
   </sitemap>
   <sitemap>

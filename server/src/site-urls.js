@@ -262,6 +262,23 @@ export function taxonomyDetailUrls(rows, siteUrl = publicSiteUrl(), languages) {
   return expand([...paths], siteUrl, languages)
 }
 
+/**
+ * 公开合集详情只提交默认语言。
+ *
+ * 合集标题和简介是用户只写一份的正文；前端也把所有语言前缀 canonical 到简体中文裸路径。
+ * 这里若照聚合页那样展开 8 份，就是主动把 7 个重复 URL 重新交给搜索引擎。
+ */
+export function collectionDetailUrls(rows, siteUrl = publicSiteUrl()) {
+  const paths = new Set()
+  for (const row of rows || []) {
+    const raw = row && typeof row === 'object' ? row.id : row
+    const id = Number(raw)
+    if (!Number.isInteger(id) || id <= 0) continue
+    paths.add(`/collections/${id}`)
+  }
+  return expand([...paths], siteUrl, [SITE_DEFAULT_LANGUAGE])
+}
+
 /** 只允许提交本站 URL，防止脏数据把这台服务器变成任意 URL 提交代理。 */
 export function normalizeSiteUrls(urls, siteUrl = publicSiteUrl()) {
   const origin = new URL(siteUrl).origin

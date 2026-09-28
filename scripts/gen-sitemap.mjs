@@ -130,6 +130,7 @@ add('/developers', '0.6', 'weekly')
 // 但响应头已经是 noindex。两者同时存在会在 Search Console 报「已提交网址被标记为 noindex」。
 // 它仍可被访问和规范化，只是不主动提交给爬虫。
 add('/blog', '0.7', 'weekly')
+add('/collections', '0.7', 'daily')
 add('/about', '0.5', 'monthly')
 // 法律页。优先级低但**必须在这里** —— 应用商店和第三方登录（Google / Apple /
 // Microsoft）的审核会去抓这两个 URL，没被收录时它们只能靠人工点进来。
@@ -152,6 +153,7 @@ add('/privacy', '0.3', 'yearly')
  *   /sitemaps/games-<lang>.xml     游戏详情
  *   /sitemaps/posts-<lang>.xml     文章详情
  *   /sitemaps/taxonomy-<lang>.xml  平台页 + 类型页
+ *   /sitemaps/collections.xml      用户合集详情（只列默认语言 canonical）
  * 下面只统计数量，好在构建日志里和数据库实际情况对一眼。
  */
 const visiblePlatformCount = new Set(visibleGames.map((g) => g.platform)).size
@@ -216,6 +218,7 @@ writeFileSync(root + 'public/sitemap-static.xml', staticXml, 'utf8')
  */
 const sitemapFiles = [
   `${SITE}/sitemap-static.xml`,
+  `${SITE}/sitemaps/collections.xml`,
   ...LANGUAGES.map((language) => `${SITE}/sitemaps/games-${language.code}.xml`),
   ...LANGUAGES.map((language) => `${SITE}/sitemaps/posts-${language.code}.xml`),
   ...LANGUAGES.map((language) => `${SITE}/sitemaps/taxonomy-${language.code}.xml`),
@@ -236,7 +239,7 @@ if (existsSync(robotsPath)) {
   writeFileSync(robotsPath, r, 'utf8')
 }
 
-console.log(`✅ sitemap.xml：1 份静态 + 每种语言各 3 份动态（游戏 / 文章 / 平台类型），共 ${1 + LANGUAGES.length * 3} 份`)
+console.log(`✅ sitemap.xml：1 份静态 + 1 份合集 + 每种语言各 3 份动态（游戏 / 文章 / 平台类型），共 ${2 + LANGUAGES.length * 3} 份`)
 console.log(`   sitemap-static.xml：${entries.length} 条 canonical URL（共用英文长正文的页面只列真实语言版本）`)
 console.log(`   由后端实时生成（下列数字只是构建时的快照，线上以数据库为准）：`)
 console.log(`     游戏 ${visibleGames.length} 款 / 文章 ${visiblePosts.length} 篇 / 平台 ${visiblePlatformCount} 个 / 类型 ${visibleGenreCount} 个`)
