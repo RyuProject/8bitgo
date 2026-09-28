@@ -6,7 +6,7 @@
 import { CACHE } from './cache.js'
 import { publicSiteUrl } from './site-urls.js'
 import { tvRedirect } from '../../shared/tv-host.js'
-import { SITE_DEFAULT_LANGUAGE } from '../../shared/site-languages.js'
+import { SITE_DEFAULT_LANGUAGE, SITE_LANGUAGES } from '../../shared/site-languages.js'
 
 /**
  * URL 归一（原名 `normalizeTrailingSlash`，现在管尾斜杠、`/index.html`、`www.` 三件事）。
@@ -112,6 +112,20 @@ function isRuntimeIndexPath(pathname) {
   return RUNTIME_INDEX_ROOTS.has(parts[0]) && /^index\.html$/i.test(parts.at(-1) || '')
 }
 
+/**
+ * 已更名且新地址仍在线的公开内容。
+ *
+ * 只给经过线上核对的确切一对一关系做 301；不能把任意 404 都送去 `/games`，那会变成
+ * soft 404。每种真实语言前缀都展开一次，旧外链的语言语义因此不会被重定向吃掉。
+ */
+const LEGACY_GAME_PATHS = new Map(
+  ['', ...SITE_LANGUAGES.filter(({ code }) => code !== SITE_DEFAULT_LANGUAGE).map(({ code }) => `/${code}`)]
+    .map((prefix) => [
+      `${prefix}/games/taiko-web`,
+      `${prefix}/games/taiko-no-tatsujin-web`,
+    ]),
+)
+
 export function normalizeUrl(req, res, next) {
   if (req.method !== 'GET' && req.method !== 'HEAD') return next()
   const cut = req.originalUrl.indexOf('?')
@@ -157,6 +171,9 @@ export function normalizeUrl(req, res, next) {
   const defaultLanguagePrefix = `/${SITE_DEFAULT_LANGUAGE}`
   if (clean === defaultLanguagePrefix) clean = '/'
   else if (clean.startsWith(`${defaultLanguagePrefix}/`)) clean = clean.slice(defaultLanguagePrefix.length)
+
+  // GSC 仍在抓旧的 taiko-web；现存内容已经更名。这里和 www / 尾斜杠合并成一次 301。
+  clean = LEGACY_GAME_PATHS.get(clean) || clean
 
   // host 归一和路径归一合成同一次 301（见开头）。带上 origin 就是跨主机跳转，
   // 顺带把 http 升成 https；不带则保持相对，免得把 localhost 上的请求跳到线上。

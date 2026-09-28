@@ -11,7 +11,9 @@ export function json(data, cors = {}, status = 200, extra = {}) {
   return new Response(JSON.stringify(data), {
     status,
     headers: { ...cors, 'Content-Type': 'application/json; charset=utf-8',
-      'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...extra },
+      'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+      // 资源域根地址和管理接口是机器用 JSON，不是搜索结果；真实图片 / ROM 响应不走这里。
+      'X-Robots-Tag': 'noindex, nofollow', ...extra },
   })
 }
 export function positiveInt(value, fallback, maximum = Number.MAX_SAFE_INTEGER) {

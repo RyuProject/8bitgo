@@ -41,12 +41,14 @@ const bare = { slug: 'battle-city', description: '坦克大战…', updated_at: 
 /** 有英文简介、没有别的译文 —— /en 该留，/de 不该留 */
 const withEn = { slug: '1942', description: '《1942》…', description_en: '1942 is a shooter…', updated_at: '2026-09-01' }
 /** 德语译文已生成 */
-const withDe = { slug: 'doom', description_en: 'Doom is…', description_i18n: { de: 'Doom ist…' }, updated_at: '2026-09-01' }
+const withDe = { slug: 'doom', description: '《毁灭战士》…', description_en: 'Doom is…', description_i18n: { de: 'Doom ist…' }, updated_at: '2026-09-01' }
 const locs = (xml) => [...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1])
 
-check('基准语言（zh-Hans）无条件保留 —— 连简介都没有的游戏也得有一条 canonical', () => {
-  assert.equal(hasLocalizedBody({}, 'zh-Hans', { i18n: 'description_i18n' }), true)
+check('基准语言也只提交有正文的游戏，薄页保留可访问但不主动消耗抓取预算', () => {
+  assert.equal(hasLocalizedBody({}, 'zh-Hans', { base: 'description', i18n: 'description_i18n' }), false)
+  assert.equal(hasLocalizedBody(bare, 'zh-Hans', { base: 'description', i18n: 'description_i18n' }), true)
   assert.equal(locs(buildGameSitemap([bare, withEn, withDe], 'zh-Hans', SITE)).length, 3)
+  assert.deepEqual(locs(buildGameSitemap([{ slug: 'thin', description: '   ' }], 'zh-Hans', SITE)), [])
 })
 
 check('没有译文的语言不进 sitemap（正文会回退成英文/简体 = 重复页）', () => {
@@ -104,6 +106,7 @@ check('⚠️ 游戏那句 SQL 必须把门控要读的列查出来（漏一列 
   assert.ok(sql.length >= 2, '应当有「带译文列」和「退回」两句')
   const rich = sql.find((q) => q.includes('description_i18n'))
   assert.ok(rich, 'games 的主查询必须 SELECT description_i18n，否则每一行都判成没翻译')
+  assert.match(rich, /\bdescription\b/, 'zh-Hans 那一档靠 description，也必须查出来')
   assert.ok(rich.includes('description_en'), 'en 那一档靠 description_en，也必须查出来')
   const posts = src.match(/SELECT[^']*FROM posts WHERE published = 1[^']*/g) || []
   assert.ok(
@@ -128,6 +131,8 @@ check('脏输入不炸', () => {
     assert.equal(hasLocalizedBody({ description_i18n: bad }, 'de', { i18n: 'description_i18n' }), false)
   }
   assert.equal(hasLocalizedBody(null, 'de', { i18n: 'description_i18n' }), false)
+  assert.equal(hasLocalizedBody(undefined, 'zh-Hans', { base: 'description' }), false)
+  // 没指定基准列的通用调用仍保留旧语义，避免其它内容类型被误伤。
   assert.equal(hasLocalizedBody(undefined, 'zh-Hans', {}), true)
 })
 

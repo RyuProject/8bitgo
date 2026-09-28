@@ -412,6 +412,20 @@ check('www. 必须 301 到裸域，并和路径归一合成同一跳', () => {
   assert.equal(run('GET', '/games', 'WWW.8BitGo.com:8080').location, 'https://8bitgo.com/games')
 })
 
+check('已更名游戏的历史外链一跳到现存页面，语言与查询串都保留', () => {
+  assert.equal(run('GET', '/games/taiko-web', '8bitgo.com').location, '/games/taiko-no-tatsujin-web')
+  assert.equal(
+    run('GET', '/en/games/taiko-web?from=old-link', '8bitgo.com').location,
+    '/en/games/taiko-no-tatsujin-web?from=old-link',
+  )
+  assert.equal(
+    run('GET', '/zh-Hans/games/taiko-web/', 'www.8bitgo.com').location,
+    'https://8bitgo.com/games/taiko-no-tatsujin-web',
+    '默认语言前缀、www、尾斜杠与旧 slug 必须合成一跳',
+  )
+  assert.ok(run('GET', '/games/taiko-web-extra', '8bitgo.com').nexted, '只能精确命中旧 slug')
+})
+
 check('www 归一不能踩到别的 host', () => {
   // 裸域本身、localhost、内网 IP、健康检查一律不动
   for (const host of ['8bitgo.com', 'localhost:5173', '127.0.0.1:8787', '10.0.0.5']) {

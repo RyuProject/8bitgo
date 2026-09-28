@@ -51,10 +51,14 @@ export const CACHE = {
   /**
    * SSR 出来的 HTML。浏览器不缓存（max-age=0，保证用户刷新一定拿到新的），
    * 但边缘可以缓存 —— 页面是匿名的，登录态和后台数据都在客户端，不存在串号。
+   *
+   * no-transform 是为了让 Cloudflare 不再把正文里的邮箱改写成 `/cdn-cgi/l/email-protection`。
+   * 那个内部端点被 Google 当普通链接抓取后会报 404；本站的邮箱本来就已经用 mailto 表达，
+   * 不需要边缘再改写 HTML。它也保证 canonical / hreflang 等 SEO 头不会被中间层变形。
    */
   // 内容上架后这段 stale 窗口也算进可见延迟；留 5 分钟扛回源抖动，
   // 避免旧首页/详情页在边缘继续可用整整一天，尤其影响低流量页面的爬虫首访。
-  page: `public, max-age=0, s-maxage=${PAGE_S_MAXAGE}, stale-while-revalidate=300`,
+  page: `public, max-age=0, s-maxage=${PAGE_S_MAXAGE}, stale-while-revalidate=300, no-transform`,
 
   /** 404：短暂缓存一下挡住爬虫的反复请求，又不至于长期钉死 */
   notFound: 'public, max-age=0, s-maxage=60',

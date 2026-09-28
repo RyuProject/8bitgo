@@ -7,6 +7,7 @@
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { CACHE } from '../server/src/cache.js'
 
 const read = (relative) => readFileSync(new URL(`../${relative}`, import.meta.url), 'utf8')
 let failed = 0
@@ -47,6 +48,10 @@ check('SSR 在启动时预热模板和渲染入口，部署窗口继续用内存
   assert.match(available, /loadRender\(\)/, '启动时没有预加载 SSR 渲染入口')
   assert.match(src, /if \(template !== null\) return template/, '构建时模板消失后不会退回内存副本')
   assert.match(src, /let renderPromise = null/, '并发首访可能重复导入渲染入口')
+})
+
+check('SSR HTML 禁止边缘改写，避免 Cloudflare 注入可抓取的 /cdn-cgi 邮箱伪链接', () => {
+  assert.match(CACHE.page, /(?:^|,\s*)no-transform(?:,|$)/)
 })
 
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过 ✅')

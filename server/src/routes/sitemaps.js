@@ -106,16 +106,21 @@ function i18nText(raw, language) {
  * ⚠️ 页面本身照旧可访问；head 里的 hreflang 也只列真正有正文的语言，和这里保持一致。
  * 未翻译 URL 会 canonical 到它实际回退显示的英文或简体版本。
  *
- * ⚠️ 基准语言（zh-Hans）无条件保留：它是 canonical 那一条，
- * 连简介都还没写的游戏也得有一条 URL 进得去，否则整款游戏从 sitemap 里消失。
+ * ⚠️ 基准语言（zh-Hans）也要有正文才主动提交。页面本身仍可访问，简介补齐后会自动
+ * 回到 sitemap；但把只有标题和播放器的薄页交给 Google，只会消耗本来就紧张的抓取预算。
+ * 2026-09-29 的 GSC 报告里，38 款缺少基准简介的游戏有 27 款落在
+ * 「已发现 - 尚未编入索引」，证明「无条件保留」并没有帮助它们被收录。
  *
  * @param row 数据库行
  * @param language 站点语言码（已经过 languageCodes 校验）
- * @param cols `{ i18n: 'description_i18n', en: 'description_en' }` —— 存译文的列名，
+ * @param cols `{ base: 'description', i18n: 'description_i18n', en: 'description_en' }` —— 正文列名，
  *             `en` 是「这门语言有独立基准列」的特例（游戏的英文简介是单独一列，文章没有）
  */
 export function hasLocalizedBody(row, language, cols = {}) {
-  if (language === SITE_DEFAULT_LANGUAGE) return true
+  // 没传 base 时保留通用 helper 过去的语义；游戏 sitemap 会明确传入 description。
+  if (language === SITE_DEFAULT_LANGUAGE) {
+    return !cols.base || Boolean(String(row?.[cols.base] ?? '').trim())
+  }
   if (cols.i18n && i18nText(row?.[cols.i18n], language)) return true
   // 英文简介在 games 里是独立的一列，不在 description_i18n 里
   if (language === 'en' && cols.en && String(row?.[cols.en] ?? '').trim()) return true
@@ -175,7 +180,11 @@ export function buildGameSitemap(rows, language, siteUrl = publicSiteUrl(), { ga
     // 只承诺正文确实是这门语言的那些游戏，见 hasLocalizedBody。
     // gate=false 是「这批行里没有译文列」，此时不能过滤，见 sitemapRows
     gate
-      ? rows.filter((row) => hasLocalizedBody(row, language, { i18n: 'description_i18n', en: 'description_en' }))
+      ? rows.filter((row) => hasLocalizedBody(row, language, {
+          base: 'description',
+          i18n: 'description_i18n',
+          en: 'description_en',
+        }))
       : rows,
     language,
     siteUrl,
@@ -196,8 +205,8 @@ export async function gameSitemap(req, res, next) {
     }
     const { rows, gate } = await sitemapRows(
       'games',
-      'SELECT slug, cover, added_at, created_at, updated_at, description_en, description_i18n FROM games WHERE hidden = 0 ORDER BY id ASC',
-      'SELECT slug, cover, added_at, created_at, updated_at FROM games WHERE hidden = 0 ORDER BY id ASC',
+      'SELECT slug, cover, added_at, created_at, updated_at, description, description_en, description_i18n FROM games WHERE hidden = 0 ORDER BY id ASC',
+      'SELECT slug, cover, added_at, created_at, updated_at, description FROM games WHERE hidden = 0 ORDER BY id ASC',
     )
     res.setHeader('Cache-Control', CACHE.meta)
     res.setHeader('Vary', 'Accept-Encoding')
@@ -453,8 +462,8 @@ async function langsWithContent() {
     const [g, p] = await Promise.all([
       sitemapRows(
         'index-games',
-        'SELECT description_en, description_i18n FROM games WHERE hidden = 0',
-        'SELECT slug FROM games WHERE hidden = 0',
+        'SELECT description, description_en, description_i18n FROM games WHERE hidden = 0',
+        'SELECT slug, description FROM games WHERE hidden = 0',
       ),
       sitemapRows(
         'index-posts',
@@ -464,7 +473,11 @@ async function langsWithContent() {
     ])
     return {
       gamesLangs: pick(g.rows, g.gate, (row, code) =>
-        hasLocalizedBody(row, code, { i18n: 'description_i18n', en: 'description_en' })),
+        hasLocalizedBody(row, code, {
+          base: 'description',
+          i18n: 'description_i18n',
+          en: 'description_en',
+        })),
       postsLangs: pick(p.rows, p.gate, hasLocalizedPostBody),
     }
   } catch (error) {

@@ -55,6 +55,7 @@ await check('自动推送只提交有正文的游戏详情页，聚合页仍覆�
       slug: 'doom',
       platform: 'dos',
       genres: ['action'],
+      description: '《毁灭战士》是一款第一人称射击游戏。',
       description_en: 'Doom is a shooter.',
       description_i18n: JSON.stringify({ fr: 'Doom est un jeu de tir.' }),
     },
@@ -65,6 +66,17 @@ await check('自动推送只提交有正文的游戏详情页，聚合页仍覆�
   assert.ok(urls.includes('https://8bitgo.com/fr/games/doom'))
   assert.ok(!urls.includes('https://8bitgo.com/de/games/doom'))
   assert.ok(urls.includes('https://8bitgo.com/de/games'), '德文游戏列表自身有本地化正文，仍应通知')
+})
+
+await check('缺少基准正文时不主动推默认语言薄页，有真实正文的其它语言不受影响', async () => {
+  const urls = gameChangeUrls({
+    slug: 'thin-game',
+    description: '   ',
+    description_en: 'This version has an English description.',
+  }, 'https://8bitgo.com')
+  assert.ok(!urls.includes('https://8bitgo.com/games/thin-game'))
+  assert.ok(urls.includes('https://8bitgo.com/en/games/thin-game'))
+  assert.ok(urls.includes('https://8bitgo.com/games'), '默认语言列表页仍有独立正文，应该通知')
 })
 
 await check('只保留本站 URL，并去重和去掉 hash', async () => {
@@ -385,7 +397,7 @@ await check('一张封面都没有时不声明 image 命名空间', async () => 
 
 await check('不输出 Google 已停止支持的 image 子标签', async () => {
   const xml = buildGameSitemap(
-    [{ slug: 'contra', cover: 'covers/contra.jpg', updated_at: new Date() }],
+    [{ slug: 'contra', cover: 'covers/contra.jpg', description: '魂斗罗是一款横版射击游戏。', updated_at: new Date() }],
     'zh-Hans',
     'https://8bitgo.com',
   )

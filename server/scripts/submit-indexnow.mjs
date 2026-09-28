@@ -43,7 +43,7 @@ try {
   const groups = []
 
   if (wants('games')) {
-    const rows = await query('SELECT slug, description_en, description_i18n FROM games WHERE hidden = 0 ORDER BY id ASC')
+    const rows = await query('SELECT slug, description, description_en, description_i18n FROM games WHERE hidden = 0 ORDER BY id ASC')
     groups.push({
       label: '游戏详情页',
       items: rows.length,

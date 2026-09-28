@@ -135,9 +135,10 @@ const present = (value) => Boolean(String(value ?? '').trim())
 /** 供 IndexNow / 百度推送复用的游戏正文语言判据；与动态 sitemap 保持一致。 */
 export function gameContentLanguages(game) {
   const translated = i18nMap(field(game, 'descriptionI18n', 'description_i18n'))
+  const base = field(game, 'description', 'description')
   const english = field(game, 'descriptionEn', 'description_en')
   return ALL_LANGUAGE_CODES.filter((code) => {
-    if (code === SITE_DEFAULT_LANGUAGE) return true
+    if (code === SITE_DEFAULT_LANGUAGE) return present(base)
     if (code === 'en') return present(translated.en) || present(english)
     return present(translated[code])
   })
@@ -154,7 +155,8 @@ export function postContentLanguages(post) {
 }
 
 function gameHasLanguageFields(game) {
-  return hasOwn(game, 'descriptionEn') || hasOwn(game, 'description_en')
+  return hasOwn(game, 'description')
+    || hasOwn(game, 'descriptionEn') || hasOwn(game, 'description_en')
     || hasOwn(game, 'descriptionI18n') || hasOwn(game, 'description_i18n')
 }
 

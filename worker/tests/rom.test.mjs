@@ -1,10 +1,20 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import worker from '../src/index.js'
-import { Bucket, environment, req, count, bytes, streamChunks } from './fixtures.mjs'
+import { Bucket, environment, req, count, streamChunks } from './fixtures.mjs'
 
 for (const method of ['PUT','POST','DELETE']) test(`${method}: unauthorized writes are rejected`, async () => {
   const e = environment(); const r = await worker.fetch(req('/game.zip', method), e); assert.equal(r.status,401); assert.equal(e.ROMS.calls.length,0)
+})
+test('machine-only JSON is noindex while public objects remain eligible for image search', async () => {
+  const root = await worker.fetch(req('/'), environment())
+  assert.equal(root.status, 200)
+  assert.equal(root.headers.get('X-Robots-Tag'), 'noindex, nofollow')
+
+  const e = environment(); e.ROMS.seed('covers/game.webp', 'image')
+  const image = await worker.fetch(req('/covers/game.webp'), e)
+  assert.equal(image.status, 200)
+  assert.equal(image.headers.get('X-Robots-Tag'), null)
 })
 test('invalid URL percent encoding returns CORS JSON 400, not uncaught URIError', async () => {
   const r = await worker.fetch(req('/%E0%A4%A'), environment()); assert.equal(r.status,400); assert.equal(r.headers.get('Access-Control-Allow-Origin'),'*')

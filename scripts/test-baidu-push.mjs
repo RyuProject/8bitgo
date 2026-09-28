@@ -267,9 +267,10 @@ await check('原始响应**原样**交给调用方（--probe 靠它）', async (
 })
 
 await check('sitemap 索引的游戏 lastmod 跟数据库走', async () => {
-  const xml = buildSitemapIndex({ siteUrl: SITE, gamesLastmod: '2026-09-02', staticLastmod: '2026-08-30' })
+  const xml = buildSitemapIndex({ siteUrl: SITE, gamesLastmod: '2026-09-02', hasCollections: false })
   assert.match(xml, /<loc>https:\/\/8bitgo\.com\/sitemaps\/games-zh-Hans\.xml<\/loc>\s*<lastmod>2026-09-02<\/lastmod>/)
-  assert.match(xml, /<loc>https:\/\/8bitgo\.com\/sitemap-static\.xml<\/loc>\s*<lastmod>2026-08-30<\/lastmod>/)
+  const staticEntry = xml.match(/<sitemap>\s*<loc>https:\/\/8bitgo\.com\/sitemap-static\.xml<\/loc>([\s\S]*?)<\/sitemap>/)?.[1] ?? ''
+  assert.doesNotMatch(staticEntry, /<lastmod>/, '静态页不能拿构建日期冒充内容更新时间')
   // 1 份静态 + 每种语言各三份（游戏 / 文章 / 平台类型）
   assert.equal((xml.match(/<sitemap>/g) || []).length, SITE_LANGUAGES.length * 3 + 1)
   // 没构建过时不写 lastmod（协议里它是可选的），别输出空标签
