@@ -659,7 +659,7 @@ export function GameDetailPage() {
                 并争取「人们还问」/ 精选摘要的露出（faqSchema 在 useSeo 里按 faqItems 注入） */}
             {game && faqItems.length > 0 && (
               <section className="mt-8">
-                <h2 className="text-lg font-bold">{faqNs.faqTitle}</h2>
+                <h2 className="text-lg font-bold">{t.game.faqTitle}</h2>
                 <dl className="mt-4 space-y-4">
                   {faqItems.map((item, i) => (
                     <div key={i}>

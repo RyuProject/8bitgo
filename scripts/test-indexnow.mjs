@@ -253,8 +253,9 @@ await check('空页面、白名单外的平台、已下线的类型都不进 sit
   const rows = pickTaxonomyRows(
     [
       { id: 'nes', latest: d },
-      // snes 不在 ENABLED_PLATFORM_IDS 里（前台不展示），不该出现
+      // snes 已开放，必须跟着进入 sitemap；n64 仍在白名单外，不该出现。
       { id: 'snes', latest: d },
+      { id: 'n64', latest: d },
     ],
     [
       { id: 'action', latest: d },
@@ -263,7 +264,7 @@ await check('空页面、白名单外的平台、已下线的类型都不进 sit
     ],
   )
   const paths = rows.map((r) => `/${r.kind}/${r.id}`)
-  assert.deepEqual(paths, ['/platforms/nes', '/genres/action'])
+  assert.deepEqual(paths, ['/platforms/nes', '/platforms/snes', '/genres/action'])
 })
 
 await check('平台与类型都按名单顺序排，不跟数据库返回顺序', async () => {
@@ -307,7 +308,11 @@ await check('shared 的平台白名单与前台 src/config/platforms.ts 是同�
   // 前台必须是 re-export，不能自己再写一遍数组字面量
   assert.ok(src.includes("from '../../shared/site-taxonomy.js'"), 'platforms.ts 应从 shared 导入')
   assert.ok(!/ENABLED_PLATFORMS\s*:\s*PlatformId\[\]\s*=\s*\[['"]/.test(src), 'platforms.ts 不该重新写死数组')
-  assert.ok(ENABLED_PLATFORM_IDS.includes('nes') && ENABLED_PLATFORM_IDS.includes('dos'))
+  assert.ok(
+    ENABLED_PLATFORM_IDS.includes('nes')
+      && ENABLED_PLATFORM_IDS.includes('snes')
+      && ENABLED_PLATFORM_IDS.includes('dos'),
+  )
 })
 
 await check('封面 key 换算成对象存储上的绝对地址，逐段编码', async () => {
