@@ -11,6 +11,7 @@
     "ruffle": "node scripts/copy-ruffle.mjs",
     "flashbridge": "node scripts/build-flash-save-bridge.mjs",
     "jsdos": "node scripts/copy-jsdos.mjs --with-dosbox-x",
+    "sockdrive:upload": "node scripts/upload-sockdrive-r2.mjs",
     "cs15:bundle": "esbuild public/web/cs15/cs15.js --bundle --format=esm --platform=browser --target=es2022 --outfile=public/web/cs15/cs15.bundle.js",
     "cs15:repack": "python3 scripts/repack-cs15.py",
     "cs15:upload": "node scripts/upload-cs15-r2.mjs",
@@ -38,6 +39,7 @@
     "test:cover": "node scripts/test-cover-resize.mjs",
     "test:cover-thumb": "node scripts/test-cover-thumb.mjs",
     "test:dos-backend": "node scripts/test-dos-backend.mjs",
+    "test:dos-sockdrive-upload": "node scripts/test-sockdrive-upload.mjs",
     "test:dospad": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-dos-pad.mjs",
     "test:romdata": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-romdata.mjs",
     "test:arcade-dip": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-arcade-dip.mjs",
@@ -160,7 +162,7 @@
     "test:dolphin": "node scripts/check-dolphin.mjs && node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-dolphin-range.mjs",
     "ppsspp:build": "node scripts/build-ppsspp.mjs",
     "ppsspp:check": "node scripts/check-ppsspp.mjs",
-    "test:ppsspp": "node scripts/check-ppsspp.mjs --source-only && node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-ppsspp-range.mjs",
+    "test:ppsspp": "node scripts/check-ppsspp.mjs --source-only && node scripts/test-ppsspp-read-ahead.mjs && node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-ppsspp-range.mjs",
     "test:j2me": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-j2me.mjs",
     "test:ejs-cores": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-ejs-cores.mjs",
     "test:nds-layout": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-nds-layout.mjs",
@@ -195,6 +197,7 @@
   },
   "dependencies": {
     "@bokuweb/zstd-wasm": "^0.0.27",
+    "@microsoft/clarity": "^1.0.2",
     "@tencentcloud/chat": "3.6.7",
     "jsnes": "^2.1.0",
     "react": "^19.2.8",
@@ -218,5 +221,8 @@
     "vite": "^8.2.2",
     "wicg-inert": "^3.1.3",
     "wrangler": "^4.141.0"
+  },
+  "overrides": {
+    "undici": "7.29.1"
   }
 }

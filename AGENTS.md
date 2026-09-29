@@ -393,6 +393,40 @@ DOSBox-X 帧缓冲是 800×600。原版 DirectDraw 把画面缩进客体桌面�
 把相对位移送给只认绝对位置的软件光标，走 `needsLockedAbsoluteDosMouse()` 那条桥修，不套
 Win95 或 Caesar 的分辨率补丁。
 
+### 2.8.7 大型 Win95/98 游戏走静态 Sockdrive，不是视频直播
+
+`games.dos_sockdrive` 填一款游戏的**静态 Sockdrive 目录**（对象 key、站内路径或完整 URL）；
+目录根必须直接有 `sockdrive.metaj`、`*.raw`，产物按 js-dos 官方 `sockify` 流程生成：
+<https://js-dos.com/publish-sockdrive-bundle.html>。播放器保留共享 `dos_system` 作为系统盘，游戏盘用
+`imgmount <序号> sockdrive <URL>` 按扇区读取；`rom / roms` 那份完整 ZIP 仍留在数据里作一键回退，
+但流式模式不会下载它。清空 `dos_sockdrive` 就原样回到旧整包路径，不需要迁移存量游戏。
+
+⚠️ 目录必须带版本（如 `sockdrives/caesar3-v1`）且**不可原地覆盖**：浏览器会按完整 URL 把磁盘块
+长期缓存在 OPFS，原地换内容会把两代扇区拼在一起。若 `sockify -b/-g`，R2 / Worker 必须分别给
+`.raw` **和 `sockdrive.metaj`** 发正确的 `Content-Encoding: br/gzip`（官方工具连元数据也压缩）；
+公开域名还要允许 8bitgo.com 跨域读取。完整公开 URL 去掉协议后不得超过 200 字符：js-dos 8.4.1
+会把更长的 OPFS 目录名截断，版本号落在截断位置后时仍会撞进旧磁盘缓存。
+发布前后统一走 `npm run sockdrive:upload -- --src <磁盘目录> --bucket <桶> --prefix
+sockdrives/<游戏>-v1 --encoding br`：脚本会核对所有必需分块、先传数据再传元数据，并默认拒绝覆盖
+公开域名上已经存在的版本目录；预检网络失败也会直接停止，不提供强制覆盖开关。按官方首次运行
+优化得到的 `preload_ranges.metaj` 是**独立文件**，不在 `sockdrive.metaj` 里；把它放到同一磁盘目录，
+上传脚本会按相同 br/gzip 编码校验并发布。漏传时 js-dos 会静默退回转换期默认清单，配置仍显示
+`default`，但进入菜单、首关或过场时会继续同步等网络，最容易被误判成“预热没有效果”。
+
+流式盘不能再由浏览器现场合并 `dos_extras` 或 `windowsGameCompatibilityExtras`：那块盘已经变成
+远程只读扇区，补丁必须在 `sockify` **之前**写进去。尤其《凯撒大帝 3》的 `c3.inf` 分辨率补丁
+必须烘进磁盘，否则 §2.8.6 的鼠标偏移会回来。后台和服务端都拒绝“Sockdrive + dos_extras”，
+避免配置看似保存成功、玩家却永远读不到补丁。
+
+js-dos 的静态 Sockdrive 会把写过的扇区单独固化，播放器因此只给这一类 Windows 客体重新开放
+保存进度；它固定使用 js-dos 存档槽 1，和旧普通 DOS / 整包模式的槽 0 隔离，存档键还带规范化
+Sockdrive URL 的指纹。**换 v2 目录会自动开一份新存档**：旧扇区差异不能套到新基础盘，否则可能
+破坏文件系统；旧存档会保留，但不要自动迁移。`sockdrivePreload`
+使用 `default`：只预取转换工具记录的首屏扇区，其余块按实际读取下载。这里不能直接用
+`dosboxConf + initFs` 启动：js-dos 8.4.1 会把 changes URL 留空，保存按钮看似存在却永远失败；
+适配器用极小 URL bundle 建立 changes key，再让最后一层真实配置接管启动。回归：
+`npm run test:dos-backend && npm run test:roms && npm run test:dos-load`。
+
 ### 2.9 平台 BIOS 的边缘缓存会骗人
 
 后台改完 BIOS 绑定只调 `invalidateContent()`（清进程内缓存），**够不着 Cloudflare 边缘**。
@@ -1657,7 +1691,7 @@ R2 multipart 发布到最终 `roms/psp/*.chd`。`.cso` / `.chd` 保持直传。
   同时发生；`source_deleted` 的 0 / 1 / 2 分别是保留 / 已删 / 正在清理。
 - 前端创建任务把随机 `source_key` 当幂等键：响应途中断线可以重试，服务端只返回原任务。旧槽是
   `.chd` / `.cso` 而新文件是 `.iso` 时绝不复用旧 key，否则转换服务降级时会把 ISO 字节写进错误扩展名。
-- 当前公开 PPSSPP 是实体目录 v7、Range loader v4：ISO/CSO/CHD 都用 2MB 分块，共用 96MB 内存 LRU，
+- 当前公开 PPSSPP 是实体目录 v8、Range loader v4：ISO/CSO/CHD 都用 2MB 分块，共用 96MB 内存 LRU，
   并主动带 `If-Match` / `If-Unmodified-Since`
   钉住同一代镜像。播放 URL 同时带 `romv=<ETag>`，Worker 必须在每次 Range 前把它与 R2 当前 ETag 比较；
   不一致返回 412。Range 也必须绕过整包 Cache API，避免缓存的 200 响应跳过版本校验。
@@ -1665,6 +1699,10 @@ R2 multipart 发布到最终 `roms/psp/*.chd`。`.cso` / `.chd` 保持直传。
   四分之一，但当前 loader 是模拟线程里的同步请求，生产 CDN 往返数也变成约四倍。693.6MB 测试盘
   真实冷启动从核心到游戏由约 86 秒退化到约 93 秒，因此 v4 恢复 2MB。以后调分块必须在同一地区、
   冷缓存、同一镜像上以 `Booted` 日志计时；不能用“单次请求更小”推导“启动更快”。
+  v8 在 Emscripten Fetch 的同步 XHR 外加一层**最多两块、串行**的顺序预读：当前块返回后才异步取
+  后续 4MB，命中后直接交给下一次同步 Range；随机寻道会取消旧方向，2G / 省流模式完全关闭，缓存
+  另限 8MB，不能让预读与核心 96MB LRU 一起无界吃内存。生成胶水补丁源在
+  `vendor/ppsspp/range-read-ahead.js`，构建脚本按唯一片段注入；不要手改压成一行的发布 JS。
 - 源站要装近期 MAME 的 `chdman`，并在 `server/.env` 配 `PSP_CONVERT_WORKER_URL`；转换临时盘
   至少留 `2 × ISO + 256MB`。默认并发 1，最多 2，避免压缩任务抢光玩家请求的 CPU / IO；
   `PSP_CONVERT_TIMEOUT_MINUTES` 默认 180，超时会先 SIGTERM、10 秒后 SIGKILL，不能让一个挂死的
@@ -1707,7 +1745,7 @@ PPSSPP 所在的 pthread 仍没有 `GLctx`；首次 `glGetString` / `glGetIntege
 `EMSCRIPTEN_WEBGL_CONTEXT_PROXY_FALLBACK` + `renderViaOffscreenBackBuffer=false`。配合
 `-sOFFSCREENCANVAS_SUPPORT=1`，支持的浏览器会把 canvas 直接转交 Worker；不能转交时才回退到
 主线程代理。v6 的 `PROXY_ALWAYS + OffscreenFramebuffer` 每条 GL 调用都跨线程，虽然能出画面，
-却会给 framebuffer-heavy 游戏增加不必要的排队与拷贝；v7 的直接 Worker 上下文才是主路径。
+却会给 framebuffer-heavy 游戏增加不必要的排队与拷贝；v8 的直接 Worker 上下文才是主路径。
 
 PPSSPP 原来的 `gl3stub.c` 把 GLES3 核心函数声明成动态函数指针，和 OffscreenFramebuffer 的
 Emscripten GL 导出发生符号类型冲突；补丁因此让浏览器构建直接使用 `<GLES3/gl3.h>` 的核心入口，
@@ -1754,7 +1792,7 @@ VPS/FPS、实际 FPS、画布尺寸和音频模式，供真机确认选档与掉
 `runtime.json` 以 `performanceProfile=adaptive-canvas-v1`、`maxCanvasPixels=522240`、
 `pthreadPoolMax=8`、`lto=true` 和 `performanceTelemetry=true` 固化验收。
 
-⚠️ 自适应只选最终画布与 SAS 线程，不再提高游戏的内部分辨率。v7 给**所有 PSP**统一写入
+⚠️ 自适应只选最终画布与 SAS 线程，不再提高游戏的内部分辨率。v8 给**所有 PSP**统一写入
 `InternalResolution=1`、`SkipBufferEffects=False`、`SkipGPUReadbackMode=0`、`HighQualityDepth=True`、
 `FrameSkip=0` / `AutoFrameSkip=False`。不要再按某款游戏加一串 slug 特判：完整缓冲/回读是正确性
 基线，代价只是少一点放大画质和性能捷径。
@@ -1773,8 +1811,9 @@ ATRAC3+ 和 MP3 解码。构建/发布检查必须同时看到 `USE_FFMPEG:BOOL=
 Cloudflare 对这组静态文件的缓存键**忽略查询串**：请求 `PPSSPPSDL.data?r=17` 仍命中旧的 r16
 （22,417,304B，`CF-Cache-Status: HIT`），而新清单需要 19,434,861B。查询参数不能再承担版本隔离，
 否则新 JS、旧 data 和旧 Wasm 会被拼在同一局里。当前整套资源发布在
-`public/ppsspp/v0dbfaca/v7/`；下次桥、JS、Wasm、data 或 AudioWorklet 任一项改变就复制/构建到
-`v8/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，不原地覆盖。
+`public/ppsspp/v0dbfaca/v8/`；下次桥、JS、Wasm、data、Range 胶水或 AudioWorklet 任一项改变就
+复制/构建到 `v9/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，
+不原地覆盖。
 
 Emscripten
 自带的 preload fetch 没有重试，`host.js` 用 `getPreloadedPackage` 接管：优先读浏览器缓存，连续
@@ -1790,7 +1829,7 @@ focus 和点击发生在同一刻，没有真实提前量，只预热小入口�
 
 输入延迟不能只靠“把画质调低”。老访客的单游戏配置还会覆盖新默认；`host.js` 因此在 Wasm
 文件系统写入一次性的 `8bitgo-performance.ini`，并通过 `--appendconfig=` 让它在全局/单游戏配置
-之后合并。v7 不再用最激进的单帧呈现：`InflightFrames=2`、`VerticalSync=False`、
+之后合并。v8 不再用最激进的单帧呈现：`InflightFrames=2`、`VerticalSync=False`、
 `LowLatencyPresent=False`，同时固定 `FrameSkip=0` / `AutoFrameSkip=False`。这会多一点输入延迟，
 但给浏览器的代理 framebuffer 呈现留出余量；弱机与四核设备仍关闭独立 SAS 音频仿真线程，减少
 pthread 争用，强机才开。这份策略在
@@ -1824,12 +1863,12 @@ PPSSPP 自己的 SAVEDATA、原生状态和按键配置仍由 IDBFS 每 30 秒�
 ⚠️ 远程盘的“启动成功”不能只等 `__ppssppRangeProgress`。该回调从 pthread 经
 `MAIN_THREAD_EM_ASM` 回页面，在部分浏览器里会晚到或完全看不到；v5 因此出现过镜像仍在正常 Range
 读取、外层却在 180 秒报“PPSSPP 响应超时”。也不能恢复“canvas 尺寸变化后一秒算成功”，那只是 SDL
-创建了黑窗口。v7 在 stdout 与 stderr 两路都等待 PPSSPP 成功打开内容后固定输出的
+创建了黑窗口。v8 在 stdout 与 stderr 两路都等待 PPSSPP 成功打开内容后固定输出的
 `Booted <path>...` 日志，并把大型 CHD 的
 mount 上限放到 300 秒；Range 回调只负责进度、对象大小校验和明确错误。`runtime.json` 用
 `startupReadinessProfile=core-boot-log-v1` 固化这条判据。
 
-PPSSPP 的 immutable 缓存只认**物理目录代次**，不再分 `?r=` 四层：`v7/` 内的 index、host、
+PPSSPP 的 immutable 缓存只认**物理目录代次**，不再分 `?r=` 四层：`v8/` 内的 index、host、
 AudioWorklet、JS、Wasm、data 与 runtime.json 必须同批发布。虽然某次可能只改 20KB 的桥，仍要换到
 下一个目录；这是用少量重复存储换取边缘缓存绝不会混代。不要重新引入 `RUNTIME_REVISION` / `DATA_REVISION`
 或给文件补查询参数假装失效，它们在当前 Cloudflare 规则下不生效。
@@ -1845,11 +1884,46 @@ AudioWorklet、JS、Wasm、data 与 runtime.json 必须同批发布。虽然某�
 ⚠️ 已发布过一版把 `VITE_PPSSPP_PATH` 目录直接塞进 iframe，老 bundle 会请求
 `/ppsspp/v0dbfaca?embed=1&r=2`（没有 `index.html`）。静态中间件关闭目录重定向后它必然 404，
 玩家要白等 120 秒才看到超时。`server/src/index.js` 为这个精确旧地址保留了 `no-store` 302，
-跳到当前 `v7/index.html`；以后换实体目录时必须同步那条跳转和回归断言。
+跳到当前 `v8/index.html`；以后换实体目录时必须同步那条跳转和回归断言。
 
 回归：`npm run test:ppsspp && npm run test:worker`。
 
 ---
+
+### 2.33 Microsoft Clarity 必须等访客明确同意后再加载
+
+Clarity 通过 `@microsoft/clarity` 接入，公开项目 ID 放在 `.env.production` 的
+`VITE_CLARITY_PROJECT_ID`；它不是密钥，但属于构建期配置，不能只写 `.env.local`（§2.1）。
+
+初始化统一走 `src/services/clarity.ts`：只有本地授权值为 `granted` 才动态加载 npm 分包，
+拒绝或未选择时不得向 `clarity.ms` 发请求。不要把脚本标签直接塞进 `index.html`，也不要在别处
+直接调用 `Clarity.init()`；页脚「分析设置」必须始终允许访客撤回选择。本站不投广告，
+`ad_Storage` 固定为 `denied`，并且**不调用 `identify`**，避免把账号 ID、邮箱等登录身份交给第三方。
+
+改动授权流程或隐私政策后至少运行：
+
+```bash
+npm run test:legal
+npm run build:client
+npm run build:server
+```
+
+验收时 `dist/client/index.html` 不应出现 `clarity.ms` 或项目 ID；Clarity SDK 应只存在于独立的
+`clarity-*.js` 动态分包中。项目 ID 可能出现在主入口分包里，这是运行时授权判断所需，不等于已请求第三方。
+
+### 2.34 Wrangler 的 Undici 安全补丁暂时由根级 override 固定
+
+2026-09-29 的 `wrangler@4.141.0` 经 `miniflare@5.20260925.0-alpha` 精确依赖了存在
+GHSA-3wwx-pv8p-q78v 的 `undici@7.29.0`。npm 自动修复会建议把 Wrangler 大幅回退到 4.101.0，
+所以根 `package.json` 暂用 `overrides` 把 Undici 固定到官方修复版 7.29.1；这只影响开发/部署工具，
+不进入主站或 Worker 的发布脚本。
+
+升级 Wrangler 后先看 `npm ls wrangler miniflare undici`：如果上游已经依赖 7.29.1 或更高的
+安全兼容版本，可以删除 override；删除前后都要运行 `npm audit`、`npm run test:worker`，以及：
+
+```bash
+WRANGLER_LOG_PATH=/tmp/8bitgo-wrangler-dry-run.log npx wrangler deploy --dry-run --config worker/wrangler.toml
+```
 
 ## 3. 常用命令
 

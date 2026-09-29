@@ -73,6 +73,8 @@ export interface SaveMeta {
 export const MAX_SAVE_BYTES = 4 * 1024 * 1024
 /** PSP 的即时状态包含整台掌机内存，浏览器本地允许更大；云端仍守 4MB 的账号配额。 */
 export const MAX_LOCAL_PSP_SAVE_BYTES = 96 * 1024 * 1024
+/** Sockdrive 保存的是改过的磁盘扇区，大型 Windows 游戏可能超过普通 DOS 的 4MB。 */
+export const MAX_LOCAL_JSDOS_SAVE_BYTES = 64 * 1024 * 1024
 
 /**
  * 能不能用云存档。
@@ -260,7 +262,11 @@ export async function pushSave(
   target: Exclude<SaveTarget, 'download'> = effectiveSaveTarget(),
 ): Promise<PushedSave> {
   if (data.length === 0) return { ok: false, where: null, error: 'empty' }
-  const localLimit = runtime === 'ppsspp' ? MAX_LOCAL_PSP_SAVE_BYTES : MAX_SAVE_BYTES
+  const localLimit = runtime === 'ppsspp'
+    ? MAX_LOCAL_PSP_SAVE_BYTES
+    : runtime === 'jsdos'
+      ? MAX_LOCAL_JSDOS_SAVE_BYTES
+      : MAX_SAVE_BYTES
   if (data.length > localLimit) return { ok: false, where: null, error: 'too-large' }
 
   const key = localKey(runtime, gameSlug, slot)

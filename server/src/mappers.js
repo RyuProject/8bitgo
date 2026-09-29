@@ -229,6 +229,33 @@ export function dosSystemOf(v) {
 }
 
 /**
+ * 大型 Windows 游戏的静态 Sockdrive **目录**。
+ *
+ * 它和 dos_system 一样可存对象 key / 站内路径 / 完整 URL，但不能留下尾斜杠：运行时会自己
+ * 拼 `/sockdrive.metaj`。引号、空白和控制字符最终会落进 DOSBox-X 的 autoexec，必须在入库前挡掉。
+ */
+export function dosSockdriveOf(v) {
+  if (v == null) return null
+  const s = String(v).trim().replace(/\/+$/, '')
+  if (!s || s.length > 500) return null
+  if (/[^\x21-\x7e]|["'%&|<>^()]/.test(s) || s.startsWith('//')) return null
+  /*
+    `//evil.example/x` 经 romUrlForKey 会被浏览器当成协议相对外链；其它 scheme 虽会被当对象 key，
+    但把 javascript: / file: 之类保存成“流式目录”只会在开局时失败。只给明确的 HTTP(S) 放行。
+  */
+  if (/^[a-z][a-z0-9+.-]*:/i.test(s)) {
+    if (!/^https?:\/\//i.test(s)) return null
+    try {
+      const url = new URL(s)
+      if (url.username || url.password || url.search || url.hash) return null
+    } catch {
+      return null
+    }
+  }
+  return s
+}
+
+/**
  * 这款 DOS 游戏怎么存档，一句话（如「按 F2 存档、F3 读档」）。
  *
  * 它只被前端当纯文本渲染，不进 dosbox.conf、不拼 SQL，所以不必像 dos_executable 那样
@@ -529,6 +556,7 @@ export function gameRowToApi(r, rel = {}) {
   if (r.dos_executable) g.dosExecutable = r.dos_executable
   if (r.dos_backend === 'dosboxX') g.dosBackend = 'dosboxX'
   if (r.dos_system) g.dosSystem = r.dos_system
+  if (r.dos_sockdrive) g.dosSockdrive = r.dos_sockdrive
   // 附加文件：库里是一行一个 key 的文本，接口上给数组，前端直接 map 成 URL
   if (r.dos_extras) {
     const extras = String(r.dos_extras).split('\n').map((x) => x.trim()).filter(Boolean)
@@ -610,6 +638,7 @@ export function gameApiToRow(g) {
     dos_executable: dosExecutableOf(g.dosExecutable),
     dos_backend: dosBackendOf(g.dosBackend),
     dos_system: dosSystemOf(g.dosSystem),
+    dos_sockdrive: dosSockdriveOf(g.dosSockdrive),
     dos_extras: dosExtrasOf(g.dosExtras),
     dos_extras_label: dosExtrasLabelOf(g.dosExtrasLabel),
     dos_extras_label_en: dosExtrasLabelOf(g.dosExtrasLabelEn),
@@ -653,6 +682,7 @@ const FIELD_TO_COLUMN = {
   dosExecutable: ['dos_executable', dosExecutableOf],
   dosBackend: ['dos_backend', dosBackendOf],
   dosSystem: ['dos_system', dosSystemOf],
+  dosSockdrive: ['dos_sockdrive', dosSockdriveOf],
   dosExtras: ['dos_extras', dosExtrasOf],
   dosExtrasLabel: ['dos_extras_label', dosExtrasLabelOf],
   dosExtrasLabelEn: ['dos_extras_label_en', dosExtrasLabelOf],

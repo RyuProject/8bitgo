@@ -49,6 +49,12 @@ export function PlayLocalPage() {
   const [romData, setRomData] = useState('')
   const [showRomData, setShowRomData] = useState(false)
   /**
+   * 调试模式：在页面上直接展示「解密 → 识别 → 选引擎 → 挂载 → 出首帧」每个阶段的成败，
+   * 并把模拟器引擎日志也抓出来。出错时据此判断是 ROM 不行、模拟器不支持还是别的环节出问题。
+   * 默认关，避免普通玩家被一堆技术信息吓到。
+   */
+  const [debug, setDebug] = useState(false)
+  /**
    * 这个本地文件需要哪个 BIOS **系统包**（`neogeo` / `pgm`，见 Game.arcadeBios）。
    *
    * 本地文件在库里没有记录，也就没有人替它填过这一格：识别得出平台的只有扩展名和文件头，
@@ -112,6 +118,16 @@ export function PlayLocalPage() {
             </span>
           </h2>
 
+          <label className="mb-3 inline-flex cursor-pointer items-center gap-2 text-xs text-muted">
+            <input
+              type="checkbox"
+              checked={debug}
+              onChange={(e) => setDebug(e.target.checked)}
+              className="h-3.5 w-3.5 accent-brand"
+            />
+            调试模式（显示启动各阶段诊断与模拟器日志，方便定位是 ROM 不行还是模拟器不支持）
+          </label>
+
           {/* 兜底：自动识别不出平台时才出现，选完立刻用同一个文件重跑 */}
           {pendingFile && (
             <div className="mb-3 rounded-xl border border-coin/50 bg-coin-soft p-3">
@@ -143,6 +159,8 @@ export function PlayLocalPage() {
             onPlatformChange={handlePlatformChange}
             onDetectFailed={handleDetectFailed}
             retryRequest={retryRequest}
+            // 本地页专属：开启后界面展示启动各阶段的诊断与模拟器日志，便于定位故障
+            debug={debug}
             // 玩本地 ROM 也要给 BIOS：拖一个 Neo Geo ROM 进来，没有 BIOS 一样起不来。
             // 核心不给覆盖 —— 这里没有具体某一款游戏，只能按平台默认走
             biosUrl={biosUrl || undefined}

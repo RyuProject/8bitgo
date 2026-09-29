@@ -146,6 +146,16 @@ const zhHant: Translation = {
     copyrightNotice: '「版權聲明」',
   },
 
+  clarityConsent: {
+    title: '協助我們改善體驗',
+    body: '經你同意，我們會載入 Microsoft Clarity，透過工作階段回放與熱圖了解頁面如何被使用。它可能設定分析 Cookie；我們不會向它傳送帳號 ID 或電子郵件。',
+    learnMore: '查看隱私權政策',
+    accept: '同意分析',
+    decline: '拒絕',
+    settings: '分析設定',
+    currentChoice: '你可以隨時變更這項選擇。',
+  },
+
   language: {
     switch: '切換語言',
     current: '語言：{label}',
@@ -1159,6 +1169,12 @@ const zhHant: Translation = {
       unsupported: '這個鍵不支援，換一個試試',
       show: '顯示螢幕按鍵',
       hide: '收起螢幕按鍵',
+      keyboard: '鍵盤',
+      mouse: '滑鼠',
+      mouseMove: '移動',
+      mouseAim: '瞄準',
+      mouseLeft: '左鍵',
+      mouseRight: '右鍵',
       close: '關閉',
     },
   },

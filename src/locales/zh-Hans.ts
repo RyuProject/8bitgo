@@ -216,6 +216,16 @@ export const zhHans = {
     copyrightNotice: '「版权声明」',
   },
 
+  clarityConsent: {
+    title: '帮助我们改进体验',
+    body: '经你同意，我们会加载 Microsoft Clarity，用会话回放和热图了解页面如何被使用。它可能设置分析 Cookie；我们不会向它发送账号 ID 或邮箱。',
+    learnMore: '查看隐私政策',
+    accept: '同意分析',
+    decline: '拒绝',
+    settings: '分析设置',
+    currentChoice: '你可以随时更改这项选择。',
+  },
+
   /* ---------------- 语言切换 ---------------- */
   language: {
     switch: '切换语言',
@@ -1223,6 +1233,12 @@ export const zhHans = {
       unsupported: '这个键不支持，换一个试试',
       show: '显示屏幕按键',
       hide: '收起屏幕按键',
+      keyboard: '键盘',
+      mouse: '鼠标',
+      mouseMove: '移动',
+      mouseAim: '瞄准',
+      mouseLeft: '左键',
+      mouseRight: '右键',
       close: '关闭',
     },
   },

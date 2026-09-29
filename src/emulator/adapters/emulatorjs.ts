@@ -3240,6 +3240,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
         Object.assign(win, {
           EJS_player: '#game',
+          /*
+            调试模式（玩本地 ROM 页开启）：把引擎自己的日志级别拉到最高，核心的 stdout / stderr
+            和引擎内部报错才会真正打进 iframe 的 console —— 我们的报错探针（installErrorTap）
+            正是从那里接的。不开的话这些字只在引擎内部吞掉，玩家遇到「加载失败」只能干瞪眼，
+            分不清是 ROM 损坏、核心不支持还是浏览器环境有问题。
+          */
+          ...(options.debug ? { EJS_DEBUG: true, EJS_LOG_VERBOSITY: 3 } : {}),
           EJS_core: core,
           EJS_gameUrl: gameUrl,
           EJS_gameName: engineGameName,

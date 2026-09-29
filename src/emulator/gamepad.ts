@@ -53,6 +53,23 @@ export interface GamepadBridgeOptions<K = unknown> {
    * 否则手柄插上去在这一局里永远不会生效。js-dos 是直接跑在主页面上的，用默认的就对。
    */
   getPads?: () => readonly (Gamepad | null)[]
+  /**
+   * 右摇杆（axes[2] / axes[3]）翻译成相对鼠标位移，用于 FPS 瞄准。
+   * 每帧按摇杆偏转量发送，带死区与灵敏度。DOS 游戏只认键盘 + 鼠标，右摇杆没有现成语义，
+   * 拿它当「看向」正好 —— 手柄玩家不必去够屏幕上的虚拟鼠标就能转视角。
+   */
+  mouseMove?: (dx: number, dy: number) => void
+  /** 右摇杆满偏时每帧的位移量（默认 6）。越大转得越快 */
+  mouseSensitivity?: number
+  /** 右摇杆死区，小于此值不视为推动（默认 0.2），避免摇杆回中后飘移 */
+  mouseDeadzone?: number
+  /**
+   * 某些手柄键映射成鼠标按键（0 = 左键，1 = 右键），例如 R1 = 开火。
+   * 和 `send` 走不同通道：鼠标键得调 `sendMouseButton` 而不是 `sendKeyEvent`，
+   * 所以这张表的值不是引擎键码，而是鼠标键编号。
+   */
+  mouseButtons?: GamepadKeyMap<0 | 1>
+  mouseButtonSend?: (button: 0 | 1, pressed: boolean) => void
 }
 
 export interface GamepadBridge {
@@ -75,6 +92,8 @@ export function startGamepadBridge<K>(map: GamepadKeyMap<K>, send: (key: K, pres
   const readPads = opts.getPads ?? (() => (navigator.getGamepads ? navigator.getGamepads() : []))
   const down = new Set<number>()
   const axisDown = new Map<string, K>()
+  /** 按下去的鼠标键（来自 mouseButtons 表），拔出时统一松开 */
+  const mouseDown = new Set<number>()
   let raf = 0
   let stopped = false
   let anyPad = false
@@ -109,6 +128,26 @@ export function startGamepadBridge<K>(map: GamepadKeyMap<K>, send: (key: K, pres
     for (const [id, key] of Array.from(axisDown)) setAxis(id, key, false)
   }
 
+  /** mouseButtons 表里某个手柄键的边沿触发，把它翻译成鼠标按键的按下 / 松开 */
+  const setMouse = (index: number, pressed: boolean) => {
+    const button = opts.mouseButtons?.[index]
+    const send = opts.mouseButtonSend
+    if (button === undefined || !send) return
+    const was = mouseDown.has(index)
+    if (pressed === was) return
+    if (pressed) mouseDown.add(index)
+    else mouseDown.delete(index)
+    try {
+      send(button, pressed)
+    } catch {
+      /* 引擎已经销毁就忽略 */
+    }
+  }
+
+  const releaseMouse = () => {
+    for (const i of Array.from(mouseDown)) setMouse(i, false)
+  }
+
   const tick = () => {
     if (stopped) return
     raf = requestAnimationFrame(tick)
@@ -135,6 +174,7 @@ export function startGamepadBridge<K>(map: GamepadKeyMap<K>, send: (key: K, pres
       // 手柄拔了：把按着的键全松开
       for (const i of Array.from(down)) set(i, false)
       releaseAxes()
+      releaseMouse()
       return
     }
     // 先把这一帧「该按下哪些」算全，再统一比对。
@@ -158,6 +198,24 @@ export function startGamepadBridge<K>(map: GamepadKeyMap<K>, send: (key: K, pres
       const value = pad.axes[binding.axis] ?? 0
       setAxis(`${binding.axis}-`, binding.negative, value < -threshold)
       setAxis(`${binding.axis}+`, binding.positive, value > threshold)
+    }
+    // 肩键 → 鼠标按键（R1 开火 / R2 右键）
+    for (let i = 0; i < 16; i++) setMouse(i, Boolean(pad.buttons[i]?.pressed))
+    // 右摇杆 → 相对鼠标位移（FPS 瞄准）。带死区，避免回中后飘移。
+    if (opts.mouseMove) {
+      const dead = opts.mouseDeadzone ?? 0.2
+      const sens = opts.mouseSensitivity ?? 6
+      const rx = pad.axes[2] ?? 0
+      const ry = pad.axes[3] ?? 0
+      const dx = Math.abs(rx) > dead ? rx * sens : 0
+      const dy = Math.abs(ry) > dead ? ry * sens : 0
+      if (dx || dy) {
+        try {
+          opts.mouseMove(dx, dy)
+        } catch {
+          /* 引擎已经销毁就忽略 */
+        }
+      }
     }
   }
 
@@ -194,6 +252,7 @@ export function startGamepadBridge<K>(map: GamepadKeyMap<K>, send: (key: K, pres
       anyPad = false
       for (const i of Array.from(down)) set(i, false)
       releaseAxes()
+      releaseMouse()
     }
   }
 
@@ -226,6 +285,7 @@ export function startGamepadBridge<K>(map: GamepadKeyMap<K>, send: (key: K, pres
       }
       down.clear()
       releaseAxes()
+      releaseMouse()
     },
     connected: () => anyPad,
   }

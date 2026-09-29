@@ -217,6 +217,21 @@ interface ActiveSession {
   ruledOut?: RuntimeId[]
 }
 
+/**
+ * 调试诊断：把「从拖进文件到出首帧」拆成几个阶段，每个阶段记一笔成败。
+ * 出问题时据此判断卡在哪一步 —— 是 8BG 解不开、平台识别不出、还是引擎起不来。
+ */
+type DiagStage = '8bg' | 'detect' | 'runtime' | 'launch' | 'content' | 'engine'
+type DiagStatus = 'ok' | 'fail' | 'skip'
+interface DiagEntry {
+  stage: DiagStage
+  label: string
+  status: DiagStatus
+  detail?: string
+}
+/** 失败归因：rom=文件本身问题，runtime=模拟器不支持，other=引擎/网络/环境。 */
+type DiagCause = 'rom' | 'runtime' | 'other'
+
 interface Props {
   platform: Platform
   gameName: string
@@ -249,6 +264,8 @@ interface Props {
    * 要玩家自己选本地 ROM 的那一路它什么都不做（也不会把「自动开过了」这个标记消耗掉）。
    */
   autoStart?: boolean
+  /** 调试模式（玩本地 ROM 页开启）：在界面上展示解密/识别/启动各阶段的成败与模拟器日志。 */
+  debug?: boolean
   /** 邀请链接带进来的 P2P 房间 id（详情页 ?p2p=） */
   invite?: string
   /** 邀请链接带进来的云端房间 id（详情页 ?room=，付费通道） */
@@ -322,6 +339,8 @@ interface Props {
   dosBackend?: DosBackend
   /** 可复用的 Windows 系统 .jsdos；游戏 ROM 仍单独加载。 */
   dosSystemUrl?: string
+  /** 大型 Windows 游戏的静态 Sockdrive 目录；有值时不会下载整包游戏 ROM。 */
+  dosSockdriveUrl?: string
   /**
    * DOS 附加文件（资料片 / 补丁）：加载时并进游戏 ZIP，见 lib/dosExtras.ts。
    * 带 optional 的那些由玩家在开始界面上自己决定要不要下。
@@ -538,6 +557,7 @@ export function EmulatorPlayer({
   dosStartupCommands,
   dosBackend,
   dosSystemUrl,
+  dosSockdriveUrl,
   dosExtras,
   dosExtrasLabel,
   dosWindowsVersion,
@@ -559,6 +579,7 @@ export function EmulatorPlayer({
   onDetectFailed,
   retryRequest,
   autoStart,
+  debug = false,
 }: Props) {
   const [status, setStatus] = useState<Status>('idle')
   const [file, setFile] = useState<File | null>(null)
@@ -664,6 +685,22 @@ export function EmulatorPlayer({
    *  必须在引用它的 ?jsnesp2p effect 之前声明：该 effect 的依赖数组在渲染期访问 handle，
    *  若声明在它之后会触发 TDZ（TS2448/2454 + 运行时 ReferenceError）。 */
   const [handle, setHandle] = useState<RuntimeHandle | null>(null)
+  /** 调试模式下的诊断时间线：每个阶段一笔成败，出问题时据此定位卡点。 */
+  const [diag, setDiag] = useState<DiagEntry[]>([])
+  const [diagCause, setDiagCause] = useState<DiagCause | null>(null)
+  /** 引擎日志（适配器从 iframe console 接出来的缓冲区），调试面板里展示。 */
+  const [engineLines, setEngineLines] = useState<string[]>([])
+  // debug 是 prop，但 begin 的深层回调闭包可能拿到旧值；用 ref 读最新的，避免切了开关不生效。
+  const debugRef = useRef(debug)
+  debugRef.current = debug
+  // 调试模式下定期把引擎日志抓出来，让诊断面板能看到核心原文（街机缺件、BIOS 对不上都在这儿）。
+  useEffect(() => {
+    if (!debug || !handle?.engineLog) return
+    const sync = () => setEngineLines(handle.engineLog?.() ?? [])
+    sync()
+    const id = window.setInterval(sync, 600)
+    return () => window.clearInterval(id)
+  }, [debug, handle])
 
   // 带 ?jsnesp2p=CODE 直接进房（与 EmulatorJS 联机的 ?p2p= 平行，两条路互不干扰）
   useEffect(() => {
@@ -1453,6 +1490,8 @@ export function EmulatorPlayer({
   // 系统镜像与等待时间也只在新会话挂载时读取；后台热改配置不应中断玩家当前这一局。
   const dosSystemUrlRef = useRef(dosSystemUrl)
   dosSystemUrlRef.current = dosSystemUrl
+  const dosSockdriveUrlRef = useRef(dosSockdriveUrl)
+  dosSockdriveUrlRef.current = dosSockdriveUrl
   /**
    * 可选附加文件（资料片）的开关。
    *
@@ -1838,6 +1877,7 @@ export function EmulatorPlayer({
       dosStartupCommands: dosStartupCommandsRef.current,
       dosBackend: dosBackendRef.current,
       dosSystemUrl: dosSystemUrlRef.current,
+      dosSockdriveUrl: dosSockdriveUrlRef.current,
       dosExtras: dosExtrasRef.current,
       dosWindowsVersion: dosWindowsVersionRef.current,
       dosLaunchDelay: dosLaunchDelayRef.current,
@@ -1857,6 +1897,8 @@ export function EmulatorPlayer({
       netplay: session.netplay,
       cloud: session.cloud,
       live: session.live,
+      // 调试模式：开启后让适配器把引擎日志级别拉满，并把各阶段诊断暴露到界面
+      debug: debugRef.current,
       // 有些引擎要等核心起来才知道自己支持什么，这里允许它后补
       onCaps: (next) => {
         if (!isCurrent()) return
@@ -1937,6 +1979,11 @@ export function EmulatorPlayer({
       onReady: () => {
         if (!isCurrent()) return
         ready = true
+        // 调试：运行时挂载成功、ROM 已被核心读取 —— 这两步都过了，卡点就在「出首帧」之后了
+        if (debugRef.current) {
+          setDiag((d) => d.map((e) => (e.stage === 'launch' ? { ...e, status: 'ok', detail: '运行时已挂载' } : e)))
+          setDiag((d) => d.map((e) => (e.stage === 'content' ? { ...e, status: 'ok', detail: 'ROM 已被核心读取' } : e)))
+        }
         window.clearTimeout(timeoutTimer)
         window.clearTimeout(slowTimer)
         // 拿不到完整下载阶段的运行时在这里兜底；同一事件客户端与数据库都会去重。
@@ -1971,6 +2018,8 @@ export function EmulatorPlayer({
       },
       onStart: () => {
         if (!isCurrent()) return
+        // 调试：核心已经产出首帧，游戏真的跑起来了
+        if (debugRef.current) setDiag((d) => [...d, { stage: 'engine', label: '引擎出首帧', status: 'ok', detail: '游戏已开始运行' }])
         reportStartup('first_frame')
       },
       /*
@@ -1990,6 +2039,12 @@ export function EmulatorPlayer({
             (next ? `，换 ${next.id} 重来` : '，而且没有别的引擎可用了'),
         )
         if (!next) {
+          // 调试：引擎明确说「这份 ROM 我跑不了」（如 jsnes 只实现 21 个 mapper）→ 模拟器不支持
+          if (debugRef.current) {
+            setDiagCause('runtime')
+            setDiag((d) => d.map((e) => (e.stage === 'launch' ? { ...e, status: 'fail', detail: reason } : e)))
+            setEngineLines(handle?.engineLog?.() ?? [])
+          }
           reportStartupFailure(reason)
           endSession()
           setError(reason)
@@ -2086,6 +2141,15 @@ export function EmulatorPlayer({
           return
         }
 
+        // 调试：按 scope 归因，并标记启动阶段失败，让人一眼看出是「文件坏」还是「引擎/环境」问题
+        if (debugRef.current) {
+          const cause: DiagCause =
+            errorScope === 'content' ? 'rom' : errorScope === 'runtime' ? 'runtime' : 'other'
+          setDiagCause(cause)
+          setDiag((d) => d.map((e) => (e.stage === 'launch' || e.stage === 'content' ? { ...e, status: 'fail', detail: failureReason } : e)))
+          // 出错时立刻把引擎日志定格：再往下 endSession 会拆掉 iframe，轮询就停了
+          setEngineLines(handle?.engineLog?.() ?? [])
+        }
         setError(failureReason)
         reportStartupFailure(failureReason)
         setStatus('error')
@@ -2671,6 +2735,10 @@ export function EmulatorPlayer({
       if (picked) restartWithLangRef.current = null
       setError(null)
       setNotice(null)
+      // 每次重开都清空上一次的诊断时间线，免得旧条目误导这次的判断
+      setDiag([])
+      setDiagCause(null)
+      setEngineLines([])
 
       // 云端 ROM
       if (!picked) {
@@ -2707,14 +2775,23 @@ export function EmulatorPlayer({
         File 包住 Blob 不会复制整份大 ROM，PS1/NDS 这类文件仍可由后面的 Blob 路径处理。
       */
       if (isRomPackBytes(await picked.slice(0, 4).arrayBuffer())) {
+        if (debugRef.current) setDiag((d) => [...d, { stage: '8bg', label: '解密 / 解包 8BG', status: 'skip', detail: '检测到 8BG 加密包，开始解密解压…' }])
         try {
           const unpacked = await unpackRomPackBlob(picked)
           picked = new File([unpacked.blob], unpacked.name, {
             type: 'application/octet-stream',
             lastModified: picked.lastModified,
           })
+          if (debugRef.current) {
+            setDiag((d) => d.map((e) => (e.stage === '8bg' ? { ...e, status: 'ok', detail: `已还原为明文 ${unpacked.name}` } : e)))
+          }
         } catch (err) {
-          setError(err instanceof Error ? err.message : '8BG ROM 包无法解开')
+          const msg = err instanceof Error ? err.message : '8BG ROM 包无法解开'
+          if (debugRef.current) {
+            setDiag((d) => d.map((e) => (e.stage === '8bg' ? { ...e, status: 'fail', detail: msg } : e)))
+            setDiagCause('rom')
+          }
+          setError(msg)
           return
         }
       }
@@ -2744,6 +2821,16 @@ export function EmulatorPlayer({
 
       // 本地文件：先嗅探类型，决定运行时
       const detection = await detectRom(picked)
+      if (debugRef.current) {
+        setDiag((d) => [...d, {
+          stage: 'detect',
+          label: '识别平台',
+          status: detection.platform ? 'ok' : 'skip',
+          detail: detection.platform
+            ? `${detection.platform}（置信度 ${detection.confidence}）：${detection.reason}`
+            : `未能从文件头 / 扩展名识别平台：${detection.reason}`,
+        }])
+      }
       let targetPlatform: PlatformId = platform.id
       if (detection.platform && detection.platform !== platform.id && detection.confidence !== 'low') {
         if (onDetectMismatch === 'switch') {
@@ -2790,12 +2877,24 @@ export function EmulatorPlayer({
         jsnesCompatible: localJsnesCompatible,
       })
       if (!runtime) {
+        if (debugRef.current) {
+          setDiag((d) => [...d, { stage: 'runtime', label: '选择运行时', status: 'fail', detail: `该平台（${targetPlatform}）没有可用模拟器` }])
+          setDiagCause('runtime')
+        }
         setError(
           fmt(t.player.noRuntime, {
             platform: platformLabel(t, targetPlatform, platformMap[targetPlatform]?.name ?? targetPlatform),
           }),
         )
         return
+      }
+      if (debugRef.current) {
+        setDiag((d) => [...d, { stage: 'runtime', label: '选择运行时', status: 'ok', detail: `使用 ${runtime.name}` }])
+        // launch / content / engine 在 begin 的回调里继续标记；先占位让时间线按序出现
+        setDiag((d) => [...d,
+          { stage: 'launch', label: '挂载运行时', status: 'skip', detail: '正在创建模拟器实例…' },
+          { stage: 'content', label: '载入 ROM 到核心', status: 'skip', detail: '等待核心读取 ROM…' },
+        ])
       }
       setFile(picked)
       begin(picked, targetPlatform, runtime)
@@ -3289,11 +3388,13 @@ export function EmulatorPlayer({
   useEffect(() => {
     if (status !== 'running' || !handle?.focus) return
     /*
-      HTML5 单独让玩家第一次点进 iframe：跨域页的内部事件父页看不见，只能靠这次真实 focus
-      识别“首次操作”。如果这里自动 focus，它会在玩家还没碰游戏时制造一条假操作；而且网页游戏
-      的音频本来也必须经过真实手势才能解锁。其它模拟器仍按原规则自动接键盘 / 手柄。
+      HTML5 也在这里自动接键盘 / 手柄。
+      跨源 iframe 的内部事件父页看不见，所以「首次真实操作」仍靠玩家点进 iframe
+      （适配器 iframe 的 focus 监听 + 运行时桥的 first-interaction 信号）来识别，不被这里的
+      自动聚焦污染；但键盘焦点可以、也应该主动给 —— 否则同源的本站网页游戏
+      （CS / HL / PvZ / Terraria 都部署在自家域名下）打开后必须先用鼠标点一下画面键盘才活，
+      玩家感受就是「按了没反应」。音频仍须真实手势解锁，自动聚焦不影响这一点。
     */
-    if (session?.runtime.id === 'html5') return
     /**
      * ⚠️ 玩家正在输入框里打字时不能抢。
      *
@@ -3922,6 +4023,45 @@ export function EmulatorPlayer({
                     </>
                   )}
                 </p>
+              )}
+              {debug && (diag.length > 0 || diagCause) && (
+                <div className="mt-2 max-w-md rounded-lg border border-white/15 bg-black/40 p-3 text-[11px] leading-relaxed text-white/80">
+                  <div className="mb-1 font-semibold text-white">调试诊断</div>
+                  {diagCause && (
+                    <div
+                      className={cx(
+                        'mb-2 rounded px-2 py-1',
+                        diagCause === 'rom' ? 'bg-red-500/20 text-red-200' : diagCause === 'runtime' ? 'bg-amber-500/20 text-amber-200' : 'bg-white/10 text-white',
+                      )}
+                    >
+                      判断：
+                      {diagCause === 'rom'
+                        ? 'ROM 本身的问题（文件损坏 / 不被识别 / 核心读不了）'
+                        : diagCause === 'runtime'
+                          ? '模拟器不支持这份 ROM（换引擎也跑不了）'
+                          : '其它（引擎 / 网络 / 浏览器环境）'}
+                    </div>
+                  )}
+                  <ol className="space-y-0.5">
+                    {diag.map((e) => (
+                      <li key={e.stage} className="flex gap-2">
+                        <span className={cx('shrink-0 font-mono', e.status === 'ok' ? 'text-green-400' : e.status === 'fail' ? 'text-red-400' : 'text-white/40')}>
+                          {e.status === 'ok' ? '✓' : e.status === 'fail' ? '✗' : '·'}
+                        </span>
+                        <span>
+                          <span className="text-white/90">{e.label}</span>
+                          {e.detail ? ` — ${e.detail}` : ''}
+                        </span>
+                      </li>
+                    ))}
+                  </ol>
+                  {engineLines.length > 0 && (
+                    <details className="mt-2">
+                      <summary className="cursor-pointer text-white/70 hover:text-white">模拟器日志（{engineLines.length} 行）</summary>
+                      <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] text-white/70">{engineLines.join('\n')}</pre>
+                    </details>
+                  )}
+                </div>
               )}
               </div>
               </div>

@@ -24,6 +24,8 @@ import type { PadButton, PadKeyPress, RuntimeHandle } from './types'
 import { cx } from '@/lib/format'
 import { Modal } from '@/components/ui/Modal'
 import { fmt, useT } from '@/services/i18n'
+import { DosKeyboard } from './DosKeyboard'
+import { DosMousePad } from './DosMousePad'
 
 /**
  * 手柄整块的触摸样式。
@@ -161,6 +163,10 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
       return false
     }
   })
+  /** 屏幕键盘开着没有（只有 handle.sendKey 存在的运行时才给入口，目前只有 DOS） */
+  const [kbOpen, setKbOpen] = useState(false)
+  /** 触屏鼠标模式开着没有（只有 handle.sendMouseMove 存在的运行时才给入口） */
+  const [mouseOpen, setMouseOpen] = useState(false)
   /**
    * 改键面板开着没有。只有适配器给了 padRemap 才有意义（目前只有 DOS）。
    *
@@ -715,6 +721,35 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
           {t.player.padMap.open}
         </button>
       )}
+      {handle?.sendKey && (
+        <button
+          type="button"
+          aria-label={t.player.padMap.keyboard}
+          aria-pressed={kbOpen}
+          onClick={() => {
+            setKbOpen((v) => !v)
+            // 点得到这颗按钮就说明他已经看见这一条了，开局提示可以收
+            onInput?.()
+          }}
+          className={cx(MINI_BTN, kbOpen && 'border-brand/60 text-brand-hover')}
+        >
+          ⌨
+        </button>
+      )}
+      {handle?.sendMouseMove && (
+        <button
+          type="button"
+          aria-label={t.player.padMap.mouse}
+          aria-pressed={mouseOpen}
+          onClick={() => {
+            setMouseOpen((v) => !v)
+            onInput?.()
+          }}
+          className={cx(MINI_BTN, mouseOpen && 'border-brand/60 text-brand-hover')}
+        >
+          🖱
+        </button>
+      )}
       <button
         type="button"
         aria-label={hidden ? t.player.padMap.show : t.player.padMap.hide}
@@ -774,6 +809,8 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
           </div>
         )}
         {remapPanel}
+        {kbOpen && handle?.sendKey && typeof document !== 'undefined' && createPortal(<DosKeyboard handle={handle} onClose={() => setKbOpen(false)} />, document.body)}
+        {mouseOpen && handle?.sendMouseMove && typeof document !== 'undefined' && createPortal(<DosMousePad handle={handle} onClose={() => setMouseOpen(false)} />, document.body)}
       </div>
     )
   }
@@ -798,6 +835,8 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
         </>
       )}
       {remapPanel}
+      {kbOpen && handle?.sendKey && typeof document !== 'undefined' && createPortal(<DosKeyboard handle={handle} onClose={() => setKbOpen(false)} />, document.body)}
+      {mouseOpen && handle?.sendMouseMove && typeof document !== 'undefined' && createPortal(<DosMousePad handle={handle} onClose={() => setMouseOpen(false)} />, document.body)}
     </div>
   )
 }

@@ -179,6 +179,53 @@ export const DOS_PAD_DEFAULT: Record<PadButton, number> = {
 
 export type DosPadKeys = Record<PadButton, number>
 
+/* ---------------- 热门游戏预设键位 ---------------- */
+
+/**
+ * 热门 DOS 游戏的出厂键位种子表，按 slug 命中（本地文件退回 `local:文件名`，命中不到就回落默认）。
+ *
+ * ⚠️ 只覆盖八颗屏幕按键（方向 + A/B/SELECT/START），超出这八个的键（数字、功能键、打字）
+ * 一律走「屏幕键盘」（见 RuntimeHandle.sendKey）。所以这里只挑每款游戏最关键的那几个动作：
+ * 移动方向、开火、菜单。其余交给玩家在「按键映射」里改，或屏幕键盘补。
+ *
+ * 为什么是种子而不是写死默认：毁灭战士和波斯王子需要的键位完全不同，给所有游戏一套
+ * 通用默认键位，结果就是「手机上除了看什么都干不了」（这正是当初做自定义键位的原因）。
+ * 命中这里的游戏开箱即玩，没命中的走 DOS_PAD_DEFAULT，行为不变。
+ */
+export const DOS_PAD_PRESETS: Record<string, Partial<DosPadKeys>> = {
+  // 毁灭战士 / 毁灭战士 2 / 赫雷提克 / 六角使者：方向键转身移动，Ctrl 开火，Alt Strafe
+  doom: { a: CODE_TO_GLFW.ControlLeft, b: CODE_TO_GLFW.AltLeft },
+  'doom-2': { a: CODE_TO_GLFW.ControlLeft, b: CODE_TO_GLFW.AltLeft },
+  doom2: { a: CODE_TO_GLFW.ControlLeft, b: CODE_TO_GLFW.AltLeft },
+  heretic: { a: CODE_TO_GLFW.ControlLeft, b: CODE_TO_GLFW.AltLeft },
+  hexen: { a: CODE_TO_GLFW.ControlLeft, b: CODE_TO_GLFW.AltLeft },
+  // 沃尔芬斯坦 3D：方向键转身，Ctrl 开火
+  wolf3d: { a: CODE_TO_GLFW.ControlLeft },
+  'wolfenstein-3d': { a: CODE_TO_GLFW.ControlLeft },
+  // 毁灭公爵 3D / Build 引擎：Ctrl 开火，Alt 蹲下 / 平移，空格跳
+  'duke-nukem-3d': { a: CODE_TO_GLFW.ControlLeft, b: CODE_TO_GLFW.AltLeft },
+  duke3d: { a: CODE_TO_GLFW.ControlLeft, b: CODE_TO_GLFW.AltLeft },
+  'blood': { a: CODE_TO_GLFW.ControlLeft, b: CODE_TO_GLFW.AltLeft },
+  'shadow-warrior': { a: CODE_TO_GLFW.ControlLeft, b: CODE_TO_GLFW.AltLeft },
+  // 雷神之锤：鼠标看向，键盘只负责移动，默认方向键即可，无需特别覆盖
+  quake: {},
+  // 主题医院 / 模拟城市 / 文明 等点选经营类：主要靠鼠标，键盘用默认
+  'theme-hospital': {},
+  simcity: {},
+  civilization: {},
+  // 波斯王子：方向键移动，Shift 抓扶，Ctrl 快走（默认 Ctrl 已被 A 占，这里不动，玩家可改）
+  'prince-of-persia': {},
+}
+
+/**
+ * 这款游戏的出厂键位（默认或预设）。`loadDosPadKeys` 拿它当底，再叠玩家自己的改动。
+ * 把「算默认」抽出来：改键面板的「恢复默认」也要拿到同一份（否则预设游戏恢复后会丢掉预设）。
+ */
+export function dosPadDefault(gameKey: string): DosPadKeys {
+  const preset = DOS_PAD_PRESETS[gameKey]
+  return preset ? { ...DOS_PAD_DEFAULT, ...preset } : { ...DOS_PAD_DEFAULT }
+}
+
 /* ---------------- 按游戏存取 ---------------- */
 
 /** 键位是按游戏存的，前缀 + slug。改前缀等于把所有玩家的自定义键位丢掉 */
@@ -205,7 +252,7 @@ function keyOf(gameKey: string) {
  * 调用方不需要再判空 —— 少一颗键的手柄比一套默认键位糟得多。
  */
 export function loadDosPadKeys(gameKey: string): DosPadKeys {
-  const out: DosPadKeys = { ...DOS_PAD_DEFAULT }
+  const out: DosPadKeys = dosPadDefault(gameKey)
   const s = store()
   if (!s || !gameKey) return out
   try {

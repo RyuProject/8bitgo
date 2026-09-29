@@ -1,4 +1,4 @@
-import { dosBackendOf, dosExecutableOf, dosSystemOf, romsOf } from './mappers.js'
+import { dosBackendOf, dosExecutableOf, dosExtrasOf, dosSockdriveOf, dosSystemOf, romsOf } from './mappers.js'
 
 const own = (value, key) => Object.prototype.hasOwnProperty.call(value ?? {}, key)
 
@@ -10,10 +10,14 @@ const own = (value, key) => Object.prototype.hasOwnProperty.call(value ?? {}, ke
  */
 export function dosGameConfigError(game) {
   const rawSystem = String(game?.dosSystem ?? '').trim()
+  const rawSockdrive = String(game?.dosSockdrive ?? '').trim()
   const windowsGuest =
     String(game?.platform ?? '') === 'dos' &&
     dosBackendOf(game?.dosBackend) === 'dosboxX' &&
     Boolean(rawSystem)
+  if (rawSockdrive && !windowsGuest) {
+    return 'Sockdrive 只能用于已配置共享系统镜像的 DOSBox-X Windows 游戏'
+  }
   if (!windowsGuest) return null
 
   const system = dosSystemOf(rawSystem)
@@ -21,14 +25,46 @@ export function dosGameConfigError(game) {
     return 'Windows 系统镜像必须是 .jsdos 文件、对象 key 或 URL'
   }
 
+  if (rawSockdrive) {
+    // 先报出可以直接修正的原因；mapper 也会拒绝这些值，但只返回“非法”会让后台很难定位。
+    if (rawSockdrive.startsWith('//')) return 'Sockdrive 目录不能使用 // 开头的协议相对地址'
+    if (/^[a-z][a-z0-9+.-]*:/i.test(rawSockdrive) && !/^https?:\/\//i.test(rawSockdrive)) {
+      return 'Sockdrive 完整地址只支持 HTTP 或 HTTPS'
+    }
+    if (/[?#]/.test(rawSockdrive)) return 'Sockdrive 目录不能带查询参数或锚点'
+    const sockdrive = dosSockdriveOf(rawSockdrive)
+    if (!sockdrive) return 'Sockdrive 目录不合法或超过 500 字符'
+    if (/(?:^|\/)sockdrive\.metaj$/i.test(sockdrive) || /\.raw$/i.test(sockdrive)) {
+      return 'Sockdrive 必须填写包含 sockdrive.metaj 的目录，不能填写某个文件'
+    }
+    if (dosExtrasOf(game?.dosExtras)) {
+      return '流式游戏盘不能现场合并 DOS 附加文件；请先把补丁写入磁盘再重新生成 Sockdrive'
+    }
+  }
+
   const roms = romsOf(game)
   const slots = Object.entries(roms)
   if (!slots.length) return '共享 Windows 系统模式必须绑定游戏 ZIP'
-  if (dosExecutableOf(game.dosExecutable)) return null
+  const streamedExecutableProblem = (value) => {
+    const executable = dosExecutableOf(value)
+    if (!rawSockdrive || !executable) return null
+    if (!/\.exe$/i.test(executable) || /[:"<>|?*]/.test(executable)) {
+      return `流式游戏盘的自启动程序必须是盘内安全的 .exe 相对路径：${executable}`
+    }
+    return null
+  }
+  const defaultExecutable = dosExecutableOf(game.dosExecutable)
+  if (defaultExecutable) return streamedExecutableProblem(defaultExecutable)
 
   const perLanguage = game?.dosExecutables && typeof game.dosExecutables === 'object'
     ? game.dosExecutables
     : {}
+  if (rawSockdrive) {
+    for (const [lang] of slots) {
+      const problem = streamedExecutableProblem(perLanguage[lang])
+      if (problem) return `${lang}：${problem}`
+    }
+  }
   const missing = slots
     .filter(([lang]) => lang === '*' || !dosExecutableOf(perLanguage[lang]))
     .map(([lang]) => lang)

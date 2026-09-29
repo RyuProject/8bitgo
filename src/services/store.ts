@@ -66,6 +66,13 @@ export async function upsertGame(game: Game): Promise<Game> {
       '服务端没有保存 Windows 系统镜像。请在服务器运行数据库迁移并重启 8bitgo-api，然后重新保存。',
     )
   }
+  const requestedSockdrive = game.dosSockdrive?.trim().replace(/\/+$/, '') || undefined
+  const persistedSockdrive = saved.dosSockdrive?.trim().replace(/\/+$/, '') || undefined
+  if (requestedSockdrive !== persistedSockdrive) {
+    throw new Error(
+      '服务端没有保存 Windows 流式游戏盘。请在服务器运行数据库迁移并重启 8bitgo-api，然后重新保存。',
+    )
+  }
   /*
     逐游戏运行时（NES 可在 jsnes 与 emulatorjs 间切换）后加到 game_roms 的字段。
     旧服务端不认识它时仍会给整个 PUT 返回 200，后台随即关闭表单并显示“已保存”，

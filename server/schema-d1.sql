@@ -68,6 +68,8 @@ CREATE TABLE IF NOT EXISTS games (
   dos_executable TEXT,
   dos_backend    TEXT,
   dos_system     TEXT,
+  -- 静态 Sockdrive 目录；播放器会在目录下请求 sockdrive.metaj 与 *.raw 分块。
+  dos_sockdrive  TEXT,
   dos_extras     TEXT    NULL,
   dos_extras_label TEXT NULL,
   dos_extras_label_en TEXT NULL,

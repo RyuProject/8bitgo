@@ -307,6 +307,36 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
     if (windowsGuest && !/\.jsdos(?:[?#].*)?$/i.test(form.dosSystem!.trim())) {
       return setError('Windows 系统镜像必须是 .jsdos 文件、对象 key 或 URL')
     }
+    const dosSockdrive = windowsGuest ? form.dosSockdrive?.trim().replace(/\/+$/, '') : undefined
+    if (dosSockdrive) {
+      // 这个值会进 DOSBox-X 的 autoexec；不能把换行、引号或空格留到玩家开局后才暴露。
+      if (dosSockdrive.length > 500 || /[^\x21-\x7e]|["'%&|<>^()]/.test(dosSockdrive)) {
+        return setError('Sockdrive 目录必须用 ASCII，且不能含空格、引号、DOS 批处理保留字符或超过 500 字符')
+      }
+      if (dosSockdrive.startsWith('//')) return setError('Sockdrive 目录不能使用 // 开头的协议相对地址')
+      if (/^[a-z][a-z0-9+.-]*:/i.test(dosSockdrive) && !/^https?:\/\//i.test(dosSockdrive)) {
+        return setError('Sockdrive 完整地址只支持 HTTP 或 HTTPS')
+      }
+      if (/[?#]/.test(dosSockdrive)) return setError('Sockdrive 目录不能带查询参数或锚点')
+      if (/(?:^|\/)sockdrive\.metaj$/i.test(dosSockdrive) || /\.raw$/i.test(dosSockdrive)) {
+        return setError('Sockdrive 请填写包含 sockdrive.metaj 的目录，不要填写某个文件')
+      }
+      try {
+        const resolved = new URL(romUrlForKey(dosSockdrive) || dosSockdrive, window.location.href)
+        if (!/^https?:$/.test(resolved.protocol) || resolved.username || resolved.password) {
+          return setError('Sockdrive 必须是没有账号口令的 HTTP(S) 目录')
+        }
+        /* js-dos 8.4.1 的 OPFS 缓存键只保留 200 字符，超长地址会让不同版本共用旧分块。 */
+        if (resolved.toString().replace(/\/+$/, '').replace(/^https?:\/\//i, '').length > 200) {
+          return setError('Sockdrive 完整地址过长，会与旧版本的本地磁盘缓存冲突')
+        }
+      } catch {
+        return setError('Sockdrive 目录无法解析为有效地址')
+      }
+      if (form.dosExtras?.length) {
+        return setError('流式游戏盘不能现场合并 DOS 附加文件；请先把补丁写入磁盘再重新生成 Sockdrive')
+      }
+    }
     const cleanedDosEntries: Partial<Record<RomLang, string>> = {}
     const cleanedDosStartupCommands: Partial<Record<RomLang, string>> = {}
     for (const l of ROM_LANGS) {
@@ -423,11 +453,12 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
       dosBackend: form.platform === 'dos' && form.dosBackend === 'dosboxX' ? 'dosboxX' : undefined,
       // 平台仍然保存为 DOS；这些字段只描述 DOSBox-X 里面要启动的客体系统。
       dosSystem: windowsGuest ? form.dosSystem!.trim() : undefined,
+      // 留空完全走旧的整包游戏层；填写后才启用按扇区读取，方便单款游戏独立灰度和回退。
+      dosSockdrive,
       dosWindowsVersion: windowsGuest ? form.dosWindowsVersion ?? '9x' : undefined,
       dosLaunchDelay: windowsGuest ? Math.max(5, Math.min(120, Math.round(Number(form.dosLaunchDelay) || 24))) : undefined,
-      // 存档说明只对能存档的普通 DOS 游戏有意义：Windows 客体存的是 qcow2 扇区，
-      // 播放器压根不给它「保存进度」按钮，留着这句话只会误导后台编辑
-      dosSaveHint: form.platform === 'dos' && !windowsGuest ? form.dosSaveHint?.trim() || undefined : undefined,
+      // 整包 Windows 客体仍不可存；Sockdrive 只固化改过的扇区，因此可以使用同一套存档说明。
+      dosSaveHint: form.platform === 'dos' && (!windowsGuest || Boolean(dosSockdrive)) ? form.dosSaveHint?.trim() || undefined : undefined,
       // 街机改版包专用；换成别的平台时要清掉，否则改完平台还留着一份没人读的 dat
       arcadeRomData: form.platform === 'arcade' ? form.arcadeRomData?.trim() || undefined : undefined,
       // 非街机平台一律不带这个字段：留着的话换平台后旧的 BIOS 名会跟着走，
@@ -560,6 +591,19 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
                   onChange={(value) => set('dosSystem', value || undefined)}
                   allowStorage={!personalLibrary}
                 />
+                <Field label="流式游戏盘目录（可选）" className="col-span-2">
+                  <input
+                    className={cx(inputClass, 'font-mono')}
+                    value={form.dosSockdrive ?? ''}
+                    onChange={(e) => set('dosSockdrive', e.target.value || undefined)}
+                    placeholder="sockdrives/caesar3-v1"
+                    disabled={!form.dosSystem?.trim()}
+                  />
+                  <p className="mt-1 text-[11px] text-dim">
+                    填官方 <code>sockify</code> 产物中直接含 <code>sockdrive.metaj</code> 的目录；玩家只按需读取用到的磁盘块。
+                    路径请带版本且不要原地覆盖。原 ROM 继续保留作回退，但启用后不会下载；附加文件需先写入磁盘再生成分块。
+                  </p>
+                </Field>
                 <Field label="Windows 版本">
                   <select
                     className={inputClass}
@@ -579,7 +623,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
                     placeholder="WINDEPTH.EXE 或 BIN/GAME.EXE"
                   />
                   <p className="mt-1 text-[11px] text-dim">
-                    游戏 ZIP 内的相对路径；语言槽有单独入口时优先使用语言槽的值。Windows 3.x 会先打开 EXE 所在目录再运行，请填写类似 ZEEK1.EXE、BIN/GAME.EXE 的 DOS 8.3 英文路径。
+                    游戏 ZIP 或流式游戏盘内的相对路径；语言槽有单独入口时优先使用语言槽的值。Windows 3.x 会先打开 EXE 所在目录再运行，请填写类似 ZEEK1.EXE、BIN/GAME.EXE 的 DOS 8.3 英文路径。
                   </p>
                 </Field>
                 <Field label="开机等待（秒）">
@@ -666,8 +710,8 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
               onLabelEnChange={(next) => set('dosExtrasLabelEn', next)}
               allowStorage={!personalLibrary}
             />
-            {/* Windows 客体不给「保存进度」按钮（存的是 qcow2 扇区，上游标为不可保存），所以不显示这一项 */}
-            {!(form.dosBackend === 'dosboxX' && form.dosSystem?.trim()) && (
+            {/* 整包 qcow2 不可保存；Sockdrive 只持久化改过的扇区，可以安全接回存档入口。 */}
+            {(!(form.dosBackend === 'dosboxX' && form.dosSystem?.trim()) || Boolean(form.dosSockdrive?.trim())) && (
               <Field label="存档提示" className="col-span-2 sm:col-span-4">
                 <input
                   className={inputClass}
@@ -873,7 +917,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
           <div key={lang} className="space-y-2">
             {form.platform === 'dos' && (
               <>
-                <Field label={`${ROM_LANG_LABEL[lang]} 启动文件（ZIP 内）`}>
+                <Field label={`${ROM_LANG_LABEL[lang]} 启动文件（${form.dosSockdrive?.trim() ? '流式游戏盘内' : 'ZIP 内'}）`}>
                   <input
                     className={cx(inputClass, 'font-mono')}
                     value={form.dosExecutables?.[lang] ?? ''}

@@ -153,6 +153,16 @@ const fr: Translation = {
     copyrightNotice: 'Mentions de copyright',
   },
 
+  clarityConsent: {
+    title: 'Aidez-nous à améliorer votre expérience',
+    body: 'Avec votre accord, nous chargeons Microsoft Clarity pour comprendre l’utilisation des pages grâce aux relectures de session et aux cartes thermiques. Il peut utiliser des cookies analytiques ; nous ne lui envoyons ni votre identifiant de compte ni votre e-mail.',
+    learnMore: 'Lire la politique de confidentialité',
+    accept: 'Autoriser l’analyse',
+    decline: 'Refuser',
+    settings: 'Réglages d’analyse',
+    currentChoice: 'Vous pouvez modifier ce choix à tout moment.',
+  },
+
   /* ---------------- Changement de langue ---------------- */
   language: {
     switch: 'Changer de langue',
@@ -1162,6 +1172,12 @@ const fr: Translation = {
       unsupported: 'Cette touche n’est pas prise en charge, essayez-en une autre',
       show: 'Afficher les boutons à l’écran',
       hide: 'Masquer les boutons à l’écran',
+      keyboard: 'Clavier',
+      mouse: 'Souris',
+      mouseMove: 'Déplacer',
+      mouseAim: 'Viser',
+      mouseLeft: 'Gauche',
+      mouseRight: 'Droite',
       close: 'Fermer',
     },
   },

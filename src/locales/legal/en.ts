@@ -27,7 +27,7 @@ import type { LegalDocCopy } from './types'
 
 const CONTACT = 'yeahcore@yeah.net'
 const UPDATED = '2026-09-23'
-const PRIVACY_UPDATED = '2026-09-25'
+const PRIVACY_UPDATED = '2026-09-29'
 
 export const termsEnglish: LegalDocCopy = {
   seoTitle: 'Terms of Service',
@@ -335,7 +335,7 @@ export const privacyEnglish: LegalDocCopy = {
 
 We have tried to describe **what the code actually does** rather than adapt a generic template. A few items do not read well — game sessions stream publicly by default, and anonymous ratings store an IP address in the clear — but writing them down is the point.
 
-**If you read one line of this:** no cookies, no ads, only limited first-party game-startup health metrics that contain no IP address or User-Agent, no profiling, nothing sold; but **playing a game creates a public stream room by default**, so please read section 7.`,
+**If you read one line of this:** no ads and nothing sold; Microsoft Clarity behavioural analytics loads only after your explicit permission, which you can withdraw at any time; but **playing a game creates a public stream room by default**, so please read section 7.`,
   sections: [
     {
       id: 'controller',
@@ -358,7 +358,7 @@ There is no data protection officer and no representative office. All mail is ha
 - **Game-startup stages and timing** — to find cases where someone clicks Play but never reaches the game, we record detail-page load, Play click, download completion, HTML5 page load, first frame, playable state, first interaction, and failure or timeout, together with the game, runtime, platform, country or region inferred offline from the IP, and elapsed milliseconds. Startup records **do not store the IP address, User-Agent, ROM URL or account ID**; a random visit identifier only joins stages of the same startup and does not identify you persistently across pages.
 - **Any anonymous rating you choose to leave** — see the note in section 9 about ratings storing an IP address.
 
-Without an account we do not know who you are, and we do not assign you an identifier that can be tracked across other sites.`,
+Without an account we do not know who you are, and we do not send account identity to behavioural analytics. Only if you opt into Microsoft Clarity may it use an analytics identifier within this site; we do not use it to track you across other sites.`,
     },
     {
       id: 'account-data',
@@ -535,15 +535,16 @@ The site has a public endpoint at /api/diag which echoes back **the caller's own
     {
       id: 'browser-storage',
       title: 'What is stored in your browser',
-      body: `### We do not use cookies
+      body: `### Cookies are used only after analytics consent
 
-This site **sets no cookies** and the server sends no Set-Cookie. There is therefore no cookie banner, because there is no cookie to consent to.
+The site's own server **does not send Set-Cookie**. The browser loads Microsoft Clarity only after you choose “Allow analytics” in the consent panel; Clarity may then set analytics cookies on this site's domain to distinguish visits and sessions. Choosing “Decline” means Clarity is not loaded and those analytics cookies are not created.
 
-What we use is the browser's local storage, session storage and IndexedDB. All of it stays on your device and is not sent to the server automatically.
+Your choice is kept in local storage under 8bit.clarity.consent.v1. “Analytics settings” in the footer reopens the panel so that you can change or withdraw it at any time. Apart from this optional analytics use, the site uses local storage, session storage and IndexedDB.
 
 ### Kept until you clear it (local storage)
 
 - The **sign-in token** (valid 30 days) and a **cached copy of the current user** (including email and nickname)
+- Your **Clarity analytics consent choice** (allow or decline)
 - Your **interface language** choice
 - An **anonymous rating identifier** — a random string, sent to the server with each anonymous rating
 - **Guest play history** (the "recently played" list when not signed in, up to 12 entries)
@@ -577,6 +578,7 @@ Clearing this site's data removes all of the above (your browser's "clear site d
 
 ### Only when you trigger it
 
+- **Microsoft Clarity behavioural analytics** — loaded from clarity.ms only after you explicitly allow it in the consent panel. It records page visits, clicks, scrolling, page content and device/browser information to produce session replays, heatmaps and aggregate metrics; Microsoft also receives the IP address inherent in the network request. The site does not call Clarity's identify API, does not send an account ID or email, and explicitly denies ad storage. You can withdraw permission through “Analytics settings” in the footer.
 - **Google / Microsoft / Apple sign-in** — loaded or redirected to only when you click the matching button. Credentials are sent to the relevant provider during verification.
 - **Hole punching and relay** — multiplayer and streaming need to traverse networks. Cloudflare's service is used by default; where it is not configured, the fallback is the public hole-punching servers of **Google** and **Twilio**. When relaying is engaged, the media passes through **Cloudflare** relay nodes (Cloudflare states that it does not retain relayed content; their policy governs).
 - **DOS multiplayer** — uses the third-party net.dos.zone as the peer server by default.
@@ -611,7 +613,7 @@ Note that this is **not the same thing** as the ByteDance entry in the previous 
       body: `This list is here because "not doing it" needs stating as clearly as doing it:
 
 - **No advertising** and no ad-network tracking code.
-- **No third-party analytics tooling** — no Google Analytics, no Baidu Tongji, nothing of that kind. The site only keeps the first-party game-startup health metrics described in section 2, and does not use them for profiling or advertising.
+- **No third-party behavioural analytics before you choose to allow it** — Microsoft Clarity is enabled only with explicit permission and is not used for advertising.
 - **No profiling.** We do not tag you with interests and do not run personalised ad targeting.
 - **We do not sell, rent or trade** your personal information.
 - **We do not send visitor IP addresses to third-party geolocation services** — country lookup happens offline on our own server.
@@ -627,6 +629,7 @@ Note that this is **not the same thing** as the ByteDance entry in the previous 
 - **Email verification codes** — valid 10 minutes, deleted on successful use. Cleanup happens opportunistically the next time a code is sent; **there is no scheduled job** — so in a quiet period expired rows may linger a while. Codes themselves are stored hashed, never in the clear.
 - **Guest recently-played** — the last 12 entries; writing a new one pushes out the oldest.
 - **Game-startup health events** — 90 days, used only to diagnose startup failures, timeouts and performance; the records contain no IP address, User-Agent, ROM URL or account ID.
+- **Microsoft Clarity analytics data and cookies** — created only after you consent and retained by Microsoft according to the Clarity project settings and its privacy policy. After withdrawal the site does not initialise Clarity on later page loads; existing browser data can be removed by clearing this site's data.
 - **Comments** — kept long term. Deleting your own hides it from the site but keeps the record; closing your account deletes it fully.
 - **The clear-text IP on anonymous ratings** — **no expiry, no cleanup** (section 9).
 - **Play-count and view-count hash identifiers** — **no expiry**, and retained after an account is closed.
@@ -646,6 +649,7 @@ Note that this is **not the same thing** as the ByteDance entry in the previous 
 - **Delete** an individual comment, rating, collection or cloud save.
 - **Close your account** — start it from your profile and confirm with the emailed code. The account goes, along with favourites, recently played, cloud saves, comments, ratings and collections.
 - **Clear local data** — clear this site's data in your browser.
+- **Change or withdraw analytics permission** — use “Analytics settings” in the footer.
 - **Stop streaming** — the "Private" switch in the player.
 
 ### What needs an email

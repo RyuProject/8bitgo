@@ -15,6 +15,7 @@ import type { Capability, CaptureSources, LoadProgress, MountOptions, PadButton,
 import { getT, fmt } from '@/services/i18n'
 import {
   hideJsdosConfigForLayer,
+  makeJsdosConfigBundle,
   makeJsdosBundle,
   makeWindowsGameLayer,
   mergeExtraFiles,
@@ -22,8 +23,12 @@ import {
   type ExtraFile,
 } from '@/lib/jsdosBundle'
 import {
+  buildSockdriveWindowsGuestConfig,
   buildWindowsGuestConfig,
+  normalizeSockdriveUrl,
   readWindowsSystemConfig,
+  sockdriveVersionedSaveKey,
+  windowsSockdriveLauncherFile,
   windowsGuestLaunchCommand,
   type WindowsGuestConfig,
 } from '@/lib/windowsGuest'
@@ -35,8 +40,8 @@ import { loadSystemBytes, systemSourcesFor } from '../systemSource'
 import { armJspi } from '../jspiFlag'
 import {
   DOS_PAD_BUTTONS,
-  DOS_PAD_DEFAULT,
   dosPadCustomized,
+  dosPadDefault,
   glfwKeyForPress,
   glfwKeyLabel,
   loadDosPadKeys,
@@ -586,6 +591,18 @@ const DOS_PAD_MAP: Record<number, number> = {
   [GP.L1]: KBD.tab,
 }
 /**
+ * 手柄的肩键映射成鼠标按键：R1 = 左键（射击类游戏的开火），R2 = 右键。
+ *
+ * 单独走一条通道，不和上面那张键盘表混：鼠标键得调 `ci.sendMouseButton` 而不是
+ * `ci.sendKeyEvent`，所以 gamepad 桥要的是「按键下标 → 鼠标键编号(0/1)」这张表，
+ * 由 `mouseButtonSend` 接住。这样射击游戏手柄玩家就能「左摇杆走、右摇杆瞄准、R1 开火」，
+ * 不必去碰屏幕键盘。R1/R2 在 DOS_PAD_MAP 里没出现，所以和键盘表不会重叠。
+ */
+const DOS_PAD_MOUSE_BUTTONS: Record<number, 0 | 1> = {
+  [GP.R1]: 0,
+  [GP.R2]: 1,
+}
+/**
  * 屏幕手柄（TouchPad）的键位**不在这里写死** —— 和 DOS_PAD_MAP 不同，它是可以改的
  * （主机模拟器的按钮是 A/B，DOS 的按钮是「键盘上的某个键」，每款游戏都不一样）。
  * 默认表、换算、以及按游戏存取都在 ../dosPad.ts，这里只负责读出来喂给引擎。
@@ -673,8 +690,118 @@ async function loadExtras(
   return out
 }
 
+/**
+ * 在下载几十 MB 的共享系统镜像期间并行探活流式盘。
+ *
+ * js-dos 对某个 `.raw` 连续失败后的行为是记日志并让磁盘读继续等待，玩家看到的往往只是
+ * Windows 黑屏；先验证清单至少能把“目录写错 / CORS 拒绝 / 上传不完整的元数据”变成明确错误。
+ */
+async function verifySockdriveMetadata(url: string, signal: AbortSignal): Promise<void> {
+  let bytes: ArrayBuffer
+  try {
+    bytes = await fetchWithProgress(`${url}/sockdrive.metaj`, {
+      signal,
+      cache: 'no-store',
+      phase: 'assets',
+      // 正常清单只有几 KB；上限也能挡住错误配置返回整页 HTML / 大文件时的内存浪费。
+      maxBytes: 1024 * 1024,
+    })
+  } catch (error) {
+    throw new Error(`Sockdrive 元数据读取失败（${error instanceof Error ? error.message : String(error)}）`)
+  }
+  let metadata: Record<string, unknown>
+  try {
+    metadata = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>
+  } catch {
+    throw new Error('Sockdrive 元数据不是有效 JSON（可能被站点回退页替换）')
+  }
+  const integer = (key: string) => {
+    const value = metadata[key]
+    if (!Number.isSafeInteger(value) || Number(value) <= 0) throw new Error(`Sockdrive 元数据字段 ${key} 无效`)
+    return Number(value)
+  }
+  const sizeKb = integer('size')
+  const aheadRead = integer('ahead_read')
+  const rangeCount = integer('range_count')
+  const sectorSize = integer('sector_size')
+  if (!Number.isSafeInteger(sizeKb * 1024) || Math.ceil(sizeKb * 1024 / aheadRead) !== rangeCount) {
+    throw new Error('Sockdrive 元数据的磁盘大小与分块数量不一致')
+  }
+  if (aheadRead % sectorSize !== 0) throw new Error('Sockdrive 分块大小不是扇区大小的整数倍')
+  const seen = new Set<number>()
+  const dropped = new Set<number>()
+  const small = new Set<number>()
+  for (const key of ['dropped_ranges', 'small_ranges'] as const) {
+    const values = metadata[key] ?? []
+    if (!Array.isArray(values)) throw new Error(`Sockdrive 元数据字段 ${key} 不是数组`)
+    for (const raw of values) {
+      if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0 || raw >= rangeCount || seen.has(raw)) {
+        throw new Error(`Sockdrive 元数据包含越界或重复分块：${String(raw)}`)
+      }
+      seen.add(raw)
+      if (key === 'dropped_ranges') dropped.add(raw)
+      else small.add(raw)
+    }
+  }
+  const preload = metadata.preload_ranges ?? []
+  if (!Array.isArray(preload)) throw new Error('Sockdrive 元数据字段 preload_ranges 不是数组')
+  const preloadSeen = new Set<number>()
+  for (const raw of preload) {
+    if (
+      typeof raw !== 'number' ||
+      !Number.isInteger(raw) ||
+      raw < 0 ||
+      raw >= rangeCount ||
+      dropped.has(raw) ||
+      preloadSeen.has(raw)
+    ) {
+      throw new Error(`Sockdrive 元数据包含无效的预取分块：${String(raw)}`)
+    }
+    preloadSeen.add(raw)
+  }
+
+  /*
+    清单存在不代表分块齐全：手工发布、对象被误删或“先传元数据后传数据”都会让玩家在启动中途
+    黑屏。挑一个真实会读到的文件做 HEAD 探活，不下载 256KB 正文，也能提前暴露 404 / CORS。
+  */
+  let sample = ''
+  for (let range = 0; range < rangeCount; range++) {
+    if (!dropped.has(range) && !small.has(range)) {
+      sample = `${range}.raw`
+      break
+    }
+  }
+  if (!sample && small.size) sample = 'preload.raw'
+  if (sample) {
+    const controller = new AbortController()
+    const relayAbort = () => controller.abort(signal.reason)
+    if (signal.aborted) relayAbort()
+    else signal.addEventListener('abort', relayAbort, { once: true })
+    const timer = window.setTimeout(() => controller.abort(), 15_000)
+    try {
+      const response = await fetch(`${url}/${sample}`, {
+        method: 'HEAD',
+        signal: controller.signal,
+        cache: 'no-store',
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    } catch (error) {
+      const reason = controller.signal.aborted && !signal.aborted
+        ? '15 秒没有收到响应'
+        : error instanceof Error ? error.message : String(error)
+      throw new Error(`Sockdrive 分块 ${sample} 读取失败（${reason}）`)
+    } finally {
+      window.clearTimeout(timer)
+      signal.removeEventListener('abort', relayAbort)
+    }
+  }
+}
+
 export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
+  const streamingGame = Boolean(options.dosSockdriveUrl)
+  // 槽 0 是旧的文件层存档；流式盘存的是扇区差异，格式完全不同，不能互相覆盖。
+  const saveSlot = streamingGame ? 1 : 0
   // 必须先于 js-dos 建 AudioContext；它是在挂载之后的某个 effect 里建的，这里来得及
   installAudioTap()
   const mountedAt = Date.now()
@@ -735,6 +862,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   void (async () => {
     try {
+      if (options.dosSockdriveUrl && !options.dosSystemUrl) {
+        throw new Error('流式 Windows 游戏盘缺少共享系统镜像')
+      }
+      const sockdriveUrl = streamingGame
+        ? normalizeSockdriveUrl(new URL(options.dosSockdriveUrl!, window.location.href).toString())
+        : ''
       // js-dos 入口脚本由 loadJsDos() 用 <script> 拉，没有字节进度，只能先报核心阶段；
       // 系统镜像和 ROM 是我们自己 fetch 的，后两段都有真实进度。
       options.onProgress?.({ phase: 'engine' })
@@ -762,15 +895,24 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         settled 立即接住拒绝，防止某一路先失败、另一条还在下载时出现未处理的 Promise rejection。
       */
       const engineTask = loadJsDos()
-      const romTask = settled(readRom(
-        options.game,
-        (progress) => {
-          latestRomProgress = progress
-          if (engineDone && systemDone) options.onProgress?.(progress)
-        },
-        abort.signal,
-      ))
-      const extrasTask = settled(loadExtras(options.dosExtras, abort.signal))
+      const romTask = settled(streamingGame
+        ? Promise.resolve(null)
+        : readRom(
+            options.game,
+            (progress) => {
+              latestRomProgress = progress
+              if (engineDone && systemDone) options.onProgress?.(progress)
+            },
+            abort.signal,
+          ))
+      const extrasTask = settled(streamingGame
+        ? options.dosExtras?.length
+          ? Promise.reject(new Error('流式游戏盘不能现场合并 DOS 附加文件，请重新生成 Sockdrive'))
+          : Promise.resolve([])
+        : loadExtras(options.dosExtras, abort.signal))
+      const sockdriveTask = settled(streamingGame
+        ? verifySockdriveMetadata(sockdriveUrl, abort.signal)
+        : Promise.resolve())
       /*
         系统镜像走**多源兜底**（见 ../systemSource）：主源是我们自己的资源域名，
         取不到或者卡死就换 js-dos 官方源。它是 Win9x/Win3.x 游戏的硬前提 ——
@@ -793,13 +935,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       } catch (e) {
         // 核心脚本失败时把三路下载一起停掉；settled 会把它们的拒绝接住，避免控制台再冒未处理异常。
         abort.abort(e)
-        await Promise.all([romTask, extrasTask, systemTask])
+        await Promise.all([romTask, extrasTask, sockdriveTask, systemTask])
         throw e
       }
       engineDone = true
       options.onProgress?.({ phase: 'engine', ratio: 1 })
       if (latestSystemProgress) options.onProgress?.(latestSystemProgress)
       if (systemDone && latestRomProgress) options.onProgress?.(latestRomProgress)
+
+      const sockdriveResult = await sockdriveTask
+      if (sockdriveResult.error) throw concurrentFailure ?? sockdriveResult.error
 
       const systemResult = await systemTask
       // 并发资源先失败时，AbortError 只是连带结果；玩家真正需要的是最先发生的原始错误。
@@ -814,10 +959,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       if (latestRomProgress) options.onProgress?.(latestRomProgress)
       const romResult = await romTask
       if (romResult.error) throw romResult.error
-      const rom = romResult.value!
+      const rom = romResult.value
       const extrasResult = await extrasTask
       if (extrasResult.error) throw extrasResult.error
       const extras = extrasResult.value ?? []
+      if (streamingGame) options.onProgress?.({ phase: 'rom', ratio: 1 })
       options.onProgress?.({ phase: 'starting' })
       if (destroyed) return
       /*
@@ -831,46 +977,67 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       let guestLaunchCommand = ''
       let initFs: unknown[] | undefined
       if (loadedSystem) {
-        // Windows 客体仍需要一个完整的游戏层；这条路才做整包合并。
         if (!options.dosExecutable) throw new Error('Windows 客体游戏没有配置自启动 EXE')
-        const compatibleExtras = await windowsGameCompatibilityExtras(
-          options.gameSlug,
-          options.dosExecutable,
-          rom.buf,
-          extras,
-        )
-        const gameBuf = compatibleExtras.length ? mergeExtraFiles(rom.buf, compatibleExtras) : rom.buf
         const systemConfig = await readWindowsSystemConfig(loadedSystem.data)
-        guest = buildWindowsGuestConfig(systemConfig, dosboxConfig)
-        const gameLayer = makeWindowsGameLayer(gameBuf, options.dosExecutable, guest.gameDrive)
-        if (!gameLayer.executable) throw new Error('Windows 游戏层没有可启动的 EXE')
-        if ((options.dosWindowsVersion ?? '9x') === '3x') {
-          const slash = gameLayer.executable.lastIndexOf('/')
-          const executableDir = slash >= 0 ? gameLayer.executable.slice(0, slash) : ''
+        let gameLayerBytes: Uint8Array<ArrayBuffer> | null = null
+        let gameExecutable = options.dosExecutable
+        let narrowedToExeDir = false
+        if (streamingGame) {
           /*
-            File Manager 只需切到游戏盘根目录，因此让盘根直接对应 EXE 的父目录。
-            ⚠️ 但只在**包里所有东西都在那一层**时才这么干（gameLayer.singleDir）。
-            EXE 在子目录、而数据在别处的包（`BIN/GAME.EXE` + `DATA/`，Win3.x 商业包里很常见）
-            一旦收窄，客体的 D:\ 就只等于那一个子目录 —— 兄弟目录和根上的 .INI **整个不存在**，
-            游戏能启动然后立刻报「找不到数据文件」。那种情况宁可让盘根留在游戏根上：
-            工作目录不对最多是部分游戏读不到相对路径，文件不存在则是必然打不开。
+            目录地址可能是站内 `/sockdrives/...`；DOSBox-X 的 Sockdrive 只接受 HTTP(S)，
+            所以在浏览器当前 origin 上补成绝对地址。游戏 ZIP、兼容补丁和附加文件都不能再
+            现场改这块远程磁盘：这些内容必须在 sockify 之前烘进去，否则会制造“后台已配、
+            玩家却永远读不到”的假象。
           */
-          const gameRoot =
-            executableDir && gameLayer.singleDir ? `${WINDOWS_GAME_ROOT}/${executableDir}` : WINDOWS_GAME_ROOT
-          guest = buildWindowsGuestConfig(systemConfig, dosboxConfig, gameRoot)
+          guest = buildSockdriveWindowsGuestConfig(systemConfig, sockdriveUrl, dosboxConfig)
+          initFs = [windowsSockdriveLauncherFile(gameExecutable, guest.gameDrive)]
+          /*
+            致命细节：直接传 `dosboxConf + initFs` 时，js-dos 的 loadBundleFromConfig 会把
+            bundleChangesUrl 固定成 null，之后 props.save() 永远返回 false。这里用一个只含
+            “sockdrive”标记的极小 bundle 走 URL 入口，让上游建立 changes key；真正配置仍在
+            initFs 最后一层，避免上游看见共享系统盘的 `.qcow2` 后误判整局不可保存。
+          */
+          const bootstrap = makeJsdosConfigBundle('[autoexec]\nrem sockdrive bootstrap')
+          primaryUrl = URL.createObjectURL(bootstrap)
+          objectUrls.push(primaryUrl)
+        } else {
+          if (!rom) throw new Error('Windows 客体游戏没有可用的游戏 ZIP')
+          // 非流式模式保持原来的整包合并与逐游戏兼容补丁，旧数据不改变任何行为。
+          const compatibleExtras = await windowsGameCompatibilityExtras(
+            options.gameSlug,
+            options.dosExecutable,
+            rom.buf,
+            extras,
+          )
+          const gameBuf = compatibleExtras.length ? mergeExtraFiles(rom.buf, compatibleExtras) : rom.buf
+          guest = buildWindowsGuestConfig(systemConfig, dosboxConfig)
+          const gameLayer = makeWindowsGameLayer(gameBuf, options.dosExecutable, guest.gameDrive)
+          if (!gameLayer.executable) throw new Error('Windows 游戏层没有可启动的 EXE')
+          gameExecutable = gameLayer.executable
+          narrowedToExeDir = gameLayer.singleDir !== false
+          if ((options.dosWindowsVersion ?? '9x') === '3x') {
+            const slash = gameLayer.executable.lastIndexOf('/')
+            const executableDir = slash >= 0 ? gameLayer.executable.slice(0, slash) : ''
+            /*
+              File Manager 只需切到游戏盘根目录，因此让盘根直接对应 EXE 的父目录。
+              ⚠️ 但只在**包里所有东西都在那一层**时这么干；否则兄弟目录和根上的 INI 会消失。
+            */
+            const gameRoot =
+              executableDir && gameLayer.singleDir ? `${WINDOWS_GAME_ROOT}/${executableDir}` : WINDOWS_GAME_ROOT
+            guest = buildWindowsGuestConfig(systemConfig, dosboxConfig, gameRoot)
+          }
+          gameLayerBytes = gameLayer.bytes
         }
         guestLaunchCommand = windowsGuestLaunchCommand(
           guest,
-          gameLayer.executable,
+          gameExecutable,
           options.dosWindowsVersion ?? '9x',
-          // 盘根没收窄的话，得把子目录也敲进 File > Run，否则在盘根上找不到那个 EXE
-          gameLayer.singleDir !== false,
+          narrowedToExeDir,
         )
         // 现在就验：以前这两处是在 ci-ready 的回调 / 定时器里才抛，没人接得住，
         // Windows 在屏幕上跑着、遮罩却盖到四分钟超时才报一句不相干的话
         assertTypeable(guestLaunchCommand)
         if ((options.dosWindowsVersion ?? '9x') === '3x') windows3xLaunchCommands(guestLaunchCommand)
-        const gameLayerBytes = gameLayer.bytes
         /*
           系统包自己的 conf 必须先改名：它作为后续文件层解开时会覆盖 Dos() 的直接配置。
           改名只动 ZIP 头里的 36 个 ASCII 字节，不复制那一大块 qcow2 数据。
@@ -889,14 +1056,18 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           loadedSystem.fromCache ? loadedSystem.data : loadedSystem.data.slice(0),
         )
         // 最终配置再放一次到最后，未来 js-dos 即使调整直接配置与 initFs 的合并顺序也不会倒退。
-        initFs = [systemLayer, gameLayerBytes, { dosboxConf: guest.dosboxConf, jsdosConf: { version: '8' } }]
+        initFs = [
+          systemLayer,
+          ...(gameLayerBytes ? [gameLayerBytes] : (initFs ?? [])),
+          { dosboxConf: guest.dosboxConf, jsdosConf: { version: '8' } },
+        ]
       } else {
         // 普通 zip / exe 现场打成 bundle；已经是 bundle 的原样使用。
         // 后台指定了启动程序就按它生成 conf，压过 pickExecutable 的猜测。
         const startupCommands = normalizeDosStartupCommands(options.dosStartupCommands)
         const bundle = await makeJsdosBundle(
-          rom.name,
-          rom.buf,
+          rom!.name,
+          rom!.buf,
           undefined,
           dosboxConfig,
           options.dosExecutable,
@@ -915,7 +1086,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
        * blob URL —— 每次进游戏都重新生成一个。用默认键的话每局都是全新存档，
        * 存了也永远读不回来。所以这里换成稳定的 slug（本地文件退回文件名）。
        */
-      saveKey = options.gameSlug || `local:${rom.name}`
+      const baseSaveKey = options.gameSlug || `local:${rom?.name ?? options.gameName}`
+      saveKey = streamingGame ? sockdriveVersionedSaveKey(baseSaveKey, sockdriveUrl) : baseSaveKey
       if (destroyed) {
         for (const url of objectUrls) URL.revokeObjectURL(url)
         return
@@ -926,7 +1098,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         options.mouseCapture && !guest && needsLockedAbsoluteDosMouse(options.gameSlug),
       )
       props = Dos(host, {
-        ...(guest
+        ...(streamingGame
+          ? { url: primaryUrl, initFs }
+          : guest
           ? { dosboxConf: guest.dosboxConf, jsdosConf: { version: '8' }, initFs }
           : { url: primaryUrl }),
         // 自托管的 wasm / worker 都在这个目录下
@@ -959,22 +1133,24 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         imageRendering: 'pixelated',
         // Windows 开机最耗时；第一次键盘输入会自动退出倍速，所以不会把游戏本体也加速。
         ...(guest ? { fastForwardOnBoot: 5 } : {}),
+        // default 只预取 sockify 记录的首屏扇区；其余块在客体真正读取时才下载。
+        ...(streamingGame ? { sockdrivePreload: 'default' } : {}),
         /**
-         * 存档。js-dos 存的是**文件系统的变更包**（盘上被改过的文件），
-         * 不是内存快照 —— 玩家必须先在游戏里存盘，点存档只是把这些改动固化下来。
+         * 存档。普通 DOS 存文件层变更；Sockdrive 存被写过的磁盘扇区，都不是内存快照。
+         * 玩家仍要先在游戏里存盘，播放器的按钮只是把已经发生的磁盘改动固化下来。
          *
          * 三个钩子指向 services/saves.ts：登录了进云端跟着账号走，
          * 没登录就落在浏览器里。pull 会在开机时被自动调用，所以读档是无感的。
          */
         /*
-          ⚠️ Windows 客体这条路**不接** fsChanges。
-          下面 caps 那里早就写明「qcow2 系统镜像的扇区变化不是普通 js-dos 文件层存档，
-          上游也明确把这种包标成不可保存」，所以 guest 拿不到 fsSave 能力。
-          可 pull 那一路一直接着 —— 开机时 js-dos 会自动调它，把这款游戏当年按普通 DOS
-          配置上线时留下的**文件层变更包**叠到客体盘上：轻则无害，重则遮住系统/游戏文件
-          让客体起不来，而玩家连一个能删掉它的入口都没有，只能一直撞。
+          ⚠️ 只有“整包 qcow2 Windows 客体”不接 fsChanges；静态 Sockdrive 自带独立的扇区差异，
+          可以保存，而且使用 slot 1 与旧的文件层存档隔离。
+
+          完整 qcow2 的 guest 拿不到 fsSave 能力，也绝不能只接 pull：开机时 js-dos 会把这款游戏
+          当年按普通 DOS 配置上线时留下的**文件层变更包**叠到客体盘上，轻则无害，重则遮住
+          系统/游戏文件让客体起不来，而玩家连一个能删掉它的入口都没有，只能一直撞。
         */
-        ...(guest
+        ...(guest && !streamingGame
           ? {}
           : {
               fsChanges: {
@@ -988,7 +1164,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                 */
                 pull: async () => {
                   try {
-                    return (await pullSave('jsdos', saveKey))?.data ?? null
+                    return (await pullSave('jsdos', saveKey, saveSlot))?.data ?? null
                   } catch (e) {
                     console.warn('[jsdos] 读取存档失败，按没有存档处理', e)
                     return null
@@ -1005,7 +1181,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                   */
                   lastBytes = new Uint8Array(data)
                   try {
-                    const r = await pushSave('jsdos', saveKey, data)
+                    const r = await pushSave('jsdos', saveKey, data, saveSlot)
                     lastPush = { ok: r.ok, where: r.where, error: r.cloudFailed ? r.error : undefined }
                   } catch (e) {
                     lastPush = { ok: false, where: null, error: e instanceof Error ? e.message : String(e) }
@@ -1013,7 +1189,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                 },
                 delete: async () => {
                   try {
-                    await deleteSave('jsdos', saveKey)
+                    await deleteSave('jsdos', saveKey, saveSlot)
                   } catch (e) {
                     console.warn('[jsdos] 删除存档失败', e)
                   }
@@ -1084,7 +1260,22 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               }
               // DOS 游戏只认键盘，手柄在这里翻译成按键
               if (caps.has('gamepad') && !pad) {
-                pad = startGamepadBridge(DOS_PAD_MAP, (key, pressed) => ci?.sendKeyEvent(key, pressed))
+                pad = startGamepadBridge(DOS_PAD_MAP, (key, pressed) => ci?.sendKeyEvent(key, pressed), {
+                  /**
+                   * 右摇杆 → 相对鼠标位移（FPS 瞄准）。DOS 游戏只认键盘 + 鼠标，
+                   * 手柄右摇杆没有现成语义，正好用来当「看向」：推多少转多少。
+                   * 相对游戏（毁灭战士）直接喂 sendMouseRelativeMotion；绝对坐标游戏
+                   * （主题医院 / Windows 客体）适配器已把这条接口包成「相对→绝对」，
+                   * 这里调的是同一个 ci 方法，所以两类游戏都能动光标。
+                   */
+                  mouseMove: (dx, dy) => ci?.sendMouseRelativeMotion?.(dx, dy),
+                  /**
+                   * R1 / R2 → 鼠标按键（0=左键开火，1=右键）。射击游戏手柄玩家的开火键。
+                   * 绝对坐标游戏里适配器保留了原始的 sendMouseButton，这里调它一样生效。
+                   */
+                  mouseButtons: DOS_PAD_MOUSE_BUTTONS,
+                  mouseButtonSend: (button, pressed) => ci?.sendMouseButton?.(button, pressed),
+                })
               }
               // 屏幕手柄同理 —— 有了 ci 才有地方送键，所以能力等到这一刻才声明
               caps.add('touchpad')
@@ -1101,8 +1292,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       props.setVolume?.(volume)
       if (paused) props.setPaused?.(true)
       // 存档要等 js-dos 起来才有 props.save()，所以能力在这里才补上
-      // qcow2 系统镜像的扇区变化不是普通 js-dos 文件层存档；上游也明确把这种包标成不可保存。
-      if (props.save && saveKey && !guest) {
+      // 整包 qcow2 不可保存；Sockdrive 只固化改过的扇区，因此可以安全开放同一套能力。
+      if (props.save && saveKey && (!guest || streamingGame)) {
         caps.add('fsSave')
         // 导出/导入是 fsSave 的兜底，条件完全一样
         caps.add('fsFile')
@@ -1146,6 +1337,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   return {
     caps,
+    saveSlot,
+    /** getter 让工具栏在异步解析完规范 URL 后读到版本化键，而不是 mount 当下的空字符串。 */
+    get saveArchiveKey() {
+      return saveKey || undefined
+    },
     volume,
     /** 鼠标上下当前反转了没有。写成 getter：工具栏读到的永远是现值，不是挂载时的快照 */
     get mouseInverted() {
@@ -1186,6 +1382,42 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
     },
     /**
+     * 屏幕键盘：发一个 GLFW 键码。手机上没有实体键盘，而 DOS 游戏读的是键盘 ——
+     * 打字、按数字选单位、F1–F12 这类光靠八颗屏幕按键够不着的操作，靠它补全。
+     * 走 `ci.sendKeyEvent`（和 sendButton 同一个接口），不合成 KeyboardEvent。
+     */
+    sendKey(glfw, down) {
+      try {
+        ci?.sendKeyEvent(glfw, down)
+      } catch {
+        /* 引擎已经拆了就忽略 */
+      }
+    },
+    /** 触屏鼠标模式：设绝对坐标（0~1）。点选类 DOS 游戏（主题医院等）的拖动手柄。 */
+    sendMouseMove(x, y) {
+      try {
+        ci?.sendMouseMotion?.(x, y)
+      } catch {
+        /* 引擎已经拆了就忽略 */
+      }
+    },
+    /** 触屏鼠标模式 / 手柄右摇杆：发相对位移（FPS 瞄准）。 */
+    sendMouseRelative(dx, dy) {
+      try {
+        ci?.sendMouseRelativeMotion?.(dx, dy)
+      } catch {
+        /* 引擎已经拆了就忽略 */
+      }
+    },
+    /** 触屏鼠标模式：左 / 右键（0 = 左，1 = 右）。 */
+    sendMouseButton(button, down) {
+      try {
+        ci?.sendMouseButton?.(button, down)
+      } catch {
+        /* 引擎已经拆了就忽略 */
+      }
+    },
+    /**
      * 屏幕手柄的键位可以改（见 ../dosPad.ts）。
      *
      * 换算和存储都留在这一侧：键码是 js-dos 的 GLFW 编号，播放器不该认识它。
@@ -1208,7 +1440,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         saveDosPadKeys(padKey, padKeys)
       },
       reset() {
-        padKeys = { ...DOS_PAD_DEFAULT }
+        // 落到「预设感知的默认」而不是写死的 DOS_PAD_DEFAULT：命中预设的游戏恢复后
+        // 仍保留预设键位，玩家才会觉得「恢复默认」名副其实。
+        padKeys = dosPadDefault(padKey)
         resetDosPadKeys(padKey)
       },
       customized: () => dosPadCustomized(padKey),
@@ -1278,7 +1512,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       if (!saveKey) return { ok: false, error: 'no-slug' }
       if (!data || data.length === 0) return { ok: false, error: 'empty' }
       try {
-        const r = await pushSave('jsdos', saveKey, data)
+        const r = await pushSave('jsdos', saveKey, data, saveSlot)
         return { ok: r.ok, where: r.where ?? undefined, error: r.cloudFailed ? r.error : undefined }
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) }

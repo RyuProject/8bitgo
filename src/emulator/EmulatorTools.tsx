@@ -228,6 +228,9 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
   // liveview（在看别人直播，没有自己的机器状态）绝不能混进来，否则会发一个注定 400 的查询。
   const saveRuntime = asSaveRuntime(runtimeId)
   const archivable = Boolean(saveRuntime && gameSlug && caps.has('saveState'))
+  const archiveSlot = handle.saveSlot ?? 0
+  const archiveGameKey = handle.saveArchiveKey ?? gameSlug
+  const hasArchivedSlot = Boolean(saveRuntime && archiveGameKey && (caps.has('saveState') || caps.has('fsFile')))
   const toCloud = cloudSavesEnabled()
 
   useEffect(() => {
@@ -266,14 +269,14 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
   useEffect(() => {
     let alive = true
     setArchived(null)
-    if (!archivable || !saveRuntime || !gameSlug) return
-    void saveInfo(saveRuntime, gameSlug).then((info) => {
+    if (!hasArchivedSlot || !saveRuntime || !archiveGameKey) return
+    void saveInfo(saveRuntime, archiveGameKey, archiveSlot).then((info) => {
       if (alive && info) setArchived({ where: info.where, updatedAt: info.updatedAt, pending: info.pending })
     })
     return () => {
       alive = false
     }
-  }, [archivable, saveRuntime, gameSlug, handle])
+  }, [hasArchivedSlot, saveRuntime, archiveGameKey, archiveSlot, handle])
 
   /*
     手柄面板开着的时候才轮询，平时不占 CPU。

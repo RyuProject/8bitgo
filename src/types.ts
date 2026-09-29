@@ -244,6 +244,14 @@ export interface Game {
    */
   dosSystem?: string
   /**
+   * 大型 Windows 游戏的静态 Sockdrive 目录（对象 key、站内路径或完整 URL）。
+   *
+   * 目录里必须直接包含 `sockdrive.metaj` 与转换工具生成的 `*.raw` 分块。有值时，播放器
+   * 不下载 rom / roms 里的整包游戏 ZIP，而把这块磁盘作为独立盘按扇区读取；原 ROM 只保留为
+   * 管理端可随时清空本字段后回退的完整包。目录内容必须版本化且不可原地覆盖。
+   */
+  dosSockdrive?: string
+  /**
    * DOS 附加文件（资料片 / 补丁 / 配置）清单，一行一个。
    *
    * 形状是 `对象key` 或 `对象key|游戏里的路径`（省略后半段 = 落到游戏根目录，

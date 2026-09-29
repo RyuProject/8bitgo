@@ -5,6 +5,7 @@ import {
   dosboxConfigOf,
   dosLaunchDelayOf,
   dosSaveHintOf,
+  dosSockdriveOf,
   dosSystemOf,
   dosWindowsVersionOf,
   gameApiToPartialRow,
@@ -27,17 +28,20 @@ const win95 = gameRowToApi({
   slug: 'win95',
   dos_backend: 'dosboxX',
   dos_system: 'systems/win95.jsdos',
+  dos_sockdrive: 'sockdrives/game-v1',
   dos_launch_delay: 24,
   dosbox_config_override: '[gus]\ngus=false',
 })
 assert.equal(win95.dosBackend, 'dosboxX')
 assert.equal(win95.dosSystem, 'systems/win95.jsdos')
+assert.equal(win95.dosSockdrive, 'sockdrives/game-v1')
 assert.equal(win95.dosLaunchDelay, 24)
 assert.equal(win95.dosboxConfig, '[gus]\ngus=false')
 assert.equal(gameRowToApi({ slug: 'dos', dos_backend: null }).dosBackend, undefined)
 
 assert.equal(gameApiToRow({ slug: 'win95', dosBackend: 'dosboxX', dosSystem: 'systems/win95.jsdos', dosLaunchDelay: 24 }).dos_backend, 'dosboxX')
 assert.equal(gameApiToRow({ slug: 'win95', dosBackend: 'dosboxX', dosSystem: 'systems/win95.jsdos', dosLaunchDelay: 24 }).dos_system, 'systems/win95.jsdos')
+assert.equal(gameApiToRow({ slug: 'win95', dosSockdrive: 'sockdrives/game-v1/' }).dos_sockdrive, 'sockdrives/game-v1')
 assert.equal(gameApiToRow({ slug: 'win95', dosBackend: 'dosboxX', dosSystem: 'systems/win95.jsdos', dosLaunchDelay: 24 }).dos_launch_delay, 24)
 assert.equal(gameApiToRow({ slug: 'dos', dosBackend: 'dosbox' }).dos_backend, null)
 assert.equal(gameApiToRow({ slug: 'win95', dosboxConfig: '[cpu]\ncycles=20000' }).dosbox_config_override, '[cpu]\ncycles=20000')
@@ -54,6 +58,14 @@ assert.match(gameForm, /form\.dosBackend === 'dosboxX' \? 'DOSBox-X' : 'DOSBox'/
 
 assert.equal(dosSystemOf(' systems/win98.jsdos '), 'systems/win98.jsdos')
 assert.equal(dosSystemOf('bad\nvalue'), null)
+assert.equal(dosSockdriveOf(' sockdrives/game-v1/ '), 'sockdrives/game-v1')
+assert.equal(dosSockdriveOf('bad value'), null)
+assert.equal(dosSockdriveOf('//evil.example/game-v1'), null)
+assert.equal(dosSockdriveOf('javascript:alert(1)'), null)
+assert.equal(dosSockdriveOf('https://user:pass@assets.test/game-v1'), null)
+assert.equal(dosSockdriveOf('https://assets.test/game-v1?old=1'), null)
+assert.equal(dosSockdriveOf('https://assets.test/game%20v1'), null)
+assert.equal(dosSockdriveOf('https://assets.test/game-v1'), 'https://assets.test/game-v1')
 assert.equal(dosWindowsVersionOf('3x'), '3x')
 assert.equal(dosWindowsVersionOf('9x'), '9x')
 assert.equal(dosWindowsVersionOf('win31'), null)
@@ -62,6 +74,9 @@ assert.equal(dosLaunchDelayOf(999), 120)
 assert.deepEqual(gameApiToPartialRow({ dosSystem: '', dosLaunchDelay: undefined }), {
   dos_system: null,
   dos_launch_delay: null,
+})
+assert.deepEqual(gameApiToPartialRow({ dosSockdrive: 'sockdrives/game-v2/' }), {
+  dos_sockdrive: 'sockdrives/game-v2',
 })
 
 const win31 = gameRowToApi({
@@ -100,6 +115,29 @@ assert.match(dosGameConfigError({ ...winGuest, dosSystem: 'systems/win95.zip' })
 assert.match(dosGameConfigError({ ...winGuest, dosSystem: 'systems/win95.jsdos\nignored' }), /必须是 \.jsdos/)
 assert.match(dosGameConfigError({ ...winGuest, roms: {} }), /必须绑定游戏 ZIP/)
 assert.match(dosGameConfigError({ ...winGuest, roms: undefined, rom: 'roms/game.zip.8bg' }), /通用 ROM 必须填写默认/)
+const streamedGuest = { ...winGuest, dosExecutable: 'BIN/GAME.EXE', dosSockdrive: 'sockdrives/game-v1' }
+assert.equal(dosGameConfigError(streamedGuest), null)
+assert.match(dosGameConfigError({ ...streamedGuest, dosSockdrive: 'sockdrives/game-v1/sockdrive.metaj' }), /必须填写.*目录/)
+assert.match(dosGameConfigError({ ...streamedGuest, dosSockdrive: 'https://assets.test/game?v=1' }), /查询参数/)
+assert.match(dosGameConfigError({ ...streamedGuest, dosExtras: ['extras/patch.dat'] }), /不能现场合并/)
+assert.match(dosGameConfigError({ ...streamedGuest, dosExecutable: 'RUN.BAT' }), /安全的 \.exe/)
+assert.match(dosGameConfigError({ ...streamedGuest, dosExecutable: 'BIN/BAD?.EXE' }), /安全的 \.exe/)
+assert.match(
+  dosGameConfigError({ platform: 'dos', dosBackend: 'dosboxX', dosSockdrive: 'sockdrives/game-v1' }),
+  /只能用于已配置共享系统镜像/,
+)
+assert.match(gameForm, /dosSockdrive/)
+assert.match(gameForm, /dosSockdrive\.startsWith\('\/\/'\)/)
+assert.match(gameForm, /本地磁盘缓存冲突/)
+
+// 发布器是不可逆写入 R2 的最后一道闸：禁止“网络预检失败仍继续”和覆盖旧版本目录。
+const sockdriveUploader = readFileSync(new URL('./upload-sockdrive-r2.mjs', import.meta.url), 'utf8')
+assert.doesNotMatch(sockdriveUploader, /allow-overwrite/)
+assert.match(sockdriveUploader, /existing\.status !== 404/)
+assert.match(sockdriveUploader, /无法确认公开目录是否已存在，已停止发布/)
+assert.match(sockdriveUploader, /brotliDecompressSync/)
+assert.match(sockdriveUploader, /const encoded = encoding !== 'identity'/)
+assert.match(sockdriveUploader, /small\.size \* metadata\.ahead_read/)
 
 const current = { ...winGuest, dosExecutables: { en: 'OLD.EXE' } }
 assert.equal(

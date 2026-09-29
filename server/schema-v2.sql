@@ -89,6 +89,8 @@ CREATE TABLE IF NOT EXISTS games (
   -- 可复用的 Windows 客体系统 .jsdos。游戏 ROM 仍是独立 ZIP，运行时作为另一块 FAT 盘挂入。
   -- NULL 保留旧模式：ROM 自己就是已经装好系统与游戏的完整 .jsdos。
   dos_system     VARCHAR(500)  NULL,
+  -- 静态 Sockdrive 目录；有值时游戏盘按扇区读取，rom / roms 只作为可回退的完整包保留。
+  dos_sockdrive  VARCHAR(500)  NULL,
   dos_extras     TEXT             NULL,  -- 附加文件：一行一个对象 key，加载时并进游戏目录
   dos_extras_label VARCHAR(60)  NULL,  -- 可选附加文件在开始界面上的名字（「隐秘行动」）
   dos_extras_label_en VARCHAR(60) NULL, -- 同上的英文名（Covert Operations）；非中文界面用它

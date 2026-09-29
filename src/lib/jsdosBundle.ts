@@ -250,6 +250,32 @@ function buildZip(entries: OutEntry[]): Blob {
   return new Blob(zipParts(entries) as BlobPart[], { type: 'application/zip' })
 }
 
+/**
+ * 生成只含配置的极小 js-dos bundle。
+ *
+ * js-dos 的 Player API 只有从 `url` 加载 bundle 时才会建立 changes key、调用
+ * `fsChanges.pull/push`；直接传 `dosboxConf + initFs` 时它把 changes URL 固定成 null，
+ * `props.save()` 会永远返回 false。Sockdrive 仍要把大型系统层放在 initFs，因而用这个
+ * 几百字节的引导包走 url 入口，再把真正配置作为最后一层覆盖进去。
+ */
+export function makeJsdosConfigBundle(dosboxConf: string): Blob {
+  const conf = dosboxConf.replace(/\r\n?/g, '\n').trim()
+  if (!conf || !/^\s*\[[^\]]+\]\s*$/m.test(conf)) throw new Error('js-dos 引导配置为空或格式无效')
+  const bytes = te.encode(`${conf}\n`) as Uint8Array<ArrayBuffer>
+  const empty = new Uint8Array(0) as Uint8Array<ArrayBuffer>
+  return buildZip([
+    { name: '.jsdos/', method: 0, crc: 0, compressedSize: 0, uncompressedSize: 0, data: empty },
+    {
+      name: '.jsdos/dosbox.conf',
+      method: 0,
+      crc: crc32(bytes),
+      compressedSize: bytes.length,
+      uncompressedSize: bytes.length,
+      data: bytes,
+    },
+  ])
+}
+
 /** 和 buildZip 同样的字节，但不经过 Blob —— 少复制一整份包，见 zipParts 的注释 */
 function buildZipBytes(entries: OutEntry[]): Uint8Array<ArrayBuffer> {
   const parts = zipParts(entries)

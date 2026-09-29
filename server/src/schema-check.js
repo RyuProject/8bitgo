@@ -22,6 +22,7 @@ const EXPECTED_COLUMNS = [
   { table: 'game_roms', column: 'backup_key', why: '同语言 ROM 备用地址；缺列会让后台保存备用源 500' },
   { table: 'games', column: 'dos_backend', why: 'DOS / Windows 客体运行核心选择' },
   { table: 'games', column: 'dos_system', why: '可复用的 Windows 客体系统镜像' },
+  { table: 'games', column: 'dos_sockdrive', why: '大型 Windows 游戏的静态流式磁盘目录' },
   { table: 'games', column: 'dos_extras', why: 'DOS 附加文件（资料片 / 补丁）清单；缺了后台保存的附加文件会静默丢失' },
   { table: 'games', column: 'dos_extras_label', why: '可选资料片在开始界面上的名字；缺了开关上只剩「加载扩展包」，玩家不知道那几百 MB 是什么' },
   { table: 'games', column: 'dos_extras_label_en', why: '资料片名字的英文版；缺了非中文界面的玩家会在一句英文里看到一个中文名' },
@@ -149,17 +150,21 @@ export async function checkSchema() {
     /*
       结构齐全仍可能有「写得进去、永远启动不了」的数据。共享 Windows 模式最典型：
       少一个 EXE 路径不会触发数据库错误，玩家却要先下载系统镜像和游戏包，最后才收到报错。
-      启动时只扫 DOSBox-X 的少量候选，及早把历史坏记录点名；新写入由路由同步阻止。
+      启动时只扫 DOSBox-X 的少量候选；另把所有填过 Sockdrive 的记录纳入，避免一条错误平台记录
+      因为不满足“正确候选”条件反而逃过检查。新写入仍由路由同步阻止。
     */
     const rows = await query(
-      `SELECT g.slug, g.platform, g.dos_backend, g.dos_system, g.dos_executable,
+      `SELECT g.slug, g.platform, g.dos_backend, g.dos_system, g.dos_sockdrive, g.dos_extras, g.dos_executable,
               gr.lang, gr.object_key, gr.dos_executable AS lang_dos_executable
          FROM games g
          LEFT JOIN game_roms gr ON gr.game_id = g.id
-        WHERE g.platform = 'dos'
-          AND g.dos_backend = 'dosboxX'
-          AND g.dos_system IS NOT NULL
-          AND g.dos_system <> ''`,
+        WHERE (
+                g.platform = 'dos'
+            AND g.dos_backend = 'dosboxX'
+            AND g.dos_system IS NOT NULL
+            AND g.dos_system <> ''
+          )
+           OR (g.dos_sockdrive IS NOT NULL AND g.dos_sockdrive <> '')`,
     )
     const games = new Map()
     for (const row of rows) {
@@ -170,6 +175,8 @@ export async function checkSchema() {
           platform: row.platform,
           dosBackend: row.dos_backend,
           dosSystem: row.dos_system,
+          dosSockdrive: row.dos_sockdrive,
+          dosExtras: row.dos_extras ? String(row.dos_extras).split('\n') : undefined,
           dosExecutable: row.dos_executable,
           roms: {},
           dosExecutables: {},

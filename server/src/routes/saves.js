@@ -7,7 +7,7 @@
  *
  * 两种引擎的存档不是一回事，所以用 runtime 区分、互不覆盖：
  *   emulatorjs  内存快照（整台机器某一帧的状态），NES 约 20KB、GBA 几十 KB
- *   jsdos       DOS 文件系统的**变更包**（盘上被改过的文件），几 KB 到几百 KB
+ *   jsdos       DOS 文件系统变更，或 Sockdrive 被改过的磁盘扇区
  *   html5       接入本站存档桥的网页游戏存档包（例如 PvZ 的 userdata ZIP）
  *
  * 存档是二进制的，所以这里用 express.raw 收，不走全局的 express.json。
@@ -29,7 +29,7 @@ const MAX_SAVES_PER_USER = Number(process.env.SAVE_MAX_PER_USER || 200)
  * 只有一个目的。份数管的是「别开太多格」，字节数才管得住体积。
  */
 const MAX_TOTAL_BYTES = Number(process.env.SAVE_MAX_TOTAL_BYTES || 64 * 1024 * 1024)
-/** 每个游戏的存档位。0 是「自动 / 主存档」，DOS 只用 0 */
+/** 每个游戏的存档位。0 是普通主存档；Sockdrive 用 1，避免和旧 DOS 文件层变更包混用。 */
 const MAX_SLOT = 9
 
 /** 只认已知的引擎名，别让人往库里塞任意字符串 */

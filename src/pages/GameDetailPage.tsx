@@ -468,6 +468,7 @@ export function GameDetailPage() {
                   dosStartupCommands={dosStartupCommandsForRom(game, rom)}
                   dosBackend={game.dosBackend}
                   dosSystemUrl={game.dosSystem ? romUrlForKey(game.dosSystem) : undefined}
+                  dosSockdriveUrl={game.dosSockdrive ? romUrlForKey(game.dosSockdrive) : undefined}
                   dosExtras={dosExtraSources(game.dosExtras)}
                   dosExtrasLabel={dosExtrasName(game, lang)}
                   dosWindowsVersion={game.dosWindowsVersion}

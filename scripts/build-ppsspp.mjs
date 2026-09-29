@@ -14,10 +14,11 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpat
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
+import { installPspRangeReadAhead } from './helpers/ppsspp-runtime-patch.mjs'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const VERSION = '0dbfaca'
-const RUNTIME_GENERATION = 'v7'
+const RUNTIME_GENERATION = 'v8'
 const RANGE_LOADER_REVISION = 4
 const PINNED_COMMIT = '0dbfaca62a8a924abc2c5dd5dd0733b668e5e68a'
 const PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0001-range-streaming.patch')
@@ -30,6 +31,7 @@ const CHD_RANGE_PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0007-chd-rang
 const COLD_START_PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0008-web-cold-start.patch')
 const WORKER_CANVAS_PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0009-worker-offscreen-canvas.patch')
 const WASM_FFMPEG_PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0010-wasm-ffmpeg.patch')
+const RANGE_READ_AHEAD_SOURCE = join(root, 'vendor', 'ppsspp', 'range-read-ahead.js')
 const OUTPUT = join(root, 'public', 'ppsspp', `v${VERSION}`, RUNTIME_GENERATION)
 const FFMPEG_COMMIT = '1e3b4965632f60b1d85360261d1b9dd45444bc71'
 const FFMPEG_LIBRARIES = ['avcodec', 'avformat', 'avutil', 'swresample', 'swscale']
@@ -67,6 +69,7 @@ if (!existsSync(CHD_RANGE_PATCH)) fail(`CHD Range 性能补丁不存在：${CHD_
 if (!existsSync(COLD_START_PATCH)) fail(`Web 冷启动补丁不存在：${COLD_START_PATCH}`)
 if (!existsSync(WORKER_CANVAS_PATCH)) fail(`Worker OffscreenCanvas 补丁不存在：${WORKER_CANVAS_PATCH}`)
 if (!existsSync(WASM_FFMPEG_PATCH)) fail(`Web FFmpeg 补丁不存在：${WASM_FFMPEG_PATCH}`)
+if (!existsSync(RANGE_READ_AHEAD_SOURCE)) fail(`Range 顺序预读源码不存在：${RANGE_READ_AHEAD_SOURCE}`)
 if (capture('git', ['rev-parse', 'HEAD']) !== PINNED_COMMIT) {
   fail(`源码提交不匹配，必须是 ${PINNED_COMMIT}；不要在未知上游版本上硬套二进制补丁`)
 }
@@ -335,6 +338,15 @@ if (runtimeScript.includes(asyncPackageNeedle)) {
 } else if (!runtimeScript.includes(asyncPackageReplacement)) {
   fail('PPSSPPSDL.js 的预加载器结构与锁定的 Emscripten 5.0.7 不符，无法安全接入异步重试')
 }
+try {
+  runtimeScript = installPspRangeReadAhead(
+    runtimeScript,
+    readFileSync(RANGE_READ_AHEAD_SOURCE, 'utf8'),
+  )
+  writeFileSync(runtimeScriptPath, runtimeScript)
+} catch (error) {
+  fail(`无法接入 PSP 顺序预读：${error instanceof Error ? error.message : String(error)}`)
+}
 if (!runtimeScript.includes('pthreadMainJs=_scriptName') || !runtimeScript.includes('new Worker(pthreadMainJs')) {
   fail('PPSSPPSDL.js 缺少 Emscripten 5 自身 Worker 启动标记，PROXY_TO_PTHREAD 可能没有生效')
 }
@@ -360,6 +372,9 @@ if (runtimeScript.includes('/assets/debugger/')) {
 }
 for (const marker of ['__ppssppRangeProgress', '__ppssppRangeError']) {
   if (!runtimeScript.includes(marker)) fail(`PPSSPPSDL.js 缺少 Range v${RANGE_LOADER_REVISION} 标记 ${marker}，核心补丁可能没有编进产物`)
+}
+for (const marker of ['__8bitgoCreatePspRangeXhr', '__8bitgoPspRangeWarmStats']) {
+  if (!runtimeScript.includes(marker)) fail(`PPSSPPSDL.js 缺少 Range 顺序预读标记 ${marker}`)
 }
 for (const marker of ['__ppssppAudio', 'AudioWorkletNode', 'ppsspp-audio', 'createScriptProcessor', '__ppssppPerformance']) {
   if (!runtimeScript.includes(marker)) fail(`PPSSPPSDL.js 缺少 pthread 共享音频桥标记 ${marker}`)
@@ -416,6 +431,9 @@ const manifest = {
   graphicsCompatibilityProfile: 'buffered-native-v1',
   startupReadinessProfile: 'core-boot-log-v1',
   preloadAssetsProfile: 'runtime-no-debugger',
+  rangeReadAheadProfile: 'adaptive-sequential-v1',
+  rangeReadAheadBlocks: 2,
+  rangeReadAheadCacheBytes: 8 * 1024 * 1024,
   webFeaturesBridge: 'savestate-controls-v1',
   mediaEngine: 'ffmpeg-h264-audio-minimal',
   ffmpegCommit: FFMPEG_COMMIT,

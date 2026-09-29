@@ -153,6 +153,16 @@ const de: Translation = {
     copyrightNotice: 'Urheberrechtshinweis',
   },
 
+  clarityConsent: {
+    title: 'Hilf uns, das Erlebnis zu verbessern',
+    body: 'Mit deiner Zustimmung laden wir Microsoft Clarity, um die Seitennutzung anhand von Sitzungswiedergaben und Heatmaps zu verstehen. Dabei können Analyse-Cookies gesetzt werden; deine Konto-ID oder E-Mail senden wir nicht.',
+    learnMore: 'Datenschutzerklärung lesen',
+    accept: 'Analyse erlauben',
+    decline: 'Ablehnen',
+    settings: 'Analyse-Einstellungen',
+    currentChoice: 'Du kannst diese Auswahl jederzeit ändern.',
+  },
+
   /* ---------------- Sprachumschalter ---------------- */
   language: {
     switch: 'Sprache wechseln',
@@ -1161,6 +1171,12 @@ const de: Translation = {
       unsupported: 'Diese Taste wird nicht unterstützt – versuch eine andere',
       show: 'Bildschirmtasten anzeigen',
       hide: 'Bildschirmtasten ausblenden',
+      keyboard: 'Tastatur',
+      mouse: 'Maus',
+      mouseMove: 'Bewegen',
+      mouseAim: 'Zielen',
+      mouseLeft: 'Links',
+      mouseRight: 'Rechts',
       close: 'Schließen',
     },
   },

@@ -247,6 +247,37 @@ check('异常位移不会把绝对光标污染成 NaN，下一帧仍可继续移
   )
 })
 
+console.log('\n── Windows Sockdrive：大型游戏按块读取 ──')
+
+check('配置流式目录后不再下载整包 ROM', () => {
+  assert.match(jsdos, /const romTask = settled\(streamingGame\s*\?\s*Promise\.resolve\(null\)/)
+  assert.match(jsdos, /streamingGame\s*\?\s*options\.dosExtras\?\.length/)
+})
+
+check('流式盘使用官方 default 预取，并挂到 DOSBox-X 的 Sockdrive', () => {
+  assert.match(jsdos, /buildSockdriveWindowsGuestConfig\(systemConfig, sockdriveUrl, dosboxConfig\)/)
+  assert.match(jsdos, /sockdrivePreload:\s*'default'/)
+  assert.match(jsdos, /windowsSockdriveLauncherFile\(gameExecutable, guest\.gameDrive\)/)
+})
+
+check('流式盘必须走 URL bundle 入口，否则 js-dos 会把 changes URL 留空、保存永远失败', () => {
+  assert.match(jsdos, /makeJsdosConfigBundle\('\[autoexec\]\\nrem sockdrive bootstrap'\)/)
+  assert.match(jsdos, /streamingGame\s*\?\s*\{\s*url:\s*primaryUrl,\s*initFs\s*\}/)
+  assert.match(jsdos, /verifySockdriveMetadata\(sockdriveUrl, abort\.signal\)/)
+  assert.match(jsdos, /method:\s*'HEAD'/)
+  assert.match(jsdos, /Sockdrive 分块 \$\{sample\} 读取失败/)
+})
+
+check('流式扇区存档与旧文件层存档隔离', () => {
+  assert.match(jsdos, /const saveSlot = streamingGame \? 1 : 0/)
+  assert.match(jsdos, /sockdriveVersionedSaveKey\(baseSaveKey, sockdriveUrl\)/)
+  assert.match(jsdos, /get saveArchiveKey\(\)/)
+  assert.match(jsdos, /return\s*\{\s*\n\s*caps,\s*\n\s*saveSlot,/)
+  assert.match(jsdos, /pullSave\('jsdos', saveKey, saveSlot\)/)
+  assert.match(jsdos, /pushSave\('jsdos', saveKey, data, saveSlot\)/)
+  assert.match(jsdos, /deleteSave\('jsdos', saveKey, saveSlot\)/)
+})
+
 console.log('\n── 工具栏：📂 读档 ──')
 
 check("panel 状态里有 'fsLoad'", () => assert.match(tools, /'fsSave'\s*\|\s*'fsLoad'/))

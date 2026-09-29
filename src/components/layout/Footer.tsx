@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom'
 import { SITE_NAME } from './Logo'
 import { footerLinksFor } from './nav'
 import { useT } from '@/services/i18n'
+import { clarityConfigured, openClarityPreferences } from '@/services/clarity'
 
 /**
  * 精简页脚：一行链接 + 一行版权信息。版权只写归属声明（游戏内容归各自所有者），
@@ -29,6 +30,11 @@ export function Footer() {
                 {l.label}
               </Link>
             ),
+          )}
+          {clarityConfigured() && (
+            <button type="button" onClick={openClarityPreferences} className="transition hover:text-fg">
+              {t.clarityConsent.settings}
+            </button>
           )}
         </nav>
         <p className="leading-relaxed">

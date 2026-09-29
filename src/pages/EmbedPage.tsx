@@ -186,6 +186,7 @@ export function EmbedPage({ standalonePlatform }: Props) {
           dosStartupCommands={dosStartupCommandsForRom(game, rom)}
           dosBackend={game.dosBackend}
           dosSystemUrl={game.dosSystem ? romUrlForKey(game.dosSystem) : undefined}
+          dosSockdriveUrl={game.dosSockdrive ? romUrlForKey(game.dosSockdrive) : undefined}
           dosWindowsVersion={game.dosWindowsVersion}
           dosLaunchDelay={game.dosLaunchDelay}
           dosboxConfig={game.dosboxConfig}

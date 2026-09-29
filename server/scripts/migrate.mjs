@@ -203,6 +203,12 @@ const patches = [
     run: () => conn.query('ALTER TABLE `games` ADD COLUMN `dos_system` VARCHAR(500) NULL AFTER `dos_backend`'),
   },
   {
+    name: 'games.dos_sockdrive（大型 Windows 游戏的流式磁盘目录）',
+    table: 'games',
+    needed: async () => !(await hasColumn('games', 'dos_sockdrive')),
+    run: () => conn.query('ALTER TABLE `games` ADD COLUMN `dos_sockdrive` VARCHAR(500) NULL AFTER `dos_system`'),
+  },
+  {
     name: 'games.dos_windows_version（Windows 3.x / 9x 自启动方式）',
     table: 'games',
     needed: async () => !(await hasColumn('games', 'dos_windows_version')),

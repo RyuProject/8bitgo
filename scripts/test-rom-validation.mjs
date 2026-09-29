@@ -56,8 +56,8 @@ try {
       contents: [
         "export * from './src/lib/romValidation.ts'",
         "export { assertValidZip, assertValidZipBlob, listZipEntries, extractZipEntry } from './src/lib/unzip.ts'",
-        "export { makeJsdosBundle } from './src/lib/jsdosBundle.ts'",
-        "export { buildWindowsGuestConfig, windowsGuestLaunchCommand } from './src/lib/windowsGuest.ts'",
+        "export { makeJsdosBundle, makeJsdosConfigBundle } from './src/lib/jsdosBundle.ts'",
+        "export { buildSockdriveWindowsGuestConfig, buildWindowsGuestConfig, sockdriveVersionedSaveKey, windowsGuestLaunchCommand, windowsSockdriveLauncherFile } from './src/lib/windowsGuest.ts'",
         "export { normalizeDosboxConfigOverride, mergeDosboxConfigOverride } from './shared/dosbox-config.js'",
         "export { createOverallRatio, fetchWithProgress, windowsGuestStartupBudgetMs } from './src/emulator/loadProgress.ts'",
         "export { shouldCaptureMouse } from './src/emulator/mouseCapture.ts'",
@@ -83,10 +83,14 @@ try {
     assertNdsRomBlob,
     prepareNdsRom,
     makeJsdosBundle,
+    makeJsdosConfigBundle,
     listZipEntries,
     extractZipEntry,
     buildWindowsGuestConfig,
+    buildSockdriveWindowsGuestConfig,
+    sockdriveVersionedSaveKey,
     windowsGuestLaunchCommand,
+    windowsSockdriveLauncherFile,
     normalizeDosboxConfigOverride,
     mergeDosboxConfigOverride,
     createOverallRatio,
@@ -210,6 +214,56 @@ try {
     () => buildWindowsGuestConfig('[autoexec]\nimgmount c system.img\nboot c:\n', undefined, 'GAME/../WINDOWS'),
     /安全的 DOS 路径/,
   )
+
+  // 大型 Windows 游戏：系统盘保持原样，游戏盘用静态 Sockdrive，启动批处理另占一个极小本地盘。
+  const streamedGuest = buildSockdriveWindowsGuestConfig(
+    '[autoexec]\nimgmount 2 system.img\nboot c:\n',
+    'https://assets.example.test/sockdrives/game-v1/',
+  )
+  assert.equal(streamedGuest.gameDrive, 'D')
+  assert.equal(streamedGuest.gameDriveIndex, 3)
+  assert.equal(streamedGuest.sockdriveUrl, 'https://assets.example.test/sockdrives/game-v1')
+  assert.match(streamedGuest.dosboxConf, /imgmount 3 sockdrive https:\/\/assets\.example\.test\/sockdrives\/game-v1/)
+  assert.match(streamedGuest.dosboxConf, /mount e 8BITGO -freesize 1/)
+  assert.match(streamedGuest.dosboxConf, /boot c: -convertfat/)
+  assert.equal(windowsGuestLaunchCommand(streamedGuest, 'BIN/GAME.EXE', '9x', false), 'E:\\RUN.BAT')
+  assert.equal(windowsGuestLaunchCommand(streamedGuest, 'BIN/GAME.EXE', '3x', false), 'D:\\BIN\\GAME.EXE')
+  const launcherFile = windowsSockdriveLauncherFile('BIN/GAME.EXE', streamedGuest.gameDrive)
+  assert.equal(launcherFile.path, '8BITGO/RUN.BAT')
+  assert.match(new TextDecoder().decode(launcherFile.contents), /d:\r\ncd "\\BIN"\r\n"GAME\.EXE"/)
+  const escapedLauncher = new TextDecoder().decode(windowsSockdriveLauncherFile('BIN/100%&FUN.EXE', 'D').contents)
+  assert.match(escapedLauncher, /"100%%&FUN\.EXE"/)
+  assert.throws(() => windowsSockdriveLauncherFile('BIN/BAD?.EXE', 'D'), /安全的 \.exe/)
+  const occupiedD = buildSockdriveWindowsGuestConfig(
+    '[autoexec]\nimgmount 2 system.img\nimgmount 3 tools.img\nboot c:\n',
+    'https://assets.example.test/sockdrives/game-v2',
+  )
+  assert.equal(occupiedD.gameDrive, 'E', '数字式 imgmount 3 已占 D:，流式盘不能重复使用')
+  assert.match(occupiedD.dosboxConf, /imgmount 4 sockdrive/)
+  assert.throws(
+    () => buildSockdriveWindowsGuestConfig('[autoexec]\nimgmount 2 system.img\nboot c:\n', 'https://assets.test/game?v=1'),
+    /查询参数/,
+  )
+  assert.throws(
+    () => buildSockdriveWindowsGuestConfig('[autoexec]\nimgmount 2 system.img\nboot c:\n', 'https://assets.test/game%20v1'),
+    /批处理/,
+  )
+  assert.throws(
+    () => buildSockdriveWindowsGuestConfig(
+      '[autoexec]\nimgmount 2 system.img\nboot c:\n',
+      `https://assets.test/sockdrives/${'a'.repeat(210)}-v2`,
+    ),
+    /URL 过长|缓存/,
+  )
+  const saveV1 = sockdriveVersionedSaveKey('game', 'https://assets.test/sockdrives/game-v1')
+  assert.equal(saveV1, sockdriveVersionedSaveKey('game', 'https://assets.test/sockdrives/game-v1/'))
+  assert.notEqual(saveV1, sockdriveVersionedSaveKey('game', 'https://assets.test/sockdrives/game-v2'))
+  assert.ok(sockdriveVersionedSaveKey('g'.repeat(200), 'https://assets.test/sockdrives/game-v1').length <= 160)
+  const bootstrapBytes = await makeJsdosConfigBundle('[autoexec]\nrem sockdrive bootstrap').arrayBuffer()
+  const bootstrapConfigEntry = listZipEntries(bootstrapBytes).find((entry) => entry.name === '.jsdos/dosbox.conf')
+  assert.ok(bootstrapConfigEntry, '流式引导包必须是能走 js-dos URL 加载入口的标准 bundle')
+  const bootstrapConfig = new TextDecoder().decode(await extractZipEntry(bootstrapBytes, bootstrapConfigEntry))
+  assert.match(bootstrapConfig, /sockdrive bootstrap/)
 
   // 旧式完整 .jsdos 也要替换包内配置；不能只让共享系统模式生效。
   const legacyBytes = arrayBuffer(zip([

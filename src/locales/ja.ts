@@ -153,6 +153,16 @@ const ja: Translation = {
     copyrightNotice: '「著作権表示」',
   },
 
+  clarityConsent: {
+    title: '体験の改善にご協力ください',
+    body: '同意いただいた場合、Microsoft Clarity を読み込み、セッション再生とヒートマップでページの利用状況を把握します。分析 Cookie が設定される場合がありますが、アカウント ID やメールアドレスは送信しません。',
+    learnMore: 'プライバシーポリシーを読む',
+    accept: '分析を許可',
+    decline: '拒否',
+    settings: '分析設定',
+    currentChoice: 'この選択はいつでも変更できます。',
+  },
+
   /* ---------------- 言語切り替え ---------------- */
   language: {
     switch: '言語を切り替える',
@@ -1146,6 +1156,12 @@ const ja: Translation = {
       unsupported: 'このキーは対応していません。別のキーを試してください',
       show: '画面ボタンを表示',
       hide: '画面ボタンを隠す',
+      keyboard: 'キーボード',
+      mouse: 'マウス',
+      mouseMove: '移動',
+      mouseAim: '照準',
+      mouseLeft: '左',
+      mouseRight: '右',
       close: '閉じる',
     },
   },

@@ -120,6 +120,8 @@ export interface MountOptions {
   dosBackend?: DosBackend
   /** Windows 客体系统的共享 .jsdos 镜像 URL；游戏文件仍由 game 单独提供。 */
   dosSystemUrl?: string
+  /** 大型 Windows 游戏的静态 Sockdrive 目录 URL；有值时游戏盘按扇区读取，不下载整包 ROM。 */
+  dosSockdriveUrl?: string
   /**
    * DOS 附加文件（资料片 / 补丁）：加载时下载下来并进游戏 ZIP，仓库里的 ROM 不动。
    * url 为空表示后台配了 key 但 ROM 存储没配好 —— 那是错误，不是「跳过」。
@@ -166,6 +168,11 @@ export interface MountOptions {
    * webretro 同源，读它自己那根 <progress> 得到 ratio；其余的只报 phase，
    * ratio 为 undefined 表示「不知道还剩多少」，UI 转不确定态。
    */
+  /**
+   * 调试模式：把引擎日志、各阶段（解密 / 识别 / 启动）的成败都暴露到界面上，
+   * 方便区分「ROM 不行 / 模拟器不支持 / 其它」。仅本地页（玩本地 ROM）开启。
+   */
+  debug?: boolean
   onProgress?: (progress: LoadProgress) => void
   /**
    * 旧 Flash 游戏的在线存档会话到期时间（毫秒）；0 = 游客模式 / 没拿到会话。
@@ -467,6 +474,10 @@ export interface RuntimeHandle {
   saveMode?: 'local' | 'remote'
   /** 存档文件的扩展名（默认 state）。Flash 导出的是一个 json 包，就写成 flashsave.json */
   saveExt?: string
+  /** 这套运行时实际使用的归档槽；默认 0。Sockdrive 用 1 与旧文件层存档隔离。 */
+  saveSlot?: number
+  /** 运行时实际使用的存档键；Sockdrive 把磁盘版本指纹写进去，避免跨版本套用扇区差异。 */
+  saveArchiveKey?: string
   saveState?: () => Promise<Blob | null>
   /** 旧 srcdoc 路径的 Flash 存档无法自动辨认游戏，只在玩家明确选择时恢复。 */
   hasLegacyFlashSave?: () => boolean
@@ -530,6 +541,18 @@ export interface RuntimeHandle {
    * 引擎只有一套输入的（js-dos / jsnes）忽略这个参数即可。
    */
   sendButton?: (button: PadButton, down: boolean, player?: number) => void
+  /**
+   * 发一个 GLFW 键码（按下 / 松开）。给屏幕键盘用，目前只有 DOS 提供 ——
+   * 手机上没有实体键盘，而 DOS 游戏读的是键盘，光靠八颗屏幕按键覆盖不了打字 / 功能键
+   * （冒险游戏输名字、策略游戏按数字选单位、F1–F12 热键等）。
+   */
+  sendKey?: (glfw: number, down: boolean) => void
+  /** 设置绝对鼠标坐标（0~1）。给触屏鼠标模式用，专门服务《主题医院》这类点选 DOS 游戏。 */
+  sendMouseMove?: (x: number, y: number) => void
+  /** 发相对鼠标位移（用于 FPS 瞄准）。触屏鼠标模式 / 手柄右摇杆都会用到。 */
+  sendMouseRelative?: (dx: number, dy: number) => void
+  /** 鼠标按键：0 = 左键，1 = 右键。给触屏鼠标模式用。 */
+  sendMouseButton?: (button: number, down: boolean) => void
   /**
    * 发一条弹幕。只有 liveview（看直播）这一路实现 —— 别的运行时下面根本没有直播间。
    * 主播那一侧不走这里，走 Broadcast.sendChat（他手里握着的是推流会话，不是观看会话）。

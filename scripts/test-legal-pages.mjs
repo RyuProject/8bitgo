@@ -403,13 +403,24 @@ const FACTS = [
     id: 'no-cookies',
     where: 'browser-storage',
     doc: 'privacy',
-    what: '全站不下发 Cookie —— 这条是「没有做」，所以探针反过来：一旦有人开始下发就该红',
+    what: '本站服务端不下发 Cookie；Clarity 分析 Cookie 则只可能在访客同意后由 SDK 设置',
     probe: null,
     negProbe: [
       ['server/src', /res\.cookie\(|['"]Set-Cookie['"]/],
       ['src', /document\.cookie\s*=/],
     ],
-    say: { zh: ['不设置任何 Cookie|不設定任何 Cookie'], en: ['sets no cookies'] },
+    say: { zh: ['不下发 Set-Cookie|不下發 Set-Cookie'], en: ['does not send Set-Cookie'] },
+  },
+  {
+    id: 'clarity-consent',
+    where: 'third-parties',
+    doc: 'privacy',
+    what: 'Microsoft Clarity 只在本地授权为 granted 后加载，且不调用 identify 发送账号身份',
+    probe: ['src/services/clarity.ts', "readClarityConsent() !== 'granted'"],
+    say: {
+      zh: ['Microsoft Clarity', '明确同意|明確同意', 'identify', '账号 ID|帳號 ID'],
+      en: ['Microsoft Clarity', 'explicitly allow', 'identify', 'account ID'],
+    },
   },
   {
     id: 'birth-date',

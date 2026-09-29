@@ -153,6 +153,16 @@ const en: Translation = {
     copyrightNotice: 'Copyright Notice',
   },
 
+  clarityConsent: {
+    title: 'Help us improve the experience',
+    body: 'With your permission, we load Microsoft Clarity to understand page use through session replays and heatmaps. It may set analytics cookies; we do not send it your account ID or email.',
+    learnMore: 'Read the Privacy Policy',
+    accept: 'Allow analytics',
+    decline: 'Decline',
+    settings: 'Analytics settings',
+    currentChoice: 'You can change this choice at any time.',
+  },
+
   /* ---------------- Language switcher ---------------- */
   language: {
     switch: 'Switch language',
@@ -1160,6 +1170,12 @@ const en: Translation = {
       unsupported: "That key isn't supported — try another",
       show: 'Show on-screen controls',
       hide: 'Hide on-screen controls',
+      keyboard: 'Keyboard',
+      mouse: 'Mouse',
+      mouseMove: 'Move',
+      mouseAim: 'Aim',
+      mouseLeft: 'Left',
+      mouseRight: 'Right',
       close: 'Close',
     },
   },

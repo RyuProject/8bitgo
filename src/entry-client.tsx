@@ -7,6 +7,7 @@ import { hydrateAuth } from '@/services/auth'
 import { setLangForRender, syncHtmlLang } from '@/services/lang'
 import { langFromPath, langPrefix } from '@/config/languages'
 import { loadLocale } from '@/locales'
+import { initClarity } from '@/services/clarity'
 
 /**
  * 首屏数据由 services/pageData 在模块加载时从 window.__8BITGO__ 里读走，
@@ -50,6 +51,9 @@ async function start() {
 
   // 登录态是浏览器独有的，渲染之后再补
   if (apiEnabled()) void hydrateAuth()
+
+  // 放在水合之后，第三方分析加载失败或变慢都不能阻塞首屏。
+  initClarity()
 }
 
 void start()

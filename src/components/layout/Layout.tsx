@@ -12,6 +12,7 @@ import { useT } from '@/services/i18n'
 import { onTvHost } from '@/services/tvHost'
 import { stripLang } from '@/config/languages'
 import { TV_ROUTE } from '../../../shared/tv-host.js'
+import { ClarityConsentBanner } from '@/components/privacy/ClarityConsentBanner'
 
 /** 路由切换时回到顶部；带 hash 时滚动到对应锚点；同时退出沉浸模式、关闭抽屉 */
 function RouteEffects() {
@@ -138,6 +139,9 @@ function Shell() {
 
       {/* 全站登录弹窗 */}
       <AuthModal />
+
+      {/* 第三方行为分析只有在访客主动同意后才会加载。 */}
+      <ClarityConsentBanner />
 
       {/*
         站内消息的右侧抽屉。挂载之后**一直挂着**（靠 transform 滑出，所以收起也有动画），
