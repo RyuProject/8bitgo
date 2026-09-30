@@ -21,9 +21,10 @@
  * ⚠️ 这两类问题都**不会报错**：页面照常渲染、测试照常绿，只有搜索引擎知道。
  */
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import ts from 'typescript'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const read = (rel) => readFileSync(path.join(ROOT, rel), 'utf8')
@@ -183,8 +184,8 @@ check('短简介按 CJK / 拉丁语言分别收敛，再供 meta / Open Graph / 
   const src = code('src/services/seo.ts')
   assert.match(src, /META_DESCRIPTION_MIN_LENGTH = 80/, '短简介下限不再是 80 个 Unicode 码点')
   assert.match(src, /META_DESCRIPTION_MAX_LENGTH = 160/, '拉丁语摘要上限不再是 160 个 Unicode 码点')
-  assert.match(src, /CJK_META_DESCRIPTION_MIN_LENGTH = 50/, 'CJK 摘要下限不再是 50 个 Unicode 码点')
-  assert.match(src, /CJK_META_DESCRIPTION_MAX_LENGTH = 90/, 'CJK 摘要上限不再是 90 个 Unicode 码点')
+  assert.match(src, /CJK_META_DESCRIPTION_MIN_LENGTH = 80/, 'CJK 摘要下限不再是 80 个 Unicode 码点')
+  assert.match(src, /CJK_META_DESCRIPTION_MAX_LENGTH = 120/, 'CJK 摘要上限不再是 120 个 Unicode 码点')
   assert.match(src, /CJK_META_LANGUAGES\.has\(lang\)/, '没有按当前页面语言选择摘要长度')
   assert.match(
     src,
@@ -192,6 +193,12 @@ check('短简介按 CJK / 拉丁语言分别收敛，再供 meta / Open Graph / 
     '页面描述没有使用当前语言的补充文案',
   )
   assert.match(src, /maxLength = META_DESCRIPTION_MAX_LENGTH/, '默认摘要上限没有复用统一常量')
+  assert.match(
+    src,
+    /normalizeMetaDescription\(`\$\{primary\}\$\{separator\}\$\{expansion\.trim\(\)\}`,[\s\S]*?maxLength,[\s\S]*?minLength\)/,
+    '补全后的摘要没有把最短长度传给断句逻辑，可能又在原简介句号处截短',
+  )
+  assert.ok(src.includes("replace(/[，,]$/u, '')"), '软断句仍可能让摘要以逗号收尾')
   for (const tag of ["['name', 'description', shortDescription]", "['property', 'og:description', shortDescription]", "['name', 'twitter:description', shortDescription]"]) {
     assert.ok(src.includes(tag), `${tag} 没有使用同一份短摘要`)
   }
@@ -262,6 +269,44 @@ check('详情页的 title 带平台缩写，H1 仍保持干净的游戏名', () 
   assert.match(page, /<h1[^>]*>\{seoTitle\}<\/h1>/, 'H1 不应被平台后缀污染')
   assert.match(i18n, /`\$\{cleanTitle\}（\$\{cleanPlatform\}）`/, 'CJK 标题没有使用全角括号')
   assert.match(i18n, /`\$\{cleanTitle\} \(\$\{cleanPlatform\}\)`/, '拉丁语言标题没有使用平台后缀')
+})
+
+console.log('八、原生图片必须显式提供替代文字')
+
+check('所有 TSX 的 <img> 都显式声明 alt', () => {
+  // 用 TypeScript AST 检查，避免正则把注释、字符串或跨行 JSX 当成真实标签。
+  const files = []
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name)
+      if (entry.isDirectory()) walk(full)
+      else if (entry.isFile() && entry.name.endsWith('.tsx')) files.push(full)
+    }
+  }
+  walk(path.join(ROOT, 'src'))
+
+  const missing = []
+  for (const file of files) {
+    const content = readFileSync(file, 'utf8')
+    const source = ts.createSourceFile(file, content, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+    const visit = (node) => {
+      if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
+        if (node.tagName.getText(source) === 'img') {
+          const hasAlt = node.attributes.properties.some(
+            (property) => ts.isJsxAttribute(property) && property.name.getText(source) === 'alt',
+          )
+          if (!hasAlt) {
+            const { line } = source.getLineAndCharacterOfPosition(node.getStart(source))
+            missing.push(`${path.relative(ROOT, file)}:${line + 1}`)
+          }
+        }
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(source)
+  }
+
+  assert.deepEqual(missing, [], `缺少 alt：${missing.join(', ')}`)
 })
 
 console.log(failed ? `\n${failed} 项未通过` : '\n全部通过 ✅')

@@ -142,18 +142,35 @@ function contentTime(value?: string): string {
  * Google 最终仍会自行截断。这里按 Unicode 码点留 160 个字符，并尽量停在完整句子上；
  * 页面正文和 JSON-LD 仍保留全文，只有 meta / Open Graph / Twitter 使用短摘要。
  */
-export function normalizeMetaDescription(value?: string, maxLength = 160): string {
+export function normalizeMetaDescription(
+  value?: string,
+  maxLength = 160,
+  minimumBoundary = 0,
+): string {
   const clean = String(value || '').replace(/\s+/g, ' ').trim()
   const chars = [...clean]
   if (chars.length <= maxLength) return clean
   const prefix = chars.slice(0, maxLength).join('')
-  const breaks = ['。', '！', '？', '. ', '! ', '? ', '；', '; ', '，', ', ', ' ']
-    .map((mark) => {
+  const lastBoundary = (marks: string[]) => Math.max(
+    ...marks.map((mark) => {
       const index = prefix.lastIndexOf(mark)
       return index < 0 ? -1 : index + mark.trimEnd().length
-    })
-  const boundary = Math.max(...breaks)
-  if (boundary >= Math.floor(maxLength * 0.65)) return prefix.slice(0, boundary).trim()
+    }),
+  )
+  // 补全文案时，原简介末尾通常恰好就是一个句号。只按 65% 找边界会在这里又截回
+  // 过短的原句，表面上调用了补全函数，最终输出却一点没变。minimumBoundary 只由
+  // completeMetaDescription 传入，让补全后的摘要至少越过目标下限再寻找完整句子。
+  const usableBoundary = Math.max(Math.floor(maxLength * 0.65), minimumBoundary)
+  const sentenceBoundary = lastBoundary(['。', '！', '？', '. ', '! ', '? ', '；', '; '])
+  if (sentenceBoundary >= usableBoundary) return prefix.slice(0, sentenceBoundary).trim()
+
+  // 实在没有完整句子时退到最近的逗号或词边界，但用省略号明确告诉读者这是截断；
+  // 直接保留结尾逗号会让搜索摘要看起来像渲染坏了半句话。
+  const softBoundary = lastBoundary(['，', ', ', ' '])
+  if (softBoundary >= usableBoundary) {
+    const shortened = prefix.slice(0, softBoundary).trim().replace(/[，,]$/u, '').trimEnd()
+    return `${[...shortened].slice(0, maxLength - 1).join('')}…`
+  }
   return `${chars.slice(0, maxLength - 1).join('').trimEnd()}…`
 }
 
@@ -163,12 +180,14 @@ export function normalizeMetaDescription(value?: string, maxLength = 160): strin
  * 固定页面的 SEO 文案可以逐条写够，但游戏、文章和玩家合集的简介来自数据库，无法保证
  * 每条都足够完整。只在原文不足 80 个码点时补一段当前语言的站点上下文，既保留页面自己
  * 的关键词，也避免所有短简介退化成同一句通用描述；最后仍由 normalizeMetaDescription
- * 收敛到 160 个码点，搜索结果不会被一大段正文塞满。
+ * 按语言收敛到 120 或 160 个码点，搜索结果不会被一大段正文塞满。
  */
 export const META_DESCRIPTION_MIN_LENGTH = 80
 export const META_DESCRIPTION_MAX_LENGTH = 160
-export const CJK_META_DESCRIPTION_MIN_LENGTH = 50
-export const CJK_META_DESCRIPTION_MAX_LENGTH = 90
+// 2026-09-30 Bing 把线上 58～79 码点的中日文摘要继续判为过短。CJK 不必照搬
+// 拉丁语的 160 上限，但 50 的下限已经不足以通过实际抓取；80～120 是信息量与自然度的折中。
+export const CJK_META_DESCRIPTION_MIN_LENGTH = 80
+export const CJK_META_DESCRIPTION_MAX_LENGTH = 120
 const CJK_META_LANGUAGES = new Set<Lang>(['zh-Hans', 'zh-Hant', 'ja'])
 
 export function completeMetaDescription(
@@ -183,7 +202,7 @@ export function completeMetaDescription(
     return normalizeMetaDescription(primary, maxLength)
   }
   const separator = /[。！？.!?；;：:]$/.test(primary) ? ' ' : ' — '
-  return normalizeMetaDescription(`${primary}${separator}${expansion.trim()}`, maxLength)
+  return normalizeMetaDescription(`${primary}${separator}${expansion.trim()}`, maxLength, minLength)
 }
 
 export interface SeoLanguagePlan {
@@ -393,9 +412,8 @@ export function useSeo(opts: SeoOptions) {
     metas.push(['property', 'og:image:height', OG_DEFAULT_HEIGHT])
   }
   if (TWITTER_SITE) metas.push(['name', 'twitter:site', TWITTER_SITE])
-  // CJK 一个字承载的信息远多于拉丁字母。以前所有语言都硬凑 80~160 个码点，中文首页
-  // 被补成一整段并在第 160 个字截断，既不像自然摘要，也会在标点边界留下半句话。
-  // 数据库短简介仍统一补上下文，只是按语言选择符合实际搜索摘要的长度。
+  // CJK 一个字承载的信息远多于拉丁字母，所以仍不照搬 160 的拉丁语上限；但线上抓取已经
+  // 证明 50～79 会被 Bing 判短。数据库短简介统一补上下文，再在 80～120 内找完整句子。
   const cjkDescription = CJK_META_LANGUAGES.has(lang)
   const shortDescription = completeMetaDescription(
     description,
