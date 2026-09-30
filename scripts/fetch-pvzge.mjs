@@ -40,6 +40,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync, readdirSync } from 'node:fs'
 import { dirname, join, posix, resolve, extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { writeCleanPvzgeIndex } from './lib/pvzge-index.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const OUT = join(ROOT, 'public/web/PvZ2')
@@ -217,7 +218,7 @@ function extractRefs(p, text, ext) {
     for (const m of text.matchAll(/(?:import|export)\b[^'"]*?from\s*["']([^"']+)["']/g)) add(m[1])
     for (const m of text.matchAll(/import\s*["']([^"']+)["']/g)) add(m[1])
     // Emscripten 胶水里直接写死的 .wasm 文件名
-    for (const m of text.matchAll(/"([A-Za-z0-9_.\-]+\.wasm)"/g)) add(posix.join(dir, m[1]))
+    for (const m of text.matchAll(/"([A-Za-z0-9_.-]+\.wasm)"/g)) add(posix.join(dir, m[1]))
   } else if (ext === '.json') {
     try {
       const j = JSON.parse(text)
@@ -286,37 +287,8 @@ async function fetchOne(p) {
 await run()
 if (fetched) log(`启动层抓取完成：${fetched} 个文件，约 ${(bytes / 1048576).toFixed(1)} MB`)
 
-// ───────────── 三、写干净的 index.html（注入 base href，剔除污染）─────────────
-writeFileSync(
-  join(OUT, 'index.html'),
-  `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <title>PvZ2 Gardendless</title>
-  <meta name="viewport" content="width=device-width,user-scalable=no,initial-scale=1,minimum-scale=1,maximum-scale=1,minimal-ui=true" />
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="format-detection" content="telephone=no">
-  <base href="/web/PvZ2/">
-  <link rel="stylesheet" type="text/css" href="style.css" />
-</head>
-<body>
-  <div id="GameDiv" cc_exact_fit_screen="true">
-    <div id="Cocos3dGameContainer">
-      <canvas id="GameCanvas" tabindex="99"></canvas>
-    </div>
-  </div>
-
-  <script src="src/polyfills.bundle.js" charset="utf-8"></script>
-  <script src="src/system.bundle.js" charset="utf-8"></script>
-  <script src="src/import-map.json" type="systemjs-importmap" charset="utf-8"></script>
-  <script>System.import('./index.js').catch(function (err) { console.error(err); })</script>
-  <script src="tmpPatch.js" charset="utf-8"></script>
-</body>
-</html>
-`,
-)
+// 抓取和构建前修复共用同一模板，避免服务器上的忽略目录与 Git 中的规则再次漂移。
+writeCleanPvzgeIndex(OUT)
 log('已写入干净的 index.html（<base href="/web/PvZ2/">，已剔除 Cloudflare/GA 污染）')
 
 // ───────────── 四、审计：service worker / 外链 ─────────────

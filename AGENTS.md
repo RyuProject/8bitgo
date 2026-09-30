@@ -1026,6 +1026,13 @@ npm run audit:rom-langs -- --slug=pokemon-ruby   # 单款（清理时用）
 
 缓存：`cache.js` 里 `/web/` 走 `CACHE.engine`（固定 URL，既不永久缓存也不走兜底那一档）。
 
+⚠️ **PvZ2 Gardendless 是例外：`public/web/PvZ2/` 约 722MB，整目录被 Git 忽略。**
+生产机上的目录会跨 `git pull` 保留，所以旧 `index.html` 也不会自动更新；曾因此缺少
+`<base href="/web/PvZ2/">`，让 `npm run build` 在预检阶段退出，后面的服务重启根本没有执行。
+入口模板的唯一来源是 `scripts/lib/pvzge-index.mjs`。`prebuild` 会先跑 `pvzge:prepare`，只对
+已安装目录幂等重写这份小入口（不联网、不碰大资产），然后再由 `check-pvzge.mjs` 严格校验。
+没有安装过 PvZ2 时必须继续跳过，不能因普通构建创建一套只有 index.html 的残缺运行时。
+
 **当前内容：PvZ Portable（WASM 0.2.3）**。上游升级时保留这些本地集成：
 
 1. jszip 从 `cdn.jsdelivr.net` 改自托管 `jszip.min.js`（3.10.1，MIT，保留许可证头）——
