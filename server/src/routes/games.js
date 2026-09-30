@@ -11,6 +11,7 @@ import { queueGameSearchPush } from '../search-push.js'
 import {
   listGames,
   getGameBySlug,
+  getGameMediaBySlug,
   getGamesBySlugs,
   upsertGame,
   patchGame,
@@ -22,6 +23,7 @@ import {
   suggestGames,
   searchFallback,
 } from '../games-repo.js'
+import { createGameMediaProxy } from '../game-media.js'
 import { isTranslateConfigured, translateGateOk, translatePlan } from '../translate.js'
 import { gameDescriptionSource, renderField } from '../i18n-generate.js'
 import { takeAnonymous } from '../rateLimit.js'
@@ -37,6 +39,7 @@ import {
 } from '../volunteer-libraries.js'
 
 export const gamesRouter = Router()
+const gameMediaProxy = createGameMediaProxy({ loadGameMedia: getGameMediaBySlug })
 
 const truthy = (v) => v === '1' || v === 'true'
 
@@ -257,6 +260,12 @@ gamesRouter.get('/facets', async (_req, res, next) => {
     next(e)
   }
 })
+
+/**
+ * COEP 隔离页不能直接显示没有 CORP/CORS 头的第三方封面与视频。
+ * 目标地址只从 games 表读取，客户端不能把这个接口变成任意 URL 代理。
+ */
+gamesRouter.get('/:slug/media/:kind', gameMediaProxy)
 
 /**
  * 游玩前实时确认：这款游戏是不是成人游戏，以及**这个人**现在能不能玩。

@@ -70,7 +70,8 @@
     "test:backup": "node scripts/test-backup-script.mjs",
     "test:startup": "node scripts/test-startup-failure.mjs",
     "test:startup-metrics": "node scripts/test-startup-metrics.mjs",
-    "test:psp-conversion": "node scripts/test-psp-conversion.mjs"
+    "test:psp-conversion": "node scripts/test-psp-conversion.mjs",
+    "test:game-media": "node --test scripts/test-game-media.mjs"
   },
   "dependencies": {
     "@ip-location-db/geo-whois-asn-country-mmdb": "^2.3.2026061719",

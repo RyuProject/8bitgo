@@ -1722,6 +1722,10 @@ PPSSPP 的 pthread 仍然需要 `Cross-Origin-Opener-Policy: same-origin` 与
 ⚠️ 开了 `require-corp` 后，跨域封面、视频和 ROM 响应必须明确允许被隔离页加载。公开 R2 Worker
 除了 `Access-Control-Allow-Origin: *`，还必须发
 `Cross-Origin-Resource-Policy: cross-origin`；否则页面本身正常，封面/媒体却会被浏览器静默拦截。
+后台手填的第三方封面 / 视频通常不带这两个头，不能指望对方配合：`GameCover` 对完整外链统一改走
+`/api/games/:slug/media/:kind` 同源代理。代理目标必须按 slug + kind 回查数据库，并在每次跳转前挡住
+内网 / 保留地址；不准改成接收任意 `?url=` 的开放代理。视频 Range 必须透传，否则卡片循环预览会反复整包下载。
+回归：`npm run test:game-media`。
 隔离页也不加载字节的外部收录脚本，避免第三方响应缺 CORP 反复报错。改这套响应头后要同时部署
 站点和 `worker/standalone/rom-worker.js`，并清理 Cloudflare 已缓存的 PSP 详情页 HTML；旧缓存没有
 COOP/COEP，前端再新也拿不到 `SharedArrayBuffer`。

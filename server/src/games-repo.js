@@ -485,6 +485,14 @@ export async function getGameBySlug(slug) {
   return lastCommentAt ? { ...g, lastCommentAt } : g
 }
 
+/**
+ * 外链媒体代理只需要这两列。不能复用 getGameBySlug：那会为了每张侧栏封面再查三张关联表
+ * 和最新评论时间，媒体还没开始传，数据库已经先做了一圈完全用不上的工作。
+ */
+export function getGameMediaBySlug(slug) {
+  return queryOne('SELECT cover, video, hidden FROM games WHERE slug = ? LIMIT 1', [slug])
+}
+
 /** 按一组 slug 取游戏，返回顺序与传入的 slugs 一致（用于收藏 / 最近列表） */
 export async function getGamesBySlugs(slugs) {
   if (!slugs.length) return []

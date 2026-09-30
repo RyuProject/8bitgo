@@ -38,6 +38,7 @@
     "test:age": "node scripts/test-age-gate.mjs",
     "test:cover": "node scripts/test-cover-resize.mjs",
     "test:cover-thumb": "node scripts/test-cover-thumb.mjs",
+    "test:game-media": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-game-media-url.mjs && npm --prefix server run test:game-media",
     "test:dos-backend": "node scripts/test-dos-backend.mjs",
     "test:dos-sockdrive-upload": "node scripts/test-sockdrive-upload.mjs",
     "test:dospad": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-dos-pad.mjs",

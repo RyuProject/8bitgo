@@ -221,6 +221,35 @@ export function romUrlForKey(key: string, base = getRomBase()): string {
   return useBase ? `${useBase}/${encodeKey(key)}` : ''
 }
 
+export type GameMediaKind = 'cover' | 'video'
+
+/** 给外链媒体代理生成短版本戳；后台换 URL 后边缘缓存会自然换一条。 */
+function mediaVersion(value: string): string {
+  let hash = 2166136261
+  for (let index = 0; index < value.length; index++) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(36)
+}
+
+/**
+ * 游戏封面 / 视频专用地址。
+ *
+ * R2 key 与站内路径仍直连；完整外链改走按 slug 回查数据库的同源接口。
+ * 这样普通页面与 PSP 的 COEP 隔离页面得到同一份 SSR 标记，不会在 hydrate 前先发起一轮
+ * 注定被浏览器拦掉的第三方请求，也不用把任意目标 URL 暴露给一个开放代理。
+ */
+export function gameMediaUrl(
+  game: { slug: string; cover?: string; video?: string },
+  kind: GameMediaKind,
+): string {
+  const value = String(game[kind] || '').trim()
+  if (!value) return ''
+  if (!/^https?:\/\//i.test(value)) return romUrlForKey(value)
+  return `/api/games/${encodeURIComponent(game.slug)}/media/${kind}?v=${mediaVersion(value)}`
+}
+
 const IMAGE_EXT_RE = /\.(png|jpe?g|webp|avif)$/i
 
 /**
