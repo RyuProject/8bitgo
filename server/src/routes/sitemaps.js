@@ -4,6 +4,16 @@ import { localizedPublicUrl, publicSiteUrl, sitemapImagePublicUrl } from '../sit
 import { SITE_DEFAULT_LANGUAGE, SITE_LANGUAGES } from '../../../shared/site-languages.js'
 import { ENABLED_PLATFORM_IDS, GENRE_IDS } from '../../../shared/site-taxonomy.js'
 
+/**
+ * 只收前台真能打开的平台。GameDetailPage 对不在 ENABLED_PLATFORM_IDS 里的平台直接回 404，
+ * 以前 sitemap 只按 hidden = 0 过滤 —— 下线平台（n64 / segaMD / ws …）上的游戏被主动提交给
+ * 搜索引擎，抓回来全是 404，Search Console 里堆一片「已提交的网址返回 404」。
+ * 名单是代码里的常量，不来自请求，直接拼进 SQL 是安全的（仍按字面量转义一遍）。
+ */
+const ENABLED_PLATFORM_SQL = ENABLED_PLATFORM_IDS.length
+  ? ` AND platform IN (${ENABLED_PLATFORM_IDS.map((id) => `'${String(id).replace(/[^a-z0-9_-]/gi, '')}'`).join(', ')})`
+  : ''
+
 const XML_HEADER = '<?xml version="1.0" encoding="UTF-8"?>'
 const languageCodes = new Set(SITE_LANGUAGES.map((item) => item.code))
 
@@ -205,8 +215,8 @@ export async function gameSitemap(req, res, next) {
     }
     const { rows, gate } = await sitemapRows(
       'games',
-      'SELECT slug, cover, added_at, created_at, updated_at, description, description_en, description_i18n FROM games WHERE hidden = 0 ORDER BY id ASC',
-      'SELECT slug, cover, added_at, created_at, updated_at, description FROM games WHERE hidden = 0 ORDER BY id ASC',
+      `SELECT slug, cover, added_at, created_at, updated_at, description, description_en, description_i18n FROM games WHERE hidden = 0${ENABLED_PLATFORM_SQL} ORDER BY id ASC`,
+      `SELECT slug, cover, added_at, created_at, updated_at, description FROM games WHERE hidden = 0${ENABLED_PLATFORM_SQL} ORDER BY id ASC`,
     )
     res.setHeader('Cache-Control', CACHE.meta)
     res.setHeader('Vary', 'Accept-Encoding')
@@ -462,8 +472,8 @@ async function langsWithContent() {
     const [g, p] = await Promise.all([
       sitemapRows(
         'index-games',
-        'SELECT description, description_en, description_i18n FROM games WHERE hidden = 0',
-        'SELECT slug, description FROM games WHERE hidden = 0',
+        `SELECT description, description_en, description_i18n FROM games WHERE hidden = 0${ENABLED_PLATFORM_SQL}`,
+        `SELECT slug, description FROM games WHERE hidden = 0${ENABLED_PLATFORM_SQL}`,
       ),
       sitemapRows(
         'index-posts',
@@ -489,7 +499,7 @@ async function langsWithContent() {
 export async function sitemapIndex(_req, res, next) {
   try {
     const [gameRows, postRows, collectionRows, langs] = await Promise.all([
-      query('SELECT MAX(COALESCE(updated_at, created_at, added_at)) AS latest FROM games WHERE hidden = 0'),
+      query(`SELECT MAX(COALESCE(updated_at, created_at, added_at)) AS latest FROM games WHERE hidden = 0${ENABLED_PLATFORM_SQL}`),
       query('SELECT MAX(COALESCE(updated_at, created_at)) AS latest FROM posts WHERE published = 1'),
       query('SELECT COUNT(*) AS n, MAX(COALESCE(updated_at, created_at)) AS latest FROM collections WHERE hidden = 0'),
       langsWithContent(),

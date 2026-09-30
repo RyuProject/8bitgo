@@ -16,7 +16,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { SITE_DEFAULT_LANGUAGE, SITE_LANGUAGES } from '../shared/site-languages.js'
 import { normalizeUrl } from '../server/src/url-normalize.js'
-import { tvAllowedPaths, tvRobots, tvRobotsTxt } from '../server/src/tv-robots.js'
+import { TV_RENDER_ASSET_PREFIXES, tvAllowedPaths, tvRobots, tvRobotsTxt } from '../server/src/tv-robots.js'
 
 const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
 const ROBOTS = path.join(root, 'public/robots.txt')
@@ -152,6 +152,8 @@ check('接口被挡住 —— 爬虫不能再来挂 SSE 长连接（09-09 压垮
   assertBlocked('/api/live/events')
   assertBlocked('/api/netplay/events')
   assertBlocked('/api/games')
+  assertBlocked('/api/games/kof97')
+  assertBlocked('/api/games/kof97/translate-description')
   // 接口没有语言前缀，所以只需要一条 `/api/`；顺手确认没人「好心」补成 8 条通配。
   for (const prefix of langPrefixes.filter(Boolean)) assertAllowed(`${prefix}/games`)
 })
@@ -163,6 +165,12 @@ check('屏蔽 /api 不能误伤 sitemap 与站内内容页', () => {
   // `/api` 是前缀匹配：真出现一款 slug 以 api 开头的游戏，它在 /games/ 底下，挡不到
   assertAllowed('/games/api-quest')
   assertAllowed('/en/games/apidya')
+})
+
+check('外链封面 / 视频的同源代理必须可抓（否则主图进不了图片搜索）', () => {
+  assertAllowed('/api/games/kof97/media/cover?v=abc')
+  assertAllowed('/api/games/kof97/media/video')
+  assertBlocked('/api/netplay/media/x')
 })
 
 check('没有任何一条规则使用「/*/」这种会吃掉整段路径的通配写法', () => {
@@ -240,6 +248,10 @@ function run(method, originalUrl, host) {
   })
 
   check('⚠️ 除了各语言的根，其余一律不收（否则整站被抓两遍）', () => {
+    // 渲染 TV 根页面要用的脚本、样式、字体、图标必须可抓，否则 Google 渲染出白页
+    for (const p of ['/assets/index-abc.js', '/assets/index-abc.css', '/fonts/x.woff2', '/ui/logo.png', '/favicon.svg']) {
+      assert.ok(tvDecide(p).allowed, `TV 子域上 ${p} 被挡住了`)
+    }
     for (const p of ['/games', '/games/contra', '/ja/games/contra', '/platforms', '/genres', '/tv', '/ja/tv']) {
       const d = tvDecide(p)
       assert.ok(!d.allowed, `${p} 在子域上被放行了（命中 ${d.rule}）`)
@@ -251,7 +263,8 @@ function run(method, originalUrl, host) {
       `Allow: /` 是**前缀**匹配，会把整个子域重新放开，这份 robots 就白写了；
       `Allow: /ja` 同理会连 /ja/games/contra 一起放行。
     */
-    const bad = tvRules.filter((r) => r.allow && !r.pattern.endsWith('$'))
+    // 例外：渲染资源前缀（/assets/ 等）本来就要前缀匹配，它们不是页面，不会放出重复页
+    const bad = tvRules.filter((r) => r.allow && !r.pattern.endsWith('$') && !TV_RENDER_ASSET_PREFIXES.includes(r.pattern))
     assert.deepEqual(bad.map((r) => r.pattern), [], '这些 Allow 没有结尾锚')
     assert.ok(tvRules.some((r) => !r.allow && r.pattern === '/'), '缺少兜底的 Disallow: /')
   })

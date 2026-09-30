@@ -5,6 +5,7 @@ import { watchPresence, clientIpFrom, UNKNOWN_PRESENCE } from './presence.js'
 import { admitSse } from './sseGuard.js'
 import { resolveGameRoomPolicy } from './netplay-game-policy.js'
 import { NETPLAY_MAX_PLAYERS, normalizeGamePlayers } from '../../shared/netplay-players.js'
+import { guardSocketArgs } from './socket-guard.js'
 
 /**
  * P2P 联机信令服务器（EmulatorJS netplay）+ 房主迁移。
@@ -590,6 +591,8 @@ export function attachNetplay(httpServer, app, origins = ['*'], { resolveGamePol
   nspRef = nsp
 
   nsp.on('connection', (socket) => {
+    // 客户端能在 ack 位置塞非函数值，同步 handler 抛错会打挂整个进程，见 socket-guard.js
+    guardSocketArgs(socket)
     /**
      * 握手时就把设备和国家定下来，RTT 交给心跳持续更新。
      * 一条连接建一次就够 —— 同一个人开房、进房、换角色都复用这一张名片。
@@ -610,6 +613,11 @@ export function attachNetplay(httpServer, app, origins = ['*'], { resolveGamePol
        * 在控制台把 2 改成 4 就能绕过后台。game_slug 由我们的适配器补入，再与数字 game_id
        * 交叉核对，不能拿另一款四人游戏的 slug 给当前游戏套额度。
        */
+      // 查库之前先挡掉「已在房间 / 正在开房」：否则一条 socket 每秒刷几千次 open-room，
+      // 每次都排进 10 连接的 MySQL 池（队列无上限），全站 SSR / API 查询都被堵在后面。
+      if (socketRoom.has(socket.id)) return ack?.('already in a room')
+      if (socket.data.netplayOpening) return ack?.('room is opening')
+      socket.data.netplayOpening = true
       let gamePolicy
       try {
         gamePolicy = await resolveGamePolicy({
@@ -620,6 +628,8 @@ export function attachNetplay(httpServer, app, origins = ['*'], { resolveGamePol
       } catch (error) {
         console.error('[netplay] 读取游戏最大玩家数失败：', error)
         return ack?.('game lookup failed')
+      } finally {
+        socket.data.netplayOpening = false
       }
       const authoritativeMax = normalizeGamePlayers(gamePolicy?.maxPlayers)
       if (!gamePolicy || authoritativeMax < 2) {

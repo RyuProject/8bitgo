@@ -7,6 +7,7 @@ import { openConfig } from './open/config.js'
 import { verifyLivePublisherToken } from './open/live-publisher.js'
 import { dateOnly, dbFlag } from './mappers.js'
 import { isAdultByBirthDate } from '../../shared/age.js'
+import { guardSocketArgs } from './socket-guard.js'
 import {
   CHAT_ACK_EMPTY,
   CHAT_ACK_FAILED,
@@ -892,6 +893,8 @@ export function attachLive(io, options = {}) {
   })
 
   nsp.on('connection', (socket) => {
+    // 客户端能在 ack 位置塞非函数值，同步 handler 抛错会打挂整个进程，见 socket-guard.js
+    guardSocketArgs(socket)
     /**
      * 客户端的 ack 可能在网络切换时丢掉，而服务端其实已经完成了开播/续播。
      * 同一条 socket 再问时要把原结果补回去，不能只回 already in a room ——

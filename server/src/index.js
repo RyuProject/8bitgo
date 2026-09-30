@@ -342,7 +342,12 @@ if (ssrAvailable()) {
    * 不能加到整站：主站的跨源字体、封面和统计脚本会被 COEP 拦掉。
    * 这条在静态中间件之前，避免同名 HTML 绕开所需响应头。
    */
-  app.get(['/linux', '/linux.html'], (_req, res) => {
+  // /linux.html 与 /linux 是同一页，301 收成一个 URL，避免重复页
+  app.get('/linux.html', (req, res) => {
+    const qs = req.originalUrl.includes('?') ? req.originalUrl.slice(req.originalUrl.indexOf('?')) : ''
+    res.set('Cache-Control', CACHE.meta).redirect(301, `/linux${qs}`)
+  })
+  app.get('/linux', (_req, res) => {
     res.set({
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Embedder-Policy': 'require-corp',
@@ -531,7 +536,9 @@ if (ssrAvailable()) {
   })
 
   // 除 /api 外的所有 GET 都交给 SSR（/admin 也走，但它本身是 noindex 的后台）
-  app.get(/^(?!\/api\/).*/, renderPage)
+  // /netplay/list 是 EmulatorJS 联机菜单读房间列表的 JSON 接口，由 attachNetplay 在后面注册；
+  // 不排除的话这里先把它渲染成 HTML 页，引擎自带的房间列表永远是空的
+  app.get(/^(?!\/api\/|\/netplay\/list$).*/, renderPage)
 
   console.log('[ssr] 已启用服务端渲染')
 } else {

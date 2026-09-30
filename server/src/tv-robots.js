@@ -41,6 +41,9 @@ export function tvAllowedPaths() {
   ]
 }
 
+/** TV 根页面渲染所需的静态资源前缀（都是内容寻址或纯资源，不是页面，放开不会产生重复页） */
+export const TV_RENDER_ASSET_PREFIXES = ['/assets/', '/fonts/', '/ui/', '/favicon']
+
 export function tvRobotsTxt() {
   const lines = [
     '# tv.8bitgo.com —— 电视 / 车机专用入口。',
@@ -50,6 +53,9 @@ export function tvRobotsTxt() {
     'Disallow: /',
     // $ 是结尾锚，少了它就是前缀匹配，等于整站放开
     ...tvAllowedPaths().map((p) => `Allow: ${p}$`),
+    // 语言根是要收录的，而 Google 要跑 JS / CSS 才渲染得出这一页（TV 页数据在客户端取）。
+    // 以前 Disallow: / 把 /assets 的脚本样式、字体、界面图一起挡了，Google 渲染出来是一张白纸
+    ...TV_RENDER_ASSET_PREFIXES.map((p) => `Allow: ${p}`),
     '',
   ]
   return lines.join('\n')

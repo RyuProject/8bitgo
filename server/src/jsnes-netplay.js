@@ -40,10 +40,17 @@ function makeRoomId() {
 }
 
 export function attachJsnesNetplay(httpServer, app, _origins = ['*']) {
-  const wss = new WebSocketServer({ noServer: true })
+  // maxPayload：ws 默认 100 MiB，信令最大也就几 KB 的 SDP，给 64 KB 足够
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 })
 
   /** roomId -> { hostId, players: Map<connId, {seat}>, createdAt } */
   const rooms = new Map()
+  /**
+   * connId -> ws。ws 8 的 wss.clients 是 **Set**（元素就是连接本身），不是 Map ——
+   * 以前写成 `for (const [id, sock] of wss.clients)`，访客一进房就抛 “is not iterable”，
+   * 这个异常发生在 ws 的 message 监听里没人接，直接打挂整个 Node 进程。
+   */
+  const conns = new Map()
 
   // 只接管 /jsnes-netplay 的 upgrade，其余（socket.io / IPX / SFS）一律放过
   httpServer.on('upgrade', (req, socket, head) => {
@@ -54,7 +61,12 @@ export function attachJsnesNetplay(httpServer, app, _origins = ['*']) {
       return
     }
     if (pathname !== '/jsnes-netplay') return
-    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
+    try {
+      wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
+    } catch (e) {
+      console.warn('[jsnes-netplay] upgrade 失败：', e?.message || e)
+      socket.destroy()
+    }
   })
 
   const send = (ws, obj) => {
@@ -72,8 +84,18 @@ export function attachJsnesNetplay(httpServer, app, _origins = ['*']) {
     ws.roomId = null
     ws.sigWindow = 0
     ws.sigCount = 0
+    conns.set(ws.id, ws)
 
     ws.on('message', (raw) => {
+      // 任何异常都不能冒出 ws 的监听器：那里没人 catch，会直接变成 uncaughtException
+      try {
+        onMessage(raw)
+      } catch (e) {
+        console.warn('[jsnes-netplay] 处理消息失败：', e?.message || e)
+      }
+    })
+
+    function onMessage(raw) {
       let msg
       try {
         msg = JSON.parse(raw.toString())
@@ -83,6 +105,8 @@ export function attachJsnesNetplay(httpServer, app, _origins = ['*']) {
       if (!msg || typeof msg !== 'object') return
 
       if (msg.type === 'host') {
+        // 先退出旧房间：否则同一条连接连发 host 就能把 MAX_ROOMS 占满
+        if (ws.roomId) leave(ws)
         if (rooms.size >= MAX_ROOMS) return send(ws, { type: 'error', reason: 'server is full' })
         let roomId = makeRoomId()
         while (rooms.has(roomId)) roomId = makeRoomId()
@@ -100,30 +124,30 @@ export function attachJsnesNetplay(httpServer, app, _origins = ['*']) {
         const room = rooms.get(roomId)
         if (!room) return send(ws, { type: 'error', reason: 'room not found' })
         if (!room.hostId) return send(ws, { type: 'error', reason: 'room not found' })
+        if (ws.roomId === roomId) return
         if (room.players.size >= 2) return send(ws, { type: 'error', reason: 'room is full' })
+        if (ws.roomId) leave(ws)
         room.players.set(ws.id, { seat: 1 })
         ws.roomId = roomId
         // 通知房主：有人来了，可以开始协商
-        for (const [id, sock] of wss.clients) {
-          if (id === room.hostId) send(sock, { type: 'peer-joined', guest: ws.id })
-        }
+        const host = conns.get(room.hostId)
+        if (host) send(host, { type: 'peer-joined', guest: ws.id })
         send(ws, { type: 'joined', you: ws.id, roomId, host: room.hostId, seat: 1 })
         return
       }
 
       if (msg.type === 'signal') {
-        if (!msg.to || typeof msg.data !== 'object') return
+        if (typeof msg.to !== 'string' || !msg.data || typeof msg.data !== 'object') return
         const now = Date.now()
         if (now - ws.sigWindow > 1000) {
           ws.sigWindow = now
           ws.sigCount = 0
         }
         if (++ws.sigCount > SIGNALS_PER_SEC) return
-        for (const [id, sock] of wss.clients) {
-          if (id === msg.to) {
-            send(sock, { type: 'signal', from: ws.id, data: msg.data })
-            break
-          }
+        // 只转发给同一房间的对端，不能拿信令去骚扰任意连接
+        const peer = conns.get(msg.to)
+        if (peer && ws.roomId && peer.roomId === ws.roomId) {
+          send(peer, { type: 'signal', from: ws.id, data: msg.data })
         }
         return
       }
@@ -132,10 +156,18 @@ export function attachJsnesNetplay(httpServer, app, _origins = ['*']) {
         leave(ws)
         return
       }
-    })
+    }
 
-    ws.on('close', () => leave(ws))
-    ws.on('error', () => leave(ws))
+    const onGone = () => {
+      try {
+        leave(ws)
+      } catch (e) {
+        console.warn('[jsnes-netplay] 清理连接失败：', e?.message || e)
+      }
+      conns.delete(ws.id)
+    }
+    ws.on('close', onGone)
+    ws.on('error', onGone)
   })
 
   function leave(ws) {
@@ -151,14 +183,15 @@ export function attachJsnesNetplay(httpServer, app, _origins = ['*']) {
       return
     }
     // 通知剩下的那个人：对端走了
-    for (const [id, sock] of wss.clients) {
-      if (room.players.has(id)) send(sock, { type: 'peer-left' })
+    for (const id of room.players.keys()) {
+      const sock = conns.get(id)
+      if (sock) send(sock, { type: 'peer-left' })
     }
     if (wasHost) {
       // 房主走了，房间直接散（jsnes 没有 EmulatorJS 那样的「房主迁移」需求：
       // 输入是逐帧锁步，接手的人状态对不上反而更乱）
       rooms.delete(roomId)
-      for (const [, sock] of wss.clients) {
+      for (const sock of conns.values()) {
         if (sock.roomId === roomId) {
           sock.roomId = null
           send(sock, { type: 'peer-left' })

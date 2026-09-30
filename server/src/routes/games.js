@@ -443,6 +443,11 @@ gamesRouter.post('/:slug/translate-description', async (req, res, next) => {
     // 让前端按"按钮可点但报失败"反而是把诊断难度推给访客。
     const game = await getGameBySlug(req.params.slug)
     if (!game) return res.status(404).json({ error: '游戏不存在' })
+    // 下架游戏对匿名访客必须和不存在一样：否则这条接口能读出下架游戏的简介、探测隐藏 slug
+    // （posts 的 translate 已经修过同一个问题，见 posts.js）
+    if (game.hidden && !(await hasAbility(req, 'content:edit'))) {
+      return res.status(404).json({ error: '游戏不存在' })
+    }
 
     // 源文按目标语言挑：繁体优先中文原文（本地 OpenCC，不需要密钥），
     // 其余语言优先英文简介。见 i18n-generate.js 的注释

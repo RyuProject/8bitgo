@@ -178,6 +178,32 @@ export async function renderPage(req, res, next) {
     const [pathname, qs] = url.split('?')
     const isolatedPlay = isIsolatedPlayPath(pathname)
     const data = await loadForRoute(stripLang(pathname), new URLSearchParams(qs ?? ''))
+
+    /*
+      游戏 slug 大小写 / 重音 / 尾随空格不同也能查到（slug 列是 utf8mb4_unicode_ci），
+      /games/METAL-SLUG-3 与 /games/metal-slug-3 都回 200 就是一对重复页、分走外链权重。
+      统一 301 到数据库里的真 slug（语言前缀和查询串原样保留）。
+    */
+    if (data?.route === 'game' && data.game?.slug) {
+      const bare = stripLang(pathname)
+      const seg = bare.split('/').filter(Boolean)
+      if (seg[0] === 'games' && seg.length === 2) {
+        let requested = null
+        try {
+          requested = decodeURIComponent(seg[1])
+        } catch {
+          /* 解不开的前面已按 404 处理，走不到这里 */
+        }
+        if (requested !== null && requested !== data.game.slug) {
+          // 前缀只从白名单语言里取，不能拿原始 pathname 切：`//games/x` 这类路径切出来的
+          // 前缀会拼成协议相对地址，变成开放重定向
+          const first = pathname.split('/').filter(Boolean)[0]
+          const prefix = LANG_SEG.has(first) ? `/${first}` : ''
+          const target = `${prefix}/games/${encodeURIComponent(data.game.slug)}${qs ? `?${qs}` : ''}`
+          return res.set('Cache-Control', CACHE.meta).redirect(301, target)
+        }
+      }
+    }
     /**
      * PSP 不再跳到铺满视口的精简页：正常详情页本身就是顶层隔离文档，
      * 所以玩家按“开始”后仍留在播放器、标题、资料与侧栏同在的页面里。

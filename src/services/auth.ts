@@ -527,11 +527,15 @@ export function startOAuthLogin(provider: OAuthProvider, returnTo?: string): voi
 export async function completeOAuthLogin(token: string, cst: string): Promise<PublicUser> {
   const expected = readOnce(OAUTH_STATE_KEY)
   /**
-   * 存过就必须对得上 —— 这是「这次登录确实是本浏览器发起的」唯一证据，
-   * 少了它，别人可以把自己的登录结果塞给你（登录 CSRF）。
-   * 没存过（无痕模式）只能放行，否则那批人永远登不进来。
+   * 必须存过、且对得上 —— 这是「这次登录确实是本浏览器发起的」唯一证据。
+   *
+   * ⚠️ 以前「没存过就放行」：sessionStorage 按标签页隔离，任何一个没发起登录的新标签页
+   * expected 都是空的。攻击者把 `/auth/callback#token=<自己的JWT>&cst=x` 发给受害者，
+   * 受害者一点就被静默换成攻击者的账号，之后的云存档、收藏、私信都进了攻击者能看的账号
+   * （登录 CSRF / 会话固定）。现代浏览器的无痕模式都支持 sessionStorage，这条放行
+   * 实际只在帮攻击者，所以一律拒绝。
    */
-  if (expected && expected !== cst) throw new Error(getT().errors.oauthStateMismatch)
+  if (!expected || expected !== cst) throw new Error(getT().errors.oauthStateMismatch)
   if (!token) throw new Error(getT().errors.oauthNoToken)
   setToken(token)
   try {

@@ -26,6 +26,7 @@ import {
   taxonomyDetailUrls,
 } from '../src/indexnow.js'
 import { taxonomyRows } from '../src/routes/sitemaps.js'
+import { isPlatformEnabledId } from '../../shared/site-taxonomy.js'
 
 const argv = process.argv.slice(2)
 const KINDS = ['games', 'posts', 'taxonomy', 'collections']
@@ -43,11 +44,13 @@ try {
   const groups = []
 
   if (wants('games')) {
-    const rows = await query('SELECT slug, description, description_en, description_i18n FROM games WHERE hidden = 0 ORDER BY id ASC')
+    const rows = await query('SELECT slug, platform, description, description_en, description_i18n FROM games WHERE hidden = 0 ORDER BY id ASC')
+    // 下线平台的详情页是 404，不能提交（见 routes/sitemaps.js 的 ENABLED_PLATFORM_SQL）
+    const enabledRows = rows.filter((row) => isPlatformEnabledId(String(row.platform)))
     groups.push({
       label: '游戏详情页',
-      items: rows.length,
-      urls: rows.flatMap((row) => gameDetailUrls(row.slug, siteUrl, gameContentLanguages(row))),
+      items: enabledRows.length,
+      urls: enabledRows.flatMap((row) => gameDetailUrls(row.slug, siteUrl, gameContentLanguages(row))),
     })
   }
 

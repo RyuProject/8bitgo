@@ -88,6 +88,13 @@ export function staticCacheHeaders(res, filePath) {
   const p = filePath.replace(/\\/g, '/')
   const set = (v) => res.setHeader('Cache-Control', v)
 
+  /*
+    不该被收录的静态 HTML：`__*.html` 是本地复现用的调试页（标题是中文调试说明），
+    flash-frame.html 是播放器 iframe 的空壳。express.static 直接回 200、没有 robots 信号，
+    爬虫顺着任何外链就能把它们当正常页面收录。
+  */
+  if (/\/(?:__[^/]*|flash-frame)\.html$/i.test(p)) res.setHeader('X-Robots-Tag', 'noindex, nofollow')
+
   // /play-local 是跨源隔离文档，它内嵌这个同源页时，子文档也必须声明
   // COEP。否则 Chromium 不报 SWF 错误，而是直接把 iframe 换成 chrome-error 黑屏。
   if (p.endsWith('/flash-frame.html')) {

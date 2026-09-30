@@ -64,7 +64,8 @@ export function GamesPage() {
   const coin = params.get('coin') === '1'
   const sortParam = params.get('sort') as SortKey | null
   const sort: SortKey = sortParam && SORT_KEYS.includes(sortParam) ? sortParam : 'popular'
-  const page = Math.max(1, Number(params.get('page') ?? 1) || 1)
+  // 取整：?page=2.5 不该算一个独立页面（后端也按整数分页）
+  const page = Math.max(1, Math.trunc(Number(params.get('page') ?? 1)) || 1)
   const activeFilterCount = [platformId, genreId, developer, multiplayer, coin, q].filter(Boolean).length
   // 手机首屏优先把游戏露出来；从带筛选的分享链接进入时默认展开，避免条件被藏住。
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(activeFilterCount > 0)
@@ -163,14 +164,20 @@ export function GamesPage() {
    * 不同切片，组合数是乘积级的，内链层也只给裸的 `?page=` 输出 href。
    */
   const plainList = !q && !platformId && !genreId && !developer && !multiplayer && !coin && sort === 'popular'
-  const paged = plainList && page > 1
+  /**
+   * SEO 用后端夹过的页码：/games?page=9999 后端回的是最后一页，
+   * 用 URL 里的 9999 当 canonical 会生成无穷多个自称 canonical 的重复页（标题还是「第 9999 / 9 页」）。
+   * 这样越界页 canonical 到真实的最后一页。
+   */
+  const seoPage = list?.page ?? page
+  const paged = plainList && seoPage > 1
   const totalPages = list?.totalPages ?? 1
 
   useSeo({
     // 第 2 页起标题带上页码，避免多页共用同一个 title
-    title: paged ? `${title}${fmt(t.games.pageOf, { page, total: totalPages })}` : title,
+    title: paged ? `${title}${fmt(t.games.pageOf, { page: seoPage, total: totalPages })}` : title,
     description: t.seo.games,
-    canonicalPath: paged ? `/games?page=${page}` : '/games',
+    canonicalPath: paged ? `/games?page=${seoPage}` : '/games',
     // 站内搜索结果没有收录价值（内容随关键词无限组合），但仍允许抓取，
     // 这样 canonical 能被读到，首页 JSON-LD 里的站内搜索框也才验证得过
     noindex: Boolean(q),

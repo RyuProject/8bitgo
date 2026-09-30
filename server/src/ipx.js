@@ -13,6 +13,7 @@
  * ⚠️ 端口 1900 是 js-dos 写死的（它连的是 `<address>:1900/ipx/<room>`），不能改。
  */
 import { WebSocketServer } from 'ws'
+import { clientIpFrom } from './presence.js'
 
 const IPX_PORT = 1900
 const IPX_PATH = '/ipx/'
@@ -100,8 +101,13 @@ const MAX_TOTAL = 200
 /** 每个 IP 当前挂着几条。close 时减回去 */
 const perIp = new Map()
 
+/**
+ * 生产环境前面挂着 nginx，直连地址永远是 127.0.0.1 —— 以前直接用 remoteAddress，
+ * 「每 IP 8 条」实际变成了「全站 8 条」，谁开 8 条空连接就能把所有人挡在 DOS 联机外面。
+ * 统一走 presence.js 的 clientIpFrom（只在直连是内网地址时才信 X-Forwarded-For）。
+ */
 function ipOf(req) {
-  return String(req.socket?.remoteAddress || '').replace(/^::ffff:/i, '')
+  return clientIpFrom(req.socket?.remoteAddress, req.headers || {})
 }
 
 function totalConnections() {
@@ -116,7 +122,13 @@ export function attachIpxToServer(httpServer, { publicHost = 'ipx' } = {}) {
 
   httpServer.on('upgrade', (req, socket, head) => {
     if (!(req.url || '').startsWith(IPX_PATH)) return // 交给别的监听者（socket.io）
-    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
+    // upgrade 监听里抛出的异常没人接，会直接打挂进程
+    try {
+      wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
+    } catch (e) {
+      console.warn('[ipx] upgrade 失败：', e?.message || e)
+      socket.destroy()
+    }
   })
 
   wire(wss, `${publicHost}:${IPX_PORT}`)
@@ -138,7 +150,14 @@ function wire(wss, serverAddress) {
     const parts = (req.url || '').split('/')
     // 路径必须是 /ipx/<room>
     if (parts[1] !== 'ipx' || !parts[2]) return ws.close()
-    const room = decodeURIComponent(parts[2])
+    // 畸形百分号编码（/ipx/%E0%A4%A）会让 decodeURIComponent 抛 URIError；
+    // 这里是 ws 在 upgrade 事件里同步调用的，抛出去就是 uncaughtException → 进程退出
+    let room
+    try {
+      room = decodeURIComponent(parts[2])
+    } catch {
+      return ws.close()
+    }
     // 房间名来自 URL，不限长的话 rooms 的 key 可以被撑到任意大
     if (room.length > MAX_ROOM_NAME) return ws.close()
 

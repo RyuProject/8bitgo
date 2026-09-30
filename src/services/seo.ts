@@ -632,6 +632,8 @@ export interface GameSchemaInput {
   ratingCount?: number
   /** 当前 URL 回退到其它语言正文时，结构化数据里的 URL 也必须跟 canonical 走。 */
   language?: Lang
+  /** 支持多人（games.multiplayer）。决定 playMode 是否带 MultiPlayer */
+  multiplayer?: boolean
 }
 
 /**
@@ -650,11 +652,10 @@ export function videoGameSchema(g: GameSchemaInput) {
     '@type': 'VideoGame',
     name: g.name,
     url: langUrl(`/games/${g.slug}`, g.language),
-    playMode: 'SinglePlayer',
-    applicationCategory: 'Game',
-    // 浏览器里直接运行
-    operatingSystem: 'Web Browser',
-    offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD', availability: 'https://schema.org/InStock' },
+    // playMode 的取值是 GamePlayMode 枚举的 URL，不是裸字符串；多人游戏如实标上 MultiPlayer
+    playMode: g.multiplayer
+      ? ['https://schema.org/SinglePlayer', 'https://schema.org/MultiPlayer']
+      : 'https://schema.org/SinglePlayer',
   }
   if (g.description) schema.description = g.description
   // 同 og:image：封面存的是对象 key，得先拼成公开地址（拼不出来就不输出这个字段）
@@ -680,6 +681,16 @@ export function videoGameSchema(g: GameSchemaInput) {
       bestRating: 5,
       worstRating: 1,
     }
+    /*
+      带 applicationCategory / operatingSystem / offers 的 VideoGame 会被 Google 按「软件应用」
+      富媒体结果校验，而那一类**必须**有 aggregateRating 或 review。以前三项无条件输出，
+      评分不够 5 人的游戏（几乎全部）在 Search Console 里都是「无效项」。
+      所以只在真有评分时才补上软件应用字段；平时就是一个干净的 VideoGame。
+    */
+    schema.applicationCategory = 'GameApplication'
+    // 浏览器里直接运行
+    schema.operatingSystem = 'Web Browser'
+    schema.offers = { '@type': 'Offer', price: '0', priceCurrency: 'USD', availability: 'https://schema.org/InStock' }
   }
   return schema
 }

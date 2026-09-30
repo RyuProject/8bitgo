@@ -89,6 +89,12 @@ Disallow: /ja/login$
 #
 #   robots.txt 只是第一道：它不是强制的，Bytespider 那类根本不读。第二道在
 #   `server/src/sseGuard.js`（按 UA 拒 + 并发上限 + 最长存活时间）。
+#
+#   ⚠️ 例外：外链封面 / 视频经 `/api/games/<slug>/media/<cover|video>` 同源代理输出
+#   （src/services/roms.ts 的 gameMediaUrl）。挡住它等于详情页、列表页的主图对
+#   Googlebot / Googlebot-Image 全部不可见，进不了图片搜索，渲染出来也缺主图。
+#   Google / Bing 按最长规则裁决，这条 Allow 比 `/api/` 长，且通配只在 /api/games/ 之内。
+Allow: /api/games/*/media/
 Disallow: /api/
 
 # ── 筛选与搜索 ──────────────────────────────────────────────

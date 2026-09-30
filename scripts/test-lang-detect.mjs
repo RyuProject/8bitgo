@@ -112,6 +112,10 @@ check('爬虫 -> 不动（保住每种语言各自被收录）', () => {
     'Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)',
     'Mozilla/5.0 (compatible; Baiduspider/2.0; +http://www.baidu.com/search/spider.html)',
     'Mozilla/5.0 (compatible; YandexBot/3.0)',
+    // Search Console 网址检查的实时测试、Google 其它抓取器 —— UA 里没有 bot 字样
+    'Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36 (compatible; Google-InspectionTool/1.0;)',
+    'Mozilla/5.0 (compatible; GoogleOther)',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 (compatible; Google-Read-Aloud; +https://support.google.com/webmasters/answer/1061943)',
   ]
   for (const ua of bots) assert.equal(run({ path: '/', langs: ['en'], ua }), null, ua.slice(0, 40))
 })

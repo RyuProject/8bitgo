@@ -272,6 +272,9 @@ export function GameDetailPage() {
     game
       ? {
           title: fmt(t.game.docTitle, { title: seoDocumentTitle }),
+          // canonical 钉死数据库里的真 slug：slug 列是 utf8mb4_unicode_ci，大小写 / 重音不同的
+          // URL（/games/Metal-Slug-3）也能查到同一款游戏，不钉的话每种写法都自称 canonical
+          canonicalPath: `/games/${game.slug}`,
           // 优先用游戏自己的简介，没有再套通用模板
           description: seoDesc || fmt(t.seo.gameDesc, { title: seoTitle, platform: seoPlatformName }),
           contentLanguages: seoLanguages?.contentLanguages,
@@ -294,6 +297,7 @@ export function GameDetailPage() {
               rating: game.rating,
               ratingCount: game.ratingCount,
               language: seoLanguages?.canonicalLanguage,
+              multiplayer: Boolean(game.multiplayer),
             }),
             breadcrumbSchema([
               { name: t.common.home, path: '/' },

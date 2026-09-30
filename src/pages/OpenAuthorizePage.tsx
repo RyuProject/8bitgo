@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useAuthReady, useCurrentUser } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
@@ -37,8 +37,14 @@ export function OpenAuthorizePage() {
   /** 'approved' | 'denied'，定了之后这一页就只显示结果 */
   const [done, setDone] = useState<'approved' | 'denied' | ''>('')
 
-  /** 地址里的 OAuth 参数，POST 同意时要原样带回去给服务端再校验一遍 */
-  const oauthParams = Object.fromEntries(params.entries())
+  /**
+   * 地址里的 OAuth 参数，POST 同意时要原样带回去给服务端再校验一遍。
+   * ⚠️ 必须按查询串做 memo：以前每次渲染都新建对象 → load 每次都是新函数 →
+   * effect 每次渲染都跑 → load 里的 setState 又触发渲染，无限请求 /api/oauth/authorize，
+   * 按钮几乎一直是 busy，第三方应用的授权流程走不完。
+   */
+  const qs = params.toString()
+  const oauthParams = useMemo(() => Object.fromEntries(new URLSearchParams(qs).entries()), [qs])
 
   const load = useCallback(async () => {
     setBusy(true)

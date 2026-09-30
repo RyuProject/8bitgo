@@ -25,7 +25,9 @@ export function AppsPage() {
   const [loading, setLoading] = useState(true)
   const [submitOpen, setSubmitOpen] = useState(false)
 
-  useSeo({ title: t.apps.title, description: t.apps.desc })
+  // noindex：列表只在客户端从 /api/apps 取（robots.txt 挡着 /api），SSR 给爬虫的是空壳，
+  // 8 种语言各一份就是 8 个薄内容 / 软 404 候选。seo.ts 的注释里本来就把 /apps 列为 noindex 页
+  useSeo({ title: t.apps.title, description: t.apps.desc, noindex: true })
 
   useEffect(() => {
     if (!apiEnabled()) {

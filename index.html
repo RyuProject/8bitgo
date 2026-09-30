@@ -56,7 +56,10 @@
           if (CODES.indexOf(seg) >= 0) return
           if (seg === 'admin') return
           var ua = navigator.userAgent || ''
-          if (/bot|crawl|spider|slurp|mediapartners|facebookexternalhit|embedly|preview/i.test(ua)) return
+          // google-|googleother：Search Console「网址检查」的实时测试是 Google-InspectionTool，
+          // 还有 GoogleOther / Google-Read-Aloud，UA 里都没有 bot 字样；漏掉的话裸路径（简体）
+          // 会被跳到 /en/…，站长在 Search Console 里看到的是错的页面和 canonical
+          if (/bot|crawl|spider|slurp|google-|googleother|mediapartners|facebookexternalhit|embedly|preview/i.test(ua)) return
 
           // 测速代理。上面那串一个都不匹配 —— PSI 的 UA 长这样：
           //   Mozilla/5.0 (Linux; Android 11; moto g power (2022)) ... Mobile Safari/537.36 Chrome-Lighthouse

@@ -165,22 +165,58 @@ async function dropRec(email, purpose) {
   mem.delete(memKey(email, purpose))
 }
 
-/** 错一次减一次机会，返回累计错误次数 */
-async function bumpTries(email, purpose, rec) {
+/**
+ * **先占一次机会，再比对**。成功占到返回 true；次数已用完 / 已过期 / 不存在返回 false。
+ *
+ * 为什么不能「先比对、错了再 bumpTries」：读记录、比哈希、加次数是三步分开的查询，
+ * 攻击者并发打几千个 /email/verify，所有 SELECT 都排在第一个失败请求的 UPDATE 之前，
+ * 每个猜测都拿去和真哈希比 —— 5 次上限形同虚设，6 位验证码几个小时就能试穿，
+ * 任意账号（包括管理员）都能被接管。条件 UPDATE 是原子的，第 6 个请求一定占不到。
+ */
+async function reserveAttempt(email, purpose) {
+  const now = Date.now()
   if (useDb !== false) {
     try {
-      await query('UPDATE login_codes SET tries = tries + 1 WHERE email = ? AND purpose = ?', [email, purpose])
-      const row = await queryOne('SELECT tries FROM login_codes WHERE email = ? AND purpose = ?', [email, purpose])
+      const r = await query(
+        'UPDATE login_codes SET tries = tries + 1 WHERE email = ? AND purpose = ? AND tries < ? AND expires_at >= ?',
+        [email, purpose, MAX_TRIES, now],
+      )
       useDb = true
-      return Number(row?.tries ?? rec.tries + 1)
+      return Number(r?.affectedRows || 0) > 0
     } catch (e) {
       fallback(e)
     }
   }
+  // 内存兜底：Node 单线程，读改写之间没有 await，天然原子
   const m = mem.get(memKey(email, purpose))
-  if (!m) return MAX_TRIES
+  if (!m || m.expires < now || m.tries >= MAX_TRIES) return false
   m.tries += 1
-  return m.tries
+  return true
+}
+
+/**
+ * 成功时**有条件地**消费：只有哈希仍是我们比对过的那一条才删得掉。
+ * 并发的两个正确请求只有一个能拿到 affectedRows=1，验证码严格一次性。
+ */
+async function consumeRec(email, purpose, hash) {
+  if (useDb !== false) {
+    try {
+      const r = await query('DELETE FROM login_codes WHERE email = ? AND purpose = ? AND code_hash = ?', [
+        email,
+        purpose,
+        hash,
+      ])
+      useDb = true
+      return Number(r?.affectedRows || 0) > 0
+    } catch (e) {
+      fallback(e)
+    }
+  }
+  const k = memKey(email, purpose)
+  const m = mem.get(k)
+  if (!m || m.hash !== hash) return false
+  mem.delete(k)
+  return true
 }
 
 /** 清掉过期条目。每次发码时顺手做一遍，不额外起定时器。 */
@@ -307,6 +343,17 @@ export async function verifyCode(email, purpose, code, userId = null) {
   if (!/^\d{6}$/.test(String(code || '').trim())) {
     throw new CodeError(400, '验证码是 6 位数字')
   }
+  // 兜底限流：同一邮箱同一用途 15 分钟最多 20 次校验请求（正常人一个码最多试 5 次）
+  const gate = take(`code:verify:${purpose}:${email}`, 20, 15 * 60_000)
+  if (!gate.ok) throw new CodeError(429, '尝试次数过多，请稍后再试', { retryAfter: gate.retryAfter })
+
+  // 先原子地占一次机会，再去比对（见 reserveAttempt 的注释）
+  if (!(await reserveAttempt(email, purpose))) {
+    const cur = await readRec(email, purpose)
+    await dropRec(email, purpose)
+    if (cur && cur.expires >= Date.now()) throw new CodeError(429, '错误次数过多，请重新获取验证码')
+    throw new CodeError(400, '验证码已过期，请重新获取')
+  }
   const rec = await readRec(email, purpose)
   if (!rec || rec.expires < Date.now()) {
     await dropRec(email, purpose)
@@ -318,15 +365,18 @@ export async function verifyCode(email, purpose, code, userId = null) {
     throw new CodeError(400, '验证码与当前账号不匹配，请重新获取')
   }
   if (!sameHash(rec.hash, hashCode(email, purpose, String(code).trim()))) {
-    const tries = await bumpTries(email, purpose, rec)
+    // rec.tries 已经包含本次（reserveAttempt 先加过了）
     // 用完机会直接作废这个验证码 —— 否则可以慢慢把 6 位数字试穿
-    if (tries >= MAX_TRIES) {
+    if (rec.tries >= MAX_TRIES) {
       await dropRec(email, purpose)
       throw new CodeError(429, '错误次数过多，请重新获取验证码')
     }
     throw new CodeError(400, '验证码不正确')
   }
-  await dropRec(email, purpose)
+  // 并发的另一个正确请求可能已经把它消费掉了 —— 只认先删到的那一个
+  if (!(await consumeRec(email, purpose, rec.hash))) {
+    throw new CodeError(400, '验证码已失效，请重新获取')
+  }
 }
 
 /** 把 CodeError 翻成 HTTP 响应；不是 CodeError 就交回给 Express 的兜底处理器 */

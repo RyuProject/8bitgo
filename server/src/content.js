@@ -282,6 +282,20 @@ async function loadRelatedGames(game) {
   return scored.slice(0, 8).map((x) => x.g)
 }
 
+/**
+ * 路径段解码。畸形的百分号编码（/games/%E0%A4%A）会让 decodeURIComponent 抛 URIError，
+ * 一路冒到 ssr.js 变成 503 + Retry-After —— 垃圾 URL 持续回 5xx，Google 会给全站降抓取频率。
+ * 解不开就换成一个不可能命中任何数据的值，让页面按「不存在」走 404。
+ */
+const UNDECODABLE = '\u0000'
+function safeDecode(s) {
+  try {
+    return decodeURIComponent(s)
+  } catch {
+    return UNDECODABLE
+  }
+}
+
 export async function loadForRoute(pathname, search) {
   const seg = pathname.split('/').filter(Boolean)
   const qs = (k) => search?.get(k) ?? undefined
@@ -292,7 +306,7 @@ export async function loadForRoute(pathname, search) {
   // /games、/games/:slug
   if (seg[0] === 'games') {
     if (seg[1]) {
-      const slug = decodeURIComponent(seg[1])
+      const slug = safeDecode(seg[1])
       return loadGamePage(slug)
     }
     const q = {
@@ -310,13 +324,13 @@ export async function loadForRoute(pathname, search) {
   // `/play/<平台>/:slug` 是独立的跨源隔离播放器，但首屏仍需同一款游戏的数据。
   const isolatedPlay = isolatedRuntimeRoute(pathname)
   if (isolatedPlay) {
-    return loadGamePage(decodeURIComponent(isolatedPlay.slug))
+    return loadGamePage(safeDecode(isolatedPlay.slug))
   }
 
   // /platforms、/platforms/:id
   if (seg[0] === 'platforms') {
     if (seg[1]) {
-      const id = decodeURIComponent(seg[1])
+      const id = safeDecode(seg[1])
       return cached(`platform:${id}:${cachePage(qs('page'))}`, async () => ({
         route: 'platform',
         id,
@@ -329,7 +343,7 @@ export async function loadForRoute(pathname, search) {
   // /genres、/genres/:id
   if (seg[0] === 'genres') {
     if (seg[1]) {
-      const id = decodeURIComponent(seg[1])
+      const id = safeDecode(seg[1])
       return cached(`genre:${id}:${cachePage(qs('page'))}`, async () => ({
         route: 'genre',
         id,
@@ -345,7 +359,7 @@ export async function loadForRoute(pathname, search) {
   // 卡片链接、合集标题和里面的游戏。和其它公开内容页一样在进程内取好再渲染。
   if (seg[0] === 'collections') {
     if (seg[1]) {
-      const raw = Number(decodeURIComponent(seg[1]))
+      const raw = Number(safeDecode(seg[1]))
       const id = Number.isInteger(raw) && raw > 0 ? raw : 0
       return cached(`collection:${id}`, async () => ({
         route: 'collection',

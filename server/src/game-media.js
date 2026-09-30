@@ -192,6 +192,14 @@ export function createGameMediaProxy({
       res.setHeader('Cache-Control', CACHE_CONTROL)
       res.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
       res.setHeader('X-Content-Type-Options', 'nosniff')
+      /*
+        外链封面可能是 image/svg+xml。SVG 被直接打开时是一份**同源文档**，里面的 <script>
+        能读 localStorage 里的登录 token（管理员浏览器里还有 ADMIN_TOKEN）——第三方图床被黑、
+        域名过期被抢注，都能借这条代理在 8bitgo.com 上执行脚本。
+        作为 <img> 加载时 SVG 本来就不跑脚本，所以不禁 SVG，只给响应加沙箱 CSP：
+        直接导航过去时脚本、表单、同源身份全部失效。
+      */
+      res.setHeader('Content-Security-Policy', "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox")
       for (const name of ['content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified']) {
         copyHeader(upstream, res, name)
       }

@@ -55,6 +55,7 @@ import {
 } from '../src/baidu-push.js'
 import { taxonomyRows } from '../src/routes/sitemaps.js'
 import { gameContentLanguages, postContentLanguages } from '../src/site-urls.js'
+import { isPlatformEnabledId } from '../../shared/site-taxonomy.js'
 
 const argv = process.argv.slice(2)
 const has = (name) => argv.includes(name)
@@ -191,19 +192,21 @@ try {
   if (wants('games')) {
     const rows = all
       ? await query(
-          'SELECT slug, updated_at, description, description_en, description_i18n FROM games WHERE hidden = 0 ORDER BY COALESCE(updated_at, created_at, added_at) DESC',
+          'SELECT slug, platform, updated_at, description, description_en, description_i18n FROM games WHERE hidden = 0 ORDER BY COALESCE(updated_at, created_at, added_at) DESC',
         )
       : await query(
-          `SELECT slug, updated_at, description, description_en, description_i18n FROM games
+          `SELECT slug, platform, updated_at, description, description_en, description_i18n FROM games
             WHERE hidden = 0
               AND COALESCE(updated_at, created_at, added_at) >= DATE_SUB(NOW(), INTERVAL ? DAY)
             ORDER BY COALESCE(updated_at, created_at, added_at) DESC`,
           [days],
         )
+    // 下线平台的详情页是 404，不能提交（见 routes/sitemaps.js 的 ENABLED_PLATFORM_SQL）
+    const enabledRows = rows.filter((row) => isPlatformEnabledId(String(row.platform)))
     groups.push({
       label: '游戏详情页',
-      items: rows.length,
-      urls: rows.flatMap((row) => {
+      items: enabledRows.length,
+      urls: enabledRows.flatMap((row) => {
         const available = new Set(gameContentLanguages(row))
         const eligible = languages.filter((code) => available.has(code))
         return eligible.length ? gameBaiduDetailUrls(row.slug, site, eligible) : []
