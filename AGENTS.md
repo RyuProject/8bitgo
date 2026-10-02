@@ -820,6 +820,26 @@ Flash 手柄键位存在 `games.flash_controls` JSON，街机屏幕手柄的动�
 所以可以先迁移再慢慢在后台补配置。部署这版必须先跑 `cd server && npm run migrate`；
 自测用 `npm run test:ruffle-runtime && npm run test:game-controls && npm run test:keymap`。
 
+### 2.24.0 Ruffle 存档要跟着游戏走；舞台按显示尺寸渲染
+
+Ruffle 的 SharedObject 键是 `<hostname>/<localPath>/<名字>`，而本站所有 Flash 共用一个源：
+`getLocal("save", "/")` 这类根路径存档会落在 `8bitgo.com//save`，不同游戏互相覆盖，而且不在本局
+前缀下，导出 / 云存档一份都拿不到。默认 localPath 又带 SWF 文件名，单 SWF 重传成 8BG（解包名是
+管理员本地原始名）或改成 `root.swf` 多文件包后，老进度就无声消失。
+
+`src/emulator/ruffleStorageScope.ts` 在 ruffle.js 加载前把 iframe realm 的 `window.localStorage`
+换成 Proxy（Ruffle 用 `storage[key]` 具名访问，不走 getItem，三种陷阱都要拦）：本局槽统一翻译到
+`/flash-frames/<slug>/<稳定名>.swf/`，祖先路径的键翻译成同前缀下的 `~shared/<原路径>`。稳定名由
+`flashSaveSwfName()` 从 ROM 地址推（剥 `.8bg`，`root.swf` 换目录名），单 SWF 的 `<slug>.swf` 不变，
+所以存量存档不用迁；语言版本仍各自独立。旧键读不到新键时回退读并拷过来，删除写空串墓碑。
+Proxy 装不上时整条退回旧路径，导出 / 导入也跟着旧路径走。回归：`npm run test:ruffle-saves`。
+
+等比模式（默认）下舞台元素按**显示尺寸**布局，并给 Ruffle `scale: showAll + forceScale`。
+不要再改回「元素钉原始像素 + CSS transform 放大」：Ruffle 画布只看 `clientWidth × DPR`，
+transform 不改它，550×400 的游戏在 1080p 全屏里会按 687×500 画完再放大两倍多，整片发糊。
+超过约 1080p 面积（`RUFFLE_MAX_RENDER_AREA`）才用 transform 补剩余倍数，给 4K 封顶。
+在线存档会话请求有 6 秒总时限，API 卡住时按「不可用」启动，不能把已登录玩家挡在加载遮罩上。
+
 ### 2.24.1 js-dos 的 JS / DOSBox / DOSBox-X 必须整套更新，stop 必须真清理
 
 js-dos 运行时从 npm 复制到 `public/jsdos/v<version>/`，版本同时写在

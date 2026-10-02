@@ -17,9 +17,10 @@ import { focusFrame } from '../frameFocus'
 import { isTyping } from '../hotkeyBridge'
 import { installAudioTap, type AudioTap } from '../audioTap'
 import {
-  FLASH_SAVE_FORMAT, LEGACY_FLASH_PREFIX, flashMovieUrl, flashSavePrefix,
+  FLASH_SAVE_FORMAT, LEGACY_FLASH_PREFIX, flashLegacySavePrefixes, flashMovieUrl, flashSavePrefix, flashSaveSwfName,
   readFlashEntries, readLegacyFlashEntries, restoreFlashEntries, validFlashEntries,
 } from '../ruffleSaves'
+import { installFlashStorageScope, moveFlashEntries, type FlashStorageScope } from '../ruffleStorageScope'
 import { getT, fmt } from '@/services/i18n'
 import {
   FLASH_SAVE_LOGIN_CALLBACK,
@@ -28,7 +29,7 @@ import {
 } from '@/services/flashOnlineSave'
 import { prepareSfsRuffleConfig } from '@/services/sfs'
 import { installRufflePixelRatioCap, RUFFLE_FIXED_QUALITY } from '../rufflePerformance'
-import { ruffleStageScale, ruffleStageSize } from '../ruffleStageFit'
+import { ruffleStageRenderPlan, ruffleStageSize } from '../ruffleStageFit'
 import { isRuffleFrameReady } from '../ruffleFrame'
 import { flashCompatibilityIssue } from '../flashCompatibility'
 import { flashLegacyBundleRules, type FlashUrlRewriteRule } from '../flashLegacyBundle'
@@ -178,11 +179,17 @@ function waitForRuffleMetadata(player: RufflePlayerElement, signal: AbortSignal)
 }
 
 /**
- * 让 Ruffle 只按 SWF 的原始舞台尺寸渲染，再由浏览器把整个播放器等比缩放。
+ * 把 Ruffle 元素摆成「SWF 原始舞台比例、铺满容器」的那块区域。
  *
  * 很多老游戏在 ActionScript 里设置了 noScale，并按固定坐标摆放界面。直接把 Ruffle 元素拉成
- * 16:9 时，它们仍只画左上角的 4:3 舞台，其余区域就变成截图里的大片灰色。外层 CSS 缩放
- * 不会改变游戏看到的舞台尺寸，同时也避免在超宽屏上为无内容区域创建更大的 WebGL 画布。
+ * 16:9 时，它们仍只画左上角的 4:3 舞台，其余区域就变成大片灰色。所以元素只占等比区域，
+ * 再配合 load 配置里的 `forceScale + showAll`，让 noScale 游戏也被 Ruffle 自己矢量缩放。
+ *
+ * ⚠️ 以前这里把元素钉在**原始像素尺寸**、再用 CSS `transform: scale()` 放大。Ruffle 的画布是
+ * `clientWidth × devicePixelRatio`（transform 不改 clientWidth），于是 550×400 的游戏在 1080p
+ * 全屏里只按 687×500 渲染、再被浏览器放大 2 倍多——所有 Flash 一放大就糊，前面那条 DPR 1.25
+ * 的高清策略也白做了。现在元素按显示尺寸布局，Ruffle 直接按显示分辨率画矢量；只有超出
+ * `RUFFLE_MAX_RENDER_AREA`（约 1080p）的极大屏才用 transform 补剩下的一点倍数，给 GPU 封顶。
  */
 function installRuffleStageFit(
   win: Window & { ResizeObserver?: typeof ResizeObserver },
@@ -195,16 +202,17 @@ function installRuffleStageFit(
 
   stage.dataset.nativeFit = 'true'
   stage.style.position = 'absolute'
-  stage.style.width = `${size.width}px`
-  stage.style.height = `${size.height}px`
-  // 用原始尺寸算出未缩放元素的位置，再围绕中心缩放；这样舞台比容器大时也不会被网格轨道挤偏。
-  stage.style.left = `calc(50% - ${size.width / 2}px)`
-  stage.style.top = `calc(50% - ${size.height / 2}px)`
   stage.style.transformOrigin = 'center'
 
   const update = () => {
-    const scale = ruffleStageScale(host.clientWidth, host.clientHeight, size)
-    if (scale) stage.style.transform = `scale(${scale})`
+    const plan = ruffleStageRenderPlan(host.clientWidth, host.clientHeight, size)
+    if (!plan) return
+    stage.style.width = `${plan.width}px`
+    stage.style.height = `${plan.height}px`
+    // 围绕中心缩放：舞台比容器大时也不会被网格轨道挤偏
+    stage.style.left = `calc(50% - ${plan.width / 2}px)`
+    stage.style.top = `calc(50% - ${plan.height / 2}px)`
+    stage.style.transform = plan.cssScale === 1 ? '' : `scale(${plan.cssScale})`
   }
   update()
 
@@ -302,8 +310,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     return c && usableVideoSize(c.width, c.height) ? c : null
   }
 
-  /** Ruffle 的 data 模式按播放框地址和文件名造虚拟 URL，和下载网址无关。 */
+  /** 存档用的规范影片地址（见 ruffleSaves.flashSaveSwfName），导出 / 导入都认它。 */
   let movieUrl: URL | null = null
+  /** iframe 里的 localStorage 已换成按本局前缀翻译键名的 Proxy（见 ruffleStorageScope.ts） */
+  let storageScoped = false
+  let storageScope: FlashStorageScope | null = null
+  /** 默认等比居中；少数依赖 Ruffle 原始整框布局的游戏可在后台逐款退回 */
+  const fitStage = options.flashControls?.displayMode !== 'ruffle'
   let lastLoadOptions: Record<string, unknown> | null = null
   const saveId = options.gameSlug || (typeof options.game === 'string' ? options.game : `local:${options.game.name}`)
   // 会话申请与 iframe / Ruffle 初始化同时开始；普通 Flash 游戏会立刻得到 null，不增加请求。
@@ -547,6 +560,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     */
     installRufflePixelRatioCap(win)
     audioTap = installAudioTap(win as unknown as Window & Record<string, unknown>)
+    // 同样要赶在 ruffle.js 之前：Ruffle 建实例时取一次 window.localStorage。scope 在拿到 SWF 后才填。
+    storageScoped = installFlashStorageScope(win, () => storageScope)
 
     const script = doc.createElement('script')
     script.src = `${RUFFLE_PATH}ruffle.js`
@@ -641,6 +656,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           autoplay: 'on',
           unmuteOverlay: 'visible',
           letterbox: 'on',
+          /*
+            等比模式下元素已经是 SWF 原始比例，再禁止 SWF 把缩放改成 noScale：否则这类游戏只按
+            1:1 画在左上角，其余是灰底（见 installRuffleStageFit）。showAll 在同比例元素里与
+            exactFit / noBorder 画面一致。逐款退回 'ruffle' 布局时不强制，保持 Ruffle 原生行为。
+          */
+          ...(fitStage ? { scale: 'showAll', forceScale: true } : {}),
           // ExternalInterface 只对经过共用接入表审核的游戏开放；普通 SWF 仍保持关闭。
           allowScriptAccess: Boolean(onlineSave),
           // Ruffle 自己的 none 模式无法在“开播后”动态恢复后台执行，所以由上面的
@@ -674,10 +695,33 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           // 中文 / 日文这类设备字体文本要靠它才画得出来，见文件顶部的说明
           ...fontConfig(),
         }
+        /*
+          存档路径：Proxy 装上时按 ROM 地址推稳定名，并把旧文件名路径下的槽搬过来；
+          装不上就维持 Ruffle 原生的「按本次文件名」路径，导出 / 导入也跟着它走。
+        */
+        const saveSwfName = storageScoped
+          ? flashSaveSwfName(typeof options.game === 'string' ? options.game : null, loaded.name)
+          : loaded.name
+        movieUrl = flashMovieUrl(win.location.href, saveSwfName)
+        if (storageScoped) {
+          const savePrefix = flashSavePrefix(movieUrl)
+          try {
+            const store = storage()
+            for (const legacy of flashLegacySavePrefixes(win.location.href, loaded.name)) {
+              if (legacy !== savePrefix) moveFlashEntries(store, legacy, savePrefix)
+            }
+          } catch (error) {
+            console.warn('[ruffle] 旧路径存档迁移失败，本局仍可读到旧键：', error)
+          }
+          storageScope = {
+            hostPrefix: `${movieUrl.hostname}/`,
+            gameDir: new URL('.', win.location.href).pathname.replace(/^\//, ''),
+            savePrefix,
+          }
+        }
         const isFile = typeof options.game !== 'string'
         let loadOptions: Record<string, unknown>
         if (isFile) {
-          movieUrl = flashMovieUrl(win.location.href, loaded.name)
           loadOptions = { ...base, data: loaded.data, swfFileName: loaded.name }
         } else {
           /**
@@ -690,7 +734,6 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
            * 它本来也是这么推的，这里只是把同一件事写明白。
           */
           const url = options.game as string
-          movieUrl = flashMovieUrl(win.location.href, loaded.name)
           loadOptions = {
             ...base,
             data: loaded.data,
@@ -717,7 +760,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         ])
         if (destroyed) return
         // 默认修复固定舞台 SWF 的左上角缩放；少数依赖 Ruffle 原始整框布局的游戏可在后台逐款退回。
-        if (host && stage && options.flashControls?.displayMode !== 'ruffle') {
+        if (host && stage && fitStage) {
           cancelStageFit()
           cancelStageFit = installRuffleStageFit(win, host, stage, player.metadata)
         }

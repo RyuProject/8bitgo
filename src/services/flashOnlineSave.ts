@@ -71,7 +71,14 @@ function saveApiUrl(path: string): string {
  * 玩家看到的是「在线槽忽然不能用了」，也没有任何重试入口。4xx 则是明确的拒绝
  * （令牌失效 / 被限流 / 未启用），重试只是白打一次请求 —— 那种情况直接退不可用模式。
  */
-async function requestSession(gameSlug: string): Promise<SessionResponse | null> {
+/**
+ * 会话请求的总时限。Ruffle 启动链会 `await` 这份会话（和 SWF、WASM 并行），而 api.post
+ * 没有超时：API 卡住时已登录玩家会**永远**停在加载遮罩上，游客反而能玩。超时后按
+ * 「unavailable」启动 —— 游戏照常进，只是这一局的在线槽不可用，和服务故障时的表现一致。
+ */
+export const FLASH_SAVE_SESSION_TIMEOUT_MS = 6000
+
+async function requestSessionOnce(gameSlug: string): Promise<SessionResponse | null> {
   try {
     return await api.post<SessionResponse>('/api/flash-saves/v1/session', { gameSlug })
   } catch (error) {
@@ -82,6 +89,21 @@ async function requestSession(gameSlug: string): Promise<SessionResponse | null>
     } catch {
       return null
     }
+  }
+}
+
+async function requestSession(gameSlug: string): Promise<SessionResponse | null> {
+  let timer = 0
+  const timeout = new Promise<null>((resolve) => {
+    timer = window.setTimeout(() => {
+      console.warn(`[flash-save] 在线存档会话 ${FLASH_SAVE_SESSION_TIMEOUT_MS}ms 未返回，按不可用模式启动`)
+      resolve(null)
+    }, FLASH_SAVE_SESSION_TIMEOUT_MS)
+  })
+  try {
+    return await Promise.race([requestSessionOnce(gameSlug), timeout])
+  } finally {
+    window.clearTimeout(timer)
   }
 }
 

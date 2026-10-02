@@ -9,7 +9,7 @@ import {
   RUFFLE_RENDER_PIXEL_RATIO,
   supportsRuffleWasmExtensions,
 } from '../src/emulator/rufflePerformance.ts'
-import { ruffleStageScale, ruffleStageSize } from '../src/emulator/ruffleStageFit.ts'
+import { RUFFLE_MAX_RENDER_AREA, ruffleStageRenderPlan, ruffleStageScale, ruffleStageSize } from '../src/emulator/ruffleStageFit.ts'
 import { isRuffleFrameReady } from '../src/emulator/ruffleFrame.ts'
 import { isSfsGame } from '../shared/sfs-games.js'
 
@@ -40,6 +40,14 @@ for (const bad of [null, {}, { width: '800', height: 600 }, { width: 0, height: 
 assert.equal(ruffleStageScale(1920, 1080, { width: 800, height: 600 }), 1.8)
 assert.equal(ruffleStageScale(600, 900, { width: 800, height: 600 }), 0.75)
 assert.equal(ruffleStageScale(0, 900, { width: 800, height: 600 }), null)
+
+// 按显示尺寸渲染：1080p 里的 550×400 游戏必须按 1485×1080 画，不能按原始像素画完再被 CSS 放大 2.7 倍
+assert.deepEqual(ruffleStageRenderPlan(1920, 1080, { width: 550, height: 400 }), { width: 1485, height: 1080, cssScale: 1 })
+assert.deepEqual(ruffleStageRenderPlan(600, 900, { width: 800, height: 600 }), { width: 600, height: 450, cssScale: 1 }, '小屏按显示尺寸画，省 GPU')
+const huge = ruffleStageRenderPlan(3840, 2160, { width: 800, height: 600 })
+assert.ok(huge.width * huge.height <= RUFFLE_MAX_RENDER_AREA, '4K 全屏要给渲染面积封顶')
+assert.ok(Math.abs(huge.width * huge.cssScale - 2880) < 2 && Math.abs(huge.height * huge.cssScale - 2160) < 2, '封顶后显示区域仍贴合容器')
+assert.equal(ruffleStageRenderPlan(0, 0, { width: 800, height: 600 }), null)
 
 console.log('── WASM 变体选择 ──')
 let probes = 0
@@ -75,6 +83,9 @@ assert.match(adapter, /player\.metadata/, '元数据就绪后必须读取 SWF �
 assert.match(adapter, /new win\.ResizeObserver\(update\)/, '播放器容器变化时必须重新计算缩放')
 assert.match(adapter, /options\.flashControls\?\.displayMode !== 'ruffle'/, '必须保留逐游戏兼容退回开关')
 assert.match(adapter, /cancelStageFit\(\)/, '销毁会话时必须断开舞台尺寸监听')
+assert.match(adapter, /ruffleStageRenderPlan\(host\.clientWidth, host\.clientHeight, size\)/, '舞台元素必须按显示尺寸布局')
+assert.doesNotMatch(adapter, /stage\.style\.width = `\$\{size\.width\}px`/, '不能再把元素钉在原始像素尺寸再用 transform 放大（Ruffle 画布不随 transform 变，会糊）')
+assert.match(adapter, /fitStage \? \{ scale: 'showAll', forceScale: true \}/, '等比模式必须禁止 SWF 切到 noScale，否则固定布局游戏只画左上角')
 assert.match(frame, /id="stage"/, '独立舞台层不能被删掉，否则 CSS 缩放会直接改写 Ruffle 视口')
 
 console.log('── iframe 初始空文档竞态 ──')

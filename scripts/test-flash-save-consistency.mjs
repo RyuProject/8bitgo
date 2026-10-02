@@ -94,6 +94,13 @@ check('前端不再自己维护一份桥表', () => {
   )
 })
 
+check('在线存档会话请求有总时限，API 卡住不能挡住游戏启动', () => {
+  const source = readFileSync(join(root, 'src/services/flashOnlineSave.ts'), 'utf8')
+  assert.match(source, /Promise\.race\(\[requestSessionOnce\(gameSlug\), timeout\]\)/,
+    'Ruffle 启动链会 await 这份会话；没有时限时已登录玩家会永远停在加载遮罩')
+  assert.match(source, /FLASH_SAVE_SESSION_TIMEOUT_MS = \d+/)
+})
+
 check('游客只在游戏内主动用在线槽时才打开登录框', () => {
   const service = readFileSync(join(root, 'src/services/flashOnlineSave.ts'), 'utf8')
   const ruffle = readFileSync(join(root, 'src/emulator/adapters/ruffle.ts'), 'utf8')

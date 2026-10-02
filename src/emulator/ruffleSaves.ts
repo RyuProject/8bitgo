@@ -14,6 +14,49 @@ export function flashMovieUrl(frameHref: string, swfFileName: string): URL {
   return new URL(encodeURIComponent(swfFileName), new URL('.', frame))
 }
 
+/**
+ * 存档路径里的 SWF 名要跟着**游戏**走，而不是跟着这次下载到的文件名走。
+ *
+ * 同一款游戏的 ROM 可能是 `<slug>.swf`、重新上传后的 `<slug>.swf.8bg`（解包名是管理员本地的
+ * 原始文件名）、或多 SWF 包 `<slug>/root.swf`。旧实现直接用解包 / 下载名，三种形态各落一条路径，
+ * 后台一换形态，老玩家的进度就读不到了。这里从 ROM 地址推一个稳定名：剥掉 `.8bg`，
+ * `root.swf` 换成所在目录名。单 SWF 的 `<slug>.swf` 结果不变，存量存档无需迁移；
+ * 语言版本（`<slug>.zh-Hans.swf`）仍各自独立，避免不同构建互读存档格式。
+ */
+export function flashSaveSwfName(gameUrl: string | null | undefined, loadedName: string): string {
+  if (!gameUrl) return loadedName
+  try {
+    const parts = new URL(gameUrl, 'https://8bitgo.invalid/').pathname
+      .split('/')
+      .filter(Boolean)
+      .map((part) => decodeURIComponent(part))
+    let last = (parts.pop() ?? '').replace(/\.8bg$/i, '')
+    if (/^root\.swf$/i.test(last) && parts.length) last = `${parts[parts.length - 1]}.swf`
+    return /\.swf$/i.test(last) && !/[\\/]/.test(last) ? last : loadedName
+  } catch {
+    return loadedName
+  }
+}
+
+/**
+ * Ruffle 当前按 `loadedName` 实际落盘的前缀候选。它和我们用 encodeURIComponent 算出来的
+ * 可能不同（WHATWG URL 不转义 `[]` 等字符），两种都列出来，迁移时逐个找。
+ */
+export function flashLegacySavePrefixes(frameHref: string, loadedName: string): string[] {
+  const out = new Set<string>()
+  out.add(flashSavePrefix(flashMovieUrl(frameHref, loadedName)))
+  try {
+    const frame = new URL(frameHref)
+    frame.search = ''
+    frame.hash = ''
+    const whatwg = new URL(loadedName.replace(/[?#]/g, encodeURIComponent), new URL('.', frame))
+    out.add(flashSavePrefix(whatwg))
+  } catch {
+    /* 名字无法组成 URL 时只留第一种 */
+  }
+  return [...out]
+}
+
 export function flashSavePrefix(movieUrl: URL): string {
   return `${movieUrl.hostname}/${movieUrl.pathname.replace(/^\//, '')}/`
 }

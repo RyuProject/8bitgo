@@ -37,3 +37,35 @@ export function ruffleStageScale(
   const scale = Math.min(containerWidth / stage.width, containerHeight / stage.height)
   return Number.isFinite(scale) && scale > 0 ? scale : null
 }
+
+/**
+ * 元素按显示尺寸布局时，Ruffle 画布 = CSS 面积 × DPR（已钳到 1.25）。为了给 4K 全屏之类的
+ * 极大屏封顶，CSS 面积超过约 1080p 时元素停在这个面积，剩下的倍数交给 transform。
+ * 1080p 及以下（绝大多数桌面、全部手机）完全按显示分辨率渲染，矢量画面保持锐利。
+ */
+export const RUFFLE_MAX_RENDER_AREA = 1920 * 1080
+
+export interface RuffleStageRenderPlan {
+  /** 元素的 CSS 宽高（整数像素）：Ruffle 按它 × DPR 建画布 */
+  width: number
+  height: number
+  /** 在此基础上再用 transform 放大的倍数；1 表示不用 transform */
+  cssScale: number
+}
+
+export function ruffleStageRenderPlan(
+  containerWidth: number,
+  containerHeight: number,
+  stage: RuffleStageSize,
+  maxArea = RUFFLE_MAX_RENDER_AREA,
+): RuffleStageRenderPlan | null {
+  const scale = ruffleStageScale(containerWidth, containerHeight, stage)
+  if (!scale) return null
+  const areaCap = Math.sqrt(maxArea / (stage.width * stage.height))
+  const renderScale = Math.min(scale, Number.isFinite(areaCap) && areaCap > 0 ? areaCap : scale)
+  const width = Math.max(1, Math.floor(stage.width * renderScale))
+  const height = Math.max(1, Math.floor(stage.height * renderScale))
+  // 用取整后的真实尺寸反推剩余倍数，保证最终显示区域仍然贴合容器
+  const cssScale = renderScale < scale ? Math.min(containerWidth / width, containerHeight / height) : 1
+  return { width, height, cssScale }
+}
