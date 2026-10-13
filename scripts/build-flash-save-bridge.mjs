@@ -50,6 +50,16 @@ const BRIDGES = [
     releaseOutput: `public${flashSaveBridgeOf('kingdom-rushfrontiers')}`,
     manifest: 'public/flash-api/armor-games/runtime-agi2.json',
   },
+  {
+    label: 'Banana（SAS Zombie Assault 3）',
+    // SAS3 只按 Loader.content 动态调用方法，不要求文档类名；Ruffle 的空壳模板足够。
+    source: 'flash-api/ninjakiwi/src',
+    sourceFile: 'test_fla/MainTimeline.as',
+    template: { ruffle: RUFFLE_TEMPLATE_URL },
+    output: 'public/flash-api/ninjakiwi/Banana.swf',
+    releaseOutput: `public${flashSaveBridgeOf('sas-zombie-assault-3')}`,
+    manifest: 'public/flash-api/ninjakiwi/runtime.json',
+  },
 ]
 
 if (!existsSync(FFDEC)) throw new Error(`找不到 FFDec：${FFDEC}`)

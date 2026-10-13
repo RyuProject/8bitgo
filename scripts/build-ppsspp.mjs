@@ -18,7 +18,7 @@ import { installPspRangeReadAhead } from './helpers/ppsspp-runtime-patch.mjs'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const VERSION = '0dbfaca'
-const RUNTIME_GENERATION = 'v8'
+const RUNTIME_GENERATION = 'v9'
 const RANGE_LOADER_REVISION = 4
 const PINNED_COMMIT = '0dbfaca62a8a924abc2c5dd5dd0733b668e5e68a'
 const PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0001-range-streaming.patch')
@@ -373,7 +373,12 @@ if (runtimeScript.includes('/assets/debugger/')) {
 for (const marker of ['__ppssppRangeProgress', '__ppssppRangeError']) {
   if (!runtimeScript.includes(marker)) fail(`PPSSPPSDL.js 缺少 Range v${RANGE_LOADER_REVISION} 标记 ${marker}，核心补丁可能没有编进产物`)
 }
-for (const marker of ['__8bitgoCreatePspRangeXhr', '__8bitgoPspRangeWarmStats']) {
+for (const marker of [
+  '__8bitgoCreatePspRangeXhr',
+  '__8bitgoPspRangeWarmStats',
+  'for (const entry of inflight.values()) entry.cancel()',
+  'exactPrefetch.cancel()',
+]) {
   if (!runtimeScript.includes(marker)) fail(`PPSSPPSDL.js 缺少 Range 顺序预读标记 ${marker}`)
 }
 for (const marker of ['__ppssppAudio', 'AudioWorkletNode', 'ppsspp-audio', 'createScriptProcessor', '__ppssppPerformance']) {
@@ -431,7 +436,7 @@ const manifest = {
   graphicsCompatibilityProfile: 'buffered-native-v1',
   startupReadinessProfile: 'core-boot-log-v1',
   preloadAssetsProfile: 'runtime-no-debugger',
-  rangeReadAheadProfile: 'adaptive-sequential-v1',
+  rangeReadAheadProfile: 'adaptive-sequential-v2',
   rangeReadAheadBlocks: 2,
   rangeReadAheadCacheBytes: 8 * 1024 * 1024,
   webFeaturesBridge: 'savestate-controls-v1',

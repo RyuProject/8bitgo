@@ -6,6 +6,14 @@ import { SFS_GAME_SLUGS } from '../../shared/sfs-games.js'
 const DEFAULT_WS_PATH = '/sfs/sas3'
 const SAS3_HOST = 'sas3server.ninjakiwi.com'
 const SAS3_PORT = 444
+const SAS3_MAP_ORIGIN = 'http://sas3maps.ninjakiwi.com/sas3maps'
+const SAS3_MAP_FILES = Object.freeze([
+  'AirbaseMap.swf',
+  'BlackIsleMap.swf',
+  'FarmhouseMap.swf',
+  'KarnivaleMap.swf',
+  'VerdammtenstadtMap.swf',
+])
 
 function flag(value) {
   return /^(1|true|yes|on)$/i.test(String(value || '').trim())
@@ -160,9 +168,18 @@ function ruffleConfig(req, config) {
     socketProxy: [{ host: SAS3_HOST, port: SAS3_PORT, proxyUrl: publicWsUrl(req, config) }],
   }
   if (config.mapBaseUrl) {
-    result.urlRewriteRules = [
-      ['^https?://sas3maps\\.ninjakiwi\\.com/sas3maps/(.*)$', `${config.mapBaseUrl}/$1`],
-    ]
+    /*
+      Ruffle 只把真正的 RegExp 对象当正则；JSON 接口不可能保留对象类型，原先下发的
+      `^https?...(.*)$` 到浏览器后只是普通字符串，于是被按「完整 URL 相等」比较，五张地图
+      一条都匹配不到，玩家会永久停在 loading game。这里按已取证的地图清单下发精确映射。
+
+      必须匹配 SWF 内嵌的 http:// 原地址：Ruffle 的 URL 改写先于 HTTPS 自动升级。失败日志里
+      虽然打印 https://，那已经是升级后的最终请求，拿它做规则来源仍然永远不会命中。
+    */
+    result.urlRewriteRules = SAS3_MAP_FILES.map((file) => [
+      `${SAS3_MAP_ORIGIN}/${file}`,
+      `${config.mapBaseUrl}/${file}`,
+    ])
   }
   return result
 }

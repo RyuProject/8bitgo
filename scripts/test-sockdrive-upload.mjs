@@ -32,6 +32,25 @@ const makeFixture = (name, encoding) => {
   return dir
 }
 
+const makePartialFinalFixture = () => {
+  const dir = join(root, 'partial-final')
+  mkdirSync(dir)
+  const metadata = Buffer.from(JSON.stringify({
+    size: 3,
+    ahead_read: 2048,
+    range_count: 2,
+    sector_size: 512,
+    dropped_ranges: [],
+    small_ranges: [],
+    preload_ranges: [0, 1],
+  }))
+  writeFileSync(join(dir, 'sockdrive.metaj'), metadata)
+  writeFileSync(join(dir, '0.raw'), Buffer.alloc(2048, 0x5a))
+  writeFileSync(join(dir, '1.raw'), Buffer.alloc(1024, 0xa5))
+  writeFileSync(join(dir, 'preload_ranges.metaj'), '[0,1]')
+  return dir
+}
+
 const run = (dir, encoding, prefix = `sockdrives/test-${encoding}-v1`) => execFileSync(
   process.execPath,
   [uploader.pathname, '--src', dir, '--prefix', prefix, '--encoding', encoding, '--dry-run'],
@@ -54,6 +73,14 @@ try {
     () => run(join(root, 'identity'), 'identity', 'sockdrives/no-version'),
     /必须带版本号或内容哈希/,
   )
+  assert.throws(
+    () => run(join(root, 'identity'), 'identity', 'sockdrives/v1/no-version'),
+    /必须带版本号或内容哈希/,
+  )
+  assert.match(
+    run(makePartialFinalFixture(), 'identity', 'sockdrives/partial-final-v1'),
+    /Sockdrive 结构完整：2 个范围/,
+  )
 
   const invalidProfile = join(root, 'invalid-profile')
   mkdirSync(invalidProfile)
@@ -64,7 +91,7 @@ try {
     /preload_ranges\.metaj 无效.*重复分块/,
   )
 
-  console.log('Sockdrive 发布器测试通过：热点预热 / identity / Brotli / gzip / 编码错配 / 版本目录')
+  console.log('Sockdrive 发布器测试通过：热点预热 / identity / Brotli / gzip / 编码错配 / 版本目录 / 尾块长度')
 } finally {
   rmSync(root, { recursive: true, force: true })
 }

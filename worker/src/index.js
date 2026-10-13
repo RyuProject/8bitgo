@@ -36,6 +36,20 @@ const MAX_JSON_BYTES = 2 * 1024 * 1024
 const DEFAULT_CACHE_CONTROL = 'public, max-age=300, s-maxage=600, must-revalidate'
 const VERSIONED_CACHE_CONTROL = 'public, max-age=86400, s-maxage=2592000, stale-while-revalidate=86400'
 const IMMUTABLE_CACHE_CONTROL = 'public, max-age=31536000, s-maxage=31536000, immutable'
+const SOCKDRIVE_VERSION_SUFFIX = /(?:^|[-_.])(?:v\d+(?:[-_.][a-z0-9]+)*|[a-f0-9]{8,64})$/i
+
+/**
+ * Sockdrive 的版本在路径里而不在查询串里。只把严格版本目录下的固定产物视为不可变，
+ * 避免把同目录的说明文件或误上传内容也永久钉进边缘缓存。
+ */
+function immutableSockdrivePath(pathname) {
+  const parts = String(pathname || '').split('/').filter(Boolean)
+  if (parts.length < 3 || parts[0] !== 'sockdrives') return false
+  const file = parts.at(-1)
+  const directory = parts.at(-2)
+  return SOCKDRIVE_VERSION_SUFFIX.test(directory) &&
+    /^(?:sockdrive|preload_ranges)\.metaj$|^(?:preload|\d+)\.raw$/i.test(file)
+}
 function cacheValue(env, name, fallback) {
   const value = env[name] || fallback
   if (/[\r\n]/.test(value)) throw new HttpError(500, '缓存配置无效', 'invalid_configuration')
@@ -61,8 +75,9 @@ export function edgeCacheEligible(request, url, cors) {
   if (request.headers.has('If-Match') || request.headers.has('If-Unmodified-Since') || request.headers.has('If-Range')) return false
   if (/\b(?:no-cache|no-store)\b/i.test(request.headers.get('Cache-Control') || '')) return false
   const versioned = Boolean(url.searchParams.get('romv') || url.searchParams.get('v'))
-  const immutableShard = /^\/web\/cs16\/zstd-v1\/chunks\/[a-f0-9]{64}\.zst$/.test(url.pathname)
-  return versioned || immutableShard
+  const immutablePath = /^\/web\/cs16\/zstd-v1\/chunks\/[a-f0-9]{64}\.zst$/.test(url.pathname) ||
+    immutableSockdrivePath(url.pathname)
+  return versioned || immutablePath
 }
 
 function edgeCacheHeader(response, value) {
@@ -83,7 +98,10 @@ function writeCacheControl(env) { return cacheValue(env, 'OBJECT_CACHE_CONTROL',
  */
 export function cachePolicy(env, url) {
   // CS16 分片的路径本身就是压缩字节 SHA-256；它不会被原地替换，可以安全缓存一年。
-  if (/^\/web\/cs16\/zstd-v1\/chunks\/[a-f0-9]{64}\.zst$/.test(url?.pathname || '')) {
+  if (
+    /^\/web\/cs16\/zstd-v1\/chunks\/[a-f0-9]{64}\.zst$/.test(url?.pathname || '') ||
+    immutableSockdrivePath(url?.pathname || '')
+  ) {
     return cacheValue(env, 'IMMUTABLE_CACHE_CONTROL', IMMUTABLE_CACHE_CONTROL)
   }
   const versioned = Boolean(url?.searchParams?.get('romv') || url?.searchParams?.get('v'))

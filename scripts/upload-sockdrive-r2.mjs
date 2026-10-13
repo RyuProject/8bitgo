@@ -20,6 +20,7 @@ import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { brotliDecompressSync, createBrotliDecompress, createGunzip, gunzipSync } from 'node:zlib'
+import { isVersionedSockdriveDirectory } from '../shared/sockdrive-url.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const arg = (name) => {
@@ -48,7 +49,7 @@ if (
 ) {
   throw new Error('--prefix 必须是安全的 ASCII 对象目录，不能含空白、DOS 保留字符、反斜杠或 . / .. 段')
 }
-if (!/(?:^|[-_/])v\d+(?:[-_.]|$)|[a-f0-9]{8,}$/i.test(prefix)) {
+if (!isVersionedSockdriveDirectory(prefix)) {
   throw new Error(`路径「${prefix}」必须带版本号或内容哈希；Sockdrive 分块禁止原地覆盖`)
 }
 
@@ -192,7 +193,11 @@ need('sockdrive.metaj')
 */
 for (const name of files) {
   if (name.endsWith('.metaj')) continue
-  const expected = name === 'preload.raw' ? small.size * metadata.ahead_read : metadata.ahead_read
+  const range = Number.parseInt(name, 10)
+  const expected = name === 'preload.raw'
+    ? small.size * metadata.ahead_read
+    // 最后一块允许短于 ahead_read；把它强行按整块验会让非整除尺寸的合法磁盘永远无法发布。
+    : Math.min(metadata.ahead_read, metadata.size * 1024 - range * metadata.ahead_read)
   const actual = await decodedFileSize(name, expected)
   if (actual !== expected) throw new Error(`${name} 解码后是 ${actual} 字节，应为 ${expected} 字节`)
 }

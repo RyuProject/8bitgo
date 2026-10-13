@@ -37,6 +37,12 @@ import {
   lockedAbsoluteContentRect,
   lockedAbsolutePointerAtClientPosition,
 } from '@/emulator/lockedAbsoluteMouse'
+import {
+  parseSockdrivePreload,
+  parseSockdriveWarmPlan,
+  planSockdriveWarmFiles,
+  sockdriveRuntimePreloadMode,
+} from '@/emulator/sockdriveWarm'
 
 const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
 const read = (rel) => readFileSync(path.join(root, rel), 'utf8')
@@ -52,6 +58,7 @@ const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$
 const tools = strip(read('src/emulator/EmulatorTools.tsx'))
 const player = strip(read('src/emulator/EmulatorPlayer.tsx'))
 const jsdos = strip(read('src/emulator/adapters/jsdos.ts'))
+const prewarm = strip(read('src/emulator/prewarm.ts'))
 
 /**
  * 全部跑完再汇总，不在第一条就退出。
@@ -249,14 +256,24 @@ check('异常位移不会把绝对光标污染成 NaN，下一帧仍可继续移
 
 console.log('\n── Windows Sockdrive：大型游戏按块读取 ──')
 
+check('Win95 悬停时预热正确的 DOSBox-X 核心和系统盘版本探测', () => {
+  assert.match(player, /prewarmCore = pageRuntime\?\.id === 'jsdos' && \(dosSystemUrl \|\| dosBackend === 'dosboxX'\)/)
+  assert.match(player, /prewarmRuntime\(pageRuntime\?\.id, prewarmCore, true\)/)
+  assert.match(player, /prewarmSystemCache\(dosSystemUrl\)/)
+  assert.match(prewarm, /jspiEnabled\(\) \? 'wdosbox-x-jspi' : 'wdosbox-x'/)
+  assert.match(prewarm, /warmHttpCache\(`\$\{emulatorRoot\}\$\{stem\}\.wasm`\)/)
+  assert.match(prewarm, /connection\?\.saveData/)
+  assert.match(prewarm, /effectiveType !== '2g'/)
+})
+
 check('配置流式目录后不再下载整包 ROM', () => {
   assert.match(jsdos, /const romTask = settled\(streamingGame\s*\?\s*Promise\.resolve\(null\)/)
   assert.match(jsdos, /streamingGame\s*\?\s*options\.dosExtras\?\.length/)
 })
 
-check('流式盘使用官方 default 预取，并挂到 DOSBox-X 的 Sockdrive', () => {
+check('流式盘按预算选择官方预取，并挂到 DOSBox-X 的 Sockdrive', () => {
   assert.match(jsdos, /buildSockdriveWindowsGuestConfig\(systemConfig, sockdriveUrl, dosboxConfig\)/)
-  assert.match(jsdos, /sockdrivePreload:\s*'default'/)
+  assert.match(jsdos, /streamingGame \? \{ sockdrivePreload \} : \{\}/)
   assert.match(jsdos, /windowsSockdriveLauncherFile\(gameExecutable, guest\.gameDrive\)/)
 })
 
@@ -266,6 +283,57 @@ check('流式盘必须走 URL bundle 入口，否则 js-dos 会把 changes URL �
   assert.match(jsdos, /verifySockdriveMetadata\(sockdriveUrl, abort\.signal\)/)
   assert.match(jsdos, /method:\s*'HEAD'/)
   assert.match(jsdos, /Sockdrive 分块 \$\{sample\} 读取失败/)
+})
+
+check('流式盘优先读取真实启动热点，并限制为两路预热与有限字节预算', () => {
+  assert.match(jsdos, /preload_ranges\.metaj/)
+  assert.match(jsdos, /planSockdriveWarmFiles\(plan, profile, sockdriveWarmBudget\(\)\)/)
+  assert.match(jsdos, /Math\.min\(2, warmFiles\.length\)/)
+  assert.match(jsdos, /cache:\s*'force-cache'/)
+  assert.match(jsdos, /bytes\.byteLength !== file\.expectedBytes/)
+})
+
+check('热点清单按真实对象去重，并在预算边界停止', () => {
+  const plan = parseSockdriveWarmPlan({
+    size: 1024,
+    ahead_read: 262144,
+    range_count: 4,
+    sector_size: 512,
+    dropped_ranges: [3],
+    small_ranges: [0, 2],
+    preload_ranges: [0, 1],
+  })
+  const profile = parseSockdrivePreload([2, 0, 1], plan.rangeCount, plan.dropped)
+  assert.deepEqual(planSockdriveWarmFiles(plan, profile, 1024 * 1024), [
+    { name: 'preload.raw', expectedBytes: 524288 },
+    { name: '1.raw', expectedBytes: 262144 },
+  ])
+  assert.deepEqual(planSockdriveWarmFiles(plan, profile, 600000), [
+    { name: 'preload.raw', expectedBytes: 524288 },
+  ])
+  assert.equal(
+    sockdriveRuntimePreloadMode(plan, profile, planSockdriveWarmFiles(plan, profile, 1024 * 1024)),
+    'default',
+  )
+  assert.equal(
+    sockdriveRuntimePreloadMode(plan, profile, planSockdriveWarmFiles(plan, profile, 600000)),
+    'none',
+  )
+  assert.equal(sockdriveRuntimePreloadMode(plan, [], []), 'default')
+  assert.equal(
+    sockdriveRuntimePreloadMode(plan, null, planSockdriveWarmFiles(plan, null, 1024 * 1024)),
+    'none',
+    '外置清单 404 时不能让上游把 JSON 错误体当数组',
+  )
+  assert.throws(() => parseSockdrivePreload([3], plan.rangeCount, plan.dropped), /无效的预取分块/)
+})
+
+check('Win95 致命错误是终态，迟到的 ci-ready 与兜底定时器不能再报成功', () => {
+  assert.match(jsdos, /let terminalErrorSent = false/)
+  assert.match(jsdos, /const failLoad = [\s\S]*?terminalErrorSent = true[\s\S]*?options\.onError/)
+  assert.match(jsdos, /if \(destroyed \|\| readySent \|\| terminalErrorSent\) return/)
+  assert.match(jsdos, /if \(destroyed \|\| terminalErrorSent\) return/)
+  assert.match(jsdos, /failLoad\(fmt\(rt\.jsdosRunFailed/)
 })
 
 check('流式扇区存档与旧文件层存档隔离', () => {

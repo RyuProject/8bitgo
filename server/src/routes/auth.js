@@ -242,9 +242,23 @@ authRouter.post('/google', async (req, res, next) => {
     }
     // 和 /register、/login 同一套闸。这条路以前一道都没有，而它每次调用都要外呼一次
     if (!authGateOk(req, res, { kind: 'google' })) return
-    const resp = await fetch('https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(credential))
-    if (!resp.ok) return res.status(401).json({ error: 'Google 凭证无效' })
-    const info = await resp.json()
+    let verification
+    try {
+      /*
+        复用 OIDC 的 10 秒超时与非 JSON 容错。直接 fetch 没有上限时，Google 或网络半断开会让
+        未认证请求长期占住源站连接；网关回 HTML 时也不该冒成一条难辨认的 JSON 解析异常。
+      */
+      verification = await fetchJson(
+        'https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(credential),
+      )
+    } catch (e) {
+      console.warn('[auth:google] 凭证校验服务暂时不可用：', e?.message || e)
+      return res.status(503).json({ error: 'Google 登录服务暂时不可用，请稍后再试' })
+    }
+    if (!verification.ok || !verification.data || typeof verification.data !== 'object') {
+      return res.status(401).json({ error: 'Google 凭证无效' })
+    }
+    const info = verification.data
     if (info.aud !== clientId) return res.status(401).json({ error: 'Google 凭证与本站不匹配' })
     // 字段缺失时也拒绝：拿不到「邮箱已验证」的证据就不能凭这个邮箱发身份
     if (info.email_verified !== true && info.email_verified !== 'true') {

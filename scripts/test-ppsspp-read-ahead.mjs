@@ -9,6 +9,8 @@ const TOTAL = BLOCK * 6
 function makeRuntime(effectiveType = '4g', saveData = false) {
   const requests = []
   const pending = []
+  let activeAsync = 0
+  let maxActiveAsync = 0
 
   class FakeXMLHttpRequest {
     constructor() {
@@ -22,6 +24,7 @@ function makeRuntime(effectiveType = '4g', saveData = false) {
       this.timeout = 0
       this.withCredentials = false
       this.aborted = false
+      this.asyncActive = false
     }
 
     open(method, url, async = true) {
@@ -46,6 +49,10 @@ function makeRuntime(effectiveType = '4g', saveData = false) {
       requests.push({ start, end, async: this.async })
       const finish = () => {
         if (this.aborted) return
+        if (this.asyncActive) {
+          this.asyncActive = false
+          activeAsync--
+        }
         this.status = 206
         this.statusText = 'Partial Content'
         this.readyState = 4
@@ -54,13 +61,22 @@ function makeRuntime(effectiveType = '4g', saveData = false) {
         this.onreadystatechange?.({ target: this })
         this.onload?.({ target: this })
       }
-      if (this.async) pending.push(finish)
+      if (this.async) {
+        this.asyncActive = true
+        activeAsync++
+        maxActiveAsync = Math.max(maxActiveAsync, activeAsync)
+        pending.push(finish)
+      }
       else finish()
     }
 
     abort() {
       if (this.aborted) return
       this.aborted = true
+      if (this.asyncActive) {
+        this.asyncActive = false
+        activeAsync--
+      }
       this.onabort?.({ target: this })
     }
 
@@ -96,7 +112,15 @@ function makeRuntime(effectiveType = '4g', saveData = false) {
   }
 
   const flushOne = () => pending.shift()?.()
-  return { context, demand, flushOne, requests, pending }
+  return {
+    context,
+    demand,
+    flushOne,
+    requests,
+    pending,
+    activeAsync: () => activeAsync,
+    maxActiveAsync: () => maxActiveAsync,
+  }
 }
 
 {
@@ -141,6 +165,16 @@ function makeRuntime(effectiveType = '4g', saveData = false) {
   runtime.demand(BLOCK * 4, BLOCK * 5 - 1)
   assert.equal(runtime.requests.filter((request) => !request.async).at(-1).start, BLOCK * 4, '随机寻道必须让正式请求立即接管')
   assert.ok(runtime.context.__8bitgoPspRangeWarmStats().queuedBlocks <= 2)
+}
+
+{
+  const runtime = makeRuntime()
+  runtime.demand(0, BLOCK - 1)
+  assert.equal(runtime.activeAsync(), 1)
+  // 正式请求追上正在预读的下一块时，abort 可能同步触发 onabort；这里专门守住那个重入窗口。
+  runtime.demand(BLOCK, BLOCK * 2 - 1)
+  assert.equal(runtime.activeAsync(), 1, '正式读盘撞上预读时，后台仍只能保留一条请求')
+  assert.equal(runtime.maxActiveAsync(), 1, '取消回调不能重入队列并放出第二条并发预读')
 }
 
 {

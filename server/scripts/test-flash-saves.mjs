@@ -106,9 +106,11 @@ check('旧 AGI 全量结果只暴露完整槽，权益字段由服务端覆盖',
 check('方言逐游戏绑定，未知 slug 退回 agi1 而不是乱猜', () => {
   assert.equal(flashSaveProtocol('infectonator-2'), 'agi1')
   assert.equal(flashSaveProtocol('kingdom-rushfrontiers'), 'agi2')
+  assert.equal(flashSaveProtocol('sas-zombie-assault-3'), 'agi2')
   assert.equal(flashSaveProtocol('some-unreviewed-game'), 'agi1')
   assert.match(flashSaveBridgeUrl('infectonator-2'), /\/AGI\.swf$/)
   assert.match(flashSaveBridgeUrl('kingdom-rushfrontiers'), /\/AGI2\.swf$/)
+  assert.match(flashSaveBridgeUrl('sas-zombie-assault-3'), /\/Banana\.swf$/)
 })
 
 check('AGI2 只认 slot1~3', () => {
@@ -168,8 +170,9 @@ check('写入选项 opId / expectedRevision 可选，但边界要挡住', () => 
 })
 
 check('新游戏同时在白名单和方言表里才放行', () => {
-  const withKrf = { FLASH_SAVE_GAMES: 'infectonator-2,kingdom-rushfrontiers' }
+  const withKrf = { FLASH_SAVE_GAMES: 'infectonator-2,kingdom-rushfrontiers,sas-zombie-assault-3' }
   assert.equal(flashSaveGameEnabled('kingdom-rushfrontiers', withKrf), true)
+  assert.equal(flashSaveGameEnabled('sas-zombie-assault-3', withKrf), true)
   assert.equal(flashSaveGameEnabled('kingdom-rushfrontiers', { FLASH_SAVE_GAMES: 'infectonator-2' }), false)
 })
 

@@ -97,7 +97,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
 
   const request = (type: string, payload: Record<string, unknown>): Promise<unknown> => {
-    if (destroyed) return Promise.reject(new Error('PPSSPP 会话已经关闭'))
+    if (destroyed || fatalReported) return Promise.reject(new Error('PPSSPP 会话已经关闭'))
     const id = ++requestId
     return new Promise((resolve, reject) => {
       const timer = window.setTimeout(() => {
@@ -109,10 +109,25 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     })
   }
 
-  const reportFatal = (message: string) => {
+  const rejectPending = (message: string) => {
+    for (const entry of pending.values()) {
+      window.clearTimeout(entry.timer)
+      entry.reject(new Error(message))
+    }
+    pending.clear()
+  }
+
+  const failSession = (message: string, pendingMessage = 'PPSSPP 会话启动失败') => {
     if (destroyed || fatalReported) return
     fatalReported = true
-    options.onError?.(fmt(rt.ppssppLoadFailed, { msg: message }))
+    window.clearTimeout(hostTimer)
+    probeController.abort(new Error(pendingMessage))
+    rejectPending(pendingMessage)
+    options.onError?.(message)
+  }
+
+  const reportFatal = (message: string) => {
+    failSession(fmt(rt.ppssppLoadFailed, { msg: message }), message)
   }
 
   async function prepareGame(): Promise<File | RemoteDiscDescriptor> {
@@ -146,20 +161,20 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   async function boot(): Promise<void> {
     // iframe 恢复缓存或脚本被重复执行时可能再次发 host-ready；第二次 boot 会同时挂两张盘，
     // 而 host 只允许 start 一次，外层就会把真实成功误报成失败。
-    if (bootStarted || destroyed) return
+    if (bootStarted || destroyed || fatalReported) return
     bootStarted = true
     try {
       if (!globalThis.crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') {
         throw new Error(rt.ppssppNeedsIsolation)
       }
       const game = await prepareGame()
-      if (destroyed) return
+      if (destroyed || fatalReported) return
       // 存档包必须带站内游戏身份，不能只信 PPSSPP 盘内文件名：同一游戏的地区版/汉化版
       // 可能共享标题，读错状态的结果通常不是明确报错，而是几分钟后随机崩溃。
       const stateId = options.gameSlug || `local:${discNameOf(options.game, options.gameName)}`
       if (game instanceof File) await request('mount-local', { file: game, stateId })
       else await request('mount-remote', { remote: game, stateId })
-      if (destroyed) return
+      if (destroyed || fatalReported) return
 
       ready = true
       options.onProgress?.({ phase: 'starting', startup: 1 })
@@ -180,7 +195,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
 
   const onMessage = (event: MessageEvent) => {
-    if (destroyed || event.source !== iframe.contentWindow || event.origin !== location.origin) return
+    if (destroyed || fatalReported || event.source !== iframe.contentWindow || event.origin !== location.origin) return
     const message = event.data as BridgeMessage | null
     if (!message || message.source !== BRIDGE_SOURCE || message.version !== BRIDGE_VERSION) return
 
@@ -236,8 +251,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   iframe.src = `${PPSSPP_RUNTIME_PATH}index.html?embed=1`
   hostTimer = window.setTimeout(() => {
     if (!destroyed && !ready && !fatalReported) {
-      fatalReported = true
-      options.onError?.(rt.ppssppStartTimeout)
+      failSession(rt.ppssppStartTimeout, 'PPSSPP 运行时页面启动超时')
     }
   }, HOST_TIMEOUT_MS)
 
@@ -294,11 +308,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       probeController.abort()
       window.clearTimeout(hostTimer)
       window.removeEventListener('message', onMessage)
-      for (const entry of pending.values()) {
-        window.clearTimeout(entry.timer)
-        entry.reject(new Error('PPSSPP 会话已经关闭'))
-      }
-      pending.clear()
+      rejectPending('PPSSPP 会话已经关闭')
       iframe.remove()
     },
   }

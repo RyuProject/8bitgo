@@ -65,6 +65,15 @@ import {
   lockedAbsolutePointerAtClientPosition,
 } from '../lockedAbsoluteMouse'
 import { windowsGameCompatibilityExtras } from '../windowsGameCompatibility'
+import {
+  parseSockdrivePreload,
+  parseSockdriveWarmPlan,
+  planSockdriveWarmFiles,
+  sockdriveRuntimePreloadMode,
+  type SockdriveRuntimePreload,
+  type SockdriveWarmFile,
+  type SockdriveWarmPlan,
+} from '../sockdriveWarm'
 
 /** P2P 模式的撮合服务器。自建的话见 https://github.com/caiiiycuk/WebRTC-NET（Go） */
 export const JSDOS_PEER_SERVER: string = import.meta.env.VITE_JSDOS_PEER_SERVER || 'https://net.dos.zone'
@@ -690,111 +699,194 @@ async function loadExtras(
   return out
 }
 
+const SOCKDRIVE_METADATA_LIMIT = 1024 * 1024
+const SOCKDRIVE_WARM_DESKTOP_BYTES = 16 * 1024 * 1024
+const SOCKDRIVE_WARM_3G_BYTES = 4 * 1024 * 1024
+
+function sockdriveWarmBudget(): number {
+  const connection = (navigator as Navigator & {
+    connection?: { saveData?: boolean; effectiveType?: string }
+  }).connection
+  if (connection?.saveData || /(?:^|-)2g$/i.test(connection?.effectiveType ?? '')) return 0
+  if (connection?.effectiveType === '3g') return SOCKDRIVE_WARM_3G_BYTES
+  return SOCKDRIVE_WARM_DESKTOP_BYTES
+}
+
+async function readSockdrivePreloadProfile(
+  url: string,
+  plan: SockdriveWarmPlan,
+  signal: AbortSignal,
+): Promise<number[] | null> {
+  const controller = new AbortController()
+  const relayAbort = () => controller.abort(signal.reason)
+  if (signal.aborted) relayAbort()
+  else signal.addEventListener('abort', relayAbort, { once: true })
+  const timer = window.setTimeout(() => controller.abort(), 12_000)
+  const cleanup = () => {
+    window.clearTimeout(timer)
+    signal.removeEventListener('abort', relayAbort)
+  }
+  let response: Response
+  try {
+    response = await fetch(`${url}/preload_ranges.metaj`, {
+      signal: controller.signal,
+      cache: 'force-cache',
+    })
+  } catch (error) {
+    cleanup()
+    if (signal.aborted) throw error
+    // 本站仍按主清单做受限预热，但不再让上游重试：它会把 Worker 的 JSON 错误体误当成数组。
+    console.warn('[jsdos] Sockdrive 热点清单读取失败，退回主清单的受限预热', error)
+    return null
+  }
+  if (response.status === 404) {
+    cleanup()
+    return null
+  }
+  if (!response.ok) {
+    cleanup()
+    console.warn(`[jsdos] Sockdrive 热点清单返回 HTTP ${response.status}，退回主清单的受限预热`)
+    return null
+  }
+  const declaredLength = Number(response.headers.get('content-length'))
+  if (Number.isFinite(declaredLength) && declaredLength > SOCKDRIVE_METADATA_LIMIT) {
+    cleanup()
+    throw new Error('Sockdrive 热点清单超过 1MB，拒绝在开局时读取')
+  }
+  let bytes: ArrayBuffer
+  try {
+    bytes = await response.arrayBuffer()
+  } catch (error) {
+    if (signal.aborted) throw error
+    console.warn('[jsdos] Sockdrive 热点清单正文读取失败，退回主清单的受限预热', error)
+    return null
+  } finally {
+    cleanup()
+  }
+  if (bytes.byteLength > SOCKDRIVE_METADATA_LIMIT) throw new Error('Sockdrive 热点清单超过 1MB，拒绝在开局时读取')
+  try {
+    return parseSockdrivePreload(JSON.parse(new TextDecoder().decode(bytes)), plan.rangeCount, plan.dropped)
+  } catch (error) {
+    throw new Error(`Sockdrive 热点清单无效（${error instanceof Error ? error.message : String(error)}）`)
+  }
+}
+
+async function warmSockdriveFile(
+  url: string,
+  file: SockdriveWarmFile,
+  signal: AbortSignal,
+): Promise<void> {
+  let failure: unknown = null
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const bytes = await fetchWithProgress(`${url}/${file.name}`, {
+        signal,
+        cache: 'force-cache',
+        phase: 'assets',
+        maxBytes: file.expectedBytes,
+      })
+      if (bytes.byteLength !== file.expectedBytes) {
+        throw new Error(`长度 ${bytes.byteLength}，应为 ${file.expectedBytes}`)
+      }
+      return
+    } catch (error) {
+      failure = error
+      if (signal.aborted || attempt > 0) break
+      await new Promise<void>((resolve, reject) => {
+        const onAbort = () => {
+          window.clearTimeout(timer)
+          reject(signal.reason)
+        }
+        const timer = window.setTimeout(() => {
+          signal.removeEventListener('abort', onAbort)
+          resolve()
+        }, 250)
+        signal.addEventListener('abort', onAbort, { once: true })
+      })
+    }
+  }
+  throw new Error(`Sockdrive 启动分块 ${file.name} 读取失败（${failure instanceof Error ? failure.message : String(failure)}）`)
+}
+
+async function headSockdriveFile(url: string, sample: string, signal: AbortSignal): Promise<void> {
+  const controller = new AbortController()
+  const relayAbort = () => controller.abort(signal.reason)
+  if (signal.aborted) relayAbort()
+  else signal.addEventListener('abort', relayAbort, { once: true })
+  const timer = window.setTimeout(() => controller.abort(), 15_000)
+  try {
+    const response = await fetch(`${url}/${sample}`, {
+      method: 'HEAD',
+      signal: controller.signal,
+      cache: 'force-cache',
+    })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  } catch (error) {
+    const reason = controller.signal.aborted && !signal.aborted
+      ? '15 秒没有收到响应'
+      : error instanceof Error ? error.message : String(error)
+    throw new Error(`Sockdrive 分块 ${sample} 读取失败（${reason}）`)
+  } finally {
+    window.clearTimeout(timer)
+    signal.removeEventListener('abort', relayAbort)
+  }
+}
+
 /**
- * 在下载几十 MB 的共享系统镜像期间并行探活流式盘。
- *
- * js-dos 对某个 `.raw` 连续失败后的行为是记日志并让磁盘读继续等待，玩家看到的往往只是
- * Windows 黑屏；先验证清单至少能把“目录写错 / CORS 拒绝 / 上传不完整的元数据”变成明确错误。
+ * 在下载共享系统镜像时并行验证磁盘，并把真正的启动热点送入浏览器缓存。
+ * js-dos 自己遇到缺块通常只会持续等盘，所以这里必须把发布残缺还原成明确错误。
  */
-async function verifySockdriveMetadata(url: string, signal: AbortSignal): Promise<void> {
+async function verifySockdriveMetadata(url: string, signal: AbortSignal): Promise<SockdriveRuntimePreload> {
   let bytes: ArrayBuffer
   try {
     bytes = await fetchWithProgress(`${url}/sockdrive.metaj`, {
       signal,
-      cache: 'no-store',
+      // 发布器强制版本化且 immutable；复用清单缓存可省掉每次开局的一次跨域往返。
+      cache: 'force-cache',
       phase: 'assets',
       // 正常清单只有几 KB；上限也能挡住错误配置返回整页 HTML / 大文件时的内存浪费。
-      maxBytes: 1024 * 1024,
+      maxBytes: SOCKDRIVE_METADATA_LIMIT,
     })
   } catch (error) {
     throw new Error(`Sockdrive 元数据读取失败（${error instanceof Error ? error.message : String(error)}）`)
   }
-  let metadata: Record<string, unknown>
+  let metadata: unknown
   try {
-    metadata = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>
+    metadata = JSON.parse(new TextDecoder().decode(bytes))
   } catch {
     throw new Error('Sockdrive 元数据不是有效 JSON（可能被站点回退页替换）')
   }
-  const integer = (key: string) => {
-    const value = metadata[key]
-    if (!Number.isSafeInteger(value) || Number(value) <= 0) throw new Error(`Sockdrive 元数据字段 ${key} 无效`)
-    return Number(value)
-  }
-  const sizeKb = integer('size')
-  const aheadRead = integer('ahead_read')
-  const rangeCount = integer('range_count')
-  const sectorSize = integer('sector_size')
-  if (!Number.isSafeInteger(sizeKb * 1024) || Math.ceil(sizeKb * 1024 / aheadRead) !== rangeCount) {
-    throw new Error('Sockdrive 元数据的磁盘大小与分块数量不一致')
-  }
-  if (aheadRead % sectorSize !== 0) throw new Error('Sockdrive 分块大小不是扇区大小的整数倍')
-  const seen = new Set<number>()
-  const dropped = new Set<number>()
-  const small = new Set<number>()
-  for (const key of ['dropped_ranges', 'small_ranges'] as const) {
-    const values = metadata[key] ?? []
-    if (!Array.isArray(values)) throw new Error(`Sockdrive 元数据字段 ${key} 不是数组`)
-    for (const raw of values) {
-      if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0 || raw >= rangeCount || seen.has(raw)) {
-        throw new Error(`Sockdrive 元数据包含越界或重复分块：${String(raw)}`)
-      }
-      seen.add(raw)
-      if (key === 'dropped_ranges') dropped.add(raw)
-      else small.add(raw)
+  const plan = parseSockdriveWarmPlan(metadata)
+  const profile = await readSockdrivePreloadProfile(url, plan, signal)
+  const warmFiles = planSockdriveWarmFiles(plan, profile, sockdriveWarmBudget())
+
+  // 两路足够覆盖元数据与系统镜像的网络等待，又不会像全量并发那样把 Win95 系统盘饿死。
+  let cursor = 0
+  const worker = async () => {
+    for (;;) {
+      const file = warmFiles[cursor++]
+      if (!file) return
+      await warmSockdriveFile(url, file, signal)
     }
   }
-  const preload = metadata.preload_ranges ?? []
-  if (!Array.isArray(preload)) throw new Error('Sockdrive 元数据字段 preload_ranges 不是数组')
-  const preloadSeen = new Set<number>()
-  for (const raw of preload) {
-    if (
-      typeof raw !== 'number' ||
-      !Number.isInteger(raw) ||
-      raw < 0 ||
-      raw >= rangeCount ||
-      dropped.has(raw) ||
-      preloadSeen.has(raw)
-    ) {
-      throw new Error(`Sockdrive 元数据包含无效的预取分块：${String(raw)}`)
-    }
-    preloadSeen.add(raw)
-  }
+  await Promise.all(Array.from({ length: Math.min(2, warmFiles.length) }, worker))
+
+  const runtimePreload = sockdriveRuntimePreloadMode(plan, profile, warmFiles)
 
   /*
     清单存在不代表分块齐全：手工发布、对象被误删或“先传元数据后传数据”都会让玩家在启动中途
     黑屏。挑一个真实会读到的文件做 HEAD 探活，不下载 256KB 正文，也能提前暴露 404 / CORS。
   */
-  let sample = ''
-  for (let range = 0; range < rangeCount; range++) {
-    if (!dropped.has(range) && !small.has(range)) {
-      sample = `${range}.raw`
-      break
-    }
+  if (warmFiles.length) return runtimePreload
+  const preferred = profile ?? plan.preload
+  const firstHot = preferred.find((range) => !plan.dropped.has(range))
+  let sample = firstHot === undefined ? '' : plan.small.has(firstHot) ? 'preload.raw' : `${firstHot}.raw`
+  for (let range = 0; !sample && range < plan.rangeCount; range++) {
+    if (!plan.dropped.has(range) && !plan.small.has(range)) sample = `${range}.raw`
   }
-  if (!sample && small.size) sample = 'preload.raw'
-  if (sample) {
-    const controller = new AbortController()
-    const relayAbort = () => controller.abort(signal.reason)
-    if (signal.aborted) relayAbort()
-    else signal.addEventListener('abort', relayAbort, { once: true })
-    const timer = window.setTimeout(() => controller.abort(), 15_000)
-    try {
-      const response = await fetch(`${url}/${sample}`, {
-        method: 'HEAD',
-        signal: controller.signal,
-        cache: 'no-store',
-      })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    } catch (error) {
-      const reason = controller.signal.aborted && !signal.aborted
-        ? '15 秒没有收到响应'
-        : error instanceof Error ? error.message : String(error)
-      throw new Error(`Sockdrive 分块 ${sample} 读取失败（${reason}）`)
-    } finally {
-      window.clearTimeout(timer)
-      signal.removeEventListener('abort', relayAbort)
-    }
-  }
+  if (!sample && plan.small.size) sample = 'preload.raw'
+  if (sample) await headSockdriveFile(url, sample, signal)
+  return runtimePreload
 }
 
 export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
@@ -817,6 +909,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /** onReady 的延时兜底定时器，销毁时要清掉 */
   let readyFallback = 0
   let readySent = false
+  /** 一次失败就是终态；否则迟到的 ci-ready / 兜底定时器会把错误会话重新标成“运行中”。 */
+  let terminalErrorSent = false
   /** 玩家切走时把还在下的系统镜像 / ROM 掐掉：近百 MB 的镜像不该在后台继续吞流量、写缓存 */
   const abort = new AbortController()
   /** emu-ready 到过没有（引擎壳起来了）；ci-ready 才是 DOSBox 真的在跑 */
@@ -846,8 +940,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 它看不出中间那个 await 期间 push 回调把值改掉了。
    */
   const readLastPush = () => lastPush
+  const failLoad = (message: string) => {
+    if (destroyed || terminalErrorSent) return
+    terminalErrorSent = true
+    window.clearTimeout(readyFallback)
+    cancelWindowsLaunch?.()
+    cancelWindowsLaunch = null
+    if (!abort.signal.aborted) abort.abort(new Error(message))
+    options.onError?.(message)
+  }
   const markReady = () => {
-    if (destroyed || readySent) return
+    if (destroyed || readySent || terminalErrorSent) return
     readySent = true
     window.clearTimeout(readyFallback)
     options.onReady?.()
@@ -912,7 +1015,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         : loadExtras(options.dosExtras, abort.signal))
       const sockdriveTask = settled(streamingGame
         ? verifySockdriveMetadata(sockdriveUrl, abort.signal)
-        : Promise.resolve())
+        : Promise.resolve<SockdriveRuntimePreload>('none'))
       /*
         系统镜像走**多源兜底**（见 ../systemSource）：主源是我们自己的资源域名，
         取不到或者卡死就换 js-dos 官方源。它是 Win9x/Win3.x 游戏的硬前提 ——
@@ -945,6 +1048,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
       const sockdriveResult = await sockdriveTask
       if (sockdriveResult.error) throw concurrentFailure ?? sockdriveResult.error
+      const sockdrivePreload = sockdriveResult.value ?? 'none'
 
       const systemResult = await systemTask
       // 并发资源先失败时，AbortError 只是连带结果；玩家真正需要的是最先发生的原始错误。
@@ -1133,8 +1237,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         imageRendering: 'pixelated',
         // Windows 开机最耗时；第一次键盘输入会自动退出倍速，所以不会把游戏本体也加速。
         ...(guest ? { fastForwardOnBoot: 5 } : {}),
-        // default 只预取 sockify 记录的首屏扇区；其余块在客体真正读取时才下载。
-        ...(streamingGame ? { sockdrivePreload: 'default' } : {}),
+        /*
+          js-dos 的 default 不认识我们的网络预算，会把外置热点清单四路全拉。清单已完整预热时
+          让它把 HTTP 缓存搬进 OPFS；预算截断时用 none，剩余分块只在客体真正读取时下载。
+        */
+        ...(streamingGame ? { sockdrivePreload } : {}),
         /**
          * 存档。普通 DOS 存文件层变更；Sockdrive 存被写过的磁盘扇区，都不是内存快照。
          * 玩家仍要先在游戏里存盘，播放器的按钮只是把已经发生的磁盘改动固化下来。
@@ -1197,7 +1304,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               },
             }),
         onEvent: (event: string, arg?: unknown) => {
-          if (destroyed) return
+          if (destroyed || terminalErrorSent) return
           if (event === 'emu-ready') {
             // 只是模拟器壳起来了：包还没解、DOSBox 还没跑。以前这里就 markReady，第二局起
             // js-dos 已经在内存里，emu-ready 在 Dos() 里同步就到 —— 遮罩当场撤掉，玩家对着黑屏
@@ -1246,7 +1353,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                   // 确认不了「客体里有反应」。这一定发生在 markReady 之前，
                   // 所以播放器还能自动重试一次；以前这条链根本没有失败出口
                   (msg) => {
-                    if (!destroyed && !readySent) options.onError?.(fmt(rt.jsdosRunFailed, { msg }))
+                    if (!destroyed && !readySent) failLoad(fmt(rt.jsdosRunFailed, { msg }))
                   },
                   // 另外两个里程碑：桌面画完了 / 启动命令敲完了。只推进度条，不参与成败判定
                   (step) => {
@@ -1284,7 +1391,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             options.onStart?.()
           }
           else if (event === 'emu-error' || event === 'bnd-error') {
-            options.onError?.(fmt(rt.jsdosRunFailed, { msg: String(arg ?? '') }))
+            failLoad(fmt(rt.jsdosRunFailed, { msg: String(arg ?? '') }))
           }
         },
       }) as DosProps
@@ -1308,28 +1415,26 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
        */
       if (!guest) {
         readyFallback = window.setTimeout(() => {
-          if (readySent) return
+          if (readySent || terminalErrorSent) return
           // 引擎壳起来了只是 ci-ready 没等到（老版本 / 事件漏了）：按老规矩放行。
           // 连壳都没起来（wasm 没下到、包 404），以前也 markReady —— 播放器显示「运行中」，
           // 画面是 kiosk 模式下什么都不显示的黑屏；现在报错，让它走自动重试那条路
           if (engineUp || ci) markReady()
-          else options.onError?.(fmt(rt.jsdosRunFailed, { msg: 'DOSBox did not start' }))
+          else failLoad(fmt(rt.jsdosRunFailed, { msg: 'DOSBox did not start' }))
         }, 8000)
       } else {
         // CI 创建期间 js-dos 要在 WASM 内挂载近百 MB 的 qcow2；旧的 45 秒宽限会让慢设备
         // 在即将成功前被误判。真实引擎错误仍会立即走 emu-error，这里只拦真正的长时间失联。
         const timeoutMs = windowsGuestStartupBudgetMs(options.dosLaunchDelay)
         readyFallback = window.setTimeout(() => {
-          if (!readySent) {
-            options.onError?.(fmt(rt.jsdosRunFailed, { msg: 'Windows 客体初始化超时，未能执行自启动程序' }))
+          if (!readySent && !terminalErrorSent) {
+            failLoad(fmt(rt.jsdosRunFailed, { msg: 'Windows 客体初始化超时，未能执行自启动程序' }))
           }
         }, timeoutMs)
       }
     } catch (e) {
       if (destroyed) return
-      // 任一路失败后，其余并发下载已经没有用途；立即停掉，避免错误页背后继续吞几十 MB。
-      abort.abort(e)
-      options.onError?.(fmt(rt.jsdosLoadFailed, { msg: e instanceof Error ? e.message : String(e) }))
+      failLoad(fmt(rt.jsdosLoadFailed, { msg: e instanceof Error ? e.message : String(e) }))
     }
   })()
 

@@ -26,6 +26,7 @@ import type { ArcadeButtonCount, PlatformId } from '@/types'
 import { EJS_ARCADE_DEFAULT_CONTROLS, EJS_DEFAULT_CONTROLS } from '@/lib/keymapData'
 import type { Capability, CaptureSources, LoadPhase, LoadProgress, MountOptions, RuntimeHandle, StageMode } from '../types'
 import { fetchBlobWithProgress, fetchWithProgress, throttleProgress } from '../loadProgress'
+import { emulatorJsDownloadPhase, isCriticalEmulatorJsDownload } from '../emulatorjsDownload'
 import { downloadResumeStore } from '../downloadResume'
 import { romCacheDelete, romCacheGetBlob, romCacheKey, romCachePutBlob } from '../romCache'
 import { focusFrame, frameGamepads } from '../frameFocus'
@@ -772,6 +773,11 @@ const FATAL_PHRASES = [
   'failed to load the content data, the frontend may have a bug',
   'failed to create melonds ds system subdirectory',
   'failed to get system directory',
+  // mame-current：内容不在子目录时核心会进系统菜单，却仍可能把前端标成 started。
+  // 这三句必须在“假成功”撤掉加载遮罩之前拦住，否则玩家只会看到 No Driver Loaded 菜单。
+  'error parsing system name',
+  'error parsing parent path',
+  'no driver loaded',
 ]
 
 /*
@@ -1000,7 +1006,7 @@ function installNetTap(
     /** 有任何网络动静就拍一下，卡死检测靠它判断「引擎还有没有在动」 */
     onBeat: () => void
     /** 开不了局的文件下载失败了（HTTP 4xx / 5xx） */
-    onFailed: (status: number, url: string) => void
+    onFailed: (status: number, url: string, phase: LoadPhase) => void
   },
 ) {
   const emit = throttleProgress(ctx.onProgress)
@@ -1009,21 +1015,15 @@ function installNetTap(
   /**
    * 这一趟是不是「没有它就开不了局」。
    *
-   * 只认 ROM 和 BIOS —— 正好是上面那个 TypeError 死锁的两条路径。核心不算：
-   * 它下载失败时 EmulatorJS 会自己退到官方 CDN 再试一次，抢在它前面报错，
-   * 等于把本来能救回来的一局掐掉；socket.io 之类断了更不影响单机。
+   * ROM、BIOS 与核心都认。核心以前被刻意放行给官方 CDN 兜底，但本站自建引擎的回落地址
+   * 是已验证不兼容的 4.3.0-pre：不但救不回来，还会多下一个大核心并把坏结果写进 IndexedDB。
+   * socket.io 之类仍不算致命，断了不影响单机。
    */
   const critical = (url: string): boolean =>
-    Boolean(url) &&
-    ((Boolean(ctx.gameUrl) && url.startsWith(ctx.gameUrl)) || (Boolean(ctx.biosUrl) && url.startsWith(ctx.biosUrl!)))
+    isCriticalEmulatorJsDownload(url, ctx.gameUrl, ctx.biosUrl)
 
   /** 按 URL 认这一趟在下什么。认不出来的（socket.io 之类）一律算配套资源 */
-  const phaseOf = (url: string): LoadPhase => {
-    if (url && ctx.gameUrl && url.startsWith(ctx.gameUrl)) return 'rom'
-    // 核心与它的资源包：cores/<core>-wasm.data
-    if (/\/cores\/|-wasm\.data/.test(url)) return 'engine'
-    return 'assets'
-  }
+  const phaseOf = (url: string): LoadPhase => emulatorJsDownloadPhase(url, ctx.gameUrl)
 
   /* ---------------- fetch（引擎真正在用的那条） ---------------- */
 
@@ -1062,7 +1062,7 @@ function installNetTap(
 
       // 4xx / 5xx 必须在这里截住 —— 交给 EmulatorJS 的话它会死锁，见 critical() 的说明
       if (res.status >= 400) {
-        if (critical(url)) ctx.onFailed(res.status, url)
+        if (critical(url)) ctx.onFailed(res.status, url, phaseOf(url))
         return res
       }
       // 没有 body（HEAD、204、opaque）就没什么可数的
@@ -1136,7 +1136,7 @@ function installNetTap(
       ctx.onBeat()
       // 4xx / 5xx 必须在这里截住 —— 交给 EmulatorJS 的话它会死锁，见上面的说明
       if (this.status >= 400) {
-        if (critical(url)) ctx.onFailed(this.status, url)
+        if (critical(url)) ctx.onFailed(this.status, url, phase)
         return
       }
       // 下完这一趟就把条推满，别停在 97% 上等解压。
@@ -1253,6 +1253,9 @@ function injectScript(doc: Document, src: string, timeoutMs?: number): Promise<v
       ? window.setTimeout(() => {
           s.onload = null
           s.onerror = null
+          // 超时后必须移除：否则它可能在 loader.js 已经启动后才姗姗来迟，
+          // 让本局处于“页面有 io、引擎初始化时却没有 io”的半初始化状态。
+          s.remove()
           reject(new Error(`${src} (超时)`))
         }, timeoutMs)
       : 0
@@ -1265,6 +1268,22 @@ function injectScript(doc: Document, src: string, timeoutMs?: number): Promise<v
     s.onload = () => done(resolve)
     s.onerror = () => done(() => reject(new Error(src)))
     doc.head.appendChild(s)
+  })
+}
+
+/** 可选资源只等固定时间；成功时清掉计时器，避免每局多留一个无意义的 6 秒回调。 */
+function optionalWithin<T>(task: Promise<T>, timeoutMs: number): Promise<T | null> {
+  return new Promise((resolve) => {
+    let settled = false
+    let timer = 0
+    const done = (value: T | null) => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(timer)
+      resolve(value)
+    }
+    timer = window.setTimeout(() => done(null), timeoutMs)
+    void task.then((value) => done(value), () => done(null))
   })
 }
 
@@ -1936,9 +1955,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (errorTap.lines.length > LOG_LIMIT) errorTap.lines.shift()
   }
   const reportedErrors = new Set<string>()
+  /**
+   * 一次启动只能向播放器上报一个终止错误。核心常把同一根因拆成多行（例如 MAME 先报
+   * parent path、再报 No Driver Loaded）；连续 onError 会同时触发重试与错误态，旧会话的
+   * 第二条回调甚至可能盖到新会话上。用这道闩把整条失败链收成一个终态。
+   */
+  let loadFailed = false
   /** 开局前的致命错误：报上去并停掉轮询（播放器收到 onError 会把这局拆掉） */
   const failLoad = (message: string) => {
-    if (destroyed || started) return
+    if (destroyed || started || loadFailed) return
+    loadFailed = true
     window.clearInterval(startWatch)
     options.onError?.(message)
   }
@@ -1957,7 +1983,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       logEngine(`[engine] ${line}`)
       return
     }
-    options.onError?.(fmt(rt.ejsEngineError, { msg: line }))
+    failLoad(fmt(rt.ejsEngineError, { msg: line }))
   }
   // 本地文件转成 blob: URL（同源 iframe 可直接访问）；gameName 用原始文件名以保留扩展名
   const isFile = typeof options.game !== 'string'
@@ -3012,6 +3038,30 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         if (isFile && validateNds) await validateNds(options.game as File)
 
         /**
+         * 这些工作以前全排在 ROM 下载**之后**：几十 MB 的 romset 下完，才开始清引擎缓存、
+         * 拉 socket.io / ICE，再开始额外 BIOS。它们彼此没有数据依赖，串行只会把各自 RTT
+         * 和慢请求一段段加到冷启动上。现在趁 ROM 下载占用网络等待时间并行做，真正需要
+         * loader.js 时再统一收口；任一可选任务失败仍沿用原来的降级策略。
+         */
+        const biosPlan = planBiosFiles(options.biosUrl, options.biosSet)
+        const biosDownloads = new Map<string, Promise<Uint8Array | null>>()
+        for (const file of biosPlan.files) {
+          // Map 构造前先执行 files.map(...) 会让重复 URL 的 fetch 都已经发出去；必须先查再启动。
+          // fetchBiosBytes 自己把网络失败收成 null，因此并行期间也不会产生未处理的 rejection。
+          if (!biosDownloads.has(file.url)) {
+            biosDownloads.set(
+              file.url,
+              fetchBiosBytes(file.url, beat, options.onProgress, prepareAbort.signal),
+            )
+          }
+        }
+        const cachePurgeTask = purgePoisonedEngineCache()
+        const socketIoTask: Promise<unknown | null> = NETPLAY_URL
+          ? injectScript(doc, socketIoScriptUrl(), 8_000).then(() => null, (error: unknown) => error)
+          : Promise.resolve(null)
+        const iceTask = NETPLAY_URL ? optionalWithin(fetchIceConfig(), 6_000) : Promise.resolve(null)
+
+        /**
          * 只处理「远程 + 街机」：本地文件本来就是 Blob，其他平台的压缩包需要让引擎照常
          * 解开，不能一刀切。必须在写 EJS_* 和加载 loader.js 之前完成，否则引擎会抢先
          * 读取旧 URL，这一局里再改全局变量已经来不及。
@@ -3181,7 +3231,6 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
          *
          * 所以 plan 必须在**这里**就先算出来（下面写文件时复用同一个对象，不重算）。
          */
-        const biosPlan = planBiosFiles(options.biosUrl, options.biosSet)
         const platformBiosName = biosNameOfUrl(options.biosUrl)
         const gameBiosName = options.biosSet?.name?.trim().toLowerCase() ?? ''
         const skipPlatformBios = Boolean(
@@ -3362,7 +3411,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             而「文件明明写进去了」，查起来毫无线索。FBNeo 系列内容在根目录，照旧。
           */
           const path = mameContentDir ? `/${mameContentDir}${file.path.replace(/^\//, '')}` : file.path
-          injections.push({ path, bytes: fetchBiosBytes(file.url, beat, options.onProgress, prepareAbort.signal) })
+          injections.push({
+            path,
+            // 下载在 ROM 开始时已经并行发出；Map 也让误配成同一 URL 的两个 set 只拉一次。
+            bytes: biosDownloads.get(file.url) ?? fetchBiosBytes(file.url, beat, options.onProgress, prepareAbort.signal),
+          })
         }
 
         /**
@@ -3590,20 +3643,30 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           live: () => !destroyed && !started,
           onProgress: options.onProgress,
           onBeat: beat,
-          onFailed: (status, url) => failLoad(fmt(rt.ejsRomFailed, { status: String(status), url })),
+          onFailed: (status, url, phase) => failLoad(
+            phase === 'engine'
+              // 核心是自托管运行时的一部分；不要把它误说成“游戏文件”，更不能放任引擎
+              // 回落到已知不兼容的 4.3.0-pre CDN 地址并把坏核心写进 IndexedDB。
+              ? rt.ejsLoadFailed
+              : fmt(rt.ejsRomFailed, { status: String(status), url }),
+          ),
         })
 
         // socket.io 客户端必须在 loader.js 之前就位：netplay 用的是全局 io()
         if (NETPLAY_URL) {
-          await injectScript(doc, socketIoScriptUrl(), 8_000).catch(() => {
+          const socketIoError = await socketIoTask
+          if (socketIoError) {
             // 信令服务器不可达时不阻断单机游戏，只是联机用不了。
             // ⚠️ onError 对播放器来说就是「这局完了」（重试一次然后拆掉），没有「警告」这一档 ——
             // 以前这里不管有没有联机会话都往上报，信令一挂（或者被广告拦截器拦掉脚本），
             // 全站所有 EmulatorJS 游戏都起不来。现在只有带着联机会话进来的才算致命
             if (destroyed) return
             logEngine(`[netplay] socket.io 脚本加载失败：${socketIoScriptUrl()}`)
-            if (netplay) options.onError?.(fmt(rt.netplaySignalUnreachable, { url: socketIoScriptUrl() }))
-          })
+            if (netplay) {
+              failLoad(fmt(rt.netplaySignalUnreachable, { url: socketIoScriptUrl() }))
+              return
+            }
+          }
           hookRoomToken(win)
 
           /*
@@ -3618,10 +3681,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             给一个上限：正常 RTT 几十毫秒，6 秒没回来就先用兜底 STUN 开局 ——
             真正联机时那条路会自己再取一次（onIceReady 不发就是了）。
           */
-          const ice = await Promise.race([
-            fetchIceConfig(),
-            new Promise<never>((_, reject) => window.setTimeout(() => reject(new Error('ICE 配置超时')), 6_000)),
-          ]).catch(() => null)
+          const ice = await iceTask
           if (ice) {
             win.EJS_netplayICEServers = ice.iceServers
             netplay?.onIceReady?.(ice.hasTurn)
@@ -3636,7 +3696,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         if (destroyed) return
         // 清掉旧时代缓存的坏核心（见 purgePoisonedEngineCache 的注释），
         // 必须在 loader.js 之前 —— 引擎一起来就会去查这个库
-        await purgePoisonedEngineCache()
+        await cachePurgeTask
 
         /**
          * ⚠️ 看门狗必须放在这里，不能更早。

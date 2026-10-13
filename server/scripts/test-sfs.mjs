@@ -57,6 +57,7 @@ const service = createSfsService({
     SFS_ENABLED: '1',
     SFS_TCP_HOST: '127.0.0.1',
     SFS_TCP_PORT: String(upstreamAddress.port),
+    SFS_SAS3_MAP_BASE_URL: 'https://assets.8bitgo.com/roms/flash/sas-zombie-assault-3.en/maps',
     SFS_MAX_PER_IP: '2',
     SFS_CONNECT_TIMEOUT_MS: '500',
     SFS_HEARTBEAT_INTERVAL_MS: '1000',
@@ -94,6 +95,13 @@ try {
   assert.equal(config.ruffle.socketProxy[0].host, 'sas3server.ninjakiwi.com')
   assert.equal(config.ruffle.socketProxy[0].port, 444)
   assert.equal(config.ruffle.socketProxy[0].proxyUrl, `${origin.replace('http:', 'ws:')}/sfs/sas3`)
+  assert.deepEqual(config.ruffle.urlRewriteRules, [
+    ['http://sas3maps.ninjakiwi.com/sas3maps/AirbaseMap.swf', 'https://assets.8bitgo.com/roms/flash/sas-zombie-assault-3.en/maps/AirbaseMap.swf'],
+    ['http://sas3maps.ninjakiwi.com/sas3maps/BlackIsleMap.swf', 'https://assets.8bitgo.com/roms/flash/sas-zombie-assault-3.en/maps/BlackIsleMap.swf'],
+    ['http://sas3maps.ninjakiwi.com/sas3maps/FarmhouseMap.swf', 'https://assets.8bitgo.com/roms/flash/sas-zombie-assault-3.en/maps/FarmhouseMap.swf'],
+    ['http://sas3maps.ninjakiwi.com/sas3maps/KarnivaleMap.swf', 'https://assets.8bitgo.com/roms/flash/sas-zombie-assault-3.en/maps/KarnivaleMap.swf'],
+    ['http://sas3maps.ninjakiwi.com/sas3maps/VerdammtenstadtMap.swf', 'https://assets.8bitgo.com/roms/flash/sas-zombie-assault-3.en/maps/VerdammtenstadtMap.swf'],
+  ], '地图必须按精确 URL 下发；JSON 字符串不能冒充 RegExp')
 
   const cloudflareConfig = await fetch(`${origin}/api/sfs/config`, {
     headers: { 'CF-Visitor': '{"scheme":"https"}' },

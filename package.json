@@ -102,7 +102,7 @@
     "test:ruffle-saves": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-ruffle-saves.mjs",
     "test:ruffle-runtime": "node scripts/check-ruffle.mjs && node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-ruffle-performance.mjs",
     "test:flash-compatibility": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-flash-compatibility.mjs",
-    "test:flash-online-save": "node scripts/check-flash-save-bridge.mjs && node scripts/test-flash-save-consistency.mjs && npm --prefix server run test:flash-saves",
+    "test:flash-online-save": "node scripts/check-flash-save-bridge.mjs && node scripts/test-flash-save-consistency.mjs && node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-flash-login-redirect.mjs && npm --prefix server run test:flash-saves",
     "test:gamepad": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-gamepad-input.mjs",
     "test:chat-send": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-chat-send.mjs",
     "test:avatar": "node scripts/test-avatar.mjs",

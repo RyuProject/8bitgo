@@ -45,7 +45,7 @@ globalThis.__flashDb={query:run,queryOne:async(s,p)=>(await run(s,p))[0],withTra
 stubs({
  'db.js':`export const query=(...a)=>globalThis.__flashDb.query(...a);export const queryOne=(...a)=>globalThis.__flashDb.queryOne(...a);export const withTransaction=(...a)=>globalThis.__flashDb.withTransaction(...a);`,
  'auth.js':`export const tokenVersionOf=u=>Number(u?.token_version)||0;export const requireUser=(req,res,next)=>{if(req.headers.authorization!=='Bearer login-u1')return res.status(401).json({error:'请先登录'});req.user={id:'u1',nickname:'Player',token_version:7};next()};`,
- 'shared/flash-save-games.js':`export const flashSaveKnownSlugs=()=>['infectonator-2','kingdom-rushfrontiers'];export const flashSaveProtocolOf=slug=>slug==='kingdom-rushfrontiers'?'agi2':'agi1';export const flashSaveBridgeOf=slug=>'/flash-api/armor-games/20260925-r03/'+(slug==='kingdom-rushfrontiers'?'AGI2':'AGI')+'.swf';`,
+ 'shared/flash-save-games.js':`export const FLASH_SAVE_BRIDGE_RELEASE='20260925-r03';export const flashSaveKnownSlugs=()=>['infectonator-2','kingdom-rushfrontiers'];export const flashSaveProtocolOf=slug=>slug==='kingdom-rushfrontiers'?'agi2':'agi1';export const flashSaveBridgeOf=slug=>'/flash-api/armor-games/20260925-r03/'+(slug==='kingdom-rushfrontiers'?'AGI2':'AGI')+'.swf';`,
 })
 const {flashSavesRouter}=await load('src/routes/flash-saves.js')
 const {signFlashSaveToken}=await load('src/flash-save-token.js')

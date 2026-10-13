@@ -250,13 +250,13 @@ async function put(key: string, data: CacheValue, maxEntry: number): Promise<voi
    * 行为分叉却无从得知。
    */
   if (size > budget / 2) return skip(key, size, `超过预算的一半（${Math.round(budget / 2 / 1048576)}MB）`)
-  if (!(await ensureRoom(db, size, budget))) return skip(key, size, '腾不出空间')
+  if (!(await ensureRoom(db, size, budget, key))) return skip(key, size, '腾不出空间')
 
   const result = await putEntry(db, key, data)
   if (result !== 'quota') return
   // 配额是**整个源**共享的，存档、EmulatorJS-Cache、HTTP 缓存都在占，
   // estimate() 给的数字不一定跟得上。被拒了就多腾一倍再试一次，还不行就放弃。
-  if (await ensureRoom(db, size * 2, budget)) await putEntry(db, key, data)
+  if (await ensureRoom(db, size * 2, budget, key)) await putEntry(db, key, data)
 }
 
 /** 读全部元信息（不碰字节本体） */
@@ -276,14 +276,20 @@ async function readMeta(db: IDBDatabase): Promise<Array<{ key: string; meta: Met
 }
 
 /** 按 LRU 淘汰到「装得下 need 字节」为止。返回是否腾出了空间 */
-async function ensureRoom(db: IDBDatabase, need: number, budget: number): Promise<boolean> {
+async function ensureRoom(db: IDBDatabase, need: number, budget: number, replacingKey = ''): Promise<boolean> {
   const entries = await readMeta(db)
-  let total = entries.reduce((sum, e) => sum + e.meta.size, 0)
+  /*
+    同一个内容键可能被两个标签页同时下载并先后写入。后一个写是“替换”，不是再占一份空间；
+    若仍把旧条目的 size 算进 total，预算刚好时会无端淘汰另一款游戏，随后 put 又只是覆盖原键。
+    玩家看到的结果是两款街机轮流玩时缓存反复消失，明明容量足够却每次重下。
+  */
+  let total = entries.reduce((sum, e) => sum + (e.key === replacingKey ? 0 : e.meta.size), 0)
   if (total + need <= budget) return true
 
   const victims: string[] = []
   // 最久没用的先走
   for (const e of [...entries].sort((a, b) => (a.meta.lastUsedAt || 0) - (b.meta.lastUsedAt || 0))) {
+    if (e.key === replacingKey) continue
     if (total + need <= budget) break
     victims.push(e.key)
     total -= e.meta.size

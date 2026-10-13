@@ -140,6 +140,35 @@ test('content-addressed CS16 Zstd shards are immutable and use the Zstd MIME typ
   assert.equal(r.headers.get('Cache-Control'),'public, max-age=31536000, s-maxage=31536000, immutable')
   assert.equal(r.headers.get('Content-Type'),'application/zstd')
 })
+test('versioned Sockdrive files are immutable and edge-cached by their path', async () => {
+  const previous = globalThis.caches
+  let stored
+  const waits = []
+  globalThis.caches = { default: {
+    async match() { return stored?.clone() },
+    async put(_request, response) { stored = response.clone(); await response.arrayBuffer() },
+  } }
+  const context = { waitUntil(promise) { waits.push(promise) } }
+  try {
+    const e = environment(); e.ROMS.seed('sockdrives/starcraft-v3/0.raw', 'sector')
+    const first = await worker.fetch(req('/sockdrives/starcraft-v3/0.raw'), e, context)
+    assert.equal(first.headers.get('Cache-Control'), 'public, max-age=31536000, s-maxage=31536000, immutable')
+    assert.equal(first.headers.get('X-8BitGo-Edge-Cache'), 'MISS')
+    assert.equal(await first.text(), 'sector')
+    await Promise.all(waits)
+    const second = await worker.fetch(req('/sockdrives/starcraft-v3/0.raw'), e, context)
+    assert.equal(second.headers.get('X-8BitGo-Edge-Cache'), 'HIT')
+    assert.equal(await second.text(), 'sector')
+
+    const mutable = environment(); mutable.ROMS.seed('sockdrives/starcraft/0.raw', 'mutable')
+    const plain = await worker.fetch(req('/sockdrives/starcraft/0.raw'), mutable, context)
+    assert.equal(plain.headers.get('Cache-Control'), 'public, max-age=300, s-maxage=600, must-revalidate')
+    assert.equal(plain.headers.get('X-8BitGo-Edge-Cache'), null)
+  } finally {
+    if (previous === undefined) delete globalThis.caches
+    else globalThis.caches = previous
+  }
+})
 test('cache policy is overridable per class without a code change', async () => {
   const e=environment(); e.ROMS.seed('a.zip','abcdef')
   e.OBJECT_CACHE_CONTROL='public, max-age=60'; e.VERSIONED_CACHE_CONTROL='public, max-age=600'

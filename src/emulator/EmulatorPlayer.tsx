@@ -35,12 +35,14 @@ import { sendChatWithAck } from './chatSend'
 import { SEAT_TTL_MS } from './coopSeat'
 import type { Broadcast } from './broadcast'
 import { matchLocalArcadeHack } from './arcadeHack'
+import { arcadeCoreForRomData } from './arcadeCore'
 import type { DosExtraSource } from '@/lib/dosExtras'
 import type { LiveSession } from './adapters/liveview'
 import type { NetplaySession } from './adapters/emulatorjs'
 import type { CloudSession, CloudState } from './adapters/cloudgame'
 import { p2pPlayable, cloudPlayable } from './paths'
 import { prewarmRuntime } from './prewarm'
+import { prewarmSystemCache } from './systemSource'
 import { canRestartInPlace } from './sessionRestart'
 import { confirmAndReplayAnchorNavigation } from './leaveNavigation'
 import { AdSenseSlot } from '@/components/ads/AdSenseSlot'
@@ -1634,6 +1636,14 @@ export function EmulatorPlayer({
   /** NES 是否已拿到 ROM 大小（或确认拿不到）：没拿到前「开始」按钮进入准备态，不报错也不误显「不支持」 */
   const engineReady = platform.id !== 'nes' || romSize !== undefined
   const supported = Boolean(pageRuntime) || onlineOk
+  /** js-dos 预热必须知道最终后端，否则会把普通 DOS 的 1.4 MB 核心当成 Win95 的 7.5 MB 核心。 */
+  const requestedPrewarmCore = core ?? platform.core
+  const prewarmCore = pageRuntime?.id === 'jsdos' && (dosSystemUrl || dosBackend === 'dosboxX')
+    ? 'dosboxX'
+    : platform.id === 'arcade' && requestedPrewarmCore
+      // RomData 只有 FBNeo 会读；悬停时也必须用最终核心，否则会白下 mame-current 的 35MB。
+      ? arcadeCoreForRomData(requestedPrewarmCore, arcadeRomDataRef.current)
+      : requestedPrewarmCore
   // 云端联机连不上时的本地兜底（用 ref，避免挂载 effect 捕获到旧值）
   const localFallbackRef = useRef<{ url?: string; runtime?: Runtime }>({})
   localFallbackRef.current = { url: romUrl, runtime: pageRuntime }
@@ -3826,10 +3836,16 @@ export function EmulatorPlayer({
                     size="lg"
                     disabled={(!online && romChecking) || joinBlocked}
                     onPointerEnter={() => {
-                      if (!online) prewarmRuntime(pageRuntime?.id, core ?? platform.core, true)
+                      if (!online) {
+                        prewarmRuntime(pageRuntime?.id, prewarmCore, true)
+                        if (pageRuntime?.id === 'jsdos' && dosSystemUrl) prewarmSystemCache(dosSystemUrl)
+                      }
                     }}
                     onFocus={() => {
-                      if (!online) prewarmRuntime(pageRuntime?.id, core ?? platform.core)
+                      if (!online) {
+                        prewarmRuntime(pageRuntime?.id, prewarmCore)
+                        if (pageRuntime?.id === 'jsdos' && dosSystemUrl) prewarmSystemCache(dosSystemUrl)
+                      }
                     }}
                     onClick={primaryAction}
                   >

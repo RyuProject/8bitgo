@@ -102,6 +102,7 @@ function authHeaders(admin: boolean, skipAdminToken = false): Record<string, str
 interface ReqOptions {
   body?: unknown
   admin?: boolean
+  signal?: AbortSignal
 }
 
 /** 带上状态码与响应体的请求错误。调用方想细分处理时用 instanceof 判一下即可。 */
@@ -119,7 +120,7 @@ export class ApiError extends Error {
 async function request<T>(
   method: string,
   path: string,
-  { body, admin = false }: ReqOptions = {},
+  { body, admin = false, signal }: ReqOptions = {},
   skipAdminToken = false,
 ): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
@@ -131,6 +132,7 @@ async function request<T>(
       ...authHeaders(admin, skipAdminToken),
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal,
   })
   const text = await res.text()
   // 网关的 502 页面、被静态服务器兜底成 index.html 的 /api 请求，返回的都是 HTML。
@@ -156,7 +158,7 @@ async function request<T>(
     const code = (data as { code?: string } | null)?.code
     if (code === 'invalid_admin_token' && !skipAdminToken && getAdminApiToken() && getToken()) {
       setAdminApiToken(null)
-      return request<T>(method, path, { body, admin }, true)
+      return request<T>(method, path, { body, admin, signal }, true)
     }
     const msg = (data as { error?: string } | null)?.error || fmt(getT().errors.requestFailed, { status: res.status })
     // 抛 ApiError 而不是裸 Error：状态码和响应体不能在这里丢掉 ——
@@ -171,7 +173,7 @@ async function request<T>(
 }
 
 export const api = {
-  get: <T>(path: string, admin = false) => request<T>('GET', path, { admin }),
+  get: <T>(path: string, admin = false, signal?: AbortSignal) => request<T>('GET', path, { admin, signal }),
   post: <T>(path: string, body?: unknown, admin = false) => request<T>('POST', path, { body, admin }),
   put: <T>(path: string, body?: unknown, admin = false) => request<T>('PUT', path, { body, admin }),
   patch: <T>(path: string, body?: unknown, admin = false) => request<T>('PATCH', path, { body, admin }),

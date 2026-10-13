@@ -1,6 +1,12 @@
 import { ApiError, api, apiBase, apiEnabled, getToken } from './api'
 // 「哪款游戏用哪套方言、加载哪个桥」只有一份，前后端共用（见该文件顶部说明）
-import { flashSaveBridgeOf, flashSaveGameKeyOf, flashSaveProtocolOf } from '../../shared/flash-save-games.js'
+import {
+  flashSaveBridgeOf,
+  flashSaveGameKeyOf,
+  flashSaveLoginUrlsOf,
+  flashSaveProtocolOf,
+  flashSaveRewriteSourcesOf,
+} from '../../shared/flash-save-games.js'
 
 /** 会话还剩多久之内就不再复用了：太接近到期的话，交给游戏的是一个马上就会失效的令牌 */
 const SESSION_REUSE_MARGIN_MS = 5 * 60_000
@@ -29,6 +35,10 @@ interface SessionResponse {
 
 export interface FlashOnlineSaveLaunch {
   bridgeUrl: string
+  /** 旧 SWF 真正请求的 SDK 地址；存在时不能再按 Armor Games 文件名猜。 */
+  rewriteFrom: string[]
+  /** navigateToURL 绕过 SDK 时，由 Ruffle iframe 把这些旧登录页接回站内登录框。 */
+  loginUrls: string[]
   parameters: Record<string, string>
   /**
    * guest 才表示真的没登录；unavailable 是已登录但会话申请失败。
@@ -129,6 +139,8 @@ export async function prepareFlashOnlineSave(gameSlug?: string): Promise<FlashOn
   if (!bridgeUrl) return null
   const guest: FlashOnlineSaveLaunch = {
     bridgeUrl: siteUrl(bridgeUrl),
+    rewriteFrom: flashSaveRewriteSourcesOf(gameSlug),
+    loginUrls: flashSaveLoginUrlsOf(gameSlug),
     expiresAt: 0,
     mode: 'guest',
     parameters: {
@@ -164,6 +176,8 @@ export async function prepareFlashOnlineSave(gameSlug?: string): Promise<FlashOn
   }
   const launch: FlashOnlineSaveLaunch = {
     bridgeUrl: siteUrl(response.data.bridgeUrl || bridgeUrl),
+    rewriteFrom: guest.rewriteFrom,
+    loginUrls: guest.loginUrls,
     expiresAt: Number(response.data.expiresAt) || 0,
     mode: 'authenticated',
     parameters: {
@@ -187,11 +201,14 @@ export function flashOnlineSaveRuffleConfig(launch: FlashOnlineSaveLaunch | null
     被补丁过的游戏直接请求本站地址，这些规则是给仍指向 agi.armorgames.com 的副本兜底。
   */
   const file = launch.bridgeUrl.split('/').pop() || 'AGI.swf'
+  const sources = launch.rewriteFrom.length
+    ? launch.rewriteFrom
+    : [
+        `http://agi.armorgames.com/assets/agi/${file}`,
+        `https://agi.armorgames.com/assets/agi/${file}`,
+      ]
   return {
     parameters: launch.parameters,
-    urlRewriteRules: [
-      [`http://agi.armorgames.com/assets/agi/${file}`, launch.bridgeUrl],
-      [`https://agi.armorgames.com/assets/agi/${file}`, launch.bridgeUrl],
-    ],
+    urlRewriteRules: sources.map((source) => [source, launch.bridgeUrl]),
   }
 }

@@ -337,6 +337,25 @@ process.on('unhandledRejection', (e) => {
     console.log('✓ 单条不得超过预算一半（否则两款游戏轮着玩就是每次都重下）')
   }
 
+  /* --- 12. 同一个内容键的并发晚写是替换，不能按新增容量误淘汰其它游戏 --- */
+  {
+    const { romCachePut, romCacheGet, romCacheStats, fake } = await freshCache()
+    fake.setQuota(1000) // 预算 500，两份 200 本来放得下
+    await romCachePut(url('a'), buf(200))
+    tick()
+    await romCachePut(url('b'), buf(200))
+    tick()
+    // 让 a 成为最近使用；旧实现覆盖 a 时把旧 a + 新 a 都算进去，会错杀更老的 b。
+    await romCacheGet(url('a'))
+    await new Promise((r) => setTimeout(r, 10))
+    tick()
+    await romCachePut(url('a'), buf(200))
+    assert.ok(await romCacheGet(url('a')), '被覆盖的 a 应仍存在')
+    assert.ok(await romCacheGet(url('b')), '覆盖 a 不应淘汰容量内的 b')
+    assert.deepEqual(await romCacheStats().then(({ count, bytes }) => ({ count, bytes })), { count: 2, bytes: 400 })
+    console.log('✓ 同键覆盖不重复计算容量、不误淘汰其它 ROM')
+  }
+
   console.log('\n全部通过 ✅')
 }
 Date.now = realNow

@@ -8,6 +8,10 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { arcadeCoreForRomData, supportsFbneoRomData } from '../src/emulator/arcadeCore.ts'
+import {
+  emulatorJsDownloadPhase,
+  isCriticalEmulatorJsDownload,
+} from '../src/emulator/emulatorjsDownload.ts'
 import { writeFsInjections } from '../src/emulator/fsInjection.ts'
 import { arcadeArchiveLayoutProblem } from '../src/lib/arcadeArchive.ts'
 import { REQUIRED_SELF_BUILT_CORES } from '../src/config/emulators.ts'
@@ -105,12 +109,55 @@ await check('大核心只在真实鼠标悬停且网络允许时预拉', async (
   assert.match(source, /core && hasHoverIntent\(\) && allowsLargeHoverPrewarm\(\)/)
 })
 
+await check('RomData 游戏预热最终的 FBNeo，不白下错误的 MAME 大核心', async () => {
+  const source = await readFile(new URL('../src/emulator/EmulatorPlayer.tsx', import.meta.url), 'utf8')
+  assert.match(source, /arcadeCoreForRomData\(requestedPrewarmCore, arcadeRomDataRef\.current\)/)
+})
+
+await check('自托管核心下载失败会立即终止，不回落到已知损坏的 CDN', () => {
+  const game = 'blob:https://8bitgo.com/rom'
+  const bios = 'https://assets.8bitgo.com/bios/neogeo.zip'
+  const core = '/emulatorjs/cores/mame-current-wasm.data'
+  assert.equal(emulatorJsDownloadPhase(core, game), 'engine')
+  assert.equal(isCriticalEmulatorJsDownload(core, game, bios), true)
+  assert.equal(isCriticalEmulatorJsDownload(game, game, bios), true)
+  assert.equal(isCriticalEmulatorJsDownload(bios, game, bios), true)
+  assert.equal(isCriticalEmulatorJsDownload('/socket.io/socket.io.js', game, bios), false)
+})
+
+await check('MAME 路径解析失败不会被误判为成功启动', async () => {
+  const source = await readFile(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
+  for (const phrase of ['error parsing system name', 'error parsing parent path', 'no driver loaded']) {
+    assert.match(source, new RegExp(`['\"]${phrase}['\"]`), `致命短语缺失：${phrase}`)
+  }
+})
+
+await check('同一根因的多条核心错误只会上报一次终止事件', async () => {
+  const source = await readFile(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
+  assert.match(source, /let loadFailed = false/)
+  assert.match(source, /destroyed \|\| started \|\| loadFailed/)
+  assert.match(source, /loadFailed = true/)
+  assert.match(source, /failLoad\(fmt\(rt\.ejsEngineError/)
+})
+
 await check('退出等 BIOS 的会话后不再启动已移除 iframe 里的 WASM', async () => {
   const source = await readFile(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
   const guardAt = source.indexOf('if (!shouldContinue()) return')
   const startAt = source.indexOf('return original.call(this)', guardAt)
   assert.ok(guardAt >= 0 && startAt > guardAt, '会话销毁判定没有守在真正启动核心之前')
   assert.match(source, /\(\) => !destroyed\)/)
+})
+
+await check('ROM、额外 BIOS、缓存清理与联机辅助资源并行启动', async () => {
+  const source = await readFile(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
+  const loadAt = source.indexOf("iframe.addEventListener('load'")
+  const parallelAt = source.indexOf('const biosDownloads = new Map', loadAt)
+  const arcadeAt = source.indexOf('await prepareRemoteArcadeRom(', loadAt)
+  const joinAt = source.indexOf('const socketIoError = await socketIoTask', loadAt)
+  assert.ok(loadAt >= 0 && parallelAt > loadAt && parallelAt < arcadeAt, 'BIOS 仍在 ROM 下载后才开始')
+  assert.match(source.slice(parallelAt, arcadeAt), /if \(!biosDownloads\.has\(file\.url\)\)/, '相同 BIOS URL 会被重复下载')
+  assert.ok(source.indexOf('const cachePurgeTask = purgePoisonedEngineCache()', loadAt) < arcadeAt, '缓存清理没有与 ROM 并行')
+  assert.ok(source.indexOf('const socketIoTask:', loadAt) < arcadeAt && joinAt > arcadeAt, '联机脚本没有提前发起、稍后收口')
 })
 
 console.log(failed === 0 ? '\n街机启动链体检通过\n' : `\n街机启动链体检失败：${failed} 项\n`)

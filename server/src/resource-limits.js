@@ -15,8 +15,12 @@
  * 这台 Express 同时扛着整站，配额填错属于「某个功能配置有误」，不该演成整站 502；
  * 而且崩溃循环往往要等下一次部署才被发现，warn 反而更快被人看到。
  */
-export function envNumber(name, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER, integer = true } = {}) {
-  const raw = process.env[name]
+export function envNumber(
+  name,
+  fallback,
+  { min = 1, max = Number.MAX_SAFE_INTEGER, integer = true, source = process.env } = {},
+) {
+  const raw = source[name]
   if (raw == null || String(raw).trim() === '') return fallback
 
   const value = Number(raw)

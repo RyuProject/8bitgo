@@ -193,6 +193,7 @@ export function usePageData<T extends PageData>(
       return
     }
     let cancelled = false
+    const controller = new AbortController()
     loadedKey.current = key
     setState((prev) => ({ status: 'loading', data: prev.data }))
     // 顶部进度条：这一下就是站内跳转真正花时间的地方。
@@ -200,7 +201,7 @@ export function usePageData<T extends PageData>(
     // 那根条会一直卡在 90% 不下来
     const done = startPageLoad()
     api
-      .get<T>(key)
+      .get<T>(key, false, controller.signal)
       .then((data) => {
         if (!cancelled) setState({ status: 'ready', data })
       })
@@ -213,6 +214,11 @@ export function usePageData<T extends PageData>(
       .finally(done)
     return () => {
       cancelled = true
+      /*
+        cancelled 只挡 React 落状态，不会停止浏览器下载，也不会让服务端尽早放弃工作。
+        真正 abort 后，快速翻页时上一页的 JSON 不再和当前页争带宽；后端也能及时看到断连。
+      */
+      controller.abort()
       /*
         React StrictMode 在开发环境会故意执行「effect → cleanup → effect」来找副作用。
         第一轮已经把 loadedKey 标成完成、请求回来后却因 cancelled 不落状态；第二轮若还看见

@@ -298,12 +298,12 @@ export default defineConfig(({ mode }) => {
           不切的话它和业务代码挤在同一个 index chunk 里，改一行文案就整包作废 ——
           那是首屏里最重的一块（gzip 四十多 KB）。
 
-          ⚠️ 只用 advancedChunks，别同时写 codeSplitting：rolldown 里两者同时给时
-          advancedChunks 会被**静默忽略**（见 rolldown 的 OutputOptions 注释）。
+          ⚠️ Rolldown 1.x 已把 advancedChunks 标成弃用别名；这里只留 codeSplitting，
+          否则每次现代版和旧浏览器版构建都会各打一条警告，未来升级还可能直接失效。
           ⚠️ test 用正则匹配 node_modules 路径 —— react / react-dom / scheduler 是同一批
           跟着 React 版本走的包，拆开会让它们互相 import 而被再次合并。
         */
-        advancedChunks: {
+        codeSplitting: {
           groups: [
             {
               name: 'react-vendor',

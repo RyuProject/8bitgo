@@ -1,4 +1,5 @@
 import { dosBackendOf, dosExecutableOf, dosExtrasOf, dosSockdriveOf, dosSystemOf, romsOf } from './mappers.js'
+import { isVersionedSockdriveDirectory } from '../../shared/sockdrive-url.js'
 
 const own = (value, key) => Object.prototype.hasOwnProperty.call(value ?? {}, key)
 
@@ -36,6 +37,9 @@ export function dosGameConfigError(game) {
     if (!sockdrive) return 'Sockdrive 目录不合法或超过 500 字符'
     if (/(?:^|\/)sockdrive\.metaj$/i.test(sockdrive) || /\.raw$/i.test(sockdrive)) {
       return 'Sockdrive 必须填写包含 sockdrive.metaj 的目录，不能填写某个文件'
+    }
+    if (!isVersionedSockdriveDirectory(sockdrive)) {
+      return 'Sockdrive 目录必须以版本号或内容哈希结尾，且新版本必须使用新目录'
     }
     if (dosExtrasOf(game?.dosExtras)) {
       return '流式游戏盘不能现场合并 DOS 附加文件；请先把补丁写入磁盘再重新生成 Sockdrive'

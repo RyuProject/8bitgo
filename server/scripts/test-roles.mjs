@@ -139,7 +139,8 @@ check('登录令牌失效时说「登录已失效」，不说「权限不足」'
 const apiSrc = readFileSync(join(root, '../src/services/api.ts'), 'utf8')
 check(
   '⭐ 收到 invalid_admin_token 会清掉口令并重试',
-  apiSrc.includes('setAdminApiToken(null)') && apiSrc.includes('return request<T>(method, path, { body, admin }, true)'),
+  apiSrc.includes('setAdminApiToken(null)')
+    && apiSrc.includes('return request<T>(method, path, { body, admin, signal }, true)'),
 )
 check(
   '⚠️ 只重试这一种 code —— 别放宽（403 才保证服务端什么都没做，重试 PUT 不会写两遍）',

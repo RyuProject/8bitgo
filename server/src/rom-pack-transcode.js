@@ -14,6 +14,7 @@
 import { createDecipheriv, createHash } from 'node:crypto'
 import zlib from 'node:zlib'
 import { deriveRomPackKey } from './rom-pack-key.js'
+import { envNumber } from './resource-limits.js'
 import {
   ROM_PACK_CODEC,
   ROM_PACK_HEADER_PREFIX_BYTES,
@@ -30,13 +31,22 @@ import {
 
 /** 单 ROM 转码上限：默认 512MB / 2 并发 / 10 分钟，环境可覆盖。超额直接拒服务，不是排队。 */
 export function romTranscodeLimits(env = process.env) {
-  const maxBytes = Number(env.ROM_TRANSCODE_MAX_BYTES || 512 * 1024 * 1024)
-  const concurrency = Math.max(1, Number(env.ROM_TRANSCODE_CONCURRENCY || 2))
-  const timeoutMs = Number(env.ROM_TRANSCODE_TIMEOUT_MS || 10 * 60 * 1000)
   return {
-    maxBytes: Number.isFinite(maxBytes) ? maxBytes : 512 * 1024 * 1024,
-    concurrency: Number.isFinite(concurrency) ? concurrency : 2,
-    timeoutMs: Number.isFinite(timeoutMs) ? timeoutMs : 10 * 60 * 1000,
+    /*
+      这三项不能只判 NaN：`1e100` 也是合法数字，却会把大小闸变成摆设；小数并发则会
+      让实际槽位向上取整。统一走有上下界的解析，填错时宁可回安全默认值或收紧。
+    */
+    maxBytes: envNumber('ROM_TRANSCODE_MAX_BYTES', 512 * 1024 * 1024, {
+      min: 1024 * 1024,
+      max: 8 * 1024 * 1024 * 1024,
+      source: env,
+    }),
+    concurrency: envNumber('ROM_TRANSCODE_CONCURRENCY', 2, { max: 32, source: env }),
+    timeoutMs: envNumber('ROM_TRANSCODE_TIMEOUT_MS', 10 * 60 * 1000, {
+      min: 1000,
+      max: 60 * 60 * 1000,
+      source: env,
+    }),
   }
 }
 

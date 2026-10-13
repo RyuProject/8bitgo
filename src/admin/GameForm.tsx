@@ -52,6 +52,7 @@ import { normalizeDevelopers } from '@/lib/developers'
 import { Field, btnClass, inputClass } from './ui'
 import { mergeDosboxConfigOverride, normalizeDosboxConfigOverride } from '../../shared/dosbox-config.js'
 import { normalizeDosStartupCommands } from '../../shared/dos-startup-commands.js'
+import { isVersionedSockdriveDirectory } from '../../shared/sockdrive-url.js'
 import { probeRange } from '@/emulator/remoteDisc'
 import { isRomPackBytes, isRomPackUrl, packRomForUpload, romPackKey, verifyRomPackBlob } from '@/services/romPack'
 import { isStreamingDiscPlatform } from '../../shared/streaming-disc-platforms.js'
@@ -320,6 +321,9 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
       if (/[?#]/.test(dosSockdrive)) return setError('Sockdrive 目录不能带查询参数或锚点')
       if (/(?:^|\/)sockdrive\.metaj$/i.test(dosSockdrive) || /\.raw$/i.test(dosSockdrive)) {
         return setError('Sockdrive 请填写包含 sockdrive.metaj 的目录，不要填写某个文件')
+      }
+      if (!isVersionedSockdriveDirectory(dosSockdrive)) {
+        return setError('Sockdrive 目录必须以版本号或内容哈希结尾；发布新磁盘时必须换新目录')
       }
       try {
         const resolved = new URL(romUrlForKey(dosSockdrive) || dosSockdrive, window.location.href)

@@ -101,7 +101,6 @@
     pumping = true
 
     const xhr = new NativeXMLHttpRequest()
-    inflight.set(key, xhr)
     let settled = false
     const finish = () => {
       // 某些浏览器在 abort 后还会补发 error/loadend；重复推进队列会把两个预读同时放行。
@@ -109,6 +108,20 @@
       settled = true
       finishPrefetch(key)
     }
+    const cancel = () => {
+      if (settled) return
+      // 先封住回调再 abort。部分 XHR 会同步触发 onabort；旧实现让它在正式同步读盘尚未结束时
+      // 先泵出下一块，afterDemand 随后又泵一块，表面“串行”的预读实际会并发两路。
+      settled = true
+      inflight.delete(key)
+      pumping = false
+      try {
+        xhr.abort()
+      } catch {
+        // 正式读盘会接管同一块，取消预读失败不应改变核心的错误语义。
+      }
+    }
+    inflight.set(key, { xhr, cancel })
     xhr.open('GET', job.url, true)
     xhr.responseType = 'arraybuffer'
     xhr.timeout = PREFETCH_TIMEOUT_MS
@@ -152,13 +165,7 @@
 
   const cancelQueuedAndInflight = () => {
     queued.clear()
-    for (const xhr of inflight.values()) {
-      try {
-        xhr.abort()
-      } catch {
-        // 预读失败不能影响正式读盘；同步请求随后会按核心自己的三次重试处理。
-      }
-    }
+    for (const entry of inflight.values()) entry.cancel()
     inflight.clear()
     pumping = false
   }
@@ -170,13 +177,7 @@
     const exactPrefetch = inflight.get(key)
     if (exactPrefetch) {
       // 正式读取不能排队等低优先级请求；立即让核心自己的同步请求接管。
-      try {
-        exactPrefetch.abort()
-      } catch {
-        /* noop */
-      }
-      inflight.delete(key)
-      pumping = false
+      exactPrefetch.cancel()
     }
     queued.delete(key)
 

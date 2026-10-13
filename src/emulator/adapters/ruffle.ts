@@ -33,6 +33,7 @@ import { ruffleStageRenderPlan, ruffleStageSize } from '../ruffleStageFit'
 import { isRuffleFrameReady } from '../ruffleFrame'
 import { flashCompatibilityIssue } from '../flashCompatibility'
 import { flashLegacyBundleRules, type FlashUrlRewriteRule } from '../flashLegacyBundle'
+import { installFlashLegacyLoginRedirect } from '../flashLegacyLogin'
 
 export { RUFFLE_PATH } from '../paths'
 import { RUFFLE_PATH } from '../paths'
@@ -402,6 +403,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let frameInitTimer = 0
   let frameInitialized = false
   let cancelStageFit = () => {}
+  let cancelLegacyLoginRedirect = () => {}
 
   const cancelFocusRetry = () => {
     if (focusRaf) cancelAnimationFrame(focusRaf)
@@ -627,8 +629,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           frameGlobals[FLASH_SAVE_LOGIN_CALLBACK] = () => {
             if (!destroyed) options.onFlashSaveLoginRequired?.()
           }
+          cancelLegacyLoginRedirect()
+          cancelLegacyLoginRedirect = installFlashLegacyLoginRedirect(win, onlineSave.loginUrls, () => {
+            if (!destroyed) options.onFlashSaveLoginRequired?.()
+          })
         } else {
           delete frameGlobals[FLASH_SAVE_LOGIN_CALLBACK]
+          cancelLegacyLoginRedirect()
+          cancelLegacyLoginRedirect = () => {}
         }
         const onlineSaveConfig = flashOnlineSaveRuffleConfig(onlineSave)
         /*
@@ -1016,6 +1024,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       destroyed = true
       document.removeEventListener('visibilitychange', syncVisibility)
       cancelStageFit()
+      cancelLegacyLoginRedirect()
       cancelFocusRetry()
       if (canvasCapsTimer) window.clearTimeout(canvasCapsTimer)
       canvasCapsTimer = 0

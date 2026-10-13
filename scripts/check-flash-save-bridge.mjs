@@ -33,6 +33,13 @@ const BRIDGES = [
     releaseSwf: `public${flashSaveBridgeOf('kingdom-rushfrontiers')}`,
     manifest: 'public/flash-api/armor-games/runtime-agi2.json',
   },
+  {
+    label: 'Banana（SAS Zombie Assault 3）',
+    source: 'flash-api/ninjakiwi/src/test_fla/MainTimeline.as',
+    swf: 'public/flash-api/ninjakiwi/Banana.swf',
+    releaseSwf: `public${flashSaveBridgeOf('sas-zombie-assault-3')}`,
+    manifest: 'public/flash-api/ninjakiwi/runtime.json',
+  },
 ]
 
 let checked = 0

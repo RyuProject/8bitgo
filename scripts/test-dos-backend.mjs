@@ -119,6 +119,8 @@ const streamedGuest = { ...winGuest, dosExecutable: 'BIN/GAME.EXE', dosSockdrive
 assert.equal(dosGameConfigError(streamedGuest), null)
 assert.match(dosGameConfigError({ ...streamedGuest, dosSockdrive: 'sockdrives/game-v1/sockdrive.metaj' }), /必须填写.*目录/)
 assert.match(dosGameConfigError({ ...streamedGuest, dosSockdrive: 'https://assets.test/game?v=1' }), /查询参数/)
+assert.match(dosGameConfigError({ ...streamedGuest, dosSockdrive: 'sockdrives/game' }), /版本号|内容哈希/)
+assert.match(dosGameConfigError({ ...streamedGuest, dosSockdrive: 'sockdrives/v2/game' }), /版本号|内容哈希/)
 assert.match(dosGameConfigError({ ...streamedGuest, dosExtras: ['extras/patch.dat'] }), /不能现场合并/)
 assert.match(dosGameConfigError({ ...streamedGuest, dosExecutable: 'RUN.BAT' }), /安全的 \.exe/)
 assert.match(dosGameConfigError({ ...streamedGuest, dosExecutable: 'BIN/BAD?.EXE' }), /安全的 \.exe/)
@@ -129,6 +131,7 @@ assert.match(
 assert.match(gameForm, /dosSockdrive/)
 assert.match(gameForm, /dosSockdrive\.startsWith\('\/\/'\)/)
 assert.match(gameForm, /本地磁盘缓存冲突/)
+assert.match(gameForm, /isVersionedSockdriveDirectory\(dosSockdrive\)/)
 
 // 发布器是不可逆写入 R2 的最后一道闸：禁止“网络预检失败仍继续”和覆盖旧版本目录。
 const sockdriveUploader = readFileSync(new URL('./upload-sockdrive-r2.mjs', import.meta.url), 'utf8')

@@ -8,8 +8,8 @@
  *
  * 方言说明：
  *   agi1  方法式（Infectonator 2）：游戏连调两次 submitUserData，profile + data 拼成一槽
- *   agi2  对象式（Kingdom Rush Frontiers）：user / storage / content / quests，
- *         按 key→value 存取，key 固定 slot1~3
+ *   agi2  key→value 存储方言。Kingdom Rush Frontiers 的 AGI2 桥和 SAS3 的 Banana
+ *         兼容桥虽然对游戏暴露的接口不同，落到服务端都是 slot1~3 三个 JSON 对象。
  *
  * agiGameKey 是 AGI1 的兼容标识（游戏传给 init 的 gameKey）。它不是密钥，
  * 但能防止一个不相容的 Armor Games SWF 被这套半兼容桥静默接管。
@@ -27,6 +27,12 @@
  */
 export const FLASH_SAVE_BRIDGE_RELEASE = '20260925-r03'
 
+/**
+ * SAS3 使用独立发布号：它与 Armor Games 两代桥没有发布耦合，修 Banana 兼容层时不该让
+ * 已稳定的 AGI / AGI2 URL 一起变化。Cloudflare 会缓存 SWF，所以仍然只增不改。
+ */
+export const SAS3_BANANA_BRIDGE_RELEASE = '20261002-r01'
+
 export const FLASH_SAVE_GAMES = Object.freeze({
   'infectonator-2': {
     protocol: 'agi1',
@@ -38,6 +44,22 @@ export const FLASH_SAVE_GAMES = Object.freeze({
   'kingdom-rushfrontiers': {
     protocol: 'agi2',
     bridge: `/flash-api/armor-games/${FLASH_SAVE_BRIDGE_RELEASE}/AGI2.swf`,
+  },
+  'sas-zombie-assault-3': {
+    // SAS3 只需要一份主进度对象（slot1）；slot2/3 留给旧版 additional-data 扩展。
+    protocol: 'agi2',
+    bridge: `/flash-api/ninjakiwi/${SAS3_BANANA_BRIDGE_RELEASE}/Banana.swf`,
+    /*
+      必须写原 SWF 内嵌的 http:// 地址。Ruffle 在 URL 改写之后才做 HTTPS 升级；
+      只写控制台最终打印出来的 https:// 会和地图资源犯同一个“看似正确、永远不命中”的错。
+    */
+    rewriteFrom: [
+      // RemoteLoader 把 URLRequest.data 追加成查询串以后才交给 Ruffle，规则必须连查询串一起精确匹配。
+      'http://ninjakiwi.com/nklogin/Banana.swf?gamename=SAS3',
+      'http://ninjakiwi.com/nklogin/debugBanana.swf?gamename=SAS3',
+    ],
+    // 主游戏自己的登录按钮直接 navigateToURL，不经过 Banana；播放器用这张表接回站内登录框。
+    loginUrls: ['https://ninjakiwi.com/login', 'http://ninjakiwi.com/login'],
   },
 })
 
@@ -57,6 +79,18 @@ export function flashSaveProtocolOf(gameSlug) {
 /** AGI1 的 init gameKey；非 AGI1 或表外游戏返回空串。 */
 export function flashSaveGameKeyOf(gameSlug) {
   return FLASH_SAVE_GAMES[String(gameSlug || '')]?.agiGameKey || ''
+}
+
+/** 旧游戏加载远程 SDK 的原地址；空数组表示沿用 Armor Games 的文件名规则。 */
+export function flashSaveRewriteSourcesOf(gameSlug) {
+  const sources = FLASH_SAVE_GAMES[String(gameSlug || '')]?.rewriteFrom
+  return Array.isArray(sources) ? sources.slice() : []
+}
+
+/** 游戏里写死、需要由播放器接回本站登录框的网页地址。 */
+export function flashSaveLoginUrlsOf(gameSlug) {
+  const urls = FLASH_SAVE_GAMES[String(gameSlug || '')]?.loginUrls
+  return Array.isArray(urls) ? urls.slice() : []
 }
 
 /** 已接入的游戏 slug。用于把 env 白名单的默认值钉在同一份表上 */

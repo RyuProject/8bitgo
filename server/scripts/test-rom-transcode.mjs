@@ -175,6 +175,25 @@ async function main() {
   check('释放后又能放行', tryAcquireTranscodeSlot(limits) === true)
   releaseTranscodeSlot()
 
+  // 8) 环境变量填错或写成离谱大数时，资源闸不能静默失效
+  const malformed = romTranscodeLimits({
+    ROM_TRANSCODE_MAX_BYTES: '不是数字',
+    ROM_TRANSCODE_CONCURRENCY: '2.9',
+    ROM_TRANSCODE_TIMEOUT_MS: '-1',
+  })
+  check('非法大小退回安全默认值', malformed.maxBytes === 512 * 1024 * 1024)
+  check('并发小数向下取整', malformed.concurrency === 2)
+  check('负超时夹到安全下限', malformed.timeoutMs === 1000)
+  const oversized = romTranscodeLimits({
+    ROM_TRANSCODE_MAX_BYTES: '1e100',
+    ROM_TRANSCODE_CONCURRENCY: '999999',
+    ROM_TRANSCODE_TIMEOUT_MS: '999999999',
+  })
+  check('离谱资源配置会被夹住',
+    oversized.maxBytes === 8 * 1024 * 1024 * 1024
+      && oversized.concurrency === 32
+      && oversized.timeoutMs === 60 * 60 * 1000)
+
   console.log(failed ? `\nROM 转码测试：${failed} 项失败` : '\nROM 转码测试：全部通过')
   process.exit(failed ? 1 : 0)
 }

@@ -33,6 +33,16 @@ const NEEDS_SERVICE = {
   'server:test:mail': '要真实 SMTP / Resend 凭据',
 }
 
+/**
+ * 必须由人明确提供工具或本机合法资源的验收脚本，不属于 `npm test`。
+ * `--all` 只表示连外部服务测试也跑，不能凭空补出 Playwright 浏览器和游戏资源路径。
+ * 这些脚本仍可直接 `npm run <名字>`，避免为了让聚合测试变绿而削弱它们的真实验收条件。
+ */
+const MANUAL = {
+  'test:pvz': '需单独安装 Playwright 与 Chromium，属于浏览器验收',
+  'test:pvz-real': '需 Playwright，并显式提供 --main / --pack 本机合法资源',
+}
+
 /** 是别的套件的聚合，跑了等于重复 */
 const AGGREGATES = new Set(['server:test:netplay:all'])
 
@@ -69,6 +79,36 @@ const jobs = Math.max(1, Number(flag('jobs', 4)) || 4)
 const only = args.includes('--only') ? flag('only', '') : ''
 const timeoutMs = Math.max(5000, Number(flag('timeout', 120000)) || 120000)
 
+/**
+ * npm 还会再起一层真正的 node 测试进程。只 `child.kill()` 会留下孙进程继续占端口、握着
+ * stdout 管道，聚合器于是既收不到 close，也永远打印不出是哪套超时。Unix 下让每套测试
+ * 单独成为进程组，超时时整组清掉；Windows 用 taskkill /T 做同一件事。
+ */
+const running = new Set()
+function killTree(child) {
+  if (!child?.pid) return
+  if (process.platform === 'win32') {
+    const killer = spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    })
+    killer.unref()
+    return
+  }
+  try {
+    process.kill(-child.pid, 'SIGKILL')
+  } catch {
+    child.kill('SIGKILL')
+  }
+}
+
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.once(signal, () => {
+    for (const child of running) killTree(child)
+    process.exit(128 + (signal === 'SIGINT' ? 2 : 15))
+  })
+}
+
 const scriptsOf = (pkg) => Object.keys(JSON.parse(readFileSync(join(root, pkg), 'utf8')).scripts ?? {})
 
 /** 全部候选：前端的 test:*，加上服务端的（带 server: 前缀区分） */
@@ -84,6 +124,10 @@ const all = [
 const skipped = []
 const queue = []
 for (const t of all) {
+  if (MANUAL[t.id]) {
+    skipped.push({ ...t, why: MANUAL[t.id] })
+    continue
+  }
   if (AGGREGATES.has(t.id)) {
     skipped.push({ ...t, why: '是别的套件的聚合' })
     continue
@@ -114,16 +158,19 @@ const run = (t) =>
       cwd: t.cwd,
       env: { ...process.env, FORCE_COLOR: '0' },
       stdio: ['ignore', 'pipe', 'pipe'],
+      detached: process.platform !== 'win32',
     })
+    running.add(child)
     let out = ''
     child.stdout.on('data', (d) => (out += d))
     child.stderr.on('data', (d) => (out += d))
     const killer = setTimeout(() => {
       out += `\n[run-tests] 超过 ${Math.round(timeoutMs / 1000)}s，强制结束`
-      child.kill('SIGKILL')
+      killTree(child)
     }, timeoutMs)
     child.on('close', (code) => {
       clearTimeout(killer)
+      running.delete(child)
       resolve({ ...t, code, ms: Date.now() - started, out })
     })
   })

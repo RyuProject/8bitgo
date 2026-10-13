@@ -1,5 +1,6 @@
 import { WebSocketServer } from 'ws'
 import { randomBytes } from 'node:crypto'
+import { envNumber } from './resource-limits.js'
 
 /**
  * jsnes 的 P2P 联机信令（与 EmulatorJS netplay **完全独立**的一条路）。
@@ -29,7 +30,8 @@ import { randomBytes } from 'node:crypto'
  * 信令里不传任何游戏内容 —— 输入走 WebRTC 数据通道，画面更不会过服务器。
  */
 
-const MAX_ROOMS = Number(process.env.JSNES_NETPLAY_MAX_ROOMS || 500)
+/* 填成 NaN 时 `rooms.size >= NaN` 永远是假，会把公开信令的内存上限整个关掉。 */
+const MAX_ROOMS = envNumber('JSNES_NETPLAY_MAX_ROOMS', 500, { max: 5000 })
 /** 单个连接每秒最多转发几条 signal，防刷 */
 const SIGNALS_PER_SEC = 60
 

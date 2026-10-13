@@ -14,6 +14,7 @@ import { readFileSync } from 'node:fs'
 import {
   looksLikeSystemBundle,
   loadSystemBytes,
+  prewarmSystemCache,
   systemCacheUrl,
   systemSourcesFor,
 } from '../src/emulator/systemSource.ts'
@@ -316,6 +317,28 @@ await check('⚠️ 已经取消了就别再探', async () => {
   ctl.abort()
   assert.equal(await systemCacheUrl(PRIMARY, ctl.signal), '')
   assert.equal(called, 0, '已取消还去打了一次 HEAD')
+})
+
+await check('悬停预热与紧接着的开局共用同一次 HEAD', async () => {
+  let heads = 0
+  globalThis.fetch = async () => {
+    heads++
+    return { ok: true, status: 200, headers: { get: (k) => (k.toLowerCase() === 'etag' ? '"warm"' : null) } }
+  }
+  const first = await systemCacheUrl(PRIMARY)
+  const second = await systemCacheUrl(PRIMARY)
+  assert.equal(first, `${PRIMARY}?romv=warm`)
+  assert.equal(second, first)
+  assert.equal(heads, 1, '点击后又探了一遍，悬停预热没有缩短关键路径')
+})
+
+await check('⚠️ 没有 IndexedDB 时预热系统盘不发无用 HEAD', async () => {
+  let heads = 0
+  globalThis.fetch = async () => { heads++; throw new Error('不该调用') }
+  assert.equal(typeof indexedDB, 'undefined', '这条用例的前提是 node 里没有 indexedDB')
+  prewarmSystemCache(PRIMARY)
+  await Promise.resolve()
+  assert.equal(heads, 0)
 })
 
 await check('⚠️ node / 无痕 / SSR（没有 IndexedDB）下连探都不探', async () => {

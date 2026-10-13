@@ -56,6 +56,17 @@ export function jspiOverride(search: string): boolean | null {
 }
 
 /**
+ * 算出这一局最终会不会选 JSPI，但不碰 localStorage。
+ *
+ * 预热器要用同一份判断去选 `wdosbox-x-jspi.wasm` / `wdosbox-x.wasm`；若在那里
+ * 另抄一遍条件，两边一旦分叉就会在悬停时白下 7.5 MB，真正开局还得再下一套。
+ */
+export function jspiEnabled(search = typeof location === 'undefined' ? '' : location.search): boolean {
+  const forced = jspiOverride(search)
+  return forced === null ? jspiSupported() : forced && jspiSupported()
+}
+
+/**
  * 在加载 js-dos.js **之前**调用。返回这一局实际会不会用 JSPI。
  *
  * ⚠️ 不支持时要**明确写 'false'**，不能只是不写：这个 key 留在玩家本地，
@@ -63,8 +74,7 @@ export function jspiOverride(search: string): boolean | null {
  * 而 js-dos 的 dosJspi 动作在不支持的浏览器上会 `alert()` 一句英文报错弹窗。
  */
 export function armJspi(search = typeof location === 'undefined' ? '' : location.search): boolean {
-  const forced = jspiOverride(search)
-  const on = forced === null ? jspiSupported() : forced && jspiSupported()
+  const on = jspiEnabled(search)
   try {
     localStorage.setItem('jspi', on ? 'true' : 'false')
   } catch {

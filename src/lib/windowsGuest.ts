@@ -8,6 +8,7 @@
 import { assertValidZip, extractZipEntry } from './unzip'
 import { WINDOWS_GAME_ROOT, WINDOWS_LAUNCHER_PATH } from './jsdosBundle'
 import { mergeDosboxConfigOverride } from '../../shared/dosbox-config.js'
+import { isVersionedSockdriveDirectory } from '../../shared/sockdrive-url.js'
 
 const td = new TextDecoder()
 const te = new TextEncoder()
@@ -109,6 +110,9 @@ export function normalizeSockdriveUrl(value: string): string {
   */
   if (normalized.replace(/^https?:\/\//i, '').length > 200) {
     throw new Error('Sockdrive 完整 URL 过长；js-dos 的本地块缓存会截断并可能混入旧版本')
+  }
+  if (!isVersionedSockdriveDirectory(normalized)) {
+    throw new Error('Sockdrive 目录必须以版本号或内容哈希结尾；无版本目录会混入旧磁盘分块')
   }
   return normalized
 }

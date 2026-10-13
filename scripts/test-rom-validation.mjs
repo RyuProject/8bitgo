@@ -245,6 +245,10 @@ try {
     /查询参数/,
   )
   assert.throws(
+    () => buildSockdriveWindowsGuestConfig('[autoexec]\nimgmount 2 system.img\nboot c:\n', 'https://assets.test/sockdrives/game'),
+    /版本号|内容哈希/,
+  )
+  assert.throws(
     () => buildSockdriveWindowsGuestConfig('[autoexec]\nimgmount 2 system.img\nboot c:\n', 'https://assets.test/game%20v1'),
     /批处理/,
   )

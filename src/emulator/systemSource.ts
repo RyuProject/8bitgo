@@ -144,41 +144,94 @@ function warnNoVersionHeaderOnce(url: string): void {
 
 export const PROBE_MS = 4000
 
+/**
+ * 悬停预热与真正开局之间通常只有几百毫秒；共用这次 HEAD，避免玩家点击后仍先空等一次 RTT。
+ * 只缓存很短时间且只缓存版本号，不持有几十 MB 的镜像字节：对象若真的被原地覆盖，最多
+ * 30 秒后就会重新探；玩家没点击时也不会因为一次悬停把整个 Windows 系统盘读进内存。
+ */
+export const PROBE_REUSE_MS = 30_000
+type ProbeEntry = {
+  fetcher: typeof fetch
+  expiresAt: number
+  promise: Promise<string>
+}
+const probeEntries = new Map<string, ProbeEntry>()
+
+/** 等共享 HEAD 的同时仍响应这一局自己的取消；取消不能把别的预热 / 开局也一起 abort。 */
+function awaitProbe(promise: Promise<string>, signal?: AbortSignal): Promise<string> {
+  if (!signal) return promise
+  if (signal.aborted) return Promise.resolve('')
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (value: string) => {
+      if (settled) return
+      settled = true
+      signal.removeEventListener('abort', cancel)
+      resolve(value)
+    }
+    const cancel = () => finish('')
+    signal.addEventListener('abort', cancel, { once: true })
+    void promise.then(finish, () => finish(''))
+  })
+}
+
 export async function systemCacheUrl(url: string, signal?: AbortSignal): Promise<string> {
   if (typeof fetch !== 'function' || !url) return ''
-  const ctl = new AbortController()
-  // 裸 setTimeout：这个模块要能在 node 里被测到
-  const timer = setTimeout(() => ctl.abort(), PROBE_MS)
-  const relay = () => ctl.abort(signal?.reason)
   if (signal?.aborted) return ''
-  signal?.addEventListener('abort', relay)
-  try {
-    // no-store：这一趟正是为了读到**新的**版本号，自己吃缓存就白探了
-    const res = await fetch(url, { method: 'HEAD', cache: 'no-store', signal: ctl.signal })
-    if (!res.ok) return ''
-    /*
-      ⚠️⚠️ ETag **不在 CORS 响应头安全列表里**。
-      系统镜像在资源域名上（跨域），服务器不额外发
-      `Access-Control-Expose-Headers: ETag` 的话，`headers.get('etag')` 就是 null ——
-      于是拼不出 romv、romCacheKey 返回空串、整套缓存**一个字节都不生效**，
-      而且没有任何报错：表现就是「明明写了缓存，怎么还是每次都下 20 MB」。
-
-      Last-Modified 是安全列表里的（Cache-Control / Content-Language / Content-Length /
-      Content-Type / Expires / Last-Modified / Pragma），任何跨域配置下都读得到，
-      拿它兜底。对象覆盖时 Last-Modified 一样会变，作为内容版本号够用。
-    */
-    const token = res.headers.get('etag') || res.headers.get('last-modified')
-    if (!token) {
-      warnNoVersionHeaderOnce(url)
-      return ''
-    }
-    return versionedRomUrl(url, token)
-  } catch {
-    return ''
-  } finally {
-    clearTimeout(timer)
-    signal?.removeEventListener('abort', relay)
+  const fetcher = fetch
+  const now = Date.now()
+  const existing = probeEntries.get(url)
+  if (existing && existing.fetcher === fetcher && existing.expiresAt > now) {
+    return awaitProbe(existing.promise, signal)
   }
+
+  const promise = (async () => {
+    const ctl = new AbortController()
+    // 裸 setTimeout：这个模块要能在 node 里被测到
+    const timer = setTimeout(() => ctl.abort(), PROBE_MS)
+    try {
+      // no-store：这一趟正是为了读到**新的**版本号，自己吃缓存就白探了
+      const res = await fetcher(url, { method: 'HEAD', cache: 'no-store', signal: ctl.signal })
+      if (!res.ok) return ''
+      /*
+        ⚠️⚠️ ETag **不在 CORS 响应头安全列表里**。
+        系统镜像在资源域名上（跨域），服务器不额外发
+        `Access-Control-Expose-Headers: ETag` 的话，`headers.get('etag')` 就是 null ——
+        于是拼不出 romv、romCacheKey 返回空串、整套缓存**一个字节都不生效**，
+        而且没有任何报错：表现就是「明明写了缓存，怎么还是每次都下 20 MB」。
+
+        Last-Modified 是安全列表里的（Cache-Control / Content-Language / Content-Length /
+        Content-Type / Expires / Last-Modified / Pragma），任何跨域配置下都读得到，
+        拿它兜底。对象覆盖时 Last-Modified 一样会变，作为内容版本号够用。
+      */
+      const token = res.headers.get('etag') || res.headers.get('last-modified')
+      if (!token) {
+        warnNoVersionHeaderOnce(url)
+        return ''
+      }
+      return versionedRomUrl(url, token)
+    } catch {
+      return ''
+    } finally {
+      clearTimeout(timer)
+    }
+  })()
+  const entry: ProbeEntry = { fetcher, expiresAt: now + PROBE_REUSE_MS, promise }
+  probeEntries.set(url, entry)
+  void promise.then((value) => {
+    // 失败不能占住 30 秒；网络刚恢复或 CORS 刚修好时，下一次要能立刻重试。
+    if (!value && probeEntries.get(url) === entry) probeEntries.delete(url)
+  })
+  return awaitProbe(promise, signal)
+}
+
+/**
+ * 只提前取系统盘的版本号，不下载镜像本体。没有 IndexedDB 时版本号没人使用，连 HEAD 都省掉。
+ * 真正开局会复用上面 30 秒内的结果，再按原流程读本地镜像或走多源下载。
+ */
+export function prewarmSystemCache(url: string): void {
+  if (!url || typeof indexedDB === 'undefined') return
+  void systemCacheUrl(url)
 }
 
 /** 把外部 signal 和「失速自杀」合成一个 */

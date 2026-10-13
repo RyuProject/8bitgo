@@ -10,7 +10,7 @@
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { armJspi, jspiOverride, jspiSupported } from '../src/emulator/jspiFlag.ts'
+import { armJspi, jspiEnabled, jspiOverride, jspiSupported } from '../src/emulator/jspiFlag.ts'
 
 let pass = 0, fail = 0
 const ok = (c, m) => { c ? (pass++, console.log('✅ ' + m)) : (fail++, console.log('❌ ' + m)) }
@@ -40,6 +40,13 @@ ok(jspiOverride('?jspi=off') === false, '?jspi=off 强制关')
 ok(jspiOverride('?x=1') === null, '没写就不表态（交给特性检测）')
 ok(jspiOverride('') === null, '空查询串不表态')
 ok(jspiOverride('?jspi=maybe') === null, '认不出来的值不表态，而不是当成开')
+
+console.log('\n── 预热与正式开局共用的最终选择 ──')
+setSupport(true)
+ok(jspiEnabled('') === true, '支持且没强制关闭 → 预热 JSPI 核心')
+ok(jspiEnabled('?jspi=0') === false, '支持但人工关闭 → 预热 Asyncify 核心')
+setSupport(false)
+ok(jspiEnabled('?jspi=1') === false, '浏览器不支持时人工强开也不能预热 JSPI 核心')
 
 console.log('\n── armJspi 写进 localStorage 的值 ──')
 setSupport(true)

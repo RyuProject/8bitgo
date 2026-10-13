@@ -305,8 +305,27 @@ check('⚠️ /auth/google 有闸，而且长度闸在外呼之前', () => {
   assert.ok(gate > 0, '这条路没有限流')
   assert.ok(lenGuard < outbound, '长度闸排在外呼之后 —— 12MB 的 URL 已经发出去了')
   assert.ok(gate < outbound, '限流排在外呼之后')
+  assert.match(body, /fetchJson\(/, 'Google 外呼没有复用带超时和非 JSON 容错的 OIDC 请求器')
+  const oidc = strip(read('server/src/oidc.js'))
+  assert.match(oidc, /AbortSignal\.timeout\(FETCH_TIMEOUT_MS\)/, 'OIDC 请求器没有硬超时')
   // google 是登录不是注册，按注册那档（10 次/小时）会把 NAT 后面的人互相锁在门外
   assert.match(auth, /kind === 'login' \|\| kind === 'google'/, 'google 没算进登录那一档')
+})
+
+check('⚠️ 路由切换会取消上一页取数，不让废请求继续占带宽和数据库', () => {
+  const api = strip(read('src/services/api.ts'))
+  const pageData = strip(read('src/services/pageData.ts'))
+  assert.match(api, /signal\?: AbortSignal/, 'API 客户端还不能接取消信号')
+  assert.match(api, /signal,/, '取消信号没有传给 fetch')
+  assert.match(pageData, /new AbortController\(\)/, '页面取数没有创建取消控制器')
+  assert.match(pageData, /\.get<T>\(key,\s*false,\s*controller\.signal\)/, '页面取数没有把信号传给 API')
+  assert.match(pageData, /controller\.abort\(\)/, 'effect 清理时没有真正掐断网络请求')
+})
+
+check('⚠️ jsnes 房间上限的环境变量填错时不能变成无上限', () => {
+  const jsnes = strip(read('server/src/jsnes-netplay.js'))
+  assert.match(jsnes, /envNumber\('JSNES_NETPLAY_MAX_ROOMS',\s*500,\s*\{\s*max:\s*5000\s*\}\)/)
+  assert.doesNotMatch(jsnes, /Number\(process\.env\.JSNES_NETPLAY_MAX_ROOMS/)
 })
 
 check('⚠️ 合集的两处「先查后写」都进了事务', () => {

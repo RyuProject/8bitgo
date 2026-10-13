@@ -206,6 +206,10 @@ check('⭐ TvPlay 和 EmbedPage 的播放器 props 不许漂移', () => {
   // 有意不同的那几个，每一个都要说得出理由
   const ONLY_EMBED = new Set([
     'maxPlayers', // 嵌入页压成 1（跨站 iframe 里联机指望不上，信令要登录态）
+    // 这三项来自 iframe 地址的启动漏斗参数；TV 是站内入口，没有可继承的外部访问/尝试 ID。
+    'startupVisitId',
+    'initialStartupAttemptId',
+    'initialStartupStartedAt',
   ])
   const ONLY_PLAY = new Set([
     'maxPlayers', // TV 上照游戏本身的人数来

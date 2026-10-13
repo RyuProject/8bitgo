@@ -4,10 +4,19 @@
  * 既浪费流量也可能绕过访问时机。fetch 只填 HTTP 缓存，引擎稍后照常走自己的初始化。
  */
 import type { RuntimeId } from './types'
-import { EJS_PATH, J2ME_PATH, PPSSPP_RUNTIME_PATH, RUFFLE_PATH, ejsRuntimeAsset, emulatorJsCoreFileFor } from './paths'
+import {
+  EJS_PATH,
+  J2ME_PATH,
+  JSDOS_PATH,
+  PPSSPP_RUNTIME_PATH,
+  RUFFLE_PATH,
+  ejsRuntimeAsset,
+  emulatorJsCoreFileFor,
+} from './paths'
 import { CHEERPJ_ORIGIN, j2meWarmTargets } from './j2meUrl'
 import { preconnectOrigin, warmHttpCache } from './httpWarm'
 import { supportsRuffleWasmExtensions } from './rufflePerformance'
+import { jspiEnabled } from './jspiFlag'
 
 /**
  * 这台设备上「指针停在按钮上」和「点击」之间是否真的有提前量。
@@ -79,6 +88,33 @@ async function prewarmRuffleCore() {
   }
 }
 
+/**
+ * js-dos 的入口只有 430 KB，真正拉长 Win95 冷启动的是后面才发现要取的 DOSBox-X：
+ * glue + wasm 约 7.7 MB。玩家把鼠标停到“开始游戏”上时把正确的那一套送进 HTTP 缓存，
+ * 点击后便能和系统盘 / Sockdrive 并行初始化，而不是再从零建立这条下载关键路径。
+ *
+ * `core` 在 js-dos 这里表示后端（dos / dosboxX），由播放器按逐游戏配置传进来。
+ * JSPI 版与 Asyncify 版只能预热一套，判断必须和 loadJsDos() 最终写入的开关共用
+ * jspiEnabled；两边分叉会让玩家白下另一份 7.5 MB 核心。
+ */
+function prewarmJsdos(core: string | null | undefined, aggressive: boolean) {
+  warmHttpCache(`${JSDOS_PATH}js-dos.js`)
+  warmHttpCache(`${JSDOS_PATH}js-dos.css`)
+  if (!aggressive || !hasHoverIntent() || !allowsLargeHoverPrewarm()) return
+
+  const emulatorRoot = `${JSDOS_PATH}emulators/`
+  // 两个后端都先经过这层调度和 ZIP 文件系统；合计不足 300 KB，和核心并行拉最划算。
+  warmHttpCache(`${emulatorRoot}emulators.js`)
+  warmHttpCache(`${emulatorRoot}wlibzip.js`)
+  warmHttpCache(`${emulatorRoot}wlibzip.wasm`)
+
+  const stem = core === 'dosboxX'
+    ? (jspiEnabled() ? 'wdosbox-x-jspi' : 'wdosbox-x')
+    : 'wdosbox'
+  warmHttpCache(`${emulatorRoot}${stem}.js`)
+  warmHttpCache(`${emulatorRoot}${stem}.wasm`)
+}
+
 export function prewarmRuntime(runtime: RuntimeId | undefined, core?: string | null, aggressive = false) {
   if (runtime === 'j2me') {
     prewarmJ2me()
@@ -102,6 +138,10 @@ export function prewarmRuntime(runtime: RuntimeId | undefined, core?: string | n
       warmHttpCache(`${PPSSPP_RUNTIME_PATH}PPSSPPSDL.data`)
       warmHttpCache(`${PPSSPP_RUNTIME_PATH}audio-worklet.js`)
     }
+    return
+  }
+  if (runtime === 'jsdos') {
+    prewarmJsdos(core, aggressive)
     return
   }
   if (runtime !== 'emulatorjs') return
