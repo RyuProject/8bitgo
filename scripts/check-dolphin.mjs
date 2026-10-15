@@ -48,6 +48,9 @@ for (const relative of required) {
 if (!/index\.html\?embed=1&r=1/.test(adapter)) {
   fail('Dolphin iframe 入口缺内容代次，旧 301/HTML 会继续被边缘缓存命中')
 }
+if (!/saveArchiveKey:[\s\S]{0,120}dolphinVersionSaveSlug\(options\.gameSlug, DOLPHIN_VERSION\)/.test(adapter)) {
+  fail('Dolphin 即时状态没有按核心构建隔离，升级后会把不兼容旧档喂给新核心')
+}
 
 const source = readFileSync(join(runtimeDir, 'SOURCE.txt'), 'utf8')
 if (!source.includes('7e38409ace3dda709c178312ff63fd92a3653cc7') || !source.includes('GPL-2.0-or-later')) {
@@ -61,10 +64,11 @@ if (createHash('sha256').update(wasm).digest('hex') !== CORE_SHA256) fail('Dolph
 const app = readFileSync(join(runtimeDir, 'src/app.js'), 'utf8')
 const worker = readFileSync(join(runtimeDir, 'src/upstream-discio-worker.js'), 'utf8')
 const range = readFileSync(join(runtimeDir, 'src/range-backed-file.js'), 'utf8')
-for (const marker of ['8bitgo-dolphin-bridge', 'mount-remote', 'host-ready']) {
+for (const marker of ['8bitgo-dolphin-bridge', 'mount-remote', 'host-ready', 'save-state', 'load-state']) {
   if (!app.includes(marker)) fail(`站内桥缺关键特征 ${marker}`)
 }
 if (!worker.includes('RangeBackedFile') || !worker.includes('mountRemote')) fail('Worker 没有远程光盘挂载接口')
+if (!worker.includes('saveStateFile') || !worker.includes('loadStateFile')) fail('Worker 没有即时存 / 读档接口')
 if (!range.includes('Range') || !range.includes('206') || !range.includes('XMLHttpRequest')) fail('远程光盘不是 HTTP Range 随机读取实现')
 
 if (useDist) {

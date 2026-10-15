@@ -55,6 +55,22 @@ export interface IdbEntry {
   data: Uint8Array
   updatedAt: number
   /**
+   * 同一毫秒里也能分清两次写入的凭证。
+   *
+   * 只拿 updatedAt 做版本守卫仍有一个很窄但真实的洞：两次快速存档、或两个标签页，
+   * 完全可能在同一毫秒写入。那时旧上传的回调会把新档误标成“已经上云”。
+   * 老数据没有这个字段，继续用时间戳守卫，等下一次写入就会自然补齐。
+   */
+  revision?: string
+  /** 这份本地档最后一次确认对应的服务端版本；自动补传拿它做乐观锁。 */
+  cloudRevision?: string
+  /** 待同步档属于哪个账号；换号后绝不能把上一个人的进度补传到新账号。 */
+  cloudOwner?: string
+  /** 冲突 / 超限不能靠反复重试解决，记下来避免后台请求死循环。 */
+  syncBlocked?: 'conflict' | 'too-large' | 'quota'
+  /** 生成通用存档文件头时要带回去的核心与格式信息。 */
+  saveMetadata?: Record<string, string>
+  /**
    * 这份数据还没成功同步到服务器。
    *
    * 存档要用它来定「读档该读哪份」：云端推送失败过（断网、超配额、令牌过期）的时候，
@@ -70,13 +86,38 @@ export interface IdbEntry {
 export async function idbGet(key: string): Promise<IdbEntry | null> {
   const v = await tx<unknown>('readonly', (s) => s.get(key) as IDBRequest<unknown>)
   if (!v || typeof v !== 'object') return null
-  const e = v as { data?: unknown; updatedAt?: unknown; dirty?: unknown }
+  const e = v as {
+    data?: unknown
+    updatedAt?: unknown
+    dirty?: unknown
+    revision?: unknown
+    cloudRevision?: unknown
+    cloudOwner?: unknown
+    syncBlocked?: unknown
+    saveMetadata?: unknown
+  }
   if (!(e.data instanceof Uint8Array)) return null
   return {
     data: e.data,
     updatedAt: typeof e.updatedAt === 'number' ? e.updatedAt : 0,
     dirty: e.dirty === true,
+    revision: typeof e.revision === 'string' ? e.revision : undefined,
+    cloudRevision: typeof e.cloudRevision === 'string' ? e.cloudRevision : undefined,
+    cloudOwner: typeof e.cloudOwner === 'string' ? e.cloudOwner : undefined,
+    syncBlocked: e.syncBlocked === 'conflict' || e.syncBlocked === 'too-large' || e.syncBlocked === 'quota'
+      ? e.syncBlocked
+      : undefined,
+    saveMetadata: e.saveMetadata && typeof e.saveMetadata === 'object'
+      ? e.saveMetadata as Record<string, string>
+      : undefined,
   }
+}
+
+export interface IdbPutOptions {
+  cloudRevision?: string
+  cloudOwner?: string
+  syncBlocked?: IdbEntry['syncBlocked']
+  saveMetadata?: Record<string, string>
 }
 
 export async function idbPut(
@@ -84,11 +125,22 @@ export async function idbPut(
   data: Uint8Array,
   updatedAt = Date.now(),
   dirty = false,
+  revision?: string,
+  options: IdbPutOptions = {},
 ): Promise<boolean> {
   // 存进去的必须是自己的副本：调用方可能复用同一段 buffer，
   // 而 IndexedDB 是异步落盘的，直接存原引用有可能存到被改过的数据
   const copy = new Uint8Array(data)
-  const r = await tx<IDBValidKey>('readwrite', (s) => s.put({ data: copy, updatedAt, dirty }, key))
+  const r = await tx<IDBValidKey>('readwrite', (s) => s.put({
+    data: copy,
+    updatedAt,
+    dirty,
+    revision,
+    cloudRevision: options.cloudRevision,
+    cloudOwner: options.cloudOwner,
+    syncBlocked: options.syncBlocked,
+    saveMetadata: options.saveMetadata,
+  }, key))
   return r !== null
 }
 
@@ -99,13 +151,17 @@ export async function idbPut(
  * 等结果回来再把标记落定。重新 put 一遍整份数据只是为了改一个布尔值，
  * DOS 的变更包能有几百 KB，没必要。
  */
-export async function idbMark(key: string, dirty: boolean, expectUpdatedAt?: number): Promise<void> {
-  const cur = await idbGet(key)
-  if (!cur || cur.dirty === dirty) return
+export async function idbMark(
+  key: string,
+  dirty: boolean,
+  expectUpdatedAt?: number,
+  expectRevision?: string,
+  updates: Pick<IdbPutOptions, 'cloudRevision' | 'syncBlocked'> = {},
+): Promise<boolean> {
   /*
     ⚠️⚠️ `expectUpdatedAt` 不是可选的讲究，是防丢档的。
 
-    这个函数是跨两个事务的 read-modify-write，而且原来**只认 key、不认版本** ——
+    这个函数原来是跨两个事务的 read-modify-write，而且最早还**只认 key、不认版本** ——
     于是同一个存档位上有两次并发推送时：
       1. 存档 A：idbPut(A, dirty=true)，PUT A 上路；
       2. 玩家没看到反馈又按了一次（N64/PSX 的快照推云端要好几秒，而快捷键那条路
@@ -117,10 +173,78 @@ export async function idbMark(key: string, dirty: boolean, expectUpdatedAt?: num
     另一条不需要任何失败的变体：两个 PUT 都成功但到达顺序反了，云端留下更旧的 A，
     而本地 B 已被标成 clean，同样丢 B。
 
-    带上推送时的 updatedAt 之后，「这份已经不是我推的那份了」就什么都不做。
+    带上推送时的版本之后，「这份已经不是我推的那份了」不能清标记。还有一个更隐蔽的
+    到达顺序：后来者 B 已经上传并标成 clean，旧请求 A 才最后回 200；这时云端又可能被 A
+    覆盖，所以必须把 B 重新标成 dirty。否则本地虽然保住了 B，下次读档仍会拿云端的 A。
+
+    这里还必须把 get + put 放进**同一个 readwrite 事务**。若先读、事务结束、再开一个事务写，
+    另一个标签页可以恰好在两者之间写入 B；本页随后仍会把刚读到的 A 整份写回去，
+    版本判断虽然做了，数据却还是被回滚成 A。IndexedDB 会串行同一对象仓库的 readwrite 事务，
+    所以在一个事务里做条件更新，检查与落盘之间才没有缝。
   */
-  if (expectUpdatedAt !== undefined && cur.updatedAt !== expectUpdatedAt) return
-  await tx<IDBValidKey>('readwrite', (s) => s.put({ data: cur.data, updatedAt: cur.updatedAt, dirty }, key))
+  const db = await openDb()
+  if (!db) return false
+  return new Promise<boolean>((resolve) => {
+    let settled = false
+    const finish = (ok: boolean) => {
+      if (settled) return
+      settled = true
+      resolve(ok)
+    }
+    try {
+      const transaction = db.transaction(STORE, 'readwrite')
+      const store = transaction.objectStore(STORE)
+      const request = store.get(key) as IDBRequest<unknown>
+      request.onerror = () => finish(false)
+      transaction.onabort = () => finish(false)
+      transaction.onerror = () => finish(false)
+      request.onsuccess = () => {
+        const raw = request.result
+        if (!raw || typeof raw !== 'object') return finish(false)
+        const cur = raw as {
+          data?: unknown
+          updatedAt?: unknown
+          dirty?: unknown
+          revision?: unknown
+          cloudRevision?: unknown
+          syncBlocked?: unknown
+        }
+        if (!(cur.data instanceof Uint8Array)) return finish(false)
+        const versionChanged =
+          (expectUpdatedAt !== undefined && cur.updatedAt !== expectUpdatedAt) ||
+          // 新写入都有 revision；老数据没有时仍靠 updatedAt 保持兼容。
+          (expectRevision !== undefined && cur.revision !== expectRevision)
+        if (versionChanged) {
+          if (!dirty && cur.dirty !== true) {
+            // 旧上传晚到会把云端倒退；把较新的本地档重新标成待同步，至少保证下次读档不倒退。
+            const put = store.put({ ...cur, dirty: true }, key)
+            put.onsuccess = () => finish(false)
+            put.onerror = () => finish(false)
+            return
+          }
+          return finish(false)
+        }
+        const hasCloudRevision = Object.prototype.hasOwnProperty.call(updates, 'cloudRevision')
+        const hasSyncBlocked = Object.prototype.hasOwnProperty.call(updates, 'syncBlocked')
+        const unchanged =
+          (cur.dirty === true) === dirty &&
+          (!hasCloudRevision || cur.cloudRevision === updates.cloudRevision) &&
+          (!hasSyncBlocked || cur.syncBlocked === updates.syncBlocked)
+        if (unchanged) return finish(true)
+        const put = store.put({
+          ...cur,
+          dirty,
+          ...(hasCloudRevision ? { cloudRevision: updates.cloudRevision } : {}),
+          // undefined 表示清掉旧的阻塞原因；成功同步或新存档都要能恢复自动补传。
+          ...(hasSyncBlocked ? { syncBlocked: updates.syncBlocked } : {}),
+        }, key)
+        put.onsuccess = () => finish(true)
+        put.onerror = () => finish(false)
+      }
+    } catch {
+      finish(false)
+    }
+  })
 }
 
 export async function idbDelete(key: string): Promise<void> {

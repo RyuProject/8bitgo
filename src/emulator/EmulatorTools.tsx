@@ -31,6 +31,7 @@ import { installHotkeys } from './hotkeyBridge'
 import type { HotkeyAction } from '@/services/hotkeys'
 import { cx } from '@/lib/format'
 import { DOS_MOUSE_SENSITIVITY_DEFAULT, dosMouseSpeedMultiplier } from './dosMouse'
+import { decodeSaveArchive, encodeSaveArchive, encodeSaveArchiveBlob } from './saveEnvelope'
 
 interface Props {
   handle: RuntimeHandle | null
@@ -183,6 +184,8 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
   /** DOS「固化存档」正在飞：按钮压住，别让连点把 lastPush 判断搞反（见 doFsSave） */
   /** 正在存 / 正在读。防连点用，见 doSave 里的注释 */
   const [saving, setSaving] = useState(false)
+  /** state 更新要等下一次渲染；ref 才能挡住同一事件循环里连着进来的两次快捷键。 */
+  const saveBusyRef = useRef(false)
   const [fsSaving, setFsSaving] = useState(false)
   /** 刚导入过一份存档，面板上要把「重开这一局」那个按钮亮出来 */
   const [fsImported, setFsImported] = useState(false)
@@ -227,17 +230,14 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
   // HTML5 只有页面明确接入存档桥之后才会上报 saveState；普通第三方页面仍然没有按钮。
   // liveview（在看别人直播，没有自己的机器状态）绝不能混进来，否则会发一个注定 400 的查询。
   const saveRuntime = asSaveRuntime(runtimeId)
-  const archivable = Boolean(saveRuntime && gameSlug && caps.has('saveState'))
+  const remoteOnly = handle.saveMode === 'remote'
   const archiveSlot = handle.saveSlot ?? 0
   const archiveGameKey = handle.saveArchiveKey ?? gameSlug
-  const hasArchivedSlot = Boolean(saveRuntime && archiveGameKey && (caps.has('saveState') || caps.has('fsFile')))
+  const archivable = Boolean(!remoteOnly && saveRuntime && archiveGameKey && caps.has('saveState'))
+  const hasArchivedSlot = Boolean(
+    saveRuntime && archiveGameKey && ((!remoteOnly && caps.has('saveState')) || caps.has('fsFile')),
+  )
   const toCloud = cloudSavesEnabled()
-
-  useEffect(() => {
-    if (saveRequest === seenSaveRequest.current) return
-    seenSaveRequest.current = saveRequest
-    if (caps.has('saveState')) setSaveModal(true)
-  }, [saveRequest, caps])
 
   const say = useCallback((text: string) => {
     setMsg(text)
@@ -385,7 +385,8 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
       并发本身已经在 services/saves.ts 里排队了，但让玩家多存一份没用的、还要多等一轮，
       没有任何好处。SaveLoadModal 早就声明了 busy 这个 prop，只是一直没人传 —— 现在传上了。
     */
-    if (saving) return
+    if (saveBusyRef.current) return
+    saveBusyRef.current = true
     setSaving(true)
     setPanel(null)
     /*
@@ -408,34 +409,81 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
       }
       // 「下载」不是存到哪儿，是不存、直接给他文件
       if (target === 'download') {
-        downloadBlob(blob, mediaFileName(gameName, handle.saveExt ?? 'state'))
+        const downloadable = saveRuntime && archiveGameKey
+          ? await encodeSaveArchiveBlob(
+              blob,
+              { runtime: saveRuntime, gameSlug: archiveGameKey, slot: archiveSlot },
+              handle.saveMetadata,
+            )
+          : blob
+        downloadBlob(downloadable, mediaFileName(gameName, handle.saveExt ?? 'state'))
         say(tt.saveOk)
         return
       }
-      if (archivable && saveRuntime && gameSlug) {
-        const bytes = new Uint8Array(await blob.arrayBuffer())
-        const r = await pushSave(saveRuntime, gameSlug, bytes, 0, target)
+      const bytes = new Uint8Array(await blob.arrayBuffer())
+      const downloadable = saveRuntime && archiveGameKey
+        ? new Blob([
+            await encodeSaveArchive(
+              bytes,
+              { runtime: saveRuntime, gameSlug: archiveGameKey, slot: archiveSlot },
+              handle.saveMetadata,
+            ) as BlobPart,
+          ], { type: 'application/octet-stream' })
+        : blob
+      if (archivable && saveRuntime && archiveGameKey) {
+        const r = await pushSave(
+          saveRuntime,
+          archiveGameKey,
+          bytes,
+          archiveSlot,
+          target,
+          handle.saveMetadata,
+        )
         if (r.ok && r.where) {
           sayStored(r.where, r.cloudFailed ? r.error : undefined)
           return
         }
         // 云端和浏览器都写不进去（超配额、太大、无痕模式）：
         // 退回下载成文件，总之不能让玩家的进度就这么没了
-        downloadBlob(blob, mediaFileName(gameName, handle.saveExt ?? 'state'))
+        downloadBlob(downloadable, mediaFileName(gameName, handle.saveExt ?? 'state'))
         say(fmt(tt.saveFellBack, { msg: r.error ?? '' }))
         return
       }
-      downloadBlob(blob, mediaFileName(gameName, handle.saveExt ?? 'state'))
+      downloadBlob(downloadable, mediaFileName(gameName, handle.saveExt ?? 'state'))
       say(tt.saveOk)
     } catch (e) {
       say(e instanceof Error && e.message ? e.message : tt.saveFail)
     } finally {
+      saveBusyRef.current = false
       setSaving(false)
     }
   }
 
+  /**
+   * 外层播放器也能请求打开存档入口。远程云游戏没有可下载的文件与读档卡，直接发服务器存档；
+   * 普通模拟器才打开三落点面板。把这段放在 doSave 后面，保证调用的是本次渲染的句柄。
+   */
+  useEffect(() => {
+    if (saveRequest === seenSaveRequest.current) return
+    seenSaveRequest.current = saveRequest
+    if (!caps.has('saveState')) return
+    if (remoteOnly) void doSave('local')
+    else setSaveModal(true)
+    // doSave 每次渲染都会重建，但触发条件只该是外层计数变化；seenSaveRequest 负责去重。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saveRequest, caps, remoteOnly])
+
   /** DOS 存档的文件名。扩展名自定，重要的是让人一眼看出这是哪款游戏的存档 */
   const dosSaveFileName = () => mediaFileName(gameName, 'dossave')
+
+  const wrapFileSave = async (bytes: Uint8Array): Promise<Uint8Array> => {
+    if (!saveRuntime || !archiveGameKey) return bytes
+    return encodeSaveArchive(
+      bytes,
+      { runtime: saveRuntime, gameSlug: archiveGameKey, slot: archiveSlot },
+      handle.saveMetadata,
+    )
+  }
 
   /**
    * 导出成文件 —— 没有云端时这是玩家唯一能把进度带走的办法。
@@ -456,7 +504,9 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
         say(r.error ? fmt(tt.fsSaveFailed, { msg: r.error }) : tt.saveFail)
         return
       }
-      downloadBlob(r.blob, dosSaveFileName())
+      const bytes = new Uint8Array(await r.blob.arrayBuffer())
+      const archive = await wrapFileSave(bytes)
+      downloadBlob(new Blob([archive as BlobPart], { type: 'application/octet-stream' }), dosSaveFileName())
       setFsSaveFailed(false)
       say(tt.saveOk)
     } catch (e) {
@@ -495,8 +545,14 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
     if (!file || fsSaving) return
     setFsSaving(true)
     try {
-      const bytes = new Uint8Array(await file.arrayBuffer())
-      const r = await handle.fsImport?.(bytes)
+      const archive = new Uint8Array(await file.arrayBuffer())
+      const decoded = await decodeSaveArchive(
+        archive,
+        saveRuntime && archiveGameKey
+          ? { runtime: saveRuntime, gameSlug: archiveGameKey, slot: archiveSlot }
+          : undefined,
+      )
+      const r = await handle.fsImport?.(decoded.payload)
       if (!r?.ok) {
         say(fmt(tt.fsImportFailed, { msg: r?.error ?? '' }))
         return
@@ -553,7 +609,8 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
           唯一的副本（无痕模式、超配额、令牌过期都会走到这里）—— 说完就丢掉了。
         */
         if (r?.bytes?.length) {
-          downloadBlob(new Blob([r.bytes as BlobPart], { type: 'application/octet-stream' }), dosSaveFileName())
+          const archive = await wrapFileSave(r.bytes)
+          downloadBlob(new Blob([archive as BlobPart], { type: 'application/octet-stream' }), dosSaveFileName())
           say(fmt(tt.saveFellBack, { msg: r.error ?? '' }))
           return
         }
@@ -582,12 +639,24 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
 
   /** 从文件读档 */
   const doLoadFile = async (file: File | null | undefined) => {
-    if (!file) return
+    if (!file || !handle.loadState || saveBusyRef.current) return
+    saveBusyRef.current = true
+    setSaving(true)
     try {
-      const note = await handle.loadState?.(await file.arrayBuffer())
+      const archive = new Uint8Array(await file.arrayBuffer())
+      const decoded = await decodeSaveArchive(
+        archive,
+        saveRuntime && archiveGameKey
+          ? { runtime: saveRuntime, gameSlug: archiveGameKey, slot: archiveSlot }
+          : undefined,
+      )
+      const note = await handle.loadState(decoded.payload.slice().buffer)
       say(typeof note === 'string' && note ? note : tt.loadOk)
     } catch (e) {
       say(fmt(tt.loadFail, { msg: e instanceof Error ? e.message : String(e) }))
+    } finally {
+      saveBusyRef.current = false
+      setSaving(false)
     }
   }
 
@@ -600,20 +669,27 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
    * 那是重复入口，已经删掉。）
    */
   const loadFrom = async (from: 'cloud' | 'local') => {
-    if (!archivable || !saveRuntime || !gameSlug) return
+    if (!archivable || !saveRuntime || !archiveGameKey || !handle.loadState || saveBusyRef.current) return
+    saveBusyRef.current = true
+    setSaving(true)
     setSaveModal(false)
     try {
-      const got = from === 'cloud' ? await fetchCloudSave(saveRuntime, gameSlug) : await pullLocalSave(saveRuntime, gameSlug)
+      const got = from === 'cloud'
+        ? await fetchCloudSave(saveRuntime, archiveGameKey, archiveSlot)
+        : await pullLocalSave(saveRuntime, archiveGameKey, archiveSlot)
       if (!got) {
         say(tt.saveLoadNothing)
         return
       }
       // slice() 保证拿到的是一段独立的 buffer，不受原数组偏移影响
-      const note = await handle.loadState?.(got.data.slice().buffer)
+      const note = await handle.loadState(got.data.slice().buffer)
       setArchived({ where: from, updatedAt: got.updatedAt })
       say(typeof note === 'string' && note ? note : fmt(tt.loadFrom, { where: whereLabel(from) }))
     } catch (e) {
       say(fmt(tt.loadFail, { msg: e instanceof Error ? e.message : String(e) }))
+    } finally {
+      saveBusyRef.current = false
+      setSaving(false)
     }
   }
 
@@ -648,6 +724,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
       desc: tt.saveCardCloudDesc,
       disabled: !toCloud || !archivable,
       disabledNote: toCloud ? undefined : tt.saveNeedLogin,
+      canLoad: Boolean(handle.loadState),
       onSave: () => {
         setSaveTarget('cloud')
         void doSave('cloud')
@@ -661,6 +738,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
       title: tt.saveCardLocal,
       desc: tt.saveCardLocalDesc,
       disabled: !archivable,
+      canLoad: Boolean(handle.loadState),
       onSave: () => {
         setSaveTarget('local')
         void doSave('local')
@@ -674,6 +752,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
       // 文件这一路不需要 archivable：没有 slug 的本地 ROM 也能把存档下载下来带走
       title: tt.saveCardFile,
       desc: tt.saveCardFileDesc,
+      canLoad: Boolean(handle.loadState),
       onSave: () => {
         setSaveTarget('download')
         void doSave('download')
@@ -693,6 +772,16 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
    */
   useEffect(() => {
     if (!caps.has('saveState')) return
+    if (remoteOnly) {
+      // 云游戏只支持服务器侧保存，没有能下载/上传的状态文件，也没有客户端读档 API。
+      return installHotkeys(
+        stageRef?.current ?? null,
+        (action) => {
+          if (action === 'save:local') void doSave('local')
+        },
+        () => handleRef.current?.popupOpen?.() === true,
+      )
+    }
     const byAction: Record<HotkeyAction, (() => void) | undefined> = {
       'save:cloud': saveCards[0].disabled ? undefined : saveCards[0].onSave,
       'load:cloud': saveCards[0].disabled ? undefined : saveCards[0].onLoad,
@@ -708,7 +797,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
       () => handleRef.current?.popupOpen?.() === true,
     )
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [caps, saveCards, stageRef])
+  }, [caps, saveCards, stageRef, remoteOnly])
 
 
   const doShot = async () => {
@@ -852,9 +941,15 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
           <button
             type="button"
             className={BTN}
-            onClick={() => setSaveModal(true)}
+            disabled={saving}
+            onClick={() => {
+              if (remoteOnly) void doSave('local')
+              else setSaveModal(true)
+            }}
             title={
-              archived
+              remoteOnly
+                ? tt.save
+                : archived
                 ? `${tt.saveLoadTitle} · ${fmt(tt.loadTitle, {
                     where: whereLabel(archived.where, archived.pending),
                     when: timeAgo(archived.updatedAt, lang),
@@ -1207,7 +1302,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
         </div>
       )}
 
-      {saveModal && (
+      {saveModal && !remoteOnly && (
         <SaveLoadModal
           cards={saveCards}
           busy={saving}

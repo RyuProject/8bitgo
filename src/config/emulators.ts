@@ -27,7 +27,7 @@ export const EXT_RUNTIME_OVERRIDES: Record<string, RuntimeId> = {
   jad: 'j2me',
 
   /*
-    NDS 不再交给 webretro。2026-09-23 已把 melonDS DS 1.3.1 编成 EmulatorJS 的
+    NDS 不再交给 webretro。自 2026-10-16 起已把 melonDS DS 1.4.0 编成 EmulatorJS 的
     自托管 `melondsds` 核心；这里若还强制 webretro，部署过 webretro 的机器反而会
     悄悄继续跑旧 melonDS，形成「同一站点两种核心」的灰度事故。
   */
@@ -60,7 +60,7 @@ export const EXT_RUNTIME_OVERRIDES: Record<string, RuntimeId> = {
  * 所以默认留 pcsx_rearmed（保证能跑起来），个别有画面问题、或者想要高清的游戏
  * 再单独换成 mednafen_psx_hw。
  *
- * NDS 是第三个：默认已经硬切到 melonDS DS 1.3.1（`melondsds`）。它是继续维护的
+ * NDS 是第三个：默认已经硬切到 melonDS DS 1.4.0（`melondsds`）。它是继续维护的
  * 新核心，布局、触控和兼容性都比旧 `melonds` 完整；旧核心不再出现在下拉或资源目录。
  * 站点普通详情页没有 COOP/COEP，故自构建的是兼容所有页面的非 pthread 软件渲染版。
  * DeSmuME 两档仍保留作逐游戏兜底：某款游戏在新核心上跑不动时才单独切换。
@@ -82,7 +82,7 @@ export const CORE_OPTIONS: Record<string, Array<{ id: string; label: string }>> 
     { id: 'mednafen_psx_hw', label: 'Beetle PSX HW（更准、可高清，吃性能）' },
   ],
   nds: [
-    { id: 'melondsds', label: 'melonDS DS 1.3.1（默认，持续维护）' },
+    { id: 'melondsds', label: 'melonDS DS 1.4.0（默认，持续维护）' },
     { id: 'desmume', label: 'DeSmuME（有帧跳 / 可调内部分辨率，跑不动时换它）' },
     { id: 'desmume2015', label: 'DeSmuME 2015（更老更轻，弱机兜底）' },
   ],
@@ -100,7 +100,7 @@ export function coreOptionsFor(platform: string): Array<{ id: string; label: str
  * 只要已经出现在后台下拉里就是对玩家的可用承诺：产物缺失必须阻断构建，
  * 不能只打一条线上根本没人看的警告后继续发布。
  */
-export const MELONDSDS_VERSION = '1.3.1'
+export const MELONDSDS_VERSION = '1.4.0'
 
 export const SELF_BUILT_CORES = new Set<string>(['mame-current', 'melondsds'])
 

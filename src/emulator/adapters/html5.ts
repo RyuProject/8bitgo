@@ -378,6 +378,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   return {
     caps,
     saveExt: saveFormat.ext,
+    saveMetadata: { core: 'html5-bridge', format: saveFormat.ext },
     async saveState() {
       const data = await requestSaveBridge('export')
       if (!(data instanceof ArrayBuffer) || data.byteLength === 0) throw new Error('网页游戏返回了空存档')

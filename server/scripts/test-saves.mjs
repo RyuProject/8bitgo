@@ -74,6 +74,17 @@ const put = (u, runtime, slug, bytes, slot = 0) =>
     headers: { ...auth(u), 'content-type': 'application/octet-stream' },
     body: bytes,
   })
+const putVersioned = (u, runtime, slug, bytes, revision, parent, slot = 0) =>
+  fetch(url(runtime, slug, slot), {
+    method: 'PUT',
+    headers: {
+      ...auth(u),
+      'content-type': 'application/octet-stream',
+      'x-save-revision': revision,
+      'x-save-parent-revision': parent,
+    },
+    body: bytes,
+  })
 const get = (u, runtime, slug, slot = 0) => fetch(url(runtime, slug, slot), { headers: auth(u) })
 const del = (u, runtime, slug, slot = 0) => fetch(url(runtime, slug, slot), { method: 'DELETE', headers: auth(u) })
 
@@ -109,13 +120,61 @@ try {
   const meta = await (await fetch(url('emulatorjs', 'contra', 0, '/meta'), { headers: auth(alice) })).json()
   ok('meta 给出体积和时间', meta.size === Buffer.from('第三关').length && meta.updatedAt > 0)
 
+  /* ================= 二点五、跨设备冲突保护 ================= */
+  section('跨设备冲突保护')
+  await put(alice, 'emulatorjs', 'optimistic-lock', bytes('初始'))
+  const initial = await get(alice, 'emulatorjs', 'optimistic-lock')
+  const parentRevision = initial.headers.get('x-save-revision')
+  ok('下载响应带当前 revision', Boolean(parentRevision))
+  const firstVersioned = await putVersioned(
+    alice,
+    'emulatorjs',
+    'optimistic-lock',
+    bytes('设备 A'),
+    'device-a-2',
+    parentRevision,
+  )
+  ok('基于最新父版本的写入成功', firstVersioned.ok)
+  const stale = await putVersioned(
+    alice,
+    'emulatorjs',
+    'optimistic-lock',
+    bytes('设备 B 的旧页面'),
+    'device-b-2',
+    parentRevision,
+  )
+  ok('基于旧父版本的写入返回 409', stale.status === 409 && (await stale.json()).code === 'save_conflict')
+  ok('冲突不会覆盖设备 A 的内容', (await textOf(await get(alice, 'emulatorjs', 'optimistic-lock'))) === '设备 A')
+  ok(
+    '响应丢失后用同 revision 重试是幂等成功',
+    (await putVersioned(
+      alice,
+      'emulatorjs',
+      'optimistic-lock',
+      bytes('设备 A'),
+      'device-a-2',
+      parentRevision,
+    )).ok,
+  )
+  const versionedMeta = await (await fetch(
+    url('emulatorjs', 'optimistic-lock', 0, '/meta'),
+    { headers: auth(alice) },
+  )).json()
+  ok('meta 暴露 revision 供下次条件写', versionedMeta.revision === 'device-a-2')
+  await del(alice, 'emulatorjs', 'optimistic-lock')
+
   /* ================= 三、互不覆盖 ================= */
   section('不同引擎 / 存档位 / 用户之间互不覆盖')
   await put(alice, 'jsdos', 'contra', bytes('DOS 的变更包'))
   await put(alice, 'ppsspp', 'contra', bytes('PSP 即时状态'))
+  await put(alice, 'dolphin', 'contra~dolphin-7e38409', bytes('Dolphin 即时状态'))
   ok('同名游戏、不同引擎各存各的', (await textOf(await get(alice, 'emulatorjs', 'contra'))) === '第三关')
   ok('DOS 那份也在', (await textOf(await get(alice, 'jsdos', 'contra'))) === 'DOS 的变更包')
   ok('PSP 那份也在且不会覆盖其它引擎', (await textOf(await get(alice, 'ppsspp', 'contra'))) === 'PSP 即时状态')
+  ok(
+    'Dolphin 构建隔离键可以存取',
+    (await textOf(await get(alice, 'dolphin', 'contra~dolphin-7e38409'))) === 'Dolphin 即时状态',
+  )
   await put(alice, 'html5', 'plants-vs-zombies', bytes('PVZ userdata zip'))
   ok('HTML5 存档桥使用独立命名空间', (await textOf(await get(alice, 'html5', 'plants-vs-zombies'))) === 'PVZ userdata zip')
 
@@ -130,7 +189,7 @@ try {
   /* ================= 四、清单 ================= */
   section('存档清单')
   const list = await (await fetch(`${API}/api/saves`, { headers: auth(alice) })).json()
-  ok('清单只列自己的', Array.isArray(list) && list.length === 5)
+  ok('清单只列自己的', Array.isArray(list) && list.length === 6)
   ok('清单不带存档内容', list.every((r) => !('data' in r)) && list.every((r) => r.size > 0))
   ok('按更新时间倒序', list.every((r, i) => i === 0 || list[i - 1].updatedAt >= r.updatedAt))
 

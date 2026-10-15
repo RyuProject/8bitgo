@@ -488,6 +488,7 @@ const patches = [
           '`size` INT UNSIGNED NOT NULL,' +
           // MEDIUMBLOB 上限 16MB，接口层再卡到 SAVE_MAX_BYTES（默认 4MB）
           '`data` MEDIUMBLOB NOT NULL,' +
+          '`revision` VARCHAR(80) NULL,' +
           '`created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,' +
           '`updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,' +
           'PRIMARY KEY (`user_id`, `runtime`, `game_slug`, `slot`),' +
@@ -504,6 +505,13 @@ const patches = [
         console.log(`   （外键没加上，注销账号时要自己清存档：${e.message}）`)
       }
     },
+  },
+  {
+    name: 'saves.revision（跨设备存档乐观锁）',
+    table: 'saves',
+    needed: async () => !(await hasColumn('saves', 'revision')),
+    // 旧行先保留 NULL，接口把它映射为 legacy；第一次新版写入后自然换成真正 UUID。
+    run: () => conn.query('ALTER TABLE `saves` ADD COLUMN `revision` VARCHAR(80) NULL AFTER `data`'),
   },
   {
     name: 'flash_save_slots（Flash 游戏内部的在线存档槽）',

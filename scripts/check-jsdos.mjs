@@ -108,10 +108,14 @@ if (!js.includes('requestPointerLock()')) fail('找不到使用系统加速的 P
 if (!js.includes('n.lock(["KeyW","Escape"])?.catch(()=>{})')) {
   fail('Keyboard Lock 拒绝仍可能变成全局未处理异常')
 }
-if (!js.includes('function Xa(){return null}')) fail('js-dos 仍可能显示重复的鼠标灵敏度侧栏')
-if (!js.includes('function Dl(){return null}')) fail('js-dos 仍可能显示鼠标捕获黑色蒙版')
+// 压缩函数名并不是稳定接口：8.4.1 的 Xa/Dl 在 8.5.3 已变成 Ga/Tl。
+// 直接确认会生成界面的唯一 DOM 特征已消失，避免以后只因符号重命名误报。
+if (js.includes('class:"sidebar-slider "+')) fail('js-dos 仍可能显示重复的鼠标灵敏度侧栏')
+if (js.includes('class:"absolute top-0 left-0 w-full h-full flex flex-col items-center justify-center pointer-events-none bg-black/70')) {
+  fail('js-dos 仍可能显示鼠标捕获黑色蒙版')
+}
 if (js.includes('i&&l&&zi("div",{class:"w-2 flex-shrink-0"})')) fail('kiosk 仍为鼠标侧栏保留空白边')
-if (!js.includes('for(const o of nc.starters)e.addEventListener(o,t,n)')) {
+if (!/requestPointerLock\(\)\}\}const \w+=\{capture:!0\};for\(const \w+ of \w+\.starters\)e\.addEventListener\(/.test(js)) {
   fail('找不到画布点击直接请求 Pointer Lock 的监听器')
 }
 for (const type of ['fullscreenchange', 'pointerlockchange', 'visibilitychange']) {

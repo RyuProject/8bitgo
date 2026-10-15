@@ -39,7 +39,7 @@ export const EJS_PATH: string = asDir(import.meta.env.VITE_EJS_PATH, '/emulatorj
  * EmulatorJS 的文件名没有内容哈希，而 CDN 会缓存一个月。每次改自托管引擎或 loader
  * 都要加一代，让浏览器和边缘不再把旧 JS 与新核心拼在一起。
  */
-export const EJS_RUNTIME_GENERATION = '20260923-melondsds-core-errors'
+export const EJS_RUNTIME_GENERATION = '20261016-melondsds-1.4.0'
 export const ejsRuntimeAsset = (name: string): string =>
   `${EJS_PATH}${name}?v=${encodeURIComponent(EJS_RUNTIME_GENERATION)}`
 
@@ -47,7 +47,7 @@ export const ejsRuntimeAsset = (name: string): string =>
  * Ruffle 的版本既进入 URL，也由构建检查和 npm 包互相校验。
  * wasm / glue 文件名不是稳定的内容哈希；把版本放进目录后，旧 CDN 缓存不会和新版混用。
  */
-export const RUFFLE_VERSION = '0.6.0'
+export const RUFFLE_VERSION = '0.7.1'
 export const RUFFLE_PATH: string = asDir(
   import.meta.env.VITE_RUFFLE_PATH,
   `/ruffle/v${RUFFLE_VERSION}/`,
@@ -63,8 +63,8 @@ export const RUFFLE_PATH: string = asDir(
  * 本站会对 js-dos.js 打补丁，而这些文件是一年 immutable：只要补丁会改变产物，
  * JSDOS_ASSET_VERSION 就必须换代。否则代码已部署，玩家却会继续命中上一份 CDN 缓存。
  */
-export const JSDOS_VERSION = '8.4.1'
-export const JSDOS_ASSET_VERSION = '8.4.1-8bitgo.3'
+export const JSDOS_VERSION = '8.5.3'
+export const JSDOS_ASSET_VERSION = '8.5.3-8bitgo.1'
 export const JSDOS_PATH: string = asDir(
   import.meta.env.VITE_JSDOS_PATH,
   `/jsdos/v${JSDOS_ASSET_VERSION}/`,

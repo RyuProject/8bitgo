@@ -1,7 +1,7 @@
 /**
  * webretro 运行时：RetroArch 的 WebAssembly 移植（BinBashBanana/webretro，GPL-3.0）。
  *
- * 2026-09-23 NDS 已硬切 EmulatorJS 自托管的 melonDS DS 1.3.1，本适配器不再
+ * 2026-10-16 NDS 已硬切 EmulatorJS 自托管的 melonDS DS 1.4.0，本适配器不再
  * 自动接管任何平台。代码保留仅供将来接入 EmulatorJS 没有的核心，别再把 NDS
  * 加回去，否则部署了 webretro 的机器会悄悄继续跑旧 melonDS。
  *

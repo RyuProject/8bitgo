@@ -225,20 +225,27 @@ function patchKeyboardLockRejection(file) {
  */
 function patchMinimalMouseCaptureUi(file) {
   let code = readFileSync(file, 'utf8')
-  const replaceFunction = (start, end, replacement, label, requiredMarker) => {
-    if (code.split(start).length - 1 !== 1 || code.split(end).length - 1 !== 1) {
-      fail(`上游 ${label} 结构变化，无法移除重复的鼠标捕获界面`)
+  const replaceMarkedFunction = (marker, label) => {
+    if (code.split(marker).length - 1 !== 1) {
+      fail(`上游 ${label} 特征变化，无法移除重复的鼠标捕获界面`)
     }
-    const from = code.indexOf(start)
-    const to = code.indexOf(end, from)
-    if (to <= from || !code.slice(from, to).includes(requiredMarker)) {
-      fail(`上游 ${label} 内容变化，无法确认补丁目标`)
+    const markerAt = code.indexOf(marker)
+    const from = code.lastIndexOf('function ', markerAt)
+    const to = code.indexOf('function ', markerAt + marker.length)
+    const signature = code.slice(from, markerAt).match(/^function ([\w$]+)\([^)]*\)\{/)
+    if (from < 0 || to <= from || !signature) {
+      fail(`上游 ${label} 函数边界变化，无法确认补丁目标`)
     }
-    code = `${code.slice(0, from)}${replacement}${code.slice(to)}`
+    code = `${code.slice(0, from)}function ${signature[1]}(){return null}${code.slice(to)}`
   }
 
-  replaceFunction('function Xa(e){', 'function Ga(', 'function Xa(){return null}', '鼠标灵敏度侧栏', 'sidebar-slider')
-  replaceFunction('function Dl(){', 'function Tl(){', 'function Dl(){return null}', '鼠标捕获提示层', 'clickToLockModal')
+  // 压缩符号会随上游构建漂移（8.4.1 的 Xa/Dl 在 8.5.3 变成 Ga/Tl），
+  // 用唯一的 DOM 特征锁定完整函数，既容忍符号改名，又不会在界面结构变化时模糊替换。
+  replaceMarkedFunction('class:"sidebar-slider "+e.class', '鼠标灵敏度侧栏')
+  replaceMarkedFunction(
+    'class:"absolute top-0 left-0 w-full h-full flex flex-col items-center justify-center pointer-events-none bg-black/70',
+    '鼠标捕获提示层',
+  )
 
   const kioskSpacer = 'i&&l&&zi("div",{class:"w-2 flex-shrink-0"}),'
   if (code.split(kioskSpacer).length - 1 !== 1) {

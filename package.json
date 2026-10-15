@@ -136,6 +136,8 @@
     "test:play": "node scripts/check-play.mjs",
     "test:save-target": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-save-target.mjs",
     "test:save-sync": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-save-sync.mjs",
+    "test:save-envelope": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-save-envelope.mjs",
+    "test:save-capabilities": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-save-capabilities.mjs",
     "test:scroll": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-scroll-guard.mjs",
     "test:leave-nav": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-leave-navigation.mjs",
     "test:hardening": "node scripts/test-hardening.mjs",
@@ -208,7 +210,7 @@
     "react-router-dom": "^7.18.2"
   },
   "devDependencies": {
-    "@ruffle-rs/ruffle": "^0.6.0",
+    "@ruffle-rs/ruffle": "^0.7.1",
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
@@ -217,7 +219,7 @@
     "@vitejs/plugin-react": "^6.1.0",
     "abortcontroller-polyfill": "^1.7.8",
     "esbuild": "^0.28.2",
-    "js-dos": "^8.4.1",
+    "js-dos": "^8.5.3",
     "oxlint": "^1.79.0",
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.2",

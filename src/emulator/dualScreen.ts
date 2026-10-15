@@ -28,7 +28,7 @@
  * 我们只对取值做**形态归类**（上下叠 / 并排 / 单屏 / 混合），归不了类的按未知处理
  * —— 未知不影响能不能切，只影响我们要不要跟着改容器比例。
  *
- * 取证（2026-09-23，melonDS DS v1.3.1 的
+ * 取证（2026-10-16，melonDS DS v1.4.0 的
  * `src/libretro/config/definitions/screen.hpp`）：
  *
  *   melonds_screen_layout1  默认 top-bottom
@@ -288,7 +288,7 @@ export const WIDE_RATIO = 1.2
  * 写死就白改，而且看不出来。
  *
  * ── 作用范围只认两条经过实读的精确 key ───────────────────────
- * melonDS DS 1.3.1 改为 `auto`，但网页端仍主动选 `touch`：它明确对应
+ * melonDS DS 1.4.0 的默认值仍是 `auto`，但网页端仍主动选 `touch`：它明确对应
  * Pointer 绝对坐标，避免鼠标和触屏首次输入在 auto 判定上出现模式抖动。
  *
  * DeSmuME / DeSmuME 2015 是弱机兜底，但它们的出厂值也是相对位移的 `mouse`；两个核心

@@ -9,7 +9,7 @@
  *      这一局**一个能按的东西都没有**，而且没有任何提示
  *   3. 比例取整取错方向 → 画面悄悄缩小，没人会为此报 bug
  *
- * MELONDSDS_OPTIONS 是从 melonDS DS v1.3.1 的
+ * MELONDSDS_OPTIONS 是从 melonDS DS v1.4.0 的
  * `src/libretro/config/definitions/screen.hpp` 实读的。改核心版本后值可能变，
  * 重新取一次证再改这里。
  */
@@ -41,7 +41,7 @@ const check = (name, fn) => {
   }
 }
 
-/** melonDS DS 1.3.1 真实上报的 value（label 另有英文展示名） */
+/** melonDS DS 1.4.0 真实上报的 value（label 另有英文展示名） */
 const LAYOUT_VALUES = [
   'top-bottom', 'bottom-top', 'left-right', 'right-left', 'top', 'bottom',
   'largescreen-top', 'largescreen-bottom',
@@ -51,7 +51,8 @@ const LAYOUT_VALUES = [
 ]
 const MELONDSDS_OPTIONS = {
   options: [
-    { key: 'melonds_console_mode', desc: 'Console Mode', values: [{ value: 'ds' }, { value: 'dsi' }], default: 'ds' },
+    // 1.4.0 新增 Auto，并把它设成默认；fixture 必须反映核心真实顺序，避免升级验收沿用旧表。
+    { key: 'melonds_console_mode', desc: 'Console Mode', values: [{ value: 'auto' }, { value: 'ds' }, { value: 'dsi' }], default: 'auto' },
     { key: 'melonds_touch_mode', desc: 'Touch Mode', values: [{ value: 'joystick' }, { value: 'touch' }, { value: 'auto' }], default: 'auto' },
     // 真实选项顺序里它在 layout1 前；绝不能把 1–8 当成布局。
     { key: 'melonds_number_of_screen_layouts', desc: '# of Screen Layouts', values: ['1', '2', '3', '4', '5', '6', '7', '8'], default: '2' },
@@ -63,7 +64,7 @@ const MELONDSDS_OPTIONS = {
 
 console.log('一、从核心自报的选项表里认出布局那一项')
 
-check('melonDS DS 1.3.1 的真实选项表 → 认出 layout1 与 17 个取值', () => {
+check('melonDS DS 1.4.0 的真实选项表 → 认出 layout1 与 17 个取值', () => {
   const opt = findLayoutOption(MELONDSDS_OPTIONS)
   assert.ok(opt, '没认出来')
   assert.equal(opt.key, 'melonds_screen_layout1')

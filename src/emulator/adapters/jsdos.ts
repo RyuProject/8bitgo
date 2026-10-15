@@ -52,7 +52,7 @@ import {
 import { normalizeDosStartupCommands } from '../../../shared/dos-startup-commands.js'
 import { fetchWithProgress, STARTING_MILESTONE, windowsGuestStartupBudgetMs } from '../loadProgress'
 import { assertTypeable, scheduleWindowsLaunch, windows3xLaunchCommands, type WindowsLaunchCi } from '../windowsLaunch'
-import { JSDOS_PATH } from '../paths'
+import { JSDOS_ASSET_VERSION, JSDOS_PATH } from '../paths'
 import {
   DOS_MOUSE_SENSITIVITY_DEFAULT,
   dosMouseSpeedMultiplier,
@@ -894,6 +894,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const streamingGame = Boolean(options.dosSockdriveUrl)
   // 槽 0 是旧的文件层存档；流式盘存的是扇区差异，格式完全不同，不能互相覆盖。
   const saveSlot = streamingGame ? 1 : 0
+  const saveMetadata = {
+    core: options.dosBackend === 'dosboxX' || options.dosSystemUrl ? 'dosbox-x' : 'dosbox',
+    build: JSDOS_ASSET_VERSION,
+    format: streamingGame ? 'sockdrive-sector-changes' : 'jsdos-fs-changes',
+  }
   // 必须先于 js-dos 建 AudioContext；它是在挂载之后的某个 effect 里建的，这里来得及
   installAudioTap()
   const mountedAt = Date.now()
@@ -1288,7 +1293,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                   */
                   lastBytes = new Uint8Array(data)
                   try {
-                    const r = await pushSave('jsdos', saveKey, data, saveSlot)
+                    const r = await pushSave('jsdos', saveKey, data, saveSlot, undefined, saveMetadata)
                     lastPush = { ok: r.ok, where: r.where, error: r.cloudFailed ? r.error : undefined }
                   } catch (e) {
                     lastPush = { ok: false, where: null, error: e instanceof Error ? e.message : String(e) }
@@ -1443,6 +1448,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   return {
     caps,
     saveSlot,
+    saveMetadata,
     /** getter 让工具栏在异步解析完规范 URL 后读到版本化键，而不是 mount 当下的空字符串。 */
     get saveArchiveKey() {
       return saveKey || undefined
@@ -1617,7 +1623,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       if (!saveKey) return { ok: false, error: 'no-slug' }
       if (!data || data.length === 0) return { ok: false, error: 'empty' }
       try {
-        const r = await pushSave('jsdos', saveKey, data, saveSlot)
+        const r = await pushSave('jsdos', saveKey, data, saveSlot, undefined, saveMetadata)
         return { ok: r.ok, where: r.where ?? undefined, error: r.cloudFailed ? r.error : undefined }
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) }

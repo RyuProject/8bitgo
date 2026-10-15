@@ -1,6 +1,8 @@
+import { useEffect } from 'react'
 import { BrowserRouter } from 'react-router-dom'
 import { AppRoutes } from './AppRoutes'
 import { AppErrorBoundary } from '@/components/AppErrorBoundary'
+import { installSaveAutoSync } from '@/services/saves'
 
 /**
  * 浏览器端的应用外壳。
@@ -10,6 +12,8 @@ import { AppErrorBoundary } from '@/components/AppErrorBoundary'
  * 默认语言（简体中文）没有前缀，basename 为 '/'。
  */
 export default function App({ basename }: { basename?: string }) {
+  useEffect(() => installSaveAutoSync(), [])
+
   return (
     <AppErrorBoundary>
       <BrowserRouter basename={basename || '/'}>

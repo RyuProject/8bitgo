@@ -1,0 +1,61 @@
+/**
+ * 跨运行时存档能力的总闸测试。
+ *
+ * 单个适配器的测试只能证明“引擎能吐出一份状态”；这里钉的是它能否一路穿过
+ * 工具栏坐标、前端白名单、后端白名单与体积策略。漏任意一层，玩家看到的都是同一个症状：
+ * 按钮能点，但存档不在、读不回，或只能下载不能归档。
+ */
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+
+globalThis.__viteEnv = { VITE_API_URL: 'https://api.test' }
+globalThis.localStorage = {
+  getItem: () => null,
+  setItem: () => {},
+  removeItem: () => {},
+}
+
+const {
+  asSaveRuntime,
+  MAX_LOCAL_DOLPHIN_SAVE_BYTES,
+  MAX_LOCAL_PSP_SAVE_BYTES,
+  MAX_SAVE_BYTES,
+} = await import('../src/services/saves.ts')
+const { dolphinVersionSaveSlug, parseDolphinVersionSaveSlug } = await import('../src/emulator/dolphinSave.ts')
+
+let passed = 0
+const ok = (condition, message) => {
+  assert.ok(condition, message)
+  passed++
+  console.log(`✅ ${message}`)
+}
+
+console.log('── Dolphin 统一存档链 ──')
+ok(asSaveRuntime('dolphin') === 'dolphin', '前端白名单收 Dolphin')
+ok(MAX_LOCAL_DOLPHIN_SAVE_BYTES > MAX_LOCAL_PSP_SAVE_BYTES, 'GC / Wii 大状态的本地上限高于 PSP')
+ok(MAX_LOCAL_DOLPHIN_SAVE_BYTES > MAX_SAVE_BYTES, '大状态先保在浏览器，不被 4MB 云配额一起挡掉')
+
+const keyed = dolphinVersionSaveSlug('super-mario-galaxy', '7e38409')
+const parsed = parseDolphinVersionSaveSlug(keyed)
+ok(parsed.gameSlug === 'super-mario-galaxy' && parsed.version === '7e38409', 'Dolphin 归档键带核心构建且可还原标题')
+const longA = dolphinVersionSaveSlug(`${'x'.repeat(160)}a`, '7e38409')
+const longB = dolphinVersionSaveSlug(`${'x'.repeat(160)}b`, '7e38409')
+ok(longA.length <= 160 && parseDolphinVersionSaveSlug(longA).version === '7e38409', '极端长 slug 仍保留核心构建且不越过 160 字符')
+ok(longA !== longB, '相同长前缀的两个本地 ROM 仍按指纹隔离')
+
+console.log('\n── 工具栏归档坐标与远程存档边界 ──')
+const tools = readFileSync(new URL('../src/emulator/EmulatorTools.tsx', import.meta.url), 'utf8')
+ok(
+  /pushSave\([\s\S]*?saveRuntime,[\s\S]*?archiveGameKey,[\s\S]*?bytes,[\s\S]*?archiveSlot,[\s\S]*?target,[\s\S]*?handle\.saveMetadata/.test(tools),
+  '保存使用运行时声明的 archive key + slot',
+)
+ok(/encodeSaveArchive\(/.test(tools) && /decodeSaveArchive\(/.test(tools), '文件导出与导入走通用存档校验容器')
+ok(
+  /fetchCloudSave\(saveRuntime, archiveGameKey, archiveSlot\)/.test(tools) &&
+    /pullLocalSave\(saveRuntime, archiveGameKey, archiveSlot\)/.test(tools),
+  '云端与本地读取使用同一组 archive key + slot',
+)
+ok(/saveModal && !remoteOnly/.test(tools), '远程云游戏不再打开本地/文件三选一面板')
+ok(/!handle\.loadState \|\| saveBusyRef\.current/.test(tools), '没有读档 API 时不会假报“读取成功”')
+
+console.log(`\n全部通过 ✅  共 ${passed} 项`)

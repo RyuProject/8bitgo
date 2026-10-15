@@ -342,7 +342,7 @@ check('流式扇区存档与旧文件层存档隔离', () => {
   assert.match(jsdos, /get saveArchiveKey\(\)/)
   assert.match(jsdos, /return\s*\{\s*\n\s*caps,\s*\n\s*saveSlot,/)
   assert.match(jsdos, /pullSave\('jsdos', saveKey, saveSlot\)/)
-  assert.match(jsdos, /pushSave\('jsdos', saveKey, data, saveSlot\)/)
+  assert.match(jsdos, /pushSave\('jsdos', saveKey, data, saveSlot, undefined, saveMetadata\)/)
   assert.match(jsdos, /deleteSave\('jsdos', saveKey, saveSlot\)/)
 })
 

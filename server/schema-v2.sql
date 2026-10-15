@@ -552,6 +552,8 @@ CREATE TABLE IF NOT EXISTS saves (
   size       INT UNSIGNED     NOT NULL,
   -- MEDIUMBLOB 上限 16MB，接口层再卡到 SAVE_MAX_BYTES（默认 4MB）
   data       MEDIUMBLOB       NOT NULL,
+  -- 客户端生成的不可预测版本；PUT 带父版本，防止两台设备把新进度互相覆盖
+  revision   VARCHAR(80)      NULL,
   created_at TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (user_id, runtime, game_slug, slot),

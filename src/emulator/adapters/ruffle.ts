@@ -36,7 +36,7 @@ import { flashLegacyBundleRules, type FlashUrlRewriteRule } from '../flashLegacy
 import { installFlashLegacyLoginRedirect } from '../flashLegacyLogin'
 
 export { RUFFLE_PATH } from '../paths'
-import { RUFFLE_PATH } from '../paths'
+import { RUFFLE_PATH, RUFFLE_VERSION } from '../paths'
 
 /* ---------------- 设备字体（中文不显示的根因）---------------- */
 
@@ -874,6 +874,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   return {
     caps,
     volume,
+    saveMetadata: { core: 'ruffle', build: RUFFLE_VERSION, format: 'ruffle-shared-object' },
     // Flash 游戏也在 iframe 里，键盘操作的那些（横版过关、打字游戏）不交焦点就是死的。
     // 注意是 focusPlayer 不是 focusFrame —— 只把焦点给到 iframe，Ruffle 照样不收键盘
     focus: focusPlayer,

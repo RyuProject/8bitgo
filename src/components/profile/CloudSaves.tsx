@@ -27,6 +27,7 @@ import { useGamesBySlugs } from '@/services/gameCache'
 import { deleteCloudSave, fetchCloudSave, listCloudSaves, type SaveMeta } from '@/services/saves'
 import { ROM_LANG_LABEL, type RomLang } from '@/config/languages'
 import { parsePspVariantSaveSlug } from '@/emulator/romLanguage'
+import { parseDolphinVersionSaveSlug } from '@/emulator/dolphinSave'
 import { Notice, Panel } from './shared'
 
 /** 存档的唯一坐标。同一款游戏的不同存档位是不同的行 */
@@ -36,7 +37,9 @@ function keyOf(s: SaveMeta) {
 
 /** 只有 PPSSPP 会写这种后缀；别把普通游戏碰巧同名的 slug 当成 PSP 变体。 */
 function identityOf(s: SaveMeta): { gameSlug: string; romLang?: RomLang } {
-  return s.runtime === 'ppsspp' ? parsePspVariantSaveSlug(s.gameSlug) : { gameSlug: s.gameSlug }
+  if (s.runtime === 'ppsspp') return parsePspVariantSaveSlug(s.gameSlug)
+  if (s.runtime === 'dolphin') return parseDolphinVersionSaveSlug(s.gameSlug)
+  return { gameSlug: s.gameSlug }
 }
 
 export function CloudSaves() {
@@ -82,7 +85,8 @@ export function CloudSaves() {
        * 见 emulator/recorder.ts）。
        */
       downloadBlob(
-        new Blob([got.data as BlobPart], { type: 'application/octet-stream' }),
+        // 保留通用文件头：离线导入时才能校验游戏、核心代次与文件完整性。
+        new Blob([got.archive as BlobPart], { type: 'application/octet-stream' }),
         `${s.gameSlug.replace(/[^\w.-]+/g, '_')}-${s.runtime}-${s.slot}.sav`,
       )
     } catch (err) {

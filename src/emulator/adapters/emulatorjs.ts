@@ -96,7 +96,7 @@ import {
  * 玩家看到的就是「Error loading EmulatorJS runtime」。本地有核心，这条路不会走。
  */
 export { EJS_PATH } from '../paths'
-import { EJS_PATH, ejsRuntimeAsset, emulatorJsCoreForGame, isDiscPlatform, isSelfDownloadPlatform } from '../paths'
+import { EJS_PATH, EJS_RUNTIME_GENERATION, ejsRuntimeAsset, emulatorJsCoreForGame, isDiscPlatform, isSelfDownloadPlatform } from '../paths'
 import { applyTuning, sizeOfTrack, tuningFor, usableVideoSize } from '../videoTuning'
 import {
   findLayoutOption,
@@ -3304,6 +3304,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           EJS_paths: {
             'emulator.min.js': ejsRuntimeAsset('emulator.min.js'),
             'emulator.min.css': ejsRuntimeAsset('emulator.min.css'),
+            // 自构建核心沿用固定文件名，Cloudflare 会缓存一个月；跟运行时代次一起加查询参数，
+            // 否则 1.4.0 已部署后，老访客仍可能从边缘或浏览器拿到 1.3.1。
+            [`${core}-wasm.data`]: ejsRuntimeAsset(`cores/${encodeURIComponent(core)}-wasm.data`),
           },
           /*
             平台级 BIOS。Neo Geo 这类平台不给就直接起不来；不需要 BIOS 的平台这里是空串。
@@ -3841,6 +3844,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   return {
     caps,
     destroy,
+    saveMetadata: { core, build: EJS_RUNTIME_GENERATION, format: 'emulatorjs-state' },
     // EmulatorJS 默认 0.6，工具栏滑块要跟它对上
     volume,
     ...(options.platform === 'gba'

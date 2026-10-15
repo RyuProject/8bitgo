@@ -30,7 +30,14 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CORE_OPTIONS, MELONDSDS_VERSION, REQUIRED_SELF_BUILT_CORES, SELF_BUILT_CORES } from '../src/config/emulators.ts'
 import { platforms } from '../src/data/platforms.ts'
-import { emulatorJsCoreFileFor, emulatorJsCoreForGame, webretroCoreFor } from '../src/emulator/paths.ts'
+import {
+  EJS_PATH,
+  EJS_RUNTIME_GENERATION,
+  ejsRuntimeAsset,
+  emulatorJsCoreFileFor,
+  emulatorJsCoreForGame,
+  webretroCoreFor,
+} from '../src/emulator/paths.ts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const coresDir = join(root, 'public', 'emulatorjs', 'cores')
@@ -123,6 +130,15 @@ check('悬停预热使用真实核心文件名，不会请求平台别名 404', 
       `${platform.id} 的预热映射与 EmulatorJS 别名表不一致`,
     )
   }
+})
+
+check('固定名核心与悬停预热共用版本化 URL，不会把两代核心拼进同一缓存', () => {
+  const expected = `${EJS_PATH}cores/melondsds-wasm.data?v=${encodeURIComponent(EJS_RUNTIME_GENERATION)}`
+  assert.equal(ejsRuntimeAsset('cores/melondsds-wasm.data'), expected)
+  const adapter = readFileSync(join(root, 'src/emulator/adapters/emulatorjs.ts'), 'utf8')
+  const prewarm = readFileSync(join(root, 'src/emulator/prewarm.ts'), 'utf8')
+  assert.match(adapter, /\[`\$\{core\}-wasm\.data`\]: ejsRuntimeAsset\(`cores\/\$\{encodeURIComponent\(core\)\}-wasm\.data`\)/)
+  assert.match(prewarm, /ejsRuntimeAsset\(`cores\/\$\{encodeURIComponent\(emulatorJsCoreFileFor\(core\)\)\}-wasm\.data`\)/)
 })
 
 console.log('\n二、我们会交给引擎的每一个核心，都得真的发了')

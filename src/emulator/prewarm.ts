@@ -5,7 +5,6 @@
  */
 import type { RuntimeId } from './types'
 import {
-  EJS_PATH,
   J2ME_PATH,
   JSDOS_PATH,
   PPSSPP_RUNTIME_PATH,
@@ -154,6 +153,7 @@ export function prewarmRuntime(runtime: RuntimeId | undefined, core?: string | n
     真实鼠标悬停且不是省流 / 2G 时预拉大核心；loader.js 很小，仍然无条件预热。
   */
   if (core && hasHoverIntent() && allowsLargeHoverPrewarm()) {
-    warmHttpCache(`${EJS_PATH}cores/${encodeURIComponent(emulatorJsCoreFileFor(core))}-wasm.data`)
+    // 与播放器 EJS_paths 使用完全相同的版本化 URL，避免预热旧核心、正式启动又下载新核心。
+    warmHttpCache(ejsRuntimeAsset(`cores/${encodeURIComponent(emulatorJsCoreFileFor(core))}-wasm.data`))
   }
 }

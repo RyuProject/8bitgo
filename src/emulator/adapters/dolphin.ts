@@ -10,7 +10,8 @@
  * 192MB LRU 缓存。同步只阻塞模拟 Worker，不会把 React 主线程卡白。
  */
 import type { Capability, MountOptions, RuntimeHandle } from '../types'
-import { DOLPHIN_PATH } from '../paths'
+import { DOLPHIN_PATH, DOLPHIN_VERSION } from '../paths'
+import { dolphinVersionSaveSlug } from '../dolphinSave'
 import { probeRange } from '../remoteDisc'
 import { getT, fmt } from '@/services/i18n'
 
@@ -200,6 +201,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   return {
     caps,
     saveExt: 'sav',
+    saveMetadata: { core: 'dolphin', build: DOLPHIN_VERSION, format: 'dolphin-state' },
+    // Dolphin 状态只保证同一构建可读；核心换代后必须与旧档物理隔离。
+    saveArchiveKey: options.gameSlug
+      ? dolphinVersionSaveSlug(options.gameSlug, DOLPHIN_VERSION)
+      : undefined,
     setPaused(paused) {
       post('set-paused', { paused })
     },

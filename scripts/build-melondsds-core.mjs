@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 把 melonDS DS v1.3.1 编成 8BitGo 可直接加载的 EmulatorJS 核心。
+ * 把 melonDS DS v1.4.0 编成 8BitGo 可直接加载的 EmulatorJS 核心。
  *
  * 为什么不直接拿 libretro buildbot：它发的是桌面动态库，不是 Emscripten bitcode；
  * EmulatorJS 还要把核心和自己的 RetroArch 前端二次链接、打成 `.data`。
@@ -35,9 +35,9 @@ const scriptDir = dirname(fileURLToPath(import.meta.url))
 const repoRoot = join(scriptDir, '..')
 
 const CORE_REPO = 'https://github.com/JesseTG/melonds-ds.git'
-const CORE_TAG = 'v1.3.1'
-const CORE_VERSION = '1.3.1'
-const CORE_COMMIT = 'bc4e4b67d2d470d7c682810a1e892cafd6f9082b'
+const CORE_TAG = 'v1.4.0'
+const CORE_VERSION = '1.4.0'
+const CORE_COMMIT = 'f394adbacb5722ee97c1b37c8064da9a25818310'
 const RETROARCH_REPO = 'https://github.com/EmulatorJS/RetroArch.git'
 const RETROARCH_COMMIT = '1eb5edf2b3becf0a7b29520a34545628db0c5416'
 const EMSDK_REPO = 'https://github.com/emscripten-core/emsdk.git'
@@ -144,6 +144,20 @@ function patchCore(coreDir) {
   )
 }
 
+/**
+ * 1.4.0 锁定的 libretro-common 已能在 Emscripten 上探测到系统 mmap，却仍把
+ * `__EMSCRIPTEN__` 列进“没有 sys/mman.h”的旧平台清单，结果它自己声明的 size_t off
+ * 和工具链标准的 off_t 冲突。依赖由 CMake FetchContent 拉取，只能在 configure 后修正；
+ * 让它走已经探测成功的系统 mmap，也避免维护一份重复且 ABI 不一致的 shim。
+ */
+function patchConfiguredDependencies(coreDir) {
+  replaceOnce(
+    join(coreDir, 'build-ejs/_deps/libretro-common-src/include/memmap.h'),
+    ' || defined(__EMSCRIPTEN__)',
+    ' /* Emscripten 使用系统 mmap ABI。 */',
+  )
+}
+
 function patchRetroArch(retroDir, jobs) {
   const script = join(retroDir, 'EmulatorJS/build-emulatorjs.sh')
   replaceOnce(script, '  name=`echo "$f" | sed "s/\\(_libretro_emscripten\\|\\).bc$//"`', '  name=${f%_libretro_emscripten.bc}')
@@ -153,7 +167,7 @@ function patchRetroArch(retroDir, jobs) {
   writeFileSync(script, next)
 }
 
-function mergeArchives(coreDir) {
+function mergeArchives(coreDir, env) {
   const build = join(coreDir, 'build-ejs')
   const output = join(build, 'melondsds_libretro_emscripten.bc')
   const archives = [
@@ -169,7 +183,9 @@ function mergeArchives(coreDir) {
   for (const archive of archives) if (!existsSync(archive)) throw new Error(`缺少链接输入：${archive}`)
   const mri = join(build, 'merge.mri')
   writeFileSync(mri, [`create ${output}`, ...archives.map((path) => `addlib ${path}`), 'save', 'end', ''].join('\n'))
-  runBash(`emar -M < ${q(mri)}`, build)
+  // emar 属于 EMSDK，不在普通 shell 的 PATH；这里必须沿用编译阶段同一套工具链环境，
+  // 否则源码已经编完也会在归档合并的最后一步报 command not found。
+  runBash(`${env} && emar -M < ${q(mri)}`, build)
   return output
 }
 
@@ -258,8 +274,9 @@ function main() {
     '-DENABLE_DYNAMIC=OFF', '-DBUILD_TESTING=OFF',
   ].map(q).join(' ')
   runBash(`${env} && emcmake cmake ${cmakeArgs}`, coreDir)
+  patchConfiguredDependencies(coreDir)
   runBash(`${env} && cmake --build build-ejs --parallel ${args.jobs}`, coreDir)
-  const bitcode = mergeArchives(coreDir)
+  const bitcode = mergeArchives(coreDir, env)
 
   const ejsDir = join(retroDir, 'EmulatorJS')
   copyFileSync(bitcode, join(ejsDir, 'melondsds_libretro_emscripten.bc'))

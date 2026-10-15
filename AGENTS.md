@@ -284,9 +284,9 @@ zip 顶层条目，于是照旧报 `v-102tw.u39 NOT FOUND` 回菜单。拍平（
 引擎升级后它红了就重新取证，别直接改数字）。**注意它是延迟换稳定**：想调到别的值，
 改 `MAME_AUDIO_LATENCY_MS` 并同步上面那条「Buffer size」断言。
 
-### 2.8.4 NDS：已硬切 melonDS DS 1.3.1，旧 melonDS 不再发布
+### 2.8.4 NDS：已硬切 melonDS DS 1.4.0，旧 melonDS 不再发布
 
-本站 NDS 默认核心是自构建 `melondsds-wasm.data`（上游 melonDS DS v1.3.1），
+本站 NDS 默认核心是自构建 `melondsds-wasm.data`（上游 melonDS DS v1.4.0），
 `src/data/platforms.ts` 与后台下拉都直接写 `melondsds`。历史游戏数据若仍填 `nds` / `melonds`，
 `emulatorJsCoreForGame()` 会在开局时硬归一到新核心；旧 `melonds-*.data` 已删除，不留双跑窗口。
 用户确认没有 NDS 存档，所以没有做 `.sav` → `.srm` 或旧即时存档的迁移桥。

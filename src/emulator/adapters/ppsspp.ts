@@ -10,7 +10,7 @@
  */
 import type { Capability, CaptureSources, MountOptions, RuntimeHandle } from '../types'
 import { focusFrame, frameGamepads } from '../frameFocus'
-import { PPSSPP_RUNTIME_PATH } from '../paths'
+import { PPSSPP_RUNTIME_PATH, PPSSPP_VERSION } from '../paths'
 import { probeRange } from '../remoteDisc'
 import { fmt, getT } from '@/services/i18n'
 
@@ -258,6 +258,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   return {
     caps,
     saveExt: 'ppssppstate',
+    saveMetadata: { core: 'ppsspp', build: PPSSPP_VERSION, format: 'ppsspp-state' },
     async saveState() {
       const payload = await request('save-state', {}) as { data?: unknown } | null
       const data = payload?.data

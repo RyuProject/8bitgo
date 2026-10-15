@@ -9,11 +9,13 @@
  *   emulatorjs  内存快照（整台机器某一帧的状态），NES 约 20KB、GBA 几十 KB
  *   jsdos       DOS 文件系统变更，或 Sockdrive 被改过的磁盘扇区
  *   html5       接入本站存档桥的网页游戏存档包（例如 PvZ 的 userdata ZIP）
+ *   dolphin     GC / Wii 整机状态；通常超过云端 4MB，上限不变时会安全回落到浏览器 / 文件
  *
  * 存档是二进制的，所以这里用 express.raw 收，不走全局的 express.json。
  */
 import { Router } from 'express'
 import express from 'express'
+import { randomUUID } from 'node:crypto'
 import { query, queryOne, withTransaction } from '../db.js'
 import { requireUser } from '../auth.js'
 
@@ -33,7 +35,22 @@ const MAX_TOTAL_BYTES = Number(process.env.SAVE_MAX_TOTAL_BYTES || 64 * 1024 * 1
 const MAX_SLOT = 9
 
 /** 只认已知的引擎名，别让人往库里塞任意字符串 */
-const RUNTIMES = new Set(['emulatorjs', 'jsdos', 'cloudgame', 'jsnes', 'ruffle', 'webretro', 'j2me', 'html5', 'ppsspp'])
+const RUNTIMES = new Set(['emulatorjs', 'jsdos', 'cloudgame', 'jsnes', 'ruffle', 'webretro', 'j2me', 'html5', 'ppsspp', 'dolphin'])
+const REVISION_RE = /^[A-Za-z0-9._:-]{1,80}$/
+
+/** null 是旧客户端；新客户端必须同时给“新版本”和“我基于哪个旧版本”。 */
+export function saveRevisionHeaders(headers) {
+  const revision = String(headers?.['x-save-revision'] || '').trim()
+  const parent = String(headers?.['x-save-parent-revision'] || '').trim()
+  if (!revision && !parent) return { ok: true, versioned: false, revision: randomUUID(), parent: null }
+  if (!REVISION_RE.test(revision) || !REVISION_RE.test(parent) || revision === 'none' || revision === 'legacy') {
+    return { ok: false }
+  }
+  return { ok: true, versioned: true, revision, parent }
+}
+
+/** 旧行还没有 revision；用稳定哨兵让第一次新版覆盖同样能做条件写。 */
+const currentRevision = (row) => row ? String(row.revision || 'legacy') : 'none'
 
 /**
  * 存档的 key 是 slug；本地文件没有 slug，前端会给个 `local:文件名` 的形式 ——
@@ -120,7 +137,7 @@ function coords(req, res) {
 savesRouter.get('/', async (req, res, next) => {
   try {
     const rows = await query(
-      `SELECT runtime, game_slug, slot, size, created_at, updated_at
+      `SELECT runtime, game_slug, slot, size, revision, created_at, updated_at
          FROM saves WHERE user_id = ? ORDER BY updated_at DESC`,
       [req.user.id],
     )
@@ -130,6 +147,7 @@ savesRouter.get('/', async (req, res, next) => {
         gameSlug: r.game_slug,
         slot: r.slot,
         size: r.size,
+        revision: r.revision || 'legacy',
         createdAt: new Date(r.created_at).getTime(),
         updatedAt: new Date(r.updated_at).getTime(),
       })),
@@ -156,13 +174,14 @@ savesRouter.get('/:runtime/:slug/meta', async (req, res, next) => {
     const c = coords(req, res)
     if (!c) return
     const row = await queryOne(
-      'SELECT size, created_at, updated_at FROM saves WHERE user_id = ? AND runtime = ? AND game_slug = ? AND slot = ?',
+      'SELECT size, revision, created_at, updated_at FROM saves WHERE user_id = ? AND runtime = ? AND game_slug = ? AND slot = ?',
       [req.user.id, c.runtime, c.slug, c.slot],
     )
     // 204：问到了，答案是「没有」。别用 404 —— 见上面注释
     if (!row) return res.status(204).end()
     res.json({
       size: row.size,
+      revision: row.revision || 'legacy',
       createdAt: new Date(row.created_at).getTime(),
       updatedAt: new Date(row.updated_at).getTime(),
     })
@@ -177,12 +196,13 @@ savesRouter.get('/:runtime/:slug', async (req, res, next) => {
     const c = coords(req, res)
     if (!c) return
     const row = await queryOne(
-      'SELECT data, updated_at FROM saves WHERE user_id = ? AND runtime = ? AND game_slug = ? AND slot = ?',
+      'SELECT data, revision, updated_at FROM saves WHERE user_id = ? AND runtime = ? AND game_slug = ? AND slot = ?',
       [req.user.id, c.runtime, c.slug, c.slot],
     )
     if (!row) return res.status(404).json({ error: '没有存档' })
     res.setHeader('content-type', 'application/octet-stream')
     res.setHeader('x-save-updated-at', String(new Date(row.updated_at).getTime()))
+    res.setHeader('x-save-revision', row.revision || 'legacy')
     res.send(row.data)
   } catch (e) {
     next(e)
@@ -220,6 +240,8 @@ savesRouter.put(
       if (req.body.length > MAX_SAVE_BYTES) {
         return res.status(413).json({ error: '存档太大' })
       }
+      const revisions = saveRevisionHeaders(req.headers)
+      if (!revisions.ok) return res.status(400).json({ error: '存档版本头不合法' })
 
       /*
         ⚠️ 配额的「查」和「写」必须在**同一个事务、同一把锁**下面。
@@ -241,9 +263,19 @@ savesRouter.put(
 
         // 份数 + 总字节一起查，判定交给 saveQuotaError（纯函数，规则写在它头上）
         const existing = (await run(
-          'SELECT size FROM saves WHERE user_id = ? AND runtime = ? AND game_slug = ? AND slot = ?',
+          'SELECT size, revision FROM saves WHERE user_id = ? AND runtime = ? AND game_slug = ? AND slot = ?',
           [req.user.id, c.runtime, c.slug, c.slot],
         ))[0]
+        const current = currentRevision(existing)
+        if (revisions.versioned) {
+          // 响应丢失后的同版本重试必须幂等；否则客户端会把“其实已经成功”误报成冲突。
+          if (revisions.revision === current) {
+            return { denied: null, revision: current, idempotent: true, size: Number(existing?.size ?? req.body.length) }
+          }
+          if (revisions.parent !== current) {
+            return { denied: null, conflict: true, revision: current }
+          }
+        }
         const used = (await run(
           'SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM saves WHERE user_id = ?',
           [req.user.id],
@@ -264,16 +296,25 @@ savesRouter.put(
          * 界面上的「最后存档时间」跟着一起卡住。
          */
         await run(
-          `INSERT INTO saves (user_id, runtime, game_slug, slot, size, data)
-                VALUES (?, ?, ?, ?, ?, ?)
+          `INSERT INTO saves (user_id, runtime, game_slug, slot, size, data, revision)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
            ON DUPLICATE KEY UPDATE size = VALUES(size), data = VALUES(data),
+                                   revision = VALUES(revision),
                                    updated_at = CURRENT_TIMESTAMP`,
-          [req.user.id, c.runtime, c.slug, c.slot, req.body.length, req.body],
+          [req.user.id, c.runtime, c.slug, c.slot, req.body.length, req.body, revisions.revision],
         )
-        return { denied: null }
+        return { denied: null, revision: revisions.revision, size: req.body.length }
       })
       if (result.denied) return res.status(result.denied.status).json({ error: result.denied.error })
-      res.json({ ok: true, size: req.body.length, updatedAt: Date.now() })
+      if (result.conflict) {
+        return res.status(409).json({
+          code: 'save_conflict',
+          error: '云存档在另一台设备上已有更新；本地进度已保留，再次手动保存可确认覆盖',
+          currentRevision: result.revision,
+        })
+      }
+      res.setHeader('x-save-revision', result.revision)
+      res.json({ ok: true, size: result.size, revision: result.revision, updatedAt: Date.now() })
     } catch (e) {
       next(e)
     }

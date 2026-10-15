@@ -28,6 +28,7 @@ import type { NetplaySession } from './adapters/emulatorjs'
 import type { LiveSession } from './adapters/liveview'
 import type { ChatSendResult } from './chatSend'
 import type { GbaVideoMode } from './gbaVideo'
+import type { SaveArchiveDetails } from './saveEnvelope'
 
 export type RuntimeId = 'emulatorjs' | 'ruffle' | 'html5' | 'jsnes' | 'j2me' | 'jsdos' | 'webretro' | 'play' | 'ppsspp' | 'dolphin' | 'cloudgame' | 'liveview'
 
@@ -478,6 +479,8 @@ export interface RuntimeHandle {
   saveSlot?: number
   /** 运行时实际使用的存档键；Sockdrive 把磁盘版本指纹写进去，避免跨版本套用扇区差异。 */
   saveArchiveKey?: string
+  /** 写进通用存档文件头，供兼容性排查；需要硬隔离的运行时还应把构建写进 saveArchiveKey。 */
+  saveMetadata?: SaveArchiveDetails
   saveState?: () => Promise<Blob | null>
   /** 旧 srcdoc 路径的 Flash 存档无法自动辨认游戏，只在玩家明确选择时恢复。 */
   hasLegacyFlashSave?: () => boolean

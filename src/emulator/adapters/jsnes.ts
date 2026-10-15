@@ -810,6 +810,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   return {
     caps,
     volume,
+    saveMetadata: { core: 'jsnes', build: '2.1.0', format: 'jsnes-state' },
     setPaused: (paused) => {
       if (paused) {
         // 补帧的定时器要一起收：否则暂停之后画面还会往前走一两帧

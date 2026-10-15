@@ -8,12 +8,10 @@
  *
  * 用法：cd server && npm run test:save-quota
  */
-import assert from 'node:assert/strict'
-
 const MB = 1024 * 1024
 process.env.SAVE_MAX_PER_USER = '3'
 process.env.SAVE_MAX_TOTAL_BYTES = String(10 * MB)
-const { saveQuotaError, slugOk } = await import('../src/routes/saves.js')
+const { saveCoords, saveQuotaError, saveRevisionHeaders, slugOk } = await import('../src/routes/saves.js')
 
 let n = 0
 let failedChecks = 0
@@ -57,6 +55,25 @@ console.log('\n── 存档 slug：本地 ROM 的文件名得能存上云 ─�
   ok(slugOk('') === false, '空')
   ok(slugOk('local:' + 'x'.repeat(200)) === false, '超长的挡住')
 }
+
+console.log('\n── 前后端存档运行时白名单 ──')
+ok(saveCoords({ runtime: 'dolphin', slug: 'mario~dolphin-7e38409', slot: 0 }).ok, 'Dolphin 状态可以进入统一云存档')
+ok(!saveCoords({ runtime: 'play', slug: 'game', slot: 0 }).ok, '没有稳定存档 API 的 Play! 仍然拒绝')
+
+console.log('\n── 跨设备乐观锁请求头 ──')
+ok(saveRevisionHeaders({}).versioned === false, '旧客户端不带版本头仍兼容')
+ok(
+  saveRevisionHeaders({ 'x-save-revision': 'client-a:2', 'x-save-parent-revision': 'none' }).versioned === true,
+  '新客户端同时携带新版本与父版本',
+)
+ok(
+  saveRevisionHeaders({ 'x-save-revision': 'client-a:2' }).ok === false,
+  '只带一半版本信息会被拒绝，不能绕过冲突保护',
+)
+ok(
+  saveRevisionHeaders({ 'x-save-revision': 'none', 'x-save-parent-revision': 'old' }).ok === false,
+  '新版本不能冒充保留哨兵',
+)
 
 
 process.on('exit', () => {

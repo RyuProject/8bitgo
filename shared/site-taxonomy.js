@@ -38,7 +38,7 @@ export const ENABLED_PLATFORM_IDS = Object.freeze([
   /*
     NDS（2026-09-08 加）。**东西早就齐了，只是漏了这一行** ——
     平台定义在 src/data/platforms.ts（runtime: emulatorjs / core: melondsds）、三个核心也真发出去了
-    （melonDS DS 1.3.1 / desmume / desmume2015）、双屏布局与触控 09-07 做完，
+    （melonDS DS 1.4.0 / desmume / desmume2015）、双屏布局与触控 09-07 做完，
     而这份名单一直没加它。后果是**每一款 NDS 游戏的详情页都 404**
     （GameDetailPage 那句 `!isPlatformEnabled(...) → NotFoundPage`，SSR 跟着回 404），
     平台页 /platforms/nds 同理。站长报「cooking-mama 显示 404」就是撞在这里。
