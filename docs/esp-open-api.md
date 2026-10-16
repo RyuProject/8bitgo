@@ -827,16 +827,18 @@ GET /v1/platforms          ← 只要令牌有效就回，不限 scope
 | `enabled` | 这个平台在站上开着没有。`false` = 前台 404、列表里查不到东西，客户端应当整个隐藏 |
 
 `game.platform` 字段就是这里的 `id`。客户端拿 `id` 查这张表即可，
-**别把 16 个平台的映射硬编码进客户端**——站上加平台时旧客户端就认不出了。
+**别把平台映射硬编码进客户端**——站上加平台时旧客户端就认不出了。
 
 ### 12.2 哪些平台「下载即跑」，哪些不是
 
-- ✅ **下载即跑**：`runtime=emulatorjs` 那 11 个（nes / snes / gba / gb / gbc / n64 /
-  nds / psx / segaMD / ws / arcade）+ `java`（`runtime=j2me`，FreeJ2ME），一共 12 个。
+- ✅ **下载即跑**：`runtime=emulatorjs` 那 23 个（nes / snes / gba / gb / gbc / n64 /
+  nds / psx / segaMD / segaMS / segaGG / segaCD / sega32x / pce / ngp / atari2600 /
+  atari5200 / atari7800 / lynx / c64 / amiga / ws / arcade）+ `java`
+  （`runtime=j2me`，FreeJ2ME），一共 24 个。
   ROM 是单个文件（`.nes` / `.sfc` / `.zip` romset / `.jar` …），`filename` 字段直接
   告诉你文件名，按 `romExtensions` 交给对应模拟器。
 
-  > ⚠️ **这 12 个里有几个站上是关着的。** 每一行都带 `enabled`，它跟着站点的平台
+  > ⚠️ **这些平台里有几个站上是关着的。** 每一行都带 `enabled`，它跟着站点的平台
   > 白名单走：`enabled:false` 的平台在前台是 404，`/v1/games?platform=<id>` 也查不到东西。
   > **客户端要按 `enabled` 过滤**，别照着这份名单给用户列出永远没有内容的分类。
   > 这个名单是会变的（NDS 就是后来才补进去的），所以别在代码里写死「有哪几个」。

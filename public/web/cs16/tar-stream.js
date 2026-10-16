@@ -1,6 +1,6 @@
 const BLOCK = 512
 const MAX_FILE_BYTES = 64 * 1024 * 1024
-const MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
+const MAX_TOTAL_BYTES = 160 * 1024 * 1024
 
 const decoder = new TextDecoder()
 
@@ -77,8 +77,10 @@ function verifyChecksum(block) {
 /**
  * 流式展开 ustar 包。每次只分配当前文件的大小，避免 800MB 资产包和 MEMFS 副本同时驻留。
  */
-export async function unpackTarStream(stream, onFile, onProgress) {
+export async function unpackTarStream(stream, onFile, onProgress, limits = {}) {
   const cursor = new StreamCursor(stream)
+  const maxTotalBytes = Math.min(limits.maxTotalBytes ?? MAX_TOTAL_BYTES, MAX_TOTAL_BYTES)
+  if (!Number.isSafeInteger(maxTotalBytes) || maxTotalBytes <= 0) throw new Error('TAR 展开上限无效')
   let files = 0
   let bytes = 0
   let zeroBlocks = 0
@@ -97,7 +99,7 @@ export async function unpackTarStream(stream, onFile, onProgress) {
     const type = header[156]
     const size = octal(header, 124, 12, '文件长度')
     if (size > MAX_FILE_BYTES) throw new Error(`TAR 单文件过大：${fullName}（${size} 字节）`)
-    if (bytes + size > MAX_TOTAL_BYTES) throw new Error('TAR 展开后超过 2GB 安全上限')
+    if (bytes + size > maxTotalBytes) throw new Error(`TAR 展开后超过 ${(maxTotalBytes / 1048576).toFixed(0)}MB 安全上限`)
 
     const data = await cursor.take(size)
     const padding = (BLOCK - (size % BLOCK)) % BLOCK

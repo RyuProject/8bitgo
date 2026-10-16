@@ -6,7 +6,7 @@
  * NES 默认运行时就是 jsnes，所以 NES 不用切到 EmulatorJS 也能联机 ——
  * 这正是当初给 jsnes 加这套联机的用意；EmulatorJS 联机作为兜底层保持不变。
  */
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button, buttonClasses } from '@/components/ui/Button'
 import { playerName } from '@/services/netplay'
 import type { RuntimeHandle } from './types'
@@ -15,21 +15,24 @@ interface Props {
   handle: RuntimeHandle
   gameSlug?: string
   gameName: string
+  /** 邀请链接进来时由面板自己自动加入，状态回调才能落在这张面板上。 */
+  initialRoomId?: string
   onClose?: () => void
 }
 
 type LinkState = RTCPeerConnectionState | 'idle' | 'connecting'
 
-export function JsnesNetplayPanel({ handle, gameSlug, gameName, onClose }: Props) {
+export function JsnesNetplayPanel({ handle, gameSlug, gameName, initialRoomId = '', onClose }: Props) {
   const [mode, setMode] = useState<'host' | 'join' | null>(null)
   const [started, setStarted] = useState(false)
   const [roomId, setRoomId] = useState('')
-  const [code, setCode] = useState('')
+  const [code, setCode] = useState(initialRoomId.toUpperCase())
   const [bufferFrames, setBufferFrames] = useState(2)
   const [linkState, setLinkState] = useState<LinkState>('idle')
   const [players, setPlayers] = useState(1)
   const [copied, setCopied] = useState(false)
   const [error, setError] = useState('')
+  const autoJoinStarted = useRef(false)
 
   const inviteLink = useMemo(() => {
     if (!roomId || !gameSlug) return ''
@@ -44,6 +47,10 @@ export function JsnesNetplayPanel({ handle, gameSlug, gameName, onClose }: Props
     onPlayers: (n: number) => setPlayers(n),
     onLinkState: (s: RTCPeerConnectionState) => setLinkState(s),
     onHostLeft: () => setError('对端已离开，联机结束'),
+    onError: (message: string) => {
+      setLinkState('failed')
+      setError(message || '联机失败，请重试')
+    },
   }
 
   const startHost = () => {
@@ -60,8 +67,8 @@ export function JsnesNetplayPanel({ handle, gameSlug, gameName, onClose }: Props
     else setError('这局游戏还没准备好，稍后再试')
   }
 
-  const startJoin = () => {
-    const id = code.trim().toLowerCase()
+  const joinRoom = (rawCode: string) => {
+    const id = rawCode.trim().toLowerCase()
     if (!id) {
       setError('请填写房间号')
       return
@@ -79,6 +86,18 @@ export function JsnesNetplayPanel({ handle, gameSlug, gameName, onClose }: Props
     if (ok) setStarted(true)
     else setError('这局游戏还没准备好，稍后再试')
   }
+
+  const startJoin = () => joinRoom(code)
+
+  useEffect(() => {
+    if (!initialRoomId || autoJoinStarted.current) return
+    autoJoinStarted.current = true
+    // 旧实现由父组件在后台先调用 openJsnesNetplay，随后才打开一张全新的空面板：
+    // 实际已经进房，界面却还让玩家再填一次房号；第二次调用又因会话已占用而失败。
+    joinRoom(initialRoomId)
+    // initialRoomId 是邀请链接在本次挂载时的快照；面板不负责监听地址栏变化。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialRoomId])
 
   const reset = () => {
     handle.closeNetplay?.()

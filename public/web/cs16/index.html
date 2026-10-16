@@ -1,43 +1,550 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
     <!-- 生产路由会把尾斜杠去掉；base 保证脚本、WASM 和字体始终从 /web/cs16/ 解析。 -->
     <base href="/web/cs16/" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#050602" />
     <title>Counter-Strike 1.6 · Web</title>
     <style>
-      :root { color-scheme: dark; }
-      * { box-sizing: border-box; }
-      html, body { margin: 0; height: 100%; background: #0a0a0c; color: #e6e6e6; font: 14px/1.5 system-ui, sans-serif; }
-      #app { position: fixed; inset: 0; display: flex; flex-direction: column; }
-      #stage { position: relative; flex: 1; min-height: 0; background: #000; }
-      #canvas { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
-      #overlay {
-        position: absolute; inset: 0; display: flex; flex-direction: column;
-        align-items: center; justify-content: center; gap: 14px;
-        background: radial-gradient(circle at 50% 30%, #16202b, #05070a);
-        text-align: center; padding: 24px;
+      :root {
+        color-scheme: dark;
+        --cs-amber: #ffb000;
+        --cs-amber-dim: #bc7000;
+        --cs-amber-dark: #503000;
+        --cs-ink: #050602;
+        --cs-panel: rgba(0, 0, 0, .88);
+        --cs-field: rgba(0, 0, 0, .76);
+        --cs-muted: rgba(255, 176, 0, .64);
       }
+
+      * { box-sizing: border-box; }
+      [hidden] { display: none !important; }
+
+      html,
+      body {
+        margin: 0;
+        min-width: 320px;
+        height: 100%;
+        overflow: hidden;
+        background: var(--cs-ink);
+        color: var(--cs-amber);
+        font: 600 13px/1.45 Verdana, Tahoma, Arial, sans-serif;
+      }
+
+      button,
+      select,
+      input { font: inherit; }
+
+      button:focus-visible,
+      select:focus-visible,
+      input:focus-visible,
+      summary:focus-visible {
+        outline: 1px dashed var(--cs-amber);
+        outline-offset: 3px;
+      }
+
+      #app {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+      }
+
+      #stage {
+        position: relative;
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+        background: #000;
+      }
+
+      #canvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+        image-rendering: pixelated;
+      }
+
+      #overlay {
+        position: absolute;
+        inset: 0;
+        overflow: auto;
+        background-color: #020300;
+        background-image: url("./ui/original-menu-background.png");
+        background-position: center;
+        background-repeat: no-repeat;
+        background-size: cover;
+      }
+
+      #overlay::after {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        background: rgba(0, 0, 0, .1);
+      }
+
       #overlay.hidden { display: none; }
-      #title { font-size: 22px; font-weight: 700; letter-spacing: .5px; }
-      #sub { opacity: .7; max-width: 560px; }
-      #bar { width: min(460px, 80vw); height: 8px; border-radius: 6px; background: #1d2733; overflow: hidden; }
-      #bar > i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #4caf50, #8bc34a); transition: width .2s; }
-      #phase { font-variant-numeric: tabular-nums; opacity: .85; }
-      #net { opacity: .6; font-size: 12px; }
-      #log { width: min(640px, 92vw); max-height: 32vh; overflow: auto; font: 12px/1.45 ui-monospace, monospace;
-             background: #0c1116; border: 1px solid #1d2733; border-radius: 8px; padding: 10px; text-align: left; }
-      #log .err { color: #ff6b6b; }
-      #errbox { color: #ff8a80; max-width: 620px; white-space: pre-wrap; }
-      .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: center; }
-      .field { display: inline-flex; gap: 8px; align-items: center; }
-      select, button { font: inherit; padding: 6px 12px; border-radius: 8px; border: 1px solid #2a3744; background: #141c24; color: #e6e6e6; }
-      button { cursor: pointer; }
-      button:hover { background: #1c2731; }
-      button:disabled, select:disabled { cursor: wait; opacity: .65; }
-      #bot-hint { opacity: .62; font-size: 12px; }
-      #hud { position: absolute; top: 8px; left: 8px; font: 12px ui-monospace, monospace; opacity: .55; pointer-events: none; }
+
+      .launcher-shell {
+        position: relative;
+        z-index: 1;
+        min-height: 100%;
+        padding: clamp(28px, 6vh, 58px) clamp(22px, 6vw, 72px) 44px;
+      }
+
+      .brand {
+        display: block;
+        width: 207px;
+        height: 32px;
+        object-fit: contain;
+        user-select: none;
+        -webkit-user-drag: none;
+      }
+
+      .launcher-layout {
+        display: grid;
+        grid-template-columns: 190px minmax(360px, 520px);
+        gap: clamp(28px, 5vw, 68px);
+        align-items: start;
+        margin-top: clamp(60px, 12vh, 118px);
+      }
+
+      .main-menu {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        padding-top: 35px;
+      }
+
+      .menu-entry {
+        position: relative;
+        width: 100%;
+        min-height: 32px;
+        padding: 5px 8px 5px 0;
+        border: 0;
+        background: transparent;
+        color: var(--cs-amber-dim);
+        text-align: left;
+        text-transform: uppercase;
+        letter-spacing: .02em;
+        cursor: pointer;
+      }
+
+      .menu-entry:hover,
+      .menu-entry[aria-selected="true"] { color: #fff; }
+
+      .menu-entry[aria-selected="true"]::before {
+        content: ">";
+        position: absolute;
+        left: -17px;
+        color: var(--cs-amber);
+      }
+
+      .dialog-stack { min-width: 0; }
+
+      .vgui-dialog {
+        border: 1px solid rgba(188, 112, 0, .72);
+        background: var(--cs-panel);
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, .72), 0 18px 50px rgba(0, 0, 0, .4);
+      }
+
+      .dialog-titlebar {
+        display: flex;
+        align-items: center;
+        min-height: 38px;
+        padding: 8px 13px;
+        border-bottom: 1px solid rgba(188, 112, 0, .46);
+        color: var(--cs-amber);
+        font-size: 15px;
+        text-transform: uppercase;
+        letter-spacing: .04em;
+      }
+
+      .dialog-content { padding: 18px 20px 20px; }
+
+      #sub {
+        margin: 0 0 18px;
+        color: var(--cs-muted);
+        font-size: 11px;
+        font-weight: 400;
+      }
+
+      .form-grid {
+        display: grid;
+        grid-template-columns: 116px minmax(0, 1fr);
+        gap: 13px 12px;
+        align-items: center;
+      }
+
+      .field-label {
+        color: var(--cs-amber);
+        font-size: 12px;
+      }
+
+      select,
+      input {
+        width: 100%;
+        min-height: 31px;
+        padding: 5px 8px;
+        border: 1px solid var(--cs-amber-dim);
+        border-radius: 0;
+        background: var(--cs-field);
+        color: var(--cs-amber);
+      }
+
+      select {
+        padding-right: 30px;
+        cursor: pointer;
+      }
+
+      select:hover,
+      input:hover { border-color: var(--cs-amber); }
+
+      select:disabled,
+      button:disabled {
+        cursor: wait;
+        color: rgba(255, 176, 0, .42);
+        border-color: rgba(188, 112, 0, .36);
+      }
+
+      #bot-hint {
+        min-height: 34px;
+        margin: 17px 0 0;
+        padding-top: 13px;
+        border-top: 1px solid rgba(188, 112, 0, .32);
+        color: var(--cs-muted);
+        font-size: 11px;
+        font-weight: 400;
+      }
+
+      .dialog-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: 18px;
+      }
+
+      .vgui-button {
+        min-width: 104px;
+        min-height: 31px;
+        padding: 5px 14px;
+        border: 1px solid rgba(188, 112, 0, .72);
+        border-radius: 0;
+        background: rgba(0, 0, 0, .5);
+        color: var(--cs-amber);
+        text-transform: uppercase;
+        cursor: pointer;
+      }
+
+      .vgui-button:hover:not(:disabled) {
+        border-color: var(--cs-amber);
+        background: rgba(255, 176, 0, .16);
+        color: #fff;
+      }
+
+      .server-status {
+        margin: 0 0 16px;
+        padding: 9px 10px;
+        border: 1px solid rgba(188, 112, 0, .46);
+        background: rgba(0, 0, 0, .54);
+        color: #fff;
+        font-size: 11px;
+      }
+
+      .server-status.is-ready { color: #a8d56a; }
+      .server-status.is-error { color: #ff7b5d; }
+
+      .server-table {
+        overflow: hidden;
+        border: 1px solid rgba(188, 112, 0, .46);
+        background: rgba(0, 0, 0, .66);
+      }
+
+      .server-columns,
+      .server-row {
+        display: grid;
+        grid-template-columns: minmax(150px, 1fr) 92px 62px 68px;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .server-columns {
+        padding: 6px 9px;
+        border-bottom: 1px solid rgba(188, 112, 0, .4);
+        color: var(--cs-muted);
+        font-size: 9px;
+        font-weight: 400;
+        text-transform: uppercase;
+      }
+
+      #server-list {
+        min-height: 104px;
+        max-height: 244px;
+        overflow: auto;
+      }
+
+      .server-row {
+        width: 100%;
+        min-height: 35px;
+        padding: 6px 9px;
+        border: 0;
+        border-bottom: 1px solid rgba(188, 112, 0, .2);
+        background: transparent;
+        color: var(--cs-amber);
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .server-row:last-child { border-bottom: 0; }
+      .server-row:hover,
+      .server-row[aria-selected="true"] { background: rgba(255, 176, 0, .16); color: #fff; }
+      .server-row[aria-selected="true"] { box-shadow: inset 2px 0 var(--cs-amber); }
+      .server-row.is-unreachable { color: rgba(255, 176, 0, .62); }
+      .server-row:disabled { cursor: wait; }
+      .server-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+      .server-copy,
+      .server-steps {
+        color: var(--cs-muted);
+        font-size: 11px;
+        font-weight: 400;
+      }
+
+      .server-copy { margin: 0; }
+
+      .room-created {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-top: 13px;
+        padding: 10px;
+        border: 1px solid #7e9d43;
+        background: rgba(85, 110, 38, .2);
+        color: #d6ef9c;
+        font-size: 11px;
+      }
+
+      .room-code {
+        margin-left: 7px;
+        color: #fff;
+        font: 700 18px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+        letter-spacing: .15em;
+      }
+
+      .room-created .vgui-button { min-width: 72px; min-height: 27px; padding: 3px 8px; }
+
+      .connect-tools {
+        display: grid;
+        grid-template-columns: 88px minmax(0, 1fr) 92px;
+        gap: 8px;
+        align-items: center;
+        margin-top: 14px;
+        padding-top: 14px;
+        border-top: 1px solid rgba(188, 112, 0, .32);
+      }
+
+      .connect-tools .vgui-button { min-width: 0; }
+
+      #room-code-input {
+        text-transform: uppercase;
+        letter-spacing: .12em;
+      }
+
+      #server-connect-status {
+        min-height: 17px;
+        margin: 8px 0 0;
+        color: var(--cs-muted);
+        font-size: 10px;
+        font-weight: 400;
+      }
+
+      .server-steps {
+        margin: 16px 0 0;
+        padding: 14px 0 0 22px;
+        border-top: 1px solid rgba(188, 112, 0, .32);
+      }
+
+      .server-steps li + li { margin-top: 7px; }
+
+      #errbox {
+        margin: 14px 0 0;
+        color: #ff7b5d;
+        font: 11px/1.45 Verdana, Tahoma, Arial, sans-serif;
+        white-space: pre-wrap;
+      }
+
+      .launcher-footnote {
+        position: absolute;
+        left: clamp(22px, 6vw, 72px);
+        bottom: 18px;
+        color: rgba(255, 176, 0, .46);
+        font-size: 9px;
+        font-weight: 400;
+        letter-spacing: .03em;
+      }
+
+      .loading-panel {
+        display: none;
+        position: relative;
+        z-index: 1;
+        width: min(560px, calc(100vw - 36px));
+        margin: min(23vh, 190px) auto 0;
+        padding: 19px 20px 20px;
+        border: 1px solid rgba(188, 112, 0, .72);
+        background: rgba(0, 0, 0, .9);
+      }
+
+      .loading-title {
+        margin-bottom: 16px;
+        color: var(--cs-amber);
+        font-size: 14px;
+        text-transform: uppercase;
+      }
+
+      #bar {
+        height: 10px;
+        border: 1px solid var(--cs-amber-dim);
+        background: #050300;
+        overflow: hidden;
+      }
+
+      #bar > i {
+        display: block;
+        width: 0;
+        height: 100%;
+        background: var(--cs-amber);
+        transition: width .2s;
+      }
+
+      #phase {
+        margin-top: 11px;
+        color: var(--cs-amber);
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+      }
+
+      #net {
+        margin-top: 4px;
+        color: var(--cs-muted);
+        font-size: 10px;
+        font-weight: 400;
+      }
+
+      #overlay.is-loading .launcher-shell { display: none; }
+      #overlay.is-loading .loading-panel { display: block; }
+
+      .diagnostics {
+        position: fixed;
+        z-index: 3;
+        right: 16px;
+        bottom: 13px;
+        width: min(520px, calc(100vw - 32px));
+        color: rgba(255, 176, 0, .58);
+        font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+
+      .diagnostics summary {
+        display: block;
+        width: max-content;
+        margin-left: auto;
+        padding: 4px 7px;
+        border: 1px solid rgba(188, 112, 0, .28);
+        background: rgba(0, 0, 0, .7);
+        cursor: pointer;
+        list-style: none;
+      }
+
+      .diagnostics summary::-webkit-details-marker { display: none; }
+
+      #log {
+        max-height: 27vh;
+        margin-top: 5px;
+        overflow: auto;
+        padding: 9px;
+        border: 1px solid rgba(188, 112, 0, .34);
+        background: rgba(0, 0, 0, .93);
+        text-align: left;
+      }
+
+      #log .err { color: #ff7b5d; }
+
+      #hud {
+        position: absolute;
+        top: 8px;
+        left: 8px;
+        pointer-events: none;
+        opacity: .55;
+        font: 12px ui-monospace, monospace;
+      }
+
+      #hud:not(:empty) {
+        padding: 5px 7px;
+        border: 1px solid rgba(255, 176, 0, .45);
+        background: rgba(0, 0, 0, .72);
+        color: var(--cs-amber);
+        opacity: .9;
+      }
+
+      @media (max-width: 780px) {
+        #overlay { background-position: 63% center; }
+        #overlay::after { background: rgba(0, 0, 0, .32); }
+
+        .launcher-shell { padding: 24px 18px 54px; }
+
+        .launcher-layout {
+          grid-template-columns: 1fr;
+          gap: 12px;
+          margin-top: 30px;
+        }
+
+        .main-menu {
+          flex-direction: row;
+          gap: 8px;
+          padding: 0;
+          overflow-x: auto;
+        }
+
+        .menu-entry {
+          width: auto;
+          min-width: max-content;
+          padding: 6px 8px;
+          border: 1px solid rgba(188, 112, 0, .42);
+          background: rgba(0, 0, 0, .76);
+        }
+
+        .menu-entry[aria-selected="true"]::before { display: none; }
+
+        .menu-entry[aria-selected="true"] {
+          border-color: var(--cs-amber);
+          background: rgba(255, 176, 0, .14);
+        }
+
+        .vgui-dialog { background: rgba(0, 0, 0, .93); }
+        .launcher-footnote { left: 18px; }
+      }
+
+      @media (max-width: 500px) {
+        .form-grid { grid-template-columns: 1fr; gap: 5px; }
+        .field-label:not(:first-child) { margin-top: 7px; }
+        .dialog-content { padding: 15px; }
+        .dialog-actions { justify-content: stretch; }
+        .vgui-button { flex: 1; }
+        .launcher-footnote { display: none; }
+        .server-columns,
+        .server-row { grid-template-columns: minmax(116px, 1fr) 76px 48px 54px; gap: 5px; }
+        .server-columns,
+        .server-row { padding-left: 6px; padding-right: 6px; font-size: 10px; }
+        .connect-tools { grid-template-columns: 72px minmax(0, 1fr); }
+        .connect-tools .vgui-button { grid-column: 2; }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        #bar > i { transition: none; }
+      }
     </style>
   </head>
   <body>
@@ -46,53 +553,125 @@
         <canvas id="canvas"></canvas>
         <div id="hud"></div>
         <div id="overlay">
-          <div id="title">Counter-Strike 1.6 · Web</div>
-          <div id="sub">Runs CS1.6 on the Xash3D-FWGS (WebAssembly) engine with 12 classic maps and YaPB bots. Assets are Zstd-chunked and streamed — downloaded, verified and written into the game disk on the fly. Press ~ in-game to open the console.</div>
-          <div class="row">
-            <label class="field">Map
-              <select id="map">
-                <option value="de_dust2">de_dust2</option>
-                <option value="de_dust">de_dust</option>
-                <option value="de_inferno">de_inferno</option>
-                <option value="de_nuke">de_nuke</option>
-                <option value="de_aztec">de_aztec</option>
-                <option value="de_train">de_train</option>
-                <option value="de_cbble">de_cbble</option>
-                <option value="cs_office">cs_office</option>
-                <option value="cs_italy">cs_italy</option>
-                <option value="cs_assault">cs_assault</option>
-                <option value="cs_militia">cs_militia</option>
-                <option value="de_vertigo">de_vertigo</option>
-              </select>
-            </label>
-            <label class="field">BOT
-              <select id="bots">
-                <option value="0">0 (solo)</option>
-                <option value="1">1</option>
-                <option value="2">2</option>
-                <option value="3">3</option>
-                <option value="4">4</option>
-                <option value="5">5</option>
-                <option value="6">6</option>
-                <option value="7" selected>7 (recommended)</option>
-                <option value="8">8</option>
-                <option value="9">9</option>
-                <option value="10">10</option>
-                <option value="11">11</option>
-                <option value="12">12</option>
-                <option value="13">13</option>
-                <option value="14">14</option>
-                <option value="15">15 (heavy load)</option>
-              </select>
-            </label>
-            <button id="start">Start</button>
+          <div class="launcher-shell">
+            <img class="brand" src="./ui/original-counter-strike-logo.png" alt="Counter-Strike" width="207" height="32" />
+
+            <div class="launcher-layout">
+              <nav class="main-menu" aria-label="游戏模式">
+                <button class="menu-entry" id="show-practice" type="button" aria-selected="true">New Game</button>
+                <button class="menu-entry" id="show-servers" type="button" aria-selected="false">Find Servers</button>
+                <button class="menu-entry" type="button" disabled title="进入游戏后可在原版菜单中调整">Options</button>
+              </nav>
+
+              <main class="dialog-stack">
+                <section class="vgui-dialog" id="practice-panel" aria-labelledby="title">
+                  <div class="dialog-titlebar" id="title">Create Server</div>
+                  <div class="dialog-content">
+                    <p id="sub">选择地图和 BOT。可以只在本机训练，也可以生成房间码，让好友加入你浏览器里的临时服务器。</p>
+                    <div class="form-grid">
+                      <label class="field-label" for="map">地图</label>
+                      <select id="map">
+                        <option value="de_dust2">Dust II — de_dust2</option>
+                        <option value="de_dust">Dust — de_dust</option>
+                        <option value="de_inferno">Inferno — de_inferno</option>
+                        <option value="de_nuke">Nuke — de_nuke</option>
+                        <option value="de_aztec">Aztec — de_aztec</option>
+                        <option value="de_train">Train — de_train</option>
+                        <option value="de_cbble">Cobblestone — de_cbble</option>
+                        <option value="cs_office">Office — cs_office</option>
+                        <option value="cs_italy">Italy — cs_italy</option>
+                        <option value="cs_assault">Assault — cs_assault</option>
+                        <option value="cs_militia">Militia — cs_militia</option>
+                        <option value="de_vertigo">Vertigo — de_vertigo</option>
+                      </select>
+
+                      <label class="field-label" for="bots">BOT 数量</label>
+                      <select id="bots">
+                        <option value="0">0 — 单人熟悉地图</option>
+                        <option value="1">1</option>
+                        <option value="2">2</option>
+                        <option value="3">3</option>
+                        <option value="4">4</option>
+                        <option value="5">5</option>
+                        <option value="6">6</option>
+                        <option value="7" selected>7 — 推荐 4v4</option>
+                        <option value="8">8</option>
+                        <option value="9">9</option>
+                        <option value="10">10</option>
+                        <option value="11">11</option>
+                        <option value="12">12</option>
+                        <option value="13">13</option>
+                        <option value="14">14</option>
+                        <option value="15">15 — 较高负载</option>
+                      </select>
+
+                      <label class="field-label" for="difficulty">BOT 难度</label>
+                      <select id="difficulty">
+                        <option value="0">Easy</option>
+                        <option value="1">Normal</option>
+                        <option value="2">Hard</option>
+                        <option value="3" selected>Expert</option>
+                      </select>
+                    </div>
+
+                    <p id="bot-hint">你和 7 个 BOT 组成经典 4v4。系统会自动加入反恐精英；按 M 可以换队。</p>
+                    <div class="room-created" id="room-created" hidden>
+                      <span>房间码 <strong class="room-code" id="created-room-code"></strong></span>
+                      <button class="vgui-button" id="copy-room-code" type="button">Copy</button>
+                    </div>
+                    <pre id="errbox" role="alert" aria-live="assertive"></pre>
+                    <div class="dialog-actions">
+                      <button class="vgui-button" id="start" type="button">Local Training</button>
+                      <button class="vgui-button" id="create-room" type="button">Create Room</button>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="vgui-dialog" id="server-panel" aria-labelledby="server-title" hidden>
+                  <div class="dialog-titlebar" id="server-title">Find Servers</div>
+                  <div class="dialog-content">
+                    <p class="server-status" id="server-status" role="status" aria-live="polite">打开此页后会读取安全服务器目录</p>
+                    <div class="server-table">
+                      <div class="server-columns" aria-hidden="true">
+                        <span>Server</span><span>Map</span><span>Players</span><span>Latency</span>
+                      </div>
+                      <div id="server-list" role="listbox" aria-label="CS1.6 已验证服务器"></div>
+                    </div>
+                    <div class="connect-tools" aria-label="其它连接方式">
+                      <label class="field-label" for="direct-address">Direct IP</label>
+                      <input id="direct-address" type="text" inputmode="decimal" autocomplete="off" maxlength="21" placeholder="1.2.3.4:27015" />
+                      <button class="vgui-button" id="direct-connect" type="button">Connect</button>
+
+                      <label class="field-label" for="room-code-input">Room Code</label>
+                      <input id="room-code-input" type="text" autocomplete="off" maxlength="6" placeholder="ABC234" />
+                      <button class="vgui-button" id="room-connect" type="button">Join Room</button>
+                    </div>
+                    <p id="server-connect-status" role="status" aria-live="polite"></p>
+                    <p class="server-copy">公共目录和手输 IP 都会先由本站确认是兼容的公网 CS1.6 服务器；房间码只连接房主浏览器里的临时服务器，不要求房主有公网 IP。</p>
+                    <div class="dialog-actions">
+                      <button class="vgui-button" id="server-refresh" type="button">Refresh</button>
+                      <button class="vgui-button" id="server-back" type="button">Back</button>
+                      <button class="vgui-button" id="server-join" type="button" disabled>Join</button>
+                    </div>
+                  </div>
+                </section>
+              </main>
+            </div>
+
+            <div class="launcher-footnote">XASH3D-FWGS · WEBASSEMBLY · 12 CLASSIC MAPS</div>
           </div>
-          <div id="bot-hint">You + 7 bots make a classic 4v4. You will join Counter-Terrorists automatically; press M to switch teams.</div>
-          <div id="bar"><i></i></div>
-          <div id="phase">Ready</div>
-          <div id="net"></div>
-          <pre id="errbox"></pre>
-          <div id="log"></div>
+
+          <section class="loading-panel" aria-labelledby="loading-title">
+            <div class="loading-title" id="loading-title">Loading Counter-Strike…</div>
+            <div id="bar" aria-hidden="true"><i></i></div>
+            <div id="phase" role="status" aria-live="polite">准备中</div>
+            <div id="net"></div>
+          </section>
+
+          <details class="diagnostics">
+            <summary>Console</summary>
+            <div id="log"></div>
+          </details>
         </div>
       </div>
     </div>
@@ -101,6 +680,6 @@
       「目录 + 无扩展名」的裸模块写法，原生 ESM 解析不了（dev 会兜底成根 index.html）。
       官方 raw.js 那条路在本引擎版本（1.2.2）上会卡在版本检查，详见 cs16.js 头注释。
     -->
-    <script type="module" src="./cs16.bundle.js?v=20260924-perf1"></script>
+    <script type="module" src="./cs16.bundle.js?v=20261016-temporary-rooms2"></script>
   </body>
 </html>

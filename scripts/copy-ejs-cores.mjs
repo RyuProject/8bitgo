@@ -117,13 +117,32 @@ const CORES = [
   'mednafen_psx_hw',    // psx 备选：Beetle PSX HW（更准、可高清，吃性能）
   'genesis_plus_gx',    // segaMD
   'mednafen_wswan',     // ws
+  // 新平台必须跟现有核心一起进入发布清单；漏一个就会落到不受支持的 CDN failsafe。
+  'mednafen_pce',       // PC Engine / TurboGrafx-16
+  'mednafen_ngp',       // Neo Geo Pocket / Color
+  'stella2014',         // Atari 2600
+  'a5200',              // Atari 5200
+  'prosystem',          // Atari 7800
+  'handy',              // Atari Lynx
+  'picodrive',          // Sega 32X
+  'vice_x64sc',         // Commodore 64
+  'puae',               // Commodore Amiga
   // nds 默认的 melondsds 是自构建核心，由 preserveSelfBuilt() 原样保留；
   // 停更的旧 melonds 故意不再从 npm 复制回来。
   'desmume',            // nds 备选：有 frameskip 和内部分辨率，melonDS 两样都没有
   'desmume2015',        // nds 备选：更老更轻，弱机兜底
 ]
 
-if (ifMissing && existsSync(join(out, 'fbneo-wasm.data'))) process.exit(0)
+/*
+ * 以前 --if-missing 只看 fbneo：旧安装里只要这个文件还在，即使后来新增的核心
+ * 一个都没复制，也会被误判成“完整”。现在按整张清单核对正常版、legacy 和报告。
+ */
+const publishedCoreIsComplete = (core) =>
+  existsSync(join(out, `${core}-wasm.data`)) &&
+  existsSync(join(out, `${core}-legacy-wasm.data`)) &&
+  existsSync(join(out, 'reports', `${core}.json`))
+
+if (ifMissing && CORES.every(publishedCoreIsComplete)) process.exit(0)
 
 const missing = CORES.filter((c) => !existsSync(join(root, 'node_modules', '@emulatorjs', `core-${c}`)))
 if (missing.length) {

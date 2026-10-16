@@ -3,6 +3,7 @@ import { apiBase, apiEnabled } from './api'
 import {
   ROM_PACK_CODEC,
   ROM_PACK_HEADER_PREFIX_BYTES,
+  ROM_PACK_MAX_HEADER_BYTES,
   assertZstdFrameContentSize,
   base64UrlToBytes,
   isRomPackBytes,
@@ -20,6 +21,70 @@ export { isRomPackBytes, isRomPackUrl, romPackKey }
 
 export const ROM_PACK_DEFAULT_CODEC: RomPackCodec = ROM_PACK_CODEC.ZSTD
 export const ROM_PACK_DEFAULT_LEVEL = 19
+/**
+ * ArrayBuffer 路径的硬上限。
+ *
+ * `unpackRomPack()` 要同时持有密文、解密后的连续缓冲和调用方后续生成的游戏层；超过 1GB 时，
+ * 浏览器即使偶尔分配成功，也很容易在下一次复制时直接杀掉标签页。大型 Windows 游戏必须改成
+ * Sockdrive，不能靠放宽这个数字把内存问题推迟到玩家机器上。
+ */
+export const ROM_PACK_ARRAY_BUFFER_LIMIT = 1024 * 1024 * 1024
+
+const REMOTE_HEADER_PREVIEW_BYTES = 64 * 1024
+
+/**
+ * 只用 HTTP Range 读取远端 8BG 的文件头。
+ *
+ * 这道预检专门防止 StarCraft 这类超大 Windows 包：旧流程会先下载 1.4GB，最后才在
+ * `unpackRomPack()` 里发现它超过连续内存上限。资源域名不支持 Range 时返回 null，交给原下载
+ * 路径兼容处理；绝不能把一次 200 响应读完整，否则“预检”本身又会变成整包下载。
+ */
+export async function inspectRemoteRomPack(
+  url: string,
+  signal?: AbortSignal,
+  fetchImpl: typeof fetch = fetch,
+): Promise<RomPackHeader | null> {
+  const readPrefix = async (end: number): Promise<{ bytes: Uint8Array<ArrayBuffer>; total?: number } | null> => {
+    const response = await fetchImpl(url, {
+      headers: { Range: `bytes=0-${end}` },
+      signal,
+      cache: 'no-store',
+    })
+    if (response.status === 200) {
+      // 有些源在响应头里声称支持 Range，实际仍回整包；立刻取消，不能为一次预检吞下 GB 级文件。
+      void response.body?.cancel().catch(() => {})
+      return null
+    }
+    if (response.status !== 206) throw new Error(`读取 8BG 文件头失败（HTTP ${response.status}）`)
+    const match = response.headers.get('content-range')?.match(/^bytes\s+0-(\d+)\/(\d+)$/i)
+    if (!match) throw new Error('8BG 文件头响应缺少有效的 Content-Range')
+    const bytes = new Uint8Array(await response.arrayBuffer()) as Uint8Array<ArrayBuffer>
+    const expected = Number(match[1]) + 1
+    if (bytes.byteLength !== expected) throw new Error('8BG 文件头 Range 响应长度不完整')
+    return { bytes, total: Number(match[2]) }
+  }
+
+  let preview = await readPrefix(REMOTE_HEADER_PREVIEW_BYTES - 1)
+  if (!preview) return null
+  let headerLength: number
+  try {
+    headerLength = romPackHeaderLength(preview.bytes.subarray(0, ROM_PACK_HEADER_PREFIX_BYTES))
+  } catch {
+    throw new Error('远端文件不是有效的 8BG 容器')
+  }
+  if (headerLength > ROM_PACK_MAX_HEADER_BYTES) throw new Error('8BG 文件头超过格式上限')
+  const required = ROM_PACK_HEADER_PREFIX_BYTES + headerLength
+  if (preview.bytes.byteLength < required) {
+    const complete = await readPrefix(required - 1)
+    if (!complete) return null
+    preview = complete
+  }
+  const { header, dataOffset } = parseRomPackHeader(preview.bytes)
+  if (preview.total !== undefined && dataOffset + header.payloadSize !== preview.total) {
+    throw new Error('8BG 文件长度与文件头不一致')
+  }
+  return header
+}
 
 interface KeyResponse {
   packageId: string
@@ -149,7 +214,7 @@ export async function unpackRomPack(data: ArrayBuffer): Promise<{ name: string; 
   if (dataOffset + header.payloadSize !== bytes.byteLength) throw new Error('8BG 文件长度与文件头不一致')
   // 这一条路径必须申请连续 ArrayBuffer；光盘等大文件走下面的 Blob 版本。先挡住异常文件头，
   // 避免在校验第一块之前就把手机标签页用一笔超大分配直接杀掉。
-  if (header.originalSize > 1024 * 1024 * 1024) throw new Error('ROM 包解开后超过 1GB，请改用支持 Blob 的播放器路径')
+  if (header.originalSize > ROM_PACK_ARRAY_BUFFER_LIMIT) throw new Error('ROM 包解开后超过 1GB，请改用支持 Blob 的播放器路径')
   const key = await contentKey(header)
   const output = new Uint8Array(header.originalSize)
   let sourceAt = 0

@@ -5,6 +5,7 @@ import { takeAnonymous } from '../rateLimit.js'
 import { presenceFromRequest, UNKNOWN_PRESENCE } from '../presence.js'
 import { resolveGameRoomPolicy } from '../netplay-game-policy.js'
 import { NETPLAY_MAX_PLAYERS, normalizeGamePlayers } from '../../../shared/netplay-players.js'
+import { envNumber } from '../resource-limits.js'
 
 /**
  * 联机房间注册表（内存版）。
@@ -23,7 +24,8 @@ import { NETPLAY_MAX_PLAYERS, normalizeGamePlayers } from '../../../shared/netpl
  */
 const MEMBER_TTL = 30_000
 /** 房间数上限。心跳是公开接口，roomId 客户端随便填 —— 不设上限的话一个循环就能把内存刷爆 */
-const MAX_ROOMS = Number(process.env.ROOMS_MAX || 1000)
+// NaN 会让 `rooms.size >= MAX_ROOMS` 永远为假；配置写错不能把公开接口的内存上限整个关掉。
+const MAX_ROOMS = envNumber('ROOMS_MAX', 1000, { max: 10_000 })
 
 /**
  * 成员令牌。

@@ -697,6 +697,17 @@ export function attachNetplay(httpServer, app, origins = ['*'], { resolveGamePol
       if (!SAFE_ID.test(userid) || UNSAFE_OBJECT_IDS.has(userid)) return ack?.('bad request')
       if (isIndexLike(userid)) return ack?.('bad userid')
       /**
+       * 房间号不是游戏身份。旧实现只凭 roomId 放人：把邀请链接里的 slug 改成另一款游戏，
+       * 仍会加入成功，访客却用另一套平台 / 键位解释房主的输入和画面；FNV32 偶遇碰撞时
+       * 大厅也可能把两款游戏混在一起。数字 id 必须一致，新客户端还会补稳定 slug 再对一次。
+       */
+      const joinGameId = gameIdOf(extra.game_id)
+      if (joinGameId === null || String(joinGameId) !== String(room.gameId)) return ack?.('room belongs to another game')
+      const joinGameSlug = str(extra.game_slug, 160)
+      if (joinGameSlug && joinGameSlug !== room.gameSlug) return ack?.('room belongs to another game')
+      const joinDomain = str(extra.domain, 200)
+      if (joinDomain && room.domain && joinDomain !== room.domain) return ack?.('room belongs to another domain')
+      /**
        * ⚠️ userid 是**客户端自己填的**，而且随 users-updated 广播给屋里每个人。
        * 不挡重复的话，任何一个访客都能拿房主的 userid 再 join 一次 ——
        * `room.users.set(userid, …)` 会直接**覆盖**房主那条记录，于是：

@@ -13,7 +13,7 @@
  * ⚠️ 端口 1900 是 js-dos 写死的（它连的是 `<address>:1900/ipx/<room>`），不能改。
  */
 import { WebSocketServer } from 'ws'
-import { clientIpFrom } from './presence.js'
+import { clientIpFrom, isPrivateIp } from './presence.js'
 
 const IPX_PORT = 1900
 const IPX_PATH = '/ipx/'
@@ -48,6 +48,21 @@ function addressToParts(address) {
 /** uint32 + port -> 「1.2.3.4:5678」，用于按目标地址找人 */
 function partsToAddress(host, port) {
   return `${(host >>> 24) & 0xff}.${(host >>> 16) & 0xff}.${(host >>> 8) & 0xff}.${host & 0xff}:${port}`
+}
+
+/**
+ * 浏览器交上来的源网络 / 节点地址不能信：同房间任意玩家都能把它填成另一位玩家，
+ * 让游戏把伪造包当成对方发来的。中继已经按连接分配了地址，转发前必须盖回真实值；
+ * IPX socket（偏移 28）是游戏协议自己选的端口，保留原值。
+ */
+function authenticatedPacket(buf, address) {
+  const packet = Buffer.from(buf)
+  const v = new DataView(packet.buffer, packet.byteOffset, packet.byteLength)
+  const source = addressToParts(address)
+  v.setUint32(18, 1, false)
+  v.setUint32(22, source.host, false)
+  v.setUint16(26, source.port, false)
+  return packet
 }
 
 /** 注册包的应答：告诉客户端「你的 IPX 地址是这个」 */
@@ -110,18 +125,47 @@ function ipOf(req) {
   return clientIpFrom(req.socket?.remoteAddress, req.headers || {})
 }
 
+function sameOrigin(req, origin) {
+  try {
+    const source = new URL(origin)
+    const target = new URL(`http://${String(req.headers.host || '')}`)
+    if (source.host === target.host) return true
+    return isPrivateIp(req.socket?.remoteAddress) && source.hostname === target.hostname
+  } catch {
+    return false
+  }
+}
+
+function originAllowed(req, allowedOrigins) {
+  const origin = String(req.headers.origin || '').replace(/\/$/, '')
+  return !origin || allowedOrigins.includes('*') || sameOrigin(req, origin) || allowedOrigins.includes(origin)
+}
+
+function rejectUpgrade(socket, status, message) {
+  if (socket.destroyed) return
+  const body = Buffer.from(message)
+  socket.write(
+    `HTTP/1.1 ${status}\r\n` +
+    'Content-Type: text/plain; charset=utf-8\r\n' +
+    `Content-Length: ${body.length}\r\n` +
+    'Connection: close\r\n\r\n',
+  )
+  socket.end(body)
+}
+
 function totalConnections() {
   let n = 0
   for (const clients of rooms.values()) n += clients.size
   return n
 }
 
-export function attachIpxToServer(httpServer, { publicHost = 'ipx' } = {}) {
+export function attachIpxToServer(httpServer, { publicHost = 'ipx', allowedOrigins = ['*'] } = {}) {
   const wss = new WebSocketServer({ noServer: true, handleProtocols, maxPayload: MAX_PAYLOAD })
   wss.on('error', (e) => console.warn('[ipx] server error:', e.message))
 
   httpServer.on('upgrade', (req, socket, head) => {
     if (!(req.url || '').startsWith(IPX_PATH)) return // 交给别的监听者（socket.io）
+    if (!originAllowed(req, allowedOrigins)) return rejectUpgrade(socket, '403 Forbidden', 'origin denied')
     // upgrade 监听里抛出的异常没人接，会直接打挂进程
     try {
       wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
@@ -137,8 +181,13 @@ export function attachIpxToServer(httpServer, { publicHost = 'ipx' } = {}) {
 }
 
 /** 独立端口模式：不打补丁、用原版 js-dos 时走这条 */
-export function attachIpx({ port = IPX_PORT, host = '127.0.0.1' } = {}) {
-  const wss = new WebSocketServer({ port, handleProtocols, maxPayload: MAX_PAYLOAD })
+export function attachIpx({ port = IPX_PORT, host = '127.0.0.1', allowedOrigins = ['*'] } = {}) {
+  const wss = new WebSocketServer({
+    port,
+    handleProtocols,
+    maxPayload: MAX_PAYLOAD,
+    verifyClient: ({ req }, done) => done(originAllowed(req, allowedOrigins), 403, 'origin denied'),
+  })
   wss.on('error', (e) => console.warn('[ipx] server error:', e.message))
   wire(wss, `${host}:${port}`)
   console.log(`[ipx] DOS 联机中继已启用：ws://…:${port}${IPX_PATH}<房间名>`)
@@ -179,6 +228,8 @@ function wire(wss, serverAddress) {
       const buf = Buffer.isBuffer(data) ? data : Buffer.from(data)
       const header = parseHeader(buf)
       if (!header) return
+      // 声明长度超过实包时，DOSBox 会继续按头部长度读，结果可能是截断包或协议状态错乱。
+      if (header.length < HEADER_SIZE || header.length > buf.length) return
 
       // 注册：客户端问「我的地址是多少」
       if (header.dest.socket === 0x2 && header.dest.host === 0) {
@@ -187,10 +238,11 @@ function wire(wss, serverAddress) {
       }
 
       if (header.dest.host === 0xffffffff) {
-        for (const [, peer] of clients) if (peer !== ws && peer.readyState === peer.OPEN) peer.send(buf)
+        const packet = authenticatedPacket(buf, address)
+        for (const [, peer] of clients) if (peer !== ws && peer.readyState === peer.OPEN) peer.send(packet)
       } else {
         const peer = clients.get(partsToAddress(header.dest.host, header.dest.port))
-        if (peer && peer.readyState === peer.OPEN) peer.send(buf)
+        if (peer && peer.readyState === peer.OPEN) peer.send(authenticatedPacket(buf, address))
       }
     })
 

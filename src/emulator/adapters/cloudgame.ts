@@ -29,6 +29,8 @@ import { CLOUDGAME_URL, CLOUDGAME_ZONE } from '../paths'
 
 /** 从连上服务器到真正开始游戏的总超时。超过就报错，而不是让转圈一直转下去 */
 const HANDSHAKE_TIMEOUT_MS = 30_000
+/** `disconnected` 可能自愈，但浏览器不保证之后一定变成 failed；到点必须结束黑屏会话。 */
+const PEER_DISCONNECT_GRACE_MS = 10_000
 
 /**
  * 本站平台 → 服务器 libretro 核心。
@@ -173,6 +175,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let startSent = false
   /** 服务器已确认开始，游戏真正跑起来了 */
   let playing = false
+  let terminal = false
+  let peerDisconnectTimer = 0
   /** 服务器分配的房间 id：退出、存档等消息都要带它，不能用请求里的空值 */
   let assignedRoomId = cloud.roomId ?? ''
   const stream = new MediaStream()
@@ -183,7 +187,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   }
   const fail = (msg: string) => {
     window.clearTimeout(watchdog)
-    if (!destroyed) options.onError?.(msg)
+    window.clearTimeout(peerDisconnectTimer)
+    peerDisconnectTimer = 0
+    if (destroyed || terminal) return
+    terminal = true
+    options.onError?.(msg)
   }
 
   // 握手看门狗：连不上 / 服务器不回应时给出明确错误，而不是永远转圈
@@ -253,6 +261,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     pc.addTransceiver('audio', { direction: 'recvonly' })
     pc.ontrack = (ev) => {
       stream.addTrack(ev.track)
+      // connectionState 仍可能停在 connected，而唯一的视频轨已经结束；不守这条会永久定格最后一帧。
+      if (ev.track.kind === 'video') {
+        ev.track.addEventListener('ended', () => {
+          if (!destroyed && !terminal) {
+            setState('disconnected')
+            fail(rt.cloudDisconnected)
+          }
+        }, { once: true })
+      }
       void video.play().catch(() => {
         /* 自动播放被拦时用户点一下画面即可 */
       })
@@ -262,7 +279,19 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
     pc.onconnectionstatechange = () => {
       if (!pc || destroyed) return
-      if (pc.connectionState === 'connected') startGame()
+      if (pc.connectionState === 'connected') {
+        window.clearTimeout(peerDisconnectTimer)
+        peerDisconnectTimer = 0
+        startGame()
+      } else if (pc.connectionState === 'disconnected') {
+        setState('disconnected')
+        if (!peerDisconnectTimer) {
+          peerDisconnectTimer = window.setTimeout(() => {
+            peerDisconnectTimer = 0
+            if (pc?.connectionState === 'disconnected') fail(rt.cloudDisconnected)
+          }, PEER_DISCONNECT_GRACE_MS)
+        }
+      }
       else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
         setState('disconnected')
         fail(rt.cloudDisconnected)
@@ -501,7 +530,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /* ---------------- 销毁 ---------------- */
   const destroy = () => {
     destroyed = true
+    terminal = true
     window.clearTimeout(watchdog)
+    window.clearTimeout(peerDisconnectTimer)
+    peerDisconnectTimer = 0
     cancelAnimationFrame(raf)
     window.removeEventListener('keydown', onKeyDown)
     window.removeEventListener('keyup', onKeyUp)
@@ -578,5 +610,4 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     },
   }
 }
-
 

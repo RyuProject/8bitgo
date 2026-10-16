@@ -28,6 +28,15 @@ const MOBILE_ASPECT: Partial<Record<PlatformId, string>> = {
   gamecube: 'aspect-[4/3]',
   wii: 'aspect-[4/3]',
   segaMD: 'aspect-[4/3]',
+  segaMS: 'aspect-[4/3]',
+  segaCD: 'aspect-[4/3]',
+  sega32x: 'aspect-[4/3]',
+  pce: 'aspect-[4/3]',
+  atari2600: 'aspect-[4/3]',
+  atari5200: 'aspect-[4/3]',
+  atari7800: 'aspect-[4/3]',
+  c64: 'aspect-[4/3]',
+  amiga: 'aspect-[4/3]',
   arcade: 'aspect-[4/3]',
   dos: 'aspect-[4/3]',
   // Flash 时代的网页游戏多数也是 4:3；真是宽屏的那些只会多出上下黑边，画面不缩小
@@ -35,7 +44,10 @@ const MOBILE_ASPECT: Partial<Record<PlatformId, string>> = {
   // 掌机各有各的屏
   gb: 'aspect-[10/9]', // 160×144
   gbc: 'aspect-[10/9]',
+  segaGG: 'aspect-[10/9]', // 160×144
   gba: 'aspect-[3/2]', // 240×160
+  ngp: 'aspect-[20/19]', // 160×152
+  lynx: 'aspect-[80/51]', // 160×102
   ws: 'aspect-[14/9]', // 224×144
   // 双屏上下叠着，是竖的 —— 给 16:9 的话上下两块屏会被压成两条。
   // 256×(192+192) = 256×384 = 2/3。以前写的 3/4 比原生**更矮**，

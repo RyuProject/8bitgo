@@ -16753,6 +16753,12 @@ ${e}`);
 var xash_default = Xash3D;
 
 // public/web/cs16/engine/dist/xash3d.js
+function ErrNoLocation(em) {
+  const ptr2 = em?.Module.ccall("getErrnoLocation", "number", [], []);
+  if (!ptr2)
+    return 0;
+  return em.getValue(ptr2, "i32");
+}
 var Xash3D2 = class {
   /** Whether the engine has exited */
   get exited() {
@@ -16986,6 +16992,211 @@ var Xash3D2 = class {
       this.net.init(this.em);
     }
     this.em.FS.mkdir("/rwdir");
+  }
+};
+
+// public/web/cs16/engine/dist/utils/rb.js
+var RollingBuffer = class {
+  constructor(opts) {
+    this.head = 0;
+    this.tail = 0;
+    this.count = 0;
+    this.opts = opts;
+    this.buffer = new Array(this.opts.maxSize);
+  }
+  push(item) {
+    if (this.isFull()) {
+      this.tail = (this.tail + 1) % this.opts.maxSize;
+    } else {
+      this.count += 1;
+    }
+    this.buffer[this.head] = item;
+    this.head = (this.head + 1) % this.opts.maxSize;
+  }
+  enqueue(item) {
+    this.push(item);
+  }
+  pull() {
+    if (this.isEmpty())
+      return void 0;
+    const item = this.buffer[this.tail];
+    this.buffer[this.tail] = void 0;
+    this.tail = (this.tail + 1) % this.opts.maxSize;
+    this.count -= 1;
+    return item;
+  }
+  peek() {
+    return this.buffer[this.tail];
+  }
+  size() {
+    return this.count;
+  }
+  isFull() {
+    return this.count === this.opts.maxSize;
+  }
+  isEmpty() {
+    return this.count === 0;
+  }
+  clear() {
+    this.buffer.fill(void 0);
+    this.head = 0;
+    this.tail = 0;
+    this.count = 0;
+  }
+  toArray() {
+    const res = new Array(this.size());
+    for (let i2 = 0; i2 < this.size(); ++i2) {
+      const idx = (this.tail + i2) % this.opts.maxSize;
+      res[i2] = this.buffer[idx];
+    }
+    return res;
+  }
+};
+
+// public/web/cs16/engine/dist/net/net.js
+var Net = class {
+  constructor(sender, opts = {}) {
+    this.lastSocketID = 1e3;
+    this.sockets = /* @__PURE__ */ new Map();
+    const { maxPackets = 128, hostname = "webxash3d", hostID = 3e3 } = opts;
+    this.sender = sender;
+    this.opts = {
+      hostname,
+      maxPackets,
+      hostID
+    };
+    this.incoming = new RollingBuffer({
+      maxSize: maxPackets
+    });
+  }
+  /**
+   * Initializes the Net instance with a reference to the Emscripten module.
+   * Ensures setup happens only once.
+   * @param em - The Emscripten module instance
+   */
+  init(em) {
+    if (this.em)
+      return;
+    this.em = em;
+  }
+  readSockaddrFast(addrPtr) {
+    const em = this.em;
+    const heapU8 = em.HEAPU8;
+    const ipOffset = addrPtr + 4;
+    const ip = [
+      heapU8[ipOffset],
+      heapU8[ipOffset + 1],
+      heapU8[ipOffset + 2],
+      heapU8[ipOffset + 3]
+    ];
+    const portOffset = addrPtr + 2;
+    const port = heapU8[portOffset] << 8 | heapU8[portOffset + 1];
+    return [ip, port];
+  }
+  recvfrom(fd, bufPtr, bufLen, flags2, sockaddrPtr, socklenPtr) {
+    const packet = this.incoming.pull();
+    if (!packet) {
+      this.em.setValue(ErrNoLocation(this.em), 73, "i32");
+      return -1;
+    }
+    const em = this.em;
+    const data = packet.data;
+    const u8 = data instanceof Uint8Array ? data : new Uint8Array(data.buffer || data);
+    const copyLen = Math.min(bufLen, u8.length);
+    if (copyLen > 0) {
+      em.HEAPU8.set(u8.subarray(0, copyLen), bufPtr);
+    }
+    if (sockaddrPtr) {
+      const heap8 = em.HEAP8;
+      const heap16 = em.HEAP16;
+      const base16 = sockaddrPtr >> 1;
+      const port = packet.port;
+      heap16[base16] = 2;
+      heap8[sockaddrPtr + 2] = port >> 8 & 255;
+      heap8[sockaddrPtr + 3] = port & 255;
+      heap8[sockaddrPtr + 4] = packet.ip[0];
+      heap8[sockaddrPtr + 5] = packet.ip[1];
+      heap8[sockaddrPtr + 6] = packet.ip[2];
+      heap8[sockaddrPtr + 7] = packet.ip[3];
+    }
+    if (socklenPtr) {
+      em.HEAP32[socklenPtr >> 2] = 16;
+    }
+    return copyLen;
+  }
+  sendto(fd, bufPtr, bufLen, flags2, sockaddrPtr, socklenPtr) {
+    const em = this.em;
+    const heapU8 = em.HEAPU8;
+    const [ip, port] = this.readSockaddrFast(sockaddrPtr);
+    const packetCopy = heapU8.subarray(bufPtr, bufPtr + bufLen);
+    this.sender.sendto({ data: packetCopy, ip, port });
+    return bufLen;
+  }
+  sendtoBatch(fd, bufsPtr, lensPtr, count, flags2, sockaddrPtr, socklenPtr) {
+    const em = this.em;
+    const heap32 = em.HEAP32;
+    const heapU8 = em.HEAPU8;
+    let totalSize = 0;
+    const [ip, port] = this.readSockaddrFast(sockaddrPtr);
+    for (let i2 = 0; i2 < count; ++i2) {
+      const size = heap32[(lensPtr >> 2) + i2];
+      const packetPtr = heap32[(bufsPtr >> 2) + i2];
+      const slice = heapU8.subarray(packetPtr, packetPtr + size);
+      this.sender.sendto({
+        data: slice,
+        port,
+        ip
+      });
+      totalSize += slice.length;
+    }
+    return totalSize;
+  }
+  socket(family, type, protocol) {
+    const id = this.lastSocketID;
+    this.sockets.set(id, { id, family, type, protocol });
+    this.lastSocketID += 1;
+    return id;
+  }
+  gethostbyname(hostnamePtr) {
+    return 0;
+  }
+  gethostname(namePtr, namelenPtr) {
+    this.em.writeArrayToMemory(this.em.intArrayFromString(`${this.opts.hostname}.${this.opts.hostID}`, true), namePtr);
+    return 0;
+  }
+  getsockname(fd, sockaddrPtr, socklenPtr) {
+    const sock = this.sockets.get(fd);
+    if (!sock)
+      return -1;
+    this.em.writeSockaddr(sockaddrPtr, sock.family, sock.addr?.addr ?? "0.0.0.0", sock.addr?.port ?? 0, socklenPtr);
+    return 0;
+  }
+  bind(fd, sockaddrPtr, socklenPtr) {
+    const sock = this.sockets.get(fd);
+    if (!sock)
+      return -1;
+    sock.addr = this.em.readSockaddr(sockaddrPtr, socklenPtr);
+    return 0;
+  }
+  closesocket(fd) {
+    return this.sockets.delete(fd) ? 0 : -1;
+  }
+  getaddrinfo(hostnamePtr, restrictPrt, hintsPtr, addrinfoPtr) {
+    const host = this.em.AsciiToString(hostnamePtr);
+    const [, identity] = host.split(".", 2);
+    const id = Number(identity);
+    const sa = this.em._malloc(16);
+    this.em.writeSockaddr(sa, 2, `101.101.${id >> 0 & 255}.${id >> 8 & 255}`, 0);
+    const ai = this.em._malloc(32);
+    this.em.HEAP32[ai + 4 >> 2] = 2;
+    this.em.HEAP32[ai + 8 >> 2] = 2;
+    this.em.HEAP32[ai + 12 >> 2] = 17;
+    this.em.HEAPU32[ai + 24 >> 2] = 0;
+    this.em.HEAPU32[ai + 20 >> 2] = sa;
+    this.em.HEAP32[ai + 16 >> 2] = 16;
+    this.em.HEAP32[ai + 28 >> 2] = 0;
+    this.em.HEAPU32[addrinfoPtr >> 2] = ai;
+    return 0;
   }
 };
 
@@ -17441,7 +17652,7 @@ var init3 = (path) => __awaiter2(void 0, void 0, void 0, function* () {
 // public/web/cs16/tar-stream.js
 var BLOCK = 512;
 var MAX_FILE_BYTES = 64 * 1024 * 1024;
-var MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024;
+var MAX_TOTAL_BYTES = 160 * 1024 * 1024;
 var decoder = new TextDecoder();
 function fieldText(block, start3, length) {
   const end = block.subarray(start3, start3 + length).indexOf(0);
@@ -17504,8 +17715,10 @@ function verifyChecksum(block) {
   for (let i2 = 0; i2 < block.length; i2++) actual += i2 >= 148 && i2 < 156 ? 32 : block[i2];
   if (actual !== expected) throw new Error(`TAR \u5934\u6821\u9A8C\u5931\u8D25\uFF08\u671F\u671B ${expected}\uFF0C\u5B9E\u9645 ${actual}\uFF09`);
 }
-async function unpackTarStream(stream, onFile, onProgress) {
+async function unpackTarStream(stream, onFile, onProgress, limits = {}) {
   const cursor = new StreamCursor(stream);
+  const maxTotalBytes = Math.min(limits.maxTotalBytes ?? MAX_TOTAL_BYTES, MAX_TOTAL_BYTES);
+  if (!Number.isSafeInteger(maxTotalBytes) || maxTotalBytes <= 0) throw new Error("TAR \u5C55\u5F00\u4E0A\u9650\u65E0\u6548");
   let files = 0;
   let bytes = 0;
   let zeroBlocks = 0;
@@ -17524,7 +17737,7 @@ async function unpackTarStream(stream, onFile, onProgress) {
     const type = header[156];
     const size = octal(header, 124, 12, "\u6587\u4EF6\u957F\u5EA6");
     if (size > MAX_FILE_BYTES) throw new Error(`TAR \u5355\u6587\u4EF6\u8FC7\u5927\uFF1A${fullName}\uFF08${size} \u5B57\u8282\uFF09`);
-    if (bytes + size > MAX_TOTAL_BYTES) throw new Error("TAR \u5C55\u5F00\u540E\u8D85\u8FC7 2GB \u5B89\u5168\u4E0A\u9650");
+    if (bytes + size > maxTotalBytes) throw new Error(`TAR \u5C55\u5F00\u540E\u8D85\u8FC7 ${(maxTotalBytes / 1048576).toFixed(0)}MB \u5B89\u5168\u4E0A\u9650`);
     const data = await cursor.take(size);
     const padding = (BLOCK - size % BLOCK) % BLOCK;
     if (padding) await cursor.take(padding);
@@ -17541,9 +17754,344 @@ async function unpackTarStream(stream, onFile, onProgress) {
   }
 }
 
+// public/web/cs16/cs16-net.js
+var MAX_WEBSOCKET_BUFFER = 512 * 1024;
+var ROOM_HOST_IP_PREFIX = [101, 101];
+var ROOM_GUEST_IP_PREFIX = [101, 102];
+var ROOM_GUEST_PORT_BASE = 3e4;
+function prepareNet(net) {
+  const upstreamRecvfrom = net.recvfrom.bind(net);
+  net.recvfrom = (...args2) => {
+    if (!net.incoming.isEmpty()) return upstreamRecvfrom(...args2);
+    const errnoPtr = net.em?.Module?.ccall?.("getErrnoLocation", "number", [], []) || 0;
+    if (errnoPtr) net.em.setValue(errnoPtr, 73, "i32");
+    return -1;
+  };
+  net.sendto_batch = net.sendtoBatch.bind(net);
+  return net;
+}
+function eventBytes(data) {
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  return data.arrayBuffer().then((buffer) => new Uint8Array(buffer));
+}
+function relayUrl(server, locationObject) {
+  const url = new URL("/api/cs16/relay", locationObject.origin);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.searchParams.set("server", server.id);
+  return url.href;
+}
+function validRelayServer(server) {
+  return !!server && typeof server === "object" && /^[a-z0-9][a-z0-9_-]{0,31}$/.test(server.id) && Number.isInteger(server.netId) && server.netId >= 1 && server.netId <= 65535 && Number.isInteger(server.port) && server.port >= 1 && server.port <= 65535;
+}
+function createCs16RelayNet(server, {
+  WebSocketImpl = WebSocket,
+  locationObject = location,
+  timeoutMs = 15e3,
+  onDisconnect = () => {
+  }
+} = {}) {
+  if (!validRelayServer(server)) throw new Error("\u670D\u52A1\u5668\u76EE\u5F55\u8FD4\u56DE\u4E86\u65E0\u6548\u7684\u8054\u673A\u6807\u8BC6");
+  const virtualIp = [101, 101, server.netId & 255, server.netId >> 8 & 255];
+  let socket = null;
+  let connectPromise = null;
+  let closedByClient = false;
+  let ready = false;
+  const sender = {
+    sendto(packet) {
+      if (packet.port !== server.port || packet.ip.some((octet, index) => octet !== virtualIp[index])) return;
+      if (!socket || socket.readyState !== WebSocketImpl.OPEN || socket.bufferedAmount > MAX_WEBSOCKET_BUFFER) return;
+      socket.send(new Uint8Array(packet.data).slice());
+    }
+  };
+  const net = prepareNet(new Net(sender, { hostname: "webxash3d", hostID: 3e3, maxPackets: 512 }));
+  const connect = () => {
+    if (connectPromise) return connectPromise;
+    connectPromise = new Promise((resolve, reject) => {
+      socket = new WebSocketImpl(relayUrl(server, locationObject));
+      socket.binaryType = "arraybuffer";
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        try {
+          socket.close();
+        } catch {
+        }
+        reject(new Error("\u8054\u673A\u7F51\u5173 15 \u79D2\u5185\u6CA1\u6709\u5C31\u7EEA"));
+      }, timeoutMs);
+      socket.addEventListener("message", async (event) => {
+        if (typeof event.data === "string") {
+          let control;
+          try {
+            control = JSON.parse(event.data);
+          } catch {
+            return;
+          }
+          if (!settled && control?.type === "ready" && control.server === server.id) {
+            settled = true;
+            ready = true;
+            clearTimeout(timer);
+            resolve();
+          }
+          return;
+        }
+        try {
+          const found = eventBytes(event.data);
+          const data = found instanceof Uint8Array ? found : await found;
+          net.incoming.push({ data, ip: virtualIp, port: server.port });
+        } catch {
+        }
+      });
+      socket.addEventListener("error", () => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          reject(new Error("\u65E0\u6CD5\u8FDE\u63A5 CS1.6 \u8054\u673A\u7F51\u5173"));
+        }
+      });
+      socket.addEventListener("close", (event) => {
+        clearTimeout(timer);
+        if (!settled) {
+          settled = true;
+          reject(new Error(`\u8054\u673A\u7F51\u5173\u5728\u5C31\u7EEA\u524D\u5173\u95ED\uFF08${event.code || "\u65E0\u72B6\u6001\u7801"}\uFF09`));
+        } else if (ready && !closedByClient) {
+          onDisconnect(`\u4E0E\u670D\u52A1\u5668\u7684\u8054\u673A\u901A\u9053\u5DF2\u65AD\u5F00\uFF08${event.reason || event.code || "\u7F51\u7EDC\u4E2D\u65AD"}\uFF09`);
+        }
+        ready = false;
+      });
+    });
+    return connectPromise;
+  };
+  const close = () => {
+    closedByClient = true;
+    ready = false;
+    try {
+      socket?.close(1e3, "page closed");
+    } catch {
+    }
+  };
+  return { net, connect, close, virtualIp };
+}
+function validRoomDescriptor(room) {
+  return !!room && typeof room === "object" && /^[A-HJ-NP-Z2-9]{6}$/.test(room.code) && room.server && Number.isInteger(room.server.netId) && room.server.netId >= 1 && room.server.netId <= 65535 && Number.isInteger(room.server.port) && room.server.port >= 1 && room.server.port <= 65535;
+}
+function roomConnectTimeoutMs(room, role, override) {
+  if (Number.isFinite(override) && override > 0) return override;
+  if (role !== "guest") return 15e3;
+  const remaining = Number(room?.hostWaitMsRemaining);
+  if (Number.isFinite(remaining) && remaining >= 0) {
+    return Math.max(3e4, Math.min(31 * 6e4, remaining + 15e3));
+  }
+  return 16 * 6e4;
+}
+function roomUrl(room, role, locationObject) {
+  const url = new URL("/api/cs16/room", locationObject.origin);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.searchParams.set("room", room.code);
+  url.searchParams.set("role", role);
+  if (role === "host") url.searchParams.set("token", room.hostToken);
+  return url.href;
+}
+function roomHostIp(room) {
+  return [ROOM_HOST_IP_PREFIX[0], ROOM_HOST_IP_PREFIX[1], room.server.netId & 255, room.server.netId >> 8 & 255];
+}
+function roomGuestIp(peerId) {
+  return [ROOM_GUEST_IP_PREFIX[0], ROOM_GUEST_IP_PREFIX[1], peerId & 255, peerId >> 8 & 255];
+}
+function sameIp(left, right) {
+  return left.length === right.length && left.every((octet, index) => octet === right[index]);
+}
+function createCs16RoomNet(room, role, {
+  WebSocketImpl = WebSocket,
+  locationObject = location,
+  timeoutMs,
+  onDisconnect = () => {
+  },
+  onStatus = () => {
+  }
+} = {}) {
+  if (!validRoomDescriptor(room) || !["host", "guest"].includes(role)) throw new Error("\u623F\u95F4\u8054\u673A\u53C2\u6570\u65E0\u6548");
+  if (role === "host" && !/^[A-Za-z0-9_-]{24,128}$/.test(String(room.hostToken || ""))) {
+    throw new Error("\u623F\u4E3B\u51ED\u8BC1\u65E0\u6548");
+  }
+  const hostIp = roomHostIp(room);
+  const connectionTimeoutMs = roomConnectTimeoutMs(room, role, timeoutMs);
+  let socket = null;
+  let connectPromise = null;
+  let closedByClient = false;
+  let ready = false;
+  let peerId = 0;
+  const sender = {
+    sendto(packet) {
+      if (!socket || socket.readyState !== WebSocketImpl.OPEN || socket.bufferedAmount > MAX_WEBSOCKET_BUFFER) return;
+      const payload = new Uint8Array(packet.data).slice();
+      if (role === "guest") {
+        if (packet.port !== room.server.port || !sameIp(packet.ip, hostIp)) return;
+        socket.send(payload);
+        return;
+      }
+      if (packet.ip[0] !== ROOM_GUEST_IP_PREFIX[0] || packet.ip[1] !== ROOM_GUEST_IP_PREFIX[1]) return;
+      const targetId = packet.ip[2] | packet.ip[3] << 8;
+      if (!targetId || packet.port !== ROOM_GUEST_PORT_BASE + (targetId - 1) % 3e4) return;
+      const envelope = new Uint8Array(payload.length + 2);
+      envelope[0] = targetId >> 8 & 255;
+      envelope[1] = targetId & 255;
+      envelope.set(payload, 2);
+      socket.send(envelope);
+    }
+  };
+  const net = prepareNet(new Net(sender, {
+    hostname: "webxash3d",
+    hostID: role === "host" ? room.server.netId : 3e3,
+    maxPackets: 1024
+  }));
+  const connect = () => {
+    if (connectPromise) return connectPromise;
+    connectPromise = new Promise((resolve, reject) => {
+      socket = new WebSocketImpl(roomUrl(room, role, locationObject));
+      socket.binaryType = "arraybuffer";
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        try {
+          socket.close();
+        } catch {
+        }
+        reject(new Error(role === "host" ? "\u4E34\u65F6\u670D\u52A1\u5668\u6CA1\u6709\u5C31\u7EEA" : "\u7B49\u5F85\u623F\u4E3B\u8D85\u65F6\uFF0C\u8BF7\u786E\u8BA4\u623F\u4E3B\u5DF2\u7ECF\u5F00\u59CB\u6E38\u620F"));
+      }, connectionTimeoutMs);
+      socket.addEventListener("message", async (event) => {
+        if (typeof event.data === "string") {
+          let control;
+          try {
+            control = JSON.parse(event.data);
+          } catch {
+            return;
+          }
+          if (control?.type === "room-waiting") {
+            onStatus("\u623F\u4E3B\u4ECD\u5728\u52A0\u8F7D\uFF0C\u6B63\u5728\u7B49\u5F85\u4E34\u65F6\u670D\u52A1\u5668\u2026");
+            return;
+          }
+          if (!settled && control?.type === "room-ready" && control.code === room.code && control.role === role) {
+            if (role === "guest" && (!Number.isInteger(control.peerId) || control.peerId < 1 || control.peerId > 65535)) {
+              settled = true;
+              clearTimeout(timer);
+              reject(new Error("\u623F\u95F4\u8FD4\u56DE\u4E86\u65E0\u6548\u7684\u73A9\u5BB6\u7F16\u53F7"));
+              return;
+            }
+            peerId = role === "guest" ? control.peerId : 0;
+            settled = true;
+            ready = true;
+            clearTimeout(timer);
+            resolve(control);
+          }
+          return;
+        }
+        if (!ready) return;
+        try {
+          const found = eventBytes(event.data);
+          const data = found instanceof Uint8Array ? found : await found;
+          if (role === "host") {
+            if (data.length < 3) return;
+            const sourceId = data[0] << 8 | data[1];
+            net.incoming.push({
+              data: data.slice(2),
+              ip: roomGuestIp(sourceId),
+              port: ROOM_GUEST_PORT_BASE + (sourceId - 1) % 3e4
+            });
+          } else {
+            net.incoming.push({ data: data.slice(), ip: hostIp, port: room.server.port });
+          }
+        } catch {
+        }
+      });
+      socket.addEventListener("error", () => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          reject(new Error("\u65E0\u6CD5\u8FDE\u63A5\u4E34\u65F6\u670D\u52A1\u5668\u7F51\u5173"));
+        }
+      });
+      socket.addEventListener("close", (event) => {
+        clearTimeout(timer);
+        if (!settled) {
+          settled = true;
+          reject(new Error(`\u4E34\u65F6\u670D\u52A1\u5668\u5728\u5C31\u7EEA\u524D\u5173\u95ED\uFF08${event.reason || event.code || "\u7F51\u7EDC\u4E2D\u65AD"}\uFF09`));
+        } else if (ready && !closedByClient) {
+          onDisconnect(role === "host" ? "\u4E34\u65F6\u670D\u52A1\u5668\u8FDE\u63A5\u5DF2\u65AD\u5F00\uFF0C\u623F\u95F4\u5DF2\u7ECF\u7ED3\u675F" : `\u623F\u4E3B\u5DF2\u79BB\u5F00\u6216\u623F\u95F4\u8FDE\u63A5\u4E2D\u65AD\uFF08${event.reason || event.code || "\u7F51\u7EDC\u4E2D\u65AD"}\uFF09`);
+        }
+        ready = false;
+      });
+    });
+    return connectPromise;
+  };
+  const close = () => {
+    closedByClient = true;
+    ready = false;
+    try {
+      socket?.close(1e3, "page closed");
+    } catch {
+    }
+  };
+  return { net, connect, close, hostIp, get peerId() {
+    return peerId;
+  } };
+}
+
+// public/web/cs16/pack-guards.js
+var MIB = 1024 * 1024;
+var MAX_CATALOG_BYTES = 256 * 1024;
+var MAX_BUFFERED_RESOURCE_BYTES = 20 * MIB;
+var MAX_ZSTD_CHUNK_RAW_BYTES = 16 * MIB;
+var MAX_ZSTD_CHUNK_COMPRESSED_BYTES = 20 * MIB;
+var MAX_BASE_RAW_BYTES = 160 * MIB;
+var MAX_BASE_COMPRESSED_BYTES = 128 * MIB;
+var MAX_MAP_RAW_BYTES = 60 * MIB;
+var MAX_MAP_COMPRESSED_BYTES = 60 * MIB;
+var SHA256_RE = /^[a-f0-9]{64}$/;
+var ZSTD_FORMAT = "8bitgo.cs16.zstd-chunks.v1";
+function packLimits(key2) {
+  return key2 === "base" ? { rawBytes: MAX_BASE_RAW_BYTES, compressedBytes: MAX_BASE_COMPRESSED_BYTES, chunks: 10 } : { rawBytes: MAX_MAP_RAW_BYTES, compressedBytes: MAX_MAP_COMPRESSED_BYTES, chunks: 4 };
+}
+function validatePackCatalog(catalog) {
+  if (!catalog || catalog.format !== ZSTD_FORMAT || !catalog.packs || typeof catalog.packs !== "object" || Array.isArray(catalog.packs)) {
+    throw new Error("Incompatible CS1.6 Zstd manifest format");
+  }
+  if (catalog.compression?.algorithm !== "zstd" || catalog.compression?.chunkRawBytes !== MAX_ZSTD_CHUNK_RAW_BYTES) {
+    throw new Error("Incompatible compression parameters in CS1.6 Zstd manifest");
+  }
+  const entries = Object.entries(catalog.packs);
+  if (!entries.length || entries.length > 64) throw new Error("Invalid pack count in CS1.6 Zstd manifest");
+  const chunksByCompressedHash = /* @__PURE__ */ new Map();
+  for (const [key2, pack] of entries) {
+    if (!(key2 === "base" || /^maps\/[a-z0-9_]+$/.test(key2))) throw new Error(`Invalid pack name in Zstd manifest: ${key2}`);
+    const limits = packLimits(key2);
+    if (!pack || typeof pack !== "object" || Array.isArray(pack) || !Number.isSafeInteger(pack.rawBytes) || pack.rawBytes <= 0 || pack.rawBytes > limits.rawBytes || !Number.isSafeInteger(pack.compressedBytes) || pack.compressedBytes <= 0 || pack.compressedBytes > limits.compressedBytes || !SHA256_RE.test(pack.rawSha256) || !Array.isArray(pack.chunks) || !pack.chunks.length || pack.chunks.length > limits.chunks) {
+      throw new Error(`Invalid metadata for ${key2} in Zstd manifest`);
+    }
+    let rawBytes = 0, compressedBytes = 0;
+    pack.chunks.forEach((chunk, index) => {
+      if (!chunk || typeof chunk !== "object" || Array.isArray(chunk) || chunk.index !== index || chunk.path !== `chunks/${chunk.compressedSha256}.zst` || !SHA256_RE.test(chunk.compressedSha256) || !SHA256_RE.test(chunk.rawSha256) || !Number.isSafeInteger(chunk.rawBytes) || chunk.rawBytes <= 0 || chunk.rawBytes > MAX_ZSTD_CHUNK_RAW_BYTES || !Number.isSafeInteger(chunk.compressedBytes) || chunk.compressedBytes <= 0 || chunk.compressedBytes > MAX_ZSTD_CHUNK_COMPRESSED_BYTES) {
+        throw new Error(`Invalid chunk ${index + 1} for ${key2} in Zstd manifest`);
+      }
+      const metadata2 = `${chunk.compressedBytes}:${chunk.rawBytes}:${chunk.rawSha256}`;
+      const previous = chunksByCompressedHash.get(chunk.compressedSha256);
+      if (previous && previous !== metadata2) throw new Error(`Conflicting metadata for chunk ${chunk.compressedSha256}`);
+      chunksByCompressedHash.set(chunk.compressedSha256, metadata2);
+      rawBytes += chunk.rawBytes;
+      compressedBytes += chunk.compressedBytes;
+    });
+    if (rawBytes !== pack.rawBytes || compressedBytes !== pack.compressedBytes) {
+      throw new Error(`Total length mismatch for ${key2} in Zstd manifest`);
+    }
+  }
+  return catalog;
+}
+
 // public/web/cs16/cs16.js
 var BASE = "/rodir/";
-var ASSET_VERSION = "20260924-perf1";
+var ASSET_VERSION = "20261016-temporary-rooms2";
 var expectedProgressBytes = 128 * 1024 * 1024;
 var Q = new URLSearchParams(location.search);
 var SUPPORTED_MAPS = /* @__PURE__ */ new Set([
@@ -17563,6 +18111,8 @@ var SUPPORTED_MAPS = /* @__PURE__ */ new Set([
 var DEFAULT_MAP = "de_dust2";
 var DEFAULT_BOT_COUNT = 7;
 var MAX_BOT_COUNT = 15;
+var DEFAULT_BOT_DIFFICULTY = 3;
+var MAX_BOT_DIFFICULTY = 3;
 var PREBUILT_VIS_MAPS = new Set(SUPPORTED_MAPS);
 var BOT_VIS_GENERATION = "yapb-4.5-vis-v1";
 var AUTO_JOIN = Q.get("autojoin") !== "0";
@@ -17579,9 +18129,19 @@ function selectedBotCount() {
   const requested = Q.has("bots") ? Q.get("bots") : document.getElementById("bots")?.value;
   return parseBotCount(requested);
 }
+function parseBotDifficulty(value) {
+  if (!/^\d$/.test(String(value ?? ""))) return DEFAULT_BOT_DIFFICULTY;
+  const difficulty = Number(value);
+  return Number.isInteger(difficulty) && difficulty >= 0 && difficulty <= MAX_BOT_DIFFICULTY ? difficulty : DEFAULT_BOT_DIFFICULTY;
+}
+function selectedBotDifficulty() {
+  const requested = Q.has("difficulty") ? Q.get("difficulty") : document.getElementById("difficulty")?.value;
+  return parseBotDifficulty(requested);
+}
 var queryMap = Q.get("map");
 if (SUPPORTED_MAPS.has(queryMap)) document.getElementById("map").value = queryMap;
 if (Q.has("bots")) document.getElementById("bots").value = String(parseBotCount(Q.get("bots")));
+if (Q.has("difficulty")) document.getElementById("difficulty").value = String(parseBotDifficulty(Q.get("difficulty")));
 var VGUI_MENUS = Q.get("vgui") || "1";
 var USE_NEW_LIBS = Q.get("client") === "new";
 var PAGE_ROOT = new URL("./", document.baseURI);
@@ -17605,6 +18165,22 @@ window.__probe.keys = [];
 var phase = "Ready";
 var started = false;
 var firstFrameReady = false;
+var failureReported = false;
+var pageUnloading = false;
+var engineFatalError = null;
+var activeRelay = null;
+var pendingHostedRoom = null;
+window.addEventListener("beforeunload", () => {
+  pageUnloading = true;
+  activeRelay?.close();
+});
+window.addEventListener("pagehide", () => {
+  pageUnloading = true;
+  activeRelay?.close();
+});
+window.addEventListener("pageshow", () => {
+  pageUnloading = false;
+});
 window.addEventListener("keydown", (e) => {
   const rec = { t: "down", key: e.key, code: e.code, keyCode: e.keyCode };
   window.__probe.keys.push(rec);
@@ -17686,12 +18262,64 @@ function guardStream(stream, label, url) {
     }
   });
 }
-async function fetchBytes(url, label, options) {
-  const res = await fetchRequired(url, label, options);
-  return new Uint8Array(await new Response(guardStream(res.body, label, url)).arrayBuffer());
+async function fetchBytes(url, label, options = {}) {
+  const { maxBytes = MAX_BUFFERED_RESOURCE_BYTES, ...fetchOptions } = options;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw new Error(`${label} has an invalid download limit`);
+  const res = await fetchRequired(url, label, fetchOptions);
+  const declared = Number(res.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    void res.body.cancel().catch(() => {
+    });
+    throw new Error(`${label} is unexpectedly large (${declared} bytes; limit ${maxBytes})`);
+  }
+  const stream = guardStream(res.body, label, url);
+  const reader = stream.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    for (; ; ) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (total + value.byteLength > maxBytes) throw new Error(`${label} exceeded its ${maxBytes}-byte download limit`);
+      chunks.push(value);
+      total += value.byteLength;
+    }
+  } catch (error) {
+    void reader.cancel(error).catch(() => {
+    });
+    throw error;
+  }
+  const bytes = new Uint8Array(total);
+  let at = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return bytes;
 }
-var ZSTD_FORMAT = "8bitgo.cs16.zstd-chunks.v1";
-var SHA256_RE = /^[a-f0-9]{64}$/;
+async function fetchBytesWithRetry(url, label, options = {}) {
+  const { validate, attempts = 3, ...fetchOptions } = options;
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const attemptUrl = new URL(url, location.href);
+    if (attempt) attemptUrl.searchParams.set("retry", String(attempt));
+    try {
+      const bytes = await fetchBytes(attemptUrl.href, label, {
+        ...fetchOptions,
+        ...attempt ? { cache: "reload" } : {}
+      });
+      if (validate && !validate(bytes)) throw new Error(`${label} failed content validation`);
+      return bytes;
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts - 1) log(`\u26A0\uFE0F ${label} failed, retrying ${attempt + 2}/${attempts}: ${error}`, "err");
+    }
+  }
+  throw lastError;
+}
+var isWasm = (bytes) => bytes.byteLength >= 8 && bytes[0] === 0 && bytes[1] === 97 && bytes[2] === 115 && bytes[3] === 109;
+var isZip = (bytes) => bytes.byteLength >= 4 && bytes[0] === 80 && bytes[1] === 75 && bytes[2] === 3 && bytes[3] === 4;
+var isTtf = (bytes) => bytes.byteLength >= 4 && (bytes[0] === 0 && bytes[1] === 1 && bytes[2] === 0 && bytes[3] === 0 || new TextDecoder().decode(bytes.subarray(0, 4)) === "OTTO");
 var chunkPromises = /* @__PURE__ */ new Map();
 var catalogPromise;
 var wasmZstdPromise;
@@ -17706,49 +18334,52 @@ async function digestHex(bytes) {
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
-function validatePackCatalog(catalog) {
-  if (!catalog || catalog.format !== ZSTD_FORMAT || !catalog.packs || typeof catalog.packs !== "object") {
-    throw new Error("Incompatible CS1.6 Zstd manifest format");
-  }
-  if (catalog.compression?.algorithm !== "zstd" || catalog.compression?.chunkRawBytes !== 16 * 1024 * 1024) {
-    throw new Error("Incompatible compression parameters in CS1.6 Zstd manifest");
-  }
-  for (const [key2, pack] of Object.entries(catalog.packs)) {
-    if (!(key2 === "base" || /^maps\/[a-z0-9_]+$/.test(key2))) throw new Error(`Invalid pack name in Zstd manifest: ${key2}`);
-    if (!Number.isSafeInteger(pack.rawBytes) || pack.rawBytes <= 0 || !Number.isSafeInteger(pack.compressedBytes) || pack.compressedBytes <= 0 || !SHA256_RE.test(pack.rawSha256) || !Array.isArray(pack.chunks) || !pack.chunks.length) {
-      throw new Error(`Invalid metadata for ${key2} in Zstd manifest`);
-    }
-    let rawBytes = 0, compressedBytes = 0;
-    pack.chunks.forEach((chunk, index) => {
-      if (chunk.index !== index || chunk.path !== `chunks/${chunk.compressedSha256}.zst` || !SHA256_RE.test(chunk.compressedSha256) || !SHA256_RE.test(chunk.rawSha256) || !Number.isSafeInteger(chunk.rawBytes) || chunk.rawBytes <= 0 || chunk.rawBytes > 16 * 1024 * 1024 || !Number.isSafeInteger(chunk.compressedBytes) || chunk.compressedBytes <= 0) {
-        throw new Error(`Invalid chunk ${index + 1} for ${key2} in Zstd manifest`);
-      }
-      rawBytes += chunk.rawBytes;
-      compressedBytes += chunk.compressedBytes;
-    });
-    if (rawBytes !== pack.rawBytes || compressedBytes !== pack.compressedBytes) {
-      throw new Error(`Total length mismatch for ${key2} in Zstd manifest`);
-    }
-  }
-  return catalog;
-}
 async function getPackCatalog() {
   if (!catalogPromise) {
     catalogPromise = (async () => {
-      const bytes = await fetchBytes(`${PACKS_ROOT}catalog.json?v=${ASSET_VERSION}`, "CS1.6 chunk manifest");
-      let catalog;
-      try {
-        catalog = JSON.parse(new TextDecoder().decode(bytes));
-      } catch {
-        throw new Error("CS1.6 chunk manifest is not valid JSON");
+      let lastError;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const url = new URL("catalog.json", PACKS_ROOT);
+        url.searchParams.set("v", ASSET_VERSION);
+        if (attempt) url.searchParams.set("retry", String(attempt));
+        try {
+          const bytes = await fetchBytes(url.href, "CS1.6 chunk manifest", {
+            maxBytes: MAX_CATALOG_BYTES,
+            ...attempt ? { cache: "reload" } : {}
+          });
+          let catalog;
+          try {
+            catalog = JSON.parse(new TextDecoder().decode(bytes));
+          } catch {
+            throw new Error("CS1.6 chunk manifest is not valid JSON");
+          }
+          return validatePackCatalog(catalog);
+        } catch (error) {
+          lastError = error;
+          if (attempt < 2) log(`\u26A0\uFE0F CS1.6 chunk manifest failed, retrying ${attempt + 2}/3: ${error}`, "err");
+        }
       }
-      return validatePackCatalog(catalog);
+      throw lastError;
     })();
   }
-  return catalogPromise;
+  const pending = catalogPromise;
+  try {
+    return await pending;
+  } catch (error) {
+    if (catalogPromise === pending) catalogPromise = null;
+    throw error;
+  }
 }
 async function ensureWasmZstd() {
-  if (!wasmZstdPromise) wasmZstdPromise = init3(`${ASSET_ROOT}/zstd.wasm?v=${ASSET_VERSION}`);
+  if (!wasmZstdPromise) {
+    wasmZstdPromise = (async () => {
+      const bytes = await fetchBytesWithRetry(`${ASSET_ROOT}/zstd.wasm?v=${ASSET_VERSION}`, "Zstd decoder", {
+        maxBytes: 1024 * 1024,
+        validate: isWasm
+      });
+      await init3(bytes);
+    })();
+  }
   await wasmZstdPromise;
 }
 async function decompressChunk(compressed, chunk, label) {
@@ -17773,8 +18404,12 @@ async function decompressChunk(compressed, chunk, label) {
 async function fetchChunkOnce(chunk, label, attempt) {
   const chunkUrl = new URL(chunk.path, PACKS_ROOT);
   chunkUrl.searchParams.set("v", chunk.compressedSha256);
+  if (attempt) chunkUrl.searchParams.set("retry", String(attempt));
   const url = chunkUrl.href;
-  const compressed = await fetchBytes(url, label, attempt ? { cache: "reload" } : void 0);
+  const compressed = await fetchBytes(url, label, {
+    ...attempt ? { cache: "reload" } : {},
+    maxBytes: MAX_ZSTD_CHUNK_COMPRESSED_BYTES
+  });
   if (compressed.byteLength !== chunk.compressedBytes) throw new Error(`${label} download length mismatch`);
   if (await digestHex(compressed) !== chunk.compressedSha256) throw new Error(`${label} SHA-256 mismatch`);
   return decompressChunk(compressed, chunk, label);
@@ -17901,11 +18536,8 @@ async function placeLibs(xash) {
   const downloads = /* @__PURE__ */ new Map();
   const files = await Promise.all(Object.entries(LIB_FILES).map(async ([name2, url]) => {
     const assetUrl = versioned(url);
-    if (!downloads.has(assetUrl)) downloads.set(assetUrl, fetchBytes(assetUrl, `library ${name2}`));
+    if (!downloads.has(assetUrl)) downloads.set(assetUrl, fetchBytesWithRetry(assetUrl, `library ${name2}`, { validate: isWasm }));
     const buf = await downloads.get(assetUrl);
-    if (name2.endsWith(".wasm") && !(buf[0] === 0 && buf[1] === 97 && buf[2] === 115 && buf[3] === 109)) {
-      throw new Error(`library ${name2} is not valid WASM (got 404 HTML?)`);
-    }
     return [name2, buf];
   }));
   for (const [name2, buf] of files) {
@@ -17957,7 +18589,7 @@ async function fetchPackBytes(url, label) {
   if (typeof DecompressionStream === "undefined") throw new Error("Streaming gzip is not supported in this browser");
   return stream.pipeThrough(new DecompressionStream("gzip"));
 }
-async function writePack(xash, stream) {
+async function writePack(xash, stream, maxTotalBytes) {
   let yieldBytes = 0;
   return unpackTarStream(
     stream,
@@ -17974,16 +18606,18 @@ async function writePack(xash, stream) {
     },
     ({ files, bytes }) => {
       if (files % 100 === 0) setPhase(`Extracting assets: ${files} files / ${(bytes / 1048576).toFixed(0)} MB`);
-    }
+    },
+    { maxTotalBytes }
   );
 }
 async function loadPack(xash, file) {
+  const limits = packLimits(file);
   if (!FORCE_GZIP) {
     try {
       const catalog = await getPackCatalog();
       const pack = catalog.packs[file];
       if (!pack) throw new Error(`Zstd manifest is missing ${file}`);
-      const result = await writePack(xash, zstdPackStream(pack, file));
+      const result = await writePack(xash, zstdPackStream(pack, file), limits.rawBytes);
       window.__probe.info.packFormat = nativeZstd ? "zstd-native" : "zstd-wasm";
       log(`[cs16] ${file} via ${nativeZstd ? "native Zstd" : "Zstd WASM"}, ${pack.chunks.length} verified chunks`);
       return result;
@@ -17991,7 +18625,7 @@ async function loadPack(xash, file) {
       log(`\u26A0\uFE0F Zstd chunks for ${file} unavailable, trying gzip fallback: ${zstdError}`, "err");
       try {
         const stream2 = await fetchPackBytes(`${LEGACY_PACKS_ROOT}${file}.tar.gz?v=${ASSET_VERSION}`, `${file} gzip fallback`);
-        const result = await writePack(xash, stream2);
+        const result = await writePack(xash, stream2, limits.rawBytes);
         window.__probe.info.packFormat = "gzip-fallback";
         return result;
       } catch (gzipError) {
@@ -18001,21 +18635,17 @@ async function loadPack(xash, file) {
   }
   const stream = await fetchPackBytes(`${FORCE_GZIP_ROOT}${file}.tar.gz?v=${ASSET_VERSION}`, `${file} gzip pack`);
   window.__probe.info.packFormat = "gzip-forced";
-  return writePack(xash, stream);
+  return writePack(xash, stream, limits.rawBytes);
 }
 async function loadHudFont(xash, fontPromise) {
   const FS2 = xash.em.FS;
-  try {
-    const buf = await (fontPromise || fetchBytes(`${ASSET_ROOT}/gfx/fonts/FiraSans-Regular.ttf?v=` + ASSET_VERSION, "HUD font"));
-    for (const dir of ["gfx/fonts", "cstrike/gfx/fonts"]) {
-      FS2.mkdirTree(`${BASE}${dir}`);
-      FS2.writeFile(`${BASE}${dir}/FiraSans-Regular.ttf`, buf);
-      FS2.writeFile(`${BASE}${dir}/tahoma.ttf`, buf);
-    }
-    mark("HUD font ready");
-  } catch (e) {
-    log("\u26A0\uFE0F HUD font failed to load: " + e, "err");
+  const buf = await (fontPromise || fetchBytesWithRetry(`${ASSET_ROOT}/gfx/fonts/FiraSans-Regular.ttf?v=` + ASSET_VERSION, "HUD font", { validate: isTtf }));
+  for (const dir of ["gfx/fonts", "cstrike/gfx/fonts"]) {
+    FS2.mkdirTree(`${BASE}${dir}`);
+    FS2.writeFile(`${BASE}${dir}/FiraSans-Regular.ttf`, buf);
+    FS2.writeFile(`${BASE}${dir}/tahoma.ttf`, buf);
   }
+  mark("HUD font ready");
 }
 function waitForFirstFrame(canvas, xash, timeoutMs = 6e4) {
   const fatal = /(?:can't initialize any renderer|version check failed|failed to asynchronously prepare wasm|abort\(|host_error:)/i;
@@ -18023,6 +18653,7 @@ function waitForFirstFrame(canvas, xash, timeoutMs = 6e4) {
   const startedAt = performance.now();
   return new Promise((resolve, reject) => {
     const check = () => {
+      if (engineFatalError) return reject(engineFatalError);
       if (xash.exited) return reject(new Error("Engine exited before the first frame"));
       const fatalLine = window.__probe.log.find((line) => fatal.test(line));
       if (fatalLine) return reject(new Error(`Engine failed to start: ${fatalLine}`));
@@ -18066,7 +18697,7 @@ function ensureBinds(xash) {
   }
   mark("Key bindings written (autoexec.cfg)");
 }
-function configureBots(xash, map, count) {
+function configureBots(xash, map, count, difficulty) {
   const FS2 = xash.em.FS;
   const liblistPath = `${BASE}cstrike/liblist.gam`;
   const decoder2 = new TextDecoder();
@@ -18086,21 +18717,25 @@ function configureBots(xash, map, count) {
     'yb_kick_after_player_connect "0"',
     'yb_join_after_player "0"',
     'yb_join_team "any"',
-    'yb_join_delay "1.0"'
+    'yb_join_delay "1.0"',
+    // 难度必须和 quota 一起落到地图级配置；等画面出来再改会让首批 Bot 沿用包内固定的 Expert。
+    `yb_difficulty "${difficulty}"`
   ].join("\n") + "\n";
   const configDir = `${BASE}cstrike/addons/yapb/conf/maps`;
   FS2.mkdirTree(configDir);
   FS2.writeFile(`${configDir}/${map}.cfg`, encoder.encode(mapConfig));
   window.__probe.info.botCount = count;
+  window.__probe.info.botDifficulty = difficulty;
   window.__probe.info.botGameDll = `${BASE}cstrike/${GAME_SERVER_LIB}`;
   mark("Bot config ready", count ? `${count} YaPB` : "no bots");
 }
-function enforceBotCount(xash, count) {
+function enforceBotCount(xash, count, difficulty) {
   xash.Cmd_ExecuteString([
     "yb_quota_mode normal",
     "yb_autovacate 0",
     "yb_kick_after_player_connect 0",
     "yb_join_after_player 0",
+    `yb_difficulty ${difficulty}`,
     `yb_quota ${count}`
   ].join(";"));
 }
@@ -18248,24 +18883,312 @@ async function autoJoinPlayer(xash) {
   await delay(1150);
   window.__probe.info.autoJoin = "counter-terrorists";
 }
-async function start2() {
+function updateBotHint(count) {
+  const hint = $("bot-hint");
+  if (!hint) return;
+  const difficulty = $("difficulty");
+  if (difficulty && !started) difficulty.disabled = count === 0;
+  const summary = count === 0 ? "\u4E0D\u52A0\u5165 BOT\uFF0C\u9002\u5408\u719F\u6089\u5730\u56FE\u548C\u7EC3\u4E60\u6295\u63B7\u7269\u3002" : count === 7 ? "\u4F60\u548C 7 \u4E2A BOT \u7EC4\u6210\u7ECF\u5178 4v4\u3002" : `\u4F60\u548C ${count} \u4E2A BOT \u4E00\u8D77\u8BAD\u7EC3\u3002`;
+  hint.textContent = `${summary} \u7CFB\u7EDF\u4F1A\u81EA\u52A8\u52A0\u5165\u53CD\u6050\u7CBE\u82F1\uFF1B\u6309 M \u53EF\u4EE5\u6362\u961F\u3002`;
+}
+$("bots")?.addEventListener("change", () => updateBotHint(selectedBotCount()));
+updateBotHint(selectedBotCount());
+var serverDirectory = [];
+var selectedServerId = "";
+var serverDirectoryPromise = null;
+function setConnectStatus(message, kind = "") {
+  const status = $("server-connect-status");
+  if (!status) return;
+  status.textContent = message;
+  status.style.color = kind === "error" ? "#ff7b5d" : kind === "ready" ? "#a8d56a" : "";
+}
+async function readJsonResponse(response) {
+  let body2 = null;
+  try {
+    body2 = await response.json();
+  } catch {
+  }
+  if (!response.ok) throw new Error(body2?.error || `HTTP ${response.status}`);
+  return body2;
+}
+function normalizedRoomCode(value) {
+  const code = String(value || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return /^[A-HJ-NP-Z2-9]{6}$/.test(code) ? code : "";
+}
+async function findRoom(code) {
+  const normalized = normalizedRoomCode(code);
+  if (!normalized) throw new Error("\u8BF7\u8F93\u5165 6 \u4F4D\u623F\u95F4\u7801");
+  const response = await fetch(`/api/cs16/rooms/${encodeURIComponent(normalized)}`, { cache: "no-store" });
+  const room = await readJsonResponse(response);
+  if (!validRoomDescriptor(room) || !SUPPORTED_MAPS.has(room.map)) throw new Error("\u623F\u95F4\u8FD4\u56DE\u4E86\u65E0\u6548\u7684\u8054\u673A\u53C2\u6570");
+  return room;
+}
+function setServerStatus(message, kind = "") {
+  const status = $("server-status");
+  if (!status) return;
+  status.textContent = message;
+  status.className = `server-status${kind ? ` ${kind}` : ""}`;
+}
+function selectedServer() {
+  return serverDirectory.find((server) => server.id === selectedServerId) || null;
+}
+function updateServerJoinButton() {
+  const server = selectedServer();
+  const join = $("server-join");
+  if (!join) return;
+  join.disabled = started || !server || server.joinable === false;
+  join.title = server?.unavailableReason || "";
+}
+function renderServerDirectory() {
+  const list = $("server-list");
+  if (!list) return;
+  list.replaceChildren();
+  for (const server of serverDirectory) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = `server-row${server.online ? "" : " is-unreachable"}`;
+    row.setAttribute("role", "option");
+    row.setAttribute("aria-selected", String(server.id === selectedServerId));
+    row.disabled = started;
+    const name2 = document.createElement("span");
+    name2.className = "server-name";
+    name2.textContent = server.name;
+    const map = document.createElement("span");
+    map.textContent = server.map;
+    const players = document.createElement("span");
+    players.textContent = server.players == null ? "\u2014" : `${server.players}/${server.maxPlayers}`;
+    const ping = document.createElement("span");
+    ping.textContent = server.pingMs == null ? "\u2014" : `${server.pingMs} ms`;
+    row.append(name2, map, players, ping);
+    row.title = server.unavailableReason || server.description || (server.online ? "\u53CC\u51FB\u52A0\u5165\u670D\u52A1\u5668" : "\u72B6\u6001\u63A2\u6D4B\u672A\u54CD\u5E94\uFF0C\u4ECD\u53EF\u5C1D\u8BD5\u52A0\u5165");
+    row.addEventListener("click", () => {
+      selectedServerId = server.id;
+      renderServerDirectory();
+      updateServerJoinButton();
+    });
+    row.addEventListener("dblclick", () => {
+      if (server.joinable !== false) start2({ server }).catch(showError);
+    });
+    list.appendChild(row);
+  }
+  updateServerJoinButton();
+}
+async function loadServerDirectory(force = false) {
+  if (!force && serverDirectoryPromise) return serverDirectoryPromise;
+  setServerStatus("\u6B63\u5728\u5237\u65B0\u5B89\u5168\u670D\u52A1\u5668\u76EE\u5F55\u2026");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15e3);
+  serverDirectoryPromise = (async () => {
+    try {
+      const response = await fetch("/api/cs16/servers", { cache: "no-store", signal: controller.signal });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const directory = await response.json();
+      if (!directory?.enabled) {
+        serverDirectory = [];
+        selectedServerId = "";
+        setServerStatus("\u7F51\u9875\u8054\u673A\u72B6\u6001\uFF1A\u81EA\u52A8\u76EE\u5F55\u5DF2\u5173\u95ED\uFF0C\u4E14\u6CA1\u6709\u914D\u7F6E\u56FA\u5B9A\u670D\u52A1\u5668", "is-empty");
+        renderServerDirectory();
+        return serverDirectory;
+      }
+      serverDirectory = Array.isArray(directory.servers) ? directory.servers.filter((server) => validRelayServer(server) && SUPPORTED_MAPS.has(server.map) && typeof server.name === "string") : [];
+      if (!serverDirectory.some((server) => server.id === selectedServerId)) {
+        selectedServerId = serverDirectory.find((server) => server.joinable !== false)?.id || "";
+      }
+      const online = serverDirectory.filter((server) => server.online).length;
+      setServerStatus(
+        serverDirectory.length ? `\u53EF\u52A0\u5165\u670D\u52A1\u5668 ${serverDirectory.length} \u4E2A \xB7 \u72B6\u6001\u63A2\u6D4B\u5728\u7EBF ${online} \u4E2A` : "\u7F51\u9875\u8054\u673A\u72B6\u6001\uFF1A\u76EE\u5F55\u5DF2\u542F\u7528\uFF0C\u4F46\u6CA1\u6709\u53EF\u7528\u670D\u52A1\u5668",
+        serverDirectory.length ? "is-ready" : "is-empty"
+      );
+      renderServerDirectory();
+      return serverDirectory;
+    } catch (error) {
+      serverDirectory = [];
+      selectedServerId = "";
+      renderServerDirectory();
+      const detail = error instanceof Error && error.name === "AbortError" ? "\u8BF7\u6C42\u8D85\u65F6" : String(error);
+      setServerStatus(`\u8054\u673A\u76EE\u5F55\u6682\u65F6\u4E0D\u53EF\u7528\uFF08${detail}\uFF09\uFF1BBOT \u8BAD\u7EC3\u4E0D\u53D7\u5F71\u54CD`, "is-error");
+      return serverDirectory;
+    } finally {
+      clearTimeout(timer);
+    }
+  })();
+  return serverDirectoryPromise;
+}
+function showLauncherMode(mode) {
+  const practice = mode !== "servers";
+  const practicePanel = $("practice-panel");
+  const serverPanel = $("server-panel");
+  const practiceButton = $("show-practice");
+  const serverButton = $("show-servers");
+  if (practicePanel) practicePanel.hidden = !practice;
+  if (serverPanel) serverPanel.hidden = practice;
+  practiceButton?.setAttribute("aria-selected", String(practice));
+  serverButton?.setAttribute("aria-selected", String(!practice));
+  if (!practice) void loadServerDirectory();
+}
+$("show-practice")?.addEventListener("click", () => showLauncherMode("practice"));
+$("show-servers")?.addEventListener("click", () => showLauncherMode("servers"));
+$("server-back")?.addEventListener("click", () => showLauncherMode("practice"));
+$("server-refresh")?.addEventListener("click", () => {
+  serverDirectoryPromise = null;
+  void loadServerDirectory(true);
+});
+$("server-join")?.addEventListener("click", () => {
+  const server = selectedServer();
+  if (server) start2({ server }).catch(showError);
+});
+$("direct-connect")?.addEventListener("click", async () => {
   if (started) return;
+  const button = $("direct-connect");
+  try {
+    if (button) button.disabled = true;
+    setConnectStatus("\u6B63\u5728\u786E\u8BA4\u76EE\u6807\u662F\u517C\u5BB9\u7684\u516C\u7F51 CS1.6 \u670D\u52A1\u5668\u2026");
+    const response = await fetch("/api/cs16/servers/resolve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ address: $("direct-address")?.value || "" })
+    });
+    const server = await readJsonResponse(response);
+    if (!validRelayServer(server) || !SUPPORTED_MAPS.has(server.map) || server.joinable === false) {
+      throw new Error(server?.unavailableReason || "\u8FD9\u4E2A\u5730\u5740\u4E0D\u662F\u517C\u5BB9\u7684 CS1.6 \u670D\u52A1\u5668");
+    }
+    setConnectStatus(`\u5DF2\u9A8C\u8BC1 ${server.name} \xB7 ${server.map}\uFF0C\u6B63\u5728\u8FDE\u63A5\u2026`, "ready");
+    await start2({ server });
+  } catch (error) {
+    if (started) showError(error);
+    else setConnectStatus(error instanceof Error ? error.message : String(error), "error");
+  } finally {
+    if (button && !started) button.disabled = false;
+  }
+});
+$("room-connect")?.addEventListener("click", async () => {
+  if (started) return;
+  const button = $("room-connect");
+  try {
+    if (button) button.disabled = true;
+    setConnectStatus("\u6B63\u5728\u67E5\u627E\u623F\u95F4\u2026");
+    const room = await findRoom($("room-code-input")?.value);
+    setConnectStatus(room.hostReady ? `\u623F\u4E3B\u5DF2\u5C31\u7EEA \xB7 ${room.map}` : `\u623F\u4E3B\u4ECD\u5728\u52A0\u8F7D \xB7 ${room.map}\uFF0C\u53EF\u4EE5\u5148\u52A0\u8F7D\u6E38\u620F`, "ready");
+    await start2({ room: { ...room, role: "guest" } });
+  } catch (error) {
+    if (started) showError(error);
+    else setConnectStatus(error instanceof Error ? error.message : String(error), "error");
+  } finally {
+    if (button && !started) button.disabled = false;
+  }
+});
+$("room-code-input")?.addEventListener("input", (event) => {
+  event.currentTarget.value = String(event.currentTarget.value || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
+});
+$("create-room")?.addEventListener("click", async () => {
+  if (started) return;
+  const button = $("create-room");
+  if (pendingHostedRoom) {
+    start2({ room: pendingHostedRoom }).catch(showError);
+    return;
+  }
+  try {
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Creating\u2026";
+    }
+    const response = await fetch("/api/cs16/rooms", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        map: selectedMap(),
+        botCount: selectedBotCount(),
+        difficulty: selectedBotDifficulty()
+      })
+    });
+    const room = await readJsonResponse(response);
+    if (!validRoomDescriptor(room) || !SUPPORTED_MAPS.has(room.map) || typeof room.hostToken !== "string") {
+      throw new Error("\u521B\u5EFA\u63A5\u53E3\u8FD4\u56DE\u4E86\u65E0\u6548\u7684\u623F\u95F4\u53C2\u6570");
+    }
+    pendingHostedRoom = { ...room, role: "host" };
+    for (const id of ["map", "bots", "difficulty", "start"]) {
+      const control = $(id);
+      if (control) control.disabled = true;
+    }
+    const code = $("created-room-code");
+    if (code) code.textContent = room.code;
+    const box = $("room-created");
+    if (box) box.hidden = false;
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Start Room";
+    }
+    const sub = $("sub");
+    if (sub) sub.textContent = "\u628A\u623F\u95F4\u7801\u53D1\u7ED9\u597D\u53CB\uFF0C\u7136\u540E\u70B9\u51FB Start Room\u3002\u597D\u53CB\u53EF\u4EE5\u63D0\u524D\u8F93\u5165\u623F\u95F4\u7801\u5E76\u52A0\u8F7D\u3002";
+  } catch (error) {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Create Room";
+    }
+    const errbox = $("errbox");
+    if (errbox) errbox.textContent = `ERROR \xB7 ${error instanceof Error ? error.message : String(error)}`;
+  }
+});
+$("copy-room-code")?.addEventListener("click", async () => {
+  if (!pendingHostedRoom) return;
+  const shareUrl = new URL(location.href);
+  shareUrl.search = "";
+  shareUrl.searchParams.set("room", pendingHostedRoom.code);
+  try {
+    await navigator.clipboard.writeText(`${pendingHostedRoom.code}
+${shareUrl.href}`);
+    const button = $("copy-room-code");
+    if (button) button.textContent = "Copied";
+  } catch {
+    const errbox = $("errbox");
+    if (errbox) errbox.textContent = `\u623F\u95F4\u7801\uFF1A${pendingHostedRoom.code} \xB7 \u9080\u8BF7\u94FE\u63A5\uFF1A${shareUrl.href}`;
+  }
+});
+function reportEngineFailure(message) {
+  if (pageUnloading || failureReported) return;
+  engineFatalError = new Error(message);
+  queueMicrotask(() => showError(engineFatalError));
+}
+async function start2({ server = null, room = null } = {}) {
+  if (started) return;
+  if (server && room) throw new Error("\u4E0D\u80FD\u540C\u65F6\u8FDE\u63A5\u516C\u5171\u670D\u52A1\u5668\u548C\u4E34\u65F6\u623F\u95F4");
+  if (server && (!validRelayServer(server) || !SUPPORTED_MAPS.has(server.map) || server.joinable === false)) {
+    throw new Error(server?.unavailableReason || "\u8FD9\u4E2A\u670D\u52A1\u5668\u5F53\u524D\u4E0D\u80FD\u7531\u7F51\u9875\u7248\u52A0\u5165");
+  }
+  if (room && (!validRoomDescriptor(room) || !SUPPORTED_MAPS.has(room.map) || !["host", "guest"].includes(room.role))) {
+    throw new Error("\u8FD9\u4E2A\u4E34\u65F6\u623F\u95F4\u7684\u8054\u673A\u53C2\u6570\u65E0\u6548");
+  }
   started = true;
   const startButton = $("start");
   if (startButton) startButton.disabled = true;
   const mapSelect = $("map");
   const botSelect = $("bots");
+  const difficultySelect = $("difficulty");
   if (mapSelect) mapSelect.disabled = true;
   if (botSelect) botSelect.disabled = true;
-  const map = selectedMap();
-  const botCount = selectedBotCount();
+  if (difficultySelect) difficultySelect.disabled = true;
+  for (const id of ["show-practice", "show-servers", "server-back", "server-refresh", "server-join", "create-room", "direct-connect", "room-connect"]) {
+    const button = $(id);
+    if (button) button.disabled = true;
+  }
+  for (const row of document.querySelectorAll(".server-row")) row.disabled = true;
+  const remoteClient = !!server || room?.role === "guest";
+  const listenServer = !remoteClient;
+  const map = server?.map || room?.map || selectedMap();
+  const botCount = room?.role === "host" ? room.botCount : selectedBotCount();
+  const botDifficulty = room?.role === "host" ? room.difficulty : selectedBotDifficulty();
   const overlay = $("overlay");
-  if (overlay) overlay.classList.remove("hidden");
+  if (overlay) {
+    overlay.classList.remove("hidden");
+    overlay.classList.add("is-loading");
+  }
   const canvasEl = $("canvas");
   if (!(canvasEl instanceof HTMLCanvasElement)) throw new Error("Game canvas missing; the page files may be incomplete");
   let restoreTimer = 0;
+  let webglContextLost = false;
   canvasEl?.addEventListener("webglcontextlost", (e) => {
     e.preventDefault();
+    webglContextLost = true;
     if (overlay) overlay.classList.remove("hidden");
     setPhase("WebGL context lost, attempting restore\u2026");
     log("\u26A0\uFE0F WebGL context lost (usually GPU/memory pressure) \u2014 screen goes black", "err");
@@ -18273,8 +19196,9 @@ async function start2() {
   });
   canvasEl?.addEventListener("webglcontextrestored", () => {
     clearTimeout(restoreTimer);
+    webglContextLost = false;
     log("WebGL context restored");
-    if (firstFrameReady && overlay) overlay.classList.add("hidden");
+    if (firstFrameReady && !failureReported && overlay) overlay.classList.add("hidden");
   });
   const args2 = [
     "-windowed",
@@ -18288,8 +19212,7 @@ async function start2() {
       `team is full`，玩家永远卡在观察（spectator）状态 —— 没有刀、没有 HUD/雷达、
       没有武器状态。必须在 `+map` 之前设置（map 启动时才读这个 cvar）。
     */
-    "+maxplayers",
-    "32",
+    ...listenServer ? ["+maxplayers", "32"] : [],
     "+volume",
     "0.7",
     "+hud_scale",
@@ -18299,17 +19222,26 @@ async function start2() {
     // CS 必须选队伍才会 spawn；队伍选择 / 购买是 VGUI 菜单，显式开启。
     "+_vgui_menus",
     VGUI_MENUS,
-    ...map ? ["+map", map] : []
+    ...listenServer && map ? ["+map", map] : [],
+    ...server ? ["+connect", `webxash3d.${server.netId}:${server.port}`] : [],
+    ...room?.role === "guest" ? ["+connect", `webxash3d.${room.server.netId}:${room.server.port}`] : []
   ];
   window.__probe.args = args2;
+  window.__probe.info.mode = server ? "server" : room ? `room-${room.role}` : "practice";
+  if (server) window.__probe.info.server = { id: server.id, name: server.name, map: server.map };
+  if (room) {
+    window.__probe.info.room = { code: room.code, role: room.role, map: room.map };
+    const hud = $("hud");
+    if (hud) hud.textContent = `ROOM ${room.code} \xB7 ${room.role === "host" ? "\u623F\u4E3B" : "\u73A9\u5BB6"}`;
+  }
   const wanted = ["base", `maps/${map}`];
   const packWarmup = FORCE_GZIP ? Promise.resolve(null) : prepareZstdPacks(wanted).catch((error) => {
     log(`\u26A0\uFE0F Zstd prewarm failed, will try fallback pack later: ${error}`, "err");
     return null;
   });
-  const extrasPromise = fetchBytes(`${LIB}/cstrike/extras.pk3?v=${ASSET_VERSION}`, "cs16 client extras.pk3");
-  const fontPromise = fetchBytes(`${ASSET_ROOT}/gfx/fonts/FiraSans-Regular.ttf?v=${ASSET_VERSION}`, "HUD font");
-  const botVisPromise = loadBotVis(map).catch((error) => {
+  const extrasPromise = fetchBytesWithRetry(`${LIB}/cstrike/extras.pk3?v=${ASSET_VERSION}`, "cs16 client extras.pk3", { validate: isZip });
+  const fontPromise = fetchBytesWithRetry(`${ASSET_ROOT}/gfx/fonts/FiraSans-Regular.ttf?v=${ASSET_VERSION}`, "HUD font", { validate: isTtf });
+  const botVisPromise = (listenServer ? loadBotVis(map) : Promise.resolve(null)).catch((error) => {
     log(`\u26A0\uFE0F YaPB visibility cache unavailable: ${error}`, "err");
     return null;
   });
@@ -18323,6 +19255,9 @@ async function start2() {
       // YaPB 是 GameDLL 代理层，必须由它再加载真正的 CS 服务端库。使用绝对 MEMFS 路径，
       // 避免 Xash/side-module 对当前工作目录认知不一致时误报“不支持 cstrike”。
       ENV: { XASH3D_GAMELIBPATH: `${BASE}cstrike/${GAME_SERVER_LIB}` },
+      // 包装器的 xash.exited 只会在主动 quit() 时变化；WASM 自己 abort/exit 必须从 Emscripten 回调接住。
+      onAbort: (reason) => reportEngineFailure(`Engine aborted: ${reason || "unknown fatal error"}`),
+      onExit: (status) => reportEngineFailure(`Engine exited unexpectedly (code ${status})`),
       print: (s2) => {
         window.__probe.log.push(s2);
         log(s2);
@@ -18336,11 +19271,23 @@ async function start2() {
     canvas: canvasEl,
     libraries: LIBS_MAP
   });
+  if (server) {
+    activeRelay = createCs16RelayNet(server, {
+      onDisconnect: (message) => reportEngineFailure(message)
+    });
+    xash.net = activeRelay.net;
+  } else if (room) {
+    activeRelay = createCs16RoomNet(room, room.role, {
+      onDisconnect: (message) => reportEngineFailure(message),
+      onStatus: (message) => setPhase(message)
+    });
+    xash.net = activeRelay.net;
+  }
   window.__probe.xash = xash;
   setInterval(() => {
     if (xash.exited && !window.__probe.exited) {
       window.__probe.exited = true;
-      log("\u26A0\uFE0F Engine exited", "err");
+      reportEngineFailure("Engine exited unexpectedly");
     }
   }, 3e3);
   await xash.init();
@@ -18358,43 +19305,70 @@ async function start2() {
   window.__probe.info.assetCount = files;
   window.__probe.info.assetBytes = raw;
   const extras = await extrasPromise;
-  if (!(extras[0] === 80 && extras[1] === 75)) throw new Error("extras.pk3 is not a valid ZIP");
   xash.em.FS.mkdirTree(BASE + "cstrike");
   xash.em.FS.writeFile(BASE + "cstrike/extras.pk3", extras);
   mark("extras.pk3 ready");
   await loadHudFont(xash, fontPromise);
   ensureBinds(xash);
-  configureBots(xash, map, botCount);
-  const botVisReady = restoreBotVis(xash, map, await botVisPromise);
+  if (listenServer) configureBots(xash, map, botCount, botDifficulty);
+  const botVisReady = remoteClient ? true : restoreBotVis(xash, map, await botVisPromise);
+  if (server || room) {
+    setPhase(server ? `Connecting to ${server.name}\u2026` : room.role === "host" ? `Opening room ${room.code}\u2026` : `Joining room ${room.code}\u2026`);
+    await activeRelay.connect();
+    mark(room ? "Room relay connected" : "Server relay connected", room?.code || server.name);
+  }
   xash.em.FS.chdir(BASE);
   xash.main();
-  if (!botVisReady) watchGeneratedBotVis(xash, map);
+  if (listenServer && !botVisReady) watchGeneratedBotVis(xash, map);
   mark("Engine main loop started");
   await waitForFirstFrame(canvasEl, xash);
-  enforceBotCount(xash, botCount);
-  await autoJoinPlayer(xash);
+  if (listenServer) {
+    enforceBotCount(xash, botCount, botDifficulty);
+    await autoJoinPlayer(xash);
+  }
+  if (engineFatalError) throw engineFatalError;
   firstFrameReady = true;
-  mark("Game ready");
-  if (overlay) overlay.classList.add("hidden");
+  mark("Game ready", server?.name || room?.code);
+  if (overlay && !webglContextLost && !failureReported) overlay.classList.add("hidden");
 }
 function showError(e) {
+  if (failureReported) return;
+  failureReported = true;
+  activeRelay?.close();
   const raw = String(e && e.stack || e);
   const engineReason = [...window.__probe.log].reverse().find((line) => /(?:host_|error|failed|couldn't|abort)/i.test(line));
   const msg = e instanceof Error && e.message || (engineReason ? `Engine failed to start: ${engineReason}` : raw);
   window.__probe.errors.push(msg);
+  const overlay = $("overlay");
+  overlay?.classList.remove("hidden", "is-loading");
+  showLauncherMode("practice");
   mark("Failed");
   const box = $("errbox");
-  if (box) box.textContent = "\u274C " + msg;
+  if (box) box.textContent = "ERROR \xB7 " + msg;
   const startButton = $("start");
   if (startButton) {
     startButton.disabled = false;
-    startButton.textContent = "Reload to retry";
+    startButton.textContent = "Reload";
     startButton.onclick = () => location.reload();
   }
-  log("\u274C " + msg, "err");
+  log("ERROR \xB7 " + msg, "err");
   console.error(e);
 }
-if (Q.has("map")) {
+if (Q.has("room")) {
+  showLauncherMode("servers");
+  const input = $("room-code-input");
+  if (input) input.value = String(Q.get("room") || "").toUpperCase();
+  setConnectStatus("\u6B63\u5728\u8BFB\u53D6\u9080\u8BF7\u623F\u95F4\u2026");
+  findRoom(Q.get("room")).then((room) => start2({ room: { ...room, role: "guest" } })).catch(showError);
+} else if (Q.has("server")) {
+  showLauncherMode("servers");
+  loadServerDirectory().then((servers) => {
+    const server = servers.find((entry) => entry.id === Q.get("server"));
+    if (!server) throw new Error("\u5206\u4EAB\u94FE\u63A5\u4E2D\u7684\u670D\u52A1\u5668\u4E0D\u5B58\u5728\u6216\u5F53\u524D\u672A\u5F00\u653E");
+    selectedServerId = server.id;
+    return start2({ server });
+  }).catch(showError);
+} else if (Q.has("map")) {
   start2().catch(showError);
 } else {
   $("start")?.addEventListener("click", () => start2().catch(showError));

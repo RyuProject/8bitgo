@@ -7,6 +7,22 @@ import { normalizeHostSync } from '../src/emulator/netplaySyncGuard.ts'
 const engine = readFileSync(new URL('../public/emulatorjs/emulator.min.js', import.meta.url), 'utf8')
 assert.match(engine, /this\.socket\.on\("data-message",t=>\{this\.dataMessage\(t\)\}\)/)
 
+const adapter = readFileSync(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
+const startAt = adapter.indexOf('const startNetplay = async')
+const endAt = adapter.indexOf('const startStateUpload', startAt)
+const startNetplay = adapter.slice(startAt, endAt)
+assert.ok(startAt >= 0 && endAt > startAt, '必须能定位 startNetplay 实现')
+assert.ok(
+  startNetplay.indexOf('await fetchIceConfig()') < startNetplay.indexOf('np.joinRoom(')
+    && startNetplay.indexOf('await fetchIceConfig()') < startNetplay.indexOf('np.openRoom('),
+  '建 PeerConnection 前必须先等短期 TURN 凭证刷新完成',
+)
+assert.match(
+  adapter,
+  /event === 'open-room' \|\| event === 'join-room'[\s\S]{0,500}game_slug: options\.gameSlug/,
+  '开房和加房都必须带稳定 slug，不能只靠可能碰撞的 32 位 gameId',
+)
+
 const input = (frame, player = 1, index = 8, value = 1) => ({ frame, connected_input: [player, index, value] })
 const message = { 'sync-control': [input(20)], chat: 'still here' }
 const onHost = normalizeHostSync(message, true, 100_000)
@@ -26,4 +42,4 @@ assert.equal(bad.chat, 'keep', '畸形按键和聊天同包时聊天仍要显示
 
 assert.equal(normalizeHostSync(message, false, 100_000), message, '访客端保持引擎原来的接收行为')
 assert.equal(normalizeHostSync({ chat: 'hi' }, true, 100_000).chat, 'hi', '非按键消息原样转发')
-console.log('✅ 房主帧轴与畸形输入守门通过（8 项）')
+console.log('✅ 房主帧轴、房间身份与 TURN 时序守门通过（11 项）')

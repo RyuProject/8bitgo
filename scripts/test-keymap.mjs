@@ -249,6 +249,10 @@ ok(EJS_ARCADE_DEFAULT_CONTROLS[0][2] === undefined, '街机不再用全站 Shift
     /options\.platform === 'arcade' \? EJS_ARCADE_DEFAULT_CONTROLS : EJS_DEFAULT_CONTROLS/.test(adapterSrc),
     '适配器只给街机传街机默认键位，不影响其它主机的 Select',
   )
+  ok(
+    /EJS_controlScheme: options\.platform === 'gbc' \? 'gb' : options\.platform/.test(adapterSrc),
+    '适配器显式传平台控制方案；共用核心的世嘉主机不会被误判成同一款手柄',
+  )
 }
 
 /* ── 4. 快速存 / 读档名单 ────────────────────────────────── */

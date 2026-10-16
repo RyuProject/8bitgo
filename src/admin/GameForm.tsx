@@ -605,7 +605,8 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
                   />
                   <p className="mt-1 text-[11px] text-dim">
                     填官方 <code>sockify</code> 产物中直接含 <code>sockdrive.metaj</code> 的目录；玩家只按需读取用到的磁盘块。
-                    路径请带版本且不要原地覆盖。原 ROM 继续保留作回退，但启用后不会下载；附加文件需先写入磁盘再生成分块。
+                    路径请带版本且不要原地覆盖。超大 ZIP 上传时要保留本地原文件，随后在 Linux 制作机运行 <code>npm run sockdrive:prepare</code>；
+                    它会生成、校验、上传并在公开资源完整后绑定。原 ROM 继续保留作回退，但启用后不会下载；附加文件需先写入磁盘再生成分块。
                   </p>
                 </Field>
                 <Field label="Windows 版本">

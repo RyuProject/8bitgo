@@ -132,6 +132,29 @@ check('悬停预热使用真实核心文件名，不会请求平台别名 404', 
   }
 })
 
+check('最高 / 高 / 中优先级平台固定到已发布的核心', () => {
+  const expected = {
+    segaMS: 'genesis_plus_gx',
+    segaGG: 'genesis_plus_gx',
+    segaCD: 'genesis_plus_gx',
+    pce: 'mednafen_pce',
+    ngp: 'mednafen_ngp',
+    atari2600: 'stella2014',
+    atari5200: 'a5200',
+    atari7800: 'prosystem',
+    lynx: 'handy',
+    sega32x: 'picodrive',
+    c64: 'vice_x64sc',
+    amiga: 'puae',
+  }
+  for (const [id, core] of Object.entries(expected)) {
+    const platform = platforms.find((p) => p.id === id)
+    assert.ok(platform, `${id} 平台没有接入`)
+    assert.equal(platform.runtime, 'emulatorjs', `${id} 没走 EmulatorJS`)
+    assert.equal(platform.core, core, `${id} 的默认核心不对`)
+  }
+})
+
 check('固定名核心与悬停预热共用版本化 URL，不会把两代核心拼进同一缓存', () => {
   const expected = `${EJS_PATH}cores/melondsds-wasm.data?v=${encodeURIComponent(EJS_RUNTIME_GENERATION)}`
   assert.equal(ejsRuntimeAsset('cores/melondsds-wasm.data'), expected)

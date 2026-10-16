@@ -109,7 +109,10 @@ function filesUnder(dir) {
 }
 
 const source = readFileSync(join(publicDir, 'cs16.js'), 'utf8')
+const netSource = readFileSync(join(publicDir, 'cs16-net.js'), 'utf8')
 const index = readFileSync(join(publicDir, 'index.html'), 'utf8')
+const relaySource = readFileSync(join(root, 'server/src/cs16-relay.js'), 'utf8')
+const roomSource = readFileSync(join(root, 'server/src/cs16-rooms.js'), 'utf8')
 const assetVersion = source.match(/const ASSET_VERSION = ['"]([^'"]+)['"]/)?.[1]
 if (!assetVersion) fail('cs16.js 没有 ASSET_VERSION')
 if (!index.includes(`cs16.bundle.js?v=${assetVersion}`)) fail('index.html 没引用当前版本的 cs16.bundle.js')
@@ -125,6 +128,47 @@ if (source.includes("new URL('./', location.href)")) fail('cs16.js 仍会在无�
 if (!index.includes('<select id="bots">') || !index.includes('<option value="7" selected>')) {
   fail('开始界面缺少默认 7 人的 BOT 数量选择')
 }
+if (!index.includes('<select id="difficulty">') || !index.includes('id="show-servers"') ||
+    !index.includes('./ui/original-menu-background.png') || !index.includes('./ui/original-counter-strike-logo.png')) {
+  fail('开始界面缺少原版风格资源、BOT 难度或联机状态入口')
+}
+if (!index.includes('id="server-list"') || !index.includes('id="server-refresh"') || !index.includes('id="server-join"')) {
+  fail('Find Servers 缺少真实目录、刷新或加入控件')
+}
+if (!index.includes('id="create-room"') || !index.includes('id="room-code-input"') ||
+    !index.includes('id="direct-address"') || !index.includes('id="direct-connect"')) {
+  fail('CS1.6 启动页缺少临时房间码或经验证的 IP 直连入口')
+}
+if (!source.includes("fetch('/api/cs16/servers'") || !source.includes('xash.net = activeRelay.net') ||
+    !source.includes("['+connect', `webxash3d.${server.netId}:${server.port}`]")) {
+  fail('启动器没有把安全目录、Xash 虚拟网络层和 connect 命令接成完整联机路径')
+}
+if (!source.includes("fetch('/api/cs16/servers/resolve'") || !source.includes("fetch('/api/cs16/rooms'") ||
+    !source.includes('createCs16RoomNet(room, room.role') || !source.includes("Q.has('room')")) {
+  fail('IP 直连、创建房间、房间虚拟网络或邀请链接没有接成完整路径')
+}
+if (!netSource.includes("new URL('/api/cs16/relay'") || !netSource.includes("ccall?.('getErrnoLocation'") ||
+    !netSource.includes('net.sendto_batch = net.sendtoBatch.bind(net)') || !netSource.includes('new Uint8Array(packet.data).slice()')) {
+  fail('CS1.6 WSS 适配器缺少固定同源端点、errno/sendto_batch 兼容或 WASM 数据复制')
+}
+if (!netSource.includes("new URL('/api/cs16/room'") || !netSource.includes('ROOM_GUEST_IP_PREFIX') ||
+    !netSource.includes('createCs16RoomNet') || !netSource.includes('roomConnectTimeoutMs')) {
+  fail('CS1.6 房间适配器缺少固定同源端点、独立访客虚拟地址或建房网络层')
+}
+if (!relaySource.includes('serverById.get(serverId)') || !relaySource.includes('isPublicIpv4(server.host)') ||
+    !relaySource.includes('udp.connect(server.port, server.host)') || relaySource.includes("url.searchParams.get('host')")) {
+  fail('CS1.6 后端没有把 UDP 目标严格锁在服务端注册并验证的目标表')
+}
+if (!relaySource.includes("router.post('/servers/resolve'") || !relaySource.includes('parseDirectAddress') ||
+    !relaySource.includes('compatiblePublicServer(info)') || !relaySource.includes('withinRate(serverRate') ||
+    !relaySource.includes('CS1.6 server changed or failed revalidation')) {
+  fail('CS1.6 手输 IP 没有经过公网地址、A2S 协议与兼容地图复检')
+}
+if (!roomSource.includes("const ROOM_PATH = '/api/cs16/room'") || !roomSource.includes('timingSafeEqual') ||
+    !roomSource.includes('message.readUInt16BE(0)') || !roomSource.includes("removeRoom(room, 1012, 'Host left the room')") ||
+    !roomSource.includes('hostWaitMsRemaining')) {
+  fail('CS1.6 临时房间缺少固定路径、房主凭证、peer 路由或房主退出回收')
+}
 if (!source.includes("'cstrike/dlls/cs_emscripten_wasm32.wasm'") || !source.includes("'cstrike/dlls/yapb_emscripten_wasm32.wasm'") || !source.includes('\'gamedll_linux "dlls/yapb.so"\'')) {
   fail('liblist.gam 没有通过 YaPB 代理接入 cstrike/dlls 下真正的 CS 服务端库')
 }
@@ -137,6 +181,9 @@ if (!generatedXash.includes('var ENV = Module["ENV"] ?? {};')) {
 }
 if (!source.includes('yb_quota_mode "normal"') || !source.includes('yb_autovacate "0"') || !source.includes('`yb_quota "${count}"`')) {
   fail('BOT 数量没有通过地图级配置精确覆盖 YaPB 默认值')
+}
+if (!source.includes('`yb_difficulty "${difficulty}"`') || !source.includes('`yb_difficulty ${difficulty}`')) {
+  fail('启动页 BOT 难度没有同时写入地图配置与运行时兜底命令')
 }
 if (source.includes('alias addbot "bot_add"') || source.includes('alias delbot "bot_kill"')) {
   fail('autoexec.cfg 仍在使用非 YaPB 的无效 BOT 命令')
@@ -151,8 +198,12 @@ const required = [
   'index.html',
   'cs16.js',
   'cs16.bundle.js',
+  'cs16-net.js',
+  'pack-guards.js',
   'tar-stream.js',
   'zstd.wasm',
+  'ui/original-menu-background.png',
+  'ui/original-counter-strike-logo.png',
   'engine/dist/xash.wasm',
   'engine/dist/filesystem_stdio.wasm',
   'engine/dist/libmenu.wasm',
@@ -357,6 +408,21 @@ if (!xashGlue.includes('requestedSize > 536870912') || !xashGlue.includes('retur
 if (!source.includes('https://assets.8bitgo.com/web/cs16/zstd-v1/')) fail('生产 Zstd 包没有指向 R2 自定义域名')
 if (!source.includes("crypto.subtle.digest('SHA-256'")) fail('Zstd 分片缺 SHA-256 完整性校验')
 if (!source.includes('chunkPromises.delete(chunk.compressedSha256)')) fail('Zstd 解压缓存不会释放，整包会常驻 JS 堆')
+if (!source.includes('maxBytes: MAX_ZSTD_CHUNK_COMPRESSED_BYTES') || !source.includes('maxBytes: MAX_CATALOG_BYTES')) {
+  fail('CS16 清单或分片下载缺少运行时硬上限，异常响应可能在校验前耗尽内存')
+}
+if (!source.includes("fetchBytesWithRetry(`${ASSET_ROOT}/zstd.wasm") || !source.includes('await initZstd(bytes)')) {
+  fail('Zstd 解码器仍由第三方胶水层单次下载，瞬时断网会让全部分片重试失效')
+}
+if (!source.includes("'HUD font', { validate: isTtf }") || source.includes('HUD font failed to load')) {
+  fail('必需 HUD 字体失败仍会被吞掉，玩家会进入没有雷达/血量/弹药的残局')
+}
+if (!source.includes('onAbort: (reason) => reportEngineFailure') || !source.includes('onExit: (status) => reportEngineFailure')) {
+  fail('WASM 首帧后异常退出不会显示给玩家')
+}
+if (!source.includes("overlay?.classList.remove('hidden', 'is-loading')")) fail('首帧后错误不会重新显示故障层')
+if (!source.includes('firstFrameReady && !failureReported && overlay')) fail('WebGL 迟到恢复会错误隐藏终态故障层')
+if (!source.includes('overlay && !webglContextLost && !failureReported')) fail('WebGL 丢失期间仍会撤掉加载层并露出黑屏')
 if (!source.includes("FS.writeFile(BASE + 'cstrike/extras.pk3', extras)")) {
   fail('extras.pk3 没放进 cstrike 搜索路径，YaPB 配置和导航图不会被挂载')
 }

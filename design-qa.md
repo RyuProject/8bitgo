@@ -62,6 +62,58 @@ final result: passed
 
 ---
 
+# CS1.6 original-style launcher QA
+
+- Source visual truth: `/Users/zhangwenyu/Documents/GitHub/8bitgo/public/web/cs16/ui/original-menu-background.png`, `/Users/zhangwenyu/Documents/GitHub/8bitgo/public/web/cs16/ui/original-counter-strike-logo.png`, and `cstrike/resource/ClientScheme.res` inside the local CS1.6 base pack.
+- Browser-rendered implementation screenshot: Codex in-app browser capture of `http://127.0.0.1:5174/web/cs16/?launcher=2` (the in-app browser exposes the rendered image in-task but no local screenshot path).
+- Grouped comparison evidence: Codex in-app browser capture of `http://127.0.0.1:5174/web/cs16/design-qa-compare.html`, with the original 800 × 600 source asset and the rendered launcher shown in the same 1280 × 720 image. The temporary comparison route was removed after review.
+- Viewports: 1280 × 720 desktop and 390 × 844 narrow/mobile, device density normalized by the in-app browser.
+- Source pixels: 800 × 600. Desktop implementation capture: 1280 × 720. Mobile implementation capture: 390 × 844.
+- State: launcher default `New Game`, live whitelist-backed `Find Servers`, loading screen, and a completed de_dust2 launch with one Normal-difficulty YaPB bot.
+
+## Findings
+
+No actionable P0, P1, or P2 differences remain for the requested original-CS1.6 direction.
+
+## Full-view comparison evidence
+
+The grouped comparison shows the launcher using the exact source background crop, original Counter-Strike logo, black translucent panels, square borders, and the source scheme's `255 176 0` amber accent. The form remains on the less visually busy portion of the image at desktop width and collapses above the character art at narrow width without horizontal overflow.
+
+## Focused region comparison evidence
+
+The Create Server panel was inspected at desktop and 390 px widths. Map, BOT count, BOT difficulty, hint copy, and Start remain readable and keyboard-focusable. The original square-corner, low-decoration VGUI density is preserved; no modern rounded card or generic green progress treatment remains.
+
+## Required fidelity surfaces
+
+- Fonts and typography: Verdana/Tahoma fallback, compact weights, uppercase dialog titles, and amber hierarchy match the original ClientScheme family and density.
+- Spacing and layout rhythm: the left menu, dialog titlebar, two-column form, separators, and right-aligned action follow the original VGUI proportions; mobile becomes a single-column form without clipped actions.
+- Colors and visual tokens: text, borders, muted copy, black field backgrounds, and selection states use the original amber/black palette.
+- Image quality and asset fidelity: background and logo are converted directly from bundled original TGA assets; no generated or CSS-drawn replacement artwork is used.
+- Copy and content: the launcher keeps the original English menu names while using concise Chinese setup help. The server page accurately says that ordinary UDP servers are not currently reachable from the browser.
+
+## Comparison history
+
+1. Previous launcher: generic radial dark background, rounded controls, English technical paragraph, always-visible logs, and no server-state explanation (P1 visual mismatch).
+2. First implementation: source background/logo, original palette, Create Server dialog, real difficulty control, collapsed console, and whitelist-backed Find Servers state.
+3. Post-fix evidence: desktop, 390 px mobile, server tab, zero-BOT difficulty disabling, loading state, and completed de_dust2 gameplay all render and behave correctly.
+
+## Interaction and browser checks
+
+- `Find Servers` loads the no-cache runtime directory; Refresh, row selection, double-click/Join and Back preserve selected-menu styling.
+- Empty/unreachable relay states remain explicit and do not affect local BOT practice.
+- Choosing zero BOTs disables the irrelevant difficulty control and updates the help text.
+- `?map=de_dust2&bots=1&difficulty=1` reached live gameplay with YaPB loaded.
+- Browser console had no error or warning entries during launcher interaction.
+- CS16 pack tests, focused lint, production client build, post-build CS16 artifact verification, and browser compatibility checks pass.
+
+## Follow-up polish
+
+No P3 visual fix is required. Real public-server rows should only replace the current status panel after a restricted WSS-to-UDP transport and server whitelist exist.
+
+final result: passed
+
+---
+
 # Nine-slice center-fill correction recheck
 
 - Source visual truth: `/var/folders/hg/rws3swzs2gnc5zs48b6ln5r80000gn/T/TemporaryItems/NSIRD_screencaptureui_tNhqtP/截屏2026-08-29 14.43.21.png` and the supplied nine-slice SVG files.

@@ -25,6 +25,11 @@ export const ENABLED_PLATFORM_IDS = Object.freeze([
   // SNES 的平台定义、游戏数据和 snes9x 核心都已存在；此前只因漏了白名单，
   // 平台页和游戏详情页才会被统一拦成 404。
   'nes', 'snes', 'flash', 'html5', 'gba', 'gb', 'gbc', 'java', 'arcade', 'dos',
+  // 这批平台都走已经随站点发布的 EmulatorJS 核心。首页仍按 count > 0 过滤，
+  // 所以开放路由不会制造空入口；上传第一款游戏后才会真正出现在玩家面前。
+  'segaMS', 'segaGG', 'segaCD', 'pce', 'ngp',
+  'atari2600', 'atari5200', 'atari7800', 'lynx',
+  'sega32x', 'c64', 'amiga',
   // 光盘平台。加进来是安全的：首页入口按「有几款游戏」过滤（count > 0），
   // sitemap 也只收数据库里真有游戏的那些平台（见 pickTaxonomyRows），
   // 所以在传第一款游戏之前，这两个平台在前台是完全看不见的，不会留空页面。

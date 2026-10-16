@@ -439,6 +439,33 @@ OPFS；预算只覆盖部分热点时传 `none`，否则 js-dos 会无视 16MB /
 适配器用极小 URL bundle 建立 changes key，再让最后一层真实配置接管启动。回归：
 `npm run test:dos-backend && npm run test:roms && npm run test:dos-load`。
 
+### 2.8.8 StarCraft 这类超大 Windows 包必须在下载前拦截
+
+线上 `starcraft.en.zip.8bg` 的密文约 1.42GB，文件头声明解开后约 1.49GB；而 js-dos 的旧入口
+`loadGameBytes → unpackRomPack → makeWindowsGameLayer` 需要连续 `ArrayBuffer`，并且明确拒绝 1GB
+以上的原文。旧行为因此不是“弱网慢”，而是**下载完 1.42GB 后必然失败**，还可能在失败前先把
+标签页内存耗尽。
+
+`src/services/romPack.ts` 的 `inspectRemoteRomPack()` 只 Range 读取前 64KB（文件头更大时才补第二次），
+`jsdos.ts` 在 Windows 客体整包模式开局前用它检查原文大小；超过连续内存上限立即停止，并明确要求
+配置 Sockdrive。若对象源忽略 Range 回 200，预检必须立刻 cancel 响应体，不能把“预检”变成另一条
+整包下载。回归：`npm run test:starcraft-weak-network`。
+
+详情页还会在年龄接口旁边投机预拉播放器本体。省流量、2G/3G、低于 3Mbps 或 RTT 高于 300ms 时，
+`preloadPolicy.ts` 会跳过这份数百 KB 的预拉，让几十字节的年龄结论和页面交互先完成；网络提示缺失时
+维持旧行为，避免没有 Network Information API 的 Safari 全部失去预热。
+
+这只是止损，不是让超大包重新可玩。真正发布仍按 §2.8.7：先把游戏盘制成版本化 Sockdrive、上传
+`sockdrive.metaj` / `*.raw` / `preload_ranges.metaj`，再给 `games.dos_sockdrive` 绑定该目录。没有三类
+产物就不要填一个猜出来的路径；元数据 404 会让所有玩家在开局前直接失败。
+
+StarCraft 已补一条离线发布流水线：`npm run sockdrive:prepare -- --source <原始ZIP> --slug starcraft
+--version v1 --exe StarCraft/Brood.exe --work-dir <目录> --cli <官方cli>`。它在 Linux 上用
+`virt-make-fs` 生成带 MBR 的 VFAT/QCOW2 游戏盘，再调官方 `sockify`；加 `--publish --bucket <桶>
+--bind` 会在 R2 公开校验通过后才更新游戏。绑定令牌只认环境变量 `EIGHTBITGO_ADMIN_JWT`，不收命令行
+参数，避免落进 shell 历史。上传成功、绑定失败时只重跑 `npm run sockdrive:bind`，不准覆盖原目录。
+完整操作见 `docs/starcraft-sockdrive.md`，回归并入 `npm run test:dos-sockdrive-upload`。
+
 ### 2.9 平台 BIOS 的边缘缓存会骗人
 
 后台改完 BIOS 绑定只调 `invalidateContent()`（清进程内缓存），**够不着 Cloudflare 边缘**。
@@ -1260,6 +1287,11 @@ curl -I https://assets.8bitgo.com/web/cs16/zstd-v1/catalog.json
 丢失和 60 秒内没有首帧都会显示可读错误，不能再静默露出黑色画布。数据包很大，部署后要清理
 Cloudflare 的 `/web/cs16/*` 旧缓存，至少清掉入口、bundle 和所有曾返回 404 的 URL。
 
+⚠️ **首帧后的 WASM 崩溃不能轮询 `xash.exited` 判断。** 包装器只在页面主动调用 `quit()` 时改这个
+字段，核心自己的 `abort` / `exit` 不会碰它；旧轮询因此会安静地留下黑屏。启动器必须同时接住
+Emscripten 的 `onAbort` / `onExit`，并把已经隐藏的 overlay 重新显示。页面离开期间的正常销毁要用
+`beforeunload` / `pagehide` 排除，避免把导航误报成崩溃。
+
 WebGL 默认 framebuffer 没有 `preserveDrawingBuffer` 时，浏览器合成后 `readPixels` 可能一直是黑色，
 不能只靠像素探测决定何时撤加载层。`Custom resource propagation complete` / 进入选队脚本说明服务端、
 客户端和渲染器均已完成初始化，可作为首帧兜底。原包没有这些地图的导航文件，页面不能承诺
@@ -1286,6 +1318,16 @@ WebGL 默认 framebuffer 没有 `preserveDrawingBuffer` 时，浏览器合成后
 压缩字节和解压字节的长度、SHA-256；浏览器逐片双校验，失败最多重试三次，再把原始片按顺序喂给
 USTAR 解析器。新浏览器优先用原生 `DecompressionStream('zstd')`，不支持时才加载 246KB 的
 `zstd.wasm`；不能退回“整个包交给 `@bokuweb/zstd-wasm`”的写法，那会重新制造百 MB 临时缓冲区。
+
+⚠️ 长度校验发生在下载完成后，**不能拿它代替下载上限**。一份误传的 catalog 若把某片长度写成
+几 GB，旧加载器会先把整片塞进 JS 堆，随后才比较长度，页面已经 OOM。`pack-guards.js` 同时限制
+catalog、单片压缩/解压体积、基础包/地图总量和片数；`fetchBytes` 还要在流读取过程中执行硬上限。
+gzip 应急包也必须把对应包上限传给 TAR 解析器，不能只保护 Zstd 主路径。
+
+⚠️ 分片重试救不了解码器或 catalog 的单次失败：若把 `zstd.wasm` 的 URL直接交给第三方胶水层，
+那次内部 fetch 失败后它的初始化 Promise 会永久拒绝；catalog Promise 同理，预热时失败会让正式加载
+立即复用同一个失败。现在两者都先经本站的限长、内容校验和三次换查询串重试，解码器拿到验证过的
+字节后才初始化；catalog 最终失败还会清掉 Promise，给随后正式加载一次重新建连机会。
 
 生成、验证、上传：
 
@@ -1324,6 +1366,43 @@ magic、v4、节点平方矩阵、压缩段和每节点 4 字节尾部统计，�
 再 `sv_restart 1`，否则命令挤在同一帧会被旧客户端丢掉，或玩家虽入队仍要等下一轮。`?autojoin=0`
 仅用于排查。首载关键路径还会并行预取 extras、HUD 字体、当前地图首片，并按 URL 去重动态库下载；
 不能为了并行把公共包更多分片常驻 JS 堆，现有边界仍是基础 16MB + 当前地图一片。
+
+### 2.28.4.2 CS1.6 启动页复用原版资产；联机只能走后端已验证目标 WSS↔UDP
+
+启动页的背景与 Logo 不是重新画的：`public/web/cs16/ui/` 来自基础包里的原版 800×600 菜单拼图和
+`resource/game_menu.tga`，转换成浏览器能直接显示的 PNG 后随运行时清单发布。配色也按
+`cstrike/resource/ClientScheme.res` 的 `255 176 0` 琥珀色 / 黑色半透明面板走。改页面时保留
+`map`、`bots`、`difficulty`、`start`、`bar`、`phase`、`net`、`errbox`、`log` 这些 ID；加载器与
+故障恢复直接通过它们更新状态。BOT 难度不是装饰：`?difficulty=0..3` 会同时写进地图级配置和
+首帧后的 `yb_difficulty` 兜底命令，避免首批 Bot 偷用 `extras.pk3` 里的固定 Expert。
+
+`Find Servers` 已接真实目录与传输层：旧 Valve UDP Master 域名已经不稳定解析，默认改查
+XCSTRIKE 的免密钥、人工审核 JSON 目录（90 req/min，而本站最多每 5 分钟一次），先拒绝内网/保留地址
+与同 IP 大量端口，再用 A2S_INFO 验证
+`cstrike`、协议 47/48、无密码和已发布地图；验证结果只以带 TTL 的短 ID 注册。可选的
+`CS16_SERVERS_JSON` 最多补 32 个固定目标并排在前面。`GET /api/cs16/servers` 返回人数、地图和
+“网关→游戏服”延迟；浏览器的 `public/web/cs16/cs16-net.js` 把 Xash `Net` 数据报接到同源
+`/api/cs16/relay?server=<已注册ID>`，后端再用 connected UDP socket 只连目标表里的 host:port。
+**不准**把 host / port 改成客户端参数或做通用代理：那会直接变成 UDP 反射/流量滥用入口。
+网关还必须保留同源校验、每 IP / 总连接、帧大小、每秒速率、积压、空闲/总时长和 ping/pong 回收。
+
+浏览器拿到的 `netId` 只映射成 Xash 虚拟地址 `101.101.<低8位>.<高8位>`；WSS 连接本身已经绑定
+唯一已注册项，发送适配器还会复核虚拟 IP 与公开 port。`Net` 必须在 `xash.init()` **之前**赋到
+`xash.net`，但 WSS 要等基础包和地图写完后才 `connect()`，否则首载慢时会在开局前吃掉空闲超时。
+联机启动不加本地 `+map`、不改 `liblist.gam` 到 YaPB，也不执行 `sv_restart` / 自动入队；只预载目录
+返回的当前地图包后用 `+connect webxash3d.<netId>:<port>`。服务器若轮换到 12 张发布地图之外，目录
+会显示真实地图但禁止 Join，不能让玩家下载一大轮后才报缺 BSP。
+
+⚠️ xash3d-fwgs 1.2.2 的 JS `Net` 有两个上游缺陷，适配层的补丁不能删：
+
+- 空接收队列时 `ErrNoLocation()` 把 errno **值**当成指针，原实现会写 WASM 地址 0；现在重新调用
+  `getErrnoLocation` 取真实指针再写 EWOULDBLOCK。
+- Emscripten 导入找 `sendto_batch`，类却只提供 `sendtoBatch`；现在显式补 snake_case 别名。
+
+自动目录默认开启，部署不必填写服务器；改目录地址/数量或增加固定项只需改 `server/.env` 并重启，
+不需要重编前端。示例和所有限额见 `server/.env.example`。验收先跑
+`cd server && npm run test:cs16-relay`（本机 UDP echo 证明自动目录过滤、A2S、跨站拒绝和逐数据报
+透明），再跑根目录 `npm run test:cs16`。公共目录不可用时 Find Servers 显示空状态，BOT 训练不受影响。
 
 ### 2.28.5 /web/diablo：CRA v2 老工具链，WASM 核心走 R2 Brotli 流式代理
 

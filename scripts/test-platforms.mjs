@@ -18,6 +18,7 @@ import { readFileSync } from 'node:fs'
 
 const src = readFileSync(new URL('../src/data/platforms.ts', import.meta.url), 'utf8')
 const browse = readFileSync(new URL('../src/pages/BrowsePages.tsx', import.meta.url), 'utf8')
+const detect = readFileSync(new URL('../src/emulator/detect.ts', import.meta.url), 'utf8')
 
 // 先把注释剥掉再匹配。否则像上面那段说明一样、写在 id 和 runtime 之间的长注释
 // 会把两者顶出正则的窗口，测试就会误报「平台不见了」（第一版就踩了）。
@@ -26,7 +27,7 @@ const stripComments = (s) =>
 
 /** 从源码里抓出每个平台的 id 和 runtime。不 import 是因为这份文件带 TS 类型和 i18n 依赖 */
 const found = []
-for (const m of stripComments(src).matchAll(/id: '([a-z0-9]+)',[\s\S]{0,800}?runtime: ([^,\n]+),/g)) {
+for (const m of stripComments(src).matchAll(/id: '([A-Za-z0-9]+)',[\s\S]{0,800}?runtime: ([^,\n]+),/g)) {
   found.push({ id: m[1], runtime: m[2].trim() })
 }
 
@@ -75,6 +76,35 @@ check('GameCube / Wii 都固定走 wasm-dolphin', () => {
     const platform = found.find((p) => p.id === id)
     assert.ok(platform, `${id} 平台不见了`)
     assert.equal(platform.runtime, "'dolphin'")
+  }
+})
+
+check('新增的最高 / 高 / 中优先级 WASM 平台全部走 EmulatorJS', () => {
+  const expected = [
+    'segaMS', 'segaGG', 'segaCD',
+    'pce', 'ngp', 'atari2600', 'atari5200', 'atari7800', 'lynx',
+    'sega32x', 'c64', 'amiga',
+  ]
+  for (const id of expected) {
+    const platform = found.find((p) => p.id === id)
+    assert.ok(platform, `${id} 平台不见了`)
+    assert.equal(platform.runtime, "'emulatorjs'", `${id} 没走 EmulatorJS`)
+  }
+})
+
+check('新增平台的专用 ROM 后缀都能自动识别', () => {
+  const expected = {
+    sms: 'segaMS', gg: 'segaGG', '32x': 'sega32x',
+    pce: 'pce', ngp: 'ngp', ngc: 'ngp',
+    a26: 'atari2600', a52: 'atari5200', a78: 'atari7800', lnx: 'lynx',
+    d64: 'c64', crt: 'c64', adf: 'amiga', hdf: 'amiga',
+  }
+  for (const [extension, platform] of Object.entries(expected)) {
+    assert.match(
+      detect,
+      new RegExp(`(?:^|\\n)\\s*(?:'${extension}'|${extension}): '${platform}',`),
+      `.${extension} 没有映射到 ${platform}`,
+    )
   }
 })
 

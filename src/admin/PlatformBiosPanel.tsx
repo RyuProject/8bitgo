@@ -38,6 +38,11 @@ import { Card, btnClass, inputClass } from './ui'
 const NEED_BIOS: Array<{ id: PlatformId; hint: string }> = [
   { id: 'arcade', hint: 'Neo Geo 系（拳皇 / 合金弹头 / 侍魂）必须要 neogeo.zip；CPS 系不需要' },
   { id: 'psx', hint: '多数核心可以不用 BIOS，但用真 BIOS 兼容性更好' },
+  { id: 'segaCD', hint: '必须提供对应区域的 Mega CD / Sega CD BIOS；多区域可打包成 ZIP，文件放在根目录' },
+  { id: 'pce', hint: 'HuCard 不需要；运行 PC Engine CD 游戏时需要 System Card 3（syscard3.pce）' },
+  { id: 'atari5200', hint: '多数游戏需要 Atari 5200 BIOS（常见文件名 5200.rom）' },
+  { id: 'lynx', hint: 'Handy 核心通常需要 lynxboot.img；若使用无 BIOS 启动的 homebrew 可留空' },
+  { id: 'amiga', hint: '需要与机型匹配的 Kickstart ROM；多版本可打包成 ZIP，文件放在根目录' },
 ]
 
 /**
@@ -150,7 +155,7 @@ function BiosRow({
         <input
           ref={registerFileInput}
           type="file"
-          accept=".zip,.bin,.rom"
+          accept=".zip,.bin,.rom,.img,.pce"
           hidden
           onChange={(e) => {
             const f = e.target.files?.[0]

@@ -166,6 +166,8 @@ interface AccessResponse {
 
 /** 非成人游戏的 access 接口失败时自动再问几次（不含第一次）；成人游戏走本地结论，不重试 */
 const AUTO_RETRIES = 2
+/** 单次年龄检查不能无限挂住；三轮最坏约 27 秒，之后给玩家明确的重试入口。 */
+const ACCESS_REQUEST_TIMEOUT_MS = 8_000
 
 function isReason(v: unknown): v is Reason {
   return v === 'login' || v === 'birthDate' || v === 'underage'
@@ -241,12 +243,21 @@ export function GameAgeGuard({ slug, markedAdult, backdrop, loginAction, classNa
 
     let cancelled = false
     let retryTimer = 0
+    let requestTimer = 0
+    let requestController: AbortController | null = null
     // 已经放行的播放器不因为一次复查就被卸载（玩着玩着在顶栏登录了也一样）——
     // 只有结论变严了才收回去。换了游戏则必须回到 checking。
     setAccess((prev) => (prev.slug === slug && prev.status === 'open' ? prev : { slug, status: 'checking' }))
     const ask = (tries: number) => {
+      requestController?.abort()
+      const controller = new AbortController()
+      requestController = controller
+      window.clearTimeout(requestTimer)
+      requestTimer = window.setTimeout(() => {
+        controller.abort(new DOMException('年龄检查请求超时', 'TimeoutError'))
+      }, ACCESS_REQUEST_TIMEOUT_MS)
       api
-        .get<AccessResponse>(`/api/games/${encodeURIComponent(slug)}/access`)
+        .get<AccessResponse>(`/api/games/${encodeURIComponent(slug)}/access`, false, controller.signal)
         .then((r) => {
           if (!cancelled) setAccess({ slug, status: verdictOf(r, markedAdult, account) })
         })
@@ -269,11 +280,16 @@ export function GameAgeGuard({ slug, markedAdult, backdrop, loginAction, classNa
           }
           setAccess({ slug, status: 'error' })
         })
+        .finally(() => {
+          if (requestController === controller) window.clearTimeout(requestTimer)
+        })
     }
     ask(0)
     return () => {
       cancelled = true
       window.clearTimeout(retryTimer)
+      window.clearTimeout(requestTimer)
+      requestController?.abort()
     }
   }, [slug, markedAdult, attempt, userId, userBirthDate])
 

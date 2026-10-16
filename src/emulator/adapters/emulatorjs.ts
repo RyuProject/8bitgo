@@ -1904,7 +1904,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           if (sock?.emit && options.gameSlug && !options.gameSlug.startsWith('local:')) {
             const realEmit = sock.emit.bind(sock)
             sock.emit = (event: string, ...emitArgs: unknown[]) => {
-              if (event === 'open-room' && emitArgs[0] && typeof emitArgs[0] === 'object' && !Array.isArray(emitArgs[0])) {
+              if ((event === 'open-room' || event === 'join-room')
+                && emitArgs[0] && typeof emitArgs[0] === 'object' && !Array.isArray(emitArgs[0])) {
                 const payload = emitArgs[0] as Record<string, unknown>
                 const rawExtra = payload.extra
                 const extra = rawExtra && typeof rawExtra === 'object' && !Array.isArray(rawExtra)
@@ -2018,7 +2019,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    *   2. 已经在玩了，中途点「联机匹配」—— handle.openNetplay() 调
    * 两种情况都必须等游戏真的跑起来：房主要先有画面才能推给别人。
    */
-  const startNetplay = (win: Window & Record<string, unknown>) => {
+  const startNetplay = async (win: Window & Record<string, unknown>) => {
     // netplay 是可变的（中途开房会后补），闭包里收窄不了 —— 先钉在局部常量上
     const cfg = netplay
     if (destroyed || !cfg) return
@@ -2091,12 +2092,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
      * 拿的就是两小时前的凭证，TURN 直接鉴权失败、退化成纯 STUN，穿不过 NAT 的那部分玩家全连不上。
      * fetchIceConfig 自带缓存（快过期才真去取），所以这里绝大多数时候只是读内存。
      */
-    void fetchIceConfig().then((ice) => {
-      if (destroyed || netplay !== cfg) return
-      win.EJS_netplayICEServers = ice.iceServers
-      lastIceAt = Date.now()
-      cfg.onIceReady?.(ice.hasTurn)
-    })
+    const ice = await fetchIceConfig()
+    // 加入房间会立刻创建 PeerConnection；不能一边异步刷新 TURN、一边先拿旧凭证建连接。
+    // 页面开了几小时后再匹配时，旧凭证已经过期，这个竞态会稳定退化成“部分网络永远连不上”。
+    if (destroyed || netplay !== cfg) return
+    win.EJS_netplayICEServers = ice.iceServers
+    lastIceAt = Date.now()
+    cfg.onIceReady?.(ice.hasTurn)
 
     try {
       if (cfg.mode === 'join' && cfg.roomId) {
@@ -2977,7 +2979,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     saveFlushTimer = window.setInterval(flushSaveFiles, SAVE_FLUSH_MS)
     document.addEventListener('visibilitychange', onVisibility)
     window.addEventListener('pagehide', flushSaveFiles)
-    if (netplay) startNetplay(win)
+    if (netplay) void startNetplay(win)
   }
 
   /**
@@ -3297,6 +3299,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           */
           ...(options.debug ? { EJS_DEBUG: true, EJS_LOG_VERBOSITY: 3 } : {}),
           EJS_core: core,
+          /*
+            真实核心名不能反推出唯一手柄：genesis_plus_gx 同时跑 MD、Master System、
+            Game Gear 和 Mega CD，引擎会按别名表里第一个命中的 segaMS 误画两键手柄。
+            平台 id 才是这局真正的控制器类型；GBC 是唯一例外，引擎与 GB 共用 gb 方案。
+          */
+          EJS_controlScheme: options.platform === 'gbc' ? 'gb' : options.platform,
           EJS_gameUrl: gameUrl,
           EJS_gameName: engineGameName,
           EJS_pathtodata: EJS_PATH,
@@ -3962,7 +3970,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       // 引擎的 config 是开局前就定死的；房间的 game_id 从它读，中途开房得补写这一格
       if (emu.config && typeof session.gameId === 'number') emu.config.gameId = session.gameId
       netplay = session
-      startNetplay(win)
+      void startNetplay(win)
       return true
     },
     /** 主动退房，回到自己一个人玩（游戏继续跑，不重开） */

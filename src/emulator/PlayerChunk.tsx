@@ -7,6 +7,7 @@ import { lazyNamed } from '@/routes/lazy'
 import type { ComponentProps } from 'react'
 import type { EmulatorPlayer as EmulatorPlayerType } from './EmulatorPlayer'
 import { useT } from '@/services/i18n'
+import { allowsSpeculativePlayerPreload, type NetworkHint } from './preloadPolicy'
 
 const loadPlayer = () => import('./EmulatorPlayer')
 const LazyPlayer = lazyNamed(loadPlayer, 'EmulatorPlayer')
@@ -23,6 +24,10 @@ let preloaded = false
  */
 export function preloadPlayer(): void {
   if (preloaded) return
+  const connection = typeof navigator === 'undefined'
+    ? undefined
+    : (navigator as Navigator & { connection?: NetworkHint }).connection
+  if (!allowsSpeculativePlayerPreload(connection)) return
   preloaded = true
   loadPlayer().catch(() => {
     preloaded = false

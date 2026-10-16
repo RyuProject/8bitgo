@@ -704,24 +704,16 @@ export function EmulatorPlayer({
     return () => window.clearInterval(id)
   }, [debug, handle])
 
-  // 带 ?jsnesp2p=CODE 直接进房（与 EmulatorJS 联机的 ?p2p= 平行，两条路互不干扰）
+  const jsnesInviteCode = typeof window !== 'undefined'
+    ? (new URLSearchParams(window.location.search).get('jsnesp2p')?.trim().toLowerCase() ?? '')
+    : ''
+  // 带 ?jsnesp2p=CODE 时打开面板，由面板自己自动进房。
+  // 连接也放在面板里做，信令/ROM/状态回调才会更新玩家眼前的这一张界面。
   useEffect(() => {
-    const code = new URLSearchParams(window.location.search).get('jsnesp2p')
-    if (!code || status !== 'running' || !handle?.openJsnesNetplay) return
-    const ok = handle.openJsnesNetplay({
-      mode: 'join',
-      roomId: code.trim().toLowerCase(),
-      roomName: gameName,
-      playerName: playerName(),
-      bufferFrames: 2,
-      onRoom: () => {},
-      onPlayers: () => {},
-      onLinkState: () => {},
-      onHostLeft: () => {},
-    })
-    if (ok) setJsnesNetplayOpen(true)
+    if (!jsnesInviteCode || status !== 'running' || !handle?.openJsnesNetplay) return
+    setJsnesNetplayOpen(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, handle])
+  }, [status, handle, jsnesInviteCode])
   /** netplay 给我们分配的身份 id，服务器用它判断「谁该接手」 */
   const myIdRef = useRef<string>('')
   /** 正在接手的旧房间 id：新房间开好后要调 /migrate 把两者接上 */
@@ -1594,7 +1586,7 @@ export function EmulatorPlayer({
 
   // 带 ?jsnesp2p=CODE 的邀请链接进来要直接进 jsnes 联机房：这条链接只在引擎是 jsnes 时进得去
   // （EmulatorJS 不实现 openJsnesNetplay），所以开局前必须把 NES 钉在 jsnes 上，否则会静默连不上。
-  const jsnesNetplay = typeof window !== 'undefined' && Boolean(new URLSearchParams(window.location.search).get('jsnesp2p'))
+  const jsnesNetplay = Boolean(jsnesInviteCode)
 
   // NES：提前探一次 mapper（iNES 头仅 16 字节，远端用 Range 取前 16 字节即可），
   // 把结果交给 registry 的 jsnesCompatible —— 已知的「jsnes 跑不了的 mapper」在选引擎阶段
@@ -4604,6 +4596,7 @@ export function EmulatorPlayer({
         handle={handle}
         gameSlug={gameSlug}
         gameName={gameName}
+        initialRoomId={jsnesInviteCode}
         onClose={() => setJsnesNetplayOpen(false)}
       />
     )}

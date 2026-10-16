@@ -69,6 +69,41 @@ pm2 save
 
 自检：`curl http://127.0.0.1:8788/api/health` 应返回 `{"service":"8bitgo-api","db":true}`。
 
+### CS1.6 公共服务器、IP 直连与临时房间
+
+浏览器不能直接发送 GoldSrc UDP。本站后端会把 Xash 的虚拟 UDP 数据报经同源
+`/api/cs16/relay` WebSocket 转到已经验证的固定游戏服。默认不需要配置：后端从免密钥、人工审核的
+XCSTRIKE 公共目录发现 CS1.6 服务器，拒绝内网/保留地址，再用 A2S 校验游戏类型、协议、密码和当前地图；只有
+校验通过的短期目标 ID 能建立通道，网页始终不能传入任意主机或端口。
+
+Find Servers 也允许玩家输入 `公网 IPv4:端口`。这不需要站长维护白名单：后端会先从同一个地址端口取得
+A2S_INFO，确认它真的是兼容版本、无密码且正在运行本站已有地图的 CS1.6 服务器，才为该目标建立短期登记。
+玩家加载完大资源、真正打开 WSS 时会再做一次 A2S 验真；即使首载超过登记 TTL，也不会直接连到已换用途的 UDP 端口。
+域名（防 DNS 重绑定）、内网和保留地址都不能进入中继。
+
+New Game 里的 Create Room 则是真正的浏览器监听服：地图、BOT 与 GameDLL 都在房主浏览器运行，后端只按
+6 位房间码交换同房间玩家的数据报。房主不需要公网 IP、端口映射或服务器白名单；房主离开后房间和所有访客
+连接会立即回收。邀请链接使用 `?room=<房间码>`。
+
+`CS16_SERVERS_JSON` 现在只是可选的“固定服务器”列表，适合把自营服置顶，不填也能使用：
+
+```dotenv
+CS16_SERVERS_JSON=[{"id":"dust-cn-1","name":"8BitGo Dust II","host":"127.0.0.1","port":27015,"map":"de_dust2","region":"CN","netId":1,"maxPlayers":16}]
+```
+
+重启后端后检查 `GET /api/cs16/servers`；页面的 Find Servers 会显示 A2S 探测到的地图、人数和
+网关到游戏服的延迟。若服务器轮换到网页版未发布的地图，该项仍显示但会禁止加入，避免进服后才因
+缺 BSP 失败。联机要求 Nginx 把 `/api/cs16/relay` 与 `/api/cs16/room` 的 WebSocket Upgrade 原样转给这个 Node 进程；
+与现有 Socket.IO / IPX 共用 443 即可，不需要把 UDP 27015 暴露给浏览器。
+
+如需关闭自动目录，设置 `CS16_PUBLIC_DIRECTORY=0`；目录地址、刷新周期和数量上限见 `.env.example`。
+公共服务器由第三方运营，能通过目录校验不等于它一定接受 Web 版客户端，连接失败时玩家仍可回到
+BOT 训练，不会影响单机模式。
+
+```bash
+npm run test:cs16-relay
+```
+
 ## 五、让前端用上后端
 
 前端通过环境变量 `VITE_API_URL` 找后端（**填站点地址，不带 `/api`**，前端会自动加）：
@@ -96,6 +131,10 @@ server {
 
   location /api/ {
     proxy_pass http://127.0.0.1:8788;
+    # /api/cs16/relay、/api/cs16/room 与普通 JSON API 共用这段；三行缺一条都会让列表可见但 Join 失败。
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-Proto $scheme;
     # 直面用户时用 $proxy_add_x_forwarded_for；**在 Cloudflare 后面必须用 $http_cf_connecting_ip**
@@ -115,6 +154,13 @@ server {
 | GET | `/api/health` | 健康检查 | 无 |
 | GET | `/api/sfs/config` | SAS3 的 Ruffle / 原生客户端连接配置 | 无 |
 | GET | `/api/sfs/status` | SFS 开关、上游可达性、连接数与流量 | 无 |
+| GET | `/api/cs16/servers` | CS1.6 自动发现/固定服务器与 A2S 状态 | 无 |
+| POST | `/api/cs16/servers/resolve` | 验证并短期注册玩家输入的公网 IPv4:端口 | 无（限流） |
+| GET | `/api/cs16/status` | CS1.6 网关连接与流量计数 | 无 |
+| WS | `/api/cs16/relay?server=<id>` | Xash 数据报到服务端已验证的固定 UDP 目标 | 同源 / 专用 Origin 白名单 |
+| POST | `/api/cs16/rooms` | 创建由房主浏览器运行的临时监听服房间 | 无（限流） |
+| GET | `/api/cs16/rooms/:code` | 查询房间地图、人数和房主就绪状态 | 无（限流） |
+| WS | `/api/cs16/room?room=<code>&role=<host/guest>` | 同房间浏览器间的 GoldSrc 数据报交换 | 同源；房主另需一次性凭证 |
 | WebSocket | `/sfs/sas3` | SAS3 WebSocket → SmartFox TCP 字节桥 | 无（同源限制 + 每 IP 上限） |
 | GET | `/api/games` `/api/games/:slug` | 游戏列表 / 单个 | 无 |
 | PUT/PATCH/DELETE | `/api/games/:slug` | 新增覆盖 / 局部改 / 删 | 管理员 |

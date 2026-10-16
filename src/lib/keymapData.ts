@@ -169,6 +169,15 @@ export const EJS_SCHEME: Readonly<Record<string, string>> = {
   gba: 'gba',
   nds: 'nds',
   segaMD: 'segaMD',
+  segaMS: 'segaMS',
+  segaGG: 'segaGG',
+  segaCD: 'segaCD',
+  sega32x: 'sega32x',
+  pce: 'pce',
+  ngp: 'ngp',
+  atari2600: 'atari2600',
+  atari7800: 'atari7800',
+  lynx: 'lynx',
   psx: 'psx',
   n64: 'n64',
 }
@@ -213,6 +222,40 @@ export const EJS_PLATFORM_BUTTONS: Readonly<Record<string, readonly EjsButton[]>
     ['#dpad', [4, 5, 6, 7]],
     ['A', 1], ['B', 0], ['C', 8], ['X', 10], ['Y', 9], ['Z', 11],
     ['Start', 3], ['MODE', 2],
+  ],
+  // 同一颗 genesis_plus_gx 核心覆盖四台机器，按钮表必须按平台拆开，不能靠核心名猜。
+  segaMS: [
+    ['#dpad', [4, 5, 6, 7]], ['BUTTON 1 / START', 0], ['BUTTON 2', 8],
+  ],
+  segaGG: [
+    ['#dpad', [4, 5, 6, 7]], ['BUTTON 1', 0], ['BUTTON 2', 8], ['Start', 3],
+  ],
+  segaCD: [
+    ['#dpad', [4, 5, 6, 7]],
+    ['A', 1], ['B', 0], ['C', 8], ['X', 10], ['Y', 9], ['Z', 11],
+    ['Start', 3], ['MODE', 2],
+  ],
+  sega32x: [
+    ['#dpad', [4, 5, 6, 7]],
+    ['A', 1], ['B', 0], ['C', 8], ['X', 10], ['Y', 9], ['Z', 11],
+    ['Start', 3], ['MODE', 2],
+  ],
+  pce: [
+    ['#dpad', [4, 5, 6, 7]], ['I', 8], ['II', 0], ['RUN', 3], ['SELECT', 2],
+  ],
+  ngp: [
+    ['#dpad', [4, 5, 6, 7]], ['A', 0], ['B', 8], ['OPTION', 3],
+  ],
+  atari2600: [
+    ['#dpad', [4, 5, 6, 7]], ['FIRE', 0], ['SELECT', 2], ['RESET', 3],
+  ],
+  atari7800: [
+    ['#dpad', [4, 5, 6, 7]], ['BUTTON 1', 0], ['BUTTON 2', 8],
+    ['SELECT', 2], ['PAUSE', 3], ['RESET', 9],
+  ],
+  lynx: [
+    ['#dpad', [4, 5, 6, 7]], ['A', 8], ['B', 0],
+    ['OPTION 1', 10], ['OPTION 2', 11], ['Start', 3],
   ],
   // PS1。L3 / R3 引擎没给默认键，所以不摆
   psx: [

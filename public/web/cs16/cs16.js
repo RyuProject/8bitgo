@@ -33,9 +33,17 @@
 import { Xash3D } from './engine/dist/index.js'
 import { decompress as decompressZstd, init as initZstd } from '@bokuweb/zstd-wasm'
 import { unpackTarStream } from './tar-stream.js'
+import { createCs16RelayNet, createCs16RoomNet, validRelayServer, validRoomDescriptor } from './cs16-net.js'
+import {
+  MAX_BUFFERED_RESOURCE_BYTES,
+  MAX_CATALOG_BYTES,
+  MAX_ZSTD_CHUNK_COMPRESSED_BYTES,
+  packLimits,
+  validatePackCatalog,
+} from './pack-guards.js'
 
 const BASE = '/rodir/'
-const ASSET_VERSION = '20260924-perf1'
+const ASSET_VERSION = '20261016-temporary-rooms2'
 // 清单返回后会换成当前地图的真实压缩体积；这里仅用于清单到达前，避免进度条跳满。
 let expectedProgressBytes = 128 * 1024 * 1024
 const Q = new URLSearchParams(location.search)
@@ -46,6 +54,8 @@ const SUPPORTED_MAPS = new Set([
 const DEFAULT_MAP = 'de_dust2'
 const DEFAULT_BOT_COUNT = 7
 const MAX_BOT_COUNT = 15
+const DEFAULT_BOT_DIFFICULTY = 3
+const MAX_BOT_DIFFICULTY = 3
 // 12 张公开地图都随发布物带 YaPB 自己生成的可见性表；IDB 仍作为缺文件/未来新增地图的回退。
 const PREBUILT_VIS_MAPS = new Set(SUPPORTED_MAPS)
 // 只有 graph / YaPB 数据格式变化时才递增，不能跟着纯 UI 版本变化白白废掉玩家已算好的缓存。
@@ -69,10 +79,24 @@ function selectedBotCount() {
   return parseBotCount(requested)
 }
 
+function parseBotDifficulty(value) {
+  if (!/^\d$/.test(String(value ?? ''))) return DEFAULT_BOT_DIFFICULTY
+  const difficulty = Number(value)
+  return Number.isInteger(difficulty) && difficulty >= 0 && difficulty <= MAX_BOT_DIFFICULTY
+    ? difficulty
+    : DEFAULT_BOT_DIFFICULTY
+}
+
+function selectedBotDifficulty() {
+  const requested = Q.has('difficulty') ? Q.get('difficulty') : document.getElementById('difficulty')?.value
+  return parseBotDifficulty(requested)
+}
+
 // 自动启动链接也要让控件显示真实配置，方便问题现场一眼看出这局加载了什么。
 const queryMap = Q.get('map')
 if (SUPPORTED_MAPS.has(queryMap)) document.getElementById('map').value = queryMap
 if (Q.has('bots')) document.getElementById('bots').value = String(parseBotCount(Q.get('bots')))
+if (Q.has('difficulty')) document.getElementById('difficulty').value = String(parseBotDifficulty(Q.get('difficulty')))
 // 队伍选择 / 购买是 VGUI 菜单，CS 必须选队才会 spawn。留 ?vgui=0 便于对照排查。
 const VGUI_MENUS = Q.get('vgui') || '1'
 const USE_NEW_LIBS = Q.get('client') === 'new'
@@ -117,6 +141,15 @@ window.__probe.keys = []
 let phase = 'Ready'
 let started = false
 let firstFrameReady = false
+let failureReported = false
+let pageUnloading = false
+let engineFatalError = null
+let activeRelay = null
+let pendingHostedRoom = null
+
+window.addEventListener('beforeunload', () => { pageUnloading = true; activeRelay?.close() })
+window.addEventListener('pagehide', () => { pageUnloading = true; activeRelay?.close() })
+window.addEventListener('pageshow', () => { pageUnloading = false })
 
 window.addEventListener('keydown', (e) => {
   const rec = { t: 'down', key: e.key, code: e.code, keyCode: e.keyCode }
@@ -198,13 +231,64 @@ function guardStream(stream, label, url) {
   })
 }
 
-async function fetchBytes(url, label, options) {
-  const res = await fetchRequired(url, label, options)
-  return new Uint8Array(await new Response(guardStream(res.body, label, url)).arrayBuffer())
+async function fetchBytes(url, label, options = {}) {
+  const { maxBytes = MAX_BUFFERED_RESOURCE_BYTES, ...fetchOptions } = options
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw new Error(`${label} has an invalid download limit`)
+  const res = await fetchRequired(url, label, fetchOptions)
+  const declared = Number(res.headers.get('content-length'))
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    void res.body.cancel().catch(() => {})
+    throw new Error(`${label} is unexpectedly large (${declared} bytes; limit ${maxBytes})`)
+  }
+  const stream = guardStream(res.body, label, url)
+  const reader = stream.getReader()
+  const chunks = []
+  let total = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (total + value.byteLength > maxBytes) throw new Error(`${label} exceeded its ${maxBytes}-byte download limit`)
+      chunks.push(value)
+      total += value.byteLength
+    }
+  } catch (error) {
+    void reader.cancel(error).catch(() => {})
+    throw error
+  }
+  const bytes = new Uint8Array(total)
+  let at = 0
+  for (const chunk of chunks) { bytes.set(chunk, at); at += chunk.byteLength }
+  return bytes
 }
 
-const ZSTD_FORMAT = '8bitgo.cs16.zstd-chunks.v1'
-const SHA256_RE = /^[a-f0-9]{64}$/
+async function fetchBytesWithRetry(url, label, options = {}) {
+  const { validate, attempts = 3, ...fetchOptions } = options
+  let lastError
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const attemptUrl = new URL(url, location.href)
+    if (attempt) attemptUrl.searchParams.set('retry', String(attempt))
+    try {
+      const bytes = await fetchBytes(attemptUrl.href, label, {
+        ...fetchOptions,
+        ...(attempt ? { cache: 'reload' } : {}),
+      })
+      if (validate && !validate(bytes)) throw new Error(`${label} failed content validation`)
+      return bytes
+    } catch (error) {
+      lastError = error
+      if (attempt < attempts - 1) log(`⚠️ ${label} failed, retrying ${attempt + 2}/${attempts}: ${error}`, 'err')
+    }
+  }
+  throw lastError
+}
+
+const isWasm = (bytes) => bytes.byteLength >= 8 && bytes[0] === 0 && bytes[1] === 0x61 && bytes[2] === 0x73 && bytes[3] === 0x6d
+const isZip = (bytes) => bytes.byteLength >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04
+const isTtf = (bytes) => bytes.byteLength >= 4 &&
+  ((bytes[0] === 0 && bytes[1] === 1 && bytes[2] === 0 && bytes[3] === 0) ||
+    new TextDecoder().decode(bytes.subarray(0, 4)) === 'OTTO')
+
 const chunkPromises = new Map()
 let catalogPromise
 let wasmZstdPromise
@@ -222,47 +306,52 @@ async function digestHex(bytes) {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
-function validatePackCatalog(catalog) {
-  if (!catalog || catalog.format !== ZSTD_FORMAT || !catalog.packs || typeof catalog.packs !== 'object') {
-    throw new Error('Incompatible CS1.6 Zstd manifest format')
-  }
-  if (catalog.compression?.algorithm !== 'zstd' || catalog.compression?.chunkRawBytes !== 16 * 1024 * 1024) {
-    throw new Error('Incompatible compression parameters in CS1.6 Zstd manifest')
-  }
-  for (const [key, pack] of Object.entries(catalog.packs)) {
-    if (!(key === 'base' || /^maps\/[a-z0-9_]+$/.test(key))) throw new Error(`Invalid pack name in Zstd manifest: ${key}`)
-    if (!Number.isSafeInteger(pack.rawBytes) || pack.rawBytes <= 0 || !Number.isSafeInteger(pack.compressedBytes) || pack.compressedBytes <= 0 || !SHA256_RE.test(pack.rawSha256) || !Array.isArray(pack.chunks) || !pack.chunks.length) {
-      throw new Error(`Invalid metadata for ${key} in Zstd manifest`)
-    }
-    let rawBytes = 0, compressedBytes = 0
-    pack.chunks.forEach((chunk, index) => {
-      if (chunk.index !== index || chunk.path !== `chunks/${chunk.compressedSha256}.zst` || !SHA256_RE.test(chunk.compressedSha256) || !SHA256_RE.test(chunk.rawSha256) || !Number.isSafeInteger(chunk.rawBytes) || chunk.rawBytes <= 0 || chunk.rawBytes > 16 * 1024 * 1024 || !Number.isSafeInteger(chunk.compressedBytes) || chunk.compressedBytes <= 0) {
-        throw new Error(`Invalid chunk ${index + 1} for ${key} in Zstd manifest`)
-      }
-      rawBytes += chunk.rawBytes
-      compressedBytes += chunk.compressedBytes
-    })
-    if (rawBytes !== pack.rawBytes || compressedBytes !== pack.compressedBytes) {
-      throw new Error(`Total length mismatch for ${key} in Zstd manifest`)
-    }
-  }
-  return catalog
-}
-
 async function getPackCatalog() {
   if (!catalogPromise) {
     catalogPromise = (async () => {
-      const bytes = await fetchBytes(`${PACKS_ROOT}catalog.json?v=${ASSET_VERSION}`, 'CS1.6 chunk manifest')
-      let catalog
-      try { catalog = JSON.parse(new TextDecoder().decode(bytes)) } catch { throw new Error('CS1.6 chunk manifest is not valid JSON') }
-      return validatePackCatalog(catalog)
+      let lastError
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const url = new URL('catalog.json', PACKS_ROOT)
+        url.searchParams.set('v', ASSET_VERSION)
+        if (attempt) url.searchParams.set('retry', String(attempt))
+        try {
+          const bytes = await fetchBytes(url.href, 'CS1.6 chunk manifest', {
+            maxBytes: MAX_CATALOG_BYTES,
+            ...(attempt ? { cache: 'reload' } : {}),
+          })
+          let catalog
+          try { catalog = JSON.parse(new TextDecoder().decode(bytes)) } catch { throw new Error('CS1.6 chunk manifest is not valid JSON') }
+          return validatePackCatalog(catalog)
+        } catch (error) {
+          lastError = error
+          if (attempt < 2) log(`⚠️ CS1.6 chunk manifest failed, retrying ${attempt + 2}/3: ${error}`, 'err')
+        }
+      }
+      throw lastError
     })()
   }
-  return catalogPromise
+  const pending = catalogPromise
+  try {
+    return await pending
+  } catch (error) {
+    // 失败 Promise 不能永久钉住本页；预热失败后，正式加载仍应有一次重新建连的机会。
+    // 只清自己等待的那一代，避免另一个调用已经发起的新请求被迟到的 catch 抹掉。
+    if (catalogPromise === pending) catalogPromise = null
+    throw error
+  }
 }
 
 async function ensureWasmZstd() {
-  if (!wasmZstdPromise) wasmZstdPromise = initZstd(`${ASSET_ROOT}/zstd.wasm?v=${ASSET_VERSION}`)
+  if (!wasmZstdPromise) {
+    wasmZstdPromise = (async () => {
+      const bytes = await fetchBytesWithRetry(`${ASSET_ROOT}/zstd.wasm?v=${ASSET_VERSION}`, 'Zstd decoder', {
+        maxBytes: 1024 * 1024,
+        validate: isWasm,
+      })
+      // 先把 WASM 字节可靠地拿到手再初始化；传 URL 会让第三方胶水层做一次不可重试的内部 fetch。
+      await initZstd(bytes)
+    })()
+  }
   await wasmZstdPromise
 }
 
@@ -291,8 +380,13 @@ async function fetchChunkOnce(chunk, label, attempt) {
   const chunkUrl = new URL(chunk.path, PACKS_ROOT)
   // Worker 也按查询串识别不可变对象；哈希既在路径里又在 v 里，换内容必然换 URL。
   chunkUrl.searchParams.set('v', chunk.compressedSha256)
+  // cache:reload 只约束浏览器缓存；重试换查询串还能绕开偶发的边缘坏缓存。
+  if (attempt) chunkUrl.searchParams.set('retry', String(attempt))
   const url = chunkUrl.href
-  const compressed = await fetchBytes(url, label, attempt ? { cache: 'reload' } : undefined)
+  const compressed = await fetchBytes(url, label, {
+    ...(attempt ? { cache: 'reload' } : {}),
+    maxBytes: MAX_ZSTD_CHUNK_COMPRESSED_BYTES,
+  })
   if (compressed.byteLength !== chunk.compressedBytes) throw new Error(`${label} download length mismatch`)
   if (await digestHex(compressed) !== chunk.compressedSha256) throw new Error(`${label} SHA-256 mismatch`)
   return decompressChunk(compressed, chunk, label)
@@ -449,11 +543,8 @@ async function placeLibs(xash) {
   const downloads = new Map()
   const files = await Promise.all(Object.entries(LIB_FILES).map(async ([name, url]) => {
     const assetUrl = versioned(url)
-    if (!downloads.has(assetUrl)) downloads.set(assetUrl, fetchBytes(assetUrl, `library ${name}`))
+    if (!downloads.has(assetUrl)) downloads.set(assetUrl, fetchBytesWithRetry(assetUrl, `library ${name}`, { validate: isWasm }))
     const buf = await downloads.get(assetUrl)
-    if (name.endsWith('.wasm') && !(buf[0] === 0 && buf[1] === 0x61 && buf[2] === 0x73 && buf[3] === 0x6d)) {
-      throw new Error(`library ${name} is not valid WASM (got 404 HTML?)`)
-    }
     return [name, buf]
   }))
   for (const [name, buf] of files) {
@@ -510,7 +601,7 @@ async function fetchPackBytes(url, label) {
   return stream.pipeThrough(new DecompressionStream('gzip'))
 }
 
-async function writePack(xash, stream) {
+async function writePack(xash, stream, maxTotalBytes) {
   let yieldBytes = 0
   return unpackTarStream(
     stream,
@@ -529,16 +620,18 @@ async function writePack(xash, stream) {
     ({ files, bytes }) => {
       if (files % 100 === 0) setPhase(`Extracting assets: ${files} files / ${(bytes / 1048576).toFixed(0)} MB`)
     },
+    { maxTotalBytes },
   )
 }
 
 async function loadPack(xash, file) {
+  const limits = packLimits(file)
   if (!FORCE_GZIP) {
     try {
       const catalog = await getPackCatalog()
       const pack = catalog.packs[file]
       if (!pack) throw new Error(`Zstd manifest is missing ${file}`)
-      const result = await writePack(xash, zstdPackStream(pack, file))
+      const result = await writePack(xash, zstdPackStream(pack, file), limits.rawBytes)
       window.__probe.info.packFormat = nativeZstd ? 'zstd-native' : 'zstd-wasm'
       log(`[cs16] ${file} via ${nativeZstd ? 'native Zstd' : 'Zstd WASM'}, ${pack.chunks.length} verified chunks`)
       return result
@@ -547,7 +640,7 @@ async function loadPack(xash, file) {
       log(`⚠️ Zstd chunks for ${file} unavailable, trying gzip fallback: ${zstdError}`, 'err')
       try {
         const stream = await fetchPackBytes(`${LEGACY_PACKS_ROOT}${file}.tar.gz?v=${ASSET_VERSION}`, `${file} gzip fallback`)
-        const result = await writePack(xash, stream)
+        const result = await writePack(xash, stream, limits.rawBytes)
         window.__probe.info.packFormat = 'gzip-fallback'
         return result
       } catch (gzipError) {
@@ -557,7 +650,7 @@ async function loadPack(xash, file) {
   }
   const stream = await fetchPackBytes(`${FORCE_GZIP_ROOT}${file}.tar.gz?v=${ASSET_VERSION}`, `${file} gzip pack`)
   window.__probe.info.packFormat = 'gzip-forced'
-  return writePack(xash, stream)
+  return writePack(xash, stream, limits.rawBytes)
 }
 
 /**
@@ -573,17 +666,14 @@ async function loadPack(xash, file) {
  */
 async function loadHudFont(xash, fontPromise) {
   const FS = xash.em.FS
-  try {
-    const buf = await (fontPromise || fetchBytes(`${ASSET_ROOT}/gfx/fonts/FiraSans-Regular.ttf?v=` + ASSET_VERSION, 'HUD font'))
-    for (const dir of ['gfx/fonts', 'cstrike/gfx/fonts']) {
-      FS.mkdirTree(`${BASE}${dir}`)
-      FS.writeFile(`${BASE}${dir}/FiraSans-Regular.ttf`, buf)
-      FS.writeFile(`${BASE}${dir}/tahoma.ttf`, buf)
-    }
-    mark('HUD font ready')
-  } catch (e) {
-    log('⚠️ HUD font failed to load: ' + e, 'err')
+  const buf = await (fontPromise || fetchBytesWithRetry(`${ASSET_ROOT}/gfx/fonts/FiraSans-Regular.ttf?v=` + ASSET_VERSION, 'HUD font', { validate: isTtf }))
+  for (const dir of ['gfx/fonts', 'cstrike/gfx/fonts']) {
+    FS.mkdirTree(`${BASE}${dir}`)
+    FS.writeFile(`${BASE}${dir}/FiraSans-Regular.ttf`, buf)
+    FS.writeFile(`${BASE}${dir}/tahoma.ttf`, buf)
   }
+  // 缺字体会让雷达、血量、弹药和武器名整体消失，不能把这种残局伪装成启动成功。
+  mark('HUD font ready')
 }
 
 function waitForFirstFrame(canvas, xash, timeoutMs = 60_000) {
@@ -592,6 +682,7 @@ function waitForFirstFrame(canvas, xash, timeoutMs = 60_000) {
   const startedAt = performance.now()
   return new Promise((resolve, reject) => {
     const check = () => {
+      if (engineFatalError) return reject(engineFatalError)
       if (xash.exited) return reject(new Error('Engine exited before the first frame'))
       const fatalLine = window.__probe.log.find((line) => fatal.test(line))
       if (fatalLine) return reject(new Error(`Engine failed to start: ${fatalLine}`))
@@ -639,7 +730,7 @@ function ensureBinds(xash) {
  * 地图级配置由 YaPB 在图数据加载前执行；画面出来后还会再设一次 cvar，抵御不同引擎版本的
  * ServerCommand 队列时序差异。
  */
-function configureBots(xash, map, count) {
+function configureBots(xash, map, count, difficulty) {
   const FS = xash.em.FS
   const liblistPath = `${BASE}cstrike/liblist.gam`
   const decoder = new TextDecoder()
@@ -663,21 +754,25 @@ function configureBots(xash, map, count) {
     'yb_join_after_player "0"',
     'yb_join_team "any"',
     'yb_join_delay "1.0"',
+    // 难度必须和 quota 一起落到地图级配置；等画面出来再改会让首批 Bot 沿用包内固定的 Expert。
+    `yb_difficulty "${difficulty}"`,
   ].join('\n') + '\n'
   const configDir = `${BASE}cstrike/addons/yapb/conf/maps`
   FS.mkdirTree(configDir)
   FS.writeFile(`${configDir}/${map}.cfg`, encoder.encode(mapConfig))
   window.__probe.info.botCount = count
+  window.__probe.info.botDifficulty = difficulty
   window.__probe.info.botGameDll = `${BASE}cstrike/${GAME_SERVER_LIB}`
   mark('Bot config ready', count ? `${count} YaPB` : 'no bots')
 }
 
-function enforceBotCount(xash, count) {
+function enforceBotCount(xash, count, difficulty) {
   xash.Cmd_ExecuteString([
     'yb_quota_mode normal',
     'yb_autovacate 0',
     'yb_kick_after_player_connect 0',
     'yb_join_after_player 0',
+    `yb_difficulty ${difficulty}`,
     `yb_quota ${count}`,
   ].join(';'))
 }
@@ -837,21 +932,335 @@ async function autoJoinPlayer(xash) {
   window.__probe.info.autoJoin = 'counter-terrorists'
 }
 
-async function start() {
+function updateBotHint(count) {
+  const hint = $('bot-hint')
+  if (!hint) return
+  const difficulty = $('difficulty')
+  if (difficulty && !started) difficulty.disabled = count === 0
+  const summary = count === 0
+    ? '不加入 BOT，适合熟悉地图和练习投掷物。'
+    : count === 7
+      ? '你和 7 个 BOT 组成经典 4v4。'
+      : `你和 ${count} 个 BOT 一起训练。`
+  hint.textContent = `${summary} 系统会自动加入反恐精英；按 M 可以换队。`
+}
+
+$('bots')?.addEventListener('change', () => updateBotHint(selectedBotCount()))
+updateBotHint(selectedBotCount())
+
+let serverDirectory = []
+let selectedServerId = ''
+let serverDirectoryPromise = null
+
+function setConnectStatus(message, kind = '') {
+  const status = $('server-connect-status')
+  if (!status) return
+  status.textContent = message
+  status.style.color = kind === 'error' ? '#ff7b5d' : kind === 'ready' ? '#a8d56a' : ''
+}
+
+async function readJsonResponse(response) {
+  let body = null
+  try { body = await response.json() } catch { /* 反代错误页不是 JSON 时仍保留 HTTP 状态 */ }
+  if (!response.ok) throw new Error(body?.error || `HTTP ${response.status}`)
+  return body
+}
+
+function normalizedRoomCode(value) {
+  const code = String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '')
+  return /^[A-HJ-NP-Z2-9]{6}$/.test(code) ? code : ''
+}
+
+async function findRoom(code) {
+  const normalized = normalizedRoomCode(code)
+  if (!normalized) throw new Error('请输入 6 位房间码')
+  const response = await fetch(`/api/cs16/rooms/${encodeURIComponent(normalized)}`, { cache: 'no-store' })
+  const room = await readJsonResponse(response)
+  if (!validRoomDescriptor(room) || !SUPPORTED_MAPS.has(room.map)) throw new Error('房间返回了无效的联机参数')
+  return room
+}
+
+function setServerStatus(message, kind = '') {
+  const status = $('server-status')
+  if (!status) return
+  status.textContent = message
+  status.className = `server-status${kind ? ` ${kind}` : ''}`
+}
+
+function selectedServer() {
+  return serverDirectory.find((server) => server.id === selectedServerId) || null
+}
+
+function updateServerJoinButton() {
+  const server = selectedServer()
+  const join = $('server-join')
+  if (!join) return
+  join.disabled = started || !server || server.joinable === false
+  join.title = server?.unavailableReason || ''
+}
+
+function renderServerDirectory() {
+  const list = $('server-list')
+  if (!list) return
+  list.replaceChildren()
+  for (const server of serverDirectory) {
+    const row = document.createElement('button')
+    row.type = 'button'
+    row.className = `server-row${server.online ? '' : ' is-unreachable'}`
+    row.setAttribute('role', 'option')
+    row.setAttribute('aria-selected', String(server.id === selectedServerId))
+    row.disabled = started
+
+    const name = document.createElement('span')
+    name.className = 'server-name'
+    name.textContent = server.name
+    const map = document.createElement('span')
+    map.textContent = server.map
+    const players = document.createElement('span')
+    players.textContent = server.players == null ? '—' : `${server.players}/${server.maxPlayers}`
+    const ping = document.createElement('span')
+    ping.textContent = server.pingMs == null ? '—' : `${server.pingMs} ms`
+    row.append(name, map, players, ping)
+    row.title = server.unavailableReason || server.description || (server.online ? '双击加入服务器' : '状态探测未响应，仍可尝试加入')
+    row.addEventListener('click', () => {
+      selectedServerId = server.id
+      renderServerDirectory()
+      updateServerJoinButton()
+    })
+    row.addEventListener('dblclick', () => {
+      if (server.joinable !== false) start({ server }).catch(showError)
+    })
+    list.appendChild(row)
+  }
+  updateServerJoinButton()
+}
+
+async function loadServerDirectory(force = false) {
+  if (!force && serverDirectoryPromise) return serverDirectoryPromise
+  setServerStatus('正在刷新安全服务器目录…')
+  const controller = new AbortController()
+  // 首次打开需要先取外部公共目录，再由本站并发做 A2S 复检；弱网下给它完整的一轮时间。
+  const timer = setTimeout(() => controller.abort(), 15_000)
+  serverDirectoryPromise = (async () => {
+    try {
+      const response = await fetch('/api/cs16/servers', { cache: 'no-store', signal: controller.signal })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const directory = await response.json()
+      if (!directory?.enabled) {
+        serverDirectory = []
+        selectedServerId = ''
+        setServerStatus('网页联机状态：自动目录已关闭，且没有配置固定服务器', 'is-empty')
+        renderServerDirectory()
+        return serverDirectory
+      }
+      serverDirectory = Array.isArray(directory.servers)
+        ? directory.servers.filter((server) => validRelayServer(server) && SUPPORTED_MAPS.has(server.map) && typeof server.name === 'string')
+        : []
+      if (!serverDirectory.some((server) => server.id === selectedServerId)) {
+        selectedServerId = serverDirectory.find((server) => server.joinable !== false)?.id || ''
+      }
+      const online = serverDirectory.filter((server) => server.online).length
+      setServerStatus(
+        serverDirectory.length
+          ? `可加入服务器 ${serverDirectory.length} 个 · 状态探测在线 ${online} 个`
+          : '网页联机状态：目录已启用，但没有可用服务器',
+        serverDirectory.length ? 'is-ready' : 'is-empty',
+      )
+      renderServerDirectory()
+      return serverDirectory
+    } catch (error) {
+      serverDirectory = []
+      selectedServerId = ''
+      renderServerDirectory()
+      const detail = error instanceof Error && error.name === 'AbortError' ? '请求超时' : String(error)
+      setServerStatus(`联机目录暂时不可用（${detail}）；BOT 训练不受影响`, 'is-error')
+      return serverDirectory
+    } finally {
+      clearTimeout(timer)
+    }
+  })()
+  return serverDirectoryPromise
+}
+
+function showLauncherMode(mode) {
+  const practice = mode !== 'servers'
+  const practicePanel = $('practice-panel')
+  const serverPanel = $('server-panel')
+  const practiceButton = $('show-practice')
+  const serverButton = $('show-servers')
+  if (practicePanel) practicePanel.hidden = !practice
+  if (serverPanel) serverPanel.hidden = practice
+  practiceButton?.setAttribute('aria-selected', String(practice))
+  serverButton?.setAttribute('aria-selected', String(!practice))
+  if (!practice) void loadServerDirectory()
+}
+
+$('show-practice')?.addEventListener('click', () => showLauncherMode('practice'))
+$('show-servers')?.addEventListener('click', () => showLauncherMode('servers'))
+$('server-back')?.addEventListener('click', () => showLauncherMode('practice'))
+$('server-refresh')?.addEventListener('click', () => {
+  serverDirectoryPromise = null
+  void loadServerDirectory(true)
+})
+$('server-join')?.addEventListener('click', () => {
+  const server = selectedServer()
+  if (server) start({ server }).catch(showError)
+})
+
+$('direct-connect')?.addEventListener('click', async () => {
   if (started) return
+  const button = $('direct-connect')
+  try {
+    if (button) button.disabled = true
+    setConnectStatus('正在确认目标是兼容的公网 CS1.6 服务器…')
+    const response = await fetch('/api/cs16/servers/resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ address: $('direct-address')?.value || '' }),
+    })
+    const server = await readJsonResponse(response)
+    if (!validRelayServer(server) || !SUPPORTED_MAPS.has(server.map) || server.joinable === false) {
+      throw new Error(server?.unavailableReason || '这个地址不是兼容的 CS1.6 服务器')
+    }
+    setConnectStatus(`已验证 ${server.name} · ${server.map}，正在连接…`, 'ready')
+    await start({ server })
+  } catch (error) {
+    if (started) showError(error)
+    else setConnectStatus(error instanceof Error ? error.message : String(error), 'error')
+  } finally {
+    if (button && !started) button.disabled = false
+  }
+})
+
+$('room-connect')?.addEventListener('click', async () => {
+  if (started) return
+  const button = $('room-connect')
+  try {
+    if (button) button.disabled = true
+    setConnectStatus('正在查找房间…')
+    const room = await findRoom($('room-code-input')?.value)
+    setConnectStatus(room.hostReady ? `房主已就绪 · ${room.map}` : `房主仍在加载 · ${room.map}，可以先加载游戏`, 'ready')
+    await start({ room: { ...room, role: 'guest' } })
+  } catch (error) {
+    if (started) showError(error)
+    else setConnectStatus(error instanceof Error ? error.message : String(error), 'error')
+  } finally {
+    if (button && !started) button.disabled = false
+  }
+})
+
+$('room-code-input')?.addEventListener('input', (event) => {
+  event.currentTarget.value = String(event.currentTarget.value || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6)
+})
+
+$('create-room')?.addEventListener('click', async () => {
+  if (started) return
+  const button = $('create-room')
+  if (pendingHostedRoom) {
+    start({ room: pendingHostedRoom }).catch(showError)
+    return
+  }
+  try {
+    if (button) {
+      button.disabled = true
+      button.textContent = 'Creating…'
+    }
+    const response = await fetch('/api/cs16/rooms', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        map: selectedMap(),
+        botCount: selectedBotCount(),
+        difficulty: selectedBotDifficulty(),
+      }),
+    })
+    const room = await readJsonResponse(response)
+    if (!validRoomDescriptor(room) || !SUPPORTED_MAPS.has(room.map) || typeof room.hostToken !== 'string') {
+      throw new Error('创建接口返回了无效的房间参数')
+    }
+    pendingHostedRoom = { ...room, role: 'host' }
+    for (const id of ['map', 'bots', 'difficulty', 'start']) {
+      const control = $(id)
+      if (control) control.disabled = true
+    }
+    const code = $('created-room-code')
+    if (code) code.textContent = room.code
+    const box = $('room-created')
+    if (box) box.hidden = false
+    if (button) {
+      button.disabled = false
+      button.textContent = 'Start Room'
+    }
+    const sub = $('sub')
+    if (sub) sub.textContent = '把房间码发给好友，然后点击 Start Room。好友可以提前输入房间码并加载。'
+  } catch (error) {
+    if (button) {
+      button.disabled = false
+      button.textContent = 'Create Room'
+    }
+    const errbox = $('errbox')
+    if (errbox) errbox.textContent = `ERROR · ${error instanceof Error ? error.message : String(error)}`
+  }
+})
+
+$('copy-room-code')?.addEventListener('click', async () => {
+  if (!pendingHostedRoom) return
+  const shareUrl = new URL(location.href)
+  shareUrl.search = ''
+  shareUrl.searchParams.set('room', pendingHostedRoom.code)
+  try {
+    await navigator.clipboard.writeText(`${pendingHostedRoom.code}\n${shareUrl.href}`)
+    const button = $('copy-room-code')
+    if (button) button.textContent = 'Copied'
+  } catch {
+    const errbox = $('errbox')
+    if (errbox) errbox.textContent = `房间码：${pendingHostedRoom.code} · 邀请链接：${shareUrl.href}`
+  }
+})
+
+function reportEngineFailure(message) {
+  if (pageUnloading || failureReported) return
+  engineFatalError = new Error(message)
+  queueMicrotask(() => showError(engineFatalError))
+}
+
+async function start({ server = null, room = null } = {}) {
+  if (started) return
+  if (server && room) throw new Error('不能同时连接公共服务器和临时房间')
+  if (server && (!validRelayServer(server) || !SUPPORTED_MAPS.has(server.map) || server.joinable === false)) {
+    throw new Error(server?.unavailableReason || '这个服务器当前不能由网页版加入')
+  }
+  if (room && (!validRoomDescriptor(room) || !SUPPORTED_MAPS.has(room.map) || !['host', 'guest'].includes(room.role))) {
+    throw new Error('这个临时房间的联机参数无效')
+  }
   started = true
   const startButton = $('start')
   if (startButton) startButton.disabled = true
   const mapSelect = $('map')
   const botSelect = $('bots')
+  const difficultySelect = $('difficulty')
   if (mapSelect) mapSelect.disabled = true
   if (botSelect) botSelect.disabled = true
-  const map = selectedMap()
-  const botCount = selectedBotCount()
-  const overlay = $('overlay'); if (overlay) overlay.classList.remove('hidden')
+  if (difficultySelect) difficultySelect.disabled = true
+  for (const id of ['show-practice', 'show-servers', 'server-back', 'server-refresh', 'server-join', 'create-room', 'direct-connect', 'room-connect']) {
+    const button = $(id)
+    if (button) button.disabled = true
+  }
+  for (const row of document.querySelectorAll('.server-row')) row.disabled = true
+  const remoteClient = !!server || room?.role === 'guest'
+  const listenServer = !remoteClient
+  const map = server?.map || room?.map || selectedMap()
+  const botCount = room?.role === 'host' ? room.botCount : selectedBotCount()
+  const botDifficulty = room?.role === 'host' ? room.difficulty : selectedBotDifficulty()
+  const overlay = $('overlay')
+  if (overlay) {
+    overlay.classList.remove('hidden')
+    overlay.classList.add('is-loading')
+  }
   const canvasEl = $('canvas')
   if (!(canvasEl instanceof HTMLCanvasElement)) throw new Error('Game canvas missing; the page files may be incomplete')
   let restoreTimer = 0
+  let webglContextLost = false
 
   /*
     黑屏的常见元凶是 WebGL 上下文丢失（GPU 显存 / 内存压力）。
@@ -860,6 +1269,7 @@ async function start() {
   */
   canvasEl?.addEventListener('webglcontextlost', (e) => {
     e.preventDefault()
+    webglContextLost = true
     if (overlay) overlay.classList.remove('hidden')
     setPhase('WebGL context lost, attempting restore…')
     log('⚠️ WebGL context lost (usually GPU/memory pressure) — screen goes black', 'err')
@@ -867,8 +1277,10 @@ async function start() {
   })
   canvasEl?.addEventListener('webglcontextrestored', () => {
     clearTimeout(restoreTimer)
+    webglContextLost = false
     log('WebGL context restored')
-    if (firstFrameReady && overlay) overlay.classList.add('hidden')
+    // 超时已经进入终态后不能再把错误层藏回去，否则玩家又只剩黑屏。
+    if (firstFrameReady && !failureReported && overlay) overlay.classList.add('hidden')
   })
 
   /*
@@ -885,14 +1297,23 @@ async function start() {
       `team is full`，玩家永远卡在观察（spectator）状态 —— 没有刀、没有 HUD/雷达、
       没有武器状态。必须在 `+map` 之前设置（map 启动时才读这个 cvar）。
     */
-    '+maxplayers', '32',
+    ...(listenServer ? ['+maxplayers', '32'] : []),
     '+volume', '0.7', '+hud_scale', '2.5',
     '+exec', 'autoexec.cfg',
     // CS 必须选队伍才会 spawn；队伍选择 / 购买是 VGUI 菜单，显式开启。
     '+_vgui_menus', VGUI_MENUS,
-    ...(map ? ['+map', map] : []),
+    ...(listenServer && map ? ['+map', map] : []),
+    ...(server ? ['+connect', `webxash3d.${server.netId}:${server.port}`] : []),
+    ...(room?.role === 'guest' ? ['+connect', `webxash3d.${room.server.netId}:${room.server.port}`] : []),
   ]
   window.__probe.args = args
+  window.__probe.info.mode = server ? 'server' : room ? `room-${room.role}` : 'practice'
+  if (server) window.__probe.info.server = { id: server.id, name: server.name, map: server.map }
+  if (room) {
+    window.__probe.info.room = { code: room.code, role: room.role, map: room.map }
+    const hud = $('hud')
+    if (hud) hud.textContent = `ROOM ${room.code} · ${room.role === 'host' ? '房主' : '玩家'}`
+  }
 
   // 先取 14KB 清单并预热基础包/地图首片，让 R2 握手和引擎初始化并行。
   const wanted = ['base', `maps/${map}`]
@@ -903,9 +1324,9 @@ async function start() {
         return null
       })
   // 这三份小资源原来都排在 60MB+ 公共包之后串行下载。现在与引擎/数据包并行，写盘顺序仍保持不变。
-  const extrasPromise = fetchBytes(`${LIB}/cstrike/extras.pk3?v=${ASSET_VERSION}`, 'cs16 client extras.pk3')
-  const fontPromise = fetchBytes(`${ASSET_ROOT}/gfx/fonts/FiraSans-Regular.ttf?v=${ASSET_VERSION}`, 'HUD font')
-  const botVisPromise = loadBotVis(map).catch((error) => {
+  const extrasPromise = fetchBytesWithRetry(`${LIB}/cstrike/extras.pk3?v=${ASSET_VERSION}`, 'cs16 client extras.pk3', { validate: isZip })
+  const fontPromise = fetchBytesWithRetry(`${ASSET_ROOT}/gfx/fonts/FiraSans-Regular.ttf?v=${ASSET_VERSION}`, 'HUD font', { validate: isTtf })
+  const botVisPromise = (listenServer ? loadBotVis(map) : Promise.resolve(null)).catch((error) => {
     log(`⚠️ YaPB visibility cache unavailable: ${error}`, 'err')
     return null
   })
@@ -919,6 +1340,9 @@ async function start() {
       // YaPB 是 GameDLL 代理层，必须由它再加载真正的 CS 服务端库。使用绝对 MEMFS 路径，
       // 避免 Xash/side-module 对当前工作目录认知不一致时误报“不支持 cstrike”。
       ENV: { XASH3D_GAMELIBPATH: `${BASE}cstrike/${GAME_SERVER_LIB}` },
+      // 包装器的 xash.exited 只会在主动 quit() 时变化；WASM 自己 abort/exit 必须从 Emscripten 回调接住。
+      onAbort: (reason) => reportEngineFailure(`Engine aborted: ${reason || 'unknown fatal error'}`),
+      onExit: (status) => reportEngineFailure(`Engine exited unexpectedly (code ${status})`),
       print: (s) => { window.__probe.log.push(s); log(s) },
       printErr: (s) => { window.__probe.log.push('[err] ' + s); log('[err] ' + s, 'err') },
       locateFile,
@@ -926,12 +1350,26 @@ async function start() {
     canvas: canvasEl,
     libraries: LIBS_MAP,
   })
+  if (server) {
+    activeRelay = createCs16RelayNet(server, {
+      onDisconnect: (message) => reportEngineFailure(message),
+    })
+    // runEm 在初始化 WASM 时读取 xash.net；晚到 init() 之后再赋值，网络 syscall 会永远回 -1。
+    xash.net = activeRelay.net
+  } else if (room) {
+    activeRelay = createCs16RoomNet(room, room.role, {
+      onDisconnect: (message) => reportEngineFailure(message),
+      onStatus: (message) => setPhase(message),
+    })
+    // 房主也要挂虚拟 UDP，外部玩家的数据报才能进入浏览器里的监听服。
+    xash.net = activeRelay.net
+  }
   window.__probe.xash = xash
-  // 引擎自己退出（黑屏的另一种形态）时留一条记录，否则现场没有任何线索
+  // 保留包装器状态作为第二道兜底；真正的 WASM 退出由上面的 onAbort/onExit 接住。
   setInterval(() => {
     if (xash.exited && !window.__probe.exited) {
       window.__probe.exited = true
-      log('⚠️ Engine exited', 'err')
+      reportEngineFailure('Engine exited unexpectedly')
     }
   }, 3000)
 
@@ -954,48 +1392,76 @@ async function start() {
   // extras.pk3 是 cstrike 的游戏包（含 YaPB 配置、导航图和语音），必须放进 cstrike/。
   // 放在 /rodir 根目录时 Xash 不会把它加入 cstrike 搜索路径，表面能进图但 Bot 永远找不到 graph。
   const extras = await extrasPromise
-  if (!(extras[0] === 0x50 && extras[1] === 0x4b)) throw new Error('extras.pk3 is not a valid ZIP')
   xash.em.FS.mkdirTree(BASE + 'cstrike')
   xash.em.FS.writeFile(BASE + 'cstrike/extras.pk3', extras)
   mark('extras.pk3 ready')
 
   await loadHudFont(xash, fontPromise)
   ensureBinds(xash)
-  configureBots(xash, map, botCount)
-  const botVisReady = restoreBotVis(xash, map, await botVisPromise)
+  if (listenServer) configureBots(xash, map, botCount, botDifficulty)
+  const botVisReady = remoteClient ? true : restoreBotVis(xash, map, await botVisPromise)
+
+  if (server || room) {
+    setPhase(server ? `Connecting to ${server.name}…` : room.role === 'host' ? `Opening room ${room.code}…` : `Joining room ${room.code}…`)
+    await activeRelay.connect()
+    mark(room ? 'Room relay connected' : 'Server relay connected', room?.code || server.name)
+  }
 
   xash.em.FS.chdir(BASE)
   xash.main()
-  if (!botVisReady) watchGeneratedBotVis(xash, map)
+  if (listenServer && !botVisReady) watchGeneratedBotVis(xash, map)
   mark('Engine main loop started')
   await waitForFirstFrame(canvasEl, xash)
   // YaPB 已完成 GameDLL/地图初始化；再次执行能保证最终数量严格等于启动页选择值。
-  enforceBotCount(xash, botCount)
-  await autoJoinPlayer(xash)
+  if (listenServer) {
+    enforceBotCount(xash, botCount, botDifficulty)
+    await autoJoinPlayer(xash)
+  }
+  if (engineFatalError) throw engineFatalError
   firstFrameReady = true
-  mark('Game ready')
-  if (overlay) overlay.classList.add('hidden')
+  mark('Game ready', server?.name || room?.code)
+  if (overlay && !webglContextLost && !failureReported) overlay.classList.add('hidden')
 }
 
 function showError(e) {
+  if (failureReported) return
+  failureReported = true
+  activeRelay?.close()
   const raw = String((e && e.stack) || e)
   // Emscripten 有些致命错误只 throw `Infinity`，真正原因只写在上一行控制台里。
   const engineReason = [...window.__probe.log].reverse().find((line) => /(?:host_|error|failed|couldn't|abort)/i.test(line))
   const msg = (e instanceof Error && e.message) || (engineReason ? `Engine failed to start: ${engineReason}` : raw)
   window.__probe.errors.push(msg)
+  const overlay = $('overlay')
+  overlay?.classList.remove('hidden', 'is-loading')
+  showLauncherMode('practice')
   mark('Failed')
-  const box = $('errbox'); if (box) box.textContent = '❌ ' + msg
+  const box = $('errbox'); if (box) box.textContent = 'ERROR · ' + msg
   const startButton = $('start')
   if (startButton) {
     startButton.disabled = false
-    startButton.textContent = 'Reload to retry'
+    startButton.textContent = 'Reload'
     startButton.onclick = () => location.reload()
   }
-  log('❌ ' + msg, 'err')
+  log('ERROR · ' + msg, 'err')
   console.error(e)
 }
 
-if (Q.has('map')) {
+if (Q.has('room')) {
+  showLauncherMode('servers')
+  const input = $('room-code-input')
+  if (input) input.value = String(Q.get('room') || '').toUpperCase()
+  setConnectStatus('正在读取邀请房间…')
+  findRoom(Q.get('room')).then((room) => start({ room: { ...room, role: 'guest' } })).catch(showError)
+} else if (Q.has('server')) {
+  showLauncherMode('servers')
+  loadServerDirectory().then((servers) => {
+    const server = servers.find((entry) => entry.id === Q.get('server'))
+    if (!server) throw new Error('分享链接中的服务器不存在或当前未开放')
+    selectedServerId = server.id
+    return start({ server })
+  }).catch(showError)
+} else if (Q.has('map')) {
   start().catch(showError)
 } else {
   $('start')?.addEventListener('click', () => start().catch(showError))

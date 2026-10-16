@@ -1,5 +1,5 @@
 {
-  "assetVersion": "20260924-perf1",
+  "assetVersion": "20261016-temporary-rooms2",
   "files": [
     {
       "name": "PACKS.md",
@@ -7,14 +7,19 @@
       "sha256": "02a5fdd456d7336a87659f9fd1b38443f2eeefcfd2f1a94e86aecc12bc2c0efc"
     },
     {
+      "name": "cs16-net.js",
+      "size": 12573,
+      "sha256": "6bb8e51393135d4450ece549f47c880425a67b36ed2cefb2b4928546d867e387"
+    },
+    {
       "name": "cs16.bundle.js",
-      "size": 745894,
-      "sha256": "a6cb079c492a9906bd9f8ea88e02c8f15e9b8acea430e0c61cdf74c58272d7f6"
+      "size": 786285,
+      "sha256": "27689e42b47f7fb9ccee892054239da97dbaebc10dd660b3dcecf85c834b6da7"
     },
     {
       "name": "cs16.js",
-      "size": 44749,
-      "sha256": "443ab8a1c56c162729663ab48ab6cae8e40e5d9bbc09354dcbc27b28e53c5e97"
+      "size": 64186,
+      "sha256": "c2a564dcd9840b86162909aab3b0127a9652fc4e380d1312b91699dda6ef8fca"
     },
     {
       "name": "engine/dist/constants.js",
@@ -118,8 +123,8 @@
     },
     {
       "name": "index.html",
-      "size": 5696,
-      "sha256": "1cb67ba08ead5fc02452c7096c41eced557cbd0cefff8bfc80954baa0b884f6b"
+      "size": 21990,
+      "sha256": "245483423472666e5de2ebfc9dca5dbfc065923e3bb1ee1d9732233e4a375cc1"
     },
     {
       "name": "lib-new/cstrike/cl_dlls/client_emscripten_wasm32.wasm",
@@ -172,9 +177,24 @@
       "sha256": "bf0af8180933d71af77e3215328d54029dc2dde359a5dd0ed208d5229d65a99a"
     },
     {
+      "name": "pack-guards.js",
+      "size": 3800,
+      "sha256": "4f1d9b29a4ccaa87291ebb446bcba196ced9dcf50e1008358dc201c632294774"
+    },
+    {
       "name": "tar-stream.js",
-      "size": 4061,
-      "sha256": "d64b610adfa6f56da793d1a5864d43dba34dc6d04a81a990c95d79ab2bb1d372"
+      "size": 4304,
+      "sha256": "a62c8db83ba18e1ac76af851aecbbf1979e6836bc69e7cea23cae4211e2146bc"
+    },
+    {
+      "name": "ui/original-counter-strike-logo.png",
+      "size": 2756,
+      "sha256": "e51fd2a5ee9e4f30687c22028a3da3fd38d0a24fb48bff9146f8938e22e42bfb"
+    },
+    {
+      "name": "ui/original-menu-background.png",
+      "size": 548846,
+      "sha256": "4abf616bbcf483e978d7a2e8319e3cce4a96b5028183ac13ee91e24b4422a094"
     },
     {
       "name": "vis/cs_assault.vis",

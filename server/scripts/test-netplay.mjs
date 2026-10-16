@@ -79,6 +79,13 @@ section('基础协议')
   await wait(60)
   ok('房主收到 users-updated', hostUsers && Object.keys(hostUsers).length === 2)
 
+  const wrongGame = await connect()
+  const [wrongIdErr] = await join(wrongGame, extra('u-wrong-id', 'R1', '错游戏', 99))
+  ok('改邀请链接到另一款游戏不能混进原房间', wrongIdErr === 'room belongs to another game')
+  const [wrongSlugErr] = await join(wrongGame, { ...extra('u-wrong-slug', 'R1', '碰撞游戏'), game_slug: 'another-game' })
+  ok('数字散列相同也要再核对稳定 slug', wrongSlugErr === 'room belongs to another game')
+  wrongGame.close()
+
   let relayed = null
   host.on('webrtc-signal', (d) => (relayed = d))
   guest.emit('webrtc-signal', { target: users['u-host'].socketId, offer: { sdp: 'fake' } })

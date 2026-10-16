@@ -68,6 +68,8 @@ import { logSearchPushStatus } from './search-push.js'
 import { romPackRouter } from './routes/rom-pack.js'
 import { isRomPackConfigured } from './rom-pack-key.js'
 import { createSfsService } from './sfs.js'
+import { createCs16RelayService } from './cs16-relay.js'
+import { createCs16RoomService } from './cs16-rooms.js'
 
 const app = express()
 app.disable('x-powered-by')
@@ -94,6 +96,10 @@ const origins = (process.env.ALLOWED_ORIGINS || '*').split(',').map((s) => s.tri
 // SFS 是可选旁路：这里创建配置与只读接口，真正的 WebSocket 桥要到 httpServer 建好后才挂。
 // 默认 SFS_ENABLED=0，因此 Java sidecar 不存在也不会影响主站启动。
 const sfs = createSfsService()
+// 浏览器没有原生 UDP；CS1.6 只把服务端发现并验证过的目标经同源 WSS 接到 Xash 虚拟网络层。
+const cs16Relay = createCs16RelayService({ defaultAllowedOrigins: origins })
+// 房间数据只在浏览器之间转发，与公网 UDP 目录分开，避免某一边关闭时误伤另一种联机方式。
+const cs16Rooms = createCs16RoomService({ defaultAllowedOrigins: origins })
 app.use(
   cors({
     origin: origins.includes('*') ? true : origins,
@@ -127,6 +133,8 @@ app.use(express.json({ limit: '4mb' }))
 // 默认安全：漏配只是少一层缓存，配反了就可能把某个用户的数据缓存给下一个人。
 app.use('/api', noStore)
 app.use('/api/sfs', sfs.router)
+app.use('/api/cs16', cs16Relay.router)
+app.use('/api/cs16', cs16Rooms.router)
 
 /*
   健康检查。公开、匿名。
@@ -637,6 +645,8 @@ attachLive(io)
 attachJsnesNetplay(httpServer, app, origins)
 // 旧 Flash 的裸 TCP 不能从浏览器直连；只接管 /sfs/sas3，其余 upgrade 继续交给 socket.io / IPX。
 sfs.attach(httpServer)
+cs16Relay.attach(httpServer)
+cs16Rooms.attach(httpServer)
 startSweeper()
 
 /**
@@ -652,8 +662,12 @@ startSweeper()
 if (/^(1|true|yes|on)$/i.test(process.env.IPX_ENABLED || '')) {
   try {
     const { attachIpx, attachIpxToServer } = await import('./ipx.js')
-    if (process.env.IPX_PORT) attachIpx({ port: Number(process.env.IPX_PORT), host: process.env.IPX_PUBLIC_HOST || '127.0.0.1' })
-    else attachIpxToServer(httpServer, { publicHost: process.env.IPX_PUBLIC_HOST || 'ipx' })
+    if (process.env.IPX_PORT) attachIpx({
+      port: Number(process.env.IPX_PORT),
+      host: process.env.IPX_PUBLIC_HOST || '127.0.0.1',
+      allowedOrigins: origins,
+    })
+    else attachIpxToServer(httpServer, { publicHost: process.env.IPX_PUBLIC_HOST || 'ipx', allowedOrigins: origins })
   } catch (e) {
     console.warn(`[ipx] DOS 联机中继未启用：${e.message}`)
   }

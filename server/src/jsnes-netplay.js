@@ -1,6 +1,7 @@
 import { WebSocketServer } from 'ws'
 import { randomBytes } from 'node:crypto'
 import { envNumber } from './resource-limits.js'
+import { clientIpFrom, isPrivateIp } from './presence.js'
 
 /**
  * jsnes 的 P2P 联机信令（与 EmulatorJS netplay **完全独立**的一条路）。
@@ -32,8 +33,41 @@ import { envNumber } from './resource-limits.js'
 
 /* 填成 NaN 时 `rooms.size >= NaN` 永远是假，会把公开信令的内存上限整个关掉。 */
 const MAX_ROOMS = envNumber('JSNES_NETPLAY_MAX_ROOMS', 500, { max: 5000 })
+/** 房间上限挡不住“只连 WebSocket、什么也不发”的连接，长连接必须另有总量与单 IP 上限。 */
+const MAX_CONNECTIONS = envNumber('JSNES_NETPLAY_MAX_CONNECTIONS', 1000, { max: 10_000 })
+const MAX_PER_IP = envNumber('JSNES_NETPLAY_MAX_PER_IP', 12, { max: 100 })
+const JOIN_TIMEOUT_MS = 15_000
 /** 单个连接每秒最多转发几条 signal，防刷 */
 const SIGNALS_PER_SEC = 60
+
+function sameOrigin(req, origin) {
+  try {
+    const source = new URL(origin)
+    const target = new URL(`http://${String(req.headers.host || '')}`)
+    if (source.host === target.host) return true
+    // 开发反代会改 Host 端口；只有可信本机 / 私网代理才能走“同 hostname”这条放宽。
+    return isPrivateIp(req.socket?.remoteAddress) && source.hostname === target.hostname
+  } catch {
+    return false
+  }
+}
+
+function originAllowed(req, origins) {
+  const origin = String(req.headers.origin || '').replace(/\/$/, '')
+  return !origin || origins.includes('*') || sameOrigin(req, origin) || origins.includes(origin)
+}
+
+function rejectUpgrade(socket, status, message) {
+  if (socket.destroyed) return
+  const body = Buffer.from(message)
+  socket.write(
+    `HTTP/1.1 ${status}\r\n` +
+    'Content-Type: text/plain; charset=utf-8\r\n' +
+    `Content-Length: ${body.length}\r\n` +
+    'Connection: close\r\n\r\n',
+  )
+  socket.end(body)
+}
 
 function makeRoomId() {
   // 6 位十六进制（Node 的 Buffer.toString 不支持 base36，用 hex 最稳），
@@ -41,7 +75,7 @@ function makeRoomId() {
   return randomBytes(4).toString('hex').slice(0, 6)
 }
 
-export function attachJsnesNetplay(httpServer, app, _origins = ['*']) {
+export function attachJsnesNetplay(httpServer, app, origins = ['*']) {
   // maxPayload：ws 默认 100 MiB，信令最大也就几 KB 的 SDP，给 64 KB 足够
   const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 })
 
@@ -53,6 +87,7 @@ export function attachJsnesNetplay(httpServer, app, _origins = ['*']) {
    * 这个异常发生在 ws 的 message 监听里没人接，直接打挂整个 Node 进程。
    */
   const conns = new Map()
+  const perIp = new Map()
 
   // 只接管 /jsnes-netplay 的 upgrade，其余（socket.io / IPX / SFS）一律放过
   httpServer.on('upgrade', (req, socket, head) => {
@@ -63,6 +98,11 @@ export function attachJsnesNetplay(httpServer, app, _origins = ['*']) {
       return
     }
     if (pathname !== '/jsnes-netplay') return
+    if (!originAllowed(req, origins)) return rejectUpgrade(socket, '403 Forbidden', 'origin denied')
+    const ip = clientIpFrom(req.socket?.remoteAddress, req.headers || {}) || 'unknown'
+    if (wss.clients.size >= MAX_CONNECTIONS || (perIp.get(ip) || 0) >= MAX_PER_IP) {
+      return rejectUpgrade(socket, '429 Too Many Requests', 'too many connections')
+    }
     try {
       wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
     } catch (e) {
@@ -81,12 +121,23 @@ export function attachJsnesNetplay(httpServer, app, _origins = ['*']) {
 
   const roomPlayers = (room) => room.players.size
 
-  wss.on('connection', (ws) => {
+  wss.on('connection', (ws, req) => {
     ws.id = randomBytes(9).toString('hex')
     ws.roomId = null
     ws.sigWindow = 0
     ws.sigCount = 0
     conns.set(ws.id, ws)
+    const ip = clientIpFrom(req.socket?.remoteAddress, req.headers || {}) || 'unknown'
+    perIp.set(ip, (perIp.get(ip) || 0) + 1)
+    let joinTimer = setTimeout(() => {
+      // 开着空连接不发 host / join 以前没有任何回收，会绕过 MAX_ROOMS 一直吃满 fd。
+      if (!ws.roomId) ws.close(1008, 'room handshake timeout')
+    }, JOIN_TIMEOUT_MS)
+    joinTimer.unref?.()
+    const joined = () => {
+      clearTimeout(joinTimer)
+      joinTimer = null
+    }
 
     ws.on('message', (raw) => {
       // 任何异常都不能冒出 ws 的监听器：那里没人 catch，会直接变成 uncaughtException
@@ -116,6 +167,7 @@ export function attachJsnesNetplay(httpServer, app, _origins = ['*']) {
         room.players.set(ws.id, { seat: 0 })
         rooms.set(roomId, room)
         ws.roomId = roomId
+        joined()
         send(ws, { type: 'room', roomId, you: ws.id, seat: 0 })
         return
       }
@@ -131,6 +183,7 @@ export function attachJsnesNetplay(httpServer, app, _origins = ['*']) {
         if (ws.roomId) leave(ws)
         room.players.set(ws.id, { seat: 1 })
         ws.roomId = roomId
+        joined()
         // 通知房主：有人来了，可以开始协商
         const host = conns.get(room.hostId)
         if (host) send(host, { type: 'peer-joined', guest: ws.id })
@@ -156,17 +209,30 @@ export function attachJsnesNetplay(httpServer, app, _origins = ['*']) {
 
       if (msg.type === 'leave') {
         leave(ws)
+        if (!joinTimer) {
+          joinTimer = setTimeout(() => {
+            if (!ws.roomId) ws.close(1008, 'room handshake timeout')
+          }, JOIN_TIMEOUT_MS)
+          joinTimer.unref?.()
+        }
         return
       }
     }
 
+    let gone = false
     const onGone = () => {
+      if (gone) return
+      gone = true
+      clearTimeout(joinTimer)
       try {
         leave(ws)
       } catch (e) {
         console.warn('[jsnes-netplay] 清理连接失败：', e?.message || e)
       }
       conns.delete(ws.id)
+      const left = (perIp.get(ip) || 1) - 1
+      if (left > 0) perIp.set(ip, left)
+      else perIp.delete(ip)
     }
     ws.on('close', onGone)
     ws.on('error', onGone)
@@ -184,11 +250,6 @@ export function attachJsnesNetplay(httpServer, app, _origins = ['*']) {
       rooms.delete(roomId)
       return
     }
-    // 通知剩下的那个人：对端走了
-    for (const id of room.players.keys()) {
-      const sock = conns.get(id)
-      if (sock) send(sock, { type: 'peer-left' })
-    }
     if (wasHost) {
       // 房主走了，房间直接散（jsnes 没有 EmulatorJS 那样的「房主迁移」需求：
       // 输入是逐帧锁步，接手的人状态对不上反而更乱）
@@ -199,6 +260,13 @@ export function attachJsnesNetplay(httpServer, app, _origins = ['*']) {
           send(sock, { type: 'peer-left' })
         }
       }
+      return
+    }
+    // 访客走时只通知仍在房里的房主一次。旧实现先广播一次、房主分支又广播一次，
+    // 房主离开会让访客连续收到两条 peer-left，界面清理与错误提示也跟着执行两遍。
+    for (const id of room.players.keys()) {
+      const sock = conns.get(id)
+      if (sock) send(sock, { type: 'peer-left' })
     }
   }
 
@@ -213,7 +281,7 @@ export function attachJsnesNetplay(httpServer, app, _origins = ['*']) {
     )
   })
   app.get('/api/jsnes-netplay/rooms/:roomId', (req, res) => {
-    const room = rooms.get(String(req.params.roomId))
+    const room = rooms.get(String(req.params.roomId).toLowerCase())
     if (!room) return res.status(404).json({ error: 'room not found' })
     res.json({ exists: true, players: roomPlayers(room) })
   })

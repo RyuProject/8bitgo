@@ -36,6 +36,7 @@ import { imageDataToBlob } from '../recorder'
 import { GP, startGamepadBridge, hasGamepadApi, type GamepadBridge } from '../gamepad'
 import { deleteSave, pullSave, pushSave } from '@/services/saves'
 import { loadGameBytes } from '../romLoader'
+import { inspectRemoteRomPack, isRomPackUrl, ROM_PACK_ARRAY_BUFFER_LIMIT } from '@/services/romPack'
 import { loadSystemBytes, systemSourcesFor } from '../systemSource'
 import { armJspi } from '../jspiFlag'
 import {
@@ -655,7 +656,17 @@ async function readRom(
   game: File | string,
   onProgress?: (p: LoadProgress) => void,
   signal?: AbortSignal,
+  windowsGuest = false,
 ): Promise<{ name: string; buf: ArrayBuffer }> {
+  if (windowsGuest && typeof game === 'string' && isRomPackUrl(game)) {
+    const header = await inspectRemoteRomPack(game, signal)
+    if (header && header.originalSize > ROM_PACK_ARRAY_BUFFER_LIMIT) {
+      const gib = (header.originalSize / 1024 ** 3).toFixed(1)
+      throw new Error(
+        `这款大型 Windows 游戏尚未配置流式游戏盘（整包解开后 ${gib} GB），已停止下载以避免耗尽流量和内存。请先发布并绑定 Sockdrive。`,
+      )
+    }
+  }
   const loaded = await loadGameBytes(game, onProgress, signal)
   return { name: loaded.name, buf: loaded.data }
 }
@@ -1012,6 +1023,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               if (engineDone && systemDone) options.onProgress?.(progress)
             },
             abort.signal,
+            Boolean(options.dosSystemUrl),
           ))
       const extrasTask = settled(streamingGame
         ? options.dosExtras?.length

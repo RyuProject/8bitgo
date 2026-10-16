@@ -325,6 +325,9 @@ export default defineConfig(({ mode }) => {
       '/api': {
         target: process.env.BACKEND_URL || 'http://127.0.0.1:8788',
         changeOrigin: true,
+        // CS1.6 的 /api/cs16/relay 是 WebSocket Upgrade；不打开这项时服务器列表能读，
+        // 点 Join 却只在开发环境握手失败，和生产同源 Express 的表现正好相反。
+        ws: true,
       },
     },
   },

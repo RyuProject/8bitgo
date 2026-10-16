@@ -56,6 +56,8 @@ export interface JsnesNetplaySession {
   onLinkState?: (state: RTCPeerConnectionState) => void
   /** 对端离开（房主掉线 / 主动退出） */
   onHostLeft?: () => void
+  /** 信令、ROM 校验或初始状态同步失败。 */
+  onError?: (message: string) => void
 }
 
 export interface MountOptions {

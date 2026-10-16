@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { createGunzip } from 'node:zlib'
 import { decompress, init } from '@bokuweb/zstd-wasm'
 import { safePackPath, unpackTarStream } from '../public/web/cs16/tar-stream.js'
+import { validatePackCatalog } from '../public/web/cs16/pack-guards.js'
 
 const te = new TextEncoder()
 const writeText = (target, at, length, value) => target.set(te.encode(value).subarray(0, length), at)
@@ -69,6 +70,10 @@ assert.equal(result.bytes, 11)
 await assert.rejects(() => unpackTarStream(fragmented(tar([['a', 'b']], true)), async () => {}), /校验失败/)
 const truncated = tar([['a', 'b']]).subarray(0, 600)
 await assert.rejects(() => unpackTarStream(fragmented(truncated), async () => {}), /提前结束/)
+await assert.rejects(
+  () => unpackTarStream(fragmented(tar([['a', '1234']])), async () => {}, undefined, { maxTotalBytes: 3 }),
+  /超过 0MB 安全上限/,
+)
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const packDir = join(root, 'public/web/cs16/packs')
@@ -95,10 +100,26 @@ async function gzipRawSha256(file) {
 
 const zstdRoot = join(packDir, 'zstd-v1')
 const catalog = JSON.parse(readFileSync(join(zstdRoot, 'catalog.json'), 'utf8'))
+validatePackCatalog(catalog)
 assert.equal(catalog.format, '8bitgo.cs16.zstd-chunks.v1')
 assert.equal(catalog.compression.level, 22)
 assert.equal(catalog.compression.chunkRawBytes, 16 * 1024 * 1024)
 await init()
+
+const oversizedCatalog = structuredClone(catalog)
+oversizedCatalog.packs.base.rawBytes = 161 * 1024 * 1024
+await assert.rejects(async () => validatePackCatalog(oversizedCatalog), /Invalid metadata for base/)
+const oversizedChunkCatalog = structuredClone(catalog)
+oversizedChunkCatalog.packs.base.chunks[0].compressedBytes = 21 * 1024 * 1024
+await assert.rejects(async () => validatePackCatalog(oversizedChunkCatalog), /Invalid chunk 1 for base/)
+const conflictingChunkCatalog = structuredClone(catalog)
+const duplicate = structuredClone(conflictingChunkCatalog.packs.base.chunks[0])
+duplicate.index = 1
+duplicate.rawSha256 = '0'.repeat(64)
+conflictingChunkCatalog.packs.base.chunks = [conflictingChunkCatalog.packs.base.chunks[0], duplicate]
+conflictingChunkCatalog.packs.base.rawBytes = conflictingChunkCatalog.packs.base.chunks.reduce((sum, chunk) => sum + chunk.rawBytes, 0)
+conflictingChunkCatalog.packs.base.compressedBytes = conflictingChunkCatalog.packs.base.chunks.reduce((sum, chunk) => sum + chunk.compressedBytes, 0)
+await assert.rejects(async () => validatePackCatalog(conflictingChunkCatalog), /Conflicting metadata/)
 
 async function inspectZstdPack(key) {
   const pack = catalog.packs[key]
