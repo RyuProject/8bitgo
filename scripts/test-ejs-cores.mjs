@@ -175,12 +175,8 @@ check('核心构建报告改走 metadata 别名，浏览器拦截 /reports/ 时�
   // 同时盯住轻核心和 KOF97 实际使用的街机核心，避免修复只在单个平台上成立。
   for (const core of ['fceumm', 'fbneo']) {
     const paths = emulatorJsRuntimePaths(core)
-    const reportKeys = Object.keys(paths).filter((key) => key.startsWith(`${core}.json?v=`))
-    assert.equal(reportKeys.length, 3, `${core} 报告必须覆盖整点前后，避免查询串让 EJS_paths 失效`)
-    for (const key of reportKeys) {
-      assert.equal(paths[key], ejsRuntimeAsset(`cores/metadata/${core}.json`))
-      assert.doesNotMatch(paths[key], /\/reports\//)
-    }
+    assert.equal(paths[`${core}.json`], ejsRuntimeAsset(`cores/metadata/${core}.json`))
+    assert.doesNotMatch(paths[`${core}.json`], /\/reports\//)
     const source = readFileSync(join(coresDir, 'reports', `${core}.json`))
     const alias = readFileSync(join(coresDir, 'metadata', `${core}.json`))
     assert.ok(source.equals(alias), `${core} 的 metadata 别名必须与上游报告逐字节相同`)

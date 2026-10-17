@@ -13,7 +13,7 @@
  *
  * ── --dist：构建后再对一遍产物 ─────────────────────────────
  * 上面那些查的都是 public/。但真正跑在线上的是 dist/client/ 里那份拷贝，
- * 两者会脱节：2026-09-02 修好了存档 ABI（public/ 已打补丁、这个脚本也报「三项补丁均在位」），
+ * 两者会脱节：2026-09-02 修好了存档 ABI（public/ 已打补丁、源码体检也全部通过），
  * 而线上仍在发 9-1 构建出来的旧引擎，玩家继续看到 FAILED TO SAVE STATE ——
  * 补丁在源码里、跑出去的是旧产物，是这套自托管引擎最容易栽的一跤：
  * 文件名不带哈希，看不出新旧，check 又只体检源码，全程没有一个环节会喊。
@@ -64,6 +64,20 @@ if (!js.includes('this.functions.saveStateInfo()')) {
   fail(
     'emulator.min.js 缺「存档 ABI 回退」补丁 —— 所有平台按保存进度都会红字 FAILED TO SAVE STATE',
     'npm run ejspatch。引擎（自建 4.3.0-pre）走 Module.EmulatorJSGetState，而 npm 发布的核心只导出老 ABI 的 save_state_info，两边对不上；详见 scripts/patch-emulatorjs.mjs 头注释',
+  )
+}
+
+if (!js.includes('const p=(t.split("/").pop()||"").split(/[?#]/)[0]')) {
+  fail(
+    'emulator.min.js 缺「版本化文件路径覆盖」补丁 —— 带 ?v= 的核心报告匹配不到 EJS_paths',
+    'npm run ejspatch。报告按小时带查询串，但 EJS_paths 的键只有 basename；详见 patch-emulatorjs.mjs 第三节',
+  )
+}
+
+if (!js.includes('JSON.parse(new TextDecoder().decode(i.files[0].bytes))')) {
+  fail(
+    'emulator.min.js 缺「核心报告 JSON 解析」补丁 —— 引擎会禁用 IndexedDB 核心缓存',
+    'npm run ejspatch。新下载器返回 CacheItem，不能再把 i.data 直接当 JSON；详见 patch-emulatorjs.mjs 第三节',
   )
 }
 
@@ -138,7 +152,7 @@ if (!checkDist) {
   }
 }
 
-  console.log('✔ EmulatorJS 自建运行时 + 核心齐全（三项补丁在位，下载器仍是 fetch）')
+  console.log('✔ EmulatorJS 自建运行时 + 核心齐全（关键补丁在位，下载器仍是 fetch）')
   process.exit(0)
 }
 

@@ -53,6 +53,15 @@
  *             gameManager.quickSave(1) === false   ← 玩家看到的就是这句红字
  *   打补丁后：getState() 返回 528472 字节，quickSave(1) === true，
  *             loadState() 回灌不报错，再取一次尺寸一致
+ *
+ * ── 三、核心报告缓存（影响所有 EmulatorJS 平台）──────────────
+ * 核心报告决定核心能否进 IndexedDB 缓存。上游当前有两个连续缺陷：
+ * 1. 查 EJS_paths 时直接拿带 `?v=<小时>` 的末段做键，`fbneo.json` 覆盖永远匹配不到；
+ * 2. 新下载器返回 CacheItem，报告读取处却仍把它当已经解析的 JSON，buildStart 永远取不到。
+ *
+ * 两者任一存在，引擎都会打印「Core caching will be disabled」，玩家每次开局重新下载并解压核心。
+ * KOF97 的 FBNeo legacy 核心约 8MB，弱网下尤其明显。补丁先让路径匹配忽略查询串，再从
+ * CacheItem 第一份文件的 bytes 解码 JSON；旧下载器若已经返回对象则保持原路径。
  */
 import { readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -145,6 +154,26 @@ const KEEP_ZIP_TO = '(e.dontExtractIfCore?.includes(this.getCore())||"mame-curre
 const WEBGL2_CORES_FROM = 'm=["ppsspp","azahar"]'
 const WEBGL2_CORES_TO = 'm=["ppsspp","azahar","melondsds"]'
 
+/** EJS_paths 的键是文件 basename；下载 URL 自己的查询串不属于文件名。 */
+const FILE_PATH_LOOKUP_FROM =
+  'let h=(n?"":this.config.dataPath)+t;!n&&this.config.filePaths&&"string"==typeof ' +
+  'this.config.filePaths[t.split("/").pop()]&&(h=this.config.filePaths[t.split("/").pop()]);'
+const FILE_PATH_LOOKUP_TO =
+  'let h=(n?"":this.config.dataPath)+t;const p=(t.split("/").pop()||"").split(/[?#]/)[0];' +
+  '!n&&this.config.filePaths&&"string"==typeof this.config.filePaths[p]&&(h=this.config.filePaths[p]);'
+
+/** 新下载器的 text 结果也包在 CacheItem.files[0].bytes 里，报告必须先解码再读 buildStart。 */
+const REPORT_PARSE_FROM =
+  '(i=-1===i||"string"==typeof i||"string"==typeof i.data?{}:i.data).buildStart||' +
+  '(console.warn("Could not fetch core report JSON at "+e+"! Core caching will be disabled!"),' +
+  'i.buildStart=100*Math.random())'
+const REPORT_PARSE_TO =
+  'i=-1===i||"string"==typeof i||"string"==typeof i.data?{}:i.data;' +
+  'if(i&&i.files&&i.files[0]&&i.files[0].bytes)try{' +
+  'i=JSON.parse(new TextDecoder().decode(i.files[0].bytes))}catch(t){i={}}' +
+  'i.buildStart||(console.warn("Could not fetch core report JSON at "+e+' +
+  '"! Core caching will be disabled!"),i.buildStart=100*Math.random())'
+
 /**
  * 每组：name 显示用；patches 是 [要找的原文, 替换后]；
  * legacy 可选，把「替换后」映射成更早一版补丁的样子，用来在引擎升级后接管旧补丁；
@@ -164,6 +193,22 @@ const GROUPS = [
     legacy: (to) => to.replace(URL_NAME_EXPR, 't.split("/").pop()'),
     hint: [
       '重新找到两个下载分支里 split("/").pop() 取文件名的地方，更新这一组。',
+    ],
+  },
+  {
+    name: '版本化文件路径覆盖',
+    patches: [[FILE_PATH_LOOKUP_FROM, FILE_PATH_LOOKUP_TO]],
+    hint: [
+      '在 downloadFile 里找 config.filePaths[t.split("/").pop()] 的两处读取；',
+      '查询 EJS_paths 前先从 basename 去掉 ?query / #hash，否则核心报告的按小时版本串会让覆盖失效。',
+    ],
+  },
+  {
+    name: '核心报告 JSON 解析',
+    patches: [[REPORT_PARSE_FROM, REPORT_PARSE_TO]],
+    hint: [
+      '在 loadCore 里找 buildStart 与「Core caching will be disabled」警告；',
+      '新下载器返回 CacheItem，需从 files[0].bytes 用 TextDecoder + JSON.parse 还原报告对象。',
     ],
   },
   {

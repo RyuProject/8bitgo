@@ -39,7 +39,7 @@ export const EJS_PATH: string = asDir(import.meta.env.VITE_EJS_PATH, '/emulatorj
  * EmulatorJS 的文件名没有内容哈希，而 CDN 会缓存一个月。每次改自托管引擎或 loader
  * 都要加一代，让浏览器和边缘不再把旧 JS 与新核心拼在一起。
  */
-export const EJS_RUNTIME_GENERATION = '20261016-melondsds-1.4.0'
+export const EJS_RUNTIME_GENERATION = '20261017-core-report-cache1'
 export const ejsRuntimeAsset = (name: string): string =>
   `${EJS_PATH}${name}?v=${encodeURIComponent(EJS_RUNTIME_GENERATION)}`
 
@@ -54,27 +54,15 @@ export const ejsRuntimeAsset = (name: string): string =>
  * `EJS_paths` 正是用下载目标的末段文件名查覆盖地址。
  */
 export function emulatorJsRuntimePaths(core: string): Record<string, string> {
-  const paths: Record<string, string> = {
+  return {
     'emulator.min.js': ejsRuntimeAsset('emulator.min.js'),
     'emulator.min.css': ejsRuntimeAsset('emulator.min.css'),
     [`${core}-wasm.data`]: ejsRuntimeAsset(`cores/${encodeURIComponent(core)}-wasm.data`),
     // FBNeo 在不满足 SIMD / WebGL 条件的浏览器会选 legacy；线上 KOF97 实际走的就是这一支。
     // 两个变体必须一起换代，否则边缘仍可能把新引擎和缓存一个月的旧 legacy 核心拼在一起。
     [`${core}-legacy-wasm.data`]: ejsRuntimeAsset(`cores/${encodeURIComponent(core)}-legacy-wasm.data`),
+    [`${core}.json`]: ejsRuntimeAsset(`cores/metadata/${encodeURIComponent(core)}.json`),
   }
-
-  /*
-    上游给报告名临时拼了 `?v=<当前小时>`，但查 EJS_paths 时忘了先去查询串，
-    所以键其实不是 fbneo.json，而是 fbneo.json?v=497842。这里把前一小时、当前小时和
-    下一小时都映上：前后各一格既覆盖整点边界，也覆盖开页后挂起再恢复的短时钟漂移。
-    真正的下载地址仍是固定 metadata 文件，HTTP 缓存可正常复用。
-  */
-  const reportUrl = ejsRuntimeAsset(`cores/metadata/${encodeURIComponent(core)}.json`)
-  const reportHour = Math.floor(Date.now() / 36e5)
-  for (const hour of [reportHour - 1, reportHour, reportHour + 1]) {
-    paths[`${core}.json?v=${hour}`] = reportUrl
-  }
-  return paths
 }
 
 /**
