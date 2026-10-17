@@ -1,5 +1,5 @@
 /*
- * 把六款网页游戏分别打成六个 Cloudflare Pages 直接上传目录。
+ * 把独立网页游戏分别打成各自的 Cloudflare Pages 直接上传目录。
  *
  * Minecraft 的合法自建客户端按版权规则不进 Git，因此这里从 operator 当前机器复制；
  * 这也是这些项目不能交给 Cloudflare Git 自动构建、而要本地 Direct Upload 的原因。
@@ -86,7 +86,10 @@ for (const name of selected) {
     recursive: true,
     filter: (path) => {
       const rel = relative(source, path).replaceAll('\\', '/')
-      return !rel.split('/').includes('_framework') && !rel.endsWith('.DS_Store')
+      const segments = rel.split('/')
+      return !segments.includes('_framework') &&
+        !(config.excludeDirs || []).some((name) => segments.includes(name)) &&
+        !rel.endsWith('.DS_Store')
     },
   })
   mkdirSync(resolve(output, 'html5-api'), { recursive: true })
@@ -104,6 +107,7 @@ for (const name of selected) {
     entry: config.entry,
     runtime: config.runtime,
     isolated: config.isolated,
+    apiOrigin: config.apiOrigin || '',
   })
   writeFileSync(resolve(output, '_worker.js'), workerTemplate.replace('/*__GAME_CONFIG__*/ null', workerConfig))
   writeFileSync(resolve(output, 'index.html'), rootPage(config))

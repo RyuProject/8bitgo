@@ -32,6 +32,9 @@ for (const name of selected) {
     existsSync(resolve(root, config.entry.replace(/^\//, '').replace(/\/$/, '/index.html'))), `${name} 入口缺失`)
   assert.ok(existsSync(resolve(root, '_worker.js')), `${name} 缺少 _worker.js`)
   assert.ok(!existsSync(resolve(root, 'web', config.sourceDir, '_framework')), `${name} 错把超大 _framework 打进 Pages`)
+  for (const excluded of config.excludeDirs || []) {
+    assert.ok(!existsSync(resolve(root, 'web', config.sourceDir, excluded)), `${name} 错把 ${excluded} 打进 Pages`)
+  }
 
   const files = walk(root)
   assert.ok(files.length <= 20_000, `${name} 文件数超过 Pages 免费版上限`)
@@ -52,7 +55,11 @@ for (const name of selected) {
   const originalFetch = globalThis.fetch
   const fetched = []
   globalThis.fetch = async (url, init) => {
-    fetched.push({ url: String(url), init })
+    fetched.push({
+      url: url instanceof Request ? url.url : String(url),
+      headers: new Headers(url instanceof Request ? url.headers : init?.headers),
+      init,
+    })
     return new Response(new Uint8Array([1, 2, 3]), {
       status: 200,
       headers: { 'Content-Type': 'application/octet-stream', ETag: '"test"' },
@@ -85,6 +92,85 @@ for (const name of selected) {
       const response = await worker.fetch(new Request(`https://${config.domain}/web/${config.runtime}/_framework/dotnet.js`), { ASSETS: assets })
       assert.equal(response.status, 200)
       assert.match(fetched.at(-1).url, new RegExp(`web/${config.runtime}/_framework/dotnet\\.js$`))
+    }
+    if (name === 'cs16') {
+      const response = await worker.fetch(new Request(`https://${config.domain}/api/cs16/servers`, {
+        headers: { Authorization: 'Bearer must-not-leak', Cookie: 'session=must-not-leak' },
+      }), { ASSETS: assets })
+      assert.equal(response.status, 200)
+      assert.equal(fetched.at(-1).url, 'https://8bitgo.com/api/cs16/servers')
+      assert.equal(fetched.at(-1).headers.get('origin'), 'https://8bitgo.com')
+      assert.equal(fetched.at(-1).headers.has('authorization'), false)
+      assert.equal(fetched.at(-1).headers.has('cookie'), false)
+
+      // Node 自带 Response 不接受 101；用最小 Worker WebSocket 模型锁住专用路径与上游地址。
+      const NativeResponse = globalThis.Response
+      const NativeWebSocket = globalThis.WebSocket
+      const NativeWebSocketPair = globalThis.WebSocketPair
+      let upstreamSocket
+      let browserSocket
+      class MockSocket {
+        static CONNECTING = 0
+        static OPEN = 1
+        static CLOSING = 2
+        static CLOSED = 3
+        constructor(url = '') {
+          this.url = String(url)
+          this.readyState = MockSocket.CONNECTING
+          this.listeners = new Map()
+          this.sent = []
+        }
+        accept() { this.readyState = MockSocket.OPEN }
+        addEventListener(type, listener) { this.listeners.set(type, listener) }
+        send(data) { this.sent.push(data) }
+        close() { this.readyState = MockSocket.CLOSED }
+        emit(type, event = {}) { this.listeners.get(type)?.(event) }
+      }
+      try {
+        globalThis.WebSocket = class extends MockSocket {
+          constructor(url) {
+            super(url)
+            upstreamSocket = this
+          }
+        }
+        Object.assign(globalThis.WebSocket, {
+          CONNECTING: MockSocket.CONNECTING,
+          OPEN: MockSocket.OPEN,
+          CLOSING: MockSocket.CLOSING,
+          CLOSED: MockSocket.CLOSED,
+        })
+        globalThis.WebSocketPair = class {
+          constructor() {
+            browserSocket = new MockSocket()
+            return { 0: new MockSocket(), 1: browserSocket }
+          }
+        }
+        globalThis.Response = class {
+          constructor(body, init = {}) {
+            this.body = body
+            this.status = init.status || 200
+            this.webSocket = init.webSocket
+          }
+        }
+        const socketResponse = await worker.fetch(
+          new Request(`https://${config.domain}/api/cs16/room?room=ABC234&role=guest`),
+          { ASSETS: assets },
+        )
+        assert.equal(socketResponse.status, 101)
+        assert.ok(socketResponse.webSocket)
+        assert.equal(upstreamSocket.url, 'wss://8bitgo.com/api/cs16/room?room=ABC234&role=guest')
+        upstreamSocket.readyState = MockSocket.OPEN
+        upstreamSocket.emit('open')
+        browserSocket.emit('message', { data: new Blob([new Uint8Array([9, 8, 7])]) })
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        assert.deepEqual(new Uint8Array(upstreamSocket.sent[0]), new Uint8Array([9, 8, 7]), 'Blob 二进制帧必须转成 ArrayBuffer 再上行')
+        upstreamSocket.emit('message', { data: new Uint8Array([1, 2, 3]).buffer })
+        assert.deepEqual(new Uint8Array(browserSocket.sent[0]), new Uint8Array([1, 2, 3]), '后端二进制帧必须原样下行')
+      } finally {
+        globalThis.Response = NativeResponse
+        globalThis.WebSocket = NativeWebSocket
+        globalThis.WebSocketPair = NativeWebSocketPair
+      }
     }
   } finally {
     globalThis.fetch = originalFetch

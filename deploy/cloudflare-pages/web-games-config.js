@@ -59,6 +59,19 @@ export const WEB_GAME_PAGES = Object.freeze({
     isolated: true,
     html: [['index.html', '#app > *']],
   }),
+  cs16: Object.freeze({
+    project: '8bitgo-cs16',
+    domain: 'cs16.8bitgo.com',
+    sourceDir: 'cs16',
+    entry: '/web/cs16/',
+    title: 'Counter-Strike 1.6',
+    runtime: '',
+    isolated: false,
+    apiOrigin: 'https://8bitgo.com',
+    // 大包已经按内容哈希发布到 R2；Pages 只承载小型运行时，避免上传两份和触发单文件上限。
+    excludeDirs: ['packs'],
+    html: [['index.html', '#canvas']],
+  }),
 })
 
 export function webGamePage(name) {

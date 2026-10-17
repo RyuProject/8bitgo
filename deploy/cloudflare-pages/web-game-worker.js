@@ -108,6 +108,105 @@ function commonHeaders(response, pathname) {
   })
 }
 
+function apiOrigin(value) {
+  try {
+    const url = new URL(String(value || ''))
+    if (url.protocol !== 'https:' || url.username || url.password) return ''
+    return url.origin
+  } catch {
+    return ''
+  }
+}
+
+function forwardedCloseCode(value) {
+  const code = Number(value)
+  if (!Number.isInteger(code) || code < 1000 || code > 4999 || [1004, 1005, 1006, 1015].includes(code)) return 1011
+  return code
+}
+
+async function websocketPayload(value) {
+  if (typeof value === 'string' || value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return value
+  // Pages 的服务端 WebSocket 在部分运行时会把入站二进制帧表示成 Blob；出站 WebSocket.send
+  // 只接受 ArrayBuffer / TypedArray。显式转换才能避免连接看似成功、实际游戏包静默丢失。
+  if (value && typeof value.arrayBuffer === 'function') return value.arrayBuffer()
+  throw new TypeError('Unsupported WebSocket payload')
+}
+
+function websocketPayloadBytes(value) {
+  if (typeof value === 'string') return new TextEncoder().encode(value).byteLength
+  return value?.byteLength || 0
+}
+
+function proxyCs16Socket(target) {
+  const [client, browser] = Object.values(new WebSocketPair())
+  const upstreamUrl = new URL(target)
+  upstreamUrl.protocol = 'wss:'
+  const upstream = new WebSocket(upstreamUrl.href)
+  const queued = []
+  let queuedBytes = 0
+  let browserMessageChain = Promise.resolve()
+  browser.accept()
+  browser.binaryType = 'arraybuffer'
+  upstream.binaryType = 'arraybuffer'
+
+  const close = (socket, code, reason) => {
+    if (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN) {
+      socket.close(forwardedCloseCode(code), String(reason || '').slice(0, 120))
+    }
+  }
+  browser.addEventListener('message', (event) => {
+    // Blob.arrayBuffer() 是异步的；串行链保证同一玩家的 UDP 数据报不会因转换耗时不同而乱序。
+    browserMessageChain = browserMessageChain.then(async () => {
+      const data = await websocketPayload(event.data)
+      if (upstream.readyState === WebSocket.OPEN) {
+        upstream.send(data)
+        return
+      }
+      if (upstream.readyState !== WebSocket.CONNECTING) return close(browser, 1011, 'CS1.6 upstream unavailable')
+      queuedBytes += websocketPayloadBytes(data)
+      if (queuedBytes > 512 * 1024) return close(browser, 1009, 'CS1.6 upstream queue exceeded')
+      queued.push(data)
+    }).catch(() => {
+      close(upstream, 1011, 'CS1.6 WebSocket payload error')
+      close(browser, 1011, 'CS1.6 WebSocket payload error')
+    })
+  })
+  upstream.addEventListener('open', () => {
+    if (browser.readyState !== WebSocket.OPEN) return close(upstream, 1000, 'Browser disconnected')
+    for (const data of queued) upstream.send(data)
+    queued.length = 0
+    queuedBytes = 0
+  })
+  upstream.addEventListener('message', (event) => {
+    if (browser.readyState === WebSocket.OPEN) browser.send(event.data)
+  })
+  browser.addEventListener('close', (event) => close(upstream, event.code, event.reason))
+  upstream.addEventListener('close', (event) => close(browser, event.code, event.reason))
+  browser.addEventListener('error', () => close(upstream, 1011, 'Browser WebSocket error'))
+  upstream.addEventListener('error', () => close(browser, 1011, 'CS1.6 upstream unavailable'))
+
+  return new Response(null, { status: 101, webSocket: client })
+}
+
+async function proxyCs16Api(request, configuredOrigin) {
+  const origin = apiOrigin(configuredOrigin)
+  if (!origin) return new Response('CS1.6 API origin is not configured', { status: 503 })
+  const incoming = new URL(request.url)
+  const target = new URL(`${incoming.pathname}${incoming.search}`, origin)
+  const websocketEndpoint = incoming.pathname === '/api/cs16/relay' || incoming.pathname === '/api/cs16/room'
+  if (websocketEndpoint) {
+    // Pages 的跨域 fetch 会把 Upgrade 降级成普通 GET；显式桥接两条 WebSocket 才能保留二进制帧。
+    // 仍按专用路径判定，因为 Pages 边缘不保证把首段 Upgrade 头暴露给脚本。
+    return proxyCs16Socket(target)
+  }
+  const upstream = new Request(target, request)
+  // 这条代理只开放匿名 CS1.6 接口；不把主站登录凭证带过去，也不让任意客户端伪造跨站来源。
+  upstream.headers.delete('Cookie')
+  upstream.headers.delete('Authorization')
+  upstream.headers.set('Origin', origin)
+  return fetch(upstream)
+}
+
 async function proxyRuntime(request, asset) {
   const requestHeaders = new Headers()
   requestHeaders.set('Accept-Encoding', 'identity')
@@ -178,6 +277,10 @@ export default {
     if (!GAME) return new Response('Pages Worker 尚未构建', { status: 503 })
     const url = new URL(request.url)
     if (url.pathname === '/') return Response.redirect(new URL(GAME.entry, url), 302)
+
+    if (GAME.name === 'cs16' && url.pathname.startsWith('/api/cs16/')) {
+      return proxyCs16Api(request, env.CS16_API_ORIGIN || GAME.apiOrigin)
+    }
 
     const base = String(env.RUNTIME_ASSET_BASE_URL || ASSET_BASE_DEFAULT).replace(/\/+$/, '')
     const asset = runtimeAsset(url.pathname, base)

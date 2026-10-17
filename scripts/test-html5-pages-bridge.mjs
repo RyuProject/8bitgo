@@ -22,6 +22,7 @@ const migrations = [
   ['/web/Minecraft/', 'https://minecraft.8bitgo.com/web/Minecraft/'],
   ['/web/celeste/', 'https://celeste.8bitgo.com/web/celeste/'],
   ['/web/terraria/', 'https://terraria.8bitgo.com/web/terraria/'],
+  ['/web/cs16/', 'https://cs16.8bitgo.com/web/cs16/'],
 ]
 for (const [legacy, expected] of migrations) {
   const migrated = new URL(versionHtml5Entry(`${legacy}?from=database#resume`, main))
