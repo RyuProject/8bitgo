@@ -18091,7 +18091,7 @@ function validatePackCatalog(catalog) {
 
 // public/web/cs16/cs16.js
 var BASE = "/rodir/";
-var ASSET_VERSION = "20261016-temporary-rooms2";
+var ASSET_VERSION = "20261017-directory-recovery";
 var expectedProgressBytes = 128 * 1024 * 1024;
 var Q = new URLSearchParams(location.search);
 var SUPPORTED_MAPS = /* @__PURE__ */ new Set([
@@ -19005,7 +19005,9 @@ async function loadServerDirectory(force = false) {
       serverDirectory = [];
       selectedServerId = "";
       renderServerDirectory();
-      const detail = error instanceof Error && error.name === "AbortError" ? "\u8BF7\u6C42\u8D85\u65F6" : String(error);
+      const loopback = ["127.0.0.1", "localhost", "::1"].includes(location.hostname);
+      const detail = error instanceof Error && error.name === "AbortError" ? "\u8BF7\u6C42\u8D85\u65F6" : error instanceof TypeError ? loopback ? "\u672C\u5730\u8054\u673A\u540E\u7AEF\u672A\u8FDE\u63A5\uFF0C\u8BF7\u91CD\u65B0\u8FD0\u884C npm run dev" : "\u7F51\u7EDC\u8FDE\u63A5\u5931\u8D25\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5" : error instanceof Error ? error.message : "\u672A\u77E5\u7F51\u7EDC\u9519\u8BEF";
+      console.warn("[cs16] \u8054\u673A\u76EE\u5F55\u5237\u65B0\u5931\u8D25\uFF1A", error);
       setServerStatus(`\u8054\u673A\u76EE\u5F55\u6682\u65F6\u4E0D\u53EF\u7528\uFF08${detail}\uFF09\uFF1BBOT \u8BAD\u7EC3\u4E0D\u53D7\u5F71\u54CD`, "is-error");
       return serverDirectory;
     } finally {

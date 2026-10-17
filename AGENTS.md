@@ -2078,7 +2078,8 @@ WRANGLER_LOG_PATH=/tmp/8bitgo-wrangler-dry-run.log npx wrangler deploy --dry-run
 ## 3. 常用命令
 
 ```bash
-npm run dev            # 开发（predev 自动准备 ruffle / js-dos / 字体）
+npm run dev            # 全栈开发：同时启动 Vite 与 8788 后端（predev 自动准备资源）
+npm run dev:web        # 仅启动 Vite；另有 BACKEND_URL / 后端进程时才用
 npm run build          # prebuild 会跑 check-emulatorjs.mjs 体检，缺东西直接失败
 npm run lint           # oxlint
 npm run test:worker    # Worker 全套自测（分片 / Range / 缓存策略 / 代理，内存版 R2 mock，不联网）

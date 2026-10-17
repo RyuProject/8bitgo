@@ -1,5 +1,5 @@
 {
-  "assetVersion": "20261016-temporary-rooms2",
+  "assetVersion": "20261017-directory-recovery",
   "files": [
     {
       "name": "PACKS.md",
@@ -13,13 +13,13 @@
     },
     {
       "name": "cs16.bundle.js",
-      "size": 786285,
-      "sha256": "27689e42b47f7fb9ccee892054239da97dbaebc10dd660b3dcecf85c834b6da7"
+      "size": 786755,
+      "sha256": "74a2225cfa64804354406f306b128895ee60253022f618b211047303c2c0f8ac"
     },
     {
       "name": "cs16.js",
-      "size": 64186,
-      "sha256": "c2a564dcd9840b86162909aab3b0127a9652fc4e380d1312b91699dda6ef8fca"
+      "size": 64730,
+      "sha256": "68b7f5c36b3fb59946d9aae49a32c6ba5a9aee6e881650b3f42a27259db347ac"
     },
     {
       "name": "engine/dist/constants.js",
@@ -123,8 +123,8 @@
     },
     {
       "name": "index.html",
-      "size": 21990,
-      "sha256": "245483423472666e5de2ebfc9dca5dbfc065923e3bb1ee1d9732233e4a375cc1"
+      "size": 21992,
+      "sha256": "40688a84b8da8d52d4e229b699247f8181a6cbf04d70749ff9e605625e1748f5"
     },
     {
       "name": "lib-new/cstrike/cl_dlls/client_emscripten_wasm32.wasm",

@@ -43,7 +43,7 @@ import {
 } from './pack-guards.js'
 
 const BASE = '/rodir/'
-const ASSET_VERSION = '20261016-temporary-rooms2'
+const ASSET_VERSION = '20261017-directory-recovery'
 // 清单返回后会换成当前地图的真实压缩体积；这里仅用于清单到达前，避免进度条跳满。
 let expectedProgressBytes = 128 * 1024 * 1024
 const Q = new URLSearchParams(location.search)
@@ -1072,7 +1072,18 @@ async function loadServerDirectory(force = false) {
       serverDirectory = []
       selectedServerId = ''
       renderServerDirectory()
-      const detail = error instanceof Error && error.name === 'AbortError' ? '请求超时' : String(error)
+      const loopback = ['127.0.0.1', 'localhost', '::1'].includes(location.hostname)
+      const detail = error instanceof Error && error.name === 'AbortError'
+        ? '请求超时'
+        : error instanceof TypeError
+          ? loopback
+            ? '本地联机后端未连接，请重新运行 npm run dev'
+            : '网络连接失败，请稍后重试'
+          : error instanceof Error
+            ? error.message
+            : '未知网络错误'
+      // 浏览器原始异常只留给控制台排查，不能把 `TypeError: Failed to fetch` 直接甩给玩家。
+      console.warn('[cs16] 联机目录刷新失败：', error)
       setServerStatus(`联机目录暂时不可用（${detail}）；BOT 训练不受影响`, 'is-error')
       return serverDirectory
     } finally {
