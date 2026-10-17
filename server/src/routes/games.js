@@ -5,6 +5,7 @@ import { publicApi } from '../cache.js'
 import { playIdentity } from '../playcount.js'
 import { gameApiToPartialRow, relationsInPatch, dateOnly } from '../mappers.js'
 import { isAdultByBirthDate } from '../../../shared/age.js'
+import { gameSupportsNetplay } from '../../../shared/netplay-players.js'
 import { query } from '../db.js'
 import { attachRelations, writeDescriptionTranslation } from '../games-repo.js'
 import { queueGameSearchPush } from '../search-push.js'
@@ -50,6 +51,17 @@ const tooMany = (res, retryAfter, msg = '请求太频繁了，请稍后再试') 
 // 数据库里的布尔列走 mysql2，tinyint(1) 回来的是数字 1/0，不是字符串。
 // 别用上面那个 truthy() —— 它只认查询串里的 '1'/'true'，套在数据行上会一律判 false。
 export const dbFlag = (v) => v === 1 || v === true || v === '1'
+
+/**
+ * 联机开关与人数必须一起保存。页面和开房接口会安全降级脏数据，但后台若继续允许
+ * `multiplayer=true, players=1` 入库，运营下一次编辑又会造出同一种“按钮可见却必失败”。
+ */
+export function netplayGameConfigError(game) {
+  if (!dbFlag(game?.multiplayer)) return null
+  return gameSupportsNetplay(game.multiplayer, game.players)
+    ? null
+    : '启用联机时，最大玩家数至少要设置为 2'
+}
 
 /**
  * 游戏列表。
@@ -506,6 +518,8 @@ gamesRouter.put('/:slug', requireAbility('games:edit'), async (req, res, next) =
     const slug = String(req.params.slug)
     if (!req.body?.title) return res.status(400).json({ error: '缺少标题' })
     if (!req.body?.platform) return res.status(400).json({ error: '缺少平台' })
+    const netplayError = netplayGameConfigError(req.body)
+    if (netplayError) return res.status(400).json({ error: netplayError })
     const dosError = dosGameConfigError(req.body)
     if (dosError) return res.status(400).json({ error: dosError })
     if (req.staffRole === 'volunteer') {
@@ -535,13 +549,19 @@ gamesRouter.patch('/:slug', requireAbility('games:edit'), async (req, res, next)
       if (!ownerId) return res.status(403).json({ error: '志愿者独立库必须使用账号登录' })
       const current = await getVolunteerGame(ownerId, slug)
       if (!current) return res.status(404).json({ error: '你的游戏库里没有这款游戏' })
-      const dosError = dosGameConfigError(mergeGamePatchForDosValidation(current, req.body))
+      const candidate = mergeGamePatchForDosValidation(current, req.body)
+      const netplayError = netplayGameConfigError(candidate)
+      if (netplayError) return res.status(400).json({ error: netplayError })
+      const dosError = dosGameConfigError(candidate)
       if (dosError) return res.status(400).json({ error: dosError })
       return res.json(await patchVolunteerGame(ownerId, slug, req.body))
     }
     const current = await getGameBySlug(slug)
     if (!current) return res.status(404).json({ error: '游戏不存在' })
-    const dosError = dosGameConfigError(mergeGamePatchForDosValidation(current, req.body))
+    const candidate = mergeGamePatchForDosValidation(current, req.body)
+    const netplayError = netplayGameConfigError(candidate)
+    if (netplayError) return res.status(400).json({ error: netplayError })
+    const dosError = dosGameConfigError(candidate)
     if (dosError) return res.status(400).json({ error: dosError })
     const patchRow = gameApiToPartialRow(req.body)
     const relations = relationsInPatch(req.body)

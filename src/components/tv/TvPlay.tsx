@@ -143,8 +143,6 @@ export function TvPlay({ slug, onExit }: { slug: string; onExit: () => void }) {
               dosSaveHint={game.dosSaveHint}
               biosUrl={biosUrl || undefined}
               romUrl={rom.status === 'found' ? rom.url : undefined}
-              /* 已经从 ROM 元数据拿到大小，别让播放器为选 NES 轻量核心再发一次 HEAD。 */
-              romSize={rom.status === 'found' ? rom.size : undefined}
               romChecking={rom.status === 'checking'}
               romUnavailable={rom.status === 'missing'}
               romUnreachable={rom.unreachable}

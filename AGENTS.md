@@ -1182,6 +1182,24 @@ npm run pvz:check-assets              # 线上 HEAD + CORS 验收
   有 120s 超时，脚本标签也有 `onerror`，不再永远卡在「Preparing WebAssembly runtime…」。
 - 根目录那份 `pvz-manifest.json` 没有任何代码引用；`cn` / `en` 只读各自的 v2 清单。
 
+首次自动加载使用 `public/web/PvZ/pvz-loading.css` + `pvz-loading-scene.webp` 的 4:3 游戏启动画面，
+进度木牌读取的仍是 `setProgress()` 的真实下载 / WASM 写盘比例，不准换成与下载脱节的假动画。
+画面挂在 `#drop-zone.loading` 下，因此必需资源或引擎失败后移除 loading class 就会回到原资源选择页；
+不要让视觉层盖住错误回退。外壳由 `scripts/pvz-web/inject-autoplay.mjs` 注入中英文入口，修改后要
+同步 bump `SHELL_VERSION`、`src/emulator/adapters/html5.ts` 的 `PVZ_SHELL_VERSION`，再运行
+`npm run pvz:sync-snippet`，否则 Pages / iframe 可能继续命中旧 CSS。
+
+⚠️ Pages 里的中英文入口不能直接使用上面的 `html5.8bitgo.com`：该 R2 自定义域能返回 200，
+但没有 `Access-Control-Allow-Origin`，浏览器最终只报 `Failed to fetch`，加载画面随后按设计退回
+资源选择页。`scripts/build-web-game-pages.mjs` 会把 Pages 产物的 `PVZ_DATA_BASE` 改成同源
+`/pvz-data/`，再由 `deploy/cloudflare-pages/web-game-worker.js` 保留 Range / ETag 流式转发到 R2。
+本地验收必须用 `wrangler pages dev .cloudflare-pages/pvz`，普通静态服务器不会执行这条代理。
+
+⚠️ 清单里的 `properties/` 是可选覆盖配置，全部 404 时允许使用引擎内置默认值；`main.pak` 和
+reanim 包才是启动硬条件。旧 `pvz-page.js` 虽然下载层按可选处理，`startGame()` 却又强制要求
+`properties/`，结果真实资源跑到 100% 后退回导入页。自动清单成功后只通过
+`allowBuiltInProperties` 放宽这一次启动，玩家手动导入仍要求完整 `properties/`，避免误放残包。
+
 验收：
 
 ```bash

@@ -47,6 +47,10 @@ for (const name of selected) {
     assert.match(html, /\/html5-api\/8bitgo-runtime-bridge\.js/, `${name}/${file} 没有 Pages 运行桥`)
     if (name === 'pvz') {
       assert.match(html, /h==='8bitgo-pvz\.pages\.dev'/, `${name}/${file} 没有放行自己的固定 Pages 域名`)
+      if (file === 'cn/index.html' || file === 'en/index.html') {
+        assert.match(html, /PVZ_DATA_BASE=location\.origin\+'\/pvz-data\/'/, `${name}/${file} 没有使用 Pages 同源数据代理`)
+        assert.doesNotMatch(html, /PVZ_DATA_BASE='https:\/\/html5\.8bitgo\.com/, `${name}/${file} 仍在浏览器直连无 CORS 的 R2 域名`)
+      }
     }
   }
 
@@ -62,7 +66,12 @@ for (const name of selected) {
     })
     return new Response(new Uint8Array([1, 2, 3]), {
       status: 200,
-      headers: { 'Content-Type': 'application/octet-stream', ETag: '"test"' },
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': '3',
+        'Accept-Ranges': 'bytes',
+        ETag: '"test"',
+      },
     })
   }
   try {
@@ -92,6 +101,22 @@ for (const name of selected) {
       const response = await worker.fetch(new Request(`https://${config.domain}/web/${config.runtime}/_framework/dotnet.js`), { ASSETS: assets })
       assert.equal(response.status, 200)
       assert.match(fetched.at(-1).url, new RegExp(`web/${config.runtime}/_framework/dotnet\\.js$`))
+    }
+    if (name === 'pvz') {
+      const response = await worker.fetch(new Request(`https://${config.domain}/pvz-data/packs/reanim-test.pvzpack.gz`, {
+        headers: { Range: 'bytes=0-2097151' },
+      }), { ASSETS: assets })
+      assert.equal(response.status, 200)
+      assert.equal(fetched.at(-1).url, 'https://html5.8bitgo.com/PvZ/properties/packs/reanim-test.pvzpack.gz')
+      assert.equal(fetched.at(-1).headers.get('range'), 'bytes=0-2097151')
+      assert.equal(fetched.at(-1).headers.get('accept-encoding'), 'identity')
+      assert.equal(response.headers.get('access-control-allow-origin'), '*')
+      assert.equal(response.headers.get('accept-ranges'), 'bytes')
+
+      const rejected = await worker.fetch(new Request(`https://${config.domain}/pvz-data/reanim.pak`, {
+        method: 'POST',
+      }), { ASSETS: assets })
+      assert.equal(rejected.status, 405)
     }
     if (name === 'cs16') {
       const response = await worker.fetch(new Request(`https://${config.domain}/api/cs16/servers`, {

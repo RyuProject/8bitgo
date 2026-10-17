@@ -72,7 +72,11 @@ curl -i -N --max-time 5 -A 'Mozilla/5.0' https://8bitgo.com/api/netplay/events
 
 本机及时、公网延迟时，核对 `/api/` 实际命中的 nginx `location` 是否禁用了
 `proxy_buffering`，并允许长连接（`proxy_read_timeout`）；应用已经发送
-`X-Accel-Buffering: no` 和 `Cache-Control: no-transform`。若 nginx 也及时，
+`X-Accel-Buffering: no`、`Cache-Control: no-store, no-transform` 和
+`Cloudflare-CDN-Cache-Control: no-store`。公网响应的 `cf-cache-status` 必须是
+`BYPASS` / `DYNAMIC`，若出现 `HIT` / `MISS` / `EXPIRED` 就说明事件流仍被缓存规则接管；
+在 Cloudflare Cache Rules 里把 `/api/live/events`、`/api/netplay/events` 两个精确路径设为
+Bypass cache，并放在会命中它们的 Cache Everything 规则**之后**（同一设置最后一条匹配规则生效）。若 nginx 也及时，
 再检查 Cloudflare 对这两个精确路径的 Response Body Buffering 设置；
 [Cloudflare 官方排查文档](https://developers.cloudflare.com/rules/configuration-rules/response-body-inspection/)
 建议先对照源站与边缘响应，再按路径关闭响应体缓冲。

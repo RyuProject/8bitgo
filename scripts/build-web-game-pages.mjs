@@ -60,6 +60,21 @@ function allowPvzPagesHost(path) {
   writeFileSync(path, html)
 }
 
+/**
+ * html5.8bitgo.com 的历史自定义域能读对象却没有 CORS 响应头，浏览器直连会在拿到 200 后仍
+ * 报 Failed to fetch。Pages 包改走同源 Worker；源站副本继续保留真实 R2 地址，避免改变主站行为。
+ */
+function usePvzPagesDataProxy(path) {
+  let html = readFileSync(path, 'utf8')
+  const before = "window.PVZ_DATA_BASE='https://html5.8bitgo.com/PvZ/properties/';"
+  // 加载器会把它作为 new URL(relative, base) 的 base，必须给出绝对 URL，不能只写根相对路径。
+  const after = "window.PVZ_DATA_BASE=location.origin+'/pvz-data/';"
+  const hits = html.split(before).length - 1
+  if (hits !== 1) throw new Error(`${path} 的 PvZ 数据基址出现 ${hits} 次，期望 1 次`)
+  html = html.replace(before, after)
+  writeFileSync(path, html)
+}
+
 function rootPage(config) {
   return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -98,7 +113,10 @@ for (const name of selected) {
   for (const [file, selector] of config.html) {
     const path = resolve(output, 'web', config.sourceDir, file)
     if (!existsSync(path)) throw new Error(`${name} 缺少要注入运行桥的入口：${file}`)
-    if (name === 'pvz') allowPvzPagesHost(path)
+    if (name === 'pvz') {
+      allowPvzPagesHost(path)
+      if (file === 'cn/index.html' || file === 'en/index.html') usePvzPagesDataProxy(path)
+    }
     injectRuntimeBridge(path, selector)
   }
 

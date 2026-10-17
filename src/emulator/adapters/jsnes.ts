@@ -14,7 +14,7 @@ import { getT, fmt } from '@/services/i18n'
 import { extractRomFromZip, isZip } from '@/lib/unzip'
 import { assertNesRom } from '@/lib/romValidation'
 import { loadGameBytes } from '../romLoader'
-import { JSNES_MAPPERS, readNesMapper } from '../nesMapper'
+import { analyzeJsnesCompatibility } from '../nesMapper'
 import { installJsnesSafeStop, probeJsnesStartup } from '../jsnesCompat'
 import { startGamepadInput, type GamepadInput } from '../gamepadInput'
 import { installPadKeyboard } from '../padKeyboard'
@@ -756,17 +756,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       if (destroyed) return
 
       /*
-        先看 mapper 认不认得。jsnes 只实现了 21 个（见 nesMapper.ts），碰上没实现的会在
-        loadROM 里抛 `Unsupported mapper: N` —— 玩家看到一条红字，而同一份 ROM 交给
-        EmulatorJS 的 FCEUmm 核心毫无问题（忍者神龟 3 = mapper 25，Konami VRC4）。
+        mapper 编号只是第一层：jsnes 还会忽略 NES 2.0 的 submapper / 制式 / 主机类型，
+        也不会正确装入 trainer。只检查 mapper 会出现“开得起来但板子接线或时钟不对”的
+        假成功，往往玩到后面才坏。统一走 nesMapper.ts 的完整静态体检，和页面选引擎
+        使用同一套规则；不兼容不是网络或运行故障，直接让给 EmulatorJS。
 
-        这不是「失败」，是「找错引擎了」：走 onUnsupported 让播放器换引擎重开，
-        而不是 onError —— 后者会先原样重试几次，重试多少次结果都一样。
-        ROM 字节已经进了 IndexedDB 缓存（romLoader 的 loadGameBytes），换引擎不会重下。
+        ROM 已经进 IndexedDB 缓存（romLoader 的 loadGameBytes），换引擎不会重下。
       */
-      const mapper = readNesMapper(buf)
-      if (mapper !== null && !JSNES_MAPPERS.has(mapper)) {
-        options.onUnsupported?.(`jsnes 未实现 mapper ${mapper}`)
+      const compatibility = analyzeJsnesCompatibility(buf)
+      if (!compatibility.compatible) {
+        options.onUnsupported?.(compatibility.message)
         return
       }
       netplayGameId = jsnesRomFingerprint(new Uint8Array(buf))
@@ -817,11 +816,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         /**
          * ⚠️ loadROM 失败要换引擎，不能原样重试。
          *
-         * nesMapper.ts 的预判和 jsnes 自己那套「脏文件头就只取低 4 位」的判据**不是同一套**
-         * （我们只看字节 12-15，jsnes 看 8-15），两边分歧时预判会说「jsnes 支持」而
-         * jsnes 当场抛 `Unsupported mapper: N`。走 onError 的话播放器只会原封不动重试一次，
-         * 第二次**确定性地**再失败 —— 玩家拿到一张红字，而 EmulatorJS 的 FCEUmm 明明跑得动。
-         * 交给 onUnsupported 就走换引擎那条路；没有下一个引擎时播放器自己会退回报错，语义不丢。
+         * 静态体检已经逐位复刻当前 jsnes 的头解析，但未来升级依赖后解析规则可能改变，
+         * mapper 实现也可能在构造阶段发现更细的板型限制。开局异常仍然属于“能力不支持”，
+         * 交给 onUnsupported 走换引擎；没有下一个引擎时播放器会退回报错，语义不丢。
          */
         if (!readyFired) {
           options.onUnsupported?.(e instanceof Error ? e.message : String(e))

@@ -643,6 +643,22 @@ const patches = [
     run: () => conn.query('DELETE r FROM recents r LEFT JOIN games g ON g.slug = r.game_slug WHERE g.slug IS NULL'),
   },
   {
+    name: '修复超级马力欧兄弟联机人数（联机已开启却配置成 1 人）',
+    table: 'games',
+    needed: async () => {
+      const r = await one(
+        'SELECT COUNT(*) AS n FROM games WHERE slug = ? AND multiplayer = 1 AND COALESCE(players, 0) < 2',
+        ['super-mario-bros'],
+      )
+      return Number(r?.n ?? 0) > 0
+    },
+    // 只修「已经明确开启联机」的这一条脏记录；若运营以后主动关闭联机，迁移不会替他重新打开。
+    run: () => conn.query(
+      'UPDATE games SET players = 2 WHERE slug = ? AND multiplayer = 1 AND COALESCE(players, 0) < 2',
+      ['super-mario-bros'],
+    ),
+  },
+  {
     name: 'game_comments（游戏评论：登录用户发表、后台可隐藏、支持引用回复）',
     // table: null —— 这条补丁自己就是建表，不能拿「表不存在」当跳过理由
     table: null,

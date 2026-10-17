@@ -194,8 +194,18 @@ export function admitSse(req, res) {
 
   res.set({
     'Content-Type': 'text/event-stream; charset=utf-8',
-    'Cache-Control': 'no-cache, no-transform',
-    Connection: 'keep-alive',
+    // `no-cache` 仍允许 CDN 把对象存下来再验证。线上已经抓到 SSE 返回
+    // `cf-cache-status: EXPIRED` + `last-modified`，说明它真的进过 Cloudflare 缓存；
+    // 长响应一旦被当成普通对象缓存/缓冲，就会变成「200 但没首帧」甚至协议错误。
+    'Cache-Control': 'no-cache, no-store, no-transform',
+    // 站点有 Cache Everything 规则时，单靠浏览器层 Cache-Control 不够明确；这两层分别
+    // 告诉 Cloudflare 与其它共享 CDN 永远别存。若控制台 Cache Response Rule 强制覆盖，
+    // `audit-migration` 会从 cf-cache-status 把它抓出来，部署侧再排除这两个精确路径。
+    'Cloudflare-CDN-Cache-Control': 'no-store',
+    'CDN-Cache-Control': 'no-store',
+    // 不要手工发 `Connection: keep-alive`。这是 HTTP/1.1 的逐跳头，HTTP/2 明令禁止；
+    // Node 直连时看似没事，但只要某层反代没有把它剥掉，Chrome 就会把整条 SSE 判成
+    // ERR_HTTP2_PROTOCOL_ERROR。响应不 end 本身就会保持连接，HTTP/1.1 不需要这行。
     // Nginx 默认缓冲响应，缓冲住 SSE 就完全不推了
     'X-Accel-Buffering': 'no',
   })

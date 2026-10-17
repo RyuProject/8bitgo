@@ -105,7 +105,10 @@ resetSseCounters()
   ok(admitSse(req, res) === true, '正常浏览器放行')
   ok(res.headers['content-type'] === 'text/event-stream; charset=utf-8', 'Content-Type 是 event-stream')
   ok(res.headers['x-accel-buffering'] === 'no', '带 X-Accel-Buffering: no（少了 nginx 会把流缓冲住）')
-  ok(/no-cache/.test(res.headers['cache-control'] || ''), 'Cache-Control 不缓存')
+  ok(/no-store/.test(res.headers['cache-control'] || ''), '浏览器 / 普通代理不存 SSE')
+  ok(res.headers['cloudflare-cdn-cache-control'] === 'no-store', 'Cloudflare 边缘不存 SSE')
+  ok(res.headers['cdn-cache-control'] === 'no-store', '其它共享 CDN 不存 SSE')
+  ok(!('connection' in res.headers), '不发送 HTTP/2 禁止的 Connection 逐跳头')
 }
 
 console.log('\n── per-IP 上限 ──')

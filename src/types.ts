@@ -184,8 +184,9 @@ export interface Game {
    */
   core?: string
   /**
-   * 逐游戏覆盖运行时（引擎）。空 = 用平台默认引擎（platforms.ts 的 runtime 字段）。
-   * 例如 NES 平台默认 jsnes，但某些 ROM 在 EmulatorJS 上更兼容，可在此逐游戏指定 emulatorjs。
+   * 逐游戏覆盖运行时（引擎）。空 = 用自动策略（通常回落平台默认引擎）。
+   * NES 会按 iNES mapper 能力自动选择；容器包若已人工验收，可在此固定 jsnes / emulatorjs，
+   * 防止同一游戏切换运行时后让隔离存档看起来消失。
    * 合法性由 src/emulator/registry.ts 在解析时校验：覆盖值不可用或不支持本平台时回落默认引擎。
    */
   runtime?: RuntimeId | null

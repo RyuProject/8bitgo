@@ -290,3 +290,61 @@ final result: blocked
 The homepage special-thanks placement, friend-link wrapping, 88 × 31 image sizing, responsive behavior, admin workflow, and production builds were visually and functionally verified in the current task. See “Homepage special-thanks and friend-links QA” above for the complete evidence.
 
 final result: passed
+
+---
+
+## 2026-10-17 PvZ Pages 加载画面
+
+**Design QA — PvZ Pages 加载画面**
+
+- Source visual truth path: `/var/folders/hg/rws3swzs2gnc5zs48b6ln5r80000gn/T/codex-clipboard-00cab5b0-d115-49b1-9036-140fb1c24a4a.png`
+- Implementation screenshot evidence: Codex 内置浏览器对照页 `http://127.0.0.1:4175/pvz-loading-qa.html`（本轮已捕获并排画面）
+- Implementation URL: `http://127.0.0.1:4173/web/PvZ/cn/`（由 `.cloudflare-pages/pvz` 构建产物提供）
+- Viewport: 对照 1440 × 900 CSS px；另验收 390 × 844 竖屏、844 × 390 横屏与默认桌面窗口
+- Density normalization: `devicePixelRatio = 1`；参考图 640 × 480 px，生成画面 1280 × 960 px，二者均按 4:3 等比缩放到相同对照框
+- State: 自动资源加载中，真实进度为 0%，木牌进度条可见
+
+**Full-view Comparison Evidence**
+
+- 构图：实现保留了参考图的上方游戏标题、中间花园对阵场景、左侧植物、右侧僵尸和底部木牌加载器；主要视觉层级一致。
+- 字体与排版：标题使用粗窄展示字与深色描边，接近参考图的游戏 Logo 量感；木牌使用高对比衬线大写字和等宽百分比，缩小后仍清楚。
+- 间距与节奏：标题、角色场景和加载木牌均落在 4:3 安全区；木牌居中且不遮挡关键角色面部。非 4:3 屏幕使用同图模糊延展，不裁掉左右角色。
+- 色彩与视觉 token：蓝天、亮绿植物、紫色右侧树林、棕色木牌与参考图同一色彩关系；暗角只用于提升标题和进度的可读性。
+- 图像质量：实现使用 1280 × 960、209 KB WebP，无参考图右下水印；默认桌面、手机竖屏与横屏均未出现拉伸、透明边或低清晰度问题。
+- 文案与内容：保留 `LOADING...`，增加真实百分比和低干扰的 `8BitGo · Web Edition`；增加内容属于功能性状态反馈，不改变参考图的信息层级。
+
+**Focused Region Comparison Evidence**
+
+- 已单独检查顶部 Logo 与底部木牌区域：描边、对比度、木纹层次、进度槽和百分比在 390 px 窄屏仍可辨认。
+- 其它细节不需要额外局部裁切：并排 4:3 对照中角色、道路、房屋、标题与加载控件均已清晰可见。
+
+**Findings**
+
+- 无可执行的 P0 / P1 / P2 视觉差异。
+- [P3] 竖屏上下会出现模糊延展背景；这是为了完整保留 4:3 角色构图的有意取舍，比裁切主画面更稳妥。
+
+**Primary Interactions Tested**
+
+- 自动加载开始时全屏启动画面出现。
+- 进度控件暴露 `progressbar`、0–100 范围和当前值，屏幕阅读器状态可读。
+- 390 × 844 与 844 × 390 两个移动端方向不溢出、不裁掉木牌。
+- 已检查控制台：加载画面 CSS / WebP / DOM 未产生错误；localhost 对生产资源域的请求受线上 CORS 策略限制，未作为视觉缺陷计入。
+
+**Comparison History**
+
+- Pass 1：参考图与实现首次并排比较即未发现 P0 / P1 / P2；无需视觉返工。
+
+**Implementation Checklist**
+
+- [x] 4:3 高分辨率无水印场景
+- [x] 真实下载 / 写盘进度接入木牌
+- [x] 中英文入口同步注入
+- [x] 桌面、手机竖屏与横屏验证
+- [x] Pages 构建包与 Worker 检查
+- [x] 错误时保留原资源选择页回退
+
+**Follow-up Polish**
+
+- 可选：以后若提供更接近原作的已授权 Logo 素材，可替换当前 CSS 文本标题；不影响本次验收。
+
+final result: passed

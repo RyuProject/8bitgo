@@ -35,7 +35,10 @@ npm run pages:web-game:deploy -- pvz
 
 Diablo、Celeste、Terraria 的大 WASM/.NET 文件不会复制进 Pages：各自的 `_worker.js` 会从 `https://assets.8bitgo.com` 取 R2 对象并同源转发。若以后更换 R2 域名，在对应 Pages 项目里设置 `RUNTIME_ASSET_BASE_URL`。
 
-PvZ 的 `main.pak` 和动画包继续由 `html5.8bitgo.com` 提供；Pages 只承载网页外壳和 7MB WASM。Minecraft 的 Pages 包只能由拥有合法自建产物的 operator 在本机生成和上传。
+PvZ 的 `main.pak` 和动画包仍存放在 `html5.8bitgo.com`，但该历史自定义域没有 CORS 响应头，
+浏览器不能直接读取。构建后的中英文页面会把数据基址改成同源 `/pvz-data/`，由 Pages Worker
+流式转发并保留 Range / ETag；可用 `PVZ_DATA_BASE_URL` 更换上游。Pages 静态包本身仍只承载网页
+外壳和约 7MB WASM。Minecraft 的 Pages 包只能由拥有合法自建产物的 operator 在本机生成和上传。
 
 CS1.6 的内容寻址 Zstd 分片继续由 `assets.8bitgo.com` 的 R2 Worker 提供；Pages 包明确排除
 `public/web/cs16/packs/`。`_worker.js` 只把 `/api/cs16/*` 同源转发到主站，公共服务器的 UDP

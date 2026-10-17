@@ -40,7 +40,7 @@ export const emulatorJsMeta: Runtime = {
     return getT().runtime.ejsDesc
   },
   extensions: EJS_EXTS,
-  // 通用兜底引擎，优先级最低：有更专精的引擎（如 .nes 的 jsnes）时让给它
+  // 通用兜底引擎，优先级最低；NES 的 jsnes / EmulatorJS 决策另由 mapper 能力策略处理。
   priority: 5,
   available: () => true,
   supports: (platform) => Boolean(platformMap[platform]?.core),

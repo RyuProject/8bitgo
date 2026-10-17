@@ -150,7 +150,7 @@ export interface MountOptions {
   /**
    * P2P 联机会话（jsnes netplay）：纯输入锁步，两端各跑一份 jsnes，
    * 不经服务器传画面、只交换每帧手柄输入。和上面的 EmulatorJS 联机是**两条独立**的路，
-   * 互不干扰；NES 默认走 jsnes，于是 NES 也能联机，不必切到 EmulatorJS。
+   * 互不干扰；播放器按当前运行时句柄选择这条链路，不会把 jsnes 房间误交给 EmulatorJS。
    */
   jsnesNetplay?: JsnesNetplaySession
   /** 云端联机会话（cloudgame 运行时）：游戏由服务器运行，此时 game 字段被忽略 */
@@ -332,17 +332,11 @@ export interface ResolveContext {
   ext?: string
   /**
    * 逐游戏的运行时覆盖（来自 GameRecord.runtime）。
-   * 设了就优先于「扩展名覆盖表」和「平台默认引擎」生效 —— 例如 NES 平台默认 jsnes，
-   * 但某款 ROM 在 EmulatorJS 上更兼容时，后台可逐游戏指定 emulatorjs。
+   * 设了就优先于自动格式 / mapper 策略和平台默认引擎生效 —— 例如已人工验收的 NES 容器包
+   * 可明确固定 jsnes，复杂 mapper 则固定 emulatorjs，避免运行时与存档命名空间漂移。
    * 仅当该运行时确实可用且支持本平台时才采纳，否则回落默认逻辑（避免脏数据让游戏打不开）。
    */
   runtimeOverride?: RuntimeId | null
-  /**
-   * ROM 文件字节数（可选）。用于「按 ROM 大小分流」的规则，
-   * 例如 NES：< 25KB 用轻量 jsnes，>= 25KB 用 EmulatorJS（mapper 覆盖更全、性能更好）。
-   * 拿不到（列表页、还没拉到 ROM）时回落到扩展名覆盖表的默认行为，不影响其它平台。
-   */
-  romSize?: number
   /**
    * 这款游戏将用 jsnes 的 P2P 联机（openJsnesNetplay）跑。
    *
@@ -351,17 +345,15 @@ export interface ResolveContext {
    * （引擎装起来了、但开房按钮根本不显示，进房 effect 在 `handle?.openJsnesNetplay`
    * 这一关就 return 了）。只有 NES 用得上（jsnes 是 NES 专用），其它平台传了也忽略。
    *
-   * 比「按大小分流」更优先：jsnes 联机需要 jsnes 这个事实压过「大 ROM 更适合 EmulatorJS」。
+   * 比普通格式探测更优先：jsnes 联机需要 jsnes 这个事实压过默认兼容性兜底。
    */
   jsnesNetplay?: boolean
   /**
    * 已知 jsnes 能否跑这份 ROM（按 iNES 头里的 mapper 判定，见 nesMapper.ts 的 JSNES_MAPPERS）。
    * 可选：true = mapper 在 jsnes 支持列表内；false = 明确不支持；不传/undefined = 还没探明。
    *
-   * 让 registry 在「选引擎」这一步就避开已知的失败：
-   *   · false 且 ROM 偏小（本该走 jsnes）时直接选 EmulatorJS，省掉「先试 jsnes 再换引擎」的闪动；
-   *   · jsnes 联机（?jsnesp2p）强制 jsnes 时若为 false 则不强制，避免被钉到一个没有联机能力的引擎。
-   * 不传时回落「按大小分流 + 挂载时 onUnsupported 兜底」的现有行为，不影响其它平台。
+   * true 才默认选择 jsnes；false 或 undefined 都走 EmulatorJS。这样压缩容器、非 iNES 与
+   * Range 不可用时不会靠外层大小猜引擎。jsnes 邀请链接仍会优先 jsnes，除非已经明确为 false。
    */
   jsnesCompatible?: boolean
 }
@@ -615,7 +607,7 @@ export interface RuntimeHandle {
   openNetplay?: (session: NetplaySession) => boolean
   /**
    * 在**正在跑的这一局**上开 / 加入 jsnes 联机（与 EmulatorJS 的 openNetplay 平行、互不影响）。
-   * NES 默认运行时是 jsnes，于是 NES 也能中途点「联机」而不必切到 EmulatorJS。
+   * 当前运行时是 jsnes 时，NES 也能中途点“联机”；播放器会与 openNetplay 按能力分派。
    * 返回 false 表示这局开不了（引擎还没起来、或已经在房间里）。
    */
   openJsnesNetplay?: (session: JsnesNetplaySession) => boolean
@@ -758,7 +750,7 @@ export interface Runtime {
   extensions: string[]
   /**
    * 多个引擎都能处理同一格式时，数字大的先被选中。
-   * 例：.nes 既能给 EmulatorJS 也能给 jsnes，靠这个和 config/emulators.ts 的覆盖表决定。
+   * 例：多数重叠格式靠这个和 config/emulators.ts 的覆盖表决定；NES 另按 mapper 能力选择。
    */
   priority: number
 

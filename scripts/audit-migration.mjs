@@ -83,6 +83,14 @@ try {
   if (!response.ok || !response.headers.get('content-type')?.includes('text/event-stream') || !response.body) {
     report(false, '联机事件流', `HTTP ${response.status} 或响应类型不正确`)
   } else {
+    const cacheControl = response.headers.get('cache-control') || ''
+    const edgeCache = (response.headers.get('cf-cache-status') || '').toUpperCase()
+    report(/\bno-store\b/i.test(cacheControl), '联机事件流禁止缓存', `Cache-Control: ${cacheControl || '缺失'}`)
+    report(
+      !['HIT', 'MISS', 'EXPIRED', 'STALE', 'REVALIDATED', 'UPDATING'].includes(edgeCache),
+      '联机事件流未进入 Cloudflare 缓存',
+      `cf-cache-status: ${edgeCache || '无（未经过 Cloudflare）'}`,
+    )
     const reader = response.body.getReader()
     try {
       let prefix = ''

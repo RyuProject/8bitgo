@@ -2,11 +2,12 @@
  * 运行时注册表：决定「这个 ROM 该用哪个引擎跑」。
  *
  * 解析优先级（resolveRuntime）：
- *   1. 扩展名命中 src/config/emulators.ts 的覆盖表，且该引擎可用 → 用它
- *   2. 否则在「声明支持该扩展名」的可用引擎里挑 priority 最高的
- *   3. 否则退回平台自己配置的引擎（src/data/platforms.ts 的 runtime 字段）
+ *   1. 逐游戏 runtime 覆盖可用 → 用它
+ *   2. NES 按明确的 iNES / mapper 能力选择；未知容器默认 EmulatorJS
+ *   3. 其它格式命中覆盖表 → 用指定引擎
+ *   4. 否则在支持该扩展名的引擎中按 priority 选择，再退回平台默认
  *
- * 只传平台、不传扩展名时（比如详情页还没选文件），走第 3 步。
+ * 只传平台、不传扩展名时（比如详情页还没选文件），直接退回平台默认。
  *
  * 注意：cloudgame（远程联机）不参与上面的解析 —— 它不由文件格式决定，
  * 而是用户在播放器里显式切到「联机模式」时才使用（见 EmulatorPlayer）。
@@ -16,6 +17,7 @@ import { platformMap } from '@/data/platforms'
 import { EXT_RUNTIME_OVERRIDES } from '@/config/emulators'
 import type { ResolveContext, Runtime, RuntimeId } from './types'
 import { runtimeMetas } from './runtimeMeta'
+import { preferredNesRuntime } from './nesRuntimePolicy'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { romPackInnerName } from '../../shared/rom-pack-format.js'
 
@@ -70,32 +72,17 @@ export function resolveRuntime(target: PlatformId | ResolveContext): Runtime | u
   }
 
   if (ext) {
-    // 0. NES 的运行时选择（覆盖「扩展名覆盖表」里写死的 nes→jsnes）：
-    //    - 先看是不是要走 jsnes 联机（?jsnesp2p=）：是就强制 jsnes，EmulatorJS 没有 openJsnesNetplay。
-    //      但已知 mapper 不支持时（ctx.jsnesCompatible === false）不强制，否则会被钉到一个
-    //      既会失败、又没有联机能力的引擎上。
-    //    - 否则按 ROM 大小分流：小 ROM 用轻量 jsnes，大 ROM 用 EmulatorJS（性能更好）。
-    //      小 ROM 里若已知 mapper 不支持，则直接选 EmulatorJS，省掉「先试 jsnes 再换引擎」的闪动；
-    //      已知支持或不明时仍乐观试 jsnes（不明时挂载阶段还有 onUnsupported 兜底）。
-    //    逐游戏运行时覆盖（runtimeOverride）已在上面优先处理，这里只动「默认」行为，不抢显式指定。
-    //    大小还没探到时回落默认 jsnes —— 既符合「NES 默认 jsnes」的设计，也不会拿错引擎开局。
+    // 0. NES 不能按文件大小选引擎：线上拿到的经常是 `.8bg` / ZIP 外层大小，压缩参数一变
+    //    就会换引擎，按运行时隔离的存档也会像“丢了”。现在只有明确可读的 iNES mapper 才走
+    //    轻量 jsnes；格式不明、mapper 不支持或容器包默认走 EmulatorJS。后台 runtime 覆盖仍最优先。
     if (platform === 'nes') {
-      const small = getRuntime('jsnes')
-      const big = getRuntime('emulatorjs')
-      // jsnes 联机必须 jsnes；但已知 mapper 不支持时强制必败，且 EmulatorJS 无 openJsnesNetplay，
-      // 故不强制，回落下面正常分流（走 EmulatorJS 的联机系统）。
-      if (ctx.jsnesNetplay && ctx.jsnesCompatible !== false && small?.available() && small.supports('nes')) return small
-      if (ctx.romSize != null) {
-        if (ctx.romSize < NES_JSNES_MAX_BYTES) {
-          if (ctx.jsnesCompatible === false) {
-            // 小 ROM 但 mapper 认不出：直接交给 EmulatorJS，别浪费一次 jsnes 尝试。
-            if (big?.available() && big.supports('nes')) return big
-          } else if (small?.available() && small.supports('nes')) {
-            return small
-          }
-        } else if (big?.available() && big.supports('nes')) {
-          return big
-        }
+      const preferred = preferredNesRuntime(ctx)
+      const order: RuntimeId[] = preferred === 'jsnes'
+        ? ['jsnes', 'emulatorjs']
+        : ['emulatorjs', 'jsnes']
+      for (const id of order) {
+        const candidate = getRuntime(id)
+        if (candidate?.available() && candidate.supports('nes')) return candidate
       }
     }
 
@@ -113,15 +100,6 @@ export function resolveRuntime(target: PlatformId | ResolveContext): Runtime | u
   // 3. 平台默认
   return platformDefault(platform)
 }
-
-/**
- * NES 按 ROM 大小分流的阈值。
- * 小 ROM（如简单 NROM 卡带）< 25KB 用轻量的纯 JS 引擎 jsnes，启动快、包小；
- * 大 ROM（绝大多数商业游戏）>= 25KB 用 EmulatorJS（fceumm 等 RetroArch 核心），
- * mapper 覆盖更全、性能更好，且能复用站点的联机 / 金手指等能力。
- * 这个阈值只是经验切分，不是硬边界：两边都跑得动的游戏，小 ROM 用 jsnes 更省事。
- */
-export const NES_JSNES_MAX_BYTES = 25 * 1024
 
 /** 平台是否可在线运行（任意一个可用的本地引擎支持它即可） */
 export function isPlayable(platform: PlatformId): boolean {

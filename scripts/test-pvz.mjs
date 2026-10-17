@@ -227,6 +227,9 @@ async function makePage(browser, options = {}) {
       })
     }
     const key = path.split('/PvZ/properties/')[1] || ''
+    if (options.missingProperties && key.startsWith('properties/')) {
+      return route.fulfill({ status: 404, headers: { 'access-control-allow-origin': '*' }, body: 'missing' })
+    }
     const body = options.assetBodies?.[key] || Buffer.from([1, 2, 3, 4])
     const range = route.request().headers().range || ''
     if (options.resourceRangeRequests && key === 'main.pak') options.resourceRangeRequests.push(range || 'full')
@@ -328,6 +331,18 @@ try {
     const fileChooser = page.waitForEvent('filechooser')
     await page.locator('#save-import-btn').click()
     await fileChooser
+    assert.deepEqual(pageErrors, [])
+    await context.close()
+  }
+
+  {
+    const { context, page, pageErrors } = await makePage(browser, { missingProperties: true })
+    await page.goto(origin + '/web/PvZ/cn', { waitUntil: 'domcontentloaded' })
+    await page.waitForFunction(() => document.body.classList.contains('game-mode'))
+    assert.equal(await page.evaluate(() => window.__callMainCount), 1, '可选 properties/ 全部缺失时应使用引擎内置配置启动')
+    const writes = await page.evaluate(() => window.__writes.map((item) => item[0]))
+    assert.equal(writes.some((path) => path.startsWith('/properties/')), false)
+    assert.ok(writes.includes('/reanim/test-1999.reanim'))
     assert.deepEqual(pageErrors, [])
     await context.close()
   }

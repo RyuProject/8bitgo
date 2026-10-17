@@ -88,6 +88,8 @@ public/qemu-wasm/*
 # Cloudflare Worker
 worker/node_modules
 worker/.wrangler
+# `wrangler pages dev` 从仓库根启动时会把本地缓存与临时 Worker 放在这里。
+.wrangler/
 
 # 六款网页游戏的 Cloudflare Pages Direct Upload 产物。
 # Minecraft 会被复制进来，其中含 operator 本机合法自建、按版权规则不能提交的资源。

@@ -22,7 +22,9 @@ const SNIPPET = resolve(__dirname, 'autoplay-snippet.html')
 
 const START = '<!-- PvZ_AUTOPLAY_START -->'
 const END = '<!-- PvZ_AUTOPLAY_INJECTED -->'
-const SHELL_VERSION = '20260924-resume1'
+const SHELL_VERSION = '20261017-loading2'
+const LOADING_STYLE = `<link rel=stylesheet href=pvz-loading.css?v=${SHELL_VERSION}>`
+const LOADING_MARKUP = `<div id=pvz-loading-scene role=status aria-live=polite aria-label="正在加载植物大战僵尸"><div class=pvz-loading-frame><img class=pvz-loading-art src=pvz-loading-scene.webp alt="" aria-hidden=true draggable=false><div class=pvz-loading-shade></div><div class=pvz-loading-logo aria-hidden=true><span class=plants>Plants</span><span class=versus>VS</span><span class=zombies>Zombies</span></div><div class=pvz-loading-board id=pvz-loading-progress role=progressbar aria-label="游戏加载进度" aria-valuemin=0 aria-valuemax=100 aria-valuenow=0><span class=pvz-loading-pips aria-hidden=true><i></i><i></i><i></i></span><div class=pvz-loading-copy><span>LOADING...</span><span id=pvz-loading-percent>0%</span></div><div class=pvz-loading-track aria-hidden=true><i id=pvz-loading-fill></i></div></div><span class=pvz-loading-note>8BitGo · Web Edition</span></div></div>`
 
 const wanted = process.argv.slice(2)
 const LOCALES = wanted.length ? wanted : ['cn', 'en']
@@ -36,6 +38,15 @@ if (!snippet.includes(START) || !snippet.includes(END)) {
 
 function syncRuntimeShell(html) {
   let out = html
+  // 把大图和样式留在独立文件里，既能由浏览器缓存，也避免两份语言入口继续膨胀和分叉。
+  if (out.includes('href=pvz-loading.css')) {
+    out = out.replace(/<link rel=stylesheet href=pvz-loading\.css\?v=[^>]+>/, LOADING_STYLE)
+  } else {
+    out = out.replace('</head>', `${LOADING_STYLE}</head>`)
+  }
+  if (!out.includes('id=pvz-loading-scene')) {
+    out = out.replace('<div id=loading-drop-zone>', `${LOADING_MARKUP}<div id=loading-drop-zone>`)
+  }
   // 原生 preload 会和 Range 下载器并行拉一份完整 wasm，弱网下反而把带宽和流量翻倍。
   out = out.replace('<link rel=preload href=pvz-portable.wasm as=fetch crossorigin>', '')
   if (!out.includes('src=pvz-wasm-loader.js')) {
@@ -44,6 +55,7 @@ function syncRuntimeShell(html) {
       `<script src=pvz-wasm-loader.js?v=${SHELL_VERSION}></script><script>window.moduleReadyPromise=`,
     )
   }
+  out = out.replace(/<script src=pvz-wasm-loader\.js\?v=[^>]+><\/script>/, `<script src=pvz-wasm-loader.js?v=${SHELL_VERSION}></script>`)
   if (!out.includes('instantiateWasm:window.__pvzInstantiateWasm')) {
     out = out.replace('var Module={canvas:', 'var Module={instantiateWasm:window.__pvzInstantiateWasm,canvas:')
   }
@@ -52,7 +64,9 @@ function syncRuntimeShell(html) {
     out = out.replace('));var Module={', '));window.moduleReadyPromise.catch(function(){});var Module={')
   }
   out = out.replace(/<script src=pvz-page\.js\?v=[^>]+><\/script>/, `<script src=pvz-page.js?v=${SHELL_VERSION}></script>`)
-  if (!out.includes(`src=pvz-wasm-loader.js?v=${SHELL_VERSION}`) ||
+  if (!out.includes(`href=pvz-loading.css?v=${SHELL_VERSION}`) ||
+      !out.includes('id=pvz-loading-scene') ||
+      !out.includes(`src=pvz-wasm-loader.js?v=${SHELL_VERSION}`) ||
       !out.includes(`src=pvz-page.js?v=${SHELL_VERSION}`) ||
       !out.includes('instantiateWasm:window.__pvzInstantiateWasm') ||
       !out.includes('window.moduleReadyPromise.catch(function(){})')) {
@@ -76,7 +90,9 @@ for (const locale of LOCALES) {
   if (html.includes(START) && html.includes(END)) {
     const i = html.indexOf(START)
     const j = html.indexOf(END)
-    out = html.slice(0, i) + snippet + html.slice(j + END.length)
+    // 每次替换都收敛到一个换行；否则 snippet 自带的尾换行会和旧页面尾部叠加，
+    // “幂等同步”实际会在每次构建时偷偷多写一个空行。
+    out = html.slice(0, i) + snippet.trimEnd() + '\n' + html.slice(j + END.length).replace(/^\s*/, '')
   } else if (html.includes('</body>')) {
     out = html.replace('</body>', snippet + '\n</body>')
   } else {

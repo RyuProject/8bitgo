@@ -19,7 +19,7 @@ const emulatorToolsPath = resolve(repo, 'src/emulator/EmulatorTools.tsx')
 const snippet = readFileSync(resolve(repo, 'scripts/pvz-web/autoplay-snippet.html'), 'utf8')
 const START = '<!-- PvZ_AUTOPLAY_START -->'
 const END = '<!-- PvZ_AUTOPLAY_INJECTED -->'
-const SHELL_VERSION = '20260924-resume1'
+const SHELL_VERSION = '20261017-loading2'
 const WASM_SHA256 = '851072d991cc7f5770244b9be7204ed03ff5ee769101446987bbd3e1329ec3a6'
 
 const errors = []
@@ -74,6 +74,8 @@ for (const locale of ['cn', 'en']) {
   ok((html.match(/PvZ_AUTOPLAY_START/g) || []).length === 1, `${locale}/index.html 自动加载片段重复`)
   ok(html.includes('<base href=/web/PvZ/>'), `${locale}/index.html 缺少固定 base`)
   ok(!html.includes('<link rel=preload href=pvz-portable.wasm as=fetch crossorigin>'), `${locale}/index.html 仍在 preload 完整 wasm，会和 Range 下载重复耗流量`)
+  ok(html.includes(`<link rel=stylesheet href=pvz-loading.css?v=${SHELL_VERSION}>`), `${locale}/index.html 没有引用当前加载画面样式`)
+  ok(html.includes('id=pvz-loading-scene') && html.includes('id=pvz-loading-progress'), `${locale}/index.html 缺少游戏加载画面`)
   ok(html.includes(`<script src=pvz-wasm-loader.js?v=${SHELL_VERSION}></script>`), `${locale}/index.html 没有引用断点下载器`)
   ok(html.includes('instantiateWasm:window.__pvzInstantiateWasm'), `${locale}/index.html 没有把断点下载器接进 Emscripten`)
   ok(html.includes(`<script src=pvz-page.js?v=${SHELL_VERSION}></script>`), `${locale}/index.html 没有引用当前版本的共用运行脚本`)
@@ -111,7 +113,7 @@ for (const locale of ['cn', 'en']) {
   ok(bundle?.fileCount >= 2000 && bundle?.unpackedBytes > 100 * 1024 * 1024, `${locale} reanim 流式包元数据不完整`)
 }
 
-for (const name of ['pvz-page.js', 'pvz-wasm-loader.js', 'pvz-portable.js', 'pvz-portable.wasm', 'jszip.min.js', 'pvz-pack.json']) {
+for (const name of ['pvz-page.js', 'pvz-wasm-loader.js', 'pvz-portable.js', 'pvz-portable.wasm', 'jszip.min.js', 'pvz-pack.json', 'pvz-loading.css', 'pvz-loading-scene.webp']) {
   ok(existsSync(resolve(root, name)), `${name} 缺失`)
 }
 
@@ -129,6 +131,7 @@ if (existsSync(resolve(root, 'pvz-page.js'))) {
   for (const marker of ['inspectZip', 'unpackPvzBundle', 'DecompressionStream', 'EXIT_SAVE_TIMEOUT_MS', 'saveSyncQueued = true', 'window.__pvzStartTs = Date.now()', 'if (!window.__pvzGuardedReload())', '8bitgo-save-bridge', 'buildSaveArchive', 'applySaveArchive', 'request-load', 'installMobileSoftKeyboardAssist', 'pvz-keyboard-btn']) {
     ok(runtime.includes(marker), `pvz-page.js 缺少关键保护：${marker}`)
   }
+  ok(runtime.includes('hasProperties || allowBuiltInProperties'), '自动清单缺 properties/ 时仍会被旧启动校验拦截')
   ok(!runtime.includes('__pvzGuardedReload() || window.location.reload()'), '退出刷新守卫被兜底 reload 绕过')
 }
 
@@ -141,8 +144,9 @@ try {
 ok(snippet.includes("DATA_VERSION || '4'"), 'PvZ 资源缓存代次不是 4')
 ok(snippet.includes("fs.indexOf('reanim/') === 0"), 'reanim/ 没有按必需资源处理')
 ok(snippet.includes("fs === '@bundle/reanim'"), 'reanim 流式包没有按必需资源处理')
+ok(snippet.includes('allowBuiltInProperties = true'), '自动清单没有启用内置 properties/ 回退')
 ok(snippet.includes('downloaded[entry.fs] = bytes'), 'IndexedDB 写入失败时没有内存回退')
-for (const marker of ['RANGE_CHUNK_SIZE', "headers: { Range:", 'partPrefix(entry)', 'scheduleAutoRetry', 'AUTO_RETRY_LIMIT']) {
+for (const marker of ['RANGE_CHUNK_SIZE', "headers: { Range:", 'partPrefix(entry)', 'scheduleAutoRetry', 'AUTO_RETRY_LIMIT', "getElementById('pvz-loading-fill')", "setAttribute('aria-valuenow'"]) {
   ok(snippet.includes(marker), `自动加载片段缺少弱网保护：${marker}`)
 }
 
@@ -174,7 +178,7 @@ for (const [name, expected] of Object.entries(expectedHashes)) {
 }
 
 if (useDist && existsSync(root)) {
-  for (const name of ['pvz-page.js', 'pvz-wasm-loader.js', 'pvz-portable.js', 'pvz-portable.wasm', 'jszip.min.js', 'pvz-pack.json']) {
+  for (const name of ['pvz-page.js', 'pvz-wasm-loader.js', 'pvz-portable.js', 'pvz-portable.wasm', 'jszip.min.js', 'pvz-pack.json', 'pvz-loading.css', 'pvz-loading-scene.webp']) {
     const built = resolve(root, name)
     const source = resolve(sourceRoot, name)
     if (existsSync(built) && existsSync(source)) ok(sha256(built) === sha256(source), `dist 中的 ${name} 不是 public 最新版本`)

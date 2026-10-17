@@ -12,7 +12,7 @@
 import { normalizeDosboxConfigOverride } from '../../shared/dosbox-config.js'
 import { normalizeDosStartupCommands } from '../../shared/dos-startup-commands.js'
 import { isAdultByBirthDate } from '../../shared/age.js'
-import { normalizeGamePlayers } from '../../shared/netplay-players.js'
+import { gameSupportsNetplay, normalizeGamePlayers } from '../../shared/netplay-players.js'
 
 /**
  * 数据库布尔列的唯一判断方式。
@@ -525,7 +525,9 @@ export function gameRowToApi(r, rel = {}) {
     developer: r.developer || '',
     plays: Number(r.plays) || 0,
     players: normalizeGamePlayers(r.players),
-    multiplayer: bool(r.multiplayer),
+    // 不把「已勾联机、人数却是 1」的脏记录发给页面：这种按钮服务端一定拒绝，
+    // 与其让所有玩家点到死路，不如先安全降级；迁移脚本会修复已知的马力欧记录。
+    multiplayer: gameSupportsNetplay(r.multiplayer, r.players),
     coinReward: Number(r.coin_reward) || 0,
     icon: r.icon || '🎮',
     description: r.description || '',

@@ -7,7 +7,7 @@ import type { RomLang } from '@/config/languages'
 import { ROM_LANG_ABBR } from '@/config/languages'
 import { dosExecutableForRom, dosStartupCommandsForRom, romLangsOf, romUrlForKey, useRomUrl } from '@/services/roms'
 import { parseDosExtras, type DosExtraSource } from '@/lib/dosExtras'
-import { resolveRuntime, runtimesFor, getRuntime, type Runtime } from '@/emulator'
+import { extOf, resolveRuntime, runtimesFor, type Runtime } from '@/emulator'
 import { p2pPlayable } from '@/emulator'
 import { visitCountsAsPlayed } from '@/emulator/playedScope'
 import { requestMatch } from '@/services/matchRequest'
@@ -327,17 +327,16 @@ export function GameDetailPage() {
   // 不挡的话下面每一处 platform.xxx 都会把整页带崩。
   if (!seoPlatform || !isPlatformEnabled(seoPlatform.id)) return <NotFoundPage message={t.game.notFoundMsg} />
   const platform = seoPlatform
-  // 没有具体文件时，按优先级取该平台实际会用的引擎 —— 跟 PlayLocalPage 的选法一致。
-  // 只用 resolveRuntime(platform.id) 会走到「平台默认引擎」那一档（platforms.ts 的 runtime
-  // 字段），显示的是兜底引擎而不是真正会跑的那个：NDS 装了 webretro 仍写着 EmulatorJS，
-  // NES 明明由 jsnes 接管也一样。
-  // 逐游戏运行时覆盖（GameRecord.runtime）：NES 可在 jsnes 与 emulatorjs 间切换。
-  // 仅当覆盖值确实可用且支持本平台时才采纳，否则回落平台默认引擎
-  const overrideRuntime = game.runtime ? getRuntime(game.runtime) : undefined
+  // 操作说明必须跟播放器使用同一套“平台 + 实际 ROM 扩展名 + 逐游戏覆盖”解析。
+  // 以前这里只拿平台优先级，NES 页面永远显示 jsnes 键位；现在容器包会稳定走 EmulatorJS，
+  // 若说明仍写 F2/F4 和 jsnes 2P 键，玩家会以为按键坏了。直链 `.nes` 的 mapper 要到播放器
+  // Range 探测后才知道，这里取安全兜底；后台明确指定的 runtime 始终优先。
   const runtime: Runtime =
-    overrideRuntime?.available() && overrideRuntime.supports(platform.id)
-      ? overrideRuntime
-      : (runtimesFor(platform.id)[0] ?? resolveRuntime(platform.id))
+    resolveRuntime({
+      platform: platform.id,
+      ext: rom.status === 'found' ? extOf(rom.url) : undefined,
+      runtimeOverride: game.runtime,
+    }) ?? runtimesFor(platform.id)[0] ?? resolveRuntime(platform.id)!
   // 「支持语言」格：从 game.roms 里读出真正绑了哪些语言槽，映射成 CN / EN / JP 缩写。
   // romLangsOf 只返回有 key 的槽，所以「数据库里有那个语言的 ROM 就写什么」。
   const supportedLangs = Array.from(
@@ -481,7 +480,6 @@ export function GameDetailPage() {
                   dosSaveHint={game.dosSaveHint}
                   biosUrl={biosUrl || undefined}
                   romUrl={rom.status === 'found' ? rom.url : undefined}
-                  romSize={rom.status === 'found' ? rom.size : undefined}
                   romChecking={rom.status === 'checking'}
                   romUnavailable={rom.status === 'missing'}
                   romUnreachable={rom.unreachable}

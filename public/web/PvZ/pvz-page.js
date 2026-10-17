@@ -12,6 +12,9 @@ const collectedBundles = [];
 
 let hasPak = false;
 let hasProperties = false;
+// 服务器清单里的 properties/ 只是覆盖配置；自动加载完整 main.pak + reanim 后可安全使用引擎内置默认值。
+// 手动导入仍要求玩家提供 properties/，避免把一份不完整的自备资源误判成可启动。
+let allowBuiltInProperties = false;
 let savesMounted = false;
 let gameStarted = false;
 let startGameInFlight = false;
@@ -321,7 +324,8 @@ function refreshUI() {
   for (const path of collectedFiles.keys()) {
     if (path.startsWith("properties/")) { hasProperties = true; break; }
   }
-  const ready = hasPak && hasProperties;
+  const propertiesReady = hasProperties || allowBuiltInProperties;
+  const ready = hasPak && propertiesReady;
   const hasAny = collectedFiles.size > 0;
   fileListDiv.innerHTML = "";
   if (hasAny) {
@@ -332,7 +336,7 @@ function refreshUI() {
       fileListDiv.appendChild(item);
     };
     add("main.pak", hasPak);
-    add("properties/", hasProperties);
+    add(hasProperties ? "properties/" : "properties/ (built-in)", propertiesReady);
   }
   fileListDiv.classList.toggle("has-items", hasAny);
   dropZone.classList.toggle("ready", ready);
@@ -544,7 +548,7 @@ async function startGame() {
   loadStatus.classList.remove("has-error");
   try {
     refreshUI();
-    if (!hasPak || !hasProperties) throw new Error("缺少 main.pak 或 properties/，无法启动");
+    if (!hasPak || (!hasProperties && !allowBuiltInProperties)) throw new Error("缺少 main.pak 或 properties/，无法启动");
     if (window.__pvzSetProgress) window.__pvzSetProgress(0);
     loadStatus.textContent = "";
     await withTimeout(window.moduleReadyPromise, MODULE_READY_TIMEOUT_MS, "WebAssembly 运行时加载超时");
@@ -601,6 +605,7 @@ async function startGame() {
     if (resourcesStartedWriting) {
       collectedFiles.clear();
       collectedBundles.length = 0;
+      allowBuiltInProperties = false;
     }
     loadStatus.textContent = "Error: " + (error.message || error);
     loadStatus.classList.add("has-error");
@@ -901,6 +906,7 @@ async function handleGameExit(reason) {
   dropZone.style.pointerEvents = "";
   collectedFiles.clear();
   collectedBundles.length = 0;
+  allowBuiltInProperties = false;
   fileInput.value = "";
   resourceZipInput.value = "";
   refreshUI();
@@ -946,6 +952,7 @@ dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragover
 dropZone.addEventListener("drop", async (event) => {
   event.preventDefault();
   dropZone.classList.remove("dragover");
+  allowBuiltInProperties = false;
   try {
     const items = event.dataTransfer.items;
     if (!items) return;
@@ -974,11 +981,13 @@ dropZone.addEventListener("drop", async (event) => {
 
 browseFolderBtn.addEventListener("click", () => fileInput.click());
 fileInput.addEventListener("change", () => {
+  allowBuiltInProperties = false;
   try { handleFileList(fileInput.files); } catch (error) { alert("Resource import failed: " + error.message); }
   refreshUI();
 });
 browseZipBtn.addEventListener("click", () => resourceZipInput.click());
 resourceZipInput.addEventListener("change", async () => {
+  allowBuiltInProperties = false;
   const file = resourceZipInput.files && resourceZipInput.files[0];
   if (file) await importResourceZip(file, browseZipBtn);
   resourceZipInput.value = "";
@@ -995,6 +1004,7 @@ reselectLink.addEventListener("click", (event) => {
   event.stopPropagation();
   collectedFiles.clear();
   collectedBundles.length = 0;
+  allowBuiltInProperties = false;
   fileInput.value = "";
   resourceZipInput.value = "";
   refreshUI();

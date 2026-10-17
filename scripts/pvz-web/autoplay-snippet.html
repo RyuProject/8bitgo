@@ -98,10 +98,16 @@
   */
   var loadBar = document.getElementById('load-bar');
   var loadBarFill = loadBar ? loadBar.firstElementChild : null;
+  var splashFill = document.getElementById('pvz-loading-fill');
+  var splashPercent = document.getElementById('pvz-loading-percent');
+  var splashProgress = document.getElementById('pvz-loading-progress');
   function setProgress(ratio) {
-    if (!loadBarFill) return;
     var p = !ratio || ratio < 0 ? 0 : (ratio > 1 ? 1 : ratio);
-    loadBarFill.style.width = (p * 100).toFixed(2) + '%';
+    var percent = Math.round(p * 100);
+    if (loadBarFill) loadBarFill.style.width = (p * 100).toFixed(2) + '%';
+    if (splashFill) splashFill.style.width = (p * 100).toFixed(2) + '%';
+    if (splashPercent) splashPercent.textContent = percent + '%';
+    if (splashProgress) splashProgress.setAttribute('aria-valuenow', String(percent));
   }
   // 页面后段的 startGame()（把资源写进 WASM FS 那一段）复用同一个进度条
   window.__pvzSetProgress = setProgress;
@@ -110,6 +116,8 @@
     dropZone.classList.remove('ready');
     dropZone.classList.add('loading');
     dropZone.style.pointerEvents = 'none';
+    var splash = document.getElementById('pvz-loading-scene');
+    if (splash) splash.setAttribute('aria-label', LOCALE === 'en' ? 'Loading Plants vs. Zombies' : '正在加载植物大战僵尸');
     loadStatus.style.display = 'none';
     setProgress(0);
   }
@@ -121,6 +129,7 @@
     loadStatus.classList.add('has-error');
     collectedFiles.clear();
     collectedBundles.length = 0;
+    allowBuiltInProperties = false;
     refreshUI();
   }
 
@@ -855,6 +864,8 @@
           // 这里只剩真正可选的覆盖配置；reanim/ 已在下载阶段作为必需资源拦住。
           setStatusNow('已加载 ' + count + ' 个文件；' + warn, false);
         }
+        // 自动清单已完整拿到 main.pak 与必需 reanim 包；properties/ 只是覆盖配置，缺失时用引擎内置值。
+        allowBuiltInProperties = true;
         refreshUI();
         return wasmReady.then(function () {
           retryState().clear();

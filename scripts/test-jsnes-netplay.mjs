@@ -241,6 +241,10 @@ const playerSource = readFileSync(new URL('../src/emulator/EmulatorPlayer.tsx', 
 const panelSource = readFileSync(new URL('../src/emulator/JsnesNetplayPanel.tsx', import.meta.url), 'utf8')
 assert.match(playerSource, /initialRoomId=\{jsnesInviteCode\}/, '邀请房号必须交给可见面板')
 assert.match(panelSource, /joinRoom\(initialRoomId\)/, '可见面板必须自动加入邀请房')
+assert.match(playerSource, /autoHost=\{jsnesNetplayAutoHost\}/, '通用开房请求必须把自动开房意图交给 jsnes 面板')
+assert.match(panelSource, /if \(!autoHost \|\| initialRoomId \|\| autoHostStarted\.current\) return/, 'jsnes 面板必须自动创建通用按钮请求的房间')
+const matchRequestSource = playerSource.slice(playerSource.indexOf('const wantMatchRef'), playerSource.indexOf('/** 结束联机'))
+assert.match(matchRequestSource, /openMatchForCurrentRuntime\(\)/, '通用开房必须按当前运行时能力分派，不能只认 EmulatorJS')
 assert.doesNotMatch(
   playerSource.slice(playerSource.indexOf('const jsnesInviteCode'), playerSource.indexOf('/** netplay 给我们分配的身份 id')),
   /handle\.openJsnesNetplay\(/,

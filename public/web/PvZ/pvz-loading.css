@@ -1,0 +1,247 @@
+/*
+  首次资源下载会持续数十秒，单独做成游戏内的启动画面，避免玩家把空白说明页误判成卡死。
+  画面只在 #drop-zone.loading 时出现；任何下载或引擎错误仍会退出到上游资源选择页。
+*/
+#pvz-loading-scene {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  isolation: isolate;
+  color: #fff8cf;
+  background: #0b2118;
+  cursor: wait;
+}
+
+#drop-zone.loading #pvz-loading-scene {
+  display: flex;
+}
+
+/* 4:3 主画面完整保留；其它屏幕比例用同图模糊延展，避免裁掉两侧角色。 */
+#pvz-loading-scene::before {
+  content: "";
+  position: absolute;
+  inset: -7%;
+  z-index: -2;
+  background: url("pvz-loading-scene.webp") center / cover no-repeat;
+  filter: blur(28px) brightness(.48) saturate(.9);
+  transform: scale(1.05);
+}
+
+#pvz-loading-scene::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: radial-gradient(circle at 50% 45%, transparent 45%, rgba(2, 12, 8, .52) 100%);
+}
+
+.pvz-loading-frame {
+  position: relative;
+  width: min(100vw, calc(100vh * 4 / 3));
+  max-width: 100vw;
+  max-height: 100vh;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  box-shadow: 0 0 42px rgba(0, 0, 0, .7);
+}
+
+.pvz-loading-art {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.pvz-loading-shade {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(0, 30, 34, .18) 0%, transparent 28%),
+    linear-gradient(0deg, rgba(8, 23, 8, .48) 0%, transparent 25%);
+}
+
+.pvz-loading-logo {
+  position: absolute;
+  top: 3.5%;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: .12em;
+  width: 88%;
+  transform: translateX(-50%) rotate(-1deg);
+  white-space: nowrap;
+  font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif;
+  font-size: clamp(28px, 6.3vw, 82px);
+  line-height: .92;
+  letter-spacing: -.035em;
+  text-transform: uppercase;
+  filter: drop-shadow(0 .07em .02em rgba(0, 0, 0, .8));
+}
+
+.pvz-loading-logo .plants {
+  color: #83c62d;
+  -webkit-text-stroke: .045em #17380f;
+  text-shadow: 0 .06em 0 #497d18, 0 .1em 0 #163b0d;
+}
+
+.pvz-loading-logo .versus {
+  display: grid;
+  place-items: center;
+  width: 1.7em;
+  height: 1.5em;
+  margin: 0 -.1em;
+  color: #fff2c3;
+  border: .11em solid #322216;
+  background: linear-gradient(145deg, #746856, #39352e);
+  clip-path: polygon(8% 15%, 84% 0, 100% 72%, 24% 100%, 0 55%);
+  font-family: Georgia, serif;
+  font-size: .28em;
+  letter-spacing: 0;
+  -webkit-text-stroke: 0;
+  text-shadow: 0 1px 1px #000;
+}
+
+.pvz-loading-logo .zombies {
+  color: #e6e2d0;
+  -webkit-text-stroke: .045em #282924;
+  text-shadow: 0 .06em 0 #868879, 0 .1em 0 #383a34;
+}
+
+.pvz-loading-board {
+  position: absolute;
+  left: 50%;
+  bottom: 3.6%;
+  width: min(48%, 560px);
+  min-width: 300px;
+  padding: clamp(9px, 1.2vw, 16px) clamp(20px, 2.6vw, 34px) clamp(10px, 1.4vw, 18px);
+  transform: translateX(-50%) rotate(-.5deg);
+  color: #fff1b0;
+  background:
+    linear-gradient(100deg, transparent 0 2%, rgba(255, 255, 255, .08) 2.5% 3%, transparent 3.5% 96%, rgba(55, 17, 5, .25) 97%),
+    linear-gradient(180deg, #9b4e1e 0%, #733313 45%, #4d210d 100%);
+  border: clamp(2px, .32vw, 5px) solid #3e1d0b;
+  border-radius: 22% 14% 19% 13% / 30% 22% 34% 26%;
+  box-shadow:
+    inset 0 .18em 0 rgba(255, 199, 104, .25),
+    inset 0 -.2em 0 rgba(36, 12, 4, .38),
+    0 .35em .7em rgba(0, 0, 0, .5);
+}
+
+.pvz-loading-board::before,
+.pvz-loading-board::after {
+  content: "";
+  position: absolute;
+  top: 47%;
+  z-index: -1;
+  width: 11%;
+  height: 40%;
+  background: #54240d;
+  border: 3px solid #351506;
+  border-radius: 50%;
+  box-shadow: inset 0 3px 0 rgba(255, 190, 90, .16);
+}
+
+.pvz-loading-board::before { left: -8%; transform: rotate(-11deg); }
+.pvz-loading-board::after { right: -8%; transform: rotate(10deg); }
+
+.pvz-loading-pips {
+  position: absolute;
+  top: clamp(-28px, -2.6vw, -18px);
+  left: 50%;
+  display: flex;
+  gap: .45em;
+  align-items: flex-end;
+  transform: translateX(-50%);
+}
+
+.pvz-loading-pips i {
+  display: block;
+  width: clamp(12px, 1.45vw, 20px);
+  aspect-ratio: 1;
+  border: 2px solid #69210f;
+  border-radius: 50%;
+  background: radial-gradient(circle at 34% 28%, #f25c2d 0 10%, #c62c17 48%, #7d160d 100%);
+  box-shadow: 0 2px 3px rgba(0, 0, 0, .45);
+  animation: pvz-loading-bob 1.2s ease-in-out infinite alternate;
+}
+
+.pvz-loading-pips i:nth-child(2) {
+  width: clamp(16px, 1.85vw, 25px);
+  animation-delay: -.35s;
+}
+
+.pvz-loading-pips i:nth-child(3) { animation-delay: -.7s; }
+
+.pvz-loading-copy {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1em;
+  margin-bottom: .38em;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(13px, 1.45vw, 20px);
+  font-weight: 900;
+  letter-spacing: .12em;
+  text-shadow: 0 2px 1px #341307;
+}
+
+#pvz-loading-percent {
+  min-width: 3.5ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.pvz-loading-track {
+  height: clamp(9px, 1.05vw, 14px);
+  overflow: hidden;
+  border: 2px solid #351507;
+  border-radius: 999px;
+  background: rgba(28, 12, 6, .72);
+  box-shadow: inset 0 2px 3px rgba(0, 0, 0, .65), 0 1px 0 rgba(255, 211, 122, .28);
+}
+
+.pvz-loading-track > i {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, .25), transparent 24%),
+    linear-gradient(180deg, #c7ed46 0%, #76af24 52%, #3d751b 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .5), 0 0 12px rgba(164, 229, 53, .6);
+  transition: width .18s linear;
+}
+
+.pvz-loading-note {
+  position: absolute;
+  right: 2.5%;
+  bottom: 1.8%;
+  color: rgba(255, 255, 255, .76);
+  font-size: clamp(9px, .85vw, 12px);
+  letter-spacing: .04em;
+  text-shadow: 0 1px 3px #000;
+}
+
+@keyframes pvz-loading-bob {
+  from { transform: translateY(0) rotate(-4deg); }
+  to { transform: translateY(-5px) rotate(4deg); }
+}
+
+@media (max-width: 640px) {
+  .pvz-loading-logo { top: 4.5%; width: 94%; font-size: clamp(25px, 8vw, 52px); }
+  .pvz-loading-board { bottom: 4.5%; width: 68%; min-width: 230px; }
+  .pvz-loading-note { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pvz-loading-pips i { animation: none; }
+  .pvz-loading-track > i { transition: none; }
+}

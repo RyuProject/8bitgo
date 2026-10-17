@@ -12,8 +12,11 @@
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
 
-const { readNesMapper, jsnesCanRun, JSNES_MAPPERS } = await import(
+const { analyzeJsnesCompatibility, readNesMapper, jsnesCanRun, JSNES_MAPPERS } = await import(
   fileURLToPath(new URL('../src/emulator/nesMapper.ts', import.meta.url))
+)
+const { preferredNesRuntime } = await import(
+  fileURLToPath(new URL('../src/emulator/nesRuntimePolicy.ts', import.meta.url))
 )
 
 /**
@@ -85,14 +88,13 @@ for (const m of [0, 25, 256, 555, 4095]) {
   assert.equal(readNesMapper(tail), 118 & 0x0f)
 }
 
-/* ---------- 3c. 脏头不能被误认成 NES 2.0 ---------- */
+/* ---------- 3c. 疑似 NES 2.0 必须和 jsnes 作同一种解释 ---------- */
 {
   /*
-    NES 2.0 的判据是「字节 7 的 bit2-3 == 0b10」。光看那两位不够：把工具名写进字节 7 的
-    老文件，只要那个 ASCII 满足 `c & 0x0c === 0x08`（'H' 'I' 'X' 'Y' '8' '(' … 一大把）
-    就会被误认，然后拿另一个 ASCII 字节当 mapper 高位，算出上千的荒唐编号 ——
-    本来 jsnes 秒开的游戏被赶去下载一个 RetroArch 核心。
-    所以再要求 ROM 大小自洽（头里写的 PRG + CHR 不能超过文件本身）。
+    老工具写进去的 ASCII 可能碰巧满足 NES 2.0 标记。以前我们用“文件大小不自洽”把它纠正
+    回 iNES 1.0，但 jsnes 本身没有这条纠正规则，最终仍会按 NES 2.0 读成另一个 mapper。
+    运行时选择必须和真正执行者一致：宁可把这类歧义文件交给 EmulatorJS，也不能预判 jsnes
+    支持、开局后再确定性失败。
   */
   const body = 16 + 2 * 16384 + 1 * 8192
   const rom = new Uint8Array(body)
@@ -101,21 +103,22 @@ for (const m of [0, 25, 256, 555, 4095]) {
   const junk = 'HACK'
   for (let i = 0; i < junk.length; i++) rom[7 + i] = junk.charCodeAt(i)
   assert.equal((rom[7] & 0x0c) === 0x08, true, '前提：这个字节确实会被误认成 NES 2.0')
-  assert.equal(readNesMapper(rom), 4, '⭐ 大小对不上就不是 NES 2.0，退回只取低 4 位')
+  assert.equal(readNesMapper(rom), 324, '必须和 jsnes 一样按 NES 2.0 读出 mapper 324')
+  assert.equal(analyzeJsnesCompatibility(rom).code, 'unsupported-mapper')
 
   // 真的 NES 2.0（大小自洽）不能被误伤
   const real = new Uint8Array(body)
   real.set(header(256, { nes20: true }))
   assert.equal(readNesMapper(real), 256, '真 NES 2.0 且大小自洽 → 照常读 12 位')
 
-  // 指数记法（字节 9 的半字节 == 0xF）算不出确切大小，一律放行
+  // readNesMapper 只负责 mapper；指数尺寸是否安全由完整兼容分析单独决定。
   const expo = new Uint8Array(64)
   expo.set(header(300, { nes20: true }))
   expo[9] = 0x0f
-  assert.equal(readNesMapper(expo), 300, '指数记法不参与大小校验')
+  assert.equal(readNesMapper(expo), 300, '指数记法不改变 mapper')
 }
 
-/* ---------- 4. 不是 iNES → null（交给 jsnes 自己试） ---------- */
+/* ---------- 4. 不是 iNES → null（默认交给 EmulatorJS） ---------- */
 {
   assert.equal(readNesMapper(new Uint8Array(16)), null, '魔数不对就不是 iNES')
   assert.equal(readNesMapper(new Uint8Array(8)), null, '头都不够长')
@@ -124,7 +127,7 @@ for (const m of [0, 25, 256, 555, 4095]) {
   assert.equal(readNesMapper(unif), null)
 }
 
-/* ---------- 5. jsnesCanRun：拦下必然失败的，别误伤 ---------- */
+/* ---------- 5. jsnesCanRun：只放行 jsnes 真正接受的 iNES + mapper ---------- */
 {
   // 真实案例：忍者神龟 3
   assert.equal(jsnesCanRun(header(25)), false, 'mapper 25（VRC4）jsnes 跑不了，要让给 EmulatorJS')
@@ -136,8 +139,8 @@ for (const m of [0, 25, 256, 555, 4095]) {
   for (const m of JSNES_MAPPERS) {
     assert.equal(jsnesCanRun(header(m)), true, `mapper ${m} jsnes 实现了，不该被拦`)
   }
-  // 读不出格式的不拦 —— 这个函数只负责「提前拦下必然失败的」，不替 jsnes 做校验
-  assert.equal(jsnesCanRun(new Uint8Array(4)), true, '认不出格式时要放行')
+  // jsnes 2.1.0 只接受 iNES；8BG / UNIF / FDS 不能再先做一次必败尝试。
+  assert.equal(jsnesCanRun(new Uint8Array(4)), false, '认不出格式时交给 EmulatorJS')
 }
 
 /* ---------- 6. ArrayBuffer 和 Uint8Array 都要吃 ---------- */
@@ -145,6 +148,62 @@ for (const m of [0, 25, 256, 555, 4095]) {
   const u8 = header(25)
   const ab = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength)
   assert.equal(readNesMapper(ab), 25, 'ArrayBuffer 也要能读')
+}
+
+/* ---------- 6b. mapper 支持不等于板型兼容 ---------- */
+{
+  const normal = header(4)
+  const exactBytes = 16 + 2 * 16_384 + 8_192
+  assert.deepEqual(
+    analyzeJsnesCompatibility(normal, exactBytes),
+    {
+      compatible: true,
+      code: 'supported',
+      message: 'iNES 1.0 mapper 4 可由 jsnes 明确支持',
+      mapper: 4,
+      expectedBytes: exactBytes,
+      actualBytes: exactBytes,
+    },
+    '普通 NTSC iNES + 已实现 mapper 才是真正的 jsnes 快路径',
+  )
+
+  assert.equal(
+    analyzeJsnesCompatibility(normal, exactBytes - 1).code,
+    'truncated-rom',
+    'Range 响应给出总长时应在下载整包前拦住截断 ROM',
+  )
+
+  const noPrg = header(0)
+  noPrg[4] = 0
+  assert.equal(analyzeJsnesCompatibility(noPrg).code, 'invalid-prg-size')
+
+  const trainer = header(0)
+  trainer[6] |= 0x04
+  assert.equal(analyzeJsnesCompatibility(trainer).code, 'unsupported-trainer', 'jsnes 只跳过 trainer，并不会装入 $7000')
+
+  const submapper = header(4, { nes20: true })
+  submapper[8] |= 0x10
+  assert.equal(analyzeJsnesCompatibility(submapper).code, 'unsupported-submapper')
+
+  const pal20 = header(4, { nes20: true })
+  pal20[12] = 1
+  assert.equal(analyzeJsnesCompatibility(pal20).code, 'unsupported-timing')
+
+  const dendy20 = header(4, { nes20: true })
+  dendy20[12] = 3
+  assert.equal(analyzeJsnesCompatibility(dendy20).code, 'unsupported-timing')
+
+  const vsSystem = header(4, { nes20: true })
+  vsSystem[7] |= 1
+  assert.equal(analyzeJsnesCompatibility(vsSystem).code, 'unsupported-console')
+
+  const exponent = header(4, { nes20: true })
+  exponent[9] = 0x0f
+  assert.equal(analyzeJsnesCompatibility(exponent).code, 'unsupported-size-encoding')
+
+  const pal10 = header(0)
+  pal10[9] = 1
+  assert.equal(analyzeJsnesCompatibility(pal10).code, 'unsupported-timing')
 }
 
 /* ---------- 7. jsnes 的实现清单没漂移 ---------- */
@@ -170,4 +229,17 @@ for (const m of [0, 25, 256, 555, 4095]) {
   }
 }
 
-console.log('✅ NES mapper 解析测试通过：iNES 1.0 / NES 2.0 / 脏头 / 非 iNES / jsnes 清单对齐')
+/* ---------- 8. 运行时策略只看明确能力，不看外层文件大小 ---------- */
+{
+  assert.equal(preferredNesRuntime({ jsnesCompatible: true }), 'jsnes', '明确支持的 mapper 才默认走 jsnes')
+  assert.equal(preferredNesRuntime({ jsnesCompatible: false }), 'emulatorjs', '不支持的 mapper 直接走 EmulatorJS')
+  assert.equal(preferredNesRuntime({}), 'emulatorjs', '容器 / 未知格式稳定走 EmulatorJS，不再用包大小猜')
+  assert.equal(preferredNesRuntime({ jsnesNetplay: true }), 'jsnes', 'jsnes 邀请链接必须回到 jsnes')
+  assert.equal(
+    preferredNesRuntime({ jsnesNetplay: true, jsnesCompatible: false }),
+    'emulatorjs',
+    '已知不兼容时不能为邀请链接强制一个必败引擎',
+  )
+}
+
+console.log('✅ NES 运行时测试通过：iNES / mapper / 未知格式 / 稳定选择 / jsnes 清单对齐')

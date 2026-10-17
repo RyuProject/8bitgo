@@ -7,6 +7,7 @@ import { jsnesCanRun } from './nesMapper'
 import { resolveRuntime, runtimesFor, extOf } from './registry'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { isRomPackBytes, unpackRomPackBlob } from '@/services/romPack'
+import { isRomPackUrl } from '../../shared/rom-pack-format.js'
 import type { Capability, LoadPhase, Runtime, RuntimeHandle, RuntimeId, ScreenLayoutState, StageMode } from './types'
 import {
   createOverallRatio,
@@ -304,11 +305,6 @@ interface Props {
   className?: string
   /** 若有可直接访问的 ROM URL（对象存储 / 自制开源游戏），可跳过上传 */
   romUrl?: string
-  /**
-   * ROM 字节数（可选）。父组件用 useRomUrl 探测可用性时已经 HEAD 过一次、顺手带回 Content-Length，
-   * 这里直接采用就能省掉一次重复的 HEAD 探测（见 services/roms.ts）。不传则播放器自己 HEAD 取。
-   */
-  romSize?: number
   /** 这一款游戏指定的模拟器核心。不传就用平台默认 */
   core?: string
   /** 逐游戏的运行时覆盖（来自 GameRecord.runtime）；NES 可在 jsnes 与 emulatorjs 间切换 */
@@ -545,7 +541,6 @@ export function EmulatorPlayer({
   onReport,
   className,
   romUrl,
-  romSize: providedRomSize,
   core,
   /** 逐游戏的运行时覆盖（来自 GameRecord.runtime），NES 可在 jsnes / emulatorjs 间切换 */
   runtime,
@@ -670,19 +665,18 @@ export function EmulatorPlayer({
   const [matchBusy, setMatchBusy] = useState(false)
   /** jsnes 联机面板开关（与 EmulatorJS 的 MatchControls 平行，互不干扰） */
   const [jsnesNetplayOpen, setJsnesNetplayOpen] = useState(false)
+  /** 通用“创建联机房间”落到 jsnes 时，面板打开后要自动执行一次开房。 */
+  const [jsnesNetplayAutoHost, setJsnesNetplayAutoHost] = useState(false)
   /**
-   * NES ROM 真实字节数：用来在 jsnes（小 ROM）与 EmulatorJS（大 ROM）之间分流。
-   * 本地 ROM 页传的是 string URL，直接 HEAD 一次读 Content-Length 即可；
-   * 读不到（跨域被拦 / blob URL）就回落到默认 jsnes，不强行改默认值。
+   * 远端直链 `.nes` 的格式 / mapper 探测结果必须和 URL 绑在一起。
+   * 只存一个裸 boolean 会在切语言的那一帧把上一份 ROM 的结果套到新地址上，
+   * autoplay 随即用错引擎；对象里的 url 是防止这类竞态的身份闸。
    */
-  const [romSize, setRomSize] = useState<number | undefined>(undefined)
-
-  /**
-   * NES：提前探出的 mapper 兼容性（iNES 头 16 字节，远端用 Range 取）。
-   * true = jsnes 支持；false = 不支持；undefined = 还没探明或探不了（包 / 本地 / 被拦）。
-   * 交给 registry 的 jsnesCompatible，让「选引擎」阶段就避开已知的失败，而不是等挂载时再换。
-   */
-  const [jsnesCompatible, setJsnesCompatible] = useState<boolean | undefined>(undefined)
+  const [nesProbe, setNesProbe] = useState<{
+    url: string
+    ready: boolean
+    compatible?: boolean
+  }>({ url: '', ready: false })
   /** 当前运行时句柄 + 它上报的能力集合（决定工具栏画哪些按钮）。
    *  必须在引用它的 ?jsnesp2p effect 之前声明：该 effect 的依赖数组在渲染期访问 handle，
    *  若声明在它之后会触发 TDZ（TS2448/2454 + 运行时 ReferenceError）。 */
@@ -711,6 +705,7 @@ export function EmulatorPlayer({
   // 连接也放在面板里做，信令/ROM/状态回调才会更新玩家眼前的这一张界面。
   useEffect(() => {
     if (!jsnesInviteCode || status !== 'running' || !handle?.openJsnesNetplay) return
+    setJsnesNetplayAutoHost(false)
     setJsnesNetplayOpen(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, handle, jsnesInviteCode])
@@ -1550,83 +1545,72 @@ export function EmulatorPlayer({
    */
   const [liveFrozen, setLiveFrozen] = useState(false)
 
-  // 云端 ROM 也按其文件扩展名选引擎；还没拿到地址时退回平台默认。
-  // runtimeOverride 是逐游戏覆盖（GameRecord.runtime）：NES 可在 jsnes 与 emulatorjs 间切换
-  // NES 再按 ROM 实际大小分流：< 25KB 走轻量 jsnes，>= 25KB 走 EmulatorJS（见 registry.ts）。
-  // 这里只负责把真实字节数现取回来；拿不到就回落默认，不改现有行为。
-  useEffect(() => {
-    if (platform.id !== 'nes') return
-    // 父组件已通过 romSize 把 HEAD 探出的大小传下来：直接采用，省一次请求（见 services/roms.ts）
-    if (providedRomSize != null) {
-      setRomSize(providedRomSize)
-      return
-    }
-    // 本地 ROM 页没有可 HEAD 的远程地址；大小在玩家选文件时由其 File.size 决定，
-    // 这里先回落默认（jsnes），别让 pageRuntime 永远 undefined 把开始按钮卡死。
-    if (!romUrl || typeof romUrl !== 'string') {
-      setRomSize(-1)
-      return
-    }
-    let aborted = false
-    // 进入“等待大小”态：先不定引擎，避免一上来用错（尤其 ?autoplay 自动开局），
-    // 也避免大小翻转时重复开局。
-    setRomSize(undefined)
-    fetch(romUrl, { method: 'HEAD' })
-      .then((r) => {
-        const len = Number(r.headers.get('content-length'))
-        if (!aborted) setRomSize(Number.isFinite(len) && len > 0 ? len : -1)
-      })
-      .catch(() => {
-        if (!aborted) setRomSize(-1)
-      })
-    return () => {
-      aborted = true
-    }
-  }, [platform.id, romUrl, providedRomSize])
-
   // 带 ?jsnesp2p=CODE 的邀请链接进来要直接进 jsnes 联机房：这条链接只在引擎是 jsnes 时进得去
   // （EmulatorJS 不实现 openJsnesNetplay），所以开局前必须把 NES 钉在 jsnes 上，否则会静默连不上。
   const jsnesNetplay = Boolean(jsnesInviteCode)
 
-  // NES：提前探一次 mapper（iNES 头仅 16 字节，远端用 Range 取前 16 字节即可），
-  // 把结果交给 registry 的 jsnesCompatible —— 已知的「jsnes 跑不了的 mapper」在选引擎阶段
-  // 就直接走 EmulatorJS，省掉「先试 jsnes 再换引擎」的闪动；带 ?jsnesp2p 进房时也能避免
-  // 被钉到一个没有联机能力的引擎上。
-  // ⚠️ 仅对远端直接 .nes 有效：ROM 包（外层是打包格式）的内层头读不到，跳过，回落挂载时判定。
-  useEffect(() => {
-    if (platform.id !== 'nes') { setJsnesCompatible(undefined); return }
-    if (!romUrl || typeof romUrl !== 'string') { setJsnesCompatible(undefined); return }
-    if (romArchiveRef(romUrl)) { setJsnesCompatible(undefined); return }
-    let aborted = false
-    fetch(romUrl, { headers: { Range: 'bytes=0-15' } })
-      .then((r) => {
-        if (aborted) return
-        // 服务器不支持 Range 会回 200 整包：不读（避免把整份 ROM 拉进内存），回落挂载时兜底。
-        if (r.status !== 206) { setJsnesCompatible(undefined); return null }
-        return r.arrayBuffer()
-      })
-      .then((buf) => { if (buf && !aborted) setJsnesCompatible(jsnesCanRun(buf)) })
-      .catch(() => { if (!aborted) setJsnesCompatible(undefined) })
-    return () => { aborted = true }
-  }, [platform.id, romUrl])
+  /**
+   * 只有“未指定运行时的远端直链 `.nes`”值得做 16 字节 Range 探测。
+   * `.8bg` 虽然 extOf 能还原出内层 `.nes`，开头却是容器头；ZIP / 归档地址也同理，
+   * 误探会把 `8BG1` 当未知 ROM。容器默认交给 EmulatorJS，后台可按游戏明确指定 jsnes。
+   */
+  const shouldProbeNes = platform.id === 'nes'
+    && !runtime
+    && !jsnesNetplay
+    && Boolean(romUrl)
+    && extOf(romUrl) === 'nes'
+    && !isRomPackUrl(romUrl)
+    && !romArchiveRef(romUrl ?? '')
 
-  // NES：ROM 大小还没探明前 pageRuntime 故意返回 undefined —— 这样各「自动开局」逻辑
-  // （autoplay / 想开房 / ROM 失败重试）会等到大小回来再触发，不会先拿错误的 jsnes 开一局，
-  // 也不会在大小翻转时重复开局。大小探明（含探失败回落 -1）后才是真正的运行时。
+  useEffect(() => {
+    if (!shouldProbeNes || !romUrl) return
+    const probeUrl = romUrl
+    const controller = new AbortController()
+    setNesProbe({ url: probeUrl, ready: false })
+    fetch(probeUrl, { headers: { Range: 'bytes=0-15' }, signal: controller.signal })
+      .then(async (response) => {
+        // 不支持 Range 时若调用 arrayBuffer()，浏览器会继续下载整份 ROM，只为读 16 字节。
+        // 主动取消响应体，默认走 EmulatorJS；真正开局时再由正常下载链获取完整内容。
+        if (response.status !== 206) {
+          await response.body?.cancel().catch(() => undefined)
+          return undefined
+        }
+        const totalMatch = /\/(\d+)$/.exec(response.headers.get('content-range') ?? '')
+        const totalBytes = totalMatch ? Number(totalMatch[1]) : undefined
+        return { header: await response.arrayBuffer(), totalBytes }
+      })
+      .then((probe) => {
+        if (controller.signal.aborted) return
+        setNesProbe({
+          url: probeUrl,
+          ready: true,
+          compatible: probe ? jsnesCanRun(probe.header, probe.totalBytes) : undefined,
+        })
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setNesProbe({ url: probeUrl, ready: true })
+      })
+    return () => controller.abort()
+  }, [romUrl, shouldProbeNes])
+
+  const currentNesProbe = nesProbe.url === romUrl ? nesProbe : undefined
+  const jsnesCompatible = shouldProbeNes ? currentNesProbe?.compatible : undefined
+
+  // 直链 `.nes` 的头还没回来前故意不定引擎：autoplay / 切语言重开都必须等当前 URL 的结果，
+  // 不能先拿上一份 ROM 的 mapper 开局。容器包无需等待，稳定默认 EmulatorJS。
   const pageRuntime = useMemo(() => {
-    if (platform.id === 'nes' && romSize === undefined) return undefined
+    if (shouldProbeNes && !currentNesProbe?.ready) return undefined
     return resolveRuntime({
       platform: platform.id,
       ext: extOf(romUrl),
       runtimeOverride: runtime,
-      romSize: romSize != null && romSize >= 0 ? romSize : undefined,
       jsnesNetplay,
       jsnesCompatible,
     })
-  }, [platform.id, runtime, romUrl, romSize, jsnesNetplay, jsnesCompatible])
+  }, [platform.id, runtime, romUrl, shouldProbeNes, currentNesProbe?.ready, jsnesNetplay, jsnesCompatible])
 
-  /** NES 是否已拿到 ROM 大小（或确认拿不到）：没拿到前「开始」按钮进入准备态，不报错也不误显「不支持」 */
-  const engineReady = platform.id !== 'nes' || romSize !== undefined
+  /** 当前直链 `.nes` 的头是否已探完；等待时“开始”进入准备态，不误显为平台不支持。 */
+  const engineReady = !shouldProbeNes || Boolean(currentNesProbe?.ready)
   const supported = Boolean(pageRuntime) || onlineOk
   /** js-dos 预热必须知道最终后端，否则会把普通 DOS 的 1.4 MB 核心当成 Win95 的 7.5 MB 核心。 */
   const requestedPrewarmCore = core ?? platform.core
@@ -2025,7 +2009,7 @@ export function EmulatorPlayer({
         reportStartup('first_frame')
       },
       /*
-        引擎说「这份 ROM 得换个人跑」（目前只有 jsnes 会说：它只实现了 21 个 mapper）。
+        引擎说「这份 ROM 得换个人跑」（目前只有 jsnes 会说：格式 / 板型能力不兼容）。
 
         和 onError 分开处理，因为该做的事正好相反：onError 会原样自动重试几次，
         而这里重试一万次也一样，得换引擎。ROM 字节已经在 IndexedDB 缓存里，换了不重下。
@@ -2041,7 +2025,7 @@ export function EmulatorPlayer({
             (next ? `，换 ${next.id} 重来` : '，而且没有别的引擎可用了'),
         )
         if (!next) {
-          // 调试：引擎明确说「这份 ROM 我跑不了」（如 jsnes 只实现 21 个 mapper）→ 模拟器不支持
+          // 调试：引擎明确说「这份 ROM 我跑不了」（如 jsnes 不支持该 mapper / submapper）→ 模拟器不支持
           if (debugRef.current) {
             setDiagCause('runtime')
             setDiag((d) => d.map((e) => (e.stage === 'launch' ? { ...e, status: 'fail', detail: reason } : e)))
@@ -2540,6 +2524,24 @@ export function EmulatorPlayer({
     // 按钮一直显示「正在开房…」直到房间号到手，玩家才不会对着一个没有邀请链接的房间发愣。
   }
 
+  /**
+   * 通用“创建联机房间”必须按当前句柄的真实能力分派。
+   * jsnes 没有 openNetplay，它用独立的 openJsnesNetplay；以前这里只检查前者，
+   * 所以详情页按钮会把游戏启动起来却静默不建房。
+   */
+  const openMatchForCurrentRuntime = (): boolean => {
+    if (handle?.openNetplay) {
+      openMatch()
+      return true
+    }
+    if (handle?.openJsnesNetplay) {
+      setJsnesNetplayAutoHost(true)
+      setJsnesNetplayOpen(true)
+      return true
+    }
+    return false
+  }
+
   /** 房间号到手（或者等太久了）就把「正在开房…」收掉 */
   useEffect(() => {
     if (!matchBusy) return
@@ -2567,7 +2569,10 @@ export function EmulatorPlayer({
       onMatchRequest(() => {
         if (hosting || matchBusy) return
         // 已经在跑：立刻开，用不着留标记
-        if (status === 'running') return openMatch()
+        if (status === 'running') {
+          if (!openMatchForCurrentRuntime()) setNotice(t.player.matchFailed)
+          return
+        }
         /**
          * 还没跑：先跑起来，running 之后由下面那个 effect 补上开房。
          *
@@ -2585,9 +2590,9 @@ export function EmulatorPlayer({
           wantMatchRef.current = true
         }
       }),
-    // openMatch / start 每次渲染都是新的，订阅只要一次 —— 用 ref 读最新的状态即可
+    // openMatchForCurrentRuntime / start 每次渲染都是新的；状态变化时重订阅以拿到最新句柄。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [status, hosting, matchBusy, romUrl, pageRuntime],
+    [status, hosting, matchBusy, romUrl, pageRuntime, handle],
   )
 
   // 游戏跑起来了，而且是因为「想开房」才跑的 —— 把那一步补上
@@ -2602,9 +2607,9 @@ export function EmulatorPlayer({
       return
     }
     if (status !== 'running') return
-    // 这个引擎 / 平台开不了房：别把标记一直挂着，等下一次真的点
+    // 这个引擎 / 平台开不了房：别把标记一直挂着；同时给出反馈，不能再静默吞掉点击。
     wantMatchRef.current = false
-    if (handle?.openNetplay) openMatch()
+    if (!openMatchForCurrentRuntime()) setNotice(t.player.matchFailed)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, handle])
 
@@ -2762,8 +2767,8 @@ export function EmulatorPlayer({
           云端这一路一直没有。补齐，两条路说同一句话。
         */
         if (!pageRuntime) {
-          // NES 还在探 ROM 大小：不是“没有引擎”，是“还没定”，静默等，不报 noRuntime 错
-          if (platform.id === 'nes' && romSize === undefined) return
+          // 远端直链 NES 还在探格式 / mapper：不是“没有引擎”，静默等当前 URL 的结果。
+          if (!engineReady) return
           setError(fmt(t.player.noRuntime, { platform: platformLabel(t, platform.id, platform.name) }))
           return
         }
@@ -2864,17 +2869,15 @@ export function EmulatorPlayer({
         return
       }
 
-      // 按「平台 + 文件扩展名」选引擎：.nes 会走 jsnes，.swf 走 Ruffle，其余交给 EmulatorJS
-      // NES 顺带把本地文件大小带进去，让“小 ROM 用 jsnes / 大 ROM 用 EmulatorJS”的规则对本地 ROM 也生效
+      // 按「平台 + 文件扩展名」选引擎：.swf 走 Ruffle；NES 则按 iNES 格式与 mapper 能力决定。
       // 带 ?jsnesp2p= 进来的本地 ROM 同样要钉在 jsnes 上，才能进 jsnes 联机房
-      // 本地文件头已在手，顺手用前 16 字节预判 mapper 兼容性（jsnesCanRun），交给 registry 的
-      // jsnesCompatible：小 ROM 但 jsnes 不支持的，直接走 EmulatorJS，也避免 ?jsnesp2p 钉到无联机能力的引擎。
+      // 本地文件头已在手，顺手用前 16 字节预判：只有 jsnes 真正支持的 iNES mapper 才走它；
+      // UNIF / FDS / 其它未知格式和不支持的 mapper 直接走 EmulatorJS，不先做一次必败尝试。
       const localJsnesCompatible: boolean | undefined =
-        targetPlatform === 'nes' ? jsnesCanRun(await picked.slice(0, 16).arrayBuffer()) : undefined
+        targetPlatform === 'nes' ? jsnesCanRun(await picked.slice(0, 16).arrayBuffer(), picked.size) : undefined
       const runtime = resolveRuntime({
         platform: targetPlatform,
         ext: extOf(picked),
-        romSize: picked.size || undefined,
         jsnesNetplay,
         jsnesCompatible: localJsnesCompatible,
       })
@@ -2901,7 +2904,7 @@ export function EmulatorPlayer({
       setFile(picked)
       begin(picked, targetPlatform, runtime)
     },
-    [platform, romUrl, pageRuntime, onDetectMismatch, onPlatformChange, onDetectFailed, t],
+    [platform, romUrl, pageRuntime, engineReady, jsnesNetplay, onDetectMismatch, onPlatformChange, onDetectFailed, t],
   )
 
   /*
@@ -3044,13 +3047,16 @@ export function EmulatorPlayer({
       romUrl,
       checking: romChecking,
     })) return
+    // 直链 `.nes` 换语言后还要等“当前 URL”的 mapper 探测；现在就消费意图，start() 会
+    // 因 pageRuntime 未定而静默返回，结果玩家只看到旧会话被关掉、新语言永远不开。
+    if (!engineReady || !pageRuntime) return
     restartWithLangRef.current = null
     void start(null)
     // start() 里会先清掉提示，所以这句要放它后面
     setNotice(fmt(t.player.romLangSwitched, { lang: ROM_LANG_LABEL[pending] }))
-    // 同 key 切换只变 romLang / checking；start 是 useCallback，不能放依赖造成无关重开。
+    // 同 key 切换只变 romLang / checking；直链 NES 还要在 pageRuntime 定下来时再检查一次。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [romUrl, romLang, romLangSelection, romChecking])
+  }, [romUrl, romLang, romLangSelection, romChecking, engineReady, pageRuntime])
 
   useEffect(() => {
     if (!restartAfterRomFailureRef.current || romChecking) return
@@ -4525,7 +4531,10 @@ export function EmulatorPlayer({
               variant="secondary"
               size="sm"
               className="max-sm:h-11 max-sm:min-w-11 max-sm:px-2"
-              onClick={() => setJsnesNetplayOpen(true)}
+              onClick={() => {
+                setJsnesNetplayAutoHost(false)
+                setJsnesNetplayOpen(true)
+              }}
               title="NES 联机（jsnes 原生 P2P，与 EmulatorJS 联机互不影响）"
             >
               <span className="hidden sm:inline">jsnes 联机</span>
@@ -4597,7 +4606,11 @@ export function EmulatorPlayer({
         gameSlug={gameSlug}
         gameName={gameName}
         initialRoomId={jsnesInviteCode}
-        onClose={() => setJsnesNetplayOpen(false)}
+        autoHost={jsnesNetplayAutoHost}
+        onClose={() => {
+          setJsnesNetplayOpen(false)
+          setJsnesNetplayAutoHost(false)
+        }}
       />
     )}
     {/*

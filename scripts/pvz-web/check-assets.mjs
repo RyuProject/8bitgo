@@ -12,6 +12,7 @@
   用法：
     node scripts/pvz-web/check-assets.mjs                  # 抽查 cn + en（每目录 30 条）
     node scripts/pvz-web/check-assets.mjs --locale cn
+    node scripts/pvz-web/check-assets.mjs --base https://pvz.8bitgo.com/pvz-data/
     node scripts/pvz-web/check-assets.mjs --limit 100      # 每目录抽查 100 条
     node scripts/pvz-web/check-assets.mjs --all            # 全量（2000+ 请求，慢）
 */
@@ -32,6 +33,11 @@ const has = (name) => argv.includes('--' + name)
 const LOCALES = opt('locale', null) ? [opt('locale', null)] : ['cn', 'en']
 const LIMIT = has('all') ? Infinity : Number(opt('limit', 30)) || 30
 const CONCURRENCY = Math.max(1, Number(opt('conc', 10)) || 10)
+// 浏览器实际走 Pages 同源代理；直接检查 html5.8bitgo.com 会因缺 CORS 得到误导性的失败结果。
+const publicDataUrl = new URL(opt('base', 'https://pvz.8bitgo.com/pvz-data/'))
+publicDataUrl.pathname = publicDataUrl.pathname.replace(/\/*$/, '/')
+const PUBLIC_DATA_BASE = publicDataUrl.href
+const PUBLIC_ORIGIN = publicDataUrl.origin
 
 function isRequired(fs) { return fs === 'main.pak' || fs.startsWith('reanim/') || fs === '@bundle/reanim' }
 function topDir(fs) { return fs === '@bundle/reanim' ? 'reanim-pack' : (fs.indexOf('/') > 0 ? fs.split('/')[0] : '(根)') }
@@ -76,7 +82,7 @@ async function head(url) {
       method: 'HEAD',
       redirect: 'follow',
       signal: ctl.signal,
-      headers: { Origin: 'https://8bitgo.com' },
+      headers: { Origin: PUBLIC_ORIGIN },
     })
     return {
       ok: r.ok,
@@ -93,12 +99,10 @@ async function head(url) {
 }
 
 async function checkLocale(locale) {
-  const htmlPath = resolve(ROOT, 'public/web/PvZ', locale, 'index.html')
   const manifestPath = resolve(ROOT, 'public/web/PvZ', locale, 'pvz-manifest.json')
 
-  let html, manifest
+  let manifest
   try {
-    html = readFileSync(htmlPath, 'utf8')
     manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
   } catch (e) {
     console.error('[' + locale + '] 读文件失败：' + e.message)
@@ -106,9 +110,8 @@ async function checkLocale(locale) {
     return
   }
 
-  // DATA_BASE 写在页面里，取它才能拼出真实 URL —— 拼错一层是最常见的部署失误
-  const m = html.match(/PVZ_DATA_BASE\s*=\s*['"]([^'"]*)['"]/)
-  const DATA_BASE = m ? m[1] : './'
+  // 源文件保留 R2 地址供主站兼容；线上 Pages 会在构建期改走同源代理，所以自检也必须验代理链。
+  const DATA_BASE = PUBLIC_DATA_BASE
   console.log('\n=== [' + locale + '] DATA_BASE = ' + DATA_BASE)
   const rawEntries = Array.isArray(manifest)
     ? manifest
@@ -158,7 +161,7 @@ async function checkLocale(locale) {
       const e = picked[i]
       const url = new URL(e.r2.split('/').map(encodeURIComponent).join('/'), DATA_BASE).href
       const r = await head(url)
-      const corsOk = new URL(url).origin === 'https://8bitgo.com' || r.allowOrigin === '*' || r.allowOrigin === 'https://8bitgo.com'
+      const corsOk = new URL(url).origin === PUBLIC_ORIGIN || r.allowOrigin === '*' || r.allowOrigin === PUBLIC_ORIGIN
       const sizeOk = !e.size || !r.length || e.size === r.length
       results.push({ fs: e.fs, r2: e.r2, expectedSize: e.size || 0, corsOk, sizeOk, ...r, ok: r.ok && corsOk && sizeOk })
     }
@@ -191,7 +194,7 @@ async function checkLocale(locale) {
   console.log('    示例（前 5 条）：')
   for (const r of missing.slice(0, 5)) {
     let detail = String(r.status)
-    if (r.ok === false && r.status === 200 && !r.corsOk) detail += '，CORS 缺少 https://8bitgo.com'
+    if (r.ok === false && r.status === 200 && !r.corsOk) detail += '，CORS 缺少 ' + PUBLIC_ORIGIN
     if (r.status === 200 && !r.sizeOk) detail += `，长度 ${r.length}（清单 ${r.expectedSize}）`
     console.log('       ' + DATA_BASE + r.r2 + '  → ' + detail)
   }

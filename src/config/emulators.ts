@@ -7,14 +7,12 @@
  *   3. 再否则退回平台自己配置的引擎（src/data/platforms.ts 的 runtime 字段）
  *
  * 覆盖表只在该引擎 available() 为真时生效，否则自动往下走，不会把页面卡死。
+ * NES 是例外：同为 `.nes`，mapper 支持范围也不同，必须走 registry.ts 的能力策略，
+ * 不能在这里只凭扩展名写死成 jsnes。
  */
 import type { RuntimeId } from '@/emulator/types'
 
 export const EXT_RUNTIME_OVERRIDES: Record<string, RuntimeId> = {
-  // NES 交给轻量的 jsnes（纯 JS，启动快、包小）
-  // 想换回 EmulatorJS 的 RetroArch 核心（更精准、支持金手指与更多 mapper），把这行删掉即可
-  nes: 'jsnes',
-
   // Flash
   swf: 'ruffle',
 

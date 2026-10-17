@@ -6,8 +6,10 @@
 const GAME = /*__GAME_CONFIG__*/ null
 
 const ASSET_BASE_DEFAULT = 'https://assets.8bitgo.com'
+const PVZ_DATA_BASE_DEFAULT = 'https://html5.8bitgo.com/PvZ/properties'
 const SAFE_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 const SAFE_DIABLO_CORE = /^(?:Diablo|DiabloSpawn|MpqCmp)\.[a-f0-9]{8}\.wasm$/
+const SAFE_PVZ_DATA_PATH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,1023}$/
 const MUTABLE_FRAMEWORK_FILES = new Set(['dotnet.js', 'blazor.boot.json'])
 
 function acceptsBrotli(value) {
@@ -207,6 +209,63 @@ async function proxyCs16Api(request, configuredOrigin) {
   return fetch(upstream)
 }
 
+function pvzDataPath(pathname) {
+  if (!pathname.startsWith('/pvz-data/')) return undefined
+  let relative
+  try { relative = decodeURIComponent(pathname.slice('/pvz-data/'.length)) } catch { return null }
+  if (!SAFE_PVZ_DATA_PATH.test(relative) || relative.includes('//') || relative.includes('\\')) return null
+  const parts = relative.split('/')
+  if (parts.some((part) => !part || part === '.' || part === '..')) return null
+  return parts.map(encodeURIComponent).join('/')
+}
+
+function pvzDataBase(value) {
+  try {
+    const url = new URL(String(value || PVZ_DATA_BASE_DEFAULT))
+    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) return ''
+    return url.href.replace(/\/+$/, '')
+  } catch {
+    return ''
+  }
+}
+
+async function proxyPvzData(request, relativePath, configuredBase) {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    return new Response('method not allowed', { status: 405, headers: { Allow: 'GET, HEAD' } })
+  }
+  const base = pvzDataBase(configuredBase)
+  if (!base) return new Response('PvZ data origin is not configured', { status: 503 })
+
+  const headers = new Headers({ 'Accept-Encoding': 'identity' })
+  // Range 是大包按需读取和断点续传的基础；条件请求则避免边缘代理重复搬运未变的数据。
+  for (const name of ['Range', 'If-None-Match', 'If-Modified-Since', 'If-Range']) {
+    const value = request.headers.get(name)
+    if (value) headers.set(name, value)
+  }
+  const upstream = await fetch(`${base}/${relativePath}`, {
+    method: request.method,
+    headers,
+    redirect: 'follow',
+  })
+  const responseHeaders = new Headers()
+  for (const name of [
+    'content-type', 'content-length', 'content-range', 'accept-ranges',
+    'etag', 'last-modified', 'cache-control',
+  ]) {
+    const value = upstream.headers.get(name)
+    if (value) responseHeaders.set(name, value)
+  }
+  // 浏览器实际走同源；仍补 CORS，方便运维用 pages.dev / 自定义域交叉探测同一份对象。
+  responseHeaders.set('Access-Control-Allow-Origin', '*')
+  responseHeaders.set('Cross-Origin-Resource-Policy', 'same-origin')
+  responseHeaders.set('X-Content-Type-Options', 'nosniff')
+  return new Response(request.method === 'HEAD' ? null : upstream.body, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers: responseHeaders,
+  })
+}
+
 async function proxyRuntime(request, asset) {
   const requestHeaders = new Headers()
   requestHeaders.set('Accept-Encoding', 'identity')
@@ -280,6 +339,12 @@ export default {
 
     if (GAME.name === 'cs16' && url.pathname.startsWith('/api/cs16/')) {
       return proxyCs16Api(request, env.CS16_API_ORIGIN || GAME.apiOrigin)
+    }
+
+    if (GAME.name === 'pvz') {
+      const dataPath = pvzDataPath(url.pathname)
+      if (dataPath === null) return new Response('bad path', { status: 400 })
+      if (dataPath) return proxyPvzData(request, dataPath, env.PVZ_DATA_BASE_URL)
     }
 
     const base = String(env.RUNTIME_ASSET_BASE_URL || ASSET_BASE_DEFAULT).replace(/\/+$/, '')

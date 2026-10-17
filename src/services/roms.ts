@@ -678,8 +678,8 @@ export interface ProbeOutcome {
   /**
    * 文件字节数（HEAD 响应的 Content-Length）。只在 HEAD 成功那条路径上有值；
    * 走 GET Range 兜底探测时 Content-Length 是那一片的长度，不能当整份大小，故不取。
-   * 播放器拿它按 ROM 大小分流引擎（如 NES：小 ROM 用 jsnes、大 ROM 用 EmulatorJS），
-   * 顺带省掉一次单独的 HEAD 探测。
+   * 这是外层对象大小：`.8bg` / ZIP 压缩参数会改变它，不能拿来判断内层 ROM 的模拟器兼容性。
+   * 保留该字段供下载提示、诊断和其它确实需要传输体积的界面使用。
    */
   size?: number
 }

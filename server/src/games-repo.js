@@ -180,7 +180,9 @@ export async function listGames(q = {}) {
     只会觉得我们的分页时好时坏 —— 这正是最难被报告的一类 bug。
   */
   if (q.excludeAdult) where.push('g.adult = 0')
-  if (q.multiplayer) where.push('g.multiplayer = 1')
+  // 联机专区只能列出服务端真的允许开房的游戏。历史脏数据可能勾了联机却仍是 1 人，
+  // 只筛 multiplayer 会把一个注定失败的「创建房间」入口送到首页和联机游戏库。
+  if (q.multiplayer) where.push('g.multiplayer = 1 AND g.players >= 2')
   if (q.coin) where.push('g.coin_reward > 0')
   // 字母索引（参照 /pro 那种 A-Z 快跳）：按标题首字母过滤。
   // 只认 A-Z，拼进 LIKE 的模式固定是「单字母 + %」，没有通配符注入空间

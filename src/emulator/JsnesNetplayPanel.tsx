@@ -3,8 +3,8 @@
  * 只负责「开房 / 进房 / 调输入延迟 / 复制邀请链接」这一层 UI；
  * 真正的 P2P 握手与逐帧同步在 src/emulator/jsnesNetplay.ts + adapters/jsnes.ts 里。
  *
- * NES 默认运行时就是 jsnes，所以 NES 不用切到 EmulatorJS 也能联机 ——
- * 这正是当初给 jsnes 加这套联机的用意；EmulatorJS 联机作为兜底层保持不变。
+ * 当前游戏实际跑在 jsnes 时可直接开锁步联机；跑在 EmulatorJS 时仍用它自己的联机链路，
+ * 两套协议由播放器按运行时句柄分派，不能只看平台名猜。
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button, buttonClasses } from '@/components/ui/Button'
@@ -17,12 +17,14 @@ interface Props {
   gameName: string
   /** 邀请链接进来时由面板自己自动加入，状态回调才能落在这张面板上。 */
   initialRoomId?: string
+  /** 详情页通用开房按钮进来时，面板挂载后直接创建房间。 */
+  autoHost?: boolean
   onClose?: () => void
 }
 
 type LinkState = RTCPeerConnectionState | 'idle' | 'connecting'
 
-export function JsnesNetplayPanel({ handle, gameSlug, gameName, initialRoomId = '', onClose }: Props) {
+export function JsnesNetplayPanel({ handle, gameSlug, gameName, initialRoomId = '', autoHost = false, onClose }: Props) {
   const [mode, setMode] = useState<'host' | 'join' | null>(null)
   const [started, setStarted] = useState(false)
   const [roomId, setRoomId] = useState('')
@@ -33,6 +35,7 @@ export function JsnesNetplayPanel({ handle, gameSlug, gameName, initialRoomId = 
   const [copied, setCopied] = useState(false)
   const [error, setError] = useState('')
   const autoJoinStarted = useRef(false)
+  const autoHostStarted = useRef(false)
 
   const inviteLink = useMemo(() => {
     if (!roomId || !gameSlug) return ''
@@ -98,6 +101,15 @@ export function JsnesNetplayPanel({ handle, gameSlug, gameName, initialRoomId = 
     // initialRoomId 是邀请链接在本次挂载时的快照；面板不负责监听地址栏变化。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialRoomId])
+
+  useEffect(() => {
+    if (!autoHost || initialRoomId || autoHostStarted.current) return
+    autoHostStarted.current = true
+    // 通用“创建联机房间”已经表达了开房意图；再让玩家在弹窗里点第二次既多余又容易误解。
+    startHost()
+    // autoHost 是本次面板挂载的快照；StrictMode 重放靠 ref 防止重复占用一个会话。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoHost, initialRoomId])
 
   const reset = () => {
     handle.closeNetplay?.()

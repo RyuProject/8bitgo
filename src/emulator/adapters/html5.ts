@@ -15,7 +15,7 @@ import { html5CanvasHasFrame, html5RuntimeSignal } from '../html5Lifecycle'
 const SAVE_BRIDGE_SOURCE = '8bitgo-save-bridge'
 const SAVE_BRIDGE_VERSION = 1
 const SAVE_BRIDGE_TIMEOUT_MS = 15_000
-const PVZ_SHELL_VERSION = '20260924-resume1'
+const PVZ_SHELL_VERSION = '20261017-loading2'
 const LEGACY_PAGES_ENTRIES = [
   ['/web/PvZ', 'https://pvz.8bitgo.com'],
   ['/web/diablo', 'https://diablo.8bitgo.com'],

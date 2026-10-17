@@ -891,12 +891,14 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
               value={form.runtime ?? ''}
               onChange={(e) => set('runtime', (e.target.value || undefined) as typeof form.runtime)}
             >
-              <option value="">jsnes（默认，轻量、启动快）</option>
+              <option value="">自动（按格式 / mapper 选择）</option>
+              <option value="jsnes">jsnes（明确指定，轻量、启动快）</option>
               <option value="emulatorjs">EmulatorJS（兼容性更好，需下载核心）</option>
             </select>
             <p className="mt-1 text-[11px] text-dim">
-              NES 默认用 <b>jsnes</b>（纯 JS、内存占用小）。个别 ROM 在 jsnes 上画面不对或跑不起来时，
-              换成 <b>EmulatorJS</b>——它走 fceumm 这类核心，准确度更高，但首次启动要额外下载核心。
+              自动模式只在直链 iNES 的 mapper 已确认受支持时用 <b>jsnes</b>；8BG / ZIP、未知格式或
+              不支持的 mapper 走 <b>EmulatorJS</b>。已人工验收的容器 ROM 可在这里明确固定 jsnes，
+              避免同一游戏因为探测条件变化而切换引擎和存档命名空间。
             </p>
           </Field>
         )}
