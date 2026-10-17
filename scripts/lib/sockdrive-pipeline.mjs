@@ -1,6 +1,41 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { brotliCompressSync, brotliDecompressSync, gzipSync, gunzipSync } from 'node:zlib'
 
+// 官方 CLI 2.0.10 会按原始镜像字节数选择内置磁盘描述，多一个字节或少一个字节都会拒绝转换。
+export const SOCKDRIVE_DISK_TEMPLATES = Object.freeze([
+  Object.freeze({ id: 'fat16-256mb', label: 'FAT16-256MB', bytes: 252_370_944 }),
+  Object.freeze({ id: 'fat32-2gb', label: 'FAT32-2GB', bytes: 2_147_483_648 }),
+])
+export const SOCKDRIVE_FILESYSTEM_OVERHEAD_BYTES = 16 * 1024 ** 2
+
+export function parseSockdriveSize(value) {
+  const match = /^([1-9]\d*)([KMG])$/i.exec(String(value || '').trim())
+  if (!match) throw new Error('Sockdrive 空闲空间请写成 128M 这类正数容量')
+  const multiplier = { K: 1024, M: 1024 ** 2, G: 1024 ** 3 }[match[2].toUpperCase()]
+  const bytes = Number(match[1]) * multiplier
+  if (!Number.isSafeInteger(bytes)) throw new Error('Sockdrive 空闲空间超过安全整数范围')
+  return bytes
+}
+
+/**
+ * sockify 目前不是任意尺寸切块器，只认识仓库内置的两份磁盘布局。这里在制盘前选中精确模板，
+ * 并留出分区表、FAT 和目录项余量，避免花几分钟生成镜像后才被官方 CLI 拒绝。
+ */
+export function selectSockdriveDiskTemplate(sourceBytes, freeSpace) {
+  if (!Number.isSafeInteger(sourceBytes) || sourceBytes < 0) throw new Error('Sockdrive 源文件总大小无效')
+  const requestedFreeBytes = parseSockdriveSize(freeSpace)
+  const requiredBytes = sourceBytes + requestedFreeBytes + SOCKDRIVE_FILESYSTEM_OVERHEAD_BYTES
+  const template = SOCKDRIVE_DISK_TEMPLATES.find((candidate) => requiredBytes <= candidate.bytes)
+  if (!template) {
+    const sourceMiB = Math.ceil(sourceBytes / 1024 ** 2)
+    const freeMiB = Math.ceil(requestedFreeBytes / 1024 ** 2)
+    throw new Error(
+      `解压后的游戏文件约 ${sourceMiB}MiB，加上 ${freeMiB}MiB 预留空间后超过官方 Sockdrive 最大 2GB 模板`,
+    )
+  }
+  return { ...template, requestedFreeBytes, requiredBytes }
+}
+
 /**
  * 7z 解包发生在制作机本地，但上传包仍可能带绝对路径、盘符或 `..`。先检查清单再解包，
  * 否则一个坏包就能把工作目录外的同名文件覆盖掉。
@@ -18,7 +53,7 @@ export function assertSafeArchiveEntry(name) {
 }
 
 /** 解析 `7z l -slt`；第一段是归档自身信息，分隔线后才是成员。 */
-export function archiveEntriesFrom7z(output) {
+export function archiveEntriesFrom7z(output, maxDeclaredBytes = 8 * 1024 ** 3) {
   const lines = String(output).replace(/\r\n?/g, '\n').split('\n')
   const start = lines.findIndex((line) => /^-{10,}$/.test(line.trim()))
   if (start < 0) throw new Error('无法解析 7z 文件清单')
@@ -37,8 +72,9 @@ export function archiveEntriesFrom7z(output) {
   }
   if (!entries.length) throw new Error('ZIP 中没有文件')
   if (entries.length > 200_000) throw new Error('ZIP 成员超过 20 万个，拒绝在制作机解包')
-  if (!Number.isSafeInteger(declaredBytes) || declaredBytes > 8 * 1024 ** 3) {
-    throw new Error('ZIP 声明解压后超过 8GB，拒绝在制作机解包')
+  if (!Number.isSafeInteger(maxDeclaredBytes) || maxDeclaredBytes <= 0) throw new Error('ZIP 解压上限无效')
+  if (!Number.isSafeInteger(declaredBytes) || declaredBytes > maxDeclaredBytes) {
+    throw new Error(`ZIP 声明解压后超过 ${Math.floor(maxDeclaredBytes / 1024 ** 2)}MiB，拒绝在制作机解包`)
   }
   return entries
 }

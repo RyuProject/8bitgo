@@ -7,6 +7,8 @@ import {
   archiveEntriesFrom7z,
   assertSafeArchiveEntry,
   ensureBaselinePreloadProfile,
+  selectSockdriveDiskTemplate,
+  SOCKDRIVE_DISK_TEMPLATES,
 } from './lib/sockdrive-pipeline.mjs'
 import { bindSockdriveGame } from './bind-sockdrive-game.mjs'
 
@@ -21,6 +23,15 @@ assert.throws(
 assert.deepEqual(
   archiveEntriesFrom7z('archive\n----------\nPath = StarCraft\nPath = StarCraft/Brood.exe\n'),
   ['StarCraft', 'StarCraft/Brood.exe'],
+)
+assert.equal(selectSockdriveDiskTemplate(1, '16M').id, 'fat16-256mb')
+assert.equal(selectSockdriveDiskTemplate(1500 * 1024 ** 2, '128M').id, 'fat32-2gb')
+assert.equal(selectSockdriveDiskTemplate(1500 * 1024 ** 2, '128M').bytes, 2_147_483_648)
+assert.deepEqual(SOCKDRIVE_DISK_TEMPLATES.map(({ bytes }) => bytes), [252_370_944, 2_147_483_648])
+assert.throws(() => selectSockdriveDiskTemplate(1950 * 1024 ** 2, '128M'), /最大 2GB 模板/)
+assert.throws(
+  () => archiveEntriesFrom7z('archive\n----------\nPath = huge.bin\nSize = 2000000000\n', 1_900_000_000),
+  /拒绝在制作机解包/,
 )
 
 const root = mkdtempSync(join(tmpdir(), '8bitgo-sockdrive-pipeline-'))

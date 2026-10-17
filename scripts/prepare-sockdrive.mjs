@@ -24,7 +24,10 @@ import { isVersionedSockdriveDirectory } from '../shared/sockdrive-url.js'
 import {
   archiveEntriesFrom7z,
   ensureBaselinePreloadProfile,
+  selectSockdriveDiskTemplate,
   shellQuote,
+  SOCKDRIVE_DISK_TEMPLATES,
+  SOCKDRIVE_FILESYSTEM_OVERHEAD_BYTES,
 } from './lib/sockdrive-pipeline.mjs'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -42,7 +45,7 @@ const workRoot = resolve(arg('work-dir') || '')
 const cli = resolve(arg('cli') || process.env.SOCKDRIVE_CLI || '')
 const encoding = (arg('encoding') || 'br').toLowerCase()
 const publicBase = (arg('public-base') || 'https://assets.8bitgo.com').replace(/\/+$/, '')
-const freeSpace = arg('free-space') || '256M'
+const freeSpace = arg('free-space') || '128M'
 const publish = flag('publish')
 const bind = flag('bind')
 const bucket = arg('bucket')
@@ -52,7 +55,7 @@ const usage = () => {
   console.error(
     '用法：npm run sockdrive:prepare -- --source <原始ZIP或目录> --slug starcraft --version v1 ' +
       '--exe StarCraft/Brood.exe --work-dir </data/builds> --cli </opt/sockdrive/cli> ' +
-      '[--encoding br|gzip|identity] [--free-space 256M] ' +
+      '[--encoding br|gzip|identity] [--free-space 128M] ' +
       '[--publish --bucket <R2桶名> [--bind --api-base https://8bitgo.com]]',
   )
   process.exit(2)
@@ -118,7 +121,11 @@ if (statSync(source).isFile()) {
   }
   if (!/\.zip$/i.test(source)) throw new Error('--source 文件只支持原始 .zip；也可以直接传已解压目录')
   const listing = capture('7z', ['l', '-slt', '--', source])
-  archiveEntriesFrom7z(listing)
+  // 2GB 是当前官方 CLI 的最大模板；在解包前利用 7z 声明大小止损，避免 ZIP 炸弹耗尽工作盘。
+  const requested = selectSockdriveDiskTemplate(0, freeSpace)
+  const largestTemplate = SOCKDRIVE_DISK_TEMPLATES.at(-1)
+  const maxDeclaredBytes = largestTemplate.bytes - requested.requestedFreeBytes - SOCKDRIVE_FILESYSTEM_OVERHEAD_BYTES
+  archiveEntriesFrom7z(listing, maxDeclaredBytes)
   filesRoot = join(buildRoot, 'files')
   mkdirSync(filesRoot)
   run('7z', ['x', '-y', `-o${filesRoot}`, '--', source])
@@ -146,6 +153,7 @@ const walk = (directory) => {
 }
 walk(filesRoot)
 if (!fileCount) throw new Error('源目录没有文件')
+const diskTemplate = selectSockdriveDiskTemplate(totalBytes, freeSpace)
 
 const findCaseInsensitive = (root, wanted) => {
   let current = root
@@ -174,20 +182,20 @@ writeFileSync(join(configRoot, 'dosbox.conf'), [
   '',
 ].join('\n'))
 
-console.log(`制作 FAT32/QCOW2 游戏盘（额外可写空间 ${freeSpace}）…`)
+console.log(`制作 ${diskTemplate.label}/QCOW2 游戏盘（额外可写空间至少 ${freeSpace}）…`)
 run('virt-make-fs', [
   '--format=qcow2',
   '--type=vfat',
   '--partition=mbr',
-  `--size=+${freeSpace}`,
+  `--size=${diskTemplate.bytes}`,
   '--label=8BITGO',
   '--',
   filesRoot,
   imagePath,
 ])
 const imageInfo = JSON.parse(capture('qemu-img', ['info', '--output=json', imagePath]))
-if (imageInfo.format !== 'qcow2' || !Number.isSafeInteger(imageInfo['virtual-size']) || imageInfo['virtual-size'] <= totalBytes) {
-  throw new Error('生成的 QCOW2 格式或虚拟容量不正确')
+if (imageInfo.format !== 'qcow2' || imageInfo['virtual-size'] !== diskTemplate.bytes) {
+  throw new Error(`生成的 QCOW2 格式或虚拟容量不正确：应为 ${diskTemplate.bytes} 字节`)
 }
 
 const convertedRoot = join(buildRoot, 'converted')
@@ -240,6 +248,8 @@ const manifest = {
   source: source,
   sourceFiles: fileCount,
   sourceBytes: totalBytes,
+  diskTemplate: diskTemplate.id,
+  requestedFreeBytes: diskTemplate.requestedFreeBytes,
   qcowVirtualBytes: imageInfo['virtual-size'],
   encoding,
   prefix,

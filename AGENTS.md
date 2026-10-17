@@ -476,6 +476,13 @@ Worker 必须把 `psp-staging/` / `sockdrive-staging/` 的 GET/HEAD 也设为 Be
 `Content-Encoding`。手工命令仍作为故障兜底，不是日常上传步骤。回归：
 `npm run test:sockdrive-conversion && npm run test:dos-sockdrive-upload && npm --prefix worker test`。
 
+⚠️ 官方 Sockdrive CLI 2.0.10 **不接受任意磁盘容量**，只按原始镜像字节数匹配两份内置描述：
+252,370,944 字节（FAT16-256MB）或 2,147,483,648 字节（FAT32-2GB）。曾经给 `virt-make-fs`
+传 `--size=+<空闲空间>`，生成 17,065,984 字节的真实 QCOW2 后，前面的文件检查全过、最后才被
+`sockify` 拒绝。现在 `selectSockdriveDiskTemplate()` 会在解包/制盘前选择精确模板并为 FAT 元数据
+留余量；默认只留 128MB 写空间，原始 ZIP 上限 1900MB。调大服务器硬盘不会突破 2GB 格式上限；
+上游增加新模板时必须先更新常量和真实转换冒烟测试，不能只放宽上传限制。
+
 ### 2.9 平台 BIOS 的边缘缓存会骗人
 
 后台改完 BIOS 绑定只调 `invalidateContent()`（清进程内缓存），**够不着 Cloudflare 边缘**。

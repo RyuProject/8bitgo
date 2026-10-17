@@ -10,7 +10,7 @@ const {
 const env = {
   PSP_CONVERT_WORKER_URL: 'https://worker.example.test/',
   PSP_CONVERT_WORKER_TOKEN: 'shared-token',
-  SOCKDRIVE_MAX_SOURCE_MB: '8192',
+  SOCKDRIVE_MAX_SOURCE_MB: '1900',
   SOCKDRIVE_CONVERT_TMP_DIR: '/data/sockdrive-builds',
 }
 const valid = {
@@ -29,7 +29,7 @@ assert.deepEqual(validateSockdriveConversionRequest(valid, env), {
   targetPrefix: 'sockdrives/starcraft-v20261017010101',
 })
 assert.throws(() => validateSockdriveConversionRequest({ ...valid, sourceKey: '../source.zip' }, env), /临时 Sockdrive ZIP key/)
-assert.throws(() => validateSockdriveConversionRequest({ ...valid, sourceSize: 9 * 1024 ** 3 }, env), /ZIP 大小/)
+assert.throws(() => validateSockdriveConversionRequest({ ...valid, sourceSize: 1901 * 1024 ** 2 }, env), /ZIP 大小/)
 assert.throws(() => validateSockdriveConversionRequest({ ...valid, executable: '../bad.exe' }, env), /\.exe/)
 assert.throws(() => validateSockdriveConversionRequest({ ...valid, executable: `${'a'.repeat(252)}.exe` }, env), /\.exe/)
 assert.throws(() => validateSockdriveConversionRequest({ ...valid, version: 'latest' }, env), /版本/)
@@ -39,7 +39,8 @@ const config = sockdriveConversionConfig(env)
 assert.equal(config.workerUrl, 'https://worker.example.test')
 assert.equal(config.workerToken, 'shared-token')
 assert.equal(config.tempDir, '/data/sockdrive-builds')
-assert.equal(config.maxSourceBytes, 8192 * 1024 * 1024)
+assert.equal(config.maxSourceBytes, 1900 * 1024 * 1024)
+assert.equal(config.freeSpace, '128M')
 assert.equal(config.concurrency, 1)
 
 const schema = readFileSync(new URL('../schema-v2.sql', import.meta.url), 'utf8')

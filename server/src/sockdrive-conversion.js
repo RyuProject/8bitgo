@@ -43,8 +43,9 @@ export function sockdriveConversionConfig(env = process.env) {
     tempDir: resolve(String(env.SOCKDRIVE_CONVERT_TMP_DIR || new URL('../tmp/sockdrive-conversions', import.meta.url).pathname)),
     cli: String(env.SOCKDRIVE_CLI || '/opt/sockdrive/cli').trim(),
     encoding: String(env.SOCKDRIVE_ENCODING || 'br').trim().toLowerCase(),
-    freeSpace: String(env.SOCKDRIVE_FREE_SPACE || '512M').trim().toUpperCase(),
-    maxSourceBytes: positiveInt(env.SOCKDRIVE_MAX_SOURCE_MB, 8192, 16 * 1024) * 1024 * 1024,
+    freeSpace: String(env.SOCKDRIVE_FREE_SPACE || '128M').trim().toUpperCase(),
+    // 官方 CLI 当前最大只认 2GB 镜像；1900MiB 给 FAT/分区表和默认 128MiB 可写空间留出余量。
+    maxSourceBytes: positiveInt(env.SOCKDRIVE_MAX_SOURCE_MB, 1900, 1900) * 1024 * 1024,
     concurrency: positiveInt(env.SOCKDRIVE_CONCURRENCY, 1, 1),
     timeoutMs: positiveInt(env.SOCKDRIVE_TIMEOUT_MINUTES, 360, 24 * 60) * 60 * 1000,
   }
