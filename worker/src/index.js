@@ -135,6 +135,12 @@ function markerKeyValid(key) {
 function validUploadId(id) {
   return typeof id === 'string' && id.length > 0 && id.length <= 2048 && !/[\x00-\x20\x7f]/.test(id)
 }
+function safeContentEncoding(value) {
+  const encoding = typeof value === 'string' ? value.trim().toLowerCase() : ''
+  if (!encoding || encoding === 'identity') return undefined
+  if (encoding === 'br' || encoding === 'gzip') return encoding
+  throw new HttpError(400, 'contentEncoding 只能是 br、gzip 或 identity')
+}
 function methodNotAllowed(cors, allow) {
   return json({ error: 'method not allowed' }, cors, 405, { Allow: allow })
 }
@@ -174,10 +180,13 @@ async function deterministicMarker(key, uploadId) {
 async function createMultipart(request, env, key, cors) {
   const meta = await readJson(request, 16 * 1024, true)
   const contentType = typeof meta.contentType === 'string' && meta.contentType ? meta.contentType : guessType(key)
+  const contentEncoding = safeContentEncoding(meta.contentEncoding)
   if (contentType.length > 256 || /[\r\n]/.test(contentType)) throw new HttpError(400, '无效 contentType')
   if (meta.size !== undefined && (!Number.isSafeInteger(Number(meta.size)) || Number(meta.size) < 0)) throw new HttpError(400, '无效 size')
   const bucket = bucketForWrite(env, key)
-  const upload = await bucket.createMultipartUpload(key, { httpMetadata: { contentType, cacheControl: writeCacheControl(env) } })
+  const upload = await bucket.createMultipartUpload(key, {
+    httpMetadata: { contentType, ...(contentEncoding ? { contentEncoding } : {}), cacheControl: writeCacheControl(env) },
+  })
   const marker = await deterministicMarker(key, upload.uploadId)
   try {
     // Preserve the original list-with-metadata interface without per-marker GETs.
@@ -299,9 +308,22 @@ async function handle(request, env, url, cors) {
   catch { throw new HttpError(400, 'URL 路径编码无效', 'invalid_path') }
   if (path === '' || path === 'ping') {
     if (!['GET', 'HEAD'].includes(request.method)) return methodNotAllowed(cors, 'GET, HEAD, OPTIONS')
-    return json({ ok: true, service: '8bitgo-roms', writable: Boolean(env.ADMIN_TOKEN), multipart: true, time: new Date().toISOString() }, cors)
+    return json({
+      ok: true,
+      service: '8bitgo-roms',
+      writable: Boolean(env.ADMIN_TOKEN),
+      multipart: true,
+      // 制作机在启用自动队列前会检查这两个能力；旧 Worker 不会误接收随后必坏的 Brotli 产物。
+      features: { privateStagingRead: true, contentEncodingUpload: true },
+      time: new Date().toISOString(),
+    }, cors)
   }
-  const admin = ['list', 'bulk', 'multipart'].includes(path) || ['PUT', 'POST', 'DELETE'].includes(request.method)
+  /*
+   * 转换源文件只有制作机需要读取。key 虽然带随机 UUID，但“猜不到”不是权限边界；
+   * 若继续公开 GET，管理员上传的原始商业镜像会在转换完成前暴露在公开资源域名上。
+   */
+  const privateStagingRead = ['GET', 'HEAD'].includes(request.method) && /^(?:psp|sockdrive)-staging\//.test(path)
+  const admin = privateStagingRead || ['list', 'bulk', 'multipart'].includes(path) || ['PUT', 'POST', 'DELETE'].includes(request.method)
   if (admin && !authorized(request, env)) return json({ error: 'unauthorized' }, cors, 401)
   if (!env.ROMS) throw new HttpError(503, 'ROMS 绑定缺失', 'missing_binding')
   if (path === 'list') {
@@ -344,10 +366,11 @@ async function handle(request, env, url, cors) {
   if (request.method === 'PUT') {
     const limit = maxUploadBytes(env)
     const contentType = request.headers.get('Content-Type') || guessType(key)
+    const contentEncoding = safeContentEncoding(request.headers.get('Content-Encoding'))
     // Unknown-length single uploads are bounded to 32 MiB. Larger uploads should
     // supply Content-Length or use the existing multipart endpoint, not allocate 512 MiB.
     const object = await writeBody(request, limit, body => bucketForWrite(env, key).put(key, body, {
-      httpMetadata: { contentType, cacheControl: writeCacheControl(env) },
+      httpMetadata: { contentType, ...(contentEncoding ? { contentEncoding } : {}), cacheControl: writeCacheControl(env) },
     }), Math.min(limit, MAX_PART_BYTES))
     return json({ ok: true, key, size: object.size, etag: object.httpEtag, uploaded: object.uploaded }, cors)
   }

@@ -17,6 +17,7 @@
  */
 import { execFileSync } from 'node:child_process'
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
+import { open } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { brotliDecompressSync, createBrotliDecompress, createGunzip, gunzipSync } from 'node:zlib'
@@ -32,15 +33,18 @@ const bucket = arg('bucket')
 const prefix = arg('prefix').replace(/^\/+|\/+$/g, '')
 const encoding = (arg('encoding') || 'identity').toLowerCase()
 const publicBase = (arg('public-base') || 'https://assets.8bitgo.com').replace(/\/+$/, '')
+const workerUrl = (arg('worker-url') || '').replace(/\/+$/, '')
+const workerToken = process.env.SOCKDRIVE_WORKER_TOKEN || ''
 const dryRun = process.argv.includes('--dry-run')
 
-if (!sourceDir || !prefix || (!dryRun && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(bucket))) {
+if (!sourceDir || !prefix || (!dryRun && !workerUrl && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(bucket))) {
   console.error(
     '用法：npm run sockdrive:upload -- --src <含 sockdrive.metaj 的目录> --bucket <R2桶名> ' +
-      '--prefix sockdrives/<游戏>-v1 [--encoding br|gzip|identity] [--dry-run]',
+      '--prefix sockdrives/<游戏>-v1 [--encoding br|gzip|identity] [--worker-url <写入Worker>] [--dry-run]',
   )
   process.exit(2)
 }
+if (!dryRun && workerUrl && !workerToken) throw new Error('--worker-url 模式需要环境变量 SOCKDRIVE_WORKER_TOKEN')
 if (!['br', 'gzip', 'identity'].includes(encoding)) throw new Error('--encoding 只能是 br、gzip 或 identity')
 // R2 key 最终会原样进入公开 URL 与 DOSBox-X 配置；路径穿越、查询串和空白都不是可发布的目录名。
 if (
@@ -218,20 +222,138 @@ if (existing.status !== 404) throw new Error(`公开目录预检返回 HTTP ${ex
 const wrangler = join(root, 'node_modules/.bin/wrangler')
 // 元数据最后上传，它相当于“这块磁盘已经完整可见”的提交点。
 const ordered = [...files.filter((name) => name !== 'sockdrive.metaj'), 'sockdrive.metaj']
-for (const name of ordered) {
+const PART_BYTES = 8 * 1024 * 1024
+const SINGLE_PUT_BYTES = 24 * 1024 * 1024
+const encodedKey = (key) => key.split('/').map(encodeURIComponent).join('/')
+const workerRequest = (key, init = {}, query = '') => fetch(`${workerUrl}/${encodedKey(key)}${query}`, {
+  ...init,
+  headers: { Authorization: `Bearer ${workerToken}`, ...init.headers },
+  ...(init.body instanceof ReadableStream ? { duplex: 'half' } : {}),
+})
+const jsonResponse = async (response, label) => {
+  const text = await response.text()
+  let value
+  try { value = JSON.parse(text) } catch {
+    const error = new Error(`${label}返回了非 JSON 响应（HTTP ${response.status}）`)
+    error.retryable = response.status === 408 || response.status === 429 || response.status >= 500
+    throw error
+  }
+  if (!response.ok) {
+    const error = new Error(`${label}失败：${value?.error || `HTTP ${response.status}`}`)
+    error.retryable = response.status === 408 || response.status === 429 || response.status >= 500
+    throw error
+  }
+  return value
+}
+const retry = async (task, label) => {
+  let last
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try { return await task() } catch (error) { last = error }
+    if (last?.retryable === false) break
+    if (attempt < 3) await new Promise((resolveWait) => setTimeout(resolveWait, 500 * 2 ** attempt))
+  }
+  throw new Error(`${label}失败：${last instanceof Error ? last.message : String(last)}`)
+}
+const requestJson = (task, label) => retry(async () => jsonResponse(await task(), label), label)
+const uploadWithWorker = async (name, contentType) => {
+  const file = join(sourceDir, name)
+  const size = statSync(file).size
+  const key = `${prefix}/${name}`
+  const commonHeaders = {
+    'Content-Type': contentType,
+    ...(encoding !== 'identity' ? { 'Content-Encoding': encoding } : {}),
+  }
+  if (size <= SINGLE_PUT_BYTES) {
+    const result = await requestJson(
+      () => workerRequest(key, {
+        method: 'PUT',
+        headers: { ...commonHeaders, 'Content-Length': String(size) },
+        body: createReadStream(file),
+        duplex: 'half',
+      }),
+      `上传 ${name}`,
+    )
+    if (result.key !== key || Number(result.size) !== size || !result.etag) throw new Error(`Worker 没有完整确认 ${name}`)
+    return
+  }
+
+  const session = await requestJson(
+    () => workerRequest(key, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contentType,
+        contentEncoding: encoding,
+        size,
+        name,
+      }),
+    }, '?uploads'),
+    `创建 ${name} 分片会话`,
+  )
+  if (!session.uploadId || !session.marker) throw new Error(`Worker 没有返回 ${name} 的有效分片会话`)
+  const parts = []
+  const handle = await open(file, 'r')
+  try {
+    for (let partNumber = 1, position = 0; position < size; partNumber++, position += PART_BYTES) {
+      const length = Math.min(PART_BYTES, size - position)
+      const bytes = Buffer.allocUnsafe(length)
+      let offset = 0
+      while (offset < length) {
+        const { bytesRead } = await handle.read(bytes, offset, length - offset, position + offset)
+        if (!bytesRead) throw new Error(`${name} 第 ${partNumber} 片读取不完整`)
+        offset += bytesRead
+      }
+      const part = await requestJson(
+        () => workerRequest(key, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(length) },
+          body: bytes,
+        }, `?uploadId=${encodeURIComponent(session.uploadId)}&partNumber=${partNumber}`),
+        `上传 ${name} 第 ${partNumber} 片`,
+      )
+      if (!part.etag) throw new Error(`Worker 没有确认 ${name} 第 ${partNumber} 片`)
+      parts.push({ partNumber, etag: part.etag })
+    }
+    const result = await requestJson(
+      () => workerRequest(key, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parts, marker: session.marker }),
+      }, `?uploadId=${encodeURIComponent(session.uploadId)}`),
+      `合并 ${name} 分片`,
+    )
+    if (result.key !== key || Number(result.size) !== size || !result.etag) throw new Error(`Worker 没有完整确认 ${name}`)
+  } catch (error) {
+    await workerRequest(
+      key,
+      { method: 'DELETE' },
+      `?uploadId=${encodeURIComponent(session.uploadId)}&marker=${encodeURIComponent(session.marker)}`,
+    ).catch(() => {})
+    throw error
+  } finally {
+    await handle.close()
+  }
+}
+
+for (const [index, name] of ordered.entries()) {
   const json = name.endsWith('.metaj')
   // sockify 会连元数据一起压缩；漏掉这个响应头时，浏览器拿到的是压缩字节而不是 JSON。
   const encoded = encoding !== 'identity'
-  const args = [
-    'r2', 'object', 'put', `${bucket}/${prefix}/${name}`,
-    '--file', join(sourceDir, name),
-    '--content-type', json ? 'application/json; charset=utf-8' : 'application/octet-stream',
-    '--cache-control', 'public, max-age=31536000, immutable',
-    '--remote', '--force',
-  ]
-  if (encoded) args.push('--content-encoding', encoding)
-  console.log(`上传 ${prefix}/${name}…`)
-  execFileSync(wrangler, args, { cwd: root, stdio: 'inherit' })
+  const contentType = json ? 'application/json; charset=utf-8' : 'application/octet-stream'
+  console.log(`上传 ${prefix}/${name}（${index + 1}/${ordered.length}）…`)
+  if (workerUrl) {
+    await uploadWithWorker(name, contentType)
+  } else {
+    const args = [
+      'r2', 'object', 'put', `${bucket}/${prefix}/${name}`,
+      '--file', join(sourceDir, name),
+      '--content-type', contentType,
+      '--cache-control', 'public, max-age=31536000, immutable',
+      '--remote', '--force',
+    ]
+    if (encoded) args.push('--content-encoding', encoding)
+    execFileSync(wrangler, args, { cwd: root, stdio: 'inherit' })
+  }
 }
 
 const verifyMeta = await fetch(`${publicRoot}/sockdrive.metaj?verify=${Date.now()}`, {

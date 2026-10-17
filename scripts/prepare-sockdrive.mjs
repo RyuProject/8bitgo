@@ -3,9 +3,9 @@
 /**
  * 把“大型 Windows 游戏的普通 ZIP / 文件目录”制作成本站可直接发布的静态 Sockdrive。
  *
- * 这项工作依赖 guestfs / qemu 和官方 sockdrive CLI，必须在 Linux 制作机离线执行；不要放进
- * Express 请求里。StarCraft 约 1.5GB，一次转换会持续占用 CPU、磁盘与文件描述符，在线转换
- * 既容易拖死玩家请求，也会让中断的半成品难以判断能否绑定。
+ * 这项工作依赖 guestfs / qemu 和官方 sockdrive CLI，必须在 Linux 制作机的后台任务或离线命令里
+ * 执行，不能放进 Express 请求生命周期。StarCraft 约 1.5GB，一次转换会持续占用 CPU、磁盘与
+ * 文件描述符；持久队列把它限制为单并发，并用最终元数据区分半成品与可绑定版本。
  */
 import { execFileSync, spawnSync } from 'node:child_process'
 import {

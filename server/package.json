@@ -73,6 +73,7 @@
     "test:startup": "node scripts/test-startup-failure.mjs",
     "test:startup-metrics": "node scripts/test-startup-metrics.mjs",
     "test:psp-conversion": "node scripts/test-psp-conversion.mjs",
+    "test:sockdrive-conversion": "node scripts/test-sockdrive-conversion.mjs",
     "test:game-media": "node --test scripts/test-game-media.mjs"
   },
   "dependencies": {

@@ -59,6 +59,7 @@ const EXPECTED_TABLES = [
   { table: 'game_startup_events', why: '第一方启动漏斗；缺了详情页到首帧/首次操作的性能统计会全部 500' },
   { table: 'game_roms', why: '按语言分槽的 ROM' },
   { table: 'psp_conversion_jobs', why: 'PSP ISO → CHD 后台压缩队列；缺了上传 ISO 后无法创建转换任务' },
+  { table: 'sockdrive_conversion_jobs', why: '大型 Windows ZIP → Sockdrive 后台队列；缺了后台上传后无法自动转换' },
   { table: 'open_rom_samples', why: '开放平台未审核应用的逐机型 ROM 测试样本；缺了沙箱领票和样本目录会 500' },
   { table: 'game_genres', why: '游戏分类' },
   { table: 'game_tags', why: '游戏标签' },

@@ -176,8 +176,15 @@ test('cache policy is overridable per class without a code change', async () => 
   assert.equal((await worker.fetch(req('/a.zip?romv=1'),e)).headers.get('Cache-Control'),'public, max-age=600')
 })
 test('uploads record the revalidating policy in object metadata', async () => {
-  const e=environment(); await worker.fetch(req('/a.zip','PUT','abcdef',{},true),e)
+  const e=environment(); await worker.fetch(req('/a.zip','PUT','abcdef',{'Content-Encoding':'gzip'},true),e)
   assert.equal(e.ROMS.objects.get('a.zip').httpMetadata.cacheControl,'public, max-age=300, s-maxage=600, must-revalidate')
+  assert.equal(e.ROMS.objects.get('a.zip').httpMetadata.contentEncoding,'gzip')
+})
+test('conversion staging objects require authorization for reads', async () => {
+  const e=environment(); e.ROMS.seed('sockdrive-staging/source.zip','secret')
+  assert.equal((await worker.fetch(req('/sockdrive-staging/source.zip'),e)).status,401)
+  assert.equal((await worker.fetch(req('/sockdrive-staging/source.zip','HEAD'),e)).status,401)
+  assert.equal((await worker.fetch(req('/sockdrive-staging/source.zip','GET',undefined,{},true),e)).status,200)
 })
 test('a newline in the cache configuration is rejected, never echoed into a header', async () => {
   const e=environment(); e.ROMS.seed('a.zip','abcdef'); e.OBJECT_CACHE_CONTROL='public, max-age=60\r\nX-Injected: 1'

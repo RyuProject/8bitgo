@@ -11,11 +11,16 @@ async function part(e, session, data='abc') {
   assert.equal(r.status,200);return r.json()
 }
 test('multipart complete preserves bytes, metadata and original success fields',async()=>{
-  const e=environment();const s=await create(e,'covers/a.webp',{contentType:'image/webp',size:3,name:'封面.webp'});assert(s.marker.startsWith('_uploads/v2-'))
+  const e=environment();const s=await create(e,'covers/a.webp',{contentType:'image/webp',contentEncoding:'br',size:3,name:'封面.webp'});assert(s.marker.startsWith('_uploads/v2-'))
   const p=await part(e,s)
   const r=await worker.fetch(req('/'+s.key+'?uploadId='+s.uploadId,'POST',{parts:[p],marker:s.marker},{},true),e)
   assert.equal(r.status,200);const j=await r.json();assert(j.ok);assert(j.markerRemoved);assert.equal(j.size,3)
   assert.equal(new TextDecoder().decode(e.COVERS.objects.get(s.key).data),'abc');assert(!e.COVERS.objects.has(s.marker));assert.equal(e.COVERS.objects.get(s.key).httpMetadata.contentType,'image/webp')
+  assert.equal(e.COVERS.objects.get(s.key).httpMetadata.contentEncoding,'br')
+})
+test('multipart rejects unsupported content encoding before creating a session',async()=>{
+  const e=environment();const r=await worker.fetch(req('/roms/a?uploads','POST',{contentEncoding:'deflate'}, {},true),e)
+  assert.equal(r.status,400);assert.equal(count(e.ROMS,'createMultipartUpload'),0)
 })
 test('known-length part is streamed; Request.arrayBuffer is never called',async()=>{
   const e=environment();const s=await create(e);const r=req('/roms/a?uploadId='+s.uploadId+'&partNumber=1','PUT','abc',{'Content-Length':'3'},true)

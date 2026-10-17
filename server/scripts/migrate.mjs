@@ -1109,9 +1109,48 @@ const patches = [
       }
     },
   },
+  {
+    name: 'sockdrive_conversion_jobs（大型 Windows ZIP → Sockdrive 后台队列）',
+    table: null,
+    skip: async () => (!(await hasTable('game_roms')) ? '不是 v2 数据库' : null),
+    needed: async () => !(await hasTable('sockdrive_conversion_jobs')),
+    run: () => conn.query(`CREATE TABLE IF NOT EXISTS sockdrive_conversion_jobs (
+      id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+      source_key VARCHAR(500) NOT NULL,
+      source_size BIGINT UNSIGNED NOT NULL,
+      source_etag VARCHAR(160) NOT NULL,
+      game_id BIGINT UNSIGNED NOT NULL,
+      game_slug VARCHAR(120) NOT NULL,
+      executable VARCHAR(500) NOT NULL,
+      expected_executable VARCHAR(500) NOT NULL DEFAULT '',
+      version VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+      target_prefix VARCHAR(500) NOT NULL,
+      expected_sockdrive VARCHAR(500) NOT NULL DEFAULT '',
+      encoding VARCHAR(10) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'br',
+      actor_id VARCHAR(40) NULL,
+      status VARCHAR(24) NOT NULL DEFAULT 'queued',
+      progress TINYINT UNSIGNED NOT NULL DEFAULT 0,
+      output_bytes BIGINT UNSIGNED NULL,
+      output_files INT UNSIGNED NULL,
+      metadata_etag VARCHAR(160) NULL,
+      range_count INT UNSIGNED NULL,
+      publish_started TINYINT(1) NOT NULL DEFAULT 0,
+      bound TINYINT(1) NOT NULL DEFAULT 0,
+      source_deleted TINYINT UNSIGNED NOT NULL DEFAULT 0,
+      message VARCHAR(500) NULL,
+      error VARCHAR(1000) NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      completed_at TIMESTAMP NULL,
+      UNIQUE KEY uniq_sockdrive_source (source_key(191)),
+      UNIQUE KEY uniq_sockdrive_target (target_prefix(191)),
+      KEY idx_sockdrive_jobs_queue (status, created_at),
+      KEY idx_sockdrive_jobs_game (game_id, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`),
+  },
 ]
 
-const TABLES = ['games', 'posts', 'users', 'volunteer_games', 'volunteer_posts', 'favorites', 'recents', 'saves', 'flash_save_slots', 'flash_save_kv', 'flash_save_seqs', 'login_codes', 'platform_bios', 'game_plays', 'game_startup_events', 'psp_conversion_jobs', 'developers', 'friend_links', 'friend_link_hits', 'game_comments', 'game_ratings', 'oauth_apps', 'open_rom_samples']
+const TABLES = ['games', 'posts', 'users', 'volunteer_games', 'volunteer_posts', 'favorites', 'recents', 'saves', 'flash_save_slots', 'flash_save_kv', 'flash_save_seqs', 'login_codes', 'platform_bios', 'game_plays', 'game_startup_events', 'psp_conversion_jobs', 'sockdrive_conversion_jobs', 'developers', 'friend_links', 'friend_link_hits', 'game_comments', 'game_ratings', 'oauth_apps', 'open_rom_samples']
 
 try {
   /*

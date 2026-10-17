@@ -466,6 +466,16 @@ StarCraft 已补一条离线发布流水线：`npm run sockdrive:prepare -- --so
 参数，避免落进 shell 历史。上传成功、绑定失败时只重跑 `npm run sockdrive:bind`，不准覆盖原目录。
 完整操作见 `docs/starcraft-sockdrive.md`，回归并入 `npm run test:dos-sockdrive-upload`。
 
+生产后台现在把这条离线流水线包成了**持久任务**：编辑已保存的 DOSBox-X 游戏，在「原始大 ZIP
+自动转 Sockdrive」上传原始 ZIP；浏览器仍直接分片写进私有 `sockdrive-staging/`，不经过 Express
+内存。`sockdrive_conversion_jobs` 记录 ETag、原配置和发布阶段，生产机从
+`SOCKDRIVE_CONVERT_TMP_DIR`（应挂独立大盘）下载后自动制盘、上传、公开校验，再用事务 CAS 同时绑定
+`dos_sockdrive` 与 `dos_executable`。页面关闭或服务重启都不丢任务；失败源保留 24 小时供后台重试。
+`sockdrive.metaj` 仍必须最后上传，它既是玩家入口也是发布提交点；重启恢复只在看见它后跳过重新制盘。
+Worker 必须把 `psp-staging/` / `sockdrive-staging/` 的 GET/HEAD 也设为 Bearer 私有，并保留上传请求的
+`Content-Encoding`。手工命令仍作为故障兜底，不是日常上传步骤。回归：
+`npm run test:sockdrive-conversion && npm run test:dos-sockdrive-upload && npm --prefix worker test`。
+
 ### 2.9 平台 BIOS 的边缘缓存会骗人
 
 后台改完 BIOS 绑定只调 `invalidateContent()`（清进程内缓存），**够不着 Cloudflare 边缘**。
@@ -1740,6 +1750,14 @@ ROM 存储和其它站级入口全部是管理员权限。后台列表统一带 
   （`^~ /socket.io/`、`^~ /ipx/`、`= /api/netplay/events`）和 `client_max_body_size 32m`
   （云存档 4MB / J2ME 20MB，**丢了上传必挂**）。XFF 用 `$http_cf_connecting_ip`（§2.16）。
   连接槽已由 `deploy/nginx/tune-nginx.sh` 调到 8192 × 4 worker = 32768。
+- **两条 SSE 绝不能进入 Cloudflare 缓存。** 2026-10-17 公网取证到
+  `/api/netplay/events` 返回 `cf-cache-status: EXPIRED` + `last-modified`，同时浏览器报
+  `ERR_HTTP2_PROTOCOL_ERROR`。`sseGuard.js` 现在同时发 `Cache-Control`、
+  `CDN-Cache-Control`、`Cloudflare-CDN-Cache-Control: no-store`，并且不再发 HTTP/2 禁止的
+  `Connection: keep-alive`。Cloudflare Cache Rules 仍要把 `/api/live/events` 与
+  `/api/netplay/events` 两个精确路径设成 Bypass，并排在 Cache Everything **之后**（冲突设置最后
+  一条匹配规则生效）；`audit-migration.mjs` 会把
+  `cf-cache-status: HIT/MISS/EXPIRED/...` 判为部署失败。
 - **防火墙 ufw 已启用：22 对外，80/443 只对 Cloudflare IP 段** —— 这不是可选项，
   是采用 `$http_cf_connecting_ip` 换来的代价（否则该头可被直连源站伪造，见 §2.16）。
 - **备份：`8bitgo-backup.timer` 每 6 小时 → R2**。rclone 的 remote 名是 **`r2-8bitgo:`**，

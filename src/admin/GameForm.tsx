@@ -67,6 +67,17 @@ import {
   rememberedPspConversion,
   waitForPspConversion,
 } from '@/services/pspConversion'
+import {
+  createSockdriveConversion,
+  nextSockdriveVersion,
+  rememberSockdriveConversion,
+  rememberedSockdriveConversion,
+  retrySockdriveConversion,
+  sockdriveConversionCapability,
+  sockdriveConversionLabel,
+  sockdriveStagingKey,
+  waitForSockdriveConversion,
+} from '@/services/sockdriveConversion'
 
 /*
   一键模板。点一下是**合并**进现有配置（mergeDosboxConfigOverride），不是覆盖，可以叠着点。
@@ -605,10 +616,18 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
                   />
                   <p className="mt-1 text-[11px] text-dim">
                     填官方 <code>sockify</code> 产物中直接含 <code>sockdrive.metaj</code> 的目录；玩家只按需读取用到的磁盘块。
-                    路径请带版本且不要原地覆盖。超大 ZIP 上传时要保留本地原文件，随后在 Linux 制作机运行 <code>npm run sockdrive:prepare</code>；
-                    它会生成、校验、上传并在公开资源完整后绑定。原 ROM 继续保留作回退，但启用后不会下载；附加文件需先写入磁盘再生成分块。
+                    路径请带版本且不要原地覆盖。原 ROM 会继续保留作回退，但启用后不会下载；附加文件需先写入原始 ZIP 再生成分块。
                   </p>
                 </Field>
+                <SockdriveAutoField
+                  slug={initial?.slug ?? ''}
+                  executable={form.dosExecutable ?? ''}
+                  value={form.dosSockdrive ?? ''}
+                  hasSystem={Boolean(form.dosSystem?.trim())}
+                  hasExtras={Boolean(form.dosExtras?.length)}
+                  allowStorage={!personalLibrary}
+                  onChange={(value) => set('dosSockdrive', value || undefined)}
+                />
                 <Field label="Windows 版本">
                   <select
                     className={inputClass}
@@ -1652,6 +1671,188 @@ interface PendingBundle {
   /** 目标包目录，如 roms/flash/jyqx3 */
   dir: string
   plan: SwfBundlePlan
+}
+
+/**
+ * 原始 Windows ZIP 的自动发布入口。
+ *
+ * 这里不把 1GB+ 文件送进 Express：浏览器沿用 R2 multipart，服务端只拿 staging key 建持久任务。
+ * 页面关掉只会停止进度轮询，不会杀掉转换；下次打开编辑页会从 localStorage 找回任务显示。
+ */
+function SockdriveAutoField({
+  slug,
+  executable,
+  value,
+  hasSystem,
+  hasExtras,
+  allowStorage,
+  onChange,
+}: {
+  slug: string
+  executable: string
+  value: string
+  hasSystem: boolean
+  hasExtras: boolean
+  allowStorage: boolean
+  onChange: (value: string) => void
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const restored = useRef('')
+  const [progress, setProgress] = useState<number | null>(null)
+  const [stage, setStage] = useState<UploadStage | null>(null)
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null)
+  const [failedJobId, setFailedJobId] = useState('')
+  const cfg = getRomConfig()
+  const canUpload = allowStorage && Boolean(cfg.api && cfg.token) && Boolean(slug) && hasSystem && !hasExtras
+
+  const watchJob = async (id: string, signal?: AbortSignal) => {
+    const completed = await waitForSockdriveConversion(id, (job) => {
+      setProgress(45 + Math.round(job.progress * 0.55))
+      setMessage({ ok: true, text: `${sockdriveConversionLabel(job)} ${job.progress}%${job.message ? `；${job.message}` : ''}` })
+    }, signal)
+    rememberSockdriveConversion(slug, null)
+    setFailedJobId('')
+    onChange(completed.targetPrefix)
+    setProgress(null)
+    setMessage({
+      ok: true,
+      text: `Sockdrive 已发布：${completed.targetPrefix}` +
+        (completed.outputFiles ? `（${completed.outputFiles} 个文件，${human(completed.outputBytes ?? 0)}）` : '') +
+        (completed.bound ? '；已自动绑定到游戏' : `；${completed.message || '请保存表单完成绑定'}`),
+    })
+    return completed
+  }
+
+  useEffect(() => {
+    if (!slug || !allowStorage) return
+    const id = rememberedSockdriveConversion(slug)
+    if (!id || restored.current === id) return
+    restored.current = id
+    const controller = new AbortController()
+    setProgress(45)
+    setMessage({ ok: true, text: '正在恢复上次未完成的 Sockdrive 后台任务…' })
+    void watchJob(id, controller.signal).catch((error) => {
+      if (error instanceof Error && error.name === 'AbortError') return
+      setProgress(null)
+      setFailedJobId(id)
+      setMessage({ ok: false, text: error instanceof Error ? error.message : '恢复 Sockdrive 任务失败' })
+    })
+    return () => controller.abort()
+    // onChange 是父组件每次渲染新建的闭包；同一任务只允许由 restored 启动一次。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slug, allowStorage])
+
+  const onFile = async (file: File | undefined) => {
+    if (!file) return
+    let stagingKey = ''
+    let taskCreated = false
+    let createdJobId = ''
+    setFailedJobId('')
+    setMessage(null)
+    try {
+      if (!/\.zip$/i.test(file.name)) throw new Error('自动转换只接收原始 .zip 游戏包')
+      if (!slug) throw new Error('请先保存游戏资料，再上传超大 ZIP')
+      if (!hasSystem) throw new Error('请先配置共享 Windows 系统镜像')
+      if (hasExtras) throw new Error('请先把附加文件合入原始 ZIP，并清空 DOS 附加文件')
+      if (!executable.trim()) throw new Error('请先填写“默认 Windows 自启动 EXE”')
+      const capability = await sockdriveConversionCapability()
+      if (!capability.available) throw new Error(capability.reason || '服务器暂时不能制作 Sockdrive')
+      if (file.size > capability.maxSourceBytes) throw new Error(`ZIP 超过后台上限 ${human(capability.maxSourceBytes)}`)
+      const version = nextSockdriveVersion()
+      const prefix = `sockdrives/${slug}-${version}`
+      if (!window.confirm(
+        `${file.name}（${human(file.size)}）\n\n` +
+        `上传后服务器会自动制作、校验并发布到 ${prefix}，关闭页面也会继续。开始吗？`,
+      )) return
+
+      stagingKey = sockdriveStagingKey()
+      setProgress(0)
+      setMessage({ ok: true, text: '正在断点上传原始 ZIP；完成后会自动进入服务器队列' })
+      await uploadRom(file, stagingKey, (pct, at) => {
+        setProgress(Math.round(pct * 0.45))
+        if (at) setStage(at)
+      })
+      setStage(null)
+      setProgress(45)
+      setMessage({ ok: true, text: '原始 ZIP 已安全上传，正在创建持久转换任务…' })
+      const job = await createSockdriveConversion({
+        sourceKey: stagingKey,
+        sourceSize: file.size,
+        gameSlug: slug,
+        executable: executable.trim(),
+        version,
+        expectedSockdrive: value.trim().replace(/\/+$/, ''),
+        encoding: 'br',
+      })
+      taskCreated = true
+      createdJobId = job.id
+      rememberSockdriveConversion(slug, job.id)
+      await watchJob(job.id)
+    } catch (error) {
+      setProgress(null)
+      setStage(null)
+      setMessage({ ok: false, text: error instanceof Error ? error.message : 'Sockdrive 上传或转换失败' })
+      if (createdJobId) {
+        setFailedJobId(createdJobId)
+        rememberSockdriveConversion(slug, createdJobId)
+      }
+      // 任务一旦创建，源文件由服务端按成功 / 失败 24 小时规则管理；建任务前失败才由浏览器清孤儿。
+      if (stagingKey && !taskCreated) await deleteRomObjects([stagingKey]).catch(() => {})
+    } finally {
+      if (inputRef.current) inputRef.current.value = ''
+    }
+  }
+
+  const retry = async () => {
+    if (!failedJobId) return
+    setProgress(45)
+    setMessage({ ok: true, text: '正在重新排队…' })
+    try {
+      const job = await retrySockdriveConversion(failedJobId)
+      rememberSockdriveConversion(slug, job.id)
+      await watchJob(job.id)
+    } catch (error) {
+      setProgress(null)
+      setMessage({ ok: false, text: error instanceof Error ? error.message : '重试失败' })
+    }
+  }
+
+  return (
+    <Field
+      label="原始大 ZIP 自动转 Sockdrive"
+      className="col-span-2"
+      hint="适合 StarCraft 这类 1GB 以上 Windows 游戏；上传、转换、发布、校验和绑定全部自动完成"
+    >
+      <div className="flex flex-wrap gap-2">
+        <input ref={inputRef} type="file" accept=".zip,application/zip" className="hidden" onChange={(event) => void onFile(event.target.files?.[0])} />
+        <button
+          type="button"
+          className={btnClass.primary}
+          disabled={!canUpload || progress !== null}
+          onClick={() => inputRef.current?.click()}
+        >
+          {progress === null ? '☁️ 上传 ZIP 并自动转换' : `处理中 ${progress}%`}
+        </button>
+        {failedJobId && progress === null && (
+          <button type="button" className={btnClass.secondary} onClick={() => void retry()}>重试后台任务</button>
+        )}
+      </div>
+      <p className="mt-2 text-[11px] text-dim">
+        必须先保存这款游戏，并填写系统镜像和默认 EXE。大文件直接分片进私有 staging，不经过站点服务器内存；
+        服务器使用独立硬盘制作新版本目录，<code>sockdrive.metaj</code> 最后发布，成功后才原子绑定。
+      </p>
+      {!slug && <p className="mt-1 text-xs text-live">请先保存游戏资料，再回来上传原始 ZIP。</p>}
+      {hasExtras && <p className="mt-1 text-xs text-live">当前还有 DOS 附加文件；流式盘必须先把这些文件烘进原始 ZIP。</p>}
+      {!allowStorage && <p className="mt-1 text-xs text-dim">个人库不能创建 R2 转换任务。</p>}
+      {progress !== null && (
+        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-black/10">
+          <div className="h-full bg-brand transition-[width]" style={{ width: `${progress}%` }} />
+        </div>
+      )}
+      {progress !== null && stageText(stage) && <p className="mt-1 font-mono text-[11px] text-dim">{stageText(stage)}</p>}
+      {message && <p className={cx('mt-2 text-xs', message.ok ? 'text-online' : 'text-live')}>{message.text}</p>}
+    </Field>
+  )
 }
 
 /**

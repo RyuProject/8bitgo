@@ -320,6 +320,44 @@ CREATE TABLE IF NOT EXISTS psp_conversion_jobs (
   KEY idx_psp_jobs_game (game_slug, lang, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ---------- 大型 Windows ZIP → Sockdrive 后台转换任务 ----------
+-- 元数据文件最后发布，所以 publish_started + 公开 sockdrive.metaj 可以在进程重启后安全恢复收尾。
+CREATE TABLE IF NOT EXISTS sockdrive_conversion_jobs (
+  id                  CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+  source_key          VARCHAR(500) NOT NULL,
+  source_size         BIGINT UNSIGNED NOT NULL,
+  source_etag         VARCHAR(160) NOT NULL,
+  game_id             BIGINT UNSIGNED NOT NULL,
+  game_slug           VARCHAR(120) NOT NULL,
+  executable          VARCHAR(500) NOT NULL,
+  -- 转换开始时的默认 EXE；最终绑定时与 Sockdrive 目录一起 CAS，避免覆盖管理员中途改的新配置。
+  expected_executable VARCHAR(500) NOT NULL DEFAULT '',
+  version             VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  target_prefix       VARCHAR(500) NOT NULL,
+  expected_sockdrive  VARCHAR(500) NOT NULL DEFAULT '',
+  encoding            VARCHAR(10) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'br',
+  actor_id            VARCHAR(40) NULL,
+  status              VARCHAR(24) NOT NULL DEFAULT 'queued',
+  progress            TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  output_bytes        BIGINT UNSIGNED NULL,
+  output_files        INT UNSIGNED NULL,
+  metadata_etag       VARCHAR(160) NULL,
+  range_count         INT UNSIGNED NULL,
+  publish_started     TINYINT(1) NOT NULL DEFAULT 0,
+  bound               TINYINT(1) NOT NULL DEFAULT 0,
+  -- 0=保留、1=已删、2=清扫器已领取；失败源保留 24 小时供重试。
+  source_deleted      TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  message             VARCHAR(500) NULL,
+  error               VARCHAR(1000) NULL,
+  created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  completed_at        TIMESTAMP NULL,
+  UNIQUE KEY uniq_sockdrive_source (source_key(191)),
+  UNIQUE KEY uniq_sockdrive_target (target_prefix(191)),
+  KEY idx_sockdrive_jobs_queue (status, created_at),
+  KEY idx_sockdrive_jobs_game (game_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- ---------- 开放平台沙箱 ROM 样本 ----------
 -- 每个平台至多一款，且只由站长选可供第三方测试的游戏。
 -- 不按应用分别选：否则反复建应用就能把整库拼出来。
