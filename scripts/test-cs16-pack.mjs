@@ -67,12 +67,12 @@ const result = await unpackTarStream(
 assert.deepEqual(found, [['cstrike/a.txt', 'A'], ['valve/long.bin', '0123456789']])
 assert.equal(result.files, 2)
 assert.equal(result.bytes, 11)
-await assert.rejects(() => unpackTarStream(fragmented(tar([['a', 'b']], true)), async () => {}), /校验失败/)
+await assert.rejects(() => unpackTarStream(fragmented(tar([['a', 'b']], true)), async () => {}), /checksum mismatch/)
 const truncated = tar([['a', 'b']]).subarray(0, 600)
-await assert.rejects(() => unpackTarStream(fragmented(truncated), async () => {}), /提前结束/)
+await assert.rejects(() => unpackTarStream(fragmented(truncated), async () => {}), /ended unexpectedly/)
 await assert.rejects(
   () => unpackTarStream(fragmented(tar([['a', '1234']])), async () => {}, undefined, { maxTotalBytes: 3 }),
-  /超过 0MB 安全上限/,
+  /exceeds the 0MB safety limit/,
 )
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')

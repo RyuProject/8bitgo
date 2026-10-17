@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <!-- 生产路由会把尾斜杠去掉；base 保证脚本、WASM 和字体始终从 /web/cs16/ 解析。 -->
@@ -557,19 +557,19 @@
             <img class="brand" src="./ui/original-counter-strike-logo.png" alt="Counter-Strike" width="207" height="32" />
 
             <div class="launcher-layout">
-              <nav class="main-menu" aria-label="游戏模式">
+              <nav class="main-menu" aria-label="Game modes">
                 <button class="menu-entry" id="show-practice" type="button" aria-selected="true">New Game</button>
                 <button class="menu-entry" id="show-servers" type="button" aria-selected="false">Find Servers</button>
-                <button class="menu-entry" type="button" disabled title="进入游戏后可在原版菜单中调整">Options</button>
+                <button class="menu-entry" type="button" disabled title="Available from the original in-game menu">Options</button>
               </nav>
 
               <main class="dialog-stack">
                 <section class="vgui-dialog" id="practice-panel" aria-labelledby="title">
                   <div class="dialog-titlebar" id="title">Create Server</div>
                   <div class="dialog-content">
-                    <p id="sub">选择地图和 BOT。可以只在本机训练，也可以生成房间码，让好友加入你浏览器里的临时服务器。</p>
+                    <p id="sub">Choose a map and BOTs. Train locally, or create a room code so friends can join your temporary server.</p>
                     <div class="form-grid">
-                      <label class="field-label" for="map">地图</label>
+                      <label class="field-label" for="map">Map</label>
                       <select id="map">
                         <option value="de_dust2">Dust II — de_dust2</option>
                         <option value="de_dust">Dust — de_dust</option>
@@ -585,16 +585,16 @@
                         <option value="de_vertigo">Vertigo — de_vertigo</option>
                       </select>
 
-                      <label class="field-label" for="bots">BOT 数量</label>
+                      <label class="field-label" for="bots">BOT Count</label>
                       <select id="bots">
-                        <option value="0">0 — 单人熟悉地图</option>
+                        <option value="0">0 — Explore the map solo</option>
                         <option value="1">1</option>
                         <option value="2">2</option>
                         <option value="3">3</option>
                         <option value="4">4</option>
                         <option value="5">5</option>
                         <option value="6">6</option>
-                        <option value="7" selected>7 — 推荐 4v4</option>
+                        <option value="7" selected>7 — Recommended 4v4</option>
                         <option value="8">8</option>
                         <option value="9">9</option>
                         <option value="10">10</option>
@@ -602,10 +602,10 @@
                         <option value="12">12</option>
                         <option value="13">13</option>
                         <option value="14">14</option>
-                        <option value="15">15 — 较高负载</option>
+                        <option value="15">15 — Higher system load</option>
                       </select>
 
-                      <label class="field-label" for="difficulty">BOT 难度</label>
+                      <label class="field-label" for="difficulty">BOT Difficulty</label>
                       <select id="difficulty">
                         <option value="0">Easy</option>
                         <option value="1">Normal</option>
@@ -614,9 +614,9 @@
                       </select>
                     </div>
 
-                    <p id="bot-hint">你和 7 个 BOT 组成经典 4v4。系统会自动加入反恐精英；按 M 可以换队。</p>
+                    <p id="bot-hint">You and 7 BOTs make a classic 4v4 match. You will join Counter-Terrorists automatically; press M to switch teams.</p>
                     <div class="room-created" id="room-created" hidden>
-                      <span>房间码 <strong class="room-code" id="created-room-code"></strong></span>
+                      <span>Room Code <strong class="room-code" id="created-room-code"></strong></span>
                       <button class="vgui-button" id="copy-room-code" type="button">Copy</button>
                     </div>
                     <pre id="errbox" role="alert" aria-live="assertive"></pre>
@@ -630,14 +630,14 @@
                 <section class="vgui-dialog" id="server-panel" aria-labelledby="server-title" hidden>
                   <div class="dialog-titlebar" id="server-title">Find Servers</div>
                   <div class="dialog-content">
-                    <p class="server-status" id="server-status" role="status" aria-live="polite">打开此页后会读取安全服务器目录</p>
+                    <p class="server-status" id="server-status" role="status" aria-live="polite">The verified server directory loads when this page opens.</p>
                     <div class="server-table">
                       <div class="server-columns" aria-hidden="true">
                         <span>Server</span><span>Map</span><span>Players</span><span>Latency</span>
                       </div>
-                      <div id="server-list" role="listbox" aria-label="CS1.6 已验证服务器"></div>
+                      <div id="server-list" role="listbox" aria-label="Verified CS1.6 servers"></div>
                     </div>
-                    <div class="connect-tools" aria-label="其它连接方式">
+                    <div class="connect-tools" aria-label="Other connection methods">
                       <label class="field-label" for="direct-address">Direct IP</label>
                       <input id="direct-address" type="text" inputmode="decimal" autocomplete="off" maxlength="21" placeholder="1.2.3.4:27015" />
                       <button class="vgui-button" id="direct-connect" type="button">Connect</button>
@@ -647,7 +647,7 @@
                       <button class="vgui-button" id="room-connect" type="button">Join Room</button>
                     </div>
                     <p id="server-connect-status" role="status" aria-live="polite"></p>
-                    <p class="server-copy">公共目录和手输 IP 都会先由本站确认是兼容的公网 CS1.6 服务器；房间码只连接房主浏览器里的临时服务器，不要求房主有公网 IP。</p>
+                    <p class="server-copy">Public listings and direct IPs are verified as compatible public CS1.6 servers first. Room codes connect only to a temporary server in the host's browser, so the host does not need a public IP.</p>
                     <div class="dialog-actions">
                       <button class="vgui-button" id="server-refresh" type="button">Refresh</button>
                       <button class="vgui-button" id="server-back" type="button">Back</button>
@@ -664,7 +664,7 @@
           <section class="loading-panel" aria-labelledby="loading-title">
             <div class="loading-title" id="loading-title">Loading Counter-Strike…</div>
             <div id="bar" aria-hidden="true"><i></i></div>
-            <div id="phase" role="status" aria-live="polite">准备中</div>
+            <div id="phase" role="status" aria-live="polite">Preparing…</div>
             <div id="net"></div>
           </section>
 
@@ -680,6 +680,6 @@
       「目录 + 无扩展名」的裸模块写法，原生 ESM 解析不了（dev 会兜底成根 index.html）。
       官方 raw.js 那条路在本引擎版本（1.2.2）上会卡在版本检查，详见 cs16.js 头注释。
     -->
-    <script type="module" src="./cs16.bundle.js?v=20261017-directory-recovery"></script>
+    <script type="module" src="./cs16.bundle.js?v=20261017-english-ui1"></script>
   </body>
 </html>

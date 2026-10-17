@@ -12,9 +12,9 @@ function fieldText(block, start, length) {
 function octal(block, start, length, label) {
   const raw = fieldText(block, start, length)
   if (!raw) return 0
-  if (!/^[0-7]+$/.test(raw)) throw new Error(`TAR 的 ${label} 不是八进制数`)
+  if (!/^[0-7]+$/.test(raw)) throw new Error(`TAR ${label} is not a valid octal value`)
   const value = Number.parseInt(raw, 8)
-  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`TAR 的 ${label} 超出范围`)
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`TAR ${label} is out of range`)
   return value
 }
 
@@ -45,7 +45,7 @@ class StreamCursor {
         this.queued += next.value.byteLength
       }
     }
-    if (this.queued < size) throw new Error('TAR 数据提前结束')
+    if (this.queued < size) throw new Error('TAR data ended unexpectedly')
   }
 
   async take(size) {
@@ -68,10 +68,10 @@ class StreamCursor {
 }
 
 function verifyChecksum(block) {
-  const expected = octal(block, 148, 8, '校验和')
+  const expected = octal(block, 148, 8, 'checksum')
   let actual = 0
   for (let i = 0; i < block.length; i++) actual += i >= 148 && i < 156 ? 32 : block[i]
-  if (actual !== expected) throw new Error(`TAR 头校验失败（期望 ${expected}，实际 ${actual}）`)
+  if (actual !== expected) throw new Error(`TAR header checksum mismatch (expected ${expected}, got ${actual})`)
 }
 
 /**
@@ -80,7 +80,7 @@ function verifyChecksum(block) {
 export async function unpackTarStream(stream, onFile, onProgress, limits = {}) {
   const cursor = new StreamCursor(stream)
   const maxTotalBytes = Math.min(limits.maxTotalBytes ?? MAX_TOTAL_BYTES, MAX_TOTAL_BYTES)
-  if (!Number.isSafeInteger(maxTotalBytes) || maxTotalBytes <= 0) throw new Error('TAR 展开上限无效')
+  if (!Number.isSafeInteger(maxTotalBytes) || maxTotalBytes <= 0) throw new Error('Invalid TAR extraction limit')
   let files = 0
   let bytes = 0
   let zeroBlocks = 0
@@ -97,22 +97,22 @@ export async function unpackTarStream(stream, onFile, onProgress, limits = {}) {
     const prefix = fieldText(header, 345, 155)
     const fullName = prefix ? `${prefix}/${name}` : name
     const type = header[156]
-    const size = octal(header, 124, 12, '文件长度')
-    if (size > MAX_FILE_BYTES) throw new Error(`TAR 单文件过大：${fullName}（${size} 字节）`)
-    if (bytes + size > maxTotalBytes) throw new Error(`TAR 展开后超过 ${(maxTotalBytes / 1048576).toFixed(0)}MB 安全上限`)
+    const size = octal(header, 124, 12, 'file size')
+    if (size > MAX_FILE_BYTES) throw new Error(`TAR file is too large: ${fullName} (${size} bytes)`)
+    if (bytes + size > maxTotalBytes) throw new Error(`Extracted TAR data exceeds the ${(maxTotalBytes / 1048576).toFixed(0)}MB safety limit`)
 
     const data = await cursor.take(size)
     const padding = (BLOCK - (size % BLOCK)) % BLOCK
     if (padding) await cursor.take(padding)
     if (type === 0 || type === 48) {
       const safe = safePackPath(fullName)
-      if (!safe) throw new Error(`TAR 含不安全路径：${fullName}`)
+      if (!safe) throw new Error(`TAR contains an unsafe path: ${fullName}`)
       await onFile(safe, data)
       files++
       bytes += size
       onProgress?.({ files, bytes, streamBytes: cursor.read, name: safe })
     } else if (type !== 53) {
-      throw new Error(`TAR 含不支持的条目类型 ${String.fromCharCode(type || 0)}：${fullName}`)
+      throw new Error(`TAR contains unsupported entry type ${String.fromCharCode(type || 0)}: ${fullName}`)
     }
   }
 }

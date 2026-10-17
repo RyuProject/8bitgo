@@ -1,5 +1,5 @@
 {
-  "assetVersion": "20261017-directory-recovery",
+  "assetVersion": "20261017-english-ui1",
   "files": [
     {
       "name": "PACKS.md",
@@ -8,18 +8,18 @@
     },
     {
       "name": "cs16-net.js",
-      "size": 12573,
-      "sha256": "6bb8e51393135d4450ece549f47c880425a67b36ed2cefb2b4928546d867e387"
+      "size": 12767,
+      "sha256": "522f92a63c90904a7a161f515426fe2142c6bee787135ea2983e8bddab16274a"
     },
     {
       "name": "cs16.bundle.js",
-      "size": 786755,
-      "sha256": "74a2225cfa64804354406f306b128895ee60253022f618b211047303c2c0f8ac"
+      "size": 785156,
+      "sha256": "bfc95956a78a92c0177652f37b2e8b31f07ac8742eb8172a3f27a08a32eb76ff"
     },
     {
       "name": "cs16.js",
-      "size": 64730,
-      "sha256": "68b7f5c36b3fb59946d9aae49a32c6ba5a9aee6e881650b3f42a27259db347ac"
+      "size": 64978,
+      "sha256": "46fd31196ffb34e24e5747fcaf3fe162dff11ae47a98056737665cc88c861d87"
     },
     {
       "name": "engine/dist/constants.js",
@@ -123,8 +123,8 @@
     },
     {
       "name": "index.html",
-      "size": 21992,
-      "sha256": "40688a84b8da8d52d4e229b699247f8181a6cbf04d70749ff9e605625e1748f5"
+      "size": 22025,
+      "sha256": "45e9aa69af9fcfff4740ec8d95b09cfd610f19d3e513d07c92a2f1aa6f0e000b"
     },
     {
       "name": "lib-new/cstrike/cl_dlls/client_emscripten_wasm32.wasm",
@@ -183,8 +183,8 @@
     },
     {
       "name": "tar-stream.js",
-      "size": 4304,
-      "sha256": "a62c8db83ba18e1ac76af851aecbbf1979e6836bc69e7cea23cae4211e2146bc"
+      "size": 4333,
+      "sha256": "6d0ddd2be2eb9c74b205dfe80a1486f617c11ef22170f37d257886d784b5de44"
     },
     {
       "name": "ui/original-counter-strike-logo.png",

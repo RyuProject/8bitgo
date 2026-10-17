@@ -20,8 +20,8 @@ assert.equal(await localCs16BackendReady(async () => response({}, false)), false
 assert.equal(await localCs16BackendReady(async () => { throw new TypeError('Failed to fetch') }), false)
 
 const launcher = readFileSync(new URL('../public/web/cs16/cs16.js', import.meta.url), 'utf8')
-assert.match(launcher, /本地联机后端未连接，请重新运行 npm run dev/)
-assert.match(launcher, /网络连接失败，请稍后重试/)
+assert.match(launcher, /The local online backend is not connected\. Restart npm run dev\./)
+assert.match(launcher, /Network connection failed\. Please try again later\./)
 assert.doesNotMatch(launcher, /const detail = .*String\(error\)/)
 
 console.log('✅ 本地全栈启动与 CS1.6 目录错误提示回归通过')

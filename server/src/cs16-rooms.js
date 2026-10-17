@@ -183,11 +183,11 @@ export function createCs16RoomService({
 
   router.post('/rooms', (req, res) => {
     noStore(res)
-    if (!config.enabled) return res.status(503).json({ error: '临时房间当前未开放' })
+    if (!config.enabled) return res.status(503).json({ error: 'Temporary rooms are currently unavailable' })
     // 主站 CORS 可能允许 `*`；这里仍要单独挡住第三方网页借访客浏览器批量占满匿名房间。
     if (!originAllowed(req, config.allowedOrigins)) {
       stats.rejected += 1
-      return res.status(403).json({ error: '来源网页不允许创建 CS1.6 房间' })
+      return res.status(403).json({ error: 'This page is not allowed to create CS1.6 rooms' })
     }
     sweepRooms()
     const ip = ipOf(req)
@@ -196,15 +196,15 @@ export function createCs16RoomService({
     if (!perIp.ok || !global.ok) {
       const retryAfter = Math.max(perIp.retryAfter || 0, global.retryAfter || 0, 1)
       res.set('Retry-After', String(retryAfter))
-      return res.status(429).json({ error: '创建房间太频繁，请稍后再试', retryAfter })
+      return res.status(429).json({ error: 'Too many rooms have been created. Please try again later.', retryAfter })
     }
-    if (rooms.size >= config.maxRooms) return res.status(503).json({ error: '临时房间已满，请稍后再试' })
+    if (rooms.size >= config.maxRooms) return res.status(503).json({ error: 'All temporary room slots are in use. Please try again later.' })
     const map = String(req.body?.map || '')
     const botCount = Number(req.body?.botCount)
     const difficulty = Number(req.body?.difficulty)
     if (!SUPPORTED_MAPS.has(map) || !Number.isInteger(botCount) || botCount < 0 || botCount > 15 ||
         !Number.isInteger(difficulty) || difficulty < 0 || difficulty > 3) {
-      return res.status(400).json({ error: '地图或 BOT 设置无效' })
+      return res.status(400).json({ error: 'Invalid map or BOT settings' })
     }
     const now = Date.now()
     const code = newRoomCode(rooms)
@@ -237,12 +237,12 @@ export function createCs16RoomService({
     const quota = take(`cs16-room:lookup:${ip}`, 120, 60_000)
     if (!quota.ok) {
       res.set('Retry-After', String(quota.retryAfter))
-      return res.status(429).json({ error: '查询房间太频繁，请稍后再试' })
+      return res.status(429).json({ error: 'Too many room lookups. Please try again later.' })
     }
     sweepRooms()
     const code = roomCode(req.params.code)
     const room = code ? rooms.get(code) : null
-    if (!room) return res.status(404).json({ error: '房间不存在或已经结束' })
+    if (!room) return res.status(404).json({ error: 'The room does not exist or has already ended' })
     res.json(roomView(room))
   })
 

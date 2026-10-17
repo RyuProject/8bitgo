@@ -203,7 +203,7 @@
     "test:browser-compat": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-browser-compat.mjs",
     "test:jspi": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-jspi-flag.mjs",
     "test:jsdos-runtime": "node scripts/check-jsdos.mjs",
-    "test:cs16": "node scripts/test-cs16-pack.mjs && node scripts/test-cs16-net.mjs && node scripts/test-dev-startup.mjs && node scripts/check-cs16.mjs",
+    "test:cs16": "node scripts/test-cs16-pack.mjs && node scripts/test-cs16-net.mjs && node scripts/test-dev-startup.mjs && node scripts/test-cs16-english-ui.mjs && node scripts/check-cs16.mjs",
     "test:cs16-relay": "npm --prefix server run test:cs16-relay",
     "repack:jsdos": "node scripts/repack-jsdos.mjs",
     "test:system-source": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-system-source.mjs"

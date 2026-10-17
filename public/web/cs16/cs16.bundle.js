@@ -17661,9 +17661,9 @@ function fieldText(block, start3, length) {
 function octal(block, start3, length, label) {
   const raw = fieldText(block, start3, length);
   if (!raw) return 0;
-  if (!/^[0-7]+$/.test(raw)) throw new Error(`TAR \u7684 ${label} \u4E0D\u662F\u516B\u8FDB\u5236\u6570`);
+  if (!/^[0-7]+$/.test(raw)) throw new Error(`TAR ${label} is not a valid octal value`);
   const value = Number.parseInt(raw, 8);
-  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`TAR \u7684 ${label} \u8D85\u51FA\u8303\u56F4`);
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`TAR ${label} is out of range`);
   return value;
 }
 function safePackPath(value) {
@@ -17689,7 +17689,7 @@ var StreamCursor = class {
         this.queued += next.value.byteLength;
       }
     }
-    if (this.queued < size) throw new Error("TAR \u6570\u636E\u63D0\u524D\u7ED3\u675F");
+    if (this.queued < size) throw new Error("TAR data ended unexpectedly");
   }
   async take(size) {
     if (!size) return new Uint8Array(0);
@@ -17710,15 +17710,15 @@ var StreamCursor = class {
   }
 };
 function verifyChecksum(block) {
-  const expected = octal(block, 148, 8, "\u6821\u9A8C\u548C");
+  const expected = octal(block, 148, 8, "checksum");
   let actual = 0;
   for (let i2 = 0; i2 < block.length; i2++) actual += i2 >= 148 && i2 < 156 ? 32 : block[i2];
-  if (actual !== expected) throw new Error(`TAR \u5934\u6821\u9A8C\u5931\u8D25\uFF08\u671F\u671B ${expected}\uFF0C\u5B9E\u9645 ${actual}\uFF09`);
+  if (actual !== expected) throw new Error(`TAR header checksum mismatch (expected ${expected}, got ${actual})`);
 }
 async function unpackTarStream(stream, onFile, onProgress, limits = {}) {
   const cursor = new StreamCursor(stream);
   const maxTotalBytes = Math.min(limits.maxTotalBytes ?? MAX_TOTAL_BYTES, MAX_TOTAL_BYTES);
-  if (!Number.isSafeInteger(maxTotalBytes) || maxTotalBytes <= 0) throw new Error("TAR \u5C55\u5F00\u4E0A\u9650\u65E0\u6548");
+  if (!Number.isSafeInteger(maxTotalBytes) || maxTotalBytes <= 0) throw new Error("Invalid TAR extraction limit");
   let files = 0;
   let bytes = 0;
   let zeroBlocks = 0;
@@ -17735,21 +17735,21 @@ async function unpackTarStream(stream, onFile, onProgress, limits = {}) {
     const prefix = fieldText(header, 345, 155);
     const fullName = prefix ? `${prefix}/${name2}` : name2;
     const type = header[156];
-    const size = octal(header, 124, 12, "\u6587\u4EF6\u957F\u5EA6");
-    if (size > MAX_FILE_BYTES) throw new Error(`TAR \u5355\u6587\u4EF6\u8FC7\u5927\uFF1A${fullName}\uFF08${size} \u5B57\u8282\uFF09`);
-    if (bytes + size > maxTotalBytes) throw new Error(`TAR \u5C55\u5F00\u540E\u8D85\u8FC7 ${(maxTotalBytes / 1048576).toFixed(0)}MB \u5B89\u5168\u4E0A\u9650`);
+    const size = octal(header, 124, 12, "file size");
+    if (size > MAX_FILE_BYTES) throw new Error(`TAR file is too large: ${fullName} (${size} bytes)`);
+    if (bytes + size > maxTotalBytes) throw new Error(`Extracted TAR data exceeds the ${(maxTotalBytes / 1048576).toFixed(0)}MB safety limit`);
     const data = await cursor.take(size);
     const padding = (BLOCK - size % BLOCK) % BLOCK;
     if (padding) await cursor.take(padding);
     if (type === 0 || type === 48) {
       const safe = safePackPath(fullName);
-      if (!safe) throw new Error(`TAR \u542B\u4E0D\u5B89\u5168\u8DEF\u5F84\uFF1A${fullName}`);
+      if (!safe) throw new Error(`TAR contains an unsafe path: ${fullName}`);
       await onFile(safe, data);
       files++;
       bytes += size;
       onProgress?.({ files, bytes, streamBytes: cursor.read, name: safe });
     } else if (type !== 53) {
-      throw new Error(`TAR \u542B\u4E0D\u652F\u6301\u7684\u6761\u76EE\u7C7B\u578B ${String.fromCharCode(type || 0)}\uFF1A${fullName}`);
+      throw new Error(`TAR contains unsupported entry type ${String.fromCharCode(type || 0)}: ${fullName}`);
     }
   }
 }
@@ -17791,7 +17791,7 @@ function createCs16RelayNet(server, {
   onDisconnect = () => {
   }
 } = {}) {
-  if (!validRelayServer(server)) throw new Error("\u670D\u52A1\u5668\u76EE\u5F55\u8FD4\u56DE\u4E86\u65E0\u6548\u7684\u8054\u673A\u6807\u8BC6");
+  if (!validRelayServer(server)) throw new Error("The server directory returned an invalid connection identifier");
   const virtualIp = [101, 101, server.netId & 255, server.netId >> 8 & 255];
   let socket = null;
   let connectPromise = null;
@@ -17818,7 +17818,7 @@ function createCs16RelayNet(server, {
           socket.close();
         } catch {
         }
-        reject(new Error("\u8054\u673A\u7F51\u5173 15 \u79D2\u5185\u6CA1\u6709\u5C31\u7EEA"));
+        reject(new Error("The online gateway did not become ready within 15 seconds"));
       }, timeoutMs);
       socket.addEventListener("message", async (event) => {
         if (typeof event.data === "string") {
@@ -17847,16 +17847,16 @@ function createCs16RelayNet(server, {
         if (!settled) {
           settled = true;
           clearTimeout(timer);
-          reject(new Error("\u65E0\u6CD5\u8FDE\u63A5 CS1.6 \u8054\u673A\u7F51\u5173"));
+          reject(new Error("Unable to connect to the CS1.6 online gateway"));
         }
       });
       socket.addEventListener("close", (event) => {
         clearTimeout(timer);
         if (!settled) {
           settled = true;
-          reject(new Error(`\u8054\u673A\u7F51\u5173\u5728\u5C31\u7EEA\u524D\u5173\u95ED\uFF08${event.code || "\u65E0\u72B6\u6001\u7801"}\uFF09`));
+          reject(new Error(`The online gateway closed before it was ready (${event.code || "no status code"})`));
         } else if (ready && !closedByClient) {
-          onDisconnect(`\u4E0E\u670D\u52A1\u5668\u7684\u8054\u673A\u901A\u9053\u5DF2\u65AD\u5F00\uFF08${event.reason || event.code || "\u7F51\u7EDC\u4E2D\u65AD"}\uFF09`);
+          onDisconnect(`The connection to the server was lost (${event.reason || event.code || "network interruption"})`);
         }
         ready = false;
       });
@@ -17911,9 +17911,9 @@ function createCs16RoomNet(room, role, {
   onStatus = () => {
   }
 } = {}) {
-  if (!validRoomDescriptor(room) || !["host", "guest"].includes(role)) throw new Error("\u623F\u95F4\u8054\u673A\u53C2\u6570\u65E0\u6548");
+  if (!validRoomDescriptor(room) || !["host", "guest"].includes(role)) throw new Error("Invalid room connection settings");
   if (role === "host" && !/^[A-Za-z0-9_-]{24,128}$/.test(String(room.hostToken || ""))) {
-    throw new Error("\u623F\u4E3B\u51ED\u8BC1\u65E0\u6548");
+    throw new Error("Invalid host credentials");
   }
   const hostIp = roomHostIp(room);
   const connectionTimeoutMs = roomConnectTimeoutMs(room, role, timeoutMs);
@@ -17959,7 +17959,7 @@ function createCs16RoomNet(room, role, {
           socket.close();
         } catch {
         }
-        reject(new Error(role === "host" ? "\u4E34\u65F6\u670D\u52A1\u5668\u6CA1\u6709\u5C31\u7EEA" : "\u7B49\u5F85\u623F\u4E3B\u8D85\u65F6\uFF0C\u8BF7\u786E\u8BA4\u623F\u4E3B\u5DF2\u7ECF\u5F00\u59CB\u6E38\u620F"));
+        reject(new Error(role === "host" ? "The temporary server did not become ready" : "Timed out waiting for the host. Make sure the host has started the game."));
       }, connectionTimeoutMs);
       socket.addEventListener("message", async (event) => {
         if (typeof event.data === "string") {
@@ -17970,14 +17970,14 @@ function createCs16RoomNet(room, role, {
             return;
           }
           if (control?.type === "room-waiting") {
-            onStatus("\u623F\u4E3B\u4ECD\u5728\u52A0\u8F7D\uFF0C\u6B63\u5728\u7B49\u5F85\u4E34\u65F6\u670D\u52A1\u5668\u2026");
+            onStatus("The host is still loading. Waiting for the temporary server\u2026");
             return;
           }
           if (!settled && control?.type === "room-ready" && control.code === room.code && control.role === role) {
             if (role === "guest" && (!Number.isInteger(control.peerId) || control.peerId < 1 || control.peerId > 65535)) {
               settled = true;
               clearTimeout(timer);
-              reject(new Error("\u623F\u95F4\u8FD4\u56DE\u4E86\u65E0\u6548\u7684\u73A9\u5BB6\u7F16\u53F7"));
+              reject(new Error("The room returned an invalid player ID"));
               return;
             }
             peerId = role === "guest" ? control.peerId : 0;
@@ -18010,16 +18010,16 @@ function createCs16RoomNet(room, role, {
         if (!settled) {
           settled = true;
           clearTimeout(timer);
-          reject(new Error("\u65E0\u6CD5\u8FDE\u63A5\u4E34\u65F6\u670D\u52A1\u5668\u7F51\u5173"));
+          reject(new Error("Unable to connect to the temporary server gateway"));
         }
       });
       socket.addEventListener("close", (event) => {
         clearTimeout(timer);
         if (!settled) {
           settled = true;
-          reject(new Error(`\u4E34\u65F6\u670D\u52A1\u5668\u5728\u5C31\u7EEA\u524D\u5173\u95ED\uFF08${event.reason || event.code || "\u7F51\u7EDC\u4E2D\u65AD"}\uFF09`));
+          reject(new Error(`The temporary server closed before it was ready (${event.reason || event.code || "network interruption"})`));
         } else if (ready && !closedByClient) {
-          onDisconnect(role === "host" ? "\u4E34\u65F6\u670D\u52A1\u5668\u8FDE\u63A5\u5DF2\u65AD\u5F00\uFF0C\u623F\u95F4\u5DF2\u7ECF\u7ED3\u675F" : `\u623F\u4E3B\u5DF2\u79BB\u5F00\u6216\u623F\u95F4\u8FDE\u63A5\u4E2D\u65AD\uFF08${event.reason || event.code || "\u7F51\u7EDC\u4E2D\u65AD"}\uFF09`);
+          onDisconnect(role === "host" ? "The temporary server connection was lost and the room has ended" : `The host left or the room connection was lost (${event.reason || event.code || "network interruption"})`);
         }
         ready = false;
       });
@@ -18091,7 +18091,7 @@ function validatePackCatalog(catalog) {
 
 // public/web/cs16/cs16.js
 var BASE = "/rodir/";
-var ASSET_VERSION = "20261017-directory-recovery";
+var ASSET_VERSION = "20261017-english-ui1";
 var expectedProgressBytes = 128 * 1024 * 1024;
 var Q = new URLSearchParams(location.search);
 var SUPPORTED_MAPS = /* @__PURE__ */ new Set([
@@ -18888,8 +18888,8 @@ function updateBotHint(count) {
   if (!hint) return;
   const difficulty = $("difficulty");
   if (difficulty && !started) difficulty.disabled = count === 0;
-  const summary = count === 0 ? "\u4E0D\u52A0\u5165 BOT\uFF0C\u9002\u5408\u719F\u6089\u5730\u56FE\u548C\u7EC3\u4E60\u6295\u63B7\u7269\u3002" : count === 7 ? "\u4F60\u548C 7 \u4E2A BOT \u7EC4\u6210\u7ECF\u5178 4v4\u3002" : `\u4F60\u548C ${count} \u4E2A BOT \u4E00\u8D77\u8BAD\u7EC3\u3002`;
-  hint.textContent = `${summary} \u7CFB\u7EDF\u4F1A\u81EA\u52A8\u52A0\u5165\u53CD\u6050\u7CBE\u82F1\uFF1B\u6309 M \u53EF\u4EE5\u6362\u961F\u3002`;
+  const summary = count === 0 ? "No BOTs. Ideal for exploring the map and practicing grenades." : count === 7 ? "You and 7 BOTs make a classic 4v4 match." : `Train with ${count} BOTs.`;
+  hint.textContent = `${summary} You will join Counter-Terrorists automatically; press M to switch teams.`;
 }
 $("bots")?.addEventListener("change", () => updateBotHint(selectedBotCount()));
 updateBotHint(selectedBotCount());
@@ -18917,10 +18917,10 @@ function normalizedRoomCode(value) {
 }
 async function findRoom(code) {
   const normalized = normalizedRoomCode(code);
-  if (!normalized) throw new Error("\u8BF7\u8F93\u5165 6 \u4F4D\u623F\u95F4\u7801");
+  if (!normalized) throw new Error("Enter a valid 6-character room code");
   const response = await fetch(`/api/cs16/rooms/${encodeURIComponent(normalized)}`, { cache: "no-store" });
   const room = await readJsonResponse(response);
-  if (!validRoomDescriptor(room) || !SUPPORTED_MAPS.has(room.map)) throw new Error("\u623F\u95F4\u8FD4\u56DE\u4E86\u65E0\u6548\u7684\u8054\u673A\u53C2\u6570");
+  if (!validRoomDescriptor(room) || !SUPPORTED_MAPS.has(room.map)) throw new Error("The room returned invalid connection settings");
   return room;
 }
 function setServerStatus(message, kind = "") {
@@ -18960,7 +18960,7 @@ function renderServerDirectory() {
     const ping = document.createElement("span");
     ping.textContent = server.pingMs == null ? "\u2014" : `${server.pingMs} ms`;
     row.append(name2, map, players, ping);
-    row.title = server.unavailableReason || server.description || (server.online ? "\u53CC\u51FB\u52A0\u5165\u670D\u52A1\u5668" : "\u72B6\u6001\u63A2\u6D4B\u672A\u54CD\u5E94\uFF0C\u4ECD\u53EF\u5C1D\u8BD5\u52A0\u5165");
+    row.title = server.unavailableReason || server.description || (server.online ? "Double-click to join" : "The status probe did not respond; you can still try to join");
     row.addEventListener("click", () => {
       selectedServerId = server.id;
       renderServerDirectory();
@@ -18975,7 +18975,7 @@ function renderServerDirectory() {
 }
 async function loadServerDirectory(force = false) {
   if (!force && serverDirectoryPromise) return serverDirectoryPromise;
-  setServerStatus("\u6B63\u5728\u5237\u65B0\u5B89\u5168\u670D\u52A1\u5668\u76EE\u5F55\u2026");
+  setServerStatus("Refreshing the verified server directory\u2026");
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15e3);
   serverDirectoryPromise = (async () => {
@@ -18986,7 +18986,7 @@ async function loadServerDirectory(force = false) {
       if (!directory?.enabled) {
         serverDirectory = [];
         selectedServerId = "";
-        setServerStatus("\u7F51\u9875\u8054\u673A\u72B6\u6001\uFF1A\u81EA\u52A8\u76EE\u5F55\u5DF2\u5173\u95ED\uFF0C\u4E14\u6CA1\u6709\u914D\u7F6E\u56FA\u5B9A\u670D\u52A1\u5668", "is-empty");
+        setServerStatus("Online play: the automatic directory is disabled and no fixed servers are configured.", "is-empty");
         renderServerDirectory();
         return serverDirectory;
       }
@@ -18996,7 +18996,7 @@ async function loadServerDirectory(force = false) {
       }
       const online = serverDirectory.filter((server) => server.online).length;
       setServerStatus(
-        serverDirectory.length ? `\u53EF\u52A0\u5165\u670D\u52A1\u5668 ${serverDirectory.length} \u4E2A \xB7 \u72B6\u6001\u63A2\u6D4B\u5728\u7EBF ${online} \u4E2A` : "\u7F51\u9875\u8054\u673A\u72B6\u6001\uFF1A\u76EE\u5F55\u5DF2\u542F\u7528\uFF0C\u4F46\u6CA1\u6709\u53EF\u7528\u670D\u52A1\u5668",
+        serverDirectory.length ? `${serverDirectory.length} joinable server${serverDirectory.length === 1 ? "" : "s"} \xB7 ${online} online` : "Online play: the directory is enabled, but no compatible servers are currently available.",
         serverDirectory.length ? "is-ready" : "is-empty"
       );
       renderServerDirectory();
@@ -19006,9 +19006,9 @@ async function loadServerDirectory(force = false) {
       selectedServerId = "";
       renderServerDirectory();
       const loopback = ["127.0.0.1", "localhost", "::1"].includes(location.hostname);
-      const detail = error instanceof Error && error.name === "AbortError" ? "\u8BF7\u6C42\u8D85\u65F6" : error instanceof TypeError ? loopback ? "\u672C\u5730\u8054\u673A\u540E\u7AEF\u672A\u8FDE\u63A5\uFF0C\u8BF7\u91CD\u65B0\u8FD0\u884C npm run dev" : "\u7F51\u7EDC\u8FDE\u63A5\u5931\u8D25\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5" : error instanceof Error ? error.message : "\u672A\u77E5\u7F51\u7EDC\u9519\u8BEF";
-      console.warn("[cs16] \u8054\u673A\u76EE\u5F55\u5237\u65B0\u5931\u8D25\uFF1A", error);
-      setServerStatus(`\u8054\u673A\u76EE\u5F55\u6682\u65F6\u4E0D\u53EF\u7528\uFF08${detail}\uFF09\uFF1BBOT \u8BAD\u7EC3\u4E0D\u53D7\u5F71\u54CD`, "is-error");
+      const detail = error instanceof Error && error.name === "AbortError" ? "Request timed out" : error instanceof TypeError ? loopback ? "The local online backend is not connected. Restart npm run dev." : "Network connection failed. Please try again later." : error instanceof Error ? error.message : "Unknown network error";
+      console.warn("[cs16] Failed to refresh the server directory:", error);
+      setServerStatus(`The server directory is temporarily unavailable (${detail}). BOT training is unaffected.`, "is-error");
       return serverDirectory;
     } finally {
       clearTimeout(timer);
@@ -19044,7 +19044,7 @@ $("direct-connect")?.addEventListener("click", async () => {
   const button = $("direct-connect");
   try {
     if (button) button.disabled = true;
-    setConnectStatus("\u6B63\u5728\u786E\u8BA4\u76EE\u6807\u662F\u517C\u5BB9\u7684\u516C\u7F51 CS1.6 \u670D\u52A1\u5668\u2026");
+    setConnectStatus("Verifying that this is a compatible public CS1.6 server\u2026");
     const response = await fetch("/api/cs16/servers/resolve", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -19052,9 +19052,9 @@ $("direct-connect")?.addEventListener("click", async () => {
     });
     const server = await readJsonResponse(response);
     if (!validRelayServer(server) || !SUPPORTED_MAPS.has(server.map) || server.joinable === false) {
-      throw new Error(server?.unavailableReason || "\u8FD9\u4E2A\u5730\u5740\u4E0D\u662F\u517C\u5BB9\u7684 CS1.6 \u670D\u52A1\u5668");
+      throw new Error(server?.unavailableReason || "This address is not a compatible CS1.6 server");
     }
-    setConnectStatus(`\u5DF2\u9A8C\u8BC1 ${server.name} \xB7 ${server.map}\uFF0C\u6B63\u5728\u8FDE\u63A5\u2026`, "ready");
+    setConnectStatus(`Verified ${server.name} \xB7 ${server.map}. Connecting\u2026`, "ready");
     await start2({ server });
   } catch (error) {
     if (started) showError(error);
@@ -19068,9 +19068,9 @@ $("room-connect")?.addEventListener("click", async () => {
   const button = $("room-connect");
   try {
     if (button) button.disabled = true;
-    setConnectStatus("\u6B63\u5728\u67E5\u627E\u623F\u95F4\u2026");
+    setConnectStatus("Finding the room\u2026");
     const room = await findRoom($("room-code-input")?.value);
-    setConnectStatus(room.hostReady ? `\u623F\u4E3B\u5DF2\u5C31\u7EEA \xB7 ${room.map}` : `\u623F\u4E3B\u4ECD\u5728\u52A0\u8F7D \xB7 ${room.map}\uFF0C\u53EF\u4EE5\u5148\u52A0\u8F7D\u6E38\u620F`, "ready");
+    setConnectStatus(room.hostReady ? `Host ready \xB7 ${room.map}` : `Host is still loading \xB7 ${room.map}. You can load the game now.`, "ready");
     await start2({ room: { ...room, role: "guest" } });
   } catch (error) {
     if (started) showError(error);
@@ -19105,7 +19105,7 @@ $("create-room")?.addEventListener("click", async () => {
     });
     const room = await readJsonResponse(response);
     if (!validRoomDescriptor(room) || !SUPPORTED_MAPS.has(room.map) || typeof room.hostToken !== "string") {
-      throw new Error("\u521B\u5EFA\u63A5\u53E3\u8FD4\u56DE\u4E86\u65E0\u6548\u7684\u623F\u95F4\u53C2\u6570");
+      throw new Error("The room service returned invalid settings");
     }
     pendingHostedRoom = { ...room, role: "host" };
     for (const id of ["map", "bots", "difficulty", "start"]) {
@@ -19121,7 +19121,7 @@ $("create-room")?.addEventListener("click", async () => {
       button.textContent = "Start Room";
     }
     const sub = $("sub");
-    if (sub) sub.textContent = "\u628A\u623F\u95F4\u7801\u53D1\u7ED9\u597D\u53CB\uFF0C\u7136\u540E\u70B9\u51FB Start Room\u3002\u597D\u53CB\u53EF\u4EE5\u63D0\u524D\u8F93\u5165\u623F\u95F4\u7801\u5E76\u52A0\u8F7D\u3002";
+    if (sub) sub.textContent = "Send the room code to your friends, then click Start Room. They can enter the code and load the game while you prepare.";
   } catch (error) {
     if (button) {
       button.disabled = false;
@@ -19143,7 +19143,7 @@ ${shareUrl.href}`);
     if (button) button.textContent = "Copied";
   } catch {
     const errbox = $("errbox");
-    if (errbox) errbox.textContent = `\u623F\u95F4\u7801\uFF1A${pendingHostedRoom.code} \xB7 \u9080\u8BF7\u94FE\u63A5\uFF1A${shareUrl.href}`;
+    if (errbox) errbox.textContent = `Room Code: ${pendingHostedRoom.code} \xB7 Invite Link: ${shareUrl.href}`;
   }
 });
 function reportEngineFailure(message) {
@@ -19153,12 +19153,12 @@ function reportEngineFailure(message) {
 }
 async function start2({ server = null, room = null } = {}) {
   if (started) return;
-  if (server && room) throw new Error("\u4E0D\u80FD\u540C\u65F6\u8FDE\u63A5\u516C\u5171\u670D\u52A1\u5668\u548C\u4E34\u65F6\u623F\u95F4");
+  if (server && room) throw new Error("You cannot join a public server and a temporary room at the same time");
   if (server && (!validRelayServer(server) || !SUPPORTED_MAPS.has(server.map) || server.joinable === false)) {
-    throw new Error(server?.unavailableReason || "\u8FD9\u4E2A\u670D\u52A1\u5668\u5F53\u524D\u4E0D\u80FD\u7531\u7F51\u9875\u7248\u52A0\u5165");
+    throw new Error(server?.unavailableReason || "This server cannot currently be joined from the web version");
   }
   if (room && (!validRoomDescriptor(room) || !SUPPORTED_MAPS.has(room.map) || !["host", "guest"].includes(room.role))) {
-    throw new Error("\u8FD9\u4E2A\u4E34\u65F6\u623F\u95F4\u7684\u8054\u673A\u53C2\u6570\u65E0\u6548");
+    throw new Error("This temporary room has invalid connection settings");
   }
   started = true;
   const startButton = $("start");
@@ -19234,7 +19234,7 @@ async function start2({ server = null, room = null } = {}) {
   if (room) {
     window.__probe.info.room = { code: room.code, role: room.role, map: room.map };
     const hud = $("hud");
-    if (hud) hud.textContent = `ROOM ${room.code} \xB7 ${room.role === "host" ? "\u623F\u4E3B" : "\u73A9\u5BB6"}`;
+    if (hud) hud.textContent = `ROOM ${room.code} \xB7 ${room.role === "host" ? "HOST" : "PLAYER"}`;
   }
   const wanted = ["base", `maps/${map}`];
   const packWarmup = FORCE_GZIP ? Promise.resolve(null) : prepareZstdPacks(wanted).catch((error) => {
@@ -19360,13 +19360,13 @@ if (Q.has("room")) {
   showLauncherMode("servers");
   const input = $("room-code-input");
   if (input) input.value = String(Q.get("room") || "").toUpperCase();
-  setConnectStatus("\u6B63\u5728\u8BFB\u53D6\u9080\u8BF7\u623F\u95F4\u2026");
+  setConnectStatus("Loading the invited room\u2026");
   findRoom(Q.get("room")).then((room) => start2({ room: { ...room, role: "guest" } })).catch(showError);
 } else if (Q.has("server")) {
   showLauncherMode("servers");
   loadServerDirectory().then((servers) => {
     const server = servers.find((entry) => entry.id === Q.get("server"));
-    if (!server) throw new Error("\u5206\u4EAB\u94FE\u63A5\u4E2D\u7684\u670D\u52A1\u5668\u4E0D\u5B58\u5728\u6216\u5F53\u524D\u672A\u5F00\u653E");
+    if (!server) throw new Error("The server in this shared link does not exist or is not currently available");
     selectedServerId = server.id;
     return start2({ server });
   }).catch(showError);

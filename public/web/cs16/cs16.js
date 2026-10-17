@@ -43,7 +43,7 @@ import {
 } from './pack-guards.js'
 
 const BASE = '/rodir/'
-const ASSET_VERSION = '20261017-directory-recovery'
+const ASSET_VERSION = '20261017-english-ui1'
 // 清单返回后会换成当前地图的真实压缩体积；这里仅用于清单到达前，避免进度条跳满。
 let expectedProgressBytes = 128 * 1024 * 1024
 const Q = new URLSearchParams(location.search)
@@ -938,11 +938,11 @@ function updateBotHint(count) {
   const difficulty = $('difficulty')
   if (difficulty && !started) difficulty.disabled = count === 0
   const summary = count === 0
-    ? '不加入 BOT，适合熟悉地图和练习投掷物。'
+    ? 'No BOTs. Ideal for exploring the map and practicing grenades.'
     : count === 7
-      ? '你和 7 个 BOT 组成经典 4v4。'
-      : `你和 ${count} 个 BOT 一起训练。`
-  hint.textContent = `${summary} 系统会自动加入反恐精英；按 M 可以换队。`
+      ? 'You and 7 BOTs make a classic 4v4 match.'
+      : `Train with ${count} BOTs.`
+  hint.textContent = `${summary} You will join Counter-Terrorists automatically; press M to switch teams.`
 }
 
 $('bots')?.addEventListener('change', () => updateBotHint(selectedBotCount()))
@@ -973,10 +973,10 @@ function normalizedRoomCode(value) {
 
 async function findRoom(code) {
   const normalized = normalizedRoomCode(code)
-  if (!normalized) throw new Error('请输入 6 位房间码')
+  if (!normalized) throw new Error('Enter a valid 6-character room code')
   const response = await fetch(`/api/cs16/rooms/${encodeURIComponent(normalized)}`, { cache: 'no-store' })
   const room = await readJsonResponse(response)
-  if (!validRoomDescriptor(room) || !SUPPORTED_MAPS.has(room.map)) throw new Error('房间返回了无效的联机参数')
+  if (!validRoomDescriptor(room) || !SUPPORTED_MAPS.has(room.map)) throw new Error('The room returned invalid connection settings')
   return room
 }
 
@@ -1021,7 +1021,7 @@ function renderServerDirectory() {
     const ping = document.createElement('span')
     ping.textContent = server.pingMs == null ? '—' : `${server.pingMs} ms`
     row.append(name, map, players, ping)
-    row.title = server.unavailableReason || server.description || (server.online ? '双击加入服务器' : '状态探测未响应，仍可尝试加入')
+    row.title = server.unavailableReason || server.description || (server.online ? 'Double-click to join' : 'The status probe did not respond; you can still try to join')
     row.addEventListener('click', () => {
       selectedServerId = server.id
       renderServerDirectory()
@@ -1037,7 +1037,7 @@ function renderServerDirectory() {
 
 async function loadServerDirectory(force = false) {
   if (!force && serverDirectoryPromise) return serverDirectoryPromise
-  setServerStatus('正在刷新安全服务器目录…')
+  setServerStatus('Refreshing the verified server directory…')
   const controller = new AbortController()
   // 首次打开需要先取外部公共目录，再由本站并发做 A2S 复检；弱网下给它完整的一轮时间。
   const timer = setTimeout(() => controller.abort(), 15_000)
@@ -1049,7 +1049,7 @@ async function loadServerDirectory(force = false) {
       if (!directory?.enabled) {
         serverDirectory = []
         selectedServerId = ''
-        setServerStatus('网页联机状态：自动目录已关闭，且没有配置固定服务器', 'is-empty')
+        setServerStatus('Online play: the automatic directory is disabled and no fixed servers are configured.', 'is-empty')
         renderServerDirectory()
         return serverDirectory
       }
@@ -1062,8 +1062,8 @@ async function loadServerDirectory(force = false) {
       const online = serverDirectory.filter((server) => server.online).length
       setServerStatus(
         serverDirectory.length
-          ? `可加入服务器 ${serverDirectory.length} 个 · 状态探测在线 ${online} 个`
-          : '网页联机状态：目录已启用，但没有可用服务器',
+          ? `${serverDirectory.length} joinable server${serverDirectory.length === 1 ? '' : 's'} · ${online} online`
+          : 'Online play: the directory is enabled, but no compatible servers are currently available.',
         serverDirectory.length ? 'is-ready' : 'is-empty',
       )
       renderServerDirectory()
@@ -1074,17 +1074,17 @@ async function loadServerDirectory(force = false) {
       renderServerDirectory()
       const loopback = ['127.0.0.1', 'localhost', '::1'].includes(location.hostname)
       const detail = error instanceof Error && error.name === 'AbortError'
-        ? '请求超时'
+        ? 'Request timed out'
         : error instanceof TypeError
           ? loopback
-            ? '本地联机后端未连接，请重新运行 npm run dev'
-            : '网络连接失败，请稍后重试'
+            ? 'The local online backend is not connected. Restart npm run dev.'
+            : 'Network connection failed. Please try again later.'
           : error instanceof Error
             ? error.message
-            : '未知网络错误'
+            : 'Unknown network error'
       // 浏览器原始异常只留给控制台排查，不能把 `TypeError: Failed to fetch` 直接甩给玩家。
-      console.warn('[cs16] 联机目录刷新失败：', error)
-      setServerStatus(`联机目录暂时不可用（${detail}）；BOT 训练不受影响`, 'is-error')
+      console.warn('[cs16] Failed to refresh the server directory:', error)
+      setServerStatus(`The server directory is temporarily unavailable (${detail}). BOT training is unaffected.`, 'is-error')
       return serverDirectory
     } finally {
       clearTimeout(timer)
@@ -1123,7 +1123,7 @@ $('direct-connect')?.addEventListener('click', async () => {
   const button = $('direct-connect')
   try {
     if (button) button.disabled = true
-    setConnectStatus('正在确认目标是兼容的公网 CS1.6 服务器…')
+    setConnectStatus('Verifying that this is a compatible public CS1.6 server…')
     const response = await fetch('/api/cs16/servers/resolve', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1131,9 +1131,9 @@ $('direct-connect')?.addEventListener('click', async () => {
     })
     const server = await readJsonResponse(response)
     if (!validRelayServer(server) || !SUPPORTED_MAPS.has(server.map) || server.joinable === false) {
-      throw new Error(server?.unavailableReason || '这个地址不是兼容的 CS1.6 服务器')
+      throw new Error(server?.unavailableReason || 'This address is not a compatible CS1.6 server')
     }
-    setConnectStatus(`已验证 ${server.name} · ${server.map}，正在连接…`, 'ready')
+    setConnectStatus(`Verified ${server.name} · ${server.map}. Connecting…`, 'ready')
     await start({ server })
   } catch (error) {
     if (started) showError(error)
@@ -1148,9 +1148,9 @@ $('room-connect')?.addEventListener('click', async () => {
   const button = $('room-connect')
   try {
     if (button) button.disabled = true
-    setConnectStatus('正在查找房间…')
+    setConnectStatus('Finding the room…')
     const room = await findRoom($('room-code-input')?.value)
-    setConnectStatus(room.hostReady ? `房主已就绪 · ${room.map}` : `房主仍在加载 · ${room.map}，可以先加载游戏`, 'ready')
+    setConnectStatus(room.hostReady ? `Host ready · ${room.map}` : `Host is still loading · ${room.map}. You can load the game now.`, 'ready')
     await start({ room: { ...room, role: 'guest' } })
   } catch (error) {
     if (started) showError(error)
@@ -1187,7 +1187,7 @@ $('create-room')?.addEventListener('click', async () => {
     })
     const room = await readJsonResponse(response)
     if (!validRoomDescriptor(room) || !SUPPORTED_MAPS.has(room.map) || typeof room.hostToken !== 'string') {
-      throw new Error('创建接口返回了无效的房间参数')
+      throw new Error('The room service returned invalid settings')
     }
     pendingHostedRoom = { ...room, role: 'host' }
     for (const id of ['map', 'bots', 'difficulty', 'start']) {
@@ -1203,7 +1203,7 @@ $('create-room')?.addEventListener('click', async () => {
       button.textContent = 'Start Room'
     }
     const sub = $('sub')
-    if (sub) sub.textContent = '把房间码发给好友，然后点击 Start Room。好友可以提前输入房间码并加载。'
+    if (sub) sub.textContent = 'Send the room code to your friends, then click Start Room. They can enter the code and load the game while you prepare.'
   } catch (error) {
     if (button) {
       button.disabled = false
@@ -1225,7 +1225,7 @@ $('copy-room-code')?.addEventListener('click', async () => {
     if (button) button.textContent = 'Copied'
   } catch {
     const errbox = $('errbox')
-    if (errbox) errbox.textContent = `房间码：${pendingHostedRoom.code} · 邀请链接：${shareUrl.href}`
+    if (errbox) errbox.textContent = `Room Code: ${pendingHostedRoom.code} · Invite Link: ${shareUrl.href}`
   }
 })
 
@@ -1237,12 +1237,12 @@ function reportEngineFailure(message) {
 
 async function start({ server = null, room = null } = {}) {
   if (started) return
-  if (server && room) throw new Error('不能同时连接公共服务器和临时房间')
+  if (server && room) throw new Error('You cannot join a public server and a temporary room at the same time')
   if (server && (!validRelayServer(server) || !SUPPORTED_MAPS.has(server.map) || server.joinable === false)) {
-    throw new Error(server?.unavailableReason || '这个服务器当前不能由网页版加入')
+    throw new Error(server?.unavailableReason || 'This server cannot currently be joined from the web version')
   }
   if (room && (!validRoomDescriptor(room) || !SUPPORTED_MAPS.has(room.map) || !['host', 'guest'].includes(room.role))) {
-    throw new Error('这个临时房间的联机参数无效')
+    throw new Error('This temporary room has invalid connection settings')
   }
   started = true
   const startButton = $('start')
@@ -1323,7 +1323,7 @@ async function start({ server = null, room = null } = {}) {
   if (room) {
     window.__probe.info.room = { code: room.code, role: room.role, map: room.map }
     const hud = $('hud')
-    if (hud) hud.textContent = `ROOM ${room.code} · ${room.role === 'host' ? '房主' : '玩家'}`
+    if (hud) hud.textContent = `ROOM ${room.code} · ${room.role === 'host' ? 'HOST' : 'PLAYER'}`
   }
 
   // 先取 14KB 清单并预热基础包/地图首片，让 R2 握手和引擎初始化并行。
@@ -1462,13 +1462,13 @@ if (Q.has('room')) {
   showLauncherMode('servers')
   const input = $('room-code-input')
   if (input) input.value = String(Q.get('room') || '').toUpperCase()
-  setConnectStatus('正在读取邀请房间…')
+  setConnectStatus('Loading the invited room…')
   findRoom(Q.get('room')).then((room) => start({ room: { ...room, role: 'guest' } })).catch(showError)
 } else if (Q.has('server')) {
   showLauncherMode('servers')
   loadServerDirectory().then((servers) => {
     const server = servers.find((entry) => entry.id === Q.get('server'))
-    if (!server) throw new Error('分享链接中的服务器不存在或当前未开放')
+    if (!server) throw new Error('The server in this shared link does not exist or is not currently available')
     selectedServerId = server.id
     return start({ server })
   }).catch(showError)

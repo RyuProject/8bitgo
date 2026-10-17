@@ -383,13 +383,13 @@ function publicServer(server, info) {
   const mapSupported = !info || (!!reportedMap && SUPPORTED_MAPS.has(reportedMap))
   const password = info?.password ?? false
   const unavailableReason = !info
-    ? '服务器当前无响应'
+    ? 'The server is not responding'
     : !mapSupported
       ? reportedMap
-        ? `服务器当前地图 ${reportedMap} 尚未随网页版发布`
-        : '服务器返回了无效地图名'
+        ? `The server is currently running ${reportedMap}, which is not included in the web version`
+        : 'The server returned an invalid map name'
       : password
-        ? '该服务器需要密码，网页版目录暂不下发口令'
+        ? 'This server requires a password; the web directory does not distribute passwords'
         : null
   return {
     id: server.id,
@@ -444,7 +444,7 @@ function automaticServer(candidate, info, usedNetIds, expiresAt) {
     netId: allocateNetId(digest, usedNetIds),
     family: 4,
     region: candidate.region || 'Public',
-    description: '公共目录自动发现；已通过 CS1.6 协议与地图校验',
+    description: 'Automatically discovered and verified for CS1.6 protocol and map compatibility',
     maxPlayers: info.maxPlayers,
     automatic: true,
     directory: true,
@@ -467,7 +467,7 @@ function directServer(candidate, info, usedNetIds, expiresAt) {
     netId: allocateNetId(digest, usedNetIds),
     family: 4,
     region: 'Direct IP',
-    description: '玩家输入的公网地址；已通过本站 CS1.6 协议与地图兼容复检',
+    description: 'Player-entered public address verified for CS1.6 protocol and map compatibility',
     maxPlayers: info.maxPlayers,
     automatic: true,
     direct: true,
@@ -642,11 +642,11 @@ export function createCs16RelayService({
 
   router.post('/servers/resolve', async (req, res) => {
     noStore(res)
-    if (!config.directConnect) return res.status(503).json({ error: 'IP 直连当前未开放' })
+    if (!config.directConnect) return res.status(503).json({ error: 'Direct IP connections are currently unavailable' })
     // 全站 CORS 可以放开普通读接口，但不能让第三方网页把访客变成本站的公网 UDP 探针。
     if (!originAllowed(req, config.allowedOrigins)) {
       stats.rejected += 1
-      return res.status(403).json({ error: '来源网页不允许发起 CS1.6 IP 探测' })
+      return res.status(403).json({ error: 'This page is not allowed to probe CS1.6 servers' })
     }
     const ip = ipOf(req) || 'unknown'
     const perIpQuota = take(`cs16-direct:ip:${ip}`, 8, 60_000)
@@ -654,24 +654,24 @@ export function createCs16RelayService({
     if (!perIpQuota.ok || !globalQuota.ok) {
       const retryAfter = Math.max(perIpQuota.retryAfter || 0, globalQuota.retryAfter || 0, 1)
       res.set('Retry-After', String(retryAfter))
-      return res.status(429).json({ error: 'IP 探测太频繁，请稍后再试', retryAfter })
+      return res.status(429).json({ error: 'Too many IP checks. Please try again later.', retryAfter })
     }
     const candidate = parseDirectAddress(req.body?.address)
-    if (!candidate) return res.status(400).json({ error: '请输入公网 IPv4:端口，例如 45.12.34.56:27015' })
+    if (!candidate) return res.status(400).json({ error: 'Enter a public IPv4 address and port, for example 45.12.34.56:27015' })
     cleanupDirectServers()
     const prospectiveId = `direct-${publicServerIdentity(candidate.host, candidate.port).toString('hex').slice(0, 16)}`
     const directCount = [...serverById.values()].filter((server) => server.direct).length
     if (!serverById.has(prospectiveId) && directCount >= config.directMaxServers) {
-      return res.status(503).json({ error: 'IP 直连临时注册已满，请稍后再试' })
+      return res.status(503).json({ error: 'The temporary Direct IP registry is full. Please try again later.' })
     }
     const info = await probe(candidate, config.directProbeTimeoutMs)
-    if (!info) return res.status(404).json({ error: '服务器无响应，请确认 IP、端口和防火墙' })
+    if (!info) return res.status(404).json({ error: 'The server did not respond. Check the IP, port, and firewall.' })
     if (!compatiblePublicServer(info)) {
       const error = info.password
-        ? '该服务器需要密码，网页版暂不保存或下发服务器口令'
+        ? 'This server requires a password; the web version does not store or distribute server passwords'
         : !SUPPORTED_MAPS.has(info.map)
-          ? `服务器当前地图 ${text(info.map, 32) || '未知'} 尚未随网页版发布`
-          : '目标响应了 UDP，但不是兼容的 Counter-Strike 1.6 服务器'
+          ? `The server is currently running ${text(info.map, 32) || 'an unknown map'}, which is not included in the web version`
+          : 'The UDP target responded, but it is not a compatible Counter-Strike 1.6 server'
       return res.status(422).json({ error })
     }
     const id = prospectiveId

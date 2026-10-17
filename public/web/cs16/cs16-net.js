@@ -54,7 +54,7 @@ export function createCs16RelayNet(server, {
   timeoutMs = 15_000,
   onDisconnect = () => {},
 } = {}) {
-  if (!validRelayServer(server)) throw new Error('服务器目录返回了无效的联机标识')
+  if (!validRelayServer(server)) throw new Error('The server directory returned an invalid connection identifier')
   const virtualIp = [101, 101, server.netId & 0xff, (server.netId >> 8) & 0xff]
   let socket = null
   let connectPromise = null
@@ -82,7 +82,7 @@ export function createCs16RelayNet(server, {
         if (settled) return
         settled = true
         try { socket.close() } catch { /* 构造成功但还没 open 时也允许直接收尾 */ }
-        reject(new Error('联机网关 15 秒内没有就绪'))
+        reject(new Error('The online gateway did not become ready within 15 seconds'))
       }, timeoutMs)
 
       socket.addEventListener('message', async (event) => {
@@ -109,16 +109,16 @@ export function createCs16RelayNet(server, {
         if (!settled) {
           settled = true
           clearTimeout(timer)
-          reject(new Error('无法连接 CS1.6 联机网关'))
+          reject(new Error('Unable to connect to the CS1.6 online gateway'))
         }
       })
       socket.addEventListener('close', (event) => {
         clearTimeout(timer)
         if (!settled) {
           settled = true
-          reject(new Error(`联机网关在就绪前关闭（${event.code || '无状态码'}）`))
+          reject(new Error(`The online gateway closed before it was ready (${event.code || 'no status code'})`))
         } else if (ready && !closedByClient) {
-          onDisconnect(`与服务器的联机通道已断开（${event.reason || event.code || '网络中断'}）`)
+          onDisconnect(`The connection to the server was lost (${event.reason || event.code || 'network interruption'})`)
         }
         ready = false
       })
@@ -186,9 +186,9 @@ export function createCs16RoomNet(room, role, {
   onDisconnect = () => {},
   onStatus = () => {},
 } = {}) {
-  if (!validRoomDescriptor(room) || !['host', 'guest'].includes(role)) throw new Error('房间联机参数无效')
+  if (!validRoomDescriptor(room) || !['host', 'guest'].includes(role)) throw new Error('Invalid room connection settings')
   if (role === 'host' && !/^[A-Za-z0-9_-]{24,128}$/.test(String(room.hostToken || ''))) {
-    throw new Error('房主凭证无效')
+    throw new Error('Invalid host credentials')
   }
   const hostIp = roomHostIp(room)
   const connectionTimeoutMs = roomConnectTimeoutMs(room, role, timeoutMs)
@@ -233,7 +233,7 @@ export function createCs16RoomNet(room, role, {
         if (settled) return
         settled = true
         try { socket.close() } catch { /* CONNECTING 状态也允许直接收尾 */ }
-        reject(new Error(role === 'host' ? '临时服务器没有就绪' : '等待房主超时，请确认房主已经开始游戏'))
+        reject(new Error(role === 'host' ? 'The temporary server did not become ready' : 'Timed out waiting for the host. Make sure the host has started the game.'))
       }, connectionTimeoutMs)
 
       socket.addEventListener('message', async (event) => {
@@ -241,14 +241,14 @@ export function createCs16RoomNet(room, role, {
           let control
           try { control = JSON.parse(event.data) } catch { return }
           if (control?.type === 'room-waiting') {
-            onStatus('房主仍在加载，正在等待临时服务器…')
+            onStatus('The host is still loading. Waiting for the temporary server…')
             return
           }
           if (!settled && control?.type === 'room-ready' && control.code === room.code && control.role === role) {
             if (role === 'guest' && (!Number.isInteger(control.peerId) || control.peerId < 1 || control.peerId > 65535)) {
               settled = true
               clearTimeout(timer)
-              reject(new Error('房间返回了无效的玩家编号'))
+              reject(new Error('The room returned an invalid player ID'))
               return
             }
             peerId = role === 'guest' ? control.peerId : 0
@@ -282,18 +282,18 @@ export function createCs16RoomNet(room, role, {
         if (!settled) {
           settled = true
           clearTimeout(timer)
-          reject(new Error('无法连接临时服务器网关'))
+          reject(new Error('Unable to connect to the temporary server gateway'))
         }
       })
       socket.addEventListener('close', (event) => {
         clearTimeout(timer)
         if (!settled) {
           settled = true
-          reject(new Error(`临时服务器在就绪前关闭（${event.reason || event.code || '网络中断'}）`))
+          reject(new Error(`The temporary server closed before it was ready (${event.reason || event.code || 'network interruption'})`))
         } else if (ready && !closedByClient) {
           onDisconnect(role === 'host'
-            ? '临时服务器连接已断开，房间已经结束'
-            : `房主已离开或房间连接中断（${event.reason || event.code || '网络中断'}）`)
+            ? 'The temporary server connection was lost and the room has ended'
+            : `The host left or the room connection was lost (${event.reason || event.code || 'network interruption'})`)
         }
         ready = false
       })
