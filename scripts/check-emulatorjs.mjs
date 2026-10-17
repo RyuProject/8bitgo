@@ -81,6 +81,36 @@ if (!existsSync(join(dir, 'cores', 'fbneo-wasm.data'))) {
   )
 }
 
+/*
+  构建报告必须同时有 metadata 别名，而且逐字节一致。
+
+  线上实测浏览器会把 `/cores/reports/<core>.json` 以 ERR_BLOCKED_BY_CLIENT 拦掉，
+  引擎随即禁用 IndexedDB 缓存；KOF97 因此每次都要重新下载并解压约 8MB 的 FBNeo 核心。
+  运行时已改请求不含 reports 的 metadata/；这里防止只改了地址却漏发文件，或自构建核心
+  更新报告后别名仍停在上一版。
+*/
+const reportsDir = join(dir, 'cores', 'reports')
+const metadataDir = join(dir, 'cores', 'metadata')
+if (!existsSync(reportsDir) || !existsSync(metadataDir)) {
+  fail(
+    'EmulatorJS 核心报告缺 reports/ 或 metadata/ 目录',
+    'npm run ejsmeta；运行时只请求 metadata/，用来避开会误拦 `/reports/` 的浏览器隐私规则',
+  )
+}
+const reports = readdirSync(reportsDir).filter((name) => name.endsWith('.json'))
+if (!reports.length) {
+  fail('EmulatorJS 没有任何核心构建报告', '重新复制核心并运行 npm run ejsmeta')
+}
+for (const name of reports) {
+  const alias = join(metadataDir, name)
+  if (!existsSync(alias) || !readFileSync(join(reportsDir, name)).equals(readFileSync(alias))) {
+    fail(
+      `cores/metadata/${name} 缺失或与 reports/${name} 不一致`,
+      'npm run ejsmeta；不要手工维护两份报告，构建前也会自动同步',
+    )
+  }
+}
+
 if (!checkDist) {
 /*
   引擎的下载器必须还是 fetch。
@@ -153,4 +183,16 @@ if (missing.length) {
   )
 }
 
-console.log(`✔ dist/client/emulatorjs/ 与 public/ 一致（引擎逐字节相同，${cores.length} 个核心齐全）`)
+// metadata 很小，全部逐字节比对；任何一份漏进 dist 都会让对应平台退回「每局重下核心」。
+for (const name of reports) {
+  const src = join(metadataDir, name)
+  const out = join(distDir, 'cores', 'metadata', name)
+  if (!existsSync(out) || !readFileSync(src).equals(readFileSync(out))) {
+    fail(
+      `dist/client/emulatorjs/cores/metadata/${name} 缺失或落后于 public/`,
+      '重新 npm run build:client；核心报告不对时 EmulatorJS 会禁用 IndexedDB 缓存',
+    )
+  }
+}
+
+console.log(`✔ dist/client/emulatorjs/ 与 public/ 一致（引擎逐字节相同，${cores.length} 个核心、${reports.length} 份缓存元数据齐全）`)

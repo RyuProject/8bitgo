@@ -44,6 +44,28 @@ export const ejsRuntimeAsset = (name: string): string =>
   `${EJS_PATH}${name}?v=${encodeURIComponent(EJS_RUNTIME_GENERATION)}`
 
 /**
+ * 交给 EmulatorJS 的固定资源映射。
+ *
+ * 核心构建报告原本位于 `cores/reports/<core>.json`。部分隐私保护器会按 URL 中的
+ * `/reports/` 直接拦截它（线上实测是 `ERR_BLOCKED_BY_CLIENT`），引擎拿不到报告就会
+ * 主动禁用 IndexedDB 核心缓存。轻核心会反复下载，KOF97 用的 FBNeo 更会重复下载并
+ * 解压约 8MB 的核心，弱网下每次开局都白等一轮。
+ * 映射到内容相同的 `cores/metadata/` 避开误杀；键仍必须是 basename，因为上游
+ * `EJS_paths` 正是用下载目标的末段文件名查覆盖地址。
+ */
+export function emulatorJsRuntimePaths(core: string): Record<string, string> {
+  return {
+    'emulator.min.js': ejsRuntimeAsset('emulator.min.js'),
+    'emulator.min.css': ejsRuntimeAsset('emulator.min.css'),
+    [`${core}-wasm.data`]: ejsRuntimeAsset(`cores/${encodeURIComponent(core)}-wasm.data`),
+    // FBNeo 在不满足 SIMD / WebGL 条件的浏览器会选 legacy；线上 KOF97 实际走的就是这一支。
+    // 两个变体必须一起换代，否则边缘仍可能把新引擎和缓存一个月的旧 legacy 核心拼在一起。
+    [`${core}-legacy-wasm.data`]: ejsRuntimeAsset(`cores/${encodeURIComponent(core)}-legacy-wasm.data`),
+    [`${core}.json`]: ejsRuntimeAsset(`cores/metadata/${encodeURIComponent(core)}.json`),
+  }
+}
+
+/**
  * Ruffle 的版本既进入 URL，也由构建检查和 npm 包互相校验。
  * wasm / glue 文件名不是稳定的内容哈希；把版本放进目录后，旧 CDN 缓存不会和新版混用。
  */

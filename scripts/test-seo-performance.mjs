@@ -29,6 +29,14 @@ check('移动端封面视频不进入首屏下载队列', () => {
   assert.doesNotMatch(src, /preload=\{priority \? 'metadata'/)
 })
 
+check('侧栏微型封面不在开局时下载和解码宣传视频', () => {
+  const src = read('src/components/layout/Sidebar.tsx')
+  const compactCovers = src.match(/<GameCover[^>]+still \/>/g) ?? []
+  assert.equal(compactCovers.length, 2, '稍后玩和曾经玩过的两种微型封面都必须固定为静态图')
+  assert.ok(compactCovers.some((tag) => tag.includes('ratio="square"')), '稍后玩的方形微缩图仍会加载视频')
+  assert.ok(compactCovers.some((tag) => tag.includes('ratio="landscape"')), '曾经玩过的横版微缩图仍会加载视频')
+})
+
 check('550KB 中文字体不再 preload，也不强制慢网下载', () => {
   const html = read('index.html')
   const css = read('src/index.css')

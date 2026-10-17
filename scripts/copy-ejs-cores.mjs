@@ -142,7 +142,11 @@ const publishedCoreIsComplete = (core) =>
   existsSync(join(out, `${core}-legacy-wasm.data`)) &&
   existsSync(join(out, 'reports', `${core}.json`))
 
-if (ifMissing && CORES.every(publishedCoreIsComplete)) process.exit(0)
+if (ifMissing && CORES.every(publishedCoreIsComplete)) {
+  // 二进制齐全不代表 metadata 别名齐全；旧 checkout 可能只有 reports/。
+  await import('./sync-emulatorjs-core-metadata.mjs')
+  process.exit(0)
+}
 
 const missing = CORES.filter((c) => !existsSync(join(root, 'node_modules', '@emulatorjs', `core-${c}`)))
 if (missing.length) {
@@ -182,4 +186,7 @@ if (keptSelfBuilt.length) {
       `—— 它们不在 npm 上，本脚本不负责、也没法负责更新`,
   )
 }
+// reports/ 是上游目录；运行时请求 metadata/，避开会误拦 `/reports/` 的隐私扩展。
+// 这里同步一次，保证单独执行 npm run ejscores 后的 public/ 也立刻可用；prebuild 还会再核对。
+await import('./sync-emulatorjs-core-metadata.mjs')
 console.log(`✔ EmulatorJS 核心已复制 ${n} 个文件到 public/emulatorjs/cores/（${CORES.length} 个核心 × 正常/legacy 两个变体）`)

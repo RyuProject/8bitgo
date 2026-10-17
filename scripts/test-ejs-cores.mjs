@@ -36,6 +36,7 @@ import {
   ejsRuntimeAsset,
   emulatorJsCoreFileFor,
   emulatorJsCoreForGame,
+  emulatorJsRuntimePaths,
   webretroCoreFor,
 } from '../src/emulator/paths.ts'
 
@@ -158,10 +159,28 @@ check('最高 / 高 / 中优先级平台固定到已发布的核心', () => {
 check('固定名核心与悬停预热共用版本化 URL，不会把两代核心拼进同一缓存', () => {
   const expected = `${EJS_PATH}cores/melondsds-wasm.data?v=${encodeURIComponent(EJS_RUNTIME_GENERATION)}`
   assert.equal(ejsRuntimeAsset('cores/melondsds-wasm.data'), expected)
+  const fbneoPaths = emulatorJsRuntimePaths('fbneo')
+  assert.equal(
+    fbneoPaths['fbneo-legacy-wasm.data'],
+    ejsRuntimeAsset('cores/fbneo-legacy-wasm.data'),
+    'KOF97 实际选到 legacy 核心时也必须走版本化 URL',
+  )
   const adapter = readFileSync(join(root, 'src/emulator/adapters/emulatorjs.ts'), 'utf8')
   const prewarm = readFileSync(join(root, 'src/emulator/prewarm.ts'), 'utf8')
-  assert.match(adapter, /\[`\$\{core\}-wasm\.data`\]: ejsRuntimeAsset\(`cores\/\$\{encodeURIComponent\(core\)\}-wasm\.data`\)/)
+  assert.match(adapter, /EJS_paths: emulatorJsRuntimePaths\(core\)/)
   assert.match(prewarm, /ejsRuntimeAsset\(`cores\/\$\{encodeURIComponent\(emulatorJsCoreFileFor\(core\)\)\}-wasm\.data`\)/)
+})
+
+check('核心构建报告改走 metadata 别名，浏览器拦截 /reports/ 时仍能启用缓存', () => {
+  // 同时盯住轻核心和 KOF97 实际使用的街机核心，避免修复只在单个平台上成立。
+  for (const core of ['fceumm', 'fbneo']) {
+    const paths = emulatorJsRuntimePaths(core)
+    assert.equal(paths[`${core}.json`], ejsRuntimeAsset(`cores/metadata/${core}.json`))
+    assert.doesNotMatch(paths[`${core}.json`], /\/reports\//)
+    const source = readFileSync(join(coresDir, 'reports', `${core}.json`))
+    const alias = readFileSync(join(coresDir, 'metadata', `${core}.json`))
+    assert.ok(source.equals(alias), `${core} 的 metadata 别名必须与上游报告逐字节相同`)
+  }
 })
 
 console.log('\n二、我们会交给引擎的每一个核心，都得真的发了')

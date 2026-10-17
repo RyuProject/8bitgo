@@ -270,7 +270,11 @@ function LaterBox({ collapsed }: { collapsed: boolean }) {
               className="flex h-9 items-center gap-2.5 rounded-lg px-3 text-sm text-muted transition hover:bg-black/5 hover:text-fg"
             >
               <span className="h-6 w-6 shrink-0 overflow-hidden rounded" aria-hidden>
-                <GameCover game={g} ratio="square" showTitle={false} iconSize="sm" />
+                {/*
+                  侧栏只有 24px，视频细节完全看不出来，却会在玩家开局时和 ROM / 核心抢带宽，
+                  还要额外占一路硬解码。这里固定用静态封面；真正的游戏卡片仍保留视频预览。
+                */}
+                <GameCover game={g} ratio="square" showTitle={false} iconSize="sm" still />
               </span>
               <span className="min-w-0 flex-1 truncate">{gameTitle(g, lang)}</span>
             </Link>
@@ -321,7 +325,11 @@ function PlayedBox({ collapsed }: { collapsed: boolean }) {
               className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 transition hover:bg-black/5"
             >
               <span className="w-14 shrink-0 overflow-hidden rounded-md">
-                <GameCover game={g} ratio="landscape" showTitle={false} showBadge={false} iconSize="sm" />
+                {/*
+                  56×42 的最近游玩缩略图没有播放视频的价值。尤其当前游戏会出现在这里，
+                  若继续预加载同一份 MP4，就会在 28MB 街机 ROM 开局时制造无关竞争。
+                */}
+                <GameCover game={g} ratio="landscape" showTitle={false} showBadge={false} iconSize="sm" still />
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-xs font-semibold">{gameTitle(g, lang)}</span>
