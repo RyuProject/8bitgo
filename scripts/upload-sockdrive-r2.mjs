@@ -357,7 +357,11 @@ for (const [index, name] of ordered.entries()) {
 }
 
 const verifyMeta = await fetch(`${publicRoot}/sockdrive.metaj?verify=${Date.now()}`, {
-  headers: { Origin: 'https://8bitgo.com' },
+  // Cloudflare 可能按内容协商解码并移除响应头；显式请求发布格式才能可靠验收 R2 元数据。
+  headers: {
+    Origin: 'https://8bitgo.com',
+    'Accept-Encoding': encoding === 'identity' ? 'identity' : encoding,
+  },
   cache: 'no-store',
 })
 if (!verifyMeta.ok) throw new Error(`公开 sockdrive.metaj 读取失败：HTTP ${verifyMeta.status}`)
@@ -368,7 +372,10 @@ if (cors !== '*' && cors !== 'https://8bitgo.com') throw new Error('公开 Sockd
 
 if (preloadProfile) {
   const verifyPreload = await fetch(`${publicRoot}/${preloadProfileName}?verify=${Date.now()}`, {
-    headers: { Origin: 'https://8bitgo.com' },
+    headers: {
+      Origin: 'https://8bitgo.com',
+      'Accept-Encoding': encoding === 'identity' ? 'identity' : encoding,
+    },
     cache: 'no-store',
   })
   if (!verifyPreload.ok) throw new Error(`公开 ${preloadProfileName} 读取失败：HTTP ${verifyPreload.status}`)
@@ -382,7 +389,10 @@ const sample = ordered.find((name) => name.endsWith('.raw'))
 if (sample) {
   const response = await fetch(`${publicRoot}/${sample}?verify=${Date.now()}`, {
     method: 'HEAD',
-    headers: { Origin: 'https://8bitgo.com' },
+    headers: {
+      Origin: 'https://8bitgo.com',
+      'Accept-Encoding': encoding === 'identity' ? 'identity' : encoding,
+    },
     cache: 'no-store',
   })
   if (!response.ok) throw new Error(`公开分块 ${sample} 读取失败：HTTP ${response.status}`)

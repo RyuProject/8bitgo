@@ -449,8 +449,13 @@ async function outputSummary(directory) {
 async function verifyPublished(config, job) {
   const root = `${config.publicBase}/${job.target_prefix}`
   const stamp = Date.now()
+  // Cloudflare 会按 Accept-Encoding 协商响应；不声明 br 时它可能解码并移除响应头，造成正确产物被误判。
+  const publicHeaders = {
+    Origin: 'https://8bitgo.com',
+    'Accept-Encoding': job.encoding === 'identity' ? 'identity' : job.encoding,
+  }
   const metadataResponse = await fetch(`${root}/sockdrive.metaj?verify=${stamp}`, {
-    headers: { Origin: 'https://8bitgo.com' }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), cache: 'no-store',
+    headers: publicHeaders, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), cache: 'no-store',
   })
   if (!metadataResponse.ok) throw new Error(`公开 sockdrive.metaj 读取失败：HTTP ${metadataResponse.status}`)
   const metadata = await metadataResponse.json()
@@ -458,7 +463,7 @@ async function verifyPublished(config, job) {
   const cors = metadataResponse.headers.get('access-control-allow-origin')
   if (cors !== '*' && cors !== 'https://8bitgo.com') throw new Error('公开 Sockdrive 没有允许 8bitgo.com 跨域读取')
   const preload = await fetch(`${root}/preload_ranges.metaj?verify=${stamp}`, {
-    headers: { Origin: 'https://8bitgo.com' }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), cache: 'no-store',
+    headers: publicHeaders, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), cache: 'no-store',
   })
   if (!preload.ok || !Array.isArray(await preload.json())) throw new Error('公开 preload_ranges.metaj 无效')
   const dropped = new Set(Array.isArray(metadata.dropped_ranges) ? metadata.dropped_ranges : [])
@@ -469,7 +474,7 @@ async function verifyPublished(config, job) {
   if (sample !== undefined) {
     const name = typeof sample === 'number' ? `${sample}.raw` : sample
     const response = await fetch(`${root}/${name}?verify=${stamp}`, {
-      method: 'HEAD', headers: { Origin: 'https://8bitgo.com' }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), cache: 'no-store',
+      method: 'HEAD', headers: publicHeaders, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), cache: 'no-store',
     })
     if (!response.ok) throw new Error(`公开分块 ${name} 读取失败：HTTP ${response.status}`)
     const actualEncoding = response.headers.get('content-encoding') || 'identity'
