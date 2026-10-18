@@ -54,6 +54,7 @@ export interface CreateSockdriveConversion {
 }
 
 const REMEMBER_KEY = '8bitgo.sockdrive.conversions'
+const PENDING_CREATE_KEY = '8bitgo.sockdrive.pending-creations'
 
 function remembered(): Record<string, string> {
   try {
@@ -63,6 +64,24 @@ function remembered(): Record<string, string> {
 }
 
 const rememberId = (slug: string, lang?: string) => lang ? `${slug}:${lang}` : slug
+
+interface PendingSockdriveCreation {
+  request: CreateSockdriveConversion
+  savedAt: number
+}
+
+function pendingCreations(): Record<string, PendingSockdriveCreation> {
+  try {
+    const value = JSON.parse(localStorage.getItem(PENDING_CREATE_KEY) || '{}')
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  } catch { return {} }
+}
+
+function writePendingCreations(value: Record<string, PendingSockdriveCreation>) {
+  try { localStorage.setItem(PENDING_CREATE_KEY, JSON.stringify(value)) } catch {
+    /* 这只是“上传完、建任务响应丢失”的恢复账本；写不进去不能阻止本次正常建任务。 */
+  }
+}
 
 export function rememberSockdriveConversion(slug: string, id: string | null, lang?: string) {
   try {
@@ -80,6 +99,29 @@ export function rememberedSockdriveConversion(slug: string, lang?: string): stri
   return remembered()[rememberId(slug, lang)] || ''
 }
 
+/**
+ * 原始 ZIP 已上传、但任务创建是否成功还不确定时保留完整请求。
+ * sourceKey 是服务端幂等键；刷新后原样重发只会取回已有任务，不会再建第二份流式盘。
+ */
+export function rememberPendingSockdriveCreation(slug: string, request: CreateSockdriveConversion, lang?: string) {
+  const entries = pendingCreations()
+  entries[rememberId(slug, lang)] = { request, savedAt: Date.now() }
+  writePendingCreations(entries)
+}
+
+export function rememberedPendingSockdriveCreation(slug: string, lang?: string): CreateSockdriveConversion | null {
+  const entry = pendingCreations()[rememberId(slug, lang)]
+  if (!entry?.request || entry.request.gameSlug !== slug || (entry.request.lang || undefined) !== lang) return null
+  if (!/^sockdrive-staging\/[a-f0-9-]{16,}\.zip$/i.test(entry.request.sourceKey || '')) return null
+  return entry.request
+}
+
+export function clearPendingSockdriveCreation(slug: string, lang?: string) {
+  const entries = pendingCreations()
+  delete entries[rememberId(slug, lang)]
+  writePendingCreations(entries)
+}
+
 export function sockdriveStagingKey(): string {
   const id = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}`
   return `sockdrive-staging/${id}.zip`
@@ -93,25 +135,57 @@ export function nextSockdriveVersion(now = new Date()): string {
 export const sockdriveConversionCapability = () =>
   api.get<SockdriveConversionCapability>('/api/admin/sockdrive-conversions/capability', true)
 
-export async function createSockdriveConversion(request: CreateSockdriveConversion): Promise<SockdriveConversionJob> {
+/** 这些错误没有证明服务器没执行请求；任务接口有 sourceKey / id 幂等保护，可以安全重试。 */
+export function retryableSockdriveRequestError(error: unknown): boolean {
+  if (error instanceof ApiError) {
+    return error.status === 408 || error.status === 425 || error.status === 429 || error.status >= 500
+  }
+  return error instanceof TypeError || (error instanceof Error && /(?:failed to fetch|networkerror|network request failed)/i.test(error.message))
+}
+
+/** 401/403 也应保留已上传源文件：管理员修正登录或口令后，原 sourceKey 仍可继续建任务。 */
+export function preserveSockdriveSourceAfterCreateError(error: unknown): boolean {
+  return retryableSockdriveRequestError(error) || (error instanceof ApiError && (error.status === 401 || error.status === 403))
+}
+
+const wait = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+  if (signal?.aborted) return reject(new DOMException('页面已离开，后台转换仍会继续', 'AbortError'))
+  const onAbort = () => {
+    window.clearTimeout(timer)
+    reject(new DOMException('页面已离开，后台转换仍会继续', 'AbortError'))
+  }
+  const timer = window.setTimeout(() => {
+    signal?.removeEventListener('abort', onAbort)
+    resolve()
+  }, ms)
+  signal?.addEventListener('abort', onAbort, { once: true })
+})
+
+async function retryRequest<T>(run: () => Promise<T>, attempts: number): Promise<T> {
   let last: unknown
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try { return await api.post<SockdriveConversionJob>('/api/admin/sockdrive-conversions', request, true) }
-    catch (error) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try { return await run() } catch (error) {
       last = error
-      // sourceKey 是幂等键；只重试网络错误与 5xx，明确的参数/冲突错误交给管理员处理。
-      if (error instanceof ApiError && error.status < 500) throw error
-      if (attempt < 2) await new Promise((resolve) => window.setTimeout(resolve, 600 * 2 ** attempt))
+      if (!retryableSockdriveRequestError(error) || attempt === attempts - 1) throw error
+      await wait(700 * 2 ** attempt)
     }
   }
   throw last
+}
+
+export async function createSockdriveConversion(request: CreateSockdriveConversion): Promise<SockdriveConversionJob> {
+  // sourceKey 是幂等键；网关可能在服务端插入任务后才丢掉响应，原请求重发只会取回那一项。
+  return retryRequest(() => api.post<SockdriveConversionJob>('/api/admin/sockdrive-conversions', request, true), 5)
 }
 
 export const getSockdriveConversion = (id: string) =>
   api.get<SockdriveConversionJob>(`/api/admin/sockdrive-conversions/${encodeURIComponent(id)}`, true)
 
 export const retrySockdriveConversion = (id: string) =>
-  api.post<SockdriveConversionJob>(`/api/admin/sockdrive-conversions/${encodeURIComponent(id)}/retry`, undefined, true)
+  retryRequest(
+    () => api.post<SockdriveConversionJob>(`/api/admin/sockdrive-conversions/${encodeURIComponent(id)}/retry`, undefined, true),
+    5,
+  )
 
 export function sockdriveConversionLabel(job: SockdriveConversionJob): string {
   const labels: Record<SockdriveConversionStatus, string> = {
@@ -130,17 +204,27 @@ export async function waitForSockdriveConversion(
   id: string,
   onUpdate?: (job: SockdriveConversionJob) => void,
   signal?: AbortSignal,
+  onConnectionIssue?: (error: Error, attempt: number, retryInMs: number) => void,
 ): Promise<SockdriveConversionJob> {
+  let failures = 0
   for (;;) {
     if (signal?.aborted) throw new DOMException('页面已离开，后台转换仍会继续', 'AbortError')
-    const job = await getSockdriveConversion(id)
+    let job: SockdriveConversionJob
+    try {
+      job = await getSockdriveConversion(id)
+      failures = 0
+    } catch (error) {
+      if (!retryableSockdriveRequestError(error)) throw error
+      failures++
+      // 后台任务在 MySQL 与独立队列里继续跑；一次 502/断网只代表这次“查询”失败，绝不能改成任务失败。
+      const retryInMs = Math.min(15_000, 1_000 * 2 ** Math.min(4, failures - 1))
+      onConnectionIssue?.(error instanceof Error ? error : new Error(String(error)), failures, retryInMs)
+      await wait(retryInMs, signal)
+      continue
+    }
     onUpdate?.(job)
     if (job.status === 'completed') return job
     if (job.status === 'failed') throw new Error(job.error || 'Sockdrive 转换失败')
-    await new Promise<void>((resolve, reject) => {
-      const onAbort = () => { window.clearTimeout(timer); reject(new DOMException('页面已离开，后台转换仍会继续', 'AbortError')) }
-      const timer = window.setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve() }, 1800)
-      signal?.addEventListener('abort', onAbort, { once: true })
-    })
+    await wait(1800, signal)
   }
 }

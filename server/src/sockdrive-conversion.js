@@ -20,6 +20,8 @@ import { SITE_LANGUAGES } from '../../shared/site-languages.js'
 const ACTIVE = new Set(['queued', 'downloading', 'converting', 'uploading', 'verifying'])
 const INTERRUPTED = ['downloading', 'converting', 'uploading', 'verifying']
 const FETCH_TIMEOUT_MS = 60_000
+// 管理接口在 Cloudflare 后面；同步校验若接近 100 秒，网关会先回 504，客户端无法知道任务有没有创建。
+const CONTROL_PLANE_TIMEOUT_MS = 8_000
 const SOURCE_IDLE_MS = 60_000
 const MAX_ERROR_CHARS = 900
 const ROM_LANGS = new Set(SITE_LANGUAGES.map(({ code }) => code))
@@ -124,22 +126,38 @@ function encodeKey(key) {
 }
 
 async function workerRequest(config, key, init = {}) {
-  const { query: search = '', ...options } = init
+  const { query: search = '', timeoutMs = FETCH_TIMEOUT_MS, ...options } = init
   return fetch(`${config.workerUrl}/${encodeKey(key)}${search}`, {
     ...options,
-    signal: options.signal || AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    signal: options.signal || AbortSignal.timeout(timeoutMs),
     headers: { Authorization: `Bearer ${config.workerToken}`, ...options.headers },
   })
 }
 
-async function remoteHead(config, key) {
-  const response = await workerRequest(config, key, { method: 'HEAD' })
+async function remoteHead(config, key, timeoutMs = FETCH_TIMEOUT_MS) {
+  const response = await workerRequest(config, key, { method: 'HEAD', timeoutMs })
   if (response.status === 404) return null
   if (!response.ok) throw new Error(`对象存储 HEAD ${key} 失败：HTTP ${response.status}`)
   const size = Number(response.headers.get('content-length'))
   const etag = response.headers.get('etag') || ''
   if (!Number.isSafeInteger(size) || size < 0 || !etag) throw new Error(`对象存储没有返回 ${key} 的完整大小或 ETag`)
   return { size, etag }
+}
+
+/**
+ * 建任务属于 HTTP 控制面，不能把一分钟的 R2 等待塞进一次管理请求。
+ * 后台转换仍保留 60 秒容错；这里只在八秒内拿不到结论就明确回 503，让幂等客户端重试。
+ */
+async function controlPlaneHead(config, key, label) {
+  try {
+    return await remoteHead(config, key, CONTROL_PLANE_TIMEOUT_MS)
+  } catch (error) {
+    throw Object.assign(new Error(`对象存储暂时无法确认${label}；任务尚未创建，请稍后重试`), {
+      status: 503,
+      retryAfter: 2,
+      cause: error,
+    })
+  }
 }
 
 async function commandExists(bin, args = ['--help']) {
@@ -166,7 +184,7 @@ async function workerSupportsSockdrive(config) {
   try {
     const response = await fetch(`${config.workerUrl}/ping`, {
       headers: { Authorization: `Bearer ${config.workerToken}` },
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      signal: AbortSignal.timeout(CONTROL_PLANE_TIMEOUT_MS),
       cache: 'no-store',
     })
     if (!response.ok) return false
@@ -298,13 +316,18 @@ export async function createSockdriveConversion(raw, actorId = null, env = proce
     throw Object.assign(new Error('Sockdrive 绑定已被其他人修改，请刷新表单后重试'), { status: 409 })
   }
   const config = sockdriveConversionConfig(env)
-  const source = await remoteHead(config, request.sourceKey)
+  // 三个 HEAD 互不依赖；串行最坏会越过 Cloudflare 网关时限，造成“服务器其实建了任务、浏览器只见 504”。
+  const [source, fallback, published] = await Promise.all([
+    controlPlaneHead(config, request.sourceKey, '临时 ZIP'),
+    request.lang ? controlPlaneHead(config, request.targetRomKey, '完整回退包') : null,
+    controlPlaneHead(config, `${request.targetPrefix}/sockdrive.metaj`, '目标版本目录'),
+  ])
   if (!source) throw Object.assign(new Error('临时 ZIP 不存在；请重新上传'), { status: 404 })
   if (source.size !== request.sourceSize) throw Object.assign(new Error('临时 ZIP 大小与浏览器上报不一致'), { status: 409 })
-  if (request.lang && !(await remoteHead(config, request.targetRomKey))) {
+  if (request.lang && !fallback) {
     throw Object.assign(new Error('完整回退包尚未上传成功；拒绝创建只有流式盘的语言槽'), { status: 409 })
   }
-  if (await remoteHead(config, `${request.targetPrefix}/sockdrive.metaj`)) {
+  if (published) {
     throw Object.assign(new Error('目标版本目录已经存在；Sockdrive 禁止原地覆盖，请换新版本'), { status: 409 })
   }
 
@@ -338,20 +361,14 @@ export async function retrySockdriveConversion(id) {
   const row = await queryOne('SELECT * FROM sockdrive_conversion_jobs WHERE id = ?', [id])
   if (!row) return null
   if (ACTIVE.has(row.status) || row.status === 'completed') return publicJob(row)
-  const config = sockdriveConversionConfig()
-  // 上传阶段失败后只有“最终元数据已经存在”才能脱离源 ZIP 恢复；仅凭 publish_started 不代表发布已提交。
-  const published = row.publish_started
-    ? await remoteHead(config, `${row.target_prefix}/sockdrive.metaj`)
-    : null
-  if (!published) {
-    if (Number(row.source_deleted) !== 0) {
-      throw Object.assign(new Error('临时 ZIP 已清理且发布尚未提交，不能重试；请重新上传'), { status: 409 })
-    }
-    const source = await remoteHead(config, row.source_key)
-    if (!source || source.size !== Number(row.source_size) || source.etag !== row.source_etag) {
-      throw Object.assign(new Error('临时 ZIP 已不存在或改变，不能重试；请重新上传'), { status: 409 })
-    }
+  if (!row.publish_started && Number(row.source_deleted) !== 0) {
+    throw Object.assign(new Error('临时 ZIP 已清理且发布尚未开始，不能重试；请重新上传'), { status: 409 })
   }
+  /*
+   * 重试接口只负责重新排队，不能同步 HEAD R2：发布过的任务要查元数据，未发布的还要查源 ZIP，
+   * 两次外部等待曾超过 Cloudflare 时限直接回 504。processJob 本来就会按 ETag 重新校验源文件，
+   * 并在 publish_started 时先检查已提交元数据；把 I/O 留给后台既不降低安全性，也让请求立即返回。
+   */
   const claimed = await query(
     "UPDATE sockdrive_conversion_jobs SET status = 'queued', progress = 0, error = NULL, message = '手动重试', completed_at = NULL WHERE id = ? AND status = 'failed'",
     [id],

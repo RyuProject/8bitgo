@@ -68,9 +68,13 @@ import {
   waitForPspConversion,
 } from '@/services/pspConversion'
 import {
+  clearPendingSockdriveCreation,
   createSockdriveConversion,
   nextSockdriveVersion,
+  preserveSockdriveSourceAfterCreateError,
+  rememberPendingSockdriveCreation,
   rememberSockdriveConversion,
+  rememberedPendingSockdriveCreation,
   rememberedSockdriveConversion,
   retrySockdriveConversion,
   sockdriveConversionCapability,
@@ -1834,16 +1838,29 @@ function SockdriveAutoField({
   const [stage, setStage] = useState<UploadStage | null>(null)
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null)
   const [failedJobId, setFailedJobId] = useState('')
+  const [pendingCreation, setPendingCreation] = useState(false)
   const cfg = getRomConfig()
   const canUpload = allowStorage && configurationSaved && Boolean(cfg.api && cfg.token) && Boolean(slug) && Boolean(!lang || romKey?.trim()) && streamingEnabled && !hasExtras
 
   const watchJob = async (id: string, signal?: AbortSignal) => {
-    const completed = await waitForSockdriveConversion(id, (job) => {
-      setProgress(45 + Math.round(job.progress * 0.55))
-      setMessage({ ok: true, text: `${sockdriveConversionLabel(job)} ${job.progress}%${job.message ? `；${job.message}` : ''}` })
-    }, signal)
+    const completed = await waitForSockdriveConversion(
+      id,
+      (job) => {
+        setProgress(45 + Math.round(job.progress * 0.55))
+        setMessage({ ok: true, text: `${sockdriveConversionLabel(job)} ${job.progress}%${job.message ? `；${job.message}` : ''}` })
+      },
+      signal,
+      (error, attempt, retryInMs) => {
+        setMessage({
+          ok: false,
+          text: `后台任务仍在运行；状态查询暂时失败（${error.message}），${Math.ceil(retryInMs / 1000)} 秒后自动重连（第 ${attempt} 次）`,
+        })
+      },
+    )
     rememberSockdriveConversion(slug, null, lang)
+    clearPendingSockdriveCreation(slug, lang)
     setFailedJobId('')
+    setPendingCreation(false)
     onChange(completed.targetPrefix)
     setProgress(null)
     setMessage({
@@ -1858,17 +1875,48 @@ function SockdriveAutoField({
   useEffect(() => {
     if (!slug || !allowStorage) return
     const id = rememberedSockdriveConversion(slug, lang)
-    if (!id || restored.current === id) return
-    restored.current = id
+    const pending = id ? null : rememberedPendingSockdriveCreation(slug, lang)
+    const restoreId = id || pending?.sourceKey || ''
+    if (!restoreId || restored.current === restoreId) return
+    restored.current = restoreId
     const controller = new AbortController()
-    setProgress(45)
-    setMessage({ ok: true, text: '正在恢复上次未完成的 Sockdrive 后台任务…' })
-    void watchJob(id, controller.signal).catch((error) => {
-      if (error instanceof Error && error.name === 'AbortError') return
-      setProgress(null)
-      setFailedJobId(id)
-      setMessage({ ok: false, text: error instanceof Error ? error.message : '恢复 Sockdrive 任务失败' })
-    })
+    if (id) {
+      setProgress(45)
+      setMessage({ ok: true, text: '正在恢复上次未完成的 Sockdrive 后台任务…' })
+      void watchJob(id, controller.signal).catch((error) => {
+        if (error instanceof Error && error.name === 'AbortError') return
+        setProgress(null)
+        setFailedJobId(id)
+        setMessage({ ok: false, text: error instanceof Error ? error.message : '恢复 Sockdrive 任务失败' })
+      })
+    } else if (pending) {
+      let restoredJobId = ''
+      setPendingCreation(true)
+      setProgress(45)
+      setMessage({ ok: true, text: '原始 ZIP 已在私有 staging，正在恢复任务创建，不会重新上传…' })
+      void createSockdriveConversion(pending).then(async (job) => {
+        restoredJobId = job.id
+        clearPendingSockdriveCreation(slug, lang)
+        setPendingCreation(false)
+        rememberSockdriveConversion(slug, job.id, lang)
+        if (!controller.signal.aborted) await watchJob(job.id, controller.signal)
+      }).catch((error) => {
+        if (error instanceof Error && error.name === 'AbortError') return
+        setProgress(null)
+        if (restoredJobId) {
+          setFailedJobId(restoredJobId)
+          rememberSockdriveConversion(slug, restoredJobId, lang)
+        }
+        setPendingCreation(preserveSockdriveSourceAfterCreateError(error))
+        if (!preserveSockdriveSourceAfterCreateError(error)) clearPendingSockdriveCreation(slug, lang)
+        setMessage({
+          ok: false,
+          text: preserveSockdriveSourceAfterCreateError(error)
+            ? `原始 ZIP 已保留，无需重传；创建任务失败：${error instanceof Error ? error.message : String(error)}`
+            : error instanceof Error ? error.message : '恢复 Sockdrive 任务失败',
+        })
+      })
+    }
     return () => controller.abort()
     // onChange 是父组件每次渲染新建的闭包；同一任务只允许由 restored 启动一次。
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1877,6 +1925,7 @@ function SockdriveAutoField({
   const onFile = async (file: File | undefined) => {
     if (!file) return
     let stagingKey = ''
+    let sourceUploaded = false
     let taskCreated = false
     let createdJobId = ''
     setFailedJobId('')
@@ -1914,10 +1963,11 @@ function SockdriveAutoField({
         setProgress(Math.round(pct * 0.45))
         if (at) setStage(at)
       })
+      sourceUploaded = true
       setStage(null)
       setProgress(45)
       setMessage({ ok: true, text: '原始 ZIP 已安全上传，正在创建持久转换任务…' })
-      const job = await createSockdriveConversion({
+      const request = {
         sourceKey: stagingKey,
         sourceSize: file.size,
         gameSlug: slug,
@@ -1927,32 +1977,55 @@ function SockdriveAutoField({
         version,
         expectedSockdrive: value.trim().replace(/\/+$/, ''),
         encoding: 'br',
-      })
+      } as const
+      // 先落恢复账本再发请求：服务端可能已插入任务，但 502 把响应丢在回程上。
+      rememberPendingSockdriveCreation(slug, request, lang)
+      const job = await createSockdriveConversion(request)
       taskCreated = true
+      clearPendingSockdriveCreation(slug, lang)
+      setPendingCreation(false)
       createdJobId = job.id
       rememberSockdriveConversion(slug, job.id, lang)
       await watchJob(job.id)
     } catch (error) {
       setProgress(null)
       setStage(null)
-      setMessage({ ok: false, text: error instanceof Error ? error.message : 'Sockdrive 上传或转换失败' })
+      const keepUploadedSource = sourceUploaded && !taskCreated && preserveSockdriveSourceAfterCreateError(error)
+      setPendingCreation(keepUploadedSource)
+      setMessage({
+        ok: false,
+        text: keepUploadedSource
+          ? `原始 ZIP 已安全保留，无需重传；创建任务失败：${error instanceof Error ? error.message : String(error)}`
+          : error instanceof Error ? error.message : 'Sockdrive 上传或转换失败',
+      })
       if (createdJobId) {
         setFailedJobId(createdJobId)
         rememberSockdriveConversion(slug, createdJobId, lang)
       }
-      // 任务一旦创建，源文件由服务端按成功 / 失败 24 小时规则管理；建任务前失败才由浏览器清孤儿。
-      if (stagingKey && !taskCreated) await deleteRomObjects([stagingKey]).catch(() => {})
+      /*
+       * 只有 Worker 明确确认“完整 staging 对象已上传”，且服务端明确拒绝建任务时才删。
+       * 上传合并结果不确定、网络断开或 5xx 时都不能删：前两种可能已有完整对象，后一种甚至可能已有任务。
+       */
+      if (stagingKey && sourceUploaded && !taskCreated && !keepUploadedSource) {
+        clearPendingSockdriveCreation(slug, lang)
+        await deleteRomObjects([stagingKey]).catch(() => {})
+      }
     } finally {
       if (inputRef.current) inputRef.current.value = ''
     }
   }
 
   const retry = async () => {
-    if (!failedJobId) return
+    const pending = pendingCreation ? rememberedPendingSockdriveCreation(slug, lang) : null
+    if (!failedJobId && !pending) return
     setProgress(45)
-    setMessage({ ok: true, text: '正在重新排队…' })
+    setMessage({ ok: true, text: pending ? '正在用已上传的原始 ZIP 重新创建任务…' : '正在重新排队…' })
     try {
-      const job = await retrySockdriveConversion(failedJobId)
+      const job = pending
+        ? await createSockdriveConversion(pending)
+        : await retrySockdriveConversion(failedJobId)
+      clearPendingSockdriveCreation(slug, lang)
+      setPendingCreation(false)
       rememberSockdriveConversion(slug, job.id, lang)
       await watchJob(job.id)
     } catch (error) {
@@ -1989,8 +2062,10 @@ function SockdriveAutoField({
         {value.trim() && progress === null && (
           <a href={romUrlForKey(value.trim())} target="_blank" rel="noreferrer" className={btnClass.secondary}>检查</a>
         )}
-        {failedJobId && progress === null && (
-          <button type="button" className={btnClass.secondary} onClick={() => void retry()}>重试后台任务</button>
+        {(failedJobId || pendingCreation) && progress === null && (
+          <button type="button" className={btnClass.secondary} onClick={() => void retry()}>
+            {pendingCreation ? '重试创建任务（无需重传）' : '重试后台任务'}
+          </button>
         )}
       </div>
       <p className="mt-2 text-[11px] text-dim">
@@ -2288,6 +2363,7 @@ function RomField({
 
     const version = nextSockdriveVersion()
     const stagingKey = sockdriveStagingKey()
+    let sourceUploaded = false
     let taskCreated = false
     try {
       setProgress(0)
@@ -2297,9 +2373,10 @@ function RomField({
         setProgress(Math.round(pct * 0.45))
         if (at) setStage(at)
       })
+      sourceUploaded = true
       setStage(null)
       setProgress(45)
-      const job = await createSockdriveConversion({
+      const request = {
         sourceKey: stagingKey,
         sourceSize: file.size,
         gameSlug: autoSockdrive.gameSlug,
@@ -2310,8 +2387,11 @@ function RomField({
         version,
         expectedSockdrive: autoSockdrive.value.trim().replace(/\/+$/, ''),
         encoding: 'br',
-      })
+      } as const
+      rememberPendingSockdriveCreation(autoSockdrive.gameSlug, request, lang)
+      const job = await createSockdriveConversion(request)
       taskCreated = true
+      clearPendingSockdriveCreation(autoSockdrive.gameSlug, lang)
       rememberSockdriveConversion(autoSockdrive.gameSlug, job.id, lang)
       const completed = await waitForSockdriveConversion(job.id, (next) => {
         setProgress(45 + Math.round(next.progress * 0.55))
@@ -2321,7 +2401,14 @@ function RomField({
       autoSockdrive.onChange(completed.targetPrefix)
       return `；${ROM_LANG_LABEL[lang]}流式盘已发布并${completed.bound ? '自动绑定' : '等待保存'}：${completed.targetPrefix}`
     } catch (error) {
-      if (!taskCreated) await deleteRomObjects([stagingKey]).catch(() => {})
+      const keepUploadedSource = sourceUploaded && !taskCreated && preserveSockdriveSourceAfterCreateError(error)
+      if (sourceUploaded && !taskCreated && !keepUploadedSource) {
+        clearPendingSockdriveCreation(autoSockdrive.gameSlug, lang)
+        await deleteRomObjects([stagingKey]).catch(() => {})
+      }
+      if (keepUploadedSource) {
+        throw new Error(`完整回退包已发布，流式源 ZIP 也已保留，无需重传；创建任务失败：${error instanceof Error ? error.message : String(error)}`)
+      }
       throw error
     }
   }

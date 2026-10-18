@@ -10,6 +10,14 @@ import {
 
 export const sockdriveConversionsRouter = Router()
 
+function taskError(res, error) {
+  const status = Number(error?.status)
+  if (!Number.isInteger(status) || status < 400 || status >= 600) return false
+  if (status === 503) res.set('Retry-After', String(Number(error?.retryAfter) || 2))
+  res.status(status).json({ error: error.message })
+  return true
+}
+
 // 转换能消耗数 GB 磁盘并写入公开 R2，权限必须与 ROM 存储管理一致。
 sockdriveConversionsRouter.use(requireAbility('site:manage'))
 
@@ -21,9 +29,7 @@ sockdriveConversionsRouter.post('/', async (req, res, next) => {
   try {
     res.status(202).json(await createSockdriveConversion(req.body, req.user?.id || null))
   } catch (error) {
-    if (Number(error?.status) >= 400 && Number(error?.status) < 600) {
-      return res.status(Number(error.status)).json({ error: error.message })
-    }
+    if (taskError(res, error)) return
     next(error)
   }
 })
@@ -44,9 +50,7 @@ sockdriveConversionsRouter.post('/:id/retry', async (req, res, next) => {
     if (!job) return res.status(404).json({ error: '转换任务不存在' })
     res.status(job.status === 'completed' ? 200 : 202).json(job)
   } catch (error) {
-    if (Number(error?.status) >= 400 && Number(error?.status) < 600) {
-      return res.status(Number(error.status)).json({ error: error.message })
-    }
+    if (taskError(res, error)) return
     next(error)
   }
 })

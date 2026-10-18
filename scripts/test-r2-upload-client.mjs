@@ -11,10 +11,17 @@ const storage = () => {
 }
 globalThis.localStorage = storage()
 globalThis.sessionStorage = storage()
+globalThis.__viteEnv = { VITE_API_URL: 'same-origin' }
 globalThis.localStorage.setItem('8bitgo.rom.api', 'https://w.test')
 globalThis.localStorage.setItem('8bitgo.rom.base', 'https://assets.test')
 globalThis.sessionStorage.setItem('8bitgo.rom.token', 'test-token')
-globalThis.window = { setInterval, clearInterval }
+// Sockdrive 轮询的退避不应让离线回归真的等十几秒；这里仍保留异步边界，能抓同步递归。
+globalThis.window = {
+  setInterval,
+  clearInterval,
+  setTimeout: (fn) => { queueMicrotask(fn); return 1 },
+  clearTimeout,
+}
 
 let xhrResponse = () => ({ status: 200, body: '<html>wrong endpoint</html>' })
 globalThis.XMLHttpRequest = class {
@@ -36,6 +43,15 @@ globalThis.XMLHttpRequest = class {
 
 const { uploadRom, deleteRomDir, listRomObjects } = await import('../src/services/roms.ts')
 const { uploadRomMultipart, listOrphanUploads, abortOrphanUpload, listPendingUploads } = await import('../src/services/romMultipart.ts')
+const {
+  clearPendingSockdriveCreation,
+  createSockdriveConversion,
+  preserveSockdriveSourceAfterCreateError,
+  rememberPendingSockdriveCreation,
+  rememberedPendingSockdriveCreation,
+  waitForSockdriveConversion,
+} = await import('../src/services/sockdriveConversion.ts')
+const { ApiError } = await import('../src/services/api.ts')
 
 const small = new Blob(['abc'])
 await assert.rejects(uploadRom(small, 'roms/nes/demo.nes'), /上传响应不完整/)
@@ -136,3 +152,72 @@ console.log('✅ 旧 Worker 会退回原来的逐文件删除')
 globalThis.fetch = async (url) => Response.json({ objects: [], truncated: true, cursor: String(Number(new URL(url).searchParams.get('cursor') || 0) + 1) })
 await assert.rejects(listRomObjects('roms/ps2'), /文件过多/)
 console.log('✅ R2 列表超过页面上限时明确报错，不会静默遗漏文件')
+
+const pendingSockdrive = {
+  sourceKey: 'sockdrive-staging/12345678-1234-1234-1234-123456789abc.zip',
+  sourceSize: 123456,
+  gameSlug: 'demo',
+  lang: 'zh-Hant',
+  targetRomKey: 'roms/dos/demo.zh-Hant.zip.8bg',
+  expectedRomKey: 'roms/dos/demo.zh-Hant.zip.8bg',
+  executable: 'GAME.EXE',
+  version: 'v123',
+  expectedSockdrive: '',
+  encoding: 'br',
+}
+rememberPendingSockdriveCreation('demo', pendingSockdrive, 'zh-Hant')
+assert.deepEqual(rememberedPendingSockdriveCreation('demo', 'zh-Hant'), pendingSockdrive)
+clearPendingSockdriveCreation('demo', 'zh-Hant')
+assert.equal(rememberedPendingSockdriveCreation('demo', 'zh-Hant'), null)
+console.log('✅ 已上传的 Sockdrive staging 请求可跨刷新恢复，成功后能清账')
+
+const completedJob = {
+  id: '12345678-1234-1234-1234-123456789abc',
+  sourceKey: pendingSockdrive.sourceKey,
+  targetPrefix: 'sockdrives/demo-zh-hant-v123',
+  status: 'completed',
+  progress: 100,
+  sourceSize: pendingSockdrive.sourceSize,
+  outputBytes: 1,
+  outputFiles: 1,
+  gameSlug: 'demo',
+  lang: 'zh-Hant',
+  targetRomKey: pendingSockdrive.targetRomKey,
+  executable: 'GAME.EXE',
+  bound: true,
+  message: '',
+  error: '',
+}
+let createAttempts = 0
+globalThis.fetch = async (url, init) => {
+  assert.equal(init?.method, 'POST')
+  assert.match(String(url), /\/api\/admin\/sockdrive-conversions$/)
+  createAttempts++
+  if (createAttempts < 3) return Response.json({ error: 'temporary gateway' }, { status: createAttempts === 1 ? 502 : 504 })
+  return Response.json(completedJob, { status: 202 })
+}
+assert.equal((await createSockdriveConversion(pendingSockdrive)).id, completedJob.id)
+assert.equal(createAttempts, 3)
+assert.equal(preserveSockdriveSourceAfterCreateError(new ApiError('bad gateway', 502, null)), true)
+assert.equal(preserveSockdriveSourceAfterCreateError(new ApiError('conflict', 409, null)), false)
+console.log('✅ 创建任务遇到 502/504 会幂等重试；不确定结果不会触发 staging 误删')
+
+let polls = 0
+const reconnects = []
+globalThis.fetch = async (url, init) => {
+  assert.equal(init?.method, 'GET')
+  assert.match(String(url), /\/api\/admin\/sockdrive-conversions\//)
+  polls++
+  if (polls < 3) return Response.json({ error: 'temporary gateway' }, { status: polls === 1 ? 502 : 504 })
+  return Response.json(completedJob)
+}
+const polled = await waitForSockdriveConversion(
+  completedJob.id,
+  undefined,
+  undefined,
+  (_error, attempt) => reconnects.push(attempt),
+)
+assert.equal(polled.status, 'completed')
+assert.equal(polls, 3)
+assert.deepEqual(reconnects, [1, 2])
+console.log('✅ 状态查询的瞬时 502/504 只会自动重连，不再把运行中的后台任务误判为失败')
