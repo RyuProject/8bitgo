@@ -38,8 +38,9 @@ export function windowsGameNeedsDirectDrawFocusRefresh(
 
 /**
  * StarCraft 1.16.1 在 Win95 + DOSBox-X 下用 normal core 已完成主菜单和 Brood War 建档实测。
- * 共享系统盘的 auto 会随宿主选择不同执行核心，旧版 DirectDraw 程序可能在部分设备上无报错退回
- * 桌面；这里把已验证配置作为游戏级默认值，同时让后台显式配置保留最终决定权。
+ * Fallout DOS 版也不能在切到纯 DOS Sockdrive 后丢掉原 bundle 的 CPU / 内存参数：它的 DOS4GW
+ * 进程和音频已经按 32MB、normal、30000 cycles 验证。这里提供兼容默认值，同时让后台显式配置
+ * 保留最终决定权。
  */
 export function windowsGameCompatibilityDosboxConfig(
   gameSlug: string | undefined,
@@ -47,6 +48,37 @@ export function windowsGameCompatibilityDosboxConfig(
   override: string | undefined,
 ): string | undefined {
   const slug = normalizedSlug(gameSlug)
+  if (slug === 'fallout') {
+    return mergeDosboxConfigOverride(
+      [
+        '[dosbox]',
+        'memsize=32',
+        '',
+        '[cpu]',
+        'core=normal',
+        'cputype=auto',
+        'cycles=fixed 30000',
+        '',
+        '[mixer]',
+        'rate=44100',
+        'blocksize=1024',
+        'prebuffer=40',
+        '',
+        '[sblaster]',
+        'sbtype=sb16',
+        'sbbase=220',
+        'irq=7',
+        'dma=1',
+        'hdma=5',
+        'oplemu=fast',
+        'oplrate=44100',
+        '',
+        '[gus]',
+        'gus=false',
+      ].join('\n'),
+      override,
+    )
+  }
   if (slug !== 'starcraft' && slug !== 'starcraft-1-16-1') return override
   windowsGameCompatibilityRegistryImport(gameSlug, executable ?? '')
   return mergeDosboxConfigOverride('[cpu]\ncore=normal', override)

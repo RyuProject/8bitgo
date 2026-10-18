@@ -59,8 +59,8 @@ export async function bindSockdriveGame({
   const cleanApi = apiBase.replace(/\/+$/, '')
   const gameUrl = `${cleanApi}/api/games/${encodeURIComponent(slug)}`
   const current = await jsonOrError(await fetchImpl(gameUrl, { cache: 'no-store' }), '读取游戏配置')
-  if (current.platform !== 'dos' || current.dosBackend !== 'dosboxX' || !current.dosSystem) {
-    throw new Error('目标游戏不是已配置共享 Windows 系统镜像的 DOSBox-X 游戏')
+  if (current.platform !== 'dos' || current.dosBackend !== 'dosboxX') {
+    throw new Error('目标游戏不是 DOSBox-X 游戏；普通 DOSBox 不支持 Sockdrive')
   }
   if (!current.dosExecutable && !Object.keys(current.dosExecutables ?? {}).length) {
     throw new Error('目标游戏没有配置流式盘内的启动 EXE')

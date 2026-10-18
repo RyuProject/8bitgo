@@ -52,6 +52,30 @@ export function assertSafeArchiveEntry(name) {
   return value
 }
 
+/**
+ * Sockdrive 最终写进 VFAT。Linux 能解出的名字不代表 FAT/Windows 能无损保存：冒号、结尾空格、
+ * CON/COM1 这类设备名会被 guestfs 拒绝或静默改名，而大小写冲突还可能让启动 EXE 被另一项覆盖。
+ * 在几分钟制盘前按真正目标文件系统拦住，不能发布一张“文件数对、客体里却少文件”的磁盘。
+ */
+export function fatArchiveEntryKey(name) {
+  const value = assertSafeArchiveEntry(name)
+  const directory = value.endsWith('/')
+  // ZIP 允许无意义的 `./` 段；去掉它后再比较，才能识别 `./GAME/A` 与 `game/a` 的 FAT 冲突。
+  const clean = value.replace(/\/+$/, '').split('/').filter((part) => part !== '.').join('/')
+  if (!clean) throw new Error(`ZIP 含空目录名：${JSON.stringify(name)}`)
+  for (const part of clean.split('/')) {
+    if (/[<>:"|?*]/.test(part) || /[. ]$/.test(part)) {
+      throw new Error(`ZIP 文件名不能无损写入 FAT：${JSON.stringify(name)}`)
+    }
+    const stem = part.split('.', 1)[0]
+    if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(stem)) {
+      throw new Error(`ZIP 使用了 Windows 保留设备名：${JSON.stringify(name)}`)
+    }
+    if (Array.from(part).length > 255) throw new Error(`ZIP 文件名超过 FAT 单段上限：${JSON.stringify(name)}`)
+  }
+  return { value: directory ? `${clean}/` : clean, key: clean.normalize('NFC').toLowerCase() }
+}
+
 /** 解析 `7z l -slt`；第一段是归档自身信息，分隔线后才是成员。 */
 export function archiveEntriesFrom7z(output, maxDeclaredBytes = 8 * 1024 ** 3) {
   const lines = String(output).replace(/\r\n?/g, '\n').split('\n')
@@ -63,10 +87,19 @@ export function archiveEntriesFrom7z(output, maxDeclaredBytes = 8 * 1024 ** 3) {
     throw new Error('ZIP 含符号链接或硬链接，拒绝解包')
   }
   const entries = []
+  const fatNames = new Map()
   let declaredBytes = 0
   for (const line of lines.slice(start + 1)) {
     const match = /^Path = (.*)$/.exec(line)
-    if (match) entries.push(assertSafeArchiveEntry(match[1]))
+    if (match) {
+      const entry = fatArchiveEntryKey(match[1])
+      const previous = fatNames.get(entry.key)
+      if (previous) {
+        throw new Error(`ZIP 含 FAT 下会互相覆盖的文件名：${JSON.stringify(previous)} / ${JSON.stringify(entry.value)}`)
+      }
+      fatNames.set(entry.key, entry.value)
+      entries.push(entry.value)
+    }
     const size = /^Size = (\d+)$/.exec(line)
     if (size) declaredBytes += Number(size[1])
   }

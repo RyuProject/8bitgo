@@ -2,9 +2,10 @@ import { dosBackendOf, dosExecutableOf, dosExtrasOf, dosSockdriveOf, dosSystemOf
 import { isVersionedSockdriveDirectory } from '../../shared/sockdrive-url.js'
 
 const own = (value, key) => Object.prototype.hasOwnProperty.call(value ?? {}, key)
+const DOS_83_SEGMENT = /^[A-Za-z0-9_^$~!#%&{}@'()-]{1,8}(\.[A-Za-z0-9_^$~!#%&{}@'()-]{1,3})?$/
 
 /**
- * 检查一款游戏能否按「共享 Windows 系统镜像 + 游戏 ZIP」启动。
+ * 检查一款游戏能否按「完整 ZIP」或「静态 Sockdrive」启动。
  *
  * 这道校验必须放在服务端：后台表单虽然也会拦，但批量导入、旧脚本和直接 API 写入都能绕过表单。
  * 坏数据保存成功后，播放器要等系统镜像和游戏包都下载完才发现没有 EXE，代价是一次完整大文件下载。
@@ -16,18 +17,23 @@ export function dosGameConfigError(game) {
     ? Object.entries(game.dosSockdrives).filter(([, value]) => String(value || '').trim())
     : []
   const hasAnySockdrive = Boolean(rawSockdrive || rawSockdrives.length)
-  const windowsGuest =
+  const dosBoxXGame =
     String(game?.platform ?? '') === 'dos' &&
-    dosBackendOf(game?.dosBackend) === 'dosboxX' &&
+    dosBackendOf(game?.dosBackend) === 'dosboxX'
+  const windowsGuest =
+    dosBoxXGame &&
     Boolean(rawSystem)
-  if (hasAnySockdrive && !windowsGuest) {
-    return 'Sockdrive 只能用于已配置共享系统镜像的 DOSBox-X Windows 游戏'
+  const streamedGame = dosBoxXGame && hasAnySockdrive
+  if (hasAnySockdrive && !dosBoxXGame) {
+    return 'Sockdrive 需要 DOSBox-X；普通 DOSBox 不支持远程磁盘按需读取'
   }
-  if (!windowsGuest) return null
+  if (!windowsGuest && !streamedGame) return null
 
-  const system = dosSystemOf(rawSystem)
-  if (!system || !/\.jsdos(?:[?#].*)?$/i.test(system)) {
-    return 'Windows 系统镜像必须是 .jsdos 文件、对象 key 或 URL'
+  if (windowsGuest) {
+    const system = dosSystemOf(rawSystem)
+    if (!system || !/\.jsdos(?:[?#].*)?$/i.test(system)) {
+      return 'Windows 系统镜像必须是 .jsdos 文件、对象 key 或 URL'
+    }
   }
 
   const validateSockdrive = (raw, label = '') => {
@@ -54,7 +60,7 @@ export function dosGameConfigError(game) {
 
   const roms = romsOf(game)
   const slots = Object.entries(roms)
-  if (!slots.length) return '共享 Windows 系统模式必须绑定游戏 ZIP'
+  if (!slots.length) return windowsGuest ? '共享 Windows 系统模式必须绑定游戏 ZIP' : '纯 DOS 流式模式必须保留完整 ZIP 回退包'
   const perLanguageSockdrives = {}
   for (const [lang, rawValue] of rawSockdrives) {
     if (!Object.prototype.hasOwnProperty.call(roms, lang) || lang === '*') {
@@ -79,6 +85,9 @@ export function dosGameConfigError(game) {
     if (!/\.exe$/i.test(executable) || /[:"<>|?*]/.test(executable)) {
       return `流式游戏盘的自启动程序必须是盘内安全的 .exe 相对路径：${executable}`
     }
+    if (!windowsGuest && !executable.split('/').every((part) => DOS_83_SEGMENT.test(part))) {
+      return `纯 DOS 流式盘的自启动程序必须使用 DOS 8.3 路径：${executable}`
+    }
     return null
   }
   const defaultExecutable = dosExecutableOf(game.dosExecutable)
@@ -97,8 +106,8 @@ export function dosGameConfigError(game) {
   if (!missing.length) return null
 
   return missing.includes('*')
-    ? '共享 Windows 系统模式的通用 ROM 必须填写默认自启动 EXE'
-    : `共享 Windows 系统模式缺少自启动 EXE：${missing.join('、')}`
+    ? `${windowsGuest ? '共享 Windows 系统' : '纯 DOS 流式'}模式的通用 ROM 必须填写默认自启动 EXE`
+    : `${windowsGuest ? '共享 Windows 系统' : '纯 DOS 流式'}模式缺少自启动 EXE：${missing.join('、')}`
 }
 
 /**

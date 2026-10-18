@@ -11,11 +11,12 @@
  *     --src /tmp/sockdrive/game-v1 \
  *     --bucket 8bitgo \
  *     --prefix sockdrives/game-v1 \
- *     --encoding br
+ *     --encoding br \
+ *     --concurrency 6
  *
  * `sockify -b` 用 br，`sockify -g` 用 gzip；没压缩就写 identity（默认）。
  */
-import { execFileSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
 import { open } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -36,11 +37,22 @@ const publicBase = (arg('public-base') || 'https://assets.8bitgo.com').replace(/
 const workerUrl = (arg('worker-url') || '').replace(/\/+$/, '')
 const workerToken = process.env.SOCKDRIVE_WORKER_TOKEN || ''
 const dryRun = process.argv.includes('--dry-run')
+const positiveInt = (raw, fallback, max) => {
+  const value = Number(raw)
+  return Number.isSafeInteger(value) && value > 0 && value <= max ? value : fallback
+}
+// 小分块逐个串行上传时，RTT 会远大于真实传输时间；六路能吃满 HTTP/2 / R2，仍把内存峰值控制在可预期范围。
+const uploadConcurrency = positiveInt(arg('concurrency') || process.env.SOCKDRIVE_UPLOAD_CONCURRENCY, 6, 16)
+// zlib 的异步流工作落在线程池；默认四路与 Node 默认线程池匹配，再高只会争磁盘和 CPU。
+const validationConcurrency = Math.min(4, uploadConcurrency)
+const PUBLIC_REQUEST_TIMEOUT_MS = 30_000
+const WORKER_REQUEST_TIMEOUT_MS = 120_000
 
 if (!sourceDir || !prefix || (!dryRun && !workerUrl && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(bucket))) {
   console.error(
     '用法：npm run sockdrive:upload -- --src <含 sockdrive.metaj 的目录> --bucket <R2桶名> ' +
-      '--prefix sockdrives/<游戏>-v1 [--encoding br|gzip|identity] [--worker-url <写入Worker>] [--dry-run]',
+      '--prefix sockdrives/<游戏>-v1 [--encoding br|gzip|identity] [--concurrency 1..16] ' +
+      '[--worker-url <写入Worker>] [--dry-run]',
   )
   process.exit(2)
 }
@@ -127,7 +139,8 @@ for (const key of ['size', 'range_count', 'ahead_read', 'sector_size']) {
   if (!Number.isSafeInteger(metadata[key]) || metadata[key] <= 0) throw new Error(`sockdrive.metaj 的 ${key} 无效`)
 }
 const rangeCount = metadata.range_count
-if (!Number.isSafeInteger(metadata.size * 1024) || Math.ceil(metadata.size * 1024 / metadata.ahead_read) !== rangeCount) {
+if (!Number.isSafeInteger(metadata.size * 1024) || metadata.size * 1024 > 2 * 1024 ** 3 ||
+    Math.ceil(metadata.size * 1024 / metadata.ahead_read) !== rangeCount) {
   throw new Error('sockdrive.metaj 的磁盘大小与分块数量不一致')
 }
 if (metadata.ahead_read % metadata.sector_size !== 0) {
@@ -179,10 +192,13 @@ if (hasPreloadProfile) {
 }
 
 const files = []
+const fileSizes = new Map()
 const need = (name) => {
   const file = join(sourceDir, name)
-  if (!existsSync(file) || !statSync(file).isFile() || statSync(file).size <= 0) throw new Error(`Sockdrive 缺少有效文件：${name}`)
+  const info = existsSync(file) ? statSync(file) : null
+  if (!info?.isFile() || info.size <= 0) throw new Error(`Sockdrive 缺少有效文件：${name}`)
   files.push(name)
+  fileSizes.set(name, info.size)
 }
 if (small.size) need('preload.raw')
 for (let range = 0; range < rangeCount; range++) {
@@ -195,8 +211,23 @@ need('sockdrive.metaj')
   Content-Encoding 写错时，浏览器会把压缩字节直接交给 Sockdrive，表现是随机读盘错误而不是清楚的
   HTTP 失败。上传前把每个文件完整解码并核对长度，宁可本地多读一遍，也不能发布一块坏磁盘。
 */
-for (const name of files) {
-  if (name.endsWith('.metaj')) continue
+const mapConcurrent = async (values, concurrency, task) => {
+  let cursor = 0
+  let failure = null
+  const workers = Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+    while (!failure) {
+      const index = cursor++
+      if (index >= values.length) return
+      try { await task(values[index], index) } catch (error) { failure ??= error }
+    }
+  })
+  await Promise.all(workers)
+  if (failure) throw failure
+}
+
+const rawFiles = files.filter((name) => !name.endsWith('.metaj'))
+const validationStartedAt = Date.now()
+await mapConcurrent(rawFiles, validationConcurrency, async (name) => {
   const range = Number.parseInt(name, 10)
   const expected = name === 'preload.raw'
     ? small.size * metadata.ahead_read
@@ -204,15 +235,21 @@ for (const name of files) {
     : Math.min(metadata.ahead_read, metadata.size * 1024 - range * metadata.ahead_read)
   const actual = await decodedFileSize(name, expected)
   if (actual !== expected) throw new Error(`${name} 解码后是 ${actual} 字节，应为 ${expected} 字节`)
-}
+})
 
-const totalBytes = files.reduce((sum, name) => sum + statSync(join(sourceDir, name)).size, 0)
-console.log(`✔ Sockdrive 结构完整：${rangeCount} 个范围，发布 ${files.length} 个文件 / ${(totalBytes / 1024 / 1024).toFixed(1)} MiB`)
+const totalBytes = files.reduce((sum, name) => sum + fileSizes.get(name), 0)
+const validationSeconds = Math.max(0.001, (Date.now() - validationStartedAt) / 1000)
+console.log(
+  `✔ Sockdrive 结构完整：${rangeCount} 个范围，发布 ${files.length} 个文件 / ` +
+  `${(totalBytes / 1024 / 1024).toFixed(1)} MiB；${validationConcurrency} 路解码校验 ${validationSeconds.toFixed(1)} 秒`,
+)
 if (dryRun) process.exit(0)
 
 let existing
 try {
-  existing = await fetch(`${publicRoot}/sockdrive.metaj`, { method: 'GET', cache: 'no-store' })
+  existing = await fetch(`${publicRoot}/sockdrive.metaj`, {
+    method: 'GET', cache: 'no-store', signal: AbortSignal.timeout(PUBLIC_REQUEST_TIMEOUT_MS),
+  })
 } catch (error) {
   throw new Error(`无法确认公开目录是否已存在，已停止发布：${error instanceof Error ? error.message : String(error)}`)
 }
@@ -227,6 +264,7 @@ const SINGLE_PUT_BYTES = 24 * 1024 * 1024
 const encodedKey = (key) => key.split('/').map(encodeURIComponent).join('/')
 const workerRequest = (key, init = {}, query = '') => fetch(`${workerUrl}/${encodedKey(key)}${query}`, {
   ...init,
+  signal: init.signal || AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
   headers: { Authorization: `Bearer ${workerToken}`, ...init.headers },
   ...(init.body instanceof ReadableStream ? { duplex: 'half' } : {}),
 })
@@ -257,7 +295,7 @@ const retry = async (task, label) => {
 const requestJson = (task, label) => retry(async () => jsonResponse(await task(), label), label)
 const uploadWithWorker = async (name, contentType) => {
   const file = join(sourceDir, name)
-  const size = statSync(file).size
+  const size = fileSizes.get(name)
   const key = `${prefix}/${name}`
   const commonHeaders = {
     'Content-Type': contentType,
@@ -291,10 +329,13 @@ const uploadWithWorker = async (name, contentType) => {
     `创建 ${name} 分片会话`,
   )
   if (!session.uploadId || !session.marker) throw new Error(`Worker 没有返回 ${name} 的有效分片会话`)
-  const parts = []
+  const partCount = Math.ceil(size / PART_BYTES)
+  const parts = Array.from({ length: partCount })
   const handle = await open(file, 'r')
   try {
-    for (let partNumber = 1, position = 0; position < size; partNumber++, position += PART_BYTES) {
+    await mapConcurrent(Array.from({ length: partCount }, (_, index) => index), Math.min(3, uploadConcurrency), async (index) => {
+      const partNumber = index + 1
+      const position = index * PART_BYTES
       const length = Math.min(PART_BYTES, size - position)
       const bytes = Buffer.allocUnsafe(length)
       let offset = 0
@@ -312,8 +353,8 @@ const uploadWithWorker = async (name, contentType) => {
         `上传 ${name} 第 ${partNumber} 片`,
       )
       if (!part.etag) throw new Error(`Worker 没有确认 ${name} 第 ${partNumber} 片`)
-      parts.push({ partNumber, etag: part.etag })
-    }
+      parts[index] = { partNumber, etag: part.etag }
+    })
     const result = await requestJson(
       () => workerRequest(key, {
         method: 'POST',
@@ -335,26 +376,60 @@ const uploadWithWorker = async (name, contentType) => {
   }
 }
 
-for (const [index, name] of ordered.entries()) {
+const uploadWithWrangler = (name, contentType) => new Promise((resolveUpload, rejectUpload) => {
+  const encoded = encoding !== 'identity'
+  const args = [
+    'r2', 'object', 'put', `${bucket}/${prefix}/${name}`,
+    '--file', join(sourceDir, name),
+    '--content-type', contentType,
+    '--cache-control', 'public, max-age=31536000, immutable',
+    '--remote', '--force',
+  ]
+  if (encoded) args.push('--content-encoding', encoding)
+  const child = spawn(wrangler, args, { cwd: root, stdio: 'inherit' })
+  child.once('error', rejectUpload)
+  child.once('exit', (code, signal) => {
+    if (code === 0) resolveUpload()
+    else rejectUpload(new Error(`wrangler 上传 ${name} 失败（${signal || `exit ${code}`}）`))
+  })
+})
+
+const uploadOne = async (name) => {
   const json = name.endsWith('.metaj')
   // sockify 会连元数据一起压缩；漏掉这个响应头时，浏览器拿到的是压缩字节而不是 JSON。
-  const encoded = encoding !== 'identity'
   const contentType = json ? 'application/json; charset=utf-8' : 'application/octet-stream'
-  console.log(`上传 ${prefix}/${name}（${index + 1}/${ordered.length}）…`)
   if (workerUrl) {
     await uploadWithWorker(name, contentType)
   } else {
-    const args = [
-      'r2', 'object', 'put', `${bucket}/${prefix}/${name}`,
-      '--file', join(sourceDir, name),
-      '--content-type', contentType,
-      '--cache-control', 'public, max-age=31536000, immutable',
-      '--remote', '--force',
-    ]
-    if (encoded) args.push('--content-encoding', encoding)
-    execFileSync(wrangler, args, { cwd: root, stdio: 'inherit' })
+    await uploadWithWrangler(name, contentType)
   }
 }
+
+/*
+  只并发数据文件；sockdrive.metaj 仍是唯一提交点，必须等全部上传成功后单独发布。
+  日志按“完成数”而不是“启动序号”推进，后台进度不会因并发乱序倒退或提前显示 96%。
+*/
+const dataFiles = ordered.filter((name) => name !== 'sockdrive.metaj')
+let completedUploads = 0
+let completedBytes = 0
+const uploadStartedAt = Date.now()
+const logUploaded = (name) => {
+  completedUploads++
+  completedBytes += fileSizes.get(name)
+  const seconds = Math.max(0.001, (Date.now() - uploadStartedAt) / 1000)
+  const mibPerSecond = completedBytes / 1024 / 1024 / seconds
+  // 前半段保留旧格式给任务进度解析，后半段用真实字节量避免压缩率差异把吞吐判断带偏。
+  console.log(
+    `已上传 ${prefix}/${name}（${completedUploads}/${ordered.length}） ` +
+    `[${completedBytes}/${totalBytes} 字节，${mibPerSecond.toFixed(1)} MiB/s]`,
+  )
+}
+await mapConcurrent(dataFiles, uploadConcurrency, async (name) => {
+  await uploadOne(name)
+  logUploaded(name)
+})
+await uploadOne('sockdrive.metaj')
+logUploaded('sockdrive.metaj')
 
 const verifyMeta = await fetch(`${publicRoot}/sockdrive.metaj?verify=${Date.now()}`, {
   // Cloudflare 可能按内容协商解码并移除响应头；显式请求发布格式才能可靠验收 R2 元数据。
@@ -363,12 +438,40 @@ const verifyMeta = await fetch(`${publicRoot}/sockdrive.metaj?verify=${Date.now(
     'Accept-Encoding': encoding === 'identity' ? 'identity' : encoding,
   },
   cache: 'no-store',
+  signal: AbortSignal.timeout(PUBLIC_REQUEST_TIMEOUT_MS),
 })
 if (!verifyMeta.ok) throw new Error(`公开 sockdrive.metaj 读取失败：HTTP ${verifyMeta.status}`)
 const publicMetadata = await verifyMeta.json()
 if (publicMetadata.range_count !== rangeCount) throw new Error('公开 sockdrive.metaj 与本地产物不一致')
 const cors = verifyMeta.headers.get('access-control-allow-origin')
 if (cors !== '*' && cors !== 'https://8bitgo.com') throw new Error('公开 Sockdrive 没有允许 8bitgo.com 的 CORS')
+
+/*
+  带随机查询串、no-store 的验收只证明 R2 原对象正确，抓不到真实玩家会命中的边缘缓存问题。
+  2026-10-18 线上曾出现 Cache API 首次 MISS 正常、随后 HIT 丢 Content-Encoding 的事故：
+  浏览器拿到 Brotli 原字节后把它当 JSON，所有新会话都无法挂盘。这里再按玩家的规范 URL 连读
+  两次；第一读负责触发可能存在的缓存写入，第二读负责验收 HIT，避免发布器再次宣布假成功。
+*/
+for (let pass = 1; pass <= 2; pass++) {
+  if (pass > 1) await new Promise((resolveWait) => setTimeout(resolveWait, 250))
+  const canonical = await fetch(`${publicRoot}/sockdrive.metaj`, {
+    headers: {
+      Origin: 'https://8bitgo.com',
+      'Accept-Encoding': encoding === 'identity' ? 'identity' : encoding,
+    },
+    signal: AbortSignal.timeout(PUBLIC_REQUEST_TIMEOUT_MS),
+  })
+  if (!canonical.ok) throw new Error(`玩家路径第 ${pass} 次读取 sockdrive.metaj 失败：HTTP ${canonical.status}`)
+  let canonicalMetadata
+  try {
+    canonicalMetadata = await canonical.json()
+  } catch {
+    throw new Error(`玩家路径第 ${pass} 次读取得到的不是 JSON；边缘缓存可能丢失了 Content-Encoding`)
+  }
+  if (canonicalMetadata.range_count !== rangeCount) {
+    throw new Error(`玩家路径第 ${pass} 次读取的 sockdrive.metaj 与本地产物不一致`)
+  }
+}
 
 if (preloadProfile) {
   const verifyPreload = await fetch(`${publicRoot}/${preloadProfileName}?verify=${Date.now()}`, {
@@ -377,6 +480,7 @@ if (preloadProfile) {
       'Accept-Encoding': encoding === 'identity' ? 'identity' : encoding,
     },
     cache: 'no-store',
+    signal: AbortSignal.timeout(PUBLIC_REQUEST_TIMEOUT_MS),
   })
   if (!verifyPreload.ok) throw new Error(`公开 ${preloadProfileName} 读取失败：HTTP ${verifyPreload.status}`)
   const publicPreload = await verifyPreload.json()
@@ -385,19 +489,32 @@ if (preloadProfile) {
   }
 }
 
-const sample = ordered.find((name) => name.endsWith('.raw'))
+// 优先验一个独立块并读取正文：HEAD 看不出“Content-Encoding 头在 GET/HIT 时丢失”这类事故。
+// preload.raw 可能聚合大量小块；只有整张盘都没有独立块时才退回对它做 HEAD。
+let sampleRange
+for (let range = 0; sampleRange === undefined && range < rangeCount; range++) {
+  if (!dropped.has(range) && !small.has(range)) sampleRange = range
+}
+const sample = sampleRange === undefined ? (small.size ? 'preload.raw' : '') : `${sampleRange}.raw`
 if (sample) {
+  const readsBody = sampleRange !== undefined
   const response = await fetch(`${publicRoot}/${sample}?verify=${Date.now()}`, {
-    method: 'HEAD',
+    method: readsBody ? 'GET' : 'HEAD',
     headers: {
       Origin: 'https://8bitgo.com',
       'Accept-Encoding': encoding === 'identity' ? 'identity' : encoding,
     },
     cache: 'no-store',
+    signal: AbortSignal.timeout(PUBLIC_REQUEST_TIMEOUT_MS),
   })
   if (!response.ok) throw new Error(`公开分块 ${sample} 读取失败：HTTP ${response.status}`)
   const actualEncoding = response.headers.get('content-encoding') || 'identity'
   if (actualEncoding !== encoding) throw new Error(`${sample} 的 Content-Encoding 是 ${actualEncoding}，应为 ${encoding}`)
+  if (readsBody) {
+    const expected = Math.min(metadata.ahead_read, metadata.size * 1024 - sampleRange * metadata.ahead_read)
+    const actual = (await response.arrayBuffer()).byteLength
+    if (actual !== expected) throw new Error(`公开分块 ${sample} 解码后是 ${actual} 字节，应为 ${expected} 字节`)
+  }
 }
 
 console.log(`✔ Sockdrive 已发布并通过公开读取校验：${publicRoot}`)

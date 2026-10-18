@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * 把一份 ROM 制成 8BG 容器。默认 Zstd 19 + AES-256-GCM，按 8MB 原文分块。
+ * 把一份 ROM 制成 8BG 容器。裸 ROM 默认 Zstd 19，已压缩容器只加密，按 8MB 原文分块。
  *
  * 用法：
  *   npm run rompack -- ./kof97.zip
@@ -25,6 +25,7 @@ import {
   encodeRomPackPrefix,
   romPackAad,
   romPackIv,
+  recommendedRomPackCodec,
 } from '../shared/rom-pack-format.js'
 
 try { process.loadEnvFile(path.resolve('server/.env')) } catch { /* CI 和显式环境变量不需要文件。 */ }
@@ -32,7 +33,7 @@ try { process.loadEnvFile(path.resolve('server/.env')) } catch { /* CI 和显式
 const args = process.argv.slice(2)
 const positional = []
 let originalName = ''
-let codec = ROM_PACK_CODEC.ZSTD
+let codec = ''
 let level = 19
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--name') originalName = args[++i] || ''
@@ -45,8 +46,6 @@ if (!positional[0]) {
   console.error('用法：npm run rompack -- <输入 ROM> [输出.8bg] [--name 原文件名] [--codec zstd|store] [--level 19]')
   process.exit(2)
 }
-if (codec === ROM_PACK_CODEC.ZSTD && (!Number.isInteger(level) || level < 1 || level > 22)) throw new Error('Zstd 等级必须是 1..22')
-
 const input = path.resolve(positional[0])
 const output = path.resolve(positional[1] || `${input}.8bg`)
 const tempId = `${process.pid}-${Date.now()}-${randomBytes(4).toString('hex')}`
@@ -55,6 +54,8 @@ const outputTemp = `${output}.tmp-${tempId}`
 const inputInfo = await stat(input)
 if (!inputInfo.isFile() || inputInfo.size <= 0) throw new Error('输入必须是非空文件')
 originalName ||= path.basename(input)
+codec ||= recommendedRomPackCodec(originalName)
+if (codec === ROM_PACK_CODEC.ZSTD && (!Number.isInteger(level) || level < 1 || level > 22)) throw new Error('Zstd 等级必须是 1..22')
 
 const CODECS = {
   [ROM_PACK_CODEC.STORE]: {

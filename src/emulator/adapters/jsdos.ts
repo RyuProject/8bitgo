@@ -15,6 +15,8 @@ import type { Capability, CaptureSources, LoadProgress, MountOptions, PadButton,
 import { getT, fmt } from '@/services/i18n'
 import {
   hideJsdosConfigForLayer,
+  buildDosSockdriveConf,
+  isReadyJsdosBundleBlob,
   makeJsdosConfigBundle,
   makeJsdosBundle,
   makeWindowsGameLayer,
@@ -38,6 +40,7 @@ import { GP, startGamepadBridge, hasGamepadApi, type GamepadBridge } from '../ga
 import { deleteSave, pullSave, pushSave } from '@/services/saves'
 import { loadGameBytes } from '../romLoader'
 import { inspectRemoteRomPack, isRomPackUrl, ROM_PACK_ARRAY_BUFFER_LIMIT } from '@/services/romPack'
+import { prepareRemoteDosBundle } from '../dosBundleSource'
 import { loadSystemBytes, systemSourcesFor } from '../systemSource'
 import { armJspi } from '../jspiFlag'
 import {
@@ -52,7 +55,7 @@ import {
   type DosPadKeys,
 } from '../dosPad'
 import { normalizeDosStartupCommands } from '../../../shared/dos-startup-commands.js'
-import { fetchWithProgress, STARTING_MILESTONE, windowsGuestStartupBudgetMs } from '../loadProgress'
+import { fetchWithProgress, STALL_MS, STARTING_MILESTONE, windowsGuestStartupBudgetMs } from '../loadProgress'
 import { assertTypeable, scheduleWindowsLaunch, windows3xLaunchCommands, type WindowsLaunchCi } from '../windowsLaunch'
 import { JSDOS_ASSET_VERSION, JSDOS_PATH } from '../paths'
 import {
@@ -76,6 +79,7 @@ import {
   parseSockdrivePreload,
   parseSockdriveWarmPlan,
   planSockdriveWarmFiles,
+  sockdriveWarmConcurrency,
   sockdriveRuntimePreloadMode,
   type SockdriveRuntimePreload,
   type SockdriveWarmFile,
@@ -598,7 +602,11 @@ async function readRom(
   onProgress?: (p: LoadProgress) => void,
   signal?: AbortSignal,
   windowsGuest = false,
-): Promise<{ name: string; buf: ArrayBuffer }> {
+  preferReadyBundleBlob = false,
+): Promise<
+  | { name: string; buf: ArrayBuffer; bundleBlob?: undefined }
+  | { name: string; bundleBlob: Blob; buf?: undefined }
+> {
   if (windowsGuest && typeof game === 'string' && isRomPackUrl(game)) {
     const header = await inspectRemoteRomPack(game, signal)
     if (header && header.originalSize > ROM_PACK_ARRAY_BUFFER_LIMIT) {
@@ -606,6 +614,30 @@ async function readRom(
       throw new Error(
         `这款大型 Windows 游戏尚未配置流式游戏盘（整包解开后 ${gib} GB），已停止下载以避免耗尽流量和内存。请先发布并绑定 Sockdrive。`,
       )
+    }
+  }
+
+  /*
+    已经带 .jsdos/dosbox.conf 的普通 DOS 包不需要重打。远端大包必须在这里、也就是
+    `loadGameBytes()` 申请完整 ArrayBuffer **之前**分流；先走旧路再“优化”已经来不及了。
+    本地文件同样只读 ZIP 尾部判断，503MB 拖进页面也不再先复制成一整块内存。
+  */
+  if (preferReadyBundleBlob) {
+    if (typeof game === 'string') {
+      const loaded = await prepareRemoteDosBundle(game, onProgress, signal ?? new AbortController().signal)
+      if (loaded.ready) return { name: loaded.name, bundleBlob: loaded.blob }
+      if (loaded.blob.size > ROM_PACK_ARRAY_BUFFER_LIMIT) {
+        throw new Error('大型 DOS 包缺少 .jsdos/dosbox.conf，无法在低内存模式下直接启动；请重新打包后上传')
+      }
+      return { name: loaded.name, buf: await loaded.blob.arrayBuffer() }
+    }
+
+    const magic = new Uint8Array(await game.slice(0, 4).arrayBuffer())
+    if (magic[0] === 0x50 && magic[1] === 0x4b) {
+      if (await isReadyJsdosBundleBlob(game)) {
+        onProgress?.({ phase: 'rom', loaded: game.size, total: game.size, ratio: 1, cached: true })
+        return { name: game.name, bundleBlob: game }
+      }
     }
   }
   const loaded = await loadGameBytes(game, onProgress, signal)
@@ -654,6 +686,42 @@ async function loadExtras(
 const SOCKDRIVE_METADATA_LIMIT = 1024 * 1024
 const SOCKDRIVE_WARM_DESKTOP_BYTES = 16 * 1024 * 1024
 const SOCKDRIVE_WARM_3G_BYTES = 4 * 1024 * 1024
+/*
+ * 2026-10-18 之前 Worker 的 Cache API 会在 HIT 时丢掉 Content-Encoding、却保留 Brotli 原字节。
+ * 浏览器又把那份坏响应按 immutable 存一年，单修 Worker 也救不回已经中招的设备。每个版本目录
+ * 成功强制重取一次元数据、热点清单和启动块后记住代次；以后仍走长缓存，不让修复变成永久重下。
+ */
+const SOCKDRIVE_HTTP_CACHE_REPAIR = 'content-encoding-v2'
+const sockdriveCacheRepaired = new Set<string>()
+
+function sockdriveCacheRepairKey(url: string): string {
+  const hash = (seed: number) => {
+    let value = seed >>> 0
+    for (let i = 0; i < url.length; i++) value = Math.imul(value ^ url.charCodeAt(i), 0x01000193) >>> 0
+    return value.toString(16).padStart(8, '0')
+  }
+  return `8bitgo.sockdrive.http-cache.${hash(0x811c9dc5)}${hash(0x9e3779b9)}`
+}
+
+function sockdriveCacheMode(url: string): RequestCache {
+  if (sockdriveCacheRepaired.has(url)) return 'force-cache'
+  try {
+    if (localStorage.getItem(sockdriveCacheRepairKey(url)) === SOCKDRIVE_HTTP_CACHE_REPAIR) {
+      sockdriveCacheRepaired.add(url)
+      return 'force-cache'
+    }
+  } catch {
+    /* 隐私模式拿不到 localStorage 时，每次新页面重验一次；正确性优先于这十几 MB 的热点缓存。 */
+  }
+  return 'reload'
+}
+
+function rememberSockdriveCacheRepair(url: string): void {
+  sockdriveCacheRepaired.add(url)
+  try { localStorage.setItem(sockdriveCacheRepairKey(url), SOCKDRIVE_HTTP_CACHE_REPAIR) } catch {
+    /* 当前页面的 Set 已避免重复下载；存储不可用不影响开局。 */
+  }
+}
 
 function sockdriveWarmBudget(): number {
   const connection = (navigator as Navigator & {
@@ -668,6 +736,7 @@ async function readSockdrivePreloadProfile(
   url: string,
   plan: SockdriveWarmPlan,
   signal: AbortSignal,
+  cache: RequestCache,
 ): Promise<number[] | null> {
   const controller = new AbortController()
   const relayAbort = () => controller.abort(signal.reason)
@@ -682,7 +751,7 @@ async function readSockdrivePreloadProfile(
   try {
     response = await fetch(`${url}/preload_ranges.metaj`, {
       signal: controller.signal,
-      cache: 'force-cache',
+      cache,
     })
   } catch (error) {
     cleanup()
@@ -727,19 +796,62 @@ async function warmSockdriveFile(
   url: string,
   file: SockdriveWarmFile,
   signal: AbortSignal,
+  cache: RequestCache,
 ): Promise<void> {
   let failure: unknown = null
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const bytes = await fetchWithProgress(`${url}/${file.name}`, {
-        signal,
-        cache: 'force-cache',
-        phase: 'assets',
-        maxBytes: file.expectedBytes,
-      })
-      if (bytes.byteLength !== file.expectedBytes) {
-        throw new Error(`长度 ${bytes.byteLength}，应为 ${file.expectedBytes}`)
+      /*
+        热点只需要完整读进 HTTP 缓存，字节本身不会交给适配器。以前走 fetchWithProgress 会先保留
+        所有 chunk、再分配一块连续 ArrayBuffer 复制一次，16MB 预热就平白制造约 32MB 峰值和一次
+        主线程大拷贝。这里边读边计数后立即释放 chunk，官方 runtime 随后从缓存搬进 OPFS。
+      */
+      const controller = new AbortController()
+      const relayAbort = () => controller.abort(signal.reason)
+      if (signal.aborted) relayAbort()
+      else signal.addEventListener('abort', relayAbort, { once: true })
+      let timer = 0
+      let stalled = false
+      const armIdle = () => {
+        window.clearTimeout(timer)
+        timer = window.setTimeout(() => {
+          stalled = true
+          controller.abort()
+        }, STALL_MS)
       }
+      armIdle()
+      let loaded = 0
+      try {
+        const response = await fetch(`${url}/${file.name}`, {
+          signal: controller.signal,
+          cache,
+        })
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        if (!response.body) {
+          // 极老浏览器没有流接口；只在这条兼容路径保留一次性分配。
+          loaded = (await response.arrayBuffer()).byteLength
+        } else {
+          const reader = response.body.getReader()
+          for (;;) {
+            const { done, value } = await reader.read()
+            if (done) break
+            if (!value) continue
+            armIdle()
+            loaded += value.byteLength
+            if (loaded > file.expectedBytes) {
+              await reader.cancel().catch(() => {})
+              throw new Error(`长度超过 ${file.expectedBytes}`)
+            }
+          }
+        }
+      } catch (error) {
+        if (stalled && !signal.aborted) throw new Error(`${Math.round(STALL_MS / 1000)} 秒没有收到数据`)
+        throw error
+      } finally {
+        window.clearTimeout(timer)
+        signal.removeEventListener('abort', relayAbort)
+      }
+      if (loaded !== file.expectedBytes) throw new Error(`长度 ${loaded}，应为 ${file.expectedBytes}`)
       return
     } catch (error) {
       failure = error
@@ -760,7 +872,12 @@ async function warmSockdriveFile(
   throw new Error(`Sockdrive 启动分块 ${file.name} 读取失败（${failure instanceof Error ? failure.message : String(failure)}）`)
 }
 
-async function headSockdriveFile(url: string, sample: string, signal: AbortSignal): Promise<void> {
+async function headSockdriveFile(
+  url: string,
+  sample: string,
+  signal: AbortSignal,
+  cache: RequestCache,
+): Promise<void> {
   const controller = new AbortController()
   const relayAbort = () => controller.abort(signal.reason)
   if (signal.aborted) relayAbort()
@@ -770,7 +887,7 @@ async function headSockdriveFile(url: string, sample: string, signal: AbortSigna
     const response = await fetch(`${url}/${sample}`, {
       method: 'HEAD',
       signal: controller.signal,
-      cache: 'force-cache',
+      cache,
     })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
   } catch (error) {
@@ -784,17 +901,44 @@ async function headSockdriveFile(url: string, sample: string, signal: AbortSigna
   }
 }
 
+function sockdriveProbeFile(
+  plan: SockdriveWarmPlan,
+  profile: readonly number[] | null,
+): SockdriveWarmFile | null {
+  const preferred = profile ?? plan.preload
+  // 优先探测独立分块：preload.raw 会把全部 small range 拼在一起，极端稀疏磁盘上可能远超
+  // 省流量模式能承受的大小。独立分块仍是启动路径上的真实对象，也足够发现 404 / 编码损坏。
+  let firstRange = preferred.find((range) => !plan.dropped.has(range) && !plan.small.has(range))
+  // 不用 Array.from(rangeCount)：损坏清单可把数量伪造成极大整数，探活本身不能制造内存崩溃。
+  for (let range = 0; firstRange === undefined && range < plan.rangeCount; range++) {
+    if (!plan.dropped.has(range) && !plan.small.has(range)) firstRange = range
+  }
+  if (firstRange !== undefined) {
+    return {
+      name: `${firstRange}.raw`,
+      expectedBytes: Math.min(plan.aheadRead, plan.sizeBytes - firstRange * plan.aheadRead),
+    }
+  }
+  if (!plan.small.size) return null
+  return { name: 'preload.raw', expectedBytes: plan.small.size * plan.aheadRead }
+}
+
 /**
  * 在下载共享系统镜像时并行验证磁盘，并把真正的启动热点送入浏览器缓存。
  * js-dos 自己遇到缺块通常只会持续等盘，所以这里必须把发布残缺还原成明确错误。
  */
-async function verifySockdriveMetadata(url: string, signal: AbortSignal): Promise<SockdriveRuntimePreload> {
+async function verifySockdriveMetadata(
+  url: string,
+  signal: AbortSignal,
+  sharesLargeDownload: boolean,
+): Promise<SockdriveRuntimePreload> {
+  const cache = sockdriveCacheMode(url)
   let bytes: ArrayBuffer
   try {
     bytes = await fetchWithProgress(`${url}/sockdrive.metaj`, {
       signal,
       // 发布器强制版本化且 immutable；复用清单缓存可省掉每次开局的一次跨域往返。
-      cache: 'force-cache',
+      cache,
       phase: 'assets',
       // 正常清单只有几 KB；上限也能挡住错误配置返回整页 HTML / 大文件时的内存浪费。
       maxBytes: SOCKDRIVE_METADATA_LIMIT,
@@ -809,19 +953,27 @@ async function verifySockdriveMetadata(url: string, signal: AbortSignal): Promis
     throw new Error('Sockdrive 元数据不是有效 JSON（可能被站点回退页替换）')
   }
   const plan = parseSockdriveWarmPlan(metadata)
-  const profile = await readSockdrivePreloadProfile(url, plan, signal)
+  const profile = await readSockdrivePreloadProfile(url, plan, signal, cache)
   const warmFiles = planSockdriveWarmFiles(plan, profile, sockdriveWarmBudget())
 
-  // 两路足够覆盖元数据与系统镜像的网络等待，又不会像全量并发那样把 Win95 系统盘饿死。
+  const connection = (navigator as Navigator & {
+    connection?: { saveData?: boolean; effectiveType?: string }
+  }).connection
+  const concurrency = sockdriveWarmConcurrency(
+    connection?.effectiveType,
+    Boolean(connection?.saveData),
+    sharesLargeDownload,
+  )
+  // Win95 镜像并行下载时保持两路；纯 DOS 没有大文件竞争，四路能明显降低大量小分块的 RTT。
   let cursor = 0
   const worker = async () => {
     for (;;) {
       const file = warmFiles[cursor++]
       if (!file) return
-      await warmSockdriveFile(url, file, signal)
+      await warmSockdriveFile(url, file, signal, cache)
     }
   }
-  await Promise.all(Array.from({ length: Math.min(2, warmFiles.length) }, worker))
+  await Promise.all(Array.from({ length: Math.min(concurrency, warmFiles.length) }, worker))
 
   const runtimePreload = sockdriveRuntimePreloadMode(plan, profile, warmFiles)
 
@@ -829,21 +981,26 @@ async function verifySockdriveMetadata(url: string, signal: AbortSignal): Promis
     清单存在不代表分块齐全：手工发布、对象被误删或“先传元数据后传数据”都会让玩家在启动中途
     黑屏。挑一个真实会读到的文件做 HEAD 探活，不下载 256KB 正文，也能提前暴露 404 / CORS。
   */
-  if (warmFiles.length) return runtimePreload
-  const preferred = profile ?? plan.preload
-  const firstHot = preferred.find((range) => !plan.dropped.has(range))
-  let sample = firstHot === undefined ? '' : plan.small.has(firstHot) ? 'preload.raw' : `${firstHot}.raw`
-  for (let range = 0; !sample && range < plan.rangeCount; range++) {
-    if (!plan.dropped.has(range) && !plan.small.has(range)) sample = `${range}.raw`
+  if (!warmFiles.length) {
+    const sample = sockdriveProbeFile(plan, profile)
+    if (sample) {
+      /*
+        cache=reload 说明这个浏览器可能留着旧 Worker 生成的坏正文。HEAD 只刷新响应头，不会替换
+        同 URL 的 GET 缓存；首次修复必须完整读取一个真实分块。修复代次完成后，2G / 省流量
+        会恢复成仅 HEAD 探活，不把一次事故处置永久变成额外下载。
+      */
+      if (cache === 'reload') await warmSockdriveFile(url, sample, signal, cache)
+      else await headSockdriveFile(url, sample.name, signal, cache)
+    }
   }
-  if (!sample && plan.small.size) sample = 'preload.raw'
-  if (sample) await headSockdriveFile(url, sample, signal)
+  rememberSockdriveCacheRepair(url)
   return runtimePreload
 }
 
 export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
   const streamingGame = Boolean(options.dosSockdriveUrl)
+  const pureDosStreaming = streamingGame && !options.dosSystemUrl
   // 槽 0 是旧的文件层存档；流式盘存的是扇区差异，格式完全不同，不能互相覆盖。
   const saveSlot = streamingGame ? 1 : 0
   const saveMetadata = {
@@ -922,12 +1079,27 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   void (async () => {
     try {
-      if (options.dosSockdriveUrl && !options.dosSystemUrl) {
-        throw new Error('流式 Windows 游戏盘缺少共享系统镜像')
+      if (options.dosSockdriveUrl && options.dosBackend !== 'dosboxX') {
+        throw new Error('静态 Sockdrive 需要 DOSBox-X；普通 DOSBox 不支持远程磁盘按需读取')
       }
       const sockdriveUrl = streamingGame
         ? normalizeSockdriveUrl(new URL(options.dosSockdriveUrl!, window.location.href).toString())
         : ''
+      /*
+        只有完全不需要改包时才能把 Blob 直接交给 js-dos。后台覆盖配置、指定 EXE、语言挂盘命令
+        和附加文件都会改变最终 ZIP；漏掉任何一项都会制造“设置保存了但运行时没生效”的假象。
+      */
+      const dosboxConfig = windowsGameCompatibilityDosboxConfig(
+        options.gameSlug,
+        options.dosExecutable,
+        options.dosboxConfig,
+      )
+      const startupCommands = normalizeDosStartupCommands(options.dosStartupCommands)
+      const preferReadyBundleBlob = !options.dosSystemUrl
+        && !options.dosExecutable?.trim()
+        && !dosboxConfig?.trim()
+        && !startupCommands
+        && !options.dosExtras?.length
       // js-dos 入口脚本由 loadJsDos() 用 <script> 拉，没有字节进度，只能先报核心阶段；
       // 系统镜像和 ROM 是我们自己 fetch 的，后两段都有真实进度。
       options.onProgress?.({ phase: 'engine' })
@@ -950,7 +1122,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         以前虽然后三项并行，最前面仍先 await js-dos.js：弱网下核心 4 秒 + ROM 12 秒就是 16 秒，
         而不是两者较慢的 12 秒。普通 DOS 没有系统镜像，这段串行尤其显眼。
 
-        ROM 的进度在引擎 / 系统镜像完成前先缓住，避免小 ROM 把界面推到 80% 后又长时间不动；
+        ROM 的进度在引擎 / 系统镜像完成前先缓住，避免小 ROM 提前跑满自己的区域后又长时间不动；
         两者完成后立刻补发最新一帧。这样总耗时取各路最大值，进度仍按核心→镜像→ROM 前进。
         settled 立即接住拒绝，防止某一路先失败、另一条还在下载时出现未处理的 Promise rejection。
       */
@@ -965,6 +1137,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             },
             abort.signal,
             Boolean(options.dosSystemUrl),
+            preferReadyBundleBlob,
           ))
       const extrasTask = settled(streamingGame
         ? options.dosExtras?.length
@@ -972,7 +1145,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           : Promise.resolve([])
         : loadExtras(options.dosExtras, abort.signal))
       const sockdriveTask = settled(streamingGame
-        ? verifySockdriveMetadata(sockdriveUrl, abort.signal)
+        ? verifySockdriveMetadata(sockdriveUrl, abort.signal, Boolean(options.dosSystemUrl))
         : Promise.resolve<SockdriveRuntimePreload>('none'))
       /*
         系统镜像走**多源兜底**（见 ../systemSource）：主源是我们自己的资源域名，
@@ -1028,16 +1201,6 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       if (streamingGame) options.onProgress?.({ phase: 'rom', ratio: 1 })
       options.onProgress?.({ phase: 'starting' })
       if (destroyed) return
-      /*
-        普通 DOS 和 DOSBox-X 都认识这些硬件 / 性能配置。以前只把覆盖项交给 DOSBox-X，
-        导致普通 DOS 后台即使填了 cycles=max、memsize=32 或 ems=false 也会被静默丢掉。
-      */
-      const dosboxConfig = windowsGameCompatibilityDosboxConfig(
-        options.gameSlug,
-        options.dosExecutable,
-        options.dosboxConfig,
-      )
-
       let primaryUrl = ''
       let guest: WindowsGuestConfig | null = null
       let guestLaunchCommand = ''
@@ -1071,7 +1234,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           primaryUrl = URL.createObjectURL(bootstrap)
           objectUrls.push(primaryUrl)
         } else {
-          if (!rom) throw new Error('Windows 客体游戏没有可用的游戏 ZIP')
+          if (!rom?.buf) throw new Error('Windows 客体游戏没有可用的游戏 ZIP')
           // 非流式模式保持原来的整包合并与逐游戏兼容补丁，旧数据不改变任何行为。
           const compatibleExtras = await windowsGameCompatibilityExtras(
             options.gameSlug,
@@ -1135,21 +1298,42 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           ...(gameLayerBytes ? [gameLayerBytes] : (initFs ?? [])),
           { dosboxConf: guest.dosboxConf, jsdosConf: { version: '8' } },
         ]
-      } else {
-        // 普通 zip / exe 现场打成 bundle；已经是 bundle 的原样使用。
-        // 后台指定了启动程序就按它生成 conf，压过 pickExecutable 的猜测。
-        const startupCommands = normalizeDosStartupCommands(options.dosStartupCommands)
-        const bundle = await makeJsdosBundle(
-          rom!.name,
-          rom!.buf,
-          undefined,
-          dosboxConfig,
+      } else if (streamingGame) {
+        if (!options.dosExecutable?.trim()) throw new Error('纯 DOS 流式游戏盘没有配置自启动程序')
+        /*
+          纯 DOS 不需要为了流式读取再下载一套 Win95。极小 URL bundle 只负责建立稳定的
+          changes 通道，真正配置在 initFs 最后一层把 Sockdrive 挂成 C:，由 DOSBox-X
+          运行期间按扇区取数。完整 ZIP 仍留在数据库里，清空 dos_sockdrive 即可回退。
+        */
+        const pureDosConfig = buildDosSockdriveConf(
           options.dosExecutable,
+          sockdriveUrl,
           startupCommands,
-          // 直接并进最终 bundle，避免「整包复制一次 → 再解析并重打」的双倍峰值内存。
-          extras,
+          dosboxConfig,
         )
-        primaryUrl = URL.createObjectURL(bundle.blob)
+        const bootstrap = makeJsdosConfigBundle('[autoexec]\nrem sockdrive bootstrap')
+        primaryUrl = URL.createObjectURL(bootstrap)
+        objectUrls.push(primaryUrl)
+        initFs = [{ dosboxConf: pureDosConfig, jsdosConf: { version: '8' } }]
+      } else {
+        if (!rom) throw new Error('DOS 游戏没有可用的游戏文件')
+        if (rom.bundleBlob) {
+          // 《辐射》这类已完成打包的大 ZIP 直接透传：不再制造第二份 503MB ArrayBuffer/Blob。
+          primaryUrl = URL.createObjectURL(rom.bundleBlob)
+        } else {
+          // 普通 zip / exe 现场打成 bundle；后台指定了启动程序就按它生成 conf。
+          const bundle = await makeJsdosBundle(
+            rom.name,
+            rom.buf,
+            undefined,
+            dosboxConfig,
+            options.dosExecutable,
+            startupCommands,
+            // 直接并进最终 bundle，避免「整包复制一次 → 再解析并重打」的双倍峰值内存。
+            extras,
+          )
+          primaryUrl = URL.createObjectURL(bundle.blob)
+        }
         objectUrls.push(primaryUrl)
       }
 
@@ -1288,7 +1472,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                 进度条的第一个真实里程碑。
                 ci-ready = DOSBox-X 的命令接口建好了，也就是 qcow2 挂载 / 建盘那一段
                 （冷启动实测 ~72 秒，整条链上最慢的一段）已经过去了。
-                在此之前 80% 之后没有任何真实信号，条子全靠计时器瞎爬。
+                在此之前启动区域没有任何真实信号，条子全靠计时器瞎爬。
 
                 ⚠️ 只有客体那条路报。普通 DOS 游戏 ci-ready 的下一句就是 markReady，
                 报了不但没用，还会把播放器切进「按里程碑分段」的模式 ——
@@ -1383,7 +1567,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
        * 立刻调的结果是播放器马上显示「运行中」、加载提示消失，玩家对着黑屏
        * 等好几秒还以为卡死了。改成延时兜底：正常情况下 emu-ready 早就先到了。
        */
-      if (!guest) {
+      if (!guest && !pureDosStreaming) {
         readyFallback = window.setTimeout(() => {
           if (readySent || terminalErrorSent) return
           // 引擎壳起来了只是 ci-ready 没等到（老版本 / 事件漏了）：按老规矩放行。
@@ -1392,6 +1576,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           if (engineUp || ci) markReady()
           else failLoad(fmt(rt.jsdosRunFailed, { msg: 'DOSBox did not start' }))
         }, 8000)
+      } else if (pureDosStreaming) {
+        /*
+          远程 C: 盘第一次启动要先取分区表、FAT 和 EXE / DAT 的真实热点，不能沿用小 bundle 的
+          8 秒兜底后提前撤掉遮罩。正常 ci-ready 仍会立即 markReady；60 秒只处理事件漏报或断网。
+        */
+        readyFallback = window.setTimeout(() => {
+          if (readySent || terminalErrorSent) return
+          if (ci) markReady()
+          else failLoad(fmt(rt.jsdosRunFailed, { msg: 'DOS 流式游戏盘初始化超时，请检查网络后重试' }))
+        }, 60_000)
       } else {
         // CI 创建期间 js-dos 要在 WASM 内挂载近百 MB 的 qcow2；旧的 45 秒宽限会让慢设备
         // 在即将成功前被误判。真实引擎错误仍会立即走 emu-error，这里只拦真正的长时间失联。

@@ -73,7 +73,8 @@ npm run sockdrive:prepare -- \
 3. 生成带 MBR 的 VFAT/QCOW2 游戏盘，自动对齐官方 256MB / 2GB 模板并默认保留至少 128MB 空间；
 4. 调官方 `sockify -b` 生成 Brotli 分块；
 5. 没有真实游玩轨迹时，先从 `sockdrive.metaj` 复制一份保守的独立热点清单，避免线上 404；
-6. 用现有发布器逐块解码、核对长度，先上传数据，最后上传 `sockdrive.metaj`；
+6. 用现有发布器最多四路解码校验、默认六路上传小分块，大文件最多三片并行；自动发布只完整校验
+   一次，全部数据成功后仍最后上传 `sockdrive.metaj`；
 7. 从公开域名重新读取元数据和热点清单，全部通过后才 PATCH `games.dos_sockdrive`。
 
 令牌只从环境变量读取，避免进入 shell 历史。目录固定为 `sockdrives/starcraft-v1`，下一次内容有任何

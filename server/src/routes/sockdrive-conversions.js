@@ -1,4 +1,4 @@
-/** 大型 Windows ZIP → Sockdrive 后台任务接口；大文件本体始终只走 R2 multipart。 */
+/** 大型 DOS / Windows ZIP → Sockdrive 后台任务接口；大文件本体始终只走 R2 multipart。 */
 import { Router } from 'express'
 import { requireAbility } from '../auth.js'
 import {

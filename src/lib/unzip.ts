@@ -12,6 +12,8 @@
 
 export interface ZipFileEntry {
   name: string
+  /** 通用标志位；bit 0 表示成员带密码。旧调用方手工拼条目时可以省略。 */
+  flags?: number
   /** 压缩方式：0 = 未压缩，8 = deflate */
   method: number
   compressedSize: number
@@ -125,7 +127,7 @@ function readZipDirectory(buf: ArrayBuffer): ZipDirectory | null {
     const name = decodeZipName(b.subarray(p + 46, p + 46 + nameLen), Boolean(flags & 0x800)).replace(/\\/g, '/')
     // 目录项以 / 结尾；macOS 打包时塞的 __MACOSX/ 和 ._ 开头的资源叉一律跳过
     if (!name.endsWith('/') && !name.startsWith('__MACOSX/') && !name.split('/').pop()?.startsWith('._')) {
-      entries.push({ name, method, compressedSize, uncompressedSize, crc32, offset })
+      entries.push({ name, flags, method, compressedSize, uncompressedSize, crc32, offset })
     }
     p = next
   }
@@ -201,7 +203,7 @@ export async function assertValidZipBlob(blob: Blob, label = 'ZIP'): Promise<Zip
     const next = p + 46 + nameLen + extraLen + commentLen
     if (next > bytes.length || offset + 30 > blob.size) return invalid()
     const name = decodeZipName(bytes.subarray(p + 46, p + 46 + nameLen), Boolean(flags & 0x800)).replace(/\\/g, '/')
-    const entry = { name, method, compressedSize, uncompressedSize, crc32, offset }
+    const entry = { name, flags, method, compressedSize, uncompressedSize, crc32, offset }
     allEntries.push(entry)
     if (!name.endsWith('/') && !name.startsWith('__MACOSX/') && !name.split('/').pop()?.startsWith('._')) {
       entries.push(entry)

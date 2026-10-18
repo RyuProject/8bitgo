@@ -119,11 +119,11 @@ export interface MountOptions {
   dosExecutable?: string
   /** DOS 的 [autoexec] 在挂 C 盘后、启动程序前执行的命令。 */
   dosStartupCommands?: string
-  /** DOSBox-X 用来启动 Windows 客体的完整 .jsdos 磁盘镜像；留空走普通 DOSBox。 */
+  /** 选择 DOSBox-X；Windows 客体和纯 DOS Sockdrive 都需要它，普通整包 DOS 留空即可。 */
   dosBackend?: DosBackend
   /** Windows 客体系统的共享 .jsdos 镜像 URL；游戏文件仍由 game 单独提供。 */
   dosSystemUrl?: string
-  /** 大型 Windows 游戏的静态 Sockdrive 目录 URL；有值时游戏盘按扇区读取，不下载整包 ROM。 */
+  /** 大型 DOS / Windows 游戏的静态 Sockdrive 目录 URL；有值时按扇区读取，不下载整包 ROM。 */
   dosSockdriveUrl?: string
   /**
    * DOS 附加文件（资料片 / 补丁）：加载时下载下来并进游戏 ZIP，仓库里的 ROM 不动。
@@ -300,6 +300,8 @@ export type LoadPhase = 'engine' | 'assets' | 'rom' | 'starting'
 
 export interface LoadProgress {
   phase: LoadPhase
+  /** 阶段内可见的重活；例如大 8BG 下载完后仍在逐块解密，不能再假装只是“卡在启动”。 */
+  detail?: 'rom-pack'
   /** 0~1。拿不到总量时为 undefined —— UI 会结合已下载字节与阶段计时给出渐进估算。 */
   ratio?: number
   /**
@@ -323,6 +325,11 @@ export interface LoadProgress {
    * 几百 MB 的盘第二次开局是瞬间的，不说一声玩家只会以为进度条坏了。
    */
   cached?: boolean
+  /**
+   * 总量是光盘容量，不是本局必须下载的字节数；运行时会按需读取 Range，且读取位置可能重复。
+   * UI 据此禁用“已下载 / 总容量 = 完成度”的错误解释，并明确告诉玩家无需等完整镜像。
+   */
+  streaming?: boolean
 }
 
 /** 解析运行时时能用到的线索 */

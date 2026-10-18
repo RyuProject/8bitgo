@@ -7,6 +7,7 @@ export const ROM_PACK_MAX_ENCODED_CHUNK_BYTES: number
 export const ROM_PACK_CODEC: Readonly<{ STORE: 'store'; ZSTD: 'zstd'; LZMA2: 'lzma2' }>
 
 export type RomPackCodec = 'store' | 'zstd' | 'lzma2'
+export function recommendedRomPackCodec(name: unknown): RomPackCodec
 export interface RomPackChunk {
   sourceSize: number
   encodedSize: number

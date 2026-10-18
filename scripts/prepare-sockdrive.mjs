@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * 把“大型 Windows 游戏的普通 ZIP / 文件目录”制作成本站可直接发布的静态 Sockdrive。
+ * 把“大型 DOS / Windows 游戏的普通 ZIP / 文件目录”制作成本站可直接发布的静态 Sockdrive。
  *
  * 这项工作依赖 guestfs / qemu 和官方 sockdrive CLI，必须在 Linux 制作机的后台任务或离线命令里
  * 执行，不能放进 Express 请求生命周期。StarCraft 约 1.5GB，一次转换会持续占用 CPU、磁盘与
@@ -24,6 +24,7 @@ import { isVersionedSockdriveDirectory } from '../shared/sockdrive-url.js'
 import {
   archiveEntriesFrom7z,
   ensureBaselinePreloadProfile,
+  fatArchiveEntryKey,
   selectSockdriveDiskTemplate,
   shellQuote,
   SOCKDRIVE_DISK_TEMPLATES,
@@ -48,6 +49,8 @@ const publicBase = (arg('public-base') || 'https://assets.8bitgo.com').replace(/
 const freeSpace = arg('free-space') || '128M'
 const publish = flag('publish')
 const bind = flag('bind')
+// 后台队列会紧接着调用发布器做完整解码校验；这里跳过同一批 2GB 分块的第二次全盘解压。
+const deferValidation = flag('defer-validation')
 const bucket = arg('bucket')
 const apiBase = arg('api-base') || 'https://8bitgo.com'
 
@@ -132,12 +135,20 @@ if (statSync(source).isFile()) {
 }
 
 const sourceReal = realpathSync(filesRoot)
+const fatNames = new Map()
 let fileCount = 0
 let totalBytes = 0
 const walk = (directory) => {
   for (const name of readdirSync(directory)) {
     const path = join(directory, name)
     const info = lstatSync(path)
+    const relativeName = relative(filesRoot, path).split(sep).join('/')
+    const fatName = fatArchiveEntryKey(info.isDirectory() ? `${relativeName}/` : relativeName)
+    const previous = fatNames.get(fatName.key)
+    if (previous) {
+      throw new Error(`源目录含 FAT 下会互相覆盖的文件名：${previous} / ${fatName.value}`)
+    }
+    fatNames.set(fatName.key, fatName.value)
     if (info.isSymbolicLink()) throw new Error(`源目录含符号链接，拒绝写进游戏盘：${relative(filesRoot, path)}`)
     if (info.isDirectory()) walk(path)
     else if (info.isFile()) {
@@ -231,13 +242,16 @@ renameSync(metadataDirs[0], publishDir)
 const baseline = ensureBaselinePreloadProfile(publishDir, encoding)
 if (baseline.created) console.log(`✔ 已生成基础热点清单：${baseline.ranges.length} 个范围`)
 
-run(process.execPath, [
-  join(repoRoot, 'scripts/upload-sockdrive-r2.mjs'),
-  '--src', publishDir,
-  '--prefix', prefix,
-  '--encoding', encoding,
-  '--dry-run',
-])
+// 只生成不发布时仍在交付前完整校验；立即发布或后台接管时，由下一步发布器校验一次即可。
+if (!publish && !deferValidation) {
+  run(process.execPath, [
+    join(repoRoot, 'scripts/upload-sockdrive-r2.mjs'),
+    '--src', publishDir,
+    '--prefix', prefix,
+    '--encoding', encoding,
+    '--dry-run',
+  ])
+}
 
 const manifest = {
   schema: 1,

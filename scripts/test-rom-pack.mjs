@@ -6,7 +6,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import zstd from '@bokuweb/zstd-wasm'
 import { deriveRomPackKey, romPackSecret } from '../server/src/rom-pack-key.js'
-import { assertZstdFrameContentSize, parseRomPackHeader, romPackAad, romPackIv, romPackKey, validateRomPackHeader } from '../shared/rom-pack-format.js'
+import { assertZstdFrameContentSize, parseRomPackHeader, recommendedRomPackCodec, romPackAad, romPackIv, romPackKey, validateRomPackHeader } from '../shared/rom-pack-format.js'
 
 const dir = await mkdtemp(path.join(os.tmpdir(), '8bitgo-rom-pack-'))
 const input = path.join(dir, '测试 game.nes')
@@ -18,6 +18,19 @@ const secret = 'test-only-secret-0123456789-abcdefghijklmnopqrstuvwxyz'
 await writeFile(input, source)
 
 try {
+  assert.equal(recommendedRomPackCodec('fallout.en.zip'), 'store', 'ZIP 已压缩，8BG 不应再套 Zstd 19')
+  assert.equal(recommendedRomPackCodec('system.jsdos'), 'store', '.jsdos 本质是 ZIP，同样只加密不重复压缩')
+  assert.equal(recommendedRomPackCodec('disc.chd?romv=1'), 'store', 'CHD 已压缩，查询串不影响判断')
+  assert.equal(recommendedRomPackCodec('game.iso'), 'zstd', '裸 ISO 仍应使用 Zstd 压缩')
+  assert.equal(recommendedRomPackCodec('game.nes'), 'zstd', '裸卡带 ROM 仍应使用 Zstd 压缩')
+  const zipInput = path.join(dir, 'already-compressed.zip')
+  const zipOutput = path.join(dir, 'already-compressed.zip.8bg')
+  await writeFile(zipInput, Buffer.from('PK\x03\x04already compressed test'))
+  const zipRun = spawnSync(process.execPath, ['scripts/pack-rom.mjs', zipInput, zipOutput], {
+    cwd: path.resolve('.'), encoding: 'utf8', env: { ...process.env, ROM_PACK_SECRET: secret, ROM_PACK_KEY_ID: 'v1' },
+  })
+  assert.equal(zipRun.status, 0, zipRun.stderr || zipRun.stdout)
+  assert.equal(parseRomPackHeader(await readFile(zipOutput)).header.codec, 'store', 'CLI 默认也不能给 ZIP 重复套 Zstd')
   assert.equal(
     romPackSecret('v1', { ROM_PACK_KEY_ID: 'v2', ROM_PACK_SECRET: 'new-secret-should-not-open-v1-packages' }),
     '',

@@ -23,7 +23,7 @@ import {
   type UploadStage,
 } from '@/services/roms'
 import { bundleBytes, bundleWarnings, pickMainSwf, planSwfBundleFromZip, type SwfBundleFile, type SwfBundlePlan } from '@/lib/swfBundle'
-import { assertValidZip, assertValidZipBlob, extractZipEntry, isZip, listZipEntries } from '@/lib/unzip'
+import { assertValidZip, assertValidZipBlob, extractZipEntry, isZip } from '@/lib/unzip'
 import { arcadeArchiveLayoutProblem } from '@/lib/arcadeArchive'
 import { assertRomArchiveRef, impliedRomName, romArchiveRef } from '@/lib/romArchiveUrl'
 import {
@@ -54,7 +54,7 @@ import { mergeDosboxConfigOverride, normalizeDosboxConfigOverride } from '../../
 import { normalizeDosStartupCommands } from '../../shared/dos-startup-commands.js'
 import { isVersionedSockdriveDirectory } from '../../shared/sockdrive-url.js'
 import { probeRange } from '@/emulator/remoteDisc'
-import { isRomPackBytes, isRomPackUrl, packRomForUpload, romPackKey, verifyRomPackBlob } from '@/services/romPack'
+import { isRomPackBytes, isRomPackUrl, packRomForUpload, recommendedRomPackCodec, romPackKey, verifyRomPackBlob } from '@/services/romPack'
 import { isStreamingDiscPlatform } from '../../shared/streaming-disc-platforms.js'
 import { flashCompatibilityIssue } from '@/emulator/flashCompatibility'
 import {
@@ -102,6 +102,9 @@ const DOSBOX_CONFIG_TEMPLATES = [
   { label: '⚡ 内存 32 MB', config: '[dosbox]\nmemsize=32' },
   { label: '⚡ FM 音乐省 CPU', config: '[sblaster]\noplemu=fast' },
 ] as const
+
+const DOS_83_STREAM_SEGMENT = /^[A-Za-z0-9_^$~!#%&{}@'()-]{1,8}(\.[A-Za-z0-9_^$~!#%&{}@'()-]{1,3})?$/
+const isDos83StreamPath = (value: string) => value.split('/').every((part) => DOS_83_STREAM_SEGMENT.test(part))
 
 export function slugify(text: string): string {
   return text
@@ -199,6 +202,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
   const [error, setError] = useState<string | null>(null)
   const initialSnapshot = useRef(JSON.stringify({ form: initialForm, tagsText: initialTagsText }))
   const isEdit = Boolean(initial)
+  const dosboxXSockdriveForm = form.platform === 'dos' && form.dosBackend === 'dosboxX'
   const windowsGuestForm = form.platform === 'dos' && form.dosBackend === 'dosboxX' && Boolean(form.dosSystem?.trim())
   const hasLanguageSockdrive = Object.values(form.dosSockdrives ?? {}).some((value) => Boolean(value?.trim()))
   const hasAnySockdrive = Boolean(form.dosSockdrive?.trim()) || hasLanguageSockdrive
@@ -207,7 +211,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
    * 管理员上传完几个 GB 后才收到“数据库配置不一致”；ROM 本身允许由一键上传原子换新。
    */
   const sockdriveConfigSaved = (lang: RomLang) => Boolean(
-    windowsGuestForm && initial?.slug &&
+    dosboxXSockdriveForm && initial?.slug &&
     initial.slug === slugify(form.slug || form.title) &&
     initial.platform === form.platform &&
     initial.dosBackend === form.dosBackend &&
@@ -366,10 +370,11 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
     if (!isEdit && existingSlugs.includes(slug)) return setError(`slug「${slug}」已存在，请换一个`)
     if (form.genres.length === 0) return setError('至少选择一个类型')
     const windowsGuest = form.platform === 'dos' && form.dosBackend === 'dosboxX' && Boolean(form.dosSystem?.trim())
+    const dosboxXSockdrive = form.platform === 'dos' && form.dosBackend === 'dosboxX'
     if (windowsGuest && !/\.jsdos(?:[?#].*)?$/i.test(form.dosSystem!.trim())) {
       return setError('Windows 系统镜像必须是 .jsdos 文件、对象 key 或 URL')
     }
-    const dosSockdrive = windowsGuest ? form.dosSockdrive?.trim().replace(/\/+$/, '') : undefined
+    const dosSockdrive = dosboxXSockdrive ? form.dosSockdrive?.trim().replace(/\/+$/, '') : undefined
     if (dosSockdrive) {
       // 这个值会进 DOSBox-X 的 autoexec；不能把换行、引号或空格留到玩家开局后才暴露。
       if (dosSockdrive.length > 500 || /[^\x21-\x7e]|["'%&|<>^()]/.test(dosSockdrive)) {
@@ -409,7 +414,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
       const rawLanguageSockdrive = form.dosSockdrives?.[l]?.trim().replace(/\/+$/, '')
       if (rawLanguageSockdrive) {
         const prefix = `${ROM_LANG_LABEL[l]} Sockdrive：`
-        if (!windowsGuest) return setError(`${prefix}只能用于已配置共享系统镜像的 DOSBox-X Windows 游戏`)
+        if (!dosboxXSockdrive) return setError(`${prefix}需要 DOSBox-X；普通 DOSBox 不支持远程磁盘按需读取`)
         if (!form.roms?.[l]?.trim()) return setError(`${prefix}请先绑定同语言 ROM 完整回退包`)
         if (rawLanguageSockdrive.length > 500 || /[^\x21-\x7e]|["'%&|<>^()]/.test(rawLanguageSockdrive)) {
           return setError(`${prefix}目录必须用 ASCII，且不能含空格、引号、DOS 批处理保留字符或超过 500 字符`)
@@ -560,7 +565,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
       dosSockdrive,
       dosWindowsVersion: windowsGuest ? form.dosWindowsVersion ?? '9x' : undefined,
       dosLaunchDelay: windowsGuest ? Math.max(5, Math.min(120, Math.round(Number(form.dosLaunchDelay) || 24))) : undefined,
-      // 整包 Windows 客体仍不可存；Sockdrive 只固化改过的扇区，因此可以使用同一套存档说明。
+      // 整包 Windows 客体仍不可存；纯 DOS / Windows Sockdrive 只固化改过的扇区，可以使用存档说明。
       dosSaveHint: form.platform === 'dos' && (!windowsGuest || Boolean(dosSockdrive) || Object.keys(cleanedDosSockdrives).length > 0) ? form.dosSaveHint?.trim() || undefined : undefined,
       // 街机改版包专用；换成别的平台时要清掉，否则改完平台还留着一份没人读的 dat
       arcadeRomData: form.platform === 'arcade' ? form.arcadeRomData?.trim() || undefined : undefined,
@@ -701,11 +706,11 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
                     value={form.dosSockdrive ?? ''}
                     onChange={(e) => set('dosSockdrive', e.target.value || undefined)}
                     placeholder="sockdrives/caesar3-v1"
-                    disabled={!form.dosSystem?.trim()}
                   />
                   <p className="mt-1 text-[11px] text-dim">
                     单语言游戏或所有语言确实共用同一块磁盘时才填这里。多语言游戏请在下方每个 ROM
-                    语言槽中分别上传，播放器会跟随实际命中的语言选择流式盘。路径必须带版本，禁止原地覆盖。
+                    语言槽中分别上传，播放器会跟随实际命中的语言选择流式盘。纯 DOS 可不填系统镜像，
+                    但仍必须使用 DOSBox-X；路径必须带版本，禁止原地覆盖。
                   </p>
                   {form.dosSockdrive?.trim() && Object.keys(form.roms ?? {}).length > 1 && (
                     <p className="mt-2 rounded-lg border border-live/40 bg-live/10 px-3 py-2 text-xs text-live">
@@ -1088,6 +1093,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
                 gameSlug: initial.slug,
                 executable: form.dosExecutables?.[lang] ?? form.dosExecutable ?? '',
                 value: form.dosSockdrives?.[lang] ?? '',
+                windowsGuest: windowsGuestForm,
                 hasExtras: Boolean(form.dosExtras?.length),
                 onChange: (value) => setDosSockdriveLang(lang, value),
               } : undefined}
@@ -1100,14 +1106,15 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
               onBiosFound={(name) => setForm((f) => (f.arcadeBios?.trim() ? f : { ...f, arcadeBios: name }))}
               allowStorage={!personalLibrary}
             />
-            {windowsGuestForm && form.roms?.[lang]?.trim() && (
+            {dosboxXSockdriveForm && form.roms?.[lang]?.trim() && (
               <SockdriveAutoField
                 slug={initial?.slug ?? ''}
                 lang={lang}
                 romKey={form.roms[lang]!}
                 executable={form.dosExecutables?.[lang] ?? form.dosExecutable ?? ''}
                 value={form.dosSockdrives?.[lang] ?? ''}
-                hasSystem={Boolean(form.dosSystem?.trim())}
+                streamingEnabled={dosboxXSockdriveForm}
+                windowsGuest={windowsGuestForm}
                 hasExtras={Boolean(form.dosExtras?.length)}
                 configurationSaved={sockdriveConfigSaved(lang) &&
                   (initial?.roms?.[lang] ?? '').trim() === (form.roms?.[lang] ?? '').trim()}
@@ -1791,7 +1798,7 @@ interface PendingBundle {
 }
 
 /**
- * 原始 Windows ZIP 的自动发布入口。
+ * 原始 DOS / Windows ZIP 的自动发布入口。
  *
  * 这里不把 1GB+ 文件送进 Express：浏览器沿用 R2 multipart，服务端只拿 staging key 建持久任务。
  * 页面关掉只会停止进度轮询，不会杀掉转换；下次打开编辑页会从 localStorage 找回任务显示。
@@ -1802,7 +1809,8 @@ function SockdriveAutoField({
   romKey,
   executable,
   value,
-  hasSystem,
+  streamingEnabled,
+  windowsGuest,
   hasExtras,
   configurationSaved,
   allowStorage,
@@ -1813,7 +1821,8 @@ function SockdriveAutoField({
   romKey?: string
   executable: string
   value: string
-  hasSystem: boolean
+  streamingEnabled: boolean
+  windowsGuest: boolean
   hasExtras: boolean
   configurationSaved: boolean
   allowStorage: boolean
@@ -1826,7 +1835,7 @@ function SockdriveAutoField({
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null)
   const [failedJobId, setFailedJobId] = useState('')
   const cfg = getRomConfig()
-  const canUpload = allowStorage && configurationSaved && Boolean(cfg.api && cfg.token) && Boolean(slug) && Boolean(!lang || romKey?.trim()) && hasSystem && !hasExtras
+  const canUpload = allowStorage && configurationSaved && Boolean(cfg.api && cfg.token) && Boolean(slug) && Boolean(!lang || romKey?.trim()) && streamingEnabled && !hasExtras
 
   const watchJob = async (id: string, signal?: AbortSignal) => {
     const completed = await waitForSockdriveConversion(id, (job) => {
@@ -1877,13 +1886,16 @@ function SockdriveAutoField({
       if (!slug) throw new Error('请先保存游戏资料，再上传超大 ZIP')
       if (!configurationSaved) throw new Error('运行环境、启动 EXE 或流式盘地址有未保存修改；请先保存游戏资料')
       if (lang && !romKey?.trim()) throw new Error('请先保存这个语言的 ROM 完整回退包')
-      if (!hasSystem) throw new Error('请先配置共享 Windows 系统镜像')
+      if (!streamingEnabled) throw new Error('请先选择 DOSBox-X；普通 DOSBox 不支持 Sockdrive')
       if (hasExtras) throw new Error('请先把附加文件合入原始 ZIP，并清空 DOS 附加文件')
       const cleanExecutable = executable.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
       // 转换耗时可达数小时；必须在上传 1GB 文件之前拦住最终一定无法绑定的入口。
       // eslint-disable-next-line no-control-regex
       if (!/^[^:<>"|?*\x00-\x1f]+\.exe$/i.test(cleanExecutable) || cleanExecutable.length > 255 || cleanExecutable.split('/').some((part) => !part || part === '.' || part === '..')) {
         throw new Error('请先填写当前语言游戏盘内安全的 .EXE 相对路径（或上方默认 EXE）')
+      }
+      if (!windowsGuest && !isDos83StreamPath(cleanExecutable)) {
+        throw new Error('纯 DOS 流式盘的启动程序必须使用 DOS 8.3 路径，例如 FALLOUT.EXE 或 GAME/RUN.EXE')
       }
       const capability = await sockdriveConversionCapability()
       if (!capability.available) throw new Error(capability.reason || '服务器暂时不能制作 Sockdrive')
@@ -1955,7 +1967,7 @@ function SockdriveAutoField({
       className="col-span-2"
       hint={lang
         ? '选择这个语言的原始 ZIP；上传、转换、发布、校验和语言槽绑定全部自动完成'
-        : '适合所有需要持久存档或缩短冷启动的 Windows 游戏；上传、转换、发布、校验和绑定全部自动完成'}
+        : '适合大型 DOS / Windows 游戏；上传、转换、发布、校验和绑定全部自动完成'}
     >
       <div className="flex flex-wrap gap-2">
         <input
@@ -1963,7 +1975,7 @@ function SockdriveAutoField({
           value={value}
           onChange={(event) => onChange(event.target.value)}
           placeholder={lang ? `sockdrives/${slug || 'game'}-${lang.toLowerCase()}-v1` : `sockdrives/${slug || 'game'}-v1`}
-          disabled={!hasSystem || progress !== null}
+          disabled={!streamingEnabled || progress !== null}
         />
         <input ref={inputRef} type="file" accept=".zip,application/zip" className="hidden" onChange={(event) => void onFile(event.target.files?.[0])} />
         <button
@@ -2032,11 +2044,12 @@ function RomField({
   slug: string
   /** 只有编辑已有游戏才有值；新建表单不能仅凭一个尚未保存的 slug 去改数据库里的同名游戏。 */
   persistedSlug?: string
-  /** 已保存的 Windows 游戏可用同一次文件选择同时发布完整回退包与逐语言流式盘。 */
+  /** 已保存的 DOS / Windows 游戏可用同一次文件选择同时发布完整回退包与逐语言流式盘。 */
   autoSockdrive?: {
     gameSlug: string
     executable: string
     value: string
+    windowsGuest: boolean
     hasExtras: boolean
     onChange: (value: string) => void
   }
@@ -2266,6 +2279,9 @@ function RomField({
     if (!/^[^:<>"|?*\x00-\x1f]+\.exe$/i.test(executable) || executable.length > 255 || executable.split('/').some((part) => !part || part === '.' || part === '..')) {
       throw new Error('请先填写当前语言游戏盘内安全的 .EXE 相对路径（或上方默认 EXE）')
     }
+    if (!autoSockdrive.windowsGuest && !isDos83StreamPath(executable)) {
+      throw new Error('纯 DOS 流式盘的启动程序必须使用 DOS 8.3 路径，例如 FALLOUT.EXE 或 GAME/RUN.EXE')
+    }
     const capability = await sockdriveConversionCapability()
     if (!capability.available) throw new Error(capability.reason || '服务器暂时不能制作 Sockdrive')
     if (file.size > capability.maxSourceBytes) throw new Error(`ZIP 超过后台上限 ${human(capability.maxSourceBytes)}`)
@@ -2335,7 +2351,9 @@ function RomField({
     if (platform === 'dos' && dosEntry?.trim() && /\.zip$/i.test(file.name)) {
       try {
         const wanted = dosEntry.trim().replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase()
-        const members = listZipEntries(await file.arrayBuffer())
+        // 这里只核对一个文件名，不该为 503MB 的《辐射》先申请同样大的连续内存。
+        // Blob 版只读 ZIP 尾部、中央目录和本地头，损坏/截断仍会在上传前被拦下。
+        const members = await assertValidZipBlob(file, 'DOS ROM')
         if (!members.some((entry) => entry.name.toLowerCase() === wanted)) {
           setMsg({ ok: false, text: `ZIP 内找不到 ${dosEntry.trim()}；请先改正启动文件路径再上传` })
           if (inputRef.current) inputRef.current.value = ''
@@ -2478,12 +2496,21 @@ function RomField({
         return
       }
       let uploadFile: Blob = file
+      let packCodecLabel = ''
       if (needsPacking) {
-        setMsg({ ok: true, text: `正在用 Zstd 19 压缩并加密 ${sniffed || file.name}…` })
-        const packed = await packRomForUpload(file, sniffed || file.name, ({ loaded, total }) => {
-          // 打包与上传各占进度条一半；Zstd 单块内部没有细进度，按已完成的 8MB 块推进。
-          setProgress(Math.min(49, Math.round((loaded / Math.max(1, total)) * 50)))
+        const originalName = sniffed || file.name
+        const codec = recommendedRomPackCodec(originalName)
+        packCodecLabel = codec === 'store' ? '仅 AES-256-GCM（已压缩容器不重复压缩）' : 'Zstd 19 + AES-256-GCM'
+        setMsg({
+          ok: true,
+          text: codec === 'store'
+            ? `正在分块加密 ${originalName}；ZIP/CHD 已压缩，不再重复跑 Zstd…`
+            : `正在用 Zstd 19 压缩并加密 ${originalName}…`,
         })
+        const packed = await packRomForUpload(file, sniffed || file.name, ({ loaded, total }) => {
+          // 打包与上传各占一半；AES/Zstd 的单块内部没有细进度，按已完成的 8MB 块推进。
+          setProgress(Math.min(49, Math.round((loaded / Math.max(1, total)) * 50)))
+        }, codec)
         uploadFile = new File([packed.blob], key.split('/').pop() || `${file.name}.8bg`, {
           type: packed.blob.type,
           lastModified: file.lastModified,
@@ -2514,7 +2541,7 @@ function RomField({
         ok: !streamFailure,
         text:
           `已上传到 R2：${result.key}（${human(result.size)}）` +
-          (needsPacking ? `；Zstd 19 + AES-256-GCM` : alreadyPacked ? '；沿用已有 8BG 容器' : '') +
+          (needsPacking ? `；${packCodecLabel}` : alreadyPacked ? '；沿用已有 8BG 容器' : '') +
           (sniffed ? `；已按识别结果命名为 ${sniffed}` : '') +
           (migrationBackup ? `；旧文件 ${oldKey} 已保留${backupValue.trim() ? '' : '为备用地址'}` : '') +
           (removed ? `；旧文件 ${removed} 已删除` : '') +

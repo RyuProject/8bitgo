@@ -16,6 +16,17 @@ export const ROM_PACK_CHUNK_BYTES = 8 * 1024 * 1024
 export const ROM_PACK_MAX_ENCODED_CHUNK_BYTES = 128 * 1024 * 1024
 export const ROM_PACK_CODEC = Object.freeze({ STORE: 'store', ZSTD: 'zstd', LZMA2: 'lzma2' })
 
+/**
+ * 已经压缩过的容器再套 Zstd 19 通常省不到 1%，却会让上传和每次开局都白做一次重压/解压。
+ * ISO/裸卡带仍交给 Zstd；ZIP、CHD、CSO 和常见媒体容器直接加密分块即可。
+ */
+export function recommendedRomPackCodec(name) {
+  const clean = String(name || '').split(/[?#]/)[0]
+  return /\.(?:zip|jsdos|7z|rar|gz|bz2|xz|zst|chd|cso|pbp|mp3|ogg|opus|mp4|webm|jpe?g|png|webp)$/i.test(clean)
+    ? ROM_PACK_CODEC.STORE
+    : ROM_PACK_CODEC.ZSTD
+}
+
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 

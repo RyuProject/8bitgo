@@ -41,6 +41,7 @@ import {
   parseSockdrivePreload,
   parseSockdriveWarmPlan,
   planSockdriveWarmFiles,
+  sockdriveWarmConcurrency,
   sockdriveRuntimePreloadMode,
 } from '@/emulator/sockdriveWarm'
 
@@ -58,6 +59,7 @@ const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$
 const tools = strip(read('src/emulator/EmulatorTools.tsx'))
 const player = strip(read('src/emulator/EmulatorPlayer.tsx'))
 const jsdos = strip(read('src/emulator/adapters/jsdos.ts'))
+const windowsLaunch = strip(read('src/emulator/windowsLaunch.ts'))
 const prewarm = strip(read('src/emulator/prewarm.ts'))
 
 /**
@@ -252,7 +254,7 @@ check('异常位移不会把绝对光标污染成 NaN，下一帧仍可继续移
   )
 })
 
-console.log('\n── Windows Sockdrive：大型游戏按块读取 ──')
+console.log('\n── DOS / Windows Sockdrive：大型游戏按块读取 ──')
 
 check('Win95 悬停时预热正确的 DOSBox-X 核心和系统盘版本探测', () => {
   assert.match(player, /prewarmCore = pageRuntime\?\.id === 'jsdos' && \(dosSystemUrl \|\| dosBackend === 'dosboxX'\)/)
@@ -272,24 +274,40 @@ check('配置流式目录后不再下载整包 ROM', () => {
 check('流式盘按预算选择官方预取，并挂到 DOSBox-X 的 Sockdrive', () => {
   assert.match(jsdos, /buildSockdriveWindowsGuestConfig\(systemConfig, sockdriveUrl, dosboxConfig\)/)
   assert.match(jsdos, /streamingGame \? \{ sockdrivePreload \} : \{\}/)
-  assert.match(jsdos, /windowsSockdriveLauncherFile\(gameExecutable, guest\.gameDrive, registryImport\)/)
-  assert.match(jsdos, /guestLaunchCommand = windowsGuestLaunchCommand\(/)
+  assert.match(jsdos, /guestLaunchCommand = streamingGame\s*\? windowsSockdriveExecutableCommand/)
+  assert.match(jsdos, /windowsSockdriveRegistryCommand\(registryImport, guest\.gameDrive\)/)
+  assert.match(jsdos, /windowsGameNeedsDirectDrawFocusRefresh\(options\.gameSlug, gameExecutable\)/)
+  assert.match(jsdos, /guest\.launchPrepareCommand,\s*guest\.refreshDirectDrawAfterLaunch/)
+  assert.match(windowsLaunch, /refreshDirectDrawWhenBlack\(\)/)
+  assert.match(windowsLaunch, /frameIsBlank\(frame\)/)
+  assert.match(windowsLaunch, /tap\(WIN_KEY\.tab\)/)
+})
+
+check('纯 DOS Sockdrive 不下载 Win95，直接把远程游戏盘挂成 C:', () => {
+  assert.match(jsdos, /else if \(streamingGame\)[\s\S]*?buildDosSockdriveConf\(/)
+  assert.match(jsdos, /静态 Sockdrive 需要 DOSBox-X/)
+  assert.doesNotMatch(jsdos, /流式 Windows 游戏盘缺少共享系统镜像/)
+  assert.match(jsdos, /else if \(pureDosStreaming\)[\s\S]*?60_000/)
 })
 
 check('流式盘必须走 URL bundle 入口，否则 js-dos 会把 changes URL 留空、保存永远失败', () => {
   assert.match(jsdos, /makeJsdosConfigBundle\(guest\.dosboxConf\)/)
   assert.match(jsdos, /streamingGame\s*\?\s*\{\s*url:\s*primaryUrl,\s*initFs\s*\}/)
-  assert.match(jsdos, /verifySockdriveMetadata\(sockdriveUrl, abort\.signal\)/)
+  assert.match(jsdos, /verifySockdriveMetadata\(sockdriveUrl, abort\.signal, Boolean\(options\.dosSystemUrl\)\)/)
   assert.match(jsdos, /method:\s*'HEAD'/)
   assert.match(jsdos, /Sockdrive 分块 \$\{sample\} 读取失败/)
 })
 
-check('流式盘优先读取真实启动热点，并限制为两路预热与有限字节预算', () => {
+check('流式盘按网络与系统镜像竞争自适应预热，并且不再拼接即将丢弃的大 ArrayBuffer', () => {
   assert.match(jsdos, /preload_ranges\.metaj/)
   assert.match(jsdos, /planSockdriveWarmFiles\(plan, profile, sockdriveWarmBudget\(\)\)/)
-  assert.match(jsdos, /Math\.min\(2, warmFiles\.length\)/)
-  assert.match(jsdos, /cache:\s*'force-cache'/)
-  assert.match(jsdos, /bytes\.byteLength !== file\.expectedBytes/)
+  assert.match(jsdos, /Math\.min\(concurrency, warmFiles\.length\)/)
+  assert.match(jsdos, /const cache = sockdriveCacheMode\(url\)/)
+  assert.match(jsdos, /return 'reload'/)
+  assert.match(jsdos, /if \(cache === 'reload'\) await warmSockdriveFile\(url, sample, signal, cache\)/)
+  assert.match(jsdos, /rememberSockdriveCacheRepair\(url\)/)
+  assert.match(jsdos, /loaded !== file\.expectedBytes/)
+  assert.doesNotMatch(jsdos, /const bytes = await fetchWithProgress\(`\$\{url\}\/\$\{file\.name\}`/)
 })
 
 check('热点清单按真实对象去重，并在预算边界停止', () => {
@@ -324,7 +342,18 @@ check('热点清单按真实对象去重，并在预算边界停止', () => {
     'none',
     '外置清单 404 时不能让上游把 JSON 错误体当数组',
   )
+  assert.equal(sockdriveWarmConcurrency('4g', false, true), 2)
+  assert.equal(sockdriveWarmConcurrency('4g', false, false), 4)
+  assert.equal(sockdriveWarmConcurrency('3g', false, false), 2)
+  assert.equal(sockdriveWarmConcurrency('2g', false, false), 1)
+  assert.equal(sockdriveWarmConcurrency('4g', true, false), 1)
   assert.throws(() => parseSockdrivePreload([3], plan.rangeCount, plan.dropped), /无效的预取分块/)
+  assert.throws(() => parseSockdriveWarmPlan({
+    size: 3 * 1024 * 1024,
+    ahead_read: 262144,
+    range_count: 12288,
+    sector_size: 512,
+  }), /磁盘大小与分块数量/)
 })
 
 check('Win95 致命错误是终态，迟到的 ci-ready 与兜底定时器不能再报成功', () => {

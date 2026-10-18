@@ -1,4 +1,4 @@
-/** Windows ZIP → Sockdrive 后台任务客户端；原始文件继续复用 ROM multipart 上传。 */
+/** 大型 DOS / Windows ZIP → Sockdrive 后台任务客户端；原始文件继续复用 ROM multipart 上传。 */
 import { api, ApiError } from './api'
 
 export type SockdriveConversionStatus =

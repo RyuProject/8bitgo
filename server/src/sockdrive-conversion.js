@@ -1,5 +1,5 @@
 /**
- * 大型 Windows ZIP → 静态 Sockdrive 后台队列。
+ * 大型 DOS / Windows ZIP → 静态 Sockdrive 后台队列。
  *
  * 浏览器只负责把原始 ZIP 分片上传到随机 staging key；转换、发布与绑定都在持久任务里完成。
  * 进程重启后会重新排队，而 sockdrive.metaj 始终最后上传：它既是播放器入口，也是“整块磁盘已提交”
@@ -7,9 +7,11 @@
  */
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { constants as fsConstants } from 'node:fs'
+import { constants as fsConstants, createWriteStream } from 'node:fs'
 import { access, mkdir, open, readdir, rm, stat, statfs } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
+import { Readable, Transform } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { fileURLToPath } from 'node:url'
 import { query, queryOne, withTransaction } from './db.js'
 import { invalidateContent } from './content.js'
@@ -24,6 +26,7 @@ const ROM_LANGS = new Set(SITE_LANGUAGES.map(({ code }) => code))
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const PREPARE_SCRIPT = join(REPO_ROOT, 'scripts/prepare-sockdrive.mjs')
 const UPLOAD_SCRIPT = join(REPO_ROOT, 'scripts/upload-sockdrive-r2.mjs')
+const DOS_83_SEGMENT = /^[A-Za-z0-9_^$~!#%&{}@'()-]{1,8}(\.[A-Za-z0-9_^$~!#%&{}@'()-]{1,3})?$/
 
 let started = false
 let activeWorkers = 0
@@ -49,6 +52,8 @@ export function sockdriveConversionConfig(env = process.env) {
     // 官方 CLI 当前最大只认 2GB 镜像；1900MiB 给 FAT/分区表和默认 128MiB 可写空间留出余量。
     maxSourceBytes: positiveInt(env.SOCKDRIVE_MAX_SOURCE_MB, 1900, 1900) * 1024 * 1024,
     concurrency: positiveInt(env.SOCKDRIVE_CONCURRENCY, 1, 1),
+    // 转换本身保持单任务，发布小分块则需要并发隐藏 R2 往返；上限防止误配置打爆文件描述符。
+    uploadConcurrency: positiveInt(env.SOCKDRIVE_UPLOAD_CONCURRENCY, 6, 16),
     timeoutMs: positiveInt(env.SOCKDRIVE_TIMEOUT_MINUTES, 360, 24 * 60) * 60 * 1000,
   }
 }
@@ -270,8 +275,11 @@ export async function createSockdriveConversion(raw, actorId = null, env = proce
     [request.gameSlug],
   )
   if (!game) throw Object.assign(new Error('要绑定的游戏不存在；请先保存游戏资料'), { status: 409 })
-  if (game.platform !== 'dos' || game.dos_backend !== 'dosboxX' || !String(game.dos_system || '').trim()) {
-    throw Object.assign(new Error('目标游戏必须先配置 DOSBox-X 和共享 Windows 系统镜像'), { status: 409 })
+  if (game.platform !== 'dos' || game.dos_backend !== 'dosboxX') {
+    throw Object.assign(new Error('目标游戏必须先配置 DOSBox-X；普通 DOSBox 不支持 Sockdrive'), { status: 409 })
+  }
+  if (!String(game.dos_system || '').trim() && !request.executable.split('/').every((part) => DOS_83_SEGMENT.test(part))) {
+    throw Object.assign(new Error('纯 DOS 流式盘的启动程序必须使用 DOS 8.3 路径'), { status: 409 })
   }
   if (hasDosExtras(game.dos_extras)) {
     throw Object.assign(new Error('目标游戏还有 DOS 附加文件；请先把补丁合入 ZIP，流式盘不能在浏览器现场叠加'), { status: 409 })
@@ -373,19 +381,9 @@ async function ensureDiskSpace(config, sourceSize) {
   }
 }
 
-async function writeAllAt(file, bytes, position) {
-  let offset = 0
-  while (offset < bytes.byteLength) {
-    const { bytesWritten } = await file.write(bytes, offset, bytes.byteLength - offset, position + offset)
-    if (!Number.isSafeInteger(bytesWritten) || bytesWritten <= 0) throw new Error('写入临时 ZIP 时磁盘没有继续前进')
-    offset += bytesWritten
-  }
-}
-
 async function downloadSource(job, config, destination) {
   const controller = new AbortController()
   let idle
-  let file
   const armIdle = () => {
     clearTimeout(idle)
     idle = setTimeout(() => controller.abort(new Error('下载连续 60 秒没有收到数据')), SOURCE_IDLE_MS)
@@ -394,6 +392,8 @@ async function downloadSource(job, config, destination) {
   armIdle()
   let received = 0
   let reported = -1
+  let progressWrites = Promise.resolve()
+  let progressError = null
   try {
     const response = await workerRequest(config, job.source_key, {
       method: 'GET', headers: { 'If-Match': job.source_etag }, signal: controller.signal,
@@ -401,18 +401,35 @@ async function downloadSource(job, config, destination) {
     if (response.status === 412) throw new Error('临时 ZIP 在任务创建后被覆盖，已停止转换')
     if (!response.ok || !response.body) throw new Error(`下载临时 ZIP 失败：HTTP ${response.status}`)
     if (Number(response.headers.get('content-length')) !== Number(job.source_size)) throw new Error('下载响应大小与任务记录不一致')
-    file = await open(destination, 'wx')
-    for await (const chunk of response.body) {
-      armIdle()
-      if (received + chunk.byteLength > Number(job.source_size)) throw new Error('下载数据超过任务记录大小')
-      await writeAllAt(file, chunk, received)
-      received += chunk.byteLength
-      const progress = 4 + Math.floor(received / Number(job.source_size) * 16)
-      if (progress !== reported) { reported = progress; await updateJob(job.id, { progress }) }
-    }
+    const countAndValidate = new Transform({
+      transform(chunk, _encoding, callback) {
+        armIdle()
+        if (received + chunk.byteLength > Number(job.source_size)) {
+          callback(new Error('下载数据超过任务记录大小'))
+          return
+        }
+        received += chunk.byteLength
+        const progress = 4 + Math.floor(received / Number(job.source_size) * 16)
+        if (progress !== reported) {
+          reported = progress
+          // 数据库进度不再阻塞每一个网络 chunk；最多 17 次更新串行落库，管线继续让网络与磁盘重叠。
+          progressWrites = progressWrites
+            .then(() => updateJob(job.id, { progress }))
+            .catch((error) => { progressError ??= error })
+        }
+        callback(null, chunk)
+      },
+    })
+    await pipeline(
+      Readable.fromWeb(response.body),
+      countAndValidate,
+      // 1MB 缓冲只占固定小内存，却避免每个 64KB 网络块都等一次磁盘落盘后才继续读。
+      createWriteStream(destination, { flags: 'wx', highWaterMark: 1024 * 1024 }),
+    )
+    await progressWrites
+    if (progressError) throw progressError
   } finally {
     clearTimeout(idle)
-    if (file) await file.close()
   }
   if (received !== Number(job.source_size)) throw new Error(`ZIP 下载不完整：收到 ${received}/${job.source_size} 字节`)
   const header = Buffer.alloc(4)
@@ -508,6 +525,11 @@ async function verifyPublished(config, job) {
   if (!metadataResponse.ok) throw new Error(`公开 sockdrive.metaj 读取失败：HTTP ${metadataResponse.status}`)
   const metadata = await metadataResponse.json()
   if (!Number.isSafeInteger(metadata.range_count) || metadata.range_count <= 0) throw new Error('公开 sockdrive.metaj 的分块数无效')
+  if (!Number.isSafeInteger(metadata.size) || metadata.size <= 0 || metadata.size * 1024 > 2 * 1024 ** 3 ||
+      !Number.isSafeInteger(metadata.ahead_read) || metadata.ahead_read <= 0 ||
+      Math.ceil(metadata.size * 1024 / metadata.ahead_read) !== metadata.range_count) {
+    throw new Error('公开 sockdrive.metaj 的磁盘大小与分块数量不一致')
+  }
   const cors = metadataResponse.headers.get('access-control-allow-origin')
   if (cors !== '*' && cors !== 'https://8bitgo.com') throw new Error('公开 Sockdrive 没有允许 8bitgo.com 跨域读取')
   const preload = await fetch(`${root}/preload_ranges.metaj?verify=${stamp}`, {
@@ -516,17 +538,38 @@ async function verifyPublished(config, job) {
   if (!preload.ok || !Array.isArray(await preload.json())) throw new Error('公开 preload_ranges.metaj 无效')
   const dropped = new Set(Array.isArray(metadata.dropped_ranges) ? metadata.dropped_ranges : [])
   const small = new Set(Array.isArray(metadata.small_ranges) ? metadata.small_ranges : [])
-  const sample = small.size
-    ? 'preload.raw'
-    : Array.from({ length: metadata.range_count }, (_, index) => index).find((index) => !dropped.has(index) && !small.has(index))
-  if (sample !== undefined) {
-    const name = typeof sample === 'number' ? `${sample}.raw` : sample
-    const response = await fetch(`${root}/${name}?verify=${stamp}`, {
-      method: 'HEAD', headers: publicHeaders, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), cache: 'no-store',
+  let sampleRange
+  for (let range = 0; sampleRange === undefined && range < metadata.range_count; range++) {
+    if (!dropped.has(range) && !small.has(range)) sampleRange = range
+  }
+  const sample = sampleRange === undefined ? (small.size ? 'preload.raw' : '') : `${sampleRange}.raw`
+  if (sample) {
+    const readsBody = sampleRange !== undefined
+    const response = await fetch(`${root}/${sample}?verify=${stamp}`, {
+      method: readsBody ? 'GET' : 'HEAD', headers: publicHeaders,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), cache: 'no-store',
     })
-    if (!response.ok) throw new Error(`公开分块 ${name} 读取失败：HTTP ${response.status}`)
+    if (!response.ok) throw new Error(`公开分块 ${sample} 读取失败：HTTP ${response.status}`)
     const actualEncoding = response.headers.get('content-encoding') || 'identity'
     if (actualEncoding !== job.encoding) throw new Error(`公开分块编码是 ${actualEncoding}，应为 ${job.encoding}`)
+    if (readsBody) {
+      const expected = Math.min(metadata.ahead_read, metadata.size * 1024 - sampleRange * metadata.ahead_read)
+      const actual = (await response.arrayBuffer()).byteLength
+      if (actual !== expected) throw new Error(`公开分块 ${sample} 解码后是 ${actual} 字节，应为 ${expected} 字节`)
+    }
+  }
+  // 上传器已经验过规范 URL；后台重启后可能直接从“元数据已提交”恢复，仍要自己连读两次，
+  // 防止把只有首次 MISS 正常、后续缓存 HIT 损坏的目录重新绑定给玩家。
+  for (let pass = 1; pass <= 2; pass++) {
+    const canonical = await fetch(`${root}/sockdrive.metaj`, {
+      headers: publicHeaders, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    })
+    if (!canonical.ok) throw new Error(`玩家路径第 ${pass} 次读取 sockdrive.metaj 失败：HTTP ${canonical.status}`)
+    let value
+    try { value = await canonical.json() } catch {
+      throw new Error(`玩家路径第 ${pass} 次读取 sockdrive.metaj 不是 JSON；边缘缓存可能损坏`)
+    }
+    if (value.range_count !== metadata.range_count) throw new Error('玩家路径 sockdrive.metaj 与已发布产物不一致')
   }
   const head = await remoteHead(config, `${job.target_prefix}/sockdrive.metaj`)
   if (!head) throw new Error('Worker 中找不到已发布的 sockdrive.metaj')
@@ -541,7 +584,7 @@ async function bindPublished(job) {
     )
     const game = rows[0]
     if (!game) return { bound: false, message: '游戏已经删除；Sockdrive 已发布但未绑定' }
-    if (game.platform !== 'dos' || game.dos_backend !== 'dosboxX' || !String(game.dos_system || '').trim()) {
+    if (game.platform !== 'dos' || game.dos_backend !== 'dosboxX') {
       return { bound: false, message: '游戏运行环境已改变；Sockdrive 已发布但未绑定' }
     }
     if (hasDosExtras(game.dos_extras)) return { bound: false, message: '游戏新增了附加文件；为避免流式盘漏补丁，未自动绑定' }
@@ -656,6 +699,7 @@ async function processJob(job) {
       '--encoding', job.encoding,
       '--free-space', config.freeSpace,
       '--public-base', config.publicBase,
+      '--defer-validation',
     ], {
       timeoutMs: config.timeoutMs,
       onText: (text) => {
@@ -679,13 +723,18 @@ async function processJob(job) {
       '--encoding', job.encoding,
       '--public-base', config.publicBase,
       '--worker-url', config.workerUrl,
+      '--concurrency', String(config.uploadConcurrency),
     ], {
       timeoutMs: config.timeoutMs,
       env: { ...process.env, SOCKDRIVE_WORKER_TOKEN: config.workerToken },
       onText: (text) => {
         const match = /上传 .*（(\d+)\/(\d+)）/.exec(text)
         if (!match) return
-        const next = 72 + Math.floor(Number(match[1]) / Math.max(1, Number(match[2])) * 24)
+        const bytes = /\[(\d+)\/(\d+) 字节/.exec(text)
+        const ratio = bytes
+          ? Number(bytes[1]) / Math.max(1, Number(bytes[2]))
+          : Number(match[1]) / Math.max(1, Number(match[2]))
+        const next = 72 + Math.floor(ratio * 24)
         if (next <= uploaded) return
         uploaded = next
         void updateJob(job.id, { progress: next }).catch(() => {})
@@ -780,7 +829,7 @@ export async function startSockdriveConversionQueue() {
       WHERE status IN (${INTERRUPTED.map(() => '?').join(', ')})`,
     INTERRUPTED,
   )
-  console.log('[sockdrive-convert] Windows ZIP → Sockdrive 后台队列已启用')
+  console.log('[sockdrive-convert] DOS / Windows ZIP → Sockdrive 后台队列已启用')
   schedulePump()
   void sweepStaleSources().catch((error) => console.warn('[sockdrive-convert] staging 清扫失败：', error.message))
   sweepTimer = setInterval(() => {

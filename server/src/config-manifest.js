@@ -193,6 +193,7 @@ export const ENV_MANIFEST = [
   { name: 'PSP_CONVERT_WORKER_URL', group: 'ROM / J2ME / IPX', kind: 'config', file: 'psp-conversion.js', note: '必须指向支持 multipart 写入的 ROM Worker，不能填只读 assets 域名' },
   { name: 'SOCKDRIVE_CLI', group: 'ROM / J2ME / IPX', kind: 'config', file: 'sockdrive-conversion.js', note: '官方 Sockdrive CLI 路径，默认 /opt/sockdrive/cli' },
   { name: 'SOCKDRIVE_CONCURRENCY', group: 'ROM / J2ME / IPX', kind: 'config', file: 'sockdrive-conversion.js', note: '后台并发数固定最多 1，避免镜像制作拖垮 4G 生产机' },
+  { name: 'SOCKDRIVE_UPLOAD_CONCURRENCY', group: 'ROM / J2ME / IPX', kind: 'config', file: 'sockdrive-conversion.js', note: '分块校验与 R2 上传并发，默认 6、最多 16；不改变转换任务单并发' },
   { name: 'SOCKDRIVE_CONVERT_TMP_DIR', group: 'ROM / J2ME / IPX', kind: 'config', file: 'sockdrive-conversion.js', note: '应指向独立大硬盘上的工作目录' },
   { name: 'SOCKDRIVE_CONVERT_WORKER_TOKEN', group: 'ROM / J2ME / IPX', kind: 'secret', file: 'sockdrive-conversion.js', note: '留空依次复用 PSP_CONVERT_WORKER_TOKEN / ADMIN_TOKEN' },
   { name: 'SOCKDRIVE_CONVERT_WORKER_URL', group: 'ROM / J2ME / IPX', kind: 'config', file: 'sockdrive-conversion.js', note: '留空复用 PSP_CONVERT_WORKER_URL' },

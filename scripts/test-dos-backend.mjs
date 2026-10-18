@@ -135,7 +135,20 @@ assert.match(dosGameConfigError({ ...streamedGuest, dosExecutable: 'RUN.BAT' }),
 assert.match(dosGameConfigError({ ...streamedGuest, dosExecutable: 'BIN/BAD?.EXE' }), /安全的 \.exe/)
 assert.match(
   dosGameConfigError({ platform: 'dos', dosBackend: 'dosboxX', dosSockdrive: 'sockdrives/game-v1' }),
-  /只能用于已配置共享系统镜像/,
+  /完整 ZIP 回退包/,
+)
+const pureDosStreamed = {
+  platform: 'dos',
+  dosBackend: 'dosboxX',
+  roms: { en: 'roms/dos/fallout.en.zip.8bg' },
+  dosExecutables: { en: 'FALLOUT.EXE' },
+  dosSockdrives: { en: 'sockdrives/fallout-en-v1' },
+}
+assert.equal(dosGameConfigError(pureDosStreamed), null, '纯 DOS 的 DOSBox-X Sockdrive 不需要伪装成 Windows 客体')
+assert.match(
+  dosGameConfigError({ ...pureDosStreamed, dosBackend: undefined }),
+  /普通 DOSBox 不支持/,
+  '普通 DOSBox 不得保存一份运行时必然无法挂载的 Sockdrive',
 )
 assert.match(gameForm, /dosSockdrive/)
 assert.match(gameForm, /dosSockdrive\.startsWith\('\/\/'\)/)
@@ -150,6 +163,19 @@ assert.match(sockdriveUploader, /无法确认公开目录是否已存在，已�
 assert.match(sockdriveUploader, /brotliDecompressSync/)
 assert.match(sockdriveUploader, /const encoded = encoding !== 'identity'/)
 assert.match(sockdriveUploader, /small\.size \* metadata\.ahead_read/)
+assert.match(sockdriveUploader, /mapConcurrent\(dataFiles, uploadConcurrency/)
+assert.match(sockdriveUploader, /玩家路径第 \$\{pass\} 次读取得到的不是 JSON/)
+assert.match(sockdriveUploader, /for \(let pass = 1; pass <= 2; pass\+\+\)/)
+assert.match(sockdriveUploader, /method: readsBody \? 'GET' : 'HEAD'/)
+assert.match(sockdriveUploader, /公开分块 \$\{sample\} 解码后是/)
+assert.match(sockdriveUploader, /AbortSignal\.timeout\(WORKER_REQUEST_TIMEOUT_MS\)/)
+assert.match(sockdriveUploader, /AbortSignal\.timeout\(PUBLIC_REQUEST_TIMEOUT_MS\)/)
+assert.match(sockdriveUploader, /const dataFiles = ordered\.filter\(\(name\) => name !== 'sockdrive\.metaj'\)/)
+assert.ok(
+  sockdriveUploader.indexOf('mapConcurrent(dataFiles, uploadConcurrency') <
+    sockdriveUploader.indexOf("await uploadOne('sockdrive.metaj')"),
+  '并发上传必须先等所有数据文件完成，再单独提交 sockdrive.metaj',
+)
 
 const current = { ...winGuest, dosExecutables: { en: 'OLD.EXE' } }
 assert.equal(

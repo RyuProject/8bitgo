@@ -15,7 +15,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { normalizeDosboxConfigOverride, mergeDosboxConfigOverride } from '../shared/dosbox-config.js'
 
-const { makeJsdosBundle, makeWindowsGameLayer, buildDosboxConf, mergeExtraFiles, readZipFile } = await import(
+const { isReadyJsdosBundleBlob, makeJsdosBundle, makeWindowsGameLayer, buildDosboxConf, buildDosSockdriveConf, mergeExtraFiles, readZipFile } = await import(
   fileURLToPath(new URL('../src/lib/jsdosBundle.ts', import.meta.url))
 )
 const { windowsGuestLaunchCommand, windowsSockdriveRegistryCommand } = await import(
@@ -402,6 +402,41 @@ console.log('\n── 自带 dosbox.conf 的 .jsdos 包不能吞掉后台配置 
   ok(overridden.passthrough === false, '⭐ 填了启动程序就不能再透传（否则那一栏对这类包完全无效）')
   const names = namesOf(new Uint8Array(await overridden.blob.arrayBuffer()))
   ok(names.includes('.jsdos/dosbox.conf'), '重打的包里仍然有 dosbox.conf')
+
+  class TailOnlyBlob extends Blob {
+    async arrayBuffer() {
+      throw new Error('不该读取整份 Blob')
+    }
+  }
+  const largePath = new TailOnlyBlob([bundled])
+  ok(await isReadyJsdosBundleBlob(largePath), '⭐ 大型现成 bundle 只读 ZIP 尾部即可判定为可直接启动')
+  ok(
+    !(await isReadyJsdosBundleBlob(new Blob([makeZip([{ name: 'GAME.EXE', data: EXE }])]))),
+    '安全的普通 ZIP 返回“需要补配置”，不会被误当成现成 bundle',
+  )
+  ok(
+    !(await isReadyJsdosBundleBlob(new Blob([makeZip([
+      { name: '.jsdos/dosbox.conf/' },
+      { name: 'GAME.EXE', data: EXE },
+    ])]))),
+    '同名目录不能冒充 .jsdos/dosbox.conf 文件',
+  )
+  await throwsWith(
+    () => isReadyJsdosBundleBlob(new Blob([makeZip([
+      { name: '.jsdos/dosbox.conf', data: te.encode('[autoexec]\nGAME.EXE\n') },
+      { name: '../GAME.EXE', data: EXE },
+    ])])),
+    /不安全/,
+    '⭐ Blob 快路径同样拒绝目录穿越，不能因为不重打包就绕过安全边界',
+  )
+  await throwsWith(
+    () => isReadyJsdosBundleBlob(new Blob([makeZip([
+      { name: '.jsdos/dosbox.conf', data: te.encode('[autoexec]\nGAME.EXE\n') },
+      { name: 'GAME.EXE', data: EXE, flags: 1 },
+    ])])),
+    /带密码/,
+    '⭐ Blob 快路径提前拒绝带密码成员，避免 js-dos 静默黑屏',
+  )
 }
 
 console.log('\n── 条目名：GBK / 反斜杠 / __MACOSX ──')
@@ -588,6 +623,30 @@ console.log('\n── 普通 DOS 包必须显式开启游戏需要的内存接�
   const tunedText = new TextDecoder().decode(await tuned.blob.arrayBuffer())
   ok(/\[dosbox\]\nmemsize=32/.test(tunedText), '普通 DOS 的逐游戏 memsize 覆盖写进最终 bundle')
   ok(/\[dos\]\nxms=true\nems=false\numb=true/.test(tunedText), '普通 DOS 可以逐游戏关闭有兼容性冲突的 EMS')
+}
+
+console.log('\n── 大型纯 DOS 游戏：Sockdrive 挂成 C 盘后按扇区边下边玩 ──')
+{
+  const url = 'https://assets.example.test/sockdrives/fallout-en-v1'
+  const conf = buildDosSockdriveConf(
+    'FALLOUT.EXE',
+    url,
+    undefined,
+    windowsGameCompatibilityDosboxConfig('fallout', 'FALLOUT.EXE', undefined),
+  )
+  ok(conf.includes(`imgmount 2 sockdrive ${url}`), '⭐ 纯 DOS 流式盘直接挂成 C:，不需要下载 Win95 系统镜像')
+  ok(!/^mount c \.\s*$/m.test(conf), '流式配置不再等待完整 ZIP 解包到宿主文件系统')
+  ok(conf.includes('\nc:\nFALLOUT.EXE\n'), '远程盘挂好后直接切到 C: 启动 Fallout')
+  ok(/\[dosbox\][\s\S]*memsize=32/.test(conf), 'Fallout 流式模式保留已验证的 32MB 内存配置')
+  ok(
+    /\[cpu\][\s\S]*core=normal/.test(conf) && /\[cpu\][\s\S]*cycles=fixed 30000/.test(conf),
+    'Fallout 流式模式保留已验证的 CPU 配置',
+  )
+  await throwsWith(
+    () => Promise.resolve(buildDosSockdriveConf('Long Folder/FALLOUT.EXE', url)),
+    /DOS 8\.3/,
+    '远程盘不能靠本地二次挂载绕过长路径，开局前明确拒绝不可靠入口',
+  )
 }
 
 console.log('\n── 普通 DOS 的附加文件直接并进最终 bundle ──')

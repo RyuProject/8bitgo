@@ -9,6 +9,7 @@ import {
   isRomPackBytes,
   isRomPackUrl,
   parseRomPackHeader,
+  recommendedRomPackCodec,
   romPackAad,
   romPackHeaderLength,
   romPackIv,
@@ -18,6 +19,7 @@ import {
 } from '../../shared/rom-pack-format.js'
 
 export { isRomPackBytes, isRomPackUrl, romPackKey }
+export { recommendedRomPackCodec }
 
 export const ROM_PACK_DEFAULT_CODEC: RomPackCodec = ROM_PACK_CODEC.ZSTD
 export const ROM_PACK_DEFAULT_LEVEL = 19
@@ -142,7 +144,7 @@ export async function packRomForUpload(
   file: File,
   originalName = file.name,
   onProgress?: (progress: PackProgress) => void,
-  codec: RomPackCodec = ROM_PACK_DEFAULT_CODEC,
+  codec: RomPackCodec = recommendedRomPackCodec(originalName),
 ): Promise<{ blob: Blob; header: RomPackHeader }> {
   const packageId = randomId()
   const grant = await fetchRawKey(packageId)

@@ -12,7 +12,7 @@
  * 压缩前后大小一起搬过去，完全不用碰数据本身。
  */
 
-import { extractZipEntry, crc32, decodeZipName } from './unzip'
+import { assertValidZipBlob, extractZipEntry, crc32, decodeZipName } from './unzip'
 import { mergeDosboxConfigOverride } from '../../shared/dosbox-config.js'
 
 const te = new TextEncoder()
@@ -438,6 +438,31 @@ export function buildDosboxConf(exe: string | null, startupCommands?: string): s
   return lines.join('\n') + '\n'
 }
 
+/**
+ * 生成纯 DOS 静态 Sockdrive 的启动配置。
+ *
+ * 普通 bundle 的 `mount c .` 只能看见已经完整解包到浏览器里的文件；把它精确替换成
+ * DOSBox-X 的远程块设备后，Fallout 这类数百 MB 游戏才能先取启动扇区、进入游戏后再按需下载。
+ * 远程盘没有本地目录可以给长文件名另挂 D:，因此入口必须是可靠可执行的 DOS 8.3 路径。
+ */
+export function buildDosSockdriveConf(
+  executable: string,
+  sockdriveUrl: string,
+  startupCommands?: string,
+  configOverride?: string,
+): string {
+  const path = executable.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+  if (!path || !isDos83Path(path) || !/\.(?:exe|com|bat)$/i.test(path)) {
+    throw new Error('纯 DOS 流式盘的启动程序必须是盘内 DOS 8.3 格式的 EXE、COM 或 BAT 相对路径')
+  }
+  // URL 已由 normalizeSockdriveUrl 做过命令行字符与版本校验；这里仍拒绝换行，防止函数被单独误用。
+  if (!sockdriveUrl || /[\r\n]/.test(sockdriveUrl)) throw new Error('纯 DOS 流式盘 URL 无效')
+  const base = buildDosboxConf(path, startupCommands)
+  const mounted = base.replace(/^mount c \.\s*$/m, `imgmount 2 sockdrive ${sockdriveUrl}`)
+  if (mounted === base) throw new Error('无法生成纯 DOS 流式盘挂载配置')
+  return mergeDosboxConfigOverride(mounted, configOverride)
+}
+
 /* ---------------- 对外接口 ---------------- */
 
 export interface BundleResult {
@@ -455,6 +480,41 @@ export interface BundleResult {
    * 所以只有这个为 true 时才准收窄。
    */
   singleDir?: boolean
+}
+
+/**
+ * 只读 Blob 的 ZIP 尾部与中央目录，判断它能不能原样交给 js-dos。
+ *
+ * 大型 DOS 包不能为了回答这一个问题先 `arrayBuffer()`：以《辐射》的 503MB 包为例，
+ * 后面解密、Blob 包装和 js-dos 自己读取还会各留一份，移动端很容易直接被系统杀掉。
+ * 这里最多读取中央目录与每个成员的 30 字节本地头；已经带 dosbox.conf 就返回 true，
+ * 普通安全 ZIP 返回 false 让旧打包逻辑补配置，损坏、危险路径和不支持的压缩方式则明确报错。
+ */
+export async function isReadyJsdosBundleBlob(blob: Blob): Promise<boolean> {
+  const entries = await assertValidZipBlob(blob, 'DOS ROM')
+  const normalized = entries.map((entry) => {
+    const safe = safeArchivePath(entry.name)
+    if (!safe) throw new Error(`ZIP 含不安全的绝对路径、盘符或 ../ 路径：${entry.name}`)
+    // safeArchivePath 为了比较路径会去掉末尾斜杠；这里必须补回目录语义，
+    // 否则名为 `.jsdos/dosbox.conf/` 的坏目录会被误认成真正的配置文件。
+    const directory = /[\\/]$/.test(entry.name)
+    return { ...entry, name: directory ? `${safe}/` : safe }
+  })
+  assertNoPathCollisions(normalized, 'ZIP')
+
+  const encrypted = normalized.find((entry) => (entry.flags ?? 0) & 0x1)
+  if (encrypted) throw new Error(`ZIP 里的「${encrypted.name}」带密码，无法解包。请去掉密码后重新打包`)
+  const unsupported = normalized.find((entry) => entry.method !== 0 && entry.method !== 8)
+  if (unsupported) {
+    throw new Error(
+      `ZIP 里的「${unsupported.name}」用了不支持的压缩方式（method ${unsupported.method}）。` +
+        '请用标准 deflate 重新打包（WinRAR/7-Zip 里选「普通」压缩，别用 deflate64 或 LZMA）',
+    )
+  }
+
+  const conf = normalized.find((entry) => entry.name.toLowerCase() === '.jsdos/dosbox.conf')
+  if (conf && conf.uncompressedSize > 1024 * 1024) throw new Error('ROM 内的 dosbox.conf 大小异常')
+  return Boolean(conf)
 }
 
 /**

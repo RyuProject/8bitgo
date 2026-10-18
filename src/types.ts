@@ -244,8 +244,8 @@ export interface Game {
    */
   romBackups?: Partial<Record<RomLang, string>>
   /**
-   * DOS 运行核心。留空等同 dosbox；dosboxX 可启动 Windows 3.x / 9x 的 .jsdos 系统镜像。
-   * 这里只切换 CPU/虚拟机核心；系统由 dosSystem 提供，游戏 ZIP 作为另一块 FAT 盘挂入。
+   * DOS 运行核心。留空等同 dosbox；dosboxX 可启动 Windows 3.x / 9x 系统镜像，也支持
+   * 纯 DOS 静态 Sockdrive。这里只切换 CPU/虚拟机核心；是否启动 Windows 由 dosSystem 决定。
    */
   dosBackend?: DosBackend
   /**
@@ -257,7 +257,7 @@ export interface Game {
    */
   dosSystem?: string
   /**
-   * 大型 Windows 游戏的静态 Sockdrive 目录（对象 key、站内路径或完整 URL）。
+   * 大型 DOS / Windows 游戏的静态 Sockdrive 目录（对象 key、站内路径或完整 URL）。
    *
    * 目录里必须直接包含 `sockdrive.metaj` 与转换工具生成的 `*.raw` 分块。有值时，播放器
    * 不下载 rom / roms 里的整包游戏 ZIP，而把这块磁盘作为独立盘按扇区读取；原 ROM 只保留为
@@ -265,7 +265,7 @@ export interface Game {
    */
   dosSockdrive?: string
   /**
-   * 各语言 Windows 游戏盘的 Sockdrive 目录。它必须和 roms / dosExecutables 使用同一个语言键；
+   * 各语言 DOS / Windows 游戏盘的 Sockdrive 目录。它必须和 roms / dosExecutables 使用同一个语言键；
    * 播放器只取当前实际加载 ROM 那一槽，避免中文 ROM 误挂英文流式盘。
    *
    * dosSockdrive 保留给旧的单语言数据与确实共用同一块游戏盘的内容；同一语言同时存在两者时，

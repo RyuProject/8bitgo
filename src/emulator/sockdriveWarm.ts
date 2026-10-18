@@ -15,6 +15,24 @@ export interface SockdriveWarmFile {
 
 export type SockdriveRuntimePreload = 'default' | 'none'
 
+// 官方 sockify 2.0.10 最大模板是 FAT32 2GB。更大的声明不是本站合法产物，若继续按它循环找块，
+// 一份几 KB 的损坏元数据就能让主线程执行数十亿次循环并假死。
+const SOCKDRIVE_MAX_DISK_BYTES = 2 * 1024 ** 3
+
+/**
+ * 系统镜像与热点同时下载时保守用两路，避免预热反客为主；纯 DOS 没有大文件竞争，四路才能把
+ * HTTP/2 小对象的往返时间藏起来。弱网继续收紧，增加连接数不会凭空增加带宽。
+ */
+export function sockdriveWarmConcurrency(
+  effectiveType: string | undefined,
+  saveData: boolean,
+  sharesLargeDownload: boolean,
+): number {
+  if (saveData || /(?:^|-)2g$/i.test(effectiveType ?? '')) return 1
+  if (effectiveType === '3g') return 2
+  return sharesLargeDownload ? 2 : 4
+}
+
 function positiveInteger(metadata: Record<string, unknown>, key: string): number {
   const value = metadata[key]
   if (!Number.isSafeInteger(value) || Number(value) <= 0) {
@@ -37,7 +55,8 @@ export function parseSockdriveWarmPlan(value: unknown): SockdriveWarmPlan {
   const aheadRead = positiveInteger(metadata, 'ahead_read')
   const rangeCount = positiveInteger(metadata, 'range_count')
   const sectorSize = positiveInteger(metadata, 'sector_size')
-  if (!Number.isSafeInteger(sizeBytes) || Math.ceil(sizeBytes / aheadRead) !== rangeCount) {
+  if (!Number.isSafeInteger(sizeBytes) || sizeBytes > SOCKDRIVE_MAX_DISK_BYTES ||
+      Math.ceil(sizeBytes / aheadRead) !== rangeCount) {
     throw new Error('Sockdrive 元数据的磁盘大小与分块数量不一致')
   }
   if (aheadRead % sectorSize !== 0) throw new Error('Sockdrive 分块大小不是扇区大小的整数倍')
