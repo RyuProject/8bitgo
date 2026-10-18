@@ -303,18 +303,21 @@ const WIN_KEY = {
   s: 83,
   space: 32,
   minus: 45,
+  slash: 47,
+  quote: 39,
+  tab: 258,
   semicolon: 59,
 } as const
 
 /**
  * 进入客体图形模式后打开系统自己的“运行”对话框，再输入启动命令。
  *
- * Windows 95/98 会输入固定的 D:\\8BITGO\\RUN.BAT，由批处理切换真实工作目录；
- * Windows 3.x 的 DOS 会话无法启动 Windows 图形 EXE，而 Program Manager 直接运行又不
- * 会切换工作目录，所以先启动 File Manager 打开父目录，再从它的 File > Run 执行 EXE。
+ * Windows 95/98 从开始菜单的 Run 输入完整命令；流式盘会先静默导入兼容注册表，再运行真实 EXE。
+ * Windows 3.x 的 DOS 会话无法启动 Windows 图形 EXE，而 Program Manager 直接运行又不会切换
+ * 工作目录，所以先启动 File Manager 打开父目录，再从它的 File > Run 执行 EXE。
  */
 /** 自动输入只会敲这些字符；别的字符在 DOS 8.3 文件名里也合法（~ ! $ # 之类），但这里敲不出来 */
-const TYPEABLE = /^[a-z0-9:\\. \-_]*$/i
+const TYPEABLE = /^[a-z0-9:\\/. \-_"]*$/i
 
 /**
  * 启动前先验一遍能不能敲出来。
@@ -340,6 +343,10 @@ export function scheduleWindowsLaunch(
    * 刻意只在**确证发生**时才报：桌面稳下来了才报 desktop，等满上限硬敲的那条路不报。
    */
   onMilestone?: (step: WindowsLaunchMilestone) => void,
+  /** 先在 Win95“运行”框执行的静默准备命令；当前用于导入流式盘里的注册表文件。 */
+  prepareCommand?: string,
+  /** 老 DirectDraw 切换片头与菜单时可能留下黑色主表面；只给实测命中的游戏做一次焦点刷新。 */
+  refreshDirectDrawAfterLaunch = false,
 ): () => void {
   const timers = new Set<number>()
   let armed = false
@@ -389,6 +396,8 @@ export function scheduleWindowsLaunch(
       else if (ch === ' ') tap(WIN_KEY.space)
       else if (ch === '-') tap(WIN_KEY.minus)
       else if (ch === '_') tap(WIN_KEY.minus, true)
+      else if (ch === '/') tap(WIN_KEY.slash)
+      else if (ch === '"') tap(WIN_KEY.quote, true)
       // 敲不出来的字符 assertTypeable 早就拦了；万一漏网也别在定时器里抛（没人接），跳过它
       later(35, () => typeAt(at + 1))
     }
@@ -403,6 +412,56 @@ export function scheduleWindowsLaunch(
     later(800, onOpened)
   }
 
+  const openStartRun = (onOpened: () => void) => {
+    // DOSBox-X 不会把浏览器的 Meta / Super 键可靠地交给 Win95；Win+R 会退化成桌面上的
+    // 普通字母 R。Ctrl+Esc 是 Windows 95 原生的“打开开始菜单”，随后 R 触发 Run。
+    ci.sendKeyEvent(WIN_KEY.leftCtrl, true)
+    tap(WIN_KEY.esc)
+    ci.sendKeyEvent(WIN_KEY.leftCtrl, false)
+    later(350, () => tap(WIN_KEY.r))
+    later(800, onOpened)
+  }
+
+  const refreshDirectDrawWhenBlack = () => {
+    const shot = ci.screenshot
+    if (!refreshDirectDrawAfterLaunch || typeof shot !== 'function') return
+    let elapsed = 0
+    const poll = () => {
+      if (stopped()) return
+      elapsed += 1_500
+      void shot
+        .call(ci)
+        .then((frame) => {
+          if (stopped()) return
+          if (!frameIsBlank(frame)) {
+            if (elapsed < 60_000) later(1_500, poll)
+            return
+          }
+          /*
+            StarCraft 1.16.1 在 Win95 + DOSBox-X 里能正常画 Blizzard / Brood War 片头，
+            进入主菜单时却偶发保留一张全黑的 DirectDraw 主表面。实机验证 Ctrl+Esc 让游戏
+            失焦、再 Alt+Tab 回去会重建调色板并立刻显示菜单。这里等片头至少八秒后才探测，
+            只在真的全黑时做一次，正常游戏和其它 Windows 客体都不会收到额外按键。
+          */
+          ci.sendKeyEvent(WIN_KEY.leftCtrl, true)
+          tap(WIN_KEY.esc)
+          ci.sendKeyEvent(WIN_KEY.leftCtrl, false)
+          later(500, () => {
+            tap(WIN_KEY.esc)
+            later(350, () => {
+              ci.sendKeyEvent(WIN_KEY.leftAlt, true)
+              tap(WIN_KEY.tab)
+              ci.sendKeyEvent(WIN_KEY.leftAlt, false)
+            })
+          })
+        })
+        .catch(() => {
+          if (!stopped() && elapsed < 60_000) later(1_500, poll)
+        })
+    }
+    later(8_000, poll)
+  }
+
   /**
    * 敲完了。接下来盯着画面确认客体里真的有反应（见 WINDOWS_LAUNCH_VERIFY_MS）。
    *
@@ -411,6 +470,7 @@ export function scheduleWindowsLaunch(
    */
   const finishLaunch = () => {
     onMilestone?.('launched')
+    refreshDirectDrawWhenBlack()
     const shot = ci.screenshot
     if (typeof shot !== 'function' || !onFailed) {
       // 拿不到画面（旧版 js-dos / 调用方不接失败）：只能沿用老行为，蒙一个 5 秒
@@ -472,13 +532,17 @@ export function scheduleWindowsLaunch(
       return
     }
 
-    // DOSBox-X 不会把浏览器的 Meta / Super 键可靠地交给 Win95；Win+R 会退化成桌面上的
-    // 普通字母 R。Ctrl+Esc 是 Windows 95 原生的“打开开始菜单”，随后 R 触发 Run。
-    ci.sendKeyEvent(WIN_KEY.leftCtrl, true)
-    tap(WIN_KEY.esc)
-    ci.sendKeyEvent(WIN_KEY.leftCtrl, false)
-    later(350, () => tap(WIN_KEY.r))
-    later(800, () => typeCommand(command, finishLaunch))
+    if (prepareCommand) {
+      /*
+        REGEDIT /S 没有可等待的窗口；给老机器留出落盘时间后再开一次 Run 启动游戏。
+        两条命令必须分开：Win95 的 COMMAND.COM 不可靠支持 `&&`，拼成一行会让部分镜像失效。
+      */
+      openStartRun(() => typeCommand(prepareCommand, () => {
+        later(2_000, () => openStartRun(() => typeCommand(command, finishLaunch)))
+      }))
+      return
+    }
+    openStartRun(() => typeCommand(command, finishLaunch))
   }
   const arm = () => {
     if (armed || stopped()) return

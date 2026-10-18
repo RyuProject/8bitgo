@@ -28,8 +28,9 @@ import {
   normalizeSockdriveUrl,
   readWindowsSystemConfig,
   sockdriveVersionedSaveKey,
-  windowsSockdriveLauncherFile,
   windowsGuestLaunchCommand,
+  windowsSockdriveExecutableCommand,
+  windowsSockdriveRegistryCommand,
   type WindowsGuestConfig,
 } from '@/lib/windowsGuest'
 import { imageDataToBlob } from '../recorder'
@@ -69,6 +70,7 @@ import {
   windowsGameCompatibilityDosboxConfig,
   windowsGameCompatibilityExtras,
   windowsGameCompatibilityRegistryImport,
+  windowsGameNeedsDirectDrawFocusRefresh,
 } from '../windowsGameCompatibility'
 import {
   parseSockdrivePreload,
@@ -1055,7 +1057,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             玩家却永远读不到”的假象。
           */
           guest = buildSockdriveWindowsGuestConfig(systemConfig, sockdriveUrl, dosboxConfig)
-          initFs = [windowsSockdriveLauncherFile(gameExecutable, guest.gameDrive, registryImport)]
+          guest.launchPrepareCommand = registryImport
+            ? windowsSockdriveRegistryCommand(registryImport, guest.gameDrive)
+            : ''
           /*
             致命细节：直接传 `dosboxConf + initFs` 时，js-dos 的 loadBundleFromConfig 会把
             bundleChangesUrl 固定成 null，之后 props.save() 永远返回 false，所以必须走 URL 入口。
@@ -1094,15 +1098,19 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           }
           gameLayerBytes = gameLayer.bytes
         }
-        guestLaunchCommand = windowsGuestLaunchCommand(
-          guest,
-          gameExecutable,
-          options.dosWindowsVersion ?? '9x',
-          narrowedToExeDir,
-        )
+        guestLaunchCommand = streamingGame
+          ? windowsSockdriveExecutableCommand(gameExecutable, guest.gameDrive)
+          : windowsGuestLaunchCommand(
+              guest,
+              gameExecutable,
+              options.dosWindowsVersion ?? '9x',
+              narrowedToExeDir,
+            )
+        guest.refreshDirectDrawAfterLaunch = windowsGameNeedsDirectDrawFocusRefresh(options.gameSlug, gameExecutable)
         // 现在就验：以前这两处是在 ci-ready 的回调 / 定时器里才抛，没人接得住，
         // Windows 在屏幕上跑着、遮罩却盖到四分钟超时才报一句不相干的话
         assertTypeable(guestLaunchCommand)
+        if (guest.launchPrepareCommand) assertTypeable(guest.launchPrepareCommand)
         if ((options.dosWindowsVersion ?? '9x') === '3x') windows3xLaunchCommands(guestLaunchCommand)
         /*
           系统包自己的 conf 必须先改名：它作为后续文件层解开时会覆盖 Dos() 的直接配置。
@@ -1323,6 +1331,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                       startup: step === 'desktop' ? STARTING_MILESTONE.desktop : STARTING_MILESTONE.launched,
                     })
                   },
+                  guest.launchPrepareCommand,
+                  guest.refreshDirectDrawAfterLaunch,
                 )
               }
               // DOS 游戏只认键盘，手柄在这里翻译成按键

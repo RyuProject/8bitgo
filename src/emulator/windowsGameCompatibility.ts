@@ -25,6 +25,18 @@ export function windowsGameCompatibilityRegistryImport(
 }
 
 /**
+ * StarCraft 1.16.1 的 DirectDraw 菜单在这份 Win95 镜像里会偶发停在全黑主表面；进程并没崩，
+ * Ctrl+Esc 失焦后再 Alt+Tab 回来就会立刻重建调色板。把判定收在这里，避免给所有 Windows
+ * 游戏乱发系统切换键；EXE 校验复用注册表规则，第三方启动器仍然不会被误放行。
+ */
+export function windowsGameNeedsDirectDrawFocusRefresh(
+  gameSlug: string | undefined,
+  executable: string,
+): boolean {
+  return windowsGameCompatibilityRegistryImport(gameSlug, executable) === 'STAR.REG'
+}
+
+/**
  * StarCraft 1.16.1 在 Win95 + DOSBox-X 下用 normal core 已完成主菜单和 Brood War 建档实测。
  * 共享系统盘的 auto 会随宿主选择不同执行核心，旧版 DirectDraw 程序可能在部分设备上无报错退回
  * 桌面；这里把已验证配置作为游戏级默认值，同时让后台显式配置保留最终决定权。

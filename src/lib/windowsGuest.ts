@@ -70,6 +70,10 @@ export interface WindowsGuestConfig {
   gameDrive: string
   /** Windows“运行”对话框要打开的固定批处理路径。 */
   launcher: string
+  /** 流式游戏无法烘焙 RUN.BAT 时，在启动 EXE 前先由 Win95“运行”框执行的准备命令。 */
+  launchPrepareCommand?: string
+  /** 这款游戏需要在启动后检测并刷新老 DirectDraw 黑色主表面。 */
+  refreshDirectDrawAfterLaunch?: boolean
 }
 
 export interface WindowsSockdriveGuestConfig extends WindowsGuestConfig {
@@ -155,6 +159,30 @@ function safeStreamedExecutable(executable: string): string {
   return path
 }
 
+function safeStreamedRegistryImport(registryImport: string): string {
+  const registry = registryImport.replace(/\\/g, '/').replace(/^(?:\.\/)+/, '').replace(/^\/+|\/+$/g, '')
+  if (
+    !registry ||
+    !/\.reg$/i.test(registry) ||
+    registry.split('/').some((part) => !part || part === '.' || part === '..') ||
+    // eslint-disable-next-line no-control-regex
+    /[\x00-\x1f:"<>|?*]/.test(registry)
+  ) {
+    throw new Error('流式 Windows 注册表兼容文件必须是游戏盘内安全的 .reg 相对路径')
+  }
+  return registry
+}
+
+/**
+ * Sockdrive 游戏盘不能像整包模式那样把注册表导入写进 RUN.BAT，因为 Win95 客体看不到宿主临时盘。
+ * 先在“运行”框静默执行这条命令，再启动游戏；路径加引号，兼容带空格的目录。
+ */
+export function windowsSockdriveRegistryCommand(registryImport: string, drive: string): string {
+  if (!/^[d-z]$/i.test(drive)) throw new Error('Sockdrive 游戏盘符必须是 D-Z')
+  const registry = safeStreamedRegistryImport(registryImport).replace(/\//g, '\\')
+  return `regedit /s "${drive.toUpperCase()}:\\${registry}"`
+}
+
 /**
  * 流式游戏盘不再有一份本地游戏 ZIP 可改写，因此把极小的启动批处理放在单独的本地盘。
  * 它只负责切到远程游戏盘、进入 EXE 所在目录再启动；游戏数据仍全部从 Sockdrive 按块读取。
@@ -165,15 +193,7 @@ export function windowsSockdriveLauncherFile(
   registryImport?: string,
 ): { path: string; contents: Uint8Array<ArrayBuffer> } {
   const actual = safeStreamedExecutable(executable)
-  const registry = registryImport ? registryImport.replace(/\\/g, '/').replace(/^(?:\.\/)+/, '').replace(/^\/+|\/+$/g, '') : ''
-  if (
-    registryImport &&
-    (!registry || !/\.reg$/i.test(registry) || registry.split('/').some((part) => !part || part === '.' || part === '..') ||
-      // eslint-disable-next-line no-control-regex
-      /[\x00-\x1f:"<>|?*]/.test(registry))
-  ) {
-    throw new Error('流式 Windows 注册表兼容文件必须是游戏盘内安全的 .reg 相对路径')
-  }
+  const registry = registryImport ? safeStreamedRegistryImport(registryImport) : ''
   if (!/^[d-z]$/i.test(drive)) throw new Error('Sockdrive 游戏盘符必须是 D-Z')
   const slash = actual.lastIndexOf('/')
   const dir = slash >= 0 ? `\\${actual.slice(0, slash).replace(/\//g, '\\')}` : '\\'
@@ -219,7 +239,10 @@ export function windowsGuestLaunchCommand(
    */
   narrowedToExeDir = true,
 ): string {
-  if (version !== '3x') return guest.launcher
+  if (version !== '3x') {
+    if (!guest.launcher) throw new Error('Windows 客体没有可用的本地启动批处理')
+    return guest.launcher
+  }
   const path = executable.replace(/\\/g, '/').replace(/^\/+/, '')
   const file = path.split('/').pop()
   if (!file) throw new Error('Windows 3.x 自启动程序文件名为空')
@@ -288,8 +311,8 @@ export function buildWindowsGuestConfig(
  * 保留共享系统镜像，只把每款大型游戏改成静态 Sockdrive。
  *
  * 游戏盘必须用 `imgmount <序号> sockdrive <目录>`，不能用普通 mount：前者按扇区懒加载，
- * 后者只能看到已经下载到浏览器文件系统里的完整文件。启动批处理另挂一个极小的本地盘，
- * 避免为了写 RUN.BAT 又去修改、复制或重新发布那块远程磁盘。
+ * 后者只能看到已经下载到浏览器文件系统里的完整文件。DOSBox 的普通 mount 盘在 boot 后
+ * 不会出现在 Win95 客体里，因此流式模式由适配器直接运行游戏盘 EXE，不再制造一块假 E:。
  */
 export function buildSockdriveWindowsGuestConfig(
   base: string,
@@ -309,9 +332,6 @@ export function buildSockdriveWindowsGuestConfig(
   const used = mountedDriveLetters(autoexec)
   const gameDrive = [...DRIVE_CANDIDATES].find((drive) => !used.has(drive))
   if (!gameDrive) throw new Error('Windows 系统镜像没有空闲盘符可挂载流式游戏盘')
-  used.add(gameDrive)
-  const launcherDrive = [...DRIVE_CANDIDATES].find((drive) => !used.has(drive))
-  if (!launcherDrive) throw new Error('Windows 系统镜像没有空闲盘符可挂载启动文件')
 
   let bootDrive = 'C:'
   for (const line of autoexec) {
@@ -326,14 +346,6 @@ export function buildSockdriveWindowsGuestConfig(
     ...withoutBoot,
     '',
     `imgmount ${gameDriveIndex} sockdrive ${normalizedUrl}`,
-    `mount ${launcherDrive.toLowerCase()} 8BITGO -freesize 1`,
-    /*
-      DOSBox 的普通 mount 盘在 boot 后不会成为 Win95 的块设备，直接运行 E:\\RUN.BAT 会报
-      “找不到文件”。开机前把几百字节批处理复制进真实的 Sockdrive 游戏盘；这次写入只进
-      js-dos 的 changes 层，不会改远端基础盘，也不需要重发上千个分块。
-    */
-    `del ${gameDrive.toLowerCase()}:\\8BITGO.BAT`,
-    `copy ${launcherDrive.toLowerCase()}:\\RUN.BAT ${gameDrive.toLowerCase()}:\\8BITGO.BAT`,
     `boot ${bootDrive.toLowerCase()} -convertfat`,
     ...lines.slice(autoEnd),
   ]
@@ -344,7 +356,8 @@ export function buildSockdriveWindowsGuestConfig(
     dosboxConf: mergeDosboxConfigOverride(generated, configOverride),
     gameDrive,
     gameDriveIndex,
-    launcher: `${gameDrive}:\\8BITGO.BAT`,
+    // 流式盘直接运行真实 EXE；空值让误走普通批处理分支时立即报错，而不是静默停在桌面。
+    launcher: '',
     sockdriveUrl: normalizedUrl,
   }
 }

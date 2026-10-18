@@ -18,11 +18,14 @@ import { normalizeDosboxConfigOverride, mergeDosboxConfigOverride } from '../sha
 const { makeJsdosBundle, makeWindowsGameLayer, buildDosboxConf, mergeExtraFiles, readZipFile } = await import(
   fileURLToPath(new URL('../src/lib/jsdosBundle.ts', import.meta.url))
 )
-const { windowsGuestLaunchCommand } = await import(fileURLToPath(new URL('../src/lib/windowsGuest.ts', import.meta.url)))
+const { windowsGuestLaunchCommand, windowsSockdriveRegistryCommand } = await import(
+  fileURLToPath(new URL('../src/lib/windowsGuest.ts', import.meta.url)),
+)
 const {
   windowsGameCompatibilityDosboxConfig,
   windowsGameCompatibilityExtras,
   windowsGameCompatibilityRegistryImport,
+  windowsGameNeedsDirectDrawFocusRefresh,
 } = await import(
   fileURLToPath(new URL('../src/emulator/windowsGameCompatibility.ts', import.meta.url))
 )
@@ -264,6 +267,14 @@ console.log('\n── StarCraft：启动前静默导入安装路径 ──')
     '其它 Windows 游戏不误导入 StarCraft 注册表',
   )
   ok(
+    windowsGameNeedsDirectDrawFocusRefresh('starcraft', 'StarCraft.exe'),
+    'StarCraft 启用老 DirectDraw 黑屏后的焦点刷新',
+  )
+  ok(
+    !windowsGameNeedsDirectDrawFocusRefresh('theme-hospital', 'HOSPITAL.EXE'),
+    '其它 Windows 游戏不误触发 StarCraft 的焦点刷新',
+  )
+  ok(
     /core=normal/.test(windowsGameCompatibilityDosboxConfig('starcraft', 'StarCraft.exe', undefined)),
     'StarCraft 默认使用已完成 Win95 实机验证的 normal core',
   )
@@ -284,6 +295,15 @@ console.log('\n── StarCraft：启动前静默导入安装路径 ──')
     () => Promise.resolve(windowsGameCompatibilityRegistryImport('starcraft', 'Brood.exe')),
     /必须是 StarCraft\.exe/,
     '第三方 StarCraft 启动器不会被兼容分支放行',
+  )
+  ok(
+    windowsSockdriveRegistryCommand('setup/STAR.REG', 'd') === 'regedit /s "D:\\setup\\STAR.REG"',
+    '⭐ 流式盘从 Win95 运行框导入远程游戏盘里的注册表文件',
+  )
+  await throwsWith(
+    () => Promise.resolve(windowsSockdriveRegistryCommand('../STAR.REG', 'd')),
+    /安全的 \.reg/,
+    '流式盘注册表命令拒绝目录穿越',
   )
 
   const layer = makeWindowsGameLayer(
