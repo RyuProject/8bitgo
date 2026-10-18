@@ -18,6 +18,8 @@ const ALLOWED_SYSTEM_IMAGES = new Set([
   'system-win311-v1.jsdos',
   'system-win95-v1.jsdos',
   'system-win98-v1.jsdos',
+  // 《天之痕》使用的本地化镜像没有可信第三方副本；这里只代理 R2 上同一份对象作同源兜底。
+  'Windows95_Traditional-Chinese.jsdos',
 ])
 
 export function systemImageAsset(file) {
