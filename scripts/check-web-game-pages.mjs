@@ -52,6 +52,21 @@ for (const name of selected) {
         assert.doesNotMatch(html, /PVZ_DATA_BASE='https:\/\/html5\.8bitgo\.com/, `${name}/${file} 仍在浏览器直连无 CORS 的 R2 域名`)
       }
     }
+    if (name === 'gtavc') {
+      assert.match(html, /\/web\/gta-vc\/runtime-config\.js/, 'GTA VC 没有先加载独立归档配置')
+      assert.match(html, /\/web\/gta-vc\/manifest\.json/, 'GTA VC PWA 清单路径没有带 Pages 基址')
+      assert.doesNotMatch(html, /\/gta-vice-city-wasm\//, 'GTA VC 仍引用上游 GitHub Pages 路径')
+    }
+  }
+
+  if (name === 'gtavc') {
+    const runtimeConfig = readFileSync(resolve(root, 'web/gta-vc/runtime-config.js'), 'utf8')
+    const extractor = readFileSync(resolve(root, 'web/gta-vc/extract-worker.js'), 'utf8')
+    assert.doesNotMatch(runtimeConfig, /https?:\/\//, 'GTA VC 不得发布未经核验的游戏归档地址')
+    assert.match(extractor, /file\.stream\(\)/, 'GTA VC Pages 包丢失流式归档读取')
+    assert.match(extractor, /DecompressionStream\(["']gzip["']\)/, 'GTA VC Pages 包丢失流式 gzip 解压')
+    assert.ok(!files.some((file) => /(?:^|\/)game\.tar\.gz$/i.test(relative(root, file).replaceAll('\\', '/'))),
+      'GTA VC Pages 包不得包含游戏数据归档')
   }
 
   const workerUrl = `${pathToFileURL(resolve(root, '_worker.js')).href}?check=${Date.now()}`

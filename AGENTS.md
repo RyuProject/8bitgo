@@ -1763,6 +1763,30 @@ npm run test:celeste                                       # 纯函数回归 + �
 npm run celeste:upload -- --bucket <R2桶名> --src .celeste-framework   # q11 预压 + 原始回退
 ```
 
+### 2.28.9 /web/gta-vc：只发布开源运行端，游戏归档必须由玩家合法自备
+
+2026-10-19 接入 [joncodeofficial/gta-vice-city-wasm](https://github.com/joncodeofficial/gta-vice-city-wasm)
+提交 `10dd677cc55574da98e9be2433a3c5c668b39954`，专用 Pages 项目是 `8bitgo-gta-vc`，入口
+`/web/gta-vc/`。它比 reVCDOS 更适合纯静态托管：玩家导入一次 `game.tar.gz` 后，文件写入本机
+OPFS，Service Worker 从 `/vcsky/` 与 `/vcbr/` 提供给 WASM，之后不重复下载。
+
+⚠️ **`game.tar.gz` 绝不能进 Git、Pages、R2 或本站代理。** 运行端的 MIT 许可证不覆盖 Rockstar /
+Take-Two 的游戏数据；DOS Zone 的 Vice City 页面已列入其 DMCA 移除清单，公开 CDN 只有 reVCDOS
+使用的分文件目录，并没有可核实授权的官方 `game.tar.gz`。`public/web/gta-vc/runtime-config.js` 默认
+必须为空；只有拿到权利方或来源方明确允许本站使用的 HTTPS 归档地址，核对授权、长期可用性和下载
+文件后，才允许填写。不能热链示例站的私有 Worker、伪造 Origin、镜像或绕过访问限制。
+
+上游导入器原先会把约 668MB gzip 与完整解压 TAR 同时留在 JS 堆，再写一份 OPFS，峰值可能超过
+2GB。本站的 `extract-worker.js` 改成单遍流式解压与逐文件写盘，并在就绪标记前校验 TAR checksum、
+路径、文件数、压缩/解压体积和三份必需文件；失败会删掉标记和半成品，不能把两代资源混成“可玩”。
+更新上游时不能用原版导入器覆盖回来。回归：
+
+```bash
+npm run gta-vc:check
+npm run pages:web-games:build -- gtavc
+npm run pages:web-games:check -- gtavc
+```
+
 ### 2.29 后台能热改的站点级配置：`site_settings` 表（首页公告条是第一个）
 
 为什么不是 `.env`：`config-manifest.js` 那页（后台「配置」）**只读是刻意的**，

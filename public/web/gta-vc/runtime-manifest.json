@@ -1,0 +1,149 @@
+{
+  "format": "8bitgo.gta-vc-runtime.v1",
+  "source": "https://github.com/joncodeofficial/gta-vice-city-wasm",
+  "commit": "10dd677cc55574da98e9be2433a3c5c668b39954",
+  "base": "/web/gta-vc/",
+  "gameDataIncluded": false,
+  "files": {
+    "assets/index-vjx_VSZd.css": {
+      "bytes": 68647,
+      "sha256": "f7ac0326d722e9a383daefd3685ac7d56cce1893e3df2b6759ba7436d535c51e"
+    },
+    "assets/index-Z_C_cSJf.js": {
+      "bytes": 127112,
+      "sha256": "7a90e07efe8ac1c9ca9a1b2361bf0358e1bac1f4deaaca21c1cdd9873115f8c2"
+    },
+    "cover.png": {
+      "bytes": 271719,
+      "sha256": "ae20d221a66ef249594e00174a5b28fe26226c22234e1075d6c475bebda83c0a"
+    },
+    "demo.webp": {
+      "bytes": 130454,
+      "sha256": "eef0508cda962153176a684d9a29bd98445070b2354eb528a88ba978ff0d8d00"
+    },
+    "extract-worker.js": {
+      "bytes": 13690,
+      "sha256": "f8302a12c53fdf9436c61f46e45fcb0dd3d4decdd2522fe42daa8821329e33a0"
+    },
+    "game.js": {
+      "bytes": 16587,
+      "sha256": "4b89ddd9447b4feebac58a3dacba23d8fff69bd325858a3cae989b7135e920cd"
+    },
+    "GamepadEmulator.js": {
+      "bytes": 35435,
+      "sha256": "98fb1bab2a5e593f21e5195bf1cf93e9a5e4b8649f6abc05bb2a953fdb1a1819"
+    },
+    "icon.webp": {
+      "bytes": 60066,
+      "sha256": "556d2189a269d4e6ef5078a19fada6975c72660c22c3e3999b95795f9fb611b0"
+    },
+    "icons/icon-192.png": {
+      "bytes": 10999,
+      "sha256": "2830ad165e99909876f4d77050e6ccb60df5f2b81b0d736b7bbd84df6b58c33e"
+    },
+    "icons/icon-512.png": {
+      "bytes": 43273,
+      "sha256": "960b225f6ec050af3d402ec1a3b03be8e7ec93566529c2516383f796c5e82db4"
+    },
+    "icons/icon-maskable-512.png": {
+      "bytes": 21347,
+      "sha256": "035c19640166be5eb8bfc8eacd6398bc65da6c499d77b419120781a280c10ee3"
+    },
+    "idbfs.js": {
+      "bytes": 7815,
+      "sha256": "90f12cd8e2e9c37b9410fb5b6c57122e366761491229827f2f0cf4804d6f5f4e"
+    },
+    "index.html": {
+      "bytes": 13547,
+      "sha256": "05d964989b470b0da8b17de6660a634146672d69906d577129b7cbbca5a38f37"
+    },
+    "index.js": {
+      "bytes": 1022,
+      "sha256": "21b834b0424d19ff89ea048444a53196eab0a74af942c4da972bf66d4c2a5901"
+    },
+    "intro.mp4": {
+      "bytes": 8019046,
+      "sha256": "d77620000a4b1a93a3d1bed13b71ef7a4678c2f80b3c6faadacb77486d219140"
+    },
+    "LICENSE.upstream.txt": {
+      "bytes": 1461,
+      "sha256": "459ff921a82861efe0ee0737d37371fd491ea3cce62ce32b982994ad02d9a2d7"
+    },
+    "manifest.json": {
+      "bytes": 715,
+      "sha256": "a7e58c0f5881a1f6a860aca8bbc6428b959de4b6bbf2d76bbcb12cf2e2a53b95"
+    },
+    "modules/asm_consts/en.js": {
+      "bytes": 14238,
+      "sha256": "0638ff423fef0f4315fc4867b529b3880f882e7bc4f78b728ec38c3cb928d306"
+    },
+    "modules/audio.js": {
+      "bytes": 90848,
+      "sha256": "6e6fabeaee78a23f3147b6d4397228d44a0a67278d6adc77b250a4b48e5976dd"
+    },
+    "modules/cheats.js": {
+      "bytes": 67709,
+      "sha256": "a91d364c8b55b8cdf5e9049dbdf1b8dc832dda1cbad243106446b5d528faad8f"
+    },
+    "modules/events.js": {
+      "bytes": 54881,
+      "sha256": "ee27d72e4420240c9e718a763ff8be7b2a3026c45cb3db416fda835611a3a6b4"
+    },
+    "modules/fetch.js": {
+      "bytes": 13488,
+      "sha256": "d69a13b551356fd617e96cd9482d2a60df87d3bb676313d6e114125f91682bc5"
+    },
+    "modules/fs.js": {
+      "bytes": 99817,
+      "sha256": "2abc098dd4463495ad9d31321a8e4425415798943dad3331a609a1a0e7cb8ee1"
+    },
+    "modules/graphics.js": {
+      "bytes": 105045,
+      "sha256": "6fe5512c1c0ce0da59d4006cbc46acaae32bc2f9891a0aed072d2041709fadcf"
+    },
+    "modules/loader.js": {
+      "bytes": 9469,
+      "sha256": "f61c1f15cfb7c1155948718a6bb9737002b770955435c61725a6ad3ff4b1073d"
+    },
+    "modules/main.js": {
+      "bytes": 37,
+      "sha256": "44a846ce7b899d7de6c1004496bef38731c5ba5e708dce0b36cf7695b8fa9ce1"
+    },
+    "modules/packages/en.js": {
+      "bytes": 243191,
+      "sha256": "cdc311e3a7d72ebc151410bfb2a44d39891d7e55f86cc03b0f8538ac7334ec8e"
+    },
+    "modules/runtime.js": {
+      "bytes": 95190,
+      "sha256": "a0d31b4ff5e892a858a68dee97db8d3eeaeb61d81b124d050a1c6c29f043a6cb"
+    },
+    "modules/syscalls.js": {
+      "bytes": 16459,
+      "sha256": "2afbfa6155f81aea33731867d0c33d8f0d50b01149062ea8bfae43befbcc78fb"
+    },
+    "runtime-config.js": {
+      "bytes": 146,
+      "sha256": "117a2a9ea5bbf8ed92764608cd49f20ea805885bceb38dcf370bf5ecf4f843e0"
+    },
+    "saves.js": {
+      "bytes": 8726,
+      "sha256": "1fe19895ab64d86dff8fe61f078bb69fc33621b17afba39c9637a47ee5400f6c"
+    },
+    "shared.js": {
+      "bytes": 12774,
+      "sha256": "136b178e6d6cfc5db2100d30eb52d5e9ddca04b695a9ba72f83f52484426548c"
+    },
+    "skins.js": {
+      "bytes": 12348,
+      "sha256": "8cb36ecad8f2f925525e0bdf04029d15a328e52ea3869bd1f33b62ce4a4d4e76"
+    },
+    "sw.js": {
+      "bytes": 5753,
+      "sha256": "a9d6ec1b6fef4bb6b795d5f0f874f06a68d08977a73d7edc995791030498fdad"
+    },
+    "UPSTREAM.md": {
+      "bytes": 1406,
+      "sha256": "f39ab16399b9070216c5118a129e066ba192bbd17cfaf1b8f6d23fb6759eaec8"
+    }
+  }
+}

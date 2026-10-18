@@ -1,5 +1,5 @@
 /**
- * 六个独立 Cloudflare Pages 项目的唯一配置来源。
+ * 七个独立 Cloudflare Pages 项目的唯一配置来源。
  *
  * 入口仍保留 `/web/<游戏>/`，不是为了迁就 Pages，而是这些上游产物内部有大量
  * 根绝对路径。保留路径可以避免重写压缩后的脚本，也让源站与 Pages 能平滑回退。
@@ -71,6 +71,17 @@ export const WEB_GAME_PAGES = Object.freeze({
     // 大包已经按内容哈希发布到 R2；Pages 只承载小型运行时，避免上传两份和触发单文件上限。
     excludeDirs: ['packs'],
     html: [['index.html', '#canvas']],
+  }),
+  gtavc: Object.freeze({
+    project: '8bitgo-gta-vc',
+    domain: 'gta-vc.8bitgo.com',
+    sourceDir: 'gta-vc',
+    entry: '/web/gta-vc/',
+    title: 'Grand Theft Auto: Vice City',
+    runtime: '',
+    // 上游开发服务器依赖这两项；保留隔离头，避免未来线程版 WASM 静默退化。
+    isolated: true,
+    html: [['index.html', '.start-container']],
   }),
 })
 
