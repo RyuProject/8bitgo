@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { brotliCompressSync, brotliDecompressSync, gzipSync, gunzipSync } from 'node:zlib'
 import {
   archiveEntriesFrom7z,
   assertSafeArchiveEntry,
+  compressSockdriveDirectory,
   fatArchiveEntryKey,
   ensureBaselinePreloadProfile,
   selectSockdriveDiskTemplate,
@@ -62,6 +63,35 @@ try {
   }
 } finally {
   rmSync(root, { recursive: true, force: true })
+}
+
+for (const encoding of ['br', 'gzip']) {
+  const compressionRoot = mkdtempSync(join(tmpdir(), `8bitgo-sockdrive-compress-${encoding}-`))
+  try {
+    const originals = new Map([
+      ['0.raw', Buffer.alloc(256 * 1024, 0x41)],
+      ['sockdrive.metaj', Buffer.from(JSON.stringify({ range_count: 1 }))],
+      ['preload_ranges.metaj', Buffer.from('[0]')],
+    ])
+    for (const [name, bytes] of originals) writeFileSync(join(compressionRoot, name), bytes)
+    const progress = []
+    const result = await compressSockdriveDirectory(compressionRoot, encoding, {
+      concurrency: 2,
+      brotliQuality: 4,
+      onProgress: ({ completed }) => progress.push(completed),
+    })
+    assert.equal(result.files, originals.size)
+    assert.equal(result.sourceBytes, [...originals.values()].reduce((sum, bytes) => sum + bytes.length, 0))
+    assert.deepEqual(progress.sort((a, b) => a - b), [1, 2, 3])
+    for (const [name, original] of originals) {
+      const encoded = readFileSync(join(compressionRoot, name))
+      const decoded = encoding === 'br' ? brotliDecompressSync(encoded) : gunzipSync(encoded)
+      assert.deepEqual(decoded, original)
+    }
+    assert.equal(existsSync(join(compressionRoot, '0.raw.compressing')), false)
+  } finally {
+    rmSync(compressionRoot, { recursive: true, force: true })
+  }
 }
 
 let patched = null

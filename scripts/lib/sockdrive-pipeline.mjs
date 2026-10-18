@@ -1,5 +1,16 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { brotliCompressSync, brotliDecompressSync, gzipSync, gunzipSync } from 'node:zlib'
+import { createReadStream, createWriteStream, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { readdir, rename, rm, stat } from 'node:fs/promises'
+import { join } from 'node:path'
+import { pipeline } from 'node:stream/promises'
+import {
+  brotliCompressSync,
+  brotliDecompressSync,
+  constants as zlibConstants,
+  createBrotliCompress,
+  createGzip,
+  gzipSync,
+  gunzipSync,
+} from 'node:zlib'
 
 // 官方 CLI 2.0.10 会按原始镜像字节数选择内置磁盘描述，多一个字节或少一个字节都会拒绝转换。
 export const SOCKDRIVE_DISK_TEMPLATES = Object.freeze([
@@ -128,6 +139,80 @@ export function encodeSockdriveFile(bytes, encoding) {
   if (encoding === 'gzip') return gzipSync(bytes)
   if (encoding === 'identity') return Buffer.from(bytes)
   throw new Error(`不支持的 Sockdrive 压缩格式：${encoding}`)
+}
+
+/**
+ * 官方 sockify 的 `-b/-g` 会一次为所有分块启动外部压缩器；2GB 磁盘实测会瞬间出现四百多个
+ * brotli 进程并吃光 4GB 制作机。让 sockify 只负责切块，再在这里用固定数量的流式任务压缩，
+ * 既不把整块磁盘读进内存，也不会在负载高峰拖死站点服务。临时文件完成后才原子替换原文件，
+ * 因而中断的任务不会留下“文件名正常、正文只有半截”的可发布分块。
+ */
+export async function compressSockdriveDirectory(
+  directory,
+  encoding,
+  { concurrency = 2, brotliQuality = 9, onProgress } = {},
+) {
+  if (encoding === 'identity') return { files: 0, sourceBytes: 0, encodedBytes: 0 }
+  if (!['br', 'gzip'].includes(encoding)) throw new Error(`不支持的 Sockdrive 压缩格式：${encoding}`)
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 8) {
+    throw new Error('Sockdrive 压缩并发必须是 1～8 的整数')
+  }
+  if (!Number.isSafeInteger(brotliQuality) || brotliQuality < 1 || brotliQuality > 11) {
+    throw new Error('Sockdrive Brotli 质量必须是 1～11 的整数')
+  }
+
+  const names = (await readdir(directory)).sort((a, b) => a.localeCompare(b, 'en'))
+  const files = []
+  for (const name of names) {
+    const path = join(directory, name)
+    const info = await stat(path)
+    if (!info.isFile()) throw new Error(`Sockdrive 发布目录只能包含普通文件：${path}`)
+    files.push({ name, path, size: info.size })
+  }
+  if (!files.length) throw new Error('Sockdrive 发布目录没有可压缩文件')
+
+  let cursor = 0
+  let completed = 0
+  let sourceBytes = 0
+  let encodedBytes = 0
+  let firstError = null
+  const worker = async () => {
+    while (!firstError) {
+      const index = cursor++
+      if (index >= files.length) return
+      const file = files[index]
+      const temporary = `${file.path}.compressing`
+      const compressor = encoding === 'br'
+        ? createBrotliCompress({
+          params: {
+            [zlibConstants.BROTLI_PARAM_QUALITY]: brotliQuality,
+            [zlibConstants.BROTLI_PARAM_SIZE_HINT]: file.size,
+          },
+        })
+        : createGzip()
+      try {
+        await pipeline(
+          createReadStream(file.path),
+          compressor,
+          createWriteStream(temporary, { flags: 'wx' }),
+        )
+        const compressed = await stat(temporary)
+        await rename(temporary, file.path)
+        sourceBytes += file.size
+        encodedBytes += compressed.size
+        completed++
+        try { onProgress?.({ completed, total: files.length, name: file.name, sourceBytes, encodedBytes }) } catch {
+          // 进度显示不是产物的一部分，不能让 UI / 日志回调把已经原子替换的文件误判成压缩失败。
+        }
+      } catch (error) {
+        await rm(temporary, { force: true }).catch(() => {})
+        firstError ||= error
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, files.length) }, () => worker()))
+  if (firstError) throw firstError
+  return { files: completed, sourceBytes, encodedBytes }
 }
 
 /**

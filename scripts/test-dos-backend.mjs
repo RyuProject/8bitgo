@@ -157,6 +157,10 @@ assert.match(gameForm, /isVersionedSockdriveDirectory\(dosSockdrive\)/)
 
 // 发布器是不可逆写入 R2 的最后一道闸：禁止“网络预检失败仍继续”和覆盖旧版本目录。
 const sockdriveUploader = readFileSync(new URL('./upload-sockdrive-r2.mjs', import.meta.url), 'utf8')
+const sockdrivePreparer = readFileSync(new URL('./prepare-sockdrive.mjs', import.meta.url), 'utf8')
+assert.doesNotMatch(sockdrivePreparer, /compressionFlag/)
+assert.doesNotMatch(sockdrivePreparer, /requireTool\('brotli'/)
+assert.match(sockdrivePreparer, /compressSockdriveDirectory\(publishDir, encoding/)
 assert.doesNotMatch(sockdriveUploader, /allow-overwrite/)
 assert.match(sockdriveUploader, /existing\.status !== 404/)
 assert.match(sockdriveUploader, /无法确认公开目录是否已存在，已停止发布/)

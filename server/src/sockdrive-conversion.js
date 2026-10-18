@@ -52,6 +52,9 @@ export function sockdriveConversionConfig(env = process.env) {
     // 官方 CLI 当前最大只认 2GB 镜像；1900MiB 给 FAT/分区表和默认 128MiB 可写空间留出余量。
     maxSourceBytes: positiveInt(env.SOCKDRIVE_MAX_SOURCE_MB, 1900, 1900) * 1024 * 1024,
     concurrency: positiveInt(env.SOCKDRIVE_CONCURRENCY, 1, 1),
+    // 压缩以前由官方 CLI 为每个分块同时派生进程，2GB 盘能瞬间耗尽 4GB 内存；这里单独硬限流。
+    compressionConcurrency: positiveInt(env.SOCKDRIVE_COMPRESSION_CONCURRENCY, 2, 8),
+    brotliQuality: positiveInt(env.SOCKDRIVE_BROTLI_QUALITY, 9, 11),
     // 转换本身保持单任务，发布小分块则需要并发隐藏 R2 往返；上限防止误配置打爆文件描述符。
     uploadConcurrency: positiveInt(env.SOCKDRIVE_UPLOAD_CONCURRENCY, 6, 16),
     timeoutMs: positiveInt(env.SOCKDRIVE_TIMEOUT_MINUTES, 360, 24 * 60) * 60 * 1000,
@@ -184,7 +187,6 @@ export async function sockdriveConversionCapability(env = process.env, fresh = f
   else if (!(await commandExists('virt-make-fs'))) reason = '找不到 virt-make-fs'
   else if (!(await commandExists('qemu-img'))) reason = '找不到 qemu-img'
   else if (!(await commandExists('7z'))) reason = '找不到 7z'
-  else if (config.encoding === 'br' && !(await commandExists('brotli'))) reason = '找不到 brotli'
   else if (!(await workerSupportsSockdrive(config))) {
     reason = 'R2 Worker 尚未部署 Sockdrive 私有 staging / Content-Encoding 支持'
   }
@@ -489,9 +491,15 @@ export function sockdriveFailureMessage(error, maxChars = MAX_ERROR_CHARS) {
   return `…${raw.slice(-(maxChars - 1))}`
 }
 
-function conversionProgress(text) {
+export function sockdriveConversionProgress(text) {
   if (/Sockdrive 制作完成/.test(text)) return 70
   if (/Sockdrive 结构完整/.test(text)) return 68
+  const compression = /压缩 Sockdrive 分块：(\d+)\/(\d+)/.exec(text)
+  if (compression) {
+    const completed = Number(compression[1])
+    const total = Math.max(1, Number(compression[2]))
+    return 55 + Math.min(12, Math.floor(completed / total * 13))
+  }
   if (/调用官方 sockify/.test(text)) return 55
   if (/制作 FAT32\/QCOW2/.test(text)) return 40
   if (/源文件检查通过/.test(text)) return 32
@@ -699,11 +707,13 @@ async function processJob(job) {
       '--encoding', job.encoding,
       '--free-space', config.freeSpace,
       '--public-base', config.publicBase,
+      '--compression-concurrency', String(config.compressionConcurrency),
+      '--brotli-quality', String(config.brotliQuality),
       '--defer-validation',
     ], {
       timeoutMs: config.timeoutMs,
       onText: (text) => {
-        const next = conversionProgress(text)
+        const next = sockdriveConversionProgress(text)
         if (next == null || next <= progress) return
         progress = next
         progressWrites = progressWrites.then(() => updateJob(job.id, { progress })).catch(() => {})

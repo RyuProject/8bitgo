@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs'
 const {
   sockdriveFailureMessage,
   sockdriveConversionConfig,
+  sockdriveConversionProgress,
   validateSockdriveConversionRequest,
 } = await import('../src/sockdrive-conversion.js')
 
@@ -62,7 +63,12 @@ assert.equal(config.tempDir, '/data/sockdrive-builds')
 assert.equal(config.maxSourceBytes, 1900 * 1024 * 1024)
 assert.equal(config.freeSpace, '128M')
 assert.equal(config.concurrency, 1)
+assert.equal(config.compressionConcurrency, 2)
+assert.equal(config.brotliQuality, 9)
 assert.equal(config.uploadConcurrency, 6)
+assert.equal(sockdriveConversionProgress('调用官方 sockify 生成静态分块…'), 55)
+assert.equal(sockdriveConversionProgress('压缩 Sockdrive 分块：50/100（50%）'), 61)
+assert.equal(sockdriveConversionProgress('压缩 Sockdrive 分块：100/100（100%）'), 67)
 
 const noisyFailure = `node 失败（exit 1）：${'上传分块…'.repeat(300)}\nSyntaxError: metadata is not valid JSON`
 const compactFailure = sockdriveFailureMessage(new Error(noisyFailure), 120)
@@ -97,6 +103,9 @@ assert.match(queue, /const published = row\.publish_started/)
 assert.match(queue, /workerSupportsSockdrive/)
 assert.match(queue, /'--defer-validation'/)
 assert.match(queue, /'--concurrency', String\(config\.uploadConcurrency\)/)
+assert.match(queue, /'--compression-concurrency', String\(config\.compressionConcurrency\)/)
+assert.match(queue, /'--brotli-quality', String\(config\.brotliQuality\)/)
+assert.doesNotMatch(queue, /commandExists\('brotli'\)/)
 assert.match(queue, /\[\(\\d\+\)\\\/\(\\d\+\) 字节/)
 assert.match(queue, /Readable\.fromWeb\(response\.body\)/)
 assert.match(queue, /createWriteStream\(destination, \{ flags: 'wx', highWaterMark: 1024 \* 1024 \}\)/)

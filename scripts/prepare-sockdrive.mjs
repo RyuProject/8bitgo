@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url'
 import { isVersionedSockdriveDirectory } from '../shared/sockdrive-url.js'
 import {
   archiveEntriesFrom7z,
+  compressSockdriveDirectory,
   ensureBaselinePreloadProfile,
   fatArchiveEntryKey,
   selectSockdriveDiskTemplate,
@@ -53,6 +54,8 @@ const bind = flag('bind')
 const deferValidation = flag('defer-validation')
 const bucket = arg('bucket')
 const apiBase = arg('api-base') || 'https://8bitgo.com'
+const compressionConcurrency = Number(arg('compression-concurrency') || process.env.SOCKDRIVE_COMPRESSION_CONCURRENCY || 2)
+const brotliQuality = Number(arg('brotli-quality') || process.env.SOCKDRIVE_BROTLI_QUALITY || 9)
 
 const usage = () => {
   console.error(
@@ -75,6 +78,12 @@ if (!/^[^:<>"|?*\x00-\x1f]+\.exe$/i.test(executable) || executable.split('/').so
   throw new Error('--exe 必须是游戏盘内安全的 .exe 相对路径')
 }
 if (!['br', 'gzip', 'identity'].includes(encoding)) throw new Error('--encoding 只能是 br、gzip 或 identity')
+if (!Number.isSafeInteger(compressionConcurrency) || compressionConcurrency < 1 || compressionConcurrency > 8) {
+  throw new Error('--compression-concurrency 必须是 1～8 的整数')
+}
+if (!Number.isSafeInteger(brotliQuality) || brotliQuality < 1 || brotliQuality > 11) {
+  throw new Error('--brotli-quality 必须是 1～11 的整数')
+}
 if (!/^[1-9]\d*(?:[KMG])$/i.test(freeSpace)) throw new Error('--free-space 请写成 256M 这类正数容量')
 if (!existsSync(cli) || !statSync(cli).isFile()) throw new Error(`找不到官方 sockdrive CLI：${cli}`)
 if (bind && !publish) throw new Error('--bind 只能和 --publish 一起使用；单独绑定请运行 npm run sockdrive:bind')
@@ -115,7 +124,6 @@ const requireTool = (command, versionArgs = ['--version']) => {
 requireTool('virt-make-fs')
 requireTool('qemu-img')
 requireTool('7z')
-if (encoding === 'br') requireTool('brotli', ['--help'])
 
 let filesRoot = source
 if (statSync(source).isFile()) {
@@ -212,7 +220,6 @@ if (imageInfo.format !== 'qcow2' || imageInfo['virtual-size'] !== diskTemplate.b
 const convertedRoot = join(buildRoot, 'converted')
 mkdirSync(convertedRoot)
 const sockifiedBundle = join(buildRoot, `${slug}-${version}-sockdrive.jsdos`)
-const compressionFlag = encoding === 'br' ? '-b' : encoding === 'gzip' ? '-g' : null
 console.log('调用官方 sockify 生成静态分块…')
 run(cli, [
   'sockify',
@@ -221,7 +228,6 @@ run(cli, [
   convertedRoot,
   publicRoot,
   sockifiedBundle,
-  ...(compressionFlag ? [compressionFlag] : []),
 ])
 
 const metadataDirs = []
@@ -239,8 +245,26 @@ if (metadataDirs.length !== 1) {
 }
 const publishDir = join(buildRoot, 'publish')
 renameSync(metadataDirs[0], publishDir)
-const baseline = ensureBaselinePreloadProfile(publishDir, encoding)
+// 官方 CLI 的压缩开关会无上限地派生外部进程；先生成未压缩热点清单，再由固定并发流式压缩全部产物。
+const baseline = ensureBaselinePreloadProfile(publishDir, 'identity')
 if (baseline.created) console.log(`✔ 已生成基础热点清单：${baseline.ranges.length} 个范围`)
+if (encoding !== 'identity') {
+  let lastReported = -1
+  const compressed = await compressSockdriveDirectory(publishDir, encoding, {
+    concurrency: compressionConcurrency,
+    brotliQuality,
+    onProgress: ({ completed, total }) => {
+      const percent = Math.floor(completed / total * 100)
+      if (percent === lastReported || (percent < 100 && percent % 5 !== 0)) return
+      lastReported = percent
+      console.log(`压缩 Sockdrive 分块：${completed}/${total}（${percent}%）`)
+    },
+  })
+  console.log(
+    `✔ 固定并发压缩完成：${compressed.files} 个文件，` +
+      `${(compressed.sourceBytes / 1024 / 1024).toFixed(1)} → ${(compressed.encodedBytes / 1024 / 1024).toFixed(1)} MiB`,
+  )
+}
 
 // 只生成不发布时仍在交付前完整校验；立即发布或后台接管时，由下一步发布器校验一次即可。
 if (!publish && !deferValidation) {
@@ -266,6 +290,8 @@ const manifest = {
   requestedFreeBytes: diskTemplate.requestedFreeBytes,
   qcowVirtualBytes: imageInfo['virtual-size'],
   encoding,
+  compressionConcurrency,
+  ...(encoding === 'br' ? { brotliQuality } : {}),
   prefix,
   publicRoot,
   publishDir,
