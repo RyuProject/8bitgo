@@ -954,6 +954,8 @@ const ja: Translation = {
     loadingEngine: 'エミュレーターを準備しています…',
     loadingAssets: 'エンジンのファイルをダウンロードしています…',
     loadingRom: 'ゲームをダウンロードしています…',
+    loadingRomStream: '必要なゲームデータをストリーミングしています…',
+    loadingRomPack: 'ゲームを検証して展開しています…',
     loadingStarting: 'ゲームを起動しています…',
     tools: {
       more: 'その他のツール',
@@ -1385,6 +1387,8 @@ const ja: Translation = {
     dolphinExperimental: 'GameCube / Wii は実験的対応で、高性能なデスクトップ版 Chromium が必要です。Wii リモコン入力は未実装のため、Wii はクラシック操作対応の一部タイトルに限られます。',
     ejsDiscDownloadFailed: 'ディスクイメージのダウンロードに失敗しました：{msg}',
     discNeedDownload: 'ダウンロード {size}',
+    discDownloadProgress: '合計 {total} / {loaded} ダウンロード済み',
+    discStreamed: 'ディスク {size} · 必要な部分のみ配信',
     discCached: 'キャッシュ済み・ダウンロード不要',
     webretroNotConfigured: 'webretro が未設定です（VITE_WEBRETRO_PATH）。EmulatorJS にフォールバックしました',
     webretroUnsupportedPlatform: 'webretro は「{platform}」プラットフォームで有効になっていません',

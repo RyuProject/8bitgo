@@ -969,6 +969,8 @@ const de: Translation = {
     loadingEngine: 'Emulator wird vorbereitet…',
     loadingAssets: 'Engine-Dateien werden geladen…',
     loadingRom: 'Spiel wird heruntergeladen…',
+    loadingRomStream: 'Spieldaten werden bei Bedarf gestreamt…',
+    loadingRomPack: 'Spiel wird geprüft und entpackt…',
     loadingStarting: 'Spiel wird gestartet…',
     tools: {
       more: 'Weitere Werkzeuge',
@@ -1445,6 +1447,8 @@ const de: Translation = {
     dolphinExperimental: 'GameCube / Wii ist experimentell und braucht einen schnellen Desktop mit Chromium. Wii-Remote-Eingabe fehlt; praktisch sind nur wenige Wii-Spiele mit klassischer Steuerung.',
     ejsDiscDownloadFailed: 'Download des Disc-Abbilds fehlgeschlagen: {msg}',
     discNeedDownload: '{size} zu laden',
+    discDownloadProgress: '{total} gesamt / {loaded} geladen',
+    discStreamed: '{size} Datenträger · wird bei Bedarf gestreamt',
     discCached: 'Zwischengespeichert — kein Download nötig',
     webretroNotConfigured: 'webretro ist nicht konfiguriert (VITE_WEBRETRO_PATH) – es wird auf EmulatorJS zurückgegriffen',
     webretroUnsupportedPlatform: 'webretro ist für die Plattform „{platform}“ nicht aktiviert',

@@ -1019,6 +1019,8 @@ export const zhHans = {
     loadingEngine: '少女祈祷中 · 正在准备模拟器…',
     loadingAssets: '少女祈祷中 · 正在下载引擎资源…',
     loadingRom: '少女祈祷中 · 正在下载游戏…',
+    loadingRomStream: '少女祈祷中 · 正在按需读取游戏…',
+    loadingRomPack: '少女祈祷中 · 正在校验并解包游戏…',
     loadingStarting: '少女祈祷中 · 正在启动游戏…',
     tools: {
       more: '更多工具',
@@ -1470,6 +1472,8 @@ export const zhHans = {
     dolphinExperimental: 'GameCube / Wii 是实验性支持：需要性能较强的桌面 Chromium；Wii Remote 尚未实现，Wii 只适合支持传统手柄的少数游戏。',
     ejsDiscDownloadFailed: '光盘镜像下载失败：{msg}',
     discNeedDownload: '本局需下载 {size}',
+    discDownloadProgress: '本局需下载 {total} / 已下载 {loaded}',
+    discStreamed: '镜像 {size} · 按需读取，无需下载整包',
     discCached: '已缓存，无需下载',
     webretroNotConfigured: '尚未配置 webretro 运行时（VITE_WEBRETRO_PATH），已回退到 EmulatorJS',
     webretroUnsupportedPlatform: 'webretro 未启用「{platform}」平台',

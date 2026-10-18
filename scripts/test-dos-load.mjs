@@ -293,7 +293,7 @@ check('纯 DOS Sockdrive 不下载 Win95，直接把远程游戏盘挂成 C:', (
 check('流式盘必须走 URL bundle 入口，否则 js-dos 会把 changes URL 留空、保存永远失败', () => {
   assert.match(jsdos, /makeJsdosConfigBundle\(guest\.dosboxConf\)/)
   assert.match(jsdos, /streamingGame\s*\?\s*\{\s*url:\s*primaryUrl,\s*initFs\s*\}/)
-  assert.match(jsdos, /verifySockdriveMetadata\(sockdriveUrl, abort\.signal, Boolean\(options\.dosSystemUrl\)\)/)
+  assert.match(jsdos, /verifySockdriveForLaunch\(sockdriveUrl, abort\.signal, Boolean\(options\.dosSystemUrl\)\)/)
   assert.match(jsdos, /method:\s*'HEAD'/)
   assert.match(jsdos, /Sockdrive 分块 \$\{sample\} 读取失败/)
 })
@@ -308,6 +308,15 @@ check('流式盘按网络与系统镜像竞争自适应预热，并且不再拼�
   assert.match(jsdos, /rememberSockdriveCacheRepair\(url\)/)
   assert.match(jsdos, /loaded !== file\.expectedBytes/)
   assert.doesNotMatch(jsdos, /const bytes = await fetchWithProgress\(`\$\{url\}\/\$\{file\.name\}`/)
+})
+
+check('Sockdrive 在开始按钮悬停时提前预热，正式启动复用同一任务而不重复下载', () => {
+  assert.match(player, /prewarmSockdriveCache\(dosSockdriveUrl, Boolean\(dosSystemUrl\)\)/)
+  assert.match(jsdos, /const sockdrivePrewarmTasks = new Map/)
+  assert.match(jsdos, /const prewarmed = sockdrivePrewarmTasks\.get\(url\)/)
+  assert.match(jsdos, /await awaitSockdrivePrewarm\(prewarmed, signal\)/)
+  assert.match(jsdos, /verifySockdriveForLaunch\(sockdriveUrl, abort\.signal, Boolean\(options\.dosSystemUrl\)\)/)
+  assert.doesNotMatch(jsdos, /verifySockdriveMetadata\(sockdriveUrl, abort\.signal, Boolean\(options\.dosSystemUrl\)\)/)
 })
 
 check('热点清单按真实对象去重，并在预算边界停止', () => {
