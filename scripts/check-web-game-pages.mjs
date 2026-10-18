@@ -197,7 +197,7 @@ for (const name of selected) {
         assert.equal(socketResponse.status, 101)
         assert.ok(socketResponse.webSocket)
         assert.equal(socketResponse.headers.get('sec-websocket-protocol'), roomProtocol, 'Pages 必须向浏览器确认同一个子协议')
-        assert.equal(upstreamSocket.url, 'wss://8bitgo.com/api/cs16/room?room=ABC234&role=guest')
+        assert.equal(upstreamSocket.url, 'https://8bitgo.com/api/cs16/room?room=ABC234&role=guest')
         upstreamSocket.emit('open')
         browserSocket.emit('message', { data: new Blob([new Uint8Array([9, 8, 7])]) })
         await new Promise((resolve) => setTimeout(resolve, 0))
