@@ -75,16 +75,20 @@ export function edgeCacheEligible(request, url, cors) {
   if (request.headers.has('If-Match') || request.headers.has('If-Unmodified-Since') || request.headers.has('If-Range')) return false
   if (/\b(?:no-cache|no-store)\b/i.test(request.headers.get('Cache-Control') || '')) return false
   const versioned = Boolean(url.searchParams.get('romv') || url.searchParams.get('v'))
-  const immutablePath = /^\/web\/cs16\/zstd-v1\/chunks\/[a-f0-9]{64}\.zst$/.test(url.pathname) ||
-    immutableSockdrivePath(url.pathname)
+  /*
+   * Sockdrive 不能进 Cache API。线上实测 Cloudflare 在 cache.put/cache.match 后会丢掉 R2 的
+   * Content-Encoding，却保留原始 Brotli 字节：MISS 能解码，HIT 则把压缩字节当 JSON / 磁盘块，
+   * 新玩家直接黑屏。浏览器自己的 immutable HTTP 缓存仍然生效；这里只放真正按内容哈希命名、
+   * 且不依赖 HTTP 内容编码还原语义的 CS16 Zstd 分片。
+   */
+  const immutablePath = /^\/web\/cs16\/zstd-v1\/chunks\/[a-f0-9]{64}\.zst$/.test(url.pathname)
   return versioned || immutablePath
 }
 
 function edgeCacheHeader(response, value) {
   const headers = new Headers(response.headers)
   headers.set('X-8BitGo-Edge-Cache', value)
-  // Cache API 取回的 Sockdrive 仍是已经压好的 R2 字节；重新包装响应时也必须保留 manual，
-  // 否则首个 MISS 正常、后续 HIT 却会再次被 Workers 出口压缩，形成极难复现的二次损坏。
+  // Zstd 分片的媒体类型本身就声明压缩格式；重新包装响应时保留 manual，避免出口二次压缩。
   return new Response(response.body, r2BodyResponseInit(headers, response.status, response.statusText))
 }
 /** 写对象元数据时用的策略；读的时候还会按请求 URL 再判一次（见 cachePolicy） */

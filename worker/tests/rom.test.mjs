@@ -157,25 +157,29 @@ test('content-addressed CS16 Zstd shards are immutable and use the Zstd MIME typ
   assert.equal(r.headers.get('Cache-Control'),'public, max-age=31536000, s-maxage=31536000, immutable')
   assert.equal(r.headers.get('Content-Type'),'application/zstd')
 })
-test('versioned Sockdrive files are immutable and edge-cached by their path', async () => {
+test('versioned Sockdrive keeps immutable browser caching but bypasses Cache API that strips Content-Encoding', async () => {
   const previous = globalThis.caches
-  let stored
-  const waits = []
+  let cacheCalls = 0
   globalThis.caches = { default: {
-    async match() { return stored?.clone() },
-    async put(_request, response) { stored = response.clone(); await response.arrayBuffer() },
+    async match() { cacheCalls += 1; throw new Error('Sockdrive must bypass Cache API') },
+    async put() { cacheCalls += 1; throw new Error('Sockdrive must bypass Cache API') },
   } }
-  const context = { waitUntil(promise) { waits.push(promise) } }
+  const context = { waitUntil() { throw new Error('Sockdrive must not schedule Cache API writes') } }
   try {
-    const e = environment(); e.ROMS.seed('sockdrives/starcraft-v3/0.raw', 'sector')
+    const e = environment(); e.ROMS.seed('sockdrives/starcraft-v3/0.raw', 'sector', {
+      httpMetadata: { contentEncoding: 'br' },
+    })
     const first = await worker.fetch(req('/sockdrives/starcraft-v3/0.raw'), e, context)
     assert.equal(first.headers.get('Cache-Control'), 'public, max-age=31536000, s-maxage=31536000, immutable')
-    assert.equal(first.headers.get('X-8BitGo-Edge-Cache'), 'MISS')
+    assert.equal(first.headers.get('Content-Encoding'), 'br')
+    assert.equal(first.headers.get('X-8BitGo-Edge-Cache'), null)
     assert.equal(await first.text(), 'sector')
-    await Promise.all(waits)
     const second = await worker.fetch(req('/sockdrives/starcraft-v3/0.raw'), e, context)
-    assert.equal(second.headers.get('X-8BitGo-Edge-Cache'), 'HIT')
+    assert.equal(second.headers.get('Content-Encoding'), 'br')
+    assert.equal(second.headers.get('X-8BitGo-Edge-Cache'), null)
     assert.equal(await second.text(), 'sector')
+    assert.equal(count(e.ROMS, 'get'), 2)
+    assert.equal(cacheCalls, 0)
 
     const mutable = environment(); mutable.ROMS.seed('sockdrives/starcraft/0.raw', 'mutable')
     const plain = await worker.fetch(req('/sockdrives/starcraft/0.raw'), mutable, context)
