@@ -18,6 +18,7 @@ import {
   systemCacheUrl,
   systemSourcesFor,
 } from '../src/emulator/systemSource.ts'
+import { systemImageAsset } from '../server/src/system-images.js'
 
 let failed = 0
 const check = async (name, fn) => {
@@ -108,15 +109,26 @@ function fakeFetch(routes) {
 }
 
 const PRIMARY = 'https://assets.8bitgo.com/systems/dos/system-win95-v1.jsdos'
+const SAME_ORIGIN = '/system-images/system-win95-v1.jsdos'
 const OFFICIAL = 'https://br.cdn.dos.zone/js-dos/system/system-win95-v1.jsdos'
 
 console.log('一、镜像表')
 
 await check('已登记的路径有备用源，而且主源永远排第一', () => {
   const s = systemSourcesFor(PRIMARY)
-  assert.equal(s.length, 2)
+  assert.equal(s.length, 3)
   assert.equal(s[0].url, PRIMARY, '主源不是第一个 —— 备用源不是「更快的源」，顺序不能倒')
-  assert.equal(s[1].url, OFFICIAL)
+  assert.equal(s[1].url, SAME_ORIGIN)
+  assert.equal(s[1].label, '主站同源备用')
+  assert.equal(s[2].url, OFFICIAL)
+})
+
+await check('同源代理只开放人工核对过的系统镜像', () => {
+  const asset = systemImageAsset('system-win95-v1.jsdos')
+  assert.ok(asset?.url.endsWith('/systems/dos/system-win95-v1.jsdos'))
+  assert.equal(asset?.precompressed, false)
+  assert.equal(systemImageAsset('../roms/private.zip'), null)
+  assert.equal(systemImageAsset('anything.jsdos'), null)
 })
 
 await check('⚠️⚠️ 我们自己改出来的 VGA 镜像绝不能回落到官方那份', () => {
@@ -165,10 +177,21 @@ await check('⚠️ HTML 错误页 / 垃圾 / 缺 dosbox.conf 一律不认', () 
 console.log('三、换源的时机')
 
 const origFetch = globalThis.fetch
-const src = [{ url: PRIMARY, label: '主源' }, { url: OFFICIAL, label: 'js-dos 官方源' }]
+const src = [
+  { url: PRIMARY, label: '主源' },
+  { url: SAME_ORIGIN, label: '主站同源备用' },
+  { url: OFFICIAL, label: 'js-dos 官方源' },
+]
 
 await check('主源 500 → 自动换到备用源', async () => {
-  globalThis.fetch = fakeFetch({ [PRIMARY]: { status: 500 }, [OFFICIAL]: { body: GOOD } })
+  globalThis.fetch = fakeFetch({ [PRIMARY]: { status: 500 }, [SAME_ORIGIN]: { body: GOOD } })
+  const r = await loadSystemBytes(src)
+  assert.equal(r.usedFallback, true)
+  assert.equal(r.url, SAME_ORIGIN)
+})
+
+await check('主源和同源代理都失败时才尝试 js-dos 官方源', async () => {
+  globalThis.fetch = fakeFetch({ [PRIMARY]: { status: 503 }, [SAME_ORIGIN]: { status: 502 }, [OFFICIAL]: { body: GOOD } })
   const r = await loadSystemBytes(src)
   assert.equal(r.usedFallback, true)
   assert.equal(r.url, OFFICIAL)
@@ -176,13 +199,13 @@ await check('主源 500 → 自动换到备用源', async () => {
 
 await check('主源返回网页 → 换源（字节数是「有」的，不验就会喂进 js-dos）', async () => {
   const html = new TextEncoder().encode('<!doctype html>').buffer
-  globalThis.fetch = fakeFetch({ [PRIMARY]: { body: html, type: 'text/html' }, [OFFICIAL]: { body: GOOD } })
+  globalThis.fetch = fakeFetch({ [PRIMARY]: { body: html, type: 'text/html' }, [SAME_ORIGIN]: { body: GOOD } })
   const r = await loadSystemBytes(src)
   assert.equal(r.usedFallback, true)
 })
 
 await check('⚠️ 主源下了个不是镜像的 zip → 也要换源', async () => {
-  globalThis.fetch = fakeFetch({ [PRIMARY]: { body: NO_CONF }, [OFFICIAL]: { body: GOOD } })
+  globalThis.fetch = fakeFetch({ [PRIMARY]: { body: NO_CONF }, [SAME_ORIGIN]: { body: GOOD } })
   const r = await loadSystemBytes(src)
   assert.equal(r.usedFallback, true, '只看 HTTP 状态码的话，这一份会被当成好的')
 })
@@ -240,6 +263,7 @@ await check('全都取不到时，报错里要点名每个源和原因', async (
     () => loadSystemBytes(src),
     (e) => {
       assert.match(e.message, /主源/, '没点名主源')
+      assert.match(e.message, /主站同源备用/, '没点名同源备用')
       assert.match(e.message, /js-dos 官方源/, '没点名备用源')
       assert.match(e.message, /503/)
       assert.match(e.message, /404/)

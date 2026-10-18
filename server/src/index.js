@@ -72,6 +72,7 @@ import { isRomPackConfigured } from './rom-pack-key.js'
 import { createSfsService } from './sfs.js'
 import { createCs16RelayService } from './cs16-relay.js'
 import { createCs16RoomService } from './cs16-rooms.js'
+import { systemImageProxy } from './system-images.js'
 
 const app = express()
 app.disable('x-powered-by')
@@ -335,6 +336,12 @@ app.post('/api/j2me/release', express.text({ type: '*/*', limit: '1kb' }), relea
 app.post('/api/j2me/keepalive', express.text({ type: '*/*', limit: '1kb' }), keepaliveJar)
 // 前端据此决定心跳间隔
 app.get('/api/j2me/config', (_req, res) => res.json({ ttlMs: TTL_MS }))
+
+/*
+  Windows 客体系统盘的同源兜底。必须在静态与 SSR catch-all 之前；严格白名单和流式背压
+  在 system-images.js 里，不能改成接收任意对象 key，否则会成为公开的 R2 中转器。
+*/
+app.get('/system-images/:file', systemImageProxy)
 
 /* ---------------- 前端：静态资源 + 服务端渲染 ---------------- */
 

@@ -43,6 +43,15 @@ test('precompressed R2 bodies are marked manual so Workers never encode them twi
   assert.equal(init.status, 206)
   assert.equal(init.headers, headers)
 })
+test('CORS exposes Content-Encoding so browsers do not compare compressed length with decoded limits', async () => {
+  const e = environment()
+  e.ROMS.seed('sockdrives/game-v1/50.raw', 'compressed', {
+    httpMetadata: { contentEncoding: 'br' },
+  })
+  const r = await worker.fetch(req('/sockdrives/game-v1/50.raw'), e)
+  const exposed = r.headers.get('Access-Control-Expose-Headers') || ''
+  assert.match(exposed, /(?:^|,\s*)Content-Encoding(?:,|$)/i)
+})
 test('CS1.5 and CS1.6 assets prefer WEBGAMES and fall back to the legacy ROMS bucket', async () => {
   const e=environment(); e.WEBGAMES=new Bucket('webgames')
   e.ROMS.seed('web/cs15/packs/index.json','legacy-cs15')

@@ -31,7 +31,7 @@ function appendVary(res, token) {
 /**
  * @param {object} options
  * @param {string} options.label 日志前缀
- * @param {(file: string) => null | {url: string, contentType: string, cacheControl: string}} options.resolveAsset
+ * @param {(file: string) => null | {url: string, contentType: string, cacheControl: string, precompressed?: boolean}} options.resolveAsset
  * @param {number} options.maxProxies
  * @param {number} options.timeoutMs
  * @param {(file: string) => Record<string, string>} [options.extraHeaders]
@@ -71,7 +71,8 @@ export function createR2RuntimeProxy({
         HTTP Range 针对的是未编码文件的偏移，不能套在 `.br` 压缩字节上。
         .NET / Emscripten 的正常启动不会 Range 这些核心；调试工具真发 Range 时退回原对象。
       */
-      const encoded = !req.headers.range && acceptsBrotli(req.headers['accept-encoding'])
+      // 系统镜像这类对象本身已经是 ZIP，不另存 `.br`；显式关掉可避免每次兜底都先多打一条 404。
+      const encoded = asset.precompressed !== false && !req.headers.range && acceptsBrotli(req.headers['accept-encoding'])
       const candidates = encoded
         ? [{ url: `${asset.url}.br`, brotli: true }, { url: asset.url, brotli: false }]
         : [{ url: asset.url, brotli: false }]

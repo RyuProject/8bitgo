@@ -8,9 +8,9 @@
  * 而它是**一个单点** —— 所有人都从 assets.8bitgo.com 取同一个近百 MB 的文件。
  * 那个域名对某些网络慢、对某些网络干脆不通，而玩家看到的只是一个永远不动的进度条。
  *
- * 所以这里给每个镜像配一条**走完全不同网络路径**的备用源：js-dos 官方的
- * br.cdn.dos.zone。那几个地址是写死在 `public/jsdos/js-dos.js` 里的（studio 页面
- * 的下载列表），也就是我们这几个镜像的出处。
+ * 所以这里给每个镜像配两条备用路径：先走 8bitgo.com 的同源流式代理（避开资源子域
+ * 在部分网络上的连接问题），最后才试 js-dos 官方的 br.cdn.dos.zone。官方源没有稳定的
+ * CORS 许可，不能再把它当唯一兜底；保留它是为了上游哪天恢复跨域时仍有第三条路。
  *
  * ⚠️ **备用源不是「更快的源」，是「另一条路」**。没有任何证据说明 br.cdn.dos.zone
  * 对你的用户比 R2 快 —— 它只在主源**失败或卡死**时才上场。别把顺序倒过来。
@@ -44,11 +44,18 @@ const OFFICIAL = 'https://br.cdn.dos.zone/js-dos/system'
  * key 是**我们自己地址里的 pathname**（不含域名），这样换资源域名也不用动这张表。
  * ⚠️ 只登记「确实是同一个系统」的那些。见文件头第 1 条。
  */
-const MIRRORS: Readonly<Record<string, string>> = {
-  '/systems/dos/system-dos7.1-v1.jsdos': `${OFFICIAL}/system-dos7.1-v1.jsdos`,
-  '/systems/dos/system-win311-v1.jsdos': `${OFFICIAL}/system-win311-v1.jsdos`,
-  '/systems/dos/system-win95-v1.jsdos': `${OFFICIAL}/system-win95-v1.jsdos`,
-  '/systems/dos/system-win98-v1.jsdos': `${OFFICIAL}/system-win98-v1.jsdos`,
+type SystemMirror = { url: string; label: string }
+
+const mirrorsFor = (file: string): readonly SystemMirror[] => [
+  { url: `/system-images/${file}`, label: '主站同源备用' },
+  { url: `${OFFICIAL}/${file}`, label: 'js-dos 官方源' },
+]
+
+const MIRRORS: Readonly<Record<string, readonly SystemMirror[]>> = {
+  '/systems/dos/system-dos7.1-v1.jsdos': mirrorsFor('system-dos7.1-v1.jsdos'),
+  '/systems/dos/system-win311-v1.jsdos': mirrorsFor('system-win311-v1.jsdos'),
+  '/systems/dos/system-win95-v1.jsdos': mirrorsFor('system-win95-v1.jsdos'),
+  '/systems/dos/system-win98-v1.jsdos': mirrorsFor('system-win98-v1.jsdos'),
   /*
     ⚠️ `system-win311-vga-v1.jsdos` **故意不登记**，别手贱加上。
     它是我们自己从官方那份改出来的：SYSTEM.INI 的显示驱动从 S3 Trio64V 800x600 真彩
@@ -76,9 +83,11 @@ export function systemSourcesFor(primaryUrl: string): SystemSource[] {
   } catch {
     return list
   }
-  const mirror = MIRRORS[path]
-  // 主源本身就是官方地址时不要重复排一遍
-  if (mirror && mirror !== primaryUrl) list.push({ url: mirror, label: 'js-dos 官方源' })
+  const mirrors = MIRRORS[path] ?? []
+  for (const mirror of mirrors) {
+    // 相对地址必须保留：它会自动跟随当前站点域名，本地和预览环境也不用写死生产域名。
+    if (mirror.url !== primaryUrl) list.push(mirror)
+  }
   return list
 }
 
