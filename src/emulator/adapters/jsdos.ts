@@ -1362,9 +1362,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       } else if (streamingGame) {
         if (!options.dosExecutable?.trim()) throw new Error('纯 DOS 流式游戏盘没有配置自启动程序')
         /*
-          纯 DOS 不需要为了流式读取再下载一套 Win95。极小 URL bundle 只负责建立稳定的
-          changes 通道，真正配置在 initFs 最后一层把 Sockdrive 挂成 C:，由 DOSBox-X
-          运行期间按扇区取数。完整 ZIP 仍留在数据库里，清空 dos_sockdrive 即可回退。
+          纯 DOS 不需要为了流式读取再下载一套 Win95。极小 URL bundle 既负责建立稳定的
+          changes 通道，也必须携带最终配置：js-dos 的 URL 入口会优先执行主 bundle 里的
+          dosbox.conf，不能指望 initFs 最后一层覆盖它。这里若仍放占位 autoexec，所有分块
+          都会正常下载、DOSBox-X 也会启动，却只停在 Z:\>，是最难辨认的“假成功”。
+          initFs 仍保留同一配置，防止以后上游再调整层合并顺序。完整 ZIP 留作一键回退。
         */
         const pureDosConfig = buildDosSockdriveConf(
           options.dosExecutable,
@@ -1372,7 +1374,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           startupCommands,
           dosboxConfig,
         )
-        const bootstrap = makeJsdosConfigBundle('[autoexec]\nrem sockdrive bootstrap')
+        const bootstrap = makeJsdosConfigBundle(pureDosConfig)
         primaryUrl = URL.createObjectURL(bootstrap)
         objectUrls.push(primaryUrl)
         initFs = [{ dosboxConf: pureDosConfig, jsdosConf: { version: '8' } }]

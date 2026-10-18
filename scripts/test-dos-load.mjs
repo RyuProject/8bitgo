@@ -290,6 +290,8 @@ check('流式盘按预算选择官方预取，并挂到 DOSBox-X 的 Sockdrive',
 
 check('纯 DOS Sockdrive 不下载 Win95，直接把远程游戏盘挂成 C:', () => {
   assert.match(jsdos, /else if \(streamingGame\)[\s\S]*?buildDosSockdriveConf\(/)
+  assert.match(jsdos, /const bootstrap = makeJsdosConfigBundle\(pureDosConfig\)/)
+  assert.doesNotMatch(jsdos, /makeJsdosConfigBundle\('\[autoexec\]\\nrem sockdrive bootstrap'\)/)
   assert.match(jsdos, /静态 Sockdrive 需要 DOSBox-X/)
   assert.doesNotMatch(jsdos, /流式 Windows 游戏盘缺少共享系统镜像/)
   assert.match(jsdos, /else if \(pureDosStreaming\)[\s\S]*?60_000/)
