@@ -1,0 +1,18 @@
+{
+  "format": "8bitgo.undertale-runtime.v1",
+  "source": "https://github.com/ButterscotchRunner/Butterscotch",
+  "commit": "54e10ec4e4a5713130675c7719dda7c437b4f849",
+  "license": "MPL-2.0",
+  "gameDataIncluded": false,
+  "upstreamArtifactSha256": "19a18cad3727eb817463ab51a39fba882d3148aa53c2a05fed50c3d7447597ad",
+  "files": {
+    "runtime/butterscotch.mjs": {
+      "bytes": 107774,
+      "sha256": "d7b3e569e7bcb023c78e4f648e26e0dbbd2a191723b13128e9fe734103a7ecb0"
+    },
+    "runtime/butterscotch.wasm": {
+      "bytes": 2046313,
+      "sha256": "7d386f70c0e639135d02752761cac542ceb6c30599d71598645b01f2be9cfe6e"
+    }
+  }
+}

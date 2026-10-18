@@ -57,6 +57,10 @@ for (const name of selected) {
       assert.match(html, /\/web\/gta-vc\/manifest\.json/, 'GTA VC PWA 清单路径没有带 Pages 基址')
       assert.doesNotMatch(html, /\/gta-vice-city-wasm\//, 'GTA VC 仍引用上游 GitHub Pages 路径')
     }
+    if (name === 'undertale') {
+      assert.match(html, /本站不提供或上传游戏内容/, 'UNDERTALE Pages 必须明确本地文件边界')
+      assert.match(html, /webkitdirectory/, 'UNDERTALE Pages 必须从玩家本机安装目录导入')
+    }
   }
 
   if (name === 'gtavc') {
@@ -67,6 +71,13 @@ for (const name of selected) {
     assert.match(extractor, /DecompressionStream\(["']gzip["']\)/, 'GTA VC Pages 包丢失流式 gzip 解压')
     assert.ok(!files.some((file) => /(?:^|\/)game\.tar\.gz$/i.test(relative(root, file).replaceAll('\\', '/'))),
       'GTA VC Pages 包不得包含游戏数据归档')
+  }
+  if (name === 'undertale') {
+    const app = readFileSync(resolve(root, 'web/undertale/app.js'), 'utf8')
+    assert.match(app, /navigator\.storage\.getDirectory/, 'UNDERTALE Pages 丢失 OPFS 本地存储')
+    assert.match(app, /file\.stream\(\)\.getReader\(\)/, 'UNDERTALE Pages 丢失流式本地导入')
+    assert.ok(!files.some((file) => /(?:^|\/)(?:data\.win|game\.(?:unx|ios|droid)|[^/]+\.(?:ogg|rar|7z))$/i
+      .test(relative(root, file).replaceAll('\\', '/'))), 'UNDERTALE Pages 不得包含商业游戏内容')
   }
 
   const workerUrl = `${pathToFileURL(resolve(root, '_worker.js')).href}?check=${Date.now()}`

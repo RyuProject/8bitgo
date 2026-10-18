@@ -1787,6 +1787,32 @@ npm run pages:web-games:build -- gtavc
 npm run pages:web-games:check -- gtavc
 ```
 
+### 2.28.10 /web/undertale：公开站只放 MPL 运行端，正版安装目录只进浏览器 OPFS
+
+2026-10-19 接入 [Butterscotch](https://github.com/ButterscotchRunner/Butterscotch) Web 构建提交
+`54e10ec4e4a5713130675c7719dda7c437b4f849`，专用 Pages 项目是 `8bitgo-undertale`，入口
+`/web/undertale/`。Butterscotch 是 MPL-2.0 的 GameMaker Runner 重实现，上游把 UNDERTALE v1.08 /
+WAD 16 列为兼容目标，但仍明确标注早期开发；本站页面必须保留“实验性”提示，不能宣称官方支持。
+
+⚠️ **任何 UNDERTALE 游戏数据都不准进 Git、Pages、R2、Worker 代理或 Service Worker。** 包括
+`data.win` / `game.unx`、OGG 音乐、贴图、拆分分卷与任何第三方重打包归档。玩家用
+`webkitdirectory` 选择自己合法取得的完整安装目录；`app.js` 先验证 WAD 名称和 `FORM` 文件头，再按
+ReadableStream 分片直接写浏览器私有 OPFS。不要改成整包 `arrayBuffer()`，也不要新增远端 URL 导入。
+
+OPFS 的 `library-v1` 与 `saves` 故意分开：重新导入或点“清除本机游戏副本”只删游戏库，不删存档。
+运行时预编译与本地复制并行，第二次访问直接从 OPFS 启动；键盘、标准手柄与触屏最终都汇入
+Butterscotch 的键盘接口。当前 Web 构建依赖 WebAssembly JSPI、OPFS 和 WebGL 2，不满足时必须在
+导入前拦截，不能让玩家复制完几百 MB 才发现浏览器不兼容。
+
+上游构建与许可证由 `runtime-manifest.json` 固定哈希；换版时必须同步提交号、归档 SHA-256、两个
+运行时文件哈希和 MPL 许可证。回归：
+
+```bash
+npm run undertale:check
+npm run pages:web-games:build -- undertale
+npm run pages:web-games:check -- undertale
+```
+
 ### 2.29 后台能热改的站点级配置：`site_settings` 表（首页公告条是第一个）
 
 为什么不是 `.env`：`config-manifest.js` 那页（后台「配置」）**只读是刻意的**，
