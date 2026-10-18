@@ -417,6 +417,14 @@ Win95 或 Caesar 的分辨率补丁。
 `imgmount <序号> sockdrive <URL>` 按扇区读取；`rom / roms` 那份完整 ZIP 仍留在数据里作一键回退，
 但流式模式不会下载它。清空 `dos_sockdrive` 就原样回到旧整包路径，不需要迁移存量游戏。
 
+⚠️ **纯 DOS 也必须有一块可启动系统盘。** `sockify` 从普通游戏 ZIP 生成的是 FAT 游戏盘，
+`imgmount 2 sockdrive ...` 只把它注册成 BIOS 硬盘；DOSBox-X 内置 DOS 随后执行 `c:` 会明确报
+`Drive C does not exist`。`imgmount c sockdrive` 同样不会把 Sockdrive 变成内置 DOS 的 FAT 盘。
+未配置 `dos_system` 的流式 DOS 游戏因此由适配器自动叠加 10MB 的
+`system-dos7.1-v1.jsdos`：系统盘占硬盘 2 / C:，游戏盘占硬盘 3 / D:，`boot c:` 后再由
+`scheduleDosGuestLaunch` 在真实 DOS 提示符输入 `D:\\<EXE>`。不要再恢复“纯 DOS 不需要系统镜像”
+那条分支；官方 Sockdrive 示例里的 `imgmount 2` 后面紧跟 `boot c:`，前提就是磁盘本身可启动。
+
 ⚠️ 目录必须带版本（如 `sockdrives/caesar3-v1`）且**不可原地覆盖**：浏览器会按完整 URL 把磁盘块
 长期缓存在 OPFS，原地换内容会把两代扇区拼在一起。若 `sockify -b/-g`，R2 / Worker 必须分别给
 `.raw` **和 `sockdrive.metaj`** 发正确的 `Content-Encoding: br/gzip`（官方工具连元数据也压缩）；

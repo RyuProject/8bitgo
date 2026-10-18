@@ -329,6 +329,63 @@ export function assertTypeable(command: string): void {
   if (bad !== undefined) throw new Error(`Windows 自动启动路径含无法输入的字符：${bad}`)
 }
 
+/**
+ * DOS 7.1 启动盘没有 Windows“运行”对话框；开机后直接在真实 DOS 提示符输入 D:\\GAME.EXE。
+ * Sockdrive 必须作为 BIOS 第二硬盘存在，只有启动真实 DOS 后它才会成为可访问的 D:，所以不能
+ * 复用内置 DOS 的 `c:` 切盘，也不能复用下面那套 Ctrl+Esc / Run 自动启动链。
+ */
+export function scheduleDosGuestLaunch(
+  ci: WindowsLaunchCi,
+  command: string,
+  waitSeconds: number,
+  stopped: () => boolean,
+  onLaunched: () => void,
+  onMilestone?: (step: WindowsLaunchMilestone) => void,
+): () => void {
+  assertTypeable(command)
+  const timers = new Set<number>()
+  const later = (ms: number, fn: () => void) => {
+    const id = window.setTimeout(() => {
+      timers.delete(id)
+      if (!stopped()) fn()
+    }, ms)
+    timers.add(id)
+  }
+  const tap = (key: number, shift = false) => {
+    if (shift) ci.sendKeyEvent(WIN_KEY.leftShift, true)
+    ci.sendKeyEvent(key, true)
+    ci.sendKeyEvent(key, false)
+    if (shift) ci.sendKeyEvent(WIN_KEY.leftShift, false)
+  }
+  const chars = command.toLowerCase().split('')
+  const typeAt = (at: number) => {
+    if (at >= chars.length) {
+      tap(WIN_KEY.enter)
+      onMilestone?.('launched')
+      // 回车交给客体后再撤遮罩；这样 DOS 提示符不会在加载游戏的第一帧闪给玩家。
+      later(1_200, onLaunched)
+      return
+    }
+    const ch = chars[at]
+    if (/[a-z0-9]/.test(ch)) tap(ch.toUpperCase().charCodeAt(0))
+    else if (ch === ':') tap(WIN_KEY.semicolon, true)
+    else if (ch === '\\') tap(92)
+    else if (ch === '.') tap(46)
+    else if (ch === ' ') tap(WIN_KEY.space)
+    else if (ch === '-') tap(WIN_KEY.minus)
+    else if (ch === '_') tap(WIN_KEY.minus, true)
+    else if (ch === '/') tap(WIN_KEY.slash)
+    else if (ch === '"') tap(WIN_KEY.quote, true)
+    later(35, () => typeAt(at + 1))
+  }
+  // fastForwardOnBoot 会让 10MB 的 DOS 盘很快到提示符；仍留 8 秒默认值给慢设备与首次分块读取。
+  later(Math.max(3, Math.min(120, waitSeconds)) * 1000, () => typeAt(0))
+  return () => {
+    for (const id of timers) window.clearTimeout(id)
+    timers.clear()
+  }
+}
+
 export function scheduleWindowsLaunch(
   ci: WindowsLaunchCi,
   command: string,

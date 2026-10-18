@@ -15,10 +15,15 @@ import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { normalizeDosboxConfigOverride, mergeDosboxConfigOverride } from '../shared/dosbox-config.js'
 
-const { isReadyJsdosBundleBlob, makeJsdosBundle, makeWindowsGameLayer, buildDosboxConf, buildDosSockdriveConf, mergeExtraFiles, readZipFile } = await import(
+const { isReadyJsdosBundleBlob, makeJsdosBundle, makeWindowsGameLayer, buildDosboxConf, mergeExtraFiles, readZipFile } = await import(
   fileURLToPath(new URL('../src/lib/jsdosBundle.ts', import.meta.url))
 )
-const { windowsGuestLaunchCommand, windowsSockdriveRegistryCommand } = await import(
+const {
+  buildSockdriveWindowsGuestConfig,
+  dosSockdriveProgramCommand,
+  windowsGuestLaunchCommand,
+  windowsSockdriveRegistryCommand,
+} = await import(
   fileURLToPath(new URL('../src/lib/windowsGuest.ts', import.meta.url)),
 )
 const {
@@ -35,6 +40,7 @@ const {
   frameHasDesktopContent,
   frameDiffRatio,
   frameIsBlank,
+  scheduleDosGuestLaunch,
   scheduleWindowsLaunch,
   windowsLaunchDelayMs,
   DESKTOP_SETTLE_FLOOR_MS,
@@ -633,27 +639,26 @@ console.log('\n── 普通 DOS 包必须显式开启游戏需要的内存接�
   ok(/\[dos\]\nxms=true\nems=false\numb=true/.test(tunedText), '普通 DOS 可以逐游戏关闭有兼容性冲突的 EMS')
 }
 
-console.log('\n── 大型纯 DOS 游戏：Sockdrive 挂成 C 盘后按扇区边下边玩 ──')
+console.log('\n── 大型纯 DOS 游戏：DOS 7.1 启动盘 + D: Sockdrive 边下边玩 ──')
 {
   const url = 'https://assets.example.test/sockdrives/fallout-en-v1'
-  const conf = buildDosSockdriveConf(
-    'FALLOUT.EXE',
+  const guest = buildSockdriveWindowsGuestConfig(
+    '[dosbox]\nmemsize=16\n\n[autoexec]\necho off\nimgmount 2 system-fat32-2gb.qcow2\n',
     url,
-    undefined,
     windowsGameCompatibilityDosboxConfig('fallout', 'FALLOUT.EXE', undefined),
   )
-  ok(conf.includes(`imgmount 2 sockdrive ${url}`), '⭐ 纯 DOS 流式盘直接挂成 C:，不需要下载 Win95 系统镜像')
-  ok(!/^mount c \.\s*$/m.test(conf), '流式配置不再等待完整 ZIP 解包到宿主文件系统')
-  ok(conf.includes('\nc:\nFALLOUT.EXE\n'), '远程盘挂好后直接切到 C: 启动 Fallout')
-  ok(/\[dosbox\][\s\S]*memsize=32/.test(conf), 'Fallout 流式模式保留已验证的 32MB 内存配置')
+  ok(guest.dosboxConf.includes(`imgmount 3 sockdrive ${url}`), '⭐ DOS 7.1 占 C:，纯 DOS 流式游戏盘挂成 BIOS 第二盘 D:')
+  ok(guest.dosboxConf.includes('\nboot c: -convertfat\n'), '挂完两块盘后启动真实 DOS，D: 才会变成可访问盘符')
+  ok(dosSockdriveProgramCommand('FALLOUT.EXE', guest.gameDrive) === 'D:\\FALLOUT.EXE', '真实 DOS 提示符会启动 D:\\FALLOUT.EXE')
+  ok(/\[dosbox\][\s\S]*memsize=32/.test(guest.dosboxConf), 'Fallout 流式模式保留已验证的 32MB 内存配置')
   ok(
-    /\[cpu\][\s\S]*core=normal/.test(conf) && /\[cpu\][\s\S]*cycles=fixed 30000/.test(conf),
+    /\[cpu\][\s\S]*core=normal/.test(guest.dosboxConf) && /\[cpu\][\s\S]*cycles=fixed 30000/.test(guest.dosboxConf),
     'Fallout 流式模式保留已验证的 CPU 配置',
   )
   await throwsWith(
-    () => Promise.resolve(buildDosSockdriveConf('Long Folder/FALLOUT.EXE', url)),
+    () => Promise.resolve(dosSockdriveProgramCommand('Long Folder/FALLOUT.EXE', 'D')),
     /DOS 8\.3/,
-    '远程盘不能靠本地二次挂载绕过长路径，开局前明确拒绝不可靠入口',
+    '真实 DOS 自动输入不能绕过长路径，开局前明确拒绝不可靠入口',
   )
 }
 
@@ -944,6 +949,31 @@ const BLACK = mkFrame(640, 480, 0)
  * 实测非主色像素只占 0.04%～0.1%（光标那几十个像素），任务栏/图标一个都没有。
  */
 const WALLPAPER = mkFrame(640, 480, 40)
+
+console.log('\n── 纯 DOS 客体：等 DOS 7.1 提示符后自动输入 D:\\GAME.EXE ──')
+{
+  const clock = fakeClock()
+  globalThis.window = clock.win
+  const keys = []
+  const milestones = []
+  let launchedAt = null
+  const cancel = scheduleDosGuestLaunch(
+    { sendKeyEvent: (code, pressed) => pressed && keys.push([clock.now, code]) },
+    'D:\\FALLOUT.EXE',
+    3,
+    () => false,
+    () => (launchedAt = clock.now),
+    (step) => milestones.push([clock.now, step]),
+  )
+  await clock.runUntil(2_999)
+  ok(keys.length === 0, 'DOS 7.1 还在开机时不会提前把命令敲进 BIOS')
+  await clock.runUntil(6_000)
+  cancel()
+  ok(keys[0]?.[0] === 3_000 && keys[0]?.[1] === 68, '等待到点后从 D 开始输入游戏路径')
+  ok(keys.some(([, code]) => code === 257), '完整命令最后发送 Enter')
+  ok(milestones.some(([, step]) => step === 'launched'), '输入完成后推进 launched 里程碑')
+  ok(launchedAt !== null && launchedAt > 4_000, '回车交给客体后留出一帧加载时间再撤遮罩')
+}
 
 console.log('\n── 桌面到底画完了没有（desktopSettled）──')
 {

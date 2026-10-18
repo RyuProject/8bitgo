@@ -39,6 +39,29 @@ import { versionedRomUrl } from '@/services/roms'
 const OFFICIAL = 'https://br.cdn.dos.zone/js-dos/system'
 
 /**
+ * 纯 DOS Sockdrive 不能直接当 DOSBox-X 内置 DOS 的 C:：官方扩展只把它挂成 BIOS 硬盘。
+ * 因此流式 DOS 游戏统一先启动这块 10MB 的 DOS 7.1 系统盘，再把游戏盘作为 D: 使用。
+ */
+export const DOS71_SYSTEM_FILE = 'system-dos7.1-v1.jsdos'
+
+export function isDos71SystemUrl(value: string): boolean {
+  try {
+    return new URL(value, typeof window === 'undefined' ? 'https://x/' : window.location.href).pathname
+      .split('/')
+      .pop() === DOS71_SYSTEM_FILE
+  } catch {
+    return false
+  }
+}
+
+/** 默认优先走资源域；开发环境没配公开根地址时退回同源白名单代理。 */
+export function defaultDos71SystemUrl(): string {
+  const env = (import.meta as ImportMeta & { env?: ImportMetaEnv }).env
+  const base = String(env?.VITE_ROM_BASE_URL || '').trim().replace(/\/+$/, '')
+  return base ? `${base}/systems/dos/${DOS71_SYSTEM_FILE}` : `/system-images/${DOS71_SYSTEM_FILE}`
+}
+
+/**
  * 我们的镜像路径 → 官方同一份镜像的地址。
  *
  * key 是**我们自己地址里的 pathname**（不含域名），这样换资源域名也不用动这张表。
@@ -57,7 +80,7 @@ const sameOriginMirror = (file: string): readonly SystemMirror[] => [
 ]
 
 const MIRRORS: Readonly<Record<string, readonly SystemMirror[]>> = {
-  '/systems/dos/system-dos7.1-v1.jsdos': mirrorsFor('system-dos7.1-v1.jsdos'),
+  [`/systems/dos/${DOS71_SYSTEM_FILE}`]: mirrorsFor(DOS71_SYSTEM_FILE),
   '/systems/dos/system-win311-v1.jsdos': mirrorsFor('system-win311-v1.jsdos'),
   '/systems/dos/system-win95-v1.jsdos': mirrorsFor('system-win95-v1.jsdos'),
   '/systems/dos/system-win98-v1.jsdos': mirrorsFor('system-win98-v1.jsdos'),

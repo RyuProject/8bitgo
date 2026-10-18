@@ -159,6 +159,32 @@ function safeStreamedExecutable(executable: string): string {
   return path
 }
 
+/**
+ * 真实 DOS 7.1 启动盘会把 Sockdrive 作为第二块硬盘暴露成 D:；这里生成要在客体提示符输入的命令。
+ * 和 Windows 的 Run 路径不同，DOS 还允许 COM / BAT，但每一段仍必须是 8.3，避免键盘自动输入
+ * 成功后才在客体里报一个玩家看不懂的长文件名错误。
+ */
+export function dosSockdriveProgramCommand(program: string, drive: string): string {
+  const path = program.replace(/\\/g, '/').replace(/^(?:\.\/)+/, '').replace(/^\/+|\/+$/g, '')
+  const parts = path.split('/')
+  if (
+    !path ||
+    !/^[d-z]$/i.test(drive) ||
+    !/\.(?:exe|com|bat)$/i.test(path) ||
+    /^[a-z]:/i.test(path) ||
+    parts.some((part) => {
+      if (!part || part === '.' || part === '..' || /[\x00-\x1f"<>|?*:+,;=\[\] ]/.test(part)) return true
+      const dot = part.lastIndexOf('.')
+      const stem = dot >= 0 ? part.slice(0, dot) : part
+      const ext = dot >= 0 ? part.slice(dot + 1) : ''
+      return !stem || stem.length > 8 || ext.length > 3
+    })
+  ) {
+    throw new Error('纯 DOS 流式盘启动程序必须是盘内安全的 DOS 8.3 EXE、COM 或 BAT 相对路径')
+  }
+  return `${drive.toUpperCase()}:\\${path.replace(/\//g, '\\')}`
+}
+
 function safeStreamedRegistryImport(registryImport: string): string {
   const registry = registryImport.replace(/\\/g, '/').replace(/^(?:\.\/)+/, '').replace(/^\/+|\/+$/g, '')
   if (

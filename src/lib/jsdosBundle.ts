@@ -438,31 +438,6 @@ export function buildDosboxConf(exe: string | null, startupCommands?: string): s
   return lines.join('\n') + '\n'
 }
 
-/**
- * 生成纯 DOS 静态 Sockdrive 的启动配置。
- *
- * 普通 bundle 的 `mount c .` 只能看见已经完整解包到浏览器里的文件；把它精确替换成
- * DOSBox-X 的远程块设备后，Fallout 这类数百 MB 游戏才能先取启动扇区、进入游戏后再按需下载。
- * 远程盘没有本地目录可以给长文件名另挂 D:，因此入口必须是可靠可执行的 DOS 8.3 路径。
- */
-export function buildDosSockdriveConf(
-  executable: string,
-  sockdriveUrl: string,
-  startupCommands?: string,
-  configOverride?: string,
-): string {
-  const path = executable.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
-  if (!path || !isDos83Path(path) || !/\.(?:exe|com|bat)$/i.test(path)) {
-    throw new Error('纯 DOS 流式盘的启动程序必须是盘内 DOS 8.3 格式的 EXE、COM 或 BAT 相对路径')
-  }
-  // URL 已由 normalizeSockdriveUrl 做过命令行字符与版本校验；这里仍拒绝换行，防止函数被单独误用。
-  if (!sockdriveUrl || /[\r\n]/.test(sockdriveUrl)) throw new Error('纯 DOS 流式盘 URL 无效')
-  const base = buildDosboxConf(path, startupCommands)
-  const mounted = base.replace(/^mount c \.\s*$/m, `imgmount 2 sockdrive ${sockdriveUrl}`)
-  if (mounted === base) throw new Error('无法生成纯 DOS 流式盘挂载配置')
-  return mergeDosboxConfigOverride(mounted, configOverride)
-}
-
 /* ---------------- 对外接口 ---------------- */
 
 export interface BundleResult {

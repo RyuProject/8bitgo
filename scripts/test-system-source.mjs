@@ -12,6 +12,8 @@ import assert from 'node:assert/strict'
 import { deflateRawSync } from 'node:zlib'
 import { readFileSync } from 'node:fs'
 import {
+  defaultDos71SystemUrl,
+  isDos71SystemUrl,
   looksLikeSystemBundle,
   loadSystemBytes,
   prewarmSystemCache,
@@ -114,6 +116,12 @@ const OFFICIAL = 'https://br.cdn.dos.zone/js-dos/system/system-win95-v1.jsdos'
 const TRADITIONAL_WIN95 = 'Windows95_Traditional-Chinese-DirectInput-v1.jsdos'
 
 console.log('一、镜像表')
+
+await check('纯 DOS Sockdrive 默认使用同源 DOS 7.1 启动盘', () => {
+  assert.equal(defaultDos71SystemUrl(), '/system-images/system-dos7.1-v1.jsdos')
+  assert.equal(isDos71SystemUrl(defaultDos71SystemUrl()), true)
+  assert.equal(isDos71SystemUrl(PRIMARY), false)
+})
 
 await check('已登记的路径有备用源，而且主源永远排第一', () => {
   const s = systemSourcesFor(PRIMARY)
@@ -440,7 +448,7 @@ await check('⚠️ jsdos 适配器真的用上了多源加载', async () => {
   const src2 = readFileSync(new URL('../src/emulator/adapters/jsdos.ts', import.meta.url), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/^\s*\/\/.*$/gm, '')
-  assert.match(src2, /loadSystemBytes\(\s*\n?\s*systemSourcesFor\(options\.dosSystemUrl\)/, '系统镜像还在走单源的 loadGameBytes')
+  assert.match(src2, /loadSystemBytes\(\s*\n?\s*systemSourcesFor\(systemUrl\)/, '系统镜像还在走单源的 loadGameBytes')
 })
 
 console.log(failed ? `\n${failed} 项未通过` : '\n全部通过 ✅')
