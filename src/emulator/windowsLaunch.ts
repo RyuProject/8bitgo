@@ -303,6 +303,8 @@ const WIN_KEY = {
   s: 83,
   space: 32,
   minus: 45,
+  slash: 47,
+  quote: 39,
   semicolon: 59,
 } as const
 
@@ -314,7 +316,7 @@ const WIN_KEY = {
  * 会切换工作目录，所以先启动 File Manager 打开父目录，再从它的 File > Run 执行 EXE。
  */
 /** 自动输入只会敲这些字符；别的字符在 DOS 8.3 文件名里也合法（~ ! $ # 之类），但这里敲不出来 */
-const TYPEABLE = /^[a-z0-9:\\. \-_]*$/i
+const TYPEABLE = /^[a-z0-9:\\/. \-_"]*$/i
 
 /**
  * 启动前先验一遍能不能敲出来。
@@ -340,6 +342,8 @@ export function scheduleWindowsLaunch(
    * 刻意只在**确证发生**时才报：桌面稳下来了才报 desktop，等满上限硬敲的那条路不报。
    */
   onMilestone?: (step: WindowsLaunchMilestone) => void,
+  /** 先在 Win95“运行”框执行的静默准备命令；当前用于导入流式盘里的注册表文件。 */
+  prepareCommand?: string,
 ): () => void {
   const timers = new Set<number>()
   let armed = false
@@ -389,6 +393,8 @@ export function scheduleWindowsLaunch(
       else if (ch === ' ') tap(WIN_KEY.space)
       else if (ch === '-') tap(WIN_KEY.minus)
       else if (ch === '_') tap(WIN_KEY.minus, true)
+      else if (ch === '/') tap(WIN_KEY.slash)
+      else if (ch === '"') tap(WIN_KEY.quote, true)
       // 敲不出来的字符 assertTypeable 早就拦了；万一漏网也别在定时器里抛（没人接），跳过它
       later(35, () => typeAt(at + 1))
     }
@@ -399,6 +405,16 @@ export function scheduleWindowsLaunch(
     ci.sendKeyEvent(WIN_KEY.leftAlt, true)
     tap(WIN_KEY.f)
     ci.sendKeyEvent(WIN_KEY.leftAlt, false)
+    later(350, () => tap(WIN_KEY.r))
+    later(800, onOpened)
+  }
+
+  const openStartRun = (onOpened: () => void) => {
+    // DOSBox-X 不会把浏览器的 Meta / Super 键可靠地交给 Win95；Win+R 会退化成桌面上的
+    // 普通字母 R。Ctrl+Esc 是 Windows 95 原生的“打开开始菜单”，随后 R 触发 Run。
+    ci.sendKeyEvent(WIN_KEY.leftCtrl, true)
+    tap(WIN_KEY.esc)
+    ci.sendKeyEvent(WIN_KEY.leftCtrl, false)
     later(350, () => tap(WIN_KEY.r))
     later(800, onOpened)
   }
@@ -472,13 +488,17 @@ export function scheduleWindowsLaunch(
       return
     }
 
-    // DOSBox-X 不会把浏览器的 Meta / Super 键可靠地交给 Win95；Win+R 会退化成桌面上的
-    // 普通字母 R。Ctrl+Esc 是 Windows 95 原生的“打开开始菜单”，随后 R 触发 Run。
-    ci.sendKeyEvent(WIN_KEY.leftCtrl, true)
-    tap(WIN_KEY.esc)
-    ci.sendKeyEvent(WIN_KEY.leftCtrl, false)
-    later(350, () => tap(WIN_KEY.r))
-    later(800, () => typeCommand(command, finishLaunch))
+    if (prepareCommand) {
+      /*
+        REGEDIT /S 没有可等待的窗口；给老机器留出落盘时间后再开一次 Run 启动游戏。
+        两条命令必须分开：Win95 的 COMMAND.COM 不可靠支持 `&&`，拼成一行会让部分镜像失效。
+      */
+      openStartRun(() => typeCommand(prepareCommand, () => {
+        later(2_000, () => openStartRun(() => typeCommand(command, finishLaunch)))
+      }))
+      return
+    }
+    openStartRun(() => typeCommand(command, finishLaunch))
   }
   const arm = () => {
     if (armed || stopped()) return
