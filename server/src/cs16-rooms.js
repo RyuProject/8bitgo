@@ -6,6 +6,8 @@ import { take } from './rateLimit.js'
 
 const ROOM_PATH = '/api/cs16/room'
 const ROOM_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+const ROOM_HOST_PROTOCOL_PREFIX = '8bitgo.cs16.host.'
+const ROOM_GUEST_PROTOCOL_PREFIX = '8bitgo.cs16.guest.'
 const SUPPORTED_MAPS = new Set([
   'de_dust2', 'de_dust', 'de_inferno', 'de_nuke', 'de_aztec', 'de_train',
   'de_cbble', 'cs_office', 'cs_italy', 'cs_assault', 'cs_militia', 'de_vertigo',
@@ -42,8 +44,11 @@ function sameOrigin(req, origin) {
     const source = new URL(origin)
     const target = new URL(`http://${String(req.headers.host || '')}`)
     if (source.host === target.host) return true
-    // Vite 的 changeOrigin 开发代理会把 Host 改成后端端口；仅在直连对端是可信私网代理时放宽端口。
-    return isPrivateIp(req.socket?.remoteAddress) && source.hostname === target.hostname
+    const loopback = (hostname) => ['localhost', '127.0.0.1', '[::1]', '::1'].includes(hostname)
+    // Vite 的 changeOrigin 会同时把 localhost 改成 127.0.0.1、把端口改成后端端口；只在直连对端
+    // 本身是可信私网代理时放宽，不能让公网请求靠伪造 Origin 绕过创建房间的跨站保护。
+    return isPrivateIp(req.socket?.remoteAddress) &&
+      (source.hostname === target.hostname || (loopback(source.hostname) && loopback(target.hostname)))
   } catch {
     return false
   }
@@ -82,6 +87,25 @@ function digestToken(token) {
 function tokenMatches(room, token) {
   const supplied = digestToken(String(token || ''))
   return supplied.length === room.hostTokenHash.length && timingSafeEqual(supplied, room.hostTokenHash)
+}
+
+function tokenFromProtocols(req, prefix) {
+  const protocols = String(req.headers['sec-websocket-protocol'] || '')
+    .split(',')
+    .map((value) => value.trim())
+  const credential = protocols.find((value) => value.startsWith(prefix))
+  return credential ? credential.slice(prefix.length) : ''
+}
+
+function hostTokenFromRequest(req, url) {
+  const protocolToken = tokenFromProtocols(req, ROOM_HOST_PROTOCOL_PREFIX)
+  if (protocolToken) return protocolToken
+  const legacyToken = String(url.searchParams.get('token') || '')
+  /*
+   * 旧 Pages 客户端把 token 放在查询串。新后端必须先上线，否则新 Pages 会碰到不认识子协议的
+   * 旧后端；这里仅作滚动发布兼容，新客户端已经不会生成该 URL，避免两次发布之间房间功能全挂。
+   */
+  return /^[A-Za-z0-9_-]{24,128}$/.test(legacyToken) ? legacyToken : ''
 }
 
 function newRoomCode(rooms) {
@@ -136,6 +160,8 @@ export function readCs16RoomConfig(env = process.env, defaultAllowedOrigins = []
     maxBytesPerSecond: integer(env.CS16_RELAY_MAX_BYTES_PER_SECOND, 1024 * 1024, 64 * 1024, 16 * 1024 * 1024),
     heartbeatIntervalMs: integer(env.CS16_RELAY_HEARTBEAT_INTERVAL_MS, 30_000, 5000, 5 * 60_000),
     hostWaitMs: integer(env.CS16_ROOM_HOST_WAIT_MS, 15 * 60_000, 60_000, 30 * 60_000),
+    hostReconnectMs: integer(env.CS16_ROOM_HOST_RECONNECT_MS, 90_000, 15_000, 5 * 60_000),
+    guestReconnectMs: integer(env.CS16_ROOM_GUEST_RECONNECT_MS, 60_000, 15_000, 5 * 60_000),
     lifetimeMs: integer(env.CS16_ROOM_LIFETIME_MS, 6 * 60 * 60_000, 5 * 60_000, 24 * 60 * 60_000),
     serverPort: 27015,
     // getaddrinfo 会把这个 ID 映射成 101.101.254.202；固定值只存在浏览器虚拟网，不对应公网 IP。
@@ -169,12 +195,20 @@ export function createCs16RoomService({
     closeSocket(room.host, code, reason)
     for (const guest of room.guests.values()) closeSocket(guest, code, reason)
     room.guests.clear()
+    room.guestSessions.clear()
     room.host = null
+  }
+
+  const sweepGuestSessions = (room, now = Date.now()) => {
+    for (const [key, session] of room.guestSessions) {
+      if (!room.guests.has(session.peerId) && now >= session.expiresAt) room.guestSessions.delete(key)
+    }
   }
 
   const sweepRooms = () => {
     const now = Date.now()
     for (const room of rooms.values()) {
+      sweepGuestSessions(room, now)
       if (now >= room.expiresAt || (!room.host && now >= room.hostDeadline)) {
         removeRoom(room, 1001, now >= room.expiresAt ? 'Room expired' : 'Host did not start the room')
       }
@@ -225,6 +259,8 @@ export function createCs16RoomService({
       nextPeerId: 1,
       host: null,
       guests: new Map(),
+      // 访客瞬断时短时保留 peerId；GoldSrc 把虚拟 UDP 地址视为连接身份，换 ID 就无法原地续局。
+      guestSessions: new Map(),
     }
     rooms.set(code, room)
     stats.roomsCreated += 1
@@ -293,17 +329,31 @@ export function createCs16RoomService({
         stats.rejected += 1
         return rejectUpgrade(socket, '429 Too Many Requests', 'CS1.6 room connection limit reached')
       }
+      let guestResume = null
       if (role === 'host') {
-        if (!tokenMatches(room, url.searchParams.get('token')) || room.host) {
+        // 新客户端只走子协议；查询串仅用于承接已缓存的旧 Pages 版本，不能在新代码里重新生成。
+        if (!tokenMatches(room, hostTokenFromRequest(req, url)) || room.host) {
           stats.rejected += 1
           return rejectUpgrade(socket, '403 Forbidden', 'Invalid room host token')
         }
-      } else if (room.guests.size >= room.maxGuests) {
-        stats.rejected += 1
-        return rejectUpgrade(socket, '409 Conflict', 'CS1.6 room is full')
+      } else {
+        sweepGuestSessions(room)
+        const resumeToken = tokenFromProtocols(req, ROOM_GUEST_PROTOCOL_PREFIX)
+        if (resumeToken) {
+          const sessionKey = digestToken(resumeToken).toString('hex')
+          const session = room.guestSessions.get(sessionKey)
+          if (!/^[A-Za-z0-9_-]{24,128}$/.test(resumeToken) || !session || room.guests.has(session.peerId)) {
+            stats.rejected += 1
+            return rejectUpgrade(socket, '403 Forbidden', 'Invalid room player resume token')
+          }
+          guestResume = { sessionKey, session }
+        } else if (room.guestSessions.size >= room.maxGuests) {
+          stats.rejected += 1
+          return rejectUpgrade(socket, '409 Conflict', 'CS1.6 room is full')
+        }
       }
       try {
-        wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req, { room, role, ip }))
+        wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req, { room, role, ip, guestResume }))
       } catch (error) {
         logger.warn?.('[cs16-room] upgrade 失败：', error?.message || error)
         socket.destroy()
@@ -311,13 +361,15 @@ export function createCs16RoomService({
     }
     httpServer.on('upgrade', upgradeHandler)
 
-    wss.on('connection', (ws, _req, { room, role, ip }) => {
+    wss.on('connection', (ws, _req, { room, role, ip, guestResume }) => {
       stats.activeConnections += 1
       perIpConnections.set(ip, (perIpConnections.get(ip) || 0) + 1)
       ws.cs16Alive = true
       ws.on('pong', () => { ws.cs16Alive = true })
       let released = false
       let peerId = 0
+      let guestSessionKey = ''
+      let guestResumeToken = ''
       let windowStartedAt = Date.now()
       let windowPackets = 0
       let windowBytes = 0
@@ -357,12 +409,25 @@ export function createCs16RoomService({
           }
         }
       } else {
-        while (room.guests.has(room.nextPeerId)) room.nextPeerId = room.nextPeerId >= 65535 ? 1 : room.nextPeerId + 1
-        peerId = room.nextPeerId
-        room.nextPeerId = peerId >= 65535 ? 1 : peerId + 1
+        if (guestResume) {
+          peerId = guestResume.session.peerId
+          guestSessionKey = guestResume.sessionKey
+          guestResume.session.expiresAt = room.expiresAt
+        } else {
+          const reservedIds = new Set([...room.guestSessions.values()].map((session) => session.peerId))
+          while (room.guests.has(room.nextPeerId) || reservedIds.has(room.nextPeerId)) {
+            room.nextPeerId = room.nextPeerId >= 65535 ? 1 : room.nextPeerId + 1
+          }
+          peerId = room.nextPeerId
+          room.nextPeerId = peerId >= 65535 ? 1 : peerId + 1
+          guestResumeToken = randomBytes(24).toString('base64url')
+          guestSessionKey = digestToken(guestResumeToken).toString('hex')
+          room.guestSessions.set(guestSessionKey, { peerId, expiresAt: room.expiresAt })
+        }
         room.guests.set(peerId, ws)
-        if (room.host) ws.send(JSON.stringify({ type: 'room-ready', ...roomView(room), role: 'guest', peerId }))
-        else ws.send(JSON.stringify({ type: 'room-waiting', code: room.code, map: room.map }))
+        const resume = guestResumeToken ? { resumeToken: guestResumeToken } : {}
+        if (room.host) ws.send(JSON.stringify({ type: 'room-ready', ...roomView(room), role: 'guest', peerId, ...resume }))
+        else ws.send(JSON.stringify({ type: 'room-waiting', code: room.code, map: room.map, ...resume }))
       }
 
       ws.on('message', (data, isBinary) => {
@@ -397,9 +462,40 @@ export function createCs16RoomService({
       ws.once('error', () => {
         if (ws.readyState !== WebSocket.CLOSED) ws.terminate()
       })
-      ws.once('close', () => {
+      ws.once('close', (code, reasonBuffer) => {
         release()
-        if (role === 'host' && room.host === ws) removeRoom(room, 1012, 'Host left the room')
+        const reason = Buffer.from(reasonBuffer || []).toString()
+        if (role === 'guest') {
+          const session = room.guestSessions.get(guestSessionKey)
+          if (session) {
+            if (code === 1000 && reason === 'page closed') room.guestSessions.delete(guestSessionKey)
+            else session.expiresAt = Math.min(room.expiresAt, Date.now() + config.guestReconnectMs)
+          }
+          return
+        }
+        if (room.host !== ws) return
+        room.host = null
+        if (code === 1000 && reason === 'page closed') {
+          removeRoom(room, 1012, 'Host left the room')
+          return
+        }
+        /*
+         * 浏览器、Cloudflare 或移动网络的一次瞬断不等于房主主动退出。旧实现立即删房，客户端因此
+         * 只能显示“temporary server connection was lost”。保留同一个 room/token 一小段时间，
+         * 原有访客保持 WebSocket，房主重连后继续使用相同 peerId 路由；明确的页面关闭仍立即回收。
+         */
+        room.hostDeadline = Math.min(room.expiresAt, Date.now() + config.hostReconnectMs)
+        for (const guest of room.guests.values()) {
+          if (guest.readyState === WebSocket.OPEN) {
+            guest.send(JSON.stringify({
+              type: 'room-waiting',
+              code: room.code,
+              map: room.map,
+              reconnecting: true,
+              hostWaitMsRemaining: Math.max(0, room.hostDeadline - Date.now()),
+            }))
+          }
+        }
       })
     })
 

@@ -20,7 +20,7 @@
     "cs15:repack": "python3 scripts/repack-cs15.py",
     "cs15:upload": "node scripts/upload-cs15-r2.mjs",
     "test:cs15": "node scripts/test-cs15-pack.mjs",
-    "cs16:bundle": "esbuild public/web/cs16/cs16.js --bundle --format=esm --platform=browser --target=es2022 --outfile=public/web/cs16/cs16.bundle.js",
+    "cs16:bundle": "esbuild public/web/cs16/cs16.js --bundle --format=esm --platform=browser --target=es2022 --loader:.wasm=binary --outfile=public/web/cs16/cs16.bundle.js",
     "cs16:engine-patch": "node scripts/patch-cs16-memory.mjs",
     "cs16:repack": "python3 scripts/repack-cs16.py",
     "cs16:extras": "node scripts/repack-cs16-extras.mjs",

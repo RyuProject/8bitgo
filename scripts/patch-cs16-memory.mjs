@@ -82,10 +82,45 @@ let glue = readFileSync(gluePath, 'utf8')
 let gluePatched = false
 if (glue.includes(noGrowth)) {
   glue = glue.replace(noGrowth, withGrowth)
-  writeFileSync(gluePath, glue)
   gluePatched = true
 } else if (!glue.includes(withGrowth)) {
   throw new Error('generated/xash.js 的内存扩容函数形状已变化，不能安全补丁')
 }
 
-console.log(`${patched || gluePatched ? '✔ 已把' : '✔'} CS16 Xash 内存改为 256MB 初始、512MB 按需上限`)
+/*
+ * Emscripten 默认把浏览器 DPR 原样交给绘制缓冲；Retina 下会把 1280×720 变成 2560×1440。
+ * 启动器按设备算好 maxDevicePixelRatio，这里把普通窗口、原生全屏和软全屏三条路径全部接上。
+ * 三处缺一处就会在切全屏后突然恢复四倍像素量，所以仍按唯一片段失败而不是静默跳过。
+ */
+const dprPatches = [
+  [
+    'var getBoundingClientRect = e => specialHTMLTargets.indexOf(e) < 0 ? e.getBoundingClientRect() : { left: 0, top: 0 };\n        var JSEvents_resizeCanvasForFullscreen',
+    'var getBoundingClientRect = e => specialHTMLTargets.indexOf(e) < 0 ? e.getBoundingClientRect() : { left: 0, top: 0 };\n        // Retina/4K 原样放大会让浏览器监听服多画数倍像素；启动器给出预算，未配置时保持上游行为。\n        var cappedDevicePixelRatio = () => Math.min(devicePixelRatio, Math.max(.5, Number(Module["maxDevicePixelRatio"]) || devicePixelRatio));\n        var JSEvents_resizeCanvasForFullscreen',
+  ],
+  [
+    'strategy.canvasResolutionScaleMode == 2 ? devicePixelRatio : 1',
+    'strategy.canvasResolutionScaleMode == 2 ? cappedDevicePixelRatio() : 1',
+  ],
+  [
+    'var _emscripten_get_device_pixel_ratio = () => devicePixelRatio;',
+    'var _emscripten_get_device_pixel_ratio = () => cappedDevicePixelRatio();',
+  ],
+  [
+    'var softFullscreenResizeWebGLRenderTarget = () => { var dpr = devicePixelRatio;',
+    'var softFullscreenResizeWebGLRenderTarget = () => { var dpr = cappedDevicePixelRatio();',
+  ],
+]
+
+let dprPatched = false
+for (const [before, after] of dprPatches) {
+  if (glue.includes(before)) {
+    glue = glue.replace(before, after)
+    dprPatched = true
+  } else if (!glue.includes(after)) {
+    throw new Error('generated/xash.js 的 DPR 路径形状已变化，不能安全补丁')
+  }
+}
+
+if (gluePatched || dprPatched) writeFileSync(gluePath, glue)
+
+console.log(`${patched || gluePatched || dprPatched ? '✔ 已把' : '✔'} CS16 Xash 改为 256MB 初始、512MB 按需上限，并限制 Retina/4K 绘制像素`)

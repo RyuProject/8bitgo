@@ -139,17 +139,62 @@ function websocketPayloadBytes(value) {
   return value?.byteLength || 0
 }
 
-function proxyCs16Socket(target) {
-  const [client, browser] = Object.values(new WebSocketPair())
+function cs16SocketProtocol(request, target) {
+  if (target.pathname !== '/api/cs16/room') return ''
+  const role = target.searchParams.get('role')
+  const prefix = role === 'host'
+    ? '8bitgo.cs16.host.'
+    : role === 'guest'
+      ? '8bitgo.cs16.guest.'
+      : ''
+  if (!prefix) return ''
+  const offered = String(request.headers.get('Sec-WebSocket-Protocol') || '')
+    .split(',')
+    .map((value) => value.trim())
+  return offered.find((value) => value.startsWith(prefix) &&
+    /^[A-Za-z0-9_-]{24,128}$/.test(value.slice(prefix.length))) || ''
+}
+
+async function proxyCs16Socket(request, target) {
+  const protocol = cs16SocketProtocol(request, target)
   const upstreamUrl = new URL(target)
   upstreamUrl.protocol = 'wss:'
-  const upstream = new WebSocket(upstreamUrl.href)
+  const headers = new Headers({ Upgrade: 'websocket' })
+  if (protocol) headers.set('Sec-WebSocket-Protocol', protocol)
+
+  let upstreamResponse
+  try {
+    /*
+     * 房主凭证和玩家恢复凭证故意不进 URL，而放在 WebSocket 子协议里。Pages 是浏览器与主站
+     * 之间的真正入口，因此必须显式把子协议带到上游；只用 new WebSocket(url) 会悄悄丢掉它，
+     * 表现为直连主站测试全绿、cs16.8bitgo.com 却无法创建房间或断线续接。
+     */
+    upstreamResponse = await fetch(upstreamUrl.href, { headers })
+  } catch {
+    return new Response('CS1.6 upstream unavailable', { status: 502 })
+  }
+  const upstream = upstreamResponse.webSocket
+  if (upstreamResponse.status !== 101 || !upstream) {
+    await upstreamResponse.body?.cancel().catch(() => {})
+    const status = upstreamResponse.status >= 400 && upstreamResponse.status <= 599
+      ? upstreamResponse.status
+      : 502
+    return new Response('CS1.6 upstream rejected WebSocket', { status })
+  }
+  const selectedProtocol = String(upstreamResponse.headers.get('Sec-WebSocket-Protocol') || '').trim()
+  if (protocol && selectedProtocol !== protocol) {
+    upstream.close(1002, 'WebSocket subprotocol mismatch')
+    return new Response('CS1.6 upstream rejected WebSocket protocol', { status: 502 })
+  }
+
+  const [client, browser] = Object.values(new WebSocketPair())
   const queued = []
   let queuedBytes = 0
   let browserMessageChain = Promise.resolve()
-  browser.accept()
   browser.binaryType = 'arraybuffer'
   upstream.binaryType = 'arraybuffer'
+  browser.accept()
+  upstream.accept()
 
   const close = (socket, code, reason) => {
     if (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN) {
@@ -187,7 +232,9 @@ function proxyCs16Socket(target) {
   browser.addEventListener('error', () => close(upstream, 1011, 'Browser WebSocket error'))
   upstream.addEventListener('error', () => close(browser, 1011, 'CS1.6 upstream unavailable'))
 
-  return new Response(null, { status: 101, webSocket: client })
+  const responseHeaders = new Headers()
+  if (selectedProtocol) responseHeaders.set('Sec-WebSocket-Protocol', selectedProtocol)
+  return new Response(null, { status: 101, headers: responseHeaders, webSocket: client })
 }
 
 async function proxyCs16Api(request, configuredOrigin) {
@@ -199,7 +246,7 @@ async function proxyCs16Api(request, configuredOrigin) {
   if (websocketEndpoint) {
     // Pages 的跨域 fetch 会把 Upgrade 降级成普通 GET；显式桥接两条 WebSocket 才能保留二进制帧。
     // 仍按专用路径判定，因为 Pages 边缘不保证把首段 Upgrade 头暴露给脚本。
-    return proxyCs16Socket(target)
+    return proxyCs16Socket(request, target)
   }
   const upstream = new Request(target, request)
   // 这条代理只开放匿名 CS1.6 接口；不把主站登录凭证带过去，也不让任意客户端伪造跨站来源。

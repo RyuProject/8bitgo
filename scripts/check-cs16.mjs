@@ -113,6 +113,9 @@ const netSource = readFileSync(join(publicDir, 'cs16-net.js'), 'utf8')
 const index = readFileSync(join(publicDir, 'index.html'), 'utf8')
 const relaySource = readFileSync(join(root, 'server/src/cs16-relay.js'), 'utf8')
 const roomSource = readFileSync(join(root, 'server/src/cs16-rooms.js'), 'utf8')
+const detailSource = readFileSync(join(root, 'src/pages/GameDetailPage.tsx'), 'utf8')
+const zhHansSource = readFileSync(join(root, 'src/locales/zh-Hans.ts'), 'utf8')
+const englishSource = readFileSync(join(root, 'src/locales/en.ts'), 'utf8')
 const assetVersion = source.match(/const ASSET_VERSION = ['"]([^'"]+)['"]/)?.[1]
 if (!assetVersion) fail('cs16.js 没有 ASSET_VERSION')
 if (!index.includes(`cs16.bundle.js?v=${assetVersion}`)) fail('index.html 没引用当前版本的 cs16.bundle.js')
@@ -139,6 +142,26 @@ if (!index.includes('id="create-room"') || !index.includes('id="room-code-input"
     !index.includes('id="direct-address"') || !index.includes('id="direct-connect"')) {
   fail('CS1.6 启动页缺少临时房间码或经验证的 IP 直连入口')
 }
+if (!index.includes('id="cancel-room"') || !source.includes("$('cancel-room')?.addEventListener('click'")) {
+  fail('临时房间创建后没有取消并返回本地训练的入口，误触只能整页刷新')
+}
+if (!netSource.includes('ROOM_HOST_RECONNECT_WINDOW_MS') || !netSource.includes('scheduleRoomReconnect()') ||
+    !netSource.includes('closeDetail(event)') || !roomSource.includes('CS16_ROOM_HOST_RECONNECT_MS') ||
+    !roomSource.includes("reason === 'page closed'") || !source.includes('setRoomStatus(room, message)')) {
+  fail('临时房间仍会被一次 WebSocket 瞬断直接摧毁，或错误信息没有保留关闭原因')
+}
+if (!index.includes('rel="preconnect" href="https://assets.8bitgo.com"') ||
+    !index.includes('role="progressbar"') || !index.includes('Desktop keyboard + mouse recommended.')) {
+  fail('启动页缺少资源域预连接、可访问进度条或桌面键鼠提示')
+}
+if (!detailSource.includes("game?.slug === 'counter-strike-16'") ||
+    !detailSource.includes("hasEmbeddedCs16Rooms ? '1–16'")) {
+  fail('详情页仍会把自带 16 人房间的 CS1.6 标成单人游戏')
+}
+if (zhHansSource.includes('多数模拟器都支持即时存档') || englishSource.includes('Most emulators on 8BitGo support save states') ||
+    zhHansSource.includes('自动适配触屏设备') || englishSource.includes('adapts to touch devices')) {
+  fail('详情页 FAQ 仍在无条件承诺存档或移动端触控能力')
+}
 if (!source.includes("fetch('/api/cs16/servers'") || !source.includes('xash.net = activeRelay.net') ||
     !source.includes("['+connect', `webxash3d.${server.netId}:${server.port}`]")) {
   fail('启动器没有把安全目录、Xash 虚拟网络层和 connect 命令接成完整联机路径')
@@ -154,6 +177,12 @@ if (!netSource.includes("new URL('/api/cs16/relay'") || !netSource.includes("cca
 if (!netSource.includes("new URL('/api/cs16/room'") || !netSource.includes('ROOM_GUEST_IP_PREFIX') ||
     !netSource.includes('createCs16RoomNet') || !netSource.includes('roomConnectTimeoutMs')) {
   fail('CS1.6 房间适配器缺少固定同源端点、独立访客虚拟地址或建房网络层')
+}
+if (!netSource.includes('ROOM_HOST_PROTOCOL_PREFIX') || !netSource.includes('ROOM_GUEST_PROTOCOL_PREFIX') ||
+    !roomSource.includes('tokenFromProtocols(req, ROOM_HOST_PROTOCOL_PREFIX)') ||
+    !roomSource.includes('CS16_ROOM_GUEST_RECONNECT_MS') ||
+    netSource.includes("url.searchParams.set('token'")) {
+  fail('CS1.6 房主凭证仍可能进入 URL，或访客缺少保留 peerId 的恢复凭证')
 }
 if (!relaySource.includes('serverById.get(serverId)') || !relaySource.includes('isPublicIpv4(server.host)') ||
     !relaySource.includes('udp.connect(server.port, server.host)') || relaySource.includes("url.searchParams.get('host')")) {
@@ -179,8 +208,9 @@ const generatedXash = readFileSync(join(publicDir, 'engine/dist/generated/xash.j
 if (!generatedXash.includes('var ENV = Module["ENV"] ?? {};')) {
   fail('Xash Emscripten 封装没有接收启动器环境变量，YaPB 会在开图时终止')
 }
-if (!source.includes('yb_quota_mode "normal"') || !source.includes('yb_autovacate "0"') || !source.includes('`yb_quota "${count}"`')) {
-  fail('BOT 数量没有通过地图级配置精确覆盖 YaPB 默认值')
+if (!source.includes('yb_quota_mode "fill"') || !source.includes('yb_autovacate "1"') ||
+    !source.includes('yb_kick_after_player_connect "1"') || !source.includes('`yb_quota "${botQuota}"`')) {
+  fail('BOT 没有按“房主 + 所选 BOT”填充，真人加入时不会自动替换一个 BOT')
 }
 if (!source.includes('yb_radio_mode "1"') || !source.includes('yb_radio_mode 1') || !source.includes('voice_enable 0')) {
   fail('CS16 没有同时关闭不可用的麦克风采集和会触发旧客户端 BotVoice 崩溃的语音 chatter')
@@ -190,6 +220,15 @@ if (!source.includes('`yb_difficulty "${difficulty}"`') || !source.includes('`yb
 }
 if (source.includes('alias addbot "bot_add"') || source.includes('alias delbot "bot_kill"')) {
   fail('autoexec.cfg 仍在使用非 YaPB 的无效 BOT 命令')
+}
+if (!source.includes('maxDevicePixelRatio: maximumDevicePixelRatio()') ||
+    !generatedXash.includes('var cappedDevicePixelRatio = () =>') ||
+    !source.includes('`fps_max ${PERFORMANCE_PROFILE.fps}`') ||
+    !source.includes('`yb_think_fps "${PERFORMANCE_PROFILE.botThinkFps}"`')) {
+  fail('CS1.6 缺少 Retina/4K 像素预算、60 FPS 上限或按设备调节的 BOT 思考频率')
+}
+if (!source.includes('if (!document.hidden) visibleElapsed += now - lastCheckedAt')) {
+  fail('首帧超时仍把后台标签被浏览器节流的时间算进去，会误杀正在加载的房间')
 }
 
 const supportedMaps = [
@@ -347,6 +386,15 @@ if (!source.includes("xash.Cmd_ExecuteString('jointeam 2')") || !source.includes
 if (!source.includes('const downloads = new Map()') || !source.includes('for (const key of keys)')) {
   fail('启动关键路径没有保留动态库去重或当前地图预取')
 }
+if (!source.includes('const compressedChunkPromises = new Map()') ||
+    !source.includes('const ZSTD_DOWNLOAD_CONCURRENCY = zstdDownloadConcurrency()') ||
+    !source.includes('const ZSTD_DECODE_CONCURRENCY = 2')) {
+  fail('Zstd 分片没有把自适应网络预取与两片解压内存上限分开')
+}
+if (!source.includes('requestAnimationFrame(renderProgress)') || !source.includes('progressTime(remaining / bytesPerSecond)') ||
+    !source.includes('window.__probe.net.startedAt = 0')) {
+  fail('加载进度缺少逐帧节流、剩余时间或启动时测速归零')
+}
 
 /* 源码和 bundle 必须逐字节对应；只改 cs16.js 忘记重打包，是这类独立页最常见的线上漂移。 */
 const temp = mkdtempSync(join(tmpdir(), '8bitgo-cs16-check-'))
@@ -358,6 +406,7 @@ try {
     '--format=esm',
     '--platform=browser',
     '--target=es2022',
+    '--loader:.wasm=binary',
     `--outfile=${generated}`,
   ], { stdio: 'pipe' })
   if (!readFileSync(generated).equals(readFileSync(join(publicDir, 'cs16.bundle.js')))) {
@@ -418,8 +467,9 @@ if (!source.includes('chunkPromises.delete(chunk.compressedSha256)')) fail('Zstd
 if (!source.includes('maxBytes: MAX_ZSTD_CHUNK_COMPRESSED_BYTES') || !source.includes('maxBytes: MAX_CATALOG_BYTES')) {
   fail('CS16 清单或分片下载缺少运行时硬上限，异常响应可能在校验前耗尽内存')
 }
-if (!source.includes("fetchBytesWithRetry(`${ASSET_ROOT}/zstd.wasm") || !source.includes('await initZstd(bytes)')) {
-  fail('Zstd 解码器仍由第三方胶水层单次下载，瞬时断网会让全部分片重试失效')
+if (!source.includes("import zstdWasmBytes from './zstd.wasm'") || !source.includes('initZstd(zstdWasmBytes)') ||
+    source.includes("fetchBytesWithRetry(`${ASSET_ROOT}/zstd.wasm")) {
+  fail('Zstd 解码器没有内联进入口包，资源并发时独立下载会再次成为全部分片的单点故障')
 }
 if (!source.includes("'HUD font', { validate: isTtf }") || source.includes('HUD font failed to load')) {
   fail('必需 HUD 字体失败仍会被吞掉，玩家会进入没有雷达/血量/弹药的残局')

@@ -4,6 +4,10 @@ const MAX_WEBSOCKET_BUFFER = 512 * 1024
 const ROOM_HOST_IP_PREFIX = [101, 101]
 const ROOM_GUEST_IP_PREFIX = [101, 102]
 const ROOM_GUEST_PORT_BASE = 30_000
+const ROOM_HOST_RECONNECT_WINDOW_MS = 60_000
+const ROOM_HOST_RECONNECT_DELAY_MS = 750
+const ROOM_HOST_PROTOCOL_PREFIX = '8bitgo.cs16.host.'
+const ROOM_GUEST_PROTOCOL_PREFIX = '8bitgo.cs16.guest.'
 
 function prepareNet(net) {
   const upstreamRecvfrom = net.recvfrom.bind(net)
@@ -159,8 +163,15 @@ function roomUrl(room, role, locationObject) {
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
   url.searchParams.set('room', room.code)
   url.searchParams.set('role', role)
-  if (role === 'host') url.searchParams.set('token', room.hostToken)
   return url.href
+}
+
+function roomProtocols(room, role, guestResumeToken = '') {
+  if (role === 'guest') {
+    return guestResumeToken ? `${ROOM_GUEST_PROTOCOL_PREFIX}${guestResumeToken}` : undefined
+  }
+  // WebSocket URL 会被 Cloudflare/nginx 访问日志记录；Bearer 凭证放子协议头，避免房主 token 落盘。
+  return `${ROOM_HOST_PROTOCOL_PREFIX}${room.hostToken}`
 }
 
 function roomHostIp(room) {
@@ -175,6 +186,17 @@ function sameIp(left, right) {
   return left.length === right.length && left.every((octet, index) => octet === right[index])
 }
 
+function closeDetail(event) {
+  const reason = String(event?.reason || '').trim()
+  const code = Number(event?.code) || 0
+  return reason ? `${reason} (code ${code || 'unknown'})` : `code ${code || 'unknown'}`
+}
+
+function retryableRoomClose(event) {
+  // 策略/协议错误重试只会形成死循环；其余异常关闭可能只是代理或网络瞬断。
+  return ![1000, 1001, 1002, 1003, 1007, 1008, 1009].includes(Number(event?.code))
+}
+
 /**
  * 房主浏览器里的监听服收发真实 GoldSrc 数据报；服务端只负责按 peerId 把包送到同房间玩家。
  * 虚拟 IP 仅用于让 Xash 把不同访客识别为不同客户端，不会离开浏览器/本站 WSS。
@@ -183,6 +205,8 @@ export function createCs16RoomNet(room, role, {
   WebSocketImpl = WebSocket,
   locationObject = location,
   timeoutMs,
+  reconnectWindowMs = ROOM_HOST_RECONNECT_WINDOW_MS,
+  reconnectDelayMs = ROOM_HOST_RECONNECT_DELAY_MS,
   onDisconnect = () => {},
   onStatus = () => {},
 } = {}) {
@@ -197,6 +221,11 @@ export function createCs16RoomNet(room, role, {
   let closedByClient = false
   let ready = false
   let peerId = 0
+  let reconnectTimer = 0
+  let reconnectStartedAt = 0
+  let reconnectAttempts = 0
+  let lastClose = null
+  let guestResumeToken = ''
 
   const sender = {
     sendto(packet) {
@@ -226,32 +255,47 @@ export function createCs16RoomNet(room, role, {
   const connect = () => {
     if (connectPromise) return connectPromise
     connectPromise = new Promise((resolve, reject) => {
-      socket = new WebSocketImpl(roomUrl(room, role, locationObject))
-      socket.binaryType = 'arraybuffer'
+      const protocols = roomProtocols(room, role, guestResumeToken)
+      const candidate = protocols
+        ? new WebSocketImpl(roomUrl(room, role, locationObject), protocols)
+        : new WebSocketImpl(roomUrl(room, role, locationObject))
+      socket = candidate
+      candidate.binaryType = 'arraybuffer'
       let settled = false
       const timer = setTimeout(() => {
         if (settled) return
         settled = true
-        try { socket.close() } catch { /* CONNECTING 状态也允许直接收尾 */ }
+        try { candidate.close() } catch { /* CONNECTING 状态也允许直接收尾 */ }
         reject(new Error(role === 'host' ? 'The temporary server did not become ready' : 'Timed out waiting for the host. Make sure the host has started the game.'))
       }, connectionTimeoutMs)
 
-      socket.addEventListener('message', async (event) => {
+      candidate.addEventListener('message', async (event) => {
         if (typeof event.data === 'string') {
           let control
           try { control = JSON.parse(event.data) } catch { return }
+          if (role === 'guest' && /^[A-Za-z0-9_-]{24,128}$/.test(String(control?.resumeToken || ''))) {
+            guestResumeToken = control.resumeToken
+          }
           if (control?.type === 'room-waiting') {
-            onStatus('The host is still loading. Waiting for the temporary server…')
+            onStatus(control.reconnecting
+              ? 'The host connection was interrupted. Waiting for it to recover…'
+              : 'The host is still loading. Waiting for the temporary server…')
             return
           }
-          if (!settled && control?.type === 'room-ready' && control.code === room.code && control.role === role) {
+          if (control?.type === 'room-ready' && control.code === room.code && control.role === role) {
             if (role === 'guest' && (!Number.isInteger(control.peerId) || control.peerId < 1 || control.peerId > 65535)) {
-              settled = true
-              clearTimeout(timer)
-              reject(new Error('The room returned an invalid player ID'))
+              if (!settled) {
+                settled = true
+                clearTimeout(timer)
+                reject(new Error('The room returned an invalid player ID'))
+              }
               return
             }
             peerId = role === 'guest' ? control.peerId : 0
+            if (settled) {
+              onStatus(role === 'host' ? 'Temporary server connection restored.' : 'Room connection restored.')
+              return
+            }
             settled = true
             ready = true
             clearTimeout(timer)
@@ -278,22 +322,29 @@ export function createCs16RoomNet(room, role, {
           // 房间沿用 UDP 丢包语义：一帧损坏不能把整局变成未处理 Promise 拒绝。
         }
       })
-      socket.addEventListener('error', () => {
+      candidate.addEventListener('error', () => {
         if (!settled) {
           settled = true
           clearTimeout(timer)
           reject(new Error('Unable to connect to the temporary server gateway'))
         }
       })
-      socket.addEventListener('close', (event) => {
+      candidate.addEventListener('close', (event) => {
         clearTimeout(timer)
+        if (candidate !== socket) return
+        const wasReady = ready
+        lastClose = event
         if (!settled) {
           settled = true
           reject(new Error(`The temporary server closed before it was ready (${event.reason || event.code || 'network interruption'})`))
-        } else if (ready && !closedByClient) {
-          onDisconnect(role === 'host'
-            ? 'The temporary server connection was lost and the room has ended'
-            : `The host left or the room connection was lost (${event.reason || event.code || 'network interruption'})`)
+        } else if (wasReady && !closedByClient) {
+          if (retryableRoomClose(event) && (role === 'host' || guestResumeToken)) {
+            scheduleRoomReconnect()
+          } else {
+            onDisconnect(role === 'host'
+              ? `The temporary server connection closed (${closeDetail(event)})`
+              : `The host left or the room connection was lost (${closeDetail(event)})`)
+          }
         }
         ready = false
       })
@@ -301,9 +352,36 @@ export function createCs16RoomNet(room, role, {
     return connectPromise
   }
 
+  const scheduleRoomReconnect = () => {
+    if (closedByClient || (role === 'guest' && !guestResumeToken)) return
+    if (!reconnectStartedAt) reconnectStartedAt = Date.now()
+    const elapsed = Date.now() - reconnectStartedAt
+    if (elapsed >= reconnectWindowMs) {
+      onDisconnect(`The temporary server could not reconnect within ${Math.round(reconnectWindowMs / 1000)} seconds (${closeDetail(lastClose)})`)
+      return
+    }
+    reconnectAttempts += 1
+    onStatus(`${role === 'host' ? 'Temporary server' : 'Room'} connection interrupted. Reconnecting (${reconnectAttempts})…`)
+    const delay = Math.min(8000, reconnectDelayMs * (2 ** Math.min(reconnectAttempts - 1, 4)))
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = 0
+      connectPromise = null
+      connect().then(() => {
+        reconnectStartedAt = 0
+        reconnectAttempts = 0
+        lastClose = null
+        onStatus(role === 'host' ? 'Temporary server connection restored.' : 'Room connection restored.')
+      }).catch(() => {
+        connectPromise = null
+        scheduleRoomReconnect()
+      })
+    }, delay)
+  }
+
   const close = () => {
     closedByClient = true
     ready = false
+    clearTimeout(reconnectTimer)
     try { socket?.close(1000, 'page closed') } catch { /* 页面卸载时忽略 */ }
   }
 

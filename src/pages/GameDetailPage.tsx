@@ -249,6 +249,10 @@ export function GameDetailPage() {
   const seoPlatform = game ? platformMap[game.platform] : undefined
   const seoPlatformName = seoPlatform ? platformLabel(t, seoPlatform.id, seoPlatform.name) : ''
   const seoDocumentTitle = game ? gameSeoTitle(seoTitle, seoPlatform?.shortName ?? '', lang) : ''
+  // CS1.6 的联机房间由嵌入页自己的浏览器服务器提供，不走站点通用的 4 人 P2P 字段。
+  // 生产数据因此仍是 multiplayer=false / players=1；详情页若照抄会把眼前可用的 16 人房宣传成单机。
+  const hasEmbeddedCs16Rooms = game?.slug === 'counter-strike-16'
+  const effectiveMultiplayer = Boolean(game?.multiplayer) || hasEmbeddedCs16Rooms
   // 平台级 BIOS。必须在下面那几个 early return 之前调 —— hook 的调用顺序每次渲染都要一致。
   // 异步到货，第一帧一般是空串；播放器只在挂载引擎那一刻读它，不会因此重启游戏
   const biosUrl = usePlatformBiosUrl(seoPlatform?.id)
@@ -297,7 +301,7 @@ export function GameDetailPage() {
               rating: game.rating,
               ratingCount: game.ratingCount,
               language: seoLanguages?.canonicalLanguage,
-              multiplayer: Boolean(game.multiplayer),
+              multiplayer: effectiveMultiplayer,
             }),
             breadcrumbSchema([
               { name: t.common.home, path: '/' },
@@ -537,7 +541,7 @@ export function GameDetailPage() {
                     </Link>
                   ))}
                   {rom.status === 'found' && <Badge tone="online" className="text-xs">{t.common.instantPlay}</Badge>}
-                  {game.multiplayer && <Badge tone="online" className="text-xs">{t.game.badgeMultiplayer}</Badge>}
+                  {effectiveMultiplayer && <Badge tone="online" className="text-xs">{t.game.badgeMultiplayer}</Badge>}
                   {game.bodyControl && <Badge tone="coin" className="text-xs">{t.game.badgeBodyControl}</Badge>}
                   {game.adult && <Badge tone="live" className="text-xs">{t.game.badgeAdult}</Badge>}
                   <CoinBadge amount={game.coinReward} className="text-xs" />
@@ -635,7 +639,7 @@ export function GameDetailPage() {
                     </span>
                   ))}
                 />
-                <Meta label={t.game.players} value={formatPlayers(game.players)} />
+                <Meta label={t.game.players} value={hasEmbeddedCs16Rooms ? '1–16' : formatPlayers(game.players)} />
                 <Meta label={t.game.supportedLanguages} value={supportedLangs || '—'} />
               </dl>
               {game.tags && game.tags.length > 0 && lang === 'zh-Hans' && (

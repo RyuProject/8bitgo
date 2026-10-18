@@ -6853,6 +6853,8 @@ var Xash3D = (() => {
         } } document.addEventListener("fullscreenchange", restoreOldStyle); document.addEventListener("webkitfullscreenchange", restoreOldStyle); return restoreOldStyle; };
         var setLetterbox = (element, topBottom, leftRight) => { element.style.paddingLeft = element.style.paddingRight = leftRight + "px"; element.style.paddingTop = element.style.paddingBottom = topBottom + "px"; };
         var getBoundingClientRect = e => specialHTMLTargets.indexOf(e) < 0 ? e.getBoundingClientRect() : { left: 0, top: 0 };
+        // Retina/4K 原样放大会让浏览器监听服多画数倍像素；启动器给出预算，未配置时保持上游行为。
+        var cappedDevicePixelRatio = () => Math.min(devicePixelRatio, Math.max(.5, Number(Module["maxDevicePixelRatio"]) || devicePixelRatio));
         var JSEvents_resizeCanvasForFullscreen = (target, strategy) => { var _a, _b; var restoreOldStyle = registerRestoreOldStyle(target); var cssWidth = strategy.softFullscreen ? innerWidth : screen.width; var cssHeight = strategy.softFullscreen ? innerHeight : screen.height; var rect = getBoundingClientRect(target); var windowedCssWidth = rect.width; var windowedCssHeight = rect.height; var canvasSize = getCanvasElementSize(target); var windowedRttWidth = canvasSize[0]; var windowedRttHeight = canvasSize[1]; if (strategy.scaleMode == 3) {
             setLetterbox(target, (cssHeight - windowedCssHeight) / 2, (cssWidth - windowedCssWidth) / 2);
             cssWidth = windowedCssWidth;
@@ -6877,7 +6879,7 @@ var Xash3D = (() => {
             target.style.imageRendering = "optimize-contrast";
             target.style.imageRendering = "crisp-edges";
             target.style.imageRendering = "pixelated";
-        } var dpiScale = strategy.canvasResolutionScaleMode == 2 ? devicePixelRatio : 1; if (strategy.canvasResolutionScaleMode != 0) {
+        } var dpiScale = strategy.canvasResolutionScaleMode == 2 ? cappedDevicePixelRatio() : 1; if (strategy.canvasResolutionScaleMode != 0) {
             var newWidth = cssWidth * dpiScale | 0;
             var newHeight = cssHeight * dpiScale | 0;
             setCanvasElementSize(target, newWidth, newHeight);
@@ -6931,7 +6933,7 @@ var Xash3D = (() => {
             return -7;
         } fillBatteryEventData(batteryState, batteryManager); return 0; };
         _emscripten_get_battery_status.sig = "ip";
-        var _emscripten_get_device_pixel_ratio = () => devicePixelRatio;
+        var _emscripten_get_device_pixel_ratio = () => cappedDevicePixelRatio();
         _emscripten_get_device_pixel_ratio.sig = "d";
         var _emscripten_get_element_css_size = (target, width, height) => { target = findEventTarget(target); if (!target)
             return -4; var rect = getBoundingClientRect(target); HEAPF64[width >> 3] = rect.width; HEAPF64[height >> 3] = rect.height; return 0; };
@@ -9269,7 +9271,7 @@ var Xash3D = (() => {
             elem.node.style.display = elem.displayState;
         } };
         var restoreOldWindowedStyle = null;
-        var softFullscreenResizeWebGLRenderTarget = () => { var dpr = devicePixelRatio; var inHiDPIFullscreenMode = currentFullscreenStrategy.canvasResolutionScaleMode == 2; var inAspectRatioFixedFullscreenMode = currentFullscreenStrategy.scaleMode == 2; var inPixelPerfectFullscreenMode = currentFullscreenStrategy.canvasResolutionScaleMode != 0; var inCenteredWithoutScalingFullscreenMode = currentFullscreenStrategy.scaleMode == 3; var screenWidth = inHiDPIFullscreenMode ? Math.round(innerWidth * dpr) : innerWidth; var screenHeight = inHiDPIFullscreenMode ? Math.round(innerHeight * dpr) : innerHeight; var w = screenWidth; var h = screenHeight; var canvas = currentFullscreenStrategy.target; var canvasSize = getCanvasElementSize(canvas); var x = canvasSize[0]; var y = canvasSize[1]; var topMargin; if (inAspectRatioFixedFullscreenMode) {
+        var softFullscreenResizeWebGLRenderTarget = () => { var dpr = cappedDevicePixelRatio(); var inHiDPIFullscreenMode = currentFullscreenStrategy.canvasResolutionScaleMode == 2; var inAspectRatioFixedFullscreenMode = currentFullscreenStrategy.scaleMode == 2; var inPixelPerfectFullscreenMode = currentFullscreenStrategy.canvasResolutionScaleMode != 0; var inCenteredWithoutScalingFullscreenMode = currentFullscreenStrategy.scaleMode == 3; var screenWidth = inHiDPIFullscreenMode ? Math.round(innerWidth * dpr) : innerWidth; var screenHeight = inHiDPIFullscreenMode ? Math.round(innerHeight * dpr) : innerHeight; var w = screenWidth; var h = screenHeight; var canvas = currentFullscreenStrategy.target; var canvasSize = getCanvasElementSize(canvas); var x = canvasSize[0]; var y = canvasSize[1]; var topMargin; if (inAspectRatioFixedFullscreenMode) {
             if (w * y < x * h)
                 h = w * y / x | 0;
             else if (w * y > x * h)
