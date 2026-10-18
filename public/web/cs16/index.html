@@ -6,6 +6,8 @@
     <base href="/web/cs16/" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#050602" />
+    <link rel="preconnect" href="https://assets.8bitgo.com" crossorigin />
+    <link rel="dns-prefetch" href="//assets.8bitgo.com" />
     <title>Counter-Strike 1.6 · Web</title>
     <style>
       :root {
@@ -244,6 +246,26 @@
         background: rgba(255, 176, 0, .16);
         color: #fff;
       }
+
+      .vgui-button.primary {
+        border-color: var(--cs-amber);
+        background: var(--cs-amber);
+        color: #161000;
+      }
+
+      .vgui-button.primary:hover:not(:disabled) {
+        background: #ffc23d;
+        color: #000;
+      }
+
+      .control-hint {
+        margin: 14px 0 0;
+        color: var(--cs-muted);
+        font-size: 10px;
+        font-weight: 400;
+      }
+
+      .control-hint strong { color: #fff; }
 
       .server-status {
         margin: 0 0 16px;
@@ -565,9 +587,9 @@
 
               <main class="dialog-stack">
                 <section class="vgui-dialog" id="practice-panel" aria-labelledby="title">
-                  <div class="dialog-titlebar" id="title">Create Server</div>
+                  <div class="dialog-titlebar" id="title">New Game</div>
                   <div class="dialog-content">
-                    <p id="sub">Choose a map and BOTs. Train locally, or create a room code so friends can join your temporary server.</p>
+                    <p id="sub">Choose a map and BOTs, then start local training immediately. Create a room only when friends need to join.</p>
                     <div class="form-grid">
                       <label class="field-label" for="map">Map</label>
                       <select id="map">
@@ -614,16 +636,18 @@
                       </select>
                     </div>
 
-                    <p id="bot-hint">You and 7 BOTs make a classic 4v4 match. You will join Counter-Terrorists automatically; press M to switch teams.</p>
+                    <p id="bot-hint">You and 7 BOTs make a classic 4v4 match. In a room, each joining player replaces one BOT automatically. You will join Counter-Terrorists; press M to switch teams.</p>
                     <div class="room-created" id="room-created" hidden>
                       <span>Room Code <strong class="room-code" id="created-room-code"></strong></span>
                       <button class="vgui-button" id="copy-room-code" type="button">Copy</button>
+                      <button class="vgui-button" id="cancel-room" type="button" aria-label="Cancel room creation">Cancel</button>
                     </div>
                     <pre id="errbox" role="alert" aria-live="assertive"></pre>
                     <div class="dialog-actions">
-                      <button class="vgui-button" id="start" type="button">Local Training</button>
+                      <button class="vgui-button primary" id="start" type="button">Start Training</button>
                       <button class="vgui-button" id="create-room" type="button">Create Room</button>
                     </div>
+                    <p class="control-hint"><strong>Desktop keyboard + mouse recommended.</strong> WASD move · mouse aim/fire · E use · B buy · Esc release pointer.</p>
                   </div>
                 </section>
 
@@ -663,7 +687,7 @@
 
           <section class="loading-panel" aria-labelledby="loading-title">
             <div class="loading-title" id="loading-title">Loading Counter-Strike…</div>
-            <div id="bar" aria-hidden="true"><i></i></div>
+            <div id="bar" role="progressbar" aria-labelledby="loading-title" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i></i></div>
             <div id="phase" role="status" aria-live="polite">Preparing…</div>
             <div id="net"></div>
           </section>
@@ -680,6 +704,6 @@
       「目录 + 无扩展名」的裸模块写法，原生 ESM 解析不了（dev 会兜底成根 index.html）。
       官方 raw.js 那条路在本引擎版本（1.2.2）上会卡在版本检查，详见 cs16.js 头注释。
     -->
-    <script type="module" src="./cs16.bundle.js?v=20261018-botvoice-safe1"></script>
+    <script type="module" src="./cs16.bundle.js?v=20261019-room-perf2"></script>
   </body>
 </html>

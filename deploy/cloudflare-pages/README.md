@@ -43,3 +43,7 @@ PvZ 的 `main.pak` 和动画包仍存放在 `html5.8bitgo.com`，但该历史自
 CS1.6 的内容寻址 Zstd 分片继续由 `assets.8bitgo.com` 的 R2 Worker 提供；Pages 包明确排除
 `public/web/cs16/packs/`。`_worker.js` 只把 `/api/cs16/*` 同源转发到主站，公共服务器的 UDP
 校验与中继仍留在生产机上，不能迁进不提供任意公网 UDP Socket 的 Pages Functions。
+临时房间的房主凭证和玩家恢复凭证走 `Sec-WebSocket-Protocol`，Pages Worker 必须在浏览器握手、
+主站握手两边选择并转发同一个子协议；只转发二进制帧而漏掉该头会让 Pages 域名下的房间联机失效。
+发布顺序固定为后端先、Pages 后。新后端会兼容旧客户端的查询串凭证，但新 Pages/客户端只生成
+子协议凭证；这样滚动发布期间旧页面不会全部断房，同时不让新访问继续把凭证写进 URL 日志。

@@ -134,6 +134,7 @@ for (const name of selected) {
       const NativeWebSocketPair = globalThis.WebSocketPair
       let upstreamSocket
       let browserSocket
+      const roomProtocol = `8bitgo.cs16.guest.${'r'.repeat(32)}`
       class MockSocket {
         static CONNECTING = 0
         static OPEN = 1
@@ -152,12 +153,7 @@ for (const name of selected) {
         emit(type, event = {}) { this.listeners.get(type)?.(event) }
       }
       try {
-        globalThis.WebSocket = class extends MockSocket {
-          constructor(url) {
-            super(url)
-            upstreamSocket = this
-          }
-        }
+        globalThis.WebSocket = class extends MockSocket {}
         Object.assign(globalThis.WebSocket, {
           CONNECTING: MockSocket.CONNECTING,
           OPEN: MockSocket.OPEN,
@@ -174,17 +170,34 @@ for (const name of selected) {
           constructor(body, init = {}) {
             this.body = body
             this.status = init.status || 200
+            this.headers = new Headers(init.headers)
             this.webSocket = init.webSocket
           }
         }
+        globalThis.fetch = async (url, init = {}) => {
+          const headers = new Headers(init.headers)
+          assert.equal(headers.get('upgrade'), 'websocket')
+          assert.equal(headers.get('sec-websocket-protocol'), roomProtocol, 'Pages 必须把玩家恢复凭证转发给主站')
+          upstreamSocket = new MockSocket(String(url))
+          return new globalThis.Response(null, {
+            status: 101,
+            headers: { 'Sec-WebSocket-Protocol': roomProtocol },
+            webSocket: upstreamSocket,
+          })
+        }
         const socketResponse = await worker.fetch(
-          new Request(`https://${config.domain}/api/cs16/room?room=ABC234&role=guest`),
+          new Request(`https://${config.domain}/api/cs16/room?room=ABC234&role=guest`, {
+            headers: {
+              Upgrade: 'websocket',
+              'Sec-WebSocket-Protocol': roomProtocol,
+            },
+          }),
           { ASSETS: assets },
         )
         assert.equal(socketResponse.status, 101)
         assert.ok(socketResponse.webSocket)
+        assert.equal(socketResponse.headers.get('sec-websocket-protocol'), roomProtocol, 'Pages 必须向浏览器确认同一个子协议')
         assert.equal(upstreamSocket.url, 'wss://8bitgo.com/api/cs16/room?room=ABC234&role=guest')
-        upstreamSocket.readyState = MockSocket.OPEN
         upstreamSocket.emit('open')
         browserSocket.emit('message', { data: new Blob([new Uint8Array([9, 8, 7])]) })
         await new Promise((resolve) => setTimeout(resolve, 0))

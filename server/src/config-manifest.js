@@ -100,6 +100,8 @@ export const ENV_MANIFEST = [
   { name: 'CS16_RELAY_SESSION_TIMEOUT_MS', group: 'CS1.6 联机', kind: 'config', file: 'cs16-relay.js' },
   { name: 'CS16_ROOMS_ENABLED', group: 'CS1.6 联机', kind: 'config', file: 'cs16-rooms.js' },
   { name: 'CS16_ROOM_HOST_WAIT_MS', group: 'CS1.6 联机', kind: 'config', file: 'cs16-rooms.js' },
+  { name: 'CS16_ROOM_HOST_RECONNECT_MS', group: 'CS1.6 联机', kind: 'config', file: 'cs16-rooms.js', note: '房主瞬断后保留房间供原凭证重连的窗口，默认 90 秒' },
+  { name: 'CS16_ROOM_GUEST_RECONNECT_MS', group: 'CS1.6 联机', kind: 'config', file: 'cs16-rooms.js', note: '访客瞬断后保留 peerId 供原会话续连的窗口，默认 60 秒' },
   { name: 'CS16_ROOM_LIFETIME_MS', group: 'CS1.6 联机', kind: 'config', file: 'cs16-rooms.js' },
   { name: 'CS16_ROOM_MAX_CONNECTIONS', group: 'CS1.6 联机', kind: 'config', file: 'cs16-rooms.js' },
   { name: 'CS16_ROOM_MAX_GUESTS', group: 'CS1.6 联机', kind: 'config', file: 'cs16-rooms.js' },

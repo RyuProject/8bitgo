@@ -28,8 +28,9 @@ try {
     static CLOSED = 3
     static last = null
 
-    constructor(url) {
+    constructor(url, protocols) {
       this.url = url
+      this.protocols = protocols
       this.readyState = MockWebSocket.CONNECTING
       this.bufferedAmount = 0
       this.listeners = new Map()
@@ -116,13 +117,20 @@ try {
   assert.equal(roomConnectTimeoutMs({ hostWaitMsRemaining: 15 * 60_000 }, 'guest'), 15 * 60_000 + 15_000)
   assert.equal(roomConnectTimeoutMs({}, 'guest'), 16 * 60_000, '旧后端兼容路径也不能只等房主两分钟')
   assert.equal(roomConnectTimeoutMs(room, 'host'), 15_000, '房主网关握手失败应快速报错')
+  const hostStatuses = []
+  let hostDisconnected = ''
   const hostRelay = createCs16RoomNet(room, 'host', {
     WebSocketImpl: MockWebSocket,
     locationObject: { origin: 'https://8bitgo.com' },
+    reconnectDelayMs: 1,
+    reconnectWindowMs: 100,
+    onStatus: (message) => hostStatuses.push(message),
+    onDisconnect: (message) => { hostDisconnected = message },
   })
   const hostConnecting = hostRelay.connect()
   const hostWs = MockWebSocket.last
-  assert.equal(hostWs.url, 'wss://8bitgo.com/api/cs16/room?room=ABC234&role=host&token=abcdefghijklmnopqrstuvwx')
+  assert.equal(hostWs.url, 'wss://8bitgo.com/api/cs16/room?room=ABC234&role=host')
+  assert.equal(hostWs.protocols, '8bitgo.cs16.host.abcdefghijklmnopqrstuvwx', '房主凭证不能出现在会被代理记录的 URL 中')
   hostWs.readyState = MockWebSocket.OPEN
   hostWs.emit('message', { data: JSON.stringify({ type: 'room-ready', code: room.code, role: 'host' }) })
   await hostConnecting
@@ -140,14 +148,36 @@ try {
   assert.deepEqual(HEAPU8.slice(96, 99), new Uint8Array([6, 5, 4]))
   assert.deepEqual(HEAPU8.slice(116, 120), new Uint8Array([101, 102, 7, 0]))
 
+  // 代理/Wi-Fi 瞬断不能立即结束整局；同一凭证应在保留窗口内自动接回原来的 Net。
+  hostWs.readyState = MockWebSocket.CLOSED
+  hostWs.emit('close', { code: 1006, reason: '' })
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  const reconnectedHostWs = MockWebSocket.last
+  assert.notEqual(reconnectedHostWs, hostWs, '房主异常断线后应新建 WebSocket 重连')
+  assert.match(hostStatuses.at(-1), /Reconnecting/)
+  reconnectedHostWs.readyState = MockWebSocket.OPEN
+  reconnectedHostWs.emit('message', { data: JSON.stringify({ type: 'room-ready', code: room.code, role: 'host' }) })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(hostStatuses.at(-1), 'Temporary server connection restored.')
+  assert.equal(hostDisconnected, '', '重连窗口内的瞬断不能误报致命错误')
+
+  const guestStatuses = []
+  let guestDisconnected = ''
   const guestRelay = createCs16RoomNet(room, 'guest', {
     WebSocketImpl: MockWebSocket,
     locationObject: { origin: 'https://8bitgo.com' },
+    reconnectDelayMs: 1,
+    reconnectWindowMs: 100,
+    onStatus: (message) => guestStatuses.push(message),
+    onDisconnect: (message) => { guestDisconnected = message },
   })
   const guestConnecting = guestRelay.connect()
   const guestWs = MockWebSocket.last
   guestWs.readyState = MockWebSocket.OPEN
-  guestWs.emit('message', { data: JSON.stringify({ type: 'room-ready', code: room.code, role: 'guest', peerId: 7 }) })
+  assert.equal(guestWs.protocols, undefined, '首次访客连接还没有恢复凭证')
+  guestWs.emit('message', { data: JSON.stringify({
+    type: 'room-ready', code: room.code, role: 'guest', peerId: 7, resumeToken: 'guestresumetokenabcdefghijkl',
+  }) })
   await guestConnecting
   guestRelay.net.init(em)
   HEAPU8[sockaddr + 2] = 0x69
@@ -159,6 +189,18 @@ try {
   guestWs.emit('message', { data: new Uint8Array([4, 5, 6]).buffer })
   assert.equal(guestRelay.net.recvfrom(1000, 96, 16, 0, 112, 144), 3)
   assert.deepEqual(HEAPU8.slice(116, 120), new Uint8Array([101, 101, 0xfe, 0xca]))
+
+  guestWs.readyState = MockWebSocket.CLOSED
+  guestWs.emit('close', { code: 1006, reason: '' })
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  const reconnectedGuestWs = MockWebSocket.last
+  assert.equal(reconnectedGuestWs.protocols, '8bitgo.cs16.guest.guestresumetokenabcdefghijkl')
+  reconnectedGuestWs.readyState = MockWebSocket.OPEN
+  reconnectedGuestWs.emit('message', { data: JSON.stringify({ type: 'room-ready', code: room.code, role: 'guest', peerId: 7 }) })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(guestRelay.peerId, 7, '访客重连必须保留原 peerId，否则 GoldSrc 会话无法续上')
+  assert.equal(guestStatuses.at(-1), 'Room connection restored.')
+  assert.equal(guestDisconnected, '')
   hostRelay.close()
   guestRelay.close()
 

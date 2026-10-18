@@ -28,10 +28,12 @@
  *   `export * from './net'` 这类「目录 + 无扩展名」的裸模块写法，浏览器原生 ESM 解析不了
  *   （dev 服务器会把 .../dist/net 兜底成根 index.html，返回 text/html）。改完重新打包：
  *   ./node_modules/.bin/esbuild public/web/cs16/cs16.js --bundle --format=esm \
- *     --platform=browser --target=es2022 --outfile=public/web/cs16/cs16.bundle.js
+ *     --platform=browser --target=es2022 --loader:.wasm=binary \
+ *     --outfile=public/web/cs16/cs16.bundle.js
  */
 import { Xash3D } from './engine/dist/index.js'
 import { decompress as decompressZstd, init as initZstd } from '@bokuweb/zstd-wasm'
+import zstdWasmBytes from './zstd.wasm'
 import { unpackTarStream } from './tar-stream.js'
 import { createCs16RelayNet, createCs16RoomNet, validRelayServer, validRoomDescriptor } from './cs16-net.js'
 import {
@@ -43,9 +45,11 @@ import {
 } from './pack-guards.js'
 
 const BASE = '/rodir/'
-const ASSET_VERSION = '20261018-botvoice-safe1'
+const ASSET_VERSION = '20261019-room-perf2'
 // 清单返回后会换成当前地图的真实压缩体积；这里仅用于清单到达前，避免进度条跳满。
 let expectedProgressBytes = 128 * 1024 * 1024
+// 引擎、客户端库、BOT、字体和 extras 实发约 15MB；留一点余量，别在资源写完时还显示 70%。
+const AUXILIARY_PROGRESS_BYTES = 16 * 1024 * 1024
 const Q = new URLSearchParams(location.search)
 const SUPPORTED_MAPS = new Set([
   'de_dust2', 'de_dust', 'de_inferno', 'de_nuke', 'de_aztec', 'de_train',
@@ -61,6 +65,34 @@ const PREBUILT_VIS_MAPS = new Set(SUPPORTED_MAPS)
 // 只有 graph / YaPB 数据格式变化时才递增，不能跟着纯 UI 版本变化白白废掉玩家已算好的缓存。
 const BOT_VIS_GENERATION = 'yapb-4.5-vis-v1'
 const AUTO_JOIN = Q.get('autojoin') !== '0'
+
+/**
+ * 房主浏览器同时跑渲染、监听服和 YaPB；把高刷屏原样跑到 120/144 FPS，或在 Retina 上按 2 倍
+ * DPR 渲染，只会抢走服务端与 BOT 的主线程时间。这里按硬件分两档，但两档都优先保证 60 FPS
+ * 的稳定帧时间；低配档进一步减少 BOT 思考频率和装饰效果，不碰命中判定与地图几何。
+ */
+function detectPerformanceProfile() {
+  const memory = Number(navigator.deviceMemory || 0)
+  const cores = Number(navigator.hardwareConcurrency || 0)
+  const saveData = navigator.connection?.saveData === true
+  const lowEnd = saveData || (memory > 0 && memory <= 4) || (cores > 0 && cores <= 4)
+  return Object.freeze({
+    id: lowEnd ? 'low' : 'balanced',
+    fps: 60,
+    updateRate: lowEnd ? 20 : 30,
+    botThinkFps: lowEnd ? 24 : 30,
+    decals: lowEnd ? 64 : 128,
+    renderPixels: lowEnd ? 1280 * 720 : 1600 * 900,
+  })
+}
+
+const PERFORMANCE_PROFILE = detectPerformanceProfile()
+
+function maximumDevicePixelRatio(profile = PERFORMANCE_PROFILE) {
+  const cssPixels = Math.max(1, innerWidth * innerHeight)
+  // 允许小数缩放：1920×1080 的 CSS 视口也能落到约 1600×900，而不是被最低 1x 卡回 1080p。
+  return Math.max(0.5, Math.min(1.25, devicePixelRatio || 1, Math.sqrt(profile.renderPixels / cssPixels)))
+}
 
 // 查询参数最终会进入包路径和引擎参数；只接受已经打包并在页面公开的地图名。
 function selectedMap() {
@@ -136,9 +168,18 @@ const versioned = (url) => url + (url.includes('?') ? '&' : '?') + 'v=' + ASSET_
 const $ = (id) => document.getElementById(id)
 const t0 = performance.now()
 const marks = {}
-window.__probe = { marks, log: [], errors: [], info: {}, xash: null, net: { total: 0, byUrl: {} } }
+window.__probe = {
+  marks,
+  log: [],
+  errors: [],
+  info: {
+    performanceProfile: PERFORMANCE_PROFILE.id,
+    maxDevicePixelRatio: maximumDevicePixelRatio(),
+  },
+  xash: null,
+  net: { total: 0, byUrl: {}, startedAt: 0, lastByteAt: 0 },
+}
 window.__probe.keys = []
-let phase = 'Ready'
 let started = false
 let firstFrameReady = false
 let failureReported = false
@@ -146,6 +187,7 @@ let pageUnloading = false
 let engineFatalError = null
 let activeRelay = null
 let pendingHostedRoom = null
+let roomHudTimer = 0
 
 window.addEventListener('beforeunload', () => { pageUnloading = true; activeRelay?.close() })
 window.addEventListener('pagehide', () => { pageUnloading = true; activeRelay?.close() })
@@ -201,14 +243,59 @@ function log(msg, cls) {
   $('log')?.appendChild(line)
   const box = $('log'); if (box) box.scrollTop = box.scrollHeight
 }
-function setPhase(text) {
-  phase = text
-  const p = $('phase'); if (p) p.textContent = text
-  const n = $('net'); if (n) n.textContent = `Received / processed ${(window.__probe.net.total / 1048576).toFixed(1)} MB`
-  const bar = document.querySelector('#bar > i')
-  if (bar) {
-    bar.style.width = Math.min(100, (window.__probe.net.total / expectedProgressBytes) * 100).toFixed(1) + '%'
+
+let progressFrame = 0
+
+function progressTime(seconds) {
+  if (seconds < 60) return `~${Math.max(1, Math.ceil(seconds))}s left`
+  return `~${Math.ceil(seconds / 60)} min left`
+}
+
+function renderProgress() {
+  progressFrame = 0
+  const net = window.__probe.net
+  const received = net.total
+  const percent = Math.min(100, (received / expectedProgressBytes) * 100)
+  const n = $('net')
+  if (n) {
+    const parts = [`Downloaded ${(received / 1048576).toFixed(1)} of ~${(expectedProgressBytes / 1048576).toFixed(0)} MB`]
+    const elapsed = net.startedAt && net.lastByteAt > net.startedAt ? (net.lastByteAt - net.startedAt) / 1000 : 0
+    const bytesPerSecond = elapsed >= 1 ? received / elapsed : 0
+    if (bytesPerSecond > 0) {
+      parts.push(`${(bytesPerSecond / 1048576).toFixed(1)} MB/s`)
+      const remaining = Math.max(0, expectedProgressBytes - received)
+      if (remaining > 512 * 1024) parts.push(progressTime(remaining / bytesPerSecond))
+    }
+    n.textContent = parts.join(' · ')
   }
+  const bar = $('bar')
+  const fill = bar?.querySelector('i')
+  if (fill) fill.style.width = percent.toFixed(1) + '%'
+  bar?.setAttribute('aria-valuenow', String(Math.round(percent)))
+  bar?.setAttribute('aria-valuetext', `${Math.round(percent)}% · ${(received / 1048576).toFixed(1)} MB downloaded`)
+}
+
+function scheduleProgressRender() {
+  // fetch 流经常一秒回调几百次；把 DOM 更新合并到每帧一次，免得进度条自己抢走解包主线程。
+  if (!progressFrame) progressFrame = requestAnimationFrame(renderProgress)
+}
+
+function setPhase(text) {
+  const p = $('phase'); if (p) p.textContent = text
+  if (progressFrame) cancelAnimationFrame(progressFrame)
+  renderProgress()
+}
+
+function setRoomStatus(room, message) {
+  setPhase(message)
+  if (!firstFrameReady) return
+  const hud = $('hud')
+  if (!hud) return
+  clearTimeout(roomHudTimer)
+  const base = `ROOM ${room.code} · ${room.role === 'host' ? 'HOST · KEEP TAB ACTIVE' : 'PLAYER'}`
+  hud.textContent = `${base} · ${message}`
+  // 恢复成功短暂提示即可；中断中的状态必须一直留着，避免玩家把网络冻结误认成游戏卡死。
+  if (/restored/i.test(message)) roomHudTimer = setTimeout(() => { hud.textContent = base }, 4000)
 }
 
 async function fetchRequired(url, label, options = {}) {
@@ -242,9 +329,12 @@ function guardStream(stream, label, url) {
           }),
         ])
         if (next.done) return controller.close()
+        const now = performance.now()
+        if (!window.__probe.net.startedAt) window.__probe.net.startedAt = now
+        window.__probe.net.lastByteAt = now
         window.__probe.net.total += next.value.byteLength
         window.__probe.net.byUrl[key] = (window.__probe.net.byUrl[key] || 0) + next.value.byteLength
-        setPhase(phase)
+        scheduleProgressRender()
         controller.enqueue(next.value)
       } catch (error) {
         void reader.cancel(error).catch(() => {})
@@ -315,6 +405,7 @@ const isTtf = (bytes) => bytes.byteLength >= 4 &&
   ((bytes[0] === 0 && bytes[1] === 1 && bytes[2] === 0 && bytes[3] === 0) ||
     new TextDecoder().decode(bytes.subarray(0, 4)) === 'OTTO')
 
+const compressedChunkPromises = new Map()
 const chunkPromises = new Map()
 let catalogPromise
 let wasmZstdPromise
@@ -369,14 +460,12 @@ async function getPackCatalog() {
 
 async function ensureWasmZstd() {
   if (!wasmZstdPromise) {
-    wasmZstdPromise = (async () => {
-      const bytes = await fetchBytesWithRetry(`${ASSET_ROOT}/zstd.wasm?v=${ASSET_VERSION}`, 'Zstd decoder', {
-        maxBytes: 1024 * 1024,
-        validate: isWasm,
-      })
-      // 先把 WASM 字节可靠地拿到手再初始化；传 URL 会让第三方胶水层做一次不可重试的内部 fetch。
-      await initZstd(bytes)
-    })()
+    /*
+     * 这 246KB 必须跟入口包一起到达。过去在两片大资源并行下载时才额外向应用域名取它，
+     * 部分线路会让小请求在 HTTP/2 队列里连续 30 秒拿不到正文；两片又共用同一个失败 Promise，
+     * 于是 base 与地图会同时把三次重试耗光。内联只增加很小的首包体积，却消除了整条单点故障链。
+     */
+    wasmZstdPromise = initZstd(zstdWasmBytes)
   }
   await wasmZstdPromise
 }
@@ -402,7 +491,7 @@ async function decompressChunk(compressed, chunk, label) {
   return raw
 }
 
-async function fetchChunkOnce(chunk, label, attempt) {
+async function fetchCompressedChunkOnce(chunk, label, attempt) {
   const chunkUrl = new URL(chunk.path, PACKS_ROOT)
   // Worker 也按查询串识别不可变对象；哈希既在路径里又在 v 里，换内容必然换 URL。
   chunkUrl.searchParams.set('v', chunk.compressedSha256)
@@ -415,21 +504,37 @@ async function fetchChunkOnce(chunk, label, attempt) {
   })
   if (compressed.byteLength !== chunk.compressedBytes) throw new Error(`${label} download length mismatch`)
   if (await digestHex(compressed) !== chunk.compressedSha256) throw new Error(`${label} SHA-256 mismatch`)
-  return decompressChunk(compressed, chunk, label)
+  return compressed
+}
+
+async function fetchCompressedChunk(chunk, label) {
+  const key = chunk.compressedSha256
+  if (!compressedChunkPromises.has(key)) {
+    compressedChunkPromises.set(key, (async () => {
+      let lastError
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try { return await fetchCompressedChunkOnce(chunk, label, attempt) } catch (error) {
+          lastError = error
+          if (attempt < 2) log(`⚠️ ${label} failed, retrying ${attempt + 2}/3: ${error}`, 'err')
+        }
+      }
+      throw lastError
+    })())
+  }
+  try {
+    return await compressedChunkPromises.get(key)
+  } catch (error) {
+    compressedChunkPromises.delete(key)
+    throw error
+  }
 }
 
 async function fetchChunk(chunk, label) {
   const key = chunk.compressedSha256
   if (!chunkPromises.has(key)) {
     chunkPromises.set(key, (async () => {
-      let lastError
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        try { return await fetchChunkOnce(chunk, label, attempt) } catch (error) {
-          lastError = error
-          if (attempt < 2) log(`⚠️ ${label} failed, retrying ${attempt + 2}/3: ${error}`, 'err')
-        }
-      }
-      throw lastError
+      const compressed = await fetchCompressedChunk(chunk, label)
+      return decompressChunk(compressed, chunk, label)
     })())
   }
   try {
@@ -440,14 +545,35 @@ async function fetchChunk(chunk, label) {
   }
 }
 
-/** 最多同时保留两片解压结果，下载能并行，内存峰值仍被压在约 32MB。 */
+function zstdDownloadConcurrency() {
+  const memory = Number(navigator.deviceMemory || 0)
+  const cores = Number(navigator.hardwareConcurrency || 0)
+  if ((memory >= 8 || memory === 0) && cores >= 8) return 4
+  if (memory >= 4 && cores >= 4) return 3
+  return 2
+}
+
+const ZSTD_DOWNLOAD_CONCURRENCY = zstdDownloadConcurrency()
+const ZSTD_DECODE_CONCURRENCY = 2
+window.__probe.info.zstdDownloadConcurrency = ZSTD_DOWNLOAD_CONCURRENCY
+
+/**
+ * 压缩片最多提前取 2–4 片来吃满弱网；真正解压好的 16MB 数据仍只留两片。
+ * 直接把解压并发改成 4 会额外常驻约 64MB 原始数据，低内存设备更容易丢 WebGL 上下文。
+ */
 function zstdPackStream(pack, key) {
   let next = 0
-  const inFlight = new Map()
+  const decoded = new Map()
+  const labelOf = (index) => `${key} chunk ${index + 1}/${pack.chunks.length}`
   const schedule = () => {
-    while (inFlight.size < 2 && next + inFlight.size < pack.chunks.length) {
-      const index = next + inFlight.size
-      inFlight.set(index, fetchChunk(pack.chunks[index], `${key} chunk ${index + 1}/${pack.chunks.length}`))
+    const downloadEnd = Math.min(pack.chunks.length, next + ZSTD_DOWNLOAD_CONCURRENCY)
+    for (let index = next; index < downloadEnd; index += 1) {
+      // 预取只保留压缩字节；catch 仅防未处理 Promise，正式消费仍会抛出同一个真实错误。
+      void fetchCompressedChunk(pack.chunks[index], labelOf(index)).catch(() => {})
+    }
+    const decodeEnd = Math.min(pack.chunks.length, next + ZSTD_DECODE_CONCURRENCY)
+    for (let index = next; index < decodeEnd; index += 1) {
+      if (!decoded.has(index)) decoded.set(index, fetchChunk(pack.chunks[index], labelOf(index)))
     }
   }
   schedule()
@@ -456,10 +582,11 @@ function zstdPackStream(pack, key) {
       try {
         if (next >= pack.chunks.length) return controller.close()
         const chunk = pack.chunks[next]
-        const raw = await inFlight.get(next)
-        inFlight.delete(next)
+        const raw = await decoded.get(next)
+        decoded.delete(next)
         // 预热缓存只负责跨过初始化阶段；交给 TAR 解析器后立即放引用，避免整包常驻 JS 堆。
         chunkPromises.delete(chunk.compressedSha256)
+        compressedChunkPromises.delete(chunk.compressedSha256)
         next += 1
         controller.enqueue(raw)
         schedule()
@@ -474,16 +601,27 @@ async function prepareZstdPacks(keys) {
   const catalog = await getPackCatalog()
   for (const key of keys) if (!catalog.packs[key]) throw new Error(`Zstd manifest is missing ${key}`)
   const total = keys.reduce((sum, key) => sum + catalog.packs[key].compressedBytes, 0)
-  // extras 改成 Deflate 后，进 git 的引擎 / 客户端库 / 字体 / extras 实际约 30MB。
-  expectedProgressBytes = total + 32 * 1024 * 1024
-  // 地图包都只有一片且最大约十几 MB；和公共包第一片同时预热，可以把地图下载藏在公共包写盘时间里。
-  // 这里不预热公共包第二片，仍把额外解压内存限制在「基础 16MB + 当前地图一片」。
+  expectedProgressBytes = total + AUXILIARY_PROGRESS_BYTES
+  renderProgress()
+  // 先各解一片，地图下载能藏在公共包写盘时间里；剩余连接只预取压缩字节，不抬高原始数据峰值。
+  let downloadSlots = ZSTD_DOWNLOAD_CONCURRENCY
   for (const key of keys) {
     const first = catalog.packs[key].chunks[0]
     void fetchChunk(first, `${key} chunk 1/${catalog.packs[key].chunks.length}`).catch(() => {})
+    downloadSlots -= 1
+  }
+  for (const key of keys) {
+    const pack = catalog.packs[key]
+    for (let index = 1; index < pack.chunks.length && downloadSlots > 0; index += 1) {
+      void fetchCompressedChunk(pack.chunks[index], `${key} chunk ${index + 1}/${pack.chunks.length}`).catch(() => {})
+      downloadSlots -= 1
+    }
   }
   return catalog
 }
+
+// 启动器展示期间只取 13KB 清单并建立 R2 连接，不会在玩家点击开始前偷跑 60MB 游戏资源。
+void getPackCatalog().catch(() => {})
 
 /**
  * ⚠️ 用 gzip 魔数判断「现在这份字节还是不是 gzip」，不要假设服务端行为。
@@ -705,9 +843,14 @@ async function loadHudFont(xash, fontPromise) {
 function waitForFirstFrame(canvas, xash, timeoutMs = 60_000) {
   const fatal = /(?:can't initialize any renderer|version check failed|failed to asynchronously prepare wasm|abort\(|host_error:)/i
   const gameReady = /(?:custom resource propagation complete|execing touch\/chooseteam\.cfg)/i
-  const startedAt = performance.now()
+  let visibleElapsed = 0
+  let lastCheckedAt = performance.now()
   return new Promise((resolve, reject) => {
     const check = () => {
+      const now = performance.now()
+      // 后台标签的 rAF/定时器会被浏览器节流；把这段墙钟时间算进 60 秒只会把仍在正常加载的房间误杀。
+      if (!document.hidden) visibleElapsed += now - lastCheckedAt
+      lastCheckedAt = now
       if (engineFatalError) return reject(engineFatalError)
       if (xash.exited) return reject(new Error('Engine exited before the first frame'))
       const fatalLine = window.__probe.log.find((line) => fatal.test(line))
@@ -715,7 +858,7 @@ function waitForFirstFrame(canvas, xash, timeoutMs = 60_000) {
       // WebGL 默认缓冲通常没有 preserveDrawingBuffer，合成后 readPixels 可能永远读到全黑。
       // 服务器、客户端和渲染器走完初始化并进入选队脚本时，画面循环已经真实启动，可作为兜底判据。
       if (window.__probe.log.some((line) => gameReady.test(line))) return resolve()
-      if (performance.now() - startedAt > timeoutMs) return reject(new Error('No frame after 60s of map startup'))
+      if (visibleElapsed > timeoutMs) return reject(new Error('No frame after 60s of foreground map startup'))
       const gl = canvas.getContext('webgl2') || canvas.getContext('webgl')
       if (gl && !gl.isContextLost() && canvas.width >= 64 && canvas.height >= 64) {
         const pixel = new Uint8Array(4)
@@ -733,7 +876,7 @@ function waitForFirstFrame(canvas, xash, timeoutMs = 60_000) {
 
 /* 数字键 → 武器槽位绑定。命令行 +bind 会被启动时 exec 的 config.cfg 覆盖，
  * 故写入 autoexec.cfg（在 config 之后执行）。 */
-function ensureBinds(xash) {
+function ensureBinds(xash, listenServer) {
   const FS = xash.em.FS
   const cfg = [
     'echo "AUTOEXEC_LOADED"',
@@ -742,6 +885,28 @@ function ensureBinds(xash) {
     'hud_fastswitch 1',
     // 子站的 Permissions-Policy 明确禁用麦克风；继续初始化采集只会产生拒绝异常和无效主线程工作。
     'voice_enable 0',
+    // 高刷屏会把浏览器监听服的主线程预算吃光；60 FPS 对原版 CS 已足够，并给网络/BOT 留出余量。
+    `fps_max ${PERFORMANCE_PROFILE.fps}`,
+    'gl_vsync 1',
+    `cl_cmdrate ${PERFORMANCE_PROFILE.updateRate}`,
+    `cl_updaterate ${PERFORMANCE_PROFILE.updateRate}`,
+    'rate 25000',
+    'ex_interp 0',
+    // 这些只削减烟雾、天气、影子与长期累积的弹痕，不改变可见玩家、地图或命中判定。
+    `r_decals ${PERFORMANCE_PROFILE.decals}`,
+    `mp_decals ${PERFORMANCE_PROFILE.decals}`,
+    'fastsprites 2',
+    'cl_weather 0',
+    'cl_shadows 0',
+    'cl_minmodels 1',
+    ...(PERFORMANCE_PROFILE.id === 'low' ? ['r_dynamic 0'] : []),
+    // 浏览器监听服不需要向客户端推送高于客户端命令率的快照，避免房主为每名访客做无效工作。
+    ...(listenServer ? [
+      `sv_maxupdaterate ${PERFORMANCE_PROFILE.updateRate}`,
+      'sv_minupdaterate 15',
+      'sv_maxrate 25000',
+      'sv_minrate 10000',
+    ] : []),
     // YaPB 的服务端命令以 yb 开头；旧的 bot_add/bot_kill 是另一套 Bot API，在这里无效。
     'alias addbot "yb add"',
     'alias delbot "yb kick"',
@@ -773,17 +938,26 @@ function configureBots(xash, map, count, difficulty) {
   if (patchedLiblist === originalLiblist) throw new Error('cstrike/liblist.gam lacks gamedll_linux; cannot enable YaPB')
   FS.writeFile(liblistPath, encoder.encode(patchedLiblist))
 
+  // YaPB 的 Emscripten listen-server 构建不把本机房主计入 fill 配额：真实引擎用 N+1 会生成
+  // N+1 个 BOT。故这里直接写所选 N；远程真人仍会由 autovacate 替换，离开后再补回。
+  const botQuota = count
   const mapConfig = [
     '// Generated by the 8BitGo launcher; overrides the fixed 9-bot defaults baked into the YaPB pack.',
-    'yb_quota_mode "normal"',
-    `yb_quota "${count}"`,
-    'yb_autovacate "0"',
-    'yb_kick_after_player_connect "0"',
+    'yb_quota_mode "fill"',
+    `yb_quota "${botQuota}"`,
+    'yb_autovacate "1"',
+    'yb_autovacate_keep_slots "1"',
+    'yb_kick_after_player_connect "1"',
     'yb_join_after_player "0"',
     'yb_join_team "any"',
     'yb_join_delay "1.0"',
     // 旧 cs16-client 的 BotVoice HUD 路径会偶发 remainder-by-zero；保留短电台指令，禁用语音 chatter。
     'yb_radio_mode "1"',
+    // 网页版不需要聊天、喷漆和在线 graph 交换；关掉可避免额外字符串、贴花和失败的网络任务。
+    'yb_chat "0"',
+    'yb_spraypaints "0"',
+    'yb_graph_auto_collect_db "0"',
+    `yb_think_fps "${PERFORMANCE_PROFILE.botThinkFps}"`,
     // 难度必须和 quota 一起落到地图级配置；等画面出来再改会让首批 Bot 沿用包内固定的 Expert。
     `yb_difficulty "${difficulty}"`,
   ].join('\n') + '\n'
@@ -791,20 +965,27 @@ function configureBots(xash, map, count, difficulty) {
   FS.mkdirTree(configDir)
   FS.writeFile(`${configDir}/${map}.cfg`, encoder.encode(mapConfig))
   window.__probe.info.botCount = count
+  window.__probe.info.botQuota = botQuota
   window.__probe.info.botDifficulty = difficulty
   window.__probe.info.botGameDll = `${BASE}cstrike/${GAME_SERVER_LIB}`
   mark('Bot config ready', count ? `${count} YaPB` : 'no bots')
 }
 
 function enforceBotCount(xash, count, difficulty) {
+  const botQuota = count
   xash.Cmd_ExecuteString([
-    'yb_quota_mode normal',
-    'yb_autovacate 0',
-    'yb_kick_after_player_connect 0',
+    'yb_quota_mode fill',
+    'yb_autovacate 1',
+    'yb_autovacate_keep_slots 1',
+    'yb_kick_after_player_connect 1',
     'yb_join_after_player 0',
     'yb_radio_mode 1',
+    'yb_chat 0',
+    'yb_spraypaints 0',
+    'yb_graph_auto_collect_db 0',
+    `yb_think_fps ${PERFORMANCE_PROFILE.botThinkFps}`,
     `yb_difficulty ${difficulty}`,
-    `yb_quota ${count}`,
+    `yb_quota ${botQuota}`,
   ].join(';'))
 }
 
@@ -973,7 +1154,7 @@ function updateBotHint(count) {
     : count === 7
       ? 'You and 7 BOTs make a classic 4v4 match.'
       : `Train with ${count} BOTs.`
-  hint.textContent = `${summary} You will join Counter-Terrorists automatically; press M to switch teams.`
+  hint.textContent = `${summary} In a room, each joining player replaces one BOT automatically. You will join Counter-Terrorists; press M to switch teams.`
 }
 
 $('bots')?.addEventListener('change', () => updateBotHint(selectedBotCount()))
@@ -1195,6 +1376,8 @@ $('room-code-input')?.addEventListener('input', (event) => {
   event.currentTarget.value = String(event.currentTarget.value || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6)
 })
 
+const defaultPracticeCopy = $('sub')?.textContent || ''
+
 $('create-room')?.addEventListener('click', async () => {
   if (started) return
   const button = $('create-room')
@@ -1232,9 +1415,11 @@ $('create-room')?.addEventListener('click', async () => {
     if (button) {
       button.disabled = false
       button.textContent = 'Start Room'
+      button.classList.add('primary')
     }
+    $('start')?.classList.remove('primary')
     const sub = $('sub')
-    if (sub) sub.textContent = 'Send the room code to your friends, then click Start Room. They can enter the code and load the game while you prepare.'
+    if (sub) sub.textContent = 'Send the room code to your friends, then click Start Room. Keep this host tab in the foreground: browsers throttle the game server in background tabs. Each friend replaces one BOT.'
   } catch (error) {
     if (button) {
       button.disabled = false
@@ -1243,6 +1428,28 @@ $('create-room')?.addEventListener('click', async () => {
     const errbox = $('errbox')
     if (errbox) errbox.textContent = `ERROR · ${error instanceof Error ? error.message : String(error)}`
   }
+})
+
+$('cancel-room')?.addEventListener('click', () => {
+  if (started || !pendingHostedRoom) return
+  // 房间没有收到房主 WebSocket 会在后端自动过期；本地立即恢复选择，比强迫玩家整页刷新更可靠。
+  pendingHostedRoom = null
+  for (const id of ['map', 'bots', 'difficulty', 'start']) {
+    const control = $(id)
+    if (control) control.disabled = false
+  }
+  const box = $('room-created')
+  if (box) box.hidden = true
+  const button = $('create-room')
+  if (button) {
+    button.textContent = 'Create Room'
+    button.classList.remove('primary')
+  }
+  $('start')?.classList.add('primary')
+  const sub = $('sub')
+  if (sub) sub.textContent = defaultPracticeCopy
+  const errbox = $('errbox')
+  if (errbox) errbox.textContent = ''
 })
 
 $('copy-room-code')?.addEventListener('click', async () => {
@@ -1276,6 +1483,9 @@ async function start({ server = null, room = null } = {}) {
     throw new Error('This temporary room has invalid connection settings')
   }
   started = true
+  // 启动器打开期间预取的清单不能计入玩家思考时间，否则下载速率和 ETA 会被空闲时间严重拉低。
+  window.__probe.net.startedAt = 0
+  window.__probe.net.lastByteAt = 0
   const startButton = $('start')
   if (startButton) startButton.disabled = true
   const mapSelect = $('map')
@@ -1284,7 +1494,7 @@ async function start({ server = null, room = null } = {}) {
   if (mapSelect) mapSelect.disabled = true
   if (botSelect) botSelect.disabled = true
   if (difficultySelect) difficultySelect.disabled = true
-  for (const id of ['show-practice', 'show-servers', 'server-back', 'server-refresh', 'server-join', 'create-room', 'direct-connect', 'room-connect']) {
+  for (const id of ['show-practice', 'show-servers', 'server-back', 'server-refresh', 'server-join', 'create-room', 'cancel-room', 'direct-connect', 'room-connect']) {
     const button = $(id)
     if (button) button.disabled = true
   }
@@ -1354,7 +1564,7 @@ async function start({ server = null, room = null } = {}) {
   if (room) {
     window.__probe.info.room = { code: room.code, role: room.role, map: room.map }
     const hud = $('hud')
-    if (hud) hud.textContent = `ROOM ${room.code} · ${room.role === 'host' ? 'HOST' : 'PLAYER'}`
+    if (hud) hud.textContent = `ROOM ${room.code} · ${room.role === 'host' ? 'HOST · KEEP TAB ACTIVE' : 'PLAYER'}`
   }
 
   // 先取 14KB 清单并预热基础包/地图首片，让 R2 握手和引擎初始化并行。
@@ -1388,6 +1598,8 @@ async function start({ server = null, room = null } = {}) {
       print: (s) => { window.__probe.log.push(s); log(s) },
       printErr: (s) => { window.__probe.log.push('[err] ' + s); log('[err] ' + s, 'err') },
       locateFile,
+      // Emscripten 胶水据此限制 Retina/4K 绘制缓冲；CSS 尺寸不变，鼠标坐标仍由引擎换算。
+      maxDevicePixelRatio: maximumDevicePixelRatio(),
     },
     canvas: canvasEl,
     libraries: LIBS_MAP,
@@ -1401,7 +1613,7 @@ async function start({ server = null, room = null } = {}) {
   } else if (room) {
     activeRelay = createCs16RoomNet(room, room.role, {
       onDisconnect: (message) => reportEngineFailure(message),
-      onStatus: (message) => setPhase(message),
+      onStatus: (message) => setRoomStatus(room, message),
     })
     // 房主也要挂虚拟 UDP，外部玩家的数据报才能进入浏览器里的监听服。
     xash.net = activeRelay.net
@@ -1439,7 +1651,7 @@ async function start({ server = null, room = null } = {}) {
   mark('extras.pk3 ready')
 
   await loadHudFont(xash, fontPromise)
-  ensureBinds(xash)
+  ensureBinds(xash, listenServer)
   if (listenServer) configureBots(xash, map, botCount, botDifficulty)
   const botVisReady = remoteClient ? true : restoreBotVis(xash, map, await botVisPromise)
 

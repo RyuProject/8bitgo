@@ -1,5 +1,5 @@
 {
-  "assetVersion": "20261018-botvoice-safe1",
+  "assetVersion": "20261019-room-perf2",
   "files": [
     {
       "name": "PACKS.md",
@@ -8,18 +8,18 @@
     },
     {
       "name": "cs16-net.js",
-      "size": 12767,
-      "sha256": "522f92a63c90904a7a161f515426fe2142c6bee787135ea2983e8bddab16274a"
+      "size": 16023,
+      "sha256": "901d47f4affd72f41df7d4cc265dabc6e0b15d73727bf8c82d489d1d8ecf92bc"
     },
     {
       "name": "cs16.bundle.js",
-      "size": 786423,
-      "sha256": "6cf87eea3d4b1ff26bb9693d37d547acac91f4035c1cd2400cfbd30a036f1953"
+      "size": 1133472,
+      "sha256": "3b47b400955c652cdaf40729a37f64e53f3e1176fa2ac859d98488be7a61088d"
     },
     {
       "name": "cs16.js",
-      "size": 66560,
-      "sha256": "227737d014d4359210a870e08f7bd61c7974c566eae178e62a443fd7faf97284"
+      "size": 75804,
+      "sha256": "6f29a7012404498f207f3f253f13c28620ba8735757a63a69f6f17ac475a1b49"
     },
     {
       "name": "engine/dist/constants.js",
@@ -33,8 +33,8 @@
     },
     {
       "name": "engine/dist/generated/xash.js",
-      "size": 712611,
-      "sha256": "36b5ae2558451284a88871e002f7f1eb92cdfdf96ed998df555273a70dff59d5"
+      "size": 712915,
+      "sha256": "ca3c72d061fda6893ddd9ffa2d70a31bcdaa8b432e50308f8667bdcede80cf42"
     },
     {
       "name": "engine/dist/index.js",
@@ -123,8 +123,8 @@
     },
     {
       "name": "index.html",
-      "size": 22028,
-      "sha256": "f8e1f96c9c11f3452351cbcf1b8abd9ba711a10010cc8641a6b8bed1ab6d2e14"
+      "size": 23039,
+      "sha256": "f23aa9d7f551bdffd57224b9177209a6c09b70989f395905dfd0bd3cf940a8e9"
     },
     {
       "name": "lib-new/cstrike/cl_dlls/client_emscripten_wasm32.wasm",
