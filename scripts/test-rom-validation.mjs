@@ -271,11 +271,18 @@ try {
   assert.equal(saveV1, sockdriveVersionedSaveKey('game', 'https://assets.test/sockdrives/game-v1/'))
   assert.notEqual(saveV1, sockdriveVersionedSaveKey('game', 'https://assets.test/sockdrives/game-v2'))
   assert.ok(sockdriveVersionedSaveKey('g'.repeat(200), 'https://assets.test/sockdrives/game-v1').length <= 160)
-  const bootstrapBytes = await makeJsdosConfigBundle('[autoexec]\nrem sockdrive bootstrap').arrayBuffer()
+  const bootstrapBytes = await makeJsdosConfigBundle(streamedGuest.dosboxConf).arrayBuffer()
   const bootstrapConfigEntry = listZipEntries(bootstrapBytes).find((entry) => entry.name === '.jsdos/dosbox.conf')
   assert.ok(bootstrapConfigEntry, '流式引导包必须是能走 js-dos URL 加载入口的标准 bundle')
   const bootstrapConfig = new TextDecoder().decode(await extractZipEntry(bootstrapBytes, bootstrapConfigEntry))
-  assert.match(bootstrapConfig, /sockdrive bootstrap/)
+  assert.match(bootstrapConfig, /imgmount 3 sockdrive/, 'URL 主 bundle 必须携带最终 Sockdrive 配置')
+  assert.match(bootstrapConfig, /boot c: -convertfat/)
+  const jsdosAdapter = await readFile(new URL('../src/emulator/adapters/jsdos.ts', import.meta.url), 'utf8')
+  assert.match(
+    jsdosAdapter,
+    /makeJsdosConfigBundle\(guest\.dosboxConf\)/,
+    'Windows Sockdrive 不能再用占位 autoexec；js-dos 只执行 URL 主 bundle 的配置',
+  )
 
   // 旧式完整 .jsdos 也要替换包内配置；不能只让共享系统模式生效。
   const legacyBytes = arrayBuffer(zip([

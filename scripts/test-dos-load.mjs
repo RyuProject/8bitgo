@@ -276,7 +276,7 @@ check('流式盘按预算选择官方预取，并挂到 DOSBox-X 的 Sockdrive',
 })
 
 check('流式盘必须走 URL bundle 入口，否则 js-dos 会把 changes URL 留空、保存永远失败', () => {
-  assert.match(jsdos, /makeJsdosConfigBundle\('\[autoexec\]\\nrem sockdrive bootstrap'\)/)
+  assert.match(jsdos, /makeJsdosConfigBundle\(guest\.dosboxConf\)/)
   assert.match(jsdos, /streamingGame\s*\?\s*\{\s*url:\s*primaryUrl,\s*initFs\s*\}/)
   assert.match(jsdos, /verifySockdriveMetadata\(sockdriveUrl, abort\.signal\)/)
   assert.match(jsdos, /method:\s*'HEAD'/)

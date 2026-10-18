@@ -1059,11 +1059,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           initFs = [windowsSockdriveLauncherFile(gameExecutable, guest.gameDrive, registryImport)]
           /*
             致命细节：直接传 `dosboxConf + initFs` 时，js-dos 的 loadBundleFromConfig 会把
-            bundleChangesUrl 固定成 null，之后 props.save() 永远返回 false。这里用一个只含
-            “sockdrive”标记的极小 bundle 走 URL 入口，让上游建立 changes key；真正配置仍在
-            initFs 最后一层，避免上游看见共享系统盘的 `.qcow2` 后误判整局不可保存。
+            bundleChangesUrl 固定成 null，之后 props.save() 永远返回 false，所以必须走 URL 入口。
+            但 URL 入口只从主 bundle 读取运行配置，不会把 initFs 末层的 dosboxConf 当作主配置；
+            若这里只放占位配置，DOSBox-X 就停在 Z:\\>，自动启动键反而被敲进 DOS 提示符。
+            因此这个极小 bundle 必须携带最终配置；共享系统盘的包内配置仍在下面改名隐藏。
           */
-          const bootstrap = makeJsdosConfigBundle('[autoexec]\nrem sockdrive bootstrap')
+          const bootstrap = makeJsdosConfigBundle(guest.dosboxConf)
           primaryUrl = URL.createObjectURL(bootstrap)
           objectUrls.push(primaryUrl)
         } else {
