@@ -2,7 +2,7 @@
  * 播放器相关的通用小工具。运行时（EmulatorJS / Ruffle）的挂载逻辑见 src/runtimes/。
  */
 import { getT, fmt } from '@/services/i18n'
-import type { PlatformId } from '@/types'
+import type { ArcadeButtonCount, PlatformId } from '@/types'
 import {
   ARCADE_FIGHTER_BUTTONS,
   ARCADE_GENERIC_BUTTONS,
@@ -171,6 +171,8 @@ export function getDefaultKeymap(
   platform?: PlatformId,
   /** EmulatorJS 启动后回传的真实键位；没有时才用站点默认。 */
   effectiveEjsKeys?: Readonly<Record<number, string>> | null,
+  /** 街机按板子裁掉不存在的动作键；旧数据由调用方按 BIOS 推断。 */
+  arcadeButtons?: ArcadeButtonCount,
 ): KeymapInfo {
   const t = getT()
   const quickSave = Boolean(runtimeId && QUICK_SAVE.has(runtimeId))
@@ -374,9 +376,9 @@ export function getDefaultKeymap(
           slot: 'dpad',
           parts: EJS_DPAD.map((i) => currentArcadeKeys[i] ?? '—'),
         },
-        // 「按键 1~6」在手柄上没有固定位置（不同板子按键数都不一样），所以不给槽位 ——
-        // 六行没槽位会让 PadDiagram 整张图退回键帽列，那正是街机该有的样子
-        ...ARCADE_GENERIC_BUTTONS.map((id, i) => ({
+        // 「按键 1~N」在手柄上没有固定位置（不同板子按键数都不一样），所以不给槽位 ——
+        // 多行没槽位会让 PadDiagram 整张图退回键帽列，那正是街机该有的样子
+        ...ARCADE_GENERIC_BUTTONS.slice(0, arcadeButtons ?? 6).map((id, i) => ({
           button: fmt(t.keymap.arcadeBtn, { n: String(i + 1) }),
           key: arcadeKeysOf(id, currentArcadeKeys),
         })),

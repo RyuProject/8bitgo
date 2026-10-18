@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import type { PlatformId } from '@/types'
+import type { ArcadeButtonCount, PlatformId } from '@/types'
 import { getDefaultKeymap, type KeymapRow, type KeySlot } from '@/lib/emulator'
+import { effectiveArcadeButtons } from './arcadePerformance'
 import { cx } from '@/lib/format'
 import { getEmulatorJsKeymap, onEmulatorJsKeymapChange } from '@/services/emulatorjsKeymap'
 
@@ -37,6 +38,8 @@ interface Props {
   runtimeId?: string
   platform?: PlatformId
   gameSlug?: string
+  arcadeButtons?: ArcadeButtonCount
+  arcadeBios?: string
   className?: string
 }
 
@@ -63,14 +66,19 @@ function Cap({ k, label, shape = 'square' }: { k: string; label?: string; shape?
   )
 }
 
-export function PadDiagram({ runtimeId, platform, gameSlug, className }: Props) {
+export function PadDiagram({ runtimeId, platform, gameSlug, arcadeButtons, arcadeBios, className }: Props) {
   const [, bumpKeymap] = useState(0)
   // 引擎加载旧设置、改键或恢复默认后会发事件；下一帧直接重画，不要求玩家刷新页面。
   useEffect(() => onEmulatorJsKeymapChange(() => bumpKeymap((n) => n + 1)), [])
   const effectiveKeys = runtimeId === 'emulatorjs' && platform
     ? getEmulatorJsKeymap(gameSlug, platform)
     : null
-  const { rows } = getDefaultKeymap(runtimeId, platform, effectiveKeys)
+  const { rows } = getDefaultKeymap(
+    runtimeId,
+    platform,
+    effectiveKeys,
+    platform === 'arcade' ? effectiveArcadeButtons(arcadeButtons, arcadeBios) : undefined,
+  )
   if (!rows.length) return null
 
   const bySlot = new Map<KeySlot, KeymapRow>()

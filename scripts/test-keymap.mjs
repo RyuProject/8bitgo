@@ -301,7 +301,10 @@ for (const key of [...needed].sort()) {
   const adapter = readFileSync(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
   const code = adapter.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')
 
-  ok(/EJS_VirtualGamepadSettings:\s*arcadeVirtualPad\(options\.arcadeButtons \?\? 6\)/.test(code), '街机注入了按游戏裁剪的屏幕手柄布局')
+  ok(
+    /EJS_VirtualGamepadSettings:\s*arcadeVirtualPad\(effectiveArcadeButtons\(options\.arcadeButtons, options\.biosSet\?\.name\)\)/.test(code),
+    '街机注入了按游戏裁剪、并能从 Neo Geo BIOS 补全旧数据的屏幕手柄布局',
+  )
   ok(/options\.platform === 'arcade'[\s\S]{0,80}\? \{ EJS_VirtualGamepadSettings/.test(code), '只给街机注入，别的平台仍用引擎默认')
 
   const from = code.indexOf('function arcadeVirtualPad')

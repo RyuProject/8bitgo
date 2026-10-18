@@ -130,7 +130,7 @@ test('开始页、详情页和工具栏都接上了实时键位链路', () => {
   const tools = readFileSync(new URL('../src/emulator/EmulatorTools.tsx', import.meta.url), 'utf8')
   assert.match(diagram, /getEmulatorJsKeymap\(gameSlug, platform\)/)
   assert.match(diagram, /onEmulatorJsKeymapChange/)
-  assert.match(cards, /getDefaultKeymap\(runtimeId, platform, effectiveKeys\)/)
+  assert.match(cards, /getDefaultKeymap\([\s\S]*runtimeId,[\s\S]*platform,[\s\S]*effectiveKeys,/)
   assert.match(tools, /handle\.resetControls/)
 })
 

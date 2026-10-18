@@ -10,6 +10,70 @@ import {
 
 export type EmulatorJsKeyboardMap = Readonly<Record<number, string>>
 
+export interface EmulatorJsControlEntry {
+  value?: number | string
+  [key: string]: unknown
+}
+
+export type EmulatorJsControls = Record<number, EmulatorJsControlEntry>
+
+/**
+ * 旧版 EmulatorJS 把右摇杆 / N64 C 键放在 L/J/K/I；本站后来把街机动作键改成 UIJK。
+ * 引擎会优先恢复 localStorage 里的旧控制器，于是老访客的 J/K/I 同时触发动作键和右摇杆，
+ * 每次按键会多送一组 WASM 输入。街机根本不用右摇杆，因此只在“仍是旧出厂键、且确实和
+ * 街机有效按钮撞键”时把它迁到当前默认；玩家真正改过的其它键一概不碰。
+ */
+const LEGACY_RIGHT_STICK: Readonly<Record<number, readonly [engineName: string, keyCode: number]>> = {
+  20: ['l', 76],
+  21: ['j', 74],
+  22: ['k', 75],
+  23: ['i', 73],
+}
+
+const CURRENT_RIGHT_STICK: Readonly<Record<number, readonly [engineName: string, keyCode: number]>> = {
+  20: ['right arrow', 39],
+  21: ['left arrow', 37],
+  22: ['down arrow', 40],
+  23: ['up arrow', 38],
+}
+
+function keyToken(value: number | string | undefined): string {
+  if (typeof value === 'number') return `#${value}`
+  return String(value ?? '').trim().toLowerCase()
+}
+
+function isKey(value: number | string | undefined, engineName: string, keyCode: number): boolean {
+  const token = keyToken(value)
+  return token === engineName || token === `#${keyCode}` || token === String(keyCode)
+}
+
+export function repairLegacyArcadeKeyCollisions(
+  controls: EmulatorJsControls | undefined,
+  defaults: EmulatorJsControls | undefined,
+): readonly number[] {
+  if (!controls) return []
+  const activeValues = emulatorJsRelevantKeyIds('arcade')
+    .map((id) => controls[id]?.value)
+    .filter((value): value is number | string => value !== undefined && value !== '' && value !== 0)
+  const repaired: number[] = []
+
+  for (const [rawId, [oldName, oldCode]] of Object.entries(LEGACY_RIGHT_STICK)) {
+    const id = Number(rawId)
+    const current = controls[id]?.value
+    if (!isKey(current, oldName, oldCode)) continue
+    if (!activeValues.some((value) => isKey(value, oldName, oldCode))) continue
+
+    const [fallbackName, fallbackCode] = CURRENT_RIGHT_STICK[id]
+    let next = defaults?.[id]?.value
+    if (next === undefined || next === '' || next === 0) next = typeof current === 'number' ? fallbackCode : fallbackName
+    // 玩家若把某颗街机动作键主动放到方向键上，右摇杆直接解绑，不能制造第二次撞键。
+    if (activeValues.some((value) => keyToken(value) === keyToken(next))) next = 0
+    controls[id] = { ...controls[id], value: next }
+    repaired.push(id)
+  }
+  return repaired
+}
+
 interface StoredKeymap {
   /** 默认键位的代次。以后改默认值时，只迁移没自定义过的记录。 */
   defaultVersion: number
