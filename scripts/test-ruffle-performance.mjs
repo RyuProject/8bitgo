@@ -11,10 +11,14 @@ import {
 } from '../src/emulator/rufflePerformance.ts'
 import { RUFFLE_MAX_RENDER_AREA, ruffleStageRenderPlan, ruffleStageScale, ruffleStageSize } from '../src/emulator/ruffleStageFit.ts'
 import { isRuffleFrameReady } from '../src/emulator/ruffleFrame.ts'
+import { installRuffleCrashGuard, ruffleFatalDetail } from '../src/emulator/ruffleCrash.ts'
 import { isSfsGame } from '../shared/sfs-games.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const read = (path) => readFileSync(join(root, path), 'utf8')
+// 不从 paths.ts 导入：它会读取 Vite 的 import.meta.env，Node 回归环境没有这层对象。
+// npm 包版本就是 copy-ruffle/check-ruffle 的真源，拿它拼目录才能防止继续读取残留的旧版本产物。
+const { version: RUFFLE_VERSION } = JSON.parse(read('node_modules/@ruffle-rs/ruffle/package.json'))
 
 console.log('── 高分屏清晰度与抗锯齿平衡 ──')
 const retina = { devicePixelRatio: 2 }
@@ -52,9 +56,41 @@ assert.equal(ruffleStageRenderPlan(0, 0, { width: 800, height: 600 }), null)
 console.log('── WASM 变体选择 ──')
 let probes = 0
 assert.equal(supportsRuffleWasmExtensions(() => { probes++; return true }), true)
-assert.equal(probes, 5, '必须和 Ruffle 0.6 的五项能力探针一致')
+assert.equal(probes, 5, '必须和当前 Ruffle 的五项能力探针一致')
 assert.equal(supportsRuffleWasmExtensions(() => false), false)
 assert.equal(supportsRuffleWasmExtensions(() => { throw new Error('blocked') }), false)
+
+console.log('── Ruffle 致命异常接管 ──')
+assert.equal(ruffleFatalDetail({ name: 'AbortError', message: 'The operation was aborted' }), null)
+assert.equal(ruffleFatalDetail(new Error('普通 ActionScript 异常')), null)
+assert.equal(ruffleFatalDetail({ name: 'RuntimeError', message: 'unreachable' }), 'unreachable')
+assert.equal(ruffleFatalDetail('Ruffle has panicked! panicked at renderer.rs:42'), 'Ruffle has panicked! panicked at renderer.rs:42')
+const crashListeners = new Map()
+const nativeConsoleError = () => {}
+const crashWin = {
+  console: { error: nativeConsoleError },
+  addEventListener(type, listener) { crashListeners.set(type, listener) },
+  removeEventListener(type, listener) { if (crashListeners.get(type) === listener) crashListeners.delete(type) },
+}
+const crashReports = []
+const cancelCrashGuard = installRuffleCrashGuard(crashWin, (detail) => crashReports.push(detail))
+crashListeners.get('unhandledrejection')({ reason: { name: 'RuntimeError', message: 'memory access out of bounds' } })
+crashWin.console.error('Ruffle has panicked! should be deduplicated')
+assert.deepEqual(crashReports, ['memory access out of bounds'], '同一局只能上报第一次致命异常')
+cancelCrashGuard()
+assert.equal(crashListeners.size, 0, '销毁后必须摘掉全局异常监听')
+assert.equal(crashWin.console.error, nativeConsoleError, '销毁后必须还原 iframe 的 console.error')
+const frozenListeners = new Map()
+const frozenReports = []
+const frozenConsoleWin = {
+  console: Object.freeze({ error: nativeConsoleError }),
+  addEventListener(type, listener) { frozenListeners.set(type, listener) },
+  removeEventListener(type, listener) { if (frozenListeners.get(type) === listener) frozenListeners.delete(type) },
+}
+const cancelFrozenGuard = installRuffleCrashGuard(frozenConsoleWin, (detail) => frozenReports.push(detail))
+frozenListeners.get('error')({ error: { name: 'RuntimeError', message: 'unreachable' } })
+assert.deepEqual(frozenReports, ['unreachable'], 'console 只读时仍要靠 error 事件接住 WASM 崩溃')
+assert.doesNotThrow(cancelFrozenGuard, '加固 WebView 的只读 console 不能阻断会话销毁')
 
 console.log('── 启动链与固定高抗锯齿档 ──')
 const adapter = read('src/emulator/adapters/ruffle.ts')
@@ -105,6 +141,9 @@ assert.ok(adapter.indexOf('container.appendChild(iframe)') < adapter.indexOf("if
   'iframe 必须先挂载再导航，避免 detached iframe 的真实 src 请求被初始空文档吞掉')
 assert.match(adapter, /options\.onError\?\.\(rt\.flashInitFailed, 'runtime'\)/,
   '播放壳初始化失败必须标成运行时故障，不能误判成某一种语言 ROM 损坏')
+assert.match(adapter, /installRuffleCrashGuard\(win,/,
+  'Ruffle 必须在 iframe 内接管 WASM RuntimeError / Rust panic，不能继续显示运行中黑屏')
+assert.match(adapter, /cancelCrashGuard\(\)/, '换游戏时必须清掉旧 Ruffle 会话的致命异常监听')
 assert.match(vite, /flashFrame[\s\S]*?Cross-Origin-Embedder-Policy', 'require-corp'[\s\S]*?Cross-Origin-Resource-Policy', 'same-origin'/,
   '开发服务器必须让跨源隔离的 play-local 可以内嵌 Flash 播放壳')
 assert.match(serverCache, /flash-frame\.html'[\s\S]*?Cross-Origin-Embedder-Policy', 'require-corp'[\s\S]*?Cross-Origin-Resource-Policy', 'same-origin'/,
@@ -113,8 +152,10 @@ assert.match(player, /errorScope !== 'runtime'[\s\S]*onRomLoadFailed\?\.\(messag
   '运行时故障不得触发 ROM 语言/备用地址切换')
 
 console.log('── 大核心预热与旁路门控 ──')
-const manifest = JSON.parse(read('public/ruffle/v0.6.0/runtime.json'))
-const bootstrap = JSON.parse(read('public/ruffle/v0.6.0/bootstrap.json'))
+const manifest = JSON.parse(read(`public/ruffle/v${RUFFLE_VERSION}/runtime.json`))
+const bootstrap = JSON.parse(read(`public/ruffle/v${RUFFLE_VERSION}/bootstrap.json`))
+assert.equal(manifest.version, RUFFLE_VERSION, '性能回归必须读取当前 Ruffle 版本，不能拿旧目录假绿')
+assert.equal(bootstrap.version, RUFFLE_VERSION, '预热清单必须和当前 Ruffle 版本一致')
 const files = new Set(manifest.files.map((file) => file.name))
 for (const variant of ['modern', 'fallback']) {
   assert.equal(bootstrap.bootstrap?.[variant]?.length, 2)

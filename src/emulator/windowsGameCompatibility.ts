@@ -1,4 +1,5 @@
 import { readZipFile, type ExtraFile } from '@/lib/jsdosBundle'
+import { mergeDosboxConfigOverride } from '../../shared/dosbox-config.js'
 
 /** 原版 Caesar III 的 c3.inf 结构：resolutionId 是从 1 开始的 640/800/1024 三档。 */
 const CAESAR3_RESOLUTION_OFFSET = 16
@@ -6,6 +7,38 @@ const CAESAR3_RESOLUTION_800 = 2
 const CAESAR3_INF_SIZE = 560
 
 const normalizedSlug = (slug?: string): string => slug?.trim().toLowerCase() ?? ''
+
+/**
+ * StarCraft 1.16.1 的便携目录仍会从注册表读取安装盘和资料盘路径。原压缩包附带的
+ * RegSetup.exe 会弹成功对话框，网页自动启动无法可靠替玩家确认；静默导入同包的 STAR.REG
+ * 能在 EXE 读取数据前完成，而且整包与 Sockdrive 都走同一条启动批处理。
+ */
+export function windowsGameCompatibilityRegistryImport(
+  gameSlug: string | undefined,
+  executable: string,
+): string | undefined {
+  const slug = normalizedSlug(gameSlug)
+  if (slug !== 'starcraft' && slug !== 'starcraft-1-16-1') return undefined
+  const file = executable.trim().replace(/\\/g, '/').split('/').pop()?.toLowerCase()
+  if (file !== 'starcraft.exe') throw new Error('StarCraft 的 Windows 自启动程序必须是 StarCraft.exe')
+  return 'STAR.REG'
+}
+
+/**
+ * StarCraft 1.16.1 在 Win95 + DOSBox-X 下用 normal core 已完成主菜单和 Brood War 建档实测。
+ * 共享系统盘的 auto 会随宿主选择不同执行核心，旧版 DirectDraw 程序可能在部分设备上无报错退回
+ * 桌面；这里把已验证配置作为游戏级默认值，同时让后台显式配置保留最终决定权。
+ */
+export function windowsGameCompatibilityDosboxConfig(
+  gameSlug: string | undefined,
+  executable: string | undefined,
+  override: string | undefined,
+): string | undefined {
+  const slug = normalizedSlug(gameSlug)
+  if (slug !== 'starcraft' && slug !== 'starcraft-1-16-1') return override
+  windowsGameCompatibilityRegistryImport(gameSlug, executable ?? '')
+  return mergeDosboxConfigOverride('[cpu]\ncore=normal', override)
+}
 
 /**
  * 生成 Windows 客体游戏在挂盘前要合并的兼容文件。

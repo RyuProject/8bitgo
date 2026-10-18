@@ -162,8 +162,18 @@ function safeStreamedExecutable(executable: string): string {
 export function windowsSockdriveLauncherFile(
   executable: string,
   drive: string,
+  registryImport?: string,
 ): { path: string; contents: Uint8Array<ArrayBuffer> } {
   const actual = safeStreamedExecutable(executable)
+  const registry = registryImport ? registryImport.replace(/\\/g, '/').replace(/^(?:\.\/)+/, '').replace(/^\/+|\/+$/g, '') : ''
+  if (
+    registryImport &&
+    (!registry || !/\.reg$/i.test(registry) || registry.split('/').some((part) => !part || part === '.' || part === '..') ||
+      // eslint-disable-next-line no-control-regex
+      /[\x00-\x1f:"<>|?*]/.test(registry))
+  ) {
+    throw new Error('流式 Windows 注册表兼容文件必须是游戏盘内安全的 .reg 相对路径')
+  }
   if (!/^[d-z]$/i.test(drive)) throw new Error('Sockdrive 游戏盘符必须是 D-Z')
   const slash = actual.lastIndexOf('/')
   const dir = slash >= 0 ? `\\${actual.slice(0, slash).replace(/\//g, '\\')}` : '\\'
@@ -175,12 +185,23 @@ export function windowsSockdriveLauncherFile(
   const quote = (value: string) => `"${value.replace(/%/g, '%%')}"`
   const contents = te.encode([
     '@echo off',
+    ...(registry ? [`regedit /s ${quote(`${drive.toUpperCase()}:\\${registry.replace(/\//g, '\\')}`)}`] : []),
     `${drive.toLowerCase()}:`,
     `cd ${quote(dir)}`,
     quote(file),
     'exit',
   ].join('\r\n') + '\r\n') as Uint8Array<ArrayBuffer>
   return { path: '8BITGO/RUN.BAT', contents }
+}
+
+/**
+ * Sockdrive 是 Win95 真正能看见的硬盘；js-dos 的普通 `mount` 盘只存在于宿主 DOS，
+ * 客体启动后不会出现在“我的电脑”里。流式游戏因此必须把可执行文件的 D: 完整路径
+ * 直接交给 Windows Run，不能再依赖另挂一块 E:\\RUN.BAT 的临时盘。
+ */
+export function windowsSockdriveExecutableCommand(executable: string, drive: string): string {
+  if (!/^[d-z]$/i.test(drive)) throw new Error('Sockdrive 游戏盘符必须是 D-Z')
+  return `${drive.toUpperCase()}:\\${safeStreamedExecutable(executable).replace(/\//g, '\\')}`
 }
 
 /**

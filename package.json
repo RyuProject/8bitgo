@@ -168,6 +168,7 @@
     "test:tv-host": "node scripts/test-tv-host.mjs",
     "test:tv-autoplay": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-tv-autoplay.mjs",
     "test:admin-entry": "node scripts/test-admin-entry.mjs",
+    "test:admin-safety": "node scripts/test-admin-safety.mjs",
     "test:volunteer-libraries": "npm --prefix server run test:volunteer-libraries",
     "test:open-console": "node scripts/test-open-console.mjs",
     "test:tv-page": "node scripts/test-tv-page.mjs",

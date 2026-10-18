@@ -862,6 +862,23 @@ export function dosStartupCommandsForRom(
 }
 
 /**
+ * 流式游戏盘必须跟着最终探测成功的 ROM 语言走，而不是跟着界面语言猜。
+ * 主地址坏掉并回退到英文 ROM 时，这里也会切到英文盘。只要已经出现任意逐语言配置，
+ * 未配置的语言就回退完整包而不是旧全局盘，避免“迁移了一半”时误挂另一语言内容；只有完全没有
+ * 逐语言配置的历史数据才继续使用全局盘。
+ */
+export function dosSockdriveForRom(
+  game: Pick<Game, 'dosSockdrive' | 'dosSockdrives'>,
+  rom: Pick<RomResolution, 'lang'>,
+): string | undefined {
+  if (!rom.lang) return game.dosSockdrive
+  const languageSockdrive = game.dosSockdrives?.[rom.lang]
+  if (languageSockdrive) return languageSockdrive
+  if (Object.values(game.dosSockdrives ?? {}).some(Boolean)) return undefined
+  return game.dosSockdrive
+}
+
+/**
  * 「没问出来」时自动重试的退避节奏（毫秒）。
  *
  * 为什么要自动重试：探测失败最常见的原因是网络抖一下、或者切后台时请求被掐掉，

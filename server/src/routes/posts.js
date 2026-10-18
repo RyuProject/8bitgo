@@ -8,10 +8,12 @@ import { queuePostSearchPush } from '../search-push.js'
 import { isTranslateConfigured, translateGateOk, translatePlan } from '../translate.js'
 import { renderField, renderMarkdownField } from '../i18n-generate.js'
 import {
+  createVolunteerPost,
   deleteVolunteerPost,
   getVolunteerPost,
   listVolunteerPosts,
   saveVolunteerPost,
+  setVolunteerPostPublished,
 } from '../volunteer-libraries.js'
 
 export const postsRouter = Router()
@@ -320,7 +322,7 @@ postsRouter.get('/', async (req, res, next) => {
       if (role === 'volunteer') {
         const ownerId = String(req.user?.id ?? '')
         if (!ownerId) return res.status(403).json({ error: '志愿者独立库必须使用账号登录' })
-        return res.json(await listVolunteerPosts(ownerId))
+        return res.json(await listVolunteerPosts(ownerId, { summary: req.query.summary === '1' }))
       }
       // 管理员仍然使用主文章库；普通玩家不能借这个参数读取草稿。
       if (role !== 'admin') return res.status(403).json({ error: '需要文章库编辑权限' })
@@ -328,9 +330,13 @@ postsRouter.get('/', async (req, res, next) => {
     if (wantAll && !(await hasAbility(req, 'content:edit'))) {
       return res.status(403).json({ error: '只有管理员能查看主文章库的草稿' })
     }
+    const summary = wantAll && req.query.summary === '1'
     const rows = await query(
       wantAll
-        ? 'SELECT * FROM posts ORDER BY COALESCE(`date`, DATE(created_at)) DESC, id DESC'
+        ? summary
+          ? `SELECT id, slug, title, excerpt, icon, author, \`date\`, published, created_at, updated_at
+               FROM posts ORDER BY COALESCE(\`date\`, DATE(created_at)) DESC, id DESC`
+          : 'SELECT * FROM posts ORDER BY COALESCE(`date`, DATE(created_at)) DESC, id DESC'
         : 'SELECT * FROM posts WHERE published = 1 ORDER BY COALESCE(`date`, DATE(created_at)) DESC, id DESC',
     )
     if (!wantAll) publicApi(res)
@@ -369,11 +375,26 @@ postsRouter.get('/:slug', async (req, res, next) => {
 postsRouter.put('/:slug', requireAbility('posts:edit'), async (req, res, next) => {
   try {
     const slug = String(req.params.slug)
+    const createOnly = req.query.create === '1'
+    if (createOnly && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) {
+      return res.status(400).json({ error: 'slug 只能使用小写字母、数字和连字符' })
+    }
+    if (slug.length > 120) return res.status(400).json({ error: 'slug 不能超过 120 个字符' })
     if (!req.body?.title) return res.status(400).json({ error: '缺少标题' })
     if (req.staffRole === 'volunteer') {
       const ownerId = String(req.user?.id ?? '')
       if (!ownerId) return res.status(403).json({ error: '志愿者独立库必须使用账号登录' })
-      return res.json(await saveVolunteerPost(ownerId, slug, req.body))
+      try {
+        const saved = createOnly
+          ? await createVolunteerPost(ownerId, slug, req.body)
+          : await saveVolunteerPost(ownerId, slug, req.body)
+        return res.status(createOnly ? 201 : 200).json(saved)
+      } catch (error) {
+        if (createOnly && error?.code === 'ER_DUP_ENTRY') {
+          return res.status(409).json({ error: `slug「${slug}」已存在，请换一个` })
+        }
+        throw error
+      }
     }
     /**
      * 保存前的这一行。两处要用：
@@ -385,9 +406,9 @@ postsRouter.put('/:slug', requireAbility('posts:edit'), async (req, res, next) =
       const row = postApiToRow({ ...req.body, slug })
       const cols = Object.keys(row)
       const updates = cols.filter((c) => c !== 'slug').map((c) => `\`${c}\` = VALUES(\`${c}\`)`).join(', ')
+      const insert = `INSERT INTO posts (${cols.map((c) => `\`${c}\``).join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`
       await run(
-        `INSERT INTO posts (${cols.map((c) => `\`${c}\``).join(', ')}) VALUES (${cols.map(() => '?').join(', ')})
-         ON DUPLICATE KEY UPDATE ${updates}`,
+        createOnly ? insert : `${insert} ON DUPLICATE KEY UPDATE ${updates}`,
         cols.map((c) => row[c]),
       )
       const [{ id }] = await run('SELECT id FROM posts WHERE slug = ?', [slug])
@@ -427,6 +448,41 @@ postsRouter.put('/:slug', requireAbility('posts:edit'), async (req, res, next) =
      */
     if (post.published || dbFlag(before?.published)) queuePostSearchPush(post)
     // 已发布才补译（草稿翻了白花钱）。异步、失败只记日志，见 queuePostTranslations。
+    if (post.published) queuePostTranslations(slug)
+    res.status(createOnly ? 201 : 200).json(post)
+  } catch (e) {
+    if (req.query.create === '1' && e?.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: `slug「${req.params.slug}」已存在，请换一个` })
+    }
+    next(e)
+  }
+})
+
+/**
+ * 发布 / 撤稿只改一个布尔列。以前前端为切这个开关会 PUT 整篇文章，
+ * 另一名管理员刚保存的新正文可能被列表里的旧副本整体覆盖。
+ */
+postsRouter.patch('/:slug/published', requireAbility('posts:edit'), async (req, res, next) => {
+  try {
+    if (typeof req.body?.published !== 'boolean') {
+      return res.status(400).json({ error: 'published 必须是布尔值' })
+    }
+    const slug = String(req.params.slug)
+    if (req.staffRole === 'volunteer') {
+      const ownerId = String(req.user?.id ?? '')
+      if (!ownerId) return res.status(403).json({ error: '志愿者独立库必须使用账号登录' })
+      const saved = await setVolunteerPostPublished(ownerId, slug, req.body.published)
+      if (!saved) return res.status(404).json({ error: '你的文章库里没有这篇文章' })
+      return res.json(saved)
+    }
+
+    const before = await queryOne('SELECT published FROM posts WHERE slug = ?', [slug])
+    if (!before) return res.status(404).json({ error: '文章不存在' })
+    await query('UPDATE posts SET published = ? WHERE slug = ?', [req.body.published ? 1 : 0, slug])
+    invalidateContent()
+    const row = await queryOne('SELECT * FROM posts WHERE slug = ?', [slug])
+    const [post] = await attachPostTags([row])
+    if (post.published || dbFlag(before.published)) queuePostSearchPush(post)
     if (post.published) queuePostTranslations(slug)
     res.json(post)
   } catch (e) {

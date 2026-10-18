@@ -17,7 +17,7 @@ const valid = {
   sourceKey: 'sockdrive-staging/12345678-1234-1234-1234-123456789abc.zip',
   sourceSize: 1500 * 1024 * 1024,
   gameSlug: 'starcraft',
-  executable: 'StarCraft/Brood.exe',
+  executable: 'StarCraft.exe',
   version: 'v20261017010101',
   expectedSockdrive: 'sockdrives/starcraft-v1/',
   encoding: 'br',
@@ -25,9 +25,28 @@ const valid = {
 
 assert.deepEqual(validateSockdriveConversionRequest(valid, env), {
   ...valid,
+  lang: null,
+  targetRomKey: '',
+  expectedRomKey: '',
   expectedSockdrive: 'sockdrives/starcraft-v1',
   targetPrefix: 'sockdrives/starcraft-v20261017010101',
 })
+const localized = {
+  ...valid,
+  lang: 'zh-Hans',
+  targetRomKey: 'roms/dos/starcraft.zh-Hans.zip.8bg',
+  expectedRomKey: 'https://old.example.test/starcraft-cn.zip',
+}
+assert.deepEqual(validateSockdriveConversionRequest(localized, env), {
+  ...valid,
+  lang: 'zh-Hans',
+  targetRomKey: localized.targetRomKey,
+  expectedRomKey: localized.expectedRomKey,
+  expectedSockdrive: 'sockdrives/starcraft-v1',
+  targetPrefix: 'sockdrives/starcraft-zh-hans-v20261017010101',
+})
+assert.throws(() => validateSockdriveConversionRequest({ ...valid, lang: '../zh' }, env), /语言代码/)
+assert.throws(() => validateSockdriveConversionRequest({ ...localized, targetRomKey: 'covers/not-a-rom.8bg' }, env), /回退包 key/)
 assert.throws(() => validateSockdriveConversionRequest({ ...valid, sourceKey: '../source.zip' }, env), /临时 Sockdrive ZIP key/)
 assert.throws(() => validateSockdriveConversionRequest({ ...valid, sourceSize: 1901 * 1024 ** 2 }, env), /ZIP 大小/)
 assert.throws(() => validateSockdriveConversionRequest({ ...valid, executable: '../bad.exe' }, env), /\.exe/)
@@ -53,9 +72,14 @@ const queue = readFileSync(new URL('../src/sockdrive-conversion.js', import.meta
 assert.match(schema, /CREATE TABLE IF NOT EXISTS sockdrive_conversion_jobs/)
 assert.match(schema, /publish_started/)
 assert.match(schema, /expected_executable/)
+assert.match(schema, /expected_object_key/)
+assert.match(schema, /target_object_key/)
+assert.match(schema, /idx_sockdrive_jobs_game_lang/)
 assert.match(migration, /sockdrive_conversion_jobs（大型 Windows ZIP → Sockdrive 后台队列）/)
 assert.match(routes, /requireAbility\('site:manage'\)/)
-assert.match(frontend, /上传 ZIP 并自动转换/)
+assert.match(frontend, /生成流式盘/)
+assert.match(frontend, /完整包 \+ 流式盘/)
+assert.match(frontend, /publishLanguageSockdrive/)
 assert.match(frontend, /sockdriveStagingKey\(\)/)
 assert.match(service, /8bitgo\.sockdrive\.conversions/)
 assert.match(worker, /privateStagingRead/)
@@ -63,6 +87,10 @@ assert.match(worker, /contentEncoding/)
 assert.match(worker, /privateStagingRead: true, contentEncodingUpload: true/)
 assert.match(queue, /const published = row\.publish_started/)
 assert.match(queue, /workerSupportsSockdrive/)
+assert.match(queue, /UPDATE game_roms SET object_key = \?, dos_sockdrive = \?, dos_executable = \?/)
+assert.match(queue, /currentObjectKey !== String\(job\.expected_object_key/)
+assert.match(queue, /currentObjectKey !== String\(job\.target_object_key/)
+assert.match(queue, /remoteHead\(config, job\.target_object_key\)/)
 assert.match(queue, /'Accept-Encoding': job\.encoding === 'identity' \? 'identity' : job\.encoding/)
 
 console.log('✅ Windows ZIP → Sockdrive：参数守卫、持久队列、私有 staging 与后台接线通过')

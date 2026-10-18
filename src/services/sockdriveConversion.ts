@@ -27,6 +27,8 @@ export interface SockdriveConversionJob {
   outputBytes: number | null
   outputFiles: number | null
   gameSlug: string
+  lang?: string | null
+  targetRomKey?: string | null
   executable: string
   bound: boolean
   message: string
@@ -40,6 +42,11 @@ export interface CreateSockdriveConversion {
   sourceKey: string
   sourceSize: number
   gameSlug: string
+  lang?: string
+  /** 已上传的同语言完整回退包；转换完成时与流式盘一起原子绑定。 */
+  targetRomKey?: string
+  /** 创建任务时数据库里的旧 key；空表示新增语言槽。 */
+  expectedRomKey?: string
   executable: string
   version: string
   expectedSockdrive?: string
@@ -55,19 +62,22 @@ function remembered(): Record<string, string> {
   } catch { return {} }
 }
 
-export function rememberSockdriveConversion(slug: string, id: string | null) {
+const rememberId = (slug: string, lang?: string) => lang ? `${slug}:${lang}` : slug
+
+export function rememberSockdriveConversion(slug: string, id: string | null, lang?: string) {
   try {
     const jobs = remembered()
-    if (id) jobs[slug] = id
-    else delete jobs[slug]
+    const key = rememberId(slug, lang)
+    if (id) jobs[key] = id
+    else delete jobs[key]
     localStorage.setItem(REMEMBER_KEY, JSON.stringify(jobs))
   } catch {
     /* localStorage 只恢复界面；任务真状态在 MySQL，无痕模式不影响后台继续。 */
   }
 }
 
-export function rememberedSockdriveConversion(slug: string): string {
-  return remembered()[slug] || ''
+export function rememberedSockdriveConversion(slug: string, lang?: string): string {
+  return remembered()[rememberId(slug, lang)] || ''
 }
 
 export function sockdriveStagingKey(): string {

@@ -27,7 +27,7 @@ import { usePageData, type GameData } from '@/services/pageData'
 import { platformMap } from '@/data/platforms'
 import { isPlatformEnabled } from '@/config/platforms'
 import { langPrefix, type RomLang } from '@/config/languages'
-import { dosExecutableForRom, dosStartupCommandsForRom, romLangsOf, romUrlForKey, useRomUrl } from '@/services/roms'
+import { dosExecutableForRom, dosSockdriveForRom, dosStartupCommandsForRom, romLangsOf, romUrlForKey, useRomUrl } from '@/services/roms'
 import { usePlatformBiosUrl } from '@/services/platformBios'
 import { useSeo } from '@/services/seo'
 import { useT, fmt } from '@/services/i18n'
@@ -186,7 +186,7 @@ export function EmbedPage({ standalonePlatform }: Props) {
           dosStartupCommands={dosStartupCommandsForRom(game, rom)}
           dosBackend={game.dosBackend}
           dosSystemUrl={game.dosSystem ? romUrlForKey(game.dosSystem) : undefined}
-          dosSockdriveUrl={game.dosSockdrive ? romUrlForKey(game.dosSockdrive) : undefined}
+          dosSockdriveUrl={dosSockdriveForRom(game, rom) ? romUrlForKey(dosSockdriveForRom(game, rom)!) : undefined}
           dosWindowsVersion={game.dosWindowsVersion}
           dosLaunchDelay={game.dosLaunchDelay}
           dosboxConfig={game.dosboxConfig}

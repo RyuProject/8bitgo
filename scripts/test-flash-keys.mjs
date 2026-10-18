@@ -12,6 +12,7 @@
  * 跑：npm run test:flash-keys
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 const { keyDesc, flashKeysFor, FLASH_KEYS, PRESET } = await import('../src/emulator/flashKeys.ts')
 
@@ -59,7 +60,14 @@ assert.deepEqual(
   '运行时键位不应混入画面显示配置',
 )
 
-/* ---------- 5. 预设本身也得是合法键名 ---------- */
+/* ---------- 5. 手机本地双人必须能切换到 2P ---------- */
+const touchPadSource = readFileSync(new URL('../src/emulator/TouchPad.tsx', import.meta.url), 'utf8')
+assert.match(touchPadSource, /handle\?\.coopButtons/, '触控板必须识别运行时的第二套本地键位')
+assert.match(touchPadSource, /send\?\.\(button, down, seat\)/, '触控输入必须把当前 1P/2P 座位传给运行时')
+assert.match(touchPadSource, /releaseAll\(\)[\s\S]*setSeat\(nextSeat\)/,
+  '切换座位必须先松开旧角色的按键，避免角色卡住一直走')
+
+/* ---------- 6. 预设本身也得是合法键名 ---------- */
 for (const [name, pad] of Object.entries(PRESET)) {
   for (const [button, key] of Object.entries(pad)) {
     assert.ok(BUTTONS.has(button), `PRESET.${name}: '${button}' 不是 PadButton`)

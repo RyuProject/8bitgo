@@ -19,10 +19,14 @@ const EXPECTED_COLUMNS = [
   { table: 'games', column: 'dos_executable', why: 'DOS 启动程序覆盖' },
   { table: 'game_roms', column: 'dos_executable', why: '同一 DOS ZIP 按语言选择启动文件；缺列会让后台保存 500' },
   { table: 'game_roms', column: 'dos_startup_commands', why: '各语言 DOS 光盘挂载命令；缺列会让后台保存 500' },
+  { table: 'game_roms', column: 'dos_sockdrive', why: '多语言 Windows 游戏逐语言绑定流式盘；缺列会让后台保存 500' },
   { table: 'game_roms', column: 'backup_key', why: '同语言 ROM 备用地址；缺列会让后台保存备用源 500' },
   { table: 'games', column: 'dos_backend', why: 'DOS / Windows 客体运行核心选择' },
   { table: 'games', column: 'dos_system', why: '可复用的 Windows 客体系统镜像' },
   { table: 'games', column: 'dos_sockdrive', why: '大型 Windows 游戏的静态流式磁盘目录' },
+  { table: 'sockdrive_conversion_jobs', column: 'lang', why: 'Sockdrive 转换任务精确绑定 ROM 语言槽' },
+  { table: 'sockdrive_conversion_jobs', column: 'expected_object_key', why: '转换期间 ROM 换包时阻止误绑定旧流式盘' },
+  { table: 'sockdrive_conversion_jobs', column: 'target_object_key', why: '完整回退包与流式盘原子绑定到同一语言槽' },
   { table: 'games', column: 'dos_extras', why: 'DOS 附加文件（资料片 / 补丁）清单；缺了后台保存的附加文件会静默丢失' },
   { table: 'games', column: 'dos_extras_label', why: '可选资料片在开始界面上的名字；缺了开关上只剩「加载扩展包」，玩家不知道那几百 MB 是什么' },
   { table: 'games', column: 'dos_extras_label_en', why: '资料片名字的英文版；缺了非中文界面的玩家会在一句英文里看到一个中文名' },
@@ -156,7 +160,8 @@ export async function checkSchema() {
     */
     const rows = await query(
       `SELECT g.slug, g.platform, g.dos_backend, g.dos_system, g.dos_sockdrive, g.dos_extras, g.dos_executable,
-              gr.lang, gr.object_key, gr.dos_executable AS lang_dos_executable
+              gr.lang, gr.object_key, gr.dos_executable AS lang_dos_executable,
+              gr.dos_sockdrive AS lang_dos_sockdrive
          FROM games g
          LEFT JOIN game_roms gr ON gr.game_id = g.id
         WHERE (
@@ -165,7 +170,8 @@ export async function checkSchema() {
             AND g.dos_system IS NOT NULL
             AND g.dos_system <> ''
           )
-           OR (g.dos_sockdrive IS NOT NULL AND g.dos_sockdrive <> '')`,
+           OR (g.dos_sockdrive IS NOT NULL AND g.dos_sockdrive <> '')
+           OR (gr.dos_sockdrive IS NOT NULL AND gr.dos_sockdrive <> '')`,
     )
     const games = new Map()
     for (const row of rows) {
@@ -181,6 +187,7 @@ export async function checkSchema() {
           dosExecutable: row.dos_executable,
           roms: {},
           dosExecutables: {},
+          dosSockdrives: {},
         }
         games.set(row.slug, game)
       }
@@ -189,6 +196,9 @@ export async function checkSchema() {
       else game.roms[row.lang] = row.object_key
       if (row.lang !== '*' && row.lang_dos_executable) {
         game.dosExecutables[row.lang] = row.lang_dos_executable
+      }
+      if (row.lang !== '*' && row.lang_dos_sockdrive) {
+        game.dosSockdrives[row.lang] = row.lang_dos_sockdrive
       }
     }
     const invalid = [...games.values()]
@@ -201,6 +211,33 @@ export async function checkSchema() {
       console.warn('   请在后台补齐；这类游戏当前会在下载完成后直接启动失败。')
       console.warn('')
       return false
+    }
+    const nonStreamingWindows = [...games.values()]
+      .filter((game) => (
+        game.platform === 'dos' &&
+        game.dosBackend === 'dosboxX' &&
+        String(game.dosSystem || '').trim()
+      ))
+      .map((game) => ({
+        slug: game.slug,
+        missing: [
+          ...(game.rom && !String(game.dosSockdrive || '').trim() ? ['*'] : []),
+          ...Object.keys(game.roms).filter((lang) => {
+            if (String(game.dosSockdrives?.[lang] || '').trim()) return false
+            // 完全没有逐语言配置的是历史数据，全局盘仍覆盖各语言；迁移一旦开始则不再跨语言兜底。
+            return Object.values(game.dosSockdrives ?? {}).some((value) => String(value || '').trim()) ||
+              !String(game.dosSockdrive || '').trim()
+          }),
+        ],
+      }))
+      .filter((item) => item.missing.length)
+    if (nonStreamingWindows.length) {
+      console.warn('')
+      console.warn('⚠️  Windows 客体仍在使用整包兼容模式（严重性能 / 存档风险）：')
+      for (const item of nonStreamingWindows) console.warn(`     · ${item.slug}（缺少：${item.missing.join('、')}）`)
+      console.warn('   玩家冷启动会完整下载并重打游戏 ZIP，且客体内的战役、档案和设置不能持久化。')
+      console.warn('   请在后台把原始 ZIP 转成版本化 Sockdrive；完整 ZIP 继续保留作回退。')
+      console.warn('')
     }
     return true
   } catch (e) {

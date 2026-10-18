@@ -4,7 +4,8 @@
  * 把 CS1.6 的 extras.pk3 重写成标准 ZIP/Deflate。
  *
  * 上游包的 738 个成员全部使用 Store，25MB 的 BMP/WAV/配置因此原样传输。PK3 本来就是
- * ZIP，Xash 也原生支持 Deflate；这里只改变每个成员的压缩方法，不删除或转码任何游戏内容。
+ * ZIP，Xash 也原生支持 Deflate。本站把 YaPB 固定在 radio mode 1，因此语音 chatter 的
+ * 487 个 WAV 和 chatter.cfg 永远不会读取；打包时一并剔除，避免每位玩家首局白下约 7MB。
  * 自己写这个很小的重打包器，是为了不让生产/构建机依赖系统 zip/unzip（此前检查已经因此挂过）。
  */
 import { readFileSync, renameSync, writeFileSync } from 'node:fs'
@@ -92,6 +93,12 @@ function readEntries(bytes) {
   return entries
 }
 
+function isUnusedBotChatter(entry) {
+  const encoding = entry.flags & 0x800 ? 'utf8' : 'latin1'
+  const name = entry.name.toString(encoding).replace(/\\/g, '/').toLowerCase()
+  return name.startsWith('sound/radio/bot/') || name === 'addons/yapb/conf/chatter.cfg'
+}
+
 function writeZip(entries) {
   const localParts = []
   const centralParts = []
@@ -152,7 +159,12 @@ function writeZip(entries) {
 }
 
 const entries = readEntries(data)
-const result = writeZip(entries)
+const keptEntries = entries.filter((entry) => !isUnusedBotChatter(entry))
+const removedEntries = entries.length - keptEntries.length
+const removedRawBytes = entries
+  .filter((entry) => isUnusedBotChatter(entry))
+  .reduce((total, entry) => total + entry.raw.length, 0)
+const result = writeZip(keptEntries)
 const temp = `${input}.tmp`
 writeFileSync(temp, result.bytes)
 // 重读一次再验 CRC，避免重打包器本身写出只能“列目录”、却不能真实解压的包。
@@ -160,4 +172,4 @@ readEntries(readFileSync(temp))
 renameSync(temp, input)
 
 const saved = data.length - result.bytes.length
-console.log(`✔ extras.pk3：${entries.length} 项，${data.length} → ${result.bytes.length} 字节，减少 ${saved} 字节（${(saved / data.length * 100).toFixed(1)}%）`)
+console.log(`✔ extras.pk3：保留 ${keptEntries.length} 项，移除 ${removedEntries} 项未启用 Bot 语音（原始 ${removedRawBytes} 字节），${data.length} → ${result.bytes.length} 字节，减少 ${saved} 字节（${(saved / data.length * 100).toFixed(1)}%）`)

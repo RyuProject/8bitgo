@@ -12,7 +12,7 @@ import {
 } from './lib/sockdrive-pipeline.mjs'
 import { bindSockdriveGame } from './bind-sockdrive-game.mjs'
 
-assert.equal(assertSafeArchiveEntry('StarCraft/Brood.exe'), 'StarCraft/Brood.exe')
+assert.equal(assertSafeArchiveEntry('StarCraft.exe'), 'StarCraft.exe')
 assert.throws(() => assertSafeArchiveEntry('../outside'), /目录穿越/)
 assert.throws(() => assertSafeArchiveEntry('/absolute'), /不安全路径/)
 assert.throws(() => assertSafeArchiveEntry('C:\\Windows\\bad.exe'), /不安全路径/)
@@ -21,8 +21,8 @@ assert.throws(
   /符号链接或硬链接/,
 )
 assert.deepEqual(
-  archiveEntriesFrom7z('archive\n----------\nPath = StarCraft\nPath = StarCraft/Brood.exe\n'),
-  ['StarCraft', 'StarCraft/Brood.exe'],
+  archiveEntriesFrom7z('archive\n----------\nPath = StarCraft.exe\n'),
+  ['StarCraft.exe'],
 )
 assert.equal(selectSockdriveDiskTemplate(1, '16M').id, 'fat16-256mb')
 assert.equal(selectSockdriveDiskTemplate(1500 * 1024 ** 2, '128M').id, 'fat32-2gb')
@@ -66,7 +66,7 @@ const fakeFetch = async (url, init = {}) => {
       platform: 'dos',
       dosBackend: 'dosboxX',
       dosSystem: 'systems/dos/win95.jsdos',
-      dosExecutable: 'StarCraft/Brood.exe',
+      dosExecutable: 'StarCraft.exe',
       dosSockdrive: patched.dosSockdrive,
     })
   }
@@ -75,7 +75,7 @@ const fakeFetch = async (url, init = {}) => {
     platform: 'dos',
     dosBackend: 'dosboxX',
     dosSystem: 'systems/dos/win95.jsdos',
-    dosExecutable: 'StarCraft/Brood.exe',
+    dosExecutable: 'StarCraft.exe',
   })
 }
 const bound = await bindSockdriveGame({

@@ -1,5 +1,5 @@
 {
-  "assetVersion": "20261017-english-ui1",
+  "assetVersion": "20261018-botvoice-safe1",
   "files": [
     {
       "name": "PACKS.md",
@@ -13,13 +13,13 @@
     },
     {
       "name": "cs16.bundle.js",
-      "size": 785156,
-      "sha256": "bfc95956a78a92c0177652f37b2e8b31f07ac8742eb8172a3f27a08a32eb76ff"
+      "size": 786423,
+      "sha256": "6cf87eea3d4b1ff26bb9693d37d547acac91f4035c1cd2400cfbd30a036f1953"
     },
     {
       "name": "cs16.js",
-      "size": 64978,
-      "sha256": "46fd31196ffb34e24e5747fcaf3fe162dff11ae47a98056737665cc88c861d87"
+      "size": 66560,
+      "sha256": "227737d014d4359210a870e08f7bd61c7974c566eae178e62a443fd7faf97284"
     },
     {
       "name": "engine/dist/constants.js",
@@ -123,8 +123,8 @@
     },
     {
       "name": "index.html",
-      "size": 22025,
-      "sha256": "45e9aa69af9fcfff4740ec8d95b09cfd610f19d3e513d07c92a2f1aa6f0e000b"
+      "size": 22028,
+      "sha256": "f8e1f96c9c11f3452351cbcf1b8abd9ba711a10010cc8641a6b8bed1ab6d2e14"
     },
     {
       "name": "lib-new/cstrike/cl_dlls/client_emscripten_wasm32.wasm",
@@ -163,8 +163,8 @@
     },
     {
       "name": "lib/cstrike/extras.pk3",
-      "size": 14136577,
-      "sha256": "c586dd142f7d850ad1cbbd5d1fcb68b3077a43d16067396ea42bcc3b2e2b2f4f"
+      "size": 6911294,
+      "sha256": "12a219cf073da2476324f7b084e38d585685f9631eb7438545ed536287cca96a"
     },
     {
       "name": "lib/valve/cl_dlls/client_emscripten_wasm32.wasm",

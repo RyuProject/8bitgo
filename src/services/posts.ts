@@ -44,15 +44,27 @@ export async function fetchAllPosts(): Promise<Post[]> {
   return Array.isArray(list) ? list : []
 }
 
-export async function savePost(post: Post): Promise<Post> {
-  return api.put<Post>(`/api/posts/${encodeURIComponent(post.slug)}`, post, true)
+/** 后台文章表格不下载长正文与多语言缓存；点“编辑”时再单独取完整文章。 */
+export async function fetchAdminPostSummaries(): Promise<Post[]> {
+  if (!apiEnabled()) return []
+  const list = await api.get<Post[]>('/api/posts?all=1&library=mine&summary=1', true)
+  return Array.isArray(list) ? list : []
+}
+
+export async function fetchAdminPost(slug: string): Promise<Post> {
+  return api.get<Post>(`/api/posts/${encodeURIComponent(slug)}?library=mine`, true)
+}
+
+export async function savePost(post: Post, options: { createOnly?: boolean } = {}): Promise<Post> {
+  const suffix = options.createOnly ? '?create=1' : ''
+  return api.put<Post>(`/api/posts/${encodeURIComponent(post.slug)}${suffix}`, post, true)
 }
 
 export async function deletePost(slug: string): Promise<void> {
   await api.del(`/api/posts/${encodeURIComponent(slug)}`, true)
 }
 
-/** 切换发布状态。PUT 是整体覆盖，所以要把原文一起带上。 */
+/** 切换发布状态只发一个布尔值，避免旧列表快照覆盖另一名管理员刚保存的新正文。 */
 export async function setPostPublished(post: Post, published: boolean): Promise<Post> {
-  return savePost({ ...post, published })
+  return api.patch<Post>(`/api/posts/${encodeURIComponent(post.slug)}/published`, { published }, true)
 }

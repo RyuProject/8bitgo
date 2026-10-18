@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { Game } from '@/types'
 import { apiEnabled } from '@/services/api'
@@ -159,6 +159,7 @@ export function AdminRoms() {
   const [filter, setFilter] = useState('')
   const [showCors, setShowCors] = useState(false)
   const [busy, setBusy] = useState(false)
+  const busyRef = useRef(false)
 
   useEffect(() => subscribeRomConfig(() => setCfg(getRomConfig())), [])
 
@@ -199,6 +200,21 @@ export function AdminRoms() {
   const byRom = useMemo(() => {
     const m = new Map<string, Game>()
     for (const g of games) for (const key of romKeysOf(g)) if (!m.has(key)) m.set(key, g)
+    return m
+  }, [games])
+  /**
+   * 删除安全检查必须保留**全部**引用。上面的 byRom 只够在表格里展示一款代表游戏，
+   * 用它做解绑会在两个游戏共用对象时只摘掉第一个，然后把第二个仍在使用的文件删掉。
+   */
+  const bindingsByRom = useMemo(() => {
+    const m = new Map<string, Game[]>()
+    for (const game of games) {
+      for (const key of romKeysOf(game)) {
+        const list = m.get(key)
+        if (list) list.push(game)
+        else m.set(key, [game])
+      }
+    }
     return m
   }, [games])
 
@@ -283,12 +299,39 @@ export function AdminRoms() {
     }
   }
 
-  /** 把某个对象 key 从绑定它的游戏上摘掉（删文件前、或行内「解绑」时调用） */
+  const requireCompleteReferences = () => {
+    if (allGamesLoaded) return true
+    setListError(`当前只加载了 ${games.length} / ${gamesTotal} 款游戏，不能安全判断对象是否仍被引用。请先点“加载全部游戏”。`)
+    return false
+  }
+
+  /**
+   * 把一组 key 从所有引用它们的游戏上摘掉。
+   *
+   * 同一款游戏可能在多个语言槽里引用包内不同文件，因此每次 PATCH 后都用服务端回包作为
+   * 下一次的基准；若一直拿打开页面时的旧对象算补丁，后一次会把前一次刚清掉的绑定写回来。
+   */
+  const unbindKeys = async (keys: string[]) => {
+    if (!requireCompleteReferences()) throw new Error('尚未加载全部游戏，已阻止危险解绑')
+    const wanted = new Set(keys)
+    const candidates = new Map<string, Game>()
+    for (const key of wanted) for (const game of bindingsByRom.get(key) ?? []) candidates.set(game.slug, game)
+    const updated: Game[] = []
+    for (const original of candidates.values()) {
+      let current = original
+      for (const key of wanted) {
+        if (!romKeysOf(current).includes(key)) continue
+        const patch = unbindKeyPatch(current, key)
+        if (Object.keys(patch).length) current = await patchGame(current.slug, patch)
+      }
+      updated.push(current)
+    }
+    applyGames(updated)
+  }
+
+  /** 把某个对象 key 从所有绑定它的游戏上摘掉（删文件前、或行内「解绑」时调用） */
   const unbindKey = async (key: string) => {
-    const game = byRom.get(key)
-    if (!game) return
-    const patch = unbindKeyPatch(game, key)
-    if (Object.keys(patch).length) applyGames([await patchGame(game.slug, patch)])
+    await unbindKeys([key])
   }
 
   /** 行内「解绑」：只摘掉这一行对应的 key，不影响这款游戏的其它语言版本 */
@@ -303,6 +346,9 @@ export function AdminRoms() {
 
   const autoMatch = async () => {
     if (!objects) return
+    if (!requireCompleteReferences()) return
+    if (busyRef.current) return
+    busyRef.current = true
     setBusy(true)
     setListError(null)
     let n = 0
@@ -327,6 +373,7 @@ export function AdminRoms() {
     } finally {
       // 攒到最后一次性合并：循环里每写一条就 setState，几十条会重渲染几十次
       applyGames(updated)
+      busyRef.current = false
       setBusy(false)
     }
     if (failed) setListError(`${failed} 款游戏保存失败（其余 ${n} 款已写入数据库）`)
@@ -334,7 +381,15 @@ export function AdminRoms() {
   }
 
   const removeObject = async (o: RomObject) => {
-    if (!window.confirm(`确定从 R2 删除 ${o.key}？此操作不可恢复。`)) return
+    if (!requireCompleteReferences()) return
+    const references = bindingsByRom.get(o.key) ?? []
+    const note = references.length
+      ? `\n\n会先从 ${references.length} 款游戏解除全部引用：${references.slice(0, 5).map((g) => g.titleZh ?? g.title).join('、')}${references.length > 5 ? '…' : ''}`
+      : ''
+    if (!window.confirm(`确定从 R2 删除 ${o.key}？此操作不可恢复。${note}`)) return
+    if (busyRef.current) return
+    busyRef.current = true
+    setBusy(true)
     try {
       // 先解绑再删文件：反过来的话一旦解绑失败，库里还留着指向已删文件的 key，
       // 玩家点「开始游戏」直接 404。
@@ -344,21 +399,34 @@ export function AdminRoms() {
       flash('已删除')
     } catch (err) {
       setListError(err instanceof Error ? err.message : '删除失败')
+    } finally {
+      busyRef.current = false
+      setBusy(false)
     }
   }
 
   /** 整组删：包目录下的文件一个个删没意义，还容易删一半留一半 */
   const removeBundle = async (b: BundleGroup) => {
-    if (!window.confirm(`确定从 R2 删除整个包目录 ${b.dir}/（${b.files.length} 个文件，${formatBytes(b.size)}）？此操作不可恢复。`)) return
+    if (!requireCompleteReferences()) return
+    const keys = b.files.map((file) => file.key)
+    const referenceSlugs = new Set(keys.flatMap((key) => (bindingsByRom.get(key) ?? []).map((game) => game.slug)))
+    const note = referenceSlugs.size ? `\n\n会先从 ${referenceSlugs.size} 款游戏解除这个包的全部引用。` : ''
+    if (!window.confirm(`确定从 R2 删除整个包目录 ${b.dir}/（${b.files.length} 个文件，${formatBytes(b.size)}）？此操作不可恢复。${note}`)) return
+    if (busyRef.current) return
+    busyRef.current = true
+    setBusy(true)
     try {
       // 同样是先解绑再删：反过来一旦解绑失败，库里就留着指向已删文件的 key
-      for (const f of b.files) await unbindKey(f.key)
+      await unbindKeys(keys)
       const removed = await deleteRomDir(b.dir)
       const gone = new Set(removed.length ? removed : b.files.map((f) => f.key))
       setObjects((list) => list?.filter((x) => !gone.has(x.key)) ?? null)
       flash(`已删除 ${gone.size} 个文件`)
     } catch (err) {
       setListError(err instanceof Error ? err.message : '删除失败')
+    } finally {
+      busyRef.current = false
+      setBusy(false)
     }
   }
 

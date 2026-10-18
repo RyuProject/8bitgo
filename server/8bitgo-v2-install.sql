@@ -272,6 +272,8 @@ CREATE TABLE IF NOT EXISTS game_roms (
   dos_executable VARCHAR(255) NULL,
   -- 各语言光盘校验不同，挂盘命令跟随当前 ROM 槽。
   dos_startup_commands TEXT NULL,
+  -- 多语言 Windows 游戏各自的流式盘。
+  dos_sockdrive VARCHAR(500) NULL,
   PRIMARY KEY (game_id, lang),
   -- 后台「ROM 存储」页要反查「这个文件绑给了哪款游戏」
   KEY idx_object_key (object_key(191)),

@@ -5,7 +5,7 @@
  * 要守住的约束是「一个游戏 + 一个语言 = 一个 ROM」「一个游戏 = 一张封面」
  * 「一个平台 = 一份 BIOS」—— 原来三处都是不问直接 PUT，管理员看不到自己盖掉了什么。
  */
-import { coverThumbKey, deleteRom, deleteRomDir, dirOfKey, getRomConfig, headRom, isBundleKey } from '@/services/roms'
+import { deleteRom, deleteRomDir, dirOfKey, getRomConfig, headRom, isBundleKey } from '@/services/roms'
 import { STREAMING_DISC_PLATFORM_IDS } from '../../shared/streaming-disc-platforms.js'
 
 // 封面图常常不到 1MB，一律按 MB 显示会变成一排「0.00 MB」，看不出差别
@@ -48,35 +48,25 @@ export async function confirmUpload(key: string, file: Blob): Promise<boolean> {
 }
 
 /**
- * 上传成功后，清理被顶替的那个旧文件。
+ * 上传成功后处理被顶替的旧文件。
  *
  * 什么时候会产生旧文件：字段里的 key 被手工改过、原来填的是完整 URL、
  * 或者清空后换了个扩展名重传（zip → gba）。这几种情况新 key 和旧 key 不一样，
  * 数据库指向新的，旧对象就成了没人引用的孤儿留在 R2 里 ——
  * 「一个游戏上传多份同语言 ROM」正是这么来的。
  *
- * 两道保险：
- *   1. 同一个 key 被这款游戏的多个槽位共用时不删（比如 en 和 ja 指向同一份）
- *   2. 删之前弹确认，并且明说「别的游戏也在用就选取消」——
- *      前端只看得到当前这一款游戏，跨游戏的引用它判断不了
+ * 这里**不再自动删除**：表单只看得到当前游戏，无法证明旧 key 没被别的游戏、
+ * 平台 BIOS 或回退槽共用。让管理员凭一句确认文字猜引用关系，仍然会把别的游戏删成 404。
+ * 真正删除统一去「ROM 存储」页；那里会先加载全库引用，再解除所有绑定。
  *
- * 返回真正删掉的 key，没删就返回 null。
+ * 保留旧签名让上传入口无需各自实现判断；现在始终返回 null（没有删除）。
  */
 export async function cleanupSuperseded(oldKey: string, newKey: string, allBoundKeys: string[]): Promise<string | null> {
   const old = oldKey.trim()
   if (!old || old === newKey || /^https?:/i.test(old)) return null
   if (allBoundKeys.filter((k) => k === old).length > 1) return null
-  const exists = await headRom(old).then((h) => h.exists).catch(() => false)
-  if (!exists) return null
-  const ok = window.confirm(
-    `旧文件 ${old}\n\n已被新上传的 ${newKey} 顶替，这款游戏不再引用它。\n\n从 R2 删除吗？此操作不可恢复；如果别的游戏也在用这个文件，请选取消。`,
-  )
-  if (!ok) return null
-  await deleteRom(old)
-  // 连它的缩略图一起删（有的话）。没有就是空串，这里直接跳过
-  const oldThumb = coverThumbKey(old)
-  if (oldThumb) await deleteRom(oldThumb).catch(() => {})
-  return old
+  // 参数保留是为了让所有上传入口继续共用同一个守卫；null 表示旧对象安全保留。
+  return null
 }
 
 /**

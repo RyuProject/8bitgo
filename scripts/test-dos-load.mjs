@@ -204,23 +204,21 @@ check('宽屏播放器按实际 4:3 游戏区换算，左右黑边不占鼠标�
   assert.deepEqual(lockedAbsolutePointerAtClientPosition(900, 300, rect), { x: 1, y: 0.5 })
 })
 
-check('Windows 客体走 ci 绝对桥，《主题医院》由适配器独占指针事件，其他 DOS 保留相对鼠标', () => {
+check('Windows 客体与《主题医院》都由适配器独占绝对指针，其他 DOS 保留相对鼠标', () => {
   assert.equal(needsLockedAbsoluteDosMouse('theme-hospital'), true)
   assert.equal(needsLockedAbsoluteDosMouse(' Theme-Hospital '), true)
   assert.equal(needsLockedAbsoluteDosMouse('doom'), false)
   assert.equal(needsLockedAbsoluteDosMouse(), false)
-  assert.match(jsdos, /adapterOwnsAbsoluteDosMouse\s*=\s*Boolean/)
-  assert.match(jsdos, /mouseCapture:\s*Boolean\(options\.mouseCapture\s*&&\s*!adapterOwnsAbsoluteDosMouse\)/)
-  assert.match(jsdos, /guest\s*\?\s*hookLockedAbsoluteMouse\(ci, host/)
-  assert.match(jsdos, /adapterOwnsAbsoluteDosMouse\s*\?\s*hookCapturedAbsoluteDosMouse/)
+  assert.match(jsdos, /adapterOwnsAbsoluteMouse\s*=\s*Boolean/)
+  assert.match(jsdos, /options\.mouseCapture\s*&&\s*\(guest\s*\|\|\s*needsLockedAbsoluteDosMouse/)
+  assert.match(jsdos, /mouseCapture:\s*Boolean\(options\.mouseCapture\s*&&\s*!adapterOwnsAbsoluteMouse\)/)
+  assert.match(jsdos, /adapterOwnsAbsoluteMouse\s*\?\s*hookCapturedAbsoluteMouse/)
   assert.match(jsdos, /:\s*hookMouseInvert\(ci/)
   assert.match(jsdos, /rawAbsolute\.call\(c, pointer\.x, pointer\.y\)/)
-  assert.match(jsdos, /lockedAbsoluteContentRect\(rect/)
-  assert.match(jsdos, /if \(document\.pointerLockElement\) return/)
+  assert.match(jsdos, /lockedAbsoluteContentRect\(surface\.getBoundingClientRect\(\)/)
   assert.match(jsdos, /classList\.contains\('emulator-mouse-overlay'\)/)
   assert.match(jsdos, /pointerSurface\(event\.target\)/)
-  assert.match(jsdos, /event\.target !== surface/)
-  assert.match(jsdos, /c\.sendMouseRelativeMotion === wrapped/)
+  assert.match(jsdos, /event\.target === surface/)
   assert.match(jsdos, /captureUnavailable = true/)
   assert.match(jsdos, /surface\.requestPointerLock\(\)/)
   assert.match(jsdos, /event\.stopPropagation\(\)/)
@@ -274,7 +272,7 @@ check('配置流式目录后不再下载整包 ROM', () => {
 check('流式盘按预算选择官方预取，并挂到 DOSBox-X 的 Sockdrive', () => {
   assert.match(jsdos, /buildSockdriveWindowsGuestConfig\(systemConfig, sockdriveUrl, dosboxConfig\)/)
   assert.match(jsdos, /streamingGame \? \{ sockdrivePreload \} : \{\}/)
-  assert.match(jsdos, /windowsSockdriveLauncherFile\(gameExecutable, guest\.gameDrive\)/)
+  assert.match(jsdos, /windowsSockdriveLauncherFile\(gameExecutable, guest\.gameDrive, registryImport\)/)
 })
 
 check('流式盘必须走 URL bundle 入口，否则 js-dos 会把 changes URL 留空、保存永远失败', () => {

@@ -182,6 +182,9 @@ if (!generatedXash.includes('var ENV = Module["ENV"] ?? {};')) {
 if (!source.includes('yb_quota_mode "normal"') || !source.includes('yb_autovacate "0"') || !source.includes('`yb_quota "${count}"`')) {
   fail('BOT 数量没有通过地图级配置精确覆盖 YaPB 默认值')
 }
+if (!source.includes('yb_radio_mode "1"') || !source.includes('yb_radio_mode 1') || !source.includes('voice_enable 0')) {
+  fail('CS16 没有同时关闭不可用的麦克风采集和会触发旧客户端 BotVoice 崩溃的语音 chatter')
+}
 if (!source.includes('`yb_difficulty "${difficulty}"`') || !source.includes('`yb_difficulty ${difficulty}`')) {
   fail('启动页 BOT 难度没有同时写入地图配置与运行时兜底命令')
 }
@@ -307,8 +310,12 @@ const extrasByName = new Map(extrasEntries.map((entry) => [entry.name, entry]))
 for (const map of supportedMaps) {
   if (!extrasByName.has(`addons/yapb/data/graph/${map}.graph`)) fail(`extras.pk3 缺少 ${map} 的 YaPB 导航图`)
 }
+if (extrasEntries.some((entry) => entry.name.toLowerCase().startsWith('sound/radio/bot/')) ||
+    extrasByName.has('addons/yapb/conf/chatter.cfg')) {
+  fail('extras.pk3 仍包含 radio mode 1 永远不会读取的 Bot 语音；运行 npm run cs16:extras')
+}
 const deflatedEntries = extrasEntries.filter((entry) => entry.method === 8).length
-if (deflatedEntries < 500 || statSync(join(publicDir, 'lib/cstrike/extras.pk3')).size > 16 * 1024 * 1024) {
+if (deflatedEntries < 150 || statSync(join(publicDir, 'lib/cstrike/extras.pk3')).size > 8 * 1024 * 1024) {
   fail('extras.pk3 退回了 Store 大包；运行 npm run cs16:extras')
 }
 
@@ -419,6 +426,11 @@ if (!source.includes("'HUD font', { validate: isTtf }") || source.includes('HUD 
 }
 if (!source.includes('onAbort: (reason) => reportEngineFailure') || !source.includes('onExit: (status) => reportEngineFailure')) {
   fail('WASM 首帧后异常退出不会显示给玩家')
+}
+if (!source.includes("window.addEventListener('error', captureWasmRuntimeFailure)") ||
+    !source.includes("window.addEventListener('unhandledrejection', captureWasmRuntimeFailure)") ||
+    !source.includes('error instanceof WebAssembly.RuntimeError')) {
+  fail('浏览器事件回调里的 WASM trap 仍会绕过 onAbort/onExit 并留下黑屏')
 }
 if (!source.includes("overlay?.classList.remove('hidden', 'is-loading')")) fail('首帧后错误不会重新显示故障层')
 if (!source.includes('firstFrameReady && !failureReported && overlay')) fail('WebGL 迟到恢复会错误隐藏终态故障层')

@@ -265,6 +265,14 @@ export interface Game {
    */
   dosSockdrive?: string
   /**
+   * 各语言 Windows 游戏盘的 Sockdrive 目录。它必须和 roms / dosExecutables 使用同一个语言键；
+   * 播放器只取当前实际加载 ROM 那一槽，避免中文 ROM 误挂英文流式盘。
+   *
+   * dosSockdrive 保留给旧的单语言数据与确实共用同一块游戏盘的内容；同一语言同时存在两者时，
+   * 这里的逐语言值优先。
+   */
+  dosSockdrives?: Partial<Record<RomLang, string>>
+  /**
    * DOS 附加文件（资料片 / 补丁 / 配置）清单，一行一个。
    *
    * 形状是 `对象key` 或 `对象key|游戏里的路径`（省略后半段 = 落到游戏根目录，
@@ -404,6 +412,9 @@ export interface User {
 
 /** 对外暴露的用户信息（不含密码相关字段） */
 export type PublicUser = Omit<User, 'passwordHash' | 'salt'> & {
+  /** 后台列表只取聚合数量，不再为了显示一个数字下载全部收藏 / 最近记录。 */
+  favoritesCount?: number
+  recentCount?: number
   /**
    * 现在能不能玩成人内容 —— 由出生日期按今天现算（shared/age.js），未满 18 的账号到生日当天自动变 true。
    * 服务端给的是登录 / 拉取那一刻的值；真正放行与否以 GET /api/games/:slug/access 的实时结论为准。

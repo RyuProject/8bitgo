@@ -385,7 +385,10 @@ const adapter = readFileSync(new URL('../src/emulator/adapters/jsdos.ts', import
   const call = adapter.slice(adapter.indexOf('await makeJsdosBundle('))
   ok(/^await makeJsdosBundle\(\s*\n\s*rom!\.name,\s*\n\s*rom!\.buf,/.test(call), '⭐ 普通 DOS 不先复制完整 ROM')
   ok(/startupCommands,\s*\n\s*\/\/[^\n]+\n\s*extras,/.test(call), '⭐ 普通 DOS 把附加文件直接交给最终 bundle 一次并入')
-  ok(/const dosboxConfig = options\.dosboxConfig/.test(adapter), '普通 DOS 的性能 / 兼容配置不再被静默丢弃')
+  ok(
+    /const dosboxConfig = windowsGameCompatibilityDosboxConfig\(\s*options\.gameSlug,\s*options\.dosExecutable,\s*options\.dosboxConfig,\s*\)/.test(adapter),
+    '普通 DOS 的性能 / 兼容配置经过兼容层后仍会传给运行时，不会被静默丢弃',
+  )
   ok(adapter.indexOf('const engineTask = loadJsDos()') < adapter.indexOf('const romTask = settled(streamingGame'), '引擎与 ROM 同时开始加载')
   ok(!adapter.includes('const Dos = await loadJsDos()'), '不再等引擎脚本加载完才开始下载 ROM')
   // 取不到就抛，不静默跳过：少一条要么是 key 填错（永远不会自己好），

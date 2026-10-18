@@ -826,23 +826,27 @@ export async function fetchMyStats(): Promise<MeStats | null> {
 
 // API 模式下的用户列表缓存
 let apiUsers: PublicUser[] = []
+let usersRequestGeneration = 0
 const usersListeners = new Set<() => void>()
 function notifyUsers() {
   for (const l of usersListeners) l()
 }
 
-export async function hydrateUsers(): Promise<void> {
+export async function hydrateUsers(query = ''): Promise<void> {
   if (!apiEnabled()) return
+  const generation = ++usersRequestGeneration
   try {
     // 必须带 admin 标记：GET /api/users 是管理员接口，
     // 只用「后台口令」登录后台时（还没建管理员账号的新部署就是这种情况）
     // 不带的话拿到 403，下面又被 catch 吞掉，后台会显示成「一个用户都没有」
-    const list = await api.get<PublicUser[]>('/api/users', true)
-    if (Array.isArray(list)) apiUsers = list
+    const suffix = query.trim() ? `?q=${encodeURIComponent(query.trim())}` : ''
+    const list = await api.get<PublicUser[]>(`/api/users${suffix}`, true)
+    // 搜索词快速变化时旧请求可能后回来；不能让“zhang”的结果盖掉更新的“zhangwen”。
+    if (generation === usersRequestGeneration && Array.isArray(list)) apiUsers = list
   } catch {
     // 拉取失败就保留上一次的结果 —— 清成空列表会让人以为用户被删光了
   }
-  notifyUsers()
+  if (generation === usersRequestGeneration) notifyUsers()
 }
 
 /**
@@ -869,10 +873,10 @@ export async function adminAdjustCoins(id: string, delta: number) {
  * 不能把最后一个可用的管理员降下去。这里不重复实现 ——
  * 前端拦一遍只是省一次往返，真判断在 server/src/routes/users.js。
  */
-export async function adminSetRole(id: string, role: UserRole) {
+export async function adminSetRole(id: string, role: UserRole, query = '') {
   if (apiEnabled()) {
     await api.patch(`/api/users/${encodeURIComponent(id)}`, { role }, true)
-    await hydrateUsers()
+    await hydrateUsers(query)
     return
   }
   usersStore.update(id, { role })
@@ -882,36 +886,36 @@ export async function adminSetRole(id: string, role: UserRole) {
  * 清除用户的出生日期，让他可以重填。
  * 用户自己填一次就锁死（见 setBirthDate），这是唯一的纠错通道；后台不能代填，只能清。
  */
-export async function adminClearBirthDate(id: string) {
+export async function adminClearBirthDate(id: string, query = '') {
   if (apiEnabled()) {
     await api.patch(`/api/users/${encodeURIComponent(id)}`, { birthDate: null }, true)
-    await hydrateUsers()
+    await hydrateUsers(query)
     return
   }
   usersStore.update(id, { birthDate: null })
 }
 
-export async function adminSetStatus(id: string, status: UserStatus) {
+export async function adminSetStatus(id: string, status: UserStatus, query = '') {
   if (apiEnabled()) {
     await api.patch(`/api/users/${encodeURIComponent(id)}`, { status }, true)
-    await hydrateUsers()
+    await hydrateUsers(query)
     return
   }
   usersStore.update(id, { status })
   if (status === 'banned' && readSessionId() === id) writeSessionId(null)
 }
 
-export async function adminDeleteUser(id: string) {
+export async function adminDeleteUser(id: string, query = '') {
   if (apiEnabled()) {
     await api.del(`/api/users/${encodeURIComponent(id)}`, true)
-    await hydrateUsers()
+    await hydrateUsers(query)
     return
   }
   usersStore.remove(id)
   if (readSessionId() === id) writeSessionId(null)
 }
 
-export function useAllUsers(): PublicUser[] {
+export function useAllUsers(query = ''): PublicUser[] {
   const local = usersStore.useAll()
   const remote = useSyncExternalStore(
     (l) => {
@@ -922,7 +926,7 @@ export function useAllUsers(): PublicUser[] {
     () => apiUsers,
   )
   useEffect(() => {
-    if (apiEnabled()) void hydrateUsers()
-  }, [])
+    if (apiEnabled()) void hydrateUsers(query)
+  }, [query])
   return apiEnabled() ? remote : local.map(toPublic)
 }

@@ -117,6 +117,15 @@ assert.match(dosGameConfigError({ ...winGuest, roms: {} }), /必须绑定游戏 
 assert.match(dosGameConfigError({ ...winGuest, roms: undefined, rom: 'roms/game.zip.8bg' }), /通用 ROM 必须填写默认/)
 const streamedGuest = { ...winGuest, dosExecutable: 'BIN/GAME.EXE', dosSockdrive: 'sockdrives/game-v1' }
 assert.equal(dosGameConfigError(streamedGuest), null)
+const languageStreamedGuest = {
+  ...winGuest,
+  dosExecutables: { en: 'BIN/GAME.EXE' },
+  dosSockdrives: { en: 'sockdrives/game-en-v1' },
+}
+assert.equal(dosGameConfigError(languageStreamedGuest), null)
+assert.match(dosGameConfigError({ ...languageStreamedGuest, dosSockdrives: { ja: 'sockdrives/game-ja-v1' } }), /没有对应语言的 ROM/)
+assert.match(dosGameConfigError({ ...languageStreamedGuest, dosExecutables: { en: 'RUN.BAT' } }), /安全的 \.exe/)
+assert.match(dosGameConfigError({ ...languageStreamedGuest, dosExtras: ['extras/patch.dat'] }), /不能现场合并/)
 assert.match(dosGameConfigError({ ...streamedGuest, dosSockdrive: 'sockdrives/game-v1/sockdrive.metaj' }), /必须填写.*目录/)
 assert.match(dosGameConfigError({ ...streamedGuest, dosSockdrive: 'https://assets.test/game?v=1' }), /查询参数/)
 assert.match(dosGameConfigError({ ...streamedGuest, dosSockdrive: 'sockdrives/game' }), /版本号|内容哈希/)

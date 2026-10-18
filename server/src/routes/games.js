@@ -14,6 +14,7 @@ import {
   getGameBySlug,
   getGameMediaBySlug,
   getGamesBySlugs,
+  createGame,
   upsertGame,
   patchGame,
   deleteGame,
@@ -32,6 +33,7 @@ import { clientIpFrom, resolveCountry } from '../presence.js'
 import { isSlowStartup, normalizeStartupEvent, recordStartupEvent } from '../startup-metrics.js'
 import { dosGameConfigError, mergeGamePatchForDosValidation } from '../dos-game-config.js'
 import {
+  createVolunteerGame,
   deleteVolunteerGame,
   getVolunteerGame,
   listVolunteerGames,
@@ -516,6 +518,11 @@ gamesRouter.post('/:slug/translate-description', async (req, res, next) => {
 gamesRouter.put('/:slug', requireAbility('games:edit'), async (req, res, next) => {
   try {
     const slug = String(req.params.slug)
+    const createOnly = req.query.create === '1'
+    if (createOnly && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) {
+      return res.status(400).json({ error: 'slug 只能使用小写字母、数字和连字符' })
+    }
+    if (slug.length > 120) return res.status(400).json({ error: 'slug 不能超过 120 个字符' })
     if (!req.body?.title) return res.status(400).json({ error: '缺少标题' })
     if (!req.body?.platform) return res.status(400).json({ error: '缺少平台' })
     const netplayError = netplayGameConfigError(req.body)
@@ -525,13 +532,31 @@ gamesRouter.put('/:slug', requireAbility('games:edit'), async (req, res, next) =
     if (req.staffRole === 'volunteer') {
       const ownerId = String(req.user?.id ?? '')
       if (!ownerId) return res.status(403).json({ error: '志愿者独立库必须使用账号登录' })
-      return res.json(await saveVolunteerGame(ownerId, slug, req.body))
+      try {
+        const saved = createOnly
+          ? await createVolunteerGame(ownerId, slug, req.body)
+          : await saveVolunteerGame(ownerId, slug, req.body)
+        return res.status(createOnly ? 201 : 200).json(saved)
+      } catch (error) {
+        if (createOnly && error?.code === 'ER_DUP_ENTRY') {
+          return res.status(409).json({ error: `slug「${slug}」已存在，请换一个` })
+        }
+        throw error
+      }
     }
-    await upsertGame(slug, req.body)
+    try {
+      if (createOnly) await createGame(slug, req.body)
+      else await upsertGame(slug, req.body)
+    } catch (error) {
+      if (createOnly && error?.code === 'ER_DUP_ENTRY') {
+        return res.status(409).json({ error: `slug「${slug}」已存在，请换一个` })
+      }
+      throw error
+    }
     invalidateContent()
     const saved = await getGameBySlug(slug)
     queueGameSearchPush(saved)
-    res.json(saved)
+    res.status(createOnly ? 201 : 200).json(saved)
   } catch (e) {
     next(e)
   }

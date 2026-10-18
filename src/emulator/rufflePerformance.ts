@@ -28,7 +28,7 @@ export function installRufflePixelRatioCap(target: PixelRatioTarget): number {
 }
 
 /**
- * Ruffle 0.6 会按这五项能力在增强版 / 兼容版 WASM 之间二选一。
+ * Ruffle 会按这五项能力在增强版 / 兼容版 WASM 之间二选一。
  * 预热必须做同样的选择；猜错会先白下约 14 MB，再由 Ruffle 下载另一份。
  */
 const WASM_EXTENSION_PROBES = [

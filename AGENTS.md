@@ -344,11 +344,13 @@ DeSmuME / DeSmuME 2015 的弱机兜底也要把 `desmume_pointer_type` 从相对
 - 个别原生 DOS 图形界面对绝对位置更稳定；《主题医院》已经在真实页面复现，按 slug 收进
   `src/emulator/dosMouse.ts` 的兼容清单。不要按 `strategy` 标签一刀切，标签不能证明输入协议。
 
-修复在 `src/emulator/adapters/jsdos.ts`。Windows 客体保留 js-dos 的 Pointer Lock，在 ci 边界把
-相对位移累积成 0～1，再送 `sendMouseMotion()`；《主题医院》则把传给 js-dos 的
-`mouseCapture` 关掉，由适配器独占 pointerdown / move / up、自己请求 Pointer Lock 并发绝对坐标。
-后者不能再只靠“替换 ci 上的一个方法”：js-dos 的 React effect / 输入层一改挂载时序，就可能
-继续从旧闭包发相对包，表面看兼容分支已命中，游戏里仍只在四角跳。
+修复在 `src/emulator/adapters/jsdos.ts`。Windows 客体和《主题医院》都把传给 js-dos 的
+`mouseCapture` 关掉，由适配器独占 pointerdown / move / up、自己请求 Pointer Lock，并把相对位移
+累积成 0～1 后送 `sendMouseMotion()`。不能再只靠“替换 ci 上的一个方法”：js-dos 的 React
+effect / 输入层一改挂载时序，就可能继续从旧闭包发相对包，表面看兼容分支已命中，游戏里仍只在
+四角跳。2026-10-18 又在《帝国时代》真页面抓到第二个理由：Chromium 内置浏览器拒绝上游的
+`unadjustedMovement` 后继续报 `UnknownError`，每次点击都只重试捕获、一个鼠标键也不发；适配器
+自己的请求不带该选项，并能在拒绝后退回未锁定的绝对坐标。
 
 实际内容区必须用 `ci.width()/height()` 从捕获表面的 CSS 矩形扣掉黑边；直接拿播放器宽高会让
 4:3 游戏永远到不了左右边缘。首次捕获按点击位置校准，但锁定后的点击不能重复校准（Pointer
@@ -360,7 +362,7 @@ Lock 下 clientX/Y 已经不是真实位置）。kiosk 桌面路径的捕获面�
 切换也要主动放掉所有已按鼠标键——DOM 在拖出画布或失去 Pointer Lock 后不保证补发 pointerup，
 漏掉就是游戏里永久拖拽。老 Safari 的 `requestPointerLock()` 还可能返回 void，不能无条件 `.then()`。
 
-⚠️ Pointer Lock 会在部分 WebView / 浏览器策略下拒绝。绝对坐标 DOS 的适配器接管路径必须在
+⚠️ Pointer Lock 会在部分 WebView / 浏览器策略下拒绝。Windows 客体与绝对坐标 DOS 的适配器接管路径必须在
 拒绝后退回未锁定的 `clientX/Y → 0～1`，不能像上游那样每次点击都只重试捕获、永远不给游戏
 发送鼠标按键。拒绝发生得快时要补发第一次点击；既不 resolve 也不报错的 WebView 用 750ms
 兜底，避免第一下永久丢失。成功锁定时第一下仍只负责 capture，之后的点击才给游戏，保持原有
@@ -369,8 +371,8 @@ Lock 下 clientX/Y 已经不是真实位置）。kiosk 桌面路径的捕获面�
 普通相对鼠标与绝对桥的钩子都必须返回清理函数。`ci-ready` 在后端重连时可能再次到达；不清理
 就会把 Y 轴反转包两层，结果看起来像开关失效。回归：`npm run test:dos-load`。
 
-`scripts/copy-jsdos.mjs` 还会裁掉上游重复的灵敏度侧栏、黑色捕获蒙版和提示文字；真正的
-`requestPointerLock()` 仍直接绑在 canvas 点击上。改这段补丁后要运行 `npm run jsdos`，并让
+`scripts/copy-jsdos.mjs` 还会裁掉上游重复的灵敏度侧栏、黑色捕获蒙版和提示文字；普通相对鼠标的
+`requestPointerLock()` 仍直接绑在 canvas 点击上，Windows / 绝对坐标分支则由适配器接管。改这段补丁后要运行 `npm run jsdos`，并让
 `scripts/check-jsdos.mjs` 同时确认三块 UI 都已移除，不能只看运行时版本号。上游还会无条件调用
 `navigator.keyboard.lock()`；iframe / WebView 拒绝时必须吃掉 Promise rejection，否则控制台会有
 一个和鼠标捕获失败极像的全局 `InvalidStateError`，排查时很容易误判成 Pointer Lock 又坏了。
@@ -460,11 +462,17 @@ OPFS；预算只覆盖部分热点时传 `none`，否则 js-dos 会无视 16MB /
 产物就不要填一个猜出来的路径；元数据 404 会让所有玩家在开局前直接失败。
 
 StarCraft 已补一条离线发布流水线：`npm run sockdrive:prepare -- --source <原始ZIP> --slug starcraft
---version v1 --exe StarCraft/Brood.exe --work-dir <目录> --cli <官方cli>`。它在 Linux 上用
+--version v1 --exe StarCraft.exe --work-dir <目录> --cli <官方cli>`。它在 Linux 上用
 `virt-make-fs` 生成带 MBR 的 VFAT/QCOW2 游戏盘，再调官方 `sockify`；加 `--publish --bucket <桶>
 --bind` 会在 R2 公开校验通过后才更新游戏。绑定令牌只认环境变量 `EIGHTBITGO_ADMIN_JWT`，不收命令行
 参数，避免落进 shell 历史。上传成功、绑定失败时只重跑 `npm run sockdrive:bind`，不准覆盖原目录。
 完整操作见 `docs/starcraft-sockdrive.md`，回归并入 `npm run test:dos-sockdrive-upload`。
+
+当前英文原版包只允许官方 `StarCraft.exe`；`Brood.exe` / `brood-c.exe` / `brood.dll` 是旧整合包的
+第三方启动链，不能再拿来做自启动程序。包根还必须带 `STAR.REG`，播放器会在完整包和 Sockdrive
+两条路径的 `RUN.BAT` 里先用 `regedit /s` 静默写入 `InstallPath` / `StarCD`，再启动主程序。
+`starcraft` / `starcraft-1-16-1` 默认把 `[cpu] core` 设为已完成 Win95 实机验证的 `normal`；后台
+显式 CPU 配置仍可覆盖。回归：`npm run test:dos-bundle && npm run test:roms`。
 
 生产后台现在把这条离线流水线包成了**持久任务**：编辑已保存的 DOSBox-X 游戏，在「原始大 ZIP
 自动转 Sockdrive」上传原始 ZIP；浏览器仍直接分片写进私有 `sockdrive-staging/`，不经过 Express
@@ -475,6 +483,15 @@ StarCraft 已补一条离线发布流水线：`npm run sockdrive:prepare -- --so
 Worker 必须把 `psp-staging/` / `sockdrive-staging/` 的 GET/HEAD 也设为 Bearer 私有，并保留上传请求的
 `Content-Encoding`。手工命令仍作为故障兜底，不是日常上传步骤。回归：
 `npm run test:sockdrive-conversion && npm run test:dos-sockdrive-upload && npm --prefix worker test`。
+
+多语言 Windows 游戏的流式盘按 **ROM 语言槽**绑定：`game_roms.dos_sockdrive` 经 API 映射为
+`dosSockdrives`，播放器以最终选中的 ROM 语言取同槽 Sockdrive；旧的 `games.dos_sockdrive` 只在
+完全没有逐语言配置时作历史数据回退，迁移一旦开始，缺配置的语言宁可走完整包也不跨语言误挂。
+后台已保存游戏的语言 ROM 按钮会显示「完整包 + 流式盘」：一次选择
+原始 ZIP，先发布同语言的 8BG 完整回退包，再把原始 ZIP 写入私有 staging 制作流式盘；任务最终用
+事务 CAS 同时绑定 `object_key`、`dos_executable` 和 `dos_sockdrive`。版本目录必须带语言（如
+`sockdrives/starcraft-zh-v1730000000000`），否则多个语言会争用不可覆盖的目录。运行环境、EXE 或
+当前流式盘地址有未保存修改时必须先保存，不能让管理员传完大包才在建任务阶段发现数据库不一致。
 
 ⚠️ 官方 Sockdrive CLI 2.0.10 **不接受任意磁盘容量**，只按原始镜像字节数匹配两份内置描述：
 252,370,944 字节（FAT16-256MB）或 2,147,483,648 字节（FAT32-2GB）。曾经给 `virt-make-fs`
@@ -865,6 +882,16 @@ SmartFoxServer 配置只有 `shared/sfs-games.js` 里的游戏能请求（当前
 否则旁路故障会把每一款游戏启动拖住 1.5 秒。`api.load()` 返回也不代表舞台已经创建，必须等
 `loadedmetadata/loadeddata` 再撤加载层；不等会偶发黑框并永久漏掉本局截图 / 录制 / 直播能力。
 详细取证和升级约束见 `docs/ruffle-performance.md`。
+
+`load()` 成功后 Ruffle 仍可能在后续时间轴里发生 WASM `RuntimeError` / Rust panic。若外层不接管，
+播放器状态会永远停在「运行中」，用户只看到冻结或黑屏。`ruffleCrash.ts` 的守卫必须在 `ruffle.js`
+之前安装，且只认确定性的 WASM / panic 特征：普通 ActionScript 异常与 `AbortError` 不得误杀，换游戏时
+必须还原 iframe 的 `console.error` 并摘掉监听。回归 `npm run test:ruffle-runtime` 必须从当前 npm 包
+版本推导公开目录；不准写死旧 `v0.6.0`，否则升级后会拿残留产物假绿。
+
+《森林冰火人》这类 `flash_controls` 同时配置 p1 / p2 的游戏，在手机上只有一块本机触控板。
+`TouchPad.tsx` 必须依据 `coopButtons` 提供 1P / 2P 切换，并把座位号传给 `sendButton`；切换前要先向
+旧座位补齐 keyup，否则另一名角色会卡住一直走。直播访客的 2P 输入仍走同一个 seat=1 入口。
 
 EmulatorJS 的悬停预热不能直接拿平台配置里的 `core` 拼文件名：`gb`、`gba`、`psx` 等是
 `EJS_core` 接受的**平台别名**，公开目录里实际是 `gambatte-wasm.data`、`mgba-wasm.data`、
@@ -1327,6 +1354,11 @@ Cloudflare 的 `/web/cs16/*` 旧缓存，至少清掉入口、bundle 和所有�
 Emscripten 的 `onAbort` / `onExit`，并把已经隐藏的 overlay 重新显示。页面离开期间的正常销毁要用
 `beforeunload` / `pagehide` 排除，避免把导航误报成崩溃。
 
+⚠️ **浏览器事件回调里抛出的 WASM trap 也不会走 `onAbort` / `onExit`。** 2026-10-18 的现场是
+`RuntimeError: remainder by zero`，主循环停掉后只剩黑屏，符号地址落在旧客户端的
+`CHudRadio::Voice` / `MsgFunc_BotVoice` 附近。入口必须同时监听 `error` 与 `unhandledrejection`，但只接
+`WebAssembly.RuntimeError` 或明确 trap，不能把 MetaMask 等扩展异常误报为游戏崩溃。
+
 WebGL 默认 framebuffer 没有 `preserveDrawingBuffer` 时，浏览器合成后 `readPixels` 可能一直是黑色，
 不能只靠像素探测决定何时撤加载层。`Custom resource propagation complete` / 进入选队脚本说明服务端、
 客户端和渲染器均已完成初始化，可作为首帧兜底。原包没有这些地图的导航文件，页面不能承诺
@@ -1383,10 +1415,13 @@ npm run cs16:upload -- --bucket <R2桶名>
 ### 2.28.4.1 CS1.6 首局性能：PK3 要 Deflate，YaPB `.vis` 不能每局重算
 
 `lib/cstrike/extras.pk3` 上游包的 738 个成员曾全部使用 ZIP Store：25,111,596 字节几乎原样
-下载，其中还有大量 BMP/WAV。`npm run cs16:extras` 只把值得压缩的成员改成标准 Deflate，文件内容、
-路径和 CRC 不变，当前产物约 14.1MB（减少约 43.7%）。不要用系统 `zip/unzip` 做构建依赖；CI/生产机
-曾因没有 `unzip` 直接让 CS16 检查失败。`check-cs16.mjs` 会真实解压全部 738 项并逐项验 CRC，
-同时拒绝退回超过 16MiB 的 Store 大包。
+下载，其中还有大量 BMP/WAV。`npm run cs16:extras` 会把值得压缩的成员改成标准 Deflate；另因子站
+`Permissions-Policy` 明确禁用麦克风，且旧客户端的 BotVoice 路径会偶发 `remainder by zero`，启动器
+把 `voice_enable` 固定为 0、YaPB `yb_radio_mode` 固定为 1（保留普通电台、禁用语音 chatter），并从
+PK3 剔除 487 个永远不会读取的 `sound/radio/bot/*.wav` 和 `chatter.cfg`。不要改回 mode 2，也不要把
+这些 WAV 塞回首载包；这会同时恢复崩溃路径和约 7MB 无效下载。不要用系统 `zip/unzip` 做构建依赖；
+CI/生产机曾因没有 `unzip` 直接让 CS16 检查失败。`check-cs16.mjs` 会真实解压余下成员并逐项验 CRC，
+同时拒绝语音 chatter 混回包内或退回超过 8MiB 的大包。
 
 YaPB 的 `.graph` 只解决寻路，不含节点两两可见性。没有
 `addons/yapb/data/train/<map>.vis` 时，插件会在每帧切片追踪并打印 `Rebuilding vistable...`；

@@ -57,6 +57,14 @@ README.md
 public/__*.zip
 !public/__win95game.zip   # 77 字节的合法 MZ 空壳，不是 ROM
 
+# Win95 / Sockdrive 真机验证产物只供本机复现。镜像和临时服务脚本体积大、还可能包含
+# 玩家自带的商业游戏；发布只提交适配器与测试，不能让 GitHub Desktop 误收进历史。
+public/__win95.jsdos
+public/__swd3e-win95-test.html
+artifacts/.swd3e-work/
+artifacts/swd3e-sockdrive-local-v1/
+artifacts/轩辕剑参外传天之痕-Win95-jsdos.zip
+
 # QEMU WebAssembly 运行时（public/qemu-wasm/，约 140MB）。
 # 它只服务 /linux 这一个页面，是纯静态资源，构建期不需要存在。
 # 140MB 里光 load-rootfs.data 就 79MB —— 进 git 意味着每次 clone / 每次 git pull

@@ -4,6 +4,7 @@ import { requireAbility, hasAbility } from '../auth.js'
 import { isRole, ROLE_LABELS } from '../../../shared/roles.js'
 import { userRowToPublic } from '../mappers.js'
 import { recomputeSql } from '../ratings-repo.js'
+import { escapeLike } from '../search.js'
 
 export const usersRouter = Router()
 usersRouter.use(requireAbility('users:manage'))
@@ -17,48 +18,55 @@ usersRouter.use(requireAbility('users:manage'))
  *
  * 2000 对后台列表页绰绰有余（真要查某个具体用户有搜索）。
  */
-const MAX_USERS = Number(process.env.ADMIN_USERS_MAX || 2000)
+const configuredMaxUsers = Math.trunc(Number(process.env.ADMIN_USERS_MAX || 2000))
+const MAX_USERS = Number.isFinite(configuredMaxUsers) && configuredMaxUsers > 0
+  ? Math.min(configuredMaxUsers, 10_000)
+  : 2000
 
-/** 全部用户（含收藏 / 最近，供后台展示） */
-usersRouter.get('/', async (_req, res, next) => {
+/** 用户后台列表；q 在数据库里过滤，超过 2000 人时仍能定位早期账号。 */
+usersRouter.get('/', async (req, res, next) => {
   try {
-    const users = await query('SELECT * FROM users ORDER BY created_at DESC LIMIT ?', [MAX_USERS + 1])
+    const q = String(req.query.q ?? '').trim().slice(0, 100)
+    const where = q ? 'WHERE nickname LIKE ? OR email LIKE ?' : ''
+    const needle = `%${escapeLike(q)}%`
+    const params = q ? [needle, needle, MAX_USERS + 1] : [MAX_USERS + 1]
+    // 不把 password_hash 读进 Node 内存；后台只需要知道“是否设置过”，不需要拿到哈希本身。
+    const users = await query(
+      `SELECT id, email, nickname, avatar, coins, role, status, birth_date, created_at,
+              (password_hash IS NOT NULL) AS has_password
+         FROM users ${where} ORDER BY created_at DESC LIMIT ?`,
+      params,
+    )
     if (users.length > MAX_USERS) {
       console.warn(`[users] 后台用户列表被截断到 ${MAX_USERS} 条（表里还有更多），请改用搜索定位具体用户`)
       users.length = MAX_USERS
     }
     const ids = users.map((u) => u.id)
-    // v2 里这两张表存的是 game_id，join 回 games 拿 slug（对外一直用 slug）
-    //
-    // ⚠️ 必须带上 `WHERE user_id IN (...)`：原来这两句是**全表 join**，
-    // 一个有一百万条 recents 的库会把一百万行拖进 Node 的内存里，
-    // 结果只用了前 12 条（下面 slice(0, 12)）。
+    // 用户页只显示数量。以前把每个人的全部收藏和最近游戏 slug 拉进 Node，
+    // 2000 个重度用户足以产生上百万行；GROUP BY 后每个用户最多只回一行。
     const holes = ids.map(() => '?').join(',')
     const favs = ids.length
       ? await query(
-          `SELECT f.user_id, g.slug AS game_slug FROM favorites f JOIN games g ON g.id = f.game_id
-           WHERE f.user_id IN (${holes}) ORDER BY f.created_at DESC`,
+          `SELECT user_id, COUNT(*) AS n FROM favorites
+           WHERE user_id IN (${holes}) GROUP BY user_id`,
           ids,
         )
       : []
     const recents = ids.length
       ? await query(
-          `SELECT r.user_id, g.slug AS game_slug FROM recents r JOIN games g ON g.id = r.game_id
-           WHERE r.user_id IN (${holes}) ORDER BY r.played_at DESC`,
+          `SELECT user_id, COUNT(*) AS n FROM recents
+           WHERE user_id IN (${holes}) GROUP BY user_id`,
           ids,
         )
       : []
-    const byUser = (rows) => {
-      const m = new Map()
-      for (const r of rows) {
-        if (!m.has(r.user_id)) m.set(r.user_id, [])
-        m.get(r.user_id).push(r.game_slug)
-      }
-      return m
-    }
-    const fMap = byUser(favs)
-    const rMap = byUser(recents)
-    res.json(users.map((u) => userRowToPublic(u, fMap.get(u.id) || [], (rMap.get(u.id) || []).slice(0, 12))))
+    const counts = (rows) => new Map(rows.map((row) => [String(row.user_id), Number(row.n ?? 0)]))
+    const fMap = counts(favs)
+    const rMap = counts(recents)
+    res.json(users.map((u) => ({
+      ...userRowToPublic(u, [], []),
+      favoritesCount: fMap.get(String(u.id)) ?? 0,
+      recentCount: rMap.get(String(u.id)) ?? 0,
+    })))
   } catch (e) {
     next(e)
   }

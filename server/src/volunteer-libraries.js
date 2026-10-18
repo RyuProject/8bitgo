@@ -62,6 +62,9 @@ export function normalizeVolunteerGame(slug, input, createdAt = new Date()) {
     dosStartupCommands: Object.fromEntries(
       relationRows.filter((r) => r.dosStartupCommands).map((r) => [r.lang, r.dosStartupCommands]),
     ),
+    dosSockdrives: Object.fromEntries(
+      relationRows.filter((r) => r.dosSockdrive).map((r) => [r.lang, r.dosSockdrive]),
+    ),
   }
   const now = new Date()
   return gameRowToApi(
@@ -170,6 +173,20 @@ export async function saveVolunteerGame(ownerId, slug, game) {
   return normalized
 }
 
+/**
+ * 志愿者新增也必须是 INSERT-only。同一个账号在两个标签页同时新增同名游戏时，
+ * 不能因为个人库用 JSON 存储就退回成“后保存者覆盖前保存者”。
+ */
+export async function createVolunteerGame(ownerId, slug, game) {
+  const normalized = normalizeVolunteerGame(slug, game)
+  const payload = payloadJson(normalized, GAME_PAYLOAD_MAX, '游戏')
+  await query(
+    'INSERT INTO volunteer_games (owner_id, slug, payload) VALUES (?, ?, ?)',
+    [ownerId, slug, payload],
+  )
+  return normalized
+}
+
 export async function patchVolunteerGame(ownerId, slug, patch) {
   const current = await getVolunteerGame(ownerId, slug)
   if (!current) return null
@@ -181,9 +198,13 @@ export async function deleteVolunteerGame(ownerId, slug) {
   return result.affectedRows > 0
 }
 
-export async function listVolunteerPosts(ownerId) {
+export async function listVolunteerPosts(ownerId, { summary = false } = {}) {
   const rows = await query(
-    'SELECT payload FROM volunteer_posts WHERE owner_id = ? ORDER BY updated_at DESC, slug',
+    summary
+      // 列表不需要正文和翻译缓存；JSON_REMOVE 只裁响应副本，不改库里的 payload。
+      ? `SELECT JSON_REMOVE(payload, '$.content', '$.titleI18n', '$.excerptI18n', '$.contentI18n') AS payload
+           FROM volunteer_posts WHERE owner_id = ? ORDER BY updated_at DESC, slug`
+      : 'SELECT payload FROM volunteer_posts WHERE owner_id = ? ORDER BY updated_at DESC, slug',
     [ownerId],
   )
   return rows.map(rowPayload).filter(Boolean)
@@ -206,6 +227,29 @@ export async function saveVolunteerPost(ownerId, slug, post) {
     [ownerId, slug, payload],
   )
   return normalized
+}
+
+/** INSERT-only，防止两个标签页同时新建同名文章时静默覆盖正文。 */
+export async function createVolunteerPost(ownerId, slug, post) {
+  const normalized = normalizeVolunteerPost(slug, post)
+  const payload = payloadJson(normalized, POST_PAYLOAD_MAX, '文章')
+  await query(
+    'INSERT INTO volunteer_posts (owner_id, slug, payload) VALUES (?, ?, ?)',
+    [ownerId, slug, payload],
+  )
+  return normalized
+}
+
+/** 只改发布标记，不把浏览器里可能过期的整篇正文回写覆盖。 */
+export async function setVolunteerPostPublished(ownerId, slug, published) {
+  const result = await query(
+    `UPDATE volunteer_posts
+        SET payload = JSON_SET(payload, '$.published', CAST(? AS JSON)), updated_at = CURRENT_TIMESTAMP
+      WHERE owner_id = ? AND slug = ?`,
+    [JSON.stringify(Boolean(published)), ownerId, slug],
+  )
+  if (!result.affectedRows) return null
+  return getVolunteerPost(ownerId, slug)
 }
 
 export async function deleteVolunteerPost(ownerId, slug) {

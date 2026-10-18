@@ -40,6 +40,7 @@ export async function attachRelations(rows) {
   const roms = new Map()
   const dosExecutables = new Map()
   const dosStartupCommands = new Map()
+  const dosSockdrives = new Map()
   const romBackups = new Map()
   for (const r of genreRows) {
     const k = key(r.game_id)
@@ -67,6 +68,10 @@ export async function attachRelations(rows) {
       if (!dosStartupCommands.has(k)) dosStartupCommands.set(k, {})
       dosStartupCommands.get(k)[r.lang] = r.dos_startup_commands
     }
+    if (r.lang !== GENERIC_ROM_LANG && r.dos_sockdrive) {
+      if (!dosSockdrives.has(k)) dosSockdrives.set(k, {})
+      dosSockdrives.get(k)[r.lang] = r.dos_sockdrive
+    }
   }
   return rows.map((r) => {
     const k = key(r.id)
@@ -76,6 +81,7 @@ export async function attachRelations(rows) {
       roms: roms.get(k) ?? {},
       dosExecutables: dosExecutables.get(k) ?? {},
       dosStartupCommands: dosStartupCommands.get(k) ?? {},
+      dosSockdrives: dosSockdrives.get(k) ?? {},
       romBackups: romBackups.get(k) ?? {},
     })
   })
@@ -607,7 +613,7 @@ export async function deleteDeveloperProfile(name) {
  * 这些数字必须在数据库里算 —— 前端要算就得先把全库拉下来，正是 v2 要消灭的做法。
  */
 export async function adminStats() {
-  const [games, plays, rom, posts] = await Promise.all([
+  const [games, plays, rom, posts, users] = await Promise.all([
     queryOne('SELECT COUNT(*) AS total, SUM(hidden = 0) AS visible, SUM(hidden = 1) AS hidden FROM games'),
     // 全库之和：下架只是不对外展示，之前攒下的游玩次数还在，
     // 累计值不该因为下架一款热门游戏就往回跳
@@ -621,6 +627,7 @@ export async function adminStats() {
          FROM game_roms gr JOIN games g ON g.id = gr.game_id`,
     ),
     queryOne('SELECT COUNT(*) AS total, SUM(published = 1) AS published, SUM(published = 0) AS draft FROM posts'),
+    queryOne("SELECT COUNT(*) AS total, SUM(status = 'banned') AS banned FROM users"),
   ])
   return {
     games: {
@@ -635,6 +642,10 @@ export async function adminStats() {
       total: Number(posts?.total ?? 0),
       published: Number(posts?.published ?? 0),
       draft: Number(posts?.draft ?? 0),
+    },
+    users: {
+      total: Number(users?.total ?? 0),
+      banned: Number(users?.banned ?? 0),
     },
   }
 }
@@ -666,13 +677,13 @@ async function writeRelations(run, gameId, game, only) {
   if (!only || only.roms) {
     // ROM 存储页的 PATCH 只传 ROM key。重建关联表时保留仍指向同一 ZIP 的入口，
     // 换了 key 的槽不能继承旧入口，否则可能启动新包里碰巧同名的错误程序。
-    const previous = await run('SELECT lang, object_key, backup_key, dos_executable, dos_startup_commands FROM game_roms WHERE game_id = ?', [gameId])
+    const previous = await run('SELECT lang, object_key, backup_key, dos_executable, dos_startup_commands, dos_sockdrive FROM game_roms WHERE game_id = ?', [gameId])
     const roms = romRelationRows(game, previous, Boolean(only))
     await run('DELETE FROM game_roms WHERE game_id = ?', [gameId])
     if (roms.length) {
       await run(
-        `INSERT INTO game_roms (game_id, lang, object_key, backup_key, dos_executable, dos_startup_commands) VALUES ${roms.map(() => '(?, ?, ?, ?, ?, ?)').join(', ')}`,
-        roms.flatMap((row) => [gameId, row.lang, row.key, row.backupKey, row.dosExecutable, row.dosStartupCommands]),
+        `INSERT INTO game_roms (game_id, lang, object_key, backup_key, dos_executable, dos_startup_commands, dos_sockdrive) VALUES ${roms.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
+        roms.flatMap((row) => [gameId, row.lang, row.key, row.backupKey, row.dosExecutable, row.dosStartupCommands, row.dosSockdrive]),
       )
     }
   }
@@ -710,19 +721,23 @@ async function reindexGame(run, gameId, game) {
 }
 
 /**
- * 新增 / 整体覆盖一款游戏（PUT）。主表和三张关联表在同一个事务里，
- * 中途失败不会留下「主表写了、类型没写」这种半成品。
+ * 写一款游戏的主表与关联表。
+ *
+ * createOnly 不能用「先 SELECT、不存在再 UPSERT」代替：两个管理员同时新增同一个 slug 时，
+ * 两边都可能先读到不存在，后到的那次就会静默覆盖先到者。让数据库唯一索引裁决 INSERT，
+ * 才能把这类竞态稳定地变成 409，而不是数据丢失。
  */
-export async function upsertGame(slug, game) {
+async function persistGame(slug, game, createOnly) {
   return withTransaction(async (run) => {
     const row = gameApiToRow({ ...game, slug })
     const cols = Object.keys(row)
-    const updates = cols.filter((c) => c !== 'slug').map((c) => `\`${c}\` = VALUES(\`${c}\`)`).join(', ')
-    await run(
-      `INSERT INTO games (${cols.map((c) => `\`${c}\``).join(', ')}) VALUES (${cols.map(() => '?').join(', ')})
-       ON DUPLICATE KEY UPDATE ${updates}`,
-      cols.map((c) => row[c]),
-    )
+    const insert = `INSERT INTO games (${cols.map((c) => `\`${c}\``).join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`
+    if (createOnly) {
+      await run(insert, cols.map((c) => row[c]))
+    } else {
+      const updates = cols.filter((c) => c !== 'slug').map((c) => `\`${c}\` = VALUES(\`${c}\`)`).join(', ')
+      await run(`${insert} ON DUPLICATE KEY UPDATE ${updates}`, cols.map((c) => row[c]))
+    }
     // 拿不到 insertId 时（走了 UPDATE 分支）再查一次
     const [{ id }] = await run('SELECT id FROM games WHERE slug = ?', [slug])
     // 整体覆盖：description / description_en 必然都重新写入了，按需缓存全部作废。
@@ -732,6 +747,19 @@ export async function upsertGame(slug, game) {
     await reindexGame(run, id, { ...game, slug })
     return id
   })
+}
+
+/** 原子新增：slug 已存在时由唯一索引拒绝，绝不覆盖旧游戏。 */
+export async function createGame(slug, game) {
+  return persistGame(slug, game, true)
+}
+
+/**
+ * 新增 / 整体覆盖一款游戏（批量导入与明确的编辑操作）。主表和三张关联表在同一个事务里，
+ * 中途失败不会留下「主表写了、类型没写」这种半成品。
+ */
+export async function upsertGame(slug, game) {
+  return persistGame(slug, game, false)
 }
 
 /** 局部更新（PATCH）。只动请求里带到的列和关联表。 */

@@ -629,7 +629,12 @@ export interface WindowsGameLayer {
   singleDir: boolean
 }
 
-export function makeWindowsGameLayer(buf: ArrayBuffer, executable: string, drive = 'd'): WindowsGameLayer {
+export function makeWindowsGameLayer(
+  buf: ArrayBuffer,
+  executable: string,
+  drive = 'd',
+  registryImport?: string,
+): WindowsGameLayer {
   const parsed = readZipEntries(buf)
   const bytes = new Uint8Array(buf)
   const zipLike = bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b
@@ -647,6 +652,16 @@ export function makeWindowsGameLayer(buf: ArrayBuffer, executable: string, drive
   const actual = files.find((file) => file.name!.toLowerCase() === wanted.toLowerCase())?.name
   if (!actual) throw new Error(`Windows 游戏 ZIP 里找不到自启动程序：${wanted}`)
 
+  const wantedRegistry = registryImport ? safeArchivePath(registryImport) : null
+  if (registryImport && (!wantedRegistry || !/\.reg$/i.test(wantedRegistry))) {
+    throw new Error('Windows 注册表兼容文件必须是 ZIP 内安全的 .reg 相对路径')
+  }
+  const actualRegistry = wantedRegistry
+    ? files.find((item) => item.name!.toLowerCase() === wantedRegistry.toLowerCase())?.name
+    : null
+  if (wantedRegistry && !actualRegistry) {
+    throw new Error(`Windows 游戏 ZIP 里找不到注册表兼容文件：${wantedRegistry}`)
+  }
   const out: OutEntry[] = []
   const dirs = new Set<string>([`${WINDOWS_GAME_ROOT}/`, `${WINDOWS_GAME_ROOT}/8BITGO/`])
   for (const file of files) {
@@ -684,7 +699,17 @@ export function makeWindowsGameLayer(buf: ArrayBuffer, executable: string, drive
   const file = actual.slice(slash + 1)
   const quote = (value: string) => (/\s/.test(value) ? `"${value}"` : value)
   if (!/^[d-z]$/i.test(drive)) throw new Error('Windows 游戏盘符必须是 D-Z')
-  const launcher = te.encode(['@echo off', `${drive.toLowerCase()}:`, `cd ${quote(dir)}`, quote(file), 'exit'].join('\r\n') + '\r\n') as Uint8Array<ArrayBuffer>
+  const registryCommand = actualRegistry
+    ? `regedit /s ${quote(`${drive.toUpperCase()}:\\${actualRegistry.replace(/\//g, '\\')}`)}`
+    : null
+  const launcher = te.encode([
+    '@echo off',
+    ...(registryCommand ? [registryCommand] : []),
+    `${drive.toLowerCase()}:`,
+    `cd ${quote(dir)}`,
+    quote(file),
+    'exit',
+  ].join('\r\n') + '\r\n') as Uint8Array<ArrayBuffer>
   out.push({
     name: `${WINDOWS_GAME_ROOT}/${WINDOWS_LAUNCHER_PATH}`,
     method: 0,

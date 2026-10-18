@@ -34,6 +34,7 @@ import { isRuffleFrameReady } from '../ruffleFrame'
 import { flashCompatibilityIssue } from '../flashCompatibility'
 import { flashLegacyBundleRules, type FlashUrlRewriteRule } from '../flashLegacyBundle'
 import { installFlashLegacyLoginRedirect } from '../flashLegacyLogin'
+import { installRuffleCrashGuard } from '../ruffleCrash'
 
 export { RUFFLE_PATH } from '../paths'
 import { RUFFLE_PATH, RUFFLE_VERSION } from '../paths'
@@ -404,6 +405,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let frameInitialized = false
   let cancelStageFit = () => {}
   let cancelLegacyLoginRedirect = () => {}
+  let cancelCrashGuard = () => {}
 
   const cancelFocusRetry = () => {
     if (focusRaf) cancelAnimationFrame(focusRaf)
@@ -564,6 +566,18 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     audioTap = installAudioTap(win as unknown as Window & Record<string, unknown>)
     // 同样要赶在 ruffle.js 之前：Ruffle 建实例时取一次 window.localStorage。scope 在拿到 SWF 后才填。
     storageScoped = installFlashStorageScope(win, () => storageScope)
+    /*
+      load() 成功只代表启动链走完，不代表后面的 WASM 时间轴永远不会崩。
+      森林冰火人这类游戏会在菜单之后才进入大量脚本逻辑；若那时 Ruffle panic，旧行为仍保留
+      「运行中」并露出永久黑帧。守卫只认 WASM RuntimeError / Rust panic，不会把普通 AS 异常误杀。
+    */
+    cancelCrashGuard()
+    cancelCrashGuard = installRuffleCrashGuard(win, (detail) => {
+      if (destroyed) return
+      console.warn('[ruffle] 运行时发生致命异常：', detail)
+      setEnginePaused(true)
+      options.onError?.(fmt(rt.flashLoadFailed, { msg: detail }), 'runtime')
+    })
 
     const script = doc.createElement('script')
     script.src = `${RUFFLE_PATH}ruffle.js`
@@ -896,15 +910,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     padButtons: keys ? (Object.keys(keys.p1) as PadButton[]) : [],
     /**
      * 2P 位读哪几颗键。有这一项直播那边才会把「让观众上场」开出来（见 coopSeat.ts）——
-     * 同屏双打的游戏才在 flashKeys 里配了 p2，别的 Flash 游戏这里是空的，入口也就不出现。
+     * 同屏双打的游戏才在 flashKeys 里配了 p2；手机本机也靠它显示 1P / 2P 切换。
      */
     coopButtons: keys?.p2 ? (Object.keys(keys.p2) as PadButton[]) : [],
     gamepads: () => {
       try { return Array.from(navigator.getGamepads?.() ?? []).filter(Boolean).map((pad) => pad!.id) } catch { return [] }
     },
     /**
-     * 屏幕手柄按下 / 松开。player 是座位号：0 = 1P（本机的屏幕手柄永远是它），
-     * 1 = 2P（同屏双打的第二套键，留给「把观众提成 2P」那一步）。
+     * 屏幕手柄按下 / 松开。player 是座位号：0 = 1P，1 = 2P。
+     * 2P 既可来自手机本机切换，也可来自「把观众提成 2P」，最终都走同一份键位隔离。
      */
     sendButton(button, down, seat = 0) {
       if (!keys) return
@@ -1026,6 +1040,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       document.removeEventListener('visibilitychange', syncVisibility)
       cancelStageFit()
       cancelLegacyLoginRedirect()
+      cancelCrashGuard()
       cancelFocusRetry()
       if (canvasCapsTimer) window.clearTimeout(canvasCapsTimer)
       canvasCapsTimer = 0

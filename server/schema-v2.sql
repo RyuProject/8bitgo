@@ -272,6 +272,8 @@ CREATE TABLE IF NOT EXISTS game_roms (
   dos_executable VARCHAR(255) NULL,
   -- 各语言光盘校验不同，挂盘命令必须跟着 ROM 语言槽保存，不能共用 games 上的配置。
   dos_startup_commands TEXT NULL,
+  -- 多语言 Windows 游戏各自的流式盘；不能共用 games.dos_sockdrive 后误挂另一语言内容。
+  dos_sockdrive VARCHAR(500) NULL,
   PRIMARY KEY (game_id, lang),
   -- 后台「ROM 存储」页要反查「这个文件绑给了哪款游戏」
   KEY idx_object_key (object_key(191)),
@@ -329,9 +331,15 @@ CREATE TABLE IF NOT EXISTS sockdrive_conversion_jobs (
   source_etag         VARCHAR(160) NOT NULL,
   game_id             BIGINT UNSIGNED NOT NULL,
   game_slug           VARCHAR(120) NOT NULL,
+  -- NULL 是升级前的全局任务；新任务按 game_roms.lang 精确绑定对应语言槽。
+  lang                VARCHAR(10) NULL,
   executable          VARCHAR(500) NOT NULL,
   -- 转换开始时的默认 EXE；最终绑定时与 Sockdrive 目录一起 CAS，避免覆盖管理员中途改的新配置。
   expected_executable VARCHAR(500) NOT NULL DEFAULT '',
+  -- 语言槽在转换期间换了完整回退包时拒绝自动绑定，避免新 ROM 误配旧流式盘。
+  expected_object_key VARCHAR(500) NOT NULL DEFAULT '',
+  -- 浏览器已经上传并校验过的完整 8BG 回退包；完成时与流式盘一起原子绑定。
+  target_object_key   VARCHAR(500) NOT NULL DEFAULT '',
   version             VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   target_prefix       VARCHAR(500) NOT NULL,
   expected_sockdrive  VARCHAR(500) NOT NULL DEFAULT '',
@@ -355,7 +363,7 @@ CREATE TABLE IF NOT EXISTS sockdrive_conversion_jobs (
   UNIQUE KEY uniq_sockdrive_source (source_key(191)),
   UNIQUE KEY uniq_sockdrive_target (target_prefix(191)),
   KEY idx_sockdrive_jobs_queue (status, created_at),
-  KEY idx_sockdrive_jobs_game (game_id, created_at)
+  KEY idx_sockdrive_jobs_game_lang (game_id, lang, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------- 开放平台沙箱 ROM 样本 ----------

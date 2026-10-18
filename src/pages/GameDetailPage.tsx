@@ -5,7 +5,7 @@ import { recordRecent, toggleFavorite, useCurrentUser } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
 import type { RomLang } from '@/config/languages'
 import { ROM_LANG_ABBR } from '@/config/languages'
-import { dosExecutableForRom, dosStartupCommandsForRom, romLangsOf, romUrlForKey, useRomUrl } from '@/services/roms'
+import { dosExecutableForRom, dosSockdriveForRom, dosStartupCommandsForRom, romLangsOf, romUrlForKey, useRomUrl } from '@/services/roms'
 import { parseDosExtras, type DosExtraSource } from '@/lib/dosExtras'
 import { extOf, resolveRuntime, runtimesFor, type Runtime } from '@/emulator'
 import { p2pPlayable } from '@/emulator'
@@ -471,7 +471,7 @@ export function GameDetailPage() {
                   dosStartupCommands={dosStartupCommandsForRom(game, rom)}
                   dosBackend={game.dosBackend}
                   dosSystemUrl={game.dosSystem ? romUrlForKey(game.dosSystem) : undefined}
-                  dosSockdriveUrl={game.dosSockdrive ? romUrlForKey(game.dosSockdrive) : undefined}
+                  dosSockdriveUrl={dosSockdriveForRom(game, rom) ? romUrlForKey(dosSockdriveForRom(game, rom)!) : undefined}
                   dosExtras={dosExtraSources(game.dosExtras)}
                   dosExtrasLabel={dosExtrasName(game, lang)}
                   dosWindowsVersion={game.dosWindowsVersion}

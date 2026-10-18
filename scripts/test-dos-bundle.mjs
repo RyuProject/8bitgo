@@ -19,7 +19,11 @@ const { makeJsdosBundle, makeWindowsGameLayer, buildDosboxConf, mergeExtraFiles,
   fileURLToPath(new URL('../src/lib/jsdosBundle.ts', import.meta.url))
 )
 const { windowsGuestLaunchCommand } = await import(fileURLToPath(new URL('../src/lib/windowsGuest.ts', import.meta.url)))
-const { windowsGameCompatibilityExtras } = await import(
+const {
+  windowsGameCompatibilityDosboxConfig,
+  windowsGameCompatibilityExtras,
+  windowsGameCompatibilityRegistryImport,
+} = await import(
   fileURLToPath(new URL('../src/emulator/windowsGameCompatibility.ts', import.meta.url))
 )
 const {
@@ -246,6 +250,67 @@ console.log('\n── Caesar III：游戏分辨率必须与 Win95 的 800×600 �
     () => windowsGameCompatibilityExtras('caesar-3', 'CAESAR3/c3.exe', malformed, []),
     /c3\.inf 长度异常/,
     '设置档格式不对时明确报错，不按猜测去改未知文件',
+  )
+}
+
+console.log('\n── StarCraft：启动前静默导入安装路径 ──')
+{
+  ok(
+    windowsGameCompatibilityRegistryImport('starcraft', 'StarCraft.exe') === 'STAR.REG',
+    'StarCraft 自动选择同包的 STAR.REG',
+  )
+  ok(
+    windowsGameCompatibilityRegistryImport('theme-hospital', 'HOSPITAL.EXE') === undefined,
+    '其它 Windows 游戏不误导入 StarCraft 注册表',
+  )
+  ok(
+    /core=normal/.test(windowsGameCompatibilityDosboxConfig('starcraft', 'StarCraft.exe', undefined)),
+    'StarCraft 默认使用已完成 Win95 实机验证的 normal core',
+  )
+  const explicitCore = windowsGameCompatibilityDosboxConfig(
+    'starcraft',
+    'StarCraft.exe',
+    '[cpu]\ncore=dynamic\ncycles=max',
+  )
+  ok(
+    /core=dynamic/.test(explicitCore) && /cycles=max/.test(explicitCore) && !/core=normal/.test(explicitCore),
+    '后台显式 CPU 配置仍可覆盖兼容默认值',
+  )
+  ok(
+    windowsGameCompatibilityDosboxConfig('theme-hospital', 'HOSPITAL.EXE', '[cpu]\ncycles=max') === '[cpu]\ncycles=max',
+    '其它 Windows 游戏的 DOSBox 配置不被 StarCraft 规则改写',
+  )
+  await throwsWith(
+    () => Promise.resolve(windowsGameCompatibilityRegistryImport('starcraft', 'Brood.exe')),
+    /必须是 StarCraft\.exe/,
+    '第三方 StarCraft 启动器不会被兼容分支放行',
+  )
+
+  const layer = makeWindowsGameLayer(
+    makeZip([
+      { name: 'StarCraft.exe', data: EXE },
+      { name: 'STAR.REG', data: te.encode('REGEDIT4') },
+    ]),
+    'StarCraft.exe',
+    'd',
+    'STAR.REG',
+  )
+  const layerBuffer = layer.bytes.buffer.slice(layer.bytes.byteOffset, layer.bytes.byteOffset + layer.bytes.byteLength)
+  const launcher = await readZipFile(layerBuffer, 'GAME/8BITGO/RUN.BAT')
+  const batch = new TextDecoder().decode(launcher.data)
+  ok(
+    batch.indexOf('regedit /s D:\\STAR.REG') < batch.indexOf('d:\r\n'),
+    '⭐ 整包模式在启动 EXE 前同步导入注册表',
+  )
+  await throwsWith(
+    () => Promise.resolve(makeWindowsGameLayer(makeZip([{ name: 'StarCraft.exe', data: EXE }]), 'StarCraft.exe', 'd', 'STAR.REG')),
+    /找不到注册表兼容文件/,
+    '缺少 STAR.REG 时开机前明确报错，不把失败留给 Win95 黑屏',
+  )
+  await throwsWith(
+    () => Promise.resolve(makeWindowsGameLayer(makeZip([{ name: 'StarCraft.exe', data: EXE }]), 'StarCraft.exe', 'd', '../STAR.REG')),
+    /安全的 \.reg/,
+    '注册表路径拒绝目录穿越',
   )
 }
 

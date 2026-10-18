@@ -7,7 +7,8 @@ StarCraft 的原始 ZIP 解开后约 1.5GB，不能再让玩家浏览器整包�
 ## 1. 日常发布：后台自动完成
 
 1. 先保存游戏资料，确认平台是 DOS、后端是 DOSBox-X，已经填写共享 Windows 系统镜像；
-2. 填写游戏盘内的「默认 Windows 自启动 EXE」，例如 `StarCraft/Brood.exe`；
+2. 填写游戏盘内的「默认 Windows 自启动 EXE」为 `StarCraft.exe`；不要使用旧整合包的
+   `Brood.exe` / `brood-c.exe` 第三方启动链；
 3. 清空 DOS 附加文件。补丁必须提前放进原始 ZIP，远程只读盘不能在浏览器里再叠文件；
 4. 在「原始大 ZIP 自动转 Sockdrive」选择 ZIP，并确认开始。
 
@@ -56,7 +57,7 @@ npm run sockdrive:prepare -- \
   --source /data/StarCraft-1.16.1.zip \
   --slug starcraft \
   --version v1 \
-  --exe StarCraft/Brood.exe \
+  --exe StarCraft.exe \
   --work-dir /data/8bitgo-sockdrive-builds \
   --cli /opt/sockdrive/cli \
   --encoding br \
@@ -68,7 +69,7 @@ npm run sockdrive:prepare -- \
 脚本会依次执行：
 
 1. 解包前拒绝绝对路径、盘符和 `..`，解包后拒绝符号链接与 FAT32 不支持的超大单文件；
-2. 确认 `StarCraft/Brood.exe` 确实存在；
+2. 确认官方 `StarCraft.exe` 与静默安装路径所需的 `STAR.REG` 确实存在；
 3. 生成带 MBR 的 VFAT/QCOW2 游戏盘，自动对齐官方 256MB / 2GB 模板并默认保留至少 128MB 空间；
 4. 调官方 `sockify -b` 生成 Brotli 分块；
 5. 没有真实游玩轨迹时，先从 `sockdrive.metaj` 复制一份保守的独立热点清单，避免线上 404；
@@ -84,7 +85,7 @@ npm run sockdrive:prepare -- \
 
 ```bash
 npm run sockdrive:prepare -- --source /data/StarCraft.zip --slug starcraft --version v1 \
-  --exe StarCraft/Brood.exe --work-dir /data/builds --cli /opt/sockdrive/cli
+  --exe StarCraft.exe --work-dir /data/builds --cli /opt/sockdrive/cli
 ```
 
 如果上传完成但绑定失败，**不要重新上传或覆盖目录**，直接重试绑定：

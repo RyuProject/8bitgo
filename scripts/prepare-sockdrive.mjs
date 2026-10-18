@@ -54,7 +54,7 @@ const apiBase = arg('api-base') || 'https://8bitgo.com'
 const usage = () => {
   console.error(
     '用法：npm run sockdrive:prepare -- --source <原始ZIP或目录> --slug starcraft --version v1 ' +
-      '--exe StarCraft/Brood.exe --work-dir </data/builds> --cli </opt/sockdrive/cli> ' +
+      '--exe StarCraft.exe --work-dir </data/builds> --cli </opt/sockdrive/cli> ' +
       '[--encoding br|gzip|identity] [--free-space 128M] ' +
       '[--publish --bucket <R2桶名> [--bind --api-base https://8bitgo.com]]',
   )

@@ -43,7 +43,7 @@ import {
 } from './pack-guards.js'
 
 const BASE = '/rodir/'
-const ASSET_VERSION = '20261017-english-ui1'
+const ASSET_VERSION = '20261018-botvoice-safe1'
 // 清单返回后会换成当前地图的真实压缩体积；这里仅用于清单到达前，避免进度条跳满。
 let expectedProgressBytes = 128 * 1024 * 1024
 const Q = new URLSearchParams(location.search)
@@ -150,6 +150,32 @@ let pendingHostedRoom = null
 window.addEventListener('beforeunload', () => { pageUnloading = true; activeRelay?.close() })
 window.addEventListener('pagehide', () => { pageUnloading = true; activeRelay?.close() })
 window.addEventListener('pageshow', () => { pageUnloading = false })
+
+/**
+ * Emscripten 的 onAbort/onExit 接不到从浏览器事件回调里冒出的 WASM trap；这类异常过去会
+ * 让主循环停掉却继续露着最后一张黑帧。只认 WebAssembly.RuntimeError 或明确的 trap 文案，
+ * 避免把 MetaMask 等扩展抛到页面上的普通异常误报成游戏崩溃。
+ */
+function wasmRuntimeFailure(value) {
+  const error = value?.error || value?.reason || value
+  if (error instanceof WebAssembly.RuntimeError) return error
+  const text = String(error?.stack || error?.message || error || '')
+  if (!/(?:remainder|divide) by zero|memory access out of bounds|unreachable|table index is out of bounds|indirect call|null function/i.test(text)) {
+    return null
+  }
+  return /wasm|WebAssembly|RuntimeError/i.test(text) ? error : null
+}
+
+function captureWasmRuntimeFailure(event) {
+  if (!started || pageUnloading || failureReported) return
+  const error = wasmRuntimeFailure(event)
+  if (!error) return
+  const reason = error instanceof Error ? error.message : String(error)
+  reportEngineFailure(`WebAssembly runtime crashed: ${reason || 'unknown fatal error'}`)
+}
+
+window.addEventListener('error', captureWasmRuntimeFailure)
+window.addEventListener('unhandledrejection', captureWasmRuntimeFailure)
 
 window.addEventListener('keydown', (e) => {
   const rec = { t: 'down', key: e.key, code: e.code, keyCode: e.keyCode }
@@ -714,6 +740,8 @@ function ensureBinds(xash) {
     'bind 1 slot1', 'bind 2 slot2', 'bind 3 slot3',
     'bind 4 slot4', 'bind 5 slot5', 'bind 6 slot6',
     'hud_fastswitch 1',
+    // 子站的 Permissions-Policy 明确禁用麦克风；继续初始化采集只会产生拒绝异常和无效主线程工作。
+    'voice_enable 0',
     // YaPB 的服务端命令以 yb 开头；旧的 bot_add/bot_kill 是另一套 Bot API，在这里无效。
     'alias addbot "yb add"',
     'alias delbot "yb kick"',
@@ -754,6 +782,8 @@ function configureBots(xash, map, count, difficulty) {
     'yb_join_after_player "0"',
     'yb_join_team "any"',
     'yb_join_delay "1.0"',
+    // 旧 cs16-client 的 BotVoice HUD 路径会偶发 remainder-by-zero；保留短电台指令，禁用语音 chatter。
+    'yb_radio_mode "1"',
     // 难度必须和 quota 一起落到地图级配置；等画面出来再改会让首批 Bot 沿用包内固定的 Expert。
     `yb_difficulty "${difficulty}"`,
   ].join('\n') + '\n'
@@ -772,6 +802,7 @@ function enforceBotCount(xash, count, difficulty) {
     'yb_autovacate 0',
     'yb_kick_after_player_connect 0',
     'yb_join_after_player 0',
+    'yb_radio_mode 1',
     `yb_difficulty ${difficulty}`,
     `yb_quota ${count}`,
   ].join(';'))

@@ -11,6 +11,10 @@ import { copyText } from '@/lib/clipboard'
 
 /** 后端列表接口一页最多给 100 条，导出时要按这个上限翻页 */
 const EXPORT_PAGE_SIZE = 100
+/** 与服务端一致；更大的恢复包应拆批，避免一个请求长时间占住数据库连接。 */
+const MAX_IMPORT_ITEMS = 2000
+/** Express JSON 上限是 4MB，给外层 {games: ...} 留一点余量。 */
+const MAX_IMPORT_BYTES = 4 * 1024 * 1024 - 1024
 
 /**
  * 把整库游戏翻完。
@@ -143,7 +147,20 @@ export function AdminData() {
   const [text, setText] = useState('')
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [busy, setBusy] = useState(false)
+  // state 不能挡住同一事件循环里的双击；ref 保证导出 / 导入任务真正单飞。
+  const busyRef = useRef(false)
   const fileRef = useRef<HTMLInputElement>(null)
+
+  const beginBusy = () => {
+    if (busyRef.current) return false
+    busyRef.current = true
+    setBusy(true)
+    return true
+  }
+  const endBusy = () => {
+    busyRef.current = false
+    setBusy(false)
+  }
 
   /**
    * 这一页只需要「有多少」，不需要把内容全拉下来：
@@ -168,13 +185,13 @@ export function AdminData() {
 
   /** 导出：翻完所有页再交给调用方，中途在按钮旁边报进度 */
   const collect = async (): Promise<string> => {
+    if (!beginBusy()) throw new Error('已有数据任务正在进行，请稍候')
     setMsg(null)
-    setBusy(true)
     try {
       const games = await fetchAllGames((loaded, all) => setMsg({ ok: true, text: `正在导出：${loaded} / ${all} 款…` }))
       return toJson(games)
     } finally {
-      setBusy(false)
+      endBusy()
     }
   }
 
@@ -199,21 +216,41 @@ export function AdminData() {
   }
 
   const downloadPosts = async () => {
+    if (!beginBusy()) return
     try {
       const list = await fetchAllPosts()
       downloadJson(toJson(list), '8bitgo-posts')
       setMsg({ ok: true, text: `已导出 ${list.length} 篇文章（含草稿）` })
     } catch (err) {
       setMsg({ ok: false, text: '导出失败：' + (err instanceof Error ? err.message : '') })
+    } finally {
+      endBusy()
     }
   }
 
   const doImport = async (json: string) => {
-    setBusy(true)
+    if (!beginBusy()) return
     setMsg(null)
     try {
+      if (new TextEncoder().encode(json).byteLength > MAX_IMPORT_BYTES) {
+        throw new Error('导入文件接近或超过 4MB，请拆成多批后重试')
+      }
       const parsed: unknown = JSON.parse(json)
       if (!Array.isArray(parsed)) throw new Error('JSON 格式不正确：需要一个游戏对象数组')
+      if (!parsed.length) throw new Error('游戏数组是空的，没有可导入内容')
+      if (parsed.length > MAX_IMPORT_ITEMS) throw new Error(`单次最多导入 ${MAX_IMPORT_ITEMS} 款，请拆成多批`)
+      const slugs = new Set<string>()
+      for (let index = 0; index < parsed.length; index++) {
+        const item = parsed[index]
+        if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error(`第 ${index + 1} 条不是游戏对象`)
+        const slug = String((item as { slug?: unknown }).slug ?? '').trim().toLowerCase()
+        if (!slug) throw new Error(`第 ${index + 1} 款游戏缺少 slug`)
+        if (slugs.has(slug)) throw new Error(`导入文件里 slug「${slug}」重复，已取消以免前后互相覆盖`)
+        slugs.add(slug)
+      }
+      if (!window.confirm(
+        `准备导入 ${parsed.length} 款游戏。数据库中已有的同名 slug 会被整体覆盖；不在文件里的游戏不受影响。\n\n建议先下载当前 JSON 备份。确定继续吗？`,
+      )) return
       const r = await api.post<{ games: number }>('/api/admin/import', { games: parsed }, true)
       setMsg({ ok: true, text: `已写入数据库：${r.games} 款游戏` })
       setText('')
@@ -221,7 +258,7 @@ export function AdminData() {
     } catch (err) {
       setMsg({ ok: false, text: err instanceof Error ? err.message : '导入失败' })
     } finally {
-      setBusy(false)
+      endBusy()
     }
   }
 
@@ -310,7 +347,7 @@ export function AdminData() {
           文章与用户都存在数据库里。整站备份请直接 <code className="text-fg">mysqldump</code>；用户数据含邮箱与密码哈希，后台不提供导出。
         </p>
         <div className="flex flex-wrap gap-2">
-          <button type="button" className={btnClass.secondary} onClick={() => void downloadPosts()} disabled={!connected}>
+          <button type="button" className={btnClass.secondary} onClick={() => void downloadPosts()} disabled={!connected || busy}>
             ⬇ 下载文章 JSON{posts ? `（${posts.length} 篇）` : ''}
           </button>
         </div>

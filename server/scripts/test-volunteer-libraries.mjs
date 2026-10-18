@@ -109,7 +109,9 @@ assert.ok(layout.includes("me?.role === 'volunteer'"))
 assert.ok(layout.includes('<Navigate to={firstAllowed} replace />'))
 
 const gamesUi = read('src/admin/AdminGames.tsx')
-assert.ok(gamesUi.includes('const keys = personalLibrary ? []'))
+// 删除资料一律保留 R2：这既保证志愿者不碰对象存储，也避免管理员误删被别的游戏共用的 ROM。
+assert.equal(gamesUi.includes('deleteRomObjects'), false)
+assert.ok(gamesUi.includes('R2 文件已安全保留'))
 assert.ok(gamesUi.includes('personalLibrary={personalLibrary}'))
 assert.ok(read('src/admin/GameForm.tsx').includes('const canUpload = allowStorage &&'))
 

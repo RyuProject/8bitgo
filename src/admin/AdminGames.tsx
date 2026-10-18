@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { Game, PlatformId } from '@/types'
 import type { Paged } from '@/services/pageData'
@@ -6,11 +6,10 @@ import { platformMap, platforms } from '@/data/platforms'
 import { FEATURES } from '@/config/features'
 import { genreMap } from '@/data/genres'
 import { cx, formatCount } from '@/lib/format'
-import { api, apiEnabled } from '@/services/api'
+import { apiEnabled } from '@/services/api'
 import { useAdminData } from './AdminLayout'
 import { deleteGame, fetchAdminGames, setGameHidden, upsertGame } from '@/services/store'
 import { romKeysOf } from '@/services/roms'
-import { deleteRomObjects, isDeletableKey } from './uploadGuards'
 import { trackPageLoad } from '@/services/progress'
 import { GameForm } from './GameForm'
 import { btnClass, inputClass } from './ui'
@@ -28,24 +27,6 @@ type Editing = { mode: 'add' } | { mode: 'edit'; game: Game } | null
 const PAGE_SIZE = 24
 /** 搜索防抖：边打字边发请求会把后端打成一串没人要的查询 */
 const SEARCH_DEBOUNCE = 300
-
-/**
- * 新增前确认 slug 有没有被占用。
- *
- * v1 手上有整库，GameForm 里一次 includes 就能判重。v2 列表是分页的，
- * 表单能拿到的 existingSlugs 只有当前这一页；而 upsertGame 走的是 PUT（整体覆盖），
- * 撞名不会报错，会**悄悄把已有的那条改掉**，所以这里单独问后端一次。
- * 请求本身失败（后端不通等）就当作没撞名 —— 让后面真正的保存去报错，
- * 而不是在这里拦下一个其实合法的新增。
- */
-async function slugTaken(slug: string): Promise<boolean> {
-  try {
-    await api.get<Game>(`/api/games/${encodeURIComponent(slug)}?library=mine`, true)
-    return true
-  } catch {
-    return false
-  }
-}
 
 export function AdminGames() {
   const db = useAdminData()
@@ -66,6 +47,12 @@ export function AdminGames() {
   const [page, setPage] = useState(1)
   const [editing, setEditing] = useState<Editing>(null)
   const [toast, setToast] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  /** 同一时刻只做一个行操作，避免双击产生两次相反的上下架或重复删除。 */
+  const [rowAction, setRowAction] = useState<{ slug: string; kind: 'visibility' | 'delete' } | null>(null)
+  // React 状态要到下一轮渲染才生效；ref 封住同一事件循环里的快速双击。
+  const savingRef = useRef(false)
+  const rowActionRef = useRef(false)
 
   const [paged, setPaged] = useState<Paged<Game> | null>(null)
   const [loading, setLoading] = useState(false)
@@ -161,68 +148,66 @@ export function AdminGames() {
   const rows = items
 
   const save = async (game: Game) => {
+    if (savingRef.current) return
+    savingRef.current = true
+    setSaving(true)
     try {
-      if (editing?.mode === 'add' && (await slugTaken(game.slug))) {
-        setToast(`slug「${game.slug}」已存在，请换一个`)
-        return
-      }
-      await upsertGame(game)
+      // 新增走 INSERT-only，唯一索引在服务端原子判重；不能再用有竞态的“先查再覆盖”。
+      await upsertGame(game, { createOnly: editing?.mode === 'add' })
       // 只有保存成功才关闭；请求失败时 catch 会保留表单，避免已经填写的内容丢失。
       setEditing(null)
       setToast(editing?.mode === 'edit' ? `已保存「${game.titleZh ?? game.title}」` : `已新增「${game.titleZh ?? game.title}」`)
       reload()
     } catch (err) {
       setToast(err instanceof Error ? err.message : '保存失败')
+    } finally {
+      savingRef.current = false
+      setSaving(false)
     }
   }
 
   /**
-   * 删游戏，连同它在 R2 上的 ROM 文件一起。
+   * 这里只删数据库记录，绝不顺手删 R2。
    *
-   * 数据库那边有外键级联，game_roms 的行会自己清掉 —— 但**对象存储不会**，
-   * 文件会变成没人引用的孤儿，一直占着空间，而且事后谁也说不清那些 key 属于谁。
-   *
-   * 顺序是先删库再删文件：反过来的话，一旦删库失败，游戏还在、ROM 已经没了，
-   * 玩家点「开始游戏」直接 404。所以 key 要在删库**之前**就从 g 上取下来。
-   *
-   * 删文件失败不影响「游戏已删除」这个结果，只把失败的 key 报出来让人工收尾。
+   * 对象 key 不是游戏的所有权证明：同一份 ROM 可能被另一款游戏、另一语言槽或回退地址共用。
+   * 浏览器先删数据库再删对象时已经失去查询引用关系的机会，而且查询后到删除前仍有竞态。
+   * 保留对象最多产生可审计的孤儿；误删共享对象会让别的游戏立刻 404，代价完全不对称。
    */
   const remove = async (g: Game) => {
-    // 志愿者删的是自己的一条资料，不拥有对象存储；即使浏览器残留了 Worker 口令也绝不能顺手删文件。
-    const keys = personalLibrary ? [] : romKeysOf(g).filter(isDeletableKey)
-    const tail = keys.length
-      ? `\n\n同时会从 R2 删除这款游戏的 ${keys.length} 个 ROM 文件：\n${keys.slice(0, 5).map((k) => `  ${k}`).join('\n')}${keys.length > 5 ? `\n  …还有 ${keys.length - 5} 个` : ''}`
-      : ''
     const scope = personalLibrary
       ? '只会从你的独立游戏库移除，不影响主游戏库、其他志愿者或 ROM 文件。'
-      : '此操作会从主数据库中移除该游戏，不可恢复。'
-    if (!window.confirm(`确定删除「${g.titleZh ?? g.title}」？${scope}${tail}`)) return
+      : '此操作会从主数据库中移除该游戏；R2 文件会保留，避免误删被其他游戏共用的资源。'
+    if (!window.confirm(`确定删除「${g.titleZh ?? g.title}」？${scope}`)) return
+    if (rowActionRef.current) return
+    rowActionRef.current = true
+    setRowAction({ slug: g.slug, kind: 'delete' })
 
     try {
       await deleteGame(g.slug)
+      setToast(personalLibrary ? '已从你的游戏库移除' : '已删除游戏；R2 文件已安全保留，可在 ROM 存储中另行核对清理')
+      reload()
     } catch (err) {
       setToast(err instanceof Error ? err.message : '删除失败')
-      return
+    } finally {
+      rowActionRef.current = false
+      setRowAction(null)
     }
+  }
 
-    if (!keys.length) {
-      setToast('已删除')
-      reload()
-      return
-    }
-
+  const toggleHidden = async (g: Game) => {
+    if (rowActionRef.current) return
+    rowActionRef.current = true
+    setRowAction({ slug: g.slug, kind: 'visibility' })
     try {
-      const { removed, failed } = await deleteRomObjects(keys)
-      setToast(
-        failed.length
-          ? `游戏已删除，${removed.length} 个文件已清理，${failed.length} 个删除失败：${failed.join('、')}`
-          : `已删除，并清理了 ${removed.length} 个 ROM 文件`,
-      )
+      await setGameHidden(g.slug, !g.hidden)
+      setToast(personalLibrary ? (g.hidden ? '已在你的库中显示' : '已在你的库中隐藏') : (g.hidden ? '已上架' : '已下架'))
+      reload()
     } catch (err) {
-      // 游戏已经删掉了，这里只是文件没清干净 —— 说清楚，别让人以为整个操作失败了
-      setToast(`游戏已删除，但 R2 文件未清理：${err instanceof Error ? err.message : '删除失败'}`)
+      setToast(err instanceof Error ? err.message : '操作失败')
+    } finally {
+      rowActionRef.current = false
+      setRowAction(null)
     }
-    reload()
   }
 
   return (
@@ -395,26 +380,21 @@ export function AdminGames() {
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex justify-end gap-1">
-                      <button type="button" className={cx(btnClass.small, 'text-brand-hover hover:bg-brand-soft')} onClick={() => setEditing({ mode: 'edit', game: g })}>
+                      <button type="button" disabled={Boolean(rowAction)} className={cx(btnClass.small, 'text-brand-hover hover:bg-brand-soft')} onClick={() => setEditing({ mode: 'edit', game: g })}>
                         编辑
                       </button>
                       <button
                         type="button"
                         className={cx(btnClass.small, 'text-muted hover:bg-black/5 hover:text-fg')}
-                        onClick={async () => {
-                          try {
-                            await setGameHidden(g.slug, !g.hidden)
-                            setToast(personalLibrary ? (g.hidden ? '已在你的库中显示' : '已在你的库中隐藏') : (g.hidden ? '已上架' : '已下架'))
-                            reload()
-                          } catch (err) {
-                            setToast(err instanceof Error ? err.message : '操作失败')
-                          }
-                        }}
+                        disabled={Boolean(rowAction)}
+                        onClick={() => void toggleHidden(g)}
                       >
-                        {personalLibrary ? (g.hidden ? '显示' : '隐藏') : (g.hidden ? '上架' : '下架')}
+                        {rowAction?.slug === g.slug && rowAction.kind === 'visibility'
+                          ? '处理中…'
+                          : personalLibrary ? (g.hidden ? '显示' : '隐藏') : (g.hidden ? '上架' : '下架')}
                       </button>
-                      <button type="button" className={cx(btnClass.small, 'text-live hover:bg-live/15')} onClick={() => remove(g)}>
-                        删除
+                      <button type="button" disabled={Boolean(rowAction)} className={cx(btnClass.small, 'text-live hover:bg-live/15')} onClick={() => void remove(g)}>
+                        {rowAction?.slug === g.slug && rowAction.kind === 'delete' ? '删除中…' : '删除'}
                       </button>
                     </div>
                   </td>
@@ -504,6 +484,7 @@ export function AdminGames() {
               // 表单里这份只够挡住「和当前页某条重名」，真正的判重在 save() 里问后端
               existingSlugs={items.map((g) => g.slug)}
               personalLibrary={personalLibrary}
+              submitting={saving}
               onSubmit={save}
               onCancel={() => setEditing(null)}
             />

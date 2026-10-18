@@ -244,6 +244,7 @@ CREATE TABLE IF NOT EXISTS game_roms (
   backup_key TEXT,
   dos_executable TEXT,
   dos_startup_commands TEXT,
+  dos_sockdrive TEXT,
   PRIMARY KEY (game_id, lang)
 );
 -- MySQL 那边是 object_key(191) 前缀索引（因为 utf8mb4 下 500 字符超了索引长度上限），

@@ -13,12 +13,14 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { query, queryOne, withTransaction } from './db.js'
 import { invalidateContent } from './content.js'
+import { SITE_LANGUAGES } from '../../shared/site-languages.js'
 
 const ACTIVE = new Set(['queued', 'downloading', 'converting', 'uploading', 'verifying'])
 const INTERRUPTED = ['downloading', 'converting', 'uploading', 'verifying']
 const FETCH_TIMEOUT_MS = 60_000
 const SOURCE_IDLE_MS = 60_000
 const MAX_ERROR_CHARS = 900
+const ROM_LANGS = new Set(SITE_LANGUAGES.map(({ code }) => code))
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const PREPARE_SCRIPT = join(REPO_ROOT, 'scripts/prepare-sockdrive.mjs')
 const UPLOAD_SCRIPT = join(REPO_ROOT, 'scripts/upload-sockdrive-r2.mjs')
@@ -72,6 +74,9 @@ export function validateSockdriveConversionRequest(body, env = process.env) {
   const sourceKey = String(body?.sourceKey || '').trim()
   const sourceSize = Number(body?.sourceSize)
   const gameSlug = String(body?.gameSlug || '').trim()
+  const lang = body?.lang == null || body.lang === '' ? null : String(body.lang).trim()
+  const targetRomKey = String(body?.targetRomKey || '').trim()
+  const expectedRomKey = String(body?.expectedRomKey || '').trim()
   const executable = validExecutable(body?.executable)
   const version = String(body?.version || '').trim().toLowerCase()
   const expectedSockdrive = String(body?.expectedSockdrive || '').trim().replace(/\/+$/, '')
@@ -84,6 +89,15 @@ export function validateSockdriveConversionRequest(body, env = process.env) {
     throw Object.assign(new Error(`ZIP 大小必须在 32KB 到 ${Math.round(max / 1024 / 1024)}MB 之间`), { status: 400 })
   }
   if (!/^[a-z0-9][a-z0-9-]{0,79}$/.test(gameSlug)) throw Object.assign(new Error('游戏 slug 无效'), { status: 400 })
+  if (lang && !ROM_LANGS.has(lang)) throw Object.assign(new Error('ROM 语言代码无效'), { status: 400 })
+  if (lang && (!validObjectKey(targetRomKey) || !targetRomKey.startsWith('roms/'))) {
+    throw Object.assign(new Error('当前语言的完整回退包 key 无效'), { status: 400 })
+  }
+  // 旧槽可能还是完整 HTTPS 外链；它只用于 CAS 比较，不会被服务端请求，保留原值即可。
+  // eslint-disable-next-line no-control-regex
+  if (expectedRomKey.length > 500 || /[\x00-\x1f\x7f]/.test(expectedRomKey)) {
+    throw Object.assign(new Error('当前语言原 ROM key 无效'), { status: 400 })
+  }
   if (!executable) throw Object.assign(new Error('必须填写游戏盘内安全的 .exe 相对路径'), { status: 400 })
   if (!/^v[1-9]\d*$/.test(version) && !/^[a-f0-9]{8,64}$/.test(version)) {
     throw Object.assign(new Error('版本必须是 v1 / v2 这类编号，或 8～64 位内容哈希'), { status: 400 })
@@ -92,8 +106,9 @@ export function validateSockdriveConversionRequest(body, env = process.env) {
   if (expectedSockdrive.length > 500 || /[\r\n]/.test(expectedSockdrive)) {
     throw Object.assign(new Error('当前 Sockdrive 目录无效'), { status: 400 })
   }
-  const targetPrefix = `sockdrives/${gameSlug}-${version}`
-  return { sourceKey, sourceSize, gameSlug, executable, version, targetPrefix, expectedSockdrive, encoding }
+  // 目录名显式带语言，既方便后台排查，也防止两个语言任务争用同一个不可覆盖版本目录。
+  const targetPrefix = `sockdrives/${gameSlug}${lang ? `-${lang.toLowerCase()}` : ''}-${version}`
+  return { sourceKey, sourceSize, gameSlug, lang, targetRomKey, expectedRomKey, executable, version, targetPrefix, expectedSockdrive, encoding }
 }
 
 function encodeKey(key) {
@@ -174,6 +189,12 @@ export async function sockdriveConversionCapability(env = process.env, fresh = f
         "SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE table_schema = DATABASE() AND table_name = 'sockdrive_conversion_jobs'",
       )
       if (!Number(row?.n)) reason = '数据库缺少 sockdrive_conversion_jobs；请在 server 目录执行 npm run migrate'
+      if (!reason) {
+        const columns = await queryOne(
+          "SELECT COUNT(*) AS n FROM information_schema.COLUMNS WHERE table_schema = DATABASE() AND table_name = 'sockdrive_conversion_jobs' AND column_name IN ('lang', 'expected_object_key', 'target_object_key')",
+        )
+        if (Number(columns?.n) !== 3) reason = 'Sockdrive 多语言任务列尚未迁移；请在 server 目录执行 npm run migrate'
+      }
     } catch {
       reason = '暂时无法检查 Sockdrive 转换任务表'
     }
@@ -200,6 +221,8 @@ function publicJob(row) {
     outputBytes: row.output_bytes == null ? null : Number(row.output_bytes),
     outputFiles: row.output_files == null ? null : Number(row.output_files),
     gameSlug: row.game_slug,
+    lang: row.lang || null,
+    targetRomKey: row.target_object_key || null,
     executable: row.executable,
     bound: Boolean(row.bound),
     message: row.message || '',
@@ -212,7 +235,9 @@ function publicJob(row) {
 
 function sameRequest(row, request) {
   return row.source_key === request.sourceKey && Number(row.source_size) === request.sourceSize &&
-    row.game_slug === request.gameSlug && row.executable === request.executable && row.version === request.version &&
+    row.game_slug === request.gameSlug && (row.lang || null) === request.lang &&
+    String(row.target_object_key || '') === request.targetRomKey && String(row.expected_object_key || '') === request.expectedRomKey &&
+    row.executable === request.executable && row.version === request.version &&
     row.target_prefix === request.targetPrefix && row.expected_sockdrive === request.expectedSockdrive && row.encoding === request.encoding
 }
 
@@ -251,13 +276,24 @@ export async function createSockdriveConversion(raw, actorId = null, env = proce
   if (hasDosExtras(game.dos_extras)) {
     throw Object.assign(new Error('目标游戏还有 DOS 附加文件；请先把补丁合入 ZIP，流式盘不能在浏览器现场叠加'), { status: 409 })
   }
-  if (String(game.dos_sockdrive || '').trim().replace(/\/+$/, '') !== request.expectedSockdrive) {
+  const languageRom = request.lang
+    ? await queryOne('SELECT object_key, dos_executable, dos_sockdrive FROM game_roms WHERE game_id = ? AND lang = ?', [game.id, request.lang])
+    : null
+  const currentRomKey = String(languageRom?.object_key || '')
+  if (request.lang && currentRomKey !== request.expectedRomKey && currentRomKey !== request.targetRomKey) {
+    throw Object.assign(new Error('这个语言槽的 ROM 已被其他人修改，请刷新表单后重试'), { status: 409 })
+  }
+  const currentSockdrive = request.lang ? languageRom?.dos_sockdrive : game.dos_sockdrive
+  if (String(currentSockdrive || '').trim().replace(/\/+$/, '') !== request.expectedSockdrive) {
     throw Object.assign(new Error('Sockdrive 绑定已被其他人修改，请刷新表单后重试'), { status: 409 })
   }
   const config = sockdriveConversionConfig(env)
   const source = await remoteHead(config, request.sourceKey)
   if (!source) throw Object.assign(new Error('临时 ZIP 不存在；请重新上传'), { status: 404 })
   if (source.size !== request.sourceSize) throw Object.assign(new Error('临时 ZIP 大小与浏览器上报不一致'), { status: 409 })
+  if (request.lang && !(await remoteHead(config, request.targetRomKey))) {
+    throw Object.assign(new Error('完整回退包尚未上传成功；拒绝创建只有流式盘的语言槽'), { status: 409 })
+  }
   if (await remoteHead(config, `${request.targetPrefix}/sockdrive.metaj`)) {
     throw Object.assign(new Error('目标版本目录已经存在；Sockdrive 禁止原地覆盖，请换新版本'), { status: 409 })
   }
@@ -266,11 +302,12 @@ export async function createSockdriveConversion(raw, actorId = null, env = proce
   try {
     await query(
       `INSERT INTO sockdrive_conversion_jobs
-       (id, source_key, source_size, source_etag, game_id, game_slug, executable, expected_executable,
-        version, target_prefix, expected_sockdrive, encoding, actor_id, status, progress)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0)`,
-      [id, request.sourceKey, request.sourceSize, source.etag, game.id, request.gameSlug, request.executable,
-        String(game.dos_executable || ''), request.version, request.targetPrefix, request.expectedSockdrive,
+       (id, source_key, source_size, source_etag, game_id, game_slug, lang, executable, expected_executable,
+        expected_object_key, target_object_key, version, target_prefix, expected_sockdrive, encoding, actor_id, status, progress)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0)`,
+      [id, request.sourceKey, request.sourceSize, source.etag, game.id, request.gameSlug, request.lang,
+        request.executable, String((request.lang ? languageRom?.dos_executable : game.dos_executable) || ''),
+        request.expectedRomKey, request.targetRomKey, request.version, request.targetPrefix, request.expectedSockdrive,
         request.encoding, actorId],
     )
   } catch (error) {
@@ -498,6 +535,38 @@ async function bindPublished(job) {
       return { bound: false, message: '游戏运行环境已改变；Sockdrive 已发布但未绑定' }
     }
     if (hasDosExtras(game.dos_extras)) return { bound: false, message: '游戏新增了附加文件；为避免流式盘漏补丁，未自动绑定' }
+    if (job.lang) {
+      const romRows = await run(
+        'SELECT object_key, dos_executable, dos_sockdrive FROM game_roms WHERE game_id = ? AND lang = ? FOR UPDATE',
+        [game.id, job.lang],
+      )
+      const rom = romRows[0]
+      const current = String(rom?.dos_sockdrive || '').trim().replace(/\/+$/, '')
+      const currentObjectKey = String(rom?.object_key || '')
+      const currentExecutable = String(rom?.dos_executable || '')
+      if (current === job.target_prefix && currentObjectKey === job.target_object_key && String(rom?.dos_executable || '') === job.executable) {
+        return { bound: true, message: `${job.lang} Sockdrive 已经绑定` }
+      }
+      if (
+        current !== String(job.expected_sockdrive || '') ||
+        (currentExecutable !== String(job.expected_executable || '') && !(currentObjectKey === String(job.target_object_key || '') && currentExecutable === job.executable)) ||
+        (currentObjectKey !== String(job.expected_object_key || '') && currentObjectKey !== String(job.target_object_key || ''))
+      ) {
+        return { bound: false, message: '这个语言槽在转换期间被修改；已保留新配置，没有强行覆盖' }
+      }
+      if (rom) {
+        await run(
+          'UPDATE game_roms SET object_key = ?, dos_sockdrive = ?, dos_executable = ? WHERE game_id = ? AND lang = ?',
+          [job.target_object_key, job.target_prefix, job.executable, game.id, job.lang],
+        )
+      } else {
+        await run(
+          'INSERT INTO game_roms (game_id, lang, object_key, dos_executable, dos_sockdrive) VALUES (?, ?, ?, ?, ?)',
+          [game.id, job.lang, job.target_object_key, job.executable, job.target_prefix],
+        )
+      }
+      return { bound: true, message: `${job.lang} 完整回退包、Sockdrive 与启动 EXE 已原子绑定` }
+    }
     const current = String(game.dos_sockdrive || '').trim().replace(/\/+$/, '')
     if (current === job.target_prefix && String(game.dos_executable || '') === job.executable) {
       return { bound: true, message: 'Sockdrive 已经绑定' }
@@ -519,7 +588,14 @@ async function deleteSource(job, config) {
 
 async function finishPublishedJob(job, config, published) {
   let binding
-  try { binding = await bindPublished(job) }
+  try {
+    // 完整回退包在数小时转换期间仍可能被后台删除；最终绑定前再确认一次，不能发布出只有流式盘的语言槽。
+    if (job.lang && !(await remoteHead(config, job.target_object_key))) {
+      binding = { bound: false, message: '完整回退包在转换期间被删除；Sockdrive 已发布但未自动绑定' }
+    } else {
+      binding = await bindPublished(job)
+    }
+  }
   catch (error) { binding = { bound: false, message: `Sockdrive 已发布，但自动绑定失败：${error.message}` } }
   await updateJob(job.id, {
     status: 'completed', progress: 100, metadata_etag: published.etag, range_count: published.rangeCount,

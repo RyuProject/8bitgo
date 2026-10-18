@@ -7,6 +7,7 @@ import { upsertGame, adminStats } from '../games-repo.js'
 import { invalidateContent } from '../content.js'
 import { queueGameSearchPush, queuePostSearchPush } from '../search-push.js'
 import { startupStats } from '../startup-metrics.js'
+import { validateAdminImportPayload } from '../admin-import.js'
 
 export const adminRouter = Router()
 
@@ -35,18 +36,8 @@ adminRouter.get('/verify', async (req, res, next) => {
  */
 adminRouter.post('/import', requireAdmin, async (req, res, next) => {
   try {
-    const gameList = Array.isArray(req.body.games) ? req.body.games : []
-    const postList = Array.isArray(req.body.posts) ? req.body.posts : []
-    if (!gameList.length && !postList.length) {
-      return res.status(400).json({ error: '请求里没有 games 或 posts 数组' })
-    }
-
-    // 缺 slug 的条目直接拒掉：buildUpsert 会把 undefined 写成主键，
-    // 结果是整批数据挤进同一行，导入完只剩最后一条。
-    const missing = [...gameList, ...postList].filter((x) => !x || typeof x.slug !== 'string' || !x.slug.trim())
-    if (missing.length) {
-      return res.status(400).json({ error: `有 ${missing.length} 条数据缺少 slug，已全部拒绝` })
-    }
+    const { error, gameList, postList } = validateAdminImportPayload(req.body)
+    if (error) return res.status(400).json({ error })
 
     // 游戏要连关联表一起写，逐条走 upsertGame（它内部各自开事务）。
     // 文章只有一张标签表，量也小，放在一个事务里。

@@ -995,6 +995,12 @@ const patches = [
     run: () => conn.query('ALTER TABLE `game_roms` ADD COLUMN `dos_startup_commands` TEXT NULL AFTER `dos_executable`'),
   },
   {
+    name: 'game_roms.dos_sockdrive（各语言 Windows 流式游戏盘）',
+    table: 'game_roms',
+    needed: async () => !(await hasColumn('game_roms', 'dos_sockdrive')),
+    run: () => conn.query('ALTER TABLE `game_roms` ADD COLUMN `dos_sockdrive` VARCHAR(500) NULL AFTER `dos_startup_commands`'),
+  },
+  {
     name: 'open_rom_samples（开放平台每机型一款沙箱测试 ROM）',
     table: null,
     skip: async () => (!(await hasTable('game_roms')) ? '还没有 v2 的 game_roms 表' : null),
@@ -1137,8 +1143,11 @@ const patches = [
       source_etag VARCHAR(160) NOT NULL,
       game_id BIGINT UNSIGNED NOT NULL,
       game_slug VARCHAR(120) NOT NULL,
+      lang VARCHAR(10) NULL,
       executable VARCHAR(500) NOT NULL,
       expected_executable VARCHAR(500) NOT NULL DEFAULT '',
+      expected_object_key VARCHAR(500) NOT NULL DEFAULT '',
+      target_object_key VARCHAR(500) NOT NULL DEFAULT '',
       version VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
       target_prefix VARCHAR(500) NOT NULL,
       expected_sockdrive VARCHAR(500) NOT NULL DEFAULT '',
@@ -1161,8 +1170,27 @@ const patches = [
       UNIQUE KEY uniq_sockdrive_source (source_key(191)),
       UNIQUE KEY uniq_sockdrive_target (target_prefix(191)),
       KEY idx_sockdrive_jobs_queue (status, created_at),
-      KEY idx_sockdrive_jobs_game (game_id, created_at)
+      KEY idx_sockdrive_jobs_game_lang (game_id, lang, created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`),
+  },
+  {
+    name: 'sockdrive_conversion_jobs 多语言绑定列',
+    table: 'sockdrive_conversion_jobs',
+    needed: async () => !(await hasColumn('sockdrive_conversion_jobs', 'lang')) || !(await hasColumn('sockdrive_conversion_jobs', 'expected_object_key')) || !(await hasColumn('sockdrive_conversion_jobs', 'target_object_key')) || !(await hasIndex('sockdrive_conversion_jobs', 'idx_sockdrive_jobs_game_lang')),
+    run: async () => {
+      if (!(await hasColumn('sockdrive_conversion_jobs', 'lang'))) {
+        await conn.query('ALTER TABLE `sockdrive_conversion_jobs` ADD COLUMN `lang` VARCHAR(10) NULL AFTER `game_slug`')
+      }
+      if (!(await hasColumn('sockdrive_conversion_jobs', 'expected_object_key'))) {
+        await conn.query("ALTER TABLE `sockdrive_conversion_jobs` ADD COLUMN `expected_object_key` VARCHAR(500) NOT NULL DEFAULT '' AFTER `expected_executable`")
+      }
+      if (!(await hasColumn('sockdrive_conversion_jobs', 'target_object_key'))) {
+        await conn.query("ALTER TABLE `sockdrive_conversion_jobs` ADD COLUMN `target_object_key` VARCHAR(500) NOT NULL DEFAULT '' AFTER `expected_object_key`")
+      }
+      if (!(await hasIndex('sockdrive_conversion_jobs', 'idx_sockdrive_jobs_game_lang'))) {
+        await conn.query('ALTER TABLE `sockdrive_conversion_jobs` ADD INDEX `idx_sockdrive_jobs_game_lang` (`game_id`, `lang`, `created_at`)')
+      }
+    },
   },
 ]
 

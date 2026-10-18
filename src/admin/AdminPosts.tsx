@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import type { Post } from '@/types'
-import { deletePost, fetchAllPosts, savePost, setPostPublished } from '@/services/posts'
+import { deletePost, fetchAdminPost, fetchAdminPostSummaries, savePost, setPostPublished } from '@/services/posts'
 import { renderMarkdown } from '@/lib/markdown'
 import { cx } from '@/lib/format'
 import { apiEnabled } from '@/services/api'
@@ -25,12 +25,16 @@ export function AdminPosts() {
   const [q, setQ] = useState('')
   const [editing, setEditing] = useState<Editing>(null)
   const [toast, setToast] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [rowAction, setRowAction] = useState<{ slug: string; kind: 'edit' | 'published' | 'delete' } | null>(null)
+  const savingRef = useRef(false)
+  const rowActionRef = useRef(false)
 
   const reload = useCallback(() => {
     if (!apiEnabled()) return
     setLoading(true)
     setError('')
-    fetchAllPosts()
+    fetchAdminPostSummaries()
       .then(setPosts)
       .catch((e: unknown) => {
         setPosts([])
@@ -57,12 +61,48 @@ export function AdminPosts() {
   const remove = async (p: Post) => {
     const scope = personalLibrary ? '只会从你的独立文章库移除，不影响主文章库或其他志愿者。' : '此操作会从主文章库删除。'
     if (!window.confirm(`确定删除文章「${p.title}」？${scope}`)) return
+    if (rowActionRef.current) return
+    rowActionRef.current = true
+    setRowAction({ slug: p.slug, kind: 'delete' })
     try {
       await deletePost(p.slug)
       setToast('已删除')
       reload()
     } catch (err) {
       setToast(err instanceof Error ? err.message : '删除失败')
+    } finally {
+      rowActionRef.current = false
+      setRowAction(null)
+    }
+  }
+
+  const togglePublished = async (p: Post) => {
+    if (rowActionRef.current) return
+    rowActionRef.current = true
+    setRowAction({ slug: p.slug, kind: 'published' })
+    try {
+      await setPostPublished(p, !p.published)
+      setToast(p.published ? '已转为草稿' : personalLibrary ? '已标记成稿' : '已发布')
+      reload()
+    } catch (err) {
+      setToast(err instanceof Error ? err.message : '操作失败')
+    } finally {
+      rowActionRef.current = false
+      setRowAction(null)
+    }
+  }
+
+  const edit = async (summary: Post) => {
+    if (rowActionRef.current) return
+    rowActionRef.current = true
+    setRowAction({ slug: summary.slug, kind: 'edit' })
+    try {
+      setEditing({ mode: 'edit', post: await fetchAdminPost(summary.slug) })
+    } catch (err) {
+      setToast(err instanceof Error ? err.message : '读取文章失败')
+    } finally {
+      rowActionRef.current = false
+      setRowAction(null)
     }
   }
 
@@ -135,28 +175,21 @@ export function AdminPosts() {
                 </td>
                 <td className="px-3 py-2">
                   <div className="flex justify-end gap-1">
-                    <button type="button" className={cx(btnClass.small, 'text-brand-hover hover:bg-brand-soft')} onClick={() => setEditing({ mode: 'edit', post: p })}>
-                      编辑
+                    <button type="button" disabled={Boolean(rowAction)} className={cx(btnClass.small, 'text-brand-hover hover:bg-brand-soft')} onClick={() => void edit(p)}>
+                      {rowAction?.slug === p.slug && rowAction.kind === 'edit' ? '读取中…' : '编辑'}
                     </button>
                     <button
                       type="button"
                       className={cx(btnClass.small, 'text-muted hover:bg-black/5 hover:text-fg')}
-                      onClick={async () => {
-                        try {
-                          // setPostPublished 走的是 PUT（整体覆盖），要把原文一起带上，
-                          // 所以传的是整篇 post 而不是 slug
-                          await setPostPublished(p, !p.published)
-                          setToast(p.published ? '已转为草稿' : personalLibrary ? '已标记成稿' : '已发布')
-                          reload()
-                        } catch (err) {
-                          setToast(err instanceof Error ? err.message : '操作失败')
-                        }
-                      }}
+                      disabled={Boolean(rowAction)}
+                      onClick={() => void togglePublished(p)}
                     >
-                      {p.published ? '转草稿' : personalLibrary ? '标记成稿' : '发布'}
+                      {rowAction?.slug === p.slug && rowAction.kind === 'published'
+                        ? '处理中…'
+                        : p.published ? '转草稿' : personalLibrary ? '标记成稿' : '发布'}
                     </button>
-                    <button type="button" className={cx(btnClass.small, 'text-live hover:bg-live/15')} onClick={() => remove(p)}>
-                      删除
+                    <button type="button" disabled={Boolean(rowAction)} className={cx(btnClass.small, 'text-live hover:bg-live/15')} onClick={() => void remove(p)}>
+                      {rowAction?.slug === p.slug && rowAction.kind === 'delete' ? '删除中…' : '删除'}
                     </button>
                   </div>
                 </td>
@@ -190,7 +223,7 @@ export function AdminPosts() {
       </div>
 
       {editing && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4 backdrop-blur-sm" onClick={() => setEditing(null)}>
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4 backdrop-blur-sm">
           <div
             role="dialog"
             aria-modal="true"
@@ -203,14 +236,21 @@ export function AdminPosts() {
               initial={editing.mode === 'edit' ? editing.post : undefined}
               existingSlugs={posts.map((p) => p.slug)}
               personalLibrary={personalLibrary}
+              submitting={saving}
               onSubmit={async (post) => {
+                if (savingRef.current) return
+                savingRef.current = true
+                setSaving(true)
                 try {
-                  await savePost(post)
+                  await savePost(post, { createOnly: editing.mode === 'add' })
                   setEditing(null)
                   setToast(editing.mode === 'edit' ? '已保存' : '已创建')
                   reload()
                 } catch (err) {
                   setToast(err instanceof Error ? err.message : '保存失败')
+                } finally {
+                  savingRef.current = false
+                  setSaving(false)
                 }
               }}
               onCancel={() => setEditing(null)}
@@ -240,21 +280,45 @@ function PostForm({
   initial,
   existingSlugs,
   personalLibrary,
+  submitting,
   onSubmit,
   onCancel,
 }: {
   initial?: Post
   existingSlugs: string[]
   personalLibrary: boolean
-  onSubmit: (p: Post) => void
+  submitting: boolean
+  onSubmit: (p: Post) => void | Promise<void>
   onCancel: () => void
 }) {
-  const [form, setForm] = useState<Post>(initial ?? { ...EMPTY, date: new Date().toISOString().slice(0, 10) })
-  const [tagsText, setTagsText] = useState((initial?.tags ?? []).join(', '))
+  const initialForm = initial ?? { ...EMPTY, date: new Date().toISOString().slice(0, 10) }
+  const initialTagsText = (initial?.tags ?? []).join(', ')
+  const [form, setForm] = useState<Post>(initialForm)
+  const [tagsText, setTagsText] = useState(initialTagsText)
   const [slugTouched, setSlugTouched] = useState(Boolean(initial))
   const [preview, setPreview] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const initialSnapshot = useRef(JSON.stringify({ form: initialForm, tagsText: initialTagsText }))
   const isEdit = Boolean(initial)
+
+  const hasUnsavedChanges = () => JSON.stringify({ form, tagsText }) !== initialSnapshot.current
+
+  useEffect(() => {
+    if (submitting) return
+    const warn = (event: BeforeUnloadEvent) => {
+      if (!hasUnsavedChanges()) return
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [form, tagsText, submitting])
+
+  const requestCancel = () => {
+    if (submitting) return
+    if (hasUnsavedChanges() && !window.confirm('还有未保存的文章修改，确定放弃吗？')) return
+    onCancel()
+  }
 
   useEffect(() => {
     if (!isEdit && !slugTouched) setForm((f) => ({ ...f, slug: slugify(f.title) || f.slug }))
@@ -264,6 +328,7 @@ function PostForm({
 
   const submit = (e: FormEvent) => {
     e.preventDefault()
+    if (submitting) return
     const slug = slugify(form.slug) || `post-${Date.now().toString(36)}`
     if (!form.title.trim()) return setError('请填写标题')
     if (!form.content.trim()) return setError('正文不能为空')
@@ -282,7 +347,8 @@ function PostForm({
   }
 
   return (
-    <form onSubmit={submit} className="space-y-4">
+    <form onSubmit={submit} className="space-y-4" aria-busy={submitting}>
+      <fieldset disabled={submitting} className="contents">
       <div className="grid gap-3 sm:grid-cols-[1fr_1fr]">
         <Field label="标题 *">
           <input className={inputClass} value={form.title} onChange={(e) => set('title', e.target.value)} required />
@@ -346,13 +412,14 @@ function PostForm({
       )}
 
       <div className="flex justify-end gap-2 border-t border-line pt-4">
-        <button type="button" className={btnClass.secondary} onClick={onCancel}>
+        <button type="button" className={btnClass.secondary} onClick={requestCancel}>
           取消
         </button>
         <button type="submit" className={btnClass.primary}>
-          {isEdit ? '保存' : '创建'}
+          {submitting ? '保存中…' : isEdit ? '保存' : '创建'}
         </button>
       </div>
+      </fieldset>
     </form>
   )
 }

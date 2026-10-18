@@ -57,7 +57,7 @@ try {
         "export * from './src/lib/romValidation.ts'",
         "export { assertValidZip, assertValidZipBlob, listZipEntries, extractZipEntry } from './src/lib/unzip.ts'",
         "export { makeJsdosBundle, makeJsdosConfigBundle } from './src/lib/jsdosBundle.ts'",
-        "export { buildSockdriveWindowsGuestConfig, buildWindowsGuestConfig, sockdriveVersionedSaveKey, windowsGuestLaunchCommand, windowsSockdriveLauncherFile } from './src/lib/windowsGuest.ts'",
+        "export { buildSockdriveWindowsGuestConfig, buildWindowsGuestConfig, sockdriveVersionedSaveKey, windowsGuestLaunchCommand, windowsSockdriveExecutableCommand, windowsSockdriveLauncherFile } from './src/lib/windowsGuest.ts'",
         "export { normalizeDosboxConfigOverride, mergeDosboxConfigOverride } from './shared/dosbox-config.js'",
         "export { createOverallRatio, fetchWithProgress, windowsGuestStartupBudgetMs } from './src/emulator/loadProgress.ts'",
         "export { shouldCaptureMouse } from './src/emulator/mouseCapture.ts'",
@@ -90,6 +90,7 @@ try {
     buildSockdriveWindowsGuestConfig,
     sockdriveVersionedSaveKey,
     windowsGuestLaunchCommand,
+    windowsSockdriveExecutableCommand,
     windowsSockdriveLauncherFile,
     normalizeDosboxConfigOverride,
     mergeDosboxConfigOverride,
@@ -228,11 +229,18 @@ try {
   assert.match(streamedGuest.dosboxConf, /boot c: -convertfat/)
   assert.equal(windowsGuestLaunchCommand(streamedGuest, 'BIN/GAME.EXE', '9x', false), 'E:\\RUN.BAT')
   assert.equal(windowsGuestLaunchCommand(streamedGuest, 'BIN/GAME.EXE', '3x', false), 'D:\\BIN\\GAME.EXE')
+  assert.equal(windowsSockdriveExecutableCommand('BIN/GAME.EXE', streamedGuest.gameDrive), 'D:\\BIN\\GAME.EXE')
+  assert.throws(() => windowsSockdriveExecutableCommand('../BAD.EXE', 'D'), /安全的 \.exe/)
   const launcherFile = windowsSockdriveLauncherFile('BIN/GAME.EXE', streamedGuest.gameDrive)
   assert.equal(launcherFile.path, '8BITGO/RUN.BAT')
   assert.match(new TextDecoder().decode(launcherFile.contents), /d:\r\ncd "\\BIN"\r\n"GAME\.EXE"/)
   const escapedLauncher = new TextDecoder().decode(windowsSockdriveLauncherFile('BIN/100%&FUN.EXE', 'D').contents)
   assert.match(escapedLauncher, /"100%%&FUN\.EXE"/)
+  const registryLauncher = new TextDecoder().decode(
+    windowsSockdriveLauncherFile('StarCraft.exe', 'D', 'STAR.REG').contents,
+  )
+  assert.match(registryLauncher, /regedit \/s "D:\\STAR\.REG"\r\nd:/)
+  assert.throws(() => windowsSockdriveLauncherFile('StarCraft.exe', 'D', '../STAR.REG'), /安全的 \.reg/)
   assert.throws(() => windowsSockdriveLauncherFile('BIN/BAD?.EXE', 'D'), /安全的 \.exe/)
   const occupiedD = buildSockdriveWindowsGuestConfig(
     '[autoexec]\nimgmount 2 system.img\nimgmount 3 tools.img\nboot c:\n',

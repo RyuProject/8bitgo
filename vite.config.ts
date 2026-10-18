@@ -1,5 +1,5 @@
 import path from 'node:path'
-import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import legacy from '@vitejs/plugin-legacy'
 import react from '@vitejs/plugin-react'
@@ -79,6 +79,36 @@ function restoreAll() {
   }
 }
 
+/**
+ * legacy 插件会让同一次生产构建进入两次 closeBundle，两边可能同时创建同一根软链。
+ * 不能用 existsSync → symlinkSync 的“先检查后执行”：两个钩子都可能看到不存在，随后一边
+ * 因 EEXIST 把整次部署构建判失败。这里把“目标已经是正确软链”视为成功，并在竞争窗口内重试。
+ */
+function ensureDirectorySymlink(source: string, dest: string) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const stat = lstatSync(dest)
+      const linkedSource = stat.isSymbolicLink()
+        ? path.resolve(path.dirname(dest), readlinkSync(dest))
+        : ''
+      if (linkedSource === source) return
+      rmSync(dest, { recursive: true, force: true })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+
+    mkdirSync(path.dirname(dest), { recursive: true })
+    try {
+      symlinkSync(source, dest, 'dir')
+      return
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    }
+  }
+
+  throw new Error(`无法稳定创建静态资源软链：${dest}`)
+}
+
 function skipHugeStatic() {
   let armed = false
   return {
@@ -121,10 +151,9 @@ function skipHugeStatic() {
         const live = path.join(PUBLIC_DIR, rel)
         if (!existsSync(live)) continue
         const dest = path.join(DIST_DIR, rel)
-        // 目录被挪走了，产物里本来不该有它；有就是上一次留下的旧实体，删掉再链
-        if (existsSync(dest)) rmSync(dest, { recursive: true, force: true })
-        mkdirSync(path.dirname(dest), { recursive: true })
-        symlinkSync(live, dest, 'dir')
+        // 目录被挪走了，产物里本来不该有它；有就是上一次留下的旧实体，删掉再链。
+        // legacy 构建会并发进入两次 closeBundle，创建动作必须能容忍另一边已经先完成。
+        ensureDirectorySymlink(live, dest)
       }
     },
   }

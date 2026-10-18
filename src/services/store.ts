@@ -57,8 +57,10 @@ export async function fetchAdminGames(q: AdminGameQuery = {}): Promise<Paged<Gam
  * “已保存”，重新编辑时镜像路径却消失。这里用服务端回包做一次回读校验，让版本错位
  * 当场报清楚，也保留尚未保存的表单内容。
  */
-export async function upsertGame(game: Game): Promise<Game> {
-  const saved = await api.put<Game>(`/api/games/${encodeURIComponent(game.slug)}`, game, true)
+export async function upsertGame(game: Game, options: { createOnly?: boolean } = {}): Promise<Game> {
+  // 新增必须让服务端做 INSERT-only；浏览器里的「先查重再保存」存在竞态，会覆盖同名游戏。
+  const suffix = options.createOnly ? '?create=1' : ''
+  const saved = await api.put<Game>(`/api/games/${encodeURIComponent(game.slug)}${suffix}`, game, true)
   const requestedSystem = game.dosSystem?.trim() || undefined
   const persistedSystem = saved.dosSystem?.trim() || undefined
   if (requestedSystem !== persistedSystem) {
@@ -71,6 +73,17 @@ export async function upsertGame(game: Game): Promise<Game> {
   if (requestedSockdrive !== persistedSockdrive) {
     throw new Error(
       '服务端没有保存 Windows 流式游戏盘。请在服务器运行数据库迁移并重启 8bitgo-api，然后重新保存。',
+    )
+  }
+  const sockdriveMap = (value: Game['dosSockdrives']) => Object.fromEntries(
+    Object.entries(value ?? {})
+      .map(([lang, directory]) => [lang, directory?.trim().replace(/\/+$/, '')] as const)
+      .filter(([, directory]) => Boolean(directory))
+      .sort(([a], [b]) => a.localeCompare(b)),
+  )
+  if (JSON.stringify(sockdriveMap(game.dosSockdrives)) !== JSON.stringify(sockdriveMap(saved.dosSockdrives))) {
+    throw new Error(
+      '服务端没有保存各语言 Windows 流式游戏盘。请在服务器运行数据库迁移并重启 8bitgo-api，然后重新保存。',
     )
   }
   /*
@@ -202,6 +215,7 @@ export interface AdminStats {
   games: { total: number; visible: number; hidden: number; withRom: number; visibleWithRom: number }
   plays: number
   posts: { total: number; published: number; draft: number }
+  users: { total: number; banned: number }
 }
 
 export async function fetchAdminStats(): Promise<AdminStats> {

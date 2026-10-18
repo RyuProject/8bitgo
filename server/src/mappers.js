@@ -604,6 +604,8 @@ export function gameRowToApi(r, rel = {}) {
   // 启动文件跟语言槽走；通用 ROM 继续用 games.dos_executable，旧数据无需迁移内容。
   if (rel.dosExecutables && Object.keys(rel.dosExecutables).length) g.dosExecutables = rel.dosExecutables
   if (rel.dosStartupCommands && Object.keys(rel.dosStartupCommands).length) g.dosStartupCommands = rel.dosStartupCommands
+  // 流式盘和 ROM 使用同一个语言槽；播放器据此避免把其它语言的只读游戏盘挂进当前客体。
+  if (rel.dosSockdrives && Object.keys(rel.dosSockdrives).length) g.dosSockdrives = rel.dosSockdrives
   // 备用地址必须保留语言归属；成功切源后 DOS 入口、存档与语言选择仍按原槽处理。
   if (rel.romBackups && Object.keys(rel.romBackups).length) g.romBackups = rel.romBackups
 
@@ -713,7 +715,7 @@ export function gameApiToPartialRow(patch) {
 /** 请求体里带了关联字段吗（决定 PATCH 要不要动关联表） */
 export function relationsInPatch(patch) {
   const has = (k) => Object.prototype.hasOwnProperty.call(patch ?? {}, k)
-  return { genres: has('genres'), tags: has('tags'), roms: has('rom') || has('roms') || has('romBackups') || has('dosExecutables') || has('dosStartupCommands') }
+  return { genres: has('genres'), tags: has('tags'), roms: has('rom') || has('roms') || has('romBackups') || has('dosExecutables') || has('dosStartupCommands') || has('dosSockdrives') }
 }
 
 /** 把 API 对象里的 rom / roms 归一成 { lang: key } 的形式（通用 ROM 用 '*'） */
@@ -732,6 +734,7 @@ export function romRelationRows(game, previous = [], partial = false) {
   const hasEntries = Object.prototype.hasOwnProperty.call(game, 'dosExecutables')
   const hasCommands = Object.prototype.hasOwnProperty.call(game, 'dosStartupCommands')
   const hasBackups = Object.prototype.hasOwnProperty.call(game, 'romBackups')
+  const hasSockdrives = Object.prototype.hasOwnProperty.call(game, 'dosSockdrives')
   const oldByLang = new Map(previous.map((row) => [row.lang, row]))
   const roms = hasRomKeys || !partial ? Object.entries(romsOf(game)) : previous.map((row) => [row.lang, row.object_key])
   return roms.map(([lang, key]) => ({
@@ -751,6 +754,9 @@ export function romRelationRows(game, previous = [], partial = false) {
     dosStartupCommands: lang === GENERIC_ROM_LANG ? null : hasCommands
       ? dosStartupCommandsOf(game.dosStartupCommands?.[lang])
       : oldByLang.get(lang)?.object_key === key ? oldByLang.get(lang)?.dos_startup_commands ?? null : null,
+    dosSockdrive: lang === GENERIC_ROM_LANG ? null : hasSockdrives
+      ? dosSockdriveOf(game.dosSockdrives?.[lang])
+      : oldByLang.get(lang)?.object_key === key ? oldByLang.get(lang)?.dos_sockdrive ?? null : null,
   }))
 }
 
@@ -822,7 +828,7 @@ export function userRowToPublic(r, favorites = [], recent = []) {
      * 逼他填一个填不出来的「当前密码」等于这个功能不可用。
      * 哈希本身是能离线爆破的，没有任何理由发到浏览器。
      */
-    hasPassword: Boolean(r.password_hash),
+    hasPassword: r.has_password == null ? Boolean(r.password_hash) : Boolean(r.has_password),
     favorites,
     recent,
   }

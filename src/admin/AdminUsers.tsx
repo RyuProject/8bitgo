@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { PublicUser } from '@/types'
 import { adminClearBirthDate, adminDeleteUser, adminSetRole, adminSetStatus, useAllUsers, useCurrentUser } from '@/services/auth'
 import { isAdultByBirthDate } from '@/lib/age'
@@ -9,13 +9,21 @@ import { useAdminData } from './AdminLayout'
 import { ROLES, ROLE_LABELS, type UserRole } from '../../shared/roles.js'
 
 export function AdminUsers() {
-  const users = useAllUsers()
   const me = useCurrentUser()
   // 改角色单独一道权限点：能封号的人不一定就该能发权限（见 shared/roles.js）
   const { abilities } = useAdminData()
   const canSetRole = abilities.includes('users:role')
   const [q, setQ] = useState('')
+  const [debouncedQ, setDebouncedQ] = useState('')
   const [toast, setToast] = useState<string | null>(null)
+  const [busyUserId, setBusyUserId] = useState<string | null>(null)
+  const busyUserRef = useRef(false)
+  const users = useAllUsers(debouncedQ)
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedQ(q.trim()), 300)
+    return () => window.clearTimeout(timer)
+  }, [q])
 
   const list = useMemo(() => {
     const needle = q.trim().toLowerCase()
@@ -45,22 +53,34 @@ export function AdminUsers() {
       ? '\n\n志愿者只会获得自己的独立游戏库和文章库，不能修改主库、其他志愿者内容、评论或 ROM 存储。'
       : ''
     if (role !== 'user' && !window.confirm(`把「${u.nickname}」设为${ROLE_LABELS[role]}？${permissionNote}`)) return
+    if (busyUserRef.current) return
+    busyUserRef.current = true
+    setBusyUserId(u.id)
     try {
-      await adminSetRole(u.id, role)
+      await adminSetRole(u.id, role, debouncedQ)
       flash(`${u.nickname} → ${ROLE_LABELS[role]}`)
     } catch (err) {
       flash(err instanceof Error ? err.message : '操作失败')
+    } finally {
+      busyUserRef.current = false
+      setBusyUserId(null)
     }
   }
 
   const toggleBan = async (u: PublicUser) => {
     const banning = u.status === 'active'
     if (banning && !window.confirm(`确定封禁「${u.nickname}」？封禁后该用户将无法登录。`)) return
+    if (busyUserRef.current) return
+    busyUserRef.current = true
+    setBusyUserId(u.id)
     try {
-      await adminSetStatus(u.id, banning ? 'banned' : 'active')
+      await adminSetStatus(u.id, banning ? 'banned' : 'active', debouncedQ)
       flash(banning ? '已封禁' : '已解封')
     } catch (err) {
       flash(err instanceof Error ? err.message : '操作失败')
+    } finally {
+      busyUserRef.current = false
+      setBusyUserId(null)
     }
   }
 
@@ -72,21 +92,33 @@ export function AdminUsers() {
    */
   const clearBirthDate = async (u: PublicUser) => {
     if (!window.confirm(`清除「${u.nickname}」的出生日期？清除后他需要重新填写才能玩成人内容。`)) return
+    if (busyUserRef.current) return
+    busyUserRef.current = true
+    setBusyUserId(u.id)
     try {
-      await adminClearBirthDate(u.id)
+      await adminClearBirthDate(u.id, debouncedQ)
       flash('已清除出生日期')
     } catch (err) {
       flash(err instanceof Error ? err.message : '操作失败')
+    } finally {
+      busyUserRef.current = false
+      setBusyUserId(null)
     }
   }
 
   const remove = async (u: PublicUser) => {
     if (!window.confirm(`确定删除用户「${u.nickname}」（${u.email}）？此操作不可恢复。`)) return
+    if (busyUserRef.current) return
+    busyUserRef.current = true
+    setBusyUserId(u.id)
     try {
-      await adminDeleteUser(u.id)
+      await adminDeleteUser(u.id, debouncedQ)
       flash('已删除')
     } catch (err) {
       flash(err instanceof Error ? err.message : '删除失败')
+    } finally {
+      busyUserRef.current = false
+      setBusyUserId(null)
     }
   }
 
@@ -141,7 +173,7 @@ export function AdminUsers() {
                       value={u.role}
                       onChange={(e) => void changeRole(u, e.target.value as UserRole)}
                       // 给自己降级 = 当场把自己关在后台外面，后端也拦了一道
-                      disabled={isSelf(u)}
+                      disabled={isSelf(u) || Boolean(busyUserId)}
                       title={isSelf(u) ? '不能改自己的角色' : undefined}
                       className={cx(inputClass, 'h-7 w-24 px-1.5 py-0 text-xs disabled:opacity-60')}
                     >
@@ -166,7 +198,8 @@ export function AdminUsers() {
                       <button
                         type="button"
                         className={cx(btnClass.small, 'text-muted hover:bg-black/5 hover:text-fg')}
-                        onClick={() => clearBirthDate(u)}
+                        onClick={() => void clearBirthDate(u)}
+                        disabled={Boolean(busyUserId)}
                         title="清除后用户可以重新填写出生日期"
                       >
                         清除
@@ -176,8 +209,8 @@ export function AdminUsers() {
                     <span className="text-xs text-dim">未填写</span>
                   )}
                 </td>
-                <td className="px-3 py-2 tabular-nums text-muted">{u.favorites.length}</td>
-                <td className="px-3 py-2 tabular-nums text-muted">{u.recent.length}</td>
+                <td className="px-3 py-2 tabular-nums text-muted">{u.favoritesCount ?? u.favorites.length}</td>
+                <td className="px-3 py-2 tabular-nums text-muted">{u.recentCount ?? u.recent.length}</td>
                 <td className="px-3 py-2">
                   {u.status === 'banned' ? (
                     <span className="rounded bg-live/15 px-1.5 py-0.5 text-xs text-live">已封禁</span>
@@ -192,17 +225,17 @@ export function AdminUsers() {
                     <button
                       type="button"
                       className={cx(btnClass.small, 'text-muted hover:bg-black/5 hover:text-fg')}
-                      onClick={() => toggleBan(u)}
-                      disabled={isSelf(u) && u.status === 'active'}
+                      onClick={() => void toggleBan(u)}
+                      disabled={Boolean(busyUserId) || (isSelf(u) && u.status === 'active')}
                       title={isSelf(u) && u.status === 'active' ? '不能封禁自己' : undefined}
                     >
-                      {u.status === 'banned' ? '解封' : '封禁'}
+                      {busyUserId === u.id ? '处理中…' : u.status === 'banned' ? '解封' : '封禁'}
                     </button>
                     <button
                       type="button"
                       className={cx(btnClass.small, 'text-live hover:bg-live/15')}
-                      onClick={() => remove(u)}
-                      disabled={isSelf(u)}
+                      onClick={() => void remove(u)}
+                      disabled={Boolean(busyUserId) || isSelf(u)}
                       title={isSelf(u) ? '不能删除自己' : undefined}
                     >
                       删除

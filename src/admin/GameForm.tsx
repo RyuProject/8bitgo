@@ -184,18 +184,59 @@ interface Props {
   existingSlugs: string[]
   /** 志愿者个人库只能编辑资料，不得借表单触发 R2 上传 / 删除。 */
   personalLibrary?: boolean
-  onSubmit: (game: Game) => void
+  /** 保存期间由父层锁住整张表单，避免请求飞行中继续编辑却被成功回包关闭。 */
+  submitting?: boolean
+  onSubmit: (game: Game) => void | Promise<void>
   onCancel: () => void
 }
 
-export function GameForm({ initial, existingSlugs, personalLibrary = false, onSubmit, onCancel }: Props) {
-  const [form, setForm] = useState<Game>(initial ?? { ...EMPTY, addedAt: today() })
-  const [tagsText, setTagsText] = useState((initial?.tags ?? []).join(', '))
+export function GameForm({ initial, existingSlugs, personalLibrary = false, submitting = false, onSubmit, onCancel }: Props) {
+  const initialForm = initial ?? { ...EMPTY, addedAt: today() }
+  const initialTagsText = (initial?.tags ?? []).join(', ')
+  const [form, setForm] = useState<Game>(initialForm)
+  const [tagsText, setTagsText] = useState(initialTagsText)
   const [slugTouched, setSlugTouched] = useState(Boolean(initial))
   const [error, setError] = useState<string | null>(null)
+  const initialSnapshot = useRef(JSON.stringify({ form: initialForm, tagsText: initialTagsText }))
   const isEdit = Boolean(initial)
+  const windowsGuestForm = form.platform === 'dos' && form.dosBackend === 'dosboxX' && Boolean(form.dosSystem?.trim())
+  const hasLanguageSockdrive = Object.values(form.dosSockdrives ?? {}).some((value) => Boolean(value?.trim()))
+  const hasAnySockdrive = Boolean(form.dosSockdrive?.trim()) || hasLanguageSockdrive
+  /**
+   * 转换任务要用数据库里的旧值做 CAS。先把运行环境、EXE 与当前流式盘保存好，才能避免
+   * 管理员上传完几个 GB 后才收到“数据库配置不一致”；ROM 本身允许由一键上传原子换新。
+   */
+  const sockdriveConfigSaved = (lang: RomLang) => Boolean(
+    windowsGuestForm && initial?.slug &&
+    initial.slug === slugify(form.slug || form.title) &&
+    initial.platform === form.platform &&
+    initial.dosBackend === form.dosBackend &&
+    (initial.dosSystem ?? '').trim() === (form.dosSystem ?? '').trim() &&
+    JSON.stringify(initial.dosExtras ?? []) === JSON.stringify(form.dosExtras ?? []) &&
+    (initial.dosExecutables?.[lang] ?? initial.dosExecutable ?? '').trim() === (form.dosExecutables?.[lang] ?? form.dosExecutable ?? '').trim() &&
+    (initial.dosSockdrives?.[lang] ?? '').trim() === (form.dosSockdrives?.[lang] ?? '').trim()
+  )
   /** 该平台可选的核心。没配置的平台不显示这一栏 */
   const coreOptions = coreOptionsFor(form.platform)
+
+  const hasUnsavedChanges = () => JSON.stringify({ form, tagsText }) !== initialSnapshot.current
+
+  useEffect(() => {
+    if (submitting) return
+    const warn = (event: BeforeUnloadEvent) => {
+      if (!hasUnsavedChanges()) return
+      event.preventDefault()
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [form, tagsText, submitting])
+
+  const requestCancel = () => {
+    if (submitting) return
+    if (hasUnsavedChanges() && !window.confirm('还有未保存的修改，确定放弃吗？')) return
+    onCancel()
+  }
 
   useEffect(() => {
     if (!isEdit && !slugTouched) setForm((f) => ({ ...f, slug: slugify(f.title) }))
@@ -300,6 +341,14 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
       return { ...f, dosStartupCommands }
     })
 
+  const setDosSockdriveLang = (lang: RomLang, value: string) =>
+    setForm((f) => {
+      const dosSockdrives = { ...f.dosSockdrives }
+      if (value.trim()) dosSockdrives[lang] = value.trim()
+      else delete dosSockdrives[lang]
+      return { ...f, dosSockdrives }
+    })
+
   const setRomBackupLang = (lang: RomLang, key: string) =>
     setForm((f) => {
       const romBackups = { ...f.romBackups }
@@ -310,6 +359,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
 
   const submit = (e: FormEvent) => {
     e.preventDefault()
+    if (submitting) return
     const slug = slugify(form.slug || form.title)
     if (!form.title.trim()) return setError('请填写英文标题')
     if (!slug) return setError('slug 不能为空')
@@ -354,7 +404,40 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
     }
     const cleanedDosEntries: Partial<Record<RomLang, string>> = {}
     const cleanedDosStartupCommands: Partial<Record<RomLang, string>> = {}
+    const cleanedDosSockdrives: Partial<Record<RomLang, string>> = {}
     for (const l of ROM_LANGS) {
+      const rawLanguageSockdrive = form.dosSockdrives?.[l]?.trim().replace(/\/+$/, '')
+      if (rawLanguageSockdrive) {
+        const prefix = `${ROM_LANG_LABEL[l]} Sockdrive：`
+        if (!windowsGuest) return setError(`${prefix}只能用于已配置共享系统镜像的 DOSBox-X Windows 游戏`)
+        if (!form.roms?.[l]?.trim()) return setError(`${prefix}请先绑定同语言 ROM 完整回退包`)
+        if (rawLanguageSockdrive.length > 500 || /[^\x21-\x7e]|["'%&|<>^()]/.test(rawLanguageSockdrive)) {
+          return setError(`${prefix}目录必须用 ASCII，且不能含空格、引号、DOS 批处理保留字符或超过 500 字符`)
+        }
+        if (rawLanguageSockdrive.startsWith('//')) return setError(`${prefix}不能使用 // 开头的协议相对地址`)
+        if (/^[a-z][a-z0-9+.-]*:/i.test(rawLanguageSockdrive) && !/^https?:\/\//i.test(rawLanguageSockdrive)) {
+          return setError(`${prefix}完整地址只支持 HTTP 或 HTTPS`)
+        }
+        if (/[?#]/.test(rawLanguageSockdrive)) return setError(`${prefix}目录不能带查询参数或锚点`)
+        if (/(?:^|\/)sockdrive\.metaj$/i.test(rawLanguageSockdrive) || /\.raw$/i.test(rawLanguageSockdrive)) {
+          return setError(`${prefix}请填写包含 sockdrive.metaj 的目录，不要填写某个文件`)
+        }
+        if (!isVersionedSockdriveDirectory(rawLanguageSockdrive)) {
+          return setError(`${prefix}目录必须以版本号或内容哈希结尾；发布新磁盘时必须换新目录`)
+        }
+        try {
+          const resolved = new URL(romUrlForKey(rawLanguageSockdrive) || rawLanguageSockdrive, window.location.href)
+          if (!/^https?:$/.test(resolved.protocol) || resolved.username || resolved.password) {
+            return setError(`${prefix}必须是没有账号口令的 HTTP(S) 目录`)
+          }
+          if (resolved.toString().replace(/\/+$/, '').replace(/^https?:\/\//i, '').length > 200) {
+            return setError(`${prefix}完整地址过长，会与旧版本的本地磁盘缓存冲突`)
+          }
+        } catch {
+          return setError(`${prefix}目录无法解析为有效地址`)
+        }
+        cleanedDosSockdrives[l] = rawLanguageSockdrive
+      }
       try {
         const commands = normalizeDosStartupCommands(form.dosStartupCommands?.[l])
         if (commands) {
@@ -378,6 +461,9 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
         return setError(`${ROM_LANG_LABEL[l]} 的启动文件路径无效，请填写 ZIP 内的相对路径`)
       }
       cleanedDosEntries[l] = path
+    }
+    if (Object.keys(cleanedDosSockdrives).length && form.dosExtras?.length) {
+      return setError('流式游戏盘不能现场合并 DOS 附加文件；请先把补丁写入磁盘再重新生成 Sockdrive')
     }
     if (windowsGuest && !form.dosExecutable?.trim() && (!Object.keys(form.roms ?? {}).length || ROM_LANGS.some((l) => form.roms?.[l]?.trim() && !cleanedDosEntries[l]))) {
       return setError('共享 Windows 系统模式需要默认自启动 EXE，或为每个已绑定语言填写启动文件')
@@ -440,6 +526,8 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
       dosExecutables: form.platform === 'dos' ? cleanedDosEntries : {},
       // 清空最后一个语言命令时也要显式送空对象，服务端才能删掉旧命令。
       dosStartupCommands: form.platform === 'dos' ? cleanedDosStartupCommands : {},
+      // 每个语言槽绑定自己的流式盘；空对象同样要送出，才能明确清掉最后一条旧绑定。
+      dosSockdrives: form.platform === 'dos' ? cleanedDosSockdrives : {},
       tags: tags.length ? tags : undefined,
       /**
        * rating / ratingCount / plays 都不在表单里填，编辑时原样带回、新建时是 0。
@@ -473,7 +561,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
       dosWindowsVersion: windowsGuest ? form.dosWindowsVersion ?? '9x' : undefined,
       dosLaunchDelay: windowsGuest ? Math.max(5, Math.min(120, Math.round(Number(form.dosLaunchDelay) || 24))) : undefined,
       // 整包 Windows 客体仍不可存；Sockdrive 只固化改过的扇区，因此可以使用同一套存档说明。
-      dosSaveHint: form.platform === 'dos' && (!windowsGuest || Boolean(dosSockdrive)) ? form.dosSaveHint?.trim() || undefined : undefined,
+      dosSaveHint: form.platform === 'dos' && (!windowsGuest || Boolean(dosSockdrive) || Object.keys(cleanedDosSockdrives).length > 0) ? form.dosSaveHint?.trim() || undefined : undefined,
       // 街机改版包专用；换成别的平台时要清掉，否则改完平台还留着一份没人读的 dat
       arcadeRomData: form.platform === 'arcade' ? form.arcadeRomData?.trim() || undefined : undefined,
       // 非街机平台一律不带这个字段：留着的话换平台后旧的 BIOS 名会跟着走，
@@ -499,7 +587,8 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
   }
 
   return (
-    <form onSubmit={submit} className="space-y-4">
+    <form onSubmit={submit} className="space-y-4" aria-busy={submitting}>
+      <fieldset disabled={submitting} className="contents">
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="英文标题 *">
           <input className={inputClass} value={form.title} onChange={(e) => set('title', e.target.value)} placeholder="Super Mario Bros." required />
@@ -606,7 +695,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
                   onChange={(value) => set('dosSystem', value || undefined)}
                   allowStorage={!personalLibrary}
                 />
-                <Field label="流式游戏盘目录（可选）" className="col-span-2">
+                <Field label="全语言共用流式盘（旧数据兼容，可选）" className="col-span-2">
                   <input
                     className={cx(inputClass, 'font-mono')}
                     value={form.dosSockdrive ?? ''}
@@ -615,19 +704,22 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
                     disabled={!form.dosSystem?.trim()}
                   />
                   <p className="mt-1 text-[11px] text-dim">
-                    填官方 <code>sockify</code> 产物中直接含 <code>sockdrive.metaj</code> 的目录；玩家只按需读取用到的磁盘块。
-                    路径请带版本且不要原地覆盖。原 ROM 会继续保留作回退，但启用后不会下载；附加文件需先写入原始 ZIP 再生成分块。
+                    单语言游戏或所有语言确实共用同一块磁盘时才填这里。多语言游戏请在下方每个 ROM
+                    语言槽中分别上传，播放器会跟随实际命中的语言选择流式盘。路径必须带版本，禁止原地覆盖。
                   </p>
+                  {form.dosSockdrive?.trim() && Object.keys(form.roms ?? {}).length > 1 && (
+                    <p className="mt-2 rounded-lg border border-live/40 bg-live/10 px-3 py-2 text-xs text-live">
+                      ⚠️ 当前有多个语言 ROM，却配置了全局流式盘。除非这些语言本来就在同一块游戏盘内，
+                      否则请清空这里，并在对应语言槽分别生成，避免玩家选中文却挂载英文内容。
+                    </p>
+                  )}
+                  {form.dosSystem?.trim() && !hasAnySockdrive && (
+                    <p className="mt-2 rounded-lg border border-live/40 bg-live/10 px-3 py-2 text-xs text-live">
+                      ⚠️ 当前是整包兼容模式：玩家冷启动必须完整下载并重打游戏 ZIP，而且 Windows
+                      客体里的战役、玩家档案和设置不会持久化。经营、战略或中大型游戏上线前应转换并绑定 Sockdrive。
+                    </p>
+                  )}
                 </Field>
-                <SockdriveAutoField
-                  slug={initial?.slug ?? ''}
-                  executable={form.dosExecutable ?? ''}
-                  value={form.dosSockdrive ?? ''}
-                  hasSystem={Boolean(form.dosSystem?.trim())}
-                  hasExtras={Boolean(form.dosExtras?.length)}
-                  allowStorage={!personalLibrary}
-                  onChange={(value) => set('dosSockdrive', value || undefined)}
-                />
                 <Field label="Windows 版本">
                   <select
                     className={inputClass}
@@ -659,7 +751,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
                     value={form.dosLaunchDelay ?? 24}
                     onChange={(e) => set('dosLaunchDelay', Math.max(5, Math.min(120, Number(e.target.value) || 24)))}
                   />
-                  <p className="mt-1 text-[11px] text-dim">检测到 Windows 图形界面后再等待这么久；慢设备可适当调大。</p>
+                  <p className="mt-1 text-[11px] text-dim">这是桌面识别的最长等待上限；桌面稳定后会提前启动，慢设备可适当调大。</p>
                 </Field>
               </>
             ) : (
@@ -735,7 +827,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
               allowStorage={!personalLibrary}
             />
             {/* 整包 qcow2 不可保存；Sockdrive 只持久化改过的扇区，可以安全接回存档入口。 */}
-            {(!(form.dosBackend === 'dosboxX' && form.dosSystem?.trim()) || Boolean(form.dosSockdrive?.trim())) && (
+            {(!windowsGuestForm || hasAnySockdrive) && (
               <Field label="存档提示" className="col-span-2 sm:col-span-4">
                 <input
                   className={inputClass}
@@ -943,7 +1035,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
           <div key={lang} className="space-y-2">
             {form.platform === 'dos' && (
               <>
-                <Field label={`${ROM_LANG_LABEL[lang]} 启动文件（${form.dosSockdrive?.trim() ? '流式游戏盘内' : 'ZIP 内'}）`}>
+                <Field label={`${ROM_LANG_LABEL[lang]} 启动文件（${form.dosSockdrives?.[lang]?.trim() || form.dosSockdrive?.trim() ? '流式游戏盘内' : 'ZIP 内'}）`}>
                   <input
                     className={cx(inputClass, 'font-mono')}
                     value={form.dosExecutables?.[lang] ?? ''}
@@ -992,6 +1084,13 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
               platform={form.platform}
               slug={slugify(form.slug || form.title)}
               persistedSlug={initial?.slug}
+              autoSockdrive={sockdriveConfigSaved(lang) && initial?.slug ? {
+                gameSlug: initial.slug,
+                executable: form.dosExecutables?.[lang] ?? form.dosExecutable ?? '',
+                value: form.dosSockdrives?.[lang] ?? '',
+                hasExtras: Boolean(form.dosExtras?.length),
+                onChange: (value) => setDosSockdriveLang(lang, value),
+              } : undefined}
               onChange={(key) => setRomLang(lang, key)}
               onBackupChange={(key) => setRomBackupLang(lang, key)}
               allBoundKeys={allBoundKeys}
@@ -1001,6 +1100,21 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
               onBiosFound={(name) => setForm((f) => (f.arcadeBios?.trim() ? f : { ...f, arcadeBios: name }))}
               allowStorage={!personalLibrary}
             />
+            {windowsGuestForm && form.roms?.[lang]?.trim() && (
+              <SockdriveAutoField
+                slug={initial?.slug ?? ''}
+                lang={lang}
+                romKey={form.roms[lang]!}
+                executable={form.dosExecutables?.[lang] ?? form.dosExecutable ?? ''}
+                value={form.dosSockdrives?.[lang] ?? ''}
+                hasSystem={Boolean(form.dosSystem?.trim())}
+                hasExtras={Boolean(form.dosExtras?.length)}
+                configurationSaved={sockdriveConfigSaved(lang) &&
+                  (initial?.roms?.[lang] ?? '').trim() === (form.roms?.[lang] ?? '').trim()}
+                allowStorage={!personalLibrary}
+                onChange={(value) => setDosSockdriveLang(lang, value)}
+              />
+            )}
           </div>
         ))}
       </div>
@@ -1082,13 +1196,14 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, onSu
       )}
 
       <div className="flex justify-end gap-2 border-t border-line pt-4">
-        <button type="button" className={btnClass.secondary} onClick={onCancel}>
+        <button type="button" className={btnClass.secondary} onClick={requestCancel}>
           取消
         </button>
         <button type="submit" className={btnClass.primary}>
-          {isEdit ? '保存修改' : '新增游戏'}
+          {submitting ? '保存中…' : isEdit ? '保存修改' : '新增游戏'}
         </button>
       </div>
+      </fieldset>
     </form>
   )
 }
@@ -1683,18 +1798,24 @@ interface PendingBundle {
  */
 function SockdriveAutoField({
   slug,
+  lang,
+  romKey,
   executable,
   value,
   hasSystem,
   hasExtras,
+  configurationSaved,
   allowStorage,
   onChange,
 }: {
   slug: string
+  lang?: RomLang
+  romKey?: string
   executable: string
   value: string
   hasSystem: boolean
   hasExtras: boolean
+  configurationSaved: boolean
   allowStorage: boolean
   onChange: (value: string) => void
 }) {
@@ -1705,14 +1826,14 @@ function SockdriveAutoField({
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null)
   const [failedJobId, setFailedJobId] = useState('')
   const cfg = getRomConfig()
-  const canUpload = allowStorage && Boolean(cfg.api && cfg.token) && Boolean(slug) && hasSystem && !hasExtras
+  const canUpload = allowStorage && configurationSaved && Boolean(cfg.api && cfg.token) && Boolean(slug) && Boolean(!lang || romKey?.trim()) && hasSystem && !hasExtras
 
   const watchJob = async (id: string, signal?: AbortSignal) => {
     const completed = await waitForSockdriveConversion(id, (job) => {
       setProgress(45 + Math.round(job.progress * 0.55))
       setMessage({ ok: true, text: `${sockdriveConversionLabel(job)} ${job.progress}%${job.message ? `；${job.message}` : ''}` })
     }, signal)
-    rememberSockdriveConversion(slug, null)
+    rememberSockdriveConversion(slug, null, lang)
     setFailedJobId('')
     onChange(completed.targetPrefix)
     setProgress(null)
@@ -1727,7 +1848,7 @@ function SockdriveAutoField({
 
   useEffect(() => {
     if (!slug || !allowStorage) return
-    const id = rememberedSockdriveConversion(slug)
+    const id = rememberedSockdriveConversion(slug, lang)
     if (!id || restored.current === id) return
     restored.current = id
     const controller = new AbortController()
@@ -1742,7 +1863,7 @@ function SockdriveAutoField({
     return () => controller.abort()
     // onChange 是父组件每次渲染新建的闭包；同一任务只允许由 restored 启动一次。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slug, allowStorage])
+  }, [slug, lang, allowStorage])
 
   const onFile = async (file: File | undefined) => {
     if (!file) return
@@ -1754,17 +1875,24 @@ function SockdriveAutoField({
     try {
       if (!/\.zip$/i.test(file.name)) throw new Error('自动转换只接收原始 .zip 游戏包')
       if (!slug) throw new Error('请先保存游戏资料，再上传超大 ZIP')
+      if (!configurationSaved) throw new Error('运行环境、启动 EXE 或流式盘地址有未保存修改；请先保存游戏资料')
+      if (lang && !romKey?.trim()) throw new Error('请先保存这个语言的 ROM 完整回退包')
       if (!hasSystem) throw new Error('请先配置共享 Windows 系统镜像')
       if (hasExtras) throw new Error('请先把附加文件合入原始 ZIP，并清空 DOS 附加文件')
-      if (!executable.trim()) throw new Error('请先填写“默认 Windows 自启动 EXE”')
+      const cleanExecutable = executable.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+      // 转换耗时可达数小时；必须在上传 1GB 文件之前拦住最终一定无法绑定的入口。
+      // eslint-disable-next-line no-control-regex
+      if (!/^[^:<>"|?*\x00-\x1f]+\.exe$/i.test(cleanExecutable) || cleanExecutable.length > 255 || cleanExecutable.split('/').some((part) => !part || part === '.' || part === '..')) {
+        throw new Error('请先填写当前语言游戏盘内安全的 .EXE 相对路径（或上方默认 EXE）')
+      }
       const capability = await sockdriveConversionCapability()
       if (!capability.available) throw new Error(capability.reason || '服务器暂时不能制作 Sockdrive')
       if (file.size > capability.maxSourceBytes) throw new Error(`ZIP 超过后台上限 ${human(capability.maxSourceBytes)}`)
       const version = nextSockdriveVersion()
-      const prefix = `sockdrives/${slug}-${version}`
+      const prefix = `sockdrives/${slug}${lang ? `-${lang.toLowerCase()}` : ''}-${version}`
       if (!window.confirm(
         `${file.name}（${human(file.size)}）\n\n` +
-        `上传后服务器会自动制作、校验并发布到 ${prefix}，关闭页面也会继续。开始吗？`,
+        `${lang ? `${ROM_LANG_LABEL[lang]}：` : ''}上传后服务器会自动制作、校验并发布到 ${prefix}，关闭页面也会继续。开始吗？`,
       )) return
 
       stagingKey = sockdriveStagingKey()
@@ -1781,14 +1909,16 @@ function SockdriveAutoField({
         sourceKey: stagingKey,
         sourceSize: file.size,
         gameSlug: slug,
-        executable: executable.trim(),
+        ...(lang ? { lang } : {}),
+        ...(lang ? { targetRomKey: romKey!.trim(), expectedRomKey: romKey!.trim() } : {}),
+        executable: cleanExecutable,
         version,
         expectedSockdrive: value.trim().replace(/\/+$/, ''),
         encoding: 'br',
       })
       taskCreated = true
       createdJobId = job.id
-      rememberSockdriveConversion(slug, job.id)
+      rememberSockdriveConversion(slug, job.id, lang)
       await watchJob(job.id)
     } catch (error) {
       setProgress(null)
@@ -1796,7 +1926,7 @@ function SockdriveAutoField({
       setMessage({ ok: false, text: error instanceof Error ? error.message : 'Sockdrive 上传或转换失败' })
       if (createdJobId) {
         setFailedJobId(createdJobId)
-        rememberSockdriveConversion(slug, createdJobId)
+        rememberSockdriveConversion(slug, createdJobId, lang)
       }
       // 任务一旦创建，源文件由服务端按成功 / 失败 24 小时规则管理；建任务前失败才由浏览器清孤儿。
       if (stagingKey && !taskCreated) await deleteRomObjects([stagingKey]).catch(() => {})
@@ -1811,7 +1941,7 @@ function SockdriveAutoField({
     setMessage({ ok: true, text: '正在重新排队…' })
     try {
       const job = await retrySockdriveConversion(failedJobId)
-      rememberSockdriveConversion(slug, job.id)
+      rememberSockdriveConversion(slug, job.id, lang)
       await watchJob(job.id)
     } catch (error) {
       setProgress(null)
@@ -1821,11 +1951,20 @@ function SockdriveAutoField({
 
   return (
     <Field
-      label="原始大 ZIP 自动转 Sockdrive"
+      label={lang ? `${ROM_LANG_LABEL[lang]}流式游戏盘` : '原始大 ZIP 自动转 Sockdrive'}
       className="col-span-2"
-      hint="适合 StarCraft 这类 1GB 以上 Windows 游戏；上传、转换、发布、校验和绑定全部自动完成"
+      hint={lang
+        ? '选择这个语言的原始 ZIP；上传、转换、发布、校验和语言槽绑定全部自动完成'
+        : '适合所有需要持久存档或缩短冷启动的 Windows 游戏；上传、转换、发布、校验和绑定全部自动完成'}
     >
       <div className="flex flex-wrap gap-2">
+        <input
+          className={cx(inputClass, 'min-w-64 flex-1 font-mono')}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={lang ? `sockdrives/${slug || 'game'}-${lang.toLowerCase()}-v1` : `sockdrives/${slug || 'game'}-v1`}
+          disabled={!hasSystem || progress !== null}
+        />
         <input ref={inputRef} type="file" accept=".zip,application/zip" className="hidden" onChange={(event) => void onFile(event.target.files?.[0])} />
         <button
           type="button"
@@ -1833,17 +1972,21 @@ function SockdriveAutoField({
           disabled={!canUpload || progress !== null}
           onClick={() => inputRef.current?.click()}
         >
-          {progress === null ? '☁️ 上传 ZIP 并自动转换' : `处理中 ${progress}%`}
+          {progress === null ? (value.trim() ? '☁️ 发布新版本' : '☁️ 生成流式盘') : `处理中 ${progress}%`}
         </button>
+        {value.trim() && progress === null && (
+          <a href={romUrlForKey(value.trim())} target="_blank" rel="noreferrer" className={btnClass.secondary}>检查</a>
+        )}
         {failedJobId && progress === null && (
           <button type="button" className={btnClass.secondary} onClick={() => void retry()}>重试后台任务</button>
         )}
       </div>
       <p className="mt-2 text-[11px] text-dim">
-        必须先保存这款游戏，并填写系统镜像和默认 EXE。大文件直接分片进私有 staging，不经过站点服务器内存；
-        服务器使用独立硬盘制作新版本目录，<code>sockdrive.metaj</code> 最后发布，成功后才原子绑定。
+        必须先保存这款游戏、当前语言 ROM 和启动 EXE。完整 ROM 继续作为同语言回退包；原始 ZIP
+        直接分片进私有 staging，不经过站点服务器内存。发布成功后只绑定当前语言，不影响其它版本。
       </p>
       {!slug && <p className="mt-1 text-xs text-live">请先保存游戏资料，再回来上传原始 ZIP。</p>}
+      {slug && !configurationSaved && <p className="mt-1 text-xs text-live">运行环境、启动 EXE 或流式盘地址有修改；请先保存，再生成流式盘。</p>}
       {hasExtras && <p className="mt-1 text-xs text-live">当前还有 DOS 附加文件；流式盘必须先把这些文件烘进原始 ZIP。</p>}
       {!allowStorage && <p className="mt-1 text-xs text-dim">个人库不能创建 R2 转换任务。</p>}
       {progress !== null && (
@@ -1871,6 +2014,7 @@ function RomField({
   platform,
   slug,
   persistedSlug,
+  autoSockdrive,
   onChange,
   onBackupChange,
   lang,
@@ -1888,6 +2032,14 @@ function RomField({
   slug: string
   /** 只有编辑已有游戏才有值；新建表单不能仅凭一个尚未保存的 slug 去改数据库里的同名游戏。 */
   persistedSlug?: string
+  /** 已保存的 Windows 游戏可用同一次文件选择同时发布完整回退包与逐语言流式盘。 */
+  autoSockdrive?: {
+    gameSlug: string
+    executable: string
+    value: string
+    hasExtras: boolean
+    onChange: (value: string) => void
+  }
   onChange: (key: string) => void
   onBackupChange: (key: string) => void
   lang?: RomLang
@@ -1936,6 +2088,7 @@ function RomField({
   const isStreamingDisc = isStreamingDiscPlatform(platform)
   /** 大光盘保持 Range 随机读取；HTML5 是目录/页面。其余新上传 ROM 统一进入 8BG。 */
   const shouldPack = !isStreamingDisc && !isHtml5
+  const oneClickSockdrive = platform === 'dos' && Boolean(lang && autoSockdrive && !autoSockdrive.hasExtras)
   /** 街机的 ROM key 保留原文件名 —— FBNeo 靠压缩包名认 romset，见 roms.ts 的 FILENAME_IS_IDENTITY */
   const isArcade = keepsOriginalFileName(platform)
   // Flash 额外收 zip：平台的 romExtensions 保持只有 .swf —— 那个列表还管着
@@ -2097,6 +2250,63 @@ function RomField({
     } catch (err) {
       console.warn('[romset] 识别失败，按原文件名走：', err)
       return null
+    }
+  }
+
+  /**
+   * 完整 8BG 回退包发布成功后，复用管理员刚选的原始 ZIP 创建逐语言 Sockdrive。
+   * 这会产生第二次上行流量，但只需选择一次文件；服务端最终用事务把完整包、EXE 与流式盘一起绑定。
+   */
+  const publishLanguageSockdrive = async (file: File, targetRomKey: string, expectedRomKey: string) => {
+    if (!autoSockdrive || !lang) return ''
+    if (autoSockdrive.hasExtras) throw new Error('还有 DOS 附加文件；请先把补丁合入原始 ZIP')
+    if (!/\.zip$/i.test(file.name)) throw new Error('流式盘只能从原始 .zip 游戏包生成')
+    const executable = autoSockdrive.executable.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+    // eslint-disable-next-line no-control-regex
+    if (!/^[^:<>"|?*\x00-\x1f]+\.exe$/i.test(executable) || executable.length > 255 || executable.split('/').some((part) => !part || part === '.' || part === '..')) {
+      throw new Error('请先填写当前语言游戏盘内安全的 .EXE 相对路径（或上方默认 EXE）')
+    }
+    const capability = await sockdriveConversionCapability()
+    if (!capability.available) throw new Error(capability.reason || '服务器暂时不能制作 Sockdrive')
+    if (file.size > capability.maxSourceBytes) throw new Error(`ZIP 超过后台上限 ${human(capability.maxSourceBytes)}`)
+
+    const version = nextSockdriveVersion()
+    const stagingKey = sockdriveStagingKey()
+    let taskCreated = false
+    try {
+      setProgress(0)
+      setStage(null)
+      setMsg({ ok: true, text: `完整回退包已上传；正在上传 ${ROM_LANG_LABEL[lang]}流式盘源文件…` })
+      await uploadRom(file, stagingKey, (pct, at) => {
+        setProgress(Math.round(pct * 0.45))
+        if (at) setStage(at)
+      })
+      setStage(null)
+      setProgress(45)
+      const job = await createSockdriveConversion({
+        sourceKey: stagingKey,
+        sourceSize: file.size,
+        gameSlug: autoSockdrive.gameSlug,
+        lang,
+        targetRomKey,
+        expectedRomKey,
+        executable,
+        version,
+        expectedSockdrive: autoSockdrive.value.trim().replace(/\/+$/, ''),
+        encoding: 'br',
+      })
+      taskCreated = true
+      rememberSockdriveConversion(autoSockdrive.gameSlug, job.id, lang)
+      const completed = await waitForSockdriveConversion(job.id, (next) => {
+        setProgress(45 + Math.round(next.progress * 0.55))
+        setMsg({ ok: true, text: `${sockdriveConversionLabel(next)} ${next.progress}%${next.message ? `；${next.message}` : ''}` })
+      })
+      rememberSockdriveConversion(autoSockdrive.gameSlug, null, lang)
+      autoSockdrive.onChange(completed.targetPrefix)
+      return `；${ROM_LANG_LABEL[lang]}流式盘已发布并${completed.bound ? '自动绑定' : '等待保存'}：${completed.targetPrefix}`
+    } catch (error) {
+      if (!taskCreated) await deleteRomObjects([stagingKey]).catch(() => {})
+      throw error
     }
   }
 
@@ -2289,14 +2499,27 @@ function RomField({
       // 第一次从明文/ZIP 迁到 8BG 时先留着旧对象。若备用栏空，就自动绑成回退地址；
       // 等线上确认新包可玩后再由管理员删，不能在第一次上传成功时就把唯一退路抹掉。
       const removed = migrationBackup ? null : await cleanupSuperseded(oldKey, result.key, allBoundKeys)
+      let streamSuffix = ''
+      let streamFailure = ''
+      if (oneClickSockdrive && !alreadyPacked) {
+        try {
+          streamSuffix = await publishLanguageSockdrive(file, result.key, oldKey)
+        } catch (error) {
+          streamFailure = error instanceof Error ? error.message : '流式盘转换没有启动'
+        }
+      } else if (oneClickSockdrive && alreadyPacked) {
+        streamFailure = '选择的是现成 8BG，缺少制作流式盘所需的原始 ZIP；完整包已正常上传'
+      }
       setMsg({
-        ok: true,
+        ok: !streamFailure,
         text:
           `已上传到 R2：${result.key}（${human(result.size)}）` +
           (needsPacking ? `；Zstd 19 + AES-256-GCM` : alreadyPacked ? '；沿用已有 8BG 容器' : '') +
           (sniffed ? `；已按识别结果命名为 ${sniffed}` : '') +
           (migrationBackup ? `；旧文件 ${oldKey} 已保留${backupValue.trim() ? '' : '为备用地址'}` : '') +
-          (removed ? `；旧文件 ${removed} 已删除` : ''),
+          (removed ? `；旧文件 ${removed} 已删除` : '') +
+          streamSuffix +
+          (streamFailure ? `；完整回退包可用，但流式盘未完成：${streamFailure}` : ''),
       })
     } catch (err) {
       setMsg({ ok: false, text: err instanceof Error ? err.message : '上传失败' })
@@ -2344,54 +2567,18 @@ function RomField({
   }
 
   /**
-   * 删掉这一槽绑定的文件，并解绑。
-   *
-   * 两道守卫：
-   *   1. 同一份文件被这款游戏的多个语言槽共用时**只解绑不删文件** ——
-   *      否则删完，另一个语言槽就指向一个不存在的对象了
-   *   2. 完整 URL / 站内路径（/bios/… 这种构建产物）不归 R2 管，同样只解绑
-   * 多 SWF 包会整个包目录一起删，这个由 deleteRomObjects 处理。
+   * 解除这一槽的绑定，但不在单款游戏表单里删除 R2 对象。
+   * 表单不知道别的游戏是否共用同一个 key；真正删除统一去 ROM 存储页做全库引用检查。
    */
   const removeRom = async () => {
     const key = value.trim()
     if (!key) return
     setMsg(null)
-
-    if (!isDeletableKey(key)) {
-      if (!window.confirm(`${key}\n\n这不是对象存储里的文件（完整 URL 或站内路径），只能解除绑定，文件本身不会动。\n\n继续吗？`)) return
-      onChange('')
-      setMsg({ ok: true, text: '已解除绑定（文件不在 R2 上，未删除）' })
-      return
-    }
-
     const sharedBy = allBoundKeys.filter((k) => k === key).length
-    if (sharedBy > 1) {
-      if (!window.confirm(`${key}\n\n这份文件还被这款游戏的另外 ${sharedBy - 1} 个语言槽引用，删掉会让它们全部失效。\n\n只解除**当前这一槽**的绑定（文件保留）吗？`)) return
-      onChange('')
-      setMsg({ ok: true, text: '已解除绑定，文件保留（其它语言槽还在用）' })
-      return
-    }
-
-    const bundle = isBundleKey(key)
-    const ok = window.confirm(
-      bundle
-        ? `${dirOfKey(key)}/\n\n这是多 SWF 包里的文件，会把**整个包目录**从 R2 删掉，然后解除绑定。\n\n此操作不可恢复。别的游戏也在用这个包的话请选取消。`
-        : `${key}\n\n从 R2 删除这个文件并解除绑定。\n\n此操作不可恢复。别的游戏也绑了同一个文件的话请选取消。`,
-    )
-    if (!ok) return
-
-    try {
-      const { removed, failed } = await deleteRomObjects([key])
-      onChange('')
-      setMsg({
-        ok: failed.length === 0,
-        text: failed.length
-          ? `解绑成功，但 ${failed.length} 个文件删除失败：${failed.join('、')}`
-          : `已删除 ${removed.length} 个文件并解除绑定`,
-      })
-    } catch (err) {
-      setMsg({ ok: false, text: err instanceof Error ? err.message : '删除失败' })
-    }
+    const shared = sharedBy > 1 ? `当前游戏还有 ${sharedBy - 1} 个槽位在使用它；` : ''
+    if (!window.confirm(`${key}\n\n只解除当前槽位的绑定，R2 文件会保留。${shared}如确认不再被任何游戏使用，可到“ROM 存储”加载全库引用后删除。\n\n继续吗？`)) return
+    onChange('')
+    setMsg({ ok: true, text: '已解除绑定，R2 文件安全保留' })
   }
 
   return (
@@ -2406,6 +2593,8 @@ function RomField({
                 : isBundleKey(value.trim())
                 ? `这一槽绑的是多 SWF 包里的 ${value.trim().split('/').pop()}；再传一个 zip 会原地更新 ${dirOfKey(value.trim())}/`
                 : `再次上传会原地覆盖已绑定的 ${value.trim()}；想换存放位置就先改这里的 key 或清空`
+              : oneClickSockdrive
+                ? `选择一次原始 ZIP：先生成并上传同语言 8BG 完整回退包，再上传私有源文件，由服务器制作版本化 Sockdrive 并原子绑定`
               : isArcade
               ? `街机 ROM 会**自动识别 romset**：读包里每个文件的 CRC 比对 FBNeo 驱动表，认出来就按 romset 短名存（如 ${defKey('kof97.zip')}）。核心只认这个名字，认不出时保留原名并给出候选`
               : isFlash
@@ -2433,9 +2622,9 @@ function RomField({
             className={cx(btnClass.secondary, 'shrink-0 whitespace-nowrap')}
             disabled={!canUpload || progress !== null || bundleAt !== null}
             onClick={() => inputRef.current?.click()}
-            title={canUpload ? (isFlash ? '选择 .swf，或选 .zip 上传多 SWF 整包' : isHtml5 ? '上传单文件 HTML 作品' : isStreamingDisc ? '选择平台支持的单文件光盘镜像并上传到 R2' : '选择文件并上传到 R2') : '需要先配置 Worker'}
+            title={canUpload ? (oneClickSockdrive ? '选择原始 ZIP，同时发布完整回退包和当前语言流式盘' : isFlash ? '选择 .swf，或选 .zip 上传多 SWF 整包' : isHtml5 ? '上传单文件 HTML 作品' : isStreamingDisc ? '选择平台支持的单文件光盘镜像并上传到 R2' : '选择文件并上传到 R2') : '需要先配置 Worker'}
           >
-            {progress === null ? (isFlash ? '☁️ 上传 SWF / ZIP' : isHtml5 ? '☁️ 上传 HTML' : '☁️ 上传到 R2') : `上传中 ${progress}%`}
+            {progress === null ? (oneClickSockdrive ? '☁️ 完整包 + 流式盘' : isFlash ? '☁️ 上传 SWF / ZIP' : isHtml5 ? '☁️ 上传 HTML' : '☁️ 上传到 R2') : `处理中 ${progress}%`}
           </button>
           {value && !progress && (
             <a href={romUrlForKey(value)} target="_blank" rel="noreferrer" className={cx(btnClass.secondary, 'shrink-0')} title="在新标签页打开文件地址">
@@ -2447,9 +2636,9 @@ function RomField({
               type="button"
               className={cx(btnClass.danger, 'shrink-0')}
               onClick={() => void removeRom()}
-              title={isDeletableKey(value) ? '从 R2 删除文件并解除绑定' : '解除绑定（文件不在 R2 上）'}
+              title="解除当前绑定；R2 文件会保留"
             >
-              删除
+              解绑
             </button>
           )}
         </div>
@@ -2810,30 +2999,10 @@ function MediaField({
     setMsg(null)
 
     const sharedBy = allBoundKeys.filter((bound) => bound === key).length
-    if (!isDeletableKey(key) || sharedBy > 1 || !canUpload) {
-      const reason = !isDeletableKey(key)
-        ? '这不是对象存储里的文件，只能解除绑定。'
-        : sharedBy > 1
-          ? `这个文件还被当前游戏的另外 ${sharedBy - 1} 个字段引用，只能解除当前绑定并保留文件。`
-          : '尚未配置 Worker，无法删除对象存储里的文件，只能解除绑定。'
-      if (!window.confirm(`${key}\n\n${reason}\n\n继续吗？`)) return
-      onChange('')
-      setMsg({ ok: true, text: '已解除绑定，原文件保留' })
-      return
-    }
-
-    if (!window.confirm(`${key}\n\n从 R2 删除这个${kind === 'covers' ? '封面图片' : '视频'}并解除绑定？此操作不可恢复。`)) return
-    try {
-      // 封面的缩略图（96×96）是主图的附属品，一起删，别留成孤儿
-      const { removed, failed } = await deleteRomObjects([key, coverThumbKey(key)].filter(Boolean))
-      onChange('')
-      setMsg({
-        ok: failed.length === 0,
-        text: failed.length ? '绑定已解除，但 R2 文件删除失败' : `已删除文件并解除绑定（${removed.length} 个对象）`,
-      })
-    } catch (err) {
-      setMsg({ ok: false, text: err instanceof Error ? err.message : '删除失败' })
-    }
+    const shared = sharedBy > 1 ? `当前游戏还有 ${sharedBy - 1} 个字段在使用它；` : ''
+    if (!window.confirm(`${key}\n\n只解除这个${kind === 'covers' ? '封面' : '视频'}绑定，原文件会保留。${shared}这样不会误删其它游戏共用的资源。\n\n继续吗？`)) return
+    onChange('')
+    setMsg({ ok: true, text: '已解除绑定，原文件安全保留' })
   }
 
   return (
@@ -2860,9 +3029,9 @@ function MediaField({
             type="button"
             className={cx(btnClass.danger, 'shrink-0')}
             onClick={() => void removeMedia()}
-            title={allowStorage && isDeletableKey(value) ? '从 R2 删除文件并解除绑定' : '解除绑定（原文件保留）'}
+            title="解除当前绑定；原文件会保留"
           >
-            删除
+            解绑
           </button>
         )}
       </div>

@@ -28,6 +28,7 @@ import {
   normalizeSockdriveUrl,
   readWindowsSystemConfig,
   sockdriveVersionedSaveKey,
+  windowsSockdriveExecutableCommand,
   windowsSockdriveLauncherFile,
   windowsGuestLaunchCommand,
   type WindowsGuestConfig,
@@ -65,7 +66,11 @@ import {
   lockedAbsoluteContentRect,
   lockedAbsolutePointerAtClientPosition,
 } from '../lockedAbsoluteMouse'
-import { windowsGameCompatibilityExtras } from '../windowsGameCompatibility'
+import {
+  windowsGameCompatibilityDosboxConfig,
+  windowsGameCompatibilityExtras,
+  windowsGameCompatibilityRegistryImport,
+} from '../windowsGameCompatibility'
 import {
   parseSockdrivePreload,
   parseSockdriveWarmPlan,
@@ -272,86 +277,21 @@ function hookMouseInvert(c: DosCi, inverted: () => boolean): () => void {
 }
 
 /**
- * Windows 客体仍然要用 Pointer Lock（玩家点击画面后鼠标不能从边缘跑出去），但不能把锁定
- * 后的相对位移原样送给客体。Windows 的 `dboxmpi.drv` 只消费 0～1 绝对位置；把正负位移直接
- * 喂进去会被客体钳成四角。
- *
- * 所以保留 js-dos 的点击捕获，只在 ci 边界把相对位移累积为绝对坐标。第一次点击先用落点校准，
- * Esc 释放后再次点击也会重新对齐。原生绝对坐标 DOS 走下面完整接管事件的版本。
- */
-function hookLockedAbsoluteMouse(c: DosCi, host: HTMLElement, inverted: () => boolean): () => void {
-  const rawRelative = c.sendMouseRelativeMotion
-  const rawAbsolute = c.sendMouseMotion
-  if (typeof rawRelative !== 'function' || typeof rawAbsolute !== 'function') {
-    // 极老的 js-dos 没暴露绝对坐标接口时至少保留原行为；当前自托管版本两条接口都有。
-    console.warn('[jsdos] 当前运行时缺少绝对鼠标接口，已退回相对鼠标')
-    return hookMouseInvert(c, inverted)
-  }
-
-  let pointer = { x: 0.5, y: 0.5 }
-  const pointerSurface = (preferred?: EventTarget | null) => {
-    const usable = (candidate: EventTarget | null): candidate is HTMLElement =>
-      candidate instanceof HTMLElement
-      && host.contains(candidate)
-      && (candidate.tagName === 'CANVAS' || candidate.classList.contains('emulator-mouse-overlay'))
-
-    /*
-      js-dos 8 真正接收 pointerdown / Pointer Lock 的不是 canvas，而是盖在它上面的
-      `.emulator-mouse-overlay`。此前这里只认 canvas，导致玩家第一次点击时校准被直接跳过：
-      浏览器光标从点击处消失，客体光标却仍从 50%/50% 开始，表现成“修了四角但仍然错位”。
-      preferred 先认事件实际命中的层；锁定之后再认 pointerLockElement，兼容旧版直接锁 canvas。
-    */
-    const preferredSurface = preferred ?? null
-    if (usable(preferredSurface)) return preferredSurface
-    const locked = document.pointerLockElement
-    if (usable(locked)) return locked
-    return host.querySelector<HTMLElement>('.emulator-mouse-overlay') ?? host.querySelector('canvas')
-  }
-  const surfaceRect = (surface = pointerSurface()) => {
-    const rect = surface?.getBoundingClientRect() ?? host.getBoundingClientRect()
-    return lockedAbsoluteContentRect(rect, {
-      width: c.width?.() ?? 0,
-      height: c.height?.() ?? 0,
-    })
-  }
-  const seedFromClick = (event: PointerEvent | MouseEvent) => {
-    // 锁定后 clientX/Y 不再代表真实位置；每次点击都重置会让客体光标跳回锁定点。
-    if (document.pointerLockElement) return
-    const surface = pointerSurface(event.target)
-    // 非 kiosk 的联机页还带 js-dos 侧栏。监听器挂在 host 的捕获阶段，所以只能认画布或
-    // 它的鼠标覆盖层；否则玩家点侧栏设置也会把游戏光标钳到屏幕边缘。
-    if (!surface || event.target !== surface) return
-    const rect = surfaceRect(surface)
-    pointer = lockedAbsolutePointerAtClientPosition(event.clientX, event.clientY, rect)
-    rawAbsolute.call(c, pointer.x, pointer.y)
-  }
-  const startEvent = typeof PointerEvent === 'function' ? 'pointerdown' : 'mousedown'
-  host.addEventListener(startEvent, seedFromClick as EventListener, true)
-
-  const wrapped = (x: number, y: number) => {
-    const rect = surfaceRect()
-    pointer = advanceLockedAbsolutePointer(pointer, x, y, rect, inverted())
-    rawAbsolute.call(c, pointer.x, pointer.y)
-  }
-  c.sendMouseRelativeMotion = wrapped
-
-  return () => {
-    host.removeEventListener(startEvent, seedFromClick as EventListener, true)
-    // 与相对鼠标钩子一样，只恢复自己安装的函数；重连/销毁交错时不覆盖更新的一层。
-    if (c.sendMouseRelativeMotion === wrapped) c.sendMouseRelativeMotion = rawRelative
-  }
-}
-
-/**
- * 原生 DOS 的绝对坐标游戏不能只在 ci 上“替换相对位移方法”。js-dos 的桌面 kiosk 路径会自己
- * 负责 Pointer Lock，而 Layers / 触屏路径又有另一套事件层；上游一旦调整 effect 的挂载顺序，
- * 我们替换的方法可能被旧闭包绕过，结果就是绝对坐标修复看似启用，游戏里仍只在四角跳。
+ * Windows 客体与原生 DOS 的绝对坐标游戏不能只在 ci 上“替换相对位移方法”。js-dos 的桌面
+ * kiosk 路径会自己负责 Pointer Lock，而 Layers / 触屏路径又有另一套事件层；上游一旦调整
+ * effect 的挂载顺序，我们替换的方法可能被旧闭包绕过，结果就是绝对坐标修复看似启用，
+ * 游戏里仍只在四角跳。
  *
  * 这里让适配器完整接管这类游戏的指针事件：正常浏览器仍是第一次点击立即锁定，锁定后的相对
  * 位移在本站转换成 0～1；Pointer Lock 被浏览器拒绝时则退回未锁定的绝对坐标，至少保证光标和
- * 点击可用。Windows 客体仍走上面的 ci 桥，不改它已经验证过的 DOSBox-X 集成驱动链。
+ * 点击可用。
+ *
+ * ⚠️ Windows 客体也必须走这里。Chromium WebView / 内置浏览器会拒绝上游请求的
+ * `unadjustedMovement`，随后普通 Pointer Lock 也可能报 UnknownError；上游每次点击都只重试
+ * 捕获、不向客体发鼠标键，于是《帝国时代》菜单看得见却一个按钮都点不了。本站自己的请求不带
+ * unadjustedMovement，并在拒绝后补发首次点击，既保留能锁定时的体验，也让受限 WebView 可玩。
  */
-function hookCapturedAbsoluteDosMouse(
+function hookCapturedAbsoluteMouse(
   c: DosCi,
   host: HTMLElement,
   inverted: () => boolean,
@@ -1091,7 +1031,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         普通 DOS 和 DOSBox-X 都认识这些硬件 / 性能配置。以前只把覆盖项交给 DOSBox-X，
         导致普通 DOS 后台即使填了 cycles=max、memsize=32 或 ems=false 也会被静默丢掉。
       */
-      const dosboxConfig = options.dosboxConfig
+      const dosboxConfig = windowsGameCompatibilityDosboxConfig(
+        options.gameSlug,
+        options.dosExecutable,
+        options.dosboxConfig,
+      )
 
       let primaryUrl = ''
       let guest: WindowsGuestConfig | null = null
@@ -1103,6 +1047,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         let gameLayerBytes: Uint8Array<ArrayBuffer> | null = null
         let gameExecutable = options.dosExecutable
         let narrowedToExeDir = false
+        const registryImport = windowsGameCompatibilityRegistryImport(options.gameSlug, options.dosExecutable)
         if (streamingGame) {
           /*
             目录地址可能是站内 `/sockdrives/...`；DOSBox-X 的 Sockdrive 只接受 HTTP(S)，
@@ -1111,7 +1056,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             玩家却永远读不到”的假象。
           */
           guest = buildSockdriveWindowsGuestConfig(systemConfig, sockdriveUrl, dosboxConfig)
-          initFs = [windowsSockdriveLauncherFile(gameExecutable, guest.gameDrive)]
+          initFs = [windowsSockdriveLauncherFile(gameExecutable, guest.gameDrive, registryImport)]
           /*
             致命细节：直接传 `dosboxConf + initFs` 时，js-dos 的 loadBundleFromConfig 会把
             bundleChangesUrl 固定成 null，之后 props.save() 永远返回 false。这里用一个只含
@@ -1132,7 +1077,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           )
           const gameBuf = compatibleExtras.length ? mergeExtraFiles(rom.buf, compatibleExtras) : rom.buf
           guest = buildWindowsGuestConfig(systemConfig, dosboxConfig)
-          const gameLayer = makeWindowsGameLayer(gameBuf, options.dosExecutable, guest.gameDrive)
+          const gameLayer = makeWindowsGameLayer(gameBuf, options.dosExecutable, guest.gameDrive, registryImport)
           if (!gameLayer.executable) throw new Error('Windows 游戏层没有可启动的 EXE')
           gameExecutable = gameLayer.executable
           narrowedToExeDir = gameLayer.singleDir !== false
@@ -1149,12 +1094,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           }
           gameLayerBytes = gameLayer.bytes
         }
-        guestLaunchCommand = windowsGuestLaunchCommand(
-          guest,
-          gameExecutable,
-          options.dosWindowsVersion ?? '9x',
-          narrowedToExeDir,
-        )
+        guestLaunchCommand = streamingGame && !registryImport
+          ? windowsSockdriveExecutableCommand(gameExecutable, guest.gameDrive)
+          : windowsGuestLaunchCommand(
+              guest,
+              gameExecutable,
+              options.dosWindowsVersion ?? '9x',
+              narrowedToExeDir,
+            )
         // 现在就验：以前这两处是在 ci-ready 的回调 / 定时器里才抛，没人接得住，
         // Windows 在屏幕上跑着、遮罩却盖到四分钟超时才报一句不相干的话
         assertTypeable(guestLaunchCommand)
@@ -1215,8 +1162,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
 
       const ipx = options.ipx
-      const adapterOwnsAbsoluteDosMouse = Boolean(
-        options.mouseCapture && !guest && needsLockedAbsoluteDosMouse(options.gameSlug),
+      const adapterOwnsAbsoluteMouse = Boolean(
+        options.mouseCapture && (guest || needsLockedAbsoluteDosMouse(options.gameSlug)),
       )
       props = Dos(host, {
         ...(streamingGame
@@ -1234,11 +1181,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         kiosk: !ipx?.showUi,
         autoStart: true,
         /*
-          桌面端 DOS 统一点击画面锁定。只有《主题医院》这类绝对坐标 DOS 游戏例外地把上游开关
-          关掉：捕获仍由 hookCapturedAbsoluteDosMouse 完成，但不会再让 js-dos 同时安装一套
-          相对鼠标监听器。坐标协议与“要不要捕获”因此真正解耦，而不是靠覆盖一个方法碰时序。
+          桌面端 DOS 统一点击画面锁定。Windows 客体与《主题医院》这类绝对坐标游戏把上游开关
+          关掉：捕获由 hookCapturedAbsoluteMouse 完成，避免上游在 Pointer Lock 被拒绝后反复
+          吞点击；普通相对鼠标游戏仍由 js-dos 自己处理。
         */
-        mouseCapture: Boolean(options.mouseCapture && !adapterOwnsAbsoluteDosMouse),
+        mouseCapture: Boolean(options.mouseCapture && !adapterOwnsAbsoluteMouse),
         // 0.5 = 1×。逐游戏保存，避免一款老游戏的高灵敏度把下一款也带偏。
         mouseSensitivity,
         // DOS 游戏会自己绘制软件光标。系统光标叠在上面会出现两只不同步的鼠标。
@@ -1343,19 +1290,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                 普通 DOS 一个都不会来。
               */
               if (guest) options.onProgress?.({ phase: 'starting', startup: STARTING_MILESTONE.ci })
-              // Windows 客体继续用 ci 桥；原生绝对坐标 DOS 由适配器独占事件，避免 js-dos 重复发包。
+              // Windows 客体与原生绝对坐标 DOS 都由适配器独占事件，避免 js-dos 捕获失败后吞点击。
               if (options.mouseCapture) {
                 cancelMouseHook?.()
-                cancelMouseHook = guest
-                  ? hookLockedAbsoluteMouse(ci, host, () => mouseInverted)
-                  : adapterOwnsAbsoluteDosMouse
-                    ? hookCapturedAbsoluteDosMouse(
-                        ci,
-                        host,
-                        () => mouseInverted,
-                        () => mouseSensitivity,
-                      )
-                    : hookMouseInvert(ci, () => mouseInverted)
+                cancelMouseHook = adapterOwnsAbsoluteMouse
+                  ? hookCapturedAbsoluteMouse(
+                      ci,
+                      host,
+                      () => mouseInverted,
+                      () => mouseSensitivity,
+                    )
+                  : hookMouseInvert(ci, () => mouseInverted)
               }
               // DOSBox 真的在跑、命令接口也有了，这才是「玩家可以动手」。Windows 客体另算（等自启动）
               if (!guest) markReady()

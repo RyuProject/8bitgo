@@ -156,6 +156,12 @@ interface Props {
 
 export function TouchPad({ handle, layout = 'overlay', onInput, highlight, className }: Props) {
   const t = useT()
+  /**
+   * 同屏双人 Flash 在桌面上靠两套键盘键位，手机却只有一块触控板。
+   * 以前 TouchPad 永远把事件发给 1P，导致《森林冰火人》单人在手机上能动火娃、永远动不了冰娃。
+   * 这里允许本机在两套座位间切换；远程观众仍可占 2P，两条输入最终走同一个 seat 参数。
+   */
+  const [seat, setSeat] = useState<0 | 1>(0)
   const [hidden, setHidden] = useState(() => {
     try {
       return localStorage.getItem(HIDDEN_KEY) === '1'
@@ -200,7 +206,8 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
    * 这一局用得上的按钮。适配器不给就是八个键全有 —— 主机模拟器都是这样，
    * 只有 Flash 这种「每款游戏读的键都不一样」的才会缩到几颗（见 flashKeys.ts）。
    */
-  const only = handle?.padButtons
+  const localCoop = Boolean(handle?.coopButtons?.length)
+  const only = seat === 1 && localCoop ? handle?.coopButtons : handle?.padButtons
   const has = (button: PadButton) => !only || only.includes(button)
   /** 这游戏只用方向键（森林冰火人这类）。行内那一条的排布要跟着变 */
   const dpadOnly = !has('a') && !has('b') && !has('select') && !has('start')
@@ -221,13 +228,13 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
       if (down === held.current.has(button)) return
       if (down) held.current.add(button)
       else held.current.delete(button)
-      send?.(button, down)
+      send?.(button, down, seat)
       if (down && !inputFired.current) {
         inputFired.current = true
         onInput?.()
       }
     },
-    [send, onInput],
+    [send, onInput, seat],
   )
 
   /** 换游戏、退出全屏、组件卸载：手上按着的键必须松开，否则角色会一直往一个方向跑 */
@@ -235,10 +242,18 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
     // 归属记录也要一起清，否则下次按下会因为「集合里还留着上一轮的手指」而不触发按下
     dpadPointer.current = null
     btnPointers.current.clear()
-    for (const b of [...held.current]) set(b, false)
+    // Set 迭代时删除当前项是标准允许的；不用先复制一份，快速切换 1P/2P 时少一次临时分配。
+    for (const b of held.current) set(b, false)
   }, [set])
 
   useEffect(() => releaseAll, [releaseAll])
+
+  /** 换到不支持 2P 的游戏时必须先松开旧座位；否则冰娃会一直沿最后方向走到会话销毁。 */
+  useEffect(() => {
+    if (localCoop || seat === 0) return
+    releaseAll()
+    setSeat(0)
+  }, [localCoop, releaseAll, seat])
 
   useEffect(() => {
     try {
@@ -707,6 +722,31 @@ export function TouchPad({ handle, layout = 'overlay', onInput, highlight, class
           : 'absolute left-1/2 top-2 -translate-x-1/2',
       )}
     >
+      {localCoop && (
+        <div role="group" aria-label="Local player" className="flex items-center rounded-md border border-white/15 bg-black/25 p-0.5">
+          {([0, 1] as const).map((nextSeat) => (
+            <button
+              key={nextSeat}
+              type="button"
+              aria-label={`${nextSeat + 1}P`}
+              aria-pressed={seat === nextSeat}
+              onClick={() => {
+                if (seat === nextSeat) return
+                // 一定先按旧座位的映射补 keyup，再切目标；反过来会把松开送给另一名角色。
+                releaseAll()
+                setSeat(nextSeat)
+                onInput?.()
+              }}
+              className={cx(
+                'min-h-9 rounded px-2 text-[10px] font-bold transition-colors',
+                seat === nextSeat ? 'bg-brand text-white' : 'text-white/60 hover:text-white',
+              )}
+            >
+              {nextSeat + 1}P
+            </button>
+          ))}
+        </div>
+      )}
       {remap && (
         <button
           type="button"

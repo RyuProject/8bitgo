@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import type { Game, Post } from '@/types'
+import type { Game } from '@/types'
 import type { Facets, Paged } from '@/services/pageData'
 import { api, apiEnabled } from '@/services/api'
 import {
@@ -11,11 +11,9 @@ import {
   type StartupGroup,
   type StartupStats,
 } from '@/services/store'
-import { fetchAllPosts } from '@/services/posts'
 import { platformMap, platforms } from '@/data/platforms'
 import { genreMap } from '@/data/genres'
 import { formatCount } from '@/lib/format'
-import { useAllUsers } from '@/services/auth'
 import { trackPageLoad } from '@/services/progress'
 import { BarList, Card, Stat } from './ui'
 
@@ -32,7 +30,6 @@ interface OverviewData {
   /** 按 plays 倒序的前 TOP_SIZE 款（后端列表默认就是这个排序） */
   top: Game[]
   recent: Game[]
-  posts: Post[]
   startup: StartupStats
 }
 
@@ -44,15 +41,13 @@ interface OverviewData {
  *   - 平台 / 类型的款数     → /api/games/facets（只统计上架的）
  *   - 游戏总数、Top 10      → /api/games?all=1，一次请求既拿到 total 也拿到榜单
  *   - 最近上线              → 同一个接口按 sort=newest 取一页
- *   - 文章                  → /api/posts?all=1
- *
- *   - 全库聚合（总数/上下架/已绑 ROM/累计游玩） → /api/admin/stats
+ *   - 全库聚合（游戏、ROM、游玩、文章、用户） → /api/admin/stats
  *
  * 全库聚合必须在数据库里算。v1 是把整库拉进浏览器再 reduce，
  * 上千款游戏时光为了这几个数字就要下载整个目录。
  */
 async function loadOverview(): Promise<OverviewData> {
-  const [stats, facets, top, recent, posts, startup] = await Promise.all([
+  const [stats, facets, top, recent, startup] = await Promise.all([
     fetchAdminStats(),
     api.get<Facets>('/api/games/facets'),
     // 后端列表默认按 plays 倒序，第一页就是排行榜；顺带把 total 也带回来了，
@@ -60,10 +55,9 @@ async function loadOverview(): Promise<OverviewData> {
     fetchAdminGames({ page: 1, pageSize: TOP_SIZE }),
     // fetchAdminGames 没有 sort 参数（后台列表用不到），所以「最近上线」直接走接口
     api.get<Paged<Game>>(`/api/games?all=1&sort=newest&pageSize=${RECENT_SIZE}`, true),
-    fetchAllPosts(),
     fetchStartupStats(7),
   ])
-  return { stats, facets, total: top.total, top: top.items, recent: recent.items, posts, startup }
+  return { stats, facets, total: top.total, top: top.items, recent: recent.items, startup }
 }
 
 const startupTime = (ms: number | null) => ms == null ? '—' : ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
@@ -105,7 +99,6 @@ function StartupBreakdown({ title, rows }: { title: string; rows: StartupGroup[]
 }
 
 export function AdminOverview() {
-  const users = useAllUsers()
   const [data, setData] = useState<OverviewData | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -131,7 +124,6 @@ export function AdminOverview() {
   }, [])
 
   const facets = data?.facets
-  const posts = data?.posts ?? []
   const total = data?.total ?? 0
 
   const byPlatform = (facets?.platforms ?? [])
@@ -194,11 +186,11 @@ export function AdminOverview() {
           value={stats?.games.withRom ?? '—'}
           sub={romSub}
         />
-        <Stat label="注册用户" value={users.length} sub={`${users.filter((u) => u.status === 'banned').length} 位被封禁`} />
+        <Stat label="注册用户" value={stats?.users?.total ?? '—'} sub={`${stats?.users?.banned ?? 0} 位被封禁`} />
         <Stat
           label="文章"
-          value={stats?.posts.published ?? posts.filter((p) => p.published).length}
-          sub={`${stats?.posts.draft ?? posts.filter((p) => !p.published).length} 篇草稿`}
+          value={stats?.posts.published ?? '—'}
+          sub={`${stats?.posts.draft ?? 0} 篇草稿`}
         />
       </div>
 

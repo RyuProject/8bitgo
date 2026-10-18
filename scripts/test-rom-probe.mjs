@@ -36,7 +36,7 @@ const script = (...steps) => {
   methods = []
 }
 
-const { probeRomUrl, probeRom, clearRomProbeCache, conventionalKeys, romCandidates, playbackRomCandidates, playbackRomCandidatesForSelection, romProbeExpected, dosExecutableForRom, dosStartupCommandsForRom, versionedRomUrl, romKeysOf, unbindKeyPatch, shouldTryRomCandidateAfterUncertain, nextRomCandidateKey, slugFromKey, romUrlForKey, coverThumbKey } = await import(
+const { probeRomUrl, probeRom, clearRomProbeCache, conventionalKeys, romCandidates, playbackRomCandidates, playbackRomCandidatesForSelection, romProbeExpected, dosExecutableForRom, dosSockdriveForRom, dosStartupCommandsForRom, versionedRomUrl, romKeysOf, unbindKeyPatch, shouldTryRomCandidateAfterUncertain, nextRomCandidateKey, slugFromKey, romUrlForKey, coverThumbKey } = await import(
   fileURLToPath(new URL('../src/services/roms.ts', import.meta.url))
 )
 // 红宝石封面是外链：没有 -96 缩略图时必须回原图，不能把空 key 拼成资源域名根目录。
@@ -335,6 +335,8 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
     dosExecutable: 'START.BAT',
     dosExecutables: { en: 'EN/RUN.BAT', 'zh-Hans': 'CN/RUN.BAT' },
     dosStartupCommands: { 'zh-Hans': 'imgmount d "./CD/HEROES2_fixed.cue" -t cdrom' },
+    dosSockdrive: 'sockdrives/shared-legacy-v1',
+    dosSockdrives: { en: 'sockdrives/shared-en-v2', 'zh-Hans': 'sockdrives/shared-zh-hans-v3' },
   }
   const english = romCandidates(game, 'en')[0]
   const chinese = romCandidates(game, 'zh-Hans')[0]
@@ -343,21 +345,27 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
   assert.equal(dosExecutableForRom(game, chinese), 'CN/RUN.BAT')
   assert.equal(dosStartupCommandsForRom(game, chinese), game.dosStartupCommands['zh-Hans'], '共用 ZIP 的中文槽独自挂载光盘')
   assert.equal(dosStartupCommandsForRom(game, english), undefined, '免 CD 英文槽不会继承中文挂盘命令')
+  assert.equal(dosSockdriveForRom(game, chinese), game.dosSockdrives['zh-Hans'], '中文 ROM 只挂中文流式盘')
+  assert.equal(dosSockdriveForRom(game, english), game.dosSockdrives.en, '英文 ROM 只挂英文流式盘')
+  assert.equal(dosSockdriveForRom(game, { lang: 'ja' }), undefined, '出现逐语言配置后，未迁移语言走完整包而不是误挂旧全局盘')
+  assert.equal(dosSockdriveForRom({ dosSockdrive: game.dosSockdrive }, { lang: 'ja' }), game.dosSockdrive, '完全没有逐语言配置的旧数据继续使用全局流式盘')
   assert.equal(dosExecutableForRom(game, { lang: 'ja' }), 'START.BAT', '未配置的语言使用原有默认入口')
   assert.equal(dosExecutableForRom(game, {}), 'START.BAT', '旧版通用 ROM 沿用默认入口')
   const fromApi = gameRowToApi(
     { slug: 'shared', title: 'Shared DOS', platform: 'dos', dos_executable: 'START.BAT' },
-    { roms: game.roms, dosExecutables: game.dosExecutables, dosStartupCommands: game.dosStartupCommands },
+    { roms: game.roms, dosExecutables: game.dosExecutables, dosStartupCommands: game.dosStartupCommands, dosSockdrives: game.dosSockdrives },
   )
   assert.deepEqual(fromApi.dosExecutables, game.dosExecutables, 'API 把各语言入口送回后台编辑表单')
   assert.deepEqual(fromApi.dosStartupCommands, game.dosStartupCommands, 'API 把各语言命令送回后台编辑表单')
+  assert.deepEqual(fromApi.dosSockdrives, game.dosSockdrives, 'API 把各语言流式盘送回播放器和后台')
   assert.equal(dosExecutableForRom(fromApi, chinese), 'CN/RUN.BAT')
   assert.equal(dosExecutableOf('CN\\RUN.BAT'), 'CN/RUN.BAT', '后端将 DOS 反斜杠规整为 ZIP 相对路径')
   assert.equal(dosExecutableOf('../RUN.BAT'), null, '不能把相对路径穿出 ZIP')
   assert.equal(relationsInPatch({ dosExecutables: { en: 'EN/RUN.BAT' } }).roms, true, '只更新入口时也要写 ROM 关联表')
   assert.equal(relationsInPatch({ dosStartupCommands: { 'zh-Hans': game.dosStartupCommands['zh-Hans'] } }).roms, true, '只更新挂盘命令时也要写 ROM 关联表')
   assert.equal(relationsInPatch({ romBackups: { en: 'roms/dos/shared-backup.zip' } }).roms, true, '只更新备用地址时也要写 ROM 关联表')
-  const previous = [{ lang: 'en', object_key: 'roms/dos/shared.zip', dos_executable: 'EN/RUN.BAT', dos_startup_commands: 'imgmount d "./CD/OLD.cue" -t cdrom' }]
+  assert.equal(relationsInPatch({ dosSockdrives: { en: 'sockdrives/shared-en-v2' } }).roms, true, '只更新流式盘时也要写 ROM 关联表')
+  const previous = [{ lang: 'en', object_key: 'roms/dos/shared.zip', dos_executable: 'EN/RUN.BAT', dos_startup_commands: 'imgmount d "./CD/OLD.cue" -t cdrom', dos_sockdrive: 'sockdrives/shared-en-v1' }]
   assert.equal(romRelationRows({ roms: { en: 'roms/dos/shared.zip' } }, previous, true)[0].dosExecutable, 'EN/RUN.BAT', '只改 ROM 绑定且 key 不变时保留入口')
   assert.equal(romRelationRows({ roms: { en: 'roms/dos/new.zip' } }, previous, true)[0].dosExecutable, null, '换 ZIP 后旧入口不能沿用')
   assert.equal(romRelationRows({ dosExecutables: { en: 'EN/NEW.BAT' } }, previous, true)[0].dosExecutable, 'EN/NEW.BAT', '只改入口时保留 ROM key')
@@ -366,6 +374,9 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
   assert.equal(romRelationRows({ roms: { en: 'roms/dos/shared.zip' } }, previous)[0].dosStartupCommands, previous[0].dos_startup_commands, '旧后台整体保存同一 ZIP 时保留挂盘命令')
   assert.equal(romRelationRows({ roms: { en: 'roms/dos/new.zip' } }, previous)[0].dosStartupCommands, null, '换 ZIP 后不能继承旧光盘镜像路径')
   assert.equal(romRelationRows({ dosStartupCommands: {} }, previous, true)[0].dosStartupCommands, null, '清空最后一个语言命令时可删除旧值')
+  assert.equal(romRelationRows({ roms: { en: 'roms/dos/shared.zip' } }, previous)[0].dosSockdrive, previous[0].dos_sockdrive, '相同 ROM key 保留逐语言流式盘')
+  assert.equal(romRelationRows({ roms: { en: 'roms/dos/new.zip' } }, previous)[0].dosSockdrive, null, '换 ROM 后不能继承旧语言流式盘')
+  assert.equal(romRelationRows({ dosSockdrives: {} }, previous, true)[0].dosSockdrive, null, '可明确清空最后一个逐语言流式盘')
   assert.equal(dosStartupCommandsOf('imgmount d "./CD/DISC.cue" -t cdrom\r\n'), 'imgmount d "./CD/DISC.cue" -t cdrom', '后端规整多行挂盘命令')
   assert.throws(() => dosStartupCommandsOf('[autoexec]\nmount c .'), /不能填写/, '命令不能注入 DOSBox 配置节')
   assert.throws(
