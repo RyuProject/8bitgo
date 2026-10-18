@@ -997,6 +997,66 @@ async function verifySockdriveMetadata(
   return runtimePreload
 }
 
+/**
+ * 玩家把鼠标移到“开始游戏”后就先跑热点校验与预热；正式挂载会复用这一个 Promise。
+ *
+ * 不能只调用一组普通的 fire-and-forget fetch：按钮 focus 与 click 在触屏上几乎同时发生，
+ * 浏览器不保证把两个在途跨域请求合并，结果可能是热点被下载两遍，反而让真正的挂盘更慢。
+ * URL 已被版本目录钉住，同一页面内成功结果可以安全复用到后续重试。
+ */
+const sockdrivePrewarmTasks = new Map<string, Promise<SockdriveRuntimePreload>>()
+
+function normalizedSockdrivePrewarmUrl(value: string): string {
+  return normalizeSockdriveUrl(new URL(value, window.location.href).toString())
+}
+
+export function prewarmSockdriveCache(value: string, sharesLargeDownload: boolean): void {
+  if (!value || typeof window === 'undefined') return
+  let url: string
+  try {
+    url = normalizedSockdrivePrewarmUrl(value)
+  } catch {
+    // 悬停预热不能抢走正式启动的错误提示；点击后仍会由 mount 给出具体配置错误。
+    return
+  }
+  if (sockdrivePrewarmTasks.has(url)) return
+  const controller = new AbortController()
+  let task: Promise<SockdriveRuntimePreload>
+  task = verifySockdriveMetadata(url, controller.signal, sharesLargeDownload).catch((error) => {
+    // 网络刚好抖了一下时不能把失败缓存整页；正式点击或下一次悬停应当可以重新尝试。
+    if (sockdrivePrewarmTasks.get(url) === task) sockdrivePrewarmTasks.delete(url)
+    throw error
+  })
+  sockdrivePrewarmTasks.set(url, task)
+  // 预热是投机任务，错误留给正式启动重试并展示，不能制造全局 unhandled rejection。
+  void task.catch(() => {})
+}
+
+function awaitSockdrivePrewarm<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason)
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason)
+    signal.addEventListener('abort', onAbort, { once: true })
+    void promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort))
+  })
+}
+
+async function verifySockdriveForLaunch(
+  url: string,
+  signal: AbortSignal,
+  sharesLargeDownload: boolean,
+): Promise<SockdriveRuntimePreload> {
+  const prewarmed = sockdrivePrewarmTasks.get(url)
+  if (!prewarmed) return verifySockdriveMetadata(url, signal, sharesLargeDownload)
+  try {
+    return await awaitSockdrivePrewarm(prewarmed, signal)
+  } catch (error) {
+    if (signal.aborted) throw error
+    // 悬停阶段的瞬时失败不能让点击也直接失败；正式启动用自己的失速保护再试一次。
+    return verifySockdriveMetadata(url, signal, sharesLargeDownload)
+  }
+}
+
 export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
   const streamingGame = Boolean(options.dosSockdriveUrl)
@@ -1145,7 +1205,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           : Promise.resolve([])
         : loadExtras(options.dosExtras, abort.signal))
       const sockdriveTask = settled(streamingGame
-        ? verifySockdriveMetadata(sockdriveUrl, abort.signal, Boolean(options.dosSystemUrl))
+        ? verifySockdriveForLaunch(sockdriveUrl, abort.signal, Boolean(options.dosSystemUrl))
         : Promise.resolve<SockdriveRuntimePreload>('none'))
       /*
         系统镜像走**多源兜底**（见 ../systemSource）：主源是我们自己的资源域名，

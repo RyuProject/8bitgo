@@ -8,15 +8,21 @@ import { resolveRuntime, runtimesFor, extOf } from './registry'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { isRomPackBytes, unpackRomPackBlob } from '@/services/romPack'
 import { isRomPackUrl } from '../../shared/rom-pack-format.js'
-import type { Capability, LoadPhase, Runtime, RuntimeHandle, RuntimeId, ScreenLayoutState, StageMode } from './types'
+import type { Capability, LoadPhase, LoadProgress, Runtime, RuntimeHandle, RuntimeId, ScreenLayoutState, StageMode } from './types'
 import {
   createOverallRatio,
   createSpeedMeter,
+  DEFAULT_LOAD_PROGRESS_PLAN,
+  firstLoadProgressPhase,
   liftRatio,
-  LOAD_PHASE_RANGE,
+  loadProgressDurationMs,
+  loadProgressPlan,
+  loadProgressRange,
   nextStartupMilestone,
+  nextLoadProgressPhase,
   startingSegmentMs,
   STARTING_MILESTONE_CAP,
+  type LoadProgressPlan,
 } from './loadProgress'
 import { isTyping } from './hotkeyBridge'
 import { observeFrameDocs } from './frameDocs'
@@ -44,9 +50,11 @@ import type { CloudSession, CloudState } from './adapters/cloudgame'
 import { p2pPlayable, cloudPlayable } from './paths'
 import { prewarmRuntime } from './prewarm'
 import { prewarmSystemCache } from './systemSource'
+import { prewarmSockdriveCache } from './adapters/jsdos'
 import { canRestartInPlace } from './sessionRestart'
 import { confirmAndReplayAnchorNavigation } from './leaveNavigation'
 import { AdSenseSlot } from '@/components/ads/AdSenseSlot'
+import { LoadingProgressOverlay } from './LoadingProgressOverlay'
 import { copyText } from '@/lib/clipboard'
 import { listenMediaQuery } from '@/lib/mediaQuery'
 import { sessionCountsAsPlayed } from './playedScope'
@@ -100,18 +108,7 @@ type Mode = 'local' | 'online'
 /** 联机走哪条路：p2p = 房主浏览器直推（默认）；cloud = 游戏跑在服务器上（付费） */
 type Channel = 'p2p' | 'cloud'
 
-/**
- * 拿不到真实字节数时，各阶段仍按这个时长缓慢推进到区间末尾前 1%。
- * 最后 1% 必须留给真正的 onReady，不能把“还在等”画成“已经成功”。
- */
-const LOAD_PHASE_DURATION_MS: Record<Exclude<LoadPhase, 'starting'>, number> = {
-  engine: 20_000,
-  assets: 45_000,
-  rom: 45_000,
-}
 const LOAD_PROGRESS_CEILING = 0.99
-/** 阶段的先后顺序。进度时钟只能顺着它往前走，不能倒回去 */
-const PHASE_ORDER: LoadPhase[] = ['engine', 'assets', 'rom', 'starting']
 
 /**
  * 视觉进度当前在爬哪一格。
@@ -141,8 +138,13 @@ type ProgressClock = {
  * 一个 startup 都不报，给它们切成四小格的话，每格都得先耗光自己的预算才往下走，
  * 80→99% 会从 45 秒变成 180 秒 —— 那是把这次要修的 bug 搬到别的平台上再犯一遍。
  */
-const makeProgressClock = (phase: LoadPhase, startup = 0, milestones = false): ProgressClock => {
-  const [start, end] = LOAD_PHASE_RANGE[phase]
+const makeProgressClock = (
+  plan: LoadProgressPlan,
+  phase: LoadPhase,
+  startup = 0,
+  milestones = false,
+): ProgressClock => {
+  const [start, end] = loadProgressRange(plan, phase)
   const span = end - start
   const segmented = phase === 'starting' && milestones
   return {
@@ -337,7 +339,7 @@ interface Props {
   dosBackend?: DosBackend
   /** 可复用的 Windows 系统 .jsdos；游戏 ROM 仍单独加载。 */
   dosSystemUrl?: string
-  /** 大型 Windows 游戏的静态 Sockdrive 目录；有值时不会下载整包游戏 ROM。 */
+  /** 大型 DOS / Windows 游戏的静态 Sockdrive 目录；有值时不会下载整包游戏 ROM。 */
   dosSockdriveUrl?: string
   /**
    * DOS 附加文件（资料片 / 补丁）：加载时并进游戏 ZIP，见 lib/dosExtras.ts。
@@ -783,10 +785,12 @@ export function EmulatorPlayer({
   /**
    * 加载进度：存的是**合成后**的整条进度（0~1），不是适配器报的分阶段进度。
    * 合成逻辑在 loadProgress.ts 的 createOverallRatio —— 每次加载新建一个，
-   * 它负责把 engine / assets / rom / starting 四段折进同一条 0→100，并且只进不退。
+   * 它按当前运行时的真实启动链把各段折进同一条 0→100，并且只进不退。
    */
   const [loadRatio, setLoadRatio] = useState<number | null>(null)
-  const overallRatio = useRef(createOverallRatio())
+  /** 每款运行时的瓶颈不同，不能再让 HTML5、Flash、Win95 和 PSP 共用一张比例表。 */
+  const progressPlan = useRef<LoadProgressPlan>(DEFAULT_LOAD_PROGRESS_PLAN)
+  const overallRatio = useRef(createOverallRatio(0, progressPlan.current))
   /** 供 begin() 读当前百分比 —— 它可能从过期闭包里被调用，直接读 state 会拿到旧值 */
   const loadRatioRef = useRef<number | null>(null)
   loadRatioRef.current = loadRatio
@@ -813,19 +817,38 @@ export function EmulatorPlayer({
    * 当前加载阶段的镜像（progressClock 是 ref，界面读不到它的变化）。
    * 只给遮罩上那一行「正在下载游戏…」用，由下面那个 250ms 定时器顺手刷 —— 同值 setState 会被 React 跳过。
    */
-  const [loadPhase, setLoadPhase] = useState<LoadPhase>('engine')
+  const [loadPhase, setLoadPhase] = useState<LoadPhase>(firstLoadProgressPhase(progressPlan.current))
+  const [loadDetail, setLoadDetail] = useState<LoadProgress['detail']>()
+  /** 按需读盘的 total 是镜像容量，不是必须下载量；单独记住，避免加载文案和百分比说反话。 */
+  const [loadStreaming, setLoadStreaming] = useState(false)
   /**
    * 「这一局要下多少」。
    *
    * 只有光盘平台报得出来（PS1 的 prepareRemoteDiscRom、PS2 的 Play! 适配器）——
    * 别的平台 ROM 就几 MB，说一句「需下载 3 MB」纯属噪音，所以下面还有个体积门槛。
    *
-   * bytes = 0 表示这一局不用下（命中本地缓存，或者 PS2 那种按需读盘的）。
-   * 这一条不能省：几百 MB 的盘第二次开局是瞬间的，不说一声玩家只会以为进度条坏了。
+   * cached 表示整盘已经在本地；streaming 表示只会按需读分块。这两个都不能写成“需下载整盘”，
+   * 否则几百 MB 的容量提示反而会劝退本来几秒就能开局的玩家。
    */
-  const [discSize, setDiscSize] = useState<{ bytes: number; cached: boolean } | null>(null)
+  const [discSize, setDiscSize] = useState<{
+    bytes: number
+    loaded: number
+    cached: boolean
+    streaming: boolean
+  } | null>(null)
   /** 当前视觉阶段的起点；真实回调停顿时，计时兜底从这里继续向前走。 */
-  const progressClock = useRef<ProgressClock>(makeProgressClock('engine'))
+  const progressClock = useRef<ProgressClock>(
+    makeProgressClock(progressPlan.current, firstLoadProgressPhase(progressPlan.current)),
+  )
+  /**
+   * 当前阶段有没有真实字节/比例在走。
+   * 有真实下载时不能因为“视觉预算到了”就擅自切到下一阶段，否则慢网会一边还在下 ROM，
+   * 文案却已经说“正在启动”。没有任何可测信号的 WASM 编译阶段才允许按预算兜底前进。
+   */
+  const progressSignal = useRef<{ phase: LoadPhase; measurable: boolean }>({
+    phase: firstLoadProgressPhase(progressPlan.current),
+    measurable: false,
+  })
   const [caps, setCaps] = useState<Set<Capability>>(() => new Set())
   /** 内嵌网页游戏点了自己的存档入口；用递增号保证连续两次点击都能触发面板。 */
   const [saveRequest, setSaveRequest] = useState(0)
@@ -1648,6 +1671,13 @@ export function EmulatorPlayer({
       : runtime.id === 'ppsspp' && gameSlugRef.current
         ? pspVariantSaveSlug(gameSlugRef.current, romLangRef.current, romLangCountRef.current)
         : gameSlugRef.current
+    const plan = loadProgressPlan({
+      runtime: runtime.id,
+      platform: targetPlatform,
+      windowsGuest: runtime.id === 'jsdos' && Boolean(dosSystemUrlRef.current),
+      streaming: runtime.id === 'jsdos' && Boolean(dosSockdriveUrlRef.current),
+    })
+    progressPlan.current = plan
     sessionCounter.current += 1
     setSession({ id: sessionCounter.current, game, platform: targetPlatform, runtime, saveSlug, ...extra, startupAttemptId, startedAt })
     if (!extra?.startupAttemptId && !inherited && runtime.id !== 'liveview' && startupVisitId) {
@@ -1672,13 +1702,17 @@ export function EmulatorPlayer({
     progressFloor.current = carryOver ? (loadRatioRef.current ?? 0) : 0
     // 上一局的进度必须清掉，否则新会话的遮罩会先闪一下上次的 100%。
     // 合成器也要换一个新的：它记着「已显示的最大值」，不换的话新一局会被上一局的 100% 卡住
-    overallRatio.current = createOverallRatio(progressFloor.current)
+    overallRatio.current = createOverallRatio(progressFloor.current, plan)
     // 速度表也换新的：它记着累计字节和时间窗口，留着会让新一局开头继承上一局的读数
     speedMeter.current = createSpeedMeter()
     setLoadSpeed(0)
     setDiscSize(null)
-    progressClock.current = makeProgressClock('engine', 0, startupMilestonesOn())
-    setLoadPhase('engine')
+    const firstPhase = firstLoadProgressPhase(plan)
+    progressClock.current = makeProgressClock(plan, firstPhase, 0, startupMilestonesOn())
+    progressSignal.current = { phase: firstPhase, measurable: false }
+    setLoadPhase(firstPhase)
+    setLoadDetail(undefined)
+    setLoadStreaming(false)
     if (!carryOver) setLoadRatio(null)
     setStatus('loading')
   }
@@ -1694,21 +1728,31 @@ export function EmulatorPlayer({
 
   /** 阶段只允许向前走；并行请求迟到的回调不能把计时器拨回上一段。 */
   const enterProgressPhase = (phase: LoadPhase) => {
-    if (PHASE_ORDER.indexOf(phase) <= PHASE_ORDER.indexOf(progressClock.current.phase)) return
-    progressClock.current = makeProgressClock(phase, 0, startupMilestonesOn())
+    const plan = progressPlan.current
+    const nextIndex = plan.order.indexOf(phase)
+    const currentIndex = plan.order.indexOf(progressClock.current.phase)
+    // 不在这款运行时策略里的阶段（例如纯 DOS 空的 assets）不占区域，也不能拨动时钟。
+    if (nextIndex < 0 || nextIndex <= currentIndex) return
+    progressClock.current = makeProgressClock(plan, phase, 0, startupMilestonesOn())
+    progressSignal.current = { phase, measurable: false }
   }
 
   /**
    * 适配器报来一个**确证发生过**的启动里程碑（见 loadProgress 的 STARTING_MILESTONE）。
    *
-   * 这是 80% 之后条子唯一的真实信号源。和阶段一样只进不退：迟到的早期里程碑
+   * 这是 Windows 客体进入 starting 区域后的真实信号源。和阶段一样只进不退：迟到的早期里程碑
    * （比如 ci-ready 的回调排在 desktop 后面才跑）不能把条子拽回去。
    */
   const enterStartupMilestone = (startup: number | undefined) => {
     if (startup === undefined || !Number.isFinite(startup)) return
     const clock = progressClock.current
     if (clock.phase !== 'starting' || startup <= clock.startup + 1e-6) return
-    progressClock.current = makeProgressClock('starting', Math.min(STARTING_MILESTONE_CAP, startup), true)
+    progressClock.current = makeProgressClock(
+      progressPlan.current,
+      'starting',
+      Math.min(STARTING_MILESTONE_CAP, startup),
+      true,
+    )
   }
 
   /**
@@ -1724,9 +1768,10 @@ export function EmulatorPlayer({
    *
    * 与其去每个引擎的生命周期里找「下载完了」那一刻（EmulatorJS 那边只能靠它自己那行
    * 本地化的状态文字去猜，脆得很），不如在这里定一条谁都适用的规矩：
-   * **当前阶段已经跑满了，就进下一阶段。** 两种「跑满」都算 ——
+   * **当前阶段已经跑满了，就进下一阶段。** 两种情况会推进 ——
    *   · 实际进度触到了本阶段的上界（下载真的完成了）
-   *   · 本阶段的视觉预算也耗光了（拿不到 Content-Length，进度永远到不了 1）
+   *   · 阶段完全没有可测信号，视觉预算也耗光了（例如静默的 WASM 编译）
+   * 只要还有真实字节在报，即使拿不到 Content-Length 也留在下载阶段，不能谎称已经启动。
    * 这样以后新写的适配器漏报阶段，也不会再把条子冻住。
    */
   const advanceProgressPhase = () => {
@@ -1740,19 +1785,20 @@ export function EmulatorPlayer({
       if (!clock.milestones) return
       const next = nextStartupMilestone(clock.startup)
       if (next >= 1) return
-      progressClock.current = makeProgressClock('starting', next, true)
+      progressClock.current = makeProgressClock(progressPlan.current, 'starting', next, true)
+      progressSignal.current = { phase: 'starting', measurable: false }
       return
     }
-    const i = PHASE_ORDER.indexOf(clock.phase)
-    const next = PHASE_ORDER[i + 1]
+    const next = nextLoadProgressPhase(progressPlan.current, clock.phase)
     if (!next) return
-    progressClock.current = makeProgressClock(next, 0, clock.milestones)
+    progressClock.current = makeProgressClock(progressPlan.current, next, 0, clock.milestones)
+    progressSignal.current = { phase: next, measurable: false }
   }
 
   /**
    * 有些阶段拿不到 Content-Length，甚至在 WASM 初始化期间完全没有网络回调。
-   * 这时在当前阶段的固定区间内补一条缓慢前进的视觉进度：核心与镜像走到 40%，
-   * ROM 走到 80%，最后 20% 按启动超时推进。真实进度更快就跟真实进度走。
+   * 这时在当前运行时分到的区间内补一条缓慢前进的视觉进度；真实进度更快就跟真实进度走。
+   * 区间不是全平台写死的：Flash、HTML5、光盘流式和 Windows 客体各用自己的策略。
    */
   useEffect(() => {
     if (status !== 'loading' || !session) return
@@ -1767,9 +1813,11 @@ export function EmulatorPlayer({
           现在按里程碑分段取**预计**耗时；失败仍由 jsdos 那边同一个 389 秒的
           readyFallback 兜底，两个数各管各的。
         */
-        duration = startingSegmentMs(startup, milestones, dosLaunchDelayRef.current)
+        duration = milestones
+          ? startingSegmentMs(startup, true, dosLaunchDelayRef.current)
+          : loadProgressDurationMs(progressPlan.current, phase)
       } else {
-        duration = LOAD_PHASE_DURATION_MS[phase]
+        duration = loadProgressDurationMs(progressPlan.current, phase)
       }
       const elapsed = Date.now() - startedAt
       const visualStart = Math.max(0.01, from)
@@ -1783,7 +1831,12 @@ export function EmulatorPlayer({
       setLoadPhase(phase)
       // 这个阶段的视觉预算也耗光了还没等到下一个阶段的事件 —— 自己往前走一格，
       // 别让条子停在某个整数上装死（见 advanceProgressPhase）
-      if (elapsed >= duration) advanceProgressPhase()
+      if (
+        elapsed >= duration &&
+        !(progressSignal.current.phase === phase && progressSignal.current.measurable)
+      ) {
+        advanceProgressPhase()
+      }
       /*
         速度读数也在这里刷，而不是只在收到进度事件时刷 —— 恰恰是「没有事件」的那几十秒
         最需要它衰减到 0。read() 会按当前时刻重新算窗口，下载停了就自然归零。
@@ -1941,14 +1994,33 @@ export function EmulatorPlayer({
       },
       onProgress: (next) => {
         if (!isCurrent()) return
+        setLoadDetail(next.detail)
+        if (next.streaming) setLoadStreaming(true)
         // 只认 rom 阶段的第一个带总量的帧：核心和系统镜像也走进度回调，
         // 把它们的字节数报成「本局需下载」会差出一个数量级
-        if (next.phase === 'rom' && next.total && next.total >= DISC_NOTICE_BYTES) {
-          setDiscSize((cur) => cur ?? { bytes: next.total ?? 0, cached: Boolean(next.cached) })
+        if (next.phase === 'rom') {
+          setDiscSize((cur) => {
+            const bytes = next.total ?? cur?.bytes ?? 0
+            // 有些下载器只在第一帧给 total；建档后仍要吃后续 loaded，否则“已下载”会停在起点。
+            if (bytes < DISC_NOTICE_BYTES) return cur
+            return {
+              bytes,
+              // 断点续传会把已落盘分片一起报上来；这里显示真实字节，不拿总进度百分比反推假数字。
+              loaded: Math.min(next.loaded ?? cur?.loaded ?? 0, bytes),
+              cached: next.cached ?? cur?.cached ?? false,
+              streaming: next.streaming ?? cur?.streaming ?? false,
+            }
+          })
         }
         enterProgressPhase(next.phase)
-        // 80% 之后唯一的真实信号：客体走到哪一步了（ci-ready / 桌面画完 / 命令敲完）
+        // Windows 客体进入启动区域后的真实信号：ci-ready / 桌面画完 / 命令敲完
         enterStartupMilestone(next.startup)
+        if (
+          progressClock.current.phase === next.phase &&
+          ((next.loaded !== undefined && next.loaded > 0) || next.ratio !== undefined)
+        ) {
+          progressSignal.current = { phase: next.phase, measurable: true }
+        }
         speedMeter.current.push(next.loaded)
         const actual = Math.min(LOAD_PROGRESS_CEILING, overallRatio.current(next))
         setLoadRatio((current) => Math.max(current ?? 0, actual))
@@ -1959,8 +2031,14 @@ export function EmulatorPlayer({
           reportStartup('download_complete')
         }
         // 实际进度已经把这个阶段跑满了（下载真的完成），立刻进下一阶段。
-        // EmulatorJS 就是靠这一条从 80% 走出来的 —— 它自己不报 starting
-        if (actual >= LOAD_PHASE_RANGE[progressClock.current.phase][1] - 1e-6) advanceProgressPhase()
+        // EmulatorJS 就是靠这一条从 ROM 区域走出来的 —— 它自己不报 starting
+        const phaseEnd = liftRatio(
+          progressFloor.current,
+          loadProgressRange(progressPlan.current, progressClock.current.phase)[1],
+        )
+        if (actual >= phaseEnd - 1e-6) {
+          advanceProgressPhase()
+        }
       },
       onReady: () => {
         if (!isCurrent()) return
@@ -2668,13 +2746,19 @@ export function EmulatorPlayer({
       // begin() 里那两行同样要做：不清的话遮罩会用上一局的阶段和起始时间算进度，
       // 第一拍就把条子顶到那个阶段的天花板（79% / 99%）再慢慢爬，看着像卡住
       progressFloor.current = 0
-      overallRatio.current = createOverallRatio()
+      const plan = loadProgressPlan({ runtime: 'liveview', platform: platform.id })
+      progressPlan.current = plan
+      overallRatio.current = createOverallRatio(0, plan)
       // 速度表也换新的：它记着累计字节和时间窗口，留着会让新一局开头继承上一局的读数
       speedMeter.current = createSpeedMeter()
       setLoadSpeed(0)
       setDiscSize(null)
-      progressClock.current = makeProgressClock('engine')
-      setLoadPhase('engine')
+      const firstPhase = firstLoadProgressPhase(plan)
+      progressClock.current = makeProgressClock(plan, firstPhase)
+      progressSignal.current = { phase: firstPhase, measurable: false }
+      setLoadPhase(firstPhase)
+      setLoadDetail(undefined)
+      setLoadStreaming(false)
       setLoadRatio(null)
       sessionCounter.current += 1
       setSession({
@@ -3176,6 +3260,11 @@ export function EmulatorPlayer({
 
   // 进度条加载期间最多走到 99%，真正启动后遮罩才消失
   const ratio = loadRatio ?? 0
+  // 用细分隔线把本运行时真正存在的阶段画出来；零长度阶段不占假位置。
+  const progressBoundaries = progressPlan.current.order
+    .slice(0, -1)
+    .map((phase) => loadProgressRange(progressPlan.current, phase)[1])
+    .filter((value) => value > 0 && value < 1)
   // 速度为 0 时是空串，上面据此整格不画（见加载遮罩里的说明）
   const speedText = formatSpeed(loadSpeed)
   /**
@@ -3192,13 +3281,15 @@ export function EmulatorPlayer({
    */
   const showKeymap = !busy && !online && !touchDevice && Boolean(romUrl)
   const loadingLabel =
-    loadPhase === 'starting'
-      ? t.player.loadingStarting
-      : loadPhase === 'rom'
-        ? t.player.loadingRom
-        : loadPhase === 'assets'
-          ? t.player.loadingAssets
-          : t.player.loadingEngine
+    loadDetail === 'rom-pack'
+      ? t.player.loadingRomPack
+      : loadPhase === 'starting'
+        ? t.player.loadingStarting
+        : loadPhase === 'rom'
+          ? (loadStreaming ? t.player.loadingRomStream : t.player.loadingRom)
+          : loadPhase === 'assets'
+            ? t.player.loadingAssets
+            : t.player.loadingEngine
   /**
    * 「本局需下载 XXX」那行字。
    *
@@ -3214,8 +3305,15 @@ export function EmulatorPlayer({
   const discText = discSize
     ? discSize.cached
       ? t.runtime.discCached
-      : fmt(t.runtime.discNeedDownload, { size: formatBytes(discSize.bytes) })
+      : discSize.streaming
+        ? fmt(t.runtime.discStreamed, { size: formatBytes(discSize.bytes) })
+        : fmt(t.runtime.discDownloadProgress, {
+            total: formatBytes(discSize.bytes),
+            loaded: formatBytes(discSize.loaded),
+          })
     : ''
+  /** 大 ROM 的速度和字节数放在同一行；其它阶段仍把速度留在标题旁，避免第二行忽隐忽现。 */
+  const speedInDiscText = Boolean(speedText && discSize && !discSize.cached && !discSize.streaming)
   // 服务端的 players 不含观众，比本地 onPlayers 更准；拿不到时退回本地计数
   const roomPlayers = session?.cloud ? (myCloudRoom?.players ?? 1) : (myNetRoom?.players ?? players)
   const joinBlocked = online && ((inviteFull && !canWatch) || inviteGone || inviteChanging || inviteResolving || cloudJoinPending)
@@ -3837,12 +3935,19 @@ export function EmulatorPlayer({
                       if (!online) {
                         prewarmRuntime(pageRuntime?.id, prewarmCore, true)
                         if (pageRuntime?.id === 'jsdos' && dosSystemUrl) prewarmSystemCache(dosSystemUrl)
+                        if (pageRuntime?.id === 'jsdos' && dosSockdriveUrl) {
+                          prewarmSockdriveCache(dosSockdriveUrl, Boolean(dosSystemUrl))
+                        }
                       }
                     }}
                     onFocus={() => {
                       if (!online) {
                         prewarmRuntime(pageRuntime?.id, prewarmCore)
                         if (pageRuntime?.id === 'jsdos' && dosSystemUrl) prewarmSystemCache(dosSystemUrl)
+                        if (pageRuntime?.id === 'jsdos' && dosSockdriveUrl) {
+                          // 键盘能提前 focus；触屏 focus 与 click 同时发生，但正式挂载会复用同一 Promise。
+                          prewarmSockdriveCache(dosSockdriveUrl, Boolean(dosSystemUrl))
+                        }
                       }
                     }}
                     onClick={primaryAction}
@@ -4099,60 +4204,17 @@ export function EmulatorPlayer({
            * （包一层 iframe 里的 XHR，见 adapters/emulatorjs.ts 的 installProgressTap），
            * 照样走这根条 —— 玩家看到的是进度，而不是引擎自己那行中文字。
            *
-           * 没有真实字节数时也会在当前阶段里缓慢前进：核心与镜像 0–40%，ROM 40–80%，
-           * 启动与超时 80–99%。这样静默阶段不再像页面卡死，真正成功仍只认 onReady。
+           * 没有真实字节数时也会在当前运行时的阶段区间里缓慢前进；Flash、HTML5、光盘流式、
+           * DOS / Windows 客体各有自己的比例。这样静默阶段不再像页面卡死，真正成功仍只认 onReady。
            */
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-black px-8">
-            <div className="flex w-full max-w-xs flex-col items-center gap-3">
-              {/*
-                加载屏广告。三条原则：
-                1. 只在 status==='loading' 时挂载 —— 游戏没跑起来，不存在「挡住操作」；
-                   一旦进入 running，整个遮罩连同广告一起卸载，游玩过程零干扰。
-                2. horizontal + 关掉 full-width-responsive：auto 广告在竖屏容器里能长到两三百像素高，
-                   会把进度文案和进度条挤出屏幕；横幅式高度可控。
-                3. 放在文案**上方**而不是下方 —— 进度条和百分比必须留在原来视线位置，
-                   玩家抬头就能看到下载到哪了，不用在广告下面找。
-              */}
-              <AdSenseSlot slot="9386967599" format="horizontal" responsive={false} className="w-full" />
-              {/*
-                这一行按阶段说人话：准备模拟器 / 下载引擎资源 / 下载游戏 / 启动。
-                以前是写死的「少女祈祷中....」—— 八种语言的站点上其他七种也是这四个汉字，
-                而且玩家分不清「在下 40MB 的核心」和「WASM 编译中」，后者没有网速可看，像卡死。
-              */}
-              <p className="text-sm font-medium tracking-wide text-white/90">
-                {loadingLabel} <span className="tabular-nums text-brand-hover">{Math.round(ratio * 100)}%</span>
-                {/*
-                  网速。只在真有字节在走的时候出现 —— 下载停了（WASM 编译那几十秒）
-                  速度会衰减到 0，这一格随之消失，而不是挂着一个不再变化的旧读数骗人。
-                  tabular-nums + 固定最小宽度：数字每 250ms 跳一次，不定宽的话整行会左右抖。
-                */}
-                {speedText && (
-                  <span className="ml-2 inline-block min-w-[4.5rem] text-left tabular-nums text-[11px] text-white/45">
-                    {speedText}
-                  </span>
-                )}
-              </p>
-              {/*
-                光盘镜像才有的一行：「本局需下载 620 MB」/「已缓存，无需下载」。
-                放在百分比下面而不是并排 —— 并排会和网速那一格挤在一行，
-                窄屏上换行之后整块加载界面会跟着抖。
-              */}
-              {discText && <p className="-mt-1 text-[11px] text-white/45">{discText}</p>}
-              <div
-                role="progressbar"
-                aria-label={loadingLabel}
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={Math.round(ratio * 100)}
-                className="h-1.5 w-full overflow-hidden rounded-full bg-white/15"
-              >
-                <div
-                  className="h-full rounded-full bg-brand-hover transition-[width] duration-300 ease-out"
-                  style={{ width: `${Math.round(ratio * 100)}%` }}
-                />
-              </div>
-            </div>
-          </div>
+          <LoadingProgressOverlay
+            loadingLabel={loadingLabel}
+            ratio={ratio}
+            speedText={speedText}
+            discText={discText}
+            speedInDiscText={speedInDiscText}
+            progressBoundaries={progressBoundaries}
+          />
           )}
 
           <input

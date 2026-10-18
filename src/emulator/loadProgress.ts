@@ -11,7 +11,8 @@
  * （见 adapters/emulatorjs.ts 的 installProgressTap）—— 它自己那套文字进度 UI 我们
  * 一个字都不用碰，反正整个加载期间都被遮罩盖着。
  */
-import type { LoadPhase, LoadProgress } from './types'
+import type { PlatformId } from '@/types'
+import type { LoadPhase, LoadProgress, RuntimeId } from './types'
 import {
   downloadResumeStore,
   type DownloadResumeSnapshot,
@@ -600,26 +601,223 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
 
 /* ---------------- 合成一条 0→100 的总进度 ---------------- */
 
+export interface LoadProgressPlan {
+  /** 只用于测试与诊断；界面不把内部策略名露给玩家。 */
+  id: string
+  /** 真正发生的先后顺序。PS2 / J2ME 等运行时并不是统一的 engine → rom。 */
+  order: readonly LoadPhase[]
+  /** 每一阶段在整条 0~1 进度里的区间；不参与本策略的阶段是 [0, 0]。 */
+  ranges: Readonly<Record<LoadPhase, readonly [number, number]>>
+  /** 没有真实比例时的视觉预算；只负责让条子有反馈，不负责判定超时。 */
+  durations: Readonly<Record<LoadPhase, number>>
+}
+
+export interface LoadProgressPlanContext {
+  runtime: RuntimeId
+  platform: PlatformId
+  /** js-dos 是否带 Windows 3.x / 9x 系统盘。 */
+  windowsGuest?: boolean
+  /** 游戏盘是否是按扇区读取的静态 Sockdrive。 */
+  streaming?: boolean
+}
+
+type PhaseShare = readonly [LoadPhase, number]
+
+const DEFAULT_PHASE_DURATION_MS: Readonly<Record<LoadPhase, number>> = {
+  engine: 20_000,
+  assets: 45_000,
+  rom: 45_000,
+  starting: 45_000,
+}
+
 /**
- * 每个阶段在整条进度上的固定区间。
+ * 从“有意义的阶段 + 相对权重”生成连续区间。
  *
- * 固定区间比“按本次见到的阶段重新归一化”更重要：Windows 客体会先下载核心与共享
- * 系统镜像，再下载游戏 ROM，最后等待客体开机。如果把 starting 只留 3%，玩家会长时间
- * 卡在 90% 左右，以为浏览器死了。现在明确约定：
+ * 集中生成而不是手写四组边界，避免后续调一个比例时留下空洞、重叠或总和不是 100%。
+ * 权重会自动归一化，所以策略表里更适合写 20 / 55 / 25 这种一眼能审的整数。
+ */
+function makeLoadProgressPlan(
+  id: string,
+  shares: readonly PhaseShare[],
+  durations: Partial<Record<LoadPhase, number>> = {},
+): LoadProgressPlan {
+  const order = shares.filter(([, weight]) => weight > 0).map(([phase]) => phase)
+  const total = shares.reduce((sum, [, weight]) => sum + Math.max(0, weight), 0)
+  if (total <= 0 || new Set(order).size !== order.length) throw new Error(`无效的加载进度策略：${id}`)
+
+  const ranges: Record<LoadPhase, readonly [number, number]> = {
+    engine: [0, 0],
+    assets: [0, 0],
+    rom: [0, 0],
+    starting: [0, 0],
+  }
+  let cursor = 0
+  for (let i = 0; i < shares.length; i += 1) {
+    const [phase, rawWeight] = shares[i]
+    const weight = Math.max(0, rawWeight)
+    if (weight === 0) continue
+    const end = i === shares.length - 1 ? 1 : cursor + weight / total
+    ranges[phase] = [cursor, Math.min(1, end)]
+    cursor = end
+  }
+  // 最后一段必须精确收在 1，避免浮点累计让“阶段已完成”的判断差一个极小量。
+  const last = order[order.length - 1]
+  if (last) ranges[last] = [ranges[last][0], 1]
+
+  return {
+    id,
+    order,
+    ranges,
+    durations: { ...DEFAULT_PHASE_DURATION_MS, ...durations },
+  }
+}
+
+/** 旧的四段比例保留为默认策略，给未知/以后新增的运行时一个安全兜底。 */
+export const DEFAULT_LOAD_PROGRESS_PLAN = makeLoadProgressPlan('default', [
+  ['engine', 20],
+  ['assets', 20],
+  ['rom', 40],
+  ['starting', 20],
+])
+
+const LARGE_EMULATORJS_MEDIA = new Set<PlatformId>(['psx', 'nds', 'segaCD', 'amiga'])
+
+/**
+ * 按运行时的真实启动链分配进度区域。
+ *
+ * 这里分的是“玩家实际等待时间”，不是文件个数：
+ *   · HTML5 的全部资源都在子页面里，外层只能观察启动，因此 starting 独占整条；
+ *   · PS2 先探盘再装大 WASM，顺序就是 rom → engine → starting；
+ *   · PSP / Dolphin 先起隔离运行时，再探 Range、挂盘，所以 engine 占最大段；
+ *   · Windows 客体的系统镜像与开机远重于游戏层，不能再和红白机共用比例。
+ */
+export function loadProgressPlan(ctx: LoadProgressPlanContext): LoadProgressPlan {
+  if (ctx.runtime === 'html5' || ctx.runtime === 'cloudgame' || ctx.runtime === 'liveview') {
+    return makeLoadProgressPlan(`${ctx.runtime}-surface`, [['starting', 100]], { starting: 60_000 })
+  }
+  if (ctx.runtime === 'ruffle') {
+    return makeLoadProgressPlan('flash', [['rom', 60], ['starting', 40]], { rom: 60_000, starting: 35_000 })
+  }
+  if (ctx.runtime === 'jsnes') {
+    return makeLoadProgressPlan('jsnes', [['engine', 25], ['rom', 50], ['starting', 25]], {
+      engine: 20_000,
+      rom: 45_000,
+      starting: 25_000,
+    })
+  }
+  if (ctx.runtime === 'j2me') {
+    // 本地 JAR 要先读/上传，正式 JAR 这一段会很快越过；最慢的是后面的 JVM 冷启动。
+    return makeLoadProgressPlan('j2me', [['rom', 20], ['engine', 60], ['starting', 20]], {
+      rom: 45_000,
+      engine: 120_000,
+      starting: 30_000,
+    })
+  }
+  if (ctx.runtime === 'webretro') {
+    return makeLoadProgressPlan('webretro', [['rom', 50], ['engine', 20], ['assets', 15], ['starting', 15]], {
+      rom: 120_000,
+      engine: 45_000,
+      assets: 45_000,
+      starting: 30_000,
+    })
+  }
+  if (ctx.runtime === 'play') {
+    // Play! 先做轻量 Range 探测，再加载远大于探测结果的 WASM / pthread 运行时。
+    return makeLoadProgressPlan('ps2-stream', [['rom', 10], ['engine', 55], ['starting', 35]], {
+      rom: 20_000,
+      engine: 120_000,
+      starting: 90_000,
+    })
+  }
+  if (ctx.runtime === 'ppsspp' || ctx.runtime === 'dolphin') {
+    return makeLoadProgressPlan(`${ctx.runtime}-stream`, [['engine', 50], ['rom', 10], ['starting', 40]], {
+      engine: 120_000,
+      rom: 30_000,
+      starting: 90_000,
+    })
+  }
+  if (ctx.runtime === 'jsdos') {
+    if (ctx.windowsGuest) {
+      return ctx.streaming
+        ? makeLoadProgressPlan('windows-sockdrive', [['engine', 10], ['assets', 35], ['rom', 10], ['starting', 45]], {
+            engine: 45_000,
+            assets: 180_000,
+            rom: 30_000,
+          })
+        : makeLoadProgressPlan('windows-bundle', [['engine', 10], ['assets', 40], ['rom', 15], ['starting', 35]], {
+            engine: 45_000,
+            assets: 180_000,
+            rom: 180_000,
+          })
+    }
+    return ctx.streaming
+      ? makeLoadProgressPlan('dos-sockdrive', [['engine', 25], ['rom', 15], ['starting', 60]], {
+          engine: 45_000,
+          rom: 30_000,
+          starting: 60_000,
+        })
+      : makeLoadProgressPlan('dos-bundle', [['engine', 20], ['rom', 55], ['starting', 25]], {
+          engine: 45_000,
+          rom: 180_000,
+          starting: 45_000,
+        })
+  }
+  if (ctx.runtime === 'emulatorjs') {
+    if (ctx.platform === 'arcade') {
+      return makeLoadProgressPlan('emulatorjs-arcade', [['engine', 35], ['assets', 15], ['rom', 30], ['starting', 20]], {
+        engine: 90_000,
+        assets: 45_000,
+        rom: 90_000,
+        starting: 45_000,
+      })
+    }
+    if (LARGE_EMULATORJS_MEDIA.has(ctx.platform)) {
+      return makeLoadProgressPlan('emulatorjs-large-media', [['engine', 20], ['assets', 10], ['rom', 55], ['starting', 15]], {
+        engine: 90_000,
+        assets: 45_000,
+        rom: 180_000,
+        starting: 45_000,
+      })
+    }
+    return makeLoadProgressPlan('emulatorjs-cartridge', [['engine', 30], ['assets', 10], ['rom', 40], ['starting', 20]], {
+      engine: 60_000,
+      assets: 30_000,
+      rom: 60_000,
+      starting: 45_000,
+    })
+  }
+  return DEFAULT_LOAD_PROGRESS_PLAN
+}
+
+export const loadProgressRange = (plan: LoadProgressPlan, phase: LoadPhase): readonly [number, number] =>
+  plan.ranges[phase]
+
+export const firstLoadProgressPhase = (plan: LoadProgressPlan): LoadPhase =>
+  plan.order[0] ?? 'starting'
+
+export const nextLoadProgressPhase = (plan: LoadProgressPlan, phase: LoadPhase): LoadPhase | undefined => {
+  const index = plan.order.indexOf(phase)
+  return index >= 0 ? plan.order[index + 1] : undefined
+}
+
+export const loadProgressDurationMs = (plan: LoadProgressPlan, phase: LoadPhase): number =>
+  plan.durations[phase]
+
+/**
+ * 默认/兼容策略的固定区间。
+ *
+ * 新播放器按 loadProgressPlan() 选择运行时专用比例；这个导出仍保留给旧测试、未知运行时和
+ * 独立调用方。固定区间比“按本次见到的阶段重新归一化”可靠，因为后者会在阶段出现时重排，
+ * 让玩家看到进度倒退。默认约定是：
  *
  *   0–20%   模拟器核心
  *   20–40%  系统镜像 / 引擎素材
  *   40–80%  游戏 ROM
  *   80–100% 模拟器启动与超时等待
  *
- * 某款游戏没有其中一个阶段时，进入下一阶段会直接跨过那一小段；总进度仍然只进不退。
+ * 已知运行时不会再为空阶段预留假区域，具体比例见 loadProgressPlan()。
  */
-export const LOAD_PHASE_RANGE: Record<LoadPhase, readonly [number, number]> = {
-  engine: [0, 0.2],
-  assets: [0.2, 0.4],
-  rom: [0.4, 0.8],
-  starting: [0.8, 1],
-}
+export const LOAD_PHASE_RANGE: Record<LoadPhase, readonly [number, number]> = DEFAULT_LOAD_PROGRESS_PLAN.ranges
 
 /**
  * Windows 客体的 CI 创建会把近百 MB 的 qcow2 镜像交给 WASM 解包、建盘；这段耗时取决于
@@ -661,10 +859,10 @@ export function windowsGuestStartupBudgetMs(launchDelaySeconds = 24): number {
   return windowsLaunchDelayMs(launchDelaySeconds) + WINDOWS_LAUNCH_CHAIN_MS + WINDOWS_GUEST_INIT_GRACE_MS
 }
 
-/* ---------------- 启动阶段（80–100%）的里程碑 ---------------- */
+/* ---------------- Windows 客体启动阶段的里程碑 ---------------- */
 
 /**
- * 80% 之后客体到底走到哪一步了。
+ * 进入 starting 区域之后，客体到底走到哪一步了。
  *
  * 这一段以前是整条进度里**唯一没有任何真实信号**的部分：适配器进了 starting 就再也
  * 不吭声，条子全靠一个计时器瞎爬。而它恰恰是 Windows 客体耗时最长的一段
@@ -674,19 +872,20 @@ export function windowsGuestStartupBudgetMs(launchDelaySeconds = 24): number {
  *   desktop 客体画面稳下来了 = Windows 桌面画完了（见 windowsLaunch 的 desktopSettled）
  *   launched 启动命令已经敲完回车
  *
- * 值是「在 starting 这 20% 里的位置」，映射到整条进度就是 0.8 + 0.2 × 它。
+ * 值是「在当前策略 starting 区域里的相对位置」。Windows 完整包与 Sockdrive 的启动区间
+ * 不同，绝不能再把这里写死成某个整条百分比。
  */
 export const STARTING_MILESTONE = Object.freeze({
-  /** → 整条进度 86% */
+  /** DOSBox-X 的命令接口已经建立。 */
   ci: 0.3,
-  /** → 整条进度 91% */
+  /** Windows 桌面已经稳定画出。 */
   desktop: 0.55,
-  /** → 整条进度 97% */
+  /** 游戏启动命令已经输入并回车。 */
   launched: 0.85,
 })
 
 /**
- * 里程碑能把条子推到的最高处（→ 整条进度 98%）。
+ * 里程碑能把条子推到 starting 区域的最高相对位置。
  *
  * 最后那一格永远留给 onReady：适配器说「命令敲完了」不等于玩家能动手，
  * 画到 100% 再倒回去是这套进度里最不能犯的错。
@@ -762,16 +961,16 @@ export const liftRatio = (floor: number, v: number): number => floor + (1 - floo
  *   1. **只进不退**：记住已经显示过的最大值，任何回退都被吃掉
  *      （引擎乱序报数、或者某个阶段迟到，都不会让条子往回缩）
  *   2. **启动阶段不吃 ratio**：适配器报 starting=1 通常只表示“资源准备完了”，
- *      不表示模拟器已经可玩。80% 之后交给播放器的超时计时缓慢推进，onReady 才算成功。
+ *      不表示模拟器已经可玩。starting 区域交给播放器的视觉计时缓慢推进，onReady 才算成功。
  *   3. **从 floor 起算**：重试/换引擎时接着上一轮的百分比往前爬（见 liftRatio）
  *
  * @param floor 这一轮的起点。0 = 全新的一局；>0 = 接着上一轮已经显示的百分比
  */
-export function createOverallRatio(floor = 0): (p: LoadProgress) => number {
+export function createOverallRatio(floor = 0, plan: LoadProgressPlan = DEFAULT_LOAD_PROGRESS_PLAN): (p: LoadProgress) => number {
   const base = Math.min(0.99, Math.max(0, floor))
   let shown = base
   return (p) => {
-    const [start, end] = LOAD_PHASE_RANGE[p.phase]
+    const [start, end] = loadProgressRange(plan, p.phase)
     const span = end - start
 
     /*

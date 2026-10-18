@@ -967,6 +967,8 @@ const zhHant: Translation = {
     loadingEngine: '少女祈禱中 · 正在準備模擬器…',
     loadingAssets: '少女祈禱中 · 正在下載引擎資源…',
     loadingRom: '少女祈禱中 · 正在下載遊戲…',
+    loadingRomStream: '少女祈禱中 · 正在按需讀取遊戲…',
+    loadingRomPack: '少女祈禱中 · 正在驗證並解壓遊戲…',
     loadingStarting: '少女祈禱中 · 正在啟動遊戲…',
     tools: {
       more: '更多工具',
@@ -1392,6 +1394,8 @@ const zhHant: Translation = {
     dolphinExperimental: 'GameCube / Wii 是實驗性支援：需要效能較強的桌面 Chromium；Wii Remote 尚未實作，Wii 只適合支援傳統手把的少數遊戲。',
     ejsDiscDownloadFailed: '光碟映像檔下載失敗：{msg}',
     discNeedDownload: '本局需下載 {size}',
+    discDownloadProgress: '本局需下載 {total} / 已下載 {loaded}',
+    discStreamed: '映像 {size} · 按需讀取，無需下載整包',
     discCached: '已快取，無需下載',
     webretroNotConfigured: '尚未設定 webretro 執行環境（VITE_WEBRETRO_PATH），已回退到 EmulatorJS',
     webretroUnsupportedPlatform: 'webretro 未啟用「{platform}」平台',

@@ -80,6 +80,7 @@ import {
   sockdriveConversionCapability,
   sockdriveConversionLabel,
   sockdriveStagingKey,
+  type SockdriveConversionJob,
   waitForSockdriveConversion,
 } from '@/services/sockdriveConversion'
 
@@ -205,6 +206,15 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
   const [slugTouched, setSlugTouched] = useState(Boolean(initial))
   const [error, setError] = useState<string | null>(null)
   const initialSnapshot = useRef(JSON.stringify({ form: initialForm, tagsText: initialTagsText }))
+  /**
+   * Sockdrive 后台任务会直接在服务端原子绑定语言槽，父页面手里的 initial 不会因此自动刷新。
+   * 单独维护这三项已落库事实，避免成功后表单把服务端刚写好的值误报成“未保存修改”。
+  */
+  const persistedSockdriveLanguage = useRef({
+    roms: { ...initial?.roms },
+    executables: { ...initial?.dosExecutables },
+    sockdrives: { ...initial?.dosSockdrives },
+  })
   const isEdit = Boolean(initial)
   const dosboxXSockdriveForm = form.platform === 'dos' && form.dosBackend === 'dosboxX'
   const windowsGuestForm = form.platform === 'dos' && form.dosBackend === 'dosboxX' && Boolean(form.dosSystem?.trim())
@@ -221,8 +231,8 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
     initial.dosBackend === form.dosBackend &&
     (initial.dosSystem ?? '').trim() === (form.dosSystem ?? '').trim() &&
     JSON.stringify(initial.dosExtras ?? []) === JSON.stringify(form.dosExtras ?? []) &&
-    (initial.dosExecutables?.[lang] ?? initial.dosExecutable ?? '').trim() === (form.dosExecutables?.[lang] ?? form.dosExecutable ?? '').trim() &&
-    (initial.dosSockdrives?.[lang] ?? '').trim() === (form.dosSockdrives?.[lang] ?? '').trim()
+    (persistedSockdriveLanguage.current.executables[lang] ?? initial.dosExecutable ?? '').trim() === (form.dosExecutables?.[lang] ?? form.dosExecutable ?? '').trim() &&
+    (persistedSockdriveLanguage.current.sockdrives[lang] ?? '').trim() === (form.dosSockdrives?.[lang] ?? '').trim()
   )
   /** 该平台可选的核心。没配置的平台不显示这一栏 */
   const coreOptions = coreOptionsFor(form.platform)
@@ -356,6 +366,35 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
       else delete dosSockdrives[lang]
       return { ...f, dosSockdrives }
     })
+
+  /**
+   * 后台明确回报 bound=true 时，数据库已经保存了 ROM、EXE 与 Sockdrive。
+   * 只把这三项合入“已保存基线”，其它标题、简介等本地修改仍保持未保存，不能顺手洗白。
+   */
+  const acceptCompletedSockdrive = (lang: RomLang, job: SockdriveConversionJob) => {
+    const apply = (game: Game): Game => {
+      const roms = { ...game.roms }
+      if (job.targetRomKey?.trim()) roms[lang] = job.targetRomKey.trim()
+      const dosExecutables = { ...game.dosExecutables, [lang]: job.executable.trim() }
+      const dosSockdrives = { ...game.dosSockdrives, [lang]: job.targetPrefix.trim() }
+      return { ...game, roms, dosExecutables, dosSockdrives }
+    }
+    if (!job.bound) {
+      setDosSockdriveLang(lang, job.targetPrefix)
+      return
+    }
+
+    if (job.targetRomKey?.trim()) persistedSockdriveLanguage.current.roms[lang] = job.targetRomKey.trim()
+    persistedSockdriveLanguage.current.executables[lang] = job.executable.trim()
+    persistedSockdriveLanguage.current.sockdrives[lang] = job.targetPrefix.trim()
+    try {
+      const snapshot = JSON.parse(initialSnapshot.current) as { form: Game; tagsText: string }
+      initialSnapshot.current = JSON.stringify({ ...snapshot, form: apply(snapshot.form) })
+    } catch {
+      // 快照只服务离开页面提示；解析失败不能挡住已由服务端完成的绑定。
+    }
+    setForm(apply)
+  }
 
   const setRomBackupLang = (lang: RomLang, key: string) =>
     setForm((f) => {
@@ -1099,7 +1138,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
                 value: form.dosSockdrives?.[lang] ?? '',
                 windowsGuest: windowsGuestForm,
                 hasExtras: Boolean(form.dosExtras?.length),
-                onChange: (value) => setDosSockdriveLang(lang, value),
+                onCompleted: (job) => acceptCompletedSockdrive(lang, job),
               } : undefined}
               onChange={(key) => setRomLang(lang, key)}
               onBackupChange={(key) => setRomBackupLang(lang, key)}
@@ -1121,9 +1160,10 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
                 windowsGuest={windowsGuestForm}
                 hasExtras={Boolean(form.dosExtras?.length)}
                 configurationSaved={sockdriveConfigSaved(lang) &&
-                  (initial?.roms?.[lang] ?? '').trim() === (form.roms?.[lang] ?? '').trim()}
+                  (persistedSockdriveLanguage.current.roms[lang] ?? '').trim() === (form.roms?.[lang] ?? '').trim()}
                 allowStorage={!personalLibrary}
                 onChange={(value) => setDosSockdriveLang(lang, value)}
+                onCompleted={(job) => acceptCompletedSockdrive(lang, job)}
               />
             )}
           </div>
@@ -1819,6 +1859,7 @@ function SockdriveAutoField({
   configurationSaved,
   allowStorage,
   onChange,
+  onCompleted,
 }: {
   slug: string
   lang?: RomLang
@@ -1831,6 +1872,7 @@ function SockdriveAutoField({
   configurationSaved: boolean
   allowStorage: boolean
   onChange: (value: string) => void
+  onCompleted: (job: SockdriveConversionJob) => void
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const restored = useRef('')
@@ -1861,7 +1903,7 @@ function SockdriveAutoField({
     clearPendingSockdriveCreation(slug, lang)
     setFailedJobId('')
     setPendingCreation(false)
-    onChange(completed.targetPrefix)
+    onCompleted(completed)
     setProgress(null)
     setMessage({
       ok: true,
@@ -2126,7 +2168,7 @@ function RomField({
     value: string
     windowsGuest: boolean
     hasExtras: boolean
-    onChange: (value: string) => void
+    onCompleted: (job: SockdriveConversionJob) => void
   }
   onChange: (key: string) => void
   onBackupChange: (key: string) => void
@@ -2398,7 +2440,7 @@ function RomField({
         setMsg({ ok: true, text: `${sockdriveConversionLabel(next)} ${next.progress}%${next.message ? `；${next.message}` : ''}` })
       })
       rememberSockdriveConversion(autoSockdrive.gameSlug, null, lang)
-      autoSockdrive.onChange(completed.targetPrefix)
+      autoSockdrive.onCompleted(completed)
       return `；${ROM_LANG_LABEL[lang]}流式盘已发布并${completed.bound ? '自动绑定' : '等待保存'}：${completed.targetPrefix}`
     } catch (error) {
       const keepUploadedSource = sourceUploaded && !taskCreated && preserveSockdriveSourceAfterCreateError(error)

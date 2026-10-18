@@ -21,8 +21,14 @@ import { fileURLToPath } from 'node:url'
 const {
   createOverallRatio,
   createSpeedMeter,
+  DEFAULT_LOAD_PROGRESS_PLAN,
+  firstLoadProgressPhase,
   liftRatio,
+  loadProgressDurationMs,
+  loadProgressPlan,
+  loadProgressRange,
   LOAD_PHASE_RANGE,
+  nextLoadProgressPhase,
   nextStartupMilestone,
   startingSegmentMs,
   STARTING_MILESTONE,
@@ -32,13 +38,12 @@ const {
 const { formatSpeed } = await import(fileURLToPath(new URL('../src/lib/emulator.ts', import.meta.url)))
 
 /* ---- 播放器那套的最小复刻（逐字照抄 EmulatorPlayer.tsx 的公式与常量）---- */
-const PHASE_ORDER = ['engine', 'assets', 'rom', 'starting']
 const LOAD_PHASE_DURATION_MS = { engine: 20_000, assets: 45_000, rom: 45_000 }
 const CEILING = 0.99
 
 /** 逐字照抄 EmulatorPlayer.tsx 的 makeProgressClock */
-function makeClock(phase, startup = 0, milestones = false, now = 0) {
-  const [start, end] = LOAD_PHASE_RANGE[phase]
+function makeClock(plan, phase, startup = 0, milestones = false, now = 0) {
+  const [start, end] = loadProgressRange(plan, phase)
   const span = end - start
   const segmented = phase === 'starting' && milestones
   return {
@@ -51,30 +56,38 @@ function makeClock(phase, startup = 0, milestones = false, now = 0) {
   }
 }
 
-function makePlayer({ autoAdvance, floor = 0, milestones = false, launchDelay = 24 }) {
-  const overall = createOverallRatio(floor)
-  let clock = makeClock('engine', 0, milestones, 0)
+function makePlayer({ autoAdvance, floor = 0, milestones = false, launchDelay = 24, plan = DEFAULT_LOAD_PROGRESS_PLAN }) {
+  const overall = createOverallRatio(floor, plan)
+  let clock = makeClock(plan, firstLoadProgressPhase(plan), 0, milestones, 0)
+  let signal = { phase: clock.phase, measurable: false }
   let shown = floor
 
   const enterPhase = (phase, now) => {
-    if (PHASE_ORDER.indexOf(phase) <= PHASE_ORDER.indexOf(clock.phase)) return
-    clock = makeClock(phase, 0, milestones, now)
+    const nextIndex = plan.order.indexOf(phase)
+    const currentIndex = plan.order.indexOf(clock.phase)
+    if (nextIndex < 0 || nextIndex <= currentIndex) return
+    clock = makeClock(plan, phase, 0, milestones, now)
+    signal = { phase, measurable: false }
   }
   const enterMilestone = (startup, now) => {
     if (startup === undefined) return
     if (clock.phase !== 'starting' || startup <= clock.startup + 1e-6) return
-    clock = makeClock('starting', Math.min(STARTING_MILESTONE_CAP, startup), true, now)
+    clock = makeClock(plan, 'starting', Math.min(STARTING_MILESTONE_CAP, startup), true, now)
   }
   const advance = (now) => {
     if (clock.phase === 'starting') {
       if (!clock.milestones) return
       const next = nextStartupMilestone(clock.startup)
       if (next >= 1) return
-      clock = makeClock('starting', next, true, now)
+      clock = makeClock(plan, 'starting', next, true, now)
+      signal = { phase: 'starting', measurable: false }
       return
     }
-    const next = PHASE_ORDER[PHASE_ORDER.indexOf(clock.phase) + 1]
-    if (next) clock = makeClock(next, 0, clock.milestones, now)
+    const next = nextLoadProgressPhase(plan, clock.phase)
+    if (next) {
+      clock = makeClock(plan, next, 0, clock.milestones, now)
+      signal = { phase: next, measurable: false }
+    }
   }
   return {
     get shown() { return shown },
@@ -83,16 +96,24 @@ function makePlayer({ autoAdvance, floor = 0, milestones = false, launchDelay = 
     onProgress(p, now) {
       enterPhase(p.phase, now)
       enterMilestone(p.startup, now)
+      if (clock.phase === p.phase && ((p.loaded !== undefined && p.loaded > 0) || p.ratio !== undefined)) {
+        signal = { phase: p.phase, measurable: true }
+      }
       const actual = Math.min(CEILING, overall(p))
       shown = Math.max(shown, actual)
-      if (autoAdvance && actual >= LOAD_PHASE_RANGE[clock.phase][1] - 1e-6) advance(now)
+      const phaseEnd = liftRatio(floor, loadProgressRange(plan, clock.phase)[1])
+      if (autoAdvance && actual >= phaseEnd - 1e-6) advance(now)
     },
     /** 250ms 那个视觉计时器的一拍 */
     tick(now) {
       const duration =
         clock.phase === 'starting'
-          ? startingSegmentMs(clock.startup, clock.milestones, launchDelay)
-          : LOAD_PHASE_DURATION_MS[clock.phase]
+          ? clock.milestones
+            ? startingSegmentMs(clock.startup, true, launchDelay)
+            : loadProgressDurationMs(plan, clock.phase)
+          : plan === DEFAULT_LOAD_PROGRESS_PLAN
+            ? LOAD_PHASE_DURATION_MS[clock.phase]
+            : loadProgressDurationMs(plan, clock.phase)
       const elapsed = now - clock.startedAt
       const visualStart = Math.max(0.01, clock.from)
       const visualEnd = Math.max(visualStart, Math.min(CEILING, clock.to - 0.01))
@@ -100,7 +121,7 @@ function makePlayer({ autoAdvance, floor = 0, milestones = false, launchDelay = 
         shown,
         Math.min(CEILING, liftRatio(floor, visualStart + (visualEnd - visualStart) * Math.min(1, elapsed / duration))),
       )
-      if (autoAdvance && elapsed >= duration) advance(now)
+      if (autoAdvance && elapsed >= duration && !(signal.phase === clock.phase && signal.measurable)) advance(now)
     },
   }
 }
@@ -154,6 +175,58 @@ process.on('exit', () => {
   }
 })
 
+console.log('── 全平台按真实启动链分配区域 ──')
+{
+  const cases = [
+    [{ runtime: 'emulatorjs', platform: 'nes' }, 'emulatorjs-cartridge', ['engine', 'assets', 'rom', 'starting']],
+    [{ runtime: 'emulatorjs', platform: 'psx' }, 'emulatorjs-large-media', ['engine', 'assets', 'rom', 'starting']],
+    [{ runtime: 'emulatorjs', platform: 'arcade' }, 'emulatorjs-arcade', ['engine', 'assets', 'rom', 'starting']],
+    [{ runtime: 'ruffle', platform: 'flash' }, 'flash', ['rom', 'starting']],
+    [{ runtime: 'html5', platform: 'html5' }, 'html5-surface', ['starting']],
+    [{ runtime: 'jsnes', platform: 'nes' }, 'jsnes', ['engine', 'rom', 'starting']],
+    [{ runtime: 'j2me', platform: 'java' }, 'j2me', ['rom', 'engine', 'starting']],
+    [{ runtime: 'webretro', platform: 'nds' }, 'webretro', ['rom', 'engine', 'assets', 'starting']],
+    [{ runtime: 'play', platform: 'ps2' }, 'ps2-stream', ['rom', 'engine', 'starting']],
+    [{ runtime: 'ppsspp', platform: 'psp' }, 'ppsspp-stream', ['engine', 'rom', 'starting']],
+    [{ runtime: 'dolphin', platform: 'gamecube' }, 'dolphin-stream', ['engine', 'rom', 'starting']],
+    [{ runtime: 'jsdos', platform: 'dos' }, 'dos-bundle', ['engine', 'rom', 'starting']],
+    [{ runtime: 'jsdos', platform: 'dos', streaming: true }, 'dos-sockdrive', ['engine', 'rom', 'starting']],
+    [{ runtime: 'jsdos', platform: 'dos', windowsGuest: true }, 'windows-bundle', ['engine', 'assets', 'rom', 'starting']],
+    [{ runtime: 'jsdos', platform: 'dos', windowsGuest: true, streaming: true }, 'windows-sockdrive', ['engine', 'assets', 'rom', 'starting']],
+    [{ runtime: 'cloudgame', platform: 'nes' }, 'cloudgame-surface', ['starting']],
+    [{ runtime: 'liveview', platform: 'nes' }, 'liveview-surface', ['starting']],
+  ]
+
+  for (const [ctx, expectedId, expectedOrder] of cases) {
+    const plan = loadProgressPlan(ctx)
+    assert.equal(plan.id, expectedId)
+    assert.deepEqual(plan.order, expectedOrder)
+    assert.equal(firstLoadProgressPhase(plan), expectedOrder[0])
+    let cursor = 0
+    for (let i = 0; i < plan.order.length; i += 1) {
+      const phase = plan.order[i]
+      const [start, end] = loadProgressRange(plan, phase)
+      assert.ok(Math.abs(start - cursor) < 1e-9, `${plan.id}/${phase} 前一段无空洞`)
+      assert.ok(end > start, `${plan.id}/${phase} 占有效区域`)
+      assert.equal(nextLoadProgressPhase(plan, phase), plan.order[i + 1])
+      assert.ok(loadProgressDurationMs(plan, phase) > 0, `${plan.id}/${phase} 有视觉预算`)
+      cursor = end
+    }
+    assert.ok(Math.abs(cursor - 1) < 1e-9, `${plan.id} 精确覆盖 0~100%`)
+  }
+
+  const html = loadProgressPlan({ runtime: 'html5', platform: 'html5' })
+  assert.deepEqual(loadProgressRange(html, 'starting'), [0, 1], '⭐ HTML5 不再无依据地从 80% 起步')
+  const flash = loadProgressPlan({ runtime: 'ruffle', platform: 'flash' })
+  assert.deepEqual(loadProgressRange(flash, 'rom'), [0, 0.6], '⭐ Flash 的真实 SWF 下载从 0% 开始')
+  const ps2 = loadProgressPlan({ runtime: 'play', platform: 'ps2' })
+  assert.deepEqual(ps2.order, ['rom', 'engine', 'starting'], '⭐ PS2 按“探盘 → 大引擎 → 启动”顺序显示')
+  const windows = loadProgressPlan({ runtime: 'jsdos', platform: 'dos', windowsGuest: true })
+  assert.ok(loadProgressRange(windows, 'assets')[1] - loadProgressRange(windows, 'assets')[0] === 0.4, '⭐ Windows 系统镜像独占 40%')
+  const psp = loadProgressPlan({ runtime: 'ppsspp', platform: 'psp' })
+  assert.ok(loadProgressRange(psp, 'engine')[1] === 0.5, '⭐ PSP 隔离运行时与核心占 50%，不再把 Range 探测当主要工作')
+}
+
 console.log('── 复现旧行为：确认 80% 真的会冻住 ──')
 {
   const old = makePlayer({ autoAdvance: false })
@@ -176,19 +249,22 @@ console.log('\n── 新行为：跑满就自己进下一阶段 ──')
   ok(p.shown > 0.95 && p.shown <= CEILING, `一直爬到 ${(p.shown * 100).toFixed(0)}%，且不超过 99% 的天花板`)
 }
 
-console.log('\n── 拿不到 Content-Length 时也不能冻住 ──')
+console.log('\n── 拿不到 Content-Length 时不能谎报已进入启动 ──')
 {
   /*
     没有 total 时 ratio 是 undefined，createOverallRatio 走渐近映射，
-    **永远到不了阶段上界** —— 光靠「跑满了」那一条救不回来，还得靠「视觉预算耗光」那一条。
+    **永远到不了阶段上界**。旧逻辑在视觉预算耗光后会擅自跳到 starting，导致慢网下
+    游戏明明还在下载，文案却说“正在启动”。现在只要真实字节仍在报，就留在原阶段。
   */
   const p = makePlayer({ autoAdvance: true })
   p.onProgress({ phase: 'rom', loaded: 300_000 }, 0)
   const before = p.shown
   ok(p.shown < 0.8, `渐近映射到 ${(before * 100).toFixed(0)}%，够不到 80% 的上界`)
   for (let i = 1; i <= 200; i++) p.tick(i * 250)
-  ok(p.phase === 'starting', '⭐ rom 阶段的视觉预算耗光后照样进了 starting')
-  ok(p.shown > 0.8, `最终走到 ${(p.shown * 100).toFixed(0)}%，没有停在 79%`)
+  ok(p.phase === 'rom', '⭐ 有真实下载字节时，视觉预算耗光也不会谎称已经开始启动')
+  ok(p.shown < 0.8, `仍留在 ROM 区域内（${(p.shown * 100).toFixed(0)}%）`)
+  p.onProgress({ phase: 'rom', loaded: 500_000, total: 500_000, ratio: 1 }, 51_000)
+  ok(p.phase === 'starting', '下载真正完成后立即进入 starting，不会卡住')
 }
 
 console.log('\n── 只进不退 ──')
@@ -217,24 +293,25 @@ console.log('\n── 复现旧行为：Windows 客体「80% 之后一动不动�
 
 console.log('\n── 新行为：Windows 客体按里程碑推进 ──')
 {
-  const p = makePlayer({ autoAdvance: true, milestones: true })
+  const plan = loadProgressPlan({ runtime: 'jsdos', platform: 'dos', windowsGuest: true })
+  const p = makePlayer({ autoAdvance: true, milestones: true, plan })
   let t = runWindowsGuestLoad(p)
-  ok(Math.abs(p.shown - 0.8) < 1e-9, `下载完正好 ${(p.shown * 100).toFixed(0)}%`)
+  ok(Math.abs(p.shown - 0.65) < 1e-9, `按 Windows 权重，下载完正好 ${(p.shown * 100).toFixed(0)}%`)
   ok(p.phase === 'starting', '进了 starting')
 
   p.onProgress({ phase: 'starting', startup: STARTING_MILESTONE.ci }, t + 500)
-  ok(Math.round(p.shown * 100) === 86, `⭐ ci-ready（qcow2 建盘完成）→ ${Math.round(p.shown * 100)}%`)
+  ok(Math.round(p.shown * 100) === 76, `⭐ ci-ready（qcow2 建盘完成）→ ${Math.round(p.shown * 100)}%`)
 
   p.onProgress({ phase: 'starting', startup: STARTING_MILESTONE.desktop }, t + 2500)
-  ok(Math.round(p.shown * 100) === 91, `⭐ 桌面画完了 → ${Math.round(p.shown * 100)}%`)
+  ok(Math.round(p.shown * 100) === 84, `⭐ 桌面画完了 → ${Math.round(p.shown * 100)}%`)
 
   // 盯画面 + 按键链那十来秒里没有任何事件，只有视觉计时器在跑
   for (let i = 1; i <= 40; i++) p.tick(t + 2500 + i * 250)
   const crawling = p.shown
-  ok(crawling > 0.91 && crawling < 0.97, `按键链期间条子仍在爬（${(crawling * 100).toFixed(0)}%），且没越过下一个里程碑`)
+  ok(crawling > 0.84 && crawling < 0.95, `按键链期间条子仍在爬（${(crawling * 100).toFixed(0)}%），且没越过下一个里程碑`)
 
   p.onProgress({ phase: 'starting', startup: STARTING_MILESTONE.launched }, t + 12_000)
-  ok(Math.round(p.shown * 100) === 97, `⭐ 启动命令敲完 → ${Math.round(p.shown * 100)}%`)
+  ok(Math.round(p.shown * 100) === 95, `⭐ 启动命令敲完 → ${Math.round(p.shown * 100)}%`)
 
   // 最后那一格永远留给 onReady
   for (let i = 1; i <= 400; i++) p.tick(t + 12_000 + i * 250)
