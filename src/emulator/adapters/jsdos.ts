@@ -62,6 +62,7 @@ import {
   DOS_MOUSE_SENSITIVITY_DEFAULT,
   dosMouseSpeedMultiplier,
   needsLockedAbsoluteDosMouse,
+  needsRelativeWindowsGuestMouse,
   normalizeDosMouseSensitivity,
 } from '../dosMouse'
 import {
@@ -1412,8 +1413,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
 
       const ipx = options.ipx
+      const relativeWindowsMouse = Boolean(
+        guest && needsRelativeWindowsGuestMouse(options.gameSlug, options.dosExecutable),
+      )
       const adapterOwnsAbsoluteMouse = Boolean(
-        options.mouseCapture && (guest || needsLockedAbsoluteDosMouse(options.gameSlug)),
+        options.mouseCapture
+          && ((guest && !relativeWindowsMouse) || needsLockedAbsoluteDosMouse(options.gameSlug)),
       )
       props = Dos(host, {
         ...(streamingGame
@@ -1433,7 +1438,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         /*
           桌面端 DOS 统一点击画面锁定。Windows 客体与《主题医院》这类绝对坐标游戏把上游开关
           关掉：捕获由 hookCapturedAbsoluteMouse 完成，避免上游在 Pointer Lock 被拒绝后反复
-          吞点击；普通相对鼠标游戏仍由 js-dos 自己处理。
+          吞点击；普通相对鼠标游戏仍由 js-dos 自己处理。《天之痕》的 DirectInput 与绝对驱动
+          冲突，配套系统盘已换回标准鼠标，因此它故意和普通相对游戏走同一路。
         */
         mouseCapture: Boolean(options.mouseCapture && !adapterOwnsAbsoluteMouse),
         // 0.5 = 1×。逐游戏保存，避免一款老游戏的高灵敏度把下一款也带偏。

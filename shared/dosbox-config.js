@@ -50,10 +50,11 @@ const protectedKeys = new Map([
   // 这个值保证动态游戏盘不会被一个小 ZIP 扩成几百 MB；windowsGuest.ts 会强制写入。
   ['dosbox', new Set(['convert fat free space'])],
   /*
-    集成设备是 Windows 客体那条路的硬前提：共享镜像的 SYSTEM.INI 里
+    集成设备是绝大多数 Windows 客体的硬前提：共享镜像的 SYSTEM.INI 里
     `mouse.drv=dboxmpi.drv`（DOSBox-X Mouse Pointer Integration）就指着它。
     关掉之后鼠标会退回相对模式，Windows 里的指针跟手不一致 —— 而且是**静默**的，
-    没有任何报错，只有玩家觉得“这游戏鼠标很飘”。逐游戏没有任何正当理由关它。
+    没有任何报错，只有玩家觉得“这游戏鼠标很飘”。《天之痕》是已实测的 DirectInput 例外，
+    但例外烘在人工核对过的版本化系统镜像里；后台逐游戏配置仍不允许碰这个站点托管项。
   */
   ['cpu', new Set(['integration device'])],
 ])

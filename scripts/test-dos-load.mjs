@@ -31,7 +31,7 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { canRestartInPlace } from '@/emulator/sessionRestart'
-import { needsLockedAbsoluteDosMouse } from '@/emulator/dosMouse'
+import { needsLockedAbsoluteDosMouse, needsRelativeWindowsGuestMouse } from '@/emulator/dosMouse'
 import {
   advanceLockedAbsolutePointer,
   lockedAbsoluteContentRect,
@@ -211,8 +211,13 @@ check('Windows 客体与《主题医院》都由适配器独占绝对指针，�
   assert.equal(needsLockedAbsoluteDosMouse(' Theme-Hospital '), true)
   assert.equal(needsLockedAbsoluteDosMouse('doom'), false)
   assert.equal(needsLockedAbsoluteDosMouse(), false)
+  assert.equal(needsRelativeWindowsGuestMouse('xuan-yuan-sword-scar-of-sky', 'Swd3e/swd3e.exe'), true)
+  assert.equal(needsRelativeWindowsGuestMouse(' Xuan-Yuan-Sword-Scar-of-Sky ', 'SWD3E.EXE'), true)
+  assert.equal(needsRelativeWindowsGuestMouse('xuan-yuan-sword-scar-of-sky', 'launcher.exe'), false)
+  assert.equal(needsRelativeWindowsGuestMouse('starcraft', 'Swd3e.exe'), false)
   assert.match(jsdos, /adapterOwnsAbsoluteMouse\s*=\s*Boolean/)
-  assert.match(jsdos, /options\.mouseCapture\s*&&\s*\(guest\s*\|\|\s*needsLockedAbsoluteDosMouse/)
+  assert.match(jsdos, /guest\s*&&\s*needsRelativeWindowsGuestMouse\(options\.gameSlug, options\.dosExecutable\)/)
+  assert.match(jsdos, /guest\s*&&\s*!relativeWindowsMouse/)
   assert.match(jsdos, /mouseCapture:\s*Boolean\(options\.mouseCapture\s*&&\s*!adapterOwnsAbsoluteMouse\)/)
   assert.match(jsdos, /adapterOwnsAbsoluteMouse\s*\?\s*hookCapturedAbsoluteMouse/)
   assert.match(jsdos, /:\s*hookMouseInvert\(ci/)

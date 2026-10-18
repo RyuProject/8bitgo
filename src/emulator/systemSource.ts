@@ -61,8 +61,10 @@ const MIRRORS: Readonly<Record<string, readonly SystemMirror[]>> = {
   '/systems/dos/system-win311-v1.jsdos': mirrorsFor('system-win311-v1.jsdos'),
   '/systems/dos/system-win95-v1.jsdos': mirrorsFor('system-win95-v1.jsdos'),
   '/systems/dos/system-win98-v1.jsdos': mirrorsFor('system-win98-v1.jsdos'),
-  // 《天之痕》使用这份繁体 Win95；资源子域在弱网不可达时必须还能从玩家已打开的主站取同一对象。
-  '/systems/dos/Windows95_Traditional-Chinese.jsdos': sameOriginMirror('Windows95_Traditional-Chinese.jsdos'),
+  // 原繁体镜像的集成鼠标与《天之痕》DirectInput 冲突；版本化修正版必须只回落到同一对象。
+  '/systems/dos/Windows95_Traditional-Chinese-DirectInput-v1.jsdos': sameOriginMirror(
+    'Windows95_Traditional-Chinese-DirectInput-v1.jsdos',
+  ),
   /*
     ⚠️ `system-win311-vga-v1.jsdos` **故意不登记**，别手贱加上。
     它是我们自己从官方那份改出来的：SYSTEM.INI 的显示驱动从 S3 Trio64V 800x600 真彩

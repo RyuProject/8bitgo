@@ -395,6 +395,20 @@ DOSBox-X 帧缓冲是 800×600。原版 DirectDraw 把画面缩进客体桌面�
 把相对位移送给只认绝对位置的软件光标，走 `needsLockedAbsoluteDosMouse()` 那条桥修，不套
 Win95 或 Caesar 的分辨率补丁。
 
+### 2.8.6.1 《天之痕》：标题页正常不等于 DirectInput 正常
+
+《天之痕》只有点“开始游戏”后才创建 DirectInput 独占设备。原
+`Windows95_Traditional-Chinese.jsdos` 把 Win95 标准鼠标换成了 DOSBox-X 集成驱动
+（`SYSTEM.INI` 的 `dboxmpi.drv`），因此标题页和软件光标都正常，进入新局才弹 DirectInput
+错误，随后 `Swd3e` 非法操作退出。验收必须点进角色姓名界面，停在标题页不算通过。
+
+修正版是 `Windows95_Traditional-Chinese-DirectInput-v1.jsdos`：只把系统盘鼠标恢复为
+`mouse.drv` + `*vmouse, msmouse.vxd`，并在 bundle 配置里使用 `mouse_emulation=locked`、
+`integration device=false`。它是版本化新对象，不准覆盖原路径；浏览器会按 URL/ETag 缓存系统盘，
+原地覆盖会让老访客继续拿到坏镜像。播放器里的 `needsRelativeWindowsGuestMouse()` 还必须让
+这款游戏绕开 Windows 绝对坐标桥，交回 js-dos 相对鼠标链；只换镜像不换协议会变成“游戏能进，
+但光标不动”。回归：`npm run test:dos-load && npm run test:system-source`。
+
 ### 2.8.7 大型 Win95/98 游戏走静态 Sockdrive，不是视频直播
 
 `games.dos_sockdrive` 填一款游戏的**静态 Sockdrive 目录**（对象 key、站内路径或完整 URL）；

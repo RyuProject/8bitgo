@@ -111,7 +111,7 @@ function fakeFetch(routes) {
 const PRIMARY = 'https://assets.8bitgo.com/systems/dos/system-win95-v1.jsdos'
 const SAME_ORIGIN = '/system-images/system-win95-v1.jsdos'
 const OFFICIAL = 'https://br.cdn.dos.zone/js-dos/system/system-win95-v1.jsdos'
-const TRADITIONAL_WIN95 = 'Windows95_Traditional-Chinese.jsdos'
+const TRADITIONAL_WIN95 = 'Windows95_Traditional-Chinese-DirectInput-v1.jsdos'
 
 console.log('一、镜像表')
 
@@ -132,7 +132,7 @@ await check('同源代理只开放人工核对过的系统镜像', () => {
   assert.equal(systemImageAsset('anything.jsdos'), null)
 })
 
-await check('《天之痕》的繁体 Win95 有同源兜底，但绝不冒充官方镜像', () => {
+await check('《天之痕》的繁体 DirectInput 修正版有同源兜底，但绝不冒充官方镜像', () => {
   const primary = `https://assets.8bitgo.com/systems/dos/${TRADITIONAL_WIN95}`
   const sources = systemSourcesFor(primary)
   assert.deepEqual(sources.map((source) => source.url), [primary, `/system-images/${TRADITIONAL_WIN95}`])
