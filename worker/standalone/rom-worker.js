@@ -301,6 +301,21 @@ function objectHeaders(object, servedKey, cors, policy, guessType) {
   headers.set('Content-Disposition', `inline; filename="${filename}"; filename*=UTF-8''${filename}`)
   return headers
 }
+
+/**
+ * R2 里的 Sockdrive 文件已经由官方 sockify 预压缩，`Content-Encoding` 描述的是现有字节。
+ * Workers 的 Response 默认会把 body 当明文再编码一次；不显式写 manual，Brotli 文件会在
+ * 出口被压第二层，浏览器只解一层后仍拿到压缩字节，磁盘读取和 JSON 元数据都会损坏。
+ */
+function r2BodyResponseInit(headers, status = 200, statusText) {
+  return {
+    status,
+    ...(statusText ? { statusText } : {}),
+    headers,
+    encodeBody: 'manual',
+  }
+}
+
 async function cancelBody(object) {
   if (object?.body && !object.body.locked) {
     try { await object.body.cancel() } catch { /* response already closed */ }
@@ -315,7 +330,7 @@ async function serveObject(request, env, key, cors, policy, guessType, expectedV
     if (!found) return json({ error: 'not found' }, cors, 404)
     const headers = objectHeaders(found.object, found.servedKey, cors, policy, guessType)
     headers.set('Content-Length', String(found.object.size))
-    return new Response(found.object.body, { headers })
+    return new Response(found.object.body, r2BodyResponseInit(headers))
   }
 
   const pinnedRange = expectedVersion && request.method === 'GET' && !h.has('If-Range') &&
@@ -347,7 +362,7 @@ async function serveObject(request, env, key, cors, policy, guessType, expectedV
     const length = Number(object.range?.length ?? Math.min(pinnedRange.length, object.size - pinnedRange.offset))
     headers.set('Content-Range', `bytes ${offset}-${offset + length - 1}/${object.size}`)
     headers.set('Content-Length', String(length))
-    return new Response(object.body, { status: 206, headers })
+    return new Response(object.body, r2BodyResponseInit(headers, 206))
   }
 
   // Pin head->get to the ETag. If a concurrent overwrite happens, retry metadata,
@@ -386,7 +401,7 @@ async function serveObject(request, env, key, cors, policy, guessType, expectedV
       finalHeaders.set('Content-Range', `bytes ${range.offset}-${range.offset + range.length - 1}/${object.size}`)
       finalHeaders.set('Content-Length', String(range.length))
     } else finalHeaders.set('Content-Length', String(object.size))
-    return new Response(object.body, { status: range ? 206 : 200, headers: finalHeaders })
+    return new Response(object.body, r2BodyResponseInit(finalHeaders, range ? 206 : 200))
   }
   throw new HttpError(503, '文件正在被并发更新，请重试', 'object_changed')
 }
@@ -472,11 +487,9 @@ export function edgeCacheEligible(request, url, cors) {
 function edgeCacheHeader(response, value) {
   const headers = new Headers(response.headers)
   headers.set('X-8BitGo-Edge-Cache', value)
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  })
+  // Cache API 取回的 Sockdrive 仍是已经压好的 R2 字节；重新包装响应时也必须保留 manual，
+  // 否则首个 MISS 正常、后续 HIT 却会再次被 Workers 出口压缩，形成极难复现的二次损坏。
+  return new Response(response.body, r2BodyResponseInit(headers, response.status, response.statusText))
 }
 /** 写对象元数据时用的策略；读的时候还会按请求 URL 再判一次（见 cachePolicy） */
 function writeCacheControl(env) { return cacheValue(env, 'OBJECT_CACHE_CONTROL', DEFAULT_CACHE_CONTROL) }

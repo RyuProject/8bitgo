@@ -7,7 +7,7 @@ import {
   HttpError, json, encoder, positiveInt, declaredLength, readJson, writeBody,
   corsHeaders, authorized, listAcross, storageFailure,
 } from './common.js'
-import { serveObject } from './http.js'
+import { r2BodyResponseInit, serveObject } from './http.js'
 
 const RESERVED = new Set(['', 'ping', 'list', 'multipart', 'bulk'])
 const MULTIPART_PREFIX = '_uploads/'
@@ -83,11 +83,9 @@ export function edgeCacheEligible(request, url, cors) {
 function edgeCacheHeader(response, value) {
   const headers = new Headers(response.headers)
   headers.set('X-8BitGo-Edge-Cache', value)
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  })
+  // Cache API 取回的 Sockdrive 仍是已经压好的 R2 字节；重新包装响应时也必须保留 manual，
+  // 否则首个 MISS 正常、后续 HIT 却会再次被 Workers 出口压缩，形成极难复现的二次损坏。
+  return new Response(response.body, r2BodyResponseInit(headers, response.status, response.statusText))
 }
 /** 写对象元数据时用的策略；读的时候还会按请求 URL 再判一次（见 cachePolicy） */
 function writeCacheControl(env) { return cacheValue(env, 'OBJECT_CACHE_CONTROL', DEFAULT_CACHE_CONTROL) }

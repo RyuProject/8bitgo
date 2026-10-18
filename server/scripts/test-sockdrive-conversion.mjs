@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 const {
+  sockdriveFailureMessage,
   sockdriveConversionConfig,
   validateSockdriveConversionRequest,
 } = await import('../src/sockdrive-conversion.js')
@@ -61,6 +62,12 @@ assert.equal(config.tempDir, '/data/sockdrive-builds')
 assert.equal(config.maxSourceBytes, 1900 * 1024 * 1024)
 assert.equal(config.freeSpace, '128M')
 assert.equal(config.concurrency, 1)
+
+const noisyFailure = `node 失败（exit 1）：${'上传分块…'.repeat(300)}\nSyntaxError: metadata is not valid JSON`
+const compactFailure = sockdriveFailureMessage(new Error(noisyFailure), 120)
+assert.equal(compactFailure.length, 120)
+assert.match(compactFailure, /^…/)
+assert.match(compactFailure, /SyntaxError: metadata is not valid JSON$/)
 
 const schema = readFileSync(new URL('../schema-v2.sql', import.meta.url), 'utf8')
 const migration = readFileSync(new URL('./migrate.mjs', import.meta.url), 'utf8')

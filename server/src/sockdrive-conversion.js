@@ -462,6 +462,16 @@ function runCommand(command, args, { env = process.env, timeoutMs, onText } = {}
   })
 }
 
+/**
+ * 上传数千个分块时，子进程尾部绝大多数是“上传 4499/4465”进度。数据库若从头截断，
+ * 真正的异常和堆栈反而全部丢失，后台只能看到无意义的 exit 1。失败信息必须保留末尾。
+ */
+export function sockdriveFailureMessage(error, maxChars = MAX_ERROR_CHARS) {
+  const raw = String(error?.message || error || '未知错误').trim()
+  if (raw.length <= maxChars) return raw
+  return `…${raw.slice(-(maxChars - 1))}`
+}
+
 function conversionProgress(text) {
   if (/Sockdrive 制作完成/.test(text)) return 70
   if (/Sockdrive 结构完整/.test(text)) return 68
@@ -685,7 +695,7 @@ async function processJob(job) {
     const published = await verifyPublished(config, job)
     await finishPublishedJob(job, config, published)
   } catch (error) {
-    const message = String(error?.message || error || '未知错误').slice(0, MAX_ERROR_CHARS)
+    const message = sockdriveFailureMessage(error)
     console.error(`[sockdrive-convert] ${job.id} 失败：`, error)
     await updateJob(job.id, {
       status: 'failed', error: message,

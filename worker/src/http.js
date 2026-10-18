@@ -113,6 +113,21 @@ function objectHeaders(object, servedKey, cors, policy, guessType) {
   headers.set('Content-Disposition', `inline; filename="${filename}"; filename*=UTF-8''${filename}`)
   return headers
 }
+
+/**
+ * R2 里的 Sockdrive 文件已经由官方 sockify 预压缩，`Content-Encoding` 描述的是现有字节。
+ * Workers 的 Response 默认会把 body 当明文再编码一次；不显式写 manual，Brotli 文件会在
+ * 出口被压第二层，浏览器只解一层后仍拿到压缩字节，磁盘读取和 JSON 元数据都会损坏。
+ */
+export function r2BodyResponseInit(headers, status = 200, statusText) {
+  return {
+    status,
+    ...(statusText ? { statusText } : {}),
+    headers,
+    encodeBody: 'manual',
+  }
+}
+
 async function cancelBody(object) {
   if (object?.body && !object.body.locked) {
     try { await object.body.cancel() } catch { /* response already closed */ }
@@ -127,7 +142,7 @@ export async function serveObject(request, env, key, cors, policy, guessType, ex
     if (!found) return json({ error: 'not found' }, cors, 404)
     const headers = objectHeaders(found.object, found.servedKey, cors, policy, guessType)
     headers.set('Content-Length', String(found.object.size))
-    return new Response(found.object.body, { headers })
+    return new Response(found.object.body, r2BodyResponseInit(headers))
   }
 
   const pinnedRange = expectedVersion && request.method === 'GET' && !h.has('If-Range') &&
@@ -159,7 +174,7 @@ export async function serveObject(request, env, key, cors, policy, guessType, ex
     const length = Number(object.range?.length ?? Math.min(pinnedRange.length, object.size - pinnedRange.offset))
     headers.set('Content-Range', `bytes ${offset}-${offset + length - 1}/${object.size}`)
     headers.set('Content-Length', String(length))
-    return new Response(object.body, { status: 206, headers })
+    return new Response(object.body, r2BodyResponseInit(headers, 206))
   }
 
   // Pin head->get to the ETag. If a concurrent overwrite happens, retry metadata,
@@ -198,7 +213,7 @@ export async function serveObject(request, env, key, cors, policy, guessType, ex
       finalHeaders.set('Content-Range', `bytes ${range.offset}-${range.offset + range.length - 1}/${object.size}`)
       finalHeaders.set('Content-Length', String(range.length))
     } else finalHeaders.set('Content-Length', String(object.size))
-    return new Response(object.body, { status: range ? 206 : 200, headers: finalHeaders })
+    return new Response(object.body, r2BodyResponseInit(finalHeaders, range ? 206 : 200))
   }
   throw new HttpError(503, '文件正在被并发更新，请重试', 'object_changed')
 }

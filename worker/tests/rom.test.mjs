@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import worker from '../src/index.js'
+import { r2BodyResponseInit } from '../src/http.js'
 import { Bucket, environment, req, count, streamChunks } from './fixtures.mjs'
 
 for (const method of ['PUT','POST','DELETE']) test(`${method}: unauthorized writes are rejected`, async () => {
@@ -34,6 +35,13 @@ test('plain GET streams in one R2 call and uses the short unversioned policy', a
   const e=environment(); e.ROMS.seed('a.zip','abcdef'); const r=await worker.fetch(req('/a.zip'),e)
   assert.equal(await r.text(),'abcdef'); assert.equal(count(e.ROMS,'get'),1); assert.equal(count(e.ROMS,'head'),0)
   assert.equal(r.headers.get('Content-Length'),'6'); assert.equal(r.headers.get('Cache-Control'),'public, max-age=300, s-maxage=600, must-revalidate'); assert.equal(r.headers.get('Cross-Origin-Resource-Policy'),'cross-origin')
+})
+test('precompressed R2 bodies are marked manual so Workers never encode them twice', () => {
+  const headers = new Headers({ 'Content-Encoding': 'br' })
+  const init = r2BodyResponseInit(headers, 206)
+  assert.equal(init.encodeBody, 'manual')
+  assert.equal(init.status, 206)
+  assert.equal(init.headers, headers)
 })
 test('CS1.5 and CS1.6 assets prefer WEBGAMES and fall back to the legacy ROMS bucket', async () => {
   const e=environment(); e.WEBGAMES=new Bucket('webgames')
