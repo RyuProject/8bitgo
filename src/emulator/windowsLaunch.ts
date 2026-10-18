@@ -330,7 +330,26 @@ export function assertTypeable(command: string): void {
 }
 
 /**
- * DOS 7.1 启动盘没有 Windows“运行”对话框；开机后直接在真实 DOS 提示符输入 D:\\GAME.EXE。
+ * 把 D:\\DIR\\GAME.EXE 拆成 DOS 提示符里的三步：切盘、进入目录、执行文件。
+ * 不能直接从 C: 输入完整路径：DOS/4GW 等 stub 会按“当前目录”找运行库，Fallout 因此能找到
+ * FALLOUT.EXE 却找不到同盘根目录的 DOS4GW.EXE。显式切盘也让游戏后续的相对数据路径正确。
+ */
+export function dosGuestCommandSequence(command: string): string[] {
+  const match = /^([d-z]):\\(.+)$/i.exec(command)
+  if (!match) throw new Error('纯 DOS 自动启动命令必须是 D: 之后磁盘上的绝对路径')
+  const parts = match[2].split('\\')
+  const executable = parts.pop()
+  if (!executable || parts.some((part) => !part)) {
+    throw new Error('纯 DOS 自动启动命令包含无效路径')
+  }
+  const commands = [`${match[1].toUpperCase()}:`]
+  if (parts.length) commands.push(`cd \\${parts.join('\\')}`)
+  commands.push(executable)
+  return commands
+}
+
+/**
+ * DOS 7.1 启动盘没有 Windows“运行”对话框；开机后在真实 DOS 提示符依次切盘、切目录、启动。
  * Sockdrive 必须作为 BIOS 第二硬盘存在，只有启动真实 DOS 后它才会成为可访问的 D:，所以不能
  * 复用内置 DOS 的 `c:` 切盘，也不能复用下面那套 Ctrl+Esc / Run 自动启动链。
  */
@@ -342,7 +361,8 @@ export function scheduleDosGuestLaunch(
   onLaunched: () => void,
   onMilestone?: (step: WindowsLaunchMilestone) => void,
 ): () => void {
-  assertTypeable(command)
+  const commands = dosGuestCommandSequence(command)
+  for (const line of commands) assertTypeable(line)
   const timers = new Set<number>()
   const later = (ms: number, fn: () => void) => {
     const id = window.setTimeout(() => {
@@ -357,13 +377,18 @@ export function scheduleDosGuestLaunch(
     ci.sendKeyEvent(key, false)
     if (shift) ci.sendKeyEvent(WIN_KEY.leftShift, false)
   }
-  const chars = command.toLowerCase().split('')
-  const typeAt = (at: number) => {
+  const typeLine = (lineIndex: number, at: number) => {
+    const chars = commands[lineIndex].toLowerCase().split('')
     if (at >= chars.length) {
       tap(WIN_KEY.enter)
-      onMilestone?.('launched')
-      // 回车交给客体后再撤遮罩；这样 DOS 提示符不会在加载游戏的第一帧闪给玩家。
-      later(1_200, onLaunched)
+      if (lineIndex + 1 < commands.length) {
+        // COMMAND.COM 切盘 / 切目录很快，但仍要等它画出下一次提示符再输入下一行。
+        later(250, () => typeLine(lineIndex + 1, 0))
+      } else {
+        onMilestone?.('launched')
+        // 回车交给客体后再撤遮罩；这样 DOS 提示符不会在加载游戏的第一帧闪给玩家。
+        later(1_200, onLaunched)
+      }
       return
     }
     const ch = chars[at]
@@ -376,10 +401,10 @@ export function scheduleDosGuestLaunch(
     else if (ch === '_') tap(WIN_KEY.minus, true)
     else if (ch === '/') tap(WIN_KEY.slash)
     else if (ch === '"') tap(WIN_KEY.quote, true)
-    later(35, () => typeAt(at + 1))
+    later(35, () => typeLine(lineIndex, at + 1))
   }
   // fastForwardOnBoot 会让 10MB 的 DOS 盘很快到提示符；仍留 8 秒默认值给慢设备与首次分块读取。
-  later(Math.max(3, Math.min(120, waitSeconds)) * 1000, () => typeAt(0))
+  later(Math.max(3, Math.min(120, waitSeconds)) * 1000, () => typeLine(0, 0))
   return () => {
     for (const id of timers) window.clearTimeout(id)
     timers.clear()

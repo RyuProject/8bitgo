@@ -41,6 +41,7 @@ const {
   frameDiffRatio,
   frameIsBlank,
   scheduleDosGuestLaunch,
+  dosGuestCommandSequence,
   scheduleWindowsLaunch,
   windowsLaunchDelayMs,
   DESKTOP_SETTLE_FLOOR_MS,
@@ -950,7 +951,7 @@ const BLACK = mkFrame(640, 480, 0)
  */
 const WALLPAPER = mkFrame(640, 480, 40)
 
-console.log('\n── 纯 DOS 客体：等 DOS 7.1 提示符后自动输入 D:\\GAME.EXE ──')
+console.log('\n── 纯 DOS 客体：等 DOS 7.1 提示符后切盘、切目录、启动游戏 ──')
 {
   const clock = fakeClock()
   globalThis.window = clock.win
@@ -969,10 +970,15 @@ console.log('\n── 纯 DOS 客体：等 DOS 7.1 提示符后自动输入 D:\\
   ok(keys.length === 0, 'DOS 7.1 还在开机时不会提前把命令敲进 BIOS')
   await clock.runUntil(6_000)
   cancel()
-  ok(keys[0]?.[0] === 3_000 && keys[0]?.[1] === 68, '等待到点后从 D 开始输入游戏路径')
-  ok(keys.some(([, code]) => code === 257), '完整命令最后发送 Enter')
+  ok(keys[0]?.[0] === 3_000 && keys[0]?.[1] === 68, '等待到点后先输入 D: 切到游戏盘')
+  ok(keys.filter(([, code]) => code === 257).length === 2, '根目录游戏会先切盘，再输入可执行文件')
   ok(milestones.some(([, step]) => step === 'launched'), '输入完成后推进 launched 里程碑')
   ok(launchedAt !== null && launchedAt > 4_000, '回车交给客体后留出一帧加载时间再撤遮罩')
+  ok(
+    JSON.stringify(dosGuestCommandSequence('D:\\FALLOUT\\FALLOUT.EXE')) ===
+      JSON.stringify(['D:', 'cd \\FALLOUT', 'FALLOUT.EXE']),
+    '子目录游戏先进入 EXE 目录，保证 DOS/4GW 与相对资源能从正确目录读取',
+  )
 }
 
 console.log('\n── 桌面到底画完了没有（desktopSettled）──')

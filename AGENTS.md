@@ -417,6 +417,10 @@ Win95 或 Caesar 的分辨率补丁。
 `imgmount <序号> sockdrive <URL>` 按扇区读取；`rom / roms` 那份完整 ZIP 仍留在数据里作一键回退，
 但流式模式不会下载它。清空 `dos_sockdrive` 就原样回到旧整包路径，不需要迁移存量游戏。
 
+纯 DOS 流式游戏不能从 `C:\\>` 直接输入 `D:\\GAME.EXE`：EXE 虽能打开，DOS/4GW stub 与游戏
+相对资源仍按当前目录 `C:\\` 查找，Fallout 会报 `dos4gw.exe No such file or directory`。自动启动必须
+先输入 `D:`，有子目录时再 `cd \\目录`，最后只输入 EXE 文件名；回归由 `test:dos-bundle` 覆盖。
+
 ⚠️ **纯 DOS 也必须有一块可启动系统盘。** `sockify` 从普通游戏 ZIP 生成的是 FAT 游戏盘，
 `imgmount 2 sockdrive ...` 只把它注册成 BIOS 硬盘；DOSBox-X 内置 DOS 随后执行 `c:` 会明确报
 `Drive C does not exist`。`imgmount c sockdrive` 同样不会把 Sockdrive 变成内置 DOS 的 FAT 盘。
