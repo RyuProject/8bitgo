@@ -271,8 +271,16 @@ console.log('\n── StarCraft：启动前静默导入安装路径 ──')
     'StarCraft 启用老 DirectDraw 黑屏后的焦点刷新',
   )
   ok(
+    windowsGameNeedsDirectDrawFocusRefresh('xuan-yuan-sword-scar-of-sky', 'Swd3e/swd3e.exe'),
+    '⭐《天之痕》启用已在线复现的 DirectDraw 黑屏焦点刷新',
+  )
+  ok(
+    !windowsGameNeedsDirectDrawFocusRefresh('xuan-yuan-sword-scar-of-sky', 'setup.exe'),
+    '《天之痕》的第三方启动器不会误触发焦点刷新',
+  )
+  ok(
     !windowsGameNeedsDirectDrawFocusRefresh('theme-hospital', 'HOSPITAL.EXE'),
-    '其它 Windows 游戏不误触发 StarCraft 的焦点刷新',
+    '其它 Windows 游戏不误触发 DirectDraw 焦点刷新',
   )
   ok(
     /core=normal/.test(windowsGameCompatibilityDosboxConfig('starcraft', 'StarCraft.exe', undefined)),

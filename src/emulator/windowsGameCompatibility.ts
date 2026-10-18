@@ -25,15 +25,18 @@ export function windowsGameCompatibilityRegistryImport(
 }
 
 /**
- * StarCraft 1.16.1 的 DirectDraw 菜单在这份 Win95 镜像里会偶发停在全黑主表面；进程并没崩，
- * Ctrl+Esc 失焦后再 Alt+Tab 回来就会立刻重建调色板。把判定收在这里，避免给所有 Windows
- * 游戏乱发系统切换键；EXE 校验复用注册表规则，第三方启动器仍然不会被误放行。
+ * StarCraft 1.16.1 与《天之痕》的老 DirectDraw 全屏面在这份 Win95 镜像里都可能停在纯黑；
+ * 进程其实还活着，切走再切回会让 DOSBox-X 重建主表面。把逐游戏判定收在这里，避免给所有
+ * Windows 游戏乱发系统切换键；同时校验 EXE，第三方启动器不会因为复用 slug 被误放行。
  */
 export function windowsGameNeedsDirectDrawFocusRefresh(
   gameSlug: string | undefined,
   executable: string,
 ): boolean {
-  return windowsGameCompatibilityRegistryImport(gameSlug, executable) === 'STAR.REG'
+  const slug = normalizedSlug(gameSlug)
+  const file = executable.trim().replace(/\\/g, '/').split('/').pop()?.toLowerCase()
+  if ((slug === 'starcraft' || slug === 'starcraft-1-16-1') && file === 'starcraft.exe') return true
+  return slug === 'xuan-yuan-sword-scar-of-sky' && file === 'swd3e.exe'
 }
 
 /**
