@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import type { PlatformId } from '@/types'
+import type { ArcadeButtonCount, PlatformId } from '@/types'
 import { getDefaultKeymap } from '@/lib/emulator'
+import { effectiveArcadeButtons } from '@/emulator/arcadePerformance'
 import { comboLabel, getHotkeys, onHotkeysChange } from '@/services/hotkeys'
 import { onPadKeysChange } from '@/services/padKeys'
 import { getEmulatorJsKeymap, onEmulatorJsKeymapChange } from '@/services/emulatorjsKeymap'
@@ -21,12 +22,15 @@ interface Props {
   platform?: PlatformId
   /** 有 slug 才能取到这款游戏上次由 EmulatorJS 回传的真实键位。 */
   gameSlug?: string
+  /** 街机旧数据缺按钮数时用 BIOS 系统名推断，和运行中的虚拟手柄保持一致。 */
+  arcadeButtons?: ArcadeButtonCount
+  arcadeBios?: string
   /** 'sm' 是给窄栏用的（PlayLocalPage 的侧列） */
   size?: 'md' | 'sm'
   className?: string
 }
 
-export function KeymapCards({ runtimeId, platform, gameSlug, size = 'md', className }: Props) {
+export function KeymapCards({ runtimeId, platform, gameSlug, arcadeButtons, arcadeBios, size = 'md', className }: Props) {
   const t = useT()
   const [, bump] = useState(0)
   // 玩家在播放器里改了存读档快捷键或红白机键位，这张表得立刻跟上，不能还写着旧的
@@ -37,7 +41,12 @@ export function KeymapCards({ runtimeId, platform, gameSlug, size = 'md', classN
   const effectiveKeys = runtimeId === 'emulatorjs' && platform
     ? getEmulatorJsKeymap(gameSlug, platform)
     : null
-  const keymap = getDefaultKeymap(runtimeId, platform, effectiveKeys)
+  const keymap = getDefaultKeymap(
+    runtimeId,
+    platform,
+    effectiveKeys,
+    platform === 'arcade' ? effectiveArcadeButtons(arcadeButtons, arcadeBios) : undefined,
+  )
   const hotkeys = getHotkeys()
 
   /*

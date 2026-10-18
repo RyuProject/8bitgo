@@ -51,6 +51,7 @@
     "test:romdata": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-romdata.mjs",
     "test:arcade-dip": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-arcade-dip.mjs",
     "test:arcade-runtime": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-arcade-runtime.mjs",
+    "test:arcade-performance": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-arcade-performance.mjs",
     "test:mame-audio": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-mame-audio.mjs",
     "test:nds-audio": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-nds-audio.mjs",
     "test:gba-video": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-gba-video.mjs",

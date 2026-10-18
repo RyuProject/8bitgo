@@ -1145,6 +1145,8 @@ export interface RomObject {
   key: string
   size: number
   uploaded?: string
+  /** Worker 同时列 ROMS / COVERS 时用于区分同名旧对象；老 Worker 没有这一项也能兼容。 */
+  bucket?: 'ROMS' | 'COVERS' | string
 }
 
 function authHeaders(): Record<string, string> {
@@ -1205,13 +1207,34 @@ export interface RomHead {
  * 用途是上传前的重复检查：同一个游戏的同一个语言槽（或同一张封面）只该有一份文件，
  * 直接 PUT 会静默覆盖，管理员根本不知道自己盖掉了什么。
  *
- * Worker 的 GET/HEAD 不需要口令（ROM 桶本来就是公开读），带上 Authorization 也无妨。
- * 探测失败一律当作「不存在」——它只是个提示，不该把上传本身拦下来。
+ * 管理页有口令时走受保护的 /list；没有口令才退回公开 HEAD。调用方把探测失败当作
+ * 「未知但允许继续」——它只是覆盖提示，不该因为探测服务故障把上传本身堵死。
  */
 export async function headRom(key: string): Promise<RomHead> {
   const api = getRomApi()
   const clean = key.replace(/^\/+/, '')
   if (!api || !clean) return { exists: false }
+
+  /*
+   * 后台已经有 ADMIN_TOKEN 时用 /list 做“静默 HEAD”。直接 fetch(HEAD /对象) 在首次上传时
+   * 必然得到 404；业务上这是正常的“不存在”，但 Chromium 仍会把每一次 404 打成红色
+   * `Failed to load resource`，管理员会误以为上传失败。/list 对空结果返回 200，既没有假错误，
+   * 又能区分 ROMS 与 COVERS：封面曾从 ROMS 迁到独立桶，同名旧副本不能冒充真正的覆盖目标。
+   *
+   * 没有 token 时保留公开 HEAD，供只读配置页或旧部署使用；上传本身反正也需要 token。
+   */
+  if (getRomToken()) {
+    const url = new URL(`${api}/list`)
+    url.searchParams.set('prefix', clean)
+    const res = await fetch(url.toString(), { headers: authHeaders(), cache: 'no-store' })
+    if (!res.ok) throw explainRomStatus(res.status, '对象检测')
+    const data = (await res.json().catch(() => null)) as { objects?: RomObject[] } | null
+    const exact = (data?.objects ?? []).filter((object) => object.key === clean)
+    const preferredBucket = clean.startsWith('covers/') ? 'COVERS' : 'ROMS'
+    const object = exact.find((candidate) => candidate.bucket === preferredBucket) ?? exact[0]
+    return object ? { exists: true, size: object.size } : { exists: false }
+  }
+
   const res = await fetch(`${api}/${encodeKey(clean)}`, { method: 'HEAD', headers: authHeaders(), cache: 'no-store' })
   if (!res.ok) return { exists: false }
   const len = Number(res.headers.get('content-length'))

@@ -41,7 +41,7 @@ globalThis.XMLHttpRequest = class {
   abort() { this.onabort?.() }
 }
 
-const { uploadRom, deleteRomDir, listRomObjects } = await import('../src/services/roms.ts')
+const { uploadRom, deleteRomDir, headRom, listRomObjects } = await import('../src/services/roms.ts')
 const { uploadRomMultipart, listOrphanUploads, abortOrphanUpload, listPendingUploads } = await import('../src/services/romMultipart.ts')
 const {
   clearPendingSockdriveCreation,
@@ -52,6 +52,22 @@ const {
   waitForSockdriveConversion,
 } = await import('../src/services/sockdriveConversion.ts')
 const { ApiError } = await import('../src/services/api.ts')
+
+const headRequests = []
+globalThis.fetch = async (url, init) => {
+  headRequests.push({ url: String(url), method: init?.method ?? 'GET' })
+  if (String(url).includes('prefix=covers%2Fdemo.webp')) {
+    return Response.json({ objects: [
+      { key: 'covers/demo.webp', size: 11, bucket: 'ROMS' },
+      { key: 'covers/demo.webp', size: 22, bucket: 'COVERS' },
+    ] })
+  }
+  return Response.json({ objects: [] })
+}
+assert.deepEqual(await headRom('covers/demo.webp'), { exists: true, size: 22 })
+assert.deepEqual(await headRom('roms/nes/missing.nes.8bg'), { exists: false })
+assert.equal(headRequests.every((request) => request.method === 'GET' && request.url.includes('/list?prefix=')), true)
+console.log('✅ 上传前对象检测用 200 列表响应；不存在不再制造 HEAD 404，封面优先检查 COVERS 桶')
 
 const small = new Blob(['abc'])
 await assert.rejects(uploadRom(small, 'roms/nes/demo.nes'), /上传响应不完整/)

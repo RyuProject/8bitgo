@@ -3925,6 +3925,8 @@ export function EmulatorPlayer({
                       runtimeId={(session?.runtime.id ?? pageRuntime?.id) as string | undefined}
                       platform={platform.id}
                       gameSlug={gameSlug}
+                      arcadeButtons={arcadeButtons}
+                      arcadeBios={arcadeBios}
                       className="mb-1 max-sm:hidden"
                     />
                   )}

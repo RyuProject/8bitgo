@@ -49,6 +49,13 @@ import { arcadeCoreForRomData, supportsFbneoRomData } from '../arcadeCore'
 import { MAME_AUDIO_LATENCY_MS, RETROARCH_CFG_PATH, raiseAudioLatency } from '../mameAudio'
 import { NDS_AUDIO_BUFFER_BYTES_48K, NDS_AUDIO_LATENCY_MS } from '../ndsAudio'
 import {
+  arcadePerformanceDefaultOptions,
+  effectiveArcadeButtons,
+  FBNEO_ARCADE_AUDIO_BUFFER_BYTES_48K,
+  FBNEO_ARCADE_AUDIO_LATENCY_MS,
+  isLightArcadeCore,
+} from '../arcadePerformance'
+import {
   GBA_ADDITIONAL_SHADERS,
   GBA_DEFAULT_VIDEO_MODE,
   configureGbaVideo,
@@ -71,6 +78,7 @@ import {
   emulatorJsKeyLabel,
   emulatorJsRelevantKeyIds,
   publishEmulatorJsKeymap,
+  repairLegacyArcadeKeyCollisions,
   shouldMigrateEmulatorJsDefaults,
 } from '@/services/emulatorjsKeymap'
 
@@ -1611,6 +1619,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
   }
 
+  const coreDefaultOptions = {
+    ...arcadePerformanceDefaultOptions(
+      options.platform,
+      core,
+      options.gameSlug,
+      typeof navigator === 'undefined' ? undefined : navigator.hardwareConcurrency,
+    ),
+    ...(options.platform === 'gba' ? { shader: gbaShaderForMode(gbaVideoMode) } : {}),
+  }
+
   const iframe = document.createElement('iframe')
   iframe.title = fmt(rt.emulatorTitle, { name: options.gameName })
   iframe.style.cssText = 'width:100%;height:100%;border:0;display:block;background:#0b0b0f'
@@ -1756,7 +1774,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
     }
     // 必须先判迁移再首次 publish；publish 会把记录升级到当前代次。
-    if (!migrateDefaultKeyboard(emu)) syncKeyboardMap()
+    const migrated = migrateDefaultKeyboard(emu)
+    const repaired = options.platform === 'arcade'
+      ? repairLegacyArcadeKeyCollisions(emu.controls?.[0], emu.defaultControllers?.[0])
+      : []
+    if (repaired.length) {
+      console.info(`[emulatorjs] 已修复旧街机重复键位：libretro ${repaired.join(', ')}，避免 J/K/I 一次触发两路输入`)
+      saveControls(emu)
+    } else if (!migrated) {
+      syncKeyboardMap()
+    }
   }
 
   /** 外层工具栏的一键恢复。行为与引擎改键面板里的 Reset 相同，并立即更新操作说明。 */
@@ -3325,7 +3352,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           // 街机：引擎没有 arcade 分支，不给这份布局手机上就只有 4 颗动作键、
           // 摇杆还会把对角线松掉、投币键写着「选择」。见 ARCADE_VIRTUAL_PAD 的注释
           ...(options.platform === 'arcade'
-            ? { EJS_VirtualGamepadSettings: arcadeVirtualPad(options.arcadeButtons ?? 6) }
+            ? { EJS_VirtualGamepadSettings: arcadeVirtualPad(effectiveArcadeButtons(options.arcadeButtons, options.biosSet?.name)) }
             : {}),
           /*
             默认键位：左手 WASD、右手 UIJK、Enter 开始。主机的 Select 是 Shift；街机投币
@@ -3345,12 +3372,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             LCD 是我们的一次采样轻量 shader，通过 EJS_shaders 合进引擎自带清单；ScaleHQ
             直接复用当前自托管引擎内置资源，不多一次网络请求。
           */
-          ...(options.platform === 'gba'
-            ? {
-                EJS_defaultOptions: { shader: gbaShaderForMode(gbaVideoMode) },
-                EJS_shaders: GBA_ADDITIONAL_SHADERS,
-              }
-            : {}),
+          ...(Object.keys(coreDefaultOptions).length ? { EJS_defaultOptions: coreDefaultOptions } : {}),
+          ...(options.platform === 'gba' ? { EJS_shaders: GBA_ADDITIONAL_SHADERS } : {}),
           EJS_color: '#0078f2',
           EJS_backgroundColor: '#0b0b0f',
           // 跟着站点语言走。切语言是整页跳转（见 services/lang.ts 的 setLang），
@@ -3512,16 +3535,24 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
          *    而拦下来是整局都玩不了 —— 和这个注入器里其它钩子同一条取舍。
          * 3. **回读核对**：cfg 在虚拟文件系统里，写没写进去看不见，所以写完立刻读回来对一遍
          *    并打日志。生效与否最终看核心那行 `[RWebAudio] Buffer size:` —— 64ms 是 24576 bytes，
-         *    MAME 128ms 应该是 49152 bytes；NDS 96ms 应该是 36864 bytes。
+         *    MAME 128ms 应该是 49152 bytes；NDS 96ms 应该是 36864 bytes；
+         *    FBNeo 80ms 应该是 30720 bytes。
          *
-         * mame-current 用 128ms；单线程软件渲染的 NDS 用 96ms，给《节奏天国》少留一点节拍延迟。
-         * 其它较轻的核心仍用引擎默认值，不为没有症状的平台平白增加音画延迟。
+         * mame-current 用 128ms；单线程软件渲染的 NDS 用 96ms，给《节奏天国》少留一点节拍延迟；
+         * FBNeo / MAME 2003 系街机只加到 80ms，主要覆盖开火音效和页面短任务叠在一起时的欠载。
+         * 其它较轻的平台仍用引擎默认值，不为没有症状的平台平白增加音画延迟。
          */
         const audioLatencyPlan = isMameCurrentCore(core)
           ? { label: 'mame-current', latencyMs: MAME_AUDIO_LATENCY_MS, expectedBytes: 49_152 }
           : options.platform === 'nds'
             ? { label: 'NDS', latencyMs: NDS_AUDIO_LATENCY_MS, expectedBytes: NDS_AUDIO_BUFFER_BYTES_48K }
-            : null
+            : isLightArcadeCore(options.platform, core)
+              ? {
+                  label: `${core} 街机`,
+                  latencyMs: FBNEO_ARCADE_AUDIO_LATENCY_MS,
+                  expectedBytes: FBNEO_ARCADE_AUDIO_BUFFER_BYTES_48K,
+                }
+              : null
 
         const raiseCoreAudioLatency = audioLatencyPlan
           ? (emu: EjsEmulator) => {
