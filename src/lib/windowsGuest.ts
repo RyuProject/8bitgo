@@ -205,26 +205,6 @@ export function windowsSockdriveExecutableCommand(executable: string, drive: str
 }
 
 /**
- * 远程硬盘已经是 Win95 能直接看到的真实磁盘，注册表文件也在这块盘里。
- * 先从“运行”框静默导入，再单独启动 EXE；不能依赖 DOSBox 的普通 mount 盘，
- * 那种盘只在启动前的宿主 DOS 可见，Win95 客体里会报找不到文件。
- */
-export function windowsSockdriveRegistryCommand(registryImport: string, drive: string): string {
-  if (!/^[d-z]$/i.test(drive)) throw new Error('Sockdrive 游戏盘符必须是 D-Z')
-  const registry = registryImport.replace(/\\/g, '/').replace(/^(?:\.\/)+/, '').replace(/^\/+|\/+$/g, '')
-  if (
-    !registry ||
-    !/\.reg$/i.test(registry) ||
-    registry.split('/').some((part) => !part || part === '.' || part === '..') ||
-    // eslint-disable-next-line no-control-regex
-    /[\x00-\x1f:"<>|?*]/.test(registry)
-  ) {
-    throw new Error('流式 Windows 注册表兼容文件必须是游戏盘内安全的 .reg 相对路径')
-  }
-  return `regedit /s "${drive.toUpperCase()}:\\${registry.replace(/\//g, '\\')}"`
-}
-
-/**
  * Windows 3.x 的 DOS 会话不能反向启动 16 位 Windows 图形程序：RUN.BAT 会正常结束，
  * 但其中的游戏 EXE 只会得到“需要 Microsoft Windows”。这里把完整 EXE 路径交给
  * Windows 启动器，由它借 File Manager 设置工作目录；Windows 95/98 继续用批处理。
@@ -347,6 +327,13 @@ export function buildSockdriveWindowsGuestConfig(
     '',
     `imgmount ${gameDriveIndex} sockdrive ${normalizedUrl}`,
     `mount ${launcherDrive.toLowerCase()} 8BITGO -freesize 1`,
+    /*
+      DOSBox 的普通 mount 盘在 boot 后不会成为 Win95 的块设备，直接运行 E:\\RUN.BAT 会报
+      “找不到文件”。开机前把几百字节批处理复制进真实的 Sockdrive 游戏盘；这次写入只进
+      js-dos 的 changes 层，不会改远端基础盘，也不需要重发上千个分块。
+    */
+    `del ${gameDrive.toLowerCase()}:\\8BITGO.BAT`,
+    `copy ${launcherDrive.toLowerCase()}:\\RUN.BAT ${gameDrive.toLowerCase()}:\\8BITGO.BAT`,
     `boot ${bootDrive.toLowerCase()} -convertfat`,
     ...lines.slice(autoEnd),
   ]
@@ -357,7 +344,7 @@ export function buildSockdriveWindowsGuestConfig(
     dosboxConf: mergeDosboxConfigOverride(generated, configOverride),
     gameDrive,
     gameDriveIndex,
-    launcher: `${launcherDrive}:\\RUN.BAT`,
+    launcher: `${gameDrive}:\\8BITGO.BAT`,
     sockdriveUrl: normalizedUrl,
   }
 }

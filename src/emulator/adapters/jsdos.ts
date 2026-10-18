@@ -28,9 +28,7 @@ import {
   normalizeSockdriveUrl,
   readWindowsSystemConfig,
   sockdriveVersionedSaveKey,
-  windowsSockdriveExecutableCommand,
   windowsSockdriveLauncherFile,
-  windowsSockdriveRegistryCommand,
   windowsGuestLaunchCommand,
   type WindowsGuestConfig,
 } from '@/lib/windowsGuest'
@@ -1041,7 +1039,6 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       let primaryUrl = ''
       let guest: WindowsGuestConfig | null = null
       let guestLaunchCommand = ''
-      let guestPrepareCommand = ''
       let initFs: unknown[] | undefined
       if (loadedSystem) {
         if (!options.dosExecutable) throw new Error('Windows 客体游戏没有配置自启动 EXE')
@@ -1059,9 +1056,6 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           */
           guest = buildSockdriveWindowsGuestConfig(systemConfig, sockdriveUrl, dosboxConfig)
           initFs = [windowsSockdriveLauncherFile(gameExecutable, guest.gameDrive, registryImport)]
-          guestPrepareCommand = registryImport
-            ? windowsSockdriveRegistryCommand(registryImport, guest.gameDrive)
-            : ''
           /*
             致命细节：直接传 `dosboxConf + initFs` 时，js-dos 的 loadBundleFromConfig 会把
             bundleChangesUrl 固定成 null，之后 props.save() 永远返回 false，所以必须走 URL 入口。
@@ -1100,18 +1094,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           }
           gameLayerBytes = gameLayer.bytes
         }
-        guestLaunchCommand = streamingGame
-          ? windowsSockdriveExecutableCommand(gameExecutable, guest.gameDrive)
-          : windowsGuestLaunchCommand(
-              guest,
-              gameExecutable,
-              options.dosWindowsVersion ?? '9x',
-              narrowedToExeDir,
-            )
+        guestLaunchCommand = windowsGuestLaunchCommand(
+          guest,
+          gameExecutable,
+          options.dosWindowsVersion ?? '9x',
+          narrowedToExeDir,
+        )
         // 现在就验：以前这两处是在 ci-ready 的回调 / 定时器里才抛，没人接得住，
         // Windows 在屏幕上跑着、遮罩却盖到四分钟超时才报一句不相干的话
         assertTypeable(guestLaunchCommand)
-        if (guestPrepareCommand) assertTypeable(guestPrepareCommand)
         if ((options.dosWindowsVersion ?? '9x') === '3x') windows3xLaunchCommands(guestLaunchCommand)
         /*
           系统包自己的 conf 必须先改名：它作为后续文件层解开时会覆盖 Dos() 的直接配置。
@@ -1332,7 +1323,6 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                       startup: step === 'desktop' ? STARTING_MILESTONE.desktop : STARTING_MILESTONE.launched,
                     })
                   },
-                  guestPrepareCommand || undefined,
                 )
               }
               // DOS 游戏只认键盘，手柄在这里翻译成按键

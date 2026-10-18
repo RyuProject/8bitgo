@@ -57,7 +57,7 @@ try {
         "export * from './src/lib/romValidation.ts'",
         "export { assertValidZip, assertValidZipBlob, listZipEntries, extractZipEntry } from './src/lib/unzip.ts'",
         "export { makeJsdosBundle, makeJsdosConfigBundle } from './src/lib/jsdosBundle.ts'",
-        "export { buildSockdriveWindowsGuestConfig, buildWindowsGuestConfig, sockdriveVersionedSaveKey, windowsGuestLaunchCommand, windowsSockdriveExecutableCommand, windowsSockdriveLauncherFile, windowsSockdriveRegistryCommand } from './src/lib/windowsGuest.ts'",
+        "export { buildSockdriveWindowsGuestConfig, buildWindowsGuestConfig, sockdriveVersionedSaveKey, windowsGuestLaunchCommand, windowsSockdriveExecutableCommand, windowsSockdriveLauncherFile } from './src/lib/windowsGuest.ts'",
         "export { normalizeDosboxConfigOverride, mergeDosboxConfigOverride } from './shared/dosbox-config.js'",
         "export { createOverallRatio, fetchWithProgress, windowsGuestStartupBudgetMs } from './src/emulator/loadProgress.ts'",
         "export { shouldCaptureMouse } from './src/emulator/mouseCapture.ts'",
@@ -91,7 +91,6 @@ try {
     sockdriveVersionedSaveKey,
     windowsGuestLaunchCommand,
     windowsSockdriveExecutableCommand,
-    windowsSockdriveRegistryCommand,
     windowsSockdriveLauncherFile,
     normalizeDosboxConfigOverride,
     mergeDosboxConfigOverride,
@@ -227,15 +226,16 @@ try {
   assert.equal(streamedGuest.sockdriveUrl, 'https://assets.example.test/sockdrives/game-v1')
   assert.match(streamedGuest.dosboxConf, /imgmount 3 sockdrive https:\/\/assets\.example\.test\/sockdrives\/game-v1/)
   assert.match(streamedGuest.dosboxConf, /mount e 8BITGO -freesize 1/)
+  assert.match(streamedGuest.dosboxConf, /del d:\\8BITGO\.BAT/)
+  assert.match(streamedGuest.dosboxConf, /copy e:\\RUN\.BAT d:\\8BITGO\.BAT/)
+  assert.ok(
+    streamedGuest.dosboxConf.indexOf('copy e:\\RUN.BAT d:\\8BITGO.BAT') < streamedGuest.dosboxConf.indexOf('boot c: -convertfat'),
+    '⭐ 启动批处理必须在 boot 前复制进 Win95 真正能看见的 Sockdrive 游戏盘',
+  )
   assert.match(streamedGuest.dosboxConf, /boot c: -convertfat/)
-  assert.equal(windowsGuestLaunchCommand(streamedGuest, 'BIN/GAME.EXE', '9x', false), 'E:\\RUN.BAT')
+  assert.equal(windowsGuestLaunchCommand(streamedGuest, 'BIN/GAME.EXE', '9x', false), 'D:\\8BITGO.BAT')
   assert.equal(windowsGuestLaunchCommand(streamedGuest, 'BIN/GAME.EXE', '3x', false), 'D:\\BIN\\GAME.EXE')
   assert.equal(windowsSockdriveExecutableCommand('BIN/GAME.EXE', streamedGuest.gameDrive), 'D:\\BIN\\GAME.EXE')
-  assert.equal(
-    windowsSockdriveRegistryCommand('STAR.REG', streamedGuest.gameDrive),
-    'regedit /s "D:\\STAR.REG"',
-  )
-  assert.throws(() => windowsSockdriveRegistryCommand('../STAR.REG', 'D'), /安全的 \.reg/)
   assert.throws(() => windowsSockdriveExecutableCommand('../BAD.EXE', 'D'), /安全的 \.exe/)
   const launcherFile = windowsSockdriveLauncherFile('BIN/GAME.EXE', streamedGuest.gameDrive)
   assert.equal(launcherFile.path, '8BITGO/RUN.BAT')
@@ -393,40 +393,6 @@ try {
   assert.deepEqual(scheduled.map(({ ms }) => ms), [90_000, 24_000])
   cancelLaunch()
   assert.ok(scheduled.every(({ cleared }) => cleared))
-
-  // 流式 StarCraft 的注册表在远程 D: 盘；先静默导入，再重新打开 Run 启动主程序。
-  scheduled.length = 0
-  const preparedKeys = []
-  frameSizeConsumer = undefined
-  const cancelPreparedLaunch = scheduleWindowsLaunch(
-    {
-      sendKeyEvent(keyCode, pressed) { preparedKeys.push([keyCode, pressed]) },
-      events: () => ({ onFrameSize: (consumer) => { frameSizeConsumer = consumer } }),
-    },
-    'D:\\StarCraft.exe',
-    5,
-    () => false,
-    () => {},
-    '9x',
-    undefined,
-    undefined,
-    'regedit /s "D:\\STAR.REG"',
-  )
-  frameSizeConsumer(720, 400)
-  frameSizeConsumer(640, 480)
-  runNextTimer(5_000)
-  runNextTimer(350)
-  runNextTimer(800)
-  drainTypingTimers()
-  assert.ok(preparedKeys.some(([keyCode, pressed]) => keyCode === 47 && pressed), '注册表命令没有输入 /s')
-  assert.ok(preparedKeys.some(([keyCode, pressed]) => keyCode === 39 && pressed), '注册表路径没有输入引号')
-  assert.equal(preparedKeys.filter(([keyCode, pressed]) => keyCode === 257 && pressed).length, 1)
-  runNextTimer(2_000)
-  runNextTimer(350)
-  runNextTimer(800)
-  drainTypingTimers()
-  assert.equal(preparedKeys.filter(([keyCode, pressed]) => keyCode === 257 && pressed).length, 2)
-  cancelPreparedLaunch()
 
   // Windows 3.x 没有开始菜单：必须走 Program Manager 的 Alt+F、R，不能再发 Ctrl+Esc。
   scheduled.length = 0
