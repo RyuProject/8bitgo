@@ -310,6 +310,19 @@ const WIN_KEY = {
 } as const
 
 /**
+ * DOSBox-X 会把同一个 JavaScript tick 里的按下/抬起压进同一轮客体输入扫描。
+ * 普通字母通常没事，但 Ctrl+Esc / Alt+F 这类组合键可能在 Windows 看来从未真正同时按住。
+ * 每段保留约五帧，既跨过 Win95 的键盘轮询，也不会让自动启动肉眼可见地变慢。
+ */
+export const WINDOWS_CHORD_STEP_MS = 80
+/** 开始菜单出现后再按 R；太早会把 R 留给桌面，最后的 Enter 就会打开回收站。 */
+export const WINDOWS_START_MENU_READY_MS = 350
+/** 选择 Run 后给对话框创建输入框的时间；过早打字会把路径吞掉开头几位。 */
+export const WINDOWS_RUN_DIALOG_READY_MS = 450
+/** 第一次组合键没让画面明显变化时只重试一次；更多次只会把坏会话拖得更久。 */
+export const WINDOWS_START_MENU_ATTEMPTS = 2
+
+/**
  * 进入客体图形模式后打开系统自己的“运行”对话框，再输入启动命令。
  *
  * Windows 95/98 从开始菜单的 Run 输入完整命令；流式盘会先静默导入兼容注册表，再运行真实 EXE。
@@ -447,6 +460,20 @@ export function scheduleWindowsLaunch(
     if (shift) ci.sendKeyEvent(WIN_KEY.leftShift, false)
   }
 
+  const chord = (modifier: number, key: number, onReleased: () => void) => {
+    ci.sendKeyEvent(modifier, true)
+    later(WINDOWS_CHORD_STEP_MS, () => {
+      ci.sendKeyEvent(key, true)
+      later(WINDOWS_CHORD_STEP_MS, () => {
+        ci.sendKeyEvent(key, false)
+        later(WINDOWS_CHORD_STEP_MS, () => {
+          ci.sendKeyEvent(modifier, false)
+          onReleased()
+        })
+      })
+    })
+  }
+
   /** 开始打字前的那一帧，finishLaunch 拿它当基准 */
   let baselineFrame: ImageData | null = null
 
@@ -487,21 +514,65 @@ export function scheduleWindowsLaunch(
   }
 
   const openFileRun = (onOpened: () => void) => {
-    ci.sendKeyEvent(WIN_KEY.leftAlt, true)
-    tap(WIN_KEY.f)
-    ci.sendKeyEvent(WIN_KEY.leftAlt, false)
-    later(350, () => tap(WIN_KEY.r))
-    later(800, onOpened)
+    chord(WIN_KEY.leftAlt, WIN_KEY.f, () => {
+      later(WINDOWS_START_MENU_READY_MS, () => tap(WIN_KEY.r))
+      later(WINDOWS_START_MENU_READY_MS + WINDOWS_RUN_DIALOG_READY_MS, onOpened)
+    })
   }
 
   const openStartRun = (onOpened: () => void) => {
     // DOSBox-X 不会把浏览器的 Meta / Super 键可靠地交给 Win95；Win+R 会退化成桌面上的
     // 普通字母 R。Ctrl+Esc 是 Windows 95 原生的“打开开始菜单”，随后 R 触发 Run。
-    ci.sendKeyEvent(WIN_KEY.leftCtrl, true)
-    tap(WIN_KEY.esc)
-    ci.sendKeyEvent(WIN_KEY.leftCtrl, false)
-    later(350, () => tap(WIN_KEY.r))
-    later(800, onOpened)
+    let before: ImageData | null = null
+
+    const attempt = (number: number) => {
+      chord(WIN_KEY.leftCtrl, WIN_KEY.esc, () => {
+        later(WINDOWS_START_MENU_READY_MS, () => {
+          const continueToRun = () => {
+            tap(WIN_KEY.r)
+            later(WINDOWS_RUN_DIALOG_READY_MS, onOpened)
+          }
+          const shot = ci.screenshot
+          if (!before || typeof shot !== 'function') return continueToRun()
+          void shot.call(ci)
+            .then((frame) => {
+              if (stopped()) return
+              if (frameDiffRatio(before!, frame) >= CHANGE_RATIO) return continueToRun()
+              if (number + 1 < WINDOWS_START_MENU_ATTEMPTS) {
+                // 第一次没有看到开始菜单：不要把 R 送给桌面。windepth 的 Recycle Bin 就是这样被打开的。
+                attempt(number + 1)
+                return
+              }
+              if (onFailed) {
+                onFailed('Windows 开始菜单没有响应 Ctrl+Esc；已停止自动输入，避免误打开桌面图标。')
+                return
+              }
+              continueToRun()
+            })
+            .catch(continueToRun)
+        })
+      })
+    }
+
+    const shot = ci.screenshot
+    if (typeof shot !== 'function') {
+      attempt(0)
+      return
+    }
+    /*
+      先等基准帧真正落地再按 Ctrl+Esc。若一边截图一边立刻发键，慢设备上基准帧可能反而
+      截到已经打开的开始菜单，后面的对比就会把成功误判成失败；更糟的是基准还没回来时
+      会走“没有截图”的兼容分支，重新留下 R 落到桌面的窗口。
+    */
+    void shot.call(ci)
+      .then((frame) => {
+        if (stopped()) return
+        before = frame
+        attempt(0)
+      })
+      .catch(() => {
+        if (!stopped()) attempt(0)
+      })
   }
 
   const refreshDirectDrawWhenBlack = () => {
@@ -525,17 +596,12 @@ export function scheduleWindowsLaunch(
             失焦、再 Alt+Tab 回去会重建调色板并立刻显示菜单。这里等片头至少八秒后才探测，
             只在真的全黑时做一次，正常游戏和其它 Windows 客体都不会收到额外按键。
           */
-          ci.sendKeyEvent(WIN_KEY.leftCtrl, true)
-          tap(WIN_KEY.esc)
-          ci.sendKeyEvent(WIN_KEY.leftCtrl, false)
-          later(500, () => {
+          chord(WIN_KEY.leftCtrl, WIN_KEY.esc, () => later(500, () => {
             tap(WIN_KEY.esc)
             later(350, () => {
-              ci.sendKeyEvent(WIN_KEY.leftAlt, true)
-              tap(WIN_KEY.tab)
-              ci.sendKeyEvent(WIN_KEY.leftAlt, false)
+              chord(WIN_KEY.leftAlt, WIN_KEY.tab, () => {})
             })
-          })
+          }))
         })
         .catch(() => {
           if (!stopped() && elapsed < 60_000) later(1_500, poll)

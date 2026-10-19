@@ -285,7 +285,8 @@ check('流式盘按预算选择官方预取，并挂到 DOSBox-X 的 Sockdrive',
   assert.match(jsdos, /guest\.launchPrepareCommand,\s*guest\.refreshDirectDrawAfterLaunch/)
   assert.match(windowsLaunch, /refreshDirectDrawWhenBlack\(\)/)
   assert.match(windowsLaunch, /frameIsBlank\(frame\)/)
-  assert.match(windowsLaunch, /tap\(WIN_KEY\.tab\)/)
+  // Alt+Tab 也必须跨过客体键盘轮询；退回同一 tick 的 tap 会让 DirectDraw 黑屏修复静默失效。
+  assert.match(windowsLaunch, /chord\(WIN_KEY\.leftAlt, WIN_KEY\.tab/)
 })
 
 check('纯 DOS Sockdrive 自动叠 DOS 7.1 启动盘，再把远程游戏盘作为 D: 启动', () => {

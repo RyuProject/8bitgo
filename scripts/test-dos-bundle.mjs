@@ -45,7 +45,9 @@ const {
   scheduleWindowsLaunch,
   windowsLaunchDelayMs,
   DESKTOP_SETTLE_FLOOR_MS,
+  WINDOWS_CHORD_STEP_MS,
   WINDOWS_LAUNCH_VERIFY_MS,
+  WINDOWS_START_MENU_READY_MS,
 } = await import(fileURLToPath(new URL('../src/emulator/windowsLaunch.ts', import.meta.url)))
 
 let n = 0
@@ -1125,6 +1127,94 @@ console.log('\n── Windows 95 的开机黑屏：不能把黑屏当成桌面 �
     `⭐ 等到真桌面出现（第 8 秒）之后才敲（实际第 ${(r.firstKey / 1000).toFixed(1)} 秒），没有敲在开机黑屏上`,
   )
   ok(r.failedAt === null, '真桌面之后再敲，按正常流程判成功（没有误报失败）')
+}
+
+console.log('\n── Windows 95 的组合键：必须跨过客体键盘轮询 ──')
+{
+  const clock = fakeClock()
+  globalThis.window = clock.win
+  const events = []
+  const pressedKeys = new Set()
+  let sizeConsumer = null
+  let startMenuVisible = false
+  const startMenu = mkDesktop(640, 480, 40, 230)
+  const ci = {
+    screenshot: async () => (startMenuVisible ? startMenu : DESKTOP),
+    sendKeyEvent: (code, pressed) => {
+      events.push([clock.now, code, pressed])
+      if (pressed) pressedKeys.add(code)
+      else pressedKeys.delete(code)
+      // 只有 Esc 按下时 Ctrl 仍处于按下状态，客体才真的打开开始菜单。
+      if (code === 256 && pressed && pressedKeys.has(341)) startMenuVisible = true
+    },
+    events: () => ({ onFrameSize: (fn) => (sizeConsumer = fn) }),
+  }
+  const cancel = scheduleWindowsLaunch(
+    ci,
+    'D:\\WINDEPTH.EXE',
+    24,
+    () => false,
+    () => {},
+    '9x',
+    () => {},
+  )
+  sizeConsumer?.(720, 400)
+  sizeConsumer?.(640, 480)
+  await clock.runUntil(8_000)
+  cancel()
+
+  const ctrlDown = events.find(([, code, pressed]) => code === 341 && pressed)
+  const escDown = events.find(([, code, pressed]) => code === 256 && pressed)
+  const escUp = events.find(([, code, pressed]) => code === 256 && !pressed)
+  const ctrlUp = events.find(([, code, pressed]) => code === 341 && !pressed)
+  const runKey = events.find(([, code, pressed]) => code === 82 && pressed)
+  ok(Boolean(ctrlDown && escDown && escUp && ctrlUp && runKey), 'Ctrl+Esc 与 Run 的 R 都送进客体')
+  ok(
+    escDown[0] - ctrlDown[0] === WINDOWS_CHORD_STEP_MS &&
+      escUp[0] - escDown[0] === WINDOWS_CHORD_STEP_MS &&
+      ctrlUp[0] - escUp[0] === WINDOWS_CHORD_STEP_MS,
+    `⭐ 组合键按下/抬起各隔 ${WINDOWS_CHORD_STEP_MS}ms，不再塞进同一个输入扫描`,
+  )
+  ok(
+    runKey[0] - ctrlUp[0] >= WINDOWS_START_MENU_READY_MS,
+    '⭐ Ctrl 已经抬起且开始菜单画出来之后才按 R，不会再选中 Recycle Bin',
+  )
+}
+
+console.log('\n── Windows 95 开始菜单没开：重试后必须停手 ──')
+{
+  const clock = fakeClock()
+  globalThis.window = clock.win
+  const events = []
+  let sizeConsumer = null
+  let failedAt = null
+  const ci = {
+    // 始终返回同一张桌面图，模拟 Ctrl+Esc 被客体漏掉；这正是 windepth 曾打开回收站的前提。
+    screenshot: async () => DESKTOP,
+    sendKeyEvent: (code, pressed) => events.push([clock.now, code, pressed]),
+    events: () => ({ onFrameSize: (fn) => (sizeConsumer = fn) }),
+  }
+  const cancel = scheduleWindowsLaunch(
+    ci,
+    'D:\\WINDEPTH.EXE',
+    24,
+    () => false,
+    () => {},
+    '9x',
+    () => (failedAt = clock.now),
+  )
+  sizeConsumer?.(720, 400)
+  sizeConsumer?.(640, 480)
+  await clock.runUntil(8_000)
+  cancel()
+
+  const ctrlAttempts = events.filter(([, code, pressed]) => code === 341 && pressed).length
+  const runKeys = events.filter(([, code, pressed]) => code === 82 && pressed).length
+  const enterKeys = events.filter(([, code, pressed]) => code === 257 && pressed).length
+  ok(ctrlAttempts === 2, '开始菜单没有视觉响应时只重试一次 Ctrl+Esc')
+  ok(runKeys === 0, '⭐ 两次都失败时不把 R 送给桌面，不会再选中 Recycle Bin')
+  ok(enterKeys === 0, '⭐ 失败后也不发 Enter，不会误打开任何桌面图标')
+  ok(failedAt !== null, '⭐ 明确上报启动失败，让播放器重试或提示，而不是假装已经运行')
 }
 
 console.log('\n── Windows 95 的壁纸静止：壳还没起来，不能当成桌面 ──')
