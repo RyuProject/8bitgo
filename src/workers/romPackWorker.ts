@@ -5,97 +5,151 @@ import {
   ROM_PACK_CHUNK_BYTES,
   ROM_PACK_CODEC,
   ROM_PACK_VERSION,
-  bytesToBase64Url,
-  encodeRomPackPrefix,
   romPackAad,
   romPackIv,
   type RomPackCodec,
   type RomPackHeader,
 } from '../../shared/rom-pack-format.js'
 
-interface PackRequest {
-  type: 'pack'
-  file: File
-  originalName: string
+interface InitRequest {
+  type: 'init'
   packageId: string
   keyId: string
   key: ArrayBuffer
   codec: RomPackCodec
   level: number
+  originalName: string
+  originalSize: number
+  noncePrefix: string
 }
 
+interface ChunkRequest {
+  type: 'chunk'
+  index: number
+  source: Blob
+}
+
+type PackRequest = InitRequest | ChunkRequest
+
 type WorkerReply =
-  | { type: 'progress'; loaded: number; total: number }
-  | { type: 'done'; blob: Blob; header: RomPackHeader }
-  | { type: 'error'; message: string }
+  | { type: 'ready' }
+  | { type: 'chunk'; index: number; cipher: ArrayBuffer; chunk: RomPackHeader['chunks'][number] }
+  | { type: 'error'; message: string; index?: number }
+
+type PackContext = Omit<InitRequest, 'type' | 'key'>
 
 let zstdReady: Promise<void> | null = null
 const ready = () => (zstdReady ??= init())
+let context: PackContext | null = null
+let cryptoKey: CryptoKey | null = null
 
+const scope = self as DedicatedWorkerGlobalScope
 const hex = (buf: ArrayBuffer) => Array.from(new Uint8Array(buf), (v) => v.toString(16).padStart(2, '0')).join('')
 
-async function encode(codec: RomPackCodec, source: Uint8Array, level: number): Promise<Uint8Array<ArrayBuffer>> {
-  if (codec === ROM_PACK_CODEC.STORE) return new Uint8Array(source)
+async function encode(codec: RomPackCodec, source: Uint8Array<ArrayBuffer>, level: number): Promise<Uint8Array<ArrayBuffer>> {
+  // store 本来就只需要 AES。原来这里又复制了一份 8MB 原文，大 ZIP / CHD 会白白增加一次内存带宽。
+  if (codec === ROM_PACK_CODEC.STORE) return source
   if (codec === ROM_PACK_CODEC.ZSTD) {
     await ready()
-    // zstd-wasm 的声明没有承诺底层一定是 ArrayBuffer；复制也避免下一次压缩复用 WASM 内存。
+    // zstd-wasm 会复用自己的线性内存，复制输出后才能安全地开始下一块。
     return new Uint8Array(compress(source, level))
   }
-  // codec 在容器里是开放字段；这里把未安装的实现说清楚，未来只需在这张分发表补一项。
   throw new Error(`当前打包器还没有安装 ${codec} 编码器`)
 }
 
-async function pack(request: PackRequest): Promise<{ blob: Blob; header: RomPackHeader }> {
-  if (!request.file.size) throw new Error('不能打包空 ROM')
+async function initialize(request: InitRequest) {
   if (!/^[a-f0-9]{32}$/i.test(request.packageId)) throw new Error('packageId 无效')
-  const cryptoKey = await crypto.subtle.importKey('raw', request.key, 'AES-GCM', false, ['encrypt'])
-  const nonce = crypto.getRandomValues(new Uint8Array(8))
-  const header: RomPackHeader = {
-    version: ROM_PACK_VERSION,
+  if (!request.originalSize || request.originalSize < 0) throw new Error('ROM 大小无效')
+  const keyBytes = new Uint8Array(request.key)
+  try {
+    cryptoKey = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['encrypt'])
+  } finally {
+    // Worker 后续只保留不可导出的 CryptoKey；原始数据密钥不必继续躺在 JS 堆里。
+    keyBytes.fill(0)
+  }
+  context = {
     packageId: request.packageId,
     keyId: request.keyId,
     codec: request.codec,
-    codecVersion: 1,
-    compressionLevel: request.codec === ROM_PACK_CODEC.ZSTD ? request.level : undefined,
-    // LZMA2 的字典大小等参数以后直接放这里；老 Zstd 包的解释不受新 codec 影响。
-    codecOptions: {},
-    cipher: 'aes-256-gcm',
+    level: request.level,
     originalName: request.originalName,
-    originalSize: request.file.size,
-    originalSha256: null,
-    chunkSize: ROM_PACK_CHUNK_BYTES,
-    noncePrefix: bytesToBase64Url(nonce),
-    chunks: [],
-    payloadSize: 0,
-    createdAt: new Date().toISOString(),
+    originalSize: request.originalSize,
+    noncePrefix: request.noncePrefix,
   }
-  const encryptedChunks: Blob[] = []
-
-  // AAD 只认证当前块的元数据，所以每块压完就能立刻加密并释放原文/压缩文。
-  // 浏览器只需要保留最终要上传的密文，不会同时攒一整份压缩中间产物。
-  for (let at = 0; at < request.file.size; at += ROM_PACK_CHUNK_BYTES) {
-    const source = new Uint8Array(await request.file.slice(at, at + ROM_PACK_CHUNK_BYTES).arrayBuffer())
-    const encoded = await encode(request.codec, source, request.level)
-    const sha256 = hex(await crypto.subtle.digest('SHA-256', source))
-    const chunk = { sourceSize: source.byteLength, encodedSize: encoded.byteLength, cipherSize: encoded.byteLength + 16, sha256 }
-    header.chunks.push(chunk)
-    header.payloadSize += chunk.cipherSize
-    const cipher = await crypto.subtle.encrypt(
-      { name: 'AES-GCM', iv: romPackIv(header, header.chunks.length - 1), additionalData: romPackAad(header, header.chunks.length - 1), tagLength: 128 },
-      cryptoKey,
-      encoded,
-    )
-    // 每块立刻固化成 Blob，浏览器可把大 Blob 落盘；数组里不长期钉着整库的 ArrayBuffer。
-    encryptedChunks.push(new Blob([cipher]))
-    ;(self as DedicatedWorkerGlobalScope).postMessage({ type: 'progress', loaded: Math.min(at + source.byteLength, request.file.size), total: request.file.size } satisfies WorkerReply)
-  }
-
-  return { blob: new Blob([encodeRomPackPrefix(header), ...encryptedChunks], { type: 'application/x-8bitgo-rom' }), header }
+  if (request.codec === ROM_PACK_CODEC.ZSTD) await ready()
 }
 
-self.onmessage = (event: MessageEvent<PackRequest>) => {
-  if (event.data?.type !== 'pack') return
-  void pack(event.data)
-    .then(({ blob, header }) => (self as DedicatedWorkerGlobalScope).postMessage({ type: 'done', blob, header } satisfies WorkerReply))
-    .catch((error) => (self as DedicatedWorkerGlobalScope).postMessage({ type: 'error', message: error instanceof Error ? error.message : String(error) } satisfies WorkerReply))
+async function packChunk(request: ChunkRequest): Promise<Extract<WorkerReply, { type: 'chunk' }>> {
+  const current = context
+  const key = cryptoKey
+  if (!current || !key) throw new Error('ROM 打包 Worker 尚未初始化')
+  if (!Number.isInteger(request.index) || request.index < 0) throw new Error('ROM 分块号无效')
+  const expectedSize = Math.min(
+    ROM_PACK_CHUNK_BYTES,
+    current.originalSize - request.index * ROM_PACK_CHUNK_BYTES,
+  )
+  if (expectedSize <= 0 || request.source.size !== expectedSize) throw new Error(`ROM 第 ${request.index + 1} 块大小无效`)
+
+  const source = new Uint8Array(await request.source.arrayBuffer()) as Uint8Array<ArrayBuffer>
+  // Web Crypto 的摘要通常在线程池中运行。先发起摘要，再同步跑 Zstd，可以把两段 CPU 时间重叠起来。
+  const digest = crypto.subtle.digest('SHA-256', source)
+  const encoded = await encode(current.codec, source, current.level)
+  const sha256 = hex(await digest)
+  const chunk = {
+    sourceSize: source.byteLength,
+    encodedSize: encoded.byteLength,
+    cipherSize: encoded.byteLength + 16,
+    sha256,
+  }
+  // AAD 只读取当前下标的元数据，不依赖其它块。构造稀疏数组让不同 Worker 可以完全独立封装。
+  const chunks = Array.from({ length: request.index + 1 }) as RomPackHeader['chunks']
+  chunks[request.index] = chunk
+  const header = {
+    version: ROM_PACK_VERSION,
+    packageId: current.packageId,
+    keyId: current.keyId,
+    codec: current.codec,
+    codecVersion: 1,
+    compressionLevel: current.codec === ROM_PACK_CODEC.ZSTD ? current.level : undefined,
+    codecOptions: {},
+    cipher: 'aes-256-gcm' as const,
+    originalName: current.originalName,
+    originalSize: current.originalSize,
+    originalSha256: null,
+    chunkSize: ROM_PACK_CHUNK_BYTES,
+    noncePrefix: current.noncePrefix,
+    chunks,
+    payloadSize: 0,
+    createdAt: '',
+  } satisfies RomPackHeader
+  const cipher = await crypto.subtle.encrypt(
+    {
+      name: 'AES-GCM',
+      iv: romPackIv(header, request.index),
+      additionalData: romPackAad(header, request.index),
+      tagLength: 128,
+    },
+    key,
+    encoded,
+  )
+  if (cipher.byteLength !== chunk.cipherSize) throw new Error(`ROM 第 ${request.index + 1} 块加密长度异常`)
+  return { type: 'chunk', index: request.index, cipher, chunk }
+}
+
+scope.onmessage = (event: MessageEvent<PackRequest>) => {
+  const request = event.data
+  if (request?.type === 'init') {
+    void initialize(request)
+      .then(() => scope.postMessage({ type: 'ready' } satisfies WorkerReply))
+      .catch((error) => scope.postMessage({ type: 'error', message: error instanceof Error ? error.message : String(error) } satisfies WorkerReply))
+    return
+  }
+  if (request?.type !== 'chunk') return
+  void packChunk(request)
+    .then((message) => scope.postMessage(message, [message.cipher]))
+    .catch((error) => scope.postMessage({
+      type: 'error',
+      index: request.index,
+      message: error instanceof Error ? error.message : String(error),
+    } satisfies WorkerReply))
 }

@@ -2644,6 +2644,9 @@ function RomField({
           type: packed.blob.type,
           lastModified: file.lastModified,
         })
+        if (packed.workers > 1) {
+          setMsg({ ok: true, text: `本地已用 ${packed.workers} 路并行完成分块处理，正在自适应并发上传…` })
+        }
       }
       const result = await uploadRom(uploadFile, finalKey, (pct, at) => {
         setProgress(needsPacking ? 50 + Math.round(pct / 2) : pct)

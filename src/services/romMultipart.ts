@@ -36,10 +36,11 @@ import type { UploadProgress, UploadResult } from './roms'
  */
 export const PART_SIZE = 8 * 1024 * 1024
 /**
- * HTTP/2 下三条大 PUT 共用一条连接，边缘或中间网络重置连接时会让三片同时失败。
- * 两路通常已经能跑满家用上行；发生 status=0 后再由下面的闸门自动降为单路恢复。
+ * HTTP/2 下多条大 PUT 共用一条连接，边缘或中间网络重置连接时会让多片同时失败。
+ * 从两路起步，只有连续成功才逐级升到设备与网络允许的 3–4 路；失败会自动降为单路恢复。
  */
-const MAX_CONCURRENCY = 2
+const INITIAL_CONCURRENCY = 2
+const MAX_CONCURRENCY = 4
 /** 单片重试次数（含首次）。连接级重置需要给浏览器足够时间重建 HTTP/2 会话。 */
 const ATTEMPTS = 5
 const RECOVERY_SUCCESS_PARTS = 4
@@ -95,9 +96,9 @@ export class MultipartUploadGate {
   private successStreak = 0
   private readonly waiters: Array<() => void> = []
 
-  constructor(preferred = MAX_CONCURRENCY) {
+  constructor(preferred = MAX_CONCURRENCY, initial = Math.min(INITIAL_CONCURRENCY, preferred)) {
     this.preferred = Math.max(1, Math.min(MAX_CONCURRENCY, Math.floor(preferred)))
-    this.limit = this.preferred
+    this.limit = Math.max(1, Math.min(this.preferred, Math.floor(initial)))
   }
 
   private acquire(): Promise<void> {
@@ -116,7 +117,10 @@ export class MultipartUploadGate {
   }
 
   private transportFailed(error: unknown) {
-    return typeof error === 'object' && error !== null && 'status' in error && error.status === 0
+    if (typeof error !== 'object' || error === null || !('status' in error)) return false
+    const status = Number(error.status)
+    // 429 / 网关 5xx 也说明当前并发压住了边缘或上游；继续维持四路只会让退避后的重试一起失败。
+    return status === 0 || status === 429 || status === 502 || status === 503 || status === 504
   }
 
   async run<T>(task: () => Promise<T>): Promise<T> {
@@ -145,11 +149,21 @@ export class MultipartUploadGate {
   }
 }
 
-function preferredUploadConcurrency(): number {
-  const connection = (globalThis.navigator as { connection?: { effectiveType?: string; saveData?: boolean } } | undefined)?.connection
+export function preferredUploadConcurrency(): number {
+  const navigator = globalThis.navigator as {
+    hardwareConcurrency?: number
+    connection?: { effectiveType?: string; saveData?: boolean; downlink?: number }
+  } | undefined
+  const connection = navigator?.connection
   const type = String(connection?.effectiveType || '').toLowerCase()
   if (connection?.saveData || type === 'slow-2g' || type === '2g') return 1
-  return MAX_CONCURRENCY
+  if (type === '3g') return 2
+  const hardware = Number(navigator?.hardwareConcurrency || 2)
+  // Network Information API 没有上行测速，只把 4g + 高 downlink 当作“可以试四路”的弱信号。
+  // 判断错了也只影响开头几片：任何 reset / 429 / 5xx 都会立刻收敛到单路。
+  if (type === '4g' && Number(connection?.downlink || 0) >= 8 && hardware >= 4) return 4
+  if (hardware >= 4) return 3
+  return 2
 }
 
 /* ---------------- 本地账本 ---------------- */

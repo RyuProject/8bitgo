@@ -590,13 +590,15 @@ Free / Pro 100 MB，Business 200 MB，Enterprise 500 MB，**由边缘节点执�
 日志里能看到这次 PUT，才说明问题在 Worker 侧。
 
 现在超过 24MB（`MULTIPART_THRESHOLD`）的文件自动改走**分片上传**：
-8MB 一片、默认 2 并发、单片失败重试、`localStorage` 记账后可断点续传（`src/services/romMultipart.ts`）。
+8MB 一片、从 2 并发起步并在稳定链路上逐级升到 3–4 路、单片失败重试、`localStorage` 记账后可断点续传
+（`src/services/romMultipart.ts`）。HTTP/2 reset、429 或网关 5xx 会立即收敛到单路，连续成功后才重新升档；
+不要把它改成四路固定并发，否则一次连接级错误会再次变成重试风暴。
 上限是按**单个请求**算的，所以分片顺带把 100MB 这道墙也绕开了。三个必须记住的约束：
 
 ⚠️ 浏览器控制台若同时出现多个 `PUT ... net::ERR_HTTP2_PROTOCOL_ERROR`，通常不是 ISO 或 uploadId
 损坏，而是共用同一 HTTP/2 连接的分片被边缘/中间网络一起重置。不能让每个 XHR 在几百毫秒后
-各自并发重试：那会在刚重建的连接上再次制造失败风暴。上传器现在遇到 `status=0` 会把全局闸门
-收敛到单路，连续四片成功后才恢复双路；单片最多试 5 次并用 1.5～12 秒退避。已经完成的分片和
+各自并发重试：那会在刚重建的连接上再次制造失败风暴。上传器现在遇到 `status=0`、429 或网关 5xx
+会把全局闸门收敛到单路，之后每连续四片成功才恢复一档；单片最多试 5 次并用 1.5～12 秒退避。已经完成的分片和
 本地账本原样保留，管理员重新选择同一文件时仍从断点继续，不准为了这个错误更换 `PART_SIZE`。
 
 1. R2 要求**除最后一片外所有片等大**、最小 5MB、最多 10000 片 —— 改 `PART_SIZE` 会让旧的续传记录作废；续传还校验文件名、字节数、修改时间和头/中/尾内容指纹，防止把同名的另一份文件拼进旧分片
@@ -806,6 +808,11 @@ Play! 浏览器版仍是实验性支持：90 秒内没有产生首帧就提示�
 codecVersion、keyId 和每块 SHA-256；播放器解包后仍把 `.zip` / `.nes` / `.nds` 等原名交给核心。
 Zstd 解码前还必须核对 frame 自报的 content size 与分块表完全一致；只在解压后比大小挡不住
 恶意 frame 先诱导 WASM 申请几十 GB 内存。校验在 `assertZstdFrameContentSize()`，不要绕过。
+
+浏览器打包不是单 Worker 串行：`packRomForUpload()` 按逻辑 CPU、设备内存和真实分块数启动 1–4 个
+Worker，并行完成 Zstd、SHA-256 与 AES-GCM；每个 Worker 同时只持有一块，低内存设备自动降到 1–2 路。
+SHA-256 会在同步 Zstd 前先提交给 Web Crypto，以便和压缩重叠；`store` 路径不得再复制一份 8MB 原文。
+并行结果必须按原块号组装，AAD / IV 与现有 v1 容器完全一致，不能为了提速改格式导致旧播放器失兼容。
 
 这里故意用自己的版本化容器，而不是直接上传 `.zst` 或 `.7z`：以后切 LZMA2 时只需在
 `scripts/pack-rom.mjs`、`scripts/unpack-rom.mjs`、`src/workers/romPackWorker.ts` 和 `src/services/romPack.ts` 的 codec

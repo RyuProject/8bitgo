@@ -43,6 +43,7 @@ globalThis.XMLHttpRequest = class {
 
 const { uploadRom, deleteRomDir, headRom, listRomObjects } = await import('../src/services/roms.ts')
 const { uploadRomMultipart, listOrphanUploads, abortOrphanUpload, listPendingUploads, MultipartUploadGate } = await import('../src/services/romMultipart.ts')
+const { romPackWorkerConcurrency } = await import('../src/services/romPack.ts')
 const {
   clearPendingSockdriveCreation,
   createSockdriveConversion,
@@ -79,6 +80,25 @@ const { ApiError } = await import('../src/services/api.ts')
   assert.equal(gate.snapshot().limit, 1, '少量成功不能过早恢复并发')
 }
 console.log('✅ HTTP/2 连接级错误会把分片上传收敛到单路，避免并发重试风暴')
+
+assert.equal(romPackWorkerConcurrency(100 * 1024 * 1024, { hardwareConcurrency: 8, deviceMemory: 8 }), 4)
+assert.equal(romPackWorkerConcurrency(100 * 1024 * 1024, { hardwareConcurrency: 4, deviceMemory: 4 }), 2)
+assert.equal(romPackWorkerConcurrency(100 * 1024 * 1024, { hardwareConcurrency: 8, deviceMemory: 2 }), 1)
+assert.equal(romPackWorkerConcurrency(8 * 1024 * 1024, { hardwareConcurrency: 16, deviceMemory: 16 }), 1)
+console.log('✅ 8BG 压缩加密按 CPU、内存与分块数选择 1–4 路 Worker，不会在低内存设备上过载')
+
+// 稳定链路从两路起步，连续成功后才逐级放开；429 / 网关错误仍须立刻回到单路。
+{
+  const gate = new MultipartUploadGate(4)
+  assert.equal(gate.snapshot().limit, 2)
+  for (let i = 0; i < 4; i++) await gate.run(async () => i)
+  assert.equal(gate.snapshot().limit, 3)
+  for (let i = 0; i < 4; i++) await gate.run(async () => i)
+  assert.equal(gate.snapshot().limit, 4)
+  await assert.rejects(gate.run(async () => { throw { status: 503 } }))
+  assert.equal(gate.snapshot().limit, 1)
+}
+console.log('✅ 稳定上传可自适应升至四路；HTTP/2、限流和网关故障都会自动降回单路')
 
 const headRequests = []
 globalThis.fetch = async (url, init) => {

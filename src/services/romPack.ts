@@ -1,11 +1,15 @@
 import { decompress, init } from '@bokuweb/zstd-wasm'
 import { apiBase, apiEnabled } from './api'
 import {
+  ROM_PACK_CHUNK_BYTES,
   ROM_PACK_CODEC,
   ROM_PACK_HEADER_PREFIX_BYTES,
   ROM_PACK_MAX_HEADER_BYTES,
+  ROM_PACK_VERSION,
   assertZstdFrameContentSize,
   base64UrlToBytes,
+  bytesToBase64Url,
+  encodeRomPackPrefix,
   isRomPackBytes,
   isRomPackUrl,
   parseRomPackHeader,
@@ -99,12 +103,41 @@ interface PackProgress {
   total: number
 }
 
+interface RomPackCapacity {
+  hardwareConcurrency?: number
+  deviceMemory?: number
+}
+
 const keyCache = new Map<string, Promise<CryptoKey>>()
 let zstdReady: Promise<void> | null = null
 const readyZstd = () => (zstdReady ??= init())
 
 const randomId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), (v) => v.toString(16).padStart(2, '0')).join('')
 const hex = (buf: ArrayBuffer) => Array.from(new Uint8Array(buf), (v) => v.toString(16).padStart(2, '0')).join('')
+
+/**
+ * 浏览器打包并行度：给页面至少留一个逻辑核心，并用内存档位限制同时存在的 WASM 堆。
+ *
+ * 8MB 原文在 Zstd / AES 期间会有原文、编码结果和密文三份短暂驻留；直接照
+ * hardwareConcurrency 启十几个 Worker 在高核数低内存设备上反而会换页甚至杀标签。
+ */
+export function romPackWorkerConcurrency(
+  fileSize: number,
+  capacity: RomPackCapacity = {
+    hardwareConcurrency: globalThis.navigator?.hardwareConcurrency,
+    deviceMemory: (globalThis.navigator as Navigator & { deviceMemory?: number } | undefined)?.deviceMemory,
+  },
+): number {
+  const chunks = Math.max(1, Math.ceil(fileSize / ROM_PACK_CHUNK_BYTES))
+  const hardware = Number.isFinite(capacity.hardwareConcurrency) && Number(capacity.hardwareConcurrency) > 0
+    ? Math.floor(Number(capacity.hardwareConcurrency))
+    : 2
+  const memory = Number(capacity.deviceMemory)
+  const memoryCap = Number.isFinite(memory) && memory > 0
+    ? memory <= 2 ? 1 : memory <= 4 ? 2 : 4
+    : 4
+  return Math.max(1, Math.min(chunks, 4, memoryCap, Math.max(1, hardware - 1)))
+}
 
 async function fetchRawKey(packageId: string, keyId?: string): Promise<KeyResponse> {
   if (!apiEnabled()) throw new Error('8BG 打包需要后端 API（VITE_API_URL）')
@@ -139,40 +172,126 @@ async function contentKey(header: Pick<RomPackHeader, 'packageId' | 'keyId'>): P
   return pending
 }
 
-/** 后台上传的新 ROM 默认走这里；Worker 做重活，React 页面只收进度和最终 Blob。 */
+/** 后台上传的新 ROM 默认走这里；Worker 池做重活，React 页面只收进度和最终 Blob。 */
 export async function packRomForUpload(
   file: File,
   originalName = file.name,
   onProgress?: (progress: PackProgress) => void,
   codec: RomPackCodec = recommendedRomPackCodec(originalName),
-): Promise<{ blob: Blob; header: RomPackHeader }> {
+): Promise<{ blob: Blob; header: RomPackHeader; workers: number }> {
   const packageId = randomId()
   const grant = await fetchRawKey(packageId)
   const rawKey = base64UrlToBytes(grant.key)
-  const worker = new Worker(new URL('../workers/romPackWorker.ts', import.meta.url), { type: 'module', name: '8bitgo-rom-pack' })
+  const noncePrefix = bytesToBase64Url(crypto.getRandomValues(new Uint8Array(8)))
+  const workerCount = romPackWorkerConcurrency(file.size)
+  const workers = Array.from({ length: workerCount }, (_, index) => new Worker(
+    new URL('../workers/romPackWorker.ts', import.meta.url),
+    { type: 'module', name: `8bitgo-rom-pack-${index + 1}` },
+  ))
+  const terminate = () => workers.forEach((worker) => worker.terminate())
 
-  return new Promise((resolve, reject) => {
-    const finish = () => worker.terminate()
-    worker.onerror = (event) => {
-      finish()
-      reject(new Error(event.message || 'ROM 打包 Worker 失败'))
+  try {
+    await Promise.all(workers.map((worker) => new Promise<void>((resolve, reject) => {
+      worker.onerror = (event) => reject(new Error(event.message || 'ROM 打包 Worker 初始化失败'))
+      worker.onmessage = (event: MessageEvent<{ type: 'ready' } | { type: 'error'; message: string }>) => {
+        if (event.data.type === 'error') reject(new Error(event.data.message))
+        else resolve()
+      }
+      const key = rawKey.slice().buffer
+      worker.postMessage({
+        type: 'init',
+        packageId,
+        keyId: grant.keyId,
+        key,
+        codec,
+        level: ROM_PACK_DEFAULT_LEVEL,
+        originalName,
+        originalSize: file.size,
+        noncePrefix,
+      }, [key])
+    })))
+    rawKey.fill(0)
+
+    const totalChunks = Math.ceil(file.size / ROM_PACK_CHUNK_BYTES)
+    const encryptedChunks = Array<Blob>(totalChunks)
+    const chunks = Array<RomPackHeader['chunks'][number]>(totalChunks)
+    let nextIndex = 0
+    let completedBytes = 0
+    await new Promise<void>((resolve, reject) => {
+      let completed = 0
+      let settled = false
+      const fail = (error: unknown) => {
+        if (settled) return
+        settled = true
+        reject(error instanceof Error ? error : new Error(String(error)))
+      }
+      const dispatch = (worker: Worker) => {
+        if (settled) return
+        const index = nextIndex++
+        if (index >= totalChunks) return
+        const start = index * ROM_PACK_CHUNK_BYTES
+        worker.postMessage({
+          type: 'chunk',
+          index,
+          // Blob 的结构化克隆不复制正文；每个 Worker 只在真正处理自己的块时读取 8MB。
+          source: file.slice(start, Math.min(file.size, start + ROM_PACK_CHUNK_BYTES)),
+        })
+      }
+      for (const worker of workers) {
+        worker.onerror = (event) => fail(new Error(event.message || 'ROM 打包 Worker 失败'))
+        worker.onmessage = (event: MessageEvent<
+          | { type: 'chunk'; index: number; cipher: ArrayBuffer; chunk: RomPackHeader['chunks'][number] }
+          | { type: 'error'; message: string; index?: number }
+        >) => {
+          const message = event.data
+          if (message.type === 'error') {
+            fail(new Error(message.index === undefined ? message.message : `第 ${message.index + 1} 块：${message.message}`))
+            return
+          }
+          if (settled || encryptedChunks[message.index]) return
+          encryptedChunks[message.index] = new Blob([message.cipher])
+          chunks[message.index] = message.chunk
+          completed++
+          completedBytes += message.chunk.sourceSize
+          onProgress?.({ loaded: completedBytes, total: file.size })
+          if (completed === totalChunks) {
+            settled = true
+            resolve()
+          } else {
+            dispatch(worker)
+          }
+        }
+        dispatch(worker)
+      }
+    })
+
+    const header: RomPackHeader = {
+      version: ROM_PACK_VERSION,
+      packageId,
+      keyId: grant.keyId,
+      codec,
+      codecVersion: 1,
+      compressionLevel: codec === ROM_PACK_CODEC.ZSTD ? ROM_PACK_DEFAULT_LEVEL : undefined,
+      codecOptions: {},
+      cipher: 'aes-256-gcm',
+      originalName,
+      originalSize: file.size,
+      originalSha256: null,
+      chunkSize: ROM_PACK_CHUNK_BYTES,
+      noncePrefix,
+      chunks,
+      payloadSize: chunks.reduce((sum, chunk) => sum + chunk.cipherSize, 0),
+      createdAt: new Date().toISOString(),
     }
-    worker.onmessage = (event: MessageEvent<
-      | { type: 'progress'; loaded: number; total: number }
-      | { type: 'done'; blob: Blob; header: RomPackHeader }
-      | { type: 'error'; message: string }
-    >) => {
-      const message = event.data
-      if (message.type === 'progress') return onProgress?.(message)
-      finish()
-      if (message.type === 'error') reject(new Error(message.message))
-      else resolve({ blob: message.blob, header: message.header })
+    return {
+      blob: new Blob([encodeRomPackPrefix(header), ...encryptedChunks], { type: 'application/x-8bitgo-rom' }),
+      header,
+      workers: workerCount,
     }
-    worker.postMessage({
-      type: 'pack', file, originalName, packageId, keyId: grant.keyId,
-      key: rawKey.buffer, codec, level: ROM_PACK_DEFAULT_LEVEL,
-    }, [rawKey.buffer])
-  })
+  } finally {
+    rawKey.fill(0)
+    terminate()
+  }
 }
 
 async function decode(header: Pick<RomPackHeader, 'codec' | 'codecVersion'>, data: Uint8Array, expectedSize: number): Promise<Uint8Array<ArrayBuffer>> {
