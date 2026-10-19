@@ -266,6 +266,59 @@ console.log('\n── Daggerfall：启动参数与数据路径必须同时纠正
   )
 }
 
+console.log('\n── Arena：光盘镜像与写入目录必须同时纠正 ──')
+{
+  const slug = 'the-elder-scrolls-arena'
+  const originalBat = '@SET ARENADATA=C:\\ESARENA\r\n@D:\r\n@ACD -Ssbpdig.adv -IOS220\r\n'
+  const cue = 'FILE "Arena.img" BINARY\r\n   TRACK 1 MODE1/2352\r\n   INDEX 1 00:00:00\r\n'
+  const rom = makeZip([
+    { name: 'ARENA.BAT', data: te.encode(originalBat) },
+    { name: 'Arena.cue', data: te.encode(cue) },
+    { name: 'Arena.img', data: te.encode('disc image fixture') },
+    { name: 'CITYDATA.64', data: te.encode('save data') },
+  ])
+  const launch = dosGameCompatibilityExecutable(slug, undefined)
+  const startup = dosGameCompatibilityStartupCommands(slug, undefined)
+  ok(launch === 'ARENA.BAT', '未填入口时启动原版 ARENA.BAT')
+  ok(startup === 'imgmount d Arena.cue -t iso', '运行 BAT 前先挂载包内 CUE / IMG 光盘')
+  ok(dosGameCompatibilityExecutable(slug, 'CUSTOM.BAT') === 'CUSTOM.BAT', '后台显式 Arena 入口优先')
+  ok(dosGameCompatibilityStartupCommands(slug, 'imgmount d other.cue -t iso') === 'imgmount d other.cue -t iso', '后台显式 Arena 挂盘命令优先')
+  ok(dosGameCompatibilityLaunchArguments(slug, undefined).length === 0, 'Arena 不误继承 Daggerfall 的 Z.CFG 参数')
+
+  const extras = await dosGameCompatibilityExtras(slug, rom, [])
+  ok(extras.length === 1 && extras[0].path === 'ARENA.BAT', '只覆盖原版 BAT，不改光盘镜像')
+  const bundle = await makeJsdosBundle('上古卷轴1豪华版.zip', rom, undefined, undefined, launch, startup, extras)
+  const final = await bundle.blob.arrayBuffer()
+  const conf = new TextDecoder().decode((await readZipFile(final, '.jsdos/dosbox.conf')).data)
+  const bat = new TextDecoder().decode((await readZipFile(final, 'ARENA.BAT')).data)
+  ok(bundle.executable === 'ARENA.BAT' && /imgmount d Arena\.cue -t iso\nARENA\.BAT/i.test(conf), '最终 autoexec 先挂光盘再执行 BAT')
+  ok(bat.startsWith('@SET ARENADATA=C:\\\r\n@D:\r\n') && bat.includes('@ACD -Ssbpdig.adv -IOS220'), '最终 BAT 指向 C: 根并保留原版声卡参数')
+  ok(new TextDecoder().decode((await readZipFile(rom, 'ARENA.BAT')).data) === originalBat, '玩家原始 ZIP 没有被修改')
+
+  const admin = [{ path: 'arena.bat', data: te.encode('custom') }]
+  ok(await dosGameCompatibilityExtras(slug, rom, admin) === admin, '后台已提供 BAT 时尊重它，不重复覆盖')
+  const corrected = makeZip([
+    { name: 'ARENA.BAT', data: te.encode(originalBat.replace('C:\\ESARENA', 'C:\\')) },
+    { name: 'Arena.cue', data: te.encode(cue) },
+    { name: 'Arena.img', data: te.encode('disc image fixture') },
+  ])
+  ok((await dosGameCompatibilityExtras(slug, corrected, [])).length === 0, '源包本来就修正了目录时不重打包')
+  await throwsWith(
+    () => dosGameCompatibilityExtras(slug, makeZip([{ name: 'ARENA.BAT', data: te.encode(originalBat) }]), []),
+    /缺少 Arena\.cue 或 Arena\.img/,
+    '缺光盘文件时在 Dos() 前明确报错',
+  )
+  await throwsWith(
+    () => dosGameCompatibilityExtras(slug, makeZip([
+      { name: 'ARENA.BAT', data: te.encode('@SET ARENADATA=C:\\UNKNOWN\r\n') },
+      { name: 'Arena.cue', data: te.encode(cue) },
+      { name: 'Arena.img', data: te.encode('disc image fixture') },
+    ]), []),
+    /不能安全修补/,
+    '陌生的 BAT 路径不按猜测改写',
+  )
+}
+
 console.log('\n── Caesar III：游戏分辨率必须与 Win95 的 800×600 对齐 ──')
 {
   const c3Inf = (resolution, size = 560) => {
