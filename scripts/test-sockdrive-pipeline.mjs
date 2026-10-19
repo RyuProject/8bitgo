@@ -130,6 +130,44 @@ const bound = await bindSockdriveGame({
 assert.equal(bound.changed, true)
 assert.deepEqual(patched, { dosSockdrive: 'sockdrives/starcraft-v1' })
 
+let languagePatch = null
+const languageBound = await bindSockdriveGame({
+  slug: 'fallout',
+  prefix: 'sockdrives/fallout-en-v2',
+  lang: 'en',
+  publicBase: 'https://assets.test',
+  apiBase: 'https://site.test',
+  token: 'test-admin',
+  fetchImpl: async (url, init = {}) => {
+    const value = String(url)
+    if (value.includes('/sockdrive.metaj')) return Response.json({ range_count: 3 })
+    if (value.includes('/preload_ranges.metaj')) return Response.json([0, 2])
+    if (init.method === 'PATCH') {
+      languagePatch = JSON.parse(init.body)
+      return Response.json({
+        slug: 'fallout',
+        platform: 'dos',
+        dosBackend: 'dosboxX',
+        dosExecutables: { en: 'FALLOUT.EXE' },
+        dosSockdrives: languagePatch.dosSockdrives,
+        roms: { en: 'roms/dos/fallout.en.zip.8bg', ja: 'roms/dos/fallout.ja.zip.8bg' },
+      })
+    }
+    return Response.json({
+      slug: 'fallout',
+      platform: 'dos',
+      dosBackend: 'dosboxX',
+      dosExecutables: { en: 'FALLOUT.EXE' },
+      dosSockdrives: { en: 'sockdrives/fallout-en-v1', ja: 'sockdrives/fallout-ja-v1' },
+      roms: { en: 'roms/dos/fallout.en.zip.8bg', ja: 'roms/dos/fallout.ja.zip.8bg' },
+    })
+  },
+})
+assert.equal(languageBound.changed, true)
+assert.deepEqual(languagePatch, {
+  dosSockdrives: { en: 'sockdrives/fallout-en-v2', ja: 'sockdrives/fallout-ja-v1' },
+})
+
 await assert.rejects(
   () => bindSockdriveGame({
     slug: 'starcraft',

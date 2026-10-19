@@ -62,7 +62,7 @@ try {
         "export { createOverallRatio, fetchWithProgress, windowsGuestStartupBudgetMs } from './src/emulator/loadProgress.ts'",
         "export { shouldCaptureMouse } from './src/emulator/mouseCapture.ts'",
         "export { dosMouseSpeedMultiplier, normalizeDosMouseSensitivity } from './src/emulator/dosMouse.ts'",
-        "export { isWindowsGraphicsMode, scheduleWindowsLaunch, windows3xLaunchCommands, windowsLaunchDelayMs } from './src/emulator/windowsLaunch.ts'",
+        "export { isWindowsGraphicsMode, scheduleWindowsLaunch, windows3xLaunchCommands, windowsLaunchDelayMs, WINDOWS_CHORD_STEP_MS, WINDOWS_RUN_DIALOG_READY_MS, WINDOWS_START_MENU_READY_MS } from './src/emulator/windowsLaunch.ts'",
       ].join('\n'),
       resolveDir: process.cwd(),
       sourcefile: 'rom-validation-test-entry.ts',
@@ -104,6 +104,9 @@ try {
     scheduleWindowsLaunch,
     windows3xLaunchCommands,
     windowsLaunchDelayMs,
+    WINDOWS_CHORD_STEP_MS,
+    WINDOWS_RUN_DIALOG_READY_MS,
+    WINDOWS_START_MENU_READY_MS,
     windowsGuestStartupBudgetMs,
   } = await import(
     `${pathToFileURL(outfile).href}?${Date.now()}`
@@ -376,6 +379,10 @@ try {
       assert.ok(++count < 200, 'Windows 自动输入没有结束')
     }
   }
+  const drainChordTimers = () => {
+    // modifier down 已同步发出；其余三段必须跨过客体键盘轮询后才能继续菜单操作。
+    for (let step = 0; step < 3; step += 1) runNextTimer(WINDOWS_CHORD_STEP_MS)
+  }
   const cancelLaunch = scheduleWindowsLaunch(
     {
       sendKeyEvent() {},
@@ -415,15 +422,17 @@ try {
   frameSizeConsumer(720, 400)
   frameSizeConsumer(640, 480)
   runNextTimer(5_000)
-  runNextTimer(350)
-  runNextTimer(800)
+  drainChordTimers()
+  runNextTimer(WINDOWS_START_MENU_READY_MS)
+  runNextTimer(WINDOWS_RUN_DIALOG_READY_MS)
   drainTypingTimers()
   assert.ok(preparedKeys.some(([keyCode, pressed]) => keyCode === 47 && pressed), '注册表命令没有输入 /s')
   assert.ok(preparedKeys.some(([keyCode, pressed]) => keyCode === 39 && pressed), '注册表路径没有输入引号')
   assert.equal(preparedKeys.filter(([keyCode, pressed]) => keyCode === 257 && pressed).length, 1)
   runNextTimer(2_000)
-  runNextTimer(350)
-  runNextTimer(800)
+  drainChordTimers()
+  runNextTimer(WINDOWS_START_MENU_READY_MS)
+  runNextTimer(WINDOWS_RUN_DIALOG_READY_MS)
   drainTypingTimers()
   assert.equal(preparedKeys.filter(([keyCode, pressed]) => keyCode === 257 && pressed).length, 2)
   cancelPreparedLaunch()
@@ -448,14 +457,15 @@ try {
   frameSizeConsumer(720, 400)
   frameSizeConsumer(640, 480)
   runNextTimer(5_000)
+  drainChordTimers()
   assert.deepEqual(keyEvents, [
     [342, true],
     [70, true],
     [70, false],
     [342, false],
   ])
-  runNextTimer(350)
-  runNextTimer(800)
+  runNextTimer(WINDOWS_START_MENU_READY_MS)
+  runNextTimer(WINDOWS_START_MENU_READY_MS + WINDOWS_RUN_DIALOG_READY_MS)
   drainTypingTimers()
   assert.equal(keyEvents.filter(([keyCode, pressed]) => keyCode === 257 && pressed).length, 1)
 
@@ -468,8 +478,9 @@ try {
   runNextTimer(350)
   runNextTimer(1_500)
   assert.equal(keyEvents.filter(([keyCode, pressed]) => keyCode === 342 && pressed).length, 3)
-  runNextTimer(350)
-  runNextTimer(800)
+  drainChordTimers()
+  runNextTimer(WINDOWS_START_MENU_READY_MS)
+  runNextTimer(WINDOWS_START_MENU_READY_MS + WINDOWS_RUN_DIALOG_READY_MS)
   drainTypingTimers()
   assert.equal(keyEvents.filter(([keyCode, pressed]) => keyCode === 257 && pressed).length, 3)
   assert.equal(win31Launched, false)

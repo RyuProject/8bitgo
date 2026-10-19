@@ -15,7 +15,6 @@ import type { Capability, CaptureSources, LoadProgress, MountOptions, PadButton,
 import { getT, fmt } from '@/services/i18n'
 import {
   hideJsdosConfigForLayer,
-  buildDosSockdriveConf,
   isReadyJsdosBundleBlob,
   makeJsdosConfigBundle,
   makeJsdosBundle,
@@ -27,6 +26,7 @@ import {
 import {
   buildSockdriveWindowsGuestConfig,
   buildWindowsGuestConfig,
+  dosSockdriveProgramCommand,
   normalizeSockdriveUrl,
   readWindowsSystemConfig,
   sockdriveVersionedSaveKey,
@@ -41,7 +41,12 @@ import { deleteSave, pullSave, pushSave } from '@/services/saves'
 import { loadGameBytes } from '../romLoader'
 import { inspectRemoteRomPack, isRomPackUrl, ROM_PACK_ARRAY_BUFFER_LIMIT } from '@/services/romPack'
 import { prepareRemoteDosBundle } from '../dosBundleSource'
-import { loadSystemBytes, systemSourcesFor } from '../systemSource'
+import {
+  defaultDos71SystemUrl,
+  isDos71SystemUrl,
+  loadSystemBytes,
+  systemSourcesFor,
+} from '../systemSource'
 import { armJspi } from '../jspiFlag'
 import {
   DOS_PAD_BUTTONS,
@@ -56,12 +61,19 @@ import {
 } from '../dosPad'
 import { normalizeDosStartupCommands } from '../../../shared/dos-startup-commands.js'
 import { fetchWithProgress, STALL_MS, STARTING_MILESTONE, windowsGuestStartupBudgetMs } from '../loadProgress'
-import { assertTypeable, scheduleWindowsLaunch, windows3xLaunchCommands, type WindowsLaunchCi } from '../windowsLaunch'
+import {
+  assertTypeable,
+  scheduleDosGuestLaunch,
+  scheduleWindowsLaunch,
+  windows3xLaunchCommands,
+  type WindowsLaunchCi,
+} from '../windowsLaunch'
 import { JSDOS_ASSET_VERSION, JSDOS_PATH } from '../paths'
 import {
   DOS_MOUSE_SENSITIVITY_DEFAULT,
   dosMouseSpeedMultiplier,
   needsLockedAbsoluteDosMouse,
+  needsRelativeWindowsGuestMouse,
   normalizeDosMouseSensitivity,
 } from '../dosMouse'
 import {
@@ -1060,11 +1072,17 @@ async function verifySockdriveForLaunch(
 export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
   const streamingGame = Boolean(options.dosSockdriveUrl)
-  const pureDosStreaming = streamingGame && !options.dosSystemUrl
+  /*
+    Sockdrive 是 BIOS 硬盘，不是 DOSBox-X 内置 DOS 的 mount 盘。纯 DOS 流式游戏若没有显式系统盘，
+    自动叠一块 10MB DOS 7.1 启动盘：C: 启动系统、D: 按需读取游戏。以前直接 `imgmount 2`
+    后再执行 `c:`，分块都下载成功却只得到 “Drive C does not exist”。
+  */
+  const systemUrl = options.dosSystemUrl?.trim() || (streamingGame ? defaultDos71SystemUrl() : '')
+  const dosSystemGuest = streamingGame && isDos71SystemUrl(systemUrl)
   // 槽 0 是旧的文件层存档；流式盘存的是扇区差异，格式完全不同，不能互相覆盖。
   const saveSlot = streamingGame ? 1 : 0
   const saveMetadata = {
-    core: options.dosBackend === 'dosboxX' || options.dosSystemUrl ? 'dosbox-x' : 'dosbox',
+    core: options.dosBackend === 'dosboxX' || systemUrl ? 'dosbox-x' : 'dosbox',
     build: JSDOS_ASSET_VERSION,
     format: streamingGame ? 'sockdrive-sector-changes' : 'jsdos-fs-changes',
   }
@@ -1155,7 +1173,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         options.dosboxConfig,
       )
       const startupCommands = normalizeDosStartupCommands(options.dosStartupCommands)
-      const preferReadyBundleBlob = !options.dosSystemUrl
+      const preferReadyBundleBlob = !systemUrl
         && !options.dosExecutable?.trim()
         && !dosboxConfig?.trim()
         && !startupCommands
@@ -1164,7 +1182,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       // 系统镜像和 ROM 是我们自己 fetch 的，后两段都有真实进度。
       options.onProgress?.({ phase: 'engine' })
       let engineDone = false
-      let systemDone = !options.dosSystemUrl
+      let systemDone = !systemUrl
       let latestSystemProgress: LoadProgress | undefined
       let latestRomProgress: LoadProgress | undefined
       let concurrentFailure: unknown = null
@@ -1196,7 +1214,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               if (engineDone && systemDone) options.onProgress?.(progress)
             },
             abort.signal,
-            Boolean(options.dosSystemUrl),
+            Boolean(systemUrl),
             preferReadyBundleBlob,
           ))
       const extrasTask = settled(streamingGame
@@ -1205,16 +1223,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           : Promise.resolve([])
         : loadExtras(options.dosExtras, abort.signal))
       const sockdriveTask = settled(streamingGame
-        ? verifySockdriveForLaunch(sockdriveUrl, abort.signal, Boolean(options.dosSystemUrl))
+        ? verifySockdriveForLaunch(sockdriveUrl, abort.signal, Boolean(systemUrl))
         : Promise.resolve<SockdriveRuntimePreload>('none'))
       /*
         系统镜像走**多源兜底**（见 ../systemSource）：主源是我们自己的资源域名，
         取不到或者卡死就换 js-dos 官方源。它是 Win9x/Win3.x 游戏的硬前提 ——
         拿不到就什么都做不了，而玩家看到的只是一个永远不动的进度条。
       */
-      const systemTask = settled(options.dosSystemUrl
+      const systemTask = settled(systemUrl
         ? loadSystemBytes(
-            systemSourcesFor(options.dosSystemUrl),
+            systemSourcesFor(systemUrl),
             (progress) => {
               latestSystemProgress = { ...progress, phase: 'assets' }
               if (engineDone) options.onProgress?.(latestSystemProgress)
@@ -1266,12 +1284,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       let guestLaunchCommand = ''
       let initFs: unknown[] | undefined
       if (loadedSystem) {
-        if (!options.dosExecutable) throw new Error('Windows 客体游戏没有配置自启动 EXE')
+        if (!options.dosExecutable) throw new Error('DOS / Windows 客体游戏没有配置自启动程序')
         const systemConfig = await readWindowsSystemConfig(loadedSystem.data)
         let gameLayerBytes: Uint8Array<ArrayBuffer> | null = null
         let gameExecutable = options.dosExecutable
         let narrowedToExeDir = false
-        const registryImport = windowsGameCompatibilityRegistryImport(options.gameSlug, options.dosExecutable)
+        const registryImport = dosSystemGuest
+          ? undefined
+          : windowsGameCompatibilityRegistryImport(options.gameSlug, options.dosExecutable)
         if (streamingGame) {
           /*
             目录地址可能是站内 `/sockdrives/...`；DOSBox-X 的 Sockdrive 只接受 HTTP(S)，
@@ -1322,19 +1342,26 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           gameLayerBytes = gameLayer.bytes
         }
         guestLaunchCommand = streamingGame
-          ? windowsSockdriveExecutableCommand(gameExecutable, guest.gameDrive)
+          ? dosSystemGuest
+            ? dosSockdriveProgramCommand(gameExecutable, guest.gameDrive)
+            : windowsSockdriveExecutableCommand(gameExecutable, guest.gameDrive)
           : windowsGuestLaunchCommand(
               guest,
               gameExecutable,
               options.dosWindowsVersion ?? '9x',
               narrowedToExeDir,
             )
-        guest.refreshDirectDrawAfterLaunch = windowsGameNeedsDirectDrawFocusRefresh(options.gameSlug, gameExecutable)
+        guest.refreshDirectDrawAfterLaunch = !dosSystemGuest && windowsGameNeedsDirectDrawFocusRefresh(
+          options.gameSlug,
+          gameExecutable,
+        )
         // 现在就验：以前这两处是在 ci-ready 的回调 / 定时器里才抛，没人接得住，
         // Windows 在屏幕上跑着、遮罩却盖到四分钟超时才报一句不相干的话
         assertTypeable(guestLaunchCommand)
         if (guest.launchPrepareCommand) assertTypeable(guest.launchPrepareCommand)
-        if ((options.dosWindowsVersion ?? '9x') === '3x') windows3xLaunchCommands(guestLaunchCommand)
+        if (!dosSystemGuest && (options.dosWindowsVersion ?? '9x') === '3x') {
+          windows3xLaunchCommands(guestLaunchCommand)
+        }
         /*
           系统包自己的 conf 必须先改名：它作为后续文件层解开时会覆盖 Dos() 的直接配置。
           改名只动 ZIP 头里的 36 个 ASCII 字节，不复制那一大块 qcow2 数据。
@@ -1358,23 +1385,6 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           ...(gameLayerBytes ? [gameLayerBytes] : (initFs ?? [])),
           { dosboxConf: guest.dosboxConf, jsdosConf: { version: '8' } },
         ]
-      } else if (streamingGame) {
-        if (!options.dosExecutable?.trim()) throw new Error('纯 DOS 流式游戏盘没有配置自启动程序')
-        /*
-          纯 DOS 不需要为了流式读取再下载一套 Win95。极小 URL bundle 只负责建立稳定的
-          changes 通道，真正配置在 initFs 最后一层把 Sockdrive 挂成 C:，由 DOSBox-X
-          运行期间按扇区取数。完整 ZIP 仍留在数据库里，清空 dos_sockdrive 即可回退。
-        */
-        const pureDosConfig = buildDosSockdriveConf(
-          options.dosExecutable,
-          sockdriveUrl,
-          startupCommands,
-          dosboxConfig,
-        )
-        const bootstrap = makeJsdosConfigBundle('[autoexec]\nrem sockdrive bootstrap')
-        primaryUrl = URL.createObjectURL(bootstrap)
-        objectUrls.push(primaryUrl)
-        initFs = [{ dosboxConf: pureDosConfig, jsdosConf: { version: '8' } }]
       } else {
         if (!rom) throw new Error('DOS 游戏没有可用的游戏文件')
         if (rom.bundleBlob) {
@@ -1412,8 +1422,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       }
 
       const ipx = options.ipx
+      const relativeWindowsMouse = Boolean(
+        guest && needsRelativeWindowsGuestMouse(options.gameSlug, options.dosExecutable),
+      )
       const adapterOwnsAbsoluteMouse = Boolean(
-        options.mouseCapture && (guest || needsLockedAbsoluteDosMouse(options.gameSlug)),
+        options.mouseCapture
+          && ((guest && !relativeWindowsMouse) || needsLockedAbsoluteDosMouse(options.gameSlug)),
       )
       props = Dos(host, {
         ...(streamingGame
@@ -1433,7 +1447,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         /*
           桌面端 DOS 统一点击画面锁定。Windows 客体与《主题医院》这类绝对坐标游戏把上游开关
           关掉：捕获由 hookCapturedAbsoluteMouse 完成，避免上游在 Pointer Lock 被拒绝后反复
-          吞点击；普通相对鼠标游戏仍由 js-dos 自己处理。
+          吞点击；普通相对鼠标游戏仍由 js-dos 自己处理。《天之痕》的 DirectInput 与绝对驱动
+          冲突，配套系统盘已换回标准鼠标，因此它故意和普通相对游戏走同一路。
         */
         mouseCapture: Boolean(options.mouseCapture && !adapterOwnsAbsoluteMouse),
         // 0.5 = 1×。逐游戏保存，避免一款老游戏的高灵敏度把下一款也带偏。
@@ -1555,29 +1570,39 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               // DOSBox 真的在跑、命令接口也有了，这才是「玩家可以动手」。Windows 客体另算（等自启动）
               if (!guest) markReady()
               if (guest && !cancelWindowsLaunch) {
-                cancelWindowsLaunch = scheduleWindowsLaunch(
-                  ci,
-                  guestLaunchCommand,
-                  options.dosLaunchDelay ?? 24,
-                  () => destroyed,
-                  markReady,
-                  options.dosWindowsVersion ?? '9x',
-                  // 确认不了「客体里有反应」。这一定发生在 markReady 之前，
-                  // 所以播放器还能自动重试一次；以前这条链根本没有失败出口
-                  (msg) => {
-                    if (!destroyed && !readySent) failLoad(fmt(rt.jsdosRunFailed, { msg }))
-                  },
-                  // 另外两个里程碑：桌面画完了 / 启动命令敲完了。只推进度条，不参与成败判定
-                  (step) => {
-                    if (destroyed) return
-                    options.onProgress?.({
-                      phase: 'starting',
-                      startup: step === 'desktop' ? STARTING_MILESTONE.desktop : STARTING_MILESTONE.launched,
-                    })
-                  },
-                  guest.launchPrepareCommand,
-                  guest.refreshDirectDrawAfterLaunch,
-                )
+                const progressMilestone = (step: 'desktop' | 'launched') => {
+                  if (destroyed) return
+                  options.onProgress?.({
+                    phase: 'starting',
+                    startup: step === 'desktop' ? STARTING_MILESTONE.desktop : STARTING_MILESTONE.launched,
+                  })
+                }
+                cancelWindowsLaunch = dosSystemGuest
+                  ? scheduleDosGuestLaunch(
+                      ci,
+                      guestLaunchCommand,
+                      options.dosLaunchDelay ?? 8,
+                      () => destroyed,
+                      markReady,
+                      progressMilestone,
+                    )
+                  : scheduleWindowsLaunch(
+                      ci,
+                      guestLaunchCommand,
+                      options.dosLaunchDelay ?? 24,
+                      () => destroyed,
+                      markReady,
+                      options.dosWindowsVersion ?? '9x',
+                      // 确认不了「客体里有反应」。这一定发生在 markReady 之前，
+                      // 所以播放器还能自动重试一次；以前这条链根本没有失败出口
+                      (msg) => {
+                        if (!destroyed && !readySent) failLoad(fmt(rt.jsdosRunFailed, { msg }))
+                      },
+                      // 另外两个里程碑：桌面画完了 / 启动命令敲完了。只推进度条，不参与成败判定
+                      progressMilestone,
+                      guest.launchPrepareCommand,
+                      guest.refreshDirectDrawAfterLaunch,
+                    )
               }
               // DOS 游戏只认键盘，手柄在这里翻译成按键
               if (caps.has('gamepad') && !pad) {
@@ -1627,7 +1652,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
        * 立刻调的结果是播放器马上显示「运行中」、加载提示消失，玩家对着黑屏
        * 等好几秒还以为卡死了。改成延时兜底：正常情况下 emu-ready 早就先到了。
        */
-      if (!guest && !pureDosStreaming) {
+      if (!guest) {
         readyFallback = window.setTimeout(() => {
           if (readySent || terminalErrorSent) return
           // 引擎壳起来了只是 ci-ready 没等到（老版本 / 事件漏了）：按老规矩放行。
@@ -1636,16 +1661,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           if (engineUp || ci) markReady()
           else failLoad(fmt(rt.jsdosRunFailed, { msg: 'DOSBox did not start' }))
         }, 8000)
-      } else if (pureDosStreaming) {
+      } else if (dosSystemGuest) {
         /*
-          远程 C: 盘第一次启动要先取分区表、FAT 和 EXE / DAT 的真实热点，不能沿用小 bundle 的
-          8 秒兜底后提前撤掉遮罩。正常 ci-ready 仍会立即 markReady；60 秒只处理事件漏报或断网。
+          真实 DOS 启动盘还要等客体提示符与 D: 流式盘；不能沿用普通 bundle 的 8 秒兜底后
+          提前撤掉遮罩。正常路径由 scheduleDosGuestLaunch 输入命令并 markReady。
         */
         readyFallback = window.setTimeout(() => {
           if (readySent || terminalErrorSent) return
-          if (ci) markReady()
-          else failLoad(fmt(rt.jsdosRunFailed, { msg: 'DOS 流式游戏盘初始化超时，请检查网络后重试' }))
-        }, 60_000)
+          failLoad(fmt(rt.jsdosRunFailed, { msg: 'DOS 流式游戏盘初始化超时，请检查系统盘与网络后重试' }))
+        }, 90_000)
       } else {
         // CI 创建期间 js-dos 要在 WASM 内挂载近百 MB 的 qcow2；旧的 45 秒宽限会让慢设备
         // 在即将成功前被误判。真实引擎错误仍会立即走 emu-error，这里只拦真正的长时间失联。

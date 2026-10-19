@@ -171,7 +171,9 @@ export async function serveObject(request, env, key, cors, policy, guessType, ex
       return new Response(null, { status: 416, headers })
     }
     const offset = Number(object.range?.offset ?? pinnedRange.offset)
-    const length = Number(object.range?.length ?? Math.min(pinnedRange.length, object.size - pinnedRange.offset))
+    // 请求末片时 R2 返回的 range 元数据可能仍是请求长度；响应范围必须以对象实际末尾为界，
+    // 否则浏览器会把正确的短片判成 Content-Length 不符，断点续传永远重试最后一片。
+    const length = Math.min(Number(object.range?.length ?? pinnedRange.length), object.size - offset)
     headers.set('Content-Range', `bytes ${offset}-${offset + length - 1}/${object.size}`)
     headers.set('Content-Length', String(length))
     return new Response(object.body, r2BodyResponseInit(headers, 206))

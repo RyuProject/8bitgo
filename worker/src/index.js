@@ -37,6 +37,9 @@ const DEFAULT_CACHE_CONTROL = 'public, max-age=300, s-maxage=600, must-revalidat
 const VERSIONED_CACHE_CONTROL = 'public, max-age=86400, s-maxage=2592000, stale-while-revalidate=86400'
 const IMMUTABLE_CACHE_CONTROL = 'public, max-age=31536000, s-maxage=31536000, immutable'
 const SOCKDRIVE_VERSION_SUFFIX = /(?:^|[-_.])(?:v\d+(?:[-_.][a-z0-9]+)*|[a-f0-9]{8,64})$/i
+const ARCADE_RANGE_BYTES = 8 * 1024 * 1024
+const RANGE_CACHE_PARAM = '__8bg_edge_range'
+const RANGE_CACHE_HEADER = 'X-8BitGo-Stored-Range'
 
 /**
  * Sockdrive 的版本在路径里而不在查询串里。只把严格版本目录下的固定产物视为不可变，
@@ -69,8 +72,9 @@ function cacheValue(env, name, fallback) {
  */
 export function edgeCacheEligible(request, url, cors) {
   if (request.method !== 'GET' || cors['Access-Control-Allow-Origin'] !== '*') return false
-  // Cache API 按 URL 命中整份 200，不能保证替 Range 请求切成 206；流式光盘必须直接走 R2 Range。
+  // Cache API 的普通 URL 键只存整份 200；分片必须走下面独立的、带范围的私有键。
   if (request.headers.has('Range')) return false
+  if (url.searchParams.has(RANGE_CACHE_PARAM)) return false
   if (request.headers.has('Authorization')) return false
   if (request.headers.has('If-Match') || request.headers.has('If-Unmodified-Since') || request.headers.has('If-Range')) return false
   if (/\b(?:no-cache|no-store)\b/i.test(request.headers.get('Cache-Control') || '')) return false
@@ -83,6 +87,55 @@ export function edgeCacheEligible(request, url, cors) {
    */
   const immutablePath = /^\/web\/cs16\/zstd-v1\/chunks\/[a-f0-9]{64}\.zst$/.test(url.pathname)
   return versioned || immutablePath
+}
+
+/**
+ * 街机大包的播放器固定请求 8 MiB 对齐分片。Cloudflare Cache API 不能 put(206)，
+ * 因此用仅内部访问的 URL 键把验证过的分片存成 200，命中时还原成 206。
+ * 没有 ROM 的 R2 ETag 锁、范围不对齐或带条件头时继续直达 R2，避免混合两代 ROM。
+ */
+function arcadeRangeCachePlan(request, url, cors) {
+  if (request.method !== 'GET' || cors['Access-Control-Allow-Origin'] !== '*') return null
+  if (!/^\/roms\/arcade\/[^/]+\.zip\.8bg$/i.test(url.pathname) || url.searchParams.has(RANGE_CACHE_PARAM)) return null
+  if (request.headers.has('Authorization') || ['If-Match', 'If-Range', 'If-None-Match', 'If-Modified-Since', 'If-Unmodified-Since'].some(name => request.headers.has(name))) return null
+  if (/\b(?:no-cache|no-store)\b/i.test(request.headers.get('Cache-Control') || '')) return null
+  const version = url.searchParams.get('romv') || ''
+  if (!/^[a-f0-9]{32}(?:-\d+)?$/i.test(version)) return null
+  const match = /^bytes=(\d+)-(\d+)$/.exec(request.headers.get('Range') || '')
+  if (!match) return null
+  const start = Number(match[1]); const end = Number(match[2])
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start % ARCADE_RANGE_BYTES !== 0 || end < start || end - start + 1 > ARCADE_RANGE_BYTES) return null
+  const cacheUrl = new URL(url)
+  cacheUrl.searchParams.set(RANGE_CACHE_PARAM, `${start}-${end}`)
+  return { key: new Request(cacheUrl, { method: 'GET' }), version, start, end }
+}
+
+function verifiedRangeHeaders(response, plan, stored = false) {
+  if (response.status !== (stored ? 200 : 206) || response.headers.get('Content-Encoding')) return null
+  if (response.headers.get('ETag') !== `"${plan.version}"`) return null
+  const value = response.headers.get(stored ? RANGE_CACHE_HEADER : 'Content-Range') || ''
+  const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(value)
+  if (!match) return null
+  const start = Number(match[1]); const end = Number(match[2]); const total = Number(match[3])
+  const length = end - start + 1
+  // 非末片只收满 8 MiB，防止任意短 Range 为同一 ROM 制造海量边缘缓存键。
+  if (plan.end - plan.start + 1 < ARCADE_RANGE_BYTES && plan.end !== total - 1) return null
+  if (!Number.isSafeInteger(total) || !Number.isSafeInteger(end) || start !== plan.start || end !== Math.min(plan.end, total - 1) || length <= 0 || length > ARCADE_RANGE_BYTES || response.headers.get('Content-Length') !== String(length)) return null
+  return value
+}
+
+function restoredRangeResponse(hit, contentRange) {
+  const headers = new Headers(hit.headers)
+  headers.delete(RANGE_CACHE_HEADER)
+  headers.set('Content-Range', contentRange)
+  return edgeCacheHeader(new Response(hit.body, r2BodyResponseInit(headers, 206)), 'HIT')
+}
+
+function rangeCacheResponse(response, contentRange) {
+  const headers = new Headers(response.headers)
+  headers.delete('Content-Range')
+  headers.set(RANGE_CACHE_HEADER, contentRange)
+  return new Response(response.clone().body, r2BodyResponseInit(headers))
 }
 
 function edgeCacheHeader(response, value) {
@@ -386,13 +439,20 @@ export default {
   async fetch(request, env, context) {
     const cors = corsHeaders(request, env)
     const url = new URL(request.url)
-    let edgeCache = edgeCacheEligible(request, url, cors) && context?.waitUntil
+    const rangePlan = arcadeRangeCachePlan(request, url, cors)
+    let edgeCache = (edgeCacheEligible(request, url, cors) || rangePlan) && context?.waitUntil
       ? globalThis.caches?.default
       : null
     if (edgeCache) {
       try {
-        const hit = await edgeCache.match(request)
-        if (hit) return edgeCacheHeader(hit, 'HIT')
+        const hit = await edgeCache.match(rangePlan?.key || request)
+        if (hit && !rangePlan) return edgeCacheHeader(hit, 'HIT')
+        if (hit && rangePlan) {
+          const contentRange = verifiedRangeHeaders(hit, rangePlan, true)
+          if (contentRange) return restoredRangeResponse(hit, contentRange)
+          // 旧缓存或错误对象不能冒充 206；让 R2 重新校验版本并填充正确分片。
+          await hit.body?.cancel().catch(() => {})
+        }
       } catch (error) {
         // 边缘缓存是加速层，不是可用性依赖；某个 PoP 的 cache.match 故障时仍要回 R2。
         console.warn('[rom-cache] edge match failed', error instanceof Error ? error.message : String(error))
@@ -402,6 +462,15 @@ export default {
     let response
     try { response = await handle(request, env, url, cors) }
     catch (error) { response = storageFailure(error, cors) }
+    const rangeContent = rangePlan && verifiedRangeHeaders(response, rangePlan)
+    if (edgeCache && rangePlan && rangeContent) {
+      context.waitUntil(
+        edgeCache.put(rangePlan.key, rangeCacheResponse(response, rangeContent)).catch((error) => {
+          console.warn('[rom-cache] arcade range put failed', error instanceof Error ? error.message : String(error))
+        }),
+      )
+      return edgeCacheHeader(response, 'MISS')
+    }
     if (edgeCache && response.status === 200 && response.body && !response.headers.has('Content-Range')) {
       // clone 后立刻回玩家；75 MB 的 NDS ROM 写边缘缓存不能挡住首包。
       const cacheKey = new Request(request.url, { method: 'GET' })

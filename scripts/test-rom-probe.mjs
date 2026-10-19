@@ -36,7 +36,7 @@ const script = (...steps) => {
   methods = []
 }
 
-const { probeRomUrl, probeRom, clearRomProbeCache, conventionalKeys, romCandidates, playbackRomCandidates, playbackRomCandidatesForSelection, romProbeExpected, dosExecutableForRom, dosSockdriveForRom, dosStartupCommandsForRom, versionedRomUrl, romKeysOf, unbindKeyPatch, shouldTryRomCandidateAfterUncertain, nextRomCandidateKey, slugFromKey, romUrlForKey, coverThumbKey } = await import(
+const { probeRomUrl, probeRom, clearRomProbeCache, conventionalKeys, romCandidates, playbackRomCandidates, playbackRomCandidatesForSelection, romProbeExpected, dosExecutableForRom, dosSockdriveForRom, dosStartupCommandsForRom, streamedRomCandidateForSelection, versionedRomUrl, romKeysOf, unbindKeyPatch, shouldTryRomCandidateAfterUncertain, nextRomCandidateKey, slugFromKey, romUrlForKey, coverThumbKey } = await import(
   fileURLToPath(new URL('../src/services/roms.ts', import.meta.url))
 )
 // 红宝石封面是外链：没有 -96 缩略图时必须回原图，不能把空 key 拼成资源域名根目录。
@@ -402,6 +402,28 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
   assert.equal(dosSockdriveForRom(game, english), game.dosSockdrives.en, '英文 ROM 只挂英文流式盘')
   assert.equal(dosSockdriveForRom(game, { lang: 'ja' }), undefined, '出现逐语言配置后，未迁移语言走完整包而不是误挂旧全局盘')
   assert.equal(dosSockdriveForRom({ dosSockdrive: game.dosSockdrive }, { lang: 'ja' }), game.dosSockdrive, '完全没有逐语言配置的旧数据继续使用全局流式盘')
+
+  const scarOfSky = {
+    platform: 'dos',
+    dosBackend: 'dosboxX',
+    roms: { 'zh-Hant': 'roms/dos/scar-of-sky.zh-Hant.zip.8bg' },
+    dosSockdrives: { 'zh-Hant': 'sockdrives/scar-of-sky-zh-hant-v1' },
+  }
+  assert.equal(
+    streamedRomCandidateForSelection(scarOfSky, 'zh-Hans')?.lang,
+    'zh-Hant',
+    '只有繁体盘的 Win95 游戏应直接命中繁体 Sockdrive，不先 HEAD 大型回退包',
+  )
+  assert.equal(
+    streamedRomCandidateForSelection(scarOfSky, 'zh-Hans', 'zh-Hans'),
+    undefined,
+    '玩家明确选择尚未迁移的语言时不能偷偷挂另一语言的 Sockdrive',
+  )
+  assert.equal(
+    streamedRomCandidateForSelection({ ...scarOfSky, dosBackend: 'dosbox' }, 'zh-Hans'),
+    undefined,
+    '普通 DOSBox 不支持 Sockdrive，不能跳过整包探测',
+  )
   assert.equal(dosExecutableForRom(game, { lang: 'ja' }), 'START.BAT', '未配置的语言使用原有默认入口')
   assert.equal(dosExecutableForRom(game, {}), 'START.BAT', '旧版通用 ROM 沿用默认入口')
   const fromApi = gameRowToApi(

@@ -80,7 +80,7 @@ assert.equal(cancelled, true, 'Range 被忽略时必须立刻取消响应体，�
 const jsdos = readFileSync(new URL('../src/emulator/adapters/jsdos.ts', import.meta.url), 'utf8')
 assert.match(jsdos, /inspectRemoteRomPack\(game, signal\)/)
 assert.match(jsdos, /尚未配置流式游戏盘/)
-assert.match(jsdos, /Boolean\(options\.dosSystemUrl\)/)
+assert.match(jsdos, /verifySockdriveForLaunch\(sockdriveUrl, abort\.signal, Boolean\(systemUrl\)\)/)
 
 const ageGate = readFileSync(new URL('../src/components/game/AgeGate.tsx', import.meta.url), 'utf8')
 assert.match(ageGate, /ACCESS_REQUEST_TIMEOUT_MS = 8_000/)

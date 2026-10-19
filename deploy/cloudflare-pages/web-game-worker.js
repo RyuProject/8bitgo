@@ -158,7 +158,6 @@ function cs16SocketProtocol(request, target) {
 async function proxyCs16Socket(request, target) {
   const protocol = cs16SocketProtocol(request, target)
   const upstreamUrl = new URL(target)
-  upstreamUrl.protocol = 'wss:'
   const headers = new Headers({ Upgrade: 'websocket' })
   if (protocol) headers.set('Sec-WebSocket-Protocol', protocol)
 
@@ -168,6 +167,8 @@ async function proxyCs16Socket(request, target) {
      * 房主凭证和玩家恢复凭证故意不进 URL，而放在 WebSocket 子协议里。Pages 是浏览器与主站
      * 之间的真正入口，因此必须显式把子协议带到上游；只用 new WebSocket(url) 会悄悄丢掉它，
      * 表现为直连主站测试全绿、cs16.8bitgo.com 却无法创建房间或断线续接。
+     * Cloudflare 的 fetch 形式仍然要用 https URL，Upgrade 头才会把它升级为 WebSocket；
+     * 改成 wss URL 会在边缘直接变成 502，连主站都没有到达。
      */
     upstreamResponse = await fetch(upstreamUrl.href, { headers })
   } catch {

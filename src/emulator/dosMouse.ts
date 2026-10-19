@@ -10,6 +10,17 @@ const LOCKED_ABSOLUTE_MOUSE_GAMES = new Set([
   'theme-hospital',
 ])
 
+/**
+ * 《天之痕》进入新游戏时才创建 DirectInput 独占设备；DOSBox-X 的 dboxmpi 绝对鼠标驱动
+ * 会让这一步失败，所以它使用专门修过的 Win95 系统盘与标准相对鼠标。这里同时校验 EXE，
+ * 避免同一个 slug 将来换成启动器后仍误切协议，出现标题页光标完全不动的静默故障。
+ */
+export function needsRelativeWindowsGuestMouse(gameSlug?: string, executable?: string): boolean {
+  const slug = gameSlug?.trim().toLowerCase()
+  const file = executable?.trim().replace(/\\/g, '/').split('/').pop()?.toLowerCase()
+  return slug === 'xuan-yuan-sword-scar-of-sky' && file === 'swd3e.exe'
+}
+
 export function needsLockedAbsoluteDosMouse(gameSlug?: string): boolean {
   // slug 正常来自 API，仍在这里做一次归一化：本地 ROM / 嵌入页若带了大小写或首尾空格，
   // 不该悄悄掉回会让光标失控的相对坐标路径。

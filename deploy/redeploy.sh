@@ -61,6 +61,46 @@ fi
 [ -n "$NODE_BIN" ] && export PATH="$(dirname "$NODE_BIN"):$PATH"
 command -v node >/dev/null || die "找不到 node，用 NODE_BIN=/绝对路径/node 指定"
 
+# Bash 只会在执行流走到函数定义后才认得它。健康检查与回滚函数必须放在主流程之前，
+# 否则发布已重启服务后会报 command not found，还会让自动回滚同样失效。
+health_ok() {
+  for _ in $(seq 1 "$HEALTH_TRIES"); do
+    if curl -fsS --max-time 3 "$HEALTH_URL" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+ps2_headers_ok() {
+  local page_headers play_headers
+  # 404 的测试 slug 也必须带隔离头；只测已发布游戏会受数据库内容变化影响。
+  page_headers="$(curl -sSI --max-time 5 "$PS2_CHECK_URL")" || return 1
+  play_headers="$(curl -sSI --max-time 5 "$PLAY_JS_CHECK_URL")" || return 1
+  # 前端构建成功而后端没重启时，健康接口照样 200；这两项能抓出新旧版本错配。
+  printf '%s\n' "$page_headers" | grep -qi '^cross-origin-opener-policy: same-origin' || return 1
+  printf '%s\n' "$page_headers" | grep -qi '^cross-origin-embedder-policy: require-corp' || return 1
+  printf '%s\n' "$play_headers" | grep -qi '^cross-origin-embedder-policy: require-corp' || return 1
+  return 0
+}
+
+rollback() {
+  log "回滚：恢复 ${BEFORE_COMMIT} 并重新构建"
+  # 注意：npm ci 已经在上面按「新提交」装过了，这里直接 checkout 旧提交 + 重建。
+  # 若两个提交的依赖不同，旧源码可能和当前 node_modules 不完全匹配；
+  # 真遇到这种情况，回滚后手动在 server/ 和根目录各跑一次 npm ci 即可。
+  git checkout --quiet "$BEFORE_COMMIT" || { log "⚠️ git checkout 失败，需人工介入"; return; }
+  ( cd "$REPO_DIR"  && npm run build ) || { log "⚠️ 回滚构建失败，需人工介入"; return; }
+  ( cd "$SERVER_DIR" && npm run migrate ) || log "⚠️ 回滚迁移失败（破坏性迁移无法自动还原）"
+  systemctl restart "$UNIT" || { log "⚠️ 回滚重启失败，需人工介入"; return; }
+  if health_ok; then
+    log "✅ 已回滚到 ${BEFORE_COMMIT}"
+  else
+    log "❌ 回滚后仍不健康"
+  fi
+}
+
 # ───────────── 记录起点，供回滚 ─────────────
 cd "$REPO_DIR"
 BEFORE_COMMIT="$(git rev-parse HEAD)"
@@ -143,41 +183,3 @@ log "⚠️ 健康检查或 PS2 隔离响应头未通过，回滚到 ${BEFORE_CO
 rollback
 log "❌ 部署失败且回滚后仍不健康，请立即人工处理"
 exit 1
-
-health_ok() {
-  for _ in $(seq 1 "$HEALTH_TRIES"); do
-    if curl -fsS --max-time 3 "$HEALTH_URL" >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep 2
-  done
-  return 1
-}
-
-ps2_headers_ok() {
-  local page_headers play_headers
-  # 404 的测试 slug 也必须带隔离头；只测已发布游戏会受数据库内容变化影响。
-  page_headers="$(curl -sSI --max-time 5 "$PS2_CHECK_URL")" || return 1
-  play_headers="$(curl -sSI --max-time 5 "$PLAY_JS_CHECK_URL")" || return 1
-  # 前端构建成功而后端没重启时，健康接口照样 200；这两项能抓出新旧版本错配。
-  printf '%s\n' "$page_headers" | grep -qi '^cross-origin-opener-policy: same-origin' || return 1
-  printf '%s\n' "$page_headers" | grep -qi '^cross-origin-embedder-policy: require-corp' || return 1
-  printf '%s\n' "$play_headers" | grep -qi '^cross-origin-embedder-policy: require-corp' || return 1
-  return 0
-}
-
-rollback() {
-  log "回滚：恢复 ${BEFORE_COMMIT} 并重新构建"
-  # 注意：npm ci 已经在上面按「新提交」装过了，这里直接 checkout 旧提交 + 重建。
-  # 若两个提交的依赖不同，旧源码可能和当前 node_modules 不完全匹配；
-  # 真遇到这种情况，回滚后手动在 server/ 和根目录各跑一次 npm ci 即可。
-  git checkout --quiet "$BEFORE_COMMIT" || { log "⚠️ git checkout 失败，需人工介入"; return; }
-  ( cd "$REPO_DIR"  && npm run build ) || { log "⚠️ 回滚构建失败，需人工介入"; return; }
-  ( cd "$SERVER_DIR" && npm run migrate ) || log "⚠️ 回滚迁移失败（破坏性迁移无法自动还原）"
-  systemctl restart "$UNIT" || { log "⚠️ 回滚重启失败，需人工介入"; return; }
-  if health_ok; then
-    log "✅ 已回滚到 ${BEFORE_COMMIT}"
-  else
-    log "❌ 回滚后仍不健康"
-  fi
-}

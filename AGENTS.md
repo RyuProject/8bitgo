@@ -395,6 +395,30 @@ DOSBox-X 帧缓冲是 800×600。原版 DirectDraw 把画面缩进客体桌面�
 把相对位移送给只认绝对位置的软件光标，走 `needsLockedAbsoluteDosMouse()` 那条桥修，不套
 Win95 或 Caesar 的分辨率补丁。
 
+### 2.8.6.1 《天之痕》：标题页正常不等于 DirectInput 正常
+
+《天之痕》只有点“开始游戏”后才创建 DirectInput 独占设备。原
+`Windows95_Traditional-Chinese.jsdos` 把 Win95 标准鼠标换成了 DOSBox-X 集成驱动
+（`SYSTEM.INI` 的 `dboxmpi.drv`），因此标题页和软件光标都正常，进入新局才弹 DirectInput
+错误，随后 `Swd3e` 非法操作退出。验收必须点进角色姓名界面，停在标题页不算通过。
+
+第一版修正版 `Windows95_Traditional-Chinese-DirectInput-v1.jsdos` 只把系统盘鼠标恢复为
+`mouse.drv` + `*vmouse, msmouse.vxd`，并在 bundle 配置里使用 `mouse_emulation=locked`、
+`integration device=false`。它是版本化新对象，不准覆盖原路径；浏览器会按 URL/ETag 缓存系统盘，
+原地覆盖会让老访客继续拿到坏镜像。播放器里的 `needsRelativeWindowsGuestMouse()` 还必须让
+这款游戏绕开 Windows 绝对坐标桥，交回 js-dos 相对鼠标链；只换镜像不换协议会变成“游戏能进，
+但光标不动”。回归：`npm run test:dos-load && npm run test:system-source`。
+
+⚠️ 这款 ROM 是原生繁体 Big5，不要再改成 CP936。第一版镜像虽能到标题页，进入新游戏仍会
+弹 DirectInput 错误或非法操作：Win95 自带的旧 DirectX 不够，必须完整安装繁体
+DirectX 7.0a。46.5MB 的 `Windows95_Traditional-Chinese-DirectX7a-Minimal-v1.jsdos`
+保留作回退。当前《天之痕》使用 `Windows95_Traditional-Chinese-DirectX7a-UltraLite-v2.jsdos`
+（29,670,830 字节）：保留繁中代码页、明体字库、原生鼠标链和 DX7 运行库；裁去帮助、安装资料、
+备用注册表、工具及不使用的字体，按 FAT 表归零空闲簇后再封装。这是针对本游戏验收的系统盘，
+其他 Win95 游戏需要单独验证，不能把它当通用系统镜像。
+验收必须依次走过标题页 →「起」→ 姓名框 → 片头 → 第一段对白，并确认繁体中文可读；
+只停在标题菜单仍然不算通过。
+
 ### 2.8.7 大型 DOS / Win95/98 游戏走静态 Sockdrive，不是视频直播
 
 `games.dos_sockdrive` 填一款游戏的**静态 Sockdrive 目录**（对象 key、站内路径或完整 URL）；
@@ -405,6 +429,18 @@ Win95 或 Caesar 的分辨率补丁。
 不支持 Sockdrive。纯 DOS 入口必须是 DOS 8.3 路径（如 `FALLOUT.EXE` 或 `GAME/RUN.EXE`），因为远程
 块设备不能再靠宿主目录二次挂载长路径。`rom / roms` 那份完整 ZIP 仍留在数据里作一键回退，
 但流式模式不会下载它。清空 `dos_sockdrive` 就原样回到旧整包路径，不需要迁移存量游戏。
+
+纯 DOS 流式游戏不能从 `C:\\>` 直接输入 `D:\\GAME.EXE`：EXE 虽能打开，DOS/4GW stub 与游戏
+相对资源仍按当前目录 `C:\\` 查找，Fallout 会报 `dos4gw.exe No such file or directory`。自动启动必须
+先输入 `D:`，有子目录时再 `cd \\目录`，最后只输入 EXE 文件名；回归由 `test:dos-bundle` 覆盖。
+
+⚠️ **纯 DOS 也必须有一块可启动系统盘。** `sockify` 从普通游戏 ZIP 生成的是 FAT 游戏盘，
+`imgmount 2 sockdrive ...` 只把它注册成 BIOS 硬盘；DOSBox-X 内置 DOS 随后执行 `c:` 会明确报
+`Drive C does not exist`。`imgmount c sockdrive` 同样不会把 Sockdrive 变成内置 DOS 的 FAT 盘。
+未配置 `dos_system` 的流式 DOS 游戏因此由适配器自动叠加 10MB 的
+`system-dos7.1-v1.jsdos`：系统盘占硬盘 2 / C:，游戏盘占硬盘 3 / D:，`boot c:` 后再由
+`scheduleDosGuestLaunch` 在真实 DOS 提示符输入 `D:\\<EXE>`。不要再恢复“纯 DOS 不需要系统镜像”
+那条分支；官方 Sockdrive 示例里的 `imgmount 2` 后面紧跟 `boot c:`，前提就是磁盘本身可启动。
 
 ⚠️ 目录必须带版本（如 `sockdrives/caesar3-v1`）且**不可原地覆盖**：浏览器会按完整 URL 把磁盘块
 长期缓存在 OPFS，原地换内容会把两代扇区拼在一起。若 `sockify -b/-g`，R2 / Worker 必须分别给
@@ -1811,6 +1847,56 @@ npm run celeste:patch -- --src <webleste-loader 解压目录>   # 首次导入 /
 npm run celeste:check                                      # prebuild / postbuild:client 都会跑
 npm run test:celeste                                       # 纯函数回归 + 上面的检查
 npm run celeste:upload -- --bucket <R2桶名> --src .celeste-framework   # q11 预压 + 原始回退
+```
+
+### 2.28.9 /web/gta-vc：只发布开源运行端，游戏归档必须由玩家合法自备
+
+2026-10-19 接入 [joncodeofficial/gta-vice-city-wasm](https://github.com/joncodeofficial/gta-vice-city-wasm)
+提交 `10dd677cc55574da98e9be2433a3c5c668b39954`，专用 Pages 项目是 `8bitgo-gta-vc`，入口
+`/web/gta-vc/`。它比 reVCDOS 更适合纯静态托管：玩家导入一次 `game.tar.gz` 后，文件写入本机
+OPFS，Service Worker 从 `/vcsky/` 与 `/vcbr/` 提供给 WASM，之后不重复下载。
+
+⚠️ **`game.tar.gz` 绝不能进 Git、Pages、R2 或本站代理。** 运行端的 MIT 许可证不覆盖 Rockstar /
+Take-Two 的游戏数据；DOS Zone 的 Vice City 页面已列入其 DMCA 移除清单，公开 CDN 只有 reVCDOS
+使用的分文件目录，并没有可核实授权的官方 `game.tar.gz`。`public/web/gta-vc/runtime-config.js` 默认
+必须为空；只有拿到权利方或来源方明确允许本站使用的 HTTPS 归档地址，核对授权、长期可用性和下载
+文件后，才允许填写。不能热链示例站的私有 Worker、伪造 Origin、镜像或绕过访问限制。
+
+上游导入器原先会把约 668MB gzip 与完整解压 TAR 同时留在 JS 堆，再写一份 OPFS，峰值可能超过
+2GB。本站的 `extract-worker.js` 改成单遍流式解压与逐文件写盘，并在就绪标记前校验 TAR checksum、
+路径、文件数、压缩/解压体积和三份必需文件；失败会删掉标记和半成品，不能把两代资源混成“可玩”。
+更新上游时不能用原版导入器覆盖回来。回归：
+
+```bash
+npm run gta-vc:check
+npm run pages:web-games:build -- gtavc
+npm run pages:web-games:check -- gtavc
+```
+
+### 2.28.10 /web/undertale：公开站只放 MPL 运行端，正版安装目录只进浏览器 OPFS
+
+2026-10-19 接入 [Butterscotch](https://github.com/ButterscotchRunner/Butterscotch) Web 构建提交
+`54e10ec4e4a5713130675c7719dda7c437b4f849`，专用 Pages 项目是 `8bitgo-undertale`，入口
+`/web/undertale/`。Butterscotch 是 MPL-2.0 的 GameMaker Runner 重实现，上游把 UNDERTALE v1.08 /
+WAD 16 列为兼容目标，但仍明确标注早期开发；本站页面必须保留“实验性”提示，不能宣称官方支持。
+
+⚠️ **任何 UNDERTALE 游戏数据都不准进 Git、Pages、R2、Worker 代理或 Service Worker。** 包括
+`data.win` / `game.unx`、OGG 音乐、贴图、拆分分卷与任何第三方重打包归档。玩家用
+`webkitdirectory` 选择自己合法取得的完整安装目录；`app.js` 先验证 WAD 名称和 `FORM` 文件头，再按
+ReadableStream 分片直接写浏览器私有 OPFS。不要改成整包 `arrayBuffer()`，也不要新增远端 URL 导入。
+
+OPFS 的 `library-v1` 与 `saves` 故意分开：重新导入或点“清除本机游戏副本”只删游戏库，不删存档。
+运行时预编译与本地复制并行，第二次访问直接从 OPFS 启动；键盘、标准手柄与触屏最终都汇入
+Butterscotch 的键盘接口。当前 Web 构建依赖 WebAssembly JSPI、OPFS 和 WebGL 2，不满足时必须在
+导入前拦截，不能让玩家复制完几百 MB 才发现浏览器不兼容。
+
+上游构建与许可证由 `runtime-manifest.json` 固定哈希；换版时必须同步提交号、归档 SHA-256、两个
+运行时文件哈希和 MPL 许可证。回归：
+
+```bash
+npm run undertale:check
+npm run pages:web-games:build -- undertale
+npm run pages:web-games:check -- undertale
 ```
 
 ### 2.29 后台能热改的站点级配置：`site_settings` 表（首页公告条是第一个）

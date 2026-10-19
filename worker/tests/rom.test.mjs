@@ -276,6 +276,117 @@ test('Range requests bypass full-object edge cache and always reach version vali
     assert.equal(r.status,206);assert.equal(await r.text(),'cd');assert.equal(calls,0)
   }finally{if(previous===undefined)delete globalThis.caches;else globalThis.caches=previous}
 })
+test('version-pinned arcade chunks reuse an independent 8 MiB edge-cache entry', async () => {
+  const previous = globalThis.caches
+  const stored = new Map(); const waits = []; let puts = 0
+  globalThis.caches = { default: {
+    async match(request) { return stored.get(request.url)?.clone() },
+    async put(request, response) { puts += 1; stored.set(request.url, response.clone()); await response.arrayBuffer() },
+  } }
+  const context = { waitUntil(promise) { waits.push(promise) } }
+  try {
+    const e = environment(); const original = e.ROMS.seed('roms/arcade/mslug4.zip.8bg', 'first-ROM-bytes')
+    const path = `/roms/arcade/mslug4.zip.8bg?romv=${original.etag}`
+    const range = { Range: 'bytes=0-8388607' }
+    const first = await worker.fetch(req(path, 'GET', undefined, range), e, context)
+    assert.equal(first.status, 206)
+    assert.equal(first.headers.get('X-8BitGo-Edge-Cache'), 'MISS')
+    assert.equal(first.headers.get('Content-Range'), 'bytes 0-14/15')
+    assert.equal(await first.text(), 'first-ROM-bytes')
+    await Promise.all(waits)
+    assert.equal(puts, 1)
+    assert.equal(count(e.ROMS, 'get'), 1)
+
+    const second = await worker.fetch(req(path, 'GET', undefined, range), e, context)
+    assert.equal(second.status, 206)
+    assert.equal(second.headers.get('X-8BitGo-Edge-Cache'), 'HIT')
+    assert.equal(second.headers.get('Content-Range'), 'bytes 0-14/15')
+    assert.equal(second.headers.get('X-8BitGo-Stored-Range'), null)
+    assert.equal(await second.text(), 'first-ROM-bytes')
+    assert.equal(count(e.ROMS, 'get'), 1)
+
+    const updated = e.ROMS.seed('roms/arcade/mslug4.zip.8bg', 'new-ROM-bytes')
+    const newer = await worker.fetch(req(`/roms/arcade/mslug4.zip.8bg?romv=${updated.etag}`, 'GET', undefined, range), e, context)
+    assert.equal(newer.headers.get('X-8BitGo-Edge-Cache'), 'MISS')
+    assert.equal(await newer.text(), 'new-ROM-bytes')
+    assert.equal(count(e.ROMS, 'get'), 2)
+  } finally {
+    if (previous === undefined) delete globalThis.caches
+    else globalThis.caches = previous
+  }
+})
+test('arcade range cache rejects poisoned entries and keeps conditional or unversioned requests on R2', async () => {
+  const previous = globalThis.caches
+  let matches = 0; let puts = 0
+  globalThis.caches = { default: {
+    async match() { matches += 1; return new Response('wrong-full-object') },
+    async put() { puts += 1 },
+  } }
+  try {
+    const e = environment(); const o = e.ROMS.seed('roms/arcade/mslug4.zip.8bg', 'abcdef')
+    const path = `/roms/arcade/mslug4.zip.8bg?romv=${o.etag}`
+    const range = { Range: 'bytes=0-8388607' }
+    const poisoned = await worker.fetch(req(path, 'GET', undefined, range), e, { waitUntil() {} })
+    assert.equal(poisoned.status, 206)
+    assert.equal(await poisoned.text(), 'abcdef')
+    assert.equal(matches, 1)
+    assert.equal(puts, 1)
+
+    const arbitraryShort = await worker.fetch(req(path, 'GET', undefined, { Range: 'bytes=0-2' }), e, { waitUntil() {} })
+    assert.equal(arbitraryShort.status, 206)
+    assert.equal(arbitraryShort.headers.get('X-8BitGo-Edge-Cache'), null)
+    assert.equal(puts, 1)
+
+    const bypasses = [
+      req('/roms/arcade/mslug4.zip.8bg', 'GET', undefined, range),
+      req(path, 'GET', undefined, { Range: 'bytes=1-3' }),
+      req(path, 'GET', undefined, { ...range, 'If-Match': '"wrong"' }),
+      req(`${path}&__8bg_edge_range=0-8388607`),
+    ]
+    const before = matches
+    const results = await Promise.all(bypasses.map(request => worker.fetch(request, e, { waitUntil() {} })))
+    assert.deepEqual(results.map(result => result.status), [206, 206, 412, 200])
+    assert.equal(matches, before)
+  } finally {
+    if (previous === undefined) delete globalThis.caches
+    else globalThis.caches = previous
+  }
+})
+test('arcade cache keeps the final short chunk separate from the first chunk', async () => {
+  const previous = globalThis.caches
+  const stored = new Map(); const waits = []
+  globalThis.caches = { default: {
+    async match(request) { return stored.get(request.url)?.clone() },
+    async put(request, response) { stored.set(request.url, response.clone()); await response.arrayBuffer() },
+  } }
+  const context = { waitUntil(promise) { waits.push(promise) } }
+  try {
+    const e = environment()
+    const data = new Uint8Array(8 * 1024 * 1024 + 3)
+    data.set([7, 8, 9], 8 * 1024 * 1024)
+    const o = e.ROMS.seed('roms/arcade/mslug4.zip.8bg', data)
+    const path = `/roms/arcade/mslug4.zip.8bg?romv=${o.etag}`
+    const finalRange = { Range: 'bytes=8388608-16777215' }
+    const first = await worker.fetch(req(path, 'GET', undefined, finalRange), e, context)
+    assert.equal(first.headers.get('Content-Range'), 'bytes 8388608-8388610/8388611')
+    assert.equal(first.headers.get('Content-Length'), '3')
+    assert.deepEqual(new Uint8Array(await first.arrayBuffer()), new Uint8Array([7, 8, 9]))
+    await Promise.all(waits)
+    const again = await worker.fetch(req(path, 'GET', undefined, finalRange), e, context)
+    assert.equal(again.headers.get('X-8BitGo-Edge-Cache'), 'HIT')
+    assert.deepEqual(new Uint8Array(await again.arrayBuffer()), new Uint8Array([7, 8, 9]))
+    assert.equal(count(e.ROMS, 'get'), 1)
+    const firstChunk = await worker.fetch(req(path, 'GET', undefined, { Range: 'bytes=0-8388607' }), e, context)
+    assert.equal(firstChunk.headers.get('X-8BitGo-Edge-Cache'), 'MISS')
+    assert.equal(count(e.ROMS, 'get'), 2)
+    await firstChunk.body?.cancel()
+    await Promise.all(waits)
+    assert.equal(stored.size, 2)
+  } finally {
+    if (previous === undefined) delete globalThis.caches
+    else globalThis.caches = previous
+  }
+})
 test('conditional HEAD supports 304',async()=>{
   const e=environment();const o=e.ROMS.seed('a');const r=await worker.fetch(req('/a','HEAD',undefined,{'If-None-Match':o.httpEtag}),e);assert.equal(r.status,304);assert.equal(r.body,null)
 })

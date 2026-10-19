@@ -27,6 +27,7 @@ const jsonOrError = async (response, label) => {
 export async function bindSockdriveGame({
   slug,
   prefix,
+  lang = '',
   publicBase = 'https://assets.8bitgo.com',
   apiBase = 'https://8bitgo.com',
   token = '',
@@ -34,6 +35,8 @@ export async function bindSockdriveGame({
   fetchImpl = fetch,
 }) {
   if (!/^[a-z0-9][a-z0-9-]{0,79}$/.test(slug)) throw new Error('游戏 slug 不合法')
+  const cleanLang = String(lang).trim()
+  if (cleanLang && !/^[a-z]{2,3}(?:-[A-Za-z]{2,8})?$/.test(cleanLang)) throw new Error('语言代码不合法')
   const cleanPrefix = String(prefix).trim().replace(/^\/+|\/+$/g, '')
   if (!isVersionedSockdriveDirectory(cleanPrefix)) throw new Error('Sockdrive 目录必须带版本号或内容哈希')
 
@@ -65,12 +68,21 @@ export async function bindSockdriveGame({
   if (!current.dosExecutable && !Object.keys(current.dosExecutables ?? {}).length) {
     throw new Error('目标游戏没有配置流式盘内的启动 EXE')
   }
-  if (current.dosSockdrive === cleanPrefix || current.dosSockdrive === publicRoot) {
+  if (cleanLang && !Object.prototype.hasOwnProperty.call(current.roms ?? {}, cleanLang)) {
+    throw new Error(`目标游戏没有 ${cleanLang} 语言 ROM 槽`)
+  }
+  const currentSockdrive = cleanLang ? current.dosSockdrives?.[cleanLang] : current.dosSockdrive
+  if (currentSockdrive === cleanPrefix || currentSockdrive === publicRoot) {
     return { changed: false, publicRoot, game: current }
   }
   if (dryRun) return { changed: false, dryRun: true, publicRoot, game: current }
   if (!token) throw new Error('绑定需要环境变量 EIGHTBITGO_ADMIN_JWT；不要把令牌写进命令行历史')
 
+  // PATCH 只要带 dosSockdrives 就会重写整张语言关联表；必须把其它语言原样带回，
+  // 否则修英文盘会静默清空中文/日文盘。游戏级绑定则保持旧接口形状。
+  const patch = cleanLang
+    ? { dosSockdrives: { ...(current.dosSockdrives ?? {}), [cleanLang]: cleanPrefix } }
+    : { dosSockdrive: cleanPrefix }
   const saved = await jsonOrError(
     await fetchImpl(gameUrl, {
       method: 'PATCH',
@@ -78,11 +90,14 @@ export async function bindSockdriveGame({
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ dosSockdrive: cleanPrefix }),
+      body: JSON.stringify(patch),
     }),
     '绑定游戏 Sockdrive',
   )
-  if (saved.dosSockdrive !== cleanPrefix) throw new Error('服务端返回成功，但 dosSockdrive 没有保存成目标目录')
+  const savedSockdrive = cleanLang ? saved.dosSockdrives?.[cleanLang] : saved.dosSockdrive
+  if (savedSockdrive !== cleanPrefix) {
+    throw new Error(`服务端返回成功，但 ${cleanLang ? `${cleanLang} 语言槽` : 'dosSockdrive'} 没有保存成目标目录`)
+  }
   return { changed: true, publicRoot, game: saved }
 }
 
@@ -91,7 +106,7 @@ async function main(argv = process.argv.slice(2)) {
   const prefix = argFrom(argv, 'prefix')
   if (!slug || !prefix) {
     console.error(
-      '用法：npm run sockdrive:bind -- --slug starcraft --prefix sockdrives/starcraft-v1 ' +
+      '用法：npm run sockdrive:bind -- --slug starcraft --prefix sockdrives/starcraft-v1 [--lang en] ' +
         '[--api-base https://8bitgo.com] [--public-base https://assets.8bitgo.com] [--dry-run]',
     )
     process.exit(2)
@@ -99,6 +114,7 @@ async function main(argv = process.argv.slice(2)) {
   const result = await bindSockdriveGame({
     slug,
     prefix,
+    lang: argFrom(argv, 'lang'),
     apiBase: argFrom(argv, 'api-base') || 'https://8bitgo.com',
     publicBase: argFrom(argv, 'public-base') || 'https://assets.8bitgo.com',
     token: process.env.EIGHTBITGO_ADMIN_JWT || '',

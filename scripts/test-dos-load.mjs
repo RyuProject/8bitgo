@@ -31,7 +31,7 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { canRestartInPlace } from '@/emulator/sessionRestart'
-import { needsLockedAbsoluteDosMouse } from '@/emulator/dosMouse'
+import { needsLockedAbsoluteDosMouse, needsRelativeWindowsGuestMouse } from '@/emulator/dosMouse'
 import {
   advanceLockedAbsolutePointer,
   lockedAbsoluteContentRect,
@@ -211,8 +211,13 @@ check('Windows 客体与《主题医院》都由适配器独占绝对指针，�
   assert.equal(needsLockedAbsoluteDosMouse(' Theme-Hospital '), true)
   assert.equal(needsLockedAbsoluteDosMouse('doom'), false)
   assert.equal(needsLockedAbsoluteDosMouse(), false)
+  assert.equal(needsRelativeWindowsGuestMouse('xuan-yuan-sword-scar-of-sky', 'Swd3e/swd3e.exe'), true)
+  assert.equal(needsRelativeWindowsGuestMouse(' Xuan-Yuan-Sword-Scar-of-Sky ', 'SWD3E.EXE'), true)
+  assert.equal(needsRelativeWindowsGuestMouse('xuan-yuan-sword-scar-of-sky', 'launcher.exe'), false)
+  assert.equal(needsRelativeWindowsGuestMouse('starcraft', 'Swd3e.exe'), false)
   assert.match(jsdos, /adapterOwnsAbsoluteMouse\s*=\s*Boolean/)
-  assert.match(jsdos, /options\.mouseCapture\s*&&\s*\(guest\s*\|\|\s*needsLockedAbsoluteDosMouse/)
+  assert.match(jsdos, /guest\s*&&\s*needsRelativeWindowsGuestMouse\(options\.gameSlug, options\.dosExecutable\)/)
+  assert.match(jsdos, /guest\s*&&\s*!relativeWindowsMouse/)
   assert.match(jsdos, /mouseCapture:\s*Boolean\(options\.mouseCapture\s*&&\s*!adapterOwnsAbsoluteMouse\)/)
   assert.match(jsdos, /adapterOwnsAbsoluteMouse\s*\?\s*hookCapturedAbsoluteMouse/)
   assert.match(jsdos, /:\s*hookMouseInvert\(ci/)
@@ -257,9 +262,9 @@ check('异常位移不会把绝对光标污染成 NaN，下一帧仍可继续移
 console.log('\n── DOS / Windows Sockdrive：大型游戏按块读取 ──')
 
 check('Win95 悬停时预热正确的 DOSBox-X 核心和系统盘版本探测', () => {
-  assert.match(player, /prewarmCore = pageRuntime\?\.id === 'jsdos' && \(dosSystemUrl \|\| dosBackend === 'dosboxX'\)/)
+  assert.match(player, /prewarmCore = pageRuntime\?\.id === 'jsdos' && \(effectiveDosSystemUrl \|\| dosBackend === 'dosboxX'\)/)
   assert.match(player, /prewarmRuntime\(pageRuntime\?\.id, prewarmCore, true\)/)
-  assert.match(player, /prewarmSystemCache\(dosSystemUrl\)/)
+  assert.match(player, /prewarmSystemCache\(effectiveDosSystemUrl\)/)
   assert.match(prewarm, /jspiEnabled\(\) \? 'wdosbox-x-jspi' : 'wdosbox-x'/)
   assert.match(prewarm, /warmHttpCache\(`\$\{emulatorRoot\}\$\{stem\}\.wasm`\)/)
   assert.match(prewarm, /connection\?\.saveData/)
@@ -274,26 +279,30 @@ check('配置流式目录后不再下载整包 ROM', () => {
 check('流式盘按预算选择官方预取，并挂到 DOSBox-X 的 Sockdrive', () => {
   assert.match(jsdos, /buildSockdriveWindowsGuestConfig\(systemConfig, sockdriveUrl, dosboxConfig\)/)
   assert.match(jsdos, /streamingGame \? \{ sockdrivePreload \} : \{\}/)
-  assert.match(jsdos, /guestLaunchCommand = streamingGame\s*\? windowsSockdriveExecutableCommand/)
+  assert.match(jsdos, /guestLaunchCommand = streamingGame[\s\S]*?windowsSockdriveExecutableCommand\(gameExecutable, guest\.gameDrive\)/)
   assert.match(jsdos, /windowsSockdriveRegistryCommand\(registryImport, guest\.gameDrive\)/)
-  assert.match(jsdos, /windowsGameNeedsDirectDrawFocusRefresh\(options\.gameSlug, gameExecutable\)/)
+  assert.match(jsdos, /windowsGameNeedsDirectDrawFocusRefresh\([\s\S]*?options\.gameSlug,[\s\S]*?gameExecutable,[\s\S]*?\)/)
   assert.match(jsdos, /guest\.launchPrepareCommand,\s*guest\.refreshDirectDrawAfterLaunch/)
   assert.match(windowsLaunch, /refreshDirectDrawWhenBlack\(\)/)
   assert.match(windowsLaunch, /frameIsBlank\(frame\)/)
-  assert.match(windowsLaunch, /tap\(WIN_KEY\.tab\)/)
+  // Alt+Tab 也必须跨过客体键盘轮询；退回同一 tick 的 tap 会让 DirectDraw 黑屏修复静默失效。
+  assert.match(windowsLaunch, /chord\(WIN_KEY\.leftAlt, WIN_KEY\.tab/)
 })
 
-check('纯 DOS Sockdrive 不下载 Win95，直接把远程游戏盘挂成 C:', () => {
-  assert.match(jsdos, /else if \(streamingGame\)[\s\S]*?buildDosSockdriveConf\(/)
+check('纯 DOS Sockdrive 自动叠 DOS 7.1 启动盘，再把远程游戏盘作为 D: 启动', () => {
+  assert.match(jsdos, /streamingGame \? defaultDos71SystemUrl\(\) : ''/)
+  assert.match(jsdos, /const dosSystemGuest = streamingGame && isDos71SystemUrl\(systemUrl\)/)
+  assert.match(jsdos, /dosSystemGuest[\s\S]*?dosSockdriveProgramCommand\(gameExecutable, guest\.gameDrive\)/)
+  assert.match(jsdos, /scheduleDosGuestLaunch\(/)
+  assert.match(jsdos, /options\.dosLaunchDelay \?\? 8/)
   assert.match(jsdos, /静态 Sockdrive 需要 DOSBox-X/)
-  assert.doesNotMatch(jsdos, /流式 Windows 游戏盘缺少共享系统镜像/)
-  assert.match(jsdos, /else if \(pureDosStreaming\)[\s\S]*?60_000/)
+  assert.match(jsdos, /else if \(dosSystemGuest\)[\s\S]*?90_000/)
 })
 
 check('流式盘必须走 URL bundle 入口，否则 js-dos 会把 changes URL 留空、保存永远失败', () => {
   assert.match(jsdos, /makeJsdosConfigBundle\(guest\.dosboxConf\)/)
   assert.match(jsdos, /streamingGame\s*\?\s*\{\s*url:\s*primaryUrl,\s*initFs\s*\}/)
-  assert.match(jsdos, /verifySockdriveForLaunch\(sockdriveUrl, abort\.signal, Boolean\(options\.dosSystemUrl\)\)/)
+  assert.match(jsdos, /verifySockdriveForLaunch\(sockdriveUrl, abort\.signal, Boolean\(systemUrl\)\)/)
   assert.match(jsdos, /method:\s*'HEAD'/)
   assert.match(jsdos, /Sockdrive 分块 \$\{sample\} 读取失败/)
 })
@@ -311,12 +320,12 @@ check('流式盘按网络与系统镜像竞争自适应预热，并且不再拼�
 })
 
 check('Sockdrive 在开始按钮悬停时提前预热，正式启动复用同一任务而不重复下载', () => {
-  assert.match(player, /prewarmSockdriveCache\(dosSockdriveUrl, Boolean\(dosSystemUrl\)\)/)
+  assert.match(player, /prewarmSockdriveCache\(dosSockdriveUrl, Boolean\(effectiveDosSystemUrl\)\)/)
   assert.match(jsdos, /const sockdrivePrewarmTasks = new Map/)
   assert.match(jsdos, /const prewarmed = sockdrivePrewarmTasks\.get\(url\)/)
   assert.match(jsdos, /await awaitSockdrivePrewarm\(prewarmed, signal\)/)
-  assert.match(jsdos, /verifySockdriveForLaunch\(sockdriveUrl, abort\.signal, Boolean\(options\.dosSystemUrl\)\)/)
-  assert.doesNotMatch(jsdos, /verifySockdriveMetadata\(sockdriveUrl, abort\.signal, Boolean\(options\.dosSystemUrl\)\)/)
+  assert.match(jsdos, /verifySockdriveForLaunch\(sockdriveUrl, abort\.signal, Boolean\(systemUrl\)\)/)
+  assert.doesNotMatch(jsdos, /verifySockdriveMetadata\(sockdriveUrl, abort\.signal, Boolean\(systemUrl\)\)/)
 })
 
 check('热点清单按真实对象去重，并在预算边界停止', () => {

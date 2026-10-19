@@ -15,10 +15,15 @@ import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { normalizeDosboxConfigOverride, mergeDosboxConfigOverride } from '../shared/dosbox-config.js'
 
-const { isReadyJsdosBundleBlob, makeJsdosBundle, makeWindowsGameLayer, buildDosboxConf, buildDosSockdriveConf, mergeExtraFiles, readZipFile } = await import(
+const { isReadyJsdosBundleBlob, makeJsdosBundle, makeWindowsGameLayer, buildDosboxConf, mergeExtraFiles, readZipFile } = await import(
   fileURLToPath(new URL('../src/lib/jsdosBundle.ts', import.meta.url))
 )
-const { windowsGuestLaunchCommand, windowsSockdriveRegistryCommand } = await import(
+const {
+  buildSockdriveWindowsGuestConfig,
+  dosSockdriveProgramCommand,
+  windowsGuestLaunchCommand,
+  windowsSockdriveRegistryCommand,
+} = await import(
   fileURLToPath(new URL('../src/lib/windowsGuest.ts', import.meta.url)),
 )
 const {
@@ -35,10 +40,14 @@ const {
   frameHasDesktopContent,
   frameDiffRatio,
   frameIsBlank,
+  scheduleDosGuestLaunch,
+  dosGuestCommandSequence,
   scheduleWindowsLaunch,
   windowsLaunchDelayMs,
   DESKTOP_SETTLE_FLOOR_MS,
+  WINDOWS_CHORD_STEP_MS,
   WINDOWS_LAUNCH_VERIFY_MS,
+  WINDOWS_START_MENU_READY_MS,
 } = await import(fileURLToPath(new URL('../src/emulator/windowsLaunch.ts', import.meta.url)))
 
 let n = 0
@@ -271,8 +280,16 @@ console.log('\n── StarCraft：启动前静默导入安装路径 ──')
     'StarCraft 启用老 DirectDraw 黑屏后的焦点刷新',
   )
   ok(
+    windowsGameNeedsDirectDrawFocusRefresh('xuan-yuan-sword-scar-of-sky', 'Swd3e/swd3e.exe'),
+    '⭐《天之痕》启用已在线复现的 DirectDraw 黑屏焦点刷新',
+  )
+  ok(
+    !windowsGameNeedsDirectDrawFocusRefresh('xuan-yuan-sword-scar-of-sky', 'setup.exe'),
+    '《天之痕》的第三方启动器不会误触发焦点刷新',
+  )
+  ok(
     !windowsGameNeedsDirectDrawFocusRefresh('theme-hospital', 'HOSPITAL.EXE'),
-    '其它 Windows 游戏不误触发 StarCraft 的焦点刷新',
+    '其它 Windows 游戏不误触发 DirectDraw 焦点刷新',
   )
   ok(
     /core=normal/.test(windowsGameCompatibilityDosboxConfig('starcraft', 'StarCraft.exe', undefined)),
@@ -625,27 +642,26 @@ console.log('\n── 普通 DOS 包必须显式开启游戏需要的内存接�
   ok(/\[dos\]\nxms=true\nems=false\numb=true/.test(tunedText), '普通 DOS 可以逐游戏关闭有兼容性冲突的 EMS')
 }
 
-console.log('\n── 大型纯 DOS 游戏：Sockdrive 挂成 C 盘后按扇区边下边玩 ──')
+console.log('\n── 大型纯 DOS 游戏：DOS 7.1 启动盘 + D: Sockdrive 边下边玩 ──')
 {
   const url = 'https://assets.example.test/sockdrives/fallout-en-v1'
-  const conf = buildDosSockdriveConf(
-    'FALLOUT.EXE',
+  const guest = buildSockdriveWindowsGuestConfig(
+    '[dosbox]\nmemsize=16\n\n[autoexec]\necho off\nimgmount 2 system-fat32-2gb.qcow2\n',
     url,
-    undefined,
     windowsGameCompatibilityDosboxConfig('fallout', 'FALLOUT.EXE', undefined),
   )
-  ok(conf.includes(`imgmount 2 sockdrive ${url}`), '⭐ 纯 DOS 流式盘直接挂成 C:，不需要下载 Win95 系统镜像')
-  ok(!/^mount c \.\s*$/m.test(conf), '流式配置不再等待完整 ZIP 解包到宿主文件系统')
-  ok(conf.includes('\nc:\nFALLOUT.EXE\n'), '远程盘挂好后直接切到 C: 启动 Fallout')
-  ok(/\[dosbox\][\s\S]*memsize=32/.test(conf), 'Fallout 流式模式保留已验证的 32MB 内存配置')
+  ok(guest.dosboxConf.includes(`imgmount 3 sockdrive ${url}`), '⭐ DOS 7.1 占 C:，纯 DOS 流式游戏盘挂成 BIOS 第二盘 D:')
+  ok(guest.dosboxConf.includes('\nboot c: -convertfat\n'), '挂完两块盘后启动真实 DOS，D: 才会变成可访问盘符')
+  ok(dosSockdriveProgramCommand('FALLOUT.EXE', guest.gameDrive) === 'D:\\FALLOUT.EXE', '真实 DOS 提示符会启动 D:\\FALLOUT.EXE')
+  ok(/\[dosbox\][\s\S]*memsize=32/.test(guest.dosboxConf), 'Fallout 流式模式保留已验证的 32MB 内存配置')
   ok(
-    /\[cpu\][\s\S]*core=normal/.test(conf) && /\[cpu\][\s\S]*cycles=fixed 30000/.test(conf),
+    /\[cpu\][\s\S]*core=normal/.test(guest.dosboxConf) && /\[cpu\][\s\S]*cycles=fixed 30000/.test(guest.dosboxConf),
     'Fallout 流式模式保留已验证的 CPU 配置',
   )
   await throwsWith(
-    () => Promise.resolve(buildDosSockdriveConf('Long Folder/FALLOUT.EXE', url)),
+    () => Promise.resolve(dosSockdriveProgramCommand('Long Folder/FALLOUT.EXE', 'D')),
     /DOS 8\.3/,
-    '远程盘不能靠本地二次挂载绕过长路径，开局前明确拒绝不可靠入口',
+    '真实 DOS 自动输入不能绕过长路径，开局前明确拒绝不可靠入口',
   )
 }
 
@@ -937,6 +953,36 @@ const BLACK = mkFrame(640, 480, 0)
  */
 const WALLPAPER = mkFrame(640, 480, 40)
 
+console.log('\n── 纯 DOS 客体：等 DOS 7.1 提示符后切盘、切目录、启动游戏 ──')
+{
+  const clock = fakeClock()
+  globalThis.window = clock.win
+  const keys = []
+  const milestones = []
+  let launchedAt = null
+  const cancel = scheduleDosGuestLaunch(
+    { sendKeyEvent: (code, pressed) => pressed && keys.push([clock.now, code]) },
+    'D:\\FALLOUT.EXE',
+    3,
+    () => false,
+    () => (launchedAt = clock.now),
+    (step) => milestones.push([clock.now, step]),
+  )
+  await clock.runUntil(2_999)
+  ok(keys.length === 0, 'DOS 7.1 还在开机时不会提前把命令敲进 BIOS')
+  await clock.runUntil(6_000)
+  cancel()
+  ok(keys[0]?.[0] === 3_000 && keys[0]?.[1] === 68, '等待到点后先输入 D: 切到游戏盘')
+  ok(keys.filter(([, code]) => code === 257).length === 2, '根目录游戏会先切盘，再输入可执行文件')
+  ok(milestones.some(([, step]) => step === 'launched'), '输入完成后推进 launched 里程碑')
+  ok(launchedAt !== null && launchedAt > 4_000, '回车交给客体后留出一帧加载时间再撤遮罩')
+  ok(
+    JSON.stringify(dosGuestCommandSequence('D:\\FALLOUT\\FALLOUT.EXE')) ===
+      JSON.stringify(['D:', 'cd \\FALLOUT', 'FALLOUT.EXE']),
+    '子目录游戏先进入 EXE 目录，保证 DOS/4GW 与相对资源能从正确目录读取',
+  )
+}
+
 console.log('\n── 桌面到底画完了没有（desktopSettled）──')
 {
   ok(desktopSettled(null, DESKTOP) === false, '没有上一帧时不算稳 —— 证据不足不能敲键')
@@ -1081,6 +1127,94 @@ console.log('\n── Windows 95 的开机黑屏：不能把黑屏当成桌面 �
     `⭐ 等到真桌面出现（第 8 秒）之后才敲（实际第 ${(r.firstKey / 1000).toFixed(1)} 秒），没有敲在开机黑屏上`,
   )
   ok(r.failedAt === null, '真桌面之后再敲，按正常流程判成功（没有误报失败）')
+}
+
+console.log('\n── Windows 95 的组合键：必须跨过客体键盘轮询 ──')
+{
+  const clock = fakeClock()
+  globalThis.window = clock.win
+  const events = []
+  const pressedKeys = new Set()
+  let sizeConsumer = null
+  let startMenuVisible = false
+  const startMenu = mkDesktop(640, 480, 40, 230)
+  const ci = {
+    screenshot: async () => (startMenuVisible ? startMenu : DESKTOP),
+    sendKeyEvent: (code, pressed) => {
+      events.push([clock.now, code, pressed])
+      if (pressed) pressedKeys.add(code)
+      else pressedKeys.delete(code)
+      // 只有 Esc 按下时 Ctrl 仍处于按下状态，客体才真的打开开始菜单。
+      if (code === 256 && pressed && pressedKeys.has(341)) startMenuVisible = true
+    },
+    events: () => ({ onFrameSize: (fn) => (sizeConsumer = fn) }),
+  }
+  const cancel = scheduleWindowsLaunch(
+    ci,
+    'D:\\WINDEPTH.EXE',
+    24,
+    () => false,
+    () => {},
+    '9x',
+    () => {},
+  )
+  sizeConsumer?.(720, 400)
+  sizeConsumer?.(640, 480)
+  await clock.runUntil(8_000)
+  cancel()
+
+  const ctrlDown = events.find(([, code, pressed]) => code === 341 && pressed)
+  const escDown = events.find(([, code, pressed]) => code === 256 && pressed)
+  const escUp = events.find(([, code, pressed]) => code === 256 && !pressed)
+  const ctrlUp = events.find(([, code, pressed]) => code === 341 && !pressed)
+  const runKey = events.find(([, code, pressed]) => code === 82 && pressed)
+  ok(Boolean(ctrlDown && escDown && escUp && ctrlUp && runKey), 'Ctrl+Esc 与 Run 的 R 都送进客体')
+  ok(
+    escDown[0] - ctrlDown[0] === WINDOWS_CHORD_STEP_MS &&
+      escUp[0] - escDown[0] === WINDOWS_CHORD_STEP_MS &&
+      ctrlUp[0] - escUp[0] === WINDOWS_CHORD_STEP_MS,
+    `⭐ 组合键按下/抬起各隔 ${WINDOWS_CHORD_STEP_MS}ms，不再塞进同一个输入扫描`,
+  )
+  ok(
+    runKey[0] - ctrlUp[0] >= WINDOWS_START_MENU_READY_MS,
+    '⭐ Ctrl 已经抬起且开始菜单画出来之后才按 R，不会再选中 Recycle Bin',
+  )
+}
+
+console.log('\n── Windows 95 开始菜单没开：重试后必须停手 ──')
+{
+  const clock = fakeClock()
+  globalThis.window = clock.win
+  const events = []
+  let sizeConsumer = null
+  let failedAt = null
+  const ci = {
+    // 始终返回同一张桌面图，模拟 Ctrl+Esc 被客体漏掉；这正是 windepth 曾打开回收站的前提。
+    screenshot: async () => DESKTOP,
+    sendKeyEvent: (code, pressed) => events.push([clock.now, code, pressed]),
+    events: () => ({ onFrameSize: (fn) => (sizeConsumer = fn) }),
+  }
+  const cancel = scheduleWindowsLaunch(
+    ci,
+    'D:\\WINDEPTH.EXE',
+    24,
+    () => false,
+    () => {},
+    '9x',
+    () => (failedAt = clock.now),
+  )
+  sizeConsumer?.(720, 400)
+  sizeConsumer?.(640, 480)
+  await clock.runUntil(8_000)
+  cancel()
+
+  const ctrlAttempts = events.filter(([, code, pressed]) => code === 341 && pressed).length
+  const runKeys = events.filter(([, code, pressed]) => code === 82 && pressed).length
+  const enterKeys = events.filter(([, code, pressed]) => code === 257 && pressed).length
+  ok(ctrlAttempts === 2, '开始菜单没有视觉响应时只重试一次 Ctrl+Esc')
+  ok(runKeys === 0, '⭐ 两次都失败时不把 R 送给桌面，不会再选中 Recycle Bin')
+  ok(enterKeys === 0, '⭐ 失败后也不发 Enter，不会误打开任何桌面图标')
+  ok(failedAt !== null, '⭐ 明确上报启动失败，让播放器重试或提示，而不是假装已经运行')
 }
 
 console.log('\n── Windows 95 的壁纸静止：壳还没起来，不能当成桌面 ──')

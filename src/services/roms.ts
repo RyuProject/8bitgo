@@ -880,6 +880,40 @@ export function dosSockdriveForRom(
 }
 
 /**
+ * 已经绑定静态 Sockdrive 的 Windows / DOS 游戏不需要先证明那份“整包回退”也能访问。
+ *
+ * 流式模式开局只读 Sockdrive 元数据和实际命中的磁盘块，`jsdos.ts` 会在挂盘前严格校验它；
+ * 此时再对 1GB 以上的 `.8bg` 回退包做跨域 HEAD，不但没有运行价值，弱网下还会把开始按钮
+ * 锁住四轮超时。这里仍从正常语言候选链选盘，确保繁体 ROM 只会配繁体 Sockdrive；玩家手动
+ * 指定了一个尚未迁移的语言时则返回空，继续走整包探测，不能偷偷挂到另一种语言的磁盘。
+ */
+export function streamedRomCandidateForSelection(
+  game: Pick<Game, 'platform' | 'dosBackend' | 'dosSockdrive' | 'dosSockdrives' | 'rom' | 'roms' | 'romBackups'>,
+  lang: Lang,
+  prefer?: RomLang | null,
+): RomCandidate | undefined {
+  if (game.platform !== 'dos' || game.dosBackend !== 'dosboxX') return undefined
+  return playbackRomCandidatesForSelection(game, lang, prefer)
+    .find((candidate) => Boolean(dosSockdriveForRom(game, { lang: candidate.lang })))
+}
+
+/** 配置足够时直接给播放器一个会话标识；真实盘仍由 js-dos 启动校验，不在这里乐观判成功。 */
+function configuredStreamedRom(
+  game: Game | undefined,
+  lang: Lang,
+  prefer?: RomLang | null,
+): Omit<RomResolution, 'retry' | 'failover'> | null {
+  if (!game) return null
+  const candidate = streamedRomCandidateForSelection(game, lang, prefer)
+  if (!candidate) return null
+  const sockdrive = dosSockdriveForRom(game, { lang: candidate.lang })
+  const url = romUrlForKey(candidate.key)
+  // 两个相对 key 都依赖资源根地址；任意一个拼不出 URL 就按原流程给出配置诊断。
+  if (!sockdrive || !url || !romUrlForKey(sockdrive)) return null
+  return { status: 'found', url, key: candidate.key, lang: candidate.lang }
+}
+
+/**
  * 「没问出来」时自动重试的退避节奏（毫秒）。
  *
  * 为什么要自动重试：探测失败最常见的原因是网络抖一下、或者切后台时请求被掐掉，
@@ -949,10 +983,12 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
     初始态直接设 checking，避免搜索引擎和首屏用户先看到「选择本地 ROM」，
     水合后又突然变成「开始游戏」这种自相矛盾的文案。
   */
-  const [state, setState] = useState<Omit<RomResolution, 'retry' | 'failover'>>(() => ({
-    status: romProbeExpected(game, lang, prefer) ? 'checking' : 'idle',
-    url: '',
-  }))
+  const [state, setState] = useState<Omit<RomResolution, 'retry' | 'failover'>>(() =>
+    configuredStreamedRom(game, lang, prefer) ?? {
+      status: romProbeExpected(game, lang, prefer) ? 'checking' : 'idle',
+      url: '',
+    },
+  )
   const [attempt, setAttempt] = useState(0)
   /** 这一轮已经自动重试过几次。换游戏 / 换语言 / 玩家手动重试都要清零 */
   const autoRetries = useRef(0)
@@ -1013,6 +1049,12 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
     if (!game) return
     let cancelled = false
     let timer = 0
+    const streamed = configuredStreamedRom(game, lang, prefer)
+    if (streamed) {
+      // Sockdrive 自己会在真正开局时校验；不要让完全不会被读取的整包 HEAD 挡住开始按钮。
+      setState(streamed)
+      return
+    }
     // 切游戏或语言时要真正终止旧测速；只拦 setState 仍会让两条 256 KiB 请求继续占用新游戏的带宽。
     const routeController = new AbortController()
     setState({ status: 'checking', url: '' })

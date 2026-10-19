@@ -39,6 +39,29 @@ import { versionedRomUrl } from '@/services/roms'
 const OFFICIAL = 'https://br.cdn.dos.zone/js-dos/system'
 
 /**
+ * 纯 DOS Sockdrive 不能直接当 DOSBox-X 内置 DOS 的 C:：官方扩展只把它挂成 BIOS 硬盘。
+ * 因此流式 DOS 游戏统一先启动这块 10MB 的 DOS 7.1 系统盘，再把游戏盘作为 D: 使用。
+ */
+export const DOS71_SYSTEM_FILE = 'system-dos7.1-v1.jsdos'
+
+export function isDos71SystemUrl(value: string): boolean {
+  try {
+    return new URL(value, typeof window === 'undefined' ? 'https://x/' : window.location.href).pathname
+      .split('/')
+      .pop() === DOS71_SYSTEM_FILE
+  } catch {
+    return false
+  }
+}
+
+/** 默认优先走资源域；开发环境没配公开根地址时退回同源白名单代理。 */
+export function defaultDos71SystemUrl(): string {
+  const env = (import.meta as ImportMeta & { env?: ImportMetaEnv }).env
+  const base = String(env?.VITE_ROM_BASE_URL || '').trim().replace(/\/+$/, '')
+  return base ? `${base}/systems/dos/${DOS71_SYSTEM_FILE}` : `/system-images/${DOS71_SYSTEM_FILE}`
+}
+
+/**
  * 我们的镜像路径 → 官方同一份镜像的地址。
  *
  * key 是**我们自己地址里的 pathname**（不含域名），这样换资源域名也不用动这张表。
@@ -51,11 +74,28 @@ const mirrorsFor = (file: string): readonly SystemMirror[] => [
   { url: `${OFFICIAL}/${file}`, label: 'js-dos 官方源' },
 ]
 
+/** 自制 / 本地化镜像只能代理同一份 R2 对象；官方同名文件不能假定内容相同。 */
+const sameOriginMirror = (file: string): readonly SystemMirror[] => [
+  { url: `/system-images/${file}`, label: '主站同源备用' },
+]
+
 const MIRRORS: Readonly<Record<string, readonly SystemMirror[]>> = {
-  '/systems/dos/system-dos7.1-v1.jsdos': mirrorsFor('system-dos7.1-v1.jsdos'),
+  [`/systems/dos/${DOS71_SYSTEM_FILE}`]: mirrorsFor(DOS71_SYSTEM_FILE),
   '/systems/dos/system-win311-v1.jsdos': mirrorsFor('system-win311-v1.jsdos'),
   '/systems/dos/system-win95-v1.jsdos': mirrorsFor('system-win95-v1.jsdos'),
   '/systems/dos/system-win98-v1.jsdos': mirrorsFor('system-win98-v1.jsdos'),
+  // 保留第一版路径给旧数据/缓存回退；自制对象都不能回落到官方同名系统。
+  '/systems/dos/Windows95_Traditional-Chinese-DirectInput-v1.jsdos': sameOriginMirror(
+    'Windows95_Traditional-Chinese-DirectInput-v1.jsdos',
+  ),
+  // 《天之痕》是原生 Big5，进入剧情还依赖完整 DirectX 7.0a；不能回落到官方英文系统。
+  '/systems/dos/Windows95_Traditional-Chinese-DirectX7a-Minimal-v1.jsdos': sameOriginMirror(
+    'Windows95_Traditional-Chinese-DirectX7a-Minimal-v1.jsdos',
+  ),
+  // 超精简版也是本站自行制作，不能把英文 Win95 当成故障时的镜像替身。
+  '/systems/dos/Windows95_Traditional-Chinese-DirectX7a-UltraLite-v2.jsdos': sameOriginMirror(
+    'Windows95_Traditional-Chinese-DirectX7a-UltraLite-v2.jsdos',
+  ),
   /*
     ⚠️ `system-win311-vga-v1.jsdos` **故意不登记**，别手贱加上。
     它是我们自己从官方那份改出来的：SYSTEM.INI 的显示驱动从 S3 Trio64V 800x600 真彩

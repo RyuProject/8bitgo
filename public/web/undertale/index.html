@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#050505" />
+    <meta name="robots" content="noindex,nofollow" />
+    <meta
+      name="description"
+      content="在浏览器中运行你自己合法取得的 UNDERTALE 文件；游戏数据只保存在本机，不上传服务器。"
+    />
+    <title>UNDERTALE · 本地正版启动器 · 8BitGo</title>
+    <link rel="stylesheet" href="/web/undertale/styles.css" />
+    <script type="module" src="/web/undertale/app.js"></script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="https://8bitgo.com" aria-label="返回 8BitGo">8BITGO</a>
+        <div class="runtime-state" aria-live="polite">
+          <span class="state-dot" id="state-dot"></span>
+          <span id="runtime-state">正在准备开源运行端…</span>
+        </div>
+      </header>
+
+      <section class="launcher" id="launcher" aria-labelledby="page-title">
+        <div class="hero-copy">
+          <p class="eyebrow">LOCAL-ONLY WEB RUNNER</p>
+          <h1 id="page-title">UNDERTALE</h1>
+          <p class="subtitle">你的游戏。你的存档。只留在你的浏览器。</p>
+        </div>
+
+        <div class="legal-note">
+          <strong>本站不提供或上传游戏内容。</strong>
+          请选择你从 Steam、GOG 等官方渠道安装的游戏目录。导入文件会直接写入当前浏览器的私有存储，
+          不会发送给 8BitGo 或任何第三方。
+        </div>
+
+        <div class="status-grid" id="support-list" aria-label="浏览器兼容性检查">
+          <div class="support-item" data-check="jspi"><span>WASM JSPI</span><b>检查中</b></div>
+          <div class="support-item" data-check="opfs"><span>本地私有存储</span><b>检查中</b></div>
+          <div class="support-item" data-check="webgl"><span>WebGL 2</span><b>检查中</b></div>
+        </div>
+
+        <section class="import-card" aria-labelledby="import-title">
+          <div>
+            <p class="step">STEP 01</p>
+            <h2 id="import-title">选择正版安装目录</h2>
+            <p class="muted">
+              Windows 通常选择包含 <code>data.win</code> 的 UNDERTALE 文件夹；Linux 版通常包含
+              <code>game.unx</code>。首次导入后，下次无需重复选择。
+            </p>
+          </div>
+
+          <div class="actions">
+            <button class="primary" id="select-folder" type="button">选择游戏文件夹</button>
+            <button class="secondary" id="start-cached" type="button" hidden>启动本机副本</button>
+            <button class="quiet danger" id="clear-library" type="button" hidden>清除本机游戏副本</button>
+          </div>
+          <input id="folder-input" type="file" webkitdirectory directory multiple hidden />
+
+          <div class="progress-wrap" id="progress-wrap" hidden>
+            <div class="progress-copy">
+              <span id="progress-label">正在导入…</span>
+              <span id="progress-value">0%</span>
+            </div>
+            <progress id="progress" max="100" value="0">0%</progress>
+          </div>
+          <p class="message" id="message" role="status" aria-live="polite"></p>
+        </section>
+
+        <section class="details">
+          <div>
+            <p class="step">STEP 02</p>
+            <h2>开始游戏</h2>
+            <p>方向键移动，Z 确认，X 取消，C 打开菜单。支持标准手柄和移动端触屏按键。</p>
+          </div>
+          <div class="privacy-badge">
+            <span aria-hidden="true">◉</span>
+            <div><b>零上传</b><small>页面没有游戏文件上传接口</small></div>
+          </div>
+        </section>
+
+        <footer>
+          <p>
+            运行端：
+            <a href="https://github.com/ButterscotchRunner/Butterscotch" rel="noopener noreferrer">Butterscotch</a>
+            （MPL-2.0，实验性） ·
+            <a href="https://store.steampowered.com/app/391540/Undertale/" rel="noopener noreferrer">购买 UNDERTALE</a>
+          </p>
+          <p>非 Toby Fox、GameMaker 或其关联方的官方产品。兼容性由开源运行端决定。</p>
+        </footer>
+      </section>
+
+      <section class="game-view" id="game-view" hidden aria-label="UNDERTALE 游戏画面">
+        <div class="game-toolbar">
+          <button class="toolbar-button" id="back-to-launcher" type="button">退出游戏</button>
+          <span id="game-status">正在启动…</span>
+          <button class="toolbar-button" id="fullscreen" type="button">全屏</button>
+        </div>
+
+        <div class="canvas-stage" id="canvas-stage">
+          <canvas id="canvas" tabindex="0" aria-label="游戏画布"></canvas>
+          <button class="audio-gate" id="audio-gate" type="button" hidden>点击画面启用声音</button>
+        </div>
+
+        <div class="touch-controls" id="touch-controls" aria-label="触屏控制器">
+          <div class="dpad" aria-label="方向键">
+            <button data-key="38" aria-label="上">▲</button>
+            <button data-key="37" aria-label="左">◀</button>
+            <button data-key="40" aria-label="下">▼</button>
+            <button data-key="39" aria-label="右">▶</button>
+          </div>
+          <div class="action-pad" aria-label="动作键">
+            <button class="key-c" data-key="67" aria-label="菜单 C">C</button>
+            <button class="key-x" data-key="88" aria-label="取消 X">X</button>
+            <button class="key-z" data-key="90" aria-label="确认 Z">Z</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <noscript>需要启用 JavaScript 才能运行开源 WASM 运行端。</noscript>
+  </body>
+</html>

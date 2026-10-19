@@ -49,7 +49,7 @@ import type { NetplaySession } from './adapters/emulatorjs'
 import type { CloudSession, CloudState } from './adapters/cloudgame'
 import { p2pPlayable, cloudPlayable } from './paths'
 import { prewarmRuntime } from './prewarm'
-import { prewarmSystemCache } from './systemSource'
+import { defaultDos71SystemUrl, prewarmSystemCache } from './systemSource'
 import { prewarmSockdriveCache } from './adapters/jsdos'
 import { canRestartInPlace } from './sessionRestart'
 import { confirmAndReplayAnchorNavigation } from './leaveNavigation'
@@ -580,6 +580,8 @@ export function EmulatorPlayer({
   autoStart,
   debug = false,
 }: Props) {
+  // 静态 Sockdrive 是 BIOS 硬盘；纯 DOS 游戏也要先启动真实 DOS 7.1，才能把游戏盘读成 D:。
+  const effectiveDosSystemUrl = dosSystemUrl || (dosSockdriveUrl ? defaultDos71SystemUrl() : undefined)
   const [status, setStatus] = useState<Status>('idle')
   const [file, setFile] = useState<File | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -1500,8 +1502,8 @@ export function EmulatorPlayer({
   const dosBackendRef = useRef(dosBackend)
   dosBackendRef.current = dosBackend
   // 系统镜像与等待时间也只在新会话挂载时读取；后台热改配置不应中断玩家当前这一局。
-  const dosSystemUrlRef = useRef(dosSystemUrl)
-  dosSystemUrlRef.current = dosSystemUrl
+  const dosSystemUrlRef = useRef(effectiveDosSystemUrl)
+  dosSystemUrlRef.current = effectiveDosSystemUrl
   const dosSockdriveUrlRef = useRef(dosSockdriveUrl)
   dosSockdriveUrlRef.current = dosSockdriveUrl
   /**
@@ -1637,7 +1639,7 @@ export function EmulatorPlayer({
   const supported = Boolean(pageRuntime) || onlineOk
   /** js-dos 预热必须知道最终后端，否则会把普通 DOS 的 1.4 MB 核心当成 Win95 的 7.5 MB 核心。 */
   const requestedPrewarmCore = core ?? platform.core
-  const prewarmCore = pageRuntime?.id === 'jsdos' && (dosSystemUrl || dosBackend === 'dosboxX')
+  const prewarmCore = pageRuntime?.id === 'jsdos' && (effectiveDosSystemUrl || dosBackend === 'dosboxX')
     ? 'dosboxX'
     : platform.id === 'arcade' && requestedPrewarmCore
       // RomData 只有 FBNeo 会读；悬停时也必须用最终核心，否则会白下 mame-current 的 35MB。
@@ -1720,7 +1722,7 @@ export function EmulatorPlayer({
   /**
    * 这一局有没有启动里程碑可报。
    *
-   * 只有 Windows 客体那条路有：`dosSystemUrl` 非空就意味着「dos 平台 + 带系统镜像」，
+   * Windows 与 DOS 7.1 客体会报启动里程碑；`effectiveDosSystemUrl` 非空就是这条路径，
    * 而 dosboxX 是跑客体的硬前提。别的运行时全都一个 startup 都不报，
    * 给它们分段等于把 80→99% 从 45 秒拖成 180 秒（见 makeProgressClock 的说明）。
    */
@@ -3936,19 +3938,19 @@ export function EmulatorPlayer({
                     onPointerEnter={() => {
                       if (!online) {
                         prewarmRuntime(pageRuntime?.id, prewarmCore, true)
-                        if (pageRuntime?.id === 'jsdos' && dosSystemUrl) prewarmSystemCache(dosSystemUrl)
+                        if (pageRuntime?.id === 'jsdos' && effectiveDosSystemUrl) prewarmSystemCache(effectiveDosSystemUrl)
                         if (pageRuntime?.id === 'jsdos' && dosSockdriveUrl) {
-                          prewarmSockdriveCache(dosSockdriveUrl, Boolean(dosSystemUrl))
+                          prewarmSockdriveCache(dosSockdriveUrl, Boolean(effectiveDosSystemUrl))
                         }
                       }
                     }}
                     onFocus={() => {
                       if (!online) {
                         prewarmRuntime(pageRuntime?.id, prewarmCore)
-                        if (pageRuntime?.id === 'jsdos' && dosSystemUrl) prewarmSystemCache(dosSystemUrl)
+                        if (pageRuntime?.id === 'jsdos' && effectiveDosSystemUrl) prewarmSystemCache(effectiveDosSystemUrl)
                         if (pageRuntime?.id === 'jsdos' && dosSockdriveUrl) {
                           // 键盘能提前 focus；触屏 focus 与 click 同时发生，但正式挂载会复用同一 Promise。
-                          prewarmSockdriveCache(dosSockdriveUrl, Boolean(dosSystemUrl))
+                          prewarmSockdriveCache(dosSockdriveUrl, Boolean(effectiveDosSystemUrl))
                         }
                       }
                     }}

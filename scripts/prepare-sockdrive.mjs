@@ -50,6 +50,7 @@ const publicBase = (arg('public-base') || 'https://assets.8bitgo.com').replace(/
 const freeSpace = arg('free-space') || '128M'
 const publish = flag('publish')
 const bind = flag('bind')
+const lang = String(arg('lang') || '').trim()
 // 后台队列会紧接着调用发布器做完整解码校验；这里跳过同一批 2GB 分块的第二次全盘解压。
 const deferValidation = flag('defer-validation')
 const bucket = arg('bucket')
@@ -62,7 +63,7 @@ const usage = () => {
     '用法：npm run sockdrive:prepare -- --source <原始ZIP或目录> --slug starcraft --version v1 ' +
       '--exe StarCraft.exe --work-dir </data/builds> --cli </opt/sockdrive/cli> ' +
       '[--encoding br|gzip|identity] [--free-space 128M] ' +
-      '[--publish --bucket <R2桶名> [--bind --api-base https://8bitgo.com]]',
+      '[--publish --bucket <R2桶名> [--bind [--lang en] --api-base https://8bitgo.com]]',
   )
   process.exit(2)
 }
@@ -85,6 +86,7 @@ if (!Number.isSafeInteger(brotliQuality) || brotliQuality < 1 || brotliQuality >
   throw new Error('--brotli-quality 必须是 1～11 的整数')
 }
 if (!/^[1-9]\d*(?:[KMG])$/i.test(freeSpace)) throw new Error('--free-space 请写成 256M 这类正数容量')
+if (lang && !/^[a-z]{2,3}(?:-[A-Za-z]{2,8})?$/.test(lang)) throw new Error('--lang 语言代码不合法')
 if (!existsSync(cli) || !statSync(cli).isFile()) throw new Error(`找不到官方 sockdrive CLI：${cli}`)
 if (bind && !publish) throw new Error('--bind 只能和 --publish 一起使用；单独绑定请运行 npm run sockdrive:bind')
 if (publish && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(bucket)) throw new Error('--publish 时必须提供合法的 --bucket')
@@ -308,13 +310,15 @@ if (publish) {
     '--public-base', publicBase,
   ])
   if (bind) {
-    run(process.execPath, [
+    const bindArgs = [
       join(repoRoot, 'scripts/bind-sockdrive-game.mjs'),
       '--slug', slug,
       '--prefix', prefix,
       '--public-base', publicBase,
       '--api-base', apiBase,
-    ], { env: process.env })
+    ]
+    if (lang) bindArgs.push('--lang', lang)
+    run(process.execPath, bindArgs, { env: process.env })
   }
 }
 
@@ -327,5 +331,5 @@ if (!publish) {
   )
   console.log('上传成功后绑定：')
   console.log('先用隐藏输入设置并导出 EIGHTBITGO_ADMIN_JWT（不要把令牌明文写进命令历史），再运行：')
-  console.log(`npm run sockdrive:bind -- --slug ${slug} --prefix ${prefix}`)
+  console.log(`npm run sockdrive:bind -- --slug ${slug} --prefix ${prefix}${lang ? ` --lang ${lang}` : ''}`)
 }

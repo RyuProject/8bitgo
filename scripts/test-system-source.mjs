@@ -12,6 +12,8 @@ import assert from 'node:assert/strict'
 import { deflateRawSync } from 'node:zlib'
 import { readFileSync } from 'node:fs'
 import {
+  defaultDos71SystemUrl,
+  isDos71SystemUrl,
   looksLikeSystemBundle,
   loadSystemBytes,
   prewarmSystemCache,
@@ -111,8 +113,17 @@ function fakeFetch(routes) {
 const PRIMARY = 'https://assets.8bitgo.com/systems/dos/system-win95-v1.jsdos'
 const SAME_ORIGIN = '/system-images/system-win95-v1.jsdos'
 const OFFICIAL = 'https://br.cdn.dos.zone/js-dos/system/system-win95-v1.jsdos'
+const TRADITIONAL_WIN95 = 'Windows95_Traditional-Chinese-DirectInput-v1.jsdos'
+const SCAR_OF_SKY_WIN95 = 'Windows95_Traditional-Chinese-DirectX7a-UltraLite-v2.jsdos'
+const SCAR_OF_SKY_WIN95_FALLBACK = 'Windows95_Traditional-Chinese-DirectX7a-Minimal-v1.jsdos'
 
 console.log('一、镜像表')
+
+await check('纯 DOS Sockdrive 默认使用同源 DOS 7.1 启动盘', () => {
+  assert.equal(defaultDos71SystemUrl(), '/system-images/system-dos7.1-v1.jsdos')
+  assert.equal(isDos71SystemUrl(defaultDos71SystemUrl()), true)
+  assert.equal(isDos71SystemUrl(PRIMARY), false)
+})
 
 await check('已登记的路径有备用源，而且主源永远排第一', () => {
   const s = systemSourcesFor(PRIMARY)
@@ -129,6 +140,34 @@ await check('同源代理只开放人工核对过的系统镜像', () => {
   assert.equal(asset?.precompressed, false)
   assert.equal(systemImageAsset('../roms/private.zip'), null)
   assert.equal(systemImageAsset('anything.jsdos'), null)
+})
+
+await check('《天之痕》的繁中 DirectX 7.0a 极简镜像有同源兜底，但绝不冒充官方镜像', () => {
+  const primary = `https://assets.8bitgo.com/systems/dos/${SCAR_OF_SKY_WIN95}`
+  const sources = systemSourcesFor(primary)
+  assert.deepEqual(sources.map((source) => source.url), [primary, `/system-images/${SCAR_OF_SKY_WIN95}`])
+  assert.ok(!sources.some((source) => source.url.includes('dos.zone')), '本地化镜像错误回落到了官方系统')
+  const asset = systemImageAsset(SCAR_OF_SKY_WIN95)
+  assert.ok(asset?.url.endsWith(`/systems/dos/${SCAR_OF_SKY_WIN95}`))
+  assert.equal(asset?.precompressed, false)
+})
+
+await check('旧 DirectInput 镜像路径仍可代理，避免已有数据或缓存突然失效', () => {
+  const primary = `https://assets.8bitgo.com/systems/dos/${TRADITIONAL_WIN95}`
+  assert.deepEqual(systemSourcesFor(primary).map((source) => source.url), [
+    primary,
+    `/system-images/${TRADITIONAL_WIN95}`,
+  ])
+  assert.ok(systemImageAsset(TRADITIONAL_WIN95))
+})
+
+await check('46.5MB 的旧 DirectX 镜像仍可代理，方便超精简版回退', () => {
+  const primary = `https://assets.8bitgo.com/systems/dos/${SCAR_OF_SKY_WIN95_FALLBACK}`
+  assert.deepEqual(systemSourcesFor(primary).map((source) => source.url), [
+    primary,
+    `/system-images/${SCAR_OF_SKY_WIN95_FALLBACK}`,
+  ])
+  assert.ok(systemImageAsset(SCAR_OF_SKY_WIN95_FALLBACK))
 })
 
 await check('⚠️⚠️ 我们自己改出来的 VGA 镜像绝不能回落到官方那份', () => {
@@ -429,7 +468,7 @@ await check('⚠️ jsdos 适配器真的用上了多源加载', async () => {
   const src2 = readFileSync(new URL('../src/emulator/adapters/jsdos.ts', import.meta.url), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/^\s*\/\/.*$/gm, '')
-  assert.match(src2, /loadSystemBytes\(\s*\n?\s*systemSourcesFor\(options\.dosSystemUrl\)/, '系统镜像还在走单源的 loadGameBytes')
+  assert.match(src2, /loadSystemBytes\(\s*\n?\s*systemSourcesFor\(systemUrl\)/, '系统镜像还在走单源的 loadGameBytes')
 })
 
 console.log(failed ? `\n${failed} 项未通过` : '\n全部通过 ✅')
