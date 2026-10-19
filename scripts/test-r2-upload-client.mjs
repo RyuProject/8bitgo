@@ -43,7 +43,7 @@ globalThis.XMLHttpRequest = class {
 
 const { uploadRom, deleteRomDir, headRom, listRomObjects } = await import('../src/services/roms.ts')
 const { uploadRomMultipart, listOrphanUploads, abortOrphanUpload, listPendingUploads, MultipartUploadGate } = await import('../src/services/romMultipart.ts')
-const { romPackWorkerConcurrency } = await import('../src/services/romPack.ts')
+const { matchesRomPackSource, romPackWorkerConcurrency } = await import('../src/services/romPack.ts')
 const {
   clearPendingSockdriveCreation,
   createSockdriveConversion,
@@ -86,6 +86,30 @@ assert.equal(romPackWorkerConcurrency(100 * 1024 * 1024, { hardwareConcurrency: 
 assert.equal(romPackWorkerConcurrency(100 * 1024 * 1024, { hardwareConcurrency: 8, deviceMemory: 2 }), 1)
 assert.equal(romPackWorkerConcurrency(8 * 1024 * 1024, { hardwareConcurrency: 16, deviceMemory: 16 }), 1)
 console.log('✅ 8BG 压缩加密按 CPU、内存与分块数选择 1–4 路 Worker，不会在低内存设备上过载')
+
+// 失败重试只能复用“逐块原文 SHA 全部一致”的密文；同名、同大小、同 mtime 仍不够安全。
+{
+  const chunkSize = 8 * 1024 * 1024
+  const source = new Uint8Array(chunkSize + 17)
+  source[123] = 7
+  source[chunkSize + 3] = 9
+  const sha256 = async (bytes) => Buffer.from(await crypto.subtle.digest('SHA-256', bytes)).toString('hex')
+  const chunks = []
+  for (let at = 0; at < source.byteLength; at += chunkSize) {
+    const bytes = source.slice(at, Math.min(source.byteLength, at + chunkSize))
+    chunks.push({ sourceSize: bytes.byteLength, sha256: await sha256(bytes), encodedSize: bytes.byteLength, cipherSize: bytes.byteLength + 16 })
+  }
+  const header = { originalSize: source.byteLength, chunkSize, chunks }
+  const original = new File([source], 'retry.zip', { lastModified: 123 })
+  let verified = 0
+  assert.equal(await matchesRomPackSource(original, header, ({ loaded }) => { verified = loaded }), true)
+  assert.equal(verified, source.byteLength)
+
+  const changed = source.slice()
+  changed[Math.floor(chunkSize / 2)] ^= 1
+  assert.equal(await matchesRomPackSource(new File([changed], 'retry.zip', { lastModified: 123 }), header), false)
+}
+console.log('✅ 8BG 失败重试会逐块校验源 ROM；内容变化时绝不复用旧密文')
 
 // 稳定链路从两路起步，连续成功后才逐级放开；429 / 网关错误仍须立刻回到单路。
 {

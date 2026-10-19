@@ -54,7 +54,7 @@ import { mergeDosboxConfigOverride, normalizeDosboxConfigOverride } from '../../
 import { normalizeDosStartupCommands } from '../../shared/dos-startup-commands.js'
 import { isVersionedSockdriveDirectory } from '../../shared/sockdrive-url.js'
 import { probeRange } from '@/emulator/remoteDisc'
-import { isRomPackBytes, isRomPackUrl, packRomForUpload, recommendedRomPackCodec, romPackKey, verifyRomPackBlob } from '@/services/romPack'
+import { isRomPackBytes, isRomPackUrl, packRomForUpload, recommendedRomPackCodec, releasePackedRomUpload, romPackKey, verifyRomPackBlob } from '@/services/romPack'
 import { isStreamingDiscPlatform } from '../../shared/streaming-disc-platforms.js'
 import { flashCompatibilityIssue } from '@/emulator/flashCompatibility'
 import {
@@ -2625,6 +2625,7 @@ function RomField({
         return
       }
       let uploadFile: Blob = file
+      let packedBlob: Blob | null = null
       let packCodecLabel = ''
       if (needsPacking) {
         const originalName = sniffed || file.name
@@ -2640,11 +2641,14 @@ function RomField({
           // 打包与上传各占一半；AES/Zstd 的单块内部没有细进度，按已完成的 8MB 块推进。
           setProgress(Math.min(49, Math.round((loaded / Math.max(1, total)) * 50)))
         }, codec)
+        packedBlob = packed.blob
         uploadFile = new File([packed.blob], key.split('/').pop() || `${file.name}.8bg`, {
           type: packed.blob.type,
           lastModified: file.lastModified,
         })
-        if (packed.workers > 1) {
+        if (packed.reused) {
+          setMsg({ ok: true, text: '源 ROM 校验一致，已复用上次生成的加密包，正在从已完成分片继续上传…' })
+        } else if (packed.workers > 1) {
           setMsg({ ok: true, text: `本地已用 ${packed.workers} 路并行完成分块处理，正在自适应并发上传…` })
         }
       }
@@ -2652,6 +2656,8 @@ function RomField({
         setProgress(needsPacking ? 50 + Math.round(pct / 2) : pct)
         if (at) setStage(at)
       })
+      // 已经确认 R2 收到完整对象，马上释放可能很大的重试缓存；只有失败才需要把它留给下一次。
+      if (packedBlob) releasePackedRomUpload(packedBlob)
       onChange(result.key)
       const migrationBackup = shouldPack && oldKey && oldKey !== result.key && !isRomPackUrl(oldKey)
       if (migrationBackup && !backupValue.trim()) onBackupChange(oldKey)

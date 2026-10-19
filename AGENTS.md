@@ -593,6 +593,8 @@ Free / Pro 100 MB，Business 200 MB，Enterprise 500 MB，**由边缘节点执�
 8MB 一片、从 2 并发起步并在稳定链路上逐级升到 3–4 路、单片失败重试、`localStorage` 记账后可断点续传
 （`src/services/romMultipart.ts`）。HTTP/2 reset、429 或网关 5xx 会立即收敛到单路，连续成功后才重新升档；
 不要把它改成四路固定并发，否则一次连接级错误会再次变成重试风暴。
+XHR 的 `progress` 事件按字节差值维护总量，并限到约 12fps 再通知 React；不要恢复成每个事件遍历全部分片
+并立即 `setState`，大 ISO 在 3–4 路上传时会用 UI 统计反过来堵住主线程与网络回调。
 上限是按**单个请求**算的，所以分片顺带把 100MB 这道墙也绕开了。三个必须记住的约束：
 
 ⚠️ 浏览器控制台若同时出现多个 `PUT ... net::ERR_HTTP2_PROTOCOL_ERROR`，通常不是 ISO 或 uploadId
@@ -813,6 +815,10 @@ Zstd 解码前还必须核对 frame 自报的 content size 与分块表完全一
 Worker，并行完成 Zstd、SHA-256 与 AES-GCM；每个 Worker 同时只持有一块，低内存设备自动降到 1–2 路。
 SHA-256 会在同步 Zstd 前先提交给 Web Crypto，以便和压缩重叠；`store` 路径不得再复制一份 8MB 原文。
 并行结果必须按原块号组装，AAD / IV 与现有 v1 容器完全一致，不能为了提速改格式导致旧播放器失兼容。
+网络失败后，页面内存会保留最近一份打包结果；管理员重选同名、同大小、同 mtime 的源文件时，必须先
+逐块核对原文 SHA-256，完全一致才复用原密文。这样 multipart 的 uploadId 与已上传分片才能真正续上；
+若重新随机生成 packageId / IV，表面是“同一个 ROM”，实际密文已变，旧分片绝不能混用。上传确认成功后
+立即释放这个缓存，且只留单槽，避免后台长期占住 GB 级 Blob。
 
 这里故意用自己的版本化容器，而不是直接上传 `.zst` 或 `.7z`：以后切 LZMA2 时只需在
 `scripts/pack-rom.mjs`、`scripts/unpack-rom.mjs`、`src/workers/romPackWorker.ts` 和 `src/services/romPack.ts` 的 codec

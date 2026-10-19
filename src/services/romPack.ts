@@ -103,6 +103,14 @@ interface PackProgress {
   total: number
 }
 
+export interface PackedRomUpload {
+  blob: Blob
+  header: RomPackHeader
+  workers: number
+  /** 网络失败后再次选择同一个源文件时，可直接复用上一份完全相同的密文。 */
+  reused: boolean
+}
+
 interface RomPackCapacity {
   hardwareConcurrency?: number
   deviceMemory?: number
@@ -111,6 +119,25 @@ interface RomPackCapacity {
 const keyCache = new Map<string, Promise<CryptoKey>>()
 let zstdReady: Promise<void> | null = null
 const readyZstd = () => (zstdReady ??= init())
+
+interface PackedRomRetryCache extends Omit<PackedRomUpload, 'reused'> {
+  sourceName: string
+  sourceSize: number
+  sourceLastModified: number
+  originalName: string
+  codec: RomPackCodec
+  createdAt: number
+}
+
+/**
+ * 只留最近一次失败后可能重试的打包结果。
+ *
+ * R2 的续传账本认的是“打包后的密文”。若每次重试都重新生成 packageId / IV，即使源 ROM 没变，
+ * 密文也会完全不同，之前已经传完的分片就无法复用。把最后一份结果留在当前页面内存里，既不把
+ * GB 级 ROM 再写一份 IndexedDB，也能让最常见的“网络失败后马上重试”跳过 Zstd 19 和 AES。
+ */
+let packedRomRetryCache: PackedRomRetryCache | null = null
+const PACK_RETRY_CACHE_TTL = 2 * 60 * 60 * 1000
 
 const randomId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), (v) => v.toString(16).padStart(2, '0')).join('')
 const hex = (buf: ArrayBuffer) => Array.from(new Uint8Array(buf), (v) => v.toString(16).padStart(2, '0')).join('')
@@ -137,6 +164,46 @@ export function romPackWorkerConcurrency(
     ? memory <= 2 ? 1 : memory <= 4 ? 2 : 4
     : 4
   return Math.max(1, Math.min(chunks, 4, memoryCap, Math.max(1, hardware - 1)))
+}
+
+export async function matchesRomPackSource(
+  file: File,
+  header: RomPackHeader,
+  onProgress?: (progress: PackProgress) => void,
+): Promise<boolean> {
+  if (file.size !== header.originalSize || header.chunkSize !== ROM_PACK_CHUNK_BYTES) return false
+  const expectedChunks = Math.ceil(file.size / ROM_PACK_CHUNK_BYTES)
+  if (header.chunks.length !== expectedChunks) return false
+
+  // 不能只比名字、大小、mtime 或头中尾样本：误命中会把另一份 ROM 的旧密文上传成功，直到玩家
+  // 开局才发现内容不对。这里重读每个 8MB 原块核对已保存的 SHA；一次顺序磁盘读取仍远快于
+  // 重新执行 Zstd 19，而且不会改变密文，所以 R2 已完成的分片可以真正续上。
+  let nextIndex = 0
+  let verifiedBytes = 0
+  let matched = true
+  const workers = Math.min(romPackWorkerConcurrency(file.size), expectedChunks)
+  await Promise.all(Array.from({ length: workers }, async () => {
+    while (matched) {
+      const index = nextIndex++
+      if (index >= expectedChunks) return
+      const start = index * ROM_PACK_CHUNK_BYTES
+      const end = Math.min(file.size, start + ROM_PACK_CHUNK_BYTES)
+      const bytes = await file.slice(start, end).arrayBuffer()
+      const digest = hex(await crypto.subtle.digest('SHA-256', bytes))
+      if (digest !== header.chunks[index]?.sha256) {
+        matched = false
+        return
+      }
+      verifiedBytes += end - start
+      onProgress?.({ loaded: verifiedBytes, total: file.size })
+    }
+  }))
+  return matched
+}
+
+/** 上传确认完成后立即放掉大 Blob；失败时故意保留，供当前页面的下一次选择续传。 */
+export function releasePackedRomUpload(blob: Blob): void {
+  if (packedRomRetryCache?.blob === blob) packedRomRetryCache = null
 }
 
 async function fetchRawKey(packageId: string, keyId?: string): Promise<KeyResponse> {
@@ -178,7 +245,28 @@ export async function packRomForUpload(
   originalName = file.name,
   onProgress?: (progress: PackProgress) => void,
   codec: RomPackCodec = recommendedRomPackCodec(originalName),
-): Promise<{ blob: Blob; header: RomPackHeader; workers: number }> {
+): Promise<PackedRomUpload> {
+  const cached = packedRomRetryCache
+  if (
+    cached &&
+    Date.now() - cached.createdAt < PACK_RETRY_CACHE_TTL &&
+    cached.sourceName === file.name &&
+    cached.sourceSize === file.size &&
+    cached.sourceLastModified === file.lastModified &&
+    cached.originalName === originalName &&
+    cached.codec === codec
+  ) {
+    if (await matchesRomPackSource(file, cached.header, onProgress)) {
+      return { blob: cached.blob, header: cached.header, workers: cached.workers, reused: true }
+    }
+    // 同名同大小同时间的文件也可能被外部工具原地改过；完整散列不一致时绝不能沿用旧密文。
+    packedRomRetryCache = null
+    onProgress?.({ loaded: 0, total: file.size })
+  } else if (cached) {
+    // 单槽缓存避免连续尝试不同 ROM 时长期占住上一份 GB 级 Blob。
+    packedRomRetryCache = null
+  }
+
   const packageId = randomId()
   const grant = await fetchRawKey(packageId)
   const rawKey = base64UrlToBytes(grant.key)
@@ -283,11 +371,24 @@ export async function packRomForUpload(
       payloadSize: chunks.reduce((sum, chunk) => sum + chunk.cipherSize, 0),
       createdAt: new Date().toISOString(),
     }
-    return {
+    const result: PackedRomUpload = {
       blob: new Blob([encodeRomPackPrefix(header), ...encryptedChunks], { type: 'application/x-8bitgo-rom' }),
       header,
       workers: workerCount,
+      reused: false,
     }
+    packedRomRetryCache = {
+      blob: result.blob,
+      header,
+      workers: workerCount,
+      sourceName: file.name,
+      sourceSize: file.size,
+      sourceLastModified: file.lastModified,
+      originalName,
+      codec,
+      createdAt: Date.now(),
+    }
+    return result
   } finally {
     rawKey.fill(0)
     terminate()

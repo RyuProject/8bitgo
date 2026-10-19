@@ -482,16 +482,47 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
   const finished = new Set(state.parts.map((p) => p.partNumber))
   /** 每片当前已上传的字节数（含正在传的那几片），进度条按它们的和算 */
   const loaded = new Map<number, number>()
-  for (const n of finished) loaded.set(n, sizeOfPart(n))
+  let loadedBytes = 0
+  for (const n of finished) {
+    const bytes = sizeOfPart(n)
+    loaded.set(n, bytes)
+    loadedBytes += bytes
+  }
 
-  const report = () => {
-    let sum = 0
-    for (const v of loaded.values()) sum += v
+  // XHR 在四路并发时一秒可触发数百次 progress。旧实现每次都遍历所有分片并触发 React 更新，
+  // 大 ROM 会把主线程浪费在 O(分片数 × 事件数) 的求和与渲染上，反过来拖慢加密和网络回调。
+  // 改为按差值维护总量，并把 UI 限到约 12fps；每片完成和最终完成仍强制即时上报。
+  let lastReportedAt = 0
+  let reportTimer: number | null = null
+  const emitProgress = () => {
+    reportTimer = null
+    lastReportedAt = performance.now()
     // 封顶 99%：合并分片还要花一两秒，先跳到 100% 再卡住会让人以为卡死了
-    const pct = Math.min(99, Math.round((sum / Math.max(1, file.size)) * 100))
+    const pct = Math.min(99, Math.round((loadedBytes / Math.max(1, file.size)) * 100))
     onProgress?.(pct, { parts: total, done: finished.size, resumed })
   }
-  report()
+  const report = (force = false) => {
+    const elapsed = performance.now() - lastReportedAt
+    if (force || elapsed >= 80) {
+      if (reportTimer !== null) window.clearTimeout(reportTimer)
+      emitProgress()
+      return
+    }
+    if (reportTimer === null) reportTimer = window.setTimeout(emitProgress, 80 - elapsed)
+  }
+  const setLoaded = (n: number, bytes: number) => {
+    const previous = loaded.get(n) ?? 0
+    const safe = Math.max(0, Math.min(sizeOfPart(n), bytes))
+    if (safe === previous) return
+    loaded.set(n, safe)
+    loadedBytes += safe - previous
+    report()
+  }
+  const stopScheduledReport = () => {
+    if (reportTimer !== null) window.clearTimeout(reportTimer)
+    reportTimer = null
+  }
+  report(true)
 
   const queue = Array.from({ length: total }, (_, i) => i + 1).filter((n) => !finished.has(n))
   let failure: unknown = null
@@ -507,15 +538,14 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
       const blob = file.slice(start, start + sizeOfPart(n))
       try {
         const etag = await putPartWithRetry(ctx, state, n, blob, (bytes) => {
-          loaded.set(n, bytes)
-          report()
+          setLoaded(n, bytes)
         }, uploadGate)
         state.parts.push({ partNumber: n, etag })
         finished.add(n)
-        loaded.set(n, sizeOfPart(n))
+        setLoaded(n, sizeOfPart(n))
         // 每传完一片就落一次账：浏览器崩了 / 关了页面也只丢正在传的那几片
         if (resumable) saveState(state)
-        report()
+        report(true)
       } catch (err) {
         failure = err
         return
@@ -524,7 +554,10 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
   }
 
   await Promise.all(Array.from({ length: Math.min(preferredConcurrency, Math.max(1, queue.length)) }, () => runner()))
-  if (failure) throw await explainFailure(failure, ctx, state, total, resumable)
+  if (failure) {
+    stopScheduledReport()
+    throw await explainFailure(failure, ctx, state, total, resumable)
+  }
 
   let size: number
   try {
@@ -539,6 +572,7 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
     throw await explainFailure(err, ctx, state, total, resumable)
   }
 
+  stopScheduledReport()
   clearState(key)
   onProgress?.(100, { parts: total, done: total, resumed })
   return { key, url: romUrlForKey(key), size }
