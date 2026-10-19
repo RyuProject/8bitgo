@@ -382,6 +382,7 @@ console.log('六、自适应并发')
 
 await check('快网最多四路，省流量与 2G 始终单路', () => {
   assert.equal(adaptiveChunkConcurrency(8 * 1024 * 1024, 500, { rttMs: 80 }), 4)
+  assert.equal(adaptiveChunkConcurrency(8 * 1024 * 1024, 500), 4, '没有 Network Information API 时也要相信真实测速')
   assert.equal(adaptiveChunkConcurrency(8 * 1024 * 1024, 500, { saveData: true }), 1)
   assert.equal(adaptiveChunkConcurrency(8 * 1024 * 1024, 500, { effectiveType: '2g' }), 1)
 })
@@ -442,6 +443,75 @@ await check('省流量模式即使调用方允许四路也保持串行', async (
   })
   expectExact(await readAll(blob), 5 * 1024)
   assert.equal(source.peak(), 1)
+})
+
+await check('断点写盘与下一片网络重叠，不在每个 8MB 边界停住', async () => {
+  const size = 3 * 1024
+  const source = server(size)
+  let releaseFirstWrite
+  const firstWriteDone = new Promise((resolve) => { releaseFirstWrite = resolve })
+  const secondRequestStarted = new Promise((resolve) => {
+    const timer = setInterval(() => {
+      if (source.calls.length >= 2) {
+        clearInterval(timer)
+        resolve(true)
+      }
+    }, 1)
+    setTimeout(() => {
+      clearInterval(timer)
+      resolve(false)
+    }, 100)
+  })
+  const resumeStore = {
+    async load() { return null },
+    async put(_key, _total, _chunkBytes, index) {
+      if (index === 0) await firstWriteDone
+    },
+    async clear() {},
+  }
+  const downloading = fetchBlobWithProgress('u', {
+    fetchImpl: source.fetchImpl,
+    chunkBytes: 1024,
+    maxConcurrency: 1,
+    resumeKey: 'rom?v=pipeline',
+    resumeStore,
+  })
+  const overlapped = await secondRequestStarted
+  releaseFirstWrite()
+  const blob = await downloading
+  expectExact(await readAll(blob), size)
+  assert.equal(overlapped, true, '下一片应在首片写盘完成前开始下载')
+})
+
+await check('完整 ROM 到手后不等待临时分片删除才启动', async () => {
+  const size = 2 * 1024
+  const source = server(size)
+  let releaseClear
+  const clearDone = new Promise((resolve) => { releaseClear = resolve })
+  let clearStarted = false
+  const resumeStore = {
+    async load() { return null },
+    async put() {},
+    async clear() {
+      clearStarted = true
+      await clearDone
+    },
+  }
+  const downloading = fetchBlobWithProgress('u', {
+    fetchImpl: source.fetchImpl,
+    chunkBytes: 1024,
+    maxConcurrency: 1,
+    resumeKey: 'rom?v=background-clear',
+    resumeStore,
+  })
+  const result = await Promise.race([
+    downloading.then((blob) => ({ blob })),
+    new Promise((resolve) => setTimeout(() => resolve({ timeout: true }), 100)),
+  ])
+  assert.equal(result.timeout, undefined, '删除临时缓存不应阻塞 ROM 返回')
+  assert.equal(clearStarted, true)
+  releaseClear()
+  expectExact(await readAll(result.blob), size)
 })
 
 await check('并发期间 CDN 突然忽略 Range：停掉其它片并采用完整 200', async () => {

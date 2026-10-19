@@ -51,6 +51,8 @@ export interface RemoteDiscOptions {
   cacheBytes?: number
   /** 顺序预取下一块。默认开；测试里关掉好断言请求次数 */
   prefetch?: boolean
+  /** 向前保持多少个 2MB 块。默认 2；再大收益很小，却会和 WASM / 音频争网络。 */
+  prefetchBlocks?: number
 }
 
 /**
@@ -66,7 +68,7 @@ export class RemoteDisc implements DiscSource {
   private readonly chunkBytes: number
   private readonly cacheBytes: number
   private readonly fetchRange: RangeFetcher
-  private readonly prefetch: boolean
+  private readonly prefetchBlocks: number
 
   /** 块号 → 字节。Map 保持插入顺序，重新 set 一次就等于「最近用过」，LRU 靠这个 */
   private readonly cache = new Map<number, ArrayBuffer>()
@@ -82,7 +84,9 @@ export class RemoteDisc implements DiscSource {
     this.chunkBytes = opts.chunkBytes ?? CHUNK_BYTES
     this.cacheBytes = opts.cacheBytes ?? DEFAULT_CACHE_BYTES
     this.fetchRange = opts.fetchRange
-    this.prefetch = opts.prefetch ?? true
+    const requestedPrefetch = opts.prefetch === false ? 0 : Math.max(0, Math.trunc(opts.prefetchBlocks ?? 2))
+    // 缓存连“当前块 + 预取块”都装不下时主动缩窗，否则预取会把下一次马上要读的块自己淘汰掉。
+    this.prefetchBlocks = Math.min(requestedPrefetch, Math.max(0, Math.floor(this.cacheBytes / this.chunkBytes) - 1))
   }
 
   slice(start: number, end: number): { arrayBuffer(): Promise<ArrayBuffer> } {
@@ -108,12 +112,12 @@ export class RemoteDisc implements DiscSource {
       if (copyTo > copyFrom) out.set(chunk.subarray(copyFrom, copyTo), chunkStart + copyFrom - from)
     }
 
-    // 顺序预取：不 await，也不管它成不成 —— 失败了下次真要用时会照常再取一次
-    if (this.prefetch) {
-      const next = last + 1
-      if (next * this.chunkBytes < this.size && !this.cache.has(next) && !this.inflight.has(next)) {
-        void this.chunk(next).catch(() => {})
-      }
+    // 保持两块滚动预读：2MB 单块在跨洲链路上可能要数秒，只提前一块仍会被连续音频/视频追上。
+    // 不 await，也不管它成不成；正式读取会复用 inflight，失败则按真实请求重新获取。
+    for (let ahead = 1; ahead <= this.prefetchBlocks; ahead++) {
+      const next = last + ahead
+      if (next * this.chunkBytes >= this.size) break
+      if (!this.cache.has(next) && !this.inflight.has(next)) void this.chunk(next).catch(() => {})
     }
     return out.buffer
   }

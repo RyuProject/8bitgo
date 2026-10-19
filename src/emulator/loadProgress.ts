@@ -317,6 +317,11 @@ export const CHUNK_BYTES = 8 * 1024 * 1024
 export const CHUNK_RETRIES = 3
 
 const MAX_CHUNK_CONCURRENCY = 4
+/**
+ * 网络与 IndexedDB 写盘重叠，但最多只允许两笔写入排队。
+ * 不设上限会在高速网络 + 慢闪存上堆出几十个 8MB 事务，最后反过来挤掉模拟器启动所需内存。
+ */
+const RESUME_WRITE_BACKLOG = 2
 
 /**
  * 第一片本来就必须下载；用它的真实吞吐决定后续并发，不另发一份“测速垃圾流量”。
@@ -341,7 +346,9 @@ export function adaptiveChunkConcurrency(
 
   let concurrency = 2
   if (effectiveType === '3g' || (mbps > 0 && mbps < 3)) concurrency = 1
-  else if (mbps >= 24 && rtt > 0 && rtt < 180) concurrency = 4
+  // Firefox / Safari 没有 Network Information API，rtt=0 代表“未知”而不是“很差”。
+  // 已经拿到首个真实分片的高速样本时，不能因为缺这一条提示永远卡在三路。
+  else if (mbps >= 24 && (rtt === 0 || rtt < 180)) concurrency = 4
   else if (mbps >= 8 || rtt >= 180) concurrency = 3
 
   // 并行 Range 会让每一路同时持有一个子 Blob；小内存 / 双核设备宁可少占内存，也不赌标签页被杀。
@@ -497,12 +504,29 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
   const savePart = async (total: number, index: number, blob: Blob) => {
     if (!resumeStore) return
     try {
-      // await 很重要：进度一旦报到下一片，刷新后这一片就应该真的已经落盘。
+      // 这层必须等事务提交；上面的有界队列可以让网络继续跑，但最终清理前仍要知道写盘真的结束。
       const stored = await resumeStore.put(resumeKey, total, chunkBytes, index, blob)
       if (stored === false) resumeStore = null
     } catch {
       resumeStore = null
     }
+  }
+
+  /*
+   * 下载与写盘做成有界流水线。旧实现每片都 await IndexedDB：网络已经空闲，下一片却要等闪存事务完成，
+   * 手机和低端 SSD 上会在每个 8MB 边界停一下。现在先把完整 Blob 放进本局 parts，再让最多两笔写盘
+   * 在后台追赶；若磁盘真的比网络慢，第三笔会自然背压，仍不会形成无界事务队列。
+   */
+  const pendingPartWrites = new Set<Promise<void>>()
+  const queuePartSave = async (total: number, index: number, blob: Blob) => {
+    if (!resumeStore) return
+    while (pendingPartWrites.size >= RESUME_WRITE_BACKLOG) await Promise.race(pendingPartWrites)
+    let task: Promise<void>
+    task = savePart(total, index, blob).finally(() => pendingPartWrites.delete(task))
+    pendingPartWrites.add(task)
+  }
+  const flushPartSaves = async () => {
+    if (pendingPartWrites.size) await Promise.all(pendingPartWrites)
   }
 
   /** Range 回包必须精确对应请求；只验长度挡不住 CDN 把“别的一片等长数据”发回来。 */
@@ -529,6 +553,7 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
         throw new Error(`下载不完整：应为 ${total} 字节，实际收到 ${blob.size} 字节`)
       }
       emitTotal(blob.size, blob.size, true)
+      await flushPartSaves()
       await clearResume()
       return blob.type === type ? blob : new Blob([blob], { type })
     }
@@ -541,6 +566,7 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
       guard.touch,
     )
     emitTotal(loaded, loaded, true)
+    await flushPartSaves()
     await clearResume()
     return new Blob(chunks as BlobPart[], { type })
   }
@@ -618,10 +644,10 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
         sampleElapsedMs = Math.max(1, monotonicNow() - sampleStartedAt)
         total = firstTotal
         parts = Array.from({ length: Math.ceil(total / chunkBytes) }, () => undefined as Blob | undefined)
-        await savePart(total, 0, firstPart)
         parts[0] = firstPart
         completed = firstPart.size
         emitTotal(completed, total, true)
+        await queuePartSave(total, 0, firstPart)
         break
       } catch (error) {
         // 卡死会在外层换一只新的 AbortController；这里不能拿已 abort 的 signal 空转。
@@ -644,6 +670,7 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
   )
   const pending = parts.map((part, index) => part ? -1 : index).filter((index) => index >= 0)
   const inFlightLoaded = new Map<number, number>()
+  let inFlightBytes = 0
   const activeControllers = new Map<number, AbortController>()
   let cursor = 0
   let wholeResponse: Response | null = null
@@ -653,6 +680,17 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
     for (const [index, controller] of activeControllers) {
       if (index !== except) controller.abort()
     }
+  }
+
+  /** 只维护字节差值；每个 64KB 网络块都展开 Map 再 reduce 会把四路下载的统计成本压回主线程。 */
+  const setInFlight = (index: number, loaded: number) => {
+    const previous = inFlightLoaded.get(index) ?? 0
+    inFlightLoaded.set(index, loaded)
+    inFlightBytes += loaded - previous
+  }
+  const clearInFlight = (index: number) => {
+    inFlightBytes -= inFlightLoaded.get(index) ?? 0
+    inFlightLoaded.delete(index)
   }
 
   const downloadPart = async (index: number) => {
@@ -686,15 +724,15 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
         assertContentRange(res, start, end, total)
         const part = await takePartWithConcurrentProgress(res, expect, index)
         if (wholeResponse) return
-        await savePart(total, index, part)
+        await queuePartSave(total, index, part)
         if (wholeResponse) return
         parts[index] = part
-        inFlightLoaded.delete(index)
+        clearInFlight(index)
         completed += part.size
-        emitTotal(completed + [...inFlightLoaded.values()].reduce((sum, bytes) => sum + bytes, 0), total, true)
+        emitTotal(completed + inFlightBytes, total, true)
         return
       } catch (error) {
-        inFlightLoaded.delete(index)
+        clearInFlight(index)
         if (wholeResponse && isAbort(error)) return
         // 卡死不是「这一次没成」：重试只会再等一整个看门狗周期，直接抛
         if (guard.stalled()) throw error
@@ -713,14 +751,13 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
   /** 并发片的局部进度要相加；继续沿用 completed 会让多路互相覆盖，看起来像进度停住。 */
   async function takePartWithConcurrentProgress(res: Response, expect: number, index: number): Promise<Blob> {
     const relay = (p: LoadProgress) => {
-      inFlightLoaded.set(index, p.loaded ?? 0)
-      const active = [...inFlightLoaded.values()].reduce((sum, bytes) => sum + bytes, 0)
-      emitTotal(completed + active, total)
+      setInFlight(index, p.loaded ?? 0)
+      emitTotal(completed + inFlightBytes, total)
     }
     if (!res.body) {
       const blob = await res.blob()
       if (blob.size !== expect) throw new Error(`分片不完整：应为 ${expect} 字节，实际 ${blob.size}`)
-      inFlightLoaded.set(index, blob.size)
+      setInFlight(index, blob.size)
       return blob
     }
     const { chunks } = await drain(res.body, phase, expect, relay, Infinity, guard.touch)
@@ -746,9 +783,13 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
   if (wholeResponse) return takeWhole(wholeResponse)
 
   const complete = parts as Blob[]
+  // 网络与大部分写盘已经重叠；这里只等最多两笔尾写，避免 clear 与尚未提交的 put 互相复活。
+  await flushPartSaves()
+  // 100% 必须代表这份 ROM 已经能返回给引擎，不能先满格再等待尾部写盘。
   emitTotal(total, total, true)
-  // 成功合并后临时片立即释放；完整 ROM 会由上层写入正式缓存，避免长期占两份空间。
-  await clearResume()
+  // 删除几十到几百个临时片可能明显拖住开局。完整 Blob 已在手里，清理留在后台即可；
+  // 同一个内容键此刻再次进入，最多只是短暂复用这份完整现场，不会混入另一代 ROM。
+  void clearResume()
   return new Blob(complete, { type })
 }
 

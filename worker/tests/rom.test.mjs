@@ -315,6 +315,34 @@ test('version-pinned arcade chunks reuse an independent 8 MiB edge-cache entry',
     else globalThis.caches = previous
   }
 })
+test('version-pinned NDS and PS1 downloads share the generic 8 MiB ROM range cache', async () => {
+  const previous = globalThis.caches
+  const stored = new Map(); const waits = []
+  globalThis.caches = { default: {
+    async match(request) { return stored.get(request.url)?.clone() },
+    async put(request, response) { stored.set(request.url, response.clone()); await response.arrayBuffer() },
+  } }
+  const context = { waitUntil(promise) { waits.push(promise) } }
+  try {
+    const e = environment()
+    for (const key of ['roms/nds/rhythm.nds', 'roms/psx/chrono.chd']) {
+      const original = e.ROMS.seed(key, `bytes:${key}`)
+      const path = `/${key}?romv=${original.etag}`
+      const range = { Range: 'bytes=0-8388607' }
+      const first = await worker.fetch(req(path, 'GET', undefined, range), e, context)
+      assert.equal(first.headers.get('X-8BitGo-Edge-Cache'), 'MISS')
+      await first.arrayBuffer()
+      await Promise.all(waits.splice(0))
+      const second = await worker.fetch(req(path, 'GET', undefined, range), e, context)
+      assert.equal(second.headers.get('X-8BitGo-Edge-Cache'), 'HIT')
+      assert.equal(await second.text(), `bytes:${key}`)
+    }
+    assert.equal(count(e.ROMS, 'get'), 2, '两种平台的第二次读取都不应再次穿透 R2')
+  } finally {
+    if (previous === undefined) delete globalThis.caches
+    else globalThis.caches = previous
+  }
+})
 test('version-pinned PSP chunks reuse an independent 2 MiB edge-cache entry with matching If-Match', async () => {
   const previous = globalThis.caches
   const stored = new Map(); const waits = []
@@ -348,6 +376,35 @@ test('version-pinned PSP chunks reuse an independent 2 MiB edge-cache entry with
     const stale = await worker.fetch(req(path, 'GET', undefined, { ...range, 'If-Match': '"wrong"' }), e, context)
     assert.equal(stale.status, 412)
     assert.equal(stale.headers.get('X-8BitGo-Edge-Cache'), null)
+  } finally {
+    if (previous === undefined) delete globalThis.caches
+    else globalThis.caches = previous
+  }
+})
+test('PS2 and Dolphin discs reuse aligned 2 MiB edge blocks', async () => {
+  const previous = globalThis.caches
+  const stored = new Map(); const waits = []
+  globalThis.caches = { default: {
+    async match(request) { return stored.get(request.url)?.clone() },
+    async put(request, response) { stored.set(request.url, response.clone()); await response.arrayBuffer() },
+  } }
+  const context = { waitUntil(promise) { waits.push(promise) } }
+  try {
+    const e = environment()
+    for (const key of ['roms/ps2/ico.iso', 'roms/gamecube/wind-waker.rvz']) {
+      const data = new Uint8Array(2 * 1024 * 1024 + 1)
+      const original = e.ROMS.seed(key, data)
+      const path = `/${key}?romv=${original.etag}`
+      const range = { Range: 'bytes=0-2097151' }
+      const first = await worker.fetch(req(path, 'GET', undefined, range), e, context)
+      assert.equal(first.headers.get('X-8BitGo-Edge-Cache'), 'MISS')
+      await first.arrayBuffer()
+      await Promise.all(waits.splice(0))
+      const second = await worker.fetch(req(path, 'GET', undefined, range), e, context)
+      assert.equal(second.headers.get('X-8BitGo-Edge-Cache'), 'HIT')
+      assert.equal((await second.arrayBuffer()).byteLength, 2 * 1024 * 1024)
+    }
+    assert.equal(count(e.ROMS, 'get'), 2, '两张流式光盘的第二次读取都应命中边缘块')
   } finally {
     if (previous === undefined) delete globalThis.caches
     else globalThis.caches = previous

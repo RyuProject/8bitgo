@@ -445,7 +445,7 @@ const DEFAULT_CACHE_CONTROL = 'public, max-age=300, s-maxage=600, must-revalidat
 const VERSIONED_CACHE_CONTROL = 'public, max-age=86400, s-maxage=2592000, stale-while-revalidate=86400'
 const IMMUTABLE_CACHE_CONTROL = 'public, max-age=31536000, s-maxage=31536000, immutable'
 const SOCKDRIVE_VERSION_SUFFIX = /(?:^|[-_.])(?:v\d+(?:[-_.][a-z0-9]+)*|[a-f0-9]{8,64})$/i
-const ARCADE_RANGE_BYTES = 8 * 1024 * 1024
+const ROM_DOWNLOAD_RANGE_BYTES = 8 * 1024 * 1024
 const PSP_RANGE_BYTES = 2 * 1024 * 1024
 const RANGE_CACHE_PARAM = '__8bg_edge_range'
 const RANGE_CACHE_HEADER = 'X-8BitGo-Stored-Range'
@@ -499,7 +499,8 @@ export function edgeCacheEligible(request, url, cors) {
 }
 
 /**
- * 街机大包与 PPSSPP 分别固定请求 8 MiB / 2 MiB 对齐分片。Cloudflare Cache API 不能 put(206)，
+ * 完整下载型 ROM 固定请求 8 MiB；PSP / PS2 / Dolphin 这类按需读盘固定请求 2 MiB。
+ * Cloudflare Cache API 不能 put(206)，
  * 因此用仅内部访问的 URL 键把验证过的分片存成 200，命中时还原成 206。
  * 没有 ROM 的 R2 ETag 锁、范围不对齐或带条件头时继续直达 R2，避免混合两代 ROM。
  *
@@ -509,10 +510,15 @@ export function edgeCacheEligible(request, url, cors) {
  */
 function romRangeCachePlan(request, url, cors) {
   if (request.method !== 'GET' || cors['Access-Control-Allow-Origin'] !== '*') return null
-  const blockBytes = /^\/roms\/arcade\/[^/]+\.zip\.8bg$/i.test(url.pathname)
-    ? ARCADE_RANGE_BYTES
-    : /^\/roms\/psp\/[^/]+\.(?:iso|cso|chd)$/i.test(url.pathname)
-      ? PSP_RANGE_BYTES
+  /*
+   * 过去只缓存街机 .zip.8bg 与 PSP，导致 NDS / PS1 / DOS 的 8MB 分片、PS2 / Dolphin 的 2MB
+   * 光盘块每位玩家都重新穿透到 R2。romv 已把 URL 锁到对象 ETag，范围又必须严格对齐，
+   * 所以同一规则可以安全覆盖整个公开 ROM 命名空间；小卡带走普通 200 缓存，不会进这里。
+   */
+  const blockBytes = /^\/roms\/(?:psp|ps2|gamecube|wii)\//i.test(url.pathname)
+    ? PSP_RANGE_BYTES
+    : /^\/roms\/[^/]+\/.+/i.test(url.pathname)
+      ? ROM_DOWNLOAD_RANGE_BYTES
       : 0
   if (!blockBytes || url.searchParams.has(RANGE_CACHE_PARAM)) return null
   if (request.headers.has('Authorization') || ['If-Range', 'If-None-Match', 'If-Modified-Since', 'If-Unmodified-Since'].some(name => request.headers.has(name))) return null

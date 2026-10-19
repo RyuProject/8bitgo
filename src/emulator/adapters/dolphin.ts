@@ -58,6 +58,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let requestId = 0
   let hostTimer = 0
   let remoteTotal = 0
+  const probeController = new AbortController()
+  let remoteProbe: ReturnType<typeof probeRange> | null = null
+  let speculativeProbe = false
   const pending = new Map<number, {
     resolve: (value: unknown) => void
     reject: (error: Error) => void
@@ -109,7 +112,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
 
     options.onProgress?.({ phase: 'rom', loaded: 0 })
-    const probe = await probeRange(options.game)
+    let probe = await (remoteProbe ?? probeRange(options.game, probeController.signal))
+    // iframe 下载期间的提前探测若撞上瞬时断网，正式挂盘时再补一次，不能永久记住一次失败。
+    if (speculativeProbe && !probe.rangeSupported && !probeController.signal.aborted) {
+      speculativeProbe = false
+      remoteProbe = probeRange(options.game, probeController.signal)
+      probe = await remoteProbe
+    }
     if (!probe.rangeSupported || !probe.size) throw new Error(rt.dolphinNoRange)
     remoteTotal = probe.size
     // 远程盘没有“整份下载完成”这一刻。只把探测实际读取的两个字节报出去；
@@ -194,6 +203,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   container.appendChild(iframe)
   // 入口代次绕开旧的“删 index.html”301 边缘缓存；核心目录本身已经带构建版本。
   iframe.src = `${DOLPHIN_PATH}index.html?embed=1&r=1`
+  // 核心页面和远端光盘探测互不依赖；提前发出真实 Range，把一轮 CDN 往返藏在 iframe 启动里。
+  if (typeof options.game === 'string' && globalThis.crossOriginIsolated) {
+    speculativeProbe = true
+    remoteProbe = probeRange(options.game, probeController.signal)
+    void remoteProbe.catch(() => {})
+  }
   hostTimer = window.setTimeout(() => {
     if (!destroyed && !ready) options.onError?.(rt.dolphinStartTimeout)
   }, HOST_TIMEOUT_MS)
@@ -238,6 +253,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     destroy() {
       if (destroyed) return
       destroyed = true
+      probeController.abort()
       window.clearTimeout(hostTimer)
       post('set-paused', { paused: true })
       window.removeEventListener('message', onMessage)

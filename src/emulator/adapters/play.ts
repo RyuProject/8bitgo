@@ -247,6 +247,18 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       return
     }
 
+    /*
+     * Play.js 与光盘 Range 探测互不依赖。旧流程先等探盘 RTT，再开始下载运行时，跨洲网络下白白
+     * 串行了一次往返；先把模块请求发出去，后面仍按 rom → engine 报阶段，不会让进度条倒退。
+     */
+    const scriptUrl = `${PLAY_PATH}Play.js`
+    const factoryPromise = import(/* @vite-ignore */ scriptUrl).then((imported: { default?: PlayFactory }) => {
+      if (typeof imported.default !== 'function') throw new Error('Play.js 没有导出模块工厂')
+      return imported.default
+    })
+    // 探盘提前失败时也要接住模块拒绝；真正走到引擎阶段仍 await 原 Promise 并展示原始错误。
+    void factoryPromise.catch(() => {})
+
     /* ---- 1. 盘：先探 Range ---- */
     let source: DiscSource | null = null
     let elfBytes: Uint8Array | null = null
@@ -283,7 +295,6 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
     /* ---- 2. 引擎 ---- */
     options.onProgress?.({ phase: 'engine', loaded: 0 })
-    const scriptUrl = `${PLAY_PATH}Play.js`
     let factory: PlayFactory
     try {
       /**
@@ -291,10 +302,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
        * 把源码塞进 CommonJS 包装器会直接 SyntaxError；按模块导入也让 pthread Worker
        * 能用同一份 URL 重新加载自己，这是 Emscripten 当前生成代码要求的形态。
        */
-      const imported = (await import(/* @vite-ignore */ scriptUrl)) as { default?: PlayFactory }
+      factory = await factoryPromise
       if (destroyed) return
-      if (typeof imported.default !== 'function') throw new Error('Play.js 没有导出模块工厂')
-      factory = imported.default
     } catch (e) {
       if (!destroyed) options.onError?.(fmt(rt.playLoadFailed, { msg: e instanceof Error ? e.message : String(e) }))
       return

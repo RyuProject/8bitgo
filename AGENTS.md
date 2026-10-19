@@ -610,6 +610,17 @@ XHR 的 `progress` 事件按字节差值维护总量，并限到约 12fps 再通
 Local Uploads 只优化写入，不优化下载；玩家读取继续依赖 Anycast、版本化 URL、Worker Cache API、
 Range 边缘分片缓存，以及 `fetchBlobWithProgress()` 用首个真实分片选择下载并发。
 
+大 ROM 完整下载固定用 8MB 对齐 Range：首片是真实测速，之后按吞吐、RTT、省流量模式与设备内存
+选择 1–4 路；浏览器没有 Network Information API 时仍以真实吞吐为准，不能永远卡在三路。
+断点分片写 IndexedDB 与下一片网络传输重叠，但写盘积压最多两笔；进度按每路字节差值累计，禁止在
+每个底层 stream chunk 上展开全部请求重新求和。完整 Blob 到手后，临时分片删除留在后台，不能让
+几十到几百次 IDB delete 挡在模拟器启动前。回归：`npm run test:chunked-fetch`。
+
+Worker 的 Range Cache 覆盖整个版本化 `/roms/<平台>/…`：完整下载型平台缓存 8MB 块；PSP、PS2、
+GameCube、Wii 的按需读盘缓存 2MB 块。只有带真实 R2 ETag `romv`、严格对齐且响应长度 / ETag /
+Content-Range 全部吻合的公开请求才可入边缘缓存；任意短 Range、未版本化或条件不一致仍直达 R2。
+不要再把规则缩回某几个扩展名，否则 NDS / PS1 / DOS 和流式光盘会让每位玩家重复穿透存储。
+
 1. R2 要求**除最后一片外所有片等大**、最小 5MB、最多 10000 片 —— 改 `PART_SIZE` 会让旧的续传记录作废；续传还校验文件名、字节数、修改时间和头/中/尾内容指纹，防止把同名的另一份文件拼进旧分片
 2. binding **没有 `listParts`**：complete 时必须把每片的 `{partNumber, etag}` 全报回去，所以这份账只能记在前端 —— **换浏览器就续不上**
 3. binding 也**没有 `listMultipartUploads`**：没合并的分片在 R2 默认 7 天自动中止之前仍占用存储；自定义生命周期可能改变期限。Worker 在 `_uploads/` 下写标记对象，后台「ROM 存储」页靠它列出并清理残留；R2 自动中止后标记对象仍需手动清理
@@ -806,6 +817,8 @@ PS2 使用 Play! 官方 Web 构建，`public/play/Play.js` 和 `Play.wasm` 是**
 PS2 光盘通常数 GB，播放器通过 `src/emulator/remoteDisc.ts` 按 2MB 块发送 Range 请求，不能
 整份下载。后台直接上传 `.iso` / `.chd` / `.cso`，不要再包一层 ZIP；外链至少要正确响应
 `Range: bytes=0-0`，返回 206、`Content-Range` 和真实总大小。当前 R2 Worker 已支持这些头。
+Play.js 的模块请求与第一次 Range 探测并行；正式顺序读取维持后两块（共 4MB）滚动预取，缓存太小时
+自动缩窗，不能让投机块把马上要用的块挤掉。版本化的本站光盘块还会进入上面的 2MB 边缘缓存。
 
 Play! 浏览器版仍是实验性支持：90 秒内没有产生首帧就提示该镜像可能不兼容。不要为了让某个
 商业游戏通过而查找或分发 ROM；只测试站长有权使用的备份、自制程序或开源镜像。

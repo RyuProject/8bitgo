@@ -27,7 +27,7 @@ const check = async (name, fn) => {
 /** 一张假盘：第 i 个字节就是 i % 251（用质数，错位一格立刻就能看出来） */
 const DISC_SIZE = 10 * 1024 * 1024
 const byteAt = (i) => i % 251
-function fakeDisc(size = DISC_SIZE) {
+function fakeDisc(_size = DISC_SIZE) {
   const calls = []
   const fetchRange = async (start, endInclusive) => {
     calls.push([start, endInclusive])
@@ -118,15 +118,16 @@ await check('并发要同一块只发一次请求（去重）', async () => {
   assert.equal(calls.length, 1, `并发去重失效，发了 ${calls.length} 次`)
 })
 
-await check('顺序预取：读完第 0 块会顺手把第 1 块拉了', async () => {
+await check('滚动预取：读完第 0 块会并行准备后两块', async () => {
   const { fetchRange, calls } = fakeDisc()
   const d = new RemoteDisc({ size: DISC_SIZE, fetchRange, chunkBytes: 64 * 1024, prefetch: true })
   await d.slice(0, 1024).arrayBuffer()
   // 预取是 fire-and-forget，让出一轮微任务给它
   await new Promise((r) => setTimeout(r, 0))
   assert.deepEqual(calls[0], [0, 64 * 1024 - 1])
-  assert.equal(calls.length, 2, '第 1 块应该被预取')
+  assert.equal(calls.length, 3, '第 1、2 块应该被预取')
   assert.deepEqual(calls[1], [64 * 1024, 128 * 1024 - 1])
+  assert.deepEqual(calls[2], [128 * 1024, 192 * 1024 - 1])
 })
 
 await check('预取不会越过盘末', async () => {
@@ -136,6 +137,17 @@ await check('预取不会越过盘末', async () => {
   await d.slice(0, 1024).arrayBuffer()
   await new Promise((r) => setTimeout(r, 0))
   assert.equal(calls.length, 1)
+})
+
+await check('缓存太小时自动收缩预取窗，不能由预取把下一块自己淘汰', async () => {
+  const chunk = 64 * 1024
+  const { fetchRange, calls } = fakeDisc()
+  const d = new RemoteDisc({ size: DISC_SIZE, fetchRange, chunkBytes: chunk, cacheBytes: 2 * chunk, prefetch: true })
+  await d.slice(0, 16).arrayBuffer()
+  await new Promise((r) => setTimeout(r, 0))
+  assert.equal(calls.length, 2, '缓存只容纳当前块 + 一块预取时，不能仍发两块预取')
+  await d.slice(chunk, chunk + 16).arrayBuffer()
+  assert.equal(calls.length, 3, '第 1 块应命中预取，只新增第 2 块的滚动预取')
 })
 
 await check('最后一块的 Range 不超过盘的实际大小', async () => {
