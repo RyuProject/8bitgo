@@ -146,7 +146,7 @@ export class MultipartUploadGate {
 }
 
 function preferredUploadConcurrency(): number {
-  const connection = globalThis.navigator?.connection
+  const connection = (globalThis.navigator as { connection?: { effectiveType?: string; saveData?: boolean } } | undefined)?.connection
   const type = String(connection?.effectiveType || '').toLowerCase()
   if (connection?.saveData || type === 'slow-2g' || type === '2g') return 1
   return MAX_CONCURRENCY
