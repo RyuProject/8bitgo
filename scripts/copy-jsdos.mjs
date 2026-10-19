@@ -255,6 +255,62 @@ function patchMinimalMouseCaptureUi(file) {
   writeFileSync(file, code)
 }
 
+/**
+ * Sockdrive 原版每次碰到未缓存的 256KB 块都等一次网络；剧情切换时连续读文件就会一块一卡。
+ * 只在已完整预热的会话里，观察到连续两次读盘后试读下一块。投机结果暂存至多一个块，真正
+ * 请求到该块时直接交给客体；失败仍走原来的重试路径。3G 最多 4MB，其他网络最多 8MB，
+ * 省流量 / 2G / 不完整启动清单不预读，避免投机请求抢走真正读盘与系统镜像的带宽。
+ */
+function patchSockdriveSequentialReadAhead(file) {
+  let code = readFileSync(file, 'utf8')
+  const anchor = 'return c.preloadSizeInBytes=b.length*c.ahead_read,'
+  const read = 'readRangeAsync:async e=>{d.add(e),p.has(e)||(p.add(e),P(e))}'
+  if (code.split(anchor).length - 1 !== 1 || code.split(read).length - 1 !== 1) {
+    fail('上游 Sockdrive 读盘结构变化，无法确认顺序预读补丁安全')
+  }
+  const helper = `let __8bitgoLastDemand=-2,__8bitgoPrefetchCount=0,__8bitgoPrefetchRange=-1,__8bitgoPrefetchTask=null,__8bitgoPrefetchBytes=null;
+const __8bitgoConnection="undefined"!==typeof navigator?navigator.connection:null;
+const __8bitgoSlow=!!(__8bitgoConnection&&(__8bitgoConnection.saveData||/(?:^|-)2g$/i.test(__8bitgoConnection.effectiveType||"")));
+const __8bitgoPrefetchLimit="none"===n||__8bitgoSlow?0:Math.floor((__8bitgoConnection?.effectiveType==="3g"?4:8)*1048576/c.ahead_read);
+function __8bitgoPrefetchAfter(range){
+ const next=range+1;
+ if(!__8bitgoPrefetchLimit||__8bitgoPrefetchCount>=__8bitgoPrefetchLimit||__8bitgoPrefetchTask||next>=c.range_count||y.has(next)||f.has(next)||p.has(next)||g.has(next))return;
+ __8bitgoPrefetchCount++;
+ __8bitgoPrefetchRange=next;
+ __8bitgoPrefetchBytes=null;
+ const controller=new AbortController();
+ const timer=setTimeout(()=>controller.abort(),15000);
+ __8bitgoPrefetchTask=fetch(e+"/"+next+".raw",{signal:controller.signal,priority:"low"})
+  .then(async response=>{if(!response.ok)throw Error("HTTP "+response.status);const bytes=new Uint8Array(await response.arrayBuffer());if(bytes.length!==Math.min(c.ahead_read,c.size*1024-next*c.ahead_read))throw Error("Sockdrive read-ahead length mismatch");__8bitgoPrefetchBytes=bytes})
+  .catch(()=>{__8bitgoPrefetchBytes=null})
+  .finally(()=>{clearTimeout(timer);__8bitgoPrefetchTask=null});
+}
+`
+  code = code.replace(anchor, helper + anchor)
+  code = code.replace(read, `readRangeAsync:async e=>{
+ d.add(e);
+ const sequential=e===__8bitgoLastDemand+1;
+ __8bitgoLastDemand=e;
+ if(p.has(e))return;
+ if(__8bitgoPrefetchRange===e&&__8bitgoPrefetchTask)await __8bitgoPrefetchTask;
+ if(p.has(e))return;
+ p.add(e);
+ if(__8bitgoPrefetchRange===e&&__8bitgoPrefetchBytes){
+  const bytes=__8bitgoPrefetchBytes;
+  __8bitgoPrefetchBytes=null;
+  __8bitgoPrefetchRange=-1;
+  u.put(e,bytes).catch(console.error);
+  x(e,bytes);
+  c.readInBytes+=c.ahead_read;
+  if(sequential)__8bitgoPrefetchAfter(e);
+  return;
+ }
+ const current=P(e);
+ if(sequential)current.then(()=>__8bitgoPrefetchAfter(e)).catch(console.error);
+}`)
+  writeFileSync(file, code)
+}
+
 /** 写死的 1900 端口过不了 Cloudflare；本站中继和主站共用 443 的 /ipx/。 */
 function patchIpxPort(file) {
   if (!patchIpx) return
@@ -273,6 +329,7 @@ patchMinimalMouseCaptureUi(mainJs)
 patchLifecycle(mainJs)
 wrapCssInLayer(join(out, 'js-dos.css'))
 wrapInIife(mainJs)
+patchSockdriveSequentialReadAhead(join(out, 'emulators', 'emulators.js'))
 
 const files = listFiles(out)
   .filter((name) => name !== 'runtime.json')

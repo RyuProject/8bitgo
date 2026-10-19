@@ -18,6 +18,18 @@ export type SockdriveRuntimePreload = 'default' | 'none'
 // 官方 sockify 2.0.10 最大模板是 FAT32 2GB。更大的声明不是本站合法产物，若继续按它循环找块，
 // 一份几 KB 的损坏元数据就能让主线程执行数十亿次循环并假死。
 const SOCKDRIVE_MAX_DISK_BYTES = 2 * 1024 ** 3
+const SOCKDRIVE_WARM_DESKTOP_BYTES = 16 * 1024 * 1024
+const SOCKDRIVE_WARM_3G_BYTES = 8 * 1024 * 1024
+
+/**
+ * 弱网也要尽量在进客体前装齐启动热点。《天之痕》实际清单是 27 个 256KB 块（6.75MB），
+ * 旧 4MB 预算只覆盖前 16 块，并让 js-dos 关闭 OPFS 预载；剩余 11 块在剧情开始后同步等网络。
+ * 8MB 足够覆盖这份清单，又不会把 3G 预热放大到桌面端的 16MB。省流量 / 2G 仍不主动拉正文。
+ */
+export function sockdriveWarmBudget(effectiveType: string | undefined, saveData: boolean): number {
+  if (saveData || /(?:^|-)2g$/i.test(effectiveType ?? '')) return 0
+  return effectiveType === '3g' ? SOCKDRIVE_WARM_3G_BYTES : SOCKDRIVE_WARM_DESKTOP_BYTES
+}
 
 /**
  * 系统镜像与热点同时下载时保守用两路，避免预热反客为主；纯 DOS 没有大文件竞争，四路才能把
