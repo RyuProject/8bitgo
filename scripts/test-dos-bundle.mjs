@@ -34,6 +34,9 @@ const {
 } = await import(
   fileURLToPath(new URL('../src/emulator/windowsGameCompatibility.ts', import.meta.url))
 )
+const { dosGameCompatibilityExecutable, dosGameCompatibilityExtras, dosGameCompatibilityLaunchArguments, dosGameCompatibilityStartupCommands } = await import(
+  fileURLToPath(new URL('../src/emulator/dosGameCompatibility.ts', import.meta.url)),
+)
 const {
   desktopSettled,
   desktopContentRatio,
@@ -213,6 +216,54 @@ console.log('── 打不开的包必须在 Dos() 之前抛，不能留给黑�
   // store 和 deflate 是我们搬得动的，不能误伤
   const fine = makeWindowsGameLayer(makeZip([{ name: 'GAME.EXE', data: EXE, method: 0 }]), 'GAME.EXE')
   ok(fine.bytes instanceof Uint8Array, 'store(0) 正常通过')
+}
+
+console.log('\n── Daggerfall：启动参数与数据路径必须同时纠正 ──')
+{
+  const slug = 'the-elder-scrolls-ii-daggerfall'
+  const originalCfg = 'type dfall_medium\r\npath c:\\dagger\\arena2\\\r\npathcd d:\\dagger\\arena2\\\r\nmapfile d\r\n'
+  const rom = makeZip([
+    { name: 'FALL.EXE', data: EXE },
+    { name: 'DAGGER.EXE', data: EXE },
+    { name: 'Z.CFG', data: te.encode(originalCfg) },
+    { name: 'DFCD.iso', data: te.encode('fixture') },
+    { name: 'ARENA2/ARCH3D.BSA', data: te.encode('data') },
+  ])
+  const launch = dosGameCompatibilityExecutable(slug, undefined)
+  const args = dosGameCompatibilityLaunchArguments(slug, undefined)
+  const startup = dosGameCompatibilityStartupCommands(slug, undefined)
+  ok(launch === 'FALL.EXE' && args.join(' ') === 'Z.CFG', '未填入口时使用完整启动命令 FALL.EXE Z.CFG')
+  ok(startup === 'imgmount d DFCD.iso -t iso', '挂载包内真正的原版 CD 镜像')
+  ok(dosGameCompatibilityExecutable(slug, 'CUSTOM.BAT') === 'CUSTOM.BAT', '后台显式入口优先')
+  ok(dosGameCompatibilityLaunchArguments(slug, 'FALL.EXE').join(' ') === 'Z.CFG', '后台若指定 FALL.EXE 仍自动补齐必需的配置参数')
+  ok(dosGameCompatibilityLaunchArguments(slug, 'CUSTOM.BAT').length === 0, '后台显式入口不擅自添加参数')
+  await throwsWith(
+    () => buildDosboxConf('FALL.EXE', undefined, ['Z.CFG\nexit']),
+    /参数必须是安全的 8\.3 文件名/,
+    '启动参数不能夹带额外 DOS 命令',
+  )
+  ok(dosGameCompatibilityStartupCommands(slug, 'mount d own.iso -t iso') === 'mount d own.iso -t iso', '后台显式光盘命令优先')
+  ok(dosGameCompatibilityExecutable('other-game', undefined) === undefined, '其它 DOS 游戏保持原启动规则')
+
+  const extras = await dosGameCompatibilityExtras(slug, rom, [])
+  ok(extras.length === 1 && extras[0].path === 'Z.CFG', '只生成一份 Z.CFG 覆盖文件')
+  const bundle = await makeJsdosBundle('上古卷轴2匕首雨.zip', rom, undefined, undefined, launch, startup, extras, args)
+  const final = await bundle.blob.arrayBuffer()
+  const cfg = new TextDecoder().decode((await readZipFile(final, 'Z.CFG')).data)
+  const conf = new TextDecoder().decode((await readZipFile(final, '.jsdos/dosbox.conf')).data)
+  ok(bundle.executable === 'FALL.EXE' && /\nFALL\.EXE Z\.CFG\n/i.test(conf), '最终 bundle 的 autoexec 带配置参数启动 FALL.EXE')
+  ok(/imgmount d DFCD\.iso -t iso\nFALL\.EXE Z\.CFG/i.test(conf), '真实 CD 先于游戏程序挂载')
+  ok(/path c:\\arena2\\/i.test(cfg) && /pathcd d:\\dagger\\arena2\\/i.test(cfg), '最终配置分别指向 C: 安装目录与 D: 光盘数据')
+  ok(cfg.includes('mapfile d') && !cfg.includes('c:\\dagger'), '其它配置保留，旧的 C: 安装路径已移除')
+  ok(new TextDecoder().decode((await readZipFile(rom, 'Z.CFG')).data) === originalCfg, '玩家原始 ZIP 保持不变')
+
+  const admin = [{ path: 'z.cfg', data: te.encode('custom') }]
+  ok(await dosGameCompatibilityExtras(slug, rom, admin) === admin, '后台已提供 Z.CFG 时尊重它，不重复覆盖')
+  await throwsWith(
+    () => dosGameCompatibilityExtras(slug, makeZip([{ name: 'DAGGER.EXE', data: EXE }]), []),
+    /缺少 DFCD\.iso/,
+    '缺光盘镜像时在 Dos() 前明确报错',
+  )
 }
 
 console.log('\n── Caesar III：游戏分辨率必须与 Win95 的 800×600 对齐 ──')

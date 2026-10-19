@@ -363,7 +363,7 @@ function isDos83Path(path: string): boolean {
 }
 
 /** 生成一份能跑起来的 dosbox.conf */
-export function buildDosboxConf(exe: string | null, startupCommands?: string): string {
+export function buildDosboxConf(exe: string | null, startupCommands?: string, launchArguments: readonly string[] = []): string {
   const dir = exe && exe.includes('/') ? exe.slice(0, exe.lastIndexOf('/')) : ''
   const file = exe ? exe.slice(exe.lastIndexOf('/') + 1) : ''
   const lines = [
@@ -430,7 +430,11 @@ export function buildDosboxConf(exe: string | null, startupCommands?: string): s
       会先给这类启动文件补一个真实存在的 8.3 别名，再拿那个别名调用到这里。
     */
     if (!isDos83Path(file)) throw new Error(`DOS 启动文件名不是 8.3 格式，必须先生成启动别名：${file}`)
-    lines.push(file)
+    // 每个启动参数只接受 DOS 8.3 文件名，避免自动执行段注入额外的 DOS 命令。
+    if (launchArguments.some((argument) => !DOS_83_SEGMENT.test(argument))) {
+      throw new Error('DOS 启动参数必须是安全的 8.3 文件名')
+    }
+    lines.push([file, ...launchArguments].join(' '))
     // DOS 文本模式不是 UTF-8；把中文塞进 autoexec 只会变成玩家截图里那串乱码。
     lines.push(`@echo ${file} exited. If no game appeared, files or dependencies may be missing.`)
   }
@@ -880,6 +884,8 @@ export async function makeJsdosBundle(
   startupCommands?: string,
   /** 普通 DOS 直接在最终 bundle 里并入附加文件，避免先复制一遍完整 ROM 再重打包。 */
   extras: readonly ExtraFile[] = [],
+  /** 少数原版程序（如 FALL.EXE）必须在命令行接配置文件，不能把参数当成文件路径。 */
+  launchArguments: readonly string[] = [],
 ): Promise<BundleResult> {
   const parsed = readZipEntries(buf)
   const entries = parsed ? normalizeArchiveEntries(parsed) : null
@@ -898,7 +904,7 @@ export async function makeJsdosBundle(
   */
   if ([...wantedExtras.values()].some((extra) => /(^\.jsdos\/|\.(?:exe|com|bat|cue)$)/i.test(extra.path))) {
     const merged = mergeExtraFiles(buf, extras)
-    return makeJsdosBundle(name, merged, conf, configOverride, dosExecutable, startupCommands)
+    return makeJsdosBundle(name, merged, conf, configOverride, dosExecutable, startupCommands, [], launchArguments)
   }
   /*
     ⚠️ 后台填的启动程序，包里必须真有。
@@ -970,7 +976,7 @@ export async function makeJsdosBundle(
     管理员填了 PARANOID.COM 保存，玩家点开进的还是包里 conf 指向的安装界面，
     改三次配置清三次缓存都找不到原因。
   */
-  if (bundledConf && !wantedExtras.size && !configOverride?.trim() && !conf && !configuredExecutable && !startupCommands?.trim()) {
+  if (bundledConf && !wantedExtras.size && !configOverride?.trim() && !conf && !configuredExecutable && !startupCommands?.trim() && !launchArguments.length) {
     return { blob: new Blob([buf], { type: 'application/zip' }), executable: null, passthrough: true }
   }
 
@@ -984,16 +990,16 @@ export async function makeJsdosBundle(
       crc32: bundledConf.crc,
       offset: bundledConf.localOffset,
     })
-    const picked = configuredExecutable ?? (startupCommands?.trim() ? pickExecutable(entries.map((e) => e.name)) : null)
+    const picked = configuredExecutable ?? ((startupCommands?.trim() || launchArguments.length) ? pickExecutable(entries.map((e) => e.name)) : null)
     const launch = picked ? dosLaunchTarget(entries, buf, picked) : null
     // 后台指定了启动程序就以我们生成的那份为基底，否则用包里自带的。
     // 长文件名必须改用真实写进包里的别名，不能继续沿用调用方提前生成的坏命令。
     const base = launch?.alias
-      ? buildDosboxConf(launch.path, startupCommands)
+      ? buildDosboxConf(launch.path, startupCommands, launchArguments)
       : conf ?? (configuredExecutable
-          ? buildDosboxConf(launch?.path ?? configuredExecutable, startupCommands)
-          : startupCommands?.trim()
-            ? buildDosboxConf(launch?.path ?? picked, startupCommands)
+          ? buildDosboxConf(launch?.path ?? configuredExecutable, startupCommands, launchArguments)
+          : startupCommands?.trim() || launchArguments.length
+            ? buildDosboxConf(launch?.path ?? picked, startupCommands, launchArguments)
             : new TextDecoder().decode(extracted))
     const merged = te.encode(mergeDosboxConfigOverride(base, configOverride)) as Uint8Array<ArrayBuffer>
     const out: OutEntry[] = []
@@ -1103,7 +1109,9 @@ export async function makeJsdosBundle(
   }
 
   // conf 参数来自旧调用方时只适用于原文件名；别名场景必须重建 autoexec，否则已修好的别名不会被执行。
-  const baseConf = launchExe !== exe ? buildDosboxConf(launchExe, startupCommands) : conf ?? buildDosboxConf(launchExe, startupCommands)
+  const baseConf = launchExe !== exe
+    ? buildDosboxConf(launchExe, startupCommands, launchArguments)
+    : conf ?? buildDosboxConf(launchExe, startupCommands, launchArguments)
   const confBytes = te.encode(
     mergeDosboxConfigOverride(baseConf, configOverride),
   ) as Uint8Array<ArrayBuffer>

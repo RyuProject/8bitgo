@@ -88,6 +88,12 @@ import {
   windowsGameNeedsDirectDrawFocusRefresh,
 } from '../windowsGameCompatibility'
 import {
+  dosGameCompatibilityExecutable,
+  dosGameCompatibilityExtras,
+  dosGameCompatibilityLaunchArguments,
+  dosGameCompatibilityStartupCommands,
+} from '../dosGameCompatibility'
+import {
   parseSockdrivePreload,
   parseSockdriveWarmPlan,
   planSockdriveWarmFiles,
@@ -1162,16 +1168,21 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         只有完全不需要改包时才能把 Blob 直接交给 js-dos。后台覆盖配置、指定 EXE、语言挂盘命令
         和附加文件都会改变最终 ZIP；漏掉任何一项都会制造“设置保存了但运行时没生效”的假象。
       */
+      const dosExecutable = dosGameCompatibilityExecutable(options.gameSlug, options.dosExecutable)
+      const launchArguments = dosGameCompatibilityLaunchArguments(options.gameSlug, options.dosExecutable)
       const dosboxConfig = windowsGameCompatibilityDosboxConfig(
         options.gameSlug,
-        options.dosExecutable,
+        dosExecutable,
         options.dosboxConfig,
       )
-      const startupCommands = normalizeDosStartupCommands(options.dosStartupCommands)
+      const startupCommands = normalizeDosStartupCommands(
+        dosGameCompatibilityStartupCommands(options.gameSlug, options.dosStartupCommands),
+      )
       const preferReadyBundleBlob = !systemUrl
-        && !options.dosExecutable?.trim()
+        && !dosExecutable?.trim()
         && !dosboxConfig?.trim()
         && !startupCommands
+        && !launchArguments.length
         && !options.dosExtras?.length
       // js-dos 入口脚本由 loadJsDos() 用 <script> 拉，没有字节进度，只能先报核心阶段；
       // 系统镜像和 ROM 是我们自己 fetch 的，后两段都有真实进度。
@@ -1387,15 +1398,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           primaryUrl = URL.createObjectURL(rom.bundleBlob)
         } else {
           // 普通 zip / exe 现场打成 bundle；后台指定了启动程序就按它生成 conf。
+          const compatibleExtras = await dosGameCompatibilityExtras(options.gameSlug, rom.buf, extras)
           const bundle = await makeJsdosBundle(
             rom.name,
             rom.buf,
             undefined,
             dosboxConfig,
-            options.dosExecutable,
+            dosExecutable,
             startupCommands,
             // 直接并进最终 bundle，避免「整包复制一次 → 再解析并重打」的双倍峰值内存。
-            extras,
+            compatibleExtras,
+            launchArguments,
           )
           primaryUrl = URL.createObjectURL(bundle.blob)
         }
