@@ -35,10 +35,14 @@ import type { UploadProgress, UploadResult } from './roms'
  * 所以这个值一旦改了，**旧的续传记录就作废**（下面的身份校验会带上 partSize，自动作废）。
  */
 export const PART_SIZE = 8 * 1024 * 1024
-/** 3 并发：够把国内上行跑满，又不至于让某一片长期卡在队列里超时 */
-const CONCURRENCY = 3
-/** 单片重试次数（含首次）。网络抖动一两次很常见，一直重试就只是在耗时间 */
-const ATTEMPTS = 3
+/**
+ * HTTP/2 下三条大 PUT 共用一条连接，边缘或中间网络重置连接时会让三片同时失败。
+ * 两路通常已经能跑满家用上行；发生 status=0 后再由下面的闸门自动降为单路恢复。
+ */
+const MAX_CONCURRENCY = 2
+/** 单片重试次数（含首次）。连接级重置需要给浏览器足够时间重建 HTTP/2 会话。 */
+const ATTEMPTS = 5
+const RECOVERY_SUCCESS_PARTS = 4
 const MAX_PARTS = 10000
 
 const STORE_KEY = '8bitgo.rom.multipart'
@@ -78,6 +82,75 @@ class CompletionUncertainError extends Error {}
 
 /** 这个 Worker 还没部署分片接口（老版本）。roms.ts 收到它会退回单发 PUT */
 export class MultipartUnsupportedError extends Error {}
+
+/**
+ * 所有分片和重试共用一个并发闸。一次 HTTP/2 连接级错误会同时打掉多个 XHR；如果每个 XHR
+ * 各自立刻重试，就会再次挤进同一条刚重建的连接，形成失败风暴。这里先收敛到单路，连续四片
+ * 成功后再恢复正常并发。闸门只影响正在传输的请求，不改变 R2 uploadId 或已保存的续传账本。
+ */
+export class MultipartUploadGate {
+  private active = 0
+  private limit: number
+  private readonly preferred: number
+  private successStreak = 0
+  private readonly waiters: Array<() => void> = []
+
+  constructor(preferred = MAX_CONCURRENCY) {
+    this.preferred = Math.max(1, Math.min(MAX_CONCURRENCY, Math.floor(preferred)))
+    this.limit = this.preferred
+  }
+
+  private acquire(): Promise<void> {
+    if (this.active < this.limit) {
+      this.active++
+      return Promise.resolve()
+    }
+    return new Promise((resolve) => this.waiters.push(() => {
+      this.active++
+      resolve()
+    }))
+  }
+
+  private drain() {
+    while (this.active < this.limit && this.waiters.length) this.waiters.shift()?.()
+  }
+
+  private transportFailed(error: unknown) {
+    return typeof error === 'object' && error !== null && 'status' in error && error.status === 0
+  }
+
+  async run<T>(task: () => Promise<T>): Promise<T> {
+    await this.acquire()
+    try {
+      const value = await task()
+      if (this.limit < this.preferred && ++this.successStreak >= RECOVERY_SUCCESS_PARTS) {
+        this.limit++
+        this.successStreak = 0
+      }
+      return value
+    } catch (error) {
+      if (this.transportFailed(error)) {
+        this.limit = 1
+        this.successStreak = 0
+      }
+      throw error
+    } finally {
+      this.active--
+      this.drain()
+    }
+  }
+
+  snapshot() {
+    return { active: this.active, limit: this.limit, waiting: this.waiters.length, successStreak: this.successStreak }
+  }
+}
+
+function preferredUploadConcurrency(): number {
+  const connection = globalThis.navigator?.connection
+  const type = String(connection?.effectiveType || '').toLowerCase()
+  if (connection?.saveData || type === 'slow-2g' || type === '2g') return 1
+  return MAX_CONCURRENCY
+}
 
 /* ---------------- 本地账本 ---------------- */
 
@@ -261,7 +334,7 @@ function putPart(ctx: Ctx, state: PendingUpload, partNumber: number, blob: Blob,
     }
     xhr.onerror = () => {
       done()
-      reject(new UploadHttpError('网络中断', 0))
+      reject(new UploadHttpError('上传连接被浏览器或边缘网络重置', 0))
     }
     xhr.onabort = () => {
       done()
@@ -316,12 +389,13 @@ async function withRetry<T>(run: () => Promise<T>, attempts: number): Promise<T>
   throw last
 }
 
-async function putPartWithRetry(ctx: Ctx, state: PendingUpload, partNumber: number, blob: Blob, onLoaded: (bytes: number) => void): Promise<string> {
+async function putPartWithRetry(ctx: Ctx, state: PendingUpload, partNumber: number, blob: Blob, onLoaded: (bytes: number) => void, gate: MultipartUploadGate): Promise<string> {
   let last: unknown
   for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
-    if (attempt > 0) await sleep(600 * 2 ** (attempt - 1) + Math.random() * 400)
+    // 连接级错误后不能在几百毫秒内把多条 PUT 一起塞回刚重建的 HTTP/2 会话。
+    if (attempt > 0) await sleep(Math.min(12_000, 1_500 * 2 ** (attempt - 1)) + Math.random() * 1_000)
     try {
-      return await putPart(ctx, state, partNumber, blob, onLoaded)
+      return await gate.run(() => putPart(ctx, state, partNumber, blob, onLoaded))
     } catch (err) {
       last = err
       // 重试要从 0 字节重新算这一片的进度，否则进度条会往前虚报
@@ -407,6 +481,8 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
 
   const queue = Array.from({ length: total }, (_, i) => i + 1).filter((n) => !finished.has(n))
   let failure: unknown = null
+  const preferredConcurrency = preferredUploadConcurrency()
+  const uploadGate = new MultipartUploadGate(preferredConcurrency)
 
   const runner = async () => {
     for (;;) {
@@ -419,7 +495,7 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
         const etag = await putPartWithRetry(ctx, state, n, blob, (bytes) => {
           loaded.set(n, bytes)
           report()
-        })
+        }, uploadGate)
         state.parts.push({ partNumber: n, etag })
         finished.add(n)
         loaded.set(n, sizeOfPart(n))
@@ -433,7 +509,7 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
     }
   }
 
-  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, Math.max(1, queue.length)) }, () => runner()))
+  await Promise.all(Array.from({ length: Math.min(preferredConcurrency, Math.max(1, queue.length)) }, () => runner()))
   if (failure) throw await explainFailure(failure, ctx, state, total, resumable)
 
   let size: number

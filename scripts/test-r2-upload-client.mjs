@@ -42,7 +42,7 @@ globalThis.XMLHttpRequest = class {
 }
 
 const { uploadRom, deleteRomDir, headRom, listRomObjects } = await import('../src/services/roms.ts')
-const { uploadRomMultipart, listOrphanUploads, abortOrphanUpload, listPendingUploads } = await import('../src/services/romMultipart.ts')
+const { uploadRomMultipart, listOrphanUploads, abortOrphanUpload, listPendingUploads, MultipartUploadGate } = await import('../src/services/romMultipart.ts')
 const {
   clearPendingSockdriveCreation,
   createSockdriveConversion,
@@ -52,6 +52,33 @@ const {
   waitForSockdriveConversion,
 } = await import('../src/services/sockdriveConversion.ts')
 const { ApiError } = await import('../src/services/api.ts')
+
+// 两条 HTTP/2 PUT 同时被 reset 后，后续任务必须单路恢复；不能各自重试再制造一次连接级风暴。
+{
+  const gate = new MultipartUploadGate(2)
+  let rejectFirst
+  let rejectSecond
+  const first = gate.run(() => new Promise((_resolve, reject) => { rejectFirst = reject }))
+  const second = gate.run(() => new Promise((_resolve, reject) => { rejectSecond = reject }))
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(gate.snapshot().active, 2)
+  rejectFirst({ status: 0 })
+  rejectSecond({ status: 0 })
+  await Promise.allSettled([first, second])
+  assert.equal(gate.snapshot().limit, 1)
+
+  let releaseRecovery
+  const recovery = gate.run(() => new Promise((resolve) => { releaseRecovery = resolve }))
+  let laterStarted = false
+  const later = gate.run(async () => { laterStarted = true })
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(laterStarted, false, '网络错误后只能有一片进入新连接')
+  releaseRecovery()
+  await recovery
+  await later
+  assert.equal(gate.snapshot().limit, 1, '少量成功不能过早恢复并发')
+}
+console.log('✅ HTTP/2 连接级错误会把分片上传收敛到单路，避免并发重试风暴')
 
 const headRequests = []
 globalThis.fetch = async (url, init) => {

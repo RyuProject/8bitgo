@@ -590,8 +590,14 @@ Free / Pro 100 MB，Business 200 MB，Enterprise 500 MB，**由边缘节点执�
 日志里能看到这次 PUT，才说明问题在 Worker 侧。
 
 现在超过 24MB（`MULTIPART_THRESHOLD`）的文件自动改走**分片上传**：
-8MB 一片、3 并发、单片失败重试、`localStorage` 记账后可断点续传（`src/services/romMultipart.ts`）。
+8MB 一片、默认 2 并发、单片失败重试、`localStorage` 记账后可断点续传（`src/services/romMultipart.ts`）。
 上限是按**单个请求**算的，所以分片顺带把 100MB 这道墙也绕开了。三个必须记住的约束：
+
+⚠️ 浏览器控制台若同时出现多个 `PUT ... net::ERR_HTTP2_PROTOCOL_ERROR`，通常不是 ISO 或 uploadId
+损坏，而是共用同一 HTTP/2 连接的分片被边缘/中间网络一起重置。不能让每个 XHR 在几百毫秒后
+各自并发重试：那会在刚重建的连接上再次制造失败风暴。上传器现在遇到 `status=0` 会把全局闸门
+收敛到单路，连续四片成功后才恢复双路；单片最多试 5 次并用 1.5～12 秒退避。已经完成的分片和
+本地账本原样保留，管理员重新选择同一文件时仍从断点继续，不准为了这个错误更换 `PART_SIZE`。
 
 1. R2 要求**除最后一片外所有片等大**、最小 5MB、最多 10000 片 —— 改 `PART_SIZE` 会让旧的续传记录作废；续传还校验文件名、字节数、修改时间和头/中/尾内容指纹，防止把同名的另一份文件拼进旧分片
 2. binding **没有 `listParts`**：complete 时必须把每片的 `{partNumber, etag}` 全报回去，所以这份账只能记在前端 —— **换浏览器就续不上**
