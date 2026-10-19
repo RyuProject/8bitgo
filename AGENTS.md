@@ -2084,6 +2084,16 @@ R2 multipart 发布到最终 `roms/psp/*.chd`。`.cso` / `.chd` 保持直传。
   至少留 `2 × ISO + 256MB`。默认并发 1，最多 2，避免压缩任务抢光玩家请求的 CPU / IO；
   `PSP_CONVERT_TIMEOUT_MINUTES` 默认 180，超时会先 SIGTERM、10 秒后 SIGKILL，不能让一个挂死的
   `chdman` 永久堵住整个单并发队列。
+- 生产机的系统盘只有 20GB，`PSP_CONVERT_TMP_DIR` 必须指向专用数据盘
+  `/var/lib/8bitgo-data/psp-conversions`，不能写回 `/var/lib/8bitgo/psp-conversions`。R2 下载使用
+  4MB 背压窗口让网络读取和磁盘写入重叠；中途断线保留本地 ISO，并带 `Range + If-Match` 从已写字节
+  继续。不能恢复成“每个网络小块 await 一次磁盘写入”，那会把数万个小写操作串行化。
+- `chdman` 显式用 `PSP_CHDMAN_PROCESSORS`（留空取可用 CPU，最多 8）；转换任务仍保持单并发。
+  完整 verify 通过后才记录 `output_size`，发布失败或服务重启会复用这份已校验 CHD，不能再次下载、
+  压缩和校验。未通过 verify 的半份输出必须删掉，输入断点与已校验输出最多保留到失败任务 24 小时清扫。
+- 最终 CHD 默认四路并发上传 8MB multipart（`PSP_CONVERT_UPLOAD_CONCURRENCY`，最多 8，峰值内存约
+  并发数 × 8MB）；完成结果按 partNumber 排序，数据库账本只按可见进度批量落盘。不要把任务并发和
+  上传并发混成同一个开关：前者增加压缩 CPU / 磁盘竞争，后者主要隐藏 R2 往返。
 
 回归：`cd server && npm run test:psp-conversion`；再跑根目录 `npm run build`。
 

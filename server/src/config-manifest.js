@@ -188,6 +188,8 @@ export const ENV_MANIFEST = [
   { name: 'PORT', group: '服务与地址', kind: 'config', file: 'index.js' },
   { name: 'PSP_CHDMAN_BIN', group: 'ROM / J2ME / IPX', kind: 'config', file: 'psp-conversion.js', note: 'PSP ISO → CHD 转换工具；默认从 PATH 查找 chdman' },
   { name: 'PSP_CONVERT_CONCURRENCY', group: 'ROM / J2ME / IPX', kind: 'config', file: 'psp-conversion.js', note: '后台同时转换数，默认 1、最多 2，调高会明显争抢 CPU 与磁盘' },
+  { name: 'PSP_CONVERT_UPLOAD_CONCURRENCY', group: 'ROM / J2ME / IPX', kind: 'config', file: 'psp-conversion.js', note: '已校验 CHD 向 R2 发布的分片并发，默认 4、最多 8' },
+  { name: 'PSP_CHDMAN_PROCESSORS', group: 'ROM / J2ME / IPX', kind: 'config', file: 'psp-conversion.js', note: '单个 chdman 压缩任务的线程数；留空取可用 CPU，最多 8' },
   { name: 'PSP_CONVERT_MAX_ISO_MB', group: 'ROM / J2ME / IPX', kind: 'config', file: 'psp-conversion.js' },
   { name: 'PSP_CONVERT_TIMEOUT_MINUTES', group: 'ROM / J2ME / IPX', kind: 'config', file: 'psp-conversion.js', note: 'createdvd / verify 看门狗，默认 180 分钟' },
   { name: 'PSP_CONVERT_TMP_DIR', group: 'ROM / J2ME / IPX', kind: 'config', file: 'psp-conversion.js', note: '转换临时盘；需要约 2 × ISO 大小 + 256MB 可用空间' },

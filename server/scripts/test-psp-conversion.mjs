@@ -5,6 +5,8 @@ import { readFileSync } from 'node:fs'
 const {
   chdmanCreateArgs,
   chdmanProgress,
+  concurrentMapOrdered,
+  conversionScratchBytes,
   isPspIsoHeader,
   objectVersionMatches,
   pspConversionConfig,
@@ -74,6 +76,9 @@ assert.equal(readCalls, 4, '短读必须继续补齐整个分片')
 assert.deepEqual(chdmanCreateArgs('/tmp/in.iso', '/tmp/out.chd'), [
   'createdvd', '-hs', '2048', '-c', 'zstd', '-i', '/tmp/in.iso', '-o', '/tmp/out.chd',
 ])
+assert.deepEqual(chdmanCreateArgs('/tmp/in.iso', '/tmp/out.chd', 4), [
+  'createdvd', '-hs', '2048', '-c', 'zstd', '-np', '4', '-i', '/tmp/in.iso', '-o', '/tmp/out.chd',
+])
 assert.equal(chdmanProgress('Compressing, 18.5% complete'), 18.5)
 assert.equal(chdmanProgress('10%\r20%\r100%'), 100)
 assert.equal(chdmanProgress('no progress'), null)
@@ -85,17 +90,41 @@ assert.equal(isPspIsoHeader(header), true)
 header[0x8008] = 0
 assert.equal(isPspIsoHeader(header), false)
 
+assert.equal(
+  conversionScratchBytes(1024 * 1024, 256 * 1024, 512 * 1024),
+  273.25 * 1024 * 1024,
+  '续跑空间只计算尚未落盘的输入/输出和固定余量',
+)
+
+let activeParts = 0
+let peakParts = 0
+const finishOrder = []
+const concurrentResults = await concurrentMapOrdered(7, 3, async (index) => {
+  activeParts += 1
+  peakParts = Math.max(peakParts, activeParts)
+  await new Promise((resolve) => setTimeout(resolve, (7 - index) * 2))
+  activeParts -= 1
+  return { partNumber: index + 1 }
+}, (_completed, results) => finishOrder.push(results.filter(Boolean).length))
+assert.equal(peakParts, 3, '服务端 CHD 发布必须真正并发，但不能越过配置上限')
+assert.deepEqual(concurrentResults.map((part) => part.partNumber), [1, 2, 3, 4, 5, 6, 7], '完成顺序不能打乱 R2 part 清单')
+assert.equal(finishOrder.at(-1), 7)
+
 const config = pspConversionConfig({
   ADMIN_TOKEN: 'fallback-worker-token',
   PSP_CONVERT_WORKER_URL: 'https://roms.example.test/',
   PSP_CONVERT_MAX_ISO_MB: '2048',
   PSP_CONVERT_CONCURRENCY: '99',
+  PSP_CONVERT_UPLOAD_CONCURRENCY: '6',
+  PSP_CHDMAN_PROCESSORS: '3',
   PSP_CONVERT_TIMEOUT_MINUTES: '240',
 })
 assert.equal(config.workerUrl, 'https://roms.example.test')
 assert.equal(config.workerToken, 'fallback-worker-token')
 assert.equal(config.maxIsoBytes, 2048 * 1024 * 1024)
 assert.equal(config.concurrency, 1, '越界并发不能偷偷退成一个危险的大值')
+assert.equal(config.uploadConcurrency, 6)
+assert.equal(config.chdmanProcessors, 3)
 assert.equal(config.timeoutMs, 240 * 60 * 1000)
 
 const schema = readFileSync(new URL('../schema-v2.sql', import.meta.url), 'utf8')
@@ -103,6 +132,7 @@ const migration = readFileSync(new URL('./migrate.mjs', import.meta.url), 'utf8'
 const routes = readFileSync(new URL('../src/routes/psp-conversions.js', import.meta.url), 'utf8')
 const frontend = readFileSync(new URL('../../src/admin/GameForm.tsx', import.meta.url), 'utf8')
 const frontendService = readFileSync(new URL('../../src/services/pspConversion.ts', import.meta.url), 'utf8')
+const conversionSource = readFileSync(new URL('../src/psp-conversion.js', import.meta.url), 'utf8')
 assert.match(schema, /CREATE TABLE IF NOT EXISTS psp_conversion_jobs/)
 assert.match(schema, /target_etag_before/)
 assert.match(schema, /output_etag/)
@@ -114,5 +144,8 @@ assert.match(frontend, /waitForPspConversion/)
 assert.match(frontend, /sameStoredFormat/)
 assert.match(frontend, /persistedSlug/)
 assert.match(frontendService, /isoKey\.replace\(\/\\\.\[\^\.\/\]\+\$\/, '\.chd'\)/)
+assert.match(conversionSource, /Range: `bytes=\$\{received\}-`/, 'R2 下载失败后必须从本地断点续传')
+assert.match(conversionSource, /Readable\.fromWeb\(response\.body\)/, '下载必须使用带背压的流式磁盘管线')
+assert.match(conversionSource, /复用上次已完整校验的 CHD/, '发布失败后不能重新下载和压缩')
 
 console.log('✅ PSP ISO → CHD：格式守卫、命令参数、断点任务与后台接线通过')

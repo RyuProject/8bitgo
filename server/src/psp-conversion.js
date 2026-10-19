@@ -12,9 +12,12 @@
  */
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { constants as fsConstants } from 'node:fs'
+import { constants as fsConstants, createWriteStream } from 'node:fs'
 import { access, mkdir, open, rm, stat, statfs } from 'node:fs/promises'
+import { availableParallelism } from 'node:os'
 import { join, resolve } from 'node:path'
+import { Readable, Transform } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { query, queryOne, withTransaction } from './db.js'
 import { invalidateContent } from './content.js'
 
@@ -22,6 +25,7 @@ const ACTIVE = new Set(['queued', 'downloading', 'converting', 'verifying', 'upl
 const INTERRUPTED = ['downloading', 'converting', 'verifying', 'uploading']
 const ROM_LANGS = new Set(['zh-Hans', 'zh-Hant', 'en', 'ja'])
 const PART_BYTES = 8 * 1024 * 1024
+const STREAM_BUFFER_BYTES = 4 * 1024 * 1024
 const FETCH_ATTEMPTS = 4
 const SOURCE_IDLE_MS = 60_000
 const WORKER_REQUEST_TIMEOUT_MS = 60_000
@@ -51,6 +55,8 @@ export function pspConversionConfig(env = process.env) {
     tempDir,
     maxIsoBytes: positiveInt(env.PSP_CONVERT_MAX_ISO_MB, 2560, 16 * 1024) * 1024 * 1024,
     concurrency: positiveInt(env.PSP_CONVERT_CONCURRENCY, 1, 2),
+    uploadConcurrency: positiveInt(env.PSP_CONVERT_UPLOAD_CONCURRENCY, 4, 8),
+    chdmanProcessors: positiveInt(env.PSP_CHDMAN_PROCESSORS, Math.max(1, Math.min(availableParallelism(), 8)), 64),
     timeoutMs: positiveInt(env.PSP_CONVERT_TIMEOUT_MINUTES, 180, 24 * 60) * 60 * 1000,
   }
 }
@@ -104,9 +110,11 @@ export function validatePspConversionRequest(body, env = process.env) {
   }
 }
 
-export function chdmanCreateArgs(input, output) {
+export function chdmanCreateArgs(input, output, processors) {
   // PSP 官方建议：createdvd + 2048-byte hunk。createcd 虽能打开，但旧核心上随机读性能很差。
-  return ['createdvd', '-hs', '2048', '-c', 'zstd', '-i', input, '-o', output]
+  const args = ['createdvd', '-hs', '2048', '-c', 'zstd']
+  if (Number.isSafeInteger(processors) && processors > 0) args.push('-np', String(processors))
+  return [...args, '-i', input, '-o', output]
 }
 
 export function chdmanProgress(text) {
@@ -344,12 +352,31 @@ async function updateJob(id, fields) {
   await query(`UPDATE psp_conversion_jobs SET ${sql} WHERE id = ?`, [...entries.map(([, value]) => value), id])
 }
 
-async function ensureDiskSpace(config, sourceSize) {
+async function fileSize(path) {
+  try {
+    const info = await stat(path)
+    return info.isFile() ? info.size : 0
+  } catch (error) {
+    if (error?.code === 'ENOENT') return 0
+    throw error
+  }
+}
+
+export function conversionScratchBytes(sourceSize, inputBytes = 0, outputBytes = 0) {
+  const source = Math.max(0, Number(sourceSize) || 0)
+  const input = Math.max(0, Math.min(source, Number(inputBytes) || 0))
+  const worstOutput = source + 16 * 1024 * 1024
+  const output = Math.max(0, Math.min(worstOutput, Number(outputBytes) || 0))
+  return (source - input) + (worstOutput - output) + 256 * 1024 * 1024
+}
+
+async function ensureDiskSpace(config, sourceSize, inputBytes = 0, outputBytes = 0) {
   await mkdir(config.tempDir, { recursive: true })
   const fs = await statfs(config.tempDir)
   const free = Number(fs.bavail) * Number(fs.bsize)
-  // 输入 + 最坏情况下几乎不压缩的输出 + 256MB 工具/文件系统余量。
-  const need = sourceSize * 2 + 256 * 1024 * 1024
+  // 失败重试会保留已经落盘的输入或已校验输出；空间预检只计算还没写入的部分，
+  // 否则磁盘明明够续跑，却会因为把现有文件再算一遍而被错误拒绝。
+  const need = conversionScratchBytes(sourceSize, inputBytes, outputBytes)
   if (!Number.isFinite(free) || free < need) {
     throw new Error(`临时磁盘空间不足：至少需要 ${Math.ceil(need / 1024 / 1024)}MB 可用空间`)
   }
@@ -381,57 +408,111 @@ export async function readExactlyAt(file, buffer, position) {
   return offset
 }
 
+async function readFilePrefix(path, length) {
+  return open(path, 'r').then(async (file) => {
+    try {
+      const bytes = Buffer.alloc(length)
+      const bytesRead = await readExactlyAt(file, bytes, 0)
+      return bytes.subarray(0, bytesRead)
+    } finally {
+      await file.close()
+    }
+  })
+}
+
+async function reusableIso(path, expectedSize) {
+  if (await fileSize(path) !== Number(expectedSize)) return false
+  return isPspIsoHeader(await readFilePrefix(path, 0x9000))
+}
+
+async function reusableVerifiedChd(path, expectedSize) {
+  if (!Number.isSafeInteger(Number(expectedSize)) || Number(expectedSize) < 4096) return false
+  if (await fileSize(path) !== Number(expectedSize)) return false
+  return (await readFilePrefix(path, 8)).toString('ascii') === 'MComprHD'
+}
+
 async function downloadSource(job, config, destination) {
   const controller = new AbortController()
   let idle
-  let file
   const armIdle = () => {
     clearTimeout(idle)
     idle = setTimeout(() => controller.abort(new Error('下载连续 60 秒没有收到数据')), SOURCE_IDLE_MS)
     idle.unref?.()
   }
   armIdle()
-  let received = 0
+  const sourceSize = Number(job.source_size)
+  let received = await fileSize(destination)
+  if (received > sourceSize) {
+    await rm(destination, { force: true })
+    received = 0
+  }
+  if (received === sourceSize) {
+    if (await reusableIso(destination, sourceSize)) return
+    await rm(destination, { force: true })
+    received = 0
+  }
   let reported = -1
+  let progressWrites = Promise.resolve()
   try {
     const response = await workerRequest(config, job.source_key, {
       method: 'GET',
-      headers: { 'If-Match': job.source_etag },
+      headers: {
+        'If-Match': job.source_etag,
+        ...(received > 0 ? { Range: `bytes=${received}-` } : {}),
+      },
       signal: controller.signal,
     })
     if (response.status === 412) throw new Error('临时 ISO 在任务创建后被覆盖，已拒绝把两份内容混在一起')
     if (!response.ok || !response.body) throw new Error(`下载临时 ISO 失败：HTTP ${response.status}`)
-    const declared = Number(response.headers.get('content-length'))
-    if (declared !== Number(job.source_size)) throw new Error('下载响应的 ISO 大小与任务记录不一致')
 
-    file = await open(destination, 'wx')
-    for await (const chunk of response.body) {
-      armIdle()
-      if (received + chunk.byteLength > Number(job.source_size)) throw new Error('下载数据超过 ISO 记录大小')
-      await writeAllAt(file, chunk, received)
-      received += chunk.byteLength
-      const pct = 5 + Math.floor((received / Number(job.source_size)) * 24)
-      if (pct !== reported) {
-        reported = pct
-        await updateJob(job.id, { progress: pct })
+    if (received > 0 && response.status === 206) {
+      const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('content-range') || '')
+      if (!match || Number(match[1]) !== received || Number(match[3]) !== sourceSize) {
+        throw new Error('断点下载响应的 Content-Range 与任务记录不一致')
       }
+    } else if (received > 0) {
+      // 有些代理会忽略 Range 返回整份 200。此时必须从零覆盖，不能把整份 ISO 接到半份后面。
+      await rm(destination, { force: true })
+      received = 0
     }
+    const declared = Number(response.headers.get('content-length'))
+    if (declared !== sourceSize - received) throw new Error('下载响应的 ISO 大小与任务记录不一致')
+
+    const start = received
+    const meter = new Transform({
+      readableHighWaterMark: STREAM_BUFFER_BYTES,
+      writableHighWaterMark: STREAM_BUFFER_BYTES,
+      transform(chunk, _encoding, callback) {
+        armIdle()
+        if (received + chunk.byteLength > sourceSize) {
+          callback(new Error('下载数据超过 ISO 记录大小'))
+          return
+        }
+        received += chunk.byteLength
+        const pct = 5 + Math.floor((received / sourceSize) * 24)
+        if (pct !== reported) {
+          reported = pct
+          // 进度写库不能阻塞每个 16～64KB 网络块；保持顺序即可，传输继续由 4MB 背压窗口推进。
+          progressWrites = progressWrites.then(() => updateJob(job.id, { progress: pct })).catch(() => {})
+        }
+        callback(null, chunk)
+      }
+    })
+    const sink = createWriteStream(destination, {
+      flags: start > 0 ? 'r+' : 'wx',
+      start,
+      highWaterMark: STREAM_BUFFER_BYTES,
+    })
+    await pipeline(Readable.fromWeb(response.body), meter, sink, { signal: controller.signal })
   } finally {
     clearTimeout(idle)
-    if (file) await file.close()
+    // 失败路径也等进度链收口，避免任务已标 failed 后旧 UPDATE 又把进度向前推。
+    await progressWrites
   }
-  if (received !== Number(job.source_size)) throw new Error(`ISO 下载不完整：收到 ${received}/${job.source_size} 字节`)
+  if (received !== sourceSize) throw new Error(`ISO 下载不完整：收到 ${received}/${job.source_size} 字节`)
   // 这里只读 36KB 文件头。把 readFile 用在 1.8GB ISO 上会平白制造一份同大的内存副本，
   // 转换还没开始就可能把 Node 进程顶掉。
-  const header = await open(destination, 'r').then(async (source) => {
-    try {
-      const bytes = Buffer.alloc(0x9000)
-      const bytesRead = await readExactlyAt(source, bytes, 0)
-      return bytes.subarray(0, bytesRead)
-    } finally {
-      await source.close()
-    }
-  })
+  const header = await readFilePrefix(destination, 0x9000)
   if (!isPspIsoHeader(header)) throw new Error('上传内容不是有效的 PSP ISO（缺少 CD001 / PSP GAME 标识）')
 }
 
@@ -480,24 +561,16 @@ function runChdman(bin, args, onProgress, timeoutMs) {
 async function validateChd(path, config) {
   const info = await stat(path)
   if (!info.isFile() || info.size < 4096) throw new Error('chdman 没有生成有效输出文件')
-  const magic = await open(path, 'r').then(async (file) => {
-    try {
-      const buffer = Buffer.alloc(8)
-      const bytesRead = await readExactlyAt(file, buffer, 0)
-      if (bytesRead !== buffer.length) return ''
-      return buffer.toString('ascii')
-    } finally {
-      await file.close()
-    }
-  })
+  const magic = (await readFilePrefix(path, 8)).toString('ascii')
   if (magic !== 'MComprHD') throw new Error('输出文件缺少 CHD 魔数，拒绝发布')
   await runChdman(config.chdman, ['verify', '-i', path], undefined, config.timeoutMs)
   return info.size
 }
 
-async function retryFetch(task, what) {
+async function retryFetch(task, what, signal) {
   let last
   for (let attempt = 0; attempt < FETCH_ATTEMPTS; attempt++) {
+    if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error(`${what}已取消`)
     try {
       const response = await task()
       if (response.ok) return response
@@ -509,9 +582,44 @@ async function retryFetch(task, what) {
       last = error
       if (error?.fatal) throw error
     }
-    await new Promise((resolveWait) => setTimeout(resolveWait, 500 * 2 ** attempt))
+    if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error(`${what}已取消`)
+    if (attempt + 1 < FETCH_ATTEMPTS) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 500 * 2 ** attempt))
+    }
   }
   throw last
+}
+
+/**
+ * 本地 CHD 已经完成，发布阶段可以安全并发读取互不重叠的片。结果仍按 partNumber 排序，
+ * 避免 R2 complete 因网络完成顺序不同而拿到乱序清单。
+ */
+export async function concurrentMapOrdered(count, concurrency, mapper, onCompleted, onError) {
+  const total = Math.max(0, Math.floor(Number(count) || 0))
+  const width = Math.max(1, Math.min(total || 1, Number(concurrency) || 1))
+  const results = Array.from({ length: total })
+  let cursor = 0
+  let completed = 0
+  let stopped = false
+  const runner = async () => {
+    while (!stopped) {
+      const index = cursor++
+      if (index >= total) return
+      try {
+        results[index] = await mapper(index)
+      } catch (error) {
+        stopped = true
+        onError?.(error)
+        throw error
+      }
+      completed += 1
+      onCompleted?.(completed, results)
+    }
+  }
+  const settled = await Promise.allSettled(Array.from({ length: width }, () => runner()))
+  const failure = settled.find((item) => item.status === 'rejected')
+  if (failure) throw failure.reason
+  return results
 }
 
 async function abortMultipartSession(config, key, uploadId, marker) {
@@ -554,10 +662,14 @@ async function uploadChd(job, config, path, outputSize) {
   await updateJob(job.id, { upload_id: session.uploadId, upload_marker: session.marker, upload_parts: '[]' })
 
   const file = await open(path, 'r')
-  const parts = []
   const total = Math.max(1, Math.ceil(outputSize / PART_BYTES))
+  const controller = new AbortController()
+  let reported = -1
+  let progressWrites = Promise.resolve()
+  let parts
   try {
-    for (let partNumber = 1; partNumber <= total; partNumber++) {
+    parts = await concurrentMapOrdered(total, config.uploadConcurrency, async (index) => {
+      const partNumber = index + 1
       const length = Math.min(PART_BYTES, outputSize - (partNumber - 1) * PART_BYTES)
       const buffer = Buffer.allocUnsafe(length)
       const bytesRead = await readExactlyAt(file, buffer, (partNumber - 1) * PART_BYTES)
@@ -568,17 +680,31 @@ async function uploadChd(job, config, path, outputSize) {
           query: `?uploadId=${encodeURIComponent(session.uploadId)}&partNumber=${partNumber}`,
           headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(length) },
           body: buffer,
+          signal: controller.signal,
         }),
         `上传 CHD 第 ${partNumber}/${total} 片`,
+        controller.signal,
       )
       const part = await response.json()
       if (!part?.etag) throw new Error(`Worker 没有确认 CHD 第 ${partNumber} 片`)
-      parts.push({ partNumber, etag: part.etag })
-      await updateJob(job.id, {
-        progress: 76 + Math.floor((partNumber / total) * 22),
-        upload_parts: JSON.stringify(parts),
-      })
-    }
+      return { partNumber, etag: part.etag }
+    }, (completed, results) => {
+      const progress = 76 + Math.floor((completed / total) * 22)
+      if (progress === reported && completed !== total) return
+      reported = progress
+      const checkpoint = results.filter(Boolean)
+      // upload_parts 只负责崩溃后定位并中止旧会话，不用于续传；按可见进度批量落库，
+      // 避免 1～2GB 文件每 8MB 都制造一次串行 MySQL 往返。
+      progressWrites = progressWrites.then(() => updateJob(job.id, {
+        progress,
+        upload_parts: JSON.stringify(checkpoint),
+      })).catch(() => {})
+    }, (error) => controller.abort(error))
+    await progressWrites
+  } catch (error) {
+    controller.abort(error)
+    await progressWrites
+    throw error
   } finally {
     await file.close()
   }
@@ -671,6 +797,8 @@ async function sweepStaleSources() {
       await deleteSource(row, config)
       const note = row.status === 'failed' ? '临时 ISO 已在失败 24 小时后自动清理' : row.message
       await updateJob(row.id, { source_deleted: 1, ...(note ? { message: String(note).slice(0, 500) } : {}) })
+      // 转换失败时会保留可续传的输入和已校验 CHD；源文件生命周期结束后本地副本也必须同步回收。
+      await rm(join(config.tempDir, row.id), { recursive: true, force: true }).catch(() => {})
     } catch (error) {
       // 删除没得到确认就把领取标记退回；否则一次网络闪断会让这份临时 ISO 永远没人再清。
       await updateJob(row.id, { source_deleted: 0 }).catch(() => {})
@@ -709,27 +837,69 @@ async function processJob(job) {
   const dir = join(config.tempDir, job.id)
   const input = join(dir, 'input.iso')
   const output = join(dir, 'output.chd')
+  const sourceSize = Number(job.source_size)
+  let completed = false
+  let verifiedOutputSize = Number(job.output_size) || 0
+  const reportPhase = (name, startedAt, bytes = 0) => {
+    const seconds = Math.max(0.001, (Date.now() - startedAt) / 1000)
+    const speed = bytes > 0 ? `，${(bytes / 1024 / 1024 / seconds).toFixed(1)} MB/s` : ''
+    console.log(`[psp-convert] ${job.id} ${name}完成：${seconds.toFixed(1)} 秒${speed}`)
+  }
   try {
     // R2 已发布、但服务在绑定数据库之前重启：凭完整 ETag/大小直接收尾，绝不能再压缩并覆盖一次。
     if (job.output_etag && job.output_size) {
       const published = await remoteHead(config, job.target_key)
       if (published && published.etag === job.output_etag && published.size === Number(job.output_size)) {
         await finishPublishedJob(job, config)
+        completed = true
         return
       }
       throw new Error('任务记录显示 CHD 已发布，但 R2 最终对象身份已经变化；已停止自动覆盖')
     }
-    await ensureDiskSpace(config, Number(job.source_size))
-    await rm(dir, { recursive: true, force: true })
     await mkdir(dir, { recursive: true })
     await abortOldMultipart(job, config)
-    await updateJob(job.id, { status: 'downloading', progress: 4, error: null, message: '正在从 R2 读取临时 ISO' })
-    await downloadSource(job, config, input)
 
-    await updateJob(job.id, { status: 'converting', progress: 30, message: '正在转换为 CHD（zstd / 2048-byte hunk）' })
+    if (verifiedOutputSize > 0 && await reusableVerifiedChd(output, verifiedOutputSize)) {
+      await updateJob(job.id, {
+        status: 'uploading', progress: Math.max(75, Number(job.progress) || 0), error: null,
+        message: '复用上次已完整校验的 CHD，继续发布到 R2',
+      })
+      const uploadStarted = Date.now()
+      const published = await uploadChd(job, config, output, verifiedOutputSize)
+      reportPhase('CHD 发布', uploadStarted, verifiedOutputSize)
+      await finishPublishedJob({ ...job, output_size: verifiedOutputSize, output_etag: published.etag }, config)
+      completed = true
+      return
+    }
+    if (verifiedOutputSize > 0) {
+      // 数据库只在 verify 成功后记录 output_size；本地文件缺失或不完整时必须清掉旧标记再重压。
+      verifiedOutputSize = 0
+      await updateJob(job.id, { output_size: null })
+    }
+
+    await rm(output, { force: true })
+    let existingInputBytes = await fileSize(input)
+    if (existingInputBytes > sourceSize || (existingInputBytes === sourceSize && !(await reusableIso(input, sourceSize)))) {
+      await rm(input, { force: true })
+      existingInputBytes = 0
+    }
+    await ensureDiskSpace(config, sourceSize, existingInputBytes, 0)
+    await updateJob(job.id, {
+      status: 'downloading', progress: 4, error: null,
+      message: existingInputBytes > 0 ? '正在从上次断点继续读取临时 ISO' : '正在从 R2 读取临时 ISO',
+    })
+    const downloadStarted = Date.now()
+    await downloadSource(job, config, input)
+    reportPhase('ISO 下载', downloadStarted, Math.max(0, sourceSize - existingInputBytes))
+
+    await updateJob(job.id, {
+      status: 'converting', progress: 30,
+      message: `正在转换为 CHD（zstd / 2048-byte hunk / ${config.chdmanProcessors} 线程）`,
+    })
     let reported = -1
     let progressWrites = Promise.resolve()
-    await runChdman(config.chdman, chdmanCreateArgs(input, output), (pct) => {
+    const conversionStarted = Date.now()
+    await runChdman(config.chdman, chdmanCreateArgs(input, output, config.chdmanProcessors), (pct) => {
       const mapped = 30 + Math.floor(pct * 0.4)
       if (mapped === reported) return
       reported = mapped
@@ -737,19 +907,35 @@ async function processJob(job) {
       progressWrites = progressWrites.then(() => updateJob(job.id, { progress: mapped })).catch(() => {})
     }, config.timeoutMs)
     await progressWrites
+    reportPhase('CHD 压缩', conversionStarted, sourceSize)
 
     await updateJob(job.id, { status: 'verifying', progress: 71, message: '正在完整校验 CHD' })
+    const verifyStarted = Date.now()
     const outputSize = await validateChd(output, config)
-    if (outputSize > Number(job.source_size) + 16 * 1024 * 1024) throw new Error('CHD 比原 ISO 还大，拒绝发布异常输出')
+    reportPhase('CHD 校验', verifyStarted, outputSize)
+    if (outputSize > sourceSize + 16 * 1024 * 1024) throw new Error('CHD 比原 ISO 还大，拒绝发布异常输出')
+    verifiedOutputSize = outputSize
     await updateJob(job.id, { output_size: outputSize, status: 'uploading', progress: 75, message: '正在把最终 CHD 分片发布到 R2' })
+    const uploadStarted = Date.now()
     const published = await uploadChd(job, config, output, outputSize)
+    reportPhase('CHD 发布', uploadStarted, outputSize)
     await finishPublishedJob({ ...job, output_size: outputSize, output_etag: published.etag }, config)
+    completed = true
   } catch (error) {
     const text = String(error?.message || error || '未知错误').slice(0, MAX_ERROR_CHARS)
     console.error(`[psp-convert] ${job.id} 失败：`, error)
     await updateJob(job.id, { status: 'failed', error: text, message: '临时 ISO 已保留，可在 24 小时内重试' }).catch(() => {})
   } finally {
-    await rm(dir, { recursive: true, force: true }).catch(() => {})
+    if (completed) {
+      await rm(dir, { recursive: true, force: true }).catch(() => {})
+    } else {
+      // 未通过完整 verify 的 output.chd 不能复用；保留它只会吞掉下一次重试所需空间。
+      if (!verifiedOutputSize) await rm(output, { force: true }).catch(() => {})
+      const keptInput = await fileSize(input).catch(() => 0)
+      const keptOutput = await fileSize(output).catch(() => 0)
+      if (!keptInput && !keptOutput) await rm(dir, { recursive: true, force: true }).catch(() => {})
+      else console.log(`[psp-convert] ${job.id} 保留本地断点：ISO ${keptInput} 字节，CHD ${keptOutput} 字节`)
+    }
   }
 }
 
