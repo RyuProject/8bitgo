@@ -41,6 +41,7 @@ import {
   parseSockdrivePreload,
   parseSockdriveWarmPlan,
   planSockdriveWarmFiles,
+  sockdriveWarmBudget,
   sockdriveWarmConcurrency,
   sockdriveRuntimePreloadMode,
 } from '@/emulator/sockdriveWarm'
@@ -309,7 +310,9 @@ check('流式盘必须走 URL bundle 入口，否则 js-dos 会把 changes URL �
 
 check('流式盘按网络与系统镜像竞争自适应预热，并且不再拼接即将丢弃的大 ArrayBuffer', () => {
   assert.match(jsdos, /preload_ranges\.metaj/)
-  assert.match(jsdos, /planSockdriveWarmFiles\(plan, profile, sockdriveWarmBudget\(\)\)/)
+  assert.match(jsdos, /const warmBudget = sockdriveWarmBudget\(connection\?\.effectiveType, Boolean\(connection\?\.saveData\)\)/)
+  assert.match(jsdos, /planSockdriveWarmFiles\(\s*plan,\s*profile,\s*warmBudget/)
+  assert.match(jsdos, /warmBudget === 0 \? 'none' : sockdriveRuntimePreloadMode/)
   assert.match(jsdos, /Math\.min\(concurrency, warmFiles\.length\)/)
   assert.match(jsdos, /const cache = sockdriveCacheMode\(url\)/)
   assert.match(jsdos, /return 'reload'/)
@@ -365,6 +368,22 @@ check('热点清单按真实对象去重，并在预算边界停止', () => {
   assert.equal(sockdriveWarmConcurrency('3g', false, false), 2)
   assert.equal(sockdriveWarmConcurrency('2g', false, false), 1)
   assert.equal(sockdriveWarmConcurrency('4g', true, false), 1)
+  assert.equal(sockdriveWarmBudget('4g', false), 16 * 1024 * 1024)
+  assert.equal(sockdriveWarmBudget('3g', false), 8 * 1024 * 1024)
+  assert.equal(sockdriveWarmBudget('2g', false), 0)
+  assert.equal(sockdriveWarmBudget('4g', true), 0)
+  const scarOfSkyPlan = parseSockdriveWarmPlan({
+    size: 2 * 1024 * 1024,
+    ahead_read: 262144,
+    range_count: 8192,
+    sector_size: 512,
+    dropped_ranges: [],
+    small_ranges: [],
+    preload_ranges: Array.from({ length: 27 }, (_, index) => index),
+  })
+  const scarOfSkyWarmed = planSockdriveWarmFiles(scarOfSkyPlan, scarOfSkyPlan.preload, sockdriveWarmBudget('3g', false))
+  assert.equal(scarOfSkyWarmed.length, 27, '3G 下也要装齐《天之痕》6.75MB 启动清单')
+  assert.equal(sockdriveRuntimePreloadMode(scarOfSkyPlan, scarOfSkyPlan.preload, scarOfSkyWarmed), 'default')
   assert.throws(() => parseSockdrivePreload([3], plan.rangeCount, plan.dropped), /无效的预取分块/)
   assert.throws(() => parseSockdriveWarmPlan({
     size: 3 * 1024 * 1024,

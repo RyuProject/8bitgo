@@ -91,6 +91,7 @@ import {
   parseSockdrivePreload,
   parseSockdriveWarmPlan,
   planSockdriveWarmFiles,
+  sockdriveWarmBudget,
   sockdriveWarmConcurrency,
   sockdriveRuntimePreloadMode,
   type SockdriveRuntimePreload,
@@ -696,8 +697,6 @@ async function loadExtras(
 }
 
 const SOCKDRIVE_METADATA_LIMIT = 1024 * 1024
-const SOCKDRIVE_WARM_DESKTOP_BYTES = 16 * 1024 * 1024
-const SOCKDRIVE_WARM_3G_BYTES = 4 * 1024 * 1024
 /*
  * 2026-10-18 之前 Worker 的 Cache API 会在 HIT 时丢掉 Content-Encoding、却保留 Brotli 原字节。
  * 浏览器又把那份坏响应按 immutable 存一年，单修 Worker 也救不回已经中招的设备。每个版本目录
@@ -733,15 +732,6 @@ function rememberSockdriveCacheRepair(url: string): void {
   try { localStorage.setItem(sockdriveCacheRepairKey(url), SOCKDRIVE_HTTP_CACHE_REPAIR) } catch {
     /* 当前页面的 Set 已避免重复下载；存储不可用不影响开局。 */
   }
-}
-
-function sockdriveWarmBudget(): number {
-  const connection = (navigator as Navigator & {
-    connection?: { saveData?: boolean; effectiveType?: string }
-  }).connection
-  if (connection?.saveData || /(?:^|-)2g$/i.test(connection?.effectiveType ?? '')) return 0
-  if (connection?.effectiveType === '3g') return SOCKDRIVE_WARM_3G_BYTES
-  return SOCKDRIVE_WARM_DESKTOP_BYTES
 }
 
 async function readSockdrivePreloadProfile(
@@ -966,11 +956,15 @@ async function verifySockdriveMetadata(
   }
   const plan = parseSockdriveWarmPlan(metadata)
   const profile = await readSockdrivePreloadProfile(url, plan, signal, cache)
-  const warmFiles = planSockdriveWarmFiles(plan, profile, sockdriveWarmBudget())
-
   const connection = (navigator as Navigator & {
     connection?: { saveData?: boolean; effectiveType?: string }
   }).connection
+  const warmBudget = sockdriveWarmBudget(connection?.effectiveType, Boolean(connection?.saveData))
+  const warmFiles = planSockdriveWarmFiles(
+    plan,
+    profile,
+    warmBudget,
+  )
   const concurrency = sockdriveWarmConcurrency(
     connection?.effectiveType,
     Boolean(connection?.saveData),
@@ -987,7 +981,8 @@ async function verifySockdriveMetadata(
   }
   await Promise.all(Array.from({ length: Math.min(concurrency, warmFiles.length) }, worker))
 
-  const runtimePreload = sockdriveRuntimePreloadMode(plan, profile, warmFiles)
+  // 空清单也不能把省流量会话误判成“已全量预热”：worker 的顺序预读以此开关为底线。
+  const runtimePreload = warmBudget === 0 ? 'none' : sockdriveRuntimePreloadMode(plan, profile, warmFiles)
 
   /*
     清单存在不代表分块齐全：手工发布、对象被误删或“先传元数据后传数据”都会让玩家在启动中途

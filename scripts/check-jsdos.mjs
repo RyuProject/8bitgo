@@ -83,6 +83,7 @@ for (const file of manifest.files) {
 const required = [
   'js-dos.js',
   'js-dos.css',
+  'emulators/emulators.js',
   'emulators/wdosbox.js',
   'emulators/wdosbox.wasm',
   'emulators/wdosbox-x.js',
@@ -97,7 +98,14 @@ const required = [
 for (const name of required) if (!listed.includes(name)) fail(`运行时缺 ${name}`)
 
 const js = readFileSync(join(runtimeDir, 'js-dos.js'), 'utf8')
+const emulators = readFileSync(join(runtimeDir, 'emulators', 'emulators.js'), 'utf8')
 const css = readFileSync(join(runtimeDir, 'js-dos.css'), 'utf8')
+for (const marker of ['__8bitgoPrefetchAfter', '__8bitgoPrefetchLimit', '__8bitgoPrefetchBytes']) {
+  if (!emulators.includes(marker)) fail(`Sockdrive 顺序预读补丁缺关键特征 ${marker}`)
+}
+if (emulators.includes('readRangeAsync:async e=>{d.add(e),p.has(e)||(p.add(e),P(e))}')) {
+  fail('Sockdrive 仍在使用完全按需的旧读盘逻辑')
+}
 if (!js.startsWith(';(function () {\n') || !js.endsWith('\n}).call(this);\n')) fail('js-dos.js 没有 IIFE 隔离，可能覆盖 window.io')
 if (js.includes('":1900/ipx/"') || !js.includes('"/ipx/"')) fail('IPX 仍在使用 Cloudflare 无法代理的 1900 端口')
 for (const marker of ['__8bitgoListeners', '__8bitgoCleanup', 'navigator.keyboard.unlock']) {
