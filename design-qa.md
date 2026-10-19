@@ -59,7 +59,6 @@ The source and implementation states differ because no commercial ROM was used f
 No P3 follow-up is required for this scoped change.
 
 final result: passed
-
 ---
 
 # CS1.6 original-style launcher QA
@@ -346,5 +345,26 @@ final result: passed
 **Follow-up Polish**
 
 - 可选：以后若提供更接近原作的已授权 Logo 素材，可替换当前 CSS 文本标题；不影响本次验收。
+
+final result: passed
+
+---
+
+# 2026-10-18 加载进度界面视觉核验
+
+- 参考图：`/var/folders/hg/rws3swzs2gnc5zs48b6ln5r80000gn/T/TemporaryItems/NSIRD_screencaptureui_lurobS/截屏2026-10-18 21.54.03.png`
+- 实现页：`http://127.0.0.1:5175/__loading-progress-qa.html`
+- 核验视口：736 × 183
+- 固定状态：简体中文、61%、总计 503.2 MB、已下载 306.9 MB、745 KB/s、无广告填充
+
+| 检查项 | 结果 | 说明 |
+| --- | --- | --- |
+| 标题层级 | 通过 | 阶段文案保持白色，61% 使用品牌绿色突出。 |
+| 下载信息 | 通过 | 第二行稳定显示“总量 / 已下载量 · 实时速度”，不会挤动标题。 |
+| 进度条 | 通过 | 黑色底、灰色轨道、绿色圆角进度与 61% 状态一致。 |
+| 数字稳定性 | 通过 | 百分比、已下载量和速度均使用等宽数字，刷新时不左右抖动。 |
+| 无障碍信息 | 通过 | `progressbar` 同时暴露当前百分比和完整可读状态。 |
+
+参考图第二行只有总量；本次按需求增加真实的“已下载”数值，并把网速放在同一行。这是有意差异，其余布局、间距、颜色和层级保持一致。
 
 final result: passed

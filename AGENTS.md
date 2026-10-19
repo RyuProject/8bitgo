@@ -395,12 +395,15 @@ DOSBox-X 帧缓冲是 800×600。原版 DirectDraw 把画面缩进客体桌面�
 把相对位移送给只认绝对位置的软件光标，走 `needsLockedAbsoluteDosMouse()` 那条桥修，不套
 Win95 或 Caesar 的分辨率补丁。
 
-### 2.8.7 大型 Win95/98 游戏走静态 Sockdrive，不是视频直播
+### 2.8.7 大型 DOS / Win95/98 游戏走静态 Sockdrive，不是视频直播
 
 `games.dos_sockdrive` 填一款游戏的**静态 Sockdrive 目录**（对象 key、站内路径或完整 URL）；
 目录根必须直接有 `sockdrive.metaj`、`*.raw`，产物按 js-dos 官方 `sockify` 流程生成：
-<https://js-dos.com/publish-sockdrive-bundle.html>。播放器保留共享 `dos_system` 作为系统盘，游戏盘用
-`imgmount <序号> sockdrive <URL>` 按扇区读取；`rom / roms` 那份完整 ZIP 仍留在数据里作一键回退，
+<https://js-dos.com/publish-sockdrive-bundle.html>。Windows 客体保留共享 `dos_system` 作为系统盘，
+游戏盘用 `imgmount <序号> sockdrive <URL>` 按扇区读取；纯 DOS 游戏不需要伪装成 Windows 客体：
+`dos_system` 留空、后端仍选 DOSBox-X，播放器把 Sockdrive 直接挂成 C: 并运行盘内 EXE。普通 DOSBox
+不支持 Sockdrive。纯 DOS 入口必须是 DOS 8.3 路径（如 `FALLOUT.EXE` 或 `GAME/RUN.EXE`），因为远程
+块设备不能再靠宿主目录二次挂载长路径。`rom / roms` 那份完整 ZIP 仍留在数据里作一键回退，
 但流式模式不会下载它。清空 `dos_sockdrive` 就原样回到旧整包路径，不需要迁移存量游戏。
 
 ⚠️ 目录必须带版本（如 `sockdrives/caesar3-v1`）且**不可原地覆盖**：浏览器会按完整 URL 把磁盘块
@@ -418,8 +421,10 @@ Worker 的 404 正文是合法 JSON，它反而会把错误对象当数组并在
 预算内预热；发布器继续把外置清单当一等产物校验，正式版本不应依赖这条兼容兜底。
 
 播放器会在共享系统镜像下载期间读取这份独立热点清单，并把真正会用到的 `.raw` 送入 HTTP 缓存：
-桌面 / 4G 最多 16MB，3G 最多 4MB，2G 与省流量模式只做一个真实热点的 HEAD 探活；正文最多两路并发，
-不能为了“预热”反过来饿死 Win95 系统盘。每个热点正文都按元数据校验解码后长度，缺块或截断要在
+桌面 / 4G 最多 16MB，3G 最多 4MB，2G 与省流量模式只做一个真实热点的 HEAD 探活；与 Win95 系统盘
+同时下载时正文最多两路，纯 DOS 没有大文件竞争时用四路。预热只流式计数，不能把即将丢弃的热点再
+拼成完整 ArrayBuffer；否则 16MB 预算会额外制造约 32MB 峰值和一次主线程复制。每个热点正文都按
+元数据校验解码后长度，缺块或截断要在
 DOSBox-X 启动前明确报错，不能继续留给客体黑屏。加载错误还必须锁成终态：迟到的 `ci-ready`、
 自启动回调或兜底定时器都不得在 `onError` 之后再发 `onReady`。回归统一放在 `npm run test:dos-load`。
 
@@ -428,7 +433,7 @@ DOSBox-X 启动前明确报错，不能继续留给客体黑屏。加载错误�
 必须烘进磁盘，否则 §2.8.6 的鼠标偏移会回来。后台和服务端都拒绝“Sockdrive + dos_extras”，
 避免配置看似保存成功、玩家却永远读不到补丁。
 
-js-dos 的静态 Sockdrive 会把写过的扇区单独固化，播放器因此只给这一类 Windows 客体重新开放
+js-dos 的静态 Sockdrive 会把写过的扇区单独固化，播放器因此给纯 DOS 与 Windows 流式盘开放
 保存进度；它固定使用 js-dos 存档槽 1，和旧普通 DOS / 整包模式的槽 0 隔离，存档键还带规范化
 Sockdrive URL 的指纹。**换 v2 目录会自动开一份新存档**：旧扇区差异不能套到新基础盘，否则可能
 破坏文件系统；旧存档会保留，但不要自动迁移。播放器先按网络预算把热点送入 HTTP 缓存：
@@ -479,12 +484,19 @@ StarCraft 已补一条离线发布流水线：`npm run sockdrive:prepare -- --so
 内存。`sockdrive_conversion_jobs` 记录 ETag、原配置和发布阶段，生产机从
 `SOCKDRIVE_CONVERT_TMP_DIR`（应挂独立大盘）下载后自动制盘、上传、公开校验，再用事务 CAS 同时绑定
 `dos_sockdrive` 与 `dos_executable`。页面关闭或服务重启都不丢任务；失败源保留 24 小时供后台重试。
+staging ZIP 下载使用固定 1MB 背压缓冲，让网络读取与磁盘写入重叠；不能退回“每个网络小块 await 一次
+随机位置写入”，1GB 以上源包会产生数万次串行等待。整个过程仍须核对 ETag、Content-Length、实际
+字节数、60 秒停滞与 ZIP 文件头，优化不能改成把源包整块读进内存。
 `sockdrive.metaj` 仍必须最后上传，它既是玩家入口也是发布提交点；重启恢复只在看见它后跳过重新制盘。
+转换任务仍保持单并发，但发布器默认以 `SOCKDRIVE_UPLOAD_CONCURRENCY=6` 隐藏小文件的 R2 往返，
+解码校验最多四路、大文件 multipart 最多三片并行。自动队列会传 `--defer-validation`，因为紧随其后的
+发布器已经做完整解码校验；禁止在制盘和发布两步各校验一次，把整张 2GB 盘白白解压两遍。只制作、
+不发布的离线命令仍必须在交付前完成一次全量校验。
 Worker 必须把 `psp-staging/` / `sockdrive-staging/` 的 GET/HEAD 也设为 Bearer 私有，并保留上传请求的
 `Content-Encoding`。手工命令仍作为故障兜底，不是日常上传步骤。回归：
 `npm run test:sockdrive-conversion && npm run test:dos-sockdrive-upload && npm --prefix worker test`。
 
-多语言 Windows 游戏的流式盘按 **ROM 语言槽**绑定：`game_roms.dos_sockdrive` 经 API 映射为
+多语言 DOS / Windows 游戏的流式盘按 **ROM 语言槽**绑定：`game_roms.dos_sockdrive` 经 API 映射为
 `dosSockdrives`，播放器以最终选中的 ROM 语言取同槽 Sockdrive；旧的 `games.dos_sockdrive` 只在
 完全没有逐语言配置时作历史数据回退，迁移一旦开始，缺配置的语言宁可走完整包也不跨语言误挂。
 后台已保存游戏的语言 ROM 按钮会显示「完整包 + 流式盘」：一次选择
@@ -944,13 +956,28 @@ js-dos 运行时从 npm 复制到 `public/jsdos/v<version>/`，版本同时写�
 补一个真实的 `8BITGO.EXE`（撞名时递增）供启动。ZIP 的绝对路径、盘符和 `../` 也在重打包前拒绝，
 否则能覆盖虚拟盘里的 `.jsdos/dosbox.conf`。
 
-Windows 系统镜像、游戏包和资料片从同一刻下载；ROM 进度在系统镜像完成前暂存，避免进度条先冲到
-80% 再长时间不动。资料片最多三路并发，并走共用的失速中止。回归：
+Windows 系统镜像、游戏包和资料片从同一刻下载；ROM 进度在系统镜像完成前暂存，避免游戏段先跑满
+再长时间不动。资料片最多三路并发，并走共用的失速中止。回归：
 `npm run test:jsdos-runtime && npm run test:dos-bundle && npm run test:dos-extras && npm run test:system-source`。
 
 共享 Windows 系统模式必须有 `.jsdos` 系统镜像、游戏 ZIP，以及默认 EXE 或每个已绑定语言各自的
 EXE。不能只在后台表单拦：批量导入和直接 API 会绕过页面。`server/src/dos-game-config.js` 在
 PUT / PATCH 前按关联表的真实重写语义校验；启动时 `schema-check.js` 还会点名历史坏记录。
+
+### 2.24.2 加载进度按运行时的真实启动链分区，不能全平台写死一套比例
+
+加载条仍然只有一根、只进不退，但 `src/emulator/loadProgress.ts` 的 `loadProgressPlan()` 会按
+运行时与介质选择阶段顺序和权重：Flash 从 SWF 下载开始，HTML5 只有子页面启动，PS2 是探盘后
+加载大 WASM，PSP / Dolphin 是先起隔离运行时再挂 Range 光盘，J2ME 是 JAR 后起 JVM；DOS、
+Windows 客体及 Sockdrive 也各自分配。不要再把 `engine → assets → rom → starting` 和
+20/20/40/20 当成全平台事实，否则会出现 HTML5 一开始跳 80%、Flash 从 40% 起步、PS2 探两个
+字节就走到进度中段这类假进度。
+
+拿得到真实 `loaded` / `ratio` 的阶段永远以真实进度为准：即使没有 `Content-Length`，视觉预算
+耗光也不能擅自切成“正在启动”，否则慢网仍在下载 ROM 时文案会撒谎。只有完全没有可测信号的
+WASM 编译等静默阶段才允许按预算兜底推进；完成仍只认 `onReady`，最多显示 99%。自动重试会把
+整套策略抬到已显示的 `floor`，阶段上界也必须一起 `liftRatio()`，不能拿抬高后的实际值去比较
+未抬高的原始边界。回归：`npm run test:load-progress`。
 
 ### 2.25 直播间房间的清理只认 `hostSocketId` 这个事实，不认 `membership`
 
@@ -1391,10 +1418,11 @@ USTAR 解析器。新浏览器优先用原生 `DecompressionStream('zstd')`，�
 catalog、单片压缩/解压体积、基础包/地图总量和片数；`fetchBytes` 还要在流读取过程中执行硬上限。
 gzip 应急包也必须把对应包上限传给 TAR 解析器，不能只保护 Zstd 主路径。
 
-⚠️ 分片重试救不了解码器或 catalog 的单次失败：若把 `zstd.wasm` 的 URL直接交给第三方胶水层，
-那次内部 fetch 失败后它的初始化 Promise 会永久拒绝；catalog Promise 同理，预热时失败会让正式加载
-立即复用同一个失败。现在两者都先经本站的限长、内容校验和三次换查询串重试，解码器拿到验证过的
-字节后才初始化；catalog 最终失败还会清掉 Promise，给随后正式加载一次重新建连机会。
+⚠️ 分片重试救不了解码器或 catalog 的单次失败：曾经兼容解码器在两片大资源开始下载后，才从
+应用域名单独取 `zstd.wasm`；部分 HTTP/2 线路会让这个 246KB 小请求连续 30 秒拿不到正文，而 base
+与地图共用同一个失败的初始化 Promise，结果两边三次重试一起耗光。现在构建用 esbuild 的 binary
+loader 把解码器直接内联进已成功到达的入口包，不能再改回运行时下载。catalog 最终失败仍会清掉
+Promise，给随后正式加载一次重新建连机会。
 
 生成、验证、上传：
 
@@ -1435,7 +1463,11 @@ magic、v4、节点平方矩阵、压缩段和每节点 4 字节尾部统计，�
 玩家首帧出现不代表已经出生。启动器在 GameDLL 就绪后分三帧执行 `jointeam 2`、`joinclass 1`，
 再 `sv_restart 1`，否则命令挤在同一帧会被旧客户端丢掉，或玩家虽入队仍要等下一轮。`?autojoin=0`
 仅用于排查。首载关键路径还会并行预取 extras、HUD 字体、当前地图首片，并按 URL 去重动态库下载；
-不能为了并行把公共包更多分片常驻 JS 堆，现有边界仍是基础 16MB + 当前地图一片。
+压缩分片按设备内存 / 核数自适应为 2～4 路，解压结果仍最多保留两片，另加预热中的当前地图一片。
+不能为了并发直接把四片都解压后常驻：那会在 Xash 的 256MB 初始堆之外再堆约 64MB 原始数据，
+低内存设备更容易丢 WebGL 上下文。加载页的下载量 / 速率 / ETA 只按真实网络字节计算，进度 DOM
+最多每帧更新一次；启动器提前取清单时必须在玩家点击开始后重置测速时钟，不能把玩家选地图的时间
+算成“下载很慢”。资源域预连接与 13KB catalog 可以提前，60MB 内容包不能在点击开始前偷跑。
 
 ### 2.28.4.2 CS1.6 启动页复用原版资产；联机只能走后端已验证目标 WSS↔UDP
 
@@ -1445,6 +1477,50 @@ magic、v4、节点平方矩阵、压缩段和每节点 4 字节尾部统计，�
 `map`、`bots`、`difficulty`、`start`、`bar`、`phase`、`net`、`errbox`、`log` 这些 ID；加载器与
 故障恢复直接通过它们更新状态。BOT 难度不是装饰：`?difficulty=0..3` 会同时写进地图级配置和
 首帧后的 `yb_difficulty` 兜底命令，避免首批 Bot 偷用 `extras.pk3` 里的固定 Expert。
+
+本地训练是默认主操作，创建房间是次操作；房间码生成后必须提供 Cancel，把地图 / BOT / 难度与
+本地训练按钮原样恢复。后端会自动回收没有房主 WebSocket 的房间，所以取消不需要伪装成已经删除；
+不能再让误点 Create Room 的玩家只能刷新整页。CS1.6 没有本站 HTML5 存档桥或触屏虚拟按键，
+详情页不得静态展示 F2/F4，也不能用通用 FAQ 承诺“支持快速存档 / 手机虚拟按键”。它自己的临时
+房间上限是 16 人，不走站点通用四人 P2P 字段，详情页的人数与结构化数据要按这条能力单独呈现。
+
+房间 BOT 配额用 YaPB 的 `fill`，不是 `normal`，并开 `yb_autovacate` /
+`yb_kick_after_player_connect`。这个 Emscripten listen-server 构建实测**不把本机房主计入 fill 配额**：
+玩家选择 N 个 BOT 就必须写 `yb_quota=N`；按普通服务端语义写 N+1 会真实生成 N+1 个 BOT。
+远程真人仍会立即替换掉一个，离开再补回。网页端同时关闭 Bot 聊天、喷漆和 graph 在线交换，低配机把
+`yb_think_fps` 降到 YaPB 允许的下限 24，普通设备保持 30。
+
+Xash 的 Emscripten 构建会读取浏览器 DPR：1280×720 的 Retina 页面曾实际创建 2560×1440
+绘制缓冲，房主还要同线程跑监听服和 BOT，像素量白白变四倍。启动器按设备给 1280×720 / 1600×900
+像素预算，通过 `Module.maxDevicePixelRatio` 交给 `engine/dist/generated/xash.js` 里的本站小补丁；
+窗口与全屏三条 DPR 路径必须一起走 `cappedDevicePixelRatio()`。同时固定 `fps_max 60`、客户端和
+监听服更新率 20/30，并关掉天气、影子等装饰项。升级 xash 胶水时若补丁消失，`check-cs16` 必须报错。
+
+浏览器后台页会节流 Emscripten 主循环，而这里的房主页面本身就是游戏服务器，无法靠普通 cvar
+绕开；创建房间与房主 HUD 必须明确提示保持标签页在前台。房主凭证也不能放 WebSocket 查询串
+（Cloudflare/nginx 常记录完整请求行），现在走 `Sec-WebSocket-Protocol` 的
+`8bitgo.cs16.host.<token>`，后端只从该头读取。首帧 60 秒超时只累计页面在前台的时间：短暂切到
+邀请消息或好友页面不能因为后台计时器被节流就误报黑屏并主动关房。
+
+房主的监听服 WebSocket **不能一断就删房**：Cloudflare、Wi-Fi 切换或浏览器心跳的一次瞬断不等于
+主动退出。后端按 `CS16_ROOM_HOST_RECONNECT_MS`（默认 90 秒）保留原 room/token 和访客连接，前端
+在 60 秒窗口内指数退避重连；重连成功继续用同一组 peerId 路由。只有客户端明确发
+`1000 / page closed` 才立即回收。错误页必须带 WebSocket close code / reason，不能再把限流、过期、
+服务重启全抹成一句“connection was lost”，否则线上无法取证。
+
+访客也不能在一次 Wi-Fi 瞬断后换 peerId：房主里的 GoldSrc 监听服把虚拟 UDP 地址当连接身份，换 ID
+就等于另一个陌生客户端，原会话序号无法续上。首次加入时后端发随机 resume token，浏览器只在后续
+WebSocket 的 `8bitgo.cs16.guest.<token>` 子协议头带回；后端按
+`CS16_ROOM_GUEST_RECONNECT_MS`（默认 60 秒）保留原 peerId。主动关页立即释放，过期保留项计入房间
+容量，避免靠反复断线绕过 15 个访客上限。
+
+⚠️ CS1.6 的正式入口是 `cs16.8bitgo.com` 的 Cloudflare Pages，不是浏览器直连主站。
+`deploy/cloudflare-pages/web-game-worker.js` 除了转发二进制帧，还必须把房主/访客的
+`Sec-WebSocket-Protocol` 原样带到主站，并在 101 响应里向浏览器确认同一个协议；漏任一边都会出现
+“直连后端测试通过、Pages 线上创建房间或断线恢复失败”。改联机鉴权后必须同时跑
+`npm run pages:web-games:build -- cs16 && npm run pages:web-games:check -- cs16`。
+发布顺序必须是**先主站后端、再 Pages**：后端保留旧查询串 token 的只读兼容，承接已缓存页面；
+新客户端只生成子协议凭证。反过来发布时，新 Pages 会先撞上不认识子协议的旧后端，房主无法上线。
 
 `Find Servers` 已接真实目录与传输层：旧 Valve UDP Master 域名已经不稳定解析，默认改查
 XCSTRIKE 的免密钥、人工审核 JSON 目录（90 req/min，而本站最多每 5 分钟一次），先拒绝内网/保留地址
@@ -1887,7 +1963,7 @@ R2 multipart 发布到最终 `roms/psp/*.chd`。`.cso` / `.chd` 保持直传。
   同时发生；`source_deleted` 的 0 / 1 / 2 分别是保留 / 已删 / 正在清理。
 - 前端创建任务把随机 `source_key` 当幂等键：响应途中断线可以重试，服务端只返回原任务。旧槽是
   `.chd` / `.cso` 而新文件是 `.iso` 时绝不复用旧 key，否则转换服务降级时会把 ISO 字节写进错误扩展名。
-- 当前公开 PPSSPP 是实体目录 v9、Range loader v4：ISO/CSO/CHD 都用 2MB 分块，共用 96MB 内存 LRU，
+- 当前公开 PPSSPP 是实体目录 v10、Range loader v4：ISO/CSO/CHD 都用 2MB 分块，共用 96MB 内存 LRU，
   并主动带 `If-Match` / `If-Unmodified-Since`
   钉住同一代镜像。播放 URL 同时带 `romv=<ETag>`，Worker 必须在每次 Range 前把它与 R2 当前 ETag 比较；
   不一致返回 412。Range 也必须绕过整包 Cache API，避免缓存的 200 响应跳过版本校验。
@@ -1895,11 +1971,12 @@ R2 multipart 发布到最终 `roms/psp/*.chd`。`.cso` / `.chd` 保持直传。
   四分之一，但当前 loader 是模拟线程里的同步请求，生产 CDN 往返数也变成约四倍。693.6MB 测试盘
   真实冷启动从核心到游戏由约 86 秒退化到约 93 秒，因此 v4 恢复 2MB。以后调分块必须在同一地区、
   冷缓存、同一镜像上以 `Booted` 日志计时；不能用“单次请求更小”推导“启动更快”。
-  v9 在 Emscripten Fetch 的同步 XHR 外加一层**最多两块、串行**的顺序预读：当前块返回后才异步取
-  后续 4MB，命中后直接交给下一次同步 Range；随机寻道会取消旧方向，2G / 省流模式完全关闭，缓存
-  另限 8MB，不能让预读与核心 96MB LRU 一起无界吃内存。正式读盘追上正在预读的同一块时，必须先
-  把取消回调锁成终态再 `abort()`；部分 XHR 会同步触发 `onabort`，顺序反过来会重入队列并瞬间放出
-  两条后台请求。生成胶水补丁源在
+  v10 在 Emscripten Fetch 的同步 XHR 外加一层**紧邻两块、最多双路并行**的顺序预读：生产同一对象
+  实测单路 2MB 约 2.8～4.4 秒，两路能把同一 4MB 窗口的完成时间收在约 4.4 秒；3G 降为单路，
+  2G / 省流模式完全关闭。命中后直接交给下一次同步 Range；随机寻道会取消旧方向，缓存另限 8MB，
+  不能让预读与核心 96MB LRU 一起无界吃内存。正式读盘追上预读时必须取消**全部**投机请求，让同步
+  请求独占连接并在完成后重建窗口；取消前先把回调锁成终态，避免同步 `onabort` 重入后放出第三路。
+  生成胶水补丁源在
   `vendor/ppsspp/range-read-ahead.js`，构建脚本按唯一片段注入；不要手改压成一行的发布 JS。
 - 源站要装近期 MAME 的 `chdman`，并在 `server/.env` 配 `PSP_CONVERT_WORKER_URL`；转换临时盘
   至少留 `2 × ISO + 256MB`。默认并发 1，最多 2，避免压缩任务抢光玩家请求的 CPU / IO；
@@ -1968,7 +2045,9 @@ Emscripten GL 导出发生符号类型冲突；补丁因此让浏览器构建直
 PCM 到共享 Wasm 环形缓冲区，浏览器音频线程只用 `Atomics` 取样播放，绝不再回调 Wasm。`0006-web-performance.patch`
 把消费端从会被页面布局、聊天和直播 UI 长任务打断的 `ScriptProcessor` 升成 `AudioWorklet`；旧浏览器才回退。
 运行时 JS 必须同时包含 `__ppssppAudio` / `AudioWorkletNode` / `createScriptProcessor`，`runtime.json` 必须声明
-`pthreadAudioContext=shared-ring-buffer-worklet`；缺任一项都拒绝发布。
+`pthreadAudioContext=shared-ring-buffer-worklet-fade-v2`；缺任一项都拒绝发布。Range 偶发卡住时，
+AudioWorklet 会把最后一个有效采样衰减到 0，恢复时用 32 帧淡入，并上报真实缺失帧数；它只消除
+波形断点的爆音，不扩大音频缓冲或伪造采样，所以不会给 DJMAX 这类音游额外增加判定延迟。
 
 这份自建音频节点同时是 PSP 直播的声音采集源：`adapters/ppsspp.ts` 每次开播都从同源 iframe
 现取 canvas 与 `Module.__ppssppAudio`，再交给全站 `captureFeed`。不能只返回 canvas，否则主播本机
@@ -2013,8 +2092,8 @@ ATRAC3+ 和 MP3 解码。构建/发布检查必须同时看到 `USE_FFMPEG:BOOL=
 Cloudflare 对这组静态文件的缓存键**忽略查询串**：请求 `PPSSPPSDL.data?r=17` 仍命中旧的 r16
 （22,417,304B，`CF-Cache-Status: HIT`），而新清单需要 19,434,861B。查询参数不能再承担版本隔离，
 否则新 JS、旧 data 和旧 Wasm 会被拼在同一局里。当前整套资源发布在
-`public/ppsspp/v0dbfaca/v9/`；下次桥、JS、Wasm、data、Range 胶水或 AudioWorklet 任一项改变就
-复制/构建到 `v10/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，
+`public/ppsspp/v0dbfaca/v10/`；下次桥、JS、Wasm、data、Range 胶水或 AudioWorklet 任一项改变就
+复制/构建到 `v11/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，
 不原地覆盖。
 
 Emscripten
@@ -2032,7 +2111,7 @@ focus 和点击发生在同一刻，没有真实提前量，只预热小入口�
 
 输入延迟不能只靠“把画质调低”。老访客的单游戏配置还会覆盖新默认；`host.js` 因此在 Wasm
 文件系统写入一次性的 `8bitgo-performance.ini`，并通过 `--appendconfig=` 让它在全局/单游戏配置
-之后合并。v9 不再用最激进的单帧呈现：`InflightFrames=2`、`VerticalSync=False`、
+之后合并。v10 不再用最激进的单帧呈现：`InflightFrames=2`、`VerticalSync=False`、
 `LowLatencyPresent=False`，同时固定 `FrameSkip=0` / `AutoFrameSkip=False`。这会多一点输入延迟，
 但给浏览器的代理 framebuffer 呈现留出余量；弱机与四核设备仍关闭独立 SAS 音频仿真线程，减少
 pthread 争用，强机才开。这份策略在
@@ -2066,12 +2145,12 @@ PPSSPP 自己的 SAVEDATA、原生状态和按键配置仍由 IDBFS 每 30 秒�
 ⚠️ 远程盘的“启动成功”不能只等 `__ppssppRangeProgress`。该回调从 pthread 经
 `MAIN_THREAD_EM_ASM` 回页面，在部分浏览器里会晚到或完全看不到；v5 因此出现过镜像仍在正常 Range
 读取、外层却在 180 秒报“PPSSPP 响应超时”。也不能恢复“canvas 尺寸变化后一秒算成功”，那只是 SDL
-创建了黑窗口。v9 在 stdout 与 stderr 两路都等待 PPSSPP 成功打开内容后固定输出的
+创建了黑窗口。v10 在 stdout 与 stderr 两路都等待 PPSSPP 成功打开内容后固定输出的
 `Booted <path>...` 日志，并把大型 CHD 的
 mount 上限放到 300 秒；Range 回调只负责进度、对象大小校验和明确错误。`runtime.json` 用
 `startupReadinessProfile=core-boot-log-v1` 固化这条判据。
 
-PPSSPP 的 immutable 缓存只认**物理目录代次**，不再分 `?r=` 四层：`v9/` 内的 index、host、
+PPSSPP 的 immutable 缓存只认**物理目录代次**，不再分 `?r=` 四层：`v10/` 内的 index、host、
 AudioWorklet、JS、Wasm、data 与 runtime.json 必须同批发布。虽然某次可能只改 20KB 的桥，仍要换到
 下一个目录；这是用少量重复存储换取边缘缓存绝不会混代。不要重新引入 `RUNTIME_REVISION` / `DATA_REVISION`
 或给文件补查询参数假装失效，它们在当前 Cloudflare 规则下不生效。
@@ -2087,7 +2166,7 @@ AudioWorklet、JS、Wasm、data 与 runtime.json 必须同批发布。虽然某�
 ⚠️ 已发布过一版把 `VITE_PPSSPP_PATH` 目录直接塞进 iframe，老 bundle 会请求
 `/ppsspp/v0dbfaca?embed=1&r=2`（没有 `index.html`）。静态中间件关闭目录重定向后它必然 404，
 玩家要白等 120 秒才看到超时。`server/src/index.js` 为这个精确旧地址保留了 `no-store` 302，
-跳到当前 `v8/index.html`；以后换实体目录时必须同步那条跳转和回归断言。
+跳到当前 `v10/index.html`；以后换实体目录时必须同步那条跳转和回归断言。
 
 回归：`npm run test:ppsspp && npm run test:worker`。
 

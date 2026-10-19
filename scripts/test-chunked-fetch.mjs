@@ -9,7 +9,7 @@
  * 后者不会报错，只会让游戏莫名其妙跑不起来。
  */
 import assert from 'node:assert/strict'
-import { fetchBlobWithProgress, CHUNK_BYTES } from '../src/emulator/loadProgress.ts'
+import { adaptiveChunkConcurrency, fetchBlobWithProgress, CHUNK_BYTES } from '../src/emulator/loadProgress.ts'
 
 let failed = 0
 const check = async (name, fn) => {
@@ -376,6 +376,109 @@ console.log('五、默认值')
 
 await check('默认片长是 8MB', () => {
   assert.equal(CHUNK_BYTES, 8 * 1024 * 1024)
+})
+
+console.log('六、自适应并发')
+
+await check('快网最多四路，省流量与 2G 始终单路', () => {
+  assert.equal(adaptiveChunkConcurrency(8 * 1024 * 1024, 500, { rttMs: 80 }), 4)
+  assert.equal(adaptiveChunkConcurrency(8 * 1024 * 1024, 500, { saveData: true }), 1)
+  assert.equal(adaptiveChunkConcurrency(8 * 1024 * 1024, 500, { effectiveType: '2g' }), 1)
+})
+
+await check('低内存或双核设备把并发封顶为两路', () => {
+  assert.equal(adaptiveChunkConcurrency(8 * 1024 * 1024, 500, { deviceMemoryGb: 2 }), 2)
+  assert.equal(adaptiveChunkConcurrency(8 * 1024 * 1024, 500, { hardwareConcurrency: 2 }), 2)
+})
+
+const concurrentServer = (size, delayedMs = 12) => {
+  let active = 0
+  let peak = 0
+  let calls = 0
+  const fetchImpl = async (_url, init) => {
+    calls++
+    active++
+    peak = Math.max(peak, active)
+    // 第一片也是测速片，让它立即完成；后续片保留一点延迟，才能观察到是否真的重叠。
+    if (calls > 1) await new Promise((resolve) => setTimeout(resolve, delayedMs))
+    const m = /bytes=(\d+)-(\d+)/.exec(init.headers.Range)
+    const start = Number(m[1])
+    const end = Math.min(Number(m[2]), size - 1)
+    const bytes = bodyFor(start, end)
+    active--
+    return {
+      ok: true,
+      status: 206,
+      headers: headers({
+        'content-range': `bytes ${start}-${end}/${size}`,
+        'content-length': String(bytes.length),
+      }),
+      body: streamOf(bytes),
+    }
+  }
+  return { fetchImpl, peak: () => peak }
+}
+
+await check('快网在首片测速后自动并发下载剩余分片', async () => {
+  const source = concurrentServer(6 * 1024)
+  const blob = await fetchBlobWithProgress('u', {
+    fetchImpl: source.fetchImpl,
+    chunkBytes: 1024,
+    maxConcurrency: 4,
+    networkHints: { effectiveType: '4g', rttMs: 80, deviceMemoryGb: 8, hardwareConcurrency: 8 },
+  })
+  expectExact(await readAll(blob), 6 * 1024)
+  assert.ok(source.peak() >= 2, `快网应至少观察到双路请求，实际峰值 ${source.peak()}`)
+  assert.ok(source.peak() <= 4, `并发不能越过四路硬上限，实际峰值 ${source.peak()}`)
+})
+
+await check('省流量模式即使调用方允许四路也保持串行', async () => {
+  const source = concurrentServer(5 * 1024)
+  const blob = await fetchBlobWithProgress('u', {
+    fetchImpl: source.fetchImpl,
+    chunkBytes: 1024,
+    maxConcurrency: 4,
+    networkHints: { saveData: true, effectiveType: '4g' },
+  })
+  expectExact(await readAll(blob), 5 * 1024)
+  assert.equal(source.peak(), 1)
+})
+
+await check('并发期间 CDN 突然忽略 Range：停掉其它片并采用完整 200', async () => {
+  const size = 6 * 1024
+  let calls = 0
+  const fetchImpl = async (_url, init) => {
+    calls++
+    const range = /bytes=(\d+)-(\d+)/.exec(init.headers.Range)
+    const start = Number(range[1])
+    const end = Math.min(Number(range[2]), size - 1)
+    if (calls === 2) {
+      const bytes = bodyFor(0, size - 1)
+      return {
+        ok: true,
+        status: 200,
+        headers: headers({ 'content-length': String(size) }),
+        body: streamOf(bytes),
+      }
+    }
+    const bytes = bodyFor(start, end)
+    return {
+      ok: true,
+      status: 206,
+      headers: headers({
+        'content-range': `bytes ${start}-${end}/${size}`,
+        'content-length': String(bytes.length),
+      }),
+      body: streamOf(bytes),
+    }
+  }
+  const blob = await fetchBlobWithProgress('u', {
+    fetchImpl,
+    chunkBytes: 1024,
+    maxConcurrency: 4,
+    networkHints: { effectiveType: '4g', rttMs: 80 },
+  })
+  expectExact(await readAll(blob), size)
 })
 
 console.log(failed ? `\n${failed} 项未通过` : '\n全部通过 ✅')

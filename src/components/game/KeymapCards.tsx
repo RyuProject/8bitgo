@@ -48,6 +48,12 @@ export function KeymapCards({ runtimeId, platform, gameSlug, arcadeButtons, arca
     platform === 'arcade' ? effectiveArcadeButtons(arcadeButtons, arcadeBios) : undefined,
   )
   const hotkeys = getHotkeys()
+  /*
+   * HTML5 的 saveState 不是运行时固有能力，而是 iframe 在启动后通过存档桥动态声明的。
+   * 详情页此时还没挂游戏，无法知道桥是否会出现；按 runtime 一概展示 F2/F4 会把 CS1.6
+   * 这类没有存档桥的页面宣传成“可快速存档”。真正接上桥后，播放器工具栏仍会按 caps 显示。
+   */
+  const showQuickSave = keymap.quickSave && runtimeId !== 'html5'
 
   /*
    * 存 / 读档快捷键是站点自己实现的（emulator/hotkeyBridge.ts 直接监听键盘）。
@@ -60,10 +66,10 @@ export function KeymapCards({ runtimeId, platform, gameSlug, arcadeButtons, arca
    */
   const rows = [
     ...keymap.rows,
-    ...(keymap.quickSave && hotkeys['save:local']
+    ...(showQuickSave && hotkeys['save:local']
       ? [{ button: t.keymap.quickSave, key: comboLabel(hotkeys['save:local']) }]
       : []),
-    ...(keymap.quickSave && hotkeys['load:local']
+    ...(showQuickSave && hotkeys['load:local']
       ? [{ button: t.keymap.quickLoad, key: comboLabel(hotkeys['load:local']) }]
       : []),
   ]

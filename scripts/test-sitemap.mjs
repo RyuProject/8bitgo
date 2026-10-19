@@ -170,6 +170,21 @@ check('英文长正文条目的 hreflang 不再宣称五份不存在的译文', 
   }
 })
 
+check('本地 ROM 工具页的 8 种独立译文都进入 sitemap', () => {
+  const xml = readFileSync(new URL('../public/sitemap-static.xml', import.meta.url), 'utf8')
+  const submitted = locs(xml).filter((url) => /\/play-local$/.test(url))
+  assert.deepEqual(submitted, [
+    `${SITE}/play-local`,
+    `${SITE}/zh-Hant/play-local`,
+    `${SITE}/en/play-local`,
+    `${SITE}/es/play-local`,
+    `${SITE}/fr/play-local`,
+    `${SITE}/it/play-local`,
+    `${SITE}/de/play-local`,
+    `${SITE}/ja/play-local`,
+  ])
+})
+
 check('静态页面不拿构建日期冒充内容更新时间', () => {
   const staticXml = readFileSync(new URL('../public/sitemap-static.xml', import.meta.url), 'utf8')
   const fallbackIndex = readFileSync(new URL('../public/sitemap.xml', import.meta.url), 'utf8')

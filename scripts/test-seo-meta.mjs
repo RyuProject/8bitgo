@@ -232,6 +232,25 @@ check('⚠️ noindex 的页面不输出 JSON-LD', () => {
   assert.match(src, /const visibleJsonLd = noindex \? \[\]/, 'noindex 页面仍可能输出结构化数据')
 })
 
+check('首页不再用已退役的 SearchAction 主动制造 noindex 搜索 URL', () => {
+  const src = code('src/services/seo.ts')
+  assert.doesNotMatch(src, /['"]SearchAction['"]/, '首页仍发布 SearchAction')
+  assert.doesNotMatch(src, /search_term_string/, '首页仍把 /games?q= 模板交给爬虫')
+  assert.match(src, /['"]@type['"]:\s*['"]WebSite['"]/, '移除搜索动作时不能把站点实体一起删掉')
+})
+
+check('/play-local 保留隔离头但不再被服务器强制 noindex', () => {
+  const ssr = code('server/src/ssr.js')
+  const content = code('server/src/content.js')
+  const sitemap = code('scripts/gen-sitemap.mjs')
+  assert.match(ssr, /isIsolatedRuntimeShellPath/, '没有把隔离文档和重复播放器外壳拆开')
+  assert.match(ssr, /isolatedShell\s*\? \{ 'X-Robots-Tag': 'noindex, follow' \}/, '正常响应仍未按重复外壳决定 noindex')
+  assert.match(ssr, /isolatedShellRequest\s*\? \{ 'X-Robots-Tag': 'noindex, follow' \}/, 'SSR 降级响应仍可能误伤 /play-local')
+  assert.doesNotMatch(content, /facets-only/, '静态工具页仍会为了无用 facets 查询数据库并在故障时 503')
+  assert.match(content, /route: 'other', facets: \{ platforms: \[\], genres: \[\], developers: \[\] \}/, '静态页没有返回稳定的无查询数据形状')
+  assert.match(sitemap, /add\('\/play-local', '0\.7', 'monthly'\)/, '/play-local 没有进入静态 sitemap')
+})
+
 console.log('六、复用英文长正文的路由不能冒充独立译文')
 
 check('关于页与法律页只声明简中、繁中、英文三份真实长正文', () => {

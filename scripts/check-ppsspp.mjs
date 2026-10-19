@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const VERSION = '0dbfaca'
-const RUNTIME_GENERATION = 'v9'
+const RUNTIME_GENERATION = 'v10'
 const useDist = process.argv.includes('--dist')
 const sourceOnly = process.argv.includes('--source-only')
 const publicDir = join(root, 'public', 'ppsspp', `v${VERSION}`, RUNTIME_GENERATION)
@@ -51,10 +51,10 @@ if (!runtimeInit || /respond\s*\(/.test(runtimeInit)) {
   fail('host.js 在 onRuntimeInitialized 阶段就回复成功；此时 PPSSPP 还没有执行 main 或读取镜像')
 }
 if (!/<script src="host\.js"><\/script>/.test(need(join(runtimeDir, 'index.html')).toString('utf8'))) {
-  fail('v9 index.html 没有引用同一实体目录里的 host.js')
+  fail('v10 index.html 没有引用同一实体目录里的 host.js')
 }
-if (!/PPSSPP_RUNTIME_GENERATION = 'v9'/.test(paths) || !/PPSSPP_RUNTIME_PATH/.test(adapter)) {
-  fail('PPSSPP iframe 没有使用 v9 实体目录；查询串不能穿透当前 Cloudflare 缓存键')
+if (!/PPSSPP_RUNTIME_GENERATION = 'v10'/.test(paths) || !/PPSSPP_RUNTIME_PATH/.test(adapter)) {
+  fail('PPSSPP iframe 没有使用 v10 实体目录；查询串不能穿透当前 Cloudflare 缓存键')
 }
 if (/fetch\s*\(\s*(?:remote(?:\?\.)?\.url|gamePath)/.test(host)) {
   fail('host.js 出现整盘下载代码；远程镜像只能把 URL 交给 C++ Range loader')
@@ -87,13 +87,13 @@ if (!/FS\.stat\(path\)[\s\S]*?FS\.writeFile\(path, new Uint8Array\(\)\)/.test(ho
   fail('host.js 没有保留已有控制器配置并只在首次启动补空 controls.ini')
 }
 if (host.includes('核心没有 Range 遥测回调，使用首帧兼容判据')) {
-  fail('v9 仍会在没有真实读盘时把空画布误报成游戏已启动')
+  fail('v10 仍会在没有真实读盘时把空画布误报成游戏已启动')
 }
 if (!/gameBootConfirmed/.test(host) || !/BOOTED_LOG_PATTERN = \/\\bBooted\\s\+\.\+\\\.\\\.\\\.\//.test(host)) {
-  fail('v9 没有等待 PPSSPP 的 Booted 日志；Range 遥测跨线程丢失时会再次超时')
+  fail('v10 没有等待 PPSSPP 的 Booted 日志；Range 遥测跨线程丢失时会再次超时')
 }
 if (!/print\(text\)[\s\S]*?observeCoreLog\(message\)[\s\S]*?printErr\(text\)[\s\S]*?observeCoreLog\(message\)/.test(host)) {
-  fail('v9 没有同时观察 stdout/stderr；不同 Emscripten 日志路由下会漏掉 Booted')
+  fail('v10 没有同时观察 stdout/stderr；不同 Emscripten 日志路由下会漏掉 Booted')
 }
 if (!/MOUNT_TIMEOUT_MS = 300_000/.test(adapter)) {
   fail('PSP 冷启动仍可能被旧的短超时误杀')
@@ -101,7 +101,7 @@ if (!/MOUNT_TIMEOUT_MS = 300_000/.test(adapter)) {
 if (!/FS\.writeFile\(PERFORMANCE_CONFIG_PATH,[\s\S]*?performanceConfig\(profile\)/.test(host)) {
   fail('host.js 没有在 PPSSPP 启动前写入通用兼容配置')
 }
-for (const marker of ["registerProcessor('ppsspp-audio'", 'Atomics.load', 'Atomics.store']) {
+for (const marker of ["registerProcessor('ppsspp-audio'", 'Atomics.load', 'Atomics.store', 'missingFrames', 'this.recovering']) {
   if (!audioWorklet.includes(marker)) fail(`audio-worklet.js 缺少共享音频消费标记 ${marker}`)
 }
 
@@ -201,8 +201,9 @@ if (loaderRevision === 4 && (manifest.chdBlockBytes !== 2097152 || manifest.prel
   fail('Range v4 清单没有声明实测 2 MiB CHD 分片或精简的 Web data 包')
 }
 if (
-  manifest.rangeReadAheadProfile !== 'adaptive-sequential-v2' ||
+  manifest.rangeReadAheadProfile !== 'adaptive-dual-lane-v3' ||
   manifest.rangeReadAheadBlocks !== 2 ||
+  manifest.rangeReadAheadConcurrency !== 2 ||
   manifest.rangeReadAheadCacheBytes !== 8388608
 ) {
   fail('runtime.json 没有声明受限的 PSP 顺序预读策略')
@@ -218,7 +219,7 @@ if (
 if (manifest.proxiedWebglPreloop !== 'fallback-skip-worker-token') {
   fail('runtime.json 没有声明回退代理 WebGL 上下文的预帧保护')
 }
-if (manifest.pthreadAudioContext !== 'shared-ring-buffer-worklet') {
+if (manifest.pthreadAudioContext !== 'shared-ring-buffer-worklet-fade-v2') {
   fail('runtime.json 没有声明 AudioWorklet 共享音频桥；页面主线程卡顿会造成 PSP 爆音')
 }
 if (
@@ -266,8 +267,9 @@ if (installed) {
   for (const marker of [
     '__8bitgoCreatePspRangeXhr',
     '__8bitgoPspRangeWarmStats',
-    'for (const entry of inflight.values()) entry.cancel()',
-    'exactPrefetch.cancel()',
+    'concurrency: 2',
+    'cancelQueuedAndInflight()',
+    'demandTakeovers',
   ]) {
     if (!runtimeScript.includes(marker)) fail(`PPSSPPSDL.js 缺少 PSP 顺序预读标记 ${marker}`)
   }

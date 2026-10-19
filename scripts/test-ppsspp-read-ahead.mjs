@@ -129,9 +129,9 @@ function makeRuntime(effectiveType = '4g', saveData = false) {
   assert.equal(runtime.pending.length, 0, '取得盘大小的 1 字节探测不能误触发 2MB 预读')
 
   runtime.demand(0, BLOCK - 1)
-  assert.equal(runtime.pending.length, 1, '首个真实块读完后应该启动一个低优先级预读')
+  assert.equal(runtime.activeAsync(), 2, '快速网络应并行预取紧邻两块，隐藏单个 Range 的长往返')
   runtime.flushOne()
-  assert.equal(runtime.pending.length, 1, '预读串行执行，第一块完成后才取第二块')
+  assert.equal(runtime.activeAsync(), 1, '第一块完成后只能剩下第二条既有预读')
   runtime.flushOne()
   assert.equal(runtime.context.__8bitgoPspRangeWarmStats().cachedBlocks, 2)
 
@@ -144,6 +144,13 @@ function makeRuntime(effectiveType = '4g', saveData = false) {
     '命中预读块时不能再发同步网络请求',
   )
   assert.ok(runtime.context.__8bitgoPspRangeWarmStats().cachedBlocks <= 4, '预读缓存必须受 8MB 上限约束')
+}
+
+{
+  const runtime = makeRuntime('3g')
+  runtime.demand(0, BLOCK - 1)
+  assert.equal(runtime.activeAsync(), 1, '3G 网络必须降为单路预读，避免投机请求挤压正式读盘')
+  assert.equal(runtime.context.__8bitgoPspRangeWarmStats().concurrency, 1)
 }
 
 {
@@ -161,7 +168,7 @@ function makeRuntime(effectiveType = '4g', saveData = false) {
 {
   const runtime = makeRuntime()
   runtime.demand(0, BLOCK - 1)
-  assert.equal(runtime.pending.length, 1)
+  assert.equal(runtime.activeAsync(), 2)
   runtime.demand(BLOCK * 4, BLOCK * 5 - 1)
   assert.equal(runtime.requests.filter((request) => !request.async).at(-1).start, BLOCK * 4, '随机寻道必须让正式请求立即接管')
   assert.ok(runtime.context.__8bitgoPspRangeWarmStats().queuedBlocks <= 2)
@@ -170,11 +177,12 @@ function makeRuntime(effectiveType = '4g', saveData = false) {
 {
   const runtime = makeRuntime()
   runtime.demand(0, BLOCK - 1)
-  assert.equal(runtime.activeAsync(), 1)
-  // 正式请求追上正在预读的下一块时，abort 可能同步触发 onabort；这里专门守住那个重入窗口。
+  assert.equal(runtime.activeAsync(), 2)
+  // 正式请求追上正在预读的下一块时必须先清空两个投机请求，再围绕新位置重建窗口。
   runtime.demand(BLOCK, BLOCK * 2 - 1)
-  assert.equal(runtime.activeAsync(), 1, '正式读盘撞上预读时，后台仍只能保留一条请求')
-  assert.equal(runtime.maxActiveAsync(), 1, '取消回调不能重入队列并放出第二条并发预读')
+  assert.equal(runtime.activeAsync(), 2, '同步读盘完成后应恢复双路窗口')
+  assert.equal(runtime.maxActiveAsync(), 2, '取消回调不能重入队列并放出第三条预读')
+  assert.equal(runtime.context.__8bitgoPspRangeWarmStats().demandTakeovers, 1)
 }
 
 {
@@ -190,4 +198,4 @@ function makeRuntime(effectiveType = '4g', saveData = false) {
   )
 }
 
-console.log('✔ PSP 自适应顺序预读：同步命中、串行限流、弱网降级、随机寻道取消、版本隔离均通过')
+console.log('✔ PSP 自适应顺序预读：双路吞吐、同步命中、弱网降级、正式请求抢占、随机寻道与版本隔离均通过')

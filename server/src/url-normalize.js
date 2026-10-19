@@ -7,6 +7,7 @@ import { CACHE } from './cache.js'
 import { publicSiteUrl } from './site-urls.js'
 import { tvRedirect } from '../../shared/tv-host.js'
 import { SITE_DEFAULT_LANGUAGE, SITE_LANGUAGES } from '../../shared/site-languages.js'
+import { ENABLED_PLATFORM_IDS, GENRE_IDS } from '../../shared/site-taxonomy.js'
 
 /**
  * URL 归一（原名 `normalizeTrailingSlash`，现在管尾斜杠、`/index.html`、`www.` 三件事）。
@@ -126,11 +127,51 @@ const LEGACY_GAME_PATHS = new Map(
     ]),
 )
 
+const LANGUAGE_PREFIX_PATTERN = SITE_LANGUAGES
+  .filter(({ code }) => code !== SITE_DEFAULT_LANGUAGE)
+  .map(({ code }) => code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  .join('|')
+const GAMES_LIST_PATH = new RegExp(`^/(?:(${LANGUAGE_PREFIX_PATTERN})/)?games$`)
+const PLATFORM_IDS = new Set(ENABLED_PLATFORM_IDS)
+const GENRES = new Set(GENRE_IDS)
+
+/**
+ * 旧版平台 / 类型筛选已经有一对一的干净落地页，把历史 URL 永久并过去。
+ *
+ * `/games?platform=nes` 若继续回 200 + canonical，Google 仍要先抓一遍才知道它是重复页；
+ * `/platforms/nes` 已有独立标题、正文和分页，301 是更强也更省抓取预算的信号。
+ * 只处理“一个 taxonomy + 可选 page”的精确形状：开发商没有独立详情页，组合筛选也没有
+ * 一对一落点，擅自跳转会丢失用户选择，所以继续由页面 canonical 收敛。
+ */
+function legacyTaxonomyRedirect(pathname, search) {
+  if (!search) return null
+  const match = GAMES_LIST_PATH.exec(pathname)
+  if (!match) return null
+
+  const params = new URLSearchParams(search.slice(1))
+  const keys = [...params.keys()]
+  const taxonomyKeys = ['platform', 'genre'].filter((key) => params.has(key))
+  if (taxonomyKeys.length !== 1) return null
+  const taxonomy = taxonomyKeys[0]
+  if (keys.some((key) => key !== taxonomy && key !== 'page')) return null
+  if (params.getAll(taxonomy).length !== 1 || params.getAll('page').length > 1) return null
+
+  const id = params.get(taxonomy) || ''
+  const known = taxonomy === 'platform' ? PLATFORM_IDS.has(id) : GENRES.has(id)
+  if (!known) return null
+
+  const rawPage = params.get('page')
+  if (rawPage !== null && !/^[1-9]\d*$/.test(rawPage)) return null
+  const prefix = match[1] ? `/${match[1]}` : ''
+  const base = `${prefix}/${taxonomy === 'platform' ? 'platforms' : 'genres'}/${encodeURIComponent(id)}`
+  return { pathname: base, search: rawPage && rawPage !== '1' ? `?page=${rawPage}` : '' }
+}
+
 export function normalizeUrl(req, res, next) {
   if (req.method !== 'GET' && req.method !== 'HEAD') return next()
   const cut = req.originalUrl.indexOf('?')
   const pathname = cut >= 0 ? req.originalUrl.slice(0, cut) : req.originalUrl
-  const search = cut >= 0 ? req.originalUrl.slice(cut) : ''
+  let search = cut >= 0 ? req.originalUrl.slice(cut) : ''
   if (pathname.startsWith('/api/')) return next()
 
   const site = canonicalHost()
@@ -174,6 +215,13 @@ export function normalizeUrl(req, res, next) {
 
   // GSC 仍在抓旧的 taiko-web；现存内容已经更名。这里和 www / 尾斜杠合并成一次 301。
   clean = LEGACY_GAME_PATHS.get(clean) || clean
+
+  // 已有正式 taxonomy 页的旧筛选 URL 也在这一跳里收敛；见 legacyTaxonomyRedirect。
+  const taxonomy = legacyTaxonomyRedirect(clean, search)
+  if (taxonomy) {
+    clean = taxonomy.pathname
+    search = taxonomy.search
+  }
 
   // host 归一和路径归一合成同一次 301（见开头）。带上 origin 就是跨主机跳转，
   // 顺带把 http 升成 https；不带则保持相对，免得把 localhost 上的请求跳到线上。

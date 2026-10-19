@@ -281,6 +281,22 @@ export interface BlobFetchOptions {
   resumeKey?: string
   /** 注入临时分片仓库，只给测试用；生产默认使用 downloadResumeStore。 */
   resumeStore?: DownloadResumeStore
+  /**
+   * 自适应并发的硬上限。生产默认最多四路；测试可设成 1 固定旧的串行时序。
+   * 这不是“越大越快”：每一路都可能暂存一个完整分片，低内存设备还会被运行时提示继续压低。
+   */
+  maxConcurrency?: number
+  /** 注入浏览器网络提示，只给纯函数回归与不实现 Network Information API 的测试环境使用。 */
+  networkHints?: ChunkNetworkHints
+}
+
+export interface ChunkNetworkHints {
+  saveData?: boolean
+  effectiveType?: string
+  downlinkMbps?: number
+  rttMs?: number
+  deviceMemoryGb?: number
+  hardwareConcurrency?: number
 }
 
 /**
@@ -299,6 +315,59 @@ export const CHUNK_BYTES = 8 * 1024 * 1024
 
 /** 单片重试次数。三次退避（0.5s / 1s / 2s）足够熬过一次 Wi-Fi 切换 */
 export const CHUNK_RETRIES = 3
+
+const MAX_CHUNK_CONCURRENCY = 4
+
+/**
+ * 第一片本来就必须下载；用它的真实吞吐决定后续并发，不另发一份“测速垃圾流量”。
+ *
+ * 并发的目标是藏住高 RTT、丢包和单连接拥塞窗口，不是假设带宽可以凭空变多。因此弱网、省流量
+ * 和低内存设备主动收缩；快网也最多四路，把瞬时 Blob 内存限制在 4 × 8 MiB 左右。
+ */
+export function adaptiveChunkConcurrency(
+  sampleBytes: number,
+  elapsedMs: number,
+  hints: ChunkNetworkHints = {},
+): number {
+  const effectiveType = String(hints.effectiveType ?? '').toLowerCase()
+  if (hints.saveData || effectiveType === 'slow-2g' || effectiveType === '2g') return 1
+
+  const sampledMbps = sampleBytes > 0 && elapsedMs > 0
+    ? (sampleBytes * 8) / (elapsedMs * 1000)
+    : 0
+  const hintedMbps = Number.isFinite(hints.downlinkMbps) ? Math.max(0, hints.downlinkMbps ?? 0) : 0
+  const mbps = sampledMbps || hintedMbps
+  const rtt = Number.isFinite(hints.rttMs) ? Math.max(0, hints.rttMs ?? 0) : 0
+
+  let concurrency = 2
+  if (effectiveType === '3g' || (mbps > 0 && mbps < 3)) concurrency = 1
+  else if (mbps >= 24 && rtt > 0 && rtt < 180) concurrency = 4
+  else if (mbps >= 8 || rtt >= 180) concurrency = 3
+
+  // 并行 Range 会让每一路同时持有一个子 Blob；小内存 / 双核设备宁可少占内存，也不赌标签页被杀。
+  if ((hints.deviceMemoryGb ?? Infinity) <= 2 || (hints.hardwareConcurrency ?? Infinity) <= 2) {
+    concurrency = Math.min(concurrency, 2)
+  }
+  return Math.max(1, Math.min(MAX_CHUNK_CONCURRENCY, concurrency))
+}
+
+function browserChunkNetworkHints(): ChunkNetworkHints {
+  if (typeof navigator === 'undefined') return {}
+  const nav = navigator as Navigator & {
+    connection?: { saveData?: boolean; effectiveType?: string; downlink?: number; rtt?: number }
+    deviceMemory?: number
+  }
+  return {
+    saveData: nav.connection?.saveData,
+    effectiveType: nav.connection?.effectiveType,
+    downlinkMbps: nav.connection?.downlink,
+    rttMs: nav.connection?.rtt,
+    deviceMemoryGb: nav.deviceMemory,
+    hardwareConcurrency: nav.hardwareConcurrency,
+  }
+}
+
+const monotonicNow = () => typeof performance !== 'undefined' ? performance.now() : Date.now()
 
 const sleep = (ms: number, signal?: AbortSignal) =>
   new Promise<void>((resolve, reject) => {
@@ -324,14 +393,14 @@ const isAbort = (e: unknown) => e instanceof DOMException && e.name === 'AbortEr
  * 再拷一份进 Blob、引擎再 XHR 回来一份，峰值是文件的两三倍。
  *
  * ── 为什么要分片 ────────────────────────────────────────────
- * 不是为了快。**HTTP/2 下并发 Range 不会提高吞吐**（多个请求复用同一条连接），
- * 这里也是顺序下的。分片买到的是另外两样：
+ * 分片首先买到断点续传与内存封顶；在高 RTT、丢包或 CDN 单连接受限的路径上，第一片的真实吞吐还会
+ * 决定后续开 1～4 路。HTTP/2 复用时并发未必增加总带宽，所以绝不固定四路硬冲：
  *
  *   1. **断了不用从头来**。600MB 下到 95% 遇上一次 TCP reset / Wi-Fi 切 4G /
  *      代理超时，原来整个从 0 重来。现在只白下那 8MB。
  *      上传那边（services/romMultipart.ts）早就是这么干的，下载这边一直没有对等的东西。
  *   2. **内存封顶**。每片下完先合成一个子 Blob（浏览器会把大 Blob 落到磁盘），
- *      分片数组随即丢掉。峰值从「整个文件」降到「一片」。
+ *      分片数组随即丢掉。峰值从「整个文件」降到「当前一至四片」。
  *
  * ⚠️ 第一个请求就带 `Range: bytes=0-<片长>`，**它既是探测也是第一片**：
  * 回 206 说明支持分片，`Content-Range` 顺带给出整份大小；回 200 说明服务器不认 Range，
@@ -479,6 +548,8 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
   let total = 0
   let parts: Array<Blob | undefined> = []
   let completed = 0
+  let sampleBytes = 0
+  let sampleElapsedMs = 0
   const resumed = await loadResume()
 
   if (resumed) {
@@ -528,6 +599,7 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
     for (let attempt = 0; ; attempt++) {
       try {
         guard.touch()
+        const sampleStartedAt = monotonicNow()
         const first = await doFetch(url, { headers: { Range: `bytes=0-${chunkBytes - 1}` }, signal: guard.signal })
         if (!first.ok) throw new Error(`HTTP ${first.status}`)
         opts.check?.(first)
@@ -542,6 +614,8 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
         if (Number(match[2]) !== firstEnd) throw new Error(`分片范围不匹配：期望 bytes 0-${firstEnd}/${firstTotal}`)
 
         const firstPart = await takePart(first, firstEnd + 1)
+        sampleBytes = firstPart.size
+        sampleElapsedMs = Math.max(1, monotonicNow() - sampleStartedAt)
         total = firstTotal
         parts = Array.from({ length: Math.ceil(total / chunkBytes) }, () => undefined as Blob | undefined)
         await savePart(total, 0, firstPart)
@@ -559,38 +633,117 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
     }
   }
 
-  for (let index = 0; index < parts.length; index++) {
-    if (parts[index]) continue
+  const requestedMax = Math.trunc(opts.maxConcurrency ?? (opts.fetchImpl ? 1 : MAX_CHUNK_CONCURRENCY))
+  const hardMax = Number.isFinite(requestedMax) ? Math.max(1, Math.min(
+    MAX_CHUNK_CONCURRENCY,
+    requestedMax,
+  )) : 1
+  const concurrency = Math.min(
+    hardMax,
+    adaptiveChunkConcurrency(sampleBytes, sampleElapsedMs, opts.networkHints ?? browserChunkNetworkHints()),
+  )
+  const pending = parts.map((part, index) => part ? -1 : index).filter((index) => index >= 0)
+  const inFlightLoaded = new Map<number, number>()
+  const activeControllers = new Map<number, AbortController>()
+  let cursor = 0
+  let wholeResponse: Response | null = null
+  let fatalError: unknown
+
+  const abortActive = (except = -1) => {
+    for (const [index, controller] of activeControllers) {
+      if (index !== except) controller.abort()
+    }
+  }
+
+  const downloadPart = async (index: number) => {
     const start = index * chunkBytes
     const end = Math.min(start + chunkBytes, total) - 1
     const expect = end - start + 1
-    let part: Blob | null = null
     for (let attempt = 0; ; attempt++) {
+      const controller = new AbortController()
+      const abortFromGuard = () => controller.abort()
+      if (guard.signal.aborted) controller.abort()
+      else guard.signal.addEventListener('abort', abortFromGuard, { once: true })
+      activeControllers.set(index, controller)
       try {
         guard.touch()
-        const res = await doFetch(url, { headers: { Range: `bytes=${start}-${end}` }, signal: guard.signal })
+        const res = await doFetch(url, { headers: { Range: `bytes=${start}-${end}` }, signal: controller.signal })
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         opts.check?.(res)
-        // 某些 CDN 会在配置变化后忽略 Range。它返回的是完整 200，直接采用，不再浪费已缓存片。
-        if (res.status !== 206) return takeWhole(res)
+        if (res.status !== 206) {
+          /*
+            CDN 若在下载途中突然不认 Range，只能采用一份完整 200，绝不能让其它并发请求的局部字节
+            同时继续落盘。先停兄弟请求，等它们真正退出后再读完整响应，清理续传现场的顺序才可靠。
+          */
+          if (!wholeResponse) {
+            wholeResponse = res
+            abortActive(index)
+          } else {
+            void res.body?.cancel().catch(() => {})
+          }
+          return
+        }
         assertContentRange(res, start, end, total)
-        part = await takePart(res, expect)
-        break
-      } catch (e) {
+        const part = await takePartWithConcurrentProgress(res, expect, index)
+        if (wholeResponse) return
+        await savePart(total, index, part)
+        if (wholeResponse) return
+        parts[index] = part
+        inFlightLoaded.delete(index)
+        completed += part.size
+        emitTotal(completed + [...inFlightLoaded.values()].reduce((sum, bytes) => sum + bytes, 0), total, true)
+        return
+      } catch (error) {
+        inFlightLoaded.delete(index)
+        if (wholeResponse && isAbort(error)) return
         // 卡死不是「这一次没成」：重试只会再等一整个看门狗周期，直接抛
-        if (guard.stalled()) throw e
+        if (guard.stalled()) throw error
         // 取消是用户意图，不是失败，别在这儿空转重试
-        if (isAbort(e) || opts.signal?.aborted) throw e
-        if (attempt >= retries) throw e
+        if (isAbort(error) || opts.signal?.aborted) throw error
+        if (attempt >= retries) throw error
         // 退避：0.5s / 1s / 2s。切网络那一下往往要一两秒才恢复
         await sleep(500 * 2 ** attempt, opts.signal)
+      } finally {
+        guard.signal.removeEventListener('abort', abortFromGuard)
+        if (activeControllers.get(index) === controller) activeControllers.delete(index)
       }
     }
-    await savePart(total, index, part)
-    parts[index] = part
-    completed += part.size
-    emitTotal(completed, total, true)
   }
+
+  /** 并发片的局部进度要相加；继续沿用 completed 会让多路互相覆盖，看起来像进度停住。 */
+  async function takePartWithConcurrentProgress(res: Response, expect: number, index: number): Promise<Blob> {
+    const relay = (p: LoadProgress) => {
+      inFlightLoaded.set(index, p.loaded ?? 0)
+      const active = [...inFlightLoaded.values()].reduce((sum, bytes) => sum + bytes, 0)
+      emitTotal(completed + active, total)
+    }
+    if (!res.body) {
+      const blob = await res.blob()
+      if (blob.size !== expect) throw new Error(`分片不完整：应为 ${expect} 字节，实际 ${blob.size}`)
+      inFlightLoaded.set(index, blob.size)
+      return blob
+    }
+    const { chunks } = await drain(res.body, phase, expect, relay, Infinity, guard.touch)
+    return new Blob(chunks as BlobPart[])
+  }
+
+  const worker = async () => {
+    while (!wholeResponse && fatalError === undefined) {
+      const at = cursor++
+      if (at >= pending.length) return
+      try {
+        await downloadPart(pending[at])
+      } catch (error) {
+        if (fatalError === undefined && !wholeResponse) fatalError = error
+        abortActive()
+        return
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, pending.length) }, () => worker()))
+  if (fatalError !== undefined) throw fatalError
+  if (wholeResponse) return takeWhole(wholeResponse)
 
   const complete = parts as Blob[]
   emitTotal(total, total, true)

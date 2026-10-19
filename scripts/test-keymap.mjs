@@ -272,6 +272,16 @@ for (const id of ADAPTERS) {
   )
 }
 
+{
+  const cards = readFileSync(new URL('../src/components/game/KeymapCards.tsx', import.meta.url), 'utf8')
+  ok(
+    /const showQuickSave = keymap\.quickSave && runtimeId !== 'html5'/.test(cards) &&
+      /showQuickSave && hotkeys\['save:local'\]/.test(cards) &&
+      /showQuickSave && hotkeys\['load:local'\]/.test(cards),
+    'HTML5 详情页不再提前承诺动态存档桥；真正接通后仍由播放器 caps 显示存档入口',
+  )
+}
+
 /* ── 5. 行名有没有对应的文案 ────────────────────────────────
  * 表里 `#xxx` 那种名字是运行时去 t.keymap 里取的（见 lib/emulator.ts 的 label()），
  * 取不到会**原样显示成 "stick"**，tsc 查不出来。zh-Hans 是文案的唯一事实来源，

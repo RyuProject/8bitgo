@@ -154,8 +154,21 @@ function isIsolatedPlayPath(pathname) {
   return route === '/play-local' || Boolean(isolatedRuntimeRoute(route))
 }
 
+/**
+ * 只有 `/play/<平台>/<slug>` 是详情页的重复运行外壳。
+ *
+ * `/play-local` 虽然同样需要 COOP / COEP，却有独立的本地化说明、H1、canonical 和工具能力，
+ * 是值得收录的正式落地页。以前把“需要跨源隔离”和“应该 noindex”绑成一个布尔值，
+ * 导致 HTML 声明 index、响应头却用 X-Robots-Tag 强制 noindex；响应头最终获胜，正好命中
+ * Search Console 的“被 noindex 排除”。两种含义必须分开。
+ */
+function isIsolatedRuntimeShellPath(pathname) {
+  return Boolean(isolatedRuntimeRoute(stripLang(pathname)))
+}
+
 export async function renderPage(req, res, next) {
   const isolatedPlayRequest = isIsolatedPlayPath(req.path)
+  const isolatedShellRequest = isIsolatedRuntimeShellPath(req.path)
   // 数据取到后若确认是 PSP 详情页，即使 React SSR 随后失败，空壳也必须保留隔离头；
   // 否则浏览器虽能客户端渲染出“开始游戏”，PPSSPP 却会因为没有 SharedArrayBuffer 必挂。
   let isolatedDocumentForFallback = isolatedPlayRequest
@@ -177,6 +190,7 @@ export async function renderPage(req, res, next) {
     // v1 是把整个游戏库塞进每一个页面 —— 上千款游戏时首屏体积会失控。
     const [pathname, qs] = url.split('?')
     const isolatedPlay = isIsolatedPlayPath(pathname)
+    const isolatedShell = isIsolatedRuntimeShellPath(pathname)
     const data = await loadForRoute(stripLang(pathname), new URLSearchParams(qs ?? ''))
 
     /*
@@ -265,8 +279,8 @@ export async function renderPage(req, res, next) {
           ? {
               'Cross-Origin-Opener-Policy': 'same-origin',
               'Cross-Origin-Embedder-Policy': 'require-corp',
-              // /play/* 是重复的播放器外壳；/games/* PSP 详情页仍是正牌可收录页面。
-              ...(isolatedPlay ? { 'X-Robots-Tag': 'noindex, follow' } : {}),
+              // `/play/<平台>/<slug>` 是重复外壳；/play-local 与 PSP 详情页都是正牌页面。
+              ...(isolatedShell ? { 'X-Robots-Tag': 'noindex, follow' } : {}),
             }
           : {}),
       })
@@ -302,8 +316,8 @@ export async function renderPage(req, res, next) {
             ? {
                 'Cross-Origin-Opener-Policy': 'same-origin',
                 'Cross-Origin-Embedder-Policy': 'require-corp',
-                // 正常 PSP 详情页是可收录内容；只有重复的 /play 外壳需要 noindex。
-                ...(isolatedPlayRequest ? { 'X-Robots-Tag': 'noindex, follow' } : {}),
+                // 正常 PSP 详情页和 /play-local 都可收录；只有重复的 /play 外壳需要 noindex。
+                ...(isolatedShellRequest ? { 'X-Robots-Tag': 'noindex, follow' } : {}),
               }
             : {}),
         })

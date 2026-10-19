@@ -352,6 +352,33 @@ check('尾斜杠 301 到无斜杠，查询串原样带过去', () => {
   assert.equal(run('GET', '/games/?q=%E9%AD%82%E6%96%97%E7%BE%85/').location, '/games?q=%E9%AD%82%E6%96%97%E7%BE%85/')
 })
 
+check('旧平台 / 类型筛选一跳归到正式 taxonomy 页', () => {
+  assert.equal(run('GET', '/games?platform=nes', '8bitgo.com').location, '/platforms/nes')
+  assert.equal(run('GET', '/fr/games?platform=nes', '8bitgo.com').location, '/fr/platforms/nes')
+  assert.equal(run('GET', '/de/games?platform=dos&page=2', '8bitgo.com').location, '/de/platforms/dos?page=2')
+  assert.equal(run('GET', '/games?genre=rpg&page=1', '8bitgo.com').location, '/genres/rpg')
+  assert.equal(
+    run('GET', '/zh-Hans/games/?genre=action&page=3', 'www.8bitgo.com').location,
+    'https://8bitgo.com/genres/action?page=3',
+    '默认语言、www、尾斜杠与旧筛选必须合成一跳',
+  )
+})
+
+check('组合、开发商、搜索和非法 taxonomy 不得被重定向丢条件', () => {
+  for (const url of [
+    '/games?platform=nes&genre=action',
+    '/games?platform=nes&sort=popular',
+    '/games?developer=Nintendo',
+    '/games?q=mario',
+    '/games?platform=not-real',
+    '/games?genre=not-real',
+    '/games?platform=nes&page=0',
+    '/games?platform=nes&page=2&page=3',
+  ]) {
+    assert.ok(run('GET', url, '8bitgo.com').nexted, `${url} 不应被 taxonomy 规则改写`)
+  }
+})
+
 check('不该动的一律放行', () => {
   for (const url of ['/', '/games', '/en/games/metal-slug-3', '/api/games/', '/games?page=2']) {
     assert.ok(run('GET', url).nexted, `${url} 不该被重定向`)

@@ -150,7 +150,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       window.clearTimeout(probeTimer)
     })
     if (!probe.rangeSupported || !probe.size) throw new Error(rt.ppssppNoRange)
-    options.onProgress?.({ phase: 'rom', loaded: 2, total: probe.size })
+    options.onProgress?.({ phase: 'rom', loaded: 2, total: probe.size, streaming: true })
     return {
       url: options.game,
       name: discNameOf(options.game, options.gameName),
@@ -207,7 +207,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (message.type === 'stream-progress' && Number.isFinite(message.loaded) && Number.isFinite(message.total)) {
       const loaded = Math.max(0, Number(message.loaded))
       const total = Math.max(0, Number(message.total))
-      options.onProgress?.({ phase: 'rom', loaded, total, ratio: total ? Math.min(1, loaded / total) : undefined })
+      // loaded 是本局累计网络字节，不是光盘顺序位置；随机寻道会重复取块，甚至可能超过 total。
+      // 把它除以镜像容量当完成度，会谎称玩家必须下载完整 1.45GB，也会让进度条忽快忽慢。
+      options.onProgress?.({ phase: 'rom', loaded, total, streaming: true })
       return
     }
     if (message.type === 'runtime-error') {

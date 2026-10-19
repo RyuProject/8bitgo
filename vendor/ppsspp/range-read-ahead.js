@@ -1,3 +1,4 @@
+/* 8BITGO_PSP_RANGE_READ_AHEAD_START */
 /*
  * 8BitGo PPSSPP Range 顺序预读层。
  *
@@ -23,7 +24,11 @@
   const inflight = new Map()
   let cachedBytes = 0
   let lastDemand = null
-  let pumping = false
+  let activePrefetches = 0
+  let cancellingPrefetches = false
+  let prefetchHits = 0
+  let demandTakeovers = 0
+  let prefetchedBytes = 0
 
   const header = (headers, name) => headers.get(String(name).toLowerCase()) || ''
   const rangeOf = (value) => {
@@ -53,13 +58,15 @@
   }
   const cacheKey = (url, start, end) => `${url}\n${start}-${end}`
 
-  const readAheadDepth = () => {
+  const readAheadPolicy = () => {
     const connection = globalThis.navigator?.connection
-    if (connection?.saveData) return 0
+    if (connection?.saveData) return { depth: 0, concurrency: 0 }
     const type = String(connection?.effectiveType || '').toLowerCase()
-    if (type === 'slow-2g' || type === '2g') return 0
-    if (type === '3g') return 1
-    return 2
+    if (type === 'slow-2g' || type === '2g') return { depth: 0, concurrency: 0 }
+    if (type === '3g') return { depth: 1, concurrency: 1 }
+    // 实测单路 2 MiB Range 只有约 0.5 MiB/s；两路并行能把同一窗口里的吞吐接近翻倍。
+    // 只预读紧邻的两块，不继续扩大深度，避免节奏游戏随机寻道时浪费流量。
+    return { depth: 2, concurrency: 2 }
   }
 
   const dropCacheEntry = (key) => {
@@ -88,33 +95,21 @@
     return true
   }
 
-  const finishPrefetch = (key) => {
-    inflight.delete(key)
-    pumping = false
-    pump()
-  }
-
-  const pump = () => {
-    if (pumping || queued.size === 0) return
-    const [key, job] = queued.entries().next().value
-    queued.delete(key)
-    pumping = true
-
+  const startPrefetch = (key, job) => {
     const xhr = new NativeXMLHttpRequest()
     let settled = false
     const finish = () => {
-      // 某些浏览器在 abort 后还会补发 error/loadend；重复推进队列会把两个预读同时放行。
+      // 某些浏览器在 abort 后还会补发 error/loadend；只允许第一次回调释放并发槽位。
       if (settled) return
       settled = true
-      finishPrefetch(key)
+      if (inflight.delete(key)) activePrefetches = Math.max(0, activePrefetches - 1)
+      if (!cancellingPrefetches) pump()
     }
     const cancel = () => {
       if (settled) return
-      // 先封住回调再 abort。部分 XHR 会同步触发 onabort；旧实现让它在正式同步读盘尚未结束时
-      // 先泵出下一块，afterDemand 随后又泵一块，表面“串行”的预读实际会并发两路。
+      // 先封住回调再 abort。否则同步触发的 onabort 会在正式读盘接管前重新占满两条连接。
       settled = true
-      inflight.delete(key)
-      pumping = false
+      if (inflight.delete(key)) activePrefetches = Math.max(0, activePrefetches - 1)
       try {
         xhr.abort()
       } catch {
@@ -122,6 +117,7 @@
       }
     }
     inflight.set(key, { xhr, cancel })
+    activePrefetches++
     xhr.open('GET', job.url, true)
     xhr.responseType = 'arraybuffer'
     xhr.timeout = PREFETCH_TIMEOUT_MS
@@ -144,6 +140,7 @@
           actual.total === job.total &&
           response.byteLength === job.end - job.start + 1
         ) {
+          prefetchedBytes += response.byteLength
           store(key, {
             response,
             rawHeaders,
@@ -163,11 +160,22 @@
     }
   }
 
+  const pump = () => {
+    const { concurrency } = readAheadPolicy()
+    while (!cancellingPrefetches && activePrefetches < concurrency && queued.size > 0) {
+      const [key, job] = queued.entries().next().value
+      queued.delete(key)
+      startPrefetch(key, job)
+    }
+  }
+
   const cancelQueuedAndInflight = () => {
+    cancellingPrefetches = true
     queued.clear()
-    for (const entry of inflight.values()) entry.cancel()
+    for (const entry of [...inflight.values()]) entry.cancel()
     inflight.clear()
-    pumping = false
+    activePrefetches = 0
+    cancellingPrefetches = false
   }
 
   const beforeDemand = (url, requestHeaders) => {
@@ -176,8 +184,10 @@
     const key = cacheKey(url, requested.start, requested.end)
     const exactPrefetch = inflight.get(key)
     if (exactPrefetch) {
-      // 正式读取不能排队等低优先级请求；立即让核心自己的同步请求接管。
-      exactPrefetch.cancel()
+      // 正式读取不能和另一条投机请求争抢带宽。核心追上预读时两路都取消，由同步请求立即接管；
+      // 成功后再围绕新的读取位置重建窗口，避免一条慢预读把模拟线程继续堵住数秒。
+      demandTakeovers++
+      cancelQueuedAndInflight()
     }
     queued.delete(key)
 
@@ -202,7 +212,7 @@
     if (requested.start % BLOCK_BYTES !== 0 || (length !== BLOCK_BYTES && requested.end + 1 !== actual.total)) return
     lastDemand = { url: xhr.url_, start: requested.start }
 
-    const depth = readAheadDepth()
+    const { depth } = readAheadPolicy()
     for (let step = 1; step <= depth; step++) {
       const start = requested.start + step * BLOCK_BYTES
       if (start >= actual.total) break
@@ -254,13 +264,19 @@
         const key = cacheKey(this.url_, requested.start, requested.end)
         const entry = cache.get(key)
         if (entry && validatorMatches(entry, this.__8bitgoHeaders)) {
+          prefetchHits++
           this._fake = dropCacheEntry(key)
           afterDemand(this, requested)
           this.onreadystatechange?.({ target: this })
           this.onload?.({ target: this })
           return
         }
-        if (entry) dropCacheEntry(key)
+        if (entry) {
+          dropCacheEntry(key)
+          // 校验器已变化时，旁边的投机请求也属于旧对象代次；继续让它们占连接既无用又会拖慢
+          // 当前同步读取。全部中止后由带新 If-Match 的正式响应重建窗口。
+          cancelQueuedAndInflight()
+        }
       }
 
       this._inner.onload = (event) => {
@@ -301,6 +317,11 @@
     cachedBytes,
     queuedBlocks: queued.size,
     inflightBlocks: inflight.size,
-    depth: readAheadDepth(),
+    ...readAheadPolicy(),
+    activePrefetches,
+    prefetchHits,
+    demandTakeovers,
+    prefetchedBytes,
   })
 })()
+/* 8BITGO_PSP_RANGE_READ_AHEAD_END */

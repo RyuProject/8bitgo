@@ -379,5 +379,8 @@ export async function loadForRoute(pathname, search) {
   }
 
   // 其余页面（/play-local、/rooms、/me、静态页…）不需要预取游戏数据
-  return cached('facets-only', async () => ({ route: 'other', facets: await loadFacets() }))
+  // 以前注释虽这么写，实际却仍查了三组 facets；数据库短暂不可用时，完全静态的
+  // /play-local 也因此跟着 SSR 503。空 facets 只是为了保持 PageData 的稳定形状，
+  // 这些页面没有组件会消费它，侧边栏计数有自己独立的空闲加载接口。
+  return { route: 'other', facets: { platforms: [], genres: [], developers: [] } }
 }

@@ -18,7 +18,7 @@ import { installPspRangeReadAhead } from './helpers/ppsspp-runtime-patch.mjs'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const VERSION = '0dbfaca'
-const RUNTIME_GENERATION = 'v9'
+const RUNTIME_GENERATION = 'v10'
 const RANGE_LOADER_REVISION = 4
 const PINNED_COMMIT = '0dbfaca62a8a924abc2c5dd5dd0733b668e5e68a'
 const PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0001-range-streaming.patch')
@@ -376,8 +376,9 @@ for (const marker of ['__ppssppRangeProgress', '__ppssppRangeError']) {
 for (const marker of [
   '__8bitgoCreatePspRangeXhr',
   '__8bitgoPspRangeWarmStats',
-  'for (const entry of inflight.values()) entry.cancel()',
-  'exactPrefetch.cancel()',
+  'concurrency: 2',
+  'cancelQueuedAndInflight()',
+  'demandTakeovers',
 ]) {
   if (!runtimeScript.includes(marker)) fail(`PPSSPPSDL.js 缺少 Range 顺序预读标记 ${marker}`)
 }
@@ -426,7 +427,7 @@ const manifest = {
   offscreenFramebuffer: 'fallback',
   webglContext: 'worker-offscreen-canvas-with-proxy-fallback',
   proxiedWebglPreloop: 'fallback-skip-worker-token',
-  pthreadAudioContext: 'shared-ring-buffer-worklet',
+  pthreadAudioContext: 'shared-ring-buffer-worklet-fade-v2',
   performanceProfile: 'adaptive-canvas-v1',
   maxCanvasPixels: 960 * 544,
   pthreadPoolMax: 8,
@@ -436,8 +437,9 @@ const manifest = {
   graphicsCompatibilityProfile: 'buffered-native-v1',
   startupReadinessProfile: 'core-boot-log-v1',
   preloadAssetsProfile: 'runtime-no-debugger',
-  rangeReadAheadProfile: 'adaptive-sequential-v2',
+  rangeReadAheadProfile: 'adaptive-dual-lane-v3',
   rangeReadAheadBlocks: 2,
+  rangeReadAheadConcurrency: 2,
   rangeReadAheadCacheBytes: 8 * 1024 * 1024,
   webFeaturesBridge: 'savestate-controls-v1',
   mediaEngine: 'ffmpeg-h264-audio-minimal',

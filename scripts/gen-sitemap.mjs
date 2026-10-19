@@ -125,10 +125,9 @@ add('/games', '0.9', 'daily')
 add('/platforms', '0.8', 'weekly')
 add('/genres', '0.8', 'weekly')
 add('/developers', '0.6', 'weekly')
-// ⚠️ /play-local 不进 sitemap：它是隔离运行文档（服务端按 isIsolatedPlayPath 给
-// X-Robots-Tag: noindex, follow 以启用 SharedArrayBuffer），页面本身没有 noindex meta，
-// 但响应头已经是 noindex。两者同时存在会在 Search Console 报「已提交网址被标记为 noindex」。
-// 它仍可被访问和规范化，只是不主动提交给爬虫。
+// 本地 ROM 页虽然为了 SharedArrayBuffer 发送 COOP / COEP，但它不是重复的播放器外壳：
+// 8 种语言都有独立的说明、H1 与 canonical，应该和其它正式工具页一样主动提交。
+add('/play-local', '0.7', 'monthly')
 add('/blog', '0.7', 'weekly')
 add('/collections', '0.7', 'daily')
 add('/about', '0.5', 'monthly')

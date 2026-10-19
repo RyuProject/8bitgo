@@ -601,7 +601,14 @@ export function organizationSchema() {
   }
 }
 
-/** 首页：网站 + 站内搜索（可能让 Google 展示搜索框） */
+/**
+ * 首页的网站实体。
+ *
+ * Google 已在 2024-11-21 全球下线站点链接搜索框。继续发布 SearchAction 不会再带来
+ * 富媒体结果，反而会把 `/games?q=任意词` 这族明确 noindex 的无限 URL 主动交给爬虫；
+ * 2026-10-19 的 Search Console 报告里 45 条 noindex 示例有 24 条正是这类搜索地址。
+ * WebSite 本身仍用于站点名称识别，所以只移除 potentialAction，不删整个实体。
+ */
 export function websiteSchema(description: string) {
   return {
     '@context': 'https://schema.org',
@@ -609,11 +616,6 @@ export function websiteSchema(description: string) {
     name: SITE_NAME,
     url: langUrl('/'),
     description,
-    potentialAction: {
-      '@type': 'SearchAction',
-      target: { '@type': 'EntryPoint', urlTemplate: `${langUrl('/games')}?q={search_term_string}` },
-      'query-input': 'required name=search_term_string',
-    },
   }
 }
 

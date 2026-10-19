@@ -46,6 +46,7 @@ assert.equal(romUrlForKey(coverThumbKey(externalCover), 'https://assets.8bitgo.c
 assert.equal(romUrlForKey(externalCover, 'https://assets.8bitgo.com'), externalCover)
 const { ROM_LANGS } = await import(fileURLToPath(new URL('../src/config/languages.ts', import.meta.url)))
 const { romCacheKey } = await import(fileURLToPath(new URL('../src/emulator/romCache.ts', import.meta.url)))
+const { chooseFasterRomRoute } = await import(fileURLToPath(new URL('../src/services/romRoute.ts', import.meta.url)))
 const { isolatedEmbedFor } = await import(fileURLToPath(new URL('../shared/isolated-embeds.js', import.meta.url)))
 const { gameRowToApi, dosExecutableOf, dosStartupCommandsOf, relationsInPatch, romRelationRows } = await import(fileURLToPath(new URL('../server/src/mappers.js', import.meta.url)))
 // ts-loader 为了让 ROM 探测测试保持轻量，会把平台表换成空桩；补齐流式光盘真正用到的格式。
@@ -98,6 +99,58 @@ for (const [slug, entry] of [
 }
 assert.equal(isolatedEmbedFor('terraria')?.embed, 'https://terraria.8bitgo.com/web/terraria/', 'Terraria 必须通过独立 Pages 走隔离薄壳')
 assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP，保持普通详情页即可')
+
+/* ---------- 大 ROM 的主/备用路径测速：只选完整来源，绝不混片 ---------- */
+{
+  let routeCalls = 0
+  const routeFetch = async (requestUrl) => {
+    routeCalls++
+    const delay = String(requestUrl).includes('backup.example.com') ? 2 : 20
+    const bytes = new Uint8Array(1024)
+    return {
+      ok: true,
+      status: 206,
+      body: new ReadableStream({
+        start(controller) {
+          setTimeout(() => {
+            controller.enqueue(bytes)
+            controller.close()
+          }, delay)
+        },
+      }),
+    }
+  }
+  const chosen = await chooseFasterRomRoute(
+    { url: 'https://primary.example.com/large.zip', size: 64 * 1024 * 1024 },
+    { url: 'https://backup.example.com/large.zip', size: 64 * 1024 * 1024 },
+    { fetchImpl: routeFetch, sampleBytes: 1024, timeoutMs: 100, cacheResults: false },
+  )
+  assert.equal(chosen, 'backup', '备用域名样本明显更快时应整份改走备用源')
+  assert.equal(routeCalls, 2, '两个不同域名各取一份小样本')
+
+  routeCalls = 0
+  assert.equal(
+    await chooseFasterRomRoute(
+      { url: 'https://same.example.com/a.zip', size: 64 * 1024 * 1024 },
+      { url: 'https://same.example.com/b.zip', size: 64 * 1024 * 1024 },
+      { fetchImpl: routeFetch, sampleBytes: 1024, cacheResults: false },
+    ),
+    'primary',
+    '同一域名通常是同一条网络路径，不浪费双份测速流量',
+  )
+  assert.equal(routeCalls, 0)
+
+  assert.equal(
+    await chooseFasterRomRoute(
+      { url: 'https://primary.example.com/large.zip', size: 64 * 1024 * 1024 },
+      { url: 'https://backup.example.com/large.zip', size: 64 * 1024 * 1024 },
+      { fetchImpl: routeFetch, hints: { saveData: true }, cacheResults: false },
+    ),
+    'primary',
+    '省流量模式不应为了测速额外下载两个样本',
+  )
+  assert.equal(routeCalls, 0)
+}
 
 /* ---------- 8BG 约定地址：新容器优先，旧对象继续回退 ---------- */
 {

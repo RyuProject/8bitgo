@@ -22,6 +22,7 @@ import { romArchiveRef } from '@/lib/romArchiveUrl'
 import { isRomPackUrl, romPackKey } from '../../shared/rom-pack-format.js'
 import { isStreamingDiscPlatform } from '../../shared/streaming-disc-platforms.js'
 import { builtinWebGameFor } from '../../shared/builtin-web-games.js'
+import { chooseFasterRomRoute, ROM_ROUTE_RACE_MIN_BYTES } from './romRoute'
 
 export const ROM_BASE_KEY = '8bitgo.rom.base'
 export const ROM_API_KEY = '8bitgo.rom.api'
@@ -977,10 +978,14 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
     if (!game || state.status !== 'found' || !state.key) return false
     const bound = playbackRomCandidatesForSelection(game, lang, prefer)
     const chain = bound.length ? bound.map((candidate) => candidate.key) : conventionalKeys(game)
-    const next = nextRomCandidateKey(chain, state.key, runtimeFailures.current)
+    runtimeFailures.current.add(state.key)
+    /*
+      自动测速可能先选中排在主地址后面的备用源；它若在真实下载时失败，回退不能只“往后找”，
+      否则明明健康的主源永远没有机会。失败集合已经保证每个 key 一轮只试一次，所以从头找安全且不会循环。
+    */
+    const next = chain.find((key) => !runtimeFailures.current.has(key))
     if (!next) return false
 
-    runtimeFailures.current.add(state.key)
     // 当前 URL 的 HEAD 结论仍然是“存在”，无需抹掉；失败集才是这轮解析真正要看的信息。
     // 留一行诊断，线上能直接看出是主包坏了后切备用，而不是误以为语言回退选错。
     console.warn(
@@ -1008,6 +1013,8 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
     if (!game) return
     let cancelled = false
     let timer = 0
+    // 切游戏或语言时要真正终止旧测速；只拦 setState 仍会让两条 256 KiB 请求继续占用新游戏的带宽。
+    const routeController = new AbortController()
     setState({ status: 'checking', url: '' })
     ;(async () => {
       const candidates = playbackRomCandidatesForSelection(game, lang, prefer)
@@ -1030,10 +1037,56 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
         }
         const outcome = await probeRom(url, 4000, game.platform === 'html5')
         if (outcome.url) {
-          if (candidate.backup) {
+          let selectedCandidate = candidate
+          let selectedOutcome = outcome
+          /*
+            只有“大文件 + 同语言备用源”才值得花 2 × 256 KiB 做路径测速。备用的派生 8BG / 原包仍按
+            原顺序确认，测速只决定最终整份从哪个源下载，绝不把两个源的分片混在一起。
+          */
+          if (!candidate.backup && candidate.lang && (outcome.size ?? 0) >= ROM_ROUTE_RACE_MIN_BYTES) {
+            const backupCandidates = candidates
+              .slice(candidateIndex + 1)
+              .filter((item) => item.lang === candidate.lang && item.backup && !runtimeFailures.current.has(item.key))
+            for (let backupIndex = 0; backupIndex < backupCandidates.length; backupIndex++) {
+              const backupCandidate = backupCandidates[backupIndex]
+              const backupUrl = romUrlForKey(backupCandidate.key)
+              if (!backupUrl) continue
+              const backupOutcome = await probeRom(backupUrl, 4000, game.platform === 'html5')
+              if (backupOutcome.url) {
+                const route = await chooseFasterRomRoute(
+                  { url: outcome.url, size: outcome.size },
+                  { url: backupOutcome.url, size: backupOutcome.size },
+                  { signal: routeController.signal },
+                )
+                if (route === 'backup') {
+                  selectedCandidate = backupCandidate
+                  selectedOutcome = backupOutcome
+                  console.info(
+                    `[8bitgo/rom] ${game.slug} 的同语言备用路径测速更快，整份 ROM 改走：${backupCandidate.key}`,
+                  )
+                }
+                break
+              }
+              traces.push({
+                key: backupCandidate.key,
+                url: backupUrl,
+                outcome: backupOutcome,
+                lang: backupCandidate.lang,
+                backup: true,
+              })
+              if (!backupOutcome.certain && !backupCandidate.derivedPacked) break
+            }
+          }
+          if (selectedCandidate.backup && selectedCandidate === candidate) {
             console.warn(`[8bitgo/rom] ${game.slug} 的 ${candidate.lang ?? '通用'} 主地址不可用，已切换到同语言备用地址：${candidate.key}`)
           }
-          if (!cancelled) setState({ status: 'found', url: outcome.url, key: candidate.key, lang: candidate.lang, size: outcome.size })
+          if (!cancelled) setState({
+            status: 'found',
+            url: selectedOutcome.url,
+            key: selectedCandidate.key,
+            lang: selectedCandidate.lang,
+            size: selectedOutcome.size,
+          })
           return
         }
         traces.push({ key: candidate.key, url, outcome, lang: candidate.lang, backup: candidate.backup })
@@ -1117,6 +1170,7 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
 
     return () => {
       cancelled = true
+      routeController.abort()
       window.clearTimeout(timer)
     }
   }, [game, lang, prefer, attempt])
