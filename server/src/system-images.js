@@ -18,8 +18,10 @@ const ALLOWED_SYSTEM_IMAGES = new Set([
   'system-win311-v1.jsdos',
   'system-win95-v1.jsdos',
   'system-win98-v1.jsdos',
-  // 《天之痕》的本地化 DirectInput 修正版没有可信第三方副本，只代理 R2 上同一对象。
+  // 保留第一版路径给旧数据/缓存回退；自制系统没有可信第三方副本，只代理同一对象。
   'Windows95_Traditional-Chinese-DirectInput-v1.jsdos',
+  // 《天之痕》是原生 Big5，进入剧情还依赖完整 DirectX 7.0a；这份是去安装包后的极简系统。
+  'Windows95_Traditional-Chinese-DirectX7a-Minimal-v1.jsdos',
 ])
 
 export function systemImageAsset(file) {

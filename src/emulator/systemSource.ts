@@ -84,9 +84,13 @@ const MIRRORS: Readonly<Record<string, readonly SystemMirror[]>> = {
   '/systems/dos/system-win311-v1.jsdos': mirrorsFor('system-win311-v1.jsdos'),
   '/systems/dos/system-win95-v1.jsdos': mirrorsFor('system-win95-v1.jsdos'),
   '/systems/dos/system-win98-v1.jsdos': mirrorsFor('system-win98-v1.jsdos'),
-  // 原繁体镜像的集成鼠标与《天之痕》DirectInput 冲突；版本化修正版必须只回落到同一对象。
+  // 保留第一版路径给旧数据/缓存回退；自制对象都不能回落到官方同名系统。
   '/systems/dos/Windows95_Traditional-Chinese-DirectInput-v1.jsdos': sameOriginMirror(
     'Windows95_Traditional-Chinese-DirectInput-v1.jsdos',
+  ),
+  // 《天之痕》是原生 Big5，进入剧情还依赖完整 DirectX 7.0a；不能回落到官方英文系统。
+  '/systems/dos/Windows95_Traditional-Chinese-DirectX7a-Minimal-v1.jsdos': sameOriginMirror(
+    'Windows95_Traditional-Chinese-DirectX7a-Minimal-v1.jsdos',
   ),
   /*
     ⚠️ `system-win311-vga-v1.jsdos` **故意不登记**，别手贱加上。

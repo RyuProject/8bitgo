@@ -402,12 +402,19 @@ Win95 或 Caesar 的分辨率补丁。
 （`SYSTEM.INI` 的 `dboxmpi.drv`），因此标题页和软件光标都正常，进入新局才弹 DirectInput
 错误，随后 `Swd3e` 非法操作退出。验收必须点进角色姓名界面，停在标题页不算通过。
 
-修正版是 `Windows95_Traditional-Chinese-DirectInput-v1.jsdos`：只把系统盘鼠标恢复为
+第一版修正版 `Windows95_Traditional-Chinese-DirectInput-v1.jsdos` 只把系统盘鼠标恢复为
 `mouse.drv` + `*vmouse, msmouse.vxd`，并在 bundle 配置里使用 `mouse_emulation=locked`、
 `integration device=false`。它是版本化新对象，不准覆盖原路径；浏览器会按 URL/ETag 缓存系统盘，
 原地覆盖会让老访客继续拿到坏镜像。播放器里的 `needsRelativeWindowsGuestMouse()` 还必须让
 这款游戏绕开 Windows 绝对坐标桥，交回 js-dos 相对鼠标链；只换镜像不换协议会变成“游戏能进，
 但光标不动”。回归：`npm run test:dos-load && npm run test:system-source`。
+
+⚠️ 这款 ROM 是原生繁体 Big5，不要再改成 CP936。第一版镜像虽能到标题页，进入新游戏仍会
+弹 DirectInput 错误或非法操作：Win95 自带的旧 DirectX 不够，必须完整安装繁体
+DirectX 7.0a。最终使用 `Windows95_Traditional-Chinese-DirectX7a-Minimal-v1.jsdos`；它保留
+繁中代码页与原生鼠标链，安装 DX7 后删除 14MB 安装源并清空临时文件，约 46.5MB。
+验收必须依次走过标题页 →「起」→ 姓名框 → 片头 → 第一段对白，并确认繁体中文可读；
+只停在标题菜单仍然不算通过。
 
 ### 2.8.7 大型 Win95/98 游戏走静态 Sockdrive，不是视频直播
 
