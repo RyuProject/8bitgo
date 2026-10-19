@@ -6,7 +6,7 @@ const source = readFileSync(new URL('../vendor/ppsspp/range-read-ahead.js', impo
 const BLOCK = 2 * 1024 * 1024
 const TOTAL = BLOCK * 6
 
-function makeRuntime(effectiveType = '4g', saveData = false) {
+function makeRuntime(effectiveType = '4g', saveData = false, deviceMemory = 8, hardwareConcurrency = 8) {
   const requests = []
   const pending = []
   let activeAsync = 0
@@ -87,12 +87,13 @@ function makeRuntime(effectiveType = '4g', saveData = false) {
 
   const context = {
     XMLHttpRequest: FakeXMLHttpRequest,
-    navigator: { connection: { effectiveType, saveData } },
+    navigator: { connection: { effectiveType, saveData }, deviceMemory, hardwareConcurrency },
     console,
     Map,
     ArrayBuffer,
     Number,
     String,
+    Date,
   }
   context.globalThis = context
   vm.runInNewContext(source, context, { filename: 'range-read-ahead.js' })
@@ -129,11 +130,11 @@ function makeRuntime(effectiveType = '4g', saveData = false) {
   assert.equal(runtime.pending.length, 0, '取得盘大小的 1 字节探测不能误触发 2MB 预读')
 
   runtime.demand(0, BLOCK - 1)
-  assert.equal(runtime.activeAsync(), 2, '快速网络应并行预取紧邻两块，隐藏单个 Range 的长往返')
+  assert.equal(runtime.activeAsync(), 4, '快速网络应并行填充滚动缓冲，隐藏单个 Range 的长尾')
   runtime.flushOne()
-  assert.equal(runtime.activeAsync(), 1, '第一块完成后只能剩下第二条既有预读')
-  runtime.flushOne()
-  assert.equal(runtime.context.__8bitgoPspRangeWarmStats().cachedBlocks, 2)
+  assert.equal(runtime.activeAsync(), 4, '第一块完成后应立即从队列补足下一块，不留下带宽空洞')
+  for (let i = 0; i < 7; i++) runtime.flushOne()
+  assert.equal(runtime.context.__8bitgoPspRangeWarmStats().cachedBlocks, 5, '测试盘剩余五块应全部进入滚动缓冲')
 
   const before = runtime.requests.filter((request) => !request.async).length
   const cached = runtime.demand(BLOCK, BLOCK * 2 - 1)
@@ -143,14 +144,21 @@ function makeRuntime(effectiveType = '4g', saveData = false) {
     before,
     '命中预读块时不能再发同步网络请求',
   )
-  assert.ok(runtime.context.__8bitgoPspRangeWarmStats().cachedBlocks <= 4, '预读缓存必须受 8MB 上限约束')
+  assert.ok(runtime.context.__8bitgoPspRangeWarmStats().cachedBlocks <= 12, '预读缓存必须受 24MB 上限约束')
 }
 
 {
   const runtime = makeRuntime('3g')
   runtime.demand(0, BLOCK - 1)
-  assert.equal(runtime.activeAsync(), 1, '3G 网络必须降为单路预读，避免投机请求挤压正式读盘')
-  assert.equal(runtime.context.__8bitgoPspRangeWarmStats().concurrency, 1)
+  assert.equal(runtime.activeAsync(), 2, '3G 网络保留双路小窗口，避免持续媒体读取必然追上单路预读')
+  assert.equal(runtime.context.__8bitgoPspRangeWarmStats().concurrency, 2)
+}
+
+{
+  const runtime = makeRuntime('4g', false, 2, 2)
+  runtime.demand(0, BLOCK - 1)
+  assert.equal(runtime.activeAsync(), 2, '低内存双核设备必须把预读并发封顶为两路')
+  assert.equal(runtime.context.__8bitgoPspRangeWarmStats().depth, 4)
 }
 
 {
@@ -168,21 +176,34 @@ function makeRuntime(effectiveType = '4g', saveData = false) {
 {
   const runtime = makeRuntime()
   runtime.demand(0, BLOCK - 1)
-  assert.equal(runtime.activeAsync(), 2)
+  assert.equal(runtime.activeAsync(), 4)
   runtime.demand(BLOCK * 4, BLOCK * 5 - 1)
   assert.equal(runtime.requests.filter((request) => !request.async).at(-1).start, BLOCK * 4, '随机寻道必须让正式请求立即接管')
-  assert.ok(runtime.context.__8bitgoPspRangeWarmStats().queuedBlocks <= 2)
+  assert.ok(runtime.context.__8bitgoPspRangeWarmStats().queuedBlocks <= 6)
+}
+
+{
+  const runtime = makeRuntime('3g')
+  runtime.demand(0, BLOCK - 1)
+  assert.equal(runtime.activeAsync(), 2)
+  // 正式请求追上正在预读的下一块时必须先清空两个投机请求，再围绕新位置重建窗口。
+  runtime.demand(BLOCK, BLOCK * 2 - 1)
+  assert.equal(runtime.activeAsync(), 3, '同步读盘追上预读后应自动扩到三路，避免周期性再次追尾')
+  assert.equal(runtime.maxActiveAsync(), 3, '取消回调不能越过自适应策略放出额外请求')
+  assert.equal(runtime.context.__8bitgoPspRangeWarmStats().demandTakeovers, 1)
+  assert.equal(runtime.context.__8bitgoPspRangeWarmStats().pressureLevel, 1)
 }
 
 {
   const runtime = makeRuntime()
   runtime.demand(0, BLOCK - 1)
-  assert.equal(runtime.activeAsync(), 2)
-  // 正式请求追上正在预读的下一块时必须先清空两个投机请求，再围绕新位置重建窗口。
-  runtime.demand(BLOCK, BLOCK * 2 - 1)
-  assert.equal(runtime.activeAsync(), 2, '同步读盘完成后应恢复双路窗口')
-  assert.equal(runtime.maxActiveAsync(), 2, '取消回调不能重入队列并放出第三条预读')
+  assert.equal(runtime.activeAsync(), 4)
+  assert.equal(runtime.context.__8bitgoPspRangeWarmStats().queuedBlocks, 1)
+  // 第五个预读块还在队列里；正式读盘追到它时也必须让同步 Range 优先。
+  runtime.demand(BLOCK * 5, BLOCK * 6 - 1)
+  assert.equal(runtime.activeAsync(), 0, '追到排队块时必须取消仍在占带宽的四条投机请求')
   assert.equal(runtime.context.__8bitgoPspRangeWarmStats().demandTakeovers, 1)
+  assert.equal(runtime.context.__8bitgoPspRangeWarmStats().pressureLevel, 1)
 }
 
 {
@@ -198,4 +219,4 @@ function makeRuntime(effectiveType = '4g', saveData = false) {
   )
 }
 
-console.log('✔ PSP 自适应顺序预读：双路吞吐、同步命中、弱网降级、正式请求抢占、随机寻道与版本隔离均通过')
+console.log('✔ PSP 自适应滚动预读：四路填充、低配限流、追尾扩窗、同步命中、随机寻道与版本隔离均通过')

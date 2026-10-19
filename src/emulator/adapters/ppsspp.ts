@@ -72,6 +72,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let hostTimer = 0
   let fatalReported = false
   const probeController = new AbortController()
+  let remoteProbe: ReturnType<typeof probeRange> | null = null
+  let speculativeProbe = false
   const pending = new Map<number, {
     resolve: (value: unknown) => void
     reject: (error: Error) => void
@@ -130,6 +132,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     failSession(fmt(rt.ppssppLoadFailed, { msg: message }), message)
   }
 
+  function startRemoteProbe(game: string): ReturnType<typeof probeRange> {
+    if (!remoteProbe) {
+      remoteProbe = probeRange(game, probeController.signal)
+      // 冷启动时探测会早于 iframe 的 host-ready 完成；先接住拒绝，等 boot 消费原始错误。
+      void remoteProbe.catch(() => {})
+    }
+    return remoteProbe
+  }
+
   async function prepareGame(): Promise<File | RemoteDiscDescriptor> {
     if (options.game instanceof File) {
       options.onProgress?.({
@@ -146,9 +157,19 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     // host-ready 只说明 iframe 的桥已经加载，不能拿它当网络超时。旧实现会在一个永不返回的
     // Range 探测上无限挂住，而且 destroy 后请求仍继续占连接；这里给探测独立的截止时间。
     const probeTimer = window.setTimeout(() => probeController.abort(), RANGE_PROBE_TIMEOUT_MS)
-    const probe = await probeRange(options.game, probeController.signal).finally(() => {
+    let probe: Awaited<ReturnType<typeof probeRange>>
+    try {
+      probe = await startRemoteProbe(options.game)
+      // 提前探测可能刚好撞上短暂断网；iframe 下载的这段时间网络已恢复时，不能把那次
+      // 失败永久当成“服务器不支持 Range”。正式挂盘前只补探一次，仍受同一个截止时间约束。
+      if (speculativeProbe && !probe.rangeSupported && !probeController.signal.aborted) {
+        speculativeProbe = false
+        remoteProbe = null
+        probe = await startRemoteProbe(options.game)
+      }
+    } finally {
       window.clearTimeout(probeTimer)
-    })
+    }
     if (!probe.rangeSupported || !probe.size) throw new Error(rt.ppssppNoRange)
     options.onProgress?.({ phase: 'rom', loaded: 2, total: probe.size, streaming: true })
     return {
@@ -256,6 +277,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       failSession(rt.ppssppStartTimeout, 'PPSSPP 运行时页面启动超时')
     }
   }, HOST_TIMEOUT_MS)
+  // 探测只取 2 字节；与 iframe 入口并行可省掉一次串行跨域往返。进度仍在 host-ready 后
+  // 才切到 ROM 阶段，避免“镜像已加载”掩盖 36MB 核心资源还在下载的实际状态。
+  if (typeof options.game === 'string' && globalThis.crossOriginIsolated && typeof SharedArrayBuffer !== 'undefined') {
+    speculativeProbe = true
+    void startRemoteProbe(options.game)
+  }
 
   return {
     caps,

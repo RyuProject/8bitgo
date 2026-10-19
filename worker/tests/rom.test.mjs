@@ -315,6 +315,44 @@ test('version-pinned arcade chunks reuse an independent 8 MiB edge-cache entry',
     else globalThis.caches = previous
   }
 })
+test('version-pinned PSP chunks reuse an independent 2 MiB edge-cache entry with matching If-Match', async () => {
+  const previous = globalThis.caches
+  const stored = new Map(); const waits = []
+  globalThis.caches = { default: {
+    async match(request) { return stored.get(request.url)?.clone() },
+    async put(request, response) { stored.set(request.url, response.clone()); await response.arrayBuffer() },
+  } }
+  const context = { waitUntil(promise) { waits.push(promise) } }
+  try {
+    const e = environment()
+    const data = new Uint8Array(2 * 1024 * 1024 + 3)
+    data.set([7, 8, 9], 2 * 1024 * 1024)
+    const original = e.ROMS.seed('roms/psp/djmax.en.chd', data)
+    const path = `/roms/psp/djmax.en.chd?romv=${original.etag}`
+    const range = { Range: 'bytes=0-2097151', 'If-Match': original.httpEtag }
+    const first = await worker.fetch(req(path, 'GET', undefined, range), e, context)
+    assert.equal(first.status, 206)
+    assert.equal(first.headers.get('X-8BitGo-Edge-Cache'), 'MISS')
+    assert.equal((await first.arrayBuffer()).byteLength, 2 * 1024 * 1024)
+    await Promise.all(waits)
+    assert.equal(count(e.ROMS, 'get'), 1)
+
+    const second = await worker.fetch(req(path, 'GET', undefined, range), e, context)
+    assert.equal(second.status, 206)
+    assert.equal(second.headers.get('X-8BitGo-Edge-Cache'), 'HIT')
+    assert.equal((await second.arrayBuffer()).byteLength, 2 * 1024 * 1024)
+    assert.equal(count(e.ROMS, 'get'), 1)
+
+    const probe = await worker.fetch(req(path, 'GET', undefined, { Range: 'bytes=0-0', 'If-Match': original.httpEtag }), e, context)
+    assert.equal(probe.headers.get('X-8BitGo-Edge-Cache'), null, '1 字节探测不能制造 PSP 边缘分片')
+    const stale = await worker.fetch(req(path, 'GET', undefined, { ...range, 'If-Match': '"wrong"' }), e, context)
+    assert.equal(stale.status, 412)
+    assert.equal(stale.headers.get('X-8BitGo-Edge-Cache'), null)
+  } finally {
+    if (previous === undefined) delete globalThis.caches
+    else globalThis.caches = previous
+  }
+})
 test('arcade range cache rejects poisoned entries and keeps conditional or unversioned requests on R2', async () => {
   const previous = globalThis.caches
   let matches = 0; let puts = 0

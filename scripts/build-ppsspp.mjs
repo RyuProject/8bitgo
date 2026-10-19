@@ -18,7 +18,7 @@ import { installPspRangeReadAhead } from './helpers/ppsspp-runtime-patch.mjs'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const VERSION = '0dbfaca'
-const RUNTIME_GENERATION = 'v10'
+const RUNTIME_GENERATION = 'v11'
 const RANGE_LOADER_REVISION = 4
 const PINNED_COMMIT = '0dbfaca62a8a924abc2c5dd5dd0733b668e5e68a'
 const PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0001-range-streaming.patch')
@@ -376,7 +376,8 @@ for (const marker of ['__ppssppRangeProgress', '__ppssppRangeError']) {
 for (const marker of [
   '__8bitgoCreatePspRangeXhr',
   '__8bitgoPspRangeWarmStats',
-  'concurrency: 2',
+  'MAX_CONCURRENCY = 4',
+  'MAX_CACHE_BYTES = 24 * 1024 * 1024',
   'cancelQueuedAndInflight()',
   'demandTakeovers',
 ]) {
@@ -437,10 +438,10 @@ const manifest = {
   graphicsCompatibilityProfile: 'buffered-native-v1',
   startupReadinessProfile: 'core-boot-log-v1',
   preloadAssetsProfile: 'runtime-no-debugger',
-  rangeReadAheadProfile: 'adaptive-dual-lane-v3',
-  rangeReadAheadBlocks: 2,
-  rangeReadAheadConcurrency: 2,
-  rangeReadAheadCacheBytes: 8 * 1024 * 1024,
+  rangeReadAheadProfile: 'adaptive-rolling-buffer-v4',
+  rangeReadAheadBlocks: 10,
+  rangeReadAheadConcurrency: 4,
+  rangeReadAheadCacheBytes: 24 * 1024 * 1024,
   webFeaturesBridge: 'savestate-controls-v1',
   mediaEngine: 'ffmpeg-h264-audio-minimal',
   ffmpegCommit: FFMPEG_COMMIT,

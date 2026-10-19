@@ -38,6 +38,7 @@ const VERSIONED_CACHE_CONTROL = 'public, max-age=86400, s-maxage=2592000, stale-
 const IMMUTABLE_CACHE_CONTROL = 'public, max-age=31536000, s-maxage=31536000, immutable'
 const SOCKDRIVE_VERSION_SUFFIX = /(?:^|[-_.])(?:v\d+(?:[-_.][a-z0-9]+)*|[a-f0-9]{8,64})$/i
 const ARCADE_RANGE_BYTES = 8 * 1024 * 1024
+const PSP_RANGE_BYTES = 2 * 1024 * 1024
 const RANGE_CACHE_PARAM = '__8bg_edge_range'
 const RANGE_CACHE_HEADER = 'X-8BitGo-Stored-Range'
 
@@ -90,24 +91,35 @@ export function edgeCacheEligible(request, url, cors) {
 }
 
 /**
- * 街机大包的播放器固定请求 8 MiB 对齐分片。Cloudflare Cache API 不能 put(206)，
+ * 街机大包与 PPSSPP 分别固定请求 8 MiB / 2 MiB 对齐分片。Cloudflare Cache API 不能 put(206)，
  * 因此用仅内部访问的 URL 键把验证过的分片存成 200，命中时还原成 206。
  * 没有 ROM 的 R2 ETag 锁、范围不对齐或带条件头时继续直达 R2，避免混合两代 ROM。
+ *
+ * PSP 必须允许“与 romv 完全相同”的 If-Match：核心每次读盘都会带它。缓存键本身已含同一 ETag，
+ * 所以命中仍是同一代不可变字节；若旧版本只有部分块留在 PoP，未命中的块会从 R2 得到 412，
+ * 而不是悄悄拼进新镜像。
  */
-function arcadeRangeCachePlan(request, url, cors) {
+function romRangeCachePlan(request, url, cors) {
   if (request.method !== 'GET' || cors['Access-Control-Allow-Origin'] !== '*') return null
-  if (!/^\/roms\/arcade\/[^/]+\.zip\.8bg$/i.test(url.pathname) || url.searchParams.has(RANGE_CACHE_PARAM)) return null
-  if (request.headers.has('Authorization') || ['If-Match', 'If-Range', 'If-None-Match', 'If-Modified-Since', 'If-Unmodified-Since'].some(name => request.headers.has(name))) return null
+  const blockBytes = /^\/roms\/arcade\/[^/]+\.zip\.8bg$/i.test(url.pathname)
+    ? ARCADE_RANGE_BYTES
+    : /^\/roms\/psp\/[^/]+\.(?:iso|cso|chd)$/i.test(url.pathname)
+      ? PSP_RANGE_BYTES
+      : 0
+  if (!blockBytes || url.searchParams.has(RANGE_CACHE_PARAM)) return null
+  if (request.headers.has('Authorization') || ['If-Range', 'If-None-Match', 'If-Modified-Since', 'If-Unmodified-Since'].some(name => request.headers.has(name))) return null
   if (/\b(?:no-cache|no-store)\b/i.test(request.headers.get('Cache-Control') || '')) return null
   const version = url.searchParams.get('romv') || ''
   if (!/^[a-f0-9]{32}(?:-\d+)?$/i.test(version)) return null
+  const ifMatch = request.headers.get('If-Match')
+  if (ifMatch && ifMatch !== `"${version}"`) return null
   const match = /^bytes=(\d+)-(\d+)$/.exec(request.headers.get('Range') || '')
   if (!match) return null
   const start = Number(match[1]); const end = Number(match[2])
-  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start % ARCADE_RANGE_BYTES !== 0 || end < start || end - start + 1 > ARCADE_RANGE_BYTES) return null
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start % blockBytes !== 0 || end < start || end - start + 1 > blockBytes) return null
   const cacheUrl = new URL(url)
   cacheUrl.searchParams.set(RANGE_CACHE_PARAM, `${start}-${end}`)
-  return { key: new Request(cacheUrl, { method: 'GET' }), version, start, end }
+  return { key: new Request(cacheUrl, { method: 'GET' }), version, start, end, blockBytes }
 }
 
 function verifiedRangeHeaders(response, plan, stored = false) {
@@ -118,9 +130,9 @@ function verifiedRangeHeaders(response, plan, stored = false) {
   if (!match) return null
   const start = Number(match[1]); const end = Number(match[2]); const total = Number(match[3])
   const length = end - start + 1
-  // 非末片只收满 8 MiB，防止任意短 Range 为同一 ROM 制造海量边缘缓存键。
-  if (plan.end - plan.start + 1 < ARCADE_RANGE_BYTES && plan.end !== total - 1) return null
-  if (!Number.isSafeInteger(total) || !Number.isSafeInteger(end) || start !== plan.start || end !== Math.min(plan.end, total - 1) || length <= 0 || length > ARCADE_RANGE_BYTES || response.headers.get('Content-Length') !== String(length)) return null
+  // 非末片只收满平台约定块，防止任意短 Range 为同一 ROM 制造海量边缘缓存键。
+  if (plan.end - plan.start + 1 < plan.blockBytes && plan.end !== total - 1) return null
+  if (!Number.isSafeInteger(total) || !Number.isSafeInteger(end) || start !== plan.start || end !== Math.min(plan.end, total - 1) || length <= 0 || length > plan.blockBytes || response.headers.get('Content-Length') !== String(length)) return null
   return value
 }
 
@@ -439,7 +451,7 @@ export default {
   async fetch(request, env, context) {
     const cors = corsHeaders(request, env)
     const url = new URL(request.url)
-    const rangePlan = arcadeRangeCachePlan(request, url, cors)
+    const rangePlan = romRangeCachePlan(request, url, cors)
     let edgeCache = (edgeCacheEligible(request, url, cors) || rangePlan) && context?.waitUntil
       ? globalThis.caches?.default
       : null
@@ -466,7 +478,7 @@ export default {
     if (edgeCache && rangePlan && rangeContent) {
       context.waitUntil(
         edgeCache.put(rangePlan.key, rangeCacheResponse(response, rangeContent)).catch((error) => {
-          console.warn('[rom-cache] arcade range put failed', error instanceof Error ? error.message : String(error))
+          console.warn('[rom-cache] range put failed', error instanceof Error ? error.message : String(error))
         }),
       )
       return edgeCacheHeader(response, 'MISS')

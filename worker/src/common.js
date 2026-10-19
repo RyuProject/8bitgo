@@ -118,7 +118,7 @@ export function corsHeaders(request, env) {
     'Access-Control-Allow-Headers': 'Range, Authorization, Content-Type, If-None-Match, If-Range, If-Modified-Since, If-Match, If-Unmodified-Since',
     // Sockdrive 的 .raw / .metaj 是预压缩对象。浏览器会自动解码正文，但跨域脚本只有看见
     // Content-Encoding 才知道 Content-Length 仍是压缩字节数，不能拿它和解码后上限比较。
-    'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, Content-Encoding, ETag, Last-Modified, Retry-After, CF-Cache-Status',
+    'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, Content-Encoding, ETag, Last-Modified, Retry-After, CF-Cache-Status, X-8BitGo-Edge-Cache',
     'Access-Control-Max-Age': '86400', Vary: 'Origin',
   }
   if (allowed.includes('*')) headers['Access-Control-Allow-Origin'] = '*'

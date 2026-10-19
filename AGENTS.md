@@ -2056,19 +2056,22 @@ R2 multipart 发布到最终 `roms/psp/*.chd`。`.cso` / `.chd` 保持直传。
   同时发生；`source_deleted` 的 0 / 1 / 2 分别是保留 / 已删 / 正在清理。
 - 前端创建任务把随机 `source_key` 当幂等键：响应途中断线可以重试，服务端只返回原任务。旧槽是
   `.chd` / `.cso` 而新文件是 `.iso` 时绝不复用旧 key，否则转换服务降级时会把 ISO 字节写进错误扩展名。
-- 当前公开 PPSSPP 是实体目录 v10、Range loader v4：ISO/CSO/CHD 都用 2MB 分块，共用 96MB 内存 LRU，
+- 当前公开 PPSSPP 是实体目录 v11、Range loader v4：ISO/CSO/CHD 都用 2MB 分块，共用 96MB 内存 LRU，
   并主动带 `If-Match` / `If-Unmodified-Since`
   钉住同一代镜像。播放 URL 同时带 `romv=<ETag>`，Worker 必须在每次 Range 前把它与 R2 当前 ETag 比较；
-  不一致返回 412。Range 也必须绕过整包 Cache API，避免缓存的 200 响应跳过版本校验。
+  不一致返回 412。Range 必须绕过整包 Cache API；Worker 只把 `romv` 锁定、2MB 对齐且校验过 ETag 的
+  PSP 分片用私有范围键缓存成 200，命中时再还原 206。任意短 Range、未版本化或条件不一致仍直达 R2。
   **不要再凭 CHD hunk 大小把 Range 改小。** Range v3 曾只给 CHD 改成 512KB，理论伴读是 2MB 的
   四分之一，但当前 loader 是模拟线程里的同步请求，生产 CDN 往返数也变成约四倍。693.6MB 测试盘
   真实冷启动从核心到游戏由约 86 秒退化到约 93 秒，因此 v4 恢复 2MB。以后调分块必须在同一地区、
   冷缓存、同一镜像上以 `Booted` 日志计时；不能用“单次请求更小”推导“启动更快”。
-  v10 在 Emscripten Fetch 的同步 XHR 外加一层**紧邻两块、最多双路并行**的顺序预读：生产同一对象
-  实测单路 2MB 约 2.8～4.4 秒，两路能把同一 4MB 窗口的完成时间收在约 4.4 秒；3G 降为单路，
-  2G / 省流模式完全关闭。命中后直接交给下一次同步 Range；随机寻道会取消旧方向，缓存另限 8MB，
-  不能让预读与核心 96MB LRU 一起无界吃内存。正式读盘追上预读时必须取消**全部**投机请求，让同步
-  请求独占连接并在完成后重建窗口；取消前先把回调锁成终态，避免同步 `onabort` 重入后放出第三路。
+  v11 在 Emscripten Fetch 的同步 XHR 外加一层**自适应滚动预读**。DJMAX 的 1.42GiB CHD 线上取证到
+  单个 2MB Range 约 2.4～7.5 秒，旧版 4MB 窗口会被连续音频读取周期性追上；快速网络现在提前
+  8～10 块、最多四路并行，单路实测速率低或发生追尾时自动扩窗，连续命中后缓慢收回压力档。
+  3G 从双路小窗起步，低内存双核设备最多双路，2G / 省流模式完全关闭；额外缓存上限 24MB，
+  不能让预读与核心 96MB LRU 一起无界吃内存。命中后直接交给下一次同步 Range；随机寻道会取消旧方向。
+  正式读盘追上预读时必须取消**全部**投机请求，让同步请求独占连接并在完成后重建窗口；取消前先把
+  回调锁成终态，避免同步 `onabort` 重入后越过当前自适应并发上限。
   生成胶水补丁源在
   `vendor/ppsspp/range-read-ahead.js`，构建脚本按唯一片段注入；不要手改压成一行的发布 JS。
 - 源站要装近期 MAME 的 `chdman`，并在 `server/.env` 配 `PSP_CONVERT_WORKER_URL`；转换临时盘
@@ -2185,8 +2188,8 @@ ATRAC3+ 和 MP3 解码。构建/发布检查必须同时看到 `USE_FFMPEG:BOOL=
 Cloudflare 对这组静态文件的缓存键**忽略查询串**：请求 `PPSSPPSDL.data?r=17` 仍命中旧的 r16
 （22,417,304B，`CF-Cache-Status: HIT`），而新清单需要 19,434,861B。查询参数不能再承担版本隔离，
 否则新 JS、旧 data 和旧 Wasm 会被拼在同一局里。当前整套资源发布在
-`public/ppsspp/v0dbfaca/v10/`；下次桥、JS、Wasm、data、Range 胶水或 AudioWorklet 任一项改变就
-复制/构建到 `v11/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，
+`public/ppsspp/v0dbfaca/v11/`；下次桥、JS、Wasm、data、Range 胶水或 AudioWorklet 任一项改变就
+复制/构建到 `v12/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，
 不原地覆盖。
 
 Emscripten
@@ -2238,12 +2241,12 @@ PPSSPP 自己的 SAVEDATA、原生状态和按键配置仍由 IDBFS 每 30 秒�
 ⚠️ 远程盘的“启动成功”不能只等 `__ppssppRangeProgress`。该回调从 pthread 经
 `MAIN_THREAD_EM_ASM` 回页面，在部分浏览器里会晚到或完全看不到；v5 因此出现过镜像仍在正常 Range
 读取、外层却在 180 秒报“PPSSPP 响应超时”。也不能恢复“canvas 尺寸变化后一秒算成功”，那只是 SDL
-创建了黑窗口。v10 在 stdout 与 stderr 两路都等待 PPSSPP 成功打开内容后固定输出的
+创建了黑窗口。v11 在 stdout 与 stderr 两路都等待 PPSSPP 成功打开内容后固定输出的
 `Booted <path>...` 日志，并把大型 CHD 的
 mount 上限放到 300 秒；Range 回调只负责进度、对象大小校验和明确错误。`runtime.json` 用
 `startupReadinessProfile=core-boot-log-v1` 固化这条判据。
 
-PPSSPP 的 immutable 缓存只认**物理目录代次**，不再分 `?r=` 四层：`v10/` 内的 index、host、
+PPSSPP 的 immutable 缓存只认**物理目录代次**，不再分 `?r=` 四层：`v11/` 内的 index、host、
 AudioWorklet、JS、Wasm、data 与 runtime.json 必须同批发布。虽然某次可能只改 20KB 的桥，仍要换到
 下一个目录；这是用少量重复存储换取边缘缓存绝不会混代。不要重新引入 `RUNTIME_REVISION` / `DATA_REVISION`
 或给文件补查询参数假装失效，它们在当前 Cloudflare 规则下不生效。
@@ -2259,7 +2262,7 @@ AudioWorklet、JS、Wasm、data 与 runtime.json 必须同批发布。虽然某�
 ⚠️ 已发布过一版把 `VITE_PPSSPP_PATH` 目录直接塞进 iframe，老 bundle 会请求
 `/ppsspp/v0dbfaca?embed=1&r=2`（没有 `index.html`）。静态中间件关闭目录重定向后它必然 404，
 玩家要白等 120 秒才看到超时。`server/src/index.js` 为这个精确旧地址保留了 `no-store` 302，
-跳到当前 `v10/index.html`；以后换实体目录时必须同步那条跳转和回归断言。
+跳到当前 `v11/index.html`；以后换实体目录时必须同步那条跳转和回归断言。
 
 回归：`npm run test:ppsspp && npm run test:worker`。
 

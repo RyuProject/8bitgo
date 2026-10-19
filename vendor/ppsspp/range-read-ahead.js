@@ -14,8 +14,10 @@
   'use strict'
 
   const BLOCK_BYTES = 2 * 1024 * 1024
-  const MAX_CACHE_BYTES = 8 * 1024 * 1024
-  const PREFETCH_TIMEOUT_MS = 15_000
+  const MAX_CACHE_BYTES = 24 * 1024 * 1024
+  const MAX_DEPTH = 10
+  const MAX_CONCURRENCY = 4
+  const PREFETCH_TIMEOUT_MS = 20_000
   const NativeXMLHttpRequest = globalThis.XMLHttpRequest
   if (typeof NativeXMLHttpRequest !== 'function' || globalThis.__8bitgoCreatePspRangeXhr) return
 
@@ -29,6 +31,9 @@
   let prefetchHits = 0
   let demandTakeovers = 0
   let prefetchedBytes = 0
+  let pressureLevel = 0
+  let stableHits = 0
+  let measuredMbps = 0
 
   const header = (headers, name) => headers.get(String(name).toLowerCase()) || ''
   const rangeOf = (value) => {
@@ -60,13 +65,30 @@
 
   const readAheadPolicy = () => {
     const connection = globalThis.navigator?.connection
-    if (connection?.saveData) return { depth: 0, concurrency: 0 }
+    if (connection?.saveData) return { depth: 0, concurrency: 0, cacheBytes: 0 }
     const type = String(connection?.effectiveType || '').toLowerCase()
-    if (type === 'slow-2g' || type === '2g') return { depth: 0, concurrency: 0 }
-    if (type === '3g') return { depth: 1, concurrency: 1 }
-    // 实测单路 2 MiB Range 只有约 0.5 MiB/s；两路并行能把同一窗口里的吞吐接近翻倍。
-    // 只预读紧邻的两块，不继续扩大深度，避免节奏游戏随机寻道时浪费流量。
-    return { depth: 2, concurrency: 2 }
+    if (type === 'slow-2g' || type === '2g') return { depth: 0, concurrency: 0, cacheBytes: 0 }
+
+    const cores = Math.max(1, Number(globalThis.navigator?.hardwareConcurrency) || 4)
+    const memory = Math.max(0, Number(globalThis.navigator?.deviceMemory) || 0)
+    const constrained = cores <= 2 || (memory > 0 && memory <= 2)
+    const balanced = cores <= 4 || (memory > 0 && memory <= 4)
+    if (constrained) return { depth: 4, concurrency: 2, cacheBytes: 8 * 1024 * 1024 }
+
+    let depth = type === '3g' ? 4 : balanced ? 6 : 8
+    let concurrency = type === '3g' ? 2 : balanced ? 3 : 4
+    /*
+     * 单路实测速率低或正式读盘曾追上预读，都说明两块窗口装不下链路抖动。扩的是“提前量”，
+     * 不是 C++ 的 2 MiB 真实读取块；因此不会改变 CHD 偏移、校验器或最终文件内容。
+     */
+    if (measuredMbps > 0 && measuredMbps < 6) {
+      depth = Math.max(depth, 8)
+      concurrency = Math.max(concurrency, type === '3g' ? 3 : 4)
+    }
+    depth = Math.min(MAX_DEPTH, depth + pressureLevel * 2)
+    concurrency = Math.min(MAX_CONCURRENCY, concurrency + pressureLevel)
+    const cacheBytes = Math.min(MAX_CACHE_BYTES, Math.max(8 * 1024 * 1024, depth * BLOCK_BYTES))
+    return { depth, concurrency, cacheBytes }
   }
 
   const dropCacheEntry = (key) => {
@@ -81,8 +103,9 @@
     dropCacheEntry(key)
     cache.set(key, entry)
     cachedBytes += entry.response.byteLength
+    const { cacheBytes } = readAheadPolicy()
     for (const oldest of cache.keys()) {
-      if (cachedBytes <= MAX_CACHE_BYTES) break
+      if (cachedBytes <= cacheBytes) break
       dropCacheEntry(oldest)
     }
   }
@@ -97,12 +120,18 @@
 
   const startPrefetch = (key, job) => {
     const xhr = new NativeXMLHttpRequest()
+    const startedAt = Date.now()
     let settled = false
+    let receivedBytes = 0
     const finish = () => {
       // 某些浏览器在 abort 后还会补发 error/loadend；只允许第一次回调释放并发槽位。
       if (settled) return
       settled = true
       if (inflight.delete(key)) activePrefetches = Math.max(0, activePrefetches - 1)
+      if (receivedBytes > 0) {
+        const sampleMbps = receivedBytes * 8 / Math.max(1, Date.now() - startedAt) / 1000
+        measuredMbps = measuredMbps > 0 ? measuredMbps * 0.7 + sampleMbps * 0.3 : sampleMbps
+      }
       if (!cancellingPrefetches) pump()
     }
     const cancel = () => {
@@ -140,6 +169,7 @@
           actual.total === job.total &&
           response.byteLength === job.end - job.start + 1
         ) {
+          receivedBytes = response.byteLength
           prefetchedBytes += response.byteLength
           store(key, {
             response,
@@ -183,10 +213,13 @@
     if (!requested || requested.start % BLOCK_BYTES !== 0 || requested.end - requested.start + 1 > BLOCK_BYTES) return null
     const key = cacheKey(url, requested.start, requested.end)
     const exactPrefetch = inflight.get(key)
-    if (exactPrefetch) {
-      // 正式读取不能和另一条投机请求争抢带宽。核心追上预读时两路都取消，由同步请求立即接管；
-      // 成功后再围绕新的读取位置重建窗口，避免一条慢预读把模拟线程继续堵住数秒。
+    const exactQueued = queued.has(key)
+    if (exactPrefetch || exactQueued) {
+      // 正式读取不能和投机请求争抢带宽。核心追上进行中或排队中的预读时全部取消，
+      // 由同步请求立即接管；成功后再围绕新的读取位置重建窗口，避免慢预读继续堵住模拟线程。
       demandTakeovers++
+      pressureLevel = Math.min(2, pressureLevel + 1)
+      stableHits = 0
       cancelQueuedAndInflight()
     }
     queued.delete(key)
@@ -265,6 +298,12 @@
         const entry = cache.get(key)
         if (entry && validatorMatches(entry, this.__8bitgoHeaders)) {
           prefetchHits++
+          stableHits++
+          // 连续命中说明滚动窗口已经足够；缓慢收回压力档，避免一次旧抖动让整局永久保持最大投机量。
+          if (stableHits >= 12 && pressureLevel > 0) {
+            pressureLevel--
+            stableHits = 0
+          }
           this._fake = dropCacheEntry(key)
           afterDemand(this, requested)
           this.onreadystatechange?.({ target: this })
@@ -322,6 +361,8 @@
     prefetchHits,
     demandTakeovers,
     prefetchedBytes,
+    pressureLevel,
+    measuredMbps: Math.round(measuredMbps * 100) / 100,
   })
 })()
 /* 8BITGO_PSP_RANGE_READ_AHEAD_END */
