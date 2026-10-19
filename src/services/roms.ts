@@ -176,7 +176,7 @@ export function saveRomConfig(cfg: Partial<RomConfig>) {
       /* ignore */
     }
   }
-  probeCache.clear()
+  clearRomProbeCache()
   for (const l of listeners) l()
 }
 
@@ -382,7 +382,7 @@ async function deleteRomBatch(keys: string[]): Promise<boolean> {
   if (data?.ok !== true || !Array.isArray(data.deleted) || confirmed.size !== keys.length || keys.some((key) => !confirmed.has(key))) {
     throw new Error('Worker 未确认整包删除的全部文件；请刷新 R2 列表核查')
   }
-  probeCache.clear()
+  clearRomProbeCache()
   return true
 }
 
@@ -660,7 +660,17 @@ export function defaultKeyFor(platform: string, slug: string, fileName: string):
  * 在整个单页应用会话里一直显示「游戏没有当前语言版本 / 选择 ROM 开始游戏」——
  * ROM 明明好好躺在 R2 上，来回切页面也没用，只有整页刷新才能恢复。
  */
-const probeCache = new Map<string, Promise<ProbeOutcome>>()
+/*
+  已完成结论和在途请求必须分开存。
+
+  播放器的请求带 AbortSignal：切游戏 / 切语言时必须真取消，不能复用一条无法由当前页面
+  控制的共享 Promise；后台批量检查不带 signal，仍可合并同 URL 的并发 HEAD，避免重复打 R2。
+  只有 certain=true 才进 probeResults，网络抖动永远不会被钉死在整个 SPA 会话里。
+*/
+const probeResults = new Map<string, ProbeOutcome>()
+const probeInflight = new Map<string, Promise<ProbeOutcome>>()
+/** 清缓存时让更早启动、但更晚返回的 HEAD 失去写回资格，避免旧 404 覆盖刚上传的新对象。 */
+let probeCacheGeneration = 0
 
 /** 单次探测的结果。certain=false 表示「这一次没问出结论」，不该被记住 */
 export interface ProbeOutcome {
@@ -673,7 +683,7 @@ export interface ProbeOutcome {
    * `probeOnce` 的 catch 把异常整个吞掉，CORS 被拒、被插件拦、超时、断网
    * 在上层看起来一模一样，只能靠人去浏览器控制台里手动复现。见 reportProbeFailure。
    */
-  reason?: 'http' | 'html' | 'network' | 'timeout'
+  reason?: 'http' | 'html' | 'network' | 'timeout' | 'aborted'
   /** reason === 'http' 时服务器给的状态码 */
   status?: number
   /**
@@ -715,9 +725,21 @@ export function versionedRomUrl(url: string, etag: string | null): string {
 }
 
 /** 探一次。区分「没有」和「没问出来」，后者留给上层重试 */
-async function probeOnce(url: string, timeoutMs: number, allowHtml: boolean): Promise<ProbeOutcome> {
+async function probeOnce(
+  url: string,
+  timeoutMs: number,
+  allowHtml: boolean,
+  parentSignal?: AbortSignal,
+): Promise<ProbeOutcome> {
   const ctrl = new AbortController()
-  const timer = window.setTimeout(() => ctrl.abort(), timeoutMs)
+  let timedOut = false
+  const abortFromParent = () => ctrl.abort()
+  if (parentSignal?.aborted) ctrl.abort()
+  else parentSignal?.addEventListener('abort', abortFromParent, { once: true })
+  const timer = window.setTimeout(() => {
+    timedOut = true
+    ctrl.abort()
+  }, timeoutMs)
   try {
     // no-store 很关键：这里正是为了发现「同一个 URL 的对象内容已经换了」，
     // 若 HEAD 自己也吃浏览器缓存，就永远读不到新的 ETag。
@@ -756,41 +778,80 @@ async function probeOnce(url: string, timeoutMs: number, allowHtml: boolean): Pr
     // 超时（abort）、断网、CORS 被拒、被浏览器插件拦掉，全都是「没问出来」。
     // fetch 对这几种一律抛一个不带信息的 TypeError（CORS 的细节只在控制台里，
     // 脚本读不到），所以只能靠 signal 把「超时」这一种单独认出来。
-    return { url: '', certain: false, reason: ctrl.signal.aborted ? 'timeout' : 'network' }
+    const reason = timedOut ? 'timeout' : parentSignal?.aborted ? 'aborted' : 'network'
+    return { url: '', certain: false, reason }
   } finally {
     window.clearTimeout(timer)
+    parentSignal?.removeEventListener('abort', abortFromParent)
   }
+}
+
+export interface ProbeRomOptions {
+  /** 页面离开时终止真实网络请求，而不是只丢弃 setState。 */
+  signal?: AbortSignal
+  /** 默认保留后台调用的一次快速重试；播放器已有外层退避，必须关掉避免重试套重试。 */
+  retry?: boolean
+}
+
+/** 可被 AbortSignal 打断的短退避；取消后不能再悄悄发第二个 HEAD。 */
+function waitForProbeRetry(signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return Promise.resolve(false)
+  return new Promise((resolve) => {
+    let settled = false
+    const done = (ready: boolean) => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(timer)
+      signal?.removeEventListener('abort', abort)
+      resolve(ready)
+    }
+    const abort = () => done(false)
+    const timer = window.setTimeout(() => done(true), 300)
+    signal?.addEventListener('abort', abort, { once: true })
+  })
 }
 
 /**
  * HEAD 探测 ROM，并把内容 ETag 带回播放 URL。
  *
- * 没问出结论时**当场重试一次**（隔 300ms，躲开瞬时抖动），仍然没有结论就把这次的
- * 结果从缓存里摘掉 —— 下次再问会真的再发一次请求，而不是复读一个失败。
- * 只重试一次是为了兜住耗时：上层要按语言槽依次探好几个候选，每多一轮就多等一个超时。
+ * 默认调用没问出结论时当场重试一次（隔 300ms，躲开瞬时抖动）；播放器必须传
+ * `retry:false`，因为 useRomUrl 已有跨轮退避。网络失败不进结论缓存，下次会真的重新发请求。
  */
-export function probeRom(url: string, timeoutMs = 4000, allowHtml = false): Promise<ProbeOutcome> {
+export function probeRom(
+  url: string,
+  timeoutMs = 4000,
+  allowHtml = false,
+  options: ProbeRomOptions = {},
+): Promise<ProbeOutcome> {
   // 同一个 URL 作为 ROM 时必须拒绝 HTML，作为 HTML5 入口时又必须接受；缓存键要把两种语义分开。
   const cacheKey = `${allowHtml ? 'html' : 'rom'}:${url}`
-  const cached = probeCache.get(cacheKey)
-  if (cached) return cached
-  // 先声明再赋值：下面的闭包要拿自己这条 promise 跟缓存比对（同步段跑不到那里，
-  // 等真的用上时 p 早就赋好了）
-  let p: Promise<ProbeOutcome> | undefined
-  p = (async () => {
-    let outcome = await probeOnce(url, timeoutMs, allowHtml)
-    if (!outcome.certain) {
-      await new Promise((r) => window.setTimeout(r, 300))
-      outcome = await probeOnce(url, timeoutMs, allowHtml)
+  const cached = probeResults.get(cacheKey)
+  if (cached) return Promise.resolve(cached)
+  // 带 signal 的请求归当前页面所有，不能和别的页面共享生命周期；无 signal 的后台检查仍合并在途请求。
+  if (!options.signal) {
+    const inflight = probeInflight.get(cacheKey)
+    if (inflight) return inflight
+  }
+
+  const generation = probeCacheGeneration
+  const run = async () => {
+    let outcome = await probeOnce(url, timeoutMs, allowHtml, options.signal)
+    if (!outcome.certain && outcome.reason !== 'aborted' && options.retry !== false) {
+      const ready = await waitForProbeRetry(options.signal)
+      if (ready) outcome = await probeOnce(url, timeoutMs, allowHtml, options.signal)
     }
-    if (!outcome.certain) {
-      // 只摘掉自己这一条：期间可能已经有别的调用重新写了缓存，别把人家的结果删了
-      if (probeCache.get(cacheKey) === p) probeCache.delete(cacheKey)
-    }
+    // 上传 / 删除 / 手动重试可能在 HEAD 飞行期间清过缓存；旧请求回来后不能把旧结论塞回去。
+    if (outcome.certain && generation === probeCacheGeneration) probeResults.set(cacheKey, outcome)
     return outcome
-  })()
-  probeCache.set(cacheKey, p)
-  return p
+  }
+  const promise = run()
+  if (!options.signal) {
+    probeInflight.set(cacheKey, promise)
+    void promise.finally(() => {
+      if (probeInflight.get(cacheKey) === promise) probeInflight.delete(cacheKey)
+    })
+  }
+  return promise
 }
 
 /**
@@ -810,10 +871,17 @@ export function probeRomUrl(url: string, timeoutMs = 4000, allowHtml = false): P
  * 或者刚改完绑定时，玩家手里的页面还记着上一轮的「没有」。不传参数就全清。
  */
 export function clearRomProbeCache(urls?: string[]): void {
-  if (!urls) return probeCache.clear()
+  probeCacheGeneration += 1
+  if (!urls) {
+    probeResults.clear()
+    probeInflight.clear()
+    return
+  }
   for (const url of urls) {
-    probeCache.delete(`rom:${url}`)
-    probeCache.delete(`html:${url}`)
+    probeResults.delete(`rom:${url}`)
+    probeResults.delete(`html:${url}`)
+    probeInflight.delete(`rom:${url}`)
+    probeInflight.delete(`html:${url}`)
   }
 }
 
@@ -920,10 +988,11 @@ function configuredStreamedRom(
  * 而这时候界面会一路掉到「游戏没有当前语言版本」—— ROM 明明好好躺在 R2 上。
  * 让玩家自己去点「重新检查」是把我们的问题推给他。
  *
- * 三次、由密到疏，全部用完约 8 秒；期间状态保持 checking（按钮显示「正在确认」），
- * 不会先闪一下错误再自己好。确定性的失败（404）一次都不重试 —— 问一百次也一样。
+ * 两次、由密到疏；播放器每轮只发一次 HEAD，不再和 probeRom 自己的重试叠成指数等待。
+ * 最坏约 14 秒（3 × 4 秒探测 + 2.4 秒退避），期间状态保持 checking，不会先闪错误。
+ * 确定性的失败（404）一次都不重试 —— 问一百次也一样。
  */
-const AUTO_RETRY_DELAYS = [800, 2000, 5000]
+const AUTO_RETRY_DELAYS = [600, 1800]
 
 /** 一个候选探完之后留下的痕迹，只为诊断 */
 interface ProbeTrace {
@@ -1055,7 +1124,8 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
       setState(streamed)
       return
     }
-    // 切游戏或语言时要真正终止旧测速；只拦 setState 仍会让两条 256 KiB 请求继续占用新游戏的带宽。
+    // 切游戏或语言时要真正终止旧 HEAD 和测速；只拦 setState 仍会让旧游戏继续占用新游戏的连接。
+    const probeController = new AbortController()
     const routeController = new AbortController()
     setState({ status: 'checking', url: '' })
     ;(async () => {
@@ -1064,88 +1134,107 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
       let uncertain = false
       /** 每个候选探出来的结果，只在最终放弃时用来打诊断 */
       const traces: ProbeTrace[] = []
-      // 每个显式语言槽都要实际探测：绑定记录还在，不代表 R2 对象一定还在。
-      // 当前槽丢失时继续按英语 → 日语 → 中文 → 其余语言槽回退，不能在第一个 404 就停住。
-      for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
-        const candidate = candidates[candidateIndex]
-        if (runtimeFailures.current.has(candidate.key)) continue
-        const url = romUrlForKey(candidate.key)
-        if (!url) continue
-        // iframe 导航不受 fetch CORS 限制；第三方 HTML5 游戏常常允许嵌入，却不允许跨域 HEAD。
-        // 完整 URL 直接交给播放器，让 iframe 自己加载，才能复现普通网页嵌入的工作方式。
-        if (game.platform === 'html5' && /^https?:\/\//i.test(candidate.key)) {
-          if (!cancelled) setState({ status: 'found', url, key: candidate.key, lang: candidate.lang })
-          return
-        }
-        const outcome = await probeRom(url, 4000, game.platform === 'html5')
-        if (outcome.url) {
-          let selectedCandidate = candidate
-          let selectedOutcome = outcome
-          /*
-            只有“大文件 + 同语言备用源”才值得花 2 × 256 KiB 做路径测速。备用的派生 8BG / 原包仍按
-            原顺序确认，测速只决定最终整份从哪个源下载，绝不把两个源的分片混在一起。
-          */
-          if (!candidate.backup && candidate.lang && (outcome.size ?? 0) >= ROM_ROUTE_RACE_MIN_BYTES) {
-            const backupCandidates = candidates
-              .slice(candidateIndex + 1)
-              .filter((item) => item.lang === candidate.lang && item.backup && !runtimeFailures.current.has(item.key))
-            for (let backupIndex = 0; backupIndex < backupCandidates.length; backupIndex++) {
-              const backupCandidate = backupCandidates[backupIndex]
-              const backupUrl = romUrlForKey(backupCandidate.key)
-              if (!backupUrl) continue
-              const backupOutcome = await probeRom(backupUrl, 4000, game.platform === 'html5')
-              if (backupOutcome.url) {
-                const route = await chooseFasterRomRoute(
-                  { url: outcome.url, size: outcome.size },
-                  { url: backupOutcome.url, size: backupOutcome.size },
-                  { signal: routeController.signal },
-                )
-                if (route === 'backup') {
-                  selectedCandidate = backupCandidate
-                  selectedOutcome = backupOutcome
-                  console.info(
-                    `[8bitgo/rom] ${game.slug} 的同语言备用路径测速更快，整份 ROM 改走：${backupCandidate.key}`,
-                  )
-                }
-                break
-              }
-              traces.push({
-                key: backupCandidate.key,
-                url: backupUrl,
-                outcome: backupOutcome,
-                lang: backupCandidate.lang,
-                backup: true,
-              })
-              if (!backupOutcome.certain && !backupCandidate.derivedPacked) break
-            }
-          }
-          if (selectedCandidate.backup && selectedCandidate === candidate) {
-            console.warn(`[8bitgo/rom] ${game.slug} 的 ${candidate.lang ?? '通用'} 主地址不可用，已切换到同语言备用地址：${candidate.key}`)
-          }
-          if (!cancelled) setState({
-            status: 'found',
-            url: selectedOutcome.url,
-            key: selectedCandidate.key,
-            lang: selectedCandidate.lang,
-            size: selectedOutcome.size,
-          })
-          return
-        }
-        traces.push({ key: candidate.key, url, outcome, lang: candidate.lang, backup: candidate.backup })
-        if (!outcome.certain) {
-          // 主地址超时、CORS 或断网时仍要给同语言备用地址一次机会。
-          // 备用可以在另一个域名/R2 上，不能沿用“同一主机必然一起失败”的旧假设。
-          if (shouldTryRomCandidateAfterUncertain(candidate, candidates[candidateIndex + 1])) continue
-          /*
-            「没问出来」就**立刻收手**，别把剩下的候选挨个耗一遍。
+      /*
+        同一个语言槽的派生 8BG、原包、主源、备用源全部同时发 HEAD，再按原优先级消费结果。
+        这样优先级完全不变，但四次跨域往返从“相加”变成“取最慢一次”；选中小 ROM 后会立刻
+        abort 仍在等待的备用 HEAD。不同语言仍然一组一组走，避免中文存在时白探七种语言。
+      */
+      type CandidateProbe = { candidate: RomCandidate; url: string; outcome: ProbeOutcome }
+      const groups: RomCandidate[][] = []
+      for (const candidate of candidates) {
+        const last = groups[groups.length - 1]
+        if (!last || last[0]?.lang !== candidate.lang) groups.push([candidate])
+        else last.push(candidate)
+      }
 
-            这一类失败（断网 / CORS / 被插件拦 / 超时）是**主机级**的，不是这个 key 的事 ——
-            同一个域名下的其它候选必然一样失败。而每个候选要花「4 秒超时 ×2 + 300ms」，
-            回退链补全到八个语言槽之后，硬探到底最坏要 66 秒，再叠上三轮自动重试
-            就是四分多钟的「正在确认文件」。收手之后一轮最多 8 秒多，退避重试才有意义。
-          */
-          uncertain = true
-          break
+      explicitGroups:
+      for (const group of groups) {
+        const entries = group
+          .filter((candidate) => !runtimeFailures.current.has(candidate.key))
+          .map((candidate) => ({ candidate, url: romUrlForKey(candidate.key) }))
+          .filter((entry) => Boolean(entry.url))
+        if (!entries.length) continue
+
+        const pending: Array<Promise<CandidateProbe>> = entries.map(async ({ candidate, url }) => {
+          // iframe 导航不受 fetch CORS 限制；外站可以允许嵌入、同时拒绝跨域 HEAD。
+          // 仍放在有序 Promise 队列里，避免备用外链越过排在前面的站内主地址。
+          const directHtml = game.platform === 'html5' && /^https?:\/\//i.test(candidate.key)
+          return {
+            candidate,
+            url,
+            outcome: directHtml
+              ? { url, certain: true }
+              : await probeRom(url, candidate.derivedPacked ? 2500 : 4000, game.platform === 'html5', {
+                  signal: probeController.signal,
+                  // useRomUrl 自己有退避；这里再重试一次会把 4 秒超时嵌套放大成几十秒。
+                  retry: false,
+                }),
+          }
+        })
+
+        for (let index = 0; index < pending.length; index++) {
+          const current = await pending[index]
+          if (cancelled) return
+          const { candidate, url, outcome } = current
+          if (outcome.url) {
+            let selectedCandidate = candidate
+            let selectedOutcome = outcome
+            /*
+              大文件才为同语言双源额外取样。备用 HEAD 已和主源并发启动，这里不再串行多等一轮；
+              测速只选择一个完整来源，后续下载仍绝不混用两个源的分片。
+            */
+            if (!candidate.backup && candidate.lang && (outcome.size ?? 0) >= ROM_ROUTE_RACE_MIN_BYTES) {
+              const backupIndexes = entries
+                .map((entry, entryIndex) => ({ ...entry, entryIndex }))
+                .filter((entry) => entry.entryIndex > index && entry.candidate.backup)
+              for (let backupIndex = 0; backupIndex < backupIndexes.length; backupIndex++) {
+                const backup = await pending[backupIndexes[backupIndex].entryIndex]
+                if (cancelled) return
+                if (backup.outcome.url) {
+                  const route = await chooseFasterRomRoute(
+                    { url: outcome.url, size: outcome.size },
+                    { url: backup.outcome.url, size: backup.outcome.size },
+                    { signal: routeController.signal },
+                  )
+                  if (route === 'backup') {
+                    selectedCandidate = backup.candidate
+                    selectedOutcome = backup.outcome
+                    console.info(
+                      `[8bitgo/rom] ${game.slug} 的同语言备用路径测速更快，整份 ROM 改走：${backup.candidate.key}`,
+                    )
+                  }
+                  break
+                }
+                traces.push({
+                  key: backup.candidate.key,
+                  url: backup.url,
+                  outcome: backup.outcome,
+                  lang: backup.candidate.lang,
+                  backup: true,
+                })
+                const nextBackup = backupIndexes[backupIndex + 1]?.candidate
+                if (!backup.outcome.certain && !shouldTryRomCandidateAfterUncertain(backup.candidate, nextBackup)) break
+              }
+            }
+            if (selectedCandidate.backup && selectedCandidate === candidate) {
+              console.warn(`[8bitgo/rom] ${game.slug} 的 ${candidate.lang ?? '通用'} 主地址不可用，已切换到同语言备用地址：${candidate.key}`)
+            }
+            probeController.abort()
+            if (!cancelled) setState({
+              status: 'found',
+              url: selectedOutcome.url,
+              key: selectedCandidate.key,
+              lang: selectedCandidate.lang,
+              size: selectedOutcome.size,
+            })
+            return
+          }
+          traces.push({ key: candidate.key, url, outcome, lang: candidate.lang, backup: candidate.backup })
+          if (!outcome.certain && !shouldTryRomCandidateAfterUncertain(candidate, entries[index + 1]?.candidate)) {
+            // 一组内能换格式 / 换备用源；整组仍问不出来就停止，不能把断网误判成跨语言缺失。
+            uncertain = true
+            break explicitGroups
+          }
         }
       }
 
@@ -1172,18 +1261,42 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
         return
       }
 
-      // 完全没有绑定记录的老游戏仍按历史约定探测文件名。
-      for (const key of conventional) {
-        if (runtimeFailures.current.has(key)) continue
-        const url = romUrlForKey(key, base)
-        const outcome = await probeRom(url, 4000, game.platform === 'html5')
-        if (outcome.url) {
-          if (!cancelled) setState({ status: 'found', url: outcome.url, key, size: outcome.size })
+      // 内置 / 外链 HTML5 入口直接交给 iframe；HEAD 的 CORS 规则和“能否嵌入”不是一回事。
+      const directConventionalHtml = conventional.find((key) => game.platform === 'html5' && /^https?:\/\//i.test(key))
+      if (directConventionalHtml) {
+        const url = romUrlForKey(directConventionalHtml, base)
+        probeController.abort()
+        if (!cancelled) setState({ status: 'found', url, key: directConventionalHtml })
+        return
+      }
+
+      /*
+        没绑定记录的老游戏可能有十几个约定后缀。每批并发三个并按原顺序选第一个存在的，
+        把 N 次 RTT 压到 ceil(N/3) 次；遇到主机级故障则在本批结束后停止，不继续轰完整张表。
+      */
+      const availableConventional = conventional.filter((key) => !runtimeFailures.current.has(key))
+      for (let offset = 0; offset < availableConventional.length; offset += 3) {
+        const batch = availableConventional.slice(offset, offset + 3)
+        const results = await Promise.all(batch.map(async (key) => {
+          const url = romUrlForKey(key, base)
+          return {
+            key,
+            url,
+            outcome: await probeRom(url, key.endsWith('.8bg') ? 2500 : 4000, game.platform === 'html5', {
+              signal: probeController.signal,
+              retry: false,
+            }),
+          }
+        }))
+        if (cancelled) return
+        const found = results.find((result) => Boolean(result.outcome.url))
+        if (found) {
+          probeController.abort()
+          setState({ status: 'found', url: found.outcome.url, key: found.key, size: found.outcome.size })
           return
         }
-        traces.push({ key, url, outcome })
-        // 同上：主机级的失败，接着探别的约定文件名只是白等
-        if (!outcome.certain) {
+        for (const result of results) traces.push({ key: result.key, url: result.url, outcome: result.outcome })
+        if (results.some((result) => !result.outcome.certain)) {
           uncertain = true
           break
         }
@@ -1212,6 +1325,7 @@ export function useRomUrl(game: Game | undefined, prefer?: RomLang | null): RomR
 
     return () => {
       cancelled = true
+      probeController.abort()
       routeController.abort()
       window.clearTimeout(timer)
     }
@@ -1432,7 +1546,7 @@ export async function uploadRom(file: Blob, key: string, onProgress?: UploadProg
     const mp = await import('./romMultipart')
     try {
       const result = await mp.uploadRomMultipart(file, cleanKey, onProgress)
-      probeCache.clear()
+      clearRomProbeCache()
       return result
     } catch (err) {
       // Worker 还没部署分片接口（忘了 wrangler deploy）时退回单发 PUT。
@@ -1474,7 +1588,7 @@ function singlePut(file: Blob, cleanKey: string, api: string, onProgress?: Uploa
           reject(new Error(`上传响应不完整或对象大小不符；请到「ROM 存储」核查 ${cleanKey}`))
           return
         }
-        probeCache.clear()
+        clearRomProbeCache()
         resolve({ key: cleanKey, url: romUrlForKey(cleanKey), size: data.size })
       } else {
         reject(explainRomStatus(xhr.status, '上传'))
@@ -1488,7 +1602,7 @@ export async function deleteRom(key: string): Promise<void> {
   const api = getRomApi()
   const res = await fetch(`${api}/${encodeKey(key)}`, { method: 'DELETE', headers: authHeaders() })
   if (!res.ok) throw explainRomStatus(res.status, '删除')
-  probeCache.clear()
+  clearRomProbeCache()
 }
 
 /**

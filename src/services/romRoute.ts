@@ -5,7 +5,9 @@
  * 测速读取每个来源开头的一小段并立即取消响应；大文件才值得付这点额外流量，小 ROM 继续直接用主源。
  */
 
-export const ROM_ROUTE_SAMPLE_BYTES = 256 * 1024
+// 128 KiB 已足够把 DNS/TLS/TTFB 和明显带宽差拉开；旧值 256 KiB 会让“检查版本”
+// 在移动网下额外等更久、还为两个源各付一份流量。真正下载开始后仍会用 8 MiB 实测自适应并发。
+export const ROM_ROUTE_SAMPLE_BYTES = 128 * 1024
 export const ROM_ROUTE_RACE_MIN_BYTES = 16 * 1024 * 1024
 const ROUTE_SPEED_TTL_MS = 5 * 60 * 1000
 const FASTER_MARGIN = 1.15
@@ -76,7 +78,8 @@ async function measureRoute(source: RomRouteSource, options: RouteRaceOptions): 
   const abortFromParent = () => controller.abort()
   if (options.signal?.aborted) controller.abort()
   else options.signal?.addEventListener('abort', abortFromParent, { once: true })
-  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 5000)
+  // 测速只是优化，不能反过来成为开局门槛；3 秒还没取到样本就保守走主源。
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 3000)
   const sampleBytes = options.sampleBytes ?? ROM_ROUTE_SAMPLE_BYTES
   const startedAt = now()
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined

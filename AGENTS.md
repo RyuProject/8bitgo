@@ -2352,6 +2352,19 @@ GHSA-3wwx-pv8p-q78v 的 `undici@7.29.0`。npm 自动修复会建议把 Wrangler 
 WRANGLER_LOG_PATH=/tmp/8bitgo-wrangler-dry-run.log npx wrangler deploy --dry-run --config worker/wrangler.toml
 ```
 
+### 2.35 在线 ROM 检查只允许一层重试；同语言候选要并行探测
+
+详情页的「正在准备在线版本」由 `src/services/roms.ts` 的 `useRomUrl()` 驱动。播放器自己按
+600ms / 1800ms 做两轮退避，因此它调用 `probeRom()` 时必须传 `retry:false`；`probeRom` 默认的
+一次快速重试只留给后台独立检查。两层重试叠在一起会把一次 4 秒超时放大到几十秒。
+
+同一语言的派生 `.8bg`、原包、主源和备用源同时发 HEAD，但仍按原顺序消费结果；不同语言继续
+逐组回退，不能为了省一轮 RTT 一次轰完八种语言。页面切换必须用 AbortSignal 真正终止旧 HEAD，
+不能只挡 `setState`。外链 HTML5 入口直接交给 iframe，不用 HEAD 证明存在：跨域 HEAD 被拒不等于
+页面不能嵌入。双源路径测速只给大文件，样本保持 128 KiB、3 秒上限；测速失败保守走主源。
+
+回归：`npm run test:rom-probe`。它锁住确定性缓存、播放器单层重试和页面取消会传到真实 fetch。
+
 ## 3. 常用命令
 
 ```bash

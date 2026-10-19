@@ -278,6 +278,58 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
   assert.ok(outcome.url.includes('romv=ok'))
 }
 
+/* ---------- 8.1 播放器关闭内层重试：一次超时不能在一轮里偷偷翻倍 ---------- */
+{
+  const u = next()
+  script({ status: 503 })
+  const outcome = await probeRom(u, 4000, false, { retry: false })
+  assert.equal(outcome.certain, false)
+  assert.equal(calls, 1, 'useRomUrl 已有外层退避时，每轮只能发一次 HEAD')
+}
+
+/* ---------- 8.2 页面切走会真正 abort 在途 HEAD ---------- */
+{
+  const u = next()
+  const fakeFetch = globalThis.fetch
+  let requestSignal
+  globalThis.fetch = (_url, init = {}) => new Promise((_resolve, reject) => {
+    requestSignal = init.signal
+    const abort = () => reject(new DOMException('Aborted', 'AbortError'))
+    if (requestSignal?.aborted) abort()
+    else requestSignal?.addEventListener('abort', abort, { once: true })
+  })
+  const controller = new AbortController()
+  const pending = probeRom(u, 10_000, false, { signal: controller.signal, retry: false })
+  controller.abort()
+  const outcome = await pending
+  assert.equal(requestSignal?.aborted, true, '上层 signal 必须传到真实 fetch')
+  assert.equal(outcome.reason, 'aborted', '切页取消不能伪装成一次 10 秒超时')
+  globalThis.fetch = fakeFetch
+}
+
+/* ---------- 8.3 清缓存后，早先在途的旧 404 不能晚到并重新污染缓存 ---------- */
+{
+  const u = next()
+  const fakeFetch = globalThis.fetch
+  let finishOld
+  globalThis.fetch = () => new Promise((resolve) => {
+    finishOld = () => resolve({
+      ok: false,
+      status: 404,
+      headers: { get: () => null },
+    })
+  })
+  const oldProbe = probeRom(u, 10_000, false, { retry: false })
+  clearRomProbeCache([u])
+  finishOld()
+  await oldProbe
+  globalThis.fetch = fakeFetch
+
+  script({ status: 200, headers: { etag: '"new-object"' } })
+  assert.ok((await probeRomUrl(u)).includes('romv=new-object'), '清缓存前启动的旧请求不能把旧 404 写回来')
+  assert.equal(calls, 1, '旧请求返回后仍应重新访问服务器')
+}
+
 /* ---------- 9. 语言回退链必须覆盖**全部** ROM_LANGS ---------- */
 /*
   踩过的坑：这条链原本是手写的五项 [requested, 'en', 'ja', 'zh-Hans', 'zh-Hant']，
@@ -564,4 +616,4 @@ assert.equal(isolatedEmbedFor('diablo'), undefined, 'Diablo 不需要 COOP/COEP�
   globalThis.__viteEnv = saved
 }
 
-console.log('✅ ROM 探测测试通过：确定没有 / 没问出来（自动重试的依据）/ 手动清缓存 / 语言回退链覆盖全部 ROM_LANGS / 首帧探测判定')
+console.log('✅ ROM 探测测试通过：确定没有 / 单层重试 / 真实取消 / 缓存失效竞态 / 全语言回退 / 首帧探测判定')

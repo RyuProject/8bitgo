@@ -3615,6 +3615,20 @@ export function EmulatorPlayer({
     else inputRef.current?.click()
   }
 
+  /**
+   * “检查在线版本”期间按钮是 disabled，CSS 会把它的 pointer-events 关掉，原来绑在按钮上的
+   * hover 预热因此永远不触发。把意图监听放到外层后，ROM HEAD 与模拟器入口可以重叠下载；
+   * 仍只在玩家真的把指针移到开始区时做，不让只是浏览详情页的人白下几十 MB 核心。
+   */
+  const prewarmPrimaryAction = (aggressive: boolean) => {
+    if (online) return
+    prewarmRuntime(pageRuntime?.id, prewarmCore, aggressive)
+    if (pageRuntime?.id === 'jsdos' && effectiveDosSystemUrl) prewarmSystemCache(effectiveDosSystemUrl)
+    if (pageRuntime?.id === 'jsdos' && dosSockdriveUrl) {
+      prewarmSockdriveCache(dosSockdriveUrl, Boolean(effectiveDosSystemUrl))
+    }
+  }
+
   /*
     ⚠️ 返回的是**两个兄弟节点**（fragment），不是一个盒子 —— 弹幕输入框刻意在播放器盒子
     **外面**。别为了「看起来整齐」把它塞回去。
@@ -3932,49 +3946,36 @@ export function EmulatorPlayer({
                       className="mb-1 max-sm:hidden"
                     />
                   )}
-                  <Button
-                    size="lg"
-                    disabled={(!online && romChecking) || joinBlocked}
-                    onPointerEnter={() => {
-                      if (!online) {
-                        prewarmRuntime(pageRuntime?.id, prewarmCore, true)
-                        if (pageRuntime?.id === 'jsdos' && effectiveDosSystemUrl) prewarmSystemCache(effectiveDosSystemUrl)
-                        if (pageRuntime?.id === 'jsdos' && dosSockdriveUrl) {
-                          prewarmSockdriveCache(dosSockdriveUrl, Boolean(effectiveDosSystemUrl))
-                        }
-                      }
-                    }}
-                    onFocus={() => {
-                      if (!online) {
-                        prewarmRuntime(pageRuntime?.id, prewarmCore)
-                        if (pageRuntime?.id === 'jsdos' && effectiveDosSystemUrl) prewarmSystemCache(effectiveDosSystemUrl)
-                        if (pageRuntime?.id === 'jsdos' && dosSockdriveUrl) {
-                          // 键盘能提前 focus；触屏 focus 与 click 同时发生，但正式挂载会复用同一 Promise。
-                          prewarmSockdriveCache(dosSockdriveUrl, Boolean(effectiveDosSystemUrl))
-                        }
-                      }
-                    }}
-                    onClick={primaryAction}
+                  <span
+                    className="inline-flex"
+                    onPointerEnter={() => prewarmPrimaryAction(true)}
+                    onFocusCapture={() => prewarmPrimaryAction(false)}
                   >
-                    <span aria-hidden>{online ? (willWatch ? '👀' : '👥') : status === 'error' && romUrl ? '↻' : '▶'}</span>{' '}
-                    {joining && online
-                      ? willWatch
-                        ? t.player.watchRoom
-                        : inviteFull
-                          ? t.player.roomFull
-                          : inviteGone
-                            ? t.player.roomGoneShort
-                            : t.player.joinRoom
-                      : online
-                        ? t.player.onlineStart
-                        : romChecking
-                          ? t.player.checkingCloud
-                          : romUrl
-                            ? status === 'error'
-                              ? t.player.retryStart
-                              : t.player.start
-                            : t.player.pickRom}
-                  </Button>
+                    <Button
+                      size="lg"
+                      disabled={(!online && romChecking) || joinBlocked}
+                      onClick={primaryAction}
+                    >
+                      <span aria-hidden>{online ? (willWatch ? '👀' : '👥') : status === 'error' && romUrl ? '↻' : '▶'}</span>{' '}
+                      {joining && online
+                        ? willWatch
+                          ? t.player.watchRoom
+                          : inviteFull
+                            ? t.player.roomFull
+                            : inviteGone
+                              ? t.player.roomGoneShort
+                              : t.player.joinRoom
+                        : online
+                          ? t.player.onlineStart
+                          : romChecking
+                            ? t.player.checkingCloud
+                            : romUrl
+                              ? status === 'error'
+                                ? t.player.retryStart
+                                : t.player.start
+                              : t.player.pickRom}
+                    </Button>
+                  </span>
                   <p className="max-w-md text-[11px] leading-relaxed text-white/70 sm:text-xs">
                     {joining && online ? (
                       <>
