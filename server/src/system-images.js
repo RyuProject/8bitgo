@@ -22,6 +22,8 @@ const ALLOWED_SYSTEM_IMAGES = new Set([
   'Windows95_Traditional-Chinese-DirectInput-v1.jsdos',
   // 《天之痕》是原生 Big5，进入剧情还依赖完整 DirectX 7.0a；这份是去安装包后的极简系统。
   'Windows95_Traditional-Chinese-DirectX7a-Minimal-v1.jsdos',
+  // 超精简版保留同一游戏运行链；版本化路径防止旧镜像与浏览器磁盘缓存混用。
+  'Windows95_Traditional-Chinese-DirectX7a-UltraLite-v2.jsdos',
 ])
 
 export function systemImageAsset(file) {

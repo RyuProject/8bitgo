@@ -114,7 +114,8 @@ const PRIMARY = 'https://assets.8bitgo.com/systems/dos/system-win95-v1.jsdos'
 const SAME_ORIGIN = '/system-images/system-win95-v1.jsdos'
 const OFFICIAL = 'https://br.cdn.dos.zone/js-dos/system/system-win95-v1.jsdos'
 const TRADITIONAL_WIN95 = 'Windows95_Traditional-Chinese-DirectInput-v1.jsdos'
-const SCAR_OF_SKY_WIN95 = 'Windows95_Traditional-Chinese-DirectX7a-Minimal-v1.jsdos'
+const SCAR_OF_SKY_WIN95 = 'Windows95_Traditional-Chinese-DirectX7a-UltraLite-v2.jsdos'
+const SCAR_OF_SKY_WIN95_FALLBACK = 'Windows95_Traditional-Chinese-DirectX7a-Minimal-v1.jsdos'
 
 console.log('一、镜像表')
 
@@ -158,6 +159,15 @@ await check('旧 DirectInput 镜像路径仍可代理，避免已有数据或缓
     `/system-images/${TRADITIONAL_WIN95}`,
   ])
   assert.ok(systemImageAsset(TRADITIONAL_WIN95))
+})
+
+await check('46.5MB 的旧 DirectX 镜像仍可代理，方便超精简版回退', () => {
+  const primary = `https://assets.8bitgo.com/systems/dos/${SCAR_OF_SKY_WIN95_FALLBACK}`
+  assert.deepEqual(systemSourcesFor(primary).map((source) => source.url), [
+    primary,
+    `/system-images/${SCAR_OF_SKY_WIN95_FALLBACK}`,
+  ])
+  assert.ok(systemImageAsset(SCAR_OF_SKY_WIN95_FALLBACK))
 })
 
 await check('⚠️⚠️ 我们自己改出来的 VGA 镜像绝不能回落到官方那份', () => {

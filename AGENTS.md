@@ -411,8 +411,11 @@ Win95 或 Caesar 的分辨率补丁。
 
 ⚠️ 这款 ROM 是原生繁体 Big5，不要再改成 CP936。第一版镜像虽能到标题页，进入新游戏仍会
 弹 DirectInput 错误或非法操作：Win95 自带的旧 DirectX 不够，必须完整安装繁体
-DirectX 7.0a。最终使用 `Windows95_Traditional-Chinese-DirectX7a-Minimal-v1.jsdos`；它保留
-繁中代码页与原生鼠标链，安装 DX7 后删除 14MB 安装源并清空临时文件，约 46.5MB。
+DirectX 7.0a。46.5MB 的 `Windows95_Traditional-Chinese-DirectX7a-Minimal-v1.jsdos`
+保留作回退。当前《天之痕》使用 `Windows95_Traditional-Chinese-DirectX7a-UltraLite-v2.jsdos`
+（29,670,830 字节）：保留繁中代码页、明体字库、原生鼠标链和 DX7 运行库；裁去帮助、安装资料、
+备用注册表、工具及不使用的字体，按 FAT 表归零空闲簇后再封装。这是针对本游戏验收的系统盘，
+其他 Win95 游戏需要单独验证，不能把它当通用系统镜像。
 验收必须依次走过标题页 →「起」→ 姓名框 → 片头 → 第一段对白，并确认繁体中文可读；
 只停在标题菜单仍然不算通过。
 

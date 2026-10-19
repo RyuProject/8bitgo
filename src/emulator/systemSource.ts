@@ -92,6 +92,10 @@ const MIRRORS: Readonly<Record<string, readonly SystemMirror[]>> = {
   '/systems/dos/Windows95_Traditional-Chinese-DirectX7a-Minimal-v1.jsdos': sameOriginMirror(
     'Windows95_Traditional-Chinese-DirectX7a-Minimal-v1.jsdos',
   ),
+  // 超精简版也是本站自行制作，不能把英文 Win95 当成故障时的镜像替身。
+  '/systems/dos/Windows95_Traditional-Chinese-DirectX7a-UltraLite-v2.jsdos': sameOriginMirror(
+    'Windows95_Traditional-Chinese-DirectX7a-UltraLite-v2.jsdos',
+  ),
   /*
     ⚠️ `system-win311-vga-v1.jsdos` **故意不登记**，别手贱加上。
     它是我们自己从官方那份改出来的：SYSTEM.INI 的显示驱动从 S3 Trio64V 800x600 真彩
