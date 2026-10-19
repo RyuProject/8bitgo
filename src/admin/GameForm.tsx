@@ -1415,7 +1415,14 @@ function FlashControlsField({
  */
 function stageText(stage: UploadStage | null): string {
   if (!stage || stage.parts <= 1) return ''
-  return `分片 ${stage.done}/${stage.parts}` + (stage.resumed ? ` · 已恢复 ${stage.resumed} 片` : '')
+  const networkText = stage.measuredMbps
+    ? ` · 实测 ${stage.measuredMbps.toFixed(1)} Mbps${stage.concurrency ? ` · ${stage.concurrency} 路` : ''}`
+    : stage.done < stage.parts
+      ? ` · 正在测速${stage.concurrency ? ` · ${stage.concurrency} 路` : ''}`
+      : ''
+  return `分片 ${stage.done}/${stage.parts}` +
+    (stage.resumed ? ` · 已恢复 ${stage.resumed} 片` : '') +
+    networkText
 }
 
 /**

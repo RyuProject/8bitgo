@@ -1358,6 +1358,10 @@ export interface UploadStage {
   done: number
   /** 这次是接着上次传的，恢复了几片；0 表示从头传 */
   resumed: number
+  /** 首片真实测速后当前允许同时上传的分片数。 */
+  concurrency?: number
+  /** 首个真实分片测得的上行 Mbps；不额外发送测速文件。 */
+  measuredMbps?: number
 }
 
 /** 上传进度回调。第二个参数只有分片上传才有，单发 PUT 时是 undefined */

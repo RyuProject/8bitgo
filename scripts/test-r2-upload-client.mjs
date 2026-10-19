@@ -42,7 +42,7 @@ globalThis.XMLHttpRequest = class {
 }
 
 const { uploadRom, deleteRomDir, headRom, listRomObjects } = await import('../src/services/roms.ts')
-const { uploadRomMultipart, listOrphanUploads, abortOrphanUpload, listPendingUploads, MultipartUploadGate } = await import('../src/services/romMultipart.ts')
+const { adaptiveUploadConcurrency, uploadRomMultipart, listOrphanUploads, abortOrphanUpload, listPendingUploads, MultipartUploadGate } = await import('../src/services/romMultipart.ts')
 const { matchesRomPackSource, romPackWorkerConcurrency } = await import('../src/services/romPack.ts')
 const {
   clearPendingSockdriveCreation,
@@ -56,7 +56,7 @@ const { ApiError } = await import('../src/services/api.ts')
 
 // 两条 HTTP/2 PUT 同时被 reset 后，后续任务必须单路恢复；不能各自重试再制造一次连接级风暴。
 {
-  const gate = new MultipartUploadGate(2)
+  const gate = new MultipartUploadGate(2, 2)
   let rejectFirst
   let rejectSecond
   const first = gate.run(() => new Promise((_resolve, reject) => { rejectFirst = reject }))
@@ -80,6 +80,13 @@ const { ApiError } = await import('../src/services/api.ts')
   assert.equal(gate.snapshot().limit, 1, '少量成功不能过早恢复并发')
 }
 console.log('✅ HTTP/2 连接级错误会把分片上传收敛到单路，避免并发重试风暴')
+
+assert.equal(adaptiveUploadConcurrency(8 * 1024 * 1024, 2_000, { hardwareConcurrency: 8 }), 4)
+assert.equal(adaptiveUploadConcurrency(8 * 1024 * 1024, 8_000, { hardwareConcurrency: 8 }), 3)
+assert.equal(adaptiveUploadConcurrency(8 * 1024 * 1024, 30_000, { hardwareConcurrency: 8 }), 1)
+assert.equal(adaptiveUploadConcurrency(8 * 1024 * 1024, 2_000, { saveData: true, hardwareConcurrency: 8 }), 1)
+assert.equal(adaptiveUploadConcurrency(8 * 1024 * 1024, 2_000, { deviceMemoryGb: 2, hardwareConcurrency: 8 }), 2)
+console.log('✅ 首个真实分片会按实测上行速度、设备内存与省流量模式选择 1–4 路')
 
 assert.equal(romPackWorkerConcurrency(100 * 1024 * 1024, { hardwareConcurrency: 8, deviceMemory: 8 }), 4)
 assert.equal(romPackWorkerConcurrency(100 * 1024 * 1024, { hardwareConcurrency: 4, deviceMemory: 4 }), 2)
@@ -111,18 +118,21 @@ console.log('✅ 8BG 压缩加密按 CPU、内存与分块数选择 1–4 路 Wo
 }
 console.log('✅ 8BG 失败重试会逐块校验源 ROM；内容变化时绝不复用旧密文')
 
-// 稳定链路从两路起步，连续成功后才逐级放开；429 / 网关错误仍须立刻回到单路。
+// 第一片是真实测速；高速链路直接放开，故障后仍须单路恢复，不能把多条重试一起打回边缘。
 {
-  const gate = new MultipartUploadGate(4)
-  assert.equal(gate.snapshot().limit, 2)
-  for (let i = 0; i < 4; i++) await gate.run(async () => i)
-  assert.equal(gate.snapshot().limit, 3)
-  for (let i = 0; i < 4; i++) await gate.run(async () => i)
+  let now = 0
+  const gate = new MultipartUploadGate(4, 1, () => now, { hardwareConcurrency: 8 })
+  assert.equal(gate.snapshot().limit, 1)
+  await gate.run(async () => { now += 2_000 }, 8 * 1024 * 1024)
   assert.equal(gate.snapshot().limit, 4)
+  assert.equal(gate.snapshot().calibrated, true)
+  assert.ok(gate.snapshot().measuredMbps > 30)
   await assert.rejects(gate.run(async () => { throw { status: 503 } }))
   assert.equal(gate.snapshot().limit, 1)
+  for (let i = 0; i < 4; i++) await gate.run(async () => { now += 2_000 }, 8 * 1024 * 1024)
+  assert.equal(gate.snapshot().limit, 2, '故障后每四片只恢复一档')
 }
-console.log('✅ 稳定上传可自适应升至四路；HTTP/2、限流和网关故障都会自动降回单路')
+console.log('✅ 高速上传测速后可升至四路；HTTP/2、限流和网关故障会降为单路并逐档恢复')
 
 const headRequests = []
 globalThis.fetch = async (url, init) => {

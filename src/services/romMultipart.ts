@@ -37,9 +37,9 @@ import type { UploadProgress, UploadResult } from './roms'
 export const PART_SIZE = 8 * 1024 * 1024
 /**
  * HTTP/2 下多条大 PUT 共用一条连接，边缘或中间网络重置连接时会让多片同时失败。
- * 从两路起步，只有连续成功才逐级升到设备与网络允许的 3–4 路；失败会自动降为单路恢复。
+ * 首片单路取得真实上行样本，再选择 1–4 路；失败自动降为单路并逐档恢复到本次测速上限。
  */
-const INITIAL_CONCURRENCY = 2
+const INITIAL_CONCURRENCY = 1
 const MAX_CONCURRENCY = 4
 /** 单片重试次数（含首次）。连接级重置需要给浏览器足够时间重建 HTTP/2 会话。 */
 const ATTEMPTS = 5
@@ -94,11 +94,23 @@ export class MultipartUploadGate {
   private limit: number
   private readonly preferred: number
   private successStreak = 0
+  private calibrated = false
+  private calibratedTarget = 1
+  private measuredMbps = 0
   private readonly waiters: Array<() => void> = []
+  private readonly now: () => number
+  private readonly hints: UploadNetworkHints
 
-  constructor(preferred = MAX_CONCURRENCY, initial = Math.min(INITIAL_CONCURRENCY, preferred)) {
+  constructor(
+    preferred = MAX_CONCURRENCY,
+    initial = Math.min(INITIAL_CONCURRENCY, preferred),
+    now: () => number = monotonicNow,
+    hints: UploadNetworkHints = browserUploadNetworkHints(),
+  ) {
     this.preferred = Math.max(1, Math.min(MAX_CONCURRENCY, Math.floor(preferred)))
     this.limit = Math.max(1, Math.min(this.preferred, Math.floor(initial)))
+    this.now = now
+    this.hints = hints
   }
 
   private acquire(): Promise<void> {
@@ -123,11 +135,22 @@ export class MultipartUploadGate {
     return status === 0 || status === 429 || status === 502 || status === 503 || status === 504
   }
 
-  async run<T>(task: () => Promise<T>): Promise<T> {
+  async run<T>(task: () => Promise<T>, sampleBytes = 0): Promise<T> {
     await this.acquire()
+    const startedAt = this.now()
     try {
       const value = await task()
-      if (this.limit < this.preferred && ++this.successStreak >= RECOVERY_SUCCESS_PARTS) {
+      if (!this.calibrated && sampleBytes > 0) {
+        const elapsedMs = Math.max(1, this.now() - startedAt)
+        this.measuredMbps = uploadMbps(sampleBytes, elapsedMs)
+        this.calibratedTarget = Math.min(
+          this.preferred,
+          adaptiveUploadConcurrency(sampleBytes, elapsedMs, this.hints),
+        )
+        this.limit = this.calibratedTarget
+        this.calibrated = true
+        this.successStreak = 0
+      } else if (this.limit < (this.calibrated ? this.calibratedTarget : this.preferred) && ++this.successStreak >= RECOVERY_SUCCESS_PARTS) {
         this.limit++
         this.successStreak = 0
       }
@@ -145,25 +168,83 @@ export class MultipartUploadGate {
   }
 
   snapshot() {
-    return { active: this.active, limit: this.limit, waiting: this.waiters.length, successStreak: this.successStreak }
+    return {
+      active: this.active,
+      limit: this.limit,
+      waiting: this.waiters.length,
+      successStreak: this.successStreak,
+      calibrated: this.calibrated,
+      measuredMbps: this.measuredMbps,
+    }
   }
 }
 
-export function preferredUploadConcurrency(): number {
+export interface UploadNetworkHints {
+  saveData?: boolean
+  effectiveType?: string
+  downlinkMbps?: number
+  rttMs?: number
+  deviceMemoryGb?: number
+  hardwareConcurrency?: number
+}
+
+const monotonicNow = () => typeof performance !== 'undefined' ? performance.now() : Date.now()
+const uploadMbps = (bytes: number, elapsedMs: number) => bytes > 0 && elapsedMs > 0
+  ? (bytes * 8) / (elapsedMs * 1000)
+  : 0
+
+function browserUploadNetworkHints(): UploadNetworkHints {
   const navigator = globalThis.navigator as {
     hardwareConcurrency?: number
-    connection?: { effectiveType?: string; saveData?: boolean; downlink?: number }
+    deviceMemory?: number
+    connection?: { effectiveType?: string; saveData?: boolean; downlink?: number; rtt?: number }
   } | undefined
-  const connection = navigator?.connection
-  const type = String(connection?.effectiveType || '').toLowerCase()
-  if (connection?.saveData || type === 'slow-2g' || type === '2g') return 1
+  return {
+    saveData: navigator?.connection?.saveData,
+    effectiveType: navigator?.connection?.effectiveType,
+    downlinkMbps: navigator?.connection?.downlink,
+    rttMs: navigator?.connection?.rtt,
+    deviceMemoryGb: navigator?.deviceMemory,
+    hardwareConcurrency: navigator?.hardwareConcurrency,
+  }
+}
+
+/**
+ * 第一片本来就必须上传；用它到当前 Cloudflare Anycast 入口的真实吞吐选择后续并发，
+ * 不额外制造测速对象。并发只负责藏住高 RTT / 单连接拥塞窗口，最多四路，慢网和省流量模式收缩。
+ */
+export function adaptiveUploadConcurrency(
+  sampleBytes: number,
+  elapsedMs: number,
+  hints: UploadNetworkHints = {},
+): number {
+  const effectiveType = String(hints.effectiveType ?? '').toLowerCase()
+  if (hints.saveData || effectiveType === 'slow-2g' || effectiveType === '2g') return 1
+
+  const sampledMbps = uploadMbps(sampleBytes, elapsedMs)
+  const hintedMbps = Number.isFinite(hints.downlinkMbps) ? Math.max(0, hints.downlinkMbps ?? 0) : 0
+  const mbps = sampledMbps || hintedMbps
+  const rtt = Number.isFinite(hints.rttMs) ? Math.max(0, hints.rttMs ?? 0) : 0
+  let concurrency = 2
+  if (effectiveType === '3g' || (mbps > 0 && mbps < 3)) concurrency = 1
+  else if (mbps >= 24 && (rtt === 0 || rtt < 180)) concurrency = 4
+  else if (mbps >= 8 || rtt >= 180) concurrency = 3
+
+  // 每路 XHR 都可能短暂持有一片请求体；低内存或双核设备不能为了跑满网卡把后台标签页挤死。
+  if ((hints.deviceMemoryGb ?? Infinity) <= 2 || (hints.hardwareConcurrency ?? Infinity) <= 2) {
+    concurrency = Math.min(concurrency, 2)
+  }
+  return Math.max(1, Math.min(MAX_CONCURRENCY, concurrency))
+}
+
+export function preferredUploadConcurrency(): number {
+  const hints = browserUploadNetworkHints()
+  const type = String(hints.effectiveType || '').toLowerCase()
+  if (hints.saveData || type === 'slow-2g' || type === '2g') return 1
   if (type === '3g') return 2
-  const hardware = Number(navigator?.hardwareConcurrency || 2)
-  // Network Information API 没有上行测速，只把 4g + 高 downlink 当作“可以试四路”的弱信号。
-  // 判断错了也只影响开头几片：任何 reset / 429 / 5xx 都会立刻收敛到单路。
-  if (type === '4g' && Number(connection?.downlink || 0) >= 8 && hardware >= 4) return 4
-  if (hardware >= 4) return 3
-  return 2
+  if (Number(hints.deviceMemoryGb || Infinity) <= 2 || Number(hints.hardwareConcurrency || 2) <= 2) return 2
+  // 这里只给真实测速设硬上限，不再拿下载方向的 downlink 猜上行速度。
+  return 4
 }
 
 /* ---------------- 本地账本 ---------------- */
@@ -409,7 +490,7 @@ async function putPartWithRetry(ctx: Ctx, state: PendingUpload, partNumber: numb
     // 连接级错误后不能在几百毫秒内把多条 PUT 一起塞回刚重建的 HTTP/2 会话。
     if (attempt > 0) await sleep(Math.min(12_000, 1_500 * 2 ** (attempt - 1)) + Math.random() * 1_000)
     try {
-      return await gate.run(() => putPart(ctx, state, partNumber, blob, onLoaded))
+      return await gate.run(() => putPart(ctx, state, partNumber, blob, onLoaded), blob.size)
     } catch (err) {
       last = err
       // 重试要从 0 字节重新算这一片的进度，否则进度条会往前虚报
@@ -476,6 +557,8 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
   const state = resumedState ?? (await createUpload(ctx, key, file, ident, partSize, fingerprint ?? ''))
   const resumed = resumedState ? resumedState.parts.length : 0
   if (resumable) saveState(state)
+  const preferredConcurrency = preferredUploadConcurrency()
+  const uploadGate = new MultipartUploadGate(preferredConcurrency)
 
   /** 除最后一片外都是 partSize —— R2 要求「除末片外等大」，这也是身份校验要带上 partSize 的原因 */
   const sizeOfPart = (n: number) => Math.min(partSize, file.size - (n - 1) * partSize)
@@ -499,7 +582,14 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
     lastReportedAt = performance.now()
     // 封顶 99%：合并分片还要花一两秒，先跳到 100% 再卡住会让人以为卡死了
     const pct = Math.min(99, Math.round((loadedBytes / Math.max(1, file.size)) * 100))
-    onProgress?.(pct, { parts: total, done: finished.size, resumed })
+    const network = uploadGate.snapshot()
+    onProgress?.(pct, {
+      parts: total,
+      done: finished.size,
+      resumed,
+      concurrency: network.limit,
+      measuredMbps: network.calibrated ? network.measuredMbps : undefined,
+    })
   }
   const report = (force = false) => {
     const elapsed = performance.now() - lastReportedAt
@@ -526,8 +616,6 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
 
   const queue = Array.from({ length: total }, (_, i) => i + 1).filter((n) => !finished.has(n))
   let failure: unknown = null
-  const preferredConcurrency = preferredUploadConcurrency()
-  const uploadGate = new MultipartUploadGate(preferredConcurrency)
 
   const runner = async () => {
     for (;;) {
@@ -574,7 +662,14 @@ export async function uploadRomMultipart(file: Blob, key: string, onProgress?: U
 
   stopScheduledReport()
   clearState(key)
-  onProgress?.(100, { parts: total, done: total, resumed })
+  const network = uploadGate.snapshot()
+  onProgress?.(100, {
+    parts: total,
+    done: total,
+    resumed,
+    concurrency: network.limit,
+    measuredMbps: network.calibrated ? network.measuredMbps : undefined,
+  })
   return { key, url: romUrlForKey(key), size }
 }
 

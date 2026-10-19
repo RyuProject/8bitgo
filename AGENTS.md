@@ -590,8 +590,9 @@ Free / Pro 100 MB，Business 200 MB，Enterprise 500 MB，**由边缘节点执�
 日志里能看到这次 PUT，才说明问题在 Worker 侧。
 
 现在超过 24MB（`MULTIPART_THRESHOLD`）的文件自动改走**分片上传**：
-8MB 一片、从 2 并发起步并在稳定链路上逐级升到 3–4 路、单片失败重试、`localStorage` 记账后可断点续传
-（`src/services/romMultipart.ts`）。HTTP/2 reset、429 或网关 5xx 会立即收敛到单路，连续成功后才重新升档；
+8MB 一片，首片既是真数据也是上行测速，按实际 Mbps、RTT、省流量模式与设备内存选择 1–4 路；
+单片失败重试、`localStorage` 记账后可断点续传（`src/services/romMultipart.ts`）。HTTP/2 reset、429 或网关 5xx
+会立即收敛到单路，连续成功后才逐档恢复到本次测速上限；
 不要把它改成四路固定并发，否则一次连接级错误会再次变成重试风暴。
 XHR 的 `progress` 事件按字节差值维护总量，并限到约 12fps 再通知 React；不要恢复成每个事件遍历全部分片
 并立即 `setState`，大 ISO 在 3–4 路上传时会用 UI 统计反过来堵住主线程与网络回调。
@@ -602,6 +603,12 @@ XHR 的 `progress` 事件按字节差值维护总量，并限到约 12fps 再通
 各自并发重试：那会在刚重建的连接上再次制造失败风暴。上传器现在遇到 `status=0`、429 或网关 5xx
 会把全局闸门收敛到单路，之后每连续四片成功才恢复一档；单片最多试 5 次并用 1.5～12 秒退避。已经完成的分片和
 本地账本原样保留，管理员重新选择同一文件时仍从断点继续，不准为了这个错误更换 `PART_SIZE`。
+
+生产 R2 桶 `8bitgo` 已启用 **Local Uploads**：上传对象会先写入客户端附近的区域，再由 Cloudflare
+异步复制到桶的主区域。它是桶配置，不在 `wrangler.toml`；排查时用
+`npx wrangler r2 bucket local-uploads get 8bitgo`，不要误以为重新部署 Worker 会自动恢复这个开关。
+Local Uploads 只优化写入，不优化下载；玩家读取继续依赖 Anycast、版本化 URL、Worker Cache API、
+Range 边缘分片缓存，以及 `fetchBlobWithProgress()` 用首个真实分片选择下载并发。
 
 1. R2 要求**除最后一片外所有片等大**、最小 5MB、最多 10000 片 —— 改 `PART_SIZE` 会让旧的续传记录作废；续传还校验文件名、字节数、修改时间和头/中/尾内容指纹，防止把同名的另一份文件拼进旧分片
 2. binding **没有 `listParts`**：complete 时必须把每片的 `{partNumber, etag}` 全报回去，所以这份账只能记在前端 —— **换浏览器就续不上**
