@@ -861,6 +861,8 @@ const zhHant: Translation = {
     flashSaveLoginRequired: '登入帳號後才能使用線上存檔；登入完請退出並重新進入本局',
     flashSaveExpiringSoon: '線上存檔工作階段 10 分鐘後到期：請找機會退出並重新進入本局，之後才能繼續雲端存檔',
     runtimeFellBack: '這份 ROM 需要更完整的模擬核心，已自動切換到 {runtime}',
+    ndsCoreFellBack: 'NDS 核心意外退出，已切換相容核心並重新開始；兩種核心的存檔分開保存',
+    ndsCoreFailed: 'NDS 核心執行失敗：{reason}',
     arcadeHackFound: '已認出改版包：{title}（借 {driver} 驅動執行）',
     arcadeHackNoPlan: '認出來了：{title}，但這個包還沒有可用的載入方案，暫時跑不起來。',
     watchHintPick: '你選的是只看不玩：能看到房主的畫面、聽到聲音，但不參與操作。想上場隨時在工具列點「上場玩」。',

@@ -284,17 +284,35 @@ zip 顶层条目，于是照旧报 `v-102tw.u39 NOT FOUND` 回菜单。拍平（
 引擎升级后它红了就重新取证，别直接改数字）。**注意它是延迟换稳定**：想调到别的值，
 改 `MAME_AUDIO_LATENCY_MS` 并同步上面那条「Buffer size」断言。
 
-### 2.8.4 NDS：已硬切 melonDS DS 1.4.0，旧 melonDS 不再发布
+### 2.8.4 NDS：默认 melonDS DS 1.4.0，WASM 崩溃时旧核心兜底
 
 本站 NDS 默认核心是自构建 `melondsds-wasm.data`（上游 melonDS DS v1.4.0），
 `src/data/platforms.ts` 与后台下拉都直接写 `melondsds`。历史游戏数据若仍填 `nds` / `melonds`，
-`emulatorJsCoreForGame()` 会在开局时硬归一到新核心；旧 `melonds-*.data` 已删除，不留双跑窗口。
-用户确认没有 NDS 存档，所以没有做 `.sav` → `.srm` 或旧即时存档的迁移桥。
+`emulatorJsCoreForGame()` 会在开局时硬归一到新核心；旧 `melonds-*.data` 仅作为运行时兜底发布，
+不会因为历史字段而默认启用。新版发生 `RuntimeError: unreachable` 或 WASM 越界时，
+播放器只对可安全重启的本机会话切换一次 `melonds-compat`；联机/云端会话不擅自重建。
+两核心的即时存档使用独立档位，不能互相覆盖。回归：`npm run test:nds-crash`。
+⚠️ 已定位的 `unreachable`（线上 `wasm-function[2361]:0x1a46fb`）不是模拟 bug，是**链接期 ABI 冲突**：
+melonDS DS 自带的 libretro-common 声明 `int64_t path_get_size()`，EmulatorJS RetroArch 定义的是
+`int32_t`。两者静态链进同一个 wasm 后同名 C 符号只留 RetroArch 那份，wasm-ld 只报 warning，
+并把核心的三处调用换成 `unreachable` 桩：FlushFirmware 两个分支（重置、卸载、游戏改写固件后
+定时落盘必崩）和读 system 目录（目录里只要有一个普通文件就在开局崩）。`build:melondsds` 现在
+把这三处改走签名一致的 filestream API，并把最终链接里的 `function signature mismatch` 升级为
+构建失败；报告里 `linkAbiChecked: true` 才是修复后的包。回归：`npm run test:melondsds-abi`。
+同一个脚本还守着三件事：① 未定义符号也让构建失败（Makefile 用的是 `ERROR_ON_UNDEFINED_SYMBOLS=0`）；
+② melonDS DS 前端以 `-fexceptions` 编译和链接——它用 C++ 异常报告加密 ROM、坏 ROM、DSi 专用游戏等
+开局错误，旧包里没有任何 catch，这些错误只会变成一串数字的未捕获异常，也不会触发兼容核心回退；
+模拟核心本体不开，热路径不受影响；③ 出包时自动改 `EJS_RUNTIME_GENERATION`，新核心和新代号必须
+一起提交部署，否则浏览器可能把旧 `.data` 缓存到新 `buildStart` 名下。
+⚠️ 对《宝可梦 白 2》这份 256MB ROM，兼容核心已实测能过片头到“从最初开始”，
+但本地测试点进新游戏后仍出现长时间黑/白屏；**到菜单不等于确认可通关**，
+在角色创建和第一段可操作场景都通过前不能把它标成完整修复。
 
 普通游戏详情页没有全站 COOP/COEP，因此发布的是**非 pthread 软件渲染版**：JIT、OpenGL、
 threaded renderer 都在构建时关闭，避免 SharedArrayBuffer 初始化失败。间接 Wi-Fi 保留，
 pcap 直连网络在浏览器构建里关闭。可复现构建入口：`npm run build:melondsds`。
-DeSmuME / DeSmuME 2015 仍是逐游戏兜底，不会自动回落到旧 melonDS。
+DeSmuME / DeSmuME 2015 仍是逐游戏兜底；自动切换仅由确定的 WASM 崩溃触发，
+普通下载/ROM 错误不能误切到旧 melonDS。
 
 NDS ROM 由适配器自己按 **8MB Range** 顺序下载；每片完成后写进独立的
 `8bitgo-rom-downloads` IndexedDB，所以刷新页面、浏览器崩溃或断网重开后会只补缺失片。
@@ -361,6 +379,12 @@ Lock 下 clientX/Y 已经不是真实位置）。kiosk 桌面路径的捕获面�
 浏览器锁定点。pointerup / pointercancel 要挂在 document 捕获阶段，窗口失焦、Esc 解锁和全屏
 切换也要主动放掉所有已按鼠标键——DOM 在拖出画布或失去 Pointer Lock 后不保证补发 pointerup，
 漏掉就是游戏里永久拖拽。老 Safari 的 `requestPointerLock()` 还可能返回 void，不能无条件 `.then()`。
+
+⚠️ **锁定判断看 host 内有没有锁定元素，不能要求它等于当前事件目标。** js-dos 同时有 canvas
+和 `.emulator-mouse-overlay`；锁在 canvas、事件落到覆盖层时，`clientX/Y` 在 Pointer Lock 下是冻结的。
+若按 `pointerLockElement === event.target` 判断，就会把每次移动当作未锁定的绝对定位，软件光标
+反复跳回锁定点（《主题医院》玩家报告并用覆盖层事件复现）。相对位移要按真正的锁定元素尺寸归一化；点击也不能在
+覆盖层事件里重读冻结坐标。
 
 ⚠️ Pointer Lock 会在部分 WebView / 浏览器策略下拒绝。Windows 客体与绝对坐标 DOS 的适配器接管路径必须在
 拒绝后退回未锁定的 `clientX/Y → 0～1`，不能像上游那样每次点击都只重试捕获、永远不给游戏

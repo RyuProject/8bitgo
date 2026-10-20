@@ -860,6 +860,8 @@ const de: Translation = {
     flashSaveLoginRequired: 'Melde dich an, um Online-Spielstände zu nutzen. Beende danach das Spiel und starte es neu',
     flashSaveExpiringSoon: 'Die Online-Speicher-Sitzung läuft in 10 Minuten ab – verlasse das Spiel und starte es neu, um weiter in der Cloud zu speichern',
     runtimeFellBack: 'Diese ROM braucht einen vollständigeren Kern – zu {runtime} gewechselt',
+    ndsCoreFellBack: 'Der NDS-Kern ist abgestürzt. Neustart mit dem kompatiblen Kern; Spielstände bleiben getrennt',
+    ndsCoreFailed: 'Der NDS-Kern ist abgestürzt: {reason}',
     arcadeHackFound: 'Hack erkannt: {title} (läuft über den Treiber {driver})',
     arcadeHackNoPlan: '{title} erkannt, aber für dieses Paket gibt es noch kein funktionierendes Ladeverfahren.',
     watchHintPick: 'Du kommst als Zuschauer rein: Bild und Ton des Gastgebers, aber keine Steuerung. Über „Platz nehmen“ in der Leiste kannst du jederzeit mitspielen.',

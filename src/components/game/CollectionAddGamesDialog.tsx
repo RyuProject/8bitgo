@@ -135,7 +135,8 @@ export function CollectionAddGamesDialog({ collection, existing, onAdded, onClos
       aria-modal="true"
       aria-labelledby="collection-add-games-title"
     >
-      <div className="flex w-full max-w-3xl flex-col rounded-2xl border border-line bg-surface p-5 shadow-2xl" style={{ maxHeight: 'calc(100vh - 2rem)' }}>
+      {/* 100dvh：iPhone Safari 的 100vh 是「地址栏收起后」的大视口，卡片顶部（含唯一的关闭按钮）会被裁掉 */}
+      <div className="my-auto flex max-h-[calc(100vh-2rem)] w-full max-w-3xl flex-col rounded-2xl border border-line bg-surface p-5 shadow-2xl supports-[height:100dvh]:max-h-[calc(100dvh-2rem)]">
         <div className="flex items-start justify-between gap-3">
           <h2 id="collection-add-games-title" className="text-lg font-bold">
             {fmt(t.collections.addGamesTitle, { title: collection.title })}

@@ -26,6 +26,7 @@ import {
   mkdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { dirname, isAbsolute, join, relative } from 'node:path'
@@ -74,6 +75,67 @@ function runBash(command, cwd) {
   execFileSync('/bin/bash', ['-lc', command], { cwd, stdio: 'inherit' })
 }
 
+/** 和 runBash 一样实时打印，同时把输出存进日志供链接后检查。 */
+function runBashLogged(command, cwd, logFile) {
+  console.log(`\n$ ${command}`)
+  execFileSync('/bin/bash', ['-lc', `set -o pipefail; ( ${command} ) 2>&1 | tee ${q(logFile)}`], { cwd, stdio: 'inherit' })
+  return readFileSync(logFile, 'utf8')
+}
+
+/**
+ * wasm-ld 遇到「同名函数签名不一致」只给 warning，然后把调用替换成 unreachable 桩——
+ * 构建照样成功，包在玩家点到那条路径时才 `RuntimeError: unreachable`。核心与 RetroArch
+ * 各带一份 libretro-common，这类问题以后还会出现，所以必须在出包前拦住。
+ */
+function assertNoSignatureMismatch(log) {
+  const lines = log.split('\n')
+  const pick = (re) => [...new Set(lines.filter((line) => re.test(line)).map((line) => line.trim()))]
+  const mismatches = pick(/function signature mismatch/i)
+  if (mismatches.length) {
+    throw new Error(`最终链接出现函数签名不一致，这些调用会在运行时变成 unreachable：\n${mismatches.join('\n')}`)
+  }
+  /*
+    Makefile.emulatorjs 用 ERROR_ON_UNDEFINED_SYMBOLS=0：缺一个函数也照样出包，只在玩家走到
+    那条路径时才 `Aborted(missing function: …)`。当前发布包里这类桩为 0，以后也不允许新增。
+  */
+  const undefinedSymbols = pick(/undefined symbol:/i)
+  if (undefinedSymbols.length) {
+    throw new Error(`最终链接存在未定义符号，运行到时会直接中止：\n${undefinedSymbols.join('\n')}`)
+  }
+}
+
+/**
+ * build-emulatorjs.sh 里写死了 `7z`；Homebrew 新的 sevenzip 只提供 `7zz`。缺 `7z` 时在工作目录放
+ * 一个同名软链并加进 PATH，子进程（含 build-emulatorjs.sh）都能用。
+ */
+function ensureSevenZip(workdir) {
+  const has = (name) => {
+    try {
+      return execFileSync('/usr/bin/env', ['which', name], { encoding: 'utf8' }).trim()
+    } catch {
+      return ''
+    }
+  }
+  if (has('7z')) return
+  const alt = has('7zz') || has('7za')
+  if (!alt) throw new Error('缺少构建工具 7z（macOS：brew install sevenzip 或 brew install p7zip）')
+  const bin = join(workdir, 'bin')
+  mkdirSync(bin, { recursive: true })
+  rmSync(join(bin, '7z'), { force: true })
+  symlinkSync(alt, join(bin, '7z'))
+  process.env.PATH = `${bin}:${process.env.PATH}`
+  console.log(`[tools] 用 ${alt} 充当 7z`)
+}
+
+/** RetroArch 仓库里的目录是小写 emulatorjs；macOS 默认大小写不敏感能蒙混，Linux / 区分大小写的卷会直接失败。 */
+function emulatorJsDir(retroDir) {
+  for (const name of ['emulatorjs', 'EmulatorJS']) {
+    const dir = join(retroDir, name)
+    if (existsSync(join(dir, 'build-emulatorjs.sh'))) return dir
+  }
+  throw new Error(`RetroArch 仓库里找不到 emulatorjs/build-emulatorjs.sh：${retroDir}`)
+}
+
 function needTool(name) {
   try {
     execFileSync('/usr/bin/env', ['which', name], { stdio: 'ignore' })
@@ -101,7 +163,69 @@ function replaceOnce(path, before, after) {
   writeFileSync(path, source.replace(before, after))
 }
 
+/**
+ * melonDS DS 自带的 libretro-common（fa8a1b5）把 `path_get_size` 声明成 `int64_t`，而 EmulatorJS
+ * RetroArch 里同名函数仍是 `int32_t`。桌面版核心是独立动态库，各用各的；EmulatorJS 却把核心和
+ * RetroArch 静态链进**同一个** wasm，同名 C 符号只留 RetroArch 那份。wasm 的函数类型连返回值
+ * 宽度都要一致，wasm-ld 于是只报一条 warning，把 melonDS DS 的三处调用全部换成只有 `unreachable`
+ * 的桩。发布包里实测：
+ *   - 读系统目录（RegisterCoreOptions 扫 BIOS / 固件）时，只要目录里有一个普通文件就崩；
+ *   - FlushFirmware 两个分支都直接崩：重置、卸载游戏、游戏改写固件（WFC 设置）后定时落盘都会触发。
+ * 这就是线上 `RuntimeError: unreachable` 的来源。改走两边签名一致的 filestream API，
+ * 并在最终链接时把这类 warning 升级成构建失败（见 assertNoSignatureMismatch）。
+ */
+const WEB_PATH_SIZE_HEADER = `#pragma once
+// 8BitGo: EmulatorJS 把核心和 RetroArch 静态链接进同一个 wasm，path_get_size 会解析到 RetroArch
+// 自带 libretro-common 的 int32_t 版本，与这里头文件的 int64_t 声明签名不符，wasm-ld 会把调用换成
+// unreachable 桩。filestream_open / get_size / close 在两份 libretro-common 中签名一致。
+#include <cstdint>
+#include <streams/file_stream.h>
+
+static inline int64_t melondsds_web_path_get_size(const char* path) noexcept {
+    if (!path) return -1;
+    RFILE* file = filestream_open(path, RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
+    if (!file) return -1;
+    const int64_t size = filestream_get_size(file);
+    filestream_close(file);
+    return size;
+}
+`
+
+function patchPathGetSizeAbi(coreDir) {
+  writeFileSync(join(coreDir, 'src/libretro/retro/web_path_size.hpp'), WEB_PATH_SIZE_HEADER)
+  const dirent = join(coreDir, 'src/libretro/retro/dirent.cpp')
+  replaceOnce(dirent, '#include <compat/strl.h>\n', '#include <compat/strl.h>\n#include "web_path_size.hpp"\n')
+  replaceOnce(dirent, 'current.size = path_get_size(filePath);', 'current.size = melondsds_web_path_get_size(filePath);')
+  const tasks = join(coreDir, 'src/libretro/core/tasks.cpp')
+  replaceOnce(tasks, '#include <streams/file_stream.h>\n', '#include <streams/file_stream.h>\n#include "../retro/web_path_size.hpp"\n')
+  replaceOnce(tasks, 'path_get_size(firmwarePath.data())', 'melondsds_web_path_get_size(firmwarePath.data())')
+  replaceOnce(tasks, 'path_get_size(wfcSettingsPath.data())', 'melondsds_web_path_get_size(wfcSettingsPath.data())')
+  // 上游以后若在别处新增调用，这里必须停下来，而不是再发一个会在运行时 trap 的包。
+  let grep = ''
+  try {
+    // 只认函数调用；Tracy 的 ZoneScopedN("path_get_size") 这种字符串不算
+    grep = execFileSync('git', ['grep', '-n', '-E', '(^|[^A-Za-z0-9_])path_get_size[[:space:]]*\\(', '--', 'src/libretro'], { cwd: coreDir, encoding: 'utf8' })
+  } catch (error) {
+    // git grep 没有命中时退出码是 1，这正是期望的结果
+    if (error?.status !== 1) throw error
+  }
+  const left = grep.split('\n').filter((line) => line && !line.includes('web_path_size.hpp'))
+  if (left.length) throw new Error(`melonDS DS 仍直接调用 path_get_size（会被链成 unreachable）：\n${left.join('\n')}`)
+}
+
 function patchCore(coreDir) {
+  patchPathGetSizeAbi(coreDir)
+  /*
+    melonDS DS 用 C++ 异常报告所有开局错误（加密 ROM、坏 ROM、DSi 专用游戏、缺 NAND…），再在
+    LoadGame 里 catch 成错误画面。Emscripten 默认不编译 catch：发布包里没有任何
+    __cxa_find_matching_catch，这些错误全部变成未捕获的 JS 异常（控制台只有一串数字），
+    既没有错误画面，也不会触发兼容核心回退。只给前端开 JS 异常；模拟核心热路径保持原样。
+  */
+  replaceOnce(
+    join(coreDir, 'src/libretro/CMakeLists.txt'),
+    'configure_file("${CMAKE_CURRENT_SOURCE_DIR}/version.hpp.in"',
+    'if (EMSCRIPTEN)\n    # 8BitGo: 让 LoadGame 里的 catch 真正生效（见 build-melondsds-core.mjs）\n    target_compile_options(melondsds_libretro PRIVATE -fexceptions)\nendif()\n\nconfigure_file("${CMAKE_CURRENT_SOURCE_DIR}/version.hpp.in"',
+  )
   replaceOnce(
     join(coreDir, 'src/libretro/CMakeLists.txt'),
     '    set(LIBRARY_TYPE MODULE)',
@@ -159,7 +283,13 @@ function patchConfiguredDependencies(coreDir) {
 }
 
 function patchRetroArch(retroDir, jobs) {
-  const script = join(retroDir, 'EmulatorJS/build-emulatorjs.sh')
+  // 前端以 -fexceptions 编译，最终链接也必须带上，否则 catch 需要的运行时符号缺失（会被上面的守卫拦下）。
+  replaceOnce(
+    join(retroDir, 'Makefile.emulatorjs'),
+    'ifneq (,$(findstring same_cdi,$(TARGET)))',
+    '# 8BitGo: melonDS DS 前端需要 C++ 异常捕获\nifneq (,$(findstring melondsds,$(TARGET)))\n   LDFLAGS += -fexceptions\nendif\n\nifneq (,$(findstring same_cdi,$(TARGET)))',
+  )
+  const script = join(emulatorJsDir(retroDir), 'build-emulatorjs.sh')
   replaceOnce(script, '  name=`echo "$f" | sed "s/\\(_libretro_emscripten\\|\\).bc$//"`', '  name=${f%_libretro_emscripten.bc}')
   const source = readFileSync(script, 'utf8')
   const next = source.replaceAll('$(nproc)', String(jobs))
@@ -187,6 +317,25 @@ function mergeArchives(coreDir, env) {
   // 否则源码已经编完也会在归档合并的最后一步报 command not found。
   runBash(`${env} && emar -M < ${q(mri)}`, build)
   return output
+}
+
+/**
+ * 新核心必须和新的 EJS_RUNTIME_GENERATION 一起发布。EmulatorJS 按 reports/*.json 的 buildStart
+ * 判断 IndexedDB 里的核心缓存是否过期，而 .data 地址只带这个代号：代号不变时，边缘缓存可能
+ * 还在回旧 .data，浏览器就会把**旧核心**存到**新 buildStart** 名下，此后一直用坏核心。
+ */
+function bumpRuntimeGeneration(sha256) {
+  const file = join(repoRoot, 'src/emulator/paths.ts')
+  const source = readFileSync(file, 'utf8')
+  const re = /export const EJS_RUNTIME_GENERATION = '([^']*)'/
+  const current = source.match(re)
+  if (!current) throw new Error('src/emulator/paths.ts 里找不到 EJS_RUNTIME_GENERATION')
+  const day = new Date().toISOString().slice(0, 10).replaceAll('-', '')
+  const next = `${day}-melondsds-${sha256.slice(0, 8)}`
+  if (current[1] === next) return next
+  writeFileSync(file, source.replace(re, `export const EJS_RUNTIME_GENERATION = '${next}'`))
+  console.log(`[cache] EJS_RUNTIME_GENERATION ${current[1]} -> ${next}`)
+  return next
 }
 
 function packageCore(args, coreDir, startedAt) {
@@ -240,20 +389,27 @@ function packageCore(args, coreDir, startedAt) {
     emulatorJsRetroArchCommit: RETROARCH_COMMIT,
     emsdkVersion: EMSDK_VERSION,
     sha256,
+    // 已修正 path_get_size 的跨 libretro-common 签名冲突，且最终链接没有任何签名不一致 warning
+    linkAbiChecked: true,
+    // melonDS DS 前端以 -fexceptions 构建，开局错误会显示核心自己的错误画面
+    cxxExceptions: 'frontend',
     options: {
       defaultWebGL2: true, supportsMouse: true, jit: false, opengl: false,
       threadedRenderer: false, networking: 'indirect',
     },
   }
   writeFileSync(join(args.output, 'reports/melondsds.json'), `${JSON.stringify(report, null, 2)}\n`)
+  // 只在写进本仓库默认目录时联动缓存代号；--output 指到别处时不碰源码。
+  if (args.output === join(repoRoot, 'public/emulatorjs/cores')) bumpRuntimeGeneration(sha256)
   console.log(`\n[done] ${relative(repoRoot, installed)}\n       sha256 ${sha256}`)
 }
 
 function main() {
   const args = parseArgs(process.argv)
   const startedAt = new Date().toISOString()
-  for (const tool of ['git', 'cmake', 'make', '7z']) needTool(tool)
+  for (const tool of ['git', 'cmake', 'make', 'python3']) needTool(tool)
   mkdirSync(args.workdir, { recursive: true })
+  ensureSevenZip(args.workdir)
 
   const coreDir = join(args.workdir, 'melonds-ds')
   const retroDir = join(args.workdir, 'retroarch')
@@ -278,9 +434,10 @@ function main() {
   runBash(`${env} && cmake --build build-ejs --parallel ${args.jobs}`, coreDir)
   const bitcode = mergeArchives(coreDir, env)
 
-  const ejsDir = join(retroDir, 'EmulatorJS')
+  const ejsDir = emulatorJsDir(retroDir)
   copyFileSync(bitcode, join(ejsDir, 'melondsds_libretro_emscripten.bc'))
-  runBash(`${env} && emmake ./build-emulatorjs.sh --clean`, ejsDir)
+  const linkLog = runBashLogged(`${env} && emmake ./build-emulatorjs.sh --clean`, ejsDir, join(args.workdir, 'emulatorjs-link.log'))
+  assertNoSignatureMismatch(linkLog)
   packageCore(args, coreDir, startedAt)
 }
 

@@ -39,6 +39,12 @@ export function SearchBox({ className, full, onSubmitted }: Props) {
   /** 最后一次真正发出去的查询，用来丢掉迟到的响应 */
   const latest = useRef('')
   const composing = useRef(false)
+  /**
+   * 输入法合成结束时 +1。合成结束后 value 往往和合成中最后一次 onChange 一模一样，
+   * 光靠 setValue(同一个字符串) 不会重跑下面的查询 effect —— 防抖计时器又恰好在合成中触发过、
+   * 直接 return 了，结果建议永远不出来、loading 一直挂着。
+   */
+  const [imeTick, setImeTick] = useState(0)
 
   useEffect(() => {
     setValue(params.get('q') ?? '')
@@ -55,10 +61,11 @@ export function SearchBox({ className, full, onSubmitted }: Props) {
   }, [open])
 
   // 防抖查询
+  // 下拉没打开就不查：顶栏同时挂着桌面 / 移动两个搜索框，带 ?q= 进来时两个都会各查一遍。
   useEffect(() => {
     const q = value.trim()
     latest.current = q
-    if (!q || !searchEnabled()) {
+    if (!q || !searchEnabled() || !open) {
       setItems([])
       setLoading(false)
       return
@@ -81,7 +88,7 @@ export function SearchBox({ className, full, onSubmitted }: Props) {
         })
     }, DEBOUNCE_MS)
     return () => window.clearTimeout(timer)
-  }, [value])
+  }, [value, imeTick, open])
 
   const go = useCallback(
     (q: string) => {
@@ -153,6 +160,7 @@ export function SearchBox({ className, full, onSubmitted }: Props) {
             composing.current = false
             // 合成结束时 value 已经是最终的字了，手动再触发一次查询
             setValue(e.currentTarget.value)
+            setImeTick((n) => n + 1)
           }}
           placeholder={t.topbar.searchPlaceholder}
           aria-label={t.topbar.searchAria}

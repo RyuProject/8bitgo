@@ -39,7 +39,7 @@ export const EJS_PATH: string = asDir(import.meta.env.VITE_EJS_PATH, '/emulatorj
  * EmulatorJS 的文件名没有内容哈希，而 CDN 会缓存一个月。每次改自托管引擎或 loader
  * 都要加一代，让浏览器和边缘不再把旧 JS 与新核心拼在一起。
  */
-export const EJS_RUNTIME_GENERATION = '20261017-core-report-cache1'
+export const EJS_RUNTIME_GENERATION = '20261020-melondsds-b86fb4f3'
 export const ejsRuntimeAsset = (name: string): string =>
   `${EJS_PATH}${name}?v=${encodeURIComponent(EJS_RUNTIME_GENERATION)}`
 
@@ -107,6 +107,8 @@ const EJS_DEFAULT_CORE_BY_ALIAS: Readonly<Record<string, string>> = Object.freez
   // 引擎内建别名仍把 nds 指到停更的 melonds；站点在这一层硬切到自构建新核心。
   nds: 'melondsds',
   melonds: 'melondsds',
+  // 历史游戏记录里的 melonds 仍归一到新核心；只有崩溃兜底显式带这个内部键才用旧核心。
+  'melonds-compat': 'melonds',
   nes: 'fceumm',
   psx: 'pcsx_rearmed',
   segaMD: 'genesis_plus_gx',
@@ -114,14 +116,17 @@ const EJS_DEFAULT_CORE_BY_ALIAS: Readonly<Record<string, string>> = Object.freez
   ws: 'mednafen_wswan',
 })
 
+/** 旧 melonDS 只在新核心发生确定的 WASM 崩溃后启用，不能作为历史记录的默认核心。 */
+export const NDS_COMPAT_CORE = 'melonds-compat'
+
 /** 仅转换站点会用到的平台别名；后台直接选择的具体核心名原样返回。 */
 export function emulatorJsCoreFileFor(core: string): string {
   return EJS_DEFAULT_CORE_BY_ALIAS[core] ?? core
 }
 
 /**
- * 游戏表里可能还留着历史值 `nds` / `melonds`。没人使用 NDS 存档迁移，所以本次不做
- * 双核心兼容期，开局时直接把这两个旧值归一到新核心；DeSmuME 等显式选择不受影响。
+ * 游戏表里可能还留着历史值 `nds` / `melonds`，默认仍归一到新版；
+ * 旧核心只通过 `melonds-compat` 内部键处理确定的 WASM 崩溃，不能让历史记录直接触发。
  */
 /**
  * 平台默认核心在 platformMap 里存的是「平台别名」（`nes` / `segaMD` / `gb` …），

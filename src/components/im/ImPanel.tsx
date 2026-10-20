@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { cx } from '@/lib/format'
+import { lockBodyScroll } from '@/lib/scrollLock'
 import { useT } from '@/services/i18n'
 import { timeAgo } from '@/services/comments'
 import { useAuthReady, useCurrentUser } from '@/services/auth'
@@ -75,6 +76,12 @@ export function ImPanel() {
    * 打开过之后一直留着，这样收起时还有内容跟着滑出去。
    */
   const [mounted, setMounted] = useState(false)
+  // 手机上（< sm）抽屉是整屏的，等同模态层：锁住背后页面，否则列表滚到头会带着整页一起滚
+  useEffect(() => {
+    if (!open || typeof window === 'undefined') return
+    if (!window.matchMedia('(max-width: 639.98px)').matches) return
+    return lockBodyScroll()
+  }, [open])
   const [state, setState] = useState<ImState>(() => imState())
   /** 和 state 一起取：detail 不是 React state，只订阅 state 会让第二个错误显示第一个的细节 */
   const [detail, setDetail] = useState(() => imStateDetail())
@@ -633,7 +640,7 @@ function ConversationList({
   }
 
   return (
-    <ul className="flex-1 overflow-y-auto">
+    <ul className="flex-1 overflow-y-auto overscroll-contain">
       {convs.map((c) => (
         <li key={c.id}>
           <button
@@ -875,7 +882,7 @@ function ChatView({
 
   return (
     <>
-      <div ref={scroller} onScroll={onScroll} className="flex-1 overflow-y-auto px-3 py-3">
+      <div ref={scroller} onScroll={onScroll} className="flex-1 overflow-y-auto overscroll-contain px-3 py-3">
         {!done && (
           <div className="mb-3 text-center">
             <button

@@ -377,19 +377,18 @@ ok(extraPathProblem('DATA/SC-002.MIX') === null, '子目录里的 8.3 名也放�
 
 const adapter = readFileSync(new URL('../src/emulator/adapters/jsdos.ts', import.meta.url), 'utf8')
 {
-  // Windows 客体需要完整游戏层，所以仍先合并；普通 DOS 直接把 extras 交给最终打包，
-  // 否则几百 MB 的 ROM 会「复制整包一次 → 再重打一次」，手机峰值内存翻倍。
-  ok(/const gameBuf = compatibleExtras\.length \? mergeExtraFiles\(rom\.buf, compatibleExtras\) : rom\.buf/.test(adapter), 'Windows 客体的合并结果存进 gameBuf')
-  ok(!/makeWindowsGameLayer\(rom\.buf/.test(adapter), 'Windows 客体那条路不再直接用 rom.buf')
-  ok(/makeWindowsGameLayer\(gameBuf/.test(adapter), 'Windows 客体那条路用 gameBuf')
+  // Windows 客体和普通 DOS 都把 extras 交给最终打包那一步一次写入：先 mergeExtraFiles 会让
+  // 几百 MB 的 ROM「复制整包一次 → 再重打一次」，手机峰值内存翻倍（82MB 的凯撒 3 只为几百字节的 c3.inf）。
+  ok(/makeWindowsGameLayer\(\s*rom\.buf,\s*options\.dosExecutable,\s*guest\.gameDrive,\s*registryImport,\s*compatibleExtras,\s*\)/.test(adapter), 'Windows 客体把兼容补丁直接写进最终游戏层')
+  ok(!/mergeExtraFiles\(rom\.buf/.test(adapter), 'Windows 客体不再先复制整份 ZIP 合并附加文件')
   const call = adapter.slice(adapter.indexOf('await makeJsdosBundle('))
   ok(/^await makeJsdosBundle\(\s*\n\s*rom!?\.name,\s*\n\s*rom!?\.buf,/.test(call), '⭐ 普通 DOS 不先复制完整 ROM')
-  ok(/startupCommands,\s*\n\s*\/\/[^\n]+\n\s*extras,/.test(call), '⭐ 普通 DOS 把附加文件直接交给最终 bundle 一次并入')
+  ok(/startupCommands,\s*\n\s*\/\/[^\n]+\n\s*compatibleExtras,/.test(call), '⭐ 普通 DOS 把附加文件直接交给最终 bundle 一次并入')
   ok(/prepareRemoteDosBundle\(game, onProgress/.test(adapter), '⭐ 大型远端 DOS 包走 Blob 分片加载，不经过完整 ArrayBuffer')
   ok(/URL\.createObjectURL\(rom\.bundleBlob\)/.test(adapter), '⭐ 已带配置的 js-dos bundle 直接启动，不再复制整包重打')
   ok(/!dosboxConfig\?\.trim\(\)[\s\S]{0,120}?!startupCommands[\s\S]{0,120}?!options\.dosExtras\?\.length/.test(adapter), 'Blob 透传只在没有任何后台覆盖时启用')
   ok(
-    /const dosboxConfig = windowsGameCompatibilityDosboxConfig\(\s*options\.gameSlug,\s*options\.dosExecutable,\s*options\.dosboxConfig,\s*\)/.test(adapter),
+    /const dosboxConfig = windowsGameCompatibilityDosboxConfig\(\s*options\.gameSlug,\s*(?:options\.)?dosExecutable,\s*options\.dosboxConfig,\s*\)/.test(adapter),
     '普通 DOS 的性能 / 兼容配置经过兼容层后仍会传给运行时，不会被静默丢弃',
   )
   ok(adapter.indexOf('const engineTask = loadJsDos()') < adapter.indexOf('const romTask = settled(streamingGame'), '引擎与 ROM 同时开始加载')

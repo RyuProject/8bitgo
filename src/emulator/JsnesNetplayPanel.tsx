@@ -147,9 +147,10 @@ export function JsnesNetplayPanel({ handle, gameSlug, gameName, initialRoomId = 
     closed: '已关闭',
   }
 
+  // z-[80]：手机游玩模式的舞台是 fixed inset-0 z-[60]，z-50 会被整个压在黑屏下面，邀请链接进来根本看不到面板
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="w-full max-w-md rounded-lg border border-white/10 bg-neutral-900 p-5 text-sm text-neutral-100 shadow-xl">
+    <div className="fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-black/50 p-4">
+      <div className="my-auto w-full max-w-md rounded-lg border border-white/10 bg-neutral-900 p-5 text-sm text-neutral-100 shadow-xl">
         <div className="mb-4 flex items-center justify-between">
           <h3 className="text-base font-semibold">NES 联机（jsnes）</h3>
           <button onClick={leave} className={buttonClasses('ghost', 'sm')}>

@@ -16,12 +16,13 @@
  * 都还认，而且它能活着穿过过滤器），这是这里唯一能稳的写法。
  * 尺寸给几个 4:3 预设：多数复古平台是 4:3，播放器自己会给宽屏内容加黑边。
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/Button'
 import { useT, fmt } from '@/services/i18n'
 import { langPrefix } from '@/config/languages'
 import { useLang } from '@/services/lang'
 import { copyText } from '@/lib/clipboard'
+import { lockBodyScroll } from '@/lib/scrollLock'
 
 const SIZES = [
   { w: 640, h: 480 },
@@ -60,20 +61,25 @@ export function ShareDialog({
   const [size, setSize] = useState(0)
   const [copied, setCopied] = useState<'link' | 'code' | null>(null)
 
+  // onClose 是父组件每次渲染新建的箭头函数；放进依赖会让这个 effect 每次父组件重渲染都重跑 ——
+  // 「已复制」提示被清掉、滚动锁和按键监听反复拆装。用 ref 拿最新的那个，effect 只跟 open 走。
+  const onCloseRef = useRef(onClose)
+  useEffect(() => {
+    onCloseRef.current = onClose
+  })
   useEffect(() => {
     if (!open) return
     setCopied(null)
-    const prev = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
+    const unlock = lockBodyScroll()
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') onCloseRef.current()
     }
     window.addEventListener('keydown', onKey)
     return () => {
-      document.body.style.overflow = prev
+      unlock()
       window.removeEventListener('keydown', onKey)
     }
-  }, [open, onClose])
+  }, [open])
 
   if (!open) return null
 

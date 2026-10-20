@@ -13,7 +13,7 @@
  *    打分是个「点一下就完事」的动作，等 200ms 才亮会让人以为没点上、再点一次。
  *    失败就整块回滚到请求前的状态，并把错误显示出来。
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { RatingSummary } from '@/types'
 import { useCurrentUser } from '@/services/auth'
 import { fmt, useT } from '@/services/i18n'
@@ -29,19 +29,30 @@ export function GameRating({ gameSlug }: { gameSlug: string }) {
   const [data, setData] = useState<RatingSummary | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  /**
+   * 当前这张卡对应的游戏。详情页在相关游戏之间跳转时组件是复用的：
+   * A 的取数 / 打分 / 回滚在跳到 B 之后才返回，不能把 A 的分数写到 B 的卡上。
+   */
+  const slugRef = useRef(gameSlug)
+  /** 同一款游戏里后发的取数优先（登录状态切换会再拉一次） */
+  const loadSeq = useRef(0)
 
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current
     try {
-      setData(await fetchRating(gameSlug))
+      const next = await fetchRating(gameSlug)
+      if (slugRef.current === gameSlug && loadSeq.current === seq) setData(next)
     } catch {
       // 汇总拉不到就整块不显示。评分不是主内容，为它在详情页上挂一条报错反而更碍事
-      setData(null)
+      if (slugRef.current === gameSlug && loadSeq.current === seq) setData(null)
     }
   }, [gameSlug])
 
   useEffect(() => {
+    slugRef.current = gameSlug
     setData(null)
     setError('')
+    setBusy(false)
     void load()
   }, [gameSlug, load])
 
@@ -59,18 +70,23 @@ export function GameRating({ gameSlug }: { gameSlug: string }) {
   const pick = async (score: number) => {
     if (busy || !data) return
     const before = data
+    const slug = gameSlug
+    // 打分请求发出后，比它早发的取数一律作废，否则慢回来的旧汇总会盖掉这一票
+    ++loadSeq.current
     setBusy(true)
     setError('')
     // 乐观更新：只动「我的那一票」，平均分等服务端算完再覆盖 ——
     // 在前端重算加权平均要复制一遍服务端的权重规则，两边迟早会不一致
     setData({ ...data, mine: score ? { score, weight: user ? 1 : 0.5, anonymous: !user } : null })
     try {
-      setData(score ? await submitRating(gameSlug, score) : await clearRating(gameSlug))
+      const next = score ? await submitRating(slug, score) : await clearRating(slug)
+      if (slugRef.current === slug) setData(next)
     } catch (e) {
+      if (slugRef.current !== slug) return
       setData(before)
       setError(e instanceof Error ? e.message : r.failed)
     } finally {
-      setBusy(false)
+      if (slugRef.current === slug) setBusy(false)
     }
   }
 

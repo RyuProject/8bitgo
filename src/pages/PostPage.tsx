@@ -8,6 +8,7 @@ import { useT, fmt } from '@/services/i18n'
 import { useLang } from '@/services/lang'
 import { postContent, postExcerpt, postSeoLanguagePlan, postTitle, needsPostTranslation } from '@/services/i18nData'
 import { TranslateButton } from '@/components/game/TranslateButton'
+import { Button } from '@/components/ui/Button'
 import { PostComments } from '@/components/comments/Comments'
 import { FEATURES } from '@/config/features'
 import { NotFoundPage } from './NotFoundPage'
@@ -19,17 +20,27 @@ export function PostPage() {
   const lang = useLang()
   // 文章总量不大，/blog 一次就把已发布的全给了，单篇直接在里面找 ——
   // 没必要为一篇文章再单独打一次请求
-  const { posts, loading } = usePublishedPosts()
+  const { posts, loading, error, retry } = usePublishedPosts()
   const post = posts.find((p) => p.slug === slug)
   // 玩家点过翻译按钮之后，覆盖在正文上的译文（摘要同理）。
   // - null = 还没翻，按 postContent() 回退到原文
   // - string = 翻译后的正文（已经写进 content_i18n，但前端 state 也留一份，
   //   避免「后台改了正文但用户看不到」的隐性 bug，反正刷新一次会重新走 needsPostTranslation）
-  const [translatedContent, setTranslatedContent] = useState<string | null>(null)
   // 标题同理。以前按钮只回填正文，标题一直是中文 —— 点完翻译，页面上最大的那行字没变。
-  const [translatedTitle, setTranslatedTitle] = useState<string | null>(null)
+  // ⚠️ 连同 slug / lang 一起存：/blog/:slug 之间站内跳转时组件是复用的，只存文本会把
+  // 上一篇的译文（标题 + 正文 + SEO）盖到下一篇上；请求在跳走之后才返回也同理。
+  const [translated, setTranslated] = useState<{
+    slug: string
+    lang: string
+    title: string | null
+    content: string | null
+  } | null>(null)
+  const current = translated && translated.slug === slug && translated.lang === lang ? translated : null
+  const translatedContent = current?.content ?? null
+  const translatedTitle = current?.title ?? null
   // 还在加载时不能当成「文章不存在」—— 否则每次进详情页都会先闪一下 404
-  const missing = !loading && !post
+  // 取数失败也不能当成「文章不存在」：那会给一个 404 + noindex，用户以为文章被删了。
+  const missing = !loading && !error && !post
   // SEO：hook 要在下面的 early return 之前调用，文章不存在时走 noindex 分支
   /**
    * ⚠️ 标题和摘要一律过 postTitle / postExcerpt，**包括 SEO 和结构化数据**。
@@ -74,6 +85,21 @@ export function PostPage() {
   )
 
   if (missing) return <NotFoundPage message={t.blog.notFoundMsg} />
+  if (!post && error) {
+    return (
+      <div className="container-x flex min-h-[60vh] flex-col items-center justify-center py-20 text-center" role="alert">
+        <p className="text-4xl" aria-hidden>
+          📡
+        </p>
+        <p className="mt-4 max-w-md text-sm text-muted">{error}</p>
+        {retry && (
+          <Button type="button" variant="secondary" size="sm" className="mt-5" onClick={retry}>
+            {t.common.retry}
+          </Button>
+        )}
+      </div>
+    )
+  }
   // 还在取数：按文章真实排版占位，别渲染 404，也别留一大块没有反馈的空白。
   if (!post) return <PostSkeleton />
 
@@ -129,8 +155,7 @@ export function PostPage() {
                 lang={lang}
                 onTranslated={(r) => {
                   // 两个字段各自可能失败（partial），所以分别判空回填，别一起判
-                  setTranslatedTitle(r.title || null)
-                  setTranslatedContent(r.content || null)
+                  setTranslated({ slug: post.slug, lang, title: r.title || null, content: r.content || null })
                 }}
               />
             )}

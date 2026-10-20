@@ -8,6 +8,7 @@
  */
 import { useCallback, useRef, type PointerEvent as ReactPointerEvent } from 'react'
 import { createPortal } from 'react-dom'
+import { useOverlayHost } from './overlayHost'
 import type { RuntimeHandle } from './types'
 import { CODE_TO_GLFW } from './dosPad'
 import { cx } from '@/lib/format'
@@ -111,6 +112,8 @@ interface Props {
 
 export function DosKeyboard({ handle, onClose }: Props) {
   const t = useT()
+  // 原生全屏时 portal 到 <body> 会被整个隐藏；见 overlayHost.ts
+  const overlayHost = useOverlayHost()
   const send = handle.sendKey
   const pressed = useRef<Set<string>>(new Set())
 
@@ -145,11 +148,11 @@ export function DosKeyboard({ handle, onClose }: Props) {
     onContextMenu: (e: React.MouseEvent) => e.preventDefault(),
   })
 
-  if (!send) return null
+  if (!send || !overlayHost) return null
 
   return createPortal(
     <div
-      className="fixed inset-x-0 bottom-0 z-40 flex flex-col border-t border-white/15 bg-black/85 backdrop-blur-sm"
+      className="fixed inset-x-0 bottom-0 z-[70] flex flex-col border-t border-white/15 bg-black/85 backdrop-blur-sm"
       style={KEY_STYLE}
     >
       <div className="flex items-center justify-between px-3 py-1.5 text-[11px] text-white/60">
@@ -192,6 +195,6 @@ export function DosKeyboard({ handle, onClose }: Props) {
         ))}
       </div>
     </div>,
-    document.body,
+    overlayHost,
   )
 }

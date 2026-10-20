@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { cx } from '@/lib/format'
 import { Button } from '@/components/ui/Button'
@@ -17,6 +17,21 @@ export function Topbar() {
   const t = useT()
   const { mobileOpen, setMobileOpen, immersive } = useShell()
   const [searchOpen, setSearchOpen] = useState(false)
+  /*
+    移动端搜索行展开动画（grid-rows 0fr → 1fr）需要 overflow-hidden 才有「拉开」的效果，
+    但建议下拉是 absolute 挂在这一行下面的 —— 一直 hidden 的话下拉被整个裁掉，
+    手机上输入后永远看不到建议 / 最近搜索。动画结束（300ms）后再放开裁剪，收起时立刻收回。
+    用定时器而不是 transitionend：开了「减少动态效果」时过渡不触发 transitionend。
+  */
+  const [searchSettled, setSearchSettled] = useState(false)
+  useEffect(() => {
+    if (!searchOpen) {
+      setSearchSettled(false)
+      return
+    }
+    const timer = window.setTimeout(() => setSearchSettled(true), 320)
+    return () => window.clearTimeout(timer)
+  }, [searchOpen])
   const user = useCurrentUser()
   const location = useLocation()
   const loginTo = `/login?next=${encodeURIComponent(location.pathname + location.search)}`
@@ -85,7 +100,8 @@ export function Topbar() {
         aria-hidden={!searchOpen}
         inert={!searchOpen}
         className={cx(
-          'grid overflow-hidden transition-[grid-template-rows] duration-300 md:hidden',
+          'grid transition-[grid-template-rows] duration-300 md:hidden',
+          searchOpen && searchSettled ? 'overflow-visible' : 'overflow-hidden',
           searchOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]',
         )}
       >

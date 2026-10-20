@@ -74,13 +74,24 @@ function CommentsPanel({ target }: { target: CommentTarget }) {
   const [sending, setSending] = useState(false)
   const [formError, setFormError] = useState('')
   const boxRef = useRef<HTMLTextAreaElement>(null)
+  /**
+   * 当前宿主。面板在 A → B 之间是复用的，A 的请求（翻页、首屏、发表）在跳走之后才返回时，
+   * 结果不能落到 B 的列表上 —— 每个 await 之后都拿它比一下，宿主变了就丢掉。
+   */
+  const hostRef = useRef(`${kind}:${slug}`)
+  /** 首屏 / 翻页请求的序号：同一宿主里后发的请求优先，慢的旧响应不能盖掉新列表 */
+  const loadSeq = useRef(0)
 
   const load = useCallback(
     async (nextPage: number, append: boolean) => {
+      const host = `${kind}:${slug}`
+      const seq = ++loadSeq.current
+      const stale = () => hostRef.current !== host || loadSeq.current !== seq
       if (append) setMore(true)
       else setStatus('loading')
       try {
         const r = await fetchComments({ kind, slug }, nextPage)
+        if (stale()) return
         setTotal(r.total)
         setPage(r.page)
         // 追加时按 id 去重：翻页期间有人发了新评论，第 2 页的第一条可能已经在第 1 页里了
@@ -91,6 +102,7 @@ function CommentsPanel({ target }: { target: CommentTarget }) {
         })
         setStatus('ready')
       } catch (e) {
+        if (stale()) return
         if (append) {
           // 加载更多失败不该把已经看到的评论清掉
           setFormError(e instanceof Error ? e.message : c.loadFailed)
@@ -99,7 +111,7 @@ function CommentsPanel({ target }: { target: CommentTarget }) {
           setStatus('error')
         }
       } finally {
-        setMore(false)
+        if (!stale()) setMore(false)
       }
     },
     // kind / slug 是原始值，见文件头关于「不要依赖 target 对象」的说明
@@ -112,8 +124,11 @@ function CommentsPanel({ target }: { target: CommentTarget }) {
       setStatus('ready')
       return
     }
+    hostRef.current = `${kind}:${slug}`
     setItems([])
     setTotal(0)
+    setPage(1)
+    setMore(false)
     setReplyTo(null)
     setText('')
     setFormError('')
@@ -127,17 +142,20 @@ function CommentsPanel({ target }: { target: CommentTarget }) {
       setFormError(fmt(c.tooLong, { n: COMMENT_MAX_LENGTH }))
       return
     }
+    const host = `${kind}:${slug}`
     setSending(true)
     setFormError('')
     try {
       const created = await postComment({ kind, slug }, content, replyTo?.id)
+      // 发表期间已经换到别的游戏 / 文章：评论已经存上了，但不能插进新宿主的列表
+      if (hostRef.current !== host) return
       // 列表是最新在前，所以新评论插在最前面
       setItems((prev) => [created, ...prev])
       setTotal((n) => n + 1)
       setText('')
       setReplyTo(null)
     } catch (e) {
-      setFormError(e instanceof Error ? e.message : c.loadFailed)
+      if (hostRef.current === host) setFormError(e instanceof Error ? e.message : c.loadFailed)
     } finally {
       setSending(false)
     }
@@ -451,8 +469,9 @@ function CommentItem({
           )}
 
           {!editing && (
-            <div className="mt-1.5 flex gap-3 text-[11px] text-dim">
-              <button type="button" onClick={() => onReply(comment)} className="transition hover:text-fg">
+            // 每颗按钮至少 32px 高：原来只有 11px 字的高度（约 16px），手机上回复 / 编辑 / 删除很容易点错
+            <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[11px] text-dim">
+              <button type="button" onClick={() => onReply(comment)} className="inline-flex min-h-8 items-center px-1.5 first:-ml-1.5 transition hover:text-fg">
                 {c.reply}
               </button>
               {editable && (
@@ -462,7 +481,7 @@ function CommentItem({
                     setDraft(comment.content)
                     setEditing(true)
                   }}
-                  className="transition hover:text-fg"
+                  className="inline-flex min-h-8 items-center px-1.5 first:-ml-1.5 transition hover:text-fg"
                 >
                   {c.edit}
                 </button>
@@ -472,7 +491,7 @@ function CommentItem({
                   type="button"
                   onClick={() => void remove()}
                   disabled={busy}
-                  className="transition hover:text-live disabled:opacity-50"
+                  className="inline-flex min-h-8 items-center px-1.5 first:-ml-1.5 transition hover:text-live disabled:opacity-50"
                 >
                   {c.remove}
                 </button>

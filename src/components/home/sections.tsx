@@ -389,7 +389,7 @@ export function ToolsSection() {
   return (
     <section className="container-x">
       <SectionHeader title={t.sections.toolsTitle} subtitle={t.sections.toolsSubtitle} icon="🧰" />
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         {toolsFor(t).map((tool) => (
           <article
             key={tool.title}
@@ -421,7 +421,7 @@ export function FaqSection({ links = [] }: { links?: FriendLink[] }) {
   const t = useT()
   return (
     <section className="container-x">
-      <div className="grid gap-8 lg:grid-cols-12">
+      <div className="grid grid-cols-1 gap-8 lg:grid-cols-12">
         <div className="lg:col-span-4">
           <SectionHeader title={t.sections.faqTitle} subtitle={t.sections.faqSubtitle} icon="❓" />
           <p className="text-sm leading-relaxed text-muted">

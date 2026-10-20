@@ -111,7 +111,7 @@ export function useInfinite<T>({ first, ready, fetchPage, resetKey }: InfiniteIn
   )
 
   return {
-    items: [...(usable?.items ?? first?.items ?? []), ...tail.flatMap((p) => p.items)],
+    items: dedupeItems([...(usable?.items ?? first?.items ?? []), ...tail.flatMap((p) => p.items)]),
     total: first?.total ?? 0,
     hasMore,
     autoAllowed: autoUsed < AUTO_PAGES,
@@ -120,4 +120,24 @@ export function useInfinite<T>({ first, ready, fetchPage, resetKey }: InfiniteIn
     loadMore: useCallback(() => load(false), [load]),
     loadMoreAuto: useCallback(() => load(true), [load]),
   }
+}
+
+/**
+ * 跨页去重。默认按「热度」排序时，计数是实时变的、各页又在边缘缓存了几分钟，
+ * offset 翻页难免前后两页重叠一两条；直接拼起来就是重复卡片 + React key 冲突
+ * （列表用 slug 当 key，重复 key 会让卡片错位或丢失）。按 slug / id 保留第一次出现的那条。
+ */
+function dedupeItems<T>(items: T[]): T[] {
+  const seen = new Set<unknown>()
+  const out: T[] = []
+  for (const item of items) {
+    const rec = item as { slug?: unknown; id?: unknown } | null
+    const key = rec && typeof rec === 'object' ? (rec.slug ?? rec.id) : undefined
+    if (key !== undefined && key !== null) {
+      if (seen.has(key)) continue
+      seen.add(key)
+    }
+    out.push(item)
+  }
+  return out
 }

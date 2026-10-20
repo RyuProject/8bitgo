@@ -169,7 +169,9 @@ export function SaveLoadModal({ cards, onClose, busy, hint, legacyRecovery }: Pr
         ref={boxRef}
         tabIndex={-1}
         className={cx(
-          'w-full max-w-lg rounded-2xl border border-line bg-surface p-5 shadow-2xl outline-none transition duration-150 sm:p-6',
+          // my-auto：遮罩是 flex items-center + overflow-y-auto，卡片比视口高（横屏手机约 360px 高）时
+          // 不加 my-auto 会以中心向上溢出，标题和 ✕ 落到滚动区之外，滚都滚不到
+          'my-auto w-full max-w-lg rounded-2xl border border-line bg-surface p-5 shadow-2xl outline-none transition duration-150 sm:p-6',
           mounted ? 'scale-100 opacity-100' : 'scale-95 opacity-0',
         )}
       >

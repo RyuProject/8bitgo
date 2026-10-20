@@ -454,10 +454,19 @@ body {
   这里只抬高，不强迫文字按钮变宽；图标按钮自己的 min-w-11 在组件里负责，
   所以 320px 屏幕仍能保持一行，ROM 语言和“取消加载”也不会只剩 32px 高。
 */
-@media (max-width: 639.98px) {
+@media (max-width: 639.98px), (pointer: coarse) {
   [data-testid='emulator-toolbar'] button,
   [data-testid='emulator-toolbar'] select {
     min-height: 2.75rem;
+  }
+}
+/*
+  横屏手机宽度 ≥ 640px（sm），组件里的 sm:h-7 / sm:min-w-7 会把工具栏按钮缩回 28px ——
+  恰好是在玩游戏的那个布局里。触屏设备在 sm 以上也保持 44px 见方的命中区。
+*/
+@media (min-width: 640px) and (pointer: coarse) {
+  [data-testid='emulator-toolbar'] button {
+    min-width: 2.75rem;
   }
 }
 
@@ -660,5 +669,18 @@ body {
   }
   .hero-card {
     transition: none;
+  }
+}
+
+/*
+  iOS Safari：聚焦字号小于 16px 的输入框会自动放大页面，而且失焦后不缩回。
+  站内的搜索、登录、评论、聊天输入框都是 11–14px。只在触屏上抬到 16px。
+  ⚠️ 必须写在任何 @layer 之外：未分层的样式压过 Tailwind v4 分层的 text-sm / text-xs 工具类。
+*/
+@media (pointer: coarse) {
+  input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']):not([type='file']),
+  textarea,
+  select {
+    font-size: 16px;
   }
 }

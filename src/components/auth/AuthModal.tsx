@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { cx } from '@/lib/format'
+import { lockBodyScroll } from '@/lib/scrollLock'
 import { Button, buttonClasses } from '@/components/ui/Button'
 import { closeAuthModal, useAuthModalOpen } from '@/services/authModal'
 import type { OAuthProvider } from '@/services/auth'
@@ -58,11 +59,10 @@ export function AuthModal() {
     setSending(false)
     setBusy(false)
     setError(null)
-    const prev = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
+    const unlock = lockBodyScroll()
     const t = setTimeout(() => emailRef.current?.focus(), 60)
     return () => {
-      document.body.style.overflow = prev
+      unlock()
       clearTimeout(t)
       if (timer.current) clearInterval(timer.current)
     }
@@ -236,7 +236,7 @@ export function AuthModal() {
                 autoComplete="email"
                 inputMode="email"
                 placeholder={t.auth.emailPlaceholder}
-                className={cx(inputClass, 'flex-1')}
+                className={cx(inputClass, 'min-w-0 flex-1')}
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
               />
@@ -327,7 +327,8 @@ export function AuthModal() {
           min-w-0：grid 子项默认 min-width:auto，内容撑得下就不肯缩，一样会溢出格子。
           truncate 是最后一道保险，正常语言都不该触发。
         */}
-        <div className="grid grid-cols-3 gap-2">
+        {/* 手机上竖排：三列时每格只有约 85px，360px 屏上「谷歌」都被截成「谷…」，英文 Microsoft 更是只剩一半 */}
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
           <Button variant="secondary" size="md" className="w-full min-w-0" onClick={google} disabled={busy}>
             <GoogleIcon />
             <span className="truncate">{t.auth.googleShort}</span>

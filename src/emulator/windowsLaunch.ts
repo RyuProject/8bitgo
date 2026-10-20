@@ -6,6 +6,7 @@
  * 全部吞掉，而且只有一次机会。DOSBox-X 没有“桌面已就绪”事件，但会在 Windows 切进
  * 图形界面时把画面切到至少 640×480；因此把后台配置的等待秒数锚定到这个信号之后。
  */
+import { startActiveTimeout } from './activeTimeout'
 
 interface WindowsLaunchEvents {
   onFrameSize: (consumer: (width: number, height: number) => void) => void
@@ -50,6 +51,8 @@ export function windowsLaunchDelayMs(waitSeconds = 24): number {
  * （最常见、也最没救的一类）画面确实纹丝不动，跑不掉。
  */
 export const WINDOWS_LAUNCH_VERIFY_MS = 20_000
+/** 截图请求卡住时不能让自动启动链一直等到整局超时；正常截图远低于这个上限。 */
+export const WINDOWS_SCREENSHOT_TIMEOUT_MS = 10_000
 /**
  * 敲完回车之后多久看**第一眼**。
  *
@@ -99,7 +102,7 @@ const BLANK_LUMA_THRESHOLD = 16
  *
  * 2% 定得很松：真桌面哪怕只是深色壁纸加一条任务栏也远超这个数，而纯黑帧是 0%。
  * 宁可放过（黑屏上带一点鼠标残影仍按黑屏算），也不能误杀真桌面 ——
- * 误杀的代价是整条启动链退化到「等满上限硬敲」。
+ * 误杀的代价是不能走桌面稳定的快路径，必须继续等画面证据或明确报错。
  */
 export const DESKTOP_MIN_LIT_RATIO = 0.02
 
@@ -172,9 +175,8 @@ const CONTENT_SAMPLE_MAX = 20_000
  * 差 70 倍，所以阈值取 **3%**：两边都留着几十倍余量，
  * 换成别的壁纸 / 别的窗口管理器也不会擦边。
  *
- * ⚠️ 这道闸只影响「什么时候可以敲键」，**不参与成败判定**，而且只会**推迟**敲键：
- * 认不出来的桌面等满 `waitSeconds` 上限照样敲（见 arm 里那条硬上限），
- * 所以最坏情况退化成「不动这道闸」的老行为，不会比以前更差。
+ * ⚠️ 这道闸只影响「什么时候可以敲键」，**不参与成败判定**：已经看到桌面内容但
+ * 动画导致画面不静止时，等满 `waitSeconds` 仍会敲；若连桌面内容都没有，不能硬敲进黑屏。
  */
 export function desktopContentRatio(frame: ImageData): number {
   const total = frame.width * frame.height
@@ -214,8 +216,8 @@ export function frameHasDesktopContent(frame: ImageData): boolean {
  *
  * 现在改成**拿画面当证据**：进入图形模式之后每 DESKTOP_SETTLE_POLL_MS 抓一帧，
  * 连续 DESKTOP_SETTLE_STREAK 次「几乎没变」就认为 Program Manager 画完了、可以敲键。
- * `waitSeconds` 从「一定要等这么久」降级成「最多等这么久」——
- * 慢设备的行为和以前完全一样（等满就敲），快设备省下二十秒。
+ * `waitSeconds` 从「一定要等这么久」变成「看见桌面后的最长静止观察时间」：
+ * 桌面有动画时等满仍启动，快设备能省二十秒；一直没见到桌面内容则继续等待。
  *
  * ⚠️ 这一改顺手修掉了另一个 bug：`armed` 是一次性闩锁，而实测 canvas 尺寸序列是
  * `300x150 → 640x480(0.8s) → 720x400(1.8s) → 640x480(2.4s)` —— **真桌面是第二个
@@ -444,20 +446,89 @@ export function scheduleWindowsLaunch(
   refreshDirectDrawAfterLaunch = false,
 ): () => void {
   const timers = new Set<number>()
+  const activeTimers = new Set<() => void>()
+  const pendingCaptures = new Set<(reason: Error) => void>()
+  const pageActive = () => typeof document === 'undefined' || document.visibilityState !== 'hidden'
+  let canceled = false
+  let failed = false
+  const inactive = () => canceled || failed || stopped()
+  const reportFailure = (message: string) => {
+    if (inactive() || !onFailed) return
+    failed = true
+    onFailed(message)
+  }
   let armed = false
   const win3x = shell === '3x' ? windows3xLaunchCommands(command) : null
   const later = (ms: number, fn: () => void) => {
     const id = window.setTimeout(() => {
       timers.delete(id)
-      if (!stopped()) fn()
+      if (inactive()) return
+      // 隐藏标签页里的客体键盘也被节流；恢复前台前不继续敲命令，避免丢字母后
+      // 截图碰巧变化，又把一局停在桌面的失败误报成“游戏运行中”。
+      if (!pageActive()) {
+        later(250, fn)
+        return
+      }
+      fn()
     }, ms)
     timers.add(id)
+  }
+  const laterActive = (ms: number, fn: () => void) => {
+    const cancel = startActiveTimeout(ms, pageActive, () => {
+      activeTimers.delete(cancel)
+      if (!inactive()) fn()
+    })
+    activeTimers.add(cancel)
   }
   const tap = (key: number, shift = false) => {
     if (shift) ci.sendKeyEvent(WIN_KEY.leftShift, true)
     ci.sendKeyEvent(key, true)
     ci.sendKeyEvent(key, false)
     if (shift) ci.sendKeyEvent(WIN_KEY.leftShift, false)
+  }
+
+  const captureFrame = (): Promise<ImageData> => new Promise((resolve, reject) => {
+    const shot = ci.screenshot
+    if (typeof shot !== 'function') {
+      reject(new Error('Windows 画面接口不可用'))
+      return
+    }
+    let settled = false
+    let cancelTimeout = () => {}
+    const finish = (frame?: ImageData, error?: Error) => {
+      if (settled) return
+      settled = true
+      cancelTimeout()
+      pendingCaptures.delete(cancelCapture)
+      if (error) reject(error)
+      else resolve(frame!)
+    }
+    const cancelCapture = (reason: Error) => finish(undefined, reason)
+    cancelTimeout = startActiveTimeout(WINDOWS_SCREENSHOT_TIMEOUT_MS, pageActive, () => {
+      finish(undefined, new Error('Windows 画面读取超时'))
+    })
+    pendingCaptures.add(cancelCapture)
+    try {
+      void Promise.resolve(shot.call(ci)).then((frame) => finish(frame), (error: unknown) => {
+        finish(undefined, error instanceof Error ? error : new Error(String(error)))
+      })
+    } catch (error) {
+      finish(undefined, error instanceof Error ? error : new Error(String(error)))
+    }
+  })
+  const captureCriticalFrame = async (): Promise<ImageData> => {
+    try {
+      return await captureFrame()
+    } catch (error) {
+      // 命令接口偶发拒绝一帧时立刻再试一次；真正无响应则由前台 10 秒预算快速报错。
+      if (inactive() || (error instanceof Error && error.message === 'Windows 画面读取超时')) throw error
+      return captureFrame()
+    }
+  }
+
+  const failScreenshot = (error: unknown) => {
+    if (inactive()) return
+    reportFailure(`Windows 客体画面无法读取，自动启动已停止（${error instanceof Error ? error.message : String(error)}）。请重试。`)
   }
 
   const chord = (modifier: number, key: number, onReleased: () => void) => {
@@ -484,12 +555,6 @@ export function scheduleWindowsLaunch(
       （先敲 WINFILE，再敲游戏），基准必须是**最后那条命令**敲下去之前的画面，
       否则「文件管理器开起来了」这个变化会被算成「游戏起来了」。
     */
-    void ci
-      .screenshot?.()
-      .then((frame) => {
-        if (!stopped()) baselineFrame = frame
-      })
-      .catch(() => {})
     const chars = value.toLowerCase().split('')
     const typeAt = (at: number) => {
       if (at >= chars.length) {
@@ -510,7 +575,18 @@ export function scheduleWindowsLaunch(
       // 敲不出来的字符 assertTypeable 早就拦了；万一漏网也别在定时器里抛（没人接），跳过它
       later(35, () => typeAt(at + 1))
     }
-    typeAt(0)
+    if (typeof ci.screenshot !== 'function') {
+      baselineFrame = null
+      typeAt(0)
+      return
+    }
+    // 必须等基准帧真正截完才输入；慢设备上若截图晚于回车，确认步骤会把游戏画面
+    // 当成「启动前」的画面，最后误报没有响应。
+    void captureCriticalFrame().then((frame) => {
+      if (inactive()) return
+      baselineFrame = frame
+      typeAt(0)
+    }).catch(failScreenshot)
   }
 
   const openFileRun = (onOpened: () => void) => {
@@ -534,9 +610,9 @@ export function scheduleWindowsLaunch(
           }
           const shot = ci.screenshot
           if (!before || typeof shot !== 'function') return continueToRun()
-          void shot.call(ci)
+          void captureCriticalFrame()
             .then((frame) => {
-              if (stopped()) return
+              if (inactive()) return
               if (frameDiffRatio(before!, frame) >= CHANGE_RATIO) return continueToRun()
               if (number + 1 < WINDOWS_START_MENU_ATTEMPTS) {
                 // 第一次没有看到开始菜单：不要把 R 送给桌面。windepth 的 Recycle Bin 就是这样被打开的。
@@ -544,12 +620,12 @@ export function scheduleWindowsLaunch(
                 return
               }
               if (onFailed) {
-                onFailed('Windows 开始菜单没有响应 Ctrl+Esc；已停止自动输入，避免误打开桌面图标。')
+                reportFailure('Windows 开始菜单没有响应 Ctrl+Esc；已停止自动输入，避免误打开桌面图标。')
                 return
               }
               continueToRun()
             })
-            .catch(continueToRun)
+            .catch(failScreenshot)
         })
       })
     }
@@ -564,15 +640,13 @@ export function scheduleWindowsLaunch(
       截到已经打开的开始菜单，后面的对比就会把成功误判成失败；更糟的是基准还没回来时
       会走“没有截图”的兼容分支，重新留下 R 落到桌面的窗口。
     */
-    void shot.call(ci)
+    void captureCriticalFrame()
       .then((frame) => {
-        if (stopped()) return
+        if (inactive()) return
         before = frame
         attempt(0)
       })
-      .catch(() => {
-        if (!stopped()) attempt(0)
-      })
+      .catch(failScreenshot)
   }
 
   const refreshDirectDrawWhenBlack = () => {
@@ -580,12 +654,12 @@ export function scheduleWindowsLaunch(
     if (!refreshDirectDrawAfterLaunch || typeof shot !== 'function') return
     let elapsed = 0
     const poll = () => {
-      if (stopped()) return
+      if (inactive()) return
       elapsed += 1_500
       void shot
         .call(ci)
         .then((frame) => {
-          if (stopped()) return
+          if (inactive()) return
           if (!frameIsBlank(frame)) {
             if (elapsed < 60_000) later(1_500, poll)
             return
@@ -604,7 +678,7 @@ export function scheduleWindowsLaunch(
           }))
         })
         .catch(() => {
-          if (!stopped() && elapsed < 60_000) later(1_500, poll)
+          if (!inactive() && elapsed < 60_000) later(1_500, poll)
         })
     }
     later(8_000, poll)
@@ -629,18 +703,17 @@ export function scheduleWindowsLaunch(
     let elapsed = 0
     let waited = VERIFY_FIRST_MS
     const poll = () => {
-      if (stopped()) return
+      if (inactive()) return
       elapsed += waited
       waited = VERIFY_POLL_MS
-      void shot
-        .call(ci)
+      void captureCriticalFrame()
         .then((frame) => {
-          if (stopped()) return
+          if (inactive()) return
           const base = baselineFrame
           // 基准没拿到就别判失败：证据不足时一律按成功走
           if (!base || frameDiffRatio(base, frame) >= CHANGE_RATIO) return onLaunched()
           if (elapsed >= WINDOWS_LAUNCH_VERIFY_MS) {
-            onFailed(
+            reportFailure(
               'Windows 客体没有响应自动启动命令（画面始终没有变化）。' +
                 '多半是开始菜单/运行框没能打开，或者启动路径在客体里不存在。',
             )
@@ -648,10 +721,7 @@ export function scheduleWindowsLaunch(
           }
           later(VERIFY_POLL_MS, poll)
         })
-        .catch(() => {
-          // 截不到图就别较真，按老行为放行
-          if (!stopped()) onLaunched()
-        })
+        .catch(failScreenshot)
     }
     later(VERIFY_FIRST_MS, poll)
   }
@@ -693,7 +763,7 @@ export function scheduleWindowsLaunch(
     openStartRun(() => typeCommand(command, finishLaunch))
   }
   const arm = () => {
-    if (armed || stopped()) return
+    if (armed || inactive()) return
     armed = true
     const capMs = windowsLaunchDelayMs(waitSeconds)
     const shot = ci.screenshot
@@ -712,32 +782,52 @@ export function scheduleWindowsLaunch(
     let prev: ImageData | null = null
     let streak = 0
     let fired = false
+    let sawDesktopContent = false
+    let capReached = false
+    let screenshotFailures = 0
     const go = (settled: boolean) => {
-      if (fired || stopped()) return
+      if (fired || inactive()) return
       fired = true
       if (settled) onMilestone?.('desktop')
       launch()
     }
     /*
-      硬上限。画面永远不静止（动画壁纸、闪烁光标、开机自检还在滚）时必须还有一条出路，
-      而那条出路就是老行为 —— 所以这一改在最坏情况下**不会比以前慢**。
+      静止观察的上限。动画桌面、闪烁光标始终不静止时仍要启动；但图形模式里的
+      开机黑屏或纯壁纸不代表 Windows 壳已就绪，不能因为计时到点就盲打。
     */
-    later(capMs, () => go(false))
+    laterActive(capMs, () => {
+      capReached = true
+      // 图形信号可能只是开机黑屏或纯壁纸；等满配置的秒数也不能把按键敲进 BIOS。
+      // 动画桌面虽未静止，只要确实画出任务栏/图标，仍沿用固定等待的兼容路径。
+      if (sawDesktopContent) go(false)
+    })
     const tick = () => {
-      if (fired || stopped()) return
-      void shot
-        .call(ci)
+      if (fired || inactive()) return
+      if (!pageActive()) {
+        later(DESKTOP_SETTLE_POLL_MS, tick)
+        return
+      }
+      void captureFrame()
         .then((frame) => {
-          if (fired || stopped()) return
+          if (fired || inactive()) return
+          screenshotFailures = 0
           watched += DESKTOP_SETTLE_POLL_MS
+          sawDesktopContent = isWindowsGraphicsMode(frame.width, frame.height)
+            && !frameIsBlank(frame) && frameHasDesktopContent(frame)
           streak = desktopSettled(prev, frame) ? streak + 1 : 0
           prev = frame
           if (streak >= DESKTOP_SETTLE_STREAK && watched >= DESKTOP_SETTLE_FLOOR_MS) return go(true)
+          if (capReached && sawDesktopContent) return go(false)
           later(DESKTOP_SETTLE_POLL_MS, tick)
         })
         .catch(() => {
-          // 截图偶发失败不该把整条链卡死；继续盯，实在不行还有上面那条硬上限
-          if (!fired && !stopped()) later(DESKTOP_SETTLE_POLL_MS, tick)
+          if (fired || inactive()) return
+          // 偶发一次失败可继续盯；三次连续失败说明命令接口失联，不能再假装桌面会出现。
+          if (++screenshotFailures >= 3 && onFailed) {
+            reportFailure('Windows 客体连续无法读取画面，可能是 DOSBox-X 已停止响应；请重试。')
+            return
+          }
+          later(DESKTOP_SETTLE_POLL_MS, tick)
         })
     }
     later(DESKTOP_SETTLE_POLL_MS, tick)
@@ -752,7 +842,7 @@ export function scheduleWindowsLaunch(
    *     后果是按键全打在 BIOS / 启动阶段，然后 5 秒后 markReady，**完全静默**。
    * 所以要求先见过一次非图形尺寸再接受图形尺寸：镜像一启动就报 ≥640×480
    * （比如镜像自带 `[render] aspect=true`，720×400 文本模式校正后输出 720×540）不可信。
-   * 真的一直没见过文本模式也不会卡住 —— 90 秒兜底照样 arm。
+   * 真的一直没见过文本模式也不会永远无动作 —— 90 秒后开始抓画面，仍要看见桌面内容才敲键。
    */
   let sawTextMode = false
   const observeSize = (width: number, height: number) => {
@@ -776,10 +866,15 @@ export function scheduleWindowsLaunch(
   } catch {
     arm()
   }
-  later(WINDOWS_GRAPHICS_SIGNAL_FALLBACK_MS, arm)
+  laterActive(WINDOWS_GRAPHICS_SIGNAL_FALLBACK_MS, arm)
 
   return () => {
+    canceled = true
     for (const timer of timers) window.clearTimeout(timer)
     timers.clear()
+    for (const cancelActive of activeTimers) cancelActive()
+    activeTimers.clear()
+    for (const cancelCapture of pendingCaptures) cancelCapture(new Error('Windows 启动流程已取消'))
+    pendingCaptures.clear()
   }
 }

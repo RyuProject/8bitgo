@@ -15,12 +15,13 @@ import { usePageData, type BlogData } from './pageData'
 const byDateDesc = (a: Post, b: Post) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)
 
 /** 前台：已发布的文章（后端已经按日期倒序，这里再排一次保证稳定） */
-export function usePublishedPosts(): { posts: Post[]; loading: boolean; error?: string } {
+export function usePublishedPosts(): { posts: Post[]; loading: boolean; error?: string; retry?: () => void } {
   const state = usePageData<BlogData>('/blog', undefined, 'blog')
   return {
     posts: [...(state.data?.posts ?? [])].sort(byDateDesc),
     loading: state.status === 'loading',
     error: state.status === 'error' ? state.error : undefined,
+    retry: state.status === 'error' ? state.retry : undefined,
   }
 }
 

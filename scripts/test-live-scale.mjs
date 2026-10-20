@@ -312,7 +312,8 @@ check('⚠️ 播放器只能有一处 JSX —— 两套版面绝不能写成两
 
 check('⚠️ 播放器和侧栏在**同一个** 12 列网格里', () => {
   // 两者之间再开一个 grid 的话，「顶边齐」是做不到的 —— col-start / row-start 只对同一个网格生效
-  const at = GDP.search(/<div className="grid gap-8 lg:grid-cols-12">/)
+  // grid-cols-1 是窄屏的显式基础列（防止长名字把隐式 auto 列撑出横向滚动），不改变网格结构
+  const at = GDP.search(/<div className="grid (?:grid-cols-1 )?gap-8 lg:grid-cols-12">/)
   const player = GDP.search(/<EmulatorPlayer\s/)
   const aside = GDP.search(/<aside\b/)
   assert.ok(at > 0 && at < player, '合并后的网格不在播放器之前')

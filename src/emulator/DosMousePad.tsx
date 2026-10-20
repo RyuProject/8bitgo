@@ -12,6 +12,7 @@
  */
 import { useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import { createPortal } from 'react-dom'
+import { useOverlayHost } from './overlayHost'
 import type { RuntimeHandle } from './types'
 import { cx } from '@/lib/format'
 import { useT } from '@/services/i18n'
@@ -37,6 +38,8 @@ interface Props {
 
 export function DosMousePad({ handle, onClose }: Props) {
   const t = useT()
+  // 原生全屏时 portal 到 <body> 会被整个隐藏；见 overlayHost.ts
+  const overlayHost = useOverlayHost()
   const move = handle.sendMouseMove
   const rel = handle.sendMouseRelative
   const btn = handle.sendMouseButton
@@ -125,11 +128,11 @@ export function DosMousePad({ handle, onClose }: Props) {
     children: label,
   })
 
-  if (!move) return null
+  if (!move || !overlayHost) return null
 
   return createPortal(
     <div
-      className="fixed inset-x-0 bottom-0 z-40 flex flex-col gap-2 border-t border-white/15 bg-black/85 px-3 pb-3 pt-2 backdrop-blur-sm"
+      className="fixed inset-x-0 bottom-0 z-[70] flex flex-col gap-2 border-t border-white/15 bg-black/85 px-3 pb-3 pt-2 backdrop-blur-sm"
       style={PAD_STYLE}
     >
       <div className="flex items-center justify-between">
@@ -184,6 +187,6 @@ export function DosMousePad({ handle, onClose }: Props) {
         />
       </div>
     </div>,
-    document.body,
+    overlayHost,
   )
 }

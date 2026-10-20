@@ -63,7 +63,7 @@ export function BlogPage() {
       ) : (
         <>
           {featured && <FeaturedCard post={featured} />}
-          <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {rest.map((p) => (
               <PostCard key={p.slug} post={p} />
             ))}
@@ -91,7 +91,7 @@ function BlogSkeleton() {
           <SkeletonBlock className="mt-5 h-3 w-40" />
         </div>
       </div>
-      <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-3" aria-hidden>
+      <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3" aria-hidden>
         {Array.from({ length: 3 }, (_, i) => (
           <div key={i} className="overflow-hidden rounded-card border border-line bg-surface">
             <SkeletonBlock className="aspect-[16/7] rounded-none" />

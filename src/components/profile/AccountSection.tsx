@@ -14,6 +14,7 @@ import { changeEmail, logoutAllDevices, requestEmailChangeCode, setPassword } fr
 import { BirthDateForm, formatBirthDate } from '@/components/game/AgeGate'
 import { isAdultByBirthDate } from '@/lib/age'
 import { CodeInput, Notice, Panel, inputClass, useCooldown } from './shared'
+import { cx } from '@/lib/format'
 import { FEATURES } from '@/config/features'
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -119,7 +120,8 @@ function EmailPanel({ user }: { user: PublicUser }) {
                 autoComplete="email"
                 inputMode="email"
                 placeholder={t.account.emailNewPlaceholder}
-                className={inputClass}
+                // min-w-0 flex-1：输入框默认最小宽度约 170–200px，和不换行的「发送验证码」挤在一行时 360px 屏会撑破
+                className={cx(inputClass, 'min-w-0 flex-1')}
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
               />

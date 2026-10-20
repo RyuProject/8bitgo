@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
+import { lockBodyScroll } from '@/lib/scrollLock'
 import { useT } from '@/services/i18n'
 import { useSeo } from '@/services/seo'
 import { apiEnabled } from '@/services/api'
@@ -117,7 +118,7 @@ function Section({
 
 function Grid({ items, showSubmitter }: { items: AppItem[]; showSubmitter?: boolean }) {
   return (
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
       {items.map((item) => (
         <AppCard key={item.id} item={item} showSubmitter={showSubmitter} />
       ))}
@@ -224,7 +225,7 @@ function Empty({ text }: { text: string }) {
 
 function SkeletonGrid() {
   return (
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
       {Array.from({ length: 6 }).map((_, i) => (
         <div key={i} className="flex flex-col gap-3 rounded-2xl border border-line bg-surface p-4">
           <div className="flex items-start gap-3">
@@ -264,6 +265,7 @@ function SubmitModal({ onClose }: { onClose: () => void }) {
   const [contact, setContact] = useState('')
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  useEffect(() => lockBodyScroll(), [])
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
@@ -287,7 +289,8 @@ function SubmitModal({ onClose }: { onClose: () => void }) {
 
   return (
     <div
-      className="fixed inset-0 z-40 grid place-items-center bg-black/50 p-4"
+      // z-[80] 和其它弹窗同层：z-40 会被同意横幅（z-45）和手机抽屉压住，提交按钮被挡
+      className="fixed inset-0 z-[80] grid place-items-center bg-black/50 p-4"
       role="dialog"
       aria-modal
       aria-label={t.apps.submitTitle}

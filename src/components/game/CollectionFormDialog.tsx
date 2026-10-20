@@ -49,7 +49,7 @@ export function CollectionFormDialog({ collection, onClose, onSaved }: Props) {
   return (
     // z-[80] 和登录弹窗同层：这两个不会同时出现（没登录点新建会先弹登录）
     <div className="fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-black/50 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-md rounded-2xl border border-line bg-surface p-5 shadow-2xl">
+      <div className="my-auto w-full max-w-md rounded-2xl border border-line bg-surface p-5 shadow-2xl">
         <h2 className="text-lg font-bold">{collection ? t.collections.editTitle : t.collections.create}</h2>
 
         <label className="mt-4 block">

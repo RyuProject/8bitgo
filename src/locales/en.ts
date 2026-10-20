@@ -859,6 +859,8 @@ const en: Translation = {
     flashSaveLoginRequired: 'Sign in to use online saves. After signing in, exit and re-enter this game',
     flashSaveExpiringSoon: 'The online save session expires in 10 minutes — exit and re-enter this game to keep saving to the cloud',
     runtimeFellBack: 'This ROM needs a more complete emulator core — switched to {runtime}',
+    ndsCoreFellBack: 'The NDS core crashed. Restarting with the compatibility core; saves are kept separate',
+    ndsCoreFailed: 'The NDS core crashed: {reason}',
     arcadeHackFound: 'Recognized hack: {title} (running on the {driver} driver)',
     arcadeHackNoPlan: 'Recognized {title}, but there\'s no working load plan for this package yet, so it can\'t run.',
     watchHintPick: 'You are joining to watch: you get the host’s picture and sound but no controls. Hit “Take a slot” in the toolbar whenever you want to play.',

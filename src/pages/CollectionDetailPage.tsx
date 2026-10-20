@@ -47,19 +47,24 @@ export function CollectionDetailPage() {
    * silent=true 时不切骨架屏：已经有数据、只是要和服务端对一下账（关掉「添加游戏」弹窗之后）。
    * 每次都走骨架的话，加完几款一关弹窗整页闪一下，像是把刚加的又弄丢了。
    */
+  // 最近一次 load 的序号：/collections/1 → /collections/2 快速切换时，1 的响应晚到不能把 2 盖掉
+  const loadSeq = useRef(0)
   const load = useCallback(
     (silent = false) => {
+      const seq = ++loadSeq.current
       if (!silent) setLoading(true)
       getCollection(id)
         .then((d) => {
+          if (loadSeq.current !== seq) return
           setData(d)
           setMissing(false)
         })
         .catch(() => {
+          if (loadSeq.current !== seq) return
           if (!silent) setMissing(true)
         })
         .finally(() => {
-          if (!silent) setLoading(false)
+          if (loadSeq.current === seq && !silent) setLoading(false)
         })
     },
     [id],
@@ -170,6 +175,9 @@ export function CollectionDetailPage() {
       await removeGameFromCollection(c.id, slug)
       // 已经有数据了，悄悄对账就行，不用整页闪一次骨架
       load(true)
+    } catch (e) {
+      // 以前没有 catch：失败时什么都不提示，还会冒出一个未处理的 Promise 拒绝
+      window.alert(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
     }
@@ -239,6 +247,8 @@ export function CollectionDetailPage() {
                   try {
                     await setCollectionHidden(c.id, !c.hidden)
                     load()
+                  } catch (e) {
+                    window.alert(e instanceof Error ? e.message : String(e))
                   } finally {
                     setBusy(false)
                   }

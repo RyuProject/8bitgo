@@ -1,5 +1,6 @@
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, useRef, type ReactNode } from 'react'
 import { cx } from '@/lib/format'
+import { lockBodyScroll } from '@/lib/scrollLock'
 
 /**
  * 全站统一的模态框外壳。复刻 ShareDialog 那一套：
@@ -23,19 +24,23 @@ export function Modal({
   size?: 'sm' | 'md' | 'lg'
   closeLabel?: string
 }) {
+  // 调用方大多传内联箭头函数，放进依赖会让锁 / 监听在每次父组件重渲染时反复拆装
+  const onCloseRef = useRef(onClose)
+  useEffect(() => {
+    onCloseRef.current = onClose
+  })
   useEffect(() => {
     if (!open) return
-    const prev = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
+    const unlock = lockBodyScroll()
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') onCloseRef.current()
     }
     window.addEventListener('keydown', onKey)
     return () => {
-      document.body.style.overflow = prev
+      unlock()
       window.removeEventListener('keydown', onKey)
     }
-  }, [open, onClose])
+  }, [open])
 
   if (!open) return null
 

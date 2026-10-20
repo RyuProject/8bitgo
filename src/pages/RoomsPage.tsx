@@ -74,7 +74,7 @@ export function RoomsPage() {
             <p className="mt-1 text-sm text-muted">{live ? t.rooms.liveEmptyBody : t.rooms.emptyBody}</p>
           </div>
         ) : (
-          <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {rooms.map((room) => (
               <li key={room.roomId}>
                 <RoomCard room={room} watchOnly={live} />

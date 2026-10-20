@@ -861,6 +861,8 @@ const fr: Translation = {
     flashSaveLoginRequired: 'Connectez-vous pour utiliser la sauvegarde en ligne. Ensuite, quittez et relancez cette partie',
     flashSaveExpiringSoon: 'La session de sauvegarde en ligne expire dans 10 minutes — quittez et relancez la partie pour continuer à sauvegarder dans le cloud',
     runtimeFellBack: 'Cette ROM nécessite un cœur plus complet : passage à {runtime}',
+    ndsCoreFellBack: 'Le cœur NDS a planté. Redémarrage avec le cœur compatible ; les sauvegardes restent séparées',
+    ndsCoreFailed: 'Le cœur NDS a planté : {reason}',
     arcadeHackFound: 'Hack reconnu : {title} (exécuté via le pilote {driver})',
     arcadeHackNoPlan: '{title} reconnu, mais il n\'existe pas encore de méthode de chargement fonctionnelle pour ce paquet.',
     watchHintPick: 'Vous entrez pour regarder : image et son de l’hôte, sans les commandes. Cliquez sur « Prendre une manette » dans la barre pour jouer.',

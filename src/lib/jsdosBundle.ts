@@ -673,6 +673,7 @@ export function makeWindowsGameLayer(
   executable: string,
   drive = 'd',
   registryImport?: string,
+  extras: readonly ExtraFile[] = [],
 ): WindowsGameLayer {
   const parsed = readZipEntries(buf)
   const bytes = new Uint8Array(buf)
@@ -680,10 +681,14 @@ export function makeWindowsGameLayer(
   if (!zipLike || !parsed) throw new Error('Windows 客体游戏必须上传完整 ZIP，不能只上传单个 EXE')
   const entries = normalizeArchiveEntries(parsed)
   assertRepackable(entries)
+  const wantedExtras = planExtraFiles(extras)
+  assertExtrasFit(entries, wantedExtras)
 
-  const files = entries
-    .filter((entry) => !entry.name.endsWith('/'))
+  // 兼容配置通常只有几百字节；直接在最终游戏层替换条目，不先复制整份几十 MB 的 ZIP。
+  const files: { entry: ZipEntry | null; name: string | null; data?: Uint8Array<ArrayBuffer> }[] = entries
+    .filter((entry) => !entry.name.endsWith('/') && !wantedExtras.has(entry.name.toLowerCase()))
     .map((entry) => ({ entry, name: safeArchivePath(entry.name) }))
+  for (const extra of wantedExtras.values()) files.push({ entry: null, name: extra.path, data: extra.data })
   if (files.some((file) => file.name === null)) throw new Error('Windows 游戏 ZIP 含不安全的绝对路径或 ../ 路径')
 
   const wanted = safeArchivePath(executable)
@@ -717,15 +722,27 @@ export function makeWindowsGameLayer(
     out.push({ name: dir, method: 0, crc: 0, compressedSize: 0, uncompressedSize: 0, data: empty })
   }
   for (const file of files) {
-    const e = file.entry
-    out.push({
-      name: `${WINDOWS_GAME_ROOT}/${file.name}`,
-      method: e.method,
-      crc: e.crc,
-      compressedSize: e.compressedSize,
-      uncompressedSize: e.uncompressedSize,
-      data: rawData(buf, e),
-    })
+    if (file.entry) {
+      const e = file.entry
+      out.push({
+        name: `${WINDOWS_GAME_ROOT}/${file.name}`,
+        method: e.method,
+        crc: e.crc,
+        compressedSize: e.compressedSize,
+        uncompressedSize: e.uncompressedSize,
+        data: rawData(buf, e),
+      })
+    } else {
+      const data = file.data!
+      out.push({
+        name: `${WINDOWS_GAME_ROOT}/${file.name}`,
+        method: 0,
+        crc: crc32(data),
+        compressedSize: data.length,
+        uncompressedSize: data.length,
+        data,
+      })
+    }
   }
 
   const exeSlash = actual.lastIndexOf('/')

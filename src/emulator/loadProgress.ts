@@ -1034,7 +1034,9 @@ export const WINDOWS_GUEST_INIT_GRACE_MS = 4 * 60_000
 const WINDOWS_LAUNCH_CHAIN_MS = WINDOWS_GRAPHICS_SIGNAL_FALLBACK_MS + 15_000 + WINDOWS_LAUNCH_VERIFY_MS
 
 /**
- * 客体初始化 + 后台配置的开机等待，共同构成 80–99% 这段的**超时预算**。
+ * 客体初始化 + 后台配置的开机等待，原本共同构成 80–99% 这段的**总超时预算**。
+ * 现在适配器在 ci-ready 前仍沿用这个上限，避免慢设备因拆段而更早失败；收到 ci-ready
+ * 后另外按 windowsGuestLaunchBudgetMs 计时，真实进展不会被之前建盘耗时挤掉。
  *
  * ⚠️⚠️ 这个数**只能用来判失败，绝不能用来画进度条**。这一条是 2026-09-11 那次
  * 「加载卡在 80%」的病根：EmulatorPlayer 的视觉计时器原来直接拿它当 duration，
@@ -1050,7 +1052,12 @@ const WINDOWS_LAUNCH_CHAIN_MS = WINDOWS_GRAPHICS_SIGNAL_FALLBACK_MS + 15_000 + W
  * 前者在这里，后者见 startingSegmentMs。
  */
 export function windowsGuestStartupBudgetMs(launchDelaySeconds = 24): number {
-  return windowsLaunchDelayMs(launchDelaySeconds) + WINDOWS_LAUNCH_CHAIN_MS + WINDOWS_GUEST_INIT_GRACE_MS
+  return WINDOWS_GUEST_INIT_GRACE_MS + windowsGuestLaunchBudgetMs(launchDelaySeconds)
+}
+
+/** CI 已经建好之后，只给图形模式、自动输入与画面确认计时；不再混入之前的建盘时间。 */
+export function windowsGuestLaunchBudgetMs(launchDelaySeconds = 24): number {
+  return windowsLaunchDelayMs(launchDelaySeconds) + WINDOWS_LAUNCH_CHAIN_MS
 }
 
 /* ---------------- Windows 客体启动阶段的里程碑 ---------------- */

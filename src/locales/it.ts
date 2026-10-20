@@ -860,6 +860,8 @@ const it: Translation = {
     flashSaveLoginRequired: 'Accedi per usare i salvataggi online. Dopo l’accesso, esci e rientra in questa partita',
     flashSaveExpiringSoon: 'La sessione di salvataggio online scade tra 10 minuti: esci e rientra nella partita per continuare a salvare nel cloud',
     runtimeFellBack: 'Questa ROM richiede un core più completo: passato a {runtime}',
+    ndsCoreFellBack: 'Il core NDS si è arrestato. Riavvio con il core compatibile; i salvataggi restano separati',
+    ndsCoreFailed: 'Il core NDS si è arrestato: {reason}',
     arcadeHackFound: 'Hack riconosciuto: {title} (eseguito con il driver {driver})',
     arcadeHackNoPlan: '{title} riconosciuto, ma per questo pacchetto non esiste ancora un metodo di caricamento funzionante.',
     watchHintPick: 'Entri solo per guardare: immagine e audio dell’host, ma senza comandi. Premi «Prendi un posto» nella barra quando vuoi giocare.',

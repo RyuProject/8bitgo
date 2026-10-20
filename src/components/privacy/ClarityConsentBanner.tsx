@@ -51,11 +51,16 @@ export function ClarityConsentBanner() {
     setOpen(false)
   }
 
+  /*
+    z-[45]：高于正文、顶栏（30）和抽屉遮罩（40），但低于移动抽屉本体（50）、站内信抽屉（60/61）、
+    移动端游玩舞台（60）和所有弹窗（80）。以前和弹窗同为 z-[80] 且挂得更晚，会盖住登录表单底部、
+    抽屉底部的「登录 / 注册」，以及手机游玩时舞台底部的触屏手柄。
+  */
   return (
     <section
       role="region"
       aria-label={t.clarityConsent.title}
-      className="fixed inset-x-3 bottom-3 z-[80] mx-auto max-w-3xl rounded-3xl border-2 border-line-strong bg-surface/95 p-4 shadow-2xl backdrop-blur sm:bottom-5 sm:p-5"
+      className="fixed inset-x-3 bottom-3 z-[45] mx-auto max-w-3xl rounded-3xl border-2 border-line-strong bg-surface/95 p-4 shadow-2xl backdrop-blur sm:bottom-5 sm:p-5"
     >
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">

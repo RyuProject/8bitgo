@@ -1,5 +1,5 @@
 import { Suspense, useEffect } from 'react'
-import { Outlet, useLocation } from 'react-router-dom'
+import { Outlet, useLocation, useNavigationType } from 'react-router-dom'
 import { cx } from '@/lib/format'
 import { ShellProvider, useShell } from './ShellContext'
 import { Sidebar } from './Sidebar'
@@ -17,6 +17,7 @@ import { ClarityConsentBanner } from '@/components/privacy/ClarityConsentBanner'
 /** 路由切换时回到顶部；带 hash 时滚动到对应锚点；同时退出沉浸模式、关闭抽屉 */
 function RouteEffects() {
   const { pathname, hash } = useLocation()
+  const navType = useNavigationType()
   const { setImmersive, setMobileOpen } = useShell()
 
   useEffect(() => {
@@ -37,8 +38,11 @@ function RouteEffects() {
         return
       }
     }
-    window.scrollTo({ top: 0 })
-  }, [pathname, hash, setImmersive, setMobileOpen])
+    // 后退 / 前进（POP）交给浏览器自己的滚动恢复：强制回顶会让玩家从详情页返回长列表时丢掉位置。
+    if (navType === 'POP') return
+    // 'instant'：html 上挂了 scroll-behavior: smooth，不写的话换页会先在新页面里动画滚一遍
+    window.scrollTo({ top: 0, behavior: 'instant' })
+  }, [pathname, hash, navType, setImmersive, setMobileOpen])
 
   return null
 }

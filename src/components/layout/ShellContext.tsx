@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { listenMediaQuery } from '@/lib/mediaQuery'
+import { lockBodyScroll } from '@/lib/scrollLock'
 
 /**
  * 应用壳状态：
@@ -104,7 +105,11 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!immersive) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setImmersive(false)
+      if (e.key !== 'Escape' || e.defaultPrevented) return
+      // 上面还压着弹窗（登录、分享、存档…）时，这一下 Esc 是给弹窗的：只关弹窗，不顺手退出沉浸，
+      // 否则一次按键同时关两层，布局还会跳一下。
+      if (document.querySelector('[aria-modal="true"]')) return
+      setImmersive(false)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -116,12 +121,8 @@ export function ShellProvider({ children }: { children: ReactNode }) {
   }, [desktop])
 
   // 只有移动抽屉打开时锁定页面滚动；桌面侧栏不是模态层。
-  useEffect(() => {
-    document.body.style.overflow = mobileOpen && !desktop ? 'hidden' : ''
-    return () => {
-      document.body.style.overflow = ''
-    }
-  }, [desktop, mobileOpen])
+  // 走共用的引用计数锁：直接写 body.style.overflow 会冲掉同一批提交里弹窗加的锁。
+  useEffect(() => (mobileOpen && !desktop ? lockBodyScroll() : undefined), [desktop, mobileOpen])
 
   const value = useMemo<ShellState>(
     () => ({

@@ -118,8 +118,9 @@ check('restartSession 走 canRestartInPlace 判定，没有另写一份', () => 
 })
 
 /*
-  「哪些会话不能重挂引擎」这个判断，播放器里有**三处**要用：工具栏重开、加载失败后的
-  自动重试，以及 ROM 迁移期间切备用文件（后两处都在 onError 里）。三处必须是同一份。
+  「哪些会话不能重挂引擎」这个判断，播放器里有**四处**要用：工具栏重开、加载失败后的
+  自动重试、ROM 迁移期间切备用文件（这两处在 onError 里），以及 NDS 新核心 WASM 崩溃后
+  切兼容核心（onCoreCrash）。四处必须是同一份。
 
   以前自动重试那儿手写着 `!session.netplay && !session.cloud && !session.live`。
   留着它才是真正的风险：以后新增一种「游戏不在本机跑」的会话，
@@ -128,7 +129,8 @@ check('restartSession 走 canRestartInPlace 判定，没有另写一份', () => 
 */
 check('自动重试和读档共用同一份会话判断，没有第二份手写的', () => {
   const hits = player.match(/canRestartInPlace\(session\)/g) ?? []
-  assert.equal(hits.length, 3, `canRestartInPlace(session) 用了 ${hits.length} 处，应该是重开 + 自动重试 + ROM 故障切换三处`)
+  assert.equal(hits.length, 4, `canRestartInPlace(session) 用了 ${hits.length} 处，应该是重开 + 自动重试 + ROM 故障切换 + NDS 崩溃换核心四处`)
+  assert.match(player, /ndsCrashFallbackCore\(crashedCore, canRestartInPlace\(session\)/)
   assert.match(player, /typeof session\.game === 'string'[\s\S]{0,160}?canRestartInPlace\(session\)/)
   assert.match(player, /if \(!ready && canRestartInPlace\(session\) && attempt < AUTO_RETRY_LIMIT\)/)
   assert.doesNotMatch(
@@ -138,8 +140,9 @@ check('自动重试和读档共用同一份会话判断，没有第二份手写�
   )
 })
 
+// 重开要带上这一局的核心覆盖：NDS 已经切到兼容核心时，点「重开」不能又回到会崩的新核心。
 check('重开用的是同一局的 ROM / 平台 / 运行时（是重开，不是重新挑）', () =>
-  assert.match(player, /begin\(session\.game,\s*session\.platform,\s*session\.runtime\)/))
+  assert.match(player, /begin\(session\.game,\s*session\.platform,\s*session\.runtime,\s*\{\s*coreOverride:\s*session\.coreOverride\s*\}\)/))
 
 console.log('\n── DOS 鼠标设置：收进手柄面板 ──')
 
@@ -227,18 +230,21 @@ check('Windows 客体与《主题医院》都由适配器独占绝对指针，�
   assert.match(jsdos, /classList\.contains\('emulator-mouse-overlay'\)/)
   assert.match(jsdos, /pointerSurface\(event\.target\)/)
   assert.match(jsdos, /event\.target === surface/)
+  assert.match(jsdos, /const activeLockedSurface = \(\) =>/)
+  assert.match(jsdos, /contentRect\(locked\)/)
   assert.match(jsdos, /captureUnavailable = true/)
   assert.match(jsdos, /surface\.requestPointerLock\(\)/)
   assert.match(jsdos, /event\.stopPropagation\(\)/)
   assert.match(jsdos, /dosMouseSpeedMultiplier\(sensitivity\(\)\)/)
-  assert.match(jsdos, /document\.pointerLockElement === surface/)
   assert.match(jsdos, /if \(!locked\) sendClientPosition\(event, surface\)/)
+  assert.doesNotMatch(jsdos, /if \(document\.pointerLockElement === surface\)/)
   assert.match(jsdos, /for \(const type of endEvents\) document\.addEventListener\(type, onEnd as EventListener, true\)/)
   assert.match(jsdos, /document\.addEventListener\('pointerlockerror', onPointerLockError\)/)
   assert.match(jsdos, /window\.addEventListener\('blur', onBlur\)/)
   assert.match(jsdos, /pressButton\(attempt\.button\)/)
   assert.match(jsdos, /attempt\.timeout = window\.setTimeout/)
   assert.match(jsdos, /const result = surface\.requestPointerLock\(\) as Promise<void> \| undefined/)
+  assert.match(jsdos, /if \(activeLockedSurface\(\)\) clearCaptureAttempt\(attempt\)/)
   assert.match(jsdos, /\.catch\(\(\) => finishFailedCapture\(attempt\)\)/)
   assert.match(jsdos, /document\.addEventListener\('fullscreenchange', onFullscreenChange\)/)
 })
@@ -264,7 +270,7 @@ console.log('\n── DOS / Windows Sockdrive：大型游戏按块读取 ──'
 
 check('Win95 悬停时预热正确的 DOSBox-X 核心和系统盘版本探测', () => {
   assert.match(player, /prewarmCore = pageRuntime\?\.id === 'jsdos' && \(effectiveDosSystemUrl \|\| dosBackend === 'dosboxX'\)/)
-  assert.match(player, /prewarmRuntime\(pageRuntime\?\.id, prewarmCore, true\)/)
+  assert.match(player, /prewarmRuntime\(pageRuntime\?\.id, prewarmCore, aggressive\)/)
   assert.match(player, /prewarmSystemCache\(effectiveDosSystemUrl\)/)
   assert.match(prewarm, /jspiEnabled\(\) \? 'wdosbox-x-jspi' : 'wdosbox-x'/)
   assert.match(prewarm, /warmHttpCache\(`\$\{emulatorRoot\}\$\{stem\}\.wasm`\)/)

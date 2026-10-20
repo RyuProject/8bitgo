@@ -910,6 +910,8 @@ export const zhHans = {
     flashSaveLoginRequired: '登录账号后才能使用在线存档；登录完请退出并重新进入本局',
     flashSaveExpiringSoon: '在线存档会话 10 分钟后到期：请找机会退出并重新进入本局，之后才能继续云端存档',
     runtimeFellBack: '这份 ROM 需要更完整的模拟核心，已自动切换到 {runtime}',
+    ndsCoreFellBack: 'NDS 核心意外退出，已切换兼容核心并重新开始；两种核心的存档分别保存',
+    ndsCoreFailed: 'NDS 核心运行失败：{reason}',
     arcadeHackFound: '已认出改版包：{title}（借 {driver} 驱动运行）',
     arcadeHackNoPlan: '认出来了：{title}，但这个包还没有可用的加载方案，暂时跑不起来。',
     watchHintPick: '你选的是只看不玩：能看到房主的画面、听到声音，但不参与操作。想上场随时在工具栏点「上场玩」。',

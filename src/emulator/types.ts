@@ -221,6 +221,8 @@ export interface MountOptions {
    * 父层据此禁止切换语言或备用 ROM；换多少份内容都修不好同一个运行时故障。
    */
   onError?: (message: string, scope?: 'runtime' | 'content') => void
+  /** NDS 核心的 WASM 主循环已经崩溃；和普通加载失败分开，允许一次有界的换核心重开。 */
+  onCoreCrash?: (core: string, message: string) => void
   /**
    * 「这份 ROM 我跑不了，换个引擎吧」—— 和 onError 是两回事。
    *

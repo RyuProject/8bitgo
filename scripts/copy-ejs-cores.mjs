@@ -47,9 +47,12 @@ import { SELF_BUILT_CORES } from '../src/config/emulators.ts'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const out = join(root, 'public', 'emulatorjs', 'cores')
 const ifMissing = process.argv.includes('--if-missing')
+// 兼容 melonDS 从官方 npm 包单独取证后已提交到仓库；不能为了复制其它核心
+// 再通过 npm 依赖拉进所有可选核心，也不能让清理输出目录时把它删掉。
+const PRESERVED_CORES = new Set([...SELF_BUILT_CORES, 'melonds'])
 
 /**
- * 自构建核心（scripts/build-*.mjs 现编、npm 上没有）不归本脚本管 ——
+ * 自构建核心和单独发布的兼容核心不归本脚本管 ——
  * 但下面为了「复制结果干净」会整个删掉 cores/，所以得先抢救出来再放回去。
  *
  * 少了这一步，跑一次 npm run ejscores 就会把辛苦编出来的核心悄悄删掉。
@@ -63,7 +66,7 @@ function preserveSelfBuilt() {
   if (!existsSync(out)) return kept
   mkdirSync(join(tmp, 'reports'), { recursive: true })
 
-  for (const c of SELF_BUILT_CORES) {
+  for (const c of PRESERVED_CORES) {
     // cores/<core>-*.data（含 -legacy-、-thread- 变体）
     for (const f of readdirSync(out)) {
       if (f.startsWith(`${c}-`)) {
@@ -127,8 +130,7 @@ const CORES = [
   'picodrive',          // Sega 32X
   'vice_x64sc',         // Commodore 64
   'puae',               // Commodore Amiga
-  // nds 默认的 melondsds 是自构建核心，由 preserveSelfBuilt() 原样保留；
-  // 停更的旧 melonds 故意不再从 npm 复制回来。
+  // 旧 melonds 只为新版 WASM 崩溃兜底，已提交的二进制由 PRESERVED_CORES 保留。
   'desmume',            // nds 备选：有 frameskip 和内部分辨率，melonDS 两样都没有
   'desmume2015',        // nds 备选：更老更轻，弱机兜底
 ]
@@ -159,7 +161,7 @@ if (missing.length) {
   process.exit(1)
 }
 
-// 自构建核心不在上面的 CORES 表里，先把它们捞出来，别被紧随其后的 rmSync 一起带走
+// 自构建核心与旧 melonDS 不在上面的 CORES 表里，先捞出来，别被 rmSync 一起带走。
 const keptSelfBuilt = preserveSelfBuilt()
 
 rmSync(out, { recursive: true, force: true })
@@ -182,8 +184,8 @@ for (const c of CORES) {
 if (keptSelfBuilt.length) {
   restoreSelfBuilt(keptSelfBuilt)
   console.log(
-    `↩ 已原样保留 ${keptSelfBuilt.length} 个自构建核心文件（${[...SELF_BUILT_CORES].join('、')}）` +
-      `—— 它们不在 npm 上，本脚本不负责、也没法负责更新`,
+    `↩ 已原样保留 ${keptSelfBuilt.length} 个单独发布的核心文件（${[...PRESERVED_CORES].join('、')}）` +
+      `—— 本脚本不负责重新生成它们`,
   )
 }
 // reports/ 是上游目录；运行时请求 metadata/，避开会误拦 `/reports/` 的隐私扩展。

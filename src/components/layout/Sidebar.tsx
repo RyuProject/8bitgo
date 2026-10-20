@@ -353,6 +353,11 @@ function RandomGameButton({ collapsed }: { collapsed: boolean }) {
   const { setMobileOpen } = useShell()
 
   const [rolling, setRolling] = useState(false)
+  // 请求在路上时玩家又点了别的链接：响应回来不能再把他拽到随机游戏去
+  const pathRef = useRef(location.pathname)
+  useEffect(() => {
+    pathRef.current = location.pathname
+  }, [location.pathname])
 
   /**
    * 随机一款游戏。v1 是把整库拉到浏览器再随机取下标，v2 不再全量加载，
@@ -365,13 +370,15 @@ function RandomGameButton({ collapsed }: { collapsed: boolean }) {
     setMobileOpen(false)
     if (!apiEnabled()) return navigate('/games')
     setRolling(true)
+    const startPath = location.pathname
     try {
       const game = await api.get<{ slug: string }>(
         `/api/games/random${current ? `?exclude=${encodeURIComponent(current)}` : ''}`,
       )
+      if (pathRef.current !== startPath) return
       navigate(game?.slug ? `/games/${game.slug}` : '/games')
     } catch {
-      navigate('/games')
+      if (pathRef.current === startPath) navigate('/games')
     } finally {
       setRolling(false)
     }

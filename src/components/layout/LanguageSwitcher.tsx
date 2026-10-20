@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { cx } from '@/lib/format'
 import { useT, fmt } from '@/services/i18n'
 import { LANGUAGES } from '@/config/languages'
@@ -23,9 +23,31 @@ export function LanguageSwitcher({ className, align = 'right' }: { className?: s
   const lang = useLang()
   const [open, setOpen] = useState(false)
   const currentLabel = LANGUAGES.find((l) => l.code === lang)?.label ?? ''
+  const boxRef = useRef<HTMLDivElement>(null)
+
+  /*
+    点外面关。以前靠一层 `fixed inset-0` 的透明遮罩，但切换器挂在侧栏 <aside> 里，
+    而侧栏带 transform —— transform 会成为 fixed 子元素的包含块，那层遮罩只盖住 240px 宽的侧栏，
+    点主内容区菜单关不掉。改成和 SearchBox 一样监听 document。
+  */
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (!boxRef.current?.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
 
   return (
-    <div className={cx('relative', className)}>
+    <div ref={boxRef} className={cx('relative', className)}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -40,7 +62,6 @@ export function LanguageSwitcher({ className, align = 'right' }: { className?: s
 
       {open && (
         <>
-          <div className="fixed inset-0 z-40" aria-hidden onClick={() => setOpen(false)} />
           <div
             role="menu"
             className={cx(

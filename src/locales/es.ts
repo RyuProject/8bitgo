@@ -859,6 +859,8 @@ const es: Translation = {
     flashSaveLoginRequired: 'Inicia sesión para usar el guardado en línea. Después, sal y vuelve a entrar en la partida',
     flashSaveExpiringSoon: 'La sesión de guardado en línea caduca en 10 minutos: sal y vuelve a entrar en la partida para seguir guardando en la nube',
     runtimeFellBack: 'Esta ROM necesita un núcleo más completo: se cambió a {runtime}',
+    ndsCoreFellBack: 'El núcleo NDS falló. Reiniciando con el núcleo compatible; las partidas se guardan por separado',
+    ndsCoreFailed: 'El núcleo NDS falló: {reason}',
     arcadeHackFound: 'Hack reconocido: {title} (se ejecuta con el driver {driver})',
     arcadeHackNoPlan: 'Se reconoció {title}, pero aún no hay un método de carga que funcione para este paquete.',
     watchHintPick: 'Entras solo para mirar: verás y oirás la partida del anfitrión, pero sin controles. Pulsa «Coger un mando» en la barra cuando quieras jugar.',

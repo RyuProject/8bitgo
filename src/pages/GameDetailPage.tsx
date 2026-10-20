@@ -129,7 +129,18 @@ export function GameDetailPage() {
   const user = useCurrentUser()
   const [shareOpen, setShareOpen] = useState(false)
   const [addToCollection, setAddToCollection] = useState(false)
-  const isFav = Boolean(user?.favorites.includes(slug))
+  // 用游戏的真实 slug 判断：URL 里的 slug 大小写可能不同，而切换收藏用的是 game.slug，
+  // 两边不一致时按钮会显示「未收藏」，一点反而取消收藏。
+  const isFav = Boolean(user?.favorites.includes(game?.slug ?? slug))
+  // 收藏请求在路上时禁掉按钮：连点两下会发两次切换，最终状态取决于哪个响应后到。
+  const [favBusy, setFavBusy] = useState(false)
+  const onToggleFavorite = (target: string) => {
+    if (favBusy) return
+    setFavBusy(true)
+    void toggleFavorite(target)
+      .catch(() => {})
+      .finally(() => setFavBusy(false))
+  }
   /**
    * 「反馈问题」：滚到本页评论区并把光标放进输入框 —— 出错的玩家想说话时，评论区就是最近的出口。
    * 以前这颗按钮跳 /blog，玩家到了博客列表页不知道该干什么。
@@ -167,7 +178,9 @@ export function GameDetailPage() {
    * 不持久化到 localStorage —— 跨页签持久化反而引入「后台改了简介但用户看不到」的隐性 bug，
    * 反正刷新一次页面就重新走 needsTranslation() 判断按钮该不该显示
    */
-  const [translatedDescription, setTranslatedDescription] = useState<string | null>(null)
+  // 译文连同「是哪一款、哪种语言」一起存：详情页在相关游戏之间跳转时组件是复用的，
+  // 只存文本会把 A 的译文盖到 B 的简介上；翻译请求在跳转之后才返回也一样会错位。
+  const [translated, setTranslated] = useState<{ slug: string; lang: string; text: string } | null>(null)
   useEffect(() => setRomLang(null), [slug])
   const rom = useRomUrl(game, romLang)
   /** 这款游戏绑了哪几种语言的 ROM；少于两种时播放器不显示切换入口 */
@@ -189,6 +202,8 @@ export function GameDetailPage() {
 
   // SEO：hook 必须在下面的 early return 之前调用，所以「还没取到」和「确实没有」都要在这里各给一套
   const lang = useLang()
+  const translatedDescription =
+    translated && game && translated.slug === game.slug && translated.lang === lang ? translated.text : null
   /**
    * 这一款是不是「要整页跨源隔离才跑得起来」的游戏（登记表在 shared/isolated-embeds.js）。
    * 命中的话详情页不内嵌模拟器，改成显示一个跳 /play/<slug> 的入口。
@@ -397,7 +412,7 @@ export function GameDetailPage() {
           自己玩（默认）   [    播放器 12 列    ] / [ 资料区 8 ][ 侧栏 4 ]
           看直播 / 联机玩家 [ 播放器 8 ][ 侧    ] / [ 资料区 8 ][   栏   ]
       */}
-      <div className="grid gap-8 lg:grid-cols-12">
+      <div className="grid grid-cols-1 gap-8 lg:grid-cols-12">
         <div className={cx('w-full', twoColumn ? 'lg:col-span-8' : 'lg:col-span-12')}>
           <GameAgeGuard
                 /*
@@ -557,7 +572,7 @@ export function GameDetailPage() {
             {/* 动作按钮 */}
             <div className="mt-5 flex flex-wrap gap-2">
               {user ? (
-                <Button variant={isFav ? 'primary' : 'secondary'} size="sm" onClick={() => void toggleFavorite(game.slug).catch(() => {})} aria-pressed={isFav}>
+                <Button variant={isFav ? 'primary' : 'secondary'} size="sm" onClick={() => onToggleFavorite(game.slug)} disabled={favBusy} aria-pressed={isFav}>
                   {isFav ? t.game.favorited : t.game.favorite}
                 </Button>
               ) : (
@@ -612,7 +627,7 @@ export function GameDetailPage() {
                   <TranslateButton<{ text: string }>
                     endpoint={`/api/games/${encodeURIComponent(game.slug)}/translate-description`}
                     lang={lang}
-                    onTranslated={(r) => setTranslatedDescription(r.text)}
+                    onTranslated={(r) => setTranslated({ slug: game.slug, lang, text: r.text })}
                   />
                 )}
               </div>
@@ -921,7 +936,7 @@ function DetailSkeleton() {
       <div className="w-full">
         <SkeletonBlock className="aspect-[16/9] rounded-2xl border border-line lg:max-h-[calc(100dvh-10rem)]" />
       </div>
-      <div className="mt-6 grid gap-8 lg:grid-cols-12">
+      <div className="mt-6 grid grid-cols-1 gap-8 lg:grid-cols-12">
         <div className="lg:col-span-8">
           <SkeletonBlock className="h-8 w-2/3" />
           <div className="mt-3 flex gap-2">

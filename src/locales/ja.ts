@@ -848,6 +848,8 @@ const ja: Translation = {
     flashSaveLoginRequired: 'オンラインセーブを使うにはログインしてください。ログイン後、一度退出してこのゲームに入り直してください',
     flashSaveExpiringSoon: 'オンラインセーブのセッションは 10 分後に期限切れになります。続けてクラウド保存するには、いったん退出してこのゲームに入り直してください',
     runtimeFellBack: 'この ROM にはより完全なコアが必要です。{runtime} に切り替えました',
+    ndsCoreFellBack: 'NDS コアが停止したため互換コアで再起動します。セーブデータはコアごとに保存されます',
+    ndsCoreFailed: 'NDS コアが停止しました：{reason}',
     arcadeHackFound: '改造版を認識しました：{title}（{driver} ドライバで実行）',
     arcadeHackNoPlan: '{title} と認識しましたが、この ROM セットに使える読み込み方法がまだないため実行できません。',
     watchHintPick: '観るだけで参加します。ホストの画面と音は届きますが、操作はできません。プレイしたくなったらツールバーの「プレイに加わる」から。',

@@ -50,8 +50,15 @@ const {
   DESKTOP_SETTLE_FLOOR_MS,
   WINDOWS_CHORD_STEP_MS,
   WINDOWS_LAUNCH_VERIFY_MS,
+  WINDOWS_SCREENSHOT_TIMEOUT_MS,
   WINDOWS_START_MENU_READY_MS,
 } = await import(fileURLToPath(new URL('../src/emulator/windowsLaunch.ts', import.meta.url)))
+const { startActiveTimeout } = await import(fileURLToPath(new URL('../src/emulator/activeTimeout.ts', import.meta.url)))
+const {
+  WINDOWS_GUEST_INIT_GRACE_MS,
+  windowsGuestLaunchBudgetMs,
+  windowsGuestStartupBudgetMs,
+} = await import(fileURLToPath(new URL('../src/emulator/loadProgress.ts', import.meta.url)))
 
 let n = 0
 let failedChecks = 0
@@ -341,6 +348,12 @@ console.log('\n── Caesar III：游戏分辨率必须与 Win95 的 800×600 �
   const merged = mergeExtraFiles(rom, extras)
   const patched = await readZipFile(merged, 'caesar3/C3.INF')
   ok(Boolean(patched) && new DataView(patched.data.buffer, patched.data.byteOffset).getInt32(16, true) === 2, '补丁真正覆盖 ZIP 内的设置档，且查找不受路径大小写影响')
+  const fusedLayer = makeWindowsGameLayer(rom, 'CAESAR3/c3.exe', 'd', undefined, extras)
+  const oldLayer = makeWindowsGameLayer(merged, 'CAESAR3/c3.exe')
+  ok(
+    Buffer.from(fusedLayer.bytes).equals(Buffer.from(oldLayer.bytes)),
+    '兼容补丁直接并入最终游戏层，产物与旧的两次整包复制逐字节相同',
+  )
 
   const already800 = makeZip([
     { name: 'CAESAR3/c3.exe', data: EXE },
@@ -998,7 +1011,64 @@ function fakeClock() {
       now = limit
       await drain()
     },
+    async fireNextLate(at) {
+      let next = null
+      for (const t of timers.values()) {
+        if (!next || t.at < next.at || (t.at === next.at && t.seq < next.seq)) next = t
+      }
+      if (!next) return
+      timers.delete(next.seq)
+      now = at
+      next.fn()
+      await drain()
+    },
   }
+}
+
+console.log('\n── Windows 客体的启动超时：只累计前台、分开建盘和开机 ──')
+{
+  const adapterSource = readFileSync(new URL('../src/emulator/adapters/jsdos.ts', import.meta.url), 'utf8')
+  ok(
+    /armGuestStartupTimeout\('ci', windowsGuestStartupBudgetMs\(options\.dosLaunchDelay\)\)/.test(adapterSource),
+    'Win95 建盘阶段保留原有上限，不因拆段计时缩短慢设备的启动机会',
+  )
+  ok(
+    /armGuestStartupTimeout\('boot', windowsGuestLaunchBudgetMs\(options\.dosLaunchDelay\)\)/.test(adapterSource),
+    'CI 建好后自动启动独立计时，不让建盘时间挤占后续启动机会',
+  )
+  ok(
+    WINDOWS_GUEST_INIT_GRACE_MS + windowsGuestLaunchBudgetMs(24) === windowsGuestStartupBudgetMs(24),
+    '建盘与开机两段预算相加仍等于原来的总上限，不缩短慢设备的可用时间',
+  )
+  const clock = fakeClock()
+  globalThis.window = clock.win
+  let foreground = false
+  let fired = 0
+  const cancel = startActiveTimeout(2_000, () => foreground, () => fired++)
+  await clock.runUntil(390_000)
+  ok(fired === 0, '浏览器标签页在后台即使超过原总上限，也不误报客体超时')
+  foreground = true
+  await clock.runUntil(391_000)
+  ok(fired === 0, '回到前台一秒后，启动流程仍有剩余预算')
+  await clock.runUntil(392_000)
+  ok(fired === 1, '真正消耗两秒前台预算后才报超时')
+  cancel()
+
+  const stalled = fakeClock()
+  globalThis.window = stalled.win
+  let stalledFired = 0
+  startActiveTimeout(2_000, () => true, () => stalledFired++)
+  await stalled.fireNextLate(390_000)
+  ok(stalledFired === 0, '主线程长时间停住后首次恢复，不把整段墙上时间当成启动时间')
+  await stalled.runUntil(391_000)
+  ok(stalledFired === 1, '恢复后仍按剩余前台预算判定真正停滞')
+
+  const aborted = fakeClock()
+  globalThis.window = aborted.win
+  let canceledFired = false
+  startActiveTimeout(1_000, () => true, () => { canceledFired = true })()
+  await aborted.runUntil(2_000)
+  ok(!canceledFired, '会话销毁或启动成功后取消计时器，不再迟到报错')
 }
 
 const frameCache = new Map()
@@ -1231,6 +1301,170 @@ console.log('\n── Windows 95 的开机黑屏：不能把黑屏当成桌面 �
     `⭐ 等到真桌面出现（第 8 秒）之后才敲（实际第 ${(r.firstKey / 1000).toFixed(1)} 秒），没有敲在开机黑屏上`,
   )
   ok(r.failedAt === null, '真桌面之后再敲，按正常流程判成功（没有误报失败）')
+}
+
+console.log('\n── Win95 慢开机：图形信号的等待上限不能把按键敲进黑屏 ──')
+{
+  const r = await runLaunch({
+    frameAt: (t, typedAt) => typedAt !== null && t > typedAt ? GAME : t < 1_800 ? TEXT : t < 50_000 ? BLACK : DESKTOP,
+    until: 80_000,
+  })
+  ok(r.firstKey !== null && r.firstKey >= 50_000, '即使黑屏超过配置的 24 秒，仍等真正桌面再敲键')
+  ok(r.failedAt === null && r.launchedAt !== null, '慢开机最终进桌面后仍能正常启动游戏')
+}
+
+console.log('\n── 截图卡死：不等整局超时，也不向未经确认的桌面输入命令 ──')
+{
+  const clock = fakeClock()
+  globalThis.window = clock.win
+  const keys = []
+  let sizeConsumer = null
+  let screenshotStalled = false
+  let failedAt = null
+  let launched = false
+  const cancel = scheduleWindowsLaunch(
+    {
+      screenshot: () => screenshotStalled ? new Promise(() => {}) : Promise.resolve(DESKTOP),
+      sendKeyEvent: (code, pressed) => {
+        if (pressed) keys.push(code)
+        if (code === 341 && pressed) screenshotStalled = true
+      },
+      events: () => ({ onFrameSize: (fn) => (sizeConsumer = fn) }),
+    },
+    'D:\\CAESAR3.EXE',
+    24,
+    () => false,
+    () => { launched = true },
+    '9x',
+    () => { failedAt = clock.now },
+  )
+  sizeConsumer?.(720, 400)
+  sizeConsumer?.(640, 480)
+  await clock.runUntil(30_000)
+  cancel()
+  ok(failedAt !== null && failedAt < 30_000, `截图不响应时 ${WINDOWS_SCREENSHOT_TIMEOUT_MS / 1000} 秒内给出明确失败，而非等总超时`)
+  ok(!keys.includes(82) && !launched, '截图未确认开始菜单时，不把 R/游戏启动命令送给桌面')
+}
+
+console.log('\n── 后端重连/退出：旧截图迟到也不能重新激活启动链 ──')
+{
+  const clock = fakeClock()
+  globalThis.window = clock.win
+  const keys = []
+  let sizeConsumer = null
+  let resolveLate = null
+  let screenshotStalled = false
+  let failed = false
+  const cancel = scheduleWindowsLaunch(
+    {
+      screenshot: () => screenshotStalled
+        ? new Promise((resolve) => { resolveLate = resolve })
+        : Promise.resolve(DESKTOP),
+      sendKeyEvent: (code, pressed) => {
+        if (pressed) keys.push(code)
+        if (code === 341 && pressed) screenshotStalled = true
+      },
+      events: () => ({ onFrameSize: (fn) => (sizeConsumer = fn) }),
+    },
+    'D:\\CAESAR3.EXE',
+    24,
+    () => false,
+    () => {},
+    '9x',
+    () => { failed = true },
+  )
+  sizeConsumer?.(720, 400)
+  sizeConsumer?.(640, 480)
+  await clock.runUntil(6_000)
+  ok(Boolean(resolveLate), '重连前确实有一张开始菜单截图还在等待')
+  cancel()
+  resolveLate?.(DESKTOP)
+  await clock.runUntil(30_000)
+  ok(!keys.includes(82) && !failed, '取消旧启动链后，迟到截图不会继续敲键或报错')
+  const adapterSource = readFileSync(new URL('../src/emulator/adapters/jsdos.ts', import.meta.url), 'utf8')
+  ok(/previousCi !== ci[\s\S]*?cancelWindowsLaunch\(\)/.test(adapterSource), 'ci-ready 换了命令接口时先取消旧启动链')
+}
+
+console.log('\n── Run 框基准截图不响应：不能猜测输入已成功 ──')
+{
+  const clock = fakeClock()
+  globalThis.window = clock.win
+  const keys = []
+  let sizeConsumer = null
+  let ctrlDown = false
+  let startMenu = false
+  let runOpened = false
+  let failed = false
+  const cancel = scheduleWindowsLaunch(
+    {
+      screenshot: () => runOpened ? new Promise(() => {}) : Promise.resolve(startMenu ? DESKTOP_PAINTING : DESKTOP),
+      sendKeyEvent: (code, pressed) => {
+        if (pressed) keys.push(code)
+        if (code === 341) ctrlDown = pressed
+        if (code === 256 && pressed && ctrlDown) startMenu = true
+        if (code === 82 && pressed) runOpened = true
+      },
+      events: () => ({ onFrameSize: (fn) => (sizeConsumer = fn) }),
+    },
+    'D:\\CAESAR3.EXE',
+    24,
+    () => false,
+    () => {},
+    '9x',
+    () => { failed = true },
+  )
+  sizeConsumer?.(720, 400)
+  sizeConsumer?.(640, 480)
+  await clock.runUntil(30_000)
+  cancel()
+  ok(runOpened && failed, 'Run 已打开但基准截图卡住时，明确停止启动链')
+  ok(!keys.includes(68) && !keys.includes(257), '没有可靠基准帧时不盲打 D: 路径或回车')
+}
+
+console.log('\n── 后台标签页：截图与图形兜底不按墙上时间误报 ──')
+{
+  const previousDocument = globalThis.document
+  const visibility = { visibilityState: 'visible' }
+  globalThis.document = visibility
+  try {
+    const clock = fakeClock()
+    globalThis.window = clock.win
+    let sizeConsumer = null
+    let screenshotStalled = false
+    let failedAt = null
+    const keys = []
+    const cancel = scheduleWindowsLaunch(
+      {
+        screenshot: () => screenshotStalled ? new Promise(() => {}) : Promise.resolve(DESKTOP),
+        sendKeyEvent: (code, pressed) => {
+          if (pressed) keys.push(code)
+          if (code === 341 && pressed) {
+            screenshotStalled = true
+            visibility.visibilityState = 'hidden'
+          }
+        },
+        events: () => ({ onFrameSize: (fn) => (sizeConsumer = fn) }),
+      },
+      'D:\\CAESAR3.EXE',
+      24,
+      () => false,
+      () => {},
+      '9x',
+      () => { failedAt = clock.now },
+    )
+    sizeConsumer?.(720, 400)
+    sizeConsumer?.(640, 480)
+    await clock.runUntil(90_000)
+    ok(failedAt === null, '标签页隐藏超过原有启动上限，也不会误报截图或图形超时')
+    ok(!keys.includes(256) && !keys.includes(82), '页面在后台时不继续输入 Ctrl+Esc / R，避免客体丢键')
+    visibility.visibilityState = 'visible'
+    await clock.runUntil(101_000)
+    ok(failedAt !== null, '恢复前台后才累计真正的截图等待预算')
+    cancel()
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document
+    else globalThis.document = previousDocument
+  }
 }
 
 console.log('\n── Windows 95 的组合键：必须跨过客体键盘轮询 ──')

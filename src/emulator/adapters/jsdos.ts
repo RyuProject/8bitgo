@@ -19,7 +19,6 @@ import {
   makeJsdosConfigBundle,
   makeJsdosBundle,
   makeWindowsGameLayer,
-  mergeExtraFiles,
   WINDOWS_GAME_ROOT,
   type ExtraFile,
 } from '@/lib/jsdosBundle'
@@ -60,7 +59,8 @@ import {
   type DosPadKeys,
 } from '../dosPad'
 import { normalizeDosStartupCommands } from '../../../shared/dos-startup-commands.js'
-import { fetchWithProgress, STALL_MS, STARTING_MILESTONE, windowsGuestStartupBudgetMs } from '../loadProgress'
+import { fetchWithProgress, STALL_MS, STARTING_MILESTONE, windowsGuestLaunchBudgetMs, windowsGuestStartupBudgetMs } from '../loadProgress'
+import { startActiveTimeout } from '../activeTimeout'
 import {
   assertTypeable,
   scheduleDosGuestLaunch,
@@ -339,6 +339,10 @@ function hookCapturedAbsoluteMouse(
   let pendingCapture: CaptureAttempt | null = null
   const pressed = new Set<number>()
   const releaseTimers = new Set<number>()
+  const activeLockedSurface = () => {
+    const locked = document.pointerLockElement
+    return locked instanceof HTMLElement && host.contains(locked) ? locked : null
+  }
   const pointerSurface = (target?: EventTarget | null) => {
     const candidate = target instanceof HTMLElement ? target : null
     if (
@@ -346,8 +350,8 @@ function hookCapturedAbsoluteMouse(
       && host.contains(candidate)
       && (candidate.tagName === 'CANVAS' || candidate.classList.contains('emulator-mouse-overlay'))
     ) return candidate
-    const locked = document.pointerLockElement
-    if (locked instanceof HTMLElement && host.contains(locked)) return locked
+    const locked = activeLockedSurface()
+    if (locked) return locked
     return host.querySelector<HTMLElement>('canvas, .emulator-mouse-overlay')
   }
   const contentRect = (surface: HTMLElement) => lockedAbsoluteContentRect(surface.getBoundingClientRect(), {
@@ -389,8 +393,9 @@ function hookCapturedAbsoluteMouse(
     if (pendingCapture) clearCaptureAttempt(pendingCapture)
   }
   const finishFailedCapture = (attempt: CaptureAttempt) => {
-    captureUnavailable = true
     if (pendingCapture !== attempt) return
+    // 旧请求的迟到结果不能把新一轮捕获判成失败；否则后续点击会永久绕过 Pointer Lock。
+    captureUnavailable = true
     clearCaptureAttempt(attempt)
     // 拒绝通常同步或在下一微任务到达。太迟才失败就不能补发陈旧点击，避免误触数秒后的菜单。
     if (Date.now() - attempt.startedAt > 1_000) return
@@ -421,7 +426,11 @@ function hookCapturedAbsoluteMouse(
         // 个别 WebView 只在显式 catch 时才把 Pointer Lock 拒绝标成已处理；末尾再收一次口，
         // 防止降级过程中任何输入接口异常变成全局 unhandledrejection，污染线上错误监控。
         void result
-          .then(() => clearCaptureAttempt(attempt))
+          .then(() => {
+            // 有些 WebView 会先兑现 Promise，却既没进入锁定也不发 pointerlockchange。
+            // 只有真正持有锁才算成功；否则保留 750ms 兜底，不能永久吞掉第一次点击。
+            if (activeLockedSurface()) clearCaptureAttempt(attempt)
+          })
           .catch(() => finishFailedCapture(attempt))
           .catch((error: unknown) => console.warn('[jsdos] 鼠标捕获降级失败', error))
       }
@@ -433,7 +442,7 @@ function hookCapturedAbsoluteMouse(
     const surface = ownsEvent(event)
     if (!surface) return
     takeEvent(event)
-    const locked = document.pointerLockElement === surface
+    const locked = activeLockedSurface()
     // Pointer Lock 后 clientX/Y 会冻结在锁定点；再按它校准会让每次点击都把游戏光标拉回旧位置。
     if (!locked) sendClientPosition(event, surface)
 
@@ -450,12 +459,14 @@ function hookCapturedAbsoluteMouse(
     const surface = ownsEvent(event)
     if (!surface) return
     takeEvent(event)
-    if (document.pointerLockElement === surface) {
+    const locked = activeLockedSurface()
+    if (locked) {
       // 与 js-dos 上游一致：先把单帧异常尖峰截到 ±50，再应用逐游戏灵敏度。
       const scale = dosMouseSpeedMultiplier(sensitivity())
       const dx = Math.max(-50, Math.min(50, event.movementX)) * scale
       const dy = Math.max(-50, Math.min(50, event.movementY)) * scale
-      pointer = advanceLockedAbsolutePointer(pointer, dx, dy, contentRect(surface), inverted())
+      // 锁定元素可能是 canvas，但事件被覆盖层接收；用锁定元素的尺寸，不能回退到冻结的 clientX/Y。
+      pointer = advanceLockedAbsolutePointer(pointer, dx, dy, contentRect(locked), inverted())
       rawAbsolute.call(c, pointer.x, pointer.y)
     } else {
       // 浏览器 / WebView 不允许 Pointer Lock 时仍可玩；系统指针与游戏软件光标会一一对应。
@@ -479,8 +490,7 @@ function hookCapturedAbsoluteMouse(
     releaseButton(button)
   }
   const onPointerLockChange = () => {
-    const locked = document.pointerLockElement
-    if (locked && host.contains(locked)) {
+    if (activeLockedSurface()) {
       captureUnavailable = false
       cancelPendingCapture()
     } else {
@@ -1096,6 +1106,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let pad: GamepadBridge | null = null
   const objectUrls: string[] = []
   let cancelWindowsLaunch: (() => void) | null = null
+  let cancelGuestStartupTimeout: (() => void) | null = null
   let cancelMouseHook: (() => void) | null = null
   let volume = 1
   let paused = false
@@ -1133,10 +1144,32 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 它看不出中间那个 await 期间 push 回调把值改掉了。
    */
   const readLastPush = () => lastPush
+  let windowsLaunchStage: 'ci' | 'boot' | 'desktop' | 'launched' = 'ci'
+  const armGuestStartupTimeout = (stage: 'ci' | 'boot', budgetMs: number) => {
+    cancelGuestStartupTimeout?.()
+    windowsLaunchStage = stage
+    cancelGuestStartupTimeout = startActiveTimeout(
+      budgetMs,
+      () => document.visibilityState !== 'hidden',
+      () => {
+        const stageLabel = windowsLaunchStage === 'desktop'
+          ? '打开游戏程序'
+          : windowsLaunchStage === 'launched'
+            ? '等待游戏画面'
+            : '等待 Win95 桌面'
+        const message = windowsLaunchStage === 'ci'
+          ? 'Windows 客体建盘超时：DOSBox-X 命令接口尚未建立，请检查浏览器可用内存后重试'
+          : `Windows 客体自动启动超时（${stageLabel}）；请保持游戏页在前台后重试`
+        failLoad(fmt(rt.jsdosRunFailed, { msg: message }))
+      },
+    )
+  }
   const failLoad = (message: string) => {
     if (destroyed || terminalErrorSent) return
     terminalErrorSent = true
     window.clearTimeout(readyFallback)
+    cancelGuestStartupTimeout?.()
+    cancelGuestStartupTimeout = null
     cancelWindowsLaunch?.()
     cancelWindowsLaunch = null
     if (!abort.signal.aborted) abort.abort(new Error(message))
@@ -1146,6 +1179,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     if (destroyed || readySent || terminalErrorSent) return
     readySent = true
     window.clearTimeout(readyFallback)
+    cancelGuestStartupTimeout?.()
+    cancelGuestStartupTimeout = null
     options.onReady?.()
   }
 
@@ -1321,16 +1356,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           objectUrls.push(primaryUrl)
         } else {
           if (!rom?.buf) throw new Error('Windows 客体游戏没有可用的游戏 ZIP')
-          // 非流式模式保持原来的整包合并与逐游戏兼容补丁，旧数据不改变任何行为。
+          // 兼容补丁直接写入最终游戏层，避免为几百字节的 c3.inf 再复制整份 82MB 游戏 ZIP。
           const compatibleExtras = await windowsGameCompatibilityExtras(
             options.gameSlug,
             options.dosExecutable,
             rom.buf,
             extras,
           )
-          const gameBuf = compatibleExtras.length ? mergeExtraFiles(rom.buf, compatibleExtras) : rom.buf
           guest = buildWindowsGuestConfig(systemConfig, dosboxConfig)
-          const gameLayer = makeWindowsGameLayer(gameBuf, options.dosExecutable, guest.gameDrive, registryImport)
+          const gameLayer = makeWindowsGameLayer(
+            rom.buf, options.dosExecutable, guest.gameDrive, registryImport, compatibleExtras,
+          )
           if (!gameLayer.executable) throw new Error('Windows 游戏层没有可启动的 EXE')
           gameExecutable = gameLayer.executable
           narrowedToExeDir = gameLayer.singleDir !== false
@@ -1437,6 +1473,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         options.mouseCapture
           && ((guest && !relativeWindowsMouse) || needsLockedAbsoluteDosMouse(options.gameSlug)),
       )
+      // 建盘和 Win95 自动启动是两个阶段；建盘仍保留原来的完整兜底时长，不能让已慢到极限的
+      // 设备因拆段计时反而提前失败。收到 ci-ready 后重置为仅用于自动启动的预算。
+      // 后台标签页的定时器被节流时也不计入前台预算，避免回到页面先收到一条假超时。
+      if (guest && !dosSystemGuest) armGuestStartupTimeout('ci', windowsGuestStartupBudgetMs(options.dosLaunchDelay))
       props = Dos(host, {
         ...(streamingGame
           ? { url: primaryUrl, initFs }
@@ -1550,7 +1590,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           }
           else if (event === 'bnd-play' || event === 'ci-ready') {
             if (event === 'ci-ready' && arg) {
+              const previousCi = ci
               ci = arg as DosCi
+              if (guest && !readySent && cancelWindowsLaunch && previousCi && previousCi !== ci) {
+                // 后端重连会重新发 ci-ready。旧 CI 上的截图与按键任务必须停掉，否则两条
+                // 自动启动链会同时向新旧客体敲键，最后表现为随机桌面或莫名超时。
+                cancelWindowsLaunch()
+                cancelWindowsLaunch = null
+              }
               /*
                 进度条的第一个真实里程碑。
                 ci-ready = DOSBox-X 的命令接口建好了，也就是 qcow2 挂载 / 建盘那一段
@@ -1578,8 +1625,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               // DOSBox 真的在跑、命令接口也有了，这才是「玩家可以动手」。Windows 客体另算（等自启动）
               if (!guest) markReady()
               if (guest && !cancelWindowsLaunch) {
+                if (!dosSystemGuest) armGuestStartupTimeout('boot', windowsGuestLaunchBudgetMs(options.dosLaunchDelay))
                 const progressMilestone = (step: 'desktop' | 'launched') => {
                   if (destroyed) return
+                  windowsLaunchStage = step
                   options.onProgress?.({
                     phase: 'starting',
                     startup: step === 'desktop' ? STARTING_MILESTONE.desktop : STARTING_MILESTONE.launched,
@@ -1590,7 +1639,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                       ci,
                       guestLaunchCommand,
                       options.dosLaunchDelay ?? 8,
-                      () => destroyed,
+                      () => destroyed || terminalErrorSent,
                       markReady,
                       progressMilestone,
                     )
@@ -1598,7 +1647,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                       ci,
                       guestLaunchCommand,
                       options.dosLaunchDelay ?? 24,
-                      () => destroyed,
+                      // 失败时即使已有截图 Promise 在途，回来后也不能继续给旧客体敲键。
+                      () => destroyed || terminalErrorSent,
                       markReady,
                       options.dosWindowsVersion ?? '9x',
                       // 确认不了「客体里有反应」。这一定发生在 markReady 之前，
@@ -1678,15 +1728,6 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           if (readySent || terminalErrorSent) return
           failLoad(fmt(rt.jsdosRunFailed, { msg: 'DOS 流式游戏盘初始化超时，请检查系统盘与网络后重试' }))
         }, 90_000)
-      } else {
-        // CI 创建期间 js-dos 要在 WASM 内挂载近百 MB 的 qcow2；旧的 45 秒宽限会让慢设备
-        // 在即将成功前被误判。真实引擎错误仍会立即走 emu-error，这里只拦真正的长时间失联。
-        const timeoutMs = windowsGuestStartupBudgetMs(options.dosLaunchDelay)
-        readyFallback = window.setTimeout(() => {
-          if (!readySent && !terminalErrorSent) {
-            failLoad(fmt(rt.jsdosRunFailed, { msg: 'Windows 客体初始化超时，未能执行自启动程序' }))
-          }
-        }, timeoutMs)
       }
     } catch (e) {
       if (destroyed) return
@@ -1812,6 +1853,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     destroy() {
       destroyed = true
       window.clearTimeout(readyFallback)
+      cancelGuestStartupTimeout?.()
+      cancelGuestStartupTimeout = null
       abort.abort()
       try {
         if (document.pointerLockElement && host.contains(document.pointerLockElement)) document.exitPointerLock()
