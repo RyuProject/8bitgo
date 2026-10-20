@@ -47,6 +47,8 @@ import { SELF_BUILT_CORES } from '../src/config/emulators.ts'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const out = join(root, 'public', 'emulatorjs', 'cores')
 const ifMissing = process.argv.includes('--if-missing')
+// 旧 melonDS 仅作兼容兜底，已单独发布；复制其它核心时不能把它误删。
+const PRESERVED_CORES = new Set([...SELF_BUILT_CORES, 'melonds'])
 
 /**
  * 自构建核心（scripts/build-*.mjs 现编、npm 上没有）不归本脚本管 ——
@@ -63,7 +65,7 @@ function preserveSelfBuilt() {
   if (!existsSync(out)) return kept
   mkdirSync(join(tmp, 'reports'), { recursive: true })
 
-  for (const c of SELF_BUILT_CORES) {
+  for (const c of PRESERVED_CORES) {
     // cores/<core>-*.data（含 -legacy-、-thread- 变体）
     for (const f of readdirSync(out)) {
       if (f.startsWith(`${c}-`)) {
@@ -159,7 +161,7 @@ if (missing.length) {
   process.exit(1)
 }
 
-// 自构建核心不在上面的 CORES 表里，先把它们捞出来，别被紧随其后的 rmSync 一起带走
+// 自构建核心和兼容核心不在上面的 CORES 表里，先捞出来再清理目录。
 const keptSelfBuilt = preserveSelfBuilt()
 
 rmSync(out, { recursive: true, force: true })
@@ -182,8 +184,8 @@ for (const c of CORES) {
 if (keptSelfBuilt.length) {
   restoreSelfBuilt(keptSelfBuilt)
   console.log(
-    `↩ 已原样保留 ${keptSelfBuilt.length} 个自构建核心文件（${[...SELF_BUILT_CORES].join('、')}）` +
-      `—— 它们不在 npm 上，本脚本不负责、也没法负责更新`,
+    `↩ 已原样保留 ${keptSelfBuilt.length} 个单独发布的核心文件（${[...PRESERVED_CORES].join('、')}）` +
+      `—— 本脚本不负责重新生成它们`,
   )
 }
 // reports/ 是上游目录；运行时请求 metadata/，避开会误拦 `/reports/` 的隐私扩展。

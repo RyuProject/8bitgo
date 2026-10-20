@@ -48,6 +48,7 @@ import { writeFsInjections, type FsInjection } from '../fsInjection'
 import { arcadeCoreForRomData, supportsFbneoRomData } from '../arcadeCore'
 import { MAME_AUDIO_LATENCY_MS, RETROARCH_CFG_PATH, raiseAudioLatency } from '../mameAudio'
 import { NDS_AUDIO_BUFFER_BYTES_48K, NDS_AUDIO_LATENCY_MS } from '../ndsAudio'
+import { isNdsWasmCrash } from '../ndsCrash'
 import {
   arcadePerformanceDefaultOptions,
   effectiveArcadeButtons,
@@ -935,13 +936,16 @@ function fetchBiosBytes(
 function installErrorTap(
   win: Window & Record<string, unknown>,
   onFatal: (line: string) => void,
+  onCoreCrash?: (line: string) => void,
 ): { lines: string[] } {
   const lines: string[] = []
-  const push = (level: string, text: string) => {
+  const push = (level: string, text: string, error?: unknown) => {
     const line = `[${level}] ${text}`.slice(0, 500)
     lines.push(line)
     if (lines.length > LOG_LIMIT) lines.shift()
     const low = text.toLowerCase()
+    // melonDS DS 在 onGameStart 后才可能 trap；此时普通加载失败分支已经不再上报。
+    if (level === 'error' && onCoreCrash && isNdsWasmCrash(text, error)) onCoreCrash(text.trim() || 'RuntimeError: unreachable')
     if (level !== 'log' && FATAL_PHRASES.some((h) => low.includes(h))) onFatal(text.trim())
   }
 
@@ -957,17 +961,20 @@ function installErrorTap(
     if (typeof native !== 'function' || !c) continue
     c[level] = (...args: unknown[]) => {
       try {
-        push(level, args.map((a) => (typeof a === 'string' ? a : safeStr(a))).join(' '))
+        push(level, args.map((a) => (typeof a === 'string' ? a : safeStr(a))).join(' '), args.find((a) => isNdsWasmCrash('', a)))
       } catch {
         /* 记日志本身不能把游戏搞挂 */
       }
       native.apply(c, args as [])
     }
   }
-  win.addEventListener('error', (e) => push('error', (e as ErrorEvent).message || 'script error'))
+  win.addEventListener('error', (e) => {
+    const event = e as ErrorEvent
+    push('error', event.message || 'script error', event.error)
+  })
   win.addEventListener('unhandledrejection', (e) => {
     const r = (e as PromiseRejectionEvent).reason
-    push('error', r instanceof Error ? r.message : safeStr(r))
+    push('error', r instanceof Error ? `${r.name}: ${r.message}` : safeStr(r), r)
   })
   return { lines }
 }
@@ -1989,6 +1996,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 第二条回调甚至可能盖到新会话上。用这道闩把整条失败链收成一个终态。
    */
   let loadFailed = false
+  let crashReported = false
   /** 开局前的致命错误：报上去并停掉轮询（播放器收到 onError 会把这局拆掉） */
   const failLoad = (message: string) => {
     if (destroyed || started || loadFailed) return
@@ -2012,6 +2020,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       return
     }
     failLoad(fmt(rt.ejsEngineError, { msg: line }))
+  }
+  const reportCoreCrash = (line: string) => {
+    if (destroyed || crashReported || loadFailed) return
+    crashReported = true
+    window.clearInterval(startWatch)
+    logEngine(`[core-crash] ${core}: ${line}`)
+    // WASM 陷阱不能恢复；onReady 已经发生时也必须向播放器报真正的失败。
+    if (options.onCoreCrash) options.onCoreCrash(core, line)
+    else options.onError?.(line, 'runtime')
   }
   // 本地文件转成 blob: URL（同源 iframe 可直接访问）；gameName 用原始文件名以保留扩展名
   const isFile = typeof options.game !== 'string'
@@ -3403,7 +3420,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
         // 引擎的报错探针也要赶在 loader.js 之前装：核心是在加载过程中打错误的，
         // 装晚了那句「缺哪个文件」就已经过去了
-        errorTap = installErrorTap(win, reportEngineError)
+        errorTap = installErrorTap(win, reportEngineError, options.platform === 'nds' ? reportCoreCrash : undefined)
 
         // RomData / BIOS 也要赶在 loader.js 之前装：它靠接管 window.EJS_emulator 的赋值来生效，
         // loader.js 第一行就把实例挂上去了，晚一步就接不着。

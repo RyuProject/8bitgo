@@ -47,7 +47,8 @@ import type { DosExtraSource } from '@/lib/dosExtras'
 import type { LiveSession } from './adapters/liveview'
 import type { NetplaySession } from './adapters/emulatorjs'
 import type { CloudSession, CloudState } from './adapters/cloudgame'
-import { p2pPlayable, cloudPlayable } from './paths'
+import { p2pPlayable, cloudPlayable, emulatorJsCoreFileFor, NDS_COMPAT_CORE } from './paths'
+import { ndsCrashFallbackCore } from './ndsCrash'
 import { prewarmRuntime } from './prewarm'
 import { defaultDos71SystemUrl, prewarmSystemCache } from './systemSource'
 import { prewarmSockdriveCache } from './adapters/jsdos'
@@ -215,6 +216,8 @@ interface ActiveSession {
   live?: LiveSession
   /** 当前这次加载已经自动重试了几次；只在启动失败时递增。 */
   retryAttempt?: number
+  /** 仅这一局有效，不能改写后台核心配置或影响下一次主动开局。 */
+  coreOverride?: string
   /**
    * 这一局已经试过、并且自己说「跑不了这份 ROM」的引擎（见 RuntimeHandle 那侧的 onUnsupported）。
    * 换引擎时要把它们排除掉，否则两个引擎可以来回踢皮球，永远转圈。
@@ -1548,6 +1551,8 @@ export function EmulatorPlayer({
   dosboxConfigRef.current = dosboxConfig
   /** 云端联机是否真的跑起来过（用于区分「没连上」和「玩到一半断了」） */
   const cloudPlayedRef = useRef(false)
+  /** 换核心仍是同一次玩家点击，游玩次数不能重算。 */
+  const countedPlayAttemptRef = useRef<string | null>(null)
   /**
    * 这次是不是带着 `?live=` 进来的。
    * 挂载 effect 里要读它，而那个 effect 的依赖只有 session —— 直接闭包捕获会捕到旧值。
@@ -1657,6 +1662,7 @@ export function EmulatorPlayer({
       netplay?: NetplaySession
       cloud?: CloudSession
       retryAttempt?: number
+      coreOverride?: string
       ruledOut?: RuntimeId[]
       startupAttemptId?: string
       startedAt?: number
@@ -1668,11 +1674,15 @@ export function EmulatorPlayer({
     if (inherited) inherited.consumed = true
     const startupAttemptId = extra?.startupAttemptId ?? inherited?.id ?? newStartupId()
     const startedAt = extra?.startedAt ?? inherited?.startedAt ?? Date.now()
-    const saveSlug = typeof game !== 'string'
+    const baseSaveSlug = typeof game !== 'string'
       ? `local:${game.name}`
       : runtime.id === 'ppsspp' && gameSlugRef.current
         ? pspVariantSaveSlug(gameSlugRef.current, romLangRef.current, romLangCountRef.current)
         : gameSlugRef.current
+    // 新旧核心的即时存档不能假定兼容，避免回退后覆盖原本的档位。
+    const saveSlug = extra?.coreOverride === NDS_COMPAT_CORE && baseSaveSlug
+      ? `${baseSaveSlug}:melonds-compat`
+      : baseSaveSlug
     const plan = loadProgressPlan({
       runtime: runtime.id,
       platform: targetPlatform,
@@ -1700,7 +1710,7 @@ export function EmulatorPlayer({
       ⚠️ 保留百分比就必须同时抬高 floor，否则条子会冻在那个数上不动 ——
       见 progressFloor 的注释。以前只做了前半件事。
     */
-    const carryOver = Boolean(extra?.retryAttempt) || Boolean(extra?.ruledOut?.length)
+    const carryOver = Boolean(extra?.retryAttempt) || Boolean(extra?.ruledOut?.length) || Boolean(extra?.coreOverride)
     progressFloor.current = carryOver ? (loadRatioRef.current ?? 0) : 0
     // 上一局的进度必须清掉，否则新会话的遮罩会先闪一下上次的 100%。
     // 合成器也要换一个新的：它记着「已显示的最大值」，不换的话新一局会被上一局的 100% 卡住
@@ -1864,6 +1874,8 @@ export function EmulatorPlayer({
     const isCurrent = () => sessionCounter.current === mountedId
     /** 已经进入游戏后再报错属于运行期故障，不能按“加载失败”自动重启，免得吞掉玩家进度。 */
     let ready = false
+    let crashed = false
+    let playableTimer: number | undefined
     const mountedAt = typeof performance !== 'undefined' ? performance.now() : Date.now()
     const reportStartup = (event: StartupEventName, detail?: string) => {
       if (!startupVisitId || !gameSlugRef.current || session.runtime.id === 'liveview') return
@@ -1880,6 +1892,17 @@ export function EmulatorPlayer({
     const reportStartupFailure = (reason: string) => {
       reportStartup(/(?:超时|timeout|timed out)/i.test(reason) ? 'timeout' : 'failed', reason)
     }
+    const confirmPlayable = () => {
+      if (!isCurrent() || crashed || session.runtime.id === 'liveview' ||
+        countedPlayAttemptRef.current === session.startupAttemptId) return
+      countedPlayAttemptRef.current = session.startupAttemptId
+      reportStartup('game_playable')
+      if (gameSlugRef.current && sessionCountsAsPlayed(session)) {
+        recordPlay(gameSlugRef.current)
+        // 直播退出后自行开局才算真正玩过，不能把看直播计入最近游玩。
+        if (liveInviteRef.current) void recordRecent(gameSlugRef.current)
+      }
+    }
     const timeoutTimer = window.setTimeout(() => {
       if (isCurrent() && !ready) reportStartup('timeout', '等待 game_playable 超过 120 秒')
     }, Math.max(0, STARTUP_TIMEOUT_MS - (Date.now() - session.startedAt)))
@@ -1894,7 +1917,7 @@ export function EmulatorPlayer({
       gameName: gameNameRef.current,
       // 按游戏覆盖核心 / 平台级 BIOS：都用 ref 读当前值，
       // 放进 effect 依赖会让「BIOS 异步到货」把正在跑的游戏重启一遍
-      core: coreRef.current,
+      core: session.coreOverride ?? coreRef.current,
       mouseCapture: shouldCaptureMouse(session.platform, genresRef.current),
       arcadeRomData: arcadeRomDataRef.current,
       /*
@@ -2043,7 +2066,7 @@ export function EmulatorPlayer({
         }
       },
       onReady: () => {
-        if (!isCurrent()) return
+        if (!isCurrent() || ready) return
         ready = true
         // 调试：运行时挂载成功、ROM 已被核心读取 —— 这两步都过了，卡点就在「出首帧」之后了
         if (debugRef.current) {
@@ -2054,33 +2077,19 @@ export function EmulatorPlayer({
         window.clearTimeout(slowTimer)
         // 拿不到完整下载阶段的运行时在这里兜底；同一事件客户端与数据库都会去重。
         reportStartup('download_complete')
-        reportStartup('game_playable')
+        // 新核心可能在 onReady 之后才 trap，观察几秒再计真实游玩；崩溃会取消计数。
+        if (session.platform === 'nds' && session.runtime.id === 'emulatorjs' &&
+          emulatorJsCoreFileFor(session.coreOverride ?? coreRef.current ?? 'nds') === 'melondsds') {
+          playableTimer = window.setTimeout(confirmPlayable, 5_000)
+        } else {
+          confirmPlayable()
+        }
         const elapsed = Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) - mountedAt)
         // 详细对象仍只留在本机控制台；上面的第一方漏斗只上传阶段、耗时和运行时，不碰 ROM 地址 / UA / IP。
         // 排查“街机慢还是 Ruffle 慢”时因此有统一口径，也没有接入任何第三方分析脚本。
         console.info('[8bitgo/runtime-metric]', { runtime: session.runtime.id, platform: session.platform, readyMs: elapsed })
         setLoadRatio(null)
         setStatus('running')
-        /*
-          游戏真的跑起来了才算一次游玩 —— 打开详情页、加载失败、选错文件都不算。
-
-          ⚠️ **看直播不算。** 观众这边一帧都没跑过：画面是主播推过来的视频流，
-          本机既没有 ROM 也没有引擎。可 liveview 适配器照样会报 onReady（它指的是
-          「流接上了」），于是每进一次直播间就给这款游戏加一次游玩数，
-          还把它塞进侧边栏的「曾经玩过」。
-
-          联机（netplay / 云游戏）**照算**：游戏是跑在房主 / 服务器上没错，
-          但访客真的在操作这一局，那就是在玩。
-        */
-        if (gameSlugRef.current && sessionCountsAsPlayed(session)) {
-          recordPlay(gameSlugRef.current)
-          /*
-            带着 ?live= 进来的人，详情页那边**没有**记「曾经玩过」（看直播不算）。
-            他后来退出直播、自己开了一局 —— 那就是真的玩了，这时候补记一次。
-            没有这一句的话，这种人玩完之后侧边栏里找不到这款游戏，只能重新搜。
-          */
-          if (liveInviteRef.current) void recordRecent(gameSlugRef.current)
-        }
       },
       onStart: () => {
         if (!isCurrent()) return
@@ -2124,6 +2133,32 @@ export function EmulatorPlayer({
           startupAttemptId: session.startupAttemptId,
           startedAt: session.startedAt,
         })
+      },
+      onCoreCrash: (crashedCore: string, reason: string) => {
+        if (!isCurrent()) return
+        crashed = true
+        window.clearTimeout(playableTimer)
+        const nextCore = session.platform === 'nds' && session.runtime.id === 'emulatorjs'
+          ? ndsCrashFallbackCore(crashedCore, canRestartInPlace(session), Boolean(session.coreOverride))
+          : null
+        if (nextCore === NDS_COMPAT_CORE) {
+          // 当前 WASM 已不能继续运行；同一 ROM 只重建本机模拟器，不动后台默认值。
+          console.warn(`[8bitgo/nds] ${crashedCore} WASM 崩溃，切换兼容核心：${reason}`)
+          setError(null)
+          setNotice(fmt(t.player.runtimeFellBack, { runtime: 'melonDS' }))
+          begin(session.game, session.platform, session.runtime, {
+            coreOverride: nextCore,
+            startupAttemptId: session.startupAttemptId,
+            startedAt: session.startedAt,
+          })
+          return
+        }
+        // 旧核心再次崩溃或联机会话不可安全重建时，必须显示错误而非留着白屏。
+        if (debugRef.current) setEngineLines(handle?.engineLog?.() ?? [])
+        reportStartupFailure(reason)
+        endSession()
+        setError(reason)
+        setStatus('error')
       },
       onError: (message: string, errorScope?: 'runtime' | 'content') => {
         if (!isCurrent()) return
@@ -2175,6 +2210,7 @@ export function EmulatorPlayer({
           setError(null)
           begin(session.game, session.platform, session.runtime, {
             retryAttempt: attempt + 1,
+            coreOverride: session.coreOverride,
             startupAttemptId: session.startupAttemptId,
             startedAt: session.startedAt,
           })
@@ -2224,6 +2260,7 @@ export function EmulatorPlayer({
     } catch (error) {
       window.clearTimeout(timeoutTimer)
       window.clearTimeout(slowTimer)
+      window.clearTimeout(playableTimer)
       const message = error instanceof Error ? error.message : String(error)
       reportStartupFailure(message)
       setError(message)
@@ -2242,6 +2279,7 @@ export function EmulatorPlayer({
     return () => {
       window.clearTimeout(timeoutTimer)
       window.clearTimeout(slowTimer)
+      window.clearTimeout(playableTimer)
       setHandle(null)
       setCaps(new Set())
       setGeometry(null)
@@ -3077,7 +3115,7 @@ export function EmulatorPlayer({
    */
   const restartSession =
     session && canRestartInPlace(session)
-      ? () => begin(session.game, session.platform, session.runtime)
+      ? () => begin(session.game, session.platform, session.runtime, { coreOverride: session.coreOverride })
       : undefined
 
   const reset = () => {

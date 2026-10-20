@@ -113,6 +113,7 @@ check('NDS 的默认值和历史值都硬切 melonDS DS，webretro 不再抢路�
   assert.equal(emulatorJsCoreFileFor('nds'), 'melondsds')
   assert.equal(emulatorJsCoreForGame('nds', 'nds'), 'melondsds')
   assert.equal(emulatorJsCoreForGame('nds', 'melonds'), 'melondsds')
+  assert.equal(emulatorJsCoreForGame('nds', 'melonds-compat'), 'melonds')
   assert.equal(emulatorJsCoreForGame('nds', 'desmume'), 'desmume')
   assert.equal(webretroCoreFor('nds'), undefined)
 })
@@ -256,9 +257,9 @@ check(`melonDS DS 构建报告与代码锁定的 ${MELONDSDS_VERSION} 一致`, (
   assert.equal(createHash('sha256').update(binary).digest('hex'), report.sha256, '核心二进制与构建报告不是同一批')
 })
 
-check('硬切已移除旧 melonDS 产物，不留双跑窗口', () => {
+check('旧 melonDS 只作崩溃兜底，但完整发布正常版、legacy 和核心报告', () => {
   for (const relative of ['melonds-wasm.data', 'melonds-legacy-wasm.data', 'reports/melonds.json']) {
-    assert.equal(existsSync(join(coresDir, relative)), false, `${relative} 仍在发布目录`)
+    assert.equal(existsSync(join(coresDir, relative)), true, `${relative} 缺失，WASM 崩溃时无法兜底`)
   }
 })
 
@@ -273,7 +274,7 @@ for (const key of Object.keys(CORE_OPTIONS)) {
 
 console.log('\n四、发出去但没人用的核心（只提示，不算失败）')
 
-const used = new Set(wanted.map((w) => resolve(w.id)))
+const used = new Set([...wanted.map((w) => resolve(w.id)), 'melonds'])
 const orphans = [...shipped].filter((c) => !used.has(c))
 console.log(orphans.length ? `  ℹ️ ${orphans.join(', ')} —— 没有任何平台默认或下拉项指向它们` : '  ✅ 没有多余的核心')
 

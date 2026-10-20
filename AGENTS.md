@@ -284,11 +284,15 @@ zip 顶层条目，于是照旧报 `v-102tw.u39 NOT FOUND` 回菜单。拍平（
 引擎升级后它红了就重新取证，别直接改数字）。**注意它是延迟换稳定**：想调到别的值，
 改 `MAME_AUDIO_LATENCY_MS` 并同步上面那条「Buffer size」断言。
 
-### 2.8.4 NDS：已硬切 melonDS DS 1.4.0，旧 melonDS 不再发布
+### 2.8.4 NDS：默认 melonDS DS 1.4.0，WASM 崩溃时旧核心兜底
 
 本站 NDS 默认核心是自构建 `melondsds-wasm.data`（上游 melonDS DS v1.4.0），
 `src/data/platforms.ts` 与后台下拉都直接写 `melondsds`。历史游戏数据若仍填 `nds` / `melonds`，
-`emulatorJsCoreForGame()` 会在开局时硬归一到新核心；旧 `melonds-*.data` 已删除，不留双跑窗口。
+`emulatorJsCoreForGame()` 会在开局时硬归一到新核心；旧 `melonds-*.data` 仅作为运行时兜底发布，
+不会因历史配置而默认启用。新版发生 `RuntimeError: unreachable` 或 WASM 越界时，只对可安全重启
+的本机单人会话切换一次 `melonds-compat`；联机/云端会话不擅自重建。两核心的即时存档分档保存，
+不能互相覆盖。回归：`npm run test:nds-crash`。兼容核心在《宝可梦 白 2》可到菜单，但本地测试点进
+新游戏后曾出现长时间黑/白屏，不能只凭自动切换就宣称它已完整可玩。
 用户确认没有 NDS 存档，所以没有做 `.sav` → `.srm` 或旧即时存档的迁移桥。
 
 普通游戏详情页没有全站 COOP/COEP，因此发布的是**非 pthread 软件渲染版**：JIT、OpenGL、

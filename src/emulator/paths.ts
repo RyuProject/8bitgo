@@ -107,12 +107,17 @@ const EJS_DEFAULT_CORE_BY_ALIAS: Readonly<Record<string, string>> = Object.freez
   // 引擎内建别名仍把 nds 指到停更的 melonds；站点在这一层硬切到自构建新核心。
   nds: 'melondsds',
   melonds: 'melondsds',
+  // 旧核心只允许崩溃兜底显式启用，不能让历史游戏配置悄悄改回旧版。
+  'melonds-compat': 'melonds',
   nes: 'fceumm',
   psx: 'pcsx_rearmed',
   segaMD: 'genesis_plus_gx',
   snes: 'snes9x',
   ws: 'mednafen_wswan',
 })
+
+/** 崩溃兜底的内部核心名；实际发布文件仍是 melonds-wasm.data。 */
+export const NDS_COMPAT_CORE = 'melonds-compat'
 
 /** 仅转换站点会用到的平台别名；后台直接选择的具体核心名原样返回。 */
 export function emulatorJsCoreFileFor(core: string): string {
