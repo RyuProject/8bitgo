@@ -3,7 +3,7 @@ import { EJS_RUNTIME_GENERATION, NDS_COMPAT_CORE } from './paths'
 
 // 只靠引擎资源代次不够：单独重编核心却忘记换代时，会把旧核心的失败误套到新二进制。
 // 测试会把这段前缀与实际核心构建报告核对，换核心不更新这里就不能通过回归。
-export const NDS_MODERN_CORE_BUILD = 'b86fb4f324f9dba8'
+export const NDS_MODERN_CORE_BUILD = '0985f1cc275b0dfe'
 const STORAGE_KEY = `8bitgo:nds-core-failures:${EJS_RUNTIME_GENERATION}:${NDS_MODERN_CORE_BUILD}`
 const RETAIN_MS = 30 * 24 * 60 * 60 * 1000
 const MAX_RECORDS = 32
