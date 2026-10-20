@@ -307,6 +307,7 @@ melonDS DS 自带的 libretro-common 声明 `int64_t path_get_size()`，Emulator
 ⚠️ 对《宝可梦 白 2》这份 256MB ROM，兼容核心已实测能过片头到“从最初开始”，
 但本地测试点进新游戏后仍出现长时间黑/白屏；**到菜单不等于确认可通关**，
 在角色创建和第一段可操作场景都通过前不能把它标成完整修复。
+用户确认没有 NDS 存档，所以没有做 `.sav` → `.srm` 或旧即时存档的迁移桥。
 
 普通游戏详情页没有全站 COOP/COEP，因此发布的是**非 pthread 软件渲染版**：JIT、OpenGL、
 threaded renderer 都在构建时关闭，避免 SharedArrayBuffer 初始化失败。间接 Wi-Fi 保留，
