@@ -49,6 +49,7 @@ import type { NetplaySession } from './adapters/emulatorjs'
 import type { CloudSession, CloudState } from './adapters/cloudgame'
 import { p2pPlayable, cloudPlayable, emulatorJsCoreFileFor, NDS_COMPAT_CORE } from './paths'
 import { ndsCrashFallbackCore } from './ndsCrash'
+import { rememberNdsCoreFailure, rememberedNdsCore } from './ndsCorePreference'
 import { prewarmRuntime } from './prewarm'
 import { defaultDos71SystemUrl, prewarmSystemCache } from './systemSource'
 import { prewarmSockdriveCache } from './adapters/jsdos'
@@ -1689,9 +1690,16 @@ export function EmulatorPlayer({
       : runtime.id === 'ppsspp' && gameSlugRef.current
         ? pspVariantSaveSlug(gameSlugRef.current, romLangRef.current, romLangCountRef.current)
         : gameSlugRef.current
+    // 同一版新核心已对这份 ROM 发生过 WASM 陷阱时，下一局直接进兼容核心，
+    // 免去每次先下载、初始化新版再崩溃；本局显式覆盖和联机不受这一记忆影响。
+    const rememberedCore = !extra?.coreOverride && targetPlatform === 'nds' && runtime.id === 'emulatorjs' &&
+      canRestartInPlace(extra ?? {}) && emulatorJsCoreFileFor(coreRef.current ?? 'nds') === 'melondsds'
+      ? rememberedNdsCore(game)
+      : null
+    const coreOverride = extra?.coreOverride ?? rememberedCore ?? undefined
     // 新旧 melonDS 的即时存档 ABI 不能假定兼容；兼容核心必须用独立档位，
     // 否则自动切换后可能把旧核心的快照写回原档，造成无法恢复的覆盖。
-    const saveSlug = extra?.coreOverride === NDS_COMPAT_CORE && baseSaveSlug
+    const saveSlug = coreOverride === NDS_COMPAT_CORE && baseSaveSlug
       ? `${baseSaveSlug}:melonds-compat`
       : baseSaveSlug
     const plan = loadProgressPlan({
@@ -1702,7 +1710,7 @@ export function EmulatorPlayer({
     })
     progressPlan.current = plan
     sessionCounter.current += 1
-    setSession({ id: sessionCounter.current, game, platform: targetPlatform, runtime, saveSlug, ...extra, startupAttemptId, startedAt })
+    setSession({ id: sessionCounter.current, game, platform: targetPlatform, runtime, saveSlug, ...extra, coreOverride, startupAttemptId, startedAt })
     if (!extra?.startupAttemptId && !inherited && runtime.id !== 'liveview' && startupVisitId) {
       recordStartupEvent(gameSlugRef.current, {
         visitId: startupVisitId,
@@ -2158,6 +2166,7 @@ export function EmulatorPlayer({
           // 同一份 ROM 的旧 melonDS 兼容核心已实测能播放片头；换核心只重建本机引擎，
           // 不改游戏的默认核心，也不会在旧核心再次失败时来回循环。
           console.warn(`[8bitgo/nds] ${crashedCore} WASM 崩溃，切换兼容核心：${reason}`)
+          rememberNdsCoreFailure(session.game)
           setError(null)
           setNotice(t.player.ndsCoreFellBack)
           begin(session.game, session.platform, session.runtime, {
@@ -3685,7 +3694,12 @@ export function EmulatorPlayer({
    */
   const prewarmPrimaryAction = (aggressive: boolean) => {
     if (online) return
-    prewarmRuntime(pageRuntime?.id, prewarmCore, aggressive)
+    // 预热与真正开局必须选同一个核心，否则玩家悬停时会白下载已知会崩溃的新版 WASM。
+    const warmCore = platform.id === 'nds' && pageRuntime?.id === 'emulatorjs' && romUrl &&
+      emulatorJsCoreFileFor(prewarmCore ?? 'nds') === 'melondsds'
+      ? rememberedNdsCore(romUrl) ?? prewarmCore
+      : prewarmCore
+    prewarmRuntime(pageRuntime?.id, warmCore, aggressive)
     if (pageRuntime?.id === 'jsdos' && effectiveDosSystemUrl) prewarmSystemCache(effectiveDosSystemUrl)
     if (pageRuntime?.id === 'jsdos' && dosSockdriveUrl) {
       prewarmSockdriveCache(dosSockdriveUrl, Boolean(effectiveDosSystemUrl))

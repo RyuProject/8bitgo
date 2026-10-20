@@ -393,11 +393,12 @@ try {
     () => false,
     () => {},
   )
-  assert.deepEqual(scheduled.map(({ ms }) => ms), [90_000])
+  // 图形模式兜底按前台时间分段计数；后台标签页不能耗尽 90 秒预算。
+  assert.deepEqual(scheduled.map(({ ms }) => ms), [1_000])
   frameSizeConsumer(720, 400)
-  assert.deepEqual(scheduled.map(({ ms }) => ms), [90_000])
+  assert.deepEqual(scheduled.map(({ ms }) => ms), [1_000])
   frameSizeConsumer(640, 480)
-  assert.deepEqual(scheduled.map(({ ms }) => ms), [90_000, 24_000])
+  assert.deepEqual(scheduled.map(({ ms }) => ms), [1_000, 24_000])
   cancelLaunch()
   assert.ok(scheduled.every(({ cleared }) => cleared))
 

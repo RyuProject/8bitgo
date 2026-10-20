@@ -292,6 +292,9 @@ zip 顶层条目，于是照旧报 `v-102tw.u39 NOT FOUND` 回菜单。拍平（
 不会因为历史字段而默认启用。新版发生 `RuntimeError: unreachable` 或 WASM 越界时，
 播放器只对可安全重启的本机会话切换一次 `melonds-compat`；联机/云端会话不擅自重建。
 两核心的即时存档使用独立档位，不能互相覆盖。回归：`npm run test:nds-crash`。
+`ndsCorePreference.ts` 只记同一新版核心确实触发 WASM 陷阱、且内容身份稳定的 ROM：下次开局与
+悬停预热直接走旧核心，避免重复初始化崩溃。没有 `romv` / 归档版本的远端 ROM 不持久记忆；
+引擎资源代次和新版核心 SHA 前缀任一变化都会使旧记录失效，回归测试核对构建报告。
 ⚠️ 已定位的 `unreachable`（线上 `wasm-function[2361]:0x1a46fb`）不是模拟 bug，是**链接期 ABI 冲突**：
 melonDS DS 自带的 libretro-common 声明 `int64_t path_get_size()`，EmulatorJS RetroArch 定义的是
 `int32_t`。两者静态链进同一个 wasm 后同名 C 符号只留 RetroArch 那份，wasm-ld 只报 warning，

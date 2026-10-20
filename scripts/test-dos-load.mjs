@@ -270,7 +270,7 @@ console.log('\n── DOS / Windows Sockdrive：大型游戏按块读取 ──'
 
 check('Win95 悬停时预热正确的 DOSBox-X 核心和系统盘版本探测', () => {
   assert.match(player, /prewarmCore = pageRuntime\?\.id === 'jsdos' && \(effectiveDosSystemUrl \|\| dosBackend === 'dosboxX'\)/)
-  assert.match(player, /prewarmRuntime\(pageRuntime\?\.id, prewarmCore, aggressive\)/)
+  assert.match(player, /prewarmRuntime\(pageRuntime\?\.id, warmCore, aggressive\)/)
   assert.match(player, /prewarmSystemCache\(effectiveDosSystemUrl\)/)
   assert.match(prewarm, /jspiEnabled\(\) \? 'wdosbox-x-jspi' : 'wdosbox-x'/)
   assert.match(prewarm, /warmHttpCache\(`\$\{emulatorRoot\}\$\{stem\}\.wasm`\)/)
