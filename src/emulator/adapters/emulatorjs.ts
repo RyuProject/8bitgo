@@ -946,7 +946,10 @@ function installErrorTap(
     const low = text.toLowerCase()
     // WASM 主循环的异常发生在 EJS_onGameStart 之后；普通 FATAL 表在这时会被忽略。
     // 只对 NDS 的确定陷阱另开一条通道，不能让任意游戏日志触发清盘重开。
-    if (level === 'error' && onCoreCrash && isNdsWasmCrash(text, error)) onCoreCrash(text.trim() || 'RuntimeError: unreachable')
+    // ⚠️ 开局阶段的陷阱（retro_load_game 里 trap）被引擎 catch 后是 `console.warn('Failed to start game', e)`，
+    // 不是 error 级。warn 只认**真正的 RuntimeError 对象**（error 参数），核心 stderr 打出的文字不算。
+    const trap = level === 'error' ? isNdsWasmCrash(text, error) : level === 'warn' && error !== undefined
+    if (trap && onCoreCrash) onCoreCrash(text.trim() || 'RuntimeError: unreachable')
     if (level !== 'log' && FATAL_PHRASES.some((h) => low.includes(h))) onFatal(text.trim())
   }
 
@@ -2000,7 +2003,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let crashReported = false
   /** 开局前的致命错误：报上去并停掉轮询（播放器收到 onError 会把这局拆掉） */
   const failLoad = (message: string) => {
-    if (destroyed || started || loadFailed) return
+    // 核心陷阱已经走 onCoreCrash（换兼容核心）时，紧随其后的 FATAL 文本（Failed to start game）不能再报
+    // onError，否则播放器会对同一次崩溃再做一轮重试 + 换语言 ROM。
+    if (destroyed || started || loadFailed || crashReported) return
     loadFailed = true
     window.clearInterval(startWatch)
     options.onError?.(message)

@@ -307,6 +307,15 @@ melonDS DS 自带的 libretro-common 声明 `int64_t path_get_size()`，Emulator
 开局错误，旧包里没有任何 catch，这些错误只会变成一串数字的未捕获异常，也不会触发兼容核心回退；
 模拟核心本体不开，热路径不受影响；③ 出包时自动改 `EJS_RUNTIME_GENERATION`，新核心和新代号必须
 一起提交部署，否则浏览器可能把旧 `.data` 缓存到新 `buildStart` 名下。
+⚠️ 《宝可梦 黑》开局 `RuntimeError: null function`（`wasm-function[2284]:0x183807`）是 melonDS 上游的
+**未初始化成员**：`GPU.h` 里只有 `u16 VRAMCaptureBlockFlags[16]` 没写 `{}`，GPU 构造时
+`SetRenderer → SyncAllVRAMCaptures` 在 `Rend` 还是 nullptr 时读它；4MB 多的 NDS 对象落在加载 ROM
+留下的旧堆内存上，残留字节带 IsCapture 位就调用空虚表槽。它对具体 ROM 是确定性的（黑每次崩、白不崩）。
+`build:melondsds` 在 configure 后把它零初始化，并让 `SyncAllVRAMCaptures` 在没有渲染器时直接返回；
+报告里 `gpuCaptureFlagsInit: true` 才是修复后的包。前端兜底同时补了两处漏接：`ndsCrash.ts` 认全部
+WASM 陷阱措辞（V8 / Firefox / Safari）；开局陷阱被引擎 catch 后是 `console.warn('Failed to start game', e)`，
+错误探针对 warn 级的**真 RuntimeError 对象**也走换核心，且换核心后不再触发 onError 的重试 / 换语言 ROM。
+出包时 `NDS_MODERN_CORE_BUILD` 会跟着新 SHA 自动更新。
 ⚠️ 对《宝可梦 白 2》这份 256MB ROM，兼容核心已实测能过片头到“从最初开始”，
 但本地测试点进新游戏后仍出现长时间黑/白屏；**到菜单不等于确认可通关**，
 在角色创建和第一段可操作场景都通过前不能把它标成完整修复。

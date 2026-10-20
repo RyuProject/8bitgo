@@ -280,6 +280,36 @@ function patchConfiguredDependencies(coreDir) {
     ' || defined(__EMSCRIPTEN__)',
     ' /* Emscripten 使用系统 mmap ABI。 */',
   )
+  patchMelonDsGpuInit(coreDir)
+}
+
+/**
+ * melonDS（JesseTG/melonDS jtg/fix-uninitialized-opengl）的 GPU.h 里，`VRAMCaptureBlockFlags[16]`
+ * 是唯一没有默认初始化的成员。GPU 构造函数第一件事就是 SetRenderer → SyncAllVRAMCaptures，
+ * 而这时 `Rend` 还是 nullptr：只要这 16 个标志里有一个带着 IsCapture 位（0x8000），就会调用
+ * `Rend->SyncVRAMCapture(...)`。在 wasm 里空指针读出的虚表槽是 0，结果就是
+ * `RuntimeError: null function`（Firefox: indirect call to null）。
+ *
+ * NDS 对象有 4MB 多，new 出来的内存是否“干净”取决于堆里之前放过什么：加载 ROM 时的临时缓冲
+ * 释放后被复用，标志位就是 ROM 的残留字节。所以它对具体 ROM 是确定性的——口袋妖怪 黑 每次都崩，
+ * 白 一次都不崩。线上调用栈：wasm-function[2284]（GPU::SetRenderer）:0x183807 的 call_indirect，
+ * 上层 2256 是 NDS 构造。
+ *
+ * 修法：标志数组零初始化（根因）；SyncAllVRAMCaptures 在没有渲染器时直接返回（兜底，
+ * 万一以后别的路径在 Rend 建好前同步截图也不会再跳空指针）。
+ */
+function patchMelonDsGpuInit(coreDir) {
+  const src = join(coreDir, 'build-ejs/_deps/melonds-src/src')
+  replaceOnce(
+    join(src, 'GPU.h'),
+    '    u16 VRAMCaptureBlockFlags[16];',
+    '    u16 VRAMCaptureBlockFlags[16] {}; // 8BitGo: 构造时 SyncAllVRAMCaptures 会读它，必须是 0',
+  )
+  replaceOnce(
+    join(src, 'GPU.cpp'),
+    'void GPU::SyncAllVRAMCaptures()\n{\n',
+    'void GPU::SyncAllVRAMCaptures()\n{\n    if (!Rend) return; // 8BitGo: 构造期间还没有渲染器\n',
+  )
 }
 
 function patchRetroArch(retroDir, jobs) {
@@ -332,10 +362,24 @@ function bumpRuntimeGeneration(sha256) {
   if (!current) throw new Error('src/emulator/paths.ts 里找不到 EJS_RUNTIME_GENERATION')
   const day = new Date().toISOString().slice(0, 10).replaceAll('-', '')
   const next = `${day}-melondsds-${sha256.slice(0, 8)}`
+  bumpNdsModernCoreBuild(sha256)
   if (current[1] === next) return next
   writeFileSync(file, source.replace(re, `export const EJS_RUNTIME_GENERATION = '${next}'`))
   console.log(`[cache] EJS_RUNTIME_GENERATION ${current[1]} -> ${next}`)
   return next
+}
+
+/** “这份 ROM 在新核心上崩过”的本机记录按核心 sha 分桶；换核心后旧记录必须失效，玩家才会重新试新核心。 */
+function bumpNdsModernCoreBuild(sha256) {
+  const file = join(repoRoot, 'src/emulator/ndsCorePreference.ts')
+  const source = readFileSync(file, 'utf8')
+  const re = /export const NDS_MODERN_CORE_BUILD = '([^']*)'/
+  const current = source.match(re)
+  if (!current) throw new Error('src/emulator/ndsCorePreference.ts 里找不到 NDS_MODERN_CORE_BUILD')
+  const next = sha256.slice(0, 16)
+  if (current[1] === next) return
+  writeFileSync(file, source.replace(re, `export const NDS_MODERN_CORE_BUILD = '${next}'`))
+  console.log(`[cache] NDS_MODERN_CORE_BUILD ${current[1]} -> ${next}`)
 }
 
 function packageCore(args, coreDir, startedAt) {
@@ -391,6 +435,8 @@ function packageCore(args, coreDir, startedAt) {
     sha256,
     // 已修正 path_get_size 的跨 libretro-common 签名冲突，且最终链接没有任何签名不一致 warning
     linkAbiChecked: true,
+    // GPU::VRAMCaptureBlockFlags 已零初始化（否则部分 ROM 开局 RuntimeError: null function）
+    gpuCaptureFlagsInit: true,
     // melonDS DS 前端以 -fexceptions 构建，开局错误会显示核心自己的错误画面
     cxxExceptions: 'frontend',
     options: {

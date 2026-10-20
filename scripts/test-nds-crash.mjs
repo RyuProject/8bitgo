@@ -17,6 +17,30 @@ assert.equal(isNdsWasmCrash('RuntimeError: memory access out of bounds'), true)
 assert.equal(isNdsWasmCrash('unreachable', { name: 'RuntimeError', message: 'unreachable' }), true)
 assert.equal(isNdsWasmCrash('unreachable', { name: 'TypeError', message: 'unreachable' }), false)
 assert.equal(isNdsWasmCrash('Failed to load state'), false)
+// 新核心启动时的空函数指针崩溃：以前漏接，播放器会重试并挨个换语言 ROM，始终不切旧 melonDS。
+for (const message of [
+  'null function',
+  'null function or function signature mismatch',
+  'function signature mismatch',
+  'table index is out of bounds',
+  'indirect call to null', // Firefox
+  'indirect call signature mismatch', // Firefox
+  'unreachable executed', // Firefox
+  'index out of bounds', // Firefox
+  'call_indirect to a null table entry', // Safari
+  'Unreachable code should not be executed', // Safari
+  'Out of bounds memory access', // Safari
+  'divide by zero',
+  'integer overflow',
+  'Aborted(OOM)',
+]) {
+  assert.equal(isNdsWasmCrash('', { name: 'RuntimeError', message }), true, `RuntimeError: ${message} 必须触发兼容核心回退`)
+  assert.equal(isNdsWasmCrash(`Uncaught RuntimeError: ${message}\n    at wasm://wasm/0123:wasm-function[42]:0x1`), true, `控制台文本里的 ${message} 也要认`)
+}
+assert.equal(isNdsWasmCrash('Uncaught RuntimeError: null function\n    at wasm://wasm/010ade7a:wasm-function[7]:0x1'), true)
+assert.equal(isNdsWasmCrash('', { name: 'TypeError', message: 'null function' }), false, 'JS 层 TypeError 不是 WASM 陷阱')
+assert.equal(isNdsWasmCrash('', { name: 'RuntimeError', message: 'something unrelated' }), false)
+assert.equal(isNdsWasmCrash('RuntimeError: game log says hello'), false)
 assert.equal(isNdsWasmCrash('Warning: RuntimeError was mentioned in a log'), false)
 
 assert.equal(ndsCrashFallbackCore('melondsds', true, false), NDS_COMPAT_CORE)
@@ -62,6 +86,10 @@ const adapter = readFileSync(join(root, 'src/emulator/adapters/emulatorjs.ts'), 
 const player = readFileSync(join(root, 'src/emulator/EmulatorPlayer.tsx'), 'utf8')
 const copier = readFileSync(join(root, 'scripts/copy-ejs-cores.mjs'), 'utf8')
 assert.match(adapter, /installErrorTap\(win, reportEngineError, options\.platform === 'nds' \? reportCoreCrash : undefined\)/)
+// 开局 trap 被引擎 catch 后是 console.warn('Failed to start game', e)：warn 级的真 RuntimeError 也要走换核心。
+assert.match(adapter, /const trap = level === 'error' \? isNdsWasmCrash\(text, error\) : level === 'warn' && error !== undefined/)
+assert.match(adapter, /if \(destroyed \|\| started \|\| loadFailed \|\| crashReported\) return/, '已换核心的崩溃不能再走 onError 重试')
+assert.equal(isNdsWasmCrash('', { name: 'RuntimeError', message: 'null function' }), true)
 assert.match(player, /onCoreCrash: \(crashedCore: string, reason: string\)/)
 assert.match(player, /coreOverride: nextCore/)
 assert.match(player, /Boolean\(session\.coreOverride\)/)
