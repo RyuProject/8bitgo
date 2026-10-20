@@ -18,7 +18,7 @@ import { installPspRangeReadAhead } from './helpers/ppsspp-runtime-patch.mjs'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const VERSION = '0dbfaca'
-const RUNTIME_GENERATION = 'v11'
+const RUNTIME_GENERATION = 'v12'
 const RANGE_LOADER_REVISION = 4
 const PINNED_COMMIT = '0dbfaca62a8a924abc2c5dd5dd0733b668e5e68a'
 const PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0001-range-streaming.patch')
@@ -32,6 +32,7 @@ const COLD_START_PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0008-web-col
 const WORKER_CANVAS_PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0009-worker-offscreen-canvas.patch')
 const WASM_FFMPEG_PATCH = join(root, 'vendor', 'ppsspp', 'patches', '0010-wasm-ffmpeg.patch')
 const RANGE_READ_AHEAD_SOURCE = join(root, 'vendor', 'ppsspp', 'range-read-ahead.js')
+const RANGE_PREFETCH_WORKER_SOURCE = join(root, 'vendor', 'ppsspp', 'range-prefetch-worker.js')
 const OUTPUT = join(root, 'public', 'ppsspp', `v${VERSION}`, RUNTIME_GENERATION)
 const FFMPEG_COMMIT = '1e3b4965632f60b1d85360261d1b9dd45444bc71'
 const FFMPEG_LIBRARIES = ['avcodec', 'avformat', 'avutil', 'swresample', 'swscale']
@@ -70,6 +71,7 @@ if (!existsSync(COLD_START_PATCH)) fail(`Web 冷启动补丁不存在：${COLD_S
 if (!existsSync(WORKER_CANVAS_PATCH)) fail(`Worker OffscreenCanvas 补丁不存在：${WORKER_CANVAS_PATCH}`)
 if (!existsSync(WASM_FFMPEG_PATCH)) fail(`Web FFmpeg 补丁不存在：${WASM_FFMPEG_PATCH}`)
 if (!existsSync(RANGE_READ_AHEAD_SOURCE)) fail(`Range 顺序预读源码不存在：${RANGE_READ_AHEAD_SOURCE}`)
+if (!existsSync(RANGE_PREFETCH_WORKER_SOURCE)) fail(`Range 独立预读 Worker 不存在：${RANGE_PREFETCH_WORKER_SOURCE}`)
 if (capture('git', ['rev-parse', 'HEAD']) !== PINNED_COMMIT) {
   fail(`源码提交不匹配，必须是 ${PINNED_COMMIT}；不要在未知上游版本上硬套二进制补丁`)
 }
@@ -380,6 +382,7 @@ for (const marker of [
   'MAX_CACHE_BYTES = 24 * 1024 * 1024',
   'cancelQueuedAndInflight()',
   'demandTakeovers',
+  'sharedPrefetchWaits',
 ]) {
   if (!runtimeScript.includes(marker)) fail(`PPSSPPSDL.js 缺少 Range 顺序预读标记 ${marker}`)
 }
@@ -408,6 +411,12 @@ for (const name of names) {
     bytes: statSync(to).size,
     sha256: createHash('sha256').update(bytes).digest('hex'),
   }
+}
+copyFileSync(RANGE_PREFETCH_WORKER_SOURCE, join(OUTPUT, 'range-prefetch-worker.js'))
+const prefetchWorkerBytes = readFileSync(join(OUTPUT, 'range-prefetch-worker.js'))
+artifacts['range-prefetch-worker.js'] = {
+  bytes: prefetchWorkerBytes.byteLength,
+  sha256: createHash('sha256').update(prefetchWorkerBytes).digest('hex'),
 }
 
 const manifest = {
@@ -438,7 +447,7 @@ const manifest = {
   graphicsCompatibilityProfile: 'buffered-native-v1',
   startupReadinessProfile: 'core-boot-log-v1',
   preloadAssetsProfile: 'runtime-no-debugger',
-  rangeReadAheadProfile: 'adaptive-rolling-buffer-v4',
+  rangeReadAheadProfile: 'adaptive-rolling-buffer-shared-worker-v5',
   rangeReadAheadBlocks: 10,
   rangeReadAheadConcurrency: 4,
   rangeReadAheadCacheBytes: 24 * 1024 * 1024,

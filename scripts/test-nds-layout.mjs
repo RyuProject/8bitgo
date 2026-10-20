@@ -28,7 +28,7 @@ import {
   showsTouchScreen,
 } from '../src/emulator/dualScreen.ts'
 import { aspectClass, desktopScreenAspect, mobileScreenAspect } from '../src/emulator/screenAspect.ts'
-import { isDiscPlatform, isSelfDownloadPlatform } from '../src/emulator/paths.ts'
+import { isDiscPlatform, isLargeDirectEjsRom, isSelfDownloadPlatform } from '../src/emulator/paths.ts'
 
 let failed = 0
 const check = (name, fn) => {
@@ -359,6 +359,20 @@ check('NDS 不是光盘平台 —— isDiscPlatform 的语义没被顺手改掉'
   // 两个集合分开是类型语义；NDS 同样自己分片下载，失败交给播放器按断点自动重试。
   assert.equal(isDiscPlatform('nds'), false)
   assert.equal(isDiscPlatform('psx'), true)
+})
+check('大容量旧式直链按格式接入分片，不把小卡带和非 EJS 平台拖进 Blob 路径', () => {
+  for (const [platform, url] of [
+    ['n64', 'https://assets.example/game.Z64?romv=1'],
+    ['segaCD', 'https://assets.example/game.BIN?romv=1'],
+    ['pce', 'https://assets.example/game.chd?romv=1'],
+    ['amiga', 'https://assets.example/game.hdf?romv=1'],
+  ]) assert.equal(isLargeDirectEjsRom(platform, url), true, `${platform} 应接入`)
+  for (const [platform, url] of [
+    ['nes', 'https://assets.example/game.nes?romv=1'],
+    ['pce', 'https://assets.example/game.pce?romv=1'],
+    ['amiga', 'https://assets.example/game.adf?romv=1'],
+    ['dos', 'https://assets.example/game.zip?romv=1'],
+  ]) assert.equal(isLargeDirectEjsRom(platform, url), false, `${platform} 应保留原路径`)
 })
 
 /* ================= 触控模式（2026-09-08） ================= */

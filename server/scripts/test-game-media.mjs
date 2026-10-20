@@ -71,7 +71,8 @@ test('公网 / 内网地址分界不会把媒体代理变成 SSRF 通道', () =>
   for (const value of [
     '127.0.0.1', '10.0.0.1', '100.64.0.1', '169.254.169.254', '172.16.0.1',
     '192.168.0.1', '192.0.2.1', '198.18.0.1', '198.51.100.1', '203.0.113.1',
-    '::1', 'fc00::1', 'fe80::1', '2001:db8::1',
+    '::1', '::7f00:1', '::ffff:127.0.0.1', '::ffff:7f00:1',
+    'fc00::1', 'fe80::1', '2001:db8::1', '2001:0db8::1', '2002:c0a8:1::1',
   ]) assert.equal(isPublicMediaAddress(value), false, value)
 })
 
@@ -88,6 +89,21 @@ test('封面从数据库记录的 URL 同源流出，并补齐 COEP 所需响应
   assert.equal(response.getHeader('cross-origin-resource-policy'), 'same-origin')
   assert.match(response.getHeader('cache-control'), /s-maxage=86400/)
   assert.equal(calls[0].url, 'https://media.example/cover.webp')
+  assert.ok(calls[0].init.dispatcher, '真实请求必须携带建连时再次校验 DNS 的 dispatcher')
+})
+
+test('DNS 在预检后重绑定到内网时，建连阶段仍拒绝请求', async () => {
+  let resolutions = 0
+  const proxy = createGameMediaProxy({
+    loadGameMedia: async () => ({ cover: 'http://rebind.example/cover.webp', hidden: 0 }),
+    lookupImpl: async () => {
+      resolutions++
+      return [{ address: resolutions === 1 ? '8.8.8.8' : '127.0.0.1', family: 4 }]
+    },
+  })
+  const response = await request(proxy, 'rebind', 'cover')
+  assert.equal(response.statusCode, 502)
+  assert.equal(resolutions, 2, 'fetch 必须在实际建连时再次调用受保护的 DNS 解析器')
 })
 
 test('视频 Range 与 206 响应原样透传，避免循环预览反复整包下载', async () => {

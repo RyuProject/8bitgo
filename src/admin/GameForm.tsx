@@ -2235,7 +2235,11 @@ function RomField({
     ...(shouldPack ? ['.8bg'] : []),
   ].join(',')
   const defKey = (fileName: string) => (lang ? defaultRomKeyForLang(platform, slug, lang, fileName) : defaultKeyFor(platform, slug, fileName))
-  const exampleName = platform === 'gamecube' || platform === 'wii' ? 'game.rvz' : isStreamingDisc ? 'game.iso' : 'x.zip'
+  const exampleName = platform === 'gamecube' || platform === 'wii'
+    ? 'game.rvz'
+    : platform === 'psx'
+      ? 'game.chd'
+      : isStreamingDisc ? 'game.iso' : 'x.zip'
 
   useEffect(() => setHealth(null), [value, backupValue])
 
@@ -2775,6 +2779,8 @@ function RomField({
                   ? `可填写你有权嵌入的 HTTPS 游戏网址；单文件作品也可上传 .html。带 JS、WASM、图片等素材的项目请先完整部署，再填写它的 index.html 地址`
                 : isStreamingDisc
                   ? `直接上传镜像会存到 ${defKey(exampleName)} 这样的位置并自动绑定；不要套 ZIP。也可手填支持 HTTP Range 的完整 URL`
+                : platform === 'psx'
+                  ? `推荐直接选 CHD，不要套 ZIP；上传后封装为 ${romPackKey(defKey(exampleName))}。播放时自动选择支持 CHD、但更耗性能的 Beetle PSX HW；带版本的地址可断点续传，当前仍需下载完成后才能开局`
                 : `新上传会先做 Zstd 19 + AES-256-GCM，再存到 ${romPackKey(defKey(exampleName))} 并自动绑定；旧 ZIP/ROM 仍可直接填写和运行`
             : isHtml5
               ? '填写你有权嵌入的 HTTPS 游戏网址；目标站点必须允许 iframe 嵌入。单文件上传需先配置 Worker'

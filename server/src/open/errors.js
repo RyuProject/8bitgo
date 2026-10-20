@@ -77,6 +77,11 @@ export function openErrorFor(err, siteUrl) {
 export function openErrorMiddleware(siteUrl) {
   return (err, req, res, next) => {
     if (!isOpenPath(req?.originalUrl || req?.path)) return next(err)
+    // 流式 ROM 已写出响应头后再报错时，不能再写一份 JSON；只结束这条坏流。
+    if (res.headersSent || res.destroyed || res.writableEnded) {
+      if (!res.destroyed && !res.writableEnded) res.destroy(err)
+      return
+    }
     let base = ''
     try {
       base = siteUrl?.() ?? ''

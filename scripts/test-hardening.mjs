@@ -174,7 +174,9 @@ console.log('\n── 其余几条 ──')
 
 check('⚠️ 分页参数取整（否则 LIMIT 2.5 直接把 /api/games 和 SSR 打成 500/503）', () => {
   const repo = strip(read('server/src/games-repo.js'))
-  assert.match(repo, /const pageSize = Math\.trunc\(/)
+  const search = strip(read('server/src/search.js'))
+  assert.match(repo, /const pageSize = boundedSearchLimit\(q\.pageSize, 24, MAX_PAGE_SIZE\)/)
+  assert.match(search, /export function boundedSearchLimit[\s\S]{0,220}Math\.trunc\(value\)/)
   assert.match(repo, /const page = Math\.trunc\(/)
 })
 

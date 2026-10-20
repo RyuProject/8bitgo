@@ -50,6 +50,7 @@ import type { CloudSession, CloudState } from './adapters/cloudgame'
 import { p2pPlayable, cloudPlayable, emulatorJsCoreFileFor, NDS_COMPAT_CORE } from './paths'
 import { ndsCrashFallbackCore } from './ndsCrash'
 import { rememberNdsCoreFailure, rememberedNdsCore } from './ndsCorePreference'
+import { psxChdSaveSlug, psxCoreForTransfer } from './psxChd'
 import { prewarmRuntime } from './prewarm'
 import { defaultDos71SystemUrl, prewarmSystemCache } from './systemSource'
 import { prewarmSockdriveCache } from './adapters/jsdos'
@@ -77,6 +78,7 @@ import { platformLabel } from '@/services/i18nData'
 import { ROM_LANG_LABEL, type RomLang } from '@/config/languages'
 import {
   canResumeRomLanguageSwitch,
+  ndsVariantSaveSlug,
   nextRomLanguageRestart,
   pspVariantSaveSlug,
 } from './romLanguage'
@@ -200,6 +202,7 @@ const BAR_HOT_ZONE_MIN = 10
 interface ActiveSession {
   id: number
   game: File | string
+  pspLoadMode?: 'stream' | 'download'
   /** 实际运行的平台（本地文件被识别为其他平台时可能与页面平台不同） */
   platform: PlatformId
   runtime: Runtime
@@ -592,6 +595,9 @@ export function EmulatorPlayer({
   const [notice, setNotice] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
   const [session, setSession] = useState<ActiveSession | null>(null)
+  const [pspLoadMode, setPspLoadMode] = useState<'stream' | 'download'>('stream')
+  const pspLoadModeRef = useRef(pspLoadMode)
+  pspLoadModeRef.current = pspLoadMode
   /** 切语言时旧会话已拆掉，仍要记住新地址到货后自动重开的意图。 */
   const restartWithLangRef = useRef<RomLang | null>(null)
   /** 当前 ROM 实际加载失败后，父层切到备用地址时保持“继续开这一局”的用户意图。 */
@@ -1469,6 +1475,8 @@ export function EmulatorPlayer({
   romLangRef.current = romLang
   const romLangCountRef = useRef(romLangs?.length ?? 0)
   romLangCountRef.current = romLangs?.length ?? 0
+  const romLangsRef = useRef(romLangs)
+  romLangsRef.current = romLangs
   // 核心与 BIOS 也走 ref：BIOS 是异步取回来的，进依赖的话它一到货就会把
   // 正在跑的游戏重启一遍；这两个值只在挂载引擎那一刻读一次就够了
   const coreRef = useRef(core)
@@ -1689,7 +1697,9 @@ export function EmulatorPlayer({
       ? `local:${game.name}`
       : runtime.id === 'ppsspp' && gameSlugRef.current
         ? pspVariantSaveSlug(gameSlugRef.current, romLangRef.current, romLangCountRef.current)
-        : gameSlugRef.current
+        : targetPlatform === 'nds' && gameSlugRef.current
+          ? ndsVariantSaveSlug(gameSlugRef.current, romLangRef.current, romLangsRef.current ?? [])
+          : gameSlugRef.current
     // 同一版新核心已对这份 ROM 发生过 WASM 陷阱时，下一局直接进兼容核心，
     // 免去每次先下载、初始化新版再崩溃；本局显式覆盖和联机不受这一记忆影响。
     const rememberedCore = !extra?.coreOverride && targetPlatform === 'nds' && runtime.id === 'emulatorjs' &&
@@ -1699,9 +1709,12 @@ export function EmulatorPlayer({
     const coreOverride = extra?.coreOverride ?? rememberedCore ?? undefined
     // 新旧 melonDS 的即时存档 ABI 不能假定兼容；兼容核心必须用独立档位，
     // 否则自动切换后可能把旧核心的快照写回原档，造成无法恢复的覆盖。
-    const saveSlug = coreOverride === NDS_COMPAT_CORE && baseSaveSlug
-      ? `${baseSaveSlug}:melonds-compat`
+    const coreSaveSlug = targetPlatform === 'psx' && runtime.id === 'emulatorjs' && typeof game === 'string' && baseSaveSlug
+      ? psxChdSaveSlug(baseSaveSlug, game)
       : baseSaveSlug
+    const saveSlug = coreOverride === NDS_COMPAT_CORE && coreSaveSlug
+      ? `${coreSaveSlug}:melonds-compat`
+      : coreSaveSlug
     const plan = loadProgressPlan({
       runtime: runtime.id,
       platform: targetPlatform,
@@ -1710,7 +1723,9 @@ export function EmulatorPlayer({
     })
     progressPlan.current = plan
     sessionCounter.current += 1
-    setSession({ id: sessionCounter.current, game, platform: targetPlatform, runtime, saveSlug, ...extra, coreOverride, startupAttemptId, startedAt })
+    setSession({ id: sessionCounter.current, game, platform: targetPlatform, runtime, saveSlug,
+      pspLoadMode: runtime.id === 'ppsspp' ? pspLoadModeRef.current : undefined,
+      ...extra, coreOverride, startupAttemptId, startedAt })
     if (!extra?.startupAttemptId && !inherited && runtime.id !== 'liveview' && startupVisitId) {
       recordStartupEvent(gameSlugRef.current, {
         visitId: startupVisitId,
@@ -1858,7 +1873,11 @@ export function EmulatorPlayer({
         LOAD_PROGRESS_CEILING,
         liftRatio(progressFloor.current, visualStart + (visualEnd - visualStart) * Math.min(1, elapsed / duration)),
       )
-      setLoadRatio((current) => Math.max(current ?? 0, timed))
+      // 大 ROM 有真实字节进度时不能再让“视觉计时”超过它：弱网下 9MB / 68MB
+      // 曾显示 78%，随后长时间挂在高位，玩家无法判断是慢还是死锁。
+      if (!(progressSignal.current.phase === phase && progressSignal.current.measurable)) {
+        setLoadRatio((current) => Math.max(current ?? 0, timed))
+      }
       setLoadPhase(phase)
       // 这个阶段的视觉预算也耗光了还没等到下一个阶段的事件 —— 自己往前走一格，
       // 别让条子停在某个整数上装死（见 advanceProgressPhase）
@@ -1933,6 +1952,7 @@ export function EmulatorPlayer({
       handle = mountOf(session.runtime.id)(host, {
       platform: session.platform,
       game: session.game,
+      pspLoadMode: session.pspLoadMode,
       gameName: gameNameRef.current,
       // 按游戏覆盖核心 / 平台级 BIOS：都用 ref 读当前值，
       // 放进 effect 依赖会让「BIOS 异步到货」把正在跑的游戏重启一遍
@@ -3695,10 +3715,14 @@ export function EmulatorPlayer({
   const prewarmPrimaryAction = (aggressive: boolean) => {
     if (online) return
     // 预热与真正开局必须选同一个核心，否则玩家悬停时会白下载已知会崩溃的新版 WASM。
-    const warmCore = platform.id === 'nds' && pageRuntime?.id === 'emulatorjs' && romUrl &&
+    const selectedCore = platform.id === 'nds' && pageRuntime?.id === 'emulatorjs' && romUrl &&
       emulatorJsCoreFileFor(prewarmCore ?? 'nds') === 'melondsds'
       ? rememberedNdsCore(romUrl) ?? prewarmCore
       : prewarmCore
+    // CHD 开局会改用 Beetle；悬停时若还预拉默认 PCSX，就白下另一份大核心。
+    const warmCore = pageRuntime?.id === 'emulatorjs' && romUrl
+      ? psxCoreForTransfer(platform.id, selectedCore, romUrl)
+      : selectedCore
     prewarmRuntime(pageRuntime?.id, warmCore, aggressive)
     if (pageRuntime?.id === 'jsdos' && effectiveDosSystemUrl) prewarmSystemCache(effectiveDosSystemUrl)
     if (pageRuntime?.id === 'jsdos' && dosSockdriveUrl) {
@@ -4024,7 +4048,7 @@ export function EmulatorPlayer({
                     />
                   )}
                   <span
-                    className="inline-flex"
+                    className="inline-flex flex-wrap items-center justify-center gap-2"
                     onPointerEnter={() => prewarmPrimaryAction(true)}
                     onFocusCapture={() => prewarmPrimaryAction(false)}
                   >
@@ -4052,7 +4076,24 @@ export function EmulatorPlayer({
                                 : t.player.start
                               : t.player.pickRom}
                     </Button>
+                    {!online && romUrl && pageRuntime?.id === 'ppsspp' && (
+                      <select
+                        aria-label={t.player.pspLoadMode}
+                        title={t.player.pspLoadMode}
+                        value={pspLoadMode}
+                        onChange={(event) => setPspLoadMode(event.target.value as 'stream' | 'download')}
+                        className="h-11 max-w-full rounded-xl border border-white/30 bg-black/75 px-3 text-sm font-semibold text-white outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                      >
+                        <option value="stream">{t.player.pspStream}</option>
+                        <option value="download">{t.player.pspDownload}</option>
+                      </select>
+                    )}
                   </span>
+                  {!online && romUrl && pageRuntime?.id === 'ppsspp' && pspLoadMode === 'download' && (
+                    <p className="max-w-md text-[11px] leading-relaxed text-white/70 sm:text-xs">
+                      {t.player.pspDownloadHint}
+                    </p>
+                  )}
                   <p className="max-w-md text-[11px] leading-relaxed text-white/70 sm:text-xs">
                     {joining && online ? (
                       <>

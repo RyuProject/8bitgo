@@ -131,7 +131,10 @@ function ask<T>(req: IDBRequest<T>): Promise<T | null> {
 export function romCacheKey(url: string): string {
   if (!url || /^(blob|data):/i.test(url)) return ''
   const source = url.split('#')[0]
-  if (!/[?&]romv=/.test(source) && !romArchiveRef(url)?.version) return ''
+  const queryAt = source.indexOf('?')
+  const version = queryAt >= 0 ? new URLSearchParams(source.slice(queryAt + 1)).get('romv')?.trim() : ''
+  // 空 romv 不是内容版本；把它当键会让覆盖后的新旧分片在同一地址下混合。
+  if (!version && !romArchiveRef(url)?.version.trim()) return ''
   return url
 }
 

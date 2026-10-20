@@ -125,11 +125,55 @@ export class ByteReader {
       }
       const { value, done } = await this.iter.next()
       if (done) throw new Error('ROM 数据在传输中提前结束')
-      this.left = Buffer.from(value)
+      // fetch 给的是 Uint8Array；共享底层缓冲区，避免每个网络片先复制一次再拷进目标块。
+      this.left = Buffer.isBuffer(value) ? value : Buffer.from(value.buffer, value.byteOffset, value.byteLength)
       this.leftPos = 0
     }
     return out
   }
+
+  async skipExactly(size) {
+    if (!Number.isSafeInteger(size) || size < 0) throw new Error('skipExactly 大小无效')
+    // 忽略 Range 的源站会回整包。逐片丢弃前缀，不能为盘尾偏移分配一个 GB 级 Buffer。
+    let remaining = size
+    while (remaining > 0) {
+      if (this.left) {
+        const take = Math.min(this.left.byteLength - this.leftPos, remaining)
+        this.leftPos += take
+        remaining -= take
+        if (this.leftPos >= this.left.byteLength) { this.left = null; this.leftPos = 0 }
+        continue
+      }
+      const { value, done } = await this.iter.next()
+      if (done) throw new Error('ROM 数据在传输中提前结束')
+      this.left = Buffer.isBuffer(value) ? value : Buffer.from(value.buffer, value.byteOffset, value.byteLength)
+      this.leftPos = 0
+    }
+  }
+
+  async cancel() {
+    // fromWeb 用的是 async iterator，期间流被它锁住；直接 body.cancel() 会被拒绝。
+    await this.iter.return?.()
+  }
+}
+
+/** Range 的末尾编号是闭区间；后续分块计划统一使用半开区间。 */
+export function parseRomByteRange(header, total) {
+  if (!Number.isSafeInteger(total) || total < 0) throw new RangeError('ROM 大小无效')
+  const value = String(header || '').trim()
+  if (!value) return { start: 0, end: total, isRange: false }
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(value)
+  const invalid = { unsatisfiable: true, total }
+  if (!match || (!match[1] && !match[2]) || total === 0) return invalid
+  if (!match[1]) {
+    const suffix = Number(match[2])
+    if (!Number.isSafeInteger(suffix) || suffix < 1) return invalid
+    return { start: Math.max(0, total - suffix), end: total, isRange: true }
+  }
+  const start = Number(match[1])
+  const last = match[2] ? Number(match[2]) : total - 1
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(last) || start >= total || last < start) return invalid
+  return { start, end: Math.min(total, last + 1), isRange: true }
 }
 
 /* ------------------------------------------------------------------ *

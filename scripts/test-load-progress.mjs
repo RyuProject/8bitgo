@@ -16,6 +16,7 @@
  * 跑：npm run test:load-progress
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 const {
@@ -117,10 +118,12 @@ function makePlayer({ autoAdvance, floor = 0, milestones = false, launchDelay = 
       const elapsed = now - clock.startedAt
       const visualStart = Math.max(0.01, clock.from)
       const visualEnd = Math.max(visualStart, Math.min(CEILING, clock.to - 0.01))
-      shown = Math.max(
-        shown,
-        Math.min(CEILING, liftRatio(floor, visualStart + (visualEnd - visualStart) * Math.min(1, elapsed / duration))),
-      )
+      if (!(signal.phase === clock.phase && signal.measurable)) {
+        shown = Math.max(
+          shown,
+          Math.min(CEILING, liftRatio(floor, visualStart + (visualEnd - visualStart) * Math.min(1, elapsed / duration))),
+        )
+      }
       if (autoAdvance && elapsed >= duration && !(signal.phase === clock.phase && signal.measurable)) advance(now)
     },
   }
@@ -265,6 +268,23 @@ console.log('\n── 拿不到 Content-Length 时不能谎报已进入启动 �
   ok(p.shown < 0.8, `仍留在 ROM 区域内（${(p.shown * 100).toFixed(0)}%）`)
   p.onProgress({ phase: 'rom', loaded: 500_000, total: 500_000, ratio: 1 }, 51_000)
   ok(p.phase === 'starting', '下载真正完成后立即进入 starting，不会卡住')
+}
+
+console.log('\n── NDS 大 ROM 的真实进度不能被视觉计时抢跑 ──')
+{
+  const playerCode = readFileSync(fileURLToPath(new URL('../src/emulator/EmulatorPlayer.tsx', import.meta.url)), 'utf8')
+  ok(/if \(!\(progressSignal\.current\.phase === phase && progressSignal\.current\.measurable\)\)\s*\{\s*setLoadRatio/.test(playerCode),
+    '播放器本体也守住真实字节进度，不能只在测试复刻里修')
+  const plan = loadProgressPlan({ runtime: 'emulatorjs', platform: 'nds' })
+  const p = makePlayer({ autoAdvance: true, plan })
+  p.onProgress({ phase: 'rom', loaded: 9_000_000, total: 68_000_000, ratio: 9 / 68 }, 0)
+  const actual = p.shown
+  for (let i = 1; i <= 480; i++) p.tick(i * 250)
+  ok(Math.abs(p.shown - actual) < 1e-9,
+    `有真实字节进度时，两分钟不应从 ${(actual * 100).toFixed(0)}% 假爬到 ROM 阶段末尾`)
+  ok(p.phase === 'rom', '真实下载没完成前不提前宣称正在启动模拟器')
+  p.onProgress({ phase: 'rom', loaded: 68_000_000, total: 68_000_000, ratio: 1 }, 120_000)
+  ok(p.phase === 'starting', '真实下载完毕后仍立刻推进到启动阶段')
 }
 
 console.log('\n── 只进不退 ──')

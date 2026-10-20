@@ -64,7 +64,7 @@ export async function listForReview({ state = 'pending', status = '', limit = 50
     FROM oauth_apps a LEFT JOIN users u ON u.id = a.owner_id
     ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
     ORDER BY a.submitted_at IS NULL, a.submitted_at ASC, a.created_at ASC
-    LIMIT ${Math.min(200, Math.max(1, Number(limit) || 50))}`
+    LIMIT ${Math.trunc(Math.min(200, Math.max(1, Number(limit) || 50)))}`
   return query(sql, params)
 }
 

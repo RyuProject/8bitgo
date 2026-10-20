@@ -9,7 +9,7 @@
  */
 import { jsonMemberPath, query, queryOne, withTransaction } from './db.js'
 import { gameRowToApi, gameApiToRow, dateTimeIso, romRelationRows, GENERIC_ROM_LANG } from './mappers.js'
-import { buildGameTokens, queryTerms, tokenMatchSql, normalize, tokenize, escapeLike } from './search.js'
+import { boundedSearchLimit, buildGameTokens, queryTerms, tokenMatchSql, normalize, tokenize, escapeLike } from './search.js'
 import { BAYES_SCORE_SQL } from './ratings-repo.js'
 
 /** 列表页每页最多给多少条，挡住 ?pageSize=100000 这种请求 */
@@ -221,7 +221,7 @@ export async function listGames(q = {}) {
     const parsed = queryTerms(q.q, { prefixLast: q.prefixLast !== false })
     if (parsed.empty) {
       // 输入里一个可搜索字符都没有（比如全是标点）：直接给空，别退化成「搜全部」
-      const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(q.pageSize) || 24))
+      const pageSize = boundedSearchLimit(q.pageSize, 24, MAX_PAGE_SIZE)
       return { items: [], total: 0, page: 1, pageSize, totalPages: 1 }
     }
     const m = tokenMatchSql(parsed)
@@ -269,7 +269,7 @@ export async function listGames(q = {}) {
     原来这里只有 Math.min/max 夹范围，夹不掉小数。同仓 comments.js 用的是
     Math.trunc，说明这是漏的不是取舍。
   */
-  const pageSize = Math.trunc(Math.min(MAX_PAGE_SIZE, Math.max(1, Number(q.pageSize) || 24)))
+  const pageSize = boundedSearchLimit(q.pageSize, 24, MAX_PAGE_SIZE)
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const page = Math.trunc(Math.min(Math.max(1, Number(q.page) || 1), totalPages))
   const offset = (page - 1) * pageSize
@@ -296,9 +296,10 @@ export async function listGames(q = {}) {
 export async function suggestGames(q, { limit = 8 } = {}) {
   const parsed = queryTerms(q)
   if (parsed.empty) return []
-  const n = Math.min(20, Math.max(1, Number(limit) || 8))
+  const n = boundedSearchLimit(limit, 8, 20)
   const m = tokenMatchSql(parsed)
   const norm = normalize(q).trim()
+  const likePrefix = `${escapeLike(norm)}%`
   const rows = await query(
     `SELECT g.id, g.slug, g.title, g.title_zh, g.platform, g.year, g.icon, g.cover, g.plays
        FROM games g
@@ -309,7 +310,7 @@ export async function suggestGames(q, { limit = 8 } = {}) {
                 + CASE WHEN g.title LIKE ? OR g.title_zh LIKE ? THEN 300 ELSE 0 END) DESC,
                g.plays DESC, g.id DESC
       LIMIT ${n}`,
-    [...m.params, norm, norm, `${norm}%`, `${norm}%`],
+    [...m.params, norm, norm, likePrefix, likePrefix],
   )
   return rows.map((r) => ({
     slug: r.slug,
@@ -354,7 +355,7 @@ function editDistance(a, b, max = 2) {
 export async function searchFallback(q, { limit = 12 } = {}) {
   const parsed = queryTerms(q, { prefixLast: false })
   if (parsed.empty) return { suggestion: null, related: [] }
-  const n = Math.min(24, Math.max(1, Number(limit) || 12))
+  const n = boundedSearchLimit(limit, 12, 24)
 
   // 第一步：任意一个 token 命中即可，按命中个数 × 权重排。
   // 这里用 tokenize 而不是 queryTerms，是为了把汉字拆到**单字**：

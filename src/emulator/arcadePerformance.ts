@@ -2,7 +2,7 @@ import type { ArcadeButtonCount, PlatformId } from '@/types'
 
 /**
  * FBNeo 街机的音频排期窗口。引擎默认 64ms，网页主线程一次稍长的布局 / GC 就会把它抽空；
- * 80ms 只增加一帧左右的缓冲，却能覆盖多数短毛刺。MAME Current / NDS 更重，仍分别使用 128 / 96ms。
+ * 80ms 只增加一帧左右的缓冲，却能覆盖多数短毛刺。MAME Current / 普通 NDS 更重，均用 128ms。
  */
 export const FBNEO_ARCADE_AUDIO_LATENCY_MS = 80
 

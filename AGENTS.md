@@ -345,16 +345,42 @@ EmulatorJS 的“扩展名不认识就取第一个成员”兜底（典型失败
 `.srl` 也必须出现在本地检测与 `slugFromKey()` 的后缀表里，否则后台虽允许上传，却无法按文件名
 自动匹配游戏；回归：`npm run test:rom-probe`。
 
+⚠️ NDS 下载上限必须在 `fetchBlobWithProgress` **分配分片表和读取包体之前**检查：裸卡带上限
+512MiB，8BG 外层另留 64MiB 密文/清单余量；Range 的 `Content-Range` 若谎报巨大 total，
+不能先 `Array.from` 再指望 `assertNdsRomBlob` 收尾。损坏的跨刷新续传 metadata 也要先验总量再分配。
+`200` 整包路径同样检查 Content-Length，未知长度流按已收字节止损。回归：
+`npm run test:chunked-fetch && npm run test:nds-platform`。
+每个 `206` 响应也只能读这一片声明的字节量：`Content-Range` 是服务端自报，畸形响应可以宣称
+8MB 却持续发送巨大流，不能把它无限攒进 `chunks` 再在末尾核对；超过后直接取消并停止重试。
+旧版完整 ROM 缓存不会重走下载器，同样要在解密前查缓存 Blob 大小；8BG 还得先读文件头，
+拦截 `originalSize` 超过 512MiB 的容器，不能等逐块解密完才靠卡带校验发现。
+外站 ZIP 解出的完整 ROM 若缓存损坏，必须先删除再回源；命中缓存的 100% 进度也只能在验证之后报。
+
+⚠️ 多语言 NDS 的即时存档不能共用游戏 slug。`ndsVariantSaveSlug` 为第一语言保留旧键（避免已有存档
+无声消失），其余语言加 `~nds-<语言>`；兼容核心再加原有 `:melonds-compat`。个人页解析两层后缀
+再链接回原游戏。历史无后缀存档无法推断当初属于哪种语言，所以**不能自动复制到其它语言**；
+玩家若在非第一语言曾保存过旧档，应先从旧版或原档位备份；新版不提供跨语言自动导入，
+带原 slug 的归档还会被身份校验拒绝，不能假装能无损迁移。此规则只隔离本站即时快照；
+核心内部电池存档还由 EmulatorJS/ROM 文件名管理，不能把两者混为一谈。
+第一语言是当前 `ROM_LANGS` 排序里的首个已绑定槽；后台若日后新增更靠前的语言槽，历史无后缀
+存档的归属会变得不确定。此时不可自动把旧档搬给新语言，必须先核对玩家原来使用的 ROM。
+
+⚠️ NDS 也可能通过站内通用 P2P 入口在运行中开房：`p2pPlayable()` 按平台有无 EmulatorJS core
+判断，不能只因“没有专门的 NDS 无线联机 UI”就跳过开局前的 socket.io/ICE 准备。
+
 ⚠️ melonDS 的 `.opt` 不能只在 `startGame()` 前写：EmulatorJS 会在 `callMain()` 内通过
 `setupCoreSettingFile` 再覆盖一次。`installNdsCoreOptionsGuard()` 必须包住这个最终回调，先保留
 玩家设置，再补 `builtin` / 禁 4GB homebrew SD / 关闭布局 OSD；回归：`npm run test:nds-startup`。
 
 音频的第一处瓶颈不是插值：旧核心默认 `melonds_audio_interpolation=None`，再关也没有收益。
-真正能直接修的是 EmulatorJS 写死的 `audio_latency = 64`：NDS 遇到超过 64ms 的
-主线程长任务时 RWebAudio 队列见底，听起来就是“一卡一卡”。`src/emulator/ndsAudio.ts`
-把 NDS 单独调到 96ms（MAME 仍是 128ms）；96 是稳定与《节奏天国》节拍延迟之间的折中。
-验收看核心日志：48kHz 下 `[RWebAudio] Buffer size: 36864 bytes`。回归：
-`npm run test:nds-audio`。若整台机器连 60fps 都跑不到，缓冲不能补算力，应逐游戏换轻核心。
+EmulatorJS 写死的 `audio_latency = 64` 会让超过 64ms 的主线程短任务抽干 RWebAudio 队列，
+听起来就是“一卡一卡”。`src/emulator/ndsAudio.ts` 现在给普通 NDS 128ms，明确的节奏游戏
+保留 96ms 以减小输入到声音的延迟；48kHz 下核心日志的 `Buffer size` 应分别是 49152 / 36864
+bytes。NDS 还用 `audioTap.ts` 的 `shared-output` 模式：RWebAudio 每个短音块只连接一次固定输出总线，
+不再为录屏/直播逐音块额外接第二条音频图边；总线仍可在游戏中途接入录屏或直播。
+回归：`npm run test:nds-audio && npm run test:audio-tap`。这只能吸收短时抖动；若设备持续跑不到
+60fps，缓冲不能补算力，应逐游戏换轻核心。弱网大 ROM 已有真实字节时，视觉计时不得抢跑到
+高百分比；见 `npm run test:load-progress`。
 
 melonDS DS 自带 `rotate-left` / `rotate-right` 布局，优先用“双屏布局”里的原生旋转；
 它会连触控坐标一起转。《节奏天国黄金版 / Rhythm Heaven》这类游戏本来就要求把 DS 横拿。不要给 canvas 套
@@ -2132,7 +2158,7 @@ R2 multipart 发布到最终 `roms/psp/*.chd`。`.cso` / `.chd` 保持直传。
   同时发生；`source_deleted` 的 0 / 1 / 2 分别是保留 / 已删 / 正在清理。
 - 前端创建任务把随机 `source_key` 当幂等键：响应途中断线可以重试，服务端只返回原任务。旧槽是
   `.chd` / `.cso` 而新文件是 `.iso` 时绝不复用旧 key，否则转换服务降级时会把 ISO 字节写进错误扩展名。
-- 当前公开 PPSSPP 是实体目录 v11、Range loader v4：ISO/CSO/CHD 都用 2MB 分块，共用 96MB 内存 LRU，
+- 仓库当前待发布 PPSSPP 是实体目录 v15、Range loader v4：ISO/CSO/CHD 都用 2MB 分块，共用 96MB 内存 LRU，
   并主动带 `If-Match` / `If-Unmodified-Since`
   钉住同一代镜像。播放 URL 同时带 `romv=<ETag>`，Worker 必须在每次 Range 前把它与 R2 当前 ETag 比较；
   不一致返回 412。Range 必须绕过整包 Cache API；Worker 只把 `romv` 锁定、2MB 对齐且校验过 ETag 的
@@ -2148,6 +2174,21 @@ R2 multipart 发布到最终 `roms/psp/*.chd`。`.cso` / `.chd` 保持直传。
   不能让预读与核心 96MB LRU 一起无界吃内存。命中后直接交给下一次同步 Range；随机寻道会取消旧方向。
   正式读盘追上预读时必须取消**全部**投机请求，让同步请求独占连接并在完成后重建窗口；取消前先把
   回调锁成终态，避免同步 `onabort` 重入后越过当前自适应并发上限。
+  v12 的独立预读 Worker 把分片写入 SharedArrayBuffer，模拟线程同步读取追上它时可直接等待并消费，
+  避免同线程异步回调被同步 XHR 阻断后重复下载。但《AIR》实测两条 pthread 都会读盘，预读约
+  12 块仅命中 1 块，因此首次需求只用一条小窗口；确认相邻顺序读取才扩窗，连续四块仍低命中就
+  收回到单路、4MB，并保留探测流恢复机会。`range-prefetch-worker.js` 必须和 JS/桥在同一个实体目录，
+  `runtime.json` 要包含它的哈希。约 2MB 的边缘缓存命中分片在当前测试网络仍可花 4–12 秒，
+  这不是音频缓冲能补救的；不要把“能进标题”称作完全消除游戏内停顿。
+  v14 让正式读盘追上 SharedArrayBuffer 预读时先取消其它投机连接，只保留当前命中块；
+  否则另外几路无用 Range 与当前必需分片争带宽，会把游戏线程的同步等待进一步拉长。
+  `scripts/refresh-ppsspp-range-v14.mjs` 从已校验的 v13 生成不可变 v14，不能原地改旧目录。
+  v15 修正低命中率永久锁住单路小窗口的反馈陷阱：确认持续顺序读取后只恢复到双路，
+  一旦随机寻道立即收回；省流量和 2G 仍禁预读。由 `scripts/refresh-ppsspp-range-v15.mjs`
+  从已校验的 v14 生成新实体目录，发布前必须让检查脚本核对源码与产物一致。
+  播放器的「流式传输 / 整包下载」默认流式；整包用 8MB 有界 Range 分片写入 OPFS，
+  下载完成后经现有本地光盘 SW 按需读，不把 1GB 镜像合成 JS Blob。只有带 `romv` 的
+  完整镜像可复用本地副本；没有版本校验器的外链不得把多个 Range 拼成整盘。
   生成胶水补丁源在
   `vendor/ppsspp/range-read-ahead.js`，构建脚本按唯一片段注入；不要手改压成一行的发布 JS。
 - 源站要装近期 MAME 的 `chdman`，并在 `server/.env` 配 `PSP_CONVERT_WORKER_URL`；转换临时盘
@@ -2192,9 +2233,14 @@ PPSSPP iframe 的入口必须保留完整的 `/ppsspp/<版本>/index.html`。`se
 删掉会 301 到不存在的目录 URL 再返回 404。`test:robots` 同时守住 SEO 规范化和这条例外。
 修规则后还要提升适配器里 iframe URL 的入口代次，绕开 Cloudflare 已缓存的旧 301。
 
-⚠️ Emscripten 5 的 `IDBFS` / `WORKERFS` 不是页面全局变量，挂载必须从
-`FS.filesystems.IDBFS` / `FS.filesystems.WORKERFS` 取；否则核心下载完会在 `preRun` 直接报
-`IDBFS is not defined`，玩家只看到 40% 后失败。CMake 还必须显式链接 `-lidbfs.js`，只写桥代码
+⚠️ Emscripten 5 的 `IDBFS` 不是页面全局变量，挂载必须从 `FS.filesystems.IDBFS` 取；
+否则核心下载完会在 `preRun` 直接报 `IDBFS is not defined`，玩家只看到 40% 后失败。
+`WORKERFS` 虽然也在 `FS.filesystems` 下，但它的 `mount()` 明确断言只能在 Worker 运行；
+`PROXY_TO_PTHREAD` 的 `preRun` 却在页面线程，因此选本地 ISO 必然中止。`FS.createLazyFile`
+同样不可替代：它会在页面线程发同步 XHR，现代浏览器直接拒绝。v13 改用同源 Service Worker
+把 PPSSPP 的 HTTP Range 请求转发给当前 iframe 持有的 `File.slice()`，只传所需分片、不上传 ROM，
+且本地盘也要等核心 `Booted` 才报告成功。回归：`npm run test:ppsspp-local-disc`。
+CMake 还必须显式链接 `-lidbfs.js`，只写桥代码
 不够；`scripts/check-ppsspp.mjs` 会同时检查 host 引用方式和二进制是否真的含 IDBFS。缓存代次按
 下方 PSP 性能小节的实体目录规则更新，桥、核心和 data 必须作为同一代原子发布。
 
@@ -2274,9 +2320,12 @@ ATRAC3+ 和 MP3 解码。构建/发布检查必须同时看到 `USE_FFMPEG:BOOL=
 Cloudflare 对这组静态文件的缓存键**忽略查询串**：请求 `PPSSPPSDL.data?r=17` 仍命中旧的 r16
 （22,417,304B，`CF-Cache-Status: HIT`），而新清单需要 19,434,861B。查询参数不能再承担版本隔离，
 否则新 JS、旧 data 和旧 Wasm 会被拼在同一局里。当前整套资源发布在
-`public/ppsspp/v0dbfaca/v11/`；下次桥、JS、Wasm、data、Range 胶水或 AudioWorklet 任一项改变就
-复制/构建到 `v12/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，
+`public/ppsspp/v0dbfaca/v15/`（上一版为 v14）；下次桥、JS、Wasm、data、Range 胶水或 AudioWorklet 任一项改变就
+复制/构建到 `v16/`，并同步 `PPSSPP_RUNTIME_GENERATION` 和服务端旧地址 302。旧目录保留给旧页面，
 不原地覆盖。
+v13 只修桥和新增本地光盘 Service Worker；v14/v15 只修预读胶水，Wasm/data 与 v13 的 SHA-256 相同。
+`scripts/refresh-ppsspp-js-runtime.mjs` 仍是生成 v12 的历史入口，不要用它覆盖 v13～v15。
+下一次重新构建核心前，先把 `scripts/build-ppsspp.mjs` 的目标代次和相应模板一起升到 v16。
 
 Emscripten
 自带的 preload fetch 没有重试，`host.js` 用 `getPreloadedPackage` 接管：优先读浏览器缓存，连续

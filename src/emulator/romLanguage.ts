@@ -5,6 +5,8 @@ import { ROM_LANGS, type RomLang } from '@/config/languages'
  * 只给确实有多语言 ROM 的 PSP 游戏加后缀，避免把历史上只有一张盘的存档无谓迁走。
  */
 const PSP_SAVE_LANG_MARKER = '~psp-'
+const NDS_SAVE_LANG_MARKER = '~nds-'
+const NDS_COMPAT_SAVE_SUFFIX = ':melonds-compat'
 
 export function pspVariantSaveSlug(gameSlug: string, romLang: RomLang | undefined, romLangCount: number): string {
   if (!romLang || romLangCount < 2 || gameSlug.startsWith('local:')) return gameSlug
@@ -20,6 +22,28 @@ export function parsePspVariantSaveSlug(value: string): { gameSlug: string; romL
   const romLang = value.slice(markerAt + PSP_SAVE_LANG_MARKER.length)
   if (!(ROM_LANGS as readonly string[]).includes(romLang)) return { gameSlug: value }
   return { gameSlug: value.slice(0, markerAt), romLang: romLang as RomLang }
+}
+
+/**
+ * NDS 即时快照和具体 ROM 二进制绑定。第一种语言沿用旧键，避免把已有进度整个搬走；
+ * 其它语言独立归档，不能把中文版快照直接喂给英文版。语言列表按 ROM_LANGS 固定排序。
+ */
+export function ndsVariantSaveSlug(gameSlug: string, romLang: RomLang | undefined, romLangs: readonly RomLang[]): string {
+  if (!romLang || romLangs.length < 2 || romLang === romLangs[0] || gameSlug.startsWith('local:')) return gameSlug
+  return `${gameSlug}${NDS_SAVE_LANG_MARKER}${romLang}`
+}
+
+/** 个人页要能从 NDS 语言档和兼容核心档位回到原游戏，而不是链接到不存在的变体 slug。 */
+export function parseNdsVariantSaveSlug(value: string): { gameSlug: string; romLang?: RomLang } {
+  if (value.startsWith('local:')) return { gameSlug: value }
+  const base = value.endsWith(NDS_COMPAT_SAVE_SUFFIX)
+    ? value.slice(0, -NDS_COMPAT_SAVE_SUFFIX.length)
+    : value
+  const markerAt = base.lastIndexOf(NDS_SAVE_LANG_MARKER)
+  if (markerAt <= 0) return { gameSlug: base }
+  const romLang = base.slice(markerAt + NDS_SAVE_LANG_MARKER.length)
+  if (!(ROM_LANGS as readonly string[]).includes(romLang)) return { gameSlug: base }
+  return { gameSlug: base.slice(0, markerAt), romLang: romLang as RomLang }
 }
 
 /**

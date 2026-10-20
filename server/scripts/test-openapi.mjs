@@ -1359,6 +1359,19 @@ await check('⚠️ 取站点地址抛异常也不能把错误处理本身搞挂
   assert.equal(body.error_uri, undefined, '取不到站点地址就不该带 error_uri')
 })
 
+await check('流式响应开始后报错只结束连接，不能再写 OAuth JSON', () => {
+  const mw = openErrorMiddleware(() => 'https://8bitgo.com')
+  let destroyed = false
+  mw(new Error('upstream closed'), { originalUrl: '/api/open/v1/rom-plain/grant' }, {
+    headersSent: true,
+    destroyed: false,
+    writableEnded: false,
+    destroy() { destroyed = true },
+    status() { assert.fail('响应头已经发出，不能再次设置状态码') },
+  }, () => assert.fail('开放平台错误不应落到站内错误处理'))
+  assert.equal(destroyed, true)
+})
+
 console.log('\n七、错误体形状（open/errors.js，纯函数）')
 
 await check('超限 -> 413 invalid_request', () => {

@@ -65,6 +65,8 @@ export interface MountOptions {
   platform: PlatformId
   /** ROM：本地文件或可跨域访问的 URL */
   game: File | string
+  /** PSP 在线镜像的读取方式；整包先落 OPFS 再挂成本地盘，默认按需流式读取。 */
+  pspLoadMode?: 'stream' | 'download'
   /** 显示名（存档 / 截图命名用） */
   gameName: string
   /**

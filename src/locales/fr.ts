@@ -944,6 +944,10 @@ const fr: Translation = {
     noRuntime: 'Aucun moteur disponible pour {platform} pour le moment',
     checkingCloud: "Recherche d'une ROM sur le cloud…",
     start: 'Lancer le jeu',
+    pspLoadMode: 'Mode de chargement PSP',
+    pspStream: 'Lecture en flux',
+    pspDownload: 'Télécharger le jeu entier',
+    pspDownloadHint: 'Le jeu démarre après le téléchargement complet. Utilise le stockage du navigateur, réutilise la même version et évite les lectures réseau en jeu.',
     pickRom: 'Choisis une ROM pour commencer',
     cloudHint:
       'La ROM est chargée depuis le cloud et tourne dans ton navigateur via {runtime}. Le premier chargement prend quelques secondes.',

@@ -1,5 +1,6 @@
-/** 各轻量运行时共用的 ROM 读取入口：先查本地缓存，未命中再完整下载、拒绝 HTML，最后交给平台格式校验。 */
-import { fetchWithProgress } from './loadProgress'
+/** 各轻量运行时共用的 ROM 读取入口：有内容版本的地址可跨刷新补缺片，无版本地址保持单次直取。 */
+import { fetchBlobWithProgress, fetchWithProgress } from './loadProgress'
+import { downloadResumeStore } from './downloadResume'
 import { romCacheGet, romCacheKey, romCachePut } from './romCache'
 import type { LoadProgress } from './types'
 import { assertNotHtml } from '@/lib/romValidation'
@@ -56,8 +57,6 @@ export async function loadGameBytes(
     if (cached) {
       // 已经取消了就别再往下走，行为要和网络分支一致
       if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
-      // 命中也要发一帧满进度：播放器的遮罩靠进度回调收尾，不发的话会停在 0%
-      onProgress?.({ phase: 'rom', loaded: cached.byteLength, total: cached.byteLength, ratio: 1 })
       // 存进去之前校验过，这里再挡一次：万一是历史上写坏的记录，也不至于喂给模拟器。
       // 坏的那条要**扔掉再走网络**，不然自动重试还是撞上它，这台浏览器上这款游戏就永远起不来
       try {
@@ -65,24 +64,31 @@ export async function loadGameBytes(
         if (isRomPackBytes(cached)) {
           const unpacked = await unpackRomPack(cached)
           assertNotHtml(unpacked.data)
+          onProgress?.({ phase: 'rom', loaded: cached.byteLength, total: cached.byteLength, ratio: 1, cached: true })
+          void downloadResumeStore.clear(cacheKey).catch(() => {})
           return { name: unpacked.name, data: unpacked.data, remoteUrl: game, fromCache: true }
         }
+        // 完整缓存验证通过后才报满格；坏缓存回源时不能让进度从 100% 倒退。
+        onProgress?.({ phase: 'rom', loaded: cached.byteLength, total: cached.byteLength, ratio: 1, cached: true })
+        void downloadResumeStore.clear(cacheKey).catch(() => {})
         return { name: fileNameFromUrl(game), data: cached, remoteUrl: game, fromCache: true }
       } catch {
-        void romCacheDelete(cacheKey).catch(() => {})
+        await romCacheDelete(cacheKey).catch(() => {})
       }
     }
   }
 
-  const data = await fetchWithProgress(game, {
-    phase: 'rom',
-    onProgress,
-    signal,
-    check: (res) => {
-      const type = res.headers.get('content-type') ?? ''
-      if (/text\/html|application\/xhtml/i.test(type)) throw new Error('ROM 地址返回了网页，不是游戏文件')
-    },
-  })
+  const check = (res: Response) => {
+    const type = res.headers.get('content-type') ?? ''
+    if (/text\/html|application\/xhtml/i.test(type)) throw new Error('ROM 地址返回了网页，不是游戏文件')
+  }
+  // 只有带 romv 的不可变对象才可拼接旧片；小卡带首个 Range 就是完整文件，仍只需一趟网络。
+  // 无版本的外链维持普通 GET，避免源站原地换包时把旧片拼进新 ROM。
+  const data = cacheKey
+    ? await (await fetchBlobWithProgress(game, {
+        phase: 'rom', onProgress, signal, resumeKey: cacheKey, check,
+      })).arrayBuffer()
+    : await fetchWithProgress(game, { phase: 'rom', onProgress, signal, check })
   assertNotHtml(data)
   if (isRomPackBytes(data)) {
     const unpacked = await unpackRomPack(data)

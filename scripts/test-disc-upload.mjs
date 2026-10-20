@@ -18,6 +18,7 @@
  * 跑：npm run test:disc-upload
  */
 import { fileURLToPath } from 'node:url'
+import { existsSync, readFileSync } from 'node:fs'
 
 /* window 桩：把弹窗记下来，顺便让脚本能决定用户点了什么 */
 const asked = { alert: [], confirm: [] }
@@ -38,6 +39,8 @@ const reset = () => {
 }
 
 const { canReuseRomObjectKey, confirmDiscImage } = await import(fileURLToPath(new URL('../src/admin/uploadGuards.ts', import.meta.url)))
+const { isPsxChdTransfer, psxChdSaveSlug, parsePsxChdSaveSlug, psxCoreForPreparedName, psxCoreForTransfer, PSX_CHD_AUDIO_LATENCY_MS, PSX_CHD_CORE } = await import(fileURLToPath(new URL('../src/emulator/psxChd.ts', import.meta.url)))
+const { raiseAudioLatency } = await import(fileURLToPath(new URL('../src/emulator/mameAudio.ts', import.meta.url)))
 
 let n = 0
 let failed = 0
@@ -61,6 +64,28 @@ ok(canReuseRomObjectKey('roms/psp/game.iso', 'replacement.ISO', false), '同格�
 ok(!canReuseRomObjectKey('roms/psp/game.chd', 'replacement.iso', false), 'ISO 不能写进旧 CHD key')
 ok(!canReuseRomObjectKey('roms/psp/game.cso', 'replacement.iso', false), 'ISO 不能写进旧 CSO key')
 ok(canReuseRomObjectKey('roms/nds/game.8bg', 'replacement.nds', true), '8BG 外层统一，内部格式变化不影响对象扩展名')
+
+/* ---------------- PS1 CHD：下载外层与实际内层不能混淆 ---------------- */
+ok(isPsxChdTransfer('https://assets.example/roms/psx/theme.chd.8bg?romv=abc'), 'CHD 的 8BG 外层可启用带版本的断点续传')
+ok(isPsxChdTransfer('roms/psx/theme.CHD?romv=abc'), '原始 CHD 也可启用断点续传')
+ok(!isPsxChdTransfer('roms/psx/theme.iso.8bg'), 'ISO 不误判为 CHD')
+ok(psxCoreForTransfer('psx', 'pcsx_rearmed', 'theme.chd.8bg?romv=abc') === PSX_CHD_CORE, 'CHD 悬停预热正确核心，不白下默认 PCSX')
+ok(psxCoreForTransfer('psx', 'pcsx_rearmed', 'theme.iso.8bg') === 'pcsx_rearmed', 'ISO 悬停预热仍走默认核心')
+ok(psxCoreForPreparedName('psx', 'pcsx_rearmed', 'Theme Hospital.chd') === PSX_CHD_CORE, '解包后真实 CHD 自动改用支持 CHD 的核心')
+ok(psxCoreForPreparedName('psx', 'pcsx_rearmed', 'game.iso') === 'pcsx_rearmed', '普通 PS1 ISO 仍保留原核心')
+ok(psxCoreForPreparedName('psx', 'pcsx_rearmed', 'game.chd.8bg') === 'pcsx_rearmed', '外层 8BG 不能冒充已解包的 CHD')
+ok(psxCoreForPreparedName('pcEngine', 'mednafen_pce', 'game.chd') === 'mednafen_pce', '其它平台不受 PS1 核心切换影响')
+ok(psxChdSaveSlug('theme-hospital', 'theme.chd.8bg?romv=abc') === 'theme-hospital:beetle-chd', 'CHD 的 Beetle 即时存档不覆盖旧 PCSX 档位')
+ok(psxChdSaveSlug('theme-hospital', 'theme.iso') === 'theme-hospital', 'ISO 保留原存档档位')
+ok(psxChdSaveSlug('local:theme.chd', 'theme.chd') === 'local:theme.chd', '本地 CHD 已按文件名隔离，不额外加后缀')
+ok(parsePsxChdSaveSlug('theme-hospital:beetle-chd') === 'theme-hospital', '云存档列表能链接回原游戏')
+ok(PSX_CHD_AUDIO_LATENCY_MS === 128 && raiseAudioLatency('audio_latency = 64\n', PSX_CHD_AUDIO_LATENCY_MS) === 'audio_latency = 128\n', 'Beetle 用 128ms 队列缓冲短时主线程抖动')
+ok(existsSync(fileURLToPath(new URL(`../public/emulatorjs/cores/${PSX_CHD_CORE}-wasm.data`, import.meta.url))), 'CHD 核心已随站点发布')
+const ejsSource = readFileSync(fileURLToPath(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url)), 'utf8')
+ok(/psxCoreForPreparedName\(options\.platform, core, engineGameName\)/.test(ejsSource), '播放器在实际内层文件名确定后才切 CHD 核心')
+ok(/options\.platform === 'psx' && core === PSX_CHD_CORE[\s\S]{0,140}PSX_CHD_AUDIO_LATENCY_MS/.test(ejsSource), 'Beetle 音频缓冲计划确实接入开局钩子')
+ok(/get saveMetadata\(\)\s*\{\s*return \{ core, build: EJS_RUNTIME_GENERATION/.test(ejsSource), '异步切换后存档元数据读取最终核心，不能固化旧 PCSX')
+ok(/resumeAcrossRefresh: Boolean\(romCacheKey\(remoteGameUrl\)\)/.test(ejsSource), '打包 CHD 走已有的版本化 Range 续传')
 
 /* ---------------- 造 zip ---------------- */
 

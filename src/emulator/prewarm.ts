@@ -136,6 +136,9 @@ export function prewarmRuntime(runtime: RuntimeId | undefined, core?: string | n
       warmHttpCache(`${PPSSPP_RUNTIME_PATH}PPSSPPSDL.wasm`)
       warmHttpCache(`${PPSSPP_RUNTIME_PATH}PPSSPPSDL.data`)
       warmHttpCache(`${PPSSPP_RUNTIME_PATH}audio-worklet.js`)
+      // 真正读盘在 pthread 建出的独立 Worker 上；悬停时先取这几 KB，可避免首块完成后
+      // 再串行等一次脚本网络往返，触屏点击则不额外抢核心带宽。
+      warmHttpCache(`${PPSSPP_RUNTIME_PATH}range-prefetch-worker.js`)
     }
     return
   }

@@ -44,10 +44,12 @@ import { matchArcadeHack, type ArcadeHack } from '@/data/arcadeHacks'
 import { deriveArcadeHackBytes } from '../arcadeHack'
 import { biosNameOfUrl, planBiosFiles } from '../biosPlan'
 import { ensureParentDir } from '../fsWrite'
+import { isPsxChdTransfer, psxCoreForPreparedName, PSX_CHD_AUDIO_LATENCY_MS, PSX_CHD_CORE } from '../psxChd'
+import { warmHttpCache } from '../httpWarm'
 import { writeFsInjections, type FsInjection } from '../fsInjection'
 import { arcadeCoreForRomData, supportsFbneoRomData } from '../arcadeCore'
 import { MAME_AUDIO_LATENCY_MS, RETROARCH_CFG_PATH, raiseAudioLatency } from '../mameAudio'
-import { NDS_AUDIO_BUFFER_BYTES_48K, NDS_AUDIO_LATENCY_MS } from '../ndsAudio'
+import { ndsAudioLatencyMs } from '../ndsAudio'
 import { isNdsWasmCrash } from '../ndsCrash'
 import {
   arcadePerformanceDefaultOptions,
@@ -73,8 +75,8 @@ import {
   installNdsCoreOptionsGuard,
   type NdsCoreOptionsFs,
 } from '../ndsStartup'
-import { isRomPackBytes, isRomPackUrl, unpackRomPackBlob } from '@/services/romPack'
-import { assertNdsRomBlob } from '@/lib/romValidation'
+import { inspectRomPackBlob, isRomPackBytes, isRomPackUrl, unpackRomPackBlob } from '@/services/romPack'
+import { assertNdsRomBlob, MAX_NDS_ROM_BYTES } from '@/lib/romValidation'
 import {
   emulatorJsKeyLabel,
   emulatorJsRelevantKeyIds,
@@ -105,7 +107,7 @@ import {
  * 玩家看到的就是「Error loading EmulatorJS runtime」。本地有核心，这条路不会走。
  */
 export { EJS_PATH } from '../paths'
-import { EJS_PATH, EJS_RUNTIME_GENERATION, ejsRuntimeAsset, emulatorJsCoreForGame, emulatorJsRuntimePaths, isDiscPlatform, isSelfDownloadPlatform } from '../paths'
+import { EJS_PATH, EJS_RUNTIME_GENERATION, ejsRuntimeAsset, emulatorJsCoreForGame, emulatorJsRuntimePaths, isDiscPlatform, isLargeDirectEjsRom, isSelfDownloadPlatform } from '../paths'
 import { applyTuning, sizeOfTrack, tuningFor, usableVideoSize } from '../videoTuning'
 import {
   findLayoutOption,
@@ -1505,13 +1507,29 @@ export async function prepareRemoteDiscRom(
   url: string,
   onProgress: MountOptions['onProgress'],
   signal: AbortSignal,
-  options: { resumeAcrossRefresh?: boolean; validate?: (blob: Blob) => Promise<void> } = {},
+  options: {
+    resumeAcrossRefresh?: boolean
+    validate?: (blob: Blob) => Promise<void>
+    maxBytes?: number
+    maxUnpackedBytes?: number
+  } = {},
 ): Promise<{ url: string; bytes: number; name?: string }> {
   const prepare = async (stored: Blob): Promise<{ url: string; bytes: number; name?: string }> => {
+    // 历史缓存不经过本版下载器；同一上限也得在解密/解压前拦住旧数据。
+    if (options.maxBytes !== undefined && stored.size > options.maxBytes) {
+      throw new RangeError('ROM 文件超过浏览器下载上限')
+    }
     const magic = new Uint8Array(await stored.slice(0, 4).arrayBuffer())
     let playable = stored
     let name: string | undefined
     if (isRomPackBytes(magic)) {
+      // 8BG 外层可能很小但声称解开后巨大；先读轻量头，别先把几百块密文全解开。
+      if (options.maxUnpackedBytes !== undefined) {
+        const { header } = await inspectRomPackBlob(stored)
+        if (header.originalSize > options.maxUnpackedBytes) {
+          throw new RangeError('ROM 解开后超过浏览器下载上限')
+        }
+      }
       const unpacked = await unpackRomPackBlob(stored)
       playable = unpacked.blob
       name = unpacked.name
@@ -1525,11 +1543,10 @@ export async function prepareRemoteDiscRom(
     const cached = await romCacheGetBlob(cacheKey)
     if (cached) {
       if (signal.aborted) throw new DOMException('已取消', 'AbortError')
-      // 命中也要发满进度那一帧：播放器的加载遮罩靠进度回调收尾。
-      // cached 标记让遮罩显示「已缓存」而不是「需下载 620 MB」—— 秒开时那行字必须对得上。
-      onProgress?.({ phase: 'rom', loaded: cached.size, total: cached.size, ratio: 1, cached: true })
       try {
         const prepared = await prepare(cached)
+        // 先验证，再报 100%。旧缓存损坏时若先报满格，后续整包重下的进度只能卡在 100%。
+        onProgress?.({ phase: 'rom', loaded: cached.size, total: cached.size, ratio: 1, cached: true })
         // 两个标签页同时下载时，后完成的那页可能在完整缓存写入后又留下几片；命中完整 ROM 时顺手收尾。
         if (options.resumeAcrossRefresh) void downloadResumeStore.clear(cacheKey).catch(() => {})
         return prepared
@@ -1545,6 +1562,7 @@ export async function prepareRemoteDiscRom(
     phase: 'rom',
     onProgress,
     signal,
+    maxBytes: options.maxBytes,
     // 只在明确要求且 URL 带内容版本时落临时分片。无版本地址原地换包后会混入旧片，宁可重下。
     resumeKey: options.resumeAcrossRefresh ? cacheKey : undefined,
     check: (res) => {
@@ -1851,6 +1869,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       ok = Boolean(emuOf()?.gameManager?.getState?.()?.length)
     } catch (e) {
       logEngine(`[probeSaveState] ${e instanceof Error ? e.message : String(e)}`)
+      // 自己主动调用核心时抛的 WASM 陷阱不会经过 iframe 的 console/error 探针。
+      // 不能只摘掉存档按钮却把已死亡的 NDS 主循环继续显示为“运行中”。
+      if (options.platform === 'nds' && isNdsWasmCrash('', e)) reportCoreCrash(e instanceof Error ? e.message : String(e))
       ok = false
     }
     if (ok) return
@@ -1872,6 +1893,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       emuOf()?.gameManager?.saveSaveFiles?.()
     } catch (e) {
       logEngine(`[saveFiles] ${e instanceof Error ? e.message : String(e)}`)
+      if (options.platform === 'nds' && isNdsWasmCrash('', e)) reportCoreCrash(e instanceof Error ? e.message : String(e))
     }
   }
 
@@ -2992,6 +3014,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     options.onReady?.()
     options.onStart?.()
     refineCaps()
+    if (crashReported) return
     applyTouchInput(win)
     const emuForKeys = emuOf()
     if (emuForKeys) hookControlPersistence(emuForKeys)
@@ -3089,6 +3112,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         // 本地文件不走下面的预下载分支，也必须挡住错误页、截断 ROM 与 ZIP 解压炸弹。
         if (isFile && validateNds) await validateNds(options.game as File)
 
+        if (options.platform === 'psx' && isPsxChdTransfer(isFile ? (options.game as File).name : remoteGameUrl)) {
+          // CHD 下完之后才启动引擎；趁这段网络等待时间并行预拉正确核心，手机点击也能受益。
+          warmHttpCache(ejsRuntimeAsset('emulator.min.js'))
+          warmHttpCache(ejsRuntimeAsset(`cores/${PSX_CHD_CORE}-wasm.data`))
+        }
+
         /**
          * 这些工作以前全排在 ROM 下载**之后**：几十 MB 的 romset 下完，才开始清引擎缓存、
          * 拉 socket.io / ICE，再开始额外 BIOS。它们彼此没有数据依赖，串行只会把各自 RTT
@@ -3126,9 +3155,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           const extracted = await loadRemoteArchiveRom(remoteGameUrl, (p) => {
             beat()
             options.onProgress?.(p)
-          }, prepareAbort.signal)
+          }, prepareAbort.signal, validateNds)
           if (destroyed) return
-          await validateNds?.(extracted.blob)
           preparedArcadeBlobUrl = URL.createObjectURL(extracted.blob)
           gameUrl = preparedArcadeBlobUrl
           engineGameName = extracted.name
@@ -3147,7 +3175,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               options.onProgress?.(p)
             },
             prepareAbort.signal,
-            { resumeAcrossRefresh: options.platform === 'nds', validate: validateNds },
+            {
+              // 8BG 自带内容版本，任何平台的密文都可以按同一 URL 安全补片；
+              // 小卡带只发首片一个请求，不必为每个平台维持另一条下载链。
+              resumeAcrossRefresh: Boolean(romCacheKey(remoteGameUrl)),
+              validate: validateNds,
+              // 外层 8BG 的密文和清单会略大于裸卡带，但绝不能让错误响应宣称几百 GB。
+              maxBytes: options.platform === 'nds' ? MAX_NDS_ROM_BYTES + 64 * 1024 * 1024 : undefined,
+              // ZIP 可合法附带少量说明文件；裸 ROM 的 512MB 边界仍由 assertNdsRomBlob 严格校验。
+              maxUnpackedBytes: options.platform === 'nds' ? MAX_NDS_ROM_BYTES + 32 * 1024 * 1024 : undefined,
+            },
           )
           if (destroyed) {
             URL.revokeObjectURL(prepared.url)
@@ -3157,9 +3194,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           gameUrl = prepared.url
           engineGameName = prepared.name || discNameFor(remoteGameUrl.replace(/\.8bg(?=\?|$)/i, ''), options.gameName)
           if (isDiscPlatform(options.platform)) discRomPrepared = true
-        } else if (!isFile && isSelfDownloadPlatform(options.platform) && !isDiscPlatform(options.platform)) {
+        } else if (!isFile && (
+          isSelfDownloadPlatform(options.platform) && !isDiscPlatform(options.platform)
+          || Boolean(romCacheKey(remoteGameUrl)) && isLargeDirectEjsRom(options.platform, remoteGameUrl)
+        )) {
           /*
-            自己下载的**卡带**平台（目前只有 NDS，见 paths.ts 的 SELF_DOWNLOAD_PLATFORMS）。
+            NDS 和带内容版本的大型旧式直链由我们下载；小卡带继续给引擎直取。
 
             失败不能再退回引擎自己的整包 XHR：已经落盘的 8MB 分片会被抛在一边，播放器也
             收不到错误，无法触发那次自动重试；弱网用户于是先等我们的超时，再从 0 下载整包。
@@ -3174,7 +3214,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                 options.onProgress?.(p)
               },
               prepareAbort.signal,
-              { resumeAcrossRefresh: true, validate: validateNds },
+              {
+                resumeAcrossRefresh: true,
+                validate: validateNds,
+                // N64、Mega CD 等直链不是 DS 卡带，不能套 512MB 的 NDS 格式上限。
+                maxBytes: options.platform === 'nds' ? MAX_NDS_ROM_BYTES + 32 * 1024 * 1024 : undefined,
+              },
             )
             if (destroyed) {
               URL.revokeObjectURL(prepared.url)
@@ -3192,7 +3237,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             // 真的被取消了（换游戏 / 退出播放器）就到此为止，别接着往下开局
             if (destroyed || prepareAbort.signal.aborted) return
             const message = error instanceof Error ? error.message : String(error)
-            console.warn('[emulatorjs] NDS 分片下载失败，保留已完成分片并交给播放器重试：', error)
+            console.warn('[emulatorjs] ROM 分片下载失败，保留已完成分片并交给播放器重试：', error)
             options.onError?.(message)
             return
           }
@@ -3204,6 +3249,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               options.onProgress?.(p)
             },
             prepareAbort.signal,
+            // PS1 的原始 ISO/PBP 和 CHD 一样会被弱网中断；只按 romv 内容版本决定能否跨刷新拼片。
+            { resumeAcrossRefresh: Boolean(romCacheKey(remoteGameUrl)) },
           )
           if (destroyed) {
             URL.revokeObjectURL(prepared.url)
@@ -3266,6 +3313,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           if (isMameCurrentCore(core) && engineGameName) {
             engineGameName = canonicalMameRomset(engineGameName)
           }
+        }
+
+        // 默认 pcsx_rearmed 的 core.json 没有 chd；在真正内层文件名确定后换到支持它的核心。
+        // 本地文件和 .chd.8bg 解包都走这里，不能只靠远端 URL 的后缀猜。
+        const discCore = psxCoreForPreparedName(options.platform, core, engineGameName)
+        if (discCore !== core) {
+          console.info(`[emulatorjs] CHD 光盘切换核心：${core} → ${discCore}`)
+          core = discCore
         }
 
         /**
@@ -3422,7 +3477,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         })
 
         // 录像要取声音，必须赶在 loader.js 建 AudioContext 之前装探针
-        audioTap = installAudioTap(win)
+        // NDS 每秒排很多短音块：固定总线让每块只接一次线，录屏/直播仍能随时从总线取声音。
+        audioTap = installAudioTap(win, options.platform === 'nds' ? 'shared-output' : 'direct-tap')
 
         // 引擎的报错探针也要赶在 loader.js 之前装：核心是在加载过程中打错误的，
         // 装晚了那句「缺哪个文件」就已经过去了
@@ -3558,17 +3614,22 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
          *    而拦下来是整局都玩不了 —— 和这个注入器里其它钩子同一条取舍。
          * 3. **回读核对**：cfg 在虚拟文件系统里，写没写进去看不见，所以写完立刻读回来对一遍
          *    并打日志。生效与否最终看核心那行 `[RWebAudio] Buffer size:` —— 64ms 是 24576 bytes，
-         *    MAME 128ms 应该是 49152 bytes；NDS 96ms 应该是 36864 bytes；
+         *    MAME / Beetle PS1 128ms 应该是 49152 bytes；普通 NDS 128ms、节奏 NDS 96ms；
          *    FBNeo 80ms 应该是 30720 bytes。
          *
-         * mame-current 用 128ms；单线程软件渲染的 NDS 用 96ms，给《节奏天国》少留一点节拍延迟；
+         * mame-current 与 CHD 必需的 Beetle PS1 用 128ms；普通 NDS 用 128ms，节奏游戏保留 96ms；
          * FBNeo / MAME 2003 系街机只加到 80ms，主要覆盖开火音效和页面短任务叠在一起时的欠载。
          * 其它较轻的平台仍用引擎默认值，不为没有症状的平台平白增加音画延迟。
          */
         const audioLatencyPlan = isMameCurrentCore(core)
           ? { label: 'mame-current', latencyMs: MAME_AUDIO_LATENCY_MS, expectedBytes: 49_152 }
+          : options.platform === 'psx' && core === PSX_CHD_CORE
+            ? { label: 'Beetle PS1', latencyMs: PSX_CHD_AUDIO_LATENCY_MS, expectedBytes: 49_152 }
           : options.platform === 'nds'
-            ? { label: 'NDS', latencyMs: NDS_AUDIO_LATENCY_MS, expectedBytes: NDS_AUDIO_BUFFER_BYTES_48K }
+            ? (() => {
+                const latencyMs = ndsAudioLatencyMs(options.gameSlug)
+                return { label: 'NDS', latencyMs, expectedBytes: latencyMs / 1000 * 48_000 * 2 * 4 }
+              })()
             : isLightArcadeCore(options.platform, core)
               ? {
                   label: `${core} 街机`,
@@ -3902,7 +3963,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   return {
     caps,
     destroy,
-    saveMetadata: { core, build: EJS_RUNTIME_GENERATION, format: 'emulatorjs-state' },
+    // CHD / 改版街机的核心在异步准备 ROM 后才最终确定；存档时必须读最终核心，不能固定挂载时的旧值。
+    get saveMetadata() {
+      return { core, build: EJS_RUNTIME_GENERATION, format: 'emulatorjs-state' }
+    },
     // EmulatorJS 默认 0.6，工具栏滑块要跟它对上
     volume,
     ...(options.platform === 'gba'
@@ -3976,6 +4040,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         // 的 catch 是直接 say(e.message)。返回 null 让它显示已本地化的「存档失败」，
         // 技术原文留在 engineLog 里给我们看。
         logEngine(`[saveState] ${e instanceof Error ? e.message : String(e)}`)
+        if (options.platform === 'nds' && isNdsWasmCrash('', e)) reportCoreCrash(e instanceof Error ? e.message : String(e))
         return null
       }
       if (!state?.length) return null
@@ -3985,7 +4050,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     async loadState(data: ArrayBuffer) {
       const gm = emuOf()?.gameManager
       if (!gm?.loadState) throw new Error(rt.ejsInitFailed)
-      gm.loadState(new Uint8Array(data))
+      try {
+        gm.loadState(new Uint8Array(data))
+      } catch (e) {
+        if (options.platform === 'nds' && isNdsWasmCrash('', e)) reportCoreCrash(e instanceof Error ? e.message : String(e))
+        throw e
+      }
     },
     async screenshot() {
       const canvas = canvasOf()

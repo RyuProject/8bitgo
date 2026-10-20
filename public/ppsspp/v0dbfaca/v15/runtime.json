@@ -1,0 +1,76 @@
+{
+  "runtime": "PPSSPP WebAssembly",
+  "runtimeGeneration": "v15",
+  "upstream": "https://github.com/root-hunter/ppsspp-wasm",
+  "commit": "0dbfaca62a8a924abc2c5dd5dd0733b668e5e68a",
+  "emscripten": "5.0.7",
+  "rangeStreaming": true,
+  "rangeLoaderRevision": 4,
+  "blockBytes": 2097152,
+  "chdBlockBytes": 2097152,
+  "memoryCacheBytes": 100663296,
+  "rangeTelemetry": true,
+  "objectValidator": "etag-or-last-modified",
+  "workerModel": "self-script",
+  "offscreenCanvas": true,
+  "offscreenFramebuffer": "fallback",
+  "webglContext": "worker-offscreen-canvas-with-proxy-fallback",
+  "proxiedWebglPreloop": "fallback-skip-worker-token",
+  "pthreadAudioContext": "shared-ring-buffer-worklet-fade-v2",
+  "performanceProfile": "adaptive-canvas-v1",
+  "maxCanvasPixels": 522240,
+  "pthreadPoolMax": 8,
+  "lto": true,
+  "performanceTelemetry": true,
+  "inputLatencyProfile": "inflight-2-vsync-off-buffered-native",
+  "graphicsCompatibilityProfile": "buffered-native-v1",
+  "startupReadinessProfile": "core-boot-log-v1",
+  "localDiscProfile": "service-worker-range-v1",
+  "preloadAssetsProfile": "runtime-no-debugger",
+  "rangeReadAheadProfile": "adaptive-rolling-buffer-shared-worker-recovery-v7",
+  "rangeReadAheadBlocks": 10,
+  "rangeReadAheadCacheBytes": 25165824,
+  "webFeaturesBridge": "savestate-controls-v1",
+  "mediaEngine": "ffmpeg-h264-audio-minimal",
+  "ffmpegCommit": "1e3b4965632f60b1d85360261d1b9dd45444bc71",
+  "mediaDecoders": [
+    "h264",
+    "aac",
+    "atrac3",
+    "atrac3p",
+    "mp3",
+    "mp3float"
+  ],
+  "artifactsInstalled": true,
+  "artifacts": {
+    "PPSSPPSDL.js": {
+      "bytes": 405121,
+      "sha256": "7852121a8b84174ec267e9df45afe7489a03933b03228ad7bcf8d8e4d3289d12"
+    },
+    "PPSSPPSDL.wasm": {
+      "bytes": 18179755,
+      "sha256": "f3d66fd8368cf937fca7067927084fe64e167881465a6b53e75d0ea2c0451a12"
+    },
+    "PPSSPPSDL.data": {
+      "bytes": 19434861,
+      "sha256": "1b2a982c85a1c25577e4d154a0f21c91c72f070a7f30a6e6f7465e2d6e941e82"
+    },
+    "range-prefetch-worker.js": {
+      "bytes": 2593,
+      "sha256": "98780ea3816be871f8b6c21dd97272798b4ecb04fb480856c8bf1b95544faea5"
+    },
+    "local-disc-sw.js": {
+      "bytes": 3664,
+      "sha256": "4d2b4ebeb17e55237d959ebd4e7c9609fda7ed06c977ce93d470331432569fd1"
+    },
+    "host.js": {
+      "bytes": 31271,
+      "sha256": "f6cc38c2b52ae9377a88de7edb01cbdeb8f4668cd5f26ebb2b7afff39c4a31ac"
+    },
+    "SOURCE.txt": {
+      "bytes": 1968,
+      "sha256": "b9f0fefb52774126bac74ef79a8f797f331aa62c779f4b2d89c7e1ddb8da3e84"
+    }
+  },
+  "rangeReadAheadConcurrency": 4
+}

@@ -53,6 +53,13 @@ export const MAX_TOKEN = 32
 export const MAX_TERMS = 32
 export const MAX_QUERY = 200
 
+/** LIMIT 会直接成为 SQL 整数字面量；小数不能只夹范围，否则匿名请求会稳定触发 500。 */
+export function boundedSearchLimit(raw, fallback, maximum) {
+  const value = Number(raw)
+  if (!Number.isFinite(value) || value === 0) return fallback
+  return Math.min(maximum, Math.max(1, Math.trunc(value)))
+}
+
 const CJK = /[㐀-鿿豈-﫿]/
 const isCjk = (ch) => CJK.test(ch)
 const isWordChar = (ch) => /[a-z0-9]/.test(ch)

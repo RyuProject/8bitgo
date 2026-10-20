@@ -313,7 +313,8 @@ app.get('/api/live/events', optionalUser, (req, res) => {
   }, 25_000)
   beat.unref?.()
 
-  req.on('close', () => {
+  // GET 请求体读完也会让 req 发 close；只在响应连接关闭时移除订阅。
+  res.once('close', () => {
     clearInterval(beat)
     unsubscribe()
   })
@@ -383,7 +384,7 @@ if (ssrAvailable()) {
    */
   app.get('/ppsspp/v0dbfaca', (_req, res) => {
     res.set('Cache-Control', CACHE.none)
-    res.redirect(302, '/ppsspp/v0dbfaca/v11/index.html?embed=1')
+    res.redirect(302, '/ppsspp/v0dbfaca/v15/index.html?embed=1')
   })
 
   /**
@@ -579,6 +580,11 @@ if (ssrAvailable()) {
 app.use(openErrorMiddleware(publicSiteUrl))
 
 app.use((err, _req, res, _next) => {
+  if (res.headersSent || res.destroyed || res.writableEnded) {
+    // 代理/下载的响应体已经开始后，只能掐断连接；再发送 JSON 会抛 ERR_HTTP_HEADERS_SENT。
+    if (!res.destroyed && !res.writableEnded) res.destroy(err)
+    return
+  }
   // body-parser 的超限错误要回 413，不然前端只看到一个含糊的 500
   if (err?.type === 'entity.too.large' || err?.status === 413) {
     return res.status(413).json({ error: '文件过大' })

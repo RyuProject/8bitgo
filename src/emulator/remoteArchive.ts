@@ -2,8 +2,8 @@
 import { assertRomArchiveRef, romArchiveRef } from '@/lib/romArchiveUrl'
 import { assertValidZip, crc32, extractZipEntry } from '@/lib/unzip'
 import { assertNotHtml } from '@/lib/romValidation'
-import { fetchWithProgress } from './loadProgress'
-import { romCacheGetBlob, romCacheKey, romCachePutBlob } from './romCache'
+import { fetchBlobWithProgress, fetchWithProgress } from './loadProgress'
+import { romCacheDelete, romCacheGetBlob, romCacheKey, romCachePutBlob } from './romCache'
 import type { LoadProgress } from './types'
 
 /** 整块 ZIP 解析有内存成本；光盘镜像等更大的包应先在源站提供可直接读取的 ROM。 */
@@ -14,6 +14,7 @@ export async function loadRemoteArchiveRom(
   url: string,
   onProgress?: (progress: LoadProgress) => void,
   signal?: AbortSignal,
+  validate?: (blob: Blob) => Promise<void>,
 ): Promise<{ name: string; blob: Blob; bytes: number; fromCache: boolean }> {
   const ref = romArchiveRef(url)
   if (!ref) throw new Error('ROM 地址缺少 ZIP 内文件标记')
@@ -23,21 +24,35 @@ export async function loadRemoteArchiveRom(
     const cached = await romCacheGetBlob(cacheKey)
     if (cached) {
       if (signal?.aborted) throw new DOMException('已取消', 'AbortError')
-      onProgress?.({ phase: 'rom', loaded: cached.size, total: cached.size, ratio: 1, cached: true })
-      return { name: ref.name, blob: cached, bytes: cached.size, fromCache: true }
+      try {
+        // NDS 等调用方还需验解出的 ROM。坏缓存必须删除并回源，不能每次开局都复活同一份假 ROM。
+        await validate?.(cached)
+        onProgress?.({ phase: 'rom', loaded: cached.size, total: cached.size, ratio: 1, cached: true })
+        return { name: ref.name, blob: cached, bytes: cached.size, fromCache: true }
+      } catch (error) {
+        if (signal?.aborted) throw error
+        await romCacheDelete(cacheKey).catch(() => {})
+        console.warn('[romArchive] ROM 缓存校验失败，重新下载：', error)
+      }
     }
   }
 
   let archive: ArrayBuffer
   try {
-    archive = await fetchWithProgress(ref.sourceUrl, {
-      phase: 'rom', onProgress, signal, maxBytes: MAX_ARCHIVE_BYTES, cache: 'no-store',
-      check: (res) => {
-        if (/text\/html|application\/xhtml/i.test(res.headers.get('content-type') ?? '')) {
-          throw new Error('ZIP 地址返回了网页，不是压缩包')
-        }
-      },
-    })
+    const check = (res: Response) => {
+      if (/text\/html|application\/xhtml/i.test(res.headers.get('content-type') ?? '')) {
+        throw new Error('ZIP 地址返回了网页，不是压缩包')
+      }
+    }
+    // 只在 fragment 带明确版本时续外站归档；缓存的仍是验过的内层 ROM，绝不把未验 ZIP 当完整缓存。
+    archive = cacheKey
+      ? await (await fetchBlobWithProgress(ref.sourceUrl, {
+          phase: 'rom', onProgress, signal, maxBytes: MAX_ARCHIVE_BYTES,
+          resumeKey: cacheKey, cache: 'no-store', check,
+        })).arrayBuffer()
+      : await fetchWithProgress(ref.sourceUrl, {
+          phase: 'rom', onProgress, signal, maxBytes: MAX_ARCHIVE_BYTES, cache: 'no-store', check,
+        })
   } catch (error) {
     if (signal?.aborted) throw error
     if (error instanceof TypeError) throw new Error('无法读取外站 ZIP：请确认链接可直接下载，且源站允许本站跨域 GET')
@@ -67,6 +82,7 @@ export async function loadRemoteArchiveRom(
     : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer
   assertNotHtml(rom)
   const blob = new Blob([rom], { type: 'application/octet-stream' })
+  await validate?.(blob)
   // 无 ETag 且没指定手工 v 时不缓存：远端同名覆盖后无法判断旧数据是否过期。
   if (cacheKey) void romCachePutBlob(cacheKey, blob).catch(() => {})
   return { name: ref.name, blob, bytes: blob.size, fromCache: false }

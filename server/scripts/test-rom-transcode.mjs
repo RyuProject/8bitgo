@@ -7,6 +7,7 @@
  */
 import assert from 'node:assert/strict'
 import { createCipheriv, createHash, randomBytes } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { zstdCompressSync } from 'node:zlib'
 import { deriveRomPackKey } from '../src/rom-pack-key.js'
 import {
@@ -21,6 +22,7 @@ import {
   ByteReader,
   decryptRomPackChunk,
   isRomPackHeadPrefix,
+  parseRomByteRange,
   planRomPackChunks,
   readRomPackHead,
   releaseTranscodeSlot,
@@ -161,9 +163,33 @@ async function main() {
   // 5) isRomPackHeadPrefix
   check('magic 判定真', isRomPackHeadPrefix(Buffer.from('8BG1xxxx')))
   check('magic 判定假', !isRomPackHeadPrefix(randomBytes(8)))
+  const fragmentedPrefix = await readerFromBuffer(Buffer.from('8BG1xxxx'), 1).readExactly(8)
+  check('首 8 字节分成单字节网络片时仍识别 8BG', isRomPackHeadPrefix(fragmentedPrefix))
+  const ignoredRange = readerFromBuffer(Buffer.from('head-payload'), 2)
+  await ignoredRange.skipExactly(5)
+  check('上游忽略 Range 时可有界跳过前缀且不丢掉后续字节',
+    (await ignoredRange.readExactly(7)).toString() === 'payload')
+  let cancelled = false
+  const webStream = new ReadableStream({
+    start(controller) { controller.enqueue(Uint8Array.of(1, 2, 3)) },
+    cancel() { cancelled = true },
+  })
+  const webReader = ByteReader.fromWeb(webStream)
+  await webReader.readExactly(1)
+  await webReader.cancel()
+  check('只读头后能真正取消被 async iterator 锁住的上游流', cancelled)
 
   // 6) planRomPackChunks 边界：空范围
   check('空范围返回空计划', planRomPackChunks(header, 0, 0).length === 0)
+  check('末尾 suffix Range 正确取最后 500 字节',
+    JSON.stringify(parseRomByteRange('bytes=-500', 1000)) === JSON.stringify({ start: 500, end: 1000, isRange: true }))
+  check('越界及多段 Range 返回 416 而不是悄悄整包转码',
+    parseRomByteRange('bytes=1000-', 1000).unsatisfiable === true
+      && parseRomByteRange('bytes=0-1,3-4', 1000).unsatisfiable === true)
+  const routeSource = readFileSync(new URL('../src/routes/open.js', import.meta.url), 'utf8')
+  const plainStream = routeSource.slice(routeSource.indexOf('async function streamRomPlain('), routeSource.indexOf('async function getRawGame('))
+  check('ROM 转码只在响应断开时取消上游，不把 GET 请求结束误判为断线',
+    /res\.once\('close', onResponseClose\)/.test(plainStream) && !/req\.on\('close',/.test(plainStream))
 
   // 7) 并发闸
   const limits = romTranscodeLimits()

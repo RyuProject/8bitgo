@@ -82,7 +82,7 @@ function assertNdsSections(buf: ArrayBuffer, totalBytes = buf.byteLength): void 
 }
 
 /** 任天堂 DS 卡带的官方容量上限是 512 MiB；超过它的 ZIP 多半是损坏头或解压炸弹。 */
-const MAX_NDS_ROM_BYTES = 512 * 1024 * 1024
+export const MAX_NDS_ROM_BYTES = 512 * 1024 * 1024
 
 export interface NdsBlobValidation {
   /** ZIP 包里唯一的 ROM 路径；裸 ROM 没有。适配器用它绕过 EmulatorJS“取第一个文件”的兜底。 */

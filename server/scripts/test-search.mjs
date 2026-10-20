@@ -5,7 +5,7 @@
  * 改过 src/search.js 的规则就跑一遍 —— 分词错了不会报错，只会「搜不到」，
  * 而「搜不到」在开发时太容易被当成数据问题。
  */
-import { normalize, tokenize, pinyinTokens, queryTerms, tokenMatchSql, buildGameTokens, WEIGHT } from '../src/search.js'
+import { boundedSearchLimit, normalize, tokenize, pinyinTokens, queryTerms, tokenMatchSql, buildGameTokens, WEIGHT } from '../src/search.js'
 
 let pass = 0
 const fails = []
@@ -66,6 +66,9 @@ ok('纯英文不产生拼音', pinyinTokens('Super Mario').size === 0)
 }
 ok('纯标点算空', queryTerms('！！！').empty === true)
 ok('汉字不放宽成前缀', queryTerms('魂斗罗').required.every((x) => !x.prefix))
+eq('联想 LIMIT 小数必须取整，不能拼出非法 SQL', boundedSearchLimit('2.5', 8, 20), 2)
+eq('联想 LIMIT 越界仍受上限约束', boundedSearchLimit('100000', 8, 20), 20)
+eq('联想 LIMIT 非数字退回默认值', boundedSearchLimit('bad', 8, 20), 8)
 
 /* ---------------- 索引条目 ---------------- */
 {

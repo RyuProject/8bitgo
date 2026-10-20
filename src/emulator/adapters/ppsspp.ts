@@ -12,6 +12,7 @@ import type { Capability, CaptureSources, MountOptions, RuntimeHandle } from '..
 import { focusFrame, frameGamepads } from '../frameFocus'
 import { PPSSPP_RUNTIME_PATH, PPSSPP_VERSION } from '../paths'
 import { probeRange } from '../remoteDisc'
+import { downloadPspDisc, PspDiscStorageError } from '../pspFullDownload'
 import { fmt, getT } from '@/services/i18n'
 
 const BRIDGE_SOURCE = '8bitgo-ppsspp-bridge'
@@ -119,17 +120,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     pending.clear()
   }
 
-  const failSession = (message: string, pendingMessage = 'PPSSPP 会话启动失败') => {
+  const failSession = (message: string, pendingMessage = 'PPSSPP 会话启动失败', scope?: 'runtime' | 'content') => {
     if (destroyed || fatalReported) return
     fatalReported = true
     window.clearTimeout(hostTimer)
     probeController.abort(new Error(pendingMessage))
     rejectPending(pendingMessage)
-    options.onError?.(message)
+    options.onError?.(message, scope)
   }
 
-  const reportFatal = (message: string) => {
-    failSession(fmt(rt.ppssppLoadFailed, { msg: message }), message)
+  const reportFatal = (message: string, scope?: 'runtime' | 'content') => {
+    failSession(fmt(rt.ppssppLoadFailed, { msg: message }), message, scope)
   }
 
   function startRemoteProbe(game: string): ReturnType<typeof probeRange> {
@@ -171,6 +172,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       window.clearTimeout(probeTimer)
     }
     if (!probe.rangeSupported || !probe.size) throw new Error(rt.ppssppNoRange)
+    if (options.pspLoadMode === 'download') {
+      return downloadPspDisc(
+        options.game,
+        discNameOf(options.game, options.gameName),
+        probe.size,
+        probeController.signal,
+        options.onProgress,
+      )
+    }
     options.onProgress?.({ phase: 'rom', loaded: 2, total: probe.size, streaming: true })
     return {
       url: options.game,
@@ -210,7 +220,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       focusFrame(iframe)
     } catch (error) {
       if (!destroyed) {
-        reportFatal(error instanceof Error ? error.message : String(error))
+        reportFatal(
+          error instanceof Error ? error.message : String(error),
+          error instanceof PspDiscStorageError || (error instanceof Error && error.name === 'QuotaExceededError')
+            ? 'runtime' : undefined,
+        )
       }
     }
   }

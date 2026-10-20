@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const VERSION = '0dbfaca'
-const RUNTIME_GENERATION = 'v11'
+const RUNTIME_GENERATION = 'v15'
 const useDist = process.argv.includes('--dist')
 const sourceOnly = process.argv.includes('--source-only')
 const publicDir = join(root, 'public', 'ppsspp', `v${VERSION}`, RUNTIME_GENERATION)
@@ -22,16 +22,19 @@ const need = (path) => {
   return readFileSync(path)
 }
 
-for (const name of ['index.html', 'host.js', 'audio-worklet.js', 'runtime.json', 'SOURCE.txt']) need(join(runtimeDir, name))
+for (const name of ['index.html', 'host.js', 'audio-worklet.js', 'range-prefetch-worker.js', 'local-disc-sw.js', 'runtime.json', 'SOURCE.txt']) need(join(runtimeDir, name))
 const host = need(join(runtimeDir, 'host.js')).toString('utf8')
 const audioWorklet = need(join(runtimeDir, 'audio-worklet.js')).toString('utf8')
+const prefetchWorker = need(join(runtimeDir, 'range-prefetch-worker.js')).toString('utf8')
+const localDiscWorker = need(join(runtimeDir, 'local-disc-sw.js')).toString('utf8')
 const adapter = need(join(root, 'src', 'emulator', 'adapters', 'ppsspp.ts')).toString('utf8')
 const prewarm = need(join(root, 'src', 'emulator', 'prewarm.ts')).toString('utf8')
 const paths = need(join(root, 'src', 'emulator', 'paths.ts')).toString('utf8')
 for (const marker of [
   '8bitgo-ppsspp-bridge',
   'mount-remote',
-  'WORKERFS',
+  'openLocalDisc',
+  'local-disc-sw.js',
   'IDBFS',
   '__ppssppRangeProgress',
   '__ppssppRangeError',
@@ -51,10 +54,10 @@ if (!runtimeInit || /respond\s*\(/.test(runtimeInit)) {
   fail('host.js 在 onRuntimeInitialized 阶段就回复成功；此时 PPSSPP 还没有执行 main 或读取镜像')
 }
 if (!/<script src="host\.js"><\/script>/.test(need(join(runtimeDir, 'index.html')).toString('utf8'))) {
-  fail('v11 index.html 没有引用同一实体目录里的 host.js')
+  fail('v15 index.html 没有引用同一实体目录里的 host.js')
 }
-if (!/PPSSPP_RUNTIME_GENERATION = 'v11'/.test(paths) || !/PPSSPP_RUNTIME_PATH/.test(adapter)) {
-  fail('PPSSPP iframe 没有使用 v11 实体目录；查询串不能穿透当前 Cloudflare 缓存键')
+if (!/PPSSPP_RUNTIME_GENERATION = 'v15'/.test(paths) || !/PPSSPP_RUNTIME_PATH/.test(adapter)) {
+  fail('PPSSPP iframe 没有使用 v15 实体目录；查询串不能穿透当前 Cloudflare 缓存键')
 }
 if (/fetch\s*\(\s*(?:remote(?:\?\.)?\.url|gamePath)/.test(host)) {
   fail('host.js 出现整盘下载代码；远程镜像只能把 URL 交给 C++ Range loader')
@@ -87,13 +90,22 @@ if (!/FS\.stat\(path\)[\s\S]*?FS\.writeFile\(path, new Uint8Array\(\)\)/.test(ho
   fail('host.js 没有保留已有控制器配置并只在首次启动补空 controls.ini')
 }
 if (host.includes('核心没有 Range 遥测回调，使用首帧兼容判据')) {
-  fail('v11 仍会在没有真实读盘时把空画布误报成游戏已启动')
+  fail('v15 仍会在没有真实读盘时把空画布误报成游戏已启动')
 }
 if (!/gameBootConfirmed/.test(host) || !/BOOTED_LOG_PATTERN = \/\\bBooted\\s\+\.\+\\\.\\\.\\\.\//.test(host)) {
-  fail('v11 没有等待 PPSSPP 的 Booted 日志；Range 遥测跨线程丢失时会再次超时')
+  fail('v15 没有等待 PPSSPP 的 Booted 日志；Range 遥测跨线程丢失时会再次超时')
 }
 if (!/print\(text\)[\s\S]*?observeCoreLog\(message\)[\s\S]*?printErr\(text\)[\s\S]*?observeCoreLog\(message\)/.test(host)) {
-  fail('v11 没有同时观察 stdout/stderr；不同 Emscripten 日志路由下会漏掉 Booted')
+  fail('v15 没有同时观察 stdout/stderr；不同 Emscripten 日志路由下会漏掉 Booted')
+}
+if (/FS\.mount\([^\n]*WORKERFS|FS\.createLazyFile\(/.test(host)) {
+  fail('本地 PSP 镜像不能在主线程挂 WORKERFS 或用同步 XHR 的 LazyFile')
+}
+if (!/if \(!gameBootConfirmed\) return/.test(host) || !/localDisc = await openLocalDisc\(file\)/.test(host)) {
+  fail('本地 PSP 启动没有等真实 Booted，或没有建立按需 Range 通道')
+}
+for (const marker of ['BroadcastChannel', 'Content-Range', 'Accept-Ranges', 'Cache-Control', 'MAX_READ_BYTES']) {
+  if (!localDiscWorker.includes(marker)) fail(`本地 PSP 读盘服务缺少 ${marker}`)
 }
 if (!/MOUNT_TIMEOUT_MS = 300_000/.test(adapter)) {
   fail('PSP 冷启动仍可能被旧的短超时误杀')
@@ -175,6 +187,7 @@ for (const marker of [
   '${PPSSPP_RUNTIME_PATH}index.html?embed=1',
   '${PPSSPP_RUNTIME_PATH}PPSSPPSDL.wasm',
   '${PPSSPP_RUNTIME_PATH}PPSSPPSDL.data',
+  '${PPSSPP_RUNTIME_PATH}range-prefetch-worker.js',
   'hasHoverIntent() && allowsLargeHoverPrewarm()',
 ]) {
   if (!prewarm.includes(marker)) fail(`PSP 悬停预热缺少 ${marker}`)
@@ -182,6 +195,13 @@ for (const marker of [
 
 const manifest = JSON.parse(need(join(runtimeDir, 'runtime.json')).toString('utf8'))
 if (manifest.runtimeGeneration !== RUNTIME_GENERATION) fail('runtime.json 的实体目录代次不正确')
+if (manifest.localDiscProfile !== 'service-worker-range-v1') fail('runtime.json 没有声明本地镜像按需读盘方案')
+const localDiscBytes = need(join(runtimeDir, 'local-disc-sw.js'))
+const localDiscArtifact = manifest.artifacts?.['local-disc-sw.js']
+if (localDiscArtifact?.bytes !== localDiscBytes.byteLength ||
+  localDiscArtifact.sha256 !== createHash('sha256').update(localDiscBytes).digest('hex')) {
+  fail('本地读盘 Service Worker 与 runtime.json 校验值不符')
+}
 if (manifest.startupReadinessProfile !== 'core-boot-log-v1') fail('runtime.json 没有声明基于核心 Booted 日志的启动判据')
 if (manifest.commit !== '0dbfaca62a8a924abc2c5dd5dd0733b668e5e68a') fail('runtime.json 的上游提交没有锁定')
 if (manifest.rangeStreaming !== true || manifest.blockBytes !== 2097152) {
@@ -201,7 +221,7 @@ if (loaderRevision === 4 && (manifest.chdBlockBytes !== 2097152 || manifest.prel
   fail('Range v4 清单没有声明实测 2 MiB CHD 分片或精简的 Web data 包')
 }
 if (
-  manifest.rangeReadAheadProfile !== 'adaptive-rolling-buffer-v4' ||
+  manifest.rangeReadAheadProfile !== 'adaptive-rolling-buffer-shared-worker-recovery-v7' ||
   manifest.rangeReadAheadBlocks !== 10 ||
   manifest.rangeReadAheadConcurrency !== 4 ||
   manifest.rangeReadAheadCacheBytes !== 25165824
@@ -249,7 +269,7 @@ if (
   fail('runtime.json 没有声明锁定的 PSP H.264/音频解码能力')
 }
 
-const binaries = ['PPSSPPSDL.js', 'PPSSPPSDL.wasm', 'PPSSPPSDL.data']
+const binaries = ['PPSSPPSDL.js', 'PPSSPPSDL.wasm', 'PPSSPPSDL.data', 'range-prefetch-worker.js']
 const installed = binaries.every((name) => existsSync(join(runtimeDir, name)))
 const productionEnv = existsSync(join(root, '.env.production'))
   ? readFileSync(join(root, '.env.production'), 'utf8')
@@ -261,6 +281,10 @@ if ((!sourceOnly || productionEnabled) && !installed) {
 if (installed) {
   if (!manifest.artifactsInstalled || !manifest.artifacts) fail('已有二进制，但 runtime.json 没有来源/哈希清单')
   const runtimeScript = need(join(runtimeDir, 'PPSSPPSDL.js')).toString('utf8')
+  const readAheadSource = need(join(root, 'vendor', 'ppsspp', 'range-read-ahead.js')).toString('utf8').trimEnd()
+  if (!runtimeScript.includes(readAheadSource)) {
+    fail('v15 发布脚本与预读源码不一致；改源码后必须生成新实体运行时')
+  }
   if (!runtimeScript.includes('if(fetched?.then){fetched=await fetched}else if(!fetched){fetched=await fetchPromise}')) {
     fail('PPSSPPSDL.js 没有等待异步核心资源重试 Promise，真机解包会报 bad input')
   }
@@ -271,8 +295,13 @@ if (installed) {
     'MAX_CACHE_BYTES = 24 * 1024 * 1024',
     'cancelQueuedAndInflight()',
     'demandTakeovers',
+    'sharedPrefetchWaits',
+    'otherKey !== key',
   ]) {
     if (!runtimeScript.includes(marker)) fail(`PPSSPPSDL.js 缺少 PSP 顺序预读标记 ${marker}`)
+  }
+  for (const marker of ['postMessage({ type: \'ready\' })', 'Atomics.notify(state, 0)', 'response.status !== 206', 'offset !== bytes.byteLength']) {
+    if (!prefetchWorker.includes(marker)) fail(`range-prefetch-worker.js 缺少共享预读校验标记 ${marker}`)
   }
   if (!runtimeScript.includes('pthreadMainJs=_scriptName') || !runtimeScript.includes('new Worker(pthreadMainJs')) {
     fail('PPSSPPSDL.js 缺少自身 Worker 标记，PROXY_TO_PTHREAD 没有正确发布')
@@ -329,7 +358,7 @@ if (installed && loaderRevision === 1) {
 }
 
 if (useDist) {
-  for (const name of ['index.html', 'host.js', 'audio-worklet.js', 'runtime.json', 'SOURCE.txt']) {
+  for (const name of ['index.html', 'host.js', 'audio-worklet.js', 'range-prefetch-worker.js', 'local-disc-sw.js', 'runtime.json', 'SOURCE.txt']) {
     const a = need(join(publicDir, name))
     const b = need(join(runtimeDir, name))
     if (!a.equals(b)) fail(`dist/client 中的 ${name} 不是 public 里的当前版本`)

@@ -34,6 +34,57 @@
   let pressureLevel = 0
   let stableHits = 0
   let measuredMbps = 0
+  let prefetchWorker = null
+  let prefetchWorkerReady = false
+  let prefetchWorkerFailed = false
+  let sharedJobId = 0
+  let sharedPrefetchWaits = 0
+  let sharedPrefetchWaitMs = 0
+  let assessedDemandBlocks = 0
+  let assessedHits = 0
+  let sequentialDemandRun = 0
+
+  const initPrefetchWorker = () => {
+    if (prefetchWorker || prefetchWorkerFailed) return
+    // Atomics.wait 只允许在 Worker 中使用；不能把页面主线程卡在读盘等待上。
+    if (
+      typeof ENVIRONMENT_IS_PTHREAD === 'undefined' || !ENVIRONMENT_IS_PTHREAD ||
+      typeof globalThis.Worker !== 'function' ||
+      typeof globalThis.SharedArrayBuffer !== 'function' ||
+      typeof Atomics.wait !== 'function'
+    ) return
+    try {
+      const worker = new Worker(new URL('range-prefetch-worker.js', location.href))
+      prefetchWorker = worker
+      worker.onmessage = ({ data }) => {
+        if (data?.type === 'ready') {
+          prefetchWorkerReady = true
+          console.info('[ppsspp] 独立 Range 预读 Worker 已就绪')
+          pump()
+        } else if (data?.type === 'done') {
+          const entry = inflight.get(data.key)
+          // 取消后同一块可能立刻重新排队；旧消息绝不能结算新请求。
+          if (entry?.shared && entry.id === data.id) entry.complete()
+        }
+      }
+      worker.onerror = () => {
+        console.warn('[ppsspp] 独立 Range 预读 Worker 不可用，回退到原有预读方式')
+        prefetchWorkerFailed = true
+        prefetchWorkerReady = false
+        for (const entry of [...inflight.values()]) {
+          if (!entry.shared) continue
+          Atomics.store(entry.state, 0, 2)
+          Atomics.notify(entry.state, 0)
+          entry.complete()
+        }
+        worker.terminate()
+        prefetchWorker = null
+      }
+    } catch {
+      console.warn('[ppsspp] 无法启动独立 Range 预读 Worker，回退到原有预读方式')
+      prefetchWorkerFailed = true
+    }
+  }
 
   const header = (headers, name) => headers.get(String(name).toLowerCase()) || ''
   const rangeOf = (value) => {
@@ -73,6 +124,21 @@
     const memory = Math.max(0, Number(globalThis.navigator?.deviceMemory) || 0)
     const constrained = cores <= 2 || (memory > 0 && memory <= 2)
     const balanced = cores <= 4 || (memory > 0 && memory <= 4)
+    // CHD 可在两个 pthread 上交错随机寻道；投机块若一直没被正式读盘使用，多路预读
+    // 只会挤占慢链路。按真实需求命中率收缩，并保留一条探测流以便顺序阶段自动恢复。
+    const lowHitRate = assessedDemandBlocks >= 4 && assessedHits * 4 < assessedDemandBlocks
+    if (sequentialDemandRun === 0 || (lowHitRate && sequentialDemandRun < 3)) {
+      return { depth: 2, concurrency: 1, cacheBytes: 4 * 1024 * 1024 }
+    }
+    if (lowHitRate) {
+      // 单路预读追不上连续读盘时，命中率会一直低，旧策略因此永久锁在单路小窗。
+      // 连续四块证明当前确实是顺序阶段；只恢复到双路，下一次随机寻道仍立刻收回。
+      return {
+        depth: constrained ? 4 : 6,
+        concurrency: 2,
+        cacheBytes: constrained ? 8 * 1024 * 1024 : 12 * 1024 * 1024,
+      }
+    }
     if (constrained) return { depth: 4, concurrency: 2, cacheBytes: 8 * 1024 * 1024 }
 
     let depth = type === '3g' ? 4 : balanced ? 6 : 8
@@ -118,7 +184,64 @@
     return true
   }
 
+  const startSharedPrefetch = (key, job) => {
+    if (!prefetchWorkerReady || !prefetchWorker) return false
+    const length = job.end - job.start + 1
+    try {
+      const bytes = new SharedArrayBuffer(length)
+      const state = new Int32Array(new SharedArrayBuffer(4))
+      const id = ++sharedJobId
+      const startedAt = Date.now()
+      let settled = false
+      const finish = () => {
+        if (settled) return
+        settled = true
+        if (inflight.get(key)?.id === id) {
+          inflight.delete(key)
+          activePrefetches = Math.max(0, activePrefetches - 1)
+        }
+        if (Atomics.load(state, 0) === 1) {
+          const ifMatch = header(job.headers, 'if-match')
+          const ifUnmodifiedSince = header(job.headers, 'if-unmodified-since')
+          const rawHeaders = `content-range: bytes ${job.start}-${job.end}/${job.total}\r\n` +
+            (ifMatch ? `etag: ${ifMatch}\r\n` : '') +
+            (ifUnmodifiedSince ? `last-modified: ${ifUnmodifiedSince}\r\n` : '')
+          const response = new Uint8Array(bytes).slice().buffer
+          prefetchedBytes += response.byteLength
+          const sampleMbps = response.byteLength * 8 / Math.max(1, Date.now() - startedAt) / 1000
+          measuredMbps = measuredMbps > 0 ? measuredMbps * 0.7 + sampleMbps * 0.3 : sampleMbps
+          store(key, { response, rawHeaders, responseURL: job.url, statusText: 'Partial Content' })
+        }
+        if (!cancellingPrefetches) pump()
+      }
+      const cancel = () => {
+        if (settled) return
+        settled = true
+        if (inflight.get(key)?.id === id) {
+          inflight.delete(key)
+          activePrefetches = Math.max(0, activePrefetches - 1)
+        }
+        try { prefetchWorker?.postMessage({ type: 'cancel', id }) } catch { /* 正式读盘会接管。 */ }
+      }
+      const entry = { shared: true, id, state, startedAt, headers: job.headers, complete: finish, cancel }
+      inflight.set(key, entry)
+      activePrefetches++
+      prefetchWorker.postMessage({
+        type: 'fetch', id, key, url: job.url, start: job.start, end: job.end, total: job.total,
+        ifMatch: header(job.headers, 'if-match'),
+        ifUnmodifiedSince: header(job.headers, 'if-unmodified-since'),
+        bytes, state: state.buffer,
+      })
+      return true
+    } catch {
+      const entry = inflight.get(key)
+      if (entry?.shared) entry.cancel()
+      return false
+    }
+  }
+
   const startPrefetch = (key, job) => {
+    if (startSharedPrefetch(key, job)) return
     const xhr = new NativeXMLHttpRequest()
     const startedAt = Date.now()
     let settled = false
@@ -211,10 +334,44 @@
   const beforeDemand = (url, requestHeaders) => {
     const requested = rangeOf(header(requestHeaders, 'range'))
     if (!requested || requested.start % BLOCK_BYTES !== 0 || requested.end - requested.start + 1 > BLOCK_BYTES) return null
+    if (requested.end - requested.start + 1 === BLOCK_BYTES) {
+      sequentialDemandRun = lastDemand?.url === url && requested.start === lastDemand.start + BLOCK_BYTES
+        ? sequentialDemandRun + 1 : 0
+      assessedDemandBlocks++
+      if (assessedDemandBlocks >= 32) {
+        assessedDemandBlocks = Math.ceil(assessedDemandBlocks / 2)
+        assessedHits = Math.ceil(assessedHits / 2)
+      }
+    }
     const key = cacheKey(url, requested.start, requested.end)
     const exactPrefetch = inflight.get(key)
     const exactQueued = queued.has(key)
-    if (exactPrefetch || exactQueued) {
+    if (
+      exactPrefetch?.shared &&
+      header(exactPrefetch.headers, 'if-match') === header(requestHeaders, 'if-match') &&
+      header(exactPrefetch.headers, 'if-unmodified-since') === header(requestHeaders, 'if-unmodified-since')
+    ) {
+      // 当前正式读盘正等这块时，其余投机连接会与它争夺 CDN/用户带宽。只保留命中的
+      // SharedArrayBuffer 请求，先取消别的预读；否则核心虽然能等到它，仍可能被另三路
+      // 无用的预读拖出数秒卡顿。等完以后再围绕新位置建窗口。
+      queued.clear()
+      cancellingPrefetches = true
+      for (const [otherKey, entry] of [...inflight]) {
+        if (otherKey !== key) entry.cancel()
+      }
+      cancellingPrefetches = false
+      // 模拟线程正被同步读盘阻塞时，它自己的 onmessage 也无法执行；独立 Worker 用
+      // SharedArrayBuffer 直接唤醒这里，避免取消已下载大半的预读后再取一遍同一块。
+      const remaining = Math.max(0, PREFETCH_TIMEOUT_MS - (Date.now() - exactPrefetch.startedAt))
+      if (Atomics.load(exactPrefetch.state, 0) === 0 && remaining > 0) {
+        sharedPrefetchWaits++
+        const began = Date.now()
+        Atomics.wait(exactPrefetch.state, 0, 0, remaining)
+        sharedPrefetchWaitMs += Date.now() - began
+      }
+      if (Atomics.load(exactPrefetch.state, 0) === 1) exactPrefetch.complete()
+    }
+    if ((exactPrefetch && !cache.has(key)) || exactQueued) {
       // 正式读取不能和投机请求争抢带宽。核心追上进行中或排队中的预读时全部取消，
       // 由同步请求立即接管；成功后再围绕新的读取位置重建窗口，避免慢预读继续堵住模拟线程。
       demandTakeovers++
@@ -298,6 +455,7 @@
         const entry = cache.get(key)
         if (entry && validatorMatches(entry, this.__8bitgoHeaders)) {
           prefetchHits++
+          assessedHits++
           stableHits++
           // 连续命中说明滚动窗口已经足够；缓慢收回压力档，避免一次旧抖动让整局永久保持最大投机量。
           if (stableHits >= 12 && pressureLevel > 0) {
@@ -350,7 +508,11 @@
     set withCredentials(value) { this._inner.withCredentials = value }
   }
 
-  globalThis.__8bitgoCreatePspRangeXhr = () => new RangeWarmXMLHttpRequest()
+  globalThis.__8bitgoCreatePspRangeXhr = () => {
+    // 核心的 pthread 池会执行同一份 JS；只有真正做 Range 读盘的线程才需要预读 Worker。
+    if (readAheadPolicy().concurrency > 0) initPrefetchWorker()
+    return new RangeWarmXMLHttpRequest()
+  }
   globalThis.__8bitgoPspRangeWarmStats = () => ({
     cachedBlocks: cache.size,
     cachedBytes,
@@ -363,6 +525,12 @@
     prefetchedBytes,
     pressureLevel,
     measuredMbps: Math.round(measuredMbps * 100) / 100,
+    sharedPrefetchReady: prefetchWorkerReady,
+    sharedPrefetchWaits,
+    sharedPrefetchWaitMs,
+    assessedDemandBlocks,
+    assessedHits,
+    sequentialDemandRun,
   })
 })()
 /* 8BITGO_PSP_RANGE_READ_AHEAD_END */

@@ -18,11 +18,12 @@ import express from 'express'
 import { randomUUID } from 'node:crypto'
 import { query, queryOne, withTransaction } from '../db.js'
 import { requireUser } from '../auth.js'
+import { envNumber } from '../resource-limits.js'
 
 /** 单份存档上限。GBA 快照几十 KB、DOS 变更包几百 KB，4MB 已经很宽裕 */
-export const MAX_SAVE_BYTES = Number(process.env.SAVE_MAX_BYTES || 4 * 1024 * 1024)
+export const MAX_SAVE_BYTES = envNumber('SAVE_MAX_BYTES', 4 * 1024 * 1024, { min: 1024, max: 64 * 1024 * 1024 })
 /** 每人最多存多少份，防止有人拿它当网盘 */
-const MAX_SAVES_PER_USER = Number(process.env.SAVE_MAX_PER_USER || 200)
+const MAX_SAVES_PER_USER = envNumber('SAVE_MAX_PER_USER', 200, { max: 1000 })
 /**
  * 每人总共能占多少字节。
  *
@@ -30,7 +31,7 @@ const MAX_SAVES_PER_USER = Number(process.env.SAVE_MAX_PER_USER || 200)
  * 而账号是邮箱验证码免费注册的。正常存档 20KB～500KB，把每份都撑到 4MB
  * 只有一个目的。份数管的是「别开太多格」，字节数才管得住体积。
  */
-const MAX_TOTAL_BYTES = Number(process.env.SAVE_MAX_TOTAL_BYTES || 64 * 1024 * 1024)
+const MAX_TOTAL_BYTES = envNumber('SAVE_MAX_TOTAL_BYTES', 64 * 1024 * 1024, { min: 1024, max: 1024 * 1024 * 1024 })
 /** 每个游戏的存档位。0 是普通主存档；Sockdrive 用 1，避免和旧 DOS 文件层变更包混用。 */
 const MAX_SLOT = 9
 

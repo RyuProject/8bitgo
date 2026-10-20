@@ -942,6 +942,10 @@ const en: Translation = {
     noRuntime: 'No runtime available for {platform} yet',
     checkingCloud: 'Checking for a cloud ROM…',
     start: 'Start game',
+    pspLoadMode: 'PSP game loading mode',
+    pspStream: 'Stream',
+    pspDownload: 'Download full game',
+    pspDownloadHint: 'Starts after the full download. Uses browser storage, reuses the same version, and avoids network disc reads while playing.',
     pickRom: 'Pick a ROM to start playing',
     cloudHint:
       'The ROM loads from the cloud and runs in your browser via {runtime}. The first load takes a few seconds.',

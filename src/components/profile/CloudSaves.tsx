@@ -26,7 +26,8 @@ import { gameTitle, platformLabel } from '@/services/i18nData'
 import { useGamesBySlugs } from '@/services/gameCache'
 import { deleteCloudSave, fetchCloudSave, listCloudSaves, type SaveMeta } from '@/services/saves'
 import { ROM_LANG_LABEL, type RomLang } from '@/config/languages'
-import { parsePspVariantSaveSlug } from '@/emulator/romLanguage'
+import { parseNdsVariantSaveSlug, parsePspVariantSaveSlug } from '@/emulator/romLanguage'
+import { parsePsxChdSaveSlug } from '@/emulator/psxChd'
 import { parseDolphinVersionSaveSlug } from '@/emulator/dolphinSave'
 import { Notice, Panel } from './shared'
 
@@ -35,9 +36,10 @@ function keyOf(s: SaveMeta) {
   return `${s.runtime}/${s.gameSlug}/${s.slot}`
 }
 
-/** 只有 PPSSPP 会写这种后缀；别把普通游戏碰巧同名的 slug 当成 PSP 变体。 */
+/** 只按对应运行时拆后缀；NDS 兼容核心也必须链接回基础游戏。 */
 function identityOf(s: SaveMeta): { gameSlug: string; romLang?: RomLang } {
   if (s.runtime === 'ppsspp') return parsePspVariantSaveSlug(s.gameSlug)
+  if (s.runtime === 'emulatorjs') return parseNdsVariantSaveSlug(parsePsxChdSaveSlug(s.gameSlug))
   if (s.runtime === 'dolphin') return parseDolphinVersionSaveSlug(s.gameSlug)
   return { gameSlug: s.gameSlug }
 }

@@ -20,6 +20,7 @@ const built = await build({
       buildApi.onLoad({ filter: /.*/, namespace: 'cache-test' }, () => ({
         contents: `export const romCacheKey = u => /[?&]romv=/.test(u.split('#')[0]) || /[&#](?:v|romv)=/.test(u) ? u : '';
           export const romCacheGetBlob = async k => globalThis.__archiveCache.get(k) ?? null;
+          export const romCacheDelete = async k => { globalThis.__archiveCache.delete(k) };
           export const romCachePutBlob = async (k, b) => { globalThis.__archiveCache.set(k, b) };`,
         loader: 'js',
       }))
@@ -62,7 +63,7 @@ const rom = Buffer.from([0x4e, 0x45, 0x53, 0x1a, ...Array(12).fill(0)])
 let body = zip('folder/game.nes', rom)
 const requests = []
 globalThis.fetch = async (url, options) => {
-  requests.push({ url, cache: options?.cache })
+  requests.push({ url, cache: options?.cache, range: options?.headers?.Range })
   return new Response(body, { headers: { 'content-type': 'application/zip', 'content-length': String(body.length) } })
 }
 const base = 'https://files.example.com/outer.zip?token=abc#rom=folder%2Fgame.nes'
@@ -70,15 +71,32 @@ const first = await loadRemoteArchiveRom(`${base}&v=1`)
 assert.equal(first.name, 'game.nes')
 assert.equal(first.fromCache, false)
 assert.deepEqual(Buffer.from(await first.blob.arrayBuffer()), rom)
-assert.deepEqual(requests, [{ url: 'https://files.example.com/outer.zip?token=abc', cache: 'no-store' }], 'fragment 不能发给外站，外层 ZIP 也不留 HTTP 缓存')
+assert.deepEqual(requests, [{ url: 'https://files.example.com/outer.zip?token=abc', cache: 'no-store', range: 'bytes=0-8388607' }], '版本化 ZIP 要先探测 Range；fragment 不能发给外站，外层也不留 HTTP 缓存')
 const second = await loadRemoteArchiveRom(`${base}&v=1`)
 assert.equal(second.fromCache, true)
 assert.equal(requests.length, 1, '命中玩家缓存不能再次下载外层 ZIP')
+globalThis.__archiveCache.set(`${base}&v=1`, new Blob(['broken']))
+const validateRom = async blob => assert.deepEqual(Buffer.from(await blob.arrayBuffer()), rom)
+const oldWarn = console.warn
+const warnings = []
+console.warn = (...args) => { warnings.push(args) }
+let repaired
+try {
+  repaired = await loadRemoteArchiveRom(`${base}&v=1`, undefined, undefined, validateRom)
+} finally {
+  console.warn = oldWarn
+}
+assert.equal(repaired.fromCache, false, '坏缓存必须回源，不能当作命中')
+assert.equal(requests.length, 2, '坏缓存只回源一次')
+assert.equal(warnings.length, 1, '清除坏缓存时应留下可诊断记录')
+assert.equal((await loadRemoteArchiveRom(`${base}&v=1`, undefined, undefined, validateRom)).fromCache, true)
 await loadRemoteArchiveRom(`${base}&v=2`)
-assert.equal(requests.length, 2, '版本变更必须重新下载')
+assert.equal(requests.length, 3, '版本变更必须重新下载')
 await loadRemoteArchiveRom(base)
 await loadRemoteArchiveRom(base)
-assert.equal(requests.length, 4, '无 ETag/手工版本时不能留下无法失效的缓存')
+assert.equal(requests.length, 5, '无 ETag/手工版本时不能留下无法失效的缓存')
+assert.equal(requests[3].range, undefined, '无版本的外站 ZIP 保持单次 GET，不能复用旧分片')
+assert.equal(requests[4].range, undefined, '无版本地址反复打开也不能偷偷启用断点拼接')
 await assert.rejects(loadRemoteArchiveRom(`${base.replace('game.nes', 'missing.nes')}&v=3`), /找不到 ROM/)
 body = zip('folder/game.nes', rom, 8, true)
 await assert.rejects(loadRemoteArchiveRom(`${base}&v=4`), /校验失败/)
@@ -96,4 +114,4 @@ await assert.rejects(loadRemoteArchiveRom('https://files.example.com/hash.nds.zi
 await assert.rejects(loadRemoteArchiveRom('https://files.example.com/outer.zip#rom=auto&v=1'), /自动识别需要/)
 globalThis.fetch = async () => { throw new TypeError('Failed to fetch') }
 await assert.rejects(loadRemoteArchiveRom(`${base}&v=6`), /跨域 GET/)
-console.log('remote archive: 解包、CRC、缓存命中与失效、大小限制通过')
+console.log('remote archive: 解包、CRC、坏缓存回源、缓存失效与大小限制通过')

@@ -918,7 +918,8 @@ export function attachNetplay(httpServer, app, origins = ['*'], { resolveGamePol
     }, 25_000)
     beat.unref?.()
 
-    req.on('close', () => {
+    // 请求体完成不代表 EventSource 断开；监听响应侧才能保住长连接订阅。
+    res.once('close', () => {
       clearInterval(beat)
       watchers.delete(w)
     })

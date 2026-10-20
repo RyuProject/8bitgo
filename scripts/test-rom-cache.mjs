@@ -199,6 +199,7 @@ process.on('unhandledRejection', (e) => {
     assert.equal(romCacheKey('blob:https://8bitgo.com/uuid'), '', 'blob: 是本地文件，不该缓存')
     assert.equal(romCacheKey('data:application/zip;base64,AAAA'), '', 'data: 不该缓存')
     assert.equal(romCacheKey('https://assets.8bitgo.com/roms/nes/a.zip'), '', '没有 romv 就没有内容版本号，不能缓存')
+    assert.equal(romCacheKey('https://assets.8bitgo.com/roms/nes/a.zip?romv='), '', '空 romv 不能冒充内容版本并拼入旧分片')
     assert.equal(romCacheKey(''), '', '空地址')
     assert.equal(romCacheKey(url('a')), url('a'), '带 romv 的正常地址应可缓存')
     assert.equal(

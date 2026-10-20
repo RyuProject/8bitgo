@@ -10,6 +10,7 @@
  */
 import assert from 'node:assert/strict'
 import { adaptiveChunkConcurrency, fetchBlobWithProgress, CHUNK_BYTES } from '../src/emulator/loadProgress.ts'
+import { loadGameBytes } from '../src/emulator/romLoader.ts'
 
 let failed = 0
 const check = async (name, fn) => {
@@ -139,6 +140,17 @@ await check('文件比一片还小：只发一次请求，不进循环', async (
   const blob = await fetchBlobWithProgress('u', { fetchImpl, chunkBytes: 1024 })
   expectExact(await readAll(blob), size)
   assert.equal(calls.length, 1)
+})
+
+await check('单片小 ROM 不写临时库，避免下载完成后马上又删除一笔 IndexedDB 事务', async () => {
+  const resumeStore = memoryResumeStore()
+  const { fetchImpl, calls } = server(300)
+  const blob = await fetchBlobWithProgress('u', {
+    fetchImpl, chunkBytes: 1024, resumeKey: 'rom?v=1', resumeStore,
+  })
+  expectExact(await readAll(blob), 300)
+  assert.equal(calls.length, 1)
+  assert.equal(resumeStore.sessions.size, 0)
 })
 
 await check('服务器不认 Range：退回整份下载，照样能用', async () => {
@@ -549,6 +561,106 @@ await check('并发期间 CDN 突然忽略 Range：停掉其它片并采用完�
     networkHints: { effectiveType: '4g', rttMs: 80 },
   })
   expectExact(await readAll(blob), size)
+})
+
+console.log('七、NDS 大文件下载的内存边界')
+
+await check('无效上限不能悄悄变成无限下载', async () => {
+  await assert.rejects(() => fetchBlobWithProgress('u', {
+    fetchImpl: async () => { throw new Error('不能联网') }, maxBytes: Number.NaN,
+  }), /无效的分片下载上限/)
+})
+
+await check('异常 Content-Range 总量在分片表分配前拒绝', async () => {
+  let bodyRead = false
+  const fetchImpl = async () => ({
+    ok: true, status: 206,
+    headers: headers({ 'content-range': 'bytes 0-1023/9007199254740991' }),
+    body: { cancel: async () => {}, getReader() { bodyRead = true; throw new Error('不应读取巨大响应体') } },
+  })
+  await assert.rejects(() => fetchBlobWithProgress('u', {
+    fetchImpl, chunkBytes: 1024, maxBytes: 2048, retries: 0,
+  }), /超过浏览器下载上限/)
+  assert.equal(bodyRead, false, '读包体或分配分片表前就应该拒绝畸形总量')
+})
+
+await check('Content-Range 声称小片但实际回巨大流时立即截断', async () => {
+  let calls = 0
+  const fetchImpl = async () => {
+    calls++
+    const first = calls === 1
+    return {
+      ok: true, status: 206,
+      headers: headers({ 'content-range': first ? 'bytes 0-1023/2048' : 'bytes 1024-2047/2048' }),
+      body: streamOf(first ? bodyFor(0, 1023) : bodyFor(1024, 4095)),
+    }
+  }
+  await assert.rejects(() => fetchBlobWithProgress('u', {
+    fetchImpl, chunkBytes: 1024, maxBytes: 2048, retries: 3,
+  }), /文件过大/)
+  assert.equal(calls, 2, '畸形的第二片不能重试，更不能无限攒入内存')
+})
+
+await check('服务器忽略 Range 时仍受 Content-Length 和流式字节上限约束', async () => {
+  const source = server(4096, { noRange: true })
+  await assert.rejects(() => fetchBlobWithProgress('u', {
+    fetchImpl: source.fetchImpl, chunkBytes: 1024, maxBytes: 2048, retries: 0,
+  }), /超过浏览器下载上限/)
+  assert.equal(source.calls.length, 1, '已知整包超限不应重试或继续读四千字节')
+  let unknownCalls = 0
+  const unknownLength = async () => {
+    unknownCalls++
+    return { ok: true, status: 200, headers: headers({}), body: streamOf(bodyFor(0, 4095)) }
+  }
+  await assert.rejects(() => fetchBlobWithProgress('u', {
+    fetchImpl: unknownLength, chunkBytes: 1024, maxBytes: 2048, retries: 3,
+  }), /文件过大/)
+  assert.equal(unknownCalls, 1, '未知总量触及硬上限后不能重复下载同一包体')
+})
+
+await check('损坏的续传总量先清理，不用巨大 Array.from 阻塞页面', async () => {
+  const source = server(2048)
+  let cleared = false
+  const resumeStore = {
+    async load() { return { total: Number.MAX_SAFE_INTEGER, chunkBytes: 1024, parts: new Map([[0, new Blob([new Uint8Array(1024)])]]) } },
+    async put() {},
+    async clear() { cleared = true },
+  }
+  const blob = await fetchBlobWithProgress('u', {
+    fetchImpl: source.fetchImpl, chunkBytes: 1024, maxBytes: 2048, retries: 0,
+    resumeKey: 'bad-record', resumeStore,
+  })
+  expectExact(await readAll(blob), 2048)
+  assert.equal(cleared, true)
+})
+
+console.log('八、轻量运行时的实际入口')
+
+await check('有内容版本的通用 ROM 探测 Range；无版本外链仍单次 GET', async () => {
+  const oldFetch = globalThis.fetch
+  const oldWindow = globalThis.window
+  const requests = []
+  const bytes = new Uint8Array([0x4e, 0x45, 0x53, 0x1a, ...Array(12).fill(0)])
+  globalThis.window = { location: { href: 'https://8bitgo.com/' } }
+  globalThis.fetch = async (_url, init) => {
+    const range = init?.headers?.Range
+    requests.push(range)
+    return new Response(bytes, {
+      status: range ? 206 : 200,
+      headers: range
+        ? { 'content-range': `bytes 0-${bytes.length - 1}/${bytes.length}`, 'content-length': String(bytes.length) }
+        : { 'content-length': String(bytes.length) },
+    })
+  }
+  try {
+    const versioned = await loadGameBytes('https://assets.example/game.nes?romv=one')
+    assert.deepEqual(new Uint8Array(versioned.data), bytes)
+    await loadGameBytes('https://files.example/game.nes')
+    assert.deepEqual(requests, ['bytes=0-8388607', undefined])
+  } finally {
+    globalThis.fetch = oldFetch
+    globalThis.window = oldWindow
+  }
 })
 
 console.log(failed ? `\n${failed} 项未通过` : '\n全部通过 ✅')

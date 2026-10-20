@@ -315,9 +315,10 @@ console.log('\n── 源码守卫 ──')
     const src = strip(readFileSync(new URL(file, import.meta.url), 'utf8'))
     const at = src.indexOf(route)
     assert.ok(at > 0, `${file} 里找不到 ${route}`)
-    const body = src.slice(at, at + 400)
+    const body = src.slice(at, at + 1500)
     ok(/admitSse\(req,\s*res\)/.test(body), `${route} 的 handler 开头就调了 admitSse`)
     ok(!/text\/event-stream/.test(body), `${route} 不再自己写响应头（统一由 admitSse 写）`)
+    ok(/res\.once\('close',/.test(body) && !/req\.on\('close',/.test(body), `${route} 只在响应断开时清理订阅`)
   }
 }
 

@@ -60,6 +60,7 @@ import {
   decryptRomPackChunk,
   deriveRomPackKey,
   isRomPackHeadPrefix,
+  parseRomByteRange,
   planRomPackChunks,
   readRomPackHead,
   releaseTranscodeSlot,
@@ -1076,19 +1077,6 @@ openRouter.get('/v1/rom-plain/:grant', async (req, res, next) => {
   }
 })
 
-/** 解析设备发来的 Range: bytes=start-end（end 含，缺省补到边界）。 */
-function parseRomRange(req, total) {
-  const h = String(req.headers.range || '')
-  const m = h.match(/^bytes=(\d*)-(\d*)$/)
-  if (!m) return { start: 0, end: total, isRange: false }
-  const start = m[1] === '' ? 0 : Number(m[1])
-  const end = m[2] === '' ? total : Number(m[2]) + 1 // 转成半开区间，和 plan 对齐
-  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || start >= total) {
-    return { unsatisfiable: true, total }
-  }
-  return { start, end: Math.min(total, end), isRange: true }
-}
-
 /** 非 8BG：把请求（含 Range）原样透传上游对象存储，行为和 302 那路等价。 */
 async function pipeRomPassthrough({ req, res, target, signal }) {
   const upstream = await fetch(target, {
@@ -1116,16 +1104,23 @@ async function pipeRomPassthrough({ req, res, target, signal }) {
 async function streamRomPlain({ req, res, target, limits }) {
   const ac = new AbortController()
   const timer = setTimeout(() => ac.abort(), limits.timeoutMs)
-  req.on('close', () => ac.abort())
+  // GET 的 req.close 可在响应开始前触发；只有响应真的断开才取消上游下载。
+  const onResponseClose = () => { if (!res.writableEnded) ac.abort() }
+  res.once('close', onResponseClose)
   // 一次性辅助：取上游首块前 8 字节并释放连接（上游若忽略 Range 返回 200，cancel 能避免整包下载）
   const peek8 = async () => {
     const r = await fetch(target, { headers: { Range: 'bytes=0-7' }, redirect: 'follow', signal: ac.signal })
-    if (!r.ok && r.status !== 206) throw new Error(`取 ROM 头失败：${r.status}`)
-    const rd = r.body.getReader()
-    const { value, done } = await rd.read()
-    await rd.cancel().catch(() => {})
-    if (done || !value) throw new Error('ROM 头为空')
-    return Buffer.from(value).subarray(0, 8)
+    if (!r.ok && r.status !== 206) {
+      await r.body?.cancel().catch(() => {})
+      throw new Error(`取 ROM 头失败：${r.status}`)
+    }
+    const reader = ByteReader.fromWeb(r.body)
+    try {
+      // ReadableStream 不保证第一次 read() 就给足 8 字节；短首包会把真实 8BG 错判成明文。
+      return await reader.readExactly(8)
+    } finally {
+      await reader.cancel().catch(() => {})
+    }
   }
   try {
     const head8 = await peek8()
@@ -1137,9 +1132,17 @@ async function streamRomPlain({ req, res, target, limits }) {
       target,
       { headers: { Range: `bytes=0-${ROM_PACK_MAX_HEADER_BYTES + 7}` }, redirect: 'follow', signal: ac.signal },
     )
-    if (!headRes.ok && headRes.status !== 206) throw new Error(`取 ROM 头失败：${headRes.status}`)
-    const { header, dataOffset } = await readRomPackHead(ByteReader.fromWeb(headRes.body))
-    await headRes.body.cancel?.().catch(() => {})
+    if (!headRes.ok && headRes.status !== 206) {
+      await headRes.body?.cancel().catch(() => {})
+      throw new Error(`取 ROM 头失败：${headRes.status}`)
+    }
+    const headReader = ByteReader.fromWeb(headRes.body)
+    let header, dataOffset
+    try {
+      ({ header, dataOffset } = await readRomPackHead(headReader))
+    } finally {
+      await headReader.cancel().catch(() => {})
+    }
     if (header.originalSize > limits.maxBytes) {
       res.set('Cache-Control', 'private, no-store')
       return res.status(413).json({ error: 'payload_too_large', error_description: `ROM 明文超过上限 ${limits.maxBytes} 字节` })
@@ -1149,7 +1152,7 @@ async function streamRomPlain({ req, res, target, limits }) {
     }
     const key = deriveRomPackKey(header.packageId, header.keyId)
     await resolveZstd()
-    const range = parseRomRange(req, header.originalSize)
+    const range = parseRomByteRange(req.headers.range, header.originalSize)
     if (range.unsatisfiable) {
       res.set('Content-Range', `bytes */${header.originalSize}`)
       res.set('Cache-Control', 'private, no-store')
@@ -1158,17 +1161,18 @@ async function streamRomPlain({ req, res, target, limits }) {
     const plan = planRomPackChunks(header, range.start, range.end)
     const innerName = romPackInnerName(header.originalName)
     const asciiName = innerName.replace(/[^\x20-\x7e]/g, '_')
-    // 响应头
-    res.set('Content-Type', 'application/octet-stream')
-    res.set('Content-Disposition', `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(innerName)}`)
-    res.set('Accept-Ranges', 'bytes')
-    res.set('Cache-Control', 'private, no-store')
-    res.set('Content-Length', String(range.end - range.start))
-    if (range.isRange) {
-      res.status(206)
-      res.set('Content-Range', `bytes ${range.start}-${range.end - 1}/${header.originalSize}`)
+    const writeResponseHeaders = () => {
+      res.set('Content-Type', 'application/octet-stream')
+      res.set('Content-Disposition', `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(innerName)}`)
+      res.set('Accept-Ranges', 'bytes')
+      res.set('Cache-Control', 'private, no-store')
+      res.set('Content-Length', String(range.end - range.start))
+      if (range.isRange) {
+        res.status(206)
+        res.set('Content-Range', `bytes ${range.start}-${range.end - 1}/${header.originalSize}`)
+      }
     }
-    if (req.method === 'HEAD') return res.end()
+    if (req.method === 'HEAD') { writeResponseHeaders(); return res.end() }
     // 取命中分块对应的密文区间（分块在 payload 内连续）
     let payloadStart = 0
     for (let i = 0; i < plan[0].index; i++) payloadStart += header.chunks[i].cipherSize
@@ -1178,20 +1182,29 @@ async function streamRomPlain({ req, res, target, limits }) {
       target,
       { headers: { Range: `bytes=${dataOffset + payloadStart}-${dataOffset + payloadEnd - 1}` }, redirect: 'follow', signal: ac.signal },
     )
-    if (!payRes.ok && payRes.status !== 206) throw new Error(`取 ROM 数据失败：${payRes.status}`)
-    const reader = ByteReader.fromWeb(payRes.body)
-    // 上游若忽略 Range 返回完整对象（200），应先跳过前面的字节再读命中的块
-    if (payRes.status !== 206) await reader.readExactly(dataOffset + payloadStart)
-    const gen = async function* () {
-      for (const step of plan) {
-        const encrypted = await reader.readExactly(header.chunks[step.index].cipherSize)
-        const source = await decryptRomPackChunk({ header, key, index: step.index, encrypted })
-        yield step.skipHead > 0 || step.takeLen < source.byteLength
-          ? source.subarray(step.skipHead, step.skipHead + step.takeLen)
-          : source
-      }
+    if (payRes.status !== 206 && payRes.status !== 200) {
+      await payRes.body?.cancel().catch(() => {})
+      throw new Error(`取 ROM 数据失败：${payRes.status}`)
     }
-    await pipeline(Readable.from(gen()), res)
+    const reader = ByteReader.fromWeb(payRes.body)
+    try {
+      if (payRes.status === 200) await reader.skipExactly(dataOffset + payloadStart)
+      // 先确认上游可读并处理被忽略的 Range，再发 ROM 长度；错误路径不能带着旧长度回 JSON。
+      writeResponseHeaders()
+      const gen = async function* () {
+        for (const step of plan) {
+          const encrypted = await reader.readExactly(header.chunks[step.index].cipherSize)
+          const source = await decryptRomPackChunk({ header, key, index: step.index, encrypted })
+          yield step.skipHead > 0 || step.takeLen < source.byteLength
+            ? source.subarray(step.skipHead, step.skipHead + step.takeLen)
+            : source
+        }
+      }
+      await pipeline(Readable.from(gen()), res)
+    } finally {
+      // 上游忽略 Range 时只读到命中块末尾；必须取消剩余整包，归还连接与带宽。
+      await reader.cancel().catch(() => {})
+    }
   } catch (e) {
     if (!res.headersSent) {
       res.set('Cache-Control', 'private, no-store')
@@ -1204,6 +1217,7 @@ async function streamRomPlain({ req, res, target, limits }) {
     throw e
   } finally {
     clearTimeout(timer)
+    res.off('close', onResponseClose)
   }
 }
 

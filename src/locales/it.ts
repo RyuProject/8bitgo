@@ -943,6 +943,10 @@ const it: Translation = {
     noRuntime: "Per {platform} non c'è ancora un runtime disponibile",
     checkingCloud: 'Cerchiamo una ROM sul cloud…',
     start: 'Avvia il gioco',
+    pspLoadMode: 'Modalità di caricamento PSP',
+    pspStream: 'Streaming',
+    pspDownload: 'Scarica tutto il gioco',
+    pspDownloadHint: 'Si avvia dopo il download completo. Usa lo spazio del browser, riutilizza la stessa versione ed evita letture di rete durante il gioco.',
     pickRom: 'Scegli una ROM per iniziare a giocare',
     cloudHint:
       'La ROM viene caricata dal cloud e gira nel tuo browser con {runtime}. Il primo caricamento richiede qualche secondo.',

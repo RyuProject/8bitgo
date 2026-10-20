@@ -7,15 +7,22 @@
  * 再由同源接口流给页面；客户端不能提交任意目标 URL，所以它不是一台开放代理。
  */
 import { lookup } from 'node:dns/promises'
-import { isIP } from 'node:net'
+import { BlockList, isIP } from 'node:net'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
+import { Agent } from 'undici'
 
 const MEDIA_KINDS = new Set(['cover', 'video'])
 const MAX_REDIRECTS = 3
 const DEFAULT_TIMEOUT_MS = 20_000
 const DEFAULT_MAX_PROXIES = 24
 const CACHE_CONTROL = 'public, max-age=300, s-maxage=86400, stale-while-revalidate=86400'
+const GLOBAL_IPV6 = new BlockList()
+GLOBAL_IPV6.addSubnet('2000::', 3, 'ipv6')
+const RESERVED_IPV6 = new BlockList()
+for (const [network, prefix] of [['2001::', 32], ['2001:db8::', 32], ['2002::', 16]]) {
+  RESERVED_IPV6.addSubnet(network, prefix, 'ipv6')
+}
 
 /** IPv4 的保留、内网、回环、链路本地、文档网段与组播地址都不能成为服务端抓取目标。 */
 function isPublicIpv4(address) {
@@ -43,14 +50,9 @@ export function isPublicMediaAddress(address) {
   if (family === 4) return isPublicIpv4(value)
   if (family !== 6) return false
 
-  if (value === '::' || value === '::1') return false
-  const mapped = value.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)
-  if (mapped) return isPublicIpv4(mapped[1])
-  if (/^(?:fc|fd)/.test(value)) return false // fc00::/7
-  if (/^fe[89ab]/.test(value)) return false // fe80::/10
-  if (/^ff/.test(value)) return false // ff00::/8
-  if (/^2001:db8(?::|$)/.test(value)) return false // 文档示例网段
-  return true
+  // 映射地址会被 URL 规范化成 ::ffff:7f00:1；按点分 IPv4 匹配会漏掉回环地址。
+  // 只接全球单播，再排除其中可嵌入 IPv4 或并非公开主机的特殊网段。
+  return GLOBAL_IPV6.check(value, 'ipv6') && !RESERVED_IPV6.check(value, 'ipv6')
 }
 
 function remoteMediaUrl(value) {
@@ -66,7 +68,7 @@ function remoteMediaUrl(value) {
   }
 }
 
-async function assertPublicUrl(url, lookupImpl) {
+async function publicAddresses(url, lookupImpl) {
   // WHATWG URL 对 IPv6 literal 保留方括号，dns.lookup / net.isIP 都只认里面那段。
   const hostname = url.hostname.replace(/^\[|\]$/g, '')
   const literalFamily = isIP(hostname)
@@ -76,13 +78,28 @@ async function assertPublicUrl(url, lookupImpl) {
   if (!addresses.length || addresses.some((entry) => !isPublicMediaAddress(entry.address))) {
     throw new Error('外链媒体地址解析到了内网或保留地址')
   }
+  return addresses
 }
 
-async function fetchWithSafeRedirects(url, init, { fetchImpl, lookupImpl }) {
+/** 真正建连时再验一次，防止预检与 fetch 两次 DNS 解析之间发生重绑定。 */
+export function createPublicMediaLookup(lookupImpl = lookup) {
+  return (hostname, options, callback) => {
+    void publicAddresses({ hostname }, lookupImpl).then(
+      (addresses) => {
+        if (options?.all) callback(null, addresses)
+        else callback(null, addresses[0].address, addresses[0].family)
+      },
+      (error) => callback(error),
+    )
+  }
+}
+
+async function fetchWithSafeRedirects(url, init, { fetchImpl, lookupImpl, dispatcher }) {
   let current = url
   for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {
-    await assertPublicUrl(current, lookupImpl)
-    const response = await fetchImpl(current, { ...init, redirect: 'manual' })
+    await publicAddresses(current, lookupImpl)
+    // 预检只负责挡明显错误；唯一可靠的边界是 socket 建连时使用同一套地址校验。
+    const response = await fetchImpl(current, { ...init, redirect: 'manual', dispatcher })
     if (![301, 302, 303, 307, 308].includes(response.status)) return response
 
     const location = response.headers.get('location')
@@ -120,6 +137,7 @@ export function createGameMediaProxy({
   maxProxies = DEFAULT_MAX_PROXIES,
 }) {
   let activeProxies = 0
+  const dispatcher = new Agent({ connect: { lookup: createPublicMediaLookup(lookupImpl) } })
 
   return async function gameMediaProxy(req, res) {
     const kind = String(req.params.kind || '')
@@ -167,7 +185,7 @@ export function createGameMediaProxy({
         method: req.method === 'HEAD' ? 'HEAD' : 'GET',
         headers,
         signal,
-      }, { fetchImpl, lookupImpl })
+      }, { fetchImpl, lookupImpl, dispatcher })
 
       if (upstream.status === 304) {
         res.setHeader('Cache-Control', CACHE_CONTROL)

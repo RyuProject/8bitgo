@@ -86,6 +86,12 @@ const adapter = readFileSync(join(root, 'src/emulator/adapters/emulatorjs.ts'), 
 const player = readFileSync(join(root, 'src/emulator/EmulatorPlayer.tsx'), 'utf8')
 const copier = readFileSync(join(root, 'scripts/copy-ejs-cores.mjs'), 'utf8')
 assert.match(adapter, /installErrorTap\(win, reportEngineError, options\.platform === 'nds' \? reportCoreCrash : undefined\)/)
+for (const label of ['probeSaveState', 'saveFiles', 'saveState']) {
+  assert.match(adapter, new RegExp(`\\[${label}\\][\\s\\S]{0,260}isNdsWasmCrash\\('', e\\)\\) reportCoreCrash`),
+    `${label} 主动调用核心时的 WASM 陷阱不能躲过 console 探针`)
+}
+assert.match(adapter, /gm\.loadState\(new Uint8Array\(data\)\)[\s\S]{0,180}isNdsWasmCrash\('', e\)\) reportCoreCrash/)
+assert.match(adapter, /refineCaps\(\)\s*if \(crashReported\) return/, '存档探测触发崩溃后不能继续布置触控与定时器')
 // 开局 trap 被引擎 catch 后是 console.warn('Failed to start game', e)：warn 级的真 RuntimeError 也要走换核心。
 assert.match(adapter, /const trap = level === 'error' \? isNdsWasmCrash\(text, error\) : level === 'warn' && error !== undefined/)
 assert.match(adapter, /if \(destroyed \|\| started \|\| loadFailed \|\| crashReported\) return/, '已换核心的崩溃不能再走 onError 重试')
@@ -93,7 +99,7 @@ assert.equal(isNdsWasmCrash('', { name: 'RuntimeError', message: 'null function'
 assert.match(player, /onCoreCrash: \(crashedCore: string, reason: string\)/)
 assert.match(player, /coreOverride: nextCore/)
 assert.match(player, /Boolean\(session\.coreOverride\)/)
-assert.match(player, /\$\{baseSaveSlug\}:melonds-compat/)
+assert.match(player, /\$\{coreSaveSlug\}:melonds-compat/)
 assert.match(player, /countedPlayAttemptRef\.current === session\.startupAttemptId/)
 assert.match(player, /playableTimer = window\.setTimeout\(confirmPlayable, 5_000\)/)
 assert.match(player, /window\.clearTimeout\(playableTimer\)/)

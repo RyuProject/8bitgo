@@ -7,7 +7,7 @@
  *
  * 三条硬要求，每一条错了都是线上静默失败：
  *   1. 只旁路直接接到 destination 的那一路（中间节点也采 = 同一条声音收好几遍）
- *   2. 旁路点自己**不能**接到 destination（接了 = 玩家听到双份声音）
+ *   2. 默认旁路点不接 destination；NDS 固定总线只接它一次、短音块只接总线一次
  *   3. 任何一步失败都不能影响游戏本身（最坏结果只能是「没声音」）
  *
  * 跑：npm run test:audio-tap
@@ -163,6 +163,36 @@ console.log('\n── 只认第一个上下文 ──')
   ok(!connections.some(([, to]) => to === 'gain'), '接到别的上下文的扬声器上不会被误采')
 }
 
+console.log('\n── NDS 固定输出总线 ──')
+{
+  reset()
+  const win = makeRealm()
+  const tap = installAudioTap(win, 'shared-output')
+  const ctx = new win.AudioContext()
+  ok(tap.node instanceof FakeGainNode, '固定总线在第一个 AudioContext 建立时就绪')
+  ok(connections.length === 1 && connections[0][0] === 'gain' && connections[0][1] === 'destination',
+    '总线只向扬声器接一次，不为每个短音块重复接线')
+
+  const source = new win.AudioNode('nds-chunk')
+  ok(source.connect(ctx.destination) === ctx.destination, 'connect 返回值仍是调用方指定的扬声器节点')
+  ok(connections.filter(([from, to]) => from === 'nds-chunk' && to === 'gain').length === 1,
+    '短音块只接到固定总线一次')
+  ok(!connections.some(([from, to]) => from === 'nds-chunk' && to === 'destination'),
+    '短音块不另接扬声器，避免声音叠加')
+
+  for (let i = 0; i < 100; i++) new win.AudioNode('nds-chunk').connect(ctx.destination)
+  ok(connections.length === 102, '100 个后续音块只增加 100 次连接，不是 200 次')
+
+  tap.node.connect(new win.AudioNode('recorder'))
+  ok(connections.some(([from, to]) => from === 'gain' && to === 'recorder'),
+    '开局之后再录屏仍能从同一条总线取到声音')
+
+  const second = new win.AudioContext()
+  new win.AudioNode('second-chunk').connect(second.destination)
+  ok(connections.some(([from, to]) => from === 'second-chunk' && to === 'destination'),
+    '其它 AudioContext 保留原始输出，不错误地接进第一个上下文')
+}
+
 console.log('\n── 失败一律降级成「没声音」，不能影响游戏 ──')
 {
   // 这个 realm 根本没有 AudioContext
@@ -191,6 +221,14 @@ console.log('\n── 失败一律降级成「没声音」，不能影响游戏 
     connections.some(([from, to]) => from === 'osc' && to === 'destination'),
     '⭐ 没有旁路点时，游戏自己的声音一点没受影响',
   )
+
+  reset()
+  const badBus = makeRealm({ gainThrows: true })
+  const t4 = installAudioTap(badBus, 'shared-output')
+  const busCtx = new badBus.AudioContext()
+  new badBus.AudioNode('nds-fallback').connect(busCtx.destination)
+  ok(t4.node === null && connections.some(([from, to]) => from === 'nds-fallback' && to === 'destination'),
+    'NDS 固定总线建不起来时仍直连扬声器，不能让游戏静音')
 }
 
 console.log('\n── 装两次不会叠加 ──')

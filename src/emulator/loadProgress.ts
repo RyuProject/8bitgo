@@ -169,7 +169,8 @@ export async function fetchWithProgress(
     let total = !encoded && Number.isFinite(len) && len > 0 ? len : undefined
     if (total !== undefined && total > (opts.maxBytes ?? Infinity)) {
       void res.body?.cancel().catch(() => {})
-      throw new Error('文件过大，无法在浏览器内存中解包')
+      // 已经超过硬上限，换节点重试只会再白下同样多字节；让调用方立刻止损。
+      throw new RangeError('文件过大，无法在浏览器内存中解包')
     }
 
     if (!res.body) {
@@ -230,7 +231,8 @@ async function drain(
     touch?.()
     if (loaded + value.byteLength > maxBytes) {
       await reader.cancel().catch(() => {})
-      throw new Error('文件过大，无法在浏览器内存中解包')
+      // 真实流量越过硬上限时不能把同一份畸形回包当瞬时网络错误反复重下。
+      throw new RangeError('文件过大，无法在浏览器内存中解包')
     }
     chunks.push(value)
     loaded += value.byteLength
@@ -274,6 +276,10 @@ export interface BlobFetchOptions {
   fetchImpl?: typeof fetch
   /** 覆盖「多久没字节算卡死」，只给测试用 */
   stallMs?: number
+  /** 下载前就限制响应总量；不能等完整 Blob 到手后才让格式校验发现异常大文件。 */
+  maxBytes?: number
+  /** 外站 ZIP 的完整归档不留 HTTP 副本；续传片由独立 IndexedDB 管。 */
+  cache?: RequestCache
   /**
    * 带内容版本的持久化键。设置后，完整分片会落进临时 IndexedDB，刷新页面只补缺失片。
    * 没有可靠版本号时必须留空，否则同一个 URL 被覆盖后可能把两代 ROM 拼在一起。
@@ -304,12 +310,14 @@ export interface ChunkNetworkHints {
  * 断一次只白下 8MB，而一张 600MB 的盘也才 75 个请求，HTTP/2 下开销可以忽略。
  */
 export const CHUNK_BYTES = 8 * 1024 * 1024
+/** 先限制分片表长度：错误的 Content-Range / 本地续传记录不能让 Array.from 直接耗尽标签页。 */
+const MAX_BLOB_PARTS = 16_384
 
 /**
  * ⚠️ 小文件不需要特判：第一个 Range 请求要的就是 `bytes=0-<片长-1>`，
  * 比这短的文件一次就回全了，循环一次都不进。所以这里没有「多大以上才分片」的阈值。
  *
- * 这条路目前用于光盘平台和 NDS（见 adapters/emulatorjs.ts 的 prepareRemoteDiscRom）；
+ * 这条路用于光盘、NDS、街机及带版本的大文件（见 adapters/emulatorjs.ts 的 prepareRemoteDiscRom）；
  * 其它小卡带 ROM 仍走 loadGameBytes 的 ArrayBuffer 路径，一个字节都不受影响。
  */
 
@@ -461,6 +469,11 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
   const phase = opts.phase ?? 'rom'
   const type = opts.type ?? 'application/octet-stream'
   const chunkBytes = opts.chunkBytes ?? CHUNK_BYTES
+  const maxBytes = opts.maxBytes ?? Infinity
+  if (!Number.isSafeInteger(chunkBytes) || chunkBytes <= 0 ||
+      !(maxBytes === Infinity || Number.isSafeInteger(maxBytes) && maxBytes > 0)) {
+    throw new RangeError('无效的分片下载上限')
+  }
   const retries = opts.retries ?? CHUNK_RETRIES
   const doFetch = opts.fetchImpl ?? fetch
   const emit = throttleProgress(opts.onProgress)
@@ -547,8 +560,10 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
     const encoded = Boolean(res.headers.get('content-encoding'))
     const len = Number(res.headers.get('content-length'))
     const total = !encoded && Number.isFinite(len) && len > 0 ? len : undefined
+    if (total !== undefined && total > maxBytes) throw new RangeError('ROM 文件超过浏览器下载上限')
     if (!res.body) {
       const blob = await res.blob()
+      if (blob.size > maxBytes) throw new RangeError('ROM 文件超过浏览器下载上限')
       if (total !== undefined && blob.size !== total) {
         throw new Error(`下载不完整：应为 ${total} 字节，实际收到 ${blob.size} 字节`)
       }
@@ -562,7 +577,7 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
       phase,
       total,
       (p) => emitTotal(p.loaded ?? 0, p.total),
-      Infinity,
+      maxBytes,
       guard.touch,
     )
     emitTotal(loaded, loaded, true)
@@ -581,16 +596,20 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
   if (resumed) {
     total = resumed.total
     const count = Math.ceil(total / chunkBytes)
-    let valid = resumed.chunkBytes === chunkBytes && Number.isSafeInteger(total) && total > 0
-    parts = Array.from({ length: count }, () => undefined as Blob | undefined)
-    for (const [index, blob] of resumed.parts) {
-      const expected = Math.min(chunkBytes, total - index * chunkBytes)
-      if (!Number.isInteger(index) || index < 0 || index >= count || !(blob instanceof Blob) || blob.size !== expected) {
-        valid = false
-        break
+    let valid = resumed.chunkBytes === chunkBytes && Number.isSafeInteger(total) && total > 0 &&
+      total <= maxBytes && count <= MAX_BLOB_PARTS
+    // 旧版 IDB 或损坏的 metadata 可能写着极大 total；先验上限，再分配 parts。
+    if (valid) {
+      parts = Array.from({ length: count }, () => undefined as Blob | undefined)
+      for (const [index, blob] of resumed.parts) {
+        const expected = Math.min(chunkBytes, total - index * chunkBytes)
+        if (!Number.isInteger(index) || index < 0 || index >= count || !(blob instanceof Blob) || blob.size !== expected) {
+          valid = false
+          break
+        }
+        parts[index] = blob
+        completed += blob.size
       }
-      parts[index] = blob
-      completed += blob.size
     }
     if (!valid || completed === 0) {
       await clearResume()
@@ -610,7 +629,8 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
       if (blob.size !== expect) throw new Error(`分片不完整：应为 ${expect} 字节，实际 ${blob.size}`)
       return blob
     }
-    const { chunks } = await drain(res.body, phase, expect, relay, Infinity, guard.touch)
+    // Content-Range 只是服务器自报；若实际流远大于这一片，不能先无限攒进 chunks 再验长度。
+    const { chunks } = await drain(res.body, phase, expect, relay, expect, guard.touch)
     return new Blob(chunks as BlobPart[])
   }
 
@@ -626,7 +646,10 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
       try {
         guard.touch()
         const sampleStartedAt = monotonicNow()
-        const first = await doFetch(url, { headers: { Range: `bytes=0-${chunkBytes - 1}` }, signal: guard.signal })
+        const first = await doFetch(url, {
+          headers: { Range: `bytes=0-${chunkBytes - 1}` }, signal: guard.signal,
+          ...(opts.cache ? { cache: opts.cache } : {}),
+        })
         if (!first.ok) throw new Error(`HTTP ${first.status}`)
         opts.check?.(first)
         if (first.status !== 206) return takeWhole(first)
@@ -635,6 +658,10 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
         const firstTotal = Number(match?.[3])
         if (!match || Number(match[1]) !== 0 || !Number.isSafeInteger(firstTotal) || firstTotal <= 0) {
           throw new Error('分片响应缺少有效的 Content-Range')
+        }
+        if (firstTotal > maxBytes || Math.ceil(firstTotal / chunkBytes) > MAX_BLOB_PARTS) {
+          void first.body?.cancel().catch(() => {})
+          throw new RangeError('ROM 文件超过浏览器下载上限')
         }
         const firstEnd = Math.min(chunkBytes, firstTotal) - 1
         if (Number(match[2]) !== firstEnd) throw new Error(`分片范围不匹配：期望 bytes 0-${firstEnd}/${firstTotal}`)
@@ -647,11 +674,13 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
         parts[0] = firstPart
         completed = firstPart.size
         emitTotal(completed, total, true)
-        await queuePartSave(total, 0, firstPart)
+        // 整份不足一片时已经完整，落临时库再立刻删只会拖慢几百 KB 的小游戏开局。
+        if (firstTotal > chunkBytes) await queuePartSave(total, 0, firstPart)
         break
       } catch (error) {
         // 卡死会在外层换一只新的 AbortController；这里不能拿已 abort 的 signal 空转。
         if (guard.stalled()) throw error
+        if (error instanceof RangeError) throw error
         if (isAbort(error) || opts.signal?.aborted) throw error
         if (attempt >= retries) throw error
         await sleep(500 * 2 ** attempt, opts.signal)
@@ -705,7 +734,10 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
       activeControllers.set(index, controller)
       try {
         guard.touch()
-        const res = await doFetch(url, { headers: { Range: `bytes=${start}-${end}` }, signal: controller.signal })
+        const res = await doFetch(url, {
+          headers: { Range: `bytes=${start}-${end}` }, signal: controller.signal,
+          ...(opts.cache ? { cache: opts.cache } : {}),
+        })
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         opts.check?.(res)
         if (res.status !== 206) {
@@ -737,6 +769,7 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
         // 卡死不是「这一次没成」：重试只会再等一整个看门狗周期，直接抛
         if (guard.stalled()) throw error
         // 取消是用户意图，不是失败，别在这儿空转重试
+        if (error instanceof RangeError) throw error
         if (isAbort(error) || opts.signal?.aborted) throw error
         if (attempt >= retries) throw error
         // 退避：0.5s / 1s / 2s。切网络那一下往往要一两秒才恢复
@@ -760,7 +793,8 @@ async function blobWithProgressGuarded(url: string, opts: BlobFetchOptions, guar
       setInFlight(index, blob.size)
       return blob
     }
-    const { chunks } = await drain(res.body, phase, expect, relay, Infinity, guard.touch)
+    // 并发片同样要按实际读入字节止损，不能信 CDN 宣称的 Content-Range。
+    const { chunks } = await drain(res.body, phase, expect, relay, expect, guard.touch)
     return new Blob(chunks as BlobPart[])
   }
 

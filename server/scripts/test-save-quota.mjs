@@ -12,6 +12,7 @@ const MB = 1024 * 1024
 process.env.SAVE_MAX_PER_USER = '3'
 process.env.SAVE_MAX_TOTAL_BYTES = String(10 * MB)
 const { saveCoords, saveQuotaError, saveRevisionHeaders, slugOk } = await import('../src/routes/saves.js')
+const { envNumber } = await import('../src/resource-limits.js')
 
 let n = 0
 let failedChecks = 0
@@ -34,6 +35,10 @@ const ok = (cond, msg) => {
   failedChecks++
   console.log('❌ ' + msg)
 }
+ok(envNumber('SAVE_MAX_TOTAL_BYTES', 64 * MB, { source: { SAVE_MAX_TOTAL_BYTES: 'oops' } }) === 64 * MB,
+  '存档配额配置写错时退回安全默认值，不得变成 NaN 关闭限制')
+ok(envNumber('SAVE_MAX_BYTES', 4 * MB, { max: 64 * MB, source: { SAVE_MAX_BYTES: '1e100' } }) === 64 * MB,
+  '单份存档配置超大时仍有硬上限')
 console.log('\n── 存档 slug：本地 ROM 的文件名得能存上云 ──')
 {
   /*

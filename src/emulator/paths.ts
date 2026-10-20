@@ -171,7 +171,7 @@ export const PPSSPP_PATH: string = asDir(import.meta.env.VITE_PPSSPP_PATH)
  * Cloudflare 对这组静态文件的缓存键会忽略查询串，所以 PPSSPP 不能靠 `?r=` 换代。
  * 桥、Wasm 或 data 任一项变化都发布到新的实体目录，保证边缘不会拼出两代运行时。
  */
-export const PPSSPP_RUNTIME_GENERATION = 'v11'
+export const PPSSPP_RUNTIME_GENERATION = 'v15'
 export const PPSSPP_RUNTIME_PATH: string = PPSSPP_PATH
   ? asDir(`${PPSSPP_PATH}${PPSSPP_RUNTIME_GENERATION}`)
   : ''
@@ -293,6 +293,19 @@ export const SELF_DOWNLOAD_PLATFORMS = new Set<PlatformId>([...DISC_PLATFORMS, '
 
 export const isSelfDownloadPlatform = (platform: string): boolean =>
   SELF_DOWNLOAD_PLATFORMS.has(platform as PlatformId)
+
+/**
+ * 旧式直链里仍有几十到数百 MB 的文件；只让这些格式在有内容版本时接入续传下载。
+ * 小卡带继续交给引擎的单次 XHR，避免为几百 KB 多造一层 Blob 和 IndexedDB 事务。
+ */
+export function isLargeDirectEjsRom(platform: string, url: string): boolean {
+  const name = url.split(/[?#]/)[0].toLowerCase()
+  if (platform === 'n64') return /\.(?:z64|n64|v64|zip)$/.test(name)
+  if (platform === 'segaCD') return /\.(?:chd|iso|bin|zip)$/.test(name)
+  if (platform === 'pce') return /\.(?:chd|zip)$/.test(name)
+  if (platform === 'amiga') return /\.hdf$/.test(name)
+  return false
+}
 
 /* ---------------- 页面用的几个判断 ---------------- */
 
