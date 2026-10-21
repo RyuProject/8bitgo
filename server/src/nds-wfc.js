@@ -1,6 +1,5 @@
 import { randomBytes } from 'node:crypto'
 import dgram from 'node:dgram'
-import { Resolver } from 'node:dns/promises'
 import net from 'node:net'
 import { Router } from 'express'
 import { WebSocket, WebSocketServer } from 'ws'
@@ -11,6 +10,9 @@ const PATH = '/api/nds-wfc/socket/'
 const DNS_SERVERS = new Set(['178.62.43.212', '95.217.77.181', '172.104.88.237'])
 // 本次实测 ROM 内的 NAS / GameSpy 域名全部归在 nintendowifi.net；不扩大成任意 DNS 代理。
 const WFC_DOMAINS = ['nintendowifi.net']
+const DNS_TCP_TIMEOUT_MS = 2_000
+// WFC 只查 A 记录，限制 TCP DNS 响应缓冲，避免坏上游拖大单个会话的内存占用。
+const DNS_TCP_MAX_MESSAGE = 4_096
 const SESSION_MS = 2 * 60 * 60 * 1000
 // DS 固件可能把 DNS 结果缓存整局；中继的授权不能比本局会话短，否则老玩家中途重新建 socket 会被误拒。
 const DNS_IP_MS = SESSION_MS
@@ -76,7 +78,8 @@ export function dnsQueryName(packet) {
 export function dnsAnswerIps(packet, expectedName) {
   if (!Buffer.isBuffer(packet) || packet.length < 17 || !(packet[2] & 0x80) || packet.readUInt16BE(4) !== 1) return []
   const question = dnsName(packet, 12)
-  if (!question || question.name.toLowerCase() !== expectedName || question.next + 4 > packet.length) return []
+  if (!question || question.name.toLowerCase() !== expectedName || question.next + 4 > packet.length ||
+      packet.readUInt16BE(question.next) !== 1 || packet.readUInt16BE(question.next + 2) !== 1) return []
   let at = question.next + 4
   const records = []
   const count = Math.min(packet.readUInt16BE(6), 32)
@@ -119,23 +122,31 @@ export function dnsAnswerIps(packet, expectedName) {
   return ips
 }
 
-/**
- * 给白名单外的查询回 REFUSED。以前直接关掉整条 WebSocket：客体那边的 UDP socket 还在，
- * 之后同一 socket 发出的 NAS / GameSpy 查询全部石沉大海，游戏只能超时报 20100。
- */
-export function dnsRefusedReply(query) {
+function dnsErrorReply(query, rcode) {
   if (!Buffer.isBuffer(query) || query.length < 12 || (query[2] & 0x80)) return null
   const question = query.readUInt16BE(4) === 1 ? dnsName(query, 12) : null
   const end = question && question.next + 4 <= query.length ? question.next + 4 : 12
   const reply = Buffer.from(query.subarray(0, end))
-  // QR=1，保留 opcode 与 RD；RA=1，RCODE=5（REFUSED）
+  // QR=1，保留 opcode 与 RD；RA=1，并返回指定错误码，让客体不必等到 DNS 超时才重试。
   reply[2] = 0x80 | (query[2] & 0x79)
-  reply[3] = 0x80 | 5
+  reply[3] = 0x80 | (rcode & 0x0f)
   reply.writeUInt16BE(end > 12 ? 1 : 0, 4)
   reply.writeUInt16BE(0, 6)
   reply.writeUInt16BE(0, 8)
   reply.writeUInt16BE(0, 10)
   return reply
+}
+
+/**
+ * 给白名单外的查询回 REFUSED。以前直接关掉整条 WebSocket：客体那边的 UDP socket 还在，
+ * 之后同一 socket 发出的 NAS / GameSpy 查询全部石沉大海，游戏只能超时报 20100。
+ */
+export function dnsRefusedReply(query) {
+  return dnsErrorReply(query, 5)
+}
+
+export function dnsServFailReply(query) {
+  return dnsErrorReply(query, 2)
 }
 
 /**
@@ -223,17 +234,92 @@ function isPortHandshake(message) {
   return message.length === 10 && message.subarray(0, 8).equals(Buffer.from([255, 255, 255, 255, 112, 111, 114, 116]))
 }
 
-function resolveDns4(host, name) {
-  const resolver = new Resolver({ timeout: 1500, tries: 2 })
-  resolver.setServers([host])
-  return resolver.resolve4(name)
+/**
+ * 有些 WFC DNS 对这台服务器的 UDP 查询不回包，但 TCP 53 可用；Node Resolver 默认仍走 UDP，
+ * 所以超时回退必须自己实现 DNS-over-TCP，不能把同一种 UDP 请求再发一遍。
+ */
+export function resolveDns4Tcp(host, name, {
+  connect = net.createConnection,
+  timeoutMs = DNS_TCP_TIMEOUT_MS,
+} = {}) {
+  if (!DNS_SERVERS.has(host)) return Promise.reject(Object.assign(new Error('DNS_TCP_SERVER_NOT_ALLOWED'), { code: 'DNS_TCP_SERVER_NOT_ALLOWED' }))
+  const queryName = String(name).toLowerCase().replace(/\.$/, '')
+  if (!wfcDomain(queryName)) return Promise.reject(Object.assign(new Error('DNS_TCP_NAME_NOT_ALLOWED'), { code: 'DNS_TCP_NAME_NOT_ALLOWED' }))
+
+  const labels = queryName.split('.')
+  if (queryName.length > 253 || labels.some((label) => !label || label.length > 63 || !/^[a-z0-9-]+$/i.test(label))) {
+    return Promise.reject(Object.assign(new Error('DNS_TCP_INVALID_NAME'), { code: 'DNS_TCP_INVALID_NAME' }))
+  }
+  const transactionId = randomBytes(2).readUInt16BE(0)
+  const header = Buffer.alloc(12)
+  header.writeUInt16BE(transactionId, 0)
+  header.writeUInt16BE(0x0100, 2)
+  header.writeUInt16BE(1, 4)
+  const question = Buffer.concat([
+    ...labels.map((label) => Buffer.concat([Buffer.from([label.length]), Buffer.from(label, 'ascii')])),
+    Buffer.from([0, 0, 1, 0, 1]),
+  ])
+  const packet = Buffer.concat([header, question])
+  const prefix = Buffer.alloc(2)
+  prefix.writeUInt16BE(packet.length, 0)
+  const framedQuery = Buffer.concat([prefix, packet])
+
+  return new Promise((resolve, reject) => {
+    let socket
+    let received = Buffer.alloc(0)
+    let settled = false
+    const timeout = setTimeout(() => fail('DNS_TCP_TIMEOUT'), timeoutMs)
+    timeout.unref?.()
+    const finish = (error, ips) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      socket?.destroy()
+      if (error) reject(error)
+      else resolve(ips)
+    }
+    const fail = (code) => finish(Object.assign(new Error(code), { code }))
+
+    try {
+      socket = connect({ host, port: 53 })
+    } catch (error) {
+      fail(error?.code || 'DNS_TCP_CONNECT_FAILED')
+      return
+    }
+    socket.once('connect', () => {
+      socket.write(framedQuery, (error) => {
+        if (error) fail(error.code || 'DNS_TCP_WRITE_FAILED')
+      })
+    })
+    socket.on('data', (chunk) => {
+      if (settled) return
+      if (received.length + chunk.length > DNS_TCP_MAX_MESSAGE + 2) return fail('DNS_TCP_RESPONSE_TOO_LARGE')
+      received = Buffer.concat([received, chunk])
+      if (received.length < 2) return
+      const length = received.readUInt16BE(0)
+      if (length < 12 || length > DNS_TCP_MAX_MESSAGE) return fail('DNS_TCP_INVALID_FRAME')
+      if (received.length < length + 2) return
+
+      const response = received.subarray(2, length + 2)
+      if (response.readUInt16BE(0) !== transactionId || !(response[2] & 0x80)) return fail('DNS_TCP_INVALID_RESPONSE')
+      const rcode = response[3] & 0x0f
+      if (rcode !== 0) return fail(`DNS_TCP_RCODE_${rcode}`)
+      const ips = dnsAnswerIps(response, queryName)
+      if (!ips.length) return fail('DNS_TCP_NO_PUBLIC_A')
+      finish(null, ips)
+    })
+    socket.once('error', (error) => fail(error?.code || 'DNS_TCP_CONNECT_FAILED'))
+    socket.once('end', () => {
+      if (!settled) fail('DNS_TCP_INCOMPLETE_RESPONSE')
+    })
+  })
 }
 
 export function createNdsWfcService({
   enabled = process.env.NDS_WFC_ENABLED === '1',
   udpSocketFactory = () => dgram.createSocket('udp4'),
   tcpSocketFactory = (options) => net.createConnection(options),
-  dnsResolver = resolveDns4,
+  dnsResolver = resolveDns4Tcp,
 } = {}) {
   const router = Router()
   const sessions = new Map()
@@ -423,8 +509,11 @@ export function createNdsWfcService({
               void dnsResolver(host, request.name).then((ips) => {
                 const answer = dnsAReply(request.packet, ips)
                 if (answer) finishDns(answer)
-                else send(message)
-              }).catch(() => send(message))
+                else send(dnsServFailReply(request.packet))
+              }).catch((error) => {
+                trace('dns TCP fallback error', host, request.name, error.code)
+                send(dnsServFailReply(request.packet))
+              })
             } else finishDns(message)
           })
           let udpReady = false
@@ -475,7 +564,12 @@ export function createNdsWfcService({
                 session.dnsCache.set(name, { ips, expiresAt: Date.now() + DNS_CACHE_MS })
                 trace('dns fallback', name, ips)
                 send(answer)
-              }).catch((error) => trace('dns fallback error', name, error.code))
+              }).catch((error) => {
+                if (pendingDns.get(id) !== request) return
+                pendingDns.delete(id)
+                trace('dns TCP fallback error', host, name, error.code)
+                send(dnsServFailReply(request.packet))
+              })
             }, 1200)
             timer.unref?.()
             pendingDns.set(id, { name, packet: message, startedAt: now, timer })

@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { createServer } from 'node:http'
+import net from 'node:net'
 import express from 'express'
 import { WebSocket } from 'ws'
-import { createNdsWfcService, dnsAReply, dnsAnswerIps, dnsQueryName, dnsRefusedReply, gpTraceSummary, natnegConnectPeer } from '../src/nds-wfc.js'
+import { createNdsWfcService, dnsAReply, dnsAnswerIps, dnsQueryName, dnsRefusedReply, dnsServFailReply, gpTraceSummary, natnegConnectPeer, resolveDns4Tcp } from '../src/nds-wfc.js'
 
 const labels = 'nas.nintendowifi.net'.split('.')
 const name = Buffer.concat([...labels.map((label) => Buffer.concat([Buffer.from([label.length]), Buffer.from(label)])), Buffer.from([0])])
@@ -19,6 +20,43 @@ const fallbackQuery = Buffer.concat([header, fallbackQuestion])
 assert.equal(dnsQueryName(query), 'nas.nintendowifi.net')
 assert.equal(dnsQueryName(Buffer.concat([header, Buffer.from([3, 98, 97, 100, 0, 0, 1, 0, 1])])), null)
 const answer = (ip) => Buffer.from([0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 30, 0, 4, ...ip])
+let dnsTcpQueryCount = 0
+const dnsTcpServer = net.createServer((socket) => {
+  let received = Buffer.alloc(0)
+  socket.on('data', (chunk) => {
+    received = Buffer.concat([received, chunk])
+    if (received.length < 2) return
+    const length = received.readUInt16BE(0)
+    if (received.length < length + 2) return
+    dnsTcpQueryCount++
+    const queryPacket = received.subarray(2, length + 2)
+    const responseHeader = Buffer.from(queryPacket.subarray(0, 12))
+    responseHeader[2] = 0x81
+    responseHeader[3] = 0x80
+    responseHeader.writeUInt16BE(1, 6)
+    const response = Buffer.concat([responseHeader, queryPacket.subarray(12), answer([95, 217, 77, 151])])
+    const responsePrefix = Buffer.alloc(2)
+    responsePrefix.writeUInt16BE(response.length)
+    const framedResponse = Buffer.concat([responsePrefix, response])
+    // 分段回包，确保 TCP 帧解析不依赖一次 data 事件刚好收完整个 DNS 消息。
+    socket.write(framedResponse.subarray(0, 3))
+    setImmediate(() => socket.end(framedResponse.subarray(3)))
+  })
+})
+await new Promise((resolve) => dnsTcpServer.listen(0, '127.0.0.1', resolve))
+const tcpDnsAddress = dnsTcpServer.address()
+const tcpDnsIps = await resolveDns4Tcp('178.62.43.212', 'nas.nintendowifi.net', {
+  connect: () => net.createConnection({ host: '127.0.0.1', port: tcpDnsAddress.port }),
+  timeoutMs: 1_000,
+})
+assert.deepEqual(tcpDnsIps, ['95.217.77.151'], 'UDP 无回包时必须能通过真正的 DNS-over-TCP 取到 A 记录')
+assert.equal(dnsTcpQueryCount, 1)
+let blockedDnsConnect = false
+await assert.rejects(resolveDns4Tcp('127.0.0.1', 'nas.nintendowifi.net', {
+  connect: () => { blockedDnsConnect = true; throw new Error('不应连接未授权 DNS') },
+}), { code: 'DNS_TCP_SERVER_NOT_ALLOWED' })
+assert.equal(blockedDnsConnect, false, 'DNS-over-TCP 不能把中继扩大成任意外连代理')
+await new Promise((resolve, reject) => dnsTcpServer.close((error) => error ? reject(error) : resolve()))
 const reply = Buffer.concat([
   Buffer.from([0x12, 0x34, 0x81, 0x80, 0, 1, 0, 2, 0, 0, 0, 0]),
   question,
@@ -49,6 +87,7 @@ assert.equal(refused[2] & 0x80, 0x80)
 assert.equal(refused[3] & 0x0f, 5)
 assert.equal(refused.readUInt16BE(4), 1)
 assert.equal(refused.readUInt16BE(6), 0)
+assert.equal(dnsServFailReply(query)[3] & 0x0f, 2, '上游 DNS 完全失败时应快速返回 SERVFAIL，不应留下悬挂查询')
 assert.equal(dnsRefusedReply(reply), null, '响应包不能再被当成查询回复')
 assert.equal(gpTraceSummary(Buffer.from('\\lc\\1\\challenge\\X\\final\\')), 'lc 1')
 assert.equal(gpTraceSummary(Buffer.from('\\login\\\\challenge\\x\\authtoken\\SECRET\\final\\')), 'login')

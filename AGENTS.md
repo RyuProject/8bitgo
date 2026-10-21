@@ -402,8 +402,17 @@ IP、端口、协议和原始 socket 名，`src/emulator/ndsWfc.ts` 再交给同
 同一个客体 UDP socket 联系多个 GameSpy/NATNEG 目标时，后端必须用同一个公网 UDP socket；
 否则源端口会变，匹配握手可能失败。复制标签页会复制 `sessionStorage`，因此分组键还要带
 每页随机 instanceId，不能只靠会话令牌 + socket 编号。NAS 重复 DNS 查询只缓存已校验的 A
-回答 30 秒。回归：`npm run test:nds-wfc`，其中检查发布 `.data` 内实际包含 SOCKFS 补丁；
+回答 10 分钟。回归：`npm run test:nds-wfc`，其中检查发布 `.data` 内实际包含 SOCKFS 补丁；
 `server/scripts/probe-nds-wfc-live.mjs` 只验证 Kaeru DNS、NAS HTTP 与 GP 挑战，**不等于进房**。
+
+⚠️ WFC DNS 上游 UDP 1.2 秒无回应或返回 `TC=1` 时，备用解析必须是真正的 DNS-over-TCP（2 字节长度前缀）；
+Node `dns.Resolver` 默认仍走 UDP，不能当成 TCP 回退。只对固定 WFC DNS IP 和 `nintendowifi.net`
+查询发起 TCP 53；失败回 `SERVFAIL` 并清理待处理项，不扩大成任意 DNS 代理。
+2026-10-22 生产探测：Kaeru / Wiimmfi 的 UDP 53 超时而 TCP 53 能答，`1.1.1.1` UDP 正常，主机 UFW
+默认允许出站。AltWFC 官方 Wiki 仍列 `172.104.88.237` 和备用 `104.131.93.87`，但两地址当前都未确认可用：
+生产机对主地址 UDP 超时 / TCP 拒绝，对备用地址 UDP、TCP 超时；本机查询两地址都只拿到 `TC=1` 空响应，
+TCP 也超时。别把它们标为可用入口或仅凭旧 Wiki 扩大 DNS 白名单；官方列表见
+<https://github.com/barronwaffles/dwc_network_server_emulator/wiki/List-of-Servers>，加入新入口前必须重新实测。
 
 ⚠️ melonDS 内置固件的默认 MAC 是全员相同的 `00:09:BF:11:22:33`，联机不能让所有玩家共享
 这个设备身份。`ndsWfcMacAddress()` 为当前浏览器生成并保存稳定的 `00:09:BF:xx:xx:xx`（任天堂 OUI，
