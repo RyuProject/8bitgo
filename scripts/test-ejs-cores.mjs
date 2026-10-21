@@ -169,7 +169,8 @@ check('固定名核心与悬停预热共用版本化 URL，不会把两代核心
   const adapter = readFileSync(join(root, 'src/emulator/adapters/emulatorjs.ts'), 'utf8')
   const prewarm = readFileSync(join(root, 'src/emulator/prewarm.ts'), 'utf8')
   assert.match(adapter, /EJS_paths: emulatorJsRuntimePaths\(core\)/)
-  assert.match(prewarm, /ejsRuntimeAsset\(`cores\/\$\{encodeURIComponent\(emulatorJsCoreFileFor\(core\)\)\}-wasm\.data`\)/)
+  assert.match(prewarm, /const file = emulatorJsCoreFileFor\(core\)/)
+  assert.match(prewarm, /file === PSX_CHD_CORE \? PSX_CHD_ARCHIVE : `\$\{encodeURIComponent\(file\)\}-wasm\.data`/)
 })
 
 check('核心构建报告改走 metadata 别名，浏览器拦截 /reports/ 时仍能启用缓存', () => {

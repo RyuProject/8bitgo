@@ -44,12 +44,14 @@ import { matchArcadeHack, type ArcadeHack } from '@/data/arcadeHacks'
 import { deriveArcadeHackBytes } from '../arcadeHack'
 import { biosNameOfUrl, planBiosFiles } from '../biosPlan'
 import { ensureParentDir } from '../fsWrite'
-import { isPsxChdTransfer, psxCoreForPreparedName, PSX_CHD_AUDIO_LATENCY_MS, PSX_CHD_CORE } from '../psxChd'
+import { isPsxChdTransfer, psxCoreForPreparedName, PSX_CHD_ARCHIVE, PSX_CHD_AUDIO_LATENCY_MS, PSX_CHD_CORE } from '../psxChd'
+import { canStreamPsxChd, preparePsxRangeDisc, type PsxRangeDisc, type PsxRangeFs } from '../psxRangeDisc'
 import { warmHttpCache } from '../httpWarm'
 import { writeFsInjections, type FsInjection } from '../fsInjection'
 import { arcadeCoreForRomData, supportsFbneoRomData } from '../arcadeCore'
 import { MAME_AUDIO_LATENCY_MS, RETROARCH_CFG_PATH, raiseAudioLatency } from '../mameAudio'
 import { ndsAudioLatencyMs } from '../ndsAudio'
+import { installNdsWfcRuntime, isWorldAtWarNdsRomHeader, loadNdsWfcSettings, ndsWfcMacAddress, prepareNdsWfcSession, saveNdsWfcSettings } from '../ndsWfc'
 import { isNdsWasmCrash } from '../ndsCrash'
 import {
   arcadePerformanceDefaultOptions,
@@ -70,6 +72,9 @@ import {
 import {
   NDS_CORE_OPTIONS_PATH,
   NDS_SYSTEM_DIRECTORY,
+  NDS_WFC_MAC_PATH,
+  NDS_WFC_SETTINGS_PATH,
+  NDS_WFC_SETTINGS_SIZE,
   configureNdsCoreOptions,
   configureNdsSystemDirectory,
   installNdsCoreOptionsGuard,
@@ -183,7 +188,10 @@ const EJS_LANG: Record<Lang, string> = {
  * 里面只有可重新下载的工件（核心/ROM/BIOS 的副本），删了不丢任何用户数据；
  * 存档在另一个库（EmulatorJS-states）和我们自己的云存档里，不碰。
  */
-const EJS_CACHE_GENERATION = '2026-09-19.mame-current-both-opt'
+// 旧 NDS 核心把双倍物理画布当成 1 倍指针坐标；换代才能让玩家实际拿到触屏修正版。
+const EJS_CACHE_GENERATION = '2026-10-21.melondsds-wfc-sourceport.touch-dpr.psx-range.melondsds-core-fb82cf07'
+// 浏览器实测已能按片读取，但现有 Beetle WASM 在该样本的完整下载路径也会崩溃；未确认可玩前不能让生产自动进入实验链路。
+const PSX_RANGE_ENABLED = import.meta.env.VITE_PSX_RANGE_ENABLED === '1'
 const EJS_CACHE_PURGED_KEY = '8bitgo.ejs.cachePurged'
 
 async function purgePoisonedEngineCache(): Promise<void> {
@@ -577,6 +585,9 @@ const POINTER_FIRST = new Set<PlatformId>(['nds'])
 interface EjsEmulator {
   netplay?: EjsNetplay
   gameManager?: EjsGameManager
+  fileName?: string
+  downloadType?: { rom?: unknown }
+  download?: (url: string, type: unknown) => Promise<unknown>
   /**
    * loader.js 在开局前拼好的配置。这里只声明我们会碰的那一个字段：
    * gameId —— 开房时会被写进房间的 game_id，大厅靠它认出房间属于哪款游戏。
@@ -588,6 +599,8 @@ interface EjsEmulator {
    * 返回值写成 unknown：注入器那层是 async（要等 BIOS 字节到货），引擎不看返回值。
    */
   startGame?: () => unknown
+  /** 核心工厂在这里被调用；WFC 的 socket 配置必须赶在 SOCKFS 初始化前注入。 */
+  initModule?: (...args: unknown[]) => unknown
   isNetplay?: boolean
   /** startGame() 一路跑完才置 true —— 兜底轮询靠它判断「到底开局了没有」 */
   started?: boolean
@@ -846,6 +859,8 @@ function installFsInjector(
   onFail: (path: string, msg: string) => void,
   beforeStart?: (emu: EjsEmulator) => void,
   shouldContinue: () => boolean = () => true,
+  beforeInit?: (emu: EjsEmulator) => void,
+  psxRange?: PsxRangeDisc,
 ): void {
   let emu: EjsEmulator | undefined
   let wrapped = false
@@ -855,6 +870,30 @@ function installFsInjector(
     const original = next.startGame
     if (typeof original !== 'function') return
     wrapped = true
+    if (psxRange && typeof next.download === 'function') {
+      const originalDownload = next.download
+      next.download = function (this: EjsEmulator, url: string, type: unknown) {
+        if (!next.downloadType || type !== next.downloadType.rom || url !== psxRange.url) return originalDownload.call(this, url, type)
+        try {
+          const fs = next.gameManager?.FS as PsxRangeFs | undefined
+          if (!fs?.lookupPath) throw new Error('虚拟文件系统尚未准备好')
+          psxRange.install(fs, win)
+          console.info(`[emulatorjs] PS1 CHD Range 已挂载：${psxRange.name}（${psxRange.size} 字节）`)
+          return Promise.resolve({ files: [{ filename: psxRange.name.split('/').pop() }] })
+        } catch (error) {
+          // 挂载失败时交回引擎完整下载，不能让一张已绑定的光盘直接变成黑屏。
+          console.warn('[emulatorjs] PS1 CHD Range 挂载失败，回退完整下载：', error)
+          return originalDownload.call(this, url, type)
+        }
+      }
+    }
+    if (beforeInit && typeof next.initModule === 'function') {
+      const originalInit = next.initModule
+      next.initModule = function (this: unknown, ...args: unknown[]) {
+        try { beforeInit(next) } catch (error) { console.warn('[emulatorjs] NDS WFC 初始化失败，按离线模式继续：', error) }
+        return originalInit.apply(this, args)
+      }
+    }
     /**
      * async 是有意的：BIOS 包的字节可能还在路上，等它到了再叫 original。
      * 引擎不 await 这个返回值（`startGameFromDownload` 里是裸调用），
@@ -1668,6 +1707,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let playersTimer = 0
   let stateTimer = 0
   let saveFlushTimer = 0
+  /** WFC 设置（内置固件的 wfcsettings.bin）定期从虚拟文件系统抄回本浏览器；见 ndsWfc.ts */
+  let wfcSettingsTimer = 0
+  let syncWfcSettings: (() => void) | null = null
   /** 联机存档托管失败只报第一次，免得每 10 秒刷一条 */
   let stateUploadWarned = false
   /**
@@ -2076,6 +2118,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   const prepareAbort = new AbortController()
   /** 预下载生成的 blob:。引擎通常会自行回收，销毁时再兜一次是幂等的。 */
   let preparedArcadeBlobUrl = ''
+  /** 只给带固定 romv 的裸 CHD 挂按需文件；其它光盘仍走完整下载。 */
+  let preparedPsxRange: PsxRangeDisc | null = null
   /** 区分「ROM 预下载失败」与后续 loader.js / 核心加载失败，避免错误提示张冠李戴。 */
   let arcadeRomPrepared = false
   /** 同上，光盘那条路的。两条路的失败提示不一样，不能合成一个标志 */
@@ -3109,13 +3153,22 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
     void (async () => {
       try {
+        // WFC 会话和大 ROM 下载并行请求；服务不可用不能拖慢或阻断单机开局。
+        const localWfcRom = isFile && options.platform === 'nds' &&
+          isWorldAtWarNdsRomHeader(new Uint8Array(await (options.game as File).slice(0, 16).arrayBuffer()))
+        const ndsWfcTask = options.platform === 'nds' && (options.gameSlug === 'call-of-duty-world-at-war' || localWfcRom)
+          ? prepareNdsWfcSession('call-of-duty-world-at-war', prepareAbort.signal).catch((error) => {
+              console.warn('[emulatorjs] WFC 中继暂不可用，游戏仍可离线游玩：', error)
+              return null
+            })
+          : null
         // 本地文件不走下面的预下载分支，也必须挡住错误页、截断 ROM 与 ZIP 解压炸弹。
         if (isFile && validateNds) await validateNds(options.game as File)
 
         if (options.platform === 'psx' && isPsxChdTransfer(isFile ? (options.game as File).name : remoteGameUrl)) {
-          // CHD 下完之后才启动引擎；趁这段网络等待时间并行预拉正确核心，手机点击也能受益。
+          // Range 只先取首尾块，核心仍需网络时间；完整下载回退也走同一预热，避免再串行等核心。
           warmHttpCache(ejsRuntimeAsset('emulator.min.js'))
-          warmHttpCache(ejsRuntimeAsset(`cores/${PSX_CHD_CORE}-wasm.data`))
+          warmHttpCache(ejsRuntimeAsset(`cores/${PSX_CHD_ARCHIVE}`))
         }
 
         /**
@@ -3141,6 +3194,33 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           ? injectScript(doc, socketIoScriptUrl(), 8_000).then(() => null, (error: unknown) => error)
           : Promise.resolve(null)
         const iceTask = NETPLAY_URL ? optionalWithin(fetchIceConfig(), 6_000) : Promise.resolve(null)
+
+        if (PSX_RANGE_ENABLED && !isFile && canStreamPsxChd(options.platform, remoteGameUrl)) {
+          try {
+            preparedPsxRange = await preparePsxRangeDisc(
+              remoteGameUrl,
+              discNameFor(remoteGameUrl, options.gameName),
+              prepareAbort.signal,
+              fetch,
+              (message) => {
+                if (destroyed) return
+                logEngine(`[psx-range] ${message}`)
+                options.onError?.(message, 'runtime')
+              },
+            )
+            options.onProgress?.({
+              phase: 'rom',
+              loaded: preparedPsxRange.startupBytes,
+              total: preparedPsxRange.startupBytes,
+              ratio: 1,
+            })
+            console.info(`[emulatorjs] PS1 CHD Range 可用，首尾区间已预热：${preparedPsxRange.size} 字节`)
+          } catch (error) {
+            if (destroyed || prepareAbort.signal.aborted) return
+            // Range 不可用时保留原先的完整下载，不要求管理员重新上传同一款游戏。
+            console.warn('[emulatorjs] PS1 CHD Range 不可用，本局按完整包下载：', error)
+          }
+        }
 
         /**
          * 只处理「远程 + 街机」：本地文件本来就是 Blob，其他平台的压缩包需要让引擎照常
@@ -3241,6 +3321,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             options.onError?.(message)
             return
           }
+        } else if (preparedPsxRange) {
+          engineGameName = preparedPsxRange.name
+          discRomPrepared = true
         } else if (!isFile && isDiscPlatform(options.platform)) {
           const prepared = await prepareRemoteDiscRom(
             remoteGameUrl,
@@ -3665,6 +3748,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
          * DeSmuME 的选项路径和 key 完全不同，不能给它写一份看似成功、实际永远没人读的
          * `melonDS DS.opt`。详细根因与最终写入时序见 ndsStartup.ts。
          */
+        // 中继暂时不可用时仍保持同一设备身份，避免离线/在线切换导致游戏内 WFC 档案变号。
+        const wfcMacForCore = core === 'melondsds' && ndsWfcTask ? ndsWfcMacAddress() : null
         const configureNdsStartup = options.platform === 'nds'
           ? (emu: EjsEmulator) => {
               const gm = emu.gameManager
@@ -3674,6 +3759,32 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               try {
                 // ensureParentDir 创建的是父目录，所以用一个不会真正写入的占位路径把 system 本身建出来。
                 ensureParentDir(fs, `${NDS_SYSTEM_DIRECTORY}/.keep`)
+                // 核心扫描 system 目录来登记合法 MAC 值；必须在 callMain 注册选项之前写入。
+                if (core === 'melondsds' && wfcMacForCore) {
+                  fs.writeFile(NDS_WFC_MAC_PATH, wfcMacForCore.toUpperCase())
+                  // 上一局的 WFC 用户 ID / 连接档要在核心 LoadGame 读固件之前放回去，否则每局都是“新 DS”。
+                  const savedWfc = loadNdsWfcSettings(wfcMacForCore, NDS_WFC_SETTINGS_SIZE)
+                  if (savedWfc) {
+                    ensureParentDir(fs, NDS_WFC_SETTINGS_PATH)
+                    fs.writeFile(NDS_WFC_SETTINGS_PATH, savedWfc)
+                    console.info('[emulatorjs] NDS WFC 设置已从本浏览器恢复')
+                  }
+                  let lastWfc = savedWfc ? Array.from(savedWfc).join(',') : ''
+                  const macForSync = wfcMacForCore
+                  const readFs = fs.readFile.bind(fs)
+                  syncWfcSettings = () => {
+                    try {
+                      const raw: Uint8Array | string = readFs(NDS_WFC_SETTINGS_PATH)
+                      const bytes = typeof raw === 'string' ? new TextEncoder().encode(raw) : new Uint8Array(raw)
+                      const signature = Array.from(bytes).join(',')
+                      if (signature === lastWfc) return
+                      if (saveNdsWfcSettings(macForSync, bytes, NDS_WFC_SETTINGS_SIZE)) lastWfc = signature
+                    } catch { /* 核心还没落盘（首次连接前）是正常的 */ }
+                  }
+                  // 核心在游戏改写固件后数秒内落盘；5 秒抄一次，2KB 的比较开销可以忽略。
+                  window.clearInterval(wfcSettingsTimer)
+                  wfcSettingsTimer = window.setInterval(() => syncWfcSettings?.(), 5_000)
+                }
 
                 const cfgBytes = fs.readFile(RETROARCH_CFG_PATH)
                 const cfgBefore = decoder.decode(cfgBytes)
@@ -3693,7 +3804,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                 const guarded = installNdsCoreOptionsGuard(gm?.Module?.callbacks, fs as NdsCoreOptionsFs, (ok, error) => {
                   if (ok) console.info('[emulatorjs] NDS 核心选项最终写入已校正（玩家选择保留）')
                   else console.warn('[emulatorjs] NDS 核心选项最终写入校正失败，按核心默认配置继续：', error ?? '回读不一致')
-                })
+                }, wfcMacForCore)
 
                 ensureParentDir(fs, NDS_CORE_OPTIONS_PATH)
                 let optBefore = ''
@@ -3703,7 +3814,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                 } catch {
                   // 首次运行没有 .opt 是正常路径；下面会创建。
                 }
-                const optAfter = configureNdsCoreOptions(optBefore)
+                const optAfter = configureNdsCoreOptions(optBefore, wfcMacForCore)
                 if (optAfter !== optBefore) fs.writeFile(NDS_CORE_OPTIONS_PATH, optAfter)
 
                 const optCheck = decoder.decode(fs.readFile(NDS_CORE_OPTIONS_PATH))
@@ -3735,7 +3846,29 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             }
           : undefined
 
-        if (injections.length || relocateMameRom || relocateMameBios || configureGbaScaling || raiseCoreAudioLatency || configureNdsStartup || selectNdsArchiveRom) {
+        /**
+         * 引擎会给 Beetle 的单文件 CHD 误造 disc-0.cue，再把 CHD 魔数字节当 CUE 文本读。
+         * 这里在 callMain 前把真正内容路径交回核心；完整下载与 Range 两条路都必须修正。
+         */
+        const selectPsxChd = options.platform === 'psx' && core === PSX_CHD_CORE && /\.chd$/i.test(engineGameName)
+          ? (emu: EjsEmulator) => {
+              const name = engineGameName.split('/').pop() || engineGameName
+              if (emu.gameManager) emu.gameManager.fileName = name
+              emu.fileName = name
+            }
+          : undefined
+
+        let ndsWfcSession = core === 'melondsds' && ndsWfcTask ? await ndsWfcTask : null
+        if (ndsWfcSession && !wfcMacForCore) {
+          console.warn('[emulatorjs] 无法为 WFC 生成独立 DS 网卡地址，禁用本局在线中继')
+          ndsWfcSession = null
+        }
+        if (ndsWfcTask) {
+          console.info(ndsWfcSession
+            ? '[emulatorjs] NDS WFC 会话已建立，网络连接将走同源中继'
+            : '[emulatorjs] NDS WFC 未启用或服务不可用，游戏仍可离线游玩')
+        }
+        if (injections.length || relocateMameRom || relocateMameBios || configureGbaScaling || raiseCoreAudioLatency || configureNdsStartup || selectNdsArchiveRom || selectPsxChd || ndsWfcSession || preparedPsxRange) {
           installFsInjector(win, injections, (path, msg) => {
             /*
               写失败**不拦着开局**（和 installFsInjector 的注释一致）：没了改版 dat，
@@ -3744,18 +3877,27 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
               真缺文件的话核心自己会报「缺 xxx」，那条走 errorTap，比这里更准。
             */
             if (!destroyed) console.warn(`[emulatorjs] ${path || '待注入文件'} 没写进虚拟文件系统，按原始配置继续：`, fmt(rt.ejsFsInjectFailed, { msg }))
-          }, relocateMameRom || relocateMameBios || configureGbaScaling || raiseCoreAudioLatency || configureNdsStartup || selectNdsArchiveRom
+          }, relocateMameRom || relocateMameBios || configureGbaScaling || raiseCoreAudioLatency || configureNdsStartup || selectNdsArchiveRom || selectPsxChd
             ? (emu) => {
                 // 顺序有讲究：先处理内容/BIOS，再准备核心专属目录与选项，最后调音频窗口。
                 relocateMameRom?.(emu)
                 relocateMameBios?.(emu)
                 selectNdsArchiveRom?.(emu)
+                selectPsxChd?.(emu)
                 configureGbaScaling?.(emu)
                 configureNdsStartup?.(emu)
                 raiseCoreAudioLatency?.(emu)
               }
             : undefined,
-          () => !destroyed)
+          () => !destroyed,
+          ndsWfcSession ? () => {
+            if (!installNdsWfcRuntime(win, ndsWfcSession, window.location.origin)) {
+              console.warn('[emulatorjs] WFC 核心工厂尚未加载，网络模式未启用')
+            } else {
+              console.info('[emulatorjs] NDS WFC socket 出口已在核心初始化前安装')
+            }
+          } : undefined,
+          preparedPsxRange ?? undefined)
         }
 
         // 网络探针也要赶在 loader.js 之前包好，否则核心那一趟就漏过去了
@@ -3885,10 +4027,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     padObserver?.disconnect()
     padObserver = null
     prepareAbort.abort()
+    preparedPsxRange?.dispose()
     window.clearInterval(playersTimer)
     window.clearInterval(stateTimer)
     window.clearInterval(startWatch)
     window.clearInterval(saveFlushTimer)
+    window.clearInterval(wfcSettingsTimer)
+    // 退出前最后抄一次：刚在游戏里完成首次 WFC 建号就关页面时，ID 也不能丢。
+    try { syncWfcSettings?.() } catch { /* iframe 可能已不可访问 */ }
+    syncWfcSettings = null
     window.clearTimeout(keymapSyncTimer)
     keymapSyncTimer = 0
     // 盯几何那个是**有上限**的短定时器，正常自己会停；这里兜一道，

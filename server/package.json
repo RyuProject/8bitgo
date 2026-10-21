@@ -42,6 +42,7 @@
     "test:ipx": "node scripts/test-ipx.mjs",
     "test:sfs": "node scripts/test-sfs.mjs",
     "test:cs16-relay": "node scripts/test-cs16-relay.mjs && node scripts/test-cs16-rooms.mjs",
+    "test:nds-wfc": "node scripts/test-nds-wfc.mjs",
     "test:rooms": "node scripts/test-rooms.mjs",
     "test:netplay": "NETPLAY_HOST_GRACE_MS=400 NETPLAY_CLAIM_WINDOW_MS=500 node scripts/test-netplay.mjs",
     "test:netplay:hardening": "node scripts/test-netplay-hardening.mjs",
@@ -73,6 +74,7 @@
     "test:startup": "node scripts/test-startup-failure.mjs",
     "test:startup-metrics": "node scripts/test-startup-metrics.mjs",
     "test:psp-conversion": "node scripts/test-psp-conversion.mjs",
+    "test:psx-conversion": "node scripts/test-psx-conversion.mjs",
     "test:sockdrive-conversion": "node scripts/test-sockdrive-conversion.mjs",
     "test:game-media": "node --test scripts/test-game-media.mjs"
   },

@@ -389,6 +389,61 @@ melonDS DS 自带 `rotate-left` / `rotate-right` 布局，优先用“双屏布�
 DeSmuME / DeSmuME 2015 的弱机兜底也要把 `desmume_pointer_type` 从相对坐标 `mouse` 调为
 绝对坐标 `touch`；只精确改这一项，颜色、压力、摇杆死区等其它 pointer 选项不碰。
 
+#### 2.8.4.1 NDS WFC（《使命召唤：战争世界》）仍须游戏内验收
+
+浏览器没有原生 TCP/UDP socket；`build:melondsds` 给 Emscripten SOCKFS 的 URL 工厂传目标
+IP、端口、协议和原始 socket 名，`src/emulator/ndsWfc.ts` 再交给同源 WSS 中继。libslirp 的
+`POLLOUT/POLLWRNORM` 不一致也由该构建脚本补，否则 TCP 看似连上却发不出包。中继默认
+`NDS_WFC_ENABLED=0`，只接受这款游戏的会话、已校验的 WFC DNS 回答里的公网 IP、同源请求与
+限流；不准为了让游戏“看起来能联网”把它改成开放代理。生产 nginx 必须 include
+`deploy/nginx/cs16-websocket-locations.conf` 里的 WFC Upgrade 规则；普通 `/api` HTTP 反代
+不能升级 WebSocket。玩家等匹配时用 WS Ping 保活。
+
+同一个客体 UDP socket 联系多个 GameSpy/NATNEG 目标时，后端必须用同一个公网 UDP socket；
+否则源端口会变，匹配握手可能失败。复制标签页会复制 `sessionStorage`，因此分组键还要带
+每页随机 instanceId，不能只靠会话令牌 + socket 编号。NAS 重复 DNS 查询只缓存已校验的 A
+回答 30 秒。回归：`npm run test:nds-wfc`，其中检查发布 `.data` 内实际包含 SOCKFS 补丁；
+`server/scripts/probe-nds-wfc-live.mjs` 只验证 Kaeru DNS、NAS HTTP 与 GP 挑战，**不等于进房**。
+
+⚠️ melonDS 内置固件的默认 MAC 是全员相同的 `00:09:BF:11:22:33`，联机不能让所有玩家共享
+这个设备身份。`ndsWfcMacAddress()` 为当前浏览器生成并保存稳定的 `00:09:BF:xx:xx:xx`（任天堂 OUI，
+与 melonDS 单机多开一致；早期版本用过非任天堂前缀 `00:08:BF`，已换代为 `nds-wfc-mac-v2`），
+即使中继暂时断开也继续沿用，避免在线/离线切换时游戏内档案变号。`ndsStartup.ts` 必须在引擎
+最终覆盖 `.opt` 后写入 `melonds_mac_address_mode`。**只写 `.opt` 仍是假的修复**：RetroArch
+`core_option_manager.c` 会把不在核心选项值清单里的自定义 MAC 静默丢弃。因此核心构建脚本也必须
+让 melonDS DS 在 `RegisterCoreOptions` 扫描 `system/8bitgo-wfc-mac.txt`，先登记这个地址；
+适配器必须在 `callMain` 前写该 17 字节文件。出包测试检查发布 wasm 的文件名字符串。
+只对内置固件且没有玩家自定义 MAC 时托管；玩家选择 native 固件或已有自定义地址时绝不能改。
+回归：`npm run test:nds-startup && npm run test:nds-wfc`。
+
+⚠️ **WFC 设置必须跨会话保存。** 内置固件时 melonDS DS 把 WFC 用户 ID 和连接档单独写在
+`system/melonDS DS/wfcsettings.bin`（2304 字节）；网页端 system 目录在内存里，刷新即丢。丢了的后果：
+每局都用新 WFC ID 去 NAS 建号，而卡带存档里记的是上一局的 GameSpy 档案，好友码每局都变，
+GP 登录还可能被拒（61020 的候选原因之一）。适配器在 callMain 前按 MAC 从 localStorage 恢复，
+运行中每 5 秒、退出时各抄回一次（`loadNdsWfcSettings` / `saveNdsWfcSettings`）。
+
+中继三条硬规则（2026-10-21 复查后修正）：
+- 白名单外的 DNS 查询回 `REFUSED`，**不能关 WebSocket**。客体那边的 UDP socket 还活着，关掉之后同一
+  socket 后续的 NAS / GameSpy 查询全部无声丢失，表现为 20100。待处理过多、上游未就绪时同理只丢包。
+- 每会话 socket 上限 48：DNS 每次查询一个 socket（slirp 10 秒才回收），且 SOCKFS 没有 shutdown，
+  客体发完 FIN 的 HTTPS 连接要等服务器关；24 条在重试时会被顶满成 429。
+- NATNEG 对端只按可信撮合服务器（本局 DNS 授权过的 IP）发来的 CONNECT 包授权**精确 IP:端口**，
+  10 分钟有效（`natnegConnectPeer`）；CONNECT 的端口取自 QR2 心跳看到的公网端口，所以 QR2 / NATNEG /
+  对战必须共用同一个中继 UDP 源端口（已按 socketId 分组）。
+排查时设 `NDS_WFC_TRACE=1`：GP（29900/29901）只记命令名，服务器 `\error\` 会带 err / errmsg，
+61020 是哪一步被拒绝直接看这一行；不记 authtoken / response / 会话密钥。
+
+2026-10-21 本地用原版欧版及用户提供的美版卡带测试，游戏到达 WFC 连接流程，登录相关 TCP
+和 GameSpy 挑战可通，但曾报 61020、20100；尚未实证进入在线房间/完成匹配。GameSpy 官方
+`gsAvailable.c` 在 UDP 27900 可用性探测无回复时默认继续，不能伪造“服务可用”响应掩盖登录故障。
+独立 MAC 核心重建后的浏览器复测已能启动游戏并显示 WFC 菜单，但本轮自动化输入没能再触发
+游戏的确认按钮；不能把此前旧构建的 61020/20100 当成新构建的最终结果。后端真实服务探针与
+十轮本地回归均通过，仍不足以代替两名玩家完成实际匹配的验收。
+在游戏内通过登录并进入房间以前，**不要启用生产 WFC，也不要把探针成功写成联机成功**。
+另一个待验收的边界是 NATNEG：GameSpy 匹配后可能下发未曾出现在 WFC DNS 答案里的玩家公网
+地址；当前中继会拒绝该目标。不能直接开放任意公网 UDP 作为“修复”，那会把公开会话接口变成
+可滥用的 UDP 出口；须在真实匹配流量里确认协议，再从可信匹配服务器的响应中限时授权精确对端。
+
 ### 2.8.5 js-dos 鼠标不是一个开关：捕获方式与坐标协议必须分开
 
 桌面端 DOS 游戏统一使用 Pointer Lock，解决鼠标撞到浏览器边缘后游戏内光标停住的问题；但
@@ -2207,6 +2262,25 @@ R2 multipart 发布到最终 `roms/psp/*.chd`。`.cso` / `.chd` 保持直传。
   上传并发混成同一个开关：前者增加压缩 CPU / 磁盘竞争，后者主要隐藏 R2 往返。
 
 回归：`cd server && npm run test:psp-conversion`；再跑根目录 `npm run build`。
+
+**PS1 是另一种光盘，不可借 PSP 的 `createdvd` 当作转换成功。** 后台 PS1 语言槽上传单数据轨
+2048-byte `.iso` 会复用同一持久队列（`disc_platform='psx'`），生成固定 CUE 后执行
+`chdman createcd -c cdzl`、`verify` 和 CD 轨道元数据检查，再把 `roms/psx/*.chd` 发布到 R2。
+源文件仍放旧 Worker 已保护的 `psp-staging/`，不能擅自换成一个公开可读的新前缀。
+上传前后都校验 ISO9660 和根目录 `SYSTEM.CNF`；单独 ISO 无法还原 CDDA 音轨，带音轨的原盘
+必须先从 BIN/CUE 在本机制作 CHD。裸 CHD 带固定 `romv` 且 R2/Worker 返回匹配的强 ETag、
+正确 206/Content-Range 时，播放器先取首尾 2MB 块，开局后由 Beetle PSX 软件核心按需读盘；
+Range 不可用、版本不匹配或 CHD 格式不对时回退完整下载。 `.chd.8bg` 外层容器仍走完整
+解包，不能冒称边下边玩。旧 Beetle PSX HW 核心在浏览器触发 WASM `null function`，所以
+CHD 固定用自建 `mednafen_psx` 软件核心；该包关闭了上游 Emscripten 的整盘预缓存，
+否则模拟器会在开局前读满 CHD。新旧 Beetle 即时存档隔离，不能混用。日本区盘应配置
+日本区 BIOS；`scph1001.bin` 是美区 BIOS，不是正式兼容性验收的替代品。
+实测样本《J. League Jikkyou Winning Eleven 2000 2nd》319MB CHD 在本地浏览器按需读取，
+经过开机、标题、模式选择、手柄分配和球队选择；方向键能切换球队，确认键能进入下一级菜单。
+已进入正式比赛，比分变为 0:1、比赛时间走到 1:57；该阶段累计仅请求约 59MB（整盘的 18.5%）。
+这证明流式读盘和玩家输入在样本上可用，但尚未完成整场比赛或其它 PS1 游戏的通关验证。
+部署前需迁移新增的 `disc_platform` 列；回归：
+`npm run test:psx-conversion && npm run test:psx-range && npm run test:disc-upload && npm run test:ejs-cores`。
 
 ### 2.32.1 PSP 必须留在普通详情页内启动，不能再复用 PS2 的独立播放器外壳
 

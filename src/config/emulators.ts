@@ -50,13 +50,13 @@ export const EXT_RUNTIME_OVERRIDES: Record<string, RuntimeId> = {
  * 换核心往往比换 ROM 有用：每个核心认的 romset 版本不一样，
  * 报「缺文件」时先换核心试试。
  *
- * PS1 是第二个需要逐款调的：两个核心的取舍方向完全相反，没有哪个「更好」——
+ * PS1 是第二个需要逐款调的：普通镜像仍优先轻量 PCSX，CHD 则用已验证的软件 Beetle——
  *   - pcsx_rearmed（EmulatorJS 的 psx 默认）：为手机而生，快、省内存，
  *     但 GTE 精度和一些特效是近似的，个别游戏会花屏或几何抖动。
- *   - mednafen_psx_hw（Beetle PSX HW）：准得多，还能拉内部分辨率把 3D 画面变清楚，
- *     代价是 CPU 和内存都明显更吃 —— 中低端手机上会掉帧。
- * 所以默认留 pcsx_rearmed（保证能跑起来），个别有画面问题、或者想要高清的游戏
- * 再单独换成 mednafen_psx_hw。
+ *   - mednafen_psx（Beetle 软件版）：为 CHD Range 关闭整盘预缓存，浏览器样例已进游戏；
+ *     精度更高但比 PCSX 吃 CPU，不能给所有 ISO 一刀切。
+ *   - mednafen_psx_hw（Beetle HW）：支持高清但此批核心的浏览器 CHD 路径会触发 WASM 陷阱；
+ *     保留旧配置与非 CHD 用途，不再给 CHD 自动选择它。
  *
  * NDS 是第三个：默认已经硬切到 melonDS DS 1.4.0（`melondsds`）。它是继续维护的
  * 新核心，布局、触控和兼容性都比旧 `melonds` 完整；旧核心不再出现在下拉或资源目录。
@@ -77,6 +77,7 @@ export const CORE_OPTIONS: Record<string, Array<{ id: string; label: string }>> 
   ],
   psx: [
     { id: 'psx', label: 'PCSX-ReARMed（默认，快、省内存，手机首选）' },
+    { id: 'mednafen_psx', label: 'Beetle PSX 软件版（CHD 流式盘，已验证）' },
     { id: 'mednafen_psx_hw', label: 'Beetle PSX HW（更准、可高清，吃性能）' },
   ],
   nds: [
@@ -100,7 +101,7 @@ export function coreOptionsFor(platform: string): Array<{ id: string; label: str
  */
 export const MELONDSDS_VERSION = '1.4.0'
 
-export const SELF_BUILT_CORES = new Set<string>(['mame-current', 'melondsds'])
+export const SELF_BUILT_CORES = new Set<string>(['mame-current', 'melondsds', 'mednafen_psx'])
 
-/** 两个都被正式暴露给后台，缺任意一个都不准发布。 */
-export const REQUIRED_SELF_BUILT_CORES = new Set<string>(['mame-current', 'melondsds'])
+/** 后台已承诺这些核心可用，缺任意一份产物都会让相应游戏无法启动。 */
+export const REQUIRED_SELF_BUILT_CORES = new Set<string>(['mame-current', 'melondsds', 'mednafen_psx'])

@@ -24,6 +24,7 @@
  * （server/src/index.js 的 express.static 挂的是 CLIENT_DIR）。
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -93,6 +94,23 @@ if (!existsSync(join(dir, 'cores', 'fbneo-wasm.data'))) {
     'public/emulatorjs/cores/ 里没有核心（至少 fbneo-wasm.data 该在）',
     'npm install && npm run ejscores（核心来自 npm 的 @emulatorjs/core-*，prebuild 会自动复制，走到这里说明 npm install 没装上）',
   )
+}
+
+// PS1 Range 依赖 Beetle 不再整盘预缓存；同名核心若被上游覆盖，网页分片层会退化成整盘读取。
+const psxCore = join(dir, 'cores', 'mednafen_psx_hw-wasm.data')
+const psxCoreHash = existsSync(psxCore)
+  ? createHash('sha256').update(readFileSync(psxCore)).digest('hex')
+  : ''
+if (psxCoreHash !== 'c830df67587ba84a55bf6b962fafdc90b73bcc27f720dd074e20d746003999bb') {
+  fail('Beetle PS1 核心缺少关闭整盘预缓存的 Range 补丁', '先核对上游源码，再运行 node scripts/patch-psx-range-core.mjs；新核心必须重新取证')
+}
+// 可玩的 Range 路径使用软件版；仅验证旧 HW 补丁会让部署时误把会崩溃的核心当成合格产物。
+for (const variant of ['wasm', 'legacy-wasm']) {
+  const archive = join(dir, 'cores', `mednafen_psx-${variant}.data`)
+  const hash = existsSync(archive) ? createHash('sha256').update(readFileSync(archive)).digest('hex') : ''
+  if (hash !== 'aa489e36f1938e14ab3e03854a09acbb03da0634362ec741d60094fe70e4f33b') {
+    fail(`Beetle PS1 软件版 ${variant} 核心未通过 Range 游戏实测版本校验`, '恢复随仓库发布的 mednafen_psx 核心；换版后必须重做浏览器实玩验收')
+  }
 }
 
 /*

@@ -72,6 +72,7 @@ import { isRomPackConfigured } from './rom-pack-key.js'
 import { createSfsService } from './sfs.js'
 import { createCs16RelayService } from './cs16-relay.js'
 import { createCs16RoomService } from './cs16-rooms.js'
+import { createNdsWfcService } from './nds-wfc.js'
 import { systemImageProxy } from './system-images.js'
 
 const app = express()
@@ -103,6 +104,8 @@ const sfs = createSfsService()
 const cs16Relay = createCs16RelayService({ defaultAllowedOrigins: origins })
 // 房间数据只在浏览器之间转发，与公网 UDP 目录分开，避免某一边关闭时误伤另一种联机方式。
 const cs16Rooms = createCs16RoomService({ defaultAllowedOrigins: origins })
+// WFC 使用真实 TCP/UDP，必须与只转发手柄输入的 netplay 分开，并默认关闭公网出口。
+const ndsWfc = createNdsWfcService()
 app.use(
   cors({
     origin: origins.includes('*') ? true : origins,
@@ -138,6 +141,7 @@ app.use('/api', noStore)
 app.use('/api/sfs', sfs.router)
 app.use('/api/cs16', cs16Relay.router)
 app.use('/api/cs16', cs16Rooms.router)
+app.use('/api/nds-wfc', ndsWfc.router)
 
 /*
   健康检查。公开、匿名。
@@ -214,6 +218,8 @@ app.use('/api/admin/open-apps', adminOpenAppsRouter)
 app.use('/api/admin/config', adminConfigRouter)
 // 必须排在 /api/admin 之前：adminRouter 有通配参数，先挂可避免任务 id 被当成普通后台资源 id。
 app.use('/api/admin/psp-conversions', pspConversionsRouter)
+// 已有 PSP 地址保持兼容；新的中性入口让 PS1 不必依赖一个名字写死为 PSP 的 URL。
+app.use('/api/admin/disc-conversions', pspConversionsRouter)
 app.use('/api/admin/sockdrive-conversions', sockdriveConversionsRouter)
 
 app.use('/api/auth', authRouter)
@@ -663,6 +669,7 @@ attachJsnesNetplay(httpServer, app, origins)
 sfs.attach(httpServer)
 cs16Relay.attach(httpServer)
 cs16Rooms.attach(httpServer)
+ndsWfc.attach(httpServer)
 startSweeper()
 
 /**

@@ -43,7 +43,8 @@ import { biosSetUrlSync, platformBiosUrlSync, fetchPlatformBios, loadedPlatformB
 import { biosNameOfUrl } from '@/emulator/biosPlan'
 import { uploadSwfBundle, type BundleUploadProgress } from './swfUpload'
 import { compressCoverToWebp } from '@/lib/imageResize'
-import { canReuseRomObjectKey, confirmUpload, confirmDiscImage, cleanupSuperseded, deleteRomObjects, human, isDeletableKey } from './uploadGuards'
+import { canReuseRomObjectKey, confirmUpload, confirmConvertedUpload, confirmDiscImage, cleanupSuperseded, deleteRomObjects, human, isDeletableKey } from './uploadGuards'
+import { psxIsoValidationProblem } from './psxIso'
 import { coreOptionsFor } from '@/config/emulators'
 import { FEATURES } from '@/config/features'
 import { isPlayable } from '@/emulator'
@@ -67,6 +68,16 @@ import {
   rememberedPspConversion,
   waitForPspConversion,
 } from '@/services/pspConversion'
+import {
+  createPsxConversion,
+  psxChdKey,
+  psxConversionCapability,
+  psxConversionLabel,
+  psxStagingKey,
+  rememberPsxConversion,
+  rememberedPsxConversion,
+  waitForPsxConversion,
+} from '@/services/psxConversion'
 import {
   clearPendingSockdriveCreation,
   createSockdriveConversion,
@@ -2210,6 +2221,7 @@ function RomField({
   const [romset, setRomset] = useState<RomsetIdentification | null>(null)
   /** 同一个语言槽只恢复一次；父表单每次 setForm 都会重绘，不能因此启动第二条轮询。 */
   const resumedPspJob = useRef('')
+  const resumedPsxJob = useRef('')
   type HealthOutcome = Awaited<ReturnType<typeof probeRom>> & { rangeSupported?: boolean }
   const [health, setHealth] = useState<{
     checking: boolean
@@ -2223,8 +2235,8 @@ function RomField({
   const isFlash = platform === 'flash'
   const isHtml5 = platform === 'html5'
   const isStreamingDisc = isStreamingDiscPlatform(platform)
-  /** 大光盘保持 Range 随机读取；HTML5 是目录/页面。其余新上传 ROM 统一进入 8BG。 */
-  const shouldPack = !isStreamingDisc && !isHtml5
+  /** PS1 的 CHD 也必须保持裸文件才能按 Range 读盘；旧 8BG 仍允许上传作兼容回退。 */
+  const shouldPack = !isStreamingDisc && !isHtml5 && platform !== 'psx'
   const oneClickSockdrive = platform === 'dos' && Boolean(lang && autoSockdrive && !autoSockdrive.hasExtras)
   /** 街机的 ROM key 保留原文件名 —— FBNeo 靠压缩包名认 romset，见 roms.ts 的 FILENAME_IS_IDENTITY */
   const isArcade = keepsOriginalFileName(platform)
@@ -2232,7 +2244,7 @@ function RomField({
   // 「玩本地 ROM」和格式识别，混进 zip 会让玩家以为拖个 zip 进播放器也能玩
   const accept = [
     ...(isFlash ? ['.swf', '.zip'] : (platformMap[platform]?.romExtensions ?? ['.zip'])),
-    ...(shouldPack ? ['.8bg'] : []),
+    ...(shouldPack || platform === 'psx' ? ['.8bg'] : []),
   ].join(',')
   const defKey = (fileName: string) => (lang ? defaultRomKeyForLang(platform, slug, lang, fileName) : defaultKeyFor(platform, slug, fileName))
   const exampleName = platform === 'gamecube' || platform === 'wii'
@@ -2273,6 +2285,33 @@ function RomField({
     })
     return () => controller.abort()
     // onChange 是父组件每次渲染新建的闭包，加入依赖会让同一个任务不断 abort/restart。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [platform, lang, slug, allowStorage])
+
+  useEffect(() => {
+    if (platform !== 'psx' || !lang || !slug || !allowStorage) return
+    const id = rememberedPsxConversion(slug, lang)
+    if (!id || resumedPsxJob.current === id) return
+    resumedPsxJob.current = id
+    const controller = new AbortController()
+    setProgress(45)
+    setMsg({ ok: true, text: '正在恢复上次未完成的 PS1 ISO → CD CHD 任务…' })
+    void waitForPsxConversion(id, (job) => {
+      setProgress(45 + Math.round(job.progress * 0.55))
+      setMsg({ ok: true, text: `${psxConversionLabel(job)} ${job.progress}%${job.message ? `；${job.message}` : ''}` })
+    }, controller.signal).then((job) => {
+      onChange(job.targetKey)
+      rememberPsxConversion(slug, lang, null)
+      setProgress(null)
+      setMsg({ ok: true, text: `PS1 CD CHD 已完成并恢复绑定：${job.targetKey}（${human(job.outputSize ?? 0)}）` })
+    }).catch((error) => {
+      if (error instanceof Error && error.name === 'AbortError') return
+      rememberPsxConversion(slug, lang, null)
+      setProgress(null)
+      setMsg({ ok: false, text: error instanceof Error ? error.message : '恢复 PS1 转换任务失败' })
+    })
+    return () => controller.abort()
+    // onChange 是父组件每次渲染新建的闭包，加入依赖会反复中止同一项任务。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [platform, lang, slug, allowStorage])
 
@@ -2505,6 +2544,15 @@ function RomField({
         return
       }
     }
+    // 数据轨签名和 PS1 启动文件只需读取约 1MB；先查可避免上传整张盘后才被后台拒绝。
+    if (platform === 'psx' && /\.iso$/i.test(file.name)) {
+      const problem = await psxIsoValidationProblem(file).catch(() => '读取 ISO 目录失败')
+      if (problem) {
+        setMsg({ ok: false, text: problem })
+        if (inputRef.current) inputRef.current.value = ''
+        return
+      }
+    }
     // 光盘平台：格式和体积先问一句。转 .chd 这件事只有在**上传之前**说才有用
     if (!(await confirmDiscImage(platform, file))) {
       if (inputRef.current) inputRef.current.value = ''
@@ -2513,7 +2561,7 @@ function RomField({
     // CLI 生成的 8BG 可以直接上传；再包一层会让播放器只拆掉外层，最终把 8BG 密文交给模拟器。
     // 但四字节魔数不够：普通 ROM 可能碰巧以 8BG1 开头，半截包也照样有魔数。现成包在上传前
     // 要把每一块解密、解压和校验一遍，同时确认它使用的是当前服务端仍保留的密钥。
-    const hasPackMagic = shouldPack && isRomPackBytes(await file.slice(0, 4).arrayBuffer())
+    const hasPackMagic = (shouldPack || platform === 'psx') && isRomPackBytes(await file.slice(0, 4).arrayBuffer())
     let alreadyPacked = false
     let packedOriginalName = ''
     if (hasPackMagic) {
@@ -2562,9 +2610,34 @@ function RomField({
     // 现成容器的外层文件名可能只是 output.8bg；对象 key 必须按头里的 game.nds / game.zip
     // 生成，运行时选择在下载文件头之前就要靠这层扩展名判断，不能等解密后才知道。
     const plainKey = sniffed ? defKey(sniffed) : reusable ? oldKey : defKey(alreadyPacked ? packedOriginalName : file.name)
-    const key = shouldPack ? romPackKey(plainKey) : plainKey
+    const key = shouldPack || alreadyPacked ? romPackKey(plainKey) : plainKey
     let pspIsoToChd = false
+    let psxIsoToChd = false
     let finalKey = key
+    if (platform === 'psx' && /\.iso$/i.test(file.name)) {
+      let unavailable = lang ? '' : '未选择 ROM 语言槽'
+      try {
+        if (lang) {
+          const capability = await psxConversionCapability()
+          if (!capability.available || file.size > capability.maxIsoBytes) {
+            unavailable = capability.reason || `ISO 超过后台上限 ${human(capability.maxIsoBytes)}`
+          } else {
+            psxIsoToChd = true
+            // 旧槽可能是 .chd.8bg；自动转换后的成品是直存 .chd，不能复用旧后缀。
+            finalKey = psxChdKey(defKey(file.name))
+          }
+        }
+      } catch (error) {
+        unavailable = error instanceof Error ? error.message : '无法连接后台'
+      }
+      if (!psxIsoToChd && !window.confirm(
+        `PS1 ISO 暂时不能自动转为可流式读取的 CHD：${unavailable}\n\n` +
+        '可以原样上传 ISO，使用 PCSX 完整下载后游玩；单独 ISO 不包含原盘 CD 音轨。仍要上传吗？',
+      )) {
+        if (inputRef.current) inputRef.current.value = ''
+        return
+      }
+    }
     if (platform === 'psp' && /\.iso$/i.test(file.name)) {
       let unavailable = ''
       try {
@@ -2590,14 +2663,28 @@ function RomField({
       }
     }
     setMsg(null)
-    if (!(await confirmUpload(finalKey, file))) {
+    let allowOverwrite = false
+    if (pspIsoToChd || psxIsoToChd) {
+      try {
+        const choice = await confirmConvertedUpload(finalKey)
+        if (!choice.proceed) {
+          if (inputRef.current) inputRef.current.value = ''
+          return
+        }
+        allowOverwrite = choice.overwrite
+      } catch (error) {
+        setMsg({ ok: false, text: `无法确认目标 CHD 是否已存在，已取消转换以避免覆盖：${error instanceof Error ? error.message : String(error)}` })
+        if (inputRef.current) inputRef.current.value = ''
+        return
+      }
+    } else if (!(await confirmUpload(finalKey, file))) {
       if (inputRef.current) inputRef.current.value = ''
       return
     }
     setProgress(0)
     try {
-      if (pspIsoToChd && lang) {
-        const stagingKey = pspStagingKey()
+      if ((pspIsoToChd || psxIsoToChd) && lang) {
+        const stagingKey = psxIsoToChd ? psxStagingKey() : pspStagingKey()
         setMsg({ ok: true, text: `正在断点上传临时 ISO；上传后服务器会自动转为 ${finalKey}` })
         await uploadRom(file, stagingKey, (pct, at) => {
           // 临时 ISO 上传占前 45%，服务器下载 / 转换 / 校验 / 发布占后 55%。
@@ -2607,21 +2694,28 @@ function RomField({
         setStage(null)
         setProgress(45)
         setMsg({ ok: true, text: 'ISO 已到 R2，正在创建持久转换任务…' })
-        const job = await createPspConversion({
+        const request = {
           sourceKey: stagingKey,
           targetKey: finalKey,
           sourceSize: file.size,
           // 新建表单里的 slug 还没入库，可能正好撞到一款旧游戏；只给真实存在的编辑对象做自动绑定。
           ...(persistedSlug ? { gameSlug: persistedSlug, lang, expectedCurrentKey: oldKey } : {}),
-          // 上面的 confirmUpload 已经让管理员明确确认过目标位置可能被覆盖。
-          overwrite: true,
-        })
-        rememberPspConversion(slug, lang, job.id)
-        const completed = await waitForPspConversion(job.id, (next) => {
+          // 只有确实看到了目标并得到确认，才允许任务覆盖；探测时不存在就保持禁止覆盖。
+          overwrite: allowOverwrite,
+        }
+        const job = psxIsoToChd ? await createPsxConversion(request) : await createPspConversion(request)
+        if (psxIsoToChd) rememberPsxConversion(slug, lang, job.id)
+        else rememberPspConversion(slug, lang, job.id)
+        const onUpdate = (next: typeof job) => {
           setProgress(45 + Math.round(next.progress * 0.55))
-          setMsg({ ok: true, text: `${pspConversionLabel(next)} ${next.progress}%${next.message ? `；${next.message}` : ''}` })
-        })
-        rememberPspConversion(slug, lang, null)
+          const label = psxIsoToChd ? psxConversionLabel(next) : pspConversionLabel(next)
+          setMsg({ ok: true, text: `${label} ${next.progress}%${next.message ? `；${next.message}` : ''}` })
+        }
+        const completed = psxIsoToChd
+          ? await waitForPsxConversion(job.id, onUpdate)
+          : await waitForPspConversion(job.id, onUpdate)
+        if (psxIsoToChd) rememberPsxConversion(slug, lang, null)
+        else rememberPspConversion(slug, lang, null)
         onChange(completed.targetKey)
         const removed = await cleanupSuperseded(oldKey, completed.targetKey, allBoundKeys)
         const ratio = completed.outputSize && completed.sourceSize
@@ -2629,7 +2723,7 @@ function RomField({
           : ''
         setMsg({
           ok: true,
-          text: `PSP CHD 已校验并发布：${completed.targetKey}（${human(completed.outputSize ?? 0)}）${ratio}` +
+          text: `${psxIsoToChd ? 'PS1 CD CHD' : 'PSP CHD'} 已校验并发布：${completed.targetKey}（${human(completed.outputSize ?? 0)}）${ratio}` +
             (completed.bound ? '；已原子绑定到游戏' : `；${completed.message || '请保存表单完成绑定'}`) +
             (removed ? `；旧文件 ${removed} 已删除` : ''),
         })
@@ -2780,7 +2874,7 @@ function RomField({
                 : isStreamingDisc
                   ? `直接上传镜像会存到 ${defKey(exampleName)} 这样的位置并自动绑定；不要套 ZIP。也可手填支持 HTTP Range 的完整 URL`
                 : platform === 'psx'
-                  ? `推荐直接选 CHD，不要套 ZIP；上传后封装为 ${romPackKey(defKey(exampleName))}。播放时自动选择支持 CHD、但更耗性能的 Beetle PSX HW；带版本的地址可断点续传，当前仍需下载完成后才能开局`
+                  ? `单数据轨 ISO 优先在服务器转成可 Range 流式游玩的 CD CHD；转换不可用时可确认直接上传 ISO（完整下载后由 PCSX 游玩）。现成 CHD 直存 ${defKey(exampleName)}，按需读盘并自动选择 Beetle PSX 软件版；旧 8BG 包仍可上传，但只能完整下载。带 CD 音轨的原盘请先从 BIN/CUE 转 CHD，单独 ISO 无法保留音乐`
                 : `新上传会先做 Zstd 19 + AES-256-GCM，再存到 ${romPackKey(defKey(exampleName))} 并自动绑定；旧 ZIP/ROM 仍可直接填写和运行`
             : isHtml5
               ? '填写你有权嵌入的 HTTPS 游戏网址；目标站点必须允许 iframe 嵌入。单文件上传需先配置 Worker'

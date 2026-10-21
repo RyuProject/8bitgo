@@ -216,6 +216,22 @@ function patchPathGetSizeAbi(coreDir) {
 function patchCore(coreDir) {
   patchPathGetSizeAbi(coreDir)
   /*
+    RetroArch 读取 `.opt` 时只接受核心预先声明过的选项值。单纯写入随机 MAC 虽然能在
+    文件里回读到，实际上会被回退成 firmware，全站仍共享同一默认地址。melonDS DS
+    1.4.0 已有 macAddresses 动态选项骨架，但扫描目录处还是 TODO；只接入我们自己的
+    17 字节地址文件，让核心先注册该值，再由原有 ParseNetworkOptions 解析。
+  */
+  replaceOnce(
+    join(coreDir, 'src/libretro/config/config.cpp'),
+    '                // TODO: Pick a particular file name and load MAC addresses from it (one per line)',
+    `                // 8BitGo: WFC 客体身份先注册为合法核心选项，否则 RetroArch 会忽略 .opt 的值。
+                if (string_ends_with(d.path, "/8bitgo-wfc-mac.txt")) {
+                    if (auto address = config::ParseMacAddressFile(d)) {
+                        macAddresses.emplace_back(MacAddressEntry{"8BitGo WFC identity", config::PrintMacAddress(*address)});
+                    }
+                }`,
+  )
+  /*
     melonDS DS 用 C++ 异常报告所有开局错误（加密 ROM、坏 ROM、DSi 专用游戏、缺 NAND…），再在
     LoadGame 里 catch 成错误画面。Emscripten 默认不编译 catch：发布包里没有任何
     __cxa_find_matching_catch，这些错误全部变成未捕获的 JS 异常（控制台只有一串数字），
@@ -280,7 +296,25 @@ function patchConfiguredDependencies(coreDir) {
     ' || defined(__EMSCRIPTEN__)',
     ' /* Emscripten 使用系统 mmap ABI。 */',
   )
+  patchMelonDsSlirpPoll(coreDir)
   patchMelonDsGpuInit(coreDir)
+}
+
+/**
+ * Emscripten 的 SOCKFS 在 WebSocket OPEN 后只报告 POLLOUT(0x004)，而这里上游请求 / 检查
+ * POLLWRNORM(0x100)。两者在桌面系统通常等价，在网页端并不等价：TCP 握手已完成，
+ * libslirp 却永远等不到“可写”，游戏的 HTTP 请求一个字节都不会发出去，最终报 WFC 52200。
+ * melonDS 源码由 CMake FetchContent 拉取，只能 configure 之后修；桌面平台保持原样。
+ */
+function patchMelonDsSlirpPoll(coreDir) {
+  const slirp = join(coreDir, 'build-ejs/_deps/melonds-src/src/net/Net_Slirp.cpp')
+  replaceOnce(slirp,
+    '#include <poll.h>\n',
+    '#include <poll.h>\n#ifdef __EMSCRIPTEN__\n#define MELONDS_SLIRP_POLL_WRITE POLLOUT\n#else\n#define MELONDS_SLIRP_POLL_WRITE POLLWRNORM\n#endif\n')
+  replaceOnce(slirp, 'if (events & SLIRP_POLL_OUT) evt |= POLLWRNORM;',
+    'if (events & SLIRP_POLL_OUT) evt |= MELONDS_SLIRP_POLL_WRITE;')
+  replaceOnce(slirp, 'if (evt & POLLWRNORM) ret |= SLIRP_POLL_OUT;',
+    'if (evt & MELONDS_SLIRP_POLL_WRITE) ret |= SLIRP_POLL_OUT;')
 }
 
 /**
@@ -319,11 +353,22 @@ function patchRetroArch(retroDir, jobs) {
     'ifneq (,$(findstring same_cdi,$(TARGET)))',
     '# 8BitGo: melonDS DS 前端需要 C++ 异常捕获\nifneq (,$(findstring melondsds,$(TARGET)))\n   LDFLAGS += -fexceptions\nendif\n\nifneq (,$(findstring same_cdi,$(TARGET)))',
   )
+  // 部分浏览器的 devicePixelContentBoxSize 是 CSS 尺寸的 2 倍，window.devicePixelRatio 却报 1。
+  // 画布据前者建好后，输入驱动若仍乘后者，右侧触屏的点击只会落在左半边；
+  // 必须把“真实画布像素 / CSS 像素”的同一比例传给指针驱动。
+  replaceOnce(
+    join(retroDir, 'emscripten/library_platform_emscripten.js'),
+    '{{{ makeSetValue("dpr", "0", "window.devicePixelRatio", "double") }}};',
+    '{{{ makeSetValue("dpr", "0", "entry.contentRect.width > 0 ? width / entry.contentRect.width : window.devicePixelRatio", "double") }}};',
+  )
   const script = join(emulatorJsDir(retroDir), 'build-emulatorjs.sh')
   replaceOnce(script, '  name=`echo "$f" | sed "s/\\(_libretro_emscripten\\|\\).bc$//"`', '  name=${f%_libretro_emscripten.bc}')
   const source = readFileSync(script, 'utf8')
-  const next = source.replaceAll('$(nproc)', String(jobs))
-  if (next === source && !source.includes(`-j${jobs}`)) throw new Error('build-emulatorjs.sh 的并行度补丁位置已变')
+  // 同一构建目录重跑时可能保留上次的 -jN；允许更换并行度，避免仅因 jobs 不同而拒绝重编修复。
+  const next = source.replace(/(TARGET=\$\{name\}_libretro\.js -j)(?:\$\(nproc\)|\d+)/, `$1${jobs}`)
+  if (next === source && !source.includes(`TARGET=\${name}_libretro.js -j${jobs}`)) {
+    throw new Error('build-emulatorjs.sh 的并行度补丁位置已变')
+  }
   writeFileSync(script, next)
 }
 
@@ -360,13 +405,33 @@ function bumpRuntimeGeneration(sha256) {
   const re = /export const EJS_RUNTIME_GENERATION = '([^']*)'/
   const current = source.match(re)
   if (!current) throw new Error('src/emulator/paths.ts 里找不到 EJS_RUNTIME_GENERATION')
-  const day = new Date().toISOString().slice(0, 10).replaceAll('-', '')
-  const next = `${day}-melondsds-${sha256.slice(0, 8)}`
+  const utcDay = new Date().toISOString().slice(0, 10).replaceAll('-', '')
+  // 中国凌晨仍是前一天 UTC；核心 SHA 已换代，也不要让代号里的日期倒退造成误判。
+  const previousDay = current[1].match(/^(\d{8})-melondsds-/)?.[1] || ''
+  const day = utcDay > previousDay ? utcDay : previousDay
+  // 其它功能可能已经在代号尾部加了自己的缓存代次；重编 NDS 不能无声丢掉 PSX 等独立修复。
+  const suffix = current[1].match(/^\d{8}-melondsds-[a-f0-9]{8}(.*)$/)?.[1] || ''
+  const next = `${day}-melondsds-${sha256.slice(0, 8)}${suffix}`
   bumpNdsModernCoreBuild(sha256)
+  bumpNdsEngineCacheGeneration(sha256)
   if (current[1] === next) return next
   writeFileSync(file, source.replace(re, `export const EJS_RUNTIME_GENERATION = '${next}'`))
   console.log(`[cache] EJS_RUNTIME_GENERATION ${current[1]} -> ${next}`)
   return next
+}
+
+function bumpNdsEngineCacheGeneration(sha256) {
+  const file = join(repoRoot, 'src/emulator/adapters/emulatorjs.ts')
+  const source = readFileSync(file, 'utf8')
+  const re = /const EJS_CACHE_GENERATION = '([^']*)'/
+  const current = source.match(re)
+  if (!current) throw new Error('emulatorjs.ts 里找不到 EJS_CACHE_GENERATION')
+  // 引擎的解压工件按文件名缓存在 IndexedDB；只换 .data URL 不一定会重新解压。
+  // 每次 NDS 核心字节发生变化都自动换代，避免“源码修好但玩家仍运行旧 wasm”。
+  const next = `${current[1].replace(/\.melondsds-core-[a-f0-9]{8}/, '')}.melondsds-core-${sha256.slice(0, 8)}`
+  if (current[1] === next) return
+  writeFileSync(file, source.replace(re, `const EJS_CACHE_GENERATION = '${next}'`))
+  console.log(`[cache] EJS_CACHE_GENERATION ${current[1]} -> ${next}`)
 }
 
 /** “这份 ROM 在新核心上崩过”的本机记录按核心 sha 分桶；换核心后旧记录必须失效，玩家才会重新试新核心。 */
@@ -390,6 +455,26 @@ function packageCore(args, coreDir, startedAt) {
   rmSync(packageDir, { recursive: true, force: true })
   mkdirSync(packageDir, { recursive: true })
   run('7z', ['x', '-y', `-o${packageDir}`, raw], args.workdir)
+  /*
+   * Emscripten 默认把每个 POSIX socket 都连向同一个 WebSocket URL，服务端因而不知道
+   * 原本的协议 / 目标 IP / 端口。WFC 有 DNS(UDP) 和登录(TCP) 等多个目标，必须让
+   * SOCKFS 在创建每条连接时调用前端提供的 URL 工厂；普通 NDS 离线游戏不受影响。
+   * 精确匹配产物，升级 emsdk 后不允许静默打丢这个补丁。
+   */
+  const runtimeJs = join(packageDir, 'melondsds_libretro.js')
+  const source = readFileSync(runtimeJs, 'utf8')
+  const from = 'if(SOCKFS.websocketArgs["url"]){url=SOCKFS.websocketArgs["url"]}'
+  const to = 'if(SOCKFS.websocketArgs["url"]){url=typeof SOCKFS.websocketArgs["url"]==="function"?SOCKFS.websocketArgs["url"](addr,port,sock.type,sock.stream.node.name):SOCKFS.websocketArgs["url"]}'
+  if (!source.includes(from)) throw new Error('SOCKFS WebSocket URL 入口已变化，WFC 补丁未应用')
+  writeFileSync(runtimeJs, source.replace(from, to))
+  // 61020 发生在 GameSpy 挑战之后时，仅记录 29900 端口的入队/出队长度；
+  // 开发环境可区分“中继收到了”与“客体真的读到了”，不打印挑战或账户报文。
+  replaceOnce(runtimeJs,
+    'sock.recv_queue.push({addr:peer.addr,port:peer.port,data});SOCKFS.emit("message",sock.stream.fd)',
+    'sock.recv_queue.push({addr:peer.addr,port:peer.port,data});if(Module["wfcTrace"]&&peer.port===29900)console.info("[nds-wfc-core] gp queued",data.length);SOCKFS.emit("message",sock.stream.fd)')
+  replaceOnce(runtimeJs,
+    'var queued=sock.recv_queue.shift();if(!queued)',
+    'var queued=sock.recv_queue.shift();if(Module["wfcTrace"]&&sock.dport===29900&&queued)console.info("[nds-wfc-core] gp read",queued.data.length);if(!queued)')
   copyFileSync(join(coreDir, 'LICENSE'), join(packageDir, 'license.txt'))
   writeFileSync(join(packageDir, 'core.json'), `${JSON.stringify({
     name: 'melondsds',

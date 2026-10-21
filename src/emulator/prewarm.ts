@@ -16,6 +16,7 @@ import { CHEERPJ_ORIGIN, j2meWarmTargets } from './j2meUrl'
 import { preconnectOrigin, warmHttpCache } from './httpWarm'
 import { supportsRuffleWasmExtensions } from './rufflePerformance'
 import { jspiEnabled } from './jspiFlag'
+import { PSX_CHD_ARCHIVE, PSX_CHD_CORE } from './psxChd'
 
 /**
  * 这台设备上「指针停在按钮上」和「点击」之间是否真的有提前量。
@@ -157,6 +158,7 @@ export function prewarmRuntime(runtime: RuntimeId | undefined, core?: string | n
   */
   if (core && hasHoverIntent() && allowsLargeHoverPrewarm()) {
     // 与播放器 EJS_paths 使用完全相同的版本化 URL，避免预热旧核心、正式启动又下载新核心。
-    warmHttpCache(ejsRuntimeAsset(`cores/${encodeURIComponent(emulatorJsCoreFileFor(core))}-wasm.data`))
+    const file = emulatorJsCoreFileFor(core)
+    warmHttpCache(ejsRuntimeAsset(`cores/${file === PSX_CHD_CORE ? PSX_CHD_ARCHIVE : `${encodeURIComponent(file)}-wasm.data`}`))
   }
 }

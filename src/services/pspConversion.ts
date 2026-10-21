@@ -19,6 +19,7 @@ export interface PspConversionCapability {
 
 export interface PspConversionJob {
   id: string
+  platform?: 'psp' | 'psx'
   sourceKey: string
   targetKey: string
   status: PspConversionStatus

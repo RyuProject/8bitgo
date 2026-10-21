@@ -145,7 +145,7 @@ await check('退出等 BIOS 的会话后不再启动已移除 iframe 里的 WASM
   const guardAt = source.indexOf('if (!shouldContinue()) return')
   const startAt = source.indexOf('return original.call(this)', guardAt)
   assert.ok(guardAt >= 0 && startAt > guardAt, '会话销毁判定没有守在真正启动核心之前')
-  assert.match(source, /\(\) => !destroyed\)/)
+  assert.match(source, /\(\) => !destroyed(?:,|\))/)
 })
 
 await check('ROM、额外 BIOS、缓存清理与联机辅助资源并行启动', async () => {

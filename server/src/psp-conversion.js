@@ -13,7 +13,7 @@
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { constants as fsConstants, createWriteStream } from 'node:fs'
-import { access, mkdir, open, rm, stat, statfs } from 'node:fs/promises'
+import { access, mkdir, open, rm, stat, statfs, writeFile } from 'node:fs/promises'
 import { availableParallelism } from 'node:os'
 import { join, resolve } from 'node:path'
 import { Readable, Transform } from 'node:stream'
@@ -36,7 +36,16 @@ let started = false
 let activeWorkers = 0
 let pumpTimer
 let sweepTimer
-let capabilityCache
+const capabilityCache = new Map()
+
+/** 历史 PSP 队列已上线；共用它的磁盘、R2 幂等发布和清理机制，但按平台选择光盘格式。 */
+function discPlatform(value) {
+  const platform = String(value || 'psp').trim()
+  if (platform !== 'psp' && platform !== 'psx') {
+    throw Object.assign(new Error('只支持 PSP 或 PS1 光盘转换'), { status: 400 })
+  }
+  return platform
+}
 
 function positiveInt(raw, fallback, max = Number.MAX_SAFE_INTEGER) {
   if (raw === undefined || raw === '') return fallback
@@ -71,18 +80,23 @@ export function validObjectKey(value) {
 }
 
 export function validatePspConversionRequest(body, env = process.env) {
+  const platform = discPlatform(body?.platform)
   const sourceKey = String(body?.sourceKey || '').trim()
   const targetKey = String(body?.targetKey || '').trim()
   const sourceSize = Number(body?.sourceSize)
   const gameSlug = String(body?.gameSlug || '').trim()
   const lang = String(body?.lang || '').trim()
   const expectedCurrentKey = String(body?.expectedCurrentKey || '').trim()
+  const romPrefix = String(env.ROM_PREFIX === undefined ? 'roms' : env.ROM_PREFIX).replace(/^\/+|\/+$/g, '')
+  const targetDir = `${romPrefix ? `${romPrefix}/` : ''}${platform}/`
 
+  // PS1 也落到旧 Worker 已设为私有读的 psp-staging；换新前缀会在 Worker 未先发布时泄露源 ISO。
   if (!validObjectKey(sourceKey) || !/^psp-staging\/[a-f0-9-]{16,}\.iso$/i.test(sourceKey)) {
     throw Object.assign(new Error('临时 ISO key 无效'), { status: 400 })
   }
-  if (!validObjectKey(targetKey) || !/(^|\/)psp\/[^/]+\.chd$/i.test(targetKey)) {
-    throw Object.assign(new Error('最终 PSP 对象必须是 psp 目录下的 .chd'), { status: 400 })
+  if (!validObjectKey(targetKey) || !targetKey.startsWith(targetDir) ||
+      !/^[^/]+\.chd$/i.test(targetKey.slice(targetDir.length))) {
+    throw Object.assign(new Error(`最终 ${platform === 'psx' ? 'PS1' : 'PSP'} 对象必须是 ${targetDir.slice(0, -1)} 目录下的 .chd`), { status: 400 })
   }
   if (sourceKey === targetKey) throw Object.assign(new Error('临时源文件和最终文件不能使用同一个 key'), { status: 400 })
   const max = pspConversionConfig(env).maxIsoBytes
@@ -100,6 +114,7 @@ export function validatePspConversionRequest(body, env = process.env) {
     throw Object.assign(new Error('当前 ROM key 无效'), { status: 400 })
   }
   return {
+    ...(platform === 'psx' ? { platform } : {}),
     sourceKey,
     targetKey,
     sourceSize,
@@ -117,6 +132,13 @@ export function chdmanCreateArgs(input, output, processors) {
   return [...args, '-i', input, '-o', output]
 }
 
+export function chdmanCreateCdArgs(cue, output, processors) {
+  // PS1 是 CD 而非 PSP 的 UMD/DVD；MODE1/2048 CUE 转成 CD CHD 才能由 Beetle 按轨道读取。
+  const args = ['createcd', '-c', 'cdzl']
+  if (Number.isSafeInteger(processors) && processors > 0) args.push('-np', String(processors))
+  return [...args, '-i', cue, '-o', output]
+}
+
 export function chdmanProgress(text) {
   const hits = [...String(text || '').matchAll(/(?:^|\s)(\d{1,3}(?:\.\d+)?)%/g)]
   if (!hits.length) return null
@@ -130,6 +152,12 @@ export function isPspIsoHeader(bytes) {
   if (data.length < 0x8010) return false
   const ascii = (at, len) => String.fromCharCode(...data.subarray(at, at + len))
   return ascii(0x8001, 5) === 'CD001' && ascii(0x8008, 8) === 'PSP GAME'
+}
+
+export function isPsxIsoHeader(bytes) {
+  const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || 0)
+  return data.length >= 0x9000 && data[0x8000] === 1 && data[0x8006] === 1 &&
+    Buffer.from(data.subarray(0x8001, 0x8006)).toString('ascii') === 'CD001'
 }
 
 function encodeKey(key) {
@@ -193,8 +221,10 @@ async function commandExists(bin) {
   })
 }
 
-export async function pspConversionCapability(env = process.env, fresh = false) {
-  if (!fresh && capabilityCache && Date.now() - capabilityCache.at < 30_000) return capabilityCache.value
+export async function pspConversionCapability(env = process.env, fresh = false, requestedPlatform = 'psp') {
+  const platform = discPlatform(requestedPlatform)
+  const cached = capabilityCache.get(platform)
+  if (!fresh && cached && Date.now() - cached.at < 30_000) return cached.value
   const config = pspConversionConfig(env)
   let reason = ''
   if (!config.workerUrl) reason = '服务器未配置 PSP_CONVERT_WORKER_URL'
@@ -210,16 +240,17 @@ export async function pspConversionCapability(env = process.env, fresh = false) 
         const columns = await queryOne(
           `SELECT COUNT(*) AS n FROM information_schema.COLUMNS
             WHERE table_schema = DATABASE() AND table_name = 'psp_conversion_jobs'
-              AND column_name IN ('target_etag_before', 'output_etag', 'game_id')`,
+              AND column_name IN ('target_etag_before', 'output_etag', 'game_id', 'disc_platform')`,
         )
-        if (Number(columns?.n) !== 3) reason = 'psp_conversion_jobs 结构过旧；请在 server 目录重新执行 npm run migrate'
+        if (Number(columns?.n) !== 4) reason = 'psp_conversion_jobs 结构过旧；请在 server 目录重新执行 npm run migrate'
       }
     } catch {
       reason = '暂时无法检查 PSP 转换任务表'
     }
   }
-  const value = { available: !reason, reason, maxIsoBytes: config.maxIsoBytes, format: 'CHD (zstd, 2048-byte hunk)' }
-  capabilityCache = { at: Date.now(), value }
+  const value = { available: !reason, reason, maxIsoBytes: config.maxIsoBytes,
+    format: platform === 'psx' ? 'CD CHD (MODE1/2048，单数据轨)' : 'CHD (zstd, 2048-byte hunk)' }
+  capabilityCache.set(platform, { at: Date.now(), value })
   return value
 }
 
@@ -227,6 +258,7 @@ function publicJob(row) {
   if (!row) return null
   return {
     id: row.id,
+    platform: row.disc_platform || 'psp',
     sourceKey: row.source_key,
     targetKey: row.target_key,
     status: row.status,
@@ -259,7 +291,8 @@ export async function inspectPspSource(request, env = process.env) {
 }
 
 function sameCreateRequest(row, request) {
-  return row.source_key === request.sourceKey &&
+  return (row.disc_platform || 'psp') === (request.platform || 'psp') &&
+    row.source_key === request.sourceKey &&
     row.target_key === request.targetKey &&
     Number(row.source_size) === request.sourceSize &&
     (row.game_slug || '') === (request.gameSlug || '') &&
@@ -278,9 +311,10 @@ async function existingJobForSource(request) {
 }
 
 export async function createPspConversion(raw, actorId = null, env = process.env) {
-  const capability = await pspConversionCapability(env)
-  if (!capability.available) throw Object.assign(new Error(capability.reason), { status: 503 })
   const request = validatePspConversionRequest(raw, env)
+  const platform = request.platform || 'psp'
+  const capability = await pspConversionCapability(env, false, platform)
+  if (!capability.available) throw Object.assign(new Error(capability.reason), { status: 503 })
   // POST 必须幂等：服务端已建任务但响应途中断线时，浏览器重试只能拿回原任务，不能再压一份。
   const existing = await existingJobForSource(request)
   if (existing) return existing
@@ -288,7 +322,7 @@ export async function createPspConversion(raw, actorId = null, env = process.env
   if (request.gameSlug) {
     const game = await queryOne('SELECT id, platform FROM games WHERE slug = ?', [request.gameSlug])
     if (!game) throw Object.assign(new Error('要自动绑定的游戏不存在；请刷新后台后重试'), { status: 409 })
-    if (game.platform !== 'psp') throw Object.assign(new Error('要自动绑定的游戏已经不是 PSP 平台'), { status: 409 })
+    if (game.platform !== platform) throw Object.assign(new Error('要自动绑定的游戏平台与转换任务不一致'), { status: 409 })
     gameId = game.id
   }
   const source = await inspectPspSource(request, env)
@@ -296,10 +330,10 @@ export async function createPspConversion(raw, actorId = null, env = process.env
   try {
     await query(
       `INSERT INTO psp_conversion_jobs
-       (id, source_key, target_key, source_size, source_etag, target_etag_before, game_id, game_slug, lang,
+       (id, disc_platform, source_key, target_key, source_size, source_etag, target_etag_before, game_id, game_slug, lang,
         expected_current_key, allow_overwrite, actor_id, status, progress)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0)`,
-      [id, request.sourceKey, request.targetKey, request.sourceSize, source.etag, source.targetEtag,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0)`,
+      [id, platform, request.sourceKey, request.targetKey, request.sourceSize, source.etag, source.targetEtag,
         gameId, request.gameSlug, request.lang, request.expectedCurrentKey, request.overwrite ? 1 : 0, actorId],
     )
   } catch (error) {
@@ -362,21 +396,22 @@ async function fileSize(path) {
   }
 }
 
-export function conversionScratchBytes(sourceSize, inputBytes = 0, outputBytes = 0) {
+export function conversionScratchBytes(sourceSize, inputBytes = 0, outputBytes = 0, platform = 'psp') {
   const source = Math.max(0, Number(sourceSize) || 0)
   const input = Math.max(0, Math.min(source, Number(inputBytes) || 0))
-  const worstOutput = source + 16 * 1024 * 1024
+  // CD CHD 带 2352-byte 扇区、纠错和轨道元数据，不能套 PSP DVD 的“源大小+16MB”预算。
+  const worstOutput = platform === 'psx' ? Math.ceil(source * 1.25) + 16 * 1024 * 1024 : source + 16 * 1024 * 1024
   const output = Math.max(0, Math.min(worstOutput, Number(outputBytes) || 0))
   return (source - input) + (worstOutput - output) + 256 * 1024 * 1024
 }
 
-async function ensureDiskSpace(config, sourceSize, inputBytes = 0, outputBytes = 0) {
+async function ensureDiskSpace(config, sourceSize, inputBytes = 0, outputBytes = 0, platform = 'psp') {
   await mkdir(config.tempDir, { recursive: true })
   const fs = await statfs(config.tempDir)
   const free = Number(fs.bavail) * Number(fs.bsize)
   // 失败重试会保留已经落盘的输入或已校验输出；空间预检只计算还没写入的部分，
   // 否则磁盘明明够续跑，却会因为把现有文件再算一遍而被错误拒绝。
-  const need = conversionScratchBytes(sourceSize, inputBytes, outputBytes)
+  const need = conversionScratchBytes(sourceSize, inputBytes, outputBytes, platform)
   if (!Number.isFinite(free) || free < need) {
     throw new Error(`临时磁盘空间不足：至少需要 ${Math.ceil(need / 1024 / 1024)}MB 可用空间`)
   }
@@ -408,11 +443,11 @@ export async function readExactlyAt(file, buffer, position) {
   return offset
 }
 
-async function readFilePrefix(path, length) {
+async function readFilePrefix(path, length, position = 0) {
   return open(path, 'r').then(async (file) => {
     try {
       const bytes = Buffer.alloc(length)
-      const bytesRead = await readExactlyAt(file, bytes, 0)
+      const bytesRead = await readExactlyAt(file, bytes, position)
       return bytes.subarray(0, bytesRead)
     } finally {
       await file.close()
@@ -420,9 +455,32 @@ async function readFilePrefix(path, length) {
   })
 }
 
-async function reusableIso(path, expectedSize) {
+export async function isPsxIsoFile(path, expectedSize) {
+  if (expectedSize % 2048 !== 0 || expectedSize < 0x9000) return false
+  const pvd = await readFilePrefix(path, 0x9000)
+  if (!isPsxIsoHeader(pvd)) return false
+  const rootRecord = 0x8000 + 156
+  const rootBlock = pvd.readUInt32LE(rootRecord + 2)
+  const rootBytes = pvd.readUInt32LE(rootRecord + 10)
+  const rootOffset = rootBlock * 2048
+  if (!rootBlock || !rootBytes || rootBytes > 1024 * 1024 || rootOffset + rootBytes > expectedSize) return false
+  const directory = await readFilePrefix(path, rootBytes, rootOffset)
+  for (let at = 0; at + 34 <= directory.length;) {
+    const length = directory[at]
+    if (!length) { at = (Math.floor(at / 2048) + 1) * 2048; continue }
+    if (at + length > directory.length || length < 34) return false
+    const nameLength = directory[at + 32]
+    if (33 + nameLength > length) return false
+    const name = directory.toString('ascii', at + 33, at + 33 + nameLength).toUpperCase()
+    if (/^SYSTEM\.CNF(?:;1)?$/.test(name)) return true
+    at += length
+  }
+  return false
+}
+
+async function reusableIso(path, expectedSize, platform = 'psp') {
   if (await fileSize(path) !== Number(expectedSize)) return false
-  return isPspIsoHeader(await readFilePrefix(path, 0x9000))
+  return platform === 'psx' ? isPsxIsoFile(path, expectedSize) : isPspIsoHeader(await readFilePrefix(path, 0x9000))
 }
 
 async function reusableVerifiedChd(path, expectedSize) {
@@ -432,6 +490,7 @@ async function reusableVerifiedChd(path, expectedSize) {
 }
 
 async function downloadSource(job, config, destination) {
+  const platform = job.disc_platform || 'psp'
   const controller = new AbortController()
   let idle
   const armIdle = () => {
@@ -447,7 +506,7 @@ async function downloadSource(job, config, destination) {
     received = 0
   }
   if (received === sourceSize) {
-    if (await reusableIso(destination, sourceSize)) return
+    if (await reusableIso(destination, sourceSize, platform)) return
     await rm(destination, { force: true })
     received = 0
   }
@@ -512,8 +571,11 @@ async function downloadSource(job, config, destination) {
   if (received !== sourceSize) throw new Error(`ISO 下载不完整：收到 ${received}/${job.source_size} 字节`)
   // 这里只读 36KB 文件头。把 readFile 用在 1.8GB ISO 上会平白制造一份同大的内存副本，
   // 转换还没开始就可能把 Node 进程顶掉。
-  const header = await readFilePrefix(destination, 0x9000)
-  if (!isPspIsoHeader(header)) throw new Error('上传内容不是有效的 PSP ISO（缺少 CD001 / PSP GAME 标识）')
+  if (!(await reusableIso(destination, sourceSize, platform))) {
+    throw new Error(platform === 'psx'
+      ? '不是可直接启动的 PS1 单数据轨 2048-byte ISO（需要 ISO9660 与根目录 SYSTEM.CNF）；多音轨请提供 BIN/CUE 原盘，单独 ISO 无法还原 CD 音乐'
+      : '上传内容不是有效的 PSP ISO（缺少 CD001 / PSP GAME 标识）')
+  }
 }
 
 function runChdman(bin, args, onProgress, timeoutMs) {
@@ -558,12 +620,16 @@ function runChdman(bin, args, onProgress, timeoutMs) {
   })
 }
 
-async function validateChd(path, config) {
+async function validateChd(path, config, platform = 'psp') {
   const info = await stat(path)
   if (!info.isFile() || info.size < 4096) throw new Error('chdman 没有生成有效输出文件')
   const magic = (await readFilePrefix(path, 8)).toString('ascii')
   if (magic !== 'MComprHD') throw new Error('输出文件缺少 CHD 魔数，拒绝发布')
   await runChdman(config.chdman, ['verify', '-i', path], undefined, config.timeoutMs)
+  if (platform === 'psx') {
+    const info = await runChdman(config.chdman, ['info', '-i', path], undefined, COMMAND_PROBE_TIMEOUT_MS)
+    if (!/TRACK:1 TYPE:MODE1\b/.test(info)) throw new Error('输出 CHD 不是 PS1 所需的 MODE1 CD 光盘，拒绝发布')
+  }
   return info.size
 }
 
@@ -751,7 +817,7 @@ async function bindConvertedRom(job) {
     const games = await run('SELECT id, platform FROM games WHERE id = ? FOR UPDATE', [job.game_id])
     const game = games[0]
     if (!game) return { bound: false, message: '游戏尚未入库；CHD 已生成，请保存当前游戏表单' }
-    if (game.platform !== 'psp') return { bound: false, message: '游戏平台已经不是 PSP，未自动改动 ROM 绑定' }
+    if (game.platform !== (job.disc_platform || 'psp')) return { bound: false, message: '游戏平台已改变，未自动改动 ROM 绑定' }
     const rows = await run('SELECT object_key FROM game_roms WHERE game_id = ? AND lang = ? FOR UPDATE', [game.id, job.lang])
     const current = rows[0]?.object_key || ''
     if (current === job.target_key) return { bound: true, message: '最终 CHD 已经绑定' }
@@ -834,8 +900,10 @@ async function finishPublishedJob(job, config) {
 
 async function processJob(job) {
   const config = pspConversionConfig()
+  const platform = job.disc_platform || 'psp'
   const dir = join(config.tempDir, job.id)
   const input = join(dir, 'input.iso')
+  const cue = join(dir, 'input.cue')
   const output = join(dir, 'output.chd')
   const sourceSize = Number(job.source_size)
   let completed = false
@@ -879,11 +947,11 @@ async function processJob(job) {
 
     await rm(output, { force: true })
     let existingInputBytes = await fileSize(input)
-    if (existingInputBytes > sourceSize || (existingInputBytes === sourceSize && !(await reusableIso(input, sourceSize)))) {
+    if (existingInputBytes > sourceSize || (existingInputBytes === sourceSize && !(await reusableIso(input, sourceSize, platform)))) {
       await rm(input, { force: true })
       existingInputBytes = 0
     }
-    await ensureDiskSpace(config, sourceSize, existingInputBytes, 0)
+    await ensureDiskSpace(config, sourceSize, existingInputBytes, 0, platform)
     await updateJob(job.id, {
       status: 'downloading', progress: 4, error: null,
       message: existingInputBytes > 0 ? '正在从上次断点继续读取临时 ISO' : '正在从 R2 读取临时 ISO',
@@ -894,12 +962,20 @@ async function processJob(job) {
 
     await updateJob(job.id, {
       status: 'converting', progress: 30,
-      message: `正在转换为 CHD（zstd / 2048-byte hunk / ${config.chdmanProcessors} 线程）`,
+      message: platform === 'psx'
+        ? `正在转换为 CD CHD（MODE1/2048 单数据轨 / ${config.chdmanProcessors} 线程）`
+        : `正在转换为 CHD（zstd / 2048-byte hunk / ${config.chdmanProcessors} 线程）`,
     })
     let reported = -1
     let progressWrites = Promise.resolve()
     const conversionStarted = Date.now()
-    await runChdman(config.chdman, chdmanCreateArgs(input, output, config.chdmanProcessors), (pct) => {
+    if (platform === 'psx') {
+      // 文件名固定为 input.iso，CUE 内容没有用户输入；createcd 才会生成带 CD 轨道的 PS1 CHD。
+      await writeFile(cue, 'FILE "input.iso" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n', { flag: 'w' })
+    }
+    await runChdman(config.chdman, platform === 'psx'
+      ? chdmanCreateCdArgs(cue, output, config.chdmanProcessors)
+      : chdmanCreateArgs(input, output, config.chdmanProcessors), (pct) => {
       const mapped = 30 + Math.floor(pct * 0.4)
       if (mapped === reported) return
       reported = mapped
@@ -911,9 +987,10 @@ async function processJob(job) {
 
     await updateJob(job.id, { status: 'verifying', progress: 71, message: '正在完整校验 CHD' })
     const verifyStarted = Date.now()
-    const outputSize = await validateChd(output, config)
+    const outputSize = await validateChd(output, config, platform)
     reportPhase('CHD 校验', verifyStarted, outputSize)
-    if (outputSize > sourceSize + 16 * 1024 * 1024) throw new Error('CHD 比原 ISO 还大，拒绝发布异常输出')
+    const maxOutput = platform === 'psx' ? Math.ceil(sourceSize * 1.25) + 16 * 1024 * 1024 : sourceSize + 16 * 1024 * 1024
+    if (outputSize > maxOutput) throw new Error('CHD 异常偏大，拒绝发布')
     verifiedOutputSize = outputSize
     await updateJob(job.id, { output_size: outputSize, status: 'uploading', progress: 75, message: '正在把最终 CHD 分片发布到 R2' })
     const uploadStarted = Date.now()

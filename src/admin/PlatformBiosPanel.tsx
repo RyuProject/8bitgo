@@ -37,7 +37,7 @@ import { Card, btnClass, inputClass } from './ui'
  */
 const NEED_BIOS: Array<{ id: PlatformId; hint: string }> = [
   { id: 'arcade', hint: 'Neo Geo 系（拳皇 / 合金弹头 / 侍魂）必须要 neogeo.zip；CPS 系不需要' },
-  { id: 'psx', hint: '多数核心可以不用 BIOS，但用真 BIOS 兼容性更好' },
+  { id: 'psx', hint: 'PCSX 可用 scph1001.bin；CHD 使用的 Beetle 核心按区域寻找 scph5500.bin（日）/ scph5501.bin（美）/ scph5502.bin（欧），单独绑定 scph1001.bin 不能满足日版游戏' },
   { id: 'segaCD', hint: '必须提供对应区域的 Mega CD / Sega CD BIOS；多区域可打包成 ZIP，文件放在根目录' },
   { id: 'pce', hint: 'HuCard 不需要；运行 PC Engine CD 游戏时需要 System Card 3（syscard3.pce）' },
   { id: 'atari5200', hint: '多数游戏需要 Atari 5200 BIOS（常见文件名 5200.rom）' },
@@ -68,8 +68,8 @@ const ARCADE_BIOS_SETS: Array<{ name: string; hint: string }> = [
  *
  * ⚠️ 这里**必须保留原文件名**，不能像以前那样用 <平台>.zip。
  *
- * 模拟器核心是按**固定文件名**找 BIOS 的：FBNeo 找 `neogeo.zip`、`pgm.zip`，PS1 核心找
- * `scph5501.bin`。而播放器把 BIOS 的 URL 原样交给核心（EJS_biosUrl），
+ * 模拟器核心是按**固定文件名**找 BIOS 的：FBNeo 找 `neogeo.zip`、`pgm.zip`，PS1 的 Beetle
+ * 按游戏区域找 `scph5500.bin` / `scph5501.bin` / `scph5502.bin`。播放器把 BIOS 的 URL 原样交给核心（EJS_biosUrl），
  * 核心看到的文件名就是 URL 最后那一段 —— 存成 `bios/arcade.zip` 的话，
  * 文件明明在，核心却报「sp-s3.sp1 / sm1.sm1 / sfix.sfix / 000-lo.lo is missing」，
  * 因为它要的 neogeo.zip 根本不存在。这个坑踩过，别再改回去。
@@ -400,7 +400,7 @@ export function PlatformBiosPanel() {
         <p className="mt-1 text-[11px] leading-relaxed text-live">
           ⚠️ 不管哪种放法，<strong>地址最后一段必须是核心要找的那个文件名</strong>：街机是{' '}
           <code className="rounded bg-surface-2 px-1">neogeo.zip</code>，PS1 是{' '}
-          <code className="rounded bg-surface-2 px-1">scph5501.bin</code>。核心按固定文件名找 BIOS，
+          <code className="rounded bg-surface-2 px-1">scph5500.bin</code>（日版 Beetle；美版是 scph5501.bin）。核心按固定文件名找 BIOS，
           存成 <code className="rounded bg-surface-2 px-1">bios/arcade.zip</code> 的话文件明明在，
           核心却会报「sp-s3.sp1 … is missing」。上传时会自动保留原文件名，别手动改成别的。
         </p>

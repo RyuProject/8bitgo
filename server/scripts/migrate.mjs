@@ -1076,6 +1076,7 @@ const patches = [
     needed: async () => !(await hasTable('psp_conversion_jobs')),
     run: () => conn.query(`CREATE TABLE IF NOT EXISTS psp_conversion_jobs (
       id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+      disc_platform VARCHAR(8) NOT NULL DEFAULT 'psp',
       source_key VARCHAR(500) NOT NULL,
       target_key VARCHAR(500) NOT NULL,
       source_size BIGINT UNSIGNED NOT NULL,
@@ -1130,6 +1131,12 @@ const patches = [
         await conn.query('ALTER TABLE `psp_conversion_jobs` ADD INDEX `idx_psp_jobs_game_id` (`game_id`, `lang`, `created_at`)')
       }
     },
+  },
+  {
+    name: 'psp_conversion_jobs（PS1 共用持久队列的平台字段）',
+    table: 'psp_conversion_jobs',
+    needed: async () => !(await hasColumn('psp_conversion_jobs', 'disc_platform')),
+    run: () => conn.query("ALTER TABLE `psp_conversion_jobs` ADD COLUMN `disc_platform` VARCHAR(8) NOT NULL DEFAULT 'psp' AFTER `id`"),
   },
   {
     name: 'sockdrive_conversion_jobs（大型 Windows ZIP → Sockdrive 后台队列）',

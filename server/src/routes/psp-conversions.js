@@ -1,4 +1,4 @@
-/** PSP ISO → CHD 后台任务接口。大文件本体始终走 R2，这里只收对象 key。 */
+/** PSP / PS1 ISO → CHD 后台任务接口。大文件本体始终走 R2，这里只收对象 key。 */
 import { Router } from 'express'
 import { requireAbility } from '../auth.js'
 import {
@@ -15,8 +15,9 @@ pspConversionsRouter.use(requireAbility('site:manage'))
 
 pspConversionsRouter.get('/capability', async (_req, res, next) => {
   try {
-    res.json(await pspConversionCapability())
+    res.json(await pspConversionCapability(process.env, false, _req.query.platform))
   } catch (error) {
+    if (error?.status === 400) return res.status(400).json({ error: error.message })
     next(error)
   }
 })
@@ -57,4 +58,3 @@ pspConversionsRouter.post('/:id/retry', async (req, res, next) => {
     next(error)
   }
 })
-

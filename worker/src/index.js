@@ -103,11 +103,11 @@ export function edgeCacheEligible(request, url, cors) {
 function romRangeCachePlan(request, url, cors) {
   if (request.method !== 'GET' || cors['Access-Control-Allow-Origin'] !== '*') return null
   /*
-   * 过去只缓存街机 .zip.8bg 与 PSP，导致 NDS / PS1 / DOS 的 8MB 分片、PS2 / Dolphin 的 2MB
+   * 过去只缓存街机 .zip.8bg 与 PSP，导致 NDS / DOS 的 8MB 分片、PS1 / PS2 / Dolphin 的 2MB
    * 光盘块每位玩家都重新穿透到 R2。romv 已把 URL 锁到对象 ETag，范围又必须严格对齐，
    * 所以同一规则可以安全覆盖整个公开 ROM 命名空间；小卡带走普通 200 缓存，不会进这里。
    */
-  const blockBytes = /^\/roms\/(?:psp|ps2|gamecube|wii)\//i.test(url.pathname)
+  const blockBytes = /^\/roms\/(?:psx|psp|ps2|gamecube|wii)\//i.test(url.pathname)
     ? PSP_RANGE_BYTES
     : /^\/roms\/[^/]+\/.+/i.test(url.pathname)
       ? ROM_DOWNLOAD_RANGE_BYTES

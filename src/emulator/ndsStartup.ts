@@ -13,6 +13,17 @@
 
 export const NDS_SYSTEM_DIRECTORY = '/home/web_user/retroarch/userdata/system'
 export const NDS_CORE_OPTIONS_PATH = '/home/web_user/retroarch/userdata/config/melonDS DS/melonDS DS.opt'
+export const NDS_WFC_MAC_PATH = `${NDS_SYSTEM_DIRECTORY}/8bitgo-wfc-mac.txt`
+/**
+ * melonDS DS 用内置固件时把 WFC 设置（含 WFC 用户 ID、各连接档）单独存在这里，
+ * 见上游 console.cpp CustomizeFirmware / tasks.cpp FlushFirmware。网页端 system 目录在内存里，
+ * 不额外保存的话每次刷新都是“新 DS”。
+ */
+export const NDS_WFC_SETTINGS_PATH = `${NDS_SYSTEM_DIRECTORY}/melonDS DS/wfcsettings.bin`
+/** 3 ×（WifiAccessPoint 256 + ExtendedWifiAccessPoint 512），上游 TOTAL_WFC_SETTINGS_SIZE */
+export const NDS_WFC_SETTINGS_SIZE = 3 * (256 + 512)
+/** 站点托管的 WFC 网卡地址：任天堂 OUI 00:09:BF + 随机后三字节（旧版本曾用 00:08:BF） */
+export const NDS_MANAGED_MAC_RE = /^00:0[89]:bf(?::[a-f0-9]{2}){3}$/i
 
 export interface NdsCoreOptionsFs {
   readFile: (path: string) => Uint8Array | string
@@ -68,9 +79,17 @@ const MANAGED_OPTIONS = {
  * MANAGED_OPTIONS 每次校正：这些是站点已有 UI 的重复提示，不能让旧配置把它重新打开。
  * 选项文件格式由 RetroArch 定义为 `key = "value"`，未知行和注释都原样保留。
  */
-export function configureNdsCoreOptions(options: string): string {
+export function configureNdsCoreOptions(options: string, wfcMacAddress?: string | null): string {
   const existing = new Set<string>()
-  const managed = MANAGED_OPTIONS as Readonly<Record<string, string>>
+  const builtInFirmware = !/^\s*melonds_sysfile_mode\s*=\s*"(?!builtin")[^"]+"/m.test(options)
+  // 站点自己托管过的地址（含旧版 00:08:BF）不算玩家自定义，否则换代后会一直沿用旧身份。
+  const customMac = [...options.matchAll(/^\s*melonds_mac_address_mode\s*=\s*"([^"]+)"/gm)]
+    .some((match) => match[1] !== 'firmware' && !NDS_MANAGED_MAC_RE.test(match[1]))
+  // 玩家主动指定 MAC 或真实固件时不能改其身份；内置固件默认 MAC 则不能让全站访客共享。
+  const managedMac = builtInFirmware && !customMac && /^00:09:bf(?::[a-f0-9]{2}){3}$/i.test(wfcMacAddress || '')
+    ? { melonds_mac_address_mode: wfcMacAddress!.toUpperCase() }
+    : {}
+  const managed = { ...MANAGED_OPTIONS, ...managedMac } as Readonly<Record<string, string>>
   const managedWritten = new Set<string>()
   const lines = options.split('\n').map((line) => {
     const match = line.match(/^\s*([A-Za-z0-9_-]+)\s*=/)
@@ -84,7 +103,7 @@ export function configureNdsCoreOptions(options: string): string {
     managedWritten.add(key)
     return `${key} = "${value}"`
   })
-  const additions = [...Object.entries(SAFE_DEFAULTS), ...Object.entries(MANAGED_OPTIONS)]
+  const additions = [...Object.entries(SAFE_DEFAULTS), ...Object.entries(managed)]
     .filter(([key]) => !existing.has(key))
     .map(([key, value]) => `${key} = "${value}"`)
   const normalized = lines.join('\n')
@@ -110,6 +129,7 @@ export function installNdsCoreOptionsGuard(
   callbacks: NdsCoreSettingsCallbacks | null | undefined,
   fs: NdsCoreOptionsFs,
   onApplied?: (ok: boolean, error?: unknown) => void,
+  wfcMacAddress?: string | null,
 ): boolean {
   const original = callbacks?.setupCoreSettingFile as GuardedSetup | undefined
   if (!callbacks || typeof original !== 'function') return false
@@ -122,7 +142,7 @@ export function installNdsCoreOptionsGuard(
     try {
       const raw = fs.readFile(path)
       const before = typeof raw === 'string' ? raw : new TextDecoder().decode(raw)
-      const after = configureNdsCoreOptions(before)
+      const after = configureNdsCoreOptions(before, wfcMacAddress)
       if (after !== before) fs.writeFile(path, after)
       const checkedRaw = fs.readFile(path)
       const checked = typeof checkedRaw === 'string' ? checkedRaw : new TextDecoder().decode(checkedRaw)

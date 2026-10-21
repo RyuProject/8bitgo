@@ -315,7 +315,7 @@ test('version-pinned arcade chunks reuse an independent 8 MiB edge-cache entry',
     else globalThis.caches = previous
   }
 })
-test('version-pinned NDS and PS1 downloads share the generic 8 MiB ROM range cache', async () => {
+test('version-pinned NDS 8 MiB and PS1 CHD 2 MiB ranges each reuse edge cache', async () => {
   const previous = globalThis.caches
   const stored = new Map(); const waits = []
   globalThis.caches = { default: {
@@ -325,10 +325,10 @@ test('version-pinned NDS and PS1 downloads share the generic 8 MiB ROM range cac
   const context = { waitUntil(promise) { waits.push(promise) } }
   try {
     const e = environment()
-    for (const key of ['roms/nds/rhythm.nds', 'roms/psx/chrono.chd']) {
+    for (const [key, blockBytes] of [['roms/nds/rhythm.nds', 8 * 1024 * 1024], ['roms/psx/chrono.chd', 2 * 1024 * 1024]]) {
       const original = e.ROMS.seed(key, `bytes:${key}`)
       const path = `/${key}?romv=${original.etag}`
-      const range = { Range: 'bytes=0-8388607' }
+      const range = { Range: `bytes=0-${blockBytes - 1}` }
       const first = await worker.fetch(req(path, 'GET', undefined, range), e, context)
       assert.equal(first.headers.get('X-8BitGo-Edge-Cache'), 'MISS')
       await first.arrayBuffer()

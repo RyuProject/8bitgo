@@ -47,6 +47,16 @@ export async function confirmUpload(key: string, file: Blob): Promise<boolean> {
   )
 }
 
+export async function confirmConvertedUpload(key: string): Promise<{ proceed: boolean; overwrite: boolean }> {
+  // 后台任务的 overwrite=true 会授权覆盖最终 CHD；探测失败时绝不能沿用普通上传“放行”的规则。
+  const head = await headRom(key)
+  if (!head.exists) return { proceed: true, overwrite: false }
+  return {
+    proceed: window.confirm(`${key}\n\n这个位置已有 CHD（${human(head.size ?? 0)}）。新 ISO 转换并校验成功后才会覆盖它；转换失败时原文件保持不变。继续吗？`),
+    overwrite: true,
+  }
+}
+
 /**
  * 上传成功后处理被顶替的旧文件。
  *
@@ -284,11 +294,11 @@ export async function confirmDiscImage(platform: string, file: File): Promise<bo
   } else if (ext === '.bin' || ext === '.img') {
     notes.push('裸 .bin/.img 不压缩，而且丢掉了 .cue 里的分轨信息，多轨游戏会没有音乐。')
   } else if (ext === '.iso' && platform === 'psx') {
-    notes.push('.iso 只装得下数据轨，PS1 上带 CDDA 音轨的游戏会整局没有 BGM。')
+    notes.push('.iso 只装得下数据轨；后台会把它转为单轨 CD CHD，但无法补回原盘的 CDDA 音轨，带音轨的游戏可能没有 BGM。需要完整音乐请从 BIN/CUE 原盘在本地转换 CHD 后上传。')
   }
 
-  if (notes.length && !dolphinDisc) {
-    notes.push(`建议先用 chdman（MAME 自带）转成 .chd：\`${chdmanHint(`${stem}.cue`, `${stem}.chd`)}\`。无损、单文件，两个 PS1 核心都认。`)
+  if (notes.length && !dolphinDisc && !(platform === 'psx' && ext === '.iso')) {
+    notes.push(`建议先用 chdman（MAME 自带）转成 .chd：\`${chdmanHint(`${stem}.cue`, `${stem}.chd`)}\`。无损、单文件；本站 CHD 将自动选择 Beetle PSX HW。`)
   }
   if (file.size > DISC_WARN_BYTES) {
     notes.push(
@@ -298,5 +308,5 @@ export async function confirmDiscImage(platform: string, file: File): Promise<bo
     )
   }
   if (!notes.length) return true
-  return window.confirm(`${file.name}\n\n${notes.join('\n\n')}\n\n仍然按现在这份上传吗？`)
+  return window.confirm(`${file.name}\n\n${notes.join('\n\n')}\n\n${platform === 'psx' && ext === '.iso' ? '继续上传并自动转换为 CD CHD 吗？' : '仍然按现在这份上传吗？'}`)
 }

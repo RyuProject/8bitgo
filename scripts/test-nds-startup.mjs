@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import {
   NDS_CORE_OPTIONS_PATH,
   NDS_SYSTEM_DIRECTORY,
+  NDS_WFC_MAC_PATH,
   configureNdsCoreOptions,
   configureNdsSystemDirectory,
   installNdsCoreOptionsGuard,
@@ -48,6 +49,37 @@ check('布局 OSD 重复配置只留一条 disabled，不能让最后一条 enab
   const after = configureNdsCoreOptions('melonds_show_current_layout = "enabled"\nmelonds_show_current_layout = "enabled"\n')
   assert.equal((after.match(/melonds_show_current_layout/g) ?? []).length, 1)
   assert.match(after, /melonds_show_current_layout = "disabled"/)
+})
+
+check('WFC 内置固件使用独立 MAC，重复写入幂等且不改玩家自定义地址', () => {
+  const mac = '00:09:bf:12:34:56'
+  const initial = configureNdsCoreOptions('', mac)
+  assert.match(initial, /melonds_mac_address_mode = "00:09:BF:12:34:56"/)
+  assert.equal(configureNdsCoreOptions(initial, mac), initial)
+  const firmwareDefault = configureNdsCoreOptions('melonds_mac_address_mode = "firmware"\n', mac)
+  assert.match(firmwareDefault, /melonds_mac_address_mode = "00:09:BF:12:34:56"/)
+  // 站点旧版托管的 00:08:BF 不算玩家自定义：换代后必须换成新地址
+  const legacy = configureNdsCoreOptions('melonds_mac_address_mode = "00:08:BF:AA:BB:CC"\n', mac)
+  assert.match(legacy, /melonds_mac_address_mode = "00:09:BF:12:34:56"/)
+  const custom = configureNdsCoreOptions('melonds_mac_address_mode = "00:1f:32:aa:bb:cc"\n', mac)
+  assert.match(custom, /melonds_mac_address_mode = "00:1f:32:aa:bb:cc"/)
+  assert.doesNotMatch(custom, /melonds_mac_address_mode = "00:09:BF:12:34:56"/)
+  const native = configureNdsCoreOptions('melonds_sysfile_mode = "native"\n', mac)
+  assert.doesNotMatch(native, /melonds_mac_address_mode/)
+  assert.doesNotMatch(configureNdsCoreOptions('', 'malformed'), /melonds_mac_address_mode/)
+  assert.doesNotMatch(configureNdsCoreOptions('', '00:08:bf:12:34:56'), /melonds_mac_address_mode/)
+})
+
+check('引擎最终覆盖 .opt 后，WFC 独立 MAC 仍生效', () => {
+  const files = new Map()
+  const fs = {
+    readFile: (path) => new TextEncoder().encode(files.get(path) ?? ''),
+    writeFile: (path, data) => files.set(path, typeof data === 'string' ? data : new TextDecoder().decode(data)),
+  }
+  const callbacks = { setupCoreSettingFile(path) { fs.writeFile(path, 'melonds_mac_address_mode = "firmware"\n') } }
+  assert.equal(installNdsCoreOptionsGuard(callbacks, fs, undefined, '00:09:bf:12:34:56'), true)
+  callbacks.setupCoreSettingFile(NDS_CORE_OPTIONS_PATH)
+  assert.match(files.get(NDS_CORE_OPTIONS_PATH), /melonds_mac_address_mode = "00:09:BF:12:34:56"/)
 })
 
 check('致命时序：引擎在 callMain 内覆盖 .opt 后，守卫必须再做最后一次校正', () => {
@@ -102,7 +134,10 @@ check('适配器在 callMain 前建目录、写 cfg 与核心选项，并接入�
   assert.ok(NDS_CORE_OPTIONS_PATH.includes('melonDS DS.opt'))
   assert.match(code, /ensureParentDir\(fs, `\$\{NDS_SYSTEM_DIRECTORY\}\/\.keep`\)/)
   assert.match(code, /configureNdsSystemDirectory\(cfgBefore\)/)
-  assert.match(code, /configureNdsCoreOptions\(optBefore\)/)
+  assert.match(code, /configureNdsCoreOptions\(optBefore, wfcMacForCore\)/)
+  assert.match(code, /const wfcMacForCore = core === 'melondsds' && ndsWfcTask \? ndsWfcMacAddress\(\) : null/)
+  assert.match(code, /fs\.writeFile\(NDS_WFC_MAC_PATH, wfcMacForCore\.toUpperCase\(\)\)/)
+  assert.equal(NDS_WFC_MAC_PATH, `${NDS_SYSTEM_DIRECTORY}/8bitgo-wfc-mac.txt`)
   assert.match(code, /optCheck\.includes\('melonds_show_current_layout = "disabled"'\)/)
   assert.match(code, /installNdsCoreOptionsGuard\(gm\?\.Module\?\.callbacks, fs/)
   assert.match(code, /selectNdsArchiveRom\?\.\(emu\)/)

@@ -280,11 +280,13 @@ CREATE TABLE IF NOT EXISTS game_roms (
   CONSTRAINT fk_gr_game FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- ---------- PSP ISO → CHD 后台转换任务 ----------
+-- ---------- PSP / PS1 ISO → CHD 后台转换任务 ----------
 -- 源 ISO 已由浏览器分片上传到 R2；这里只记对象身份和状态，不把大文件塞进数据库。
 -- source_etag 是防拼包护栏：任务真正下载时用 If-Match 钉住创建任务时看到的那一代对象。
 CREATE TABLE IF NOT EXISTS psp_conversion_jobs (
   id                   CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+  -- 沿用已上线的任务表，旧任务默认 PSP；PS1 必须单独用 createcd，不能误走 createdvd。
+  disc_platform        VARCHAR(8) NOT NULL DEFAULT 'psp',
   source_key           VARCHAR(500) NOT NULL,
   target_key           VARCHAR(500) NOT NULL,
   source_size          BIGINT UNSIGNED NOT NULL,

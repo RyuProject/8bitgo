@@ -1,8 +1,11 @@
-/** 站内已发布的 PCSX ReARMed 不认 CHD；Beetle PSX HW 的 core.json 才声明了 chd。 */
-export const PSX_CHD_CORE = 'mednafen_psx_hw'
+/** HW 版在浏览器会触发 WASM 表陷阱；实机验证通过的软件版保留 CHD 能力且不整盘预缓存。 */
+export const PSX_CHD_CORE = 'mednafen_psx'
+/** 此核心走引擎的 legacy 分支；预热同一份文件，避免悬停和开局各下载一遍。 */
+export const PSX_CHD_ARCHIVE = 'mednafen_psx-legacy-wasm.data'
 /** Beetle 比默认 PCSX 重；多留 64ms 音频队列吸收短时主线程抖动，代价是音画延迟。 */
 export const PSX_CHD_AUDIO_LATENCY_MS = 128
-const PSX_CHD_SAVE_SUFFIX = ':beetle-chd'
+const PSX_CHD_SAVE_SUFFIX = ':beetle-soft-chd'
+const PSX_CHD_OLD_SAVE_SUFFIX = ':beetle-chd'
 
 function pathWithoutQuery(value: string): string {
   const path = String(value || '').split(/[?#]/, 1)[0]
@@ -24,7 +27,7 @@ export function psxCoreForPreparedName(platform: string, core: string, name: str
   return platform === 'psx' && /\.chd$/i.test(pathWithoutQuery(name)) ? PSX_CHD_CORE : core
 }
 
-/** 自动换核心后不能把 Beetle 快照写回旧 PCSX 档位；本地文件本来按文件名独立存。 */
+/** 软件版与旧 HW 版快照不混用，避免 ABI/渲染状态差异损坏既有存档。 */
 export function psxChdSaveSlug(gameSlug: string, transferUrl: string): string {
   return gameSlug.startsWith('local:') || !isPsxChdTransfer(transferUrl)
     ? gameSlug
@@ -33,7 +36,7 @@ export function psxChdSaveSlug(gameSlug: string, transferUrl: string): string {
 
 /** 个人页只用基础 slug 查游戏；云端实际存档键仍保留完整后缀。 */
 export function parsePsxChdSaveSlug(value: string): string {
-  return !value.startsWith('local:') && value.endsWith(PSX_CHD_SAVE_SUFFIX)
-    ? value.slice(0, -PSX_CHD_SAVE_SUFFIX.length)
-    : value
+  if (value.startsWith('local:')) return value
+  const suffix = [PSX_CHD_SAVE_SUFFIX, PSX_CHD_OLD_SAVE_SUFFIX].find(item => value.endsWith(item))
+  return suffix ? value.slice(0, -suffix.length) : value
 }
