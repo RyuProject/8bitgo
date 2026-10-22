@@ -430,6 +430,14 @@ DNS 和可用性检查的 UDP socket 一直开着，所以每秒有上千个 ICM
 - 包一层 `sock_ops.poll` / `recvmsg` 计数。UDP socket 的 recvmsg 次数等于 poll 次数，就是复发了；
 - TCP fd 在建连之后再也没被 poll，说明客体没收到 SYN-ACK。
 
+**自建 WFC 上游**（`NDS_WFC_DNS_UPSTREAM=<IPv4>`）：
+- 设置后，中继改向这台服务器解析 `nintendowifi.net`。它答出的 IP 照常进入本局授权。
+- DS 侧不用改：melonDS DS 的 WFC DNS 选项只认几个预设地址，自定义 IP 会被 RetroArch 丢掉。DS 仍向 178.62.43.212 发 DNS 查询，由浏览器本地 DNS 表和中继代答。
+
+**上线前验收**：在生产机上跑 `python3 server/scripts/probe-wfc-server.py <IP>`，覆盖 DNS、conntest、NAS、GP、gamestats、可用性检查和 NATNEG。
+- NAS 443 必须接受 SSL 3.0 / TLS 1.0 + RC4，否则必报 20100。
+- 2026-10-22，103.242.13.112：35/35 通过，UDP 也通。443 由这台专用 WFC 主机上的隔离旧版 TLS 前端处理，仅接受 SSL 3.0 / TLS 1.0 与 RC4，再转发到本机 HTTP 服务；不要把这些旧协议或弱加密并入系统 Nginx。生产机（香港 cognetcloud）到 Kaeru / Wiimmfi 的 UDP 收不到任何回包，所以匹配只能靠自建服务。
+
 ⚠️ melonDS 内置固件的默认 MAC 是全员相同的 `00:09:BF:11:22:33`，联机不能让所有玩家共享
 这个设备身份。`ndsWfcMacAddress()` 为当前浏览器生成并保存稳定的 `00:09:BF:xx:xx:xx`（任天堂 OUI，
 与 melonDS 单机多开一致；早期版本用过非任天堂前缀 `00:08:BF`，已换代为 `nds-wfc-mac-v2`），

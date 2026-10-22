@@ -4,7 +4,7 @@ import { createServer } from 'node:http'
 import net from 'node:net'
 import express from 'express'
 import { WebSocket } from 'ws'
-import { createNdsWfcService, dnsAReply, dnsAnswerIps, dnsQueryName, dnsRefusedReply, dnsServFailReply, gpTraceSummary, natnegConnectPeer, resolveDns4Tcp } from '../src/nds-wfc.js'
+import { createNdsWfcService, dnsAReply, dnsAnswerIps, dnsQueryName, dnsRefusedReply, dnsServFailReply, gpTraceSummary, natnegConnectPeer, resolveDns4Tcp, wfcDnsUpstream } from '../src/nds-wfc.js'
 
 const labels = 'nas.nintendowifi.net'.split('.')
 const name = Buffer.concat([...labels.map((label) => Buffer.concat([Buffer.from([label.length]), Buffer.from(label)])), Buffer.from([0])])
@@ -348,6 +348,29 @@ try {
 } finally {
   server.closeAllConnections()
   await new Promise((resolve) => server.close(resolve))
+}
+
+// 自建 WFC：DS 仍向 178.62.43.212 查询，中继改问配置的上游；非法值一律忽略
+assert.equal(wfcDnsUpstream(' 103.242.13.112 '), '103.242.13.112')
+assert.equal(wfcDnsUpstream('10.0.0.5'), null)
+assert.equal(wfcDnsUpstream('evil.example'), null)
+assert.equal(wfcDnsUpstream(undefined), null)
+await assert.rejects(resolveDns4Tcp('103.242.13.112', 'nas.nintendowifi.net'), { code: 'DNS_TCP_SERVER_NOT_ALLOWED' })
+{
+  const upstreamCalls = []
+  const upstreamService = createNdsWfcService({
+    enabled: true,
+    dnsUpstream: '103.242.13.112',
+    dnsResolver: async (host, name, options) => {
+      upstreamCalls.push({ host, name, servers: options?.servers ? [...options.servers] : null })
+      return ['103.242.13.112']
+    },
+  })
+  assert.ok(upstreamService.enabled)
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.ok(upstreamCalls.length > 0, '启动时应预解析')
+  assert.ok(upstreamCalls.every((call) => call.host === '103.242.13.112' && call.servers?.[0] === '103.242.13.112'),
+    '配置上游后不能再去问 Kaeru')
 }
 
 console.log('NDS WFC：DNS 域名 / 公网 IP / 同源会话 / 内网出口检查通过')

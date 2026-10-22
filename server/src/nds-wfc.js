@@ -257,8 +257,9 @@ function isPortHandshake(message) {
 export function resolveDns4Tcp(host, name, {
   connect = net.createConnection,
   timeoutMs = DNS_TCP_TIMEOUT_MS,
+  servers = DNS_SERVERS,
 } = {}) {
-  if (!DNS_SERVERS.has(host)) return Promise.reject(Object.assign(new Error('DNS_TCP_SERVER_NOT_ALLOWED'), { code: 'DNS_TCP_SERVER_NOT_ALLOWED' }))
+  if (!servers.has(host)) return Promise.reject(Object.assign(new Error('DNS_TCP_SERVER_NOT_ALLOWED'), { code: 'DNS_TCP_SERVER_NOT_ALLOWED' }))
   const queryName = String(name).toLowerCase().replace(/\.$/, '')
   if (!wfcDomain(queryName)) return Promise.reject(Object.assign(new Error('DNS_TCP_NAME_NOT_ALLOWED'), { code: 'DNS_TCP_NAME_NOT_ALLOWED' }))
 
@@ -331,12 +332,30 @@ export function resolveDns4Tcp(host, name, {
   })
 }
 
+/**
+ * 自建 WFC 服务时，中继改向它解析 DNS（`NDS_WFC_DNS_UPSTREAM=<IPv4>`）。
+ *
+ * DS 这边不用动：melonDS DS 的 WFC DNS 选项只认列表里的几个预设，RetroArch 会静默丢掉自定义 IP
+ * （和 MAC 地址同一个坑），所以 DS 仍然向 178.62.43.212 发查询。浏览器本地 DNS 表和中继都把这个
+ * 地址当成“DS 面向的 DNS”，真正去问的是这里配置的上游；它答出来的 IP 照常进本局授权。
+ * 未配置或不是公网 IPv4 时保持原样（直接问 DS 指定的那台）。
+ */
+export function wfcDnsUpstream(value = process.env.NDS_WFC_DNS_UPSTREAM) {
+  const ip = typeof value === 'string' ? value.trim() : ''
+  return ip && publicIpv4(ip) ? ip : null
+}
+
 export function createNdsWfcService({
   enabled = process.env.NDS_WFC_ENABLED === '1',
   udpSocketFactory = () => dgram.createSocket('udp4'),
   tcpSocketFactory = (options) => net.createConnection(options),
   dnsResolver = resolveDns4Tcp,
+  dnsUpstream = wfcDnsUpstream(),
 } = {}) {
+  const upstreamDns = wfcDnsUpstream(dnsUpstream ?? '')
+  /** DS 面向的 DNS 地址 → 实际去问的上游 */
+  const dnsTarget = (host) => upstreamDns ?? host
+  const dnsResolverOptions = upstreamDns ? { servers: new Set([upstreamDns]) } : undefined
   const router = Router()
   const sessions = new Map()
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME })
@@ -360,7 +379,7 @@ export function createNdsWfcService({
     const running = inflightDns.get(key)
     if (running) return running
     const task = Promise.resolve()
-      .then(() => dnsResolver(host, name))
+      .then(() => dnsResolver(dnsTarget(host), name, dnsResolverOptions))
       .then((ips) => {
         const valid = (Array.isArray(ips) ? ips : []).filter(publicIpv4).slice(0, 8)
         rememberDns(host, name, valid)
@@ -419,6 +438,7 @@ export function createNdsWfcService({
   }
   if (enabled) {
     // 进程一启动就把常用名字解析好，并定时刷新：第一位玩家也不必等跨洲 TCP DNS。
+    if (upstreamDns) trace('dns upstream', DNS_DEFAULT_SERVER, '->', upstreamDns)
     prewarmDns()
     const refresh = setInterval(() => prewarmDns(), 5 * 60 * 1000)
     refresh.unref?.()
@@ -689,7 +709,7 @@ export function createNdsWfcService({
           pending.push(message)
         } else sendUpstream(message)
       })
-      upstream.connect(port, host, () => {
+      upstream.connect(port, dnsTarget(host), () => {
         udpReady = true
         for (const message of pending) sendUpstream(message)
         pending.length = 0

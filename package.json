@@ -58,7 +58,7 @@
     "test:nds-startup": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-nds-startup.mjs",
     "test:nds-crash": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-nds-crash.mjs",
     "test:nds-platform": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-nds-platform.mjs",
-    "test:nds-wfc": "node --experimental-strip-types scripts/test-nds-wfc.mjs && npm --prefix server run test:nds-wfc",
+    "test:nds-wfc": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-nds-wfc.mjs && npm --prefix server run test:nds-wfc",
     "build:melondsds": "node scripts/build-melondsds-core.mjs",
     "test:melondsds-abi": "node scripts/test-melondsds-abi.mjs",
     "test:fs-write": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-fs-write.mjs",
