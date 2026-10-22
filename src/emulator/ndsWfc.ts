@@ -174,8 +174,13 @@ export function installNdsWfcRuntime(win: RuntimeWindow, session: NdsWfcSession,
   // 核心和 SOCKFS 跑在这个窗口里：DNS 节点:53 的 socket 换成本地应答，其余仍是真 WebSocket。
   // 没有预解析表时也要装：中继 socket 的握手重试同样走这个构造器，DNS 则全部转发给中继。
   if (typeof win.WebSocket === 'function') {
+    const pool = new URL(origin)
+    pool.protocol = pool.protocol === 'https:' ? 'wss:' : 'ws:'
+    pool.pathname = `${session.path}${session.token}/pool/${session.instanceId}`
+    pool.search = ''
+    pool.hash = ''
     installNdsWfcDnsShim(win as unknown as Parameters<typeof installNdsWfcDnsShim>[0],
-      session.dns ?? { server: '178.62.43.212', answers: {} }, session.path)
+      session.dns ?? { server: '178.62.43.212', answers: {} }, session.path, pool.href)
   }
   if (original.__8bitgoWfc) {
     original.__8bitgoWfc.session = session

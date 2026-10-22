@@ -107,7 +107,7 @@ const dnsUrl = `wss://8bitgo.com/api/nds-wfc/socket/${'A'.repeat(32)}/udp/178.62
 const local = new shimWin.WebSocket(dnsUrl, ['binary'])
 assert.ok(local instanceof LocalDnsSocket, 'DNS 节点:53 必须换成本地应答 socket')
 assert.equal(FakeRealSocket.direct().length, 0, '表里有的名字一条真 WSS 都不该开')
-assert.equal(FakeRealSocket.pooled().length, 3, '客体一开始查 DNS 就预热 3 条中继连接')
+assert.equal(FakeRealSocket.pooled().length, 4, '没传池地址时，客体一开始查 DNS 就预热 4 条中继连接')
 assert.equal(FakeRealSocket.pooled()[0].url, `wss://8bitgo.com/api/nds-wfc/socket/${'A'.repeat(32)}/pool/${'b'.repeat(16)}`)
 await new Promise((resolve) => { local.onopen = resolve })
 assert.equal(local.readyState, local.OPEN)
@@ -152,7 +152,7 @@ assert.deepEqual([...bound.sent[1]], [0x16, 3, 0])
 const pooledData = new Promise((resolve) => { pooledTcp.onmessage = (event) => resolve(new Uint8Array(event.data)) })
 bound.onmessage({ data: new Uint8Array([0x16, 3, 1]).buffer })
 assert.deepEqual([...(await pooledData)], [0x16, 3, 1])
-assert.equal(FakeRealSocket.pooled().length, 4, '取走一条后立即补一条')
+assert.equal(FakeRealSocket.pooled().length, 5, '取走一条后立即补一条')
 assert.deepEqual(parseRelayUrl(`wss://8bitgo.com/api/nds-wfc/socket/${'A'.repeat(32)}/udp/95.217.77.151/27900/7/${'b'.repeat(16)}`, '/api/nds-wfc/socket/'),
   { poolUrl: `wss://8bitgo.com/api/nds-wfc/socket/${'A'.repeat(32)}/pool/${'b'.repeat(16)}`, protocol: 'udp', host: '95.217.77.151', port: 27900, socketId: '7' })
 // 其它 socket（别的 DNS 节点、池已空时的 TCP）走带重试的直连
@@ -195,6 +195,16 @@ FakeRealSocket.created[1].onclose({ code: 1006 })
 assert.deepEqual(failEvents, ['error', 'close'])
 assert.equal(failing.readyState, 3)
 assert.equal(installNdsWfcDnsShim(shimWin, { server: '178.62.43.212', answers: {} }, '/api/nds-wfc/socket/'), true, '重复安装只换表')
+// 开局就预热连接池：conntest 紧跟第一次 DNS，等 DNS 时才开池的话第一条 TCP 必然赶不上（52200）
+FakeRealSocket.created.length = 0
+const eagerWin = { WebSocket: FakeRealSocket }
+const eagerPool = `wss://8bitgo.com/api/nds-wfc/socket/${'A'.repeat(32)}/pool/${'c'.repeat(16)}`
+assert.equal(installNdsWfcDnsShim(eagerWin, dnsTable, '/api/nds-wfc/socket/', eagerPool), true)
+assert.equal(FakeRealSocket.pooled().length, 4, '安装时就要开好 4 条空闲连接')
+assert.ok(FakeRealSocket.pooled().every((ws) => ws.url === eagerPool))
+for (const ws of FakeRealSocket.pooled()) { ws.readyState = 1; ws.onopen({}) }
+assert.ok(new eagerWin.WebSocket(`wss://8bitgo.com/api/nds-wfc/socket/${'A'.repeat(32)}/tcp/198.62.122.140/80`, ['binary']) instanceof PooledSocket,
+  '第一条 TCP（conntest）也要直接用预热连接')
 
 // 以前出现过“源码打了补丁、线上静态核心仍是旧产物”；这次直接验实际发给浏览器的归档。
 const archive = fileURLToPath(new URL('../public/emulatorjs/cores/melondsds-wasm.data', import.meta.url))

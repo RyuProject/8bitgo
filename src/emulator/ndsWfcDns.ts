@@ -500,7 +500,7 @@ type WfcWindow = { WebSocket: WebSocketCtor & { __8bitgoWfcDns?: { table: NdsWfc
  * 给核心所在窗口换上带 DNS 本地应答的 WebSocket 构造器。只拦 DNS 节点:53 的中继地址，
  * 其余（TCP、NATNEG、EmulatorJS 自己的 netplay）一律原样构造真 WebSocket。重复调用只更新表。
  */
-export function installNdsWfcDnsShim(win: WfcWindow, table: NdsWfcDnsTable, path: string): boolean {
+export function installNdsWfcDnsShim(win: WfcWindow, table: NdsWfcDnsTable, path: string, poolUrl?: string): boolean {
   const current = win.WebSocket
   if (typeof current !== 'function') return false
   if (current.__8bitgoWfcDns) {
@@ -510,11 +510,15 @@ export function installNdsWfcDnsShim(win: WfcWindow, table: NdsWfcDnsTable, path
   }
   const Real = current
   const state = { table, path }
-  let pool: RelayPool | null = null
+  /*
+    开局就预热，不等客体第一次查 DNS：生产实测直连 WSS 握手 1.5～4.9 秒，而 conntest 紧跟在
+    第一次 DNS 之后、DS 只等约 2 秒 —— 等 DNS 时才开池，第一条 TCP 一定赶不上（报 52200）。
+  */
+  let pool: RelayPool | null = poolUrl ? new RelayPool(poolUrl, Real, 4) : null
   /** 走中继的 socket：池里有现成连接就直接绑定，否则新开一条带重试的 WSS */
   const relaySocket = (url: string, protocols?: string | string[]): WebSocket => {
     const target = parseRelayUrl(url, state.path)
-    if (target?.poolUrl && !pool) pool = new RelayPool(target.poolUrl, Real)
+    if (target?.poolUrl && !pool) pool = new RelayPool(target.poolUrl, Real, 4)
     const ws = target && pool ? pool.take() : null
     if (target && ws) return new PooledSocket(url, ws, target) as unknown as WebSocket
     return new RetryingWebSocket(url, protocols, Real) as unknown as WebSocket
@@ -529,7 +533,7 @@ export function installNdsWfcDnsShim(win: WfcWindow, table: NdsWfcDnsTable, path
     if (isDnsRelayUrl(url, state.path, state.table.server)) {
       // 客体开始联网的第一个信号：顺手把连接池预热起来，NAS / GP 的 TCP 到时就不必再等握手
       const target = parseRelayUrl(url, state.path)
-      if (target?.poolUrl && !pool) pool = new RelayPool(target.poolUrl, Real)
+      if (target?.poolUrl && !pool) pool = new RelayPool(target.poolUrl, Real, 4)
       return new LocalDnsSocket(url, protocols, state.table, Retrying)
     }
     // 只给本站 WFC 中继套重试 / 连接池；EmulatorJS 自己的 netplay 等其它 WebSocket 原样构造
