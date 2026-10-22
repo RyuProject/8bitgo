@@ -414,6 +414,22 @@ Node `dns.Resolver` 默认仍走 UDP，不能当成 TCP 回退。只对固定 WF
 TCP 也超时。别把它们标为可用入口或仅凭旧 Wiki 扩大 DNS 白名单；官方列表见
 <https://github.com/barronwaffles/dwc_network_server_emulator/wiki/List-of-Servers>，加入新入口前必须重新实测。
 
+🔴 **20100 / 61020 的真正根因（2026-10-22 线上确认）：SOCKFS 对 UDP socket 永远报可读。**
+Emscripten SOCKFS `poll` 里 UDP 没有 peer，`!dest` 恒真，于是每次都返回 `POLLIN`。libslirp 一看可读就
+`recvfrom`，拿到 EAGAIN 后按真实错误处理，给客体回 ICMP 端口不可达。melonDS 约每毫秒 poll 一次，
+DNS 和可用性检查的 UDP socket 一直开着，所以每秒有上千个 ICMP 帧。melonDS 的接收环形缓冲只有 32KB
+（`PacketDispatcher`），满了就丢最早的帧，SYN-ACK 和 TCP 数据被挤掉：
+- NAS 443 一直握不上手，报 20100；
+- GP 的 `\lc\1` 挑战停在 SOCKFS `recv_queue` 里没人读，登录超时，报 61020；
+- conntest 总能过，因为那时还没有常驻的 UDP socket。
+
+修法：`ndsWfc.ts` 的 `fixSockfsDgramPoll`。在第一条 socket 走 URL 工厂时，从 `Module.FS.streams`
+找到 socket，把共用的 `sock_ops.poll` 包一层：UDP 队列为空时去掉可读位。**不要删掉它，
+也不要以为中继提速就能代替它。** 修之前，中继、连接池和 DNS 本地表都正常（服务端日志显示上游已连上），
+但客体就是不发包。排查方法：
+- 包一层 `sock_ops.poll` / `recvmsg` 计数。UDP socket 的 recvmsg 次数等于 poll 次数，就是复发了；
+- TCP fd 在建连之后再也没被 poll，说明客体没收到 SYN-ACK。
+
 ⚠️ melonDS 内置固件的默认 MAC 是全员相同的 `00:09:BF:11:22:33`，联机不能让所有玩家共享
 这个设备身份。`ndsWfcMacAddress()` 为当前浏览器生成并保存稳定的 `00:09:BF:xx:xx:xx`（任天堂 OUI，
 与 melonDS 单机多开一致；早期版本用过非任天堂前缀 `00:08:BF`，已换代为 `nds-wfc-mac-v2`），

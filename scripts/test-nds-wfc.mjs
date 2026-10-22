@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import vm from 'node:vm'
 import { fileURLToPath } from 'node:url'
-import { installNdsWfcRuntime, isWorldAtWarNdsRomHeader, loadNdsWfcSettings, ndsWfcMacAddress, ndsWfcSocketUrl, saveNdsWfcSettings } from '../src/emulator/ndsWfc.ts'
+import { fixSockfsDgramPoll, installNdsWfcRuntime, isWorldAtWarNdsRomHeader, loadNdsWfcSettings, ndsWfcMacAddress, ndsWfcSocketUrl, saveNdsWfcSettings } from '../src/emulator/ndsWfc.ts'
 import { NDS_WFC_SETTINGS_PATH, NDS_WFC_SETTINGS_SIZE } from '../src/emulator/ndsStartup.ts'
 import { buildDnsAReply, dnsAnswerIpsFor, installNdsWfcDnsShim, LocalDnsSocket, parseDnsQuestion, parseRelayUrl, PooledSocket, RetryingWebSocket, sanitizeDnsTable } from '../src/emulator/ndsWfcDns.ts'
 
@@ -73,6 +73,35 @@ assert.equal(moduleConfig.websocket.url('178.62.43.212', 53, 2, 'socket[12]'),
   `wss://8bitgo.com/api/nds-wfc/socket/${session.token}/udp/178.62.43.212/53/12/${session.instanceId}`)
 assert.equal(win.EJS_Runtime({}).websocket.url('95.217.77.151', 29900, 1),
   `wss://8bitgo.com/api/nds-wfc/socket/${renewed.token}/tcp/95.217.77.151/29900`)
+// ---- SOCKFS 的 UDP poll：没数据时不能报可读，否则 libslirp 每次 poll 都回客体一个 ICMP 不可达 ----
+{
+  // 与发布核心里的 SOCKFS poll 同构：UDP 没有 peer，`!dest` 让它永远可读
+  const sockOps = {
+    poll(sock) {
+      const dest = sock.type === 1 ? sock.peer : null
+      let mask = 0
+      if (sock.recv_queue.length || !dest) mask |= 64 | 1
+      if (!dest || dest.socket.readyState === 1) mask |= 4
+      return mask
+    },
+  }
+  const udp = { type: 2, recv_queue: [], sock_ops: sockOps }
+  const tcp = { type: 1, recv_queue: [], sock_ops: sockOps, peer: { socket: { readyState: 1 } } }
+  const fs = { streams: [null, { node: { name: 'socket[3]', sock: udp } }, { node: { name: 'socket[4]', sock: tcp } }] }
+  const pollWin = { EJS_Runtime: (config) => { config.FS = fs; return config } }
+  assert.equal(installNdsWfcRuntime(pollWin, session, 'https://8bitgo.com'), true)
+  const pollModule = pollWin.EJS_Runtime({})
+  assert.equal(udp.sock_ops.poll(udp) & 0x41, 0x41, '未修补前 UDP 永远可读（复现线上问题）')
+  pollModule.websocket.url('178.62.43.212', 53, 2, 'socket[3]')
+  assert.equal(udp.sock_ops.poll(udp), 4, '空 UDP socket 只能报可写')
+  udp.recv_queue.push({ data: new Uint8Array(4) })
+  assert.equal(udp.sock_ops.poll(udp) & 0x41, 0x41, '有数据的 UDP socket 仍然可读')
+  assert.equal(tcp.sock_ops.poll(tcp), 4, 'TCP 不受影响')
+  assert.equal(fixSockfsDgramPoll(udp), false, '共用的 sock_ops 只包一次')
+  // 没有 FS 的模块（单测里的假工厂）也不能让 URL 工厂报错
+  assert.ok(win.EJS_Runtime({}).websocket.url('178.62.43.212', 53, 2, 'socket[9]').includes('/udp/178.62.43.212/53/9/'))
+}
+
 // ---- 浏览器本地 DNS 应答：DS 每 ~2 秒换 socket 重查，不能每次都等 WSS + 跨洲 DNS ----
 const dnsQuery = (id, name) => new Uint8Array([id >> 8, id & 255, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0,
   ...name.split('.').flatMap((label) => [label.length, ...Buffer.from(label)]), 0, 0, 1, 0, 1])
@@ -210,6 +239,9 @@ assert.ok(new eagerWin.WebSocket(`wss://8bitgo.com/api/nds-wfc/socket/${'A'.repe
 const archive = fileURLToPath(new URL('../public/emulatorjs/cores/melondsds-wasm.data', import.meta.url))
 const shippedJs = execFileSync('7z', ['x', '-so', archive, 'melondsds_libretro.js'], { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024 })
 assert.ok(shippedJs.includes('SOCKFS.websocketArgs["url"](addr,port,sock.type,sock.stream.node.name)'), '发布核心缺少逐 socket WFC 路由补丁')
+// 运行时修补 UDP poll 依赖这两处：Module 就是传给工厂的对象、FS 挂在 Module 上
+assert.ok(shippedJs.includes('var Module=moduleArg;'), '核心不再直接使用传入的 Module 对象，UDP poll 修补拿不到 FS')
+assert.ok(shippedJs.includes('Module["FS"]=FS'), '核心没有导出 FS，UDP poll 修补拿不到 socket')
 const shippedWasm = execFileSync('7z', ['x', '-so', archive, 'melondsds_libretro.wasm'], { maxBuffer: 16 * 1024 * 1024 })
 assert.ok(shippedWasm.includes(Buffer.from('/8bitgo-wfc-mac.txt')), '发布核心没有登记逐浏览器 MAC 选项，RetroArch 会静默回退共享默认地址')
 console.log('NDS WFC：核心工厂注入及 TCP/UDP 目标路由检查通过')

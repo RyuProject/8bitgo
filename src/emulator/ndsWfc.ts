@@ -167,6 +167,57 @@ type WfcRuntime = ((config: Record<string, unknown>) => unknown) & {
   __8bitgoWfc?: { session: NdsWfcSession; origin: string }
 }
 
+interface SockfsSocket {
+  type?: number
+  recv_queue?: unknown[]
+  sock_ops?: SockfsSocketOps
+}
+
+interface SockfsSocketOps {
+  poll?: (sock: SockfsSocket, ...rest: unknown[]) => number
+  __8bitgoDgramPoll?: boolean
+}
+
+interface SockfsModule {
+  FS?: { streams?: Array<{ node?: { name?: string; sock?: SockfsSocket } } | null | undefined> }
+}
+
+const SOCK_DGRAM = 2
+const POLL_READABLE = 0x001 | 0x040 // POLLIN | POLLRDNORM
+
+/**
+ * Emscripten SOCKFS 的 poll 对 UDP socket 永远报“可读”（UDP 没有 peer，`!dest` 恒为真）。
+ * libslirp 每次 poll 到“可读”就 recvfrom，拿到 EAGAIN 后当成真实错误，给客体回一个
+ * ICMP 端口不可达。melonDS 每毫秒左右 poll 一次，DNS / 可用性检查的 UDP socket 一开就是
+ * 每秒上千个 ICMP 帧：melonDS 只有 32KB 的接收环形缓冲，满了就丢最早的帧，TCP 的 SYN-ACK
+ * 和服务端数据被挤掉 —— NAS(443) 一直等不到握手完成报 20100，GP 的挑战包留在 SOCKFS
+ * 队列里没人读、登录超时报 61020。线上实测：修正后 NAS / GP 登录一次通过。
+ *
+ * 修法：UDP socket 只有队列里真有数据时才报可读。sock_ops 是所有 socket 共用的一个对象，
+ * 只需要包一次；已经发布的核心不用重新编译。
+ */
+export function fixSockfsDgramPoll(sock: SockfsSocket | undefined): boolean {
+  const ops = sock?.sock_ops
+  if (!ops || typeof ops.poll !== 'function' || ops.__8bitgoDgramPoll) return false
+  const poll = ops.poll
+  ops.poll = function (this: unknown, target: SockfsSocket, ...rest: unknown[]) {
+    const mask = Reflect.apply(poll, this, [target, ...rest]) as number
+    return target?.type === SOCK_DGRAM && !target.recv_queue?.length ? mask & ~POLL_READABLE : mask
+  }
+  ops.__8bitgoDgramPoll = true
+  return true
+}
+
+function fixModuleSockfsPoll(module: SockfsModule, socketName: string | undefined): boolean {
+  if (!socketName) return false
+  const streams = module.FS?.streams
+  if (!Array.isArray(streams)) return false
+  for (const stream of streams) {
+    if (stream?.node?.name === socketName && stream.node.sock) return fixSockfsDgramPoll(stream.node.sock) || true
+  }
+  return false
+}
+
 /** 只包一次核心工厂；同一 iframe 重开游戏时更新令牌，不能继续拿已失效的旧会话。 */
 export function installNdsWfcRuntime(win: RuntimeWindow, session: NdsWfcSession, origin: string): boolean {
   const original = win.EJS_Runtime as WfcRuntime | undefined
@@ -193,17 +244,22 @@ export function installNdsWfcRuntime(win: RuntimeWindow, session: NdsWfcSession,
     // 新游戏可换令牌，但已经启动的核心要继续用自己的会话；URL 工厂不能读共享的可变 state。
     const activeSession = state.session
     const activeOrigin = state.origin
-    return Reflect.apply(original, this, [{
+    // MODULARIZE 的核心直接把这个对象当 Module 用，FS 之后会挂到它上面
+    let pollFixed = false
+    const moduleConfig: Record<string, unknown> & SockfsModule = {
       ...config,
       wfcTrace: Boolean(import.meta.env?.DEV),
       websocket: {
         url: (host: string, port: number, type: number, socketName?: string) => {
           if (import.meta.env?.DEV && tracedSockets++ < 20) console.info('[nds-wfc] socket', type === 1 ? 'tcp' : 'udp', host, port)
+          // 第一条 socket 建连时修 SOCKFS 的 UDP poll；早于 libslirp 第一次 poll 这条 socket
+          if (!pollFixed) pollFixed = fixModuleSockfsPoll(moduleConfig, socketName)
           return ndsWfcSocketUrl(activeOrigin, activeSession, host, port, type, socketName)
         },
         subprotocol: 'binary',
       },
-    }])
+    }
+    return Reflect.apply(original, this, [moduleConfig])
   }
   wrapped.__8bitgoWfc = state
   win.EJS_Runtime = wrapped
