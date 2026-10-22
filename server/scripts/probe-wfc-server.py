@@ -135,9 +135,21 @@ for label, key, port in (("GP gpsp :29901", "gpsp", 29901), ("master :28910", "m
 
 print("\n== 4. GameSpy UDP（匹配 / NATNEG 靠它）==")
 def udp(host, port, pkt):
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(3)
-    s.sendto(pkt, (host, port)); s.sendto(pkt, (host, port))
-    return s.recv(2048)
+    # UDP 本身没有确认；验收只因单个公网数据包丢失就报红会制造假故障。
+    # 每轮仍只接受这条探测包的首个应答，连续三轮全超时才判定服务不可用。
+    error = None
+    for _ in range(3):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.settimeout(3)
+            s.sendto(pkt, (host, port)); s.sendto(pkt, (host, port))
+            return s.recv(2048)
+        except OSError as exc:
+            error = exc
+            time.sleep(0.15)
+        finally:
+            s.close()
+    raise error or TimeoutError('UDP probe timed out')
 natneg_init = b"\xfd\xfc\x1e\x66\x6a\xb2\x03\x00" + os.urandom(4) + b"\x00\x00\x00" + b"\x00" * 6 + GAME.encode() + b"\x00"
 for label, key, port, pkt, check in (
     ("可用性 :27900", "available", 27900, b"\x09\0\0\0\0" + GAME.encode() + b"\0", lambda r: r[:3] == b"\xfe\xfd\x09"),
