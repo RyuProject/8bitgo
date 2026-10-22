@@ -439,6 +439,20 @@ GP 登录还可能被拒（61020 的候选原因之一）。适配器在 callMai
 - NATNEG 对端只按可信撮合服务器（本局 DNS 授权过的 IP）发来的 CONNECT 包授权**精确 IP:端口**，
   10 分钟有效（`natnegConnectPeer`）；CONNECT 的端口取自 QR2 心跳看到的公网端口，所以 QR2 / NATNEG /
   对战必须共用同一个中继 UDP 源端口（已按 socketId 分组）。
+⚠️ **线上 20100 / 52100 的真实时序问题（2026-10-22 生产实测）。** DS 的解析器约每 2 秒换一个新 UDP
+socket 重查，TCP connect 也只等约 2 秒；而浏览器每个 SOCKFS socket 都是一条新 WSS，经 Cloudflare 握手
+1.5～3 秒、约四分之一直接失败，生产机到 Kaeru 的 UDP DNS 又从不回（只能走 TCP，3～9 秒）。结果是 DNS
+永远在 DS 放弃之后才回来（52100），侥幸解析成功后 NAS 的 443 也连不上（20100）。现在的做法：
+- 会话接口下发服务端预解析好的 WFC 名字（进程启动即预热、5 分钟刷新），并预先给该会话放行这些 IP；
+  `src/emulator/ndsWfcDns.ts` 把核心对 DNS 节点:53 的 socket 换成本地应答，表里没有的才转发给中继。
+- 浏览器在客体第一次查 DNS 时预热 3 条空闲中继连接（`/socket/<token>/pool/<instanceId>`），客体 connect
+  时直接拿一条、用首个文本帧 bind 目标；池空时退回带握手重试的直连。
+- 中继 TCP 改为先接受 WebSocket、再连上游，期间缓存客体数据；上游失败就关 WebSocket。
+- ⚠️ 这些类定义在父页面、核心跑在 iframe：判断二进制必须用 `Object.prototype.toString`，
+  **不能 instanceof ArrayBuffer**（跨 realm 恒为 false，曾让每个查询都被当成空包）。
+在生产实测里，加了本地 DNS 后游戏已能走完 conntest → NAS 首次请求 → `cod5victoryds.available` 可用性检查，
+随后卡在 NAS 登录的 443 重连上报 20100 —— 这正是连接池和“先接受再连上游”要解决的部分，部署后需复测。
+
 排查时设 `NDS_WFC_TRACE=1`：GP（29900/29901）只记命令名，服务器 `\error\` 会带 err / errmsg，
 61020 是哪一步被拒绝直接看这一行；不记 authtoken / response / 会话密钥。
 

@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
+import vm from 'node:vm'
 import { fileURLToPath } from 'node:url'
 import { installNdsWfcRuntime, isWorldAtWarNdsRomHeader, loadNdsWfcSettings, ndsWfcMacAddress, ndsWfcSocketUrl, saveNdsWfcSettings } from '../src/emulator/ndsWfc.ts'
 import { NDS_WFC_SETTINGS_PATH, NDS_WFC_SETTINGS_SIZE } from '../src/emulator/ndsStartup.ts'
+import { buildDnsAReply, dnsAnswerIpsFor, installNdsWfcDnsShim, LocalDnsSocket, parseDnsQuestion, parseRelayUrl, PooledSocket, RetryingWebSocket, sanitizeDnsTable } from '../src/emulator/ndsWfcDns.ts'
 
 const storedMac = new Map()
 const macWindow = {
@@ -71,6 +73,129 @@ assert.equal(moduleConfig.websocket.url('178.62.43.212', 53, 2, 'socket[12]'),
   `wss://8bitgo.com/api/nds-wfc/socket/${session.token}/udp/178.62.43.212/53/12/${session.instanceId}`)
 assert.equal(win.EJS_Runtime({}).websocket.url('95.217.77.151', 29900, 1),
   `wss://8bitgo.com/api/nds-wfc/socket/${renewed.token}/tcp/95.217.77.151/29900`)
+// ---- 浏览器本地 DNS 应答：DS 每 ~2 秒换 socket 重查，不能每次都等 WSS + 跨洲 DNS ----
+const dnsQuery = (id, name) => new Uint8Array([id >> 8, id & 255, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0,
+  ...name.split('.').flatMap((label) => [label.length, ...Buffer.from(label)]), 0, 0, 1, 0, 1])
+const nasQuery = dnsQuery(0x1234, 'nas.nintendowifi.net')
+const nasQuestion = parseDnsQuestion(nasQuery)
+assert.equal(nasQuestion.name, 'nas.nintendowifi.net')
+const localReply = buildDnsAReply(nasQuery, nasQuestion, ['178.62.43.212'])
+assert.equal(localReply[0], 0x12)
+assert.equal(localReply[1], 0x34)
+assert.equal(localReply[2] & 0x80, 0x80)
+assert.deepEqual(dnsAnswerIpsFor(localReply, 'nas.nintendowifi.net'), ['178.62.43.212'])
+assert.equal(sanitizeDnsTable({ server: '178.62.43.212', answers: { 'evil.example.com': ['1.2.3.4'], 'NAS.nintendowifi.net': ['178.62.43.212', 'x'] } })
+  .answers['evil.example.com'], undefined, '表里不能混进非 WFC 域名')
+assert.deepEqual(sanitizeDnsTable({ server: '178.62.43.212', answers: { 'NAS.nintendowifi.net': ['178.62.43.212', 'x'] } }).answers,
+  { 'nas.nintendowifi.net': ['178.62.43.212'] })
+assert.equal(sanitizeDnsTable({ server: 'evil', answers: {} }), null)
+
+class FakeRealSocket {
+  static created = []
+  static direct = () => FakeRealSocket.created.filter((ws) => !ws.url.includes('/pool/'))
+  static pooled = () => FakeRealSocket.created.filter((ws) => ws.url.includes('/pool/'))
+  readyState = 0
+  sent = []
+  constructor(url, protocols) { this.url = url; this.protocols = protocols; FakeRealSocket.created.push(this) }
+  send(data) { this.sent.push(typeof data === 'string' ? data : new Uint8Array(data)) }
+  close() { this.readyState = 3 }
+}
+const shimWin = { WebSocket: FakeRealSocket }
+const dnsTable = { server: '178.62.43.212', answers: { 'nas.nintendowifi.net': ['178.62.43.212'] } }
+assert.equal(installNdsWfcDnsShim(shimWin, dnsTable, '/api/nds-wfc/socket/'), true)
+const dnsUrl = `wss://8bitgo.com/api/nds-wfc/socket/${'A'.repeat(32)}/udp/178.62.43.212/53/3/${'b'.repeat(16)}`
+const local = new shimWin.WebSocket(dnsUrl, ['binary'])
+assert.ok(local instanceof LocalDnsSocket, 'DNS 节点:53 必须换成本地应答 socket')
+assert.equal(FakeRealSocket.direct().length, 0, '表里有的名字一条真 WSS 都不该开')
+assert.equal(FakeRealSocket.pooled().length, 3, '客体一开始查 DNS 就预热 3 条中继连接')
+assert.equal(FakeRealSocket.pooled()[0].url, `wss://8bitgo.com/api/nds-wfc/socket/${'A'.repeat(32)}/pool/${'b'.repeat(16)}`)
+await new Promise((resolve) => { local.onopen = resolve })
+assert.equal(local.readyState, local.OPEN)
+const localAnswer = new Promise((resolve) => { local.onmessage = (event) => resolve(new Uint8Array(event.data)) })
+local.send(nasQuery.buffer.slice(0))
+assert.deepEqual(dnsAnswerIpsFor(await localAnswer, 'nas.nintendowifi.net'), ['178.62.43.212'])
+// 核心在 EmulatorJS 的 iframe 里：SOCKFS 交来的 ArrayBuffer 属于另一个 realm，instanceof 判断会失效
+const foreignQuery = vm.runInNewContext('Uint8Array.from(bytes).buffer', { bytes: [...nasQuery] })
+assert.equal(foreignQuery instanceof ArrayBuffer, false, '测试前提：这是另一个 realm 的 ArrayBuffer')
+const foreignAnswer = new Promise((resolve) => { local.onmessage = (event) => resolve(new Uint8Array(event.data)) })
+local.send(foreignQuery)
+assert.deepEqual(dnsAnswerIpsFor(await foreignAnswer, 'nas.nintendowifi.net'), ['178.62.43.212'],
+  '跨 realm 的查询也必须当场作答（以前被当成空包转发，最后报 52100）')
+// 表里没有的名字：懒开一条真中继 WSS，答案回来后记进表，之后就地作答
+const gpQuery = dnsQuery(0x2222, 'gpcm.gs.nintendowifi.net')
+local.send(gpQuery)
+// 池里的连接还没 OPEN：退回新开一条带重试的直连
+assert.equal(FakeRealSocket.direct().length, 1)
+assert.equal(FakeRealSocket.direct()[0].url, dnsUrl)
+const upstream = FakeRealSocket.direct()[0]
+upstream.readyState = 1
+upstream.onopen({})
+assert.deepEqual([...upstream.sent[0]], [...gpQuery])
+const gpReply = buildDnsAReply(gpQuery, parseDnsQuestion(gpQuery), ['95.217.77.151'])
+const forwarded = new Promise((resolve) => { local.onmessage = (event) => resolve(new Uint8Array(event.data)) })
+upstream.onmessage({ data: vm.runInNewContext('Uint8Array.from(bytes).buffer', { bytes: [...gpReply] }) })
+assert.deepEqual(dnsAnswerIpsFor(await forwarded, 'gpcm.gs.nintendowifi.net'), ['95.217.77.151'])
+assert.deepEqual(dnsTable.answers['gpcm.gs.nintendowifi.net'], ['95.217.77.151'])
+local.close()
+assert.equal(local.readyState, local.CLOSED)
+// 池里有已 OPEN 的连接时，客体的 TCP connect 直接拿一条：先发 bind 文本帧，随后异步宣布 OPEN
+for (const ws of FakeRealSocket.pooled()) { ws.readyState = 1; ws.onopen({}) }
+const tcpUrl = `wss://8bitgo.com/api/nds-wfc/socket/${'A'.repeat(32)}/tcp/178.62.43.212/443`
+const pooledTcp = new shimWin.WebSocket(tcpUrl, ['binary'])
+assert.ok(pooledTcp instanceof PooledSocket, '有预热连接时 TCP 不能再等一次 WSS 握手')
+const bound = FakeRealSocket.pooled().find((ws) => ws.sent.length)
+assert.deepEqual(JSON.parse(bound.sent[0]), { protocol: 'tcp', host: '178.62.43.212', port: 443 })
+await new Promise((resolve) => { pooledTcp.onopen = resolve })
+assert.equal(pooledTcp.readyState, 1)
+pooledTcp.send(new Uint8Array([0x16, 3, 0]).buffer)
+assert.deepEqual([...bound.sent[1]], [0x16, 3, 0])
+const pooledData = new Promise((resolve) => { pooledTcp.onmessage = (event) => resolve(new Uint8Array(event.data)) })
+bound.onmessage({ data: new Uint8Array([0x16, 3, 1]).buffer })
+assert.deepEqual([...(await pooledData)], [0x16, 3, 1])
+assert.equal(FakeRealSocket.pooled().length, 4, '取走一条后立即补一条')
+assert.deepEqual(parseRelayUrl(`wss://8bitgo.com/api/nds-wfc/socket/${'A'.repeat(32)}/udp/95.217.77.151/27900/7/${'b'.repeat(16)}`, '/api/nds-wfc/socket/'),
+  { poolUrl: `wss://8bitgo.com/api/nds-wfc/socket/${'A'.repeat(32)}/pool/${'b'.repeat(16)}`, protocol: 'udp', host: '95.217.77.151', port: 27900, socketId: '7' })
+// 其它 socket（别的 DNS 节点、池已空时的 TCP）走带重试的直连
+for (const ws of FakeRealSocket.pooled()) if (!ws.sent.length) ws.readyState = 3
+const tcp = new shimWin.WebSocket(tcpUrl, ['binary'])
+assert.ok(tcp instanceof RetryingWebSocket, '中继 TCP 要带握手重试')
+const otherDns = new shimWin.WebSocket(`wss://8bitgo.com/api/nds-wfc/socket/${'A'.repeat(32)}/udp/95.217.77.181/53/4/${'b'.repeat(16)}`)
+assert.ok(otherDns instanceof RetryingWebSocket)
+assert.ok(new shimWin.WebSocket('wss://8bitgo.com/socket.io/?EIO=4') instanceof FakeRealSocket, '站内其它 WebSocket 不能被改动')
+
+// 握手失败（OPEN 之前 close）自动换一条重连；OPEN 之后的断线照常交给 SOCKFS
+FakeRealSocket.created.length = 0
+const retrying = new RetryingWebSocket('wss://8bitgo.com/api/nds-wfc/socket/x/tcp/178.62.43.212/443', ['binary'], FakeRealSocket, [1, 1])
+const events = []
+retrying.onopen = () => events.push('open')
+retrying.onerror = () => events.push('error')
+retrying.onclose = () => events.push('close')
+FakeRealSocket.created[0].onerror({})
+FakeRealSocket.created[0].onclose({ code: 1006 })
+await new Promise((resolve) => setTimeout(resolve, 10))
+assert.equal(FakeRealSocket.created.length, 2, '第一次握手失败后应重连')
+assert.deepEqual(events, [], '重试期间不能向 SOCKFS 报错')
+FakeRealSocket.created[1].readyState = 1
+FakeRealSocket.created[1].onopen({})
+assert.equal(retrying.readyState, 1)
+retrying.send(new Uint8Array([1, 2]).buffer)
+assert.deepEqual([...FakeRealSocket.created[1].sent[0]], [1, 2])
+FakeRealSocket.created[1].onclose({ code: 1000 })
+assert.deepEqual(events, ['open', 'close'])
+assert.equal(FakeRealSocket.created.length, 2, 'OPEN 之后断线不能偷偷重连，否则会把半截 TCP 流接到新连接上')
+// 重试用尽才报错
+FakeRealSocket.created.length = 0
+const failing = new RetryingWebSocket('wss://8bitgo.com/api/nds-wfc/socket/x/tcp/178.62.43.212/443', ['binary'], FakeRealSocket, [1])
+const failEvents = []
+failing.onerror = () => failEvents.push('error')
+failing.onclose = () => failEvents.push('close')
+FakeRealSocket.created[0].onclose({ code: 1006 })
+await new Promise((resolve) => setTimeout(resolve, 10))
+FakeRealSocket.created[1].onclose({ code: 1006 })
+assert.deepEqual(failEvents, ['error', 'close'])
+assert.equal(failing.readyState, 3)
+assert.equal(installNdsWfcDnsShim(shimWin, { server: '178.62.43.212', answers: {} }, '/api/nds-wfc/socket/'), true, '重复安装只换表')
+
 // 以前出现过“源码打了补丁、线上静态核心仍是旧产物”；这次直接验实际发给浏览器的归档。
 const archive = fileURLToPath(new URL('../public/emulatorjs/cores/melondsds-wasm.data', import.meta.url))
 const shippedJs = execFileSync('7z', ['x', '-so', archive, 'melondsds_libretro.js'], { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024 })

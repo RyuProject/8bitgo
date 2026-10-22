@@ -3,10 +3,14 @@
  * melonDS DS 的 SOCKFS 必须在创建每条连接时拿到一个同源 WSS 地址，让本站后端转发。
  */
 
+import { installNdsWfcDnsShim, sanitizeDnsTable, type NdsWfcDnsTable } from './ndsWfcDns'
+
 export interface NdsWfcSession {
   token: string
   path: string
   instanceId: string
+  /** 服务端预解析好的 WFC 名字；有它时 DNS 在浏览器本地作答，见 ndsWfcDns.ts */
+  dns?: NdsWfcDnsTable | null
 }
 
 let pageInstanceId: string | null = null
@@ -144,10 +148,10 @@ export async function prepareNdsWfcSession(gameSlug: string, signal?: AbortSigna
     if (!response.ok) return null
     const body: unknown = await response.json()
     if (!body || typeof body !== 'object') return null
-    const session = body as Partial<NdsWfcSession>
+    const session = body as Partial<NdsWfcSession> & { dns?: unknown }
     return typeof session.token === 'string' && typeof session.path === 'string' &&
       /^[A-Za-z0-9_-]{32}$/.test(session.token) && session.path === '/api/nds-wfc/socket/'
-      ? { token: session.token, path: session.path, instanceId: wfcPageInstanceId() }
+      ? { token: session.token, path: session.path, instanceId: wfcPageInstanceId(), dns: sanitizeDnsTable(session.dns) }
       : null
   } finally {
     clearTimeout(timer)
@@ -167,6 +171,12 @@ type WfcRuntime = ((config: Record<string, unknown>) => unknown) & {
 export function installNdsWfcRuntime(win: RuntimeWindow, session: NdsWfcSession, origin: string): boolean {
   const original = win.EJS_Runtime as WfcRuntime | undefined
   if (typeof original !== 'function') return false
+  // 核心和 SOCKFS 跑在这个窗口里：DNS 节点:53 的 socket 换成本地应答，其余仍是真 WebSocket。
+  // 没有预解析表时也要装：中继 socket 的握手重试同样走这个构造器，DNS 则全部转发给中继。
+  if (typeof win.WebSocket === 'function') {
+    installNdsWfcDnsShim(win as unknown as Parameters<typeof installNdsWfcDnsShim>[0],
+      session.dns ?? { server: '178.62.43.212', answers: {} }, session.path)
+  }
   if (original.__8bitgoWfc) {
     original.__8bitgoWfc.session = session
     original.__8bitgoWfc.origin = origin

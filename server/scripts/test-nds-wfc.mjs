@@ -105,6 +105,7 @@ assert.equal(natnegConnectPeer(Buffer.from('\\heartbeat\\')), null)
 const app = express()
 app.use(express.json())
 const udpSockets = []
+const resolverCalls = []
 const tcpSockets = []
 class FakeUdpSocket extends EventEmitter {
   sent = []
@@ -137,7 +138,7 @@ const service = createNdsWfcService({ enabled: true, udpSocketFactory: () => {
   const socket = new FakeTcpSocket()
   tcpSockets.push(socket)
   return socket
-}, dnsResolver: async () => ['95.217.77.151'] })
+}, dnsResolver: async (host, name) => { resolverCalls.push(`${host}|${name}`); return ['95.217.77.151'] } })
 app.use('/api/nds-wfc', service.router)
 const server = createServer(app)
 service.attach(server)
@@ -171,7 +172,12 @@ try {
     method: 'POST', headers: { Origin: base, 'Content-Type': 'application/json' },
     body: JSON.stringify({ gameSlug: 'call-of-duty-world-at-war', clientId }),
   })
-  assert.equal((await reused.json()).token, second.token)
+  const reusedBody = await reused.json()
+  assert.equal(reusedBody.token, second.token)
+  // 进程启动 / 建会话时已在后台预解析：会话响应里带上这张表，浏览器可在本地回答 DNS
+  assert.equal(reusedBody.dns.server, '178.62.43.212')
+  assert.deepEqual(reusedBody.dns.answers['nas.nintendowifi.net'], ['95.217.77.151'])
+  assert.deepEqual(reusedBody.dns.answers['gpcm.gs.nintendowifi.net'], ['95.217.77.151'])
   // 同 IP 的第二个玩家/探针开局后，第一个玩家的 DNS socket 仍必须能升级成功。
   const firstSocket = new WebSocket(`${base.replace('http:', 'ws:')}${session.path}${session.token}/udp/178.62.43.212/53/1/${'a'.repeat(16)}`, {
     headers: { Origin: base },
@@ -187,7 +193,10 @@ try {
   const cachedReply = new Promise((resolve) => firstSocket.once('message', resolve))
   firstSocket.send(query)
   assert.deepEqual(dnsAnswerIps(Buffer.from(await cachedReply), 'nas.nintendowifi.net'), ['95.217.77.151'])
-  assert.equal(udpSockets[0].sent.length, 1, '十分钟内的重复 DNS 不应再次访问上游')
+  // 会话创建时已在后台预热 NAS 等常用名字：DS 的查询直接命中共享缓存，一个包都不必发上游
+  assert.equal(udpSockets[0].sent.length, 0, '预热过的名字不应再次访问上游')
+  assert.equal(resolverCalls.filter((call) => call === '178.62.43.212|nas.nintendowifi.net').length, 1,
+    '同一名字的并发解析与重复查询只能打一次上游')
   // 白名单外的名字只回 REFUSED，同一条 DNS socket 之后的合法查询必须照常可用
   const refusedReply = new Promise((resolve) => firstSocket.once('message', resolve))
   firstSocket.send(badQuery)
@@ -200,38 +209,63 @@ try {
   firstSocket.close()
   await new Promise((resolve) => firstSocket.once('close', resolve))
 
-  // GameSpy 在 TCP 建连后立刻发挑战；WebSocket OPEN 必须晚于真实 TCP connect，
-  // 否则客体会过早认为已连上，首包挑战丢失后只会等到 61020。
+  // 先接受 WebSocket 再连上游：DS 的 connect 约 2 秒就放弃，不能让它再等一次跨洲 TCP 建连。
+  // 上游连通前客体发来的数据要先缓存，连通后按顺序转发；挑战包照常送达。
   const gp = new WebSocket(`${base.replace('http:', 'ws:')}${session.path}${session.token}/tcp/95.217.77.151/29900`, {
     headers: { Origin: base },
   })
-  const opened = new Promise((resolve, reject) => { gp.once('open', resolve); gp.once('error', reject) })
+  await new Promise((resolve, reject) => { gp.once('open', resolve); gp.once('error', reject) })
   for (let i = 0; i < 50 && tcpSockets.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 2))
-  assert.equal(tcpSockets.length, 1, 'WebSocket OPEN 前应先连接真实上游')
-  assert.equal(gp.readyState, WebSocket.CONNECTING, '真实上游未连接时不能先宣布虚拟 TCP 成功')
+  assert.equal(tcpSockets.length, 1, '接受 WebSocket 的同时应开始连接真实上游')
+  gp.send(Buffer.from('\\early\\final\\'))
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.equal(tcpSockets[0].sent.length, 0, '上游没连通前不能写')
   tcpSockets[0].emit('connect')
-  await opened
+  for (let i = 0; i < 50 && tcpSockets[0].sent.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 2))
+  assert.equal(tcpSockets[0].sent[0].toString('ascii'), '\\early\\final\\', '连通后要补发缓存的数据')
   const gpChallenge = Buffer.from('\\lc\\1\\challenge\\test\\id\\1\\final\\')
   const receivedChallenge = new Promise((resolve) => gp.once('message', resolve))
   tcpSockets[0].emit('data', gpChallenge)
   assert.deepEqual(Buffer.from(await receivedChallenge), gpChallenge)
   gp.send(Buffer.from('\\login\\test\\final\\'))
-  for (let i = 0; i < 50 && tcpSockets[0].sent.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 2))
-  assert.equal(tcpSockets[0].sent[0].toString('ascii'), '\\login\\test\\final\\')
+  for (let i = 0; i < 50 && tcpSockets[0].sent.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 2))
+  assert.equal(tcpSockets[0].sent[1].toString('ascii'), '\\login\\test\\final\\')
   gp.close()
   await new Promise((resolve) => gp.once('close', resolve))
 
   const failedGp = new WebSocket(`${base.replace('http:', 'ws:')}${session.path}${session.token}/tcp/95.217.77.151/29900`, {
     headers: { Origin: base },
   })
-  const failedStatus = new Promise((resolve) => {
-    failedGp.once('unexpected-response', (_request, response) => resolve(response.statusCode))
-    failedGp.once('error', () => resolve(0))
-  })
+  await new Promise((resolve, reject) => { failedGp.once('open', resolve); failedGp.once('error', reject) })
   for (let i = 0; i < 50 && tcpSockets.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 2))
   assert.equal(tcpSockets.length, 2)
+  const failedClosed = new Promise((resolve) => failedGp.once('close', resolve))
   tcpSockets[1].emit('error', Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }))
-  assert.equal(await failedStatus, 502, '真实 TCP 拒绝时不能给客体虚假的 WebSocket OPEN')
+  await failedClosed
+  assert.equal(tcpSockets[1].destroyed, true, '真实 TCP 拒绝时要关掉 WebSocket，客体看到的是对端关闭')
+
+  // 预热连接池：先开空闲 WSS，首条文本帧绑定目标；未授权目标直接关掉
+  const poolUrl = `${base.replace('http:', 'ws:')}${session.path}${session.token}/pool/${'a'.repeat(16)}`
+  const pooled = new WebSocket(poolUrl, { headers: { Origin: base } })
+  await new Promise((resolve, reject) => { pooled.once('open', resolve); pooled.once('error', reject) })
+  pooled.send(JSON.stringify({ protocol: 'tcp', host: '95.217.77.151', port: 29900 }))
+  for (let i = 0; i < 50 && tcpSockets.length < 3; i++) await new Promise((resolve) => setTimeout(resolve, 2))
+  assert.equal(tcpSockets.length, 3, '池里的连接绑定后应立即连上游')
+  tcpSockets[2].emit('connect')
+  pooled.send(Buffer.from('\\login\\pool\\final\\'))
+  for (let i = 0; i < 50 && tcpSockets[2].sent.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 2))
+  assert.equal(tcpSockets[2].sent[0].toString('ascii'), '\\login\\pool\\final\\')
+  const pooledReply = new Promise((resolve) => pooled.once('message', resolve))
+  tcpSockets[2].emit('data', Buffer.from('\\lc\\2\\final\\'))
+  assert.equal(Buffer.from(await pooledReply).toString('ascii'), '\\lc\\2\\final\\')
+  pooled.close()
+  await new Promise((resolve) => pooled.once('close', resolve))
+  const evilPool = new WebSocket(poolUrl, { headers: { Origin: base } })
+  await new Promise((resolve, reject) => { evilPool.once('open', resolve); evilPool.once('error', reject) })
+  const evilClosed = new Promise((resolve) => evilPool.once('close', resolve))
+  evilPool.send(JSON.stringify({ protocol: 'tcp', host: '203.0.113.9', port: 443 }))
+  await evilClosed
+  assert.equal(tcpSockets.length, 3, '连接池不能绕过 DNS 授权去连任意地址')
 
   const wsBase = `${base.replace('http:', 'ws:')}${session.path}${session.token}/udp/95.217.77.151/`
   const openSocket = async (port, instanceId = 'a'.repeat(16)) => {
@@ -307,6 +341,10 @@ try {
     deniedSocket.once('error', () => resolve(0))
   })
   assert.equal(status, 403)
+} catch (error) {
+  // 升级后的 WebSocket 不归 http.Server 管，server.close 会一直等；失败时先把原因打印出来再退出。
+  console.error(error)
+  process.exit(1)
 } finally {
   server.closeAllConnections()
   await new Promise((resolve) => server.close(resolve))

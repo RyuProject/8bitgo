@@ -18,6 +18,22 @@ const SESSION_MS = 2 * 60 * 60 * 1000
 const DNS_IP_MS = SESSION_MS
 // 同一局里 DS 会反复查询 NAS；30 秒过期会在上游 DNS 短暂抖动时引发整批重试，最终报 20100。
 const DNS_CACHE_MS = 10 * 60 * 1000
+// 过期后仍可先拿旧答案顶上（同时后台刷新）的时长：Kaeru / Wiimmfi 的入口 IP 很少变，
+// 而生产机到这几台 DNS 的 UDP 不回包、TCP 每次又要 2～9 秒，DS 的解析器等不了这么久。
+const DNS_STALE_MS = 6 * 60 * 60 * 1000
+// 会话一建立就在后台先解析这些名字：玩家真正走到 WFC 登录时，NAS / GP 的查询直接命中缓存。
+const DNS_PREWARM_NAMES = [
+  'conntest.nintendowifi.net',
+  'nas.nintendowifi.net',
+  'gpcm.gs.nintendowifi.net',
+  'gpsp.gs.nintendowifi.net',
+  'natneg1.gs.nintendowifi.net',
+  'natneg2.gs.nintendowifi.net',
+  'natneg3.gs.nintendowifi.net',
+  'gamestats.gs.nintendowifi.net',
+  'gamestats2.gs.nintendowifi.net',
+]
+const DNS_DEFAULT_SERVER = '178.62.43.212'
 const MAX_SESSIONS = 256
 const MAX_SESSIONS_PER_IP = 8
 // 一次 WFC 登录会同时挂着：每次 DNS 查询各一个 UDP socket（slirp 10 秒后才回收）、conntest、
@@ -325,8 +341,52 @@ export function createNdsWfcService({
   const sessions = new Map()
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME })
   let socketCount = 0
-  let pendingTcpCount = 0
   const trace = (...parts) => { if (process.env.NDS_WFC_TRACE === '1') console.info('[nds-wfc]', ...parts) }
+
+  /*
+    全站共享的 WFC DNS 缓存。这些名字的答案对所有玩家都一样（都是 Kaeru / Wiimmfi 的公网入口），
+    没必要每局、每次查询都重新跨洲走一遍 TCP DNS。授权仍是按会话的：命中缓存时只给当前会话放行这些 IP。
+  */
+  const sharedDns = new Map()
+  const inflightDns = new Map()
+  const sharedKey = (host, name) => `${host}|${name}`
+  const rememberDns = (host, name, ips) => {
+    if (!ips.length) return
+    if (sharedDns.size >= 512) sharedDns.delete(sharedDns.keys().next().value)
+    sharedDns.set(sharedKey(host, name), { ips, freshUntil: Date.now() + DNS_CACHE_MS, staleUntil: Date.now() + DNS_STALE_MS })
+  }
+  const resolveShared = (host, name) => {
+    const key = sharedKey(host, name)
+    const running = inflightDns.get(key)
+    if (running) return running
+    const task = Promise.resolve()
+      .then(() => dnsResolver(host, name))
+      .then((ips) => {
+        const valid = (Array.isArray(ips) ? ips : []).filter(publicIpv4).slice(0, 8)
+        rememberDns(host, name, valid)
+        return valid
+      })
+      .finally(() => inflightDns.delete(key))
+    inflightDns.set(key, task)
+    return task
+  }
+  /** 新鲜的直接用；过期但没超出 stale 窗口的也先用，同时后台刷新 */
+  const cachedShared = (host, name) => {
+    const entry = sharedDns.get(sharedKey(host, name))
+    if (!entry) return null
+    const now = Date.now()
+    if (entry.staleUntil <= now) return null
+    if (entry.freshUntil <= now) void resolveShared(host, name).catch((error) => trace('dns refresh error', host, name, error.code))
+    return entry.ips
+  }
+  const prewarmDns = (host = DNS_DEFAULT_SERVER) => {
+    for (const name of DNS_PREWARM_NAMES) {
+      const entry = sharedDns.get(sharedKey(host, name))
+      if (entry && entry.freshUntil > Date.now()) continue
+      void resolveShared(host, name).then((ips) => trace('dns prewarm', host, name, ips))
+        .catch((error) => trace('dns prewarm error', host, name, error.code))
+    }
+  }
 
   function sweep() {
     const now = Date.now()
@@ -336,6 +396,32 @@ export function createNdsWfcService({
       for (const [peer, expiresAt] of session.allowedPeers) if (expiresAt <= now) session.allowedPeers.delete(peer)
       for (const [name, entry] of session.dnsCache) if (entry.expiresAt <= now) session.dnsCache.delete(name)
     }
+  }
+
+  /**
+   * 交给浏览器的预解析表：只含 Kaeru 节点、仍在 stale 窗口内的名字。
+   *
+   * DS 的解析器每 ~2 秒换一个新 UDP socket 重查，而浏览器每个新 socket 都要新开一条 WSS
+   * （经 Cloudflare 实测 2.5～3 秒）再加上游 DNS 3～9 秒 —— 永远赶不上，游戏报 52100 / 20100。
+   * 有了这张表，浏览器在本地直接回答这些名字（见 src/emulator/ndsWfcDns.ts），
+   * 同时这里预先给本会话放行这些 IP，后续 TCP/UDP 连接无需再等 DNS 授权。
+   */
+  const dnsSnapshot = (session) => {
+    const now = Date.now()
+    const answers = {}
+    for (const [key, entry] of sharedDns) {
+      const [host, name] = key.split('|')
+      if (host !== DNS_DEFAULT_SERVER || entry.staleUntil <= now || !entry.ips.length) continue
+      answers[name] = entry.ips
+      for (const ip of entry.ips) session.allowedIps.set(ip, now + DNS_IP_MS)
+    }
+    return { server: DNS_DEFAULT_SERVER, answers }
+  }
+  if (enabled) {
+    // 进程一启动就把常用名字解析好，并定时刷新：第一位玩家也不必等跨洲 TCP DNS。
+    prewarmDns()
+    const refresh = setInterval(() => prewarmDns(), 5 * 60 * 1000)
+    refresh.unref?.()
   }
 
   router.get('/status', (_req, res) => res.json({ enabled, transport: enabled ? 'wss' : null }))
@@ -355,7 +441,8 @@ export function createNdsWfcService({
       for (const [token, item] of sessions) {
         if (item.ip === ip && item.clientId === clientId && item.expiresAt > Date.now()) {
           item.expiresAt = Date.now() + SESSION_MS
-          return res.json({ token, path: PATH, expiresIn: SESSION_MS / 1000 })
+          prewarmDns()
+          return res.json({ token, path: PATH, expiresIn: SESSION_MS / 1000, dns: dnsSnapshot(item) })
         }
       }
     }
@@ -363,10 +450,344 @@ export function createNdsWfcService({
     if (sessions.size >= MAX_SESSIONS || [...sessions.values()].filter((item) => item.ip === ip).length >= MAX_SESSIONS_PER_IP) {
       return res.status(429).json({ error: 'capacity' })
     }
+    prewarmDns()
     const token = randomBytes(24).toString('base64url')
-    sessions.set(token, { ip, clientId, expiresAt: Date.now() + SESSION_MS, sockets: 0, pendingTcp: 0, allowedIps: new Map(), allowedPeers: new Map(), dnsCache: new Map(), udpGroups: new Map() })
-    res.json({ token, path: PATH, expiresIn: SESSION_MS / 1000 })
+    const session = { ip, clientId, expiresAt: Date.now() + SESSION_MS, sockets: 0, allowedIps: new Map(), allowedPeers: new Map(), dnsCache: new Map(), udpGroups: new Map() }
+    sessions.set(token, session)
+    res.json({ token, path: PATH, expiresIn: SESSION_MS / 1000, dns: dnsSnapshot(session) })
   })
+
+  /** 与 URL 路径里的目标同一套校验；连接池的 bind 消息也走这里，不能绕开授权。 */
+  function authorizeTarget(session, protocol, host, port) {
+    if (!publicIpv4(host) || !isPortAllowed(protocol, port)) return 'target'
+    const isDns = protocol === 'udp' && port === 53 && DNS_SERVERS.has(host)
+    // 撮合后的对战对端：只认可信 NATNEG 服务器在 CONNECT 里点名的精确 IP:端口（UDP）
+    const natnegPeer = protocol === 'udp' && (session.allowedPeers.get(`${host}:${port}`) || 0) > Date.now()
+    if (!isDns && !natnegPeer && (session.allowedIps.get(host) || 0) <= Date.now()) return 'unauthorized IP'
+    return null
+  }
+
+  /**
+   * 把一条已接受的 WebSocket 接到真实 TCP / UDP 上。调用前 session.sockets / socketCount 已经 +1，
+   * 这里负责在关闭时减回去。
+   */
+  function serve(ws, session, { protocol, host, port, udpGroupId }) {
+    const isDns = protocol === 'udp' && port === 53 && DNS_SERVERS.has(host)
+    trace('accepted', protocol, host, port)
+    let closed = false
+    let second = 0
+    let bytes = 0
+    let lastPong = Date.now()
+    let heartbeat
+    const pendingDns = new Map()
+    let udpGroup = null
+    let udpHandler = null
+    let upstream = null
+    let connectTimer = null
+    const close = () => {
+      if (closed) return
+      closed = true
+      trace('closed', protocol, host, port)
+      clearInterval(heartbeat)
+      clearTimeout(connectTimer)
+      for (const request of pendingDns.values()) clearTimeout(request.timer)
+      pendingDns.clear()
+      session.sockets--
+      socketCount--
+      if (udpGroup) {
+        const peerKey = `${host}:${port}`
+        const peer = udpGroup.peers.get(peerKey)
+        peer?.delete(udpHandler)
+        if (peer?.size === 0) udpGroup.peers.delete(peerKey)
+        if (--udpGroup.refs === 0) {
+          session.udpGroups.delete(udpGroupId)
+          try { udpGroup.socket.close() } catch { /* 最后一条 WS 关闭时 UDP 可能已经报错 */ }
+        }
+      } else {
+        try { upstream?.destroy?.() } catch { /* 断开的 TCP 不影响其它 WFC 流 */ }
+        try { upstream?.close?.() } catch { /* DNS UDP 可能已经关闭 */ }
+      }
+      if (ws.readyState === WebSocket.OPEN) ws.close()
+    }
+    const send = (data) => {
+      if (ws.readyState !== WebSocket.OPEN) return
+      if (ws.bufferedAmount > MAX_BUFFERED) return close()
+      try { ws.send(data, { binary: true }) } catch { close() }
+    }
+    const admit = (message) => {
+      const now = Date.now()
+      const nowSecond = Math.floor(now / 1000)
+      if (second !== nowSecond) { second = nowSecond; bytes = 0 }
+      bytes += message.length
+      if (message.length > MAX_FRAME || bytes > MAX_BYTES_PER_SECOND) { close(); return false }
+      // 真正在玩的局可以超过两小时；只有客体数据才续期，WS Pong 本身不算活跃游戏。
+      if (session.expiresAt < now + SESSION_MS / 2) session.expiresAt = now + SESSION_MS
+      return true
+    }
+
+    // Cloudflare 会回收长时间无流量的 WebSocket；控制器里等人入房时也必须维持传输层活性。
+    // Ping 是 WS 控制帧，不会混进 DS 客体的 TCP/UDP 数据。
+    heartbeat = setInterval(() => {
+      if (Date.now() > session.expiresAt) return close()
+      if (Date.now() - lastPong > 90_000) return close()
+      if (ws.readyState === WebSocket.OPEN) ws.ping()
+    }, 30_000)
+    heartbeat.unref?.()
+    ws.on('pong', () => { lastPong = Date.now() })
+    ws.on('close', (code) => { trace('ws close', protocol, host, port, code); close() })
+    ws.on('error', (error) => { trace('ws error', protocol, host, port, error.code); close() })
+
+    if (protocol === 'tcp') {
+      /*
+        先接受 WebSocket、再连上游，期间客体发来的数据先缓存。
+        以前反过来（上游连通才完成升级）：线上一条 WSS 握手 1.5～3 秒、再加跨洲 TCP 建连 1～3 秒，
+        而 DS 的 connect 大约 2 秒就放弃重来 —— NAS 登录（443）反复重试直到报 20100。
+        上游连不上时直接关掉 WebSocket，客体看到的是对端关闭，和真实网络里连接被拒的效果一样。
+      */
+      const gpPort = port === 29900 || port === 29901
+      const queued = []
+      let queuedBytes = 0
+      let connected = false
+      upstream = tcpSocketFactory({ host, port })
+      upstream.setNoDelay?.(true)
+      upstream.setKeepAlive?.(true, 30_000)
+      connectTimer = setTimeout(() => {
+        if (connected) return
+        trace('tcp connect timeout', host, port)
+        close()
+      }, 8_000)
+      connectTimer.unref?.()
+      upstream.once('connect', () => {
+        connected = true
+        clearTimeout(connectTimer)
+        trace('tcp connected', host, port)
+        for (const message of queued.splice(0)) upstream.write(message)
+        queuedBytes = 0
+      })
+      upstream.on('data', (data) => {
+        trace('tcp recv', host, port, data.length, gpPort ? gpTraceSummary(data) ?? '' : '')
+        send(data)
+      })
+      upstream.on('error', (error) => { trace('tcp error', host, port, error.code); close() })
+      upstream.on('end', () => trace('tcp end', host, port))
+      upstream.on('close', (hadError) => { trace('tcp close', host, port, hadError); close() })
+      ws.on('message', (raw, binary) => {
+        const message = Buffer.from(raw)
+        if (!binary || !admit(message)) return
+        if (isPortHandshake(message)) return
+        if (!message.length) return
+        trace('tcp send', host, port, message.length, gpPort ? gpTraceSummary(message) ?? '' : '')
+        if (!connected) {
+          queuedBytes += message.length
+          if (queuedBytes > MAX_BUFFERED) return close()
+          queued.push(message)
+          return
+        }
+        upstream.write(message)
+        if (upstream.writableLength > MAX_BUFFERED) close()
+      })
+    } else if (isDns) {
+      upstream = udpSocketFactory()
+      upstream.on('error', (error) => { trace('udp error', host, port, error.code); close() })
+      upstream.on('message', (message) => {
+        if (message.length < 12) return
+        const request = pendingDns.get(message.readUInt16BE(0))
+        if (!request) return
+        clearTimeout(request.timer)
+        pendingDns.delete(message.readUInt16BE(0))
+        const finishDns = (answer) => {
+          const ips = dnsAnswerIps(answer, request.name)
+          trace('dns answer', request.name, ips)
+          for (const ip of ips) session.allowedIps.set(ip, Date.now() + DNS_IP_MS)
+          if (ips.length) {
+            // NAS 整局会重复解析同一名字；缓存十分钟，免得上游 DNS 抖动时重试风暴拖垮登录。
+            if (session.dnsCache.size >= 32) session.dnsCache.delete(session.dnsCache.keys().next().value)
+            session.dnsCache.set(request.name, { ips, expiresAt: Date.now() + DNS_CACHE_MS })
+            rememberDns(host, request.name, ips)
+          }
+          send(answer)
+        }
+        if (message[2] & 0x02) {
+          // Kaeru 会对普通 UDP DNS 查询回 TC=1；DS 游戏不一定按 RFC 再走 TCP。
+          // 只对已验证的 WFC 域名，代它完成 TCP 重试，避免客体卡在 DNS 阶段。
+          void resolveShared(host, request.name).then((ips) => {
+            const answer = dnsAReply(request.packet, ips)
+            if (answer) finishDns(answer)
+            else send(dnsServFailReply(request.packet))
+          }).catch((error) => {
+            trace('dns TCP fallback error', host, request.name, error.code)
+            send(dnsServFailReply(request.packet))
+          })
+        } else finishDns(message)
+      })
+      let udpReady = false
+      const pending = []
+      const sendUpstream = (message) => {
+        try { upstream.send(message) } catch { close() }
+      }
+      ws.on('message', (raw, binary) => {
+        const message = Buffer.from(raw)
+        if (!binary || !admit(message)) return
+        if (isPortHandshake(message)) return
+        const name = dnsQueryName(message)
+        if (!name) {
+          const refused = dnsRefusedReply(message)
+          trace('refuse DNS query outside WFC allowlist', refused ? (dnsName(message, 12)?.name ?? '?') : 'unparsable')
+          // 答一句 REFUSED 让客体立刻放弃这个名字；别关 socket，否则后面的合法查询全丢。
+          if (refused) send(refused)
+          return
+        }
+        trace('dns query', name)
+        const now = Date.now()
+        const cached = session.dnsCache.get(name)
+        const shared = cached && cached.expiresAt > now ? cached.ips : cachedShared(host, name)
+        if (shared) {
+          const reply = dnsAReply(message, shared)
+          if (reply) {
+            for (const ip of shared) session.allowedIps.set(ip, now + DNS_IP_MS)
+            trace('dns cache hit', name, shared)
+            return send(reply)
+          }
+        }
+        for (const [id, request] of pendingDns) if (now - request.startedAt > 10_000) {
+          clearTimeout(request.timer)
+          pendingDns.delete(id)
+        }
+        // 客体重试风暴时丢掉新包即可（它自己会再发），关 socket 反而让后续查询全部失效。
+        if (pendingDns.size >= 8) return trace('drop DNS query: too many pending', name)
+        const id = message.readUInt16BE(0)
+        /*
+          UDP 和 TCP 同时出发，谁先拿到合法 A 记录就用谁。以前先等 UDP 1.2 秒再走 TCP：
+          生产机到 Kaeru 的 UDP 从来不回，每个名字都白等 1.2 秒再加一次跨洲 TCP，
+          实测单次 3.5～9 秒，DS 解析器早就超时重试，最后报 20100。
+        */
+        const request = { name, packet: message, startedAt: now, timer: null }
+        void resolveShared(host, name).then((ips) => {
+          if (pendingDns.get(id) !== request) return
+          const answer = dnsAReply(message, ips)
+          if (!answer || !ips.length) return
+          clearTimeout(request.timer)
+          pendingDns.delete(id)
+          for (const ip of ips) session.allowedIps.set(ip, Date.now() + DNS_IP_MS)
+          if (session.dnsCache.size >= 32) session.dnsCache.delete(session.dnsCache.keys().next().value)
+          session.dnsCache.set(name, { ips, expiresAt: Date.now() + DNS_CACHE_MS })
+          trace('dns tcp answer', name, ips, `${Date.now() - now}ms`)
+          send(answer)
+        }).catch((error) => trace('dns TCP error', host, name, error.code))
+        // TCP 失败、UDP 也一直不回时，别让客体干等到自己的超时：给 SERVFAIL 让它立即重试。
+        const timer = setTimeout(() => {
+          if (pendingDns.get(id) !== request) return
+          pendingDns.delete(id)
+          trace('dns servfail after timeout', host, name)
+          send(dnsServFailReply(request.packet))
+        }, 6_000)
+        timer.unref?.()
+        request.timer = timer
+        pendingDns.set(id, request)
+        if (!udpReady) {
+          if (pending.length >= 4) return trace('drop DNS query before upstream ready', name)
+          pending.push(message)
+        } else sendUpstream(message)
+      })
+      upstream.connect(port, host, () => {
+        udpReady = true
+        for (const message of pending) sendUpstream(message)
+        pending.length = 0
+      })
+    } else {
+      // 一个 DS UDP socket 会对多个 NATNEG / 匹配目标 sendto；同一 socketId 必须共用公网源端口。
+      // DNS 独立处理，因为它需要校验每个事务 ID 后才能给本局授权目标 IP。
+      udpGroup = session.udpGroups.get(udpGroupId)
+      if (!udpGroup) {
+        udpGroup = { socket: udpSocketFactory(), refs: 0, peers: new Map() }
+        session.udpGroups.set(udpGroupId, udpGroup)
+        const group = udpGroup
+        group.socket.on('message', (message, remote) => {
+          trace('udp recv', remote.address, remote.port, message.length)
+          // 撮合服务器本身必须是本局 DNS 授权过的地址，否则任何人都能伪造 CONNECT 给自己开出口。
+          if ((session.allowedIps.get(remote.address) || 0) > Date.now()) {
+            const peer = natnegConnectPeer(message)
+            if (peer) {
+              if (session.allowedPeers.size >= 64) session.allowedPeers.delete(session.allowedPeers.keys().next().value)
+              session.allowedPeers.set(`${peer.host}:${peer.port}`, Date.now() + NATNEG_PEER_MS)
+              trace('natneg connect authorizes peer', peer.host, peer.port)
+            }
+          }
+          for (const peer of group.peers.get(`${remote.address}:${remote.port}`) || []) peer.send(message)
+        })
+        group.socket.on('error', (error) => {
+          trace('udp error', error.code)
+          for (const peers of [...group.peers.values()]) for (const peer of [...peers]) peer.close()
+        })
+      }
+      udpGroup.refs++
+      const peerKey = `${host}:${port}`
+      if (!udpGroup.peers.has(peerKey)) udpGroup.peers.set(peerKey, new Set())
+      udpHandler = { send, close }
+      udpGroup.peers.get(peerKey).add(udpHandler)
+      ws.on('message', (raw, binary) => {
+        const message = Buffer.from(raw)
+        if (!binary || !admit(message)) return
+        if (isPortHandshake(message)) return
+        trace('udp send', host, port, message.length)
+        udpGroup.socket.send(message, port, host, (error) => { if (error) close() })
+      })
+    }
+  }
+
+  /**
+   * 预热的空闲连接：浏览器提前开好几条 WSS，客体真正 connect 时直接拿一条，
+   * 用第一条文本帧告诉中继目标（JSON：protocol / host / port / socketId）。
+   * 这样客体的 TCP 握手不必再等一次 Cloudflare WSS 握手。空闲太久或首帧不合法就关掉。
+   */
+  const POOL_IDLE_MS = 10 * 60 * 1000
+  function servePool(ws, session, instanceId) {
+    trace('pool socket ready')
+    let bound = false
+    let lastPong = Date.now()
+    const idle = setTimeout(() => { if (!bound) finish() }, POOL_IDLE_MS)
+    idle.unref?.()
+    const heartbeat = setInterval(() => {
+      if (bound) return clearInterval(heartbeat)
+      if (Date.now() - lastPong > 90_000) return finish()
+      if (ws.readyState === WebSocket.OPEN) ws.ping()
+    }, 30_000)
+    heartbeat.unref?.()
+    let finished = false
+    function finish() {
+      if (finished || bound) return
+      finished = true
+      clearTimeout(idle)
+      clearInterval(heartbeat)
+      session.sockets--
+      socketCount--
+      if (ws.readyState === WebSocket.OPEN) ws.close()
+    }
+    ws.on('pong', () => { lastPong = Date.now() })
+    ws.once('close', finish)
+    ws.on('error', finish)
+    ws.once('message', (raw, binary) => {
+      if (binary) return finish()
+      let bind
+      try { bind = JSON.parse(Buffer.from(raw).toString('utf8')) } catch { return finish() }
+      const protocol = bind?.protocol === 'tcp' || bind?.protocol === 'udp' ? bind.protocol : null
+      const host = typeof bind?.host === 'string' ? bind.host : ''
+      const port = Number(bind?.port)
+      const socketId = typeof bind?.socketId === 'string' && /^\d{1,6}$/.test(bind.socketId) ? bind.socketId : null
+      if (!protocol || (protocol === 'udp') !== Boolean(socketId) || !Number.isInteger(port)) return finish()
+      const denied = authorizeTarget(session, protocol, host, port)
+      if (denied) {
+        trace('pool reject', denied, protocol, host, port)
+        return finish()
+      }
+      bound = true
+      clearTimeout(idle)
+      clearInterval(heartbeat)
+      ws.removeListener('close', finish)
+      ws.removeListener('error', finish)
+      serve(ws, session, { protocol, host, port, udpGroupId: `${instanceId}:${socketId}` })
+    })
+  }
 
   function attach(httpServer) {
     if (!enabled) return
@@ -375,295 +796,46 @@ export function createNdsWfcService({
       try { url = new URL(req.url || '/', 'http://localhost') } catch { return reject(socket, '400 Bad Request') }
       if (!url.pathname.startsWith(PATH)) return
       if (!originAllowed(req)) return reject(socket, '403 Forbidden')
-      const match = url.pathname.match(/^\/api\/nds-wfc\/socket\/([A-Za-z0-9_-]{32})\/(tcp|udp)\/(\d{1,3}(?:\.\d{1,3}){3})\/(\d{1,5})(?:\/(\d{1,6})\/([a-f0-9]{16}))?$/)
-      if (!match) return reject(socket, '400 Bad Request')
-      const [, token, protocol, host, portText, socketId, instanceId] = match
-      if ((protocol === 'udp') !== Boolean(socketId)) return reject(socket, '400 Bad Request')
-      const udpGroupId = `${instanceId}:${socketId}`
+      const poolMatch = url.pathname.match(/^\/api\/nds-wfc\/socket\/([A-Za-z0-9_-]{32})\/pool\/([a-f0-9]{16})$/)
+      const match = poolMatch ? null : url.pathname.match(/^\/api\/nds-wfc\/socket\/([A-Za-z0-9_-]{32})\/(tcp|udp)\/(\d{1,3}(?:\.\d{1,3}){3})\/(\d{1,5})(?:\/(\d{1,6})\/([a-f0-9]{16}))?$/)
+      if (!poolMatch && !match) return reject(socket, '400 Bad Request')
+      const token = poolMatch ? poolMatch[1] : match[1]
       const session = sessions.get(token)
-      const port = Number(portText)
       if (!session || session.ip !== ipOf(req) || session.expiresAt <= Date.now()) {
-        trace('reject session', protocol, host, port)
+        trace('reject session', poolMatch ? 'pool' : `${match[2]} ${match[3]} ${match[4]}`)
         return reject(socket, '403 Forbidden')
       }
-      if (!publicIpv4(host) || !isPortAllowed(protocol, port)) {
-        trace('reject target', protocol, host, port)
-        return reject(socket, '403 Forbidden')
+      let target = null
+      if (match) {
+        const [, , protocol, host, portText, socketId, instanceId] = match
+        if ((protocol === 'udp') !== Boolean(socketId)) return reject(socket, '400 Bad Request')
+        const port = Number(portText)
+        const denied = authorizeTarget(session, protocol, host, port)
+        if (denied) {
+          trace('reject', denied, protocol, host, port, denied === 'unauthorized IP' ? [...session.allowedIps.keys()] : '')
+          return reject(socket, '403 Forbidden')
+        }
+        target = { protocol, host, port, udpGroupId: `${instanceId}:${socketId}` }
       }
-      const isDns = protocol === 'udp' && port === 53 && DNS_SERVERS.has(host)
-      // 撮合后的对战对端：只认可信 NATNEG 服务器在 CONNECT 里点名的精确 IP:端口（UDP）
-      const natnegPeer = protocol === 'udp' && (session.allowedPeers.get(`${host}:${port}`) || 0) > Date.now()
-      if (!isDns && !natnegPeer && (session.allowedIps.get(host) || 0) <= Date.now()) {
-        trace('reject unauthorized IP', protocol, host, port, [...session.allowedIps.keys()])
-        return reject(socket, '403 Forbidden')
-      }
-      if (session.sockets + session.pendingTcp >= MAX_SOCKETS_PER_SESSION || socketCount + pendingTcpCount >= MAX_SOCKETS_TOTAL) {
+      if (session.sockets >= MAX_SOCKETS_PER_SESSION || socketCount >= MAX_SOCKETS_TOTAL) {
         trace('reject socket capacity', session.sockets, socketCount)
         return reject(socket, '429 Too Many Requests')
       }
-      const upgrade = (connectedTcp = null) => wss.handleUpgrade(req, socket, head, (ws) => {
-        trace('accepted', protocol, host, port)
-        session.sockets++
-        socketCount++
-        let closed = false
-        let second = 0
-        let bytes = 0
-        let lastPong = Date.now()
-        let heartbeat
-        const pendingDns = new Map()
-        let udpGroup = null
-        let udpHandler = null
-        let upstream = connectedTcp
-        const close = () => {
-          if (closed) return
-          closed = true
-          trace('closed', protocol, host, port)
-          clearInterval(heartbeat)
-          for (const request of pendingDns.values()) clearTimeout(request.timer)
-          pendingDns.clear()
-          session.sockets--
-          socketCount--
-          if (udpGroup) {
-            const peerKey = `${host}:${port}`
-            const peer = udpGroup.peers.get(peerKey)
-            peer?.delete(udpHandler)
-            if (peer?.size === 0) udpGroup.peers.delete(peerKey)
-            if (--udpGroup.refs === 0) {
-              session.udpGroups.delete(udpGroupId)
-              try { udpGroup.socket.close() } catch { /* 最后一条 WS 关闭时 UDP 可能已经报错 */ }
-            }
-          } else {
-            try { upstream?.destroy?.() } catch { /* 断开的 TCP 不影响其它 WFC 流 */ }
-            try { upstream?.close?.() } catch { /* DNS UDP 可能已经关闭 */ }
-          }
-          if (ws.readyState === WebSocket.OPEN) ws.close()
-        }
-        const send = (data) => {
-          if (ws.readyState !== WebSocket.OPEN) return
-          if (ws.bufferedAmount > MAX_BUFFERED) return close()
-          try { ws.send(data, { binary: true }) } catch { close() }
-        }
-        const admit = (message) => {
-          const now = Date.now()
-          const nowSecond = Math.floor(now / 1000)
-          if (second !== nowSecond) { second = nowSecond; bytes = 0 }
-          bytes += message.length
-          if (message.length > MAX_FRAME || bytes > MAX_BYTES_PER_SECOND) { close(); return false }
-          // 真正在玩的局可以超过两小时；只有客体数据才续期，WS Pong 本身不算活跃游戏。
-          if (session.expiresAt < now + SESSION_MS / 2) session.expiresAt = now + SESSION_MS
-          return true
-        }
-
-        if (isDns) upstream = udpSocketFactory()
-        // Cloudflare 会回收长时间无流量的 WebSocket；控制器里等人入房时也必须维持传输层活性。
-        // Ping 是 WS 控制帧，不会混进 DS 客体的 TCP/UDP 数据。
-        heartbeat = setInterval(() => {
-          if (Date.now() > session.expiresAt) return close()
-          if (Date.now() - lastPong > 90_000) return close()
-          if (ws.readyState === WebSocket.OPEN) ws.ping()
-        }, 30_000)
-        heartbeat.unref?.()
-        ws.on('pong', () => { lastPong = Date.now() })
-        ws.on('close', (code) => { trace('ws close', protocol, host, port, code); close() })
-        ws.on('error', (error) => { trace('ws error', protocol, host, port, error.code); close() })
-        if (protocol === 'tcp') {
-          const gpPort = port === 29900 || port === 29901
-          upstream.on('data', (data) => {
-            trace('tcp recv', host, port, data.length, gpPort ? gpTraceSummary(data) ?? '' : '')
-            send(data)
-          })
-          upstream.on('error', (error) => { trace('tcp error', host, port, error.code); close() })
-          upstream.on('end', () => trace('tcp end', host, port))
-          upstream.on('close', (hadError) => { trace('tcp close', host, port, hadError); close() })
-          ws.on('message', (raw, binary) => {
-            const message = Buffer.from(raw)
-            if (!binary || !admit(message)) return
-            if (isPortHandshake(message)) return
-            trace('tcp send', host, port, message.length, gpPort ? gpTraceSummary(message) ?? '' : '')
-            if (message.length) upstream.write(message)
-            if (upstream.writableLength > MAX_BUFFERED) close()
-          })
-          upstream.resume()
-        } else if (isDns) {
-          upstream.on('error', (error) => { trace('udp error', host, port, error.code); close() })
-          upstream.on('message', (message) => {
-            if (message.length < 12) return
-            const request = pendingDns.get(message.readUInt16BE(0))
-            if (!request) return
-            clearTimeout(request.timer)
-            pendingDns.delete(message.readUInt16BE(0))
-            const finishDns = (answer) => {
-              const ips = dnsAnswerIps(answer, request.name)
-              trace('dns answer', request.name, ips)
-              for (const ip of ips) session.allowedIps.set(ip, Date.now() + DNS_IP_MS)
-              if (ips.length) {
-                // NAS 整局会重复解析同一名字；缓存十分钟，免得上游 DNS 抖动时重试风暴拖垮登录。
-                if (session.dnsCache.size >= 32) session.dnsCache.delete(session.dnsCache.keys().next().value)
-                session.dnsCache.set(request.name, { ips, expiresAt: Date.now() + DNS_CACHE_MS })
-              }
-              send(answer)
-            }
-            if (message[2] & 0x02) {
-              // Kaeru 会对普通 UDP DNS 查询回 TC=1；DS 游戏不一定按 RFC 再走 TCP。
-              // 只对已验证的 WFC 域名，代它完成 TCP 重试，避免客体卡在 DNS 阶段。
-              void dnsResolver(host, request.name).then((ips) => {
-                const answer = dnsAReply(request.packet, ips)
-                if (answer) finishDns(answer)
-                else send(dnsServFailReply(request.packet))
-              }).catch((error) => {
-                trace('dns TCP fallback error', host, request.name, error.code)
-                send(dnsServFailReply(request.packet))
-              })
-            } else finishDns(message)
-          })
-          let udpReady = false
-          const pending = []
-          const sendUpstream = (message) => {
-            try { upstream.send(message) } catch { close() }
-          }
-          ws.on('message', (raw, binary) => {
-            const message = Buffer.from(raw)
-            if (!binary || !admit(message)) return
-            if (isPortHandshake(message)) return
-            const name = dnsQueryName(message)
-            if (!name) {
-              const refused = dnsRefusedReply(message)
-              trace('refuse DNS query outside WFC allowlist', refused ? (dnsName(message, 12)?.name ?? '?') : 'unparsable')
-              // 答一句 REFUSED 让客体立刻放弃这个名字；别关 socket，否则后面的合法查询全丢。
-              if (refused) send(refused)
-              return
-            }
-            trace('dns query', name)
-            const now = Date.now()
-            const cached = session.dnsCache.get(name)
-            if (cached && cached.expiresAt > now) {
-              const reply = dnsAReply(message, cached.ips)
-              if (reply) {
-                for (const ip of cached.ips) session.allowedIps.set(ip, now + DNS_IP_MS)
-                return send(reply)
-              }
-            }
-            for (const [id, request] of pendingDns) if (now - request.startedAt > 10_000) {
-              clearTimeout(request.timer)
-              pendingDns.delete(id)
-            }
-            // 客体重试风暴时丢掉新包即可（它自己会再发），关 socket 反而让后续查询全部失效。
-            if (pendingDns.size >= 8) return trace('drop DNS query: too many pending', name)
-            const id = message.readUInt16BE(0)
-            const timer = setTimeout(() => {
-              const request = pendingDns.get(id)
-              if (!request) return
-              // 部分 Kaeru UDP DNS 请求只收到截断标记或根本不回；由同一 DNS 节点做 TCP 回退。
-              void dnsResolver(host, name).then((ips) => {
-                if (pendingDns.get(id) !== request) return
-                const answer = dnsAReply(message, ips)
-                if (!answer) return
-                pendingDns.delete(id)
-                for (const ip of ips) session.allowedIps.set(ip, Date.now() + DNS_IP_MS)
-                if (session.dnsCache.size >= 32) session.dnsCache.delete(session.dnsCache.keys().next().value)
-                session.dnsCache.set(name, { ips, expiresAt: Date.now() + DNS_CACHE_MS })
-                trace('dns fallback', name, ips)
-                send(answer)
-              }).catch((error) => {
-                if (pendingDns.get(id) !== request) return
-                pendingDns.delete(id)
-                trace('dns TCP fallback error', host, name, error.code)
-                send(dnsServFailReply(request.packet))
-              })
-            }, 1200)
-            timer.unref?.()
-            pendingDns.set(id, { name, packet: message, startedAt: now, timer })
-            if (!udpReady) {
-              if (pending.length >= 4) return trace('drop DNS query before upstream ready', name)
-              pending.push(message)
-            } else sendUpstream(message)
-          })
-          upstream.connect(port, host, () => {
-            udpReady = true
-            for (const message of pending) sendUpstream(message)
-            pending.length = 0
-          })
-        } else {
-          // 一个 DS UDP socket 会对多个 NATNEG / 匹配目标 sendto；同一 socketId 必须共用公网源端口。
-          // DNS 独立处理，因为它需要校验每个事务 ID 后才能给本局授权目标 IP。
-          udpGroup = session.udpGroups.get(udpGroupId)
-          if (!udpGroup) {
-            udpGroup = { socket: udpSocketFactory(), refs: 0, peers: new Map() }
-            session.udpGroups.set(udpGroupId, udpGroup)
-            const group = udpGroup
-            group.socket.on('message', (message, remote) => {
-              trace('udp recv', remote.address, remote.port, message.length)
-              // 撮合服务器本身必须是本局 DNS 授权过的地址，否则任何人都能伪造 CONNECT 给自己开出口。
-              if ((session.allowedIps.get(remote.address) || 0) > Date.now()) {
-                const peer = natnegConnectPeer(message)
-                if (peer) {
-                  if (session.allowedPeers.size >= 64) session.allowedPeers.delete(session.allowedPeers.keys().next().value)
-                  session.allowedPeers.set(`${peer.host}:${peer.port}`, Date.now() + NATNEG_PEER_MS)
-                  trace('natneg connect authorizes peer', peer.host, peer.port)
-                }
-              }
-              for (const peer of group.peers.get(`${remote.address}:${remote.port}`) || []) peer.send(message)
-            })
-            group.socket.on('error', (error) => {
-              trace('udp error', error.code)
-              for (const peers of [...group.peers.values()]) for (const peer of [...peers]) peer.close()
-            })
-          }
-          udpGroup.refs++
-          const peerKey = `${host}:${port}`
-          if (!udpGroup.peers.has(peerKey)) udpGroup.peers.set(peerKey, new Set())
-          udpHandler = { send, close }
-          udpGroup.peers.get(peerKey).add(udpHandler)
-          ws.on('message', (raw, binary) => {
-            const message = Buffer.from(raw)
-            if (!binary || !admit(message)) return
-            if (isPortHandshake(message)) return
-            trace('udp send', host, port, message.length)
-            udpGroup.socket.send(message, port, host, (error) => { if (error) close() })
-          })
-        }
-      })
-      if (protocol !== 'tcp') return upgrade()
-      // WebSocket OPEN 会让 SOCKFS 把虚拟 TCP 标成已连接；必须等真实上游连通，
-      // 否则游戏可能在首包挑战前进入错误的连接状态（61020），断线也无法正确反馈。
-      pendingTcpCount++
-      session.pendingTcp++
-      let settled = false
-      const tcp = tcpSocketFactory({ host, port })
-      tcp.setNoDelay(true)
-      tcp.setKeepAlive(true, 30_000)
-      const finishPending = () => {
-        if (settled) return false
-        settled = true
-        pendingTcpCount--
-        session.pendingTcp--
-        clearTimeout(connectTimer)
-        return true
-      }
-      const connectTimer = setTimeout(() => {
-        if (!finishPending()) return
-        trace('tcp connect timeout', host, port)
-        tcp.destroy()
-        reject(socket, '504 Gateway Timeout')
-      }, 8_000)
-      connectTimer.unref?.()
-      const onPendingError = (error) => {
-        trace('tcp error', host, port, error.code)
-        if (finishPending()) reject(socket, '502 Bad Gateway')
-        tcp.destroy()
-      }
-      tcp.once('connect', () => {
-        if (!finishPending()) return
-        tcp.off('error', onPendingError)
-        trace('tcp connected', host, port)
-        tcp.pause()
-        if (socket.destroyed) return tcp.destroy()
-        upgrade(tcp)
-      })
-      tcp.once('error', onPendingError)
+      // 占位要在握手之前：并发升级不能一起越过上限
+      session.sockets++
+      socketCount++
+      let accepted = false
       socket.once('close', () => {
-        finishPending()
-        tcp.destroy()
+        if (accepted) return
+        accepted = true
+        session.sockets--
+        socketCount--
+      })
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        if (accepted) return ws.terminate()
+        accepted = true
+        if (target) serve(ws, session, target)
+        else servePool(ws, session, poolMatch[2])
       })
     })
   }
