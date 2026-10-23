@@ -18,16 +18,28 @@ export interface NdsWfcDnsTable {
 
 const IPV4 = /^(?:\d{1,3}\.){3}\d{1,3}$/
 const WFC_NAME = /^(?:[a-z0-9-]{1,63}\.)*nintendowifi\.net$/
+const MAX_DNS_NAMES = 64
+
+function isPublicIpv4(value: unknown): value is string {
+  if (typeof value !== 'string' || !IPV4.test(value)) return false
+  const [a, b, c, d] = value.split('.').map(Number)
+  return [a, b, c, d].every((part) => Number.isInteger(part) && part >= 0 && part <= 255) &&
+    a > 0 && a < 224 && a !== 10 && a !== 127 && a !== 169 &&
+    !(a === 100 && b >= 64 && b <= 127) && !(a === 172 && b >= 16 && b <= 31) &&
+    !(a === 192 && (b === 168 || (b === 0 && c <= 2))) &&
+    !(a === 198 && (b === 18 || b === 19 || (b === 51 && c === 100))) &&
+    !(a === 203 && b === 0 && c === 113)
+}
 
 export function sanitizeDnsTable(value: unknown): NdsWfcDnsTable | null {
   if (!value || typeof value !== 'object') return null
   const { server, answers } = value as { server?: unknown; answers?: unknown }
-  if (typeof server !== 'string' || !IPV4.test(server) || !answers || typeof answers !== 'object') return null
+  if (!isPublicIpv4(server) || !answers || typeof answers !== 'object') return null
   const clean: Record<string, string[]> = {}
   for (const [name, ips] of Object.entries(answers as Record<string, unknown>).slice(0, 64)) {
     const lower = name.toLowerCase()
     if (!WFC_NAME.test(lower) || !Array.isArray(ips)) continue
-    const list = ips.filter((ip): ip is string => typeof ip === 'string' && IPV4.test(ip)).slice(0, 8)
+    const list = ips.filter(isPublicIpv4).slice(0, 8)
     if (list.length) clean[lower] = list
   }
   return { server, answers: clean }
@@ -60,7 +72,7 @@ export function parseDnsQuestion(bytes: Uint8Array): DnsQuestion | null {
 
 /** 与 server/src/nds-wfc.js 的 dnsAReply 同构：沿用事务 ID 和问题段，A 记录 TTL 30 秒。 */
 export function buildDnsAReply(query: Uint8Array, question: DnsQuestion, ips: string[]): Uint8Array {
-  const records = ips.slice(0, 8).map((ip) => [0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 30, 0, 4, ...ip.split('.').map(Number)])
+  const records = ips.filter(isPublicIpv4).slice(0, 8).map((ip) => [0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 30, 0, 4, ...ip.split('.').map(Number)])
   const out = new Uint8Array(question.end + records.length * 16)
   out.set(query.subarray(0, question.end))
   out[2] = 0x80 | (query[2] & 0x01) // QR=1，RD 照抄
@@ -87,7 +99,10 @@ export function dnsAnswerIpsFor(reply: Uint8Array, name: string): string[] {
     const size = (reply[at + 10] << 8) | reply[at + 11]
     at += 12
     if (at + size > reply.length) break
-    if (type === 1 && size === 4) ips.push(Array.from(reply.subarray(at, at + 4)).join('.'))
+    if (type === 1 && size === 4) {
+      const ip = Array.from(reply.subarray(at, at + 4)).join('.')
+      if (isPublicIpv4(ip)) ips.push(ip)
+    }
     at += size
   }
   return ips
@@ -189,8 +204,14 @@ export class LocalDnsSocket implements WebSocketLike {
       return
     }
     // 表里没有：交给真正的中继（服务端仍然只认白名单域名），回来的答案顺手记进表
-    if (question) this.pendingNames.set((query[0] << 8) | query[1], question.name)
-    this.forward(query)
+    const id = (query[0] << 8) | query[1]
+    const trackAnswer = Boolean(question && question.type === 1 && question.klass === 1)
+    if (question && trackAnswer) {
+      this.pendingNames.set(id, question.name)
+      // 只用来学习 DNS 答案，不让异常核心或重传风暴无限积累查询映射。
+      while (this.pendingNames.size > 32) this.pendingNames.delete(this.pendingNames.keys().next().value!)
+    }
+    if (!this.forward(query) && trackAnswer && this.pendingNames.get(id) === question?.name) this.pendingNames.delete(id)
   }
 
   close(): void {
@@ -198,6 +219,8 @@ export class LocalDnsSocket implements WebSocketLike {
     this.readyState = 3
     try { this.upstream?.close() } catch { /* 已关闭 */ }
     this.upstream = null
+    this.upstreamQueue.length = 0
+    this.pendingNames.clear()
     this.schedule(() => this.onclose?.({ type: 'close', code: 1000, wasClean: true }))
   }
 
@@ -206,13 +229,13 @@ export class LocalDnsSocket implements WebSocketLike {
     this.onmessage?.({ data: reply.buffer.slice(reply.byteOffset, reply.byteOffset + reply.byteLength) })
   }
 
-  private forward(query: Uint8Array<ArrayBuffer>): void {
+  private forward(query: Uint8Array<ArrayBuffer>): boolean {
     if (!this.upstream) {
       let ws: WebSocket
       try {
         ws = new this.RealWebSocket(this.url, this.protocols)
       } catch {
-        return
+        return false
       }
       ws.binaryType = 'arraybuffer'
       ws.onopen = () => {
@@ -227,18 +250,32 @@ export class LocalDnsSocket implements WebSocketLike {
           if (name) {
             this.pendingNames.delete(id)
             const learned = dnsAnswerIpsFor(reply, name)
-            if (learned.length) this.table.answers[name] = learned
+            if (learned.length) {
+              if (!Object.prototype.hasOwnProperty.call(this.table.answers, name) && Object.keys(this.table.answers).length >= MAX_DNS_NAMES) {
+                delete this.table.answers[Object.keys(this.table.answers)[0]]
+              }
+              this.table.answers[name] = learned
+            }
           }
         }
         this.deliver(reply)
       }
       // 上游断了不影响本地能答的名字；客体下次查询会再懒开一条
-      ws.onclose = () => { if (this.upstream === ws) this.upstream = null }
+      ws.onclose = () => {
+        if (this.upstream !== ws) return
+        this.upstream = null
+        this.upstreamQueue.length = 0
+        this.pendingNames.clear()
+      }
       ws.onerror = () => {}
       this.upstream = ws
     }
-    if (this.upstream.readyState === 1) this.upstream.send(query)
-    else if (this.upstreamQueue.length < 8) this.upstreamQueue.push(query)
+    if (this.upstream.readyState === 1) {
+      try { this.upstream.send(query); return true } catch { return false }
+    }
+    if (this.upstreamQueue.length >= 8) return false
+    this.upstreamQueue.push(query)
+    return true
   }
 }
 
@@ -247,8 +284,8 @@ export class LocalDnsSocket implements WebSocketLike {
  *
  * 线上实测：经 Cloudflare 新开 WSS 大约每 4 条就有 1 条握手直接失败（1006），玩家网络里还常见
  * ERR_HTTP2_PING_FAILED / NETWORK_CHANGED。SOCKFS 对“连不上”没有任何重试：TCP 卡在 SYN、
- * 游戏等到超时报 20100（NAS）或 61020（GP）。OPEN 之前服务端还没有向上游发过一个字节
- * （TCP 是在上游连通后才接受升级），所以换一条连接重来是安全的；OPEN 之后的断线照常交给游戏。
+ * 游戏等到超时报 20100（NAS）或 61020（GP）。OPEN 之前客体还没能通过这条 WebSocket 发送数据，
+ * 所以换一条连接重来是安全的；服务端会在升级后并行建 TCP。OPEN 之后的断线照常交给游戏。
  */
 export class RetryingWebSocket implements WebSocketLike {
   readonly CONNECTING = 0 as const
@@ -267,16 +304,22 @@ export class RetryingWebSocket implements WebSocketLike {
   private attempt = 0
   private opened = false
   private closedByUser = false
+  private retryTimer: ReturnType<typeof setTimeout> | undefined
+  private connectTimer: ReturnType<typeof setTimeout> | undefined
+  private retryCloseEvent: unknown = null
   private type: BinaryType = 'arraybuffer'
   private state = 0
 
-  constructor(url: string, protocols: string | string[] | undefined, RealWebSocket: WebSocketCtor, delays = [250, 800, 1600]) {
+  constructor(url: string, protocols: string | string[] | undefined, RealWebSocket: WebSocketCtor, delays = [250, 800, 1600], connectTimeoutMs = 8_000) {
     this.url = url
     this.protocols = protocols
     this.RealWebSocket = RealWebSocket
     this.delays = delays
+    this.connectTimeoutMs = connectTimeoutMs
     this.current = this.connect()
   }
+
+  private readonly connectTimeoutMs: number
 
   get readyState(): number { return this.state }
   get protocol(): string { return this.current.protocol }
@@ -292,17 +335,30 @@ export class RetryingWebSocket implements WebSocketLike {
   }
 
   close(): void {
+    if (this.state >= 2) return
     this.closedByUser = true
-    if (this.state === 3) return
     this.state = 2
+    clearTimeout(this.connectTimer)
+    this.connectTimer = undefined
+    if (this.retryTimer !== undefined) {
+      clearTimeout(this.retryTimer)
+      this.retryTimer = undefined
+      this.finish(this.retryCloseEvent ?? { type: 'close', code: 1000, wasClean: true })
+      return
+    }
     this.current.close()
   }
 
   private connect(): WebSocket {
     const ws = new this.RealWebSocket(this.url, this.protocols)
     ws.binaryType = this.type
+    this.connectTimer = setTimeout(() => {
+      if (ws === this.current && !this.opened && ws.readyState === 0) ws.close()
+    }, this.connectTimeoutMs)
     ws.onopen = (event) => {
       if (ws !== this.current) return
+      clearTimeout(this.connectTimer)
+      this.connectTimer = undefined
       this.opened = true
       this.state = 1
       this.onopen?.(event)
@@ -314,15 +370,19 @@ export class RetryingWebSocket implements WebSocketLike {
     }
     ws.onclose = (event) => {
       if (ws !== this.current) return
+      clearTimeout(this.connectTimer)
+      this.connectTimer = undefined
       if (!this.opened && !this.closedByUser && this.attempt < this.delays.length) {
         const delay = this.delays[this.attempt++]
-        setTimeout(() => {
+        this.retryCloseEvent = event
+        this.retryTimer = setTimeout(() => {
+          this.retryTimer = undefined
           if (this.closedByUser) return this.finish(event)
           this.current = this.connect()
         }, delay)
         return
       }
-      if (!this.opened) this.onerror?.(event)
+      if (!this.opened && !this.closedByUser) this.onerror?.(event)
       this.finish(event)
     }
     return ws
@@ -371,6 +431,7 @@ export class RelayPool {
   private readonly RealWebSocket: WebSocketCtor
   private readonly size: number
   private readonly idle: WebSocket[] = []
+  private readonly openingSockets = new Set<WebSocket>()
   private opening = 0
   private failures = 0
   private lastUse = Date.now()
@@ -391,9 +452,13 @@ export class RelayPool {
     return ws
   }
 
+  get isStopped(): boolean { return this.stopped }
+
   stop(): void {
+    if (this.stopped) return
     this.stopped = true
     for (const ws of this.idle.splice(0)) { try { ws.close() } catch { /* 已关闭 */ } }
+    for (const ws of this.openingSockets) { try { ws.close() } catch { /* 握手已结束 */ } }
   }
 
   private refill(): void {
@@ -409,10 +474,12 @@ export class RelayPool {
         return
       }
       ws.binaryType = 'arraybuffer'
+      this.openingSockets.add(ws)
       let settled = false
       ws.onopen = () => {
         settled = true
         this.opening--
+        this.openingSockets.delete(ws)
         this.failures = 0
         if (this.stopped) return ws.close()
         this.idle.push(ws)
@@ -420,6 +487,7 @@ export class RelayPool {
       ws.onclose = () => {
         const index = this.idle.indexOf(ws)
         if (index >= 0) this.idle.splice(index, 1)
+        this.openingSockets.delete(ws)
         if (!settled) {
           settled = true
           this.opening--
@@ -494,7 +562,14 @@ export function isDnsRelayUrl(url: string, path: string, server: string): boolea
   }
 }
 
-type WfcWindow = { WebSocket: WebSocketCtor & { __8bitgoWfcDns?: { table: NdsWfcDnsTable; path: string } } }
+type WfcDnsShimState = {
+  table: NdsWfcDnsTable
+  path: string
+  poolUrl: string | null
+  pool: RelayPool | null
+  RealWebSocket: WebSocketCtor
+}
+type WfcWindow = { WebSocket: WebSocketCtor & { __8bitgoWfcDns?: WfcDnsShimState } }
 
 /**
  * 给核心所在窗口换上带 DNS 本地应答的 WebSocket 构造器。只拦 DNS 节点:53 的中继地址，
@@ -504,22 +579,37 @@ export function installNdsWfcDnsShim(win: WfcWindow, table: NdsWfcDnsTable, path
   const current = win.WebSocket
   if (typeof current !== 'function') return false
   if (current.__8bitgoWfcDns) {
-    current.__8bitgoWfcDns.table = table
-    current.__8bitgoWfcDns.path = path
+    const state = current.__8bitgoWfcDns
+    state.table = table
+    if (state.path !== path && poolUrl === undefined) {
+      state.pool?.stop()
+      state.pool = null
+      state.poolUrl = null
+    }
+    state.path = path
+    if (poolUrl !== undefined && state.poolUrl !== poolUrl) {
+      state.pool?.stop()
+      state.poolUrl = poolUrl
+      state.pool = new RelayPool(poolUrl, state.RealWebSocket, 4)
+    }
     return true
   }
   const Real = current
-  const state = { table, path }
+  const state: WfcDnsShimState = { table, path, poolUrl: poolUrl ?? null, pool: null, RealWebSocket: Real }
   /*
     开局就预热，不等客体第一次查 DNS：生产实测直连 WSS 握手 1.5～4.9 秒，而 conntest 紧跟在
     第一次 DNS 之后、DS 只等约 2 秒 —— 等 DNS 时才开池，第一条 TCP 一定赶不上（报 52200）。
   */
-  let pool: RelayPool | null = poolUrl ? new RelayPool(poolUrl, Real, 4) : null
+  if (poolUrl) state.pool = new RelayPool(poolUrl, Real, 4)
   /** 走中继的 socket：池里有现成连接就直接绑定，否则新开一条带重试的 WSS */
   const relaySocket = (url: string, protocols?: string | string[]): WebSocket => {
     const target = parseRelayUrl(url, state.path)
-    if (target?.poolUrl && !pool) pool = new RelayPool(target.poolUrl, Real, 4)
-    const ws = target && pool ? pool.take() : null
+    if (target?.poolUrl && !state.poolUrl) {
+      state.poolUrl = target.poolUrl
+      state.pool = new RelayPool(target.poolUrl, Real, 4)
+    }
+    if (state.pool?.isStopped && state.poolUrl) state.pool = new RelayPool(state.poolUrl, Real, 4)
+    const ws = target && state.pool ? state.pool.take() : null
     if (target && ws) return new PooledSocket(url, ws, target) as unknown as WebSocket
     return new RetryingWebSocket(url, protocols, Real) as unknown as WebSocket
   }
@@ -533,7 +623,10 @@ export function installNdsWfcDnsShim(win: WfcWindow, table: NdsWfcDnsTable, path
     if (isDnsRelayUrl(url, state.path, state.table.server)) {
       // 客体开始联网的第一个信号：顺手把连接池预热起来，NAS / GP 的 TCP 到时就不必再等握手
       const target = parseRelayUrl(url, state.path)
-      if (target?.poolUrl && !pool) pool = new RelayPool(target.poolUrl, Real, 4)
+      if (target?.poolUrl && !state.poolUrl) {
+        state.poolUrl = target.poolUrl
+        state.pool = new RelayPool(target.poolUrl, Real, 4)
+      }
       return new LocalDnsSocket(url, protocols, state.table, Retrying)
     }
     // 只给本站 WFC 中继套重试 / 连接池；EmulatorJS 自己的 netplay 等其它 WebSocket 原样构造

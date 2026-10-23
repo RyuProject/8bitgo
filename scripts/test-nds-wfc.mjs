@@ -118,6 +118,9 @@ assert.equal(sanitizeDnsTable({ server: '178.62.43.212', answers: { 'evil.exampl
 assert.deepEqual(sanitizeDnsTable({ server: '178.62.43.212', answers: { 'NAS.nintendowifi.net': ['178.62.43.212', 'x'] } }).answers,
   { 'nas.nintendowifi.net': ['178.62.43.212'] })
 assert.equal(sanitizeDnsTable({ server: 'evil', answers: {} }), null)
+assert.equal(sanitizeDnsTable({ server: '999.1.2.3', answers: {} }), null, 'DNS 中继地址必须是有效公网 IPv4')
+assert.deepEqual(sanitizeDnsTable({ server: '178.62.43.212', answers: { 'nas.nintendowifi.net': ['192.168.1.1', '95.217.77.151'] } }).answers,
+  { 'nas.nintendowifi.net': ['95.217.77.151'] }, 'DNS 缓存不能把内网地址带进模拟器')
 
 class FakeRealSocket {
   static created = []
@@ -167,6 +170,23 @@ assert.deepEqual(dnsAnswerIpsFor(await forwarded, 'gpcm.gs.nintendowifi.net'), [
 assert.deepEqual(dnsTable.answers['gpcm.gs.nintendowifi.net'], ['95.217.77.151'])
 local.close()
 assert.equal(local.readyState, local.CLOSED)
+// DNS 转发异常/核心重复查询不能无限累计事务映射；关闭时也要释放排队包和映射。
+{
+  const existingSockets = FakeRealSocket.created.slice()
+  FakeRealSocket.created.length = 0
+  const limited = new LocalDnsSocket(dnsUrl, ['binary'], { server: '178.62.43.212', answers: {} }, FakeRealSocket)
+  await new Promise((resolve) => { limited.onopen = resolve })
+  limited.send(dnsQuery(1, 'gpcm.gs.nintendowifi.net'))
+  const dnsUpstream = FakeRealSocket.direct()[0]
+  dnsUpstream.readyState = 1
+  dnsUpstream.onopen({})
+  for (let id = 2; id < 42; id++) limited.send(dnsQuery(id, 'gpcm.gs.nintendowifi.net'))
+  assert.equal(limited.pendingNames.size, 32, 'DNS 答案学习映射必须有固定上限')
+  limited.close()
+  assert.equal(limited.pendingNames.size, 0)
+  assert.equal(limited.upstreamQueue.length, 0)
+  FakeRealSocket.created.push(...existingSockets)
+}
 // 池里有已 OPEN 的连接时，客体的 TCP connect 直接拿一条：先发 bind 文本帧，随后异步宣布 OPEN
 for (const ws of FakeRealSocket.pooled()) { ws.readyState = 1; ws.onopen({}) }
 const tcpUrl = `wss://8bitgo.com/api/nds-wfc/socket/${'A'.repeat(32)}/tcp/178.62.43.212/443`
@@ -234,6 +254,48 @@ assert.ok(FakeRealSocket.pooled().every((ws) => ws.url === eagerPool))
 for (const ws of FakeRealSocket.pooled()) { ws.readyState = 1; ws.onopen({}) }
 assert.ok(new eagerWin.WebSocket(`wss://8bitgo.com/api/nds-wfc/socket/${'A'.repeat(32)}/tcp/198.62.122.140/80`, ['binary']) instanceof PooledSocket,
   '第一条 TCP（conntest）也要直接用预热连接')
+
+// 同一 iframe 重开游戏后会换会话令牌；旧池必须关闭并按新令牌重建，否则会把首条连接送去过期会话。
+FakeRealSocket.created.length = 0
+const rotatingWin = { WebSocket: FakeRealSocket }
+const poolA = `wss://8bitgo.com/api/nds-wfc/socket/${'A'.repeat(32)}/pool/${'d'.repeat(16)}`
+const poolB = `wss://8bitgo.com/api/nds-wfc/socket/${'B'.repeat(32)}/pool/${'d'.repeat(16)}`
+assert.equal(installNdsWfcDnsShim(rotatingWin, dnsTable, '/api/nds-wfc/socket/', poolA), true)
+const oldPoolSockets = FakeRealSocket.pooled().slice()
+assert.equal(oldPoolSockets.length, 4)
+assert.equal(installNdsWfcDnsShim(rotatingWin, dnsTable, '/api/nds-wfc/socket/', poolB), true)
+assert.ok(oldPoolSockets.every((ws) => ws.readyState === 3), '旧令牌的空闲连接必须释放')
+const freshPoolSockets = FakeRealSocket.pooled().filter((ws) => ws.url === poolB)
+assert.equal(freshPoolSockets.length, 4)
+for (const ws of freshPoolSockets) { ws.readyState = 1; ws.onopen({}) }
+const rotatedTcp = new rotatingWin.WebSocket(`wss://8bitgo.com/api/nds-wfc/socket/${'B'.repeat(32)}/tcp/198.62.122.140/80`, ['binary'])
+assert.ok(rotatedTcp instanceof PooledSocket, '新会话的首条 TCP 必须使用新池')
+
+// WebSocket 握手若一直停在 CONNECTING，客户端要主动结束本次尝试并按退避策略重连。
+class ClosingSocket extends FakeRealSocket {
+  close() {
+    this.readyState = 3
+    this.onclose?.({ type: 'close', code: 1006 })
+  }
+}
+FakeRealSocket.created.length = 0
+const timed = new RetryingWebSocket('wss://8bitgo.com/api/nds-wfc/socket/x/tcp/178.62.43.212/443', ['binary'], ClosingSocket, [1], 5)
+const timedEvents = []
+timed.onerror = () => timedEvents.push('error')
+timed.onclose = () => timedEvents.push('close')
+await new Promise((resolve) => setTimeout(resolve, 30))
+assert.equal(FakeRealSocket.created.length, 2, 'CONNECTING 超时后必须产生一次受控重试')
+assert.deepEqual(timedEvents, ['error', 'close'])
+FakeRealSocket.created.length = 0
+const cancelRetry = new RetryingWebSocket('wss://8bitgo.com/api/nds-wfc/socket/x/tcp/178.62.43.212/443', ['binary'], ClosingSocket, [80], 5)
+const cancelEvents = []
+cancelRetry.onerror = () => cancelEvents.push('error')
+cancelRetry.onclose = () => cancelEvents.push('close')
+await new Promise((resolve) => setTimeout(resolve, 10))
+cancelRetry.close()
+await new Promise((resolve) => setTimeout(resolve, 90))
+assert.equal(FakeRealSocket.created.length, 1, '用户关闭后必须取消等待中的自动重试')
+assert.deepEqual(cancelEvents, ['close'], '用户关闭不能伪装成网络错误')
 
 // 以前出现过“源码打了补丁、线上静态核心仍是旧产物”；这次直接验实际发给浏览器的归档。
 const archive = fileURLToPath(new URL('../public/emulatorjs/cores/melondsds-wasm.data', import.meta.url))

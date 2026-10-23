@@ -10,7 +10,8 @@ const PATH = '/api/nds-wfc/socket/'
 const DNS_SERVERS = new Set(['178.62.43.212', '95.217.77.181', '172.104.88.237'])
 // 本次实测 ROM 内的 NAS / GameSpy 域名全部归在 nintendowifi.net；不扩大成任意 DNS 代理。
 const WFC_DOMAINS = ['nintendowifi.net']
-const DNS_TCP_TIMEOUT_MS = 2_000
+// 生产探测到 WFC DNS 的 TCP 53 有时要 2～9 秒才回；2 秒会把可用上游误判为不可用，启动预热永远填不满缓存。
+const DNS_TCP_TIMEOUT_MS = 10_000
 // WFC 只查 A 记录，限制 TCP DNS 响应缓冲，避免坏上游拖大单个会话的内存占用。
 const DNS_TCP_MAX_MESSAGE = 4_096
 const SESSION_MS = 2 * 60 * 60 * 1000
@@ -33,6 +34,9 @@ const DNS_PREWARM_NAMES = [
   'gamestats.gs.nintendowifi.net',
   'gamestats2.gs.nintendowifi.net',
 ]
+const NATNEG_DNS_NAMES = new Set(['natneg1.gs.nintendowifi.net', 'natneg2.gs.nintendowifi.net', 'natneg3.gs.nintendowifi.net'])
+// GameSpy NATNEG 服务固定从 UDP 27901 回包；仅有 WFC DNS 的 IP 授权不足以信任该 IP 上的任意 UDP 服务。
+const NATNEG_SERVER_PORT = 27901
 const DNS_DEFAULT_SERVER = '178.62.43.212'
 const MAX_SESSIONS = 256
 const MAX_SESSIONS_PER_IP = 8
@@ -44,6 +48,7 @@ const MAX_SOCKETS_TOTAL = 256
 const MAX_FRAME = 64 * 1024
 const MAX_BUFFERED = 512 * 1024
 const MAX_BYTES_PER_SECOND = 1024 * 1024
+const MAX_ALLOWED_DNS_IPS = 128
 
 function publicIpv4(host) {
   if (net.isIP(host) !== 4) return false
@@ -412,8 +417,23 @@ export function createNdsWfcService({
     for (const [token, session] of sessions) {
       if (session.expiresAt <= now && session.sockets === 0) sessions.delete(token)
       for (const [ip, expiresAt] of session.allowedIps) if (expiresAt <= now) session.allowedIps.delete(ip)
+      for (const [ip, expiresAt] of session.allowedNatnegIps) if (expiresAt <= now) session.allowedNatnegIps.delete(ip)
       for (const [peer, expiresAt] of session.allowedPeers) if (expiresAt <= now) session.allowedPeers.delete(peer)
       for (const [name, entry] of session.dnsCache) if (entry.expiresAt <= now) session.dnsCache.delete(name)
+    }
+  }
+
+  /** 把 DNS 授权按域名用途拆开：普通 WFC 主机可连接，只有 NATNEG 名字的答案能发起撮合授权。 */
+  function rememberSessionDns(session, name, ips, now = Date.now()) {
+    const expiresAt = now + DNS_IP_MS
+    for (const ip of ips) {
+      if (!session.allowedIps.has(ip) && session.allowedIps.size >= MAX_ALLOWED_DNS_IPS) {
+        session.allowedIps.delete(session.allowedIps.keys().next().value)
+      }
+      // Map 同时作为有界 LRU：最近实际用过的目标不应被大量旧 DNS 答案挤掉。
+      session.allowedIps.delete(ip)
+      session.allowedIps.set(ip, expiresAt)
+      if (NATNEG_DNS_NAMES.has(name)) session.allowedNatnegIps.set(ip, expiresAt)
     }
   }
 
@@ -432,7 +452,7 @@ export function createNdsWfcService({
       const [host, name] = key.split('|')
       if (host !== DNS_DEFAULT_SERVER || entry.staleUntil <= now || !entry.ips.length) continue
       answers[name] = entry.ips
-      for (const ip of entry.ips) session.allowedIps.set(ip, now + DNS_IP_MS)
+      rememberSessionDns(session, name, entry.ips, now)
     }
     return { server: DNS_DEFAULT_SERVER, answers }
   }
@@ -472,7 +492,7 @@ export function createNdsWfcService({
     }
     prewarmDns()
     const token = randomBytes(24).toString('base64url')
-    const session = { ip, clientId, expiresAt: Date.now() + SESSION_MS, sockets: 0, allowedIps: new Map(), allowedPeers: new Map(), dnsCache: new Map(), udpGroups: new Map() }
+    const session = { ip, clientId, expiresAt: Date.now() + SESSION_MS, sockets: 0, allowedIps: new Map(), allowedNatnegIps: new Map(), allowedPeers: new Map(), dnsCache: new Map(), udpGroups: new Map() }
     sessions.set(token, session)
     res.json({ token, path: PATH, expiresIn: SESSION_MS / 1000, dns: dnsSnapshot(session) })
   })
@@ -542,6 +562,16 @@ export function createNdsWfcService({
       if (message.length > MAX_FRAME || bytes > MAX_BYTES_PER_SECOND) { close(); return false }
       // 真正在玩的局可以超过两小时；只有客体数据才续期，WS Pong 本身不算活跃游戏。
       if (session.expiresAt < now + SESSION_MS / 2) session.expiresAt = now + SESSION_MS
+      // 本地 DNS 表会让客体整局复用旧答案；活跃连接续期时同步续上该目标的会话授权，避免长局中途突然 403。
+      if (!isDns && session.allowedIps.has(host)) {
+        session.allowedIps.delete(host)
+        session.allowedIps.set(host, now + DNS_IP_MS)
+      }
+      if (protocol === 'udp' && port === NATNEG_SERVER_PORT && session.allowedNatnegIps.has(host)) {
+        session.allowedNatnegIps.set(host, now + DNS_IP_MS)
+      }
+      const peerKey = `${host}:${port}`
+      if (protocol === 'udp' && session.allowedPeers.has(peerKey)) session.allowedPeers.set(peerKey, now + NATNEG_PEER_MS)
       return true
     }
 
@@ -646,7 +676,7 @@ export function createNdsWfcService({
         const finishDns = (answer) => {
           const ips = dnsAnswerIps(answer, request.name)
           trace('dns answer', request.name, ips)
-          for (const ip of ips) session.allowedIps.set(ip, Date.now() + DNS_IP_MS)
+          rememberSessionDns(session, request.name, ips)
           if (ips.length) {
             // NAS 整局会重复解析同一名字；缓存十分钟，免得上游 DNS 抖动时重试风暴拖垮登录。
             if (session.dnsCache.size >= 32) session.dnsCache.delete(session.dnsCache.keys().next().value)
@@ -692,7 +722,7 @@ export function createNdsWfcService({
         if (shared) {
           const reply = dnsAReply(message, shared)
           if (reply) {
-            for (const ip of shared) session.allowedIps.set(ip, now + DNS_IP_MS)
+            rememberSessionDns(session, name, shared, now)
             trace('dns cache hit', name, shared)
             return send(reply)
           }
@@ -716,7 +746,7 @@ export function createNdsWfcService({
           if (!answer || !ips.length) return
           clearTimeout(request.timer)
           pendingDns.delete(id)
-          for (const ip of ips) session.allowedIps.set(ip, Date.now() + DNS_IP_MS)
+          rememberSessionDns(session, name, ips)
           if (session.dnsCache.size >= 32) session.dnsCache.delete(session.dnsCache.keys().next().value)
           session.dnsCache.set(name, { ips, expiresAt: Date.now() + DNS_CACHE_MS })
           trace('dns tcp answer', name, ips, `${Date.now() - now}ms`)
@@ -752,8 +782,9 @@ export function createNdsWfcService({
         const group = udpGroup
         group.socket.on('message', (message, remote) => {
           trace('udp recv', remote.address, remote.port, message.length)
-          // 撮合服务器本身必须是本局 DNS 授权过的地址，否则任何人都能伪造 CONNECT 给自己开出口。
-          if ((session.allowedIps.get(remote.address) || 0) > Date.now()) {
+          // 只有 NATNEG 专用 DNS 名字解析出的地址，且来自固定服务端口的报文，才有权声明玩家对端。
+          // NAS / GameSpy 普通地址或同 IP 上的其它 UDP 服务不能伪造 CONNECT 扩大出口。
+          if (remote.port === NATNEG_SERVER_PORT && (session.allowedNatnegIps.get(remote.address) || 0) > Date.now()) {
             const peer = natnegConnectPeer(message)
             if (peer) {
               if (session.allowedPeers.size >= 64) session.allowedPeers.delete(session.allowedPeers.keys().next().value)

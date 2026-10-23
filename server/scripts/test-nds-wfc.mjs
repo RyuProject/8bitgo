@@ -11,6 +11,12 @@ const name = Buffer.concat([...labels.map((label) => Buffer.concat([Buffer.from(
 const question = Buffer.concat([name, Buffer.from([0, 1, 0, 1])])
 const header = Buffer.from([0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0])
 const query = Buffer.concat([header, question])
+const queryFor = (hostname, id = 0x5678) => {
+  const queryHeader = Buffer.from(header)
+  queryHeader.writeUInt16BE(id, 0)
+  const labels = Buffer.concat([...hostname.split('.').map((label) => Buffer.concat([Buffer.from([label.length]), Buffer.from(label)])), Buffer.from([0])])
+  return Buffer.concat([queryHeader, labels, Buffer.from([0, 1, 0, 1])])
+}
 const fallbackName = 'fallback.nintendowifi.net'
 const fallbackQuestion = Buffer.concat([
   ...fallbackName.split('.').map((label) => Buffer.concat([Buffer.from([label.length]), Buffer.from(label)])),
@@ -138,7 +144,10 @@ const service = createNdsWfcService({ enabled: true, udpSocketFactory: () => {
   const socket = new FakeTcpSocket()
   tcpSockets.push(socket)
   return socket
-}, dnsResolver: async (host, name) => { resolverCalls.push(`${host}|${name}`); return ['95.217.77.151'] } })
+}, dnsResolver: async (host, name) => {
+  resolverCalls.push(`${host}|${name}`)
+  return name.startsWith('natneg') ? ['95.217.77.152'] : ['95.217.77.151']
+} })
 app.use('/api/nds-wfc', service.router)
 const server = createServer(app)
 service.attach(server)
@@ -178,6 +187,7 @@ try {
   assert.equal(reusedBody.dns.server, '178.62.43.212')
   assert.deepEqual(reusedBody.dns.answers['nas.nintendowifi.net'], ['95.217.77.151'])
   assert.deepEqual(reusedBody.dns.answers['gpcm.gs.nintendowifi.net'], ['95.217.77.151'])
+  assert.deepEqual(reusedBody.dns.answers['natneg1.gs.nintendowifi.net'], ['95.217.77.152'])
   // 同 IP 的第二个玩家/探针开局后，第一个玩家的 DNS socket 仍必须能升级成功。
   const firstSocket = new WebSocket(`${base.replace('http:', 'ws:')}${session.path}${session.token}/udp/178.62.43.212/53/1/${'a'.repeat(16)}`, {
     headers: { Origin: base },
@@ -206,6 +216,9 @@ try {
   firstSocket.send(fallbackQuery)
   assert.deepEqual(dnsAnswerIps(Buffer.from(await fallbackReply), fallbackName), ['95.217.77.151'],
     '上游 UDP DNS 不回包时必须用同一解析节点补答，不能让游戏持续重试到 20100')
+  const natnegDnsReply = new Promise((resolve) => firstSocket.once('message', resolve))
+  firstSocket.send(queryFor('natneg1.gs.nintendowifi.net'))
+  assert.deepEqual(dnsAnswerIps(Buffer.from(await natnegDnsReply), 'natneg1.gs.nintendowifi.net'), ['95.217.77.152'])
   firstSocket.close()
   await new Promise((resolve) => firstSocket.once('close', resolve))
 
@@ -303,15 +316,21 @@ try {
     ws.once('error', () => resolve(0))
   })
   assert.equal(await peerStatus('203.0.114.7', 40000), 403, '撮合之前不能连任意玩家地址')
-  const natneg = await openSocket(27901)
+  const natnegPeerBase = wsBase.replace('95.217.77.151', '95.217.77.152')
+  const natnegSocket = new WebSocket(`${natnegPeerBase}27901/2/${'a'.repeat(16)}`, { headers: { Origin: base } })
+  await new Promise((resolve, reject) => { natnegSocket.once('open', resolve); natnegSocket.once('error', reject) })
   const natnegGroup = udpSockets.at(-1)
+  natnegGroup.emit('message', natnegConnect([203, 0, 114, 7], 40000), { address: '95.217.77.151', port: 27901 })
+  assert.equal(await peerStatus('203.0.114.7', 40000), 403, '仅 NAS / GP DNS 授权过的同 IP 不能伪造 NATNEG CONNECT')
+  natnegGroup.emit('message', natnegConnect([203, 0, 114, 7], 40000), { address: '95.217.77.152', port: 27900 })
+  assert.equal(await peerStatus('203.0.114.7', 40000), 403, 'NATNEG DNS 地址上的非服务端口不能伪造 CONNECT')
   natnegGroup.emit('message', natnegConnect([203, 0, 114, 7], 40000), { address: '198.51.99.1', port: 27901 })
   assert.equal(await peerStatus('203.0.114.7', 40000), 403, '非 DNS 授权来源伪造的 CONNECT 不能开出口')
-  natnegGroup.emit('message', natnegConnect([203, 0, 114, 7], 40000), { address: '95.217.77.151', port: 27901 })
+  natnegGroup.emit('message', natnegConnect([203, 0, 114, 7], 40000), { address: '95.217.77.152', port: 27901 })
   assert.equal(await peerStatus('203.0.114.7', 40000), 101, 'CONNECT 点名的对端必须能直连')
   assert.equal(await peerStatus('203.0.114.7', 40001), 403, '只放行精确端口')
-  natneg.close()
-  await new Promise((resolve) => natneg.once('close', resolve))
+  natnegSocket.close()
+  await new Promise((resolve) => natnegSocket.once('close', resolve))
 
   // 复制标签页会克隆 sessionStorage 令牌，但两台虚拟 DS 绝不能共用同一个公网 UDP 端口。
   const socketsBeforeTabs = udpSockets.length
