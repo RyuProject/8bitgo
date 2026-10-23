@@ -350,14 +350,22 @@ export function wfcDnsUpstream(value = process.env.NDS_WFC_DNS_UPSTREAM) {
   return ip && publicIpv4(ip) ? ip : null
 }
 
+/** 自建 WFC 服务的 DNS 53 不可达时，直接给白名单域名返回专用服务地址。 */
+export function wfcDnsStaticIp(value = process.env.NDS_WFC_DNS_STATIC_IP) {
+  const ip = typeof value === 'string' ? value.trim() : ''
+  return ip && publicIpv4(ip) ? ip : null
+}
+
 export function createNdsWfcService({
   enabled = process.env.NDS_WFC_ENABLED === '1',
   udpSocketFactory = () => dgram.createSocket('udp4'),
   tcpSocketFactory = (options) => net.createConnection(options),
   dnsResolver = resolveDns4Tcp,
   dnsUpstream = wfcDnsUpstream(),
+  dnsStaticIp = wfcDnsStaticIp(),
 } = {}) {
   const upstreamDns = wfcDnsUpstream(dnsUpstream ?? '')
+  const staticDnsIp = wfcDnsStaticIp(dnsStaticIp ?? '')
   /** DS 面向的 DNS 地址 → 实际去问的上游 */
   const dnsTarget = (host) => upstreamDns ?? host
   const dnsResolverOptions = upstreamDns ? { servers: new Set([upstreamDns]) } : undefined
@@ -368,8 +376,8 @@ export function createNdsWfcService({
   const trace = (...parts) => { if (process.env.NDS_WFC_TRACE === '1') console.info('[nds-wfc]', ...parts) }
 
   /*
-    全站共享的 WFC DNS 缓存。这些名字的答案对所有玩家都一样（都是 Kaeru / Wiimmfi 的公网入口），
-    没必要每局、每次查询都重新跨洲走一遍 TCP DNS。授权仍是按会话的：命中缓存时只给当前会话放行这些 IP。
+    全站共享的 WFC DNS 缓存：同一名字对所有玩家的答案一致，不必每局都重新查询上游。
+    授权仍按会话隔离，命中缓存时只给当前会话放行这些 IP。
   */
   const sharedDns = new Map()
   const inflightDns = new Map()
@@ -384,7 +392,10 @@ export function createNdsWfcService({
     const running = inflightDns.get(key)
     if (running) return running
     const task = Promise.resolve()
-      .then(() => dnsResolver(dnsTarget(host), name, dnsResolverOptions))
+      .then(() => {
+        if (staticDnsIp && wfcDomain(name)) return [staticDnsIp]
+        return dnsResolver(dnsTarget(host), name, dnsResolverOptions)
+      })
       .then((ips) => {
         const valid = (Array.isArray(ips) ? ips : []).filter(publicIpv4).slice(0, 8)
         rememberDns(host, name, valid)
@@ -405,6 +416,11 @@ export function createNdsWfcService({
   }
   const prewarmDns = (host = DNS_DEFAULT_SERVER) => {
     for (const name of DNS_PREWARM_NAMES) {
+      if (staticDnsIp) {
+        // WFC 专用入口上 DNS 53 不可达时，直接建立会话快照，首个玩家也不用等异步预热。
+        rememberDns(host, name, [staticDnsIp])
+        continue
+      }
       const entry = sharedDns.get(sharedKey(host, name))
       if (entry && entry.freshUntil > Date.now()) continue
       void resolveShared(host, name).then((ips) => trace('dns prewarm', host, name, ips))
@@ -458,7 +474,8 @@ export function createNdsWfcService({
   }
   if (enabled) {
     // 进程一启动就把常用名字解析好，并定时刷新：第一位玩家也不必等跨洲 TCP DNS。
-    if (upstreamDns) trace('dns upstream', DNS_DEFAULT_SERVER, '->', upstreamDns)
+    if (staticDnsIp) trace('dns static answer', DNS_DEFAULT_SERVER, '->', staticDnsIp)
+    else if (upstreamDns) trace('dns upstream', DNS_DEFAULT_SERVER, '->', upstreamDns)
     prewarmDns()
     const refresh = setInterval(() => prewarmDns(), 5 * 60 * 1000)
     refresh.unref?.()

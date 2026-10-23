@@ -403,7 +403,7 @@ IP、端口、协议和原始 socket 名，`src/emulator/ndsWfc.ts` 再交给同
 否则源端口会变，匹配握手可能失败。复制标签页会复制 `sessionStorage`，因此分组键还要带
 每页随机 instanceId，不能只靠会话令牌 + socket 编号。NAS 重复 DNS 查询只缓存已校验的 A
 回答 10 分钟。回归：`npm run test:nds-wfc`，其中检查发布 `.data` 内实际包含 SOCKFS 补丁；
-`server/scripts/probe-nds-wfc-live.mjs` 只验证 Kaeru DNS、NAS HTTP 与 GP 挑战，**不等于进房**。
+`server/scripts/probe-nds-wfc-live.mjs` 只验证当前配置 DNS、NAS HTTP 与 GP 挑战，**不等于进房**。
 
 ⚠️ WFC DNS 上游 UDP 1.2 秒无回应或返回 `TC=1` 时，备用解析必须是真正的 DNS-over-TCP（2 字节长度前缀）；
 Node `dns.Resolver` 默认仍走 UDP，不能当成 TCP 回退。只对固定 WFC DNS IP 和 `nintendowifi.net`
@@ -413,6 +413,12 @@ Node `dns.Resolver` 默认仍走 UDP，不能当成 TCP 回退。只对固定 WF
 生产机对主地址 UDP 超时 / TCP 拒绝，对备用地址 UDP、TCP 超时；本机查询两地址都只拿到 `TC=1` 空响应，
 TCP 也超时。别把它们标为可用入口或仅凭旧 Wiki 扩大 DNS 白名单；官方列表见
 <https://github.com/barronwaffles/dwc_network_server_emulator/wiki/List-of-Servers>，加入新入口前必须重新实测。
+
+⚠️ 自建 WFC 入口的 53 端口若从 8bitgo 生产机不可达（2026-10-24 实测 `103.242.13.112:53` UDP/TCP 超时，
+但同机 NAS HTTPS、GameSpy TCP/UDP 正常），不要继续依赖 `NDS_WFC_DNS_UPSTREAM`。设置
+`NDS_WFC_DNS_STATIC_IP=<自建 WFC 入口公网 IPv4>`，服务端会只把白名单内的 WFC 域名映射到该地址，
+启动时同步填好会话 DNS 快照；它优先于上游解析，不开放任意 DNS 或任意 TCP/UDP 代理。回归覆盖静态快照和
+未预热的游戏专属域名。
 
 🔴 **20100 / 61020 的真正根因（2026-10-22 线上确认）：SOCKFS 对 UDP socket 永远报可读。**
 Emscripten SOCKFS `poll` 里 UDP 没有 peer，`!dest` 恒真，于是每次都返回 `POLLIN`。libslirp 一看可读就

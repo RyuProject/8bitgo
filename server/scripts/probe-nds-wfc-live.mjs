@@ -1,4 +1,4 @@
-/** 仅人工验收时运行：用真实 Kaeru DNS 检查浏览器同源代理 → WSS → UDP。 */
+/** 仅人工验收时运行：检查同源中继 → 当前 WFC DNS → NAS / GameSpy。 */
 import assert from 'node:assert/strict'
 import { WebSocket } from 'ws'
 import { dnsAnswerIps } from '../src/nds-wfc.js'
@@ -28,9 +28,12 @@ const answer = await Promise.race([
   new Promise((_, reject) => setTimeout(() => reject(new Error('WFC DNS 超时')), 10_000)),
 ])
 const ips = dnsAnswerIps(answer, 'nas.nintendowifi.net')
-assert.ok(ips.includes('178.62.43.212'), `WFC DNS 响应不符合预期：${ips.join(',')}；${answer.subarray(0, 96).toString('hex')}`)
+const cachedNasIps = session.dns?.answers?.['nas.nintendowifi.net'] || []
+assert.ok(ips.length > 0, `WFC DNS 没有返回可用公网地址：${answer.subarray(0, 96).toString('hex')}`)
+assert.ok(!cachedNasIps.length || ips.some((ip) => cachedNasIps.includes(ip)), `DNS 回答与会话快照不一致：${ips.join(',')}`)
+const nasIp = ips[0]
 ws.close()
-const tcpUrl = `${base.replace(/^http/, 'ws')}${session.path}${session.token}/tcp/178.62.43.212/80`
+const tcpUrl = `${base.replace(/^http/, 'ws')}${session.path}${session.token}/tcp/${nasIp}/80`
 const tcp = new WebSocket(tcpUrl, 'binary', { headers: { Origin: base } })
 const httpReply = await Promise.race([
   new Promise((resolve, reject) => {
@@ -71,4 +74,4 @@ const challenge = await Promise.race([
 ])
 assert.match(challenge, /^\\lc\\1\\challenge\\/)
 gp.close()
-console.log(`NDS WFC：同源 WebSocket → Kaeru DNS → Wiimmfi HTTP → GameSpy 登录挑战已打通`)
+console.log(`NDS WFC：同源 WebSocket → WFC DNS → NAS HTTP → GameSpy 登录挑战已打通（NAS ${nasIp}）`)

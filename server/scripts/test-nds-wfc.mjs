@@ -4,7 +4,7 @@ import { createServer } from 'node:http'
 import net from 'node:net'
 import express from 'express'
 import { WebSocket } from 'ws'
-import { createNdsWfcService, dnsAReply, dnsAnswerIps, dnsQueryName, dnsRefusedReply, dnsServFailReply, gpTraceSummary, natnegConnectPeer, resolveDns4Tcp, wfcDnsUpstream } from '../src/nds-wfc.js'
+import { createNdsWfcService, dnsAReply, dnsAnswerIps, dnsQueryName, dnsRefusedReply, dnsServFailReply, gpTraceSummary, natnegConnectPeer, resolveDns4Tcp, wfcDnsStaticIp, wfcDnsUpstream } from '../src/nds-wfc.js'
 
 const labels = 'nas.nintendowifi.net'.split('.')
 const name = Buffer.concat([...labels.map((label) => Buffer.concat([Buffer.from([label.length]), Buffer.from(label)])), Buffer.from([0])])
@@ -374,6 +374,10 @@ assert.equal(wfcDnsUpstream(' 103.242.13.112 '), '103.242.13.112')
 assert.equal(wfcDnsUpstream('10.0.0.5'), null)
 assert.equal(wfcDnsUpstream('evil.example'), null)
 assert.equal(wfcDnsUpstream(undefined), null)
+assert.equal(wfcDnsStaticIp(' 103.242.13.112 '), '103.242.13.112')
+assert.equal(wfcDnsStaticIp('10.0.0.5'), null)
+assert.equal(wfcDnsStaticIp('evil.example'), null)
+assert.equal(wfcDnsStaticIp(undefined), null)
 await assert.rejects(resolveDns4Tcp('103.242.13.112', 'nas.nintendowifi.net'), { code: 'DNS_TCP_SERVER_NOT_ALLOWED' })
 {
   const upstreamCalls = []
@@ -390,6 +394,54 @@ await assert.rejects(resolveDns4Tcp('103.242.13.112', 'nas.nintendowifi.net'), {
   assert.ok(upstreamCalls.length > 0, '启动时应预解析')
   assert.ok(upstreamCalls.every((call) => call.host === '103.242.13.112' && call.servers?.[0] === '103.242.13.112'),
     '配置上游后不能再去问 Kaeru')
+}
+
+// 自建入口 DNS 53 不可达时，WFC 白名单域名也能稳定解析到同一台受限服务。
+{
+  let staticResolverCalls = 0
+  const staticApp = express()
+  staticApp.use(express.json())
+  const staticService = createNdsWfcService({
+    enabled: true,
+    dnsUpstream: '103.242.13.112',
+    dnsStaticIp: '103.242.13.112',
+    udpSocketFactory: () => new FakeUdpSocket(),
+    dnsResolver: async () => { staticResolverCalls++; throw new Error('静态映射不能访问上游 DNS') },
+  })
+  staticApp.use('/api/nds-wfc', staticService.router)
+  const staticServer = createServer(staticApp)
+  staticService.attach(staticServer)
+  await new Promise((resolve) => staticServer.listen(0, '127.0.0.1', resolve))
+  const staticAddress = staticServer.address()
+  const staticBase = `http://127.0.0.1:${staticAddress.port}`
+  try {
+    const response = await fetch(`${staticBase}/api/nds-wfc/session`, {
+      method: 'POST', headers: { Origin: staticBase, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ gameSlug: 'call-of-duty-world-at-war' }),
+    })
+    assert.equal(response.status, 200)
+    const session = await response.json()
+    assert.deepEqual(session.dns.answers['nas.nintendowifi.net'], ['103.242.13.112'])
+    assert.deepEqual(session.dns.answers['gpcm.gs.nintendowifi.net'], ['103.242.13.112'])
+    assert.deepEqual(session.dns.answers['natneg1.gs.nintendowifi.net'], ['103.242.13.112'])
+
+    const dnsSocket = new WebSocket(`${staticBase.replace('http:', 'ws:')}${session.path}${session.token}/udp/178.62.43.212/53/9/${'c'.repeat(16)}`, {
+      headers: { Origin: staticBase },
+    })
+    const dynamicDnsAnswer = await new Promise((resolve, reject) => {
+      dnsSocket.once('open', () => dnsSocket.send(queryFor('cod5victoryds.available.gs.nintendowifi.net')))
+      dnsSocket.once('message', (message) => resolve(Buffer.from(message)))
+      dnsSocket.once('error', reject)
+    })
+    assert.deepEqual(dnsAnswerIps(dynamicDnsAnswer, 'cod5victoryds.available.gs.nintendowifi.net'), ['103.242.13.112'])
+    const dnsClosed = new Promise((resolve) => dnsSocket.once('close', resolve))
+    dnsSocket.close()
+    await dnsClosed
+    assert.equal(staticResolverCalls, 0, '静态映射不能再连接不可达的 DNS 53')
+  } finally {
+    staticServer.closeAllConnections()
+    await new Promise((resolve) => staticServer.close(resolve))
+  }
 }
 
 console.log('NDS WFC：DNS 域名 / 公网 IP / 同源会话 / 内网出口检查通过')
