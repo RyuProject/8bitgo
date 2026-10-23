@@ -70,7 +70,8 @@ assert.equal(moduleConfig.websocket.subprotocol, 'binary')
 const renewed = { ...session, token: 'B'.repeat(32) }
 assert.equal(installNdsWfcRuntime(win, renewed, 'https://8bitgo.com'), true)
 assert.equal(moduleConfig.websocket.url('178.62.43.212', 53, 2, 'socket[12]'),
-  `wss://8bitgo.com/api/nds-wfc/socket/${session.token}/udp/178.62.43.212/53/12/${session.instanceId}`)
+  `wss://8bitgo.com/api/nds-wfc/socket/${renewed.token}/udp/178.62.43.212/53/12/${session.instanceId}`,
+  '同一运行中的核心也必须在重新签发会话后使用新令牌')
 assert.equal(win.EJS_Runtime({}).websocket.url('95.217.77.151', 29900, 1),
   `wss://8bitgo.com/api/nds-wfc/socket/${renewed.token}/tcp/95.217.77.151/29900`)
 // ---- SOCKFS 的 UDP poll：没数据时不能报可读，否则 libslirp 每次 poll 都回客体一个 ICMP 不可达 ----
@@ -232,6 +233,14 @@ assert.deepEqual([...FakeRealSocket.created[1].sent[0]], [1, 2])
 FakeRealSocket.created[1].onclose({ code: 1000 })
 assert.deepEqual(events, ['open', 'close'])
 assert.equal(FakeRealSocket.created.length, 2, 'OPEN 之后断线不能偷偷重连，否则会把半截 TCP 流接到新连接上')
+FakeRealSocket.created.length = 0
+let currentRelayUrl = 'wss://8bitgo.com/api/nds-wfc/socket/old-token/tcp/178.62.43.212/443'
+const dynamicRetry = new RetryingWebSocket(currentRelayUrl, ['binary'], FakeRealSocket, [1], 500, () => currentRelayUrl)
+FakeRealSocket.created[0].onclose({ code: 1006 })
+currentRelayUrl = 'wss://8bitgo.com/api/nds-wfc/socket/new-token/tcp/178.62.43.212/443'
+await new Promise((resolve) => setTimeout(resolve, 10))
+assert.equal(FakeRealSocket.created[1].url, currentRelayUrl, '在退避期间续取会话后，当前 socket 的重试也要换新令牌')
+dynamicRetry.close()
 // 重试用尽才报错
 FakeRealSocket.created.length = 0
 const failing = new RetryingWebSocket('wss://8bitgo.com/api/nds-wfc/socket/x/tcp/178.62.43.212/443', ['binary'], FakeRealSocket, [1])
@@ -270,6 +279,25 @@ assert.equal(freshPoolSockets.length, 4)
 for (const ws of freshPoolSockets) { ws.readyState = 1; ws.onopen({}) }
 const rotatedTcp = new rotatingWin.WebSocket(`wss://8bitgo.com/api/nds-wfc/socket/${'B'.repeat(32)}/tcp/198.62.122.140/80`, ['binary'])
 assert.ok(rotatedTcp instanceof PooledSocket, '新会话的首条 TCP 必须使用新池')
+
+// 服务进程重启会清空内存会话；连接池连续握手失败后必须续取令牌并换成新池。
+FakeRealSocket.created.length = 0
+const recoveringWin = { WebSocket: FakeRealSocket }
+const oldPoolUrl = `wss://8bitgo.com/api/nds-wfc/socket/${'C'.repeat(32)}/pool/${'e'.repeat(16)}`
+const recoveredPoolUrl = `wss://8bitgo.com/api/nds-wfc/socket/${'D'.repeat(32)}/pool/${'e'.repeat(16)}`
+let recoverCalls = 0
+assert.equal(installNdsWfcDnsShim(recoveringWin, dnsTable, '/api/nds-wfc/socket/', oldPoolUrl, async () => {
+  recoverCalls++
+  return { table: dnsTable, poolUrl: recoveredPoolUrl }
+}), true)
+const stalePoolSockets = FakeRealSocket.pooled().slice()
+stalePoolSockets[0].onclose({ code: 1006 })
+stalePoolSockets[1].onclose({ code: 1006 })
+await new Promise((resolve) => setTimeout(resolve, 10))
+assert.equal(recoverCalls, 1, '连续失败只触发一次会话恢复')
+assert.equal(recoveringWin.WebSocket.__8bitgoWfcDns.poolUrl, recoveredPoolUrl, '恢复后池地址必须换成新会话令牌')
+assert.equal(FakeRealSocket.pooled().filter((ws) => ws.url === recoveredPoolUrl).length, 4, '恢复后重新预热完整连接池')
+recoveringWin.WebSocket.__8bitgoWfcDns.pool.stop()
 
 // WebSocket 握手若一直停在 CONNECTING，客户端要主动结束本次尝试并按退避策略重连。
 class ClosingSocket extends FakeRealSocket {

@@ -309,13 +309,15 @@ export class RetryingWebSocket implements WebSocketLike {
   private retryCloseEvent: unknown = null
   private type: BinaryType = 'arraybuffer'
   private state = 0
+  private readonly urlProvider?: () => string
 
-  constructor(url: string, protocols: string | string[] | undefined, RealWebSocket: WebSocketCtor, delays = [250, 800, 1600], connectTimeoutMs = 8_000) {
+  constructor(url: string, protocols: string | string[] | undefined, RealWebSocket: WebSocketCtor, delays = [250, 800, 1600], connectTimeoutMs = 8_000, urlProvider?: () => string) {
     this.url = url
     this.protocols = protocols
     this.RealWebSocket = RealWebSocket
     this.delays = delays
     this.connectTimeoutMs = connectTimeoutMs
+    this.urlProvider = urlProvider
     this.current = this.connect()
   }
 
@@ -350,7 +352,7 @@ export class RetryingWebSocket implements WebSocketLike {
   }
 
   private connect(): WebSocket {
-    const ws = new this.RealWebSocket(this.url, this.protocols)
+    const ws = new this.RealWebSocket(this.urlProvider?.() ?? this.url, this.protocols)
     ws.binaryType = this.type
     this.connectTimer = setTimeout(() => {
       if (ws === this.current && !this.opened && ws.readyState === 0) ws.close()
@@ -434,13 +436,16 @@ export class RelayPool {
   private readonly openingSockets = new Set<WebSocket>()
   private opening = 0
   private failures = 0
+  private nextRecoveryAt = 0
   private lastUse = Date.now()
   private stopped = false
+  private readonly onHandshakeFailures?: () => void | Promise<void>
 
-  constructor(url: string, RealWebSocket: WebSocketCtor, size = 3) {
+  constructor(url: string, RealWebSocket: WebSocketCtor, size = 3, onHandshakeFailures?: () => void | Promise<void>) {
     this.url = url
     this.RealWebSocket = RealWebSocket
     this.size = size
+    this.onHandshakeFailures = onHandshakeFailures
     this.refill()
   }
 
@@ -493,6 +498,12 @@ export class RelayPool {
           this.opening--
           // 握手失败：退避后再补，免得网络断开时狂开连接
           this.failures++
+          if (this.failures >= 2 && Date.now() >= this.nextRecoveryAt) {
+            // 两条预热连接连续在 OPEN 前失败，常见原因是服务进程重启后令牌已失效；
+            // 只触发一次短冷却，避免弱网时每条失败都打会话接口。
+            this.nextRecoveryAt = Date.now() + 30_000
+            try { void Promise.resolve(this.onHandshakeFailures?.()).catch(() => {}) } catch { /* 修复会话失败不阻断旧池退避重试 */ }
+          }
           setTimeout(() => this.refill(), Math.min(10_000, 250 * 2 ** this.failures))
           return
         }
@@ -568,19 +579,39 @@ type WfcDnsShimState = {
   poolUrl: string | null
   pool: RelayPool | null
   RealWebSocket: WebSocketCtor
+  recoverSession?: () => Promise<{ table: NdsWfcDnsTable; poolUrl: string } | null>
 }
 type WfcWindow = { WebSocket: WebSocketCtor & { __8bitgoWfcDns?: WfcDnsShimState } }
+
+type WfcSessionRefresh = NonNullable<WfcDnsShimState['recoverSession']>
+
+function relayUrlForCurrentSession(url: string, state: WfcDnsShimState): string {
+  if (!state.poolUrl) return url
+  try {
+    const source = new URL(url)
+    const pool = new URL(state.poolUrl)
+    const token = pool.pathname.slice(state.path.length).split('/')[0]
+    const parts = source.pathname.startsWith(state.path) ? source.pathname.slice(state.path.length).split('/') : []
+    if (!/^[A-Za-z0-9_-]{32}$/.test(token) || parts.length < 2) return url
+    parts[0] = token
+    source.pathname = `${state.path}${parts.join('/')}`
+    return source.href
+  } catch {
+    return url
+  }
+}
 
 /**
  * 给核心所在窗口换上带 DNS 本地应答的 WebSocket 构造器。只拦 DNS 节点:53 的中继地址，
  * 其余（TCP、NATNEG、EmulatorJS 自己的 netplay）一律原样构造真 WebSocket。重复调用只更新表。
  */
-export function installNdsWfcDnsShim(win: WfcWindow, table: NdsWfcDnsTable, path: string, poolUrl?: string): boolean {
+export function installNdsWfcDnsShim(win: WfcWindow, table: NdsWfcDnsTable, path: string, poolUrl?: string, recoverSession?: WfcSessionRefresh): boolean {
   const current = win.WebSocket
   if (typeof current !== 'function') return false
   if (current.__8bitgoWfcDns) {
     const state = current.__8bitgoWfcDns
     state.table = table
+    if (recoverSession) state.recoverSession = recoverSession
     if (state.path !== path && poolUrl === undefined) {
       state.pool?.stop()
       state.pool = null
@@ -590,28 +621,28 @@ export function installNdsWfcDnsShim(win: WfcWindow, table: NdsWfcDnsTable, path
     if (poolUrl !== undefined && state.poolUrl !== poolUrl) {
       state.pool?.stop()
       state.poolUrl = poolUrl
-      state.pool = new RelayPool(poolUrl, state.RealWebSocket, 4)
+      state.pool = new RelayPool(poolUrl, state.RealWebSocket, 4, () => recoverWfcPool(state))
     }
     return true
   }
   const Real = current
-  const state: WfcDnsShimState = { table, path, poolUrl: poolUrl ?? null, pool: null, RealWebSocket: Real }
+  const state: WfcDnsShimState = { table, path, poolUrl: poolUrl ?? null, pool: null, RealWebSocket: Real, recoverSession }
+  if (poolUrl) state.pool = new RelayPool(poolUrl, Real, 4, () => recoverWfcPool(state))
   /*
     开局就预热，不等客体第一次查 DNS：生产实测直连 WSS 握手 1.5～4.9 秒，而 conntest 紧跟在
     第一次 DNS 之后、DS 只等约 2 秒 —— 等 DNS 时才开池，第一条 TCP 一定赶不上（报 52200）。
   */
-  if (poolUrl) state.pool = new RelayPool(poolUrl, Real, 4)
   /** 走中继的 socket：池里有现成连接就直接绑定，否则新开一条带重试的 WSS */
   const relaySocket = (url: string, protocols?: string | string[]): WebSocket => {
     const target = parseRelayUrl(url, state.path)
     if (target?.poolUrl && !state.poolUrl) {
       state.poolUrl = target.poolUrl
-      state.pool = new RelayPool(target.poolUrl, Real, 4)
+      state.pool = new RelayPool(target.poolUrl, Real, 4, () => recoverWfcPool(state))
     }
-    if (state.pool?.isStopped && state.poolUrl) state.pool = new RelayPool(state.poolUrl, Real, 4)
+    if (state.pool?.isStopped && state.poolUrl) state.pool = new RelayPool(state.poolUrl, Real, 4, () => recoverWfcPool(state))
     const ws = target && state.pool ? state.pool.take() : null
     if (target && ws) return new PooledSocket(url, ws, target) as unknown as WebSocket
-    return new RetryingWebSocket(url, protocols, Real) as unknown as WebSocket
+    return new RetryingWebSocket(url, protocols, Real, undefined, 8_000, () => relayUrlForCurrentSession(url, state)) as unknown as WebSocket
   }
   const Retrying = function (this: unknown, url: string, protocols?: string | string[]) {
     return relaySocket(url, protocols)
@@ -625,7 +656,7 @@ export function installNdsWfcDnsShim(win: WfcWindow, table: NdsWfcDnsTable, path
       const target = parseRelayUrl(url, state.path)
       if (target?.poolUrl && !state.poolUrl) {
         state.poolUrl = target.poolUrl
-        state.pool = new RelayPool(target.poolUrl, Real, 4)
+        state.pool = new RelayPool(target.poolUrl, Real, 4, () => recoverWfcPool(state))
       }
       return new LocalDnsSocket(url, protocols, state.table, Retrying)
     }
@@ -638,4 +669,15 @@ export function installNdsWfcDnsShim(win: WfcWindow, table: NdsWfcDnsTable, path
   Shim.__8bitgoWfcDns = state
   win.WebSocket = Shim
   return true
+}
+
+/** 进程重启会清空内存会话；池握手连续失败时用同一个浏览器身份取新令牌并整体换池。 */
+async function recoverWfcPool(state: WfcDnsShimState): Promise<void> {
+  if (!state.recoverSession) return
+  const refreshed = await state.recoverSession()
+  if (!refreshed || !refreshed.poolUrl || state.poolUrl === refreshed.poolUrl) return
+  state.table = refreshed.table
+  state.pool?.stop()
+  state.poolUrl = refreshed.poolUrl
+  state.pool = new RelayPool(refreshed.poolUrl, state.RealWebSocket, 4, () => recoverWfcPool(state))
 }

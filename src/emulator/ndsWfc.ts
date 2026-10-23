@@ -222,28 +222,41 @@ function fixModuleSockfsPoll(module: SockfsModule, socketName: string | undefine
 export function installNdsWfcRuntime(win: RuntimeWindow, session: NdsWfcSession, origin: string): boolean {
   const original = win.EJS_Runtime as WfcRuntime | undefined
   if (typeof original !== 'function') return false
+  const state = original.__8bitgoWfc ?? { session, origin }
+  state.session = session
+  state.origin = origin
+  const poolUrlFor = (value: NdsWfcSession, baseOrigin: string) => {
+    const pool = new URL(baseOrigin)
+    pool.protocol = pool.protocol === 'https:' ? 'wss:' : 'ws:'
+    pool.pathname = `${value.path}${value.token}/pool/${value.instanceId}`
+    pool.search = ''
+    pool.hash = ''
+    return pool.href
+  }
+  const recoverSession = async () => {
+    // WebSocket 握手失败没有可读的 HTTP 状态码；同一 clientId 重取会话可区分普通抖动与服务重启，
+    // 后端还活着时续用原令牌，内存会话丢失时则创建新令牌并恢复本地 DNS 快照。
+    const renewed = await prepareNdsWfcSession('call-of-duty-world-at-war')
+    if (!renewed) return null
+    state.session = renewed
+    state.origin = origin
+    return {
+      table: renewed.dns ?? { server: '178.62.43.212', answers: {} },
+      poolUrl: poolUrlFor(renewed, origin),
+    }
+  }
   // 核心和 SOCKFS 跑在这个窗口里：DNS 节点:53 的 socket 换成本地应答，其余仍是真 WebSocket。
   // 没有预解析表时也要装：中继 socket 的握手重试同样走这个构造器，DNS 则全部转发给中继。
   if (typeof win.WebSocket === 'function') {
-    const pool = new URL(origin)
-    pool.protocol = pool.protocol === 'https:' ? 'wss:' : 'ws:'
-    pool.pathname = `${session.path}${session.token}/pool/${session.instanceId}`
-    pool.search = ''
-    pool.hash = ''
     installNdsWfcDnsShim(win as unknown as Parameters<typeof installNdsWfcDnsShim>[0],
-      session.dns ?? { server: '178.62.43.212', answers: {} }, session.path, pool.href)
+      session.dns ?? { server: '178.62.43.212', answers: {} }, session.path, poolUrlFor(session, origin), recoverSession)
   }
   if (original.__8bitgoWfc) {
-    original.__8bitgoWfc.session = session
-    original.__8bitgoWfc.origin = origin
     return true
   }
   let tracedSockets = 0
-  const state = { session, origin }
   const wrapped: WfcRuntime = function (this: unknown, config) {
-    // 新游戏可换令牌，但已经启动的核心要继续用自己的会话；URL 工厂不能读共享的可变 state。
-    const activeSession = state.session
-    const activeOrigin = state.origin
+    // 服务器重启后池会异步换令牌；同一局之后新建的 SOCKFS socket 也必须读到刷新后的会话。
     // MODULARIZE 的核心直接把这个对象当 Module 用，FS 之后会挂到它上面
     let pollFixed = false
     const moduleConfig: Record<string, unknown> & SockfsModule = {
@@ -254,7 +267,7 @@ export function installNdsWfcRuntime(win: RuntimeWindow, session: NdsWfcSession,
           if (import.meta.env?.DEV && tracedSockets++ < 20) console.info('[nds-wfc] socket', type === 1 ? 'tcp' : 'udp', host, port)
           // 第一条 socket 建连时修 SOCKFS 的 UDP poll；早于 libslirp 第一次 poll 这条 socket
           if (!pollFixed) pollFixed = fixModuleSockfsPoll(moduleConfig, socketName)
-          return ndsWfcSocketUrl(activeOrigin, activeSession, host, port, type, socketName)
+          return ndsWfcSocketUrl(state.origin, state.session, host, port, type, socketName)
         },
         subprotocol: 'binary',
       },
