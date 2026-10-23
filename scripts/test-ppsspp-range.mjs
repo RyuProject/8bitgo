@@ -1,6 +1,7 @@
 /** PSP 接入回归：平台路由、镜像识别和核心补丁不能退回整盘下载。 */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { CACHE, staticCacheHeaders } from '../server/src/cache.js'
 import { detectRom } from '../src/emulator/detect.ts'
 import { isStreamingDiscPlatform } from '../shared/streaming-disc-platforms.js'
 import { isIsolatedRuntimePlatform, isolatedRuntimeRoute } from '../shared/isolated-runtime-platforms.js'
@@ -78,6 +79,9 @@ assert.match(host, /__ppssppAudioWorkletUrl/, 'PSP 外壳必须把独立音频�
 assert.match(host, /RUNTIME_SCRIPT = 'PPSSPPSDL\.js'/, 'v15 桥必须加载同一实体目录中的核心')
 assert.match(host, /return new URL\(path, location\.href\)\.href/, 'v15 核心资源必须按同目录解析')
 assert.match(paths, /PPSSPP_RUNTIME_GENERATION = 'v15'/, 'Cloudflare 忽略查询串时必须靠实体目录换代')
+assert.match(paths, /PPSSPP_FRAME_REVISION = '2'/, 'PPSSPP 入口 HTML 必须有独立的浏览器缓存换代号')
+assert.match(adapter, /iframe\.src = ppssppFrameUrl\(\)/, 'PPSSPP iframe 必须使用可换代的入口地址')
+assert.match(prewarm, /warmHttpCache\(ppssppFrameUrl\(\)\)/, 'PSP 预热必须与 iframe 使用同一个入口地址')
 assert.match(adapter, /MOUNT_TIMEOUT_MS = 300_000/, '大型 PSP 镜像冷启动不能被旧的 180 秒计时器误杀')
 assert.match(host, /getPreloadedPackage[\s\S]*fetchCoreData/, 'PSP data 包网络中断后必须由桥自动重试')
 assert.match(host, /attempts = 3[\s\S]*30_000/, 'PSP data 包必须有有限重试和无进度超时')
@@ -92,10 +96,13 @@ assert.ok(
 )
 assert.match(ssr, /data\?\.route === 'game' && data\.game\?\.platform === 'psp'/, 'PSP 正常详情页必须由服务端加隔离头')
 assert.match(ssr, /isolatedDocument[\s\S]*?'Cross-Origin-Opener-Policy': 'same-origin'[\s\S]*?'Cross-Origin-Embedder-Policy': 'require-corp'/, 'PSP 详情页缺少 COOP/COEP')
-assert.match(serverIndex, /app\.get\('\/ppsspp\/v0dbfaca'[\s\S]*?CACHE\.none[\s\S]*?v15\/index\.html\?embed=1/, '旧 PSP bundle 的无 index 入口必须跳到当前实体运行时，不能继续 404 或命中旧缓存')
+assert.match(serverIndex, /app\.get\('\/ppsspp\/v0dbfaca'[\s\S]*?CACHE\.none[\s\S]*?v15\/index\.html\?embed=1&frame=2/, '旧 PSP bundle 的无 index 入口必须跳到当前实体运行时，不能继续 404 或命中旧缓存')
+const staticHeaders = new Map()
+staticCacheHeaders({ setHeader: (name, value) => staticHeaders.set(name, value) }, '/dist/client/ppsspp/v0dbfaca/v15/index.html')
+assert.equal(staticHeaders.get('Cache-Control'), CACHE.engine, 'PPSSPP 入口 HTML 不能按 immutable 缓存，避免错误响应长期卡在 iframe')
 assert.match(workerHttp, /'Cross-Origin-Resource-Policy', 'cross-origin'/, '隔离详情页的跨源封面会被 COEP 拦截')
 assert.match(workerIndex, /PSP_RANGE_BYTES = 2 \* 1024 \* 1024/, 'PSP 边缘缓存必须与核心的 2 MiB Range 对齐')
-assert.match(workerIndex, /\^\\\/roms\\\/\(\?:psp\|ps2\|gamecube\|wii\)\\\//, 'PSP 按需读盘必须进入 2 MiB 分片缓存计划')
+assert.match(workerIndex, /\^\\\/roms\\\/\(\?:psx\|psp\|ps2\|gamecube\|wii\)\\\//, 'PSP 按需读盘必须进入 2 MiB 分片缓存计划')
 assert.match(workerIndex, /\^\\\/roms\\\/\[\^\/\]\+\\\/\.\+/, '完整下载型 ROM 必须进入 8 MiB 分片缓存计划')
 assert.match(workerIndex, /ifMatch && ifMatch !== `"\$\{version\}"`/, 'PSP 分片缓存必须拒绝与 romv 不一致的 If-Match')
 assert.match(workerConfig, /image\.8bitgo\.com\/\*/, '封面域名必须经过会添加 CORP 的 R2 Worker')
@@ -113,8 +120,7 @@ assert.match(adapter, /message\.type === 'runtime-error'/)
 assert.match(adapter, /if \(bootStarted \|\| destroyed \|\| fatalReported\) return/)
 assert.match(adapter, /const failSession = [\s\S]*?rejectPending\(pendingMessage\)/, 'PSP 致命错误必须终止仍在等待的桥请求')
 assert.match(adapter, /if \(destroyed \|\| fatalReported\) return[\s\S]*?ready = true/, '致命错误后的迟到回复不能把会话重新标成成功')
-assert.match(adapter, /PPSSPP_RUNTIME_PATH/)
-assert.match(adapter, /index\.html\?embed=1/)
+assert.match(adapter, /ppssppFrameUrl\(\)/)
 assert.match(adapter, /focusFrame\(iframe\)/, 'PSP 启动和工具栏交互后必须把键盘焦点无滚动地还给模拟器')
 assert.match(adapter, /frameGamepads\(iframe\)/, 'PSP 手柄状态必须从实际运行游戏的 iframe 读取')
 assert.match(adapter, /caps\.add\('saveState'\)/, 'PSP 启动后必须上报统一即时存档能力')
@@ -218,7 +224,7 @@ for (const marker of ['WASM_USE_FFMPEG ?= OFF', '-DUSE_FFMPEG=$(WASM_USE_FFMPEG)
   assert.ok(wasmFfmpegPatch.includes(marker), `Web FFmpeg 补丁缺少 ${marker}`)
 }
 assert.match(prewarm, /runtime === 'ppsspp'/, 'PSP 运行时没有接入统一预热入口')
-assert.match(prewarm, /PPSSPP_RUNTIME_PATH}index\.html\?embed=1/, 'PSP 入口预热目录与真实 iframe 不一致')
+assert.match(prewarm, /ppssppFrameUrl\(\)/, 'PSP 入口预热没有复用真实 iframe 的缓存换代地址')
 assert.match(prewarm, /PPSSPP_RUNTIME_PATH}PPSSPPSDL\.wasm/, 'PSP 悬停没有预热 Wasm 核心')
 assert.match(prewarm, /PPSSPP_RUNTIME_PATH}PPSSPPSDL\.data/, 'PSP 悬停没有预热 data 包')
 assert.match(prewarm, /hasHoverIntent\(\) && allowsLargeHoverPrewarm\(\)/, 'PSP 大核心预热必须限制在真实桌面悬停和非省流网络')

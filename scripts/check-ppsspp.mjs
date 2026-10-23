@@ -56,7 +56,7 @@ if (!runtimeInit || /respond\s*\(/.test(runtimeInit)) {
 if (!/<script src="host\.js"><\/script>/.test(need(join(runtimeDir, 'index.html')).toString('utf8'))) {
   fail('v15 index.html 没有引用同一实体目录里的 host.js')
 }
-if (!/PPSSPP_RUNTIME_GENERATION = 'v15'/.test(paths) || !/PPSSPP_RUNTIME_PATH/.test(adapter)) {
+if (!/PPSSPP_RUNTIME_GENERATION = 'v15'/.test(paths) || !/PPSSPP_FRAME_REVISION = '2'/.test(paths) || !/ppssppFrameUrl/.test(adapter)) {
   fail('PPSSPP iframe 没有使用 v15 实体目录；查询串不能穿透当前 Cloudflare 缓存键')
 }
 if (/fetch\s*\(\s*(?:remote(?:\?\.)?\.url|gamePath)/.test(host)) {
@@ -184,7 +184,7 @@ for (const marker of ['WASM_USE_FFMPEG ?= OFF', '-DUSE_FFMPEG=$(WASM_USE_FFMPEG)
 }
 for (const marker of [
   "runtime === 'ppsspp'",
-  '${PPSSPP_RUNTIME_PATH}index.html?embed=1',
+  'ppssppFrameUrl()',
   '${PPSSPP_RUNTIME_PATH}PPSSPPSDL.wasm',
   '${PPSSPP_RUNTIME_PATH}PPSSPPSDL.data',
   '${PPSSPP_RUNTIME_PATH}range-prefetch-worker.js',

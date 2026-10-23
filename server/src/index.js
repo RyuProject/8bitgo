@@ -390,7 +390,7 @@ if (ssrAvailable()) {
    */
   app.get('/ppsspp/v0dbfaca', (_req, res) => {
     res.set('Cache-Control', CACHE.none)
-    res.redirect(302, '/ppsspp/v0dbfaca/v15/index.html?embed=1')
+    res.redirect(302, '/ppsspp/v0dbfaca/v15/index.html?embed=1&frame=2')
   })
 
   /**

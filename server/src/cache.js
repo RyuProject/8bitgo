@@ -125,6 +125,10 @@ export function staticCacheHeaders(res, filePath) {
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
     res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
     res.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
+    // index.html 只是启动入口，不是内容寻址产物。若某次部署中浏览器先缓存到缺文件时的
+    // 回退响应，immutable 会让 iframe 长期显示 ERR_BLOCKED_BY_RESPONSE；核心二进制仍可
+    // 长缓存，只有这不足 2KB 的外壳每次重新校验。
+    if (/\/ppsspp\/[^/]+\/v\d+\/index\.html$/i.test(p)) return set(CACHE.engine)
     return set(CACHE.engineVersioned)
   }
 

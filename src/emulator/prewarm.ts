@@ -8,6 +8,7 @@ import {
   J2ME_PATH,
   JSDOS_PATH,
   PPSSPP_RUNTIME_PATH,
+  ppssppFrameUrl,
   RUFFLE_PATH,
   ejsRuntimeAsset,
   emulatorJsCoreFileFor,
@@ -130,7 +131,7 @@ export function prewarmRuntime(runtime: RuntimeId | undefined, core?: string | n
     // 入口与桥很小，键盘 focus（包括触屏点击同一刻）也可以安全预热。38MB 的 JS/WASM/data
     // 只在桌面真实悬停且不是省流/2G 时拉：这段提前量能把 PSP 冷启动下载移出点击关键路径，
     // 又不会让只是滚过手机详情页的访客付出大核心流量。
-    warmHttpCache(`${PPSSPP_RUNTIME_PATH}index.html?embed=1`)
+    warmHttpCache(ppssppFrameUrl())
     warmHttpCache(`${PPSSPP_RUNTIME_PATH}host.js`)
     if (aggressive && hasHoverIntent() && allowsLargeHoverPrewarm()) {
       warmHttpCache(`${PPSSPP_RUNTIME_PATH}PPSSPPSDL.js`)

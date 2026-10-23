@@ -177,6 +177,18 @@ export const PPSSPP_RUNTIME_PATH: string = PPSSPP_PATH
   : ''
 
 /**
+ * PPSSPP 的 HTML 入口不是内容寻址文件：它只是很小的启动壳，却会决定后续桥接脚本怎样
+ * 接收父页消息。曾有浏览器在部署窗口把一个错误响应缓存到版本目录的 index.html；目录
+ * 后来补齐后，`immutable` 仍会让该浏览器持续在 iframe 中显示 ERR_BLOCKED_BY_RESPONSE。
+ *
+ * Cloudflare 对这套运行时忽略查询串，因此核心数据仍复用同一份边缘缓存；这里的查询参数
+ * 只用于让浏览器放弃旧的“入口 HTML”缓存。改动入口协议时递增它，不能拿来改 Wasm/data。
+ */
+export const PPSSPP_FRAME_REVISION = '2'
+export const ppssppFrameUrl = (): string =>
+  `${PPSSPP_RUNTIME_PATH}index.html?embed=1&frame=${encodeURIComponent(PPSSPP_FRAME_REVISION)}`
+
+/**
  * wasm-dolphin 随仓库发布在版本目录里。目录名就是接入时锁定的上游提交短 SHA：
  * 运行时文件互相用相对路径 import，升级时必须整目录换代，不能让边缘缓存拼出新旧混合物。
  */

@@ -10,7 +10,7 @@
  */
 import type { Capability, CaptureSources, MountOptions, RuntimeHandle } from '../types'
 import { focusFrame, frameGamepads } from '../frameFocus'
-import { PPSSPP_RUNTIME_PATH, PPSSPP_VERSION } from '../paths'
+import { PPSSPP_VERSION, ppssppFrameUrl } from '../paths'
 import { probeRange } from '../remoteDisc'
 import { downloadPspDisc, PspDiscStorageError } from '../pspFullDownload'
 import { fmt, getT } from '@/services/i18n'
@@ -282,10 +282,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   // r=13 给首帧的音频填充、事件轮询与 NativeFrame 加一次性定位点。
   // r=14 证实真正故障是 Emscripten 在代理 WebGL 的整数令牌上执行本地 VBO 预帧维护。
   // v5 保留 v4 实测更快的 2MB CHD Range，并把所有 PSP 游戏收敛到原生分辨率完整缓冲档；
-  // 同时裁掉 data 里的远程调试器资源、
-  // 降低解包前内存峰值。Cloudflare 对这组静态资源忽略查询串，因此必须换实体目录；
-  // 不能再用 `?r=`，否则边缘会把旧 data 和新 JS 拼成不可启动的一套。
-  iframe.src = `${PPSSPP_RUNTIME_PATH}index.html?embed=1`
+  // 同时裁掉 data 里的远程调试器资源、降低解包前内存峰值。核心文件升级仍必须换实体
+  // 目录：Cloudflare 会忽略查询串，不能拿它替换 Wasm/data。入口 HTML 的浏览器缓存换代
+  // 则由 ppssppFrameUrl 管，见 paths.ts。
+  iframe.src = ppssppFrameUrl()
   hostTimer = window.setTimeout(() => {
     if (!destroyed && !ready && !fatalReported) {
       failSession(rt.ppssppStartTimeout, 'PPSSPP 运行时页面启动超时')
