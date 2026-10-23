@@ -578,6 +578,7 @@ type WfcDnsShimState = {
   path: string
   poolUrl: string | null
   pool: RelayPool | null
+  activeSockets: Set<WebSocketLike>
   RealWebSocket: WebSocketCtor
   recoverSession?: () => Promise<{ table: NdsWfcDnsTable; poolUrl: string } | null>
 }
@@ -599,6 +600,38 @@ function relayUrlForCurrentSession(url: string, state: WfcDnsShimState): string 
   } catch {
     return url
   }
+}
+
+/**
+ * 模拟器关闭时主动结束已分配的 WFC 流和预热池。
+ * 只等 iframe 被浏览器回收会让服务端继续保留 TCP / UDP peer 一段时间，快速重连时旧会话可能重叠。
+ */
+function trackWfcSocket<T extends WebSocketLike>(state: WfcDnsShimState, socket: T): T {
+  let listener = socket.onclose
+  let released = false
+  const release = () => {
+    if (released) return
+    released = true
+    state.activeSockets.delete(socket)
+  }
+  Object.defineProperty(socket, 'onclose', {
+    configurable: true,
+    enumerable: true,
+    get: () => listener,
+    set: (next: Listener) => {
+      listener = typeof next === 'function'
+        ? (event) => {
+            try { next(event) } finally { release() }
+          }
+        : next
+    },
+  })
+  const close = socket.close.bind(socket)
+  socket.close = () => {
+    try { close() } finally { release() }
+  }
+  state.activeSockets.add(socket)
+  return socket
 }
 
 /**
@@ -626,7 +659,7 @@ export function installNdsWfcDnsShim(win: WfcWindow, table: NdsWfcDnsTable, path
     return true
   }
   const Real = current
-  const state: WfcDnsShimState = { table, path, poolUrl: poolUrl ?? null, pool: null, RealWebSocket: Real, recoverSession }
+  const state: WfcDnsShimState = { table, path, poolUrl: poolUrl ?? null, pool: null, activeSockets: new Set(), RealWebSocket: Real, recoverSession }
   if (poolUrl) state.pool = new RelayPool(poolUrl, Real, 4, () => recoverWfcPool(state))
   /*
     开局就预热，不等客体第一次查 DNS：生产实测直连 WSS 握手 1.5～4.9 秒，而 conntest 紧跟在
@@ -641,8 +674,8 @@ export function installNdsWfcDnsShim(win: WfcWindow, table: NdsWfcDnsTable, path
     }
     if (state.pool?.isStopped && state.poolUrl) state.pool = new RelayPool(state.poolUrl, Real, 4, () => recoverWfcPool(state))
     const ws = target && state.pool ? state.pool.take() : null
-    if (target && ws) return new PooledSocket(url, ws, target) as unknown as WebSocket
-    return new RetryingWebSocket(url, protocols, Real, undefined, 8_000, () => relayUrlForCurrentSession(url, state)) as unknown as WebSocket
+    if (target && ws) return trackWfcSocket(state, new PooledSocket(url, ws, target)) as unknown as WebSocket
+    return trackWfcSocket(state, new RetryingWebSocket(url, protocols, Real, undefined, 8_000, () => relayUrlForCurrentSession(url, state))) as unknown as WebSocket
   }
   const Retrying = function (this: unknown, url: string, protocols?: string | string[]) {
     return relaySocket(url, protocols)
@@ -658,7 +691,7 @@ export function installNdsWfcDnsShim(win: WfcWindow, table: NdsWfcDnsTable, path
         state.poolUrl = target.poolUrl
         state.pool = new RelayPool(target.poolUrl, Real, 4, () => recoverWfcPool(state))
       }
-      return new LocalDnsSocket(url, protocols, state.table, Retrying)
+      return trackWfcSocket(state, new LocalDnsSocket(url, protocols, state.table, Retrying)) as unknown as WebSocket
     }
     // 只给本站 WFC 中继套重试 / 连接池；EmulatorJS 自己的 netplay 等其它 WebSocket 原样构造
     if (isRelay(url)) return relaySocket(url, protocols)
@@ -669,6 +702,17 @@ export function installNdsWfcDnsShim(win: WfcWindow, table: NdsWfcDnsTable, path
   Shim.__8bitgoWfcDns = state
   win.WebSocket = Shim
   return true
+}
+
+/** 释放某个模拟器 iframe 持有的 WFC socket；重复调用安全。 */
+export function disposeNdsWfcDnsShim(win: WfcWindow): void {
+  const state = win.WebSocket?.__8bitgoWfcDns
+  if (!state) return
+  state.pool?.stop()
+  for (const socket of [...state.activeSockets]) {
+    try { socket.close() } catch { /* iframe 正在销毁时个别流可能已经关闭 */ }
+  }
+  state.activeSockets.clear()
 }
 
 /** 进程重启会清空内存会话；池握手连续失败时用同一个浏览器身份取新令牌并整体换池。 */

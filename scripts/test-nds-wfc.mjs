@@ -4,7 +4,7 @@ import vm from 'node:vm'
 import { fileURLToPath } from 'node:url'
 import { fixSockfsDgramPoll, installNdsWfcRuntime, isWorldAtWarNdsRomHeader, loadNdsWfcSettings, ndsWfcMacAddress, ndsWfcSocketUrl, saveNdsWfcSettings } from '../src/emulator/ndsWfc.ts'
 import { NDS_WFC_SETTINGS_PATH, NDS_WFC_SETTINGS_SIZE } from '../src/emulator/ndsStartup.ts'
-import { buildDnsAReply, dnsAnswerIpsFor, installNdsWfcDnsShim, LocalDnsSocket, parseDnsQuestion, parseRelayUrl, PooledSocket, RetryingWebSocket, sanitizeDnsTable } from '../src/emulator/ndsWfcDns.ts'
+import { buildDnsAReply, dnsAnswerIpsFor, disposeNdsWfcDnsShim, installNdsWfcDnsShim, LocalDnsSocket, parseDnsQuestion, parseRelayUrl, PooledSocket, RetryingWebSocket, sanitizeDnsTable } from '../src/emulator/ndsWfcDns.ts'
 
 const storedMac = new Map()
 const macWindow = {
@@ -298,6 +298,24 @@ assert.equal(recoverCalls, 1, '连续失败只触发一次会话恢复')
 assert.equal(recoveringWin.WebSocket.__8bitgoWfcDns.poolUrl, recoveredPoolUrl, '恢复后池地址必须换成新会话令牌')
 assert.equal(FakeRealSocket.pooled().filter((ws) => ws.url === recoveredPoolUrl).length, 4, '恢复后重新预热完整连接池')
 recoveringWin.WebSocket.__8bitgoWfcDns.pool.stop()
+
+// 销毁模拟器时必须关掉已分配的 TCP / DNS socket 和未使用的预热连接，避免快速重开时旧会话残留。
+FakeRealSocket.created.length = 0
+const disposalWin = { WebSocket: FakeRealSocket }
+const disposalPoolUrl = `wss://8bitgo.com/api/nds-wfc/socket/${'F'.repeat(32)}/pool/${'f'.repeat(16)}`
+assert.equal(installNdsWfcDnsShim(disposalWin, dnsTable, '/api/nds-wfc/socket/', disposalPoolUrl), true)
+const disposalPoolSockets = FakeRealSocket.pooled().slice()
+for (const ws of disposalPoolSockets) { ws.readyState = 1; ws.onopen({}) }
+const disposalDns = new disposalWin.WebSocket(`wss://8bitgo.com/api/nds-wfc/socket/${'F'.repeat(32)}/udp/178.62.43.212/53/8/${'f'.repeat(16)}`)
+const disposalTcp = new disposalWin.WebSocket(`wss://8bitgo.com/api/nds-wfc/socket/${'F'.repeat(32)}/tcp/178.62.43.212/443`)
+assert.ok(disposalTcp instanceof PooledSocket)
+assert.equal(disposalWin.WebSocket.__8bitgoWfcDns.activeSockets.size, 2)
+disposeNdsWfcDnsShim(disposalWin)
+assert.equal(disposalWin.WebSocket.__8bitgoWfcDns.activeSockets.size, 0)
+assert.equal(disposalWin.WebSocket.__8bitgoWfcDns.pool.isStopped, true)
+assert.ok(FakeRealSocket.created.every((ws) => ws.readyState === 3), '模拟器 teardown 必须关闭活动连接和池内空闲连接')
+disposeNdsWfcDnsShim(disposalWin)
+assert.ok(FakeRealSocket.created.every((ws) => ws.readyState === 3), '重复 teardown 必须安全')
 
 // WebSocket 握手若一直停在 CONNECTING，客户端要主动结束本次尝试并按退避策略重连。
 class ClosingSocket extends FakeRealSocket {

@@ -51,7 +51,7 @@ import { writeFsInjections, type FsInjection } from '../fsInjection'
 import { arcadeCoreForRomData, supportsFbneoRomData } from '../arcadeCore'
 import { MAME_AUDIO_LATENCY_MS, RETROARCH_CFG_PATH, raiseAudioLatency } from '../mameAudio'
 import { ndsAudioLatencyMs } from '../ndsAudio'
-import { installNdsWfcRuntime, isWorldAtWarNdsRomHeader, loadNdsWfcSettings, ndsWfcMacAddress, prepareNdsWfcSession, saveNdsWfcSettings } from '../ndsWfc'
+import { disposeNdsWfcRuntime, installNdsWfcRuntime, isWorldAtWarNdsRomHeader, loadNdsWfcSettings, ndsWfcMacAddress, prepareNdsWfcSession, saveNdsWfcSettings } from '../ndsWfc'
 import { isNdsWasmCrash } from '../ndsCrash'
 import {
   arcadePerformanceDefaultOptions,
@@ -4036,6 +4036,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     // 退出前最后抄一次：刚在游戏里完成首次 WFC 建号就关页面时，ID 也不能丢。
     try { syncWfcSettings?.() } catch { /* iframe 可能已不可访问 */ }
     syncWfcSettings = null
+    // 先发关闭帧并释放连接池；只移除 iframe 会让服务端旧 TCP / UDP 流短暂残留，快速重连可报 52200。
+    try {
+      const wfcWindow = iframe.contentWindow
+      if (wfcWindow) disposeNdsWfcRuntime(wfcWindow)
+    } catch { /* iframe 可能已不可访问 */ }
     window.clearTimeout(keymapSyncTimer)
     keymapSyncTimer = 0
     // 盯几何那个是**有上限**的短定时器，正常自己会停；这里兜一道，

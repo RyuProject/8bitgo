@@ -3,7 +3,7 @@
  * melonDS DS 的 SOCKFS 必须在创建每条连接时拿到一个同源 WSS 地址，让本站后端转发。
  */
 
-import { installNdsWfcDnsShim, sanitizeDnsTable, type NdsWfcDnsTable } from './ndsWfcDns'
+import { disposeNdsWfcDnsShim, installNdsWfcDnsShim, sanitizeDnsTable, type NdsWfcDnsTable } from './ndsWfcDns'
 
 export interface NdsWfcSession {
   token: string
@@ -277,4 +277,9 @@ export function installNdsWfcRuntime(win: RuntimeWindow, session: NdsWfcSession,
   wrapped.__8bitgoWfc = state
   win.EJS_Runtime = wrapped
   return true
+}
+
+/** 模拟器 teardown 时显式关闭 WFC 中继，避免下一次游戏连接与旧 TCP / UDP 会话重叠。 */
+export function disposeNdsWfcRuntime(win: Window): void {
+  disposeNdsWfcDnsShim(win as unknown as Parameters<typeof disposeNdsWfcDnsShim>[0])
 }
