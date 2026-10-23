@@ -568,6 +568,12 @@ export function createNdsWfcService({
       const queued = []
       let queuedBytes = 0
       let connected = false
+      let upstreamEnded = false
+      let pendingUpstreamFrames = 0
+      const finishUpstream = () => {
+        // conntest 会在短响应后立即 FIN；先等 WebSocket 确认响应帧写出，再发关闭帧，避免客体只看到断线。
+        if (upstreamEnded && pendingUpstreamFrames === 0) close()
+      }
       upstream = tcpSocketFactory({ host, port })
       upstream.setNoDelay?.(true)
       upstream.setKeepAlive?.(true, 30_000)
@@ -586,11 +592,33 @@ export function createNdsWfcService({
       })
       upstream.on('data', (data) => {
         trace('tcp recv', host, port, data.length, gpPort ? gpTraceSummary(data) ?? '' : '')
-        send(data)
+        if (ws.readyState !== WebSocket.OPEN) return
+        if (ws.bufferedAmount > MAX_BUFFERED) return close()
+        pendingUpstreamFrames++
+        try {
+          ws.send(data, { binary: true }, (error) => {
+            pendingUpstreamFrames--
+            if (error) return close()
+            if (port === 80) trace('tcp response flushed', host, port, data.length)
+            finishUpstream()
+          })
+        } catch {
+          pendingUpstreamFrames--
+          close()
+        }
       })
       upstream.on('error', (error) => { trace('tcp error', host, port, error.code); close() })
-      upstream.on('end', () => trace('tcp end', host, port))
-      upstream.on('close', (hadError) => { trace('tcp close', host, port, hadError); close() })
+      upstream.on('end', () => {
+        trace('tcp end', host, port)
+        upstreamEnded = true
+        finishUpstream()
+      })
+      upstream.on('close', (hadError) => {
+        trace('tcp close', host, port, hadError)
+        if (hadError) return close()
+        upstreamEnded = true
+        finishUpstream()
+      })
       ws.on('message', (raw, binary) => {
         const message = Buffer.from(raw)
         if (!binary || !admit(message)) return
