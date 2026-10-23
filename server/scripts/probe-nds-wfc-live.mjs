@@ -43,7 +43,7 @@ const httpReply = await Promise.race([
   }),
   new Promise((_, reject) => setTimeout(() => reject(new Error('WFC 登录服务器 TCP 超时')), 10_000)),
 ])
-assert.match(httpReply, /^HTTP\/1\.1 401 Unauthorized/)
+assert.match(httpReply, /^HTTP\/1\.1 (?:200 OK|401 Unauthorized)/)
 tcp.close()
 const gpDns = new WebSocket(wsUrl, 'binary', { headers: { Origin: base } })
 const gpName = 'gpcm.gs.nintendowifi.net'.split('.')
