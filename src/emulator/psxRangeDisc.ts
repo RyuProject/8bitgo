@@ -21,7 +21,7 @@ export interface PsxRangeDisc {
   readonly size: number
   /** 加载条只计算开局必需的首尾分片，不把尚未需要的整张盘伪报为已下载。 */
   readonly startupBytes: number
-  install(fs: PsxRangeFs, frame: Window): void
+  install(fs: PsxRangeFs, xhrFactory: typeof XMLHttpRequest): void
   dispose(): void
 }
 
@@ -173,7 +173,7 @@ export async function preparePsxRangeDisc(url: string, name: string, signal: Abo
     return {
       url, name, size,
       startupBytes: Math.min(size, PSX_RANGE_BYTES) + (lastIndex > 0 ? size - lastIndex * PSX_RANGE_BYTES : 0),
-      install(fs, frame) {
+      install(fs, xhrFactory) {
         checkAlive()
         const path = `/${name.split('/').pop()}`
         fs.writeFile(path, new Uint8Array(0))
@@ -193,8 +193,15 @@ export async function preparePsxRangeDisc(url: string, name: string, signal: Abo
           for (let attempt = 0; attempt < 2; attempt++) {
             checkAlive()
             try {
-              const Xhr = (frame as Window & { XMLHttpRequest: typeof XMLHttpRequest }).XMLHttpRequest
-              const xhr = new Xhr()
+              /*
+                读盘请求必须由外层页面创建的 XHR 发出。
+
+                EmulatorJS 跑在 sandbox srcdoc iframe 里，浏览器会把它视为不透明源（Origin: null）；
+                R2 只允许本站页面源时，iframe 内的跨域 XHR 会被 CORS 拒绝。首尾预热由外层页面
+                fetch 发出所以看起来正常，只有核心第一次读到未缓存分片才黑屏。把构造器从调用方
+                传进来，避免误拿 iframe 自己的 XMLHttpRequest。
+              */
+              const xhr = new xhrFactory()
               xhr.open('GET', url, false)
               // 浏览器主线程禁止同步 XHR 的 arraybuffer；单字节文本映射仍能保留原始 CHD 字节。
               xhr.overrideMimeType('text/plain; charset=x-user-defined')

@@ -189,7 +189,7 @@ const EJS_LANG: Record<Lang, string> = {
  * 存档在另一个库（EmulatorJS-states）和我们自己的云存档里，不碰。
  */
 // 旧 NDS 核心把双倍物理画布当成 1 倍指针坐标；换代才能让玩家实际拿到触屏修正版。
-const EJS_CACHE_GENERATION = '2026-10-24.melondsds-wfc-sourceport.touch-dpr.psx-range.melondsds-core-fb82cf07.corecompat1'
+const EJS_CACHE_GENERATION = '2026-10-25.melondsds-wfc-sourceport.touch-dpr.psx-range.melondsds-core-fb82cf07.corecompat1.psxstate2'
 // 浏览器实测已能按片读取，但现有 Beetle WASM 在该样本的完整下载路径也会崩溃；未确认可玩前不能让生产自动进入实验链路。
 const PSX_RANGE_ENABLED = import.meta.env.VITE_PSX_RANGE_ENABLED === '1'
 const EJS_CACHE_PURGED_KEY = '8bitgo.ejs.cachePurged'
@@ -877,7 +877,8 @@ function installFsInjector(
         try {
           const fs = next.gameManager?.FS as PsxRangeFs | undefined
           if (!fs?.lookupPath) throw new Error('虚拟文件系统尚未准备好')
-          psxRange.install(fs, win)
+          // 用主页面的 XHR：iframe 是 sandbox srcdoc 的不透明源，Origin: null 不一定被 R2 CORS 放行。
+          psxRange.install(fs, window.XMLHttpRequest)
           console.info(`[emulatorjs] PS1 CHD Range 已挂载：${psxRange.name}（${psxRange.size} 字节）`)
           return Promise.resolve({ files: [{ filename: psxRange.name.split('/').pop() }] })
         } catch (error) {

@@ -75,7 +75,8 @@ const fs = {
   },
   lookupPath(path) { assert.equal(path, '/test.chd'); return { node } },
 }
-range.install(fs, { XMLHttpRequest: FakeXhr })
+// 同步读盘的 XHR 构造器由播放器外层窗口注入，不能从 sandbox iframe 取。
+range.install(fs, FakeXhr)
 assert.equal(node.usedBytes, disc.length)
 assert.notEqual(node.stream_ops, sharedStreamOps)
 assert.equal(sharedStreamOps.read(), 77, 'BIOS 与存档必须保留共享文件读取方法')
@@ -97,7 +98,7 @@ let failedNode
 failedRange.install({
   writeFile() { failedNode = { usedBytes: 0, stream_ops: sharedStreamOps } },
   lookupPath() { return { node: failedNode } },
-}, { XMLHttpRequest: FaultyXhr })
+}, FaultyXhr)
 assert.throws(() => failedNode.stream_ops.read({}, new Uint8Array(1), 0, 1, PSX_RANGE_BYTES * 4), /读盘失败.*network offline/)
 await Promise.resolve()
 assert.equal(fatalMessages.length, 1)

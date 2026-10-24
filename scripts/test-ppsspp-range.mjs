@@ -34,7 +34,9 @@ assert.equal((await detectRom(fakeFile('game.iso', iso))).platform, 'psp', 'PSP 
 
 const cso = new Uint8Array(64)
 cso.set(new TextEncoder().encode('CISO'))
-assert.equal((await detectRom(fakeFile('game.cso', cso))).platform, 'psp', 'CSO 魔数应识别为 PSP')
+const csoDetection = await detectRom(fakeFile('game.cso', cso))
+assert.equal(csoDetection.platform, undefined, 'CISO 也是 PS2 可用的容器，不能再武断送进 PSP')
+assert.deepEqual(csoDetection.candidates, ['psp', 'ps2'], 'CISO 必须只给 PSP / PS2 两个安全候选')
 
 /* ---------- 多语言切换：存档隔离与异步竞态 ---------- */
 assert.equal(pspVariantSaveSlug('project-diva', 'ja', 2), 'project-diva~psp-ja', 'PSP 多语言版必须隔离存档键')

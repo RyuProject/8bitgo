@@ -119,7 +119,7 @@ if (psxCoreHash !== 'c830df67587ba84a55bf6b962fafdc90b73bcc27f720dd074e20d746003
 for (const variant of ['wasm', 'legacy-wasm']) {
   const archive = join(dir, 'cores', `mednafen_psx-${variant}.data`)
   const hash = existsSync(archive) ? createHash('sha256').update(readFileSync(archive)).digest('hex') : ''
-  if (hash !== 'aa489e36f1938e14ab3e03854a09acbb03da0634362ec741d60094fe70e4f33b') {
+  if (hash !== '63cc07767d33693501793e1e5e9870b729d18fea08ae206aa79b3e20538344ee') {
     fail(`Beetle PS1 软件版 ${variant} 核心未通过 Range 游戏实测版本校验`, '恢复随仓库发布的 mednafen_psx 核心；换版后必须重做浏览器实玩验收')
   }
 }

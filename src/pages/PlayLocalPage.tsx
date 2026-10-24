@@ -9,7 +9,8 @@ import { usePlatformBiosUrl } from '@/services/platformBios'
 import { platformLabel } from '@/services/i18nData'
 import { EmulatorPlayer } from '@/emulator/PlayerChunk'
 import { KeymapCards } from '@/components/game/KeymapCards'
-import { isPlayable, resolveRuntime, runtimesFor } from '@/emulator'
+import { getRuntime, isPlayable, resolveRuntime, runtimesFor, type RuntimeId } from '@/emulator'
+import type { RomDetection } from '@/emulator/detect'
 
 function stepsFor(t: Translation) {
   return [
@@ -22,10 +23,10 @@ function stepsFor(t: Translation) {
 /**
  * 玩本地 ROM。
  *
- * 页面不再常驻「平台」选择器和「运行时」说明列表 —— 平台一律由 detect.ts 按文件头 /
- * 扩展名自动判断。只有在**识别不出平台**（比如内含单个 .bin 的 zip，detect 只会给
- * confidence: 'low' 且不给平台）时，才就地弹出一个平台选择让用户指定，选完立刻用
- * 同一个文件重跑。这样界面干净，又不会把这类文件卡死。
+ * 页面不再常驻「平台」选择器和「运行时」说明列表 —— 平台优先由 detect.ts 按文件头 /
+ * 扩展名自动判断。只有识别不可靠时（例如内含单个 .bin 的 ZIP、CHD / PBP / CISO
+ * 这类跨平台容器），才就地弹出一个经过缩小的平台选择；选完把用户确认一并传回播放器，
+ * 不让默认 NES 平台吞掉这类文件。
  */
 export function PlayLocalPage() {
   const t = useT()
@@ -36,8 +37,13 @@ export function PlayLocalPage() {
   const [platformId, setPlatformId] = useState<PlatformId>('nes')
   /** 识别失败、等待用户手动指定平台的文件 */
   const [pendingFile, setPendingFile] = useState<File | null>(null)
+  /** 容器有合理候选时只给这些候选；完全认不出时才开放所有可用平台。 */
+  const [pendingCandidates, setPendingCandidates] = useState<PlatformId[] | null>(null)
+  const [pendingReason, setPendingReason] = useState<string | null>(null)
   /** 用户选好平台后递给播放器重跑；每次都是新对象，所以同一个文件也能重试多次 */
-  const [retryRequest, setRetryRequest] = useState<{ file: File } | null>(null)
+  const [retryRequest, setRetryRequest] = useState<{ file: File; confirmedPlatform?: boolean } | null>(null)
+  /** 文件头 / mapper / 扩展名最终选出的运行时，不能用平台默认值冒充。 */
+  const [activeRuntimeId, setActiveRuntimeId] = useState<RuntimeId | null>(null)
   /**
    * 手写的 FBNeo RomData（.dat）。
    *
@@ -69,22 +75,39 @@ export function PlayLocalPage() {
   const playable = platforms.filter((p) => isPlayable(p.id))
   // 显示「这个平台实际会用哪个引擎」：按优先级取，与 resolveRuntime 的选法一致，
   // 否则 NES 会显示成 EmulatorJS，但实际跑的是 jsnes。
-  const runtime = runtimesFor(platformId)[0] ?? resolveRuntime(platformId)
+  const defaultRuntime = runtimesFor(platformId)[0] ?? resolveRuntime(platformId)
+  const runtime = (activeRuntimeId ? getRuntime(activeRuntimeId) : undefined) ?? defaultRuntime
 
   // 这两个回调会进 EmulatorPlayer 内部 start() 的依赖，用 useCallback 固定住引用，
   // 免得本页每次重渲染都让播放器里的回调重新创建一遍。
-  const handlePlatformChange = useCallback((id: PlatformId) => setPlatformId(id), [])
-  const handleDetectFailed = useCallback((file: File) => {
+  const clearPending = useCallback(() => {
+    setPendingFile(null)
+    setPendingCandidates(null)
+    setPendingReason(null)
+    setActiveRuntimeId(null)
+  }, [])
+  const handlePlatformChange = useCallback((id: PlatformId) => {
+    setPlatformId(id)
+    clearPending()
+  }, [clearPending])
+  const handleDetectFailed = useCallback((file: File, detection: RomDetection) => {
     setPendingFile(file)
+    setPendingCandidates(detection.candidates?.length ? detection.candidates : null)
+    setPendingReason(detection.reason)
     return true
   }, [])
+  const handleRuntimeChange = useCallback((next: { id: RuntimeId }) => setActiveRuntimeId(next.id), [])
 
   const pickPlatform = (id: PlatformId) => {
     if (!pendingFile) return
     setPlatformId(id)
-    setRetryRequest({ file: pendingFile })
-    setPendingFile(null)
+    setRetryRequest({ file: pendingFile, confirmedPlatform: true })
+    clearPending()
   }
+
+  const pendingPlatforms = pendingCandidates?.length
+    ? playable.filter((candidate) => pendingCandidates.includes(candidate.id))
+    : playable
 
   return (
     <div className="container-x py-8 sm:py-10">
@@ -128,12 +151,13 @@ export function PlayLocalPage() {
             调试模式（显示启动各阶段诊断与模拟器日志，方便定位是 ROM 不行还是模拟器不支持）
           </label>
 
-          {/* 兜底：自动识别不出平台时才出现，选完立刻用同一个文件重跑 */}
+          {/* 兜底：没有可靠结论才出现；盘类容器只展示实际可能的平台，避免误选。 */}
           {pendingFile && (
             <div className="mb-3 rounded-xl border border-coin/50 bg-coin-soft p-3">
               <p className="text-sm text-fg">{fmt(t.playLocal.detectFailed, { name: pendingFile.name })}</p>
+              {pendingReason && <p className="mt-1 text-xs leading-relaxed text-muted">{pendingReason}</p>}
               <div className="mt-2.5 flex flex-wrap gap-1.5">
-                {playable.map((p) => (
+                {pendingPlatforms.map((p) => (
                   <button
                     key={p.id}
                     type="button"
@@ -157,7 +181,9 @@ export function PlayLocalPage() {
             icon="🔍"
             onDetectMismatch="switch"
             onPlatformChange={handlePlatformChange}
+            onRuntimeChange={handleRuntimeChange}
             onDetectFailed={handleDetectFailed}
+            onLocalFileSelected={clearPending}
             retryRequest={retryRequest}
             // 本地页专属：开启后界面展示启动各阶段的诊断与模拟器日志，便于定位故障
             debug={debug}

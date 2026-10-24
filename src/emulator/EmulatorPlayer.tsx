@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type
 import type { ArcadeButtonCount, DosBackend, DosWindowsVersion, FlashControls, GenreId, Platform, PlatformId } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { formatBytes, formatSpeed, isRomFileAccepted } from '@/lib/emulator'
-import { detectRom, describeDetection } from './detect'
+import { detectRom, describeDetection, type RomDetection } from './detect'
 import { isPc98FdiFileName } from './pc98'
 import { jsnesCanRun } from './nesMapper'
 import { resolveRuntime, runtimesFor, extOf } from './registry'
@@ -410,21 +410,25 @@ interface Props {
   onDetectMismatch?: 'switch' | 'warn'
   /** 平台切换回调（onDetectMismatch = 'switch' 时触发） */
   onPlatformChange?: (platform: PlatformId) => void
+  /** 本地文件最终选中的运行时；本地页据此同步键位与状态文案，不能只显示平台默认值。 */
+  onRuntimeChange?: (runtime: Runtime, platform: PlatformId) => void
   /**
-   * 自动识别没能判定平台、当前平台又不接受这个文件时触发。
+   * 自动识别没能可靠判定平台时触发。
    *
-   * 「玩本地 ROM」页去掉了常驻的平台选择器，靠这个回调在识别失败时才让用户手动指定 ——
-   * 否则一个内含单个 .bin 的 zip（detect.ts 只会给出 confidence: 'low' 且不给平台）
-   * 会拿默认平台去跑，必然失败而且用户没有任何出路。
+   * 「玩本地 ROM」页去掉了常驻的平台选择器，靠这个回调在识别失败或遇到跨平台容器时
+   * 让用户手动指定 —— 否则一个内含单个 .bin 的 zip，或者一张 PS2 CHD，都会拿默认
+   * NES / 被硬猜出来的 PS1 去跑，必然失败而且用户没有任何出路。
    *
    * 返回 true 表示页面已经接管（不再显示默认的「格式不支持」错误）。
    */
-  onDetectFailed?: (file: File) => boolean | void
+  onDetectFailed?: (file: File, detection: RomDetection) => boolean | void
+  /** 用户选了另一份本地文件；页面可借此收起上一份文件留下的手动选择。 */
+  onLocalFileSelected?: () => void
   /**
    * 外部要求重新运行某个本地文件。每次传入**新对象**都会重新开始一次
    * （用对象包一层而不是直接传 File，是为了同一个文件也能重试第二次）。
    */
-  retryRequest?: { file: File } | null
+  retryRequest?: { file: File; confirmedPlatform?: boolean } | null
 }
 
 /**
@@ -586,7 +590,9 @@ export function EmulatorPlayer({
   onRomLangChange,
   onDetectMismatch = 'warn',
   onPlatformChange,
+  onRuntimeChange,
   onDetectFailed,
+  onLocalFileSelected,
   retryRequest,
   autoStart,
   debug = false,
@@ -2912,10 +2918,13 @@ export function EmulatorPlayer({
   }
 
   const start = useCallback(
-    async (picked: File | null) => {
+    async (picked: File | null, confirmedPlatform = false) => {
       // 玩家在语言探测失败后改选本地文件，说明他已经放弃那次自动重开；旧请求日后恢复
       // 也不能突然盖掉正在玩的本地会话。
-      if (picked) restartWithLangRef.current = null
+      if (picked) {
+        restartWithLangRef.current = null
+        onLocalFileSelected?.()
+      }
       const seq = ++startSeqRef.current
       const superseded = () => startSeqRef.current !== seq
       setError(null)
@@ -2985,30 +2994,6 @@ export function EmulatorPlayer({
         }
       }
 
-      /*
-        街机改版包：先认一遍指纹表。认出来就换成正确的包名、配好 RomData ——
-        不然核心只会说一句「Romset is unknown」，玩家完全无从下手。
-        放在 detectRom 之前：改版包和原版包的扩展名、魔数都一样，
-        detectRom 认不出这层差别，而这一步会换掉文件本身。
-      */
-      if (platform.id === 'arcade') {
-        const matched = await matchLocalArcadeHack(picked)
-        if (superseded()) return
-        if (matched?.hack.romData) {
-          setLocalRomData(matched.hack.romData)
-          setNotice(fmt(t.player.arcadeHackFound, { title: matched.hack.title, driver: matched.hack.driver }))
-          setFile(matched.file)
-          begin(matched.file, 'arcade', emulatorJsMeta)
-          return
-        }
-        // 认得出但没有加载方案，或者压根不认识：清掉上一次的，别让旧 dat 串到新包上
-        setLocalRomData(undefined)
-        if (matched) {
-          setError(fmt(t.player.arcadeHackNoPlan, { title: matched.hack.title }))
-          return
-        }
-      }
-
       // 本地文件：先嗅探类型，决定运行时
       const detection = await detectRom(picked)
       if (superseded()) return
@@ -3019,8 +3004,14 @@ export function EmulatorPlayer({
           status: detection.platform ? 'ok' : 'skip',
           detail: detection.platform
             ? `${detection.platform}（置信度 ${detection.confidence}）：${detection.reason}`
-            : `未能从文件头 / 扩展名识别平台：${detection.reason}`,
+            : `${detection.candidates?.length ? `需要确认平台（${detection.candidates.join(' / ')}）` : '未能从文件头 / 扩展名识别平台'}：${detection.reason}`,
         }])
+      }
+      // 7z 与孤立 CUE 的失败不是「选错平台」：前者没有浏览器解包器，后者缺少本机路径
+      // 上的 BIN / 音轨。继续给平台按钮只会把问题伪装成核心启动失败。
+      if (detection.unsupported || detection.requiresCompanion) {
+        setError(detection.reason)
+        return
       }
       let targetPlatform: PlatformId = platform.id
       if (detection.platform && detection.platform !== platform.id && detection.confidence !== 'low') {
@@ -3040,10 +3031,27 @@ export function EmulatorPlayer({
             }),
           )
         }
-      } else if (!isRomFileAccepted(picked, platform.romExtensions)) {
+      }
+
+      /*
+        「低置信度」不是「按当前平台凑合跑」。本地页初始平台是 NES，而且 NES 接受 .zip：
+        旧逻辑下一个装着 .chd / .cue 的压缩包会绕过 badFormat，直接送进 NES 核心，
+        用户只看到一次莫名其妙的加载失败。跨平台盘容器也同理。
+
+        用户从本页的候选按钮确认过后才允许继续；这时刻意跳过扩展名白名单，因为一些
+        老机器 dump 会用 .rom / .bin 这种泛后缀，用户已经明确提供了真正的平台。
+      */
+      const needsPlatformConfirmation = !confirmedPlatform && onDetectMismatch === 'switch' &&
+        (!detection.platform || detection.confidence === 'low')
+      if (needsPlatformConfirmation) {
+        if (onDetectFailed?.(picked, detection)) return
+        setError(detection.reason)
+        return
+      }
+      if (!confirmedPlatform && !isRomFileAccepted(picked, platform.romExtensions)) {
         // 没识别出平台，当前平台也不接受这个文件。先问页面要不要接管
         // （玩本地 ROM 页会弹出手动选择），页面不接管才报默认错误。
-        if (onDetectFailed?.(picked)) return
+        if (onDetectFailed?.(picked, detection)) return
         setError(
           fmt(t.player.badFormat, {
             platform: platformLabel(t, platform.id, platform.name),
@@ -3051,6 +3059,31 @@ export function EmulatorPlayer({
           }),
         )
         return
+      }
+
+      /*
+        街机改版包必须在**已经识别出 arcade 之后**再查指纹。
+
+        本地页以前默认是 NES，这一步却在 detectRom 之前按当前页面平台判断；拖进来的
+        街机汉化包虽然后来识别成 arcade，RomData 与正确 zip 名已经错过，最终必然报
+        Romset is unknown。把它放到 targetPlatform 之后，自动切平台与手工确认两条路都
+        能拿到同一份加载方案。
+      */
+      if (targetPlatform === 'arcade') {
+        const matched = await matchLocalArcadeHack(picked)
+        if (superseded()) return
+        if (matched?.hack.romData) {
+          setLocalRomData(matched.hack.romData)
+          setNotice(fmt(t.player.arcadeHackFound, { title: matched.hack.title, driver: matched.hack.driver }))
+          picked = matched.file
+        } else {
+          // 普通包或没有方案的改版都不能带着上一局的 dat 继续开，避免串包。
+          setLocalRomData(undefined)
+          if (matched) {
+            setError(fmt(t.player.arcadeHackNoPlan, { title: matched.hack.title }))
+            return
+          }
+        }
       }
 
       // 按「平台 + 文件扩展名」选引擎：.swf 走 Ruffle；NES 则按 iNES 格式与 mapper 能力决定。
@@ -3086,10 +3119,11 @@ export function EmulatorPlayer({
           { stage: 'content', label: '载入 ROM 到核心', status: 'skip', detail: '等待核心读取 ROM…' },
         ])
       }
+      onRuntimeChange?.(runtime, targetPlatform)
       setFile(picked)
       begin(picked, targetPlatform, runtime)
     },
-    [platform, romUrl, pageRuntime, engineReady, jsnesNetplay, onDetectMismatch, onPlatformChange, onDetectFailed, t],
+    [platform, romUrl, pageRuntime, engineReady, jsnesNetplay, onDetectMismatch, onPlatformChange, onRuntimeChange, onDetectFailed, onLocalFileSelected, t],
   )
 
   /*
@@ -3119,7 +3153,7 @@ export function EmulatorPlayer({
   useEffect(() => {
     if (!retryRequest || handledRetryRef.current === retryRequest) return
     handledRetryRef.current = retryRequest
-    void start(retryRequest.file)
+    void start(retryRequest.file, Boolean(retryRequest.confirmedPlatform))
   }, [retryRequest, start])
 
   /**

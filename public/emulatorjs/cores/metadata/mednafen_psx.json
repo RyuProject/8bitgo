@@ -1,1 +1,1 @@
-{"core":"mednafen_psx","buildStart":"2026-10-20T20:55:00+00:00","buildEnd":"2026-10-20T20:55:38+00:00","options":{},"sourceCommit":"779b894","patch":"8bitgo-psx-range-software-v1"}
+{"core":"mednafen_psx","buildStart":"2026-10-20T20:55:00+00:00","buildEnd":"2026-10-20T20:55:38+00:00","options":{},"sourceCommit":"779b894","patch":"8bitgo-psx-range-software-v1; emulatorjs-save-state-glue-v2","saveStateGlue":"v2"}

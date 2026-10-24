@@ -37,7 +37,7 @@ import { Card, btnClass, inputClass } from './ui'
  */
 const NEED_BIOS: Array<{ id: PlatformId; hint: string }> = [
   { id: 'arcade', hint: 'Neo Geo 系（拳皇 / 合金弹头 / 侍魂）必须要 neogeo.zip；CPS 系不需要' },
-  { id: 'psx', hint: 'PCSX 可用 scph1001.bin；CHD 使用的 Beetle 核心按区域寻找 scph5500.bin（日）/ scph5501.bin（美）/ scph5502.bin（欧），单独绑定 scph1001.bin 不能满足日版游戏' },
+  { id: 'psx', hint: '旧版 / PCSX 平台级回退 BIOS。Beetle PSX 会优先使用下方对应区域 BIOS；日版通常需要 scph5500.bin，单独 scph1001.bin 不能替代。' },
   { id: 'segaCD', hint: '必须提供对应区域的 Mega CD / Sega CD BIOS；多区域可打包成 ZIP，文件放在根目录' },
   { id: 'pce', hint: 'HuCard 不需要；运行 PC Engine CD 游戏时需要 System Card 3（syscard3.pce）' },
   { id: 'atari5200', hint: '多数游戏需要 Atari 5200 BIOS（常见文件名 5200.rom）' },
@@ -62,6 +62,26 @@ const ARCADE_BIOS_SETS: Array<{ name: string; hint: string }> = [
     hint: 'IGS PGM 板子：三国战纪（orlegend / kov）、西游释厄传（drgw2）等 173 款。文件必须是 pgm.zip',
   },
 ]
+
+/** Beetle PSX 按地区寻找固定文件名；上传文件原名可以不同，存储 key 不能变。 */
+const PSX_BIOS_REGIONS: Array<{ name: string; label: string; fileName: string; hint: string }> = [
+  { name: 'psx-jp', label: '日本版 BIOS', fileName: 'scph5500.bin', hint: 'NTSC-J：核心要求 scph5500.bin；SLPS / SLPM / SCPS 等编号会自动选用。' },
+  { name: 'psx-us', label: '美版 BIOS', fileName: 'scph5501.bin', hint: 'NTSC-U：核心要求 scph5501.bin；SLUS / SCUS 等编号会自动选用。' },
+  { name: 'psx-eu', label: '欧版 BIOS', fileName: 'scph5502.bin', hint: 'PAL：核心要求 scph5502.bin；SLES / SCES 等编号会自动选用。' },
+]
+
+function psxBiosFileNameForBinding(id: string): string | undefined {
+  return PSX_BIOS_REGIONS.find((region) => biosSetKey(region.name) === id)?.fileName
+}
+
+function keyFileName(value: string): string {
+  const raw = value.split(/[?#]/, 1)[0].split('/').pop() ?? ''
+  try {
+    return decodeURIComponent(raw).toLowerCase()
+  } catch {
+    return raw.toLowerCase()
+  }
+}
 
 /**
  * BIOS 在对象存储里的默认位置：<前缀>/bios/<原文件名>
@@ -268,9 +288,11 @@ export function PlatformBiosPanel() {
     try {
       // 已经绑过 BIOS 就复用同一个 key —— 原来无条件按文件名重算，
       // 传完 bios.bin 再传 bios.zip 会在 R2 里留下两份，旧的那份永远没人引用
-      const oldKey = (map[id as PlatformId] ?? '').trim()
-      const suggested = defaultBiosKey(id, file.name)
-      let key = oldKey && !/^https?:/i.test(oldKey) ? oldKey : suggested
+      const oldKey = (map as Record<string, string | undefined>)[id]?.trim() ?? ''
+      const requiredFileName = psxBiosFileNameForBinding(id)
+      const suggested = defaultBiosKey(id, requiredFileName ?? file.name)
+      const oldKeyHasExpectedName = !requiredFileName || keyFileName(oldKey) === requiredFileName
+      let key = oldKey && !/^https?:/i.test(oldKey) && oldKeyHasExpectedName ? oldKey : suggested
       /**
        * 沿用旧 key 有个前提：旧 key 的文件名得是对的。
        *
@@ -278,11 +300,11 @@ export function PlatformBiosPanel() {
        * bios/arcade.zip）会一直粘着不放 —— 你重传多少次，文件还是落在错的名字上，
        * 传上去也用不了。名字对不上就问一句，别默默沿用。
        */
-      const oldName = oldKey.split('/').pop() ?? ''
-      if (oldKey && key !== suggested && oldName !== safeFileName(file.name)) {
+      const expectedName = requiredFileName ?? safeFileName(file.name)
+      if (oldKey && key !== suggested && keyFileName(oldKey) !== expectedName.toLowerCase()) {
         const move = window.confirm(
           `当前绑定的是：\n  ${oldKey}\n你上传的文件叫：\n  ${file.name}\n\n` +
-            `模拟器核心是按文件名找 BIOS 的，沿用旧位置的话文件传上去也用不了。\n\n` +
+            `模拟器核心需要固定文件名 ${expectedName}，沿用旧位置的话 BIOS 可能无法识别。\n\n` +
             `确定 = 改传到 ${suggested}（传完会问要不要删旧文件）\n取消 = 仍然覆盖 ${oldKey}`,
         )
         if (move) key = suggested
@@ -313,6 +335,10 @@ export function PlatformBiosPanel() {
     setBusy(id)
     setMsg(null)
     try {
+      const requiredFileName = psxBiosFileNameForBinding(id)
+      if (key.trim() && requiredFileName && keyFileName(key.trim()) !== requiredFileName) {
+        throw new Error(`这个区域 BIOS 的地址末尾必须是 ${requiredFileName}，否则 Beetle PSX 无法按区域找到它。`)
+      }
       await bind(id, key.trim())
       void checkKey(id, key.trim())
       setMsg({ ok: true, text: '已绑定' })
@@ -343,7 +369,7 @@ export function PlatformBiosPanel() {
   }
 
   const rowProps = (id: string) => ({
-    value: map[id as PlatformId] ?? '',
+    value: (map as Record<string, string | undefined>)[id] ?? '',
     busy: busy === id,
     pct: pct[id] ?? 0,
     probe: probe[id],
@@ -368,6 +394,7 @@ export function PlatformBiosPanel() {
   const boundSets = Object.keys(map)
     .filter((k) => k.startsWith('bios:'))
     .map((k) => k.slice('bios:'.length))
+    .filter((name) => !PSX_BIOS_REGIONS.some((region) => region.name === name))
   const setNames = Array.from(
     new Set([...ARCADE_BIOS_SETS.map((s) => s.name), ...extraSets, ...boundSets]),
   )
@@ -398,11 +425,11 @@ export function PlatformBiosPanel() {
           前者简单，但构建机上必须也有这个文件；后者只存一份，部署时不用管。
         </p>
         <p className="mt-1 text-[11px] leading-relaxed text-live">
-          ⚠️ 不管哪种放法，<strong>地址最后一段必须是核心要找的那个文件名</strong>：街机是{' '}
-          <code className="rounded bg-surface-2 px-1">neogeo.zip</code>，PS1 是{' '}
-          <code className="rounded bg-surface-2 px-1">scph5500.bin</code>（日版 Beetle；美版是 scph5501.bin）。核心按固定文件名找 BIOS，
-          存成 <code className="rounded bg-surface-2 px-1">bios/arcade.zip</code> 的话文件明明在，
-          核心却会报「sp-s3.sp1 … is missing」。上传时会自动保留原文件名，别手动改成别的。
+          ⚠️ 单文件 BIOS 的地址最后一段必须是核心要找的文件名：街机是{' '}
+          <code className="rounded bg-surface-2 px-1">neogeo.zip</code>，PS1 单文件按地区是{' '}
+          <code className="rounded bg-surface-2 px-1">scph5500.bin</code>（日）/ scph5501.bin（美）/ scph5502.bin（欧）。
+          PS1 也可以上传一个多区域 ZIP，各 BIOS 文件放在压缩包根目录且内部文件名保留不变；引擎会展开它，让 Beetle 按游戏区域选择。
+          上传时会自动保留原文件名，别手动改 BIOS 内部文件名。
         </p>
         <p className="mt-1 text-[11px] leading-relaxed text-dim">
           街机上还有一类<strong className="text-muted">不在这张卡里填</strong>：同一个平台底下的
@@ -432,6 +459,24 @@ export function PlatformBiosPanel() {
                 {...rowProps(r.id)}
               />
             ))}
+            <div className="space-y-2 border-t border-line pt-3">
+              <div>
+                <h3 className="text-sm font-semibold">PlayStation 区域 BIOS（自动选择）</h3>
+                <p className="mt-1 text-[11px] leading-relaxed text-dim">
+                  分别上传日、美、欧版 BIOS。播放器根据游戏条目 / ROM 地址里的发行序列号（SLPM / SLUS / SLES 等）、明确地区标记和已知发行版本选择；
+                  无法判定或该区域尚未上传时，回退到上面的 PS1 平台级 BIOS。上传时会按核心要求保存为标准文件名。
+                </p>
+              </div>
+              {PSX_BIOS_REGIONS.map((region) => (
+                <BiosRow
+                  key={region.name}
+                  title={<span className="font-semibold">{region.label}</span>}
+                  hint={region.hint}
+                  placeholder={`roms/bios/${region.fileName}`}
+                  {...rowProps(biosSetKey(region.name))}
+                />
+              ))}
+            </div>
           </div>
         )}
       </Card>

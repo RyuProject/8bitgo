@@ -16,6 +16,17 @@ export interface RomDetection {
   reason: string
   /** zip 内主文件名（若为压缩包） */
   innerName?: string
+  /**
+   * 容器本身不能可靠区分平台时，给本地页缩小手动选择范围。
+   *
+   * 有候选不等于已经识别成功：CHD / PBP / CISO 都是多个主机共用的容器，
+   * 硬猜成 PS1 或 PSP 会让播放器静默送进错误核心，最后只剩一块黑屏。
+  */
+  candidates?: PlatformId[]
+  /** 外层容器无法由任何本站运行时直接读取，不能假装手选平台就能启动。 */
+  unsupported?: boolean
+  /** 单独选择的描述文件缺少同目录数据轨；浏览器无法从本机路径补读它。 */
+  requiresCompanion?: boolean
 }
 
 const EXT_TO_PLATFORM: Record<string, PlatformId> = {
@@ -74,17 +85,17 @@ const EXT_TO_PLATFORM: Record<string, PlatformId> = {
   htm: 'html5',
   jar: 'java',
   jad: 'java',
-  cue: 'psx',
-  iso: 'psx',
-  // CSO 是 PSP 最常见的随机可读压缩镜像；PS2 虽也有同名容器，本地自动识别优先 PSP。
-  cso: 'psp',
   // .iso 会由下面的光盘魔数覆盖；这些后缀本身只属于 Dolphin 平台。
   gcm: 'gamecube',
   wbfs: 'wii',
   wad: 'wii',
-  pbp: 'psx',
-  chd: 'psx',
-  img: 'psx',
+  // Play! 支持的这两种压缩盘格式在本站只归 PS2；不要让它们落进“未知文件”。
+  zso: 'ps2',
+  isz: 'ps2',
+  // PSP 自制程序的两种常见格式没有和其它平台重名，可以直接交给 PPSSPP。
+  prx: 'psp',
+  // js-dos 的打包格式不是普通 ZIP，扩展名本身就是唯一可靠身份。
+  jsdos: 'dos',
   ecm: 'psx',
   exe: 'dos',
   com: 'dos',
@@ -94,6 +105,34 @@ const EXT_TO_PLATFORM: Record<string, PlatformId> = {
 }
 
 const AMBIGUOUS = new Set(['bin', 'rom', 'dat'])
+
+/**
+ * 这些扩展名描述的是「盘怎么封装」，不是「哪台主机的游戏」。
+ *
+ * 过去把它们一律送进 PS1 / PSP：PS2 的 CHD、Sega CD 的 CUE、PS1 的 PBP 都会被
+ * 看似成功地识别，实际却被错误核心打开。这里宁可只让玩家在少数合理候选中确认一次，
+ * 也不制造一个必败的自动启动。
+ */
+const DISC_CANDIDATES: Record<string, PlatformId[]> = {
+  cue: ['psx', 'segaCD', 'pce'],
+  iso: ['psx', 'psp', 'ps2', 'segaCD', 'pce'],
+  img: ['psx', 'segaCD', 'pce'],
+  chd: ['psx', 'psp', 'ps2', 'segaCD', 'pce'],
+  pbp: ['psp', 'psx'],
+  cso: ['psp', 'ps2'],
+  // Dolphin 的压缩盘格式不保留原始 GC / Wii 盘头，无法像 .iso 一样靠魔数判断。
+  rvz: ['gamecube', 'wii'],
+  ciso: ['gamecube', 'wii'],
+  gcz: ['gamecube', 'wii'],
+  dol: ['gamecube', 'wii'],
+  // ELF 同时可能是 PSP、PS2 或 Dolphin 自制程序，必须让玩家确认目标机器。
+  elf: ['psp', 'ps2', 'gamecube', 'wii'],
+}
+
+const ISO_SECTOR_BYTES = 2048
+const ISO_PVD_OFFSET = ISO_SECTOR_BYTES * 16
+/** SYSTEM.CNF 很小；目录坏掉时也绝不能相信镜像头分配任意大小的内存。 */
+const ISO_PROBE_MAX_BYTES = 64 * 1024
 
 function ext(name: string): string {
   const m = name.toLowerCase().match(/\.([a-z0-9]+)$/)
@@ -158,7 +197,6 @@ function sniffHeader(bytes: Uint8Array): RomDetection | null {
   if (head4 === 'NES\x1A') return { platform: 'nes', confidence: 'high', reason: d.ines }
   if (head3 === 'FWS' || head3 === 'CWS' || head3 === 'ZWS') return { platform: 'flash', confidence: 'high', reason: d.swf }
   if (head4 === 'UNIF') return { platform: 'nes', confidence: 'high', reason: d.unif }
-  if (head4 === 'CISO') return { platform: 'psp', confidence: 'high', reason: d.pspImage }
   if (ascii(bytes, 0, 3) === 'FDS' || ascii(bytes, 0, 4) === '\x01*NI') return { platform: 'nes', confidence: 'medium', reason: d.fds }
   const b = bytes
   // Wii / GameCube 都常用 .iso，必须先看盘头再让扩展名把它误判成 PS1。
@@ -209,10 +247,74 @@ function sniffHeader(bytes: Uint8Array): RomDetection | null {
   if (bytes.length >= 0x200 && ascii(bytes, 0, 2) === 'MZ') return { platform: 'dos', confidence: 'medium', reason: d.dosExe }
   // PSX：镜像的系统区在第 16 扇区，要在整个读取窗口里找（见 HEAD_BYTES 的说明）
   const window = ascii(bytes, 0, bytes.length)
+  // PS2 的 BOOT2 与盘头的 PLAYSTATION 2 都能和 PS1 的通用 PLAYSTATION 字样区分。
+  // 先判它，不能让后面的 PS1 规则把 PS2 盘截走。
+  if (window.includes('BOOT2') || /PLAYSTATION\s*2/i.test(window)) {
+    return { platform: 'ps2', confidence: 'high', reason: d.ps2Image }
+  }
   if (window.includes('PLAYSTATION') || window.includes('Sony Computer Entertainment')) {
     return { platform: 'psx', confidence: 'high', reason: d.psxImage }
   }
   return null
+}
+
+/** ISO9660 目录记录。只保留找 SYSTEM.CNF 所需的两个字段。 */
+function isoDirectoryEntry(bytes: Uint8Array, offset: number): { extent: number; size: number; name: string } | null {
+  const length = bytes[offset]
+  if (!length || offset + length > bytes.length || length < 34) return null
+  const view = new DataView(bytes.buffer, bytes.byteOffset + offset, length)
+  const nameLength = bytes[offset + 32]
+  if (33 + nameLength > length) return null
+  const name = ascii(bytes, offset + 33, nameLength).replace(/;\d+$/, '').toUpperCase()
+  return { extent: view.getUint32(2, true), size: view.getUint32(10, true), name }
+}
+
+/**
+ * 从 ISO9660 的根目录找 SYSTEM.CNF，区分 PS1 的 BOOT 与 PS2 的 BOOT2。
+ *
+ * 不扫描整张盘：只读 PVD、根目录和最多 64KiB 的配置文件。这样几十 GB 的本地光盘
+ * 也不会因为「识别格式」多占内存或长时间卡住。没有标准 ISO 目录时返回 null，
+ * 后面会改走安全的人工确认，而不是凭 .iso 硬猜 PS1。
+ */
+async function sniffIsoSystemConfig(file: File): Promise<RomDetection | null> {
+  if (file.size < ISO_PVD_OFFSET + ISO_SECTOR_BYTES) return null
+  const pvd = new Uint8Array(await file.slice(ISO_PVD_OFFSET, ISO_PVD_OFFSET + ISO_SECTOR_BYTES).arrayBuffer())
+  if (pvd.length < ISO_SECTOR_BYTES || pvd[0] !== 1 || ascii(pvd, 1, 5) !== 'CD001') return null
+  const root = isoDirectoryEntry(pvd, 156)
+  if (!root || !Number.isSafeInteger(root.extent) || !Number.isSafeInteger(root.size)) return null
+  const rootOffset = root.extent * ISO_SECTOR_BYTES
+  if (rootOffset < 0 || rootOffset >= file.size || root.size <= 0) return null
+  const rootBytes = Math.min(root.size, ISO_PROBE_MAX_BYTES, file.size - rootOffset)
+  const directory = new Uint8Array(await file.slice(rootOffset, rootOffset + rootBytes).arrayBuffer())
+  for (let offset = 0; offset < directory.length;) {
+    const length = directory[offset]
+    // ISO 目录以扇区对齐的 0 填充结束；跳到下一扇区而不是误把后续数据当记录。
+    if (!length) {
+      offset = Math.ceil((offset + 1) / ISO_SECTOR_BYTES) * ISO_SECTOR_BYTES
+      continue
+    }
+    const entry = isoDirectoryEntry(directory, offset)
+    if (!entry || length < 34) return null
+    if (entry.name === 'SYSTEM.CNF') {
+      const configOffset = entry.extent * ISO_SECTOR_BYTES
+      if (configOffset < 0 || configOffset >= file.size || entry.size <= 0) return null
+      const configBytes = Math.min(entry.size, 8192, file.size - configOffset)
+      const config = ascii(new Uint8Array(await file.slice(configOffset, configOffset + configBytes).arrayBuffer()), 0, configBytes)
+      const d = getT().detect
+      if (/\bBOOT2\b/i.test(config)) return { platform: 'ps2', confidence: 'high', reason: d.ps2Image }
+      if (/\bBOOT\b/i.test(config)) return { platform: 'psx', confidence: 'high', reason: d.psxImage }
+      return null
+    }
+    offset += length
+  }
+  return null
+}
+
+function ambiguousDiscDetection(extension: string, reason: string): RomDetection | null {
+  const candidates = DISC_CANDIDATES[extension]
+  return candidates
+    ? { confidence: 'low', reason, candidates, requiresCompanion: extension === 'cue' }
+    : null
 }
 
 interface ZipEntry {
@@ -322,16 +424,34 @@ export async function detectRom(file: File): Promise<RomDetection> {
 
   // 1. 压缩包
   if (e === 'zip' || e === '7z') {
-    if (e === '7z') return { confidence: 'low', reason: d.sevenZip }
+    if (e === '7z') return { confidence: 'low', reason: d.sevenZip, unsupported: true }
     const entries = await zipEntries(file)
     const names = entries.map((x) => x.name)
 
-    // 1a. 内部文件名的扩展名就能定平台（最常见）
-    const known = entries.map((x) => ({ n: x.name, p: EXT_TO_PLATFORM[ext(x.name)] })).filter((x) => x.p)
-    if (known.length) {
-      // cue 优先于 bin
-      const pick = known.find((x) => ext(x.n) === 'cue') ?? known[0]
-      return { platform: pick.p, confidence: 'high', reason: fmt(d.zipContains, { ext: ext(pick.n) }), innerName: pick.n }
+    // 1a. 内部文件名的扩展名就能定平台（最常见）。
+    // 不能再按压缩包目录里的「第一项」定：多光盘包常同时有 cue / bin，
+    // 而 CHD / PBP / CISO 又是跨平台容器，随 zip 工具排序变化就会选到不同核心。
+    const known = entries
+      .map((entry) => ({ entry, extension: ext(entry.name), platform: EXT_TO_PLATFORM[ext(entry.name)] }))
+      .filter((item) => item.platform)
+    const directPlatforms = [...new Set(known.map((item) => item.platform!))]
+    const discExtensions = [...new Set(entries.map((entry) => ext(entry.name)).filter((extension) => DISC_CANDIDATES[extension]))]
+    if (directPlatforms.length === 1 && discExtensions.length === 0) {
+      const pick = known[0]
+      return { platform: pick.platform, confidence: 'high', reason: fmt(d.zipContains, { ext: pick.extension }), innerName: pick.entry.name }
+    }
+    if (directPlatforms.length > 1 || discExtensions.length) {
+      const candidates = [...new Set([
+        ...directPlatforms,
+        ...discExtensions.flatMap((extension) => DISC_CANDIDATES[extension]),
+      ])]
+      const named = discExtensions[0] || ext(known[0]?.entry.name ?? '')
+      return {
+        confidence: 'low',
+        reason: fmt(d.discAmbiguous, { ext: named || 'zip' }),
+        innerName: entries.find((entry) => ext(entry.name) === named)?.name,
+        candidates,
+      }
     }
 
     // 1b. 名字看不出来就解开最大的那个文件的开头，用同一套文件头规则认。
@@ -354,16 +474,31 @@ export async function detectRom(file: File): Promise<RomDetection> {
 
     // 1c. 多段小文件：街机 ROM 组的典型形态
     if (names.length >= 3) return { platform: 'arcade', confidence: 'medium', reason: d.zipArcade, innerName: names[0] }
-    if (names.length === 1 && AMBIGUOUS.has(ext(names[0]))) return { confidence: 'low', reason: fmt(d.zipAmbiguous, { ext: ext(names[0]) }), innerName: names[0] }
+    if (names.length === 1 && AMBIGUOUS.has(ext(names[0]))) {
+      return { confidence: 'low', reason: fmt(d.zipAmbiguous, { ext: ext(names[0]) }), innerName: names[0] }
+    }
     return { confidence: 'low', reason: d.zipUnknown }
   }
 
   // 2. 文件头
   const head = new Uint8Array(await file.slice(0, HEAD_BYTES).arrayBuffer())
   const byHeader = sniffHeader(head)
+
+  // ISO 的 PVD 里只写了笼统的 PLAYSTATION 字样时，sniffHeader 会先给出 PS1。
+  // 但真正决定 PS1/PS2 的是 SYSTEM.CNF 里的 BOOT / BOOT2，必须优先读这一小块。
+  // PSP / Dolphin 的盘头则无歧义，直接结束，避免无谓的目录 I/O。
+  if (byHeader && byHeader.confidence === 'high' && byHeader.platform !== 'psx') return byHeader
+  if (e === 'iso' || e === 'img') {
+    const disc = await sniffIsoSystemConfig(file)
+    if (disc) return disc
+  }
   if (byHeader && byHeader.confidence === 'high') return byHeader
 
-  // 3. 扩展名
+  // 3. 同名跨平台光盘容器。只有明确的文件头才自动切；其余让本地页只展示合理候选。
+  const ambiguousDisc = ambiguousDiscDetection(e, e === 'cue' ? d.cueNeedsCompanion : fmt(d.discAmbiguous, { ext: e }))
+  if (ambiguousDisc) return ambiguousDisc
+
+  // 4. 扩展名
   const byExt = EXT_TO_PLATFORM[e]
   if (byExt) return { platform: byExt, confidence: 'high', reason: fmt(d.byExt, { ext: e }) }
   if (byHeader) return byHeader

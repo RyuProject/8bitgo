@@ -12,6 +12,7 @@ import { useEffect, useState } from 'react'
 import type { PlatformId } from '@/types'
 import { api, apiEnabled } from './api'
 import { romUrlForKey } from './roms'
+import { psxBiosObjectKey, type PsxBiosRegion } from '@/emulator/psxBiosRegion'
 
 /**
  * 绑定表。两种键混在同一张表里（后端也是同一张 `platform_bios` 表）：
@@ -121,13 +122,8 @@ export function biosSetUrlSync(name: string | undefined): string {
   return key ? romUrlForKey(key) : ''
 }
 
-/**
- * 订阅一个键（平台 id 或 `bios:<系统名>`）的地址。
- *
- * 组件里用：BIOS 是异步取的，第一帧多半还没到，所以返回值会从 '' 变成真实地址。
- * 播放器只在真正挂载引擎那一刻读它，不会因为这一次变化重启游戏。
- */
-function useBiosUrlByKey(key: string | undefined): string {
+/** BIOS 异步到达时通知组件；多个选择器共用同一份缓存和订阅逻辑。 */
+function usePlatformBiosMap(): PlatformBiosMap {
   const [map, setMap] = useState<PlatformBiosMap>(() => cache ?? {})
   useEffect(() => {
     let alive = true
@@ -141,6 +137,12 @@ function useBiosUrlByKey(key: string | undefined): string {
       listeners.delete(sync)
     }
   }, [])
+  return map
+}
+
+/** 订阅一个键（平台 id 或 `bios:<系统名>`）的地址。 */
+function useBiosUrlByKey(key: string | undefined): string {
+  const map = usePlatformBiosMap()
   const raw = key ? (map as Record<string, string | undefined>)[key] : undefined
   return raw ? romUrlForKey(raw) : ''
 }
@@ -148,6 +150,13 @@ function useBiosUrlByKey(key: string | undefined): string {
 /** 某平台的 BIOS 完整 URL。没配就返回空串。 */
 export function usePlatformBiosUrl(platform: PlatformId | undefined): string {
   return useBiosUrlByKey(platform)
+}
+
+/** PS1 按光盘区域选 BIOS；对应区域未上传时兼容现有平台级 BIOS。 */
+export function usePsxBiosUrl(region?: PsxBiosRegion): string {
+  const map = usePlatformBiosMap()
+  const key = psxBiosObjectKey(map, region)
+  return key ? romUrlForKey(key) : ''
 }
 
 

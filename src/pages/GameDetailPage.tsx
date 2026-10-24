@@ -16,7 +16,8 @@ import { platformMap, EXPERIMENTAL_PLATFORMS } from '@/data/platforms'
 import { genreMap } from '@/data/genres'
 import { isPlatformEnabled } from '@/config/platforms'
 import { formatCount, formatPlayers } from '@/lib/format'
-import { usePlatformBiosUrl } from '@/services/platformBios'
+import { usePlatformBiosUrl, usePsxBiosUrl } from '@/services/platformBios'
+import { detectPsxBiosRegion } from '@/emulator/psxBiosRegion'
 import { useSeo, breadcrumbSchema, videoGameSchema, faqSchema } from '@/services/seo'
 import { useLang } from '@/services/lang'
 import { useT, fmt } from '@/services/i18n'
@@ -268,9 +269,19 @@ export function GameDetailPage() {
   // 生产数据因此仍是 multiplayer=false / players=1；详情页若照抄会把眼前可用的 16 人房宣传成单机。
   const hasEmbeddedCs16Rooms = game?.slug === 'counter-strike-16'
   const effectiveMultiplayer = Boolean(game?.multiplayer) || hasEmbeddedCs16Rooms
-  // 平台级 BIOS。必须在下面那几个 early return 之前调 —— hook 的调用顺序每次渲染都要一致。
-  // 异步到货，第一帧一般是空串；播放器只在挂载引擎那一刻读它，不会因此重启游戏
-  const biosUrl = usePlatformBiosUrl(seoPlatform?.id)
+  // BIOS hook 必须在下面的 early return 之前调用 —— 每次渲染的 hook 顺序要一致。
+  // PS1 优先按光盘序列号 / 明确地区标记选 BIOS；不确定或未绑定地区 BIOS 时沿用平台级绑定。
+  const psxRegion = game?.platform === 'psx'
+    ? detectPsxBiosRegion({
+        slug: game.slug,
+        title: game.title,
+        primaryIdentifier: rom.key ?? rom.url,
+        identifiers: [game.rom, ...Object.values(game.roms ?? {})],
+      })
+    : undefined
+  const platformBiosUrl = usePlatformBiosUrl(seoPlatform?.id)
+  const psxBiosUrl = usePsxBiosUrl(psxRegion)
+  const biosUrl = game?.platform === 'psx' ? psxBiosUrl : platformBiosUrl
   // SEO 描述也要跟语言走：英文页面挂一段中文 meta description，
   // 搜索结果里就是一串看不懂的字，等于白写
   const seoDesc = game ? plainText(gameDescription(game, lang)) : ''
