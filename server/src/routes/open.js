@@ -61,6 +61,7 @@ import {
   deriveRomPackKey,
   isRomPackHeadPrefix,
   parseRomByteRange,
+  parseUpstreamContentRange,
   planRomPackChunks,
   readRomPackHead,
   releaseTranscodeSlot,
@@ -68,6 +69,7 @@ import {
   romPackInnerName,
   romTranscodeLimits,
   tryAcquireTranscodeSlot,
+  validateUpstreamPartialRange,
 } from '../rom-pack-transcode.js'
 
 export const openRouter = Router()
@@ -76,8 +78,9 @@ export const openRouter = Router()
 
 openRouter.use((req, res, next) => {
   res.set('Access-Control-Allow-Origin', '*')
-  res.set('Access-Control-Allow-Headers', 'Authorization, Content-Type')
-  res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+  res.set('Access-Control-Allow-Headers', 'Authorization, Content-Type, Range, If-Range')
+  res.set('Access-Control-Allow-Methods', 'GET, HEAD, POST, OPTIONS')
+  res.set('Access-Control-Expose-Headers', 'Accept-Ranges, Content-Disposition, Content-Length, Content-Range, ETag')
   // 放开到任意 Origin 的接口**一律不带 cookie**：Bearer 走 header，天然没有 CSRF 面。
   // 这里显式不发 Allow-Credentials —— 带上它 + '*' 浏览器本来也会拒，但写明白省得有人去「修」。
   res.set('Vary', 'Origin')
@@ -1056,22 +1059,15 @@ openRouter.get('/v1/rom/:grant', async (req, res, next) => {
  *     几十上百 MB 的 ROM 断网重来一次等于白烧一遍服务端 CPU，所以必须能续。
  *   · 非 8BG 对象（明文 ROM）直接透传，行为和 /v1/rom/:grant 等价（只是流而非 302）。
  *   · 单 ROM 大小上限、全局并发闸、按 AppID/IP 限流，超额拒服务（见 romTranscodeLimits）。
- *   · 峰值内存约一个分块（8MB），不落盘。
+ *   · 不落盘；当前打包器按 8MB 原文分块，内存随活动转码数和单块密文大小有界。
  */
 openRouter.get('/v1/rom-plain/:grant', async (req, res, next) => {
   try {
     const redeemed = await redeemRomGrant(req, res)
     if (!redeemed) return
     const limits = romTranscodeLimits()
-    // 并发闸只在转码这一路收口：302 那路只是个重定向，不占 CPU/带宽，不该吃名额。
-    if (!tryAcquireTranscodeSlot(limits)) {
-      return fail(res, 503, 'server_busy', '转码服务繁忙，请稍后重试')
-    }
-    try {
-      await streamRomPlain({ req, res, target: redeemed.target, limits })
-    } finally {
-      releaseTranscodeSlot()
-    }
+    // 先判断是不是 8BG；明文 ROM 只透传，不应占用真正解密解压的并发槽。
+    await streamRomPlain({ req, res, target: redeemed.target, limits })
   } catch (e) {
     next(e)
   }
@@ -1080,20 +1076,44 @@ openRouter.get('/v1/rom-plain/:grant', async (req, res, next) => {
 /** 非 8BG：把请求（含 Range）原样透传上游对象存储，行为和 302 那路等价。 */
 async function pipeRomPassthrough({ req, res, target, signal }) {
   const upstream = await fetch(target, {
-    headers: req.headers.range ? { Range: req.headers.range } : {},
+    method: req.method,
+    headers: {
+      'Accept-Encoding': 'identity',
+      ...(req.headers.range ? { Range: req.headers.range } : {}),
+      ...(req.headers['if-range'] ? { 'If-Range': req.headers['if-range'] } : {}),
+    },
     redirect: 'follow',
     signal,
   })
-  if (!upstream.ok && upstream.status !== 206) {
-    res.set('Cache-Control', 'private, no-store')
-    return res.status(upstream.status || 502).end()
+  if (upstream.status === 206) {
+    try {
+      if (!req.headers.range) throw new Error('上游无请求却返回了部分 ROM')
+      const actual = parseUpstreamContentRange(upstream.headers.get('content-range'))
+      const expected = parseRomByteRange(req.headers.range, actual.total)
+      if (expected.unsatisfiable) throw new Error('上游对不可满足的 ROM Range 返回了部分内容')
+      validateUpstreamPartialRange(upstream, {
+        start: expected.start,
+        end: expected.end - 1,
+        total: actual.total,
+      })
+    } catch (error) {
+      await upstream.body?.cancel().catch(() => {})
+      throw error
+    }
   }
-  if (upstream.status === 206) res.status(206)
-  if (upstream.headers.get('content-range')) res.set('Content-Range', upstream.headers.get('content-range'))
-  if (upstream.headers.get('content-length')) res.set('Content-Length', upstream.headers.get('content-length'))
+  res.status(upstream.status || 502)
+  for (const name of ['content-range', 'content-length', 'content-disposition', 'etag', 'last-modified']) {
+    const value = upstream.headers.get(name)
+    if (value) res.set(name, value)
+  }
   res.set('Content-Type', upstream.headers.get('content-type') || 'application/octet-stream')
-  res.set('Accept-Ranges', 'bytes')
+  if (upstream.headers.get('accept-ranges')) res.set('Accept-Ranges', upstream.headers.get('accept-ranges'))
+  else res.set('Accept-Ranges', 'bytes')
   res.set('Cache-Control', 'private, no-store')
+  if (req.method === 'HEAD' || !upstream.body) {
+    await upstream.body?.cancel().catch(() => {})
+    return res.end()
+  }
   await pipeline(Readable.fromWeb(upstream.body), res)
 }
 
@@ -1103,21 +1123,42 @@ async function pipeRomPassthrough({ req, res, target, signal }) {
  */
 async function streamRomPlain({ req, res, target, limits }) {
   const ac = new AbortController()
-  const timer = setTimeout(() => ac.abort(), limits.timeoutMs)
-  // GET 的 req.close 可在响应开始前触发；只有响应真的断开才取消上游下载。
-  const onResponseClose = () => { if (!res.writableEnded) ac.abort() }
+  let timedOut = false
+  const timer = setTimeout(() => { timedOut = true; ac.abort() }, limits.timeoutMs)
+  timer.unref?.()
+  let transcodeSlot = false
+  let responseClosed = false
+  // 读取完 GET 请求体也会触发 req.close；这里只监听响应断开，避免把正常请求完成当成客户端掉线。
+  const onResponseClose = () => {
+    if (!res.writableEnded) {
+      responseClosed = true
+      ac.abort()
+    }
+  }
   res.once('close', onResponseClose)
   // 一次性辅助：取上游首块前 8 字节并释放连接（上游若忽略 Range 返回 200，cancel 能避免整包下载）
   const peek8 = async () => {
-    const r = await fetch(target, { headers: { Range: 'bytes=0-7' }, redirect: 'follow', signal: ac.signal })
+    const r = await fetch(target, {
+      headers: { Range: 'bytes=0-7', 'Accept-Encoding': 'identity' },
+      redirect: 'follow',
+      signal: ac.signal,
+    })
     if (!r.ok && r.status !== 206) {
       await r.body?.cancel().catch(() => {})
       throw new Error(`取 ROM 头失败：${r.status}`)
     }
+    if (r.status === 206) {
+      try {
+        validateUpstreamPartialRange(r, { start: 0, end: 7, allowShortAtEof: true })
+      } catch (error) {
+        await r.body?.cancel().catch(() => {})
+        throw error
+      }
+    }
     const reader = ByteReader.fromWeb(r.body)
     try {
       // ReadableStream 不保证第一次 read() 就给足 8 字节；短首包会把真实 8BG 错判成明文。
-      return await reader.readExactly(8)
+      return await reader.readUpTo(8)
     } finally {
       await reader.cancel().catch(() => {})
     }
@@ -1130,11 +1171,31 @@ async function streamRomPlain({ req, res, target, limits }) {
     // 取完整头（最多 1MB 头的区间）。8BG 头是 JSON，通常几百字节，1MB 上限足够。
     const headRes = await fetch(
       target,
-      { headers: { Range: `bytes=0-${ROM_PACK_MAX_HEADER_BYTES + 7}` }, redirect: 'follow', signal: ac.signal },
+      {
+        headers: { Range: `bytes=0-${ROM_PACK_MAX_HEADER_BYTES + 7}`, 'Accept-Encoding': 'identity' },
+        redirect: 'follow',
+        signal: ac.signal,
+      },
     )
     if (!headRes.ok && headRes.status !== 206) {
       await headRes.body?.cancel().catch(() => {})
       throw new Error(`取 ROM 头失败：${headRes.status}`)
+    }
+    let sourceSize = null
+    if (headRes.status === 206) {
+      try {
+        sourceSize = validateUpstreamPartialRange(headRes, {
+          start: 0,
+          end: ROM_PACK_MAX_HEADER_BYTES + 7,
+          allowShortAtEof: true,
+        }).total
+      } catch (error) {
+        await headRes.body?.cancel().catch(() => {})
+        throw error
+      }
+    } else {
+      const contentLength = headRes.headers.get('content-length')
+      if (contentLength != null && /^\d+$/.test(contentLength)) sourceSize = Number(contentLength)
     }
     const headReader = ByteReader.fromWeb(headRes.body)
     let header, dataOffset
@@ -1148,47 +1209,101 @@ async function streamRomPlain({ req, res, target, limits }) {
       return res.status(413).json({ error: 'payload_too_large', error_description: `ROM 明文超过上限 ${limits.maxBytes} 字节` })
     }
     for (const c of header.chunks) {
-      if (c.cipherSize > ROM_PACK_MAX_ENCODED_CHUNK_BYTES) throw new Error('ROM 分块超出格式上限')
+      // 格式通用上限是 128MB；再按源块大小收紧，避免小 ROM 头诱导服务端先分配超大密文缓冲。
+      const maxChunkCipher = Math.min(ROM_PACK_MAX_ENCODED_CHUNK_BYTES, c.sourceSize * 2 + 128 * 1024 + 16)
+      if (c.cipherSize > maxChunkCipher) throw new Error('ROM 分块超出转码安全上限')
     }
-    const key = deriveRomPackKey(header.packageId, header.keyId)
-    await resolveZstd()
-    const range = parseRomByteRange(req.headers.range, header.originalSize)
+    const expectedPackSize = dataOffset + header.payloadSize
+    if (!Number.isSafeInteger(expectedPackSize)) throw new Error('8BG 文件总大小超出安全整数范围')
+    if (sourceSize != null && sourceSize !== expectedPackSize) throw new Error('8BG 声明大小与对象实际大小不一致')
+    if (header.codec !== 'store' && header.codec !== 'zstd') {
+      res.set('Cache-Control', 'private, no-store')
+      return res.status(415).json({ error: 'unsupported_codec', error_description: '服务端暂不支持此 8BG 压缩算法' })
+    }
+    const innerName = romPackInnerName(header.originalName)
+    const asciiName = innerName.replace(/[^\x20-\x7e]|["\\]/g, '_')
+    const encodedName = encodeURIComponent(innerName).replace(/[!'()*]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`)
+    const etag = `"8bg-${header.packageId}"`
+    const ifRange = String(req.headers['if-range'] || '').trim()
+    const honorsIfRange = !req.headers.range || !ifRange || ifRange === etag
+    const parsedRange = parseRomByteRange(honorsIfRange ? req.headers.range : '', header.originalSize)
+    const range = parsedRange
     if (range.unsatisfiable) {
       res.set('Content-Range', `bytes */${header.originalSize}`)
       res.set('Cache-Control', 'private, no-store')
       return res.status(416).end()
     }
-    const plan = planRomPackChunks(header, range.start, range.end)
-    const innerName = romPackInnerName(header.originalName)
-    const asciiName = innerName.replace(/[^\x20-\x7e]/g, '_')
+    const responseRange = range
     const writeResponseHeaders = () => {
       res.set('Content-Type', 'application/octet-stream')
-      res.set('Content-Disposition', `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(innerName)}`)
+      res.set('Content-Disposition', `attachment; filename="${asciiName}"; filename*=UTF-8''${encodedName}`)
       res.set('Accept-Ranges', 'bytes')
       res.set('Cache-Control', 'private, no-store')
-      res.set('Content-Length', String(range.end - range.start))
-      if (range.isRange) {
+      res.set('ETag', etag)
+      res.set('Content-Length', String(responseRange.end - responseRange.start))
+      if (responseRange.isRange) {
         res.status(206)
-        res.set('Content-Range', `bytes ${range.start}-${range.end - 1}/${header.originalSize}`)
+        res.set('Content-Range', `bytes ${responseRange.start}-${responseRange.end - 1}/${header.originalSize}`)
       }
     }
     if (req.method === 'HEAD') { writeResponseHeaders(); return res.end() }
+    const key = deriveRomPackKey(header.packageId, header.keyId)
+    if (header.codec === 'zstd') await resolveZstd()
+    // 只有确认 8BG 且确实要发明文后才占槽；探头、HEAD、明文透传不消耗解码并发。
+    if (!tryAcquireTranscodeSlot(limits)) {
+      res.set('Cache-Control', 'private, no-store')
+      return res.status(503).json({ error: 'server_busy', error_description: '转码服务繁忙，请稍后重试' })
+    }
+    transcodeSlot = true
     // 取命中分块对应的密文区间（分块在 payload 内连续）
+    const plan = planRomPackChunks(header, responseRange.start, responseRange.end)
+    if (!plan.length) {
+      writeResponseHeaders()
+      return res.end()
+    }
     let payloadStart = 0
     for (let i = 0; i < plan[0].index; i++) payloadStart += header.chunks[i].cipherSize
     let payloadEnd = payloadStart
     for (let i = plan[0].index; i <= plan[plan.length - 1].index; i++) payloadEnd += header.chunks[i].cipherSize
+    const requestedPayloadStart = dataOffset + payloadStart
+    const requestedPayloadEnd = dataOffset + payloadEnd - 1
     const payRes = await fetch(
       target,
-      { headers: { Range: `bytes=${dataOffset + payloadStart}-${dataOffset + payloadEnd - 1}` }, redirect: 'follow', signal: ac.signal },
+      {
+        headers: { Range: `bytes=${requestedPayloadStart}-${requestedPayloadEnd}`, 'Accept-Encoding': 'identity' },
+        redirect: 'follow',
+        signal: ac.signal,
+      },
     )
     if (payRes.status !== 206 && payRes.status !== 200) {
       await payRes.body?.cancel().catch(() => {})
       throw new Error(`取 ROM 数据失败：${payRes.status}`)
     }
+    if (payRes.status === 206) {
+      try {
+        validateUpstreamPartialRange(payRes, {
+          start: requestedPayloadStart,
+          end: requestedPayloadEnd,
+          total: expectedPackSize,
+        })
+      } catch (error) {
+        await payRes.body?.cancel().catch(() => {})
+        throw error
+      }
+    } else if (payloadStart > 0) {
+      // Range 被忽略时从头丢弃大型容器会烧掉带宽和连接池；对续传快速失败，让设备稍后重试。
+      await payRes.body?.cancel().catch(() => {})
+      throw new Error('上游忽略了 ROM 续传 Range 请求')
+    } else {
+      const contentLength = payRes.headers.get('content-length')
+      if (contentLength != null && /^\d+$/.test(contentLength) && Number(contentLength) !== expectedPackSize) {
+        await payRes.body?.cancel().catch(() => {})
+        throw new Error('上游整包大小与 8BG 头不一致')
+      }
+    }
     const reader = ByteReader.fromWeb(payRes.body)
     try {
-      if (payRes.status === 200) await reader.skipExactly(dataOffset + payloadStart)
+      if (payRes.status === 200) await reader.skipExactly(dataOffset)
       // 先确认上游可读并处理被忽略的 Range，再发 ROM 长度；错误路径不能带着旧长度回 JSON。
       writeResponseHeaders()
       const gen = async function* () {
@@ -1206,8 +1321,12 @@ async function streamRomPlain({ req, res, target, limits }) {
       await reader.cancel().catch(() => {})
     }
   } catch (e) {
+    if (responseClosed || res.destroyed || res.writableEnded) return
     if (!res.headersSent) {
       res.set('Cache-Control', 'private, no-store')
+      if (timedOut) {
+        return res.status(504).json({ error: 'upstream_timeout', error_description: 'ROM 下载或转码超时，请重试' })
+      }
       if (/超过上限|payload_too_large/.test(String(e.message))) {
         return res.status(413).json({ error: 'payload_too_large', error_description: e.message })
       }
@@ -1216,6 +1335,7 @@ async function streamRomPlain({ req, res, target, limits }) {
     try { res.destroy() } catch {}
     throw e
   } finally {
+    if (transcodeSlot) releaseTranscodeSlot()
     clearTimeout(timer)
     res.off('close', onResponseClose)
   }

@@ -22,6 +22,7 @@ const EXPECTED_COLUMNS = [
   { table: 'game_roms', column: 'dos_sockdrive', why: '多语言 DOS / Windows 游戏逐语言绑定流式盘；缺列会让后台保存 500' },
   { table: 'game_roms', column: 'backup_key', why: '同语言 ROM 备用地址；缺列会让后台保存备用源 500' },
   { table: 'games', column: 'dos_backend', why: 'DOS / Windows 客体运行核心选择' },
+  { table: 'games', column: 'dos_pc98', why: 'DOS 分类中的 PC-98 软盘模式开关' },
   { table: 'games', column: 'dos_system', why: '可复用的 Windows 客体系统镜像' },
   { table: 'games', column: 'dos_sockdrive', why: '大型 DOS / Windows 游戏的静态流式磁盘目录' },
   { table: 'sockdrive_conversion_jobs', column: 'lang', why: 'Sockdrive 转换任务精确绑定 ROM 语言槽' },
@@ -159,7 +160,7 @@ export async function checkSchema() {
       因为不满足“正确候选”条件反而逃过检查。新写入仍由路由同步阻止。
     */
     const rows = await query(
-      `SELECT g.slug, g.platform, g.dos_backend, g.dos_system, g.dos_sockdrive, g.dos_extras, g.dos_executable,
+      `SELECT g.slug, g.platform, g.dos_backend, g.dos_pc98, g.dos_system, g.dos_sockdrive, g.dos_extras, g.dos_executable,
               gr.lang, gr.object_key, gr.dos_executable AS lang_dos_executable,
               gr.dos_sockdrive AS lang_dos_sockdrive
          FROM games g
@@ -170,6 +171,7 @@ export async function checkSchema() {
             AND g.dos_system IS NOT NULL
             AND g.dos_system <> ''
           )
+           OR (g.platform = 'dos' AND COALESCE(g.dos_pc98, 0) = 1)
            OR (g.dos_sockdrive IS NOT NULL AND g.dos_sockdrive <> '')
            OR (gr.dos_sockdrive IS NOT NULL AND gr.dos_sockdrive <> '')`,
     )
@@ -181,6 +183,7 @@ export async function checkSchema() {
           slug: row.slug,
           platform: row.platform,
           dosBackend: row.dos_backend,
+          dosPc98: Boolean(Number(row.dos_pc98)),
           dosSystem: row.dos_system,
           dosSockdrive: row.dos_sockdrive,
           dosExtras: row.dos_extras ? String(row.dos_extras).split('\n') : undefined,
@@ -206,7 +209,7 @@ export async function checkSchema() {
       .filter((item) => item.error)
     if (invalid.length) {
       console.warn('')
-      console.warn('⚠️  DOSBox-X / Windows 客体配置有致命缺项：')
+      console.warn('⚠️  DOSBox-X / Windows 客体 / PC-98 配置有致命缺项：')
       for (const item of invalid) console.warn(`     · ${item.slug}：${item.error}`)
       console.warn('   请在后台补齐；这类游戏当前会在下载完成后直接启动失败。')
       console.warn('')
@@ -216,6 +219,7 @@ export async function checkSchema() {
       .filter((game) => (
         game.platform === 'dos' &&
         game.dosBackend === 'dosboxX' &&
+        !game.dosPc98 &&
         String(game.dosSystem || '').trim()
       ))
       .map((game) => ({

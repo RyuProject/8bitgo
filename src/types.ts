@@ -249,6 +249,11 @@ export interface Game {
    */
   dosBackend?: DosBackend
   /**
+   * 仍归在 DOS 平台下的 PC-98 软盘游戏。开启后播放器强制 DOSBox-X 的 PC-98 机器，
+   * 并把当前语言的 .fdi 当作可启动软盘；它不是新平台，避免拆散既有 DOS 分类、存档和管理流程。
+   */
+  dosPc98?: boolean
+  /**
    * Windows 客体系统的共享 .jsdos 镜像（对象 key、站内路径或完整 URL）。
    *
    * 有值时，rom / roms 仍然只放这款游戏自己的 ZIP；播放器会把游戏作为独立 FAT 盘

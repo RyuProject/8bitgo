@@ -44,7 +44,7 @@ try {
   const groups = []
 
   if (wants('games')) {
-    const rows = await query('SELECT slug, platform, description, description_en, description_i18n FROM games WHERE hidden = 0 ORDER BY id ASC')
+    const rows = await query("SELECT slug, platform, description, description_en, description_i18n, COALESCE((SELECT GROUP_CONCAT(DISTINCT gr.lang ORDER BY gr.lang) FROM game_roms gr WHERE gr.game_id = games.id AND CHAR_LENGTH(TRIM(gr.object_key)) > 0), '') AS rom_languages FROM games WHERE hidden = 0 ORDER BY id ASC")
     // 下线平台的详情页是 404，不能提交（见 routes/sitemaps.js 的 ENABLED_PLATFORM_SQL）
     const enabledRows = rows.filter((row) => isPlatformEnabledId(String(row.platform)))
     groups.push({

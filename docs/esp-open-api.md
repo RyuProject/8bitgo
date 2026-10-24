@@ -127,7 +127,7 @@
 |---|---|
 | 公开目录（`/v1/games*` 的 GET、`/v1/platforms`、`/v1/genres`、`/v1/languages`、`/v1/live/rooms*`、`/v1/netplay/rooms*`、`/v1/collections*`、`/v1/health`） | **照常可用**。它们只读公开数据，一把密钥都用不上 |
 | `/v1/token`、`/v1/device/code`、`/v1/me`、`/v1/library`、`/v1/saves*` | `501 temporarily_unavailable` |
-| `/v1/games/:slug/rom`、`/v1/rom/:grant` | `501`（另外没配 `OPEN_ROM_SECRET` 时也单独 501） |
+| `/v1/games/:slug/rom`、`/v1/rom/:grant`、`/v1/rom-plain/:grant` | `501`（另外没配 `OPEN_ROM_SECRET` 时也单独 501） |
 | `/v1/games/:slug/embed` | `501`（另外要 `OPEN_EMBED_SECRET`） |
 
 > 📌 **以前是「没配密钥就整套 501」。** 那会让「游戏列表公开」依赖一个和它完全无关的
@@ -487,15 +487,55 @@ Content-Length: 0
 GET /api/open/v1/rom-plain/<grant> HTTP/1.1
 ```
 
+**设备实际调用顺序**：先用 AppID / key 换应用令牌，再用带 `games.rom` 的令牌领一次 ROM 凭据，最后把返回 URL 中的 `/rom/` 改成 `/rom-plain/`。第二个下载请求**不带 Bearer**，短期凭据本身就是授权。下面是可直接改成固件逻辑的 `curl` 示例（需要 `jq`）：
+
+```bash
+BASE='https://8bitgo.com/api/open/v1'
+APP_ID='app_替换成你的AppID'
+APP_SECRET='替换成你的AppKey'
+SLUG='替换成游戏slug'
+
+TOKEN=$(curl --fail-with-body --silent --show-error -X POST "$BASE/token" \
+  -H 'Content-Type: application/json' \
+  -d "$(jq -n --arg id "$APP_ID" --arg secret "$APP_SECRET" \
+    '{grant_type:"client_credentials",client_id:$id,client_secret:$secret}')" | jq -r '.access_token')
+
+GRANT=$(curl --fail-with-body --silent --show-error \
+  -H "Authorization: Bearer $TOKEN" "$BASE/games/$SLUG/rom")
+ROM_URL=$(printf '%s' "$GRANT" | jq -r '.url')
+FILENAME=$(printf '%s' "$GRANT" | jq -r '.filename')
+PLAIN_URL=$(printf '%s' "$ROM_URL" | sed 's#/rom/#/rom-plain/#')
+OUTPUT=${FILENAME%.8bg}
+
+# 设备保存为原生扩展名，例如 game.nes.8bg → game.nes
+curl --fail-with-body --silent --show-error "$PLAIN_URL" --output "$OUTPUT"
+```
+
+ESP 固件照这个顺序实现即可：
+
+1. `POST /token`，解析 `access_token`；App 需要有 `games.rom` 权限。
+2. `GET /games/<slug>/rom` 带 `Authorization: Bearer <access_token>`，解析响应里的 `url` 和 `filename`。
+3. 把 `url` 路径中的 `/rom/` 换成 `/rom-plain/` 后 GET；**此请求不要再附加 Bearer**。
+4. 按 HTTP `Content-Length` 收满正文后再把临时文件改成最终名。最终名可用上一步的 `filename` 去掉末尾 `.8bg` 得到；例如 `game.nes.8bg` → `game.nes`。不要把 JSON 错误体写进 ROM 文件：先检查状态码是 `200` 或 `206`，其余状态读取 `error` / `error_description`。
+
+同一张 ROM 凭据最多兑现 **10 次**，包括 `HEAD`、整包下载和 Range 重试；五分钟过期。收到 `429` 后重新调用 `/games/<slug>/rom` 领新凭据，再走明文下载端点。AppKey 不要烧进公开发布的固件：设备固件可被读取，建议由你自己的服务端保管 AppKey 并代领短期凭据。
+
+下载中断时可用 `Range: bytes=<已写入字节数>-` 从断点续传；只有收到 `206` 且 `Content-Range` 起点等于本地文件长度时才追加。若服务端回 `200`，应清空临时文件并从头写；若带 `If-Range`，值使用响应中的 `ETag`。请求 `HEAD` 可先取文件名、总长度与 ETag，不会占解码并发槽，也不传输 ROM 正文。
+
 **响应**：
 
 - 成功：`200`，`Content-Type: application/octet-stream`，`Content-Disposition: attachment; filename=<原始文件名>`，
   正文是解密解压后的明文 ROM。
 - 成功（带 `Range`）：`206`，`Content-Range: bytes <start>-<end>/<total>`，正文是那一段明文。
+- `HEAD`：返回相同文件元信息但没有正文；8BG 只读取容器头，不启动解码。
+- `ETag`：8BG 明文文件按容器 `packageId` 返回稳定标签；带匹配的 `If-Range` 可安全续传，不匹配时会回完整文件 `200`。
 - 非 8BG 对象（明文 ROM）：直接透传，行为和 `/v1/rom/:grant` 等价（只是流而非 302）。
 - 凭据问题：与 `/v1/rom/:grant` 同（失效 `410`、非法 `403`、超额 `429`）。
+- 未启用：`501 temporarily_unavailable`（部署未开启 ROM 服务或缺 `OPEN_ROM_SECRET`）。
 - 太大：`413 payload_too_large`（单 ROM 明文超过 `ROM_TRANSCODE_MAX_BYTES`，默认 512MB）。
+- 压缩算法当前仅支持 `store` 和 `zstd`；其它算法返回 `415 unsupported_codec`。
 - 服务繁忙：`503 server_busy`（并发解压数超过 `ROM_TRANSCODE_CONCURRENCY`，默认 2；超额拒服务，不是排队）。
+- 上游或转码超时：`504 upstream_timeout`，设备可退避后重试。
 - 取回或转码失败：`502 bad_gateway`。
 
 **断点续传**：支持。8BG 每个分块独立压缩+加密，所以服务端按字节范围映射出需要的分块、
@@ -504,7 +544,7 @@ GET /api/open/v1/rom-plain/<grant> HTTP/1.1
 
 **代价谁来挡**（解压是 CPU + 带宽开销，必须挡住放大面）：
 
-- 不落盘 —— 边解边吐，峰值内存约等于一个分块（8MB）。
+- 不落盘 —— 当前打包器每块 8MB 原文，服务端逐块拉取、解密、解压并写回；内存按并发数和单块大小封顶，不随 ROM 总大小增长。
 - 每块都校验 sha256 与声明的 sourceSize，zip-bomb 级别的恶意包在单块边界就被挡下。
 - 密钥不落库：直接复用 ROM 打包那套 `deriveRomPackKey`（由 `ROM_PACK_SECRET` 派生）。
 - 单 ROM 大小上限、全局并发闸、按 AppID/IP 限流（同 §6 那两道），超额拒服务。

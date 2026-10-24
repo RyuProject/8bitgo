@@ -3,6 +3,7 @@ import { CACHE } from '../cache.js'
 import { localizedPublicUrl, publicSiteUrl, sitemapImagePublicUrl } from '../site-urls.js'
 import { SITE_DEFAULT_LANGUAGE, SITE_LANGUAGES } from '../../../shared/site-languages.js'
 import { ENABLED_PLATFORM_IDS, GENRE_IDS } from '../../../shared/site-taxonomy.js'
+import { gameHasRomForLanguage } from '../../../shared/rom-language-seo.js'
 
 /**
  * 只收前台真能打开的平台。GameDetailPage 对不在 ENABLED_PLATFORM_IDS 里的平台直接回 404，
@@ -138,6 +139,21 @@ export function hasLocalizedBody(row, language, cols = {}) {
 }
 
 /**
+ * 详情页可以把不匹配的 ROM 回退到其它语言，方便玩家；但 sitemap 不能把这种回退页
+ * 当成一份「本语言可玩」的独立内容提交。正文和默认 ROM 同时具备才收录。
+ *
+ * `gameHasRomForLanguage` 对没有查询 ROM 关联的旧行保持放行，避免迁移窗口把全部
+ * sitemap 清空；主查询明确带 `rom_languages`，所以生产正常路径会严格执行此判断。
+ */
+export function hasIndexableGameLanguage(row, language) {
+  return hasLocalizedBody(row, language, {
+    base: 'description',
+    i18n: 'description_i18n',
+    en: 'description_en',
+  }) && gameHasRomForLanguage(row, language)
+}
+
+/**
  * 文章的标题、摘要、正文是三份独立 JSON；只翻其中一份仍然是半中文页面。
  * 三项都齐才允许进入该语言 sitemap，这个判据要和前端 postSeoLanguagePlan 保持一致。
  */
@@ -187,14 +203,10 @@ async function sitemapRows(key, sqlWithI18n, sqlPlain) {
  */
 export function buildGameSitemap(rows, language, siteUrl = publicSiteUrl(), { gate = true } = {}) {
   return buildUrlsetSitemap(
-    // 只承诺正文确实是这门语言的那些游戏，见 hasLocalizedBody。
+    // 只承诺正文和默认 ROM 都确实属于这门语言的游戏，见 hasIndexableGameLanguage。
     // gate=false 是「这批行里没有译文列」，此时不能过滤，见 sitemapRows
     gate
-      ? rows.filter((row) => hasLocalizedBody(row, language, {
-          base: 'description',
-          i18n: 'description_i18n',
-          en: 'description_en',
-        }))
+      ? rows.filter((row) => hasIndexableGameLanguage(row, language))
       : rows,
     language,
     siteUrl,
@@ -215,8 +227,8 @@ export async function gameSitemap(req, res, next) {
     }
     const { rows, gate } = await sitemapRows(
       'games',
-      `SELECT slug, cover, added_at, created_at, updated_at, description, description_en, description_i18n FROM games WHERE hidden = 0${ENABLED_PLATFORM_SQL} ORDER BY id ASC`,
-      `SELECT slug, cover, added_at, created_at, updated_at, description FROM games WHERE hidden = 0${ENABLED_PLATFORM_SQL} ORDER BY id ASC`,
+      `SELECT slug, cover, added_at, created_at, updated_at, description, description_en, description_i18n, COALESCE((SELECT GROUP_CONCAT(DISTINCT gr.lang ORDER BY gr.lang) FROM game_roms gr WHERE gr.game_id = games.id AND CHAR_LENGTH(TRIM(gr.object_key)) > 0), '') AS rom_languages FROM games WHERE hidden = 0${ENABLED_PLATFORM_SQL} ORDER BY id ASC`,
+      `SELECT slug, cover, added_at, created_at, updated_at, description, COALESCE((SELECT GROUP_CONCAT(DISTINCT gr.lang ORDER BY gr.lang) FROM game_roms gr WHERE gr.game_id = games.id AND CHAR_LENGTH(TRIM(gr.object_key)) > 0), '') AS rom_languages FROM games WHERE hidden = 0${ENABLED_PLATFORM_SQL} ORDER BY id ASC`,
     )
     res.setHeader('Cache-Control', CACHE.meta)
     res.setHeader('Vary', 'Accept-Encoding')
@@ -472,8 +484,8 @@ async function langsWithContent() {
     const [g, p] = await Promise.all([
       sitemapRows(
         'index-games',
-        `SELECT description, description_en, description_i18n FROM games WHERE hidden = 0${ENABLED_PLATFORM_SQL}`,
-        `SELECT slug, description FROM games WHERE hidden = 0${ENABLED_PLATFORM_SQL}`,
+        `SELECT description, description_en, description_i18n, COALESCE((SELECT GROUP_CONCAT(DISTINCT gr.lang ORDER BY gr.lang) FROM game_roms gr WHERE gr.game_id = games.id AND CHAR_LENGTH(TRIM(gr.object_key)) > 0), '') AS rom_languages FROM games WHERE hidden = 0${ENABLED_PLATFORM_SQL}`,
+        `SELECT slug, description, COALESCE((SELECT GROUP_CONCAT(DISTINCT gr.lang ORDER BY gr.lang) FROM game_roms gr WHERE gr.game_id = games.id AND CHAR_LENGTH(TRIM(gr.object_key)) > 0), '') AS rom_languages FROM games WHERE hidden = 0${ENABLED_PLATFORM_SQL}`,
       ),
       sitemapRows(
         'index-posts',
@@ -482,12 +494,7 @@ async function langsWithContent() {
       ),
     ])
     return {
-      gamesLangs: pick(g.rows, g.gate, (row, code) =>
-        hasLocalizedBody(row, code, {
-          base: 'description',
-          i18n: 'description_i18n',
-          en: 'description_en',
-        })),
+      gamesLangs: pick(g.rows, g.gate, hasIndexableGameLanguage),
       postsLangs: pick(p.rows, p.gate, hasLocalizedPostBody),
     }
   } catch (error) {

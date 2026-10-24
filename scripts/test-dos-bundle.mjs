@@ -15,8 +15,19 @@ import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { normalizeDosboxConfigOverride, mergeDosboxConfigOverride } from '../shared/dosbox-config.js'
 
-const { isReadyJsdosBundleBlob, makeJsdosBundle, makeWindowsGameLayer, buildDosboxConf, mergeExtraFiles, readZipFile } = await import(
+const {
+  isReadyJsdosBundleBlob,
+  makeJsdosBundle,
+  makePc98FdiBundle,
+  makeWindowsGameLayer,
+  buildDosboxConf,
+  mergeExtraFiles,
+  readZipFile,
+} = await import(
   fileURLToPath(new URL('../src/lib/jsdosBundle.ts', import.meta.url))
+)
+const { isPc98FdiFileName } = await import(
+  fileURLToPath(new URL('../src/emulator/pc98.ts', import.meta.url))
 )
 const {
   buildSockdriveWindowsGuestConfig,
@@ -223,6 +234,43 @@ console.log('── 打不开的包必须在 Dos() 之前抛，不能留给黑�
   // store 和 deflate 是我们搬得动的，不能误伤
   const fine = makeWindowsGameLayer(makeZip([{ name: 'GAME.EXE', data: EXE, method: 0 }]), 'GAME.EXE')
   ok(fine.bytes instanceof Uint8Array, 'store(0) 正常通过')
+}
+
+console.log('\n── PC-98：FDI 直接做成可启动的 DOSBox-X bundle ──')
+{
+  const fdi = new Uint8Array(48 + 512)
+  const header = new DataView(fdi.buffer)
+  // 一张最小 FDI 夹具：48 字节头 + 一扇区数据；只测封装与启动配置，不伪造完整游戏。
+  header.setUint32(0, 0, true)
+  header.setUint16(4, 48, true)
+  header.setUint32(8, 48, true)
+  header.setUint32(12, 512, true)
+  fdi.set([0xeb, 0x3c, 0x90], 48)
+
+  ok(isPc98FdiFileName('mtower.fdi') && isPc98FdiFileName('MTOWER.FDI') && !isPc98FdiFileName('mtower.fdi.zip'), '只把单个 .fdi 识别为 PC-98 软盘')
+  const bundle = makePc98FdiBundle('mtower.fdi', fdi.buffer, '[cpu]\ncycles=max')
+  const bytes = await bundle.blob.arrayBuffer()
+  const config = new TextDecoder().decode((await readZipFile(bytes, '.jsdos/dosbox.conf')).data)
+  const disk = (await readZipFile(bytes, '8BITGO.FDI')).data
+  ok(bundle.passthrough === false && bundle.executable === null, 'FDI 从软盘启动，不走 DOS EXE 猜测')
+  ok(/\[dosbox\]\nmachine=pc98/i.test(config) && /imgmount 0 8BITGO\.FDI -fs none/i.test(config) && /boot a:/i.test(config), '⭐ 固定 PC-98 机器，先挂载 A: 再从 FDI 启动')
+  ok(/\[cpu\][\s\S]*cycles=max/i.test(config), '安全的 CPU 覆盖仍可用于 PC-98 调优')
+  ok(Buffer.from(disk).equals(Buffer.from(fdi)), 'FDI 字节原样存入 bundle，不解压 / 重压')
+  await throwsWith(
+    () => Promise.resolve(makePc98FdiBundle('game.zip', fdi.buffer)),
+    /只接受单个 \.fdi/,
+    'PC-98 模式拒绝 ZIP，避免误走普通 DOS 启动路径',
+  )
+  await throwsWith(
+    () => Promise.resolve(makePc98FdiBundle('mtower.fdi', new ArrayBuffer(16))),
+    /过小|下载不完整/,
+    '半截 FDI 在启动 DOSBox-X 前被拦下',
+  )
+  await throwsWith(
+    () => Promise.resolve(makePc98FdiBundle('mtower.fdi', fdi.buffer, '[dosbox]\nmachine=svga_s3')),
+    /固定为 pc98/,
+    '后台配置不能把 PC-98 机器偷换成普通 DOSBox',
+  )
 }
 
 console.log('\n── Daggerfall：启动参数与数据路径必须同时纠正 ──')

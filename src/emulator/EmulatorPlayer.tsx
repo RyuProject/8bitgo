@@ -3,6 +3,7 @@ import type { ArcadeButtonCount, DosBackend, DosWindowsVersion, FlashControls, G
 import { platformMap } from '@/data/platforms'
 import { formatBytes, formatSpeed, isRomFileAccepted } from '@/lib/emulator'
 import { detectRom, describeDetection } from './detect'
+import { isPc98FdiFileName } from './pc98'
 import { jsnesCanRun } from './nesMapper'
 import { resolveRuntime, runtimesFor, extOf } from './registry'
 import { romArchiveRef } from '@/lib/romArchiveUrl'
@@ -344,6 +345,8 @@ interface Props {
   dosStartupCommands?: string
   /** DOS 运行核心：Windows 客体的完整 .jsdos 镜像必须走 DOSBox-X */
   dosBackend?: DosBackend
+  /** 普通 DOS 分类里的 PC-98 软盘开关；开启后只按 PC-98 的 .fdi 启动路径处理。 */
+  dosPc98?: boolean
   /** 可复用的 Windows 系统 .jsdos；游戏 ROM 仍单独加载。 */
   dosSystemUrl?: string
   /** 大型 DOS / Windows 游戏的静态 Sockdrive 目录；有值时不会下载整包游戏 ROM。 */
@@ -562,6 +565,7 @@ export function EmulatorPlayer({
   dosExecutable,
   dosStartupCommands,
   dosBackend,
+  dosPc98,
   dosSystemUrl,
   dosSockdriveUrl,
   dosExtras,
@@ -1523,6 +1527,8 @@ export function EmulatorPlayer({
   // 和启动程序一样，只在真正挂载 js-dos 时读取，后台配置变化不该打断已经开始的游戏
   const dosBackendRef = useRef(dosBackend)
   dosBackendRef.current = dosBackend
+  const dosPc98Ref = useRef(dosPc98)
+  dosPc98Ref.current = dosPc98
   // 系统镜像与等待时间也只在新会话挂载时读取；后台热改配置不应中断玩家当前这一局。
   const dosSystemUrlRef = useRef(effectiveDosSystemUrl)
   dosSystemUrlRef.current = effectiveDosSystemUrl
@@ -1663,7 +1669,7 @@ export function EmulatorPlayer({
   const supported = Boolean(pageRuntime) || onlineOk
   /** js-dos 预热必须知道最终后端，否则会把普通 DOS 的 1.4 MB 核心当成 Win95 的 7.5 MB 核心。 */
   const requestedPrewarmCore = core ?? platform.core
-  const prewarmCore = pageRuntime?.id === 'jsdos' && (effectiveDosSystemUrl || dosBackend === 'dosboxX')
+  const prewarmCore = pageRuntime?.id === 'jsdos' && (dosPc98 || effectiveDosSystemUrl || dosBackend === 'dosboxX')
     ? 'dosboxX'
     : platform.id === 'arcade' && requestedPrewarmCore
       // RomData 只有 FBNeo 会读；悬停时也必须用最终核心，否则会白下 mame-current 的 35MB。
@@ -1979,6 +1985,9 @@ export function EmulatorPlayer({
       dosExecutable: dosExecutableRef.current,
       dosStartupCommands: dosStartupCommandsRef.current,
       dosBackend: dosBackendRef.current,
+      // 本地页没有后台游戏表单可勾开关；FDI 是这一条路径里无歧义的 PC-98 软盘格式，
+      // 所以本地拖入也直接走同一套 DOSBox-X 启动逻辑。线上 ROM 仍以后台开关为准。
+      dosPc98: Boolean(dosPc98Ref.current || (session.platform === 'dos' && typeof session.game !== 'string' && isPc98FdiFileName(session.game.name))),
       dosSystemUrl: dosSystemUrlRef.current,
       dosSockdriveUrl: dosSockdriveUrlRef.current,
       dosExtras: dosExtrasRef.current,

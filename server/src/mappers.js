@@ -214,6 +214,11 @@ export function dosBackendOf(v) {
   return v === 'dosboxX' ? 'dosboxX' : null
 }
 
+/** PC-98 仍属于 DOS 分类；只保存一个明确的布尔开关，避免给平台枚举再开分支。 */
+export function dosPc98Of(v) {
+  return v ? 1 : 0
+}
+
 /**
  * 可复用的 Windows 客体系统镜像。
  *
@@ -557,6 +562,7 @@ export function gameRowToApi(r, rel = {}) {
   // 只有 DOS 游戏会填；不带字段 = 前端启发式自己猜
   if (r.dos_executable) g.dosExecutable = r.dos_executable
   if (r.dos_backend === 'dosboxX') g.dosBackend = 'dosboxX'
+  if (bool(r.dos_pc98)) g.dosPc98 = true
   if (r.dos_system) g.dosSystem = r.dos_system
   if (r.dos_sockdrive) g.dosSockdrive = r.dos_sockdrive
   // 附加文件：库里是一行一个 key 的文本，接口上给数组，前端直接 map 成 URL
@@ -640,7 +646,9 @@ export function gameApiToRow(g) {
     core: coreOf(g.core),
     runtime: runtimeOf(g.runtime),
     dos_executable: dosExecutableOf(g.dosExecutable),
-    dos_backend: dosBackendOf(g.dosBackend),
+    // PC-98 只由 DOSBox-X 实现；即使脚本漏传 dosBackend，也不能存出一条运行时必失败的记录。
+    dos_backend: g.dosPc98 ? 'dosboxX' : dosBackendOf(g.dosBackend),
+    dos_pc98: dosPc98Of(g.dosPc98),
     dos_system: dosSystemOf(g.dosSystem),
     dos_sockdrive: dosSockdriveOf(g.dosSockdrive),
     dos_extras: dosExtrasOf(g.dosExtras),
@@ -685,6 +693,7 @@ const FIELD_TO_COLUMN = {
   runtime: ['runtime', runtimeOf],
   dosExecutable: ['dos_executable', dosExecutableOf],
   dosBackend: ['dos_backend', dosBackendOf],
+  dosPc98: ['dos_pc98', dosPc98Of],
   dosSystem: ['dos_system', dosSystemOf],
   dosSockdrive: ['dos_sockdrive', dosSockdriveOf],
   dosExtras: ['dos_extras', dosExtrasOf],

@@ -16,6 +16,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { SITE_DEFAULT_LANGUAGE, SITE_LANGUAGES } from '../shared/site-languages.js'
 import { normalizeUrl } from '../server/src/url-normalize.js'
+import { CACHE, staticCacheHeaders } from '../server/src/cache.js'
 import { TV_RENDER_ASSET_PREFIXES, tvAllowedPaths, tvRobots, tvRobotsTxt } from '../server/src/tv-robots.js'
 
 const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
@@ -429,6 +430,30 @@ check('模拟器和网页游戏的 index.html 是运行入口，不能被 SEO �
   ]) {
     assert.ok(run('GET', url).nexted, `${url} 被错误重定向到 ${run('GET', url).location}`)
   }
+})
+
+check('模拟器运行时 HTML 一律 noindex，正式 Linux 页面不能被误伤', () => {
+  const headersFor = (file) => {
+    const headers = new Map()
+    staticCacheHeaders({ setHeader: (name, value) => headers.set(name, value) }, file)
+    return headers
+  }
+  for (const file of [
+    '/dist/client/web/PvZ/cn/index.html',
+    '/dist/client/web/cs16/index.html',
+    '/dist/client/ppsspp/v0dbfaca/v15/index.html',
+    '/dist/client/dolphin/v7e38409/index.html',
+    '/dist/client/j2me/run.html',
+  ]) {
+    assert.equal(headersFor(file).get('X-Robots-Tag'), 'noindex, nofollow', `${file} 漏了运行时 noindex`)
+  }
+  assert.equal(headersFor('/dist/client/linux.html').get('X-Robots-Tag'), undefined, '正式 Linux 落地页不该被 noindex')
+  assert.equal(headersFor('/dist/client/web/PvZ/pvz-page.js').get('X-Robots-Tag'), undefined, '脚本不是 HTML，不需要 robots 头')
+  assert.equal(
+    headersFor('/var/www/8bitgo/dist/client/web/PvZ/pvz-page.js').get('Cache-Control'),
+    CACHE.engine,
+    'express.static 给的是绝对路径，网页游戏运行时必须命中短陈旧窗口缓存策略',
+  )
 })
 
 check('www. 必须 301 到裸域，并和路径归一合成同一跳', () => {

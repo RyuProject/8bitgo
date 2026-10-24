@@ -431,6 +431,10 @@ if (ssrAvailable()) {
     const sub = req.params?.sub != null ? String(req.params.sub) : ''
     if (!WEB_GAME_NAME.test(name)) return next()
     if (sub && !WEB_GAME_NAME.test(sub)) return next()
+    // 这里返回的是原始网页游戏运行时，不是站内的游戏详情页。目录请求不会经过
+    // express.static 的 setHeaders，因此必须在这一条也明确 noindex；否则
+    // `/web/PvZ` 这类 200 页面会和 `/games/...` 争抢同一组搜索词。
+    res.set('X-Robots-Tag', 'noindex, nofollow')
     // CS1.5（Xash3D-WASM）是实验性接入：1.5 资产 + 1.6 wasm 模块版本错配，进图会崩。
     // 设 CS15_DISABLED=1 即可整页下线，不影响其它 /web/ 游戏（如 PvZ）。
     if (name === 'cs15' && process.env.CS15_DISABLED === '1') {

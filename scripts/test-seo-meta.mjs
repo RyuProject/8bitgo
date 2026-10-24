@@ -253,6 +253,15 @@ check('/play-local 保留隔离头但不再被服务器强制 noindex', () => {
 
 console.log('六、复用英文长正文的路由不能冒充独立译文')
 
+check('VideoGame 结构化数据分别声明页面 canonical 语言与可直接启动的 ROM 语言', () => {
+  const seo = code('src/services/seo.ts')
+  const detail = code('src/pages/GameDetailPage.tsx')
+  assert.match(seo, /inLanguage\?: readonly string\[\]/, 'VideoGame 输入缺少 ROM 语言字段')
+  assert.match(seo, /schema\.inLanguage = \[\.\.\.new Set\(g\.inLanguage/, 'ROM 语言没有写入 VideoGame JSON-LD')
+  assert.match(detail, /inLanguage: romLangs/, '详情页没有把真实绑定的语言槽传给 JSON-LD')
+  assert.match(detail, /ROM_LANG_LABEL/, '页面没有显示完整的 ROM 语言名')
+})
+
 check('关于页与法律页只声明简中、繁中、英文三份真实长正文', () => {
   const languages = code('src/config/languages.ts')
   assert.match(

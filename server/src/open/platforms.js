@@ -399,11 +399,11 @@ const PLATFORM_ROWS = deepFreeze([
     year: 1981,
     runtime: 'jsdos',
     core: 'dos',
-    romExtensions: ['.zip', '.exe', '.com', '.jsdos'],
+    romExtensions: ['.zip', '.exe', '.com', '.jsdos', '.fdi'],
     native: {
       runnable: true,
       emulator: 'DOSBox',
-      note: '普通 DOS 游戏可用 DOSBox；requires_windows=true 的游戏需要 Windows 3.x / 95 / 98 客体与 DOSBox-X，低性能设备可用 ?requires_windows=false 排除。jsdos 包在本地需先解包整理目录结构',
+      note: '普通 DOS 游戏可用 DOSBox；PC-98 的 .fdi 需用支持 PC-98 的 DOSBox-X。requires_windows=true 的游戏需要 Windows 3.x / 95 / 98 客体与 DOSBox-X，低性能设备可用 ?requires_windows=false 排除。jsdos 包在本地需先解包整理目录结构',
     },
   },
   {

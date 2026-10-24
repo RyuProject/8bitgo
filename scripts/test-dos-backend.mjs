@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
   dosBackendOf,
+  dosPc98Of,
   dosboxConfigOf,
   dosLaunchDelayOf,
   dosSaveHintOf,
@@ -18,6 +19,8 @@ assert.equal(dosBackendOf('dosboxX'), 'dosboxX')
 assert.equal(dosBackendOf('dosbox'), null)
 assert.equal(dosBackendOf('DOSBOX-X'), null)
 assert.equal(dosBackendOf(undefined), null)
+assert.equal(dosPc98Of(true), 1)
+assert.equal(dosPc98Of(false), 0)
 assert.equal(dosboxConfigOf(' [gus]\r\ngus=false '), '[gus]\ngus=false')
 assert.equal(dosboxConfigOf(undefined), null)
 assert.equal(dosboxConfigOf('[dos]\nems=false'), '[dos]\nems=false')
@@ -39,15 +42,22 @@ assert.equal(win95.dosLaunchDelay, 24)
 assert.equal(win95.dosboxConfig, '[gus]\ngus=false')
 assert.equal(gameRowToApi({ slug: 'dos', dos_backend: null }).dosBackend, undefined)
 
+const pc98 = gameRowToApi({ slug: 'mtower', dos_backend: 'dosboxX', dos_pc98: 1 })
+assert.equal(pc98.dosBackend, 'dosboxX')
+assert.equal(pc98.dosPc98, true)
+
 assert.equal(gameApiToRow({ slug: 'win95', dosBackend: 'dosboxX', dosSystem: 'systems/win95.jsdos', dosLaunchDelay: 24 }).dos_backend, 'dosboxX')
 assert.equal(gameApiToRow({ slug: 'win95', dosBackend: 'dosboxX', dosSystem: 'systems/win95.jsdos', dosLaunchDelay: 24 }).dos_system, 'systems/win95.jsdos')
 assert.equal(gameApiToRow({ slug: 'win95', dosSockdrive: 'sockdrives/game-v1/' }).dos_sockdrive, 'sockdrives/game-v1')
 assert.equal(gameApiToRow({ slug: 'win95', dosBackend: 'dosboxX', dosSystem: 'systems/win95.jsdos', dosLaunchDelay: 24 }).dos_launch_delay, 24)
 assert.equal(gameApiToRow({ slug: 'dos', dosBackend: 'dosbox' }).dos_backend, null)
+assert.equal(gameApiToRow({ slug: 'mtower', dosPc98: true }).dos_backend, 'dosboxX')
+assert.equal(gameApiToRow({ slug: 'mtower', dosPc98: true }).dos_pc98, 1)
 assert.equal(gameApiToRow({ slug: 'win95', dosboxConfig: '[cpu]\ncycles=20000' }).dosbox_config_override, '[cpu]\ncycles=20000')
 
 assert.deepEqual(gameApiToPartialRow({ dosBackend: 'dosboxX' }), { dos_backend: 'dosboxX' })
 assert.deepEqual(gameApiToPartialRow({ dosBackend: undefined }), { dos_backend: null })
+assert.deepEqual(gameApiToPartialRow({ dosPc98: true }), { dos_pc98: 1 })
 assert.deepEqual(gameApiToPartialRow({ dosboxConfig: '' }), { dosbox_config_override: null })
 
 // 普通 DOS 也必须能在后台填写性能 / 内存兼容配置；以前表单只在 dosboxX 分支保存，输入会静默消失。
@@ -55,6 +65,8 @@ const gameForm = readFileSync(new URL('../src/admin/GameForm.tsx', import.meta.u
 assert.match(gameForm, /if \(form\.platform === 'dos'\) \{\s*\n\s*try \{\s*\n\s*dosboxConfig = normalizeDosboxConfigOverride/)
 assert.doesNotMatch(gameForm, /if \(form\.platform === 'dos' && form\.dosBackend === 'dosboxX'\) \{\s*\n\s*try \{\s*\n\s*dosboxConfig/)
 assert.match(gameForm, /form\.dosBackend === 'dosboxX' \? 'DOSBox-X' : 'DOSBox'/)
+assert.match(gameForm, /PC-98 软盘模式（\.fdi）/)
+assert.match(gameForm, /dosPc98: form\.platform === 'dos' \? pc98 : false/)
 
 assert.equal(dosSystemOf(' systems/win98.jsdos '), 'systems/win98.jsdos')
 assert.equal(dosSystemOf('bad\nvalue'), null)
@@ -150,6 +162,24 @@ assert.match(
   /普通 DOSBox 不支持/,
   '普通 DOSBox 不得保存一份运行时必然无法挂载的 Sockdrive',
 )
+
+// PC-98 沿用 DOS 分类，但它的启动介质不是 ZIP + EXE：必须在保存时挡住所有混搭，
+// 否则玩家会等下载完才看到 DOSBox-X 黑屏，且根本不知道后台哪一项填错。
+const pc98Game = {
+  platform: 'dos',
+  dosBackend: 'dosboxX',
+  dosPc98: true,
+  roms: { ja: 'roms/dos/mtower.ja.fdi.8bg' },
+}
+assert.equal(dosGameConfigError(pc98Game), null, 'PC-98 接受加密容器内的 .fdi 镜像')
+assert.match(dosGameConfigError({ ...pc98Game, dosBackend: undefined }), /需要 DOSBox-X/)
+assert.match(dosGameConfigError({ ...pc98Game, dosSystem: 'systems/win95.jsdos' }), /不能配置 Windows 系统镜像/)
+assert.match(dosGameConfigError({ ...pc98Game, dosSockdrive: 'sockdrives/mtower-v1' }), /不能配置 Sockdrive/)
+assert.match(dosGameConfigError({ ...pc98Game, dosExecutable: 'GAME.EXE' }), /不能填写 DOS 自启动程序/)
+assert.match(dosGameConfigError({ ...pc98Game, dosStartupCommands: { ja: 'mount c .' } }), /不能填写 DOS 启动前命令/)
+assert.match(dosGameConfigError({ ...pc98Game, roms: { ja: 'roms/dos/mtower.ja.zip.8bg' } }), /只接受 \.fdi/)
+assert.match(dosGameConfigError({ ...pc98Game, dosboxConfig: '[dosbox]\nmachine=svga_s3' }), /固定为 pc98/)
+assert.equal(dosGameConfigError({ platform: 'dos', dosBackend: 'dosboxX', dosPc98: true }), null, '可先创建 PC-98 条目再上传 FDI')
 assert.match(gameForm, /dosSockdrive/)
 assert.match(gameForm, /dosSockdrive\.startsWith\('\/\/'\)/)
 assert.match(gameForm, /本地磁盘缓存冲突/)

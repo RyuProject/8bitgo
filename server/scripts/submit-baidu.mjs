@@ -192,10 +192,10 @@ try {
   if (wants('games')) {
     const rows = all
       ? await query(
-          'SELECT slug, platform, updated_at, description, description_en, description_i18n FROM games WHERE hidden = 0 ORDER BY COALESCE(updated_at, created_at, added_at) DESC',
+          "SELECT slug, platform, updated_at, description, description_en, description_i18n, COALESCE((SELECT GROUP_CONCAT(DISTINCT gr.lang ORDER BY gr.lang) FROM game_roms gr WHERE gr.game_id = games.id AND CHAR_LENGTH(TRIM(gr.object_key)) > 0), '') AS rom_languages FROM games WHERE hidden = 0 ORDER BY COALESCE(updated_at, created_at, added_at) DESC",
         )
       : await query(
-          `SELECT slug, platform, updated_at, description, description_en, description_i18n FROM games
+          `SELECT slug, platform, updated_at, description, description_en, description_i18n, COALESCE((SELECT GROUP_CONCAT(DISTINCT gr.lang ORDER BY gr.lang) FROM game_roms gr WHERE gr.game_id = games.id AND CHAR_LENGTH(TRIM(gr.object_key)) > 0), '') AS rom_languages FROM games
             WHERE hidden = 0
               AND COALESCE(updated_at, created_at, added_at) >= DATE_SUB(NOW(), INTERVAL ? DAY)
             ORDER BY COALESCE(updated_at, created_at, added_at) DESC`,

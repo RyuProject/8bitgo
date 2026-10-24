@@ -86,6 +86,8 @@ CREATE TABLE IF NOT EXISTS games (
   dos_executable VARCHAR(255)  NULL,
   -- Windows 3.x / 9x 的完整 .jsdos 磁盘镜像需要 DOSBox-X；NULL = 普通 DOSBox。
   dos_backend    VARCHAR(16)   NULL,
+  -- PC-98 仍归 DOS 分类；开启后运行时固定以 machine=pc98 从 .fdi 软盘启动。
+  dos_pc98       TINYINT(1)    NOT NULL DEFAULT 0,
   -- 可复用的 Windows 客体系统 .jsdos。游戏 ROM 仍是独立 ZIP，运行时作为另一块 FAT 盘挂入。
   -- NULL 保留旧模式：ROM 自己就是已经装好系统与游戏的完整 .jsdos。
   dos_system     VARCHAR(500)  NULL,

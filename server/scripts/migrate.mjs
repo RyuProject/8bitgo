@@ -1199,6 +1199,16 @@ const patches = [
       }
     },
   },
+  {
+    name: 'games.dos_pc98（DOS 分类中的 PC-98 FDI 软盘模式）',
+    /*
+      PC-98 没有拆成新平台：游戏目录、存档和后台入口仍沿用 DOS，只多一个运行时开关。
+      放在补丁表尾保证已部署数据库可幂等升级；AFTER 只影响展示顺序，不影响已有数据。
+    */
+    table: 'games',
+    needed: async () => !(await hasColumn('games', 'dos_pc98')),
+    run: () => conn.query('ALTER TABLE `games` ADD COLUMN `dos_pc98` TINYINT(1) NOT NULL DEFAULT 0 AFTER `dos_backend`'),
+  },
 ]
 
 const TABLES = ['games', 'posts', 'users', 'volunteer_games', 'volunteer_posts', 'favorites', 'recents', 'saves', 'flash_save_slots', 'flash_save_kv', 'flash_save_seqs', 'login_codes', 'platform_bios', 'game_plays', 'game_startup_events', 'psp_conversion_jobs', 'sockdrive_conversion_jobs', 'developers', 'friend_links', 'friend_link_hits', 'game_comments', 'game_ratings', 'oauth_apps', 'open_rom_samples']

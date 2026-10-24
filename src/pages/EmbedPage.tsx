@@ -185,6 +185,7 @@ export function EmbedPage({ standalonePlatform }: Props) {
           dosExecutable={dosExecutableForRom(game, rom)}
           dosStartupCommands={dosStartupCommandsForRom(game, rom)}
           dosBackend={game.dosBackend}
+          dosPc98={game.dosPc98}
           dosSystemUrl={game.dosSystem ? romUrlForKey(game.dosSystem) : undefined}
           dosSockdriveUrl={dosSockdriveForRom(game, rom) ? romUrlForKey(dosSockdriveForRom(game, rom)!) : undefined}
           dosWindowsVersion={game.dosWindowsVersion}

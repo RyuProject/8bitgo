@@ -68,6 +68,25 @@ await check('自动推送只提交有正文的游戏详情页，聚合页仍覆�
   assert.ok(urls.includes('https://8bitgo.com/de/games'), '德文游戏列表自身有本地化正文，仍应通知')
 })
 
+await check('自动推送只提交默认就能启动对应语言 ROM 的详情页', async () => {
+  const urls = gameChangeUrls(
+    {
+      slug: 'multi-language',
+      description: '中文介绍',
+      description_en: 'English description',
+      description_i18n: JSON.stringify({ ja: '日本語の紹介', de: 'Deutsche Beschreibung' }),
+      // 日文与英文有专属槽；中文、德文在播放器里会回退，但不能当作可独立收录的版本提交。
+      roms: { en: 'roms/en.zip', ja: 'roms/ja.zip' },
+    },
+    'https://8bitgo.com',
+  )
+  assert.ok(urls.includes('https://8bitgo.com/en/games/multi-language'))
+  assert.ok(urls.includes('https://8bitgo.com/ja/games/multi-language'))
+  assert.ok(!urls.includes('https://8bitgo.com/games/multi-language'))
+  assert.ok(!urls.includes('https://8bitgo.com/de/games/multi-language'))
+  assert.ok(urls.includes('https://8bitgo.com/de/games'), '聚合页不依赖某款游戏的 ROM 槽，仍要通知')
+})
+
 await check('缺少基准正文时不主动推默认语言薄页，有真实正文的其它语言不受影响', async () => {
   const urls = gameChangeUrls({
     slug: 'thin-game',
@@ -474,6 +493,7 @@ await check('补交脚本覆盖游戏、文章、分类与公开合集（防止�
     assert.match(src, /taxonomyRows/, `${file} 少了平台 / 类型页`)
     assert.match(src, /published = 1/, `${file} 必须只推已发布文章，草稿在前台是 404`)
     assert.match(src, /gameContentLanguages/, `${file} 游戏详情补交没有按真实正文语言过滤`)
+    assert.match(src, /rom_languages/, `${file} 没有查询 ROM 语言，无法避免推送跨语言回退页`)
     assert.match(src, /postContentLanguages/, `${file} 文章详情补交没有按完整译文过滤`)
   }
   const indexNow = readFileSync(new URL('../server/scripts/submit-indexnow.mjs', import.meta.url), 'utf8')

@@ -123,6 +123,11 @@ export interface MountOptions {
   dosStartupCommands?: string
   /** 选择 DOSBox-X；Windows 客体和纯 DOS Sockdrive 都需要它，普通整包 DOS 留空即可。 */
   dosBackend?: DosBackend
+  /**
+   * DOS 平台中的 PC-98 软盘模式。仅接受一张 .fdi 启动盘；适配器会固定 machine=pc98，
+   * 不把它伪装成 Windows 客体，也不允许被普通 DOS 的 autoexec 覆盖。
+   */
+  dosPc98?: boolean
   /** Windows 客体系统的共享 .jsdos 镜像 URL；游戏文件仍由 game 单独提供。 */
   dosSystemUrl?: string
   /** 大型 DOS / Windows 游戏的静态 Sockdrive 目录 URL；有值时按扇区读取，不下载整包 ROM。 */

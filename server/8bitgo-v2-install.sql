@@ -110,6 +110,8 @@ CREATE TABLE IF NOT EXISTS games (
   dos_executable VARCHAR(255) NULL,
   -- NULL = 普通 DOSBox；dosboxX = DOS 或 Windows 3.x / 9x 客体走 DOSBox-X。
   dos_backend   VARCHAR(16)   NULL,
+  -- PC-98 仍归 DOS 分类；开启后运行时固定以 machine=pc98 从 .fdi 软盘启动。
+  dos_pc98      TINYINT(1)    NOT NULL DEFAULT 0,
   -- 可复用的 Windows 客体系统 .jsdos。游戏 ROM 仍单独存，避免每款游戏重复一份系统盘。
   dos_system    VARCHAR(500)  NULL,
   -- 静态 Sockdrive 目录；大型游戏盘按扇区读取，不必先下载完整 ZIP。

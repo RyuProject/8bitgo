@@ -18,6 +18,7 @@ import {
   isReadyJsdosBundleBlob,
   makeJsdosConfigBundle,
   makeJsdosBundle,
+  makePc98FdiBundle,
   makeWindowsGameLayer,
   WINDOWS_GAME_ROOT,
   type ExtraFile,
@@ -1082,6 +1083,7 @@ async function verifySockdriveForLaunch(
 
 export function mount(container: HTMLElement, options: MountOptions): RuntimeHandle {
   const rt = getT().runtime
+  const pc98 = Boolean(options.dosPc98)
   const streamingGame = Boolean(options.dosSockdriveUrl)
   /*
     Sockdrive 是 BIOS 硬盘，不是 DOSBox-X 内置 DOS 的 mount 盘。纯 DOS 流式游戏若没有显式系统盘，
@@ -1093,7 +1095,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   // 槽 0 是旧的文件层存档；流式盘存的是扇区差异，格式完全不同，不能互相覆盖。
   const saveSlot = streamingGame ? 1 : 0
   const saveMetadata = {
-    core: options.dosBackend === 'dosboxX' || systemUrl ? 'dosbox-x' : 'dosbox',
+    core: pc98 || options.dosBackend === 'dosboxX' || systemUrl ? 'dosbox-x' : 'dosbox',
     build: JSDOS_ASSET_VERSION,
     format: streamingGame ? 'sockdrive-sector-changes' : 'jsdos-fs-changes',
   }
@@ -1193,6 +1195,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   void (async () => {
     try {
+      if (pc98 && streamingGame) {
+        throw new Error('PC-98 软盘模式不能同时使用 Sockdrive；请上传单个 .fdi ROM')
+      }
+      if (pc98 && systemUrl) {
+        throw new Error('PC-98 软盘模式不能配置 Windows 系统镜像')
+      }
       if (options.dosSockdriveUrl && options.dosBackend !== 'dosboxX') {
         throw new Error('静态 Sockdrive 需要 DOSBox-X；普通 DOSBox 不支持远程磁盘按需读取')
       }
@@ -1213,7 +1221,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       const startupCommands = normalizeDosStartupCommands(
         dosGameCompatibilityStartupCommands(options.gameSlug, options.dosStartupCommands),
       )
-      const preferReadyBundleBlob = !systemUrl
+      const preferReadyBundleBlob = !pc98
+        && !systemUrl
         && !dosExecutable?.trim()
         && !dosboxConfig?.trim()
         && !startupCommands
@@ -1429,7 +1438,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         ]
       } else {
         if (!rom) throw new Error('DOS 游戏没有可用的游戏文件')
-        if (rom.bundleBlob) {
+        if (pc98) {
+          if (!rom.buf) throw new Error('PC-98 FDI 必须先完整校验后再启动')
+          const bundle = makePc98FdiBundle(rom.name, rom.buf, dosboxConfig)
+          primaryUrl = URL.createObjectURL(bundle.blob)
+        } else if (rom.bundleBlob) {
           // 《辐射》这类已完成打包的大 ZIP 直接透传：不再制造第二份 503MB ArrayBuffer/Blob。
           primaryUrl = URL.createObjectURL(rom.bundleBlob)
         } else {
@@ -1487,7 +1500,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         pathPrefix: `${JSDOS_PATH}emulators/`,
         // Windows 3.x / 9x 仍是装在磁盘镜像里的客体系统；这里切的是能启动该镜像的 DOSBox-X 核心。
         // 新模式把系统 bundle 与游戏 ZIP 分开叠加；没配系统 bundle 时仍兼容旧的完整 .jsdos 包。
-        backend: guest || options.dosBackend === 'dosboxX' ? 'dosboxX' : 'dosbox',
+        backend: pc98 || guest || options.dosBackend === 'dosboxX' ? 'dosboxX' : 'dosbox',
         // 播放器外壳是我们自己的，平时隐藏 js-dos 那套 UI；
         // 中继联机时必须放出来，玩家要在它的设置面板里填 IPX 服务器和房间
         kiosk: !ipx?.showUi,

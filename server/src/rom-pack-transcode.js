@@ -6,12 +6,13 @@
  * 调本模块，服务端取回 8BG 对象、逐块解密解压、把明文 ROM 流式吐回去。
  *
  * 安全面（转码是 CPU + 带宽开销，必须挡住放大的那一侧）：
- *   · 不落盘 —— 边解边吐，峰值内存约等于一个分块（8MB）。
+ *   · 不落盘 —— 当前打包器按 8MB 原文分块；每个并发转码只暂存命中的密文块和解密/解压块。
  *   · 每块都校验 sha256 与声明的 sourceSize，zip-bomb 级别的恶意包在单块边界就被挡下。
  *   · 密钥不落库：直接复用 rom-pack-key.js 的 deriveRomPackKey（ROM_PACK_SECRET 派生）。
  *   · 单 ROM 大小上限、全局并发闸、按 AppID/IP 限流都在路由层（open.js）收口，超额拒服务。
  */
 import { createDecipheriv, createHash } from 'node:crypto'
+import { promisify } from 'node:util'
 import zlib from 'node:zlib'
 import { deriveRomPackKey } from './rom-pack-key.js'
 import { envNumber } from './resource-limits.js'
@@ -71,22 +72,40 @@ export function releaseTranscodeSlot() {
  * ------------------------------------------------------------------ */
 
 let zstdImpl = null
+let zstdInit = null
+const nativeZstdDecompress = typeof zlib.zstdDecompress === 'function'
+  ? promisify(zlib.zstdDecompress.bind(zlib))
+  : null
 
 async function resolveZstd() {
   if (zstdImpl) return zstdImpl
-  // Node 22+ 自带 zstd（取决于构建是否带 zlib）。优先它：无需新依赖、无 WASM 初始化开销。
-  if (typeof zlib.zstdDecompressSync === 'function') {
-    zstdImpl = { kind: 'native', decompress: (buf) => Buffer.from(zlib.zstdDecompressSync(buf)) }
-    return zstdImpl
+  // WASM 初始化是异步的；单飞避免冷启动时多路请求同时 init 同一份模块。
+  if (!zstdInit) {
+    zstdInit = (async () => {
+      // Node 22+ 的回调版 zstd 在 libuv 线程池解码，不把整站 API 卡在同步解压上。
+      if (nativeZstdDecompress) {
+        zstdImpl = {
+          kind: 'native',
+          decompress: (buf, maxOutputLength) => nativeZstdDecompress(buf, { maxOutputLength }),
+        }
+        return zstdImpl
+      }
+      // 兜底：根目录已装 @bokuweb/zstd-wasm（脚本和打包器在用）。
+      try {
+        const mod = await import('@bokuweb/zstd-wasm')
+        await mod.default.init()
+        zstdImpl = { kind: 'wasm', decompress: (buf) => Buffer.from(mod.default.decompress(buf)) }
+        return zstdImpl
+      } catch {
+        throw new Error('服务端缺少可用的 zstd 解码器（需要 Node 22+ 的 zlib，或 @bokuweb/zstd-wasm）')
+      }
+    })()
   }
-  // 兜底：根目录已装 @bokuweb/zstd-wasm（脚本和打包器在用）。动态 import 让 server 不强制依赖它。
   try {
-    const mod = await import('@bokuweb/zstd-wasm')
-    await mod.default.init()
-    zstdImpl = { kind: 'wasm', decompress: (buf) => Buffer.from(mod.default.decompress(buf)) }
-    return zstdImpl
-  } catch {
-    throw new Error('服务端缺少可用的 zstd 解码器（需要 Node 22+ 的 zlib，或 @bokuweb/zstd-wasm）')
+    return await zstdInit
+  } catch (error) {
+    zstdInit = null
+    throw error
   }
 }
 
@@ -110,6 +129,12 @@ export class ByteReader {
   }
 
   async readExactly(size) {
+    const out = await this.readUpTo(size)
+    if (out.byteLength !== size) throw new Error('ROM 数据在传输中提前结束')
+    return out
+  }
+
+  async readUpTo(size) {
     if (!Number.isInteger(size) || size < 0) throw new Error('readExactly 大小无效')
     const out = Buffer.allocUnsafe(size)
     let filled = 0
@@ -124,12 +149,14 @@ export class ByteReader {
         continue
       }
       const { value, done } = await this.iter.next()
-      if (done) throw new Error('ROM 数据在传输中提前结束')
+      if (done) break
       // fetch 给的是 Uint8Array；共享底层缓冲区，避免每个网络片先复制一次再拷进目标块。
       this.left = Buffer.isBuffer(value) ? value : Buffer.from(value.buffer, value.byteOffset, value.byteLength)
       this.leftPos = 0
+      // 空网络片是合法的流事件；跳过它，避免 read/skip 循环在零字节上原地打转。
+      if (!this.left.byteLength) this.left = null
     }
-    return out
+    return filled === size ? out : out.subarray(0, filled)
   }
 
   async skipExactly(size) {
@@ -148,6 +175,7 @@ export class ByteReader {
       if (done) throw new Error('ROM 数据在传输中提前结束')
       this.left = Buffer.isBuffer(value) ? value : Buffer.from(value.buffer, value.byteOffset, value.byteLength)
       this.leftPos = 0
+      if (!this.left.byteLength) this.left = null
     }
   }
 
@@ -155,6 +183,35 @@ export class ByteReader {
     // fromWeb 用的是 async iterator，期间流被它锁住；直接 body.cancel() 会被拒绝。
     await this.iter.return?.()
   }
+}
+
+/** 解析上游对象存储的 Content-Range；Range 错位时不能把别的 ROM 字节伪装成续传片段。 */
+export function parseUpstreamContentRange(value) {
+  const match = /^bytes\s+(\d+)-(\d+)\/(\d+)$/i.exec(String(value || '').trim())
+  if (!match) throw new Error('上游 Content-Range 无效')
+  const [, rawStart, rawEnd, rawTotal] = match
+  const start = Number(rawStart)
+  const end = Number(rawEnd)
+  const total = Number(rawTotal)
+  if (![start, end, total].every(Number.isSafeInteger) || start > end || end >= total) {
+    throw new Error('上游 Content-Range 超出安全范围')
+  }
+  return { start, end, total }
+}
+
+/** 校验 206 的实际字节区间，头部请求允许在对象 EOF 处自然截短。 */
+export function validateUpstreamPartialRange(response, { start, end, total, allowShortAtEof = false }) {
+  if (response.status !== 206) throw new Error('上游没有返回部分内容')
+  const actual = parseUpstreamContentRange(response.headers.get('content-range'))
+  const expectedEnd = allowShortAtEof ? Math.min(end, actual.total - 1) : end
+  if (actual.start !== start || actual.end !== expectedEnd || (total != null && actual.total !== total)) {
+    throw new Error('上游 Content-Range 与请求不一致')
+  }
+  const contentLength = response.headers.get('content-length')
+  if (contentLength != null && (!/^\d+$/.test(contentLength) || Number(contentLength) !== actual.end - actual.start + 1)) {
+    throw new Error('上游 Content-Length 与 Content-Range 不一致')
+  }
+  return actual
 }
 
 /** Range 的末尾编号是闭区间；后续分块计划统一使用半开区间。 */
@@ -224,17 +281,20 @@ export async function decryptRomPackChunk({ header, key, index, encrypted }) {
   decipher.setAuthTag(tag)
   let encoded
   try {
-    encoded = Buffer.concat([decipher.update(cipher), decipher.final()])
+    const update = decipher.update(cipher)
+    const final = decipher.final()
+    // GCM 的 final 通常为空；不再为每个 8MB 块额外复制一遍密文明文。
+    encoded = final.byteLength ? Buffer.concat([update, final]) : update
   } catch {
     throw new Error(`ROM 包第 ${index + 1} 块解密失败：文件损坏或服务端密钥不匹配`)
   }
   let source
   if (header.codec === ROM_PACK_CODEC.STORE) {
-    source = Buffer.from(encoded)
+    source = encoded
   } else if (header.codec === ROM_PACK_CODEC.ZSTD) {
     const z = await resolveZstd()
     assertZstdFrameContentSize(encoded, meta.sourceSize)
-    source = z.decompress(encoded)
+    source = await z.decompress(encoded, meta.sourceSize)
   } else {
     throw new Error(`不认识的 8BG 压缩算法：${header.codec || '空'}`)
   }

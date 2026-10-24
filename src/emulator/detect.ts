@@ -89,6 +89,8 @@ const EXT_TO_PLATFORM: Record<string, PlatformId> = {
   exe: 'dos',
   com: 'dos',
   bat: 'dos',
+  // PC-98 FDI 仍在 DOS 分类显示；启动时由 .fdi / 游戏级 PC-98 开关切到 DOSBox-X。
+  fdi: 'dos',
 }
 
 const AMBIGUOUS = new Set(['bin', 'rom', 'dat'])

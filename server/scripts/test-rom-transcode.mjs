@@ -29,6 +29,8 @@ import {
   resolveZstd,
   romTranscodeLimits,
   tryAcquireTranscodeSlot,
+  parseUpstreamContentRange,
+  validateUpstreamPartialRange,
 } from '../src/rom-pack-transcode.js'
 
 // deriveRomPackKey 需要 ROM_PACK_SECRET（keyId=v1 对应 ROM_PACK_SECRET_V1）。测试用密钥，≥32 字节。
@@ -178,6 +180,26 @@ async function main() {
   await webReader.readExactly(1)
   await webReader.cancel()
   check('只读头后能真正取消被 async iterator 锁住的上游流', cancelled)
+  const emptyFragments = (async function* () {
+    yield Buffer.alloc(0)
+    yield Buffer.from('ab')
+  })()
+  check('空网络片不会让精确读取卡死', (await new ByteReader(emptyFragments).readExactly(2)).toString() === 'ab')
+  const shortFragments = (async function* () { yield Buffer.from('xy') })()
+  check('探测小于 8 字节的明文文件可返回实际长度', (await new ByteReader(shortFragments).readUpTo(8)).toString() === 'xy')
+
+  const partialResponse = new Response(Buffer.from('01234567'), {
+    status: 206,
+    headers: { 'content-range': 'bytes 0-7/64', 'content-length': '8' },
+  })
+  check('上游 Content-Range 解析出安全的总长度',
+    JSON.stringify(parseUpstreamContentRange('bytes 0-7/64')) === JSON.stringify({ start: 0, end: 7, total: 64 }))
+  check('校验正常的部分响应', validateUpstreamPartialRange(partialResponse, { start: 0, end: 7 }).total === 64)
+  let badRangeRejected = false
+  try {
+    validateUpstreamPartialRange(partialResponse, { start: 8, end: 15 })
+  } catch { badRangeRejected = true }
+  check('上游返回错位 Range 时拒绝转码', badRangeRejected)
 
   // 6) planRomPackChunks 边界：空范围
   check('空范围返回空计划', planRomPackChunks(header, 0, 0).length === 0)
@@ -190,6 +212,15 @@ async function main() {
   const plainStream = routeSource.slice(routeSource.indexOf('async function streamRomPlain('), routeSource.indexOf('async function getRawGame('))
   check('ROM 转码只在响应断开时取消上游，不把 GET 请求结束误判为断线',
     /res\.once\('close', onResponseClose\)/.test(plainStream) && !/req\.on\('close',/.test(plainStream))
+  check('HEAD 在请求密文正文前就结束，不会下载 ROM 负载',
+    plainStream.indexOf("if (req.method === 'HEAD')") >= 0
+      && plainStream.indexOf("if (req.method === 'HEAD')") < plainStream.indexOf('const payRes = await fetch'))
+  check('只有确认 8BG 后才占转码并发槽',
+    !routeSource.slice(routeSource.indexOf("openRouter.get('/v1/rom-plain/:grant'"), routeSource.indexOf('/** 非 8BG'))
+      .includes('tryAcquireTranscodeSlot')
+      && plainStream.indexOf('tryAcquireTranscodeSlot') > plainStream.indexOf('isRomPackHeadPrefix'))
+  check('明文透传保留 HEAD，不读取响应正文',
+    /method: req\.method/.test(routeSource) && /req\.method === 'HEAD' \|\| !upstream\.body/.test(routeSource))
 
   // 7) 并发闸
   const limits = romTranscodeLimits()

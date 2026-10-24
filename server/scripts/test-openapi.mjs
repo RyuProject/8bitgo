@@ -95,7 +95,9 @@ const GBA_GAME = { ...GAME, id: 5, slug: 'gba-rpg', platform: 'gba' }
 const DOS_GAME = { ...GAME, id: 6, slug: 'dos-game', platform: 'dos', dos_backend: null }
 const WIN31_GAME = { ...GAME, id: 7, slug: 'win31-game', platform: 'dos', dos_backend: 'dosboxX', dos_windows_version: '3x' }
 const WIN9X_GAME = { ...GAME, id: 8, slug: 'win9x-game', platform: 'dos', dos_backend: 'dosboxX', dos_windows_version: '9x' }
-const ALL_GAMES = [GAME, HIDDEN_GAME, JA_ONLY, ADULT_GAME, GBA_GAME, DOS_GAME, WIN31_GAME, WIN9X_GAME]
+// PC-98 仍显示为 DOS 游戏，DOSBox-X 在此只是硬件模拟器，不能被开放接口误标成 Windows 客体。
+const PC98_GAME = { ...GAME, id: 9, slug: 'pc98-game', platform: 'dos', dos_backend: 'dosboxX', dos_pc98: 1 }
+const ALL_GAMES = [GAME, HIDDEN_GAME, JA_ONLY, ADULT_GAME, GBA_GAME, DOS_GAME, WIN31_GAME, WIN9X_GAME, PC98_GAME]
 const GAME_GENRES = [
   { game_id: 1, genre_id: 'action' },
   { game_id: 3, genre_id: 'puzzle' },
@@ -191,10 +193,10 @@ function listVisible(s, params = []) {
   if (hasGenre) rows = rows.filter((g) => GAME_GENRES.some((r) => r.game_id === g.id && r.genre_id === params[0]))
   if (s.includes('g.platform = ?')) rows = rows.filter((g) => g.platform === params[hasGenre ? 1 : 0])
   if (s.includes("g.platform = 'dos' AND g.dos_backend = 'dosboxX'")) {
-    rows = rows.filter((g) => g.platform === 'dos' && g.dos_backend === 'dosboxX')
+    rows = rows.filter((g) => g.platform === 'dos' && g.dos_backend === 'dosboxX' && !g.dos_pc98)
   }
   if (s.includes("g.platform <> 'dos' OR COALESCE(g.dos_backend, '') <> 'dosboxX'")) {
-    rows = rows.filter((g) => g.platform !== 'dos' || g.dos_backend !== 'dosboxX')
+    rows = rows.filter((g) => g.platform !== 'dos' || g.dos_backend !== 'dosboxX' || Boolean(g.dos_pc98))
   }
   return rows
 }
@@ -836,8 +838,8 @@ await check('按机型、按类型可单独或组合筛选，分页总数与交�
 
 await check('DOS 与 Windows 客体按后台复选框筛选，详情标记和分页总数一致', async () => {
   const cases = [
-    ['platform=dos', ['dos-game', 'win31-game', 'win9x-game']],
-    ['platform=dos&requires_windows=false', ['dos-game']],
+    ['platform=dos', ['dos-game', 'win31-game', 'win9x-game', 'pc98-game']],
+    ['platform=dos&requires_windows=false', ['dos-game', 'pc98-game']],
     ['platform=dos&requires_windows=true', ['win31-game', 'win9x-game']],
   ]
   for (const [query, slugs] of cases) {
@@ -849,14 +851,14 @@ await check('DOS 与 Windows 客体按后台复选框筛选，详情标记和分
   }
 
   const smallPage = await (await api('/api/open/v1/games?platform=dos&requires_windows=false&page_size=1')).json()
-  assert.equal(smallPage.total, 1)
-  assert.equal(smallPage.total_pages, 1)
+  assert.equal(smallPage.total, 2)
+  assert.equal(smallPage.total_pages, 2)
   assert.equal(smallPage.items[0].requires_windows, false)
 
   const allCapable = await (await api('/api/open/v1/games?requires_windows=false&page_size=50')).json()
-  assert.equal(allCapable.total, 4)
+  assert.equal(allCapable.total, 5)
   assert.ok(allCapable.items.every((g) => g.requires_windows === false))
-  for (const [slug, expected] of [['dos-game', false], ['win31-game', true], ['win9x-game', true]]) {
+  for (const [slug, expected] of [['dos-game', false], ['win31-game', true], ['win9x-game', true], ['pc98-game', false]]) {
     const detail = await (await api(`/api/open/v1/games/${slug}`)).json()
     assert.equal(detail.requires_windows, expected, slug)
     assert.ok(!('dos_backend' in detail), '对外响应泄漏了运行核心的内部字段')

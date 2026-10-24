@@ -51,7 +51,8 @@ import { isPlayable } from '@/emulator'
 import { NETPLAY_MAX_PLAYERS } from '../../shared/netplay-players.js'
 import { normalizeDevelopers } from '@/lib/developers'
 import { Field, btnClass, inputClass } from './ui'
-import { mergeDosboxConfigOverride, normalizeDosboxConfigOverride } from '../../shared/dosbox-config.js'
+import { mergeDosboxConfigOverride, normalizeDosboxConfigOverride, parseDosboxConfigOverride } from '../../shared/dosbox-config.js'
+import { romPackInnerName } from '../../shared/rom-pack-format.js'
 import { normalizeDosStartupCommands } from '../../shared/dos-startup-commands.js'
 import { isVersionedSockdriveDirectory } from '../../shared/sockdrive-url.js'
 import { probeRange } from '@/emulator/remoteDisc'
@@ -227,8 +228,9 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
     sockdrives: { ...initial?.dosSockdrives },
   })
   const isEdit = Boolean(initial)
-  const dosboxXSockdriveForm = form.platform === 'dos' && form.dosBackend === 'dosboxX'
-  const windowsGuestForm = form.platform === 'dos' && form.dosBackend === 'dosboxX' && Boolean(form.dosSystem?.trim())
+  const pc98Form = form.platform === 'dos' && Boolean(form.dosPc98)
+  const dosboxXSockdriveForm = form.platform === 'dos' && form.dosBackend === 'dosboxX' && !pc98Form
+  const windowsGuestForm = form.platform === 'dos' && form.dosBackend === 'dosboxX' && !pc98Form && Boolean(form.dosSystem?.trim())
   const hasLanguageSockdrive = Object.values(form.dosSockdrives ?? {}).some((value) => Boolean(value?.trim()))
   const hasAnySockdrive = Boolean(form.dosSockdrive?.trim()) || hasLanguageSockdrive
   /**
@@ -423,8 +425,33 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
     if (!slug) return setError('slug 不能为空')
     if (!isEdit && existingSlugs.includes(slug)) return setError(`slug「${slug}」已存在，请换一个`)
     if (form.genres.length === 0) return setError('至少选择一个类型')
-    const windowsGuest = form.platform === 'dos' && form.dosBackend === 'dosboxX' && Boolean(form.dosSystem?.trim())
-    const dosboxXSockdrive = form.platform === 'dos' && form.dosBackend === 'dosboxX'
+    const pc98 = form.platform === 'dos' && Boolean(form.dosPc98)
+    const windowsGuest = form.platform === 'dos' && form.dosBackend === 'dosboxX' && !pc98 && Boolean(form.dosSystem?.trim())
+    const dosboxXSockdrive = form.platform === 'dos' && form.dosBackend === 'dosboxX' && !pc98
+    if (pc98) {
+      if (form.dosSystem?.trim()) return setError('PC-98 模式不能配置 Windows 系统镜像')
+      if (form.dosSockdrive?.trim() || Object.values(form.dosSockdrives ?? {}).some((value) => value?.trim())) {
+        return setError('PC-98 模式不能配置 Sockdrive；请直接上传单个 .fdi 软盘镜像')
+      }
+      if (form.dosExtras?.length) return setError('PC-98 模式不能现场合并 DOS 附加文件')
+      if (form.dosExecutable?.trim() || Object.values(form.dosExecutables ?? {}).some((value) => value?.trim())) {
+        return setError('PC-98 FDI 会从软盘自身启动，请清空 DOS 自启动程序')
+      }
+      if (Object.values(form.dosStartupCommands ?? {}).some((value) => value?.trim())) {
+        return setError('PC-98 FDI 会从软盘自身启动，请清空 DOS 启动前命令')
+      }
+      const pc98Keys = [form.rom?.trim(), ...Object.values(form.roms ?? {}).map((value) => value?.trim())].filter(Boolean)
+      const wrongImage = pc98Keys.find((key) => !/\.fdi$/i.test(romPackInnerName(key!)))
+      if (wrongImage) return setError(`PC-98 模式只接受 .fdi 软盘镜像：${wrongImage}`)
+      try {
+        const machine = parseDosboxConfigOverride(form.dosboxConfig).entries.find(
+          (entry) => entry.section === 'dosbox' && entry.key.replace(/[\s_-]+/g, ' ').trim() === 'machine',
+        )
+        if (machine) return setError('PC-98 模式的 [dosbox] machine 固定为 pc98，不能在配置覆盖中修改')
+      } catch (err) {
+        return setError(err instanceof Error ? err.message : 'DOSBox 配置格式不正确')
+      }
+    }
     if (windowsGuest && !/\.jsdos(?:[?#].*)?$/i.test(form.dosSystem!.trim())) {
       return setError('Windows 系统镜像必须是 .jsdos 文件、对象 key 或 URL')
     }
@@ -582,11 +609,11 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
       // 空对象也要送出：管理员清空最后一个备用地址时，服务端才能删除旧值。
       romBackups: cleanedRomBackups,
       // 空对象也显式提交：编辑时清空所有语言入口，服务端才知道这是有意清除。
-      dosExecutables: form.platform === 'dos' ? cleanedDosEntries : {},
+      dosExecutables: form.platform === 'dos' && !pc98 ? cleanedDosEntries : {},
       // 清空最后一个语言命令时也要显式送空对象，服务端才能删掉旧命令。
-      dosStartupCommands: form.platform === 'dos' ? cleanedDosStartupCommands : {},
+      dosStartupCommands: form.platform === 'dos' && !pc98 ? cleanedDosStartupCommands : {},
       // 每个语言槽绑定自己的流式盘；空对象同样要送出，才能明确清掉最后一条旧绑定。
-      dosSockdrives: form.platform === 'dos' ? cleanedDosSockdrives : {},
+      dosSockdrives: form.platform === 'dos' && !pc98 ? cleanedDosSockdrives : {},
       tags: tags.length ? tags : undefined,
       /**
        * rating / ratingCount / plays 都不在表单里填，编辑时原样带回、新建时是 0。
@@ -610,15 +637,19 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
       runtime: form.platform === 'nes' ? (form.runtime ?? undefined) : null,
       // 普通 DOS 用它生成 autoexec；共享 Windows 3.x 直接运行它，95/98 则写进启动批处理。
       // 旧式“系统和游戏揉在一个 .jsdos”没有共享系统字段，仍按原 bundle 的 conf 启动。
-      dosExecutable: form.platform === 'dos' ? form.dosExecutable?.trim() || undefined : undefined,
+      dosExecutable: form.platform === 'dos' && !pc98 ? form.dosExecutable?.trim() || undefined : undefined,
       // 普通 DOS 是默认值，不落冗余字段；勾选时才明确保存 DOSBox-X。
-      dosBackend: form.platform === 'dos' && form.dosBackend === 'dosboxX' ? 'dosboxX' : undefined,
+      dosBackend: form.platform === 'dos' && (pc98 || form.dosBackend === 'dosboxX') ? 'dosboxX' : undefined,
+      dosPc98: form.platform === 'dos' ? pc98 : false,
       // 平台仍然保存为 DOS；这些字段只描述 DOSBox-X 里面要启动的客体系统。
       dosSystem: windowsGuest ? form.dosSystem!.trim() : undefined,
       // 留空完全走旧的整包游戏层；填写后才启用按扇区读取，方便单款游戏独立灰度和回退。
       dosSockdrive,
       dosWindowsVersion: windowsGuest ? form.dosWindowsVersion ?? '9x' : undefined,
       dosLaunchDelay: windowsGuest ? Math.max(5, Math.min(120, Math.round(Number(form.dosLaunchDelay) || 24))) : undefined,
+      dosExtras: form.platform === 'dos' && !pc98 ? form.dosExtras : undefined,
+      dosExtrasLabel: form.platform === 'dos' && !pc98 ? form.dosExtrasLabel?.trim() || undefined : undefined,
+      dosExtrasLabelEn: form.platform === 'dos' && !pc98 ? form.dosExtrasLabelEn?.trim() || undefined : undefined,
       // 整包 Windows 客体仍不可存；纯 DOS / Windows Sockdrive 只固化改过的扇区，可以使用存档说明。
       dosSaveHint: form.platform === 'dos' && (!windowsGuest || Boolean(dosSockdrive) || Object.keys(cleanedDosSockdrives).length > 0) ? form.dosSaveHint?.trim() || undefined : undefined,
       // 街机改版包专用；换成别的平台时要清掉，否则改完平台还留着一份没人读的 dat
@@ -732,6 +763,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
                 <input
                   type="checkbox"
                   checked={form.dosBackend === 'dosboxX'}
+                  disabled={pc98Form}
                   onChange={(e) => {
                     setForm((current) => ({
                       ...current,
@@ -743,11 +775,46 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
                 />
                 DOSBox-X（CUE 光盘 / Windows 3.x / 95 / 98）
               </label>
+              <label className="mt-2 flex min-h-9 items-center gap-2 rounded-lg border border-line bg-surface-2 px-3 text-sm">
+                <input
+                  type="checkbox"
+                  checked={pc98Form}
+                  onChange={(e) => {
+                    const next = e.target.checked
+                    if (next && !window.confirm('PC-98 会改为从 .fdi 软盘直接启动，并清空 Windows、Sockdrive、DOS 启动程序和附加文件设置。继续吗？')) return
+                    setForm((current) => next
+                      ? {
+                          ...current,
+                          dosPc98: true,
+                          dosBackend: 'dosboxX',
+                          dosSystem: undefined,
+                          dosSockdrive: undefined,
+                          dosSockdrives: {},
+                          dosExecutable: undefined,
+                          dosExecutables: {},
+                          dosStartupCommands: {},
+                          dosExtras: undefined,
+                          dosExtrasLabel: undefined,
+                          dosExtrasLabelEn: undefined,
+                          dosWindowsVersion: undefined,
+                          dosLaunchDelay: undefined,
+                        }
+                      : { ...current, dosPc98: false })
+                  }}
+                />
+                PC-98 软盘模式（.fdi）
+              </label>
               <p className="mt-1 text-[11px] text-dim">
-                数据库平台仍是 DOS。只挂 CUE 光盘时系统镜像留空；要运行 Windows 才需要填写系统镜像。
+                数据库平台仍是 DOS。PC-98 会固定使用 DOSBox-X 的 <code>machine=pc98</code>，从 FDI 自身启动；只挂 CUE 光盘时系统镜像留空；要运行 Windows 才需要填写系统镜像。
               </p>
             </Field>
-            {form.dosBackend === 'dosboxX' ? (
+            {pc98Form ? (
+              <Field label="PC-98 启动方式" className="col-span-2 sm:col-span-4">
+                <p className="rounded-lg border border-brand/30 bg-brand/5 px-3 py-2 text-sm text-fg">
+                  上传一张 <code>.fdi</code> 软盘镜像即可。播放器会在本地生成 js-dos 启动包，固定以 <code>machine=pc98</code> 挂载到 A: 后启动，不需要填写 EXE、BAT、Windows 系统盘或 Sockdrive。
+                </p>
+              </Field>
+            ) : form.dosBackend === 'dosboxX' ? (
               <>
                 <SystemImageField
                   value={form.dosSystem ?? ''}
@@ -875,16 +942,18 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
                 </p>
               )}
             </Field>
-            <DosExtrasField
-              slug={slugify(form.slug || form.title)}
-              value={form.dosExtras}
-              onChange={(next) => set('dosExtras', next)}
-              label={form.dosExtrasLabel ?? ''}
-              onLabelChange={(next) => set('dosExtrasLabel', next)}
-              labelEn={form.dosExtrasLabelEn ?? ''}
-              onLabelEnChange={(next) => set('dosExtrasLabelEn', next)}
-              allowStorage={!personalLibrary}
-            />
+            {!pc98Form && (
+              <DosExtrasField
+                slug={slugify(form.slug || form.title)}
+                value={form.dosExtras}
+                onChange={(next) => set('dosExtras', next)}
+                label={form.dosExtrasLabel ?? ''}
+                onLabelChange={(next) => set('dosExtrasLabel', next)}
+                labelEn={form.dosExtrasLabelEn ?? ''}
+                onLabelEnChange={(next) => set('dosExtrasLabelEn', next)}
+                allowStorage={!personalLibrary}
+              />
+            )}
             {/* 整包 qcow2 不可保存；Sockdrive 只持久化改过的扇区，可以安全接回存档入口。 */}
             {(!windowsGuestForm || hasAnySockdrive) && (
               <Field label="存档提示" className="col-span-2 sm:col-span-4">
@@ -1078,7 +1147,11 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
             每个语言先探主地址、再探同语言备用地址；两者都失败才依次回退到 <span className="font-medium text-fg">English → 日本語 → 简体中文 → 繁體中文</span>，全部没有时提示“游戏没有当前语言版本”。
           </p>
           {form.platform === 'dos' && (
-            <p className="mt-1 text-xs text-muted">DOS 可以像以前一样每种语言上传不同包；若一个 ZIP 内含多语言，只上传一次，再把其他语言槽绑定到同一个 ZIP key，并分别填写 BAT / EXE 等启动文件的包内相对路径。</p>
+            <p className="mt-1 text-xs text-muted">
+              {pc98Form
+                ? 'PC-98 模式只接受 .fdi 软盘镜像；每个语言槽可以绑定不同的 FDI，启动路径由软盘自身决定。'
+                : 'DOS 可以像以前一样每种语言上传不同包；若一个 ZIP 内含多语言，只上传一次，再把其他语言槽绑定到同一个 ZIP key，并分别填写 BAT / EXE 等启动文件的包内相对路径。'}
+            </p>
           )}
           {isStreamingDiscPlatform(form.platform) && (
             <p className="mt-1 text-xs text-muted">
@@ -1092,7 +1165,7 @@ export function GameForm({ initial, existingSlugs, personalLibrary = false, subm
         </div>
         {ROM_LANGS.map((lang) => (
           <div key={lang} className="space-y-2">
-            {form.platform === 'dos' && (
+            {form.platform === 'dos' && !pc98Form && (
               <>
                 <Field label={`${ROM_LANG_LABEL[lang]} 启动文件（${form.dosSockdrives?.[lang]?.trim() || form.dosSockdrive?.trim() ? '流式游戏盘内' : 'ZIP 内'}）`}>
                   <input

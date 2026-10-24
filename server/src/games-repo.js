@@ -168,10 +168,9 @@ export async function listGames(q = {}) {
     where.push('g.platform = ?')
     params.push(String(q.platform))
   }
-  // DOS 平台也收录 Windows 客体游戏。设备按运行能力筛选时必须在 SQL 里完成，
-  // 让列表条目、total 和分页保持一致；NULL 是普通 DOS 游戏。
-  if (q.requiresWindows === true) where.push("g.platform = 'dos' AND g.dos_backend = 'dosboxX'")
-  else if (q.requiresWindows === false) where.push("(g.platform <> 'dos' OR COALESCE(g.dos_backend, '') <> 'dosboxX')")
+  // DOSBox-X 同时承载 Windows 客体和 PC-98；设备筛“需要 Windows”时不能把后者误排掉。
+  if (q.requiresWindows === true) where.push("g.platform = 'dos' AND g.dos_backend = 'dosboxX' AND COALESCE(g.dos_pc98, 0) = 0")
+  else if (q.requiresWindows === false) where.push("(g.platform <> 'dos' OR COALESCE(g.dos_backend, '') <> 'dosboxX' OR COALESCE(g.dos_pc98, 0) = 1)")
   if (q.developer) {
     // 一款游戏可以录多家开发商；边界匹配避免「SNK」误命中「SNK Playmore」。
     where.push("FIND_IN_SET(?, REPLACE(REPLACE(g.developer, '，', ','), ', ', ',')) > 0")

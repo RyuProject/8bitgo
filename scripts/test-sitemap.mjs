@@ -20,6 +20,7 @@ import {
   buildGameSitemap,
   buildPostSitemap,
   buildSitemapIndex,
+  hasIndexableGameLanguage,
   hasLocalizedBody,
   hasLocalizedPostBody,
 } from '../server/src/routes/sitemaps.js'
@@ -73,6 +74,38 @@ check('英文认独立的 description_en 列（游戏的英文简介不在 descr
   assert.equal(hasLocalizedBody({ description_i18n: { en: 'x' } }, 'en', { i18n: 'description_i18n' }), true)
 })
 
+check('语言页必须同时有本语言 ROM；播放器的跨语言回退不能被 sitemap 当成独立版本', () => {
+  const row = {
+    slug: 'multi-language',
+    description: '中文介绍',
+    description_en: 'English description',
+    description_i18n: { ja: '日本語の紹介', de: 'Deutsche Beschreibung' },
+    // 这是主查询从 game_roms 聚合出的值：日文有专属 ROM，德文只能回退英文。
+    rom_languages: 'en,ja',
+  }
+  assert.equal(hasIndexableGameLanguage(row, 'ja'), true)
+  assert.equal(hasIndexableGameLanguage(row, 'en'), true)
+  assert.equal(hasIndexableGameLanguage(row, 'de'), false)
+  assert.deepEqual(locs(buildGameSitemap([row], 'ja', SITE)), [`${SITE}/ja/games/multi-language`])
+  assert.deepEqual(locs(buildGameSitemap([row], 'de', SITE)), [])
+})
+
+check('通用 ROM 可以承载每种已有正文的语言页；已查到空 ROM 槽时不再误收录', () => {
+  const generic = {
+    slug: 'language-neutral',
+    description: '中文介绍',
+    description_en: 'English description',
+    description_i18n: { fr: 'Description française' },
+    rom_languages: '*',
+  }
+  assert.equal(hasIndexableGameLanguage(generic, 'zh-Hans'), true)
+  assert.equal(hasIndexableGameLanguage(generic, 'en'), true)
+  assert.equal(hasIndexableGameLanguage(generic, 'fr'), true)
+  assert.equal(hasIndexableGameLanguage({ ...generic, rom_languages: '' }, 'en'), false)
+  // 没有 ROM 关联字段是旧的轻量调用，不可因此把既有 sitemap 在迁移窗口清空。
+  assert.equal(hasIndexableGameLanguage({ ...generic, rom_languages: undefined }, 'en'), true)
+})
+
 check('文章没有独立英文列，标题、摘要、正文三份英文译文必须全部齐', () => {
   const post = { slug: 'p1', content: '中文正文', updated_at: '2026-09-01' }
   assert.deepEqual(locs(buildPostSitemap([post], 'en', SITE)), [])
@@ -102,12 +135,15 @@ check('⚠️ 没有译文列时必须整个关掉门控，否则 7 种语言的
 
 check('⚠️ 游戏那句 SQL 必须把门控要读的列查出来（漏一列 = 全空）', () => {
   const src = readFileSync(new URL('../server/src/routes/sitemaps.js', import.meta.url), 'utf8')
-  const sql = src.match(/SELECT[^']*FROM games WHERE hidden = 0[^']*/g) || []
+  // 取 sitemapRows 的两个模板字面量，而不是靠单引号截 SQL：ROM 聚合里本来就需要 '' 兜底。
+  const gameMatch = src.match(/sitemapRows\(\s*'games',\s*`([\s\S]*?)`,\s*`([\s\S]*?)`/)
+  const sql = gameMatch ? [gameMatch[1], gameMatch[2]] : []
   assert.ok(sql.length >= 2, '应当有「带译文列」和「退回」两句')
   const rich = sql.find((q) => q.includes('description_i18n'))
   assert.ok(rich, 'games 的主查询必须 SELECT description_i18n，否则每一行都判成没翻译')
   assert.match(rich, /\bdescription\b/, 'zh-Hans 那一档靠 description，也必须查出来')
   assert.ok(rich.includes('description_en'), 'en 那一档靠 description_en，也必须查出来')
+  assert.ok(rich.includes('rom_languages') && rich.includes('game_roms'), '主查询必须带已绑定 ROM 语言，否则无法拦住跨语言回退页')
   const posts = src.match(/SELECT[^']*FROM posts WHERE published = 1[^']*/g) || []
   assert.ok(
     posts.some((q) => q.includes('title_i18n') && q.includes('excerpt_i18n') && q.includes('content_i18n')),

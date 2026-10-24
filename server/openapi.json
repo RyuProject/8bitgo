@@ -612,6 +612,32 @@
         }
       }
     },
+    "/v1/rom-plain/{grant}": {
+      "get": {
+        "tags": ["games"],
+        "summary": "兑现 ROM 凭据并返回原生明文 ROM（服务端解密 8BG）",
+        "description": "与 /v1/rom/{grant} 共用短期凭据，不要求 Authorization。8BG 文件由服务端逐块解密、解压并校验；普通 ROM 原样透传。支持单段 Range 续传和无正文的 HEAD 元信息请求。",
+        "parameters": [
+          { "name": "grant", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "Range", "in": "header", "required": false, "schema": { "type": "string", "example": "bytes=0-1048575" }, "description": "单段字节范围；8BG 只读取覆盖该范围的加密分块" },
+          { "name": "If-Range", "in": "header", "required": false, "schema": { "type": "string" }, "description": "与服务端 ETag 匹配时继续 Range；不匹配时返回完整文件" }
+        ],
+        "responses": {
+          "200": { "description": "完整的原生 ROM", "content": { "application/octet-stream": { "schema": { "type": "string", "format": "binary" } } }, "headers": { "Content-Disposition": { "schema": { "type": "string" } }, "Content-Length": { "schema": { "type": "integer" } }, "ETag": { "schema": { "type": "string" } } } },
+          "206": { "description": "Range 请求成功，返回原生 ROM 的一段", "content": { "application/octet-stream": { "schema": { "type": "string", "format": "binary" } } }, "headers": { "Content-Range": { "schema": { "type": "string", "example": "bytes 0-1048575/8388608" } } } },
+          "403": { "description": "凭据无效、应用已停用或权限已撤销", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "410": { "description": "凭据已过期", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "501": { "description": "ROM 服务未启用或必要密钥未配置", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "413": { "description": "ROM 超过转码大小上限", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "415": { "description": "8BG 压缩算法暂不支持", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "416": { "description": "Range 不可满足；检查 Content-Range: bytes */<total>" },
+          "429": { "description": "下载凭据或 IP 超出限流" },
+          "502": { "description": "对象存储响应无效或转码校验失败" },
+          "504": { "description": "上游取回或转码超过时限" },
+          "503": { "description": "转码并发已满" }
+        }
+      }
+    },
     "/v1/library": {
       "get": {
         "tags": ["user-data"],

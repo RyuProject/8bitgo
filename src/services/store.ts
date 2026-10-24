@@ -68,6 +68,11 @@ export async function upsertGame(game: Game, options: { createOnly?: boolean } =
       '服务端没有保存 Windows 系统镜像。请在服务器运行数据库迁移并重启 8bitgo-api，然后重新保存。',
     )
   }
+  if (Boolean(game.dosPc98) !== Boolean(saved.dosPc98)) {
+    throw new Error(
+      '服务端没有保存 PC-98 模式。请在服务器运行数据库迁移并重启 8bitgo-api，然后重新保存。',
+    )
+  }
   const requestedSockdrive = game.dosSockdrive?.trim().replace(/\/+$/, '') || undefined
   const persistedSockdrive = saved.dosSockdrive?.trim().replace(/\/+$/, '') || undefined
   if (requestedSockdrive !== persistedSockdrive) {

@@ -1,3 +1,5 @@
+import { parseDosboxConfigOverride } from '../../shared/dosbox-config.js'
+import { romPackInnerName } from '../../shared/rom-pack-format.js'
 import { dosBackendOf, dosExecutableOf, dosExtrasOf, dosSockdriveOf, dosSystemOf, romsOf } from './mappers.js'
 import { isVersionedSockdriveDirectory } from '../../shared/sockdrive-url.js'
 
@@ -11,6 +13,7 @@ const DOS_83_SEGMENT = /^[A-Za-z0-9_^$~!#%&{}@'()-]{1,8}(\.[A-Za-z0-9_^$~!#%&{}@
  * 坏数据保存成功后，播放器要等系统镜像和游戏包都下载完才发现没有 EXE，代价是一次完整大文件下载。
  */
 export function dosGameConfigError(game) {
+  const pc98 = Boolean(game?.dosPc98)
   const rawSystem = String(game?.dosSystem ?? '').trim()
   const rawSockdrive = String(game?.dosSockdrive ?? '').trim()
   const rawSockdrives = game?.dosSockdrives && typeof game.dosSockdrives === 'object'
@@ -20,6 +23,34 @@ export function dosGameConfigError(game) {
   const dosBoxXGame =
     String(game?.platform ?? '') === 'dos' &&
     dosBackendOf(game?.dosBackend) === 'dosboxX'
+  if (pc98) {
+    if (String(game?.platform ?? '') !== 'dos') return 'PC-98 模式只能用于 DOS 平台'
+    if (!dosBoxXGame) return 'PC-98 模式需要 DOSBox-X；请不要把它保存为普通 DOSBox'
+    if (rawSystem) return 'PC-98 模式不能配置 Windows 系统镜像'
+    if (rawSockdrive || rawSockdrives.length) return 'PC-98 模式不能配置 Sockdrive；请上传单个 .fdi 软盘镜像'
+    if (dosExtrasOf(game?.dosExtras)) return 'PC-98 模式不能现场合并 DOS 附加文件'
+    if (dosExecutableOf(game?.dosExecutable) || Object.values(game?.dosExecutables ?? {}).some((value) => dosExecutableOf(value))) {
+      return 'PC-98 FDI 会从软盘自身启动，不能填写 DOS 自启动程序'
+    }
+    if (Object.values(game?.dosStartupCommands ?? {}).some((value) => String(value ?? '').trim())) {
+      return 'PC-98 FDI 会从软盘自身启动，不能填写 DOS 启动前命令'
+    }
+    try {
+      const machine = parseDosboxConfigOverride(game?.dosboxConfig).entries.find(
+        (entry) => entry.section === 'dosbox' && entry.key.replace(/[\s_-]+/g, ' ').trim() === 'machine',
+      )
+      if (machine) return 'PC-98 模式的 [dosbox] machine 固定为 pc98，不能在配置覆盖中修改'
+    } catch (error) {
+      return error instanceof Error ? error.message : 'DOSBox 配置格式不正确'
+    }
+    const roms = romsOf(game)
+    const slots = Object.entries(roms)
+    // 后台允许先建游戏条目、再上传 ROM；有绑定时才验证格式，不能让这个开关堵死新建流程。
+    if (!slots.length) return null
+    const invalid = slots.find(([, key]) => !/\.fdi$/i.test(romPackInnerName(String(key))))
+    if (invalid) return `${invalid[0]}：PC-98 模式只接受 .fdi 软盘镜像`
+    return null
+  }
   const windowsGuest =
     dosBoxXGame &&
     Boolean(rawSystem)

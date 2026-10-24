@@ -4,7 +4,7 @@ import { InternalLink } from '@/components/ui/InternalLink'
 import { recordRecent, toggleFavorite, useCurrentUser } from '@/services/auth'
 import { openAuthModal } from '@/services/authModal'
 import type { RomLang } from '@/config/languages'
-import { ROM_LANG_ABBR } from '@/config/languages'
+import { ROM_LANG_LABEL } from '@/config/languages'
 import { dosExecutableForRom, dosSockdriveForRom, dosStartupCommandsForRom, romLangsOf, romUrlForKey, useRomUrl } from '@/services/roms'
 import { parseDosExtras, type DosExtraSource } from '@/lib/dosExtras'
 import { extOf, resolveRuntime, runtimesFor, type Runtime } from '@/emulator'
@@ -316,6 +316,9 @@ export function GameDetailPage() {
               rating: game.rating,
               ratingCount: game.ratingCount,
               language: seoLanguages?.canonicalLanguage,
+              // URL 的语言由正文 canonical 决定；inLanguage 单独如实声明玩家可直接启动的 ROM 槽。
+              // 两者不能混用，否则中文介绍 + 日文 ROM 会被错误地标成日文内容页。
+              inLanguage: romLangs,
               multiplayer: effectiveMultiplayer,
             }),
             breadcrumbSchema([
@@ -356,11 +359,11 @@ export function GameDetailPage() {
       ext: rom.status === 'found' ? extOf(rom.url) : undefined,
       runtimeOverride: game.runtime,
     }) ?? runtimesFor(platform.id)[0] ?? resolveRuntime(platform.id)!
-  // 「支持语言」格：从 game.roms 里读出真正绑了哪些语言槽，映射成 CN / EN / JP 缩写。
-  // romLangsOf 只返回有 key 的槽，所以「数据库里有那个语言的 ROM 就写什么」。
+  // 「支持语言」格：从 game.roms 里读出真正绑了哪些语言槽，直接显示语言名。
+  // 这既让玩家不用猜 CN / JP，也让 SSR 的正文明确说出哪些语言 ROM 真正可选。
   const supportedLangs = Array.from(
-    new Set(romLangsOf(game).map((l) => ROM_LANG_ABBR[l])),
-  ).join(' ')
+    new Set(romLangs.map((l) => ROM_LANG_LABEL[l])),
+  ).join(' · ')
 
   return (
     <div className="container-x py-6 sm:py-8">
@@ -489,6 +492,7 @@ export function GameDetailPage() {
                   dosExecutable={dosExecutableForRom(game, rom)}
                   dosStartupCommands={dosStartupCommandsForRom(game, rom)}
                   dosBackend={game.dosBackend}
+                  dosPc98={game.dosPc98}
                   dosSystemUrl={game.dosSystem ? romUrlForKey(game.dosSystem) : undefined}
                   dosSockdriveUrl={dosSockdriveForRom(game, rom) ? romUrlForKey(dosSockdriveForRom(game, rom)!) : undefined}
                   dosExtras={dosExtraSources(game.dosExtras)}

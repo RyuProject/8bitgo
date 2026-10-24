@@ -434,7 +434,8 @@ export const platforms: Platform[] = [
     year: 1981,
     runtime: 'jsdos',
     core: 'dos',
-    romExtensions: ['.zip', '.exe', '.com', '.jsdos'],
+    // .fdi 仍作为 DOS 分类的一种上传格式；是否用 PC-98 机器由游戏级开关决定。
+    romExtensions: ['.zip', '.exe', '.com', '.jsdos', '.fdi'],
     color: '#546e7a',
     icon: '💾',
     description: '命令行时代的 PC 经典：毁灭战士、波斯王子、暗黑破坏神、沙丘 2。',

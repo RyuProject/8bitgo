@@ -634,6 +634,8 @@ export interface GameSchemaInput {
   ratingCount?: number
   /** 当前 URL 回退到其它语言正文时，结构化数据里的 URL 也必须跟 canonical 走。 */
   language?: Lang
+  /** 实际已绑定的 ROM 语言槽；和页面正文语言分开表达，避免错误的语言归因。 */
+  inLanguage?: readonly string[]
   /** 支持多人（games.multiplayer）。决定 playMode 是否带 MultiPlayer */
   multiplayer?: boolean
 }
@@ -664,6 +666,7 @@ export function videoGameSchema(g: GameSchemaInput) {
   const imageUrl = g.image ? romUrlForKey(g.image) : ''
   if (imageUrl) schema.image = absoluteUrl(imageUrl)
   if (g.platform) schema.gamePlatform = g.platform
+  if (g.inLanguage?.length) schema.inLanguage = [...new Set(g.inLanguage.map((language) => language.trim()).filter(Boolean))]
   if (g.genres?.length) schema.genre = g.genres
   if (g.year) schema.datePublished = String(g.year)
   const developers = splitDevelopers(g.developer)

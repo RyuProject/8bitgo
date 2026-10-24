@@ -7,6 +7,7 @@
  * indexnow.js 仍然原样再导出这里的全部函数，老的导入路径不用改。
  */
 import { SITE_DEFAULT_LANGUAGE, SITE_LANGUAGES } from '../../shared/site-languages.js'
+import { gameHasRomForLanguage } from '../../shared/rom-language-seo.js'
 
 export const DEFAULT_SITE_URL = 'https://8bitgo.com'
 
@@ -132,15 +133,24 @@ function i18nMap(value) {
 
 const present = (value) => Boolean(String(value ?? '').trim())
 
-/** 供 IndexNow / 百度推送复用的游戏正文语言判据；与动态 sitemap 保持一致。 */
+/**
+ * 供 IndexNow / 百度推送复用的游戏正文语言判据；与动态 sitemap 保持一致。
+ *
+ * 页面正文翻译和 ROM 语言是两件事：canonical / hreflang 仍只由正文决定，不能因为
+ * 日文 ROM 存在就把中文正文 canonical 到日文。这里额外收紧的是「主动提交」——
+ * 只有正文和默认启动 ROM 都对得上时，才通知搜索引擎这是一份可独立游玩的语言页。
+ */
 export function gameContentLanguages(game) {
   const translated = i18nMap(field(game, 'descriptionI18n', 'description_i18n'))
   const base = field(game, 'description', 'description')
   const english = field(game, 'descriptionEn', 'description_en')
   return ALL_LANGUAGE_CODES.filter((code) => {
-    if (code === SITE_DEFAULT_LANGUAGE) return present(base)
-    if (code === 'en') return present(translated.en) || present(english)
-    return present(translated[code])
+    const hasLocalizedDescription = (() => {
+      if (code === SITE_DEFAULT_LANGUAGE) return present(base)
+      if (code === 'en') return present(translated.en) || present(english)
+      return present(translated[code])
+    })()
+    return hasLocalizedDescription && gameHasRomForLanguage(game, code)
   })
 }
 

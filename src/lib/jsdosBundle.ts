@@ -13,7 +13,8 @@
  */
 
 import { assertValidZipBlob, extractZipEntry, crc32, decodeZipName } from './unzip'
-import { mergeDosboxConfigOverride } from '../../shared/dosbox-config.js'
+import { mergeDosboxConfigOverride, parseDosboxConfigOverride } from '../../shared/dosbox-config.js'
+import { isPc98FdiFileName } from '../emulator/pc98'
 
 const te = new TextEncoder()
 
@@ -274,6 +275,97 @@ export function makeJsdosConfigBundle(dosboxConf: string): Blob {
       data: bytes,
     },
   ])
+}
+
+/**
+ * PC-98 的 FDI 是一张可启动软盘，不是「把 DOS 程序挂成 C: 再猜 EXE」的普通 DOS 包。
+ *
+ * 为了让 js-dos 同样走 URL bundle 入口（从而保留 fsChanges 存档机制），这里把原始 FDI
+ * 原封不动地塞进一个极小 zip，再固定挂到 A: 后让 DOSBox-X 从 A: 启动。盘在包内使用固定的
+ * ASCII 名，避免日文原始文件名受 DOS 代码页和 shell 引号影响；原始数据不会重压或复制。
+ */
+const PC98_FDI_BUNDLE_NAME = '8BITGO.FDI'
+
+/**
+ * FDI 的头很小，但不能只凭扩展名把一个 HTML 错误页 / 半截下载交给 DOSBox-X：
+ * 后者通常只给黑屏。这里只核对格式中稳定的头长、数据偏移和盘数据长度，不臆测机型。
+ */
+function assertPc98FdiImage(name: string, buf: ArrayBuffer): void {
+  if (!isPc98FdiFileName(name)) throw new Error('PC-98 模式只接受单个 .fdi 软盘镜像')
+  if (buf.byteLength < 48) throw new Error('PC-98 FDI 镜像过小或下载不完整')
+  const view = new DataView(buf)
+  if (view.getUint32(0, true) !== 0 || view.getUint16(4, true) < 48) {
+    throw new Error('PC-98 文件不是有效的 FDI 软盘镜像')
+  }
+  const dataOffset = view.getUint32(8, true)
+  const dataSize = view.getUint32(12, true)
+  if (dataOffset < 48 || dataSize === 0 || dataOffset > buf.byteLength || dataSize > buf.byteLength - dataOffset) {
+    throw new Error('PC-98 FDI 镜像的磁盘数据范围无效或下载不完整')
+  }
+}
+
+/** PC-98 的 machine / boot 由站点固定；普通 DOS 的高级调参仍可安全复用。 */
+function pc98ConfigOverride(override?: string): string | undefined {
+  if (!override?.trim()) return undefined
+  const machine = parseDosboxConfigOverride(override).entries.find(
+    (entry) => entry.section === 'dosbox' && entry.key.replace(/[\s_-]+/g, ' ').trim() === 'machine',
+  )
+  if (machine) throw new Error('PC-98 模式的 [dosbox] machine 由站点固定为 pc98，不能覆盖')
+  return override
+}
+
+export function makePc98FdiBundle(name: string, buf: ArrayBuffer, configOverride?: string): BundleResult {
+  assertPc98FdiImage(name, buf)
+  const image = new Uint8Array(buf) as Uint8Array<ArrayBuffer>
+  const base = [
+    '[sdl]',
+    'autolock=false',
+    '',
+    '[dosbox]',
+    'machine=pc98',
+    '',
+    '[cpu]',
+    // PC-98 软件常依赖 CPU 节奏；auto 会在保护模式软件中放开，普通游戏也不会被硬锁死。
+    'cycles=auto',
+    '',
+    '[mixer]',
+    'rate=44100',
+    'blocksize=1024',
+    'prebuffer=25',
+    '',
+    '[autoexec]',
+    // FDI 是 PC-98 软盘：先以无文件系统方式挂入 BIOS 的 A:，再按驱动器启动。
+    // 不直接 `boot 文件名`，避免不同 DOSBox-X 版本把它按普通 IBM PC 镜像猜测。
+    `imgmount 0 ${PC98_FDI_BUNDLE_NAME} -fs none`,
+    'boot a:',
+    '',
+  ].join('\n')
+  const config = te.encode(mergeDosboxConfigOverride(base, pc98ConfigOverride(configOverride))) as Uint8Array<ArrayBuffer>
+  const empty = new Uint8Array(0) as Uint8Array<ArrayBuffer>
+  return {
+    blob: buildZip([
+      { name: '.jsdos/', method: 0, crc: 0, compressedSize: 0, uncompressedSize: 0, data: empty },
+      {
+        name: '.jsdos/dosbox.conf',
+        method: 0,
+        crc: crc32(config),
+        compressedSize: config.length,
+        uncompressedSize: config.length,
+        data: config,
+      },
+      {
+        name: PC98_FDI_BUNDLE_NAME,
+        // FDI 已经是按扇区组织的二进制盘；浏览器重压只会拖慢启动并增加内存峰值。
+        method: 0,
+        crc: crc32(image),
+        compressedSize: image.length,
+        uncompressedSize: image.length,
+        data: image,
+      },
+    ]),
+    executable: null,
+    passthrough: false,
+  }
 }
 
 /** 和 buildZip 同样的字节，但不经过 Blob —— 少复制一整份包，见 zipParts 的注释 */

@@ -84,6 +84,20 @@ export const CACHE = {
 }
 
 /** express.static 的 setHeaders：按路径决定缓存多久 */
+/**
+ * 模拟器运行页不是搜索落地页。真正应被收录的是带游戏资料、封面、说明和结构化数据的
+ * `/games/:slug`；这些 HTML 只是 iframe / 独立运行时的启动壳。
+ *
+ * 不把规则散落进每个第三方 index.html：PPSSPP、Dolphin 和网页游戏升级时会整批覆盖
+ * 上游文件，漏掉一份就又会产生一个 200 的重复页。响应头对 HTML 比 `<meta>` 优先，
+ * 也同时覆盖历史版本目录和带查询串的访问。
+ */
+export function isRuntimeHtmlShell(filePath) {
+  const p = String(filePath || '').replace(/\\/g, '/')
+  if (!/\.html?$/i.test(p)) return false
+  return /\/(?:web|ppsspp|dolphin|j2me)\//i.test(p)
+}
+
 export function staticCacheHeaders(res, filePath) {
   const p = filePath.replace(/\\/g, '/')
   const set = (v) => res.setHeader('Cache-Control', v)
@@ -93,7 +107,9 @@ export function staticCacheHeaders(res, filePath) {
     flash-frame.html 是播放器 iframe 的空壳。express.static 直接回 200、没有 robots 信号，
     爬虫顺着任何外链就能把它们当正常页面收录。
   */
-  if (/\/(?:__[^/]*|flash-frame)\.html$/i.test(p)) res.setHeader('X-Robots-Tag', 'noindex, nofollow')
+  if (isRuntimeHtmlShell(p) || /\/(?:__[^/]*|flash-frame)\.html$/i.test(p)) {
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow')
+  }
 
   // /play-local 是跨源隔离文档，它内嵌这个同源页时，子文档也必须声明
   // COEP。否则 Chromium 不报 SWF 错误，而是直接把 iframe 换成 chrome-error 黑屏。
@@ -153,7 +169,11 @@ export function staticCacheHeaders(res, filePath) {
     // ⚠️ `blazor.boot.json` 虽然后缀是 json，但它是「清单」不是内容寻址的产物。
     return set(file === 'dotnet.js' || file === 'blazor.boot.json' ? CACHE.engine : CACHE.immutable)
   }
-  if (p.startsWith('/web/')) return set(CACHE.engine)
+  // express.static 传进来的是绝对文件路径（例如
+  // `/var/www/8bitgo/dist/client/web/PvZ/...`），不是 URL pathname。这里若用
+  // startsWith('/web/') 会永远落到默认的 1 小时 stale 窗口：网页游戏发版后可能把新
+  // index.html 与旧 wasm / js 混用。前面的 Terraria 分支已先截住其内容寻址文件。
+  if (p.includes('/web/')) return set(CACHE.engine)
   if (p.includes('/assets/')) return set(CACHE.immutable)
   if (p.includes('/fonts/')) return set(CACHE.font)
   if (/\/(?:ruffle|jsdos)\/v[^/]+\//.test(p)) return set(CACHE.engineVersioned)
