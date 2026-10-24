@@ -302,7 +302,11 @@ export function conventionalKeys(game: Game): string[] {
   const ordered = streamingDisc ? exts.filter((e) => e !== '.zip') : ['.zip', ...exts.filter((e) => e !== '.zip')]
   const legacy = ordered.map((ext) => at(`${game.slug}${ext}`))
   // 没有数据库绑定的老游戏也能原地把对象换成 .8bg；流式光盘明确不走浏览器解包路径。
-  return streamingDisc ? legacy : [...legacy.map((key) => `${key}.8bg`), ...legacy]
+  // PS1 的新 ROM 已改为直接绑定裸盘（CHD 还要走 Range），因此约定探测也先查裸文件，
+  // 只有历史对象确实不存在时才回退到旧 8BG；否则会对每个现存 CHD 先制造一个 404。
+  if (streamingDisc) return legacy
+  if (game.platform === 'psx') return [...legacy, ...legacy.map((key) => `${key}.8bg`)]
+  return [...legacy.map((key) => `${key}.8bg`), ...legacy]
 }
 
 /** key 自带完整地址（外链或站内绝对路径），不需要根地址就能探 */
@@ -557,7 +561,9 @@ export function romCandidates(game: Pick<Game, 'rom' | 'roms' | 'romBackups'>, l
  */
 export function playbackRomCandidates(game: Pick<Game, 'platform' | 'rom' | 'roms' | 'romBackups'>, lang: Lang, prefer?: RomLang | null): RomCandidate[] {
   const raw = romCandidates(game, lang, prefer)
-  if (isStreamingDiscPlatform(game.platform) || game.platform === 'html5') return raw
+  // PS1 后台允许显式绑定旧 8BG，但不能从裸 CHD/ISO 再派生 `.8bg` 地址：
+  // 新上传的原始 CHD 必须直接命中，否则会先请求不存在的 `.chd.8bg`，还会绕过 Range 流式读取。
+  if (isStreamingDiscPlatform(game.platform) || game.platform === 'psx' || game.platform === 'html5') return raw
   const out: RomCandidate[] = []
   const seen = new Set<string>()
   for (const candidate of raw) {

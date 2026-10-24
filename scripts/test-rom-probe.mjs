@@ -51,6 +51,7 @@ const { isolatedEmbedFor } = await import(fileURLToPath(new URL('../shared/isola
 const { gameRowToApi, dosExecutableOf, dosStartupCommandsOf, relationsInPatch, romRelationRows } = await import(fileURLToPath(new URL('../server/src/mappers.js', import.meta.url)))
 // ts-loader 为了让 ROM 探测测试保持轻量，会把平台表换成空桩；补齐流式光盘真正用到的格式。
 const { platformMap: testPlatformMap } = await import('@/data/platforms')
+testPlatformMap.psx = { romExtensions: ['.bin', '.cue', '.iso', '.img', '.pbp', '.chd', '.zip'] }
 testPlatformMap.ps2 = { romExtensions: ['.iso', '.chd', '.cso', '.zso', '.isz', '.bin', '.elf'] }
 testPlatformMap.psp = { romExtensions: ['.iso', '.cso', '.chd', '.pbp', '.elf', '.prx'] }
 testPlatformMap.gamecube = { romExtensions: ['.iso', '.gcm', '.rvz', '.ciso', '.gcz', '.dol', '.elf'] }
@@ -58,6 +59,18 @@ testPlatformMap.wii = { romExtensions: ['.iso', '.rvz', '.ciso', '.gcz', '.wbfs'
 
 let url = 0
 const next = () => `https://assets.example.com/roms/nes/game-${++url}.zip`
+
+/* ---------- PS1：后台绑定的裸 CHD 必须直接探测，不能派生不存在的 .chd.8bg ---------- */
+{
+  const key = 'roms/psx/world-soccer.zh-Hans.chd'
+  const candidates = playbackRomCandidates({ platform: 'psx', roms: { 'zh-Hans': key } }, 'zh-Hans')
+  assert.deepEqual(candidates.map((candidate) => candidate.key), [key], 'PS1 裸 CHD 绑定直接使用 R2 中已有对象，不额外请求 .chd.8bg')
+
+  const keys = conventionalKeys({ platform: 'psx', slug: 'demo' })
+  const rawChd = keys.indexOf('roms/psx/demo.chd')
+  const packedChd = keys.indexOf('roms/psx/demo.chd.8bg')
+  assert.ok(rawChd >= 0 && packedChd > rawChd, '无显式绑定时，PS1 约定探测也先试可 Range 读取的裸 CHD，再保留旧 8BG 回退')
+}
 
 /* ---------- PS2 约定地址：ISO 直接给 Play!，不能让历史 ZIP 抢先 ---------- */
 {
