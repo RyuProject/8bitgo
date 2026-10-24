@@ -89,6 +89,17 @@ if (!/m=\[[^\]]*"melondsds"[^\]]*\]/.test(js)) {
   )
 }
 
+if (
+  !js.includes(
+    '"string"==typeof t.minimumEJSVersion&&t.minimumEJSVersion.length>0&&this.versionAsInt(t.minimumEJSVersion)',
+  )
+) {
+  fail(
+    'emulator.min.js 缺核心最低引擎版本字段保护 —— 没有 minimumEJSVersion 的核心报告会在开局时触发 endsWith 异常',
+    'npm run ejspatch。缺省版本应跳过兼容性比较；明确声明的版本仍须照常校验',
+  )
+}
+
 if (!existsSync(join(dir, 'cores', 'fbneo-wasm.data'))) {
   fail(
     'public/emulatorjs/cores/ 里没有核心（至少 fbneo-wasm.data 该在）',

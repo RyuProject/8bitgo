@@ -154,6 +154,13 @@ const KEEP_ZIP_TO = '(e.dontExtractIfCore?.includes(this.getCore())||"mame-curre
 const WEBGL2_CORES_FROM = 'm=["ppsspp","azahar"]'
 const WEBGL2_CORES_TO = 'm=["ppsspp","azahar","melondsds"]'
 
+/** 核心报告字段允许缺省；老版报告没有最低引擎版本时不应让整个核心初始化崩溃。 */
+const CORE_COMPATIBILITY_FROM =
+  'checkCoreCompatibility(t){if(this.versionAsInt(t.minimumEJSVersion)>this.versionAsInt(this.ejs_version))'
+const CORE_COMPATIBILITY_TO =
+  'checkCoreCompatibility(t){if("string"==typeof t.minimumEJSVersion&&t.minimumEJSVersion.length>0&&' +
+  'this.versionAsInt(t.minimumEJSVersion)>this.versionAsInt(this.ejs_version))'
+
 /** EJS_paths 的键是文件 basename；下载 URL 自己的查询串不属于文件名。 */
 const FILE_PATH_LOOKUP_FROM =
   'let h=(n?"":this.config.dataPath)+t;!n&&this.config.filePaths&&"string"==typeof ' +
@@ -254,6 +261,14 @@ const GROUPS = [
     hint: [
       '在核心别名表后找 requiresWebGL2 使用的数组（当前含 ppsspp / azahar）；',
       '把 melondsds 加进去，避免核心报告暂时 404 时误选不存在的 legacy 文件。',
+    ],
+  },
+  {
+    name: '核心最低引擎版本字段缺省保护',
+    patches: [[CORE_COMPATIBILITY_FROM, CORE_COMPATIBILITY_TO]],
+    hint: [
+      '在 checkCoreCompatibility 里找 minimumEJSVersion 的比较；',
+      '第三方/旧版核心报告可能没有该字段，缺省时应跳过兼容性比较，不能把 undefined 传给 versionAsInt。',
     ],
   },
 ]

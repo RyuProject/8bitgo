@@ -123,6 +123,44 @@ check('melonDS DS 即使核心报告暂时 404，也不会误选已删除的 leg
   assert.match(engine, /m=\[[^\]]*"melondsds"[^\]]*\]/)
 })
 
+check('核心报告缺少 minimumEJSVersion 时安全跳过比较，明确声明的版本仍会校验', () => {
+  const engine = readFileSync(enginePath, 'utf8')
+  const psxReport = JSON.parse(readFileSync(join(coresDir, 'metadata', 'mednafen_psx.json'), 'utf8'))
+  assert.equal(psxReport.minimumEJSVersion, undefined, '该回归必须覆盖线上 PS1 报告的真实字段缺失')
+  const start = engine.indexOf('checkCoreCompatibility(t){')
+  const end = engine.indexOf('startGameError(t){', start)
+  assert.ok(start >= 0 && end > start, '找不到引擎核心兼容性检查方法')
+  const method = engine.slice(start, end).trim()
+  const compatibility = new Function(`return ({${method}})`)()
+
+  const absentCalls = []
+  const absentReceiver = {
+    ejs_version: '4.3.0-pre',
+    versionAsInt(version) {
+      absentCalls.push(version)
+      return 0
+    },
+  }
+  assert.doesNotThrow(() => compatibility.checkCoreCompatibility.call(absentReceiver, psxReport))
+  assert.deepEqual(absentCalls, [], '字段缺省时不应把 undefined 交给版本解析器')
+
+  const declaredCalls = []
+  const declaredReceiver = {
+    ejs_version: '4.3.0-pre',
+    versionAsInt(version) {
+      declaredCalls.push(version)
+      return version === '9.0' ? 900 : 400
+    },
+    localization: () => 'outdated',
+    startGameError: () => new Error('outdated'),
+  }
+  assert.throws(
+    () => compatibility.checkCoreCompatibility.call(declaredReceiver, { minimumEJSVersion: '9.0' }),
+    /Core requires minimum EmulatorJS version of 9\.0/,
+  )
+  assert.deepEqual(declaredCalls, ['9.0', '4.3.0-pre'])
+})
+
 check('悬停预热使用真实核心文件名，不会请求平台别名 404', () => {
   for (const platform of platforms) {
     if (platform.runtime !== 'emulatorjs' || !platform.core) continue
