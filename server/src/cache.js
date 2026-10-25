@@ -52,13 +52,15 @@ export const CACHE = {
    * SSR 出来的 HTML。浏览器不缓存（max-age=0，保证用户刷新一定拿到新的），
    * 但边缘可以缓存 —— 页面是匿名的，登录态和后台数据都在客户端，不存在串号。
    *
-   * no-transform 是为了让 Cloudflare 不再把正文里的邮箱改写成 `/cdn-cgi/l/email-protection`。
-   * 那个内部端点被 Google 当普通链接抓取后会报 404；本站的邮箱本来就已经用 mailto 表达，
-   * 不需要边缘再改写 HTML。它也保证 canonical / hreflang 等 SEO 头不会被中间层变形。
+   * 这里**故意不带 no-transform**。它曾经用来挡 Cloudflare 的 Email Obfuscation（把正文邮箱
+   * 改写成 `/cdn-cgi/l/email-protection`，被 Google 当普通链接抓到后报 404），代价是边缘也
+   * 不能改压缩：源站 nginx 给的 gzip 原样下发，静态 JS 早就是 zstd，HTML 却一直是 gzip。
+   * 2026-10-26 起改为在区域里关掉 Email Obfuscation（Speed/Scrape Shield 设置），HTML 才能
+   * 和其它资源一样由边缘按浏览器选 Brotli / zstd。重新打开那个开关之前先看这里。
    */
   // 内容上架后这段 stale 窗口也算进可见延迟；留 5 分钟扛回源抖动，
   // 避免旧首页/详情页在边缘继续可用整整一天，尤其影响低流量页面的爬虫首访。
-  page: `public, max-age=0, s-maxage=${PAGE_S_MAXAGE}, stale-while-revalidate=300, no-transform`,
+  page: `public, max-age=0, s-maxage=${PAGE_S_MAXAGE}, stale-while-revalidate=300`,
 
   /** 404：短暂缓存一下挡住爬虫的反复请求，又不至于长期钉死 */
   notFound: 'public, max-age=0, s-maxage=60',
