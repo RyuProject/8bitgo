@@ -475,6 +475,17 @@ function packageCore(args, coreDir, startedAt) {
   replaceOnce(runtimeJs,
     'var queued=sock.recv_queue.shift();if(!queued)',
     'var queued=sock.recv_queue.shift();if(Module["wfcTrace"]&&sock.dport===29900&&queued)console.info("[nds-wfc-core] gp read",queued.data.length);if(!queued)')
+  /*
+   * EJS RetroArch 1eb5edf 的 save_state_info() 把说明写在栈上的局部数组里返回；旧胶水却
+   * free(说明) 又从不释放真正 malloc 的快照（melonDS DS 每次 19.7MB）。与
+   * scripts/patch-ejs-state-glue.mjs 同一份修法：先复制、只释放 dataStart，乱码说明不外抛。
+   */
+  replaceOnce(runtimeJs,
+    'const data=HEAPU8.subarray(dataStart,dataStart+size);_free(info);_free(data);return new Uint8Array(data)',
+    'const data=new Uint8Array(HEAPU8.subarray(dataStart,dataStart+size));_free(dataStart);return data')
+  replaceOnce(runtimeJs,
+    'if(state[2]!=="1"){console.error("Failed to save state!",state[0]);throw new Error(state[0])}',
+    String.raw`if(state[2]!=="1"){const reason=/^[\x20-\x7e]{1,120}$/.test(state[0]||"")?state[0]:"State is not available yet";console.warn("Failed to save state!",reason);throw new Error(reason)}`)
   copyFileSync(join(coreDir, 'LICENSE'), join(packageDir, 'license.txt'))
   writeFileSync(join(packageDir, 'core.json'), `${JSON.stringify({
     name: 'melondsds',
@@ -520,6 +531,8 @@ function packageCore(args, coreDir, startedAt) {
     sha256,
     // 已修正 path_get_size 的跨 libretro-common 签名冲突，且最终链接没有任何签名不一致 warning
     linkAbiChecked: true,
+    saveStateGlue: 'v3',
+    patch: 'emulatorjs-save-state-glue-v3',
     // GPU::VRAMCaptureBlockFlags 已零初始化（否则部分 ROM 开局 RuntimeError: null function）
     gpuCaptureFlagsInit: true,
     // melonDS DS 前端以 -fexceptions 构建，开局错误会显示核心自己的错误画面

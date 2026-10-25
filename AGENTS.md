@@ -2367,6 +2367,26 @@ CHD 固定用自建 `mednafen_psx` 软件核心；该包关闭了上游 Emscript
 - **回归**：`test:disc-upload` 会解包两个核心，取证两边各自有哪些解码器。以后给 Beetle 重编进 FLAC，就要同步放宽 `BEETLE_CHD_CODECS`。
 - **数据侧备选**：`chdman extractcd` 后用 `createcd -c cdzl` 重压，可以让这张盘回到 Beetle。
 
+🔴 **自建核心的即时存档胶水：melonDS DS 必须是 v3（`scripts/patch-ejs-state-glue.mjs`），Beetle PS1 保持 v2（`scripts/patch-psx-save-state.mjs`）**（2026-10-25）。
+
+两个核心链接的 EJS RetroArch 1eb5edf 在 `save_state_info()`（tasks/task_save.c）里，把说明写进**栈上的** `char state_data[300]` 再返回其地址。旧胶水因此有三处问题：
+
+- `_free(info)` 释放的是这个栈地址；
+- `_free(data)` 传的是 Uint8Array，实际等于 free(0)；
+- 真正 malloc 出来的快照从不释放。
+
+线上实测 NDS 每取一次状态就漏约 19.7MB：5 次让 wasm 堆从 858MB 涨到 973MB。换成 v3 胶水后取 10 次堆不再增长，loadState 正常。失败分支读到的说明已被覆盖，控制台出现「Failed to save state! 댟」。
+
+v3 的修法：
+- 先复制快照，只释放 dataStart；
+- 说明不是可打印 ASCII 时换成固定文字，并降为 warn。
+
+Beetle PS1 的两个包已是 v2（泄漏已修），且 `check-emulatorjs` 按 Range 实玩验收过的 sha256 锁定，所以没上 v3。要上 v3，先重做浏览器实玩验收，再改锁定值。
+
+开局能力探测对这两个核心只调 `supportsStates()`，不再真取一次整机快照，所以开局不会再出现乱码报错。`build-melondsds-core.mjs` 打包时会带上同一补丁。
+
+melonDS DS 的包换了，要同步四处：报告 sha256、`NDS_MODERN_CORE_BUILD`、`EJS_CACHE_GENERATION`、`EJS_RUNTIME_GENERATION`。脚本会一并改好，`test:psx-state` 负责核对。
+
 ### 2.32.1 PSP 必须留在普通详情页内启动，不能再复用 PS2 的独立播放器外壳
 
 PPSSPP 的 pthread 仍然需要 `Cross-Origin-Opener-Policy: same-origin` 与

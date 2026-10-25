@@ -189,7 +189,7 @@ const EJS_LANG: Record<Lang, string> = {
  * 存档在另一个库（EmulatorJS-states）和我们自己的云存档里，不碰。
  */
 // 旧 NDS 核心把双倍物理画布当成 1 倍指针坐标；换代才能让玩家实际拿到触屏修正版。
-const EJS_CACHE_GENERATION = '2026-10-25.melondsds-wfc-sourceport.touch-dpr.psx-range.melondsds-core-fb82cf07.corecompat1.psxstate2'
+const EJS_CACHE_GENERATION = '2026-10-25.melondsds-wfc-sourceport.touch-dpr.psx-range.melondsds-core-ff33abb1.corecompat1.stateglue3'
 // 浏览器实测已能按片读取，但现有 Beetle WASM 在该样本的完整下载路径也会崩溃；未确认可玩前不能让生产自动进入实验链路。
 const PSX_RANGE_ENABLED = import.meta.env.VITE_PSX_RANGE_ENABLED === '1'
 const EJS_CACHE_PURGED_KEY = '8bitgo.ejs.cachePurged'
@@ -1939,7 +1939,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 失败不当场下结论：有些核心要跑过几帧才给得出存档，开局那一瞬取到的是空的。
    * 先隔 1.5s 复查一次，两次都不行才摘掉能力并重新广播。
    */
-  const probeSaveState = (retry = true) => {
+  const probeSaveState = (retry = true, supportOnly = false) => {
     if (destroyed || !caps.has('saveState')) return
     // 核心自己就说不支持（街机的一些驱动），不用等重试，当场摘掉
     try {
@@ -1952,6 +1952,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     } catch {
       /* 问不出来就当支持，交给下面真调一次 */
     }
+    // 只问「支不支持」、不真的取一次状态（见下面 skipEagerStateProbe 的说明）
+    if (supportOnly) return
     let ok = false
     try {
       ok = Boolean(emuOf()?.gameManager?.getState?.()?.length)
@@ -2015,14 +2017,20 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       caps.delete('record')
     }
     options.onCaps?.(caps)
-    const skipEagerStateProbe = options.platform === 'psx' && core === PSX_CHD_CORE
+    const skipEagerStateProbe = (options.platform === 'psx' && core === PSX_CHD_CORE) || core === 'melondsds'
     /*
      * Beetle PS1 会先开始出画面、再准备序列化器。这个阶段主动取状态虽然会被捕获，
      * 但核心仍会向控制台写一条“Failed to save state”，让正常开局看起来像故障。
      * 真正由玩家触发的存档仍会走 saveState() 的错误处理；这里只是不拿一次假保存
      * 来探测工具栏能力。
+     *
+     * melonDS DS 同理，而且代价更大：一次 getState() 要序列化约 19.7MB，开局探测（含 1.5s
+     * 后的复查）就是两份整机快照。两个自建核心链接的 EJS RetroArch 把 save_state_info()
+     * 的说明写在**栈上的局部数组**里返回，失败分支的文字在 JS 读到时已被覆盖，于是控制台
+     * 出现「Failed to save state! 댟」这种乱码。这两个核心只问 supportsStates()。
      */
     if (!skipEagerStateProbe) probeSaveState()
+    else probeSaveState(false, true)
   }
   /** 服务端下发的房间令牌，上传存档要用 */
   let stateToken = ''

@@ -6,7 +6,7 @@
   "upstreamCommit": "f394adbacb5722ee97c1b37c8064da9a25818310",
   "emulatorJsRetroArchCommit": "1eb5edf2b3becf0a7b29520a34545628db0c5416",
   "emsdkVersion": "3.1.74",
-  "sha256": "fb82cf07ea820c12fcc5a73caf6891ec199c28a46759657b1e72d482097e1f6a",
+  "sha256": "ff33abb149a27202f961e18ac184865abcb4514e228cd81e53d49f3d5d14bd0a",
   "linkAbiChecked": true,
   "gpuCaptureFlagsInit": true,
   "cxxExceptions": "frontend",
@@ -17,5 +17,7 @@
     "opengl": false,
     "threadedRenderer": false,
     "networking": "indirect"
-  }
+  },
+  "saveStateGlue": "v3",
+  "patch": "emulatorjs-save-state-glue-v3"
 }
