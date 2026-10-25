@@ -87,6 +87,17 @@ export const MAX_LOCAL_JSDOS_SAVE_BYTES = 64 * 1024 * 1024
 export const MAX_LOCAL_DOLPHIN_SAVE_BYTES = 256 * 1024 * 1024
 
 /**
+ * 导入和本地落盘必须共用同一条上限，不能出现“文件选择时能读进内存、真正保存才报太大”。
+ * 云端仍统一由 MAX_SAVE_BYTES 限制；这里描述的是浏览器安全能承受的原始状态大小。
+ */
+export function localSaveByteLimit(runtime: SaveRuntime): number {
+  if (runtime === 'dolphin') return MAX_LOCAL_DOLPHIN_SAVE_BYTES
+  if (runtime === 'ppsspp') return MAX_LOCAL_PSP_SAVE_BYTES
+  if (runtime === 'jsdos') return MAX_LOCAL_JSDOS_SAVE_BYTES
+  return MAX_SAVE_BYTES
+}
+
+/**
  * 能不能用云存档。
  * 两个条件缺一不可：配了后端 + 当前已登录 —— 云存档是跟着账号的，游客没有。
  */
@@ -592,13 +603,7 @@ export async function pushSave(
   metadata?: SaveArchiveDetails,
 ): Promise<PushedSave> {
   if (data.length === 0) return { ok: false, where: null, error: 'empty' }
-  const localLimit = runtime === 'dolphin'
-    ? MAX_LOCAL_DOLPHIN_SAVE_BYTES
-    : runtime === 'ppsspp'
-      ? MAX_LOCAL_PSP_SAVE_BYTES
-      : runtime === 'jsdos'
-        ? MAX_LOCAL_JSDOS_SAVE_BYTES
-        : MAX_SAVE_BYTES
+  const localLimit = localSaveByteLimit(runtime)
   if (data.length > localLimit) return { ok: false, where: null, error: 'too-large' }
 
   const key = localKey(runtime, gameSlug, slot)
@@ -666,9 +671,11 @@ async function pushOne(
 /** 删存档：两边都删。游戏里「清空存档」用这个 —— 玩家的意思是这份进度不要了 */
 export async function deleteSave(runtime: SaveRuntime, gameSlug: string, slot = 0): Promise<void> {
   const key = localKey(runtime, gameSlug, slot)
+  // 先删云端：若另一台设备刚更新，服务端会拒绝这个过期删除；这时保留本地副本，
+  // 不能让玩家以为“已清空”却在下一次同步时把远端进度重新拉回来。
+  if (cloudSavesEnabled()) await deleteCloudSave(runtime, gameSlug, slot)
   await idbDelete(key)
   cloudRevisions.delete(key)
-  await deleteCloudSave(runtime, gameSlug, slot)
 }
 
 /**
@@ -678,14 +685,28 @@ export async function deleteSave(runtime: SaveRuntime, gameSlug: string, slot = 
  * 以前调的却是两边都删的 deleteSave —— 说一套做一套，而且删掉的是玩家
  * 在这台机器上唯一的进度备份。
  */
-export async function deleteCloudSave(runtime: SaveRuntime, gameSlug: string, slot = 0): Promise<void> {
-  if (!cloudSavesEnabled()) return
-  try {
-    await fetch(cloudUrl(runtime, gameSlug, slot), { method: 'DELETE', headers: authHeaders() })
-    cloudRevisions.set(localKey(runtime, gameSlug, slot), NO_CLOUD_REVISION)
-  } catch {
-    /* 删不掉就算了，下次覆盖会顶掉 */
+export async function deleteCloudSave(
+  runtime: SaveRuntime,
+  gameSlug: string,
+  slot = 0,
+  expectedRevision?: string,
+): Promise<void> {
+  if (!cloudSavesEnabled()) throw new Error('请先登录后再删除云端存档')
+  const key = localKey(runtime, gameSlug, slot)
+  const knownRevision = expectedRevision || cloudRevisions.get(key)
+  const headers = authHeaders()
+  // 老存档 / 没打开过列表的会话没有 revision，保留旧客户端的无条件删除兼容；
+  // 正常管理页与已读取过的游戏都会带这一头，避免过期页面删除另一台设备的新进度。
+  if (knownRevision && knownRevision !== NO_CLOUD_REVISION) {
+    headers['x-save-delete-revision'] = knownRevision
   }
+  const res = await fetch(cloudUrl(runtime, gameSlug, slot), { method: 'DELETE', headers })
+  // 删除是幂等操作：另一台设备已经删掉同一格时，当前目的也已达成。
+  if (res.status !== 404 && !res.ok) {
+    const body = await res.json().catch(() => ({})) as { error?: string }
+    throw new Error(body.error || `HTTP ${res.status}`)
+  }
+  cloudRevisions.set(key, NO_CLOUD_REVISION)
 }
 
 /**

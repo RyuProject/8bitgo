@@ -280,6 +280,11 @@ try {
   assert.equal(saveV1, sockdriveVersionedSaveKey('game', 'https://assets.test/sockdrives/game-v1/'))
   assert.notEqual(saveV1, sockdriveVersionedSaveKey('game', 'https://assets.test/sockdrives/game-v2'))
   assert.ok(sockdriveVersionedSaveKey('g'.repeat(200), 'https://assets.test/sockdrives/game-v1').length <= 160)
+  assert.notEqual(
+    sockdriveVersionedSaveKey(`${'g'.repeat(150)}~rom-en`, 'https://assets.test/sockdrives/game-v1'),
+    sockdriveVersionedSaveKey(`${'g'.repeat(150)}~rom-ja`, 'https://assets.test/sockdrives/game-v1'),
+    '截短的流式盘存档仍要保留完整游戏键的差异，不能把语言变体合并',
+  )
   const bootstrapBytes = await makeJsdosConfigBundle(streamedGuest.dosboxConf).arrayBuffer()
   const bootstrapConfigEntry = listZipEntries(bootstrapBytes).find((entry) => entry.name === '.jsdos/dosbox.conf')
   assert.ok(bootstrapConfigEntry, '流式引导包必须是能走 js-dos URL 加载入口的标准 bundle')

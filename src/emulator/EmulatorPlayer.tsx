@@ -79,6 +79,7 @@ import { platformLabel } from '@/services/i18nData'
 import { ROM_LANG_LABEL, type RomLang } from '@/config/languages'
 import {
   canResumeRomLanguageSwitch,
+  emulatorVariantSaveSlug,
   ndsVariantSaveSlug,
   nextRomLanguageRestart,
   pspVariantSaveSlug,
@@ -1716,6 +1717,8 @@ export function EmulatorPlayer({
         ? pspVariantSaveSlug(gameSlugRef.current, romLangRef.current, romLangCountRef.current)
         : targetPlatform === 'nds' && gameSlugRef.current
           ? ndsVariantSaveSlug(gameSlugRef.current, romLangRef.current, romLangsRef.current ?? [])
+          : (runtime.id === 'emulatorjs' || runtime.id === 'jsnes' || runtime.id === 'jsdos' || runtime.id === 'dolphin') && gameSlugRef.current
+            ? emulatorVariantSaveSlug(gameSlugRef.current, romLangRef.current, romLangsRef.current ?? [])
           : gameSlugRef.current
     // 同一版新核心已对这份 ROM 发生过 WASM 陷阱时，下一局直接进兼容核心，
     // 免去每次先下载、初始化新版再崩溃；本局显式覆盖和联机不受这一记忆影响。

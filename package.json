@@ -209,6 +209,7 @@
     "ejspatch": "node scripts/patch-emulatorjs.mjs",
     "romsets": "node scripts/build-arcade-romsets.mjs",
     "romdata": "node scripts/make-romdata.mjs",
+    "arcade:fuse": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/fuse-arcade-clone.mjs",
     "rompack": "node scripts/pack-rom.mjs",
     "romunpack": "node scripts/unpack-rom.mjs",
     "test:rompack": "node scripts/test-rom-pack.mjs",

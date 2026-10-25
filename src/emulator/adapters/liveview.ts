@@ -34,6 +34,7 @@ import { sendChatWithAck, type ChatSendResult } from '../chatSend'
 import { usableVideoSize } from '../videoTuning'
 import { COOP_CHANNEL, encode as encodeCoop, parse as parseCoop } from '../coopSeat'
 import { isTyping } from '../hotkeyBridge'
+import { isVideoRtpStat, selectedCandidateRttMs } from '../liveStats'
 
 export type LiveViewState = 'connecting' | 'watching' | 'reconnecting' | 'host-away' | 'ended' | 'error'
 
@@ -475,6 +476,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
   /* ---- 观众端链路质量采样 ---- */
   let linkTimer = 0
+  /** 某些浏览器 getStats 会慢过一个周期；只允许一份采样在途，避免重叠结果互相覆盖基线。 */
+  let linkStatsInFlight = false
+  /** 第一次读到累计计数只建立基线，不把握手阶段的数据误算成观看期网络质量。 */
+  let linkBaselineReady = false
   /** 上一轮的累计值，用来算这一段区间的增量（getStats 给的是从头累计的） */
   let lastPkts = { received: 0, lost: 0, bytes: 0, at: 0 }
 
@@ -485,57 +490,57 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 网络早就好了，读数还挂在高位 —— 观众看到的就是一句永远不消失的「你的网络不稳」。
    */
   const sampleLink = async () => {
-    if (destroyed || !pc || !gotFrame) return
-    let report: RTCStatsReport
+    if (destroyed || !pc || !gotFrame || linkStatsInFlight) return
+    linkStatsInFlight = true
     try {
-      report = await pc.getStats()
-    } catch {
-      return
-    }
-    let fps = 0
-    let received = 0
-    let lost = 0
-    let bytes = 0
-    let rttMs = 0
-    report.forEach((stat) => {
-      const t = stat as RTCStats & {
-        kind?: string
-        framesPerSecond?: number
-        packetsReceived?: number
-        packetsLost?: number
-        bytesReceived?: number
-        state?: string
-        currentRoundTripTime?: number
-      }
-      if (t.type === 'inbound-rtp' && t.kind === 'video') {
+      const activePc = pc
+      const report = await activePc.getStats()
+      if (destroyed || pc !== activePc || !gotFrame) return
+      let fps = 0
+      let received = 0
+      let lost = 0
+      let bytes = 0
+      const stats: unknown[] = []
+      report.forEach((stat) => {
+        stats.push(stat)
+        if (!isVideoRtpStat(stat, 'inbound-rtp')) return
+        const t = stat as RTCStats & { framesPerSecond?: number; packetsReceived?: number; packetsLost?: number; bytesReceived?: number }
         if (typeof t.framesPerSecond === 'number') fps = t.framesPerSecond
         if (typeof t.packetsReceived === 'number') received += t.packetsReceived
         if (typeof t.bytesReceived === 'number') bytes += t.bytesReceived
         // packetsLost 可以是负数（重排序被算回来），夹到 0
         if (typeof t.packetsLost === 'number') lost += Math.max(0, t.packetsLost)
-      } else if (t.type === 'candidate-pair' && t.state === 'succeeded' && typeof t.currentRoundTripTime === 'number') {
-        rttMs = Math.round(t.currentRoundTripTime * 1000)
+      })
+
+      const now = performance.now()
+      const rttMs = selectedCandidateRttMs(stats)
+      if (!linkBaselineReady) {
+        lastPkts = { received, lost, bytes, at: now }
+        linkBaselineReady = true
+        return
       }
-    })
+      const dRecv = Math.max(0, received - lastPkts.received)
+      const dLost = Math.max(0, lost - lastPkts.lost)
+      const elapsed = Math.max(1, now - lastPkts.at)
+      const dBytes = Math.max(0, bytes - lastPkts.bytes)
+      lastPkts = { received, lost, bytes, at: now }
+      // 这一段区间里几乎没收到包就别下结论 —— 样本太小，判什么都是噪声
+      if (dRecv + dLost < 50) return
+      const loss = dLost / (dRecv + dLost)
+      const kbps = Math.round((dBytes * 8) / elapsed)
 
-    const dRecv = Math.max(0, received - lastPkts.received)
-    const dLost = Math.max(0, lost - lastPkts.lost)
-    const now = performance.now()
-    const elapsed = lastPkts.at > 0 ? Math.max(1, now - lastPkts.at) : LINK_STATS_INTERVAL_MS
-    const dBytes = Math.max(0, bytes - lastPkts.bytes)
-    lastPkts = { received, lost, bytes, at: now }
-    // 这一段区间里几乎没收到包就别下结论 —— 样本太小，判什么都是噪声
-    if (dRecv + dLost < 50) return
-    const loss = dLost / (dRecv + dLost)
-    const kbps = Math.round((dBytes * 8) / elapsed)
+      // 每位观众只把自己的质量回给主播；主播据此只调这一条 sender。
+      // 走已有 DataChannel，不经过信令服务器，也不会让弱网观众拖累全房。
+      sendCoop({ t: 'q', loss, rtt: rttMs, fps: Math.round(fps), kbps })
 
-    // 每位观众只把自己的质量回给主播；主播据此只调这一条 sender。
-    // 走已有 DataChannel，不经过信令服务器，也不会让弱网观众拖累全房。
-    sendCoop({ t: 'q', loss, rtt: rttMs, fps: Math.round(fps), kbps })
-
-    const verdict: LinkQuality['verdict'] =
-      loss >= LOSS_BAD ? 'local' : fps > 0 && fps < ASSUMED_HOST_FPS * HOST_SLOW_RATIO ? 'host' : 'ok'
-    live.onLinkQuality?.({ verdict, fps: Math.round(fps), loss, rttMs })
+      const verdict: LinkQuality['verdict'] =
+        loss >= LOSS_BAD ? 'local' : fps > 0 && fps < ASSUMED_HOST_FPS * HOST_SLOW_RATIO ? 'host' : 'ok'
+      live.onLinkQuality?.({ verdict, fps: Math.round(fps), loss, rttMs })
+    } catch {
+      /* 统计接口失败不影响画面；下一轮继续读 */
+    } finally {
+      linkStatsInFlight = false
+    }
   }
 
   /** 第一帧到了：这才算真的「在看」 */
@@ -551,8 +556,11 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     // 有画面了才开始采样：没画面时读出来的全是握手期的噪声
     if (!linkTimer) {
       lastPkts = { received: 0, lost: 0, bytes: 0, at: 0 }
+      linkBaselineReady = false
       linkTimer = window.setInterval(() => void sampleLink(), LINK_STATS_INTERVAL_MS)
     }
+    // 立即只读一次作为基线；否则首个 5 秒样本会把握手和首帧等待期的累计丢包算进来。
+    void sampleLink()
     live.onState?.(hostFrozen ? 'host-away' : 'watching')
   }
 
@@ -734,6 +742,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
      */
     gotFrame = false
     tinyFrame = false
+    // 新 PeerConnection 的累计计数从零开始，不能拿上条连接的包数做差。
+    lastPkts = { received: 0, lost: 0, bytes: 0, at: 0 }
+    linkBaselineReady = false
     const next = new RTCPeerConnection({ iceServers })
     pc = next
     // 房主在他那边建的输入通道，随 SDP 过来（我们不建，见 coopDc 的注释）

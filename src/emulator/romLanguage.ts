@@ -6,11 +6,29 @@ import { ROM_LANGS, type RomLang } from '@/config/languages'
  */
 const PSP_SAVE_LANG_MARKER = '~psp-'
 const NDS_SAVE_LANG_MARKER = '~nds-'
+const EMULATOR_SAVE_LANG_MARKER = '~rom-'
 const NDS_COMPAT_SAVE_SUFFIX = ':melonds-compat'
+const MAX_SAVE_SLUG_LENGTH = 160
+
+/**
+ * 服务端把 game_slug 限为 160 个字符。语言变体不能因为一份很长的本地 ROM 名而让
+ * 云端写入直接 400；同时不能只截断前缀，否则同前缀的两份本地 ROM 会重新撞在一起。
+ */
+function appendSaveVariant(gameSlug: string, marker: string, romLang: RomLang): string {
+  const suffix = `${marker}${romLang}`
+  if (gameSlug.length + suffix.length <= MAX_SAVE_SLUG_LENGTH) return `${gameSlug}${suffix}`
+  let hash = 0x811c9dc5
+  for (let i = 0; i < gameSlug.length; i++) {
+    hash ^= gameSlug.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  const fingerprint = `~${(hash >>> 0).toString(36)}`
+  return `${gameSlug.slice(0, Math.max(1, MAX_SAVE_SLUG_LENGTH - suffix.length - fingerprint.length))}${fingerprint}${suffix}`
+}
 
 export function pspVariantSaveSlug(gameSlug: string, romLang: RomLang | undefined, romLangCount: number): string {
   if (!romLang || romLangCount < 2 || gameSlug.startsWith('local:')) return gameSlug
-  return `${gameSlug}${PSP_SAVE_LANG_MARKER}${romLang}`
+  return appendSaveVariant(gameSlug, PSP_SAVE_LANG_MARKER, romLang)
 }
 
 /** 个人页展示多语言 PSP 存档时，要拿基础 slug 查游戏并链接回正确详情页。 */
@@ -30,7 +48,7 @@ export function parsePspVariantSaveSlug(value: string): { gameSlug: string; romL
  */
 export function ndsVariantSaveSlug(gameSlug: string, romLang: RomLang | undefined, romLangs: readonly RomLang[]): string {
   if (!romLang || romLangs.length < 2 || romLang === romLangs[0] || gameSlug.startsWith('local:')) return gameSlug
-  return `${gameSlug}${NDS_SAVE_LANG_MARKER}${romLang}`
+  return appendSaveVariant(gameSlug, NDS_SAVE_LANG_MARKER, romLang)
 }
 
 /** 个人页要能从 NDS 语言档和兼容核心档位回到原游戏，而不是链接到不存在的变体 slug。 */
@@ -44,6 +62,30 @@ export function parseNdsVariantSaveSlug(value: string): { gameSlug: string; romL
   const romLang = base.slice(markerAt + NDS_SAVE_LANG_MARKER.length)
   if (!(ROM_LANGS as readonly string[]).includes(romLang)) return { gameSlug: base }
   return { gameSlug: base.slice(0, markerAt), romLang: romLang as RomLang }
+}
+
+/**
+ * 即时快照是 ROM 二进制的一部分：即使核心相同，换语言版后读回旧快照也可能覆盖
+ * RAM、存储卡或区域配置。NDS/PSP 已有专用规则；其它 EmulatorJS / jsnes 平台沿用
+ * “第一语言保留历史键、其它语言隔离”的规则，避免升级时让既有默认语言进度消失。
+ */
+export function emulatorVariantSaveSlug(
+  gameSlug: string,
+  romLang: RomLang | undefined,
+  romLangs: readonly RomLang[],
+): string {
+  if (!romLang || romLangs.length < 2 || romLang === romLangs[0] || gameSlug.startsWith('local:')) return gameSlug
+  return appendSaveVariant(gameSlug, EMULATOR_SAVE_LANG_MARKER, romLang)
+}
+
+/** 个人页展示通用 EmulatorJS / jsnes 语言档时，仍要能返回游戏详情页。 */
+export function parseEmulatorVariantSaveSlug(value: string): { gameSlug: string; romLang?: RomLang } {
+  if (value.startsWith('local:')) return { gameSlug: value }
+  const markerAt = value.lastIndexOf(EMULATOR_SAVE_LANG_MARKER)
+  if (markerAt <= 0) return { gameSlug: value }
+  const romLang = value.slice(markerAt + EMULATOR_SAVE_LANG_MARKER.length)
+  if (!(ROM_LANGS as readonly string[]).includes(romLang)) return { gameSlug: value }
+  return { gameSlug: value.slice(0, markerAt), romLang: romLang as RomLang }
 }
 
 /**

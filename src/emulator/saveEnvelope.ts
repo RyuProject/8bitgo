@@ -13,6 +13,15 @@ const MAGIC = new TextEncoder().encode('8BGSAVE1')
 const PREFIX_BYTES = MAGIC.length + 4
 const MAX_HEADER_BYTES = 64 * 1024
 
+/**
+ * 文件选择器给出的 size 可以在不读取正文时取得。导入前必须用这个上界挡住异常大文件，
+ * 否则 PSP / Dolphin 以外的平台会先复制整份文件进 JS 堆，再告诉玩家“存档太大”。
+ */
+export function maxSaveArchiveBytes(payloadBytes: number): number {
+  if (!Number.isSafeInteger(payloadBytes) || payloadBytes < 0) throw new Error('存档大小上限不合法')
+  return payloadBytes + PREFIX_BYTES + MAX_HEADER_BYTES
+}
+
 export interface SaveArchiveDetails {
   core?: string
   build?: string
@@ -155,6 +164,7 @@ export async function encodeSaveArchiveBlob(
 export async function decodeSaveArchive(
   bytes: Uint8Array,
   expected?: Partial<SaveArchiveCoordinate>,
+  expectedDetails?: Pick<SaveArchiveDetails, 'core' | 'format' | 'romFingerprint'>,
 ): Promise<DecodedSaveArchive> {
   // 兼容上线前已经存在的云端、本地和手工导出文件。
   if (!hasMagic(bytes)) return { payload: bytes, header: null }
@@ -185,6 +195,21 @@ export async function decodeSaveArchive(
   if (expected?.runtime !== undefined && header.runtime !== expected.runtime) throw new Error('这份存档来自另一个模拟器')
   if (expected?.gameSlug !== undefined && header.gameSlug !== expected.gameSlug) throw new Error('这份存档属于另一款游戏')
   if (expected?.slot !== undefined && header.slot !== expected.slot) throw new Error('这份存档属于另一个存档位')
+  /**
+   * 坐标相同并不等于状态 ABI 相同：后台改了核心、或同一游戏换了不同 ROM 时，
+   * 把旧快照直接交给核心的结果通常是花屏/崩溃而不是一条可理解的错误。
+   * 旧容器和没有记录该字段的早期容器继续放行，避免本次升级把玩家历史导出档作废；
+   * build 则故意不硬拦，真正不兼容的构建已经由各适配器写入 archive key 做物理隔离。
+   */
+  if (expectedDetails?.core && header.core && expectedDetails.core !== header.core) {
+    throw new Error('这份存档来自不同的模拟核心')
+  }
+  if (expectedDetails?.format && header.format && expectedDetails.format !== header.format) {
+    throw new Error('这份存档格式与当前运行时不兼容')
+  }
+  if (expectedDetails?.romFingerprint && header.romFingerprint && expectedDetails.romFingerprint !== header.romFingerprint) {
+    throw new Error('这份存档来自不同版本的游戏 ROM')
+  }
 
   const payload = bytes.slice(PREFIX_BYTES + headerLength)
   if (payload.length !== header.payloadBytes) throw new Error('存档文件不完整')

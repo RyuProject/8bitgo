@@ -20,8 +20,8 @@ export interface NavGroup {
 }
 
 /**
- * 侧边栏最上面那三条，不带分组标题。
- * 博客挪到了最底部。直播已经开放，必须有独立入口；它和「一起玩」是两种不同意图。
+ * 侧边栏最上面那几条，不带分组标题。
+ * 博客挪到了最底部；「一起玩」保留在主导航，直播入口不在这里单独占位。
  *
  * 合集从「探索」挪上来：那一组是按平台 / 类型 / 开发商这些**属性**切游戏库，
  * 而合集是玩家自己攒的清单，跟「一起玩」一样属于社区那一路，不是一种筛选维度。
@@ -30,7 +30,6 @@ export function mainNavFor(t: Translation): NavLinkItem[] {
   return [
     { label: t.nav.discover, to: '/', icon: '🏠', exact: true },
     { label: t.nav.playOnline, to: '/rooms', icon: '👥', exact: true },
-    ...(FEATURES.live ? [{ label: t.nav.live, to: '/rooms?live=1', icon: '📡', exact: true }] : []),
     { label: t.collections.title, to: '/collections', icon: '🗂️', exact: true },
   ]
 }

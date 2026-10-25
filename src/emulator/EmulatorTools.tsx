@@ -25,13 +25,14 @@ import {
   type SaveTarget,
   type SaveWhere,
   effectiveSaveTarget,
+  localSaveByteLimit,
 } from '@/services/saves'
 import { SaveLoadModal, type SaveLoadCard } from './SaveLoadModal'
 import { installHotkeys } from './hotkeyBridge'
 import type { HotkeyAction } from '@/services/hotkeys'
 import { cx } from '@/lib/format'
 import { DOS_MOUSE_SENSITIVITY_DEFAULT, dosMouseSpeedMultiplier } from './dosMouse'
-import { decodeSaveArchive, encodeSaveArchive, encodeSaveArchiveBlob } from './saveEnvelope'
+import { decodeSaveArchive, encodeSaveArchive, encodeSaveArchiveBlob, maxSaveArchiveBytes } from './saveEnvelope'
 
 interface Props {
   handle: RuntimeHandle | null
@@ -238,6 +239,18 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
     saveRuntime && archiveGameKey && ((!remoteOnly && caps.has('saveState')) || caps.has('fsFile')),
   )
   const toCloud = cloudSavesEnabled()
+
+  /**
+   * File.arrayBuffer 会复制整个文件。先只看元数据拒绝超限文件，避免损坏档或误选 ROM
+   * 把浏览器内存吃光；容器有固定上限的短文件头，所以这里允许 payload 上限再加它。
+   */
+  const assertImportFileSize = (file: File) => {
+    const payloadLimit = saveRuntime ? localSaveByteLimit(saveRuntime) : 4 * 1024 * 1024
+    const archiveLimit = maxSaveArchiveBytes(payloadLimit)
+    if (!Number.isFinite(file.size) || file.size <= 0 || file.size > archiveLimit) {
+      throw new Error(`存档文件过大，最大允许 ${Math.ceil(archiveLimit / 1024 / 1024)}MB`)
+    }
+  }
 
   const say = useCallback((text: string) => {
     setMsg(text)
@@ -545,12 +558,14 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
     if (!file || fsSaving) return
     setFsSaving(true)
     try {
+      assertImportFileSize(file)
       const archive = new Uint8Array(await file.arrayBuffer())
       const decoded = await decodeSaveArchive(
         archive,
         saveRuntime && archiveGameKey
           ? { runtime: saveRuntime, gameSlug: archiveGameKey, slot: archiveSlot }
           : undefined,
+        handle.saveMetadata,
       )
       const r = await handle.fsImport?.(decoded.payload)
       if (!r?.ok) {
@@ -643,12 +658,14 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
     saveBusyRef.current = true
     setSaving(true)
     try {
+      assertImportFileSize(file)
       const archive = new Uint8Array(await file.arrayBuffer())
       const decoded = await decodeSaveArchive(
         archive,
         saveRuntime && archiveGameKey
           ? { runtime: saveRuntime, gameSlug: archiveGameKey, slot: archiveSlot }
           : undefined,
+        handle.saveMetadata,
       )
       const note = await handle.loadState(decoded.payload.slice().buffer)
       say(typeof note === 'string' && note ? note : tt.loadOk)

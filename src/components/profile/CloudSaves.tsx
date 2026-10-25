@@ -26,7 +26,11 @@ import { gameTitle, platformLabel } from '@/services/i18nData'
 import { useGamesBySlugs } from '@/services/gameCache'
 import { deleteCloudSave, fetchCloudSave, listCloudSaves, type SaveMeta } from '@/services/saves'
 import { ROM_LANG_LABEL, type RomLang } from '@/config/languages'
-import { parseNdsVariantSaveSlug, parsePspVariantSaveSlug } from '@/emulator/romLanguage'
+import {
+  parseEmulatorVariantSaveSlug,
+  parseNdsVariantSaveSlug,
+  parsePspVariantSaveSlug,
+} from '@/emulator/romLanguage'
 import { parsePsxChdSaveSlug } from '@/emulator/psxChd'
 import { parseDolphinVersionSaveSlug } from '@/emulator/dolphinSave'
 import { Notice, Panel } from './shared'
@@ -39,8 +43,15 @@ function keyOf(s: SaveMeta) {
 /** 只按对应运行时拆后缀；NDS 兼容核心也必须链接回基础游戏。 */
 function identityOf(s: SaveMeta): { gameSlug: string; romLang?: RomLang } {
   if (s.runtime === 'ppsspp') return parsePspVariantSaveSlug(s.gameSlug)
-  if (s.runtime === 'emulatorjs') return parseNdsVariantSaveSlug(parsePsxChdSaveSlug(s.gameSlug))
-  if (s.runtime === 'dolphin') return parseDolphinVersionSaveSlug(s.gameSlug)
+  if (s.runtime === 'emulatorjs') {
+    const nds = parseNdsVariantSaveSlug(parsePsxChdSaveSlug(s.gameSlug))
+    return nds.romLang ? nds : parseEmulatorVariantSaveSlug(nds.gameSlug)
+  }
+  if (s.runtime === 'jsnes' || s.runtime === 'jsdos') return parseEmulatorVariantSaveSlug(s.gameSlug)
+  if (s.runtime === 'dolphin') {
+    const dolphin = parseDolphinVersionSaveSlug(s.gameSlug)
+    return parseEmulatorVariantSaveSlug(dolphin.gameSlug)
+  }
   return { gameSlug: s.gameSlug }
 }
 
@@ -103,7 +114,7 @@ export function CloudSaves() {
     setError(null)
     setBusy(keyOf(s))
     try {
-      await deleteCloudSave(s.runtime, s.gameSlug, s.slot)
+      await deleteCloudSave(s.runtime, s.gameSlug, s.slot, s.revision)
       await load()
     } catch (err) {
       setError(err instanceof Error ? err.message : t.profile.saveFailed)

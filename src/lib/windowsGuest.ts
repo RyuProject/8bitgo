@@ -140,7 +140,19 @@ export function sockdriveVersionedSaveKey(gameKey: string, sockdriveUrl: string)
     .trim()
     // eslint-disable-next-line no-control-regex -- 云存档路由明确不接受这些字符，必须稳定替换而非删除。
     .replace(/[/\\\x00-\x1f\x7f]/g, '_')
-  const safeGameKey = Array.from(cleanGameKey).slice(0, 140).join('') || 'game'
+  const chars = Array.from(cleanGameKey)
+  /*
+    留存的是“盘 + 语言/地区”这一整段 key，而不是仅取前 140 字符：长游戏名的
+    `~rom-en` 往往在尾部，直接截断会让不同语言的扇区变化重新落到同一个存档里。
+    正常长度维持旧键不迁移；只有原本已经会被截断的极端长键才附加稳定指纹。
+  */
+  let gameKeyHash = 0x811c9dc5
+  for (let i = 0; i < cleanGameKey.length; i++) {
+    gameKeyHash = Math.imul(gameKeyHash ^ cleanGameKey.charCodeAt(i), 0x01000193) >>> 0
+  }
+  const safeGameKey = chars.length <= 140
+    ? (cleanGameKey || 'game')
+    : `${chars.slice(0, 129).join('')}~${gameKeyHash.toString(16).padStart(8, '0')}`
   return `${safeGameKey}:sd:${hash(0x811c9dc5)}${hash(0x9e3779b9)}`
 }
 

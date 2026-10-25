@@ -7,6 +7,7 @@ import {
   tuningForLiveTier,
 } from '../src/emulator/liveAdaptiveQuality.ts'
 import { applyTuning } from '../src/emulator/videoTuning.ts'
+import { isVideoRtpStat, selectedCandidateRttMs } from '../src/emulator/liveStats.ts'
 
 let passed = 0
 const check = (name, fn) => {
@@ -18,6 +19,21 @@ const check = (name, fn) => {
 const good = { loss: 0.002, rttMs: 45, fps: 30, kbps: 1400 }
 const bad = { loss: 0.06, rttMs: 520, fps: 17, kbps: 430 }
 const severe = { loss: 0.18, rttMs: 1100, fps: 8, kbps: 120 }
+
+check('兼容只提供 mediaType 的 WebRTC 实现', () => {
+  assert.equal(isVideoRtpStat({ type: 'inbound-rtp', mediaType: 'video' }, 'inbound-rtp'), true)
+  assert.equal(isVideoRtpStat({ type: 'inbound-rtp', kind: 'audio' }, 'inbound-rtp'), false)
+})
+
+check('RTT 只读 transport 当前选中的 ICE 路径，不被备用路径顺序干扰', () => {
+  const stats = [
+    { id: 'old', type: 'candidate-pair', state: 'succeeded', nominated: true, currentRoundTripTime: 0.9 },
+    { id: 'active', type: 'candidate-pair', state: 'succeeded', currentRoundTripTime: 0.045 },
+    { id: 'transport', type: 'transport', selectedCandidatePairId: 'active' },
+  ]
+  assert.equal(selectedCandidateRttMs(stats), 45)
+  assert.equal(selectedCandidateRttMs([{ type: 'candidate-pair', state: 'succeeded', nominated: true, currentRoundTripTime: 0.12 }]), 120)
+})
 
 check('普通网络波动要连续两轮才降档', () => {
   let s = initialLiveQualityState(0)

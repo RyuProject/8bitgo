@@ -22,6 +22,12 @@ const {
   MAX_SAVE_BYTES,
 } = await import('../src/services/saves.ts')
 const { dolphinVersionSaveSlug, parseDolphinVersionSaveSlug } = await import('../src/emulator/dolphinSave.ts')
+const {
+  emulatorVariantSaveSlug,
+  ndsVariantSaveSlug,
+  parseEmulatorVariantSaveSlug,
+  pspVariantSaveSlug,
+} = await import('../src/emulator/romLanguage.ts')
 
 let passed = 0
 const ok = (condition, message) => {
@@ -43,6 +49,32 @@ const longB = dolphinVersionSaveSlug(`${'x'.repeat(160)}b`, '7e38409')
 ok(longA.length <= 160 && parseDolphinVersionSaveSlug(longA).version === '7e38409', '极端长 slug 仍保留核心构建且不越过 160 字符')
 ok(longA !== longB, '相同长前缀的两个本地 ROM 仍按指纹隔离')
 
+console.log('\n── 多语言快照隔离 ──')
+const romLangs = ['zh-Hans', 'en']
+ok(
+  emulatorVariantSaveSlug('contra', 'zh-Hans', romLangs) === 'contra',
+  '默认语言继续使用历史 archive key，不迁走既有进度',
+)
+const englishEmulatorKey = emulatorVariantSaveSlug('contra', 'en', romLangs)
+ok(englishEmulatorKey === 'contra~rom-en', '其它语言的 EmulatorJS / jsnes 快照使用独立 key')
+ok(
+  parseEmulatorVariantSaveSlug(englishEmulatorKey).gameSlug === 'contra'
+    && parseEmulatorVariantSaveSlug(englishEmulatorKey).romLang === 'en',
+  '通用语言变体存档仍能链接回原游戏',
+)
+ok(
+  ndsVariantSaveSlug('pokemon-black', 'en', romLangs).endsWith('~nds-en')
+    && pspVariantSaveSlug('djmax', 'en', 2).endsWith('~psp-en'),
+  'NDS / PSP 既有的专用隔离规则保持不变',
+)
+const longVariant = emulatorVariantSaveSlug(`${'long-rom-'.repeat(24)}a`, 'en', romLangs)
+ok(longVariant.length <= 160 && longVariant.endsWith('~rom-en'), '极端长 slug 的语言变体也不会被服务端拒绝')
+const player = readFileSync(new URL('../src/emulator/EmulatorPlayer.tsx', import.meta.url), 'utf8')
+ok(
+  /runtime\.id === 'emulatorjs' \|\| runtime\.id === 'jsnes' \|\| runtime\.id === 'jsdos' \|\| runtime\.id === 'dolphin'/.test(player),
+  'DOS / Sockdrive 与 Dolphin 也复用语言隔离，不能只保护掌机快照',
+)
+
 console.log('\n── 工具栏归档坐标与远程存档边界 ──')
 const tools = readFileSync(new URL('../src/emulator/EmulatorTools.tsx', import.meta.url), 'utf8')
 ok(
@@ -57,5 +89,6 @@ ok(
 )
 ok(/saveModal && !remoteOnly/.test(tools), '远程云游戏不再打开本地/文件三选一面板')
 ok(/!handle\.loadState \|\| saveBusyRef\.current/.test(tools), '没有读档 API 时不会假报“读取成功”')
+ok(/assertImportFileSize\(file\)/.test(tools) && /localSaveByteLimit\(saveRuntime\)/.test(tools), '导入异常大文件会在读取前按运行时上限拦住')
 
 console.log(`\n全部通过 ✅  共 ${passed} 项`)

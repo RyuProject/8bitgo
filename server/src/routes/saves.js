@@ -50,6 +50,18 @@ export function saveRevisionHeaders(headers) {
   return { ok: true, versioned: true, revision, parent }
 }
 
+/**
+ * 删除也要带上列表看到的版本。否则设备 A 打开“我的存档”后，设备 B 保存了新进度，
+ * A 再点旧页面的删除会无声删掉 B 的新进度；用户行锁只负责串行，版本头才负责判新旧。
+ * 头缺失仍视为旧客户端，避免本次升级让已经发出去的旧前端全部无法清理自己的存档。
+ */
+export function saveDeleteRevisionHeader(headers) {
+  const revision = String(headers?.['x-save-delete-revision'] || '').trim()
+  if (!revision) return { ok: true, revision: null }
+  if (!REVISION_RE.test(revision) || revision === 'none') return { ok: false }
+  return { ok: true, revision }
+}
+
 /** 旧行还没有 revision；用稳定哨兵让第一次新版覆盖同样能做条件写。 */
 const currentRevision = (row) => row ? String(row.revision || 'legacy') : 'none'
 
@@ -327,12 +339,36 @@ savesRouter.delete('/:runtime/:slug', async (req, res, next) => {
   try {
     const c = coords(req, res)
     if (!c) return
-    await query('DELETE FROM saves WHERE user_id = ? AND runtime = ? AND game_slug = ? AND slot = ?', [
-      req.user.id,
-      c.runtime,
-      c.slug,
-      c.slot,
-    ])
+    const expected = saveDeleteRevisionHeader(req.headers)
+    if (!expected.ok) return res.status(400).json({ error: '存档删除版本头不合法' })
+    const result = await withTransaction(async (run) => {
+      // 与 PUT 共用 users 行锁：不让“查版本 → 删除”穿过另一台设备的保存事务。
+      await run('SELECT id FROM users WHERE id = ? FOR UPDATE', [req.user.id])
+      const existing = (await run(
+        'SELECT revision FROM saves WHERE user_id = ? AND runtime = ? AND game_slug = ? AND slot = ?',
+        [req.user.id, c.runtime, c.slug, c.slot],
+      ))[0]
+      const current = currentRevision(existing)
+      if (expected.revision && existing && expected.revision !== current) {
+        return { conflict: true, revision: current }
+      }
+      if (existing) {
+        await run('DELETE FROM saves WHERE user_id = ? AND runtime = ? AND game_slug = ? AND slot = ?', [
+          req.user.id,
+          c.runtime,
+          c.slug,
+          c.slot,
+        ])
+      }
+      return { conflict: false }
+    })
+    if (result.conflict) {
+      return res.status(409).json({
+        code: 'save_conflict',
+        error: '云存档在另一台设备上已有更新，未删除；请刷新后确认',
+        currentRevision: result.revision,
+      })
+    }
     res.json({ ok: true })
   } catch (e) {
     next(e)

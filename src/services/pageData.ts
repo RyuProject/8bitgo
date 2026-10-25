@@ -107,15 +107,38 @@ interface Bootstrap {
 }
 
 /**
- * 服务端注入的首屏数据。**只能用一次** —— 用掉之后就清空，
+ * 服务端注入的首屏数据。**只给第一次提交用** —— 提交之后就清空，
  * 否则站内跳到别的页面时会把上一页的数据当成本页的直接渲染出来。
+ *
+ * ⚠️ 读和清必须分开（2026-10-25 线上 React #418）：
+ * 以前在 useState 初始化函数里 takeBootstrap() 读完即清。可 hydrateRoot 是并发渲染，
+ * 这一遍渲染**没提交就可能被丢掉重来**（子树挂起、水合途中来了更高优先级的更新、
+ * 慢网首访时 chunk 还没到……），重来时初始化函数会再跑一次，此时数据已经被上一遍
+ * 清掉，页面退回 loading：首页横幅标题从服务端的「拳皇97」变成兜底品牌语，React 报
+ * 「Hydration failed … text」并把整棵树推倒重建（首屏闪一下、图片重新解码）。
+ *
+ * 所以渲染期间只 peek（可以重复读、读多少遍结果都一样），等组件真正提交后再在
+ * effect 里 release。
  */
 let bootstrapped: PageData | null = null
+
+/** 渲染期间读首屏数据：不清空，被丢掉的渲染重来时还能拿到同一份 */
+export function peekBootstrap(): PageData | null {
+  return bootstrapped
+}
+
+/** 提交之后调用：首屏数据已经落到组件 state 里，不再需要全局这一份 */
+export function releaseBootstrap(): void {
+  bootstrapped = null
+}
+
+/** 读完即清。只适合不在 React 渲染期间调用的地方（渲染期间请用 peek + release） */
 export function takeBootstrap(): PageData | null {
   const d = bootstrapped
   bootstrapped = null
   return d
 }
+
 export function setBootstrap(data: PageData | null) {
   bootstrapped = data
 }
@@ -175,11 +198,14 @@ export function usePageData<T extends PageData>(
 
   const key = pageUrl(path, params)
   // 首帧：如果服务端注入的数据正是本页的，直接同步用掉，不闪 loading
+  // 注意是 peek 不是 take：这一遍渲染可能被丢掉重来，见 bootstrapped 的注释
   const [state, setState] = useState<PageState<T>>(() => {
-    const boot = takeBootstrap()
+    const boot = peekBootstrap()
     if (boot && (!expect || boot.route === expect)) return { status: 'ready', data: boot as T }
     return { status: 'loading', data: null }
   })
+  // 提交了才清。保持旧语义「首屏数据只用一次」：不管对不对得上，本页提交后都不再留给下一页
+  useEffect(releaseBootstrap, [])
   // 记住上一次真正取过的 key：路由或筛选条件变了才重新拉
   const loadedKey = useRef<string | null>(state.status === 'ready' ? key : null)
   // 失败后玩家点「重试」：只加一下计数让 effect 再跑一遍（失败时 loadedKey 已经清掉了）

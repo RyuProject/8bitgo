@@ -42,6 +42,7 @@ import {
   type LiveQualityTier,
   type ViewerNetworkSample,
 } from './liveAdaptiveQuality'
+import { isVideoRtpStat } from './liveStats'
 
 /**
  * 码率上限的**手动覆盖**。设了就一律用它，不再按分辨率算。
@@ -412,6 +413,9 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
     feedbackConsumedAt: number
     /** 回报最多每 3 秒收一份，避免恶意页面用 DataChannel 给主播主线程灌 JSON。 */
     feedbackAcceptedAt: number
+    /** 给主播质量面板算真实发送码率；第一次采样只建立基线。 */
+    sentVideoBytes?: number
+    sentVideoAt?: number
   }
   const peers = new Map<string, Peer>()
   let genCounter = 0
@@ -846,21 +850,35 @@ export async function startBroadcast(options: BroadcastOptions): Promise<Broadca
         if (!report) continue
         let peerSawVideo = false
         let peerBandwidthLimited = false
+        let peerVideoBytes = 0
+        let peerHasByteCounter = false
         report.forEach((stat) => {
           const s = stat as RTCStats & {
             kind?: string
+            mediaType?: string
             qualityLimitationReason?: string
             framesPerSecond?: number
-            targetBitrate?: number
+            bytesSent?: number
           }
-          if (s.type !== 'outbound-rtp' || s.kind !== 'video') return
+          if (!isVideoRtpStat(s, 'outbound-rtp')) return
           sawVideo = true
           peerSawVideo = true
           if (s.qualityLimitationReason === 'bandwidth') peerBandwidthLimited = true
           if (s.qualityLimitationReason) reasons.push(s.qualityLimitationReason)
           if (typeof s.framesPerSecond === 'number') minFps = Math.min(minFps, s.framesPerSecond)
-          if (typeof s.targetBitrate === 'number') totalKbps += Math.round(s.targetBitrate / 1000)
+          if (typeof s.bytesSent === 'number') {
+            peerVideoBytes += s.bytesSent
+            peerHasByteCounter = true
+          }
         })
+        if (peerHasByteCounter) {
+          if (peer.sentVideoBytes !== undefined && peerVideoBytes >= peer.sentVideoBytes) {
+            const elapsed = peer.sentVideoAt === undefined ? STATS_INTERVAL_MS : Math.max(1, now - peer.sentVideoAt)
+            totalKbps += Math.round(((peerVideoBytes - peer.sentVideoBytes) * 8) / elapsed)
+          }
+          peer.sentVideoBytes = peerVideoBytes
+          peer.sentVideoAt = now
+        }
         if (!peerSawVideo || peers.get(peer.id) !== peer) continue
         const fresh = peer.feedback && peer.feedback.at > peer.feedbackConsumedAt && now - peer.feedback.at <= STATS_INTERVAL_MS * 3
           ? peer.feedback

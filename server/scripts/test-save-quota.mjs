@@ -11,7 +11,13 @@
 const MB = 1024 * 1024
 process.env.SAVE_MAX_PER_USER = '3'
 process.env.SAVE_MAX_TOTAL_BYTES = String(10 * MB)
-const { saveCoords, saveQuotaError, saveRevisionHeaders, slugOk } = await import('../src/routes/saves.js')
+const {
+  saveCoords,
+  saveDeleteRevisionHeader,
+  saveQuotaError,
+  saveRevisionHeaders,
+  slugOk,
+} = await import('../src/routes/saves.js')
 const { envNumber } = await import('../src/resource-limits.js')
 
 let n = 0
@@ -78,6 +84,15 @@ ok(
 ok(
   saveRevisionHeaders({ 'x-save-revision': 'none', 'x-save-parent-revision': 'old' }).ok === false,
   '新版本不能冒充保留哨兵',
+)
+ok(saveDeleteRevisionHeader({}).revision === null, '旧客户端不带删除版本头仍兼容')
+ok(
+  saveDeleteRevisionHeader({ 'x-save-delete-revision': 'device-a:2' }).revision === 'device-a:2',
+  '删除携带当前 revision 才能防止旧页面误删新进度',
+)
+ok(
+  saveDeleteRevisionHeader({ 'x-save-delete-revision': 'none' }).ok === false,
+  '删除不能把“没有云端档”的保留哨兵伪装成版本',
 )
 
 

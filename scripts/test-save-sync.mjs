@@ -81,7 +81,7 @@ const responseHeaders = (values = {}) => ({
 })
 
 /** 可编排的假云端：plan 按 PUT 顺序消费，能让某一次慢、某一次失败 */
-const cloud = { puts: [], plan: [], stored: null, revision: null }
+const cloud = { puts: [], plan: [], deletes: [], deletePlan: [], stored: null, revision: null }
 globalThis.fetch = async (url, init = {}) => {
   if (init.method === 'PUT') {
     const body = new Uint8Array(init.body)
@@ -117,6 +117,22 @@ globalThis.fetch = async (url, init = {}) => {
       json: async () => ({ revision }),
     }
   }
+  if (init.method === 'DELETE') {
+    const step = cloud.deletePlan.shift() ?? { ok: true, status: 200 }
+    const expected = init.headers?.['x-save-delete-revision']
+    cloud.deletes.push({ expected })
+    if (!step.ok) {
+      return {
+        ok: false,
+        status: step.status ?? 500,
+        headers: responseHeaders(),
+        json: async () => ({ error: step.error ?? 'delete failed' }),
+      }
+    }
+    cloud.stored = null
+    cloud.revision = null
+    return { ok: true, status: step.status ?? 200, headers: responseHeaders(), json: async () => ({ ok: true }) }
+  }
   if (String(url).includes('/meta?')) {
     if (cloud.stored === null) return { ok: true, status: 204, headers: responseHeaders(), json: async () => ({}) }
     return {
@@ -139,7 +155,7 @@ globalThis.fetch = async (url, init = {}) => {
 /* ---------------- 真模块 ---------------- */
 
 const { idbGet, idbPut, idbMark } = await import('../src/lib/idb.ts')
-const { pushSave, pullSave, retryPendingSaves, saveInfo } = await import('../src/services/saves.ts')
+const { deleteCloudSave, pushSave, pullSave, retryPendingSaves, saveInfo } = await import('../src/services/saves.ts')
 const { decodeSaveArchive } = await import('../src/emulator/saveEnvelope.ts')
 const { setSaveTarget } = await import('../src/services/saveTarget.ts')
 
@@ -159,6 +175,8 @@ const reset = () => {
   for (const db of DBS.values()) for (const objectStore of db.values()) objectStore.clear()
   cloud.puts = []
   cloud.plan = []
+  cloud.deletes = []
+  cloud.deletePlan = []
   cloud.stored = null
   cloud.revision = null
 }
@@ -334,6 +352,27 @@ console.log('\n── ⭐⭐ 另一台设备改过云端时不静默覆盖 ─�
   const putCount = cloud.puts.length
   const retried = await retryPendingSaves()
   ok(retried.blocked >= 1 && cloud.puts.length === putCount, '自动补传跳过冲突档，不制造请求风暴')
+}
+
+console.log('\n── ⭐⭐ 删除失败不能伪装成成功或毒化版本缓存 ──')
+{
+  reset()
+  setSaveTarget('cloud')
+  await pushSave('jsdos', 'delete-guard', bytes(0x41), 0, 'cloud')
+  const before = cloud.revision
+  cloud.deletePlan = [{ ok: false, status: 409, error: '另一台设备已有更新' }]
+  const rejected = await deleteCloudSave('jsdos', 'delete-guard').then(
+    () => false,
+    () => true,
+  )
+  ok(rejected, '版本冲突的删除会明确失败，而不是界面假装“已删除”')
+  ok(cloud.stored !== null && cloud.revision === before, '删除失败不会清掉云端数据')
+  await pushSave('jsdos', 'delete-guard', bytes(0x42), 0, 'cloud')
+  ok(
+    cloud.puts.at(-1)?.parent === before,
+    '删除失败后下一次保存仍基于旧 revision，不会把版本缓存错误改成 none',
+  )
+  ok(cloud.deletes[0]?.expected === before, '已知 revision 的删除请求会带条件版本头')
 }
 
 console.log('\n── ⭐⭐ 换账号后不能把前一个人的待同步档传走 ──')

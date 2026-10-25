@@ -87,6 +87,10 @@ const putVersioned = (u, runtime, slug, bytes, revision, parent, slot = 0) =>
   })
 const get = (u, runtime, slug, slot = 0) => fetch(url(runtime, slug, slot), { headers: auth(u) })
 const del = (u, runtime, slug, slot = 0) => fetch(url(runtime, slug, slot), { method: 'DELETE', headers: auth(u) })
+const delVersioned = (u, runtime, slug, revision, slot = 0) => fetch(url(runtime, slug, slot), {
+  method: 'DELETE',
+  headers: { ...auth(u), 'x-save-delete-revision': revision },
+})
 
 const bytes = (s) => new Uint8Array(Buffer.from(s))
 const textOf = async (res) => Buffer.from(await res.arrayBuffer()).toString()
@@ -161,6 +165,16 @@ try {
     { headers: auth(alice) },
   )).json()
   ok('meta 暴露 revision 供下次条件写', versionedMeta.revision === 'device-a-2')
+  const staleDelete = await delVersioned(alice, 'emulatorjs', 'optimistic-lock', parentRevision)
+  ok(
+    '旧页面删除不会抹掉另一台设备刚存的新进度',
+    staleDelete.status === 409 && (await staleDelete.json()).code === 'save_conflict',
+  )
+  ok('删除冲突后内容保持最新版本', (await textOf(await get(alice, 'emulatorjs', 'optimistic-lock'))) === '设备 A')
+  ok(
+    '带当前 revision 的确认删除成功',
+    (await delVersioned(alice, 'emulatorjs', 'optimistic-lock', versionedMeta.revision)).ok,
+  )
   await del(alice, 'emulatorjs', 'optimistic-lock')
 
   /* ================= 三、互不覆盖 ================= */
