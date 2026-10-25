@@ -1077,11 +1077,11 @@ console.log('\n── Windows 客体的启动超时：只累计前台、分开�
 {
   const adapterSource = readFileSync(new URL('../src/emulator/adapters/jsdos.ts', import.meta.url), 'utf8')
   ok(
-    /armGuestStartupTimeout\('ci', windowsGuestStartupBudgetMs\(options\.dosLaunchDelay\)\)/.test(adapterSource),
+    /armGuestStartupTimeout\('ci', windowsGuestStartupBudgetMs\(options\.dosLaunchDelay \?\? \(dosSystemGuest \? 8 : 24\)\)\)/.test(adapterSource),
     'Win95 建盘阶段保留原有上限，不因拆段计时缩短慢设备的启动机会',
   )
   ok(
-    /armGuestStartupTimeout\('boot', windowsGuestLaunchBudgetMs\(options\.dosLaunchDelay\)\)/.test(adapterSource),
+    /armGuestStartupTimeout\('boot', windowsGuestLaunchBudgetMs\(options\.dosLaunchDelay \?\? \(dosSystemGuest \? 8 : 24\)\)\)/.test(adapterSource),
     'CI 建好后自动启动独立计时，不让建盘时间挤占后续启动机会',
   )
   ok(

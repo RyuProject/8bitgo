@@ -220,7 +220,7 @@ check('Windows 客体与《主题医院》都由适配器独占绝对指针，�
   assert.equal(needsRelativeWindowsGuestMouse('xuan-yuan-sword-scar-of-sky', 'launcher.exe'), false)
   assert.equal(needsRelativeWindowsGuestMouse('starcraft', 'Swd3e.exe'), false)
   assert.match(jsdos, /adapterOwnsAbsoluteMouse\s*=\s*Boolean/)
-  assert.match(jsdos, /guest\s*&&\s*needsRelativeWindowsGuestMouse\(options\.gameSlug, options\.dosExecutable\)/)
+  assert.match(jsdos, /guest\s*&&\s*needsRelativeWindowsGuestMouse\(compatSlug, options\.dosExecutable\)/)
   assert.match(jsdos, /guest\s*&&\s*!relativeWindowsMouse/)
   assert.match(jsdos, /mouseCapture:\s*Boolean\(options\.mouseCapture\s*&&\s*!adapterOwnsAbsoluteMouse\)/)
   assert.match(jsdos, /adapterOwnsAbsoluteMouse\s*\?\s*hookCapturedAbsoluteMouse/)
@@ -288,7 +288,7 @@ check('流式盘按预算选择官方预取，并挂到 DOSBox-X 的 Sockdrive',
   assert.match(jsdos, /streamingGame \? \{ sockdrivePreload \} : \{\}/)
   assert.match(jsdos, /guestLaunchCommand = streamingGame[\s\S]*?windowsSockdriveExecutableCommand\(gameExecutable, guest\.gameDrive\)/)
   assert.match(jsdos, /windowsSockdriveRegistryCommand\(registryImport, guest\.gameDrive\)/)
-  assert.match(jsdos, /windowsGameNeedsDirectDrawFocusRefresh\([\s\S]*?options\.gameSlug,[\s\S]*?gameExecutable,[\s\S]*?\)/)
+  assert.match(jsdos, /windowsGameNeedsDirectDrawFocusRefresh\([\s\S]*?compatSlug,[\s\S]*?gameExecutable,[\s\S]*?\)/)
   assert.match(jsdos, /guest\.launchPrepareCommand,\s*guest\.refreshDirectDrawAfterLaunch/)
   assert.match(windowsLaunch, /refreshDirectDrawWhenBlack\(\)/)
   assert.match(windowsLaunch, /frameIsBlank\(frame\)/)
@@ -303,7 +303,55 @@ check('纯 DOS Sockdrive 自动叠 DOS 7.1 启动盘，再把远程游戏盘作�
   assert.match(jsdos, /scheduleDosGuestLaunch\(/)
   assert.match(jsdos, /options\.dosLaunchDelay \?\? 8/)
   assert.match(jsdos, /静态 Sockdrive 需要 DOSBox-X/)
-  assert.match(jsdos, /else if \(dosSystemGuest\)[\s\S]*?90_000/)
+  // DOS 7.1 + Sockdrive 与 Windows 客体同用前台计时：建盘一段、ci 之后自启动一段，不再是 90 秒墙钟。
+  assert.doesNotMatch(jsdos, /90_000/)
+  assert.match(jsdos, /if \(guest\) \{\s*armGuestStartupTimeout\('ci', windowsGuestStartupBudgetMs\(options\.dosLaunchDelay \?\? \(dosSystemGuest \? 8 : 24\)\)\)/)
+  assert.match(jsdos, /armGuestStartupTimeout\('boot', windowsGuestLaunchBudgetMs\(options\.dosLaunchDelay \?\? \(dosSystemGuest \? 8 : 24\)\)\)/)
+})
+
+check('兼容表按目录 slug 查：第二语言版的存档后缀不能让逐游戏修正失效', () => {
+  assert.match(jsdos, /const compatSlug = options\.gameSlug \? parseEmulatorVariantSaveSlug\(options\.gameSlug\)\.gameSlug : undefined/)
+  for (const fn of [
+    'dosGameCompatibilityExecutable', 'dosGameCompatibilityLaunchArguments', 'dosGameCompatibilityStartupCommands',
+    'windowsGameCompatibilityRegistryImport', 'dosGameCompatibilityExtras', 'needsLockedAbsoluteDosMouse',
+  ]) {
+    assert.doesNotMatch(jsdos, new RegExp(`${fn}\\(options\\.gameSlug`), `${fn} 不能直接吃存档键`)
+  }
+  assert.match(jsdos, /windowsGameCompatibilityDosboxConfig\(\s*compatSlug,/)
+  assert.match(jsdos, /windowsGameCompatibilityExtras\(\s*compatSlug,/)
+  // 存档键仍按语言版隔离
+  assert.match(jsdos, /const baseSaveKey = options\.gameSlug \|\| `local:/)
+})
+
+check('普通 DOS：引擎壳起来不等于 DOSBox 在跑，8 秒兜底不能提前撤遮罩', () => {
+  assert.doesNotMatch(jsdos, /if \(engineUp \|\| ci\) markReady\(\)/)
+  assert.match(jsdos, /if \(ci\) \{\s*markReady\(\)\s*return\s*\}/)
+  assert.match(jsdos, /startActiveTimeout\(\s*PLAIN_DOS_CI_BUDGET_MS,/)
+})
+
+check('点了开始就与系统盘 / 游戏包并行预热本局核心，且后端判断与 Dos() 一致', () => {
+  assert.match(jsdos, /warmJsdosCore\(pc98 \|\| systemUrl \|\| options\.dosBackend === 'dosboxX' \? 'dosboxX' : 'dosbox'\)/)
+  assert.match(jsdos, /backend: pc98 \|\| guest \|\| options\.dosBackend === 'dosboxX' \? 'dosboxX' : 'dosbox'/)
+  const warmAt = jsdos.indexOf('warmJsdosCore(')
+  const dosAt = jsdos.indexOf('props = Dos(host')
+  assert.ok(warmAt > 0 && warmAt < dosAt, '预热必须在等下载之前发出')
+})
+
+check('ci-ready 后放掉主线程上的启动副本（initFs 原件与 blob URL）', () => {
+  assert.match(jsdos, /if \(initFs\) initFs\.length = 0/)
+  assert.match(jsdos, /for \(const url of objectUrls\.splice\(0\)\) URL\.revokeObjectURL\(url\)/)
+})
+
+check('绝对坐标会话：手柄 / 触屏的相对位移换算成绝对坐标，清理时还原', () => {
+  assert.match(jsdos, /c\.sendMouseRelativeMotion = relativeAsAbsolute/)
+  assert.match(jsdos, /if \(c\.sendMouseRelativeMotion === relativeAsAbsolute\) c\.sendMouseRelativeMotion = rawRelative/)
+})
+
+check('Sockdrive 的保存绕开 js-dos 的 canSave（配置含 qcow2 时恒为 false），只取扇区差异', () => {
+  assert.match(jsdos, /if \(streamingGame\) \{\s*const c = ci\s*if \(!c \|\| !saveKey \|\| typeof c\.persistSockdrives !== 'function'\)/)
+  assert.match(jsdos, /await c\.persistSockdrives\(\)/)
+  assert.doesNotMatch(jsdos, /c\.persist\(true\)/)
+  assert.match(jsdos, /await storeChanges\(data\)/)
 })
 
 check('流式盘必须走 URL bundle 入口，否则 js-dos 会把 changes URL 留空、保存永远失败', () => {

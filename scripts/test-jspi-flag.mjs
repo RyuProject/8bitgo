@@ -3,14 +3,14 @@
  * JSPI 开关的回归测试。跑：npm run test:jspi
  *
  * 这块的失败方式全是安静的：
- *   · key 写错 / 写晚了 → 永远跑 Asyncify 版，慢一截，没有任何迹象
+ *   · key 写错 / 写晚了 → js-dos 根本读不到，预热与实际核心分叉，每次冷启动白下一份 7.9MB wasm
  *   · 浏览器不支持却写了 true → js-dos 的 dosJspi 会弹一个英文 alert
  *   · 忘了在不支持时写 false → 以前开过的玩家一直卡在那个弹窗上
  * 所以每条都钉。
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { armJspi, jspiEnabled, jspiOverride, jspiSupported } from '../src/emulator/jspiFlag.ts'
+import { armJspi, JSDOS_JSPI_STORAGE_KEY, JSDOS_STORAGE_PREFIX, jspiEnabled, jspiOverride, jspiSupported } from '../src/emulator/jspiFlag.ts'
 
 let pass = 0, fail = 0
 const ok = (c, m) => { c ? (pass++, console.log('✅ ' + m)) : (fail++, console.log('❌ ' + m)) }
@@ -20,6 +20,7 @@ const store = new Map()
 globalThis.localStorage = {
   getItem: (k) => (store.has(k) ? store.get(k) : null),
   setItem: (k, v) => store.set(k, String(v)),
+  removeItem: (k) => store.delete(k),
 }
 const realWasm = globalThis.WebAssembly
 const setSupport = (yes) => {
@@ -43,36 +44,47 @@ ok(jspiOverride('?jspi=maybe') === null, '认不出来的值不表态，而不�
 
 console.log('\n── 预热与正式开局共用的最终选择 ──')
 setSupport(true)
-ok(jspiEnabled('') === true, '支持且没强制关闭 → 预热 JSPI 核心')
-ok(jspiEnabled('?jspi=0') === false, '支持但人工关闭 → 预热 Asyncify 核心')
+ok(jspiEnabled('') === false, '⭐ 默认跑已验收的 Asyncify 核心（预热也拉 wdosbox-x.wasm）')
+ok(jspiEnabled('?jspi=1') === true, '支持时 ?jspi=1 可以做同机对照')
+ok(jspiEnabled('?jspi=0') === false, '人工关闭 → Asyncify')
 setSupport(false)
 ok(jspiEnabled('?jspi=1') === false, '浏览器不支持时人工强开也不能预热 JSPI 核心')
 
 console.log('\n── armJspi 写进 localStorage 的值 ──')
+ok(JSDOS_JSPI_STORAGE_KEY === 'jsdos.8.jspi', '⭐ js-dos 读的是带前缀的 jsdos.8.jspi，不是裸键 jspi')
 setSupport(true)
 store.clear()
-ok(armJspi('') === true, '支持 → 自动开')
-ok(store.get('jspi') === 'true', "写进去的是字符串 'true'（js-dos 是按字符串比的）")
-
-setSupport(false)
-store.clear()
-ok(armJspi('') === false, '不支持 → 关')
-ok(store.get('jspi') === 'false', "⭐ 不支持时要**明确写 'false'**，不能只是不写")
-
-setSupport(false)
 store.set('jspi', 'true')
-ok(armJspi('') === false, '⭐ 以前开过、现在换了不支持的浏览器 → 必须覆盖掉')
-ok(store.get('jspi') === 'false', '旧的 true 没被清掉的话 js-dos 会弹一个英文 alert')
+ok(armJspi('') === false, '默认关')
+ok(store.get('jsdos.8.jspi') === 'false', "⭐ 关也要明确写 'false'，盖掉 js-dos 设置面板留下的 true")
+ok(!store.has('jspi'), '旧代码误写的裸键会被清掉')
 
-setSupport(true)
 store.clear()
-ok(armJspi('?jspi=0') === false, '查询串能强制关（用来 A/B 对照组）')
-ok(store.get('jspi') === 'false', '强制关也要落盘')
+ok(armJspi('?jspi=1') === true, '支持 + ?jspi=1 → 开')
+ok(store.get('jsdos.8.jspi') === 'true', "写进去的是字符串 'true'（js-dos 是按字符串比的）")
 
 setSupport(false)
 store.clear()
+store.set('jsdos.8.jspi', 'true')
 ok(armJspi('?jspi=1') === false, '⭐ 强制开也拦不住「浏览器根本不支持」')
-ok(store.get('jspi') === 'false', '不支持时哪怕人工要求开，也只能写 false')
+ok(store.get('jsdos.8.jspi') === 'false', '不支持时哪怕人工要求开，也只能写 false（否则 js-dos 会弹英文 alert）')
+
+console.log('\n── 键名必须和打包进站点的 js-dos 运行时一致 ──')
+{
+  const paths = readFileSync(new URL('../src/emulator/paths.ts', import.meta.url), 'utf8')
+  const version = paths.match(/export const JSDOS_ASSET_VERSION = '([^']+)'/)?.[1]
+  ok(Boolean(version), '读到了 JSDOS_ASSET_VERSION')
+  let runtime = ''
+  try {
+    runtime = readFileSync(new URL(`../public/jsdos/v${version}/js-dos.js`, import.meta.url), 'utf8')
+  } catch {
+    console.log('ℹ️ 本地没有 public/jsdos 运行时（未跑 npm run jsdos），跳过键名对照')
+  }
+  if (runtime) {
+    ok(runtime.includes(`(void 0,"${JSDOS_STORAGE_PREFIX}")`), `⭐ js-dos 的存储前缀仍是 ${JSDOS_STORAGE_PREFIX}`)
+    ok(/jspi:"true"===\$r\.getItem\("jspi"\)/.test(runtime), '⭐ js-dos 仍在模块求值时经前缀存储读 jspi')
+  }
+}
 
 console.log('\n── localStorage 不可用时不能炸 ──')
 setSupport(true)
@@ -83,7 +95,7 @@ globalThis.localStorage = {
 let threw = false
 try { armJspi('') } catch { threw = true }
 ok(!threw, '⭐ 无痕 / 禁用站点数据时静默吞掉 —— 这只是提速，不能让人玩不了游戏')
-globalThis.localStorage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)) }
+globalThis.localStorage = { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) }
 
 console.log('\n── 接线 ──')
 const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
