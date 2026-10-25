@@ -36,6 +36,7 @@ const CEN_SIG = 0x02014b50
 const ZIP32_MAX = 0xffffffff
 // 0xffff 在 EOCD 中是 ZIP64 哨兵；少用一个槽位，保证本站写出的包也能被自己的解析器读回。
 const ZIP32_MAX_ENTRIES = 0xfffe
+const WINDOWS_GUEST_SAVE_MAX_BYTES = 64 * 1024 * 1024
 
 /** 从后往前找 EOCD（可能带注释，所以要扫一段） */
 function findEocd(v: DataView): number {
@@ -379,6 +380,130 @@ function buildZipBytes(entries: OutEntry[]): Uint8Array<ArrayBuffer> {
     at += part.length
   }
   return out
+}
+
+function assertWindowsGuestSaveSize(entries: readonly OutEntry[]): void {
+  let size = 22
+  for (const entry of entries) {
+    const nameBytes = te.encode(entry.name).length
+    size += 30 + nameBytes + entry.compressedSize + 46 + nameBytes
+    if (size > WINDOWS_GUEST_SAVE_MAX_BYTES) {
+      throw new Error('Windows 游戏存档超过 64 MiB；请检查是否把大型游戏资源写入了游戏盘')
+    }
+  }
+}
+
+/**
+ * 整包 Windows 客体的可写游戏盘映射到 `GAME/`，而 qcow2 系统盘也是同一虚拟文件系统里的大文件。
+ * js-dos 的普通 `persist()` 会把文件系统差异打包；这里先把差异限制在游戏盘，再交给存档层，
+ * 这样既能保住 AoE 一类写在安装目录里的存档，也不会把系统镜像、注册表或用户目录上传/回放。
+ */
+export function filterWindowsGuestSaveChanges(input: Uint8Array | ArrayBuffer): Uint8Array<ArrayBuffer> | null {
+  const view = input instanceof Uint8Array ? input : new Uint8Array(input)
+  // readZipEntries 以 ArrayBuffer 为坐标；传输层目前给整段 buffer，但保留对 subarray 的安全处理。
+  const bytes = view.byteOffset === 0 && view.byteLength === view.buffer.byteLength
+    ? view
+    : view.slice()
+  const parsed = readZipEntries(bytes.buffer as ArrayBuffer)
+  if (!parsed) throw new Error('Windows 游戏存档不是可读取的 ZIP 差异包')
+  const entries = normalizeArchiveEntries(parsed)
+  assertRepackable(entries)
+
+  const gameFiles = entries.filter((entry) =>
+    !entry.name.endsWith('/') && entry.name.toLowerCase().startsWith(`${WINDOWS_GAME_ROOT.toLowerCase()}/`),
+  )
+  if (gameFiles.length === 0) return null
+
+  const selected = new Map<string, ZipEntry>()
+  const directories = new Map<string, string>()
+  directories.set(`${WINDOWS_GAME_ROOT.toLowerCase()}/`, `${WINDOWS_GAME_ROOT}/`)
+  for (const entry of gameFiles) {
+    const segments = entry.name.split('/')
+    for (let i = 1; i < segments.length; i++) {
+      const path = `${segments.slice(0, i).join('/')}/`
+      directories.set(path.toLowerCase(), path)
+    }
+    selected.set(entry.name.toLowerCase(), entry)
+  }
+
+  const empty = new Uint8Array(0) as Uint8Array<ArrayBuffer>
+  const out: OutEntry[] = [...directories.values()]
+    .sort((a, b) => a.split('/').length - b.split('/').length || (a < b ? -1 : 1))
+    .map((name) => ({ name, method: 0, crc: 0, compressedSize: 0, uncompressedSize: 0, data: empty }))
+  for (const entry of selected.values()) {
+    out.push({
+      name: entry.name,
+      method: entry.method,
+      crc: entry.crc,
+      compressedSize: entry.compressedSize,
+      uncompressedSize: entry.uncompressedSize,
+      data: rawData(bytes.buffer as ArrayBuffer, entry),
+    })
+  }
+  assertWindowsGuestSaveSize(out)
+  return buildZipBytes(out)
+}
+
+/** 合并同一游戏的增量差异；后写入的同路径文件覆盖旧版，未再次改写的存档槽继续保留。 */
+export function mergeWindowsGuestSaveChanges(
+  previous: Uint8Array | null,
+  incoming: Uint8Array,
+): Uint8Array | null {
+  const next = filterWindowsGuestSaveChanges(incoming)
+  if (!next) return previous ? filterWindowsGuestSaveChanges(previous) : null
+  if (!previous) return next
+
+  const oldBytes = previous.byteOffset === 0 && previous.byteLength === previous.buffer.byteLength
+    ? previous
+    : previous.slice()
+  const oldEntries = readZipEntries(oldBytes.buffer as ArrayBuffer)
+  const newEntries = readZipEntries(next.buffer as ArrayBuffer)
+  if (!oldEntries || !newEntries) throw new Error('Windows 游戏存档差异包损坏')
+  const merged = new Map<string, { bytes: Uint8Array<ArrayBuffer>; entry: ZipEntry }>()
+  const append = (source: Uint8Array, entries: ZipEntry[]) => {
+    const normalized = normalizeArchiveEntries(entries)
+    assertRepackable(normalized)
+    for (const entry of normalized) {
+      if (entry.name.endsWith('/')) continue
+      if (!entry.name.toLowerCase().startsWith(`${WINDOWS_GAME_ROOT.toLowerCase()}/`)) {
+        throw new Error('Windows 游戏存档包含游戏盘以外的文件')
+      }
+      merged.set(entry.name.toLowerCase(), { entry, bytes: rawData(source.buffer as ArrayBuffer, entry) })
+    }
+  }
+  append(oldBytes, oldEntries)
+  append(next, newEntries)
+
+  // 重新过滤并合成目录，避免从旧归档保留任何游戏盘外文件。
+  const all = [...merged.values()]
+  const directories = new Map<string, string>([[`${WINDOWS_GAME_ROOT.toLowerCase()}/`, `${WINDOWS_GAME_ROOT}/`]])
+  for (const { entry } of all) {
+    const parts = entry.name.split('/')
+    for (let i = 1; i < parts.length; i++) {
+      const path = `${parts.slice(0, i).join('/')}/`
+      directories.set(path.toLowerCase(), path)
+    }
+  }
+  assertNoPathCollisions(
+    [...directories.values(), ...all.map(({ entry }) => entry)].map((entry) => ({ name: typeof entry === 'string' ? entry : entry.name })),
+    'Windows 游戏存档合并',
+  )
+  const empty = new Uint8Array(0) as Uint8Array<ArrayBuffer>
+  const out: OutEntry[] = [...directories.values()]
+    .sort((a, b) => a.split('/').length - b.split('/').length || (a < b ? -1 : 1))
+    .map((name) => ({ name, method: 0, crc: 0, compressedSize: 0, uncompressedSize: 0, data: empty }))
+  for (const { entry, bytes } of all) {
+    out.push({
+      name: entry.name,
+      method: entry.method,
+      crc: entry.crc,
+      compressedSize: entry.compressedSize,
+      uncompressedSize: entry.uncompressedSize,
+      data: bytes,
+    })
+  }
+  assertWindowsGuestSaveSize(out)
+  return buildZipBytes(out)
 }
 
 /* ---------------- dosbox.conf ---------------- */

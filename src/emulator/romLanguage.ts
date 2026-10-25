@@ -80,12 +80,14 @@ export function emulatorVariantSaveSlug(
 
 /** 个人页展示通用 EmulatorJS / jsnes 语言档时，仍要能返回游戏详情页。 */
 export function parseEmulatorVariantSaveSlug(value: string): { gameSlug: string; romLang?: RomLang } {
-  if (value.startsWith('local:')) return { gameSlug: value }
-  const markerAt = value.lastIndexOf(EMULATOR_SAVE_LANG_MARKER)
-  if (markerAt <= 0) return { gameSlug: value }
-  const romLang = value.slice(markerAt + EMULATOR_SAVE_LANG_MARKER.length)
-  if (!(ROM_LANGS as readonly string[]).includes(romLang)) return { gameSlug: value }
-  return { gameSlug: value.slice(0, markerAt), romLang: romLang as RomLang }
+  // 整包 Windows 游戏盘在语言 / 核心变体键后追加包指纹；个人页先剥掉它才能链接回游戏详情。
+  const base = value.replace(/:wg:[0-9a-f]{16}$/i, '')
+  if (base.startsWith('local:')) return { gameSlug: base }
+  const markerAt = base.lastIndexOf(EMULATOR_SAVE_LANG_MARKER)
+  if (markerAt <= 0) return { gameSlug: base }
+  const romLang = base.slice(markerAt + EMULATOR_SAVE_LANG_MARKER.length)
+  if (!(ROM_LANGS as readonly string[]).includes(romLang)) return { gameSlug: base }
+  return { gameSlug: base.slice(0, markerAt), romLang: romLang as RomLang }
 }
 
 /**

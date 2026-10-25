@@ -130,6 +130,7 @@
     "test:dos-bundle": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-dos-bundle.mjs",
     "test:dos-blob": "node scripts/test-dos-blob-source.mjs",
     "test:dos-load": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-dos-load.mjs",
+    "test:windows-guest-save": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-windows-guest-save.mjs",
     "test:starcraft-weak-network": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-starcraft-weak-network.mjs",
   "test:dos-extras": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-dos-extras.mjs",
     "test:disc-upload": "node --experimental-strip-types --import ./scripts/helpers/ts-register.mjs scripts/test-disc-upload.mjs",

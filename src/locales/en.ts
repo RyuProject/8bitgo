@@ -1016,6 +1016,7 @@ const en: Translation = {
       fsSaveFailed: 'Could not save your progress: {msg}',
       /** 存档说明面板：DOS 存的是盘上的文件，不讲清楚玩家会以为点一下就是即时存档 */
       fsSaveWhy: 'A DOS save is the set of files the game writes to disk, not a snapshot — the game has to write them first.',
+      fsWindowsGuestAutoSave: 'Full-package Windows games checkpoint changes under the GAME folder every minute and when the tab is backgrounded or closed. Save inside the game first. Writes to the Windows system disk (registry, desktop, user folders) are intentionally excluded so the qcow2 image is never uploaded as a save. Cloud sync requires signing in and choosing cloud saves; each cloud save is limited to 4 MiB, and larger checkpoints stay local, so export a backup.',
       fsSaveStep1: '1. Save inside the game with its own save menu (most games open it with ESC or F1)',
       fsSaveStep2: '2. Come back here and press the button below to keep those files in {where}',
       fsSaveStep3: '3. Next time you open this game they are restored automatically — just load your save in the game',

@@ -1017,6 +1017,7 @@ const it: Translation = {
       fsSaveFailed: 'Impossibile salvare i progressi: {msg}',
       /** 存档说明面板：DOS 存的是盘上的文件，不讲清楚玩家会以为点一下就是即时存档 */
       fsSaveWhy: 'Un salvataggio DOS è l’insieme dei file che il gioco scrive su disco, non un’istantanea: deve scriverli lui per primo.',
+      fsWindowsGuestAutoSave: 'I giochi Windows completi salvano automaticamente ogni minuto le modifiche nella cartella GAME e le ricontrollano quando la scheda passa in background o si esce dalla pagina. Salva prima dal gioco e conserva i salvataggi nella cartella di installazione. Le modifiche al disco di sistema Windows (registro, desktop e profili utente) sono escluse per non caricare l’intera immagine qcow2. Per sincronizzare tra dispositivi, accedi e scegli i salvataggi cloud. Ogni salvataggio cloud è limitato a 4 MiB; quelli più grandi restano locali, quindi esportane una copia di backup.',
       fsSaveStep1: '1. Salva dentro il gioco con il suo menu di salvataggio (di solito ESC o F1)',
       fsSaveStep2: '2. Torna qui e premi il pulsante qui sotto per conservare quei file in {where}',
       fsSaveStep3: '3. Alla prossima apertura vengono ripristinati da soli: ti basta caricare la partita nel gioco',

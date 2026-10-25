@@ -62,6 +62,16 @@ ok(
     && parseEmulatorVariantSaveSlug(englishEmulatorKey).romLang === 'en',
   '通用语言变体存档仍能链接回原游戏',
 )
+const versionedWindowsGuestKey = `${englishEmulatorKey}:wg:0123456789abcdef`
+ok(
+  parseEmulatorVariantSaveSlug(versionedWindowsGuestKey).gameSlug === 'contra'
+    && parseEmulatorVariantSaveSlug(versionedWindowsGuestKey).romLang === 'en',
+  '整包 Windows 版本隔离键仍能剥离指纹并链接到正确语言游戏',
+)
+ok(
+  parseEmulatorVariantSaveSlug('local:AoE.zip:wg:0123456789abcdef').gameSlug === 'local:AoE.zip',
+  '本地 Windows ROM 的版本化存档仍显示为本地游戏',
+)
 ok(
   ndsVariantSaveSlug('pokemon-black', 'en', romLangs).endsWith('~nds-en')
     && pspVariantSaveSlug('djmax', 'en', 2).endsWith('~psp-en'),
