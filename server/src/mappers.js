@@ -13,6 +13,7 @@ import { normalizeDosboxConfigOverride } from '../../shared/dosbox-config.js'
 import { normalizeDosStartupCommands } from '../../shared/dos-startup-commands.js'
 import { isAdultByBirthDate } from '../../shared/age.js'
 import { gameSupportsNetplay, normalizeGamePlayers } from '../../shared/netplay-players.js'
+import { romsetsNeedNoBios } from './arcade-bios-index.js'
 
 /**
  * 数据库布尔列的唯一判断方式。
@@ -607,6 +608,15 @@ export function gameRowToApi(r, rel = {}) {
   const byLang = { ...roms }
   delete byLang[GENERIC_ROM_LANG]
   if (Object.keys(byLang).length) g.roms = byLang
+  /*
+    官方 ROM 都是 FBNeo 索引里不需要 BIOS 的 romset 时，告诉播放器别再下平台级 BIOS
+    （平台那格通常是 neogeo.zip，恐龙快打这类 CPS 游戏用不上）。后台填了系统包 / RomData、
+    或者换了非 FBNeo 核心的游戏都不推导，保持原行为。备用源也要一起满足。
+  */
+  if (r.platform === 'arcade' && !r.arcade_bios && !r.arcade_romdata && (!r.core || r.core === 'fbneo')) {
+    const keys = [...Object.values(roms), ...Object.values(rel.romBackups ?? {})].filter((v) => typeof v === 'string' && v)
+    if (keys.length && romsetsNeedNoBios(keys)) g.arcadeNoBios = true
+  }
   // 启动文件跟语言槽走；通用 ROM 继续用 games.dos_executable，旧数据无需迁移内容。
   if (rel.dosExecutables && Object.keys(rel.dosExecutables).length) g.dosExecutables = rel.dosExecutables
   if (rel.dosStartupCommands && Object.keys(rel.dosStartupCommands).length) g.dosStartupCommands = rel.dosStartupCommands

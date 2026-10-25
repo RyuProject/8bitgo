@@ -115,6 +115,11 @@ export interface MountOptions {
    */
   biosSet?: { name: string; url: string }
   /**
+   * 服务端按 FBNeo romset 索引确认：这款街机的官方 ROM 是已知 romset，且不需要任何 BIOS
+   * （见 Game.arcadeNoBios）。为真时 FBNeo 不再下载平台级 BIOS（通常是用不上的 neogeo.zip）。
+   */
+  arcadeNoBios?: boolean
+  /**
    * DOS 启动程序（zip 内相对路径，仅 jsdos 运行时用）。
    * 传了就按它生成 dosbox.conf，压过 pickExecutable 的猜测。
    */

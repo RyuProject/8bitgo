@@ -497,6 +497,7 @@ export function GameDetailPage() {
                   genres={game.genres}
                   arcadeRomData={game.arcadeRomData}
                   arcadeBios={game.arcadeBios}
+                  arcadeNoBios={game.arcadeNoBios}
                   arcadeDip={game.arcadeDip}
                   arcadeButtons={game.arcadeButtons}
                   flashControls={game.flashControls}

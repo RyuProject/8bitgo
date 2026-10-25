@@ -111,7 +111,9 @@ test('适配器、开局键位图和操作说明共用四键推断', () => {
   const keymap = readFileSync(new URL('../src/lib/emulator.ts', import.meta.url), 'utf8')
   const cards = readFileSync(new URL('../src/components/game/KeymapCards.tsx', import.meta.url), 'utf8')
   const diagram = readFileSync(new URL('../src/emulator/PadDiagram.tsx', import.meta.url), 'utf8')
-  assert.match(src, /EJS_defaultOptions: coreDefaultOptions/)
+  assert.match(src, /EJS_defaultOptions: defaults/)
+  // 改版包指纹会把核心纠正成 fbneo：默认值必须按最终核心重算，不能沿用挂载时旧核心那份
+  assert.match(src, /core === coreDefaultOptionsCore \? coreDefaultOptions : coreDefaultOptionsFor\(core\)/)
   assert.match(src, /effectiveArcadeButtons\(options\.arcadeButtons, options\.biosSet\?\.name\)/)
   assert.match(src, /repairLegacyArcadeKeyCollisions\(emu\.controls\?\.\[0\]/)
   assert.match(src, /FBNEO_ARCADE_AUDIO_LATENCY_MS/)

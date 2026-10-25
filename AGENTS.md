@@ -162,6 +162,22 @@ EmulatorJS 把 ROM 写在文件系统根目录（`callMain(["/" + fileName])`）
 
 ⚠️ BIOS 包要**和核心同一批**的 romset：换一个版本的 `pgm.zip` 就是 CRC 对不上 → 缺文件。
 
+### 2.8.1.1 街机冷启动：三条串行链已拆开（2026-10-25，《恐龙快打》实测）
+
+修之前线上冷启动 14.7 秒，各环节依次是：
+- ROM 预下载 + 8BG 解密：2.7 秒；
+- loader / emulator.min.js 等入口：1.2 秒；
+- FBNeo 核心 8MB：6.1 秒，排在 ROM 之后；
+- 7z 解压：2.1 秒；
+- `neogeo.zip`：1.6 秒，排在解压之后，而 CPS1 根本用不上它。
+
+二次开局走引擎的 IndexedDB 缓存，只要 0.7 秒。现在的做法：
+
+- **引擎下的核心大多是 legacy 版。** 核心报告的 `options.defaultWebGL2` 为空时，引擎下载 `<core>-legacy-wasm.data`。FBNeo、snes9x、mame2003 都属于这种情况。预热必须用 `emulatorJsCoreDataFile()`，名单是 `EJS_WEBGL2_DEFAULT_CORES`，`test:arcade-runtime` 会把它和 metadata、引擎源码逐项核对。以前悬停预热拉的是 `fbneo-wasm.data`，白下 8MB，点开后引擎再下另一份。
+- **点击后与 ROM 并行预热**（`ejsStartWarm.ts`）：入口 / css / 核心报告无条件预热。核心和平台 BIOS 只在引擎库 `EmulatorJS-Cache` 里没有这个 URL 时才预热。⚠️ 查库遇到 `onupgradeneeded` 必须 abort：替引擎建出一个没有 `cache` 表的空 v1 库，会让核心缓存永久失效。
+- **平台 BIOS 只在用得上时才下。** 服务端按 romset 索引推导 `Game.arcadeNoBios`（`arcade-bios-index.js` 的 `romsetsNeedNoBios`），条件是所有官方 ROM（含备用源）都是已知、且不需要 BIOS 的 romset。后台填了系统包或 RomData、或者换了非 FBNeo 核心的游戏不推导。认不出的名字一律保守地照下平台 BIOS。播放器只对官方远端 ROM、FBNeo 核心生效。
+- **带 `?v=` 的 `/emulatorjs/` 请求长期缓存**（`cache.js` 的 `isVersionedRequest`）。引擎自己拼的 `compression/*`、`localization/*` 不带版本，仍然短缓存。前提不变：改引擎或核心必须换 `EJS_RUNTIME_GENERATION`。
+
 ### 2.8.2 mame-current 的内容必须在子目录里：根路径解析不出 rompath
 
 libretro-mame（mame-current）从内容路径解析两样东西：basename（去扩展名）当驱动名，
@@ -2328,6 +2344,11 @@ Range 不可用、版本不匹配或 CHD 格式不对时回退完整下载。 `.
 CHD 固定用自建 `mednafen_psx` 软件核心；该包关闭了上游 Emscripten 的整盘预缓存，
 否则模拟器会在开局前读满 CHD。新旧 Beetle 即时存档隔离，不能混用。日本区盘应配置
 日本区 BIOS；`scph1001.bin` 是美区 BIOS，不是正式兼容性验收的替代品。
+⚠️ **流式读盘的异步预热与同步随机读必须共用主页面源。** EmulatorJS 位于 sandbox `srcdoc` iframe，
+其 XHR 是不透明源；若核心缺片时用 iframe 的 `XMLHttpRequest` 发跨域 Range，R2 可能因
+`Origin: null` 拒绝，即使父页面的首尾 `fetch` 已成功、日志也显示「Range 已挂载」，游戏仍会黑屏。
+`psxRangeDisc.install()` 必须接收并使用外层页面的 `window.XMLHttpRequest`；不要把 iframe `Window`
+传给它。回归由 `npm run test:disc-upload` 锁住调用源、`npm run test:psx-range` 覆盖分片读取。
 实测样本《J. League Jikkyou Winning Eleven 2000 2nd》319MB CHD 在本地浏览器按需读取，
 经过开机、标题、模式选择、手柄分配和球队选择；方向键能切换球队，确认键能进入下一级菜单。
 已进入正式比赛，比分变为 0:1、比赛时间走到 1:57；该阶段累计仅请求约 59MB（整盘的 18.5%）。

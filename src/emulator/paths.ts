@@ -125,6 +125,38 @@ export function emulatorJsCoreFileFor(core: string): string {
 }
 
 /**
+ * 引擎默认走 WebGL2 版核心（`<core>-wasm.data`）的核心；其余一律下载 `-legacy-wasm.data`。
+ *
+ * 引擎的选法（emulator.min.js）：核心报告 `options.defaultWebGL2` 为真、或核心在它的
+ * requiresWebGL2 名单（ppsspp / azahar / melondsds）里，才用非 legacy 版。FBNeo、snes9x、
+ * mame2003 这些报告里 options 为空的核心**实际下载的是 legacy 版**。预热若照抄
+ * `<core>-wasm.data`，悬停时白下 8MB 的 FBNeo，点开后引擎再从头下另一份。
+ * `npm run test:arcade-runtime` 会把这张表和 public/emulatorjs/cores/metadata/*.json 逐项核对。
+ */
+export const EJS_WEBGL2_DEFAULT_CORES: ReadonlySet<string> = new Set([
+  'desmume',
+  'desmume2015',
+  'mame-current',
+  'mednafen_psx_hw',
+  'melonds',
+  'melondsds',
+  'mupen64plus_next',
+  'pcsx_rearmed',
+  // 引擎 requiresWebGL2 名单（不看报告，强制非 legacy）
+  'ppsspp',
+  'azahar',
+])
+
+/**
+ * 引擎在**默认设置**下真正会下载的核心文件名。玩家在引擎菜单里手动改过 WebGL2 开关时
+ * 会不同，但那是逐游戏的少数情况；猜错的代价只是一次没用上的预热。
+ */
+export function emulatorJsCoreDataFile(core: string): string {
+  const file = emulatorJsCoreFileFor(core)
+  return EJS_WEBGL2_DEFAULT_CORES.has(file) ? `${file}-wasm.data` : `${file}-legacy-wasm.data`
+}
+
+/**
  * 游戏表里可能还留着历史值 `nds` / `melonds`，默认仍归一到新版；
  * 旧核心只通过 `melonds-compat` 内部键处理确定的 WASM 崩溃，不能让历史记录直接触发。
  */

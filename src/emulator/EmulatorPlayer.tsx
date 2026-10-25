@@ -328,6 +328,8 @@ interface Props {
    * 地址由播放器按名字查绑定表，父组件不用管。
    */
   arcadeBios?: string
+  /** 服务端确认官方街机 ROM 不需要任何 BIOS（见 Game.arcadeNoBios）；只作用于官方远端 ROM。 */
+  arcadeNoBios?: boolean
   /**
    * 街机 **DIP 开关**（见 Game.arcadeDip）：麻将类游戏要拨到麻将面板那一档。
    *
@@ -563,6 +565,7 @@ export function EmulatorPlayer({
   genres,
   arcadeRomData,
   arcadeBios,
+  arcadeNoBios,
   arcadeDip,
   arcadeButtons,
   flashControls,
@@ -1504,6 +1507,8 @@ export function EmulatorPlayer({
    */
   const arcadeBiosRef = useRef(arcadeBios)
   arcadeBiosRef.current = arcadeBios
+  const arcadeNoBiosRef = useRef(arcadeNoBios)
+  arcadeNoBiosRef.current = arcadeNoBios
   /**
    * DIP 开关同 arcadeBios：只在挂载那一刻读一次。
    * 它是**开局时**拨的（核心在 retro_load_game 之后才认得出来），
@@ -1984,6 +1989,8 @@ export function EmulatorPlayer({
       biosSet: arcadeBiosRef.current
         ? { name: arcadeBiosRef.current.trim().toLowerCase(), url: biosSetUrlSync(arcadeBiosRef.current.trim().toLowerCase()) }
         : undefined,
+      // 只对官方远端 ROM 成立：玩家自己拖进来的包可能是任何 romset（包括 Neo Geo）。
+      arcadeNoBios: Boolean(arcadeNoBiosRef.current && session.platform === 'arcade' && typeof session.game === 'string'),
       // 后台配的 DIP 开关（原样传；认哪一项、取值是什么都由适配器从核心选项表里当场定）
       arcadeDip: arcadeDipRef.current,
       arcadeButtons: arcadeButtonsRef.current,

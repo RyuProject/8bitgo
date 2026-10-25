@@ -129,8 +129,17 @@ export function findDipOptions(options: unknown): DipOption[] {
   return out
 }
 
-/** 键名最后一段（`fbneo-dipswitch-kov-Controls` → `Controls`），后台那一栏写的就是它 */
+/**
+ * 键名里的 DIP 组名（`fbneo-dipswitch-kov-Controls` → `Controls`），后台那一栏写的就是它。
+ *
+ * ⚠️ 不能取最后一个 `-` 之后：FBNeo 洗键名时只换空格、`=`、`:`、`#`，连字符原样保留，
+ * `fbneo-dipswitch-dino-Power-Up_Test` 取末段只剩 `Up_Test`，后台写 `Power-Up Test=On`
+ * 永远对不上，警告里列出的还是被截断的名字。romset 短名本身不含 `-`，所以剥掉
+ * `…dipswitch-<驱动名>-` 这段前缀就是完整组名；认不出前缀的键再退回末段。
+ */
 export function dipNameOf(key: string): string {
+  const prefixed = /^.*?dip[\s_-]?switch-[^-]+-(.+)$/i.exec(key)
+  if (prefixed) return prefixed[1]
   const i = key.lastIndexOf('-')
   return i >= 0 ? key.slice(i + 1) : key
 }

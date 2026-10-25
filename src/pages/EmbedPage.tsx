@@ -181,6 +181,7 @@ export function EmbedPage({ standalonePlatform }: Props) {
           genres={game.genres}
           arcadeRomData={game.arcadeRomData}
           arcadeBios={game.arcadeBios}
+          arcadeNoBios={game.arcadeNoBios}
           arcadeDip={game.arcadeDip}
           dosExecutable={dosExecutableForRom(game, rom)}
           dosStartupCommands={dosStartupCommandsForRom(game, rom)}

@@ -166,7 +166,12 @@ export function matchRomset(index: RomsetIndex, crcs: number[]): RomsetIdentific
   const hack = matchArcadeHack(crcs)
 
   const tally = new Map<number, number>()
-  for (const crc of crcs) {
+  /*
+    同一个 CRC 只算一次。有些 romset 列了两份内容相同、名字不同的 ROM：索引里那个 CRC 对应
+    [id, id]、totals 也是 2；完整的包里这两个成员各算一遍就成了 4/2，覆盖率 200% ≠ 1，
+    完整无缺的包反而拿不到「确信」、不会自动改名。FBNeo 按 CRC 找 ROM，一份就能顶两个名字。
+  */
+  for (const crc of new Set(crcs.map((c) => c >>> 0))) {
     for (const id of index.byCrc.get(crc >>> 0) ?? []) tally.set(id, (tally.get(id) ?? 0) + 1)
   }
 

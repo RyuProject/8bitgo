@@ -11,6 +11,7 @@ import {
   ppssppFrameUrl,
   RUFFLE_PATH,
   ejsRuntimeAsset,
+  emulatorJsCoreDataFile,
   emulatorJsCoreFileFor,
 } from './paths'
 import { CHEERPJ_ORIGIN, j2meWarmTargets } from './j2meUrl'
@@ -159,7 +160,8 @@ export function prewarmRuntime(runtime: RuntimeId | undefined, core?: string | n
   */
   if (core && hasHoverIntent() && allowsLargeHoverPrewarm()) {
     // 与播放器 EJS_paths 使用完全相同的版本化 URL，避免预热旧核心、正式启动又下载新核心。
+    // 文件名必须是引擎真会选的那个变体（多数核心是 legacy 版），见 emulatorJsCoreDataFile。
     const file = emulatorJsCoreFileFor(core)
-    warmHttpCache(ejsRuntimeAsset(`cores/${file === PSX_CHD_CORE ? PSX_CHD_ARCHIVE : `${encodeURIComponent(file)}-wasm.data`}`))
+    warmHttpCache(ejsRuntimeAsset(`cores/${file === PSX_CHD_CORE ? PSX_CHD_ARCHIVE : encodeURIComponent(emulatorJsCoreDataFile(file))}`))
   }
 }

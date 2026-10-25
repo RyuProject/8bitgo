@@ -212,6 +212,12 @@ export interface Game {
    */
   arcadeBios?: string
   /**
+   * 服务端推导（不入库、后台不可编辑）：官方 ROM 的文件名都是 FBNeo 驱动表里的已知 romset，
+   * 且这些 romset 都不需要 BIOS 包。播放器据此跳过平台级 BIOS（neogeo.zip）的下载。
+   * 没有这个字段 = 不知道，沿用平台级 BIOS。
+   */
+  arcadeNoBios?: boolean
+  /**
    * 街机 **DIP 开关**（实机主板上那组拨码）。
    *
    * 最典型的用处是麻将类游戏：核心出厂的默认档是「摇杆」，而麻将游戏要按麻将面板收键，

@@ -98,6 +98,15 @@ export function isRuntimeHtmlShell(filePath) {
   return /\/(?:web|ppsspp|dolphin|j2me)\//i.test(p)
 }
 
+/** 请求 URL 带非空的 `v` 查询参数（express.static 的 setHeaders 只给文件路径，URL 要从 res.req 取） */
+function isVersionedRequest(res) {
+  const url = res?.req?.originalUrl ?? res?.req?.url
+  if (typeof url !== 'string') return false
+  const q = url.indexOf('?')
+  if (q < 0) return false
+  return Boolean(new URLSearchParams(url.slice(q + 1)).get('v'))
+}
+
 export function staticCacheHeaders(res, filePath) {
   const p = filePath.replace(/\\/g, '/')
   const set = (v) => res.setHeader('Cache-Control', v)
@@ -177,6 +186,15 @@ export function staticCacheHeaders(res, filePath) {
   if (p.includes('/assets/')) return set(CACHE.immutable)
   if (p.includes('/fonts/')) return set(CACHE.font)
   if (/\/(?:ruffle|jsdos)\/v[^/]+\//.test(p)) return set(CACHE.engineVersioned)
+  /*
+    EmulatorJS 的文件名不带哈希，但播放器交给引擎的入口、样式、核心与核心报告全部经
+    EJS_paths 带上 `?v=<EJS_RUNTIME_GENERATION>`（src/emulator/paths.ts），换代就换 URL。
+    这些带版本的请求可以长期缓存：以前一律 max-age=300，玩家隔几分钟再开同一款游戏，
+    loader → emulator.min.js → css → 核心报告 → 核心 HEAD 每一步都要回源校验一次，
+    串行叠成近一秒；引擎的 IndexedDB 核心缓存也按这个 max-age 记过期时间。
+    不带 ?v 的（引擎自己拼的 compression/*.js、localization/*.json）仍走短缓存。
+  */
+  if (p.includes('/emulatorjs/') && isVersionedRequest(res)) return set(CACHE.engineVersioned)
   if (p.includes('/ruffle/') || p.includes('/emulatorjs/') || p.includes('/j2me/') || p.includes('/jsdos/') || p.includes('/webretro/') || p.includes('/qemu-wasm/') || p.includes('/play/')) return set(CACHE.engine)
   if (/\.(png|jpg|jpeg|gif|webp|avif|svg|ico)$/i.test(p)) return set(CACHE.image)
   // ads.txt 跟 robots / sitemap 一样属于「构建时生成、但要能被外部频繁核对」的元文件，

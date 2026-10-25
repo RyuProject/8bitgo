@@ -85,6 +85,7 @@ export const FORBIDDEN_OUT_KEYS = Object.freeze([
   'object_key',
   'arcade_romdata',  // 街机改版包的内部清单
   'arcade_bios', 'arcadeBios', // 街机要哪个 BIOS 包 —— 第三方接入方拿不到我们的 BIOS 文件，给了也没用
+  'arcadeNoBios',    // 同上，播放器内部的下载决策
   'arcade_dip', 'arcadeDip',   // DIP 开关写的是**我们播放器**接核心的方式（核心选项键名），对方跑自己的模拟器，拿了也用不上
   'dos_executable', 'dos_backend', 'dos_pc98', 'dosPc98', 'dos_system', 'dos_sockdrive', 'dosSockdrive', 'dosSockdrives', 'dos_windows_version',
   'dos_launch_delay', 'dosbox_config_override', 'dosboxConfig',

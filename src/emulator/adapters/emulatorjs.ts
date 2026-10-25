@@ -47,6 +47,7 @@ import { ensureParentDir } from '../fsWrite'
 import { isPsxChdTransfer, psxCoreForPreparedName, PSX_CHD_ARCHIVE, PSX_CHD_AUDIO_LATENCY_MS, PSX_CHD_CORE } from '../psxChd'
 import { canStreamPsxChd, preparePsxRangeDisc, type PsxRangeDisc, type PsxRangeFs } from '../psxRangeDisc'
 import { warmHttpCache } from '../httpWarm'
+import { warmEmulatorJsStart } from '../ejsStartWarm'
 import { writeFsInjections, type FsInjection } from '../fsInjection'
 import { arcadeCoreForRomData, supportsFbneoRomData } from '../arcadeCore'
 import { MAME_AUDIO_LATENCY_MS, RETROARCH_CFG_PATH, raiseAudioLatency } from '../mameAudio'
@@ -112,7 +113,7 @@ import {
  * 玩家看到的就是「Error loading EmulatorJS runtime」。本地有核心，这条路不会走。
  */
 export { EJS_PATH } from '../paths'
-import { EJS_PATH, EJS_RUNTIME_GENERATION, ejsRuntimeAsset, emulatorJsCoreForGame, emulatorJsRuntimePaths, isDiscPlatform, isLargeDirectEjsRom, isSelfDownloadPlatform } from '../paths'
+import { EJS_PATH, EJS_RUNTIME_GENERATION, ejsRuntimeAsset, emulatorJsCoreDataFile, emulatorJsCoreFileFor, emulatorJsCoreForGame, emulatorJsRuntimePaths, isDiscPlatform, isLargeDirectEjsRom, isSelfDownloadPlatform } from '../paths'
 import { applyTuning, sizeOfTrack, tuningFor, usableVideoSize } from '../videoTuning'
 import {
   findLayoutOption,
@@ -1020,6 +1021,18 @@ function installErrorTap(
   })
   win.addEventListener('unhandledrejection', (e) => {
     const r = (e as PromiseRejectionEvent).reason
+    /*
+      RetroArch 胶水（PlatformEmscriptenDoSetWakeLock）把 navigator.wakeLock.request() 的 Promise
+      存起来却从不 catch：低电量模式、浏览器拒绝或权限策略不允许时，每局都多一条
+      「Uncaught (in promise) NotAllowedError」。屏幕常亮由外层播放器自己申请并静默降级，
+      这条拒绝没有任何后果，别让它进错误日志、也别干扰真正的故障排查。
+    */
+    // 鸭子类型：DOMException 来自 iframe 的 realm，外层的 instanceof Error 永远为假。
+    const rejected = r && typeof r === 'object' ? r as { name?: unknown; message?: unknown } : null
+    if (rejected?.name === 'NotAllowedError' && /wake ?lock/i.test(String(rejected.message ?? ''))) {
+      e.preventDefault()
+      return
+    }
     push('error', r instanceof Error ? `${r.name}: ${r.message}` : safeStr(r), r)
   })
   return { lines }
@@ -1688,20 +1701,23 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     }
   }
 
-  const coreDefaultOptions = {
+  const coreDefaultOptionsFor = (forCore: string): Record<string, string> => ({
     ...arcadePerformanceDefaultOptions(
       options.platform,
-      core,
+      forCore,
       options.gameSlug,
       typeof navigator === 'undefined' ? undefined : navigator.hardwareConcurrency,
     ),
     ...(options.platform === 'gba' ? { shader: gbaShaderForMode(gbaVideoMode) } : {}),
-  }
+  })
+  const coreDefaultOptionsCore = core
+  const coreDefaultOptions = coreDefaultOptionsFor(core)
 
   const iframe = document.createElement('iframe')
   iframe.title = fmt(rt.emulatorTitle, { name: options.gameName })
   iframe.style.cssText = 'width:100%;height:100%;border:0;display:block;background:#0b0b0f'
-  iframe.setAttribute('allow', 'fullscreen; gamepad; autoplay; camera; microphone; clipboard-write')
+  // screen-wake-lock：核心自己的常亮请求在 iframe 里同样受权限策略约束，显式放行。
+  iframe.setAttribute('allow', 'fullscreen; gamepad; autoplay; camera; microphone; clipboard-write; screen-wake-lock')
   iframe.srcdoc = FRAME_HTML
 
   let destroyed = false
@@ -3196,6 +3212,68 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             )
           }
         }
+        /**
+         * 平台级 BIOS（`EJS_biosUrl`）和这款游戏自己那套系统包是不是同一块板子。
+         * 两边名字都拿得到、又不相等 → 平台那份对这个游戏没用，别下（见下面 EJS_biosUrl 的注释）。
+         *
+         * ⚠️ 跳过是有前提的，三条同时成立才敢跳（2026-09-20 补的，早先只比了名字）：
+         *
+         *   1. **平台是 arcade**。「一个包只跑一块板子」是街机的事实；别的平台（PS1 那种）
+         *      平台级 BIOS 是**必需**的，拿一个手输的系统名去把它顶掉就是整局起不来。
+         *   2. **这款游戏自己那份真的会写进去**（`plan.files` 非空 —— 绑了地址、名字也合法）。
+         *      否则跳掉平台那份等于**一份 BIOS 都不下**，比不跳更糟：后台把系统名填错一个字母
+         *      就会走到这里，而症状和「真没绑地址」一模一样。
+         *   3. 两边名字都取得到且不相等。
+         *
+         * 所以 plan 必须在**这里**就先算出来（下面写文件时复用同一个对象，不重算）。
+         */
+        const platformBiosName = biosNameOfUrl(options.biosUrl)
+        const gameBiosName = options.biosSet?.name?.trim().toLowerCase() ?? ''
+        const skipPlatformBios = Boolean(
+          options.platform === 'arcade' &&
+            platformBiosName &&
+            gameBiosName &&
+            platformBiosName !== gameBiosName &&
+            biosPlan.files.length > 0,
+        )
+        /**
+         * 服务端按 romset 索引确认「这是已知 romset、不需要任何 BIOS」（Game.arcadeNoBios）。
+         * 平台那格填的是 neogeo.zip，而恐龙快打这类 CPS / 老板子游戏根本用不上：冷启动实测
+         * 它排在核心解压之后又占 1.6 秒（还要占一份引擎缓存）。只对 FBNeo 生效 —— 索引来自
+         * FBNeo 驱动表；后台手填了 arcadeBios 或 RomData 的游戏服务端根本不会给这个标记。
+         */
+        const noBiosNeeded = Boolean(
+          options.platform === 'arcade' && options.arcadeNoBios && core === 'fbneo' &&
+            !options.arcadeRomData?.trim() && !gameBiosName,
+        )
+        /** 这次真正交给引擎去下载的平台级 BIOS（空串 = 标不设 EJS_biosUrl）。进度探针也用这个值 */
+        const engineBiosUrl = skipPlatformBios || noBiosNeeded ? '' : (options.biosUrl ?? '')
+        if (noBiosNeeded && options.biosUrl) {
+          console.info(`[emulatorjs] 跳过平台级 BIOS（${platformBiosName || options.biosUrl}）：这个 romset 不需要 BIOS`)
+        }
+        if (skipPlatformBios) {
+          // 必须留痕：将来这款游戏报「缺文件」时，第一件事就是确认平台 BIOS 是被这条规则
+          // 主动跳过的 —— 后台「BIOS 包（系统名）」填错了系统名会走到这里
+          console.info(`[emulatorjs] 跳过平台级 BIOS（${platformBiosName}.zip）：这款游戏要的是 ${gameBiosName}.zip`)
+        }
+
+        /*
+          ROM 还在下载 / 解密时，把引擎入口、核心与平台 BIOS 并行拉进 HTTP 缓存（见 ejsStartWarm.ts）。
+          PS1 不在这里做：CHD 会在拿到内层文件名后换核心，上面那条专门的预热已经管了。
+        */
+        if (options.platform !== 'psx') {
+          void warmEmulatorJsStart({
+            always: [
+              ejsRuntimeAsset('emulator.min.js'),
+              ejsRuntimeAsset('emulator.min.css'),
+              ejsRuntimeAsset(`cores/metadata/${encodeURIComponent(emulatorJsCoreFileFor(core))}.json`),
+            ],
+            large: [
+              ejsRuntimeAsset(`cores/${encodeURIComponent(emulatorJsCoreDataFile(core))}`),
+              ...(/^https?:|^\//.test(engineBiosUrl) ? [engineBiosUrl] : []),
+            ],
+          }).catch(() => {})
+        }
         const cachePurgeTask = purgePoisonedEngineCache()
         const socketIoTask: Promise<unknown | null> = NETPLAY_URL
           ? injectScript(doc, socketIoScriptUrl(), 8_000).then(() => null, (error: unknown) => error)
@@ -3413,37 +3491,6 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           core = discCore
         }
 
-        /**
-         * 平台级 BIOS（`EJS_biosUrl`）和这款游戏自己那套系统包是不是同一块板子。
-         * 两边名字都拿得到、又不相等 → 平台那份对这个游戏没用，别下（见下面 EJS_biosUrl 的注释）。
-         *
-         * ⚠️ 跳过是有前提的，三条同时成立才敢跳（2026-09-20 补的，早先只比了名字）：
-         *
-         *   1. **平台是 arcade**。「一个包只跑一块板子」是街机的事实；别的平台（PS1 那种）
-         *      平台级 BIOS 是**必需**的，拿一个手输的系统名去把它顶掉就是整局起不来。
-         *   2. **这款游戏自己那份真的会写进去**（`plan.files` 非空 —— 绑了地址、名字也合法）。
-         *      否则跳掉平台那份等于**一份 BIOS 都不下**，比不跳更糟：后台把系统名填错一个字母
-         *      就会走到这里，而症状和「真没绑地址」一模一样。
-         *   3. 两边名字都取得到且不相等。
-         *
-         * 所以 plan 必须在**这里**就先算出来（下面写文件时复用同一个对象，不重算）。
-         */
-        const platformBiosName = biosNameOfUrl(options.biosUrl)
-        const gameBiosName = options.biosSet?.name?.trim().toLowerCase() ?? ''
-        const skipPlatformBios = Boolean(
-          options.platform === 'arcade' &&
-            platformBiosName &&
-            gameBiosName &&
-            platformBiosName !== gameBiosName &&
-            biosPlan.files.length > 0,
-        )
-        /** 这次真正交给引擎去下载的平台级 BIOS（空串 = 标不设 EJS_biosUrl）。进度探针也用这个值 */
-        const engineBiosUrl = skipPlatformBios ? '' : (options.biosUrl ?? '')
-        if (skipPlatformBios) {
-          // 必须留痕：将来这款游戏报「缺文件」时，第一件事就是确认平台 BIOS 是被这条规则
-          // 主动跳过的 —— 后台「BIOS 包（系统名）」填错了系统名会走到这里
-          console.info(`[emulatorjs] 跳过平台级 BIOS（${platformBiosName}.zip）：这款游戏要的是 ${gameBiosName}.zip`)
-        }
 
         /**
          * ── mame-current 的两条硬约束（和 FBNeo 系列都不一样）──
@@ -3540,7 +3587,12 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             LCD 是我们的一次采样轻量 shader，通过 EJS_shaders 合进引擎自带清单；ScaleHQ
             直接复用当前自托管引擎内置资源，不多一次网络请求。
           */
-          ...(Object.keys(coreDefaultOptions).length ? { EJS_defaultOptions: coreDefaultOptions } : {}),
+          // 按**最终**核心算：改版包指纹可能在上面把 mame2003 等纠正成 fbneo，挂载时那份
+          // coreDefaultOptions 还是旧核心的键，FBNeo 的超频 / 采样默认值就会整套丢失。
+          ...(() => {
+            const defaults = core === coreDefaultOptionsCore ? coreDefaultOptions : coreDefaultOptionsFor(core)
+            return Object.keys(defaults).length ? { EJS_defaultOptions: defaults } : {}
+          })(),
           ...(options.platform === 'gba' ? { EJS_shaders: GBA_ADDITIONAL_SHADERS } : {}),
           EJS_color: '#0078f2',
           EJS_backgroundColor: '#0b0b0f',

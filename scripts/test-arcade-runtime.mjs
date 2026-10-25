@@ -15,6 +15,11 @@ import {
 import { writeFsInjections } from '../src/emulator/fsInjection.ts'
 import { arcadeArchiveLayoutProblem } from '../src/lib/arcadeArchive.ts'
 import { REQUIRED_SELF_BUILT_CORES } from '../src/config/emulators.ts'
+import { readdir } from 'node:fs/promises'
+import { EJS_WEBGL2_DEFAULT_CORES, emulatorJsCoreDataFile } from '../src/emulator/paths.ts'
+import { ejsCachedUrls, warmEmulatorJsStart } from '../src/emulator/ejsStartWarm.ts'
+import { dipNameOf } from '../src/emulator/dipPlan.ts'
+import { matchRomset } from '../src/lib/arcadeRomset.ts'
 
 let failed = 0
 const check = async (name, fn) => {
@@ -158,6 +163,115 @@ await check('ROM、额外 BIOS、缓存清理与联机辅助资源并行启动',
   assert.match(source.slice(parallelAt, arcadeAt), /if \(!biosDownloads\.has\(file\.url\)\)/, '相同 BIOS URL 会被重复下载')
   assert.ok(source.indexOf('const cachePurgeTask = purgePoisonedEngineCache()', loadAt) < arcadeAt, '缓存清理没有与 ROM 并行')
   assert.ok(source.indexOf('const socketIoTask:', loadAt) < arcadeAt && joinAt > arcadeAt, '联机脚本没有提前发起、稍后收口')
+})
+
+await check('预热的核心文件就是引擎真正下载的那个变体（legacy / WebGL2）', async () => {
+  const metaDir = new URL('../public/emulatorjs/cores/metadata/', import.meta.url)
+  const engine = await readFile(new URL('../public/emulatorjs/emulator.min.js', import.meta.url), 'utf8')
+  const required = /requiresWebGL2\(t\)\{return (\w+)\.includes\(t\)\}/.exec(engine)
+  assert.ok(required, '引擎里找不到 requiresWebGL2：选核逻辑变了，重新取证')
+  const list = new RegExp(`\\b${required[1]}=(\\[[^\\]]*\\])`).exec(engine)
+  assert.ok(list, '找不到 requiresWebGL2 名单')
+  for (const core of JSON.parse(list[1])) assert.ok(EJS_WEBGL2_DEFAULT_CORES.has(core), `${core} 在引擎强制 WebGL2 名单里`)
+  assert.match(engine, /webgl2Enabled=!!i\.options&&i\.options\.defaultWebGL2/, '引擎不再按核心报告的 defaultWebGL2 选核，重新取证')
+  for (const name of await readdir(metaDir)) {
+    if (!name.endsWith('.json')) continue
+    const meta = JSON.parse(await readFile(new URL(name, metaDir), 'utf8'))
+    const core = name.replace(/\.json$/, '')
+    const webgl2 = Boolean(meta.options?.defaultWebGL2)
+    if (webgl2) assert.ok(EJS_WEBGL2_DEFAULT_CORES.has(core), `${core} 报告 defaultWebGL2，但预热会去拉 legacy`)
+    else if (!JSON.parse(list[1]).includes(core)) assert.ok(!EJS_WEBGL2_DEFAULT_CORES.has(core), `${core} 实际走 legacy，预热表却当成 WebGL2`)
+    const file = emulatorJsCoreDataFile(core)
+    await readFile(new URL(`../public/emulatorjs/cores/${file}`, import.meta.url)).catch(() => {
+      throw new Error(`${core} 预热的 ${file} 没有发布`)
+    })
+  }
+  assert.equal(emulatorJsCoreDataFile('arcade'), 'fbneo-legacy-wasm.data')
+  assert.equal(emulatorJsCoreDataFile('fbneo'), 'fbneo-legacy-wasm.data')
+  assert.equal(emulatorJsCoreDataFile('nds'), 'melondsds-wasm.data')
+})
+
+/** 只实现 ejsCachedUrls 用到的那点 IndexedDB：open / onupgradeneeded / index('url').count */
+function fakeIdb({ exists, urls = [] }) {
+  const state = { aborted: false, created: false }
+  return {
+    state,
+    open() {
+      const request = { result: null, transaction: { abort: () => { state.aborted = true } } }
+      setTimeout(() => {
+        if (!exists) {
+          request.onupgradeneeded?.()
+          if (state.aborted) return request.onerror?.()
+          state.created = true
+        }
+        request.result = {
+          objectStoreNames: { contains: (n) => exists && n === 'cache' },
+          close() {},
+          transaction: () => ({
+            objectStore: () => ({
+              indexNames: { contains: (n) => n === 'url' },
+              index: () => ({
+                count(url) {
+                  const q = {}
+                  setTimeout(() => { q.result = urls.includes(url) ? 1 : 0; q.onsuccess?.() }, 0)
+                  return q
+                },
+              }),
+            }),
+          }),
+        }
+        request.onsuccess?.()
+      }, 0)
+      return request
+    },
+  }
+}
+
+await check('开局预热：引擎缓存里已有的核心不再下载，库不存在时不会替引擎建空库', async () => {
+  const core = '/emulatorjs/cores/fbneo-legacy-wasm.data?v=1'
+  const bios = 'https://assets.example/roms/bios/neogeo.zip'
+  const warmed = []
+  const cachedIdb = fakeIdb({ exists: true, urls: [core] })
+  await warmEmulatorJsStart({ always: ['/emulatorjs/emulator.min.js?v=1'], large: [core, bios] }, { idb: cachedIdb, warm: (u) => warmed.push(u) })
+  assert.deepEqual(warmed, ['/emulatorjs/emulator.min.js?v=1', bios])
+
+  const absent = fakeIdb({ exists: false })
+  const found = await ejsCachedUrls([core], absent)
+  assert.equal(found.size, 0)
+  assert.equal(absent.state.aborted, true, '库不存在时必须 abort 升级')
+  assert.equal(absent.state.created, false, '不能留下一个没有 cache 表的空库')
+
+  const warmed2 = []
+  await warmEmulatorJsStart({ always: [], large: [core] }, { idb: undefined, warm: (u) => warmed2.push(u) })
+  assert.deepEqual(warmed2, [core], '没有 IndexedDB 时照常预热')
+})
+
+await check('开局预热排在 ROM 预下载之前，且平台 BIOS 判定只算一次', async () => {
+  const source = await readFile(new URL('../src/emulator/adapters/emulatorjs.ts', import.meta.url), 'utf8')
+  const loadAt = source.indexOf("iframe.addEventListener('load'")
+  const warmAt = source.indexOf('void warmEmulatorJsStart(', loadAt)
+  const arcadeAt = source.indexOf('await prepareRemoteArcadeRom(', loadAt)
+  assert.ok(warmAt > loadAt && warmAt < arcadeAt, '核心预热没有和 ROM 下载并行')
+  assert.equal(source.split('const engineBiosUrl =').length - 1, 1, 'engineBiosUrl 被算了两遍，预热和真正开局可能不一致')
+  assert.ok(source.indexOf('const engineBiosUrl =', loadAt) < warmAt, '预热时还不知道要不要下平台 BIOS')
+})
+
+await check('DIP 组名带连字符时保留完整组名', () => {
+  assert.equal(dipNameOf('fbneo-dipswitch-kov-Controls'), 'Controls')
+  assert.equal(dipNameOf('fbneo-dipswitch-dino-Power-Up_Test'), 'Power-Up_Test')
+  assert.equal(dipNameOf('something-Odd'), 'Odd')
+})
+
+await check('同 CRC 的双份 ROM 不会把完整包的覆盖率算成 200%', () => {
+  const index = {
+    sets: [{ name: 'dupset', parent: '', bios: '' }, { name: 'other', parent: '', bios: '' }],
+    totals: new Uint16Array([2, 3]),
+    byCrc: new Map([[0x11111111, [0, 0]], [0x22222222, [1]]]),
+  }
+  const result = matchRomset(index, [0x11111111, 0x11111111])
+  assert.equal(result.candidates[0].name, 'dupset')
+  assert.equal(result.candidates[0].coverage, 1)
+  assert.equal(result.confident?.name, 'dupset')
 })
 
 console.log(failed === 0 ? '\n街机启动链体检通过\n' : `\n街机启动链体检失败：${failed} 项\n`)
