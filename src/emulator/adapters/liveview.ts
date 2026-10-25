@@ -504,7 +504,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       report.forEach((stat) => {
         stats.push(stat)
         if (!isVideoRtpStat(stat, 'inbound-rtp')) return
-        const t = stat as RTCStats & { framesPerSecond?: number; packetsReceived?: number; packetsLost?: number; bytesReceived?: number }
+        // isVideoRtpStat 只承诺跨浏览器都能读到的兼容字段；这里的 stat 实际来自
+        // getStats()，标准 RTCStats 字段由浏览器保证，显式过 unknown 才不会把兼容类型误当完整接口。
+        const t = stat as unknown as RTCStats & { framesPerSecond?: number; packetsReceived?: number; packetsLost?: number; bytesReceived?: number }
         if (typeof t.framesPerSecond === 'number') fps = t.framesPerSecond
         if (typeof t.packetsReceived === 'number') received += t.packetsReceived
         if (typeof t.bytesReceived === 'number') bytes += t.bytesReceived
