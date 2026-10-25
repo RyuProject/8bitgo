@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import type { CoverGame } from '@/types'
 import { platformMap } from '@/data/platforms'
 import { gradientFor } from '@/lib/gradients'
-import { coverThumbKey, gameMediaUrl, romUrlForKey } from '@/services/roms'
+import { coverSrcSet, coverThumbKey, gameMediaUrl, romUrlForKey } from '@/services/roms'
 import { cx } from '@/lib/format'
 import { useT, fmt } from '@/services/i18n'
 import { useLang } from '@/services/lang'
@@ -217,6 +217,13 @@ export function GameCover({
   const [thumbFailed, setThumbFailed] = useState(false)
   useEffect(() => setThumbFailed(false), [thumbSrc])
   const imgSrc = thumbSrc && !thumbFailed ? thumbSrc : coverSrc
+  /**
+   * 缩放转码版本。变换失败（额度用完、源图格式不认）时 Cloudflare 回的是错误而不是原图，
+   * 所以和缩略图一样要记状态退回原图，不能让卡片停在渐变上。
+   */
+  const [transformFailed, setTransformFailed] = useState(false)
+  useEffect(() => setTransformFailed(false), [coverSrc])
+  const srcSet = imgSrc === coverSrc && !transformFailed ? coverSrcSet(coverSrc) : ''
 
   return (
     <div
@@ -239,6 +246,12 @@ export function GameCover({
       ) : coverSrc ? (
         <img
           src={imgSrc}
+          srcSet={srcSet || undefined}
+          /*
+            懒加载图用 sizes="auto" 让浏览器按真实布局宽度挑档；不认 auto 的浏览器和首屏 eager 图
+            退回 100vw，最多就是取 480 档（scale-down 后等于原图分辨率），不会比改之前更糊。
+          */
+          sizes={srcSet ? (priority || eager ? '100vw' : 'auto, 100vw') : undefined}
           alt={title}
           // 首屏那几张必须 eager：对着 LCP 图片加 loading="lazy"，
           // 等于让浏览器先跳过它、发现完别的资源再回头下，LCP 反而更慢
@@ -249,6 +262,7 @@ export function GameCover({
           // 缩略图没对象（老封面）就换回主图；主图本身就坏了则留给渐变背景兜着
           onError={() => {
             if (thumbSrc && !thumbFailed) setThumbFailed(true)
+            else if (srcSet) setTransformFailed(true)
           }}
           className="absolute inset-0 h-full w-full object-cover transition duration-500 group-hover:scale-105"
         />

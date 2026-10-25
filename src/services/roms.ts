@@ -251,6 +251,36 @@ export function gameMediaUrl(
   return `/api/games/${encodeURIComponent(game.slug)}/media/${kind}?v=${mediaVersion(value)}`
 }
 
+/**
+ * 封面缩放档位：卡片实际 222~254 CSS 像素，1x 屏取 240、2x 屏取 480。
+ * 只开两档是为了守住 Image Transformations 免费额度（每月 5,000 个唯一变换）：
+ * 650 张封面 × 2 档，即使 format=auto 的 AVIF / WebP 分开计也在额度内。
+ */
+const COVER_WIDTHS = [240, 480] as const
+
+/**
+ * 封面的 Cloudflare Image Transformations srcset；不适用时返回空串，调用方照旧用原图。
+ *
+ * 只处理本站封面域下的 `covers/` 原图：外链走同源代理，缩略图本来就只有 96 像素。
+ * 用 `/cdn-cgi/image/` 而不是在 Worker 里转码，是因为变换结果由 Cloudflare 边缘直接缓存，
+ * 而且按浏览器 Accept 自动给 AVIF / WebP；源图仍经 Worker 读 R2，缓存寿命跟着源图
+ * 的 s-maxage=600 走，所以「换封面 10 分钟内生效」不变。
+ * fit=scale-down 保证 480 档不会把 300 像素的老封面放大糊掉。
+ *
+ * 构建期开关 VITE_COVER_TRANSFORM=1：本地开发的封面根地址没有 /cdn-cgi/，开了只会全部 404。
+ */
+export function coverSrcSet(
+  src: string,
+  base = import.meta.env.VITE_COVER_TRANSFORM === '1' ? getCoverBase() : '',
+): string {
+  const prefix = `${base}/covers/`
+  if (!base || !/^https:\/\//i.test(base) || !src.startsWith(prefix)) return ''
+  const path = src.slice(base.length + 1)
+  return COVER_WIDTHS.map(
+    (width) => `${base}/cdn-cgi/image/width=${width},quality=80,format=auto,fit=scale-down/${path} ${width}w`,
+  ).join(', ')
+}
+
 const IMAGE_EXT_RE = /\.(png|jpe?g|webp|avif)$/i
 
 /**
