@@ -17217,7 +17217,7 @@ var Net = class {
   }
 };
 
-// node_modules/@bokuweb/zstd-wasm/dist/web/zstd.js
+// ../../../../Documents/GitHub/8bitgo/node_modules/@bokuweb/zstd-wasm/dist/web/zstd.js
 var Module2 = typeof Module2 !== "undefined" ? Module2 : {};
 var moduleOverrides = {};
 var key;
@@ -17561,7 +17561,7 @@ if (Module2["preInit"]) {
 }
 Module2["init"] = init2;
 
-// node_modules/@bokuweb/zstd-wasm/dist/web/module.js
+// ../../../../Documents/GitHub/8bitgo/node_modules/@bokuweb/zstd-wasm/dist/web/module.js
 var __awaiter = function(thisArg, _arguments, P, generator) {
   function adopt(value) {
     return value instanceof P ? value : new P(function(resolve) {
@@ -17596,13 +17596,13 @@ var waitInitialized = () => __awaiter(void 0, void 0, void 0, function* () {
   yield initialized;
 });
 
-// node_modules/@bokuweb/zstd-wasm/dist/web/errors/index.js
+// ../../../../Documents/GitHub/8bitgo/node_modules/@bokuweb/zstd-wasm/dist/web/errors/index.js
 var isError = (code) => {
   const _isError = Module2["_ZSTD_isError"];
   return _isError(code);
 };
 
-// node_modules/@bokuweb/zstd-wasm/dist/web/simple/decompress.js
+// ../../../../Documents/GitHub/8bitgo/node_modules/@bokuweb/zstd-wasm/dist/web/simple/decompress.js
 var getFrameContentSize = (src, size) => {
   const getSize = Module2["_ZSTD_getFrameContentSize"];
   return getSize(src, size);
@@ -17632,7 +17632,7 @@ var decompress = (buf, opts = { defaultHeapSize: 1024 * 1024 }) => {
   }
 };
 
-// node_modules/@bokuweb/zstd-wasm/dist/web/index.web.js
+// ../../../../Documents/GitHub/8bitgo/node_modules/@bokuweb/zstd-wasm/dist/web/index.web.js
 var __awaiter2 = function(thisArg, _arguments, P, generator) {
   function adopt(value) {
     return value instanceof P ? value : new P(function(resolve) {
