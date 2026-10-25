@@ -8,6 +8,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { CACHE } from '../server/src/cache.js'
+import { earlyHintLinks } from '../server/src/early-hints.js'
 
 const read = (relative) => readFileSync(new URL(`../${relative}`, import.meta.url), 'utf8')
 let failed = 0
@@ -58,8 +59,41 @@ check('SSR 在启动时预热模板和渲染入口，部署窗口继续用内存
   assert.match(src, /let renderPromise = null/, '并发首访可能重复导入渲染入口')
 })
 
-check('SSR HTML 禁止边缘改写，避免 Cloudflare 注入可抓取的 /cdn-cgi 邮箱伪链接', () => {
-  assert.match(CACHE.page, /(?:^|,\s*)no-transform(?:,|$)/)
+check('SSR HTML 允许边缘改压缩（Email Obfuscation 已在区域关闭，见 cache.js CACHE.page）', () => {
+  // no-transform 会让 HTML 永远停在源站 gzip，拿不到 Cloudflare 的 Brotli / zstd。
+  assert.doesNotMatch(CACHE.page, /no-transform/)
+})
+
+check('Early Hints：从构建模板提取入口 JS / CSS / 首屏字体 / 封面域预连接', () => {
+  const template = `<html><head>
+<link rel="preconnect" href="https://image.8bitgo.com">
+<link
+  rel="preload"
+  href="/fonts/geist-pixel/geist-pixel-latin.woff2"
+  as="font"
+  type="font/woff2"
+  crossorigin
+/>
+<script type="module" crossorigin src="/assets/index-CL8i0tUz.js"></script>
+<link rel="modulepreload" crossorigin href="/assets/react-vendor-mkkrrnzo.js">
+<link rel="modulepreload" crossorigin href="/assets/api-D2I2rW4W.js">
+<link rel="stylesheet" crossorigin href="/assets/index-g-Tc-3Xd.css">
+<script nomodule crossorigin id="vite-legacy-polyfill" src="/assets/polyfills-legacy-Bd8zl_rk.js"></script>
+</head></html>`
+  assert.equal(
+    earlyHintLinks(template),
+    [
+      '<https://image.8bitgo.com>; rel=preconnect',
+      '</assets/index-g-Tc-3Xd.css>; rel=preload; as=style; crossorigin',
+      '</assets/index-CL8i0tUz.js>; rel=preload; as=script; crossorigin',
+      '</assets/react-vendor-mkkrrnzo.js>; rel=preload; as=script; crossorigin',
+      '</fonts/geist-pixel/geist-pixel-latin.woff2>; rel=preload; as=font; type="font/woff2"; crossorigin',
+    ].join(', '),
+  )
+  // 没有构建产物（开发态模板）时不发 Link，不能预载不存在的文件
+  assert.equal(earlyHintLinks('<html><head></head></html>'), '')
+  const src = read('server/src/ssr.js')
+  assert.match(src, /Link: earlyHints/, 'SSR 200 响应没有带 Early Hints 的 Link 头')
 })
 
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过 ✅')

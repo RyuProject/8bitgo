@@ -11,6 +11,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loadForRoute } from './content.js'
 import { CACHE } from './cache.js'
+import { earlyHintLinks } from './early-hints.js'
 import { publicSiteUrl } from './site-urls.js'
 import { requestHostname } from './url-normalize.js'
 import { tvRenderPath } from '../../shared/tv-host.js'
@@ -85,6 +86,17 @@ function getTemplate() {
     templateMtime = mtime ?? 0
   }
   return template
+}
+
+/** Early Hints 的 Link 头跟着模板走：模板换了（重新构建）才重算，不在每个请求上解析 HTML */
+let linkTemplate = null
+let linkHeader = ''
+function earlyHintsFor(page) {
+  if (page !== linkTemplate) {
+    linkTemplate = page
+    linkHeader = earlyHintLinks(page)
+  }
+  return linkHeader
 }
 
 /** 防止数据里的 </script> 提前结束脚本块 */
@@ -243,6 +255,8 @@ export async function renderPage(req, res, next) {
     const { html, head, lang, notFound } = await render({ url, data, tvHost })
 
     let page = getTemplate()
+    // 只给 200 页面发：Cloudflare 只从 200 HTML 学 Link，404 页带着也白带
+    const earlyHints = notFound ? '' : earlyHintsFor(page)
 
     // <html lang> 跟随当前语言
     page = page.replace(/<html([^>]*)\slang="[^"]*"/, `<html$1 lang="${lang}"`)
@@ -275,6 +289,7 @@ export async function renderPage(req, res, next) {
         // 隔离头是播放器能否启动的条件；边缘沿用旧 HTML 会让新前端配旧响应头。
         'Cache-Control': isolatedPlay ? CACHE.none : notFound ? CACHE.notFound : isNoStorePath(req.path) ? CACHE.none : CACHE.page,
         Vary: 'Accept-Encoding',
+        ...(earlyHints ? { Link: earlyHints } : {}),
         ...(isolatedDocument
           ? {
               'Cross-Origin-Opener-Policy': 'same-origin',
