@@ -1017,6 +1017,7 @@ const de: Translation = {
       fsSaveFailed: 'Fortschritt konnte nicht gespeichert werden: {msg}',
       /** 存档说明面板：DOS 存的是盘上的文件，不讲清楚玩家会以为点一下就是即时存档 */
       fsSaveWhy: 'Ein DOS-Spielstand besteht aus den Dateien, die das Spiel auf die Platte schreibt – kein Sofort-Snapshot. Das Spiel muss sie erst schreiben.',
+      fsWindowsGuestAutoSave: 'Vollständige Windows-Spiele speichern Änderungen im Ordner GAME jede Minute automatisch und prüfen zusätzlich beim Wechsel in den Hintergrund oder beim Verlassen der Seite. Speichere zuerst im Spiel und lege Spielstände im Installationsordner ab. Änderungen am Windows-Systemlaufwerk (Registrierung, Desktop, Benutzerordner) werden ausgeschlossen, damit nicht das gesamte qcow2-Abbild hochgeladen wird. Für die Synchronisierung zwischen Geräten anmelden und Cloud-Speicher wählen. Cloud-Spielstände sind auf 4 MiB begrenzt; größere Checkpoints bleiben lokal, daher bitte eine Sicherung exportieren.',
       fsSaveStep1: '1. Im Spiel über dessen eigenes Speichermenü speichern (meist mit ESC oder F1)',
       fsSaveStep2: '2. Hierher zurückkehren und unten klicken, um die Dateien in {where} zu sichern',
       fsSaveStep3: '3. Beim nächsten Start wird alles automatisch zurückgespielt – lade im Spiel einfach deinen Spielstand',

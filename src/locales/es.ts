@@ -1016,6 +1016,7 @@ const es: Translation = {
       fsSaveFailed: 'No se pudo guardar el progreso: {msg}',
       /** 存档说明面板：DOS 存的是盘上的文件，不讲清楚玩家会以为点一下就是即时存档 */
       fsSaveWhy: 'Una partida guardada de DOS son los archivos que el juego escribe en el disco, no una instantánea: primero tiene que escribirlos.',
+      fsWindowsGuestAutoSave: 'Los juegos completos de Windows guardan automáticamente cada minuto los cambios de la carpeta GAME y vuelven a comprobarlos al pasar la pestaña a segundo plano o salir de la página. Guarda primero desde el juego y conserva las partidas en su carpeta de instalación. Se excluyen los cambios del disco del sistema Windows (registro, escritorio y perfiles) para no subir toda la imagen qcow2. Para sincronizar entre dispositivos, inicia sesión y elige el guardado en la nube. Cada guardado en la nube tiene un límite de 4 MiB; los más grandes quedan locales, así que exporta una copia de seguridad.',
       fsSaveStep1: '1. Guarda dentro del juego con su propio menú de guardado (normalmente ESC o F1)',
       fsSaveStep2: '2. Vuelve aquí y pulsa el botón de abajo para conservar esos archivos en {where}',
       fsSaveStep3: '3. La próxima vez se restauran solos: solo tienes que cargar la partida dentro del juego',

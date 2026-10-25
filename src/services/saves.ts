@@ -81,7 +81,7 @@ export interface SaveMeta {
 export const MAX_SAVE_BYTES = 4 * 1024 * 1024
 /** PSP 的即时状态包含整台掌机内存，浏览器本地允许更大；云端仍守 4MB 的账号配额。 */
 export const MAX_LOCAL_PSP_SAVE_BYTES = 96 * 1024 * 1024
-/** Sockdrive 保存的是改过的磁盘扇区，大型 Windows 游戏可能超过普通 DOS 的 4MB。 */
+/** DOS 文件差异、Sockdrive 扇区或 Windows 游戏目录差异可能超过普通存档的 4MB。 */
 export const MAX_LOCAL_JSDOS_SAVE_BYTES = 64 * 1024 * 1024
 /** Dolphin 会把整台 GC / Wii 的内存与设备状态写进去；本地要容得下，云端仍守 4MB。 */
 export const MAX_LOCAL_DOLPHIN_SAVE_BYTES = 256 * 1024 * 1024

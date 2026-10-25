@@ -20,6 +20,8 @@ import {
   makeJsdosBundle,
   makePc98FdiBundle,
   makeWindowsGameLayer,
+  filterWindowsGuestSaveChanges,
+  mergeWindowsGuestSaveChanges,
   WINDOWS_GAME_ROOT,
   type ExtraFile,
 } from '@/lib/jsdosBundle'
@@ -33,6 +35,8 @@ import {
   windowsGuestLaunchCommand,
   windowsSockdriveExecutableCommand,
   windowsSockdriveRegistryCommand,
+  windowsGuestArchiveFingerprint,
+  windowsGuestSaveKey,
   type WindowsGuestConfig,
 } from '@/lib/windowsGuest'
 import { imageDataToBlob } from '../recorder'
@@ -236,6 +240,8 @@ interface DosCi extends WindowsLaunchCi {
    * js-dos 8.5 的 CommandInterfaceOverTransportLayer 实例方法，见 fsSave() 里 Sockdrive 那一段。
    */
   persistSockdrives?: () => Promise<Uint8Array | null>
+  /** js-dos 的完整文件层差异包；qcow2 guest 只允许过滤后保存 GAME/ 下的游戏盘改动。 */
+  persist?: (onlyChanges?: boolean) => Promise<Uint8Array | null>
   exit: () => Promise<void>
 }
 
@@ -623,6 +629,8 @@ type DosFn = (el: HTMLElement, options: Record<string, unknown>) => DosProps
  * 正常会话 ci-ready 一到就立即放行，不会因此多等。
  */
 const PLAIN_DOS_CI_BUDGET_MS = 180_000
+/** Windows 客体的内存盘不能靠关页保存；定期把游戏盘差异落到浏览器，离开/切后台再补一次。 */
+const WINDOWS_GUEST_AUTOSAVE_INTERVAL_MS = 60_000
 
 /** js-dos 是全局脚本，整页只加载一次 */
 let loading: Promise<DosFn> | null = null
@@ -1121,8 +1129,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   */
   const systemUrl = options.dosSystemUrl?.trim() || (streamingGame ? defaultDos71SystemUrl() : '')
   const dosSystemGuest = streamingGame && isDos71SystemUrl(systemUrl)
-  // 槽 0 是旧的文件层存档；流式盘存的是扇区差异，格式完全不同，不能互相覆盖。
-  const saveSlot = streamingGame ? 1 : 0
+  const fullWindowsGuest = Boolean(systemUrl && !streamingGame)
+  // 槽 0 留给普通 DOS 文件差异；槽 1 是 Sockdrive 扇区差异；槽 2 是整包 Windows 的 GAME/ 差异。
+  const saveSlot = streamingGame ? 1 : fullWindowsGuest ? 2 : 0
   /*
     逐游戏兼容修正（凯撒 3 的 c3.inf、星际的注册表、辐射的 CPU、主题医院 / 天之痕的鼠标、
     DirectDraw 刷新、匕首雨的 EXE……）认的是**目录里的游戏 slug**。播放器传进来的
@@ -1130,10 +1139,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     这些修正在换语言后全部静默失效。存档 / 键位仍按原值隔离，只有兼容表用去掉后缀的 slug。
   */
   const compatSlug = options.gameSlug ? parseEmulatorVariantSaveSlug(options.gameSlug).gameSlug : undefined
-  const saveMetadata = {
+  let saveMetadata: { core: string; build: string; format: string; romFingerprint?: string } = {
     core: pc98 || options.dosBackend === 'dosboxX' || systemUrl ? 'dosbox-x' : 'dosbox',
     build: JSDOS_ASSET_VERSION,
-    format: streamingGame ? 'sockdrive-sector-changes' : 'jsdos-fs-changes',
+    format: streamingGame
+      ? 'sockdrive-sector-changes'
+      : fullWindowsGuest
+        ? 'windows-game-directory-changes'
+        : 'jsdos-fs-changes',
   }
   // 必须先于 js-dos 建 AudioContext；它是在挂载之后的某个 effect 里建的，这里来得及
   installAudioTap()
@@ -1151,6 +1164,19 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   /** onReady 的延时兜底定时器，销毁时要清掉 */
   let readyFallback = 0
   let readySent = false
+  let windowsGuestAutoSaveTimer = 0
+  let windowsGuestCheckpointInFlight: Promise<{
+    ok: boolean
+    where?: 'cloud' | 'local'
+    reason?: 'nothing' | 'failed'
+    error?: string
+    bytes?: Uint8Array
+  }> | null = null
+  let windowsGuestSaveArchive: Uint8Array | null = null
+  const onWindowsGuestHidden = () => {
+    if (document.visibilityState === 'hidden') void persistWindowsGuestCheckpoint('local')
+  }
+  const onWindowsGuestPageHide = () => void persistWindowsGuestCheckpoint('local')
   /** 一次失败就是终态；否则迟到的 ci-ready / 兜底定时器会把错误会话重新标成“运行中”。 */
   let terminalErrorSent = false
   /** 玩家切走时把还在下的系统镜像 / ROM 掐掉：近百 MB 的镜像不该在后台继续吞流量、写缓存 */
@@ -1186,14 +1212,88 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
    * 把一包盘面改动写进存储并记下结果。js-dos 的 fsChanges.push 钩子和 Sockdrive 自己的保存共用。
    * 字节先留一份（lastBytes），存储两边都失败时工具栏还能退回「下载成文件」。
    */
-  const storeChanges = async (data: Uint8Array) => {
+  const storeChanges = async (data: Uint8Array, target?: 'cloud' | 'local') => {
     lastBytes = new Uint8Array(data)
     try {
-      const r = await pushSave('jsdos', saveKey, data, saveSlot, undefined, saveMetadata)
+      const r = await pushSave('jsdos', saveKey, data, saveSlot, target, saveMetadata)
       lastPush = { ok: r.ok, where: r.where, error: r.cloudFailed ? r.error : undefined }
     } catch (e) {
       lastPush = { ok: false, where: null, error: e instanceof Error ? e.message : String(e) }
     }
+  }
+  const sameBytes = (a: Uint8Array | null, b: Uint8Array) =>
+    Boolean(a && a.length === b.length && a.every((byte, i) => byte === b[i]))
+  const storeWindowsGuestChanges = async (
+    changes: Uint8Array,
+    target?: 'cloud' | 'local',
+  ): Promise<{
+    ok: boolean
+    where?: 'cloud' | 'local'
+    reason?: 'nothing' | 'failed'
+    error?: string
+    bytes?: Uint8Array
+  }> => {
+    const merged = mergeWindowsGuestSaveChanges(windowsGuestSaveArchive, changes)
+    if (!merged) {
+      return windowsGuestSaveArchive && lastPush?.ok
+        ? { ok: true, where: lastPush.where ?? undefined, bytes: new Uint8Array(windowsGuestSaveArchive) }
+        : { ok: false, reason: 'nothing' }
+    }
+    if (sameBytes(windowsGuestSaveArchive, merged)) {
+      if (lastPush?.ok) {
+        return { ok: true, where: lastPush.where ?? undefined, error: lastPush.error, bytes: new Uint8Array(merged) }
+      }
+      // 一次 IndexedDB / 网络失败不能让后续检查点误以为“内容没变”而永远不重试。
+      await storeChanges(merged, target)
+      const retried = readLastPush()
+      return retried?.ok
+        ? { ok: true, where: retried.where ?? undefined, error: retried.error, bytes: new Uint8Array(merged) }
+        : { ok: false, reason: 'failed', error: retried?.error, bytes: new Uint8Array(merged) }
+    }
+    // 内存里也先保留合并结果：若 IndexedDB / 网络失败，下一轮检查点还能接着合并或导出。
+    windowsGuestSaveArchive = new Uint8Array(merged)
+    await storeChanges(merged, target)
+    const done = readLastPush()
+    if (!done?.ok) {
+      return { ok: false, reason: 'failed', error: done?.error, bytes: new Uint8Array(merged) }
+    }
+    return { ok: true, where: done.where ?? undefined, error: done.error, bytes: new Uint8Array(merged) }
+  }
+  /** 只持久化 GAME/ 下的文件层差异；系统 qcow2 和 Windows 用户配置始终留在基础镜像。 */
+  const persistWindowsGuestCheckpoint = (
+    target?: 'cloud' | 'local',
+  ): Promise<{
+    ok: boolean
+    where?: 'cloud' | 'local'
+    reason?: 'nothing' | 'failed'
+    error?: string
+    bytes?: Uint8Array
+  }> => {
+    if (!fullWindowsGuest || !ci || typeof ci.persist !== 'function' || !saveKey) {
+      return Promise.resolve({ ok: false, reason: 'failed' })
+    }
+    if (windowsGuestCheckpointInFlight) return windowsGuestCheckpointInFlight
+    const currentCi = ci
+    const run = async () => {
+      try {
+        const changes = await currentCi.persist!(true)
+        if (!changes) {
+          return windowsGuestSaveArchive && lastPush?.ok
+            ? { ok: true, where: lastPush.where ?? undefined, bytes: new Uint8Array(windowsGuestSaveArchive) }
+            : { ok: false, reason: 'nothing' as const }
+        }
+        return await storeWindowsGuestChanges(changes, target)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        console.warn('[jsdos] Windows 游戏目录自动存档失败', error)
+        return { ok: false, reason: 'failed' as const, error: message, bytes: lastBytes ?? undefined }
+      }
+    }
+    const task = run()
+    windowsGuestCheckpointInFlight = task.finally(() => {
+      windowsGuestCheckpointInFlight = null
+    })
+    return windowsGuestCheckpointInFlight
   }
   let windowsLaunchStage: 'ci' | 'boot' | 'desktop' | 'launched' = 'ci'
   const armGuestStartupTimeout = (stage: 'ci' | 'boot', budgetMs: number) => {
@@ -1531,7 +1631,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
        * 存了也永远读不回来。所以这里换成稳定的 slug（本地文件退回文件名）。
        */
       const baseSaveKey = options.gameSlug || `local:${rom?.name ?? options.gameName}`
-      saveKey = streamingGame ? sockdriveVersionedSaveKey(baseSaveKey, sockdriveUrl) : baseSaveKey
+      if (streamingGame) {
+        saveKey = sockdriveVersionedSaveKey(baseSaveKey, sockdriveUrl)
+      } else if (fullWindowsGuest && rom?.buf) {
+        const fingerprint = windowsGuestArchiveFingerprint(rom.buf)
+        saveKey = windowsGuestSaveKey(baseSaveKey, fingerprint)
+        saveMetadata = { ...saveMetadata, romFingerprint: fingerprint }
+      } else {
+        saveKey = baseSaveKey
+      }
       if (destroyed) {
         for (const url of objectUrls) URL.revokeObjectURL(url)
         return
@@ -1606,14 +1714,10 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
          * 没登录就落在浏览器里。pull 会在开机时被自动调用，所以读档是无感的。
          */
         /*
-          ⚠️ 只有“整包 qcow2 Windows 客体”不接 fsChanges；静态 Sockdrive 自带独立的扇区差异，
-          可以保存，而且使用 slot 1 与旧的文件层存档隔离。
-
-          完整 qcow2 的 guest 拿不到 fsSave 能力，也绝不能只接 pull：开机时 js-dos 会把这款游戏
-          当年按普通 DOS 配置上线时留下的**文件层变更包**叠到客体盘上，轻则无害，重则遮住
-          系统/游戏文件让客体起不来，而玩家连一个能删掉它的入口都没有，只能一直撞。
+          整包 qcow2 客体现在只接经过 GAME/ 过滤的专用差异包；不接普通 DOS 槽位，避免旧文件层
+          覆盖系统盘。Sockdrive 仍保存自己的扇区差异。普通客体之外的存档流程保持原样。
         */
-        ...(guest && !streamingGame
+        ...(guest && !streamingGame && !fullWindowsGuest
           ? {}
           : {
               fsChanges: {
@@ -1627,7 +1731,15 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                 */
                 pull: async () => {
                   try {
-                    return (await pullSave('jsdos', saveKey, saveSlot))?.data ?? null
+                    const saved = await pullSave('jsdos', saveKey, saveSlot)
+                    if (!saved?.data) return null
+                    if (!fullWindowsGuest) return saved.data
+                    const safe = filterWindowsGuestSaveChanges(saved.data)
+                    if (!safe) return null
+                    windowsGuestSaveArchive = new Uint8Array(safe)
+                    lastBytes = new Uint8Array(safe)
+                    lastPush = { ok: true, where: saved.where }
+                    return safe
                   } catch (e) {
                     console.warn('[jsdos] 读取存档失败，按没有存档处理', e)
                     return null
@@ -1642,11 +1754,24 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
                     在这个世界上唯一的副本 —— 工具栏拿它退回「下载成文件」。
                     以前这里失败就只剩一句「存档失败」，字节当场丢掉。
                   */
-                  await storeChanges(data)
+                  if (fullWindowsGuest) {
+                    try {
+                      await storeWindowsGuestChanges(data)
+                    } catch (e) {
+                      console.warn('[jsdos] Windows 游戏目录存档回调失败', e)
+                    }
+                  } else {
+                    await storeChanges(data)
+                  }
                 },
                 delete: async () => {
                   try {
                     await deleteSave('jsdos', saveKey, saveSlot)
+                    if (fullWindowsGuest) {
+                      windowsGuestSaveArchive = null
+                      lastBytes = null
+                      lastPush = null
+                    }
                   } catch (e) {
                     console.warn('[jsdos] 删除存档失败', e)
                   }
@@ -1665,6 +1790,19 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
             if (event === 'ci-ready' && arg) {
               const previousCi = ci
               ci = arg as DosCi
+              if (fullWindowsGuest && typeof ci.persist === 'function') {
+                caps.add('fsSave')
+                caps.add('fsFile')
+                options.onCaps?.(caps)
+                if (!windowsGuestAutoSaveTimer) {
+                  // 每分钟最多打一次 GAME/ 差异包；切后台/离开页面时再立即做本地检查点。
+                  windowsGuestAutoSaveTimer = window.setInterval(() => {
+                    if (document.visibilityState !== 'hidden') void persistWindowsGuestCheckpoint('local')
+                  }, WINDOWS_GUEST_AUTOSAVE_INTERVAL_MS)
+                  document.addEventListener('visibilitychange', onWindowsGuestHidden)
+                  window.addEventListener('pagehide', onWindowsGuestPageHide)
+                }
+              }
               /*
                 命令接口建好 = 启动数据早已交给 worker：js-dos 在 ws-ready 后把 initFs 每层按 4MB
                 **复制**成分片发过去，再 wc-run，最后才有 ci。可主线程上的原件还挂在 js-dos 保存的
@@ -1829,7 +1967,9 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   return {
     caps,
     saveSlot,
-    saveMetadata,
+    get saveMetadata() {
+      return saveMetadata
+    },
     /** getter 让工具栏在异步解析完规范 URL 后读到版本化键，而不是 mount 当下的空字符串。 */
     get saveArchiveKey() {
       return saveKey || undefined
@@ -1940,8 +2080,16 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       customized: () => dosPadCustomized(padKey),
     },
     destroy() {
+      const finalGuestCheckpoint = fullWindowsGuest && ci?.persist
+        ? persistWindowsGuestCheckpoint('local')
+        : null
+      const stoppedProps = props
       destroyed = true
       window.clearTimeout(readyFallback)
+      window.clearInterval(windowsGuestAutoSaveTimer)
+      windowsGuestAutoSaveTimer = 0
+      document.removeEventListener('visibilitychange', onWindowsGuestHidden)
+      window.removeEventListener('pagehide', onWindowsGuestPageHide)
       cancelGuestStartupTimeout?.()
       cancelGuestStartupTimeout = null
       abort.abort()
@@ -1956,11 +2104,26 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       cancelMouseHook = null
       pad?.stop()
       pad = null
-      try {
-        // stop() 返回 Promise，同步的 try/catch 接不住它的 reject
-        Promise.resolve(props?.stop()).catch(() => {})
-      } catch {
-        /* 已经停了就忽略 */
+      let runtimeStopped = false
+      const stopRuntime = () => {
+        if (runtimeStopped) return
+        runtimeStopped = true
+        try {
+          // stop() 返回 Promise，同步的 try/catch 接不住它的 reject
+          Promise.resolve(stoppedProps?.stop()).catch(() => {})
+        } catch {
+          /* 已经停了就忽略 */
+        }
+      }
+      if (finalGuestCheckpoint) {
+        // destroy() 是同步接口：给工作线程一个短暂收尾窗口，超时仍然关机，不能把旧游戏挂在后台。
+        const stopTimer = window.setTimeout(stopRuntime, 10_000)
+        void finalGuestCheckpoint.finally(() => {
+          window.clearTimeout(stopTimer)
+          stopRuntime()
+        })
+      } else {
+        stopRuntime()
       }
       props = null
       ci = null
@@ -2006,7 +2169,17 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       if (!saveKey) return { ok: false, error: 'no-slug' }
       if (!data || data.length === 0) return { ok: false, error: 'empty' }
       try {
-        const r = await pushSave('jsdos', saveKey, data, saveSlot, undefined, saveMetadata)
+        let payload = data
+        if (fullWindowsGuest) {
+          const safe = filterWindowsGuestSaveChanges(data)
+          if (!safe) return { ok: false, error: '存档文件里没有 GAME/ 游戏目录数据' }
+          payload = safe
+          windowsGuestSaveArchive = new Uint8Array(safe)
+          lastBytes = new Uint8Array(safe)
+        }
+        const r = await pushSave('jsdos', saveKey, payload, saveSlot, undefined, saveMetadata)
+        lastPush = { ok: r.ok, where: r.where, error: r.cloudFailed ? r.error : undefined }
+        if (!r.ok) return { ok: false, error: r.error ?? '保存失败' }
         return { ok: r.ok, where: r.where ?? undefined, error: r.cloudFailed ? r.error : undefined }
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) }
@@ -2014,6 +2187,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     },
 
     async fsSave() {
+      if (fullWindowsGuest) return persistWindowsGuestCheckpoint()
       /*
         ⚠️ Sockdrive 会话不能走 props.save()。js-dos 看到配置里有 `.qcow2` 就把 canSave 置 false
         （它无法只保存 qcow2 的改动），而我们的流式盘一定带 qcow2：Windows 客体的 C: 是系统盘，

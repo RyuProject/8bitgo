@@ -6,7 +6,7 @@
  * 再打成一个近百 MB 的包：系统层提供 qcow2/img，游戏层只提供 GAME/ 下的文件。
  */
 import { assertValidZip, extractZipEntry } from './unzip'
-import { WINDOWS_GAME_ROOT, WINDOWS_LAUNCHER_PATH } from './jsdosBundle'
+import { readZipEntries, WINDOWS_GAME_ROOT, WINDOWS_LAUNCHER_PATH } from './jsdosBundle'
 import { mergeDosboxConfigOverride } from '../../shared/dosbox-config.js'
 import { isVersionedSockdriveDirectory } from '../../shared/sockdrive-url.js'
 
@@ -81,6 +81,43 @@ export interface WindowsSockdriveGuestConfig extends WindowsGuestConfig {
   sockdriveUrl: string
   /** 挂游戏盘用的硬盘序号（2=C、3=D……）。 */
   gameDriveIndex: number
+}
+
+/**
+ * 以 ZIP 中央目录的文件名、CRC 和长度生成轻量 ROM 指纹，不扫描/复制大型游戏文件内容。
+ * 整包 Windows 游戏更新时，旧差异包不能盲目叠到新底包；同一 ROM 的重压缩仍得到同一指纹。
+ */
+export function windowsGuestArchiveFingerprint(buf: ArrayBuffer): string {
+  const entries = readZipEntries(buf)
+  if (!entries) throw new Error('Windows 游戏 ZIP 无法读取，不能建立版本化存档')
+  const rows = entries
+    .map((entry) => `${entry.name.toLowerCase()}\0${entry.crc.toString(16)}\0${entry.uncompressedSize}`)
+    .sort()
+  const hash = (seed: number) => {
+    let value = seed >>> 0
+    for (const char of rows.join('\n')) value = Math.imul(value ^ char.charCodeAt(0), 0x01000193) >>> 0
+    return value.toString(16).padStart(8, '0')
+  }
+  return `${hash(0x811c9dc5)}${hash(0x9e3779b9)}`
+}
+
+/** Windows 游戏盘的差异归档绑定游戏包版本；旧版游戏存档不会被自动套到新 ZIP 上。 */
+export function windowsGuestSaveKey(gameKey: string, fingerprint: string): string {
+  // eslint-disable-next-line no-control-regex -- 存档键会进入 URL / API 路径，必须剔除控制字符。
+  const clean = gameKey.trim().replace(/[/\\\x00-\x1f\x7f]/g, '_') || 'game'
+  const identity = `${clean}\0${fingerprint}`
+  const hash = (seed: number) => {
+    let value = seed >>> 0
+    for (let i = 0; i < identity.length; i++) value = Math.imul(value ^ identity.charCodeAt(i), 0x01000193) >>> 0
+    return value.toString(16).padStart(8, '0')
+  }
+  // 云存档 slug 上限是 160；版本后缀预留 20 字符，正常 slug（含 `~rom-en`）完整保留。
+  // 极端长的本地文件名才截短并附指纹，避免不同名字共用 key。
+  const chars = Array.from(clean)
+  const prefix = chars.length <= 140
+    ? clean
+    : `${chars.slice(0, 129).join('')}~${hash(0x811c9dc5)}`
+  return `${prefix}:wg:${hash(0x811c9dc5)}${hash(0x9e3779b9)}`
 }
 
 export function normalizeSockdriveUrl(value: string): string {

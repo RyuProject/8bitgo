@@ -1018,6 +1018,7 @@ const fr: Translation = {
       fsSaveFailed: 'Impossible d’enregistrer la progression : {msg}',
       /** 存档说明面板：DOS 存的是盘上的文件，不讲清楚玩家会以为点一下就是即时存档 */
       fsSaveWhy: 'Une sauvegarde DOS, ce sont les fichiers écrits sur le disque par le jeu, pas un instantané — le jeu doit d’abord les écrire.',
+      fsWindowsGuestAutoSave: 'Les jeux Windows complets enregistrent automatiquement les changements du dossier GAME chaque minute, ainsi qu’au passage en arrière-plan et à la fermeture de la page. Enregistrez d’abord dans le jeu et gardez les sauvegardes dans son dossier d’installation. Les changements du disque système Windows (registre, bureau, profils) sont exclus afin de ne pas envoyer toute l’image qcow2. Pour synchroniser entre appareils, connectez-vous et choisissez les sauvegardes cloud. Chaque sauvegarde cloud est limitée à 4 Mio ; les instantanés plus volumineux restent locaux, pensez à en exporter une copie.',
       fsSaveStep1: '1. Sauvegardez dans le jeu via son propre menu (souvent ESC ou F1)',
       fsSaveStep2: '2. Revenez ici et appuyez sur le bouton ci-dessous pour conserver ces fichiers dans {where}',
       fsSaveStep3: '3. À la prochaine ouverture, tout est restauré automatiquement — chargez simplement votre partie dans le jeu',

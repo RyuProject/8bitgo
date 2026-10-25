@@ -455,13 +455,15 @@ check('Win95 致命错误是终态，迟到的 ci-ready 与兜底定时器不能
   assert.match(jsdos, /failLoad\(fmt\(rt\.jsdosRunFailed/)
 })
 
-check('流式扇区存档与旧文件层存档隔离', () => {
-  assert.match(jsdos, /const saveSlot = streamingGame \? 1 : 0/)
+check('普通 DOS、Sockdrive 与整包 Windows 游戏盘使用不同存档槽', () => {
+  assert.match(jsdos, /const saveSlot = streamingGame \? 1 : fullWindowsGuest \? 2 : 0/)
   assert.match(jsdos, /sockdriveVersionedSaveKey\(baseSaveKey, sockdriveUrl\)/)
+  assert.match(jsdos, /windowsGuestSaveKey\(baseSaveKey, fingerprint\)/)
   assert.match(jsdos, /get saveArchiveKey\(\)/)
   assert.match(jsdos, /return\s*\{\s*\n\s*caps,\s*\n\s*saveSlot,/)
   assert.match(jsdos, /pullSave\('jsdos', saveKey, saveSlot\)/)
-  assert.match(jsdos, /pushSave\('jsdos', saveKey, data, saveSlot, undefined, saveMetadata\)/)
+  assert.match(jsdos, /pushSave\('jsdos', saveKey, data, saveSlot, target, saveMetadata\)/)
+  assert.match(jsdos, /pushSave\('jsdos', saveKey, payload, saveSlot, undefined, saveMetadata\)/)
   assert.match(jsdos, /deleteSave\('jsdos', saveKey, saveSlot\)/)
 })
 

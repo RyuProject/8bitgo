@@ -233,6 +233,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
   const saveRuntime = asSaveRuntime(runtimeId)
   const remoteOnly = handle.saveMode === 'remote'
   const archiveSlot = handle.saveSlot ?? 0
+  const isWindowsGuestSave = handle.saveMetadata?.format === 'windows-game-directory-changes'
   const archiveGameKey = handle.saveArchiveKey ?? gameSlug
   const archivable = Boolean(!remoteOnly && saveRuntime && archiveGameKey && caps.has('saveState'))
   const hasArchivedSlot = Boolean(
@@ -1346,7 +1347,7 @@ function ReadyEmulatorTools({ handle, caps, gameName, gameSlug, runtimeId, dosSa
       {panel === 'fsSave' && (
         <div className="absolute bottom-full left-0 z-20 mb-2 w-72 max-w-[calc(100vw-2rem)] rounded-lg border border-line bg-surface px-3 py-2 shadow-lg">
           <p className="font-semibold text-fg">{tt.fsSave}</p>
-          <p className="mt-1 text-muted">{tt.fsSaveWhy}</p>
+          <p className="mt-1 text-muted">{isWindowsGuestSave ? tt.fsWindowsGuestAutoSave : tt.fsSaveWhy}</p>
           <ol className="mt-2 space-y-1">
             {/* 空手而归时把第 ① 步标出来：问题百分之百出在这一步 */}
             <li className={fsSaveFailed ? 'font-semibold text-live' : 'text-muted'}>{tt.fsSaveStep1}</li>
