@@ -21,6 +21,8 @@ export interface PsxRangeDisc {
   readonly size: number
   /** 加载条只计算开局必需的首尾分片，不把尚未需要的整张盘伪报为已下载。 */
   readonly startupBytes: number
+  /** CHD 头的前 32 字节（含压缩器清单）；开局前据此挑核心，见 psxChd.ts 的 psxChdCoreForCodecs。 */
+  readonly head: Uint8Array
   install(fs: PsxRangeFs, xhrFactory: typeof XMLHttpRequest): void
   dispose(): void
 }
@@ -172,6 +174,7 @@ export async function preparePsxRangeDisc(url: string, name: string, signal: Abo
 
     return {
       url, name, size,
+      head: first.bytes.slice(0, 32),
       startupBytes: Math.min(size, PSX_RANGE_BYTES) + (lastIndex > 0 ? size - lastIndex * PSX_RANGE_BYTES : 0),
       install(fs, xhrFactory) {
         checkAlive()

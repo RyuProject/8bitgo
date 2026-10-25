@@ -39,7 +39,7 @@ const reset = () => {
 }
 
 const { canReuseRomObjectKey, confirmDiscImage } = await import(fileURLToPath(new URL('../src/admin/uploadGuards.ts', import.meta.url)))
-const { isPsxChdTransfer, psxChdSaveSlug, parsePsxChdSaveSlug, psxCoreForPreparedName, psxCoreForTransfer, PSX_CHD_AUDIO_LATENCY_MS, PSX_CHD_CORE } = await import(fileURLToPath(new URL('../src/emulator/psxChd.ts', import.meta.url)))
+const { chdCompressors, isPsxChdTransfer, psxChdCoreForCodecs, psxChdSaveSlug, parsePsxChdSaveSlug, psxCoreForPreparedName, psxCoreForTransfer, PSX_CHD_AUDIO_LATENCY_MS, PSX_CHD_COMPAT_CORE, PSX_CHD_CORE } = await import(fileURLToPath(new URL('../src/emulator/psxChd.ts', import.meta.url)))
 const { raiseAudioLatency } = await import(fileURLToPath(new URL('../src/emulator/mameAudio.ts', import.meta.url)))
 
 let n = 0
@@ -69,9 +69,23 @@ ok(canReuseRomObjectKey('roms/nds/game.8bg', 'replacement.nds', true), '8BG 外�
 ok(isPsxChdTransfer('https://assets.example/roms/psx/theme.chd.8bg?romv=abc'), 'CHD 的 8BG 外层可启用带版本的断点续传')
 ok(isPsxChdTransfer('roms/psx/theme.CHD?romv=abc'), '原始 CHD 也可启用断点续传')
 ok(!isPsxChdTransfer('roms/psx/theme.iso.8bg'), 'ISO 不误判为 CHD')
-ok(psxCoreForTransfer('psx', 'pcsx_rearmed', 'theme.chd.8bg?romv=abc') === PSX_CHD_CORE, 'CHD 悬停预热正确核心，不白下默认 PCSX')
+/** 只造一个 CHD v5 头的前 32 字节：魔数、版本、四个压缩器槽 */
+const chdHead = (...codecs) => {
+  const head = new Uint8Array(32)
+  head.set([...'MComprHD'].map((c) => c.charCodeAt(0)), 0)
+  head.set([0, 0, 0, 124, 0, 0, 0, 5], 8)
+  codecs.forEach((codec, i) => head.set([...codec].map((c) => c.charCodeAt(0)), 16 + i * 4))
+  return head
+}
+ok(JSON.stringify(chdCompressors(chdHead('cdlz', 'cdzl', 'cdfl'))) === '["cdlz","cdzl","cdfl"]', '读出 chdman 默认的三个 CD 压缩器')
+ok(chdCompressors(new Uint8Array(32)) === null && chdCompressors(chdHead('cdzl').subarray(0, 20)) === null, '不是 CHD v5 或字节不够时返回未知')
+ok(psxChdCoreForCodecs(['cdzl']) === PSX_CHD_CORE && psxChdCoreForCodecs(['cdlz', 'cdzl']) === PSX_CHD_CORE, '纯 zlib/LZMA 的 CHD 仍走实机验证过的 Beetle')
+ok(psxChdCoreForCodecs(['cdlz', 'cdzl', 'cdfl']) === PSX_CHD_COMPAT_CORE, '带 cdfl（Beetle 没编进 FLAC）的 CHD 改走 PCSX，否则只剩 RetroArch 空菜单')
+ok(psxChdCoreForCodecs(['cdzs']) === PSX_CHD_COMPAT_CORE && psxChdCoreForCodecs(null) === PSX_CHD_COMPAT_CORE, 'Zstandard 或读不出头时走编解码器齐全的 PCSX')
+ok(psxCoreForTransfer('psx', 'pcsx_rearmed', 'theme.chd.8bg?romv=abc') === PSX_CHD_COMPAT_CORE, 'CHD 悬停预热按站内实际落点预拉 PCSX')
 ok(psxCoreForTransfer('psx', 'pcsx_rearmed', 'theme.iso.8bg') === 'pcsx_rearmed', 'ISO 悬停预热仍走默认核心')
-ok(psxCoreForPreparedName('psx', 'pcsx_rearmed', 'Theme Hospital.chd') === PSX_CHD_CORE, '解包后真实 CHD 自动改用支持 CHD 的核心')
+ok(psxCoreForPreparedName('psx', 'pcsx_rearmed', 'Theme Hospital.chd', chdHead('cdzl')) === PSX_CHD_CORE, '解包后纯 cdzl CHD 改用 Beetle')
+ok(psxCoreForPreparedName('psx', 'mednafen_psx', 'Theme Hospital.chd', chdHead('cdlz', 'cdzl', 'cdfl')) === PSX_CHD_COMPAT_CORE, '解包后带 cdfl 的 CHD 改用 PCSX')
 ok(psxCoreForPreparedName('psx', 'pcsx_rearmed', 'game.iso') === 'pcsx_rearmed', '普通 PS1 ISO 仍保留原核心')
 ok(psxCoreForPreparedName('psx', 'pcsx_rearmed', 'game.chd.8bg') === 'pcsx_rearmed', '外层 8BG 不能冒充已解包的 CHD')
 ok(psxCoreForPreparedName('pcEngine', 'mednafen_pce', 'game.chd') === 'mednafen_pce', '其它平台不受 PS1 核心切换影响')
@@ -89,7 +103,19 @@ const ejsRuntimeSource = readFileSync(fileURLToPath(new URL('../public/emulatorj
 ok(/const shouldPack = !isStreamingDisc && !isHtml5 && platform !== 'psx'/.test(adminSource), 'PS1 新上传裸 CHD 不再包装成阻断 Range 的 8BG')
 ok(/const key = shouldPack \|\| alreadyPacked \? romPackKey\(plainKey\) : plainKey/.test(adminSource), '旧 PS1 8BG 容器仍保留正确外层扩展名')
 ok(/if \(!psxIsoToChd && !window\.confirm\(/.test(adminSource), 'PS1 自动转换不可用时可确认上传可玩的原始 ISO')
-ok(/psxCoreForPreparedName\(options\.platform, core, engineGameName\)/.test(ejsSource), '播放器在实际内层文件名确定后才切 CHD 核心')
+ok(/psxCoreForPreparedName\(options\.platform, core, engineGameName, chdHead\)/.test(ejsSource), '播放器在实际内层文件名与 CHD 头都确定后才切核心')
+ok(/preparedPsxRange\?\.head \?\? await readDiscHead\(/.test(ejsSource), 'Range 与完整下载两条路都读得到 CHD 头')
+ok(/'track numbers bad'/.test(ejsSource), 'Beetle 打不开光盘时直接报错，不停在 RetroArch 空菜单')
+ok(existsSync(fileURLToPath(new URL(`../public/emulatorjs/cores/${PSX_CHD_COMPAT_CORE}-wasm.data`, import.meta.url))), '兼容 CHD 的 PCSX 核心已随站点发布')
+{
+  // 取证：核心选择表依赖「Beetle 没有 cdfl、PCSX 有」这个事实；换核心包后要重新核对。
+  const { execFileSync } = await import('node:child_process')
+  const wasmOf = (archive, member) => execFileSync('7z', ['x', '-so', fileURLToPath(new URL(`../public/emulatorjs/cores/${archive}`, import.meta.url)), member], { maxBuffer: 64 * 1024 * 1024 })
+  const beetle = wasmOf('mednafen_psx-legacy-wasm.data', 'mednafen_psx_libretro.wasm')
+  const pcsx = wasmOf('pcsx_rearmed-wasm.data', 'pcsx_rearmed_libretro.wasm')
+  ok(beetle.includes(Buffer.from('cdzl (CD Deflate)')) && !beetle.includes(Buffer.from('cdfl (CD FLAC)')), 'Beetle 核心只有 zlib/LZMA 的 CD 解码器（重编进 FLAC 后要放宽 BEETLE_CHD_CODECS）')
+  ok(['cdzl (CD Deflate)', 'cdlz (CD LZMA)', 'cdfl (CD FLAC)', 'cdzs (CD ZStandard)'].every((name) => pcsx.includes(Buffer.from(name))), 'PCSX 核心带全部四种 CD 解码器')
+}
 ok(/psxRange\.install\(fs, window\.XMLHttpRequest\)/.test(ejsSource), 'sandbox iframe 的同步读盘沿用主页面 XHR 源，避免 R2 拒绝 Origin: null')
 ok(/scph5500\.bin[\s\S]{0,320}多区域 ZIP/.test(biosPanelSource), 'PS1 BIOS 设置指导管理员配置多区域 BIOS，兼容日版 CHD 与 PCSX')
 const biosExtract = /bios:\{name:"BIOS",dontCache:!1,dontExtractIfCore:\[([^\]]+)\]\}/.exec(ejsRuntimeSource)

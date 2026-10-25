@@ -2356,6 +2356,17 @@ CHD 固定用自建 `mednafen_psx` 软件核心；该包关闭了上游 Emscript
 部署前需迁移新增的 `disc_platform` 列；回归：
 `npm run test:psx-conversion && npm run test:psx-range && npm run test:disc-upload && npm run test:ejs-cores`。
 
+🔴 **CHD 不能一律交给 Beetle：自建 `mednafen_psx` 没有 FLAC 解码器（2026-10-25 线上确认）。**
+- **现象**：线上全部 5 款 PS1 CHD（含 Range 流式的《实况胜利十一人 2000》）开局都停在 RetroArch「Quick Menu / No Items」，没有报错。
+- **原因**：该 wasm 的 libchdr 只编进了 `cdzl` / `cdlz`。chdman createcd 的默认压缩是 cdlz + cdzl + **cdfl**，而 chd_open 要给头里的每个压缩器建解码器，缺一个就整盘打不开。核心日志只有一句 `TOC first(99)/last(0) track numbers bad.`。
+- **修法**：`psxChd.ts` 的 `chdCompressors` / `psxChdCoreForCodecs`。读 CHD 头（Range 用首片，完整下载读 blob 头 32 字节）：
+  - 压缩器全在 Beetle 认识的集合里 → 走 Beetle；
+  - 否则 → 走 `pcsx_rearmed`。PCSX 带全部四种 CD 解码器，实测能按需读取 Range 挂载的 CHD：开到片头只取了约 11MB，60fps。
+- **预热**：CHD 预测落到 PCSX。
+- **报错**：`track numbers bad` 已进 FATAL_PHRASES，不会再停在空菜单。
+- **回归**：`test:disc-upload` 会解包两个核心，取证两边各自有哪些解码器。以后给 Beetle 重编进 FLAC，就要同步放宽 `BEETLE_CHD_CODECS`。
+- **数据侧备选**：`chdman extractcd` 后用 `createcd -c cdzl` 重压，可以让这张盘回到 Beetle。
+
 ### 2.32.1 PSP 必须留在普通详情页内启动，不能再复用 PS2 的独立播放器外壳
 
 PPSSPP 的 pthread 仍然需要 `Cross-Origin-Opener-Policy: same-origin` 与

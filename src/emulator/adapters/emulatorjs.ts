@@ -44,9 +44,8 @@ import { matchArcadeHack, type ArcadeHack } from '@/data/arcadeHacks'
 import { deriveArcadeHackBytes } from '../arcadeHack'
 import { biosNameOfUrl, planBiosFiles } from '../biosPlan'
 import { ensureParentDir } from '../fsWrite'
-import { isPsxChdTransfer, psxCoreForPreparedName, PSX_CHD_ARCHIVE, PSX_CHD_AUDIO_LATENCY_MS, PSX_CHD_CORE } from '../psxChd'
+import { chdCompressors, psxCoreForPreparedName, psxCoreForTransfer, PSX_CHD_AUDIO_LATENCY_MS, PSX_CHD_CORE } from '../psxChd'
 import { canStreamPsxChd, preparePsxRangeDisc, type PsxRangeDisc, type PsxRangeFs } from '../psxRangeDisc'
-import { warmHttpCache } from '../httpWarm'
 import { warmEmulatorJsStart } from '../ejsStartWarm'
 import { writeFsInjections, type FsInjection } from '../fsInjection'
 import { arcadeCoreForRomData, supportsFbneoRomData } from '../arcadeCore'
@@ -788,6 +787,8 @@ function arcadeVirtualPad(count: ArcadeButtonCount = 6): readonly Record<string,
 const FATAL_PHRASES = [
   // FBNeo：认不出这个 romset，必然起不来
   'romset is unknown',
+  // Beetle PS1：CHD / CUE 打不开（常见是 CHD 用了核心没编进来的压缩器），随后只剩 RetroArch 的空菜单
+  'track numbers bad',
   // MAME：缺件已经到了跑不了的程度（区别于它那些 NOT FOUND 警告）
   'required files are missing',
   // 引擎自己：运行时没加载上 / startGame 抛了
@@ -1554,6 +1555,34 @@ export function discNameFor(url: string, fallback: string): string {
     /* 相对地址解析不了就用兜底名 */
   }
   return fallback
+}
+
+/**
+ * 读光盘镜像开头的 32 字节（CHD 头里有压缩器清单）。本地文件直接切片；预下载好的
+ * blob: 地址只读第一块就取消，不把几百 MB 再过一遍。读不到返回 null，由调用方按「未知」处理。
+ */
+async function readDiscHead(source: File | string | undefined): Promise<Uint8Array | null> {
+  try {
+    if (!source) return null
+    if (typeof source !== 'string') return new Uint8Array(await source.slice(0, 32).arrayBuffer())
+    if (!source.startsWith('blob:')) return null
+    const response = await fetch(source)
+    const reader = response.body?.getReader()
+    if (!reader) return null
+    const head = new Uint8Array(32)
+    let filled = 0
+    while (filled < head.length) {
+      const { done, value } = await reader.read()
+      if (done || !value) break
+      const take = Math.min(value.length, head.length - filled)
+      head.set(value.subarray(0, take), filled)
+      filled += take
+    }
+    await reader.cancel().catch(() => {})
+    return filled === head.length ? head : head.subarray(0, filled)
+  } catch {
+    return null
+  }
 }
 
 export async function prepareRemoteDiscRom(
@@ -3188,11 +3217,6 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         // 本地文件不走下面的预下载分支，也必须挡住错误页、截断 ROM 与 ZIP 解压炸弹。
         if (isFile && validateNds) await validateNds(options.game as File)
 
-        if (options.platform === 'psx' && isPsxChdTransfer(isFile ? (options.game as File).name : remoteGameUrl)) {
-          // Range 只先取首尾块，核心仍需网络时间；完整下载回退也走同一预热，避免再串行等核心。
-          warmHttpCache(ejsRuntimeAsset('emulator.min.js'))
-          warmHttpCache(ejsRuntimeAsset(`cores/${PSX_CHD_ARCHIVE}`))
-        }
 
         /**
          * 这些工作以前全排在 ROM 下载**之后**：几十 MB 的 romset 下完，才开始清引擎缓存、
@@ -3259,21 +3283,23 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
 
         /*
           ROM 还在下载 / 解密时，把引擎入口、核心与平台 BIOS 并行拉进 HTTP 缓存（见 ejsStartWarm.ts）。
-          PS1 不在这里做：CHD 会在拿到内层文件名后换核心，上面那条专门的预热已经管了。
+          PS1 的 CHD 要等读到头才最终定核心，这里先按传输地址预测（psxCoreForTransfer）；
+          PS1 BIOS 512KB 以前排在核心解压之后、实测占开局最后 2.7 秒，一样并行拉。
         */
-        if (options.platform !== 'psx') {
-          void warmEmulatorJsStart({
-            always: [
-              ejsRuntimeAsset('emulator.min.js'),
-              ejsRuntimeAsset('emulator.min.css'),
-              ejsRuntimeAsset(`cores/metadata/${encodeURIComponent(emulatorJsCoreFileFor(core))}.json`),
-            ],
-            large: [
-              ejsRuntimeAsset(`cores/${encodeURIComponent(emulatorJsCoreDataFile(core))}`),
-              ...(/^https?:|^\//.test(engineBiosUrl) ? [engineBiosUrl] : []),
-            ],
-          }).catch(() => {})
-        }
+        const warmCore = options.platform === 'psx'
+          ? psxCoreForTransfer('psx', core, isFile ? (options.game as File).name : remoteGameUrl) ?? core
+          : core
+        void warmEmulatorJsStart({
+          always: [
+            ejsRuntimeAsset('emulator.min.js'),
+            ejsRuntimeAsset('emulator.min.css'),
+            ejsRuntimeAsset(`cores/metadata/${encodeURIComponent(emulatorJsCoreFileFor(warmCore))}.json`),
+          ],
+          large: [
+            ejsRuntimeAsset(`cores/${encodeURIComponent(emulatorJsCoreDataFile(warmCore))}`),
+            ...(/^https?:|^\//.test(engineBiosUrl) ? [engineBiosUrl] : []),
+          ],
+        }).catch(() => {})
         const cachePurgeTask = purgePoisonedEngineCache()
         const socketIoTask: Promise<unknown | null> = NETPLAY_URL
           ? injectScript(doc, socketIoScriptUrl(), 8_000).then(() => null, (error: unknown) => error)
@@ -3483,11 +3509,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
           }
         }
 
-        // 默认 pcsx_rearmed 的 core.json 没有 chd；在真正内层文件名确定后换到支持它的核心。
-        // 本地文件和 .chd.8bg 解包都走这里，不能只靠远端 URL 的后缀猜。
-        const discCore = psxCoreForPreparedName(options.platform, core, engineGameName)
+        // 在真正内层文件名确定后才决定 CHD 用哪个核心；本地文件和 .chd.8bg 解包都走这里，
+        // 不能只靠远端 URL 的后缀猜。核心还要看 CHD 头里的压缩器：Beetle 不认 cdfl（见 psxChd.ts）。
+        const chdHead = options.platform === 'psx' && /\.chd$/i.test(engineGameName)
+          ? preparedPsxRange?.head ?? await readDiscHead(isFile ? options.game as File : gameUrl)
+          : null
+        const discCore = psxCoreForPreparedName(options.platform, core, engineGameName, chdHead)
         if (discCore !== core) {
-          console.info(`[emulatorjs] CHD 光盘切换核心：${core} → ${discCore}`)
+          console.info(`[emulatorjs] CHD 光盘切换核心：${core} → ${discCore}（压缩器 ${chdCompressors(chdHead)?.join('/') || '未知'}）`)
           core = discCore
         }
 
