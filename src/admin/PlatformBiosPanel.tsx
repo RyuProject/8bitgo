@@ -36,13 +36,20 @@ import { Card, btnClass, inputClass } from './ui'
  * arcade_bios 的游戏）唯一的 BIOS 来源。删了它，所有 Neo Geo 游戏当天全部起不来。
  */
 const NEED_BIOS: Array<{ id: PlatformId; hint: string }> = [
-  { id: 'arcade', hint: 'Neo Geo 系（拳皇 / 合金弹头 / 侍魂）必须要 neogeo.zip；CPS 系不需要' },
   { id: 'psx', hint: '旧版 / PCSX 平台级回退 BIOS。Beetle PSX 会优先使用下方对应区域 BIOS；日版通常需要 scph5500.bin，单独 scph1001.bin 不能替代。' },
   { id: 'segaCD', hint: '必须提供对应区域的 Mega CD / Sega CD BIOS；多区域可打包成 ZIP，文件放在根目录' },
   { id: 'pce', hint: 'HuCard 不需要；运行 PC Engine CD 游戏时需要 System Card 3（syscard3.pce）' },
   { id: 'atari5200', hint: '多数游戏需要 Atari 5200 BIOS（常见文件名 5200.rom）' },
   { id: 'lynx', hint: 'Handy 核心通常需要 lynxboot.img；若使用无 BIOS 启动的 homebrew 可留空' },
   { id: 'amiga', hint: '需要与机型匹配的 Kickstart ROM；多版本可打包成 ZIP，文件放在根目录' },
+]
+
+type BiosSection = 'platform' | 'psx' | 'arcade'
+
+const BIOS_SECTIONS: Array<{ id: BiosSection; label: string; description: string }> = [
+  { id: 'platform', label: '平台默认', description: '一份 BIOS 供同平台的游戏共用' },
+  { id: 'psx', label: 'PS1 区域', description: '按日、美、欧版游戏自动选择' },
+  { id: 'arcade', label: '街机板卡', description: '按 Neo Geo、PGM 等硬件系统选择' },
 ]
 
 /**
@@ -135,28 +142,40 @@ function BiosRow({
    */
   coveredBy?: string
 }) {
+  const status = value
+    ? probe === 'missing'
+      ? { label: '地址异常', className: 'bg-live/15 text-live' }
+      : probe === 'checking'
+        ? { label: '检查中', className: 'bg-surface-2 text-muted' }
+        : { label: '已就绪', className: 'bg-online/15 text-online' }
+    : coveredBy
+      ? { label: '由默认项提供', className: 'bg-online/15 text-online' }
+      : { label: '待配置', className: 'bg-surface-2 text-dim' }
+
   return (
-    <div className="rounded-xl border border-line p-3">
-      <div className="flex flex-wrap items-center gap-2">
-        {title}
-        {value ? (
-          <span className="rounded bg-online/15 px-1.5 py-0.5 text-xs text-online">已绑定</span>
-        ) : coveredBy ? (
-          /*
-            「平台 BIOS 已提供」而不是红的「未绑定」：引擎只有一个 BIOS 槽位
-            （EJS_biosUrl），平台那格填的**正好就是**这份系统包时，播放器压根不会再下一遍
-            （见 emulator/biosPlan.ts 里那条判断）。标红只会让人以为缺东西、跑去绑一份
-            一模一样的 —— 那正是「neogeo 在两张卡里各出现一次」的来源。
-          */
-          <span className="rounded bg-online/15 px-1.5 py-0.5 text-xs text-online">平台 BIOS 已提供</span>
-        ) : (
-          <span className="rounded bg-live/15 px-1.5 py-0.5 text-xs text-live">未绑定</span>
+    <article className="rounded-xl border border-line bg-surface-2/35 p-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            {title}
+            <span className={cx('rounded px-1.5 py-0.5 text-xs', status.className)}>{status.label}</span>
+          </div>
+          <p className="mt-1 text-[11px] leading-relaxed text-dim">{hint}</p>
+          {!value && coveredBy && <p className="mt-1 text-[11px] leading-relaxed text-online">{coveredBy}</p>}
+        </div>
+        {value && (
+          <div className="flex shrink-0 items-center gap-2 text-xs">
+            <a className="text-brand-hover hover:underline" href={romUrlForKey(value)} target="_blank" rel="noreferrer">
+              打开
+            </a>
+            <button type="button" className="text-live hover:underline" onClick={onUnbind}>
+              解绑
+            </button>
+          </div>
         )}
       </div>
-      <p className="mt-1 text-[11px] text-dim">{hint}</p>
-      {!value && coveredBy && <p className="mt-1 text-[11px] leading-relaxed text-online">{coveredBy}</p>}
 
-      <div className="mt-2 flex flex-wrap items-center gap-2">
+      <div className="mt-3 flex flex-wrap items-center gap-2">
         <input
           /*
             key 绑在已绑定的 key 上：输入框是非受控的（defaultValue），绑定成功后
@@ -165,6 +184,7 @@ function BiosRow({
           */
           key={value}
           className={cx(inputClass, 'min-w-0 flex-1')}
+          aria-label="BIOS 对象 key 或项目路径"
           placeholder={placeholder}
           defaultValue={value}
           onBlur={(e) => {
@@ -186,21 +206,6 @@ function BiosRow({
         <button type="button" className={btnClass.secondary} disabled={busy || !getRomApi()} onClick={onPickFile}>
           {busy ? `上传中 ${pct}%` : '上传文件'}
         </button>
-        {value && (
-          <>
-            <a
-              className="text-xs text-brand-hover hover:underline"
-              href={romUrlForKey(value)}
-              target="_blank"
-              rel="noreferrer"
-            >
-              打开
-            </a>
-            <button type="button" className="text-xs text-live hover:underline" onClick={onUnbind}>
-              解绑
-            </button>
-          </>
-        )}
       </div>
 
       {/*
@@ -214,24 +219,28 @@ function BiosRow({
           点「上传文件」把 BIOS 传到这个 key 上，或者把 key 改成文件真正所在的位置。
         </p>
       )}
-      {value && probe === 'ok' && <p className="mt-1 text-[11px] text-online">✓ 文件可访问</p>}
+      {value && probe === 'ok' && <p className="mt-2 text-[11px] text-online">✓ 文件可访问</p>}
 
       {value &&
         (romUrlForKey(value) ? (
-          <p className="mt-1 truncate text-[11px] text-dim">实际地址：{romUrlForKey(value)}</p>
+          <details className="mt-2 text-[11px] text-dim">
+            <summary className="cursor-pointer select-none hover:text-muted">查看实际地址</summary>
+            <p className="mt-1 break-all">{romUrlForKey(value)}</p>
+          </details>
         ) : (
           <p className="mt-1 text-[11px] text-live">
             这个 key 拼不出可访问地址（「ROM 存储」里的公开访问地址还没填）。
             现在启动游戏不会带上 BIOS，Neo Geo 会报「缺文件」——但真正的原因在这儿。
           </p>
         ))}
-    </div>
+    </article>
   )
 }
 
 export function PlatformBiosPanel() {
   const [map, setMap] = useState<PlatformBiosMap>({})
   const [loading, setLoading] = useState(true)
+  const [section, setSection] = useState<BiosSection>('platform')
   const [busy, setBusy] = useState<string | null>(null)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [pct, setPct] = useState<Record<string, number>>({})
@@ -409,145 +418,162 @@ export function PlatformBiosPanel() {
    * 仍然可以绑（系统级优先），只是不再伪装成「缺东西」。
    */
   const coveredSet = biosNameOfUrl(map.arcade)
+  const bindingIds = [
+    ...platformRows.map((row) => row.id),
+    ...PSX_BIOS_REGIONS.map((region) => biosSetKey(region.name)),
+    'arcade',
+    ...setNames.map((name) => biosSetKey(name)),
+  ]
+  const boundCount = bindingIds.filter((id) => Boolean((map as Record<string, string | undefined>)[id])).length
+  const failedCount = bindingIds.filter((id) => probe[id] === 'missing').length
 
   return (
     <>
-      <Card title="平台 BIOS">
+      <Card
+        title="模拟器 BIOS"
+        extra={
+          loading ? (
+            <span className="text-xs text-muted">正在读取…</span>
+          ) : (
+            <span className={cx('text-xs', failedCount ? 'text-live' : 'text-online')}>
+              {failedCount ? `${failedCount} 项地址异常` : `${boundCount} 项已配置`}
+            </span>
+          )
+        }
+      >
         <p className="text-xs leading-relaxed text-muted">
-          有些平台不给 BIOS 就起不来，这跟 ROM 对不对无关。传一次，该平台所有游戏共用。
-          {!getRomApi() && <span className="ml-1 text-live">（尚未配置 Worker 地址，只能手填路径 / key）</span>}
-        </p>
-        <p className="mt-1 text-[11px] leading-relaxed text-dim">
-          两种放法都行：<strong className="text-muted">放进项目</strong>（文件丢进{' '}
-          <code className="rounded bg-surface-2 px-1">public/bios/</code>，这里填{' '}
-          <code className="rounded bg-surface-2 px-1">/bios/neogeo.zip</code>，改完要重新构建），
-          或<strong className="text-muted">上传到对象存储</strong>（点下面的按钮，填的是对象 key）。
-          前者简单，但构建机上必须也有这个文件；后者只存一份，部署时不用管。
-        </p>
-        <p className="mt-1 text-[11px] leading-relaxed text-live">
-          ⚠️ 单文件 BIOS 的地址最后一段必须是核心要找的文件名：街机是{' '}
-          <code className="rounded bg-surface-2 px-1">neogeo.zip</code>，PS1 单文件按地区是{' '}
-          <code className="rounded bg-surface-2 px-1">scph5500.bin</code>（日）/ scph5501.bin（美）/ scph5502.bin（欧）。
-          PS1 也可以上传一个多区域 ZIP，各 BIOS 文件放在压缩包根目录且内部文件名保留不变；引擎会展开它，让 Beetle 按游戏区域选择。
-          上传时会自动保留原文件名，别手动改 BIOS 内部文件名。
-        </p>
-        <p className="mt-1 text-[11px] leading-relaxed text-dim">
-          街机上还有一类<strong className="text-muted">不在这张卡里填</strong>：同一个平台底下的
-          <strong className="text-muted">另一套硬件</strong> —— IGS 的 PGM 板子（三国战纪 / 西游释厄传那一批）
-          要的是 <code className="rounded bg-surface-2 px-1">pgm.zip</code>，而这张卡一个平台只存一份。
-          那些按<strong className="text-muted">系统名</strong>绑在下面的「街机 BIOS 包（按系统）」里，
-          这里留 neogeo 那份就行。
+          只需绑定模拟器实际需要的文件；上传会保留核心识别所需的文件名。平台默认、PS1 区域和街机板卡分别管理，避免同一份 BIOS 重复绑定。
+          {!getRomApi() && <span className="ml-1 text-live">（未配置 Worker，只能手填路径或对象 key）</span>}
         </p>
 
+        <div className="mt-4 flex flex-wrap gap-2" role="tablist" aria-label="BIOS 分类">
+          {BIOS_SECTIONS.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              role="tab"
+              aria-selected={section === item.id}
+              className={cx(
+                'rounded-lg px-3 py-2 text-left text-xs transition',
+                section === item.id ? 'bg-brand text-white shadow-sm' : 'bg-surface-2 text-muted hover:text-fg',
+              )}
+              onClick={() => setSection(item.id)}
+            >
+              <span className="block font-semibold">{item.label}</span>
+              <span className={cx('mt-0.5 block text-[11px]', section === item.id ? 'text-white/80' : 'text-dim')}>{item.description}</span>
+            </button>
+          ))}
+        </div>
+
         {loading ? (
-          <p className="mt-3 text-sm text-muted">正在读取…</p>
+          <p className="mt-5 text-sm text-muted">正在读取 BIOS 绑定…</p>
         ) : (
-          <div className="mt-3 space-y-3">
-            {platformRows.map((r) => (
-              <BiosRow
-                key={r.id}
-                title={
-                  <>
-                    <span className="text-base" aria-hidden>
-                      {r.platform!.icon}
-                    </span>
-                    <span className="font-semibold">{r.platform!.nameZh}</span>
-                  </>
-                }
-                hint={r.hint}
-                placeholder="/bios/neogeo.zip 或对象存储 key"
-                {...rowProps(r.id)}
-              />
-            ))}
-            <div className="space-y-2 border-t border-line pt-3">
-              <div>
-                <h3 className="text-sm font-semibold">PlayStation 区域 BIOS（自动选择）</h3>
-                <p className="mt-1 text-[11px] leading-relaxed text-dim">
-                  分别上传日、美、欧版 BIOS。播放器根据游戏条目 / ROM 地址里的发行序列号（SLPM / SLUS / SLES 等）、明确地区标记和已知发行版本选择；
-                  无法判定或该区域尚未上传时，回退到上面的 PS1 平台级 BIOS。上传时会按核心要求保存为标准文件名。
+          <div className="mt-4 space-y-3" role="tabpanel">
+            {section === 'platform' && (
+              <>
+                <p className="text-[11px] leading-relaxed text-dim">
+                  一个绑定供该平台全部游戏使用。文件可放进 <code className="rounded bg-surface-2 px-1">public/bios/</code>，也可以上传到对象存储；后者不需要跟着每次部署复制。
                 </p>
-              </div>
-              {PSX_BIOS_REGIONS.map((region) => (
-                <BiosRow
-                  key={region.name}
-                  title={<span className="font-semibold">{region.label}</span>}
-                  hint={region.hint}
-                  placeholder={`roms/bios/${region.fileName}`}
-                  {...rowProps(biosSetKey(region.name))}
-                />
-              ))}
-            </div>
-          </div>
-        )}
-      </Card>
+                {platformRows.map((r) => (
+                  <BiosRow
+                    key={r.id}
+                    title={
+                      <>
+                        <span className="text-base" aria-hidden>{r.platform!.icon}</span>
+                        <span className="font-semibold">{r.platform!.nameZh}</span>
+                      </>
+                    }
+                    hint={r.hint}
+                    placeholder="/bios/文件名 或对象存储 key"
+                    {...rowProps(r.id)}
+                  />
+                ))}
+              </>
+            )}
 
-      <Card title="街机 BIOS 包（按系统）">
-        <p className="text-xs leading-relaxed text-muted">
-          街机这一个平台底下其实是好几套硬件，而引擎只吃一个 BIOS 地址 —— 平台那一格填了{' '}
-          <code className="rounded bg-surface-2 px-1">neogeo.zip</code>，
-          IGS 的 PGM 板子（三国战纪、西游释厄传）就永远起不来。
-          这里按<strong>系统名</strong>各绑一份：游戏需要哪一份由它自己的「BIOS 包」字段说了算
-          （上传 ROM 时自动识别填好，后台也可以手工改，识别不出来的自己填）。
-        </p>
-        <p className="mt-1 text-[11px] leading-relaxed text-dim">
-          ⚠️ 系统名必须是核心要找的那个 set 名，文件也必须叫那个名字：Neo Geo 是{' '}
-          <code className="rounded bg-surface-2 px-1">neogeo</code> /{' '}
-          <code className="rounded bg-surface-2 px-1">neogeo.zip</code>，
-          PGM 是 <code className="rounded bg-surface-2 px-1">pgm</code> /{' '}
-          <code className="rounded bg-surface-2 px-1">pgm.zip</code>。
-          从别处（MAME 之类）随便拿一份 pgm 的 BIOS 包常常会因为 CRC 对不上而报缺文件 ——
-          要和核心同一批的 romset。
-        </p>
+            {section === 'psx' && (
+              <>
+                <p className="text-[11px] leading-relaxed text-dim">
+                  优先配置日、美、欧三份 BIOS；播放器会按光盘地区自动选择。日版文件必须保留为 <code className="rounded bg-surface-2 px-1">scph5500.bin</code>。无法识别地区或对应文件缺失时，才会回退到“平台默认”里的 PS1 BIOS。多区域 ZIP 也可以，内部文件必须放在压缩包根目录并保留标准文件名。
+                </p>
+                {PSX_BIOS_REGIONS.map((region) => (
+                  <BiosRow
+                    key={region.name}
+                    title={<span className="font-semibold">{region.label}</span>}
+                    hint={region.hint}
+                    placeholder={`roms/bios/${region.fileName}`}
+                    {...rowProps(biosSetKey(region.name))}
+                  />
+                ))}
+              </>
+            )}
 
-        {loading ? (
-          <p className="mt-3 text-sm text-muted">正在读取…</p>
-        ) : (
-          <div className="mt-3 space-y-3">
-            {setNames.map((name) => (
-              <BiosRow
-                key={name}
-                title={
-                  <>
-                    <span className="text-base" aria-hidden>
-                      🎛️
-                    </span>
-                    <span className="font-mono font-semibold">{name}</span>
-                  </>
-                }
-                hint={ARCADE_BIOS_SETS.find((s) => s.name === name)?.hint ?? `系统包 ${name}（自己加的）`}
-                placeholder={`bios/${name}.zip 或对象存储 key`}
-                coveredBy={
-                  name === coveredSet
-                    ? `平台那格填的是 ${map.arcade}，文件名正好就是它 —— 引擎已经拿到了，这里不用再绑一份。要单独给这个系统换一份也可以，绑了播放器优先用它。`
-                    : undefined
-                }
-                {...rowProps(biosSetKey(name))}
-              />
-            ))}
+            {section === 'arcade' && (
+              <>
+                <p className="text-[11px] leading-relaxed text-dim">
+                  每款街机 ROM 会标注自己需要的硬件系统；请按系统各绑一份，而不是把 PGM、Neo Geo 等都塞到“街机平台默认”里。系统名和文件名必须与核心使用的 romset 一致。
+                </p>
+                {setNames.map((name) => (
+                  <BiosRow
+                    key={name}
+                    title={
+                      <>
+                        <span className="text-base" aria-hidden>🎛️</span>
+                        <span className="font-mono font-semibold">{name}</span>
+                      </>
+                    }
+                    hint={ARCADE_BIOS_SETS.find((s) => s.name === name)?.hint ?? `系统包 ${name}（手工添加）`}
+                    placeholder={`bios/${name}.zip 或对象存储 key`}
+                    coveredBy={
+                      name === coveredSet
+                        ? `旧条目的默认 BIOS 已指向 ${map.arcade}；这份系统包已可用，无需重复绑定。单独绑定后会优先使用系统级文件。`
+                        : undefined
+                    }
+                    {...rowProps(biosSetKey(name))}
+                  />
+                ))}
 
-            <div className="flex flex-wrap items-center gap-2 pt-1">
-              <input
-                className={cx(inputClass, 'max-w-[12rem] font-mono')}
-                placeholder="其它系统名，如 skns"
-                value={newSet}
-                onChange={(e) => setNewSet(e.target.value)}
-              />
-              <button
-                type="button"
-                className={btnClass.secondary}
-                disabled={!/^[a-z0-9_]{1,32}$/.test(newSet.trim().toLowerCase())}
-                onClick={() => {
-                  const name = newSet.trim().toLowerCase()
-                  setExtraSets((s) => (s.includes(name) ? s : [...s, name]))
-                  setNewSet('')
-                }}
-              >
-                添加
-              </button>
-              <span className="text-[11px] text-dim">
-                系统名只认小写字母、数字和下划线（romset 索引里那 18 种就是这些名字）
-              </span>
-            </div>
+                <details className="rounded-xl border border-line p-3">
+                  <summary className="cursor-pointer text-sm font-medium hover:text-brand-hover">添加其它街机 BIOS 系统</summary>
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <input
+                      className={cx(inputClass, 'max-w-[12rem] font-mono')}
+                      placeholder="系统名，如 skns"
+                      value={newSet}
+                      onChange={(e) => setNewSet(e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className={btnClass.secondary}
+                      disabled={!/^[a-z0-9_]{1,32}$/.test(newSet.trim().toLowerCase())}
+                      onClick={() => {
+                        const name = newSet.trim().toLowerCase()
+                        setExtraSets((s) => (s.includes(name) ? s : [...s, name]))
+                        setNewSet('')
+                      }}
+                    >
+                      添加系统
+                    </button>
+                    <span className="text-[11px] text-dim">只接受小写字母、数字和下划线。</span>
+                  </div>
+                </details>
+
+                <details className="rounded-xl border border-line p-3">
+                  <summary className="cursor-pointer text-sm font-medium hover:text-brand-hover">旧街机条目的默认 BIOS（兼容用）</summary>
+                  <p className="mt-2 text-[11px] leading-relaxed text-dim">
+                    仅供还没有填写“BIOS 包”字段的历史游戏回退使用。新游戏请在上方按系统绑定；不要把不同硬件的 BIOS 混在这里。
+                  </p>
+                  <div className="mt-3">
+                    <BiosRow
+                      title={<span className="font-semibold">街机默认 BIOS</span>}
+                      hint="通常是 neogeo.zip；只影响未标注硬件系统的历史街机条目。"
+                      placeholder="bios/neogeo.zip 或对象存储 key"
+                      {...rowProps('arcade')}
+                    />
+                  </div>
+                </details>
+              </>
+            )}
           </div>
         )}
       </Card>
