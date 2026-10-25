@@ -35,4 +35,12 @@ for (const name of ['mednafen_psx-wasm.data', 'mednafen_psx-legacy-wasm.data']) 
 const report = JSON.parse(readFileSync(join(cores, 'metadata/mednafen_psx.json'), 'utf8'))
 assert.match(report.patch ?? '', /save-state-glue-v2/, 'PS1 核心报告必须标记安全存档胶水代次')
 assert.equal(report.saveStateGlue, 'v2', 'PS1 核心报告必须声明安全存档胶水版本')
+
+const adapterSource = readFileSync(join(root, 'src/emulator/adapters/emulatorjs.ts'), 'utf8')
+assert.match(
+  adapterSource,
+  /const skipEagerStateProbe = options\.platform === 'psx' && core === PSX_CHD_CORE\s*\n\s*\/\*[\s\S]*?\*\/\s*\n\s*if \(!skipEagerStateProbe\) probeSaveState\(\)/,
+  'Beetle PS1 的开机流程不应为探测能力而主动调用 getState()，否则会制造误导性的失败日志',
+)
+
 console.log('✓ PS1 即时存档胶水回归通过')

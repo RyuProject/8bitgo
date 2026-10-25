@@ -1970,8 +1970,14 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       caps.delete('record')
     }
     options.onCaps?.(caps)
-    // 上面广播完再探：探测失败时它会自己再广播一次（可能是 1.5s 之后）
-    probeSaveState()
+    const skipEagerStateProbe = options.platform === 'psx' && core === PSX_CHD_CORE
+    /*
+     * Beetle PS1 会先开始出画面、再准备序列化器。这个阶段主动取状态虽然会被捕获，
+     * 但核心仍会向控制台写一条“Failed to save state”，让正常开局看起来像故障。
+     * 真正由玩家触发的存档仍会走 saveState() 的错误处理；这里只是不拿一次假保存
+     * 来探测工具栏能力。
+     */
+    if (!skipEagerStateProbe) probeSaveState()
   }
   /** 服务端下发的房间令牌，上传存档要用 */
   let stateToken = ''
