@@ -14,11 +14,10 @@ import { requireAdmin } from '../auth.js'
 import { CACHE, publicApi } from '../cache.js'
 import { listPlatformBios, setPlatformBios, clearPlatformBios } from '../games-repo.js'
 import { invalidateContent } from '../content.js'
+import { isValidPlatformBiosKey } from '../platform-bios-key.js'
 
 export const platformBiosRouter = Router()
 
-/** 平台 id 的形状约束。平台表在前端（src/data/platforms.ts），后端不跟着抄一份 */
-const VALID_PLATFORM = /^[A-Za-z0-9_-]{1,20}$/
 /**
  * 街机 BIOS **系统包**的绑定，键写成 `bios:<系统名>`（`bios:neogeo`、`bios:pgm`）。
  *
@@ -36,10 +35,6 @@ const VALID_PLATFORM = /^[A-Za-z0-9_-]{1,20}$/
  * 因为核心是按固定文件名找 BIOS 的（见 admin/PlatformBiosPanel.tsx 的说明），
  * 而绑定地址的最后一段会被当成文件名。
  */
-const VALID_BIOS_SET = /^bios:[a-z0-9_]{1,32}$/
-
-const validKey = (v) => VALID_PLATFORM.test(v) || VALID_BIOS_SET.test(v)
-
 platformBiosRouter.get('/', async (_req, res, next) => {
   try {
     const map = await listPlatformBios()
@@ -54,8 +49,8 @@ platformBiosRouter.get('/', async (_req, res, next) => {
 platformBiosRouter.put('/:platform', requireAdmin, async (req, res, next) => {
   try {
     const platform = String(req.params.platform || '')
-    if (!validKey(platform)) {
-      return res.status(400).json({ error: '平台 id 或 BIOS 系统名不合法（BIOS 写成 bios:neogeo 这样）' })
+    if (!isValidPlatformBiosKey(platform)) {
+      return res.status(400).json({ error: '平台 id 或 BIOS 系统名不合法（例如 bios:neogeo 或 bios:psx-jp）' })
     }
     const key = String(req.body?.objectKey ?? '').trim()
     if (!key) return res.status(400).json({ error: '缺少 objectKey' })
@@ -72,8 +67,8 @@ platformBiosRouter.put('/:platform', requireAdmin, async (req, res, next) => {
 platformBiosRouter.delete('/:platform', requireAdmin, async (req, res, next) => {
   try {
     const platform = String(req.params.platform || '')
-    if (!validKey(platform)) {
-      return res.status(400).json({ error: '平台 id 或 BIOS 系统名不合法（BIOS 写成 bios:neogeo 这样）' })
+    if (!isValidPlatformBiosKey(platform)) {
+      return res.status(400).json({ error: '平台 id 或 BIOS 系统名不合法（例如 bios:neogeo 或 bios:psx-jp）' })
     }
     await clearPlatformBios(platform)
     invalidateContent()
