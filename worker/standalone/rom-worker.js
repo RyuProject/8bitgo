@@ -475,10 +475,18 @@ function cacheValue(env, name, fallback) {
  * `s-maxage` 就自动把它放进边缘缓存；线上一直显示 `CF-Cache-Status: DYNAMIC`
  * 就是这个原因。这里补的是 Worker 自己的 Cache API，而不是再堆一层响应头。
  *
- * 未版本化 URL 绝不能进来：后台替换同一个 key 后，旧对象会在边缘活到 TTL 结束。
+ * 未版本化 URL 原则上不能进来：后台替换同一个 key 后，旧对象会在边缘活到 TTL 结束。
  * `romv` / `v` 是对象 ETag 或内容哈希，内容变了 URL 必然变化，所以可以安全长缓存。
  * CORS 不是 `*` 时也先跳过，避免把某个被允许 Origin 的反射响应给另一个 Origin。
+ *
+ * 唯一例外是 `covers/` 下的图片。它们没有版本戳，但响应本来就声明了
+ * `s-maxage=600`，文件头注释也承诺「换封面 10 分钟内生效」；Cache API 按这条 s-maxage
+ * 过期，不会比承诺活得更久。不放进来的代价是线上每张封面每次都回 APAC 的 R2
+ * （2026-10-25 单日 1.4 万次，image.8bitgo.com 全部 `CF-Cache-Status: none`），
+ * 中国大陆访客还要先绕到 LAX，再跨一次太平洋。视频虽然也在可变 key 上，但它走 Range，
+ * 本来就进不了这条整份 200 的缓存路径。
  */
+const COVER_IMAGE_PATH = /^\/covers\/.+\.(?:png|jpe?g|webp|avif|gif)$/i
 export function edgeCacheEligible(request, url, cors) {
   if (request.method !== 'GET' || cors['Access-Control-Allow-Origin'] !== '*') return false
   // Cache API 的普通 URL 键只存整份 200；分片必须走下面独立的、带范围的私有键。
@@ -495,7 +503,7 @@ export function edgeCacheEligible(request, url, cors) {
    * 且不依赖 HTTP 内容编码还原语义的 CS16 Zstd 分片。
    */
   const immutablePath = /^\/web\/cs16\/zstd-v1\/chunks\/[a-f0-9]{64}\.zst$/.test(url.pathname)
-  return versioned || immutablePath
+  return versioned || immutablePath || COVER_IMAGE_PATH.test(url.pathname)
 }
 
 /**
@@ -897,7 +905,10 @@ export default {
       )
       return edgeCacheHeader(response, 'MISS')
     }
-    if (edgeCache && response.status === 200 && response.body && !response.headers.has('Content-Range')) {
+    // 分片上传允许封面带 Content-Encoding；Cache API 会丢掉这个头却保留压缩字节（见上面
+    // Sockdrive 那段），这种封面宁可每次回 R2，也不能让 HIT 吐出一张解不开的图。
+    const encodedCover = COVER_IMAGE_PATH.test(url.pathname) && response.headers.has('Content-Encoding')
+    if (edgeCache && response.status === 200 && response.body && !response.headers.has('Content-Range') && !encodedCover) {
       // clone 后立刻回玩家；75 MB 的 NDS ROM 写边缘缓存不能挡住首包。
       const cacheKey = new Request(request.url, { method: 'GET' })
       context.waitUntil(

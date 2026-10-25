@@ -134,6 +134,51 @@ test('unversioned objects and reflected CORS responses bypass edge cache', async
     else globalThis.caches = previous
   }
 })
+test('unversioned cover images use the edge cache under their short s-maxage', async () => {
+  const previous = globalThis.caches
+  let stored
+  const waits = []
+  globalThis.caches = { default: {
+    async match() { return stored?.clone() },
+    async put(_request, response) { stored = response.clone(); await response.arrayBuffer() },
+  } }
+  const context = { waitUntil(promise) { waits.push(promise) } }
+  try {
+    const e = environment(); e.COVERS.seed('covers/g.webp', 'cover')
+    const first = await worker.fetch(req('/covers/g.webp'), e, context)
+    assert.equal(first.headers.get('X-8BitGo-Edge-Cache'), 'MISS')
+    // 缓存寿命完全由这条短策略决定；如果哪天它变长，这里的「10 分钟内生效」承诺就破了。
+    assert.equal(first.headers.get('Cache-Control'), 'public, max-age=300, s-maxage=600, must-revalidate')
+    assert.equal(await first.text(), 'cover')
+    await Promise.all(waits)
+    const second = await worker.fetch(req('/covers/g.webp'), e, context)
+    assert.equal(second.headers.get('X-8BitGo-Edge-Cache'), 'HIT')
+    assert.equal(await second.text(), 'cover')
+    assert.equal(count(e.COVERS, 'get'), 1)
+  } finally {
+    if (previous === undefined) delete globalThis.caches
+    else globalThis.caches = previous
+  }
+})
+test('content-encoded cover images bypass Cache API writes', async () => {
+  const previous = globalThis.caches
+  let puts = 0
+  globalThis.caches = { default: {
+    async match() {},
+    async put() { puts += 1 },
+  } }
+  const context = { waitUntil(promise) { return promise } }
+  try {
+    const e = environment(); e.COVERS.seed('covers/br.webp', 'compressed', { httpMetadata: { contentEncoding: 'br' } })
+    const r = await worker.fetch(req('/covers/br.webp'), e, context)
+    assert.equal(r.headers.get('Content-Encoding'), 'br')
+    assert.equal(r.headers.get('X-8BitGo-Edge-Cache'), null)
+    assert.equal(puts, 0)
+  } finally {
+    if (previous === undefined) delete globalThis.caches
+    else globalThis.caches = previous
+  }
+})
 test('edge cache failure falls back to R2 instead of taking ROM downloads down', async () => {
   const previous = globalThis.caches
   globalThis.caches = { default: {
