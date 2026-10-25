@@ -657,7 +657,13 @@ DOSBox-X 启动前明确报错，不能继续留给客体黑屏。加载错误�
 避免配置看似保存成功、玩家却永远读不到补丁。
 
 js-dos 的静态 Sockdrive 会把写过的扇区单独固化，播放器因此给纯 DOS 与 Windows 流式盘开放
-保存进度；它固定使用 js-dos 存档槽 1，和旧普通 DOS / 整包模式的槽 0 隔离，存档键还带规范化
+保存进度。⚠️ 保存**不能**走 `props.save()`：js-dos 的 `Li()` 只要配置里出现 `.qcow2` 就把 `canSave`
+置 false，而我们的流式盘一定带 qcow2（Win95 系统盘或 DOS 7.1 启动盘），2026-10-26 以前《辐射》点
+保存永远是“这一刻取不到存档”。适配器改为直接调 `ci.persistSockdrives()` 只取 Sockdrive 扇区差异
+（实测《辐射》开局后 823 字节，URL 为规范化后的 Sockdrive 目录），经同一个存储钩子写入；开机时
+js-dos 仍经 `fsChanges.pull` 交回，worker 按非 ZIP 层识别成 `sockdriveChanges[url]` 回放。不要改用
+`persist(true)`：没有扇区改动时它会退回把整个文件系统（含被写过的 qcow2）打成 ZIP。
+存档固定使用 js-dos 存档槽 1，和旧普通 DOS / 整包模式的槽 0 隔离，存档键还带规范化
 Sockdrive URL 的指纹。**换 v2 目录会自动开一份新存档**：旧扇区差异不能套到新基础盘，否则可能
 破坏文件系统；旧存档会保留，但不要自动迁移。播放器先按网络预算把热点送入 HTTP 缓存：
 清单涉及的对象已全部预热时传 `sockdrivePreload: 'default'`，让官方 runtime 把缓存字节搬进
@@ -1224,6 +1230,30 @@ js-dos 运行时从 npm 复制到 `public/jsdos/v<version>/`，版本同时写�
 不会可靠剥掉，引擎照样报 ready，实际只停在 `C:\>`。`makeJsdosBundle()` 会保留原文件，再在同目录
 补一个真实的 `8BITGO.EXE`（撞名时递增）供启动。ZIP 的绝对路径、盘符和 `../` 也在重打包前拒绝，
 否则能覆盖虚拟盘里的 `.jsdos/dosbox.conf`。
+
+⚠️ js-dos 的设置不在裸 localStorage 键里：它用 `new class{…}(void 0,"jsdos.8.")` 包了一层前缀，
+JSPI 开关真正的键是 `jsdos.8.jspi`。2026-10-26 以前 `jspiFlag.ts` 一直写裸键 `jspi`，js-dos 从未
+读到，线上 DOSBox-X 实际一直跑 Asyncify；悬停预热却按 JSPI 拉 `wdosbox-x-jspi.wasm`，每次冷启动
+白下 7.9MB（gzip 约 2.7MB），真正要用的 `wdosbox-x.wasm` 反而在系统盘和游戏包下完之后才串行下载。
+现在默认固定 Asyncify（所有 Win9x 游戏都在它上面验收，《帝国时代》同机 A/B 到主菜单 12～13 秒无差别），
+`?jspi=1` 才写 `jsdos.8.jspi=true` 做对照；`test:jspi` 会对着 `public/jsdos` 里的运行时核对前缀与读法。
+适配器在玩家点击开始的那一刻就调用 `warmJsdosCore()`，把与 `Dos({ backend })` 同一判断选出的核心
+并行送进 HTTP 缓存，触屏 / 键盘开局（没有悬停）也不再把核心压在关键路径末尾。
+
+`ci-ready` 之后适配器清空交给 js-dos 的 `initFs` 数组并撤销 blob URL：js-dos 把每层按 4MB **复制**
+进 worker，主线程原件却挂在它保存的 `options.initFs` 上整局不放（帝国时代约 34MB 系统盘 + 重打的
+游戏层）。js-dos 首次加载后就把 bundle / initFs 置空，后端重连不会再读，所以可以安全释放。
+
+普通 DOS 的 8 秒兜底只在 `ci` 已到时放行；`emu-ready` 只说明 emulators.js 加载完，之后才取包、
+解压、下 wasm。壳起来但没有 `ci` 时改为继续按前台时间等（180 秒）后报错，不再提前撤遮罩把
+后续 `bnd-error` 变成 ready 之后的错误（那样播放器既不自动重试也不换语言 ROM）。DOS 7.1 +
+Sockdrive 的启动超时也改成与 Windows 客体相同的“建盘 / 自启动”两段前台计时，不再是 Dos() 起算的
+90 秒墙钟（配了 ≥80 秒开机延迟的游戏以前必然失败）。
+
+逐游戏兼容表（`windowsGameCompatibility*` / `dosGameCompatibility*` / 鼠标模式 / DirectDraw 刷新）
+一律用 `compatSlug`：播放器传入的 `gameSlug` 是存档键，第二语言版带 `~rom-<语言>` 后缀，直接比对会让
+这些修正在换语言后静默失效。绝对坐标会话（Windows 客体、主题医院）里 `ci.sendMouseRelativeMotion`
+也被换算成绝对坐标，手柄右摇杆 / 触屏鼠标板不再把光标甩到四角。
 
 Windows 系统镜像、游戏包和资料片从同一刻下载；ROM 进度在系统镜像完成前暂存，避免游戏段先跑满
 再长时间不动。资料片最多三路并发，并走共用的失速中止。回归：

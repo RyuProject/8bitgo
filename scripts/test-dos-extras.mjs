@@ -388,7 +388,7 @@ const adapter = readFileSync(new URL('../src/emulator/adapters/jsdos.ts', import
   ok(/URL\.createObjectURL\(rom\.bundleBlob\)/.test(adapter), '⭐ 已带配置的 js-dos bundle 直接启动，不再复制整包重打')
   ok(/!dosboxConfig\?\.trim\(\)[\s\S]{0,120}?!startupCommands[\s\S]{0,120}?!options\.dosExtras\?\.length/.test(adapter), 'Blob 透传只在没有任何后台覆盖时启用')
   ok(
-    /const dosboxConfig = windowsGameCompatibilityDosboxConfig\(\s*options\.gameSlug,\s*(?:options\.)?dosExecutable,\s*options\.dosboxConfig,\s*\)/.test(adapter),
+    /const dosboxConfig = windowsGameCompatibilityDosboxConfig\(\s*compatSlug,\s*(?:options\.)?dosExecutable,\s*options\.dosboxConfig,\s*\)/.test(adapter),
     '普通 DOS 的性能 / 兼容配置经过兼容层后仍会传给运行时，不会被静默丢弃',
   )
   ok(adapter.indexOf('const engineTask = loadJsDos()') < adapter.indexOf('const romTask = settled(streamingGame'), '引擎与 ROM 同时开始加载')

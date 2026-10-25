@@ -103,7 +103,18 @@ function prewarmJsdos(core: string | null | undefined, aggressive: boolean) {
   warmHttpCache(`${JSDOS_PATH}js-dos.js`)
   warmHttpCache(`${JSDOS_PATH}js-dos.css`)
   if (!aggressive || !hasHoverIntent() || !allowsLargeHoverPrewarm()) return
+  warmJsdosCore(core)
+}
 
+/**
+ * 把本局 js-dos 后端真正会用的那一套核心送进 HTTP 缓存。
+ *
+ * 适配器在玩家**已经点了开始**时也直接调用它（不看悬停 / 省流量）：js-dos 只在 `Dos()`
+ * 里才开始取 wasm，而 `Dos()` 要等系统盘和游戏包下完。不提前拉的话，7.7MB 的 DOSBox-X
+ * 会排在几十 MB 下载**之后**再串行下载、编译；触屏和键盘开局没有悬停，从来吃不到预热。
+ * 这里与那两路下载并行，正式请求时直接命中缓存。`warmHttpCache` 自带去重，悬停已拉过就不再发。
+ */
+export function warmJsdosCore(core: string | null | undefined) {
   const emulatorRoot = `${JSDOS_PATH}emulators/`
   // 两个后端都先经过这层调度和 ZIP 文件系统；合计不足 300 KB，和核心并行拉最划算。
   warmHttpCache(`${emulatorRoot}emulators.js`)
