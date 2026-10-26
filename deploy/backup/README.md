@@ -8,7 +8,8 @@
 
 ## 1. rclone 的 `r2` remote
 
-备份靠 rclone 上传，remote 默认叫 `r2`（可用 `R2_REMOTE` 覆盖）。
+备份靠 rclone 上传，优先使用名为 `r2` 的 remote（可用 `R2_REMOTE` 覆盖）。如果服务器仍保留旧命名
+`r2-8bitgo`，脚本会自动识别它；显式设置 `R2_REMOTE` 始终优先，适合多 bucket 或迁移中的机器。
 
 ⚠️ **配在 root 下**：`redeploy.sh` 用 `sudo -E` 跑、systemd 单元也是 `User=root`，
 rclone 读的是 `$HOME/.config/rclone/rclone.conf` —— sudo 下 `$HOME=/root`。

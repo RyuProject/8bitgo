@@ -51,7 +51,9 @@ ENV_FILE="${ENV_FILE:-/var/www/8bitgo/server/.env}"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/8bitgo}"
 KEEP_LOCAL_DAYS="${KEEP_LOCAL_DAYS:-7}"
 KEEP_REMOTE_DAYS="${KEEP_REMOTE_DAYS:-30}"
-R2_REMOTE="${R2_REMOTE:-r2}"
+# 允许环境显式固定 remote。留空时下面会从现有 rclone 配置中优先选 r2，
+# 再兼容早期服务器实际使用过的 r2-8bitgo，避免“本地备份完成、部署却因名字不一致中止”。
+R2_REMOTE="${R2_REMOTE:-}"
 R2_BUCKET="${R2_BUCKET:-8bitgo}"
 R2_PREFIX="${R2_PREFIX:-backups/db}"
 LOG="${LOG:-/var/log/8bitgo-backup.log}"
@@ -141,6 +143,19 @@ mv "$TMP" "$OUT"
 chmod 600 "$OUT"
 log "✅ 本地完成 $(human_size "$SIZE")：$OUT"
 
+if [ -z "$R2_REMOTE" ] && command -v rclone >/dev/null; then
+  RCLONE_REMOTES="$(rclone listremotes 2>/dev/null || true)"
+  if printf '%s\n' "$RCLONE_REMOTES" | grep -qx 'r2:'; then
+    R2_REMOTE='r2'
+  elif printf '%s\n' "$RCLONE_REMOTES" | grep -qx 'r2-8bitgo:'; then
+    # 旧生产机曾以这个名称配置；自动识别只解决命名迁移，不会猜测任何凭据或 bucket。
+    R2_REMOTE='r2-8bitgo'
+  else
+    R2_REMOTE='r2'
+  fi
+fi
+R2_REMOTE="${R2_REMOTE:-r2}"
+
 if [ "$LOCAL_ONLY" -eq 1 ]; then
   log "--local-only，跳过 R2"
 elif ! command -v rclone >/dev/null; then
@@ -149,6 +164,7 @@ elif [ "$DRY_RUN" -eq 1 ]; then
   log "--dry-run，跳过上传"
 else
   DEST="$R2_REMOTE:$R2_BUCKET/$R2_PREFIX"
+  log "R2 remote：$R2_REMOTE"
   rclone copy "$OUT" "$DEST/" --s3-no-check-bucket 2>&1 | sed 's/^/    /' | tee -a "$LOG"
   # ⚠️ 上传完要**回头核对**。rclone copy 成功退出不代表对面那份是完整的，
   #    而「以为传上去了」是备份里最贵的一种错。
