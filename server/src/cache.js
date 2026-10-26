@@ -133,10 +133,12 @@ export function staticCacheHeaders(res, filePath) {
     res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
   }
   // Play.js 同时是主线程 ES module 和 pthread Worker 入口；官方部署也给它发这两项。
-  if (p.endsWith('/play/Play.js')) {
+  const versionedPlayAsset = /\/play\/[^/]+\/(?:Play\.js|Play\.wasm)$/i.test(p)
+  if (p.endsWith('/play/Play.js') || /\/play\/[^/]+\/Play\.js$/i.test(p)) {
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
     res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
     res.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
+    return set(versionedPlayAsset || isVersionedRequest(res) ? CACHE.engineVersioned : CACHE.engine)
   }
   // wasm-dolphin 的页面、Worker 和 WASM 都在隔离页里加载；任一层少 COEP 都会白屏。
   if (p.includes('/dolphin/')) {
@@ -195,7 +197,8 @@ export function staticCacheHeaders(res, filePath) {
     不带 ?v 的（引擎自己拼的 compression/*.js、localization/*.json）仍走短缓存。
   */
   if (p.includes('/emulatorjs/') && isVersionedRequest(res)) return set(CACHE.engineVersioned)
-  if (p.includes('/ruffle/') || p.includes('/emulatorjs/') || p.includes('/j2me/') || p.includes('/jsdos/') || p.includes('/webretro/') || p.includes('/qemu-wasm/') || p.includes('/play/')) return set(CACHE.engine)
+  if (p.includes('/ruffle/') || p.includes('/emulatorjs/') || p.includes('/j2me/') || p.includes('/jsdos/') || p.includes('/webretro/') || p.includes('/qemu-wasm/')) return set(CACHE.engine)
+  if (p.includes('/play/')) return set(versionedPlayAsset || isVersionedRequest(res) ? CACHE.engineVersioned : CACHE.engine)
   if (/\.(png|jpg|jpeg|gif|webp|avif|svg|ico)$/i.test(p)) return set(CACHE.image)
   // ads.txt 跟 robots / sitemap 一样属于「构建时生成、但要能被外部频繁核对」的元文件，
   // 走兜底那档 s-maxage=3600 会让广告主和爬虫拿着边缘缓存里的旧版本看半天。

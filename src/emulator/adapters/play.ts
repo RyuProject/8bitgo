@@ -29,11 +29,14 @@
  * 见 ../remoteDisc.ts。这是 PS2 能上网页的唯一前提，别改回整份下载。
  */
 import type { Capability, CaptureSources, MountOptions, PadButton, RuntimeHandle } from '../types'
-import { PLAY_PATH } from '../paths'
+import { PLAY_PATH, playRuntimeAsset } from '../paths'
 import { getT, fmt } from '@/services/i18n'
 import { RemoteDisc, httpRangeFetcher, probeRange, type DiscSource } from '../remoteDisc'
 import { GP, hasGamepadApi, startGamepadBridge, type GamepadBridge } from '../gamepad'
 import { canvasToBlob } from '../recorder'
+import { fetchBlobWithProgress } from '../loadProgress'
+import { romCacheKey } from '../romCache'
+import { inspectPlayArcadeBundle, PLAY_ARCADE_BUNDLE_MAX_BYTES, type PlayArcadeBundle } from '@/lib/playArcadeBundle'
 
 /** Emscripten 模块工厂（MODULARIZE 构建）。只列我们真正调到的那几样 */
 interface PlayModule {
@@ -41,11 +44,16 @@ interface PlayModule {
   FS: {
     mkdir(path: string): void
     writeFile(path: string, data: Uint8Array): void
+    open(path: string, flags: string): { position?: number }
+    write(stream: { position?: number }, data: Uint8Array, offset: number, length: number, position?: number): number
+    close(stream: { position?: number }): void
   }
   canvas?: HTMLCanvasElement
   discImageDevice?: unknown
   ccall(name: string, ret: string | null, argTypes: string[], args: unknown[]): unknown
   bootDiscImage(fileName: string): void
+  bootArcade?(id: string): void
+  setArcadeRomsPath?(path: string): void
   bootElf(fileName: string): void
   getFrames?: () => number
   clearStats?: () => void
@@ -131,6 +139,94 @@ function discNameOf(game: File | string, fallback: string): string {
 }
 
 const ELF_RE = /\.elf$/i
+const ZIP_CHUNK_BYTES = 8 * 1024 * 1024
+
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256)
+  for (let i = 0; i < 256; i++) {
+    let value = i
+    for (let bit = 0; bit < 8; bit++) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1
+    table[i] = value >>> 0
+  }
+  return table
+})()
+
+function ensureFsDirectory(fs: PlayModule['FS'], path: string): void {
+  let current = ''
+  for (const part of path.split('/').filter(Boolean)) {
+    current += `/${part}`
+    try { fs.mkdir(current) } catch { /* 已存在；后续 open 会验证它确实可写 */ }
+  }
+}
+
+/**
+ * 外层包只解 ZIP 的 stored 成员，不把 460MB CHD 变成一个 JS ArrayBuffer。
+ * Emscripten 的 FS.write 会把每块直接落进 MEMFS，峰值 JS 临时内存因此限制在 8MB。
+ */
+async function writeStoredPackageEntry(
+  fs: PlayModule['FS'],
+  blob: Blob,
+  entry: Awaited<ReturnType<typeof inspectPlayArcadeBundle>>['dongleEntry'],
+  targetPath: string,
+  onProgress?: (written: number, total: number) => void,
+): Promise<void> {
+  if (entry.method !== 0 || entry.compressedSize !== entry.uncompressedSize) throw new Error(`ZIP 成员不是 stored 格式：${entry.name}`)
+  const local = await blob.slice(entry.offset, entry.offset + 30).arrayBuffer()
+  if (local.byteLength !== 30 || new DataView(local).getUint32(0, true) !== 0x04034b50) throw new Error(`ZIP 本地头损坏：${entry.name}`)
+  const header = new DataView(local)
+  const dataStart = entry.offset + 30 + header.getUint16(26, true) + header.getUint16(28, true)
+  const stream = fs.open(targetPath, 'w')
+  let position = 0
+  let crc = 0xffffffff
+  try {
+    while (position < entry.uncompressedSize) {
+      const end = Math.min(position + ZIP_CHUNK_BYTES, entry.uncompressedSize)
+      const bytes = new Uint8Array(await blob.slice(dataStart + position, dataStart + end).arrayBuffer())
+      if (bytes.byteLength !== end - position) throw new Error(`ZIP 成员读取不完整：${entry.name}`)
+      for (let i = 0; i < bytes.length; i++) crc = CRC32_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8)
+      const written = fs.write(stream, bytes, 0, bytes.length, position)
+      if (written !== bytes.length) throw new Error(`写入 Play! 文件系统不完整：${entry.name}`)
+      position = end
+      onProgress?.(position, entry.uncompressedSize)
+    }
+    if (((crc ^ 0xffffffff) >>> 0) !== (entry.crc32 >>> 0)) throw new Error(`ZIP 成员 CRC 校验失败：${entry.name}`)
+  } finally {
+    fs.close(stream)
+  }
+}
+
+async function installPlayArcadeBundle(
+  module: PlayModule,
+  blob: Blob,
+  bundle: PlayArcadeBundle,
+  onProgress?: (loaded: number, total: number) => void,
+): Promise<string> {
+  const id = bundle.manifest.id
+  // PathUtils 先检查 /app/share 是否存在；创建并写入这里后，上游会从同一处找定义文件。
+  const definitionPath = `/app/share/arcadedefs/${id}.arcadedef`
+  ensureFsDirectory(module.FS, `/app/share/arcadedefs`)
+  ensureFsDirectory(module.FS, `/arcaderoms/${id}`)
+  const definitionBytes = new TextEncoder().encode(bundle.definitionText)
+  module.FS.writeFile(definitionPath, definitionBytes)
+
+  const total = [bundle.dongleEntry, ...bundle.discEntries].reduce((sum, entry) => sum + entry.uncompressedSize, 0)
+  let loaded = 0
+  const update = (written: number) => onProgress?.(loaded + written, total)
+  const donglePath = `/arcaderoms/${id}.zip`
+  await writeStoredPackageEntry(module.FS, blob, bundle.dongleEntry, donglePath, (written) => update(written, bundle.dongleEntry.uncompressedSize))
+  loaded += bundle.dongleEntry.uncompressedSize
+  for (let index = 0; index < bundle.discEntries.length; index++) {
+    const entry = bundle.discEntries[index]
+    const relative = bundle.manifest.discs[index]
+    const target = `/${relative}`
+    ensureFsDirectory(module.FS, target.slice(0, target.lastIndexOf('/')))
+    await writeStoredPackageEntry(module.FS, blob, entry, target, (written) => update(written, entry.uncompressedSize))
+    loaded += entry.uncompressedSize
+  }
+  if (!module.setArcadeRomsPath || !module.bootArcade) throw new Error('Play! 网页核心缺少 System 2x6 启动接口；请部署新的 Play.wasm')
+  module.setArcadeRomsPath('/arcaderoms')
+  return id
+}
 
 interface PlayKey {
   code: string
@@ -201,6 +297,8 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
   let destroyed = false
   let module: PlayModule | null = null
   let disc: RemoteDisc | null = null
+  let arcadeBundleBlob: Blob | null = null
+  let arcadeBundle: PlayArcadeBundle | null = null
   let pad: GamepadBridge | null = null
   let readyPoll = 0
   let readyTimeout = 0
@@ -251,7 +349,7 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
      * Play.js 与光盘 Range 探测互不依赖。旧流程先等探盘 RTT，再开始下载运行时，跨洲网络下白白
      * 串行了一次往返；先把模块请求发出去，后面仍按 rom → engine 报阶段，不会让进度条倒退。
      */
-    const scriptUrl = `${PLAY_PATH}Play.js`
+    const scriptUrl = playRuntimeAsset('Play.js')
     const factoryPromise = import(/* @vite-ignore */ scriptUrl).then((imported: { default?: PlayFactory }) => {
       if (typeof imported.default !== 'function') throw new Error('Play.js 没有导出模块工厂')
       return imported.default
@@ -264,7 +362,26 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
     let elfBytes: Uint8Array | null = null
     const discName = discNameOf(options.game, 'game.iso')
     const isElf = ELF_RE.test(discName)
-    if (typeof options.game === 'string') {
+    const isPlayArcade = options.platform === 'arcade'
+    if (isPlayArcade) {
+      if (typeof options.game === 'string') {
+        options.onProgress?.({ phase: 'rom', loaded: 0 })
+        arcadeBundleBlob = await fetchBlobWithProgress(options.game, {
+          phase: 'rom',
+          onProgress: options.onProgress,
+          maxBytes: PLAY_ARCADE_BUNDLE_MAX_BYTES,
+          resumeKey: romCacheKey(options.game) || undefined,
+          check: (res) => {
+            if (/text\/html|application\/xhtml/i.test(res.headers.get('content-type') ?? '')) throw new Error('Play! 街机 ROM 地址返回了网页')
+          },
+        })
+      } else {
+        arcadeBundleBlob = options.game
+        options.onProgress?.({ phase: 'rom', loaded: arcadeBundleBlob.size, total: arcadeBundleBlob.size, ratio: 1, cached: true })
+      }
+      // 包格式错误在下载模拟器前就能发现，避免弱网用户先等完 Play.wasm 才看到“镜像不兼容”。
+      arcadeBundle = await inspectPlayArcadeBundle(arcadeBundleBlob)
+    } else if (typeof options.game === 'string') {
       options.onProgress?.({ phase: 'rom', loaded: 0 })
       if (isElf) {
         const res = await fetch(options.game)
@@ -315,9 +432,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
         canvas,
         // Play.wasm 和 Play.js 放在一起。不给这个的话 emscripten 会按**当前页面**的
         // 地址去找 wasm —— 站点是 SPA，任何一个 /games/xxx 路径下都会 404
-        locateFile: (file: string) => `${PLAY_PATH}${file}`,
+        locateFile: (file: string) => file === 'Play.wasm' ? playRuntimeAsset(file) : `${PLAY_PATH}${file}`,
         mainScriptUrlOrBlob: scriptUrl,
-        printErr: (msg: string) => console.warn('[play]', msg),
+        printErr: (msg: string) => {
+          console.warn('[play]', msg)
+          const bootError = /^\[play-boot-error\]\s*(.*)$/.exec(msg)
+          if (bootError) fail(fmt(rt.playLoadFailed, { msg: bootError[1] || msg }))
+        },
       })
       if (destroyed) return
       module = instance
@@ -336,7 +457,13 @@ export function mount(container: HTMLElement, options: MountOptions): RuntimeHan
       instance.ccall('initVm', null, [], [])
 
       options.onProgress?.({ phase: 'starting', loaded: 0 })
-      if (isElf && elfBytes) {
+      if (isPlayArcade && arcadeBundleBlob && arcadeBundle) {
+        const bundleId = await installPlayArcadeBundle(instance, arcadeBundleBlob, arcadeBundle, (loaded, total) => {
+          options.onProgress?.({ phase: 'starting', loaded, total, ratio: total ? loaded / total : 1 })
+        })
+        if (destroyed) return
+        instance.bootArcade?.(bundleId)
+      } else if (isElf && elfBytes) {
         const path = `/work/${discName}`
         instance.FS.writeFile(path, elfBytes)
         instance.bootElf(path)

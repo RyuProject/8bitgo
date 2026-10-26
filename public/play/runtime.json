@@ -2,16 +2,19 @@
   "name": "Play!",
   "source": "https://playjs.purei.org/",
   "upstream": "https://github.com/jpd002/Play-",
-  "fetchedAt": "2026-09-15",
-  "lastModified": "2026-09-03T18:52:08Z",
+  "fetchedAt": "2026-10-26",
+  "lastModified": "2026-10-22T10:49:09-04:00",
+  "buildCommit": "505dac73149fece41b04dd961078ce3011a8bed5",
+  "build": "8BitGo Play! Web build with System 246 / System 147 boot API; pthread SQLite fix",
+  "runtimePath": "20261026-system2x6-v1",
   "files": {
-    "Play.js": {
-      "bytes": 206594,
-      "sha256": "5599ff16ae5e3534f9b779736aedfa20661821d57be7f03e587e31ef8d090317"
+    "20261026-system2x6-v1/Play.js": {
+      "bytes": 227460,
+      "sha256": "cd2204d9e07e29b7fb9b247d069b4a9d443609c4de9599c0e424c995c48b82df"
     },
-    "Play.wasm": {
-      "bytes": 2211611,
-      "sha256": "5c6ace637a23f3416a8105d1a07786631994e8dfe34d603a9f62c3b47c47f1a2"
+    "20261026-system2x6-v1/Play.wasm": {
+      "bytes": 3182723,
+      "sha256": "308d4b666cac07b6170ea50b1f7ac48724350c6d88627fc0e36add2cefa1c55d"
     },
     "LICENSE.txt": {
       "bytes": 1336,

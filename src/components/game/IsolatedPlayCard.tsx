@@ -17,14 +17,14 @@ import { useLang } from '@/services/lang'
 import { useT } from '@/services/i18n'
 import { cx } from '@/lib/format'
 import type { ReactNode } from 'react'
-import type { IsolatedRuntimePlatformId } from '../../../shared/isolated-runtime-platforms.js'
+import type { IsolatedRuntimeRoutePlatformId } from '../../../shared/isolated-runtime-platforms.js'
 import { newStartupId, recordStartupEvent } from '@/services/startupFunnel'
 
 interface Props {
   slug: string
   gameName: string
   /** 仍使用独立页的 pthread 模拟器走自己的隔离路由；其余条目走 isolated-embeds 登记的外壳。 */
-  isolatedPlatform?: IsolatedRuntimePlatformId
+  isolatedPlatform?: IsolatedRuntimeRoutePlatformId
   /** 空闲态的大图标，和 EmulatorPlayer 的 icon 一个意思 */
   icon?: string
   /** 背景（通常是封面），和播放器空闲态保持一致的观感 */
@@ -68,7 +68,7 @@ export function IsolatedPlayCard({ slug, gameName, isolatedPlatform, icon, backd
               if (!startupVisitId) return
               const attemptId = newStartupId()
               const startedAt = Date.now()
-              const runtime = isolatedPlatform === 'psp' ? 'ppsspp' : isolatedPlatform === 'ps2' ? 'play' : isolatedPlatform ? 'dolphin' : 'html5'
+              const runtime = isolatedPlatform === 'psp' ? 'ppsspp' : isolatedPlatform === 'ps2' || isolatedPlatform === 'arcade' ? 'play' : isolatedPlatform ? 'dolphin' : 'html5'
               recordStartupEvent(slug, {
                 visitId: startupVisitId,
                 attemptId,

@@ -1,0 +1,83 @@
+diff --git a/Source/ui_js/Main.cpp b/Source/ui_js/Main.cpp
+index 999e24ca..02f208db 100644
+--- a/Source/ui_js/Main.cpp
++++ b/Source/ui_js/Main.cpp
+@@ -7,6 +7,8 @@
+ #include "InputProviderEmscripten.h"
+ #include "ui_shared/StatsManager.h"
+ #include "DefaultAppConfig.h"
++#include "PS2VM_Preferences.h"
++#include "AppConfig.h"
+ 
+ CPs2VmJs* g_virtualMachine = nullptr;
+ CGSHandler::NewFrameEvent::Connection g_gsNewFrameConnection;
+@@ -129,6 +131,16 @@ void bootDiscImage(std::string path)
+ 	g_virtualMachine->BootDiscImage(path);
+ }
+ 
++void bootArcade(std::string id)
++{
++	g_virtualMachine->BootArcade(id);
++}
++
++void setArcadeRomsPath(std::string path)
++{
++	CAppConfig::GetInstance().SetPreferencePath(PREF_PS2_ARCADEROMS_DIRECTORY, path);
++}
++
+ int getFrames()
+ {
+ 	return CStatsManager::GetInstance().GetFrames();
+@@ -145,6 +157,8 @@ EMSCRIPTEN_BINDINGS(Play)
+ 
+ 	function("bootElf", &bootElf);
+ 	function("bootDiscImage", &bootDiscImage);
++	function("bootArcade", &bootArcade);
++	function("setArcadeRomsPath", &setArcadeRomsPath);
+ 	function("getFrames", &getFrames);
+ 	function("clearStats", &clearStats);
+ }
+diff --git a/Source/ui_js/Ps2VmJs.cpp b/Source/ui_js/Ps2VmJs.cpp
+index b779dbe8..9e0ec520 100644
+--- a/Source/ui_js/Ps2VmJs.cpp
++++ b/Source/ui_js/Ps2VmJs.cpp
+@@ -4,6 +4,7 @@
+ #include "BasicBlock.h"
+ #include "PS2VM_Preferences.h"
+ #include "AppConfig.h"
++#include "ui_shared/ArcadeUtils.h"
+ 
+ extern "C" uint32 LWL_Proxy(uint32, uint32, CMIPS*);
+ extern "C" uint32 LWR_Proxy(uint32, uint32, CMIPS*);
+@@ -81,4 +82,20 @@ void CPs2VmJs::BootDiscImage(std::string path)
+ 		printf("Starting...\r\n");
+ 		ResumeImpl();
+ 	});
+-}
+\ No newline at end of file
++}
++
++void CPs2VmJs::BootArcade(std::string id)
++{
++	m_mailBox.SendCall([this, id]() {
++		try
++		{
++			ArcadeUtils::BootArcadeMachine(this, id + ".arcadedef");
++		}
++		catch(const std::exception& ex)
++		{
++			// 异步邮箱不会把 C++ 异常传回 JS；用 stderr 让适配器能在首帧超时前给出可读错误。
++			fprintf(stderr, "[play-boot-error] %s\n", ex.what());
++			Resume();
++		}
++	});
++}
+diff --git a/Source/ui_js/Ps2VmJs.h b/Source/ui_js/Ps2VmJs.h
+index 4484d5d1..e3833bc2 100644
+--- a/Source/ui_js/Ps2VmJs.h
++++ b/Source/ui_js/Ps2VmJs.h
+@@ -9,3 +9,4 @@ public:
+ 	void BootElf(std::string);
+ 	void BootDiscImage(std::string);
++	void BootArcade(std::string);
+ };

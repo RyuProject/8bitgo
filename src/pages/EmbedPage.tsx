@@ -40,7 +40,7 @@ import { SITE_NAME } from '@/components/layout/Logo'
 import { isolatedEmbedFor } from '../../shared/isolated-embeds.js'
 import {
   isIsolatedRuntimePlatform,
-  type IsolatedRuntimePlatformId,
+  type IsolatedRuntimeRoutePlatformId,
 } from '../../shared/isolated-runtime-platforms.js'
 
 /** 嵌入页里的一句话提示：出不了游戏时至少让人知道为什么，别只给一块黑 */
@@ -57,7 +57,7 @@ function EmbedNotice({ children, action }: { children: React.ReactNode; action?:
 
 interface Props {
   /** `/play/<平台>/<slug>` 顶层已经带 COOP/COEP，可以直接启动 pthread 模拟器。 */
-  standalonePlatform?: IsolatedRuntimePlatformId
+  standalonePlatform?: IsolatedRuntimeRoutePlatformId
 }
 
 export function EmbedPage({ standalonePlatform }: Props) {
@@ -87,7 +87,8 @@ export function EmbedPage({ standalonePlatform }: Props) {
    * 这一页在别人的域名里，router 的 basename 帮不上忙，用 <Link> 还会在 iframe 里套娃。
    */
   const homeUrl = `${langPrefix(lang)}/games/${encodeURIComponent(slug)}`
-  const isolatedPlayUrl = platform && isIsolatedRuntimePlatform(platform.id)
+  const gameNeedsIsolatedRuntime = Boolean(platform && (isIsolatedRuntimePlatform(platform.id) || (platform.id === 'arcade' && game?.runtime === 'play')))
+  const isolatedPlayUrl = gameNeedsIsolatedRuntime
     ? `${langPrefix(lang)}/play/${platform.id}/${encodeURIComponent(slug)}`
     : homeUrl
   const title = game ? gameTitle(game, lang) : slug
@@ -113,13 +114,13 @@ export function EmbedPage({ standalonePlatform }: Props) {
     body = <div className="h-full animate-pulse bg-black" />
   } else if (!game || !platform || !isPlatformEnabled(platform.id) || (standalonePlatform && platform.id !== standalonePlatform)) {
     body = <EmbedNotice>{t.game.notFoundMsg}</EmbedNotice>
-  } else if (!standalonePlatform && (isolated || isIsolatedRuntimePlatform(platform.id))) {
+  } else if (!standalonePlatform && (isolated || gameNeedsIsolatedRuntime)) {
     // SAB 游戏：普通第三方 iframe 拿不到隔离；模拟器平台给本站独立入口，其余回详情页。
     body = (
       <EmbedNotice
         action={
           <a
-            href={isIsolatedRuntimePlatform(platform.id) ? isolatedPlayUrl : homeUrl}
+            href={gameNeedsIsolatedRuntime ? isolatedPlayUrl : homeUrl}
             target="_blank"
             rel="noopener"
             className="inline-flex h-10 items-center rounded-full bg-brand px-5 text-sm font-bold text-white transition hover:bg-brand-hover"
@@ -157,6 +158,7 @@ export function EmbedPage({ standalonePlatform }: Props) {
           platform={platform}
           gameName={game.title}
           gameSlug={game.slug}
+          runtime={game.runtime}
           startupVisitId={funnelVisitId}
           initialStartupAttemptId={funnelAttemptId}
           initialStartupStartedAt={funnelStartedAt}
