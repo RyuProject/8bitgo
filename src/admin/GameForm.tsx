@@ -3205,7 +3205,7 @@ function RomField({
             <p className="font-semibold text-online">✓ 已精确识别：{mameRomset.board} · {mameRomset.romset}.zip（{mameRomset.matchedFiles}/12 个父集 ROM CRC 匹配）</p>
             <p className="mt-1">
               建议使用 MAME 当前版；所需 BIOS set 是 <code>namcoc76</code>（空字段会自动填写，已有手动值不会覆盖）。{mameRomset.nestedExtras > 0
-                ? ` 另外 ${mameRomset.nestedExtras} 个子目录 ROM 文件会在上传前自动移到 ZIP 根目录，ROM 数据本身不改写。`
+                ? ` 原始 ZIP 会保持不变；另外 ${mameRomset.nestedExtras} 个子目录成员仍留在原处，MAME 以 tekken.zip 只读取根目录的父集 ROM。`
                 : ''}
               {' '}请在“ROM 存储 → 街机 BIOS 包”上传并绑定 <code>namcoc76.zip</code>，然后保存游戏资料；若你手动选了其它核心，系统会尊重手动设置。
             </p>
