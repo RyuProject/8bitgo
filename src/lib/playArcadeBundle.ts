@@ -46,23 +46,34 @@ async function readStoredEntry(blob: Blob, entry: ZipFileEntry, limit: number): 
 }
 
 function parseDefinition(text: string, id: string, discPaths: string[]): string {
-  let def: Record<string, unknown>
+  let parsed: unknown
   try {
-    def = JSON.parse(text.replace(/^\uFEFF/, '')) as Record<string, unknown>
+    parsed = JSON.parse(text.replace(/^\uFEFF/, ''))
   } catch {
     fail('arcadedef 不是有效 JSON')
   }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) fail('arcadedef 格式无效')
+  const def = parsed as Record<string, unknown>
   if (def.id !== id) fail('arcadedef 的 id 与包清单不一致')
   if (def.driver !== 'sys246' && def.driver !== 'sys147') fail('只接受 Play! 已实现的 System 246 / System 147 驱动')
-  const dongle = def.dongle as { name?: unknown } | undefined
-  if (typeof dongle?.name !== 'string' || !dongle.name || !safePath(dongle.name)) fail('arcadedef 未声明有效的 dongle 成员名')
+  const dongle = def.dongle
+  if (!dongle || typeof dongle !== 'object' || Array.isArray(dongle)) return fail('arcadedef 未声明有效的 dongle 成员名')
+  const dongleName = (dongle as Record<string, unknown>).name
+  if (typeof dongleName !== 'string' || !dongleName || !safePath(dongleName)) return fail('arcadedef 未声明有效的 dongle 成员名')
 
-  const media = [def.cdvd, def.hdd].filter(Boolean) as Array<{ name?: unknown }>
-  if (media.length === 0 || media.some((item) => typeof item.name !== 'string' || !item.name)) fail('arcadedef 没有声明 CD/DVD 或硬盘镜像')
-  const names = media.map((item) => `arcaderoms/${id}/${item.name as string}`)
+  const media: Array<{ name: string }> = []
+  for (const candidate of [def.cdvd, def.hdd]) {
+    if (!candidate) continue
+    if (typeof candidate !== 'object' || Array.isArray(candidate)) return fail('arcadedef 没有声明有效的 CD/DVD 或硬盘镜像')
+    const name = (candidate as Record<string, unknown>).name
+    if (typeof name !== 'string' || !name) return fail('arcadedef 没有声明有效的 CD/DVD 或硬盘镜像')
+    media.push({ name })
+  }
+  if (media.length === 0) fail('arcadedef 没有声明 CD/DVD 或硬盘镜像')
+  const names = media.map((item) => `arcaderoms/${id}/${item.name}`)
   if (names.some((path) => !safePath(path) || !discPaths.includes(path))) fail('arcadedef 引用的镜像没有收录在包里')
   if (names.length !== discPaths.length || new Set(names).size !== names.length) fail('镜像清单与 arcadedef 不匹配')
-  return dongle.name
+  return dongleName
 }
 
 /**
@@ -86,30 +97,37 @@ export async function inspectPlayArcadeBundle(blob: Blob): Promise<PlayArcadeBun
   }
 
   const manifestEntry = entries.get('8bitgo-play-arcade.json')
-  if (!manifestEntry || manifestEntry.uncompressedSize > MAX_MANIFEST) fail('缺少 8bitgo-play-arcade.json 或文件过大')
+  if (!manifestEntry) return fail('缺少 8bitgo-play-arcade.json')
+  if (manifestEntry.uncompressedSize > MAX_MANIFEST) fail('8bitgo-play-arcade.json 文件过大')
   const manifestBytes = await readStoredEntry(blob, manifestEntry, MAX_MANIFEST)
   let parsed: unknown
   try { parsed = JSON.parse(new TextDecoder().decode(manifestBytes)) } catch { fail('包清单不是有效 JSON') }
   if (!parsed || typeof parsed !== 'object') fail('包清单格式无效')
   const manifest = parsed as Partial<PlayArcadeBundleManifest>
-  if (manifest.format !== PLAY_ARCADE_BUNDLE_FORMAT) fail('不支持的包格式')
-  if (typeof manifest.id !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(manifest.id)) fail('游戏 id 无效')
+  if (manifest.format !== PLAY_ARCADE_BUNDLE_FORMAT) return fail('不支持的包格式')
+  if (typeof manifest.id !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(manifest.id)) return fail('游戏 id 无效')
   const id = manifest.id
   const definition = `arcadedefs/${id}.arcadedef`
   const dongleArchive = `arcaderoms/${id}.zip`
-  if (manifest.definition !== definition || manifest.dongleArchive !== dongleArchive) fail('definition / dongle 路径必须符合该 id 的目录约定')
-  if (!Array.isArray(manifest.discs) || manifest.discs.length < 1 || manifest.discs.length > 4 || manifest.discs.some((p) => !safePath(p))) fail('discs 清单无效')
+  if (manifest.definition !== definition || manifest.dongleArchive !== dongleArchive) return fail('definition / dongle 路径必须符合该 id 的目录约定')
+  if (!Array.isArray(manifest.discs) || manifest.discs.length < 1 || manifest.discs.length > 4 || manifest.discs.some((p) => !safePath(p))) return fail('discs 清单无效')
   const discPaths = manifest.discs as string[]
   if (new Set(discPaths).size !== discPaths.length || discPaths.some((p) => !p.startsWith(`arcaderoms/${id}/`) || !/\.(chd|iso|cue|cso|isz|mds)$/i.test(p))) fail('镜像路径必须位于该游戏目录且使用 Play! 支持的格式')
   const expectedNames = new Set(['8bitgo-play-arcade.json', definition, dongleArchive, ...discPaths])
   if (entries.size !== expectedNames.size || [...entries.keys()].some((name) => !expectedNames.has(name))) fail('包中含有清单之外的文件')
 
   const definitionEntry = entries.get(definition)
+  if (!definitionEntry) return fail(`缺少 ${definition}`)
+  if (definitionEntry.uncompressedSize > MAX_DEFINITION) fail(`${definition} 文件过大`)
   const dongleEntry = entries.get(dongleArchive)
-  const discEntries = discPaths.map((path) => entries.get(path))
-  if (!definitionEntry || definitionEntry.uncompressedSize > MAX_DEFINITION) fail(`缺少 ${definition} 或文件过大`)
-  if (!dongleEntry || dongleEntry.uncompressedSize > MAX_SMALL_FILE) fail(`缺少 ${dongleArchive} 或文件过大`)
-  if (discEntries.some((entry) => !entry || entry.uncompressedSize === 0 || entry.uncompressedSize > PLAY_ARCADE_BUNDLE_MAX_BYTES - MAX_SMALL_FILE)) fail('盘映像缺失、为空或过大')
+  if (!dongleEntry) return fail(`缺少 ${dongleArchive}`)
+  if (dongleEntry.uncompressedSize > MAX_SMALL_FILE) fail(`${dongleArchive} 文件过大`)
+  const discEntries: ZipFileEntry[] = []
+  for (const path of discPaths) {
+    const entry = entries.get(path)
+    if (!entry || entry.uncompressedSize === 0 || entry.uncompressedSize > PLAY_ARCADE_BUNDLE_MAX_BYTES - MAX_SMALL_FILE) return fail('盘映像缺失、为空或过大')
+    discEntries.push(entry)
+  }
   const definitionBytes = await readStoredEntry(blob, definitionEntry, MAX_DEFINITION)
   const definitionText = new TextDecoder().decode(definitionBytes)
   const dongleMemberName = parseDefinition(definitionText, id, discPaths)

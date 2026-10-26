@@ -213,14 +213,14 @@ async function installPlayArcadeBundle(
   let loaded = 0
   const update = (written: number) => onProgress?.(loaded + written, total)
   const donglePath = `/arcaderoms/${id}.zip`
-  await writeStoredPackageEntry(module.FS, blob, bundle.dongleEntry, donglePath, (written) => update(written, bundle.dongleEntry.uncompressedSize))
+  await writeStoredPackageEntry(module.FS, blob, bundle.dongleEntry, donglePath, (written) => update(written))
   loaded += bundle.dongleEntry.uncompressedSize
   for (let index = 0; index < bundle.discEntries.length; index++) {
     const entry = bundle.discEntries[index]
     const relative = bundle.manifest.discs[index]
     const target = `/${relative}`
     ensureFsDirectory(module.FS, target.slice(0, target.lastIndexOf('/')))
-    await writeStoredPackageEntry(module.FS, blob, entry, target, (written) => update(written, entry.uncompressedSize))
+    await writeStoredPackageEntry(module.FS, blob, entry, target, (written) => update(written))
     loaded += entry.uncompressedSize
   }
   if (!module.setArcadeRomsPath || !module.bootArcade) throw new Error('Play! 网页核心缺少 System 2x6 启动接口；请部署新的 Play.wasm')

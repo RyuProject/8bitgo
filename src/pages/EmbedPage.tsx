@@ -88,7 +88,7 @@ export function EmbedPage({ standalonePlatform }: Props) {
    */
   const homeUrl = `${langPrefix(lang)}/games/${encodeURIComponent(slug)}`
   const gameNeedsIsolatedRuntime = Boolean(platform && (isIsolatedRuntimePlatform(platform.id) || (platform.id === 'arcade' && game?.runtime === 'play')))
-  const isolatedPlayUrl = gameNeedsIsolatedRuntime
+  const isolatedPlayUrl = platform && gameNeedsIsolatedRuntime
     ? `${langPrefix(lang)}/play/${platform.id}/${encodeURIComponent(slug)}`
     : homeUrl
   const title = game ? gameTitle(game, lang) : slug
