@@ -38,12 +38,20 @@ check('侧栏微型封面不在开局时下载和解码宣传视频', () => {
   assert.ok(compactCovers.some((tag) => tag.includes('ratio="landscape"')), '曾经玩过的横版微缩图仍会加载视频')
 })
 
-check('550KB 中文字体不再 preload，也不强制慢网下载', () => {
+check('中文像素字体按 unicode-range 拆分，不 preload，也不强制慢网下载', () => {
   const html = read('index.html')
   const css = read('src/index.css')
   assert.doesNotMatch(html, /rel="preload"[\s\S]{0,180}ark-pixel/, 'Ark Pixel 仍在关键资源 preload')
-  const face = css.match(/@font-face \{[\s\S]*?font-family: 'Ark Pixel';[\s\S]*?\}/)?.[0] ?? ''
-  assert.match(face, /font-display: optional/, 'Ark Pixel 慢网仍会强制 swap')
+  // 41KB 的 @font-face 列表只能以桌面媒体条件引入；进了主 CSS 就成了每个手机访客的首屏阻塞字节
+  const link = html.match(/<link rel="stylesheet" href="(\/fonts\/ark-pixel\/split\/ark-pixel-faces-[a-f0-9]+\.css)" media="\(hover: hover\) and \(pointer: fine\)" \/>/)
+  assert.ok(link, 'index.html 没有按桌面媒体条件引入 Ark Pixel 分片声明')
+  assert.doesNotMatch(css, /font-family: 'Ark Pixel'|url\('\/fonts\/ark-pixel/, 'Ark Pixel 的 @font-face 又写回了主 CSS')
+  const faces = read(`public${link[1]}`).match(/@font-face \{[\s\S]*?\}/g) ?? []
+  assert.ok(faces.length > 1, 'Ark Pixel 又变回单个整包字体')
+  for (const face of faces) {
+    assert.match(face, /font-display: optional/, 'Ark Pixel 慢网仍会强制 swap')
+    assert.match(face, /unicode-range: U\+/, 'Ark Pixel 分片缺 unicode-range，会被无条件下载')
+  }
   const theme = css.match(/@theme \{[\s\S]*?\n\}/)?.[0] ?? ''
   assert.doesNotMatch(theme, /'Ark Pixel'/, '移动端基础字体栈仍会触发 Ark Pixel 下载')
   const desktop = css.match(/@media \(hover: hover\) and \(pointer: fine\) \{[\s\S]*?\n\}/)?.[0] ?? ''
